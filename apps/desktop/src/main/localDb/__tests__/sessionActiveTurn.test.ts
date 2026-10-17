@@ -1,6 +1,7 @@
 /**
  * interrupted-turn-resume(简化版)单测。
- * 覆盖:started/ended 时间戳写入与保序、quit freeze、「疑似中断」pending 判定
+ * 覆盖:started/ended 时间戳写入与保序、quit freeze、owner 边界 ended 写抑制
+ * (有作用域、可释放、重入安全)、「疑似中断」pending 判定
  * (ended / cleared 边界、deleted / 不可见来源排除)、ended 落库后的注入回调通知
  * (广播假阳性修复:生效值读回 / 异常不断链 / ack resolve 前发出),以及 retry
  * 续跑判定 hasAssistantProgressAfterMessage 的正负路径。
@@ -14,11 +15,18 @@ import type { DbClient } from '../client/DbClient.js';
 import { clearCurrentDbClient, setCurrentDbClient } from '../client/current.js';
 import * as schema from '../schema.js';
 
+const feature = vi.hoisted(() => ({ enabled: false }));
+vi.mock('@cindy/maker-shared/cindy-make-feature', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@cindy/maker-shared/cindy-make-feature')>(),
+  get CINDY_MAKE_ENABLED() { return feature.enabled; },
+}));
+
 describe('sessionActiveTurn', () => {
   let currentClient: DbClient | null = null;
   let rawDb: Database.Database | null = null;
 
   afterEach(async () => {
+    feature.enabled = false;
     const { _resetSessionActiveTurnStateForTests } = await import('../sessionActiveTurn.js');
     _resetSessionActiveTurnStateForTests();
     vi.restoreAllMocks();
@@ -40,9 +48,13 @@ describe('sessionActiveTurn', () => {
         status TEXT NOT NULL DEFAULT 'active',
         source TEXT NOT NULL DEFAULT 'desktop',
         cleared_at INTEGER,
+        hidden_at INTEGER,
         active_turn_started_at INTEGER,
         active_turn_pid INTEGER,
         last_turn_ended_at INTEGER,
+        list_preview TEXT,
+        list_preview_role TEXT,
+        list_message_count INTEGER,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       );
@@ -114,21 +126,31 @@ describe('sessionActiveTurn', () => {
   }
 
   it('markSessionTurnStarted / markSessionTurnEnded write the two timestamps', async () => {
-    const { markSessionTurnStarted, markSessionTurnEnded } = await import('../sessionActiveTurn.js');
+    const { markSessionTurnStarted, markSessionTurnEnded, getSessionNotificationTurnSignal, drainSessionActiveTurnWrites } = await import('../sessionActiveTurn.js');
     const client = createTestDbClient();
     await seedSession(client, 's-1');
 
     markSessionTurnStarted('s-1');
+    const firstSignal = getSessionNotificationTurnSignal('s-1');
+    expect(firstSignal?.id).toMatch(/^signal:\d+$/);
+    expect(firstSignal?.ended).toBe(false);
     await vi.waitFor(async () => {
       expect((await readMarks(client, 's-1'))?.active_turn_started_at).toBeTypeOf('number');
     });
 
     markSessionTurnEnded('s-1');
+    expect(getSessionNotificationTurnSignal('s-1')?.id).toBe(firstSignal?.id);
+    expect(getSessionNotificationTurnSignal('s-1')?.ended).toBe(true);
+    expect(getSessionNotificationTurnSignal('s-1')?.fallbackEventId).toMatch(/^turn:\d+:\d+:signal-\d+$/);
     await vi.waitFor(async () => {
       const row = await readMarks(client, 's-1');
       expect(row?.last_turn_ended_at).toBeTypeOf('number');
       expect(row!.last_turn_ended_at!).toBeGreaterThanOrEqual(row!.active_turn_started_at!);
     });
+    markSessionTurnStarted('s-1');
+    expect(getSessionNotificationTurnSignal('s-1')?.id).not.toBe(firstSignal?.id);
+    expect(getSessionNotificationTurnSignal('s-1')?.ended).toBe(false);
+    await drainSessionActiveTurnWrites('s-1');
   });
 
   it('per-session write chain keeps started/ended landing order for very short turns', async () => {
@@ -148,6 +170,21 @@ describe('sessionActiveTurn', () => {
     const row = await readMarks(client, 's-short');
     // ended >= started → 疑似中断判定不命中。
     expect(row!.last_turn_ended_at!).toBeGreaterThanOrEqual(row!.active_turn_started_at!);
+  });
+
+  it('drains the queued turn markers before a completion reader uses them', async () => {
+    const { markSessionTurnStarted, markSessionTurnEnded, drainSessionActiveTurnWrites } =
+      await import('../sessionActiveTurn.js');
+    const client = createTestDbClient();
+    await seedSession(client, 's-notification');
+
+    markSessionTurnStarted('s-notification');
+    markSessionTurnEnded('s-notification');
+    await drainSessionActiveTurnWrites('s-notification');
+
+    const row = await readMarks(client, 's-notification');
+    expect(row?.active_turn_started_at).toBeTypeOf('number');
+    expect(row?.last_turn_ended_at).toBeGreaterThanOrEqual(row!.active_turn_started_at!);
   });
 
   it('markSessionTurnEnded honors endedAtOverride so deferred writes keep the frozen timestamp', async () => {
@@ -273,6 +310,83 @@ describe('sessionActiveTurn', () => {
     expect(row!.active_turn_started_at!).toBeGreaterThan(0);
   });
 
+  it('owner-boundary suppression blocks ended writes while held and restores them after release', async () => {
+    const { markSessionTurnStarted, markSessionTurnEnded, beginSessionTurnEndedSuppression } =
+      await import('../sessionActiveTurn.js');
+    const client = createTestDbClient();
+    await seedSession(client, 's-owner-boundary');
+
+    markSessionTurnStarted('s-owner-boundary');
+    await vi.waitFor(async () => {
+      expect((await readMarks(client, 's-owner-boundary'))?.active_turn_started_at).toBeTypeOf(
+        'number',
+      );
+    });
+
+    // 模拟切账号:owner 边界 teardown 抑制期间,maker.shutdown 关 session 触发的
+    // ended 写必须 no-op —— 否则被切换打断的在飞 turn 被伪装成正常收尾,重新打开
+    // 会话时既无中断横幅也无红点(2026-08-11 实报:跨区凭证误判触发账号切换,
+    // busy Codex 会话静默孤儿化)。
+    const release = beginSessionTurnEndedSuppression();
+    markSessionTurnEnded('s-owner-boundary');
+    await new Promise((r) => setTimeout(r, 20));
+    expect((await readMarks(client, 's-owner-boundary'))?.last_turn_ended_at).toBeNull();
+
+    // 释放后(新 owner 的运行期)正常收尾写恢复 —— 抑制必须有作用域,不能像
+    // quit freeze 一样永久生效,否则新 owner 每个正常完成的任务都会误报中断。
+    release();
+    markSessionTurnEnded('s-owner-boundary');
+    await vi.waitFor(async () => {
+      const row = await readMarks(client, 's-owner-boundary');
+      expect(row?.last_turn_ended_at).toBeTypeOf('number');
+      expect(row!.last_turn_ended_at!).toBeGreaterThanOrEqual(row!.active_turn_started_at!);
+    });
+  });
+
+  it('owner-boundary suppression release is idempotent and reentrant holds stack', async () => {
+    const { markSessionTurnEnded, beginSessionTurnEndedSuppression } =
+      await import('../sessionActiveTurn.js');
+    const client = createTestDbClient();
+    const startedAt = Date.now() - 1_000;
+    await seedSession(client, 's-owner-reentrant', { startedAt });
+
+    // 重入:两个边界流程重叠持有(极端但登出+切号竞态可达),任一释放不解除另一个。
+    const releaseA = beginSessionTurnEndedSuppression();
+    const releaseB = beginSessionTurnEndedSuppression();
+    releaseA();
+    releaseA(); // 幂等:重复释放不把 B 的持有也计销。
+    markSessionTurnEnded('s-owner-reentrant');
+    await new Promise((r) => setTimeout(r, 20));
+    expect((await readMarks(client, 's-owner-reentrant'))?.last_turn_ended_at).toBeNull();
+
+    releaseB();
+    markSessionTurnEnded('s-owner-reentrant');
+    await vi.waitFor(async () => {
+      expect((await readMarks(client, 's-owner-reentrant'))?.last_turn_ended_at).toBeTypeOf('number');
+    });
+  });
+
+  it('owner-boundary suppression also blocks barrier ended writes at call time', async () => {
+    const {
+      markSessionTurnStarted,
+      markSessionTurnEndedAfterBarrier,
+      beginSessionTurnEndedSuppression,
+    } = await import('../sessionActiveTurn.js');
+    const client = createTestDbClient();
+    await seedSession(client, 's-owner-barrier');
+    markSessionTurnStarted('s-owner-barrier');
+    await vi.waitFor(async () => {
+      expect((await readMarks(client, 's-owner-barrier'))?.active_turn_started_at).toBeTypeOf('number');
+    });
+
+    // shutdown close 经 barrier 版收尾同样要被挡(与 quit freeze 的对应用例同构)。
+    const release = beginSessionTurnEndedSuppression();
+    markSessionTurnEndedAfterBarrier('s-owner-barrier', Promise.resolve());
+    await new Promise((r) => setTimeout(r, 20));
+    expect((await readMarks(client, 's-owner-barrier'))?.last_turn_ended_at).toBeNull();
+    release();
+  });
+
   it('ended write notifies the injected listener with the effective DB value', async () => {
     const { markSessionTurnStarted, markSessionTurnEnded, setOnSessionTurnEndedPersisted } =
       await import('../sessionActiveTurn.js');
@@ -289,6 +403,29 @@ describe('sessionActiveTurn', () => {
     await vi.waitFor(() => expect(notified.length).toBe(1));
     const row = await readMarks(client, 's-notify');
     expect(notified[0]).toEqual(['s-notify', row!.last_turn_ended_at!]);
+  });
+
+  it('freezes the notify context before an async barrier settles', async () => {
+    const { markSessionTurnEndedAfterBarrier, setOnSessionTurnEndedPersisted } =
+      await import('../sessionActiveTurn.js');
+    const client = createTestDbClient();
+    await seedSession(client, 's-notify-owner');
+    let currentOwner = 'owner-a';
+    const notifiedOwners: unknown[] = [];
+    setOnSessionTurnEndedPersisted(
+      (_sid, _endedAt, context) => notifiedOwners.push(context),
+      () => currentOwner,
+    );
+
+    let releaseBarrier!: () => void;
+    const barrier = new Promise<void>((resolve) => {
+      releaseBarrier = resolve;
+    });
+    markSessionTurnEndedAfterBarrier('s-notify-owner', barrier);
+    currentOwner = 'owner-b';
+    releaseBarrier();
+
+    await vi.waitFor(() => expect(notifiedOwners).toEqual(['owner-a']));
   });
 
   it('notify carries the read-back MAX-guarded value, never a stale rewind', async () => {
@@ -374,6 +511,23 @@ describe('sessionActiveTurn', () => {
     ]);
   });
 
+  it('excludes plugin background tasks from both red-dot legs', async () => {
+    const { listInterruptedPendingSessionIds, listErrorTailPendingSessionIds } = await import('../sessionActiveTurn.js');
+    const client = createTestDbClient();
+    const now = Date.now();
+    await seedSession(client, 's-visible', { startedAt: now - 1000, source: 'plugin' });
+    await seedSession(client, 's-background', { startedAt: now - 1000, source: 'plugin' });
+    for (const id of ['s-visible', 's-background']) {
+      await client.exec(
+        'INSERT INTO messages (id, client_id, session_id, role, content, created_at, rewind_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [`${id}-err`, `${id}-err`, id, 'error', '{"message":"boom"}', now - 500, null],
+      );
+    }
+    await client.exec('UPDATE sessions SET hidden_at = ? WHERE id = ?', [now, 's-background']);
+    expect(await listInterruptedPendingSessionIds()).toEqual(['s-visible']);
+    expect(await listErrorTailPendingSessionIds()).toEqual(['s-visible']);
+  });
+
   it('hasAssistantProgressAfterMessage detects agent output after the user row', async () => {
     const { hasAssistantProgressAfterMessage } = await import('../sessionActiveTurn.js');
     const client = createTestDbClient();
@@ -444,6 +598,54 @@ describe('sessionActiveTurn', () => {
     expect(await hasAssistantProgressAfterMessage('s-same-ms', 'c-user2')).toBe(true);
   });
 
+  it('restores native Make failures only while enabled and preserves hidden failure history', async () => {
+    const { listErrorTailPendingSessionIds } = await import('../sessionActiveTurn.js');
+    feature.enabled = true;
+    const client = createTestDbClient();
+    const at = Date.now();
+    const insert = async (id: string, completion: unknown, options: {
+      source?: string; status?: string; clearedAt?: number; rewindAt?: number; content?: unknown;
+    } = {}) => {
+      await seedSession(client, id, { source: options.source ?? 'cindy-make', ...options });
+      await client.exec(
+        'INSERT INTO messages (id, client_id, session_id, role, content, agent_meta, created_at, rewind_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        [id, id, id, 'assistant', JSON.stringify(options.content ?? ''),
+          JSON.stringify({ cindyMakeCompletion: completion }), at, options.rewindAt ?? null],
+      );
+    };
+    const failed = { reportedAt: at, lastAction: 'build', personal: { status: 'failed', error: 'buildFailed' } };
+    await insert('make-failed', failed);
+    await insert('make-test-failed', { reportedAt: at, lastAction: 'test', test: { status: 'failed' } });
+    await insert('make-interrupted', { reportedAt: at, lastAction: 'test', test: { status: 'stopped', error: 'interrupted' } });
+    await insert('make-preparation', null, { content: { __cindyMakeCard: { type: 'cindy-make',
+      data: { report: { runId: 'run', status: 'failed' } } } } });
+    await insert('make-continued', { ...failed, continuedAt: at + 1 });
+    await insert('make-cancelled', { ...failed, personal: { status: 'failed', error: 'cancelled' } });
+    await insert('make-retried', { ...failed, personal: { status: 'checking' } });
+    await insert('make-new-test', { ...failed, lastAction: 'test', test: { status: 'ready' } });
+    await insert('make-rewound', failed, { rewindAt: at + 1 });
+    await insert('make-cleared', failed, { clearedAt: at });
+    await insert('make-archived', failed, { status: 'archived' });
+    await insert('ordinary-task', failed, { source: 'desktop' });
+    await insert('make-merge-failed', failed, { source: 'cindy-make-merge' });
+    await insert('make-later-user', failed);
+    await client.exec('INSERT INTO messages (id, client_id, session_id, role, content, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+      ['later', 'later', 'make-later-user', 'user', '{}', at]);
+    expect((await listErrorTailPendingSessionIds()).sort()).toEqual([
+      'make-failed', 'make-interrupted', 'make-preparation', 'make-test-failed',
+    ]);
+    feature.enabled = false;
+    expect(await listErrorTailPendingSessionIds()).toEqual([]);
+    expect(await client.queryOne('SELECT agent_meta FROM messages WHERE id = ?', ['make-failed'])).toEqual({
+      agent_meta: JSON.stringify({ cindyMakeCompletion: failed }),
+    });
+    feature.enabled = true;
+    await client.exec('UPDATE messages SET agent_meta = ? WHERE id = ?', [
+      JSON.stringify({ cindyMakeCompletion: { ...failed, personal: { status: 'waiting' } } }), 'make-failed',
+    ]);
+    expect(await listErrorTailPendingSessionIds()).not.toContain('make-failed');
+  });
+
   it('listErrorTailPendingSessionIds matches undismissed error tails only', async () => {
     const { listErrorTailPendingSessionIds } = await import('../sessionActiveTurn.js');
     const client = createTestDbClient();
@@ -506,6 +708,11 @@ describe('sessionActiveTurn', () => {
     // 不命中:不在桌面可见来源白名单里,红点无处展示。
     await seedSession(client, 's-hidden-err', { source: 'legacy-hidden' });
     await insert('s-hidden-err', 'e10-err', 'error', '{"message":"boom"}', base + 100);
+
+    for (const source of ['cindy-make', 'cindy-make-merge']) {
+      await seedSession(client, source, { source });
+      await insert(source, source + '-error', 'error', '{"message":"boom"}', base + 100);
+    }
 
     // 不命中:/clear 越过了该 error 行 —— 消息读取路径靠 cleared_at 把它挡在视图外,
     // 横幅根本不显示,红点若还挂着就永远无法处置(PR #879 review P1)。

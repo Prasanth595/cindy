@@ -7,7 +7,7 @@
  *    独立窗」的插件,就渲染**一枚**幽灵球(lucide Ghost 脸 + 数量角标),
  *    不再按数量分形态。点球纵向展开各插件自己的气泡(向下,空间不够则
  *    向上),点谁恢复谁的面板;点球或空白处收拢。全部面板都开着(没有
- *    最小化的)整层消失 —— 幽灵球只在有面板可恢复时在场。
+ *    最小化的)整层消失 —— 幽灵球只在有面板可恢复且用户选择气泡入口时在场。
  *  - 子气泡脸 = 插件图标(InstalledGhost.iconDataUrl,主窗拿不到
  *    cindy-ghost://,data URL 直接 <img>;缺图标兜底 lucide Ghost);
  *  - 定位用 left/top 而非 transform(2026-07-31 Lizi 实测:草稿页气泡拖
@@ -36,11 +36,12 @@ import { createPortal } from 'react-dom';
 import { Ghost } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
-import { ghostPanelKind, type GhostManifest } from '../../shared/ghost';
+import type { GhostManifest } from '../../shared/ghost';
+import { installedGhostStoragePart } from '../../shared/pluginIdentity';
 import { WINDOW_NO_DRAG_STYLE } from '../components/layout/windowDrag';
-import { restoreGhostPanel, useGhostPanelBubbleState } from '../lib/ghostPanelBubbleState';
-import { isGhostPanelKindDetached, useGhostPanelWindowsState } from '../lib/ghostPanelWindowState';
-import { useInstalledGhosts } from './useInstalledGhosts';
+import { restoreGhostPanel } from '../lib/ghostPanelBubbleState';
+import { useGhostPanelRestoreMode } from '../hooks/useGhostPanelRestoreMode';
+import { useMinimizedGhostPanels } from './useMinimizedGhostPanels';
 
 const BUBBLE_SIZE = 48;
 const EDGE_MARGIN = 12;
@@ -233,6 +234,7 @@ function useBubbleDrag({
 
 interface BubbleProps {
   manifest: GhostManifest;
+  instanceId: string;
   iconDataUrl: string | undefined;
   /** 渲染基准位(已按锚点排布 + clamp)。 */
   pos: { x: number; y: number };
@@ -241,7 +243,7 @@ interface BubbleProps {
 }
 
 /** 展开出的子气泡:不可拖(位置由幽灵球锚定),点击恢复对应面板。 */
-function Bubble({ manifest, iconDataUrl, pos, registerEl }: BubbleProps): ReactNode {
+function Bubble({ manifest, instanceId, iconDataUrl, pos, registerEl }: BubbleProps): ReactNode {
   const { t } = useTranslation();
   const [imgBroken, setImgBroken] = useState(false);
   /** 点击后进入"缩没退场"态:播 .ghost-bubble-exit,计时器到点才 restore。 */
@@ -256,7 +258,7 @@ function Bubble({ manifest, iconDataUrl, pos, registerEl }: BubbleProps): ReactN
     // 展开的"过程感":幽灵先跳走、圆圈再渐隐(共 EXIT_MS),到点才真正恢复
     // 面板(面板侧再接宽度展开,见 ghostPanels.tsx 的 ghost-panel-enter)。
     setExiting(true);
-    exitTimerRef.current = window.setTimeout(() => restoreGhostPanel(manifest.id), EXIT_MS);
+    exitTimerRef.current = window.setTimeout(() => restoreGhostPanel(instanceId), EXIT_MS);
   };
 
   const name = manifest.panel?.title ?? manifest.name;
@@ -264,7 +266,7 @@ function Bubble({ manifest, iconDataUrl, pos, registerEl }: BubbleProps): ReactN
     <button
       ref={(el) => registerEl?.(el)}
       type="button"
-      data-testid={`ghost-panel-bubble-${manifest.id}`}
+      data-testid={`ghost-panel-bubble-${instanceId}`}
       data-ghost-bubble-layer
       aria-label={t('ghostPanelBubble.restoreAria', { name })}
       title={t('ghostPanelBubble.restoreAria', { name })}
@@ -301,7 +303,7 @@ function Bubble({ manifest, iconDataUrl, pos, registerEl }: BubbleProps): ReactN
   );
 }
 
-/** 幽灵球:被最小化面板的唯一入口(Ghost 脸 + 数量角标),点击切换展开。 */
+/** 幽灵球:气泡模式下被最小化面板的聚合入口(Ghost 脸 + 数量角标)。 */
 function StackBubble({
   count,
   pos,
@@ -354,7 +356,7 @@ function StackBubble({
       {/* 数量角标:语义 token 灰阶,不引新强调色(与图钉同纪律)。 */}
       <span
         aria-hidden
-        className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full border border-[var(--text-tertiary)] bg-[var(--surface-chip)] px-1 text-[10px] font-medium leading-none text-[var(--text-secondary)]"
+        className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full border border-[var(--text-tertiary)] bg-[var(--surface-chip)] px-1 text-10 font-medium leading-none text-[var(--text-secondary)]"
       >
         {count}
       </span>
@@ -364,10 +366,8 @@ function StackBubble({
 
 /** 气泡层:没有最小化面板时不渲染;窗口缩放防抖重渲以重算 clamp/默认位。 */
 export function GhostPanelBubbleLayer(): ReactNode {
-  const ghosts = useInstalledGhosts();
-  const bubbles = useGhostPanelBubbleState();
-  // 订阅抽离状态:detach 期间气泡隐藏,合并回来自动复现。
-  useGhostPanelWindowsState();
+  const { mode } = useGhostPanelRestoreMode();
+  const minimized = useMinimizedGhostPanels();
   // 展开态(纯运行时,不落盘;落盘会让"重启后自动摊开一排"变成惊吓)。
   const [expanded, setExpanded] = useState(false);
   const [stackPos, setStackPos] = useState<{ x: number; y: number } | null>(() => loadStackPos());
@@ -388,15 +388,7 @@ export function GhostPanelBubbleLayer(): ReactNode {
     };
   }, []);
 
-  const minimized = ghosts.filter(
-    (g) =>
-      g.enabled !== false &&
-      g.manifest.panel !== undefined &&
-      g.manifest.panel.position !== 'tab' &&
-      bubbles[g.manifest.id]?.minimized === true &&
-      !isGhostPanelKindDetached(ghostPanelKind(g.manifest.id)),
-  );
-  const empty = minimized.length === 0;
+  const empty = mode !== 'bubble' || minimized.length === 0;
 
   // 整层退场(全部面板都开着)时收拢,防下次出现直接摊开一排。
   useEffect(() => {
@@ -425,7 +417,7 @@ export function GhostPanelBubbleLayer(): ReactNode {
   // 拖幽灵球的每一步把展开中的子气泡一起带走(同一条零 React 热路径)。
   const onStackDragMove = (x: number, y: number) => {
     minimized.forEach((g, index) => {
-      const el = childElsRef.current.get(g.manifest.id);
+      const el = childElsRef.current.get(installedGhostStoragePart(g));
       if (!el) return;
       const p = stackChildPos({ x, y }, index, minimized.length);
       placeBubbleEl(el, p.x, p.y);
@@ -447,13 +439,15 @@ export function GhostPanelBubbleLayer(): ReactNode {
       {expanded
         ? minimized.map((g, index) => (
             <Bubble
-              key={g.manifest.id}
+              key={installedGhostStoragePart(g)}
               manifest={g.manifest}
+              instanceId={installedGhostStoragePart(g)}
               iconDataUrl={g.iconDataUrl}
               pos={stackChildPos(anchor, index, minimized.length)}
               registerEl={(el) => {
-                if (el) childElsRef.current.set(g.manifest.id, el);
-                else childElsRef.current.delete(g.manifest.id);
+                const id = installedGhostStoragePart(g);
+                if (el) childElsRef.current.set(id, el);
+                else childElsRef.current.delete(id);
               }}
             />
           ))

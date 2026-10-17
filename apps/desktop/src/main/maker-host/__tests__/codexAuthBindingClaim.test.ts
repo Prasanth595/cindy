@@ -22,12 +22,27 @@ vi.mock('electron', () => ({
   app: {
     getPath: () => h.userDataDir,
     getAppPath: () => h.userDataDir,
-    isPackaged: false,
+    isPackaged: true,
   },
   safeStorage: { isEncryptionAvailable: () => false },
 }));
 
+// Skill discovery is covered separately; keep cold plugin transforms out of auth timing.
+vi.mock('../managed-skills.js', () => ({
+  listCindyManagedSkills: async () => [],
+  cindyManagedSkillRoots: async () => [],
+}));
+
 vi.mock('@cindy/maker-core', () => ({}));
+
+vi.mock('../../authBoundaryQuarantine.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../authBoundaryQuarantine.js')>();
+  return {
+    ...actual,
+    isGhostSkillProjectionBoundaryStableForOwner: (ownerId: string | null) =>
+      ownerId === h.dataOwnerId,
+  };
+});
 
 // 只覆写 getActiveAppSession(绑定判定的唯一输入);其余导出保持原实现,供
 // appCapabilities / providerSecretStore 等传递依赖正常加载。mode 用 'local':
@@ -42,10 +57,16 @@ vi.mock('../../appSessionState.js', async (importOriginal) => {
       dataOwnerId: h.dataOwnerId,
       generation: 1,
     }),
+    isAppSessionBoundaryPending: () => false,
   };
 });
 
-function fixture(): { codexHome: string; systemAuth: string; localAuth: string; bindingFile: string } {
+function fixture(): {
+  codexHome: string;
+  systemAuth: string;
+  localAuth: string;
+  bindingFile: string;
+} {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xdt-codex-binding-claim-'));
   dirs.push(root);
   h.userDataDir = path.join(root, 'user-data');
@@ -75,6 +96,21 @@ function readBindingFile(bindingFile: string): Record<string, unknown> {
   return JSON.parse(fs.readFileSync(bindingFile, 'utf8')) as Record<string, unknown>;
 }
 
+function writeStableProjectionOwner(ownerId: string | null): void {
+  const markerDir = h.userDataDir;
+  fs.mkdirSync(markerDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(markerDir, 'ghost-skill-projection-boundary.json'),
+    JSON.stringify({
+      version: 1,
+      phase: 'stable',
+      ownerId,
+      transitionId: 'test-transition',
+      updatedAt: Date.now(),
+    }),
+  );
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
   h.dataOwnerId = null;
@@ -85,6 +121,7 @@ describe('codex OAuth binding auto-claim on reconcile', () => {
   it('binds the detected system CLI credential to the current owner within one getState call', async () => {
     const { bindingFile } = fixture();
     h.dataOwnerId = 'owner-a';
+    writeStableProjectionOwner('owner-a');
     const { DesktopCodexAuthAdapter } = await import('../auth-adapters.js');
     const adapter = new DesktopCodexAuthAdapter();
 
@@ -94,6 +131,9 @@ describe('codex OAuth binding auto-claim on reconcile', () => {
       identity: 'dev@example.test',
     });
     expect(readBindingFile(bindingFile)).toMatchObject({ openai: 'owner-a' });
+    expect(readBindingFile(bindingFile)).toMatchObject({
+      sources: { openai: 'native-harness-inherited' },
+    });
     await expect(adapter.getAccessToken()).resolves.toBe('system-token');
   });
 
@@ -102,6 +142,7 @@ describe('codex OAuth binding auto-claim on reconcile', () => {
     // 竞态残局:legacyClaimOwner 已写下,openai 名额被 false 消费。
     fs.writeFileSync(bindingFile, JSON.stringify({ legacyClaimOwner: 'owner-a' }));
     h.dataOwnerId = 'owner-a';
+    writeStableProjectionOwner('owner-a');
     const { DesktopCodexAuthAdapter } = await import('../auth-adapters.js');
     const adapter = new DesktopCodexAuthAdapter();
 
@@ -122,6 +163,7 @@ describe('codex OAuth binding auto-claim on reconcile', () => {
       JSON.stringify({ openai: 'owner-a', legacyClaimOwner: 'owner-a' }),
     );
     h.dataOwnerId = 'owner-b';
+    writeStableProjectionOwner('owner-b');
     const { DesktopCodexAuthAdapter } = await import('../auth-adapters.js');
     const adapter = new DesktopCodexAuthAdapter();
 
@@ -138,9 +180,8 @@ describe('codex OAuth binding auto-claim on reconcile', () => {
     const { codexHome, systemAuth, localAuth, bindingFile } = fixture();
     fs.mkdirSync(codexHome, { recursive: true });
     fs.copyFileSync(systemAuth, localAuth);
-    const { CODEX_USER_DISCONNECT_REASON, writeInvalidatedSystemCodexAuthMarker } = await import(
-      '../codex-auth-invalidation.js'
-    );
+    const { CODEX_USER_DISCONNECT_REASON, writeInvalidatedSystemCodexAuthMarker } =
+      await import('../codex-auth-invalidation.js');
     expect(
       writeInvalidatedSystemCodexAuthMarker(
         codexHome,
@@ -150,6 +191,7 @@ describe('codex OAuth binding auto-claim on reconcile', () => {
       ),
     ).toBe(true);
     h.dataOwnerId = 'owner-a';
+    writeStableProjectionOwner('owner-a');
     const { DesktopCodexAuthAdapter } = await import('../auth-adapters.js');
     const adapter = new DesktopCodexAuthAdapter();
 
@@ -162,6 +204,7 @@ describe('codex OAuth binding auto-claim on reconcile', () => {
     // 绝不把 A 时代发起的认领写到 B 名下。B 自己的下一次 reconcile 会按 B 的规则重试。
     const { bindingFile } = fixture();
     h.dataOwnerId = 'owner-a';
+    writeStableProjectionOwner('owner-a');
     const { DesktopCodexAuthAdapter } = await import('../auth-adapters.js');
     const adapter = new DesktopCodexAuthAdapter();
 
@@ -180,6 +223,7 @@ describe('codex OAuth binding auto-claim on reconcile', () => {
     // 认领完不补拉，供应商就停在「已连接 + 零模型」，清单要等用户打开某个面板才出现。
     const { bindingFile } = fixture();
     h.dataOwnerId = 'owner-a';
+    writeStableProjectionOwner('owner-a');
     const { DesktopCodexAuthAdapter } = await import('../auth-adapters.js');
     const adapter = new DesktopCodexAuthAdapter();
     const claimed = vi.fn();
@@ -201,6 +245,7 @@ describe('codex OAuth binding auto-claim on reconcile', () => {
       JSON.stringify({ openai: 'owner-a', legacyClaimOwner: 'owner-a' }),
     );
     h.dataOwnerId = 'owner-b';
+    writeStableProjectionOwner('owner-b');
     const { DesktopCodexAuthAdapter } = await import('../auth-adapters.js');
     const adapter = new DesktopCodexAuthAdapter();
     const claimed = vi.fn();
@@ -214,6 +259,7 @@ describe('codex OAuth binding auto-claim on reconcile', () => {
     // 补拉是「认领之后要做什么」，它失败不该被记成认领失败，更不该把 reconcile 链路搞挂。
     const { bindingFile } = fixture();
     h.dataOwnerId = 'owner-a';
+    writeStableProjectionOwner('owner-a');
     const { DesktopCodexAuthAdapter } = await import('../auth-adapters.js');
 
     const throwing = new DesktopCodexAuthAdapter();
@@ -234,6 +280,7 @@ describe('codex OAuth binding auto-claim on reconcile', () => {
 
   it('keeps pre-session behavior without writing any binding when no owner is committed', async () => {
     const { bindingFile } = fixture();
+    writeStableProjectionOwner(null);
     const { DesktopCodexAuthAdapter } = await import('../auth-adapters.js');
     const adapter = new DesktopCodexAuthAdapter();
 

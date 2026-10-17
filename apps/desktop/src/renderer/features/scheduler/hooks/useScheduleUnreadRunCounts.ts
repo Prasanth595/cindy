@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Schedule, SchedulerEvent } from '@cindy/maker-scheduler';
 
+import { isDataOwnerPushCurrent } from '@/contexts/dataOwnerGeneration';
 import { createLogger } from '@/lib/logger';
-import { isUnreadScheduleRun } from '../lib/runUnread';
+import { activeScheduleFailures, isUnreadScheduleRun } from '@cindy/maker-shared/schedule-model';
 import { loadScheduleSidebarIndexRuns } from '../lib/scheduleSidebarIndexRuns';
 import { subscribeScheduleRunReadSync } from '../lib/scheduleRunReadSync';
 
@@ -32,10 +33,13 @@ export function useScheduleUnreadRunCounts(
       const runs = await loadScheduleSidebarIndexRuns();
       if (refreshSeqRef.current !== seq) return;
 
+      const activeFailures = activeScheduleFailures(runs.map((run) => ({ ...run, id: run.runId })));
       const next = new Map<string, number>();
       for (const run of runs) {
         if (!visibleScheduleIds.has(run.scheduleId)) continue;
         if (!isUnreadScheduleRun(run)) continue;
+        // Recovered failures remain unread in history, but no longer light task indicators.
+        if (run.status !== 'success' && !activeFailures.has(run.runId)) continue;
         next.set(run.scheduleId, (next.get(run.scheduleId) ?? 0) + 1);
       }
       setCounts(next);
@@ -48,7 +52,8 @@ export function useScheduleUnreadRunCounts(
 
   useEffect(() => {
     void refresh();
-    const off = window.electronAPI.maker.schedule.onEvent((raw) => {
+    const off = window.electronAPI.maker.schedule.onEvent((raw, ownerStamp) => {
+      if (!isDataOwnerPushCurrent(ownerStamp)) return;
       const event = raw as SchedulerEvent;
       if (
         event.type === 'fired' ||

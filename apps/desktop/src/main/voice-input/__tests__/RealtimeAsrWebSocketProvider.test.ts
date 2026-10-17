@@ -147,6 +147,21 @@ describe('RealtimeAsrWebSocketProvider helpers', () => {
       cachedTokens: 500_000,
       completionTokens: 100_000,
     })).toBeCloseTo(0.57, 8);
+
+    const knownCatalogProfile = getVoiceInputRefinerProfile(
+      'cat:openai:codex:gpt-5.4-mini' as Parameters<typeof getVoiceInputRefinerProfile>[0],
+    );
+    expect(knownCatalogProfile.pricing).toEqual(defaultProfile.pricing);
+    expect(estimateVoiceInputRefinerCostUsd(knownCatalogProfile, {
+      promptTokens: 1_000_000,
+      cachedTokens: 500_000,
+      completionTokens: 100_000,
+    })).toBeCloseTo(0.57, 8);
+
+    const unknownCatalogProfile = getVoiceInputRefinerProfile(
+      'cat:xd:codex:deepseek/deepseek-v4-flash' as Parameters<typeof getVoiceInputRefinerProfile>[0],
+    );
+    expect(unknownCatalogProfile.pricing).toBeUndefined();
   });
 
   it('uses provider-specific fallback error messages when upstream omits one', () => {
@@ -304,6 +319,43 @@ describe('RealtimeAsrWebSocketProvider helpers', () => {
       await expect(provider.start()).rejects.toThrow(
         `Realtime ASR handshake failed: HTTP 403 Forbidden (127.0.0.1:${address.port}/v1/realtime)`,
       );
+    } finally {
+      await provider?.stop();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it.each([
+    [401, 1],
+    [403, 0],
+  ] as const)('reports the sent token on handshake HTTP %s only when unauthorized', async (status, reports) => {
+    const server = new WebSocketServer({
+      port: 0,
+      verifyClient(_info, done) {
+        done(false, status, 'Rejected');
+      },
+    });
+    let provider: RealtimeAsrWebSocketProvider | undefined;
+    const onAuthorizationRejected = vi.fn();
+
+    try {
+      await waitFor(() => server.address() !== null);
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('Expected local test server address.');
+
+      provider = new RealtimeAsrWebSocketProvider({
+        accessTokenProvider: async () => 'gateway-key-sent',
+        realtimeUrl: `ws://127.0.0.1:${address.port}/v1/realtime`,
+        model: 'gpt-realtime-whisper',
+        providerKind: 'litellm-gpt-realtime-whisper',
+        connectTimeoutMs: 2_000,
+        onAuthorizationRejected,
+      });
+      provider.onEvent(() => {});
+
+      await expect(provider.start()).rejects.toThrow(`HTTP ${status}`);
+      expect(onAuthorizationRejected).toHaveBeenCalledTimes(reports);
+      if (reports > 0) expect(onAuthorizationRejected).toHaveBeenCalledWith('gateway-key-sent');
     } finally {
       await provider?.stop();
       await new Promise<void>((resolve) => server.close(() => resolve()));

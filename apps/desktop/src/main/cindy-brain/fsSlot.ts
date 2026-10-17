@@ -1,20 +1,33 @@
 /**
- * fsSlot.ts — fs 槽代写文件(2026-07-14,与 Lizi 定案)。
+ * fsSlot.ts — 插件沙箱的主机文件操作边界(2026-07-14,与 Lizi 定案)。
  * ---------------------------------------------------------------------------
  * 意识没有文件系统(沙箱红线不破),想落盘只能经管子请主机代写:
  *
  *   电子脑 cindy.send({type:'fs-request', op, root, path?, content?, …})
- *     → 资格审(声明了 'fs' 卡槽?)
- *     → 按 root 三档守门:
+ *     → 按执行上下文与 root 三档守门:
  *       'data'    私有数据目录 userData/ghost-fs/<ghostId>——自己的储物柜,
- *                 免确认;全 op(write/read/list/delete);配额封顶;卸载回收。
+ *                 要求插件自主 fs 声明;免确认;全 op(write/read/list/delete);
+ *                 配额封顶;卸载回收。
  *       'workdir' 当前会话工作目录——仅 write;必须带 callId(主机凭
- *                 cardService 反查 session,不信意识自报);**跟随会话
+ *                 cardService 严格反查当前 Agent 调用与 session,不信意识
+ *                 自报);当前 Agent 调用无需插件自主 fs 声明;**跟随会话
  *                 permission 模式**(映射表见 workdirWriteVerdict:免批模式
- *                 直写、逐条模式弹 fs_write 确认卡、plan 拒);远程工作区
+ *                 直写、Auto 统一审阅、逐条模式弹 fs_write 确认卡、plan 拒)。
+ *                 每个实际落盘动作前还要重新确认同一
+ *                 callId 仍严格在途并绑定该插件和会话;远程工作区
  *                 (remoteHostId 非空)明确拒——路径在远端机器,本地代写
  *                 写不到(规则 26,首期不支持不静默坏)。
- *       'save'    主 agent 过户的 save 票据目录——仅 write;复用
+ *                 例外分支(2026-08-04):callId 属于「仅运行脚本」通道的
+ *                 调用时(无会话,cardService 条目带 scriptWorkdir =
+ *                 schedule.workingDir),以该目录为写入根直写——无会话就
+ *                 没有 permission 模式可跟随、也无人在场可弹确认卡;
+ *                 授权来源是 schedule 自身的工作目录配置(script-runner
+ *                 本就以此目录 spawn 用户配置的命令,脚本进程对该目录
+ *                 有完整写权,意识代写不扩大写面)。脚本通道的 callId
+ *                 反查走**严格在途**查询(inFlightCallInfo,与 workspace
+ *                 槽同一判据):交卷即失效,不享卡片供片的宽限窗——目录
+ *                 授权上下文必须用完即废。
+ *       'save'    主 agent 过户的 save 票据目录——仅 write;票据自身授权;复用
  *                 saveDeposit 票据库的 TTL/次数/字节预算与文件名消毒去重
  *                 (与 fetch as:'file' 下载落盘同一本账)。
  *     → 主机代写/代读,只回结构化 GhostPipeFsResult(永不 reject)。
@@ -26,9 +39,8 @@
  *
  * 权限对齐哲学:意识写 workdir 的"吵闹程度"必须和主 agent 自己 Edit 文件
  * 完全一致——agent 免批的模式意识也免批,agent 逐条批的模式意识也逐条批。
- * claude / codex / pi 共用 sessions.permission_mode 这一列(codex 的 approval/
- * sandbox 由它映射派生,pi bridge 每次 tool_call 现读自己的运行时权限文件),
- * 所以一张映射表覆盖三种 agent(规则 9:映射写死在代码,不靠 prompt 判断)。
+ * claude / codex / pi 共用活跃 Session 的权限真相,不得从可能滞后的
+ * DB permission_mode 或调用开始时的快照恢复自动授权。
  *
  * 依赖注入(规则 14):fs 之外的能力(意识清单/票据库/session 快照/确认桥)
  * 全部经 deps,单测拿 tmpdir 直测零 Electron。
@@ -36,6 +48,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import type { AutoReviewDecision, ReviewableAction } from '@cindy/maker-core';
 
 import {
   GHOST_FS_DATA_MAX_FILES,
@@ -54,6 +67,7 @@ import {
   type InstalledGhost,
 } from '../../shared/ghost.js';
 import type { GhostGrantConfirmDecision, GhostGrantConfirmPayload } from './ghostGrantConfirmBridge.js';
+import { installedGhostMutationTargetToken } from '../../shared/pluginIdentity.js';
 
 /** 会话快照:fs 槽 workdir 档守门要看的全部字段。 */
 export interface FsSessionSnapshot {
@@ -62,16 +76,35 @@ export interface FsSessionSnapshot {
   planModeEnabled: boolean;
   /** 非空 = SSH 远程工作区会话(workdir 在远端机器,本地代写必拒)。 */
   remoteHostId: string | null;
+  /** 活跃 Session 的裁决与代次复核，不从数据库权限快照推定自动授权。 */
+  reviewAction?: (action: ReviewableAction) => Promise<AutoReviewDecision>;
+  isCurrent?: () => boolean;
 }
 
 export interface FsSlotDeps {
   getGhost(id: string): InstalledGhost | null;
   /** 私有数据目录根(生产 = userData/ghost-fs;意识各占 <root>/<ghostId>)。 */
   dataRootDir(): string;
-  /** callId → 归属反查(生产 = cardService.callInfoOf;不信意识自报)。 */
-  callInfo(callId: string): { ghostId: string; sessionId: string | null } | null;
-  /** sessionId → 会话快照(生产查 localDb sessions 行;查无返回 null)。 */
-  getSessionSnapshot(sessionId: string): Promise<FsSessionSnapshot | null>;
+  /** callId → 归属反查(生产 = cardService.callInfoOf;不信意识自报)。
+   *  scriptWorkdir 仅脚本通道条目带(schedule.workingDir),会话调用为 null。 */
+  callInfo(callId: string): { ghostId: string; sessionId: string | null; scriptWorkdir: string | null } | null;
+  /**
+   * callId → 严格在途反查(生产 = cardService.inFlightCallInfoOf):已交卷/
+   * 已清扫的条目返回 null。所有 workdir 写入必须走它——
+   * 目录授权上下文在工具调用结束后不得继续有效(用完即废)。
+   * channel 用于拒绝话术分流(会话通道的无会话调用 ≠ 脚本通道);
+   * scriptWritePath(脚本声明的 out_file)非空时只放行该路径。
+   */
+  inFlightCallInfo(callId: string): {
+    ghostId: string;
+    sessionId: string | null;
+    sessionInstanceId?: string;
+    scriptWorkdir: string | null;
+    scriptWritePath: string | null;
+    channel: 'session' | 'script';
+  } | null;
+  /** sessionId + instance → 活跃会话权限快照;查无或权限切换中返回 null。 */
+  getSessionSnapshot(sessionId: string, sessionInstanceId?: string): Promise<FsSessionSnapshot | null>;
   /**
    * workdir 写确认卡(生产 = GhostGrantConfirmBridge.request;桥未就绪时
    * 调用方注入的实现应直接回拒绝,不抛)。
@@ -93,12 +126,13 @@ export interface FsSlotDeps {
   };
 }
 
-/** workdir 写入的三档裁决。 */
-export type FsWorkdirVerdict = 'allow' | 'confirm' | 'deny';
+/** workdir 写入裁决。 */
+export type FsWorkdirVerdict = 'allow' | 'review' | 'confirm' | 'deny';
 
 /**
  * 会话 permission 模式 → workdir 写入裁决(claude / codex 共用,见文件头)。
- * - acceptEdits / bypassPermissions / auto:文件编辑免批 → 意识直写;
+ * - acceptEdits / bypassPermissions:文件编辑免批 → 意识直写;
+ * - auto:将真实写入目标交给当前会话的统一审阅器;
  * - ask / default:agent 编辑要逐条批 → 意识写也弹确认卡;
  * - plan(历史遗留值)与 planModeEnabled:只读规划期 → 拒;
  * - 未知模式(未来新增):保守走确认,不静默放行。
@@ -108,8 +142,9 @@ export function workdirWriteVerdict(permissionMode: string, planModeEnabled: boo
   switch (permissionMode) {
     case 'acceptEdits':
     case 'bypassPermissions':
-    case 'auto':
       return 'allow';
+    case 'auto':
+      return 'review';
     case 'ask':
     case 'default':
       return 'confirm';
@@ -252,11 +287,26 @@ export class GhostFsSlot {
    * 纯内存、进程生命周期内,不落盘)。
    */
   private readonly workdirGrants = new Set<string>();
+  private readonly inFlightRequests = new Map<string, number>();
 
-  constructor(private readonly deps: FsSlotDeps) {}
+  private sessionSnapshotResolver: FsSlotDeps['getSessionSnapshot'];
+
+  constructor(private readonly deps: FsSlotDeps) {
+    this.sessionSnapshotResolver = deps.getSessionSnapshot;
+  }
+
+  /** Maker 初始化后注入实时会话权限，保持插件运行时不反向依赖 Maker。 */
+  setSessionSnapshotResolver(resolve: FsSlotDeps['getSessionSnapshot']): void {
+    this.sessionSnapshotResolver = resolve;
+  }
+
+  hasInFlightRequests(ghostId: string): boolean {
+    return this.inFlightRequests.has(ghostId);
+  }
 
   /** 处理一条 fs-request(ghost-pipe:send 的 invoke 返回值即本结果)。 */
   async handleFsRequest(ghostId: string, payload: unknown): Promise<GhostPipeFsResult> {
+    this.inFlightRequests.set(ghostId, (this.inFlightRequests.get(ghostId) ?? 0) + 1);
     try {
       return await this.dispatch(ghostId, payload);
     } catch (err) {
@@ -266,20 +316,37 @@ export class GhostFsSlot {
         error: err instanceof Error ? err.message : String(err),
       });
       return fail('写文件失败(主机内部错误)');
+    } finally {
+      const remaining = this.inFlightRequests.get(ghostId)! - 1;
+      if (remaining > 0) this.inFlightRequests.set(ghostId, remaining);
+      else this.inFlightRequests.delete(ghostId);
     }
   }
 
   private async dispatch(ghostId: string, payload: unknown): Promise<GhostPipeFsResult> {
     const ghost = this.deps.getGhost(ghostId);
     if (!ghost) return fail('意识未装入');
-    if (!ghost.manifest.slots.includes('fs')) {
-      return fail('未声明 "fs" 卡槽——想写文件先在 ghost.json 的 slots 里声明 "fs"(装入确认时会向用户如实展示)');
-    }
     const req = (payload ?? {}) as Record<string, unknown>;
     const op = req.op as GhostFsOp;
     const root = req.root as GhostFsRoot;
     if (!GHOST_FS_OPS.includes(op)) return fail(`op 必须是 ${GHOST_FS_OPS.join(' / ')}`);
     if (!GHOST_FS_ROOTS.includes(root)) return fail(`root 必须是 ${GHOST_FS_ROOTS.join(' / ')}`);
+
+    // data 是插件自己的持久私有存储，继续要求 manifest.fs。workdir
+    // 只有能严格证明处于当前 Agent ghost_call 内才可复用会话文件
+    // 授权；save 则以 Agent 发放的限时、绑定插件的票据作为授权。
+    if (ghost.manifest.fs !== true) {
+      const callId = typeof req.callId === 'string' ? req.callId : null;
+      const callInfo = callId ? this.deps.inFlightCallInfo(callId) : null;
+      const agentMediatedWorkdir =
+        root === 'workdir'
+        && callInfo?.ghostId === ghostId
+        && callInfo.channel === 'session'
+        && callInfo.sessionId !== null;
+      if (!agentMediatedWorkdir && root !== 'save') {
+        return fail('本操作不在当前 Agent 授权调用中，且插件未声明自主 fs 能力');
+      }
+    }
 
     if (root === 'data') return this.handleData(ghostId, op, req);
     if (op !== 'write') return fail(`root:"${root}" 只支持 op:"write"(read/list/delete 仅限私有目录 root:"data")`);
@@ -458,7 +525,7 @@ export class GhostFsSlot {
     return { ok: true, op: 'write', path: written.fileName, bytes: decoded.bytes.byteLength };
   }
 
-  /* ── root:'workdir' 会话工作目录(跟随会话 permission)──────────────── */
+  /* ── root:'workdir' 会话工作目录(跟随会话 permission;脚本通道例外直写)── */
 
   private async handleWorkdirWrite(
     ghostId: string,
@@ -471,26 +538,69 @@ export class GhostFsSlot {
     }
     const info = this.deps.callInfo(callId);
     if (!info || info.ghostId !== ghostId) return fail('callId 无效或不属于本意识');
-    if (!info.sessionId) return fail('本次调用无会话上下文,无法定位工作目录');
-    const session = await this.deps.getSessionSnapshot(info.sessionId);
-    if (!session) return fail('会话不存在,无法定位工作目录');
-    if (session.remoteHostId) {
-      return fail('当前会话是 SSH 远程工作区,工作目录在远端机器,意识写文件暂不支持(请改用 root:"data" 私有目录)');
+
+    // 写入根两个来源(同一 callId 账本反查,都不信意识自报):
+    // - 会话通道:session 快照的 workingDir,放行与否跟随会话 permission 模式;
+    // - 脚本通道:登记时的 scriptWorkdir(schedule.workingDir),无会话可裁、
+    //   无人可弹确认卡——直写(schedule 配置即授权,见文件头例外分支注释)。
+    //   脚本通道必须走严格在途查询:callInfo 的宽限窗是卡片供片语义,不能
+    //   充当目录授权——交卷后旧 callId 继续可写就是"记住单号跨调用复用
+    //   workdir 写权"(review M1:懒清扫间隔内窗口实际无上界)。
+    let workdirSource: 'session' | 'script';
+    let session: FsSessionSnapshot | null = null;
+    let workingDir: string;
+    let scriptWritePath: string | null = null;
+    let sessionInstanceId: string | undefined;
+    if (info.sessionId) {
+      workdirSource = 'session';
+      const inFlight = this.deps.inFlightCallInfo(callId);
+      if (inFlight?.ghostId !== ghostId || inFlight.sessionId !== info.sessionId) {
+        return fail('调用已交卷或已过期,工作目录写盘授权已失效');
+      }
+      sessionInstanceId = inFlight.sessionInstanceId;
+      session = await this.sessionSnapshotResolver(info.sessionId, sessionInstanceId);
+      if (!session) return fail('会话不存在,无法定位工作目录');
+      if (session.remoteHostId) {
+        return fail('当前会话是 SSH 远程工作区,工作目录在远端机器,意识写文件暂不支持(请改用 root:"data" 私有目录)');
+      }
+      if (!session.workingDir || !path.isAbsolute(session.workingDir)) {
+        return fail('当前会话没有本地工作目录');
+      }
+      workingDir = session.workingDir;
+    } else {
+      const inFlight = this.deps.inFlightCallInfo(callId);
+      if (!inFlight || inFlight.ghostId !== ghostId) {
+        return fail('调用已交卷或已过期,工作目录写盘授权已失效');
+      }
+      if (inFlight.scriptWorkdir && path.isAbsolute(inFlight.scriptWorkdir)) {
+        workdirSource = 'script';
+        workingDir = inFlight.scriptWorkdir;
+        scriptWritePath = inFlight.scriptWritePath;
+      } else {
+        // 话术按通道分流:会话通道的无会话调用(resolveSessionContext 查无)
+        // 不是脚本通道,别报「脚本通道」误导(review nit)。
+        return fail(inFlight.channel === 'script'
+          ? '脚本通道未配置有效的工作目录,无法定位写入根'
+          : '本次调用无会话上下文,无法定位工作目录');
+      }
     }
-    if (!session.workingDir || !path.isAbsolute(session.workingDir)) {
-      return fail('当前会话没有本地工作目录');
-    }
+
     const reason = validateFsRelPath(req.path);
     if (reason) return fail(reason);
     const relPath = req.path as string;
+    // 脚本通道的路径白名单(review P1 第五轮):只能写脚本显式声明的
+    // out_file——调用在途期间插件也写不了根内其它文件(src/ 等)。
+    if (workdirSource === 'script' && scriptWritePath !== null && relPath !== scriptWritePath) {
+      return fail(`本次调用仅授权写入脚本声明的 out_file(${scriptWritePath})`);
+    }
     const decoded = decodeContent(req.content, req.encoding);
     if ('error' in decoded) return fail(decoded.error);
 
     let realWorkdir: string;
     try {
-      realWorkdir = await fs.promises.realpath(session.workingDir);
+      realWorkdir = await fs.promises.realpath(workingDir);
     } catch {
-      return fail('工作目录不存在');
+      return fail(workdirSource === 'script' ? '脚本工作目录不存在' : '工作目录不存在');
     }
     const target = path.join(realWorkdir, ...relPath.split('/'));
     if (!isInsideDir(realWorkdir, target)) return fail('path 越界');
@@ -503,14 +613,48 @@ export class GhostFsSlot {
       /* 不存在 = 新建 */
     }
 
-    const verdict = workdirWriteVerdict(session.permissionMode, session.planModeEnabled);
+    // 脚本通道直写:无会话可裁、无人可弹确认卡——schedule 配置即授权
+    // (script-runner 本就以此目录 spawn 用户配置的命令,脚本进程对该目录有
+    // 完整写权,意识代写不扩大写面);日志标明 channel 供事后分辨。
+    if (workdirSource === 'script') {
+      await fs.promises.mkdir(path.dirname(target), { recursive: true });
+      await fs.promises.writeFile(target, decoded.bytes);
+      this.deps.log?.info('ghost fs write (workdir)', {
+        ghostId,
+        channel: 'script',
+        relPath,
+        bytes: decoded.bytes.byteLength,
+      });
+      return { ok: true, op: 'write', path: relPath, bytes: decoded.bytes.byteLength };
+    }
+    // 会话通道继续往下(session 与 sessionId 在上方分支均已判空;此守卫只做类型收窄与防御)。
+    if (!session || !info.sessionId) return fail('本次调用无会话上下文,无法定位工作目录');
+
+    let verdict = workdirWriteVerdict(session.permissionMode, session.planModeEnabled);
     if (verdict === 'deny') {
       return fail('当前会话处于计划/只读模式,不允许写工作目录');
     }
+    const automaticReview = verdict === 'review';
+    if (automaticReview) {
+      let decision: AutoReviewDecision;
+      try {
+        decision = await session.reviewAction?.({
+          kind: 'file-write', path: target, resolvedPath: target, resolvedWritableRoots: [realWorkdir],
+        }) ?? { verdict: 'ask', unavailable: true };
+      } catch {
+        decision = { verdict: 'ask', unavailable: true };
+      }
+      if (session.isCurrent?.() === false) return fail('调用已交卷或已过期,工作目录写盘授权已失效');
+      if (decision.verdict === 'block') return fail(decision.reason ?? 'Automatic review denied this file write.');
+      verdict = decision.verdict === 'allow' ? 'allow' : 'confirm';
+    }
+    let confirmedMemoryKey: string | null = null;
     if (verdict === 'confirm') {
       const parentDir = path.dirname(target);
       const memoryKey = `${info.sessionId} ${ghostId} ${foldCase(parentDir)}`;
-      if (!this.workdirGrants.has(memoryKey)) {
+      const targetToken = installedGhostMutationTargetToken(ghost, '');
+      const bindingKey = memoryKey + '\u0000' + targetToken;
+      if (automaticReview || targetToken === null || !this.workdirGrants.has(bindingKey)) {
         const decision = await this.deps.requestWriteConfirm(info.sessionId, {
           ghostId,
           ghostName: ghost.manifest.name || ghostId,
@@ -524,12 +668,31 @@ export class GhostFsSlot {
           if (decision.reason === 'cancelled') return fail('用户拒绝了本次工作目录写入');
           return fail('确认通道未就绪或会话已关闭,本次工作目录写入未执行');
         }
-        this.workdirGrants.add(memoryKey);
+        if (!automaticReview && targetToken !== null) confirmedMemoryKey = bindingKey;
       }
     }
 
+    // 插件只在当前 Agent 调用期间借用会话文件权限。前面的
+    // session/path/confirm await 都可能给调用留下交卷窗口，不能把入口处的
+    // 在途结果缓存到真正落盘时；mkdir 与 writeFile 各自都是文件副作用，
+    // 因此分别在调用前复核同一 callId 仍绑定当前插件和会话。
+    const stillHasLiveAgentWorkdirAuthorization = (): boolean => {
+      if (session?.isCurrent?.() === false) return false;
+      const inFlight = this.deps.inFlightCallInfo(callId);
+      return inFlight?.ghostId === ghostId
+        && inFlight.channel === 'session'
+        && inFlight.sessionInstanceId === sessionInstanceId
+        && inFlight.sessionId === info.sessionId;
+    };
+    if (!stillHasLiveAgentWorkdirAuthorization()) {
+      return fail('调用已交卷或已过期,工作目录写盘授权已失效');
+    }
     await fs.promises.mkdir(path.dirname(target), { recursive: true });
+    if (!stillHasLiveAgentWorkdirAuthorization()) {
+      return fail('调用已交卷或已过期,工作目录写盘授权已失效');
+    }
     await fs.promises.writeFile(target, decoded.bytes);
+    if (confirmedMemoryKey) this.workdirGrants.add(confirmedMemoryKey);
     this.deps.log?.info('ghost fs write (workdir)', {
       ghostId,
       sessionId: info.sessionId,

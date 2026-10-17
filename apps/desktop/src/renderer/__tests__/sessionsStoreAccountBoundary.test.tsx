@@ -9,13 +9,12 @@ type SpendPayload = {
   totalMoney?: Session['totalMoney'];
   totalCostUsd?: number;
 };
+type OwnerStamp = { dataOwnerId: string | null; ownerGeneration: number };
 
 const mocks = vi.hoisted(() => {
-  let spendListener:
-    | ((payload: SpendPayload) => void)
-    | undefined;
+  let spendListener: ((payload: SpendPayload, ownerStamp?: OwnerStamp) => void) | undefined;
   const onUsageSessionSpendChanged = vi.fn(
-    (listener: (payload: SpendPayload) => void) => {
+    (listener: (payload: SpendPayload, ownerStamp?: OwnerStamp) => void) => {
       spendListener = listener;
       return vi.fn();
     },
@@ -26,8 +25,8 @@ const mocks = vi.hoisted(() => {
   });
   return {
     list: vi.fn(),
-    emitSessionSpend(payload: SpendPayload): void {
-      spendListener?.(payload);
+    emitSessionSpend(payload: SpendPayload, ownerStamp?: OwnerStamp): void {
+      spendListener?.(payload, ownerStamp);
     },
   };
 });
@@ -38,6 +37,10 @@ vi.mock('@/lib/sessionService', () => ({
 }));
 
 import { useCCSessions } from '@/hooks/useCCSessions';
+import {
+  __testing as dataOwnerTesting,
+  setDataOwnerGeneration,
+} from '@/contexts/dataOwnerGeneration';
 import { sessionsStore } from '@/lib/sessionsStore';
 
 function deferred<T>(): {
@@ -64,6 +67,7 @@ describe('sessionsStore account boundaries', () => {
   afterEach(() => {
     cleanup();
     sessionsStore.reset();
+    dataOwnerTesting.reset();
   });
 
   it('does not let a request started before reset repopulate the cache', async () => {
@@ -82,9 +86,7 @@ describe('sessionsStore account boundaries', () => {
     oldRequest.resolve([session('old-account')]);
     await oldLoad;
 
-    expect(sessionsStore.getByFilter('active')?.map(({ id }) => id)).toEqual([
-      'new-account',
-    ]);
+    expect(sessionsStore.getByFilter('active')?.map(({ id }) => id)).toEqual(['new-account']);
     expect(mocks.list).toHaveBeenCalledTimes(2);
   });
 
@@ -108,6 +110,33 @@ describe('sessionsStore account boundaries', () => {
     expect(view.result.current.isLoading).toBe(false);
   });
 
+  it.each(['active', 'all'] as const)(
+    'clears a failed %s load after another caller recovers the bucket',
+    async (filter) => {
+      mocks.list.mockRejectedValueOnce(new Error('temporary load failure'));
+      const view = renderHook(() => useCCSessions({ includeArchived: filter }));
+      await waitFor(() =>
+        expect(view.result.current.error?.message).toBe('temporary load failure'),
+      );
+      expect(view.result.current.isLoading).toBe(false);
+      expect(view.result.current.sessions).toEqual([]);
+
+      mocks.list.mockResolvedValueOnce([session('recovered')]);
+      await act(async () => {
+        await sessionsStore.forceRefresh(filter);
+      });
+      expect(view.result.current.sessions.map(({ id }) => id)).toEqual(['recovered']);
+      expect(view.result.current.error).toBeNull();
+
+      mocks.list.mockResolvedValueOnce([]);
+      await act(async () => {
+        await sessionsStore.forceRefresh(filter);
+      });
+      expect(view.result.current.sessions).toEqual([]);
+      expect(view.result.current.error).toBeNull();
+    },
+  );
+
   it('removes a deleted session from every loaded filter without refetching', async () => {
     mocks.list
       .mockResolvedValueOnce([session('deleted'), session('keep-active')])
@@ -125,21 +154,13 @@ describe('sessionsStore account boundaries', () => {
 
   it('does not let a request started before delete restore the deleted session', async () => {
     const staleRequest = deferred<Session[]>();
-    const replacementRequest = deferred<Session[]>();
-    mocks.list
-      .mockImplementationOnce(() => staleRequest.promise)
-      .mockImplementationOnce(() => replacementRequest.promise);
+    mocks.list.mockImplementationOnce(() => staleRequest.promise);
 
     const staleLoad = sessionsStore.ensureByFilter('all');
     act(() => sessionsStore.patchLocal('deleted', { status: 'deleted' }));
 
-    expect(mocks.list).toHaveBeenCalledTimes(2);
-    replacementRequest.resolve([session('keep')]);
-    await waitFor(() => {
-      expect(sessionsStore.getByFilter('all')?.map(({ id }) => id)).toEqual(['keep']);
-    });
-
-    staleRequest.resolve([session('deleted'), session('stale')]);
+    expect(mocks.list).toHaveBeenCalledTimes(1);
+    staleRequest.resolve([session('deleted'), session('keep')]);
     await staleLoad;
 
     expect(sessionsStore.getByFilter('all')?.map(({ id }) => id)).toEqual(['keep']);
@@ -168,10 +189,36 @@ describe('sessionsStore account boundaries', () => {
     unsubscribe();
   });
 
-  it('patches structured CNY spend without fabricating a USD projection', async () => {
-    mocks.list.mockResolvedValueOnce([
-      session('target', { totalCostUsd: 1 }),
+  it('ignores a delayed spend push stamped for the previous owner', async () => {
+    setDataOwnerGeneration('owner-b', 2);
+    mocks.list.mockResolvedValueOnce([session('same-id', { totalCostUsd: 1 })]);
+    await sessionsStore.ensureByFilter('active');
+
+    act(() => {
+      mocks.emitSessionSpend(
+        { sessionId: 'same-id', totalCostUsd: 9 },
+        { dataOwnerId: 'owner-a', ownerGeneration: 1 },
+      );
+    });
+
+    expect(sessionsStore.getByFilter('active')).toEqual([
+      expect.objectContaining({ id: 'same-id', totalCostUsd: 1 }),
     ]);
+
+    act(() => {
+      mocks.emitSessionSpend(
+        { sessionId: 'same-id', totalCostUsd: 2 },
+        { dataOwnerId: 'owner-b', ownerGeneration: 2 },
+      );
+    });
+
+    expect(sessionsStore.getByFilter('active')).toEqual([
+      expect.objectContaining({ id: 'same-id', totalCostUsd: 2 }),
+    ]);
+  });
+
+  it('patches structured CNY spend without fabricating a USD projection', async () => {
+    mocks.list.mockResolvedValueOnce([session('target', { totalCostUsd: 1 })]);
     await sessionsStore.ensureByFilter('active');
 
     act(() => {

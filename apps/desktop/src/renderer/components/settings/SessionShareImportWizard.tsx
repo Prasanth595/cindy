@@ -1,3 +1,4 @@
+import { Button } from '@/components/ui/button';
 /**
  * SessionShareImportWizard — .cshare(含旧 .xdtshare)会话导入向导。
  *
@@ -60,6 +61,7 @@ export function SessionShareImportWizard({
     sessionId: string;
     fidelity: 'full' | 'partial' | 'db-only';
     notes: string[];
+    orcaWorkers: number;
   } | null>(null);
   const startedRef = useRef(false);
   const draftIdRef = useRef<string | null>(null);
@@ -247,20 +249,14 @@ export function SessionShareImportWizard({
       <AlertDialog.Portal>
         <AlertDialog.Overlay
           className={cn(
-            'fixed inset-0 z-[10000]',
-            'bg-[var(--overlay-modal)]',
-            'data-[state=open]:animate-confirm-overlay-in',
-            'data-[state=closed]:animate-confirm-overlay-out',
+            'modal-scrim fixed inset-0 z-[10000]',
           )}
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
         />
         <AlertDialog.Content
           className={cn(
-            'fixed left-1/2 top-1/2 z-[10000] -translate-x-1/2 -translate-y-1/2',
-            'w-full max-w-[480px] rounded-xl p-4',
-            'bg-[var(--confirm-bg)] shadow-[var(--confirm-shadow)]',
-            'data-[state=open]:animate-confirm-content-in',
-            'data-[state=closed]:animate-confirm-content-out',
+            'modal-panel fixed left-1/2 top-1/2 z-[10000] -translate-x-1/2 -translate-y-1/2',
+            'w-full max-w-[480px] p-4',
           )}
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
           onEscapeKeyDown={(e) => {
@@ -331,6 +327,11 @@ export function SessionShareImportWizard({
                     exportedAt: new Date(preview.exportedAt).toLocaleString(),
                   })}
                 </p>
+                {preview.orcaWorkerCount > 0 && (
+                  <p className="mt-1 text-xs text-[var(--text-tertiary)]">
+                    {t('sessionShare.import.previewOrca', { count: preview.orcaWorkerCount })}
+                  </p>
+                )}
                 <p className="mt-1 text-xs text-[var(--text-tertiary)]">
                   {t(`sessionShare.fidelity.${preview.fidelity}`)}
                 </p>
@@ -368,19 +369,18 @@ export function SessionShareImportWizard({
                     >
                       {workingDir || t('sessionShare.import.workdirEmpty')}
                     </div>
-                    <button
+                    <Button
+                      variant="secondary"
+                      size="md"
+                      compact
+                      palette="confirmation"
                       type="button"
                       onClick={() => void handlePickWorkdir()}
                       disabled={busy}
-                      className={cn(
-                        'inline-flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-sm',
-                        'text-[var(--confirm-btn-secondary-text)] border-[var(--confirm-btn-secondary-border)]',
-                        'hover:bg-[var(--confirm-btn-secondary-hover)]',
-                      )}
                     >
                       <FolderOpen size={14} aria-hidden />
                       {t('sessionShare.import.pickWorkdir')}
-                    </button>
+                    </Button>
                   </div>
                   {/* 与 confirm-dialog 的 checkbox 约定一致:原生 input + size-3.5 +
                       accent 主题 token(项目没有统一 Checkbox 组件,这是现行范式)。 */}
@@ -425,6 +425,11 @@ export function SessionShareImportWizard({
               <p className="text-sm text-[var(--confirm-desc)]">
                 {t(`sessionShare.fidelityResult.${result.fidelity}`)}
               </p>
+              {result.orcaWorkers > 0 && (
+                <p className="text-sm text-[var(--confirm-desc)]">
+                  {t('sessionShare.import.doneOrca', { count: result.orcaWorkers })}
+                </p>
+              )}
               {result.notes.map((note) => (
                 <p key={note} className="text-xs text-[var(--text-tertiary)]">
                   {t(`sessionShare.note.${note}`, note)}
@@ -436,105 +441,98 @@ export function SessionShareImportWizard({
           <div className="mt-5 flex justify-end gap-2">
             {step !== 'done' && step !== 'conflict' && (
               <AlertDialog.Cancel asChild>
-                <button
+                <Button
+                  variant="secondary"
+                  size="md"
+                  compact
+                  palette="confirmation"
                   type="button"
                   disabled={busy}
-                  className={cn(
-                    'h-8 rounded-lg border px-3 text-sm font-medium',
-                    'text-[var(--confirm-btn-secondary-text)] border-[var(--confirm-btn-secondary-border)]',
-                    'hover:bg-[var(--confirm-btn-secondary-hover)]',
-                  )}
                 >
                   {t('sessionShare.import.cancel')}
-                </button>
+                </Button>
               </AlertDialog.Cancel>
             )}
 
             {step === 'password' && (
-              <button
+              <Button
+                variant="cta"
+                size="md"
+                compact
+                palette="confirmation"
+                loading={unlocking}
                 type="button"
                 disabled={!password || unlocking}
                 onClick={() => void handleUnlock()}
-                className={cn(
-                  'h-8 rounded-lg px-3 text-sm font-medium inline-flex items-center gap-1.5',
-                  'text-[var(--confirm-btn-primary-text)] bg-[var(--confirm-btn-primary-bg)]',
-                  'hover:bg-[var(--confirm-btn-primary-hover)]',
-                  (!password || unlocking) && 'opacity-50 cursor-not-allowed',
-                )}
               >
                 {unlocking && <Spinner size={14} />}
                 {t('sessionShare.import.unlock')}
-              </button>
+              </Button>
             )}
 
             {step === 'conflict' && (
               <>
-                <button
+                <Button
+                  variant="secondary"
+                  size="md"
+                  compact
+                  palette="confirmation"
                   type="button"
                   onClick={() => setStep('preview')}
-                  className={cn(
-                    'h-8 rounded-lg border px-3 text-sm font-medium',
-                    'text-[var(--confirm-btn-secondary-text)] border-[var(--confirm-btn-secondary-border)]',
-                    'hover:bg-[var(--confirm-btn-secondary-hover)]',
-                  )}
                 >
                   {t('sessionShare.import.conflictCancel')}
-                </button>
-                <button
+                </Button>
+                <Button
+                  variant="cta"
+                  size="md"
+                  compact
+                  palette="confirmation"
                   type="button"
                   onClick={() => void handleCommit(true)}
-                  className={cn(
-                    'h-8 rounded-lg px-3 text-sm font-medium',
-                    'text-[var(--confirm-btn-primary-text)] bg-[var(--confirm-btn-primary-bg)]',
-                    'hover:bg-[var(--confirm-btn-primary-hover)]',
-                  )}
                 >
                   {t('sessionShare.import.conflictOverwrite')}
-                </button>
+                </Button>
               </>
             )}
 
             {(step === 'preview' || step === 'committing') && (
-              <button
+              <Button
+                variant="cta"
+                size="md"
+                compact
+                palette="confirmation"
+                loading={step === 'committing'}
                 type="button"
                 disabled={!canCommit || busy}
                 onClick={() => void handleCommit()}
-                className={cn(
-                  'h-8 rounded-lg px-3 text-sm font-medium inline-flex items-center gap-1.5',
-                  'text-[var(--confirm-btn-primary-text)] bg-[var(--confirm-btn-primary-bg)]',
-                  'hover:bg-[var(--confirm-btn-primary-hover)]',
-                  (!canCommit || busy) && 'opacity-50 cursor-not-allowed',
-                )}
               >
                 {step === 'committing' && <Spinner size={14} />}
                 {t('sessionShare.import.confirm')}
-              </button>
+              </Button>
             )}
 
             {step === 'done' && (
               <>
-                <button
+                <Button
+                  variant="secondary"
+                  size="md"
+                  compact
+                  palette="confirmation"
                   type="button"
                   onClick={() => closeAndReset({ keepDraft: true })}
-                  className={cn(
-                    'h-8 rounded-lg border px-3 text-sm font-medium',
-                    'text-[var(--confirm-btn-secondary-text)] border-[var(--confirm-btn-secondary-border)]',
-                    'hover:bg-[var(--confirm-btn-secondary-hover)]',
-                  )}
                 >
                   {t('sessionShare.import.close')}
-                </button>
-                <button
+                </Button>
+                <Button
+                  variant="cta"
+                  size="md"
+                  compact
+                  palette="confirmation"
                   type="button"
                   onClick={handleOpenSession}
-                  className={cn(
-                    'h-8 rounded-lg px-3 text-sm font-medium',
-                    'text-[var(--confirm-btn-primary-text)] bg-[var(--confirm-btn-primary-bg)]',
-                    'hover:bg-[var(--confirm-btn-primary-hover)]',
-                  )}
                 >
                   {t('sessionShare.import.openSession')}
-                </button>
+                </Button>
               </>
             )}
           </div>

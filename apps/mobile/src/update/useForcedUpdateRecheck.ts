@@ -6,8 +6,8 @@
 
 import { useEffect } from 'react';
 import { AppState, Platform } from 'react-native';
-import Constants from 'expo-constants';
 import * as Updates from 'expo-updates';
+import { APP_BINARY_VERSION } from '@/config/env';
 import { fetchLatestRelease } from './fetchLatestRelease';
 import { createForcedUpdateRechecker } from './forcedUpdateRecheck';
 import {
@@ -16,12 +16,20 @@ import {
   getForcedUpdateRevision,
   getForcedUpdateTarget,
 } from './forcedUpdateStore';
-import { isCanaryChannel } from './canaryChannelStore';
+import { resolveUpdateChannelForDevice } from './canaryChannelStore';
+import type { UpdateChannel } from '@cindy/maker-shared/update-channel';
 
 /** 定时敲门间隔;真实请求频率仍由核对器内部节流决定(默认 30s)。 */
 const RECHECK_TICK_MS = 30_000;
 
-export function useForcedUpdateRecheck(isCanary = isCanaryChannel()): void {
+export function useForcedUpdateRecheck(
+  channel: UpdateChannel = resolveUpdateChannelForDevice(),
+): void {
+  // 通道正确性不变量:强更阻断屏在业务树之外、channel gate(useUpdateChannelGate)
+  // 不挂载;但 canary/beta 两个 store 是模块级单例,强更只会在它们 hydrate 之后才被
+  // 检测到(_layout.tsx 的 RootAfterEndpoints → useUpdateChannelGate 先于
+  // useBundleUpdatePrompt/useResumeUpdateCheck 触发 enterForcedUpdate)。因此这里的
+  // resolveUpdateChannelForDevice() 读到的必是已 hydrate 的真实通道,不会回落 release。
   useEffect(() => {
     let current = true;
     const rechecker = createForcedUpdateRechecker({
@@ -29,10 +37,11 @@ export function useForcedUpdateRecheck(isCanary = isCanaryChannel()): void {
         Platform.OS === 'android' ? 'android' : 'ios',
         undefined,
         undefined,
-        isCanary,
+        channel,
       ),
       getCurrentRuntimeVersion: () => Updates.runtimeVersion,
-      getCurrentVersion: () => Constants.expoConfig?.version ?? null,
+      // 与 useBundleUpdatePrompt 同口径:强更解除也按原生真值比,热更后不漂移。
+      getCurrentVersion: () => APP_BINARY_VERSION || null,
       onCleared: clearForcedUpdate,
       // 仍强更时刷新目标(等值时 enterForcedUpdate 幂等,不会引发重渲染)。
       onStillForced: enterForcedUpdate,
@@ -65,5 +74,5 @@ export function useForcedUpdateRecheck(isCanary = isCanaryChannel()): void {
       subscription.remove();
       clearInterval(timer);
     };
-  }, [isCanary]);
+  }, [channel]);
 }

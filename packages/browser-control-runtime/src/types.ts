@@ -98,11 +98,17 @@ export interface BrowserActRequest {
 
 export interface BrowserControlRequest {
   action: BrowserControlAction;
+  /** Per-start proxy URL. Credentials are accepted only in-memory by the host. */
+  proxyServer?: string;
+  /** Public DNS patterns allowed for page navigation while proxyServer is active. */
+  proxyAllowedHostnames?: string[];
   target?: BrowserControlTarget;
   node?: string;
   profile?: string;
   targetUrl?: string;
   url?: string;
+  /** Host-only override for user-initiated pages. Agent opens default to background. */
+  background?: boolean;
   targetId?: string;
   label?: string;
   limit?: number;

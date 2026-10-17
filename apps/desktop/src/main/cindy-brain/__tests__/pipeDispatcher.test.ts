@@ -19,13 +19,20 @@ function fakeGhost(overrides: Partial<InstalledGhost> = {}): InstalledGhost {
       version: '1.0.0',
       kind: 'chip',
       entry: 'main.js',
-      slots: ['tool', 'model', 'panel'],
       tools: [{ name: 'gen_image', description: '生成图片' }],
     },
     dir: '/fake/brain/art',
     enabled: true,
     ...overrides,
   } as InstalledGhost;
+}
+
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
 }
 
 interface Harness {
@@ -47,6 +54,8 @@ function makeHarness(opts: {
   ghost?: InstalledGhost | null;
   state?: GhostRuntimeState;
   timeoutMs?: number;
+  ownerScope?: PipeDispatcherDeps['ownerScope'];
+  prepareUsage?: PipeDispatcherDeps['prepareUsage'];
 } = {}): Harness {
   const sent: GhostPipeToolCall[] = [];
   const deps = {
@@ -65,11 +74,100 @@ function makeHarness(opts: {
   const dispatcher = new GhostPipeDispatcher({
     ...deps,
     timeoutMs: opts.timeoutMs,
+    ownerScope: opts.ownerScope,
+    prepareUsage: opts.prepareUsage,
   } as unknown as PipeDispatcherDeps);
   return { dispatcher, deps, sent };
 }
 
 const CALL = { ghostId: 'art', tool: 'gen_image', args: { prompt: '一只猫' } };
+
+describe('caller cancellation', () => {
+  it('Host Stop affects only opted-in calls in that session, preserving legacy calls', async () => {
+    const h = makeHarness();
+    const stopped = h.dispatcher.callGhostTool({ ...CALL, callId: 'stopped', sessionId: 'session-a' });
+    const kept = h.dispatcher.callGhostTool({ ...CALL, callId: 'kept', sessionId: 'session-b' });
+    const legacy = h.dispatcher.callGhostTool({ ...CALL, callId: 'legacy', sessionId: 'session-a' });
+    expect(h.dispatcher.getPendingCallSessionId('art', 'legacy')).toBeNull();
+    h.dispatcher.getPendingCallSignal('art', 'stopped');
+    const keptSignal = h.dispatcher.getPendingCallSignal('art', 'kept')!;
+    h.dispatcher.cancelSessionCalls('session-a');
+    expect(await stopped).toMatchObject({ ok: false, message: 'Plugin tool call cancelled' });
+    expect(keptSignal.aborted).toBe(false);
+    expect(h.dispatcher.pendingCount()).toBe(2);
+    h.dispatcher.handleToolResult('art', { callId: 'legacy', ok: true, result: 'legacy-kept' });
+    expect(await legacy).toEqual({ ok: true, result: 'legacy-kept' });
+    h.dispatcher.cancelSessionCalls('session-b');
+    expect(await kept).toMatchObject({ ok: false });
+    expect(h.dispatcher.pendingCount()).toBe(0);
+  });
+
+  it('cancels one call without ending another call to the same plugin', async () => {
+    const h = makeHarness();
+    const a = new AbortController();
+    const first = h.dispatcher.callGhostTool({ ...CALL, callId: 'call-1', signal: a.signal });
+    const second = h.dispatcher.callGhostTool({ ...CALL, callId: 'call-2' });
+    const firstLifetime = h.dispatcher.getPendingCallSignal('art', 'call-1')!;
+    const secondLifetime = h.dispatcher.getPendingCallSignal('art', 'call-2')!;
+    expect(h.dispatcher.getPendingCallSignal('other-plugin', 'call-1')).toBeNull();
+    expect(h.dispatcher.getPendingCallSessionId('other-plugin', 'call-1')).toBeNull();
+    expect(h.dispatcher.getPendingCallSessionId('art', 'missing')).toBeNull();
+    a.abort();
+    expect(await first).toMatchObject({ ok: false, message: 'Plugin tool call cancelled' });
+    expect(firstLifetime.aborted).toBe(true);
+    expect(secondLifetime.aborted).toBe(false);
+    expect(h.dispatcher.pendingCount()).toBe(1);
+    expect(h.dispatcher.handleToolResult('art', { callId: 'call-1', ok: true, result: 'late' }).accepted).toBe(false);
+    h.dispatcher.handleToolResult('art', { callId: 'call-2', ok: true, result: 'kept' });
+    expect(await second).toEqual({ ok: true, result: 'kept' });
+    expect(secondLifetime.aborted).toBe(true);
+  });
+
+  it.each(['before', 'during'] as const)('preserves legacy dispatch when MCP aborts %s startup', async when => {
+    const h = makeHarness({ state: 'stopped' as GhostRuntimeState });
+    const abort = new AbortController(), gate = deferred();
+    if (when === 'before') abort.abort();
+    h.deps.spawn.mockImplementation(async () => { await gate.promise; return { ok: true }; });
+    const pending = h.dispatcher.callGhostTool({ ...CALL, callId: 'legacy', signal: abort.signal, sessionId: 'task' });
+    abort.abort();
+    h.dispatcher.cancelSessionCalls('task');
+    gate.resolve();
+    await vi.waitFor(() => expect(h.sent).toHaveLength(1));
+    h.dispatcher.handleToolResult('art', { callId: 'legacy', ok: true, result: 'kept' });
+    expect(await pending).toEqual({ ok: true, result: 'kept' });
+  });
+
+  it('rejects late opt-in after Host Stop while the sandbox was starting', async () => {
+    const h = makeHarness();
+    h.deps.runtimeStateOf.mockReturnValue('off');
+    let started!: () => void;
+    h.deps.spawn.mockImplementation(() => new Promise(resolve => {
+      started = () => resolve({ ok: true });
+    }));
+    const pending = h.dispatcher.callGhostTool({ ...CALL, callId: 'stopped-before-binding', sessionId: 'stopped' });
+    h.dispatcher.cancelSessionCalls('stopped');
+    started();
+    await vi.waitFor(() => expect(h.sent).toHaveLength(1));
+    expect(h.dispatcher.getPendingCallSignal('art', 'stopped-before-binding')).toBeNull();
+    await expect(pending).resolves.toMatchObject({ ok: false, message: 'Plugin tool call cancelled' });
+
+    // Stop belongs to that invocation, not future turns reusing the session.
+    h.deps.runtimeStateOf.mockReturnValue('running');
+    const next = h.dispatcher.callGhostTool({ ...CALL, callId: 'new-turn', sessionId: 'stopped' });
+    expect(h.dispatcher.getPendingCallSignal('art', 'new-turn')?.aborted).toBe(false);
+    h.dispatcher.handleToolResult('art', { callId: 'new-turn', ok: true, result: 'done' });
+    await expect(next).resolves.toMatchObject({ ok: true });
+  });
+
+  it('rejects a new cancellation binding if its original MCP call was already aborted', async () => {
+    const h = makeHarness(), abort = new AbortController();
+    const pending = h.dispatcher.callGhostTool({ ...CALL, callId: 'late-bind', signal: abort.signal });
+    abort.abort();
+    expect(h.dispatcher.getPendingCallSignal('art', 'late-bind')).toBeNull();
+    expect(await pending).toMatchObject({ ok: false, message: 'Plugin tool call cancelled' });
+    expect(h.dispatcher.pendingCount()).toBe(0);
+  });
+});
 
 describe('资格审(结构化错误分类)', () => {
   it('未装入 → GHOST_NOT_FOUND', async () => {
@@ -178,6 +276,36 @@ describe('按需拉起', () => {
     expect(r).toMatchObject({ ok: false, errorCode: 'GHOST_CRASHED' });
     expect(h.dispatcher.pendingCount()).toBe(0);
   });
+
+  it('owner changes while spawn is pending: stops the runtime and never dispatches', async () => {
+    let generation = 1;
+    const invalidated = vi.fn();
+    const spawnStarted = deferred();
+    const releaseSpawn = deferred();
+    const h = makeHarness({
+      state: 'off',
+      ownerScope: {
+        capture: () => generation,
+        isCurrent: (scope) => scope === generation,
+        isStable: (scope) => scope === generation,
+        onInvalidated: invalidated,
+      },
+    });
+    h.deps.spawn.mockImplementation(async () => {
+      spawnStarted.resolve();
+      await releaseSpawn.promise;
+      return { ok: true as const };
+    });
+
+    const pending = h.dispatcher.callGhostTool(CALL);
+    await spawnStarted.promise;
+    generation = 2;
+    releaseSpawn.resolve();
+
+    await expect(pending).resolves.toMatchObject({ ok: false, errorCode: 'GHOST_ASLEEP' });
+    expect(h.deps.sendToGhost).not.toHaveBeenCalled();
+    expect(invalidated).toHaveBeenCalledWith('art');
+  });
 });
 
 describe('配对交卷', () => {
@@ -195,6 +323,33 @@ describe('配对交卷', () => {
     expect(outcome.accepted).toBe(true);
     await expect(p).resolves.toEqual({ ok: true, result: { url: 'cindy-media://blobs/x.png' } });
     expect(h.dispatcher.pendingCount()).toBe(0);
+  });
+
+  it('rejects a stale result after the owner generation changes', async () => {
+    let generation = 1;
+    const invalidated = vi.fn();
+    const h = makeHarness({
+      ownerScope: {
+        capture: () => generation,
+        isCurrent: (scope) => scope === generation,
+        isStable: (scope) => scope === generation,
+        onInvalidated: invalidated,
+      },
+    });
+    const pending = h.dispatcher.callGhostTool(CALL);
+    await vi.waitFor(() => expect(h.sent).toHaveLength(1));
+
+    generation = 2;
+    const outcome = h.dispatcher.handleToolResult('art', {
+      type: 'tool-result',
+      callId: h.sent[0].callId,
+      ok: true,
+      result: { stale: true },
+    });
+
+    expect(outcome).toMatchObject({ accepted: false });
+    await expect(pending).resolves.toMatchObject({ ok: false, errorCode: 'GHOST_ASLEEP' });
+    expect(invalidated).toHaveBeenCalledWith('art');
   });
 
   it('完成日志只含元数据，不记录参数或返回内容', async () => {
@@ -294,6 +449,151 @@ describe('配对交卷', () => {
     expect(
       h.dispatcher.handleToolResult('art', { type: 'tool-result', callId: 'ghost-town', ok: true }).accepted,
     ).toBe(false);
+  });
+});
+
+describe('tool-call 宿主能力绑定', () => {
+  it('按 ghostId + callId + callerTool 验身，同请求只允许一次暂态重试', async () => {
+    const h = makeHarness();
+    const pending = h.dispatcher.callGhostTool(CALL);
+    await vi.waitFor(() => expect(h.sent).toHaveLength(1));
+    const callId = h.sent[0].callId;
+
+    expect(
+      h.dispatcher.claimPendingCall(
+        'evil-ghost',
+        callId,
+        'gen_image',
+        'cindy.search.web',
+        'request-a',
+      ),
+    ).toBe(false);
+    expect(
+      h.dispatcher.claimPendingCall(
+        'art',
+        callId,
+        'other_tool',
+        'cindy.search.web',
+        'request-a',
+      ),
+    ).toBe(false);
+    expect(
+      h.dispatcher.claimPendingCall(
+        'art',
+        callId,
+        'gen_image',
+        'cindy.search.web',
+        'request-a',
+      ),
+    ).toBe(true);
+    expect(
+      h.dispatcher.claimPendingCall(
+        'art',
+        callId,
+        'gen_image',
+        'cindy.search.web',
+        'request-a',
+      ),
+    ).toBe(false);
+    expect(
+      h.dispatcher.settlePendingCallClaim(
+        'art',
+        callId,
+        'gen_image',
+        'cindy.search.web',
+        'request-a',
+        true,
+      ),
+    ).toBe(true);
+    expect(
+      h.dispatcher.claimPendingCall(
+        'art',
+        callId,
+        'gen_image',
+        'cindy.search.web',
+        'request-b',
+      ),
+    ).toBe(false);
+    expect(
+      h.dispatcher.claimPendingCall(
+        'art',
+        callId,
+        'gen_image',
+        'cindy.search.web',
+        'request-a',
+      ),
+    ).toBe(true);
+    expect(
+      h.dispatcher.settlePendingCallClaim(
+        'art',
+        callId,
+        'gen_image',
+        'cindy.search.web',
+        'request-a',
+        true,
+      ),
+    ).toBe(true);
+    expect(
+      h.dispatcher.claimPendingCall(
+        'art',
+        callId,
+        'gen_image',
+        'cindy.search.web',
+        'request-a',
+      ),
+    ).toBe(false);
+
+    h.dispatcher.handleToolResult('art', {
+      type: 'tool-result',
+      callId,
+      ok: true,
+      result: 'done',
+    });
+    await expect(pending).resolves.toMatchObject({ ok: true });
+  });
+
+  it('成功或不可重试结果会永久消费 binding', async () => {
+    const h = makeHarness();
+    const pending = h.dispatcher.callGhostTool(CALL);
+    await vi.waitFor(() => expect(h.sent).toHaveLength(1));
+    const callId = h.sent[0].callId;
+
+    expect(
+      h.dispatcher.claimPendingCall(
+        'art',
+        callId,
+        'gen_image',
+        'cindy.search.web',
+        'request-a',
+      ),
+    ).toBe(true);
+    expect(
+      h.dispatcher.settlePendingCallClaim(
+        'art',
+        callId,
+        'gen_image',
+        'cindy.search.web',
+        'request-a',
+        false,
+      ),
+    ).toBe(true);
+    expect(
+      h.dispatcher.claimPendingCall(
+        'art',
+        callId,
+        'gen_image',
+        'cindy.search.web',
+        'request-a',
+      ),
+    ).toBe(false);
+
+    h.dispatcher.handleToolResult('art', {
+      type: 'tool-result',
+      callId,
+      ok: true,
+      result: 'done',
+    });
+    await expect(pending).resolves.toMatchObject({ ok: true });
   });
 });
 
@@ -505,5 +805,54 @@ describe('预铸 callId(卡槽③贯通)', () => {
     await vi.waitFor(() => expect(h.sent).toHaveLength(1));
     expect(h.sent[0].callId).not.toBe('');
     expect(h.sent[0].callId.length).toBeGreaterThan(10);
+  });
+});
+
+
+describe('dispatch usage observation', () => {
+  it('captures only trusted call metadata and counts dispatch even when the result fails', async () => {
+    const accepted=vi.fn(); const settled=vi.fn(); const prepare=vi.fn(() => ({accepted,settled}));
+    const h=makeHarness({prepareUsage:prepare});
+    const pending=h.dispatcher.callGhostTool({...CALL,callId:'usage',sessionId:'trusted-session'});
+    expect(prepare).toHaveBeenCalledWith(expect.any(Object),'usage','gen_image','trusted-session');
+    expect(accepted).toHaveBeenCalledOnce();
+    h.dispatcher.handleToolResult('art',{callId:'usage',ok:false,errorCode:'INTERNAL',message:'private result'});
+    expect(await pending).toMatchObject({ok:false}); expect(settled).toHaveBeenCalledWith('failed');
+    expect(settled).toHaveBeenCalledOnce();
+  });
+  it('does not count failed dispatch or debug calls', async () => {
+    const accepted=vi.fn(); const settled=vi.fn(); const prepare=vi.fn(() => ({accepted,settled}));
+    const h=makeHarness({prepareUsage:prepare}); h.deps.sendToGhost.mockReturnValue(false);
+    await h.dispatcher.callGhostTool(CALL); expect(accepted).not.toHaveBeenCalled(); expect(settled).not.toHaveBeenCalled();
+    prepare.mockClear(); await h.dispatcher.callGhostTool({...CALL,recordUsage:false}); expect(prepare).not.toHaveBeenCalled();
+  });
+  it('does not prepare usage for unavailable or undeclared tools', async () => {
+    const prepare=vi.fn(); const disabled=makeHarness({ghost:fakeGhost({enabled:false}),prepareUsage:prepare});
+    await disabled.dispatcher.callGhostTool(CALL);
+    const h=makeHarness({prepareUsage:prepare}); await h.dispatcher.callGhostTool({...CALL,tool:'undeclared'});
+    expect(prepare).not.toHaveBeenCalled();
+  });
+  it('counts dispatch when a synchronous transport returns before send completes', async () => {
+    const events:string[]=[];
+    const h=makeHarness({prepareUsage:() => ({accepted:() => events.push('accepted'),settled:r => events.push(r)})});
+    h.deps.sendToGhost.mockImplementation((_id,payload) => {h.dispatcher.handleToolResult('art',{callId:payload.callId,ok:true,result:'private'});return true;});
+    expect(await h.dispatcher.callGhostTool(CALL)).toMatchObject({ok:true}); expect(events).toEqual(['accepted','succeeded']);
+  });
+  it('updates timeout and cancellation outcomes without additional counts', async () => {
+    vi.useFakeTimers();
+    try {
+      const accepted=vi.fn(); const settled=vi.fn(); const h=makeHarness({timeoutMs:25,prepareUsage:() => ({accepted,settled})});
+      const timeout=h.dispatcher.callGhostTool({...CALL,callId:'timeout'}); await vi.advanceTimersByTimeAsync(30); await timeout;
+      expect(settled).toHaveBeenLastCalledWith('timed-out');
+      const signal=new AbortController(); const pending=h.dispatcher.callGhostTool({...CALL,callId:'cancel',signal:signal.signal});
+      h.dispatcher.getPendingCallSignal('art','cancel'); signal.abort(); await pending;
+      expect(settled).toHaveBeenLastCalledWith('cancelled'); expect(accepted).toHaveBeenCalledTimes(2);
+    } finally {vi.useRealTimers();}
+  });
+  it('preserves tool behavior if statistics observation throws', async () => {
+    const h=makeHarness({prepareUsage:() => ({accepted:() => {throw new Error('disk');},settled:() => {throw new Error('disk');}})});
+    const pending=h.dispatcher.callGhostTool({...CALL,callId:'no-block'});
+    h.dispatcher.handleToolResult('art',{callId:'no-block',ok:true,result:'done'});
+    expect(await pending).toMatchObject({ok:true,result:'done'});
   });
 });

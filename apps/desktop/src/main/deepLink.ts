@@ -3,8 +3,12 @@
  * ---------------------------------------------------------------------------
  * URL 形态(scheme 单点在 shared/deepLinkSchemes.ts:生成一律主 scheme cindy://,
  * 解析主 + 历史 scheme 都认——存量消息里的 xdt-maker:// 老链接不能死):
+ *   cindy://chat-invite/<token>            —— 打开群邀请，自动预览后由用户确认加入;
+ *                                             口令残缺时只回报「链接无效」,不带链接内容
  *   cindy://session/<sessionId>             —— sessionId 直接是 string id
  *   cindy://project/<urlencoded-workingDir> —— workingDir 全路径 URL-encoded
+ *   cindy://settings/providers[?connect=<providerId>] —— 打开设置「模型供应商」页,
+ *     可选 connect 直达指定内置渠道或预设的接入流程(白名单校验,见 parseDeepLink)
  *
  * 命令行参数形态 (右键菜单 / 命令行):
  *   --open-folder <absolute-path>   或   --open-folder=<absolute-path>
@@ -26,26 +30,30 @@
  * Pending 缓存 + pull-on-mount:
  *   - 冷启动期间 mainWindow 还没 ready / renderer 还没挂 listener → 进 pendingDeepLink
  *   - 已登录用户:MainLayout mount 后会通过 IPC 'deep-link:take-pending' 拉一次,
- *     拉到非空 payload 就分发。已运行场景 pendingDeepLink 一直为 null,no-op。
+ *     拉到非空 payload 就分发。供应商导入始终先入 pending，事件仅唤醒同一 take 路径。
  *   - 未登录用户:冷启动 + deep link 后 LoginPage 接管,pendingDeepLink 保留;
  *     用户完成 Feishu OAuth → MainLayout 第一次 mount → 同一条 pull 路径消费 payload,
  *     不会因为登录流程跳过而丢失"点击右键打开"这个意图。
  *
  * dev 模式说明:
- *   非 packaged 模式下系统协议 / 右键菜单注册不会生效 (操作系统识别的是已安装的
- *   .app/.exe,不是临时跑的 Electron 解释器)。本模块的解析 / 派发逻辑可以单测,
- *   但端到端 "点链接 / 右键唤起" 必须打 release 包验证。
+ *   setAsDefaultProtocolClient 可把 scheme 临时注册到 Electron 解释器,因此能在 dev
+ *   实例运行期间验证系统 URL 唤起;但协议归属受最后注册的正式版 / dev 实例影响,
+ *   发布前仍需用 packaged build 做最终跨平台验证。
  */
 
-import { app, BrowserWindow } from 'electron';
+import { app, BrowserWindow, type IpcMainInvokeEvent } from 'electron';
 import path from 'node:path';
+import { parseProviderShareInvitationIntent, parseSharedTaskInvitationIntent } from '@cindy/device-link';
 import { createLogger } from './logger';
+import { registerWindowsDeepLinkName } from './deepLinkWindowsRegistration';
 import {
   DEEP_LINK_PRIMARY_SCHEME,
   DEEP_LINK_SCHEMES,
   DEEP_LINK_URL_PREFIX,
+  isDeepLinkProviderConnectId,
   matchDeepLinkPrefix,
 } from '../shared/deepLinkSchemes';
+import { cancelProviderImport, createProviderImportDraftFromRest } from './provider-import/providerImport';
 
 const log = createLogger('deepLink');
 
@@ -59,7 +67,17 @@ export const OPEN_FOLDER_FLAG = '--open-folder';
 export const OPEN_SHARE_FILE_FLAG = '--open-share-file';
 
 export type DeepLinkPayload =
-  | { type: 'session'; id: string; messageClientId?: string }
+  | { type: 'chat-invite'; token: string }
+  /** 点开的群邀请链接口令残缺或被改动：不带任何链接内容，只让 Renderer 明确告知。 */
+  | { type: 'chat-invite-malformed' }
+  | { type: 'shared-task-join'; invitation: string; server: string }
+  /** 供应商分享链接：原样交给 Renderer 的申请弹窗，由主进程命令再解析与核对区域。 */
+  | { type: 'provider-share-join'; link: string }
+  /**
+   * islandEntryId 只由主进程的灵动岛点击写入(URL 解析从不产生它),标识这一次点击,
+   * 供 renderer 在导航落地后申请处置被点的那张卡。
+   */
+  | { type: 'session'; id: string; messageClientId?: string; islandEntryId?: string }
   | { type: 'project'; workingDir: string }
   /**
    * 由 --open-folder argv 触发的 "新建对话 + 预填工作目录"。
@@ -68,12 +86,16 @@ export type DeepLinkPayload =
    */
   | { type: 'new-session'; workingDir: string }
   | { type: 'share-import'; filePath: string }
+  /** 外部 URL 内的凭证已在 Main 转成短期草稿；跨进程只传随机 id。 */
+  | { type: 'provider-import'; importId: string }
   /**
-   * 主进程内部发起的设置页导航。它不由自定义 URL 解析产生；复用现有的
-   * main-window focus + renderer dispatch 通道，供全局浮层等独立窗口把用户
-   * 带回主窗口的准确设置页。
+   * 设置页导航。两个来源:
+   *   1. 主进程内部发起(全局浮层等独立窗口把用户带回主窗口的准确设置页);
+   *   2. cindy://settings/providers[?connect=<providerId>] 深链(外部工具一键拉起
+   *      供应商接入流程)。URL 域只开放 tab=providers;connect 是可选的内置
+   *      provider / preset id,经白名单校验后透传给 renderer 已有的消费逻辑。
    */
-  | { type: 'settings'; tab: 'voice-input' | 'providers' }
+  | { type: 'settings'; tab: 'voice-input' | 'providers' | 'billing'; connect?: string; intent?: 'topup' }
   /**
    * 纯"把窗口拉回前台"意图,不携带导航语义 (典型来源:OAuth 授权成功页的
    * "打开 xdt-maker" 按钮 / 自动唤起)。main 进程内消化,不发给 renderer、
@@ -92,9 +114,21 @@ export type DeepLinkPayload =
  */
 export function parseDeepLink(url: string): DeepLinkPayload | null {
   if (typeof url !== 'string') return null;
+  const invitation = parseSharedTaskInvitationIntent(url);
+  if (invitation) return { type: 'shared-task-join', ...invitation };
+  if (parseProviderShareInvitationIntent(url)) return { type: 'provider-share-join', link: url };
   const prefix = matchDeepLinkPrefix(url);
   if (prefix === null) return null;
   const rest = url.slice(prefix.length);
+  if (rest.startsWith('chat-invite/')) {
+    const token = rest.slice('chat-invite/'.length);
+    return /^[A-Za-z0-9_-]{43}$/.test(token) ? { type: 'chat-invite', token } : { type: 'chat-invite-malformed' };
+  }
+  // provider/import 是双段精确路径，必须在通用 type/value 解析前消费。
+  if (rest.startsWith('provider/')) {
+    const importId = createProviderImportDraftFromRest(rest);
+    return importId ? { type: 'provider-import', importId } : null;
+  }
   const slashIdx = rest.indexOf('/');
   if (slashIdx <= 0) return null;
   const type = rest.slice(0, slashIdx);
@@ -122,6 +156,44 @@ export function parseDeepLink(url: string): DeepLinkPayload | null {
   if (type === 'focus') {
     // value 只作来源标记 (如 google-auth),解析后不参与行为分发。
     return { type: 'focus' };
+  }
+  if (type === 'settings') {
+    // URL 域只开放精确的 providers 路径(尾随 `/` 可忽略);不能沿用上方对其它
+    // payload 的“首段即值”语义,否则 settings/providers/anything 也会被接收。
+    const rawSettingsPath = rawValue.replace(/[?#].*$/, '').replace(/\/+$/, '');
+    if (rawSettingsPath !== 'providers' || decoded !== 'providers') return null;
+    // connect 是可选 provider / preset id;深链是不可信输入,值必须过共享白名单,
+    // 不合法就整条拒绝,避免 main/preload 规则漂移。
+    const connect = parseSettingsConnectParam(rawValue);
+    if (connect === INVALID_CONNECT) return null;
+    return connect
+      ? { type: 'settings', tab: 'providers', connect }
+      : { type: 'settings', tab: 'providers' };
+  }
+  return null;
+}
+
+/** 区分"没带 connect"(null)与"带了但非法"(INVALID_CONNECT → 整条深链拒绝)。 */
+const INVALID_CONNECT = Symbol('invalid-connect');
+
+function parseSettingsConnectParam(rawValue: string): string | null | typeof INVALID_CONNECT {
+  const hashIdx = rawValue.indexOf('#');
+  const noHash = hashIdx >= 0 ? rawValue.slice(0, hashIdx) : rawValue;
+  const queryIdx = noHash.indexOf('?');
+  if (queryIdx < 0) return null;
+  const query = noHash.slice(queryIdx + 1);
+  for (const pair of query.split('&')) {
+    const eqIdx = pair.indexOf('=');
+    if (eqIdx <= 0 || pair.slice(0, eqIdx) !== 'connect') continue;
+    const rawParam = pair.slice(eqIdx + 1);
+    if (!rawParam) return INVALID_CONNECT;
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(rawParam);
+    } catch {
+      return INVALID_CONNECT;
+    }
+    return isDeepLinkProviderConnectId(decoded) ? decoded : INVALID_CONNECT;
   }
   return null;
 }
@@ -216,10 +288,16 @@ export function buildFocusDeepLink(source: string): string {
 //   - mainWindow 已存在 + MainLayout 必然已 mount (用户已登录),dispatchDeepLink
 //     直接 webContents.send,不进 pending
 let pendingDeepLink: DeepLinkPayload | null = null;
+// Invitation targets must survive unrelated navigation and login focus callbacks.
+const pendingChatInvitations: Array<Extract<DeepLinkPayload, { type: 'chat-invite' | 'chat-invite-malformed' }>> = [];
 let mainWindowRef: BrowserWindow | null = null;
 
 export function setDeepLinkMainWindow(win: BrowserWindow | null): void {
   mainWindowRef = win;
+}
+
+export function getDeepLinkMainWindow(): BrowserWindow | null {
+  return mainWindowRef && !mainWindowRef.isDestroyed() ? mainWindowRef : null;
 }
 
 /**
@@ -229,10 +307,11 @@ export function setDeepLinkMainWindow(win: BrowserWindow | null): void {
 export function handleIncomingDeepLink(url: string, source: string): void {
   const payload = parseDeepLink(url);
   if (!payload) {
-    log.warn('ignoring unparseable url', { url, source });
+    // 入站 URL 现在可能含 API key；失败路径也不能把原文写进持久日志。
+    log.warn('ignoring unparseable deep link', { source });
     return;
   }
-  log.info('received deep link', { source, payload });
+  log.info('received deep link', { source, payload: safeDeepLinkLog(payload) });
   dispatchDeepLink(payload);
 }
 
@@ -288,17 +367,33 @@ export function handleIncomingShareFile(filePath: string, source: string): void 
 }
 
 /**
- * 把主窗口拉回前台 (show + restore + focus;macOS 额外 app.focus steal——从浏览器
- * 等其它前台应用手里抢焦点,单靠 win.focus() 在 macOS 上不可靠)。
+ * 把主窗口拉回前台。Windows 的外部协议唤起需要先激活应用并提升目标窗口
+ * z-order；其它平台短暂置顶后 focus，macOS 再使用 app.focus steal 从其它
+ * 前台应用手里抢回焦点。
  * 窗口不存在 / 已销毁时返回 false,调用方自行决定是否忽略。
  */
-export function focusMainWindow(): boolean {
+export function focusMainWindow(platform: NodeJS.Platform = process.platform): boolean {
   const win = mainWindowRef;
   if (!win || win.isDestroyed()) return false;
   if (!win.isVisible()) win.show();
   if (win.isMinimized()) win.restore();
-  win.focus();
-  if (process.platform === 'darwin') app.focus({ steal: true });
+  if (platform === 'win32') {
+    // Windows 可以收到 second-instance deep link 但仍把浏览器保留在
+    // 前台。app.focus() 先激活应用，moveTop() 再确保用户主动点击的
+    // OAuth 返回窗口不被原浏览器遮挡。该函数只用于 focus deep link，
+    // 不会把后台 Ghost workspace 请求扩大为强制抢前台。
+    app.focus();
+    win.moveTop();
+    win.focus();
+    return true;
+  }
+  win.setAlwaysOnTop(true);
+  try {
+    win.focus();
+  } finally {
+    if (!win.isDestroyed()) win.setAlwaysOnTop(false);
+  }
+  if (platform === 'darwin') app.focus({ steal: true });
   return true;
 }
 
@@ -310,64 +405,123 @@ export function openMainWindowVoiceSettings(tab: 'voice-input' | 'providers'): v
   dispatchDeepLink({ type: 'settings', tab });
 }
 
+/** 主进程内部入口(菜单栏余量面板)打开账单页的充值流程;URL 深链不开放这个 tab。 */
+export function openMainWindowBillingTopUp(): void {
+  dispatchDeepLink({ type: 'settings', tab: 'billing', intent: 'topup' });
+}
+
 /**
  * 主进程内部发起的会话聚焦(workspace 槽 focus:true)。复用 deep link 的
  * 前台 + renderer dispatch 通道,行为与用户点 cindy://session/<id> 一致。
  */
-export function openMainWindowSession(sessionId: string): void {
-  dispatchDeepLink({ type: 'session', id: sessionId });
+export function openMainWindowSession(
+  sessionId: string,
+  options?: { focus?: boolean; islandEntryId?: string },
+): void {
+  dispatchDeepLink(
+    options?.islandEntryId
+      ? { type: 'session', id: sessionId, islandEntryId: options.islandEntryId }
+      : { type: 'session', id: sessionId },
+    options?.focus !== false,
+  );
 }
 
-function dispatchDeepLink(payload: DeepLinkPayload): void {
+/** Sends a typed internal event to the primary renderer without broadcasting to utility windows. */
+export function sendMainWindowMessage(channel: string, payload: unknown): boolean {
+  const win = mainWindowRef;
+  if (
+    !win ||
+    win.isDestroyed() ||
+    !win.webContents ||
+    win.webContents.isDestroyed() ||
+    win.webContents.isLoading()
+  ) {
+    return false;
+  }
+  win.webContents.send(channel, payload);
+  return true;
+}
+
+function safeDeepLinkLog(payload: DeepLinkPayload) {
+  // 口令不进日志。
+  return payload.type === 'chat-invite' || payload.type === 'shared-task-join' || payload.type === 'provider-share-join' ? { type: payload.type } : payload;
+}
+
+function dispatchDeepLink(payload: DeepLinkPayload, shouldFocus = true): void {
   // 纯前台意图:main 进程内消化。冷启动时窗口还没建,app 启动流程本身会前台,直接丢弃。
   if (payload.type === 'focus') {
-    focusMainWindow();
+    if (shouldFocus) focusMainWindow();
     return;
   }
   const win = mainWindowRef;
-  // mainWindow 尚未创建(冷启动) / webContents 未就绪 → 缓存等 MainLayout pull
-  if (!win || win.isDestroyed() || !win.webContents || win.webContents.isLoading()) {
+  const windowReady = win && !win.isDestroyed() && win.webContents && !win.webContents.isLoading();
+  if (payload.type === 'chat-invite' || payload.type === 'chat-invite-malformed') {
+    if (!pendingChatInvitations.some(invitation => invitation.type === payload.type
+      && (payload.type === 'chat-invite-malformed' || (invitation.type === 'chat-invite' && invitation.token === payload.token)))) {
+      pendingChatInvitations.push(payload);
+    }
+    if (shouldFocus) focusMainWindow();
+    if (windowReady) win!.webContents.send('deep-link:navigate', payload);
+    return;
+  }
+  // A loaded login/LocalDbGate page has no MainLayout listener yet. Imports stay
+  // in the existing pending slot until the authenticated consumer takes them.
+  if (!windowReady || payload.type === 'provider-import' || payload.type === 'shared-task-join' || payload.type === 'provider-share-join') {
     // 保留"用户最后意图"语义:同一次冷启动如果先后入站多条 (例如 argv 同时含
     // deep link URL 和 --open-folder, 现实场景极罕见但 bootstrap 两条 scan 都
     // 会触发),后到的覆盖前者。但 warn log 留下排查线索,事后能从日志识别这种
     // 情况;若未来收到反馈再改为"先到先得"或"显式拒绝后者"。
     if (pendingDeepLink) {
+      if (pendingDeepLink.type === 'provider-import') {
+        cancelProviderImport(pendingDeepLink.importId);
+      }
       log.warn('overwriting buffered pending payload', {
-        previous: pendingDeepLink,
-        next: payload,
+        previous: safeDeepLinkLog(pendingDeepLink),
+        next: safeDeepLinkLog(payload),
       });
     }
     pendingDeepLink = payload;
-    log.debug('buffered pending deep link until renderer pull', payload);
-    if (win && !win.isDestroyed()) {
-      // 把窗口拉前台(用户点链接 / 右键的意图就是 focus app)
-      if (!win.isVisible()) win.show();
-      if (win.isMinimized()) win.restore();
-      win.focus();
+    log.debug('buffered pending deep link until renderer pull', safeDeepLinkLog(payload));
+    // Agent-key first tap may switch in the background. A buffered deep link
+    // from that path must not steal the frontmost app.
+    if (!windowReady) {
+      if (shouldFocus) focusMainWindow();
+      return;
     }
-    return;
   }
-  // 已运行场景:listener 必然挂着(MainLayout 已 mount),直接 send,不进 pending。
+  // Imports use this event only as a wake-up; MainLayout consumes the pending slot.
+  // Other existing navigation events retain their direct-delivery behavior.
   // 同时把窗口拉前台 — open-url / second-instance 本身不会唤起,用户点链接的
   // 意图就是要看到 app。
-  if (!win.isVisible()) win.show();
-  if (win.isMinimized()) win.restore();
-  win.focus();
-  win.webContents.send('deep-link:navigate', payload);
+  if (shouldFocus) focusMainWindow();
+  win!.webContents.send('deep-link:navigate', payload);
+}
+
+/** Only the main window can own and display retained invitation intents. */
+export function takePendingDeepLinkFromRenderer(
+  event: Pick<IpcMainInvokeEvent, 'sender' | 'senderFrame'>,
+): DeepLinkPayload | null {
+  if (!mainWindowRef || mainWindowRef.isDestroyed()
+    || event.sender !== mainWindowRef.webContents
+    || !event.senderFrame || event.senderFrame !== event.sender.mainFrame) return null;
+  return takePendingDeepLink();
 }
 
 /**
- * 给 IPC handler 用:取走 pendingDeepLink 并清空。pull-on-mount 路径专用,
+ * 给 IPC handler 用:先取排队的群邀请，再取 pendingDeepLink 并清空。
+ * Renderer 在取到群邀请后继续拉取，直至普通导航或空值。供 mount 和导入唤醒事件调用,
  * 重复调用是安全的——第一次拿到 payload,后续调用返回 null,不会双发。
  *
  * 命名上故意用 "take" 而非 "consume" / "get" 表达 pop 语义,避免和老的
  * (已删除) consumePendingDeepLink push 路径搞混。
  */
 export function takePendingDeepLink(): DeepLinkPayload | null {
+  const invitation = pendingChatInvitations.shift();
+  if (invitation) return invitation;
   if (!pendingDeepLink) return null;
   const payload = pendingDeepLink;
   pendingDeepLink = null;
-  log.info('renderer pulled pending deep link', payload);
+  log.info('renderer pulled pending deep link', safeDeepLinkLog(payload));
   return payload;
 }
 
@@ -384,6 +538,20 @@ export function findDeepLinkInArgv(argv: readonly string[]): string | null {
     if (typeof arg === 'string' && matchDeepLinkPrefix(arg) !== null) return arg;
   }
   return null;
+}
+
+/**
+ * Remove all provider-import arguments (even invalid/unselected ones), plus every
+ * copy of the consumed URL. The caller retains the selected URL for delivery.
+ * This sanitizes JS argv and future copies, not the OS's original command line.
+ */
+export function redactConsumedDeepLinkInArgv(argv: string[], deepLink?: string): void {
+  for (let i = argv.length - 1; i >= 0; i -= 1) {
+    const arg = argv[i];
+    const prefix = typeof arg === 'string' ? matchDeepLinkPrefix(arg) : null;
+    if (arg !== deepLink && !(prefix && /^(chat-invite\/|provider\/|provider-share\/|shared-task\/|shared-session\?)/.test(arg.slice(prefix.length)))) continue;
+    argv[i] = `${DEEP_LINK_PRIMARY_SCHEME}://consumed`;
+  }
 }
 
 /**
@@ -411,14 +579,19 @@ function findAbsolutePathAfterFlag(argv: readonly string[], flag: string): strin
     if (typeof arg !== 'string') continue;
     if (arg === flag) {
       const next = argv[i + 1];
-      if (typeof next === 'string' && next.length > 0 && isAbsoluteFilesystemPath(next)) return next;
+      if (typeof next === 'string' && next.length > 0 && isAbsoluteFilesystemPath(next))
+        return next;
 
       // Electron's Windows second-instance argv can interleave Chromium switches
       // between our custom flag and Explorer's folder path. Recover by taking the
       // first absolute path after the flag instead of returning a Chromium flag.
       for (let j = i + 1; j < argv.length; j++) {
         const candidate = argv[j];
-        if (typeof candidate === 'string' && candidate.length > 0 && isAbsoluteFilesystemPath(candidate)) {
+        if (
+          typeof candidate === 'string' &&
+          candidate.length > 0 &&
+          isAbsoluteFilesystemPath(candidate)
+        ) {
           return candidate;
         }
       }
@@ -458,18 +631,18 @@ function isWindowsSlashSwitch(value: string): boolean {
  */
 export function registerDeepLinkProtocol(): void {
   for (const scheme of DEEP_LINK_SCHEMES) {
+    let registered: boolean;
     if (process.defaultApp) {
       // dev:用 Electron 解释器跑 main 入口
       if (process.argv.length >= 2) {
-        app.setAsDefaultProtocolClient(scheme, process.execPath, [
-          path.resolve(process.argv[1]),
-        ]);
+        registered = app.setAsDefaultProtocolClient(scheme, process.execPath, [path.resolve(process.argv[1])]);
       } else {
-        app.setAsDefaultProtocolClient(scheme);
+        registered = app.setAsDefaultProtocolClient(scheme);
       }
     } else {
       // packaged:直接调,OS 用 app bundle 路径
-      app.setAsDefaultProtocolClient(scheme);
+      registered = app.setAsDefaultProtocolClient(scheme);
     }
+    if (registered) void registerWindowsDeepLinkName(scheme);
   }
 }

@@ -9,7 +9,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { GhostCardActionDispatcher, type CardActionDispatchDeps } from '../cardActionDispatch';
 import type { InstalledGhost } from '../../../shared/ghost';
 
-function fakeGhost(overrides: { enabled?: boolean; slots?: string[] } = {}): InstalledGhost {
+function fakeGhost(overrides: { enabled?: boolean; card?: boolean } = {}): InstalledGhost {
   return {
     manifest: {
       schemaVersion: 2,
@@ -18,7 +18,7 @@ function fakeGhost(overrides: { enabled?: boolean; slots?: string[] } = {}): Ins
       version: '1.0.0',
       kind: 'chip',
       entry: 'main.js',
-      slots: overrides.slots ?? ['tool', 'card', 'network'],
+      ...(overrides.card === false ? {} : { card: {} }),
     },
     dir: '/fake/cindy-mivo',
     enabled: overrides.enabled ?? true,
@@ -42,6 +42,34 @@ function makeDispatcher(overrides: Partial<CardActionDispatchDeps> = {}) {
   };
   return { dispatcher: new GhostCardActionDispatcher(deps), wake, sendToGhost, reopenForAction };
 }
+
+describe('cardActionDispatch owner boundary', () => {
+  it('rechecks the owner after wake and never sends to a stale Ghost', async () => {
+    let releaseWake!: () => void;
+    let ownerValid = true;
+    const onInvalidated = vi.fn();
+    const wake = vi.fn(() => new Promise<void>((resolve) => { releaseWake = resolve; }));
+    const { dispatcher, sendToGhost } = makeDispatcher({
+      isRunning: () => false,
+      wake,
+      ownerScope: {
+        capture: () => ({ ownerId: 'owner-a', generation: 1 }),
+        isCurrent: () => ownerValid,
+        isStable: () => ownerValid,
+        onInvalidated,
+      },
+    });
+
+    const resultPromise = dispatcher.dispatch('call-abc', CUSTOM_ID);
+    await vi.waitFor(() => expect(wake).toHaveBeenCalledOnce());
+    ownerValid = false;
+    releaseWake();
+
+    await expect(resultPromise).resolves.toEqual({ ok: false, reason: 'owner-boundary' });
+    expect(sendToGhost).not.toHaveBeenCalled();
+    expect(onInvalidated).toHaveBeenCalledWith('cindy-mivo');
+  });
+});
 
 const CALL_ID = 'call-abc';
 const CUSTOM_ID = 'MJ::JOB::upsample::1::0f3a2b1c-4d5e-6f70-8a9b-0c1d2e3f4a5b';
@@ -176,7 +204,7 @@ describe('cardActionDispatch · 资格审 + 投递', () => {
     const gone = makeDispatcher({ getGhost: () => null });
     expect((await gone.dispatcher.dispatch(CALL_ID, CUSTOM_ID)).ok).toBe(false);
 
-    const noSlot = makeDispatcher({ getGhost: () => fakeGhost({ slots: ['tool'] }) });
+    const noSlot = makeDispatcher({ getGhost: () => fakeGhost({ card: false }) });
     const r = await noSlot.dispatcher.dispatch(CALL_ID, CUSTOM_ID);
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.reason).toBe('no-card-slot');

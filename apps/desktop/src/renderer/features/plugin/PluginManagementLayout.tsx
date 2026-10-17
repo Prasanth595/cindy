@@ -3,6 +3,8 @@
  *
  * Inputs: active tab, shared search state, optional labels with tab-derived defaults, and actions.
  * Outputs: one width, focus-order-aligned adaptive toolbar, scrolling frame, and transitions.
+ * Settings embeds the same catalog and can intercept Plugins / Skills tab
+ * clicks via `onSelectTab` so the switcher stays inside Settings.
  * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
  */
 
@@ -12,6 +14,7 @@ import { useTranslation } from 'react-i18next';
 import { Search, X } from 'lucide-react';
 
 import { WINDOW_DRAG_STYLE, WINDOW_NO_DRAG_STYLE } from '@/components/layout/windowDrag';
+import { SegmentedControl } from '@/components/ui/segmented-control';
 import { cn } from '@/lib/utils';
 import './plugin-motion.css';
 
@@ -23,6 +26,9 @@ interface PluginManagementLayoutProps {
   searchPlaceholder?: string;
   clearSearchLabel?: string;
   headerActions?: ReactNode;
+  showPrimaryTabs?: boolean;
+  embedded?: boolean;
+  onSelectTab?: (tab: 'plugins' | 'skills') => void;
 }
 
 interface PluginManagementHeaderProps {
@@ -32,6 +38,8 @@ interface PluginManagementHeaderProps {
   onQueryChange?: (query: string) => void;
   searchPlaceholder?: string;
   clearSearchLabel?: string;
+  showPrimaryTabs?: boolean;
+  onSelectTab?: (tab: 'plugins' | 'skills') => void;
 }
 
 interface PluginManagementPageProps {
@@ -53,6 +61,15 @@ export const PLUGIN_MANAGEMENT_FRAME_CLASS = 'mx-auto w-full max-w-[920px] px-8 
 export const PLUGIN_MANAGEMENT_CARD_GRID_CLASS =
   'grid grid-cols-[repeat(auto-fit,minmax(min(100%,22.5rem),1fr))] gap-3';
 
+export const PLUGIN_MANAGEMENT_CONTENT_CONTAINER_CLASS = 'plugin-management-content-frame';
+
+/**
+ * Installed cards keep the two-column catalog track even when only one card is
+ * present, so a lone installed plugin does not stretch across the whole page.
+ * The plugin catalog container collapses this to one column at narrow widths.
+ */
+export const PLUGIN_INSTALLED_CARD_GRID_CLASS = 'plugin-installed-card-grid grid grid-cols-2 gap-3';
+
 const PLUGIN_MANAGEMENT_STACKED_MAX_WIDTH = 720;
 
 export function PluginManagementLayout({
@@ -63,15 +80,25 @@ export function PluginManagementLayout({
   searchPlaceholder,
   clearSearchLabel,
   headerActions,
+  showPrimaryTabs = true,
+  embedded = false,
+  onSelectTab,
 }: PluginManagementLayoutProps) {
   return (
-    <div className="plugin-management-layout-root plugin-motion-root flex h-full min-h-0 w-full flex-col bg-[var(--surface)]">
+    <div
+      className={cn(
+        'app-wallpaper-surface plugin-management-layout-root plugin-motion-root flex h-full min-h-0 w-full flex-col',
+        embedded ? 'bg-transparent' : 'bg-[var(--surface)]',
+      )}
+    >
       <PluginManagementHeader
         activeTab={activeTab}
         query={query}
         onQueryChange={onQueryChange}
         searchPlaceholder={searchPlaceholder}
         clearSearchLabel={clearSearchLabel}
+        showPrimaryTabs={showPrimaryTabs}
+        onSelectTab={onSelectTab}
       >
         {headerActions}
       </PluginManagementHeader>
@@ -88,6 +115,8 @@ export function PluginManagementHeader({
   onQueryChange,
   searchPlaceholder,
   clearSearchLabel,
+  showPrimaryTabs = true,
+  onSelectTab,
 }: PluginManagementHeaderProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -116,31 +145,28 @@ export function PluginManagementHeader({
     return () => observer.disconnect();
   }, []);
 
-  const tabs = (
-    <div
+  const tabs = showPrimaryTabs ? (
+    <SegmentedControl
       key="plugin-management-tabs"
-      className="plugin-motion-tabs inline-flex shrink-0 rounded-full border p-0.5 backdrop-blur-md"
+      className="plugin-motion-tabs shrink-0"
       role="tablist"
       aria-label={t('sidebar.horizontalTabbarAria')}
-      style={{
-        ...WINDOW_NO_DRAG_STYLE,
-        background: 'color-mix(in srgb, var(--surface-chip) 62%, transparent)',
-        borderColor: 'color-mix(in srgb, var(--border-default) 52%, transparent)',
-        boxShadow: 'inset 0 1px 0 color-mix(in srgb, var(--surface-elevated) 24%, transparent)',
-      }}
-    >
-      <TabButton
-        active={activeTab === 'plugins'}
-        label={t('settings.ghosts.title')}
-        onClick={() => navigate('/plugins')}
-      />
-      <TabButton
-        active={activeTab === 'skills'}
-        label={t('skillhub.home.title')}
-        onClick={() => navigate('/skillhub/local')}
-      />
-    </div>
-  );
+      style={WINDOW_NO_DRAG_STYLE}
+      height={38}
+      optionHeight={32}
+      optionClassName="plugin-management-tab min-w-[88px] px-4 text-13"
+      value={activeTab}
+      onValueChange={(tab) =>
+        onSelectTab
+          ? onSelectTab(tab)
+          : navigate(tab === 'plugins' ? '/plugins' : '/skillhub/local')
+      }
+      options={[
+        { value: 'plugins', label: t('settings.ghosts.title') },
+        { value: 'skills', label: t('skillhub.home.title') },
+      ]}
+    />
+  ) : null;
 
   const tools =
     searchable || children ? (
@@ -177,6 +203,10 @@ export function PluginManagementHeader({
               onKeyDown={(event) => {
                 if (event.nativeEvent.isComposing) return;
                 if (event.key !== 'Escape') return;
+                // 认领这一下 Esc：外层（设置页）不再接着失焦或退出。
+                event.preventDefault();
+                // 按住不放的自动连发不算新的一下：清空后不能接着失焦。
+                if (event.repeat) return;
                 if (query) {
                   onQueryChange('');
                 } else {
@@ -227,44 +257,15 @@ export function PluginManagementHeader({
 /** Shared breathing room and page-enter hook for both top-level catalogs. */
 export function PluginManagementPage({ children, className }: PluginManagementPageProps) {
   return (
-    <div className={cn(PLUGIN_MANAGEMENT_FRAME_CLASS, 'flex flex-col pb-16 pt-8', className)}>
+    <div
+      className={cn(
+        PLUGIN_MANAGEMENT_FRAME_CLASS,
+        PLUGIN_MANAGEMENT_CONTENT_CONTAINER_CLASS,
+        'flex flex-col pb-16 pt-8',
+        className,
+      )}
+    >
       {children}
     </div>
-  );
-}
-
-function TabButton({
-  active,
-  label,
-  onClick,
-}: {
-  active: boolean;
-  label: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      role="tab"
-      aria-selected={active}
-      onClick={onClick}
-      className={cn(
-        'plugin-management-tab h-8 min-w-[88px] select-none rounded-full border border-transparent px-4 text-13 font-medium transition-colors',
-        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]',
-        active
-          ? 'plugin-motion-selected text-[var(--text-primary)] shadow-[var(--plugin-card-shadow)]'
-          : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]',
-      )}
-      style={
-        active
-          ? {
-              background: 'color-mix(in srgb, var(--surface-elevated) 86%, transparent)',
-              borderColor: 'color-mix(in srgb, var(--border-default) 48%, transparent)',
-            }
-          : undefined
-      }
-    >
-      {label}
-    </button>
   );
 }

@@ -19,7 +19,10 @@
  * ASCII 方括号会破坏 markdown 链接语法,清洗为空格。
  */
 import type { Editor } from '@tiptap/core';
-import { boundAgentReferenceText } from '@cindy/maker-shared/agent-input-projection';
+import {
+  boundAgentReferenceText,
+  type AgentInputReference,
+} from '@cindy/maker-shared/agent-input-projection';
 import { projectDraftSessionTitle } from '@cindy/maker-shared/session-title';
 
 import { i18n } from '@/i18n';
@@ -85,6 +88,43 @@ export async function resolvePastedSessionMessageText(
 }
 
 /**
+ * Resolve semantic bodies on an immutable click-time composer snapshot.
+ *
+ * Device-link optimistic sends clear the live editor before this async work so
+ * the user can immediately start the next message. Mutating the live editor
+ * here would therefore target either a new draft or another session; enrich the
+ * captured AgentInputReference array instead and keep the deep-link wire text
+ * unchanged.
+ */
+export async function resolveSerializedSessionMessageReferencesForSend(
+  references: readonly AgentInputReference[],
+  resolveMessageText: (
+    sessionId: string,
+    clientId: string,
+  ) => Promise<string | null> = resolvePastedSessionMessageText,
+): Promise<AgentInputReference[]> {
+  return Promise.all(
+    references.map(async (reference): Promise<AgentInputReference> => {
+      if (reference.kind !== 'message' || reference.text) return reference;
+      try {
+        const value = await resolveMessageText(reference.sessionId, reference.messageClientId);
+        if (!value) return reference;
+        const bounded = boundAgentReferenceText(value);
+        return {
+          ...reference,
+          text: bounded.text,
+          truncated: bounded.truncated || undefined,
+        };
+      } catch {
+        // Preserve the deep link when the referenced body is unavailable. The
+        // send must remain usable on a weak/offline device-link connection.
+        return reference;
+      }
+    }),
+  );
+}
+
+/**
  * 默认标题解析:本地库 → device-link 远程会话镜像 → null(保持短 ID)。
  * 降级顺序与消息侧 SessionLinkChip 一致。服务依赖走动态 import:本模块的
  * 纯函数(分段 / 序列化)被单测直接引用,不把 sessionService 的传输层
@@ -101,7 +141,7 @@ export async function resolvePastedSessionTitle(sessionId: string): Promise<stri
     // 本地库没有(远程 / 未知会话)→ 走远程镜像降级
   }
   const { remoteProjectsStore } = await import('@/features/device-link/remoteProjectsStore');
-  const remote = remoteProjectsStore.getMergedRemoteSessions().find((s) => s.id === sessionId);
+  const remote = remoteProjectsStore.getVisibleMergedRemoteSessions().find((s) => s.id === sessionId);
   const remoteTitle = remote?.title?.trim();
   return remoteTitle ? projectResolvedChipTitle(remoteTitle) : null;
 }

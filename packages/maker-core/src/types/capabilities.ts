@@ -74,6 +74,12 @@ export interface Capabilities {
   multimodal: MultimodalCapability;
 
   /** Session 操作 */
+  /**
+   * Pi runtime command catalog queried from the live session. This is a
+   * capability of the session contract; the manifest itself may still be
+   * undefined while discovery is pending or unavailable.
+   */
+  runtimeCapabilities?: CapabilityStatus;
   fork: CapabilityStatus;
   rewind: CapabilityStatus;
   /** 同一 SDK session 内的原生分支树；与创建独立 Cindy 会话的 fork 正交。 */
@@ -103,6 +109,11 @@ export interface Capabilities {
    * UI 据此决定是否在 ChatInput 显示 ExtraDirsButton。
    */
   extraDirs: CapabilityStatus;
+  /**
+   * Session 附加可读写目录。与 extraDirs 的只读授权严格分离；旧会话只含
+   * extraDirs 时不得因此获得写权限。
+   */
+  writableDirs?: CapabilityStatus;
   /**
    * 会话导出为 HTML —— pi 原生 export_html RPC(自带 export-html 渲染器,离线、无网关)。
    * 支持时 handle 实现 exportSessionHtml;UI 据此决定是否显示「导出 HTML」入口。
@@ -236,6 +247,11 @@ export interface ModelDescriptor {
   /** 该模型默认 effort; null = 不支持 effort。 */
   defaultEffort: Effort | null;
   /**
+   * true = 目录里没有任何来源声明过该模型的 effort 能力(自定义来源只填了 id/name 等)。
+   * 这时 `efforts: []` 只是占位,不等于「明确无档位」;准入校验不应据此拒绝显式档位(#5535)。
+   */
+  effortsUnknown?: boolean;
+  /**
    * 该模型是否支持 Fast Mode (Claude 1M context 通道 / Codex priority service tier)。
    * UI 据此显示 / 隐藏 Fast Mode 开关, 不再自己 startsWith 解析 model id。
    */
@@ -264,12 +280,23 @@ export interface ModelDescriptor {
   */
   defaultEnabled?: boolean;
   /**
+   * 该模型是哪些 agent 的**新对话默认种子**（源自目录 `CatalogModel.newSessionDefault`，
+   * host 派生时透传）。与 sortOrder / defaultEnabled 独立；渲染层选新对话默认时优先取被
+   * 标记且可用可见的模型（见 modelDefinitions getDefaultModelForVendor）。maker-core 运行时不读它。
+   */
+  newSessionDefault?: ('claude-code' | 'codex' | 'pi')[];
+  /**
    * 模型计费($/1M tokens,源自目录/网关刷新,host 派生时透传)。pi 用它生成
    * models.json 的 cost 让 pi 自行计价;缺省按 0 计(用量页不显示钱数)。
    */
   cost?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number };
   /** 最大输出 tokens(源自目录 maxOutput)。缺省时各 agent 用自身默认值。 */
   maxOutputTokens?: number;
+  /**
+   * 当前实际 provider-model 路由是否明确支持图片输入。
+   * 缺省表示能力未知；调用方必须 fail closed，不能据模型名或协议猜测。
+   */
+  supportsImageInput?: boolean;
 }
 
 /**

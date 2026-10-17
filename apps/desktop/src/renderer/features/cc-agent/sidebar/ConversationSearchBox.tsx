@@ -1,3 +1,4 @@
+import { Button } from '@/components/ui/button';
 import {
   Fragment,
   useCallback,
@@ -34,8 +35,20 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { cn } from '@/lib/utils';
+import { MENU_ITEM_CLASS, MENU_ROW_CLASS } from './menuStyles';
 import { searchConversations } from '@/lib/conversationSearchService';
+import {
+  mergeConversationSearchFanout,
+  resolveConversationSearchOrigins,
+  shouldReleaseConversationSearchLock,
+  type ConversationSearchDevice,
+} from '@/lib/conversationSearchFanout';
+import {
+  MACHINE_ALL,
+  type MachineSelection,
+} from '@/features/device-link/selectedMachineStore';
 import { formatSidebarTime } from '../lib/formatSidebarTime';
+import { parseSnippetMarkup } from './snippetMarkup';
 import {
   getSearchSortBy,
   setSearchSortBy,
@@ -51,7 +64,10 @@ import type {
 } from '../../../../shared/conversationSearch';
 import { conversationSearchTitle } from '../../../../shared/conversationSearch';
 import { highlightSegments } from '../lib/highlightSegments';
+import { keywordRanges } from './keywordRanges';
 import { resolveSessionRoute } from '@/lib/orcaSessionIdentity';
+import { remoteProjectsStore } from '@/features/device-link/remoteProjectsStore';
+import { conversationSearchResultKey } from '@/lib/conversationSearchFanout';
 import {
   projectKeyComparisonKey,
   type ProjectNode as ProjectNodeData,
@@ -70,6 +86,7 @@ const SEMANTIC_SEARCH_DEBOUNCE_MS = 900;
 const SEARCH_LIMIT = 24;
 const MAX_VISIBLE_HITS_PER_RESULT = 3;
 const EMPTY_SESSION_IDS: string[] = [];
+const EMPTY_SEARCH_DEVICES: ConversationSearchDevice[] = [];
 
 type ProjectSelection = 'all' | string[];
 type Option<T extends string> = {
@@ -123,6 +140,7 @@ const AGENT_OPTIONS: ReadonlyArray<Option<ConversationSearchAgentFilter>> = [
   { value: 'all', labelKey: 'ccAgent.sidebar.filterVendor.all' },
   { value: 'cc', labelKey: 'ccAgent.sidebar.filterVendor.cc' },
   { value: 'codex', labelKey: 'ccAgent.sidebar.filterVendor.codex' },
+  { value: 'pi', labelKey: 'ccAgent.sidebar.filterVendor.pi' },
 ];
 
 const LAST_ACTIVITY_OPTIONS: ReadonlyArray<Option<ConversationSearchLastActivityFilter>> = [
@@ -133,40 +151,23 @@ const LAST_ACTIVITY_OPTIONS: ReadonlyArray<Option<ConversationSearchLastActivity
   { value: 'all', labelKey: 'ccAgent.sidebar.filterLastActivity.all' },
 ];
 
-const MENU_CONTENT_CLASS = cn(
-  'w-[248px] rounded-xl border border-[var(--cmd-palette-border)] bg-[var(--cmd-palette-bg)] p-1',
-  'text-[var(--cmd-palette-item-text)] shadow-[var(--shadow-menu)]',
-);
-
-const SUB_CONTENT_CLASS = cn(
-  'w-[240px] rounded-xl border border-[var(--cmd-palette-border)] bg-[var(--cmd-palette-bg)] p-1',
-  'text-[var(--cmd-palette-item-text)] shadow-[var(--shadow-menu)]',
-);
-
-const MENU_ROW_CLASS = cn(
-  'flex h-8 cursor-pointer select-none items-center gap-2 rounded-lg px-2 text-sm outline-none',
-  'text-[var(--cmd-palette-item-text)] transition-colors focus:bg-[var(--cmd-palette-item-hover)] data-[state=open]:bg-[var(--cmd-palette-item-hover)]',
-);
-
-const MENU_ITEM_CLASS = cn(
-  'flex h-8 cursor-pointer select-none items-center gap-2 rounded-lg px-2 text-sm outline-none',
-  'text-[var(--cmd-palette-item-text)] transition-colors focus:bg-[var(--cmd-palette-item-hover)]',
-  'data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
-);
-
 export interface UseConversationSearchParams {
   /** 是否驱动搜索:popover 传 open,内联恒为 true。gate 掉搜索 effect 与结果重算。 */
   enabled: boolean;
   navigate: NavigateFunction;
   allKnownProjects: ProjectNodeData[];
-  /** Bounds explicit project-scoped searches; global search remains unbounded. */
+  /** Kept for callers; explicit local/SSH project scope uses the project node sessions. */
   allowedSessionIds?: readonly string[];
   projectFilterRequest?: {
     projectKey: string;
     projectName: string;
     sessionIds: string[];
+    workingDir?: string | null;
+    deviceLinkDeviceId?: string | null;
     requestId: number;
   } | null;
+  machineSelection?: MachineSelection;
+  searchDevices?: readonly ConversationSearchDevice[];
   /** 收到「在此项目内搜索」请求(锁定项目)时回调:popover 用它打开面板,内联用它聚焦输入。 */
   onProgrammaticOpen?: () => void;
   /** 选中某条结果后回调(navigate 之前):popover 用它关闭面板并上报托盘。 */
@@ -183,8 +184,10 @@ export function useConversationSearch({
   enabled,
   navigate,
   allKnownProjects,
-  allowedSessionIds,
+  allowedSessionIds: _allowedSessionIds,
   projectFilterRequest,
+  machineSelection = MACHINE_ALL,
+  searchDevices = EMPTY_SEARCH_DEVICES,
   onProgrammaticOpen,
   onResultChosen,
 }: UseConversationSearchParams) {
@@ -206,49 +209,119 @@ export function useConversationSearch({
   const [lockedProjectKey, setLockedProjectKey] = useState<string | null>(null);
   const [lockedProjectName, setLockedProjectName] = useState<string | null>(null);
   const [lockedProjectSessionIds, setLockedProjectSessionIds] = useState<string[]>([]);
+  const [lockedProjectWorkingDir, setLockedProjectWorkingDir] = useState<string | null>(null);
+  const [lockedProjectDeviceId, setLockedProjectDeviceId] = useState<string | null>(null);
   const [status, setStatus] = useState<'idle' | 'searching' | 'done' | 'error'>('idle');
   const [response, setResponse] = useState<ConversationSearchResponse | null>(null);
   const requestSeqRef = useRef(0);
-  const semanticStartedSeqRef = useRef(0);
   const requestProjectKey = projectFilterRequest?.projectKey ?? null;
   const requestProjectName = projectFilterRequest?.projectName ?? null;
   const requestProjectSessionIds = projectFilterRequest?.sessionIds ?? EMPTY_SESSION_IDS;
+  const requestProjectWorkingDir = projectFilterRequest?.workingDir ?? null;
+  const requestProjectDeviceId = projectFilterRequest?.deviceLinkDeviceId ?? null;
   const requestId = projectFilterRequest?.requestId ?? 0;
 
   const trimmed = query.trim();
-  const allowedSessionIdSet = useMemo(
-    () => (allowedSessionIds == null ? null : new Set(allowedSessionIds)),
-    [allowedSessionIds],
-  );
+  void _allowedSessionIds;
   const selectedProjectSessionIds = useMemo(() => {
     if (projectSelection === 'all') return null;
     const selected = buildProjectKeyComparisonSet(projectSelection, localPlatform);
-    let indexedSessionIds = allKnownProjects
-      .filter((project) => {
-        const comparisonKey = projectKeyComparisonKey(project.projectKey, localPlatform);
-        return comparisonKey != null && selected.has(comparisonKey);
-      })
+    const selectedProjects = allKnownProjects.filter((project) => {
+      const comparisonKey = projectKeyComparisonKey(project.projectKey, localPlatform);
+      return comparisonKey != null && selected.has(comparisonKey);
+    });
+    let indexedSessionIds = selectedProjects
+      .filter((project) => project.deviceLinkDeviceId == null)
       .flatMap((project) => project.sessions.map((session) => session.id));
     const lockedProjectComparisonKey = projectKeyComparisonKey(lockedProjectKey, localPlatform);
+    const lockedMatchesSelection =
+      lockedProjectComparisonKey != null &&
+      selected.size === 1 &&
+      selected.has(lockedProjectComparisonKey);
     if (
       indexedSessionIds.length === 0 &&
-      lockedProjectComparisonKey &&
-      selected.size === 1 &&
-      selected.has(lockedProjectComparisonKey) &&
+      !lockedProjectDeviceId &&
+      lockedMatchesSelection &&
       lockedProjectSessionIds.length > 0
     ) {
       indexedSessionIds = lockedProjectSessionIds;
     }
-    if (allowedSessionIdSet == null) return indexedSessionIds;
-    return indexedSessionIds.filter((sessionId) => allowedSessionIdSet.has(sessionId));
+    if (indexedSessionIds.length > 0) return [...new Set(indexedSessionIds)].sort();
+    const selectedRemoteOnly =
+      selectedProjects.some((project) => project.deviceLinkDeviceId != null) ||
+      Boolean(lockedProjectDeviceId && lockedMatchesSelection);
+    return selectedRemoteOnly ? null : [];
   }, [
     allKnownProjects,
-    allowedSessionIdSet,
+    lockedProjectDeviceId,
     lockedProjectKey,
     lockedProjectSessionIds,
     localPlatform,
     projectSelection,
   ]);
+  const selectedProjectTargets = useMemo(() => {
+    if (projectSelection === 'all') return null;
+    const selected = buildProjectKeyComparisonSet(projectSelection, localPlatform);
+    const fromVisible = allKnownProjects
+      .filter((project) => {
+        const comparisonKey = projectKeyComparisonKey(project.projectKey, localPlatform);
+        return comparisonKey != null && selected.has(comparisonKey);
+      })
+      .flatMap((project) => {
+        const deviceId = project.deviceLinkDeviceId?.trim();
+        const workingDir = project.workingDir?.trim();
+        if (!deviceId || !workingDir) return [];
+        return [{ deviceId, workingDir }];
+      });
+    if (fromVisible.length > 0) return fromVisible;
+    const lockedComparison = projectKeyComparisonKey(lockedProjectKey, localPlatform);
+    if (
+      lockedProjectDeviceId &&
+      lockedProjectWorkingDir &&
+      lockedComparison &&
+      selected.size === 1 &&
+      selected.has(lockedComparison)
+    ) {
+      return [{
+        deviceId: lockedProjectDeviceId,
+        workingDir: lockedProjectWorkingDir,
+      }];
+    }
+    return null;
+  }, [
+    allKnownProjects,
+    localPlatform,
+    lockedProjectDeviceId,
+    lockedProjectKey,
+    lockedProjectWorkingDir,
+    projectSelection,
+  ]);
+  const searchOrigins = useMemo(
+    () =>
+      resolveConversationSearchOrigins({
+        machineSelection,
+        sessionIds: selectedProjectSessionIds,
+        projectTargets: selectedProjectTargets,
+        devices: searchDevices,
+        getSessionDeviceId: (sessionId) => remoteProjectsStore.getSessionDeviceId(sessionId),
+      }),
+    [machineSelection, searchDevices, selectedProjectSessionIds, selectedProjectTargets],
+  );
+  // Store refreshes rebuild arrays even when the actual search scope is unchanged.
+  const searchScopeKey = JSON.stringify({
+    origins: searchOrigins
+      .map((origin) => ({
+        ...origin,
+        sessionIds: origin.sessionIds ? [...origin.sessionIds].sort() : null,
+        workingDirs: origin.workingDirs ? [...origin.workingDirs].sort() : null,
+      }))
+      .sort((a, b) => {
+        const aKey = a.kind === 'local' ? '' : a.deviceId;
+        const bKey = b.kind === 'local' ? '' : b.deviceId;
+        return aKey.localeCompare(bKey);
+      }),
+    sessionIds: selectedProjectSessionIds,
+  });
   const activeFilterCount = useMemo(() => {
     let count = 0;
     if (statusFilter !== 'all') count += 1;
@@ -263,6 +336,8 @@ export function useConversationSearch({
     setLockedProjectKey(requestProjectKey);
     setLockedProjectName(requestProjectName);
     setLockedProjectSessionIds([...new Set(requestProjectSessionIds)]);
+    setLockedProjectWorkingDir(requestProjectWorkingDir);
+    setLockedProjectDeviceId(requestProjectDeviceId);
     setProjectSelection([requestProjectKey]);
     onProgrammaticOpen?.(); // popover:打开面板并上报托盘;内联:聚焦输入框
     setQuery('');
@@ -271,18 +346,29 @@ export function useConversationSearch({
     // 处理完即清零跨层请求:否则切到 rail(本组件卸载)再切回(重挂)时,本 effect 会在挂载
     // 阶段读到 stale current,把搜索框误弹出来(PR #246 review,镜像 pendingProjectFocus 的 consume)。
     consumeConversationSearchRequest();
-  }, [requestId, requestProjectKey, requestProjectName, requestProjectSessionIds, onProgrammaticOpen]);
+  }, [
+    requestId,
+    requestProjectKey,
+    requestProjectName,
+    requestProjectSessionIds,
+    requestProjectWorkingDir,
+    requestProjectDeviceId,
+    onProgrammaticOpen,
+  ]);
 
   useEffect(() => {
     requestSeqRef.current += 1;
     const seq = requestSeqRef.current;
-    semanticStartedSeqRef.current = 0;
     if (!enabled || !trimmed) {
       setStatus('idle');
       setResponse(null);
       return;
     }
     setStatus('searching');
+    const scope = JSON.parse(searchScopeKey) as {
+      origins: ReturnType<typeof resolveConversationSearchOrigins>;
+      sessionIds: string[] | null;
+    };
     const request = {
       query: trimmed,
       limit: SEARCH_LIMIT,
@@ -292,44 +378,89 @@ export function useConversationSearch({
         status: statusFilter,
         agentKind: agentFilter,
         lastActivity: lastActivityFilter,
-        sessionIds: selectedProjectSessionIds,
+        sessionIds: scope.sessionIds,
       },
     } as const;
+    let keywordPage: ConversationSearchResponse | null = null;
+    let semanticPage: ConversationSearchResponse | null = null;
+    let keywordSettled = false;
+    const hasLocalOrigin = scope.origins.some((origin) => origin.kind === 'local');
+    let semanticSettled = !hasLocalOrigin;
+    const publishResults = () => {
+      if (seq !== requestSeqRef.current) return;
+      const localPage = semanticPage ?? keywordPage;
+      if (!localPage) {
+        if (keywordSettled && semanticSettled) setStatus('error');
+        return;
+      }
+      // Only a completed hybrid page supersedes local keyword hits. Remote
+      // hits always come from the keyword page, regardless of completion order.
+      const next = mergeConversationSearchFanout(
+        [
+          {
+            ...localPage,
+            results: localPage.results.filter((item) => !item.session.deviceLinkDeviceId),
+          },
+          {
+            query: trimmed,
+            results:
+              keywordPage?.remoteResults ??
+              keywordPage?.results.filter((item) => item.session.deviceLinkDeviceId) ??
+              [],
+            vectorUsed: false,
+            vectorSkipReason: null,
+            poolCapped: keywordPage?.poolCapped ?? false,
+          },
+        ],
+        SEARCH_LIMIT,
+        sortBy,
+      );
+      // Empty results are definitive only after every applicable stage settles.
+      // Either keyword or semantic search may still contribute a late hit.
+      if (next.results.length === 0 && (!keywordSettled || !semanticSettled)) return;
+      setResponse(next);
+      setStatus('done');
+    };
     const keywordTimer = window.setTimeout(() => {
-      searchConversations({
-        ...request,
-        semanticMode: 'keyword',
-      })
+      searchConversations(
+        {
+          ...request,
+          semanticMode: 'keyword',
+        },
+        { origins: scope.origins },
+      )
         .then((next) => {
-          if (seq !== requestSeqRef.current) return;
-          if (semanticStartedSeqRef.current === seq) return;
-          setResponse(next);
-          setStatus('done');
+          keywordPage = next;
         })
-        .catch(() => {
-          if (seq !== requestSeqRef.current) return;
-          if (semanticStartedSeqRef.current === seq) return;
-          setStatus('error');
+        .catch(() => {})
+        .finally(() => {
+          keywordSettled = true;
+          publishResults();
         });
     }, DEBOUNCE_MS);
     const semanticTimer = window.setTimeout(() => {
-      semanticStartedSeqRef.current = seq;
-      searchConversations({
-        ...request,
-        semanticMode: 'hybrid',
-      })
+      if (!hasLocalOrigin) return;
+      searchConversations(
+        {
+          ...request,
+          semanticMode: 'hybrid',
+        },
+        {
+          origins: scope.origins,
+          reuseRemoteResults: [],
+        },
+      )
         .then((next) => {
-          if (seq !== requestSeqRef.current) return;
-          setResponse(next);
-          setStatus('done');
+          semanticPage = next;
         })
-        .catch(() => {
-          if (seq !== requestSeqRef.current) return;
-          semanticStartedSeqRef.current = 0;
-          setStatus((current) => current === 'searching' ? 'error' : current);
+        .catch(() => {})
+        .finally(() => {
+          semanticSettled = true;
+          publishResults();
         });
     }, SEMANTIC_SEARCH_DEBOUNCE_MS);
     return () => {
+      requestSeqRef.current += 1;
       window.clearTimeout(keywordTimer);
       window.clearTimeout(semanticTimer);
     };
@@ -337,7 +468,7 @@ export function useConversationSearch({
     agentFilter,
     lastActivityFilter,
     enabled,
-    selectedProjectSessionIds,
+    searchScopeKey,
     sortBy,
     statusFilter,
     trimmed,
@@ -365,6 +496,8 @@ export function useConversationSearch({
     setLockedProjectKey(null);
     setLockedProjectName(null);
     setLockedProjectSessionIds([]);
+    setLockedProjectWorkingDir(null);
+    setLockedProjectDeviceId(null);
     setProjectSelection('all');
   }, [lockedProjectKey]);
 
@@ -382,6 +515,10 @@ export function useConversationSearch({
       hitOverride?: ConversationSearchResultItem['contentHit'],
     ) => {
       try {
+        const remoteDeviceId = item.session.deviceLinkDeviceId;
+        if (remoteDeviceId) {
+          remoteProjectsStore.pinSessionOrigin(remoteDeviceId, item.session.id);
+        }
         const baseRoute = await resolveSessionRoute(item.session.id, item.session);
         const hit = hitOverride ?? item.contentHit;
         // popover 形态:onResultChosen 关闭面板并通知托盘(SidebarActionBar 减 openChildCount),
@@ -445,6 +582,8 @@ export function SearchResultsBody({
   results,
   onSelect,
   maxHeightClass,
+  leading,
+  leadingCount = 0,
 }: {
   trimmed: string;
   status: 'idle' | 'searching' | 'done' | 'error';
@@ -452,18 +591,45 @@ export function SearchResultsBody({
   onSelect: (item: ConversationSearchResultItem, hit?: ConversationSearchResultItem['contentHit']) => void;
   /** 结果列表滚动容器的高度约束(popover 传 max-h,内联铺满时省略)。 */
   maxHeightClass?: string;
+  /** 排在会话结果之前的本地命中(伙伴 / 群聊);有命中时不显示「无结果」。 */
+  leading?: React.ReactNode;
+  leadingCount?: number;
 }) {
   const { t } = useTranslation();
+  if (trimmed && leadingCount > 0) {
+    return (
+      <div className={cn('overflow-y-auto p-2', maxHeightClass)}>
+        {leading}
+        {status === 'searching' ? (
+          <div className="flex items-center justify-center gap-2 px-3 py-4 text-12 text-[var(--cmd-palette-item-meta)]">
+            <Spinner size={14} />
+            {t('ccAgent.search.searching')}
+          </div>
+        ) : status === 'error' ? (
+          <div className="px-3 py-4 text-center text-12 text-[var(--error-fg)]">{t('ccAgent.search.failed')}</div>
+        ) : (
+          results.map((item) => (
+            <SearchResultRow
+              key={conversationSearchResultKey(item)}
+              item={item}
+              query={trimmed}
+              onSelect={onSelect}
+            />
+          ))
+        )}
+      </div>
+    );
+  }
   if (!trimmed) {
     return (
-      <div className="px-3 py-6 text-center text-[12px] text-[var(--cmd-palette-empty)]">
+      <div className="px-3 py-6 text-center text-12 text-[var(--cmd-palette-empty)]">
         {t('ccAgent.search.empty')}
       </div>
     );
   }
   if (status === 'searching') {
     return (
-      <div className="flex items-center justify-center gap-2 px-3 py-6 text-[12px] text-[var(--cmd-palette-item-meta)]">
+      <div className="flex items-center justify-center gap-2 px-3 py-6 text-12 text-[var(--cmd-palette-item-meta)]">
         <Spinner size={14} />
         {t('ccAgent.search.searching')}
       </div>
@@ -471,14 +637,14 @@ export function SearchResultsBody({
   }
   if (status === 'error') {
     return (
-      <div className="px-3 py-6 text-center text-[12px] text-[var(--error-fg)]">
+      <div className="px-3 py-6 text-center text-12 text-[var(--error-fg)]">
         {t('ccAgent.search.failed')}
       </div>
     );
   }
   if (results.length === 0) {
     return (
-      <div className="px-3 py-6 text-center text-[12px] text-[var(--cmd-palette-empty)]">
+      <div className="px-3 py-6 text-center text-12 text-[var(--cmd-palette-empty)]">
         {t('ccAgent.search.noResults')}
       </div>
     );
@@ -486,7 +652,12 @@ export function SearchResultsBody({
   return (
     <div className={cn('overflow-y-auto p-2', maxHeightClass)}>
       {results.map((item) => (
-        <SearchResultRow key={item.session.id} item={item} query={trimmed} onSelect={onSelect} />
+        <SearchResultRow
+          key={conversationSearchResultKey(item)}
+          item={item}
+          query={trimmed}
+          onSelect={onSelect}
+        />
       ))}
     </div>
   );
@@ -501,12 +672,18 @@ export interface ConversationSearchBoxProps {
     projectKey: string;
     projectName: string;
     sessionIds: string[];
+    workingDir?: string | null;
+    deviceLinkDeviceId?: string | null;
     requestId: number;
   } | null;
+  machineSelection?: MachineSelection;
+  searchDevices?: readonly ConversationSearchDevice[];
   /** icon variant 触发钮 className 覆盖——rail 用 SIDEBAR_RAIL_ICON_BUTTON_CLASS。 */
   triggerClassName?: string;
   /** Popover open 态变化上报(供 SidebarActionBar 的 openChildCount 守卫;含程序化打开)。 */
   onOpenChange?: (open: boolean) => void;
+  /** 挂载即打开:rail 从「更多」打开未勾选的搜索时,图标随打开一起出现。 */
+  defaultOpen?: boolean;
 }
 
 /**
@@ -520,11 +697,14 @@ export function ConversationSearchBox({
   allowedSessionIds,
   hiddenProjectKeys,
   projectFilterRequest,
+  machineSelection = MACHINE_ALL,
+  searchDevices = EMPTY_SEARCH_DEVICES,
   triggerClassName,
   onOpenChange,
+  defaultOpen = false,
 }: ConversationSearchBoxProps) {
   const { t } = useTranslation();
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(defaultOpen);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // search.reset 在 search 声明后才拿得到,但 handleResultChosen 需先于 search 定义(要作为
@@ -549,6 +729,8 @@ export function ConversationSearchBox({
     allowedSessionIds,
     allKnownProjects,
     projectFilterRequest,
+    machineSelection,
+    searchDevices,
     onProgrammaticOpen: handleProgrammaticOpen,
     onResultChosen: handleResultChosen,
   });
@@ -561,7 +743,13 @@ export function ConversationSearchBox({
           lockedProjectKey,
           hiddenProjectKeys,
           window.electronAPI.platform,
-        )
+        ) ||
+        shouldReleaseConversationSearchLock({
+          lockedProjectKey,
+          visibleProjects: allKnownProjects,
+          localPlatform: window.electronAPI.platform,
+          machineSelection,
+        })
       ) {
         search.reset();
         search.clearLock();
@@ -582,6 +770,7 @@ export function ConversationSearchBox({
   }, [
     allKnownProjects,
     hiddenProjectKeys,
+    machineSelection,
     search.clearLock,
     search.lockedProjectKey,
     search.projectSelection,
@@ -607,18 +796,19 @@ export function ConversationSearchBox({
   return (
     <Popover open={open} onOpenChange={handleOpenChange}>
       <PopoverTrigger asChild>
-        <button
-          type="button"
-          onClick={search.clearLock}
-          className={cn(
-            triggerClassName ??
-              'flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-foreground transition-colors hover:bg-sidebar-item-hover',
-          )}
-          aria-label={t('ccAgent.search.open')}
-          title={t('ccAgent.search.open')}
-        >
-          <Search size={18} className="shrink-0" />
-        </button>
+        <Tip text={t('ccAgent.search.open')} side="right">
+          <button
+            type="button"
+            onClick={search.clearLock}
+            className={cn(
+              triggerClassName ??
+                'flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-foreground transition-colors hover:bg-sidebar-item-hover',
+            )}
+            aria-label={t('ccAgent.search.open')}
+          >
+            <Search size={18} className="shrink-0" />
+          </button>
+        </Tip>
       </PopoverTrigger>
       <PopoverContent
         align="start"
@@ -639,7 +829,7 @@ export function ConversationSearchBox({
               onChange={(event) => search.setQuery(event.target.value)}
               placeholder={t('ccAgent.search.placeholder')}
               aria-label={t('ccAgent.search.placeholder')}
-              className="min-w-0 flex-1 bg-transparent text-[13px] text-[var(--text-primary)] outline-none placeholder:text-[var(--text-tertiary)]"
+              className="min-w-0 flex-1 bg-transparent text-13 text-[var(--text-primary)] outline-none placeholder:text-[var(--text-tertiary)]"
             />
             {search.query && (
               <Tip text={t('ccAgent.search.clear')} side="bottom">
@@ -804,23 +994,26 @@ export function SearchFilterMenu({
           )}
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent side="bottom" align="start" sideOffset={6} className={MENU_CONTENT_CLASS}>
+      <DropdownMenuContent side="bottom" align="start" sideOffset={6} className="w-[248px]">
         <div className="flex items-center gap-2 px-2 py-1.5">
           <span className="min-w-0 flex-1 truncate text-xs font-medium text-[var(--cmd-palette-item-meta)]">
             {t('ccAgent.search.filter.label')}
           </span>
           {activeCount > 0 && (
-            <button
+            <Button
+              variant="secondary"
+              size="xxs"
+              compact
+              tone="quiet"
               type="button"
               onClick={(event) => {
                 event.preventDefault();
                 event.stopPropagation();
                 onReset();
               }}
-              className="shrink-0 rounded-full px-2 py-0.5 text-xs text-[var(--text-tertiary)] hover:bg-[var(--cmd-palette-item-hover)] hover:text-[var(--text-primary)]"
             >
               {t('ccAgent.search.filter.reset')}
-            </button>
+            </Button>
           )}
         </div>
 
@@ -952,7 +1145,7 @@ function MenuSubRow({
         </span>
         <ChevronDown size={14} className="-rotate-90 shrink-0 text-[var(--cmd-palette-item-meta)]" />
       </DropdownMenuSubTrigger>
-      <DropdownMenuSubContent sideOffset={8} className={SUB_CONTENT_CLASS}>
+      <DropdownMenuSubContent sideOffset={8} className="w-[240px]">
         {children}
       </DropdownMenuSubContent>
     </DropdownMenuSub>
@@ -1025,16 +1218,18 @@ function SearchResultRow({
   const activityIso = item.session.updatedAt;
   const activityText = formatSidebarTime(activityIso, t);
   const sourceText = primaryHit ? searchSourceLabel(primaryHit, t) : t('ccAgent.search.source.titleOnly');
+  const deviceLabel = item.session.deviceLinkDeviceName?.trim() || null;
   const meta = [
     sourceText,
     activityText,
+    deviceLabel,
     item.session.workingDir,
   ].filter(Boolean).join(' · ');
   const tooltip = (
     <div className="space-y-2">
       <div className="font-medium leading-snug">{displayTitle}</div>
       {primaryHit?.preview && (
-        <div className="border-t border-[var(--cmd-palette-border)] pt-2 text-[12px] leading-snug text-[var(--tooltip-text)]">
+        <div className="border-t border-[var(--cmd-palette-border)] pt-2 text-12 leading-snug text-[var(--tooltip-text)]">
           {renderSnippet(primaryHit.snippet, query) ?? renderKeywordHighlights(primaryHit.preview, query)}
         </div>
       )}
@@ -1043,6 +1238,8 @@ function SearchResultRow({
 
   return (
     <div
+      data-sidebar-session-row="true"
+      data-session-id={item.session.id}
       className={cn(
         'rounded-lg transition-colors hover:bg-[var(--cmd-palette-item-hover)]',
       )}
@@ -1058,22 +1255,22 @@ function SearchResultRow({
           </div>
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-center gap-2">
-              <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-[var(--text-primary)]">
+              <span className="min-w-0 flex-1 truncate text-13 font-medium text-[var(--text-primary)]">
                 {highlightSegments(displayTitle, item.titleMatchIndices)}
               </span>
               <Tip text={sourceText} side="top" delay={150}>
-                <span className="shrink-0 rounded-full bg-[var(--surface-chip)] px-1.5 py-0.5 text-[10px] leading-none text-[var(--text-tertiary)]">
+                <span className="shrink-0 rounded-full bg-[var(--surface-chip)] px-1.5 py-0.5 text-10 leading-none text-[var(--text-tertiary)]">
                   {t(`ccAgent.search.kind.${item.matchKind}`)}
                 </span>
               </Tip>
             </div>
             {meta && (
-              <div className="mt-1 truncate text-[11px] leading-none text-[var(--text-tertiary)]">
+              <div className="mt-1 truncate text-11 leading-none text-[var(--text-tertiary)]">
                 {meta}
               </div>
             )}
             {visibleHits.length === 0 && subtitle && (
-              <div className="mt-1.5 line-clamp-4 text-[12px] leading-snug text-[var(--text-secondary)]">
+              <div className="mt-1.5 line-clamp-4 text-12 leading-snug text-[var(--text-secondary)]">
                 {subtitle}
               </div>
             )}
@@ -1099,7 +1296,7 @@ function SearchResultRow({
               }}
               className={cn(
                 'flex w-full items-center rounded-md border border-transparent px-2 py-1.5 text-left',
-                'text-[10px] leading-none text-[var(--text-tertiary)]',
+                'text-10 leading-none text-[var(--text-tertiary)]',
                 'transition-colors hover:border-[var(--border-default)] hover:bg-[var(--surface-elevated)] hover:text-[var(--text-primary)]',
               )}
             >
@@ -1139,10 +1336,10 @@ function SearchHitRow({
       )}
     >
       <span className="min-w-0 flex-1">
-        <span className="block line-clamp-2 text-[12px] leading-snug text-[var(--text-secondary)]">
+        <span className="block line-clamp-2 text-12 leading-snug text-[var(--text-secondary)]">
           {content}
         </span>
-        <span className="mt-0.5 block truncate text-[10px] leading-none text-[var(--text-tertiary)]">
+        <span className="mt-0.5 block truncate text-10 leading-none text-[var(--text-tertiary)]">
           {hitTime} · {sourceText}
         </span>
       </span>
@@ -1161,36 +1358,23 @@ function searchSourceLabel(
 }
 
 function renderSnippet(snippet: string | null | undefined, query: string): React.ReactNode | null {
-  const text = snippet?.trim();
-  if (!text) return null;
-  const parts = text.split(/(<\/?mark>)/g);
-  const out: React.ReactNode[] = [];
-  let marked = false;
-  parts.forEach((part, index) => {
-    if (!part) return;
-    if (part === '<mark>') {
-      marked = true;
-      return;
-    }
-    if (part === '</mark>') {
-      marked = false;
-      return;
-    }
-    if (marked) {
-      out.push(
-        <mark key={`${index}-${part}`} className={SEARCH_MARK_CLASS}>
-          {part}
-        </mark>,
-      );
-    } else {
-      out.push(
-        <Fragment key={`${index}-${part}`}>
-          {renderKeywordHighlights(part, query)}
-        </Fragment>,
+  // 侧栏 snippet 是原文切片，不是 buildSnippetFromContent 哨兵协议。不要传 protocol:true。
+  const parts = parseSnippetMarkup(snippet);
+  if (!parts) return null;
+  return parts.map((part, index) => {
+    if (part.marked) {
+      return (
+        <mark key={`${index}-${part.text}`} className={SEARCH_MARK_CLASS}>
+          {part.text}
+        </mark>
       );
     }
+    return (
+      <Fragment key={`${index}-${part.text}`}>
+        {renderKeywordHighlights(part.text, query)}
+      </Fragment>
+    );
   });
-  return out.length > 0 ? out : null;
 }
 
 function renderKeywordHighlights(text: string, query: string): React.ReactNode {
@@ -1212,39 +1396,12 @@ function renderKeywordHighlights(text: string, query: string): React.ReactNode {
   return out;
 }
 
-function keywordRanges(text: string, query: string): Array<{ start: number; end: number }> {
-  const tokens = [...new Set(query.match(/[\p{L}\p{N}]+/gu) ?? [])]
-    .map((token) => token.trim())
-    .filter((token) => token.length > 0)
-    .sort((a, b) => b.length - a.length);
-  if (tokens.length === 0) return [];
-
-  const lowerText = text.toLocaleLowerCase();
-  const ranges: Array<{ start: number; end: number }> = [];
-  for (const token of tokens) {
-    const lowerToken = token.toLocaleLowerCase();
-    let index = lowerText.indexOf(lowerToken);
-    while (index >= 0) {
-      const next = { start: index, end: index + token.length };
-      if (!ranges.some((range) => rangesOverlap(range, next))) {
-        ranges.push(next);
-      }
-      index = lowerText.indexOf(lowerToken, index + lowerToken.length);
-    }
-  }
-  return ranges.sort((a, b) => a.start - b.start);
-}
-
-function rangesOverlap(a: { start: number; end: number }, b: { start: number; end: number }): boolean {
-  return a.start < b.end && b.start < a.end;
-}
-
 const SEARCH_MARK_CLASS =
   'rounded-[2px] bg-search-match-bg px-0.5 font-medium text-search-match-fg';
 
 const SEARCH_TOOL_BUTTON_CLASS = cn(
   'flex h-7 min-w-0 items-center gap-1.5 rounded-full border border-[var(--border-default)]',
-  'bg-[var(--surface-elevated)] px-2.5 text-[12px] text-[var(--text-secondary)]',
+  'bg-[var(--surface-elevated)] px-2.5 text-12 text-[var(--text-secondary)]',
   'transition-colors hover:bg-[var(--cmd-palette-item-hover)] hover:text-[var(--text-primary)]',
 );
 

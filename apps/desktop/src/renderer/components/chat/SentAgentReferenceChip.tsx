@@ -1,12 +1,11 @@
-import {
-  Globe2,
-  Monitor,
-  Plug,
-} from 'lucide-react';
+import { Bot, CornerDownRight, FolderOpen, Globe2, Monitor, Plug } from 'lucide-react';
+
+import { i18n } from '@/i18n';
 
 import type { AgentInputReference } from '../../../shared/agentInputQueue';
 import { InlineReferenceChip } from './InlineReferenceChip';
 import { ProjectLinkChip } from './ProjectLinkChip';
+import { QuoteChip } from './QuoteChip';
 import { SessionLinkChip } from './SessionLinkChip';
 
 const MESSAGE_REFERENCE_LABEL_MAX = 240;
@@ -18,22 +17,67 @@ function oneLine(value: string): string {
 /** The compact label shared by the rich chip and collapsed-message projection. */
 export function sentAgentReferenceDisplayLabel(reference: AgentInputReference): string {
   if (reference.kind === 'message') {
-    const text = oneLine(reference.text ?? '') || reference.messageClientId;
+    const text =
+      oneLine(reference.text ?? '') || i18n.t('chat.userMessage.messageLinkFallback');
     return text.length <= MESSAGE_REFERENCE_LABEL_MAX
       ? text
       : `${text.slice(0, MESSAGE_REFERENCE_LABEL_MAX - 1)}…`;
   }
-  if (reference.kind === 'session') return oneLine(reference.title ?? '') || reference.sessionId;
+  if (reference.kind === 'session') {
+    return oneLine(reference.title ?? '') || i18n.t('chat.userMessage.sessionLinkFallback');
+  }
   if (reference.kind === 'project') return oneLine(reference.name) || reference.workingDir;
   if (reference.kind === 'browser-tab') return oneLine(reference.title ?? '') || reference.url;
   if (reference.kind === 'desktop-window') {
     return oneLine(reference.title ?? '') || oneLine(reference.appName);
   }
+  if (reference.kind === 'bot') return oneLine(reference.name) || reference.botId;
   return oneLine(reference.label) || reference.resourceId;
 }
 
 /** Render one persisted Composer reference with the same visual shell as the input chip. */
-export function SentAgentReferenceChip({ reference }: { reference: AgentInputReference }) {
+export function SentAgentReferenceChip({
+  interactive = true,
+  reference,
+}: {
+  interactive?: boolean;
+  reference: AgentInputReference;
+}) {
+  if (!interactive) {
+    const label = sentAgentReferenceDisplayLabel(reference);
+    if (reference.kind === 'message') {
+      return (
+        <span className="relative top-[-1px] -my-[1px] inline-flex max-w-[min(240px,55vw)] align-middle">
+          <QuoteChip quote={{ text: label }} />
+        </span>
+      );
+    }
+    const icon =
+      reference.kind === 'session' ? (
+        <CornerDownRight aria-hidden />
+      ) : reference.kind === 'project' ? (
+        <FolderOpen aria-hidden />
+      ) : reference.kind === 'browser-tab' ? (
+        <Globe2 aria-hidden />
+      ) : reference.kind === 'desktop-window' ? (
+        <Monitor aria-hidden />
+      ) : reference.kind === 'bot' ? (
+        <Bot aria-hidden />
+      ) : (
+        <Plug aria-hidden />
+      );
+
+    return (
+      <InlineReferenceChip
+        ariaLabel={label}
+        className="relative top-[-1px] -my-[1px] max-w-[min(240px,55vw)] align-middle"
+        icon={icon}
+        label={label}
+        tooltip={label}
+      />
+    );
+  }
+
   if (reference.kind === 'message') {
     return (
       <SessionLinkChip
@@ -55,11 +99,16 @@ export function SentAgentReferenceChip({ reference }: { reference: AgentInputRef
   }
 
   const label = sentAgentReferenceDisplayLabel(reference);
-  const icon = reference.kind === 'browser-tab'
-    ? <Globe2 aria-hidden />
-    : reference.kind === 'desktop-window'
-      ? <Monitor aria-hidden />
-      : <Plug aria-hidden />;
+  const icon =
+    reference.kind === 'browser-tab' ? (
+      <Globe2 aria-hidden />
+    ) : reference.kind === 'desktop-window' ? (
+      <Monitor aria-hidden />
+    ) : reference.kind === 'bot' ? (
+      <Bot aria-hidden />
+    ) : (
+      <Plug aria-hidden />
+    );
 
   return (
     <InlineReferenceChip

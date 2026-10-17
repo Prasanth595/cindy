@@ -11,7 +11,7 @@ const LOCK_PROTOCOL = "cindy-test-workspaces-lock-v1";
 const PROBE_TIMEOUT_MS = 1_000;
 const RETRY_DELAY_MS = 500;
 const WAIT_REPORT_INTERVAL_MS = 60_000;
-const HEAVY_TEST_TIERS = new Set(["unit", "db", "git-integration"]);
+const HEAVY_TEST_TIERS = new Set(["unit", "db", "git-integration", "integration", "e2e"]);
 const BIND_DENIED_ERROR_CODES = new Set(["EACCES", "EPERM"]);
 
 export const TEST_GATE_LOCK_TIMEOUT_EXIT_CODE = 75;
@@ -45,10 +45,11 @@ export function isTestGateCiEnvironment(env = process.env) {
 export function shouldUseTestGateLock({
 	all = false,
 	tier = "unit",
+	lock = false,
 	noLock = false,
 	env = process.env,
 } = {}) {
-	if (noLock || isTestGateCiEnvironment(env)) return false;
+	if (!lock || noLock || isTestGateCiEnvironment(env)) return false;
 	return all || HEAVY_TEST_TIERS.has(tier);
 }
 
@@ -84,9 +85,15 @@ export function testGateLockIdentity(commonDir, platform = process.platform) {
 		.digest("hex");
 }
 
-function lockPort(identity, candidate) {
-	const baseOffset = Number.parseInt(identity.slice(0, 8), 16) % LOCK_PORT_COUNT;
-	return LOCK_PORT_START + ((baseOffset + candidate) % LOCK_PORT_COUNT);
+function lockPort(
+	identity,
+	candidate,
+	portStart = LOCK_PORT_START,
+	portCount = LOCK_PORT_COUNT,
+	portStride = 1,
+) {
+	const baseOffset = Number.parseInt(identity.slice(0, 8), 16) % portCount;
+	return portStart + ((baseOffset + candidate * portStride) % portCount);
 }
 
 export function classifyTestGateLockProbeError(code) {
@@ -227,6 +234,9 @@ function createTimeoutError(waitedMs, owner) {
 export async function acquireTestGateLock({
 	repoRoot,
 	owner,
+	lockPortStart = LOCK_PORT_START,
+	lockPortCount = LOCK_PORT_COUNT,
+	lockPortStride = 1,
 	timeoutMs = DEFAULT_TEST_GATE_LOCK_TIMEOUT_MS,
 	retryDelayMs = RETRY_DELAY_MS,
 	waitReportIntervalMs = WAIT_REPORT_INTERVAL_MS,
@@ -238,11 +248,21 @@ export async function acquireTestGateLock({
 } = {}) {
 	if (!repoRoot) throw new Error("repoRoot is required");
 	if (!owner || typeof owner !== "object") throw new Error("owner is required");
+	if (!Number.isInteger(lockPortCount) || lockPortCount <= 0) {
+		throw new Error("lockPortCount must be a positive integer");
+	}
 	const commonDir = await resolveTestGateCommonDir(repoRoot);
 	const identity = testGateLockIdentity(commonDir);
 	const ports = Array.from(
 		{ length: LOCK_PORT_CANDIDATES },
-		(_, candidate) => lockPort(identity, candidate),
+		(_, candidate) =>
+			lockPort(
+				identity,
+				candidate,
+				lockPortStart,
+				lockPortCount,
+				lockPortStride,
+			),
 	);
 	const banner = JSON.stringify({
 		protocol: LOCK_PROTOCOL,
@@ -287,7 +307,7 @@ export async function acquireTestGateLock({
 		}
 		if (now() - lastReportAt >= waitReportIntervalMs) {
 			output(
-				`WAIT test gate: ${describeOwner(decision.owner)}; waited ${formatWaitDuration(waitedMs)} (timeout ${formatWaitDuration(timeoutMs)}). Do not kill and restart; use --no-lock only when intentional overlap is safe.`,
+				`WAIT test gate (--lock): ${describeOwner(decision.owner)}; waited ${formatWaitDuration(waitedMs)} (timeout ${formatWaitDuration(timeoutMs)}). Run without --lock to use independent test processes.`,
 			);
 			lastReportAt = now();
 		}

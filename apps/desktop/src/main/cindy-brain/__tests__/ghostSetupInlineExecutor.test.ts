@@ -24,7 +24,7 @@ const action: Extract<GhostSetupAllowedAction, { kind: 'inline_form' }> = {
   },
 };
 
-function manifest(source?: 'user' | 'oauth' | 'login-email' | 'oidc-token'): GhostManifest {
+function manifest(source?: 'user' | 'oauth' | 'login-email' | 'gh-cli' | 'oidc-token'): GhostManifest {
   return {
     schemaVersion: 2,
     id: 'demo',
@@ -32,7 +32,6 @@ function manifest(source?: 'user' | 'oauth' | 'login-email' | 'oidc-token'): Gho
     version: '1.0.0',
     kind: 'chip',
     entry: 'main.js',
-    slots: ['tool', 'network'],
     tools: [{ name: 'call', description: 'Call' }],
     network: {
       hosts: ['api.example.com'],
@@ -107,7 +106,6 @@ describe('executeGhostSetupInlineSubmission', () => {
     const nodeManifest: GhostManifest = {
       ...manifest(),
       settingsHtml: 'settings.html',
-      slots: ['tool', 'network', 'node'],
       node: {
         entry: 'node/worker.cjs',
         protocol: 'json-rpc-stdio',
@@ -141,6 +139,7 @@ describe('executeGhostSetupInlineSubmission', () => {
       { current: assessment('inline_form:different'), currentManifest: manifest() },
       { current: assessment(), currentManifest: manifest('oauth') },
       { current: assessment(), currentManifest: manifest('login-email') },
+      { current: assessment(), currentManifest: manifest('gh-cli') },
       { current: assessment(), currentManifest: manifest('oidc-token') },
     ]) {
       const storeSecret = vi.fn(() => true);

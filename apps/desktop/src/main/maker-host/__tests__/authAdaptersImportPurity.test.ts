@@ -28,10 +28,12 @@ vi.mock('electron', () => ({
   safeStorage: { isEncryptionAvailable: () => false },
 }));
 
-// 同 titleOneShot.test:剪断 maker-core runtime 图,只保留 auth-adapters 需要的类型面。
+// 同 providerOneShot.test:剪断 maker-core runtime 图,只保留 auth-adapters 需要的类型面。
 vi.mock('@cindy/maker-core', () => ({}));
 
 describe('auth-adapters import purity', () => {
+  // Keep the side-effect assertions intact while allowing the full auth graph's
+  // cold transform on Linux under the eight-worker desktop unit pool.
   it('importing the module (and its singletons) must not write to the filesystem', async () => {
     h.userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'xdt-auth-import-purity-'));
     const cwdCodexHome = path.join(process.cwd(), 'codex-home');
@@ -59,5 +61,5 @@ describe('auth-adapters import purity', () => {
     } finally {
       fs.rmSync(h.userDataDir, { recursive: true, force: true });
     }
-  });
+  }, 20_000);
 });

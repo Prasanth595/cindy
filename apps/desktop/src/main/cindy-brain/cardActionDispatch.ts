@@ -25,6 +25,7 @@ import {
   type GhostPipeEventPush,
   type InstalledGhost,
 } from '../../shared/ghost.js';
+import { isGhostOwnerScopeUsable, type GhostOwnerScope } from './ghostOwnerScope.js';
 
 export interface CardActionDispatchDeps {
   /** 内存卡片服务:in-flight + 宽限窗内的条目(归属 + 会话;命中最快)。 */
@@ -56,6 +57,7 @@ export interface CardActionDispatchDeps {
    * (老卡无会话归属)时不上报。
    */
   onActivityStart?(key: string, sessionId: string): void;
+  ownerScope?: GhostOwnerScope;
   now?(): number;
   log?: {
     info: (msg: string, meta?: Record<string, unknown>) => void;
@@ -82,7 +84,7 @@ export class GhostCardActionDispatcher {
    * (IPC 层对 renderer 恒可回,reason 仅诊断)。prompt 仅 data-ghost-prompt
    * 类动作有(宿主输入框收集的用户文字),可选;非法形状整次拒。
    */
-  async dispatch(callId: unknown, actionId: unknown, prompt?: unknown): Promise<CardActionResult> {
+  async dispatch(callId: unknown, actionId: unknown, prompt?: unknown, mobilePageId?: string): Promise<CardActionResult> {
     if (typeof callId !== 'string' || callId.length === 0 || callId.length > MAX_CALL_ID_LEN) {
       return { ok: false, reason: 'bad-call-id' };
     }
@@ -102,8 +104,28 @@ export class GhostCardActionDispatcher {
     // 归属:内存优先(快),持久兜底(settle/重启后仍成立)。查无 = 拒
     // (不区分"卡不存在"与"不属于任何在场意识",不给探测面)。
     // sessionId 一并取出:重建被清扫条目、登记衍生卡位都要续会话归属。
+    let capturedOwner: unknown;
+    if (this.deps.ownerScope) {
+      try {
+        capturedOwner = this.deps.ownerScope.capture();
+      } catch {
+        return { ok: false, reason: 'owner-boundary' };
+      }
+      if (!isGhostOwnerScopeUsable(this.deps.ownerScope, capturedOwner)) {
+        return { ok: false, reason: 'owner-boundary' };
+      }
+    }
+
+    const ownerUsable = (): boolean =>
+      isGhostOwnerScopeUsable(this.deps.ownerScope, capturedOwner);
+    const rejectStaleOwner = (ghostId?: string): CardActionResult => {
+      if (ghostId) this.deps.ownerScope?.onInvalidated?.(ghostId);
+      return { ok: false, reason: 'owner-boundary' };
+    };
+
     let info = this.deps.resolveLiveInfo(callId);
     if (!info) info = await this.deps.resolvePersistedCard(callId);
+    if (!ownerUsable()) return rejectStaleOwner(info?.ghostId);
     if (!info) {
       this.deps.log?.warn('card-action rejected: unknown card', { callId });
       return { ok: false, reason: 'unknown-card' };
@@ -115,9 +137,9 @@ export class GhostCardActionDispatcher {
       this.deps.log?.warn('card-action rejected: ghost unavailable', { ghostId, callId });
       return { ok: false, reason: 'ghost-unavailable' };
     }
-    if (!ghost.manifest.slots?.includes('card')) {
-      // 卡片是它发的却没 card 槽 = 不该发生;保险起见拒。
-      this.deps.log?.warn('card-action rejected: no card slot', { ghostId, callId });
+    if (!ghost.manifest.card) {
+      // 卡片是它发的却没声明 card 能力 = 不该发生;保险起见拒。
+      this.deps.log?.warn('card-action rejected: no card capability', { ghostId, callId });
       return { ok: false, reason: 'no-card-slot' };
     }
 
@@ -134,11 +156,18 @@ export class GhostCardActionDispatcher {
     }
 
     try {
-      if (!this.deps.isRunning(ghostId)) await this.deps.wake(ghost);
+      if (!ownerUsable()) return rejectStaleOwner(ghostId);
+      if (!this.deps.isRunning(ghostId)) {
+        await this.deps.wake(ghost);
+        if (!ownerUsable()) return rejectStaleOwner(ghostId);
+      }
+      // 卡片路径只发这一张一次性票；不另记面板手势，避免一次点击两份凭据。
       const userActionToken = this.deps.issueUserActionToken?.(ghostId, sessionId) ?? null;
+      if (!ownerUsable()) return rejectStaleOwner(ghostId);
       this.deps.sendToGhost(ghostId, {
         type: 'event',
         name: 'card-action',
+        ...(mobilePageId ? { mobilePageId } : {}),
         callId,
         actionId,
         ...(sessionId ? { sessionId } : {}),

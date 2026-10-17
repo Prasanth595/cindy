@@ -9,7 +9,7 @@
  */
 
 import { PassThrough } from 'node:stream';
-import { mkdtemp, rm, writeFile as fsWriteFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile as fsWriteFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -128,6 +128,28 @@ describe('RemoteFileBrowserManager', () => {
     await mgr.disposeAll();
   });
 
+  it('beforeSend runs after the connection is built and can stop the request', async () => {
+    const { deps, calls } = makeDeps({ probeResults: [READY_PROBE] });
+    const mgr = new RemoteFileBrowserManager(deps);
+    let spawnedBeforeGate = -1;
+    await expect(
+      mgr.request(
+        'h1',
+        'writeFile',
+        { workdir, relPath: 'hello.txt', content: 'late\n' },
+        {
+          beforeSend: () => {
+            spawnedBeforeGate = calls.spawn;
+            throw new Error('[PERMISSION_DENIED] revoked');
+          },
+        },
+      ),
+    ).rejects.toThrow('PERMISSION_DENIED');
+    expect(spawnedBeforeGate).toBe(1);
+    expect(await readFile(path.join(workdir, 'hello.txt'), 'utf8')).toBe('hi\n');
+    await mgr.disposeAll();
+  });
+
   it('concurrent first requests share one connection build', async () => {
     const { deps, calls } = makeDeps({ probeResults: [READY_PROBE] });
     const mgr = new RemoteFileBrowserManager(deps);
@@ -217,5 +239,21 @@ describe('RemoteFileBrowserManager', () => {
     expect(entries.map((e) => e.name)).toContain('hello.txt');
     expect(calls.spawn).toBe(2);
     await mgr.disposeAll();
+  });
+
+  it('endpoint invalidation fences an in-flight build before it can spawn the old host', async () => {
+    let releaseEnsure!: () => void;
+    const { deps, calls } = makeDeps({ probeResults: [READY_PROBE] });
+    deps.ensureHostReady = () => new Promise<void>((resolve) => {
+      releaseEnsure = resolve;
+    });
+    const mgr = new RemoteFileBrowserManager(deps);
+    const request = mgr.request('h1', 'listDir', { workdir });
+
+    await mgr.disposeHost('h1');
+    releaseEnsure();
+
+    await expect(request).rejects.toMatchObject({ code: 'ENDPOINT_STALE' });
+    expect(calls.spawn).toBe(0);
   });
 });

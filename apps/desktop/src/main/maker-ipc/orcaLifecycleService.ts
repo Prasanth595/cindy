@@ -1,6 +1,7 @@
 import type { AgentKind } from '@cindy/maker-core';
 
 import { createHostSendFailure } from '../maker-host/send-outcome.js';
+import { buildUiAssignmentInitialTask } from './orcaUiAssignment.js';
 import type { DispatchWorkerTaskResult, OrcaWorkerEffort } from './orcaTeamService.js';
 import { normalizeOrcaWorkerLabel } from './orcaWorkerCreationService.js';
 import type {
@@ -9,8 +10,13 @@ import type {
   OrcaWorkerCreateParams,
   OrcaWorkerCreationResult,
 } from './orcaWorkerCreationService.js';
+import {
+  resolveOrcaWorkerPermissionMode,
+  type OrcaWorkerPermissionMode,
+} from '../../shared/orca-worker-permission-mode.js';
 
-export const ORCA_WORKER_READY_MESSAGE = '[系统] Orca Worker 已就绪，等待 Lead 分配任务。';
+export const ORCA_WORKER_READY_MESSAGE =
+  '[系统] Orca Worker 已就绪，当前没有待执行任务。不要调用任何工具来等待、观察或轮询 Lead。只回复一句简短确认并立即结束本轮；Lead 后续会主动发送任务。';
 
 /** 开启协同时的一次性入参；负责把 UI/MCP 的 worker 偏好归一到 worker 创建内核。 */
 export interface OrcaEnableTeamParams {
@@ -24,11 +30,23 @@ export interface OrcaEnableTeamParams {
   /** 显式选定的模型来源;语义见 OrcaWorkerCreateParams.providerId。 */
   providerId?: string | null;
   delegateTask?: string;
+  /** UI 新建 Lead 时先建 Worker，把首任务留到 Lead 首条输入可查询后再派。 */
+  deferDelegateTask?: boolean;
+  /** 本次首个 Worker 权限；缺省读取 Worker 创建偏好。显式值同时更新后续默认。 */
+  workerPermissionMode?: OrcaWorkerPermissionMode;
+  /** 首个 Worker 放到同账号另一台电脑运行；语义见 OrcaWorkerCreateParams.executionDeviceId。 */
+  executionDeviceId?: string;
+  /** 运行设备上的工作目录；只在指定运行设备时生效。 */
+  workingDir?: string;
+  /** 首个 Worker 的 Agent 所在位置(远程供应商)；语义见 OrcaWorkerCreateParams.agentDeviceId。 */
+  agentDeviceId?: string | null;
 }
 
 /** MCP start_team 只建立 lead team，不创建 worker；worker 后续由 create_worker 添加。 */
 export interface OrcaStartTeamParams {
   leadSessionId: string;
+  /** Worker 创建默认权限；缺省沿用当前偏好，显式值会更新偏好。 */
+  workerPermissionMode?: OrcaWorkerPermissionMode;
 }
 
 /** lifecycle 内部统一使用 INTERNAL 承载依赖异常，adapter 再决定 IPC/MCP 如何翻译。 */
@@ -43,6 +61,7 @@ export type OrcaStartTeamResult =
   | {
       ok: true;
       teamId: string;
+      workerPermissionMode: OrcaWorkerPermissionMode;
       reused?: boolean;
     }
   | OrcaInternalFailure;
@@ -55,6 +74,9 @@ export type OrcaEnableTeamResult =
       workerSessionId: string;
       workerId: string;
       dispatched: boolean;
+      /** 由 Worker 所在主机生成，供后续 history gate 避免跨设备时钟偏差。 */
+      uiAssignmentSnapshotBeforeMs: number;
+      workerPermissionMode: OrcaWorkerPermissionMode;
       dispatchOutcome?: DispatchWorkerTaskResult['dispatchOutcome'];
     }
   | Extract<OrcaWorkerCreationResult, { ok: false }>
@@ -68,7 +90,17 @@ export type OrcaEnableTeamResult =
 export interface OrcaLifecycleDeps {
   getActiveTeamByLead(leadSessionId: string): Promise<OrcaTeamSnapshot | null>;
   createActiveTeam(leadSessionId: string): Promise<OrcaTeamSnapshot>;
-  createWorkerInTeam(params: OrcaWorkerCreateInTeamParams): Promise<OrcaWorkerCreationResult>;
+  /** #3555:active team 是否为初始化中断遗留的孤儿(零 worker 行且无存活创建 reservation)。 */
+  isOrphanedTeamInit(teamId: string): Promise<boolean>;
+  getWorkerPermissionMode(): OrcaWorkerPermissionMode;
+  /** Host-only per-call provenance, captured with the permission before lifecycle I/O. */
+  getWorkerPermissionModeOverride?(leadSessionId: string): Promise<{
+    permissionMode?: OrcaWorkerPermissionMode;
+    assertCurrent: () => Promise<void>;
+  }>;
+  setWorkerPermissionMode(workerPermissionMode: OrcaWorkerPermissionMode): void;
+  createWorkerInTeam(params: OrcaWorkerCreateInTeamParams, assertCurrent?: () => Promise<void>,
+    onCreated?: (assertCreatedCurrent: () => Promise<void>) => void): Promise<OrcaWorkerCreationResult>;
   dispatchWorkerTask(params: {
     targetSessionId: string;
     message: string;
@@ -76,7 +108,7 @@ export interface OrcaLifecycleDeps {
       source: string;
       context: string;
     };
-  }): Promise<DispatchWorkerTaskResult>;
+  }, assertCurrent?: () => Promise<void>): Promise<DispatchWorkerTaskResult>;
   markTeamEnded(teamId: string, status: 'completed' | 'cancelled' | 'failed'): Promise<void>;
   setSessionOrcaRole(sessionId: string, role: 'lead' | null): Promise<void>;
   clearKnownNonOrcaSession(sessionId: string): void;
@@ -92,7 +124,7 @@ export interface OrcaLifecycleDeps {
     agentKind: AgentKind;
     entrypoint: 'create_worker' | 'enable_collab_mode';
     context: string;
-  }): Promise<void>;
+  }, assertCurrent?: () => Promise<void>): Promise<void>;
   rollbackCreatedWorker(params: { workerId: string; workerSessionId: string }): Promise<void>;
   broadcastSessionCreated(sessionId: string): void;
   broadcastOrcaWorkerChanged(leadSessionId: string): void;
@@ -100,7 +132,8 @@ export interface OrcaLifecycleDeps {
 
 /** 协同生命周期入口，集中处理 start_team、enable_collab_mode 和 create_worker 的补偿顺序。 */
 export interface OrcaLifecycleService {
-  startTeam(params: OrcaStartTeamParams): Promise<OrcaStartTeamResult>;
+  /** Host-only admission check; kept inside native work and its existing compensation. */
+  startTeam(params: OrcaStartTeamParams, assertCurrent?: () => Promise<void>): Promise<OrcaStartTeamResult>;
   createWorker(params: OrcaWorkerCreateParams): Promise<OrcaWorkerCreationResult>;
   enableTeam(params: OrcaEnableTeamParams): Promise<OrcaEnableTeamResult>;
 }
@@ -127,6 +160,13 @@ function normalizeEnableParams(params: OrcaEnableTeamParams): OrcaWorkerCreatePa
     fast: params.fast,
     providerId: params.providerId,
     initialTask: delegateTask,
+    ...(params.executionDeviceId
+      ? {
+          executionDeviceId: params.executionDeviceId,
+          ...(params.workingDir ? { workingDir: params.workingDir } : {}),
+        }
+      : {}),
+    ...(params.agentDeviceId !== undefined ? { agentDeviceId: params.agentDeviceId } : {}),
   };
 }
 
@@ -155,24 +195,56 @@ function hasNonEmptyInitialTask(value: string | undefined): value is string {
 }
 
 export function createOrcaLifecycleService(deps: OrcaLifecycleDeps): OrcaLifecycleService {
+  // #3555 review(并发误判竞态):本进程正在初始化的 team(已 createActiveTeam、
+  // worker/reservation 尚未落地)绝不能被并发的 enableTeam 判为孤儿收口——
+  // 否则先到的请求会把 worker 写进已被标 failed 的 team,返回成功但 worker
+  // 不出现在 active team 列表。in-flight 集合覆盖同进程全部并发窗口(含长
+  // 初始化);跨进程残余由 store 侧孤儿判定的最小年龄地板兜底。
+  const initializingTeamIds = new Set<string>();
   const dispatchSource = 'maker-ipc/collab';
+
+  function workerPermissionModeForCreate(
+    explicitMode: OrcaWorkerPermissionMode | undefined,
+    override: Awaited<ReturnType<NonNullable<OrcaLifecycleDeps['getWorkerPermissionModeOverride']>>> | undefined,
+  ): { workerPermissionMode: OrcaWorkerPermissionMode; assertCurrent?: () => Promise<void> } {
+    if (override?.permissionMode !== undefined) return { workerPermissionMode: override.permissionMode, assertCurrent: override.assertCurrent };
+    if (explicitMode === undefined) return { workerPermissionMode: deps.getWorkerPermissionMode(), assertCurrent: override?.assertCurrent };
+    const resolved = resolveOrcaWorkerPermissionMode(explicitMode);
+    deps.setWorkerPermissionMode(resolved);
+    return { workerPermissionMode: resolved, assertCurrent: override?.assertCurrent };
+  }
 
   async function dispatchInitialTask(params: {
     workerSessionId: string;
     message: string | undefined;
     context: string;
-  }): Promise<DispatchWorkerTaskResult | undefined> {
+  }, assertCurrent?: () => Promise<void>): Promise<DispatchWorkerTaskResult | undefined> {
     if (!params.message) return undefined;
+    // The dispatcher maps accepted cancellation to a send result. Remember only
+    // this call's authorization failure so cleanup runs after its locks release.
+    // A queued callback may run later: it rejects that input, not the Worker.
+    let rejected: { error: unknown } | undefined;
+    const assertAccepted = assertCurrent ? async () => {
+      try {
+        await assertCurrent();
+      } catch (error) {
+        rejected = { error };
+        throw error;
+      }
+    } : undefined;
     try {
-      return await deps.dispatchWorkerTask({
+      const result = await deps.dispatchWorkerTask({
         targetSessionId: params.workerSessionId,
         message: params.message,
         dispatchMeta: {
           source: dispatchSource,
           context: params.context,
         },
-      });
+      }, assertAccepted);
+      if (!result.queued && rejected) throw rejected.error;
+      return result;
     } catch {
+      if (rejected) throw rejected.error;
       return {
         dispatched: false,
         dispatchOutcome: {
@@ -188,36 +260,47 @@ export function createOrcaLifecycleService(deps: OrcaLifecycleDeps): OrcaLifecyc
   }
 
   async function createWorker(params: OrcaWorkerCreateParams): Promise<OrcaWorkerCreationResult> {
+    const override = await deps.getWorkerPermissionModeOverride?.(params.leadSessionId);
     const team = await deps.getActiveTeamByLead(params.leadSessionId);
+    await override?.assertCurrent();
     if (!team) {
       return { ok: false, errorCode: 'NOT_FOUND', message: 'no active team for this lead' };
     }
+    const { workerPermissionMode, assertCurrent } = workerPermissionModeForCreate(params.workerPermissionMode, override);
     const initialTask = hasNonEmptyInitialTask(params.initialTask) ? params.initialTask : undefined;
-    const created = await deps.createWorkerInTeam({ ...params, teamId: team.id });
+    let assertCreatedCurrent = assertCurrent;
+    const created = await deps.createWorkerInTeam({
+      ...params,
+      teamId: team.id,
+      workerPermissionMode,
+    }, assertCurrent, guard => { assertCreatedCurrent = guard; });
     if (!created.ok) return created;
+    try {
+      await assertCreatedCurrent?.();
+    } catch (err) {
+      await deps.rollbackCreatedWorker(created).catch(() => undefined);
+      return internalFailure(err);
+    }
 
-    const dispatchResult = initialTask
-      ? await dispatchInitialTask({
+    let dispatchResult: DispatchWorkerTaskResult | undefined;
+    try {
+      if (initialTask) {
+        dispatchResult = await dispatchInitialTask({
           workerSessionId: created.workerSessionId,
           message: initialTask,
           context: `create_worker/${created.workerSessionId}/initial_task`,
-        })
-      : undefined;
-    if (!initialTask) {
-      try {
+        }, assertCreatedCurrent);
+      } else {
         await deps.sendWorkerReadyPlaceholder({
           workerSessionId: created.workerSessionId,
           agentKind: created.resolved.agent,
           entrypoint: 'create_worker',
           context: `create_worker/${created.workerSessionId}/worker-ready-placeholder`,
-        });
-      } catch (err) {
-        await deps.rollbackCreatedWorker({
-          workerId: created.workerId,
-          workerSessionId: created.workerSessionId,
-        }).catch(() => undefined);
-        return internalFailure(err);
+        }, assertCreatedCurrent);
       }
+    } catch (err) {
+      await deps.rollbackCreatedWorker(created).catch(() => undefined);
+      return internalFailure(err);
     }
     deps.broadcastSessionCreated(created.workerSessionId);
     deps.broadcastOrcaWorkerChanged(params.leadSessionId);
@@ -259,6 +342,7 @@ export function createOrcaLifecycleService(deps: OrcaLifecycleDeps): OrcaLifecyc
   }): Promise<Extract<OrcaStartTeamResult, { ok: false }>> {
     await deps.markTeamEnded(params.teamId, 'failed').catch(() => undefined);
     await deps.setSessionOrcaRole(params.leadSessionId, null).catch(() => undefined);
+    await deps.clearLeadVendorOptions(params.leadSessionId).catch(() => undefined);
     return internalFailure(params.err);
   }
 
@@ -274,42 +358,85 @@ export function createOrcaLifecycleService(deps: OrcaLifecycleDeps): OrcaLifecyc
     });
   }
 
-  async function startTeam(params: OrcaStartTeamParams): Promise<OrcaStartTeamResult> {
+  async function startTeam(params: OrcaStartTeamParams, assertCurrent?: () => Promise<void>): Promise<OrcaStartTeamResult> {
+    const admission = workerPermissionModeForCreate(params.workerPermissionMode, await deps.getWorkerPermissionModeOverride?.(params.leadSessionId));
+    const { workerPermissionMode } = admission;
+    const assertAdmission = async () => {
+      await assertCurrent?.();
+      await admission.assertCurrent?.();
+    };
     const existing = await deps.getActiveTeamByLead(params.leadSessionId);
+    await assertAdmission();
     if (existing) {
       try {
         await activateLeadTeam({ leadSessionId: params.leadSessionId, teamId: existing.id });
+        await assertAdmission();
       } catch (err) {
         return internalFailure(err);
       }
-      return { ok: true, teamId: existing.id, reused: true };
+      return { ok: true, teamId: existing.id, workerPermissionMode, reused: true };
     }
 
     const team = await deps.createActiveTeam(params.leadSessionId);
+    initializingTeamIds.add(team.id);
     try {
+      await assertAdmission();
       await activateLeadTeam({ leadSessionId: params.leadSessionId, teamId: team.id });
+      await assertAdmission();
     } catch (err) {
       return failCreatedTeamOnly({ teamId: team.id, leadSessionId: params.leadSessionId, err });
+    } finally {
+      initializingTeamIds.delete(team.id);
     }
-    return { ok: true, teamId: team.id };
+    return { ok: true, teamId: team.id, workerPermissionMode };
   }
 
   async function enableTeam(params: OrcaEnableTeamParams): Promise<OrcaEnableTeamResult> {
+    const { workerPermissionMode, assertCurrent } = workerPermissionModeForCreate(params.workerPermissionMode, await deps.getWorkerPermissionModeOverride?.(params.leadSessionId));
+    let assertCreatedCurrent = assertCurrent;
     const normalized = normalizeEnableParams(params);
     const validationFailure = validateEnableParams(normalized);
     if (validationFailure) return validationFailure;
 
     const existing = await deps.getActiveTeamByLead(params.leadSessionId);
+    await assertCurrent?.();
     if (existing) {
-      return {
-        ok: false,
-        errorCode: 'ALREADY_EXISTS',
-        message: `lead session already has active orca team ${existing.id}`,
-      };
+      // #3555:初始化补偿依赖原进程的 finally / failCreatedTeam,跨进程不原子——
+      // 进程在 createActiveTeam 之后、worker 落地之前退出会遗留 active 空团队,
+      // 此后每次启用都撞 ALREADY_EXISTS,永久阻塞。零 worker 行(任意状态)且无
+      // 存活创建 reservation 的 team 不可能承载用户状态,按 failed 收口后继续本
+      // 次启用;判定失败时保守维持 ALREADY_EXISTS,绝不误收可能有内容的 team。
+      const orphaned = initializingTeamIds.has(existing.id)
+        ? false
+        : await deps.isOrphanedTeamInit(existing.id).catch(() => false);
+      await assertCurrent?.();
+      if (!orphaned) {
+        return {
+          ok: false,
+          errorCode: 'ALREADY_EXISTS',
+          message: `lead session already has active orca team ${existing.id}`,
+        };
+      }
+      await deps.markTeamEnded(existing.id, 'failed');
+      await assertCurrent?.();
     }
 
     const team = await deps.createActiveTeam(params.leadSessionId);
-    const created = await deps.createWorkerInTeam({ ...normalized, teamId: team.id });
+    initializingTeamIds.add(team.id);
+    let created: OrcaWorkerCreationResult;
+    try {
+      await assertCurrent?.();
+      created = await deps.createWorkerInTeam({
+        ...normalized,
+        teamId: team.id,
+        workerPermissionMode,
+      }, assertCurrent, guard => { assertCreatedCurrent = guard; });
+    } catch (err) {
+      return failCreatedTeam({ teamId: team.id, leadSessionId: params.leadSessionId, err });
+    } finally {
+      // worker 行(或其失败补偿)落地后,后续判定交还给持久化状态。
+      initializingTeamIds.delete(team.id);
+    }
     if (!created.ok) {
       return failCreatedTeam({
         teamId: team.id,
@@ -320,6 +447,7 @@ export function createOrcaLifecycleService(deps: OrcaLifecycleDeps): OrcaLifecyc
 
     let leadVendorOptionsSet = false;
     try {
+      await assertCreatedCurrent?.();
       await deps.setSessionOrcaRole(params.leadSessionId, 'lead');
       deps.clearKnownNonOrcaSession(params.leadSessionId);
       await deps.setLeadVendorOptions({
@@ -329,6 +457,7 @@ export function createOrcaLifecycleService(deps: OrcaLifecycleDeps): OrcaLifecyc
         workerSessionId: created.workerSessionId,
       });
       leadVendorOptionsSet = true;
+      await assertCreatedCurrent?.();
     } catch (err) {
       return failCreatedTeam({
         teamId: team.id,
@@ -341,30 +470,36 @@ export function createOrcaLifecycleService(deps: OrcaLifecycleDeps): OrcaLifecyc
     }
 
     let dispatchResult: DispatchWorkerTaskResult | undefined;
-    if (normalized.initialTask) {
-      dispatchResult = await dispatchInitialTask({
-        workerSessionId: created.workerSessionId,
-        message: normalized.initialTask,
-        context: `enable_collab_mode/${created.workerSessionId}/delegate_task`,
-      });
-    } else {
-      try {
+    try {
+      if (normalized.initialTask && !params.deferDelegateTask) {
+        dispatchResult = await dispatchInitialTask({
+          workerSessionId: created.workerSessionId,
+          // 远端 Worker 没有读取 Lead 历史的 Worker 桥，只发任务原文。
+          message: created.executionDeviceId
+            ? normalized.initialTask
+            : buildUiAssignmentInitialTask({
+                leadSessionId: params.leadSessionId,
+                initialTask: normalized.initialTask,
+              }),
+          context: `enable_collab_mode/${created.workerSessionId}/delegate_task`,
+        }, assertCreatedCurrent);
+      } else {
         await deps.sendWorkerReadyPlaceholder({
           workerSessionId: created.workerSessionId,
           agentKind: created.resolved.agent,
           entrypoint: 'enable_collab_mode',
           context: `enable_collab_mode/${created.workerSessionId}/worker-ready-placeholder`,
-        });
-      } catch (err) {
-        return failCreatedTeam({
-          teamId: team.id,
-          leadSessionId: params.leadSessionId,
-          workerId: created.workerId,
-          workerSessionId: created.workerSessionId,
-          clearLeadVendorOptions: true,
-          err,
-        });
+        }, assertCreatedCurrent);
       }
+    } catch (err) {
+      return failCreatedTeam({
+        teamId: team.id,
+        leadSessionId: params.leadSessionId,
+        workerId: created.workerId,
+        workerSessionId: created.workerSessionId,
+        clearLeadVendorOptions: true,
+        err,
+      });
     }
 
     deps.broadcastSessionCreated(created.workerSessionId);
@@ -375,6 +510,8 @@ export function createOrcaLifecycleService(deps: OrcaLifecycleDeps): OrcaLifecyc
       workerSessionId: created.workerSessionId,
       workerId: created.workerId,
       dispatched: dispatchResult?.dispatched ?? false,
+      uiAssignmentSnapshotBeforeMs: Date.now(),
+      workerPermissionMode,
       ...(dispatchResult ? { dispatchOutcome: dispatchResult.dispatchOutcome } : {}),
     };
   }

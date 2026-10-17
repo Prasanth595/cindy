@@ -10,6 +10,10 @@
  * 同时也是 sessions.worktree_path 反范式快照的来源。
  */
 export interface WorktreeMeta {
+  /** Durable intent; DB delegation ownership decides whether to finish or discard it. */
+  pendingSessionTransfer?: { sessionId: string; delegationId: string; requestingBotId: string };
+  /** New physical contents at the same path invalidate old recycle requests. */
+  generation?: string;
   sessionId: string;
   /** 用户输入或 nameGenerator 给的名字（用于显示 + 路径段 + 分支段）。 */
   name: string;
@@ -17,7 +21,7 @@ export interface WorktreeMeta {
   path: string;
   /** 创建 worktree 时所在的 git repo 根目录（cwd）。 */
   baseRepo: string;
-  /** 新建的本地分支名,固定为 `xdt/<name>`。删除 worktree 时**不**带 -D, 分支保留。 */
+  /** 托管分支名；新建为 `cindy/<name>`，历史记录也可能为 `xdt/<name>`。回收目录时分支保留。 */
   branch: string;
   /** 用户在 worktree 创建表单选择的源分支（git worktree add -b <branch> <path> <sourceBranch>）。 */
   sourceBranch: string;
@@ -70,8 +74,7 @@ export interface CreateWorktreeReq {
 }
 
 export type CreateWorktreeResp =
-  | { ok: true; meta: WorktreeMeta }
-  | { ok: false; error: WorktreeError };
+  { ok: true; meta: WorktreeMeta } | { ok: false; error: WorktreeError };
 
 export interface DetectCwdReq {
   cwd: string;

@@ -69,9 +69,9 @@ class InMemoryStorage implements ScheduleStorage {
       (r) => r.status === 'running' && (scheduleId === undefined || r.scheduleId === scheduleId),
     );
   }
-  async deleteRun(id: string): Promise<ScheduleRun | null> {
+  async deleteRun(id: string, options?: { excludeBotSchedules?: boolean }): Promise<ScheduleRun | null> {
     const ex = this.runs.get(id);
-    if (!ex) return null;
+    if (!ex || (options?.excludeBotSchedules && this.schedules.get(ex.scheduleId)?.source === 'bot')) return null;
     this.runs.delete(id);
     return { ...ex };
   }
@@ -160,6 +160,11 @@ interface Harness {
 function makeHarness(opts?: {
   runnerImpl?: (s: Schedule, ctx: FireContext) => Promise<FireResult>;
   isManagedWorkspaceDir?: (dir: string) => boolean;
+  validateTargetSession?: (
+    targetSessionId: string,
+    operation: 'create' | 'update' | 'fire',
+    selection: Pick<Schedule, 'modelAgentKind'>,
+  ) => Promise<void>;
   /** 传入共享 storage / clock 模拟"两个 app 实例共用同一 DB"的双开场景。 */
   storage?: InMemoryStorage;
   clock?: FakeClock;
@@ -191,6 +196,7 @@ function makeHarness(opts?: {
     generateId: opts?.generateId ?? makeIdGen(),
     tickIntervalMs: 60_000_000, // effectively disabled; tests call tick() manually
     isManagedWorkspaceDir: opts?.isManagedWorkspaceDir,
+    validateTargetSession: opts?.validateTargetSession,
     passive: opts?.passive,
     maxConcurrentRuns: opts?.maxConcurrentRuns,
     runStallMs: opts?.runStallMs,
@@ -207,6 +213,16 @@ describe('Scheduler', () => {
   let h: Harness;
   beforeEach(() => {
     h = makeHarness();
+  });
+
+
+  it('persists an explicit Harness with its model and clears it when following the target', async () => {
+    const saved = await h.scheduler.create({ ...baseInput, modelAgentKind: 'pi', model: 'grok-4.6' });
+    expect(saved.modelAgentKind).toBe('pi');
+    await expect(h.scheduler.update(saved.id, { model: undefined })).rejects.toThrow(/Harness/);
+    const followed = await h.scheduler.update(saved.id, { modelAgentKind: undefined, model: undefined });
+    expect(followed?.modelAgentKind).toBeUndefined();
+    await expect(h.scheduler.create({ ...baseInput, modelAgentKind: 'pi', model: '' })).rejects.toThrow(/Harness/);
   });
 
   it('create() computes nextFireAt and adds to active map', async () => {
@@ -260,6 +276,112 @@ describe('Scheduler', () => {
     expect(blankDir.workspaceKind).toBe('dialogue');
   });
 
+  it('passes the complete candidate Harness to host validation before saving and firing', async () => {
+    let allowedAgent = 'codex';
+    const validateTargetSession = vi.fn(async (
+      _target: string,
+      _operation: 'create' | 'update' | 'fire',
+      selection: Pick<Schedule, 'modelAgentKind'>,
+    ) => {
+      if (selection.modelAgentKind && selection.modelAgentKind !== allowedAgent) {
+        throw new Error('target Harness is fixed');
+      }
+    });
+    const local = makeHarness({ validateTargetSession });
+    await expect(local.scheduler.create({ ...baseInput, targetSessionId: 'bound',
+      modelAgentKind: 'pi', model: 'test-model' })).rejects.toThrow('Harness is fixed');
+    expect(local.storage.schedules.size).toBe(0);
+    const schedule = await local.scheduler.create({ ...baseInput, targetSessionId: 'bound',
+      modelAgentKind: 'codex', model: 'test-model' });
+    await expect(local.scheduler.update(schedule.id, { modelAgentKind: 'pi' }))
+      .rejects.toThrow('Harness is fixed');
+    expect((await local.storage.get(schedule.id))?.modelAgentKind).toBe('codex');
+    await local.scheduler.update(schedule.id, { name: 'same route' });
+    expect(validateTargetSession).toHaveBeenLastCalledWith('bound', 'update',
+      expect.objectContaining({ modelAgentKind: 'codex' }));
+
+    // A changed host capability must also be checked on automatic and manual runs.
+    allowedAgent = 'pi';
+    local.clock.setTo(Date.UTC(2026, 0, 1, 0, 1, 5));
+    await local.scheduler.tick();
+    expect(local.fireCalls).toHaveLength(0);
+    expect(validateTargetSession).toHaveBeenLastCalledWith('bound', 'fire',
+      expect.objectContaining({ modelAgentKind: 'codex' }));
+    await local.scheduler.runNow(schedule.id);
+    expect(local.fireCalls).toHaveLength(0);
+    const follow = await local.scheduler.update(schedule.id, { modelAgentKind: undefined });
+    expect(follow.modelAgentKind).toBeUndefined();
+  });
+
+  it('rejects persisted Review targets at create, update, automatic fire, and runNow after restart', async () => {
+    const sourceBySessionId = new Map<string, string>([
+      ['session-normal', 'desktop'],
+      ['session-review', 'review'],
+    ]);
+    const operations: Array<{ targetSessionId: string; operation: string }> = [];
+    const validateTargetSession = async (
+      targetSessionId: string,
+      operation: 'create' | 'update' | 'fire',
+    ): Promise<void> => {
+      operations.push({ targetSessionId, operation });
+      if (sourceBySessionId.get(targetSessionId) === 'review') {
+        throw new Error('Review tasks cannot be targets of scheduled automations');
+      }
+    };
+    const local = makeHarness({ validateTargetSession });
+
+    await expect(
+      local.scheduler.create({ ...baseInput, targetSessionId: 'session-review' }),
+    ).rejects.toThrow('Review tasks cannot be targets');
+    expect(local.storage.schedules.size).toBe(0);
+
+    const schedule = await local.scheduler.create({
+      ...baseInput,
+      targetSessionId: 'session-normal',
+    });
+    await expect(
+      local.scheduler.update(schedule.id, { targetSessionId: 'session-review' }),
+    ).rejects.toThrow('Review tasks cannot be targets');
+    expect((await local.storage.get(schedule.id))?.targetSessionId).toBe('session-normal');
+
+    // The source is durable session state, so a target that becomes a Review
+    // task after scheduling must still be rejected by a restarted host.
+    sourceBySessionId.set('session-normal', 'review');
+    const restarted = makeHarness({
+      storage: local.storage,
+      clock: local.clock,
+      validateTargetSession,
+    });
+    await restarted.scheduler.start();
+    try {
+      local.clock.setTo(Date.UTC(2026, 0, 1, 0, 1, 0));
+      await restarted.scheduler.tick();
+      expect(restarted.runner.fire).not.toHaveBeenCalled();
+      expect(await restarted.scheduler.listRuns(schedule.id)).toMatchObject([
+        {
+          status: 'failed',
+          errorMsg: 'Review tasks cannot be targets of scheduled automations',
+        },
+      ]);
+
+      await restarted.scheduler.runNow(schedule.id);
+      expect(restarted.runner.fire).not.toHaveBeenCalled();
+      const runs = await restarted.scheduler.listRuns(schedule.id);
+      expect(runs).toHaveLength(2);
+      expect(runs.every((run) => run.status === 'failed')).toBe(true);
+    } finally {
+      await restarted.scheduler.stop();
+    }
+
+    expect(operations.map((entry) => entry.operation)).toEqual([
+      'create',
+      'create',
+      'update',
+      'fire',
+      'fire',
+    ]);
+  });
+
   it('create()/update() 把 app 管理工作区目录归一成对话任务(host 注入谓词)', async () => {
     const h2 = makeHarness({
       isManagedWorkspaceDir: (dir) => dir.startsWith('/managed/'),
@@ -287,6 +409,63 @@ describe('Scheduler', () => {
       workingDir: '/managed/2026-06-12/sess-3',
     });
     expect(plain.workspaceKind).toBe('project');
+  });
+
+  it('update() 换 agentKind 时丢弃上一引擎的 model / providerId / effort(回到默认路由)', async () => {
+    // 伙伴接管期把任务钉在 Codex 的 gpt-6-astra@openai 上,之后改回 Claude Code 却没法
+    // 清模型 → 任务带着 Claude Code 跑不了的路由,每轮 fire 都被上游拒绝。
+    const sch = await h.scheduler.create({
+      ...baseInput,
+      agentKind: 'codex',
+      model: 'gpt-6-astra',
+      providerId: 'openai',
+      effort: 'medium',
+      fastMode: true,
+    });
+    const switched = await h.scheduler.update(sch.id, { agentKind: 'claude-code' });
+    expect(switched.agentKind).toBe('claude-code');
+    expect(switched.model).toBeUndefined();
+    expect(switched.providerId).toBeUndefined();
+    expect(switched.effort).toBeUndefined();
+    // 旧引擎的 Fast 开关不能潜伏到下次切回 Codex/Pi 时复活
+    expect(switched.fastMode).toBe(false);
+    const back = await h.scheduler.update(sch.id, { agentKind: 'codex' });
+    expect(back.fastMode).toBe(false);
+    expect(back.model).toBeUndefined();
+    // 落库 patch 必须带 key(storage 按 hasOwnProperty 清列),不能只是省略
+    const stored = h.storage.schedules.get(sch.id)!;
+    expect(Object.prototype.hasOwnProperty.call(stored, 'model')).toBe(true);
+    expect(stored.model).toBeUndefined();
+    expect(stored.providerId).toBeUndefined();
+
+    // 反证 1:agentKind 没变 → 路由原样保留
+    const sch2 = await h.scheduler.create({
+      ...baseInput,
+      agentKind: 'codex',
+      model: 'gpt-6-astra',
+      providerId: 'openai',
+      fastMode: true,
+    });
+    const same = await h.scheduler.update(sch2.id, { agentKind: 'codex', prompt: 'p2' });
+    expect(same.model).toBe('gpt-6-astra');
+    expect(same.providerId).toBe('openai');
+    expect(same.fastMode).toBe(true);
+    const untouched = await h.scheduler.update(sch2.id, { prompt: 'p3' });
+    expect(untouched.model).toBe('gpt-6-astra');
+
+    // 反证 2:换引擎同时显式给了新路由 → 按调用方意图
+    const explicit = await h.scheduler.update(sch2.id, {
+      agentKind: 'claude-code',
+      model: 'claude-fable-5-1',
+      providerId: 'anthropic',
+    });
+    expect(explicit.model).toBe('claude-fable-5-1');
+    expect(explicit.providerId).toBe('anthropic');
+    expect(explicit.effort).toBeUndefined();
+    expect(explicit.fastMode).toBe(false);
+    // 显式带 fastMode 按调用方意图
+    const keepFast = await h.scheduler.update(sch2.id, { agentKind: 'codex', fastMode: true });
+    expect(keepFast.fastMode).toBe(true);
   });
 
   it('update() 给了真实 workingDir 时翻成 project(与 create 推断对称)', async () => {
@@ -336,11 +515,15 @@ describe('Scheduler', () => {
     });
 
     await expect(h.scheduler.update(script.id, { useWorktree: true })).rejects.toThrow(
-      'does not support worktrees or bound sessions',
+      'does not support worktrees or persistent sessions',
     );
     await expect(h.scheduler.update(script.id, { silentWhenIdle: true })).rejects.toThrow(
       'does not support silentWhenIdle',
     );
+
+    const bound = await h.scheduler.update(script.id, { targetSessionId: 'owner-session' });
+    expect(bound.targetSessionId).toBe('owner-session');
+    expect(bound.executionMode).toBe('script');
 
     // 堵 update 逃逸:script 任务(prompt 合法为空)只切 executionMode='agent'
     // 不带 prompt → 会落库空提示词的 agent 任务,必须拒;带 prompt 一起切才放行。
@@ -560,6 +743,58 @@ describe('Scheduler', () => {
     expect(h.fireCalls[0].schedule.targetSessionId).toBe('sess-existing');
   });
 
+  it('pre-bind fire failure persists targetSessionId and emits it on failed (runNow)', async () => {
+    h = makeHarness({
+      validateTargetSession: async (_id, op) => {
+        if (op === 'fire') throw new Error('target session rejected');
+      },
+    });
+    const sch = await h.scheduler.create({
+      ...baseInput,
+      targetSessionId: 'session-bound',
+    });
+    const failedEvents: Array<{ type: string; sessionId?: string; error: string }> = [];
+    h.scheduler.on('failed', (e) => failedEvents.push(e));
+
+    const { runId } = await h.scheduler.runNow(sch.id);
+    const run = (await h.scheduler.listRuns(sch.id)).find((item) => item.id === runId);
+
+    expect(h.fireCalls).toHaveLength(0);
+    expect(run?.status).toBe('failed');
+    expect(run?.sessionId).toBe('session-bound');
+    expect(failedEvents).toEqual([
+      {
+        type: 'failed',
+        scheduleId: sch.id,
+        runId,
+        error: 'target session rejected',
+        sessionId: 'session-bound',
+      },
+    ]);
+  });
+
+  it('pre-bind fire failure persists targetSessionId on the cron path too', async () => {
+    h = makeHarness({
+      validateTargetSession: async (_id, op) => {
+        if (op === 'fire') throw new Error('target session rejected');
+      },
+    });
+    const sch = await h.scheduler.create({
+      ...baseInput,
+      targetSessionId: 'session-bound',
+    });
+    const failedEvents: Array<{ sessionId?: string }> = [];
+    h.scheduler.on('failed', (e) => failedEvents.push(e));
+    h.clock.setTo(Date.UTC(2026, 0, 1, 0, 1, 5));
+    await h.scheduler.tick();
+
+    const runs = await h.scheduler.listRuns(sch.id);
+    expect(runs).toHaveLength(1);
+    expect(runs[0].status).toBe('failed');
+    expect(runs[0].sessionId).toBe('session-bound');
+    expect(failedEvents[0]?.sessionId).toBe('session-bound');
+  });
+
   it('emits fired/completed/changed events', async () => {
     const events: Array<{ type: string; scheduleId: string }> = [];
     h.scheduler.on('fired', (e) => events.push({ type: e.type, scheduleId: e.scheduleId }));
@@ -648,6 +883,153 @@ describe('Scheduler', () => {
     await h.scheduler.stop();
   });
 
+  it('start() isolates legacy invalid interval cron records instead of blocking valid schedules', async () => {
+    const warn = vi.fn();
+    const local = makeHarness({ logger: { warn } });
+    local.storage.schedules.set('legacy-invalid', {
+      id: 'legacy-invalid',
+      name: 'legacy invalid cron',
+      prompt: 'p',
+      kind: 'cron',
+      cronExpr: '5abc * * * *',
+      timezone: 'UTC',
+      recurring: true,
+      manual: false,
+      intervalMs: 5 * 60_000,
+      agentKind: 'claude-code',
+      workspaceKind: 'project',
+      useWorktree: false,
+      notify: { desktop: false, feishu: false },
+      status: 'active',
+      createdAt: 0,
+      updatedAt: 0,
+      nextFireAt: Date.UTC(2020, 0, 1, 0, 0, 0),
+    });
+    local.storage.schedules.set('valid', {
+      id: 'valid',
+      name: 'valid cron',
+      prompt: 'p',
+      kind: 'cron',
+      cronExpr: '0 9 * * *',
+      timezone: 'UTC',
+      recurring: true,
+      manual: false,
+      agentKind: 'claude-code',
+      workspaceKind: 'project',
+      useWorktree: false,
+      notify: { desktop: false, feishu: false },
+      status: 'active',
+      createdAt: 0,
+      updatedAt: 0,
+      nextFireAt: Date.UTC(2020, 0, 1, 0, 0, 0),
+    });
+
+    await expect(local.scheduler.start()).resolves.toBeUndefined();
+
+    expect((await local.storage.get('legacy-invalid'))?.nextFireAt).toBeUndefined();
+    expect((await local.storage.get('valid'))?.nextFireAt).toBe(
+      Date.UTC(2026, 0, 1, 9, 0, 0),
+    );
+    expect(warn).toHaveBeenCalledWith(
+      'scheduler: skipped invalid active schedule during startup',
+      expect.objectContaining({ scheduleId: 'legacy-invalid' }),
+    );
+
+    await local.scheduler.stop();
+  });
+
+  it('keeps a legacy invalid cron quarantined when clearing its stale fire time fails', async () => {
+    const local = makeHarness({ logger: { warn: vi.fn() } });
+    const staleFireAt = Date.UTC(2020, 0, 1, 0, 0, 0);
+    local.storage.schedules.set('legacy-invalid', {
+      id: 'legacy-invalid',
+      name: 'legacy invalid cron',
+      prompt: 'p',
+      kind: 'cron',
+      cronExpr: '5abc * * * *',
+      timezone: 'UTC',
+      recurring: true,
+      manual: false,
+      agentKind: 'claude-code',
+      workspaceKind: 'project',
+      useWorktree: false,
+      notify: { desktop: false, feishu: false },
+      status: 'active',
+      createdAt: 0,
+      updatedAt: 0,
+      nextFireAt: staleFireAt,
+    });
+    vi.spyOn(local.storage, 'update').mockRejectedValueOnce(new Error('database is locked'));
+
+    await local.scheduler.start();
+    expect((await local.storage.get('legacy-invalid'))?.nextFireAt).toBe(staleFireAt);
+
+    local.clock.advance(30_000);
+    await local.scheduler.tick();
+
+    expect(local.runner.fire).not.toHaveBeenCalled();
+    expect(await local.scheduler.listRuns('legacy-invalid')).toHaveLength(0);
+    await local.scheduler.stop();
+  });
+
+  it('quarantines an invalid interval cron first discovered during periodic DB sync', async () => {
+    const local = makeHarness({ logger: { warn: vi.fn() } });
+    await local.scheduler.start();
+    local.storage.schedules.set('late-invalid', {
+      id: 'late-invalid',
+      name: 'late invalid cron',
+      prompt: 'p',
+      kind: 'cron',
+      cronExpr: '5abc * * * *',
+      timezone: 'UTC',
+      recurring: true,
+      manual: false,
+      intervalMs: 5 * 60_000,
+      agentKind: 'claude-code',
+      workspaceKind: 'project',
+      useWorktree: false,
+      notify: { desktop: false, feishu: false },
+      status: 'active',
+      createdAt: 0,
+      updatedAt: 0,
+      nextFireAt: Date.UTC(2020, 0, 1, 0, 0, 0),
+    });
+
+    local.clock.advance(30_000);
+    await local.scheduler.tick();
+
+    expect(local.runner.fire).not.toHaveBeenCalled();
+    expect(await local.scheduler.listRuns('late-invalid')).toHaveLength(0);
+
+    await local.storage.update('late-invalid', {
+      cronExpr: '* * * * *',
+      nextFireAt: local.clock.now(),
+    });
+    local.clock.advance(30_000);
+    await local.scheduler.tick();
+
+    expect(local.runner.fire).toHaveBeenCalledTimes(1);
+    await local.scheduler.stop();
+  });
+
+  it('does not execute a schedule whose cron becomes malformed after cache sync but before due-fire claim', async () => {
+    const local = makeHarness({ logger: { warn: vi.fn() } });
+    await local.scheduler.start();
+    const sch = await local.scheduler.create({ ...baseInput, intervalMs: 10_000 });
+
+    // Simulate a second instance writing invalid metadata while retaining the
+    // same due time. The first instance still has the valid cached copy and
+    // reaches claimDueFire before its 30s DB refresh.
+    await local.storage.update(sch.id, { cronExpr: '5abc * * * *' });
+    local.clock.advance(10_000);
+    await local.scheduler.tick();
+
+    expect(local.runner.fire).not.toHaveBeenCalled();
+    expect(await local.scheduler.listRuns(sch.id)).toHaveLength(0);
+    expect((await local.storage.get(sch.id))?.nextFireAt).toBeUndefined();
+    await local.scheduler.stop();
+  });
+
   // ── intervalMs（"上次完成 + N" 语义）──
   // 这条线和 cron-槽位 完全分支：fireOne / start / resume / create 都要分别覆盖。
 
@@ -656,6 +1038,61 @@ describe('Scheduler', () => {
     const sch = await h.scheduler.create({ ...baseInput, intervalMs: 5 * 60_000 });
     expect(sch.nextFireAt).toBe(Date.UTC(2026, 0, 1, 0, 5, 30));
     expect(sch.intervalMs).toBe(5 * 60_000);
+  });
+
+  it('create() rejects invalid cron metadata even when intervalMs controls the first fire', async () => {
+    await expect(h.scheduler.create({
+      ...baseInput,
+      cronExpr: '5abc * * * *',
+      intervalMs: 5 * 60_000,
+    })).rejects.toThrow();
+    expect(h.storage.schedules.size).toBe(0);
+  });
+
+  it('rejects enabling a legacy manual interval schedule with malformed cron metadata', async () => {
+    const schedule = await h.scheduler.create({
+      ...baseInput,
+      manual: true,
+      intervalMs: 5 * 60_000,
+    });
+    await h.storage.update(schedule.id, { cronExpr: '5abc * * * *' });
+
+    await expect(h.scheduler.update(schedule.id, { manual: false })).rejects.toThrow();
+    expect(await h.storage.get(schedule.id)).toMatchObject({
+      manual: true,
+      cronExpr: '5abc * * * *',
+    });
+  });
+
+  it('rejects reactivating an expired interval schedule with malformed cron metadata', async () => {
+    const schedule = await h.scheduler.create({
+      ...baseInput,
+      intervalMs: 5 * 60_000,
+    });
+    await h.storage.update(schedule.id, {
+      status: 'expired',
+      cronExpr: '5abc * * * *',
+    });
+
+    await expect(h.scheduler.update(schedule.id, { name: 'try to reactivate' })).rejects.toThrow();
+    expect(await h.storage.get(schedule.id)).toMatchObject({
+      status: 'expired',
+      cronExpr: '5abc * * * *',
+      name: schedule.name,
+    });
+  });
+
+  it('resume() keeps an interval schedule paused when legacy cron metadata is invalid', async () => {
+    const sch = await h.scheduler.create({
+      ...baseInput,
+      cronExpr: '*/10 * * * *',
+      intervalMs: 10 * 60_000,
+    });
+    await h.scheduler.pause(sch.id);
+    await h.storage.update(sch.id, { cronExpr: '5abc * * * *' });
+
+    await expect(h.scheduler.resume(sch.id)).rejects.toThrow();
+    expect((await h.storage.get(sch.id))?.status).toBe('paused');
   });
 
   it('intervalMs recurring fire schedules nextFireAt at finishedAt + intervalMs', async () => {
@@ -828,6 +1265,31 @@ describe('Scheduler', () => {
     expect(after?.intervalMs).toBe(10 * 60_000);
     // 触发字段变了 → 按 interval 冷启动重排：now + 10min = 00:11:00（不是 */30 壁钟槽位）
     expect(after?.nextFireAt).toBe(Date.UTC(2026, 0, 1, 0, 11, 0));
+  });
+
+  it('rejects an invalid cronExpr update even when interval scheduling remains authoritative', async () => {
+    const sch = await h.scheduler.create({
+      ...baseInput,
+      cronExpr: '*/10 * * * *',
+      intervalMs: 10 * 60_000,
+    });
+
+    await expect(h.scheduler.update(sch.id, { cronExpr: '5abc * * * *' })).rejects.toThrow();
+
+    const stored = await h.storage.get(sch.id);
+    expect(stored).toMatchObject({
+      cronExpr: '*/10 * * * *',
+      intervalMs: 10 * 60_000,
+    });
+  });
+
+  it('rejects interval-only re-arms when legacy cron metadata is malformed', async () => {
+    const sch = await h.scheduler.create({ ...baseInput, intervalMs: 10 * 60_000 });
+    await h.storage.update(sch.id, { cronExpr: '5abc * * * *' });
+    const before = await h.storage.get(sch.id);
+
+    await expect(h.scheduler.update(sch.id, { intervalMs: 5 * 60_000 })).rejects.toThrow();
+    expect(await h.storage.get(sch.id)).toEqual(before);
   });
 
   it('update(prompt only) leaves intervalMs and nextFireAt completely untouched', async () => {
@@ -1039,6 +1501,7 @@ describe('Scheduler', () => {
     expect(runs).toHaveLength(1);
     expect(runs[0].status).toBe('aborted');
     expect(runs[0].errorMsg).toMatch(/cancelled by user/);
+    expect(runs[0].readAt).toBe(runs[0].finishedAt);
   });
 
   it('pause aborts in-flight run, keeps schedule with status=paused', async () => {
@@ -1064,6 +1527,7 @@ describe('Scheduler', () => {
     const runs = await local.scheduler.listRuns(sch.id);
     expect(runs).toHaveLength(1);
     expect(runs[0].status).toBe('aborted');
+    expect(runs[0].readAt).toBe(runs[0].finishedAt);
     expect(local.scheduler.getInflightCount(sch.id)).toBe(0);
   });
 
@@ -1370,6 +1834,20 @@ describe('Scheduler', () => {
     expect(h.scheduler.isRunSilenced(runId)).toBe(false);
   });
 
+  it('keeps unclassified reminders audible and preserves explicit quiet checks and script mode', async () => {
+    const reminder = await h.scheduler.create({ ...baseInput });
+    expect(reminder.silentWhenIdle).toBe(false);
+    const { runId } = await h.scheduler.runNow(reminder.id);
+    expect((await h.scheduler.listRuns(reminder.id)).find((run) => run.id === runId)?.readAt).toBeUndefined();
+    expect((await h.scheduler.create({ ...baseInput, preRunHook: { command: 'node check.mjs' } })).silentWhenIdle).toBe(false);
+    const check = await h.scheduler.create({ ...baseInput, silentWhenIdle: true });
+    expect(check.silentWhenIdle).toBe(true);
+    expect((await h.scheduler.create({ ...baseInput, executionMode: 'script', workspaceKind: 'project', workingDir: '/repo', scriptConfig: { command: 'node check.mjs', capabilities: [] } })).silentWhenIdle).toBe(false);
+    const scriptPatch = { executionMode: 'script' as const, workspaceKind: 'project' as const, workingDir: '/repo', scriptConfig: { command: 'node check.mjs', capabilities: [] } };
+    await expect(h.scheduler.update(check.id, { ...scriptPatch, silentWhenIdle: true })).rejects.toThrow('does not support silentWhenIdle');
+    expect((await h.scheduler.update(check.id, scriptPatch)).silentWhenIdle).toBe(false);
+  });
+
   it('silentWhenIdle run is silent by default', async () => {
     h = makeHarness({
       runnerImpl: async (_s, ctx) => {
@@ -1454,7 +1932,7 @@ describe('Scheduler', () => {
           gates.push(() => resolve({ sessionId: `sess-${ctx.runId}` }));
         }),
     });
-    const sch = await h.scheduler.create({ ...baseInput });
+    const sch = await h.scheduler.create({ ...baseInput, silentWhenIdle: false });
     const p1 = h.scheduler.runNow(sch.id);
     const p2 = h.scheduler.runNow(sch.id);
     await vi.waitFor(() => expect(gates).toHaveLength(2));
@@ -1480,7 +1958,7 @@ describe('Scheduler', () => {
         return { sessionId: 'sess-no-active-turn' };
       },
     });
-    const sch = await h.scheduler.create({ ...baseInput });
+    const sch = await h.scheduler.create({ ...baseInput, silentWhenIdle: false });
     const events: unknown[] = [];
     h.scheduler.on('silenced', (e) => events.push(e));
     const result = await h.scheduler.runNow(sch.id);
@@ -1904,6 +2382,40 @@ describe('Scheduler preRunHook results', () => {
     const after = await h.storage.get(sch.id);
     expect(after?.status).toBe('expired');
     expect(after?.nextFireAt).toBeUndefined();
+  });
+
+  it.each([
+    { recurring: true, manual: false, intervalMs: undefined },
+    { recurring: true, manual: false, intervalMs: 600_000 },
+    { recurring: false, manual: false, intervalMs: undefined },
+    { recurring: false, manual: true, intervalMs: undefined },
+  ])('settles an undispatched Stop without losing normal scheduling: %j', async (timing) => {
+    const h = makeHarness({
+      runnerImpl: async () => ({
+        sessionId: 'stopped-session',
+        skipped: true,
+        resultText: 'Scheduled turn stopped before vendor dispatch',
+      }),
+    });
+    const sch = await h.scheduler.create({ ...baseInput, ...timing });
+    const firedAt = sch.nextFireAt ?? h.clock.now();
+    h.clock.setTo(firedAt);
+    if (timing.manual) await h.scheduler.runNow(sch.id);
+    else await h.scheduler.tick();
+    const runs = await h.scheduler.listRuns(sch.id);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({ status: 'skipped', sessionId: 'stopped-session', readAt: firedAt });
+    const after = await h.storage.get(sch.id);
+    if (timing.recurring) {
+      expect(after?.status).toBe('active');
+      expect(after?.nextFireAt).toBe(firedAt + (timing.intervalMs ?? 60_000));
+      h.clock.setTo(after!.nextFireAt!);
+      await h.scheduler.tick();
+      expect(await h.scheduler.listRuns(sch.id)).toHaveLength(2);
+    } else {
+      expect(after?.nextFireAt).toBeUndefined();
+      if (!timing.manual) expect(after?.status).toBe('expired');
+    }
   });
 
   it('create() 透传 preRunHook 配置', async () => {
@@ -4065,4 +4577,64 @@ describe('Scheduler: attempt 生命周期状态机(#1016)', () => {
     expect(second.runId).toBeTruthy();
     await h.scheduler.stop();
   });
+});
+
+describe('caller-owned deferred dispatch', () => {
+  it('returns deferred without arming a manual schedule or recording a failure', async () => {
+    const canDispatch = vi.fn(() => false);
+    const h = makeHarness({ runnerImpl: async (_schedule, ctx) => {
+      expect(ctx.deferToCaller).toBe(true);
+      expect(ctx.canDispatch).toBe(canDispatch);
+      expect(ctx.canDispatch?.()).toBe(false);
+      return { sessionId: 'bot-task', deferred: true, deferRetryMs: 1000 };
+    } });
+    const schedule = await h.scheduler.create({ ...baseInput, manual: true });
+    await h.scheduler.start();
+    const failed = vi.fn();
+    h.scheduler.on('failed', failed);
+    const result = await h.scheduler.runNow(schedule.id, { deferToCaller: true, canDispatch });
+    expect(result.deferred).toBe(true);
+    expect(await h.storage.listRuns(schedule.id)).toEqual([]);
+    expect(await h.storage.get(schedule.id)).toMatchObject({
+      nextFireAt: undefined, lastFiredAt: undefined,
+    });
+    h.clock.advance(120000);
+    await h.scheduler.tick();
+    expect(h.runner.fire).toHaveBeenCalledTimes(1);
+    expect(failed).not.toHaveBeenCalled();
+    await h.scheduler.stop();
+  });
+});
+
+it('keeps internal routine schedules out of public management while retaining host execution and cleanup', async () => {
+  const h = makeHarness();
+  const publicSchedule = await h.scheduler.create(baseInput);
+  const internal = { ...publicSchedule, id: 'routine-owned', source: 'bot' as const, manual: true, nextFireAt: undefined };
+  await h.storage.insert(internal);
+  expect(await h.scheduler.list()).toEqual([publicSchedule]);
+  expect(await h.scheduler.get(internal.id)).toBeNull();
+  const buildPatch = vi.fn(async () => ({ name: 'changed' }));
+  const actions = [
+    () => h.scheduler.listRuns(internal.id),
+    () => h.scheduler.update(internal.id, { name: 'changed' }),
+    () => h.scheduler.updateFromCurrent(internal.id, buildPatch),
+    () => h.scheduler.pause(internal.id),
+    () => h.scheduler.resume(internal.id),
+    () => h.scheduler.delete(internal.id),
+    () => h.scheduler.runNow(internal.id),
+  ];
+  for (const action of actions) await expect(action()).rejects.toThrow('not found');
+  expect(buildPatch).not.toHaveBeenCalled();
+  expect(h.runner.fire).not.toHaveBeenCalled();
+  expect(await h.storage.get(internal.id)).toEqual(internal);
+  const result = await h.scheduler.runNow(internal.id, { internalRoutine: true, deferToCaller: true });
+  expect(h.runner.fire).toHaveBeenCalledTimes(1);
+  await expect(h.scheduler.deleteRun(result.runId)).rejects.toThrow('not found');
+  expect(await h.storage.listRuns(internal.id)).toHaveLength(1);
+  await h.scheduler.pause(internal.id, { internalRoutine: true });
+  await h.scheduler.delete(internal.id, { internalRoutine: true });
+  expect(await h.storage.get(internal.id)).toBeNull();
+  await h.scheduler.runNow(publicSchedule.id);
+  expect(h.runner.fire).toHaveBeenCalledTimes(2);
+  await h.scheduler.stop();
 });

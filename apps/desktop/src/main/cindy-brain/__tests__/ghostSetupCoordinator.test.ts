@@ -4,12 +4,15 @@ import type {
   GhostSetupAllowedAction,
   GhostSetupAssessment,
   GhostSetupPlan,
+  InstalledGhost,
 } from '../../../shared/ghost';
 import { MAKER_PUSH } from '../../maker-ipc/channels';
 import { GhostSetupChangeBus } from '../ghostSetupChangeBus';
+import { GhostMutationCoordinator } from '../ghostMutationCoordinator';
 import {
   GhostSetupCoordinator,
   type GhostSetupActionResult,
+  type GhostSetupInlineActionInput,
   type GhostSetupTargetValidation,
 } from '../ghostSetupCoordinator';
 import {
@@ -18,6 +21,7 @@ import {
   type GhostSetupInteractionResponseTarget,
   type GhostSetupInteractionSnapshot,
 } from '../ghostSetupInteractionBridge';
+import { classifyGhostVisibility } from '../ghostVisibility';
 
 function required(revision = 0): GhostSetupAssessment {
   return {
@@ -49,6 +53,42 @@ function ready(revision = 1): GhostSetupAssessment {
       {
         ...required(revision).groups[0],
         items: [{ ...required(revision).groups[0].items[0], state: 'satisfied', actions: [] }],
+      },
+    ],
+  };
+}
+
+function readyWithReauth(revision = 7): GhostSetupAssessment {
+  return {
+    ...ready(revision),
+    reauthSuggest: {
+      ghostId: 'gmail',
+      secretKey: 'google',
+      missingScopes: ['scope.new'],
+      missingScopeCount: 1,
+      requirement: {
+        ref: 'secret:google',
+        kind: 'oauth',
+        label: 'Google 账号',
+        action: {
+          id: 'oauth_connect:secret:google',
+          kind: 'oauth_connect',
+        },
+      },
+    },
+  };
+}
+
+function reauthPlan(revision = 7): GhostSetupPlan {
+  return {
+    assessmentRevision: revision,
+    steps: [
+      {
+        id: 'reauth-google',
+        title: '重新连接账号',
+        description: '补齐新增权限',
+        requirementRefs: ['secret:google'],
+        actionId: 'oauth_connect:secret:google',
       },
     ],
   };
@@ -155,7 +195,10 @@ function requiredNavigation(revision = 0): GhostSetupAssessment {
   };
 }
 
-function harness(initial: GhostSetupAssessment) {
+function harness(
+  initial: GhostSetupAssessment,
+  extras?: { resolveStoreId?: (ghostId: string) => string; getTargetToken?: (ghostId: string) => string | null },
+) {
   const changeBus = new GhostSetupChangeBus();
   const broadcast = vi.fn();
   const bridge = new GhostSetupInteractionBridge({ broadcast });
@@ -169,7 +212,7 @@ function harness(initial: GhostSetupAssessment) {
       responseTarget?: GhostSetupInteractionResponseTarget;
     }): Promise<GhostSetupActionResult> => ({ ok: true }),
   );
-  const executeInlineAction = vi.fn(async (): Promise<GhostSetupActionResult> => ({ ok: true }));
+  const executeInlineAction = vi.fn(async (_args: GhostSetupInlineActionInput): Promise<GhostSetupActionResult> => ({ ok: true }));
   let requestNumber = 0;
   const coordinator = new GhostSetupCoordinator({
     changeBus,
@@ -186,6 +229,8 @@ function harness(initial: GhostSetupAssessment) {
     createRequestId: () => `request-${++requestNumber}`,
     timeoutMs: 5_000,
     terminalGraceMs: 0,
+    ...(extras?.resolveStoreId ? { resolveStoreId: extras.resolveStoreId } : {}),
+    ...(extras?.getTargetToken ? { getTargetToken: extras.getTargetToken } : {}),
   });
   return {
     bridge,
@@ -204,12 +249,269 @@ function harness(initial: GhostSetupAssessment) {
 }
 
 describe('GhostSetupCoordinator', () => {
+  it('refuses the old inline card after a same-key installation replacement without a lifecycle event', async () => {
+    let token = 'original';
+    const h = harness(requiredInline(), { getTargetToken: () => token });
+    const abort = new AbortController();
+    const waiting = h.coordinator.ensureReady({ sessionId: 'task', ghostId: 'api', signal: abort.signal });
+    try {
+      await vi.waitFor(() => expect(h.bridge.pendingSnapshots()).toHaveLength(1));
+      const card = h.bridge.pendingSnapshots()[0].request;
+      token = 'replacement';
+      expect(h.bridge.submitInline(card.requestId, {
+        actionId: 'inline_form:opaque', expectedRevision: card.revision, value: 'synthetic-secret',
+      })).toBe(false);
+      expect(h.executeInlineAction).not.toHaveBeenCalled();
+      expect(h.bridge.pendingSnapshots()).toHaveLength(0);
+    } finally { abort.abort(); await waiting; }
+  });
+
+  it('rechecks the original install binding at the final inline commit', async () => {
+    let token = 'original';
+    const h = harness(requiredInline(), { getTargetToken: () => token });
+    const abort = new AbortController();
+    const waiting = h.coordinator.ensureReady({ sessionId: 'task', ghostId: 'api', signal: abort.signal });
+    let rejected = false;
+    h.executeInlineAction.mockImplementationOnce(async ({ commit }) => {
+      token = 'replacement';
+      try { commit!.assertCurrent('api', 'inline_form:opaque', 'secret:api_key'); }
+      catch { rejected = true; }
+      return { ok: false, errorCode: 'ACTION_STALE' };
+    });
+    try {
+      await vi.waitFor(() => expect(h.bridge.pendingSnapshots()).toHaveLength(1));
+      const card = h.bridge.pendingSnapshots()[0].request;
+      expect(h.bridge.submitInline(card.requestId, {
+        actionId: 'inline_form:opaque', expectedRevision: card.revision, value: 'synthetic-secret',
+      })).toBe(true);
+      await vi.waitFor(() => expect(h.executeInlineAction).toHaveBeenCalledOnce());
+      expect(rejected).toBe(true);
+    } finally { abort.abort(); await waiting; }
+  });
+  it('completes local reconfiguration only after opening settings and a committed write to that connection', async () => {
+    const action = { id: 'manage_connection:connection:service', kind: 'manage_connection' as const };
+    const assessment: GhostSetupAssessment = { state: 'ready', revision: 1, groups: [{ id: 'connection', mode: 'any_of',
+      items: [{ ref: 'connection:service', kind: 'connection', label: 'Service', state: 'satisfied', actions: [action] }] }] };
+    const h = harness(assessment);
+    h.executeAction.mockResolvedValue({ ok: true, waitingExternal: true });
+    const waiting = h.coordinator.ensureReady({ sessionId: 'task', ghostId: 'gmail', reauthorize: true });
+    await vi.waitFor(() => expect(h.bridge.pendingSnapshots()).toHaveLength(1));
+    const card = h.bridge.pendingSnapshots()[0].request;
+    expect(h.bridge.resolve(card.requestId, { kind: 'plugin_setup', action: 'run_action', actionId: action.id, expectedRevision: card.revision })).toBe(true);
+    await vi.waitFor(() => expect(h.bridge.pendingSnapshots()[0].request.steps[0].phase).toBe('waiting_external'));
+    h.changeBus.wake('gmail', { source: 'connection', ref: 'service' });
+    h.changeBus.emit('gmail', { source: 'connection', ref: 'different' });
+    await vi.waitFor(() => expect(h.bridge.pendingSnapshots()[0].request.steps[0].phase).toBe('waiting_external'));
+    h.changeBus.emit('gmail', { source: 'connection', ref: 'service' });
+    await expect(waiting).resolves.toMatchObject({ ok: true });
+  });
+  it('does not treat another connection write or a forged Renderer receipt as completing reconfiguration', async () => {
+    const action = { id: 'manage_connection:connection:service', kind: 'manage_connection' as const };
+    const assessment: GhostSetupAssessment = { state: 'ready', revision: 1, groups: [{ id: 'connection', mode: 'any_of',
+      items: [{ ref: 'connection:service', kind: 'connection', label: 'Service', state: 'satisfied', actions: [action] }] }] };
+    const h = harness(assessment), abort = new AbortController();
+    const waiting = h.coordinator.ensureReady({ sessionId: 'task', ghostId: 'gmail', reauthorize: true, signal: abort.signal });
+    await vi.waitFor(() => expect(h.bridge.pendingSnapshots()).toHaveLength(1));
+    const original = h.bridge.pendingSnapshots()[0].request;
+    h.changeBus.emit('gmail', { source: 'connection', ref: 'service' });
+    await vi.waitFor(() => expect(h.bridge.pendingSnapshots()[0].request.revision).toBeGreaterThan(original.revision));
+    const card = h.bridge.pendingSnapshots()[0].request;
+    expect(h.bridge.resolve(card.requestId, { kind: 'plugin_setup', action: 'connection_committed', actionId: action.id, expectedRevision: card.revision })).toBe(false);
+    expect(h.bridge.connectionCommitted(card.requestId, action.id, original.revision)).toBe(false);
+    expect(h.bridge.connectionCommitted(card.requestId, 'manage_connection:connection:other', card.revision)).toBe(false);
+    expect(h.bridge.pendingSnapshots()).toHaveLength(1);
+    abort.abort();
+    await expect(waiting).resolves.toMatchObject({ ok: false, errorCode: 'SETUP_CANCELLED' });
+    expect(h.bridge.connectionCommitted(card.requestId, action.id, card.revision)).toBe(false);
+  });
+  it('cancels a connection waiter and rejects a replay of its card', async () => {
+    const h = harness(required());
+    const controller = new AbortController();
+    const waiting = h.coordinator.ensureReady({ sessionId: 'task', ghostId: 'gmail', signal: controller.signal });
+    await vi.waitFor(() => expect(h.bridge.pendingSnapshots()).toHaveLength(1));
+    const card = h.bridge.pendingSnapshots()[0].request;
+    controller.abort();
+    await expect(waiting).resolves.toMatchObject({ ok: false, errorCode: 'SETUP_CANCELLED' });
+    expect(h.bridge.pendingSnapshots()).toHaveLength(0);
+    expect(h.bridge.resolve(card.requestId, {
+      kind: 'plugin_setup', action: 'run_action', expectedRevision: card.revision,
+      actionId: 'oauth_connect:secret:google',
+    })).toBe(false);
+    expect(h.executeAction).not.toHaveBeenCalled();
+  });
+
+  it('does not open a card after its MCP request was already cancelled', async () => {
+    const h = harness(required());
+    const controller = new AbortController(); controller.abort();
+    await expect(h.coordinator.ensureReady({ sessionId: 'task', ghostId: 'gmail', signal: controller.signal }))
+      .resolves.toMatchObject({ ok: false, errorCode: 'SETUP_CANCELLED' });
+    expect(h.bridge.pendingSnapshots()).toHaveLength(0);
+  });
+
+  it('explicit reconnect waits for its actual OAuth action, not an unrelated settings event', async () => {
+    const configured = ready();
+    configured.groups[0].items[0].actions = required().groups[0].items[0].actions;
+    const h = harness(configured);
+    const waiting = h.coordinator.ensureReady({ sessionId: 'task', ghostId: 'gmail', reauthorize: true });
+    await vi.waitFor(() => expect(h.bridge.pendingSnapshots()).toHaveLength(1));
+    h.changeBus.emit('gmail', { source: 'secret' });
+    await vi.waitFor(() => expect(h.bridge.pendingSnapshots()[0].request.steps[0].phase).toBe('pending'));
+    const card = h.bridge.pendingSnapshots()[0].request;
+    await h.bridge.resolve(card.requestId, { kind: 'plugin_setup', action: 'run_action',
+      expectedRevision: card.revision, actionId: 'oauth_connect:secret:google' });
+    await expect(waiting).resolves.toMatchObject({ ok: true });
+    expect(h.executeAction).toHaveBeenCalledTimes(1);
+  });
+
   it('ready path does not create an interaction', async () => {
     const h = harness(ready());
     await expect(
       h.coordinator.ensureReady({ sessionId: 'session-1', ghostId: 'gmail', tool: 'search' }),
     ).resolves.toMatchObject({ ok: true });
     expect(h.bridge.pendingSnapshots()).toEqual([]);
+  });
+
+  it('ready + reauthSuggest + 匹配 plan 复用交互卡，重连清除建议后放行调用', async () => {
+    const h = harness(readyWithReauth());
+    const waiting = h.coordinator.ensureReady({
+      sessionId: 'session-1',
+      ghostId: 'gmail',
+      tool: 'search',
+      plan: reauthPlan(),
+    });
+    await vi.waitFor(() => expect(h.bridge.pendingSnapshots()).toHaveLength(1));
+    const snapshot = h.bridge.pendingSnapshots()[0].request;
+    expect(snapshot.steps).toHaveLength(1);
+    expect(snapshot.steps[0]).toMatchObject({
+      title: '重新连接账号',
+      action: { id: 'oauth_connect:secret:google', kind: 'oauth_connect' },
+    });
+    h.executeAction.mockImplementationOnce(async () => {
+      h.setAssessment(ready(8));
+      h.changeBus.emit('gmail', { source: 'oauth', ref: 'google' });
+      return { ok: true };
+    });
+    h.bridge.resolve(snapshot.requestId, {
+      kind: 'plugin_setup',
+      action: 'run_action',
+      actionId: 'oauth_connect:secret:google',
+      expectedRevision: snapshot.revision,
+    });
+
+    await expect(waiting).resolves.toMatchObject({
+      ok: true,
+      assessment: { state: 'ready', revision: 8 },
+    });
+    expect(h.executeAction).toHaveBeenCalledOnce();
+  });
+
+  it('ready 重连卡取消沿用 SETUP_CANCELLED，本次调用不执行', async () => {
+    const h = harness(readyWithReauth());
+    const waiting = h.coordinator.ensureReady({
+      sessionId: 'session-1',
+      ghostId: 'gmail',
+      tool: 'search',
+      plan: reauthPlan(),
+    });
+    await vi.waitFor(() => expect(h.bridge.pendingSnapshots()).toHaveLength(1));
+    const snapshot = h.bridge.pendingSnapshots()[0].request;
+    h.bridge.resolve(snapshot.requestId, {
+      kind: 'plugin_setup',
+      action: 'cancel',
+      expectedRevision: snapshot.revision,
+    });
+
+    await expect(waiting).resolves.toEqual({
+      ok: false,
+      errorCode: 'SETUP_CANCELLED',
+      message: '用户取消了插件设置，本次调用未执行。',
+    });
+    expect(h.executeAction).not.toHaveBeenCalled();
+  });
+
+  it('ready + reauthSuggest 但未带 plan 时不弹卡直接放行(建议非阻塞)', async () => {
+    const h = harness(readyWithReauth());
+    await expect(
+      h.coordinator.ensureReady({ sessionId: 'session-1', ghostId: 'gmail', tool: 'search' }),
+    ).resolves.toMatchObject({ ok: true, assessment: { state: 'ready' } });
+    expect(h.bridge.pendingSnapshots()).toEqual([]);
+  });
+
+  it('ready + reauthSuggest + plan 但无交互面(IM/定时任务)时丢弃 plan 放行，不拦成 SETUP_REQUIRED', async () => {
+    const h = harness(readyWithReauth());
+    await expect(
+      h.coordinator.ensureReady({
+        sessionId: null,
+        ghostId: 'gmail',
+        tool: 'search',
+        plan: reauthPlan(),
+      }),
+    ).resolves.toMatchObject({ ok: true, assessment: { state: 'ready' } });
+    expect(h.bridge.pendingSnapshots()).toEqual([]);
+  });
+
+  it('ready 无 reauthSuggest 时忽略随调用携带的 plan，直接放行', async () => {
+    const h = harness(ready(7));
+    await expect(
+      h.coordinator.ensureReady({
+        sessionId: 'session-1',
+        ghostId: 'gmail',
+        tool: 'search',
+        plan: reauthPlan(),
+      }),
+    ).resolves.toMatchObject({ ok: true, assessment: { state: 'ready' } });
+    expect(h.bridge.pendingSnapshots()).toEqual([]);
+  });
+
+  it('ready 重连 plan 引用不匹配时拒绝 Agent 编排，回落 Host 默认单步卡', async () => {
+    const h = harness(readyWithReauth());
+    const invalidPlan: GhostSetupPlan = {
+      ...reauthPlan(),
+      steps: [
+        {
+          ...reauthPlan().steps[0],
+          requirementRefs: ['secret:other'],
+          actionId: 'oauth_connect:secret:other',
+        },
+      ],
+    };
+    const waiting = h.coordinator.ensureReady({
+      sessionId: 'session-1',
+      ghostId: 'gmail',
+      tool: 'search',
+      plan: invalidPlan,
+    });
+    await vi.waitFor(() => expect(h.bridge.pendingSnapshots()).toHaveLength(1));
+    const snapshot = h.bridge.pendingSnapshots()[0].request;
+    expect(snapshot.steps).toHaveLength(1);
+    expect(snapshot.steps[0]).toMatchObject({
+      title: 'Google 账号',
+      action: { id: 'oauth_connect:secret:google', kind: 'oauth_connect' },
+    });
+    h.bridge.resolve(snapshot.requestId, {
+      kind: 'plugin_setup',
+      action: 'cancel',
+      expectedRevision: snapshot.revision,
+    });
+    await waiting;
+  });
+
+  it('wakes setup waiters from namespaced store ids emitted by plugin settings', async () => {
+    const h = harness(required(), {
+      resolveStoreId: (ghostId) => (ghostId === 'gmail' ? '_ns__xd__gmail' : ghostId),
+    });
+    const waiting = h.coordinator.ensureReady({
+      sessionId: 'session-1',
+      ghostId: 'gmail',
+      tool: 'search',
+    });
+    await vi.waitFor(() => expect(h.bridge.pendingSnapshots()).toHaveLength(1));
+    h.setAssessment(ready(4));
+    h.changeBus.emit('_ns__xd__gmail', { source: 'oauth', ref: 'google' });
+    await expect(waiting).resolves.toMatchObject({
+      ok: true,
+      assessment: { state: 'ready', revision: 4 },
+    });
   });
 
   it('submits inline Secret per request, re-assesses on change, and never snapshots the value', async () => {
@@ -305,10 +607,7 @@ describe('GhostSetupCoordinator', () => {
 
     const terminalSnapshots = h.broadcast.mock.calls
       .filter(([channel]) => channel === MAKER_PUSH.INTERACTION_REQUEST)
-      .map(
-        ([, payload]) =>
-          (payload as { request: GhostSetupInteractionSnapshot }).request,
-      )
+      .map(([, payload]) => (payload as { request: GhostSetupInteractionSnapshot }).request)
       .filter((request) => request.terminal === true);
     expect(terminalSnapshots).toHaveLength(1);
     expect(terminalSnapshots[0].steps).toEqual([
@@ -353,6 +652,51 @@ describe('GhostSetupCoordinator', () => {
     h.setAssessment(ready(1));
     release();
     await expect(waiting).resolves.toMatchObject({ ok: true });
+  });
+
+  it('keeps account-boundary action drain pending after the setup call is cancelled', async () => {
+    const h = harness(required());
+    const mutations = new GhostMutationCoordinator();
+    const releaseMutation = mutations.acquire();
+    let release!: () => void;
+    h.executeAction.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve({ ok: true });
+        }),
+    );
+    const waiting = h.coordinator
+      .ensureReady({
+        sessionId: 'session-1',
+        ghostId: 'gmail',
+        tool: 'search',
+      })
+      .finally(releaseMutation);
+    await vi.waitFor(() => expect(h.bridge.pendingSnapshots()).toHaveLength(1));
+    const pending = h.bridge.pendingSnapshots()[0].request;
+    h.bridge.resolve(pending.requestId, {
+      kind: 'plugin_setup',
+      action: 'run_action',
+      actionId: 'oauth_connect:secret:google',
+      expectedRevision: pending.revision,
+    });
+    await vi.waitFor(() => expect(h.executeAction).toHaveBeenCalledOnce());
+
+    h.bridge.cleanupAll('session_aborted');
+    await expect(waiting).resolves.toMatchObject({ ok: false, errorCode: 'SETUP_CANCELLED' });
+
+    let drained = false;
+    const drain = (async () => {
+      await h.coordinator.waitForActionsIdle();
+      await mutations.waitForIdle();
+      drained = true;
+    })();
+    await Promise.resolve();
+    expect(drained).toBe(false);
+
+    release();
+    await drain;
+    expect(drained).toBe(true);
   });
 
   it('publishes action error codes without copying Main diagnostic messages', async () => {
@@ -566,9 +910,7 @@ describe('GhostSetupCoordinator', () => {
 
     for (const release of releases) release();
     await vi.waitFor(() =>
-      expect(h.bridge.pendingSnapshots()[0].request.steps[0]?.phase).toBe(
-        'waiting_external',
-      ),
+      expect(h.bridge.pendingSnapshots()[0].request.steps[0]?.phase).toBe('waiting_external'),
     );
     const current = h.bridge.pendingSnapshots()[0].request;
     h.bridge.resolve(current.requestId, {
@@ -1031,13 +1373,13 @@ describe('GhostSetupCoordinator', () => {
     let disabledWorkdir: string | null = null;
     const validateTarget = vi.fn(
       (_ghostId: string, _tool: string | undefined, workingDir?: string | null) =>
-      workingDir === disabledWorkdir
-        ? ({
-            ok: false,
-            errorCode: 'GHOST_DISABLED_IN_WORKDIR',
-            message: '用户已在当前工作目录停用该插件;不要重试。',
-          } as const)
-        : ({ ok: true } as const),
+        workingDir === disabledWorkdir
+          ? ({
+              ok: false,
+              errorCode: 'GHOST_DISABLED_IN_WORKDIR',
+              message: '用户已在当前工作目录停用该插件;不要重试。',
+            } as const)
+          : ({ ok: true } as const),
     );
     const coordinator = new GhostSetupCoordinator({
       changeBus,
@@ -1071,6 +1413,58 @@ describe('GhostSetupCoordinator', () => {
     });
     expect(bridge.pendingSnapshots()).toEqual([]);
     expect(executeAction).not.toHaveBeenCalled();
+  });
+
+  it('setup waiter 与工具入口共用目录停用优先于未启用的可见性判序', async () => {
+    const changeBus = new GhostSetupChangeBus();
+    const bridge = new GhostSetupInteractionBridge({ broadcast: vi.fn() });
+    const ghost = {
+      dir: '/plugins/gmail',
+      enabled: true,
+      manifest: {
+        schemaVersion: 3,
+        id: 'gmail',
+        name: 'Gmail',
+        version: '1.0.0',
+        kind: 'chip',
+        entry: 'main.js',
+        tools: [{ name: 'search', description: 'Search' }],
+      },
+    } as InstalledGhost;
+    let disabled = false;
+    const coordinator = new GhostSetupCoordinator({
+      changeBus,
+      bridge,
+      assess: () => required(),
+      validateTarget: (ghostId, _tool, workingDir) => {
+        const visibility = classifyGhostVisibility(ghostId, workingDir ?? null, {
+          listGhosts: () => [ghost],
+          isAvailableForActiveSession: () => true,
+          isDisabledForWorkdir: () => disabled,
+        });
+        return visibility.ok ? { ok: true } : visibility;
+      },
+      getGhostIdentity: () => ({ id: 'gmail', name: 'Gmail' }),
+      executeAction: vi.fn(),
+      terminalGraceMs: 0,
+    });
+    const waiting = coordinator.ensureReady({
+      sessionId: 'session-1',
+      ghostId: 'gmail',
+      tool: 'search',
+      workingDir: '/proj/alpha',
+    });
+    await vi.waitFor(() => expect(bridge.pendingSnapshots()).toHaveLength(1));
+
+    ghost.enabled = false;
+    disabled = true;
+    changeBus.emit('gmail', { source: 'workdir_policy' });
+
+    await expect(waiting).resolves.toMatchObject({
+      ok: false,
+      errorCode: 'GHOST_DISABLED_IN_WORKDIR',
+    });
+    expect(bridge.pendingSnapshots()).toEqual([]);
   });
 
   it.each([

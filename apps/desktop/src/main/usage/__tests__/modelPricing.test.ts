@@ -54,8 +54,7 @@ vi.mock('../../secrets/providerSecretStore', () => ({
 }));
 
 import { CURRENT_CINDY_REGION } from '../../../shared/brandRegion';
-import { providerReferencePriceQuote } from '../../../shared/modelPriceQuote';
-import { DEFAULT_USAGE_CURRENCY } from '../../../shared/regionalMoney';
+import { modelPricingKey, providerReferencePriceQuote } from '../../../shared/modelPriceQuote';
 import { getActiveCatalog } from '../../maker-host/active-catalog';
 import {
   applyModelPriceOverrides,
@@ -63,7 +62,11 @@ import {
   readModelPriceOverridesSnapshot,
   setModelPriceOverride,
 } from '../modelPriceOverrideStore';
-import { __resetActiveLedgerCurrencyForTesting, currentLedgerCurrency } from '../ledgerCurrency';
+import {
+  __resetActiveLedgerCurrencyForTesting,
+  currentLedgerCurrency,
+  LEDGER_CURRENCY_FALLBACK,
+} from '../ledgerCurrency';
 import {
   __resetModelPricingCacheForTesting,
   clearGatewayModelPricing,
@@ -331,10 +334,12 @@ describe('pricing cache lifecycle', () => {
       });
     });
 
-    // 模拟重启:清掉内存缓存与账本币种，只留磁盘缓存
+    // 模拟重启:清掉内存缓存与账本币种，只留磁盘缓存。重置后回退链落在最后一档
+    // USD(不按构建区域猜,见 usage/ledgerCurrency),下面从磁盘恢复出 USD 才是
+    // 「快照真的把币种带回来了」的证据。
     __resetModelPricingCacheForTesting();
     __resetActiveLedgerCurrencyForTesting();
-    expect(currentLedgerCurrency()).toBe(DEFAULT_USAGE_CURRENCY);
+    expect(currentLedgerCurrency()).toBe(LEDGER_CURRENCY_FALLBACK);
 
     const hydrated = await getGatewayModelPricing();
     expect(hydrated).toEqual({});
@@ -536,8 +541,8 @@ describe('reference pricing helpers', () => {
       outputPerMtok: 10,
     });
     expect(getClaudeSubscriptionValuePrice('claude-sonnet-5', null, '2026-09-01')).toMatchObject({
-      inputPerMtok: 3,
-      outputPerMtok: 15,
+      inputPerMtok: 2,
+      outputPerMtok: 10,
     });
     expect(getClaudeSubscriptionValuePrice('claude-sonnet-5', null, '2026-06-29')).toBeUndefined();
     expect(getClaudeSubscriptionValuePrice('sonnet', null, '2026-03-01')).toMatchObject({
@@ -570,6 +575,62 @@ describe('reference pricing helpers', () => {
       modelId: 'chatgpt/gpt-5.5',
       source: 'subscription-reference',
     });
+    // Pi SuperGrok 目录 id 是裸 grok-*,报价户口是 xai/grok-*。两条都要能取到参考价,
+    // 否则消息 tooltip 会落到「本轮费用暂不可用」。
+    expect(getSubscriptionDirectValuePrice('grok-4.6')).toMatchObject({
+      providerId: 'xai',
+      modelId: 'grok-4.6',
+      source: 'subscription-reference',
+      inputPerMtok: 2,
+      outputPerMtok: 6,
+      cacheReadPerMtok: 0.5,
+    });
+    expect(getSubscriptionDirectValuePrice('xai/grok-4.6')).toMatchObject({
+      providerId: 'xai',
+      modelId: 'xai/grok-4.6',
+      source: 'subscription-reference',
+      inputPerMtok: 2,
+      outputPerMtok: 6,
+      cacheReadPerMtok: 0.5,
+    });
+    expect(
+      getSubscriptionDirectValuePrice('grok-4.6', 'pi', {
+        xai: {
+          [modelPricingKey('grok-4.6', 'pi')]: {
+            providerId: 'xai',
+            modelId: 'grok-4.6',
+            currency: 'USD',
+            source: 'user-override',
+            approximate: true,
+            inputPerMtok: 9,
+            outputPerMtok: 27,
+          },
+        },
+      }),
+    ).toMatchObject({
+      modelId: 'grok-4.6',
+      source: 'user-override',
+      inputPerMtok: 9,
+      outputPerMtok: 27,
+    });
+    expect(
+      getSubscriptionDirectValuePrice('grok-4.6', undefined, {
+        xai: {
+          [modelPricingKey('grok-4.6', 'pi')]: {
+            providerId: 'xai',
+            modelId: 'grok-4.6',
+            currency: 'USD',
+            source: 'user-override',
+            approximate: true,
+            inputPerMtok: 9,
+            outputPerMtok: 27,
+          },
+        },
+      }),
+    ).toMatchObject({
+      source: 'subscription-reference',
+      inputPerMtok: 2,
+    });
     expect(
       getSubscriptionDirectValuePrice('chatgpt/gpt-5.5', 'claude-code', {
         openai: {
@@ -599,15 +660,15 @@ describe('reference pricing helpers', () => {
     ).toMatchObject({ providerId: 'anthropic', inputPerMtok: 2, outputPerMtok: 10 });
     expect(
       getCodexProviderSubscriptionValuePrice('anthropic', 'claude-sonnet-5', null, '2026-09-01'),
-    ).toMatchObject({ inputPerMtok: 3, outputPerMtok: 15 });
+    ).toMatchObject({ inputPerMtok: 2, outputPerMtok: 10 });
   });
 
   it('re-merges sparse price overrides against the reference effective at the queried date', () => {
     const registry = getActiveCatalog().modelRegistry;
     const target = {
-      providerId: 'anthropic',
-      agent: 'claude-code',
-      modelId: 'claude-sonnet-5',
+      providerId: 'openai',
+      agent: 'codex',
+      modelId: 'gpt-5.6-sol',
     } as const;
     const currentReference = providerReferencePriceQuote(
       target.providerId,
@@ -631,20 +692,20 @@ describe('reference pricing helpers', () => {
       );
       const pricing = applyModelPriceOverrides({}, registry);
       expect(
-        getClaudeSubscriptionValuePrice('claude-sonnet-5', pricing, '2026-08-31'),
-      ).toMatchObject({ source: 'user-override', inputPerMtok: 2.5, outputPerMtok: 10 });
+        getCodexSubscriptionValuePrice('gpt-5.6-sol', pricing, '2026-08-20'),
+      ).toMatchObject({ source: 'user-override', inputPerMtok: 2.5, outputPerMtok: 30 });
       expect(
-        getClaudeSubscriptionValuePrice('claude-sonnet-5', pricing, '2026-09-01'),
-      ).toMatchObject({ source: 'user-override', inputPerMtok: 2.5, outputPerMtok: 15 });
-      expect(getClaudeSubscriptionValuePrice('claude-sonnet-5', pricing)).toMatchObject({
+        getCodexSubscriptionValuePrice('gpt-5.6-sol', pricing, '2026-08-21'),
+      ).toMatchObject({ source: 'user-override', inputPerMtok: 2.5, outputPerMtok: 20 });
+      expect(getCodexSubscriptionValuePrice('gpt-5.6-sol', pricing)).toMatchObject({
         source: 'user-override',
         inputPerMtok: 2.5,
       });
       // 批量路径:传入一次性快照时结果一致,不逐行重读覆盖文件。
       const snapshot = readModelPriceOverridesSnapshot();
       expect(
-        getClaudeSubscriptionValuePrice('claude-sonnet-5', pricing, '2026-08-31', snapshot),
-      ).toMatchObject({ source: 'user-override', inputPerMtok: 2.5, outputPerMtok: 10 });
+        getCodexSubscriptionValuePrice('gpt-5.6-sol', pricing, '2026-08-20', snapshot),
+      ).toMatchObject({ source: 'user-override', inputPerMtok: 2.5, outputPerMtok: 30 });
     } finally {
       clearModelPriceOverride(target);
     }

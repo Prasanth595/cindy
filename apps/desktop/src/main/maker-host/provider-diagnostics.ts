@@ -16,6 +16,11 @@
 
 import {
   appendProviderRequestPath,
+  providerModelRecord,
+  providerPresetModelRecord,
+  providerWireProtocolForApi,
+  type PiModelApi,
+  type ProviderModelRecord,
   isAgentSelectableModel,
   isLoopbackProviderUrl,
   type AgentKind,
@@ -29,7 +34,13 @@ import {
   type ProviderErrorCode,
 } from '../../shared/providerErrors.js';
 import { getActiveCatalog } from './active-catalog.js';
+import { withOpenCodeGoSessionHeader } from './opencode-go-session.js';
+import { createMakerLogger } from './logger-adapter.js';
 import { outboundFetch } from './outbound-fetch.js';
+import { hostCredentialEndpointAllowed, invocationModelRecord, probePiProvider, requiresNativeProviderAuth } from './pi-provider-transport.js';
+import { buildRouteDecision, providerRoutingForModel } from './provider-route.js';
+
+const log = createMakerLogger('provider-probe');
 
 /** 探测请求超时。 */
 const PROBE_TIMEOUT_MS = 10_000;
@@ -45,6 +56,11 @@ export interface ProviderProbeSpec {
   authMethod?: 'apiKey' | 'oauth' | 'none';
   /** 缺省按 agent 保持历史行为。 */
   wireProtocol?: ProviderWireProtocol;
+  /** Actual SDK API; the four display protocols cannot identify Vertex/Azure transports. */
+  api?: PiModelApi;
+  catalogPresetId?: string;
+  /** Main-only resolved model; never accepted from IPC. */
+  nativeModel?: ProviderModelRecord;
   /** 非标准推理端点的精确相对路径。 */
   requestPath?: string;
   /** 用户 API key；缺省 = 不注入鉴权头（端点可能靠自定义 headers 鉴权）。 */
@@ -85,9 +101,25 @@ function withoutCredentialHeaders(
   const normalized: Record<string, string> = {};
   for (const [name, value] of Object.entries(headers ?? {})) {
     const lower = name.toLowerCase();
-    if (lower !== 'authorization' && lower !== 'x-api-key') normalized[lower] = value;
+    if (lower !== 'authorization' && lower !== 'x-api-key' && lower !== 'x-goog-api-key') normalized[lower] = value;
   }
   return normalized;
+}
+
+const HOST_ENVIRONMENT_APIS = new Set<PiModelApi>(['google-vertex', 'bedrock-converse-stream']);
+
+function probeHasUserSecret(spec: ProviderProbeSpec): boolean {
+  if (spec.apiKey?.trim()) return true;
+  const headers = new Headers(spec.headers);
+  return Boolean(headers.get('authorization') || headers.get('x-api-key') || headers.get('x-goog-api-key'));
+}
+
+/** Vertex/Bedrock can use Desktop ADC/IAM. Renderer-chosen URLs must not inherit those credentials. */
+function hostEnvironmentApiAllowed(spec: ProviderProbeSpec, api: string): boolean {
+  if (!HOST_ENVIRONMENT_APIS.has(api as PiModelApi)) return true;
+  // Bedrock signs with Desktop IAM even when a dummy apiKey is present.
+  if (api !== 'bedrock-converse-stream' && probeHasUserSecret(spec)) return true;
+  return hostCredentialEndpointAllowed(api, spec.baseUrl);
 }
 
 function normalizedHeaders(headers: Record<string, string> | undefined): Record<string, string> {
@@ -102,13 +134,26 @@ function normalizedHeaders(headers: Record<string, string> | undefined): Record<
 export function buildProbeRequest(spec: ProviderProbeSpec): { url: string; init: RequestInit } {
   const mustStripCredentialHeaders =
     !!spec.apiKey || spec.authMethod === 'none' || spec.authMethod === 'oauth';
-  const headers = mustStripCredentialHeaders
-    ? withoutCredentialHeaders(spec.headers)
-    : normalizedHeaders(spec.headers);
+  const headers = withOpenCodeGoSessionHeader(
+    mustStripCredentialHeaders
+      ? withoutCredentialHeaders(spec.headers)
+      : normalizedHeaders(spec.headers),
+    { providerId: spec.catalogPresetId ?? '', catalogPresetId: spec.catalogPresetId, upstream: spec.baseUrl },
+  ) ?? {};
   headers['content-type'] = 'application/json';
+  if (spec.wireProtocol === 'google-generative-ai') {
+    if (spec.apiKey) headers['x-goog-api-key'] = spec.apiKey;
+    return {
+      url: appendProviderRequestPath(spec.baseUrl, spec.requestPath ?? `/models/${encodeURIComponent(spec.modelId.replace(/^models\//, ''))}:generateContent`),
+      init: { method: 'POST', headers, body: JSON.stringify({
+        contents: [{ role: 'user', parts: [{ text: 'ping' }] }],
+        generationConfig: { maxOutputTokens: 16 },
+      }) },
+    };
+  }
   const anthropicMessages =
-    spec.wireProtocol === 'anthropic-messages'
-    || (spec.wireProtocol === undefined && spec.agent === 'claude-code');
+    spec.wireProtocol === 'anthropic-messages' ||
+    (spec.wireProtocol === undefined && spec.agent === 'claude-code');
   if (anthropicMessages) {
     headers['anthropic-version'] = headers['anthropic-version'] ?? '2023-06-01';
     if (spec.apiKey) {
@@ -209,12 +254,17 @@ async function readFirstSsePayload(res: Response): Promise<string | null> {
 
 function classifyStreamedError(error: Record<string, unknown>): ProviderErrorClassification {
   const bodyText = JSON.stringify(error).slice(0, MAX_ERROR_BODY_BYTES);
-  const explicitStatus = typeof error.status === 'number' ? error.status
-    : typeof error.status_code === 'number' ? error.status_code
-      : typeof error.code === 'number' ? error.code
-        : undefined;
+  const explicitStatus =
+    typeof error.status === 'number'
+      ? error.status
+      : typeof error.status_code === 'number'
+        ? error.status_code
+        : typeof error.code === 'number'
+          ? error.code
+          : undefined;
   const type = typeof error.type === 'string' ? error.type.toLowerCase() : '';
-  const inferredStatus = explicitStatus ?? (type.includes('server') || type.includes('overload') ? 503 : 400);
+  const inferredStatus =
+    explicitStatus ?? (type.includes('server') || type.includes('overload') ? 503 : 400);
   return classifyProviderError({ status: inferredStatus, bodyText });
 }
 
@@ -229,17 +279,108 @@ function networkErrorCode(err: unknown): string {
   return 'UNKNOWN_NETWORK_ERROR';
 }
 
-/** 跑一次探测请求并分类结果。fetch 可注入（单测）。 */
+/** 上游 origin(协议 + host + 端口),不带路径 / query / 凭证——只用于日志定位。 */
+function probeUpstreamOrigin(baseUrl: string): string {
+  try {
+    return new URL(baseUrl).origin;
+  } catch {
+    return '<invalid-url>';
+  }
+}
+
+/** 进日志的摘要上限;分类器给出的 detail 已经过 redactSensitiveText,这里只再兜一层凭证头形态与长度。 */
+const PROBE_DETAIL_MAX_CHARS = 512;
+function sanitizeProbeDetail(detail: string | undefined): string | undefined {
+  if (!detail) return undefined;
+  return detail
+    .replace(/(authorization|x-api-key|x-goog-api-key)(["'\s:=]+)[^\s"',}]+/gi, '$1$2<redacted>')
+    .slice(0, PROBE_DETAIL_MAX_CHARS);
+}
+
+/**
+ * 「测试连接」失败在主进程留痕(#4954):渲染层只拿到分类码,非鉴权 / 非网络类的 4xx 会落成
+ * 「未知错误,请查看日志」,而此前主进程一行都不写,日志里无迹可循。字段不含路径 / query / 凭证。
+ */
+function logProbeFailure(spec: ProviderProbeSpec, result: ProviderTestResult): ProviderTestResult {
+  if (result.ok) return result;
+  const detail = sanitizeProbeDetail(result.detail);
+  log.warn('provider connection probe failed', {
+    agent: spec.agent,
+    provider: spec.catalogPresetId ?? 'custom',
+    model: spec.modelId,
+    upstream: probeUpstreamOrigin(spec.baseUrl),
+    wireProtocol: spec.wireProtocol ?? spec.api ?? 'default',
+    status: result.status,
+    code: result.code,
+    latencyMs: result.latencyMs,
+    detail,
+  });
+  return detail === result.detail ? result : { ...result, detail };
+}
+
+/** 跑一次探测请求并分类结果。fetch 可注入（单测）。失败一律经 logProbeFailure 留痕。 */
 export async function runProviderProbe(
   spec: ProviderProbeSpec,
   // 默认吃系统代理:探测必须与真实会话同口径,否则代理用户会被误判成「连不通」。
   fetchImpl: typeof fetch = outboundFetch,
 ): Promise<ProviderTestResult> {
+  const start = Date.now();
+  try {
+    return logProbeFailure(spec, await runProviderProbeUnlogged(spec, fetchImpl));
+  } catch (err) {
+    // 拿到响应头后读首帧时连接中断(readFirstSsePayload 抛错)、请求装配抛错等异常路径
+    // 同样要留痕,否则仍是「未知错误、日志无迹」;异常本身原样抛给 IPC,不改变错误语义。
+    const message = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+    logProbeFailure(spec, { ok: false, code: 'UNKNOWN', latencyMs: Date.now() - start,
+      detail: `probe threw before classification: ${message}` });
+    throw err;
+  }
+}
+
+async function runProviderProbeUnlogged(
+  spec: ProviderProbeSpec,
+  fetchImpl: typeof fetch,
+): Promise<ProviderTestResult> {
   if (spec.authMethod === 'none' && !isLoopbackProviderUrl(spec.baseUrl)) {
     throw new TypeError('no-auth provider probes require a loopback URL');
   }
-  const { url, init } = buildProbeRequest(spec);
   const start = Date.now();
+  const presetRow = providerPresetModelRecord(spec.catalogPresetId, spec.modelId, spec.api);
+  const row = spec.nativeModel
+    ?? providerModelRecord(spec.modelId, spec.baseUrl, spec.api ?? spec.wireProtocol)
+    ?? (presetRow && (spec.api || !spec.wireProtocol || providerWireProtocolForApi(presetRow.execution.pi.api) === spec.wireProtocol)
+      ? presetRow : undefined);
+  const requestedApi = spec.api ?? row?.execution.pi.api;
+  if (requestedApi && !hostEnvironmentApiAllowed(spec, requestedApi)) {
+    return { ok: false, code: 'AUTH_INVALID', latencyMs: Date.now() - start,
+      detail: 'native SDK probe requires a user credential or a matching saved preset endpoint' };
+  }
+  const api = requestedApi;
+  if (api && (['google-generative-ai', 'google-vertex', 'azure-openai-responses',
+    'bedrock-converse-stream', 'mistral-conversations'].includes(api) || requiresNativeProviderAuth(row))) {
+    const model = row ?? invocationModelRecord({ id: spec.modelId, name: spec.modelId,
+      group: 'custom', contextWindow: 4096, maxOutput: 16, efforts: [], defaultEffort: null, api: api as PiModelApi }, spec.baseUrl)!;
+    try {
+      const result = await probePiProvider({ row: model, providerId: spec.catalogPresetId ?? 'custom-probe',
+        upstream: spec.baseUrl, apiKey: spec.authMethod === 'none' ? '' : spec.apiKey
+          ?? new Headers(spec.headers).get('authorization')?.replace(/^Bearer /i, '')
+          ?? new Headers(spec.headers).get('x-goog-api-key')
+          ?? new Headers(spec.headers).get('x-api-key') ?? '',
+        headers: spec.apiKey || spec.authMethod === 'none' ? withoutCredentialHeaders(spec.headers) : spec.headers, fetchImpl,
+      }, AbortSignal.timeout(PROBE_TIMEOUT_MS));
+      if (result.stopReason !== 'error' && result.stopReason !== 'aborted') return { ok: true, latencyMs: Date.now() - start };
+      const detail = result.errorMessage ?? 'Native provider probe failed';
+      const statusMatch = detail.match(/(?:status|code)["\s:]+(4\d\d|5\d\d)\b|^(4\d\d|5\d\d)(?:\s|:)/);
+      const status = statusMatch ? Number(statusMatch[1] ?? statusMatch[2]) : undefined;
+      const cls = classifyProviderError({ status, bodyText: detail,
+        ...(result.stopReason === 'aborted' ? { networkErrorCode: 'AbortError' } : {}) });
+      return { ok: false, code: cls.code, status, latencyMs: Date.now() - start, detail: cls.detail };
+    } catch (err) {
+      const cls = classifyProviderError({ networkErrorCode: networkErrorCode(err) });
+      return { ok: false, code: cls.code, latencyMs: Date.now() - start, detail: cls.detail };
+    }
+  }
+  const { url, init } = buildProbeRequest(spec);
   let res: Response;
   try {
     res = await fetchImpl(url, { ...init, signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
@@ -322,7 +463,8 @@ export async function runProviderProbe(
 export function resolveSavedProbeSpec(providerId: string, agent: AgentKind): ProviderProbeSpec {
   const provider = getActiveCatalog().providers.find((p) => p.id === providerId);
   if (!provider) throw new Error(`provider '${providerId}' not found`);
-  if (provider.source !== 'user') throw new Error(`provider '${providerId}' is not a custom provider`);
+  if (provider.source !== 'user')
+    throw new Error(`provider '${providerId}' is not a custom provider`);
   const routing = provider.routing[agent];
   if (!routing) throw new Error(`provider '${providerId}' has no runtime for '${agent}'`);
   if (routing.disabled) throw new Error(`provider '${providerId}' runtime '${agent}' is disabled`);
@@ -333,6 +475,25 @@ export function resolveSavedProbeSpec(providerId: string, agent: AgentKind): Pro
     isAgentSelectableModel(m, { userProvider: provider.source === 'user' }),
   );
   if (!model) throw new Error(`provider '${providerId}' has no chat models for '${agent}'`);
+  // Pi's HTTP-only route helper intentionally excludes SDK transports. A native
+  // probe must keep the SDK route instead of treating that exclusion as failure.
+  const modelApi = model.api ?? model.piApi;
+  const modelRouting = agent === 'pi' && modelApi && ['google-generative-ai', 'google-vertex',
+    'azure-openai-responses', 'bedrock-converse-stream', 'mistral-conversations'].includes(modelApi)
+    ? { ...routing, upstream: model.route?.baseUrl ?? routing.upstream,
+      wireProtocol: model.route?.wireProtocol ?? routing.wireProtocol }
+    : providerRoutingForModel(provider, agent, model.id);
+  if (!modelRouting) {
+    throw new Error(
+      `provider '${providerId}' model '${model.id}' has no supported protocol for '${agent}'`,
+    );
+  }
+  const baseUrl = modelRouting.upstream;
+  const wireProtocol = modelRouting.wireProtocol;
+  const native = modelApi ? { api: modelApi, nativeModel: invocationModelRecord(model, baseUrl, modelApi) } : {};
+  const catalogPresetId = model.catalogPresetId ?? routing.piCatalogProviderId;
+  // Pi derives its inference path from wireProtocol and does not consume requestPath.
+  const requestPath = agent === 'pi' ? undefined : modelRouting.requestPath;
   // OAuth 形态：探测凭证用 Runner 持有的 access_token（与 oauth-token 路由同源），未登录时
   // 无 token → 探测会得到 AUTH_INVALID，这本身就是「先去登录」的正确结论。
   // token 走 authorization 头而**不走 apiKey 字段**——apiKey 会让 cc 探测同时发
@@ -342,10 +503,12 @@ export function resolveSavedProbeSpec(providerId: string, agent: AgentKind): Pro
     const oauthToken = oauthProbeTokenReader(providerId);
     return {
       agent,
-      baseUrl: routing.upstream,
+      baseUrl: buildRouteDecision(modelRouting, null, agent, null, oauthToken)?.upstreamOverride ?? baseUrl,
       modelId: model.id,
-      wireProtocol: routing.wireProtocol,
-      requestPath: routing.requestPath,
+      ...native,
+      ...(catalogPresetId ? { catalogPresetId } : {}),
+      wireProtocol,
+      requestPath,
       apiKey: null,
       headers: {
         ...withoutCredentialHeaders(routing.headerOverride),
@@ -356,10 +519,12 @@ export function resolveSavedProbeSpec(providerId: string, agent: AgentKind): Pro
   if (routing.authStrategy === 'none') {
     return {
       agent,
-      baseUrl: routing.upstream,
+      baseUrl,
       modelId: model.id,
-      wireProtocol: routing.wireProtocol,
-      requestPath: routing.requestPath,
+      ...native,
+      ...(catalogPresetId ? { catalogPresetId } : {}),
+      wireProtocol,
+      requestPath,
       apiKey: null,
       headers: withoutCredentialHeaders(routing.headerOverride),
     };
@@ -367,13 +532,15 @@ export function resolveSavedProbeSpec(providerId: string, agent: AgentKind): Pro
   const apiKey = keyReader(providerId, agent);
   return {
     agent,
-    baseUrl: routing.upstream,
+    baseUrl,
     modelId: model.id,
+    ...native,
+    ...(catalogPresetId ? { catalogPresetId } : {}),
     // 与 oauth-token 分支对齐：Chat 桥接供应商（api-key-header + openai-chat）的 saved 探测
     // 必须带上 wireProtocol，否则 buildProbeRequest 回落到原生 /responses，对 Chat-only 上游
     // 误报连接失败（真实会话走 resolveSessionRoute 不受影响，探测结论会与真实会话相反）。
-    wireProtocol: routing.wireProtocol,
-    requestPath: routing.requestPath,
+    wireProtocol,
+    requestPath,
     apiKey,
     // 与真实会话路由保持 legacy 兼容：safeStorage 已有 key 时清掉旧凭证头，由 apiKey
     // 重新注入；尚未迁移的 header-only 配置则原样保留，否则“测试连接”会无凭证误报失败。
@@ -397,6 +564,7 @@ export async function testProviderConnection(
   input: ProviderTestInput,
   fetchImpl: typeof fetch = outboundFetch,
 ): Promise<ProviderTestResult> {
-  const spec = input.kind === 'saved' ? resolveSavedProbeSpec(input.providerId, input.agent) : input.spec;
+  const spec =
+    input.kind === 'saved' ? resolveSavedProbeSpec(input.providerId, input.agent) : input.spec;
   return runProviderProbe(spec, fetchImpl);
 }

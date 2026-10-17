@@ -1,3 +1,4 @@
+import { Button } from '@/components/ui/button';
 /**
  * HookConnectionsSection —— 「IM 机器人」页「官方」栏(Cindy 渠道)。
  * i18n key 刻意留在 settings.remoteControl.hook.* 命名空间(50+ 条 × 4 语言的
@@ -35,7 +36,7 @@
  * 颜色全部走主题 token; 状态徽章沿用「个人」栏的 --settings-badge-* 语义色。
  */
 
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Check, ChevronDown, Plus, Trash2 } from 'lucide-react';
 
@@ -50,10 +51,7 @@ import { useConfirmDialog } from '@/components/ui/confirm-dialog-provider';
 import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
 import { extractIpcError } from '@/utils/ipcError';
-import type {
-  ImDefaultAgentKind,
-  ImDefaultSettingsState,
-} from '../../../shared/imDefaultSettings';
+import type { ImDefaultAgentKind, ImDefaultSettingsState } from '../../../shared/imDefaultSettings';
 import { acknowledgeXUsage, isXUsageAcknowledged } from '@/state/xUsageNotice';
 import { XUsageGuide } from './XUsageGuide';
 import {
@@ -71,6 +69,7 @@ import {
 type NeutralCardProvider = 'telegram' | 'x';
 import { useHookWorkspacePrefs, WorkspacePrefsEditor } from './HookWorkspacePrefsEditor';
 import { ImChannelSettingsCard } from './ImChannelSettingsCard';
+import { useSettingsSearchNavigation } from './SettingsSearchNavigation';
 import {
   TelegramBehaviorSettings,
   TelegramGroupActivationSettings,
@@ -169,7 +168,11 @@ export function legacyOverrideRows(state: ImDefaultSettingsState): LegacyOverrid
   const rows: LegacyOverrideRow[] = [];
   for (const key of state.customizedKeys) {
     if (key === 'agentKind') {
-      rows.push({ kind: 'agentKind', current: state.agentKind, fallback: state.defaults.agentKind });
+      rows.push({
+        kind: 'agentKind',
+        current: state.agentKind,
+        fallback: state.defaults.agentKind,
+      });
       continue;
     }
     if (key === 'permissionMode') {
@@ -186,8 +189,11 @@ export function legacyOverrideRows(state: ImDefaultSettingsState): LegacyOverrid
     const fallback = state.defaults.agents[agent];
     if (!current || !fallback) continue;
     // 只列真的不一样的子字段 —— 把三项全列出来会让人以为都被改过。
-    const fields: Array<{ field: 'model' | 'effort' | 'source'; current: string; fallback: string }> =
-      [];
+    const fields: Array<{
+      field: 'model' | 'effort' | 'source';
+      current: string;
+      fallback: string;
+    }> = [];
     if (current.model !== fallback.model) {
       fields.push({ field: 'model', current: current.model, fallback: fallback.model });
     }
@@ -302,15 +308,18 @@ function LegacyGlobalDefaultsNotice({
           </li>
         ))}
       </ul>
-      <button
+      <Button
+        variant="secondary"
+        size="sm"
+        compact
         type="button"
         data-testid="hook-legacy-global-defaults-restore"
         onClick={onRestore}
         disabled={pending}
-        className="mt-0.5 flex h-7 w-fit items-center rounded-full border border-[var(--border-default)] px-3 text-12 text-[var(--text-secondary)] transition-colors hover:text-[var(--text-primary)] disabled:opacity-50"
+        className="mt-0.5 w-fit"
       >
         {t('settings.defaults.restore')}
-      </button>
+      </Button>
     </div>
   );
 }
@@ -336,7 +345,13 @@ function handleRadioGroupKeyDown(e: KeyboardEvent<HTMLDivElement>): void {
   if (options.length === 0) return;
   const current = options.indexOf(document.activeElement as HTMLButtonElement);
   // 焦点还不在任何一项上(例如刚点进容器): 从选中项开始, 没有选中项就从头。
-  const from = current >= 0 ? current : Math.max(0, options.findIndex((o) => o.getAttribute('aria-checked') === 'true'));
+  const from =
+    current >= 0
+      ? current
+      : Math.max(
+          0,
+          options.findIndex((o) => o.getAttribute('aria-checked') === 'true'),
+        );
   const next = options[(from + (forward ? 1 : -1) + options.length) % options.length];
   e.preventDefault();
   next.focus();
@@ -386,10 +401,6 @@ function DefaultWorkspaceRadio({
     </button>
   );
 }
-
-/** 小号胶囊按钮(「复制链接 / 安装 Slack App」共用)。 */
-const pillBtn =
-  'flex h-6 shrink-0 items-center rounded-full border border-[var(--border-default)] px-2.5 text-11 text-[var(--text-secondary)] transition-colors hover:text-[var(--text-primary)] disabled:opacity-50';
 
 const RESERVED_WORKSPACE_ALIASES = new Set([
   HOOK_CHAT_WORKSPACE_ALIAS,
@@ -442,6 +453,7 @@ export function workspaceRowsToMap(
 
 export function HookConnectionsSection() {
   const { t } = useTranslation();
+  const { entry, activation } = useSettingsSearchNavigation();
   const [hook, setHook] = useState<SlackHookView | null>(null);
   /** 工作目录行的本地编辑态(别名输入中不被状态推送打断, blur 时提交)。 */
   const [rows, setRows] = useState<Array<{ alias: string; dir: string }>>([]);
@@ -452,7 +464,15 @@ export function HookConnectionsSection() {
    * 全收起 —— 收起行自带状态徽章与绑定摘要。打开渠道开关时自动展开对应卡,
    * 让授权进度与兜底动作(复制链接 / 安装引导)立即可见。
    */
-  const [expandedCard, setExpandedCard] = useState<CindyImCard | null>(null);
+  const targetCard = (['slack', 'telegram', 'x'] as const).find(
+    (card) => entry?.targetId === 'cindy-im-' + card,
+  ) ?? null;
+  const [expandedCard, setExpandedCard] = useState<CindyImCard | null>(targetCard);
+  useLayoutEffect(() => {
+    if (targetCard) setExpandedCard(targetCard);
+  }, [targetCard, activation]);
+  const [slackAuthActionPending, setSlackAuthActionPending] = useState(false);
+  const slackAuthActionInFlightRef = useRef(false);
   const toggleCard = (card: CindyImCard) =>
     setExpandedCard((current) => (current === card ? null : card));
   /** Older IPC replies and server pushes must never overwrite a newer view transition. */
@@ -521,22 +541,46 @@ export function HookConnectionsSection() {
     [applyView, t],
   );
 
+  /** Slack 授权相关动作共用一个门，避免开关/添加/重绑交叉点击创建多轮 OAuth。 */
+  const runSlackAuthAction = useCallback(
+    (
+      action: () => Promise<{ hook: SlackHookView }>,
+      errorKey:
+        | 'settings.remoteControl.hook.toast.toggleFailed'
+        | 'settings.remoteControl.hook.toast.actionFailed',
+      expand = false,
+    ) => {
+      if (slackAuthActionInFlightRef.current) return;
+      slackAuthActionInFlightRef.current = true;
+      setSlackAuthActionPending(true);
+      if (expand) setExpandedCard('slack');
+      const requestedAtRevision = ++viewRevisionRef.current;
+      void action()
+        .then((res) => {
+          if (viewRevisionRef.current === requestedAtRevision) applyView(res.hook);
+        })
+        .catch(() => toast.error(t(errorKey)))
+        .finally(() => {
+          slackAuthActionInFlightRef.current = false;
+          setSlackAuthActionPending(false);
+        });
+    },
+    [applyView, t],
+  );
+
   /**
    * 开关即绑定(即时生效): 开 = 连接, main 连上后自动拉起浏览器 Slack 授权;
    * 关 = 解除绑定并断开(main 发 bind.revoke), 再开需重新授权。
    */
   const handleToggle = useCallback(
     (enabled: boolean) => {
-      if (enabled) setExpandedCard('slack');
-      const requestedAtRevision = ++viewRevisionRef.current;
-      void window.electronAPI.hookControl
-        .setEnabled(enabled)
-        .then((res) => {
-          if (viewRevisionRef.current === requestedAtRevision) applyView(res.hook);
-        })
-        .catch(() => toast.error(t('settings.remoteControl.hook.toast.toggleFailed')));
+      runSlackAuthAction(
+        () => window.electronAPI.hookControl.setEnabled(enabled),
+        'settings.remoteControl.hook.toast.toggleFailed',
+        enabled,
+      );
     },
-    [applyView, t],
+    [runSlackAuthAction],
   );
 
   // ── (multi-team)派生视图 ────────────────────────────────────────────────
@@ -546,7 +590,8 @@ export function HookConnectionsSection() {
   // 缓存行, multiUi 自然回落。
   const multiUi = hook !== null && (hook.serverMultiTeam || hook.bindings.length > 0);
   const activeTeams = hook?.bindings.filter((b) => !b.displaced) ?? [];
-  const displacedCount = (hook?.bindings.length ?? 0) - activeTeams.length;
+  const communicationTeams = hook?.serverSlackCommunications ? hook.bindings.filter((b) => b.communicationsEnabled !== undefined) : [];
+  const displacedCount = hook?.bindings.filter((b) => b.displaced && b.communicationsEnabled === undefined).length ?? 0;
   /** 状态行「(M 个待处理)」= 在途/终止态授权 + displaced 行。 */
   const pendingIssueCount = (hook !== null && hook.pendingBind !== null ? 1 : 0) + displacedCount;
 
@@ -571,6 +616,22 @@ export function HookConnectionsSection() {
         });
     },
     [applyView, t],
+  );
+
+  /** Terminal Slack authorization states restart through the matching main-process flow. */
+  const handleReauthorize = useCallback(
+    (mode: 'enable' | 'add' | 'rebind' | 'communications', teamId?: string) => {
+      const action =
+        mode === 'communications' && teamId
+          ? () => window.electronAPI.hookControl.setSlackCommunications(teamId, true)
+          : mode === 'enable'
+          ? () => window.electronAPI.hookControl.setEnabled(true)
+          : mode === 'rebind' && teamId
+            ? () => window.electronAPI.hookControl.rebindTeam(teamId)
+            : () => window.electronAPI.hookControl.addBinding();
+      runSlackAuthAction(action, 'settings.remoteControl.hook.toast.actionFailed', true);
+    },
+    [runSlackAuthAction],
   );
 
   /**
@@ -690,12 +751,15 @@ export function HookConnectionsSection() {
         if (decision.installUrl) void window.electronAPI.openExternal(decision.installUrl);
       } else if (decision.multiUi) {
         // multi-team: 取消只作废这次"添加 workspace"尝试, 既有绑定不受影响
-        runHookAction(() => window.electronAPI.hookControl.cancelPendingBind());
+        runSlackAuthAction(
+          () => window.electronAPI.hookControl.cancelPendingBind(),
+          'settings.remoteControl.hook.toast.actionFailed',
+        );
       } else {
         handleToggle(false);
       }
     })();
-  }, [awaitingInstall, confirm, handleToggle, runHookAction, t]);
+  }, [awaitingInstall, confirm, handleToggle, runSlackAuthAction, t]);
 
   /**
    * X 的「用法与公开风险」确认门:绑定成功那一刻拦一次, 让用户明确点过「我明白」。
@@ -870,30 +934,39 @@ export function HookConnectionsSection() {
 
   /**
    * (multi-team)解绑某 workspace: 走确认弹窗(危险操作文案)。displaced 行的
-   * "删除"同一入口 —— main 侧按行状态区分(活跃行发 bind.revoke, displaced 行
-   * 仅清本地缓存), 文案按行状态取。
+   * "删除"同一入口 —— main 区分 Bot 解绑、通讯专用授权撤销与旧 server 缓存。
+   * 确认文案按行状态和服务端能力取。
    */
   const handleRemoveBinding = async (b: HookTeamBindingView) => {
     const target = {
       teamId: b.teamId,
       slackUserId: b.slackUserId,
       displaced: b.displaced,
+      communicationsEnabled: b.communicationsEnabled,
+      serverSlackCommunications: hook?.serverSlackCommunications,
     };
     const teamLabel = b.teamName ?? b.teamId;
     const ok = await confirm({
       title: t('settings.remoteControl.hook.multi.removeConfirmTitle', { team: teamLabel }),
       description: b.displaced
-        ? t('settings.remoteControl.hook.multi.removeDisplacedConfirmDescription')
+        ? t(hook?.serverSlackCommunications
+            ? 'settings.remoteControl.hook.multi.removeCommunicationsConfirmDescription'
+            : 'settings.remoteControl.hook.multi.removeDisplacedConfirmDescription')
         : t('settings.remoteControl.hook.multi.removeConfirmDescription', { team: teamLabel }),
       confirmText: t('settings.remoteControl.hook.multi.removeConfirm'),
       cancelText: t('settings.remoteControl.hook.notInstalled.confirmCancel'),
     });
-    const stillSameBinding = hookRef.current?.bindings.some(
-      (current) =>
-        current.teamId === target.teamId &&
-        current.slackUserId === target.slackUserId &&
-        current.displaced === target.displaced,
-    );
+    // 确认授权撤销后不能因重连旧节点而降级为仅删除本地缓存。
+    const currentHook = hookRef.current;
+    const stillSameBinding =
+      currentHook?.serverSlackCommunications === target.serverSlackCommunications &&
+      currentHook?.bindings.some(
+        (current) =>
+          current.teamId === target.teamId &&
+          current.slackUserId === target.slackUserId &&
+          current.displaced === target.displaced &&
+          current.communicationsEnabled === target.communicationsEnabled,
+      );
     if (!ok || !mountedRef.current || !stillSameBinding) return;
     runHookAction(() => window.electronAPI.hookControl.revokeTeam(target.teamId));
   };
@@ -906,13 +979,13 @@ export function HookConnectionsSection() {
    * toggle 视觉开态:
    *   - 单绑定(老 server): 绑定已确认(连接 + 绑定齐备才算"开") —— enabled 只是
    *     持久化的意图, 连接中 / 授权中 / 待安装期间开关显示为关;
-   *   - multi-team: 有可用绑定即算"开"(不再要求单一 confirmed); 首次 0 绑定
-   *     授权中仍显示关+「授权中…」, 与现状一致。
+   *   - multi-team: 有 Bot 绑定或通讯授权（含显式关闭）即算"开"；仅有展示缓存
+   *     不算稳定连接，首次授权中仍显示关+「授权中…」。
    * 两种模式都用绑定快照而非连接态承载开态 —— 断线重连的瞬时抖动不弹开关
    * (连接状态由左侧状态点与状态行表达, 规则 7 不跳变)。
    */
   const toggleChecked = multiUi
-    ? hook.enabled && activeTeams.length > 0
+    ? hook.enabled && (activeTeams.length > 0 || communicationTeams.length > 0)
     : hook.enabled && hook.binding?.state === 'confirmed';
   /** 在途态(意图已开但尚无可用绑定): 此时再点 toggle = 取消本轮流程(关回)。 */
   const toggleInProgress = hook.enabled && !toggleChecked;
@@ -926,54 +999,58 @@ export function HookConnectionsSection() {
     bindingState === 'expired' ||
     bindingState === 'failed' ||
     bindingState === 'revoked';
-  // 顶部状态行合并的绑定态(仅连上时有意义; 失败态走下方错误行, 不并进这里;
-  // "等安装"是保持在线的中间态, 单独给「待安装 App」)。multi-team 分支:
+  // 顶部状态行的绑定态独立于 transport: 已绑定账号在重连/错误/待机时仍是已绑定。
+  // 失败态走下方错误行; "等安装"单独给「待安装 App」。multi-team 分支:
   // 单个绑定沿用「已绑定 {team} @{user}」; 多个绑定/有待处理项给数量摘要。
-  const bindingLabel =
-    hook.status !== 'connected'
-      ? null
-      : multiUi
-        ? activeTeams.length === 1 && pendingIssueCount === 0
-          ? t('settings.remoteControl.hook.statusBoundTeam', {
-              name: activeTeams[0].slackUserName ?? activeTeams[0].slackUserId,
-              team: activeTeams[0].teamName ?? activeTeams[0].teamId,
-            })
-          : activeTeams.length > 0
-            ? `${t('settings.remoteControl.hook.multi.statusWorkspaces', { count: activeTeams.length })}${
-                pendingIssueCount > 0
-                  ? t('settings.remoteControl.hook.multi.statusPendingSuffix', {
-                      count: pendingIssueCount,
-                    })
-                  : ''
-              }`
-            : hook.pendingBind?.state === 'pending'
-              ? t('settings.remoteControl.hook.authorizing')
-              : isNotInstalled
-                ? t('settings.remoteControl.hook.notInstalled.status')
-                : t('settings.remoteControl.hook.statusUnbound')
-        : bindingState === 'confirmed'
-          ? hook.binding?.teamName
-            ? t('settings.remoteControl.hook.statusBoundTeam', {
-                name: hook.binding?.slackUserName ?? hook.binding?.slackUserId ?? '',
-                team: hook.binding.teamName,
-              })
-            : t('settings.remoteControl.hook.statusBound', {
-                name: hook.binding?.slackUserName ?? hook.binding?.slackUserId ?? '',
-              })
-          : bindingState === 'pending'
-            ? t('settings.remoteControl.hook.authorizing')
-            : isNotInstalled
-              ? t('settings.remoteControl.hook.notInstalled.status')
-              : t('settings.remoteControl.hook.statusUnbound');
+  const bindingLabel = multiUi
+    ? activeTeams.length === 1 && pendingIssueCount === 0
+      ? t('settings.remoteControl.hook.statusBoundTeam', {
+          name: activeTeams[0].slackUserName ?? activeTeams[0].slackUserId,
+          team: activeTeams[0].teamName ?? activeTeams[0].teamId,
+        })
+      : activeTeams.length > 0
+        ? `${t('settings.remoteControl.hook.multi.statusWorkspaces', { count: activeTeams.length })}${
+            pendingIssueCount > 0
+              ? t('settings.remoteControl.hook.multi.statusPendingSuffix', {
+                  count: pendingIssueCount,
+                })
+              : ''
+          }`
+        : hook.pendingBind?.state === 'pending'
+          ? t('settings.remoteControl.hook.authorizing')
+          : isNotInstalled
+            ? t('settings.remoteControl.hook.notInstalled.status')
+            : communicationTeams.length > 0
+              ? t(communicationTeams.some((b) => b.communicationsEnabled)
+                  ? 'settings.remoteControl.hook.multi.communicationsActive'
+                  : 'settings.remoteControl.hook.multi.communicationsInactive')
+              : t('settings.remoteControl.hook.statusUnbound')
+    : bindingState === 'confirmed'
+      ? hook.binding?.teamName
+        ? t('settings.remoteControl.hook.statusBoundTeam', {
+            name: hook.binding?.slackUserName ?? hook.binding?.slackUserId ?? '',
+            team: hook.binding.teamName,
+          })
+        : t('settings.remoteControl.hook.statusBound', {
+            name: hook.binding?.slackUserName ?? hook.binding?.slackUserId ?? '',
+          })
+      : bindingState === 'pending'
+        ? t('settings.remoteControl.hook.authorizing')
+        : isNotInstalled
+          ? t('settings.remoteControl.hook.notInstalled.status')
+          : t('settings.remoteControl.hook.statusUnbound');
   /**
    * Slack 卡收起行摘要: 关闭态且本地还留有绑定(multi-team 关开关不清绑定)
    * 时给「已关闭 · N 个 workspace 绑定已保留」, 其余用绑定摘要(连接状态由
    * 徽章单独承载, 不再拼接)。
    */
-  const slackSummary =
+  const slackBindingSummary =
     !hook.enabled && multiUi && hook.bindings.length > 0
       ? t('settings.remoteControl.hook.multi.statusOffKept', { count: hook.bindings.length })
       : bindingLabel;
+  const slackSummary = t('settings.remoteControl.hook.accountStatus', {
+    status: slackBindingSummary ?? t('settings.remoteControl.hook.statusUnbound'),
+  });
   // transport 的稳定错误标识换成人话；其它瞬时网络错误保留原文供诊断。
   const errorText =
     hook.lastError === 'not logged in'
@@ -1175,18 +1252,14 @@ export function HookConnectionsSection() {
           <div className="flex items-center gap-2 text-11 text-[var(--text-tertiary)]">
             <span>{prefsState.hint}</span>
             {prefsState.retry !== null && (
-              <button
-                type="button"
-                onClick={prefsState.retry}
-                className="rounded-md border border-[var(--border-default)] px-2 py-0.5 text-11 text-[var(--text-secondary)]"
-              >
+              <Button variant="secondary" size="xs" compact type="button" onClick={prefsState.retry}>
                 {t('settings.tina.prefs.retry')}
-              </button>
+              </Button>
             )}
           </div>
         )}
-        {/* row 形态: 整个目录清单是一组单选 —— 选中的那个就是默认工作目录。
-            aria 分组挂在这里, 各行头部的 role="radio" 按钮是它的选项。 */}
+        {/* 逐条列出**这次实际会清掉的全部** override(见 legacyOverrideRows 注释):
+            只报当前 agent 的模型, 等于让用户在不知道范围的情况下改掉目录路由。 */}
         <div
           className="flex flex-col gap-2"
           {...(defaultWorkspace?.mode === 'row'
@@ -1197,100 +1270,103 @@ export function HookConnectionsSection() {
               }
             : {})}
         >
-        {/* 内置「对话」伪目录: 与真实目录同级, 常驻第一位, 不可改名/删除;
+          {/* 内置「对话」伪目录: 与真实目录同级, 常驻第一位, 不可改名/删除;
             Slack 那头对应保留别名 chat, 偏好与 /model 选 chat 同一份 */}
-        <div className="flex flex-col gap-2 rounded-xl border border-[var(--border-default)] p-2.5">
-          <div className="flex items-center gap-1.5">
-            {defaultWorkspace?.mode === 'row' ? (
-              <DefaultWorkspaceRadio
-                selected={defaultWorkspace.value === null}
-                label={t('settings.remoteControl.hook.form.defaultWorkspaceRadioAria', {
-                  name: t('settings.tina.chat.title'),
-                })}
-                onSelect={() => void setProviderDefaultWorkspace(defaultWorkspace.provider, null)}
-              />
-            ) : null}
-            <span className="w-36 shrink-0 px-2.5 py-1.5 text-13 font-medium text-[var(--text-primary)]">
-              {t('settings.tina.chat.title')}
-            </span>
-            <span className="min-w-0 flex-1 truncate text-12 text-[var(--text-tertiary)]">
-              {t('settings.tina.chat.description')}
-            </span>
-          </div>
-          <WorkspacePrefsEditor
-            alias={HOOK_CHAT_WORKSPACE_ALIAS}
-            state={prefsState}
-            maxVisibleModelRows={chatMaxVisibleModelRows}
-          />
-        </div>
-        {rows.map((row, i) => (
-          <div
-            key={row.dir}
-            className="flex flex-col gap-2 rounded-xl border border-[var(--border-default)] p-2.5"
-          >
+          <div className="flex flex-col gap-2 rounded-xl border border-[var(--border-default)] p-2.5">
             <div className="flex items-center gap-1.5">
               {defaultWorkspace?.mode === 'row' ? (
                 <DefaultWorkspaceRadio
-                  // **只认已保存的 alias → dir 映射**, 不看输入框里的临时值: 别名改了
-                  // 但还没 blur 落盘时, 拿它当选中判据会把未保存的名字显示成已选中,
-                  // 点下去还会把 workspaces 里不存在的别名发给 store(直接抛校验错)。
-                  // 未保存的新行(还没有对应映射)不给选 —— 先落盘再设默认。
-                  selected={
-                    savedAliasOf(row.dir) !== null &&
-                    defaultWorkspace.value === savedAliasOf(row.dir)
-                  }
-                  disabled={savedAliasOf(row.dir) === null}
+                  selected={defaultWorkspace.value === null}
                   label={t('settings.remoteControl.hook.form.defaultWorkspaceRadioAria', {
-                    name: savedAliasOf(row.dir) ?? row.alias.trim(),
+                    name: t('settings.tina.chat.title'),
                   })}
-                  onSelect={() => {
-                    const saved = savedAliasOf(row.dir);
-                    if (saved === null) return;
-                    void setProviderDefaultWorkspace(defaultWorkspace.provider, saved);
-                  }}
+                  onSelect={() => void setProviderDefaultWorkspace(defaultWorkspace.provider, null)}
                 />
               ) : null}
-              <input
-                value={row.alias}
-                onChange={(e) => {
-                  const next = rows.slice();
-                  next[i] = { ...next[i], alias: e.target.value };
-                  setRows(next);
-                }}
-                onBlur={() => void saveWorkspaces(rows)}
-                maxLength={32}
-                className="shrink-0 w-36 rounded-lg border border-transparent px-2.5 py-1.5 text-13 text-[var(--settings-input-text)] bg-transparent outline-none hover:border-[var(--border-default)] focus:border-[var(--border-default)] transition-colors"
-              />
-              <button
-                type="button"
-                onClick={() => void handleChangeDir(i)}
-                title={t('settings.remoteControl.hook.form.changeDir')}
-                className="min-w-0 flex-1 truncate text-left text-12 text-[var(--text-tertiary)] transition-colors hover:text-[var(--text-primary)]"
-              >
-                {row.dir}
-              </button>
-              <button
-                type="button"
-                onClick={() => void handleRemoveWorkspace(i)}
-                aria-label={t('settings.remoteControl.hook.form.removeWorkspace')}
-                className="shrink-0 rounded-md p-1.5 text-[var(--text-tertiary)] transition-colors hover:text-[var(--text-primary)]"
-              >
-                <Trash2 size={13} />
-              </button>
+              <span className="w-36 shrink-0 px-2.5 py-1.5 text-13 font-medium text-[var(--text-primary)]">
+                {t('settings.tina.chat.title')}
+              </span>
+              <span className="min-w-0 flex-1 truncate text-12 text-[var(--text-tertiary)]">
+                {t('settings.tina.chat.description')}
+              </span>
             </div>
-            {/* 会话偏好编辑行: 偏好按别名归属(与 Slack /model 卡同键) */}
-            <WorkspacePrefsEditor alias={row.alias.trim()} state={prefsState} />
+            <WorkspacePrefsEditor
+              alias={HOOK_CHAT_WORKSPACE_ALIAS}
+              state={prefsState}
+              maxVisibleModelRows={chatMaxVisibleModelRows}
+            />
           </div>
-        ))}
+          {rows.map((row, i) => (
+            <div
+              key={row.dir}
+              className="flex flex-col gap-2 rounded-xl border border-[var(--border-default)] p-2.5"
+            >
+              <div className="flex items-center gap-1.5">
+                {defaultWorkspace?.mode === 'row' ? (
+                  <DefaultWorkspaceRadio
+                    // **只认已保存的 alias → dir 映射**, 不看输入框里的临时值: 别名改了
+                    // 但还没 blur 落盘时, 拿它当选中判据会把未保存的名字显示成已选中,
+                    // 点下去还会把 workspaces 里不存在的别名发给 store(直接抛校验错)。
+                    // 未保存的新行(还没有对应映射)不给选 —— 先落盘再设默认。
+                    selected={
+                      savedAliasOf(row.dir) !== null &&
+                      defaultWorkspace.value === savedAliasOf(row.dir)
+                    }
+                    disabled={savedAliasOf(row.dir) === null}
+                    label={t('settings.remoteControl.hook.form.defaultWorkspaceRadioAria', {
+                      name: savedAliasOf(row.dir) ?? row.alias.trim(),
+                    })}
+                    onSelect={() => {
+                      const saved = savedAliasOf(row.dir);
+                      if (saved === null) return;
+                      void setProviderDefaultWorkspace(defaultWorkspace.provider, saved);
+                    }}
+                  />
+                ) : null}
+                <input
+                  value={row.alias}
+                  onChange={(e) => {
+                    const next = rows.slice();
+                    next[i] = { ...next[i], alias: e.target.value };
+                    setRows(next);
+                  }}
+                  onBlur={() => void saveWorkspaces(rows)}
+                  maxLength={32}
+                  className="shrink-0 w-36 rounded-lg border border-transparent px-2.5 py-1.5 text-13 text-[var(--settings-input-text)] bg-transparent outline-none hover:border-[var(--border-default)] focus:border-[var(--border-default)] transition-colors"
+                />
+                <button
+                  type="button"
+                  onClick={() => void handleChangeDir(i)}
+                  title={t('settings.remoteControl.hook.form.changeDir')}
+                  className="min-w-0 flex-1 truncate text-left text-12 text-[var(--text-tertiary)] transition-colors hover:text-[var(--text-primary)]"
+                >
+                  {row.dir}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleRemoveWorkspace(i)}
+                  aria-label={t('settings.remoteControl.hook.form.removeWorkspace')}
+                  className="shrink-0 rounded-md p-1.5 text-[var(--text-tertiary)] transition-colors hover:text-[var(--text-primary)]"
+                >
+                  <Trash2 size={13} />
+                </button>
+              </div>
+              {/* 会话偏好编辑行: 偏好按别名归属(与 Slack /model 卡同键) */}
+              <WorkspacePrefsEditor alias={row.alias.trim()} state={prefsState} />
+            </div>
+          ))}
         </div>
-        <button
+        <Button
+          variant="secondary"
+          size="sm"
+          compact
           type="button"
           onClick={() => void handleAddWorkspace()}
-          className="flex h-7 w-fit items-center gap-1.5 rounded-full border border-[var(--border-default)] px-3 text-12 text-[var(--text-secondary)] transition-colors hover:text-[var(--text-primary)]"
+          className="w-fit"
         >
           <Plus size={12} />
           {t('settings.remoteControl.hook.form.addWorkspace')}
-        </button>
+        </Button>
       </div>
     </>
   );
@@ -1365,80 +1441,90 @@ export function HookConnectionsSection() {
               {cs.inProgress && cs.binding?.connectUrl ? (
                 <>
                   {cs.actions.includes('open_connect_url') ? (
-                    <button
+                    <Button
+                      variant="secondary"
+                      size="xs"
+                      compact
                       type="button"
                       onClick={() => handleProviderOpen(provider, 'connect')}
-                      className={pillBtn}
                     >
                       {t(`settings.remoteControl.hook.${provider}.openApp`)}
-                    </button>
+                    </Button>
                   ) : null}
                   {cs.actions.includes('copy_connect_url') ? (
-                    <button
+                    <Button
+                      variant="secondary"
+                      size="xs"
+                      compact
                       type="button"
                       onClick={() => void handleCopyProviderLink(provider)}
-                      className={pillBtn}
                     >
                       {t('settings.remoteControl.hook.binding.copyLink')}
-                    </button>
+                    </Button>
                   ) : null}
                 </>
               ) : null}
               {cs.inProgress && cs.actions.includes('cancel') ? (
-                <button
+                <Button
+                  variant="secondary"
+                  size="xs"
+                  compact
                   type="button"
-                  onClick={() =>
-                    runHookAction(() => window.electronAPI.hookControl.providerBindCancel(provider))
-                  }
-                  className={pillBtn}
+                  onClick={() => runHookAction(() => window.electronAPI.hookControl.providerBindCancel(provider))}
                 >
                   {t(`settings.remoteControl.hook.${provider}.cancel`)}
-                </button>
+                </Button>
               ) : null}
               {cs.confirmed ? (
                 <>
                   {cs.actions.includes('open_provider') ? (
-                    <button
+                    <Button
+                      variant="secondary"
+                      size="xs"
+                      compact
                       type="button"
                       onClick={() => handleProviderOpen(provider, 'provider')}
-                      className={pillBtn}
                     >
                       {t(`settings.remoteControl.hook.${provider}.openBot`)}
-                    </button>
+                    </Button>
                   ) : null}
                   {cs.actions.includes('add_to_group') ? (
-                    <button
+                    <Button
+                      variant="secondary"
+                      size="xs"
+                      compact
                       type="button"
                       onClick={() => handleProviderOpen(provider, 'add-to-group')}
-                      className={pillBtn}
                     >
                       {t(`settings.remoteControl.hook.${provider}.addToGroup`)}
-                    </button>
+                    </Button>
                   ) : null}
                   {cs.actions.includes('revoke') ? (
-                    <button
+                    <Button
+                      variant="secondary"
+                      size="xs"
+                      compact
                       type="button"
                       onClick={() => void handleProviderUnlink(provider)}
-                      className={pillBtn}
                     >
                       {t(`settings.remoteControl.hook.${provider}.unlink`)}
-                    </button>
+                    </Button>
                   ) : null}
                 </>
               ) : cs.canStartLink ? (
-                <button
+                <Button
+                  variant="secondary"
+                  size="xs"
+                  compact
                   type="button"
-                  onClick={() =>
-                    runHookAction(() => window.electronAPI.hookControl.providerBindStart(provider))
-                  }
-                  className={pillBtn}
+                  onClick={() => runHookAction(() => window.electronAPI.hookControl.providerBindStart(provider))}
                 >
                   {t(
                     cs.state === 'none'
                       ? `settings.remoteControl.hook.${provider}.connect`
                       : `settings.remoteControl.hook.${provider}.retry`,
                   )}
-                </button>
+                </Button>
               ) : null}
             </div>
           ) : null}
@@ -1511,12 +1597,15 @@ export function HookConnectionsSection() {
         status={
           <ChannelStatusBadge
             tone={transportBadgeTone(hook.status)}
-            label={t(`settings.remoteControl.hook.status.${hook.status}`)}
+            label={t('settings.remoteControl.hook.transportStatus', {
+              status: t(`settings.remoteControl.hook.status.${hook.status}`),
+            })}
           />
         }
         headerAction={
           <Switch
             checked={toggleChecked}
+            disabled={slackAuthActionPending}
             onCheckedChange={(next) => {
               // 在途态(视觉关、意图开)点击会回传 next=true, 语义是"取消本轮
               // 授权/等待"而非重复开启 —— 统一关回; 其余情况按点击意图直传
@@ -1545,50 +1634,47 @@ export function HookConnectionsSection() {
             </span>
           ) : null}
 
-          {/* 单绑定授权中: 复制授权链接 —— 远程控制时 openExternal 落被控机,
-              复制到本机浏览器完成授权是兜底通路(规则 26)。浏览器已自动弹出,
-              摘要的「授权中…」即进度反馈; multi-team 列表模式的复制按钮在
-              下方 pending 行里 */}
+          {/* 逐条列出**这次实际会清掉的全部** override(见 legacyOverrideRows 注释):
+              只报当前 agent 的模型, 等于让用户在不知道范围的情况下改掉目录路由。 */}
           {hook.enabled && !multiUi && bindingState === 'pending' && hook.binding?.authorizeUrl ? (
             <div className="flex items-center gap-2 rounded-xl border border-dashed border-[var(--border-default)] px-2.5 py-2">
               <span className="min-w-0 flex-1 truncate text-12 text-[var(--text-tertiary)]">
                 {t('settings.remoteControl.hook.authorizing')}
               </span>
-              <button type="button" onClick={() => void handleCopyLink()} className={pillBtn}>
+              <Button variant="secondary" size="xs" compact type="button" onClick={() => void handleCopyLink()}>
                 {t('settings.remoteControl.hook.binding.copyLink')}
-              </button>
+              </Button>
             </div>
           ) : null}
 
-          {/* 授权检出 workspace 未安装 App(bind.update failed + reason=not-installed):
-              专属引导行 —— 安装是能用的前提, 给「安装 Slack App」按钮(302 直跳
-              Slack 安装授权页)+ 说明。安装成功与否无从主动探测, 装完重开开关走
-              新一轮授权即验证。远程控制时 openExternal 落被控机, 「复制链接」到
-              本机浏览器完成安装是兜底通路(规则 26)。multi-team 首绑失败时
-              manager 会 setEnabled(false) 弹回开关、列表区块随 enabled 消失, 故
-              这段独立于列表渲染(带「取消」入口的版本在下方列表区块内) */}
+          {/* 逐条列出**这次实际会清掉的全部** override(见 legacyOverrideRows 注释):
+              只报当前 agent 的模型, 等于让用户在不知道范围的情况下改掉目录路由。 */}
           {isNotInstalled && (!multiUi || !hook.enabled) ? (
             <div className="flex flex-col gap-1.5">
               <div className="flex items-center gap-2">
                 <span className="min-w-0 flex-1 text-11 leading-relaxed text-[var(--error-fg)]">
                   {t('settings.remoteControl.hook.notInstalled.title')}
                 </span>
-                <button
+                <Button
+                  variant="secondary"
+                  size="xs"
+                  compact
                   type="button"
                   onClick={() => {
                     if (installUrl) void window.electronAPI.openExternal(installUrl);
                   }}
-                  className={pillBtn}
                 >
                   {t('settings.remoteControl.hook.installApp')}
-                </button>
-                <button
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="xs"
+                  compact
                   type="button"
                   onClick={() => void handleCopyInstallLink()}
-                  className={pillBtn}
                 >
                   {t('settings.remoteControl.hook.binding.copyLink')}
-                </button>
+                </Button>
               </div>
               <span className="text-11 leading-relaxed text-[var(--text-tertiary)]">
                 {hook.enabled
@@ -1599,13 +1685,32 @@ export function HookConnectionsSection() {
           ) : null}
 
           {/* 取消授权 / 授权失败 / 超时 / 被新设备顶掉: 开关已自动弹回, 显示原因;
-              绑定记录保留, 重新打开开关即自动重连并(未绑定时)重新发起授权 */}
+              绑定记录保留, 显式重新授权入口复用开关的启用与浏览器授权流程 */}
           {!multiUi && isBindingFailure && !isNotInstalled ? (
             <div className="flex flex-col gap-1">
-              <span className="text-11 leading-relaxed text-[var(--error-fg)]">
-                {hook.binding?.message ??
-                  t(`settings.remoteControl.hook.binding.state.${bindingState}`)}
-              </span>
+              <div className="flex items-center gap-2">
+                <span className="min-w-0 flex-1 text-11 leading-relaxed text-[var(--error-fg)]">
+                  {bindingState === 'denied'
+                    ? t('settings.remoteControl.hook.binding.state.denied')
+                    : (hook.binding?.message ??
+                      t(`settings.remoteControl.hook.binding.state.${bindingState}`))}
+                </span>
+                <Button
+                  variant="secondary"
+                  size="xs"
+                  compact
+                  type="button"
+                  onClick={() => handleReauthorize('enable')}
+                  disabled={slackAuthActionPending}
+                  aria-busy={slackAuthActionPending}
+                >
+                  {t(
+                    slackAuthActionPending
+                      ? 'settings.remoteControl.hook.binding.reauthorizing'
+                      : 'settings.remoteControl.hook.binding.reauthorize',
+                  )}
+                </Button>
+              </div>
               <span className="text-11 leading-relaxed text-[var(--text-tertiary)]">
                 {t('settings.remoteControl.hook.binding.retryHint')}
               </span>
@@ -1621,10 +1726,29 @@ export function HookConnectionsSection() {
           hook.pendingBind !== null &&
           hook.pendingBind.state !== 'pending' ? (
             <div className="flex flex-col gap-1">
-              <span className="text-11 leading-relaxed text-[var(--error-fg)]">
-                {hook.pendingBind.message ??
-                  t(`settings.remoteControl.hook.binding.state.${hook.pendingBind.state}`)}
-              </span>
+              <div className="flex items-center gap-2">
+                <span className="min-w-0 flex-1 text-11 leading-relaxed text-[var(--error-fg)]">
+                  {hook.pendingBind.state === 'denied'
+                    ? t('settings.remoteControl.hook.binding.state.denied')
+                    : (hook.pendingBind.message ??
+                      t(`settings.remoteControl.hook.binding.state.${hook.pendingBind.state}`))}
+                </span>
+                <Button
+                  variant="secondary"
+                  size="xs"
+                  compact
+                  type="button"
+                  onClick={() => handleReauthorize('enable')}
+                  disabled={slackAuthActionPending}
+                  aria-busy={slackAuthActionPending}
+                >
+                  {t(
+                    slackAuthActionPending
+                      ? 'settings.remoteControl.hook.binding.reauthorizing'
+                      : 'settings.remoteControl.hook.binding.reauthorize',
+                  )}
+                </Button>
+              </div>
               <span className="text-11 leading-relaxed text-[var(--text-tertiary)]">
                 {t('settings.remoteControl.hook.binding.retryHint')}
               </span>
@@ -1640,7 +1764,7 @@ export function HookConnectionsSection() {
               {hook.bindings.map((b) => (
                 <div
                   key={b.teamId}
-                  className="flex items-center gap-2 rounded-xl border border-[var(--border-default)] px-2.5 py-2"
+                  className="flex flex-wrap items-center gap-2 rounded-xl border border-[var(--border-default)] px-2.5 py-2"
                 >
                   <div className="flex min-w-0 flex-1 flex-col gap-0.5">
                     <span className="truncate text-13 font-medium text-[var(--text-primary)]">
@@ -1653,18 +1777,29 @@ export function HookConnectionsSection() {
                   {b.displaced ? (
                     <>
                       {/* 被另一台设备顶掉: 标注 + 重新绑定(pin 到该 team 的授权页) */}
-                      <span className="shrink-0 text-11 text-[var(--error-fg)]">
-                        {t('settings.remoteControl.hook.multi.displaced')}
+                      <span className={`shrink-0 text-11 ${b.communicationsEnabled !== undefined ? 'text-[var(--text-tertiary)]' : 'text-[var(--error-fg)]'}`}>
+                        {t(b.communicationsEnabled !== undefined ? 'settings.remoteControl.hook.multi.botNotReceiving' : 'settings.remoteControl.hook.multi.displaced')}
                       </span>
-                      <button
+                      <Button
+                        variant="secondary"
+                        size="xs"
+                        compact
                         type="button"
                         onClick={() =>
-                          runHookAction(() => window.electronAPI.hookControl.rebindTeam(b.teamId))
+                          runSlackAuthAction(
+                            () => window.electronAPI.hookControl.rebindTeam(b.teamId),
+                            'settings.remoteControl.hook.toast.actionFailed',
+                            true,
+                          )
                         }
-                        className={pillBtn}
+                        disabled={slackAuthActionPending}
                       >
-                        {t('settings.remoteControl.hook.multi.rebind')}
-                      </button>
+                        {t(
+                          b.communicationsEnabled !== undefined
+                            ? 'settings.remoteControl.hook.multi.receiveBot'
+                            : 'settings.remoteControl.hook.multi.rebind',
+                        )}
+                      </Button>
                     </>
                   ) : null}
                   <button
@@ -1675,6 +1810,21 @@ export function HookConnectionsSection() {
                   >
                     <Trash2 size={13} />
                   </button>
+                  {hook.serverSlackCommunications ? (
+                    <label className="flex basis-full items-center justify-between gap-2 text-12 text-[var(--text-secondary)]">
+                      {t('settings.remoteControl.hook.multi.localCommunications')}
+                      <Switch
+                        checked={b.communicationsEnabled === true}
+                        disabled={hook.status !== 'connected' || slackAuthActionPending || hook.pendingBind?.state === 'pending'}
+                        onCheckedChange={(enabled) => runSlackAuthAction(
+                          () => window.electronAPI.hookControl.setSlackCommunications(b.teamId, enabled),
+                          'settings.remoteControl.hook.toast.actionFailed',
+                          true,
+                        )}
+                        aria-label={t('settings.remoteControl.hook.multi.localCommunications')}
+                      />
+                    </label>
+                  ) : null}
                 </div>
               ))}
               {hook.pendingBind?.state === 'pending' ? (
@@ -1683,19 +1833,25 @@ export function HookConnectionsSection() {
                     {t('settings.remoteControl.hook.authorizing')}
                   </span>
                   {hook.pendingBind.authorizeUrl ? (
-                    <button type="button" onClick={() => void handleCopyLink()} className={pillBtn}>
+                    <Button variant="secondary" size="xs" compact type="button" onClick={() => void handleCopyLink()}>
                       {t('settings.remoteControl.hook.binding.copyLink')}
-                    </button>
+                    </Button>
                   ) : null}
-                  <button
+                  <Button
+                    variant="secondary"
+                    size="xs"
+                    compact
                     type="button"
                     onClick={() =>
-                      runHookAction(() => window.electronAPI.hookControl.cancelPendingBind())
+                      runSlackAuthAction(
+                        () => window.electronAPI.hookControl.cancelPendingBind(),
+                        'settings.remoteControl.hook.toast.actionFailed',
+                      )
                     }
-                    className={pillBtn}
+                    disabled={slackAuthActionPending}
                   >
                     {t('settings.remoteControl.hook.multi.cancelPending')}
-                  </button>
+                  </Button>
                 </div>
               ) : null}
               {/* 未安装引导行(添加的 workspace 没装 App; 确认框逻辑与单绑定共用) */}
@@ -1705,31 +1861,41 @@ export function HookConnectionsSection() {
                     <span className="min-w-0 flex-1 text-11 leading-relaxed text-[var(--error-fg)]">
                       {t('settings.remoteControl.hook.notInstalled.title')}
                     </span>
-                    <button
+                    <Button
+                      variant="secondary"
+                      size="xs"
+                      compact
                       type="button"
                       onClick={() => {
                         if (installUrl) void window.electronAPI.openExternal(installUrl);
                       }}
-                      className={pillBtn}
                     >
                       {t('settings.remoteControl.hook.installApp')}
-                    </button>
-                    <button
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      size="xs"
+                      compact
                       type="button"
                       onClick={() => void handleCopyInstallLink()}
-                      className={pillBtn}
                     >
                       {t('settings.remoteControl.hook.binding.copyLink')}
-                    </button>
-                    <button
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      size="xs"
+                      compact
                       type="button"
                       onClick={() =>
-                        runHookAction(() => window.electronAPI.hookControl.cancelPendingBind())
+                        runSlackAuthAction(
+                          () => window.electronAPI.hookControl.cancelPendingBind(),
+                          'settings.remoteControl.hook.toast.actionFailed',
+                        )
                       }
-                      className={pillBtn}
+                      disabled={slackAuthActionPending}
                     >
                       {t('settings.remoteControl.hook.multi.cancelPending')}
-                    </button>
+                    </Button>
                   </div>
                   <span className="text-11 leading-relaxed text-[var(--text-tertiary)]">
                     {t('settings.remoteControl.hook.notInstalled.waitingHint')}
@@ -1750,35 +1916,82 @@ export function HookConnectionsSection() {
                             hook.pendingBind.teamId ??
                             '',
                         })
-                      : (hook.pendingBind.message ??
-                        t(`settings.remoteControl.hook.binding.state.${hook.pendingBind.state}`))}
+                      : hook.pendingBind.state === 'denied'
+                        ? t('settings.remoteControl.hook.binding.state.denied')
+                        : (hook.pendingBind.message ??
+                          t(`settings.remoteControl.hook.binding.state.${hook.pendingBind.state}`))}
                   </span>
-                  <button
+                  <Button
+                    variant="secondary"
+                    size="xs"
+                    compact
+                    type="button"
+                    onClick={() => {
+                      const pending = hook.pendingBind;
+                      // 重试入口由发起意图决定, 不能靠 teamId 猜: add 流的终止态
+                      // (denied/expired/failed/already-bound)即使 server 回显 teamId
+                      // 也是「新增」失败, 重试必须回 add 流程让授权页可切换 workspace;
+                      // 只有发起时就 pin 到 team 的定向重绑才走 rebindTeam。
+                      if (pending?.purpose === 'communications' && pending.teamId) {
+                        handleReauthorize('communications', pending.teamId);
+                        return;
+                      }
+                      const rebindIntent = pending?.intent === 'rebind';
+                      handleReauthorize(
+                        rebindIntent ? 'rebind' : 'add',
+                        rebindIntent ? (pending?.teamId ?? undefined) : undefined,
+                      );
+                    }}
+                    disabled={slackAuthActionPending}
+                    aria-busy={slackAuthActionPending}
+                  >
+                    {t(
+                      slackAuthActionPending
+                        ? 'settings.remoteControl.hook.binding.reauthorizing'
+                        : 'settings.remoteControl.hook.binding.reauthorize',
+                    )}
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="xs"
+                    compact
                     type="button"
                     onClick={() =>
-                      runHookAction(() => window.electronAPI.hookControl.cancelPendingBind())
+                      runSlackAuthAction(
+                        () => window.electronAPI.hookControl.cancelPendingBind(),
+                        'settings.remoteControl.hook.toast.actionFailed',
+                      )
                     }
-                    className={pillBtn}
+                    disabled={slackAuthActionPending}
                   >
                     {t('settings.remoteControl.hook.multi.dismiss')}
-                  </button>
+                  </Button>
                 </div>
               ) : null}
               {hook.serverMultiTeam ? (
-                <button
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  compact
                   type="button"
-                  onClick={() => runHookAction(() => window.electronAPI.hookControl.addBinding())}
-                  className="flex h-7 w-fit items-center gap-1.5 rounded-full border border-[var(--border-default)] px-3 text-12 text-[var(--text-secondary)] transition-colors hover:text-[var(--text-primary)]"
+                  onClick={() =>
+                    runSlackAuthAction(
+                      () => window.electronAPI.hookControl.addBinding(),
+                      'settings.remoteControl.hook.toast.actionFailed',
+                      true,
+                    )
+                  }
+                  disabled={slackAuthActionPending}
                 >
                   <Plus size={12} />
                   {t('settings.remoteControl.hook.multi.addWorkspace')}
-                </button>
+                </Button>
               ) : null}
             </div>
           ) : null}
 
-          {/* 单绑定已完成: 说明开关的反向语义(关 = 解绑, 重开需再授权),
-              避免展开区空白 */}
+          {/* 逐条列出**这次实际会清掉的全部** override(见 legacyOverrideRows 注释):
+              只报当前 agent 的模型, 等于让用户在不知道范围的情况下改掉目录路由。 */}
           {hook.enabled && !multiUi && bindingState === 'confirmed' ? (
             <span className="text-11 leading-relaxed text-[var(--text-tertiary)]">
               {t('settings.remoteControl.hook.slackBoundHint')}

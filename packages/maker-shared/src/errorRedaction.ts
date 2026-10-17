@@ -52,6 +52,9 @@ const DETERMINISTIC_USAGE_EXHAUSTION_PATTERNS = [
   /\b(?:exceeded[-_]?budget|budget[-_]?exceeded)\b/i,
   /\b(?:account|session|usage)\s+budget\b.{0,16}\b(?:exhausted|exceeded)\b/i,
   /\b(?:exhausted|exceeded)\b.{0,16}\b(?:account|session|usage)\s+budget\b/i,
+  // ChatGPT workspace member spend cap (Codex): "You hit your spend cap set by the
+  // owner of your workspace". The owner must raise it; waiting does not help.
+  /\bspend(?:ing)?[-_ ]?cap\b/i,
   /余额不足|欠费/i,
 ];
 
@@ -165,4 +168,74 @@ function matchHeaderField(
   cursor += 1;
   while (/\s/.test(input[cursor] ?? '')) cursor += 1;
   return cursor;
+}
+
+/**
+ * LiteLLM 虚拟 Key 401：请求带的网关 token 不在 VerificationTokenTable。
+ * 与 Claude.ai / Codex 订阅 401 不是同一类，不能当成「去重新登录第三方」。
+ */
+export const GATEWAY_PROXY_TOKEN_INVALID_REASON = 'gateway-proxy-token-invalid';
+
+/** Cindy 内置网关：显式 `xd`，或旧会话未写 provider 的隐式默认来源。 */
+export function isCindyGatewayProviderId(providerId: string | null | undefined): boolean {
+  return providerId == null || providerId === 'xd';
+}
+
+export function isGatewayProxyTokenInvalidError(message: string): boolean {
+  if (!message) return false;
+  return /invalid[\s_-]*proxy[\s_-]*server[\s_-]*token|LiteLLM_VerificationTokenTable/i.test(
+    message,
+  );
+}
+
+export function isCindyGatewayProxyTokenInvalidError(input: {
+  reason?: string | null;
+  message?: string | null;
+  providerId?: string | null;
+}): boolean {
+  if (input.reason === GATEWAY_PROXY_TOKEN_INVALID_REASON) return true;
+  return (
+    isCindyGatewayProviderId(input.providerId) &&
+    isGatewayProxyTokenInvalidError(input.message ?? '')
+  );
+}
+
+/** The Lite transport rejects an omitted parallel-tool flag; this is a client request error, not auth. */
+export function isResponsesLiteParallelToolCallsError(message: string): boolean {
+  return /X-OpenAI-Internal-Codex-Responses-Lite requires `?parallel_tool_calls`? to be false\./i.test(message);
+}
+
+/** UI-only recovery offer. A premature close does not establish an encryption failure. */
+export function canOfferCodexHistoryRecovery(input: {
+  message: string;
+  agentKind?: string | null;
+  remoteHostId?: string | null;
+  agentDeviceId?: string | null;
+  running?: boolean;
+}): boolean {
+  return input.agentKind === 'codex' && !input.remoteHostId && !input.agentDeviceId &&
+    !input.running && /stream disconnected before completion:\s*stream closed before response\.completed\b/i.test(input.message);
+}
+
+const AGENT_CHAT_ERROR_CODES: ReadonlySet<string> = new Set([
+  'DEVICE_LINK_BUSY',
+  'DEVICE_LINK_CONTROL_DISABLED',
+  'DEVICE_LINK_MEDIA_TRANSFER_FAILED',
+  'AUTO_REVIEW_UNAVAILABLE',
+  'AUTO_REVIEW_CONFIRM_UNDELIVERED',
+  'MCP_APPROVAL_AUTO_BLOCKED',
+  'MCP_APPROVAL_CONFIRMATION_TIMEOUT',
+  'MCP_APPROVAL_CONFIRMATION_UNAVAILABLE',
+]);
+
+/** Parse the existing runtime error envelope, including Electron's IPC wrapper.
+ * A parsed code is only a translation candidate: unknown REMOTE codes must not
+ * promote their upstream fallback text into localized user-facing guidance.
+ */
+export function parseAgentErrorCode(message: string): { code: string; fallback: string } | null {
+  const match = /(?:^|: Error: )\[([A-Z0-9_]+)\]\s*([\s\S]*)$/.exec(message);
+  if (!match || (!/^REMOTE_[A-Z_]+$/.test(match[1]) && !AGENT_CHAT_ERROR_CODES.has(match[1]))) {
+    return null;
+  }
+  return { code: match[1], fallback: match[2] || message };
 }

@@ -6,6 +6,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const capabilities = vi.hoisted(() => ({ canUseDeviceLink: true }));
 
+// Transport windows are outside this in-memory IPC handler harness.
+vi.mock('../device-link/filePeer', () => ({
+  tryUploadPeerAttachment: vi.fn(async () => null),
+}));
+
 // electron / serverApiClient / device-link host 全部替换为测试替身,
 // 只测 handler 纯函数体
 vi.mock('electron', () => ({
@@ -35,6 +40,13 @@ vi.mock('./index', () => ({
   remoteUnsubscribe: vi.fn(),
   disconnectAllControllers: vi.fn(),
   broadcast: vi.fn(),
+  applyControllerPresenceListSnapshot: vi.fn(),
+  captureControllerDisplayNameRequestEpoch: () => 0,
+  captureControllerPresenceRequestEpoch: () => 0,
+  readControllerDisplayNameFreshnessSince: () => ({
+    changedAfterRequest: false,
+    authoritativeName: null,
+  }),
 }));
 vi.mock('../device-link/index', () => ({
   getDeviceLinkStatus: () => 'online',
@@ -46,6 +58,13 @@ vi.mock('../device-link/index', () => ({
   remoteUnsubscribe: vi.fn(),
   disconnectAllControllers: vi.fn(),
   broadcast: vi.fn(),
+  applyControllerPresenceListSnapshot: vi.fn(),
+  captureControllerDisplayNameRequestEpoch: () => 0,
+  captureControllerPresenceRequestEpoch: () => 0,
+  readControllerDisplayNameFreshnessSince: () => ({
+    changedAfterRequest: false,
+    authoritativeName: null,
+  }),
 }));
 vi.mock('../device-link/dispatch', () => ({
   getActiveControllers: () => [],
@@ -90,10 +109,23 @@ import {
   retryUnsubscribeAfterWindowGone,
   type DeviceLinkIpcDeps,
 } from '../device-link/ipc';
-import { DeviceLinkError } from '@cindy/device-link';
+import { DeviceLinkError, PLUGIN_OAUTH_CHANNEL, PLUGIN_SECRET_LOCAL_CHANNEL } from '@cindy/device-link';
+import { MCP_APPS_INVOKE } from '../../shared/mcpApps.js';
+import { invokeWithClosedLinkRecovery } from '../device-link/linkRecovery';
 import { ServerApiError } from '../serverApiClient';
-import { __testing as settingsTesting } from '../device-link/settings-store';
+import { createIpcError } from '../../shared/ipc-errors';
+import { ReviewArtifactAuthorizationError } from '../reviewer/reviewArtifactAuthorization';
+import {
+  __testing as settingsTesting,
+  normalizeCachedDeviceName,
+} from '../device-link/settings-store';
 import { __testing as refcountTesting } from '../device-link/subscriptionRefcount';
+import {
+  applyControllerDisplayNamePresence,
+  createControllerDisplayNameFreshnessTracker,
+  getControllerDisplayNameFreshnessSince,
+  resetControllerDisplayNameFreshness,
+} from '../device-link/controllerDisplayNameFreshness';
 
 function makeDeps(overrides?: Partial<DeviceLinkIpcDeps>): DeviceLinkIpcDeps {
   return {
@@ -124,11 +156,28 @@ function makeDeps(overrides?: Partial<DeviceLinkIpcDeps>): DeviceLinkIpcDeps {
     broadcast: vi.fn(),
     readLastKnownDeviceNames: vi.fn(() => ({})),
     rememberLastKnownDeviceName: vi.fn(async () => false),
+    forgetLastKnownDeviceName: vi.fn(async () => false),
+    applyControllerDisplayNameListSnapshot: vi.fn(),
+    applyControllerPresenceListSnapshot: vi.fn(),
+    beginControllerDisplayNameDirectoryRefresh: vi.fn(() => 1),
+    captureControllerDisplayNameRequestEpoch: vi.fn(() => 0),
+    captureControllerPresenceRequestEpoch: vi.fn(() => 0),
+    isLatestControllerDisplayNameDirectoryRefresh: vi.fn(() => true),
+    waitForNewerControllerDisplayNameDirectoryRefresh: vi.fn(async () => {}),
+    readControllerDisplayNameFreshnessSince: vi.fn(() => ({
+      changedAfterRequest: false,
+      authoritativeName: null,
+    })),
     ...overrides,
   };
 }
 
 describe('device-link IPC handlers', () => {
+  it.each([PLUGIN_OAUTH_CHANNEL, PLUGIN_SECRET_LOCAL_CHANNEL])('never forwards %s from the generic Renderer tunnel', async channel => {
+    const deps = makeDeps();
+    await expect(handleInvoke(deps, 'cloud', channel, [{ op: 'capabilities' }])).rejects.toThrow('PERMISSION_DENIED');
+    expect(deps.invoke).not.toHaveBeenCalled();
+  });
   beforeEach(() => {
     refcountTesting.reset(); // 多窗口订阅引用计数:每个用例独立
     capabilities.canUseDeviceLink = true;
@@ -265,6 +314,119 @@ describe('device-link IPC handlers', () => {
     await expect(handleListDevices(depsNet)).rejects.toThrowError(/\[DEVICE_LINK_UNAVAILABLE\]/);
   });
 
+  it.each([
+    ['旧数据库名', '新数据库名', '新数据库名'],
+    ['', '新数据库名', '新数据库名'],
+    ['旧数据库名', null, 'Host.local'],
+  ] as const)(
+    'listDevices:被后台目录淘汰的旧响应(%s)等待后返回当前权威名(%s)',
+    async (name, authoritativeName, expectedName) => {
+      const applyControllerDisplayNameListSnapshot = vi.fn();
+      const applyControllerPresenceListSnapshot = vi.fn();
+      const rememberLastKnownDeviceName = vi.fn(async () => true);
+      const forgetLastKnownDeviceName = vi.fn(async () => true);
+      const waitForNewerControllerDisplayNameDirectoryRefresh = vi.fn(async () => {});
+      const deps = makeDeps({
+        apiFetch: vi.fn().mockResolvedValue({
+          devices: [
+            {
+              deviceId: 'dev-1',
+              name,
+              selfName: 'Host.local',
+              platform: 'darwin',
+              lastSeenAt: '2026-06-23T00:00:00.000Z',
+              online: true,
+              busy: false,
+              remoteControlEnabled: true,
+              controlEnabled: true,
+              isSelf: false,
+            },
+          ],
+        }),
+        applyControllerDisplayNameListSnapshot,
+        applyControllerPresenceListSnapshot,
+        rememberLastKnownDeviceName,
+        forgetLastKnownDeviceName,
+        beginControllerDisplayNameDirectoryRefresh: vi.fn(() => 1),
+        isLatestControllerDisplayNameDirectoryRefresh: vi.fn(() => false),
+        waitForNewerControllerDisplayNameDirectoryRefresh,
+        readControllerDisplayNameFreshnessSince: vi.fn(() => ({
+          changedAfterRequest: false,
+          authoritativeName,
+        })),
+      });
+
+      await expect(handleListDevices(deps)).resolves.toMatchObject({
+        devices: [{ name: expectedName }],
+      });
+
+      expect(waitForNewerControllerDisplayNameDirectoryRefresh).toHaveBeenCalledWith(1);
+      expect(applyControllerDisplayNameListSnapshot).not.toHaveBeenCalled();
+      expect(applyControllerPresenceListSnapshot).not.toHaveBeenCalled();
+      expect(rememberLastKnownDeviceName).not.toHaveBeenCalled();
+      expect(forgetLastKnownDeviceName).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['旧目录名', ''] as const)(
+    'listDevices:并发请求中新响应先返回时，晚到旧响应(%s)跟随新结果且不回写缓存',
+    async (oldName) => {
+      const resolvers: Array<(value: unknown) => void> = [];
+      const apiFetch: DeviceLinkIpcDeps['apiFetch'] = <T>() =>
+        new Promise<T>((resolve) => {
+          resolvers.push((value) => resolve(value as T));
+        });
+      const rememberLastKnownDeviceName = vi.fn(async () => true);
+      const forgetLastKnownDeviceName = vi.fn(async () => true);
+      const applyControllerDisplayNameListSnapshot = vi.fn();
+      const applyControllerPresenceListSnapshot = vi.fn();
+      const deps = makeDeps({
+        apiFetch,
+        rememberLastKnownDeviceName,
+        forgetLastKnownDeviceName,
+        applyControllerDisplayNameListSnapshot,
+        applyControllerPresenceListSnapshot,
+      });
+      const device = (name: string) => ({
+        deviceId: 'dev-1',
+        name,
+        selfName: 'Host.local',
+        platform: 'darwin',
+        lastSeenAt: '2026-06-23T00:00:00.000Z',
+        online: true,
+        busy: false,
+        remoteControlEnabled: true,
+        controlEnabled: true,
+        isSelf: false,
+      });
+
+      const oldRequest = handleListDevices(deps);
+      const newRequest = handleListDevices(deps);
+      resolvers[1]?.({ devices: [device('新数据库名')] });
+      await expect(newRequest).resolves.toMatchObject({
+        devices: [{ name: '新数据库名' }],
+      });
+      resolvers[0]?.({ devices: [device(oldName)] });
+      await expect(oldRequest).resolves.toMatchObject({
+        devices: [{ name: '新数据库名' }],
+      });
+
+      expect(rememberLastKnownDeviceName).toHaveBeenCalledTimes(1);
+      expect(rememberLastKnownDeviceName).toHaveBeenCalledWith('dev-1', '新数据库名');
+      expect(forgetLastKnownDeviceName).not.toHaveBeenCalled();
+      expect(applyControllerDisplayNameListSnapshot).toHaveBeenCalledTimes(1);
+      expect(applyControllerDisplayNameListSnapshot).toHaveBeenCalledWith(
+        [expect.objectContaining({ deviceId: 'dev-1', name: '新数据库名' })],
+        0,
+      );
+      expect(applyControllerPresenceListSnapshot).toHaveBeenCalledTimes(1);
+      expect(applyControllerPresenceListSnapshot).toHaveBeenCalledWith(
+        [expect.objectContaining({ deviceId: 'dev-1', online: true, platform: 'darwin' })],
+        0,
+      );
+    },
+  );
+
   it('listDevices:缓存服务端返回的有效设备名', async () => {
     const rememberLastKnownDeviceName = vi.fn(async () => true);
     const deps = makeDeps({
@@ -348,6 +510,229 @@ describe('device-link IPC handlers', () => {
       ],
     });
   });
+
+  it.each([
+    ['unknown', 'Host.local', 'Host.local'],
+    ['no', null, '12345678'],
+  ] as const)(
+    'listDevices:目录占位名 %s 无缓存时回退 selfName/设备短 ID(%s)',
+    async (name, selfName, expectedName) => {
+      const deps = makeDeps({
+        apiFetch: vi.fn().mockResolvedValue({
+          devices: [
+            {
+              deviceId: '1234567890abcdef',
+              name,
+              selfName,
+              platform: 'darwin',
+              lastSeenAt: '2026-06-23T00:00:00.000Z',
+              online: false,
+              busy: false,
+              remoteControlEnabled: false,
+              controlEnabled: true,
+              isSelf: false,
+            },
+          ],
+        }),
+        readLastKnownDeviceNames: vi.fn(() => ({})),
+      });
+
+      const result = await handleListDevices(deps);
+      expect(result.devices[0]?.name).toBe(expectedName);
+      expect(deps.rememberLastKnownDeviceName).not.toHaveBeenCalled();
+      expect(deps.forgetLastKnownDeviceName).not.toHaveBeenCalled();
+    },
+  );
+
+  it('listDevices:断线重连后的新 presence 阻止断线前旧列表响应删除名称', async () => {
+    const freshness = createControllerDisplayNameFreshnessTracker();
+    applyControllerDisplayNamePresence({
+      deviceId: 'dev-1',
+      name: '断线前名称',
+      selfName: 'Host.local',
+      freshness,
+      normalizeName: normalizeCachedDeviceName,
+      setDisplayName: vi.fn(),
+      setFallbackDisplayName: vi.fn(),
+      rememberName: vi.fn(),
+      forgetName: vi.fn(),
+    });
+    const rememberLastKnownDeviceName = vi.fn(async () => true);
+    const forgetLastKnownDeviceName = vi.fn(async () => true);
+    const apiFetch: DeviceLinkIpcDeps['apiFetch'] = async <T>() => {
+      resetControllerDisplayNameFreshness(freshness);
+      applyControllerDisplayNamePresence({
+        deviceId: 'dev-1',
+        name: '重连后名称',
+        selfName: 'Host.local',
+        freshness,
+        normalizeName: normalizeCachedDeviceName,
+        setDisplayName: vi.fn(),
+        setFallbackDisplayName: vi.fn(),
+        rememberName: vi.fn(),
+        forgetName: vi.fn(),
+      });
+      return {
+        devices: [
+          {
+            deviceId: 'dev-1',
+            name: '',
+            selfName: 'Host.local',
+            platform: 'darwin',
+            lastSeenAt: '2026-06-23T00:00:00.000Z',
+            online: true,
+            busy: false,
+            remoteControlEnabled: true,
+            controlEnabled: true,
+            isSelf: false,
+          },
+        ],
+      } as T;
+    };
+    const deps = makeDeps({
+      apiFetch,
+      rememberLastKnownDeviceName,
+      forgetLastKnownDeviceName,
+      captureControllerDisplayNameRequestEpoch: () => freshness.epoch,
+      readControllerDisplayNameFreshnessSince: (deviceId, requestEpoch) =>
+        getControllerDisplayNameFreshnessSince(freshness, deviceId, requestEpoch),
+    });
+
+    const result = await handleListDevices(deps);
+    expect(result.devices[0]?.name).toBe('重连后名称');
+    expect(rememberLastKnownDeviceName).not.toHaveBeenCalled();
+    expect(forgetLastKnownDeviceName).not.toHaveBeenCalled();
+  });
+
+  it('listDevices:仅发生 relay reset 时仍采用并缓存有效数据库展示名', async () => {
+    const freshness = createControllerDisplayNameFreshnessTracker();
+    const rememberLastKnownDeviceName = vi.fn(async () => true);
+    const forgetLastKnownDeviceName = vi.fn(async () => true);
+    const apiFetch: DeviceLinkIpcDeps['apiFetch'] = async <T>() => {
+      resetControllerDisplayNameFreshness(freshness);
+      return {
+        devices: [
+          {
+            deviceId: 'dev-1',
+            name: '数据库展示名',
+            selfName: 'Host.local',
+            platform: 'darwin',
+            lastSeenAt: '2026-06-23T00:00:00.000Z',
+            online: false,
+            busy: false,
+            remoteControlEnabled: true,
+            controlEnabled: true,
+            isSelf: false,
+          },
+        ],
+      } as T;
+    };
+    const deps = makeDeps({
+      apiFetch,
+      rememberLastKnownDeviceName,
+      forgetLastKnownDeviceName,
+      captureControllerDisplayNameRequestEpoch: () => freshness.epoch,
+      readControllerDisplayNameFreshnessSince: (deviceId, requestEpoch) =>
+        getControllerDisplayNameFreshnessSince(freshness, deviceId, requestEpoch),
+    });
+
+    const result = await handleListDevices(deps);
+    expect(result.devices[0]?.name).toBe('数据库展示名');
+    expect(rememberLastKnownDeviceName).toHaveBeenCalledWith('dev-1', '数据库展示名');
+    expect(forgetLastKnownDeviceName).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['旧目录名', '新数据库名', 'remember', '新数据库名'],
+    ['', '新数据库名', 'forget', '新数据库名'],
+    ['旧目录名', '', 'remember', 'Host.local'],
+  ] as const)(
+    'listDevices:旧目录 %s 在 presence(%s) 后不得触发 %s，并返回当前名称',
+    async (directoryName, presenceName, _mutation, expectedName) => {
+      const freshness = createControllerDisplayNameFreshnessTracker();
+      const rememberLastKnownDeviceName = vi.fn(async () => true);
+      const forgetLastKnownDeviceName = vi.fn(async () => true);
+      const apiFetch: DeviceLinkIpcDeps['apiFetch'] = async <T>() => {
+        applyControllerDisplayNamePresence({
+          deviceId: 'dev-1',
+          name: presenceName,
+          selfName: 'Host.local',
+          freshness,
+          normalizeName: (value) => normalizeCachedDeviceName(value),
+          setDisplayName: vi.fn(),
+          setFallbackDisplayName: vi.fn(),
+          rememberName: vi.fn(),
+          forgetName: vi.fn(),
+        });
+        return {
+          devices: [
+            {
+              deviceId: 'dev-1',
+              name: directoryName,
+              selfName: 'Host.local',
+              platform: 'darwin',
+              lastSeenAt: '2026-06-23T00:00:00.000Z',
+              online: true,
+              busy: false,
+              remoteControlEnabled: true,
+              controlEnabled: true,
+              isSelf: false,
+            },
+          ],
+        } as T;
+      };
+      const deps = makeDeps({
+        apiFetch,
+        rememberLastKnownDeviceName,
+        forgetLastKnownDeviceName,
+        captureControllerDisplayNameRequestEpoch: () => freshness.epoch,
+        readControllerDisplayNameFreshnessSince: (deviceId, requestEpoch) =>
+          getControllerDisplayNameFreshnessSince(freshness, deviceId, requestEpoch),
+      });
+
+      const result = await handleListDevices(deps);
+      expect(result.devices[0]?.name).toBe(expectedName);
+      expect(rememberLastKnownDeviceName).not.toHaveBeenCalled();
+      expect(forgetLastKnownDeviceName).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ['Host.local', 'Host.local'],
+    [null, '12345678'],
+  ] as const)(
+    'listDevices:数据库空名清除 last-known，并回退 selfName/设备短 ID(%s)',
+    async (selfName, expectedName) => {
+      const forgetLastKnownDeviceName = vi.fn(async () => true);
+      const rememberLastKnownDeviceName = vi.fn(async () => false);
+      const deps = makeDeps({
+        apiFetch: vi.fn().mockResolvedValue({
+          devices: [
+            {
+              deviceId: '1234567890abcdef',
+              name: '',
+              selfName,
+              platform: 'darwin',
+              lastSeenAt: '2026-06-23T00:00:00.000Z',
+              online: false,
+              busy: false,
+              remoteControlEnabled: false,
+              controlEnabled: true,
+              isSelf: false,
+            },
+          ],
+        }),
+        readLastKnownDeviceNames: vi.fn(() => ({ '1234567890abcdef': '旧缓存名' })),
+        rememberLastKnownDeviceName,
+        forgetLastKnownDeviceName,
+      });
+
+      const result = await handleListDevices(deps);
+      expect(result.devices[0]?.name).toBe(expectedName);
+      expect(forgetLastKnownDeviceName).toHaveBeenCalledWith('1234567890abcdef');
+      expect(rememberLastKnownDeviceName).not.toHaveBeenCalled();
+    },
+  );
 
   it('listDevices:按本机 disabledControlDeviceIds 合成 controlEnabled=false', async () => {
     const deps = makeDeps({
@@ -485,6 +870,15 @@ describe('device-link controller handlers', () => {
     ]);
   });
 
+  it('keeps background admission local and preserves the remote argument list', async () => {
+    const deps = makeDeps({ invoke: vi.fn().mockResolvedValue({ ok: true, result: [] }) });
+    const args = [200, 'active'];
+    await handleInvoke(deps, 'dev-2', 'local-db:sessions:list', args, { background: true });
+    expect(deps.invoke).toHaveBeenCalledWith('dev-2', 'local-db:sessions:list', args, { background: true });
+    await handleInvoke(deps, 'dev-2', 'local-db:sessions:list', args, { background: 'true' });
+    expect(deps.invoke).toHaveBeenLastCalledWith('dev-2', 'local-db:sessions:list', args);
+  });
+
   it('invoke:CHANNEL_NOT_ALLOWED → 映射 IpcError', async () => {
     const deps = makeDeps({
       invoke: vi.fn().mockResolvedValue({
@@ -518,13 +912,76 @@ describe('device-link controller handlers', () => {
     );
   });
 
-  it('invoke:本地传输背压 → DEVICE_LINK_NOT_CONNECTED', async () => {
+  it('invoke:本地传输背压 → DEVICE_LINK_BUSY', async () => {
     const deps = makeDeps({
       invoke: vi.fn().mockRejectedValue(new DeviceLinkError('BACKPRESSURE', 'buffer full')),
     });
     await expect(handleInvoke(deps, 'dev-2', 'maker:send', [])).rejects.toThrowError(
-      /\[DEVICE_LINK_NOT_CONNECTED\]/,
+      /\[DEVICE_LINK_BUSY\]/,
     );
+  });
+
+  it('invoke: remote admission backpressure remains busy rather than disconnected', async () => {
+    const deps = makeDeps({
+      invoke: vi.fn().mockResolvedValue({
+        ok: false, error: { code: 'BACKPRESSURE', message: 'remote invoke execution queue is full' },
+      }),
+    });
+    await expect(handleInvoke(deps, 'dev-2', 'local-db:task-tags:execute', []))
+      .rejects.toMatchObject({ code: 'DEVICE_LINK_BUSY' });
+  });
+
+  it('invoke: a second peer reset stops retrying and becomes a disconnected IPC error', async () => {
+    const reset = new DeviceLinkError('PEER_RESET', 'peer reset during read');
+    reset.inFlight = true;
+    const invoke = vi.fn().mockRejectedValue(reset);
+    const reopen = vi.fn().mockResolvedValue(undefined);
+    const deps = makeDeps({ invoke: () => invokeWithClosedLinkRecovery(invoke, reopen) });
+    await expect(handleInvoke(deps, 'dev-2', 'local-db:messages:list', ['session'])).rejects.toMatchObject({
+      code: 'DEVICE_LINK_NOT_CONNECTED', message: '[DEVICE_LINK_NOT_CONNECTED] peer reset during read',
+    });
+    expect(invoke).toHaveBeenCalledTimes(2);
+    expect(reopen).toHaveBeenCalledTimes(1);
+  });
+
+  it('invoke: a peer reset result envelope uses the same IPC mapping', async () => {
+    const deps = makeDeps({ invoke: vi.fn().mockResolvedValue({
+      ok: false, error: { code: 'PEER_RESET', message: 'peer reset' },
+    }) });
+    await expect(handleInvoke(deps, 'dev-2', 'local-db:messages:list', ['session'])).rejects.toMatchObject({
+      code: 'DEVICE_LINK_NOT_CONNECTED', message: '[DEVICE_LINK_NOT_CONNECTED] peer reset',
+    });
+  });
+
+  it('invoke:Review 授权/校验拒绝保留原错误码,不再误标为媒体传输失败', async () => {
+    // 回归:maker:review:start 与附件上传共用 rewriteOutboundMedia, 其 PERMISSION_DENIED
+    // (凭证/密钥附件拒绝)、INVALID_PARAMS(整批请求校验)与用户取消授权对话框
+    // (ReviewArtifactAuthorizationError)曾被 catch 一律折叠成
+    // DEVICE_LINK_MEDIA_TRANSFER_FAILED —— 消费端会把"有意拒绝"当可重试传输故障。
+    const invoke = vi.fn().mockResolvedValue({ ok: true, result: null });
+    for (const rejection of [
+      createIpcError('PERMISSION_DENIED', 'Review refused a credential or key attachment'),
+      createIpcError('INVALID_PARAMS', 'review attachments must be an array'),
+      Object.assign(new ReviewArtifactAuthorizationError('Review of external artifacts was cancelled')),
+    ]) {
+      const deps = makeDeps({
+        invoke,
+        rewriteOutboundMedia: vi.fn().mockRejectedValue(rejection),
+      });
+      await expect(handleInvoke(deps, 'dev-2', 'maker:review:start', [{ sourceSessionId: 's' }]))
+        .rejects.toThrowError(rejection instanceof ReviewArtifactAuthorizationError
+          ? /\[PERMISSION_DENIED\] Review of external artifacts was cancelled/
+          : new RegExp(`\\[${rejection.code}\\]`));
+      expect(invoke).not.toHaveBeenCalled();
+    }
+    // 真传输失败(普通 Error)仍折叠为 MEDIA_TRANSFER_FAILED。
+    const deps = makeDeps({
+      invoke,
+      rewriteOutboundMedia: vi.fn().mockRejectedValue(new Error('OSS PUT 失败 (403)')),
+    });
+    await expect(handleInvoke(deps, 'dev-2', 'maker:review:start', [{ sourceSessionId: 's' }]))
+      .rejects.toThrowError(/\[DEVICE_LINK_MEDIA_TRANSFER_FAILED\]/);
+    expect(invoke).not.toHaveBeenCalled();
   });
 
   it('invoke:出方向附件改写失败 → DEVICE_LINK_MEDIA_TRANSFER_FAILED,不发 invoke(整条不发)', async () => {
@@ -586,6 +1043,14 @@ describe('device-link controller handlers', () => {
       /\[INVALID_PARAMS\]/,
     );
   });
+  it.each(['open', 'message', 'poll', 'context', 'authorize-link', 'teardown'])(
+    'forbids the general Renderer bridge from bypassing remote App frame authentication: %s', async (op) => {
+      const deps = makeDeps();
+      await expect(handleInvoke(deps, 'dev-2', MCP_APPS_INVOKE, ['task', { op, viewId: 'forged' }]))
+        .rejects.toThrow('MCP_APP_FRAME_REQUIRED');
+      expect(deps.invoke).not.toHaveBeenCalled();
+    },
+  );
 
   it('subscribe:校验 + 成功 + 转发 topics', async () => {
     const deps = makeDeps();
@@ -658,7 +1123,7 @@ describe('device-link controller handlers', () => {
     });
     await handleSubscribe(deps, 'dev-2', ['sessions'], 1);
     await expect(handleUnsubscribe(deps, 'dev-2', ['sessions'], 1)).rejects.toThrowError(
-      /\[DEVICE_LINK_NOT_CONNECTED\]/,
+      /\[DEVICE_LINK_BUSY\]/,
     );
     await expect(handleUnsubscribe(deps, 'dev-2', ['sessions'], 1)).resolves.toEqual({ ok: true });
     expect(deps.unsubscribe).toHaveBeenCalledTimes(2);
@@ -799,6 +1264,7 @@ describe('device-link revoke / restore handlers', () => {
 describe('device-link settings normalize', () => {
   it('非法输入回落默认值,布尔严格校验', () => {
     expect(settingsTesting.normalize(null)).toEqual({
+      remoteDesktopEnabled: false,
       remoteControlEnabled: false,
       keepAwake: false,
       revokedControllers: [],
@@ -806,6 +1272,7 @@ describe('device-link settings normalize', () => {
       lastKnownDeviceNames: {},
     });
     expect(settingsTesting.normalize({})).toEqual({
+      remoteDesktopEnabled: false,
       remoteControlEnabled: false,
       keepAwake: false,
       revokedControllers: [],
@@ -813,6 +1280,7 @@ describe('device-link settings normalize', () => {
       lastKnownDeviceNames: {},
     });
     expect(settingsTesting.normalize({ remoteControlEnabled: 'true' })).toEqual({
+      remoteDesktopEnabled: false,
       remoteControlEnabled: false,
       keepAwake: false,
       revokedControllers: [],
@@ -820,6 +1288,7 @@ describe('device-link settings normalize', () => {
       lastKnownDeviceNames: {},
     });
     expect(settingsTesting.normalize({ remoteControlEnabled: true })).toEqual({
+      remoteDesktopEnabled: false,
       remoteControlEnabled: true,
       keepAwake: false,
       revokedControllers: [],
@@ -834,6 +1303,7 @@ describe('device-link settings normalize', () => {
         disabledControlDeviceIds: [' dev-1 ', 'dev-1', '', 42, 'dev-2'],
       }),
     ).toEqual({
+      remoteDesktopEnabled: false,
       remoteControlEnabled: false,
       keepAwake: false,
       revokedControllers: [],
@@ -853,6 +1323,7 @@ describe('device-link settings normalize', () => {
         },
       }),
     ).toEqual({
+      remoteDesktopEnabled: false,
       remoteControlEnabled: false,
       keepAwake: false,
       revokedControllers: [],

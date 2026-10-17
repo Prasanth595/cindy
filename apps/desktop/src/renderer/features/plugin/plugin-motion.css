@@ -1,10 +1,4 @@
 .plugin-motion-root {
-  --plugin-motion-state: 220ms;
-  --plugin-motion-enter: 420ms;
-  --plugin-motion-page: 520ms;
-  --plugin-motion-rise: 14px;
-  --plugin-motion-stagger: 44ms;
-  --plugin-motion-ease-enter: cubic-bezier(0.22, 1, 0.36, 1);
   --plugin-card-shadow: var(--shadow-soft-panel);
   --plugin-icon-surface: color-mix(in srgb, var(--surface-elevated) 78%, transparent);
   --plugin-icon-shadow: 0 1px 2px color-mix(in srgb, var(--text-primary) 12%, transparent);
@@ -15,89 +9,65 @@
   filter: invert(1);
 }
 
-/**
- * Compositor-friendly transitions shared by Plugin and Skill management views.
- * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
- */
-
-@keyframes plugin-page-enter {
-  from {
-    opacity: 0;
-    transform: translate3d(0, var(--plugin-motion-rise), 0);
-  }
-  to {
-    opacity: 1;
-    transform: translate3d(0, 0, 0);
-  }
+/* Keep disclosure content mounted so collapse can ease out instead of jumping. */
+.plugin-installed-overflow {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transform: translate3d(0, -6px, 0);
+  transition:
+    grid-template-rows var(--motion-base) var(--motion-ease-move),
+    opacity var(--motion-base) var(--motion-ease-move),
+    transform var(--motion-base) var(--motion-ease-move);
 }
 
-@keyframes plugin-item-enter {
-  from {
-    opacity: 0;
-    transform: translate3d(0, 10px, 0) scale(0.985);
-  }
-  to {
-    opacity: 1;
-    transform: translate3d(0, 0, 0) scale(1);
-  }
+.plugin-installed-overflow[data-expanded='true'] {
+  grid-template-rows: 1fr;
+  opacity: 1;
+  transform: translate3d(0, 0, 0);
 }
 
-@keyframes plugin-selection-settle {
-  from {
-    transform: scale(0.985);
-  }
-  to {
-    transform: scale(1);
-  }
+.plugin-installed-overflow-clip {
+  min-height: 0;
+  overflow: hidden;
 }
 
-.plugin-motion-tabs {
-  animation: plugin-page-enter 300ms var(--plugin-motion-ease-enter) backwards;
+.plugin-installed-overflow-grid {
+  padding-top: 0.75rem;
 }
-.plugin-motion-page-header {
-  animation: plugin-page-enter var(--plugin-motion-enter) var(--plugin-motion-ease-enter) 45ms
-    backwards;
+
+.plugin-installed-preview-stack {
+  display: inline-flex;
+  align-items: center;
+  isolation: isolate;
 }
-.plugin-motion-page-section {
-  animation: plugin-page-enter var(--plugin-motion-page) var(--plugin-motion-ease-enter) 135ms
-    backwards;
+
+.plugin-installed-preview-card {
+  position: relative;
+  display: inline-flex;
+  width: 1.75rem;
+  height: 1.75rem;
+  margin-left: -0.45rem;
+  border-radius: 0.75rem;
+  background: var(--surface-elevated);
+  outline: 2px solid var(--surface-elevated);
 }
-.plugin-motion-stagger > * {
-  --plugin-motion-order: 0;
-  animation: plugin-item-enter var(--plugin-motion-enter) var(--plugin-motion-ease-enter) backwards;
-  animation-delay: calc(var(--plugin-motion-order) * var(--plugin-motion-stagger));
+
+.plugin-installed-preview-card > span {
+  border-radius: inherit;
 }
-.plugin-motion-stagger > :nth-child(2) {
-  --plugin-motion-order: 1;
-}
-.plugin-motion-stagger > :nth-child(3) {
-  --plugin-motion-order: 2;
-}
-.plugin-motion-stagger > :nth-child(4) {
-  --plugin-motion-order: 3;
-}
-.plugin-motion-stagger > :nth-child(5) {
-  --plugin-motion-order: 4;
-}
-.plugin-motion-stagger > :nth-child(6) {
-  --plugin-motion-order: 5;
-}
-.plugin-motion-stagger > :nth-child(7) {
-  --plugin-motion-order: 6;
-}
-.plugin-motion-stagger > :nth-child(8) {
-  --plugin-motion-order: 7;
-}
-.plugin-motion-stagger > :nth-child(n + 9) {
-  --plugin-motion-order: 8;
-}
-.plugin-motion-selected {
-  animation: plugin-selection-settle var(--plugin-motion-state) var(--plugin-motion-ease-enter);
+
+.plugin-installed-preview-card:first-child {
+  margin-left: 0;
 }
 
 /* Catalog chrome responds to the actual main pane, including when the sidebar stays open. */
 .plugin-management-layout-root {
   container: plugin-management / inline-size;
+}
+
+.plugin-management-content-frame {
+  container: plugin-management-content / inline-size;
 }
 
 .plugin-detail-frame {
@@ -121,9 +91,26 @@
   }
 }
 
-@container plugin-detail (max-width: 420px) {
+@container plugin-detail (max-width: 520px) {
+  .plugin-detail-frame .plugin-detail-heading {
+    display: contents;
+  }
+
+  .plugin-detail-frame .plugin-detail-heading > h1 {
+    grid-column: 2;
+    grid-row: 1;
+    align-self: center;
+  }
+
+  .plugin-detail-frame .plugin-detail-actions {
+    grid-column: 3;
+    grid-row: 1;
+  }
+
   .plugin-detail-frame .plugin-detail-metadata {
-    display: none;
+    grid-column: 1 / -1;
+    grid-row: 2;
+    margin-top: 0;
   }
 }
 
@@ -141,23 +128,23 @@
   }
 }
 
-@container plugin-management (max-width: 720px) {
-  .plugin-management-layout-root .plugin-catalog-toolbar {
-    align-items: stretch;
+@container plugin-management-content (max-width: 720px) {
+  .plugin-installed-card-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .plugin-catalog-toolbar {
+    align-items: flex-start;
     flex-direction: column;
     gap: 0.75rem;
   }
 
-  .plugin-management-layout-root .plugin-catalog-filters {
-    width: 100%;
-    justify-content: space-between;
-    gap: 0.125rem;
+  .plugin-catalog-filters {
+    width: auto;
   }
+}
 
-  .plugin-management-layout-root .plugin-catalog-filters > button {
-    padding-inline: 0.5rem;
-  }
-
+@container plugin-management (max-width: 720px) {
   .plugin-management-layout-root .plugin-management-header {
     height: 7rem;
   }
@@ -180,8 +167,8 @@
   }
 
   .plugin-management-layout-root .plugin-management-tab {
-    min-width: 0;
-    flex: 1 1 0%;
+    min-width: max-content;
+    flex: 1 0 auto;
   }
 
   .plugin-management-layout-root .plugin-management-tools {
@@ -207,22 +194,9 @@
   }
 }
 
-@media (max-width: 767px) {
-  .plugin-motion-root {
-    --plugin-motion-rise: 10px;
-    --plugin-motion-stagger: 32ms;
-  }
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .plugin-motion-root
-    :is(
-      .plugin-motion-tabs,
-      .plugin-motion-page-header,
-      .plugin-motion-page-section,
-      .plugin-motion-stagger > *,
-      .plugin-motion-selected
-    ) {
+  .plugin-motion-root .plugin-installed-overflow {
     animation: none !important;
+    transition: none !important;
   }
 }

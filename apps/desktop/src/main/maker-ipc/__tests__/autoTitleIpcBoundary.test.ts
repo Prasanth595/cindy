@@ -6,22 +6,38 @@
  * 必须做 sender 断言 + 运行期结构/长度/枚举校验(TS 类型不等于运行期校验)。
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { TitleOneShotResult } from '../../maker-host/title-one-shot.js';
 
 const h = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
   trusted: true,
-  run: vi.fn(async (_request: unknown) => ({ applied: true, done: true })),
+  run: vi.fn(async (_request: unknown) => {
+    void _request;
+    return { applied: true, done: true };
+  }),
   regenerateMaterial: vi.fn(
     async (
       _sessionId: string,
       _limit: number,
       _latestTurnIsInFlight: boolean | (() => boolean),
-    ) => ({
-      opening: { text: '原始需求', createdAt: 1, rowid: 1 },
-      recent: [{ role: 'user' as const, text: '原始需求', createdAt: 1, rowid: 1 }],
-    }),
+    ) => {
+      void _sessionId;
+      void _limit;
+      void _latestTurnIsInFlight;
+      return {
+        opening: { text: '原始需求', createdAt: 1, rowid: 1 },
+        recent: [{ role: 'user' as const, text: '原始需求', createdAt: 1, rowid: 1 }],
+      };
+    },
   ),
-  generateTitle: vi.fn(async () => '任务标题'),
+  generateTitle: vi.fn(async (_request: unknown) => {
+    void _request;
+    return '任务标题';
+  }),
+  generateTitleResult: vi.fn(async (_request: unknown): Promise<TitleOneShotResult> => {
+    void _request;
+    return { status: 'ok', title: '任务标题' };
+  }),
   drainPersistQueue: vi.fn<() => Promise<void>>(async () => undefined),
 }));
 
@@ -44,8 +60,9 @@ vi.mock('../../localDb/latestMessageText.js', () => ({
 vi.mock('../../maker-host/createDesktopProviderService.js', () => ({
   getDesktopProviderService: vi.fn(),
 }));
-vi.mock('../../maker-host/title-one-shot.js', () => ({
-  generateTitleViaProvider: h.generateTitle,
+vi.mock('../../maker-host/auxiliary-title-one-shot.js', () => ({
+  generateTitleWithAuxiliaryModel: h.generateTitle,
+  generateTitleWithAuxiliaryModelResult: h.generateTitleResult,
 }));
 vi.mock('../../messagePersistBroadcaster.js', () => ({
   drainPersistQueue: h.drainPersistQueue,
@@ -59,9 +76,15 @@ vi.mock('../../security/trustedAppRenderer.js', () => ({
     }
   },
 }));
+// title.ts imports promptPrediction statically; this boundary suite does not
+// exercise prediction itself, so keep the maker-host graph out of collection.
+vi.mock('../promptPrediction.js', () => ({
+  generatePromptPrediction: vi.fn(),
+}));
 
 import { registerMakerTitleIpc } from '../title.js';
 import { getDbClient } from '../../localDb/client/current.js';
+import { runDeviceLinkInvokeContext } from '../../device-link/invoke-context.js';
 
 const EVENT = {} as Electron.IpcMainInvokeEvent;
 
@@ -71,10 +94,27 @@ function invoke(request: unknown): Promise<unknown> {
   return Promise.resolve(handler(EVENT, request));
 }
 
-function invokeRegenerate(sessionId: string): Promise<unknown> {
+function invokeGenerate(request: unknown): Promise<unknown> {
+  const handler = h.handlers.get('maker:generate-title');
+  if (!handler) throw new Error('generate-title handler not registered');
+  return Promise.resolve(handler(EVENT, request));
+}
+
+function invokeRegenerateRequest(request: unknown): Promise<unknown> {
   const handler = h.handlers.get('maker:regenerate-title');
   if (!handler) throw new Error('regenerate-title handler not registered');
-  return Promise.resolve(handler(EVENT, { sessionId }));
+  return Promise.resolve(handler(EVENT, request));
+}
+
+function invokeRegenerate(sessionId: string): Promise<unknown> {
+  return invokeRegenerateRequest({ sessionId });
+}
+
+function invokeFromDeviceLink(
+  channel: string,
+  invokeHandler: () => Promise<unknown>,
+): Promise<unknown> {
+  return runDeviceLinkInvokeContext({ controllerDeviceId: 'controller-1', channel }, invokeHandler);
 }
 
 beforeEach(() => {
@@ -84,6 +124,8 @@ beforeEach(() => {
   h.run.mockResolvedValue({ applied: true, done: true });
   h.regenerateMaterial.mockClear();
   h.generateTitle.mockClear();
+  h.generateTitleResult.mockReset();
+  h.generateTitleResult.mockResolvedValue({ status: 'ok', title: '任务标题' });
   h.drainPersistQueue.mockReset();
   h.drainPersistQueue.mockResolvedValue(undefined);
   vi.mocked(getDbClient).mockReturnValue({
@@ -129,6 +171,7 @@ describe('maker:regenerate-title — 当前 turn 状态', () => {
       's-running',
       expect.any(Number),
       expect.any(Function),
+      { preferHookUserText: true },
     );
   });
 
@@ -155,6 +198,7 @@ describe('maker:regenerate-title — 当前 turn 状态', () => {
       's-completed',
       expect.any(Number),
       expect.any(Function),
+      { preferHookUserText: true },
     );
   });
 
@@ -185,6 +229,7 @@ describe('maker:regenerate-title — 当前 turn 状态', () => {
       's-new-turn',
       expect.any(Number),
       expect.any(Function),
+      { preferHookUserText: true },
     );
   });
 
@@ -210,7 +255,122 @@ describe('maker:regenerate-title — 当前 turn 状态', () => {
       's-snapshot-race',
       expect.any(Number),
       expect.any(Function),
+      { preferHookUserText: true },
     );
+  });
+});
+
+describe('maker title IPC — 本机 / device-link 来源边界', () => {
+  it('非受信本机 Renderer 调用 generate / regenerate 均被拒且没有副作用', async () => {
+    h.trusted = false;
+
+    await expect(
+      invokeGenerate({ message: '排查远程标题', agentKind: 'codex', sessionId: 's1' }),
+    ).rejects.toThrow(/PERMISSION_DENIED/);
+    await expect(invokeRegenerate('s1')).rejects.toThrow(/PERMISSION_DENIED/);
+
+    expect(h.generateTitle).not.toHaveBeenCalled();
+    expect(h.generateTitleResult).not.toHaveBeenCalled();
+    expect(h.drainPersistQueue).not.toHaveBeenCalled();
+  });
+
+  it('device-link 可信上下文允许合成 event 调用 generate / regenerate', async () => {
+    h.trusted = false;
+
+    await expect(
+      invokeFromDeviceLink('maker:generate-title', () =>
+        invokeGenerate({ message: '排查远程标题', agentKind: 'codex', sessionId: 's1' }),
+      ),
+    ).resolves.toEqual({ title: '任务标题' });
+    await expect(
+      invokeFromDeviceLink('maker:regenerate-title', () => invokeRegenerate('s1')),
+    ).resolves.toEqual({ title: '任务标题' });
+
+    expect(h.generateTitle).toHaveBeenCalledOnce();
+    expect(h.generateTitleResult).toHaveBeenCalledOnce();
+    expect(h.drainPersistQueue).toHaveBeenCalledOnce();
+  });
+
+  it('软删除任务按 NOT_FOUND 处理且不调用标题模型', async () => {
+    vi.mocked(getDbClient).mockReturnValue({
+      drizzle: {
+        select: () => ({
+          from: () => ({
+            where: () => ({
+              limit: async () => [{ agentKind: 'codex', status: 'deleted' }],
+            }),
+          }),
+        }),
+      },
+    } as unknown as ReturnType<typeof getDbClient>);
+
+    await expect(invokeRegenerate('deleted')).rejects.toThrow(/\[NOT_FOUND\]/);
+    expect(h.generateTitleResult).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['unsupported-provider', 'TITLE_PROVIDER_UNSUPPORTED'],
+    ['failed', 'INTERNAL'],
+  ] as const)('regenerate %s 在本机与 device-link 上都透传 %s', async (status, code) => {
+    h.generateTitleResult.mockResolvedValue({ status });
+
+    await expect(invokeRegenerate('s1')).rejects.toThrow(new RegExp(`\\[${code}\\]`));
+
+    h.trusted = false;
+    await expect(
+      invokeFromDeviceLink('maker:regenerate-title', () => invokeRegenerate('s1')),
+    ).rejects.toThrow(new RegExp(`\\[${code}\\]`));
+  });
+
+  it('auto-title 不因 device-link 上下文放宽本机专属 sender 边界', async () => {
+    h.trusted = false;
+
+    await expect(
+      invokeFromDeviceLink('maker:auto-title', () =>
+        invoke({ sessionId: 's1', text: '排查远程标题', agentKind: 'codex' }),
+      ),
+    ).rejects.toThrow(/PERMISSION_DENIED/);
+    expect(h.run).not.toHaveBeenCalled();
+  });
+});
+
+describe('maker title IPC — payload 运行期校验', () => {
+  it.each([
+    ['非对象', null],
+    ['数组', []],
+    ['message 非字符串', { message: 1, agentKind: 'codex' }],
+    ['agentKind 非枚举值', { message: 'x', agentKind: 'gpt' }],
+    ['sessionId 空串', { message: 'x', agentKind: 'codex', sessionId: '' }],
+    ['sessionId 超长', { message: 'x', agentKind: 'codex', sessionId: 'a'.repeat(200) }],
+  ])('generate-title: %s → INVALID_PARAMS 且不调用模型', async (_label, payload) => {
+    await expect(invokeGenerate(payload)).rejects.toThrow(/INVALID_PARAMS/);
+    expect(h.generateTitle).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['非对象', null],
+    ['数组', []],
+    ['缺 sessionId', {}],
+    ['sessionId 非字符串', { sessionId: 1 }],
+    ['sessionId 空串', { sessionId: '' }],
+    ['sessionId 超长', { sessionId: 'a'.repeat(200) }],
+  ])('regenerate-title: %s → INVALID_PARAMS 且不读取素材', async (_label, payload) => {
+    await expect(invokeRegenerateRequest(payload)).rejects.toThrow(/INVALID_PARAMS/);
+    expect(h.drainPersistQueue).not.toHaveBeenCalled();
+    expect(h.regenerateMaterial).not.toHaveBeenCalled();
+    expect(h.generateTitleResult).not.toHaveBeenCalled();
+  });
+
+  it('generate-title 截断超长正文，保留正常的空消息回落语义', async () => {
+    await invokeGenerate({ message: 'x'.repeat(9000), agentKind: 'claude-code' });
+    const forwarded = h.generateTitle.mock.calls[0]?.[0] as { prompt?: string } | undefined;
+    expect(forwarded?.prompt).toContain('x'.repeat(200));
+
+    h.generateTitle.mockClear();
+    await expect(invokeGenerate({ message: '', agentKind: 'codex' })).resolves.toEqual({
+      title: null,
+    });
+    expect(h.generateTitle).not.toHaveBeenCalled();
   });
 });
 

@@ -1,11 +1,17 @@
 // @vitest-environment jsdom
 
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
+  openSessionInNewWindow: vi.fn(async () => undefined),
+  writeText: vi.fn(async () => undefined),
+  error: vi.fn(),
   navigate: vi.fn(),
+  pinSessionOrigin: vi.fn(),
   resolveSessionRoute: vi.fn(async (sessionId: string) => `/cc-agent/${sessionId}`),
   getSession: vi.fn(async (sessionId: string) => ({
     id: sessionId,
@@ -14,6 +20,14 @@ const mocks = vi.hoisted(() => ({
   })),
   resolveSessionMessageText: vi.fn(async () => 'Target message\nfull text'),
 }));
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
 
 vi.mock('react-router-dom', async (importOriginal) => {
   const actual = await importOriginal<typeof import('react-router-dom')>();
@@ -26,21 +40,38 @@ vi.mock('react-i18next', () => ({
 }));
 vi.mock('@/features/device-link/remoteProjectsStore', () => ({
   useRemoteProjectSessions: () => [],
+  useRemoteSessionTitle: () => null,
+  getSessionDeviceId: () => undefined,
+  remoteProjectsStore: {
+    getSessionDeviceId: () => undefined,
+    pinSessionOrigin: mocks.pinSessionOrigin,
+  },
 }));
 vi.mock('@/lib/sessionService', () => ({ get: mocks.getSession }));
+vi.mock('@/lib/toast', () => ({ toast: { error: mocks.error, success: vi.fn() } }));
+vi.mock('@/contexts/AuthContext', () => ({ useOptionalAuthDeviceId: () => 'this-mac' }));
+vi.mock('@/features/device-link/useDeviceLinkDeviceList', () => ({
+  useDeviceLinkDeviceList: () => [
+    { deviceId: 'this-mac', name: 'Studio Mac', isSelf: true },
+    { deviceId: 'phone-1', name: 'Dash iPhone', isSelf: false },
+  ],
+}));
 vi.mock('@/lib/sessionMessageText', () => ({
   resolveSessionMessageText: mocks.resolveSessionMessageText,
 }));
 vi.mock('@/lib/orcaSessionIdentity', () => ({
   resolveSessionRoute: mocks.resolveSessionRoute,
+  getSessionRouteOwnerId: (route: string) => /^\/cc-agent\/([^/?#]+)/.exec(route)?.[1] ?? null,
 }));
 
 import {
+  isInteractiveSessionNavigationMode,
   SessionNavigationModeProvider,
   useSidebarTargetSessionId,
 } from '@/features/cc-agent/embeddedSessionNavigation';
 import { tryHandleNavigationCommand } from '@/lib/navigationCommands';
 import { AutomationOriginBadge } from '../AutomationOriginBadge';
+import { MessageSourceLabels } from '../MessageSourceLabels';
 import { SessionHandoffCard } from '../SessionHandoffCard';
 import { SessionLinkChip } from '../SessionLinkChip';
 
@@ -55,6 +86,17 @@ function embedded(children: ReactNode, sidebarTargetSessionId?: string) {
   );
 }
 
+function splitPane(
+  children: ReactNode,
+  onSessionNavigate: (targetSessionId: string, routeOwnerSessionId?: string) => void,
+) {
+  return (
+    <SessionNavigationModeProvider mode="split-pane" onSessionNavigate={onSessionNavigate}>
+      {children}
+    </SessionNavigationModeProvider>
+  );
+}
+
 function SidebarTargetProbe({ contentSessionId }: { contentSessionId?: string }) {
   return <span data-testid="sidebar-target">{useSidebarTargetSessionId(contentSessionId)}</span>;
 }
@@ -62,6 +104,12 @@ function SidebarTargetProbe({ contentSessionId }: { contentSessionId?: string })
 describe('sidebar-embedded session navigation boundary', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    Object.defineProperty(window, 'electronAPI', {
+      configurable: true, value: { maker: { openSessionInNewWindow: mocks.openSessionInNewWindow } },
+    });
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true, value: { writeText: mocks.writeText },
+    });
   });
 
   it('keeps worker content identity while targeting the visible Lead sidebar bucket', () => {
@@ -77,10 +125,12 @@ describe('sidebar-embedded session navigation boundary', () => {
     expect(screen.getByTestId('sidebar-target').textContent).toBe('');
   });
 
-  it('renders session links as static chips without resolving or navigating', async () => {
+  it('opens embedded session links in a separate window without taking the host route', async () => {
     render(embedded(<SessionLinkChip href="xdt-maker://session/session-a" label="Session A" />));
 
-    expect(screen.queryByRole('button')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Session A' }));
+    await waitFor(() => expect(mocks.openSessionInNewWindow)
+      .toHaveBeenCalledWith('session-a', undefined, null));
     const chip = screen.getByText('Session A').closest('[data-inline-reference-chip]');
     expect(chip).not.toBeNull();
     expect(chip?.getAttribute('title')).toBeNull();
@@ -88,58 +138,166 @@ describe('sidebar-embedded session navigation boundary', () => {
     expect(mocks.navigate).not.toHaveBeenCalled();
   });
 
-  it('shows the persisted reference range summary without changing the link label', () => {
-    render(
-      embedded(
-        <SessionLinkChip
-          href="cindy://session/session-a?message=message-1"
-          label="Session A"
-          referenceMetadata={{
-            sessionId: 'session-a',
-            messageClientId: 'message-1',
-            range: 'around-anchor',
-            messageCount: 7,
-            truncated: true,
-          }}
-        />,
-      ),
-    );
+  it.each([{ shiftKey: true }, { metaKey: true }, { ctrlKey: true }])(
+    'opens remote task links separately for modifier %j, keeping the message anchor', async (modifier) => {
+      const onNavigate = vi.fn();
+      render(splitPane(<SessionLinkChip
+        href="cindy://session/remote-task?device=remote-mac&message=m%2F1" label="Remote task"
+      />, onNavigate));
+      fireEvent.click(screen.getByRole('button', { name: 'Remote task' }), modifier);
+      await waitFor(() => expect(mocks.openSessionInNewWindow)
+        .toHaveBeenCalledWith('remote-task', 'remote-mac', 'm/1'));
+      expect(mocks.navigate).not.toHaveBeenCalled();
+      expect(onNavigate).not.toHaveBeenCalled();
+    },
+  );
 
-    expect(screen.getByText('Session A')).toBeTruthy();
-    expect(
-      screen.getByText(
-        'chat.userMessage.sessionReference.aroundAnchor · chat.userMessage.sessionReference.messageCount · chat.userMessage.sessionReference.truncated',
-      ),
-    ).toBeTruthy();
+  it('supports Shift+Enter on an inline task chip', async () => {
+    render(<SessionLinkChip href="cindy://session/local?device=this-mac" label="Local" />);
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Local' }), { key: 'Enter', shiftKey: true });
+    await waitFor(() => expect(mocks.openSessionInNewWindow).toHaveBeenCalledWith('local', undefined, null));
+    expect(mocks.navigate).not.toHaveBeenCalled();
   });
 
-  it('keeps the anchored pill and its range summary on a single line', () => {
-    const { container } = render(
-      <SessionLinkChip
-        href="cindy://session/session-a?message=message-1"
-        label="Session A"
-        referenceMetadata={{
-          sessionId: 'session-a',
-          messageClientId: 'message-1',
-          range: 'around-anchor',
-          messageCount: 11,
-          truncated: true,
-        }}
-      />,
+  it('supports middle click without navigating the source pane', async () => {
+    render(<SessionLinkChip href="cindy://session/local" label="Local" />);
+    fireEvent(screen.getByRole('button', { name: 'Local' }), new MouseEvent('auxclick', { bubbles: true, button: 1 }));
+    await waitFor(() => expect(mocks.openSessionInNewWindow).toHaveBeenCalledWith('local', undefined, null));
+    expect(mocks.navigate).not.toHaveBeenCalled();
+  });
+
+  it('offers the same new-window action in the context menu without triggering parent clicks', async () => {
+    const parentClick = vi.fn();
+    render(<div onClick={parentClick}><SessionLinkChip
+      href="cindy://session/remote-task?device=remote-mac" label="Remote task"
+    /></div>);
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'Remote task' }), { clientX: 12, clientY: 24 });
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'ccAgent.sidebar.sessionMenu.openInNewWindow' }));
+    await waitFor(() => expect(mocks.openSessionInNewWindow).toHaveBeenCalledWith('remote-task', 'remote-mac', null));
+    expect(mocks.navigate).not.toHaveBeenCalled();
+    expect(parentClick).not.toHaveBeenCalled();
+  });
+
+  it('opens the menu with Shift+F10 and copies the complete link', async () => {
+    const href = 'cindy://session/remote-task?device=remote-mac&message=m%2F1';
+    render(<SessionLinkChip href={href} label="Remote task" />);
+    const link = screen.getByRole('button', { name: 'Remote task' });
+    fireEvent.keyDown(link, { key: 'F10', shiftKey: true });
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'chat.markdownRenderer.copyLink' }));
+    await waitFor(() => expect(mocks.writeText).toHaveBeenCalledWith(href));
+    expect(mocks.openSessionInNewWindow).not.toHaveBeenCalled();
+    expect(mocks.navigate).not.toHaveBeenCalled();
+  });
+
+  it('reports a rejected window-open request and leaves the source pane intact', async () => {
+    mocks.openSessionInNewWindow.mockRejectedValueOnce(new Error('unavailable'));
+    render(<SessionLinkChip href="cindy://session/local" label="Local" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Local' }), { shiftKey: true });
+    await waitFor(() => expect(mocks.error).toHaveBeenCalledWith('chat.markdownRenderer.openLinkFailed'));
+    expect(mocks.navigate).not.toHaveBeenCalled();
+  });
+
+  it('routes an unmirrored remote history link through its host before resolving the task', async () => {
+    render(<SessionLinkChip href="cindy://session/archived-task?device=remote-mac" />);
+    expect(mocks.getSession).not.toHaveBeenCalled();
+    expect(mocks.pinSessionOrigin).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button'));
+
+    await waitFor(() => expect(mocks.navigate).toHaveBeenCalledWith('/cc-agent/archived-task', undefined));
+    expect(mocks.pinSessionOrigin).toHaveBeenCalledWith('remote-mac', 'archived-task');
+    expect(mocks.pinSessionOrigin.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.resolveSessionRoute.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it('keeps a link to this computer local', async () => {
+    render(<SessionLinkChip href="cindy://session/local-task?device=this-mac" label="Local task" />);
+    fireEvent.click(screen.getByRole('button'));
+    await waitFor(() => expect(mocks.navigate).toHaveBeenCalledWith('/cc-agent/local-task', undefined));
+    expect(mocks.pinSessionOrigin).not.toHaveBeenCalled();
+  });
+
+  it('reports split-pane session navigation before changing the route', async () => {
+    const onSessionNavigate = vi.fn();
+    render(
+      splitPane(
+        <SessionLinkChip href="xdt-maker://session/session-target" label="Session target" />,
+        onSessionNavigate,
+      ),
     );
 
-    // 宽度上限必须留在 pill 一侧:加回外层会让 pill 与 summary 抢同一份 240px,
-    // summary 被压成逐字竖排、pill 被 stretch 拉成大椭圆。
+    fireEvent.click(screen.getByRole('button'));
+
+    await waitFor(() =>
+      expect(mocks.navigate).toHaveBeenCalledWith('/cc-agent/session-target', undefined),
+    );
+    expect(onSessionNavigate).toHaveBeenCalledWith('session-target', 'session-target');
+    expect(onSessionNavigate.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.navigate.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('reports the canonical Lead owner for a worker deep link', async () => {
+    mocks.resolveSessionRoute.mockResolvedValueOnce('/cc-agent/lead-target?worker=worker-target');
+    const onSessionNavigate = vi.fn();
+    render(
+      splitPane(
+        <SessionLinkChip href="xdt-maker://session/worker-target" label="Worker target" />,
+        onSessionNavigate,
+      ),
+    );
+
+    fireEvent.click(screen.getByRole('button'));
+
+    await waitFor(() =>
+      expect(mocks.navigate).toHaveBeenCalledWith(
+        '/cc-agent/lead-target?worker=worker-target',
+        undefined,
+      ),
+    );
+    expect(onSessionNavigate).toHaveBeenCalledWith('worker-target', 'lead-target');
+  });
+
+  it('cancels pending split-pane link navigation after the source pane unmounts', async () => {
+    const pendingRoute = deferred<string>();
+    mocks.resolveSessionRoute.mockReturnValueOnce(pendingRoute.promise);
+    const onSessionNavigate = vi.fn();
+    const view = render(
+      splitPane(
+        <SessionLinkChip href="xdt-maker://session/session-target" label="Session target" />,
+        onSessionNavigate,
+      ),
+    );
+
+    fireEvent.click(screen.getByRole('button'));
+    expect(mocks.resolveSessionRoute).toHaveBeenCalledWith('session-target', null);
+    view.unmount();
+
+    await act(async () => {
+      pendingRoute.resolve('/cc-agent/session-target');
+      await pendingRoute.promise;
+    });
+
+    expect(onSessionNavigate).not.toHaveBeenCalled();
+    expect(mocks.navigate).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])('keeps the anchored pill visibly clickable and on a single line (embedded=%s)', async (isEmbedded) => {
+    const chip = <SessionLinkChip href="cindy://session/session-a?message=message-1" label="Session A" />;
+    const { container } = render(isEmbedded ? embedded(chip) : chip);
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText('Session A')).toBeTruthy();
     const link = container.querySelector('button[data-session-message-link]');
     expect(link?.className).toContain('items-center');
-    expect(link?.className).not.toContain('max-w-[min(240px,55vw)]');
+    expect(link?.textContent).toBe('Session A');
+    expect(container.querySelector('[data-inline-reference-chip]')?.className).toContain('underline');
     expect(
       container.querySelector('[data-inline-reference-chip]')?.parentElement?.className,
     ).toContain('max-w-[min(240px,55vw)]');
-    // summary 单行截断,不参与换行。
-    expect(container.querySelector('[data-session-reference-summary]')?.className).toContain(
-      'truncate',
-    );
   });
 
   it('renders handoff cards as static content without resolving or navigating', () => {
@@ -157,6 +315,60 @@ describe('sidebar-embedded session navigation boundary', () => {
     expect(screen.queryByRole('button')).toBeNull();
     expect(screen.getByText('Session B')).toBeTruthy();
     expect(mocks.resolveSessionRoute).not.toHaveBeenCalled();
+    expect(mocks.navigate).not.toHaveBeenCalled();
+  });
+
+  it('reports the canonical Lead owner for a worker handoff', async () => {
+    mocks.resolveSessionRoute.mockResolvedValueOnce('/cc-agent/lead-target?worker=worker-target');
+    const onSessionNavigate = vi.fn();
+    render(
+      splitPane(
+        <SessionHandoffCard
+          sessionId="worker-target"
+          title="Worker target"
+          wake="resumed"
+          lastActive={null}
+        />,
+        onSessionNavigate,
+      ),
+    );
+
+    fireEvent.click(screen.getByRole('button'));
+
+    await waitFor(() =>
+      expect(mocks.navigate).toHaveBeenCalledWith('/cc-agent/lead-target?worker=worker-target', {
+        state: undefined,
+      }),
+    );
+    expect(onSessionNavigate).toHaveBeenCalledWith('worker-target', 'lead-target');
+  });
+
+  it('cancels pending handoff navigation after the source pane unmounts', async () => {
+    const pendingRoute = deferred<string>();
+    mocks.resolveSessionRoute.mockReturnValueOnce(pendingRoute.promise);
+    const onSessionNavigate = vi.fn();
+    const view = render(
+      splitPane(
+        <SessionHandoffCard
+          sessionId="session-target"
+          title="Session target"
+          wake="resumed"
+          lastActive={null}
+        />,
+        onSessionNavigate,
+      ),
+    );
+
+    fireEvent.click(screen.getByRole('button'));
+    expect(mocks.resolveSessionRoute).toHaveBeenCalledWith('session-target');
+    view.unmount();
+
+    await act(async () => {
+      pendingRoute.resolve('/cc-agent/session-target');
+      await pendingRoute.promise;
+    });
+
+    expect(onSessionNavigate).not.toHaveBeenCalled();
     expect(mocks.navigate).not.toHaveBeenCalled();
   });
 
@@ -178,18 +390,156 @@ describe('sidebar-embedded session navigation boundary', () => {
     expect(mocks.navigate).not.toHaveBeenCalled();
   });
 
+  it('renders device, plugin and hook source labels as static content', () => {
+    render(
+      embedded(
+        <>
+          <MessageSourceLabels
+            sourcePlugin={{ pluginId: 'ghost.notes', name: 'Notes' }}
+            sourceDevice={{ deviceId: 'phone-1', platform: 'mobile' }}
+          />
+          <MessageSourceLabels
+            automationOrigin={{
+              kind: 'scheduler',
+              scheduleId: 'hook:slack-1',
+              scheduleName: 'Hook · Team Slack',
+            }}
+          />
+        </>,
+      ),
+    );
+
+    expect(screen.queryByRole('button')).toBeNull();
+    expect(screen.getByText('Notes')).toBeTruthy();
+    expect(screen.getByText('Dash iPhone')).toBeTruthy();
+    expect(screen.queryByText('Hook · Team Slack')).toBeNull();
+    expect(mocks.navigate).not.toHaveBeenCalled();
+  });
+
   it('consumes /jump-session without resolving or navigating in embedded mode', async () => {
     const t = ((key: string) => key) as never;
+    const onSessionNavigate = vi.fn();
 
     await expect(
       tryHandleNavigationCommand('/jump-session session-c', {
         navigate: mocks.navigate,
         t,
         allowNavigation: false,
+        onSessionNavigate,
       }),
     ).resolves.toBe(true);
     expect(mocks.getSession).not.toHaveBeenCalled();
+    expect(mocks.resolveSessionRoute).not.toHaveBeenCalled();
+    expect(onSessionNavigate).not.toHaveBeenCalled();
     expect(mocks.navigate).not.toHaveBeenCalled();
+  });
+
+  it('reports /jump-session replacement before navigating from a split pane', async () => {
+    const t = ((key: string) => key) as never;
+    const onSessionNavigate = vi.fn();
+    mocks.resolveSessionRoute.mockResolvedValueOnce('/cc-agent/lead-target?worker=worker-target');
+
+    await expect(
+      tryHandleNavigationCommand('/jump-session worker-target', {
+        navigate: mocks.navigate,
+        t,
+        allowNavigation: true,
+        onSessionNavigate,
+      }),
+    ).resolves.toBe(true);
+
+    expect(mocks.getSession).toHaveBeenCalledWith('worker-target');
+    expect(mocks.resolveSessionRoute).toHaveBeenCalledWith(
+      'worker-target',
+      expect.objectContaining({ id: 'worker-target' }),
+    );
+    expect(onSessionNavigate).toHaveBeenCalledWith('worker-target', 'lead-target');
+    expect(mocks.navigate).toHaveBeenCalledWith('/cc-agent/lead-target?worker=worker-target');
+    expect(onSessionNavigate.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.navigate.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+    );
+  });
+
+  it('cancels pending split-pane /jump-session navigation after the source becomes stale', async () => {
+    const pendingRoute = deferred<string>();
+    mocks.resolveSessionRoute.mockReturnValueOnce(pendingRoute.promise);
+    const onSessionNavigate = vi.fn();
+    let navigationCurrent = true;
+    const navigationPromise = tryHandleNavigationCommand('/jump-session session-target', {
+      navigate: mocks.navigate,
+      t: ((key: string) => key) as never,
+      allowNavigation: true,
+      onSessionNavigate,
+      isNavigationCurrent: () => navigationCurrent,
+    });
+
+    await waitFor(() => expect(mocks.resolveSessionRoute).toHaveBeenCalled());
+    navigationCurrent = false;
+    await act(async () => {
+      pendingRoute.resolve('/cc-agent/session-target');
+      await pendingRoute.promise;
+      await navigationPromise;
+    });
+
+    expect(onSessionNavigate).not.toHaveBeenCalled();
+    expect(mocks.navigate).not.toHaveBeenCalled();
+  });
+
+  it('cancels stale /jump-session before resolving the route after target lookup', async () => {
+    const pendingSession = deferred<{
+      id: string;
+      title: string;
+      status: 'active';
+    }>();
+    mocks.getSession.mockReturnValueOnce(pendingSession.promise);
+    const onSessionNavigate = vi.fn();
+    let navigationCurrent = true;
+    const navigationPromise = tryHandleNavigationCommand('/jump-session session-target', {
+      navigate: mocks.navigate,
+      t: ((key: string) => key) as never,
+      allowNavigation: true,
+      onSessionNavigate,
+      isNavigationCurrent: () => navigationCurrent,
+    });
+
+    await waitFor(() => expect(mocks.getSession).toHaveBeenCalledWith('session-target'));
+    navigationCurrent = false;
+    await act(async () => {
+      pendingSession.resolve({ id: 'session-target', title: 'Session target', status: 'active' });
+      await pendingSession.promise;
+      await navigationPromise;
+    });
+
+    expect(mocks.resolveSessionRoute).not.toHaveBeenCalled();
+    expect(onSessionNavigate).not.toHaveBeenCalled();
+    expect(mocks.navigate).not.toHaveBeenCalled();
+  });
+
+  it('wires split-pane /jump-session handling through the pane navigation reporter', () => {
+    const source = readFileSync(
+      resolve(__dirname, '..', '..', '..', 'features', 'cc-agent', 'CCAgentSessionView.tsx'),
+      'utf8',
+    );
+
+    expect(source).toContain('allowNavigation: canNavigateSession');
+    expect(source).toContain(
+      "onSessionNavigate: navigationMode === 'split-pane' ? onSessionNavigate : undefined",
+    );
+    expect(source).toContain(
+      'onSessionNavigate?.(parentSessionId, getSessionRouteOwnerId(target) ?? parentSessionId)',
+    );
+    expect(source).toContain(
+      'canNavigateSession && session?.parentSessionId && session.forkedAtMessageId',
+    );
+    expect(source).toContain('const sessionNavigationVersionRef = useRef(0);');
+    expect(source).toContain(
+      'if (sessionNavigationVersionRef.current !== navigationRequestVersion) return;',
+    );
+    expect(source).toContain(
+      'if (sessionNavigationVersionRef.current !== forkStripNavigationVersion || !recovery.isCurrent()) return;',
+    );
+    expect(source).toContain('isNavigationCurrent:');
+    expect(source).toContain('[navigationMode, sessionId],');
   });
 
   it('keeps route-owner session links interactive', async () => {
@@ -270,7 +620,9 @@ describe('sidebar-embedded session navigation boundary', () => {
         automationOrigin={{ kind: 'scheduler', scheduleId: 'schedule-2', scheduleName: 'Daily' }}
       />,
     );
-    fireEvent.click(screen.getByRole('button'));
+    const automationButton = screen.getByRole('button');
+    expect(automationButton.getAttribute('data-split-pane-route-action')).toBe('');
+    fireEvent.click(automationButton);
     expect(mocks.navigate).toHaveBeenCalledWith('/cc-agent/scheduled?focus=schedule-2');
   });
 
@@ -284,6 +636,20 @@ describe('sidebar-embedded session navigation boundary', () => {
     ).resolves.toBe(true);
 
     expect(mocks.getSession).toHaveBeenCalledWith('session-f');
+    expect(mocks.resolveSessionRoute).toHaveBeenCalledWith(
+      'session-f',
+      expect.objectContaining({ id: 'session-f' }),
+    );
     expect(mocks.navigate).toHaveBeenCalledWith('/cc-agent/session-f');
+  });
+});
+
+describe('session navigation interaction policy', () => {
+  it.each([
+    ['route-owner', true],
+    ['split-pane', true],
+    ['sidebar-embedded', false],
+  ] as const)('%s interactive=%s', (mode, expected) => {
+    expect(isInteractiveSessionNavigationMode(mode)).toBe(expected);
   });
 });

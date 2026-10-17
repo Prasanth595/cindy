@@ -14,10 +14,26 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
+import { app } from 'electron';
+import { setCindyPersonalRuntime, setCindyVersionEndpointOverride } from '../cindy-make/versionRuntimeIdentity';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { TEST_CLIENT_ENDPOINTS } from '../../test/vitest/clientEndpointsFixture';
+
+const canLinkFile = (() => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'client-endpoints-file-link-probe-'));
+  try {
+    const target = path.join(root, 'target');
+    fs.writeFileSync(target, 'probe');
+    fs.symlinkSync(target, path.join(root, 'link'), 'file');
+    return true;
+  } catch {
+    return false;
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+})();
 
 const ipcOn = vi.hoisted(() => vi.fn());
 const netRequest = vi.hoisted(() => vi.fn());
@@ -27,6 +43,7 @@ vi.mock('electron', () => ({
   app: {
     getPath: vi.fn(),
     getAppPath: vi.fn(() => '/repo/apps/desktop'),
+    getPreferredSystemLanguages: vi.fn(() => ['en-US']),
     isPackaged: false,
     exit: vi.fn(),
   },
@@ -55,6 +72,7 @@ import {
   getClientEndpoint,
   getClientEndpointForRealm,
   getResolvedClientEndpoints,
+  initClientEndpoints,
   loadClientEndpointsForRealm,
   isUsingCachedClientEndpoints,
   registerClientEndpointsIpc,
@@ -90,6 +108,7 @@ const FULL_MANIFEST = JSON.stringify({
   voiceApiBaseUrl: 'https://voice.remote.example.com',
   githubApiBaseUrl: 'https://github-api.remote.example.com',
   skillhubApiBaseUrl: 'https://skillhub.remote.example.com',
+  cindySkillHubApiBaseUrl: 'https://cindy-skillhub.remote.example.com',
   pluginApiBaseUrl: 'https://plugin.remote.example.com',
   cdnBaseUrl: 'https://cdn.remote.example.com/app',
   mobileUpdateBaseUrl: 'https://mobile-update.remote.example.com',
@@ -240,6 +259,67 @@ describe('resolveEndpointSource(清单来源三选一)', () => {
     ],
   ] as const)('%s', (_label, input, expected) => {
     expect(resolveEndpointSource({ ...input, repoRoot: REPO_ROOT })).toEqual(expected);
+  });
+});
+
+describe('localhost 开发端点的 realm 固定', () => {
+  it('a packaged personal version keeps the verified local Dev services instead of sending credentials to production', async () => {
+    const previousPackaged = app.isPackaged;
+    (app as { isPackaged: boolean }).isPackaged = true;
+    setCindyPersonalRuntime(true);
+    setCindyVersionEndpointOverride({ manifestText: LOCAL_MANIFEST, local: true });
+    netRequest.mockClear();
+    try {
+      await expect(initClientEndpoints()).resolves.toBe(true);
+      const local = getClientEndpoint('authApiBaseUrl');
+      expect(local.startsWith('http://localhost')).toBe(true);
+      activateClientEndpointRealm('global');
+      expect(getClientEndpoint('authApiBaseUrl')).toBe(local);
+      activateClientEndpointRealm('cn');
+      expect(getClientEndpoint('authApiBaseUrl')).toBe(local);
+      expect(netRequest).not.toHaveBeenCalled();
+    } finally {
+      setCindyPersonalRuntime(false);
+      setCindyVersionEndpointOverride(undefined);
+      (app as { isPackaged: boolean }).isPackaged = previousPackaged;
+    }
+  });
+  it('登录恢复切换 realm 时仍复用本地文件清单，不加载线上清单', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'client-endpoints-local-realm-'));
+    const manifestPath = path.join(root, 'endpoint.local.json');
+    const previousMode = process.env.XDT_DESKTOP_DEV_MODE;
+    const previousManifestFile = process.env.XDT_ENDPOINT_MANIFEST_FILE;
+    fs.writeFileSync(
+      manifestPath,
+      JSON.stringify({
+        ...(JSON.parse(LOCAL_MANIFEST) as Record<string, unknown>),
+        cindySkillHubApiBaseUrl: 'http://localhost:3345',
+      }),
+    );
+    process.env.XDT_DESKTOP_DEV_MODE = 'local';
+    process.env.XDT_ENDPOINT_MANIFEST_FILE = manifestPath;
+
+    try {
+      await expect(initClientEndpoints()).resolves.toBe(true);
+
+      activateClientEndpointRealm('cn');
+      expect(getClientEndpoint('cindySkillHubApiBaseUrl')).toBe('http://localhost:3345');
+      activateClientEndpointRealm('global');
+      expect(getClientEndpoint('cindySkillHubApiBaseUrl')).toBe('http://localhost:3345');
+      await expect(loadClientEndpointsForRealm('cn')).resolves.toMatchObject({
+        cindySkillHubApiBaseUrl: 'http://localhost:3345',
+      });
+      await expect(loadClientEndpointsForRealm('global')).resolves.toMatchObject({
+        cindySkillHubApiBaseUrl: 'http://localhost:3345',
+      });
+      expect(netRequest).not.toHaveBeenCalled();
+    } finally {
+      if (previousMode === undefined) delete process.env.XDT_DESKTOP_DEV_MODE;
+      else process.env.XDT_DESKTOP_DEV_MODE = previousMode;
+      if (previousManifestFile === undefined) delete process.env.XDT_ENDPOINT_MANIFEST_FILE;
+      else process.env.XDT_ENDPOINT_MANIFEST_FILE = previousManifestFile;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
@@ -781,6 +861,102 @@ describe('用户确认的离线出口', () => {
     expect(fetchManifest).toHaveBeenCalledTimes(1);
   });
 
+  it('自动模式下网络失败 + 有缓存 → 不弹框、不诊断，直接用缓存启动', async () => {
+    const loadOfflineManifest = vi.fn(offlineCandidate);
+    const promptRetry = vi.fn();
+    const diagnose = vi.fn();
+    const exitApp = vi.fn();
+    const onResolved = vi.fn();
+
+    const result = await resolveClientEndpointsBlocking({
+      fetchManifest: failFetch('ERR_INTERNET_DISCONNECTED'),
+      promptRetry,
+      exitApp,
+      diagnose,
+      loadOfflineManifest,
+      offlineFallbackMode: 'automatic',
+      onResolved,
+      ...NO_AUTO_RETRY,
+    });
+
+    expect(result?.authApiBaseUrl).toBe('https://auth.cached.example.com');
+    expect(loadOfflineManifest).toHaveBeenCalledTimes(1);
+    expect(promptRetry).not.toHaveBeenCalled();
+    expect(diagnose).not.toHaveBeenCalled();
+    expect(exitApp).not.toHaveBeenCalled();
+    expect(onResolved).toHaveBeenCalledWith(expect.anything(), 'cache');
+  });
+
+  it('自动模式仍优先等待短重试自愈，远端成功时不读取缓存', async () => {
+    const fetchManifest = vi
+      .fn<BlockingResolveDeps['fetchManifest']>()
+      .mockResolvedValueOnce({ ok: false, detail: 'ERR_NAME_NOT_RESOLVED' })
+      .mockResolvedValueOnce({ ok: true, text: FULL_MANIFEST });
+    const loadOfflineManifest = vi.fn(offlineCandidate);
+
+    const result = await resolveClientEndpointsBlocking({
+      fetchManifest,
+      promptRetry: vi.fn(),
+      exitApp: vi.fn(),
+      loadOfflineManifest,
+      offlineFallbackMode: 'automatic',
+      autoRetryDelaysMs: [10],
+      sleep: async () => {},
+    });
+
+    expect(result?.authApiBaseUrl).toBe('https://auth.remote.example.com');
+    expect(fetchManifest).toHaveBeenCalledTimes(2);
+    expect(loadOfflineManifest).not.toHaveBeenCalled();
+  });
+
+  it('自动模式没有可用缓存时仍诊断并弹框', async () => {
+    const diagnose = vi.fn().mockResolvedValue({
+      summary: 'proxy=DIRECT dns=fail(ENOTFOUND)',
+      logPath: '/tmp/cindy-test-logs',
+    });
+    const promptRetry = vi.fn().mockReturnValue('exit');
+    const exitApp = vi.fn();
+
+    const result = await resolveClientEndpointsBlocking({
+      fetchManifest: failFetch('ERR_INTERNET_DISCONNECTED'),
+      promptRetry,
+      exitApp,
+      diagnose,
+      loadOfflineManifest: () => null,
+      offlineFallbackMode: 'automatic',
+      ...NO_AUTO_RETRY,
+    });
+
+    expect(result).toBeNull();
+    expect(diagnose).toHaveBeenCalledTimes(1);
+    expect(promptRetry).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'network',
+        offlineSavedAt: null,
+        diagnosis: 'proxy=DIRECT dns=fail(ENOTFOUND)',
+      }),
+    );
+    expect(exitApp).toHaveBeenCalledTimes(1);
+  });
+
+  it('自动模式绝不让缓存掩盖配置事故', async () => {
+    const loadOfflineManifest = vi.fn(offlineCandidate);
+    const promptRetry = vi.fn().mockReturnValue('exit');
+
+    await resolveClientEndpointsBlocking({
+      fetchManifest: okFetch('not json'),
+      promptRetry,
+      exitApp: vi.fn(),
+      loadOfflineManifest,
+      offlineFallbackMode: 'automatic',
+    });
+
+    expect(loadOfflineManifest).not.toHaveBeenCalled();
+    expect(promptRetry).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'config', offlineSavedAt: null }),
+    );
+  });
+
   it('走离线出口时 onResolved 收到 source=cache;网络成功则是 network 并带原文', async () => {
     const cacheResolved = vi.fn();
     await resolveClientEndpointsBlocking({
@@ -1291,12 +1467,11 @@ describe('netlog 产物事后核对(verifyEndpointNetLogCapture)', () => {
   it('目录项被换成 symlink → 不通过(产物丢弃)', () => {
     // 这是攻击的真实形状:把我们创建的目录项换成指向别处的 symlink,好让 Chromium
     // 写到别的地方去。lstat 不跟随 symlink,所以 isDirectory() 为 false。
-    if (process.platform === 'win32') return;
     const capture = prepareEndpointNetLogFile(logDir)!;
     const captureDir = path.dirname(capture.file);
     const elsewhere = fs.mkdtempSync(path.join(logDir, 'elsewhere-'));
     fs.rmSync(captureDir, { recursive: true, force: true });
-    fs.symlinkSync(elsewhere, captureDir);
+    fs.symlinkSync(elsewhere, captureDir, process.platform === 'win32' ? 'junction' : 'dir');
     fs.writeFileSync(capture.file, '{}', 'utf8');
     expect(verifyEndpointNetLogCapture(capture)).toBe(false);
   });
@@ -1318,7 +1493,7 @@ describe('netlog 产物事后核对(verifyEndpointNetLogCapture)', () => {
   });
 
   it('目标被换成 symlink → 不通过', () => {
-    if (process.platform === 'win32') return;
+    if (!canLinkFile) return;
     const capture = prepareEndpointNetLogFile(logDir)!;
     const real = path.join(logDir, 'elsewhere.json');
     fs.writeFileSync(real, '{}', 'utf8');
@@ -1333,6 +1508,24 @@ describe('netlog 产物事后核对(verifyEndpointNetLogCapture)', () => {
 });
 
 describe('getter / IPC', () => {
+  it('aborts a non-200 endpoint response instead of draining without a deadline', async () => {
+    resetClientEndpointsForTest(TEST_CLIENT_ENDPOINTS, {
+      buildRegion: 'cn',
+      realmManifestBaseUrls: {
+        cn: 'https://manifest.cn.example.com/app',
+        global: 'https://manifest.global.example.com/app',
+      },
+    });
+    const response = Object.assign(new EventEmitter(), { statusCode: 404 });
+    const request = Object.assign(new EventEmitter(), {
+      end: vi.fn(() => request.emit('response', response)),
+      abort: vi.fn(() => response.emit('error', new Error('cancelled'))),
+    });
+    netRequest.mockReturnValueOnce(request);
+    await expect(loadClientEndpointsForRealm('global')).rejects.toThrow('http-404');
+    expect(request.abort).toHaveBeenCalledTimes(1);
+  });
+
   it('默认不是离线缓存启动', () => {
     expect(isUsingCachedClientEndpoints()).toBe(false);
   });

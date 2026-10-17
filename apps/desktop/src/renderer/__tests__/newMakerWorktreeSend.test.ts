@@ -15,7 +15,7 @@ const sessionViewSource = readFileSync(
 
 describe('NewMakerDraftRoute worktree send flow', () => {
   it('enters a real session before creating the worktree in the background', () => {
-    // 2026-07-29 状态契约:生效条件 = 勾选 && baseRepo 就绪(不合格静默普通启动)。
+    // 发送门已保证用户勾选时资格就绪；副作用分支仍以勾选 + baseRepo 双重防御。
     const worktreeBranch = source.indexOf(
       'if (!isRemoteProjectDraft && wt.enabled && wt.baseRepo) {',
     );
@@ -35,6 +35,48 @@ describe('NewMakerDraftRoute worktree send flow', () => {
     expect(worktreeCreate).toBeGreaterThan(navigate);
   });
 
+  it('clears starting when the first-message draft is restored after a send-before-start failure', () => {
+    const restore = source.indexOf('const restoreFirstMessageDraft = () => {');
+    const clearStarting = source.indexOf('clearSessionStarting(newSession.id)', restore);
+    const restoreEnd = source.indexOf('};', source.indexOf('emitAutoTitlePreviewCleared(newSession.id)', restore));
+    expect(restore).toBeGreaterThan(-1);
+    expect(clearStarting).toBeGreaterThan(restore);
+    expect(clearStarting).toBeLessThan(restoreEnd);
+  });
+
+  it('never silently downgrades an explicit worktree request to a normal session', () => {
+    const selected = source.indexOf('const selectedWorktree = { ...wtRef.current };');
+    const guard = source.indexOf(
+      '&& selectedWorktree.confirmedIneligible !== true',
+      selected,
+    );
+    const markInFlight = source.indexOf('markSendInFlight(true);', guard);
+    const guardedSource = source.slice(guard, markInFlight);
+
+    expect(selected).toBeGreaterThan(-1);
+    expect(guard).toBeGreaterThan(selected);
+    expect(markInFlight).toBeGreaterThan(guard);
+    expect(guardedSource).toContain('!selectedWorktree.baseRepo');
+    expect(guardedSource).toContain('!selectedWorktree.branchPreferenceReady');
+    expect(guardedSource).toContain('selectedWorktree.supportsRecoveryKeyDiscard !== true');
+    expect(guardedSource).toContain('return false;');
+  });
+
+  it('lets a confirmed-ineligible directory create a plain session while keeping the ON memory', () => {
+    // 2026-08-07 裁决:探测成功且确认不合格(非 git / 无 git / 已在 worktree 内)时,
+    // 勾选记忆不生效——发送 / Goal 门、worktree 副作用分支全部按普通会话放行;
+    // confirmedIneligible === null(探测中 / 失败)必须仍走 fail closed。
+    // Send 门与 Goal 门各有一处放行条件;Goal 的本地 worktree 使用点同样排除。
+    expect(
+      source.match(/&& selectedWorktree\.confirmedIneligible !== true/g)?.length ?? 0,
+    ).toBeGreaterThanOrEqual(3);
+    // device-link 预创建两条路径(Send / Goal)同样不得对确认不合格目录发起 worktree:create。
+    expect(source).toContain('wt.confirmedIneligible !== true');
+    // 确认态来源:WorktreeChipsRow 的探测回包,null 表示未确认。
+    expect(source).toContain('const [wtConfirmedIneligible, setWtConfirmedIneligible]');
+    expect(source).toContain('onConfirmedIneligibleChange={handleWtConfirmedIneligibleChange}');
+  });
+
   it('keeps the first message as a session draft when background worktree creation fails', () => {
     const worktreeCreate = source.indexOf('window.electronAPI.worktreeCreate');
     const failedCard = source.indexOf("status: 'failed'", worktreeCreate);
@@ -47,6 +89,22 @@ describe('NewMakerDraftRoute worktree send flow', () => {
     expect(restoreHelper).toBeGreaterThan(-1);
     expect(saveDraft).toBeGreaterThan(failedCard);
     expect(restoreText).toBeGreaterThan(restoreHelper);
+    const draftSnapshot = source.indexOf('const preNavDraft = getComposerDraft(');
+    expect(draftSnapshot).toBeGreaterThan(-1);
+    expect(draftSnapshot).toBeLessThan(restoreHelper);
+    expect(source.slice(draftSnapshot, restoreHelper)).toContain(
+      'const preNavDraftDoc = opts?.recoveryDraftDoc ?? preNavDraft?.text ?? null;',
+    );
+    expect(source.slice(restoreHelper, restoreText)).toContain('text: preNavDraftDoc ??');
+    expect(source.slice(restoreHelper, restoreHelper + 500)).toContain(
+      'browserComments: rehomedComments',
+    );
+    expect(source.slice(restoreHelper, failedCard)).toContain(
+      'rewriteBrowserCommentsFromRehomedFiles(',
+    );
+    expect(source.slice(restoreHelper, failedCard)).toContain(
+      'excludeCommentScreenshots(rehomedFiles, rehomedComments)',
+    );
   });
 
   it('does not make the new worktree path the next New Maker default project', () => {
@@ -56,6 +114,18 @@ describe('NewMakerDraftRoute worktree send flow', () => {
   it('uses the current checkout as the safe source when branch discovery is not ready', () => {
     expect(source.match(/sourceBranch: wt\.sourceBranch\.trim\(\) \|\| 'HEAD'/g)).toHaveLength(2);
     expect(source).not.toContain("sourceBranch: wt.sourceBranch.trim() || 'main'");
+  });
+
+  it('uses the shared Cindy branch helper and adopts the authoritative created branch', () => {
+    const previewBranch = source.indexOf('let branchName = getBranchName(name);');
+    const worktreeCreate = source.indexOf('window.electronAPI.worktreeCreate', previewBranch);
+    const authoritativeBranch = source.indexOf('branchName = resp.meta.branch;', worktreeCreate);
+    const creatingStateRefresh = source.indexOf("status: 'creating'", authoritativeBranch);
+
+    expect(source).not.toContain('`xdt/${name}`');
+    expect(previewBranch).toBeGreaterThan(-1);
+    expect(authoritativeBranch).toBeGreaterThan(worktreeCreate);
+    expect(creatingStateRefresh).toBeGreaterThan(authoritativeBranch);
   });
 
   it('treats remote session creation as committed before the shared non-blocking handoff', () => {
@@ -96,7 +166,12 @@ describe('NewMakerDraftRoute worktree send flow', () => {
     expect(reservationGuard).toBeGreaterThan(retainedGuard);
     expect(worktreeCreate).toBeGreaterThan(reservationGuard);
     expect(worktreeCreate).toBeGreaterThan(retainedGuard);
-    expect(source.slice(worktreeCreate, worktreeCreate + 420)).toContain('recoveryKey,');
+    const createRequest = source.lastIndexOf(
+      'const createRequest: RemoteWorktreeCreateRequest = {',
+      worktreeCreate,
+    );
+    expect(createRequest).toBeGreaterThan(reservationGuard);
+    expect(source.slice(createRequest, worktreeCreate)).toContain('recoveryKey,');
     expect(ledgerRegistration).toBeGreaterThan(worktreeCreate);
     expect(source.slice(ledgerRegistration, ledgerRegistration + 220)).toContain('deviceId,');
   });
@@ -124,20 +199,8 @@ describe('NewMakerDraftRoute worktree send flow', () => {
     expect(silentCatch).toBeGreaterThan(handoff);
   });
 
-  it('retries remote draft defaults after the relay or selected workstation reconnects', () => {
-    const epochHook = source.indexOf('useDeviceLinkReconnectEpoch(');
-    const defaultsFetch = source.indexOf("'maker:get-new-maker-defaults'", epochHook);
-    const effectDependencies = source.indexOf('remoteDraftRefreshEpoch,', defaultsFetch);
-    const transientPreserve = source.indexOf(
-      'value: unsupported ? null : previous.value',
-      defaultsFetch,
-    );
-
-    expect(epochHook).toBeGreaterThan(-1);
-    expect(defaultsFetch).toBeGreaterThan(epochHook);
-    expect(effectDependencies).toBeGreaterThan(defaultsFetch);
-    expect(transientPreserve).toBeGreaterThan(defaultsFetch);
-  });
+  // Reconnect/default preservation is exercised through the production hooks
+  // in remoteDraftDefaultsCache.test.tsx, rather than source ordering.
 
   it('does not auto-send if the prepared session is no longer active', () => {
     const worktreeCreate = source.indexOf('window.electronAPI.worktreeCreate');

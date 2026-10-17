@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+
+import { SegmentedControl } from '@/components/ui/segmented-control';
 import {
   Sun,
   Moon,
@@ -23,24 +25,20 @@ import {
   DEFAULT_UI_FONT_SIZE,
   useFontSettings,
 } from '@/hooks/useFontSettings';
-import { useSidebarCardMode, type SidebarViewMode } from '@/hooks/useSidebarCardMode';
-import {
-  getThemeFamilies,
-  resolveFamilyVariant,
-  type ThemeFamily,
-} from '@/themes/families';
-import {
-  buildCopyFromTheme,
-  onLocalThemesChange,
-  refreshLocalThemes,
-} from '@/themes/local-themes';
+import { useSidebarCardMode, useSidebarMainViewMode } from '@/hooks/useSidebarCardMode';
+import { useGhostPanelRestoreMode } from '@/hooks/useGhostPanelRestoreMode';
+import { getThemeFamilies, resolveFamilyVariant, type ThemeFamily } from '@/themes/families';
+import { buildCopyFromTheme, onLocalThemesChange, refreshLocalThemes } from '@/themes/local-themes';
 import { toast } from '@/lib/toast';
 import { isLocalThemeId } from '../../../shared/local-themes';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { Button } from '@/components/ui/button';
 import { Tip } from '@/components/ui/tooltip';
 import { Slider } from '@/components/ui/slider';
 import { extractIpcError } from '@/utils/ipcError';
 import { FontFamilyPicker, type FontPreset } from './FontFamilyPicker';
+import { LayoutResetControl } from './LayoutResetControl';
+import { WallpaperSection } from './WallpaperSection';
 
 const log = createLogger('settings/AppearanceSection');
 
@@ -143,7 +141,7 @@ function ThemeCard({
         style={{
           backgroundColor: previewBg,
           borderColor: isSelected
-            ? activeRingColor ?? 'var(--settings-theme-preview-border-active)'
+            ? (activeRingColor ?? 'var(--settings-theme-preview-border-active)')
             : 'var(--settings-theme-preview-border)',
         }}
       >
@@ -188,19 +186,16 @@ function LocalThemeIconButton({
 }) {
   return (
     <Tip text={label}>
-      <button
+      <Button
+        variant="secondary"
+        size="lg"
+        className="w-9 px-0"
         type="button"
         aria-label={label}
         onClick={onClick}
-        className={cn(
-          'flex h-9 w-9 items-center justify-center rounded-xl',
-          'border border-[var(--settings-input-border)]',
-          'bg-[var(--settings-input-bg)] text-[var(--settings-input-text)]',
-          'transition-colors hover:bg-[var(--settings-menu-bg-hover)]',
-        )}
       >
         <Icon size={16} />
-      </button>
+      </Button>
     </Tip>
   );
 }
@@ -286,7 +281,10 @@ function FamilyDropdown({
                     {getLabel(family)}
                   </span>
                   {isSelected ? (
-                    <Check size={16} className="shrink-0 text-[var(--settings-theme-icon-active)]" />
+                    <Check
+                      size={16}
+                      className="shrink-0 text-[var(--settings-theme-icon-active)]"
+                    />
                   ) : null}
                 </button>
               );
@@ -315,6 +313,9 @@ export function AppearanceSection() {
     resetCodeSize,
   } = useFontSettings();
   const { mode: sidebarViewMode, setMode: setSidebarViewMode } = useSidebarCardMode();
+  const { mode: sidebarMainViewMode, setMode: setSidebarMainViewMode } = useSidebarMainViewMode();
+  const { mode: ghostPanelRestoreMode, setMode: setGhostPanelRestoreMode } =
+    useGhostPanelRestoreMode();
   const { t } = useTranslation();
   const [localThemesVersion, setLocalThemesVersion] = useState(0);
   const [uiSizeInput, setUiSizeInput] = useState(String(uiSize));
@@ -334,9 +335,13 @@ export function AppearanceSection() {
     setCodeSizeInput(String(codeSize));
   }, [codeSize]);
 
-  useEffect(() => onLocalThemesChange(() => {
-    setLocalThemesVersion((version) => version + 1);
-  }), []);
+  useEffect(
+    () =>
+      onLocalThemesChange(() => {
+        setLocalThemesVersion((version) => version + 1);
+      }),
+    [],
+  );
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -362,27 +367,23 @@ export function AppearanceSection() {
   );
 
   const getFamilyLabel = useCallback(
-    (family: ThemeFamily) => isLocalThemeId(family.id)
-      ? `${family.name} ${t('settings.appearance.localBadge')}`
-      : family.name,
+    (family: ThemeFamily) =>
+      isLocalThemeId(family.id)
+        ? `${family.name} ${t('settings.appearance.localBadge')}`
+        : family.name,
     [t],
   );
 
   const handleExport = useCallback(async () => {
     const isDark = resolveIsDark(theme);
-    const { theme: activeTheme } = resolveFamilyVariant(
-      familyId,
-      isDark ? 'dark' : 'light',
-    );
+    const { theme: activeTheme } = resolveFamilyVariant(familyId, isDark ? 'dark' : 'light');
     const { baseId, theme: themeJson } = buildCopyFromTheme(activeTheme);
     const result = await window.electronAPI.localThemes.write({
       baseId,
       theme: themeJson,
     });
     if (!result.success) {
-      toast.error(
-        t('settings.appearance.localThemes.exportFailed', { error: result.error }),
-      );
+      toast.error(t('settings.appearance.localThemes.exportFailed', { error: result.error }));
       return;
     }
     // openDir 失败只 log,不退化 success toast — 文件已落盘是主要事实
@@ -441,9 +442,7 @@ export function AppearanceSection() {
   const handleOpenDir = useCallback(async () => {
     const result = await window.electronAPI.localThemes.openDir();
     if (!result.success) {
-      toast.error(
-        t('settings.appearance.localThemes.openDirFailed', { error: result.error }),
-      );
+      toast.error(t('settings.appearance.localThemes.openDirFailed', { error: result.error }));
     }
   }, [t]);
 
@@ -503,7 +502,7 @@ export function AppearanceSection() {
       </h2>
 
       {/* Theme card — rounded 12, Card bg, 1px Board, padding 20 */}
-      <div
+      <div id="settings-search-settings-appearance-themeLabel"
         className={cn(
           'flex flex-col gap-[14px] rounded-xl p-5',
           'bg-[var(--settings-theme-card-bg)]',
@@ -511,7 +510,7 @@ export function AppearanceSection() {
         )}
       >
         {/* Appearance mode */}
-        <p
+        <p id="settings-search-settings-appearance-modeLabel"
           className="text-13 font-medium text-[var(--settings-section-sublabel)]"
           style={{ letterSpacing: '0.12px' }}
         >
@@ -579,7 +578,7 @@ export function AppearanceSection() {
         />
 
         <div className="flex flex-col gap-2 pt-1">
-          <p
+          <p id="settings-search-settings-appearance-localThemes-title"
             className="text-13 font-medium text-[var(--settings-section-sublabel)]"
             style={{ letterSpacing: '0.12px' }}
           >
@@ -589,22 +588,30 @@ export function AppearanceSection() {
             <LocalThemeIconButton
               icon={Copy}
               label={t('settings.appearance.localThemes.export')}
-              onClick={() => { void handleExport(); }}
+              onClick={() => {
+                void handleExport();
+              }}
             />
             <LocalThemeIconButton
               icon={ImportIcon}
               label={t('settings.appearance.localThemes.import')}
-              onClick={() => { void handleImport(); }}
+              onClick={() => {
+                void handleImport();
+              }}
             />
             <LocalThemeIconButton
               icon={FolderOpen}
               label={t('settings.appearance.localThemes.openDir')}
-              onClick={() => { void handleOpenDir(); }}
+              onClick={() => {
+                void handleOpenDir();
+              }}
             />
             <LocalThemeIconButton
               icon={RefreshCw}
               label={t('settings.appearance.localThemes.refresh')}
-              onClick={() => { void handleRefresh(); }}
+              onClick={() => {
+                void handleRefresh();
+              }}
             />
           </div>
         </div>
@@ -616,7 +623,9 @@ export function AppearanceSection() {
         ) : null}
       </div>
 
-      <div
+      <WallpaperSection />
+
+      <div id="settings-search-settings-appearance-font-uiFamily-label"
         className={cn(
           'flex flex-col gap-[14px] rounded-xl p-5',
           'bg-[var(--settings-theme-card-bg)]',
@@ -640,7 +649,7 @@ export function AppearanceSection() {
         <div className="flex flex-col gap-3">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <p
+              <p id="settings-search-settings-appearance-font-uiSize-label"
                 className="text-13 font-medium text-[var(--settings-section-sublabel)]"
                 style={{ letterSpacing: '0.12px' }}
               >
@@ -651,21 +660,16 @@ export function AppearanceSection() {
               </p>
             </div>
             <Tip text={t('settings.appearance.font.reset')}>
-              <button
+              <Button
+                variant="secondary"
+                className="w-8 px-0"
                 type="button"
                 aria-label={t('settings.appearance.font.reset')}
                 onClick={resetUiSize}
                 disabled={uiSize === DEFAULT_UI_FONT_SIZE}
-                className={cn(
-                  'flex h-8 w-8 shrink-0 items-center justify-center rounded-xl',
-                  'border border-[var(--settings-input-border)]',
-                  'bg-[var(--settings-input-bg)] text-[var(--settings-input-text)]',
-                  'transition-colors hover:bg-[var(--settings-menu-bg-hover)]',
-                  'disabled:cursor-default disabled:opacity-40 disabled:hover:bg-[var(--settings-input-bg)]',
-                )}
               >
                 <RefreshCw size={14} />
-              </button>
+              </Button>
             </Tip>
           </div>
 
@@ -682,6 +686,7 @@ export function AppearanceSection() {
             />
             <input
               type="number"
+              aria-label={t('settings.appearance.font.uiSize.label')}
               min={12}
               max={24}
               step={1}
@@ -695,7 +700,7 @@ export function AppearanceSection() {
                 }
               }}
               className={cn(
-                'h-9 w-[72px] rounded-xl border px-3 text-right text-[13px] outline-none',
+                'h-9 w-[72px] rounded-xl border px-3 text-right text-13 outline-none',
                 'border-[var(--settings-input-border)] bg-[var(--settings-input-bg)]',
                 'font-mono text-[var(--settings-input-text)]',
                 'focus:border-[var(--settings-input-border-focus)]',
@@ -706,7 +711,8 @@ export function AppearanceSection() {
 
         <div className="h-px bg-[var(--settings-input-border)]" />
 
-        <FontFamilyPicker
+        <div id="settings-search-settings-appearance-font-codeFamily-label">
+          <FontFamilyPicker
           label={t('settings.appearance.font.codeFamily.label')}
           description={t('settings.appearance.font.codeFamily.description')}
           ariaLabel={t('settings.appearance.font.codeFamily.aria')}
@@ -717,14 +723,15 @@ export function AppearanceSection() {
           previewFallbackFamily="var(--app-font-code-default)"
           onChange={setCodeFamily}
           onReset={resetCodeFamily}
-        />
+          />
+        </div>
 
         <div className="h-px bg-[var(--settings-input-border)]" />
 
         <div className="flex flex-col gap-3">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <p
+              <p id="settings-search-settings-appearance-font-codeSize-label"
                 className="text-13 font-medium text-[var(--settings-section-sublabel)]"
                 style={{ letterSpacing: '0.12px' }}
               >
@@ -735,21 +742,16 @@ export function AppearanceSection() {
               </p>
             </div>
             <Tip text={t('settings.appearance.font.reset')}>
-              <button
+              <Button
+                variant="secondary"
+                className="w-8 px-0"
                 type="button"
                 aria-label={t('settings.appearance.font.reset')}
                 onClick={resetCodeSize}
                 disabled={codeSize === DEFAULT_CODE_FONT_SIZE}
-                className={cn(
-                  'flex h-8 w-8 shrink-0 items-center justify-center rounded-xl',
-                  'border border-[var(--settings-input-border)]',
-                  'bg-[var(--settings-input-bg)] text-[var(--settings-input-text)]',
-                  'transition-colors hover:bg-[var(--settings-menu-bg-hover)]',
-                  'disabled:cursor-default disabled:opacity-40 disabled:hover:bg-[var(--settings-input-bg)]',
-                )}
               >
                 <RefreshCw size={14} />
-              </button>
+              </Button>
             </Tip>
           </div>
 
@@ -766,6 +768,7 @@ export function AppearanceSection() {
             />
             <input
               type="number"
+              aria-label={t('settings.appearance.font.codeSize.label')}
               min={10}
               max={24}
               step={1}
@@ -779,7 +782,7 @@ export function AppearanceSection() {
                 }
               }}
               className={cn(
-                'h-9 w-[72px] rounded-xl border px-3 text-right text-[13px] outline-none',
+                'h-9 w-[72px] rounded-xl border px-3 text-right text-13 outline-none',
                 'border-[var(--settings-input-border)] bg-[var(--settings-input-bg)]',
                 'font-mono text-[var(--settings-input-text)]',
                 'focus:border-[var(--settings-input-border-focus)]',
@@ -789,55 +792,90 @@ export function AppearanceSection() {
         </div>
       </div>
 
-      {/* Sidebar card mode — 卡片瀑布流 vs 紧凑列表（sidebar-card-mode redesign）。
+      {/* Sidebar view modes — 置顶段(三态) / 主列表(两态)分离(sidebar-redesign B 期)。
           独立卡片，沿用 NotificationSection 的 label+hint+Switch 行模式。 */}
       <div
         className={cn(
-          'flex items-center justify-between gap-3 rounded-xl p-5',
+          'flex flex-col gap-4 rounded-xl p-5',
           'bg-[var(--settings-theme-card-bg)]',
           'border border-[var(--settings-theme-card-border)]',
         )}
       >
-        <div className="flex min-w-0 flex-col gap-1">
-          <p
-            className="text-13 font-medium text-[var(--settings-section-sublabel)]"
-            style={{ letterSpacing: '0.12px' }}
-          >
-            {t('settings.appearance.sidebarCardMode.label')}
-          </p>
-          <p className="text-12 leading-[1.4] text-[var(--settings-section-sublabel)] opacity-70">
-            {t('settings.appearance.sidebarCardMode.hint')}
-          </p>
+        <div className="cindy-segmented-row">
+          <div className="flex min-w-0 flex-col gap-1">
+            <p id="settings-search-settings-appearance-sidebarCardMode-label"
+              className="text-13 font-medium text-[var(--settings-section-sublabel)]"
+              style={{ letterSpacing: '0.12px' }}
+            >
+              {t('settings.appearance.sidebarCardMode.label')}
+            </p>
+            <p className="text-12 leading-[1.4] text-[var(--settings-section-sublabel)] opacity-70">
+              {t('settings.appearance.sidebarCardMode.hint')}
+            </p>
+          </div>
+
+          <SegmentedControl
+            aria-label={t('settings.appearance.sidebarCardMode.aria')}
+            value={sidebarViewMode}
+            onValueChange={setSidebarViewMode}
+            options={[
+              { value: 'text', label: t('ccAgent.sidebar.viewStyleList') },
+              { value: 'card', label: t('ccAgent.sidebar.viewStyleCard') },
+              { value: 'list', label: t('ccAgent.sidebar.viewStyleListWide') },
+            ]}
+          />
         </div>
 
-        <div
-          role="radiogroup"
-          aria-label={t('settings.appearance.sidebarCardMode.aria')}
-          className="flex shrink-0 items-center gap-0.5 rounded-lg border border-[var(--settings-theme-card-border)] p-0.5"
-        >
-          {([
-            { value: 'text', labelKey: 'ccAgent.sidebar.viewStyleList' },
-            { value: 'card', labelKey: 'ccAgent.sidebar.viewStyleCard' },
-            { value: 'list', labelKey: 'ccAgent.sidebar.viewStyleListWide' },
-          ] as Array<{ value: SidebarViewMode; labelKey: string }>).map((opt) => (
-            <button
-              key={opt.value}
-              type="button"
-              role="radio"
-              aria-checked={sidebarViewMode === opt.value}
-              onClick={() => setSidebarViewMode(opt.value)}
-              className={cn(
-                'rounded-md px-2.5 py-1 text-xs transition-colors',
-                sidebarViewMode === opt.value
-                  ? 'bg-[var(--chat-input-chip-bg)] font-medium text-[var(--msg-assistant-text)]'
-                  : 'text-[var(--settings-section-sublabel)] hover:bg-sidebar-item-hover',
-              )}
+        <div className="cindy-segmented-row">
+          <div className="flex min-w-0 flex-col gap-1">
+            <p id="settings-search-settings-appearance-sidebarMainListMode-label"
+              className="text-13 font-medium text-[var(--settings-section-sublabel)]"
+              style={{ letterSpacing: '0.12px' }}
             >
-              {t(opt.labelKey)}
-            </button>
-          ))}
+              {t('settings.appearance.sidebarMainListMode.label')}
+            </p>
+            <p className="text-12 leading-[1.4] text-[var(--settings-section-sublabel)] opacity-70">
+              {t('settings.appearance.sidebarMainListMode.hint')}
+            </p>
+          </div>
+
+          <SegmentedControl
+            aria-label={t('settings.appearance.sidebarMainListMode.aria')}
+            value={sidebarMainViewMode}
+            onValueChange={setSidebarMainViewMode}
+            options={[
+              { value: 'text', label: t('ccAgent.sidebar.viewStyleList') },
+              { value: 'list', label: t('ccAgent.sidebar.viewStyleListWide') },
+            ]}
+          />
+        </div>
+
+        <div className="cindy-segmented-row">
+          <div className="flex min-w-0 flex-col gap-1">
+            <p id="settings-search-settings-appearance-ghostPanelRestore-label"
+              className="text-13 font-medium text-[var(--settings-section-sublabel)]"
+              style={{ letterSpacing: '0.12px' }}
+            >
+              {t('settings.appearance.ghostPanelRestore.label')}
+            </p>
+            <p className="text-12 leading-[1.4] text-[var(--settings-section-sublabel)] opacity-70">
+              {t('settings.appearance.ghostPanelRestore.hint')}
+            </p>
+          </div>
+
+          <SegmentedControl
+            aria-label={t('settings.appearance.ghostPanelRestore.aria')}
+            value={ghostPanelRestoreMode}
+            onValueChange={setGhostPanelRestoreMode}
+            options={[
+              { value: 'bubble', label: t('settings.appearance.ghostPanelRestore.bubble') },
+              { value: 'sidebar', label: t('settings.appearance.ghostPanelRestore.sidebar') },
+            ]}
+          />
         </div>
       </div>
+
+      <LayoutResetControl />
     </div>
   );
 }

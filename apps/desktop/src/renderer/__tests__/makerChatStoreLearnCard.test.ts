@@ -35,6 +35,7 @@ vi.mock('@/lib/imageRef', () => ({
 }));
 vi.mock('@/lib/composerDraftStore', () => ({
   saveDraft: vi.fn(),
+  setRemoteOptimisticAttachmentUrls: vi.fn(),
   plainTextToTiptapDoc: (s: string) => ({
     type: 'doc',
     content: [{ type: 'paragraph', content: [{ type: 'text', text: s }] }],
@@ -152,5 +153,126 @@ describe('agent switch 历史投影', () => {
       .getSnapshot(id)
       .messages.find((message) => message.systemCardType === 'agent-switch');
     expect(card?.systemCardData).toMatchObject({ resumed: true });
+  });
+});
+
+describe('context rebuild 历史投影', () => {
+  it('把可见交接行投影成可展开的 context-rebuild 卡', async () => {
+    const id = sid('context-rebuild-card');
+    transportMocks.listMessages.mockResolvedValueOnce([
+      {
+        id: 'row-rebuild',
+        clientId: 'context-rebuild-card:1',
+        sessionId: id,
+        role: 'assistant',
+        content: '',
+        agentMeta: {
+          contextRebuild: {
+            reason: 'pi-prompt-timeout',
+            handoff: 'stopped responding to prompts',
+          },
+        },
+        createdAt: Date.now(),
+      },
+    ] as never);
+
+    makerChatStore.ensureInitialMessages(id);
+    await vi.waitFor(() => {
+      expect(makerChatStore.getSnapshot(id).historyLoaded).toBe(true);
+    });
+
+    const card = makerChatStore
+      .getSnapshot(id)
+      .messages.find((message) => message.systemCardType === 'context-rebuild');
+    expect(card?.systemCardData).toMatchObject({
+      reason: 'pi-prompt-timeout',
+      handoff: 'stopped responding to prompts',
+    });
+  });
+});
+
+describe('teammate result attachment history', () => {
+  it('loads frozen results from the sealed reply even when the receipt is outside the history page', async () => {
+    const id = sid('result-attachment');
+    const result = {
+      v: 1, role: 'delegation-result', delegationId: 'job', fromBotId: 'bot', fromBotName: 'Cindy',
+      toBotId: null, toBotName: 'Cindy', parentSessionId: id, childSessionId: 'child', objective: 'Report',
+      result: { runSequence: 2, status: 'completed', title: 'Report', text: 'Saved', artifacts: [] },
+    };
+    transportMocks.listMessages.mockResolvedValueOnce([
+      { id: 'progress', clientId: 'progress', sessionId: id, role: 'assistant', content: 'Checking',
+        agentMeta: { botTaskResults: [result] }, createdAt: 1 },
+      { id: 'final', clientId: 'final', sessionId: id, role: 'assistant', content: 'Ready',
+        agentMeta: { turnCompleted: true, botTaskResults: [result, result, {}] }, createdAt: 2 },
+    ] as never);
+    makerChatStore.ensureInitialMessages(id);
+    await vi.waitFor(() => expect(makerChatStore.getSnapshot(id).historyLoaded).toBe(true));
+    const messages = makerChatStore.getSnapshot(id).messages;
+    expect(messages.find(message => message.clientId === 'progress')?.botTaskResults).toBeUndefined();
+    expect(messages.find(message => message.clientId === 'final')?.botTaskResults).toEqual([result]);
+  });
+});
+
+// Both initial history and live message insertion use the same stored-row projection.
+describe('MCP App read-only history', () => {
+  it.each(['owner', 'guest', 'pending'])(
+    'keeps public text and titles for %s card history',
+    async (audience) => {
+      const id = sid('mcp-app-history');
+      const text = audience === 'pending' ? '' : 'Saved form result';
+      transportMocks.listMessages.mockResolvedValueOnce([
+        {
+          id: 'app-row',
+          clientId: 'app-card',
+          sessionId: id,
+          role: 'assistant',
+          createdAt: Date.now(),
+          content:
+            audience !== 'owner'
+              ? { mcpAppHistory: { version: 1, title: 'Saved form', text } }
+              : {
+                  mcpApp: {
+                    version: 1,
+                    serverId: 'example',
+                    serverRevision: 'revision',
+                    resourceUri: 'ui://example/app',
+                    tool: { name: 'draft', title: 'Saved form', inputSchema: { type: 'object' } },
+                    arguments: {},
+                    result: {
+                      content: [{ type: 'text', text: 'Saved form result' }],
+                      _meta: { private: 'view-only' },
+                    },
+                  },
+                },
+          agentMeta: { mcpApp: true },
+        },
+      ] as never);
+      makerChatStore.ensureInitialMessages(id);
+      await vi.waitFor(() => expect(makerChatStore.getSnapshot(id).historyLoaded).toBe(true));
+      expect(makerChatStore.getSnapshot(id).messages[0]).toMatchObject({
+        systemCardType: 'mcp-app',
+        systemCardData: { title: 'Saved form', fallbackText: text },
+      });
+      expect(
+        JSON.stringify(makerChatStore.getSnapshot(id).messages[0].systemCardData),
+      ).not.toContain('view-only');
+    },
+  );
+});
+
+describe('private group reply source', () => {
+  it('keeps group provenance on assistant rows without relabeling normal private replies', async () => {
+    const id = sid('group-private-source');
+    transportMocks.listMessages.mockResolvedValueOnce([
+      { id: 'group-reply', clientId: 'group-reply', sessionId: id, role: 'assistant', content: 'Reply',
+        agentMeta: { sourceGroup: { groupId: 'g-1', name: 'Design' } }, createdAt: Date.now() },
+      { id: 'private-reply', clientId: 'private-reply', sessionId: id, role: 'assistant', content: 'Private',
+        agentMeta: null, createdAt: Date.now() },
+    ] as never);
+    makerChatStore.ensureInitialMessages(id);
+    await vi.waitFor(() => expect(makerChatStore.getSnapshot(id).historyLoaded).toBe(true));
+    const messages = makerChatStore.getSnapshot(id).messages;
+    expect(messages.find(m => m.clientId === 'group-reply')).toMatchObject({ role: 'assistant', sourceGroup: { groupId: 'g-1', name: 'Design' } });
+    expect(messages.find(m => m.clientId === 'private-reply')?.sourceGroup).toBeUndefined();
   });
 });

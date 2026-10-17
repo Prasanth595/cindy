@@ -13,6 +13,11 @@ import {
 import type { ScanStagingResult } from '../staging';
 import { computeProposalFingerprint } from '../stagingValidation.pure';
 import { tryAcquireSkillInstallLock } from '../../skillhub/installLock';
+vi.mock('../../skillhub/sharedMutationLease', () => ({
+  acquireSharedSkillMutationLease: vi.fn(async () => Object.assign(async () => {}, {
+    run: <T>(operation: () => Promise<T>) => operation(),
+  })),
+}));
 
 vi.mock('../../logger', () => ({
   createLogger: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
@@ -51,7 +56,7 @@ class FakeSession implements LearnSessionLike {
     }
     return this.sendResult;
   }
-  onEvent(listener: (ev: { type: string; data?: unknown }) => void): () => void {
+  onEvent(listener: (ev: { type: string; data?: unknown; turnContinuationId?: number }) => void): () => void {
     this.listeners.push(listener);
     return () => {
       this.listeners = this.listeners.filter((l) => l !== listener);
@@ -60,7 +65,7 @@ class FakeSession implements LearnSessionLike {
   async abort(): Promise<void> {
     this.aborted = true;
   }
-  emit(ev: { type: string; data?: unknown }): void {
+  emit(ev: { type: string; data?: unknown; turnContinuationId?: number }): void {
     for (const l of [...this.listeners]) l(ev);
   }
 }
@@ -235,6 +240,8 @@ describe('LearnController 状态机', () => {
     expect(h.session.sent[0]).not.toContain('THE CURRENT CONVERSATION');
 
     h.session.emit({ type: 'text', data: { text: 'created my-skill', isFinal: true } });
+    h.session.emit({ type: 'done', turnContinuationId: 1 });
+    expect(h.store.get(runId)!.status).toBe('distilling');
     h.session.emit({ type: 'done' });
 
     const run = await h.waitForStatus(runId, 'awaiting-review');
@@ -386,6 +393,25 @@ describe('LearnController 状态机', () => {
     expect(run.error).toContain('model exploded');
   });
 
+  it('工具循环终态错误持久化稳定 reason 与受限详情', async () => {
+    const h = makeHarness();
+    const { runId } = await h.controller.startLearn({ input: 'x', sourceKind: 'freetext' });
+    await h.waitForStatus(runId, 'distilling');
+    h.session.emit({
+      type: 'error',
+      data: {
+        message: 'missing_required_field: file_path',
+        reason: 'tool_use_loop_detected',
+        toolLoop: { kind: 'contract', count: 3 },
+      },
+    });
+
+    const run = await h.waitForStatus(runId, 'failed');
+    expect(run.errorReason).toBe('tool_use_loop_detected');
+    expect(run.toolLoop).toEqual({ kind: 'contract', count: 3 });
+    expect(run.error).toContain('missing_required_field');
+  });
+
   it('超时 → abort + failed', async () => {
     const h = makeHarness({ turnTimeoutMs: 30 });
     const { runId } = await h.controller.startLearn({ input: 'x', sourceKind: 'freetext' });
@@ -494,6 +520,32 @@ describe('LearnController 状态机', () => {
     });
     expect(h.store.get(runId)!.status).toBe('awaiting-review');
     expect(h.cleanupCalls).not.toContain(runId);
+  });
+
+  it('对话迭代:claimed SDK done 不会提前清活跃态或扫描未完成提案', async () => {
+    const h = makeHarness();
+    h.setScan(goodScan());
+    const { runId } = await h.controller.startLearn({ input: 'x', sourceKind: 'freetext' });
+    await h.waitForStatus(runId, 'distilling');
+    h.session.emit({ type: 'done' });
+    await h.waitForStatus(runId, 'awaiting-review');
+
+    const internals = h.controller as unknown as { revisionTurnActive: Set<string> };
+    let rescanStarts = 0;
+    h.setBeforeScan(async () => {
+      rescanStarts += 1;
+    });
+    h.session.emit({ type: 'text', data: { text: 'still revising' } });
+    expect(internals.revisionTurnActive.has(runId)).toBe(true);
+
+    h.session.emit({ type: 'done', turnContinuationId: 1 });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(rescanStarts).toBe(0);
+    expect(internals.revisionTurnActive.has(runId)).toBe(true);
+
+    h.session.emit({ type: 'done' });
+    await vi.waitFor(() => expect(rescanStarts).toBe(1));
+    expect(internals.revisionTurnActive.has(runId)).toBe(false);
   });
 
   it('对话迭代:rescan 未结束时收到后续 done 会排队补扫,不丢最新提案', async () => {
@@ -1064,6 +1116,12 @@ describe('LearnController 状态机', () => {
       releaseMarket();
     }
 
+    const { acquireSharedSkillMutationLease } = await import('../../skillhub/sharedMutationLease');
+    vi.mocked(acquireSharedSkillMutationLease).mockResolvedValueOnce(null);
+    await expect(h.controller.apply('r1')).rejects.toMatchObject({ code: 'LEARN_BUSY' });
+    expect(h.applyCalls).toHaveLength(0);
+    expect(h.store.get('r1')!.status).toBe('awaiting-review');
+
     // 不同名的市场安装不阻塞;同名锁释放后重试成功
     const releaseUnrelated = tryAcquireSkillInstallLock('unrelated-skill', 'market-install')!;
     try {
@@ -1275,19 +1333,27 @@ describe('LearnController 状态机', () => {
 
   it('hub 源命中同名本地 skill:本地 SKILL.md 注入 prompt 前过 redaction', async () => {
     const secret = 'sk-abcdef1234567890abcdef1234567890';
+    const fetchHubSkill = vi.fn(async () => ({
+      name: 'my-skill',
+      description: 'upstream',
+      content: '# upstream skill',
+    }));
     const h = makeHarness({
-      fetchHubSkill: async () => ({
-        name: 'my-skill',
-        description: 'upstream',
-        content: '# upstream skill',
-      }),
+      fetchHubSkill,
       dirExists: async (dir) =>
         dir.startsWith(path.join('/', 'fake-staging')) || dir === path.join('/', 'installed', 'my-skill'),
       readFileText: async () => `# local skill\napi key: ${secret}\n`,
     });
     h.setScan(goodScan());
-    const { runId } = await h.controller.startLearn({ input: '', sourceKind: 'hub', hubSlug: 'my-skill' });
+    const { runId } = await h.controller.startLearn({
+      input: '',
+      sourceKind: 'hub',
+      hubSlug: 'my-skill',
+      hubCatalogScope: 'team',
+    });
     await h.waitForStatus(runId, 'distilling');
+    expect(fetchHubSkill).toHaveBeenCalledWith('my-skill', 'team');
+    expect(h.store.get(runId)?.hubCatalogScope).toBe('team');
     expect(h.session.sent[0]).toContain('# local skill');
     expect(h.session.sent[0]).not.toContain(secret);
   });
@@ -1295,12 +1361,13 @@ describe('LearnController 状态机', () => {
   it('Claude-only 本地 skill 也算已装:注入原文、diff 有基线、标记 personal', async () => {
     const claudeDir = path.join('/', 'claude', 'skills', 'my-skill');
     let diffOldDir: string | null | undefined;
+    const fetchHubSkill = vi.fn(async () => ({
+      name: 'my-skill',
+      description: 'upstream',
+      content: '# upstream skill',
+    }));
     const h = makeHarness({
-      fetchHubSkill: async () => ({
-        name: 'my-skill',
-        description: 'upstream',
-        content: '# upstream skill',
-      }),
+      fetchHubSkill,
       search: async () => ({ hits: [], sessions: {}, nextCursor: null, vectorUsed: false }) as never,
       collectProfile: async () => ({ block: '', used: false }),
       resolveInstalledSkillDirs: (name) => [path.join('/', 'installed', name), path.join('/', 'claude', 'skills', name)],
@@ -1314,6 +1381,8 @@ describe('LearnController 状态机', () => {
     h.setScan(goodScan());
     const { runId } = await h.controller.startLearn({ input: '', sourceKind: 'hub', hubSlug: 'my-skill' });
     await h.waitForStatus(runId, 'distilling');
+    expect(fetchHubSkill).toHaveBeenCalledWith('my-skill', 'market');
+    expect(h.store.get(runId)?.hubCatalogScope).toBe('market');
     expect(h.session.sent[0]).toContain('# local Claude skill');
     expect(h.store.get(runId)!.usedSessionEvidence).toBe(true);
 
@@ -1440,6 +1509,20 @@ describe('LearnController 状态机', () => {
     await expect(h.controller.startLearn({ input: '', sourceKind: 'session' })).rejects.toMatchObject({
       code: 'INVALID_PARAMS',
     });
+  });
+
+  it('session 源在创建 run 前拒绝没有可蒸馏消息的空任务', async () => {
+    const h = makeHarness({ getConversationBlock: async () => '' });
+
+    await expect(h.controller.startLearn({
+      input: '',
+      sourceKind: 'session',
+      originSessionId: 'empty-origin',
+    })).rejects.toMatchObject({
+      code: 'INVALID_PARAMS',
+      message: 'the origin conversation has no distillable content',
+    });
+    expect(h.store.list()).toEqual([]);
   });
 
   it('证据检索抛错 → 无证据继续(不整轮失败)', async () => {

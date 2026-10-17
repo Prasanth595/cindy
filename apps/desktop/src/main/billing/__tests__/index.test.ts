@@ -280,6 +280,48 @@ describe('billing IPC', () => {
     });
   });
 
+  it('resumes the current subscription through one fixed provider-neutral POST', async () => {
+    const { call, fetch } = harness();
+    const resumed = {
+      subscriptionId: 'subscription_1',
+      status: 'ACTIVE',
+      currentPeriodStartAt: '2026-07-01T00:00:00.000Z',
+      currentPeriodEndAt: '2026-08-01T00:00:00.000Z',
+      entitlementValidUntil: '2026-08-02T00:00:00.000Z',
+      cancelAtPeriodEnd: false,
+      resumable: false,
+      effectivePlan: null,
+      purchaseAttemptId: null,
+      paymentAction: null,
+    };
+    fetch.mockResolvedValueOnce(resumed);
+
+    await expect(call(BILLING_INVOKE.RESUME_CURRENT_SUBSCRIPTION)).resolves.toEqual(resumed);
+    expect(fetch).toHaveBeenCalledWith('/api/billing/subscription/resume', {
+      baseUrl: expect.any(Function),
+      timeoutMs: 20_000,
+      redactErrorDetails: true,
+      method: 'POST',
+      allowedRedactedErrorCodes: ['RESUME_NOT_AVAILABLE'],
+    });
+  });
+
+  it('preserves the safe subscription-resume rejection code across IPC', async () => {
+    const { call, fetch } = harness();
+    fetch.mockRejectedValueOnce(
+      new ServerApiError(
+        'RESUME_NOT_AVAILABLE',
+        409,
+        'upstream detail must not reach the renderer',
+      ),
+    );
+
+    await expect(call(BILLING_INVOKE.RESUME_CURRENT_SUBSCRIPTION)).rejects.toMatchObject({
+      code: 'RESUME_NOT_AVAILABLE',
+      message: '[RESUME_NOT_AVAILABLE] subscription is not resumable',
+    });
+  });
+
   it('rejects non-main-window senders before network access', async () => {
     const { call, fetch } = harness();
     await expect(call(BILLING_INVOKE.GET_CATALOG, undefined, { id: 2 })).rejects.toMatchObject({
@@ -414,7 +456,7 @@ describe('billing IPC', () => {
       method: 'POST',
       body: { targetOfferCode: 'plus_month' },
       headers: { 'Idempotency-Key': 'desktop:plan-change:12345678' },
-      allowedRedactedErrorCodes: ['PLAN_CHANGE_NOT_AVAILABLE'],
+      allowedRedactedErrorCodes: ['PLAN_CHANGE_NOT_AVAILABLE', 'PLAN_CHANGE_RENEWAL_PREPAID'],
     });
   });
 
@@ -438,6 +480,32 @@ describe('billing IPC', () => {
       message: '[PLAN_CHANGE_NOT_AVAILABLE] target plan is not available',
     });
   });
+
+  it.each([
+    [
+      BILLING_INVOKE.QUOTE_PLAN_CHANGE,
+      { targetOfferCode: 'max_month', idempotencyKey: 'desktop:plan-change:12345678' },
+    ],
+    [BILLING_INVOKE.CONFIRM_PLAN_CHANGE, { planChangeId: 'plan_change_1' }],
+  ])(
+    'preserves prepaid renewal rejection without exposing upstream text: %s',
+    async (channel, payload) => {
+      const { call, fetch } = harness();
+      fetch.mockRejectedValueOnce(
+        new ServerApiError('PLAN_CHANGE_RENEWAL_PREPAID', 409, 'private upstream detail'),
+      );
+      await expect(call(channel, payload)).rejects.toMatchObject({
+        code: 'PLAN_CHANGE_RENEWAL_PREPAID',
+        message: '[PLAN_CHANGE_RENEWAL_PREPAID] next renewal is already paid',
+      });
+      expect(fetch).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          allowedRedactedErrorCodes: expect.arrayContaining(['PLAN_CHANGE_RENEWAL_PREPAID']),
+        }),
+      );
+    },
+  );
 
   it('rejects a plan change quote without a valid idempotency key before network access', async () => {
     const { call, fetch } = harness();

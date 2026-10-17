@@ -10,7 +10,6 @@
  *     cleanup-session / cleanup-files)
  *   - xdt-image:// protocol handler
  *   - agentManager.buildContentBlocks (F5 temporary base64 read)
- *   - startup orphan sweep for unsent draft images
  *
  * Security model: every URL→absPath resolution funnels through `resolveSafe`
  * which path-resolves against the cache root and rejects anything that escapes.
@@ -200,10 +199,16 @@ function parseSessionImageUrl(url: string): { sessionId: string; filename: strin
     return null;
   }
 
-  const host = decodeURIComponent(parsed.hostname);
-  if (RESERVED_HOSTS[host]) return null;
-  const pathnameRaw = parsed.pathname.startsWith('/') ? parsed.pathname.slice(1) : parsed.pathname;
-  const filename = decodeURIComponent(pathnameRaw);
+  let host: string;
+  let filename: string;
+  try {
+    host = decodeURIComponent(parsed.hostname);
+    if (RESERVED_HOSTS[host]) return null;
+    const pathnameRaw = parsed.pathname.startsWith('/') ? parsed.pathname.slice(1) : parsed.pathname;
+    filename = decodeURIComponent(pathnameRaw);
+  } catch {
+    return null;
+  }
 
   try {
     assertSafeSessionId(host);
@@ -550,10 +555,16 @@ export function resolveSafe(url: string): { absPath: string; mimeType: string } 
   } catch {
     throw new Error('xdt-image: malformed url');
   }
-  const host = decodeURIComponent(parsed.hostname);
-  // pathname is e.g. "/abc-123.png" → strip leading slash
-  const pathnameRaw = parsed.pathname.startsWith('/') ? parsed.pathname.slice(1) : parsed.pathname;
-  const filename = decodeURIComponent(pathnameRaw);
+  let host: string;
+  let filename: string;
+  try {
+    host = decodeURIComponent(parsed.hostname);
+    // pathname is e.g. "/abc-123.png" → strip leading slash
+    const pathnameRaw = parsed.pathname.startsWith('/') ? parsed.pathname.slice(1) : parsed.pathname;
+    filename = decodeURIComponent(pathnameRaw);
+  } catch {
+    throw new Error('xdt-image: malformed url');
+  }
 
   if (
     !host ||

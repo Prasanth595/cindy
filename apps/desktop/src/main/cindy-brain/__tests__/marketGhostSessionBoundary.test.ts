@@ -14,6 +14,87 @@ describe('market Ghost session boundary', () => {
     resolve(process.cwd(), 'src/main/cindy-brain/index.ts'),
     'utf8',
   ).replace(/\r\n/g, '\n');
+  const marketServiceSource = readFileSync(
+    resolve(process.cwd(), 'src/main/plugin-market/service.ts'),
+    'utf8',
+  ).replace(/\r\n/g, '\n');
+
+  it('keeps automatic custom updates bound to the owner captured by synchronization', () => {
+    const installStart = marketServiceSource.indexOf('  private async customInstall(');
+    const installEnd = marketServiceSource.indexOf(
+      '\n  private async installDetail(',
+      installStart,
+    );
+    const installBody = marketServiceSource.slice(installStart, installEnd);
+    const automaticStart = marketServiceSource.indexOf('  private async applyAutomaticUpgrades(');
+    const automaticEnd = marketServiceSource.indexOf(
+      '\n  private localInstallSnapshot(',
+      automaticStart,
+    );
+    const automaticBody = marketServiceSource.slice(automaticStart, automaticEnd);
+
+    expect(installBody).toContain('owner = captureMarketOwner(),');
+    expect(installBody).toContain('const ledger = this.ledgerForOwner(owner);');
+    expect(installBody).toContain('const manager = this.sourceManagerForOwner(owner);');
+    expect(installBody).toContain('requireSameMarketOwner(owner);');
+    expect(installBody).toContain(
+      'beforePackagePlacement: () => {\n            requireSameMarketOwner(owner);',
+    );
+    expect(installBody).toContain(
+      'afterCommit: async (_installed, _packagedManifest, evidence) => {',
+    );
+    const afterCommitStart = installBody.indexOf(
+      'afterCommit: async (_installed, _packagedManifest, evidence) => {',
+    );
+    const afterCommitEnd = installBody.indexOf('\n          },\n        }).catch', afterCommitStart);
+    const afterCommitBody = installBody.slice(afterCommitStart, afterCommitEnd);
+    expect(afterCommitBody).toContain('this.withCapturedLedgerMutation(ledger, () => {');
+    expect(afterCommitBody).not.toContain('requireSameMarketOwner(');
+    expect(automaticBody).toContain("          { mode: 'automatic' },\n          owner,\n        );");
+  });
+
+  it('releases the custom-source cache lease before waiting for install consent', () => {
+    const installStart = marketServiceSource.indexOf('  private async customInstall(');
+    const installEnd = marketServiceSource.indexOf(
+      '\n  private async installDetail(',
+      installStart,
+    );
+    const installBody = marketServiceSource.slice(installStart, installEnd);
+    const lease = installBody.indexOf('manager.withDiscoveredSource(');
+    const pack = installBody.indexOf('packCustomMarketPlugin(');
+    const consent = installBody.indexOf('obtainGhostInstallConsent(');
+    expect(lease).toBeGreaterThan(-1);
+    expect(pack).toBeGreaterThan(lease);
+    expect(consent).toBeGreaterThan(pack);
+    expect(installBody.slice(lease, consent)).toContain('packCustomMarketPlugin(');
+    expect(installBody.slice(consent)).not.toContain('withDiscoveredSource(');
+  });
+
+  it('keeps package placement and market ledger commit in the same owner lease', () => {
+    const installStart = source.indexOf(
+      'async function installOrUpdateMarketGhostPackageLocked(',
+    );
+    const installEnd = source.indexOf('\n}\n\ntype GhostUninstallLedgerCompletion', installStart);
+    const installBody = source.slice(installStart, installEnd);
+    const firstAfterCommit = installBody.indexOf(
+      'await expected.afterCommitInLock?.(installedGhost, commitEvidence);',
+    );
+    const updateAfterCommit = installBody.indexOf(
+      'await expected.afterCommitInLock?.(result.ghost, commitEvidence);',
+    );
+    const release = installBody.indexOf('releaseMutation?.();');
+
+    expect(firstAfterCommit).toBeGreaterThan(-1);
+    expect(updateAfterCommit).toBeGreaterThan(firstAfterCommit);
+    expect(release).toBeGreaterThan(updateAfterCommit);
+    const serverCommitStart = marketServiceSource.indexOf(
+      'afterCommitInLock: async (_committed, evidence) => {',
+    );
+    const serverCommitEnd = marketServiceSource.indexOf('\n        },\n      }).catch', serverCommitStart);
+    const serverCommitBody = marketServiceSource.slice(serverCommitStart, serverCommitEnd);
+    expect(serverCommitBody).toContain('this.withCapturedLedgerMutation(ledger, () => {');
+    expect(serverCommitBody).not.toContain('requireSameMarketOwner(');
+  });
 
   it('requires the pre-approval session generation when acquiring the mutation lease', () => {
     const captureStart = source.indexOf(
@@ -23,6 +104,7 @@ describe('market Ghost session boundary', () => {
     const captureBody = source.slice(captureStart, captureEnd);
     expect(captureBody).toContain('isAppSessionBoundaryPending()');
     expect(captureBody).toContain('return getActiveAppSession();');
+    expect(captureBody).not.toContain('isGhostSkillProjectionBoundaryStableForOwner');
 
     const leaseStart = source.indexOf(
       'function beginGhostMutation(expectedOwner?: ActiveAppSession): () => void {',
@@ -33,6 +115,7 @@ describe('market Ghost session boundary', () => {
     expect(leaseBody).toContain('currentOwner.mode !== expectedOwner.mode');
     expect(leaseBody).toContain('currentOwner.dataOwnerId !== expectedOwner.dataOwnerId');
     expect(leaseBody).toContain('currentOwner.generation !== expectedOwner.generation');
+    expect(leaseBody).not.toContain('isGhostSkillProjectionBoundaryStableForOwner');
   });
 
   it('captures before async inspection but leases only after Node authorization', () => {
@@ -57,5 +140,276 @@ describe('market Ghost session boundary', () => {
     expect(captureIndex).toBeLessThan(inspectIndex);
     expect(leaseIndex).toBeGreaterThan(inspectIndex);
     expect(body).toContain('releaseMutation?.();');
+  });
+
+  it('fails owner-scoped plugin reads closed while an account boundary is pending', () => {
+    const start = source.indexOf('function availableGhosts(): InstalledGhost[] {');
+    const end = source.indexOf('\n}', start);
+    const body = source.slice(start, end);
+    expect(body).toContain('if (isAppSessionBoundaryPending()) return [];');
+    expect(source).toContain(
+      'const resolved = resolveInstalledGhost(availableGhosts(), id, namespace);',
+    );
+    const resolverStart = source.indexOf('export function findGhostForInstanceId(');
+    const resolverBody = source.slice(resolverStart, source.indexOf('\n}', resolverStart));
+    expect(resolverBody.match(/availableGhosts\(\)/g)).toHaveLength(1);
+    expect(resolverBody).toContain('resolvePluginInstanceQuery(availableGhosts(), id, namespace)');
+    expect(resolverBody).not.toContain('findInstalledGhostByInstanceId');
+    // The exact-key fast path fails closed at an account boundary and keeps the
+    // active-session availability filter that availableGhosts() applies.
+    const fastPathStart = resolverBody.indexOf('if (namespace === undefined) {');
+    expect(fastPathStart).toBeGreaterThanOrEqual(0);
+    const fastPath = resolverBody.slice(fastPathStart, resolverBody.indexOf('\n  }', fastPathStart));
+    expect(fastPath).toContain('if (isAppSessionBoundaryPending()) return null;');
+    expect(fastPath.indexOf('isAppSessionBoundaryPending()')).toBeLessThan(fastPath.indexOf('findInstalledInstance(id)'));
+    expect(fastPath).toContain('isGhostAvailableForActiveSession(ghost.manifest.id) ? ghost : null');
+    expect(source.match(/getGhost: findAvailableGhost/g)?.length ?? 0).toBe(0);
+    expect(source.match(/getGhost: findGhostForInstanceId/g)?.length ?? 0).toBeGreaterThanOrEqual(12);
+    expect(resolverBody).toContain(
+      "return resolved.status === 'unique' ? resolved.ghost : null;",
+    );
+    expect(source).toContain('availableByInstanceId.get(entry.ghostId)');
+    expect(source).toContain('hasCardSlot: (ghostId) => {');
+    expect(source).toContain('const g = findGhostForPhysicalStoragePart(ghostId);');
+    expect(source).toContain(
+      'export async function getGhostLibraryOverview(ghostId: string): Promise<GhostLibraryOverview> {',
+    );
+    const overviewStart = source.indexOf(
+      'export async function getGhostLibraryOverview(ghostId: string)',
+    );
+    expect(source.slice(overviewStart, overviewStart + 280)).toContain(
+      'const ghost = findGhostForInstanceId(ghostId);',
+    );
+    const assessStart = source.indexOf(
+      'export function getGhostSetupAssessment(ghostId: string)',
+    );
+    const assessBody = source.slice(assessStart, assessStart + 1600);
+    expect(assessBody).toContain('const ghost = findGhostForInstanceId(ghostId);');
+    expect(assessBody).toContain('const storeId = installedGhostStoragePart(ghost);');
+    expect(assessBody).toContain('getGhostSetupProbes(storeId, runtimeManifest)');
+    expect(assessBody).not.toContain('oauthManager.listAccounts(ghostId, key)');
+    const probesStart = source.indexOf('function getGhostSetupProbes(');
+    const probesBody = source.slice(probesStart, source.indexOf('export function getGhostSetupAssessment', probesStart));
+    expect(probesBody).toContain('oauthManager.listAccounts(storeId, key)');
+    expect(probesBody).not.toContain('oauthManager.listAccounts(ghostId, key)');
+    expect(source).toContain('return findGhostForInstanceId(id)?.manifest.name ?? null;');
+  });
+
+  it('blocks relocation and source archival while a private filesystem request is in flight', () => {
+    const start = source.indexOf('function assertGhostRelocationIdle(part: string): void {');
+    const guard = source.slice(start, source.indexOf('\n}', start));
+    expect(guard).toContain('fsSlotSingleton?.hasInFlightRequests(part)');
+    expect(source).toContain('assertGhostRelocationIdle(fromPart);');
+    expect(source).toContain('if (sourceChanged) assertGhostRelocationIdle(instanceId);');
+    expect(source).toContain('if (expected.sourceChanged) assertGhostRelocationIdle(installedGhostStoragePart(installed));');
+  });
+
+  it('allows explicit local replacement and detaches market routing before landing', () => {
+    const updateStart = source.indexOf(
+      "ipcMain.handle('ghosts:update'",
+    );
+    const updateEnd = source.indexOf(
+      "ipcMain.handle('ghosts:pick-file'",
+      updateStart,
+    );
+    const updateBody = source.slice(updateStart, updateEnd);
+    const helperStart = source.indexOf('async function updateLocalGhostPackageLocked(');
+    const helperEnd = source.indexOf(
+      '\n}\n\n/**\n * Forge 的显式安装入口。',
+      helperStart,
+    );
+    const helperBody = source.slice(helperStart, helperEnd);
+
+    const ledgerReadIndex = helperBody.indexOf(
+      '= readLocalGhostUpdateSource(',
+    );
+    const captureIndex = updateBody.indexOf('const mutationOwner = captureGhostMutationOwner();');
+    const inspectIndex = updateBody.indexOf('await manager.inspect(lizFilePath)');
+    const leaseIndex = updateBody.indexOf('const releaseMutation = beginGhostMutation(mutationOwner);');
+    const helperCallIndex = updateBody.indexOf('updateLocalGhostPackageLocked(');
+    const ledgerBindIndex = helperBody.indexOf('const marketLedger = getPluginMarketLedger().bind(');
+    const detachDecisionIndex = helperBody.indexOf(
+      'const detachMarketRecord = Boolean(marketRecord?.installed)',
+    );
+    const runtimeStopIndex = helperBody.indexOf(
+      'runtime.stop(instanceId)',
+    );
+    const stopAndWaitIndex = helperBody.indexOf(
+      'await getGhostNodeRuntimeBroker().stopAndWait(instanceId);',
+    );
+    const oauthLockIndex = helperBody.indexOf(
+      'result = await withActiveOwnerGhostOauthMutationLock(',
+    );
+    const managerUpdateIndex = helperBody.indexOf('manager.update(cindyFilePath,');
+    const detachIndex = helperBody.indexOf(
+      'marketLedger.markRemovedRecord(marketRecord, null)',
+    );
+
+    expect(captureIndex).toBeGreaterThan(-1);
+    expect(captureIndex).toBeLessThan(inspectIndex);
+    expect(leaseIndex).toBeGreaterThan(inspectIndex);
+    expect(helperCallIndex).toBeGreaterThan(leaseIndex);
+    expect(ledgerBindIndex).toBeGreaterThan(-1);
+    expect(runtimeStopIndex).toBeGreaterThan(ledgerBindIndex);
+    expect(ledgerReadIndex).toBeGreaterThan(ledgerBindIndex);
+    expect(ledgerReadIndex).toBeLessThan(runtimeStopIndex);
+    expect(detachDecisionIndex).toBeGreaterThan(ledgerReadIndex);
+    expect(stopAndWaitIndex).toBeGreaterThan(runtimeStopIndex);
+    // 只有确认旧进程退出，才切断旧市场的自动更新路由；等待失败时保留原路由，
+    // 也不会尝试恢复第二份 resident 进程。
+    expect(detachIndex).toBeGreaterThan(stopAndWaitIndex);
+    expect(helperBody.indexOf('if (isCurrent?.() === false)')).toBeGreaterThan(-1);
+    expect(helperBody.indexOf('if (isCurrent?.() === false)')).toBeLessThan(stopAndWaitIndex);
+    expect(oauthLockIndex).toBeGreaterThan(detachIndex);
+    expect(managerUpdateIndex).toBeGreaterThan(oauthLockIndex);
+    expect(helperBody).toContain('marketLedger.restoreInstallation(');
+    expect(helperBody).toContain('...deliveryNamespaceFields(previousGhost)');
+    expect(helperBody).not.toContain('marketLedger.isDefaultInstallSuppressed(');
+    expect(helperBody).not.toContain('marketInstallSubject');
+    expect(helperBody).toContain('用户显式卸载，不得产生 default-install opt-out');
+    expect(helperBody).toContain('onPackagePlaced: () => {');
+    expect(helperBody).toContain('packagePlaced = true;');
+    expect(helperBody).toContain('if (!packagePlaced) {\n      restoreMarketRecord();');
+    expect(updateBody).toContain('releaseMutation();');
+    expect(helperBody).not.toContain('GHOST_SOURCE_CONFLICT');
+  });
+
+  it('forwards the first-install check into package placement and guards update entry', () => {
+    const installStart = source.indexOf(
+      'async function installOrUpdateMarketGhostPackageLocked(',
+    );
+    const installEnd = source.indexOf(
+      '\n}\n\ntype GhostUninstallLedgerCompletion',
+      installStart,
+    );
+    const body = source.slice(installStart, installEnd);
+    const initialBranch = body.slice(
+      body.indexOf('if (!installed) {'),
+      body.indexOf('const runtime = getGhostRuntime();'),
+    );
+
+    expect(initialBranch).toContain('beforePackagePlacement: expected.beforeCommitInLock,');
+    expect(body.match(/expected\.beforeCommitInLock\?\.\(\);/g)).toHaveLength(1);
+
+    const waitIndex = body.indexOf(
+      'await getGhostNodeRuntimeBroker().stopAndWait(',
+    );
+    const oauthLockIndex = body.indexOf(
+      'await withActiveOwnerGhostOauthMutationLock(installedGhostStoragePart(installed)',
+    );
+    const updateIndex = body.indexOf('manager.update(cindyFilePath,');
+
+    expect(waitIndex).toBeGreaterThan(-1);
+    expect(waitIndex).toBeLessThan(oauthLockIndex);
+    expect(oauthLockIndex).toBeLessThan(updateIndex);
+    expect(body).toContain('runtime.stop(installedGhostStoragePart(installed));');
+    expect(body).toContain(
+      'await getGhostNodeRuntimeBroker().stopAndWait(installedGhostStoragePart(installed));',
+    );
+    expect(body).toContain('runtime.resetFuse(installedGhostStoragePart(result.ghost));');
+    expect(body).not.toContain(
+      'pluginStoragePart(createPluginLogicalIdentity(expected.namespace ?? null, expected.ghostId))',
+    );
+    const restoreIndex = body.indexOf('spawnIfResident(installed);');
+    expect(restoreIndex).toBeGreaterThan(updateIndex);
+  });
+
+  it('releases the mutation lease for shutdown failures and restores only after confirmed shutdown', () => {
+    const updateStart = source.indexOf("ipcMain.handle('ghosts:update'");
+    const updateEnd = source.indexOf("ipcMain.handle('ghosts:pick-file'", updateStart);
+    const updateBody = source.slice(updateStart, updateEnd);
+    const helperStart = source.indexOf('async function updateLocalGhostPackageLocked(');
+    const helperEnd = source.indexOf(
+      '\n}\n\n/**\n * Forge 的显式安装入口。',
+      helperStart,
+    );
+    const helperBody = source.slice(helperStart, helperEnd);
+
+    const waitIndex = helperBody.indexOf(
+      'await getGhostNodeRuntimeBroker().stopAndWait(instanceId);',
+    );
+    const oauthLockIndex = helperBody.indexOf(
+      'result = await withActiveOwnerGhostOauthMutationLock(',
+    );
+    const updateIndex = helperBody.indexOf('manager.update(cindyFilePath');
+    const restoreIndex = helperBody.indexOf(
+      'spawnIfResident(previousGhost);',
+    );
+
+    // stopAndWait must be called before manager.update (safe directory
+    // replacement on Windows). The owner lease is outside the per-id lock
+    // per the documented invariant (owner lease → per-id lock).
+    expect(waitIndex).toBeGreaterThan(-1);
+    expect(waitIndex).toBeLessThan(oauthLockIndex);
+    expect(oauthLockIndex).toBeLessThan(updateIndex);
+    // spawnIfResident is in the market-provenance catch block, after
+    // stopAndWait (rollback if provenance check fails).
+    expect(restoreIndex).toBeGreaterThan(waitIndex);
+    expect(updateBody).toContain('finally {\n      releaseMutation();');
+    const provenanceStart = source.indexOf('function readLocalGhostUpdateSource(');
+    const provenanceBody = source.slice(provenanceStart, helperStart);
+    expect(provenanceBody).toContain("throwIpcError('INTERNAL', 'Unable to verify the installed Plugin source');");
+    expect(provenanceBody).toContain('installationForPlugin({');
+    expect(provenanceBody).toContain('...deliveryNamespaceFields(previousGhost)');
+    expect(helperBody.indexOf('= readLocalGhostUpdateSource(')).toBeLessThan(waitIndex);
+    expect(helperBody).toContain("throwIpcError('INTERNAL', 'Unable to detach the installed Plugin source');");
+  });
+
+  it('Ghost 媒体在途守卫只依赖当前进程的 AppSession owner 边界', () => {
+    const helperStart = source.indexOf('function isGhostBoundaryPending(): boolean {');
+    expect(helperStart).toBeGreaterThan(-1);
+    const helperEnd = source.indexOf('\n}\n', helperStart);
+    const helperBody = source.slice(helperStart, helperEnd);
+    expect(helperBody).toContain('isAppSessionBoundaryPending()');
+    expect(helperBody).not.toContain('isGhostSkillProjectionBoundaryStableForOwner');
+    // 两处 Ghost 专属消费点(xAI 通道与 GhostCindySlot)都必须走 helper。
+    const injections =
+      source.match(/isOwnerBoundaryPending: \(\) => isGhostBoundaryPending\(\)/g)?.length ?? 0;
+    expect(injections).toBeGreaterThanOrEqual(2);
+  });
+
+  it('Ghost 媒体持久化写入守卫也绑定当前进程的 owner scope', () => {
+    // 这两处是 GhostCindySlot 的 deps,内部 assertStillValid 会在 ingestMedia 的
+    // await 边界反复断言。持久化写入守卫必须同时检查本进程边界与 scope generation。
+    const resolveStart = source.indexOf('resolveOwnedMedia: async (ghostId, hash, ownerScopeKey)');
+    const saveStart = source.indexOf('saveGhostMedia: async ({ ghostId, buffer, mimeType, ownerScopeKey');
+    expect(resolveStart).toBeGreaterThan(-1);
+    expect(saveStart).toBeGreaterThan(-1);
+    const resolveBody = source.slice(resolveStart, resolveStart + 700);
+    const saveBody = source.slice(saveStart, saveStart + 700);
+    const combinedGuard = 'isGhostBoundaryPending() || activeOwnerScopeKey() !== ownerScopeKey';
+    expect(resolveBody).toContain(combinedGuard);
+    expect(saveBody).toContain(combinedGuard);
+    // generation 不能退化成只看 pending 位。
+    expect(source).not.toContain('isAppSessionBoundaryPending() || activeOwnerScopeKey() !== ownerScopeKey');
+  });
+
+  it('networkSlot 的 saveGhostMedia(as:media fetch 落仓)也绑定本地 owner scope', () => {
+    // networkSlot 与 cindy 槽是两个独立实现,签名不带 ownerScopeKey(在函数体开头
+    // 捕获)。它的落仓路径(ghost-gallery 作品归属 + recordGhostCallMedia)必须同样
+    // 有本地 owner 守卫 + assertStillValid + 补偿 journal,否则账号切换期间的
+    // as:'media' fetch 仍可能落仓到错误 owner 的画廊。
+    const networkStart = source.indexOf('saveGhostMedia: async ({ ghostId, buffer, mimeType, label, callId, assertStillValid }) =>');
+    expect(networkStart).toBeGreaterThan(-1);
+    const networkBody = source.slice(networkStart, networkStart + 1800);
+    expect(networkBody).toContain('const ownerScopeKey = activeOwnerScopeKey();');
+    expect(networkBody).toContain('assertStillValid?.();');
+    expect(source).toContain('captureRequestGuard: captureGhostNetworkRequestGuard');
+    expect(source).toContain('networkSlotSingleton?.hasInFlightRequests(part)');
+    expect(networkBody).toContain('isGhostBoundaryPending() || activeOwnerScopeKey() !== ownerScopeKey');
+    expect(networkBody).toContain('assertStillValid: assertOwnerScopeCurrent');
+    expect(networkBody).toContain('refCompensationScope: captureMediaRefCompensationScope(ownerScopeKey)');
+  });
+
+  it('depositMedia(ghost-deposit 寄存器落仓)也绑定本地 owner scope', () => {
+    // 寄存器引用按 ghostId 落到 owner 作用域账本(originKind:'user' 但 refId 仍是意识),
+    // 本进程账号切换时必须 fail closed,与 saveGhostMedia 同口径。
+    const depositStart = source.indexOf('depositMedia: async ({ ghostId, buffer, mimeType, label }) =>');
+    expect(depositStart).toBeGreaterThan(-1);
+    const depositBody = source.slice(depositStart, depositStart + 1800);
+    expect(depositBody).toContain('const ownerScopeKey = activeOwnerScopeKey();');
+    expect(depositBody).toContain('isGhostBoundaryPending() || activeOwnerScopeKey() !== ownerScopeKey');
+    expect(depositBody).toContain('assertStillValid: assertOwnerScopeCurrent');
+    expect(depositBody).toContain('refCompensationScope: captureMediaRefCompensationScope(ownerScopeKey)');
   });
 });

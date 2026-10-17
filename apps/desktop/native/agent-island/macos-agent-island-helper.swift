@@ -1633,6 +1633,8 @@ private let expandedIslandBodySpacing: CGFloat = 4
 private let expandedIslandBottomPadding: CGFloat = 16
 private let compactIslandBaseWidth: CGFloat = 210
 private let compactIslandMinContentWidth: CGFloat = 80
+private let compactCollapseLeadingReservedWidth: CGFloat = 80
+private let compactCollapseTrailingReservedWidth: CGFloat = 100
 private let compactIslandBadgeCollapseContentThreshold: CGFloat = 152
 private let compactIslandDetailCollapseContentThreshold: CGFloat = 190
 private let compactIslandCjkTitleMinimumWidth: CGFloat = 32
@@ -1702,6 +1704,15 @@ private let agentIslandCodexMarkSVG = """
 private let agentIslandClaudeMarkSVG = """
 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
   <path fill="black" fill-rule="evenodd" clip-rule="evenodd" d="M20.998 10.949H24v3.102h-3v3.028h-1.487V20H18v-2.921h-1.487V20H15v-2.921H9V20H7.488v-2.921H6V20H4.487v-2.921H3V14.05H0v-3.1h3V5h17.998zM6 10.949h1.488V8.102H6zm10.51 0H18V8.102h-1.49z"/>
+</svg>
+"""
+private let agentIslandPiMarkSVG = """
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+  <g fill="none" stroke="black" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M3.6 6.6h16.8"/>
+    <path d="M8.4 6.6v11.8"/>
+    <path d="M15.6 6.6v9.6c0 1.5.9 2.2 2.4 2.2"/>
+  </g>
 </svg>
 """
 
@@ -3974,6 +3985,7 @@ func sourceLabel(for agentKind: String) -> String {
   let lower = agentKind.lowercased()
   if lower.contains("codex") { return "Codex" }
   if lower.contains("claude") { return "Claude" }
+  if lower == "pi" { return "Pi" }
   return agentKind.isEmpty ? "Agent" : agentKind
 }
 
@@ -4057,10 +4069,14 @@ struct StatusDot: View {
 enum AgentIslandSessionVendor {
   case cc
   case codex
+  case pi
 }
 
 func agentIslandSessionVendor(for session: AgentIslandSession) -> AgentIslandSessionVendor {
-  session.agentKind.lowercased().contains("codex") ? .codex : .cc
+  let kind = session.agentKind.lowercased()
+  if kind.contains("codex") { return .codex }
+  if kind == "pi" { return .pi }
+  return .cc
 }
 
 final class AgentIslandVendorMarkImageStore {
@@ -4070,7 +4086,15 @@ final class AgentIslandVendorMarkImageStore {
 
   func image(for vendor: AgentIslandSessionVendor) -> NSImage? {
     if let cached = cache[vendor] { return cached }
-    let svg = vendor == .codex ? agentIslandCodexMarkSVG : agentIslandClaudeMarkSVG
+    let svg: String
+    switch vendor {
+    case .cc:
+      svg = agentIslandClaudeMarkSVG
+    case .codex:
+      svg = agentIslandCodexMarkSVG
+    case .pi:
+      svg = agentIslandPiMarkSVG
+    }
     guard let data = svg.data(using: .utf8), let image = NSImage(data: data) else {
       return nil
     }
@@ -4092,7 +4116,7 @@ struct AgentIslandSessionVendorIcon: View {
   }
 
   private var markSize: CGFloat {
-    vendor == .codex ? 12 : 13
+    vendor == .cc ? 13 : 12
   }
 
   var body: some View {
@@ -4619,6 +4643,7 @@ final class AgentIslandController {
     notchBaselineHeight: 24,
     screenMetrics: .fallback
   )
+  private var lastCompactIslandWidth: CGFloat?
   private var globalClickMonitor: Any?
   private var localClickMonitor: Any?
   private var globalMoveMonitor: Any?
@@ -4758,7 +4783,7 @@ final class AgentIslandController {
       )
       return
     }
-    lastLayout = layout
+    rememberLayout(layout)
     if state.mode == "expanded" {
       cancelPendingCarrierFrame()
     }
@@ -5255,8 +5280,12 @@ final class AgentIslandController {
       return
     }
     pendingMoveInteraction = nil
+    // Collapse is owned here, not by SwiftUI top-bar taps, so the hit stays
+    // inside the original compact footprint instead of the whole spacer.
     if shouldTreatAsCompactClick(interaction: interaction, screenPoint: screenPoint) {
       eventSink(["type": "expand"])
+    } else if shouldTreatAsCompactCollapseClick(interaction: interaction, screenPoint: screenPoint) {
+      eventSink(["type": "collapse"])
     }
     handleMouseMoved(screenPoint: screenPoint, force: true)
     replayDeferredInteractionUpdateIfNeeded()
@@ -5424,8 +5453,64 @@ final class AgentIslandController {
     guard interaction.mode == .move, !interaction.startLayout.expanded else {
       return false
     }
-    return abs(screenPoint.x - interaction.startMouseX) <= agentIslandClickDragTolerance
+    return isClickWithoutDrag(interaction: interaction, screenPoint: screenPoint)
+  }
+
+  private func shouldTreatAsCompactCollapseClick(
+    interaction: PanelDragInteraction,
+    screenPoint: NSPoint
+  ) -> Bool {
+    guard interaction.mode == .move, interaction.startLayout.expanded else {
+      return false
+    }
+    guard isClickWithoutDrag(interaction: interaction, screenPoint: screenPoint) else {
+      return false
+    }
+    return isCompactFootprintClick(interaction: interaction)
+  }
+
+  private func isClickWithoutDrag(interaction: PanelDragInteraction, screenPoint: NSPoint) -> Bool {
+    abs(screenPoint.x - interaction.startMouseX) <= agentIslandClickDragTolerance
       && abs(screenPoint.y - interaction.startMouseY) <= agentIslandClickDragTolerance
+  }
+
+  /// The screen rectangle where the collapsed island sat. After expand, that
+  /// center strip is blank (hardware-notch Color.clear, or the top-bar spacer).
+  /// Clicking it should fold the island back; toolbar / title live outside it.
+  private func isCompactFootprintClick(interaction: PanelDragInteraction) -> Bool {
+    let layout = interaction.startLayout
+    let footprintWidth = compactCollapseFootprintWidth(layout: layout)
+    let centerX = interaction.startFrame.midX
+    let clickX = interaction.startMouseX
+    guard clickX >= centerX - footprintWidth / 2 && clickX <= centerX + footprintWidth / 2 else {
+      return false
+    }
+    let visualMinX = centerX - layout.width / 2
+    let visualMaxX = centerX + layout.width / 2
+    let sideChrome = layout.hasHardwareNotch
+      ? max(0, (layout.width - layout.notchWidth) / 2)
+      : 0
+    let leadingReserved = max(compactCollapseLeadingReservedWidth, sideChrome)
+    let trailingReserved = max(compactCollapseTrailingReservedWidth, sideChrome)
+    return clickX > visualMinX + leadingReserved
+      && clickX < visualMaxX - trailingReserved
+  }
+
+  private func compactCollapseFootprintWidth(layout: AgentIslandLayout) -> CGFloat {
+    if let remembered = lastCompactIslandWidth, remembered > 0 {
+      return remembered
+    }
+    if layout.hasHardwareNotch {
+      return max(1, layout.notchWidth)
+    }
+    return compactIslandBaseWidth
+  }
+
+  private func rememberLayout(_ layout: AgentIslandLayout) {
+    lastLayout = layout
+    if !layout.expanded, layout.width > 0 {
+      lastCompactIslandWidth = layout.width
+    }
   }
 
   private func shouldPromotePendingMove(interaction: PanelDragInteraction, screenPoint: NSPoint) -> Bool {
@@ -5478,7 +5563,7 @@ final class AgentIslandController {
       frame: frame,
       expanded: lastLayout.expanded
     )
-    lastLayout = AgentIslandLayout.compute(
+    rememberLayout(AgentIslandLayout.compute(
       state: model.state,
       availableFrameWidth: frame.width,
       locallyHovered: model.locallyHovered,
@@ -5486,7 +5571,7 @@ final class AgentIslandController {
       screenMetrics: model.screenMetrics,
       hardwareNotchLayoutEnabled: hardwareNotchLayoutEnabled,
       preferredContentWidth: currentContentWidth(frame: frame, layout: lastLayout)
-    )
+    ))
     let nextContentWidth = currentContentWidth(frame: frame, layout: lastLayout)
     if animatedSnap {
       beginCompactSnapLayoutAnimation()

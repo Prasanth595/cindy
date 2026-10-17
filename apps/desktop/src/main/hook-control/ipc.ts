@@ -21,10 +21,14 @@ import { isModelVisible, visibleModelUnion } from '@cindy/model-providers';
 import { BRAND_NAME } from '@cindy/maker-shared/branding';
 
 import { createLogger } from '../logger.js';
+import { t } from '../i18n.js';
+import { buildOfficialBotCommandMenus } from '../im/shared/botCommands.js';
+import { stopSessionTurnExplicitly } from '../maker-ipc/register.js';
+import { onChannelTurn } from '../maker-ipc/channelTurnSignal.js';
 import { getMaker, restartCodexAfterAuthModeChange } from '../maker-host/index.js';
 import { shutdownCodexEnvironment } from '../mcp-integrations/codexEnvironment.js';
 import { getDesktopProviderService } from '../maker-host/createDesktopProviderService.js';
-import { getModelVisibilityOverride } from '../maker-host/model-visibility-mirror.js';
+import { getModelVisibilityOverride, waitForModelVisibilityMirror } from '../maker-host/model-visibility-mirror.js';
 import { resolveFreshSourceBranch, WorktreeManager } from '../worktree/index.js';
 import { prepareHandoffWorktree } from '../maker-ipc/handoffWorktree.js';
 import {
@@ -43,9 +47,18 @@ import {
   listWorkspaceProviderSources,
   setWorkspaceProviderSource,
 } from './workspaceProviderSourceStore.js';
+import {
+  applyIncomingServerWorkspacePrefs,
+  listWorkspacePrefs,
+  markWorkspacePrefsMigrated,
+  setWorkspacePref,
+  type HookPrefsChannel,
+} from './workspacePrefsStore.js';
+import { createWorkspacePrefsMirror } from './workspacePrefsMirror.js';
 import { patchSessionMetaInDb } from '../localDb/ipc/sessions.js';
 import {
   dialogueWorkspaceRootDir,
+  dialogueWorkspaceRoots,
   ensureDialogueWorkspaceDir,
 } from '../localDb/dialogueWorkspace.js';
 import * as authManager from '../authManager.js';
@@ -60,6 +73,7 @@ import {
   HOOK_WORKSPACE_PROVIDER_SOURCE_MAX_ENTRIES,
   type HookPrefsPatch,
   type HookPrefsView,
+  type HookWorkspacePrefs,
   type ProviderPrefsView,
   type SlackHookView,
   type TelegramHookBehaviorPatch,
@@ -81,11 +95,12 @@ import {
 import { createHookTransport } from './transport.js';
 import { registerSlackToolBridge, unregisterSlackToolBridge } from './slackToolBridge.js';
 import { createHookBindingStore } from './bindings.js';
+import { createHookRequestLedger } from './requestLedger.js';
 import {
   buildGroupContextPrefix,
   listTelegramKnownGroupsForStableBinding,
   mergeTelegramGroupActivationViews,
-  resetGroupContextCursors,
+  resetGroupContextCursorsSafely,
 } from './groupWindow.js';
 import { createHookDispatcher } from './dispatcher.js';
 import { createMakerHookSessionRunner } from './session-runner.js';
@@ -98,6 +113,7 @@ import { resetTelegramSpeakerRegistrationCache } from '../im/telegram/contactsAu
 import { assertTrustedAppRendererEvent } from '../security/trustedAppRenderer.js';
 import { getAgentIslandService } from '../agent-island/service.js';
 import { setLifecycleAnnouncementFromIpc } from './lifecycleAnnouncementIpc.js';
+import { setSlackCommunicationsFromIpc } from './slackCommunicationsIpc.js';
 
 const log = createLogger('hook-control');
 
@@ -183,8 +199,7 @@ async function drainCodexMcpRefreshForSlackAvailability(): Promise<void> {
     while (codexMcpRefreshPending) {
       codexMcpRefreshPending = false;
       try {
-        await restartCodexAfterAuthModeChange();
-        await shutdownCodexEnvironment();
+        await restartCodexAfterAuthModeChange(shutdownCodexEnvironment);
         log.info('Codex MCP environment refreshed after Slack provider availability changed', {
           enabled: latestSlackToolProviderEnabled,
         });
@@ -232,6 +247,175 @@ function broadcastProviderPrefs(view: ProviderPrefsView): void {
     }
   }
 }
+
+function slackAccountBound(view: SlackHookView): boolean {
+  if (!view.enabled) return false;
+  // 明确未绑定（在线 revoke / none）才关掉编辑。
+  if (view.binding?.state === 'none') return false;
+  if (view.binding?.state === 'confirmed') return true;
+  if (view.bindings.some((b) => !b.displaced)) return true;
+  // 单绑定冷启动：live binding 要等 bind.update，掉线重启时仍是 null。
+  // 开关开着且没有 none，视为上次已绑定，允许离线编辑。
+  return true;
+}
+
+function slackLocalPrefsView(): HookPrefsView {
+  const snap = ensureInstances().manager.snapshot();
+  return { bound: slackAccountBound(snap), prefs: listWorkspacePrefs('slack') };
+}
+
+function providerLocalPrefsView(provider: Exclude<HookPrefsChannel, 'slack'>): ProviderPrefsView {
+  const lane = ensureInstances().manager.snapshot()[provider];
+  const confirmed = lane.binding?.state === 'confirmed' ? lane.binding : null;
+  return {
+    provider,
+    bindingId: confirmed?.bindingId ?? null,
+    scopeId: confirmed?.scopeId ?? null,
+    bound: confirmed !== null,
+    prefs: listWorkspacePrefs(provider),
+  };
+}
+
+function parseWorkspacePrefsWrite(payload: unknown): {
+  workspace: string;
+  teamId: string | null;
+  patch: HookPrefsPatch;
+} {
+  const p = requireObject(payload);
+  const workspace = requireString(p.workspace, 'workspace');
+  if (!HOOK_WORKSPACE_ALIAS_RE.test(workspace)) {
+    throwIpcError('INVALID_PARAMS', 'workspace must match the alias format');
+  }
+  const teamId =
+    p.teamId === undefined || p.teamId === null ? null : requireString(p.teamId, 'teamId');
+  if (teamId !== null && teamId.length > 64) {
+    throwIpcError('INVALID_PARAMS', 'teamId too long');
+  }
+  const rawPatch = requireObject(p.patch);
+  const patch: HookPrefsPatch = {};
+  for (const field of ['model', 'effort', 'agentKind', 'permissionMode'] as const) {
+    const value = rawPatch[field];
+    if (value === undefined) continue;
+    if (value !== null && typeof value !== 'string') {
+      throwIpcError('INVALID_PARAMS', `${field} must be a string or null`);
+    }
+    if (typeof value === 'string' && value.length > 128) {
+      throwIpcError('INVALID_PARAMS', `${field} too long`);
+    }
+    patch[field] = value as string | null;
+  }
+  return { workspace, teamId, patch };
+}
+
+const remotePrefsSnapshotGenerations = new Map<HookPrefsChannel, number>();
+
+function broadcastWorkspaceProviderSources(entries: ReturnType<typeof listWorkspaceProviderSources>): void {
+  // 多窗口同步(codex review): 会话副窗也能开设置页, 写后全窗口广播全量条目。
+  for (const w of BrowserWindow.getAllWindows()) {
+    if (!w.isDestroyed() && isAppContentWindow(w)) {
+      w.webContents.send(HOOK_CONTROL_EVENT.WORKSPACE_PROVIDER_SOURCE_CHANGED, entries);
+    }
+  }
+}
+
+/**
+ * server 快照落地可能清掉配对来源(applyIncomingServerWorkspacePrefs, issue #5912),
+ * 落地后把现有条目推给设置页; 给了落地前快照时只在有变化时推。
+ */
+function rebroadcastWorkspaceProviderSources(before?: string): void {
+  try {
+    const entries = listWorkspaceProviderSources();
+    if (before === undefined || JSON.stringify(entries) !== before) {
+      broadcastWorkspaceProviderSources(entries);
+    }
+  } catch (err) {
+    log.warn(
+      `workspace provider source broadcast failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+function snapshotWorkspaceProviderSources(): string {
+  try {
+    return JSON.stringify(listWorkspaceProviderSources());
+  } catch {
+    return '';
+  }
+}
+
+function persistUnsolicitedServerPrefs(channel: HookPrefsChannel, prefs: HookWorkspacePrefs[]): void {
+  try {
+    const sourcesBefore = snapshotWorkspaceProviderSources();
+    applyIncomingServerWorkspacePrefs(channel, prefs);
+    rebroadcastWorkspaceProviderSources(sourcesBefore);
+    remotePrefsSnapshotGenerations.set(
+      channel,
+      (remotePrefsSnapshotGenerations.get(channel) ?? 0) + 1,
+    );
+    markWorkspacePrefsMigrated(channel);
+  } catch (err) {
+    log.warn(
+      `local workspace prefs replace (${channel}) failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+function channelLiveBindingKey(channel: HookPrefsChannel): string | null {
+  const snap = ensureInstances().manager.snapshot();
+  if (channel === 'slack') {
+    if (snap.serverMultiTeam) {
+      const teamIds = snap.bindings
+        .filter((binding) => !binding.displaced)
+        .map((binding) => binding.teamId)
+        .sort();
+      return teamIds.length > 0 ? `slack:multi:${teamIds.join(',')}` : null;
+    }
+    const binding = snap.binding;
+    return binding?.state === 'confirmed'
+      ? `slack:single:${binding.slackUserId ?? ''}:${binding.teamName ?? ''}`
+      : null;
+  }
+  const binding = snap[channel].binding;
+  return binding?.state === 'confirmed'
+    ? `${channel}:${binding.bindingId}:${binding.scopeId ?? ''}`
+    : null;
+}
+
+function channelMirrorTargetCurrent(channel: HookPrefsChannel, teamId: string | null): boolean {
+  if (channelLiveBindingKey(channel) === null) return false;
+  if (channel !== 'slack' || teamId === null) return true;
+  const snap = ensureInstances().manager.snapshot();
+  if (!snap.serverMultiTeam) return true;
+  return snap.bindings.some((binding) => binding.teamId === teamId && !binding.displaced);
+}
+
+const mirrorWorkspacePrefs = createWorkspacePrefsMirror({
+  getLiveBindingKey: channelLiveBindingKey,
+  isMirrorTargetCurrent: channelMirrorTargetCurrent,
+  getRemoteSnapshotGeneration: (channel) => remotePrefsSnapshotGenerations.get(channel) ?? 0,
+  getRemotePrefs: async (channel) => {
+    const manager = ensureInstances().manager;
+    return channel === 'slack'
+      ? manager.getWorkspacePrefs()
+      : manager.getProviderWorkspacePrefs(channel);
+  },
+  setRemotePrefs: async (channel, workspace, patch, teamId) => {
+    const manager = ensureInstances().manager;
+    if (channel === 'slack') await manager.setWorkspacePrefs(workspace, patch, teamId);
+    else await manager.setProviderWorkspacePrefs(channel, workspace, patch);
+  },
+  onLocalPrefsChanged: (channel) => {
+    if (channel === 'slack') broadcastPrefs(slackLocalPrefsView());
+    else broadcastProviderPrefs(providerLocalPrefsView(channel));
+    // 重连镜像同样经 applyIncomingServerWorkspacePrefs 落快照, 可能清掉配对来源(issue #5912)。
+    rebroadcastWorkspaceProviderSources();
+  },
+  onError: (channel, err) => {
+    log.warn(
+      `workspace prefs mirror (${channel}) failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  },
+});
 
 function broadcastTelegramBehavior(view: TelegramHookBehaviorState): void {
   for (const w of BrowserWindow.getAllWindows()) {
@@ -334,6 +518,10 @@ function ensureInstances(): { store: SlackHookStore; manager: HookControlManager
         filePath: ownerScopedUserDataPath('hook-bindings.json'),
         log,
       }),
+      terminalLedger: createHookRequestLedger({
+        filePath: ownerScopedUserDataPath('hook-request-ledger.json'),
+        log,
+      }),
       runner: createMakerHookSessionRunner({ log }),
       buildContextPrefix: buildGroupContextPrefix,
       // 新建 hook 会话默认预建独立 worktree(并发隔离); deps 组装与
@@ -370,6 +558,7 @@ function ensureInstances(): { store: SlackHookStore; manager: HookControlManager
       // 内置「对话」伪目录(chat): 与桌面端无项目对话同一套 app 托管目录
       dialogue: {
         rootDir: dialogueWorkspaceRootDir,
+        rootDirs: dialogueWorkspaceRoots,
         allocateDir: async (sessionId) => ensureDialogueWorkspaceDir(sessionId, Date.now()),
       },
       // task.cancel 的中断出口: 与用户手动 Stop 同一条 session.abort() 路径
@@ -389,6 +578,9 @@ function ensureInstances(): { store: SlackHookStore; manager: HookControlManager
         }
         await session.abort();
       },
+      // 渠道 /stop(task.cancel): 与桌面 Stop 同一套清理(撤续跑 / 取消恢复 / 暂停 Goal /
+      // 停输入队列并中止当前一轮), 见 docs/dev-rules/im-turn-flow.md 不变量 9。
+      stopSessionExplicitly: (sessionId) => stopSessionTurnExplicitly(sessionId),
       // session.archive 的归档出口: 与 device-link 远程归档同一条
       // patchSessionMetaInDb 路径(落库 + sessions:patched 广播, sidebar 即时移出)
       archiveSessionRow: async (sessionId) => {
@@ -399,10 +591,14 @@ function ensureInstances(): { store: SlackHookStore; manager: HookControlManager
       // 「用户在桌面端点了重试 / 继续任务」信号 -> 把那一轮接回渠道原消息
       // (turn.reopen, 协议阶段 18)。信号由 maker 的发送事务发布。
       subscribeUiContinuation: onUiContinuation,
+      subscribeChannelTurn: (listener) => onChannelTurn((session, phase, source) => listener(session.id, session.workDir, phase, source)),
       subscribeUiSessionIntervention: onUiSessionIntervention,
       subscribeUiTurnDispatching: onUiTurnDispatching,
       subscribeUiTurnUndispatched: onUiTurnUndispatched,
       accountInitiallyActive: false,
+      // 官方 Telegram 命令菜单以 desktop 注册表为准(telegram-commands-v1), 按 Telegram
+      // 用户语言各渲染一份。
+      telegramCommandMenus: () => buildOfficialBotCommandMenus((key, locale) => t(key, locale)),
       log,
     });
     manager = createHookControlManager({
@@ -432,8 +628,18 @@ function ensureInstances(): { store: SlackHookStore; manager: HookControlManager
       agents: getMaker().listAvailableAgents(),
       notifyStatus: broadcastStatus,
       onSlackToolProviderEnabledChanged: requestCodexMcpRefreshForSlackAvailability,
-      notifyPrefs: broadcastPrefs,
-      notifyProviderPrefs: broadcastProviderPrefs,
+      notifyPrefs: (view) => {
+        persistUnsolicitedServerPrefs('slack', view.prefs);
+        broadcastPrefs(slackLocalPrefsView());
+      },
+      notifyProviderPrefs: (view) => {
+        if (view.provider === 'slack') return;
+        persistUnsolicitedServerPrefs(view.provider, view.prefs);
+        broadcastProviderPrefs(providerLocalPrefsView(view.provider));
+      },
+      onHookReadyForPrefsMirror: (provider) => {
+        void mirrorWorkspacePrefs(provider);
+      },
       notifyTelegramBehavior: broadcastTelegramBehavior,
       dispatcher,
       getAccountFingerprint: currentAccountFingerprint,
@@ -447,6 +653,7 @@ function ensureInstances(): { store: SlackHookStore; manager: HookControlManager
       // 侧据此渲染权限档下拉(选中值经 dispatch options.permissionMode 回流)
       listAgentModels: async () => {
         const providers = await getDesktopProviderService().listProviders({ allowSideEffects: true });
+        await waitForModelVisibilityMirror();
         // 动态取 runtime 已注册的 agent(含 Pi,若已安装);上游此处硬编码 cc/codex(早于 Pi),
         // 本 PR 的 Pi 接入以 listAvailableAgents() 为准 —— 与新建入口按注册结果门控同源。
         return getMaker().listAvailableAgents().map((agentKind) => {
@@ -757,14 +964,18 @@ export function registerHookControlIpc(): void {
     return runMultiTeamAction((mgr) => mgr.rebindTeam(teamId));
   });
 
-  registerTrustedHookControlHandler(HOOK_CONTROL_INVOKE.REVOKE_TEAM, (_e, payload) => {
+  registerTrustedHookControlHandler(HOOK_CONTROL_INVOKE.SET_SLACK_COMMUNICATIONS, (_e, payload) => {
+    requireHookControl();
+    return setSlackCommunicationsFromIpc(ensureInstances().manager, payload);
+  });
+
+  registerTrustedHookControlHandler(HOOK_CONTROL_INVOKE.REVOKE_TEAM, async (_e, payload) => {
     requireHookControl();
     const p = requireObject(payload);
     const teamId = requireString(p.teamId, 'teamId');
-    // displaced 行的删除是纯本地操作, 离线也要能删 —— 不做 multi-team 能力
-    // 前置检查(manager 内部区分 displaced/活跃行)
+    // manager 区分旧 server 本地缓存清理、新 server 通讯 grant 撤销和 Bot 解绑。
     const mgr = ensureInstances().manager;
-    if (!mgr.revokeTeam(teamId)) {
+    if (!await mgr.revokeTeam(teamId)) {
       throwIpcError('HOOK_NOT_CONNECTED', 'slack hook is not connected');
     }
     return { hook: mgr.snapshot() };
@@ -778,76 +989,56 @@ export function registerHookControlIpc(): void {
     return { hook: mgr.snapshot() };
   });
 
-  // 目录偏好远程读写: 数据正本在 slack-hook-server 的 user_prefs(与 Slack
-  // /model 卡同一份), 这里只是经 WS 往返的 adapter; 校验在协议层 + server。
+  // 目录偏好本机正本: 设置页读写本地文件, 不依赖 hook WS。连上后 best-effort
+  // 镜像到 server, 只供 /model 卡展示与遥控。
   registerTrustedHookControlHandler(HOOK_CONTROL_INVOKE.PREFS_GET, async () => {
     requireHookControl();
-    const { manager: m } = ensureInstances();
-    try {
-      return { prefs: await m.getWorkspacePrefs() };
-    } catch (err) {
-      throwHookPrefsError(err);
-    }
+    ensureInstances();
+    return { prefs: slackLocalPrefsView() };
   });
 
   registerTrustedHookControlHandler(HOOK_CONTROL_INVOKE.PREFS_SET, async (_e, payload) => {
     requireHookControl();
-    const { manager: m } = ensureInstances();
-    const p = requireObject(payload);
-    const workspace = requireString(p.workspace, 'workspace');
-    const rawPatch = requireObject(p.patch);
-    const patch: HookPrefsPatch = {};
-    for (const field of ['model', 'effort', 'agentKind', 'permissionMode'] as const) {
-      const v = rawPatch[field];
-      if (v === undefined) continue;
-      if (v !== null && typeof v !== 'string') {
-        throwIpcError('INVALID_PARAMS', `${field} must be a string or null`);
-      }
-      patch[field] = v as string | null;
-    }
-    // (multi-team)偏好归属 team: 可选; 缺省/null = 单绑定语境(server 侧按
-    // 设备唯一绑定落值)
-    const teamId =
-      p.teamId === undefined || p.teamId === null ? null : requireString(p.teamId, 'teamId');
+    ensureInstances();
+    const parsed = parseWorkspacePrefsWrite(payload);
     try {
-      return { prefs: await m.setWorkspacePrefs(workspace, patch, teamId) };
+      setWorkspacePref('slack', parsed.teamId, parsed.workspace, parsed.patch);
     } catch (err) {
-      throwHookPrefsError(err);
+      log.warn(
+        `local slack workspace prefs write failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      throwIpcError('INTERNAL', 'failed to persist workspace prefs');
     }
+    const view = slackLocalPrefsView();
+    broadcastPrefs(view);
+    void mirrorWorkspacePrefs('slack');
+    return { prefs: view };
   });
 
   registerTrustedHookControlHandler(HOOK_CONTROL_INVOKE.PROVIDER_PREFS_GET, async (_e, payload) => {
     requireHookControl();
-    const { manager: m } = ensureInstances();
+    ensureInstances();
     const provider = requireNeutralProvider(payload);
-    try {
-      return { prefs: await m.getProviderWorkspacePrefs(provider) };
-    } catch (err) {
-      throwHookPrefsError(err);
-    }
+    return { prefs: providerLocalPrefsView(provider) };
   });
 
   registerTrustedHookControlHandler(HOOK_CONTROL_INVOKE.PROVIDER_PREFS_SET, async (_e, payload) => {
     requireHookControl();
-    const { manager: m } = ensureInstances();
+    ensureInstances();
     const provider = requireNeutralProvider(payload);
-    const p = requireObject(payload);
-    const workspace = requireString(p.workspace, 'workspace');
-    const rawPatch = requireObject(p.patch);
-    const patch: HookPrefsPatch = {};
-    for (const field of ['model', 'effort', 'agentKind', 'permissionMode'] as const) {
-      const value = rawPatch[field];
-      if (value === undefined) continue;
-      if (value !== null && typeof value !== 'string') {
-        throwIpcError('INVALID_PARAMS', `${field} must be a string or null`);
-      }
-      patch[field] = value as string | null;
-    }
+    const parsed = parseWorkspacePrefsWrite(payload);
     try {
-      return { prefs: await m.setProviderWorkspacePrefs(provider, workspace, patch) };
+      setWorkspacePref(provider, parsed.teamId, parsed.workspace, parsed.patch);
     } catch (err) {
-      throwHookPrefsError(err);
+      log.warn(
+        `local ${provider} workspace prefs write failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      throwIpcError('INTERNAL', 'failed to persist workspace prefs');
     }
+    const view = providerLocalPrefsView(provider);
+    broadcastProviderPrefs(view);
+    void mirrorWorkspacePrefs(provider);
+    return { prefs: view };
   });
 
   registerTrustedHookControlHandler(HOOK_CONTROL_INVOKE.TELEGRAM_BEHAVIOR_GET, async (_e, payload) => {
@@ -984,6 +1175,10 @@ export function registerHookControlIpc(): void {
       if (providerId !== null && providerId.length > 128) {
         throwIpcError('INVALID_PARAMS', 'providerId too long');
       }
+      const agentDeviceId = p.agentDeviceId == null ? null : requireString(p.agentDeviceId, 'agentDeviceId');
+      if (agentDeviceId && (!/^[A-Za-z0-9_.:-]{1,128}$/.test(agentDeviceId) || !providerId)) {
+        throwIpcError('INVALID_PARAMS', 'remote provider route invalid');
+      }
       // 条目总量上限(codex review): 键合法性校验挡不住海量唯一 teamId 的无限
       // 追加 —— 新增(非替换/删除)且已达上限时拒绝。按精确键判新增(不能用
       // getWorkspaceProviderSource, 它的 teamId null 兜底会把新 team 误判为已存在)。
@@ -1003,19 +1198,14 @@ export function registerHookControlIpc(): void {
       // throwIpcError 协议给稳定错误码, 细节留 main 日志。
       let entries: ReturnType<typeof setWorkspaceProviderSource>;
       try {
-        entries = setWorkspaceProviderSource(channel, teamId, workspace, providerId);
+        entries = setWorkspaceProviderSource(channel, teamId, workspace, providerId, agentDeviceId);
       } catch (err) {
         log.warn(
           `workspace provider source write failed: ${err instanceof Error ? err.message : String(err)}`,
         );
         throwIpcError('INTERNAL', 'failed to persist workspace provider source');
       }
-      // 多窗口同步(codex review): 会话副窗也能开设置页, 写后全窗口广播全量条目。
-      for (const w of BrowserWindow.getAllWindows()) {
-        if (!w.isDestroyed() && isAppContentWindow(w)) {
-          w.webContents.send(HOOK_CONTROL_EVENT.WORKSPACE_PROVIDER_SOURCE_CHANGED, entries);
-        }
-      }
+      broadcastWorkspaceProviderSources(entries);
       return { entries };
     },
   );
@@ -1059,9 +1249,10 @@ export async function stopHookControlAccount(): Promise<void> {
 }
 
 /** Stop and discard all state tied to the current data owner; IPC stays registered. */
-export function resetHookControlOwnerBoundary(): void {
+export function resetHookControlOwnerBoundary(options?: { clearPersisted?: boolean }): void {
+  mirrorWorkspacePrefs.invalidateOwnerBoundary();
   unregisterSlackToolBridge();
-  resetGroupContextCursors();
+  resetGroupContextCursorsSafely(options);
   resetTelegramSpeakerRegistrationCache();
   manager?.dispose();
   manager = null;
@@ -1076,5 +1267,7 @@ export function disposeHookControl(): void {
   disposeAuthListener?.();
   disposeAuthListener = null;
   observedAuthRealm = null;
-  resetHookControlOwnerBoundary();
+  // App quit is not an account unbind: preserve the durable cursor and only
+  // discard the in-memory cache so the next process resumes incrementally.
+  resetHookControlOwnerBoundary({ clearPersisted: false });
 }

@@ -403,6 +403,7 @@ function projectOffer(
 ): BillingCatalogOffer | null {
   if (!isRecord(value) || !Array.isArray(value.purchaseOptions)) return null;
   const offerCode = code(value.code);
+  const offerName = boundedString(value.name, 128) ?? undefined;
   const offerCurrency = currency(value.currency);
   const amount = nullable(value.amount, decimal);
   const minAmount = nullable(value.minAmount, decimal);
@@ -516,6 +517,7 @@ function projectOffer(
   }
   return {
     code: offerCode,
+    ...(offerName ? { name: offerName } : {}),
     ...availability,
     interval: isSubscription ? interval : null,
     currency: offerCurrency,
@@ -856,6 +858,7 @@ export function projectBillingSubscription(value: unknown): BillingSubscription 
     currentPeriodEndAt,
     entitlementValidUntil,
     cancelAtPeriodEnd: value.cancelAtPeriodEnd,
+    ...(typeof value.resumable === 'boolean' ? { resumable: value.resumable } : {}),
     effectivePlan: value.effectivePlan === null ? null : projectEffectivePlan(value.effectivePlan),
     purchaseAttemptId,
     paymentAction: projectPaymentAction(value.paymentAction),

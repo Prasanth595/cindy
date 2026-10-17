@@ -12,8 +12,23 @@ const sessionViewSource = readFileSync(
   'utf8',
 ).replace(/\r\n?/g, '\n');
 
+const messageStreamSource = readFileSync(
+  resolve(__dirname, '..', 'components', 'chat', 'MessageStream.tsx'),
+  'utf8',
+).replace(/\r\n?/g, '\n');
+
+const mainLayoutSource = readFileSync(
+  resolve(__dirname, '..', 'components', 'layout', 'MainLayout.tsx'),
+  'utf8',
+).replace(/\r\n?/g, '\n');
+
 const newMakerDraftRouteSource = readFileSync(
   resolve(__dirname, '..', 'features', 'cc-agent', 'NewMakerDraftRoute.tsx'),
+  'utf8',
+).replace(/\r\n?/g, '\n');
+
+const sidebarUpperSource = readFileSync(
+  resolve(__dirname, '..', 'features', 'cc-agent', 'CCAgentSidebarUpper.tsx'),
   'utf8',
 ).replace(/\r\n?/g, '\n');
 
@@ -42,21 +57,66 @@ describe('ChatInput session switch focus contract', () => {
 
     expect(chatInputSource).toContain('focusOnStorageKeyChange?: boolean;');
     expect(chatInputSource).toContain('focusOnStorageKeyChange = false');
-    expect(chatInputSource).toContain('const focusOnStorageKeyChangeRef = useRef(focusOnStorageKeyChange);');
-    expect(chatInputSource).toContain('focusOnStorageKeyChangeRef.current = focusOnStorageKeyChange;');
+    expect(chatInputSource).toContain(
+      'const focusOnStorageKeyChangeRef = useRef(focusOnStorageKeyChange);',
+    );
+    expect(chatInputSource).toContain(
+      'focusOnStorageKeyChangeRef.current = focusOnStorageKeyChange;',
+    );
     expect(chatInputSource).toContain('const storageKeyFocusAnchor = document.activeElement;');
     expect(restoreNextDraftBlock).toContain('if (!focusOnStorageKeyChangeRef.current) return;');
-    expect(restoreNextDraftBlock).toContain('if (disableAutofocusRef.current || disabledRef.current) return;');
+    expect(restoreNextDraftBlock).toContain(
+      'if (disableAutofocusRef.current || disabledRef.current) return;',
+    );
     expect(restoreNextDraftBlock).toContain('if (!isCurrentTransition()) return;');
-    expect(restoreNextDraftBlock).toContain('if (hasFocusMovedToInteractiveElement(storageKeyFocusAnchor, editor)) return;');
+    expect(restoreNextDraftBlock).toContain(
+      'if (hasFocusMovedToInteractiveElement(storageKeyFocusAnchor, editor.view.dom)) return;',
+    );
     expect(restoreNextDraftBlock).toContain("editor.commands.focus('end');");
     expect(firstMountHydrationBlock).toContain('focusOnStorageKeyChangeRef.current');
     expect(firstMountHydrationBlock).toContain("editor.commands.focus('end');");
   });
 
   it('enables storageKey refocus for routed session and new-draft views', () => {
-    expect(sessionViewSource).toContain('const ownsRoute = !sessionIdProp && !isCompactRail && !isOrcaMode;');
+    expect(sessionViewSource).toContain(
+      'const ownsRoute = routeOwner ?? (!sessionIdProp && !isCompactRail && !isOrcaMode);',
+    );
     expect(sessionViewSource).toContain('focusOnStorageKeyChange={ownsRoute}');
+    expect(sessionViewSource).toContain(
+      'ownsHardwareComposerActions={ownsHardwareTaskActions}',
+    );
+    expect(chatInputSource).toContain('workLouderVoiceGestureRef.current?.cancelHeldPress();');
+    expect(sessionViewSource).toContain(
+      'ownsHardwareScrollActions={ownsHardwareTaskActions}',
+    );
+    expect(sessionViewSource).toContain("navigationMode !== 'split-pane'");
+    expect(sessionViewSource).toContain("action.commandId === 'toggleTaskPin'");
+    expect(sessionViewSource).toContain("action.commandId === 'archiveTask'");
+    expect(sessionViewSource).toContain('void togglePin();');
+    expect(sessionViewSource).toContain('void archive();');
+    expect(messageStreamSource).toContain('ownsHardwareScrollActions?: boolean;');
+    expect(messageStreamSource).toContain('if (!ownsHardwareScrollActions) return false;');
+    expect(mainLayoutSource).toContain("const reviewTab = bucket.tabs.find((tab) => tab.kind === 'review');");
+    expect(mainLayoutSource).toContain("routeSidebarCommand({ type: 'toggle-review-tab', sessionId })");
+    expect(mainLayoutSource).toContain('if (reviewIsActive && reviewTab) {');
+    expect(mainLayoutSource).toContain('await closeTab(sessionId, reviewTab.id);');
+    expect(mainLayoutSource).toContain(
+      "navigate('/cc-agent/new', { state: makeFolderPickerNewMakerRouteState() })",
+    );
+    expect(newMakerDraftRouteSource).toContain('readNewMakerFolderPickerRequest(location.state)');
+    expect(newMakerDraftRouteSource).toContain('setFolderPickerOpen(true)');
+    expect(sidebarUpperSource).toContain(
+      "const catalogSessions = sessionsWithRemote.filter((session) => session.status === 'active');",
+    );
+    expect(sidebarUpperSource).toContain('catalogEligible: false');
+    expect(sidebarUpperSource).toContain(
+      'const remainingCatalogSlots = Math.max(0, 100 - visibleProjection.length);',
+    );
+    expect(sidebarUpperSource).toContain('WORKLOUDER_CODEX_AGENT_SLOT_COUNT');
+    expect(sidebarUpperSource).toContain('.slice(0, WORKLOUDER_CODEX_AGENT_SLOT_COUNT)');
+    expect(sidebarUpperSource).not.toContain(
+      '[...visibleSessionsWithRemote, ...remoteProjectSessions]',
+    );
     expect(newMakerDraftRouteSource).toContain('focusOnStorageKeyChange');
   });
 
@@ -73,33 +133,75 @@ describe('ChatInput session switch focus contract', () => {
   });
 
   it('keeps deferred editor mount autofocus at the draft end', () => {
-    expect(chatInputSource).toContain(
-      "autofocus: !disableAutofocus && !disabled ? 'end' : false",
-    );
+    expect(chatInputSource).toContain("autofocus: !disableAutofocus && !disabled ? 'end' : false");
   });
 
   it('guards delayed storageKey focus against stealing from another focused control', () => {
-    expect(chatInputSource).toContain('function hasFocusMovedToInteractiveElement(');
-    expect(chatInputSource).toContain('if (activeElement === focusAnchor) return false;');
-    expect(chatInputSource).toContain('if (editor.view.dom.contains(activeElement)) return false;');
-    expect(chatInputSource).toContain('return isInteractiveFocusedElement(activeElement);');
+    expect(chatInputSource).toContain(
+      'hasFocusMovedToInteractiveElement(storageKeyFocusAnchor, editor.view.dom)',
+    );
   });
 
-  it('reuses in-composer Plugin placement for routed Use and end-focuses Create with Cindy', () => {
-    expect(pluginPageSource).toContain('pendingGhostId: ghost.manifest.id');
+  it('wires local send locking through the behavior-tested focus restore hook', () => {
+    const localSendLockBlock = extractBetween(
+      chatInputSource,
+      '// Local/SSH lock the live composer only while the click-time document',
+      'try {\n        let serializedContent',
+    );
+
+    expect(chatInputSource).toContain(
+      'const captureSendFocusForRestore = useComposerSendFocusRestore(',
+    );
+    const focusRestoreCall = extractBetween(
+      chatInputSource,
+      'const captureSendFocusForRestore = useComposerSendFocusRestore(',
+      'const { settings: voiceInputSettings }',
+    );
+    expect(focusRestoreCall).toContain('composerTypingLocked');
+    expect(focusRestoreCall).not.toContain('composerMutationLocked');
+    expect(focusRestoreCall).not.toContain('sendDispatchInFlight');
+    expect(localSendLockBlock).toContain('captureSendFocusForRestore();');
+    expect(localSendLockBlock.indexOf('captureSendFocusForRestore();')).toBeLessThan(
+      localSendLockBlock.indexOf('setSendDispatchInFlight(true);'),
+    );
+  });
+
+  it('reuses composer entry paths for Plugin commands', () => {
+    const capabilitySelectionBlock = extractBetween(
+      chatInputSource,
+      'const insertAtResource = useCallback(',
+      'const handleComposerSuggestionSelect = useCallback(',
+    );
+
+    expect(pluginPageSource).toContain('pendingGhostId: installedGhostStoragePart(ghost)');
     expect(pluginPageSource.match(/focusAtEnd: true/g)).toHaveLength(1);
     expect(
-      chatInputSource.match(/placeGhostAtComposerStart\(editor, ghost, installedGhosts\)/g),
-    ).toHaveLength(2);
+      chatInputSource.match(/placeGhostAtComposerStart\(editor, ghost, ghostsForCommand\)/g),
+    ).toHaveLength(1);
+    expect(
+      chatInputSource.match(
+        /placeGhostAtComposerStart\(editor, ghost, composerGhostsRef\.current\)/g,
+      ),
+    ).toHaveLength(1);
     expect(chatInputSource).toContain('pendingGhostId: undefined');
+
+    expect(capabilitySelectionBlock).toContain("selectedItem.type === 'plugin-command'");
+    expect(capabilitySelectionBlock).toContain('!ghost?.enabled');
+    expect(capabilitySelectionBlock).toContain('findInstalledGhostByInstanceId(');
+    expect(capabilitySelectionBlock).toContain('composerGhostsRef.current,');
+    expect(capabilitySelectionBlock).toContain(
+      'placeGhostAtComposerStart(editor, ghost, composerGhostsRef.current);',
+    );
+    expect(capabilitySelectionBlock).toContain('closeAtPanel();');
+    expect(capabilitySelectionBlock).not.toContain('focusIOSSimulatorPanel');
     expect(chatInputSource).toContain('focusComposerEndNextFrame(editor);');
   });
 
   it('records recent Plugin usage only after a successful direct or deferred send', () => {
     const successfulSendBlock = extractBetween(
       chatInputSource,
-      'if (result === false) return;',
-      '// Suppress onUpdate',
+      'if (result === false) {',
+      'finishAgentSendDispatch();',
     );
     const worktreeSendBlock = extractBetween(
       newMakerDraftRouteSource,
@@ -107,11 +209,186 @@ describe('ChatInput session switch focus contract', () => {
       'worktreeCreationStore.clear(newSession.id);',
     );
 
-    expect(chatInputSource).toContain('findGhostByCommand(eligibleGhosts, ghostCommandWord)');
+    expect(chatInputSource).toContain('findGhostByCommand(eligibleGhosts, ghostCommandToken.word, ghostCommandToken.namespace)');
     expect(chatInputSource).toContain('onAccepted: markRecentPluginUsage');
     expect(successfulSendBlock).toContain('markRecentPluginUsage();');
-    expect(newMakerDraftRouteSource.match(/opts\?\.onAccepted\?\.\(\);/g)).toHaveLength(3);
-    expect(worktreeSendBlock).toContain('if (accepted) opts?.onAccepted?.();');
+    // 本机首条 / worktree 首条 / 远程普通首条直接发送 / 远程视图交接 四处受理点。
+    expect(newMakerDraftRouteSource.match(/opts\?\.onAccepted\?\.\(\);/g)).toHaveLength(4);
+    expect(worktreeSendBlock).toContain('if (accepted) {');
+    expect(worktreeSendBlock).toContain('opts?.onAccepted?.();');
+    expect(worktreeSendBlock).toContain(
+      'dispatchDeferredUiAssignment(newSession.id, deferredUiAssignment)',
+    );
+  });
+
+  it('clears the live composer before awaiting local or remote send', () => {
+    const optimisticClear = chatInputSource.indexOf(
+      '// Click-time composer must disappear before any await that can surface',
+    );
+    const clearCall = chatInputSource.indexOf('clearSentComposer();', optimisticClear);
+    const onSend = chatInputSource.indexOf('result = await onSend(', optimisticClear);
+    const failedRestore = chatInputSource.indexOf('restoreRemoteComposerAndRelease();', onSend);
+
+    expect(optimisticClear).toBeGreaterThanOrEqual(0);
+    expect(clearCall).toBeGreaterThan(optimisticClear);
+    expect(onSend).toBeGreaterThan(clearCall);
+    expect(failedRestore).toBeGreaterThan(onSend);
+    expect(chatInputSource).not.toContain(
+      'if (!optimisticallyClearRemoteComposer) clearSentComposer();',
+    );
+  });
+
+  it('keeps send and settings locked after optimistic clear while allowing typing', () => {
+    const unlockAfterClear = extractBetween(
+      chatInputSource,
+      '// Click-time composer must disappear before any await that can surface',
+      'result = await onSend(',
+    );
+    expect(unlockAfterClear).toContain('dispatchSendClearedKeysRef.current.add(sendInFlightKey);');
+    expect(unlockAfterClear).toContain('setAllowTypeDuringSend(true);');
+    expect(unlockAfterClear.indexOf('dispatchSendClearedKeysRef.current.add(sendInFlightKey);')).toBeLessThan(
+      unlockAfterClear.indexOf('setAllowTypeDuringSend(true);'),
+    );
+    expect(unlockAfterClear).not.toContain('setSendDispatchInFlight(false);');
+    expect(chatInputSource).toContain(
+      'disabled || (sendDispatchInFlight && !allowTypeDuringSend)',
+    );
+    expect(chatInputSource).toContain('sendDispatchInFlight ||');
+    expect(chatInputSource).toContain('setSendDispatchInFlight(nextSendInFlight);');
+    expect(chatInputSource).toContain(
+      'setAllowTypeDuringSend(nextSendInFlight && nextSendCleared);',
+    );
+    expect(chatInputSource).toContain(
+      'documentBeforeOptimisticClear = plainTextToComposerDocument(serializedContent.text);',
+    );
+    const settleLockBlock = extractBetween(
+      chatInputSource,
+      'dispatchSendInFlightKeysRef.current.delete(sendInFlightKey);',
+      'finishAgentSendDispatch();',
+    );
+    expect(settleLockBlock).toContain(
+      'dispatchSendClearedKeysRef.current.delete(sendInFlightKey);',
+    );
+    expect(settleLockBlock).toContain(
+      'storageKeyForDraftRef.current === sourceStorageKey',
+    );
+    expect(settleLockBlock).toContain('setAllowTypeDuringSend(false);');
+    expect(settleLockBlock.indexOf('storageKeyForDraftRef.current === sourceStorageKey')).toBeLessThan(
+      settleLockBlock.indexOf('setAllowTypeDuringSend(false);'),
+    );
+  });
+
+  it('snapshots the source restore payload instead of a reused destination editor', () => {
+    const snapshotBlock = extractBetween(
+      chatInputSource,
+      'const editorOwnsSourceAtStart = editorOwnsSourceDraft({',
+      'const dataOwnerAtOptimisticClear = getDataOwnerGeneration();',
+    );
+
+    expect(snapshotBlock).toContain(
+      'optimisticallyClearRemoteComposer && editorOwnsSourceAtStart',
+    );
+    expect(snapshotBlock).toContain('getComposerDraft(sourceStorageKey)');
+    expect(snapshotBlock).toContain('frozenVoiceSendRef.current?.sourceStorageKey === sourceStorageKey');
+    expect(snapshotBlock).toContain('editorOwnsSourceAtStart\n        ? editor.getJSON()');
+    expect(snapshotBlock.indexOf('editorOwnsSourceAtStart')).toBeLessThan(
+      snapshotBlock.indexOf('editor.getJSON()'),
+    );
+  });
+
+  it('refreshes the local restore snapshot only while the editor still owns the source draft', () => {
+    const refreshBlock = extractBetween(
+      chatInputSource,
+      'const sendSnapshot = captureComposerSendSnapshot(',
+      'let recentUsageMarked = false;',
+    );
+
+    expect(refreshBlock).toContain('!optimisticallyClearRemoteComposer');
+    expect(refreshBlock).toContain('editorOwnsSourceDraft({');
+    expect(refreshBlock).toContain('documentBeforeOptimisticClear = editor.getJSON();');
+    expect(refreshBlock.indexOf('editorOwnsSourceDraft({')).toBeLessThan(
+      refreshBlock.indexOf('documentBeforeOptimisticClear = editor.getJSON();'),
+    );
+  });
+
+  it('optimistically clears device-link composer state before awaiting send and restores without dropping newer input', () => {
+    const transitionBegin = chatInputSource.indexOf(
+      'makerChatStore.beginRemoteOptimisticComposerTransition(',
+    );
+    const optimisticClear = chatInputSource.indexOf(
+      '// Click-time composer must disappear before any await that can surface',
+    );
+    const frozenReferenceHydration = chatInputSource.search(
+      /agentReferences\s*=\s*await resolveSerializedSessionMessageReferencesForSend\(agentReferences\);/,
+    );
+    const onSend = chatInputSource.indexOf('result = await onSend(', optimisticClear);
+    const failedRestore = chatInputSource.indexOf('restoreRemoteComposerAndRelease();', onSend);
+    const restoreAndReleaseBlock = extractBetween(
+      chatInputSource,
+      'const restoreRemoteComposerAndRelease = () => {',
+      '// Click-time composer must disappear before any await that can surface',
+    );
+
+    expect(chatInputSource).toContain('deviceLinkDeviceId && sourceSessionId');
+    expect(transitionBegin).toBeGreaterThanOrEqual(0);
+    expect(optimisticClear).toBeGreaterThanOrEqual(0);
+    expect(transitionBegin).toBeLessThan(optimisticClear);
+    expect(frozenReferenceHydration).toBeGreaterThan(optimisticClear);
+    expect(frozenReferenceHydration).toBeLessThan(onSend);
+    expect(onSend).toBeGreaterThan(optimisticClear);
+    expect(failedRestore).toBeGreaterThan(onSend);
+    expect(chatInputSource).toContain('sourceSessionId,\n                filesToSend,');
+    expect(restoreAndReleaseBlock.indexOf('restoreOptimisticallyClearedComposer();')).toBeLessThan(
+      restoreAndReleaseBlock.indexOf('releaseRemoteComposerTransition();'),
+    );
+    expect(chatInputSource).toContain('let optimisticComposerRestored = false;');
+    expect(chatInputSource).toContain('restoreRemoteOptimisticDraft(');
+    expect(chatInputSource).toContain('text: isEditorEmpty(editor) ? null : editor.getJSON()');
+    expect(chatInputSource).toContain('attachments: latestAttachmentsRef.current');
+    expect(chatInputSource).toContain('browserComments: browserCommentsRef.current');
+    expect(chatInputSource).toContain("editor.commands.focus('end');");
+    expect(chatInputSource).toContain('restoreFiles(restored.attachments);');
+    expect(chatInputSource).toContain(
+      'latestStorageKeyRef.current === sourceStorageKey && editorOwnsSource',
+    );
+    expect(chatInputSource).toContain(
+      'latestStorageKeyRef.current === sourceStorageKey &&\n            storageKeyForDraftRef.current === sourceStorageKey',
+    );
+    expect(chatInputSource).toContain(
+      'restoreRemoteOptimisticDraft(\n            sourceStorageKey,',
+    );
+    expect(chatInputSource).toContain('!isDataOwnerGenerationCurrent(dataOwnerAtOptimisticClear)');
+    expect(chatInputSource).toContain('restoreOptimisticallyClearedComposer(clientId, {');
+    expect(chatInputSource).toContain('isRemoteOptimisticDataOwnerBoundaryError(error)');
+    expect(chatInputSource).toContain('isRemoteOptimisticSessionPurgedError(error)');
+    expect(chatInputSource).toContain('optimisticComposerRestored = true;');
+    expect(chatInputSource).toContain('isRemoteOptimisticComposerTransitionActive(');
+    expect(chatInputSource).toContain('updateLive: !isDataOwnerBoundary');
+    expect(chatInputSource).toContain('recoveryBatch: error as object');
+    expect(chatInputSource).toContain('recoveryBatch ? { recoveryBatch } : undefined');
+    expect(chatInputSource).toContain('if (!updateLive || !isCurrentComposer) return;');
+    expect(chatInputSource).toContain('if (!isDataOwnerIdCurrent(dataOwnerAtEffect))');
+    expect(chatInputSource).toContain(
+      'if (!isDataOwnerIdCurrent(dataOwnerAtSubscription)) return;',
+    );
+    expect(chatInputSource).toContain('browserCommentsRef.current = nextBrowserComments;');
+    expect(chatInputSource).toContain('browserCommentsRef.current = restoredComments;');
+    expect(chatInputSource).not.toContain('mergeComposerDocumentsForRestore(');
+  });
+
+  it('reuses the original voice-session recovery checkpoint until the editor owner switches', () => {
+    expect(chatInputSource).toContain('useRef<RemoteOptimisticTransitionCheckpoint | null>(null)');
+    expect(chatInputSource).toContain('getOrCreateRemoteOptimisticTransitionCheckpoint(');
+    expect(chatInputSource).toContain('saveComposerTextAfterAsyncTransition(');
+    expect(chatInputSource).toContain('recoveryCheckpoint!');
+    expect(chatInputSource).toContain(
+      'if ((pendingStopAndSend || voiceInputBusyRef.current) && prevEditorKey && voiceOwnerKey)',
+    );
+    expect(chatInputSource).toContain('}, [editor, storageKey]);');
+    expect(chatInputSource).not.toContain('}, [editor, storageKey, voiceInput.isBusy]);');
+    expect(chatInputSource.match(/storageKeyTransitionRecoveryRef\.current = null;/g)).toHaveLength(
+      2,
+    );
   });
 
   it('propagates the existing-session enqueue acceptance promise back to ChatInput', () => {
@@ -129,12 +406,12 @@ describe('ChatInput session switch focus contract', () => {
     expect(pluginPageSource).toContain(
       'window.electronAPI.ghosts.onRecentUsageChanged(({ ids }) => {',
     );
-    expect(pluginPageSource).toMatch(
-      /sortGhostPluginItemsByRecentUse\(installedItems, recentGhostIds\)/,
-    );
-    expect(pluginPageSource).not.toContain(
-      'sortGhostPluginItemsByRecentUse(\n        ghosts',
-    );
+    // Ranking runs over the (searched) installed set, not the raw ghost list, and feeds
+    // recent-use + unread signals into the shared pure sorter.
+    expect(pluginPageSource).toMatch(/sortInstalledForDisplay\(searchedInstalledItems, \{/);
+    expect(pluginPageSource).toContain('recentIds: recentGhostIds');
+    expect(pluginPageSource).not.toContain('sortInstalledForDisplay(ghosts');
+    expect(pluginPageSource).not.toContain('sortInstalledForDisplay(installedItems');
   });
 });
 

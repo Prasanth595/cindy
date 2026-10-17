@@ -20,17 +20,30 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createElement } from 'react';
 
+const ghostFixtures = vi.hoisted(() => ({ ghosts: [] as unknown[] }));
+const openFileMenuAt = vi.hoisted(() => vi.fn());
+vi.mock('@/cindy-brain/useInstalledGhosts', () => ({
+  useInstalledGhosts: () => ghostFixtures.ghosts,
+}));
+
 vi.mock('react-i18next', () => ({
   // t 返回原 key(带 count 时后缀 :count),断言直接对 key 做,避免复制文案表。
   useTranslation: () => ({
     t: (key: string, options?: Record<string, unknown>) =>
-      options && typeof options.count === 'number' ? `${key}:${String(options.count)}` : key,
+      options && typeof options.count === 'number'
+        ? `${key}:${String(options.count)}`
+        : options && typeof options.size === 'string'
+          ? `${key}:${options.size}`
+          : key,
   }),
 }));
 
 // Lightbox 家族与文件 chip 菜单只在交互后出现,渲染测试不涉及 — mock 掉,
 // 避免拖进重型依赖(DiffView / 文稿浏览器)。
-vi.mock('@/components/chat/TextLightbox', () => ({ TextLightbox: () => null }));
+vi.mock('@/components/chat/TextLightbox', () => ({
+  formatBytes: (bytes: number) => `${bytes / 1024} KB`,
+  TextLightbox: () => null,
+}));
 vi.mock('@/components/chat/ImageLightbox', () => ({ ImageLightbox: () => null }));
 vi.mock('@/components/chat/ToolPayloadLightbox', () => ({
   ToolPayloadLightbox: ({ payload }: { payload: unknown }) => JSON.stringify(payload),
@@ -39,13 +52,14 @@ vi.mock('@/components/chat/useFileChipContextMenu', () => ({
   useFileChipContextMenu: () => ({
     menu: null,
     onContextMenu: () => {},
-    openAt: () => {},
+    onActivate: (_event: unknown, openDefault: () => void) => openDefault(),
+    openAt: openFileMenuAt,
   }),
 }));
 vi.mock('@/lib/filePreview', () => ({ shouldOpenTextLightbox: async () => false }));
 vi.mock('@/lib/localPathResolver', () => ({ toLocalFileUrl: (p: string) => `xdt-file://${p}` }));
 
-import { AgentActionRow } from '@/components/chat/AgentActionRow';
+import { AgentActionRow, humanizeDocumentToolResult } from '@/components/chat/AgentActionRow';
 import { AgentActionsBlock } from '@/components/chat/AgentActionsBlock';
 import { __test_internals as expandMemory } from '@/hooks/useExpandedBlockMemory';
 import type { ChatMessage } from '@/lib/makerChatStore';
@@ -53,7 +67,11 @@ import type { ChatMessage } from '@/lib/makerChatStore';
 afterEach(cleanup);
 // useExpandedBlockMemory 是 module-level 内存态,blockId(agent:<clientId>)
 // 相同会让展开状态跨用例泄漏 — 每个用例前清空。
-beforeEach(() => expandMemory.reset());
+beforeEach(() => {
+  expandMemory.reset();
+  ghostFixtures.ghosts = [];
+  openFileMenuAt.mockClear();
+});
 
 const mkTool = (id: string, toolName: string, toolInput: unknown): ChatMessage => ({
   clientId: id,
@@ -62,6 +80,117 @@ const mkTool = (id: string, toolName: string, toolInput: unknown): ChatMessage =
   toolUseId: `tu-${id}`,
   toolName,
   toolInput,
+});
+
+it.each(['ContextMenu', 'F10'])('passes the focused tool row to its file menu (%s)', (key) => {
+  render(createElement(AgentActionRow, {
+    message: mkTool('read-file', 'Read', { file_path: '/repo/example.ts' }),
+  }));
+  const row = screen.getByRole('button');
+  row.focus();
+  fireEvent.keyDown(row, { key, shiftKey: key === 'F10' });
+  expect(openFileMenuAt).toHaveBeenCalledWith(expect.any(Number), expect.any(Number), row);
+});
+
+describe('AgentActionRow — ghost_call 插件名称', () => {
+  const root = {
+    manifest: { id: 'helper', name: 'Root Helper' },
+    namespace: null,
+    instanceKey: '_root__helper',
+  };
+  const organization = {
+    manifest: { id: 'helper', name: 'Organization Helper' },
+    namespace: 'acme',
+    instanceKey: '_ns__acme__helper',
+  };
+  const renderCall = (ghostId: string, namespace?: string | null) => {
+    const toolInput = namespace === undefined
+      ? { ghost_id: ghostId, tool: 'echo' }
+      : { ghost_id: ghostId, namespace, tool: 'echo' };
+    render(createElement(AgentActionRow, {
+      message: mkTool('ghost', 'mcp__cindy__ghost_call', toolInput),
+    }));
+  };
+
+  it('新 root 实例：省略 namespace 与显式 null 都显示名称', () => {
+    ghostFixtures.ghosts = [root];
+    renderCall('helper');
+    expect(screen.getByText(/「Root Helper」· echo/)).toBeTruthy();
+    cleanup();
+    renderCall('helper', null);
+    expect(screen.getByText(/「Root Helper」· echo/)).toBeTruthy();
+  });
+
+  it('唯一企业实例：省略 namespace 与显式 slug 都显示名称', () => {
+    ghostFixtures.ghosts = [organization];
+    renderCall('helper');
+    expect(screen.getByText(/「Organization Helper」· echo/)).toBeTruthy();
+    cleanup();
+    renderCall('helper', 'acme');
+    expect(screen.getByText(/「Organization Helper」· echo/)).toBeTruthy();
+  });
+
+  it('旧 root 裸实例键仍显示名称', () => {
+    ghostFixtures.ghosts = [{ ...root, instanceKey: 'helper' }];
+    renderCall('helper');
+    expect(screen.getByText(/「Root Helper」· echo/)).toBeTruthy();
+  });
+
+  it('同 ID 多实例不让旧 root 的物理键掩盖歧义', () => {
+    ghostFixtures.ghosts = [{ ...root, instanceKey: 'helper' }, organization];
+    renderCall('helper');
+    expect(screen.getByText(/「helper」· echo/)).toBeTruthy();
+    expect(screen.queryByText(/「Root Helper」· echo/)).toBeNull();
+    cleanup();
+    renderCall('helper', null);
+    expect(screen.getByText(/「Root Helper」· echo/)).toBeTruthy();
+    cleanup();
+    renderCall('helper', 'acme');
+    expect(screen.getByText(/「Organization Helper」· echo/)).toBeTruthy();
+  });
+
+  it('真实实例键精确查找，卸载后回退为 ID', () => {
+    ghostFixtures.ghosts = [root, organization];
+    renderCall('_ns__acme__helper');
+    expect(screen.getByText(/「Organization Helper」· echo/)).toBeTruthy();
+    cleanup();
+    ghostFixtures.ghosts = [];
+    renderCall('helper');
+    expect(screen.getByText(/「helper」· echo/)).toBeTruthy();
+  });
+});
+
+describe('document tool result presentation', () => {
+  it('shows a human hint instead of the raw JSON error payload', () => {
+    expect(
+      humanizeDocumentToolResult(
+        'mcp__cindy_docs__make_docx',
+        JSON.stringify({
+          ok: false,
+          errorCode: 'FILE_EXISTS',
+          data: { hint: '目标文件已存在，请换一个文件名。' },
+        }),
+      ),
+    ).toBe('目标文件已存在，请换一个文件名。');
+  });
+
+  it('shows a human hint for read-only document tool failures too', () => {
+    const error = JSON.stringify({
+      ok: false,
+      errorCode: 'FILE_TOO_LARGE',
+      data: { hint: '文件超过检查上限，请先压缩或拆分。' },
+    });
+    expect(humanizeDocumentToolResult('mcp__cindy_docs__read_sheet', error)).toBe(
+      '文件超过检查上限，请先压缩或拆分。',
+    );
+    expect(humanizeDocumentToolResult('mcp:cindy_docs:inspect_pdf', error)).toBe(
+      '文件超过检查上限，请先压缩或拆分。',
+    );
+  });
+
+  it('does not rewrite non-document tool results', () => {
+    expect(humanizeDocumentToolResult('Bash', '{"ok":false}')).toBeNull();
+  });
 });
 
 describe('AgentActionRow — 行主文案', () => {
@@ -137,7 +266,12 @@ describe('AgentActionRow — 行主文案', () => {
         message: mkTool('t1', 'exec', {
           command: 'rg -n useMemo src/renderer | head -40',
           commandActions: [
-            { type: 'search', command: 'rg -n useMemo src/renderer', query: 'useMemo', path: 'src/renderer' },
+            {
+              type: 'search',
+              command: 'rg -n useMemo src/renderer',
+              query: 'useMemo',
+              path: 'src/renderer',
+            },
           ],
         }),
       }),
@@ -208,11 +342,13 @@ describe('AgentActionRow — 行主文案', () => {
     render(
       createElement(AgentActionRow, {
         message: mkTool('t1', 'file_change', {
-          changes: [{
-            path: '/repo/src/old.ts',
-            kind: { type: 'update', move_path: '/repo/src/new.ts' },
-            diff: '',
-          }],
+          changes: [
+            {
+              path: '/repo/src/old.ts',
+              kind: { type: 'update', move_path: '/repo/src/new.ts' },
+              diff: '',
+            },
+          ],
         }),
       }),
     );
@@ -354,6 +490,33 @@ describe('AgentActionRow — 行主文案', () => {
     expect(screen.getAllByText('查看工作区状态')).toHaveLength(1);
     expect(screen.queryByText(/^# /)).toBeNull();
   });
+
+  it('已精简的工具结果显示释放提示与原始大小', () => {
+    render(
+      createElement(AgentActionRow, {
+        message: mkTool('t1', 'Bash', { command: 'git status' }),
+        toolResult: JSON.stringify({
+          type: 'tool_result_compacted',
+          version: 1,
+          originalBytes: 128 * 1024,
+          compactedAt: 500,
+        }),
+      }),
+    );
+
+    fireEvent.click(screen.getByRole('button'));
+    expect(screen.getByText('chat.toolResultCompacted:128 KB')).toBeTruthy();
+    expect(document.body.textContent).not.toContain('tool_result_compacted');
+  });
+
+  it('exposes the tool clientId as a viewport child anchor', () => {
+    const { container } = render(
+      createElement(AgentActionRow, {
+        message: mkTool('t1', 'Bash', { command: 'ls' }),
+      }),
+    );
+    expect(container.querySelector('[data-message-client-id="t1"]')).toBeTruthy();
+  });
 });
 
 describe('AgentActionsBlock — 状态判定与块头', () => {
@@ -374,7 +537,7 @@ describe('AgentActionsBlock — 状态判定与块头', () => {
         isSessionStreaming: true,
       }),
     );
-    expect(container.querySelector('.animate-spin')).toBeTruthy();
+    expect(container.querySelector('.animate-spinner')).toBeTruthy();
     expandBlock();
     expect(screen.getAllByLabelText('chat.agentActionRow.status.done')).toHaveLength(1);
     expect(screen.getAllByLabelText('chat.agentActionRow.status.running')).toHaveLength(1);
@@ -389,7 +552,7 @@ describe('AgentActionsBlock — 状态判定与块头', () => {
         isSessionStreaming: true,
       }),
     );
-    expect(container.querySelector('.animate-spin')).toBeNull();
+    expect(container.querySelector('.animate-spinner')).toBeNull();
     expandBlock();
     expect(screen.getByLabelText('chat.agentActionRow.status.done')).toBeTruthy();
   });
@@ -401,7 +564,7 @@ describe('AgentActionsBlock — 状态判定与块头', () => {
         resultMap: new Map(),
       }),
     );
-    expect(container.querySelector('.animate-spin')).toBeNull();
+    expect(container.querySelector('.animate-spinner')).toBeNull();
     expandBlock();
     expect(screen.getByLabelText('chat.agentActionRow.status.done')).toBeTruthy();
   });

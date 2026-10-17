@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { runGhostSnapshotWorkerRequest } from '../../main/cindy-brain/ghostSnapshotWorkerProcess';
 
 const noop = () => undefined;
 const asyncNoop = async () => undefined;
@@ -74,6 +75,7 @@ export const app = createEmitter({
   getName: () => 'XDMaker Test',
   setName: noop,
   getVersion: () => '0.0.0-test',
+  configureWebAuthn: noop,
   setAppUserModelId: noop,
   requestSingleInstanceLock: () => true,
   releaseSingleInstanceLock: noop,
@@ -256,12 +258,25 @@ export class Notification extends EventEmitter {
 }
 
 export const utilityProcess = {
-  fork: () =>
-    createEmitter({
+  fork: (_entry?: string, _args?: string[], options?: { cwd?: string }) => {
+    const emitter = createEmitter({
       pid: 0,
-      postMessage: noop,
+      postMessage: (message: unknown) => {
+        const value = message as { type?: string; request?: unknown };
+        if (value.type !== 'mutate' || !value.request || !options?.cwd) return;
+        void runGhostSnapshotWorkerRequest(value.request as never, options.cwd).then(
+          () => emitter.emit('message', { ok: true }),
+          (error) => emitter.emit('message', {
+            ok: false,
+            message: error instanceof Error ? error.message : String(error),
+          }),
+        );
+      },
       kill: () => true,
-    }),
+    });
+    queueMicrotask(() => emitter.emit('message', { type: 'ready' }));
+    return emitter;
+  },
 };
 
 export const contextBridge = {
@@ -307,6 +322,7 @@ export const session = {
 
 export const webContents = {
   fromId: () => null,
+  fromFrame: () => null,
   getAllWebContents: () => [],
 };
 

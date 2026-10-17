@@ -21,7 +21,7 @@
  *
  * 存储位置与生命周期(docs/dev-rules/credentials-and-local-storage.md):
  *   ownerScopedUserDataPath('device-link-mirror-cache')/
- *     messages/<deviceHash>-<sessionHash>.json   每 (设备, 会话) 最近一页消息
+ *     messages/<deviceHash>-<sessionHash>.json   最近一页消息或结构化历史视图
  *     session-list.json                          全部被控设备的会话列表快照
  * owner 命名空间由 appSessionState 提供 —— 换账号 / 登出后天然读不到旧数据,无需手工按
  * userId 键控(手机端 mobileHomeListCache 的 v2 正是为此改成按账号键控)。clearAll 仍保留,
@@ -31,10 +31,12 @@
  */
 
 import path from 'node:path';
+import { historyCacheReceiptFollows } from '@cindy/maker-shared/message-window';
 import fsp from 'node:fs/promises';
 import { createHash, randomBytes } from 'node:crypto';
 
 import { ownerScopedUserDataPath } from '../appSessionState';
+import { decodeRemoteHistory, encodeRemoteHistory } from '../../shared/remoteHistoryCache';
 import { withCrossProcessLock } from './crossProcessLock';
 // 作废屏障(持久计数器)与 purge 队列共用一份实现 —— 队列在补删残留后要顺手把屏障修好。
 import {
@@ -91,6 +93,7 @@ interface StoredMessages {
   version: 1;
   updatedAt: number;
   messages: Record<string, unknown>[];
+  historyView?: string;
 }
 
 interface StoredSessionList {
@@ -415,20 +418,59 @@ export interface MirrorCache {
    * `readMessages` 一并返回、renderer 缓存)。空写会**先**自增该计数再删除,于是任何"内容取自
    * 作废之前"的写入(哪怕来自另一个窗口 / 另一个进程)都会在提交前被比对挡掉 —— renderer
    * 侧的令牌只在本渲染进程内可见,挡不住多窗口(review: codex P1)。
+   *
+   * 参数在类型上可选是为了兼容空写(删除)和旧桥,但**非空写入必须同时提供**匹配的
+   * 非负整数 `expectedInvalidation`、内部 `expectedOwnerRoot` 与非负整数
+   * `expectedAccountCounter`;缺失或不匹配时实现会 fail-closed 拒写。
    */
   writeMessages(
     deviceId: string,
     sessionId: string,
     messages: readonly unknown[],
     expectedInvalidation?: number,
+    expectedOwnerRoot?: string,
+    expectedAccountCounter?: number,
+    historyView?: string,
+    mergeListMessage?: boolean,
   ): Promise<{ invalidation: number }>;
-  /** 读某 (设备, 会话) 的最近一页,并带回当前作废计数(供写入侧比对)。 */
+  /**
+   * 读某 (设备, 会话) 的最近一页,并带回当前作废计数与账号代际(供写入侧比对)。
+   *
+   * `ownerRoot` 是账号身份(root 路径),`accountCounter` 是账号级作废计数(clearAll 会自增)。
+   * 两者一起才能构成完整的账号边界锚点:root 能区分**不同账号**,而 accountCounter 能区分
+   * **同一账号的登出再登录**(root 相同但 clearAll 已自增过计数)(review: codex P1)。
+   */
   readMessagesWithInvalidation(
     deviceId: string,
     sessionId: string,
-  ): Promise<{ messages: Record<string, unknown>[]; invalidation: number }>;
+  ): Promise<{
+    messages: Record<string, unknown>[];
+    historyView?: string;
+    invalidation: number;
+    ownerRoot: string;
+    accountCounter: number;
+  }>;
   readSessionList(): Promise<CachedDeviceSessions[]>;
-  writeSessionList(devices: readonly unknown[]): Promise<void>;
+  /**
+   * 读侧边栏远程会话列表快照,并带回账号身份与代际(供回写比对)。
+   *
+   * 与 readMessagesWithInvalidation 同款:owner root 区分不同账号,accountCounter 区分
+   * 同一账号的登出再登录(clearAll 自增)。渲染进程在排程去抖回写时捕获、写回时原样回传。
+   */
+  readSessionListWithInvalidation(): Promise<{
+    devices: CachedDeviceSessions[];
+    ownerRoot: string;
+    accountCounter: number;
+  }>;
+  /**
+   * 非空快照必须提供 owner root 与非负整数账号代际;可选签名仅用于空写 / 旧桥兼容。
+   * 缺失任一令牌时实现会 fail-closed 拒写。
+   */
+  writeSessionList(
+    devices: readonly unknown[],
+    expectedOwnerRoot?: string,
+    expectedAccountCounter?: number,
+  ): Promise<void>;
   /** 某设备离场(移除 / 撤销控制):清掉它的消息文件与列表快照条目。 */
   clearDevice(deviceId: string): Promise<void>;
   /** 显式登出等隐私路径:整棵缓存目录删掉。 */
@@ -669,8 +711,9 @@ export function createMirrorCache(resolveRoot: () => string): MirrorCache {
    *  - 两个进程各自清不同设备时,会各读同一份旧 session-list、各写"除我之外的全部",
    *    后写的那次把对方刚移除的设备恢复回来 —— 两边都报成功(review: codex P1)。
    *
-   * 所以落盘写入与清理统一在这把锁里做(实现见 crossProcessLock:pid + 心跳 + 存活判定,
-   * 只接管确实死掉的持有者)。拿不到锁时:
+   * 所以落盘写入与清理统一在 ordinary/advisory 档跨进程锁里做(用 PID 存活、mtime 心跳
+   * 与 acquisition nonce 保护接管/释放)。这里的 advisory 是锁证明档位，不是允许无锁写入；
+   * 缓存自己的屏障决定拿不到锁时如何安全降级:
    *  - **写入**直接跳过(缓存是纯优化,少写一次远好过在别人清理途中写回明文);
    *  - **清理**照常进行(删除是安全方向),并保留清理收尾的二次扫描兜底。
    */
@@ -927,6 +970,7 @@ export function createMirrorCache(resolveRoot: () => string): MirrorCache {
   return {
     async readMessagesWithInvalidation(deviceId, sessionId) {
       const root = resolveRoot();
+      const ownerRoot = root;
       const key = sessionClearKey(deviceId, sessionId);
       // 计数必须**夹住**文件读(前后各读一次),不能与它并行:并行时另一个窗口正在清理这条会话,
       // 文件读可能返回清理**之前**的行、计数读却已经是新值(或反之),这一对被原样返回后,发起
@@ -941,16 +985,33 @@ export function createMirrorCache(resolveRoot: () => string): MirrorCache {
       // 墓碑要**夹住**这次读(前后各查一次):共享同一个 userData 的另一个实例可能在我们查过
       // 之后才落墓碑,然后在自增之前退出 —— 那时计数前后一致,只查一次就会把清理失败后的
       // 残留返回出去(review: codex P1)。
-      if (await hasPendingClears(root)) return { messages: [], invalidation: -1 };
+      if (await hasPendingClears(root)) {
+        return { messages: [], invalidation: -1, ownerRoot, accountCounter: -1 };
+      }
       const keys = [key, deviceClearKey(deviceId), CLEARED_ACCOUNT];
       const before = await readCounters(root, keys);
       const messages = await this.readMessages(deviceId, sessionId);
+      const parsed = await readJson(path.join(root, MESSAGES_DIR, messageFileName(deviceId, sessionId)));
+      const historyView = isRecord(parsed) && decodeRemoteHistory(parsed.historyView) ? parsed.historyView as string : undefined;
       const after = await readCounters(root, keys);
-      if (await hasPendingClears(root)) return { messages: [], invalidation: -1 };
-      if (!countersHeld(before, after)) {
-        return { messages: [], invalidation: numericCounter(after[0]) };
+      if (await hasPendingClears(root)) {
+        return { messages: [], invalidation: -1, ownerRoot, accountCounter: -1 };
       }
-      return { messages, invalidation: numericCounter(after[0]) };
+      if (!countersHeld(before, after)) {
+        return {
+          messages: [],
+          invalidation: numericCounter(after[0]),
+          ownerRoot,
+          accountCounter: numericCounter(after[2]),
+        };
+      }
+      return {
+        messages,
+        ...(historyView !== undefined ? { historyView } : {}),
+        invalidation: numericCounter(after[0]),
+        ownerRoot,
+        accountCounter: numericCounter(after[2]),
+      };
     },
 
     async readMessages(deviceId, sessionId) {
@@ -960,7 +1021,16 @@ export function createMirrorCache(resolveRoot: () => string): MirrorCache {
       return normalizeMessages(messages);
     },
 
-    async writeMessages(deviceId, sessionId, messages, expectedInvalidation) {
+    async writeMessages(
+      deviceId,
+      sessionId,
+      messages,
+      expectedInvalidation,
+      expectedOwnerRoot,
+      expectedAccountCounter,
+      historyView,
+      mergeListMessage,
+    ) {
       if (!deviceId.trim() || !sessionId.trim()) return { invalidation: -1 };
       // root 在**发起时**快照,不能在出错时再 resolve:owner 会在进程生命周期内变(登出 /
       // 切账号),那时 resolveRoot() 指向新账号,而 `file` 还在旧账号目录里 —— 用新 root 去
@@ -984,10 +1054,21 @@ export function createMirrorCache(resolveRoot: () => string): MirrorCache {
         return withCacheFileLock(rootAtStart, async (held) => {
           const dir = path.join(rootAtStart, MESSAGES_DIR);
           const file = path.join(dir, messageFileName(deviceId, sessionId));
-          const normalized = normalizeMessages(messages);
+          let normalized = normalizeMessages(messages);
+          let retainedListReceipts = false;
+          const history = decodeRemoteHistory(historyView);
+          // Sanitize the whole projection, including images outside message.content.
+          let sanitizedHistory = history ? JSON.stringify(stripInlineMedia(JSON.parse(encodeRemoteHistory(history)), 0)) : undefined;
+          if (historyView !== undefined && (!sanitizedHistory || !decodeRemoteHistory(sanitizedHistory))) {
+            return { invalidation: numericCounter(await readClearCounter(rootAtStart, sessionKey)) };
+          }
+          // An invalid list update is never an authoritative empty-page clear.
+          if (mergeListMessage && (normalized.length !== 1 || historyView !== undefined)) {
+            return { invalidation: numericCounter(await readClearCounter(rootAtStart, sessionKey)) };
+          }
           // 空列表 = 清掉这条缓存(被控端 /clear、rewind 或删完最后一条时,残留会在
           // 下次冷开 hydrate 出已经不存在的正文)。
-          if (normalized.length === 0) {
+          if (normalized.length === 0 && sanitizedHistory === undefined) {
             // 先落"作废意图"再删数据:计数自增在删除**之前**,于是即使本进程在删除中途崩掉,
             // 屏障也已经在盘上 —— 另一个实例(哪怕它的页取自作废之前)提交时会被挡掉
             // (review: codex P1)。自增失败就不删:宁可缓存暂留,也不要"删了却没有屏障" ——
@@ -1048,18 +1129,67 @@ export function createMirrorCache(resolveRoot: () => string): MirrorCache {
             });
             return { invalidation };
           }
-          const body = JSON.stringify(normalized);
+          const writeGuard: WriteGuard = { kind: 'write', epoch, deviceId };
+          /**
+           * 所有非空写的提交闸。必须在**任何副作用**之前、且在同一文件串行链内执行:
+           * 超限页虽然不落新内容,但会删除旧文件,同样不能让跨账号 / 已作废的迟到响应动缓存。
+           */
+          const canCommitNonEmpty = async (): Promise<boolean> => {
+            if (!held || isStale(writeGuard)) return false;
+            const now = await readClearCounter(rootAtStart, sessionKey);
+            if (typeof now !== 'number' || now !== expectedInvalidation) return false;
+            if (await clearedSince(rootAtStart, deviceClearKey(deviceId), clearCounterAtStart)) {
+              return false;
+            }
+            if (await clearedSince(rootAtStart, CLEARED_ACCOUNT, accountCounterAtStart)) return false;
+            if (typeof expectedOwnerRoot !== 'string' || expectedOwnerRoot !== rootAtStart) {
+              return false;
+            }
+            if (
+              typeof expectedAccountCounter !== 'number'
+              || await clearedSince(rootAtStart, CLEARED_ACCOUNT, expectedAccountCounter)
+            ) {
+              return false;
+            }
+            return true;
+          };
+          if (mergeListMessage) {
+            if (!(await canCommitNonEmpty())) return { invalidation: -1 };
+            const previous = await readJson(file);
+            const message = normalized[0];
+            const rows = isRecord(previous) && Array.isArray(previous.messages) ? normalizeMessages(previous.messages) : [];
+            normalized = normalizeMessages([...rows.filter(row => row.id !== message.id
+              && (!message.clientId || row.clientId !== message.clientId)), message]);
+            if (isRecord(previous) && decodeRemoteHistory(previous.historyView)) sanitizedHistory = previous.historyView as string;
+          } else if (history) {
+            // A delayed page write must not erase list bodies received after
+            // that page started reading. Older receipts are covered by the page.
+            if (!(await canCommitNonEmpty())) return { invalidation: -1 };
+            const previous = await readJson(file);
+            const rows = isRecord(previous) && Array.isArray(previous.messages) ? normalizeMessages(previous.messages) : [];
+            const arrivals = rows.filter(row => historyCacheReceiptFollows(row.cacheReceipt, history.readReceipt));
+            retainedListReceipts = arrivals.length > 0;
+            normalized = normalizeMessages([...normalized, ...arrivals]);
+          }
+          const body = sanitizedHistory === undefined ? JSON.stringify(normalized) : JSON.stringify([normalized, sanitizedHistory]);
           const payload: StoredMessages = {
             version: 1,
             updatedAt: Date.now(),
             messages: normalized,
+            ...(sanitizedHistory !== undefined ? { historyView: sanitizedHistory } : {}),
           };
           const serialized = JSON.stringify(payload);
           if (Buffer.byteLength(serialized, 'utf8') > MAX_MESSAGE_FILE_BYTES) {
+            // Prefetch is additive: if it cannot fit, retain the usable history.
+            if (mergeListMessage || retainedListReceipts) return { invalidation: numericCounter(await readClearCounter(rootAtStart, sessionKey)) };
             // 单会话超限:新页写不下 —— 但旧正本此刻可能是 rewind / 删消息**之前**的窗口,
             // 而同一个超限页每次对账都会走到这里,永远不会有第二次机会更新它。所以**作废**
             // 旧缓存,而不是留一份会骗人的旧页(review: codex P1)。
             await serializeWrite(file, async () => {
+              if (!(await canCommitNonEmpty())) return;
+              // canCommitNonEmpty 内部有多次 await;期间 clearDevice / clearAll 可同步 bump generation
+              // 后排在 root mutex 上。删除旧文件前必须再复核一次(review: independent P2)。
+              if (isStale(writeGuard)) return;
               if (unchanged(file, body)) return; // 内容没变(旧页就是它)→ 无需作废
               lastWritten.delete(file);
               try {
@@ -1075,28 +1205,8 @@ export function createMirrorCache(resolveRoot: () => string): MirrorCache {
             };
           }
           // 落盘与指纹登记必须成对且有序 → 同一文件的写入串成链(见 serializeWrite)。
-          const writeGuard: WriteGuard = { kind: 'write', epoch, deviceId };
           await serializeWrite(file, async () => {
-            // 拿不到跨进程锁(别的**进程**正在临界区)→ 跳过这次写。
-            if (!held) return;
-            if (isStale(writeGuard)) return;
-            // 调用方取到这批内容时看到的会话级计数与此刻不一致 → 期间权威侧作废过(可能是
-            // **另一个窗口 / 另一个进程**干的),手里这批属于作废之前,丢弃(review: codex P1)。
-            //
-            // **没带令牌的非空写入一律拒掉**:缓存读与远端请求是刻意并行的,于是远端页可能在
-            // 缓存读回来之前就到达,此时 renderer 拿不到令牌(undefined)。放行的话,期间另一个
-            // 窗口 rewind / 清会话,这笔取自清理之前的页就在没有任何会话级比对的情况下写回去了
-            // (设备 / 账号基线是这笔写入**开始时**才采样的,已经在清理之后)(review: codex P1)。
-            // 拒掉不会永久关掉这条缓存:下面照样把当前计数返回给调用方,它下一次对账就带上令牌。
-            // 空写(= 清掉这条缓存)不受此限 —— 它本身是安全方向,且由上面的分支处理。
-            const now = await readClearCounter(rootAtStart, sessionKey);
-            // 读不出来 / 对不上都拒写(不可比对即 fail-closed,见 clearedSince)。
-            if (typeof now !== 'number' || now !== expectedInvalidation) return;
-            // 清理在我取到内容之后完成过 → 我手里的是被清掉的旧正文,丢弃。
-            if (await clearedSince(rootAtStart, deviceClearKey(deviceId), clearCounterAtStart))
-              return;
-            // 账号级清理(登出 / 切账号)同理:它删的是整棵缓存根,而计数器在根之外。
-            if (await clearedSince(rootAtStart, CLEARED_ACCOUNT, accountCounterAtStart)) return;
+            if (!(await canCommitNonEmpty())) return;
             // 指纹只算消息体,不含 payload 的 updatedAt —— 否则每次都"变了",去重永不命中。
             // 在链内判等:排队期间前一笔可能刚写下同样内容。
             if (unchanged(file, body)) return;
@@ -1147,38 +1257,72 @@ export function createMirrorCache(resolveRoot: () => string): MirrorCache {
     },
 
     async readSessionList() {
+      const { devices } = await this.readSessionListWithInvalidation();
+      return devices;
+    },
+
+    async readSessionListWithInvalidation() {
       // 同 readMessagesWithInvalidation:用 `_any`(任一设备被清)与 `_account`(登出 / 切账号)
       // 夹住这次读 —— 否则"读到旧快照字节 → 期间设备被撤销 / 账号被清 → 照样返回"会把已经离场的
       // 设备连同会话标题画回侧边栏(review: codex P1)。
       const root = resolveRoot();
+      const ownerRoot = root;
       // 同 readMessagesWithInvalidation:有"没确认清完"的墓碑就不命中。
-      if (await hasPendingClears(root)) return [];
+      if (await hasPendingClears(root)) {
+        return { devices: [], ownerRoot, accountCounter: -1 };
+      }
       const keys = [CLEARED_ANY, CLEARED_ACCOUNT];
       const before = await readCounters(root, keys);
       const parsed = await readJson(sessionListPath());
       const after = await readCounters(root, keys);
       // 同 readMessagesWithInvalidation:墓碑夹住这次读(只查前面挡不住"读到一半才落墓碑")。
-      if (await hasPendingClears(root)) return [];
-      if (!countersHeld(before, after)) return [];
+      if (await hasPendingClears(root)) {
+        return { devices: [], ownerRoot, accountCounter: numericCounter(after[1]) };
+      }
+      if (!countersHeld(before, after)) {
+        return { devices: [], ownerRoot, accountCounter: numericCounter(after[1]) };
+      }
       const devices = isRecord(parsed) && Array.isArray(parsed.devices) ? parsed.devices : [];
-      return normalizeDeviceSessions(devices);
+      return {
+        devices: normalizeDeviceSessions(devices),
+        ownerRoot,
+        accountCounter: numericCounter(after[1]),
+      };
     },
 
-    async writeSessionList(devices) {
+    async writeSessionList(devices, expectedOwnerRoot, expectedAccountCounter) {
       // 代际在请求发起时(进互斥之前)同步捕获 —— 同 writeMessages。
       const epoch = generation;
       const rootAtStart = resolveRoot();
+      const hasContent = normalizeDeviceSessions(devices).length > 0;
       // 同 writeMessages 的三段式:互斥准入 → 等跨进程锁之前读基线 → 拿到锁才提交。
       return withRootMutex(rootAtStart, async () => {
         const clearCounterAtStart = await readClearCounter(rootAtStart, CLEARED_ANY);
         const accountCounterAtStart = await readClearCounter(rootAtStart, CLEARED_ACCOUNT);
+        // **没带 owner root 的非空快照一律拒掉**(同 writeMessages 的 fail-closed):renderer
+        // 可能因补读失败 / owner 边界推进 / IPC 波动拿不到 owner root(undefined),放行的话
+        // 会把上一个账号的快照按**写入时**的新账号 root 落盘 —— 与 #1783 同型的跨账号泄漏。
+        // 空快照(删除)是安全方向照做。
+        if (hasContent && (typeof expectedOwnerRoot !== 'string' || expectedOwnerRoot !== rootAtStart)) {
+          return;
+        }
+        // 账号代际校验(同 writeMessages):同一账号登出再登录时 root 不变,owner root 拦不住;
+        // clearAll 会自增 `_account` 计数,携带「取到内容时的计数」能看出期间发生过登出清理。
+        // 空快照(删除)是安全方向照做。
+        if (
+          hasContent
+          && (typeof expectedAccountCounter !== 'number'
+            || await clearedSince(rootAtStart, CLEARED_ACCOUNT, expectedAccountCounter))
+        ) {
+          return;
+        }
         return withCacheFileLock(rootAtStart, async (held) => {
           // 与 writeMessages 同款:同一文件的写入串成链,保证「落盘 → 登记指纹」成对有序。
           const listFile = path.join(rootAtStart, SESSION_LIST_FILE);
           const outcome = await serializeWrite(listFile, async () =>
             // 拿不到跨进程锁 → 跳过(整份快照写在别人清理途中落地会把被清设备写回来)。
             // 空快照 = **删除**,删除是安全方向:即使拿不到锁 / 期间发生过清理也照做。
-            normalizeDeviceSessions(devices).length === 0 ||
+            !hasContent ||
             (held &&
               !(await clearedSince(rootAtStart, CLEARED_ANY, clearCounterAtStart)) &&
               !(await clearedSince(rootAtStart, CLEARED_ACCOUNT, accountCounterAtStart)))

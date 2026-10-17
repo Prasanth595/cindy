@@ -1,3 +1,5 @@
+import { isOpenAiSubscriptionProvider } from '@cindy/model-providers';
+import { isClaudeSubscriptionProviderId } from './subscription-account-auth.js';
 /**
  * title-one-shot —— 会话标题的「单次 HTTP」生成器。
  *
@@ -9,8 +11,11 @@
  *   - xd 网关        → litellm chat-completions(`/v1/chat/completions`,Bearer 网关 key)
  *
  * 约束(用户敲定):
- *   - **只试本会话的单一 provider,不做跨 provider 兜底**。凭证缺失 / HTTP 失败 / 空响应 → 返回
- *     null,调用方(renderer scheduleAutoName)回落到「消息前 N 字」启发式。
+ *   - **本会话供应商有标题 wire 时,只试这一家,不做跨 provider 兜底**。凭证缺失 /
+ *     HTTP 失败 / 空响应 → 返回 null,调用方(renderer scheduleAutoName)回落「消息前 N 字」启发式。
+ *   - **本会话供应商没有标题 wire 时,回落到官方 `xd`(个人账号 Cindy AI /企业登录 XD,同一
+ *     provider)**。官方未连接或组不出标题目标 → 手动重命名报 TITLE_PROVIDER_UNSUPPORTED,自动起名仍
+ *     折叠为启发式。官方通道自己的凭证 / HTTP 失败同样不再 hop。
  *   - **不实现 token 自动 refresh** —— OAuth/订阅 token 的刷新由 cc 子进程 / codex app-server 负责
  *     (它们读写同一处凭证),本模块每次实时读当下值;过期就当次失败、优雅降级。
  *   - 三条标题调用都**不注入任何 system / 身份提示词**(实测 anthropic 裸调即 200),不触及系统提示词。
@@ -38,8 +43,10 @@ import {
   findModelRegistryRoute,
   isModelSelectableForNewRoute,
   nativeDefaultSourceId,
+  providerCatalogId,
 } from '@cindy/model-providers';
 import { toSdkModelString } from '@cindy/maker-core';
+import { AUTO_TITLE_MAX_CHARS } from '@cindy/maker-shared/session-title';
 
 import { createLogger } from '../logger.js';
 import { getAppCapabilities } from '../appCapabilities.js';
@@ -48,7 +55,6 @@ import { getActiveCatalog } from './active-catalog.js';
 import { isModelDisabled, isProviderDisabled } from '@cindy/model-providers';
 import { readModelDisableOverrides } from './model-disable-store.js';
 import { readClaudeApiKey, readCodexOneShotCreds } from './auth-adapters.js';
-import { getValidClaudeAiOAuth } from './claude-oauth-refresh.js';
 import { outboundUndiciFetch } from './outbound-fetch.js';
 import { effectiveXdGatewayBaseUrl } from '../model-access/effectiveEndpoint.js';
 import { validateTitleOutput } from './title-output-validation.js';
@@ -57,8 +63,14 @@ const log = createLogger('maker-host:title-one-shot');
 
 /** 标题 oneShot 单次请求超时(对齐 renderer scheduleAutoName 的等待窗口语义,留余量)。 */
 const TITLE_TIMEOUT_MS = 12_000;
-/** 标题 ≤ 20 字,32 token 足够;codex Responses 协议层不暴露 max_tokens,仅对 messages/chat 生效。 */
-const TITLE_MAX_TOKENS = 32;
+/** 为多字节中文 / emoji 留出每字符 4 token；字符上限仍单独校验。 */
+const TITLE_MAX_TOKENS = AUTO_TITLE_MAX_CHARS * 4;
+/**
+ * XD 网关思考模型(Hy3 / DeepSeek 等)默认会先写 reasoning_content。
+ * 标题只要短正文;不关思考时短标题的 token 预算会全部烧掉,content 仍是空串。
+ * 网关认 OpenAI 兼容的 thinking.type=disabled;官方 no_think / enable_thinking=false 无效。
+ */
+const TITLE_GATEWAY_THINKING = { type: 'disabled' } as const;
 /** 异常响应保护:完整模型输出超过此 Unicode 长度就拒绝,再按历史契约截到 40 字。 */
 const TITLE_OUTPUT_MAX_CHARS = 256;
 /**
@@ -85,6 +97,21 @@ export interface TitleTarget {
   upstream: string;
 }
 
+/**
+ * 标题 oneShot 的内部诊断结果。自动起名仍通过 `generateTitleViaProvider()` 消费
+ * string / null 兼容口径；手动 AI 重命名使用本结果区分可操作的失败原因。
+ */
+export type TitleOneShotResult =
+  | { status: 'ok'; title: string }
+  | { status: 'unsupported-provider' }
+  | { status: 'failed' };
+
+/** 当前实现具备完整凭证与 wire 契约的供应商；目标暂不可用不等于供应商不受支持。 */
+const TITLE_ONE_SHOT_PROVIDER_IDS = new Set(['anthropic', 'openai', 'xd']);
+
+/** 无标题 wire 的会话供应商回落到官方 Cindy AI / XD 网关(同一 provider id)。 */
+const OFFICIAL_TITLE_FALLBACK_ID = 'xd';
+
 /** 注入点 —— 便于单测(mock fetch / 伪造凭证 / 伪造 provider)。缺省均返回 null(回落启发式)。 */
 export interface TitleOneShotDeps {
   fetchImpl?: FetchImpl;
@@ -92,10 +119,17 @@ export interface TitleOneShotDeps {
   readSessionProviderId?: (sessionId: string) => Promise<string | null>;
   /** 某 agent 下已连接的供应商视图列表(实时连接态)。用于无显式选择时取 WYSIWYG 默认。 */
   listConnectedProviders?: (agentKind: AgentKind) => Promise<ProviderView[]>;
-  readAnthropicOAuth?: () =>
+  readAnthropicOAuth?: (providerId?: string) =>
     Promise<{ accessToken: string } | null> | { accessToken: string } | null;
-  readCodexCreds?: () => { accessToken: string; accountId: string } | null;
+  readCodexCreds?: (providerId?: string) => { accessToken: string; accountId: string } | null;
   readGatewayKey?: () => string | null;
+  /**
+   * 派发紧前复查(异步):凭证到手、请求发出的紧前,回读会话归属 / agent 是否仍与本次
+   * one-shot 的解析口径一致。返回 false 则中止本次 one-shot(回落失败,不发出付费请求)。
+   * prompt prediction 用它防「等待期间会话被切换 agent,仍把转写路由到切换前的 provider /
+   * 账号」的 TOCTOU 竞态;标题场景无此竞态,缺省不复查。
+   */
+  beforeDispatch?: (args: { sessionId: string; agentKind: AgentKind; providerId: string }) => Promise<boolean>;
 }
 
 const EFFORT_RANK: Record<Effort, number> = {
@@ -118,8 +152,17 @@ function trimTrailingSlash(s: string): string {
   return s.replace(/\/+$/, '');
 }
 
-/** 在 provider 的所有 agent 模型清单里查某 model id 的目录条目(用于取 efforts)。 */
-function findCatalogModel(provider: Provider, modelId: string) {
+/** 标题请求固定走供应商自己的原生通道，不能被其它 harness 的同名模型遮住状态。 */
+function titleCatalogAgent(providerId: string): 'claude-code' | 'codex' | null {
+  if (isClaudeSubscriptionProviderId(providerId)) return 'claude-code';
+  if (providerId === 'openai' || isOpenAiSubscriptionProvider(getActiveCatalog().providers.find((p) => p.id === providerId))) return 'codex';
+  return null;
+}
+
+/** 在标题请求实际使用的 agent 清单里查模型；XD 动态模型仍跨清单查找。 */
+function findTitleCatalogModel(provider: Provider, modelId: string) {
+  const titleAgent = titleCatalogAgent(provider.id);
+  if (titleAgent) return (provider.models[titleAgent] ?? []).find((model) => model.id === modelId);
   for (const agent of provider.agents) {
     const hit = (provider.models[agent] ?? []).find((m) => m.id === modelId);
     if (hit) return hit;
@@ -127,7 +170,7 @@ function findCatalogModel(provider: Provider, modelId: string) {
   return undefined;
 }
 
-type TitleRouteUnavailableReason = 'disabled' | 'retired' | 'capability-model';
+type TitleRouteUnavailableReason = 'disabled' | 'retired' | 'capability-model' | 'provider-unavailable';
 
 function titleRouteUnavailableReason(
   model: CatalogModel,
@@ -139,26 +182,75 @@ function titleRouteUnavailableReason(
 }
 
 /**
+ * XD 网关实时清单中选标题模型:存在 + 具备聊天能力 + 未停用/未退休,取单价最低者
+ * (标题 oneShot 语义 = 最经济模型)。清单为空或无可用聊天模型 → null(回落启发式,
+ * 不向网关发送必然 400 的无效请求)。
+ *
+ * 2026-08-06 修复(#1891):此前 xd 分支直发静态 titleModel `gpt-5.4-mini`,而网关
+ * 清单已不含该模型(网关 /v1/models 是权威,模型 id 均带供应商前缀)——修复后改为
+ * 从 active catalog 中 xd provider 的 models(由 setXdGatewayModels 整体重建)选择,
+ * 网关清单变化不再导致标题通道硬失败。
+ */
+function pickXdTitleModel(provider: Provider): CatalogModel | null {
+  // 用户显式停用(disable override store)优先于清单排序:active catalog 的 xd
+  // 模型不带 buildRegistry 烘焙的 disabled 字段(那在 rail 的 ProviderView 上),
+  // 只查目录会选中已停用模型,派发前 routeUnavailableNow 再中止整个 one-shot,
+  // 标题退回落启发式而非次便宜可用模型(Codex review round 2)。
+  const disableOverrides = readModelDisableOverrides();
+  const candidates: CatalogModel[] = [];
+  for (const agent of provider.agents) {
+    for (const model of provider.models[agent] ?? []) {
+      if (!isModelSelectableForNewRoute(model, { userProvider: provider.source === 'user' })) {
+        continue;
+      }
+      // 只选原生 chat 模型:mode 明确为 'responses' 的模型需要走 Codex Responses
+      // wire,而标题通道固定走 gateway-chat(/v1/chat/completions)——选中的话仍会
+      // 被网关拒收(Greptile review P2,2026-08-06)。mode 缺省(网关旧条目)按 chat
+      // 处理,由 isModelSelectableForNewRoute 的 id 分类兜底。
+      if (model.mode === 'responses') continue;
+      if (isModelDisabled(disableOverrides, provider.id, model.id)) continue;
+      candidates.push(model);
+    }
+  }
+  if (candidates.length === 0) return null;
+  // 按 per-1M token 总价升序选最经济;无价条目排后(仍可被选中,兜底保证可用性)。
+  const costRank = (m: CatalogModel): number => {
+    const c = m.cost;
+    if (!c) return Number.POSITIVE_INFINITY;
+    return (typeof c.input === 'number' ? c.input : 0) + (typeof c.output === 'number' ? c.output : 0);
+  };
+  return [...candidates].sort((a, b) => costRank(a) - costRank(b))[0];
+}
+
+/**
  * 据 providerId 组装标题目标(模型 + 最低 effort + wire + upstream)。
  * provider 无 titleModel / 无对应路由 / 未知 provider → null(不参与智能起名)。
  *
  * wire 按 provider 分派:内置三家协议各异且无法纯靠 authStrategy 区分(anthropic 与 openai
  * 同为 oauth-passthrough 但 wire 不同),故按 id 显式分派。**新增供应商的标题支持 = 加一个 case。**
+ *
+ * 注意:anthropic / openai 的 titleModel 是各自订阅通道内有效的静态值(haiku /
+ * gpt-5.4-mini 在 ChatGPT 后端有效);xd 是动态清单供应商,**标题模型从网关实时
+ * 清单选择**(pickXdTitleModel),不读静态 titleModel(网关清单即权威)。
  */
 export function buildTitleTarget(providerId: string): TitleTarget | null {
   const provider = getActiveCatalog().providers.find((p) => p.id === providerId);
-  if (!provider?.titleModel) return null;
-  const model = provider.titleModel;
-  const effort = lowestEffort(findCatalogModel(provider, model)?.efforts ?? []);
+  if (!provider) return null;
 
-  switch (provider.id) {
+  switch (isOpenAiSubscriptionProvider(provider) ? 'openai' : provider.auth.native === 'claude' ? 'anthropic' : provider.id) {
     case 'anthropic': {
+      if (!provider.titleModel) return null;
+      const model = provider.titleModel;
+      const effort = lowestEffort(findTitleCatalogModel(provider, model)?.efforts ?? []);
       const routing = provider.routing['claude-code'];
       return routing
         ? { providerId, model, effort, wire: 'anthropic-messages', upstream: routing.upstream }
         : null;
     }
     case 'openai': {
+      if (!provider.titleModel) return null;
+      const model = provider.titleModel;
+      const effort = lowestEffort(findTitleCatalogModel(provider, model)?.efforts ?? []);
       const routing = provider.routing['codex'];
       return routing
         ? { providerId, model, effort, wire: 'codex-responses', upstream: routing.upstream }
@@ -166,20 +258,25 @@ export function buildTitleTarget(providerId: string): TitleTarget | null {
     }
     case 'xd': {
       if (!getAppCapabilities().canUseCindyGateway) return null;
-      // titleModel 为 gpt-5.4-mini(OpenAI 系)→ 走网关 litellm 的 chat-completions。
       // 上游不取 catalog routing.upstream:XD 网关入口一律用 model-access server
       // 随凭据下发的 endpoint(与 key 同租户,见 effectiveEndpoint.ts);凭据未
       // 就绪(空串)时返回 null,回落启发式起名。
       const base = effectiveXdGatewayBaseUrl().trim();
-      return base
-        ? {
-            providerId,
-            model,
-            effort,
-            wire: 'gateway-chat',
-            upstream: `${trimTrailingSlash(base)}/v1`,
-          }
-        : null;
+      if (!base) return null;
+      const model = pickXdTitleModel(provider);
+      if (!model) {
+        log.debug('oneShot skipped: no usable chat model in xd gateway catalog', {
+          providerId,
+        });
+        return null;
+      }
+      return {
+        providerId,
+        model: model.id,
+        effort: lowestEffort(model.efforts ?? []),
+        wire: 'gateway-chat',
+        upstream: `${trimTrailingSlash(base)}/v1`,
+      };
     }
     default:
       return null;
@@ -188,7 +285,9 @@ export function buildTitleTarget(providerId: string): TitleTarget | null {
 
 // ── wire fetchers(各自一次 fetch;失败 / 空 → 抛错,由编排层吞成 null)─────────────
 
-/** Anthropic Messages:Bearer 订阅 OAuth + anthropic-beta;model 经 toSdkModelString 还原 wire 串。 */
+/** Anthropic Messages:Bearer 订阅 OAuth + anthropic-beta;model 经 toSdkModelString 还原 wire 串。
+ *  systemPrompt(可选)写入 Messages API 顶层 `system` 字段，而非作为消息角色。
+ *  prompt prediction 依赖此字段将系统指令与对话上下文正确分离。 */
 async function fetchAnthropicTitle(
   upstream: string,
   modelId: string,
@@ -196,7 +295,24 @@ async function fetchAnthropicTitle(
   oauthToken: string,
   fetchImpl: FetchImpl,
   signal: AbortSignal,
+  maxTokens: number = TITLE_MAX_TOKENS,
+  systemPrompt?: string,
+  thinking?: typeof TITLE_GATEWAY_THINKING | null,
 ): Promise<string> {
+  // Anthropic Messages API 不支持 role: 'system' 消息 —— 系统指令必须写入
+  // 顶层 `system` 字段，否则请求会被 API 拒绝。
+  const body: Record<string, unknown> = {
+    model: toSdkModelString(modelId),
+    max_tokens: maxTokens,
+    messages: [{ role: 'user', content: prompt }],
+  };
+  if (systemPrompt) {
+    body.system = systemPrompt;
+  }
+  // 标题 / 预测只要短正文；有 thinking 的 Claude 档不关会先烧 token。
+  if (thinking) {
+    body.thinking = thinking;
+  }
   const res = await fetchImpl(`${trimTrailingSlash(upstream)}/v1/messages`, {
     method: 'POST',
     signal,
@@ -206,11 +322,7 @@ async function fetchAnthropicTitle(
       'anthropic-beta': 'oauth-2025-04-20',
       'content-type': 'application/json',
     },
-    body: JSON.stringify({
-      model: toSdkModelString(modelId),
-      max_tokens: TITLE_MAX_TOKENS,
-      messages: [{ role: 'user', content: prompt }],
-    }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`anthropic messages HTTP ${res.status}`);
   const json = (await res.json()) as { content?: Array<{ type?: string; text?: string }> };
@@ -230,10 +342,15 @@ async function fetchCodexTitle(
   creds: { accessToken: string; accountId: string },
   fetchImpl: FetchImpl,
   signal: AbortSignal,
+  instructions: string = CODEX_TITLE_INSTRUCTIONS,
+  systemPrompt?: string,
 ): Promise<string> {
+  const effectiveInstructions = systemPrompt
+    ? `${systemPrompt}\n\n${instructions}`
+    : instructions;
   const body: Record<string, unknown> = {
     model: modelId,
-    instructions: CODEX_TITLE_INSTRUCTIONS,
+    instructions: effectiveInstructions,
     input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: prompt }] }],
     tools: [],
     tool_choice: 'auto',
@@ -242,6 +359,9 @@ async function fetchCodexTitle(
     stream: true,
   };
   if (effort) body.reasoning = { effort };
+  // ChatGPT Codex 订阅的 chatgpt.com/backend-api/codex 端点不支持 max_output_tokens，
+  // 会对该参数返回 400（见 anthropic-responses-bridge/src/translate-request.ts:290）。
+  // 长度限制由调用方在响应后通过 maxVisualChars 截断实现，不在此处注入。
 
   const res = await fetchImpl(`${trimTrailingSlash(upstream)}/responses`, {
     method: 'POST',
@@ -269,7 +389,16 @@ async function fetchGatewayTitle(
   gatewayKey: string,
   fetchImpl: FetchImpl,
   signal: AbortSignal,
+  maxTokens: number = TITLE_MAX_TOKENS,
+  systemPrompt?: string,
+  thinking?: typeof TITLE_GATEWAY_THINKING | null,
+  effort?: Effort | null,
 ): Promise<string> {
+  const messages: Array<{ role: string; content: string }> = [];
+  if (systemPrompt) messages.push({ role: 'system', content: systemPrompt });
+  messages.push({ role: 'user', content: prompt });
+
+  // thinking / reasoning_effort 都由调用方按 TitleTarget 传入，函数内不写死。
   const res = await fetchImpl(`${trimTrailingSlash(upstream)}/chat/completions`, {
     method: 'POST',
     signal,
@@ -279,8 +408,10 @@ async function fetchGatewayTitle(
     },
     body: JSON.stringify({
       model: modelId,
-      max_tokens: TITLE_MAX_TOKENS,
-      messages: [{ role: 'user', content: prompt }],
+      max_tokens: maxTokens,
+      ...(thinking ? { thinking } : {}),
+      ...(effort ? { reasoning_effort: effort } : {}),
+      messages,
     }),
   });
   if (!res.ok) throw new Error(`gateway chat HTTP ${res.status}`);
@@ -322,23 +453,49 @@ export function parseResponsesSse(raw: string): string {
 }
 
 /**
- * 标题 oneShot 主入口:解析本会话 provider → titleModel → 单次 HTTP 起标题。
- * 任何环节失败(无 titleModel / 凭证缺失 / HTTP 错 / 空响应 / 超时)→ 返回 null,调用方回落启发式。
- * 全程不打印 token(只记 providerId / model / wire / 耗时)。
+ * 非标题 one-shot 调用的可选参数覆盖。标题调用不传(走默认值)。
+ * 用于 prompt prediction 等复用同一条 provider 通路但需要不同 token/校验的场景。
  */
-export async function generateTitleViaProvider(
+export interface OneShotOpts {
+  /** 覆盖 max_tokens(标题默认 160)。 */
+  maxTokens?: number;
+  /** 覆盖 Codex instructions(标题默认 CODEX_TITLE_INSTRUCTIONS)。 */
+  codexInstructions?: string;
+  /** 覆盖输出校验时的最大 Unicode 长度(标题默认 256)。0 跳过 validateTitleOutput。 */
+  maxOutputChars?: number;
+  /** 校验通过后的 Unicode 截断长度(标题默认 40)。0 跳过截断。 */
+  maxVisualChars?: number;
+  /**
+   * 可选的 system 指令。
+   * - Anthropic Messages wire: 写入顶层 `system` 字段（该 API 不接受 role: 'system' 消息）。
+   * - Codex Responses wire: 拼接到 instructions 前。
+   * - Gateway chat wire: 作为 role: 'system' 消息插入 messages 数组。
+   * prompt prediction 用此字段将系统指令与对话上下文正确分离。
+   */
+  systemPrompt?: string;
+}
+
+/**
+ * 标题 oneShot 诊断入口:解析本会话 provider → titleModel → 单次 HTTP 起标题。
+* 无标题 wire 的会话供应商先回落官方 `xd`;仍组不出目标时才区分”当前供应商不支持”与通用失败,
+ * 供手动 AI 重命名给出可操作提示。全程不打印 token(只记 providerId / model / wire / 耗时)。
+ *
+ * `opts` 仅用于非标题场景(如 prompt prediction)覆盖默认 token 数/校验规则;
+ * 标题场景不传即可走默认值。
+ */
+export async function generateTitleViaProviderResult(
   args: { sessionId: string; agentKind: AgentKind; prompt: string; signal?: AbortSignal },
   deps: TitleOneShotDeps = {},
-): Promise<string | null> {
+  opts?: OneShotOpts,
+): Promise<TitleOneShotResult> {
   // 默认走吃系统代理的 undici fetch:上游可能是境外端点(catalog routing.upstream)。
   const fetchImpl = deps.fetchImpl ?? outboundUndiciFetch;
   const readSessionProviderId = deps.readSessionProviderId ?? (async () => null);
   const listConnectedProviders = deps.listConnectedProviders ?? (async () => []);
-  const readCodexCreds = deps.readCodexCreds ?? readCodexOneShotCreds;
-  // 走刷新模块而非直读凭证库:cc >= 2.1.198 后凭证库的新鲜度取决于 host 刷新节奏,
-  // 直读会在 token 过期后长期拿死值 → 静默 401 回落启发式标题。getValidClaudeAiOAuth
-  // 临期自动续(非强制语义,失败退回现值,行为不劣于直读)。
-  const readAnthropicOAuth = deps.readAnthropicOAuth ?? (() => getValidClaudeAiOAuth());
+  const readCodexCreds = deps.readCodexCreds ?? ((providerId?: string) => readCodexOneShotCreds(undefined, providerId));
+  // Claude 订阅凭证只在内置 Claude Code CLI 里,Cindy 不持有:缺省没有 anthropic 凭证,
+  // 该 wire 的标题请求一律跳过(回落启发式标题)。
+  const readAnthropicOAuth = deps.readAnthropicOAuth ?? (async () => null);
   const readGatewayKey = deps.readGatewayKey ?? readClaudeApiKey;
 
   // Provider 解析:WYSIWYG,与模型选择器高亮同口径。
@@ -358,32 +515,57 @@ export async function generateTitleViaProvider(
   }
 
   if (!providerId) {
-    log.debug('title oneShot skipped: no connected provider', { agentKind: args.agentKind });
-    return null;
+    log.debug('oneShot skipped: no connected provider', { agentKind: args.agentKind });
+    return { status: 'failed' };
   }
 
-  const target = buildTitleTarget(providerId);
-  if (!target) {
-    log.debug('title oneShot skipped: no title target', { providerId, agentKind: args.agentKind });
-    return null;
+  const sessionProviderId = providerId;
+  let target = buildTitleTarget(providerId);
+  // 无标题 wire 的会话供应商(自定义 DeepSeek / xAI 等)回落官方
+  // Cindy AI / XD;有 wire 的三家仍不因组不出目标而 hop。
+  if (!target && !(TITLE_ONE_SHOT_PROVIDER_IDS.has(providerId) || isClaudeSubscriptionProviderId(providerId) || isOpenAiSubscriptionProvider(rail.find((p) => p.id === providerId)))) {
+    const officialConnected = rail.some((p) => p.id === OFFICIAL_TITLE_FALLBACK_ID);
+    const officialTarget = officialConnected
+      ? buildTitleTarget(OFFICIAL_TITLE_FALLBACK_ID)
+      : null;
+    if (officialTarget) {
+      log.info('title oneShot falling back to official provider', {
+        sessionProviderId,
+        providerId: OFFICIAL_TITLE_FALLBACK_ID,
+        agentKind: args.agentKind,
+      });
+      providerId = OFFICIAL_TITLE_FALLBACK_ID;
+      target = officialTarget;
+    }
   }
-  // 标题模型这份拷贝被用户停用 → 跳过(回落启发式起名)。rail 条目带 buildRegistry
-  // 烘焙的 disabled 标志。查找必须跨该供应商的**所有 agent** 清单(findCatalogModel,
-  // 与 buildTitleTarget 解析 titleModel 的口径一致):cc 会话经 OpenAI 路由时,标题模型
-  // gpt-5.4-mini 挂在 codex 清单下,只查会话 agent 会漏掉停用标志(PR #744 review
-  // 第十一轮)。目录里完全找不到该模型时不额外拦。
+  if (!target) {
+    const status = (TITLE_ONE_SHOT_PROVIDER_IDS.has(sessionProviderId) || isClaudeSubscriptionProviderId(sessionProviderId) || isOpenAiSubscriptionProvider(rail.find((p) => p.id === sessionProviderId)))
+      ? 'failed'
+      : 'unsupported-provider';
+log.debug('title oneShot skipped: no title target', {
+      providerId: sessionProviderId,
+      agentKind: args.agentKind,
+      status,
+    });
+    return { status };
+  }
+  // 标题模型这份拷贝被用户停用 → 跳过(回落启发式起名)。查标题请求实际使用的原生
+  // agent 清单，而不是会话 agent 或全部清单：OpenAI 标题走 codex，Anthropic 标题走
+  // claude-code；否则 Pi 的独立同名条目会遮住原生通道的 retired 状态。
   const railProvider = rail.find((p) => p.id === providerId);
-  const titleCatalogModel = railProvider ? findCatalogModel(railProvider, target.model) : undefined;
+  const titleCatalogModel = railProvider
+    ? findTitleCatalogModel(railProvider, target.model)
+    : undefined;
   const initialUnavailableReason = titleCatalogModel
     ? titleRouteUnavailableReason(titleCatalogModel, railProvider?.source === 'user')
     : null;
   if (initialUnavailableReason) {
-    log.debug('title oneShot skipped: title model unavailable for new route', {
+    log.debug('oneShot skipped: title model unavailable for new route', {
       providerId,
       model: target.model,
       reason: initialUnavailableReason,
     });
-    return null;
+    return { status: 'failed' };
   }
 
   const startedAt = Date.now();
@@ -408,23 +590,28 @@ export async function generateTitleViaProvider(
     }
     const currentCatalog = getActiveCatalog();
     const currentProvider = currentCatalog.providers.find((provider) => provider.id === providerId);
+    if (!currentProvider) return 'provider-unavailable';
     const currentModel = currentProvider
-      ? findCatalogModel(currentProvider, target.model)
+      ? findTitleCatalogModel(currentProvider, target.model)
       : undefined;
     if (currentModel) {
       return titleRouteUnavailableReason(currentModel, currentProvider?.source === 'user');
     }
     // retired 且没有 discovery/local addition 时不会出现在 provider.models；仍要从
     // Registry tombstone 本身识别，不能把“未实体化”误当成“没有限制”。
-    return findModelRegistryRoute(currentCatalog.modelRegistry, providerId, target.model)?.entry
-      .status === 'retired'
+    return findModelRegistryRoute(
+      currentCatalog.modelRegistry,
+      providerCatalogId(currentProvider),
+      target.model,
+      titleCatalogAgent(providerId) ?? undefined,
+    )?.entry.status === 'retired'
       ? 'retired'
       : null;
   };
   const canDispatchNow = (stage: string): boolean => {
     const reason = routeUnavailableNow();
     if (!reason) return true;
-    log.debug('title oneShot skipped: route unavailable before dispatch', {
+    log.debug('oneShot skipped: route unavailable before dispatch', {
       providerId,
       model: target.model,
       reason,
@@ -432,16 +619,80 @@ export async function generateTitleViaProvider(
     });
     return false;
   };
+  // 派发紧前复查:同步的 route 可用性(canDispatchNow)之外,再叠加可选的异步会话归属
+  // 复查(beforeDispatch)。凭证获取是可能数秒的 await,期间会话可能被切换 agent / 转远程,
+  // 仅在发出付费请求的紧前复查才能把窗口缩到最小。
+  const preDispatchEligible = async (stage: string): Promise<boolean> => {
+    if (!canDispatchNow(stage)) return false;
+    if (
+      deps.beforeDispatch &&
+      !(await deps.beforeDispatch({ sessionId: args.sessionId, agentKind: args.agentKind, providerId }))
+    ) {
+      log.debug('oneShot skipped: pre-dispatch eligibility check failed', {
+        providerId,
+        model: target.model,
+        stage,
+      });
+      return false;
+    }
+    return true;
+  };
+  // 非标题场景(如 prompt prediction)可覆盖 token 数/校验规则。
+  const maxTokens = opts?.maxTokens ?? TITLE_MAX_TOKENS;
+  const codexInstructions = opts?.codexInstructions ?? CODEX_TITLE_INSTRUCTIONS;
+  const maxOutputChars = opts?.maxOutputChars ?? TITLE_OUTPUT_MAX_CHARS;
+  const maxVisualChars = opts?.maxVisualChars ?? AUTO_TITLE_MAX_CHARS;
   try {
     let text = '';
     switch (target.wire) {
       case 'anthropic-messages': {
-        const oauth = await readAnthropicOAuth();
+        const oauth = await readAnthropicOAuth(providerId);
         if (!oauth?.accessToken) {
-          log.debug('title oneShot skipped: no anthropic OAuth', { providerId });
-          return null;
+          log.debug('oneShot skipped: no anthropic OAuth', { providerId });
+          return { status: 'failed' };
         }
-        if (!canDispatchNow('after-credential-refresh')) return null;
+        // 紧前复查：readAnthropicOAuth 是异步操作，期间用户可能登出/切换账号/轮换凭证。
+        // 重新读取当前凭证并与捕获值比对，不一致则中止，避免向旧账号外发付费调用。
+        const oauthRecheck = await readAnthropicOAuth(providerId);
+        if (oauthRecheck?.accessToken !== oauth.accessToken) {
+          log.debug('oneShot skipped: credential changed during OAuth read', {
+            providerId,
+          });
+          return { status: 'failed' };
+        }
+        // 凭证确认后再做派发紧前复查（会话资格），把凭证读取期间的 TOCTOU 窗口也覆盖。
+        // preDispatchEligible 内部异步操作（listConnectedProviders 等）之后，实际
+        // fetch 之前不再有 await，使会话变更窗口最小化。
+        if (!(await preDispatchEligible('after-credential-recheck'))) {
+          return { status: 'failed' };
+        }
+        // preDispatchEligible 内部可能有异步 provider 状态读取，期间用户仍可能登出/
+        // 切换账号/轮换凭证。在最后一个 await 之后重新读取并比对，捕获 eligibility
+        // 检查期间的凭证变更，避免向旧账号外发付费调用。
+        const oauthPostEligibility = await readAnthropicOAuth(providerId);
+        if (oauthPostEligibility?.accessToken !== oauth.accessToken) {
+          log.debug('oneShot skipped: credential changed during eligibility check', {
+            providerId,
+          });
+          return { status: 'failed' };
+        }
+        // readAnthropicOAuth 是异步操作，期间 session 可能被删除/切换 agent/
+        // 转远程/改工作目录。在最后一个 await 之后再做一次 session 归属复核
+        // （仅 DB 查询，不做 provider/credential 状态读取），避免用过期
+        // session 上下文外发付费调用。
+        if (
+          deps.beforeDispatch &&
+          !(await deps.beforeDispatch({
+            sessionId: args.sessionId,
+            agentKind: args.agentKind,
+            providerId,
+          }))
+        ) {
+          log.debug('oneShot skipped: session eligibility changed during final OAuth check', {
+            providerId,
+          });
+          return { status: 'failed' };
+        }
         text = await fetchAnthropicTitle(
           target.upstream,
           target.model,
@@ -449,16 +700,66 @@ export async function generateTitleViaProvider(
           oauth.accessToken,
           fetchImpl,
           controller.signal,
+          maxTokens,
+          opts?.systemPrompt,
+          TITLE_GATEWAY_THINKING,
         );
         break;
       }
       case 'codex-responses': {
-        const creds = readCodexCreds();
+        const creds = readCodexCreds(providerId === 'openai' ? undefined : providerId);
         if (!creds) {
-          log.debug('title oneShot skipped: no codex creds', { providerId });
-          return null;
+          log.debug('oneShot skipped: no codex creds', { providerId });
+          return { status: 'failed' };
         }
-        if (!canDispatchNow('after-credential-read')) return null;
+        // 紧前复查：readCodexCreds 之后用户可能切换 ChatGPT workspace/账号或轮换 token。
+        // 重新读取并与捕获值比对（accountId + accessToken），不一致则中止。
+        const credsRecheck = readCodexCreds(providerId === 'openai' ? undefined : providerId);
+        if (
+          !credsRecheck ||
+          credsRecheck.accountId !== creds.accountId ||
+          credsRecheck.accessToken !== creds.accessToken
+        ) {
+          log.debug('oneShot skipped: credential changed during creds read', {
+            providerId,
+          });
+          return { status: 'failed' };
+        }
+        // 凭证确认后再做派发紧前复查（会话资格），把凭证读取期间的 TOCTOU 窗口也覆盖。
+        if (!(await preDispatchEligible('after-credential-recheck'))) {
+          return { status: 'failed' };
+        }
+        // preDispatchEligible 内部可能有异步 provider 状态读取，期间用户仍可能登出/
+        // 切换 workspace/轮换 token。在最后一个 await 之后重新读取并比对，捕获
+        // eligibility 检查期间的凭证变更，避免向旧账号外发付费调用。
+        const credsPostEligibility = readCodexCreds(providerId === 'openai' ? undefined : providerId);
+        if (
+          !credsPostEligibility ||
+          credsPostEligibility.accountId !== creds.accountId ||
+          credsPostEligibility.accessToken !== creds.accessToken
+        ) {
+          log.debug('oneShot skipped: credential changed during eligibility check', {
+            providerId,
+          });
+          return { status: 'failed' };
+        }
+        // readCodexCreds 是同步操作，但 preDispatchEligible 内部有异步 provider
+        // 状态读取，期间 session 可能被删除/切换 agent/转远程。在最后一个 await
+        // 之后再做一次 session 归属复核（仅 DB 查询），避免用过期 session 上下文
+        // 外发付费调用。
+        if (
+          deps.beforeDispatch &&
+          !(await deps.beforeDispatch({
+            sessionId: args.sessionId,
+            agentKind: args.agentKind,
+            providerId,
+          }))
+        ) {
+          log.debug('oneShot skipped: session eligibility changed during final creds check', {
+            providerId,
+          });
+          return { status: 'failed' };
+        }
         text = await fetchCodexTitle(
           target.upstream,
           target.model,
@@ -467,16 +768,55 @@ export async function generateTitleViaProvider(
           creds,
           fetchImpl,
           controller.signal,
+          codexInstructions,
+          opts?.systemPrompt,
         );
         break;
       }
       case 'gateway-chat': {
         const key = readGatewayKey();
         if (!key) {
-          log.debug('title oneShot skipped: no gateway key', { providerId });
-          return null;
+          log.debug('oneShot skipped: no gateway key', { providerId });
+          return { status: 'failed' };
         }
-        if (!canDispatchNow('after-credential-read')) return null;
+        // 紧前复查：readGatewayKey 之后用户可能轮换 XD 网关 key。
+        // 重新读取并与捕获值比对，不一致则中止。
+        if (readGatewayKey() !== key) {
+          log.debug('oneShot skipped: credential changed during key read', {
+            providerId,
+          });
+          return { status: 'failed' };
+        }
+        // 凭证确认后再做派发紧前复查（会话资格），把凭证读取期间的 TOCTOU 窗口也覆盖。
+        if (!(await preDispatchEligible('after-credential-recheck'))) {
+          return { status: 'failed' };
+        }
+        // preDispatchEligible 内部可能有异步 provider 状态读取，期间用户仍可能轮换
+        // 网关 key。在最后一个 await 之后重新读取并比对，捕获 eligibility 检查期间的
+        // 凭证变更，避免用旧 key 外发付费调用。
+        if (readGatewayKey() !== key) {
+          log.debug('oneShot skipped: gateway key changed during eligibility check', {
+            providerId,
+          });
+          return { status: 'failed' };
+        }
+        // readGatewayKey 是同步操作，但 preDispatchEligible 内部有异步 provider
+        // 状态读取，期间 session 可能被删除/切换 agent/转远程。在最后一个 await
+        // 之后再做一次 session 归属复核（仅 DB 查询），避免用过期 session 上下文
+        // 外发付费调用。
+        if (
+          deps.beforeDispatch &&
+          !(await deps.beforeDispatch({
+            sessionId: args.sessionId,
+            agentKind: args.agentKind,
+            providerId,
+          }))
+        ) {
+          log.debug('oneShot skipped: session eligibility changed during final key check', {
+            providerId,
+          });
+          return { status: 'failed' };
+        }
         text = await fetchGatewayTitle(
           target.upstream,
           target.model,
@@ -484,6 +824,10 @@ export async function generateTitleViaProvider(
           key,
           fetchImpl,
           controller.signal,
+          maxTokens,
+          opts?.systemPrompt,
+          TITLE_GATEWAY_THINKING,
+          target.effort,
         );
         break;
       }
@@ -492,36 +836,53 @@ export async function generateTitleViaProvider(
     // response, Markdown wrapper, or multiline answer. Validate the complete response
     // before applying the historical 40-character auto-title truncation, so a bad suffix
     // cannot hide beyond the slice boundary.
-    const normalized = validateTitleOutput(text, TITLE_OUTPUT_MAX_CHARS);
-    const title = normalized ? Array.from(normalized).slice(0, 40).join('') : null;
+    // `maxOutputChars === 0`: skip validation (non-title use cases like prompt prediction).
+    const normalized =
+      maxOutputChars > 0 ? validateTitleOutput(text, maxOutputChars) : text.trim() || null;
+    const title =
+      normalized && maxVisualChars > 0
+        ? Array.from(normalized).slice(0, maxVisualChars).join('')
+        : normalized;
     if (!title) {
-      log.warn('title oneShot rejected invalid model output', {
+      log.warn('oneShot rejected invalid model output', {
         providerId,
         model: target.model,
         wire: target.wire,
         elapsedMs: Date.now() - startedAt,
       });
-      return null;
+      return { status: 'failed' };
     }
-    log.info('title oneShot done', {
+    log.info('oneShot done', {
       providerId,
       model: target.model,
       wire: target.wire,
       elapsedMs: Date.now() - startedAt,
       chars: Array.from(title).length,
     });
-    return title;
+    return { status: 'ok', title };
   } catch (err) {
-    log.warn('title oneShot failed (swallowed)', {
+    log.warn('oneShot failed', {
       providerId,
       model: target.model,
       wire: target.wire,
       elapsedMs: Date.now() - startedAt,
       error: err instanceof Error ? err.message : String(err),
     });
-    return null;
+    return { status: 'failed' };
   } finally {
     clearTimeout(timeout);
     args.signal?.removeEventListener('abort', onExternalAbort);
   }
+}
+
+/**
+ * 自动起名的兼容入口：失败继续折叠为 null，让既有调用方回落启发式标题。
+ * 手动重命名需要失败语义时应调用 `generateTitleViaProviderResult()`。
+ */
+export async function generateTitleViaProvider(
+  args: { sessionId: string; agentKind: AgentKind; prompt: string; signal?: AbortSignal },
+  deps: TitleOneShotDeps = {},
+): Promise<string | null> {
+  const result = await generateTitleViaProviderResult(args, deps);
+  return result.status === 'ok' ? result.title : null;
 }

@@ -139,6 +139,18 @@ export interface CodexModelListParams {
   includeHidden?: boolean | null;
 }
 
+/** Minimal subset of `mcpServerStatus/list` used for post-start capability gates. */
+export interface CodexMcpServerStatus {
+  name: string;
+  tools: Record<string, unknown>;
+  [k: string]: unknown;
+}
+
+export interface CodexMcpServerStatusListResponse {
+  data: CodexMcpServerStatus[];
+  nextCursor: string | null;
+}
+
 export interface CodexModelListResponse {
   data: CodexModelListItem[];
   nextCursor: string | null;
@@ -203,8 +215,8 @@ export interface ThreadStartParams {
   model?: string;
   /**
    * 覆盖本 thread 的 model provider(config `model_providers` 里的 key)。
-   * 缺省走 config 顶层 model_provider。用于订阅直连 thread 选 OpenAI 身份
-   * provider(开远端压缩);provider 身份是 thread 级冻结,settings/update 改不了。
+   * 缺省走 config 顶层 model_provider。用于支持远端压缩的 thread 选择内部 OpenAI
+   * transport identity；产品 Provider 不随之改变。provider 身份是 thread 级冻结。
    */
   modelProvider?: string;
   cwd?: string;
@@ -440,9 +452,11 @@ export type SandboxPolicy =
 
 export interface ThreadForkParams {
   threadId: string;
+  /** Fork the source thread at this provider-native turn boundary. */
+  lastTurnId?: string;
   /** 可选: 从特定 rollout path fork (绝大多数场景用 threadId)。 */
   path?: string;
-  /** Codex 自家前端 fork 精确节点时会开启, 保留完整历史供后续 rollback。 */
+  /** Legacy fork + rollback path only; lastTurnId precision path omits it. */
   persistExtendedHistory?: boolean;
   model?: string;
   cwd?: string;
@@ -456,6 +470,12 @@ export interface ThreadForkParams {
   sandbox?: SandboxMode;
   /** Per-request config overrides, including named permission profile definitions. */
   config?: Record<string, unknown>;
+  /**
+   * 只返回 thread 元数据与 live fork state,不把完整历史塞进单条 NDJSON response。
+   * 与 thread/resume.excludeTurns 同族;超长历史 thread 的 fork 响应体与历史成
+   * 正比、无上界,曾实测单行 31MiB 超过 client maxLineBytes(16MiB)熔断整条连接。
+   */
+  excludeTurns?: boolean;
   [k: string]: unknown;
 }
 
@@ -470,6 +490,20 @@ export interface ThreadRollbackParams {
   threadId: string;
   /** 从 thread 尾部回滚多少个完整 turn。 */
   numTurns: number;
+}
+
+/** Codex 0.153.4: bounded turn metadata, including failed/interrupted turns. */
+export interface ThreadTurnsListParams {
+  threadId: string;
+  cursor?: string;
+  limit: number;
+  sortDirection: 'desc';
+  itemsView: 'notLoaded';
+}
+
+export interface ThreadTurnsListResponse {
+  data: Array<{ id: string; status: string; startedAt?: number | null }>;
+  nextCursor: string | null;
 }
 
 export interface ThreadRollbackResponse {
@@ -738,7 +772,8 @@ export interface ServerRequestResolvedNotification {
 }
 
 export interface DynamicToolSpec {
-  namespace?: string;
+  /** Current canonical app-server format for top-level dynamic tools. */
+  type: 'function';
   name: string;
   description: string;
   inputSchema: unknown;
@@ -788,6 +823,11 @@ export interface ThreadStartedNotification {
 export interface TurnStartedNotification {
   method: 'turn/started';
   params: { threadId: string; turn: { id: string; [k: string]: unknown }; [k: string]: unknown };
+}
+
+export interface TurnDiffUpdatedNotification {
+  method: 'turn/diff/updated';
+  params: { threadId: string; turnId: string; diff: string; [k: string]: unknown };
 }
 
 /**
@@ -882,6 +922,8 @@ export interface TokenUsageBreakdown {
   totalTokens: number;
   inputTokens: number;
   cachedInputTokens: number;
+  /** Present in Codex 0.153.0; older app-server versions omit this subset. */
+  cacheWriteInputTokens?: number;
   outputTokens: number;
   reasoningOutputTokens: number;
 }
@@ -916,6 +958,18 @@ export interface ItemUpdatedNotification {
 export interface ItemCompletedNotification {
   method: 'item/completed';
   params: { threadId: string; turnId: string; item: ItemEnvelope; completedAtMs?: number };
+}
+
+/**
+ * v2 AgentMessageDeltaNotification:
+ *   { thread_id, turn_id, item_id, delta }
+ *
+ * 正文的专用增量流。item/updated 仍作为旧版 / 异常上游的全文快照兜底，
+ * item/completed 负责最终全文校准。
+ */
+export interface AgentMessageDeltaNotification {
+  method: 'item/agentMessage/delta';
+  params: { threadId: string; turnId: string; itemId: string; delta: string };
 }
 
 export type PlanEntryStatus = 'pending' | 'in_progress' | 'completed';
@@ -1142,11 +1196,13 @@ export interface ItemEnvelope {
 export type ServerNotification =
   | ThreadStartedNotification
   | TurnStartedNotification
+  | TurnDiffUpdatedNotification
   | TurnCompletedNotification
   | ThreadTokenUsageUpdatedNotification
   | ItemStartedNotification
   | ItemUpdatedNotification
   | ItemCompletedNotification
+  | AgentMessageDeltaNotification
   | ReasoningSummaryTextDeltaNotification
   | ReasoningSummaryPartAddedNotification
   | ReasoningTextDeltaNotification
@@ -1164,11 +1220,14 @@ export type ServerNotification =
 export const Method = {
   Initialize: 'initialize',
   ModelList: 'model/list',
+  McpServerStatusList: 'mcpServerStatus/list',
   SkillsList: 'skills/list',
   ThreadStart: 'thread/start',
   ThreadResume: 'thread/resume',
+  ThreadInjectItems: 'thread/inject_items',
   ThreadFork: 'thread/fork',
   ThreadRollback: 'thread/rollback',
+  ThreadTurnsList: 'thread/turns/list',
   ThreadUnsubscribe: 'thread/unsubscribe',
   ThreadSettingsUpdate: 'thread/settings/update',
   TurnStart: 'turn/start',
@@ -1179,6 +1238,9 @@ export const Method = {
   // Memory (实验性, experimentalApi 必须 true 才能用):
   // app-server/README.md:202-203 + 155
   ConfigRead: 'config/read',
+  /** EXPERIMENTAL. Register a remote exec-server as a named environment. */
+  EnvironmentAdd: 'environment/add',
+  ExperimentalFeatureList: 'experimentalFeature/list',
   ExperimentalFeatureEnablementSet: 'experimentalFeature/enablement/set',
   MemoryReset: 'memory/reset',
   // ServerRequest (Phase 2 + permissions):

@@ -21,12 +21,25 @@ export interface OrcaDiagnosticWorkerSnapshot {
     effort: string | null;
     workingDir: string;
   };
+  /** 跑在另一台电脑上的 Worker：运行设备投影；本机 Worker 无此字段。 */
+  executionDevice?: {
+    deviceId: string;
+    deviceName?: string;
+    reachable?: boolean;
+    workingDir?: string;
+  };
 }
 
 export interface OrcaDiagnosticsDeps {
   readActiveTeam(leadSessionId: string): Promise<OrcaDiagnosticTeamSnapshot | null>;
   listWorkersByLead(leadSessionId: string): Promise<OrcaDiagnosticWorkerSnapshot[]>;
   getSessionStatus(sessionId: string): string;
+  getWorkerFlowStatus(sessionId: string): Promise<{
+    isWorking: boolean;
+    willQueue: boolean;
+    queuedCount: number;
+    queuePaused: boolean;
+  }>;
   readLatestAssistantMessage(workerSessionId: string): Promise<string>;
 }
 
@@ -42,8 +55,9 @@ function idleMs(worker: OrcaDiagnosticWorkerSnapshot): number | null {
   return Math.max(0, Date.now() - source);
 }
 
-function toWorkerSummary(deps: OrcaDiagnosticsDeps, worker: OrcaDiagnosticWorkerSnapshot) {
+async function toWorkerSummary(deps: OrcaDiagnosticsDeps, worker: OrcaDiagnosticWorkerSnapshot) {
   const sessionStatus = deps.getSessionStatus(worker.sessionId);
+  const flow = await deps.getWorkerFlowStatus(worker.sessionId);
   return {
     worker_id: worker.id,
     session_id: worker.sessionId,
@@ -51,24 +65,38 @@ function toWorkerSummary(deps: OrcaDiagnosticsDeps, worker: OrcaDiagnosticWorker
     session_status: sessionStatus,
     idle_ms: idleMs(worker),
     restored_from_storage: sessionStatus === 'not_running',
+    is_working: flow.isWorking,
+    will_queue: flow.willQueue,
+    queued_count: flow.queuedCount,
+    queue_paused: flow.queuePaused,
     label: worker.label,
     role: worker.role,
     agent_kind: worker.session.agentKind,
     model: worker.session.model,
     effort: worker.session.effort ?? null,
     focused: worker.focused,
-    working_dir: worker.session.workingDir,
+    // 远端 Worker 的本机代理行没有目录；展示运行设备上的目录。
+    working_dir: worker.executionDevice?.workingDir ?? worker.session.workingDir,
+    ...(worker.executionDevice
+      ? {
+          execution_device: {
+            device_id: worker.executionDevice.deviceId,
+            device_name: worker.executionDevice.deviceName ?? null,
+            reachable: worker.executionDevice.reachable ?? null,
+          },
+        }
+      : {}),
   };
 }
 
-type OrcaWorkerSummary = ReturnType<typeof toWorkerSummary>;
+type OrcaWorkerSummary = Awaited<ReturnType<typeof toWorkerSummary>>;
 
 async function readDiagnosticWorkers(
   deps: OrcaDiagnosticsDeps,
   leadSessionId: string,
 ): Promise<OrcaWorkerSummary[]> {
   const workers = await deps.listWorkersByLead(leadSessionId);
-  return workers.map((worker) => toWorkerSummary(deps, worker));
+  return Promise.all(workers.map((worker) => toWorkerSummary(deps, worker)));
 }
 
 // worker_id 与 session_id 都接受（与 resolveWorkerRef 同语义，只读诊断侧）。

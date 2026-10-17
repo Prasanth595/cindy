@@ -28,6 +28,11 @@ export type ProviderSecretId =
   | 'gemini'
   | 'openai-images';
 
+/** The dedicated builtin key bridge and its UI must expose the same supported IDs. */
+export function isBuiltinApiKeyProviderId(providerId: unknown): providerId is ProviderSecretId {
+  return providerId === 'gemini' || providerId === 'openai-images';
+}
+
 /**
  * providerId → safeStorage 存储键名(.enc 文件名,不含后缀)。
  * 改动须谨慎:键名变了等于"换文件",会让用户本机已存的 key 读不到。
@@ -74,11 +79,22 @@ export function providerSecretStorageKey(id: ProviderSecretId): string {
  */
 export const REMOTE_MCP_BRIDGE_TOKEN_STORAGE_KEY = 'remote_mcp_bridge_token';
 
+/**
+ * Host-only HMAC key for remote Pi proxy session tokens. Unlike the derived
+ * per-session token, this value never enters a child/remote process env.
+ */
+export const PI_PROXY_DERIVATION_KEY_STORAGE_KEY = 'pi_proxy_derivation_key';
+
+/** Host-only key for persisted MCP App configuration revisions, never synced. */
+export const MCP_APP_REVISION_KEY_STORAGE_KEY = 'mcp_app_revision_key';
+
 const MAIN_ONLY_PROVIDER_SECRET_STORAGE_KEYS = new Set<string>([
   STORAGE_KEYS['voice-asr'].toLowerCase(),
   STORAGE_KEYS['gemini'].toLowerCase(),
   STORAGE_KEYS['openai-images'].toLowerCase(),
   REMOTE_MCP_BRIDGE_TOKEN_STORAGE_KEY.toLowerCase(),
+  PI_PROXY_DERIVATION_KEY_STORAGE_KEY.toLowerCase(),
+  MCP_APP_REVISION_KEY_STORAGE_KEY.toLowerCase(),
 ]);
 
 /** Custom-provider runtime header blobs are main-only credential material. */
@@ -93,6 +109,9 @@ export function isRendererAccessibleSafeStorageKey(storageKey: string): boolean 
   return (
     !MAIN_ONLY_PROVIDER_SECRET_STORAGE_KEYS.has(normalized)
     && !normalized.startsWith(CUSTOM_PROVIDER_HEADER_SECRET_PREFIX)
+    // Imported environments contain private credentials/checkpoints. All generic
+    // read/store/remove calls must leave this entire namespace to Main.
+    && !normalized.startsWith('bot_environment_')
   );
 }
 
@@ -122,6 +141,12 @@ export function customProviderSecretStorageKey(providerId: string, agent: string
   assertSafeKeyPart(providerId, 'providerId');
   assertSafeKeyPart(agent, 'agent');
   return `provider_key_${providerId}_${agent}`;
+}
+
+const CUSTOM_PROVIDER_RUNTIME_KEY_RE = /^provider_key_[a-zA-Z0-9_-]+_(?:claude-code|codex|pi)$/;
+
+export function isCustomProviderRuntimeKeyStorageKey(storageKey: unknown): boolean {
+  return typeof storageKey === 'string' && CUSTOM_PROVIDER_RUNTIME_KEY_RE.test(storageKey);
 }
 
 /**
@@ -173,7 +198,7 @@ export function providerOAuthStorageKey(providerId: string): string {
 export const GHOST_SECRET_PREFIX = 'ghost_secret_';
 
 /**
- * 官方内置意识凭证 → 历史机器级 provider key 的别名表(老用户兼容)。
+ * 官方意识凭证 → 历史机器级 provider key 的别名表(老用户兼容)。
  *
  * cindy-web-search 的两条凭证与「工具密钥」时代的 Brave / Tavily key 是**同一
  * 把钥匙**,直接映射到同一存储键(.enc 同一文件):
@@ -182,7 +207,7 @@ export const GHOST_SECRET_PREFIX = 'ghost_secret_';
  * - 卸载意识不删这两个键(removeGhostSecrets 只扫 ghost_secret_ 前缀,别名键
  *   天然不在扫描面内)——它们是用户填的机器级 key,归属机器不归属意识,
  *   重装意识即恢复可用;换账号仍随 clearAll 清扫(在 PROVIDER_SECRET_IDS 里)。
- * 仅限官方内置意识登记(key 必须是官方保留前缀 id,见
+ * 仅限官方意识登记(key 必须是官方保留前缀 id,见
  * GHOST_OFFICIAL_ID_PREFIXES):第三方意识一律走 ghost_secret_ 命名空间;
  * packaged 版本的用户装入通道对官方前缀 id 拒装(cindy-brain/index.ts
  * rejectReservedGhostId),抢注官方 id 蹭别名的路被封死。
@@ -209,10 +234,20 @@ const GHOST_SECRET_STORAGE_ALIASES: Record<string, Record<string, string>> = {
  * ghostId 规则 /^[a-z0-9][a-z0-9-]{0,31}$/、secretKey 规则 /^[a-z][a-z0-9_]{0,31}$/
  * (validateGhostManifest 已把关),此处按惯例在键名构造点再断言一次。
  */
-export function ghostSecretStorageKey(ghostId: string, secretKey: string): string {
+function ghostSecretAliasOwner(ghostId: string, allowMivoAlias: boolean): string {
+  // Only the legacy bare id may hold the historical Mivo key. A namespaced
+  // xd-mivo instance is a different install and must not share it.
+  if (allowMivoAlias && ghostId === 'xd-mivo') return 'xd-mivo';
+  return ghostId;
+}
+
+export function ghostSecretStorageKey(ghostId: string, secretKey: string, allowMivoAlias = false): string {
   assertSafeKeyPart(ghostId, 'ghostId');
   assertSafeKeyPart(secretKey, 'secretKey');
-  const alias = GHOST_SECRET_STORAGE_ALIASES[ghostId]?.[secretKey];
+  const aliasOwner = ghostSecretAliasOwner(ghostId, allowMivoAlias);
+  const alias = ghostId === 'xd-mivo' && !allowMivoAlias
+    ? undefined
+    : GHOST_SECRET_STORAGE_ALIASES[aliasOwner]?.[secretKey];
   if (alias) return alias;
   return `${GHOST_SECRET_PREFIX}${ghostId}_${secretKey}`;
 }
@@ -221,8 +256,8 @@ export function ghostSecretStorageKey(ghostId: string, secretKey: string): strin
  * 意识凭证「尾 4 位指纹」的 safeStorage 键名前缀。指纹在**入库那一刻**由
  * deriveGhostSecretTail 截取、与密文分键保管——读路径(/secrets GET)只回
  * 这个预截好的指纹,从头到尾不存在"读明文再现场截"的环节,只写通道的
- * 结构保持干净。前缀与 ghost_secret_ 平行且零碰撞(ghostId 不含下划线,
- * ghost_secret_ 命名空间内第一个 `_` 前必是 ghostId,拼不出 hint_ 开头)。
+ * 结构保持干净。前缀与 ghost_secret_ 平行且零碰撞(root ghostId 不含下划线;
+ * 企业实例使用 `_ns__<namespace>__<ghostId>` storage part,仍拼不出 hint_ 开头)。
  * 账号切换清理(clearAll)与卸载清理(removeGhostSecrets)都要连它一起扫。
  */
 export const GHOST_SECRET_HINT_PREFIX = 'ghost_hint_';

@@ -11,7 +11,11 @@ import path from 'node:path';
 import { app } from 'electron';
 import JSZip from 'jszip';
 
-import { getCurrentUserId } from '../authManager';
+import { getCurrentDataOwnerId, getCurrentUserId } from '../authManager';
+import {
+  assertGhostSkillProjectionBoundaryStableForOwner,
+  withSharedGlobalSkillProjectionMutation,
+} from '../authBoundaryQuarantine.js';
 import { createLogger, maskPath } from '../logger';
 import {
   prepareSharedGlobalSkillLinks,
@@ -30,6 +34,7 @@ import {
   type SkillImportMetadata,
 } from './importLocalSkill.pure.js';
 import { getSkillInstallLockOwner, tryAcquireSkillInstallLock } from './installLock';
+import { acquireSharedSkillMutationLease, type SkillMutationRelease } from './sharedMutationLease';
 import { ensureSymlinkToShared } from './installService';
 import { registryService } from './registry';
 
@@ -452,6 +457,7 @@ export async function importLocalSkill(params: ImportLocalParams): Promise<Impor
   const stagingDir = path.join(path.dirname(finalDir), `.xdt-importing-${name}-${rand()}`);
   let replaceDir: string | null = null;
   let finalDirCreated = false;
+  let releaseShared: SkillMutationRelease | null = null;
 
   const rollback = async () => {
     if (finalDirCreated) {
@@ -471,6 +477,8 @@ export async function importLocalSkill(params: ImportLocalParams): Promise<Impor
   };
 
   try {
+    releaseShared = await acquireSharedSkillMutationLease([name]);
+    if (!releaseShared) return { success: false, errorCode: 'BUSY', message: busyMessage(name) };
     try {
       await materialize(stagingDir);
     } catch (err) {
@@ -550,9 +558,15 @@ export async function importLocalSkill(params: ImportLocalParams): Promise<Impor
       }
     }
 
-    const projectWorkingDir = await reconcileProjectLinks(finalDir);
+    const projectWorkingDir = await releaseShared.run(() => reconcileProjectLinks(finalDir));
     try {
-      const linkResult = await prepareSharedGlobalSkillLinks();
+      const ownerId = getCurrentDataOwnerId();
+      const linkResult = await withSharedGlobalSkillProjectionMutation(ownerId, () =>
+        releaseShared!.run(() => prepareSharedGlobalSkillLinks({
+          assertOwnerStable: () =>
+            assertGhostSkillProjectionBoundaryStableForOwner(ownerId),
+        })),
+      );
       for (const warning of linkResult.warnings) {
         log.warn('[importLocal] shared global skill link warning:', warning);
       }
@@ -569,6 +583,7 @@ export async function importLocalSkill(params: ImportLocalParams): Promise<Impor
       ...(projectWorkingDir ? { projectWorkingDir } : {}),
     };
   } finally {
+    await releaseShared?.();
     releaseLock();
   }
 }

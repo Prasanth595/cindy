@@ -1,4 +1,5 @@
-import { GitBranch, MessageSquareText, Sparkles } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { GitBranch, MessageSquareText, Sparkles, Download } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { cn } from '@/lib/utils';
@@ -18,6 +19,7 @@ const sectionDescClass = 'mt-1 text-12 leading-[1.6] text-[var(--settings-sectio
 
 export function HelpSection({ onAskHelp }: HelpSectionProps) {
   const { t } = useTranslation();
+  const isLinux = window.electronAPI?.platform === 'linux';
 
   return (
     <div className="flex flex-col gap-3">
@@ -34,7 +36,7 @@ export function HelpSection({ onAskHelp }: HelpSectionProps) {
         <div className="flex items-start gap-3">
           <Sparkles size={16} className="mt-0.5 shrink-0 text-[var(--settings-section-title)]" />
           <div className="min-w-0">
-            <div className={sectionTitleClass}>{t('settings.help.gettingStarted.title')}</div>
+            <div id="settings-search-settings-help-gettingStarted-title" className={sectionTitleClass}>{t('settings.help.gettingStarted.title')}</div>
             <ol className="mt-2 list-decimal space-y-1.5 pl-4 text-13 leading-[1.6] text-[var(--settings-section-title)]">
               <li>{t('settings.help.gettingStarted.step1')}</li>
               <li>{t('settings.help.gettingStarted.step2')}</li>
@@ -48,7 +50,7 @@ export function HelpSection({ onAskHelp }: HelpSectionProps) {
         <div className="flex items-start gap-3">
           <GitBranch size={16} className="mt-0.5 shrink-0 text-[var(--settings-section-title)]" />
           <div className="min-w-0">
-            <div className={sectionTitleClass}>{t('settings.help.workflows.title')}</div>
+            <div id="settings-search-settings-help-workflows-title" className={sectionTitleClass}>{t('settings.help.workflows.title')}</div>
             <p className={sectionDescClass}>{t('settings.help.workflows.description')}</p>
             <ul className="mt-2 space-y-1.5 text-13 leading-[1.6] text-[var(--settings-section-title)]">
               <li>{t('settings.help.workflows.item1')}</li>
@@ -63,7 +65,7 @@ export function HelpSection({ onAskHelp }: HelpSectionProps) {
         <div className="flex items-start gap-3">
           <MessageSquareText size={16} className="mt-0.5 shrink-0 text-[var(--settings-section-title)]" />
           <div className="min-w-0">
-            <div className={sectionTitleClass}>{t('settings.help.recommendedWays.title')}</div>
+            <div id="settings-search-settings-help-recommendedWays-title" className={sectionTitleClass}>{t('settings.help.recommendedWays.title')}</div>
             <p className={sectionDescClass}>{t('settings.help.recommendedWays.description')}</p>
             <ul className="mt-2 space-y-1.5 text-13 leading-[1.6] text-[var(--settings-section-title)]">
               <li>{t('settings.help.recommendedWays.item1')}</li>
@@ -74,19 +76,39 @@ export function HelpSection({ onAskHelp }: HelpSectionProps) {
         </div>
       </div>
 
+      {isLinux ? (
+        <div className={cardClass}>
+          <div className="flex items-start gap-3">
+            <Download size={16} className="mt-0.5 shrink-0 text-[var(--settings-section-title)]" />
+            <div className="min-w-0">
+              <div id="settings-search-settings-help-linuxUpdates-title" className={sectionTitleClass}>{t('settings.help.linuxUpdates.title')}</div>
+              <p className={sectionDescClass}>{t('settings.help.linuxUpdates.description')}</p>
+              <ul className="mt-2 space-y-1.5 text-13 leading-[1.6] text-[var(--settings-section-title)]">
+                <li>{t('settings.help.linuxUpdates.item1')}</li>
+                <li>{t('settings.help.linuxUpdates.item2')}</li>
+                <li>{t('settings.help.linuxUpdates.item3')}</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       <div className={cardClass}>
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0">
-            <div className={sectionTitleClass}>{t('settings.help.qnaTitle')}</div>
+            <div id="settings-search-settings-help-qnaTitle" className={sectionTitleClass}>{t('settings.help.qnaTitle')}</div>
             <p className={sectionDescClass}>{t('settings.help.qnaDescription')}</p>
           </div>
-          <button
+          <Button
+            variant="secondary"
+            size="md"
+            compact
             type="button"
             onClick={onAskHelp}
-            className="shrink-0 rounded-full border border-[var(--settings-theme-card-border)] px-4 py-2 text-12 font-medium text-[var(--settings-section-title)] transition-colors hover:bg-[var(--settings-theme-card-border)]/40"
+            className="shrink-0"
           >
             {t('settings.help.openAssistant')}
-          </button>
+          </Button>
         </div>
       </div>
     </div>

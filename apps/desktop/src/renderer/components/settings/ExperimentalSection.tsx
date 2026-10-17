@@ -1,3 +1,4 @@
+import { Button } from '@/components/ui/button';
 /**
  * ExperimentalSection — Settings → General 的"实验功能"区块。
  *
@@ -19,9 +20,12 @@ import {
   type ExperimentalFeatureMeta,
 } from '@/hooks/useExperimentalFeatures';
 import { LspBetaCell } from './LspBetaCell';
+import { BetaChannelCell } from './BetaChannelCell';
 
 export function ExperimentalSection() {
   const { t } = useTranslation();
+  const betaChannelSupported =
+    window.electronAPI?.supportsBetaUpdateChannel ?? window.electronAPI?.platform !== 'linux';
 
   return (
     <div className="flex flex-col gap-[14px]">
@@ -31,6 +35,7 @@ export function ExperimentalSection() {
 
       <div className="flex flex-col gap-3">
         <LspBetaCell />
+        {betaChannelSupported ? <BetaChannelCell /> : null}
         {EXPERIMENTAL_FEATURES.map((feature) => (
           <ExperimentalFeatureRow key={feature.key} feature={feature} />
         ))}
@@ -83,18 +88,15 @@ function ExperimentalFeatureRow({ feature }: { feature: ExperimentalFeatureMeta 
       {/* toggle on 后才显示入口按钮 */}
       {enabled && feature.openAction && (
         <div className="flex items-center justify-end pt-1">
-          <button
+          <Button
+            variant="cta"
+            size="md"
+            compact
             type="button"
             onClick={() => navigate(feature.openAction!.routePath)}
-            className={cn(
-              'rounded-md px-3 py-1.5 text-12 font-medium',
-              'bg-[var(--settings-menu-bg-selected)] text-[var(--settings-menu-text-selected)]',
-              'border border-[var(--settings-menu-border-selected)]',
-              'transition-colors hover:opacity-80',
-            )}
           >
             {feature.openAction.label}
-          </button>
+          </Button>
         </div>
       )}
     </div>

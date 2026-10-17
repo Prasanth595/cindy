@@ -21,6 +21,7 @@ vi.mock('../../logger.js', () => ({
 import {
   importSharedCodexThread,
   removeSharedCodexThread,
+  reserveCodexForkCleanup,
 } from '../codex-local-sessions';
 
 const THREAD_ID = '019dcd5a-6e54-7960-95e0-aa68117a28f1';
@@ -87,6 +88,31 @@ describe('importSharedCodexThread', () => {
     threadSpawnEdges: [],
   });
 
+  it('atomically replaces an interrupted migration-owned rollout on retry', async () => {
+    const target = path.join(codexHome, 'sessions', 'migration.jsonl');
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, '{partial');
+    const bytes = Buffer.from('{"complete":true}\n');
+    const write = fs.writeFileSync.bind(fs);
+    const partial = vi.spyOn(fs, 'writeFileSync').mockImplementationOnce((file, _data, options) => {
+      write(file, '{partial-temp', options);
+      throw Object.assign(new Error('disk full'), { code: 'ENOSPC' });
+    });
+    try {
+      await expect(importSharedCodexThread({
+        migration: true, threadId: THREAD_ID, stateRows: stateRows(),
+        rolloutBuffer: bytes, rolloutFilename: 'migration.jsonl', newCwd: '/target', title: 'migrated', updatedAt: 1,
+      })).rejects.toMatchObject({ code: 'ENOSPC' });
+      expect(fs.readFileSync(target, 'utf8')).toBe('{partial');
+      expect(fs.readdirSync(path.dirname(target))).toEqual(['migration.jsonl']);
+    } finally { partial.mockRestore(); }
+    const result = await importSharedCodexThread({
+      migration: true, threadId: THREAD_ID, stateRows: stateRows(),
+      rolloutBuffer: bytes, rolloutFilename: 'migration.jsonl', newCwd: '/target', title: 'migrated', updatedAt: 1,
+    });
+    expect(fs.readFileSync(target)).toEqual(bytes);
+    expect(result.rolloutWritten).toBe(true);
+  });
   it('writes rollout + state rows with cwd/rollout_path overrides and appends session index', async () => {
     const result = await importSharedCodexThread({
       threadId: THREAD_ID,
@@ -175,7 +201,7 @@ describe('importSharedCodexThread', () => {
     expect(fs.existsSync(path.join(rootDir, '..', 'tmp', 'evil.jsonl'))).toBe(false);
   });
 
-  it('re-import reuses existing rollout/state without overwriting; rollback keeps them (deleted-session re-import)', async () => {
+  it('re-import reuses existing rollout/state without overwriting; rollback restores changed state (deleted-session re-import)', async () => {
     const first = await importSharedCodexThread({
       threadId: THREAD_ID,
       stateRows: stateRows(),
@@ -203,6 +229,13 @@ describe('importSharedCodexThread', () => {
     expect(second.rolloutPath).toBe(first.rolloutPath);
     expect(second.rolloutWritten).toBe(false);
     expect(second.stateWritten).toBe(false); // 无新插入行
+    expect(second.previousState).toMatchObject({
+      dbPath: stateDbPath,
+      values: {
+        cwd: '/new/proj',
+        rollout_path: first.rolloutPath,
+      },
+    });
     expect(second.statePresent).toBe(true); // 行仍在,不该触发降档提示
     expect(fs.readFileSync(second.rolloutPath!, 'utf-8')).toBe('{"v":1}\n'); // 未被覆盖
 
@@ -217,10 +250,17 @@ describe('importSharedCodexThread', () => {
     expect(row.rollout_path).toBe(second.rolloutPath);
     expect(toolCount.n).toBe(1); // child 表未翻倍
 
-    // 第二次导入失败回滚:不得误删第一次落下的文件与 state 行
+    // 第二次导入失败回滚:不得误删第一次落下的文件/state 行，并恢复更新前的可变字段。
     await removeSharedCodexThread(THREAD_ID, second);
     expect(fs.existsSync(first.rolloutPath!)).toBe(true);
     expect(desktopThreadExists(THREAD_ID)).toBe(true);
+    const restoredDb = new Database(stateDbPath, { readonly: true });
+    const restoredRow = restoredDb
+      .prepare('SELECT cwd, rollout_path FROM threads WHERE id = ?')
+      .get(THREAD_ID) as { cwd: string; rollout_path: string };
+    restoredDb.close();
+    expect(restoredRow.cwd).toBe('/new/proj');
+    expect(restoredRow.rollout_path).toBe(first.rolloutPath);
   });
 
   it('removeSharedCodexThread rolls back rollout file and state rows', async () => {
@@ -239,5 +279,32 @@ describe('importSharedCodexThread', () => {
     const db = new Database(stateDbPath, { readonly: true });
     expect(db.prepare('SELECT COUNT(*) AS n FROM thread_dynamic_tools').get()).toEqual({ n: 0 });
     db.close();
+  });
+
+  it('removes only the exact reserved fork rollout and state rows', async () => {
+    const sourceThreadId = '019dcd5a-6e54-7960-95e0-aa68117a28f2';
+    const rolloutPath = path.join(
+      codexHome,
+      'sessions',
+      '2026',
+      '08',
+      '29',
+      `rollout-2026-08-29T00-00-00-${THREAD_ID}.jsonl`,
+    );
+    fs.mkdirSync(path.dirname(rolloutPath), { recursive: true });
+    fs.writeFileSync(rolloutPath, '{"type":"session_meta"}\n');
+    const db = new Database(stateDbPath);
+    db.prepare('INSERT INTO threads (id, rollout_path) VALUES (?, ?)').run(THREAD_ID, rolloutPath);
+    db.prepare('INSERT INTO thread_dynamic_tools (thread_id, tool_name) VALUES (?, ?)')
+      .run(THREAD_ID, 'browser');
+    db.close();
+
+    const reservation = reserveCodexForkCleanup(THREAD_ID, sourceThreadId);
+    expect(reservation).not.toBeNull();
+    await reservation!();
+
+    expect(fs.existsSync(rolloutPath)).toBe(false);
+    expect(desktopThreadExists(THREAD_ID)).toBe(false);
+    expect(reserveCodexForkCleanup(sourceThreadId, sourceThreadId)).toBeNull();
   });
 });

@@ -32,11 +32,18 @@
  * 3s 安全兜底防"点完不动"卡住乐观态,与 CHIP_JUMP_SAFETY_MS 同源经验值。
  */
 
-import { useCallback, useEffect, useRef, useState, type WheelEvent as ReactWheelEvent } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+  type WheelEvent as ReactWheelEvent,
+} from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { cn } from '@/lib/utils';
-import { Tip } from '@/components/ui/tooltip';
+import { Tooltip } from '@/components/ui/tooltip';
 
 import { useNavigationKeyListener } from './useNavigationKeyListener';
 import {
@@ -48,6 +55,8 @@ import {
   pickActiveNavId,
   pickVisibleNavRange,
   planNavRailTicks,
+  planNavRailTickWidth,
+  planNavRailTickProgress,
   type NavRailEntry,
 } from './messageNavRailModel';
 import { forwardNavRailWheel } from './messageNavRailWheel';
@@ -74,6 +83,8 @@ export interface MessageNavRailProps {
   scrollRef: { readonly current: HTMLDivElement | null };
   /** 内容列 maxWidth(与 MessageStream contentRef 的 maxWidth 同值)。 */
   contentMaxWidth: number;
+  /** ResizeObserver 测量时读取最新宽度，避免把连续像素变化回灌给 React。 */
+  getContentMaxWidth?: () => number;
   /** 底部输入 overlay 高度(resolvedBottomPadding),刻度带避开这段。 */
   bottomOffset: number;
   /** 点击刻度 → 跳到该提问。目标可能在渲染窗口外,由父级扩窗后滚动。 */
@@ -93,6 +104,7 @@ export function MessageNavRail({
   entries,
   scrollRef,
   contentMaxWidth,
+  getContentMaxWidth,
   bottomOffset,
   onJump,
   onNavCoverageChange,
@@ -105,6 +117,8 @@ export function MessageNavRail({
   // 测量与渲染之间 entries 可能已更新,按 id 回查最稳。
   const [visibleRange, setVisibleRange] = useState<{ startId: string; endId: string } | null>(null);
   const [pendingId, setPendingId] = useState<string | null>(null);
+  const [hoveredId, setHoveredId] = useState<string | null>(null);
+  const [scrubId, setScrubId] = useState<string | null>(null);
   const [hasRoom, setHasRoom] = useState(false);
   const [availHeight, setAvailHeight] = useState(0);
   // 淡入淡出:挂载即亮(给切进会话的用户一个初始定位),此后随活动唤醒。
@@ -114,6 +128,15 @@ export function MessageNavRail({
   const pendingTimerRef = useRef<number | null>(null);
   const idleTimerRef = useRef<number | null>(null);
   const hoveringRef = useRef(false);
+  const railRef = useRef<HTMLElement | null>(null);
+  const scrubRef = useRef<{
+    pointerId: number;
+    startY: number;
+    moved: boolean;
+    lastJumpedIndex: number | null;
+    button: HTMLButtonElement;
+  } | null>(null);
+  const suppressClickRef = useRef(false);
   // 容器左缘缓存,给高频 mousemove 的左缘唤醒判定用,免得每次事件都
   // getBoundingClientRect 强制布局读;measure(scroll/resize 都会触发)时刷新。
   const containerLeftRef = useRef(0);
@@ -130,6 +153,8 @@ export function MessageNavRail({
   }
   const contentMaxWidthRef = useRef(contentMaxWidth);
   contentMaxWidthRef.current = contentMaxWidth;
+  const getContentMaxWidthRef = useRef(getContentMaxWidth);
+  getContentMaxWidthRef.current = getContentMaxWidth;
   const bottomOffsetRef = useRef(bottomOffset);
   bottomOffsetRef.current = bottomOffset;
 
@@ -138,6 +163,9 @@ export function MessageNavRail({
     setActiveId(null);
     setVisibleRange(null);
     setPendingId(null);
+    setHoveredId(null);
+    setScrubId(null);
+    scrubRef.current = null;
     setAwake(true);
   }, [resetKey]);
 
@@ -166,7 +194,8 @@ export function MessageNavRail({
     if (!root) return;
     const containerRect = root.getBoundingClientRect();
     containerLeftRef.current = containerRect.left;
-    const roomOk = hasNavRailRoom(containerRect.width, contentMaxWidthRef.current);
+    const liveContentMaxWidth = getContentMaxWidthRef.current?.() || contentMaxWidthRef.current;
+    const roomOk = hasNavRailRoom(containerRect.width, liveContentMaxWidth);
     setHasRoom(roomOk);
     const avail = Math.max(
       0,
@@ -266,7 +295,7 @@ export function MessageNavRail({
   // availHeight 与纵向出场门槛会停在旧值直到下次滚动(PR #830 review)。
   useEffect(() => {
     scheduleMeasure();
-  }, [entries, bottomOffset, contentMaxWidth, scheduleMeasure]);
+  }, [entries, bottomOffset, contentMaxWidth, getContentMaxWidth, scheduleMeasure]);
 
   // 挂载亮相的那次也要按空闲节奏淡出。
   useEffect(() => {
@@ -312,6 +341,10 @@ export function MessageNavRail({
 
   const handleTickClick = useCallback(
     (clientId: string) => {
+      if (suppressClickRef.current) {
+        suppressClickRef.current = false;
+        return;
+      }
       setPendingId(clientId);
       if (pendingTimerRef.current !== null) {
         window.clearTimeout(pendingTimerRef.current);
@@ -323,6 +356,85 @@ export function MessageNavRail({
       onJump(clientId);
     },
     [onJump],
+  );
+
+  const findScrubIndex = useCallback((clientY: number): number | null => {
+    const rail = railRef.current;
+    if (!rail) return null;
+    let nearest: { index: number; distance: number } | null = null;
+    for (const button of rail.querySelectorAll<HTMLButtonElement>('[data-message-nav-index]')) {
+      const index = Number(button.dataset.messageNavIndex);
+      if (!Number.isInteger(index)) continue;
+      const rect = button.getBoundingClientRect();
+      const distance = Math.abs(clientY - (rect.top + rect.height / 2));
+      if (nearest === null || distance < nearest.distance) nearest = { index, distance };
+    }
+    return nearest?.index ?? null;
+  }, []);
+
+  const jumpToScrubIndex = useCallback(
+    (index: number) => {
+      const entry = entries[index];
+      if (!entry) return;
+      setScrubId(entry.id);
+      const scrub = scrubRef.current;
+      if (scrub?.lastJumpedIndex === index) return;
+      if (scrub) scrub.lastJumpedIndex = index;
+      setPendingId(entry.id);
+      if (pendingTimerRef.current !== null) window.clearTimeout(pendingTimerRef.current);
+      pendingTimerRef.current = window.setTimeout(() => {
+        pendingTimerRef.current = null;
+        setPendingId(null);
+      }, PENDING_SAFETY_MS);
+      onJump(entry.id);
+    },
+    [entries, onJump],
+  );
+
+  const handleTickPointerDown = useCallback(
+    (index: number, event: ReactPointerEvent<HTMLButtonElement>) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      suppressClickRef.current = false;
+      const button = event.currentTarget;
+      scrubRef.current = {
+        pointerId: event.pointerId,
+        startY: event.clientY,
+        moved: false,
+        lastJumpedIndex: null,
+        button,
+      };
+      setScrubId(entries[index]?.id ?? null);
+      wake();
+      button.setPointerCapture?.(event.pointerId);
+    },
+    [entries, wake],
+  );
+
+  const handleTickPointerMove = useCallback(
+    (event: ReactPointerEvent<HTMLButtonElement>) => {
+      const scrub = scrubRef.current;
+      if (!scrub || scrub.pointerId !== event.pointerId) return;
+      if (!scrub.moved && Math.abs(event.clientY - scrub.startY) < 3) return;
+      scrub.moved = true;
+      const index = findScrubIndex(event.clientY);
+      if (index !== null) jumpToScrubIndex(index);
+    },
+    [findScrubIndex, jumpToScrubIndex],
+  );
+
+  const finishScrub = useCallback(
+    (event: ReactPointerEvent<HTMLButtonElement>, suppressFollowUpClick: boolean) => {
+      const scrub = scrubRef.current;
+      if (!scrub || scrub.pointerId !== event.pointerId) return;
+      if (scrub.button.hasPointerCapture?.(event.pointerId)) {
+        scrub.button.releasePointerCapture?.(event.pointerId);
+      }
+      suppressClickRef.current = suppressFollowUpClick && scrub.moved;
+      scrubRef.current = null;
+      setScrubId(null);
+    },
+    [],
   );
 
   const handleTickMouseEnter = useCallback(() => {
@@ -376,13 +488,16 @@ export function MessageNavRail({
 
   return (
     <nav
+      ref={railRef}
       aria-label={t('chat.messageNavRail.aria')}
       // 容器不吃事件,只有刻度自身 pointer-events-auto(空闲减淡时也可点,
       // 见 tickEvents 注释),不挡左缘留白里的文字选择;justify-center 让
       // 刻度组在(避开输入 overlay 的)带内垂直居中。
       className={cn(
         'pointer-events-none absolute inset-y-0 left-2 z-30 flex w-6 flex-col items-stretch justify-center',
-        'transition-opacity duration-200 ease-out',
+        // §14.4 禁硬编码 duration / cubic-bezier。不透明度变化属 fast 档
+        // (150ms);原先是 Tailwind 的 duration-200 + ease-out。
+        'transition-opacity duration-[var(--motion-fast)] ease-[var(--motion-ease-out)]',
         awake ? 'opacity-100' : NAV_RAIL_IDLE_OPACITY_CLASS,
       )}
       style={{ paddingTop: RAIL_TOP_PX, paddingBottom: bottomOffset + RAIL_BOTTOM_EXTRA_PX }}
@@ -390,111 +505,180 @@ export function MessageNavRail({
       // "更早还有 N 条"占位刻度一并覆盖。
       onWheel={handleRailWheel}
     >
-      {plan.hiddenCount > 0 ? (
-        <Tip
-          text={t('chat.messageNavRail.hiddenEarlier', { count: plan.hiddenCount })}
-          side="right"
-          delay={150}
-        >
-          <div
-            className={cn('flex items-center justify-center', tickEvents)}
-            style={{ height: plan.pitchPx }}
-            onMouseEnter={handleTickMouseEnter}
-            onMouseLeave={handleTickMouseLeave}
-          >
-            <span
-              aria-hidden="true"
-              className="text-[9px] leading-none text-[var(--text-tertiary)]"
-            >
-              ⋯
-            </span>
-          </div>
-        </Tip>
-      ) : null}
-      {shown.map((entry, i) => {
-        // 纯附件且无文件名的提问用 i18n 计数文案兜底(模型层不碰 i18n)。
-        const preview =
-          entry.preview ||
-          (entry.attachmentsOnly
-            ? t('chat.messageNavRail.attachmentOnly', { count: entry.attachmentsOnly })
-            : '');
-        const isActive = entry.id === displayActiveId;
-        const fullIdx = plan.startIndex + i;
-        // 该轮次的内容当前正显示在视口里 → 提亮(Codex 同款"屏上内容高亮");
-        // 当前项在提亮之上再加长,两个信号分工:范围 = 在看什么,长刻度 = 读到哪。
-        const inView = rangeStartIdx >= 0 && fullIdx >= rangeStartIdx && fullIdx <= rangeEndIdx;
-        return (
-          <Tip
-            key={entry.id}
-            // 预览卡 = 提问(加粗一行)+ 回答摘要(灰字,至多 3 行)。
-            // 摘要是识别的主载体:大量提问是"继续 / 重来"式短指令,只靠
-            // 提问认不出是哪一轮。回答未产生时只显示提问行。
-            text={
-              preview ? (
-                <span className="flex max-w-[344px] flex-col gap-1">
-                  <span className="truncate text-13 font-medium">{preview}</span>
-                  {entry.answerExcerpt ? (
-                    // 摘要 = 主文字色 × 50% 透明度,不引新 token。数值由多轮
-                    // 实机验收夹逼、最终用户直接指定(2026-07-28)。注意半透明
-                    // 文字经抗锯齿合成会比同亮度实心灰**显得更亮**,别拿色值
-                    // 计算器推这个数,调整必须实机看效果。
-                    <span className="line-clamp-3 whitespace-normal break-normal text-13 leading-relaxed opacity-50">
-                      {entry.answerExcerpt}
-                    </span>
-                  ) : null}
+      {/*
+       * 整条导轨共用一个 Provider。原先每根刻度包一层 <Tip>,而 Tip 内部是
+       * 无条件自带 <TooltipProvider> 的 —— 而 skipDelayDuration 是 **Provider
+       * 级**状态,跨刻度就是跨 Provider,新 Provider 没有"刚刚开过"的记忆,于是
+       * 每根都重新等满 delay。刻度纵距只有 9px,鼠标竖着划过去是连续闪断。
+       * 换成 primitives 挂在一个 Provider 下:首次 hover 等 150ms,之后 700ms 内
+       * 切到相邻刻度立即显示,竖向移动时预览卡只换内容、不中断。
+       * (在 <Tip> 外面套一层 Provider 没用 —— 内层会把外层遮住。)
+       */}
+      <Tooltip.Provider delayDuration={150} skipDelayDuration={700}>
+        {plan.hiddenCount > 0 ? (
+          <Tooltip.Root>
+            <Tooltip.Trigger asChild>
+              <div
+                className={cn('flex items-center justify-center', tickEvents)}
+                style={{ height: plan.pitchPx }}
+                onMouseEnter={handleTickMouseEnter}
+                onMouseLeave={handleTickMouseLeave}
+              >
+                <span
+                  aria-hidden="true"
+                  className="text-10 leading-none text-[var(--text-tertiary)]"
+                >
+                  ⋯
                 </span>
-              ) : null
-            }
-            side="right"
-            delay={150}
-            // 面色刻意不用全局 tooltip token(亮暗两模式都是近黑,那是给
-            // "一句话标签"定的惯例):本卡是**内容预览**,语义对应 popover
-            // 内容面 —— 白底深字 / 暗色深面,多行正文可读性优先。旁边的
-            // "更早还有 N 条"是标签,继续用默认 tooltip 面色,两类不混。
-            // 覆盖类刻意与 TooltipContent 的原类同形式(任意值 bg-[...] /
-            // text-[...]),确保 tailwind-merge 归入同一冲突组、后写的必胜,
-            // 不赌歧义值的分组启发式。
-            // 阴影不覆盖:继承 TooltipContent 基座的浮层阴影决策,本卡不引入
-            // 新的深度样式(PR #830 review)。
-            contentClassName={cn(
-              'max-w-[380px] break-normal px-3 py-2',
-              'border-[var(--border-default)] bg-[hsl(var(--popover))] text-[hsl(var(--popover-foreground))]',
-              'dark:border-[var(--border-default)]',
-            )}
-          >
-            <button
-              type="button"
-              aria-label={t('chat.messageNavRail.jumpAria', {
-                index: plan.startIndex + i + 1,
-                preview,
-              })}
-              aria-current={isActive ? 'true' : undefined}
-              onClick={() => handleTickClick(entry.id)}
-              onMouseEnter={handleTickMouseEnter}
-              onMouseLeave={handleTickMouseLeave}
-              // 命中区吃满整格纵距,刻度线本体只有 2px 高。焦点环用全局
-              // --focus-ring token(AgentTaskCard 同款),键盘 Tab 可见
-              // (PR #830 review:纯 outline-none 会让键盘用户丢焦点)。
-              className={cn(
-                'group flex w-full items-center rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]',
-                tickEvents,
-              )}
-              style={{ height: plan.pitchPx }}
-            >
-              <span
-                className={cn(
-                  'h-[2px] rounded-full transition-all duration-200 ease-out',
-                  isActive
-                    ? 'w-4 bg-[var(--text-primary)]'
-                    : inView
-                      ? 'w-3 bg-[var(--text-primary)] group-hover:w-3.5'
-                      : 'w-3 bg-[var(--border-default)] group-hover:w-3.5 group-hover:bg-[var(--text-secondary)]',
-                )}
-              />
-            </button>
-          </Tip>
-        );
-      })}
+              </div>
+            </Tooltip.Trigger>
+            {/* 占位刻度是**标签**,继续用默认 tooltip 面色(近黑),与下面的
+                内容预览卡两类不混 —— 面色决策同 #830 原状。 */}
+            <Tooltip.Content side="right">
+              {t('chat.messageNavRail.hiddenEarlier', { count: plan.hiddenCount })}
+            </Tooltip.Content>
+          </Tooltip.Root>
+        ) : null}
+        {shown.map((entry, i) => {
+          // 纯附件且无文件名的提问用 i18n 计数文案兜底(模型层不碰 i18n)。
+          const preview =
+            entry.preview ||
+            (entry.attachmentsOnly
+              ? t('chat.messageNavRail.attachmentOnly', { count: entry.attachmentsOnly })
+              : '');
+          const isActive = entry.id === displayActiveId;
+          const fullIdx = plan.startIndex + i;
+          const interactionId = scrubId ?? hoveredId;
+          const interactionIndex =
+            interactionId == null ? -1 : entries.findIndex((item) => item.id === interactionId);
+          const interactionDistance =
+            interactionIndex < 0 ? null : Math.abs(fullIdx - interactionIndex);
+          // 该轮次的内容当前正显示在视口里 → 提亮"屏上内容高亮";
+          // 当前项在提亮之上再加长,两个信号分工:范围 = 在看什么,长刻度 = 读到哪。
+          const inView = rangeStartIdx >= 0 && fullIdx >= rangeStartIdx && fullIdx <= rangeEndIdx;
+          // 自动化提问是系统注入的重复性消息,用更短的刻度保留其导航入口,
+          // 同时让手动提问成为更容易扫到的主节奏。当前项仍比普通自动刻度更长,
+          // 保持点击跳转后的定位反馈。
+          const tickWidthClass = planNavRailTickWidth({
+            distance: interactionDistance,
+            isActive,
+            inView,
+            isAutomation: entry.isAutomation,
+          });
+          const tickOpacityClass =
+            interactionDistance === 0
+              ? 'opacity-100'
+              : interactionDistance !== null
+                ? 'opacity-[0.65]'
+                : isActive
+                  ? 'opacity-90'
+                  : 'opacity-[0.65]';
+          const markerProgress = planNavRailTickProgress(interactionDistance);
+          return (
+            <Tooltip.Root key={entry.id}>
+              <Tooltip.Trigger asChild>
+                <button
+                  type="button"
+                  aria-label={t('chat.messageNavRail.jumpAria', {
+                    index: plan.startIndex + i + 1,
+                    preview,
+                  })}
+                  aria-current={isActive ? 'true' : undefined}
+                  data-message-nav-automation={entry.isAutomation ? 'true' : undefined}
+                  data-message-nav-index={fullIdx}
+                  onClick={() => handleTickClick(entry.id)}
+                  onMouseLeave={() => {
+                    handleTickMouseLeave();
+                    setHoveredId((current) => (current === entry.id ? null : current));
+                  }}
+                  onPointerEnter={() => {
+                    setHoveredId(entry.id);
+                    handleTickMouseEnter();
+                  }}
+                  onPointerDown={(event) => handleTickPointerDown(fullIdx, event)}
+                  onPointerMove={handleTickPointerMove}
+                  onPointerUp={(event) => finishScrub(event, true)}
+                  onPointerCancel={(event) => finishScrub(event, false)}
+                  onLostPointerCapture={(event) => finishScrub(event, false)}
+                  onMouseEnter={() => {
+                    setHoveredId(entry.id);
+                    handleTickMouseEnter();
+                  }}
+                  // 命中区吃满整格纵距,刻度线本体只有 2px 高。焦点环用全局
+                  // --focus-ring token(AgentTaskCard 同款),键盘 Tab 可见
+                  // (PR #830 review:纯 outline-none 会让键盘用户丢焦点)。
+                  className={cn(
+                    'group flex w-full items-center rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]',
+                    tickEvents,
+                  )}
+                  style={{ height: plan.pitchPx }}
+                >
+                  <span
+                    className={cn(
+                      // §14.4 禁硬编码 duration / cubic-bezier:base 档
+                      // (200ms)与原先的 duration-200 同值,曲线取尺寸插值的
+                      // ease-move。过渡属性从 all 收窄到实际会变的两项。
+                      'h-[2px] w-[26px] origin-left rounded-full',
+                      'transition-[transform,background-color] duration-[var(--motion-base)]',
+                      'ease-[var(--motion-ease-move)]',
+                      tickWidthClass,
+                      tickOpacityClass,
+                      interactionDistance === 0 ||
+                        (interactionDistance === null && (isActive || inView))
+                        ? 'bg-[var(--text-primary)]'
+                        : 'bg-[var(--text-secondary)] group-hover:bg-[var(--text-primary)]',
+                    )}
+                    style={{
+                      transform: `scaleX(${0.2308 + 0.7692 * markerProgress})`,
+                    }}
+                  />
+                </button>
+              </Tooltip.Trigger>
+              {/*
+               * 预览卡 = 提问(加粗一行)+ 回答摘要(灰字,至多 3 行)。
+               * 摘要是识别的主载体:大量提问是"继续 / 重来"式短指令,只靠
+               * 提问认不出是哪一轮。回答未产生时只显示提问行。
+               *
+               * 面色刻意不用全局 tooltip token(亮暗两模式都是近黑,那是给
+               * "一句话标签"定的惯例):本卡是**内容预览**,语义对应 popover
+               * 内容面 —— 白底深字 / 暗色深面,多行正文可读性优先。旁边的
+               * "更早还有 N 条"是标签,继续用默认 tooltip 面色,两类不混。
+               * 覆盖类刻意与 TooltipContent 的原类同形式(任意值 bg-[...] /
+               * text-[...]),确保 tailwind-merge 归入同一冲突组、后写的必胜,
+               * 不赌歧义值的分组启发式。
+               * 阴影不覆盖:继承 TooltipContent 基座的浮层阴影决策,本卡不引入
+               * 新的深度样式(PR #830 review)。
+               *
+               * 无预览文本时不渲染 Content —— 与原先 <Tip text={null}> 的
+               * 透明传递等价(空内容不该冒出一个空卡)。
+               */}
+              {preview ? (
+                <Tooltip.Content
+                  side="right"
+                  className={cn(
+                    'max-w-[380px] break-normal px-3 py-2',
+                    'border-[var(--border-default)] bg-[hsl(var(--popover))] text-[hsl(var(--popover-foreground))]',
+                    'dark:border-[var(--border-default)]',
+                  )}
+                >
+                  <span className="flex max-w-[344px] flex-col gap-1">
+                    <span className="truncate text-13 font-medium">{preview}</span>
+                    {entry.answerExcerpt ? (
+                      // 摘要 = 主文字色 × 50% 透明度,不引新 token。数值由多轮
+                      // 实机验收夹逼、最终用户直接指定(2026-07-28)。注意半透明
+                      // 文字经抗锯齿合成会比同亮度实心灰**显得更亮**,别拿色值
+                      // 计算器推这个数,调整必须实机看效果。
+                      <span className="line-clamp-3 whitespace-normal break-normal text-13 leading-relaxed opacity-50">
+                        {entry.answerExcerpt}
+                      </span>
+                    ) : null}
+                  </span>
+                </Tooltip.Content>
+              ) : null}
+            </Tooltip.Root>
+          );
+        })}
+      </Tooltip.Provider>
     </nav>
   );
 }

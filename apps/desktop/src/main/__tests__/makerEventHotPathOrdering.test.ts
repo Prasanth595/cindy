@@ -1,37 +1,126 @@
 /**
  * makerEventHotPathOrdering.test.ts
  * ---------------------------------------------------------------------------
- * maker:event 是每个 agent 事件都会经过的 main→renderer hot path。这里用源码
- * 契约守住顺序：先把事件广播给 renderer，再做 usage/context 这类同步 SQLite
- * 或额外广播 side effect，避免 turn 结束时把 final/done 送达延后。
+ * Remaining production wiring and pricing characterization guards. Event ordering,
+ * failure ownership and provider admission run as behavioral tests in
+ * maker-ipc/__tests__/sessionEventPipeline.test.ts.
  */
 
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { ScriptTarget, transpileModule } from 'typescript';
+import type { AgentEvent } from '@cindy/maker-core';
 
 const sourcePath = resolve(__dirname, '..', 'maker-ipc', 'register.ts');
 const source = readFileSync(sourcePath, 'utf8').replace(/\r\n?/g, '\n');
+const registerSource = source;
 const usageSourcePath = resolve(__dirname, '..', 'maker-ipc', 'usage.ts');
 const usageSource = readFileSync(usageSourcePath, 'utf8').replace(/\r\n?/g, '\n');
 const hookControlSourcePath = resolve(__dirname, '..', 'hook-control', 'ipc.ts');
 const hookControlSource = readFileSync(hookControlSourcePath, 'utf8').replace(/\r\n?/g, '\n');
+const bootstrapSourcePath = resolve(__dirname, '..', 'bootstrap-electron.ts');
+const bootstrapSource = readFileSync(bootstrapSourcePath, 'utf8').replace(/\r\n?/g, '\n');
 const goalStorageSourcePath = resolve(__dirname, '..', 'goal-host', 'storage.ts');
 const goalStorageSource = readFileSync(goalStorageSourcePath, 'utf8').replace(/\r\n?/g, '\n');
 
 describe('maker:event hot path ordering', () => {
+  it('finishes mandatory runtime cleanup when optional remote refresh throws at an owner boundary', () => {
+    const start = source.indexOf('function cleanupClosedSessionRuntime(');
+    const code = source.slice(start, source.indexOf('\n// Keep holder reads', start));
+    const js = transpileModule(code, { compilerOptions: { target: ScriptTarget.ES2022 } }).outputText;
+    const cleared = vi.fn();
+    const deps = {
+      pendingCredentialSwitchHolder: null, deferredCodexRestartHolder: null,
+      gatewayCodexRestartHolder: { onSessionSettled: vi.fn() },
+      agentInputCoordinatorHolder: null,
+      refreshRemoteCodexMcpOnTurnSettledHolder: () => { throw new Error('App session is switching'); },
+      gitSnapshotCoordinator: { onSessionClosed: vi.fn() },
+      clearOrcaMcpHydrated: vi.fn(), knownNonOrcaSessionIds: new Set(),
+      lastReportedCostUsdBySession: new Map(), lastReportedModelUsageBySession: new Map(),
+      turnModelPromiseBySession: new Map(), turnUsageContextBySession: new Map(),
+      productTurnWallClockTracker: { clear: cleared }, productTurnUsageTargetTracker: { clear: vi.fn() },
+      claudeOutputLagTimingGuard: { clear: vi.fn() }, clearClaudeSessionBackgroundActivity: vi.fn(),
+      clearSessionPersistState: vi.fn(), clearSubagentObservationRewindState: () => true,
+      handleAgentIslandSessionClosedAfterCleanup: vi.fn(), log: { warn: vi.fn() },
+    };
+    const cleanup = new Function(...Object.keys(deps), `${js}; return cleanupClosedSessionRuntime;`)(...Object.values(deps));
+    expect(() => cleanup({ id: 'departing-task' })).not.toThrow();
+    expect(deps.gatewayCodexRestartHolder.onSessionSettled).toHaveBeenCalledOnce();
+    expect(cleared).toHaveBeenCalledWith('departing-task');
+    expect(deps.clearSessionPersistState).toHaveBeenCalledWith('departing-task');
+    expect(deps.handleAgentIslandSessionClosedAfterCleanup).toHaveBeenCalledWith('departing-task', 'process-closed');
+  });
+
+  it('does not read the guarded Maker during account-boundary remote refresh', () => {
+    const start = source.indexOf('refreshRemoteCodexMcpOnTurnSettledHolder = (sessionId: string): void => {');
+    const prefix = source.slice(start, source.indexOf('    const remoteHostId', start));
+    const js = transpileModule(`let refreshRemoteCodexMcpOnTurnSettledHolder; ${prefix}\n};`, {
+      compilerOptions: { target: ScriptTarget.ES2022 },
+    }).outputText;
+    const getSession = vi.fn(() => { throw new Error('App session is switching'); });
+    const refresh = new Function('isAppSessionBoundaryPending', 'maker', `${js}; return refreshRemoteCodexMcpOnTurnSettledHolder;`)(() => true, { getSession });
+    expect(() => refresh('departing-task')).not.toThrow();
+    expect(getSession).not.toHaveBeenCalled();
+  });
+  it.each([undefined, null, { text: 'Restart Cindy before using Pi again.', isFinal: true }])(
+    'strips Host recovery metadata from the boundary copy with data %j',
+    (data) => {
+      // Execute the actual boundary function without booting Desktop/register side effects.
+      const start = source.indexOf('function redactEventForRenderer');
+      const code = source.slice(start, source.indexOf('\nfunction ', start + 1));
+      const js = transpileModule(code, {
+        compilerOptions: { target: ScriptTarget.ES2022 },
+      }).outputText;
+      const redact = new Function(`${js}; return redactEventForRenderer;`)() as
+        (event: AgentEvent) => AgentEvent;
+      const original: AgentEvent = {
+        type: 'text', source: 'pi', data, runtimeRecovery: true,
+        sessionInstanceId: 'runtime', sessionTurnGeneration: 7,
+      };
+      const boundary = redact(original);
+      expect(boundary).toEqual({ type: 'text', source: 'pi', data });
+      expect(original.runtimeRecovery).toBe(true);
+      expect(original.sessionInstanceId).toBe('runtime');
+      expect(original.sessionTurnGeneration).toBe(7);
+      expect(boundary).not.toBe(original);
+    },
+  );
+
+  it('keeps complete PI Subagent returns on the host side of the event boundary', () => {
+    const redactor = source.slice(
+      source.indexOf('function redactEventForRenderer'),
+      source.indexOf('\nfunction ', source.indexOf('function redactEventForRenderer') + 1),
+    );
+    expect(redactor).toContain('delete rendererEvent.sessionTurnGeneration;');
+    expect(redactor).toContain('delete rendererEvent.sessionInstanceId;');
+    for (const key of [
+      'subagentObservation',
+      'returnedResult',
+      'returnedResultEmpty',
+      'returnedResultTruncated',
+    ]) {
+      expect(redactor).toContain(`'${key}'`);
+    }
+  });
+
   it('rewires a replacement Session instance that retains the same business id', () => {
     const wireSessionSource = extractWireSessionSource();
 
-    expect(source).toContain('const wiredSessionsById = new Map<string, WiredSessionRegistration>();');
-    expect(wireSessionSource).toContain('if (existing?.session === session)');
-    expect(wireSessionSource).toContain('for (const dispose of existing.disposers) dispose();');
-    expect(wireSessionSource).toContain('existing.session.setInteractionListener(null);');
+    // Instance ownership and teardown failures are exercised by
+    // sessionBindingLifecycle.test.ts; retain the production adapter wiring guard.
     expect(wireSessionSource).toContain(
-      'registration.disposers.push(session.onEvent((event: AgentEvent) => {',
+      'const registration = sessionBindings.beginBinding(session);',
     );
-    expect(wireSessionSource).toContain(
-      'registration.disposers.push(session.onStatusChange((status) => {',
+    expect(wireSessionSource).toContain('if (!registration) return;');
+    expect(wireSessionSource).toMatch(
+      /registration\.disposers\.push\(\s*session\.onEvent\(\(event: AgentEvent\) => \{/,
+    );
+    expect(wireSessionSource).toContain('session.onRuntimeRecovery(emitWiredSessionEvent)');
+    expectOrder(
+      wireSessionSource,
+      'sessionBindings.attachStatusListener(registration);',
+      'installDesktopInteractionListener(session);',
     );
     // #1286:拆线(实例替换 / 会话关闭)必须给插件补 did-turn-end,否则订阅方的
     // 「AI 在忙」外层状态永久卡在 working,除重启没有自愈手段。同一个 disposer 里
@@ -42,65 +131,197 @@ describe('maker:event hot path ordering', () => {
       wireSessionSource.lastIndexOf('registration.disposers.push(', tapDisposerIndex),
     ).toBeGreaterThanOrEqual(0);
     expect(wireSessionSource).toContain('installInteractionLifecycleObserver(session, null);');
+    expectOrder(
+      wireSessionSource,
+      'if (isFencedStaleSessionTerminal(session.id, event)) return;',
+      'ghostSessionTap.handleEvent(',
+    );
   });
 
-  it('broadcasts EVENT before usage/context/island/idle side effects', () => {
-    const wireSessionSource = extractWireSessionSource();
-
-    const broadcastIndex = wireSessionSource.indexOf('broadcastToAllWindows(MAKER_PUSH.EVENT');
-    expect(broadcastIndex).toBeGreaterThanOrEqual(0);
-
-    for (const sideEffect of [
-      'recordSessionContextSnapshot(',
-      'recordCodexAccountUsageSnapshot(',
-      'recordTurnSpend(',
-      'recordSessionTurnSpend(',
-      'recordCodexTurnUsage(',
-      'handleAgentIslandEventAfterBroadcast(',
-      'sessionTurnActivityTracker.scheduleIdleAfterStatusBroadcast(',
-      'sessionTurnActivityTracker.scheduleIdleAfterTerminalBroadcast(',
+  it('keeps the remaining runtime close adapter in its original domain order', () => {
+    const start = source.indexOf('function cleanupClosedSessionRuntime(');
+    const end = source.indexOf('\n}\n', start);
+    expect(start).toBeGreaterThan(-1);
+    const body = source.slice(start, end);
+    let previous = -1;
+    for (const call of [
+      'pendingCredentialSwitchHolder?.onSessionClosed(',
+      'deferredCodexRestartHolder?.onSessionSettled(',
+      'agentInputCoordinatorHolder?.onExternalTurnSettled(',
+      'refreshRemoteCodexMcpOnTurnSettledHolder?.(',
+      'gitSnapshotCoordinator?.onSessionClosed(',
+      'clearOrcaMcpHydrated(',
+      'knownNonOrcaSessionIds.delete(',
+      'lastReportedCostUsdBySession.delete(',
+      'lastReportedModelUsageBySession.delete(',
+      'turnModelPromiseBySession.delete(',
+      'turnUsageContextBySession.delete(',
+      'productTurnWallClockTracker.clear(',
+      'productTurnUsageTargetTracker.clear(',
+      'claudeOutputLagTimingGuard.clear(',
+      'clearClaudeSessionBackgroundActivity(',
+      'clearSessionPersistState(',
+      'clearSubagentObservationRewindState(',
+      'handleAgentIslandSessionClosedAfterCleanup(',
     ]) {
-      const indices = [...wireSessionSource.matchAll(new RegExp(escapeRegExp(sideEffect), 'g'))]
-        .map((match) => match.index)
-        .filter((index): index is number => typeof index === 'number');
-      expect(indices.length, `${sideEffect} should be present`).toBeGreaterThan(0);
-      expect(indices.every((index) => index > broadcastIndex), `${sideEffect} must be after EVENT broadcast`).toBe(true);
+      const index = body.indexOf(call);
+      expect(index, call).toBeGreaterThan(previous);
+      previous = index;
     }
-    expect(wireSessionSource.slice(0, broadcastIndex)).not.toContain('handleAgentEvent(sessionMetaForIsland');
   });
+  // runs the paid-model fence in the shared Session lifecycle boundary: covered by the executable sessionEventPipeline tests.
+
+  // rejects a fenced leftover terminal before register-side turn effects: covered by the executable sessionEventPipeline tests.
+
+  // broadcasts EVENT before usage/context/island/idle side effects: covered by the executable sessionEventPipeline tests.
+
+  // tracks Claude wall clock across continuation segments and only consumes it at product completion: covered by the executable sessionEventPipeline tests.
+  it('preserves the product clock before a silent-stop continuation can emit running', () => {
+    const start = source.indexOf('async function handleSilentStopTurnEnd(');
+    const continuation = source.slice(start, source.indexOf('\nfunction ', start + 1));
+    expectOrder(
+      continuation,
+      'productTurnWallClockTracker.preserveForContinuation(session.id);',
+      'const sendResult = await session.sendHostTurnContinuation(',
+    );
+  });
+
+  it('uses the assistant API message id as Vertex output-lag evidence', () => {
+    const wireSessionSource = readEventModule('sessionClaudeTurnUsage');
+
+    expect(wireSessionSource).toContain('assistant_message_id?: unknown;');
+    expect(wireSessionSource).toContain("typeof doneData?.assistant_message_id === 'string'");
+    expect(wireSessionSource).toContain('? doneData.assistant_message_id');
+    expect(wireSessionSource).toContain('doneData?.is_error !== true');
+  });
+  // wakes deferred Goal resumes from the shared product-terminal idle boundary: covered by the executable sessionEventPipeline tests.
+
+  it('wakes deferred Goal resumes after direct-abort and authoritative-idle reconciliation', () => {
+    const observerHelperStart = source.indexOf('function notifyGoalIdleAfterTurnSettled(');
+    const observerHelperEnd = source.indexOf('\n}\n', observerHelperStart) + 2;
+    const observerHelperSource = source.slice(observerHelperStart, observerHelperEnd);
+    const reconcileStart = source.indexOf('const sealLostTerminalPersistState =');
+    const reconcileEnd = source.indexOf('\n\n  const readDirectAbortTurnId =', reconcileStart);
+    const reconcileSource = source.slice(reconcileStart, reconcileEnd);
+    const directAbortStart = source.indexOf('ipcMain.handle(MAKER_INVOKE.ABORT_SESSION');
+    const directAbortEnd = source.indexOf(
+      '\n  ipcMain.handle(MAKER_INVOKE.CLOSE_SESSION',
+      directAbortStart,
+    );
+    const directAbortSource = source.slice(directAbortStart, directAbortEnd);
+    const coordinatorStart = source.indexOf('const inputCoordinator:');
+    const coordinatorEnd = source.indexOf(
+      '\n  agentInputCoordinatorHolder = inputCoordinator;',
+      coordinatorStart,
+    );
+    const coordinatorSource = source.slice(coordinatorStart, coordinatorEnd);
+
+    expect(observerHelperStart).toBeGreaterThanOrEqual(0);
+    expect(observerHelperEnd).toBeGreaterThan(observerHelperStart);
+    expect(observerHelperSource).toContain('goalIdleObserver?.(sessionId);');
+    expect([...source.matchAll(/goalIdleObserver\?\.\(sessionId\);/g)]).toHaveLength(1);
+
+    expect(reconcileStart).toBeGreaterThanOrEqual(0);
+    expect(reconcileEnd).toBeGreaterThan(reconcileStart);
+    const liveIdleStart = reconcileSource.indexOf(
+      'sessionTurnActivityTracker.setSessionInTurn(sessionId, false);',
+    );
+    expect(liveIdleStart).toBeGreaterThanOrEqual(0);
+    expect(
+      reconcileSource.indexOf('notifyGoalIdleAfterTurnSettled(sessionId);', liveIdleStart),
+    ).toBeGreaterThan(liveIdleStart);
+    expectOrder(
+      reconcileSource,
+      'sealAssistantBlockForLateFinal(sessionId, null);',
+      'consumeLastAssistantPersistId(sessionId);',
+    );
+    expectOrder(
+      reconcileSource,
+      'clearCodexPlanRowsForSession(sessionId);',
+      'resetTurnPersistState(sessionId);',
+    );
+    expectOrder(
+      reconcileSource,
+      'sealLostTerminalPersistState(sessionId);',
+      'sessionTurnActivityTracker.deleteSession(sessionId);',
+    );
+
+    // ABORT_SESSION reconciles from finally, so vendor abort rejection still reaches the
+    // shared idle wake-up once the exact Session/generation boundary proves idle.
+    expect(directAbortStart).toBeGreaterThanOrEqual(0);
+    expect(directAbortEnd).toBeGreaterThan(directAbortStart);
+    expect(directAbortSource).toMatch(
+      /finally \{[\s\S]*reconcileDirectAbortBoundary\(sessionId, directAbortBoundary, 'direct-abort'\);/,
+    );
+    expect(source).toContain('reconciledIdle = reconcileSessionTurnIdle(sessionId, source);');
+
+    // Coordinator NO_ACTIVE_TURN / settled-abort fallback shares the same reconciliation exit.
+    expect(coordinatorStart).toBeGreaterThanOrEqual(0);
+    expect(coordinatorEnd).toBeGreaterThan(coordinatorStart);
+    expect(coordinatorSource).toContain(
+      "return reconcileSessionTurnIdle(sessionId, 'authoritative-idle');",
+    );
+    expect(coordinatorSource).toContain('isLiveTurnRunning: (sessionId) =>');
+    expect(coordinatorSource).toContain('isLiveSessionPresent: (sessionId) =>');
+    expect(source).toContain('lookupStableSessionForTurnBoundary');
+    expect(source).toContain("status: 'unavailable'");
+    expect(coordinatorSource).toContain("if (lookup.status === 'unavailable') return undefined;");
+    expect(coordinatorSource).toContain("if (lookup.status === 'missing') return false;");
+    expect(coordinatorSource).toContain("return lookup.status === 'found';");
+  });
+  // does not latch product-turn bookkeeping on background status events: covered by the executable sessionEventPipeline tests.
+
+  // persists a terminal Codex plan before clearing its turn-owned lookup maps: covered by the executable sessionEventPipeline tests.
 
   it('defers remote auth island errors until the renderer reports retry failure', () => {
-    const wireSessionSource = extractWireSessionSource();
+    const wireSessionSource = readEventModule('sessionEventPreparation');
     const deferredHandler = source.match(
-      /ipcMain\.handle\(MAKER_INVOKE\.PERSIST_TURN_ERROR_DEFERRED,[\s\S]*?\n {2}\}\);/,
+      /ipcMain\.handle\(\s*MAKER_INVOKE\.PERSIST_TURN_ERROR_DEFERRED,[\s\S]*?\n\s*\}\);/,
     )?.[0];
 
     expect(source).toContain('function isRemoteAuthRetryErrorEvent(');
     expect(source).toContain("if (session.agentKind === 'codex') return false;");
     expect(source).toContain('service.deferRemoteAuthRetryError(meta, event);');
-    expect(wireSessionSource).toContain('isRemoteAuthRetry = isRemoteAuthRetryErrorEvent(session, event);');
+    expect(wireSessionSource).toContain(
+      'isRemoteAuthRetry = isRemoteAuthRetryErrorEvent(session, event);',
+    );
     expect(deferredHandler).toBeTruthy();
-    expect(deferredHandler).toContain('getAgentIslandService()?.resolveDeferredRemoteAuthRetryError(sid);');
+    expect(deferredHandler).toContain(
+      'getAgentIslandService()?.resolveDeferredRemoteAuthRetryError(sid);',
+    );
+    expect(deferredHandler).toContain('return persistId;');
     expectOrder(
       deferredHandler ?? '',
       'onTurnErrorEvent(sid, errData, agentMeta);',
       'getAgentIslandService()?.resolveDeferredRemoteAuthRetryError(sid);',
     );
+    expectOrder(
+      deferredHandler ?? '',
+      'getAgentIslandService()?.resolveDeferredRemoteAuthRetryError(sid);',
+      'return persistId;',
+    );
   });
 
   it('keeps auto-resume-owned terminal errors out of Agent Island until they are final', () => {
+    const source = registerSource + readEventModule('sessionEventTerminal');
     const handler = source.match(
       /function handleAgentIslandEventAfterBroadcast\([\s\S]*?\n}\n\nfunction surfaceSuppressedAutoResumeErrorInAgentIsland/,
     )?.[0];
     expect(handler).toBeTruthy();
     if (!handler) return;
 
-    expectOrder(handler, 'service.deferRemoteAuthRetryError(meta, event);', 'const terminalError =');
-    expect(handler).toContain('agentInputCoordinatorHolder?.isAutoResumePending(session.id) === true');
-    expect(handler).toContain('agentInputCoordinatorHolder?.isAutoResumeDeferred(session.id) === true');
-    expect(handler).toContain(
-      'autoResumeBookkeeping.shouldSuppressAgentIslandError(session.id)',
+    expectOrder(
+      handler,
+      'service.deferRemoteAuthRetryError(meta, event);',
+      'const terminalError =',
     );
+    expect(handler).toContain(
+      'agentInputCoordinatorHolder?.isAutoResumePending(session.id) === true',
+    );
+    expect(handler).toContain(
+      'agentInputCoordinatorHolder?.isAutoResumeDeferred(session.id) === true',
+    );
+    expect(handler).toContain('autoResumeBookkeeping.shouldSuppressAgentIslandError(session.id)');
     expect(handler).toContain(
       'autoResumeBookkeeping.shouldSuppressAgentIslandCompletionTail(session.id)',
     );
@@ -112,7 +333,7 @@ describe('maker:event hot path ordering', () => {
     expect(handler).not.toContain('suppressErrorSound');
 
     expect(source).toContain('surfaceSuppressedAutoResumeErrorInAgentIsland(sessionId, detail)');
-    expect(source).toContain("data: { ...detail, isTerminal: true }");
+    expect(source).toContain('data: { ...detail, isTerminal: true }');
     expect(source).toContain(
       'autoResumeBookkeeping.claimSuppressedErrorForRetry(sessionId, clientId, source);',
     );
@@ -134,104 +355,82 @@ describe('maker:event hot path ordering', () => {
     expect(source).toContain(
       'autoResumeBookkeeping.discardReplacementProvenByProviderEvent(session.id);',
     );
-    expect(source).not.toContain(
-      'autoResumeBookkeeping.discardSuppressedError(sessionId);',
+    expect(source).not.toContain('autoResumeBookkeeping.discardSuppressedError(sessionId);');
+    expect(source).toContain(
+      'deferredOrcaWorkerTerminal = autoResumeBookkeeping.stashOrcaSuppressedTerminal(',
+    );
+    expect(source).toContain('finalizeOrcaSuppressedTerminal: settleDeferredOrcaWorkerTerminal,');
+    expect(source).toContain('shouldSkipOrcaWorkerTerminal({');
+    expect(source).toContain('stashedThisErrorEvent: deferredOrcaWorkerTerminal');
+    expect(source).toContain('isPairedFailedTurnDone,');
+    expect(source).toContain('isFailedTurnCompletionTail,');
+    expect(source).toContain('autoResumeBookkeeping.consumeFailedTurnCompletionTail(');
+    expect(source).toContain('event.sessionTurnGeneration');
+    expect(source).toContain(
+      'hasSuppressedError: autoResumeBookkeeping.hasSuppressedError(session.id)',
     );
   });
+  // only status/done/error paths request idle restore: covered by the executable sessionEventPipeline tests.
 
-  it('only status/done/error paths request idle restore', () => {
-    const wireSessionSource = extractWireSessionSource();
-    const statusIdleAssignments = [...wireSessionSource.matchAll(/shouldMarkTurnStatusIdleAfterBroadcast = true;/g)]
-      .map((match) => match.index)
-      .filter((index): index is number => typeof index === 'number');
-    const terminalIdleAssignments = [...wireSessionSource.matchAll(/shouldMarkTurnTerminalIdleAfterBroadcast = true;/g)]
-      .map((match) => match.index)
-      .filter((index): index is number => typeof index === 'number');
+  it('keeps the bound deferred Orca terminal behind worker start and forwards its original capture', async () => {
+    const binding = source.match(/finalizeOrcaSuppressedTerminal:\s*(\w+),/);
+    expect(binding).not.toBeNull();
+    const name = binding![1];
+    const start = source.indexOf(`function ${name}(`);
+    expect(start).toBeGreaterThanOrEqual(0);
+    const end = source.indexOf('\n/**', start);
+    expect(end).toBeGreaterThan(start);
+    const js = transpileModule(source.slice(start, end), {
+      compilerOptions: { target: ScriptTarget.ES2022 },
+    }).outputText;
+    let releaseStart!: () => void;
+    const started = new Promise<void>((resolve) => { releaseStart = resolve; });
+    const waitForStart = vi.fn(() => started);
+    const handleWorkerTerminalTurn = vi.fn(async (_terminal: { capture: unknown }) => undefined);
+    const finalize = new Function(
+      'workerTurnStartSequencer',
+      'orcaTeamServiceForEvents',
+      `${js}\nreturn ${name};`,
+    )({ waitForStart }, { handleWorkerTerminalTurn }) as (
+      sessionId: string,
+      payload: unknown,
+    ) => void;
+    const capture = { turnId: 'original-turn' };
+    const payload = {
+      status: 'error', finalText: 'original result', diagnostic: 'original failure', capture,
+    };
 
-    expect(statusIdleAssignments).toHaveLength(1);
-    expect(terminalIdleAssignments).toHaveLength(2);
-
-    // 回看窗口要盖住赋值点与所属 if 条件之间的声明/注释(done 分支里 silent-stop
-    // 的 isSilentStopDone 判定 + 设计注释就有 ~500 字符),太窄会把仍在正确分支内的
-    // 赋值误判成"脱离 done 路径"。
-    const CONTEXT_LOOKBACK = 1_400;
-    const statusContexts = statusIdleAssignments.map((index) =>
-      wireSessionSource.slice(Math.max(0, index - CONTEXT_LOOKBACK), index + 'shouldMarkTurnStatusIdleAfterBroadcast = true;'.length),
-    );
-    const terminalContexts = terminalIdleAssignments.map((index) =>
-      wireSessionSource.slice(Math.max(0, index - CONTEXT_LOOKBACK), index + 'shouldMarkTurnTerminalIdleAfterBroadcast = true;'.length),
-    );
-
-    expect(statusContexts.some((context) => context.includes('data.isRunning === false'))).toBe(true);
-    expect(terminalContexts.some((context) => context.includes("event.type === 'done'"))).toBe(true);
-    expect(terminalContexts.some((context) => context.includes('isTerminalTurnErrorEvent(event)'))).toBe(true);
-    expect([...statusContexts, ...terminalContexts].join('\n')).not.toContain("event.type === 'error'");
+    finalize('worker-session', payload);
+    expect(waitForStart).toHaveBeenCalledWith('worker-session');
+    expect(handleWorkerTerminalTurn).not.toHaveBeenCalled();
+    releaseStart();
+    await vi.waitFor(() => expect(handleWorkerTerminalTurn).toHaveBeenCalledTimes(1));
+    expect(handleWorkerTerminalTurn).toHaveBeenCalledWith({ sessionId: 'worker-session', ...payload });
+    expect(handleWorkerTerminalTurn.mock.calls[0]?.[0].capture).toBe(capture);
   });
 
-  it('does not persist remote Codex account snapshots into local account usage', () => {
-    const wireSessionSource = extractWireSessionSource();
-    expect(wireSessionSource).toContain(
-      "event.type === 'account_usage' && event.source === 'codex' && !session.remoteHostId",
-    );
-  });
+  // does not persist remote Codex account snapshots into local account usage: covered by the executable sessionEventPipeline tests.
 
-  it('fires git snapshots only from post-broadcast done events', () => {
-    const wireSessionSource = extractWireSessionSource();
-    const broadcastIndex = wireSessionSource.indexOf('broadcastToAllWindows(MAKER_PUSH.EVENT');
-    const snapshotIndex = wireSessionSource.indexOf('void gitSnapshotCoordinator?.onTurnEnd(session.id);');
-    const doneBlockIndex = wireSessionSource.indexOf("if (event.type === 'done') {", broadcastIndex);
-    const beforeBroadcast = wireSessionSource.slice(0, broadcastIndex);
-
-    expect(snapshotIndex).toBeGreaterThan(broadcastIndex);
-    expect(beforeBroadcast).not.toContain('gitSnapshotCoordinator?.onTurnEnd');
-    expect(doneBlockIndex).toBeGreaterThanOrEqual(0);
-    expect(snapshotIndex).toBeGreaterThan(doneBlockIndex);
-  });
+  // fires git snapshots only from post-broadcast product-terminal done events: covered by the executable sessionEventPipeline tests.
 
   it('uses status turn-start snapshots only as a fallback when no baseline is pending', () => {
-    const wireSessionSource = extractWireSessionSource();
-    const turnStartIndex = wireSessionSource.indexOf('gitSnapshotCoordinator?.onTurnStart(session.id);');
-    const pendingCheckIndex = wireSessionSource.indexOf('gitSnapshotCoordinator?.hasPendingTurnStart(session.id)');
+    const wireSessionSource = readEventModule('sessionEventPreparation');
+    const turnStartIndex = wireSessionSource.indexOf(
+      'gitSnapshotCoordinator?.onTurnStart(session.id);',
+    );
+    const pendingCheckIndex = wireSessionSource.indexOf(
+      'gitSnapshotCoordinator?.hasPendingTurnStart(session.id)',
+    );
 
     expect(turnStartIndex).toBeGreaterThanOrEqual(0);
     expect(pendingCheckIndex).toBeGreaterThanOrEqual(0);
     expect(pendingCheckIndex).toBeLessThan(turnStartIndex);
   });
+  // clears pending git snapshot baselines only after terminal error broadcast: covered by the executable sessionEventPipeline tests.
 
-  it('clears pending git snapshot baselines only after terminal error broadcast', () => {
-    const wireSessionSource = extractWireSessionSource();
-    const broadcastIndex = wireSessionSource.indexOf('broadcastToAllWindows(MAKER_PUSH.EVENT');
-    const abortIndex = wireSessionSource.indexOf('gitSnapshotCoordinator?.onTurnAbort(session.id);');
-    const beforeBroadcast = wireSessionSource.slice(0, broadcastIndex);
-    const abortContext = wireSessionSource.slice(Math.max(0, abortIndex - 140), abortIndex + 80);
+  // writes one durable Assistant boundary for both success and terminal error: covered by the executable sessionEventPipeline tests.
 
-    expect(abortIndex).toBeGreaterThan(broadcastIndex);
-    expect(beforeBroadcast).not.toContain('gitSnapshotCoordinator?.onTurnAbort');
-    expect(abortContext).toContain('isTerminalTurnErrorEvent(event)');
-  });
-
-  it('writes one durable Assistant boundary for both success and terminal error', () => {
-    const wireSessionSource = extractWireSessionSource();
-    const boundaryStart = wireSessionSource.indexOf('let turnAssistantPersistId: string | undefined;');
-    const boundaryEnd = wireSessionSource.indexOf('const autoResumeSuppressesPersist', boundaryStart);
-    const boundaryBlock = wireSessionSource.slice(boundaryStart, boundaryEnd);
-
-    expect(boundaryStart).toBeGreaterThanOrEqual(0);
-    expect(boundaryEnd).toBeGreaterThan(boundaryStart);
-    expectOrder(boundaryBlock, 'flushAssistantBlock(session.id, eventAgentMeta);', 'consumeLastAssistantPersistId(session.id);');
-    expectOrder(boundaryBlock, 'consumeLastAssistantPersistId(session.id);', 'consumeLastTopLevelAssistantPersistId(session.id);');
-    expectOrder(boundaryBlock, 'consumeLastTopLevelAssistantPersistId(session.id);', 'flushOrphanToolResults(session.id, eventAgentMeta);');
-    expect(boundaryBlock).toContain("event.type === 'done'");
-    expect(boundaryBlock).toContain('markAssistantTurnCompleted(session.id, turnBoundaryAssistantPersistId)');
-    expect(boundaryBlock).toContain('markAssistantTurnFailed(session.id, turnBoundaryAssistantPersistId)');
-    expect(boundaryBlock).toContain('pendingFailedTurnAssistantPersistId.get(session.id)');
-    expect(boundaryBlock).toContain('isPairedFailedTurnDone = true');
-    expectOrder(
-      boundaryBlock,
-      'isPairedFailedTurnDone = true',
-      "else if (!isPairedFailedTurnDone)",
-    );
-  });
+  // reserves terminal error persistId before EVENT broadcast and writes after: covered by the executable sessionEventPipeline tests.
 
   it('rejects stale Agent Island interactions before renderer delivery', () => {
     const interactionListenerSource = extractInstallDesktopInteractionListenerSource();
@@ -242,47 +441,150 @@ describe('maker:event hot path ordering', () => {
       'getAgentIslandService()?.isInteractionCurrent(',
     );
     const flushIndex = interactionListenerSource.indexOf('flushAssistantBlock(session.id);');
-    const broadcastIndex = interactionListenerSource.indexOf('broadcastToAllWindows(MAKER_PUSH.INTERACTION_REQUEST');
-    const pendingIndex = interactionListenerSource.indexOf('pendingInteractionResolvers.set(req.requestId, entry);');
-    const islandIndex = interactionListenerSource.indexOf('handleAgentIslandInteractionAfterBroadcast(');
+    const broadcastIndex = interactionListenerSource.indexOf(
+      'broadcastToAllWindows(MAKER_PUSH.INTERACTION_REQUEST',
+    );
+    const pendingIndex = interactionListenerSource.indexOf(
+      'pendingInteractionResolvers.set(req.requestId, entry);',
+    );
+    const islandIndex = interactionListenerSource.indexOf(
+      'handleAgentIslandInteractionAfterBroadcast(',
+    );
 
     expect(epochCaptureIndex).toBeGreaterThanOrEqual(0);
     expect(currentEpochCheckIndex).toBeGreaterThan(epochCaptureIndex);
     expect(flushIndex).toBeGreaterThan(currentEpochCheckIndex);
-    expect(broadcastIndex).toBeGreaterThan(flushIndex);
-    expect(broadcastIndex).toBeGreaterThanOrEqual(0);
-    expect(pendingIndex).toBeGreaterThan(broadcastIndex);
-    expect(islandIndex).toBeGreaterThan(pendingIndex);
-    expect(interactionListenerSource.slice(0, broadcastIndex)).not.toContain('handleInteractionRequest(');
-    expect(source).toContain('Agent Island interaction update failed after maker interaction broadcast');
+    expect(pendingIndex).toBeGreaterThan(flushIndex);
+    expect(broadcastIndex).toBeGreaterThan(pendingIndex);
+    expect(islandIndex).toBeGreaterThan(broadcastIndex);
+    expect(interactionListenerSource.slice(0, broadcastIndex)).not.toContain(
+      'handleInteractionRequest(',
+    );
+    expect(source).toContain(
+      'Agent Island interaction update failed after maker interaction broadcast',
+    );
+  });
+
+  it('stores the redacted permission request for reconnect and Feishu takeover', () => {
+    const interactionListenerSource = extractInstallDesktopInteractionListenerSource();
+    const boundaryIndex = interactionListenerSource.indexOf(
+      'const boundaryRequest: InteractionRequest =',
+    );
+    const entryIndex = interactionListenerSource.indexOf(
+      'const entry: PendingInteractionEntry =',
+    );
+    const pendingIndex = interactionListenerSource.indexOf(
+      'pendingInteractionResolvers.set(req.requestId, entry);',
+    );
+
+    expect(boundaryIndex).toBeGreaterThanOrEqual(0);
+    expect(entryIndex).toBeGreaterThan(boundaryIndex);
+    expect(pendingIndex).toBeGreaterThan(entryIndex);
+    expect(interactionListenerSource.slice(entryIndex, pendingIndex)).toContain(
+      'request: boundaryRequest,',
+    );
+    expect(source).toContain('out.push({ request: entry.request, persistId: entry.persistId });');
+    expect(source).toContain(
+      'taken.push({ requestId, request: entry.request, resolve:',
+    );
   });
 
   it('clears git snapshot coordinator state when sessions close', () => {
-    const wireSessionSource = extractWireSessionSource();
-    const closedBlock = wireSessionSource.slice(wireSessionSource.indexOf("if (status === 'closed') {"));
+    const closedBlock = extractSessionCloseAdaptersSource();
 
     expect(closedBlock).toContain('gitSnapshotCoordinator?.onSessionClosed(session.id);');
     expectOrder(
       closedBlock,
-      'agentInputCoordinatorHolder?.onSessionClosed(session.id);',
+      'agentInputCoordinatorHolder?.onSessionClosed(session.id, options);',
       'gitSnapshotCoordinator?.onSessionClosed(session.id);',
     );
   });
 
+  it('wakes queued input only for runtime self-closes, not direct product closes', () => {
+    const closedBlock = extractSessionCloseAdaptersSource();
+
+    // 'unexpected' only means no Maker reason was recorded; IM /new and archive
+    // sync close sessions directly and must not resurrect the old task's queue.
+    expect(closedBlock).toContain(
+      "wakeQueuedInput: context.closeReason === 'unexpected' && session.wasClosedByRuntime(),",
+    );
+    expectOrder(
+      closedBlock,
+      'wakeQueuedInput:',
+      'agentInputCoordinatorHolder?.onSessionClosed(session.id, options);',
+    );
+  });
+
+  it('preserves coordinator input boundary inside the rehydrate suppression window (#1930)', () => {
+    const closedBlock = extractSessionCloseAdaptersSource();
+
+    // rehydrate / 凭证切换 close-rebuild 期间同一逻辑会话进程内重建:窗口内
+    // onSessionClosed 传 preserveInputBoundary(true)保留 input boundary(不 abort
+    // 驱动本次重建的 signal → #1930),但**其余清理必须照常执行**(不能整体跳过
+    // onSessionClosed,否则 rebuild 失败/close 后不 rebuild 时 coordinator 残留)。
+    expect(closedBlock).toContain(
+      'agentInputCoordinatorHolder?.onSessionClosed(session.id, options);',
+    );
+    expect(closedBlock).toContain(
+      'shouldPreserveInputBoundary: () => rehydrateCloseSuppression.isSuppressed(session.id),',
+    );
+    expectOrder(
+      closedBlock,
+      'agentInputCoordinatorHolder?.onSessionClosed(session.id, options);',
+      'gitSnapshotCoordinator?.onSessionClosed(session.id);',
+    );
+  });
+
+  it('preserves continuation-only retry across its exact unexpected provider rebuild', () => {
+    const closedBlock = extractSessionCloseAdaptersSource();
+
+    expect(source).toContain(
+      'const pendingContinuationOnlyAutoResumeRebuilds = new WeakMap<Session, number>();',
+    );
+    expect(source).toContain('if (isAcceptedTurnContinuationOnlyReason(signals.reason)) {');
+    expect(source).toContain(
+      'pendingContinuationOnlyAutoResumeRebuilds.set(runtimeSession, decision.attemptToken);',
+    );
+    expect(source).toContain('shouldPreserveWaitingContinuationOnlyAutoResume({');
+    expect(source).toContain('leasedAttemptToken,');
+    expect(source).toContain(
+      'interruptedTurnAutoResumeGuard.isCurrentAttempt(session.id, attemptToken)',
+    );
+    expect(source).toContain('autoResumeBookkeeping.hasLiveSchedule(session.id, attemptToken)');
+    expect(source).toContain('coordinator?.hasQueuedAutoResume(session.id)');
+    expect(source).toContain('isContinuationOnly:');
+    expect(source).toContain('coordinator?.isContinuationOnlyAutoResume(session.id) === true');
+    expect(source).toContain('coordinator?.isContinuationOnlyAutoResume(session.id) !== true');
+    expect(closedBlock).toContain(
+      'shouldPreserveContinuationOnlyAutoResume(session, closeReason)',
+    );
+    expect(closedBlock).toContain(
+      'shouldPreserveSessionRuntimeFallbackAutoResume(session, closeReason)',
+    );
+    expect(closedBlock).toContain('runSessionCloseCleanup(context.preserveAutoResumeIntent, {');
+    expect(closedBlock).toContain('autoResumeBookkeeping.teardown(session.id);');
+    expect(source).toMatch(/onBind: \(session: WiredSession\) => \{\s*advanceSessionTurnBoundaryGeneration\(session.id\);\s*bindContinuationOnlyAutoResumeLease\(session\);/);
+    expect(source).toContain('onUnconfirmedAutoResumeTurn:');
+    expect(source).toContain('autoResumeBookkeeping.abandonUnconfirmedPersistedResume(');
+  });
+
   it('clears Agent Island after mandatory closed-session cleanup', () => {
-    const wireSessionSource = extractWireSessionSource();
-    const closedBlock = wireSessionSource.slice(wireSessionSource.indexOf("if (status === 'closed') {"));
+    const closedBlock = extractSessionCloseAdaptersSource();
     const closeSessionHandler = source.match(
       /ipcMain\.handle\(MAKER_INVOKE\.CLOSE_SESSION,[\s\S]*?\n {2}\}\);/,
     )?.[0];
 
-    expect(closedBlock).toContain("handleAgentIslandSessionClosedAfterCleanup(session.id, 'process-closed');");
-    expectOrder(
-      closedBlock,
-      "cleanupPendingInteractionsForSession(session.id, 'session_closed');",
+    expect(closedBlock).toContain(
       "handleAgentIslandSessionClosedAfterCleanup(session.id, 'process-closed');",
     );
-    expect(source).toContain('Agent Island session close cleanup failed after mandatory session cleanup');
+    expectOrder(
+      closedBlock,
+      "cleanupPendingInteractionsForSession(session.id, 'session_closed')",
+      "handleAgentIslandSessionClosedAfterCleanup(session.id, 'process-closed');",
+    );
+    expect(source).toContain(
+      'Agent Island session close cleanup failed after mandatory session cleanup',
+    );
     expect(closeSessionHandler).toBeTruthy();
     expect(closeSessionHandler).not.toContain('handleSessionClosed');
   });
@@ -327,16 +629,8 @@ describe('maker:event hot path ordering', () => {
       'if (!sess) {',
     );
     expect(directAbortSource).not.toContain('const sess = maker.getSession(sessionId);');
-    expectOrder(
-      directAbortSource,
-      'if (!sess) {',
-      'handleAgentIslandSessionStopped(sess);',
-    );
-    expectOrder(
-      directAbortSource,
-      'handleAgentIslandSessionStopped(sess);',
-      'await sess.abort();',
-    );
+    expectOrder(directAbortSource, 'if (!sess) {', 'handleAgentIslandSessionStopped(sess);');
+    expectOrder(directAbortSource, 'handleAgentIslandSessionStopped(sess);', 'await sess.abort();');
     expect(directAbortSource).toContain(
       'const directAbortBoundary = beginDirectAbortReconciliation(sessionId, sess);',
     );
@@ -379,16 +673,23 @@ describe('maker:event hot path ordering', () => {
 
   it('tears down every automatic recovery path before an explicit Stop aborts the session', () => {
     const resetStart = source.indexOf('function resetAutomaticRecoveryForExplicitStop(');
-    const resetEnd = source.indexOf('\n}\n\nfunction settleUndispatchedAutoResumeOutcome', resetStart) + 2;
+    const resetEnd =
+      source.indexOf('\n}\n\nfunction settleUndispatchedAutoResumeOutcome', resetStart) + 2;
     const resetSource = source.slice(resetStart, resetEnd);
     const coordinatorAbortStart = source.indexOf('abortSession: async (sessionId) => {');
     const coordinatorAbortEnd = source.indexOf('\n    isTurnRunning:', coordinatorAbortStart);
     const coordinatorAbortSource = source.slice(coordinatorAbortStart, coordinatorAbortEnd);
     const inputStopStart = source.indexOf('ipcMain.handle(MAKER_INVOKE.INPUT_STOP');
-    const inputStopEnd = source.indexOf('\n  ipcMain.handle(MAKER_INVOKE.INPUT_RESUME', inputStopStart);
+    const inputStopEnd = source.indexOf(
+      '\n  ipcMain.handle(MAKER_INVOKE.INPUT_RESUME',
+      inputStopStart,
+    );
     const inputStopSource = source.slice(inputStopStart, inputStopEnd);
     const directAbortStart = source.indexOf('ipcMain.handle(MAKER_INVOKE.ABORT_SESSION');
-    const directAbortEnd = source.indexOf('\n  ipcMain.handle(MAKER_INVOKE.CLOSE_SESSION', directAbortStart);
+    const directAbortEnd = source.indexOf(
+      '\n  ipcMain.handle(MAKER_INVOKE.CLOSE_SESSION',
+      directAbortStart,
+    );
     const directAbortSource = source.slice(directAbortStart, directAbortEnd);
     const goalPauseStart = source.indexOf('async function pauseGoalBeforeExplicitStop(');
     const goalPauseEnd = source.indexOf('\n}\n// (Option B)', goalPauseStart) + 2;
@@ -398,7 +699,24 @@ describe('maker:event hot path ordering', () => {
     expect(resetSource).toContain('silentStopAutoResumeGuard.noteSessionReset(sessionId);');
     expect(resetSource).toContain('interruptedTurnAutoResumeGuard.noteSessionReset(sessionId);');
     expect(resetSource).toContain('autoResumeBookkeeping.teardown(sessionId);');
-    expect(source).toContain('noteSessionReset: resetAutomaticRecoveryForExplicitStop,');
+    // 「全部停止」：先撤自动续跑与退避簿记，再作废供应商组进行中的换电脑(#5880，provider-groups.md §6.1)。
+    const stopAllStart = source.indexOf(
+      'registerStopSessionBackgroundTasksHandler(createElectronIpcHandlerRegistry(), {',
+    );
+    const stopAllEnd = source.indexOf('\n  });', stopAllStart);
+    const stopAllSource = source.slice(stopAllStart, stopAllEnd);
+    const stopAllResetStart = stopAllSource.indexOf('    noteSessionReset: (sessionId) => {');
+    const stopAllResetSource = stopAllSource.slice(
+      stopAllResetStart,
+      stopAllSource.indexOf('\n    notifyGoalStop:', stopAllResetStart),
+    );
+    expect(stopAllStart).toBeGreaterThanOrEqual(0);
+    expect(stopAllResetStart).toBeGreaterThanOrEqual(0);
+    expectOrder(
+      stopAllResetSource,
+      'resetAutomaticRecoveryForExplicitStop(sessionId);',
+      'providerGroupService?.noteUserAction(sessionId);',
+    );
     expect(source).toContain('resetAutomaticRecoveryForExplicitStop(sid);');
 
     expectOrder(
@@ -418,9 +736,9 @@ describe('maker:event hot path ordering', () => {
     );
     // no-session 分支会先 await goalPause 后返回；有 live session 时真正的 abort 必须
     // 立即启动，只在 abort/reconcile 之后读取 Goal 持久化结果。
-    expect(directAbortSource.indexOf('const settledGoalPause = await goalPauseResult;')).toBeGreaterThan(
-      directAbortSource.indexOf('await sess.abort();'),
-    );
+    expect(
+      directAbortSource.indexOf('const settledGoalPause = await goalPauseResult;'),
+    ).toBeGreaterThan(directAbortSource.indexOf('await sess.abort();'));
     expectOrder(
       inputStopSource,
       'resetAutomaticRecoveryForExplicitStop(sid);',
@@ -431,11 +749,13 @@ describe('maker:event hot path ordering', () => {
       'const goalPause = pauseGoalBeforeExplicitStop(sid);',
       'inputCoordinator.stop(',
     );
-    expectOrder(inputStopSource, 'inputCoordinator.stop(', 'await goalPause;');
+    expectOrder(inputStopSource, 'inputCoordinator.stop(', 'await Promise.all([goalPause, makeInterrupted]);');
     expect(goalPauseStart).toBeGreaterThanOrEqual(0);
     expect(goalPauseSource).toContain('catch (err)');
     expect(goalPauseSource).toContain('await Promise.resolve(observer(sessionId));');
-    expect(goalPauseSource).toContain("log.error('goal pause persistence failed during explicit stop'");
+    expect(goalPauseSource).toContain(
+      "log.error('goal pause persistence failed during explicit stop'",
+    );
     expect(goalPauseSource).toContain(
       "throwIpcError('INTERNAL', 'Failed to persist the stopped Goal state');",
     );
@@ -443,8 +763,16 @@ describe('maker:event hot path ordering', () => {
     expect(goalPauseSource).not.toContain('Promise.race');
     expect(goalPauseSource).not.toContain('setTimeout');
     expect(directAbortSource).toContain('const goalPauseResult = goalPause.then(');
-    expectOrder(directAbortSource, 'await sess.abort();', 'const settledGoalPause = await goalPauseResult;');
-    expectOrder(directAbortSource, 'if (abortFailed)', 'if (!settledGoalPause.ok) throw settledGoalPause.error;');
+    expectOrder(
+      directAbortSource,
+      'await sess.abort();',
+      'const settledGoalPause = await goalPauseResult;',
+    );
+    expectOrder(
+      directAbortSource,
+      'if (abortFailed)',
+      'if (!settledGoalPause.ok) throw settledGoalPause.error;',
+    );
   });
 
   it('commits a Goal state update before its post-write readback', () => {
@@ -461,45 +789,99 @@ describe('maker:event hot path ordering', () => {
   });
 
   it('uses the wired Session snapshot while reconciling owner-boundary aborts', () => {
-    const stableLookupStart = source.indexOf('const getStableSessionForTurnBoundary =');
-    const stableLookupEnd = source.indexOf('\n  const reconcileSessionTurnIdle =', stableLookupStart);
+    const stableLookupStart = source.indexOf('const lookupStableSessionForTurnBoundary =');
+    const stableLookupEnd = source.indexOf(
+      '\n  const getStableSessionForTurnBoundary =',
+      stableLookupStart,
+    );
     const stableLookupSource = source.slice(stableLookupStart, stableLookupEnd);
-    const reconcileStart = stableLookupEnd;
+    const reconcileStart = source.indexOf('const sealLostTerminalPersistState =');
     const reconcileEnd = source.indexOf('\n\n  const inputCoordinator:', reconcileStart);
     const reconcileSource = source.slice(reconcileStart, reconcileEnd);
 
     expect(stableLookupStart).toBeGreaterThanOrEqual(0);
     expect(stableLookupEnd).toBeGreaterThan(stableLookupStart);
-    expect(stableLookupSource).toContain('wiredSessionsById.get(sessionId)?.session');
-    expectOrder(stableLookupSource, 'if (wired) return wired;', 'return maker.getSession(sessionId) ?? null;');
-    expect(stableLookupSource).toContain('return null;');
+    expect(stableLookupSource).toContain('sessionBindings.getSession(sessionId)');
+    expectOrder(
+      stableLookupSource,
+      "if (wired) return { status: 'found', session: wired };",
+      "return sess ? { status: 'found', session: sess } : { status: 'missing' };",
+    );
+    expect(stableLookupSource).toContain("return { status: 'unavailable' };");
+    expect(source).toContain("return lookup.status === 'found' ? lookup.session : null;");
 
     expect(reconcileStart).toBeGreaterThanOrEqual(0);
     expect(reconcileEnd).toBeGreaterThan(reconcileStart);
     expect(reconcileSource).toContain('if (!liveSessionIdle) return false;');
-    expect(reconcileSource).not.toContain('if (!trackerStale && !hadZombieInteraction) return false;');
-    expect(reconcileSource).toContain('confirmed live session idle during turn-boundary reconciliation');
-    expectOrder(reconcileSource, 'flushAssistantBlock(sessionId, null);', 'consumeLastAssistantPersistId(sessionId);');
-    expectOrder(reconcileSource, 'consumeLastAssistantPersistId(sessionId);', 'consumeLastTopLevelAssistantPersistId(sessionId);');
-    expectOrder(reconcileSource, 'consumeLastTopLevelAssistantPersistId(sessionId);', 'markAssistantTurnFailed(sessionId, abortedBoundaryAssistantPersistId)');
-    expectOrder(reconcileSource, 'markAssistantTurnFailed(sessionId, abortedBoundaryAssistantPersistId)', 'markTurnEndedAfterPersistDrain(sessionId);');
-    expectOrder(reconcileSource, 'markTurnEndedAfterPersistDrain(sessionId);', 'resetTurnPersistState(sessionId);');
+    expect(reconcileSource).not.toContain(
+      'if (!trackerStale && !hadZombieInteraction) return false;',
+    );
+    expect(reconcileSource).toContain(
+      'confirmed live session idle during turn-boundary reconciliation',
+    );
+    expectOrder(
+      reconcileSource,
+      'sealAssistantBlockForLateFinal(sessionId, null);',
+      'consumeLastAssistantPersistId(sessionId);',
+    );
+    expectOrder(
+      reconcileSource,
+      'consumeLastAssistantPersistId(sessionId);',
+      'consumeLastTopLevelAssistantPersistId(sessionId);',
+    );
+    expectOrder(
+      reconcileSource,
+      'consumeLastTopLevelAssistantPersistId(sessionId);',
+      'markAssistantTurnFailed(sessionId, abortedBoundaryAssistantPersistId)',
+    );
+    expectOrder(
+      reconcileSource,
+      'sealLostTerminalPersistState(sessionId);',
+      'sessionTurnActivityTracker.deleteSession(sessionId);',
+    );
+    expectOrder(
+      reconcileSource,
+      'clearCodexPlanRowsForSession(sessionId);',
+      'resetTurnPersistState(sessionId);',
+    );
   });
 
   it('keeps direct abort reconciliation fail-closed across owner replacement and new turns', () => {
+    const closeBoundaryStart = source.indexOf('function getDirectAbortBoundaryForClosingSession(');
+    const closeBoundaryEnd = source.indexOf('\n}\n', closeBoundaryStart) + 2;
+    const closeBoundarySource = source.slice(closeBoundaryStart, closeBoundaryEnd);
     const helperStart = source.indexOf('const readDirectAbortTurnId =');
     const helperEnd = source.indexOf('\n\n  const inputCoordinator:', helperStart);
     const helperSource = source.slice(helperStart, helperEnd);
-    const wireSessionSource = extractWireSessionSource();
-    const closedBlock = wireSessionSource.slice(wireSessionSource.indexOf("if (status === 'closed') {"));
+    const wireSessionSource = readEventModule('sessionEventPreparation');
+    const closedBlock = extractSessionCloseAdaptersSource();
 
-    expect(source).toContain('const sessionTurnBoundaryGenerationById = new Map<string, number>();');
-    expect(source).toContain('const directAbortReconcileBoundaries = new Map<string, DirectAbortReconcileBoundary>();');
-    expect(helperSource).toContain('wiredSessionsById.get(sessionId)?.session !== boundary.session');
-    expect(helperSource).toContain('currentSessionTurnBoundaryGeneration(sessionId) !== boundary.generation');
+    expect(source).toContain(
+      'const sessionTurnBoundaryGenerationById = new Map<string, number>();',
+    );
+    expect(source).toContain(
+      'const directAbortReconcileBoundaries = new Map<string, DirectAbortReconcileBoundary>();',
+    );
+    expect(closeBoundaryStart).toBeGreaterThanOrEqual(0);
+    expect(closeBoundaryEnd).toBeGreaterThan(closeBoundaryStart);
+    expect(closeBoundarySource).toContain('boundary.session !== session');
+    expect(closeBoundarySource).toContain(
+      'currentSessionTurnBoundaryGeneration(sessionId) !== boundary.generation',
+    );
+    expect(helperSource).toContain('sessionBindings.getSession(sessionId) !== boundary.session');
+    expect(helperSource).toContain(
+      'currentSessionTurnBoundaryGeneration(sessionId) !== boundary.generation',
+    );
     expect(helperSource).toContain('direct-abort-retry');
     expect(helperSource).toContain('cancelDirectAbortReconciliation(sessionId, boundary);');
-    expect(wireSessionSource).toContain('if (!wasInTurn) advanceSessionTurnBoundaryGeneration(session.id);');
+    expect(wireSessionSource).toContain(
+      'if (!wasInTurn) advanceSessionTurnBoundaryGeneration(session.id);',
+    );
+    expectOrder(
+      closedBlock,
+      'const closedDirectAbortBoundary = getDirectAbortBoundaryForClosingSession(',
+      'cancelDirectAbortReconciliation(session.id);',
+    );
     expect(closedBlock).toContain('cancelDirectAbortReconciliation(session.id);');
     expectOrder(
       closedBlock,
@@ -507,33 +889,85 @@ describe('maker:event hot path ordering', () => {
       'pendingFailedTurnAssistantPersistId.delete(session.id);',
     );
     expect(closedBlock).toContain('sessionTurnBoundaryGenerationById.delete(session.id);');
+    expectOrder(
+      closedBlock,
+      'sessionTurnActivityTracker.deleteSession(session.id);',
+      'notifyGoalIdle: () => notifyGoalIdleAfterTurnSettled(session.id)',
+    );
+    expect(closedBlock).toContain(
+      'finalizeSessionClose(context.closedDirectAbortBoundary !== null, {',
+    );
+    expect(
+      closedBlock.indexOf('notifyGoalIdle: () => notifyGoalIdleAfterTurnSettled(session.id)'),
+    ).toBeGreaterThan(closedBlock.indexOf('sessionTurnBoundaryGenerationById.delete(session.id);'));
+  });
+
+  it('cancels deferred Goal resumes when non-abort session teardown supersedes them', () => {
+    const replacementStart = source.indexOf('beforeReplace: (session: WiredSession) => {');
+    const replacementEnd = source.indexOf('onBind: (session: WiredSession) => {', replacementStart);
+    const replacementBlock = source.slice(replacementStart, replacementEnd);
+    const closedBlock = extractSessionCloseAdaptersSource();
+
+    expect(source).toContain('let goalDeferredResumeCancelObserver:');
+    expect(source).toContain('export function setGoalDeferredResumeCancelObserver(');
+    expect(bootstrapSource).toContain('setGoalDeferredResumeCancelObserver((sid) => {');
+    expect(bootstrapSource).toContain(
+      'getGoalController()?.cancelDeferredManualResume(sid, { restoreUsageResume: true });',
+    );
+    expect(replacementStart).toBeGreaterThanOrEqual(0);
+    expect(replacementEnd).toBeGreaterThan(replacementStart);
+    expectOrder(
+      replacementBlock,
+      'cancelDirectAbortReconciliation(session.id);',
+      'goalDeferredResumeCancelObserver?.(session.id);',
+    );
+    expect(closedBlock).toContain(
+      'finalizeSessionClose(context.closedDirectAbortBoundary !== null, {',
+    );
+    expect(closedBlock).toContain(
+      'cancelGoalResume: () => goalDeferredResumeCancelObserver?.(session.id),',
+    );
   });
 
   it('keeps Codex subscription value out of real session cost totals', () => {
-    const wireSessionSource = extractWireSessionSource();
-    const codexDoneIndex = wireSessionSource.indexOf("event.type === 'done' && event.source === 'codex'");
+    const wireSessionSource = readEventModule('sessionCodexTurnUsage');
+    const codexDoneIndex = wireSessionSource.indexOf(
+      "event.type === 'done' && event.source === 'codex'",
+    );
     expect(codexDoneIndex).toBeGreaterThanOrEqual(0);
 
     const codexDoneSource = wireSessionSource.slice(codexDoneIndex);
-    expect(codexDoneSource).toContain('const sessionProvider = getSessionProvider(session.id);');
-    expect(codexDoneSource).toContain('const isRemoteCodexSession = Boolean(session.remoteHostId);');
-    expect(codexDoneSource).toContain('const codexAuthInjection = isRemoteCodexSession ? null : getCodexProxyAuthInjection();');
-    expect(wireSessionSource).toContain('!turnModelPromiseBySession.has(session.id)');
-    expect(wireSessionSource).toContain('turnModelPromiseBySession.set(session.id, readSessionModelForUsage(session.id));');
-    expect(codexDoneSource).toContain('const modelPromise = turnModelPromiseBySession.get(session.id) ?? readSessionModelForUsage(session.id);');
+    expect(codexDoneSource).toContain('const sessionProvider = turnContext.providerId;');
+    expect(codexDoneSource).toContain(
+      'const isRemoteCodexSession = Boolean(session.remoteHostId);',
+    );
+    expect(codexDoneSource).toContain(
+      'const codexAuthInjection = isRemoteCodexSession ? null : getCodexProxyAuthInjection();',
+    );
+    expect(readEventModule('sessionEventPreparation')).toContain(
+      '!turnModelPromiseBySession.has(session.id)',
+    );
+    expect(readEventModule('sessionEventPreparation')).toContain(
+      'turnModelPromiseBySession.set(session.id, readSessionModelForUsage(session.id));',
+    );
+    expect(codexDoneSource).toMatch(
+      /const modelPromise\s*=\s*turnModelPromiseBySession\.get\(session\.id\)\s*\?\?\s*readSessionModelForUsage\(session\.id\);/,
+    );
     expect(codexDoneSource).toContain('turnModelPromiseBySession.delete(session.id);');
     expect(codexDoneSource).not.toContain('hasCodexOAuthLogin()');
     expect(codexDoneSource).toContain('promptTokens + completionTokens + cachedTokens');
-    expect(codexDoneSource).not.toContain('promptTokens + completionTokens + reasoningTokens + cachedTokens');
+    expect(codexDoneSource).not.toContain(
+      'promptTokens + completionTokens + reasoningTokens + cachedTokens',
+    );
     expect(codexDoneSource).toContain('const isCustomProviderRoute =');
-    expect(codexDoneSource).toContain('isUserProviderSession(session.id)');
-    expect(codexDoneSource).toContain("&& pricingModel.startsWith('codex/');");
-    expect(codexDoneSource).toContain('&& pricingModel.startsWith(XAI_MODEL_PREFIX);');
+    expect(codexDoneSource).toContain('turnContext.isUserProviderRoute');
+    expect(codexDoneSource).toMatch(/&&\s*isCodexGatewayWireModel\(pricingModel\);/);
+    expect(codexDoneSource).toMatch(/&&\s*isExclusiveXaiModelId\(pricingModel\);/);
     expect(codexDoneSource).toContain('const hasGatewayKey = Boolean(readClaudeApiKey());');
     expect(codexDoneSource).toContain('const hasEffectiveGatewayRoute =');
     expect(codexDoneSource).toContain('!isCustomProviderRoute');
-    expect(codexDoneSource).toContain('(sessionProvider === \'xd\' && hasGatewayKey)');
-    expect(codexDoneSource).toContain('const isSubscriptionValue = isRemoteCodexSession ||');
+    expect(codexDoneSource).toContain("(sessionProvider === 'xd' && hasGatewayKey)");
+    expect(codexDoneSource).toMatch(/const isSubscriptionValue\s*=\s*isRemoteCodexSession\s*\|\|/);
     expect(codexDoneSource).toContain('isCodexXaiProviderRoute ||');
     // 用正则而非整串匹配:这段条件已按多行排版,单行字面量会因换行/缩进调整而假失败。
     // 要守的语义是——订阅计价只在「OpenAI 供应商 + oauth-bearer 注入 + 无生效网关路由」时成立。
@@ -563,45 +997,55 @@ describe('maker:event hot path ordering', () => {
     expect(codexDoneSource).toContain('? getReferenceModelPricing()');
     expect(codexDoneSource).toContain('? await getGatewayModelPricingForModel()');
     expect(codexDoneSource).toContain('price ?? undefined');
-    expect(codexDoneSource).toContain(
-      "if (!isSubscriptionValue && money && price?.source === 'gateway')",
+    expect(codexDoneSource).toMatch(
+      /u\.segments !== undefined && codexSegmentsReliable\s*\? codexUsageSegments\s*:\s*\[\]/,
     );
+    expect(codexDoneSource).toContain(
+      "if (money && (isSubscriptionValue || price?.source === 'gateway'))",
+    );
+    expect(codexDoneSource).toContain(
+      "const isActualApiCost = !isSubscriptionValue && price?.source === 'gateway';",
+    );
+    expect(codexDoneSource).toContain('if (isActualApiCost)');
     expect(codexDoneSource).toContain('void recordTurnSpend(money);');
     expect(codexDoneSource).toContain('void recordSessionTurnSpend(session.id, money);');
     expect(codexDoneSource).toMatch(
-      /await recordModelTurnUsage\(\{\s*agentKind: 'codex',\s*model: modelUsageKey,\s*inputTokensDelta: promptTokens,\s*outputTokensDelta: completionTokens,\s*cacheReadTokensDelta: cachedTokens,\s*cacheCreateTokensDelta: 0,\s*\}\)\.finally\(\(\) => rebroadcastCodexTodayUsage\(\)\);[\s\S]*?const pricing = isSubscriptionValue/,
+      /await recordModelTurnUsage\(\{\s*sessionId: session\.id,\s*agentKind: 'codex',\s*model: modelUsageKey,\s*money: isSubscriptionValue \? unpricedSubscriptionValueMarker\(\) : undefined,\s*inputTokensDelta: promptTokens,\s*outputTokensDelta: completionTokens,\s*cacheReadTokensDelta: cachedTokens,\s*cacheCreateTokensDelta: cacheCreationTokens,\s*\}\)\.finally\(\(\) => rebroadcastCodexTodayUsage\(\)\);[\s\S]*?const pricing = isSubscriptionValue/,
     );
     expect(codexDoneSource).toMatch(
-      /await recordModelTurnUsage\(\{\s*agentKind: 'codex',\s*model: modelUsageKey,\s*money,\s*inputTokensDelta: 0,\s*outputTokensDelta: 0,\s*cacheReadTokensDelta: 0,\s*cacheCreateTokensDelta: 0,\s*\}\);/,
+      /await recordModelTurnUsage\(\{\s*sessionId: session\.id,\s*agentKind: 'codex',\s*model: modelUsageKey,\s*money,\s*inputTokensDelta: 0,\s*outputTokensDelta: 0,\s*cacheReadTokensDelta: 0,\s*cacheCreateTokensDelta: 0,\s*\}\);/,
     );
     const costRecordIndex = codexDoneSource.indexOf('void recordTurnSpend(money);');
     const modelCostRecordIndex = codexDoneSource.indexOf(
-      "if (!isSubscriptionValue && money && price?.source === 'gateway')",
+      "if (money && (isSubscriptionValue || price?.source === 'gateway'))",
     );
     const schedulerCostRecordIndex = codexDoneSource.indexOf('await recordSchedulerTurnCost({');
     expect(costRecordIndex).toBeGreaterThanOrEqual(0);
     expect(modelCostRecordIndex).toBeGreaterThanOrEqual(0);
-    expect(modelCostRecordIndex).toBeGreaterThan(codexDoneSource.indexOf('const pricing = isSubscriptionValue && !isCodexXaiProviderRoute'));
+    expect(modelCostRecordIndex).toBeGreaterThan(
+      codexDoneSource.indexOf('const pricing = isSubscriptionValue'),
+    );
     expect(schedulerCostRecordIndex).toBeGreaterThan(costRecordIndex);
     expect(codexDoneSource).toContain('clientId: turnAssistantPersistId');
     expect(codexDoneSource).toContain('money,');
-    expect(codexDoneSource).toContain('if (!isRemoteCodexSession &&');
-    expect(codexDoneSource).toContain('!isCustomProviderRoute &&');
-    expect(codexDoneSource).toContain("!model.startsWith(XAI_MODEL_PREFIX) &&");
-    expect(codexDoneSource).toContain("(codexAuthInjection === 'env-key' || model.startsWith('codex/') || (sessionProvider === 'xd' && hasGatewayKey))");
+    expect(codexDoneSource).toMatch(
+      /const hasEffectiveGatewayRoute\s*=\s*!isRemoteCodexSession\s*&&\s*!isCustomProviderRoute\s*&&/,
+    );
+    expect(codexDoneSource).toContain('const isCodexXaiProviderRoute =');
+    expect(codexDoneSource).toMatch(
+      /codexAuthInjection === 'env-key'\s*\|\|\s*isCodexBudgetRoute\s*\|\|\s*\(sessionProvider === 'xd' && hasGatewayKey\)/,
+    );
     expect(codexDoneSource).not.toContain("sessionProvider !== 'xai'");
     expect(codexDoneSource).not.toContain('isEstimate: true');
   });
 
-  it('claude-code 费用走 HYBRID 定价 (gateway 重算 + total_cost_usd 窄兜底) after EVENT broadcast', () => {
-    const wireSessionSource = extractWireSessionSource();
-    const claudeDoneIndex = wireSessionSource.indexOf("event.type === 'done' && event.source === 'claude-code'");
-    const codexDoneIndex = wireSessionSource.indexOf("event.type === 'done' && event.source === 'codex'");
+  it('claude-code 费用按完整请求段定价，累计 cost 首帧只建基线', () => {
+    const wireSessionSource = readEventModule('sessionClaudeTurnUsage');
+    const claudeDoneIndex = wireSessionSource.indexOf(
+      "event.type === 'done' && event.source === 'claude-code'",
+    );
     expect(claudeDoneIndex).toBeGreaterThanOrEqual(0);
-    expect(codexDoneIndex).toBeGreaterThan(claudeDoneIndex);
-
-    // 仅取 claude-code 块 (到 codex 块前)。
-    const claudeDoneSource = wireSessionSource.slice(claudeDoneIndex, codexDoneIndex);
+    const claudeDoneSource = wireSessionSource.slice(claudeDoneIndex);
     // 主路径:按真实 provider / billing route 取价，所有 sink 共用区域金额结果。
     expect(claudeDoneSource).toContain('const billingRoute: BillingRoute = session.remoteHostId');
     expect(claudeDoneSource).toContain("billingRoute === 'xd-gateway'");
@@ -612,61 +1056,112 @@ describe('maker:event hot path ordering', () => {
     );
     expect(claudeDoneSource).toContain('providerId: sessionProviderForBilling');
     expect(claudeDoneSource).toContain('billingRoute,');
+    expect(claudeDoneSource).toContain(
+      'const claudeUsageSegments = normalizeTurnUsageSegments(doneData?.usageSegments);',
+    );
     expect(claudeDoneSource).toContain('recordTurnSpend(turnMoney);');
     expect(claudeDoneSource).toContain('recordSessionTurnSpend(session.id, turnMoney);');
-    expect(claudeDoneSource).toContain(
-      "money: m.money?.kind === 'actual-cost' ? m.money : null,",
-    );
-    // 订阅轮 (Claude Anthropic 订阅或 bridge 订阅直连) 打 #billing=subscription 标记,
+    expect(claudeDoneSource).toContain('subscriptionEstimate ?? unpricedSubscriptionValueMarker()');
+    expect(claudeDoneSource).toContain('money: modelRowMoney,');
+    // 订阅轮复用计费解析结果打 #billing=subscription 标记,
     // 仪表盘按订阅估算价折算; 其余轮仍写归一化裸 id。
-    expect(claudeDoneSource).toContain(
-      'model: isClaudeSubscriptionValueRow ? claudeSubscriptionUsageModelKey(m.model) : m.model,',
-    );
-    expect(claudeDoneSource).toContain(
-      "isClaudeSubscriptionSession && !m.money && isAnthropicModel(m.model)",
-    );
-    expect(claudeDoneSource).toContain(
-      "m.source === 'subscription' && isSubscriptionDirectModel(m.model)",
-    );
     expect(claudeDoneSource).toMatch(
-      /estimateClaudeSubscriptionTurnValue\(\s*perModel,\s*currentLedgerCurrency\(\),\s*pricing,\s*\)/,
+      /model:\s*isSubscriptionValueRow\s*\?\s*claudeSubscriptionUsageModelKey\(m\.model\)\s*:\s*m\.model,/,
+    );
+    expect(claudeDoneSource).toContain(
+      "const isSubscriptionValueRow = m.source === 'subscription'",
+    );
+    expect(claudeDoneSource).toContain('const subscriptionTurnEstimates: RegionalMoney[] = [];');
+    expect(claudeDoneSource).toMatch(
+      /computePriceQuoteTurnMoney\(\s*m\.deltas,\s*\(sessionProviderForBilling\s*\? getCodexProviderSubscriptionValuePrice\(sessionProviderForBilling, m\.model, pricing, undefined, undefined, 'claude-code'\)\s*: undefined\) \?\? getSubscriptionValuePriceFor\('claude-code', m\.model, pricing\),\s*currentLedgerCurrency\(\),\s*m\.segments,\s*\)/,
     );
     // 订阅判定对齐 proxy 路由: 显式选 Anthropic, 或默认路由优先按 observed route, 未观察再回落无网关 key 启发式
-    expect(claudeDoneSource).toContain("sessionProviderForBilling === 'anthropic'");
+    expect(claudeDoneSource).toContain("turnContext.subscriptionKind === 'claude'");
     expect(claudeDoneSource).toContain('const observedClaudeRoute =');
     expect(claudeDoneSource).toContain('readClaudeSessionRoute(session.id)');
-    expect(claudeDoneSource).toContain(
-      "observedClaudeRoute === 'subscription'",
-    );
-    expect(claudeDoneSource).toContain(
-      ': !readClaudeApiKey()',
-    );
+    expect(claudeDoneSource).toContain("observedClaudeRoute === 'subscription'");
+    expect(claudeDoneSource).toContain(': !readClaudeApiKey()');
     // 纯订阅轮无 recordTurnSpend push, 模型行落库后重广播今日 spend 触发仪表盘刷新
     expect(claudeDoneSource).toContain(
       'void Promise.allSettled(modelUsageWrites).then(() => rebroadcastTodaySpend());',
     );
     // 保留 #216 的 tooltip token/cache 明细。
     expect(claudeDoneSource).toContain('buildClaudeTurnUsageDetails(');
-    // 窄兜底: modelUsage 缺失时仍用 total_cost_usd delta 记总额, 别漏整轮 (review #4)。
-    expect(claudeDoneSource).toContain('const rawDelta = Math.max(0, cumulative - prevReportedCost);');
+    // 窄兜底: total_cost_usd 是进程累计；首次只建基线，且累计 usage 不得冒充本轮 token。
+    expect(claudeDoneSource).toMatch(
+      /const rawDelta\s*=\s*prevReportedCost === undefined\s*\? 0\s*:\s*Math\.max\(0, cumulative - prevReportedCost\);/,
+    );
+    const claudeCostFallback = claudeDoneSource.slice(
+      claudeDoneSource.indexOf("} else if (typeof cumulative === 'number' && cumulative >= 0)"),
+    );
+    expect(claudeCostFallback).toMatch(
+      /buildClaudeTurnUsageDetails\(\s*undefined,\s*undefined,\s*resolvedModel,/,
+    );
+    expect(claudeCostFallback).toContain(
+      "if (route !== 'provider-api' || turnContext.accessKind === 'managed')",
+    );
   });
 
-  it('refreshes Claude credential cache before dropping mismatched header snapshots', () => {
+  it('pi subscription turns estimate value from the shared reference-price helper', () => {
+    const wireSessionSource = readEventModule('sessionPiTurnUsage');
+    const piDoneIndex = wireSessionSource.indexOf("event.type === 'done' && event.source === 'pi'");
+    expect(piDoneIndex).toBeGreaterThanOrEqual(0);
+    const piDoneSource = wireSessionSource.slice(piDoneIndex);
+    expect(piDoneSource).toContain(
+      'turnContext.piFastMode',
+    );
+    expect(piDoneSource).toContain('turnUsageContextBySession.delete(session.id);');
+    expect(piDoneSource).toContain(
+      "segment.priceVariant ?? (segment.id?.startsWith('pi:') ? piPriceVariant : 'standard'),",
+    );
+    expect(piDoneSource).toMatch(/const pricing\s*=\s*billingRoute === 'xd-gateway'/);
+    expect(piDoneSource).toContain(': getReferenceModelPricing();');
+    expect(piDoneSource).toContain("getSubscriptionValuePriceFor('pi', model, pricing)");
+    expect(piDoneSource).toContain(
+      'const pricingSegments = piSegmentsReliable ? group.segments : [];',
+    );
+    expect(piDoneSource).toContain('money = resolveTurnCost({');
+    expect(piDoneSource).toContain('segments: pricingSegments,');
+    expect(piDoneSource).toContain(
+      "billingRoute === 'provider-api' ? undefined : group.sdkCostUsd",
+    );
+    expect(piDoneSource).toContain('money ?? unpricedSubscriptionValueMarker()');
+    expect(piDoneSource).toContain('money: modelRowMoney,');
+    expect(piDoneSource).toContain('if (actualMoney)');
+    expect(piDoneSource).toContain('await recordSchedulerTurnCost({');
+    // 消息 / 调度落库失败同样落进 catch:兜底只补写正常分支尚未发起的模型组,
+    // 不重放已写过的用量(否则任务与模型用量翻倍)。
+    expectOrder(piDoneSource, 'recordedModels.add(model);', 'modelWrites.push(');
+    expect(piDoneSource).toMatch(
+      /\[\.\.\.groupedSegments\]\s*\.filter\(\(\[model\]\) => !recordedModels\.has\(model\)\)\s*\.map\(/,
+    );
+  });
+
+  it('records Claude subscription quota events only while the native login is connected', () => {
     const listenerSource = usageSource.match(
-      /setClaudeRateLimitHeadersListener\(\(snapshot, requestBearerToken\) => \{[\s\S]*?\n {2}\}\);/,
+      /setClaudeRateLimitInfoListener\(\(info\) => \{[\s\S]*?\n {2}\}\);/,
     )?.[0];
     expect(listenerSource).toBeTruthy();
     if (!listenerSource) return;
 
-    expect(listenerSource).toContain('let currentToken = _currentClaudeToken;');
-    expect(listenerSource).toContain('currentToken = readClaudeCredentialsInfo()?.accessToken ?? null;');
+    // 登出 / 断开后晚到的事件必须丢弃,不能复活刚清掉的快照。
     expectOrder(
       listenerSource,
-      'currentToken = readClaudeCredentialsInfo()?.accessToken ?? null;',
-      'if (requestBearerToken !== currentToken) return false;',
+      'if (!hasClaudeNativeLogin()) return;',
+      'void recordClaudeSubscriptionUsageSnapshot(',
     );
+    expect(usageSource).not.toContain('setClaudeRateLimitHeadersListener');
   });
 });
+
+/** Checks the production adapters; close ordering itself is tested by executing the service. */
+function extractSessionCloseAdaptersSource(): string {
+  const start = source.indexOf('captureCloseContext: (session: WiredSession) => {');
+  const end = source.indexOf('export function wireSessionToIpc', start);
+  expect(start).toBeGreaterThanOrEqual(0);
+  expect(end).toBeGreaterThan(start);
+  return source.slice(start, end);
+}
 
 function extractWireSessionSource(): string {
   const wireSessionSource = source.match(
@@ -690,14 +1185,17 @@ function extractInstallDesktopInteractionListenerSource(): string {
   return listenerSource;
 }
 
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
 function expectOrder(sourceBlock: string, firstNeedle: string, secondNeedle: string): void {
   const first = sourceBlock.indexOf(firstNeedle);
   const second = sourceBlock.indexOf(secondNeedle);
   expect(first).toBeGreaterThanOrEqual(0);
   expect(second).toBeGreaterThanOrEqual(0);
   expect(first).toBeLessThan(second);
+}
+
+/** Existing domain guards ignore only the injected service qualifier. */
+function readEventModule(name: string): string {
+  return readFileSync(resolve(__dirname, '..', 'maker-ipc', name + '.ts'), 'utf8')
+    .replace(/\r\n?/g, '\n')
+    .replaceAll('deps.', '');
 }

@@ -22,6 +22,7 @@ import path from 'node:path';
 import * as blobStore from './blobStore';
 import * as ledger from './ledger';
 import type { LedgerDb } from './ledger';
+import { getDbClient } from '../localDb/client/current';
 import { createLogger } from '../logger';
 
 const log = createLogger('cindy-media/chat');
@@ -108,6 +109,15 @@ export function collectCindyMediaUrls(value: unknown): string[] {
   return [...new Set(serialized.match(CINDY_BLOB_URL_RE) ?? [])];
 }
 
+/** Return validated blob hashes referenced by a message payload. */
+export function collectCindyMediaHashes(value: unknown): string[] {
+  return [...new Set(
+    collectCindyMediaUrls(value)
+      .map((url) => blobStore.parseBlobUrl(url)?.hash)
+      .filter((hash): hash is string => typeof hash === 'string'),
+  )];
+}
+
 /**
  * 发送时提交:给消息里的每个 blob 挂 session-attachment 引用(幂等——同
  * 会话同指纹已有引用则跳过,重发/插话不刷重复行)。形状不合法的 URL 跳过。
@@ -145,6 +155,19 @@ export async function commitChatImageUrls(
     originKind?: 'user' | 'tool';
   },
   db?: LedgerDb,
+): Promise<{ committed: number; skipped: number; failed: number }> {
+  if (!params.urls.some((url) => blobStore.parseBlobUrl(url))) {
+    return { committed: 0, skipped: params.urls.length, failed: 0 };
+  }
+  const database = db ?? getDbClient().drizzle;
+  return ledger.withSessionMediaRefLock(database, params.sessionId, () =>
+    commitChatImageUrlsUnlocked(params, database),
+  );
+}
+
+async function commitChatImageUrlsUnlocked(
+  params: Parameters<typeof commitChatImageUrls>[0],
+  db: LedgerDb,
 ): Promise<{ committed: number; skipped: number; failed: number }> {
   let committed = 0;
   let skipped = 0;

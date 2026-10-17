@@ -17,13 +17,18 @@
 
 import { Globe, Volume2 } from 'lucide-react';
 import type { TFunction } from 'i18next';
-import { useState } from 'react';
+import { lazy, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 
 import { cn } from '@/lib/utils';
 
+import { normalizePersistableFavicon } from '../../../../../shared/faviconPersistence';
 import { registerTabKind } from '../../registry';
 import type { TabKindPlugin } from '../../types';
-import { BrowserTabBody } from './BrowserTabBody';
+
+const BrowserTabBody = lazy(() =>
+  import('./BrowserTabBody').then((module) => ({ default: module.BrowserTabBody })),
+);
 
 /** plugin state shape —— 反序列化口径:JSON identity 即可恢复。 */
 export interface WebBrowserState {
@@ -31,13 +36,17 @@ export interface WebBrowserState {
   url: string;
   /** 当前页面 title(用作 tab pill 文案)。空串 / 未拿到时 pill 走"新标签"占位。 */
   title: string;
-  /** 当前页面 favicon URL(用作 tab pill icon)。null = 没拿到,走 Globe fallback。 */
+  /** 当前页面 favicon URL(用作 tab pill icon)。null = 没拿到 / 拿到但不可
+   * 持久化(blob: / 超大 / 非白名单协议),都走 Globe fallback。 */
   favicon: string | null;
   /** guest 正在发声(`audio-state-changed`)。tab pill 据此叠喇叭图标,跟 Chrome
    *  行为对齐 + Codex `main-cC-d0ezP.js:48434` 等价。后台 tab 不持久化(切走重启
    *  应当回到静默态,因为 webview 会重新加载),但运行时仍然写进 state 走 patchState
    *  统一通道,UI 通过 state 拿。 */
   isAudible: boolean;
+  /** Runtime-only id of a Chromium-created popup adopted by main. Hydration
+   * intentionally drops it because native surfaces do not survive restart. */
+  nativePopupSurfaceId?: string;
 }
 
 const DEFAULT_STATE: WebBrowserState = {
@@ -69,6 +78,7 @@ function WebBrowserTabPillTitle({
  * favicon onError(404 / 取不到)→ 也走 fallback,不让破图占位。
  */
 export function WebBrowserTabPillIcon({ state }: { state: WebBrowserState }) {
+  const { t } = useTranslation();
   const base = state.favicon ? (
     <FaviconImage
       key={state.favicon}
@@ -87,7 +97,7 @@ export function WebBrowserTabPillIcon({ state }: { state: WebBrowserState }) {
         size={9}
         strokeWidth={2.5}
         className="pointer-events-none absolute -bottom-0.5 -right-1 text-[var(--accent-cta-bg)]"
-        aria-label="audible"
+        aria-label={t('rightSidebar.browser.audible')}
       />
     </span>
   );
@@ -129,6 +139,7 @@ const plugin: TabKindPlugin<WebBrowserState> = {
   defaultState: () => ({ ...DEFAULT_STATE }),
   // hydrate:容忍持久化 schema 演进。Phase 2 时期空 state(`null`)→ default。
   // isAudible 不从持久化恢复(重启后 webview 重新加载,默认静默才合理)。
+  // favicon 再消毒一次:存量坏数据(超大 / blob: / 非白名单)在显示层也不放行。
   hydrateState: (raw): WebBrowserState => {
     if (!raw || typeof raw !== 'object') return { ...DEFAULT_STATE };
     const obj = raw as Record<string, unknown>;
@@ -136,7 +147,7 @@ const plugin: TabKindPlugin<WebBrowserState> = {
     const title = typeof obj.title === 'string' ? obj.title : DEFAULT_STATE.title;
     const favicon =
       typeof obj.favicon === 'string'
-        ? obj.favicon
+        ? normalizePersistableFavicon(obj.favicon)
         : obj.favicon === null
         ? null
         : DEFAULT_STATE.favicon;

@@ -1,0 +1,134 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { isMobileRemoteCollectionSupported, normalizeRemoteCollectionItems, parseRemoteResourceTargets, type HostedRemoteCollectionItem, type RemoteHomeCollection } from './remoteResources';
+
+const PREFIX = 'cindy.remoteResources.v1.';
+const MAX_CHARS = 256 * 1024;
+type Snapshot = { home: RemoteHomeCollection[]; items: Record<string, HostedRemoteCollectionItem[]>; read: Record<string, number>; readSequences?: Record<string, string> };
+const empty = (): Snapshot => ({ home: [], items: {}, read: {}, readSequences: {} });
+const validSequence = (value: unknown): value is string => typeof value === 'string' && /^\d{1,30}$/.test(value);
+let epoch = 0;
+const writes = new Map<string, Promise<void>>();
+const snapshots = new Map<string, Snapshot>();
+// Users whose last disk write failed; the next update retries it even when unchanged.
+const unsaved = new Set<string>();
+const listeners = new Set<() => void>();
+let revision = 0;
+export const subscribeRemoteResourceCache = (fn: () => void) => { listeners.add(fn); return () => { listeners.delete(fn); }; };
+export const remoteResourceCacheRevision = () => revision;
+const emit = () => { revision += 1; listeners.forEach((fn) => fn()); };
+
+/** Cache only portable display/link fields; availability is always live. */
+function normalize(raw: unknown): Snapshot {
+  const out = empty();
+  if (!raw || typeof raw !== 'object') return out;
+  const value = raw as Partial<Snapshot>;
+  if (Array.isArray(value.home)) for (const row of value.home.slice(0, 32)) {
+    if (!row || typeof row.id !== 'string' || row.id.length > 160 || typeof row.title !== 'string' || typeof row.resourceKind !== 'string') continue;
+    if (!isMobileRemoteCollectionSupported(row.id)) continue;
+    out.home.push({ id: row.id, title: row.title.slice(0, 512), resourceKind: row.resourceKind.slice(0,160), placement: 'home-scope', targets: parseRemoteResourceTargets(JSON.stringify(row.targets)) });
+  }
+  if (value.items && typeof value.items === 'object') for (const [id, rows] of Object.entries(value.items).slice(0, 32)) {
+    if (id.length > 160 || !Array.isArray(rows) || !isMobileRemoteCollectionSupported(id)) continue;
+    out.items[id] = rows.slice(0, 200).flatMap((row) => {
+      if (!row) return [];
+      const [host] = parseRemoteResourceTargets(JSON.stringify([row.host]));
+      const [item] = normalizeRemoteCollectionItems({ items: [row.item] }, id);
+      return host && item ? [{ host, item, key: JSON.stringify([host.deviceId, item.ref.kind, item.ref.id]) }] : [];
+    });
+  }
+  if (value.read && typeof value.read === 'object') for (const [key, at] of Object.entries(value.read).slice(-2000)) {
+    if (key.length <= 600 && typeof at === 'number' && Number.isFinite(at) && at >= 0) out.read[key] = at;
+  }
+  if (value.readSequences && typeof value.readSequences === 'object') for (const [key, sequence] of Object.entries(value.readSequences).slice(-2000)) {
+    if (key.length <= 600 && validSequence(sequence)) out.readSequences![key] = sequence;
+  }
+  return out;
+}
+
+export async function readRemoteResourceSnapshot(userId: string): Promise<Snapshot> {
+  if (!userId) return empty();
+  const cached = snapshots.get(userId);
+  if (cached) return cached;
+  const expected = epoch;
+  const raw = await AsyncStorage.getItem(PREFIX + userId).catch(() => null);
+  let value = empty();
+  try { if (raw && raw.length <= MAX_CHARS) value = normalize(JSON.parse(raw)); } catch { /* cache miss */ }
+  if (epoch !== expected) return empty();
+  if (!snapshots.has(userId)) snapshots.set(userId, value);
+  return snapshots.get(userId)!;
+}
+
+async function update(userId: string, change: (snapshot: Snapshot) => void): Promise<void> {
+  if (!userId) return;
+  const expected = epoch;
+  const previous = writes.get(userId) ?? Promise.resolve();
+  const next = previous.then(async () => {
+    const snapshot = await readRemoteResourceSnapshot(userId);
+    if (expected !== epoch) return;
+    const before = JSON.stringify(snapshot);
+    change(snapshot);
+    const cleaned = normalize(snapshot);
+    const raw = JSON.stringify(cleaned);
+    snapshots.set(userId, cleaned);
+    // An unchanged cache must stay silent: subscribers re-render on every emit, and an
+    // open companion chat re-acknowledges its read position on render (a JS render loop).
+    if (raw === before && !unsaved.has(userId)) return;
+    if (raw !== before) emit();
+    if (raw.length > MAX_CHARS) return;
+    const saved = await AsyncStorage.setItem(PREFIX + userId, raw).then(() => true, () => false);
+    if (expected !== epoch) { await AsyncStorage.removeItem(PREFIX + userId).catch(() => undefined); return; }
+    if (saved) unsaved.delete(userId); else unsaved.add(userId);
+  });
+  writes.set(userId, next);
+  await next.finally(() => { if (writes.get(userId) === next) writes.delete(userId); });
+}
+export const cacheRemoteResourceHome = (userId: string, home: RemoteHomeCollection[]) => update(userId, (s) => { s.home = home; });
+export const remoteResourceReadKey = (deviceId: string, resourceId: string) => JSON.stringify([deviceId, resourceId]);
+export const cacheRemoteResourceItems = (userId: string, collectionId: string, items: HostedRemoteCollectionItem[]) => update(userId, (s) => {
+  s.items[collectionId] = items;
+  for (const row of items) {
+    const key = remoteResourceReadKey(row.host.deviceId, row.item.ref.id);
+    if ((row.item.ref.kind === 'bot' || row.item.ref.kind === 'bot-group') && s.read[key] === undefined) s.read[key] = row.item.display.lastReplyAt ?? 0;
+  }
+});
+export const markRemoteResourceRead = (userId: string, deviceId: string, resourceId: string, at: number, sequence?: string) => update(userId, (s) => {
+  const key = remoteResourceReadKey(deviceId, resourceId);
+  if (Number.isFinite(at) && at >= 0) s.read[key] = Math.max(s.read[key] ?? 0, at);
+  if (validSequence(sequence)) {
+    const sequences = s.readSequences ??= {};
+    if (sequences[key] === undefined || BigInt(sequence) > BigInt(sequences[key])) sequences[key] = sequence;
+  }
+});
+export function isRemoteResourceUnread(userId: string, deviceId: string, resourceId: string, at?: number, sequence?: string): boolean {
+  const snapshot = snapshots.get(userId);
+  const key = remoteResourceReadKey(deviceId, resourceId);
+  if (validSequence(sequence)) return BigInt(sequence) > BigInt(snapshot?.readSequences?.[key] ?? '0');
+  const read = snapshot?.read[key];
+  return at !== undefined && read !== undefined && at > read;
+}
+/** Name the cached Bot whose conversation link is this task. Presentation only; access stays live. */
+export function cachedBotIdForSession(userId: string, collectionId: string, deviceId: string, sessionId: string): string {
+  const row = snapshots.get(userId)?.items[collectionId]?.find(({ host, item }) => host.deviceId === deviceId
+    && item.ref.kind === 'bot' && item.links.some(({ rel, target }) => rel === 'conversation'
+      && target.kind === 'session' && target.sessionId === sessionId));
+  return row?.item.ref.id ?? '';
+}
+/** A cached roster row for display (name/avatar) only; never an authorization or availability signal. */
+export function cachedBotItem(userId: string, collectionId: string, deviceId: string, botId: string) {
+  return snapshots.get(userId)?.items[collectionId]?.find(({ host, item }) => host.deviceId === deviceId
+    && item.ref.kind === 'bot' && item.ref.id === botId)?.item ?? null;
+}
+export async function clearRemoteResourceCache(): Promise<void> {
+  epoch += 1; snapshots.clear(); unsaved.clear(); emit();
+  await Promise.allSettled([...writes.values()]);
+  const keys = await AsyncStorage.getAllKeys().catch(() => []);
+  await AsyncStorage.multiRemove(keys.filter((key) => key.startsWith(PREFIX))).catch(() => undefined);
+}
+
+/** Drop only this account's display/unread mirror after a confirmed personal removal. */
+export const forgetRemoteResource = (userId: string, resourceId: string) => update(userId, s => {
+  for (const id of Object.keys(s.items)) s.items[id] = s.items[id].filter(row => row.item.ref.id !== resourceId);
+  for (const map of [s.read, s.readSequences ?? {}]) for (const key of Object.keys(map)) {
+    try { if (JSON.parse(key)[1] === resourceId) delete map[key]; } catch { /* legacy cache key */ }
+  }
+});

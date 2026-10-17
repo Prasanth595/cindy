@@ -14,9 +14,10 @@
  *   - buildScheduleInput:表单 → CreateScheduleInput(原 toInput 迁入)
  */
 
-import type { CreateScheduleInput, ScheduleTemplate, ScheduleWorkspaceKind, ScriptCapability } from '@cindy/maker-scheduler';
+import type { Schedule, CreateScheduleInput, ScheduleTemplate, ScheduleWorkspaceKind, ScriptCapability } from '@cindy/maker-scheduler';
 import {
   effectiveSourceIdForModel,
+  getModel,
   type AgentKind,
   type ProviderView,
 } from '@cindy/model-providers';
@@ -45,6 +46,25 @@ export function isExplicitScheduleModelUnavailable(
 }
 
 /**
+ * First required template parameter the scheduler engine would reject.
+ * Empty string is not "provided" and falls back to a non-empty default, matching
+ * applyTemplateParams. Whitespace is provided: the engine inserts it as-is.
+ */
+export function missingRequiredTemplateParamLabel(
+  template: Pick<ScheduleTemplate, 'parameters'>,
+  values: Record<string, string>,
+): string | null {
+  for (const parameter of template.parameters ?? []) {
+    if (!parameter.required) continue;
+    const raw = values[parameter.key];
+    const provided = Object.prototype.hasOwnProperty.call(values, parameter.key) && raw !== '';
+    const hasDefault = parameter.default !== undefined && parameter.default !== '';
+    if (!provided && !hasDefault) return parameter.label || parameter.key;
+  }
+  return null;
+}
+
+/**
  * Resolve the provider represented by the schedule picker. An empty stored
  * providerId means "use the effective source", not "use the utility fallback
  * chain", so generation must materialize that source before crossing IPC.
@@ -70,6 +90,36 @@ export function resolveScheduleGenerationProviderId(input: {
   );
 }
 
+/**
+ * Resolve effort options without crossing an explicit provider boundary.
+ * A stale pinned provider preserves its effort until the provider is repaired;
+ * only an unpinned selection may follow the effective fallback.
+ */
+export function resolveScheduleModelEfforts(input: {
+  providers: ProviderView[];
+  providerId: string;
+  model: string;
+  agentKind: AgentKind;
+  fallbackEfforts?: readonly string[];
+}): readonly string[] | undefined {
+  const model = input.model.trim();
+  if (!model) return undefined;
+  const explicitProviderId = input.providerId.trim();
+  const sourceId = effectiveSourceIdForModel(
+    input.providers,
+    explicitProviderId || null,
+    model,
+    input.agentKind,
+  );
+  if (explicitProviderId && sourceId !== explicitProviderId) return undefined;
+  const source = sourceId
+    ? input.providers.find((provider) => provider.id === sourceId)
+    : undefined;
+  return source
+    ? getModel(source, model, input.agentKind)?.efforts
+    : input.fallbackEfforts;
+}
+
 export interface ScheduleFormState {
   name: string;
   prompt: string;
@@ -89,6 +139,9 @@ export interface ScheduleFormState {
   /** 手动模式:true → 创建后永不自动 fire,只能 Run now。UI 上需要 recurring=false 才能勾。 */
   manual: boolean;
   agentKind: 'claude-code' | 'codex' | 'pi';
+  modelAgentKind?: 'claude-code' | 'codex' | 'pi';
+  /** The bound task's baseline, independent of the editable model choice. Form-only. */
+  boundAgent?: { sessionId: string; agentKind: ScheduleFormState['agentKind'] };
   model: string;
   /**
    * 显式选定的来源(供应商)id。'' = 跟随该 agent 原生默认来源（no-break，与未升级
@@ -133,8 +186,8 @@ export type RunMode = 'fresh' | 'persistent' | 'bound';
  * Agent-mode bound schedules may only be persisted after the selected session
  * has resolved as available and active. Archived sessions remain openable, so
  * their reference state is still `available`, but the runner cannot use them as
- * ordinary heartbeat targets. Script mode intentionally clears targetSessionId,
- * so a stale binding must not block that mode conversion.
+ * ordinary heartbeat targets. Script bindings are lifecycle owners: editing them remains allowed,
+ * and the runner pauses unavailable owners before executing hooks or scripts.
  */
 export function canSubmitSessionBinding(
   executionMode: ScheduleFormState['executionMode'],
@@ -152,14 +205,69 @@ export function hasRealBinding(form: Pick<ScheduleFormState, 'targetSessionId'>)
   return !!tgt && tgt !== PENDING_SESSION_ID;
 }
 
-/** True only for a bound schedule that intentionally follows its session route. */
-export function shouldFollowBoundSessionGenerationRoute(
-  form: Pick<ScheduleFormState, 'persistentSession' | 'targetSessionId' | 'providerId' | 'model'>,
+/**
+ * A bound schedule follows its session route when model and provider are both
+ * inherited. Effort is an independent runtime override and must not alter the
+ * generation route predicate.
+ */
+export function isFollowingSessionSelection(input: {
+  followSession?: boolean;
+  model: string;
+  providerId: string;
+  effort: string;
+}): boolean {
+  return Boolean(
+    input.followSession &&
+      !input.model.trim() &&
+      !input.providerId.trim() &&
+      !input.effort.trim(),
+  );
+}
+
+/**
+ * 前置脚本生成是否应沿用绑定会话的模型。
+ *
+ * model 是绑定任务的继承维度；provider/effort 可以独立覆盖，不能因为这两个
+ * 覆盖值存在就把空 model 当成“没有可生成的模型”。
+ */
+export function usesBoundSessionGenerationModel(
+  form: Pick<ScheduleFormState, 'persistentSession' | 'targetSessionId' | 'model'>,
 ): boolean {
   return deriveRunMode(form) === 'bound'
     && hasRealBinding(form)
-    && !form.providerId.trim()
     && !form.model.trim();
+}
+
+/** bound 任务生成前置脚本时，是否需要 main 用会话路由补齐缺省维度。 */
+export function needsBoundSessionGenerationRouteResolution(
+  form: Pick<
+    ScheduleFormState,
+    'persistentSession' | 'targetSessionId' | 'providerId' | 'model'
+  >,
+): boolean {
+  return deriveRunMode(form) === 'bound'
+    && hasRealBinding(form)
+    && (!form.model.trim() || !form.providerId.trim());
+}
+
+/** 前置脚本生成沿用绑定会话的完整模型/来源路由(努力强度是独立覆盖)。 */
+export function shouldFollowBoundSessionGenerationRoute(
+  form: Pick<
+    ScheduleFormState,
+    'persistentSession' | 'targetSessionId' | 'providerId' | 'model' | 'effort'
+  >,
+): boolean {
+  return needsBoundSessionGenerationRouteResolution(form)
+    && usesBoundSessionGenerationModel(form)
+    && !form.providerId.trim();
+}
+
+/** 绑定任务 model 为空时，运行模型仍来自绑定会话；provider/effort 可独立覆盖。 */
+export function usesBoundSessionModel(input: {
+  followSession?: boolean;
+  model: string;
+}): boolean {
+  return Boolean(input.followSession && !input.model.trim());
 }
 
 /**
@@ -189,6 +297,8 @@ export interface RememberedBinding {
   effort: EffortValue | '';
   fastMode: boolean;
   agentKind: ScheduleFormState['agentKind'];
+  modelAgentKind?: ScheduleFormState['modelAgentKind'];
+  boundAgent?: ScheduleFormState['boundAgent'];
 }
 
 /** 从 form 提取绑定快照;无真实绑定返回 null。 */
@@ -201,6 +311,8 @@ export function captureBinding(form: ScheduleFormState): RememberedBinding | nul
     effort: form.effort,
     fastMode: form.fastMode,
     agentKind: form.agentKind,
+    modelAgentKind: form.modelAgentKind,
+    boundAgent: form.boundAgent,
   };
 }
 
@@ -234,6 +346,8 @@ export function applyRunMode(
           effort: remembered.effort,
           fastMode: remembered.fastMode,
           agentKind: remembered.agentKind,
+          modelAgentKind: remembered.modelAgentKind,
+          boundAgent: remembered.boundAgent,
         }
       : f;
 
@@ -272,7 +386,11 @@ export function sessionAgentKindToScheduleAgentKind(
 }
 
 interface TemplateAgentDefaults {
-  getDefaultModel: (agentKind: ScheduleFormState['agentKind']) => string;
+  /** 目标 agent 在给定来源内的默认模型及与之成对的来源(null = 跟随原生默认)。 */
+  getDefaultRoute: (
+    agentKind: ScheduleFormState['agentKind'],
+    preferredProviderId?: string | null,
+  ) => { model: string; providerId: string | null };
   getAgentPrefs: (
     agentKind: ScheduleFormState['agentKind'],
   ) => Pick<ScheduleFormState, 'providerId' | 'effort' | 'fastMode'>;
@@ -289,11 +407,22 @@ export function resolveTemplateAgentFields(
   const templateModel = typeof template.model === 'string' ? template.model.trim() : '';
   const templateProviderId = typeof template.providerId === 'string' ? template.providerId.trim() : undefined;
   const templateEffort = template.effort && isEffortValue(template.effort) ? template.effort : undefined;
+  // 模板没给模型、换了 agent 时用默认路由:限定在模板 / 任务记忆的来源内,模型与来源整对应用。
+  const defaultRoute =
+    agentChanged && !templateModel
+      ? defaults.getDefaultRoute(agentKind, templateProviderId ?? (agentPrefs?.providerId || null))
+      : null;
 
   return {
     agentKind,
-    model: templateModel || (agentChanged ? defaults.getDefaultModel(agentKind) : form.model),
-    providerId: templateProviderId ?? (agentChanged ? (agentPrefs?.providerId ?? '') : form.providerId),
+    model: templateModel || (agentChanged ? (defaultRoute?.model ?? '') : form.model),
+    providerId:
+      templateProviderId ??
+      (agentChanged
+        ? defaultRoute
+          ? (defaultRoute.providerId ?? '')
+          : (agentPrefs?.providerId ?? '')
+        : form.providerId),
     effort: templateEffort ?? (agentChanged ? (agentPrefs?.effort ?? '') : form.effort),
     fastMode: template.fastMode ?? (agentChanged ? (agentPrefs?.fastMode ?? false) : form.fastMode),
   };
@@ -411,6 +540,13 @@ export function parseScriptTimeoutMs(sec: string): number | undefined {
   return Number.isFinite(n) && n > 0 ? Math.floor(n * 1000) : undefined;
 }
 
+/** Preserve a binding's baseline when saving; unbound tasks use the selected Harness. */
+export function scheduleAgentKindForForm(form: ScheduleFormState): ScheduleFormState['agentKind'] {
+  return form.executionMode !== 'script' && hasRealBinding(form) &&
+    form.boundAgent?.sessionId === form.targetSessionId.trim()
+    ? form.boundAgent.agentKind : form.agentKind;
+}
+
 export function buildScheduleInput(form: ScheduleFormState): CreateScheduleInput {
   const isHeartbeat = !!form.targetSessionId.trim();
   const isScript = (form.executionMode ?? 'agent') === 'script';
@@ -428,12 +564,13 @@ export function buildScheduleInput(form: ScheduleFormState): CreateScheduleInput
     // 恒带 key：编辑 Cron 任务时 undefined 会沿 storage patch 契约清空旧 intervalMs；
     // 相对间隔任务则原样保留权威值，不能从可能陈旧的 cronExpr 重新推导。
     intervalMs: form.intervalMs,
-    agentKind: form.agentKind,
+    agentKind: scheduleAgentKindForForm(form),
+    modelAgentKind: !isScript && form.model.trim() ? form.modelAgentKind : undefined,
     workspaceKind: form.workspaceKind,
     useWorktree: !isScript && form.workspaceKind === 'project' && form.useWorktree,
     persistentSession: !isScript && form.persistentSession,
     silentWhenIdle: !isScript && form.silentWhenIdle,
-    targetSessionId: !isScript ? (form.targetSessionId.trim() || undefined) : undefined,
+    targetSessionId: hasRealBinding(form) ? form.targetSessionId.trim() : undefined,
     preRunHook: buildPreRunHook(form),
     notify: {
       desktop: form.notifyDesktop,
@@ -446,14 +583,14 @@ export function buildScheduleInput(form: ScheduleFormState): CreateScheduleInput
     base.workspaceKind = 'project';
     base.workingDir = form.workingDir.trim();
     base.useWorktree = false;
-    // script 模式不叠前置检查(任务本体就是脚本,UI 也不展示该区块);保留 key,
-    // 编辑保存时按 hasKey + undefined = 写 NULL 契约把历史 hook 清列。
-    base.preRunHook = undefined;
+    // Preserve installed script gates when editing; hidden controls must not erase them.
     return base;
   }
 
   if (isHeartbeat) {
     base.useWorktree = false;
+    // Keep the key when following so an update clears a previously saved Fast override.
+    base.fastMode = form.modelAgentKind ? form.fastMode : undefined;
     base.model = form.model.trim() || undefined;
     base.providerId = form.providerId.trim() || undefined;
     base.effort = form.effort && isEffortValue(form.effort) ? form.effort : undefined;
@@ -462,11 +599,42 @@ export function buildScheduleInput(form: ScheduleFormState): CreateScheduleInput
   if (form.workspaceKind === 'project') base.workingDir = form.workingDir.trim();
   else base.useWorktree = false;
   if (form.model.trim()) base.model = form.model.trim();
-  if (form.providerId.trim()) base.providerId = form.providerId.trim();
+  // providerId 是可清除的来源 override：表单选回原生默认来源时值为空，仍须保留 key，
+  // 让 update patch 按「key 在 + undefined」把旧 provider_id 清成 NULL。
+  base.providerId = form.providerId.trim() || undefined;
   if (form.effort && isEffortValue(form.effort)) base.effort = form.effort;
   // fastMode 对 Codex / Pi 都生效(runner.ts:665 明确 claude-code 忽略此字段);只序列化
   // codex 会让用户在 Pi 任务里开的 Fast 被静默丢弃(codex review)。表单侧 Fast 开关已按
   // capability × 模型 supportsFastMode 门控,Pi 只有真支持时才可能为 true。
   if (form.agentKind === 'codex' || form.agentKind === 'pi') base.fastMode = form.fastMode;
   return base;
+}
+
+/** Clone/demote drops the binding, so freeze the explicitly selected Harness for the new task. */
+export function scheduleToUserCreateInput(
+  schedule: Schedule,
+  overrides: Partial<CreateScheduleInput> = {},
+): CreateScheduleInput {
+  return {
+    name: schedule.name,
+    prompt: schedule.prompt,
+    kind: schedule.kind,
+    cronExpr: schedule.cronExpr,
+    timezone: schedule.timezone,
+    recurring: schedule.recurring,
+    manual: schedule.manual,
+    intervalMs: schedule.intervalMs,
+    agentKind: schedule.modelAgentKind ?? schedule.agentKind,
+    modelAgentKind: schedule.modelAgentKind,
+    model: schedule.model,
+    providerId: schedule.providerId,
+    fastMode: schedule.fastMode,
+    effort: schedule.effort,
+    workspaceKind: schedule.workspaceKind,
+    workingDir: schedule.workingDir,
+    useWorktree: schedule.useWorktree,
+    persistentSession: schedule.persistentSession,
+    notify: schedule.notify,
+    ...overrides,
+  };
 }

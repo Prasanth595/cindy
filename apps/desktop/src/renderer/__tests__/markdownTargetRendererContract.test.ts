@@ -104,8 +104,23 @@ describe('Markdown target rendering contract', () => {
     expect(markdownRenderer).toContain('WINDOWS_ABSOLUTE_HREF_RE.test(url)');
   });
 
+  it('restores raw local link hrefs mangled by hast URL serialization (#1629)', () => {
+    // mdast→hast 会把反斜杠 percent-encode 成 %5C,`C:\...` 链接因此漏出
+    // trustedUrlTransform 白名单、href 被清空退化纯文本。a 渲染器必须优先消费
+    // remarkPreserveRawLocalDestinations 存的原始值(与 img 同构),且仅限受信任内容。
+    expect(markdownRenderer).toContain('RAW_LOCAL_LINK_HREF_PROP');
+    expect(markdownRenderer).toContain(
+      "allowPrivilegedLinks && typeof rawLocalHref === 'string' ? rawLocalHref : href",
+    );
+    // preserve 插件必须排在两份插件链的**链尾**(remarkLocalPathLinks 之后),
+    // 正文裸路径切出的 link 节点才拿得到原始值。
+    expect(
+      markdownRenderer.match(/remarkLocalPathLinks,\n  remarkPreserveRawLocalDestinations,\n\]/g),
+    ).toHaveLength(2);
+  });
+
   it('passes already-rewritten remote media image URLs through normalization', () => {
-    expect(markdownRenderer).toContain('remarkPreserveLocalImagePaths');
+    expect(markdownRenderer).toContain('remarkPreserveRawLocalDestinations');
     expect(markdownRenderer).toContain('normalizeMarkdownImageSrc(');
     const normalizeBlock = localPathResolver.match(
       /export function normalizeMarkdownImageSrc[\s\S]*?return toLocalFileUrl/,
@@ -132,5 +147,28 @@ describe('Markdown target rendering contract', () => {
     expect(textLightbox).toContain(
       'scroller.scrollTop = targetRect.top - scrollerRect.top + scroller.scrollTop',
     );
+  });
+
+  it('has the session bubbles honour the boundary they are handed', () => {
+    // SubagentsBody component tests verify the boundary at the panel seam.
+    // This guard retains propagation through the real session bubble sources.
+    const chatDir = resolve(__dirname, '../components/chat');
+    const assistant = readFileSync(resolve(chatDir, 'AssistantMessage.tsx'), 'utf8')
+      .replace(/\r\n/g, '\n');
+    // Defaulting to true is what keeps every local caller unchanged, and is
+    // also what made the omission invisible.
+    expect(assistant).toContain('allowPrivilegedLinks = true');
+    // Both bodies: the streamed one and the settled one.
+    expect([...assistant.matchAll(/allowPrivilegedLinks=\{allowPrivilegedLinks\}/g)].length)
+      .toBeGreaterThanOrEqual(3);
+
+    const user = readFileSync(resolve(chatDir, 'UserMessage.tsx'), 'utf8')
+      .replace(/\r\n/g, '\n');
+    expect(user).toContain('allowPrivilegedLinks = true');
+    // A remote author's @-chip must not resolve against this filesystem: the
+    // click handler is withheld, which is the inert chip shape the component
+    // already uses for a collapsed long message.
+    expect(user).toContain('longMessageCollapsed || !allowPrivilegedLinks');
+    expect(user).toContain('allowPrivilegedLinks\n                                ? async (abs, name, chip)');
   });
 });

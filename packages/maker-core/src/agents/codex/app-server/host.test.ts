@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { AppServerHost } from './host.js';
+import { AppServerHost, CodexNativeInitializationStoppedError } from './host.js';
 import type { Logger } from '../../../interfaces/logger.js';
 import type { Transport, LineHandler, StderrHandler, CloseHandler } from './transport.js';
 
@@ -69,10 +69,51 @@ class DelayedTransport implements Transport {
   }
 }
 
+class RejectedInitializeTransport implements Transport {
+  private readonly lineHandlers = new Set<LineHandler>();
+  private readonly closeHandlers = new Set<CloseHandler>();
+  closed = false;
+
+  async writeLine(line: string): Promise<void> {
+    const message = JSON.parse(line) as { id?: unknown; method?: string };
+    if (message.id == null || message.method !== 'initialize') return;
+    for (const handler of this.lineHandlers) {
+      handler(JSON.stringify({
+        id: message.id,
+        error: { code: -32_000, message: 'initialize boom' },
+      }));
+    }
+  }
+
+  onLine(handler: LineHandler): () => void {
+    this.lineHandlers.add(handler);
+    return () => this.lineHandlers.delete(handler);
+  }
+
+  onClose(handler: CloseHandler): () => void {
+    this.closeHandlers.add(handler);
+    return () => this.closeHandlers.delete(handler);
+  }
+
+  onStderr(_handler: StderrHandler): () => void {
+    return () => {};
+  }
+
+  async close(reason = 'test close'): Promise<void> {
+    if (this.closed) return;
+    this.closed = true;
+    for (const handler of this.closeHandlers) handler({ reason });
+  }
+}
+
 class NotificationTransport implements Transport {
   private readonly lineHandlers = new Set<LineHandler>();
   private readonly closeHandlers = new Set<CloseHandler>();
   readonly lines: string[] = [];
+
+  constructor(
+    private readonly resultForMethod?: (method: string) => unknown,
+  ) {}
 
   async writeLine(line: string): Promise<void> {
     this.lines.push(line);
@@ -84,7 +125,7 @@ class NotificationTransport implements Transport {
           codexHome: '/tmp/codex-home',
           platformOs: 'linux',
         }
-      : {};
+      : this.resultForMethod?.(msg.method ?? '') ?? {};
     this.emit({ id: msg.id, result });
   }
 
@@ -112,6 +153,366 @@ class NotificationTransport implements Transport {
   }
 }
 
+describe('concrete writer candidate proof', () => {
+  it.each(['request', 'notification', 'subscription'])('retains %s evidence until confirmed process exit', async (source) => {
+    const transports: NotificationTransport[] = [];
+    const host = new AppServerHost({ createTransport: () => {
+      const transport = new NotificationTransport(); transports.push(transport); return transport;
+    }, logger, clientInfo: { name: 'test', version: '0' } });
+    try {
+      await host.ensureStarted();
+      expect(host.writerCandidate).toBeNull();
+      await host.request('thread/loaded/list');
+      expect(host.writerCandidate).toBeNull();
+      if (source === 'request') await host.request('thread/resume', { threadId: 'source' });
+      if (source === 'notification') transports[0].emit({ method: 'thread/started', params: { thread: { id: 'source' } } });
+      if (source === 'subscription') host.subscribeThread('source', {});
+      const proof = host.writerCandidate;
+      expect(proof).not.toBeNull();
+      const close = vi.spyOn(transports[0], 'close').mockRejectedValueOnce(new Error('exit not proven'));
+      await expect(host.shutdown('test', { throwOnTransportError: true })).rejects.toThrow('exit not proven');
+      expect(host.writerCandidate).toBe(proof);
+      close.mockRestore();
+      await host.shutdown('confirmed', { throwOnTransportError: true });
+      expect(host.writerCandidate).toBeNull();
+      await host.ensureStarted();
+      expect(host.writerCandidate).toBeNull();
+      // A late old notification cannot turn the replacement into an old writer.
+      transports[0].emit({ method: 'thread/started', params: { thread: { id: 'source' } } });
+      expect(host.writerCandidate).toBeNull();
+      await host.request('thread/start');
+      expect(host.writerCandidate).not.toBe(proof);
+      expect(host.writerCandidate).not.toBeNull();
+    } finally { await host.retire(); }
+  });
+});
+
+describe('AppServerHost isolated account lifecycle', () => {
+  it.each([false, true])('rejects persistent native policy before task dispatch (OAuth: %s)', async oauth => {
+    const transport = new NotificationTransport(() => ({ config: { cli_auth_credentials_store: 'file' } }));
+    const readTokens = vi.fn(async () => ({ accessToken: 'fixture-token', chatgptAccountId: 'account-b' }));
+    const host = new AppServerHost({ createTransport: () => transport, logger,
+      clientInfo: { name: 'cindy-test', version: '0.0.0' }, requireEphemeralAuth: true,
+      ...(oauth ? { externalAuth: { readTokens } } : {}),
+    });
+    try {
+      await expect(host.request('thread/resume', { threadId: 'fixture' })).rejects.toThrow('isolated account authentication');
+      const methods = transport.lines.map(line => JSON.parse(line).method);
+      expect(methods).not.toContain('account/login/start');
+      expect(methods).not.toContain('thread/resume');
+      expect(readTokens).not.toHaveBeenCalled();
+    } finally { await host.retire(); }
+  });
+
+  it('never installs a credential read that finishes after retirement', async () => {
+    const transport = new NotificationTransport(() => ({ config: { cli_auth_credentials_store: 'ephemeral' } }));
+    let resolve!: (value: { accessToken: string; chatgptAccountId: string }) => void;
+    const readTokens = vi.fn(() => new Promise<{ accessToken: string; chatgptAccountId: string }>(done => { resolve = done; }));
+    const host = new AppServerHost({ createTransport: () => transport, logger,
+      clientInfo: { name: 'cindy-test', version: '0.0.0' }, externalAuth: { readTokens },
+    });
+    const pending = host.ensureStarted();
+    const rejected = expect(pending).rejects.toThrow();
+    await vi.waitFor(() => expect(readTokens).toHaveBeenCalledOnce());
+    const retiring = host.retire();
+    resolve({ accessToken: 'late-fixture-secret', chatgptAccountId: 'account-b' });
+    await retiring;
+    await rejected;
+    expect(transport.lines.join('\n')).not.toContain('late-fixture-secret');
+  });
+});
+
+describe('AppServerHost assistant text delta routing', () => {
+  it('subscribes to dedicated agentMessage deltas and routes them to the owning thread', async () => {
+    const transport = new NotificationTransport();
+    const host = new AppServerHost({
+      createTransport: () => transport,
+      logger,
+      clientInfo: { name: 'cindy-test', version: '0.0.0' },
+    });
+    await host.ensureStarted();
+
+    const initialize = transport.lines
+      .map((line) => JSON.parse(line) as { method?: string; params?: { capabilities?: { optOutNotificationMethods?: string[] } } })
+      .find((message) => message.method === 'initialize');
+    expect(initialize?.params?.capabilities?.optOutNotificationMethods).not.toContain(
+      'item/agentMessage/delta',
+    );
+
+    const agentMessageDelta = vi.fn();
+    const subscription = host.subscribeThread('thread-1', { agentMessageDelta });
+    const params = {
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      itemId: 'msg-1',
+      delta: 'Hello',
+    };
+    transport.emit({ method: 'item/agentMessage/delta', params });
+
+    expect(agentMessageDelta).toHaveBeenCalledOnce();
+    expect(agentMessageDelta).toHaveBeenCalledWith(params);
+
+    await subscription.release();
+    await host.shutdown();
+  });
+});
+
+describe('AppServerHost custom Provider subagent policy', () => {
+  const routes = [
+    {
+      providerId: 'images-a',
+      modelProviderId: 'cindy_custom_aaaaaaaaaaaaaaaaaaaa',
+      capabilities: { imageGeneration: true },
+      responseModels: ['image-a', 'image-a-alt'],
+    },
+    {
+      providerId: 'images-b',
+      modelProviderId: 'cindy_custom_bbbbbbbbbbbbbbbbbbbb',
+      capabilities: { imageGeneration: true },
+      responseModels: ['image-b'],
+    },
+  ];
+
+  function policy(
+    root: { providerId: string; model: string },
+    child?: { providerId: string; catalogModel: string },
+  ) {
+    const host = new AppServerHost({
+      createTransport: () => new HangingTransport(),
+      logger,
+      clientInfo: { name: 'cindy-test', version: '0.0.0' },
+      codexCustomProviderRoutes: routes,
+      ...(child
+        ? { subagentRoute: { ...child, reasoningEffort: null } }
+        : {}),
+    });
+    return host.getCustomProviderThreadPolicy(root.providerId, root.model);
+  }
+
+  it('does not affect a non-image parent', () => {
+    expect(policy({ providerId: 'images-a', model: 'text-a' }, {
+      providerId: 'images-b',
+      catalogModel: 'image-b',
+    })).toEqual({
+      dynamicIdentity: false,
+      disableSubagents: false,
+      disableModelOverrides: false,
+    });
+  });
+
+  it.each([
+    ['same Provider eligible child', 'images-a', 'image-a-alt', false],
+    ['same Provider non-Responses child', 'images-a', 'text-a', true],
+    ['different Provider child', 'images-b', 'image-b', true],
+  ] as const)('%s', (_label, providerId, catalogModel, disableSubagents) => {
+    expect(policy(
+      { providerId: 'images-a', model: 'image-a' },
+      { providerId, catalogModel },
+    )).toEqual({
+      dynamicIdentity: true,
+      disableSubagents,
+      disableModelOverrides: true,
+    });
+  });
+
+  it('allows the second dynamic Provider with its own matching child', () => {
+    expect(policy(
+      { providerId: 'images-b', model: 'image-b' },
+      { providerId: 'images-b', catalogModel: 'image-b' },
+    )).toEqual({
+      dynamicIdentity: true,
+      disableSubagents: false,
+      disableModelOverrides: true,
+    });
+  });
+});
+
+describe('AppServerHost shutdown completion', () => {
+  it.each([false, true])('shutdown and retire wait for the same process (failure=%s)', async (fails) => {
+    const transport = new NotificationTransport();
+    let finish!: () => void;
+    let fail!: (error: Error) => void;
+    const completion = new Promise<void>((resolve, reject) => { finish = resolve; fail = reject; });
+    const close = vi.spyOn(transport, 'close').mockImplementation(() => completion);
+    const onRetired = vi.fn();
+    const host = new AppServerHost({ createTransport: () => transport, logger,
+      clientInfo: { name: 'cindy-test', version: '0.0.0' }, onRetired });
+    await host.ensureStarted();
+    const settled = vi.fn();
+    const shutdown = host.shutdown().then(settled);
+    const retire = host.retire('retire', { throwOnTransportError: true });
+    const retirement = fails
+      ? expect(retire).rejects.toThrow('exit not confirmed')
+      : expect(retire).resolves.toBeUndefined();
+    await Promise.resolve();
+    await expect(host.ensureStarted()).rejects.toThrow('after retirement');
+    expect(onRetired).not.toHaveBeenCalled();
+    expect(settled).not.toHaveBeenCalled();
+    if (fails) fail(new Error('exit not confirmed'));
+    else finish();
+    await Promise.all([shutdown, retirement]);
+    expect(close).toHaveBeenCalledOnce();
+    expect(onRetired).toHaveBeenCalledTimes(fails ? 0 : 1);
+    if (fails) {
+      await expect(host.shutdown('retry', { throwOnTransportError: true })).rejects.toThrow('exit not confirmed');
+      expect(onRetired).not.toHaveBeenCalled();
+      close.mockResolvedValue(undefined);
+      await Promise.all([host.retire(), host.retire('late exit', { throwOnTransportError: true })]);
+      expect(onRetired).toHaveBeenCalledOnce();
+      await expect(retire).rejects.toThrow('exit not confirmed');
+    }
+    await host.retire();
+    expect(close).toHaveBeenCalledTimes(fails ? 3 : 1);
+    expect(onRetired).toHaveBeenCalledOnce();
+    await expect(host.ensureStarted()).rejects.toThrow('after retirement');
+  });
+
+  it('rechecks failed shutdown before restarting and respects retirement during that recheck', async () => {
+    const transport = new NotificationTransport();
+    const close = vi.spyOn(transport, 'close').mockRejectedValue(new Error('exit not confirmed'));
+    const createTransport = vi.fn().mockReturnValueOnce(transport).mockReturnValue(new NotificationTransport());
+    const onRetired = vi.fn();
+    const host = new AppServerHost({ createTransport, logger,
+      clientInfo: { name: 'cindy-test', version: '0.0.0' }, onRetired });
+    await host.ensureStarted();
+    await expect(host.shutdown('failed', { throwOnTransportError: true })).rejects.toThrow('exit not confirmed');
+    await expect(host.ensureStarted()).rejects.toThrow('exit not confirmed');
+    expect(createTransport).toHaveBeenCalledOnce();
+    close.mockResolvedValue(undefined);
+    await host.ensureStarted();
+    expect(createTransport).toHaveBeenCalledTimes(2);
+
+    const nextTransport = createTransport.mock.results[1]!.value as NotificationTransport;
+    const nextClose = vi.spyOn(nextTransport, 'close').mockRejectedValue(new Error('exit not confirmed'));
+    await host.shutdown();
+    let finish!: () => void;
+    nextClose.mockImplementation(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const restart = expect(host.ensureStarted()).rejects.toThrow('after retirement');
+    const retiring = host.retire('retire during recheck', { throwOnTransportError: true });
+    await vi.waitFor(() => expect(nextClose).toHaveBeenCalledTimes(2));
+    finish();
+    await Promise.all([restart, retiring]);
+    expect(createTransport).toHaveBeenCalledTimes(2);
+    expect(onRetired).toHaveBeenCalledOnce();
+  });
+
+  it('blocks bootstrap retry until the failed process has exited', async () => {
+    const failed = new RejectedInitializeTransport();
+    let finish!: () => void;
+    vi.spyOn(failed, 'close').mockImplementation(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const createTransport = vi.fn().mockReturnValueOnce(failed).mockReturnValue(new NotificationTransport());
+    const host = new AppServerHost({ createTransport, logger, clientInfo: { name: 'cindy-test', version: '0.0.0' } });
+    const failure = expect(host.ensureStarted()).rejects.toThrow('initialize boom');
+    await vi.waitFor(() => expect(failed.close).toHaveBeenCalledOnce());
+    await expect(host.ensureStarted()).rejects.toThrow('during shutdown');
+    expect(createTransport).toHaveBeenCalledOnce();
+    finish();
+    await failure;
+    await host.ensureStarted();
+    expect(createTransport).toHaveBeenCalledTimes(2);
+    await host.shutdown();
+  });
+
+  it('recovers when subscribing synchronously reports a closed startup transport', async () => {
+    const failed = new NotificationTransport();
+    let finish!: () => void;
+    vi.spyOn(failed, 'onClose').mockImplementation((handler) => { handler({ reason: 'closed on subscribe' }); return () => {}; });
+    vi.spyOn(failed, 'close').mockImplementation(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const createTransport = vi.fn().mockReturnValueOnce(failed).mockReturnValue(new NotificationTransport());
+    const host = new AppServerHost({ createTransport, logger, clientInfo: { name: 'cindy-test', version: '0.0.0' } });
+    const failure = expect(host.ensureStarted()).rejects.toThrow();
+    await vi.waitFor(() => expect(failed.close).toHaveBeenCalledOnce());
+    await expect(host.ensureStarted()).rejects.toThrow('during shutdown');
+    finish();
+    await failure;
+    await host.ensureStarted();
+    expect(createTransport).toHaveBeenCalledTimes(2);
+    await host.shutdown();
+  });
+});
+
+describe('AppServerHost MCP readiness', () => {
+  it('releases Host-owned resources only on terminal retire and only once', async () => {
+    const onRetired = vi.fn(async () => undefined);
+    const host = new AppServerHost({
+      createTransport: () => new NotificationTransport(),
+      logger,
+      clientInfo: { name: 'cindy-test', version: '0.0.0' },
+      onRetired,
+    });
+
+    await host.shutdown('transport recovery');
+    expect(onRetired).not.toHaveBeenCalled();
+    await Promise.all([
+      host.retire('task finished'),
+      host.retire('duplicate cleanup'),
+    ]);
+    expect(onRetired).toHaveBeenCalledOnce();
+  });
+
+  it('retries a negative tool probe instead of permanently caching it', async () => {
+    let available = false;
+    const transport = new NotificationTransport((method) => (
+      method === 'mcpServerStatus/list'
+        ? {
+            data: [{
+              name: 'node_repl',
+              tools: available ? { js: {} } : {},
+              authStatus: 'notApplicable',
+            }],
+            nextCursor: null,
+          }
+        : {}
+    ));
+    const host = new AppServerHost({
+      createTransport: () => transport,
+      logger,
+      clientInfo: { name: 'cindy-test', version: '0.0.0' },
+      codexBrowserUseStartupTimeoutMs: 10,
+    });
+
+    await expect(host.waitForMcpTool('node_repl', 'js')).resolves.toBe(false);
+    available = true;
+    await expect(host.waitForMcpTool('node_repl', 'js')).resolves.toBe(true);
+
+    await host.shutdown();
+  });
+
+  it('re-probes MCP readiness after the app-server respawns', async () => {
+    const firstTransport = new NotificationTransport((method) => (
+      method === 'mcpServerStatus/list'
+        ? {
+            data: [{ name: 'node_repl', tools: { js: {} }, authStatus: 'notApplicable' }],
+            nextCursor: null,
+          }
+        : {}
+    ));
+    const secondTransport = new NotificationTransport((method) => (
+      method === 'mcpServerStatus/list'
+        ? {
+            data: [{ name: 'node_repl', tools: {}, authStatus: 'notApplicable' }],
+            nextCursor: null,
+          }
+        : {}
+    ));
+    const transports = [firstTransport, secondTransport];
+    const createTransport = vi.fn(() => transports.shift() ?? secondTransport);
+    const host = new AppServerHost({
+      createTransport,
+      logger,
+      clientInfo: { name: 'cindy-test', version: '0.0.0' },
+      codexBrowserUseStartupTimeoutMs: 10,
+    });
+
+    await expect(host.waitForMcpTool('node_repl', 'js')).resolves.toBe(true);
+    await host.shutdown();
+    await expect(host.waitForMcpTool('node_repl', 'js')).resolves.toBe(false);
+
+    expect(createTransport).toHaveBeenCalledTimes(2);
+    await host.shutdown();
+  });
+});
+
 const logger: Logger = {
   trace: vi.fn(),
   debug: vi.fn(),
@@ -122,7 +523,124 @@ const logger: Logger = {
   child: () => logger,
 };
 
+describe('native SQLite initialization recovery', () => {
+  class FailedNativeTransport extends NotificationTransport {
+    failed = false;
+    closeGate: Promise<void> = Promise.resolve();
+    override async writeLine(line: string) {
+      this.lines.push(line);
+      this.failed = true;
+      await super.close('native SQLite exited');
+    }
+    nativeSqliteInitializationFailed() { return this.failed; }
+    override async close(reason?: string) { await this.closeGate; await super.close(reason); }
+  }
+
+  it('shares recovery, waits for close, and sends the task only to the replacement', async () => {
+    const failed = new FailedNativeTransport();
+    let release!: () => void;
+    failed.closeGate = new Promise(resolve => { release = resolve; });
+    const healthy = new NotificationTransport();
+    const createTransport = vi.fn().mockReturnValueOnce(failed).mockReturnValue(healthy);
+    const host = new AppServerHost({ createTransport, logger, clientInfo: { name: 'test', version: '0' } });
+    try {
+      const first = host.ensureStarted();
+      expect(host.ensureStarted()).toBe(first);
+      await vi.waitFor(() => expect(failed.failed).toBe(true));
+      expect(createTransport).toHaveBeenCalledTimes(1);
+      release();
+      await first;
+      await host.request('thread/start', {});
+      expect(createTransport).toHaveBeenCalledTimes(2);
+      expect(failed.lines.map(line => JSON.parse(line).method)).toEqual(['initialize']);
+      expect(healthy.lines.map(line => JSON.parse(line).method)).toEqual(['initialize', 'thread/start']);
+    } finally { release(); await host.retire(); }
+  });
+
+  it.each(['exhaust', 'shutdown', 'retire', 'timeout', 'close-failure'] as const)('stops recovery on %s', async mode => {
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const failed = new FailedNativeTransport();
+    if (mode !== 'exhaust') failed.closeGate = gate;
+    if (mode === 'close-failure') failed.close = vi.fn(async () => { await gate; throw new Error('exit unconfirmed'); });
+    const createTransport = vi.fn(() => mode === 'exhaust' ? new FailedNativeTransport() : failed);
+    const host = new AppServerHost({ createTransport, logger, clientInfo: { name: 'test', version: '0' } });
+    const started = mode === 'timeout' ? host.ensureStartedWithTimeout(10, 'fixture') : host.ensureStarted();
+    const rejection = expect(started).rejects.toThrow(mode === 'timeout' ? /timed out/ : mode === 'close-failure' ? /exit unconfirmed/ : /initialization stopped/);
+    if (mode === 'exhaust') {
+      await rejection;
+      expect(createTransport).toHaveBeenCalledTimes(3);
+    } else {
+      await vi.waitFor(() => expect(failed.failed).toBe(true));
+      const stopped = mode === 'shutdown' ? host.shutdown() : mode === 'retire' ? host.retire() : undefined;
+      if (mode === 'timeout') await rejection;
+      release();
+      await rejection;
+      await stopped;
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(createTransport).toHaveBeenCalledTimes(1);
+    }
+    await host.retire();
+  });
+
+  it('does not retry an initialize RPC rejection', async () => {
+    const createTransport = vi.fn(() => new RejectedInitializeTransport());
+    const host = new AppServerHost({ createTransport, logger, clientInfo: { name: 'test', version: '0' } });
+    await expect(host.ensureStarted()).rejects.not.toBeInstanceOf(CodexNativeInitializationStoppedError);
+    expect(createTransport).toHaveBeenCalledTimes(1);
+    await host.retire();
+  });
+
+  it('does not retry credential installation after native initialization', async () => {
+    const transport = new NotificationTransport(() => ({ config: { cli_auth_credentials_store: 'ephemeral' } }));
+    const createTransport = vi.fn(() => transport);
+    const host = new AppServerHost({ createTransport, logger, clientInfo: { name: 'test', version: '0' },
+      externalAuth: { readTokens: async () => { throw new Error('synthetic official account rejected'); } },
+    });
+    await expect(host.request('thread/start', {})).rejects.toThrow('Codex account authentication is unavailable or has changed');
+    expect(createTransport).toHaveBeenCalledTimes(1);
+    expect(transport.lines.map(line => JSON.parse(line).method)).not.toContain('thread/start');
+    await host.retire();
+  });
+
+  it('never replays a task RPC failure after initialize', async () => {
+    const transport = new NotificationTransport(method => {
+      if (method === 'thread/start') throw new Error('synthetic task write failed');
+      return {};
+    });
+    const createTransport = vi.fn(() => transport);
+    const host = new AppServerHost({ createTransport, logger, clientInfo: { name: 'test', version: '0' } });
+    await expect(host.request('thread/start', {})).rejects.toThrow();
+    expect(createTransport).toHaveBeenCalledTimes(1);
+    expect(transport.lines.filter(line => JSON.parse(line).method === 'thread/start')).toHaveLength(1);
+    await host.retire();
+  });
+});
+
 describe('AppServerHost.request startup timeout', () => {
+  it.each([undefined, 1000])('checks dispatch after the final startup await (timeout=%s)', async (timeoutMs) => {
+    const transport = new NotificationTransport();
+    const host = new AppServerHost({ createTransport: () => transport, logger, clientInfo: { name: 'test', version: '0' } });
+    try {
+      await host.ensureStarted();
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const ensure = host.ensureStarted.bind(host);
+      vi.spyOn(host, 'ensureStarted').mockImplementationOnce(async () => { await gate; return ensure(); });
+      let valid = true;
+      const beforeDispatch = vi.fn(() => { if (!valid) throw new Error('route expired'); });
+      const pending = host.request('thread/start', {}, { timeoutMs, beforeDispatch });
+      expect(beforeDispatch).not.toHaveBeenCalled();
+      valid = false;
+      release();
+      await expect(pending).rejects.toThrow('route expired');
+      expect(transport.lines.some((line) => JSON.parse(line).method === 'thread/start')).toBe(false);
+      valid = true;
+      await host.request('thread/start', {}, { timeoutMs, beforeDispatch });
+      expect(transport.lines.filter((line) => JSON.parse(line).method === 'thread/start')).toHaveLength(1);
+    } finally { await host.shutdown(); }
+  });
+
   it('bounds a hung ensureStarted by the caller-provided timeoutMs (greptile R6 P1)', async () => {
     // 冷启动 / transport 重建时 ensureStarted 本身也可能永不返回 — 调用方显式
     // 给的 timeoutMs 必须同样覆盖启动路径, 否则「关键 RPC 加超时」形同虚设。
@@ -197,6 +715,20 @@ describe('AppServerHost.request startup timeout', () => {
 });
 
 describe('AppServerHost.ensureStartedWithTimeout', () => {
+  it('closes the failed transport when initialize rejects', async () => {
+    const transport = new RejectedInitializeTransport();
+    const host = new AppServerHost({
+      createTransport: () => transport,
+      logger,
+      clientInfo: { name: 'cindy-test', version: '0.0.0' },
+    });
+
+    await expect(host.ensureStarted()).rejects.toThrow('initialize boom');
+
+    expect(transport.closed).toBe(true);
+    await host.shutdown();
+  });
+
   it('rejects when startup hangs past the budget and keeps the shared bootstrap reusable (codex R13 P1)', async () => {
     // startSession 的 initialize 直调与 request() 的 startup deadline 同款语义:
     // 超时只截断本次等待, startPromise 后台继续, 后续调用直接复用不重新 spawn。
@@ -330,6 +862,156 @@ describe('AppServerHost descendant thread routing', () => {
         id: 'grandchild-thread',
         parentThreadId: 'child-thread',
       },
+    });
+
+    await subscription.release();
+    await host.shutdown();
+  });
+
+  it('registerDescendantLineage routes child notifications without any thread/started (codex 0.145)', async () => {
+    // 0.145 只对显式 thread/start / fork RPC 发 thread/started;spawn 出的子线程
+    // 只有 item / turn / tokenUsage 通知。血缘必须能由 Cindy 侧(从 spawn item)
+    // 主动登记,否则这些通知全部在 TTL 缓冲里过期,子代理卡永久转圈。
+    const transport = new NotificationTransport();
+    const host = new AppServerHost({
+      createTransport: () => transport,
+      logger,
+      clientInfo: { name: 'cindy-test', version: '0.0.0' },
+    });
+    await host.ensureStarted();
+
+    const descendantNotification = vi.fn();
+    const descendantThreadStarted = vi.fn();
+    const subscription = host.subscribeThread('root-thread', {
+      descendantNotification,
+      descendantThreadStarted,
+    });
+
+    // 早到:子线程通知先于 spawn item 被处理,落进 TTL 缓冲。
+    transport.emit({
+      method: 'turn/started',
+      params: { threadId: 'child-thread', turn: { id: 'turn-1' } },
+    });
+
+    host.registerDescendantLineage('child-thread', 'root-thread');
+
+    // 缓冲的早到通知按序补投,后续通知实时路由;全程没有任何 thread/started。
+    transport.emit({
+      method: 'turn/completed',
+      params: { threadId: 'child-thread', turn: { id: 'turn-1', status: 'completed' } },
+    });
+    expect(descendantNotification).toHaveBeenNthCalledWith(
+      1,
+      'child-thread',
+      'turn/started',
+      { threadId: 'child-thread', turn: { id: 'turn-1' } },
+    );
+    expect(descendantNotification).toHaveBeenNthCalledWith(
+      2,
+      'child-thread',
+      'turn/completed',
+      { threadId: 'child-thread', turn: { id: 'turn-1', status: 'completed' } },
+    );
+
+    // 血缘重复:新版 codex 补发同一条边的 thread/started 不重复建边、不重放缓冲,
+    // 但通知本身仍要转发——它携带的 thread.model 是实际模型的唯一观测入口(codex review)。
+    transport.emit({
+      method: 'thread/started',
+      params: { thread: { id: 'child-thread', parentThreadId: 'root-thread', model: 'gpt-5.6-terra' } },
+    });
+    expect(descendantThreadStarted).toHaveBeenCalledTimes(1);
+    expect(descendantThreadStarted).toHaveBeenCalledWith({
+      thread: { id: 'child-thread', parentThreadId: 'root-thread', model: 'gpt-5.6-terra' },
+    });
+    expect(descendantNotification).toHaveBeenCalledTimes(2);
+
+    await subscription.release();
+    await host.shutdown();
+  });
+
+  it('replays a buffered child thread/started before draining ordinary notifications', async () => {
+    const transport = new NotificationTransport();
+    const host = new AppServerHost({
+      createTransport: () => transport,
+      logger,
+      clientInfo: { name: 'cindy-test', version: '0.0.0' },
+    });
+    await host.ensureStarted();
+
+    // Root subscription is late. The child metadata and lifecycle arrive first,
+    // then the root spawn item is buffered under the root id.
+    transport.emit({
+      method: 'thread/started',
+      params: {
+        thread: {
+          id: 'child-thread',
+          parentThreadId: 'root-thread',
+          model: 'codex/gpt-5.6-sol',
+        },
+      },
+    });
+    transport.emit({
+      method: 'turn/started',
+      params: { threadId: 'child-thread', turn: { id: 'child-turn' } },
+    });
+    transport.emit({
+      method: 'item/started',
+      params: {
+        threadId: 'root-thread',
+        turnId: 'root-turn',
+        item: { id: 'spawn-1', type: 'subAgentActivity', agentThreadId: 'child-thread' },
+      },
+    });
+
+    const observed: string[] = [];
+    const subscription = host.subscribeThread('root-thread', {
+      itemStarted: () => {
+        observed.push('spawn');
+        host.registerDescendantLineage('child-thread', 'root-thread');
+      },
+      descendantThreadStarted: (params) => {
+        observed.push(`model:${params.thread.model ?? ''}`);
+      },
+      descendantNotification: (_threadId, method) => {
+        observed.push(method);
+      },
+    });
+
+    expect(observed).toEqual([
+      'spawn',
+      'model:codex/gpt-5.6-sol',
+      'turn/started',
+    ]);
+
+    await subscription.release();
+    await host.shutdown();
+  });
+
+  it('registerDescendantLineage unlocks a buffered grandchild thread/started chain', async () => {
+    const transport = new NotificationTransport();
+    const host = new AppServerHost({
+      createTransport: () => transport,
+      logger,
+      clientInfo: { name: 'cindy-test', version: '0.0.0' },
+    });
+    await host.ensureStarted();
+
+    const descendantThreadStarted = vi.fn();
+    const subscription = host.subscribeThread('root-thread', {
+      descendantThreadStarted,
+    });
+
+    // 孙线程的 thread/started(新版 codex 才会发)先到,此时子线程尚无血缘,缓冲。
+    transport.emit({
+      method: 'thread/started',
+      params: { thread: { id: 'grandchild-thread', parentThreadId: 'child-thread' } },
+    });
+    expect(descendantThreadStarted).not.toHaveBeenCalled();
+
+    // 子线程血缘由 spawn item 路径登记 → 缓冲中的孙线程血缘应被递归重建。
+    host.registerDescendantLineage('child-thread', 'root-thread');
+    expect(descendantThreadStarted).toHaveBeenCalledWith({
+      thread: { id: 'grandchild-thread', parentThreadId: 'child-thread' },
     });
 
     await subscription.release();
@@ -482,6 +1164,328 @@ describe('AppServerHost descendant thread routing', () => {
     await subscription.release();
     await host.shutdown();
   });
+
+  it('briefly waits for descendant lineage before declining an MCP elicitation', async () => {
+    const transport = new NotificationTransport();
+    const host = new AppServerHost({
+      createTransport: () => transport,
+      logger,
+      clientInfo: { name: 'cindy-test', version: '0.0.0' },
+    });
+    await host.ensureStarted();
+
+    const mcpServerElicitation = vi.fn(async () => ({
+      action: 'accept' as const,
+      content: { value: 'ok' },
+      _meta: null,
+    }));
+    const subscription = host.subscribeThread('root-thread', { mcpServerElicitation });
+    const initialLineCount = transport.lines.length;
+
+    // The request is dispatched asynchronously. Emit the lineage notification
+    // immediately afterwards to reproduce the observed cross-message race.
+    transport.emit({
+      id: 'early-elicitation',
+      method: 'mcpServer/elicitation/request',
+      params: {
+        threadId: 'child-thread',
+        turnId: 'turn-1',
+        serverName: 'node_repl',
+        mode: 'form',
+        _meta: null,
+        message: 'Confirm',
+        requestedSchema: {},
+      },
+    });
+    transport.emit({
+      method: 'thread/started',
+      params: { thread: { id: 'child-thread', parentThreadId: 'root-thread' } },
+    });
+
+    await vi.waitFor(() => {
+      expect(transport.lines.length).toBe(initialLineCount + 1);
+    });
+    expect(JSON.parse(transport.lines.at(-1)!)).toEqual({
+      id: 'early-elicitation',
+      result: { action: 'accept', content: { value: 'ok' }, _meta: null },
+    });
+    expect(mcpServerElicitation).toHaveBeenCalledWith(
+      expect.objectContaining({ threadId: 'child-thread', serverName: 'node_repl' }),
+    );
+
+    await subscription.release();
+    await host.shutdown();
+  });
+
+  it('keeps known descendant request dispatch synchronous before a resolved notification', async () => {
+    const transport = new NotificationTransport();
+    const host = new AppServerHost({
+      createTransport: () => transport,
+      logger,
+      clientInfo: { name: 'cindy-test', version: '0.0.0' },
+    });
+    await host.ensureStarted();
+
+    const order: string[] = [];
+    const subscription = host.subscribeThread('root-thread', {
+      requestUserInput: vi.fn(async () => {
+        order.push('request');
+        return { answers: {} };
+      }),
+      serverRequestResolved: vi.fn(() => {
+        order.push('resolved');
+      }),
+    });
+    transport.emit({
+      id: 'known-request',
+      method: 'item/tool/requestUserInput',
+      params: {
+        threadId: 'root-thread',
+        turnId: 'root-turn',
+        itemId: 'input',
+        questions: [{ id: 'q1', header: 'Q', question: 'Continue?', options: [] }],
+      },
+    });
+    transport.emit({
+      method: 'serverRequest/resolved',
+      params: { threadId: 'root-thread', requestId: 'known-request' },
+    });
+
+    await vi.waitFor(() => {
+      expect(order).toEqual(['request', 'resolved']);
+    });
+
+    await subscription.release();
+    await host.shutdown();
+  });
+
+  it('registers provisional descendant request brokers before replaying resolved notifications', async () => {
+    const transport = new NotificationTransport();
+    const host = new AppServerHost({
+      createTransport: () => transport,
+      logger,
+      clientInfo: { name: 'cindy-test', version: '0.0.0' },
+    });
+    await host.ensureStarted();
+
+    const order: string[] = [];
+    const subscription = host.subscribeThread('root-thread', {
+      requestUserInput: vi.fn(async (_params, meta) => {
+        order.push(`request:${String(meta.requestId)}`);
+        return { answers: {} };
+      }),
+      dynamicToolCall: vi.fn(async (_params, meta) => {
+        order.push(`request:${String(meta.requestId)}`);
+        return { contentItems: [], success: false };
+      }),
+      descendantNotification: (_threadId, method, params) => {
+        if (method !== 'serverRequest/resolved') return;
+        order.push(`resolved:${String((params as { requestId: string }).requestId)}`);
+      },
+    });
+
+    host.reserveDescendantLineage('child-thread', 'root-thread');
+    transport.emit({
+      id: 'pending-input',
+      method: 'item/tool/requestUserInput',
+      params: {
+        threadId: 'child-thread',
+        turnId: 'child-turn',
+        itemId: 'input',
+        questions: [{ id: 'q1', header: 'Q', question: 'Continue?', options: [] }],
+      },
+    });
+    transport.emit({
+      id: 'pending-tool',
+      method: 'item/tool/call',
+      params: {
+        threadId: 'child-thread',
+        turnId: 'child-turn',
+        callId: 'tool',
+        namespace: null,
+        tool: 'ask_user',
+        arguments: {},
+      },
+    });
+    transport.emit({
+      method: 'serverRequest/resolved',
+      params: { threadId: 'child-thread', requestId: 'pending-input' },
+    });
+    transport.emit({
+      method: 'serverRequest/resolved',
+      params: { threadId: 'child-thread', requestId: 'pending-tool' },
+    });
+
+    host.registerDescendantLineage('child-thread', 'root-thread');
+
+    await vi.waitFor(() => {
+      expect(order).toEqual([
+        'request:pending-input',
+        'request:pending-tool',
+        'resolved:pending-input',
+        'resolved:pending-tool',
+      ]);
+    });
+
+    await subscription.release();
+    await host.shutdown();
+  });
+
+  it('declines an MCP elicitation whose lineage stays unknown for the bounded window', async () => {
+    const transport = new NotificationTransport();
+    const host = new AppServerHost({
+      createTransport: () => transport,
+      logger,
+      clientInfo: { name: 'cindy-test', version: '0.0.0' },
+      notificationBufferTtlMs: 20,
+    });
+    await host.ensureStarted();
+
+    const mcpServerElicitation = vi.fn();
+    const subscription = host.subscribeThread('root-thread', { mcpServerElicitation });
+    const initialLineCount = transport.lines.length;
+    transport.emit({
+      id: 'unknown-elicitation',
+      method: 'mcpServer/elicitation/request',
+      params: {
+        threadId: 'unknown-thread',
+        turnId: 'turn-1',
+        serverName: 'node_repl',
+        mode: 'form',
+        _meta: null,
+        message: 'Confirm',
+        requestedSchema: {},
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(transport.lines.length).toBe(initialLineCount + 1);
+    });
+    expect(JSON.parse(transport.lines.at(-1)!)).toEqual({
+      id: 'unknown-elicitation',
+      result: { action: 'decline', content: null, _meta: null },
+    });
+    expect(mcpServerElicitation).not.toHaveBeenCalled();
+
+    await subscription.release();
+    await host.shutdown();
+  });
+
+  it('holds all descendant server requests behind a pending spawn claim until commit', async () => {
+    const transport = new NotificationTransport();
+    const host = new AppServerHost({
+      createTransport: () => transport,
+      logger,
+      clientInfo: { name: 'cindy-test', version: '0.0.0' },
+      notificationBufferTtlMs: 20,
+    });
+    await host.ensureStarted();
+
+    const subscription = host.subscribeThread('root-thread', {
+      commandExecutionApproval: vi.fn(async () => ({ decision: 'accept' as const })),
+      fileChangeApproval: vi.fn(async () => ({ decision: 'accept' as const })),
+      permissionsApproval: vi.fn(async () => ({ permissions: { network: true }, scope: 'turn' as const })),
+      requestUserInput: vi.fn(async () => ({ answers: { q1: { answers: ['ok'] } } })),
+      dynamicToolCall: vi.fn(async () => ({
+        contentItems: [{ type: 'inputText' as const, text: 'ok' }],
+        success: true,
+      })),
+      mcpServerElicitation: vi.fn(async () => ({
+        action: 'accept' as const,
+        content: { value: 'ok' },
+        _meta: null,
+      })),
+    });
+
+    const requests = [
+      { id: 'pending-command', method: 'item/commandExecution/requestApproval', params: { threadId: 'child-thread', turnId: 'child-turn', itemId: 'command' } },
+      { id: 'pending-file', method: 'item/fileChange/requestApproval', params: { threadId: 'child-thread', turnId: 'child-turn', itemId: 'file' } },
+      { id: 'pending-permissions', method: 'item/permissions/requestApproval', params: { threadId: 'child-thread', turnId: 'child-turn', itemId: 'permissions', permissions: { network: true } } },
+      { id: 'pending-input', method: 'item/tool/requestUserInput', params: { threadId: 'child-thread', turnId: 'child-turn', itemId: 'input', questions: [] } },
+      { id: 'pending-tool', method: 'item/tool/call', params: { threadId: 'child-thread', turnId: 'child-turn', callId: 'tool', namespace: null, tool: 'test', arguments: {} } },
+      { id: 'pending-elicitation', method: 'mcpServer/elicitation/request', params: { threadId: 'child-thread', turnId: 'child-turn', serverName: 'test-mcp', mode: 'form', _meta: null, message: 'Confirm', requestedSchema: {} } },
+    ] as const;
+    const initialLineCount = transport.lines.length;
+    for (const request of requests) transport.emit(request);
+
+    // The parent spawn is known, but not yet accepted by turn reconciliation.
+    host.reserveDescendantLineage('child-thread', 'root-thread');
+    await Promise.resolve();
+    expect(transport.lines).toHaveLength(initialLineCount);
+
+    host.registerDescendantLineage('child-thread', 'root-thread');
+    await vi.waitFor(() => {
+      expect(transport.lines).toHaveLength(initialLineCount + requests.length);
+    });
+
+    const responses = transport.lines
+      .slice(initialLineCount)
+      .map((line) => JSON.parse(line) as { id: string; result: unknown });
+    expect(responses.map((response) => response.id)).toEqual(requests.map((request) => request.id));
+
+    await subscription.release();
+    await host.shutdown();
+  });
+
+  it('keeps pending child buffers alive until commit and drops them on discard', async () => {
+    const transport = new NotificationTransport();
+    const host = new AppServerHost({
+      createTransport: () => transport,
+      logger,
+      clientInfo: { name: 'cindy-test', version: '0.0.0' },
+      notificationBufferTtlMs: 10,
+    });
+    await host.ensureStarted();
+
+    const descendantThreadStarted = vi.fn();
+    const descendantNotification = vi.fn();
+    const subscription = host.subscribeThread('root-thread', {
+      descendantThreadStarted,
+      descendantNotification,
+    });
+
+    host.reserveDescendantLineage('child-thread', 'root-thread');
+    transport.emit({
+      method: 'thread/started',
+      params: { thread: { id: 'child-thread', parentThreadId: 'root-thread', model: 'gpt-5.6-terra' } },
+    });
+    transport.emit({
+      method: 'turn/completed',
+      params: { threadId: 'child-thread', turn: { id: 'child-turn', status: 'completed' } },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(descendantThreadStarted).not.toHaveBeenCalled();
+    expect(descendantNotification).not.toHaveBeenCalled();
+
+    host.registerDescendantLineage('child-thread', 'root-thread');
+    expect(descendantThreadStarted).toHaveBeenCalledWith({
+      thread: { id: 'child-thread', parentThreadId: 'root-thread', model: 'gpt-5.6-terra' },
+    });
+    expect(descendantNotification).toHaveBeenCalledWith(
+      'child-thread',
+      'turn/completed',
+      { threadId: 'child-thread', turn: { id: 'child-turn', status: 'completed' } },
+    );
+
+    host.reserveDescendantLineage('orphan-child', 'root-thread');
+    transport.emit({
+      method: 'turn/completed',
+      params: { threadId: 'orphan-child', turn: { id: 'orphan-turn', status: 'completed' } },
+    });
+    host.discardPendingDescendantLineage('orphan-child', 'root-thread');
+    transport.emit({
+      method: 'turn/completed',
+      params: { threadId: 'orphan-child', turn: { id: 'late-turn', status: 'completed' } },
+    });
+    expect(descendantNotification).not.toHaveBeenCalledWith(
+      'orphan-child',
+      expect.anything(),
+      expect.anything(),
+    );
+
+    await subscription.release();
+    await host.shutdown();
+  });
 });
 
 describe('AppServerHost descendant notification routing', () => {
@@ -498,11 +1502,13 @@ describe('AppServerHost descendant notification routing', () => {
     const itemStarted = vi.fn();
     const tokenUsageUpdated = vi.fn();
     const turnCompleted = vi.fn();
+    const turnDiffUpdated = vi.fn();
     const subscription = host.subscribeThread('root-thread', {
       descendantNotification,
       itemStarted,
       tokenUsageUpdated,
       turnCompleted,
+      turnDiffUpdated,
     });
 
     transport.emit({
@@ -526,32 +1532,45 @@ describe('AppServerHost descendant notification routing', () => {
       method: 'turn/completed',
       params: { threadId: 'grandchild-thread', turn: { id: 'turn-g1', status: 'completed' } },
     };
+    const childDiff = {
+      method: 'turn/diff/updated',
+      params: { threadId: 'child-thread', turnId: 'turn-c1', diff: 'diff --git a/a b/a' },
+    };
     transport.emit(childItem);
     transport.emit(childUsage);
     transport.emit(grandchildTurn);
+    transport.emit(childDiff);
 
     expect(descendantNotification.mock.calls).toEqual([
       ['child-thread', 'item/started', childItem.params],
       ['child-thread', 'thread/tokenUsage/updated', childUsage.params],
       ['grandchild-thread', 'turn/completed', grandchildTurn.params],
+      ['child-thread', 'turn/diff/updated', childDiff.params],
     ]);
     // 关键隔离:子线程事件绝不能进主线程 handler —— 否则子代理的 exec 会被渲染成
     // 主会话自己的工具调用,并污染主 turn 的 usage 与状态机。
     expect(itemStarted).not.toHaveBeenCalled();
     expect(tokenUsageUpdated).not.toHaveBeenCalled();
     expect(turnCompleted).not.toHaveBeenCalled();
+    expect(turnDiffUpdated).not.toHaveBeenCalled();
 
     // 主线程自己的同名事件照旧走主通道。
     transport.emit({
       method: 'item/started',
       params: { threadId: 'root-thread', turnId: 'turn-r1', item: { id: 'i-2', type: 'commandExecution' } },
     });
+    const rootDiff = {
+      method: 'turn/diff/updated',
+      params: { threadId: 'root-thread', turnId: 'turn-r1', diff: 'diff --git a/b b/b' },
+    };
+    transport.emit(rootDiff);
     expect(itemStarted).toHaveBeenCalledTimes(1);
-    expect(descendantNotification).toHaveBeenCalledTimes(3);
+    expect(turnDiffUpdated).toHaveBeenCalledWith(rootDiff.params);
+    expect(descendantNotification).toHaveBeenCalledTimes(4);
 
     await subscription.release();
     transport.emit(childItem);
-    expect(descendantNotification).toHaveBeenCalledTimes(3);
+    expect(descendantNotification).toHaveBeenCalledTimes(4);
     // thread/started 只走专用的 descendantThreadStarted,不重复出现在本通道。
     expect(descendantNotification.mock.calls.some(([, method]) => method === 'thread/started')).toBe(false);
 

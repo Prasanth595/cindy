@@ -92,6 +92,18 @@ export const LOGIN_LOCAL_MODE = {
  * 500,见 SPLASH_PANEL.height。
  */
 export const PANEL = { width: 680, height: 500, radius: 36 } as const;
+
+/**
+ * 身份选择列表视口。标题区固定不动，身份超过三项时只滚动卡片区；首行的
+ * 面板坐标仍为 y=148，避免修复可达性时改变既有登录构图。
+ */
+export const ACCOUNT_LIST = {
+  top: 136,
+  bottom: 12,
+  rowTop: 12,
+  rowStep: 120,
+  bottomPadding: 12,
+} as const;
 export const TITLE = { y: 31, height: 38, fontSize: 32 } as const;
 /** 副标题:540@70 ≤2 行顶对齐,槽高 = 行高 × 最大行数(DESIGN.md §16.2,2026-07-24 拍板)。 */
 export const SUBTITLE = { x: 70, y: 75, width: 540, fontSize: 20, lineHeight: 23, maxLines: 2 } as const;
@@ -167,6 +179,25 @@ export const SKIP_ENTRY = {
 } as const;
 /** sso-org 帮助行:顶对齐 ≤2 行,y=输入框底 238+6,两行至 290 < 主按钮 300(DESIGN.md §16.2 折行分级 2)。 */
 export const SSO_ORG_HINT = { x: 70, y: 244, width: 540, fontSize: 20, lineHeight: 23, maxLines: 2 } as const;
+/**
+ * 最近组织浮层：紧贴输入框下沿并与输入框等宽，作为浮层覆盖后续提示与主按钮。
+ * 它与输入框同处登录组坐标系，因此大小窗口共享同一个锚点与缩放，不再依赖
+ * 面板下方是否还有视口空间。最大高度收在面板内，88 设计px 的最小行高经
+ * 0.5 桌面缩放后得到 44px 可点击行，其余条目在无可见滚动条的自身滚动区内访问。
+ */
+export const SSO_ORG_HISTORY = {
+  x: CONTROL.x,
+  y: CONTROL.inputY + CONTROL.height + 8,
+  width: CONTROL.width,
+  maxHeight: PANEL.height - (CONTROL.inputY + CONTROL.height + 8) - 10,
+  rowMinHeight: 88,
+  radius: 22,
+  rowRadius: 16,
+  fontSize: 20,
+  lineHeight: 23,
+  paddingX: CONTROL.textPadLeft,
+  paddingY: 16,
+} as const;
 
 /**
  * 协议同意行(figma 600:660「服务条款」行:680×40,radio 24 @x156 + 文字 20 @x186.5)。
@@ -208,8 +239,8 @@ export const CONSENT_DIALOG = {
 /** 顶部拖拽条 overlay 高度(附录 C §1.4 条4 工程定案:46px 独立层,不占文档流)。 */
 export const DRAG_BAR_HEIGHT = 46;
 
-/** 验证码重发倒计时时长(Step 3a 契约:双端 42s,绝对 deadline 模型)。 */
-export const RESEND_COUNTDOWN_MS = 42_000;
+/** 验证码重发倒计时时长(双端 60s,与 auth-server 单目标冷却一致;绝对 deadline 模型)。 */
+export const RESEND_COUNTDOWN_MS = 60_000;
 
 /**
  * Splash 统一面板(wave4 五帧 379:581/525/607/633/655 实测,figma §10.3;
@@ -231,6 +262,14 @@ export const SPLASH_PANEL = {
   progress: { x: 90, y: 346, width: 501, height: 16, radius: 12 },
   /** 明细行 20px Regular @(41,375) 599×23(379:574,与副文案同栏宽居中) */
   stats: { x: 41, y: 375, width: 599, height: 23, fontSize: 20 },
+  /** 启动数据库清理：阶段标题下依次为进度、时间、取消入口和安全提示。 */
+  databaseCleanup: {
+    progressY: 160,
+    statsY: 190,
+    actionY: 235,
+    actionHeight: 50,
+    hint: { x: 70, y: 315, width: 540, height: 48, fontSize: 16, lineHeight: 22 },
+  },
 } as const;
 
 /**
@@ -238,7 +277,7 @@ export const SPLASH_PANEL = {
  * wave4 组 = PR0a;组件色组 = PR1 按 token-decision-table §3 注册。
  */
 export const LOGIN_COLORS = {
-  /** 白底体系底色(固定 #EDEDED 与主题解耦,用户拍板 2026-07-22;login-bg-base) */
+  /** 画布底色(亮 #F2F2ED / 暗 #181818,与 CINDY 皮肤页底同值、与扩展主题解耦;login-bg-base) */
   bgBase: 'var(--login-bg-base)',
   gradientRadial: 'var(--login-bg-gradient-radial)',
   gradientLinear: 'var(--login-bg-gradient-linear)',

@@ -46,6 +46,8 @@ import { isAgentIslandSupported } from '@/hooks/useAgentIslandSettings';
 import { resolveAgentIslandVisibleSessionIdForWorkdirBrowseRail } from '@/lib/agentIslandVisibleSessionRoute';
 import type { AgentKind } from '@/lib/ccAgent.types';
 import { CCAgentSessionView } from '../CCAgentSessionView';
+import { CindyMakeSessionGate } from '../CindyMakeSessionGate';
+import { CINDY_MAKE_ENABLED, isCindyMakeSource } from '@cindy/maker-shared/cindy-make-feature';
 import {
   comparePinnedByStatusThenPinnedDesc,
   compareSessionsByStatusThenSortTimeDesc,
@@ -75,6 +77,15 @@ import {
 const log = createLogger('cc-agent.workdir-browse.route');
 
 export function WorkdirBrowseRoute() {
+  const { sessionId } = useParams<{ sessionId: string }>();
+  return (
+    <CindyMakeSessionGate sessionId={sessionId}>
+      <WorkdirBrowseContent />
+    </CindyMakeSessionGate>
+  );
+}
+
+function WorkdirBrowseContent() {
   const { t } = useTranslation();
   const { sessionId } = useParams<{ sessionId: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -93,7 +104,7 @@ export function WorkdirBrowseRoute() {
   // 断链/重连后列表变化会重渲染)。
   const remoteMirrorSessions = useSyncExternalStore(
     remoteProjectsStore.subscribe,
-    remoteProjectsStore.getMergedRemoteSessions,
+    remoteProjectsStore.getVisibleMergedRemoteSessions,
   );
   const currentSession = useMemo(
     () =>
@@ -159,6 +170,7 @@ export function WorkdirBrowseRoute() {
       (s) =>
         projectIdentityKeyForSession(s) === currentProjectKey &&
         s.status === 'active' &&
+        (CINDY_MAKE_ENABLED || !isCindyMakeSource(s.source)) &&
         !isOrcaWorkerSession(s),
     );
     return list.slice().sort((a, b) => {
@@ -402,11 +414,11 @@ export function WorkdirBrowseRoute() {
         await sessionService.patchMeta(id, { title: newTitle });
       } catch (err) {
         log.error('[session rename] doc mode', err);
-        toast.error('重命名失败');
+        toast.error(t('ccAgent.sidebar.renameFailed'));
         if (oldTitle !== undefined) sessionsHook.patchLocal(id, { title: oldTitle });
       }
     },
-    [sessionsHook],
+    [sessionsHook, t],
   );
 
   // 关闭最后一个 tab / 关闭无邻居的 active tab → 清空 ?file= + 清空 selectedFile，

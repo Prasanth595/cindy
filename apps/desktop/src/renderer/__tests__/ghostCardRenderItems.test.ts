@@ -12,6 +12,7 @@
 import { describe, it, expect } from 'vitest';
 import { buildRenderItems, type RenderItem } from '../components/chat/MessageStream';
 import type { ChatMessage } from '@/lib/makerChatStore';
+import { makerChatStore } from '@/lib/makerChatStore';
 import type { GhostCardSnapshot, GhostCardEntry, GhostLiveCard } from '@/cindy-brain/ghostCardStore';
 
 const GHOST_TOOL = 'mcp__cindy__ghost_call';
@@ -53,6 +54,14 @@ function itemsOf(messages: ChatMessage[], snap?: GhostCardSnapshot): RenderItem[
 }
 
 describe('ghost_card · settled 配对', () => {
+  it('keeps the card store physical id for a namespaced settled call', () => {
+    const call = { ...mkGhostCall('org', 'helper'), toolInput: { ghost_id: 'helper', namespace: 'acme', tool: 'run' } };
+    const cards = itemsOf([call, mkResult('result-org', 'tu-org', { xdt_card_id: 'org-card' })],
+      snapshot({ 'org-card': readyEntry('_ns__acme__helper') }));
+    expect(cards.find((item) => item.type === 'ghost_card')).toMatchObject({
+      ghostId: '_ns__acme__helper', callId: 'org-card', settled: true,
+    });
+  });
   it('xdt_card_id + ready → ghost_card item,自身媒体被抑制', () => {
     const items = itemsOf(
       [
@@ -143,6 +152,88 @@ describe('ghost_card · in-flight 锚定', () => {
     ...over,
   });
 
+  it('does not claim a root card for an enterprise call sharing its ghost id', () => {
+    const call = { ...mkGhostCall('org', 'helper'), toolInput: { ghost_id: 'helper', namespace: 'acme', tool: 'run' } };
+    const cards = itemsOf([call], snapshot({ 'root-card': readyEntry('helper') }, [
+      live('root-card', { ghostId: 'helper' }),
+    ]));
+    expect(cards.some((item) => item.type === 'ghost_card')).toBe(false);
+  });
+
+  it('claims an enterprise card by physical id and retains its identity', () => {
+    const call = { ...mkGhostCall('org', 'helper'), toolInput: { ghost_id: 'helper', namespace: 'acme', tool: 'run' } };
+    const cards = itemsOf([call], snapshot({ 'org-card': readyEntry('_ns__acme__helper') }, [
+      live('org-card', { ghostId: '_ns__acme__helper' }),
+    ]));
+    expect(cards.find((item) => item.type === 'ghost_card')).toMatchObject({
+      ghostId: '_ns__acme__helper', callId: 'org-card', settled: false,
+    });
+  });
+
+  it('claims an encoded enterprise call without a toolUseId only for its matching live card', () => {
+    const call = { ...mkGhostCall('org', '_ns__acme__helper'), toolUseId: undefined };
+    const cards = itemsOf([call], snapshot({ 'org-card': readyEntry('_ns__acme__helper') }, [
+      live('org-card', { ghostId: '_ns__acme__helper' }),
+    ]));
+    expect(cards).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'ghost_card', ghostId: '_ns__acme__helper', callId: 'org-card' }),
+    ]));
+  });
+
+  it('uses exact tool-use correlation for an in-place namespace stamp', () => {
+    const call = { ...mkGhostCall('org', 'helper'), toolInput: { ghost_id: 'helper', namespace: 'acme', tool: 'run' } };
+    const cards = itemsOf([call], snapshot({ 'org-card': readyEntry('helper') }, [
+      live('org-card', { ghostId: 'helper', toolUseId: 'tu-org' }),
+    ]));
+    expect(cards.find((item) => item.type === 'ghost_card')).toMatchObject({
+      ghostId: 'helper', callId: 'org-card', settled: false,
+    });
+  });
+
+  it('matches an in-place organization card without a tool-use id but never anchors it to root', () => {
+    const card = live('org-card', { ghostId: 'helper', logicalGhostId: '_ns__acme__helper' });
+    const cards = snapshot({ 'org-card': readyEntry('helper') }, [card]);
+    const organization = { ...mkGhostCall('org', 'helper'), toolUseId: undefined,
+      toolInput: { ghost_id: 'helper', namespace: 'acme', tool: 'run' } };
+    const root = { ...mkGhostCall('root', 'helper'), toolUseId: undefined,
+      toolInput: { ghost_id: 'helper', namespace: null, tool: 'run' } };
+    expect(itemsOf([organization], cards).find((item) => item.type === 'ghost_card'))
+      .toMatchObject({ callId: 'org-card', settled: false });
+    expect(itemsOf([root], cards).some((item) => item.type === 'ghost_card')).toBe(false);
+    const implicitRoot = { ...root, toolInput: { ghost_id: 'helper', tool: 'run' } };
+    expect(itemsOf([implicitRoot], cards).some((item) => item.type === 'ghost_card')).toBe(false);
+  });
+
+  it('ignores malformed plugin ids instead of crashing the message stream', () => {
+    const call = { ...mkGhostCall('invalid'), toolInput: { ghost_id: 'invalid id', namespace: 'acme', tool: 'run' } };
+    const cards = itemsOf([call], snapshot({ 'org-card': readyEntry('_ns__acme__helper') }, [
+      live('org-card', { ghostId: '_ns__acme__helper' }),
+    ]));
+    expect(cards.some((item) => item.type === 'ghost_card')).toBe(false);
+  });
+
+  it('renders a Pi card before its tool returns and restores the settled card from old history', () => {
+    const sessionId = 'pi-card-regression';
+    const content = { toolUseId: 'tu-pi', toolName: 'cindy_mcp_call_tool', input: {
+      server: 'cindy', tool: 'ghost_call', args: { ghost_id: 'cindy-art', tool: 'show_card' },
+    } };
+    try {
+      makerChatStore.__applyStreamEventForTest(sessionId, { sessionId, type: 'tool_use', data: content });
+      const messages = makerChatStore.getSnapshot(sessionId).messages;
+      const snap = snapshot({ 'call-pi': readyEntry() }, [live('call-pi')]);
+      expect(itemsOf(messages, snap).find(item => item.type === 'ghost_card')).toMatchObject({
+        callId: 'call-pi', tool: 'show_card', settled: false,
+      });
+      const history = makerChatStore.__mapServerMessagesForTest([{
+        id: 'persisted-pi', clientId: 'persisted-pi', sessionId, role: 'tool_use', content,
+        toolUseId: null, agentMeta: null,
+        createdAt: '2026-09-08T00:00:00.000Z',
+      }]);
+      expect(itemsOf([...history, mkResult('result-pi', 'tu-pi', { xdt_card_id: 'call-pi' })], snap)
+        .find(item => item.type === 'ghost_card')).toMatchObject({ callId: 'call-pi', settled: true });
+    } finally { makerChatStore.purgeSession(sessionId); }
+  });
+
   it('claude:活卡带 toolUseId 时精确锚到对应行', () => {
     const items = itemsOf(
       [mkGhostCall('g1'), mkGhostCall('g2')],
@@ -202,6 +293,42 @@ describe('ghost_card · in-flight 锚定', () => {
 });
 
 describe('ghost_card · 媒体回锚(xdt_anchor_card_id)', () => {
+  it.each([[undefined, null, 'helper'], [null, undefined, '_root__helper'],
+    ['acme', 'acme', '_ns__archive__helper'], [null, null, '_archive_helper'],
+    [undefined, undefined, '_root__helper']] as const)(
+    'rejects ambiguous or archived owners (%s → %s, %s)', (openedNamespace, polledNamespace, physicalKey) => {
+      const call = (id: string, namespace: string | null | undefined) => ({ ...mkGhostCall(id, 'helper'),
+        toolInput: { ghost_id: 'helper', ...(namespace === undefined ? {} : { namespace }), tool: id } });
+      const items = itemsOf([call('submit', openedNamespace), mkResult('submitted', 'tu-submit', { xdt_card_id: 'card' }),
+        call('poll', polledNamespace), mkResult('polled', 'tu-poll', { xdt_anchor_card_id: 'card', xdt_image_urls: [IMG] })],
+      snapshot({ card: readyEntry(physicalKey) }));
+      const card = items.find((item) => item.type === 'ghost_card');
+      expect(card && card.type === 'ghost_card' ? card.media : undefined).toBeUndefined();
+      expect(items.some((item) => item.type === 'tool_media')).toBe(true);
+    },
+  );
+  it.each([[null, '_root__helper'], ['acme', 'helper'], ['acme', '_ns__acme__helper']] as const)(
+    'anchors same-instance media for namespace %s with physical owner %s', (namespace, physicalKey) => {
+      const call = (id: string) => ({ ...mkGhostCall(id, 'helper'),
+        toolInput: { ghost_id: 'helper', namespace, tool: id } });
+      const items = itemsOf([call('submit'), mkResult('submitted', 'tu-submit', { xdt_card_id: 'card' }),
+        call('poll'), mkResult('polled', 'tu-poll', { xdt_anchor_card_id: 'card', xdt_image_urls: [IMG] })],
+      snapshot({ card: readyEntry(physicalKey) }));
+      const card = items.find((item) => item.type === 'ghost_card');
+      expect(card && card.type === 'ghost_card' ? card.media?.map((media) => media.url) : []).toEqual([IMG]);
+      expect(items.some((item) => item.type === 'tool_media')).toBe(false);
+    },
+  );
+  it('does not attach enterprise media to a root card with the same id', () => {
+    const rootCall = { ...mkGhostCall('root', 'helper'), toolInput: { ghost_id: 'helper', namespace: null, tool: 'run' } };
+    const orgPoll = { ...mkGhostCall('org', 'helper'), toolInput: { ghost_id: 'helper', namespace: 'acme', tool: 'poll' } };
+    const items = itemsOf([rootCall, mkResult('root-result', 'tu-root', { xdt_card_id: 'root-card' }),
+      orgPoll, mkResult('org-result', 'tu-org', { xdt_anchor_card_id: 'root-card', xdt_image_urls: [IMG] })],
+    snapshot({ 'root-card': readyEntry('helper') }));
+    expect(items.some((item) => item.type === 'tool_media')).toBe(true);
+    const card = items.find((item) => item.type === 'ghost_card');
+    expect(card && card.type === 'ghost_card' ? card.media : undefined).toBeUndefined();
+  });
   const VIDEO = `cindy-media://blobs/${'c'.repeat(64)}.mp4`;
   // 提交调用(开卡)+ 轮询调用(出媒体带锚)的标准两段式消息流。
   const submitAndPoll = (pollBody: Record<string, unknown>, pollGhostId = 'xd-mivo') => [

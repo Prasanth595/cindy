@@ -1,0 +1,837 @@
+import { describe, expect, it } from 'vitest';
+import {
+  PLUGIN_API_SCHEMA_VERSION,
+  parseGetPluginResponse,
+  parseListPluginsResponse,
+  parsePluginDownloadResponse,
+  PluginProtocolError,
+} from '../delivery.js';
+const validManifest = {
+  schemaVersion: 2,
+  id: 'acme-helper',
+  name: 'Acme Helper',
+  version: '1.0.0',
+  kind: 'chip',
+  entry: 'index.js',
+  slots: ['tool'],
+  tools: [{ name: 'help', description: 'Help with Acme tasks' }],
+} as const;
+const pluginId = `c${'p'.repeat(24)}`;
+const validIcon = {
+  mimeType: 'image/png',
+  sha256: 'c'.repeat(64),
+  sizeBytes: 2048,
+  url: 'https://cdn.example.com/plugin-icon.png?signature=example',
+  expiresAt: '2026-07-19T00:05:00.000Z',
+} as const;
+const oidcManifest = {
+  ...validManifest,
+  tools: undefined,
+  slots: ['network'],
+  network: {
+    hosts: ['api.example.com'],
+    secrets: [
+      {
+        key: 'cindy_identity',
+        label: 'Cindy organization identity',
+        source: 'oidc-token',
+        inject: {
+          header: 'Authorization',
+          format: 'Bearer {value}',
+          hosts: ['api.example.com'],
+        },
+      },
+    ],
+  },
+} as const;
+
+describe('plugin delivery contract', () => {
+  it('preserves optional cumulative download statistics in list and detail without conflating installs', () => {
+    const plugin = {
+      id: pluginId, ghostId: validManifest.id, name: validManifest.name,
+      description: null, author: null, scope: 'public', organizationId: null,
+      defaultInstall: false,
+      currentRelease: {
+        id: 'release-1', version: validManifest.version, sha256: 'a'.repeat(64),
+        sizeBytes: 1024, publishedAt: '2026-07-19T00:00:00.000Z', icon: null,
+        manifest: validManifest,
+      },
+    };
+    for (const downloadStatistics of [
+      { requestCount: '0', last7DaysRequestCount: '0' },
+      { requestCount: '18446744073709551615', last7DaysRequestCount: '12' },
+      { requestCount: '123' },
+    ]) {
+      const withStatistics = { ...plugin, downloadStatistics };
+      const list = parseListPluginsResponse({ schemaVersion: 2, plugins: [withStatistics], nextCursor: null });
+      const detail = parseGetPluginResponse({ schemaVersion: 2, plugin: withStatistics });
+      expect(list.plugins[0]?.downloadStatistics).toEqual(downloadStatistics);
+      expect(detail.plugin.downloadStatistics).toEqual(downloadStatistics);
+      expect(detail.plugin).not.toHaveProperty('usageStatistics');
+    }
+    for (const downloadStatistics of [undefined, null, {}, { requestCount: 0 }, { requestCount: '-1' }, { requestCount: '01' }]) {
+      const detail = parseGetPluginResponse({ schemaVersion: 2, plugin: { ...plugin, downloadStatistics } });
+      expect(detail.plugin).not.toHaveProperty('downloadStatistics');
+    }
+  });
+
+  it('parses a paginated visible Plugin summary without requiring a manifest', () => {
+    const response = parseListPluginsResponse({
+      schemaVersion: PLUGIN_API_SCHEMA_VERSION,
+      plugins: [
+        {
+          id: pluginId,
+          ghostId: validManifest.id,
+          name: validManifest.name,
+          description: null,
+          author: null,
+          scope: 'public',
+          organizationId: null,
+          defaultInstall: true,
+          currentRelease: {
+            id: 'release-1',
+            version: validManifest.version,
+            sha256: 'a'.repeat(64),
+            sizeBytes: 1024,
+            publishedAt: '2026-07-19T00:00:00.000Z',
+            icon: validIcon,
+          },
+        },
+      ],
+      nextCursor: pluginId,
+    });
+    expect(response.plugins[0]?.name).toBe(validManifest.name);
+    expect(response.plugins[0]?.currentRelease.version).toBe(validManifest.version);
+    expect(response.plugins[0]?.currentRelease.icon).toEqual(validIcon);
+    expect(response.nextCursor).toBe(pluginId);
+  });
+
+  it('accepts legacy v2 releases without icon metadata', () => {
+    const response = parseListPluginsResponse({
+      schemaVersion: PLUGIN_API_SCHEMA_VERSION,
+      plugins: [
+        {
+          id: pluginId,
+          ghostId: validManifest.id,
+          name: validManifest.name,
+          description: null,
+          author: null,
+          scope: 'public',
+          organizationId: null,
+          defaultInstall: false,
+          currentRelease: {
+            id: 'release-legacy',
+            version: validManifest.version,
+            sha256: 'a'.repeat(64),
+            sizeBytes: 1024,
+            publishedAt: '2026-07-19T00:00:00.000Z',
+          },
+        },
+      ],
+      nextCursor: null,
+    });
+    expect(response.plugins[0]?.currentRelease.icon).toBeNull();
+  });
+
+  it('rejects non-HTTPS icon URLs and invalid icon hashes', () => {
+    const plugin = {
+      id: pluginId,
+      ghostId: validManifest.id,
+      name: validManifest.name,
+      description: null,
+      author: null,
+      scope: 'public',
+      organizationId: null,
+      defaultInstall: false,
+      currentRelease: {
+        id: 'release-icon',
+        version: validManifest.version,
+        sha256: 'a'.repeat(64),
+        sizeBytes: 1024,
+        publishedAt: '2026-07-19T00:00:00.000Z',
+        icon: { ...validIcon, url: 'http://localhost:3391/icon.png' },
+      },
+    };
+    expect(() =>
+      parseListPluginsResponse({
+        schemaVersion: PLUGIN_API_SCHEMA_VERSION,
+        plugins: [plugin],
+        nextCursor: null,
+      }),
+    ).toThrow(PluginProtocolError);
+    expect(() =>
+      parseListPluginsResponse({
+        schemaVersion: PLUGIN_API_SCHEMA_VERSION,
+        plugins: [
+          {
+            ...plugin,
+            currentRelease: { ...plugin.currentRelease, icon: { ...validIcon, sha256: 'bad' } },
+          },
+        ],
+        nextCursor: null,
+      }),
+    ).toThrow(PluginProtocolError);
+  });
+
+  it('parses a visible Plugin detail and validates its manifest', () => {
+    const detailManifest = {
+      ...validManifest,
+      slots: ['tool', 'panel', 'badge', 'confirm', 'agent'],
+      panel: { html: 'panel.html' },
+      agent: { errand: true, schedule: true },
+    } as const;
+    const response = parseGetPluginResponse({
+      schemaVersion: PLUGIN_API_SCHEMA_VERSION,
+      plugin: {
+        id: pluginId,
+        ghostId: detailManifest.id,
+        name: detailManifest.name,
+        description: null,
+        author: null,
+        scope: 'public',
+        organizationId: null,
+        defaultInstall: true,
+        currentRelease: {
+          id: 'release-1',
+          version: detailManifest.version,
+          sha256: 'a'.repeat(64),
+          sizeBytes: 1024,
+          publishedAt: '2026-07-19T00:00:00.000Z',
+          manifest: detailManifest,
+        },
+      },
+    });
+    expect(response.plugin.currentRelease.manifest.id).toBe(detailManifest.id);
+    expect(response.plugin.currentRelease.manifest.slots).toEqual([
+      'tool',
+      'panel',
+      'badge',
+      'confirm',
+      'agent',
+    ]);
+    expect(response.plugin.currentRelease.manifest.agent).toEqual({
+      errand: true,
+      schedule: true,
+    });
+  });
+
+  it('preserves the version-gated ios-simulator slot in Plugin details', () => {
+    const manifest = {
+      ...validManifest,
+      id: 'simulator-workflow',
+      name: 'Simulator Workflow',
+      minCindyVersion: '1.2.3',
+      slots: ['ios-simulator'],
+      tools: undefined,
+    } as const;
+    const response = parseGetPluginResponse({
+      schemaVersion: PLUGIN_API_SCHEMA_VERSION,
+      plugin: {
+        id: pluginId,
+        ghostId: manifest.id,
+        name: manifest.name,
+        description: null,
+        author: null,
+        scope: 'public',
+        organizationId: null,
+        defaultInstall: false,
+        currentRelease: {
+          id: 'release-simulator',
+          version: manifest.version,
+          sha256: 'a'.repeat(64),
+          sizeBytes: 1024,
+          publishedAt: '2026-07-19T00:00:00.000Z',
+          manifest,
+        },
+      },
+    });
+
+    expect(response.plugin.currentRelease.manifest.slots).toEqual(['ios-simulator']);
+    expect(response.plugin.currentRelease.manifest.minCindyVersion).toBe('1.2.3');
+  });
+
+  it('preserves unknown slot declarations for the client capability check', () => {
+    const manifest = {
+      ...validManifest,
+      slots: ['tool', 'vendor-runtime'],
+    } as const;
+    const response = parseGetPluginResponse({
+      schemaVersion: PLUGIN_API_SCHEMA_VERSION,
+      plugin: {
+        id: pluginId,
+        ghostId: manifest.id,
+        name: manifest.name,
+        description: null,
+        author: null,
+        scope: 'public',
+        organizationId: null,
+        defaultInstall: false,
+        currentRelease: {
+          id: 'release-vendor-runtime',
+          version: manifest.version,
+          sha256: 'a'.repeat(64),
+          sizeBytes: 1024,
+          publishedAt: '2026-07-19T00:00:00.000Z',
+          manifest,
+        },
+      },
+    });
+
+    expect(response.plugin.currentRelease.manifest.slots).toEqual(['tool', 'vendor-runtime']);
+  });
+
+  it('allows oidc-token only in organization Plugin details', () => {
+    const plugin = {
+      id: pluginId,
+      ghostId: oidcManifest.id,
+      name: oidcManifest.name,
+      description: null,
+      author: null,
+      defaultInstall: false,
+      currentRelease: {
+        id: 'release-oidc',
+        version: oidcManifest.version,
+        sha256: 'a'.repeat(64),
+        sizeBytes: 1024,
+        publishedAt: '2026-07-19T00:00:00.000Z',
+        manifest: oidcManifest,
+      },
+    };
+
+    expect(
+      parseGetPluginResponse({
+        schemaVersion: PLUGIN_API_SCHEMA_VERSION,
+        plugin: { ...plugin, scope: 'organization', organizationId: 'org-1' },
+      }).plugin.scope,
+    ).toBe('organization');
+    for (const scope of ['public', 'personal'] as const) {
+      expect(() =>
+        parseGetPluginResponse({
+          schemaVersion: PLUGIN_API_SCHEMA_VERSION,
+          plugin: { ...plugin, scope, organizationId: null },
+        }),
+      ).toThrow(/currentRelease\.manifest.*oidc-token.*organization scope/);
+    }
+  });
+
+  it('keeps availability separate from default installation', () => {
+    const response = parseListPluginsResponse({
+      schemaVersion: PLUGIN_API_SCHEMA_VERSION,
+      plugins: [
+        {
+          id: pluginId,
+          ghostId: validManifest.id,
+          name: validManifest.name,
+          description: null,
+          author: null,
+          scope: 'organization',
+          organizationId: 'org-1',
+          defaultInstall: false,
+          currentRelease: {
+            id: 'release-1',
+            version: validManifest.version,
+            sha256: 'b'.repeat(64),
+            sizeBytes: 1024,
+            publishedAt: '2026-07-19T00:00:00.000Z',
+          },
+        },
+      ],
+      nextCursor: null,
+    });
+    expect(response.plugins).toHaveLength(1);
+    expect(response.plugins[0]?.defaultInstall).toBe(false);
+  });
+
+  it('parses a personal Plugin without exposing its owner identity', () => {
+    const response = parseListPluginsResponse({
+      schemaVersion: PLUGIN_API_SCHEMA_VERSION,
+      plugins: [
+        {
+          id: pluginId,
+          ghostId: validManifest.id,
+          name: validManifest.name,
+          description: null,
+          author: null,
+          scope: 'personal',
+          organizationId: null,
+          ownerPassportId: 'passport-example',
+          defaultInstall: false,
+          currentRelease: {
+            id: 'release-1',
+            version: validManifest.version,
+            sha256: 'b'.repeat(64),
+            sizeBytes: 1024,
+            publishedAt: '2026-07-19T00:00:00.000Z',
+          },
+        },
+      ],
+      nextCursor: null,
+    });
+    expect(response.plugins[0]?.scope).toBe('personal');
+    expect(response.plugins[0]?.organizationId).toBeNull();
+    expect(response.plugins[0]).not.toHaveProperty('ownerPassportId');
+  });
+
+  it('rejects organization ownership metadata that disagrees with scope', () => {
+    const plugin = {
+      id: pluginId,
+      ghostId: validManifest.id,
+      name: validManifest.name,
+      description: null,
+      author: null,
+      defaultInstall: false,
+      currentRelease: {
+        id: 'release-1',
+        version: validManifest.version,
+        sha256: 'b'.repeat(64),
+        sizeBytes: 1024,
+        publishedAt: '2026-07-19T00:00:00.000Z',
+      },
+    };
+
+    expect(() =>
+      parseListPluginsResponse({
+        schemaVersion: PLUGIN_API_SCHEMA_VERSION,
+        plugins: [{ ...plugin, scope: 'public', organizationId: 'org-1' }],
+        nextCursor: null,
+      }),
+    ).toThrow(PluginProtocolError);
+    expect(() =>
+      parseListPluginsResponse({
+        schemaVersion: PLUGIN_API_SCHEMA_VERSION,
+        plugins: [{ ...plugin, scope: 'personal', organizationId: 'org-1' }],
+        nextCursor: null,
+      }),
+    ).toThrow(PluginProtocolError);
+    expect(() =>
+      parseListPluginsResponse({
+        schemaVersion: PLUGIN_API_SCHEMA_VERSION,
+        plugins: [{ ...plugin, scope: 'organization', organizationId: null }],
+        nextCursor: null,
+      }),
+    ).toThrow(PluginProtocolError);
+  });
+
+  it('parses the signed download response used by staging installation', () => {
+    expect(
+      parsePluginDownloadResponse({
+        url: 'https://example.com/plugin.cindy?signature=example',
+        expiresAt: '2026-07-19T00:05:00.000Z',
+        sha256: 'c'.repeat(64),
+        sizeBytes: 1024,
+      }),
+    ).toEqual({
+      url: 'https://example.com/plugin.cindy?signature=example',
+      expiresAt: '2026-07-19T00:05:00.000Z',
+      sha256: 'c'.repeat(64),
+      sizeBytes: 1024,
+    });
+    expect(() =>
+      parsePluginDownloadResponse({
+        url: 'http://example.com/plugin.cindy',
+        expiresAt: '2026-07-19T00:05:00.000Z',
+        sha256: 'c'.repeat(64),
+        sizeBytes: 1024,
+      }),
+    ).toThrow(PluginProtocolError);
+    expect(() =>
+      parsePluginDownloadResponse({
+        url: 'https://example.com/plugin.cindy',
+        expiresAt: '0',
+        sha256: 'c'.repeat(64),
+        sizeBytes: 1024,
+      }),
+    ).toThrow(PluginProtocolError);
+  });
+
+  it('round-trips an opaque list cursor and rejects an empty cursor', () => {
+    const cursor = Buffer.from(JSON.stringify({ sortOrder: 7, id: 'plugin-1' })).toString(
+      'base64url',
+    );
+    expect(
+      parseListPluginsResponse({
+        schemaVersion: PLUGIN_API_SCHEMA_VERSION,
+        plugins: [],
+        nextCursor: cursor,
+      }).nextCursor,
+    ).toBe(cursor);
+    expect(() =>
+      parseListPluginsResponse({
+        schemaVersion: PLUGIN_API_SCHEMA_VERSION,
+        plugins: [],
+        nextCursor: '',
+      }),
+    ).toThrow(PluginProtocolError);
+  });
+
+  it('rejects a detail manifest mismatch', () => {
+    expect(() =>
+      parseGetPluginResponse({
+        schemaVersion: PLUGIN_API_SCHEMA_VERSION,
+        plugin: {
+          id: pluginId,
+          ghostId: validManifest.id,
+          name: validManifest.name,
+          description: null,
+          author: null,
+          scope: 'public',
+          organizationId: null,
+          defaultInstall: true,
+          currentRelease: {
+            id: 'release-1',
+            version: '2.0.0',
+            sha256: 'a'.repeat(64),
+            sizeBytes: 1024,
+            publishedAt: '2026-07-19T00:00:00.000Z',
+            manifest: validManifest,
+          },
+        },
+      }),
+    ).toThrow(PluginProtocolError);
+  });
+
+  it('normalizes missing removals to an empty array', () => {
+    const legacy = parseListPluginsResponse({
+      schemaVersion: PLUGIN_API_SCHEMA_VERSION,
+      plugins: [],
+      nextCursor: null,
+    });
+    expect(legacy.removals).toEqual([]);
+    const explicitNull = parseListPluginsResponse({
+      schemaVersion: PLUGIN_API_SCHEMA_VERSION,
+      plugins: [],
+      nextCursor: null,
+      removals: null,
+    });
+    expect(explicitNull.removals).toEqual([]);
+  });
+
+  it('parses organization removal notices', () => {
+    const removal = {
+      pluginId: `c${'r'.repeat(24)}`,
+      ghostId: validManifest.id,
+      scope: 'organization',
+      organizationId: 'org-1',
+      action: 'purge',
+      removedAt: '2026-08-03T08:00:00.000Z',
+    } as const;
+    const response = parseListPluginsResponse({
+      schemaVersion: PLUGIN_API_SCHEMA_VERSION,
+      plugins: [],
+      nextCursor: null,
+      removals: [removal],
+    });
+    expect(response.removals).toEqual([removal]);
+  });
+
+  it('skips removal notices with unknown actions while keeping known ones', () => {
+    const removal = {
+      pluginId: `c${'r'.repeat(24)}`,
+      ghostId: validManifest.id,
+      scope: 'organization',
+      organizationId: 'org-1',
+      action: 'purge',
+      removedAt: '2026-08-03T08:00:00.000Z',
+    } as const;
+    const response = parseListPluginsResponse({
+      schemaVersion: PLUGIN_API_SCHEMA_VERSION,
+      plugins: [],
+      nextCursor: null,
+      removals: [{ ...removal, pluginId: `c${'d'.repeat(24)}`, action: 'disable' }, removal],
+    });
+    expect(response.removals).toEqual([removal]);
+  });
+
+  it('rejects malformed removal notices', () => {
+    const removal = {
+      pluginId: `c${'r'.repeat(24)}`,
+      ghostId: validManifest.id,
+      scope: 'organization',
+      organizationId: 'org-1',
+      action: 'purge',
+      removedAt: '2026-08-03T08:00:00.000Z',
+    } as const;
+    const withRemovals = (removals: unknown) => () =>
+      parseListPluginsResponse({
+        schemaVersion: PLUGIN_API_SCHEMA_VERSION,
+        plugins: [],
+        nextCursor: null,
+        removals,
+      });
+    expect(withRemovals({})).toThrow(PluginProtocolError);
+    expect(withRemovals([{ ...removal, pluginId: 'INVALID' }])).toThrow(PluginProtocolError);
+    expect(withRemovals([{ ...removal, ghostId: 'Bad Ghost Id' }])).toThrow(PluginProtocolError);
+    expect(withRemovals([{ ...removal, organizationId: null }])).toThrow(PluginProtocolError);
+    expect(withRemovals([{ ...removal, scope: 'public' }])).toThrow(PluginProtocolError);
+    expect(withRemovals([{ ...removal, action: 42 }])).toThrow(PluginProtocolError);
+    // action 的结构形状是 1–64 字符:超长按坏帧拒绝,不落入"未知取值跳过"分支。
+    expect(withRemovals([{ ...removal, action: 'x'.repeat(65) }])).toThrow(PluginProtocolError);
+    // 动作未知但其余字段不合法的通告仍然整体拒绝:跳过只发生在结构校验通过之后。
+    expect(withRemovals([{ ...removal, action: 'disable', removedAt: 'soon' }])).toThrow(
+      PluginProtocolError,
+    );
+  });
+
+  it('rejects detail metadata that differs from its manifest', () => {
+    expect(() =>
+      parseGetPluginResponse({
+        schemaVersion: PLUGIN_API_SCHEMA_VERSION,
+        plugin: {
+          id: pluginId,
+          ghostId: validManifest.id,
+          name: 'Stale name',
+          description: null,
+          author: null,
+          scope: 'public',
+          organizationId: null,
+          defaultInstall: true,
+          currentRelease: {
+            id: 'release-1',
+            version: validManifest.version,
+            sha256: 'a'.repeat(64),
+            sizeBytes: 1024,
+            publishedAt: '2026-07-19T00:00:00.000Z',
+            manifest: validManifest,
+          },
+        },
+      }),
+    ).toThrow(PluginProtocolError);
+  });
+
+  it('normalizes missing or null currentOrganization to null', () => {
+    const missing = parseListPluginsResponse({
+      schemaVersion: PLUGIN_API_SCHEMA_VERSION,
+      plugins: [],
+      nextCursor: null,
+    });
+    expect(missing.currentOrganization).toBeNull();
+    const explicitNull = parseListPluginsResponse({
+      schemaVersion: PLUGIN_API_SCHEMA_VERSION,
+      plugins: [],
+      nextCursor: null,
+      currentOrganization: null,
+    });
+    expect(explicitNull.currentOrganization).toBeNull();
+  });
+
+  it('parses a registered organization plugin prefix without adding a hyphen', () => {
+    const response = parseListPluginsResponse({
+      schemaVersion: PLUGIN_API_SCHEMA_VERSION,
+      plugins: [],
+      nextCursor: null,
+      currentOrganization: { organizationId: 'org-1', pluginPrefix: 'acme' },
+    });
+    expect(response.currentOrganization).toEqual({
+      organizationId: 'org-1',
+      pluginPrefix: 'acme',
+    });
+  });
+
+  it('keeps pluginPrefix null when the organization has not registered a prefix', () => {
+    const response = parseListPluginsResponse({
+      schemaVersion: PLUGIN_API_SCHEMA_VERSION,
+      plugins: [],
+      nextCursor: null,
+      currentOrganization: { organizationId: 'org-1', pluginPrefix: null },
+    });
+    expect(response.currentOrganization).toEqual({
+      organizationId: 'org-1',
+      pluginPrefix: null,
+    });
+  });
+
+  it('enforces the server organizationId length limit of 128 characters', () => {
+    const organizationId128 = 'a'.repeat(128);
+    const accepted = parseListPluginsResponse({
+      schemaVersion: PLUGIN_API_SCHEMA_VERSION,
+      plugins: [],
+      nextCursor: null,
+      currentOrganization: { organizationId: organizationId128, pluginPrefix: null },
+    });
+    expect(accepted.currentOrganization).toEqual({
+      organizationId: organizationId128,
+      pluginPrefix: null,
+    });
+
+    expect(() =>
+      parseListPluginsResponse({
+        schemaVersion: PLUGIN_API_SCHEMA_VERSION,
+        plugins: [],
+        nextCursor: null,
+        currentOrganization: { organizationId: 'a'.repeat(129), pluginPrefix: null },
+      }),
+    ).toThrow(PluginProtocolError);
+  });
+
+  it('rejects currentOrganization when the pluginPrefix key is missing', () => {
+    expect(() =>
+      parseListPluginsResponse({
+        schemaVersion: PLUGIN_API_SCHEMA_VERSION,
+        plugins: [],
+        nextCursor: null,
+        currentOrganization: { organizationId: 'org-1' },
+      }),
+    ).toThrow(PluginProtocolError);
+  });
+
+  it('rejects pluginPrefix values outside the server pattern', () => {
+    const withPrefix = (pluginPrefix: unknown) => () =>
+      parseListPluginsResponse({
+        schemaVersion: PLUGIN_API_SCHEMA_VERSION,
+        plugins: [],
+        nextCursor: null,
+        currentOrganization: { organizationId: 'org-1', pluginPrefix },
+      });
+    expect(withPrefix('a')).toThrow(PluginProtocolError);
+    expect(withPrefix('ab')()).toMatchObject({
+      currentOrganization: { organizationId: 'org-1', pluginPrefix: 'ab' },
+    });
+    expect(withPrefix('a'.repeat(16))()).toMatchObject({
+      currentOrganization: { pluginPrefix: 'a'.repeat(16) },
+    });
+    expect(withPrefix('a'.repeat(17))).toThrow(PluginProtocolError);
+    expect(withPrefix('acme-')).toThrow(PluginProtocolError);
+    expect(withPrefix('Acme')).toThrow(PluginProtocolError);
+  });
+
+  it('does not parse currentOrganization on Plugin details', () => {
+    const response = parseGetPluginResponse({
+      schemaVersion: PLUGIN_API_SCHEMA_VERSION,
+      plugin: {
+        id: pluginId,
+        ghostId: validManifest.id,
+        name: validManifest.name,
+        description: null,
+        author: null,
+        scope: 'public',
+        organizationId: null,
+        defaultInstall: true,
+        currentRelease: {
+          id: 'release-1',
+          version: validManifest.version,
+          sha256: 'a'.repeat(64),
+          sizeBytes: 1024,
+          publishedAt: '2026-07-19T00:00:00.000Z',
+          manifest: validManifest,
+        },
+      },
+      currentOrganization: { organizationId: 'org-1', pluginPrefix: 'acme' },
+    });
+    expect(response).not.toHaveProperty('currentOrganization');
+  });
+
+  const namespacePlugin = {
+    id: pluginId,
+    ghostId: validManifest.id,
+    name: validManifest.name,
+    description: null,
+    author: null,
+    scope: 'organization' as const,
+    organizationId: 'org-1',
+    defaultInstall: false,
+    currentRelease: {
+      id: 'release-org',
+      version: validManifest.version,
+      sha256: 'a'.repeat(64),
+      sizeBytes: 1024,
+      publishedAt: '2026-07-19T00:00:00.000Z',
+    },
+  };
+
+  it('keeps enterprise namespace distinct from root and validates detail identity', () => {
+    const response = parseGetPluginResponse({
+      schemaVersion: PLUGIN_API_SCHEMA_VERSION,
+      plugin: {
+        ...namespacePlugin,
+        namespace: 'acme',
+        defaultInstall: true,
+        currentRelease: {
+          ...namespacePlugin.currentRelease,
+          id: 'release-namespace',
+          manifest: { ...validManifest, namespace: 'acme' },
+        },
+      },
+    });
+    expect(response.plugin.namespace).toBe('acme');
+    expect(response.plugin.currentRelease.manifest.namespace).toBe('acme');
+  });
+
+  it('rejects omitted organization namespace when currentOrganization.orgSlug is present', () => {
+    expect(() =>
+      parseListPluginsResponse({
+        schemaVersion: PLUGIN_API_SCHEMA_VERSION,
+        plugins: [namespacePlugin],
+        nextCursor: null,
+        currentOrganization: { organizationId: 'org-1', orgSlug: 'acme', pluginPrefix: null },
+      }),
+    ).toThrow(PluginProtocolError);
+    expect(
+      parseListPluginsResponse({
+        schemaVersion: PLUGIN_API_SCHEMA_VERSION,
+        plugins: [namespacePlugin],
+        nextCursor: null,
+        currentOrganization: { organizationId: 'org-1', pluginPrefix: null },
+      }).plugins[0],
+    ).not.toHaveProperty('namespace');
+    expect(
+      parseListPluginsResponse({
+        schemaVersion: PLUGIN_API_SCHEMA_VERSION,
+        plugins: [{ ...namespacePlugin, namespace: 'acme' }],
+        nextCursor: null,
+        currentOrganization: { organizationId: 'org-1', orgSlug: 'acme', pluginPrefix: null },
+      }).plugins[0]?.namespace,
+    ).toBe('acme');
+  });
+
+  it('rejects a namespace that disagrees with scope or manifest', () => {
+    const plugin = {
+      ...namespacePlugin,
+      scope: 'public',
+      organizationId: null,
+      currentRelease: {
+        ...namespacePlugin.currentRelease,
+        id: 'release-root',
+        manifest: { ...validManifest, namespace: 'acme' },
+      },
+    };
+    expect(() =>
+      parseGetPluginResponse({
+        schemaVersion: PLUGIN_API_SCHEMA_VERSION,
+        plugin: { ...plugin, namespace: 'acme' },
+      }),
+    ).toThrow(PluginProtocolError);
+    expect(() =>
+      parseGetPluginResponse({
+        schemaVersion: PLUGIN_API_SCHEMA_VERSION,
+        plugin: {
+          ...plugin,
+          scope: 'organization',
+          organizationId: 'org-1',
+          namespace: 'acme',
+          currentRelease: {
+            ...plugin.currentRelease,
+            manifest: { ...validManifest, namespace: 'other' },
+          },
+        },
+      }),
+    ).toThrow(PluginProtocolError);
+  });
+
+  it('accepts additive download identity while preserving legacy responses', () => {
+    const legacy = {
+      url: 'https://example.com/plugin.cindy?signature=example',
+      expiresAt: '2026-07-19T00:05:00.000Z',
+      sha256: 'c'.repeat(64),
+      sizeBytes: 1024,
+    };
+    const response = parsePluginDownloadResponse({
+      ...legacy,
+      pluginId,
+      releaseId: 'release-namespace',
+      ghostId: validManifest.id,
+      namespace: 'acme',
+    });
+    expect(response.namespace).toBe('acme');
+    expect(parsePluginDownloadResponse(legacy)).not.toHaveProperty('namespace');
+  });
+});

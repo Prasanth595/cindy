@@ -5,10 +5,13 @@
 import * as http from 'node:http';
 import { describe, expect, it, vi } from 'vitest';
 
+import type { GhostManifest } from '../../../shared/ghost.js';
+
 import {
   GHOST_OAUTH_INVALID_GRANT_RECHECK_DELAY_MS,
   GHOST_OAUTH_MAX_ACCOUNTS,
   GhostOauthAccountManager,
+  missingAuthScopes,
   type GhostOauthDecl,
   type GhostOauthVault,
 } from '../ghostOauthAccounts.js';
@@ -26,8 +29,18 @@ const DECL: GhostOauthDecl = {
   identity: { url: 'https://api.example.com/userinfo', labelPath: 'email' },
 };
 
-function memoryVault(seed?: Record<string, string>): GhostOauthVault & { data: Map<string, string> } {
-  const data = new Map<string, string>(Object.entries(seed ?? {}).map(([k, v]) => [`${GHOST}\u0000${k}`, v]));
+/** §4.4: 特权不再随官方前缀默认放行，测试夹具显式授予。 */
+const FIRST_PARTY_HOST = {
+  isTokenBrokerAuthorized: () => true,
+  isHostPrimitiveAuthorized: () => true,
+} as const;
+
+function memoryVault(
+  seed?: Record<string, string>,
+): GhostOauthVault & { data: Map<string, string> } {
+  const data = new Map<string, string>(
+    Object.entries(seed ?? {}).map(([k, v]) => [`${GHOST}\u0000${k}`, v]),
+  );
   return {
     data,
     read: (ghostId, key) => data.get(`${ghostId}\u0000${key}`) ?? null,
@@ -42,7 +55,10 @@ function memoryVault(seed?: Record<string, string>): GhostOauthVault & { data: M
 }
 
 function jsonResponse(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  });
 }
 
 /** 模拟浏览器:从授权 URL 提取回调地址与 state 并回打 code。 */
@@ -71,7 +87,906 @@ function seededVault(rt = 'rt-seed'): ReturnType<typeof memoryVault> {
   });
 }
 
+function oauthManifest(clientId: string): GhostManifest {
+  return {
+    schemaVersion: 2,
+    kind: 'chip',
+    id: GHOST,
+    name: 'Google',
+    description: 'test',
+    whenToUse: 'test',
+    version: '1.0.0',
+    author: 'test',
+    entry: 'main.js',
+    slots: ['network'],
+    network: {
+      hosts: ['api.example.com'],
+      secrets: [
+        {
+          key: KEY,
+          label: 'Google account',
+          source: 'oauth',
+          inject: {
+            header: 'Authorization',
+            format: 'Bearer {value}',
+            hosts: ['api.example.com'],
+          },
+          oauth: { ...DECL, clientId },
+        },
+      ],
+    },
+  };
+}
+
+function oauthManifestWithoutBuiltinClient(): GhostManifest {
+  const manifest = oauthManifest('placeholder');
+  const secret = manifest.network?.secrets?.[0];
+  if (secret?.source === 'oauth' && secret.oauth) delete secret.oauth.clientId;
+  return manifest;
+}
+
+describe('插件 OAuth clientId 迁移', () => {
+  it('仅内置 clientId 变化时标记迁移过期，保留且不再消费旧 refresh token', async () => {
+    const vault = memoryVault({
+      [`${KEY}-accounts`]: JSON.stringify({
+        defaultAccountId: 'acc-1',
+        accounts: [{ id: 'acc-1', label: 'a@b.com', status: 'connected', createdAt: 1 }],
+      }),
+      [`${KEY}-rt-acc-1`]: 'rt-old-client',
+    });
+    const onAccountStatusChanged = vi.fn();
+    const fetchImpl = vi.fn();
+    const mgr = new GhostOauthAccountManager({
+      vault,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      openExternal: vi.fn(),
+      onAccountStatusChanged,
+    });
+
+    expect(
+      mgr.expireAccountsForChangedClients(oauthManifest('old-client'), oauthManifest('new-client'), GHOST),
+    ).toBe(1);
+    expect(mgr.listAccounts(GHOST, KEY)[0]?.status).toBe('expired');
+    expect(mgr.clientMigrationExpiredAccountCount(GHOST, KEY)).toBe(1);
+    await expect(
+      mgr.getFreshAccessToken(GHOST, KEY, { ...DECL, clientId: 'new-client' }),
+    ).resolves.toMatchObject({ ok: false, error: 'AUTH_EXPIRED' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(vault.read(GHOST, `${KEY}-rt-acc-1`)).toBe('rt-old-client');
+    expect(onAccountStatusChanged).toHaveBeenCalledWith({
+      ghostId: GHOST,
+      secretKey: KEY,
+      status: 'expired',
+    });
+  });
+
+  it('migrates accounts stored under a namespaced vault id', () => {
+    const vaultId = '_ns__xd__xd-feishu';
+    const vault = memoryVault();
+    vault.store(
+      vaultId,
+      `${KEY}-accounts`,
+      JSON.stringify({
+        defaultAccountId: 'acc-1',
+        accounts: [{ id: 'acc-1', label: 'a@b.com', status: 'connected', createdAt: 1 }],
+      }),
+    );
+    const mgr = new GhostOauthAccountManager({
+      vault,
+      fetchImpl: vi.fn() as unknown as typeof fetch,
+      openExternal: vi.fn(),
+    });
+    expect(
+      mgr.expireAccountsForChangedClients(
+        oauthManifest('old-client'),
+        oauthManifest('new-client'),
+        vaultId,
+      ),
+    ).toBe(1);
+    expect(mgr.listAccounts(vaultId, KEY)[0]?.status).toBe('expired');
+    expect(mgr.listAccounts(GHOST, KEY)).toEqual([]);
+  });
+
+  it('clientId 未变化或用户使用自定义 clientId 时不改变账号状态', () => {
+    const unchangedVault = memoryVault({
+      [`${KEY}-accounts`]: JSON.stringify({
+        defaultAccountId: 'acc-1',
+        accounts: [{ id: 'acc-1', label: 'a@b.com', status: 'connected', createdAt: 1 }],
+      }),
+    });
+    const unchanged = new GhostOauthAccountManager({
+      vault: unchangedVault,
+      fetchImpl: vi.fn() as unknown as typeof fetch,
+      openExternal: vi.fn(),
+    });
+    expect(
+      unchanged.expireAccountsForChangedClients(
+        oauthManifest('same-client'),
+        oauthManifest('same-client'),
+        GHOST,
+      ),
+    ).toBe(0);
+    expect(unchanged.listAccounts(GHOST, KEY)[0]?.status).toBe('connected');
+    expect(unchanged.clientMigrationExpiredAccountCount(GHOST, KEY)).toBe(0);
+
+    const customizedVault = memoryVault({
+      [`${KEY}-client-id`]: 'custom-client',
+      [`${KEY}-accounts`]: JSON.stringify({
+        defaultAccountId: 'acc-1',
+        accounts: [{ id: 'acc-1', label: 'a@b.com', status: 'connected', createdAt: 1 }],
+      }),
+    });
+    const customized = new GhostOauthAccountManager({
+      vault: customizedVault,
+      fetchImpl: vi.fn() as unknown as typeof fetch,
+      openExternal: vi.fn(),
+    });
+    expect(
+      customized.expireAccountsForChangedClients(
+        oauthManifest('old-client'),
+        oauthManifest('new-client'),
+        GHOST,
+      ),
+    ).toBe(0);
+    expect(customized.listAccounts(GHOST, KEY)[0]?.status).toBe('connected');
+    expect(customized.clientMigrationExpiredAccountCount(GHOST, KEY)).toBe(0);
+  });
+
+  it('prepare 延迟通知，rollback 恢复账号，commit 才发布过期状态', () => {
+    const vault = memoryVault({
+      [`${KEY}-accounts`]: JSON.stringify({
+        defaultAccountId: 'acc-1',
+        accounts: [{ id: 'acc-1', label: 'a@b.com', status: 'connected', createdAt: 1 }],
+      }),
+    });
+    const onAccountStatusChanged = vi.fn();
+    const mgr = new GhostOauthAccountManager({
+      vault,
+      fetchImpl: vi.fn() as unknown as typeof fetch,
+      openExternal: vi.fn(),
+      onAccountStatusChanged,
+    });
+
+    const rolledBack = mgr.prepareAccountsForChangedClients(
+      oauthManifest('old-client'),
+      oauthManifest('new-client'),
+      GHOST,
+    );
+    expect(mgr.listAccounts(GHOST, KEY)[0]?.status).toBe('expired');
+    expect(onAccountStatusChanged).not.toHaveBeenCalled();
+    rolledBack.rollback();
+    expect(mgr.listAccounts(GHOST, KEY)[0]?.status).toBe('connected');
+    expect(onAccountStatusChanged).not.toHaveBeenCalled();
+
+    const committed = mgr.prepareAccountsForChangedClients(
+      oauthManifest('old-client'),
+      oauthManifest('new-client'),
+      GHOST,
+    );
+    committed.commit();
+    expect(mgr.listAccounts(GHOST, KEY)[0]?.status).toBe('expired');
+    expect(onAccountStatusChanged).toHaveBeenCalledWith({
+      ghostId: GHOST,
+      secretKey: KEY,
+      status: 'expired',
+    });
+  });
+
+  it('rollback 不覆盖并发重连写入', () => {
+    const vault = memoryVault({
+      [`${KEY}-accounts`]: JSON.stringify({
+        defaultAccountId: 'acc-1',
+        accounts: [{ id: 'acc-1', label: 'a@b.com', status: 'connected', createdAt: 1 }],
+      }),
+    });
+    const mgr = new GhostOauthAccountManager({
+      vault,
+      fetchImpl: vi.fn() as unknown as typeof fetch,
+      openExternal: vi.fn(),
+    });
+    const migration = mgr.prepareAccountsForChangedClients(
+      oauthManifest('old-client'),
+      oauthManifest('new-client'),
+      GHOST,
+    );
+    const concurrent = JSON.parse(vault.read(GHOST, `${KEY}-accounts`) ?? '{}') as {
+      accounts: Array<Record<string, unknown>>;
+    };
+    concurrent.accounts[0].status = 'connected';
+    delete concurrent.accounts[0].expiredReason;
+    concurrent.accounts[0].displayLabel = 'reconnected';
+    vault.store(GHOST, `${KEY}-accounts`, JSON.stringify(concurrent));
+
+    migration.rollback();
+    expect(JSON.parse(vault.read(GHOST, `${KEY}-accounts`) ?? '{}').accounts[0]).toMatchObject({
+      status: 'connected',
+      displayLabel: 'reconnected',
+    });
+  });
+
+  it('启动对账只恢复已回滚到签发 client 的迁移账号', () => {
+    const vault = memoryVault({
+      [`${KEY}-accounts`]: JSON.stringify({
+        defaultAccountId: 'acc-1',
+        accounts: [
+          {
+            id: 'acc-1',
+            label: 'a@b.com',
+            status: 'expired',
+            expiredReason: 'oauth_client_changed',
+            expiredFromClientId: 'old-client',
+            expiredForClientId: 'new-client',
+            createdAt: 1,
+          },
+        ],
+      }),
+    });
+    const onAccountStatusChanged = vi.fn();
+    const mgr = new GhostOauthAccountManager({
+      vault,
+      fetchImpl: vi.fn() as unknown as typeof fetch,
+      openExternal: vi.fn(),
+      onAccountStatusChanged,
+    });
+
+    expect(mgr.reconcileAccountsForInstalledManifest(oauthManifest('new-client'), GHOST)).toBe(0);
+    expect(mgr.listAccounts(GHOST, KEY)[0]?.status).toBe('expired');
+    expect(mgr.reconcileAccountsForInstalledManifest(oauthManifest('third-client'), GHOST)).toBe(0);
+    expect(mgr.listAccounts(GHOST, KEY)[0]?.status).toBe('expired');
+    expect(mgr.reconcileAccountsForInstalledManifest(oauthManifest('old-client'), GHOST)).toBe(1);
+    expect(mgr.listAccounts(GHOST, KEY)[0]?.status).toBe('connected');
+    expect(onAccountStatusChanged).toHaveBeenCalledWith({
+      ghostId: GHOST,
+      secretKey: KEY,
+      status: 'connected',
+    });
+  });
+
+  it('reports a retry when crash recovery cannot persist the restored account state', () => {
+    const vault = memoryVault({
+      [`${KEY}-accounts`]: JSON.stringify({
+        defaultAccountId: 'acc-1',
+        accounts: [
+          {
+            id: 'acc-1',
+            label: 'a@b.com',
+            status: 'expired',
+            expiredReason: 'oauth_client_changed',
+            expiredFromClientId: 'old-client',
+            expiredForClientId: 'new-client',
+            createdAt: 1,
+          },
+        ],
+      }),
+    });
+    const mgr = new GhostOauthAccountManager({
+      vault: { ...vault, store: () => false },
+      fetchImpl: vi.fn() as unknown as typeof fetch,
+      openExternal: vi.fn(),
+    });
+
+    expect(mgr.reconcileAccountsForInstalledManifestWithResult(oauthManifest('old-client'), GHOST))
+      .toEqual({ restored: 0, retryPending: true });
+  });
+
+  it('reports a retry when crash recovery cannot strictly read the account manifest', () => {
+    const vault = memoryVault();
+    const mgr = new GhostOauthAccountManager({
+      vault: {
+        ...vault,
+        readStrict: () => {
+          throw new Error('keychain temporarily unavailable');
+        },
+      },
+      fetchImpl: vi.fn() as unknown as typeof fetch,
+      openExternal: vi.fn(),
+    });
+
+    expect(mgr.reconcileAccountsForInstalledManifestWithResult(oauthManifest('old-client'), GHOST))
+      .toEqual({ restored: 0, retryPending: true });
+  });
+
+  it('插件切回签发 client 时只在 commit 后复活旧 token，不误复活新 client 账号', () => {
+    const vault = memoryVault({
+      [`${KEY}-accounts`]: JSON.stringify({
+        defaultAccountId: 'old-account',
+        accounts: [
+          {
+            id: 'old-account',
+            label: 'old@b.com',
+            status: 'expired',
+            expiredReason: 'oauth_client_changed',
+            expiredFromClientId: 'old-client',
+            expiredForClientId: 'new-client',
+            createdAt: 1,
+          },
+          { id: 'new-account', label: 'new@b.com', status: 'connected', createdAt: 2 },
+        ],
+      }),
+    });
+    const onAccountStatusChanged = vi.fn();
+    const mgr = new GhostOauthAccountManager({
+      vault,
+      fetchImpl: vi.fn() as unknown as typeof fetch,
+      openExternal: vi.fn(),
+      onAccountStatusChanged,
+    });
+
+    const migration = mgr.prepareAccountsForChangedClients(
+      oauthManifest('new-client'),
+      oauthManifest('old-client'),
+      GHOST,
+    );
+    const preparedAccounts = mgr.listAccounts(GHOST, KEY);
+    expect(preparedAccounts.find((account) => account.id === 'old-account')?.status).toBe(
+      'expired',
+    );
+    expect(preparedAccounts.find((account) => account.id === 'new-account')?.status).toBe(
+      'expired',
+    );
+    migration.commit();
+    const committedAccounts = mgr.listAccounts(GHOST, KEY);
+    expect(committedAccounts.find((account) => account.id === 'old-account')?.status).toBe(
+      'connected',
+    );
+    expect(committedAccounts.find((account) => account.id === 'new-account')?.status).toBe(
+      'expired',
+    );
+    expect(onAccountStatusChanged).toHaveBeenCalledWith({
+      ghostId: GHOST,
+      secretKey: KEY,
+      status: 'connected',
+    });
+    expect(onAccountStatusChanged).toHaveBeenCalledWith({
+      ghostId: GHOST,
+      secretKey: KEY,
+      status: 'expired',
+    });
+  });
+
+  it('A → 无内置 client → A 时在第二次 receipt commit 后无需重启即可恢复', () => {
+    const vault = memoryVault({
+      [`${KEY}-accounts`]: JSON.stringify({
+        defaultAccountId: 'acc-1',
+        accounts: [{ id: 'acc-1', label: 'a@b.com', status: 'connected', createdAt: 1 }],
+      }),
+    });
+    const mgr = new GhostOauthAccountManager({
+      vault,
+      fetchImpl: vi.fn() as unknown as typeof fetch,
+      openExternal: vi.fn(),
+    });
+
+    const removed = mgr.prepareAccountsForChangedClients(
+      oauthManifest('client-a'),
+      oauthManifestWithoutBuiltinClient(),
+      GHOST,
+    );
+    removed.commit();
+    expect(mgr.listAccounts(GHOST, KEY)[0]?.status).toBe('expired');
+
+    const restored = mgr.prepareAccountsForChangedClients(
+      oauthManifestWithoutBuiltinClient(),
+      oauthManifest('client-a'),
+      GHOST,
+    );
+    expect(mgr.listAccounts(GHOST, KEY)[0]?.status).toBe('expired');
+    restored.commit();
+    expect(mgr.listAccounts(GHOST, KEY)[0]?.status).toBe('connected');
+  });
+
+  it('切回签发 client 后 receipt 失败时 rollback 不会提前复活 token', () => {
+    const vault = memoryVault({
+      [`${KEY}-accounts`]: JSON.stringify({
+        defaultAccountId: 'acc-1',
+        accounts: [
+          {
+            id: 'acc-1',
+            label: 'a@b.com',
+            status: 'expired',
+            expiredReason: 'oauth_client_changed',
+            expiredFromClientId: 'old-client',
+            expiredForClientId: 'new-client',
+            createdAt: 1,
+          },
+        ],
+      }),
+    });
+    const mgr = new GhostOauthAccountManager({
+      vault,
+      fetchImpl: vi.fn() as unknown as typeof fetch,
+      openExternal: vi.fn(),
+    });
+
+    const migration = mgr.prepareAccountsForChangedClients(
+      oauthManifest('new-client'),
+      oauthManifest('old-client'),
+      GHOST,
+    );
+    expect(mgr.listAccounts(GHOST, KEY)[0]?.status).toBe('expired');
+    migration.rollback();
+    expect(mgr.listAccounts(GHOST, KEY)[0]?.status).toBe('expired');
+  });
+
+  it('迁移状态写入失败时抛错并保留旧账号与 refresh token', () => {
+    const vault = memoryVault({
+      [`${KEY}-accounts`]: JSON.stringify({
+        defaultAccountId: 'acc-1',
+        accounts: [{ id: 'acc-1', label: 'a@b.com', status: 'connected', createdAt: 1 }],
+      }),
+      [`${KEY}-rt-acc-1`]: 'rt-old-client',
+    });
+    const store = vault.store;
+    vault.store = (ghostId, key, value) =>
+      key === `${KEY}-accounts` ? false : store(ghostId, key, value);
+    const mgr = new GhostOauthAccountManager({
+      vault,
+      fetchImpl: vi.fn() as unknown as typeof fetch,
+      openExternal: vi.fn(),
+    });
+
+    expect(() =>
+      mgr.expireAccountsForChangedClients(oauthManifest('old-client'), oauthManifest('new-client'), GHOST),
+    ).toThrow('Unable to persist OAuth client migration state');
+    expect(mgr.listAccounts(GHOST, KEY)[0]?.status).toBe('connected');
+    expect(vault.read(GHOST, `${KEY}-rt-acc-1`)).toBe('rt-old-client');
+  });
+});
+
+describe('missingAuthScopes(快照推断)', () => {
+  it.each([
+    ['全量快照没有新增 scope', ['scope.a'], { authFace: 'full', authScopes: ['scope.a'] }, false],
+    [
+      '全量快照存在新增 scope',
+      ['scope.a', 'scope.b'],
+      { authFace: 'full', authScopes: ['scope.a'] },
+      true,
+    ],
+    [
+      '主动降面账号不猜',
+      ['scope.a', 'scope.b'],
+      { authFace: 'subset', authScopes: ['scope.a'] },
+      false,
+    ],
+    ['老账号无快照不猜', ['scope.a', 'scope.b'], {}, false],
+    ['只有 scope 面没有 full 标记不猜', ['scope.a', 'scope.b'], { authScopes: ['scope.a'] }, false],
+  ] as const)('%s', (_name, declScopes, row, expected) => {
+    expect(missingAuthScopes(declScopes, row).length > 0).toBe(expected);
+  });
+
+  it('老清单与非法快照继续宽松读取，不误报陈旧授权', () => {
+    const vault = memoryVault({
+      [`${KEY}-accounts`]: JSON.stringify({
+        defaultAccountId: 'acc-old',
+        accounts: [
+          { id: 'acc-old', label: 'old@example.com', status: 'connected', createdAt: 1 },
+          {
+            id: 'acc-bad',
+            label: 'bad@example.com',
+            status: 'connected',
+            createdAt: 2,
+            authScopes: ['scope.a', 42],
+            authFace: 'unknown',
+          },
+        ],
+      }),
+    });
+    const mgr = new GhostOauthAccountManager({
+      vault,
+      fetchImpl: vi.fn() as unknown as typeof fetch,
+      openExternal: vi.fn(),
+    });
+    const expanded = { ...DECL, scopes: ['scope.a', 'scope.b'] };
+
+    expect(mgr.listAccounts(GHOST, KEY, expanded)).toMatchObject([
+      { id: 'acc-old', scopeStale: false },
+      { id: 'acc-bad', scopeStale: false },
+    ]);
+    expect(mgr.defaultMissingScopes(GHOST, KEY, expanded)).toEqual([]);
+  });
+
+  it('老账号无快照但有真实错误证据时触发建议与详情页角标', () => {
+    const vault = memoryVault({
+      [`${KEY}-accounts`]: JSON.stringify({
+        defaultAccountId: 'acc-old',
+        accounts: [
+          {
+            id: 'acc-old',
+            label: 'old@example.com',
+            status: 'connected',
+            createdAt: 1,
+            insufficientScopes: ['scope.b'],
+          },
+        ],
+      }),
+    });
+    const mgr = new GhostOauthAccountManager({
+      vault,
+      fetchImpl: vi.fn() as unknown as typeof fetch,
+      openExternal: vi.fn(),
+    });
+    const expanded = { ...DECL, scopes: ['scope.a', 'scope.b'] };
+
+    expect(mgr.defaultMissingScopes(GHOST, KEY, expanded)).toEqual(['scope.b']);
+    expect(mgr.listAccounts(GHOST, KEY, expanded)[0]?.scopeStale).toBe(true);
+  });
+
+  it('真实错误证据优先于快照推断；无证据时回退快照', () => {
+    const vault = memoryVault({
+      [`${KEY}-accounts`]: JSON.stringify({
+        defaultAccountId: 'acc-1',
+        accounts: [
+          {
+            id: 'acc-1',
+            label: 'a@example.com',
+            status: 'connected',
+            createdAt: 1,
+            authScopes: ['scope.a'],
+            authFace: 'full',
+            insufficientScopes: ['scope.c'],
+          },
+        ],
+      }),
+    });
+    const mgr = new GhostOauthAccountManager({
+      vault,
+      fetchImpl: vi.fn() as unknown as typeof fetch,
+      openExternal: vi.fn(),
+    });
+    const expanded = { ...DECL, scopes: ['scope.a', 'scope.b', 'scope.c'] };
+
+    expect(mgr.defaultMissingScopes(GHOST, KEY, expanded)).toEqual(['scope.c']);
+    const manifest = JSON.parse(vault.read(GHOST, `${KEY}-accounts`) ?? '{}');
+    delete manifest.accounts[0].insufficientScopes;
+    vault.store(GHOST, `${KEY}-accounts`, JSON.stringify(manifest));
+    expect(mgr.defaultMissingScopes(GHOST, KEY, expanded)).toEqual(['scope.b', 'scope.c']);
+  });
+
+  it('非法错误证据按 undefined 宽松读取，并回退快照推断', () => {
+    const vault = memoryVault({
+      [`${KEY}-accounts`]: JSON.stringify({
+        defaultAccountId: 'acc-1',
+        accounts: [
+          {
+            id: 'acc-1',
+            label: 'a@example.com',
+            status: 'connected',
+            createdAt: 1,
+            authScopes: ['scope.a'],
+            authFace: 'full',
+            insufficientScopes: ['scope.b', 42],
+          },
+        ],
+      }),
+    });
+    const mgr = new GhostOauthAccountManager({
+      vault,
+      fetchImpl: vi.fn() as unknown as typeof fetch,
+      openExternal: vi.fn(),
+    });
+
+    expect(
+      mgr.defaultMissingScopes(GHOST, KEY, { ...DECL, scopes: ['scope.a', 'scope.b'] }),
+    ).toEqual(['scope.b']);
+  });
+
+  it.each([
+    ['纯空白', ['   ']],
+    ['单项超长', ['x'.repeat(257)]],
+    ['条数超限', Array.from({ length: 65 }, (_, index) => `scope.${index}`)],
+  ])('%s 的持久化坏证据对判定惰性(按当前声明过滤,不整包丢弃)', (_name, insufficientScopes) => {
+    const vault = memoryVault({
+      [`${KEY}-accounts`]: JSON.stringify({
+        defaultAccountId: 'acc-1',
+        accounts: [
+          {
+            id: 'acc-1',
+            label: 'a@example.com',
+            status: 'connected',
+            createdAt: 1,
+            insufficientScopes,
+          },
+        ],
+      }),
+    });
+    const mgr = new GhostOauthAccountManager({
+      vault,
+      fetchImpl: vi.fn() as unknown as typeof fetch,
+      openExternal: vi.fn(),
+    });
+
+    expect(mgr.defaultMissingScopes(GHOST, KEY, DECL)).toEqual([]);
+  });
+
+  it('历史证据已不在当前声明时忽略，并回退快照推断', () => {
+    const vault = memoryVault({
+      [`${KEY}-accounts`]: JSON.stringify({
+        defaultAccountId: 'acc-1',
+        accounts: [
+          {
+            id: 'acc-1',
+            label: 'a@example.com',
+            status: 'connected',
+            createdAt: 1,
+            authScopes: ['scope.a'],
+            authFace: 'full',
+            insufficientScopes: ['scope.removed'],
+          },
+        ],
+      }),
+    });
+    const mgr = new GhostOauthAccountManager({
+      vault,
+      fetchImpl: vi.fn() as unknown as typeof fetch,
+      openExternal: vi.fn(),
+    });
+
+    expect(
+      mgr.defaultMissingScopes(GHOST, KEY, { ...DECL, scopes: ['scope.a', 'scope.b'] }),
+    ).toEqual(['scope.b']);
+  });
+
+  it('错误证据只合并到默认账号，重复上报去重', () => {
+    const vault = memoryVault({
+      [`${KEY}-accounts`]: JSON.stringify({
+        defaultAccountId: 'acc-2',
+        accounts: [
+          { id: 'acc-1', label: 'one@example.com', status: 'connected', createdAt: 1 },
+          {
+            id: 'acc-2',
+            label: 'two@example.com',
+            status: 'connected',
+            createdAt: 2,
+            insufficientScopes: ['scope.a'],
+          },
+        ],
+      }),
+    });
+    const mgr = new GhostOauthAccountManager({
+      vault,
+      fetchImpl: vi.fn() as unknown as typeof fetch,
+      openExternal: vi.fn(),
+    });
+
+    const decl = ['scope.a', 'scope.b'];
+    expect(mgr.reportInsufficientScopes(GHOST, KEY, ['scope.a', 'scope.b', 'scope.b'], decl)).toBe(
+      'stored',
+    );
+    expect(mgr.reportInsufficientScopes(GHOST, KEY, ['scope.b'], decl)).toBe('unchanged');
+    const accounts = JSON.parse(vault.read(GHOST, `${KEY}-accounts`) ?? '{}').accounts;
+    expect(accounts[0]).not.toHaveProperty('insufficientScopes');
+    expect(accounts[1].insufficientScopes).toEqual(['scope.a', 'scope.b']);
+    expect(
+      new GhostOauthAccountManager({
+        vault: memoryVault(),
+        fetchImpl: vi.fn() as unknown as typeof fetch,
+        openExternal: vi.fn(),
+      }).reportInsufficientScopes(GHOST, KEY, ['scope.a'], decl),
+    ).toBe(false);
+  });
+
+  it('合并时按当前声明面裁剪,清单换代后的过期证据被淘汰,条数不越积越多', () => {
+    const vault = memoryVault({
+      [`${KEY}-accounts`]: JSON.stringify({
+        defaultAccountId: 'acc-1',
+        accounts: [
+          {
+            id: 'acc-1',
+            label: 'a@example.com',
+            status: 'connected',
+            createdAt: 1,
+            insufficientScopes: ['scope.old', 'scope.b'],
+          },
+        ],
+      }),
+    });
+    const mgr = new GhostOauthAccountManager({
+      vault,
+      fetchImpl: vi.fn() as unknown as typeof fetch,
+      openExternal: vi.fn(),
+    });
+
+    expect(mgr.reportInsufficientScopes(GHOST, KEY, ['scope.c'], ['scope.b', 'scope.c'])).toBe(
+      'stored',
+    );
+    const accounts = JSON.parse(vault.read(GHOST, `${KEY}-accounts`) ?? '{}').accounts;
+    expect(accounts[0].insufficientScopes).toEqual(['scope.b', 'scope.c']);
+  });
+});
+
 describe('connectAccount', () => {
+  function targetConnectDeps() {
+    return {
+      vault: memoryVault(),
+      openExternal: vi.fn(autoBrowser()),
+      fetchImpl: vi.fn(async (input: string | URL | Request) => String(input) === DECL.tokenUrl
+        ? jsonResponse({ access_token: 'fake-access', refresh_token: 'fake-refresh', expires_in: 3600 })
+        : jsonResponse({ email: 'test@example.com' })),
+    };
+  }
+
+  it.each([
+    ['same declaration on a replacement root instance', 'token'],
+    ['physical relocation during identity lookup', 'identity'],
+    ['approval replacement before the mutation lock', 'mutation'],
+    ['owner invalidation before the mutation lock', 'owner'],
+  ] as const)('rejects %s without committing tokens', async (_name, transition) => {
+    const ghostId = 'helper';
+    const vault = memoryVault();
+    const originalTarget = { ownerGeneration: 1, revision: 'approved-org', storagePart: ghostId };
+    let currentTarget: typeof originalTarget | null = originalTarget;
+    let insideMutationLock = false;
+    const captureConnectTarget = vi.fn(() => currentTarget);
+    const isConnectTargetCurrent = vi.fn((
+      _ghostId: string, _secretKey: string, _decl: GhostOauthDecl, expected?: unknown,
+    ) => expected === undefined || expected === currentTarget);
+    const decl = { ...DECL, clientId: 'fake-public-client' };
+    const deps = {
+      vault,
+      captureConnectTarget,
+      isConnectTargetCurrent,
+      openExternal: autoBrowser(),
+      fetchImpl: (async (input) => {
+        if (String(input) === decl.tokenUrl) {
+          if (transition === 'token') {
+            currentTarget = { ownerGeneration: 1, revision: 'approved-root', storagePart: ghostId };
+          }
+          return jsonResponse({ access_token: 'fake-org-access', refresh_token: 'fake-org-refresh', expires_in: 3600 });
+        }
+        if (transition === 'identity') {
+          currentTarget = { ownerGeneration: 1, revision: 'approved-org', storagePart: '_ns__acme__helper' };
+        }
+        return jsonResponse({ email: 'org@example.com' });
+      }) as typeof fetch,
+      withMutationLock: async <Result>(_ghostId: string, task: () => Promise<Result> | Result) => {
+        insideMutationLock = true;
+        if (transition === 'mutation') {
+          currentTarget = { ownerGeneration: 1, revision: 'approved-new', storagePart: ghostId };
+        }
+        if (transition === 'owner') currentTarget = null;
+        return task();
+      },
+    };
+    const manager = new GhostOauthAccountManager(deps);
+
+    await expect(manager.connectAccount(ghostId, KEY, decl)).resolves.toMatchObject({
+      ok: false, error: 'INVALID_CONFIG',
+    });
+    expect(captureConnectTarget).toHaveBeenCalledExactlyOnceWith(ghostId);
+    expect(isConnectTargetCurrent).toHaveBeenLastCalledWith(ghostId, KEY, decl, originalTarget);
+    expect(insideMutationLock).toBe(transition !== 'token');
+    expect(vault.data.size).toBe(0);
+    expect(manager.listAccounts(ghostId, KEY)).toHaveLength(0);
+    await expect(manager.getFreshAccessToken(ghostId, KEY, decl)).resolves.toMatchObject({
+      ok: false, error: 'NO_ACCOUNT',
+    });
+  });
+
+  it.each([
+    { revision: 'legacy-approval', storagePart: 'helper' },
+    { namespace: null, revision: 'root-approval', storagePart: '_root__helper' },
+    { namespace: 'acme', revision: 'relocated-approval', storagePart: '_ns__acme__helper' },
+  ])('keeps an unchanged approved target usable: $revision', async (target) => {
+    let insideMutationLock = false;
+    const captureConnectTarget = vi.fn(() => target);
+    const isConnectTargetCurrent = vi.fn((
+      _ghostId: string, _secretKey: string, _decl: GhostOauthDecl, expected?: unknown,
+    ) => expected === undefined || expected === target);
+    const decl = { ...DECL, clientId: 'fake-public-client' };
+    const deps = {
+      ...targetConnectDeps(), captureConnectTarget, isConnectTargetCurrent,
+      withMutationLock: async <Result>(_ghostId: string, task: () => Promise<Result> | Result) => {
+        insideMutationLock = true;
+        return task();
+      },
+    };
+    const manager = new GhostOauthAccountManager(deps);
+    const result = await manager.connectAccount(target.storagePart, KEY, decl);
+
+    expect(result.ok).toBe(true);
+    expect(captureConnectTarget).toHaveBeenCalledExactlyOnceWith(target.storagePart);
+    expect(isConnectTargetCurrent).toHaveBeenLastCalledWith(target.storagePart, KEY, decl, target);
+    expect(insideMutationLock).toBe(true);
+    expect(manager.listAccounts(target.storagePart, KEY)).toHaveLength(1);
+    if (!result.ok) throw new Error('Expected the unchanged target to connect');
+    expect(deps.vault.read(target.storagePart, KEY + '-rt-' + result.account.id)).toBe('fake-refresh');
+    const fetchCount = deps.fetchImpl.mock.calls.length;
+    await expect(manager.getFreshAccessToken(target.storagePart, KEY, decl)).resolves.toMatchObject({
+      ok: true, accessToken: 'fake-access',
+    });
+    expect(deps.fetchImpl).toHaveBeenCalledTimes(fetchCount);
+  });
+
+  it.each([null, undefined])('refuses an unavailable captured target (%s) before authorization', async (target) => {
+    const deps = {
+      ...targetConnectDeps(),
+      captureConnectTarget: () => target,
+      isConnectTargetCurrent: () => true,
+    };
+    const manager = new GhostOauthAccountManager(deps);
+    await expect(manager.connectAccount('helper', KEY, { ...DECL, clientId: 'fake-client' })).resolves.toMatchObject({
+      ok: false, error: 'INVALID_CONFIG',
+    });
+    expect(deps.openExternal).not.toHaveBeenCalled();
+    expect(deps.fetchImpl).not.toHaveBeenCalled();
+    expect(deps.vault.data.size).toBe(0);
+  });
+
+  it('does not recapture a replacement instance when the endpoint provides its original target', async () => {
+    const originalTarget = { revision: 'approved-org', storagePart: 'helper' };
+    const replacementTarget = { revision: 'approved-root', storagePart: 'helper' };
+    const captureConnectTarget = vi.fn(() => replacementTarget);
+    const deps = {
+      ...targetConnectDeps(), captureConnectTarget,
+      isConnectTargetCurrent: (
+        _ghostId: string, _secretKey: string, _decl: GhostOauthDecl, expected?: unknown,
+      ) => expected === replacementTarget,
+    };
+    const manager = new GhostOauthAccountManager(deps);
+    await expect(manager.connectAccount('helper', KEY, { ...DECL, clientId: 'fake-client' }, {
+      expectedConnectTarget: originalTarget,
+    })).resolves.toMatchObject({ ok: false, error: 'INVALID_CONFIG' });
+    expect(captureConnectTarget).not.toHaveBeenCalled();
+    expect(deps.openExternal).not.toHaveBeenCalled();
+    expect(deps.vault.data.size).toBe(0);
+  });
+
+  it('fails closed when a captured target has no lifecycle verifier', async () => {
+    const deps = {
+      ...targetConnectDeps(),
+      captureConnectTarget: () => ({ revision: 'approved-org' }),
+    };
+    const manager = new GhostOauthAccountManager(deps);
+    await expect(manager.connectAccount('helper', KEY, { ...DECL, clientId: 'fake-client' })).resolves.toMatchObject({
+      ok: false, error: 'INVALID_CONFIG',
+    });
+    expect(deps.openExternal).not.toHaveBeenCalled();
+    expect(deps.vault.data.size).toBe(0);
+  });
+
+  it('keeps refresh token comparison independent of connect target capture', async () => {
+    const vault = seededVault();
+    const captureConnectTarget = vi.fn(() => null);
+    const isConnectTargetCurrent = vi.fn(() => true);
+    const fetchImpl = vi.fn(async () => {
+      vault.remove(GHOST, KEY + '-rt-acc-1');
+      return jsonResponse({ access_token: 'fake-stale-access', refresh_token: 'fake-stale-refresh', expires_in: 3600 });
+    });
+    const deps = {
+      vault, captureConnectTarget, isConnectTargetCurrent,
+      openExternal: vi.fn(), fetchImpl: fetchImpl as unknown as typeof fetch,
+    };
+    const manager = new GhostOauthAccountManager(deps);
+    await expect(manager.getFreshAccessToken(GHOST, KEY, DECL)).resolves.toMatchObject({
+      ok: false, error: 'AUTH_EXPIRED',
+    });
+    expect(captureConnectTarget).not.toHaveBeenCalled();
+    expect(isConnectTargetCurrent).toHaveBeenCalledWith(GHOST, KEY, DECL);
+    expect(vault.read(GHOST, KEY + '-rt-acc-1')).toBeNull();
+    expect([...vault.data.values()]).not.toContain('fake-stale-refresh');
+  });
+
+  it.each(['boundary', 'policy'] as const)('does not commit OAuth tokens when %s becomes invalid during identity lookup', async (reason) => {
+    const vault = memoryVault({ [`${KEY}-client-id`]: 'cid' });
+    const before = new Map(vault.data);
+    let current = true;
+    const mgr = new GhostOauthAccountManager({
+      vault, openExternal: autoBrowser(),
+      fetchImpl: (async (input) => {
+        if (String(input) === DECL.tokenUrl)
+          return jsonResponse({ access_token: 'fake-access', refresh_token: 'fake-refresh', expires_in: 3600 });
+        current = false;
+        return jsonResponse({ email: 'test@example.com' });
+      }) as typeof fetch,
+    });
+    await expect(mgr.connectAccount(GHOST, KEY, DECL, {
+      assertCurrent: () => { if (reason === 'boundary' && !current) throw new Error('card withdrawn'); },
+      beforeCommit: async () => { if (reason === 'policy' && !current) throw new Error('card withdrawn'); },
+    })).rejects.toThrow('card withdrawn');
+    expect(vault.data).toEqual(before);
+    expect(mgr.listAccounts(GHOST, KEY)).toHaveLength(0);
+  });
+
   it('端口回收器只对第一方官方意识放行(第三方 redirectPort 不许借刀杀进程)', async () => {
     const blocker = http.createServer();
     const heldPort = await new Promise<number>((resolve) => {
@@ -89,21 +1004,22 @@ describe('connectAccount', () => {
         redirectPort: heldPort,
       };
       const reclaimPort = vi.fn(async () => false);
-      const mkMgr = (): GhostOauthAccountManager =>
+      const mkMgr = (hostPrimitive: boolean): GhostOauthAccountManager =>
         new GhostOauthAccountManager({
           vault: memoryVault(),
           fetchImpl: vi.fn() as unknown as typeof fetch,
           openExternal: vi.fn(),
           reclaimPort,
+          isHostPrimitiveAuthorized: () => hostPrimitive,
         });
       // 第三方 id:门控挡住,占用直接报错,回收器(杀进程)绝不能被调用。
-      await expect(mkMgr().connectAccount('evil-tools', KEY, decl)).resolves.toMatchObject({
+      await expect(mkMgr(false).connectAccount('evil-tools', KEY, decl)).resolves.toMatchObject({
         ok: false,
         error: 'LISTEN_FAILED',
       });
       expect(reclaimPort).not.toHaveBeenCalled();
-      // 官方前缀 id:回收器放行被调用(此处回收失败仍 LISTEN_FAILED,只验门控)。
-      await expect(mkMgr().connectAccount('cindy-google', KEY, decl)).resolves.toMatchObject({
+      // 经第一方宿主原语授权后才调用回收器(此处回收失败仍 LISTEN_FAILED,只验门控)。
+      await expect(mkMgr(true).connectAccount('cindy-google', KEY, decl)).resolves.toMatchObject({
         ok: false,
         error: 'LISTEN_FAILED',
       });
@@ -138,13 +1054,20 @@ describe('connectAccount', () => {
     expect(result.account.label).toBe('user@example.com');
     expect(result.account.isDefault).toBe(true);
     expect(result.account.status).toBe('connected');
+    expect(result.account.scopeStale).toBe(false);
 
-    const listed = mgr.listAccounts(GHOST, KEY);
+    const listed = mgr.listAccounts(GHOST, KEY, DECL);
     expect(listed).toHaveLength(1);
     expect(vault.read(GHOST, `${KEY}-rt-${result.account.id}`)).toBe('rt-1');
     // 清单里不落任何令牌字节。
     expect(vault.read(GHOST, `${KEY}-accounts`)).not.toContain('rt-1');
     expect(vault.read(GHOST, `${KEY}-accounts`)).not.toContain('at-1');
+    const persistedAccount = JSON.parse(vault.read(GHOST, `${KEY}-accounts`) ?? '{}').accounts[0];
+    expect(persistedAccount).toMatchObject({
+      authScopes: ['scope.a'],
+      authFace: 'full',
+    });
+    expect(persistedAccount).not.toHaveProperty('insufficientScopes');
 
     // 授权余温:access token 已进缓存,取用不再走网络。
     const fetchCalls = fetchImpl.mock.calls.length;
@@ -159,7 +1082,11 @@ describe('connectAccount', () => {
     const fetchImpl = vi.fn(async (input: string | URL | Request) => {
       const url = String(input);
       if (url === DECL.tokenUrl) {
-        return jsonResponse({ access_token: 'at-stale', refresh_token: 'rt-stale', expires_in: 3600 });
+        return jsonResponse({
+          access_token: 'at-stale',
+          refresh_token: 'rt-stale',
+          expires_in: 3600,
+        });
       }
       if (url === DECL.identity?.url) {
         return jsonResponse({ email: 'stale@example.com' });
@@ -187,7 +1114,11 @@ describe('connectAccount', () => {
   it('声明 avatarPath → 连接时下载头像存库(不带凭证),listAccounts 带 avatarDataUrl,断开清掉', async () => {
     const avatarDecl: GhostOauthDecl = {
       ...DECL,
-      identity: { url: 'https://api.example.com/userinfo', labelPath: 'email', avatarPath: 'picture' },
+      identity: {
+        url: 'https://api.example.com/userinfo',
+        labelPath: 'email',
+        avatarPath: 'picture',
+      },
     };
     const pngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
     const expectedDataUrl = `data:image/png;base64,${pngBytes.toString('base64')}`;
@@ -198,12 +1129,18 @@ describe('connectAccount', () => {
         return jsonResponse({ access_token: 'at-1', refresh_token: 'rt-1', expires_in: 3600 });
       }
       if (url === 'https://api.example.com/userinfo') {
-        return jsonResponse({ email: 'user@example.com', picture: 'https://cdn.example.com/a.png' });
+        return jsonResponse({
+          email: 'user@example.com',
+          picture: 'https://cdn.example.com/a.png',
+        });
       }
       if (url === 'https://cdn.example.com/a.png') {
         // 头像下载绝不带 Authorization(CDN 域名不在凭证注入白名单)。
         expect(new Headers(init?.headers).get('Authorization')).toBeNull();
-        return new Response(new Uint8Array(pngBytes), { status: 200, headers: { 'Content-Type': 'image/png' } });
+        return new Response(new Uint8Array(pngBytes), {
+          status: 200,
+          headers: { 'Content-Type': 'image/png' },
+        });
       }
       throw new Error(`unexpected fetch ${url}`);
     });
@@ -211,6 +1148,7 @@ describe('connectAccount', () => {
       vault,
       fetchImpl: fetchImpl as unknown as typeof fetch,
       openExternal: autoBrowser(),
+      ...FIRST_PARTY_HOST,
     });
 
     const result = await mgr.connectAccount(GHOST, KEY, avatarDecl);
@@ -231,7 +1169,11 @@ describe('connectAccount', () => {
     const avatarDecl: GhostOauthDecl = {
       ...DECL,
       clientId: 'cid-baked',
-      identity: { url: 'https://api.example.com/userinfo', labelPath: 'email', avatarPath: 'picture' },
+      identity: {
+        url: 'https://api.example.com/userinfo',
+        labelPath: 'email',
+        avatarPath: 'picture',
+      },
     };
     const fetchImpl = vi.fn(async (input: string | URL | Request) => {
       const url = String(input);
@@ -239,7 +1181,10 @@ describe('connectAccount', () => {
         return jsonResponse({ access_token: 'at-1', refresh_token: 'rt-1', expires_in: 3600 });
       }
       if (url === 'https://api.example.com/userinfo') {
-        return jsonResponse({ email: 'user@example.com', picture: 'https://internal.example/secret.png' });
+        return jsonResponse({
+          email: 'user@example.com',
+          picture: 'https://internal.example/secret.png',
+        });
       }
       throw new Error(`unexpected fetch ${url}`);
     });
@@ -253,13 +1198,19 @@ describe('connectAccount', () => {
     if (!result.ok) return;
     expect(result.account.avatarDataUrl).toBeNull();
     // 头像地址从未被主机请求过(fetch 只打过 token 与身份端点)。
-    expect(fetchImpl.mock.calls.map((c) => String(c[0]))).not.toContain('https://internal.example/secret.png');
+    expect(fetchImpl.mock.calls.map((c) => String(c[0]))).not.toContain(
+      'https://internal.example/secret.png',
+    );
   });
 
   it('头像下载失败 → 连接照常成功,avatarDataUrl 为 null(best-effort)', async () => {
     const avatarDecl: GhostOauthDecl = {
       ...DECL,
-      identity: { url: 'https://api.example.com/userinfo', labelPath: 'email', avatarPath: 'picture' },
+      identity: {
+        url: 'https://api.example.com/userinfo',
+        labelPath: 'email',
+        avatarPath: 'picture',
+      },
     };
     const fetchImpl = vi.fn(async (input: string | URL | Request) => {
       const url = String(input);
@@ -267,7 +1218,10 @@ describe('connectAccount', () => {
         return jsonResponse({ access_token: 'at-1', refresh_token: 'rt-1', expires_in: 3600 });
       }
       if (url === 'https://api.example.com/userinfo') {
-        return jsonResponse({ email: 'user@example.com', picture: 'https://cdn.example.com/a.png' });
+        return jsonResponse({
+          email: 'user@example.com',
+          picture: 'https://cdn.example.com/a.png',
+        });
       }
       throw new Error('avatar cdn down');
     });
@@ -275,6 +1229,7 @@ describe('connectAccount', () => {
       vault: memoryVault({ [`${KEY}-client-id`]: 'cid' }),
       fetchImpl: fetchImpl as unknown as typeof fetch,
       openExternal: autoBrowser(),
+      ...FIRST_PARTY_HOST,
     });
     const result = await mgr.connectAccount(GHOST, KEY, avatarDecl);
     expect(result.ok).toBe(true);
@@ -310,7 +1265,11 @@ describe('connectAccount', () => {
     });
     const fetchImpl = vi.fn(async (input: string | URL | Request) => {
       if (String(input) === DECL.tokenUrl) {
-        return jsonResponse({ access_token: 'at-full', refresh_token: 'rt-full', expires_in: 3600 });
+        return jsonResponse({
+          access_token: 'at-full',
+          refresh_token: 'rt-full',
+          expires_in: 3600,
+        });
       }
       return jsonResponse({ email: 'brand-new@x.com' });
     });
@@ -333,7 +1292,13 @@ describe('connectAccount', () => {
       [`${KEY}-accounts`]: JSON.stringify({
         defaultAccountId: 'acc-1',
         accounts: [
-          { id: 'acc-1', label: 'a@b.com', status: 'expired', createdAt: 1 },
+          {
+            id: 'acc-1',
+            label: 'a@b.com',
+            status: 'expired',
+            expiredReason: 'oauth_client_changed',
+            createdAt: 1,
+          },
           { id: 'acc-2', label: 'other@b.com', status: 'connected', createdAt: 2 },
         ],
       }),
@@ -359,8 +1324,51 @@ describe('connectAccount', () => {
     expect(result.account.isDefault).toBe(true);
     const listed = mgr.listAccounts(GHOST, KEY);
     expect(listed).toHaveLength(2);
+    expect(mgr.clientMigrationExpiredAccountCount(GHOST, KEY)).toBe(0);
     expect(vault.read(GHOST, `${KEY}-rt-acc-1`)).toBe('rt-fresh');
+    expect(JSON.parse(vault.read(GHOST, `${KEY}-accounts`) ?? '{}').accounts[0]).toMatchObject({
+      authScopes: ['scope.a'],
+      authFace: 'full',
+    });
     // 授权余温:合并账号的 access token 已进缓存。
+    await expect(mgr.getFreshAccessToken(GHOST, KEY, DECL, 'acc-1')).resolves.toMatchObject({
+      ok: true,
+      accessToken: 'at-re',
+    });
+  });
+
+  it('clientId 迁移重连未返回 refresh token 时移除旧 token', async () => {
+    const vault = memoryVault({
+      [`${KEY}-client-id`]: 'cid',
+      [`${KEY}-accounts`]: JSON.stringify({
+        defaultAccountId: 'acc-1',
+        accounts: [
+          {
+            id: 'acc-1',
+            label: 'a@b.com',
+            status: 'expired',
+            expiredReason: 'oauth_client_changed',
+            createdAt: 1,
+          },
+        ],
+      }),
+      [`${KEY}-rt-acc-1`]: 'rt-old-client',
+    });
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      if (String(input) === DECL.tokenUrl) {
+        return jsonResponse({ access_token: 'at-re', expires_in: 3600 });
+      }
+      return jsonResponse({ email: 'a@b.com' });
+    });
+    const mgr = new GhostOauthAccountManager({
+      vault,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      openExternal: autoBrowser(),
+    });
+
+    await expect(mgr.connectAccount(GHOST, KEY, DECL)).resolves.toMatchObject({ ok: true });
+    expect(vault.read(GHOST, `${KEY}-rt-acc-1`)).toBeNull();
+    expect(mgr.clientMigrationExpiredAccountCount(GHOST, KEY)).toBe(0);
     await expect(mgr.getFreshAccessToken(GHOST, KEY, DECL, 'acc-1')).resolves.toMatchObject({
       ok: true,
       accessToken: 'at-re',
@@ -384,7 +1392,11 @@ describe('connectAccount', () => {
     });
     expect((await mgrNew.connectAccount(GHOST, KEY, DECL)).ok).toBe(true);
     expect(onNew).toHaveBeenCalledTimes(1);
-    expect(onNew).toHaveBeenCalledWith({ ghostId: GHOST, secretKey: KEY, label: 'user@example.com' });
+    expect(onNew).toHaveBeenCalledWith({
+      ghostId: GHOST,
+      secretKey: KEY,
+      label: 'user@example.com',
+    });
 
     // 同身份重连(合并):同样触发;钩子抛错不影响 ok 结果
     const onMerge = vi.fn(() => {
@@ -458,6 +1470,154 @@ describe('connectAccount', () => {
     expect(result).toMatchObject({ ok: true });
     if (result.ok) expect(result.account.id).toBe('acc-3');
     expect(mgr.listAccounts(GHOST, KEY)).toHaveLength(GHOST_OAUTH_MAX_ACCOUNTS);
+  });
+});
+
+describe('invalidateGhost', () => {
+  it.each(['success', 'invalid-grant', 'missing-token'] as const)('blocks stale %s mutations after waiting for the OAuth lock', async (outcome) => {
+    const vault = seededVault('fake-same-refresh');
+    if (outcome === 'missing-token') vault.remove(GHOST, KEY + '-rt-acc-1');
+    const before = new Map(vault.data);
+    const manager: GhostOauthAccountManager = new GhostOauthAccountManager({
+      vault, openExternal: vi.fn(), sleep: instantSleep,
+      fetchImpl: vi.fn(async () => outcome === 'success'
+        ? jsonResponse({ access_token: 'fake-stale-access', refresh_token: 'fake-stale-rotated', expires_in: 3600 })
+        : jsonResponse({ error: 'invalid_grant' }, 400)) as unknown as typeof fetch,
+      withMutationLock: async (_ghostId, task) => {
+        manager.invalidateGhost(GHOST);
+        return task();
+      },
+    });
+    await expect(manager.getFreshAccessToken(GHOST, KEY, DECL)).resolves.toMatchObject({
+      ok: false, error: 'AUTH_EXPIRED',
+    });
+    expect(vault.data).toEqual(before);
+  });
+
+  it('does not write old asynchronous identity backfill into restored credentials', async () => {
+    const vault = seededVault('fake-same-refresh');
+    const before = new Map(vault.data);
+    let releaseIdentity!: (response: Response) => void;
+    const identityResponse = new Promise<Response>((resolve) => { releaseIdentity = resolve; });
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => String(input) === DECL.tokenUrl
+      ? jsonResponse({ access_token: 'fake-access', expires_in: 3600 })
+      : identityResponse);
+    const manager = new GhostOauthAccountManager({
+      vault, openExternal: vi.fn(), fetchImpl: fetchImpl as typeof fetch,
+    });
+    const backfillTarget = manager as unknown as {
+      backfillIdentityExtras: (...parameters: unknown[]) => Promise<void>;
+    };
+    const runBackfill = backfillTarget.backfillIdentityExtras.bind(manager);
+    let backfillTask: Promise<void> | null = null;
+    vi.spyOn(backfillTarget, 'backfillIdentityExtras').mockImplementation((...parameters) => {
+      backfillTask = runBackfill(...parameters);
+      return backfillTask;
+    });
+    const decl = { ...DECL, identity: { ...DECL.identity!, displayTemplate: '{email}' } };
+    await expect(manager.getFreshAccessToken(GHOST, KEY, decl)).resolves.toMatchObject({ ok: true });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(backfillTask).not.toBeNull();
+    manager.invalidateGhost(GHOST);
+    releaseIdentity(jsonResponse({ email: 'old-owner@example.com' }));
+    await backfillTask;
+    expect(vault.data).toEqual(before);
+  });
+
+  it.each(['token', 'identity', 'mutation'] as const)('retires a connect during %s and permits a fresh connect after rollback', async (transition) => {
+    const vault = memoryVault();
+    const target = { revision: 'approved-original' };
+    const decl = { ...DECL, clientId: 'fake-client' };
+    let shouldInvalidate = true;
+    const manager: GhostOauthAccountManager = new GhostOauthAccountManager({
+      vault, openExternal: autoBrowser(), captureConnectTarget: () => target,
+      isConnectTargetCurrent: () => true,
+      fetchImpl: (async (input) => {
+        const tokenRequest = String(input) === decl.tokenUrl;
+        if (shouldInvalidate && transition === (tokenRequest ? 'token' : 'identity')) {
+          manager.invalidateGhost?.(GHOST);
+        }
+        return tokenRequest
+          ? jsonResponse({ access_token: 'fake-access', refresh_token: 'fake-refresh', expires_in: 3600 })
+          : jsonResponse({ email: 'test@example.com' });
+      }) as typeof fetch,
+      withMutationLock: async (_ghostId, task) => {
+        if (shouldInvalidate && transition === 'mutation') manager.invalidateGhost?.(GHOST);
+        return task();
+      },
+    });
+    await expect(manager.connectAccount(GHOST, KEY, decl)).resolves.toMatchObject({
+      ok: false, error: 'INVALID_CONFIG',
+    });
+    expect(vault.data.size).toBe(0);
+    shouldInvalidate = false;
+    await expect(manager.connectAccount(GHOST, KEY, decl)).resolves.toMatchObject({ ok: true });
+    expect(manager.listAccounts(GHOST, KEY)).toHaveLength(1);
+  });
+
+  it('clears only the invalidated ghost cache even when restored credentials are identical', async () => {
+    const vault = seededVault('fake-same-refresh');
+    const otherGhostId = '_ns__acme__' + GHOST;
+    for (const [key, value] of [...vault.data]) {
+      vault.data.set(otherGhostId + key.slice(GHOST.length), value);
+    }
+    let fetchCount = 0;
+    const fetchImpl = vi.fn(async () => {
+      fetchCount += 1;
+      return jsonResponse({ access_token: 'fake-access-' + fetchCount, expires_in: 3600 });
+    });
+    const manager = new GhostOauthAccountManager({
+      vault, openExternal: vi.fn(), fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    await expect(manager.getFreshAccessToken(GHOST, KEY, DECL)).resolves.toMatchObject({ accessToken: 'fake-access-1' });
+    await expect(manager.getFreshAccessToken(otherGhostId, KEY, DECL)).resolves.toMatchObject({ accessToken: 'fake-access-2' });
+    manager.invalidateGhost?.(GHOST);
+    await expect(manager.getFreshAccessToken(otherGhostId, KEY, DECL)).resolves.toMatchObject({ accessToken: 'fake-access-2' });
+    await expect(manager.getFreshAccessToken(GHOST, KEY, DECL)).resolves.toMatchObject({ accessToken: 'fake-access-3' });
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
+  it('rejects an old refresh with an identical token and does not delete the new generation single flight', async () => {
+    const vault = seededVault('fake-same-refresh');
+    let releaseOld!: (response: Response) => void;
+    let releaseNew!: (response: Response) => void;
+    const oldResponse = new Promise<Response>((resolve) => { releaseOld = resolve; });
+    const newResponse = new Promise<Response>((resolve) => { releaseNew = resolve; });
+    const fetchImpl = vi.fn().mockReturnValueOnce(oldResponse).mockReturnValueOnce(newResponse);
+    const manager = new GhostOauthAccountManager({
+      vault, openExternal: vi.fn(), fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const oldFlow = manager.getFreshAccessToken(GHOST, KEY, DECL);
+    manager.invalidateGhost?.(GHOST);
+    const newFlow = manager.getFreshAccessToken(GHOST, KEY, DECL);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    releaseOld(jsonResponse({ access_token: 'fake-old-access', refresh_token: 'fake-old-rotated', expires_in: 3600 }));
+    await expect(oldFlow).resolves.toMatchObject({ ok: false, error: 'AUTH_EXPIRED' });
+    expect(vault.read(GHOST, KEY + '-rt-acc-1')).toBe('fake-same-refresh');
+    const joinedNewFlow = manager.getFreshAccessToken(GHOST, KEY, DECL);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    releaseNew(jsonResponse({ access_token: 'fake-new-access', refresh_token: 'fake-new-rotated', expires_in: 3600 }));
+    await expect(newFlow).resolves.toMatchObject({ ok: true, accessToken: 'fake-new-access' });
+    await expect(joinedNewFlow).resolves.toMatchObject({ ok: true, accessToken: 'fake-new-access' });
+    expect(vault.read(GHOST, KEY + '-rt-acc-1')).toBe('fake-new-rotated');
+  });
+
+  it('does not delete or expire restored credentials after an old invalid_grant', async () => {
+    const vault = seededVault('fake-same-refresh');
+    const before = new Map(vault.data);
+    let releaseOld!: (response: Response) => void;
+    const response = new Promise<Response>((resolve) => { releaseOld = resolve; });
+    const onAccountStatusChanged = vi.fn();
+    const manager = new GhostOauthAccountManager({
+      vault, openExternal: vi.fn(), sleep: instantSleep, onAccountStatusChanged,
+      fetchImpl: vi.fn(() => response) as unknown as typeof fetch,
+    });
+    const oldFlow = manager.getFreshAccessToken(GHOST, KEY, DECL);
+    manager.invalidateGhost?.(GHOST);
+    releaseOld(jsonResponse({ error: 'invalid_grant' }, 400));
+    await expect(oldFlow).resolves.toMatchObject({ ok: false, error: 'AUTH_EXPIRED' });
+    expect(vault.data).toEqual(before);
+    expect(onAccountStatusChanged).not.toHaveBeenCalled();
   });
 });
 
@@ -557,7 +1717,9 @@ describe('getFreshAccessToken', () => {
     const onAccountStatusChanged = vi.fn();
     const mgr = new GhostOauthAccountManager({
       vault,
-      fetchImpl: vi.fn(async () => jsonResponse({ error: 'invalid_grant' }, 400)) as unknown as typeof fetch,
+      fetchImpl: vi.fn(async () =>
+        jsonResponse({ error: 'invalid_grant' }, 400),
+      ) as unknown as typeof fetch,
       openExternal: vi.fn(),
       sleep: instantSleep,
       onAccountStatusChanged,
@@ -567,6 +1729,7 @@ describe('getFreshAccessToken', () => {
       error: 'AUTH_EXPIRED',
     });
     expect(mgr.listAccounts(GHOST, KEY)[0]).toMatchObject({ status: 'expired' });
+    expect(mgr.clientMigrationExpiredAccountCount(GHOST, KEY)).toBe(0);
     expect(vault.read(GHOST, `${KEY}-rt-acc-1`)).toBeNull();
     expect(onAccountStatusChanged).toHaveBeenCalledWith({
       ghostId: GHOST,
@@ -629,7 +1792,9 @@ describe('getFreshAccessToken', () => {
   it('瞬时刷新失败 → REFRESH_FAILED,账号不标过期', async () => {
     const mgr = new GhostOauthAccountManager({
       vault: seededVault(),
-      fetchImpl: vi.fn(async () => jsonResponse({ error: 'server_error' }, 500)) as unknown as typeof fetch,
+      fetchImpl: vi.fn(async () =>
+        jsonResponse({ error: 'server_error' }, 500),
+      ) as unknown as typeof fetch,
       openExternal: vi.fn(),
     });
     await expect(mgr.getFreshAccessToken(GHOST, KEY, DECL)).resolves.toMatchObject({
@@ -822,7 +1987,12 @@ describe('多实例共库的 RT 轮换竞态(invalid_grant 防误删)', () => {
       expect(params.refreshToken).toBe('rt-winner');
       return {
         ok: true as const,
-        bundle: { accessToken: 'at-bk2', refreshToken: null, expiresAt: Date.now() + 60_000, grantedScope: null },
+        bundle: {
+          accessToken: 'at-bk2',
+          refreshToken: null,
+          expiresAt: Date.now() + 60_000,
+          grantedScope: null,
+        },
       };
     });
     const mgr = new GhostOauthAccountManager({
@@ -831,6 +2001,7 @@ describe('多实例共库的 RT 轮换竞态(invalid_grant 防误删)', () => {
       openExternal: vi.fn(),
       broker: { exchange: vi.fn(), refresh },
       sleep: instantSleep,
+      ...FIRST_PARTY_HOST,
     });
     const brokerDecl: GhostOauthDecl = {
       authorizeUrl: 'https://auth.example.com/authorize',
@@ -947,7 +2118,12 @@ describe('tokenBroker 模式', () => {
     const fetchImpl = vi.fn();
     const exchange = vi.fn(async () => ({
       ok: true as const,
-      bundle: { accessToken: 'at-bk', refreshToken: 'rt-bk', expiresAt: Date.now() + 60_000, grantedScope: null },
+      bundle: {
+        accessToken: 'at-bk',
+        refreshToken: 'rt-bk',
+        expiresAt: Date.now() + 60_000,
+        grantedScope: null,
+      },
     }));
     const mgr = new GhostOauthAccountManager({
       vault,
@@ -958,6 +2134,7 @@ describe('tokenBroker 模式', () => {
         autoBrowser('c-bk')(url);
       },
       broker: { exchange, refresh: vi.fn() },
+      ...FIRST_PARTY_HOST,
     });
 
     const result = await mgr.connectAccount(GHOST, KEY, BROKER_DECL);
@@ -967,6 +2144,21 @@ describe('tokenBroker 模式', () => {
     expect(exchange).toHaveBeenCalledTimes(1);
     // token 交换不直连 tokenUrl。
     expect(fetchImpl.mock.calls.map((c) => String(c[0]))).not.toContain(BROKER_DECL.tokenUrl);
+  });
+
+  it('connect: missing first-party grant denies even an official-looking id', async () => {
+    const openExternal = vi.fn();
+    const mgr = new GhostOauthAccountManager({
+      vault: memoryVault(),
+      fetchImpl: vi.fn() as unknown as typeof fetch,
+      openExternal,
+      broker: { exchange: vi.fn(), refresh: vi.fn() },
+    });
+    await expect(mgr.connectAccount(GHOST, KEY, BROKER_DECL)).resolves.toMatchObject({
+      ok: false,
+      error: 'BROKER_FORBIDDEN',
+    });
+    expect(openExternal).not.toHaveBeenCalled();
   });
 
   it('clientConfigured:brokered + 内置 clientId 恒 true,与保险库无关', () => {
@@ -1001,6 +2193,7 @@ describe('tokenBroker 模式', () => {
         })),
         refresh: vi.fn(),
       },
+      ...FIRST_PARTY_HOST,
     });
     await expect(
       mgr.connectAccount(GHOST, KEY, BROKER_DECL, { clientId: 'global-cid' }),
@@ -1013,6 +2206,7 @@ describe('tokenBroker 模式', () => {
       fetchImpl: vi.fn() as unknown as typeof fetch,
       openExternal: blockedOpenExternal,
       broker: { exchange: vi.fn(), refresh: vi.fn() },
+      ...FIRST_PARTY_HOST,
     });
     await expect(
       blocked.connectAccount(GHOST, KEY, BROKER_DECL, { clientId: 'foreign-cid' }),
@@ -1040,6 +2234,7 @@ describe('tokenBroker 模式', () => {
       openExternal: vi.fn(),
       broker: { exchange: vi.fn(), refresh },
       sleep: instantSleep,
+      ...FIRST_PARTY_HOST,
     });
     await expect(mgr.getFreshAccessToken(GHOST, KEY, BROKER_DECL)).resolves.toMatchObject({
       ok: false,
@@ -1048,6 +2243,64 @@ describe('tokenBroker 模式', () => {
     expect(refresh).toHaveBeenCalledTimes(1);
     expect(vault.read(GHOST, `${KEY}-rt-acc-1`)).toBeNull();
     expect(mgr.listAccounts(GHOST, KEY)[0]?.status).toBe('expired');
+  });
+
+  it('getFreshAccessToken refuses a cached broker token after eligibility is withdrawn', async () => {
+    const releaseSha256 = 'a'.repeat(64);
+    let approvedPackageSha256 = releaseSha256;
+    const vault = seededVault();
+    const mgr = new GhostOauthAccountManager({
+      vault,
+      fetchImpl: vi.fn() as unknown as typeof fetch,
+      openExternal: vi.fn(),
+      broker: {
+        exchange: vi.fn(),
+        refresh: vi.fn(async () => ({
+          ok: true as const,
+          bundle: {
+            accessToken: 'at-cached',
+            refreshToken: 'rt-seed',
+            expiresAt: Date.now() + 60_000,
+            grantedScope: null,
+          },
+        })),
+      },
+      sleep: instantSleep,
+      isTokenBrokerAuthorized: () => approvedPackageSha256 === releaseSha256,
+    });
+    await expect(mgr.getFreshAccessToken(GHOST, KEY, BROKER_DECL)).resolves.toMatchObject({
+      ok: true,
+      accessToken: 'at-cached',
+    });
+    // Simulate an unchanged manifest with different approved package bytes.
+    // Authorization is checked before the token cache, so fixing only the
+    // connect path cannot leak the already-cached Broker token.
+    approvedPackageSha256 = 'b'.repeat(64);
+    await expect(mgr.getFreshAccessToken(GHOST, KEY, BROKER_DECL)).resolves.toMatchObject({
+      ok: false,
+      error: 'BROKER_FORBIDDEN',
+    });
+  });
+
+  it('connectAccount refuses before opening the browser when byte-bound eligibility is false', async () => {
+    const releaseSha256 = 'a'.repeat(64);
+    const approvedPackageSha256 = 'b'.repeat(64);
+    const openExternal = vi.fn();
+    const mgr = new GhostOauthAccountManager({
+      vault: memoryVault(),
+      fetchImpl: vi.fn() as unknown as typeof fetch,
+      openExternal,
+      broker: { exchange: vi.fn(), refresh: vi.fn() },
+      isTokenBrokerAuthorized: () => approvedPackageSha256 === releaseSha256,
+    });
+
+    await expect(mgr.connectAccount(GHOST, KEY, BROKER_DECL)).resolves.toMatchObject({
+      ok: false,
+      error: 'BROKER_FORBIDDEN',
+    });
+    expect(approvedPackageSha256).not.toBe(releaseSha256);
+    // This kills an implementation that adds the SHA check only to token refresh.
+    expect(openExternal).not.toHaveBeenCalled();
   });
 });
 
@@ -1074,8 +2327,11 @@ describe('brokerBounce(双地址弹跳回调)', () => {
       fetchImpl: vi.fn() as unknown as typeof fetch,
       openExternal: openExternal1,
       broker: { exchange: vi.fn(), refresh: vi.fn() },
+      ...FIRST_PARTY_HOST,
     });
-    await expect(mgrNoResolver.connectAccount(GHOST, KEY, bounceDecl(53699))).resolves.toMatchObject({
+    await expect(
+      mgrNoResolver.connectAccount(GHOST, KEY, bounceDecl(53699)),
+    ).resolves.toMatchObject({
       ok: false,
       error: 'INVALID_CONFIG',
     });
@@ -1089,8 +2345,11 @@ describe('brokerBounce(双地址弹跳回调)', () => {
       openExternal: openExternal2,
       broker: { exchange: vi.fn(), refresh: vi.fn() },
       resolveBrokerPublicUrl: vi.fn(() => null),
+      ...FIRST_PARTY_HOST,
     });
-    await expect(mgrNullResolver.connectAccount(GHOST, KEY, bounceDecl(53699))).resolves.toMatchObject({
+    await expect(
+      mgrNullResolver.connectAccount(GHOST, KEY, bounceDecl(53699)),
+    ).resolves.toMatchObject({
       ok: false,
       error: 'INVALID_CONFIG',
     });
@@ -1117,7 +2376,12 @@ describe('brokerBounce(双地址弹跳回调)', () => {
       expect(params.redirectUri).toBe(PUBLIC_URI);
       return {
         ok: true as const,
-        bundle: { accessToken: 'at-bb', refreshToken: 'rt-bb', expiresAt: Date.now() + 60_000, grantedScope: null },
+        bundle: {
+          accessToken: 'at-bb',
+          refreshToken: 'rt-bb',
+          expiresAt: Date.now() + 60_000,
+          grantedScope: null,
+        },
       };
     });
     const mgr = new GhostOauthAccountManager({
@@ -1136,6 +2400,7 @@ describe('brokerBounce(双地址弹跳回调)', () => {
       },
       broker: { exchange, refresh: vi.fn() },
       resolveBrokerPublicUrl,
+      ...FIRST_PARTY_HOST,
     });
     const result = await mgr.connectAccount(GHOST, KEY, bounceDecl(freePort));
     expect(result).toMatchObject({ ok: true });
@@ -1153,8 +2418,9 @@ describe('connectAccount · opts.scopes 收窄', () => {
 
   it('声明子集 → 授权 URL 的 scope 面收窄为子集', async () => {
     let capturedScope: string | null = null;
+    const vault = memoryVault();
     const mgr = new GhostOauthAccountManager({
-      vault: memoryVault(),
+      vault,
       fetchImpl: vi.fn(async () =>
         jsonResponse({ access_token: 'at-narrow', refresh_token: 'rt-narrow', expires_in: 3600 }),
       ) as unknown as typeof fetch,
@@ -1167,6 +2433,16 @@ describe('connectAccount · opts.scopes 收窄', () => {
       mgr.connectAccount(GHOST, KEY, NARROW_DECL, { scopes: ['read:x'] }),
     ).resolves.toMatchObject({ ok: true });
     expect(capturedScope).toBe('read:x');
+    expect(JSON.parse(vault.read(GHOST, `${KEY}-accounts`) ?? '{}').accounts[0]).toMatchObject({
+      authScopes: ['read:x'],
+      authFace: 'subset',
+    });
+    expect(
+      mgr.listAccounts(GHOST, KEY, {
+        ...NARROW_DECL,
+        scopes: ['read:x', 'write:y', 'admin:z'],
+      })[0]?.scopeStale,
+    ).toBe(false);
   });
 
   it('含未声明条目 / 空数组 → INVALID_CONFIG,不拉浏览器', async () => {
@@ -1214,7 +2490,11 @@ describe('identity.displayTemplate 展示名', () => {
     const onConnected = vi.fn();
     const mgr = new GhostOauthAccountManager({
       vault,
-      fetchImpl: slackFetch({ team: 'acme', user: 'devuser', user_id: 'U0EXAMPLE1' }) as unknown as typeof fetch,
+      fetchImpl: slackFetch({
+        team: 'acme',
+        user: 'devuser',
+        user_id: 'U0EXAMPLE1',
+      }) as unknown as typeof fetch,
       openExternal: autoBrowser(),
       onAccountConnected: onConnected,
     });
@@ -1227,9 +2507,16 @@ describe('identity.displayTemplate 展示名', () => {
     const manifest = JSON.parse(vault.read(GHOST, `${KEY}-accounts`) ?? '{}') as {
       accounts: Array<{ label: string; displayLabel: string }>;
     };
-    expect(manifest.accounts[0]).toMatchObject({ label: 'U0EXAMPLE1', displayLabel: 'acme · devuser' });
+    expect(manifest.accounts[0]).toMatchObject({
+      label: 'U0EXAMPLE1',
+      displayLabel: 'acme · devuser',
+    });
     // 授权成功提示用展示名。
-    expect(onConnected).toHaveBeenCalledWith({ ghostId: GHOST, secretKey: KEY, label: 'acme · devuser' });
+    expect(onConnected).toHaveBeenCalledWith({
+      ghostId: GHOST,
+      secretKey: KEY,
+      label: 'acme · devuser',
+    });
   });
 
   it('同身份重连:按稳定键合并到老账号(旧行 label 是 user_id),并补上展示名', async () => {
@@ -1237,13 +2524,25 @@ describe('identity.displayTemplate 展示名', () => {
       [`${KEY}-client-id`]: 'cid',
       [`${KEY}-accounts`]: JSON.stringify({
         defaultAccountId: 'acc-legacy',
-        accounts: [{ id: 'acc-legacy', label: 'U0EXAMPLE1', status: 'connected', createdAt: 1 }],
+        accounts: [
+          {
+            id: 'acc-legacy',
+            label: 'U0EXAMPLE1',
+            status: 'connected',
+            createdAt: 1,
+            insufficientScopes: ['scope.a'],
+          },
+        ],
       }),
       [`${KEY}-rt-acc-legacy`]: 'rt-old',
     });
     const mgr = new GhostOauthAccountManager({
       vault,
-      fetchImpl: slackFetch({ team: 'acme', user: 'devuser', user_id: 'U0EXAMPLE1' }) as unknown as typeof fetch,
+      fetchImpl: slackFetch({
+        team: 'acme',
+        user: 'devuser',
+        user_id: 'U0EXAMPLE1',
+      }) as unknown as typeof fetch,
       openExternal: autoBrowser(),
     });
     const result = await mgr.connectAccount(GHOST, KEY, SLACK_DECL);
@@ -1253,6 +2552,52 @@ describe('identity.displayTemplate 展示名', () => {
     expect(result.account.id).toBe('acc-legacy');
     expect(result.account.label).toBe('acme · devuser');
     expect(mgr.listAccounts(GHOST, KEY)).toHaveLength(1);
+    expect(JSON.parse(vault.read(GHOST, `${KEY}-accounts`) ?? '{}').accounts[0]).not.toHaveProperty(
+      'insufficientScopes',
+    );
+    expect(mgr.defaultMissingScopes(GHOST, KEY, SLACK_DECL)).toEqual([]);
+  });
+
+  it('同身份重连清除证据时账号清单写失败，返回 VAULT_WRITE_FAILED 而不假报成功', async () => {
+    const baseVault = memoryVault({
+      [`${KEY}-client-id`]: 'cid',
+      [`${KEY}-accounts`]: JSON.stringify({
+        defaultAccountId: 'acc-legacy',
+        accounts: [
+          {
+            id: 'acc-legacy',
+            label: 'U0EXAMPLE1',
+            status: 'connected',
+            createdAt: 1,
+            insufficientScopes: ['scope.a'],
+          },
+        ],
+      }),
+      [`${KEY}-rt-acc-legacy`]: 'rt-old',
+    });
+    const vault: GhostOauthVault = {
+      read: baseVault.read,
+      remove: baseVault.remove,
+      store: (ghostId, storageKey, value) =>
+        storageKey === `${KEY}-accounts` ? false : baseVault.store(ghostId, storageKey, value),
+    };
+    const mgr = new GhostOauthAccountManager({
+      vault,
+      fetchImpl: slackFetch({
+        team: 'acme',
+        user: 'devuser',
+        user_id: 'U0EXAMPLE1',
+      }) as unknown as typeof fetch,
+      openExternal: autoBrowser(),
+    });
+
+    await expect(mgr.connectAccount(GHOST, KEY, SLACK_DECL)).resolves.toMatchObject({
+      ok: false,
+      error: 'VAULT_WRITE_FAILED',
+    });
+    expect(JSON.parse(baseVault.read(GHOST, `${KEY}-accounts`) ?? '{}').accounts[0]).toMatchObject({
+      insufficientScopes: ['scope.a'],
+    });
   });
 
   it('模板占位符取不到值 → 展示名降级,view.label 回落稳定身份键', async () => {
@@ -1278,10 +2623,16 @@ describe('identity.displayTemplate 展示名', () => {
     });
     const mgr = new GhostOauthAccountManager({
       vault,
-      fetchImpl: slackFetch({ team: 'acme', user: 'devuser', user_id: 'U0EXAMPLE1' }) as unknown as typeof fetch,
+      fetchImpl: slackFetch({
+        team: 'acme',
+        user: 'devuser',
+        user_id: 'U0EXAMPLE1',
+      }) as unknown as typeof fetch,
       openExternal: vi.fn(),
     });
-    await expect(mgr.getFreshAccessToken(GHOST, KEY, SLACK_DECL)).resolves.toMatchObject({ ok: true });
+    await expect(mgr.getFreshAccessToken(GHOST, KEY, SLACK_DECL)).resolves.toMatchObject({
+      ok: true,
+    });
     // 回填是 fire-and-forget,轮询等它落库。
     await vi.waitFor(() => {
       expect(mgr.listAccounts(GHOST, KEY)[0]?.label).toBe('acme · devuser');
@@ -1294,7 +2645,13 @@ describe('identity.displayTemplate 展示名', () => {
       [`${KEY}-accounts`]: JSON.stringify({
         defaultAccountId: 'acc-1',
         accounts: [
-          { id: 'acc-1', label: 'U0EXAMPLE1', displayLabel: 'acme · devuser', status: 'connected', createdAt: 1 },
+          {
+            id: 'acc-1',
+            label: 'U0EXAMPLE1',
+            displayLabel: 'acme · devuser',
+            status: 'connected',
+            createdAt: 1,
+          },
         ],
       }),
       [`${KEY}-rt-acc-1`]: 'rt-old',
@@ -1305,7 +2662,9 @@ describe('identity.displayTemplate 展示名', () => {
       fetchImpl: fetchImpl as unknown as typeof fetch,
       openExternal: vi.fn(),
     });
-    await expect(mgr.getFreshAccessToken(GHOST, KEY, SLACK_DECL)).resolves.toMatchObject({ ok: true });
+    await expect(mgr.getFreshAccessToken(GHOST, KEY, SLACK_DECL)).resolves.toMatchObject({
+      ok: true,
+    });
     // 给潜在的异步回填一个宏任务窗口,再断言没有第二次网络调用。
     await new Promise((r) => setTimeout(r, 20));
     expect(fetchImpl).toHaveBeenCalledTimes(1);
@@ -1316,7 +2675,11 @@ describe('identity.displayTemplate 展示名', () => {
 describe('identity.avatarPath 头像回填', () => {
   const AVATAR_DECL: GhostOauthDecl = {
     ...DECL,
-    identity: { url: 'https://api.example.com/userinfo', labelPath: 'email', avatarPath: 'picture' },
+    identity: {
+      url: 'https://api.example.com/userinfo',
+      labelPath: 'email',
+      avatarPath: 'picture',
+    },
   };
   const PNG_BYTES = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
   const PNG_DATA_URL = `data:image/png;base64,${PNG_BYTES.toString('base64')}`;
@@ -1338,10 +2701,16 @@ describe('identity.avatarPath 头像回填', () => {
       const url = String(input);
       if (url === DECL.tokenUrl) return jsonResponse({ access_token: 'at-2', expires_in: 3600 });
       if (url === 'https://api.example.com/userinfo') {
-        return jsonResponse({ email: 'user@example.com', picture: 'https://cdn.example.com/a.png' });
+        return jsonResponse({
+          email: 'user@example.com',
+          picture: 'https://cdn.example.com/a.png',
+        });
       }
       if (url === 'https://cdn.example.com/a.png') {
-        return new Response(new Uint8Array(PNG_BYTES), { status: 200, headers: { 'Content-Type': 'image/png' } });
+        return new Response(new Uint8Array(PNG_BYTES), {
+          status: 200,
+          headers: { 'Content-Type': 'image/png' },
+        });
       }
       throw new Error(`unexpected fetch ${url}`);
     });
@@ -1353,8 +2722,11 @@ describe('identity.avatarPath 头像回填', () => {
       vault,
       fetchImpl: avatarFetch() as unknown as typeof fetch,
       openExternal: vi.fn(),
+      ...FIRST_PARTY_HOST,
     });
-    await expect(mgr.getFreshAccessToken(GHOST, KEY, AVATAR_DECL)).resolves.toMatchObject({ ok: true });
+    await expect(mgr.getFreshAccessToken(GHOST, KEY, AVATAR_DECL)).resolves.toMatchObject({
+      ok: true,
+    });
     // 回填是 fire-and-forget,轮询等它落库。
     await vi.waitFor(() => {
       expect(vault.read(GHOST, `${KEY}-avatar-acc-1`)).toBe(PNG_DATA_URL);
@@ -1389,12 +2761,16 @@ describe('identity.avatarPath 头像回填', () => {
       fetchImpl: fetchImpl as unknown as typeof fetch,
       openExternal: vi.fn(),
     });
-    await expect(mgr.getFreshAccessToken('evil-tools', KEY, decl)).resolves.toMatchObject({ ok: true });
+    await expect(mgr.getFreshAccessToken('evil-tools', KEY, decl)).resolves.toMatchObject({
+      ok: true,
+    });
     // 等展示名回填落库,证明身份端点确实拉过了(而不是回填整体没跑)。
     await vi.waitFor(() => {
       expect(mgr.listAccounts('evil-tools', KEY)[0]?.label).toBe('user@example.com·bf');
     });
-    expect(fetchImpl.mock.calls.map((c) => String(c[0]))).not.toContain('https://cdn.example.com/a.png');
+    expect(fetchImpl.mock.calls.map((c) => String(c[0]))).not.toContain(
+      'https://cdn.example.com/a.png',
+    );
     expect(vault.read('evil-tools', `${KEY}-avatar-acc-1`)).toBeNull();
   });
 
@@ -1412,12 +2788,18 @@ describe('identity.avatarPath 头像回填', () => {
       const url = String(input);
       if (url === DECL.tokenUrl) return jsonResponse({ access_token: 'at-2', expires_in: 3600 });
       if (url === 'https://api.example.com/userinfo') {
-        return jsonResponse({ email: 'user@example.com', picture: 'https://cdn.example.com/a.png' });
+        return jsonResponse({
+          email: 'user@example.com',
+          picture: 'https://cdn.example.com/a.png',
+        });
       }
       if (url === 'https://cdn.example.com/a.png') {
         avatarRequestedResolve();
         await gate;
-        return new Response(new Uint8Array(PNG_BYTES), { status: 200, headers: { 'Content-Type': 'image/png' } });
+        return new Response(new Uint8Array(PNG_BYTES), {
+          status: 200,
+          headers: { 'Content-Type': 'image/png' },
+        });
       }
       throw new Error(`unexpected fetch ${url}`);
     });
@@ -1425,8 +2807,11 @@ describe('identity.avatarPath 头像回填', () => {
       vault,
       fetchImpl: fetchImpl as unknown as typeof fetch,
       openExternal: vi.fn(),
+      ...FIRST_PARTY_HOST,
     });
-    await expect(mgr.getFreshAccessToken(GHOST, KEY, AVATAR_DECL)).resolves.toMatchObject({ ok: true });
+    await expect(mgr.getFreshAccessToken(GHOST, KEY, AVATAR_DECL)).resolves.toMatchObject({
+      ok: true,
+    });
     // 等回填走到头像下载(此时被 gate 卡住),断开账号后再放行下载。
     await avatarRequested;
     mgr.disconnectAccount(GHOST, KEY, 'acc-1');

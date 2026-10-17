@@ -6,11 +6,11 @@
  *   maker-core 'codex'       ⇄ db 'codex'
  *
  * 注意：本轮 (stage-1) 是新链路独立写入，不会影响老链路 ('local-db:sessions:*' IPC) 的查询/读取。
- * 两边读同一张表，新链路默认 source='desktop'；自动化 runner 会在创建后把
- * source backfill 为 'scheduler'，两者都属于 desktop-visible session。
+ * 两边读同一张表，新链路默认 source='desktop'；host-owned Review 在同一 INSERT
+ * 原子写 source='review'，自动化 runner 仍会在创建后 backfill 为 'scheduler'。
  */
 
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, ne } from 'drizzle-orm';
 
 import { dbToMakerAgentKind, makerToDbAgentKind } from '../../shared/agentKindConversion.js';
 
@@ -57,9 +57,12 @@ function rowToMeta(row: SessionRow): SessionMeta {
     effort: row.effort,
     permissionMode: row.permissionMode,
     fastMode: row.fastMode,
+    planMode: row.planModeEnabled,
+    ...(row.source === 'review' ? { reviewMode: true as const } : {}),
     sdkSessionId: row.sdkSessionId ?? undefined,
     parentSessionId: row.parentSessionId ?? undefined,
     remoteHostId: row.remoteHostId ?? undefined,
+    ...(row.agentDeviceId ? { agentDeviceId: row.agentDeviceId } : {}),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -79,6 +82,7 @@ export class DesktopSessionStorage implements SessionStorage {
       effort: meta.effort ?? 'high',
       permissionMode: meta.permissionMode ?? 'ask',
       fastMode: meta.fastMode ?? false,
+      planModeEnabled: meta.planMode ?? false,
       status: 'active',
       sdkSessionId: meta.sdkSessionId ?? null,
       agentKind: toDbKind(meta.agentKind),
@@ -88,7 +92,8 @@ export class DesktopSessionStorage implements SessionStorage {
       // 避免 maker.createSession (maker:create-session / scheduler / Feishu / Orca 等入口)
       // 把空白 host 原样入库,导致 renderer 按 local 分组、maker 按 remote-like 处理的分裂。
       remoteHostId: normalizeRemoteHostId(meta.remoteHostId),
-      source: 'desktop',
+      agentDeviceId: normalizeRemoteHostId(meta.remoteHostId) ? null : normalizeRemoteHostId(meta.agentDeviceId),
+      source: meta.reviewMode === true ? 'review' : 'desktop',
       createdAt: now,
       updatedAt: now,
     });
@@ -99,6 +104,18 @@ export class DesktopSessionStorage implements SessionStorage {
     const db = getDbClient().drizzle;
     const rows = await db.select().from(sessions).where(eq(sessions.id, id)).limit(1);
     return rows[0] ? rowToMeta(rows[0]) : null;
+  }
+
+  /** Read the product lifecycle status without widening maker-core SessionMeta. */
+  async getStatus(id: string): Promise<'active' | 'archived' | 'deleted' | null> {
+    const db = getDbClient().drizzle;
+    const rows = await db
+      .select({ status: sessions.status })
+      .from(sessions)
+      .where(eq(sessions.id, id))
+      .limit(1);
+    const status = rows[0]?.status;
+    return status === 'active' || status === 'archived' || status === 'deleted' ? status : null;
   }
 
   async list(): Promise<SessionMeta[]> {
@@ -129,12 +146,12 @@ export class DesktopSessionStorage implements SessionStorage {
     expectedSdkSessionId: string,
   ): Promise<boolean> {
     const db = getDbClient().drizzle;
-    const changed = await db
+    const result = await db
       .update(sessions)
       .set({ sdkSessionId: null, updatedAt: Date.now() })
       .where(and(eq(sessions.id, id), eq(sessions.sdkSessionId, expectedSdkSessionId)))
-      .returning({ id: sessions.id });
-    return changed.length > 0;
+      .run();
+    return result.changes > 0;
   }
 
   async delete(id: string): Promise<void> {
@@ -217,4 +234,37 @@ export async function readSessionExtraDirsFromDb(id: string): Promise<string[]> 
     /* fall through */
   }
   return [];
+}
+
+/** 读 sessions.writable_dirs；旧库迁移后默认 []，绝不从 extra_dirs 推导。 */
+export async function readSessionWritableDirsFromDb(id: string): Promise<string[]> {
+  const db = getDbClient().drizzle;
+  const rows = await db
+    .select({ writableDirs: sessions.writableDirs })
+    .from(sessions)
+    .where(eq(sessions.id, id))
+    .limit(1);
+  const raw = rows[0]?.writableDirs;
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed) && parsed.every((x) => typeof x === 'string')) return parsed;
+  } catch {
+    /* fall through */
+  }
+  return [];
+}
+
+/** 当前 owner 可见、未删除的桌面会话(含 plugin 入口)。review 不注入 library 槽。 */
+export async function listVisibleActiveSessionDirectoryGrants(): Promise<Array<{ id: string; extraDirs: string | null }>> {
+  const db = getDbClient().drizzle;
+  const rows = await db
+    .select({ id: sessions.id, extraDirs: sessions.extraDirs })
+    .from(sessions)
+    .where(and(
+      inArray(sessions.source, DESKTOP_VISIBLE_SESSION_SOURCES),
+      eq(sessions.status, 'active'),
+      ne(sessions.source, 'review'),
+    ));
+  return rows;
 }

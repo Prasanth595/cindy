@@ -10,9 +10,12 @@ const ipc = vi.hoisted(() => ({
   onStatusChanged: vi.fn<(listener: (view: SlackHookView) => void) => () => void>(() => () => {}),
   setEnabled: vi.fn(),
   setLifecycleAnnouncement: vi.fn(),
+  setSlackCommunications: vi.fn(),
   providerBindStart: vi.fn(),
   providerBindCancel: vi.fn(),
   providerBindRevoke: vi.fn(),
+  addBinding: vi.fn(),
+  rebindTeam: vi.fn(),
   cancelPendingBind: vi.fn(),
   revokeTeam: vi.fn(),
   openProviderAction: vi.fn(),
@@ -107,6 +110,7 @@ vi.mock('../TelegramBehaviorSettings', () => ({
 }));
 
 import { deriveAlias, HookConnectionsSection, workspaceRowsToMap } from '../HookConnectionsSection';
+import { SettingsSearchNavigationContext } from '../SettingsSearchNavigation';
 import { resetXUsageNoticeMemoryState } from '@/state/xUsageNotice';
 
 /** 渠道卡收起时内容卸载(Collapse), 交互前先点开对应卡的头部行。 */
@@ -165,6 +169,9 @@ describe('HookConnectionsSection binding actions (Telegram / X)', () => {
     ipc.setEnabled.mockResolvedValue({ hook: BASE_HOOK });
     ipc.setLifecycleAnnouncement.mockResolvedValue({ hook: BASE_HOOK });
     ipc.providerBindRevoke.mockResolvedValue({ hook: BASE_HOOK });
+    ipc.addBinding.mockResolvedValue({ hook: BASE_HOOK });
+    ipc.rebindTeam.mockResolvedValue({ hook: BASE_HOOK });
+    ipc.cancelPendingBind.mockResolvedValue({ hook: BASE_HOOK });
     ipc.revokeTeam.mockResolvedValue({ hook: BASE_HOOK });
     ipc.openProviderAction.mockResolvedValue(undefined);
     // 默认: 没有存量 global override(绝大多数设备) —— 收尾入口一次都不该露出来
@@ -177,9 +184,12 @@ describe('HookConnectionsSection binding actions (Telegram / X)', () => {
         onStatusChanged: ipc.onStatusChanged,
         setEnabled: ipc.setEnabled,
         setLifecycleAnnouncement: ipc.setLifecycleAnnouncement,
+        setSlackCommunications: ipc.setSlackCommunications,
         providerBindStart: ipc.providerBindStart,
         providerBindCancel: ipc.providerBindCancel,
         providerBindRevoke: ipc.providerBindRevoke,
+        addBinding: ipc.addBinding,
+        rebindTeam: ipc.rebindTeam,
         cancelPendingBind: ipc.cancelPendingBind,
         revokeTeam: ipc.revokeTeam,
         openProviderAction: ipc.openProviderAction,
@@ -243,6 +253,64 @@ describe('HookConnectionsSection binding actions (Telegram / X)', () => {
     expect(workspacePrefsEditor.render).toHaveBeenCalledWith(
       expect.objectContaining({ alias: 'chat', maxVisibleModelRows: undefined }),
     );
+  });
+
+  it('expands an official channel selected by settings search', async () => {
+    ipc.get.mockResolvedValue({ hook: BASE_HOOK });
+
+    render(
+      <SettingsSearchNavigationContext.Provider
+        value={{
+          entry: {
+            id: 'imBot.cindy.telegram',
+            tab: 'im-bot',
+            targetId: 'cindy-im-telegram',
+            titleKey: 'settings.tina.prefs.providerTelegram',
+            sectionKey: 'settings.imBot.groups.cindy',
+          },
+          activation: 1,
+        }}
+      >
+        <HookConnectionsSection />
+      </SettingsSearchNavigationContext.Provider>,
+    );
+
+    expect((await screen.findByRole('button', { name: TELEGRAM_CARD })).getAttribute('aria-expanded')).toBe(
+      'true',
+    );
+  });
+
+  it.each([true, false])('displaced workspace communications toggle (%s) never invokes Bot rebind or revoke', async (enabled) => {
+    const row = { teamId: 'T1', teamName: 'Workspace', slackUserId: 'U1', slackUserName: 'tester', displaced: true, communicationsEnabled: enabled };
+    const view: SlackHookView = { ...BASE_HOOK, enabled: true, status: 'connected', serverMultiTeam: true, serverSlackCommunications: true, bindings: [row] };
+    ipc.get.mockResolvedValue({ hook: view });
+    ipc.setSlackCommunications.mockResolvedValue({ hook: { ...view, bindings: [{ ...row, communicationsEnabled: !enabled }] } });
+    render(<HookConnectionsSection />);
+    await expandChannelCard(SLACK_CARD);
+    const toggle = await screen.findByRole('switch', { name: 'settings.remoteControl.hook.multi.localCommunications' });
+    const masterToggle = screen.getByRole('switch', { name: 'settings.remoteControl.hook.toggleAria' });
+    expect(masterToggle.getAttribute('aria-checked')).toBe('true');
+    expect(toggle.getAttribute('aria-checked')).toBe(String(enabled));
+    fireEvent.click(toggle);
+    await waitFor(() => expect(ipc.setSlackCommunications).toHaveBeenCalledWith('T1', !enabled));
+    expect(masterToggle.getAttribute('aria-checked')).toBe('true');
+    fireEvent.click(masterToggle);
+    await waitFor(() => expect(ipc.setEnabled).toHaveBeenCalledWith(false));
+    expect(ipc.rebindTeam).not.toHaveBeenCalled();
+    expect(ipc.revokeTeam).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])('workspace removal confirmation reflects device communications support (%s)', async (supported) => {
+    const row = { teamId: 'T1', teamName: 'Workspace', slackUserId: 'U1', slackUserName: 'tester', displaced: true, communicationsEnabled: true };
+    ipc.get.mockResolvedValue({ hook: { ...BASE_HOOK, enabled: true, status: 'connected', serverMultiTeam: true, serverSlackCommunications: supported, bindings: [row] } });
+    dialog.confirm.mockResolvedValue(false);
+    render(<HookConnectionsSection />);
+    await expandChannelCard(SLACK_CARD);
+    fireEvent.click(await screen.findByRole('button', { name: 'settings.remoteControl.hook.multi.removeAria' }));
+    expect(dialog.confirm).toHaveBeenCalledWith(expect.objectContaining({
+      description: supported ? 'settings.remoteControl.hook.multi.removeCommunicationsConfirmDescription' : 'settings.remoteControl.hook.multi.removeDisplacedConfirmDescription',
+    }));
+    expect(ipc.revokeTeam).not.toHaveBeenCalled();
   });
 
   it('shows the lifecycle notification switch only after Slack is bound and persists changes', async () => {
@@ -509,6 +577,12 @@ describe('HookConnectionsSection binding actions (Telegram / X)', () => {
 
     render(<HookConnectionsSection />);
     await waitFor(() => expect(dialog.confirm).toHaveBeenCalledOnce());
+    await expandChannelCard(SLACK_CARD);
+    expect(
+      screen.queryByRole('button', {
+        name: 'settings.remoteControl.hook.binding.reauthorize',
+      }),
+    ).toBeNull();
     act(() => {
       pushStatus?.(awaitingInstall('https://hook.example.test/slack/install?team=NEW'));
     });
@@ -546,6 +620,7 @@ describe('HookConnectionsSection binding actions (Telegram / X)', () => {
         reason: 'not-installed',
         installUrl: `https://hook.example.test/slack/install?team=${teamId}`,
         teamId,
+        intent: 'add',
       },
       binding: {
         state: 'failed',
@@ -598,6 +673,7 @@ describe('HookConnectionsSection binding actions (Telegram / X)', () => {
         reason: 'not-installed',
         installUrl: 'https://hook.example.test/slack/install?team=TEAM_A',
         teamId: 'TEAM_A',
+        intent: 'add',
       },
       binding: {
         state: 'failed',
@@ -634,6 +710,565 @@ describe('HookConnectionsSection binding actions (Telegram / X)', () => {
       await Promise.resolve();
     });
     expect(ipc.openExternal).toHaveBeenCalledOnce();
+  });
+
+  it('offers a direct Slack reauthorization action after single-workspace authorization is denied', async () => {
+    ipc.get.mockResolvedValue({
+      hook: {
+        ...BASE_HOOK,
+        status: 'connected',
+        binding: {
+          state: 'denied',
+          slackUserId: null,
+          slackUserName: null,
+          message: 'server-specific cancellation text',
+          authorizeUrl: null,
+          reason: null,
+          installUrl: null,
+          teamName: null,
+        },
+      },
+    });
+
+    render(<HookConnectionsSection />);
+    await expandChannelCard(SLACK_CARD);
+    expect(
+      await screen.findByText('settings.remoteControl.hook.binding.state.denied'),
+    ).toBeTruthy();
+    expect(screen.queryByText('server-specific cancellation text')).toBeNull();
+    expect(tCalls).toContainEqual({
+      key: 'settings.remoteControl.hook.transportStatus',
+      vars: { status: 'settings.remoteControl.hook.status.connected' },
+    });
+    expect(tCalls).toContainEqual({
+      key: 'settings.remoteControl.hook.accountStatus',
+      vars: { status: 'settings.remoteControl.hook.statusUnbound' },
+    });
+    fireEvent.click(
+      await screen.findByRole('button', {
+        name: 'settings.remoteControl.hook.binding.reauthorize',
+      }),
+    );
+
+    await waitFor(() => expect(ipc.setEnabled).toHaveBeenCalledWith(true));
+    expect(ipc.addBinding).not.toHaveBeenCalled();
+  });
+
+  it('keeps the confirmed Slack account visible while the transport reconnects', async () => {
+    ipc.get.mockResolvedValue({
+      hook: {
+        ...BASE_HOOK,
+        enabled: true,
+        status: 'connecting',
+        binding: {
+          state: 'confirmed',
+          slackUserId: 'USER_BOUND',
+          slackUserName: 'bound-user',
+          message: null,
+          authorizeUrl: null,
+          reason: null,
+          installUrl: null,
+          teamName: 'Bound workspace',
+        },
+      },
+    });
+
+    render(<HookConnectionsSection />);
+    await waitFor(() =>
+      expect(tCalls).toContainEqual({
+        key: 'settings.remoteControl.hook.accountStatus',
+        vars: { status: 'settings.remoteControl.hook.statusBoundTeam' },
+      }),
+    );
+    expect(tCalls).toContainEqual({
+      key: 'settings.remoteControl.hook.transportStatus',
+      vars: { status: 'settings.remoteControl.hook.status.connecting' },
+    });
+  });
+
+  it('keeps active Slack workspaces visible while the multi-workspace transport is offline', async () => {
+    ipc.get.mockResolvedValue({
+      hook: {
+        ...BASE_HOOK,
+        enabled: true,
+        status: 'error',
+        lastError: 'network unavailable',
+        serverMultiTeam: true,
+        bindings: [
+          {
+            teamId: 'TEAM_BOUND',
+            teamName: 'Bound workspace',
+            slackUserId: 'USER_BOUND',
+            slackUserName: 'bound-user',
+            displaced: false,
+          },
+        ],
+      },
+    });
+
+    render(<HookConnectionsSection />);
+    await waitFor(() =>
+      expect(tCalls).toContainEqual({
+        key: 'settings.remoteControl.hook.accountStatus',
+        vars: { status: 'settings.remoteControl.hook.statusBoundTeam' },
+      }),
+    );
+    expect(tCalls).toContainEqual({
+      key: 'settings.remoteControl.hook.transportStatus',
+      vars: { status: 'settings.remoteControl.hook.status.error' },
+    });
+  });
+
+  it('allows only one Slack reauthorization request while the action is in flight', async () => {
+    let resolveEnable: ((value: { hook: SlackHookView }) => void) | undefined;
+    ipc.setEnabled.mockReturnValue(
+      new Promise<{ hook: SlackHookView }>((resolve) => {
+        resolveEnable = resolve;
+      }),
+    );
+    ipc.get.mockResolvedValue({
+      hook: {
+        ...BASE_HOOK,
+        status: 'connected',
+        binding: {
+          state: 'expired',
+          slackUserId: null,
+          slackUserName: null,
+          message: null,
+          authorizeUrl: null,
+          reason: null,
+          installUrl: null,
+          teamName: null,
+        },
+      },
+    });
+
+    render(<HookConnectionsSection />);
+    await expandChannelCard(SLACK_CARD);
+    const button = await screen.findByRole('button', {
+      name: 'settings.remoteControl.hook.binding.reauthorize',
+    });
+    fireEvent.click(button);
+    fireEvent.click(button);
+
+    expect(ipc.setEnabled).toHaveBeenCalledTimes(1);
+    expect(button).toHaveProperty('disabled', true);
+    expect(button.getAttribute('aria-busy')).toBe('true');
+    // The button is disabled while the action is in flight, so it must not be focusable.
+    button.focus();
+    expect(document.activeElement).not.toBe(button);
+    await act(async () => {
+      resolveEnable?.({ hook: BASE_HOOK });
+      await Promise.resolve();
+    });
+  });
+
+  it('does not let a stale reauthorization reply replace a newer Slack push', async () => {
+    let pushStatus: ((view: SlackHookView) => void) | undefined;
+    let resolveEnable: ((value: { hook: SlackHookView }) => void) | undefined;
+    const deniedHook: SlackHookView = {
+      ...BASE_HOOK,
+      status: 'connected',
+      binding: {
+        state: 'denied',
+        slackUserId: null,
+        slackUserName: null,
+        message: null,
+        authorizeUrl: null,
+        reason: null,
+        installUrl: null,
+        teamName: null,
+      },
+    };
+    ipc.get.mockResolvedValue({ hook: deniedHook });
+    ipc.setEnabled.mockReturnValue(
+      new Promise<{ hook: SlackHookView }>((resolve) => {
+        resolveEnable = resolve;
+      }),
+    );
+    ipc.onStatusChanged.mockImplementation((listener: (view: SlackHookView) => void) => {
+      pushStatus = listener;
+      return () => {};
+    });
+
+    render(<HookConnectionsSection />);
+    await expandChannelCard(SLACK_CARD);
+    fireEvent.click(
+      await screen.findByRole('button', {
+        name: 'settings.remoteControl.hook.binding.reauthorize',
+      }),
+    );
+    act(() => {
+      pushStatus?.({
+        ...BASE_HOOK,
+        enabled: true,
+        status: 'connected',
+        binding: {
+          state: 'confirmed',
+          slackUserId: 'USER_NEW',
+          slackUserName: 'new-user',
+          message: null,
+          authorizeUrl: null,
+          reason: null,
+          installUrl: null,
+          teamName: 'New workspace',
+        },
+      });
+    });
+    await act(async () => {
+      resolveEnable?.({ hook: deniedHook });
+      await Promise.resolve();
+    });
+
+    expect(
+      screen.queryByRole('button', {
+        name: 'settings.remoteControl.hook.binding.reauthorize',
+      }),
+    ).toBeNull();
+  });
+
+  it('restarts the initial multi-workspace authorization through the existing enable flow', async () => {
+    const denied = {
+      state: 'denied' as const,
+      message: null,
+      authorizeUrl: null,
+      reason: null,
+      installUrl: null,
+      teamId: null,
+      intent: 'add',
+    };
+    ipc.get.mockResolvedValue({
+      hook: {
+        ...BASE_HOOK,
+        status: 'connected',
+        serverMultiTeam: true,
+        pendingBind: denied,
+        binding: {
+          ...denied,
+          slackUserId: null,
+          slackUserName: null,
+          teamName: null,
+        },
+      },
+    });
+
+    render(<HookConnectionsSection />);
+    await expandChannelCard(SLACK_CARD);
+    fireEvent.click(
+      await screen.findByRole('button', {
+        name: 'settings.remoteControl.hook.binding.reauthorize',
+      }),
+    );
+
+    await waitFor(() => expect(ipc.setEnabled).toHaveBeenCalledWith(true));
+    expect(ipc.addBinding).not.toHaveBeenCalled();
+  });
+
+  it('retries a failed additional Slack workspace without disturbing active bindings', async () => {
+    const denied = {
+      state: 'denied' as const,
+      message: null,
+      authorizeUrl: null,
+      reason: null,
+      installUrl: null,
+      teamId: null,
+      intent: 'add',
+    };
+    ipc.get.mockResolvedValue({
+      hook: {
+        ...BASE_HOOK,
+        enabled: true,
+        status: 'connected',
+        serverMultiTeam: true,
+        bindings: [
+          {
+            teamId: 'TEAM_ACTIVE',
+            teamName: 'Active workspace',
+            slackUserId: 'USER_ACTIVE',
+            slackUserName: 'active-user',
+            displaced: false,
+          },
+        ],
+        pendingBind: denied,
+        binding: {
+          ...denied,
+          slackUserId: null,
+          slackUserName: null,
+          teamName: null,
+        },
+      },
+    });
+
+    render(<HookConnectionsSection />);
+    await expandChannelCard(SLACK_CARD);
+    fireEvent.click(
+      await screen.findByRole('button', {
+        name: 'settings.remoteControl.hook.binding.reauthorize',
+      }),
+    );
+
+    await waitFor(() => expect(ipc.addBinding).toHaveBeenCalledOnce());
+    expect(ipc.setEnabled).not.toHaveBeenCalled();
+  });
+
+  it('retries a pinned Slack workspace authorization with rebindTeam', async () => {
+    const denied = {
+      state: 'denied' as const,
+      message: null,
+      authorizeUrl: null,
+      reason: null,
+      installUrl: null,
+      teamId: 'TEAM_PINNED',
+      intent: 'rebind',
+    };
+    ipc.get.mockResolvedValue({
+      hook: {
+        ...BASE_HOOK,
+        enabled: true,
+        status: 'connected',
+        serverMultiTeam: true,
+        bindings: [
+          {
+            teamId: 'TEAM_ACTIVE',
+            teamName: 'Active workspace',
+            slackUserId: 'USER_ACTIVE',
+            slackUserName: 'active-user',
+            displaced: false,
+          },
+        ],
+        pendingBind: denied,
+        binding: {
+          ...denied,
+          slackUserId: null,
+          slackUserName: null,
+          teamName: null,
+        },
+      },
+    });
+
+    render(<HookConnectionsSection />);
+    await expandChannelCard(SLACK_CARD);
+    fireEvent.click(
+      await screen.findByRole('button', {
+        name: 'settings.remoteControl.hook.binding.reauthorize',
+      }),
+    );
+
+    await waitFor(() => expect(ipc.rebindTeam).toHaveBeenCalledWith('TEAM_PINNED'));
+    expect(ipc.addBinding).not.toHaveBeenCalled();
+    expect(ipc.setEnabled).not.toHaveBeenCalled();
+  });
+
+  // The server may include the collided teamId in an add failure; that identity
+  // describes the conflict, not a request to pin the next OAuth flow to that team.
+  it('re-runs the add flow instead of rebinding when an add attempt fails as already-bound', async () => {
+    const alreadyBound = {
+      state: 'failed' as const,
+      message: null,
+      authorizeUrl: null,
+      reason: 'already-bound',
+      installUrl: null,
+      teamId: 'TEAM_ACTIVE',
+      intent: 'add',
+    };
+    ipc.get.mockResolvedValue({
+      hook: {
+        ...BASE_HOOK,
+        enabled: true,
+        status: 'connected',
+        serverMultiTeam: true,
+        bindings: [
+          {
+            teamId: 'TEAM_ACTIVE',
+            teamName: 'Active workspace',
+            slackUserId: 'USER_ACTIVE',
+            slackUserName: 'active-user',
+            displaced: false,
+          },
+        ],
+        pendingBind: alreadyBound,
+        binding: {
+          ...alreadyBound,
+          slackUserId: null,
+          slackUserName: null,
+          teamName: null,
+        },
+      },
+    });
+
+    render(<HookConnectionsSection />);
+    await expandChannelCard(SLACK_CARD);
+    fireEvent.click(
+      await screen.findByRole('button', {
+        name: 'settings.remoteControl.hook.binding.reauthorize',
+      }),
+    );
+
+    await waitFor(() => expect(ipc.addBinding).toHaveBeenCalledOnce());
+    expect(ipc.rebindTeam).not.toHaveBeenCalled();
+    expect(ipc.setEnabled).not.toHaveBeenCalled();
+  });
+
+  // An add attempt that ends denied/expired/failed also carries the collided
+  // teamId from the server reply; the retry must stay in the add flow so the
+  // user can pick a different workspace, not pin the OAuth page to that team.
+  it('keeps the retry in the add flow when a terminal add state echoes a teamId', async () => {
+    const deniedWithTeam = {
+      state: 'denied' as const,
+      message: null,
+      authorizeUrl: null,
+      reason: null,
+      installUrl: null,
+      teamId: 'TEAM_ECHOED',
+      intent: 'add' as const,
+    };
+    ipc.get.mockResolvedValue({
+      hook: {
+        ...BASE_HOOK,
+        enabled: true,
+        status: 'connected',
+        serverMultiTeam: true,
+        bindings: [
+          {
+            teamId: 'TEAM_ACTIVE',
+            teamName: 'Active workspace',
+            slackUserId: 'USER_ACTIVE',
+            slackUserName: 'active-user',
+            displaced: false,
+          },
+        ],
+        pendingBind: deniedWithTeam,
+        binding: {
+          ...deniedWithTeam,
+          slackUserId: null,
+          slackUserName: null,
+          teamName: null,
+        },
+      },
+    });
+
+    render(<HookConnectionsSection />);
+    await expandChannelCard(SLACK_CARD);
+    fireEvent.click(
+      await screen.findByRole('button', {
+        name: 'settings.remoteControl.hook.binding.reauthorize',
+      }),
+    );
+
+    await waitFor(() => expect(ipc.addBinding).toHaveBeenCalledOnce());
+    expect(ipc.rebindTeam).not.toHaveBeenCalled();
+    expect(ipc.setEnabled).not.toHaveBeenCalled();
+  });
+
+  it('blocks conflicting Slack authorization controls while reauthorization is in flight', async () => {
+    let resolveAdd: ((value: { hook: SlackHookView }) => void) | undefined;
+    ipc.addBinding.mockReturnValue(
+      new Promise<{ hook: SlackHookView }>((resolve) => {
+        resolveAdd = resolve;
+      }),
+    );
+    const denied = {
+      state: 'denied' as const,
+      message: null,
+      authorizeUrl: null,
+      reason: null,
+      installUrl: null,
+      teamId: null,
+      intent: 'add',
+    };
+    ipc.get.mockResolvedValue({
+      hook: {
+        ...BASE_HOOK,
+        enabled: true,
+        status: 'connected',
+        serverMultiTeam: true,
+        bindings: [
+          {
+            teamId: 'TEAM_ACTIVE',
+            teamName: 'Active workspace',
+            slackUserId: 'USER_ACTIVE',
+            slackUserName: 'active-user',
+            displaced: false,
+          },
+        ],
+        pendingBind: denied,
+        binding: {
+          ...denied,
+          slackUserId: null,
+          slackUserName: null,
+          teamName: null,
+        },
+      },
+    });
+
+    render(<HookConnectionsSection />);
+    await expandChannelCard(SLACK_CARD);
+    fireEvent.click(
+      await screen.findByRole('button', {
+        name: 'settings.remoteControl.hook.binding.reauthorize',
+      }),
+    );
+    const toggle = screen.getByRole('switch', {
+      name: 'settings.remoteControl.hook.toggleAria',
+    });
+    const addWorkspace = screen.getByRole('button', {
+      name: 'settings.remoteControl.hook.multi.addWorkspace',
+    });
+    const dismiss = screen.getByRole('button', {
+      name: 'settings.remoteControl.hook.multi.dismiss',
+    });
+    expect(toggle).toHaveProperty('disabled', true);
+    expect(addWorkspace).toHaveProperty('disabled', true);
+    expect(dismiss).toHaveProperty('disabled', true);
+    fireEvent.click(toggle);
+    fireEvent.click(addWorkspace);
+    fireEvent.click(dismiss);
+
+    expect(ipc.addBinding).toHaveBeenCalledTimes(1);
+    expect(ipc.setEnabled).not.toHaveBeenCalled();
+    expect(ipc.cancelPendingBind).not.toHaveBeenCalled();
+    await act(async () => {
+      resolveAdd?.({ hook: BASE_HOOK });
+      await Promise.resolve();
+    });
+  });
+
+  it('unlocks Slack reauthorization after an IPC failure', async () => {
+    ipc.setEnabled
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce({ hook: BASE_HOOK });
+    ipc.get.mockResolvedValue({
+      hook: {
+        ...BASE_HOOK,
+        status: 'connected',
+        binding: {
+          state: 'expired',
+          slackUserId: null,
+          slackUserName: null,
+          message: null,
+          authorizeUrl: null,
+          reason: null,
+          installUrl: null,
+          teamName: null,
+        },
+      },
+    });
+
+    render(<HookConnectionsSection />);
+    await expandChannelCard(SLACK_CARD);
+    fireEvent.click(
+      await screen.findByRole('button', {
+        name: 'settings.remoteControl.hook.binding.reauthorize',
+      }),
+    );
+    await waitFor(() => expect(toast.error).toHaveBeenCalledOnce());
+    fireEvent.click(
+      await screen.findByRole('button', {
+        name: 'settings.remoteControl.hook.binding.reauthorize',
+      }),
+    );
+
+    await waitFor(() => expect(ipc.setEnabled).toHaveBeenCalledTimes(2));
   });
 
   it('shows the actionable Telegram transport error instead of only a generic failure', async () => {
@@ -963,6 +1598,55 @@ describe('HookConnectionsSection binding actions (Telegram / X)', () => {
     });
 
     expect(ipc.revokeTeam).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { name: 'server capability lost', supported: false, enabled: true, removes: false },
+    { name: 'communication disabled', supported: true, enabled: false, removes: false },
+    { name: 'communication grant removed', supported: true, enabled: undefined, removes: false },
+    { name: 'unchanged grant', supported: true, enabled: true, removes: true },
+  ])('rechecks Slack removal confirmation: $name', async ({ supported, enabled, removes }) => {
+    let pushStatus: ((view: SlackHookView) => void) | undefined;
+    let resolveConfirm: ((value: boolean) => void) | undefined;
+    dialog.confirm.mockReturnValue(new Promise<boolean>((resolve) => { resolveConfirm = resolve; }));
+    ipc.onStatusChanged.mockImplementation((listener: (view: SlackHookView) => void) => {
+      pushStatus = listener;
+      return () => {};
+    });
+    const initial: SlackHookView = {
+      ...BASE_HOOK,
+      enabled: true,
+      status: 'connected',
+      serverMultiTeam: true,
+      serverSlackCommunications: true,
+      bindings: [{
+        teamId: 'team-1', teamName: 'Cindy Team', slackUserId: 'user-1',
+        slackUserName: 'Cindy User', displaced: true, communicationsEnabled: true,
+      }],
+    };
+    ipc.get.mockResolvedValue({ hook: initial });
+    render(<HookConnectionsSection />);
+    await expandChannelCard(SLACK_CARD);
+    fireEvent.click(await screen.findByRole('button', {
+      name: 'settings.remoteControl.hook.multi.removeAria',
+    }));
+    await waitFor(() => expect(dialog.confirm).toHaveBeenCalledOnce());
+    expect(dialog.confirm).toHaveBeenCalledWith(expect.objectContaining({
+      description: 'settings.remoteControl.hook.multi.removeCommunicationsConfirmDescription',
+    }));
+    act(() => {
+      pushStatus?.({
+        ...initial,
+        serverSlackCommunications: supported,
+        bindings: [{ ...initial.bindings[0], communicationsEnabled: enabled }],
+      });
+    });
+    await act(async () => { resolveConfirm?.(true); });
+    if (removes) {
+      expect(ipc.revokeTeam).toHaveBeenCalledExactlyOnceWith('team-1');
+    } else {
+      expect(ipc.revokeTeam).not.toHaveBeenCalled();
+    }
   });
 
   it('X 卡是 chip 形态, Telegram 卡是目录行内的选中态单选', async () => {
@@ -1295,9 +1979,7 @@ describe('HookConnectionsSection binding actions (Telegram / X)', () => {
     ipc.get.mockResolvedValue({ hook: xUnboundHook() });
     render(<HookConnectionsSection />);
     await expandChannelCard(TELEGRAM_CARD);
-    expect(
-      screen.queryByText('settings.remoteControl.hook.x.guide.riskPublicBody'),
-    ).toBeNull();
+    expect(screen.queryByText('settings.remoteControl.hook.x.guide.riskPublicBody')).toBeNull();
   });
 
   it('说明区可选可复制: 弹窗根节点带 select-none, 不覆盖就复制不了 @askmycindy', async () => {
@@ -1312,9 +1994,9 @@ describe('HookConnectionsSection binding actions (Telegram / X)', () => {
     // 三组共同的祖先就是 XUsageGuide 的根
     const root = body.closest('.select-text');
     expect(root, 'XUsageGuide 根节点必须带 select-text 覆盖弹窗的 select-none').not.toBeNull();
-    expect(
-      root?.textContent?.includes('settings.remoteControl.hook.x.guide.withdrawBody'),
-    ).toBe(true);
+    expect(root?.textContent?.includes('settings.remoteControl.hook.x.guide.withdrawBody')).toBe(
+      true,
+    );
   });
 
   it('说明区没有任何小于 12px 的字号: 这是逐句阅读的正文, 不是辅助标签', async () => {
@@ -1328,9 +2010,9 @@ describe('HookConnectionsSection binding actions (Telegram / X)', () => {
     ipc.get.mockResolvedValue({ hook: xUnboundHook() });
     render(<HookConnectionsSection />);
     await expandChannelCard(X_CARD);
-    const root = (
-      await screen.findByText('settings.remoteControl.hook.x.guide.usageBody')
-    ).closest('.select-text');
+    const root = (await screen.findByText('settings.remoteControl.hook.x.guide.usageBody')).closest(
+      '.select-text',
+    );
     expect(root).not.toBeNull();
 
     const tooSmall: string[] = [];
@@ -1360,9 +2042,7 @@ describe('HookConnectionsSection binding actions (Telegram / X)', () => {
       'withdrawLabel',
       'withdrawBody',
     ]) {
-      expect(
-        await screen.findByText(`settings.remoteControl.hook.x.guide.${key}`),
-      ).toBeTruthy();
+      expect(await screen.findByText(`settings.remoteControl.hook.x.guide.${key}`)).toBeTruthy();
     }
   });
 

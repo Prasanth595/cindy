@@ -8,20 +8,33 @@
 
 import { describe, it, expect, vi } from 'vitest';
 
+import { BUNDLED_CATALOG } from '@cindy/model-providers';
+import { getActiveCatalog, setActiveCatalog, setOpenAiImagesApiKeyConfigured } from '../../maker-host/active-catalog.js';
+import { deriveCindyMediaConfig } from '../cindyMediaCatalog.js';
+
 import { GhostCindySlot, type CindySlotDeps } from '../cindySlot';
 import { sniffMediaMime } from '../../cindy-media/sniffMediaMime';
 import {
   GHOST_CINDY_DEPOSIT_BURST,
   GHOST_CINDY_DEPOSIT_MAX_BYTES,
   GHOST_CINDY_DEPOSIT_QUOTA_BYTES,
+  GHOST_CINDY_EMBED_TIMEOUT_MS,
 } from '../../../shared/ghost';
 import type { InstalledGhost } from '../../../shared/ghost';
 
 function fakeGhost(
   overrides: {
     enabled?: boolean;
-    slots?: string[];
-    model?: { image?: string[]; video?: string[]; media?: string[]; text?: string[] } | null;
+    cindy?: boolean;
+    model?: {
+      image?: string[];
+      video?: string[];
+      media?: string[];
+      text?: string[];
+      embed?: string[];
+      search?: string[];
+      oneshotModel?: string;
+    } | null;
   } = {},
 ): InstalledGhost {
   return {
@@ -32,10 +45,9 @@ function fakeGhost(
       version: '1.0.0',
       kind: 'chip',
       entry: 'main.js',
-      slots: overrides.slots ?? ['tool', 'cindy', 'panel'],
       tools: [{ name: 'gen_image', description: '生成图片' }],
       // null = 模拟老包缺详单;undefined = 默认全能力(image + video + media)。
-      ...(overrides.model === null
+      ...(overrides.cindy === false || overrides.model === null
         ? {}
         : {
             cindy:
@@ -58,7 +70,6 @@ function makeSlot(overrides: Partial<CindySlotDeps> = {}): {
   generateVideo: ReturnType<typeof vi.fn>;
   editVideo: ReturnType<typeof vi.fn>;
   resolveOwnedMedia: ReturnType<typeof vi.fn>;
-  getOverride: ReturnType<typeof vi.fn>;
   getImageConfig: ReturnType<typeof vi.fn>;
   getVideoConfig: ReturnType<typeof vi.fn>;
   videoCapabilities: ReturnType<typeof vi.fn>;
@@ -67,6 +78,9 @@ function makeSlot(overrides: Partial<CindySlotDeps> = {}): {
   depositMedia: ReturnType<typeof vi.fn>;
   depositUsageBytes: ReturnType<typeof vi.fn>;
   releaseDeposit: ReturnType<typeof vi.fn>;
+  searchWeb: ReturnType<typeof vi.fn>;
+  claimPipeCall: ReturnType<typeof vi.fn>;
+  settlePipeCallClaim: ReturnType<typeof vi.fn>;
 } {
   const generateImage = vi.fn(async () => ({
     buffer: new Uint8Array([1, 2, 3]),
@@ -101,7 +115,6 @@ function makeSlot(overrides: Partial<CindySlotDeps> = {}): {
   );
   const imageCapabilities = vi.fn(() => null);
   const resolveOwnedMedia = vi.fn(async (_ghostId: string, hash: string) => `/disk/${hash}.png`);
-  const getOverride = vi.fn((_ghostId: string, _capability: string) => null as string | null);
   const getImageConfig = vi.fn(() => ({
     models: [
     { id: 'gpt-image-2', label: 'GPT Image 2' },
@@ -136,6 +149,19 @@ function makeSlot(overrides: Partial<CindySlotDeps> = {}): {
   );
   const depositUsageBytes = vi.fn(async () => 0);
   const releaseDeposit = vi.fn(async () => true);
+  const searchWeb = vi.fn(async () => ({
+    ok: true as const,
+    results: [
+      {
+        title: 'Cindy',
+        url: 'https://example.test/cindy',
+        snippet: 'Search result',
+      },
+    ],
+    requestId: 'search-call-1',
+  }));
+  const claimPipeCall = vi.fn(() => true);
+  const settlePipeCallClaim = vi.fn(() => true);
   const slot = new GhostCindySlot({
     getGhost: () => fakeGhost(),
     getOwnerScopeKey: () => 'cloud:test-owner:1',
@@ -145,7 +171,6 @@ function makeSlot(overrides: Partial<CindySlotDeps> = {}): {
     generateVideo,
     editVideo,
     resolveOwnedMedia,
-    getOverride,
     getImageConfig,
     getVideoConfig,
     imageCapabilities,
@@ -155,6 +180,9 @@ function makeSlot(overrides: Partial<CindySlotDeps> = {}): {
     depositMedia,
     depositUsageBytes,
     releaseDeposit,
+    searchWeb,
+    claimPipeCall,
+    settlePipeCallClaim,
     ...overrides,
   } as CindySlotDeps);
   return {
@@ -164,7 +192,6 @@ function makeSlot(overrides: Partial<CindySlotDeps> = {}): {
     generateVideo,
     editVideo,
     resolveOwnedMedia,
-    getOverride,
     getImageConfig,
     getVideoConfig,
     videoCapabilities,
@@ -173,6 +200,9 @@ function makeSlot(overrides: Partial<CindySlotDeps> = {}): {
     depositMedia,
     depositUsageBytes,
     releaseDeposit,
+    searchWeb,
+    claimPipeCall,
+    settlePipeCallClaim,
   };
 }
 
@@ -190,16 +220,61 @@ describe('载荷校验', () => {
     ).toMatchObject({ ok: false });
   });
 
-  it('模型白名单:名单内放行并透传,名单外拒且不触发生成', async () => {
+  it('Art keeps an explicit subscription image model for generation and editing with the unified label', async () => {
+    setActiveCatalog(BUNDLED_CATALOG);
+    setOpenAiImagesApiKeyConfigured(false);
+    const config = deriveCindyMediaConfig(getActiveCatalog().providers, 'image');
+    const id = 'openai/gpt-image-2';
+    expect(config.models.find(m => m.id === id)).toMatchObject({ label: 'GPT Image Gen', supportsEdit: true });
+    const { slot, generateImage, editImage } = makeSlot({
+      getImageConfig: () => config,
+    });
+    for (const request of [{ ...REQ, model: id }, { ...EDIT_REQ, model: id }]) {
+      expect(await slot.handleModelRequest('art', request)).toMatchObject({
+        ok: true, model: id, modelLabel: 'GPT Image Gen',
+      });
+    }
+    expect(generateImage).toHaveBeenCalledWith(expect.objectContaining({ model: id }));
+    expect(editImage).toHaveBeenCalledWith(expect.objectContaining({ model: id }));
+  });
+
+  it('旧插件模型名:名单内透传,唯一 basename 升级,失效值回落当前默认', async () => {
     const { slot, generateImage } = makeSlot();
     const ok = await slot.handleModelRequest('art', { ...REQ, model: 'gemini-3-pro-image' });
     expect(ok).toMatchObject({ ok: true });
-    expect(generateImage).toHaveBeenCalledWith({ prompt: '一只猫', model: 'gemini-3-pro-image' });
+    expect(generateImage).toHaveBeenLastCalledWith({
+      prompt: '一只猫',
+      model: 'gemini-3-pro-image',
+    });
 
-    const bad = await slot.handleModelRequest('art', { ...REQ, model: 'dall-e-9' });
-    expect(bad).toMatchObject({ ok: false });
-    expect((bad as { message: string }).message).toContain('白名单');
-    expect(generateImage).toHaveBeenCalledTimes(1);
+    const namespaced = makeSlot({
+      getImageConfig: vi.fn(() => ({
+        models: [
+          {
+            id: 'openai/gpt-image-2',
+            label: 'GPT Image 2',
+            supportsEdit: true,
+          },
+        ],
+        defaults: {
+          standard: 'openai/gpt-image-2',
+          draft: 'openai/gpt-image-2',
+          best: 'openai/gpt-image-2',
+        },
+      })) as unknown as CindySlotDeps['getImageConfig'],
+    });
+    expect(await namespaced.slot.handleModelRequest('art', { ...REQ, model: 'gpt-image-2' })).toMatchObject({
+      ok: true,
+      model: 'openai/gpt-image-2',
+    });
+    expect(namespaced.generateImage).toHaveBeenCalledWith({
+      prompt: '一只猫',
+      model: 'openai/gpt-image-2',
+    });
+
+    const fallback = await slot.handleModelRequest('art', { ...REQ, model: 'dall-e-9' });
+    expect(fallback).toMatchObject({ ok: true, model: 'gpt-image-2' });
+    expect(generateImage).toHaveBeenLastCalledWith({ prompt: '一只猫', model: 'gpt-image-2' });
   });
 
   it('缺省模型 = gpt-image-2', async () => {
@@ -278,6 +353,194 @@ describe('载荷校验', () => {
     expect(videoBad).toMatchObject({ ok: false });
     expect((videoBad as { message: string }).message).toContain('ratio');
     expect(generateVideo).not.toHaveBeenCalled();
+  });
+});
+
+describe('Cindy Web Search', () => {
+  const SEARCH_REQ = {
+    type: 'cindy-request',
+    kind: 'search_web',
+    query: '  Cindy Web Search  ',
+    provider: 'cindy',
+    callId: 'call-search-1',
+    callerTool: 'research',
+  };
+
+  const searchGhost = () => fakeGhost({ model: { search: ['web'] } });
+
+  it('按能力声明放行，trim query、补默认结果数并保持逻辑 Provider 为 cindy', async () => {
+    const searchWeb = vi.fn(async () => ({
+      ok: true as const,
+      results: [
+        {
+          title: 'Result',
+          url: 'https://example.test/result',
+          snippet: 'Summary',
+        },
+      ],
+      requestId: 'litellm-call-1',
+    }));
+    const { slot, claimPipeCall, settlePipeCallClaim } = makeSlot({
+      getGhost: searchGhost,
+      searchWeb,
+    });
+
+    const result = await slot.handleModelRequest('art', SEARCH_REQ);
+
+    expect(searchWeb).toHaveBeenCalledWith({ query: 'Cindy Web Search', limit: 5 });
+    expect(claimPipeCall).toHaveBeenCalledWith(
+      'art',
+      'call-search-1',
+      'research',
+      'cindy.search.web',
+      expect.stringMatching(/^[a-f0-9]{64}$/),
+    );
+    expect(settlePipeCallClaim).toHaveBeenCalledWith(
+      'art',
+      'call-search-1',
+      'research',
+      'cindy.search.web',
+      expect.stringMatching(/^[a-f0-9]{64}$/),
+      false,
+    );
+    expect(result).toEqual({
+      ok: true,
+      provider: 'cindy',
+      results: [
+        {
+          title: 'Result',
+          url: 'https://example.test/result',
+          snippet: 'Summary',
+        },
+      ],
+    });
+  });
+
+  it('权限不足返回 PERMISSION_DENIED；非法参数返回 INVALID_PARAMS，且不出网', async () => {
+    const searchWeb = vi.fn();
+    for (const getGhost of [
+      () => fakeGhost({ enabled: false, model: { search: ['web'] } }),
+      () => fakeGhost({ cindy: false, model: { search: ['web'] } }),
+      () => fakeGhost(),
+    ]) {
+      const denied = makeSlot({ getGhost, searchWeb });
+      expect(await denied.slot.handleModelRequest('art', SEARCH_REQ)).toMatchObject({
+        ok: false,
+        errorCode: 'PERMISSION_DENIED',
+      });
+    }
+
+    const unbound = makeSlot({
+      getGhost: searchGhost,
+      searchWeb,
+      claimPipeCall: vi.fn(() => false),
+    });
+    expect(await unbound.slot.handleModelRequest('art', SEARCH_REQ)).toMatchObject({
+      ok: false,
+      errorCode: 'PERMISSION_DENIED',
+    });
+
+    const { slot } = makeSlot({ getGhost: searchGhost, searchWeb });
+    for (const request of [
+      { ...SEARCH_REQ, provider: 'tavily' },
+      { ...SEARCH_REQ, query: '   ' },
+      { ...SEARCH_REQ, query: 'x'.repeat(2001) },
+      { ...SEARCH_REQ, limit: 0 },
+      { ...SEARCH_REQ, limit: 1.5 },
+      { ...SEARCH_REQ, limit: 11 },
+      { ...SEARCH_REQ, callId: '' },
+      { ...SEARCH_REQ, callerTool: '' },
+    ]) {
+      expect(await slot.handleModelRequest('art', request)).toMatchObject({
+        ok: false,
+        errorCode: 'INVALID_PARAMS',
+      });
+    }
+    expect(searchWeb).not.toHaveBeenCalled();
+  });
+
+  it('能力未接线、并发受限和账号切换等前置失败不消费 binding', async () => {
+    const notConfigured = makeSlot({
+      getGhost: searchGhost,
+      searchWeb: undefined,
+    });
+    expect(await notConfigured.slot.handleModelRequest('art', SEARCH_REQ)).toMatchObject({
+      ok: false,
+      errorCode: 'NOT_CONFIGURED',
+    });
+    expect(notConfigured.claimPipeCall).not.toHaveBeenCalled();
+    expect(notConfigured.settlePipeCallClaim).not.toHaveBeenCalled();
+
+    const rateLimited = makeSlot({
+      getGhost: searchGhost,
+      getInflightLimit: () => 0,
+    });
+    expect(await rateLimited.slot.handleModelRequest('art', SEARCH_REQ)).toMatchObject({
+      ok: false,
+      errorCode: 'RATE_LIMITED',
+    });
+    expect(rateLimited.claimPipeCall).not.toHaveBeenCalled();
+    expect(rateLimited.settlePipeCallClaim).not.toHaveBeenCalled();
+
+    const switching = makeSlot({
+      getGhost: searchGhost,
+      isOwnerBoundaryPending: () => true,
+    });
+    expect(await switching.slot.handleModelRequest('art', SEARCH_REQ)).toMatchObject({
+      ok: false,
+      errorCode: 'UPSTREAM_UNAVAILABLE',
+    });
+    expect(switching.claimPipeCall).not.toHaveBeenCalled();
+    expect(switching.settlePipeCallClaim).not.toHaveBeenCalled();
+  });
+
+  it('仅明确未出网的失败允许重试；已出网错误保留错误码并消费 binding', async () => {
+    const notStartedSearch = vi.fn(async () => ({
+      ok: false as const,
+      errorCode: 'NOT_CONFIGURED' as const,
+      message: '搜索尚未配置',
+      requestStarted: false,
+    }));
+    const notStarted = makeSlot({ getGhost: searchGhost, searchWeb: notStartedSearch });
+    expect(await notStarted.slot.handleModelRequest('art', SEARCH_REQ)).toEqual({
+      ok: false,
+      errorCode: 'NOT_CONFIGURED',
+      message: '搜索尚未配置',
+    });
+    expect(notStarted.settlePipeCallClaim).toHaveBeenCalledWith(
+      'art',
+      'call-search-1',
+      'research',
+      'cindy.search.web',
+      expect.stringMatching(/^[a-f0-9]{64}$/),
+      true,
+    );
+
+    const searchWeb = vi.fn(async () => ({
+      ok: false as const,
+      errorCode: 'QUOTA_EXHAUSTED' as const,
+      message: 'Cindy AI 搜索额度不足',
+      requestStarted: true,
+      status: 402,
+      requestId: 'litellm-call-2',
+    }));
+    const quota = makeSlot({ getGhost: searchGhost, searchWeb });
+    expect(await quota.slot.handleModelRequest('art', SEARCH_REQ)).toEqual({
+      ok: false,
+      errorCode: 'QUOTA_EXHAUSTED',
+      message: 'Cindy AI 搜索额度不足',
+    });
+
+    expect(quota.claimPipeCall).toHaveBeenCalledTimes(1);
+    expect(quota.settlePipeCallClaim).toHaveBeenCalledWith(
+      'art',
+      'call-search-1',
+      'research',
+      'cindy.search.web',
+      expect.stringMatching(/^[a-f0-9]{64}$/),
+      false,
+    );
+    expect(searchWeb).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -518,48 +781,21 @@ describe('目录空清单 = 能力暂不可用', () => {
     expect(editImage).not.toHaveBeenCalled();
   });
 
-  it('清单空时用户钉的旧覆盖也不生效(不拿不在册型号下单)', async () => {
-    const { slot, generateImage } = makeSlot({
-      getImageConfig: vi.fn(() => EMPTY_CONFIG) as unknown as CindySlotDeps['getImageConfig'],
-      getOverride: vi.fn(() => 'gpt-image-2') as unknown as CindySlotDeps['getOverride'],
-    });
-    expect(await slot.handleModelRequest('art', REQ)).toMatchObject({ ok: false });
-    expect(generateImage).not.toHaveBeenCalled();
-  });
 });
 
-describe('意识专属后端覆盖(解析表第②层)', () => {
-  it('覆盖压过档位;调用显式点名仍压过覆盖;下架型号的覆盖静默落回', async () => {
-    const pinned = makeSlot({
-      getOverride: vi.fn(() => 'gemini-3-pro-image') as unknown as CindySlotDeps['getOverride'],
-    });
-    // 覆盖 > tier
-    await pinned.slot.handleModelRequest('art', { ...REQ, tier: 'draft' });
-    expect(pinned.generateImage).toHaveBeenLastCalledWith({
-      prompt: '一只猫',
-      model: 'gemini-3-pro-image',
-    });
-    // 显式点名 > 覆盖
-    await pinned.slot.handleModelRequest('art', { ...REQ, model: 'gpt-image-2' });
-    expect(pinned.generateImage).toHaveBeenLastCalledWith({ prompt: '一只猫', model: 'gpt-image-2' });
-
-    // 钉的型号已不在白名单 → 忽略覆盖,落回默认,不拒单。
-    const stale = makeSlot({
-      getOverride: vi.fn(() => 'retired-model-9') as unknown as CindySlotDeps['getOverride'],
-    });
-    const r = await stale.slot.handleModelRequest('art', REQ);
-    expect(r).toMatchObject({ ok: true });
-    expect(stale.generateImage).toHaveBeenLastCalledWith({ prompt: '一只猫', model: 'gpt-image-2' });
-  });
-
-  it('覆盖按能力键全名取(出图/改图/视频各自独立)', async () => {
-    const { slot, getOverride } = makeSlot();
+describe('媒体选型没有逐插件覆盖(2026-10 起只走系统默认)', () => {
+  it('默认 → 档位 → 调用显式点名;不再向宿主查询插件覆盖', async () => {
+    const { slot, generateImage, editImage, generateVideo } = makeSlot();
     await slot.handleModelRequest('art', REQ);
-    expect(getOverride).toHaveBeenLastCalledWith('art', 'image.generate');
+    expect(generateImage).toHaveBeenLastCalledWith({ prompt: '一只猫', model: 'gpt-image-2' });
+    await slot.handleModelRequest('art', { ...REQ, tier: 'draft' });
+    expect(generateImage).toHaveBeenLastCalledWith({ prompt: '一只猫', model: 'gemini-3.1-flash-image' });
+    await slot.handleModelRequest('art', { ...REQ, tier: 'draft', model: 'gemini-3-pro-image' });
+    expect(generateImage).toHaveBeenLastCalledWith({ prompt: '一只猫', model: 'gemini-3-pro-image' });
     await slot.handleModelRequest('art', EDIT_REQ);
-    expect(getOverride).toHaveBeenLastCalledWith('art', 'image.edit');
+    expect(editImage).toHaveBeenLastCalledWith(expect.objectContaining({ model: 'gpt-image-2' }));
     await slot.handleModelRequest('art', { type: 'cindy-request', kind: 'gen_video', prompt: '一只猫奔跑' });
-    expect(getOverride).toHaveBeenLastCalledWith('art', 'video.generate');
+    expect(generateVideo).toHaveBeenLastCalledWith(expect.objectContaining({ model: 'seedance-fast' }));
   });
 });
 
@@ -567,24 +803,28 @@ describe('视频代办(gen_video / edit_video)', () => {
   const VREQ = { type: 'cindy-request', kind: 'gen_video', prompt: '一只猫奔跑' };
 
   it('gen_video happy path:走视频白名单默认款,产物同一条落仓链路', async () => {
-    const { slot, generateVideo, saveGhostMedia } = makeSlot();
+    const { slot, generateVideo, getVideoConfig, saveGhostMedia } = makeSlot();
     const r = await slot.handleModelRequest('art', VREQ);
     expect(r).toMatchObject({ ok: true, model: 'seedance-fast', modelLabel: 'Seedance 快速' });
+    expect(getVideoConfig).toHaveBeenCalledWith('generate');
     expect(generateVideo).toHaveBeenCalledWith({ prompt: '一只猫奔跑', model: 'seedance-fast' });
     expect(saveGhostMedia).toHaveBeenCalledWith(expect.objectContaining({ mimeType: 'video/mp4' }));
   });
 
-  it('tier 档位查视频翻译表(best → seedance-pro);白名单外点名拒', async () => {
+  it('tier 档位查视频翻译表(best → seedance-pro);失效点名回落默认', async () => {
     const { slot, generateVideo } = makeSlot();
     await slot.handleModelRequest('art', { ...VREQ, tier: 'best' });
     expect(generateVideo).toHaveBeenLastCalledWith({ prompt: '一只猫奔跑', model: 'seedance-pro' });
-    // 图像白名单里的型号点给视频代办 → 拒(两类目白名单独立)。
-    const bad = await slot.handleModelRequest('art', { ...VREQ, model: 'gpt-image-2' });
-    expect(bad).toMatchObject({ ok: false });
+    const fallback = await slot.handleModelRequest('art', { ...VREQ, model: 'gpt-image-2' });
+    expect(fallback).toMatchObject({ ok: true, model: 'seedance-fast' });
+    expect(generateVideo).toHaveBeenLastCalledWith({
+      prompt: '一只猫奔跑',
+      model: 'seedance-fast',
+    });
   });
 
   it('edit_video:参考图归属校验后按路径注入;上限 2 张,超限拒', async () => {
-    const { slot, editVideo, resolveOwnedMedia } = makeSlot();
+    const { slot, editVideo, getVideoConfig, resolveOwnedMedia } = makeSlot();
     const r = await slot.handleModelRequest('art', {
       type: 'cindy-request',
       kind: 'edit_video',
@@ -592,6 +832,7 @@ describe('视频代办(gen_video / edit_video)', () => {
       hashes: [HASH_S],
     });
     expect(r).toMatchObject({ ok: true });
+    expect(getVideoConfig).toHaveBeenCalledWith('edit');
     expect(resolveOwnedMedia).toHaveBeenCalledWith('art', HASH_S, 'cloud:test-owner:1');
     expect(editVideo).toHaveBeenCalledWith({
       prompt: '让它动起来',
@@ -728,11 +969,11 @@ describe('能力粒度资格审(model 详单)', () => {
     expect(editImage).not.toHaveBeenCalled();
   });
 
-  it('老包缺详单 = 零能力,一切代办拒且提示更新声明', async () => {
+  it('老包缺详单 = 零能力,一切代办拒且明确未声明 cindy 能力', async () => {
     const { slot, generateImage } = makeSlot({ getGhost: () => fakeGhost({ model: null }) });
     const r = await slot.handleModelRequest('art', REQ);
     expect(r).toMatchObject({ ok: false });
-    expect((r as { message: string }).message).toContain('更新');
+    expect((r as { message: string }).message).toContain('未声明 cindy 能力');
     expect(generateImage).not.toHaveBeenCalled();
   });
 });
@@ -745,8 +986,8 @@ describe('资格审', () => {
     expect(await asleep.slot.handleModelRequest('art', REQ)).toMatchObject({ ok: false });
   });
 
-  it('身份卡未声明 cindy 卡槽 → 结构上无此器官,拒', async () => {
-    const { slot, generateImage } = makeSlot({ getGhost: () => fakeGhost({ slots: ['tool', 'panel'] }) });
+  it('身份卡未声明 cindy 能力 → 结构上无此器官,拒', async () => {
+    const { slot, generateImage } = makeSlot({ getGhost: () => fakeGhost({ cindy: false }) });
     const r = await slot.handleModelRequest('art', REQ);
     expect(r).toMatchObject({ ok: false });
     expect((r as { message: string }).message).toContain('cindy');
@@ -784,6 +1025,28 @@ describe('代办链路', () => {
       getOwnerScopeKey: () => ownerScopeKey,
       generateImage: vi.fn(async () => {
         ownerScopeKey = 'cloud:owner-b:2';
+        return { buffer: new Uint8Array([1, 2, 3]), mimeType: 'image/png' };
+      }),
+      saveGhostMedia,
+    });
+
+    const result = await slot.handleModelRequest('art', REQ);
+
+    expect(result).toMatchObject({ ok: false });
+    expect((result as { message: string }).message).toContain('账号已切换');
+    expect(saveGhostMedia).not.toHaveBeenCalled();
+  });
+
+  it('生成期间 Ghost durable owner 变为 mismatch 时不保存产物', async () => {
+    // 模拟另一实例改写全局 durable Ghost projection owner:进程内 boundaryDepth
+    // 与 owner scope key 都不变,但 Ghost 专属边界(isOwnerBoundaryPending 已含
+    // durable owner 检查)在任务执行中变 pending,在途任务必须收口。
+    let boundaryPending = false;
+    const saveGhostMedia = vi.fn();
+    const { slot } = makeSlot({
+      isOwnerBoundaryPending: () => boundaryPending,
+      generateImage: vi.fn(async () => {
+        boundaryPending = true;
         return { buffer: new Uint8Array([1, 2, 3]), mimeType: 'image/png' };
       }),
       saveGhostMedia,
@@ -1044,6 +1307,46 @@ describe('改图代办(edit_image)', () => {
     expect((result as { message: string }).message).toContain('账号已切换');
     expect(resolveOwnedMedia).toHaveBeenCalledWith('art', HASH_S, 'cloud:owner-a:1');
     expect(editImage).not.toHaveBeenCalled();
+  });
+
+  it('library 正本 blob 相对键可消费;sidecar 禁止当像素', async () => {
+    const HASH = 'a'.repeat(64);
+    const blob = `assets/${HASH.slice(0, 2)}/${HASH}/blob.png`;
+    const resolveOwnedMedia = vi.fn(async (_g: string, key: string) =>
+      key === blob ? `/library/${blob}` : null,
+    );
+    const { slot, editImage } = makeSlot({
+      resolveOwnedMedia,
+    } as Partial<CindySlotDeps>);
+    const ok = await slot.handleModelRequest('art', {
+      ...EDIT_REQ,
+      hashes: [blob],
+    });
+    expect(ok).toMatchObject({ ok: true });
+    expect(resolveOwnedMedia).toHaveBeenCalledWith('art', blob, 'cloud:test-owner:1');
+    expect(editImage).toHaveBeenCalledWith(expect.objectContaining({ imagePaths: [`/library/${blob}`] }));
+
+    const sidecar = makeSlot();
+    const rejected = await sidecar.slot.handleModelRequest('art', {
+      ...EDIT_REQ,
+      hashes: [`assets/${HASH.slice(0, 2)}/${HASH}/preview.webp`],
+    });
+    expect(rejected).toMatchObject({ ok: false });
+    expect((rejected as { message: string }).message).toContain('sidecar');
+    expect(sidecar.editImage).not.toHaveBeenCalled();
+
+    const prefixedResolve = vi.fn();
+    const prefixedSidecar = makeSlot({
+      resolveOwnedMedia: prefixedResolve,
+    } as Partial<CindySlotDeps>);
+    const prefixedRejected = await prefixedSidecar.slot.handleModelRequest('art', {
+      ...EDIT_REQ,
+      hashes: [`library:assets/${HASH.slice(0, 2)}/${HASH}/preview.webp`],
+    });
+    expect(prefixedRejected).toMatchObject({ ok: false });
+    expect((prefixedRejected as { message: string }).message).toContain('sidecar');
+    expect(prefixedSidecar.editImage).not.toHaveBeenCalled();
+    expect(prefixedResolve).not.toHaveBeenCalled();
   });
 });
 
@@ -1327,7 +1630,7 @@ describe('寄存(deposit_media / release_media)', () => {
     expect(noMedia.depositMedia).not.toHaveBeenCalled();
 
     const noSlot = makeSlot({
-      getGhost: () => fakeGhost({ slots: ['tool'], model: null }),
+      getGhost: () => fakeGhost({ model: null }),
     } as Partial<CindySlotDeps>);
     expect(await noSlot.slot.handleModelRequest('art', depositReq(b64(PNG)))).toMatchObject({
       ok: false,
@@ -1435,7 +1738,6 @@ describe('寄存(deposit_media / release_media)', () => {
       generateVideo: vi.fn(),
       editVideo: vi.fn(),
       resolveOwnedMedia: vi.fn(),
-      getOverride: vi.fn(() => null),
       getImageConfig: vi.fn(() => ({ models: [], defaults: null })),
       getVideoConfig: vi.fn(() => ({ models: [], defaults: null })),
       saveGhostMedia: vi.fn(),
@@ -1505,8 +1807,15 @@ describe('快问快答(oneshot_text)', () => {
     expect(
       await slot.handleModelRequest('art', { ...ONESHOT, maxTokens: 0 }),
     ).toMatchObject({ ok: false, errorCode: 'INVALID_PARAMS' });
+    // 宿主不设输出上限:任意正整数 maxTokens 合法(仅基本校验,挡负数/小数)。
     expect(
-      await slot.handleModelRequest('art', { ...ONESHOT, maxTokens: 99999 }),
+      await slot.handleModelRequest('art', { ...ONESHOT, maxTokens: 81920 }),
+    ).toMatchObject({ ok: true });
+    expect(
+      await slot.handleModelRequest('art', { ...ONESHOT, maxTokens: 999999 }),
+    ).toMatchObject({ ok: true });
+    expect(
+      await slot.handleModelRequest('art', { ...ONESHOT, maxTokens: -1 }),
     ).toMatchObject({ ok: false, errorCode: 'INVALID_PARAMS' });
     expect(
       await slot.handleModelRequest('art', { ...ONESHOT, expectJson: 'yes' }),
@@ -1524,16 +1833,106 @@ describe('快问快答(oneshot_text)', () => {
     });
   });
 
-  it('happy path:文字随返回递回,带实际选型;缺省 maxTokens=1024', async () => {
+  it('happy path:文字随返回递回,带实际选型;缺省 maxTokens 不设输出上限', async () => {
     const oneshotText = vi.fn(async () => ({ ok: true as const, text: '答案', model: 'chain/mini' }));
     const { slot } = withText({ oneshotText });
     const r = await slot.handleModelRequest('art', ONESHOT);
     expect(r).toMatchObject({ ok: true, text: '答案', model: 'chain/mini' });
     expect(oneshotText).toHaveBeenCalledWith({
       prompt: '总结一下',
-      maxTokens: 1024,
+      maxTokens: undefined,
       timeoutMs: 60_000,
     });
+  });
+
+  // 选型优先级 = 用户在插件详情选的模型 > 身份卡声明(oneshotModel)> 系统辅助模型链。
+  it('选型优先级:用户选的模型 > 身份卡声明 > 系统辅助模型链', async () => {
+    const oneshotText = vi.fn(async (_params: { route?: unknown }) => ({ ok: true as const, text: 'ok' }));
+    const declared = { model: { text: ['oneshot'], oneshotModel: 'codex/gpt-5.5' } };
+    const resolveOneshotModel = vi.fn(() => ({ providerId: 'xd', agentKind: 'codex' as const, model: 'codex/gpt-5.5' }));
+
+    // ① 用户选了完整组合:钉死该 供应商×agent×模型,声明不生效(resolve 不调用)。
+    const getOneshotModelSelection = vi.fn(() => ({
+      providerId: 'openai', agentKind: 'codex' as const, model: 'gpt-5.5',
+    }));
+    const pinned = makeSlot({
+      getGhost: () => fakeGhost(declared),
+      getOneshotModelSelection,
+      resolveOneshotModel,
+      oneshotText,
+    });
+    await pinned.slot.handleModelRequest('art', ONESHOT);
+    expect(getOneshotModelSelection).toHaveBeenCalledWith('art');
+    expect(oneshotText).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        route: { kind: 'catalog', providerId: 'openai', agentKind: 'codex', model: 'gpt-5.5' },
+      }),
+    );
+    expect(resolveOneshotModel).not.toHaveBeenCalled();
+
+    // ② 用户选的组合缺供应商(手改文件):照样钉死,交执行侧推断,不回落默认链。
+    const noProvider = makeSlot({
+      getGhost: () => fakeGhost(declared),
+      getOneshotModelSelection: () => ({ agentKind: 'claude-code' as const, model: 'claude-sonnet' }),
+      oneshotText,
+    });
+    await noProvider.slot.handleModelRequest('art', ONESHOT);
+    expect(oneshotText).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        route: { kind: 'catalog', agentKind: 'claude-code', model: 'claude-sonnet' },
+      }),
+    );
+
+    // ③ 未选模型 + 声明可解析:走声明路由。
+    const declaredOnly = makeSlot({
+      getGhost: () => fakeGhost(declared),
+      getOneshotModelSelection: () => null,
+      resolveOneshotModel,
+      oneshotText,
+    });
+    await declaredOnly.slot.handleModelRequest('art', ONESHOT);
+    expect(resolveOneshotModel).toHaveBeenCalledWith('codex/gpt-5.5');
+    expect(oneshotText).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        route: { kind: 'catalog', providerId: 'xd', agentKind: 'codex', model: 'codex/gpt-5.5' },
+      }),
+    );
+
+    // ④ 未选模型 + 声明解析不到(目录没有/已停用):按未声明,跟随系统辅助模型链。
+    const unresolved = makeSlot({
+      getGhost: () => fakeGhost(declared),
+      getOneshotModelSelection: () => null,
+      resolveOneshotModel: () => null,
+      oneshotText,
+    });
+    await unresolved.slot.handleModelRequest('art', ONESHOT);
+    expect(oneshotText.mock.lastCall?.[0]?.route).toBeUndefined();
+
+    // ⑤ 未选模型无声明:route 缺省,跟随系统辅助模型链。
+    const plain = makeSlot({
+      getGhost: () => fakeGhost({ model: { text: ['oneshot'] } }),
+      getOneshotModelSelection: () => null,
+      oneshotText,
+    });
+    await plain.slot.handleModelRequest('art', ONESHOT);
+    expect(oneshotText.mock.lastCall?.[0]?.route).toBeUndefined();
+  });
+
+  it('每单现读用户选择:改回跟随默认后下一单即走系统辅助模型链', async () => {
+    const oneshotText = vi.fn(async (_params: { route?: unknown }) => ({ ok: true as const, text: 'ok' }));
+    let selection: { providerId: string; agentKind: 'codex'; model: string } | null = {
+      providerId: 'openai', agentKind: 'codex', model: 'gpt-5.5',
+    };
+    const { slot } = makeSlot({
+      getGhost: () => fakeGhost({ model: { text: ['oneshot'] } }),
+      getOneshotModelSelection: () => selection,
+      oneshotText,
+    });
+    await slot.handleModelRequest('art', ONESHOT);
+    expect(oneshotText.mock.lastCall?.[0]?.route).toMatchObject({ model: 'gpt-5.5' });
+    selection = null;
+    await slot.handleModelRequest('art', ONESHOT);
+    expect(oneshotText.mock.lastCall?.[0]?.route).toBeUndefined();
   });
 
   it('链路失败三档映射:no_candidate → NO_CANDIDATE,timeout → TIMEOUT,failed → INTERNAL', async () => {
@@ -1631,6 +2030,8 @@ describe('anyInflightWork（更新重启阻断探针）', () => {
       generateImage: vi.fn(async () => {
         // 请求已计入 inflight、但还没结算的那一刻。
         expect(slot.anyInflightWork()).toBe(true);
+        expect(slot.hasInflightWorkFor('art')).toBe(true);
+        expect(slot.hasInflightWorkFor('other')).toBe(false);
         await gate;
         return { buffer: new Uint8Array([1]), mimeType: 'image/png' };
       }),
@@ -1652,6 +2053,8 @@ describe('anyInflightWork（更新重启阻断探针）', () => {
     const { slot } = makeSlot({
       depositMedia: vi.fn(async () => {
         seenDuring = slot.anyInflightWork();
+        expect(slot.hasInflightWorkFor('art')).toBe(true);
+        expect(slot.hasInflightWorkFor('other')).toBe(false);
         await gate;
         return { hash: 'a'.repeat(64), bytes: PNG_BYTES.length, usedBytes: 10, quotaBytes: 100 };
       }),
@@ -1708,6 +2111,485 @@ describe('anyInflightWork（更新重启阻断探针）', () => {
     expect(res).toMatchObject({ ok: true, status: 'running' });
     // 受理即返回，job 仍在途 —— 此时没有任何 turn 级信号还亮着。
     expect(slot.anyInflightWork()).toBe(true);
+    expect(slot.hasInflightWorkFor('art')).toBe(true);
+    expect(slot.hasInflightWorkFor('other')).toBe(false);
     release();
+  });
+});
+
+describe('文本转向量(embed_text)', () => {
+  const EMBED = { type: 'cindy-request', kind: 'embed_text', texts: ['一段内容'] };
+  /** 4 维假向量:维度只需要"可辨认",不必真跑模型。 */
+  const fakeVec = (seed: number): number[] => [seed, seed + 0.1, seed + 0.2, seed + 0.3];
+  const withEmbed = (deps: Partial<CindySlotDeps> = {}) =>
+    makeSlot({
+      getGhost: () => fakeGhost({ model: { embed: ['text'] } }),
+      getEmbedConfig: vi.fn(() => ({
+        models: [
+          { id: 'voyage/voyage-4', label: 'Voyage 4' },
+          { id: 'voyage/voyage-4-large', label: 'Voyage 4 Large' },
+          { id: 'text-embedding-3-small', label: 'OpenAI Embedding 3 Small' },
+        ],
+        defaults: {
+          standard: 'voyage/voyage-4',
+          draft: 'text-embedding-3-small',
+          best: 'voyage/voyage-4-large',
+        },
+      })),
+      embedText: vi.fn(async ({ texts }: { texts: string[] }) => ({
+        embeddings: texts.map((_t, i) => fakeVec(i)),
+        modelUsed: 'voyage/voyage-4',
+      })),
+      ...deps,
+    } as unknown as Partial<CindySlotDeps>);
+
+  it('未声明 embed.text → PERMISSION_DENIED,不触发通道', async () => {
+    const embedText = vi.fn();
+    const { slot } = makeSlot({ embedText } as unknown as Partial<CindySlotDeps>);
+    const r = await slot.handleModelRequest('art', EMBED);
+    expect(r).toMatchObject({ ok: false, errorCode: 'PERMISSION_DENIED' });
+    expect(embedText).not.toHaveBeenCalled();
+  });
+
+  it('happy path:向量等长递回,并带 model / dim / modelLabel', async () => {
+    const { slot } = withEmbed();
+    const r = await slot.handleModelRequest('art', {
+      ...EMBED,
+      texts: ['第一段', '第二段'],
+    });
+    expect(r).toMatchObject({
+      ok: true,
+      model: 'voyage/voyage-4',
+      modelLabel: 'Voyage 4',
+      dim: 4,
+    });
+    // dim 与 model 是调方判断"存量向量还能不能用"的唯一依据,必须逐次交付。
+    expect((r as { embeddings: number[][] }).embeddings).toHaveLength(2);
+  });
+
+  /**
+   * 手册要求把回执里的 model 存下、检索时原样回传,而 model 参数要过主机白名单。
+   * 上游解析出带版本号的实际型号(不在目录里)时,若把它当 model 回给插件,
+   * "入库成功 → 按回执检索"这条主路径就确定性地撞 INVALID_PARAMS
+   * (PR #1707 review 第十一轮)。别名负责可回放,upstreamModel 负责可观测。
+   */
+  it('上游回带版本号的型号 → model 仍是白名单别名,实际型号进 upstreamModel', async () => {
+    const embedText = vi.fn(async () => ({
+      embeddings: [fakeVec(1)],
+      modelUsed: 'voyage/voyage-4-20250101',
+    }));
+    const { slot } = withEmbed({ embedText } as unknown as Partial<CindySlotDeps>);
+    const r = await slot.handleModelRequest('art', EMBED);
+
+    expect(r).toMatchObject({
+      ok: true,
+      model: 'voyage/voyage-4',
+      upstreamModel: 'voyage/voyage-4-20250101',
+    });
+    // 回执里的 model 必须能原样再走一遍白名单(不然手册那条检索示例是死的)
+    const replay = await slot.handleModelRequest('art', {
+      ...EMBED,
+      model: (r as { model: string }).model,
+    });
+    expect(replay).toMatchObject({ ok: true });
+  });
+
+  it('上游型号与别名相同 → 不带 upstreamModel(不给调方多余的比对项)', async () => {
+    const { slot } = withEmbed();
+    const r = await slot.handleModelRequest('art', EMBED);
+    expect(r).toMatchObject({ ok: true, model: 'voyage/voyage-4' });
+    expect(r).not.toHaveProperty('upstreamModel');
+  });
+
+  it('载荷校验:空数组 / 非字符串 / 超条数 / 单条超长 / 总量超限 → INVALID_PARAMS', async () => {
+    const { slot } = withEmbed();
+    for (const texts of [[], [''], [123], Array.from({ length: 33 }, () => 'x')]) {
+      expect(await slot.handleModelRequest('art', { ...EMBED, texts })).toMatchObject({
+        ok: false,
+        errorCode: 'INVALID_PARAMS',
+      });
+    }
+    expect(
+      await slot.handleModelRequest('art', { ...EMBED, texts: ['x'.repeat(8193)] }),
+    ).toMatchObject({ ok: false, errorCode: 'INVALID_PARAMS' });
+    // 32 条 × 4096 = 131072 字符:每条都合法,合计超出单批预算。
+    expect(
+      await slot.handleModelRequest('art', {
+        ...EMBED,
+        texts: Array.from({ length: 32 }, () => 'x'.repeat(4096)),
+      }),
+    ).toMatchObject({ ok: false, errorCode: 'INVALID_PARAMS' });
+  });
+
+  it('inputType / dimensions 值域校验,合法值原样下传', async () => {
+    const embedText = vi.fn(async () => ({ embeddings: [fakeVec(1)], modelUsed: 'voyage/voyage-4' }));
+    const { slot } = withEmbed({ embedText } as unknown as Partial<CindySlotDeps>);
+    expect(
+      await slot.handleModelRequest('art', { ...EMBED, inputType: 'passage' }),
+    ).toMatchObject({ ok: false, errorCode: 'INVALID_PARAMS' });
+    expect(
+      await slot.handleModelRequest('art', { ...EMBED, dimensions: 0 }),
+    ).toMatchObject({ ok: false, errorCode: 'INVALID_PARAMS' });
+    expect(
+      await slot.handleModelRequest('art', { ...EMBED, dimensions: 99999 }),
+    ).toMatchObject({ ok: false, errorCode: 'INVALID_PARAMS' });
+    expect(embedText).not.toHaveBeenCalled();
+
+    await slot.handleModelRequest('art', { ...EMBED, inputType: 'query', dimensions: 512 });
+    expect(embedText).toHaveBeenCalledWith(
+      expect.objectContaining({ inputType: 'query', dimensions: 512 }),
+    );
+  });
+
+  it('选型:tier 档位 / 显式 model,白名单外明拒', async () => {
+    const embedText = vi.fn(async () => ({ embeddings: [fakeVec(1)], modelUsed: 'x' }));
+    const { slot } = withEmbed({ embedText } as unknown as Partial<CindySlotDeps>);
+    await slot.handleModelRequest('art', { ...EMBED, tier: 'draft' });
+    expect(embedText).toHaveBeenLastCalledWith(
+      expect.objectContaining({ model: 'text-embedding-3-small' }),
+    );
+    await slot.handleModelRequest('art', { ...EMBED, model: 'voyage/voyage-4-large' });
+    expect(embedText).toHaveBeenLastCalledWith(
+      expect.objectContaining({ model: 'voyage/voyage-4-large' }),
+    );
+    expect(
+      await slot.handleModelRequest('art', { ...EMBED, model: 'not-in-catalog' }),
+    ).toMatchObject({ ok: false, errorCode: 'INVALID_PARAMS' });
+
+  });
+
+  it('目录无可用向量型号 → NO_CANDIDATE,不出网', async () => {
+    const embedText = vi.fn();
+    const { slot } = withEmbed({
+      getEmbedConfig: vi.fn(() => ({ models: [], defaults: null })),
+      embedText,
+    } as unknown as Partial<CindySlotDeps>);
+    expect(await slot.handleModelRequest('art', EMBED)).toMatchObject({
+      ok: false,
+      errorCode: 'NO_CANDIDATE',
+    });
+    expect(embedText).not.toHaveBeenCalled();
+  });
+
+  it('能力未接线(deps 缺 embedText / getEmbedConfig)→ 结构化拒绝,fail closed', async () => {
+    const { slot } = makeSlot({
+      getGhost: () => fakeGhost({ model: { embed: ['text'] } }),
+      embedText: undefined,
+      getEmbedConfig: undefined,
+    } as unknown as Partial<CindySlotDeps>);
+    expect(await slot.handleModelRequest('art', EMBED)).toMatchObject({
+      ok: false,
+      errorCode: 'INTERNAL',
+    });
+  });
+
+  it('通道返回条数与请求不符 → 丢弃结果而不是错位交付', async () => {
+    // 错位比缺失危险得多:调方按 index 对齐,配错的向量不报错,只让检索结果莫名其妙。
+    const { slot } = withEmbed({
+      embedText: vi.fn(async () => ({ embeddings: [fakeVec(1)], modelUsed: 'voyage/voyage-4' })),
+    } as unknown as Partial<CindySlotDeps>);
+    expect(
+      await slot.handleModelRequest('art', { ...EMBED, texts: ['a', 'b', 'c'] }),
+    ).toMatchObject({ ok: false, errorCode: 'INTERNAL' });
+  });
+
+  it('通道抛错被兜住(永不 reject),且在途计数归零', async () => {
+    const { slot } = withEmbed({
+      embedText: vi.fn(async () => {
+        throw new Error('gateway 500');
+      }),
+    } as unknown as Partial<CindySlotDeps>);
+    const r = await slot.handleModelRequest('art', EMBED);
+    expect(r).toMatchObject({ ok: false, errorCode: 'INTERNAL' });
+    expect(slot.anyInflightWork()).toBe(false);
+  });
+});
+
+describe('文本转向量 · 上下文化(documents)', () => {
+  const fakeVec = (seed: number): number[] => [seed, seed + 0.1, seed + 0.2, seed + 0.3];
+  const CTX_MODEL = 'voyage/voyage-context-4';
+  const DOCS = [['一篇的 chunk1', '一篇的 chunk2', '一篇的 chunk3'], ['二篇只有一块']];
+  const REQ = {
+    type: 'cindy-request',
+    kind: 'embed_text',
+    model: CTX_MODEL,
+    documents: DOCS,
+    inputType: 'document',
+  };
+  /** 按请求分组同形地造假结果(默认 happy path)。 */
+  const echoShape = vi.fn(async ({ documents }: { documents: string[][] }) => ({
+    embeddings: documents.map((doc, d) => doc.map((_c, i) => fakeVec(d * 10 + i))),
+    modelUsed: CTX_MODEL,
+  }));
+  const withCtx = (deps: Partial<CindySlotDeps> = {}) =>
+    makeSlot({
+      getGhost: () => fakeGhost({ model: { embed: ['text'] } }),
+      getEmbedConfig: vi.fn(() => ({
+        models: [
+          { id: 'voyage/voyage-4', label: 'Voyage 4' },
+          { id: CTX_MODEL, label: 'Voyage Context 4' },
+        ],
+        defaults: { standard: 'voyage/voyage-4', draft: 'voyage/voyage-4', best: CTX_MODEL },
+      })),
+      embedText: vi.fn(async ({ texts }: { texts: string[] }) => ({
+        embeddings: texts.map((_t, i) => fakeVec(i)),
+        modelUsed: 'voyage/voyage-4',
+      })),
+      embedDocuments: echoShape,
+      ...deps,
+    } as unknown as Partial<CindySlotDeps>);
+
+  it('happy path:回 documentEmbeddings(三层),不回 embeddings', async () => {
+    const { slot } = withCtx();
+    const r = (await slot.handleModelRequest('art', REQ)) as {
+      ok: boolean;
+      documentEmbeddings?: number[][][];
+      embeddings?: number[][];
+      dim?: number;
+      modelLabel?: string;
+    };
+    expect(r.ok).toBe(true);
+    expect(r.documentEmbeddings?.map((d) => d.length)).toEqual([3, 1]);
+    expect(r.embeddings).toBeUndefined();
+    expect(r.dim).toBe(4);
+    expect(r.modelLabel).toBe('Voyage Context 4');
+  });
+
+  it('上下文化路径同样回可回放的别名(带版本号的进 upstreamModel)', async () => {
+    const embedDocuments = vi.fn(async ({ documents }: { documents: string[][] }) => ({
+      embeddings: documents.map((doc, d) => doc.map((_c, i) => fakeVec(d * 10 + i))),
+      modelUsed: `${CTX_MODEL}-20250101`,
+    }));
+    const { slot } = withCtx({ embedDocuments } as unknown as Partial<CindySlotDeps>);
+    const r = await slot.handleModelRequest('art', REQ);
+    expect(r).toMatchObject({
+      ok: true,
+      model: CTX_MODEL,
+      upstreamModel: `${CTX_MODEL}-20250101`,
+    });
+  });
+
+  it('texts 与 documents 同时传 → INVALID_PARAMS,不出网(意图不明不猜)', async () => {
+    const embedDocuments = vi.fn();
+    const embedText = vi.fn();
+    const { slot } = withCtx({ embedDocuments, embedText } as unknown as Partial<CindySlotDeps>);
+    expect(
+      await slot.handleModelRequest('art', { ...REQ, texts: ['x'] }),
+    ).toMatchObject({ ok: false, errorCode: 'INVALID_PARAMS' });
+    expect(embedDocuments).not.toHaveBeenCalled();
+    expect(embedText).not.toHaveBeenCalled();
+  });
+
+  it('不支持上下文化的型号收到 documents → 出网前明拒', async () => {
+    // 关键:不能让它降级成逐块独立嵌 —— 那样调方以为拿到了 chunk 上下文,
+    // 实际没有,质量损失完全不可见。
+    const embedDocuments = vi.fn();
+    const { slot } = withCtx({ embedDocuments } as unknown as Partial<CindySlotDeps>);
+    const r = await slot.handleModelRequest('art', { ...REQ, model: 'voyage/voyage-4' });
+    expect(r).toMatchObject({ ok: false, errorCode: 'INVALID_PARAMS' });
+    expect((r as { message: string }).message).toContain('上下文化');
+    expect(embedDocuments).not.toHaveBeenCalled();
+  });
+
+  it('documents 载荷校验:空数组 / 空文档 / 非字符串 chunk → INVALID_PARAMS', async () => {
+    const { slot } = withCtx();
+    for (const documents of [[], [[]], [['ok'], []], [[123]], ['not-an-array']]) {
+      expect(
+        await slot.handleModelRequest('art', { ...REQ, documents }),
+      ).toMatchObject({ ok: false, errorCode: 'INVALID_PARAMS' });
+    }
+  });
+
+  it('预算按 chunk 总数计:33 个 chunk 分两篇也超限', async () => {
+    const { slot } = withCtx();
+    const documents = [
+      Array.from({ length: 20 }, () => 'x'),
+      Array.from({ length: 13 }, () => 'y'),
+    ];
+    const r = await slot.handleModelRequest('art', { ...REQ, documents });
+    expect(r).toMatchObject({ ok: false, errorCode: 'INVALID_PARAMS' });
+    expect((r as { message: string }).message).toContain('chunk');
+  });
+
+  it('返回分组与请求不同形 → 丢弃结果(chunk 归错文档不报错,只让检索莫名其妙)', async () => {
+    const { slot } = withCtx({
+      embedDocuments: vi.fn(async () => ({
+        embeddings: [[fakeVec(1), fakeVec(2)], [fakeVec(3)]], // 首篇少一个 chunk
+        modelUsed: CTX_MODEL,
+      })),
+    } as unknown as Partial<CindySlotDeps>);
+    expect(await slot.handleModelRequest('art', REQ)).toMatchObject({
+      ok: false,
+      errorCode: 'INTERNAL',
+    });
+  });
+
+  it('上下文化未接线(deps 缺 embedDocuments)→ 结构化拒绝,而非退回逐条路径', async () => {
+    const embedText = vi.fn();
+    const { slot } = withCtx({
+      embedDocuments: undefined,
+      embedText,
+    } as unknown as Partial<CindySlotDeps>);
+    expect(await slot.handleModelRequest('art', REQ)).toMatchObject({
+      ok: false,
+      errorCode: 'INTERNAL',
+    });
+    expect(embedText).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * embed_text 的失败面与时间预算(PR #1707 review)。
+ *
+ * 两条都不是"崩没崩"的问题,而是"插件能不能判断下一步该干什么":
+ *   - 执行层的结构化 code 被一律压成 INTERNAL,则"改参数"与"退避重试"在协议上
+ *     长得一样,插件只能瞎猜;
+ *   - 不给时间预算,网关连上却不返数据时 await 永不落地,该意识的在途额度被永久
+ *     占掉一格,配了并发上限的插件从此单单被拒。
+ */
+describe('文本转向量(embed_text)· 失败码与时间预算', () => {
+  const EMBED = { type: 'cindy-request', kind: 'embed_text', texts: ['一段内容'] };
+  const embedCfg = () => ({
+    models: [{ id: 'voyage/voyage-4', label: 'Voyage 4' }],
+    defaults: {
+      standard: 'voyage/voyage-4',
+      draft: 'voyage/voyage-4',
+      best: 'voyage/voyage-4',
+    },
+  });
+  /** 让注入的执行实现抛某个 EmbeddingError 形状(鸭子判型只看 .code)。 */
+  const throwingSlot = (code: string | undefined) =>
+    makeSlot({
+      getGhost: () => fakeGhost({ model: { embed: ['text'] } }),
+      getEmbedConfig: vi.fn(embedCfg),
+      embedText: vi.fn(async () => {
+        const err = new Error(`upstream said no (${String(code)})`) as Error & { code?: string };
+        if (code !== undefined) err.code = code;
+        throw err;
+      }),
+    } as unknown as Partial<CindySlotDeps>);
+
+  it.each([
+    ['INVALID_MODEL', 'INVALID_PARAMS'],
+    ['RATE_LIMITED', 'RATE_LIMITED'],
+    ['TIMEOUT', 'TIMEOUT'],
+    ['AUTH_FAILED', 'NO_CANDIDATE'],
+    // 用户在设置里停用了供应商/型号 —— 主机没得选,与"目录里没有可用型号"同一
+    // 语义面。FORGE_GUIDE 明确承诺这种情况报 NO_CANDIDATE。
+    ['DISABLED', 'NO_CANDIDATE'],
+    ['NETWORK_ERROR', 'INTERNAL'],
+    ['SERVER_ERROR', 'INTERNAL'],
+  ])('执行层 %s → 协议 %s', async (upstream, expected) => {
+    const { slot } = throwingSlot(upstream);
+    expect(await slot.handleModelRequest('art', EMBED)).toMatchObject({
+      ok: false,
+      errorCode: expected,
+    });
+  });
+
+  it.each([['ultra'], ['Best'], [123], [null]])(
+    '非法档位 tier=%s → INVALID_PARAMS,不出网(静默降级会让向量落错模型空间)',
+    async (tier) => {
+      const embedText = vi.fn();
+      const { slot } = makeSlot({
+        getGhost: () => fakeGhost({ model: { embed: ['text'] } }),
+        getEmbedConfig: vi.fn(embedCfg),
+        embedText,
+      } as unknown as Partial<CindySlotDeps>);
+      expect(await slot.handleModelRequest('art', { ...EMBED, tier })).toMatchObject({
+        ok: false,
+        errorCode: 'INVALID_PARAMS',
+      });
+      expect(embedText).not.toHaveBeenCalled();
+    },
+  );
+
+  it('合法档位照常生效(明拒不能顺手把三个档位一起拒掉)', async () => {
+    const embedText = vi.fn(async (_p: { model: string }) => ({
+      embeddings: [[1]],
+      modelUsed: 'x',
+    }));
+    const { slot } = makeSlot({
+      getGhost: () => fakeGhost({ model: { embed: ['text'] } }),
+      getEmbedConfig: vi.fn(() => ({
+        models: [
+          { id: 'voyage/voyage-4', label: 'Voyage 4' },
+          { id: 'voyage/voyage-4-large', label: 'Voyage 4 Large' },
+        ],
+        defaults: {
+          standard: 'voyage/voyage-4',
+          draft: 'voyage/voyage-4',
+          best: 'voyage/voyage-4-large',
+        },
+      })),
+      embedText,
+    } as unknown as Partial<CindySlotDeps>);
+    expect(await slot.handleModelRequest('art', { ...EMBED, tier: 'best' })).toMatchObject({
+      ok: true,
+    });
+    expect(embedText.mock.calls[0][0]).toMatchObject({ model: 'voyage/voyage-4-large' });
+  });
+
+  it('不带 code 的普通异常仍是 INTERNAL(鸭子判型不能把任何 Error 都当结构化失败)', async () => {
+    const { slot } = throwingSlot(undefined);
+    expect(await slot.handleModelRequest('art', EMBED)).toMatchObject({
+      ok: false,
+      errorCode: 'INTERNAL',
+    });
+  });
+
+  it('失败后在途额度必须归还:同一插件下一单不会被并发上限拒掉', async () => {
+    const { slot } = makeSlot({
+      getGhost: () => fakeGhost({ model: { embed: ['text'] } }),
+      getEmbedConfig: vi.fn(embedCfg),
+      getInflightLimit: () => 1,
+      embedText: vi
+        .fn()
+        .mockRejectedValueOnce(Object.assign(new Error('boom'), { code: 'SERVER_ERROR' }))
+        .mockResolvedValueOnce({ embeddings: [[1, 2, 3]], modelUsed: 'voyage/voyage-4' }),
+    } as unknown as Partial<CindySlotDeps>);
+    expect(await slot.handleModelRequest('art', EMBED)).toMatchObject({ ok: false });
+    // 额度没归还的实现在这里会回 RATE_LIMITED 而不是成功。
+    expect(await slot.handleModelRequest('art', EMBED)).toMatchObject({ ok: true });
+  });
+
+  it('两条路径都把时间预算递给执行层(缺了就等于没有超时)', async () => {
+    const embedText = vi.fn(async (_p: { timeoutMs?: number }) => ({
+      embeddings: [[1]],
+      modelUsed: 'voyage/voyage-4',
+    }));
+    const embedDocuments = vi.fn(async (_p: { timeoutMs?: number }) => ({
+      embeddings: [[[1]]],
+      modelUsed: 'voyage/voyage-context-4',
+    }));
+    const { slot } = makeSlot({
+      getGhost: () => fakeGhost({ model: { embed: ['text'] } }),
+      getEmbedConfig: vi.fn(() => ({
+        models: [
+          { id: 'voyage/voyage-4', label: 'Voyage 4' },
+          { id: 'voyage/voyage-context-4', label: 'Voyage Context 4' },
+        ],
+        defaults: {
+          standard: 'voyage/voyage-4',
+          draft: 'voyage/voyage-4',
+          best: 'voyage/voyage-4',
+        },
+      })),
+      embedText,
+      embedDocuments,
+    } as unknown as Partial<CindySlotDeps>);
+    await slot.handleModelRequest('art', EMBED);
+    await slot.handleModelRequest('art', {
+      type: 'cindy-request',
+      kind: 'embed_text',
+      model: 'voyage/voyage-context-4',
+      documents: [['chunk']],
+    });
+    expect(embedText.mock.calls[0][0]).toMatchObject({
+      timeoutMs: GHOST_CINDY_EMBED_TIMEOUT_MS,
+    });
+    expect(embedDocuments.mock.calls[0][0]).toMatchObject({
+      timeoutMs: GHOST_CINDY_EMBED_TIMEOUT_MS,
+    });
   });
 });

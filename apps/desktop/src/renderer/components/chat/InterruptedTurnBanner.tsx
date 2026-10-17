@@ -30,10 +30,12 @@
  * --error-fg / --error-fg-strong(与 ErrorMessageCard 同组),不硬编码 Tailwind red。
  */
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { CirclePause, Play, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
+import { extractUsageLimitRecoveryHint } from '@/lib/usageLimitRecovery';
+import type { ToolLoopErrorDetails } from '@cindy/maker-core';
 import { ErrorBanner } from './ErrorBanner';
 
 export function InterruptedTurnBanner({
@@ -90,7 +92,9 @@ export function InterruptedTurnBanner({
         title={t('chat.interruptedBanner.continueTitle')}
       >
         <Play size={12} />
-        {sending ? t('chat.interruptedBanner.continuing') : t('chat.interruptedBanner.continueAction')}
+        {sending
+          ? t('chat.interruptedBanner.continuing')
+          : t('chat.interruptedBanner.continueAction')}
       </button>
       <button
         type="button"
@@ -105,14 +109,16 @@ export function InterruptedTurnBanner({
 }
 
 /** ErrorBanner 的 retryText 只是显示 Retry 的非空 typed token,onRetry 忽略它。 */
-const ERROR_TAIL_RETRY_TOKEN = '__xdt_error_tail_continue__';
+export const ERROR_TAIL_RETRY_TOKEN = '__xdt_error_tail_continue__';
 
 export function ErrorTailErrorBanner({
   errorText,
   onContinue,
   onDismiss,
+  dismissOnEscape,
   agentKind,
   remoteHostId,
+  agentDeviceId,
   deviceLinkDeviceId,
   modelId,
   providerId,
@@ -123,7 +129,9 @@ export function ErrorTailErrorBanner({
   onForkStripEncrypted,
   forkStripEncryptedRunning,
   errorReason,
+  toolLoop,
   onSilentStopContinue,
+  sessionSource,
   className,
   style,
 }: {
@@ -132,7 +140,9 @@ export function ErrorTailErrorBanner({
   errorText: string;
   onContinue: () => Promise<void> | void;
   onDismiss: () => void;
+  dismissOnEscape?: boolean;
   agentKind?: 'cc' | 'codex' | 'pi';
+  agentDeviceId?: string | null;
   remoteHostId?: string;
   deviceLinkDeviceId?: string | null;
   modelId?: string;
@@ -146,19 +156,30 @@ export function ErrorTailErrorBanner({
   onForkStripEncrypted?: () => void | Promise<void>;
   forkStripEncryptedRunning?: boolean;
   errorReason?: string | null;
+  toolLoop?: ToolLoopErrorDetails;
   onSilentStopContinue?: () => void;
+  sessionSource?: string | null;
   className?: string;
   style?: React.CSSProperties;
 }) {
+  const usageLimitRecovery = useMemo(
+    () => extractUsageLimitRecoveryHint({ message: errorText }),
+    [errorText],
+  );
+
   return (
     <ErrorBanner
       error={errorText}
       errorReason={errorReason}
+      toolLoop={toolLoop}
       retryText={ERROR_TAIL_RETRY_TOKEN}
       onRetry={() => void onContinue()}
       onCancel={onDismiss}
+      dismissOnEscape={dismissOnEscape}
       onSilentStopContinue={onSilentStopContinue}
+      usageLimitRecovery={usageLimitRecovery}
       agentKind={agentKind}
+      agentDeviceId={agentDeviceId}
       remoteHostId={remoteHostId}
       deviceLinkDeviceId={deviceLinkDeviceId}
       modelId={modelId}
@@ -169,6 +190,7 @@ export function ErrorTailErrorBanner({
       silentEncryptedRetryEnabled={silentEncryptedRetryEnabled}
       onForkStripEncrypted={onForkStripEncrypted}
       forkStripEncryptedRunning={forkStripEncryptedRunning}
+      sessionSource={sessionSource}
       className={className}
       style={style}
     />

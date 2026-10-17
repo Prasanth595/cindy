@@ -11,7 +11,7 @@
  *   5. 长供应商名称不撑破弹层(truncate)
  */
 
-import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import React from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -22,16 +22,56 @@ vi.mock('react-i18next', async (importOriginal) => ({
       const translations: Record<string, string> = {
         'settings.providers.anthropic.title': 'Anthropic',
         'settings.providers.xd.title': 'Cindy AI',
+        'settings.providers.xd.accountTier.free': '免费版',
         'newChat.modelSelector.trigger.placeholder': '选择模型',
+        'newChat.modelSelector.trigger.loading': '正在读取模型…',
+        'newChat.modelSelector.trigger.unresolved': '模型信息暂不可用',
         'newChat.modelSelector.trigger.aria': `Select model. Current: ${options?.model ?? ''}`,
         'newChat.modelSelector.trigger.ariaWithEffort': `Select model. Current: ${options?.model ?? ''}, effort: ${options?.effort ?? ''}`,
+        'newChat.modelSelector.modelListAria': '模型列表',
         'newChat.modelSelector.search.noResults': '无匹配模型',
         'newChat.modelSelector.pricing.free': '限时免费',
         'newChat.modelSelector.source.disconnected': '已断开',
+        'newChat.modelSelector.trigger.agent.claudeCode': 'Claude Code',
+        'newChat.modelSelector.trigger.agent.codex': 'Codex',
+        'newChat.modelSelector.trigger.currentAndNext': `${options?.current} → ${options?.next}`,
+        'effortLevels.high': '最高',
       };
       return translations[key] ?? options?.defaultValue ?? key;
     },
   }),
+}));
+
+const floatingUiMocks = vi.hoisted(() => {
+  const limitShiftResult = { fn: () => ({ x: 0, y: 0 }), options: {} };
+  return {
+    autoUpdate: vi.fn(() => () => {}),
+    flip: vi.fn((options: unknown) => ({ name: 'flip', options })),
+    limitShift: vi.fn(() => limitShiftResult),
+    limitShiftResult,
+    offset: vi.fn((options: unknown) => ({ name: 'offset', options })),
+    shift: vi.fn((options: unknown) => ({ name: 'shift', options })),
+    size: vi.fn((options: unknown) => ({ name: 'size', options })),
+    useFloating: vi.fn(),
+  };
+});
+
+vi.mock('@floating-ui/react-dom', () => ({
+  autoUpdate: floatingUiMocks.autoUpdate,
+  flip: floatingUiMocks.flip,
+  limitShift: floatingUiMocks.limitShift,
+  offset: floatingUiMocks.offset,
+  shift: floatingUiMocks.shift,
+  size: floatingUiMocks.size,
+  useFloating: (options: unknown) => {
+    floatingUiMocks.useFloating(options);
+    return {
+      refs: { setFloating: () => {} },
+      floatingStyles: { position: 'fixed', left: 120, top: 24 },
+      isPositioned: true,
+      placement: 'left',
+    };
+  },
 }));
 
 vi.mock('@/components/ui/popover', async () => {
@@ -66,12 +106,37 @@ vi.mock('@/components/ui/popover', async () => {
       });
     },
     PopoverAnchor: ({ children }: { children: React.ReactNode }) => children,
-    PopoverContent: ({ children }: { children: React.ReactNode }) => {
+    PopoverContent: React.forwardRef<
+      HTMLDivElement,
+      {
+        children: React.ReactNode;
+        className?: string;
+        collisionPadding?:
+          | number
+          | {
+              top?: number;
+              right?: number;
+              bottom?: number;
+              left?: number;
+            };
+      }
+    >(({ children, className, collisionPadding }, ref) => {
       const state = React.useContext(OpenContext);
+      const collisionPaddingTop =
+        typeof collisionPadding === 'number' ? collisionPadding : collisionPadding?.top;
       return state.open
-        ? React.createElement('div', { 'data-testid': 'model-options-popover' }, children)
+        ? React.createElement(
+            'div',
+            {
+              ref,
+              'data-testid': 'model-options-popover',
+              'data-collision-padding-top': collisionPaddingTop,
+              className,
+            },
+            children,
+          )
         : null;
-    },
+    }),
   };
 });
 
@@ -94,6 +159,18 @@ vi.mock('@/hooks/useConnectedSource', () => ({
 vi.mock('@/hooks/useModelPricing', () => ({
   useGatewayModelPricing: () => ({}),
   useReferenceModelPricing: () => ({}),
+}));
+
+const modelAccessState = vi.hoisted(() => ({
+  accountTier: null as 'free' | 'paid' | 'not_applicable' | null,
+}));
+vi.mock('@/hooks/useModelAccessStatus', () => ({
+  useModelAccessStatus: () => ({
+    state: 'ok',
+    source: 'server',
+    endpoint: 'https://gateway.example.com',
+    accountTier: modelAccessState.accountTier,
+  }),
 }));
 
 const providersRef = vi.hoisted(() => {
@@ -146,10 +223,12 @@ const providersRef = vi.hoisted(() => {
       },
     },
   ] as unknown[];
-  return { DEFAULT_PROVIDERS, providers: DEFAULT_PROVIDERS };
+  return { DEFAULT_PROVIDERS, providers: DEFAULT_PROVIDERS, loading: false, loadFailed: false,
+    error: null as { reason: 'legacy-busy' } | null, refetch: vi.fn(async () => true) };
 });
 vi.mock('@/hooks/useProviders', () => ({
-  useProviders: () => ({ providers: providersRef.providers, providerOrder: [] }),
+  useProviders: () => ({ providers: providersRef.providers, providerOrder: [],
+    loading: providersRef.loading, loadFailed: providersRef.loadFailed, error: providersRef.error, refetch: providersRef.refetch }),
 }));
 
 vi.mock('@/hooks/useDeviceProviders', () => ({
@@ -163,13 +242,17 @@ vi.mock('@/hooks/useDeviceProviders', () => ({
   }),
 }));
 
+// selectVisibleModels 只喂 trigger 的 currentModel(分组列表另有来源),既有用例一律按
+// 空清单跑 —— trigger 显示占位符。pill 形态的用例需要一个**真实模型名 + 档位**才能验,
+// 故走 hoisted ref 逐用例开洞,默认值不动,既有用例行为逐字节不变。
+const visibleModelsRef = vi.hoisted(() => ({ models: [] as unknown[] }));
 vi.mock('@/lib/providerModels', () => ({
   providerMonogram: (name: string) => name.slice(0, 1).toUpperCase(),
-  isChatBridgedCodexProvider: () => false,
+  isLocalOnlyProviderForAgent: () => false,
   filterChatBridgedCodexProviders: (providers: unknown[]) => providers,
   resolveVisibleModelAgentKind: ({ agentKind }: { agentKind: string | null }) =>
     agentKind ?? 'claude-code',
-  selectVisibleModels: () => [],
+  selectVisibleModels: () => visibleModelsRef.models,
 }));
 
 vi.mock('@/state/modelVisibilityPrefs', () => ({
@@ -191,7 +274,20 @@ const requestProviderModelsAutoRefresh = vi.fn(async () => ({ ok: true as const 
 
 beforeEach(() => {
   requestProviderModelsAutoRefresh.mockClear();
+  floatingUiMocks.autoUpdate.mockClear();
+  floatingUiMocks.flip.mockClear();
+  floatingUiMocks.limitShift.mockClear();
+  floatingUiMocks.offset.mockClear();
+  floatingUiMocks.shift.mockClear();
+  floatingUiMocks.size.mockClear();
+  floatingUiMocks.useFloating.mockClear();
   providersRef.providers = providersRef.DEFAULT_PROVIDERS;
+  providersRef.loading = false;
+  providersRef.loadFailed = false;
+  providersRef.error = null;
+  providersRef.refetch.mockClear();
+  modelAccessState.accountTier = null;
+  visibleModelsRef.models = [];
   (window as unknown as { electronAPI: unknown }).electronAPI = {
     maker: { requestProviderModelsAutoRefresh },
   };
@@ -200,6 +296,8 @@ beforeEach(() => {
 function renderSelector(props: Partial<React.ComponentProps<typeof ModelSelector>> = {}) {
   return render(
     React.createElement(ModelSelector, {
+      // Compatibility renderer for capabilities-only remote hosts.
+      unifiedPanel: false,
       modelId: 'claude-opus-4-8',
       effort: 'high',
       onModelChange: vi.fn(),
@@ -218,7 +316,363 @@ async function openDropdown(): Promise<void> {
   });
 }
 
+describe('model selector display identity during switches', () => {
+  const props = {
+    unifiedPanel: false,
+    modelId: 'chatgpt/gpt-6',
+    effort: 'high',
+    vendorKey: 'codex' as const,
+    currentProviderId: 'openai',
+    actualRoute: true,
+    onModelChange: vi.fn(),
+    onEffortChange: vi.fn(),
+  };
+  const provider = {
+    id: 'openai', name: 'OpenAI', source: 'builtin', agents: ['codex'],
+    auth: { method: 'oauth' }, routing: { codex: {} }, connected: true,
+    models: { codex: [{ id: 'gpt-6', name: 'GPT-6', efforts: ['high'] }] },
+  };
+  const trigger = () => screen.getByRole('button');
+
+  it.each([false, true])('resolves implicit aliases using the eligible default source (session=%s)', (actualRoute) => {
+    const gateway = { ...provider, id: 'xd', models: { codex: [{ id: 'gpt-6', name: 'Gateway GPT' }] } };
+    providersRef.providers = [gateway, provider];
+    const implicit = { ...props, currentProviderId: null, actualRoute };
+    const { rerender } = render(<ModelSelector {...implicit} switching />);
+    expect(trigger().textContent).toContain('GPT-6');
+    expect(trigger().textContent).not.toContain('Gateway GPT');
+    providersRef.providers = [gateway, { ...provider, connected: false }];
+    rerender(<ModelSelector {...implicit} />);
+    expect(trigger().textContent).toContain('Gateway GPT');
+  });
+
+  it.each([false, true])('preserves disabled-model eligibility for implicit sources (session=%s)', (actualRoute) => {
+    const gateway = { ...provider, id: 'xd', models: { codex: [{ id: 'gpt-6', name: 'Gateway GPT' }] } };
+    const disabled = { ...provider, models: { codex: [{ id: 'gpt-6', name: 'Saved GPT', disabled: true }] } };
+    providersRef.providers = [gateway, disabled];
+    render(<ModelSelector {...props} currentProviderId={null} actualRoute={actualRoute} />);
+    expect(trigger().textContent).toContain(actualRoute ? 'Saved GPT' : 'Gateway GPT');
+  });
+
+  it('resolves an implicit current model in the pending tooltip', () => {
+    providersRef.providers = [provider];
+    render(<ModelSelector {...props} currentProviderId={null}
+      agentIdentity={{ vendorKey: 'codex', state: 'pending' }}
+      currentSelection={{ agentKind: 'codex', model: props.modelId, providerId: null, effort: 'high', fastMode: false }} />);
+    expect(trigger().title).toContain('Codex · GPT-6 · OpenAI');
+    expect(trigger().title).not.toContain(props.modelId);
+  });
+
+  it.each([false, true])('keeps the long-context product when choosing an implicit source (session=%s)', (actualRoute) => {
+    providersRef.providers = [
+      { ...provider, models: { codex: [{ id: 'glm-5.2', name: 'Standard GLM' }] } },
+      { ...provider, id: 'xd', name: 'Gateway', models: { codex: [{ id: 'glm-5.2[1m]', name: 'GLM 1M' }] } },
+    ];
+    render(<ModelSelector {...props} modelId="glm-5.2[1m]" currentProviderId={null} actualRoute={actualRoute}
+      agentIdentity={{ vendorKey: 'codex', state: 'pending' }}
+      currentSelection={{ agentKind: 'codex', model: 'glm-5.2[1m]', providerId: null, effort: 'high', fastMode: false }} />);
+    expect(trigger().textContent).toContain('GLM 1M');
+    expect(trigger().title).toContain('Codex · GLM 1M · Cindy AI');
+    expect(trigger().title).not.toContain('Standard GLM');
+    expect(trigger().title).not.toContain('OpenAI');
+  });
+
+  it('resolves a wire alias immediately, including while the switch is in flight', () => {
+    providersRef.providers = [provider];
+    const { rerender } = render(<ModelSelector {...props} switching />);
+    expect(trigger().textContent).toContain('GPT-6');
+    expect(trigger().getAttribute('aria-label')).not.toContain(props.modelId);
+    rerender(<ModelSelector {...props} switching={false} />);
+    expect(trigger().textContent).toContain('GPT-6');
+  });
+
+  it('retains the selected name when discovery loses the catalog, then accepts updated names', () => {
+    providersRef.providers = [provider];
+    const { rerender } = render(<ModelSelector {...props} switching />);
+    providersRef.providers = [];
+    rerender(<ModelSelector {...props} switching sourceDisconnected />);
+    expect(trigger().textContent).toContain('GPT-6');
+    expect(trigger().textContent).not.toContain(props.modelId);
+    // A failed switch/refresh must not leave the wire ID behind once in-flight ends.
+    rerender(<ModelSelector {...props} sourceDisconnected />);
+    expect(trigger().textContent).toContain('GPT-6');
+    expect(trigger().textContent).toContain('已断开');
+    providersRef.providers = [{ ...provider, models: { codex: [{ id: 'gpt-6', name: 'Custom GPT label' }] } }];
+    rerender(<ModelSelector {...props} />);
+    expect(trigger().textContent).toContain('Custom GPT label');
+  });
+
+  it.each([
+    { modelId: 'chatgpt/unknown-model' },
+    { currentProviderId: 'another-account' },
+    { vendorKey: 'pi' as const },
+    { deviceId: 'another-device' },
+  ])('does not reuse the previous name across a selection boundary: %j', (change) => {
+    providersRef.providers = [provider];
+    const { rerender } = render(<ModelSelector {...props} />);
+    expect(trigger().textContent).toContain('GPT-6');
+    providersRef.providers = [];
+    rerender(<ModelSelector {...props} {...change} />);
+    expect(trigger().textContent).not.toContain('GPT-6');
+    expect(trigger().textContent).not.toContain(change.modelId ?? props.modelId);
+  });
+
+  it.each([false, true])('distinguishes an unknown saved model from an empty selection (disconnected=%s)', (sourceDisconnected) => {
+    providersRef.providers = [];
+    render(<ModelSelector {...props} sourceDisconnected={sourceDisconnected} />);
+    expect(trigger().textContent).toContain('模型信息暂不可用');
+    expect(trigger().textContent).not.toContain('选择模型');
+    expect(trigger().textContent).not.toContain(props.modelId);
+    expect(trigger().getAttribute('title')).not.toContain(props.modelId);
+    expect(trigger().getAttribute('aria-label')).not.toContain(props.modelId);
+  });
+
+  it('shows loading for a selected model until its catalog arrives, and keeps the name through refresh', () => {
+    providersRef.providers = [];
+    providersRef.loading = true;
+    const { rerender } = render(<ModelSelector {...props} />);
+    expect(trigger().textContent).toContain('正在读取模型…');
+    providersRef.providers = [provider];
+    providersRef.loading = false;
+    rerender(<ModelSelector {...props} />);
+    expect(trigger().textContent).toContain('GPT-6');
+    providersRef.providers = [];
+    providersRef.loading = true;
+    rerender(<ModelSelector {...props} />);
+    expect(trigger().textContent).toContain('GPT-6');
+    expect(trigger().textContent).not.toContain('正在读取模型…');
+  });
+
+  it('still prompts for a model when there is no selection', () => {
+    render(<ModelSelector {...props} modelId="" />);
+    expect(trigger().textContent).toContain('选择模型');
+  });
+
+  it('settles a failed first catalog load, then recovers through retry without clearing the selection', () => {
+    providersRef.providers = [];
+    providersRef.loading = true;
+    const { rerender } = render(<ModelSelector {...props} />);
+    expect(trigger().textContent).toContain('正在读取模型…');
+
+    providersRef.loadFailed = true;
+    rerender(<ModelSelector {...props} />);
+    expect(trigger().textContent).toContain('模型信息暂不可用');
+    expect(trigger().textContent).not.toContain('正在读取模型…');
+    expect(trigger().textContent).not.toContain('选择模型');
+
+    providersRef.loadFailed = false;
+    rerender(<ModelSelector {...props} />);
+    expect(trigger().textContent).toContain('正在读取模型…');
+    providersRef.providers = [provider];
+    providersRef.loading = false;
+    rerender(<ModelSelector {...props} />);
+    expect(trigger().textContent).toContain('GPT-6');
+
+    providersRef.providers = [];
+    providersRef.loadFailed = true;
+    rerender(<ModelSelector {...props} />);
+    expect(trigger().textContent).toContain('GPT-6');
+  });
+
+  it('preserves an explicitly supplied diagnostic label', () => {
+    providersRef.providers = [];
+    render(<ModelSelector {...props} unknownModelLabel={() => 'Unavailable saved model'} sourceDisconnected />);
+    expect(trigger().textContent).toContain('Unavailable saved model');
+  });
+
+  it('uses display names in the pending selection tooltip and accessibility label', () => {
+    providersRef.providers = [provider];
+    const pendingProps = {
+      ...props,
+      agentIdentity: { vendorKey: 'codex' as const, state: 'pending' as const },
+      currentSelection: { agentKind: 'codex' as const, model: 'chatgpt/missing', providerId: 'openai', effort: 'high', fastMode: false },
+    };
+    const { rerender } = render(<ModelSelector {...pendingProps} />);
+    providersRef.providers = [];
+    rerender(<ModelSelector {...pendingProps} />);
+    for (const attribute of ['title', 'aria-label']) {
+      expect(trigger().getAttribute(attribute)).toContain('GPT-6');
+      expect(trigger().getAttribute(attribute)).toContain('选择模型');
+      expect(trigger().getAttribute(attribute)).not.toContain('chatgpt/');
+    }
+  });
+});
+
+type FloatingOptions = {
+  strategy: string;
+  placement: string;
+  transform: boolean;
+  open: boolean;
+  elements: { reference: HTMLElement };
+  whileElementsMounted: (
+    reference: HTMLElement,
+    floating: HTMLElement,
+    update: () => void,
+  ) => () => void;
+};
+
+function floatingOptionsForReference(reference: HTMLElement): FloatingOptions {
+  // React/Floating UI 可能因并发重渲染产生多次调用；按「当前连接锚点 + open」取值，
+  // 守护实际生效的浮层，而不是把调用顺序误当成契约。
+  const options = floatingUiMocks.useFloating.mock.calls
+    .map(([call]) => call as FloatingOptions)
+    .findLast((call) => call.open && call.elements?.reference === reference);
+  expect(options).toBeDefined();
+  if (!options) throw new Error('Floating UI options for the active model row were not found');
+  return options;
+}
+
+function sizeOptionsForFloatingPanel(): {
+  apply: (args: { elements: { floating: HTMLElement }; availableHeight: number }) => void;
+} {
+  // size middleware 的行为由其稳定参数和 apply 回调表达；匹配参数可避开其它渲染留下的调用。
+  const options = floatingUiMocks.size.mock.calls
+    .map(
+      ([call]) =>
+        call as {
+          padding?: number;
+          boundary?: Element[];
+          altBoundary?: boolean;
+          apply?: (args: { elements: { floating: HTMLElement }; availableHeight: number }) => void;
+        },
+    )
+    .findLast(
+      (call) =>
+        call.padding === 8 &&
+        Array.isArray(call.boundary) &&
+        call.boundary.length === 0 &&
+        call.altBoundary === false &&
+        typeof call.apply === 'function',
+    );
+  expect(options).toBeDefined();
+  if (!options?.apply) throw new Error('Floating UI size middleware was not configured');
+  return { apply: options.apply };
+}
+
+async function openModelOptionsPanel(row: HTMLElement): Promise<void> {
+  await act(async () => {
+    // ArrowLeft 是模型行公开支持的配置入口；调用前由用例等待 MorphPopover 的 settle 焦点，
+    // 避免把异步焦点交接顺序误当成浮层锚点契约。
+    fireEvent.keyDown(row, { key: 'ArrowLeft' });
+  });
+}
+
+async function waitForSearchInputFocus(): Promise<HTMLElement> {
+  const searchInput = screen.getByRole('textbox');
+  // MorphPopover settle 后才把焦点交给搜索框；先等这个最终状态，避免后续 ArrowLeft
+  // reveal 与尚未完成的焦点交接竞态。
+  await waitFor(() => expect(document.activeElement).toBe(searchInput));
+  return searchInput;
+}
+
 describe('ModelSelector provider groups', () => {
+  it.each([false, true])('offers recovery instead of an empty local catalog (unified=%s)', async (unifiedPanel) => {
+    providersRef.providers = [];
+    providersRef.loading = true;
+    providersRef.error = { reason: 'legacy-busy' };
+    renderSelector({ unifiedPanel });
+    await openDropdown();
+    expect(screen.getByRole('status').textContent).toContain('catalogRecovery.legacy');
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'settings.providers.catalogRecovery.retry' }));
+    });
+    expect(providersRef.refetch).toHaveBeenCalledOnce();
+  });
+
+  it('retains the usable local list when a subsequent refresh fails', async () => {
+    providersRef.error = { reason: 'legacy-busy' };
+    renderSelector();
+    await openDropdown();
+    expect(screen.getByRole('status').textContent).toContain('catalogRecovery.legacy');
+    expect(screen.getAllByRole('option').length).toBeGreaterThan(0);
+  });
+
+  it('keeps classic-picker recovery visible when the snapshot has no connected source for the current engine', async () => {
+    providersRef.providers = [{
+      id: 'gemini', name: 'Gemini', source: 'builtin', connected: true,
+      agents: [], models: {}, auth: { method: 'api-key' },
+    }];
+    providersRef.error = { reason: 'legacy-busy' };
+    renderSelector({ onNavigateToProviders: vi.fn() });
+    await openDropdown();
+    expect(screen.getByRole('status').textContent).toContain('catalogRecovery.legacy');
+    expect(screen.getByRole('button', { name: 'newChat.modelSelector.source.connectCta' })).toBeTruthy();
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'settings.providers.catalogRecovery.retry' }));
+    });
+    expect(providersRef.refetch).toHaveBeenCalledOnce();
+  });
+
+  it('never presents the local recovery action in a remote device picker', async () => {
+    providersRef.loading = true;
+    providersRef.error = { reason: 'legacy-busy' };
+    renderSelector({ deviceId: 'remote-device' });
+    await openDropdown();
+    expect(screen.queryByText('settings.providers.catalogRecovery.legacy')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'settings.providers.catalogRecovery.retry' })).toBeNull();
+  });
+
+  it('offers source navigation with only a connected media provider and no chat candidates', async () => {
+    providersRef.providers = [{
+      id: 'gemini', name: 'Gemini', source: 'builtin', connected: true,
+      agents: [], models: {}, auth: { method: 'api-key' },
+    }];
+    const onNavigateToProviders = vi.fn();
+    renderSelector({
+      unifiedPanel: true, unifiedAgents: ['pi', 'codex'],
+      vendorKey: 'pi', modelId: '', currentProviderId: null,
+      onProviderChange: undefined, onUnifiedSelect: vi.fn(), onNavigateToProviders,
+    });
+    await openDropdown();
+    fireEvent.click(screen.getByRole('button', { name: 'newChat.modelSelector.source.connect' }));
+    expect(onNavigateToProviders).toHaveBeenCalledOnce();
+  });
+
+  it('仅在本机经典 Cindy AI 分组旁显示免费版标签', async () => {
+    providersRef.providers = [
+      ...(providersRef.DEFAULT_PROVIDERS as unknown[]),
+      {
+        id: 'xd',
+        name: 'Cindy AI',
+        source: 'builtin',
+        agents: ['claude-code'],
+        auth: { method: 'apiKey' },
+        routing: { 'claude-code': {} },
+        connected: true,
+        models: {
+          'claude-code': [
+            {
+              id: 'cindy-free-model',
+              name: 'Cindy Free Model',
+              contextWindow: 200000,
+              efforts: ['high'],
+              defaultEffort: 'high',
+            },
+          ],
+        },
+      },
+    ] as unknown[];
+    modelAccessState.accountTier = 'free';
+
+    const view = renderSelector();
+    await openDropdown();
+    const badge = screen.getByTestId('cindy-ai-model-group-free-tier-badge');
+    expect(badge.textContent).toBe('免费版');
+    expect(badge.classList.contains('ml-auto')).toBe(true);
+
+    view.unmount();
+    modelAccessState.accountTier = 'paid';
+    const paidView = renderSelector();
+    await openDropdown();
+    expect(screen.queryByTestId('cindy-ai-model-group-free-tier-badge')).toBeNull();
+
+    paidView.unmount();
+    modelAccessState.accountTier = 'not_applicable';
+    renderSelector();
+    await openDropdown();
+    expect(screen.queryByTestId('cindy-ai-model-group-free-tier-badge')).toBeNull();
+  });
+
   it('renders a group heading for each provider', async () => {
     renderSelector();
     await openDropdown();
@@ -242,7 +696,194 @@ describe('ModelSelector provider groups', () => {
     expect(within(dashscopeGroup).queryByText('Opus 4.8')).toBeNull();
   });
 
-  it('reselects the connected fallback source when the stored source is disconnected', async () => {
+  it('hides effort summaries when the entry only supports selecting a model id', async () => {
+    renderSelector({ configurationEnabled: false });
+    await openDropdown();
+
+    const popover = screen.getByTestId('model-options-popover');
+    expect(within(popover).queryByTitle('high')).toBeNull();
+    expect(within(popover).queryByTitle('medium')).toBeNull();
+  });
+
+  it('keeps the create-agent secondary panel at the original left/center position with layout coordinates', async () => {
+    renderSelector({ visualVariant: 'create-agent', useMorphPopover: true });
+    await openDropdown();
+    await waitForSearchInputFocus();
+
+    const modelList = screen.getByRole('listbox', { name: '模型列表' });
+    const row = within(modelList).getByRole('option', { name: /Opus 4\.8/ });
+    await openModelOptionsPanel(row);
+
+    const secondaryPanel = await screen.findByTestId('model-options-floating-panel');
+    const positioner = secondaryPanel.closest<HTMLElement>('[data-radix-popper-content-wrapper]');
+    expect(positioner).not.toBeNull();
+    expect(positioner?.parentElement).toBe(document.body);
+    expect(positioner?.style.position).toBe('fixed');
+    expect(positioner?.style.left).toBe('120px');
+    expect(positioner?.style.top).toBe('24px');
+    // Electron app-region 依赖布局矩形，定位层不能通过 translate 重新定位；这里只守护
+    // no-translate 行为，不锁定 jsdom 对空 transform 的具体序列化。
+    expect(positioner?.style.transform ?? '').not.toMatch(/translate/);
+    expect(
+      (positioner?.style as CSSStyleDeclaration & { WebkitAppRegion: string }).WebkitAppRegion,
+    ).toBe('no-drag');
+    expect(secondaryPanel.className).toContain('overflow-hidden');
+    expect(secondaryPanel.className).not.toContain('max-h-[');
+    expect(secondaryPanel.className).not.toContain('overflow-y-auto');
+
+    const floatingOptions = floatingOptionsForReference(row);
+    expect(floatingOptions).toMatchObject({
+      strategy: 'fixed',
+      placement: 'left',
+      transform: false,
+      open: true,
+    });
+    expect(floatingOptions.elements.reference).toBe(row);
+    const floatingElement = document.createElement('div');
+    const cleanup = floatingOptions.whileElementsMounted(row, floatingElement, vi.fn());
+    // autoUpdate 必须绑定当前行与浮层元素；按参数匹配，避免其它重渲染的调用顺序影响断言。
+    const autoUpdateCall = floatingUiMocks.autoUpdate.mock.calls.findLast(
+      (call: unknown[]) => call[0] === row && call[1] === floatingElement,
+    );
+    expect(autoUpdateCall).toEqual([
+      row,
+      floatingElement,
+      expect.any(Function),
+      { animationFrame: false },
+    ]);
+    cleanup();
+
+    // middleware 参数保留左侧贴边、碰撞留白和可用高度回归；按参数匹配而非取最后调用，
+    // 避免 React 并发重渲染改变 mock 调用顺序。
+    const offsetOptions = floatingUiMocks.offset.mock.calls
+      .map(([call]) => call)
+      .findLast(
+        (call) =>
+          (call as { mainAxis?: number; alignmentAxis?: number })?.mainAxis === 8 &&
+          (call as { mainAxis?: number; alignmentAxis?: number })?.alignmentAxis === 0,
+      );
+    expect(offsetOptions).toEqual({ mainAxis: 8, alignmentAxis: 0 });
+    const shiftOptions = floatingUiMocks.shift.mock.calls
+      .map(([call]) => call)
+      .findLast(
+        (call) =>
+          (call as { mainAxis?: boolean; crossAxis?: boolean; padding?: number })?.mainAxis ===
+            true &&
+          (call as { mainAxis?: boolean; crossAxis?: boolean; padding?: number })?.crossAxis ===
+            false &&
+          (call as { mainAxis?: boolean; crossAxis?: boolean; padding?: number })?.padding === 8,
+      );
+    expect(shiftOptions).toEqual(
+      expect.objectContaining({
+        mainAxis: true,
+        crossAxis: false,
+        limiter: floatingUiMocks.limitShiftResult,
+        padding: 8,
+        boundary: [],
+        altBoundary: false,
+      }),
+    );
+    const flipOptions = floatingUiMocks.flip.mock.calls
+      .map(([call]) => call)
+      .findLast(
+        (call) =>
+          (call as { padding?: number; boundary?: Element[]; altBoundary?: boolean })?.padding ===
+            8 &&
+          Array.isArray(
+            (call as { padding?: number; boundary?: Element[]; altBoundary?: boolean })?.boundary,
+          ) &&
+          (call as { padding?: number; boundary?: Element[]; altBoundary?: boolean })?.boundary
+            ?.length === 0 &&
+          (call as { padding?: number; boundary?: Element[]; altBoundary?: boolean })
+            ?.altBoundary === false,
+      );
+    expect(flipOptions).toEqual({ padding: 8, boundary: [], altBoundary: false });
+    const sizeOptions = sizeOptionsForFloatingPanel();
+    sizeOptions.apply({ elements: { floating: floatingElement }, availableHeight: 180 });
+    expect(floatingElement.style.getPropertyValue('--radix-popover-content-available-height')).toBe(
+      '180px',
+    );
+
+    const panelOptions = within(secondaryPanel).getAllByRole('option');
+    const firstPanelOption = panelOptions[0];
+    const lastPanelOption = panelOptions.at(-1);
+    expect(lastPanelOption).toBeDefined();
+    lastPanelOption?.focus();
+    fireEvent.keyDown(lastPanelOption as HTMLElement, { key: 'Tab' });
+    expect(document.activeElement).toBe(firstPanelOption);
+    fireEvent.keyDown(firstPanelOption, { key: 'Tab', shiftKey: true });
+    expect(document.activeElement).toBe(lastPanelOption);
+
+    fireEvent.keyDown(row, { key: 'Escape' });
+    // Escape 关闭的是行级浮层，一级模型列表仍保持打开；等待两个最终 DOM 状态而非依赖
+    // keydown 后 React 同步 flush 的具体顺序。
+    await waitFor(() => {
+      expect(screen.queryByTestId('model-options-floating-panel')).toBeNull();
+      expect(screen.getByRole('listbox', { name: '模型列表' })).toBeTruthy();
+    });
+  });
+
+  it('refreshes the create-agent floating anchor after search remounts the active model row', async () => {
+    renderSelector({ visualVariant: 'create-agent', useMorphPopover: true });
+    await openDropdown();
+
+    const searchInput = await waitForSearchInputFocus();
+
+    const modelList = screen.getByRole('listbox', { name: '模型列表' });
+    const originalRow = within(modelList).getByRole('option', { name: /Opus 4\.8/ });
+    await openModelOptionsPanel(originalRow);
+    await screen.findByTestId('model-options-floating-panel');
+
+    const originalFloatingOptions = floatingOptionsForReference(originalRow);
+    expect(originalFloatingOptions.elements.reference).toBe(originalRow);
+
+    await act(async () => {
+      fireEvent.change(searchInput, { target: { value: 'qwen' } });
+    });
+    // 搜索过滤会卸载旧行，行级浮层必须随之关闭，不能继续引用 detached DOM；这是行为契约，
+    // 不依赖 useFloating 的渲染/调用次数。
+    await waitFor(() => {
+      expect(originalRow.isConnected).toBe(false);
+      expect(screen.queryByTestId('model-options-floating-panel')).toBeNull();
+    });
+
+    await act(async () => {
+      fireEvent.change(searchInput, { target: { value: '' } });
+    });
+    // 清空搜索会重新挂载新行，但旧 editing 状态不能让浮层自动复活或把新行误标 active。
+    await waitFor(() => {
+      const restoredRow = within(modelList).getByRole('option', { name: /Opus 4\.8/ });
+      expect(restoredRow).not.toBe(originalRow);
+      expect(restoredRow.getAttribute('data-model-options-active')).toBeNull();
+      expect(screen.queryByTestId('model-options-floating-panel')).toBeNull();
+    });
+    const restoredRow = within(modelList).getByRole('option', { name: /Opus 4\.8/ });
+
+    await openModelOptionsPanel(restoredRow);
+    await screen.findByTestId('model-options-floating-panel');
+
+    const restoredFloatingOptions = floatingOptionsForReference(restoredRow);
+    expect(restoredFloatingOptions.elements.reference).toBe(restoredRow);
+    expect(restoredFloatingOptions.elements.reference.isConnected).toBe(true);
+  });
+
+  it('keeps the existing Radix secondary popover outside the create-agent variant', async () => {
+    renderSelector();
+    await openDropdown();
+
+    const popover = screen.getByTestId('model-options-popover');
+    const row = within(popover).getByRole('option', { name: /Opus 4\.8/ });
+    await act(async () => {
+      fireEvent.pointerEnter(row);
+    });
+
+    const details = screen.getByRole('group', { name: /Opus 4\.8/ });
+    const secondaryPanel = details.closest('[data-testid="model-options-popover"]');
+    expect(secondaryPanel?.getAttribute('data-collision-padding-top')).toBe('8');
+    expect(screen.queryByTestId('model-options-floating-panel')).toBeNull();
+  });
+
+  it('does not mark another account selected when the stored source is disconnected', async () => {
     const modelId = 'claude-fable-5';
     const model = {
       id: modelId,
@@ -281,6 +922,7 @@ describe('ModelSelector provider groups', () => {
       currentProviderId: 'anthropic',
       sourceDisconnected: true,
       reselectEmitsChange: true,
+      selectedRowClickOpensConfiguration: true,
       onProviderChange,
     });
     await act(async () => {
@@ -290,10 +932,72 @@ describe('ModelSelector provider groups', () => {
     const popover = screen.getByTestId('model-options-popover');
     const xdGroup = within(popover).getByRole('group', { name: 'Cindy AI' });
     const fallbackRow = within(xdGroup).getByRole('option', { name: /Fable 5/ });
-    expect(fallbackRow.getAttribute('aria-selected')).toBe('true');
+    expect(fallbackRow.getAttribute('aria-selected')).toBe('false');
 
     fireEvent.click(fallbackRow);
-    expect(onProviderChange).toHaveBeenCalledWith('xd', modelId);
+    expect(onProviderChange).toHaveBeenCalledWith('xd', modelId, 'high');
+    // This is a new account selection, not a click on the currently selected row.
+    expect(screen.queryByRole('group', { name: /Fable 5/ })).toBeNull();
+  });
+
+  it('opens a selected provider configuration without persisting its derived effort', async () => {
+    const onProviderChange = vi.fn();
+    renderSelector({
+      reselectEmitsChange: true,
+      selectedRowClickOpensConfiguration: true,
+      onProviderChange,
+    });
+    await openDropdown();
+
+    fireEvent.click(screen.getByRole('option', { name: /Opus 4\.8/ }));
+
+    expect(onProviderChange).not.toHaveBeenCalled();
+    expect(screen.getByRole('group', { name: /Opus 4\.8/ })).toBeTruthy();
+  });
+
+  it('returns the target provider effort for the same model id', async () => {
+    const modelId = 'shared-model';
+    const anthropicModel = {
+      id: modelId,
+      name: 'Shared Model',
+      contextWindow: 200000,
+      efforts: ['low', 'high'],
+      defaultEffort: 'high',
+    };
+    const xdModel = {
+      ...anthropicModel,
+      efforts: ['low'],
+      defaultEffort: 'low',
+    };
+    providersRef.providers = [
+      {
+        ...(providersRef.DEFAULT_PROVIDERS[0] as Record<string, unknown>),
+        models: { 'claude-code': [anthropicModel] },
+      },
+      {
+        id: 'xd',
+        name: 'Cindy AI',
+        source: 'builtin',
+        agents: ['claude-code'],
+        auth: { method: 'api-key' },
+        routing: { 'claude-code': {} },
+        connected: true,
+        models: { 'claude-code': [xdModel] },
+      },
+    ] as unknown[];
+    const onProviderChange = vi.fn();
+
+    try {
+      renderSelector({ modelId, effort: 'high', currentProviderId: 'anthropic', onProviderChange });
+      await openDropdown();
+      const xdGroup = within(screen.getByTestId('model-options-popover')).getByRole('group', {
+        name: 'Cindy AI',
+      });
+      fireEvent.click(within(xdGroup).getByRole('option', { name: /Shared Model/ }));
+      expect(onProviderChange).toHaveBeenCalledWith('xd', modelId, 'low');
+    } finally {
+      providersRef.providers = providersRef.DEFAULT_PROVIDERS;
+    }
   });
 
   it('does not render group headings in flat mode (no onProviderChange)', async () => {
@@ -341,5 +1045,78 @@ describe('ModelSelector provider groups', () => {
     const popover = screen.getByTestId('model-options-popover');
     const heading = within(popover).getByText(/A Very Long Provider Name/);
     expect(heading.className).toContain('truncate');
+  });
+});
+
+/**
+ * composer pill 的引擎表达(model-selector-unified §1.1,Chris 2026-08-12 裁决 / bug7)。
+ *
+ * 旧形态把 harness 名字写成文本前缀:「Codex · GPT-5.6-Luna · 最高」—— 三段并列,
+ * 用户第一眼读到的是 harness 而不是模型。新形态只在 composer 生效:模型名在前,
+ * 引擎小标与深度档字挨在一起收尾;其余 7 个入口(scheduler / IM / Hook / Subagent /
+ * Worker / GhostErrand / 设置)不传 engineMarkVendor,展示逐像素不变。
+ */
+describe('ModelSelector composer pill 引擎小标', () => {
+  const triggerOf = (): HTMLElement => screen.getByRole('button', { name: /Select model/ });
+
+  /** 让 trigger 拿到真实的模型名与档位(默认 harness 恒是占位符,见 visibleModelsRef)。 */
+  const withRealModel = (): void => {
+    visibleModelsRef.models = [
+      {
+        id: 'claude-opus-4-8',
+        displayName: 'Opus 4.8',
+        efforts: ['low', 'medium', 'high'],
+        defaultEffort: 'high',
+        contextWindow: 200000,
+      },
+    ];
+  };
+
+  it('传 engineMarkVendor 时用小标取代 harness 名字文本', () => {
+    renderSelector({
+      engineMarkVendor: 'codex',
+      agentIdentity: { vendorKey: 'codex', state: 'current' },
+    });
+    const trigger = triggerOf();
+    expect(trigger.querySelector('[data-composer-engine-mark="codex"]')).toBeTruthy();
+    // 名字文本不再出现在 pill 上(但仍留在 title / aria-label 里,读屏与 hover 不丢信息)。
+    expect(trigger.textContent).not.toContain('Codex');
+    expect(trigger.getAttribute('title')).toContain('Codex');
+    expect(trigger.getAttribute('aria-label')).toContain('Codex');
+  });
+
+  it('小标紧跟模型名之后、深度档字之前(图标与档字成组收尾)', () => {
+    withRealModel();
+    renderSelector({
+      engineMarkVendor: 'codex',
+      agentIdentity: { vendorKey: 'codex', state: 'current' },
+    });
+    const trigger = triggerOf();
+    const mark = trigger.querySelector('[data-composer-engine-mark="codex"]') as HTMLElement;
+    const modelName = within(trigger).getByText('Opus 4.8');
+    const effort = within(trigger).getByText('最高');
+    // Node.DOCUMENT_POSITION_FOLLOWING = 4
+    expect(modelName.compareDocumentPosition(mark) & 4).toBeTruthy();
+    expect(mark.compareDocumentPosition(effort) & 4).toBeTruthy();
+  });
+
+  it('窄工具条下先截模型名,小标与档字保留', () => {
+    withRealModel();
+    renderSelector({
+      engineMarkVendor: 'codex',
+      agentIdentity: { vendorKey: 'codex', state: 'current' },
+      compactToolbar: true,
+    });
+    const trigger = triggerOf();
+    expect(trigger.querySelector('[data-composer-engine-mark="codex"]')).toBeTruthy();
+    expect(within(trigger).getByText('最高')).toBeTruthy();
+    expect(within(trigger).getByText('Opus 4.8').className).toContain('truncate');
+  });
+
+  it('不传 engineMarkVendor 的入口维持名字文本形态(其余 7 个消费者不受影响)', () => {
+    renderSelector({ agentIdentity: { vendorKey: 'codex', state: 'current' } });
+    const trigger = triggerOf();
+    expect(trigger.querySelector('[data-composer-engine-mark]')).toBeNull();
+    expect(trigger.textContent).toContain('Codex');
   });
 });

@@ -58,13 +58,19 @@ describe('orca 远程路由接线不变式', () => {
   // enable/disable 这两个 mutation 曾走非粘滞的 makerApiFor —— relay 瞬时重连清空注册表的
   // 窗口内会退回本机,在**控制端**建出或销毁一个 team(本机恰有同 id 会话时还操作错对象)。
   // 这是「同一语义在对称路径上的缺口」,两条必须同口径,所以一起锁。
-  it('协同开关的 enable / disable 都用粘滞归属(makerApiForSticky),不用非粘滞 makerApiFor', () => {
+  it('协同开关的 enable / disable 都用粘滞归属,不用非粘滞 makerApiFor', () => {
     const view = read('features/cc-agent/CCAgentSessionView.tsx');
-    expect(view).toContain('makerApiForSticky(collabSessionId).enableOrca(');
+    expect(view).toContain('const orcaDeviceId = getStickySessionDeviceId(collabSessionId);');
+    expect(view).toContain('await enableRemoteCollabForSession({');
+    expect(view).toContain('deviceId: orcaDeviceId,');
     expect(view).not.toContain('makerApiFor(collabSessionId).enableOrca(');
     // 开启后的镜像回流也取粘滞值,否则瞬断窗口内解析成 undefined 会整段跳过,
     // 被控端刚建的 worker 永远进不了控制端注册表。
     expect(view).toContain('getStickySessionDeviceId(collabSessionId)');
+
+    const handoff = read('features/cc-agent/remoteCollabHandoff.ts');
+    expect(handoff).toContain('makerApiForDevice(p.deviceId).enableOrca(');
+    expect(handoff).not.toContain('makerApiFor(p.leadSessionId).enableOrca(');
 
     const stop = read('features/cc-agent/hooks/useStopOrcaCollab.ts');
     expect(stop).toContain('makerApiForSticky(leadSessionId).disableOrca(');
@@ -132,13 +138,16 @@ describe('orca 远程路由接线不变式', () => {
     expect(src).toContain(
       "import { useDeviceLinkRemoteProjects } from '@/features/device-link/useDeviceLinkRemoteProjects'",
     );
-    expect(src).toContain('useDeviceLinkRemoteProjects();');
+    expect(src).toContain("useDeviceLinkRemoteProjects(windowVisible, 'sidebar');");
   });
 
   it('右侧栏协同 tab close 不带路由副作用,避免 detached 窗口跳回 MainLayout', () => {
-    const src = read('features/right-sidebar/plugins/orca-workers/index.tsx');
-    expect(src).toContain('navigateOnSuccess: false');
-    expect(src).not.toContain('navigateOnSuccess: true');
+    const src = read('features/right-sidebar/plugins/orca-workers/OrcaWorkersTabBody.tsx');
+    expect(src).toContain('useStopOrcaCollabWithoutNavigation');
+    expect(src).not.toContain('useStopOrcaCollab({');
+    expect(src).toContain('isSidebarWindow() ? (');
+    expect(src).toContain('<MemoryRouter initialEntries={[`/cc-agent/${ctx.sessionId}`]}>');
+    expect(src).toContain('<RoutedOrcaWorkerPanel {...workerPanelProps} />');
   });
 
   it('detached 子窗口消费 browser/file/orca intent,主窗口 helper 不直接写子窗宿主 store', () => {

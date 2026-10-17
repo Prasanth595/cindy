@@ -20,8 +20,8 @@ describe('RolePillDropdown worker count summary', () => {
 
     const gateBlock = extractBetween(
       source,
-      '{/* ── Create new worker row (3 上限态) ── */}',
-      '        </div>\n      )}',
+      'function CreateWorkerTabButton({',
+      'function WorkerTabsList({',
     );
     expect(gateBlock).toContain('activeCount >= hardLimit');
     expect(gateBlock).toContain('activeCount >= softLimit');
@@ -30,7 +30,7 @@ describe('RolePillDropdown worker count summary', () => {
   });
 
   it('defines the pluralized summary string in every locale', () => {
-    for (const locale of ['zh-CN', 'en', 'ja', 'ko']) {
+    for (const locale of ['zh-CN', 'zh-TW', 'en', 'ja', 'ko']) {
       const raw = readFileSync(
         resolve(__dirname, '..', 'i18n', 'locales', locale, 'common.json'),
         'utf8',

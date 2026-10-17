@@ -11,7 +11,11 @@ import os from 'node:os';
 import path from 'node:path';
 
 import JSZip from 'jszip';
+import { sanitizeClaudeProjectKey } from '@cindy/maker-core';
+import { migrationNativeContext } from '../migrationNativeContext';
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { DB_TRANSPORT_OUTCOME_UNKNOWN } from '../../localDb/client/DbTransport.js';
 
 const tmpRoot = mkdtempSync(path.join(os.tmpdir(), 'xdtshare-import-test-'));
 const projectsRoot = path.join(tmpRoot, 'claude-home', 'projects');
@@ -21,39 +25,81 @@ const piSessionsRoot = path.join(tmpRoot, 'pi-agent-home', 'sessions', 'shared')
 
 const dbMock = vi.hoisted(() => ({
   conflictRow: null as { id: string; status?: string } | null,
+  /** 只对指定 resume id 命中冲突(协同包按 Worker 定向测冲突)。 */
+  conflictForResumeId: null as string | null,
+  conflictGraphRows: [] as Array<{ id: string; status: 'active' | 'archived' }>,
   queryCalls: [] as Array<{ sql: string; params: unknown[] }>,
   txCalls: [] as Array<{ name: string; args: unknown }>,
   txError: null as Error | null,
-}));
-const patchMock = vi.hoisted(() => ({
-  calls: [] as Array<{ sessionId: string; patch: Record<string, unknown> }>,
+  afterTxResolve: null as (() => void) | null,
+  drizzle: { scope: 'stable-import-db' },
 }));
 const codexMock = vi.hoisted(() => ({
   importCalls: [] as unknown[],
   removeCalls: [] as unknown[],
+  importResult: {
+    rolloutPath: '',
+    rolloutWritten: true,
+    stateWritten: true,
+    previousState: null as null | {
+      dbPath: string;
+      values: Record<string, string | number | null>;
+    },
+    statePresent: true,
+  },
 }));
 const cindyMediaMock = vi.hoisted(() => ({
   ingestCalls: [] as Array<{ buffer: Buffer; mimeType: string; refs: Array<Record<string, unknown>> }>,
   removeSessionRefsCalls: [] as string[],
+  removeSessionRefsIfDeletedCalls: [] as string[],
+  removeSessionRefsErrorFor: null as string | null,
   /** 置为 Error 让 ingest 全部失败(测回落老目录路径)。 */
   ingestError: null as Error | null,
 }));
 const legacyImageMock = vi.hoisted(() => ({
   removeSessionCalls: [] as string[],
 }));
+const closeSharedTaskForTask = vi.hoisted(() => vi.fn());
+vi.mock('../../device-link/sharedTaskRuntime.js', () => ({ closeSharedTaskForTask }));
+// 没有草稿偏好时按新建任务口径解析默认模型;本 harness 不搭供应商目录,按 agent 固定返回。
+const resolveNewTaskDefaultModelRoute = vi.hoisted(() =>
+  vi.fn(async (agent: string) =>
+    agent === 'codex'
+      ? { model: 'gpt-6-astra', providerId: 'openai' }
+      : { model: 'claude-opus-5-5', providerId: 'anthropic' },
+  ),
+);
+vi.mock('../../maker-host/model-route-guard-live.js', () => ({ resolveNewTaskDefaultModelRoute }));
 
 vi.mock('electron', () => ({
   app: { getPath: () => tmpRoot, getVersion: () => '9.9.9' },
 }));
 vi.mock('../../localDb/client/current.js', () => ({
   getDbClient: () => ({
+    drizzle: dbMock.drizzle,
     queryOne: async (sql: string, params: unknown[]) => {
       dbMock.queryCalls.push({ sql, params });
+      if (dbMock.conflictForResumeId != null) {
+        return params?.[1] === dbMock.conflictForResumeId
+          ? { id: 'existing-worker-session', status: 'active' }
+          : undefined;
+      }
       return dbMock.conflictRow ?? undefined;
+    },
+    query: async (sql: string, params: unknown[]) => {
+      dbMock.queryCalls.push({ sql, params });
+      if (
+        typeof sql === 'string' &&
+        (sql.includes('FROM orca_teams t') || sql.includes('WITH related_leads AS'))
+      ) {
+        return dbMock.conflictGraphRows;
+      }
+      return [];
     },
     tx: async (name: string, args: unknown) => {
       if (dbMock.txError) throw dbMock.txError;
       dbMock.txCalls.push({ name, args });
+      dbMock.afterTxResolve?.();
       return { messageCount: (args as { messages: unknown[] }).messages.length };
     },
   }),
@@ -69,10 +115,9 @@ vi.mock('../../maker-host/codex-local-sessions.js', () => ({
   importSharedCodexThread: async (params: unknown) => {
     codexMock.importCalls.push(params);
     return {
-      rolloutPath: path.join(tmpRoot, 'landed-rollout.jsonl'),
-      rolloutWritten: true,
-      stateWritten: true,
-      statePresent: true,
+      ...codexMock.importResult,
+      rolloutPath:
+        codexMock.importResult.rolloutPath || path.join(tmpRoot, 'landed-rollout.jsonl'),
     };
   },
   removeSharedCodexThread: async (threadId: string, written: unknown) => {
@@ -135,21 +180,39 @@ vi.mock('../../cindy-media/ingest.js', () => ({
 vi.mock('../../cindy-media/ledger.js', () => ({
   removeSessionRefs: async (sessionId: string) => {
     cindyMediaMock.removeSessionRefsCalls.push(sessionId);
+    if (cindyMediaMock.removeSessionRefsErrorFor === sessionId) {
+      throw new Error('media cleanup failed');
+    }
+    return 0;
+  },
+  removeSessionRefsIfDeleted: async (sessionId: string) => {
+    cindyMediaMock.removeSessionRefsIfDeletedCalls.push(sessionId);
+    if (cindyMediaMock.removeSessionRefsErrorFor === sessionId) {
+      throw new Error('media cleanup failed');
+    }
     return 0;
   },
 }));
 const worktreeMock = vi.hoisted(() => ({
-  detect: null as
+  detect: null as null | {
+    isGitRepo: boolean;
+    isInsideWorktree: boolean;
+    gitInstalled: boolean;
+    repoRoot?: string;
+    currentBranch?: string;
+  },
+  createResult: null as
     | null
-    | { isGitRepo: boolean; isInsideWorktree: boolean; gitInstalled: boolean; repoRoot?: string; currentBranch?: string },
-  createResult: null as null | { ok: true; meta: { path: string } } | { ok: false; error: { kind: string; message?: string } },
+    | { ok: true; meta: { path: string } }
+    | { ok: false; error: { kind: string; message?: string } },
+  suggestedName: 'imported-wt' as string | null,
   createCalls: [] as Array<{ sessionId: string; baseRepo: string; name: string; sourceBranch: string }>,
   removeCalls: [] as string[],
 }));
 vi.mock('../../worktree/WorktreeManager.js', () => ({
   detectCwd: async () =>
     worktreeMock.detect ?? { isGitRepo: false, isInsideWorktree: false, gitInstalled: true },
-  suggestName: async () => 'imported-wt',
+  suggestName: async () => worktreeMock.suggestedName ?? '',
   createWorktree: async (req: { sessionId: string; baseRepo: string; name: string; sourceBranch: string }) => {
     worktreeMock.createCalls.push(req);
     return worktreeMock.createResult ?? { ok: false, error: { kind: 'unknown', message: 'no mock' } };
@@ -158,17 +221,29 @@ vi.mock('../../worktree/WorktreeManager.js', () => ({
     worktreeMock.removeCalls.push(sessionId);
   },
 }));
-// 覆盖导入的软删/恢复走 patchSessionMetaInDb(真实实现依赖 Electron 主进程环境)
-vi.mock('../../localDb/ipc/sessions.js', () => ({
-  patchSessionMetaInDb: async (sessionId: string, patch: Record<string, unknown>) => {
-    patchMock.calls.push({ sessionId, patch });
-    return { id: sessionId, ...patch };
-  },
-}));
-
-const { inspectShareFile, unlockShareDraft, commitShareImport, cancelShareDraft } = await import(
-  '../sessionShareImport.js'
-);
+const sessionShareImportModule = await import('../sessionShareImport.js');
+const {
+  inspectShareFile,
+  unlockShareDraft,
+  cancelShareDraft,
+  cleanupReplacedSessionMediaRefs,
+} = sessionShareImportModule;
+const mockedDbClientModule = await import('../../localDb/client/current.js');
+const rawCommitShareImport = sessionShareImportModule.commitShareImport;
+const commitShareImport = (
+  opts: Parameters<typeof rawCommitShareImport>[0],
+  migration?: Parameters<typeof rawCommitShareImport>[1]['migration'],
+) =>
+  rawCommitShareImport(opts, {
+    migration,
+    dbClient: mockedDbClientModule.getDbClient(),
+    assertStillValid: () => undefined,
+    refCompensationScope: {
+      journalDir: path.join(tmpRoot, 'ref-compensation'),
+      ownerStorageKey: 'a'.repeat(20),
+      assertStillValid: () => undefined,
+    },
+  });
 const { buildLooseUrl } = await import('../mediaUrlRewrite.pure.js');
 const { buildPlainFile, sealPayload } = await import('../xdtshareCrypto.js');
 
@@ -201,7 +276,15 @@ interface BundleOverrides {
   looseAudio?: { bytes: Buffer };
   /** v1 旧包没有逐消息 agentKind。 */
   omitMessageAgentKind?: boolean;
+  /** 协同包:附带一个 Worker(cc 或 codex),manifest 升到 v2 + orca 段。 */
+  orcaWorker?: {
+    agentKind: 'cc' | 'codex';
+    status?: 'idle' | 'running' | 'done' | 'error';
+    snapshot?: Record<string, unknown>;
+  };
 }
+
+const WORKER_SID = 'bbbbbbbb-1111-2222-3333-555555555555';
 
 async function buildBundle(overrides: BundleOverrides = {}): Promise<Buffer> {
   const agentKind = overrides.agentKind ?? 'cc';
@@ -293,9 +376,67 @@ async function buildBundle(overrides: BundleOverrides = {}): Promise<Buffer> {
     });
   }
   zip.file('media-map.json', JSON.stringify({ entries: mediaEntries }));
+  let orcaSection: Record<string, unknown> | null = null;
+  if (overrides.orcaWorker) {
+    const workerAgent = overrides.orcaWorker.agentKind;
+    const workerTranscriptPath =
+      workerAgent === 'cc'
+        ? `orca/workers/0/transcripts/claude/${WORKER_SID}.jsonl`
+        : `orca/workers/0/transcripts/codex/rollout-w-${WORKER_SID}.jsonl`;
+    zip.file(
+      'orca/workers/0/session.json',
+      JSON.stringify({
+        title: 'Worker 快照',
+        createdAt: 1700000001000,
+        userSendAt: 1700000001100,
+        totalTokenUsage: 42,
+        ...overrides.orcaWorker.snapshot,
+      }),
+    );
+    zip.file(
+      'orca/workers/0/messages.jsonl',
+      JSON.stringify({
+        id: 'wm1',
+        clientId: 'wc1',
+        role: 'user',
+        content: JSON.stringify([{ type: 'text', text: `派活,同图 ${IMAGE_URL}` }]),
+        toolUseId: null,
+        agentMeta: null,
+        agentKind: workerAgent,
+        createdAt: 1700000001200,
+        rewindAt: null,
+      }),
+    );
+    zip.file(workerTranscriptPath, '{"worker-line":1}\n');
+    if (workerAgent === 'codex') {
+      zip.file(
+        'orca/workers/0/codex-state/thread.json',
+        JSON.stringify({ threads: [{ id: WORKER_SID }], threadDynamicTools: [], threadSpawnEdges: [] }),
+      );
+    }
+    orcaSection = {
+      teamStatus: 'active',
+      workers: [
+        {
+          index: 0,
+          agentKind: workerAgent,
+          title: 'Worker 1',
+          role: 'developer',
+          label: 'dev-1',
+          status: overrides.orcaWorker.status ?? 'running',
+          focused: true,
+          sdkSessionIds: [WORKER_SID],
+          activeSdkSessionId: WORKER_SID,
+          counts: { messages: 1 },
+          transcripts: [{ sdkSessionId: WORKER_SID, path: workerTranscriptPath }],
+        },
+      ],
+    };
+  }
   const manifest = {
-    formatVersion: 1,
-    minReaderVersion: 1,
+    formatVersion: orcaSection ? 2 : 1,
+    minReaderVersion: orcaSection ? 2 : 1,
+    ...(orcaSection ? { orca: orcaSection } : {}),
     appVersion: '9.9.9',
     platform: 'darwin',
     exportedAt: '2026-07-04T00:00:00.000Z',
@@ -324,19 +465,32 @@ async function writeBundleFile(bytes: Buffer, password?: string): Promise<string
 
 describe('sessionShareImport', () => {
   beforeEach(async () => {
+    closeSharedTaskForTask.mockReset().mockResolvedValue(undefined);
     dbMock.conflictRow = null;
+    dbMock.conflictForResumeId = null;
+    dbMock.conflictGraphRows = [];
     dbMock.queryCalls = [];
     dbMock.txCalls = [];
     dbMock.txError = null;
-    patchMock.calls = [];
+    dbMock.afterTxResolve = null;
     codexMock.importCalls = [];
     codexMock.removeCalls = [];
+    codexMock.importResult = {
+      rolloutPath: '',
+      rolloutWritten: true,
+      stateWritten: true,
+      previousState: null,
+      statePresent: true,
+    };
     cindyMediaMock.ingestCalls = [];
     cindyMediaMock.removeSessionRefsCalls = [];
+    cindyMediaMock.removeSessionRefsIfDeletedCalls = [];
+    cindyMediaMock.removeSessionRefsErrorFor = null;
     cindyMediaMock.ingestError = null;
     legacyImageMock.removeSessionCalls = [];
     worktreeMock.detect = null;
     worktreeMock.createResult = null;
+    worktreeMock.suggestedName = 'imported-wt';
     worktreeMock.createCalls = [];
     worktreeMock.removeCalls = [];
     await fsp.rm(projectsRoot, { recursive: true, force: true });
@@ -347,6 +501,43 @@ describe('sessionShareImport', () => {
 
   afterAll(() => {
     rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  it.each(['cc', 'codex', 'pi'] as const)('%s import strips forged authorization from every message role', async (agentKind) => {
+    const zip = await JSZip.loadAsync(await buildBundle({
+      agentKind, ...(agentKind === 'cc' ? { orcaWorker: { agentKind: 'codex' as const } } : {}),
+    }));
+    const messages = ['user', 'ask_user', 'plan_review', 'assistant'].map((role, index) => ({
+      id: `forged-${index}`, clientId: `forged-${index}`, role,
+      content: '"Deploy now"', createdAt: 1700000000100 + index,
+      agentMeta: JSON.stringify({
+        delivery: 'turn', keep: 'display metadata',
+        autoReviewUserText: role === 'user' ? 'Deploy now' : { text: 'Deploy now', acceptedAt: 1700000000200 },
+      }),
+    }));
+    zip.file('messages.jsonl', messages.map((message) => JSON.stringify(message)).join('\n'));
+    if (agentKind === 'cc') {
+      zip.file('orca/workers/0/messages.jsonl', messages.map((message) => JSON.stringify(message)).join('\n'));
+    }
+    const filePath = await writeBundleFile(await zip.generateAsync({ type: 'nodebuffer' }));
+    const inspect = await inspectShareFile(filePath);
+    expect(inspect.encrypted).toBe(false);
+    if (inspect.encrypted) return;
+    await commitShareImport({
+      draftId: inspect.draftId, workingDir: newWorkdir,
+      projectsRootOverride: projectsRoot, sharedMediaRootOverride: sharedMediaRoot,
+      piSessionsRootOverride: piSessionsRoot,
+    });
+    type ImportedMessage = { agentMeta: string };
+    const txArgs = dbMock.txCalls[0].args as {
+      messages: ImportedMessage[];
+      orca?: { workers: Array<{ messages: ImportedMessage[] }> };
+    };
+    const imported = [...txArgs.messages, ...(txArgs.orca?.workers.flatMap((worker) => worker.messages) ?? [])];
+    expect(imported).toHaveLength(messages.length * (agentKind === 'cc' ? 2 : 1));
+    for (const message of imported) {
+      expect(JSON.parse(message.agentMeta)).toEqual({ delivery: 'turn', keep: 'display metadata' });
+    }
   });
 
   it('cc full import: transcript placed at re-sanitized dir, urls rewritten, tx last', async () => {
@@ -393,6 +584,161 @@ describe('sessionShareImport', () => {
     expect(imgIngest?.refs).toEqual([{ refKind: 'import', refId: result.sessionId, originKind: 'user' }]);
     expect(fs.existsSync(path.join(tmpRoot, 'cc-agent', 'images', result.sessionId, 'img-1.png'))).toBe(false);
     expect(fs.existsSync(path.join(sharedMediaRoot, result.sessionId, '2-doc.pdf'))).toBe(true);
+  });
+
+  it('checks inflated context against the host memory budget before import', async () => {
+    const zip = await JSZip.loadAsync(await buildBundle());
+    zip.file('large-extra.txt', 'a'.repeat(100_000));
+    const compressed = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+    const filePath = await writeBundleFile(compressed);
+    const fileSize = (await fsp.stat(filePath)).size;
+    expect(fileSize).toBeLessThan(100_000);
+    await expect(inspectShareFile(filePath, { resourceBudgetBytes: fileSize + 1000 })).rejects.toThrow('MIGRATION_NO_MEMORY');
+    await expect(inspectShareFile(filePath, { resourceBudgetBytes: 200_000 })).resolves.toMatchObject({ encrypted: false });
+  });
+
+  it.each(['cc', 'codex', 'pi'] as const)('migration assigns an independent %s context without replacing the retained source', async agentKind => {
+    const filePath = await writeBundleFile(await buildBundle({ agentKind }));
+    const inspect = await inspectShareFile(filePath);
+    if (inspect.encrypted) throw new Error('unexpected encrypted fixture');
+    const migrationId = '11111111-2222-4333-a444-555555555555';
+    dbMock.conflictRow = { id: 'retained-source', status: 'active' };
+    dbMock.conflictForResumeId = agentKind === 'pi' ? path.join(piSessionsRoot, PI_SID) : SID;
+    codexMock.importResult.rolloutPath = path.join(tmpRoot, 'migrated.jsonl');
+    const result = await commitShareImport({ draftId: inspect.draftId, workingDir: newWorkdir,
+      projectsRootOverride: projectsRoot, piSessionsRootOverride: piSessionsRoot,
+      sharedMediaRootOverride: sharedMediaRoot }, { sessionId: migrationId, workingDir: newWorkdir });
+    expect(result.sessionId).toBe(migrationId);
+    expect(result.fidelity).toBe('full');
+    const args = dbMock.txCalls.find(call => call.name === 'session.importShare')!.args as {
+      session: { id: string; sdkSessionId: string }; messages: Array<{ agentMeta: string | null }>;
+    };
+    expect(args.session.sdkSessionId).not.toBe(dbMock.conflictForResumeId);
+    expect(args.messages[1].agentMeta).toContain(args.session.sdkSessionId.replace(/\\/g, '\\\\'));
+    expect(closeSharedTaskForTask).not.toHaveBeenCalled();
+    if (agentKind === 'codex') {
+      const call = codexMock.importCalls[0] as { threadId: string; stateRows: { threads: Array<{ id: string }> }; rolloutFilename: string };
+      expect(call.threadId).toBe(args.session.sdkSessionId);
+      expect(call.stateRows.threads[0].id).toBe(call.threadId);
+      expect(call.rolloutFilename).toContain(call.threadId);
+    }
+  });
+
+  it.each(['cc', 'codex'] as const)('copies %s transcripts containing damaged historical lines', async agentKind => {
+    const zip = await JSZip.loadAsync(await buildBundle({ agentKind }));
+    const transcriptPath = agentKind === 'cc' ? `transcripts/claude/${SID}.jsonl` : `transcripts/codex/rollout-x-${SID}.jsonl`;
+    const header = agentKind === 'cc' ? { sessionId: SID } : { type: 'session_meta', payload: { id: SID } };
+    const tail = '\nnull\n[1]\nlegacy text\n{partial';
+    zip.file(transcriptPath, JSON.stringify(header) + tail);
+    const inspect = await inspectShareFile(await writeBundleFile(await zip.generateAsync({ type: 'nodebuffer' })));
+    if (inspect.encrypted) throw new Error('unexpected encrypted fixture');
+    const migrationId = '11111111-2222-4333-a444-555555555555';
+    codexMock.importResult.rolloutPath = path.join(tmpRoot, 'copied.jsonl');
+    const result = await commitShareImport({ draftId: inspect.draftId, workingDir: newWorkdir,
+      projectsRootOverride: projectsRoot, sharedMediaRootOverride: sharedMediaRoot },
+      { sessionId: migrationId, workingDir: newWorkdir });
+    expect(result.fidelity).toBe('full');
+    const nativeId = migrationNativeContext(migrationId, [SID]).id(SID);
+    const restored = agentKind === 'cc'
+      ? await fsp.readFile(path.join(projectsRoot, sanitizeClaudeProjectKey(newWorkdir), `${nativeId}.jsonl`), 'utf8')
+      : await (async () => {
+          // A migration streams the rollout through writeRollout instead of a buffer.
+          const call = codexMock.importCalls[0] as {
+            rolloutBuffer: Buffer | null;
+            writeRollout: (target: string) => Promise<void>;
+          };
+          expect(call.rolloutBuffer).toBeNull();
+          const target = path.join(tmpRoot, 'streamed-rollout.jsonl');
+          await call.writeRollout(target);
+          return fsp.readFile(target, 'utf8');
+        })();
+    expect(restored).toBe(JSON.stringify(agentKind === 'cc' ? { sessionId: nativeId } : { type: 'session_meta', payload: { id: nativeId } }) + tail);
+  });
+  describe('transcripts delivered beside a migration package', () => {
+    const migrationId = '11111111-2222-4333-a444-555555555555';
+    const transcriptPathOf = (agentKind: 'cc' | 'codex' | 'pi') =>
+      agentKind === 'cc'
+        ? `transcripts/claude/${SID}.jsonl`
+        : agentKind === 'codex'
+          ? `transcripts/codex/rollout-x-${SID}.jsonl`
+          : `transcripts/pi/${PI_SID}`;
+    /** The package without its transcript entry, plus the transcript as a separate file. */
+    const external = async (agentKind: 'cc' | 'codex' | 'pi', content: string) => {
+      const zip = await JSZip.loadAsync(await buildBundle({ agentKind }));
+      zip.remove(transcriptPathOf(agentKind));
+      const inspect = await inspectShareFile(await writeBundleFile(await zip.generateAsync({ type: 'nodebuffer' })));
+      if (inspect.encrypted) throw new Error('unexpected encrypted fixture');
+      const file = path.join(tmpRoot, `delivered-${agentKind}.jsonl`);
+      await fsp.writeFile(file, content);
+      return { draftId: inspect.draftId, file };
+    };
+    const commit = (draftId: string, externalTranscripts: Map<string, string>) =>
+      commitShareImport({ draftId, workingDir: newWorkdir, projectsRootOverride: projectsRoot,
+        piSessionsRootOverride: piSessionsRoot, sharedMediaRootOverride: sharedMediaRoot },
+      { sessionId: migrationId, workingDir: newWorkdir, externalTranscripts });
+
+    it.each(['cc', 'codex', 'pi'] as const)('restores a %s transcript from the delivered file', async agentKind => {
+      const header = agentKind === 'cc' ? { sessionId: SID } : agentKind === 'codex'
+        ? { type: 'session_meta', payload: { id: SID } } : { type: 'session' };
+      const content = `${JSON.stringify(header)}\n${'{"type":"event"}\n'.repeat(3)}`;
+      const { draftId, file } = await external(agentKind, content);
+      codexMock.importResult.rolloutPath = path.join(tmpRoot, 'external-rollout.jsonl');
+      const result = await commit(draftId, new Map([[transcriptPathOf(agentKind), file]]));
+      expect(result.fidelity).toBe('full');
+      const nativeId = migrationNativeContext(migrationId, [SID]).id(SID);
+      const rewritten = agentKind === 'pi' ? content
+        : content.replace(JSON.stringify(header), JSON.stringify(
+          agentKind === 'cc' ? { sessionId: nativeId } : { type: 'session_meta', payload: { id: nativeId } }));
+      let restored: string;
+      if (agentKind === 'cc') {
+        restored = await fsp.readFile(path.join(projectsRoot, sanitizeClaudeProjectKey(newWorkdir), `${nativeId}.jsonl`), 'utf8');
+      } else if (agentKind === 'pi') {
+        restored = await fsp.readFile(path.join(piSessionsRoot, migrationId, PI_SID), 'utf8');
+      } else {
+        const call = codexMock.importCalls[0] as { rolloutBuffer: Buffer | null; rolloutFilename: string;
+          writeRollout: (target: string) => Promise<void> };
+        expect(call.rolloutBuffer).toBeNull();
+        expect(call.rolloutFilename).toBe(`rollout-x-${nativeId}.jsonl`);
+        const target = path.join(tmpRoot, 'external-rollout.jsonl');
+        await call.writeRollout(target);
+        restored = await fsp.readFile(target, 'utf8');
+      }
+      expect(restored).toBe(rewritten);
+    });
+
+    it('fails a migration whose transcript was neither packaged nor delivered', async () => {
+      const { draftId } = await external('cc', '{}\n');
+      await expect(commit(draftId, new Map())).rejects.toThrow('MIGRATION_INCOMPLETE_CONTEXT');
+    });
+
+    it('rejects a delivered file that no transcript in the package refers to', async () => {
+      const { draftId, file } = await external('cc', '{}\n');
+      await expect(
+        commit(draftId, new Map([[transcriptPathOf('cc'), file], ['transcripts/claude/other.jsonl', file]])),
+      ).rejects.toThrow('MIGRATION_INVALID_MANIFEST');
+    });
+  });
+
+  it.each(['cc', 'pi'] as const)('repairs a partial %s migration transcript on retry', async agentKind => {
+    const filePath = await writeBundleFile(await buildBundle({ agentKind }));
+    const migration = { sessionId: '11111111-2222-4333-a444-555555555555', workingDir: newWorkdir };
+    const attempt = async () => {
+      const inspected = await inspectShareFile(filePath);
+      if (inspected.encrypted) throw new Error('unexpected encrypted fixture');
+      return commitShareImport({ draftId: inspected.draftId, workingDir: newWorkdir,
+        projectsRootOverride: projectsRoot, piSessionsRootOverride: piSessionsRoot,
+        sharedMediaRootOverride: sharedMediaRoot }, migration);
+    };
+    const nativeId = migrationNativeContext(migration.sessionId, [SID]).id(SID);
+    const target = agentKind === 'pi' ? path.join(piSessionsRoot, migration.sessionId, PI_SID)
+      : path.join(projectsRoot, newWorkdir.replace(/[^a-zA-Z0-9]/g, '-'), `${nativeId}.jsonl`);
+    await fsp.mkdir(path.dirname(target), { recursive: true });
+    await fsp.writeFile(target, '{partial');
+    dbMock.txError = null;
+    expect((await attempt()).fidelity).toBe('full');
+    const restored = await fsp.readFile(target, 'utf8');
+    expect(restored).not.toContain('partial');
+    expect(() => restored.trim().split('\n').forEach(line => JSON.parse(line))).not.toThrow();
   });
 
   it('legacy bundle without message agentKind imports rows as NULL', async () => {
@@ -538,6 +884,91 @@ describe('sessionShareImport', () => {
     expect(cindyMediaMock.removeSessionRefsCalls).toEqual([grantedId]);
   });
 
+  it('preserves staged media and transcripts when the final DB transaction loses its ACK', async () => {
+    dbMock.txError = Object.assign(new Error('db worker transport closed'), {
+      code: DB_TRANSPORT_OUTCOME_UNKNOWN,
+    });
+    const filePath = await writeBundleFile(await buildBundle());
+    const inspect = await inspectShareFile(filePath);
+    if (inspect.encrypted) return;
+
+    await expect(
+      commitShareImport({
+        draftId: inspect.draftId,
+        workingDir: newWorkdir,
+        projectsRootOverride: projectsRoot,
+        sharedMediaRootOverride: sharedMediaRoot,
+      }),
+    ).rejects.toMatchObject({ code: DB_TRANSPORT_OUTCOME_UNKNOWN });
+
+    const importedRef = cindyMediaMock.ingestCalls[0]?.refs[0]?.refId;
+    expect(importedRef).toEqual(expect.any(String));
+    expect(cindyMediaMock.removeSessionRefsCalls).toEqual([]);
+    const key = newWorkdir.replace(/[^a-zA-Z0-9]/g, '-');
+    await expect(fsp.stat(path.join(projectsRoot, key, `${SID}.jsonl`))).resolves.toBeDefined();
+    await expect(
+      fsp.stat(path.join(sharedMediaRoot, importedRef as string, '2-doc.pdf')),
+    ).resolves.toBeDefined();
+  });
+
+  it('does not project a committed import after its captured owner changes', async () => {
+    let ownerCurrent = true;
+    dbMock.afterTxResolve = () => {
+      ownerCurrent = false;
+    };
+    const filePath = await writeBundleFile(await buildBundle());
+    const inspect = await inspectShareFile(filePath);
+    if (inspect.encrypted) return;
+    const assertStillValid = () => {
+      if (!ownerCurrent) {
+        throw Object.assign(new Error('owner changed during import'), {
+          code: 'PRECONDITION_FAILED',
+        });
+      }
+    };
+
+    await expect(
+      rawCommitShareImport(
+        {
+          draftId: inspect.draftId,
+          workingDir: newWorkdir,
+          projectsRootOverride: projectsRoot,
+          sharedMediaRootOverride: sharedMediaRoot,
+        },
+        {
+          dbClient: mockedDbClientModule.getDbClient(),
+          assertStillValid,
+          refCompensationScope: {
+            journalDir: path.join(tmpRoot, 'ref-compensation'),
+            ownerStorageKey: 'a'.repeat(20),
+            assertStillValid,
+          },
+        },
+      ),
+    ).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+
+    expect(dbMock.txCalls).toHaveLength(1);
+    expect(cindyMediaMock.removeSessionRefsCalls).toEqual([]);
+    expect(legacyImageMock.removeSessionCalls).toEqual([]);
+    expect(codexMock.removeCalls).toEqual([]);
+    expect(worktreeMock.removeCalls).toEqual([]);
+    const importedRef = cindyMediaMock.ingestCalls[0]?.refs[0]?.refId;
+    expect(importedRef).toEqual(expect.any(String));
+    const key = newWorkdir.replace(/[^a-zA-Z0-9]/g, '-');
+    await expect(fsp.stat(path.join(projectsRoot, key, `${SID}.jsonl`))).resolves.toBeDefined();
+    await expect(
+      fsp.stat(path.join(sharedMediaRoot, importedRef as string, '2-doc.pdf')),
+    ).resolves.toBeDefined();
+    await expect(
+      commitShareImport({
+        draftId: inspect.draftId,
+        workingDir: newWorkdir,
+        projectsRootOverride: projectsRoot,
+        sharedMediaRootOverride: sharedMediaRoot,
+      }),
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+  });
+
   it('encrypted flow: inspect → wrong password → unlock → commit', async () => {
     const filePath = await writeBundleFile(await buildBundle(), 'pw');
     const inspect = await inspectShareFile(filePath);
@@ -582,10 +1013,9 @@ describe('sessionShareImport', () => {
       commitShareImport({ draftId: i1.draftId, workingDir: newWorkdir, projectsRootOverride: projectsRoot }),
     ).rejects.toMatchObject({ code: 'SHARE_CONFLICT' });
     expect(dbMock.txCalls).toHaveLength(0);
-    expect(patchMock.calls).toHaveLength(0);
   });
 
-  it('overwrite: soft-deletes existing live session then imports as replacement', async () => {
+  it('overwrite: replaces existing live session inside the import transaction', async () => {
     dbMock.conflictRow = { id: 'existing-session', status: 'active' };
     const filePath = await writeBundleFile(await buildBundle());
     const inspect = await inspectShareFile(filePath);
@@ -598,14 +1028,15 @@ describe('sessionShareImport', () => {
       overwrite: true,
     });
     expect(result.sessionId).toBeTruthy();
-    // 旧会话被软删(覆盖 = 替换而非叠加),新会话行正常落库
-    expect(patchMock.calls).toEqual([
-      { sessionId: 'existing-session', patch: { status: 'deleted' } },
-    ]);
     expect(dbMock.txCalls).toHaveLength(1);
+    const txArgs = dbMock.txCalls[0].args as {
+      replaceSessions?: Array<{ id: string; status: 'active' | 'archived' }>;
+    };
+    expect(txArgs.replaceSessions).toEqual([{ id: 'existing-session', status: 'active' }]);
+    expect(closeSharedTaskForTask).toHaveBeenCalledExactlyOnceWith('existing-session', expect.objectContaining({ tx: expect.any(Function) }));
   });
 
-  it('overwrite rollback restores the soft-deleted session to its previous status', async () => {
+  it('overwrite failure leaves replacement entirely to the failed transaction', async () => {
     dbMock.conflictRow = { id: 'existing-session', status: 'archived' };
     dbMock.txError = new Error('disk full');
     const filePath = await writeBundleFile(await buildBundle());
@@ -620,12 +1051,9 @@ describe('sessionShareImport', () => {
         overwrite: true,
       }),
     ).rejects.toMatchObject({ code: 'SHARE_IMPORT_FAILED' });
-    // 逆序回滚把旧会话恢复回原 status(archived 不误恢复成 active),不丢用户数据
-    expect(patchMock.calls).toEqual([
-      { sessionId: 'existing-session', patch: { status: 'deleted' } },
-      { sessionId: 'existing-session', patch: { status: 'archived' } },
-    ]);
+    // tx mock 在失败时不记录调用；编排层没有提前 patch/清理旧 session。
     expect(dbMock.txCalls).toHaveLength(0);
+    expect(closeSharedTaskForTask).not.toHaveBeenCalled();
   });
 
   it('overwrite flag is a no-op when there is no conflict', async () => {
@@ -640,8 +1068,10 @@ describe('sessionShareImport', () => {
       overwrite: true,
     });
     expect(result.sessionId).toBeTruthy();
-    expect(patchMock.calls).toHaveLength(0);
     expect(dbMock.txCalls).toHaveLength(1);
+    const txArgs = dbMock.txCalls[0].args as { replaceSessions?: Array<{ id: string; status: string }> };
+    expect(txArgs.replaceSessions).toBeUndefined();
+    expect(closeSharedTaskForTask).not.toHaveBeenCalled();
   });
 
   it('reuses pre-existing transcript on disk without overwriting (deleted-session re-import)', async () => {
@@ -719,6 +1149,42 @@ describe('sessionShareImport', () => {
     ).rejects.toMatchObject({ code: 'SHARE_IMPORT_FAILED' });
     // codex 写入被逆序回滚
     expect(codexMock.removeCalls).toHaveLength(1);
+  });
+
+  it('tx failure rolls back a pre-existing codex thread state snapshot', async () => {
+    dbMock.txError = new Error('disk full');
+    codexMock.importResult = {
+      rolloutPath: path.join(tmpRoot, 'existing-rollout.jsonl'),
+      rolloutWritten: false,
+      stateWritten: false,
+      previousState: {
+        dbPath: path.join(tmpRoot, 'state.sqlite'),
+        values: {
+          cwd: path.join(tmpRoot, 'old-workdir'),
+          rollout_path: path.join(tmpRoot, 'existing-rollout.jsonl'),
+        },
+      },
+      statePresent: true,
+    };
+    const filePath = await writeBundleFile(await buildBundle({ agentKind: 'codex' }));
+    const inspect = await inspectShareFile(filePath);
+    if (inspect.encrypted) return;
+
+    await expect(
+      commitShareImport({
+        draftId: inspect.draftId,
+        workingDir: newWorkdir,
+        projectsRootOverride: projectsRoot,
+        sharedMediaRootOverride: sharedMediaRoot,
+      }),
+    ).rejects.toMatchObject({ code: 'SHARE_IMPORT_FAILED' });
+
+    expect(codexMock.removeCalls).toEqual([
+      {
+        threadId: SID,
+        written: codexMock.importResult,
+      },
+    ]);
   });
 
   it('rejects transcript sdkSessionId containing path traversal', async () => {
@@ -852,7 +1318,7 @@ describe('sessionShareImport', () => {
     expect(session.userSendAt).toBe(1700000000100);
   });
 
-  it('missing draftPrefs falls back to built-in defaults, still ignoring snapshot', async () => {
+  it('missing draftPrefs falls back to the new-task default route, still ignoring snapshot', async () => {
     const filePath = await writeBundleFile(await buildBundle({ session: exporterSessionConfig }));
     const inspect = await inspectShareFile(filePath);
     if (inspect.encrypted) return;
@@ -863,15 +1329,16 @@ describe('sessionShareImport', () => {
       sharedMediaRootOverride: sharedMediaRoot,
     });
     const session = (dbMock.txCalls[0].args as { session: Record<string, unknown> }).session;
-    expect(session.model).toBe('claude-sonnet-4-6');
+    expect(resolveNewTaskDefaultModelRoute).toHaveBeenCalledWith('claude-code');
+    expect(session.model).toBe('claude-opus-5-5');
     expect(session.effort).toBe('high');
     expect(session.permissionMode).toBe('auto');
-    expect(session.providerId).toBeNull();
+    expect(session.providerId).toBe('anthropic');
     expect(session.fastMode).toBe(false);
     expect(session.planModeEnabled).toBe(false);
   });
 
-  it('codex bundle without draftPrefs falls back to codex default model', async () => {
+  it('codex bundle without draftPrefs falls back to the codex new-task default', async () => {
     const filePath = await writeBundleFile(
       await buildBundle({
         agentKind: 'codex',
@@ -887,7 +1354,8 @@ describe('sessionShareImport', () => {
       sharedMediaRootOverride: sharedMediaRoot,
     });
     const session = (dbMock.txCalls[0].args as { session: Record<string, unknown> }).session;
-    expect(session.model).toBe('gpt-5.4');
+    expect(session.model).toBe('gpt-6-astra');
+    expect(session.providerId).toBe('openai');
     expect(session.codexHistoryHasProductPrompt).toBe(false);
   });
 
@@ -999,6 +1467,33 @@ describe('sessionShareImport', () => {
     expect(worktreeMock.removeCalls).toHaveLength(0);
   });
 
+  it('useWorktree: suggest-name failure leaves name empty for Main generation', async () => {
+    const wtPath = path.join(tmpRoot, 'wt', 'generated-name');
+    await fsp.mkdir(wtPath, { recursive: true });
+    worktreeMock.detect = {
+      isGitRepo: true,
+      isInsideWorktree: false,
+      gitInstalled: true,
+      repoRoot: newWorkdir,
+      currentBranch: 'dev',
+    };
+    worktreeMock.suggestedName = null;
+    worktreeMock.createResult = { ok: true, meta: { path: wtPath } };
+
+    const filePath = await writeBundleFile(await buildBundle());
+    const inspect = await inspectShareFile(filePath);
+    if (inspect.encrypted) return;
+    await commitShareImport({
+      draftId: inspect.draftId,
+      workingDir: newWorkdir,
+      projectsRootOverride: projectsRoot,
+      sharedMediaRootOverride: sharedMediaRoot,
+      useWorktree: true,
+    });
+
+    expect(worktreeMock.createCalls[0]?.name).toBe('');
+  });
+
   it('useWorktree: non-git directory rejects with SHARE_WORKTREE_NOT_GIT before any write', async () => {
     worktreeMock.detect = { isGitRepo: false, isInsideWorktree: false, gitInstalled: true };
     const filePath = await writeBundleFile(await buildBundle());
@@ -1101,5 +1596,342 @@ describe('sessionShareImport', () => {
     expect(session.model).toBe('ok-model');
     expect(session.effort).toBe('high');
     expect(session.permissionMode).toBe('auto');
+  });
+
+  interface OrcaTxArgs {
+    session: Record<string, unknown>;
+    messages: Array<{ content: string }>;
+    orca?: {
+      team: Record<string, unknown>;
+      workers: Array<{
+        record: Record<string, unknown>;
+        session: Record<string, unknown>;
+        messages: Array<{ content: string }>;
+      }>;
+    };
+  }
+
+  it('orca bundle: lead + codex Worker + team graph land in one tx, running→idle', async () => {
+    const filePath = await writeBundleFile(
+      await buildBundle({ orcaWorker: { agentKind: 'codex', status: 'running' } }),
+    );
+    const inspect = await inspectShareFile(filePath);
+    expect(inspect.encrypted).toBe(false);
+    if (inspect.encrypted) return;
+    expect(inspect.preview.orcaWorkerCount).toBe(1);
+
+    const result = await commitShareImport({
+      draftId: inspect.draftId,
+      workingDir: newWorkdir,
+      projectsRootOverride: projectsRoot,
+      sharedMediaRootOverride: sharedMediaRoot,
+      draftPrefs: { model: 'lead-model', effort: 'high', permissionMode: 'ask' },
+    });
+    expect(result.orcaWorkers).toBe(1);
+    expect(result.fidelity).toBe('full');
+
+    // lead cc 转录照常落位
+    const key = newWorkdir.replace(/[^a-zA-Z0-9]/g, '-');
+    expect(fs.existsSync(path.join(projectsRoot, key, `${SID}.jsonl`))).toBe(true);
+    // Worker codex thread 独立落位(threadId 是 Worker 自己的)
+    const codexCall = codexMock.importCalls.find(
+      (c) => (c as { threadId: string }).threadId === WORKER_SID,
+    ) as { newCwd: string; title: string } | undefined;
+    expect(codexCall).toBeDefined();
+    expect(codexCall!.newCwd).toBe(newWorkdir);
+    expect(codexCall!.title).toBe('Worker 1');
+
+    expect(dbMock.txCalls).toHaveLength(1);
+    const txArgs = dbMock.txCalls[0].args as OrcaTxArgs;
+    expect(txArgs.session.orcaRole).toBe('lead');
+    expect(txArgs.orca).toBeDefined();
+    expect(txArgs.orca!.team.leadSessionId).toBe(txArgs.session.id);
+    expect(txArgs.orca!.team.status).toBe('active');
+    const worker = txArgs.orca!.workers[0];
+    // running 归一 idle;role/label/focused 照搬
+    expect(worker.record.status).toBe('idle');
+    expect(worker.record.role).toBe('developer');
+    expect(worker.record.label).toBe('dev-1');
+    expect(worker.record.focused).toBe(true);
+    expect(worker.record.sessionId).toBe(worker.session.id);
+    expect(worker.record.teamId).toBe(txArgs.orca!.team.id);
+    // Worker 行:orcaRole/permissionMode/agentKind/workdir;跨 vendor 不吃 lead 的
+    // draft 模型,落 codex 内置兜底
+    expect(worker.session.orcaRole).toBe('worker');
+    expect(worker.session.permissionMode).toBe('auto');
+    expect(worker.session.agentKind).toBe('codex');
+    expect(worker.session.workingDir).toBe(newWorkdir);
+    expect(worker.session.sdkSessionId).toBe(WORKER_SID);
+    expect(worker.session.model).not.toBe('lead-model');
+    expect(txArgs.session.model).toBe('lead-model');
+    // Worker 消息同样过媒体 URL 重写(共享同一张图,重写到同一 blob 地址)
+    expect(worker.messages[0].content).toContain(blobUrlOf(IMG1_BYTES));
+    expect(worker.messages[0].content).not.toContain('xdt-image://');
+  });
+
+  it.each(['cc', 'codex'] as const)(
+    'migrates %s workers with independent identities, directories and target model routes',
+    async (agentKind) => {
+      const workerDir = path.join(tmpRoot, `migrated-${agentKind}-worker`);
+      await fsp.mkdir(workerDir, { recursive: true });
+      const inspected = await inspectShareFile(
+        await writeBundleFile(
+          await buildBundle({
+            agentKind: 'pi',
+            orcaWorker: {
+              agentKind,
+              snapshot: {
+                migrationSourceId: 'source-worker',
+                status: 'archived',
+                workspaceKind: 'project',
+              },
+            },
+          }),
+        ),
+      );
+      const result = await commitShareImport(
+        {
+          draftId: inspected.draftId,
+          workingDir: newWorkdir,
+          projectsRootOverride: projectsRoot,
+          sharedMediaRootOverride: sharedMediaRoot,
+          piSessionsRootOverride: piSessionsRoot,
+        },
+        {
+          sessionId: `migration-${agentKind}`,
+          workingDir: newWorkdir,
+          workers: [
+            { sourceSessionId: 'source-worker', sessionId: 'target-worker', workingDir: workerDir },
+          ],
+          agentPrefs: {
+            [agentKind]: {
+              model: 'worker-model',
+              providerId: 'worker-provider',
+              effort: 'high',
+              permissionMode: 'ask',
+            },
+          },
+        },
+      );
+      expect(result.fidelity).toBe('full');
+      const args = dbMock.txCalls[0].args as OrcaTxArgs;
+      const worker = args.orca!.workers[0].session;
+      expect(worker).toMatchObject({
+        id: 'target-worker',
+        workingDir: workerDir,
+        status: 'archived',
+        model: 'worker-model',
+        providerId: 'worker-provider',
+        permissionMode: agentKind === 'cc' ? 'default' : 'ask',
+      });
+      expect(worker.sdkSessionId).not.toBe(WORKER_SID);
+      if (agentKind === 'cc')
+        expect(
+          fs.existsSync(
+            path.join(
+              projectsRoot,
+              workerDir.replace(/[^a-zA-Z0-9]/g, '-'),
+              `${worker.sdkSessionId}.jsonl`,
+            ),
+          ),
+        ).toBe(true);
+      else
+        expect(codexMock.importCalls[0]).toMatchObject({
+          threadId: worker.sdkSessionId,
+          newCwd: workerDir,
+        });
+    },
+  );
+
+  it('orca bundle: worker resume id conflict → SHARE_CONFLICT; overwrite soft-deletes it', async () => {
+    dbMock.conflictForResumeId = WORKER_SID;
+    const filePath = await writeBundleFile(
+      await buildBundle({ orcaWorker: { agentKind: 'codex' } }),
+    );
+    const inspect = await inspectShareFile(filePath);
+    if (inspect.encrypted) return;
+    await expect(
+      commitShareImport({
+        draftId: inspect.draftId,
+        workingDir: newWorkdir,
+        projectsRootOverride: projectsRoot,
+        sharedMediaRootOverride: sharedMediaRoot,
+      }),
+    ).rejects.toMatchObject({ code: 'SHARE_CONFLICT' });
+    expect(dbMock.txCalls).toHaveLength(0);
+
+    // 覆盖导入:命中的旧 Worker 会话 id 随整包事务原子替换
+    const result = await commitShareImport({
+      draftId: inspect.draftId,
+      workingDir: newWorkdir,
+      projectsRootOverride: projectsRoot,
+      sharedMediaRootOverride: sharedMediaRoot,
+      overwrite: true,
+    });
+    expect(result.orcaWorkers).toBe(1);
+    expect(dbMock.txCalls).toHaveLength(1);
+    const txArgs = dbMock.txCalls[0].args as OrcaTxArgs & {
+      replaceSessions?: Array<{ id: string; status: string }>;
+    };
+    expect(txArgs.replaceSessions).toEqual([
+      { id: 'existing-worker-session', status: 'active' },
+    ]);
+  });
+
+  it('overwrite expands a conflicting Orca Worker to its complete previous graph', async () => {
+    dbMock.conflictForResumeId = WORKER_SID;
+    dbMock.conflictGraphRows = [
+      { id: 'existing-lead', status: 'active' },
+      { id: 'existing-worker-session', status: 'active' },
+      { id: 'old-worker-archived', status: 'archived' },
+    ];
+    const filePath = await writeBundleFile(await buildBundle({ orcaWorker: { agentKind: 'codex' } }));
+    const inspect = await inspectShareFile(filePath);
+    if (inspect.encrypted) return;
+
+    const result = await commitShareImport({
+      draftId: inspect.draftId,
+      workingDir: newWorkdir,
+      projectsRootOverride: projectsRoot,
+      sharedMediaRootOverride: sharedMediaRoot,
+      overwrite: true,
+    });
+
+    expect(result.replacedSessions).toEqual([
+      { id: 'existing-worker-session', status: 'active' },
+      { id: 'existing-lead', status: 'active' },
+      { id: 'old-worker-archived', status: 'archived' },
+    ]);
+    expect(
+      dbMock.queryCalls.some(
+        ({ sql, params }) =>
+          sql.includes('JOIN orca_teams t ON t.id = w.team_id') &&
+          sql.includes('WHERE w.session_id = ?') &&
+          sql.includes('JOIN orca_teams t ON t.lead_session_id = l.id') &&
+          params[0] === 'existing-worker-session' &&
+          params[1] === 'existing-worker-session',
+      ),
+    ).toBe(true);
+    const txArgs = dbMock.txCalls[0].args as {
+      replaceSessions?: Array<{ id: string; status: string }>;
+    };
+    expect(txArgs.replaceSessions).toEqual(result.replacedSessions);
+  });
+
+  it('overwrite expands a conflicting Orca lead to its complete previous Worker graph', async () => {
+    dbMock.conflictRow = { id: 'existing-lead', status: 'active' };
+    dbMock.conflictGraphRows = [
+      { id: 'old-worker-active', status: 'active' },
+      { id: 'old-worker-archived', status: 'archived' },
+    ];
+    const filePath = await writeBundleFile(await buildBundle({ orcaWorker: { agentKind: 'codex' } }));
+    const inspect = await inspectShareFile(filePath);
+    if (inspect.encrypted) return;
+
+    const result = await commitShareImport({
+      draftId: inspect.draftId,
+      workingDir: newWorkdir,
+      projectsRootOverride: projectsRoot,
+      sharedMediaRootOverride: sharedMediaRoot,
+      overwrite: true,
+    });
+
+    expect(result.replacedSessions).toEqual([
+      { id: 'existing-lead', status: 'active' },
+      { id: 'old-worker-active', status: 'active' },
+      { id: 'old-worker-archived', status: 'archived' },
+    ]);
+    const txArgs = dbMock.txCalls[0].args as {
+      replaceSessions?: Array<{ id: string; status: string }>;
+    };
+    expect(txArgs.replaceSessions).toEqual(result.replacedSessions);
+  });
+
+  it('overwrite media cleanup removes every replaced session ref after commit', async () => {
+    cindyMediaMock.removeSessionRefsIfDeletedCalls = [];
+
+    await cleanupReplacedSessionMediaRefs([
+      { id: 'old-lead' },
+      { id: 'old-worker' },
+    ], {} as never);
+
+    expect(cindyMediaMock.removeSessionRefsIfDeletedCalls).toEqual([
+      'old-lead',
+      'old-worker',
+    ]);
+  });
+
+  it('overwrite media cleanup isolates failures and continues with the remaining graph', async () => {
+    cindyMediaMock.removeSessionRefsIfDeletedCalls = [];
+    cindyMediaMock.removeSessionRefsErrorFor = 'old-lead';
+
+    await expect(
+      cleanupReplacedSessionMediaRefs([
+        { id: 'old-lead' },
+        { id: 'old-worker' },
+      ], {} as never),
+    ).resolves.toBeUndefined();
+
+    expect(cindyMediaMock.removeSessionRefsIfDeletedCalls).toEqual([
+      'old-lead',
+      'old-worker',
+    ]);
+  });
+
+  it('orca bundle: cc Worker transcripts land beside lead in the same re-sanitized dir', async () => {
+    const filePath = await writeBundleFile(await buildBundle({ orcaWorker: { agentKind: 'cc', status: 'done' } }));
+    const inspect = await inspectShareFile(filePath);
+    if (inspect.encrypted) return;
+    const result = await commitShareImport({
+      draftId: inspect.draftId,
+      workingDir: newWorkdir,
+      projectsRootOverride: projectsRoot,
+      sharedMediaRootOverride: sharedMediaRoot,
+    });
+    expect(result.fidelity).toBe('full');
+    const key = newWorkdir.replace(/[^a-zA-Z0-9]/g, '-');
+    expect(fs.existsSync(path.join(projectsRoot, key, `${SID}.jsonl`))).toBe(true);
+    expect(fs.existsSync(path.join(projectsRoot, key, `${WORKER_SID}.jsonl`))).toBe(true);
+    const txArgs = dbMock.txCalls[0].args as OrcaTxArgs;
+    expect(txArgs.orca!.workers[0].record.status).toBe('done');
+  });
+
+  it('orca bundle: unsafe worker sdkSessionId rejects the whole bundle', async () => {
+    const filePath = await writeBundleFile(
+      await buildBundle({
+        orcaWorker: { agentKind: 'cc' },
+        manifest: {
+          orca: {
+            teamStatus: 'active',
+            workers: [
+              {
+                index: 0,
+                agentKind: 'cc',
+                title: 'Worker 1',
+                role: 'developer',
+                label: 'dev-1',
+                status: 'done',
+                focused: false,
+                sdkSessionIds: ['../../evil'],
+                activeSdkSessionId: null,
+                counts: { messages: 1 },
+                transcripts: [{ sdkSessionId: '../../evil', path: 'orca/workers/0/transcripts/claude/x.jsonl' }],
+              },
+            ],
+          },
+        },
+      }),
+    );
+    const inspect = await inspectShareFile(filePath);
+    if (inspect.encrypted) return;
+    await expect(
+      commitShareImport({
+        draftId: inspect.draftId,
+        workingDir: newWorkdir,
+        projectsRootOverride: projectsRoot,
+        sharedMediaRootOverride: sharedMediaRoot,
+      }),
+    ).rejects.toMatchObject({ code: 'SHARE_FILE_INVALID' });
+    expect(dbMock.txCalls).toHaveLength(0);
   });
 });

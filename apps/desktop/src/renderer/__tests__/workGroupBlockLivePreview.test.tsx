@@ -24,6 +24,8 @@ vi.mock('@/components/chat/AgentActionRow', () => ({
     status?: 'running' | 'done';
     toolResult?: string;
     intentOverride?: { action: string; target?: string };
+    descriptorOverride?: { kind: string };
+    onActivateOverride?: () => void;
   }) => {
     const toolInput = props.message.toolInput as { command?: unknown } | undefined;
     const command = typeof toolInput?.command === 'string'
@@ -37,7 +39,9 @@ vi.mock('@/components/chat/AgentActionRow', () => ({
         'data-result': props.toolResult,
         'data-intent': props.intentOverride?.action,
         'data-target': props.intentOverride?.target,
+        'data-descriptor': props.descriptorOverride?.kind,
         'aria-label': `chat.agentActionRow.status.${props.status ?? 'done'}`,
+        onClick: props.onActivateOverride,
       },
       command,
     );
@@ -129,6 +133,75 @@ function clickGroup(label: string) {
 }
 
 describe('WorkGroupBlock — running latest-five preview', () => {
+  it('keeps teammate execution collapsed while streaming and preserves explicit expansion at completion', async () => {
+    const props = { compact: true, blockId: 'work:bot-public', isStreaming: true,
+      childItems: [rendered('progress', 'Checking the market'),
+        tools('tools', [mkTool('search')], new Map([['search', 'original error evidence']]), new Set(['search']))] };
+    const { rerender, container } = render(createElement(WorkGroupBlock, props));
+    expect(container.querySelector('[data-live-work-preview]')).toBeNull();
+    expect(screen.queryByTestId('assistant-progress')).toBeNull();
+    expect(screen.queryByTestId('direct-tool')).toBeNull();
+    expect(screen.getByRole('button').getAttribute('aria-expanded')).toBe('false');
+    clickGroup('chat.workGroup.workDetails');
+    expect(screen.getByTestId('assistant-progress').textContent).toBe('Checking the market');
+    expect(screen.getByTestId('direct-tool').getAttribute('data-result')).toBe('original error evidence');
+    rerender(createElement(WorkGroupBlock, { ...props, isStreaming: false }));
+    expect(screen.getByTestId('assistant-progress')).toBeTruthy();
+    clickGroup('chat.workGroup.workDetails');
+    await waitFor(() => expect(screen.queryByTestId('assistant-progress')).toBeNull());
+  });
+
+  it('keeps lazy teammate history load and retry controls reachable without a live preview', () => {
+    const setVisible = vi.fn();
+    const retry = vi.fn();
+    const props = { compact: true, blockId: 'work:bot-lazy', isStreaming: true, childItems: [],
+      deferred: { owner: {}, key: 'range', expanded: false, loading: false, failed: true,
+        toggle: vi.fn(), retry, setVisible } };
+    render(createElement(WorkGroupBlock, props));
+    clickGroup('chat.workGroup.workDetails');
+    expect(setVisible).toHaveBeenLastCalledWith(true, false);
+    fireEvent.click(screen.getByText('chat.errorBanner.retry'));
+    expect(retry).toHaveBeenCalledOnce();
+  });
+
+  it('rebinds visible detail interest when the Host changes without changing the group key', () => {
+    const first = vi.fn();
+    const second = vi.fn();
+    const deferred = (owner: object, setVisible: typeof first) => ({ owner, key: 'range',
+      expanded: false, loading: false, failed: false, toggle: vi.fn(), retry: vi.fn(), setVisible });
+    const props = { blockId: 'work:same-key', isStreaming: true,
+      childItems: [tools('tools', Array.from({ length: 6 }, (_, index) => mkTool(`t${index}`)))] };
+    const { rerender, unmount } = render(createElement(WorkGroupBlock, { ...props, deferred: deferred({}, first) }));
+    expect(first).toHaveBeenLastCalledWith(false, true);
+    expect(screen.getAllByTestId('direct-tool')).toHaveLength(5);
+    clickGroup('chat.workGroup.working');
+    expect(first).toHaveBeenLastCalledWith(true, true);
+    rerender(createElement(WorkGroupBlock, { ...props, deferred: deferred({}, second) }));
+    expect(first).toHaveBeenLastCalledWith(false, false);
+    expect(second).toHaveBeenLastCalledWith(true, true);
+    unmount();
+    expect(second).toHaveBeenLastCalledWith(false, false);
+  });
+
+  it('keeps an outer summary independent from inner detail visibility and remembers the inner toggle', async () => {
+    const setVisible = vi.fn();
+    const child: WorkGroupChild = { kind: 'group', key: 'inner', blockId: 'work:inner', durationMs: 1000,
+      isStreaming: false, childItems: [tools('tools', [mkTool('inside')])],
+      deferred: { owner: {}, key: 'range', expanded: false, loading: false, failed: false, toggle: vi.fn(), retry: vi.fn(), setVisible } };
+    render(createElement(WorkGroupBlock, { blockId: 'work:summary', durationMs: 3000,
+      childItems: [rendered('progress', 'Checking'), child] }));
+    expect(setVisible).not.toHaveBeenCalled();
+    clickGroup('chat.workGroup.worked:3s');
+    expect(setVisible).toHaveBeenLastCalledWith(false, false);
+    expect(screen.queryByTestId('direct-tool')).toBeNull();
+    clickGroup('chat.workGroup.worked:1s');
+    expect(setVisible).toHaveBeenLastCalledWith(true, false);
+    clickGroup('chat.workGroup.worked:3s');
+    await waitFor(() => expect(setVisible).toHaveBeenLastCalledWith(false, false));
+    clickGroup('chat.workGroup.worked:3s');
+    await waitFor(() => expect(setVisible).toHaveBeenLastCalledWith(true, false));
+  });
+
   it('keeps the latest five tools/reasoning rows in chronological order and drops empty thinking', async () => {
     const children: WorkGroupChild[] = [
       tools('seg-1', [mkTool('t1'), mkTool('t2')]),
@@ -510,6 +583,35 @@ describe('WorkGroupBlock — running latest-five preview', () => {
     expect(thinkingButton.textContent).toContain('first line\nsecond line');
   });
 
+  it('always reserves the 18px trailing chevron slot on thinking rows', () => {
+    render(
+      createElement(WorkGroupBlock, {
+        blockId: 'work:t1',
+        isStreaming: true,
+        childItems: [
+          thinking(mkThinking('short', 'brief')),
+          thinking(mkThinking('long', 'first line\nsecond line')),
+        ],
+      }),
+    );
+
+    const rows = document.querySelectorAll<HTMLButtonElement>(
+      '[data-live-work-activity="thinking"]',
+    );
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect(row.className).toContain('rounded-[8px]');
+      const slot = row.lastElementChild;
+      expect(slot?.className).toContain('w-[18px]');
+      expect(slot?.className).toContain('h-[18px]');
+      expect(slot?.className).toContain('ml-auto');
+      expect(slot?.className).toContain('rounded-[8px]');
+      expect(slot?.className).toContain('group-hover:bg-[var(--cmd-palette-item-hover)]');
+    }
+    expect(rows[0]?.querySelector('svg.lucide-chevron-right')).toBeNull();
+    expect(rows[1]?.querySelector('svg.lucide-chevron-right')).toBeTruthy();
+  });
+
   it('drops empty thinking and renders redacted thinking directly', () => {
     const redacted = { ...mkThinking('hidden', ''), thinkingRedacted: true };
     render(
@@ -543,5 +645,63 @@ describe('WorkGroupBlock — running latest-five preview', () => {
 
     expect(screen.getAllByLabelText('chat.agentActionRow.status.done')).toHaveLength(2);
     expect(screen.getAllByLabelText('chat.agentActionRow.status.running')).toHaveLength(1);
+  });
+});
+
+describe('WorkGroupBlock — Host-projected running lines', () => {
+  const deferred = (lines?: import('@cindy/maker-shared/message-window').HistoryWorkLine[]) => ({
+    owner: {}, key: 'work-remote', expanded: false, loading: false, failed: false,
+    toggle: vi.fn(), retry: vi.fn(), setVisible: vi.fn(), ...(lines ? { lines } : {}),
+  });
+  const placeholder = thinking({ ...mkThinking('placeholder', ''), thinkingRedacted: true });
+
+  it('renders Host lines without asking for the detail preview, and a line opens the group', () => {
+    const remote = deferred([
+      { kind: 'tool', key: 'c1', toolName: 'exec', status: 'done',
+        descriptor: { kind: 'command', toolName: 'exec', command: 'pnpm test', intent: { action: 'test' } } },
+      { kind: 'thinking', key: 'c2', text: 'Checking the failing case' },
+    ]);
+    const { container } = render(createElement(WorkGroupBlock, {
+      blockId: 'work:remote', isStreaming: true, childItems: [placeholder], deferred: remote,
+    }));
+    expect(remote.setVisible).toHaveBeenLastCalledWith(false, false);
+    expect(container.querySelector('[data-live-work-preview]')).not.toBeNull();
+    expect(screen.getByTestId('direct-tool').getAttribute('data-descriptor')).toBe('command');
+    expect(screen.getByText('Checking the failing case')).toBeTruthy();
+    fireEvent.click(screen.getByTestId('direct-tool'));
+    expect(remote.setVisible).toHaveBeenLastCalledWith(true, false);
+  });
+
+  it('keeps the Host lines on screen after expanding until detail rows arrive', () => {
+    const lines = [{ kind: 'thinking' as const, key: 'c2', text: 'Checking the failing case' }];
+    const props = {
+      blockId: 'work:remote-hold', isStreaming: true,
+      childItems: [rendered('detail', 'Every detail row')],
+    };
+    const { container, rerender } = render(createElement(WorkGroupBlock, {
+      ...props, deferred: { ...deferred(lines), awaitingDetails: true },
+    }));
+    clickGroup('chat.workGroup.working');
+    expect(container.querySelector('[data-live-work-preview]')).not.toBeNull();
+    expect(screen.getByText('Checking the failing case')).toBeTruthy();
+    expect(screen.queryByTestId('assistant-progress')).toBeNull();
+    // The detail body is already open, so the handoff below swaps rows without replaying its expansion.
+    const body = container.querySelector('.grid');
+    expect(body).not.toBeNull();
+
+    rerender(createElement(WorkGroupBlock, {
+      ...props, deferred: { ...deferred(lines), awaitingDetails: false },
+    }));
+    expect(container.querySelector('[data-live-work-preview]')).toBeNull();
+    expect(container.querySelector('.grid')).toBe(body);
+    expect(screen.getByTestId('assistant-progress').textContent).toBe('Every detail row');
+  });
+
+  it('keeps the detail preview for a Host that sends no lines', () => {
+    const remote = deferred();
+    render(createElement(WorkGroupBlock, {
+      blockId: 'work:remote-old', isStreaming: true, childItems: [placeholder], deferred: remote,
+    }));
+    expect(remote.setVisible).toHaveBeenLastCalledWith(false, true);
   });
 });

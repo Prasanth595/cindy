@@ -3,7 +3,7 @@
  *
  * 蓝本是 right-sidebar-window/window.ts,差异:
  *  - 按 ghostId 多实例:窗口位置记忆每插件一份
- *    (ghost-panel-window-state-<id>.json,id 字符集 [a-z0-9-] 文件名安全);
+ *    (ghost-panel-window-state-<id>.json,id 为 storage part,文件名安全);
  *  - webPreferences 按 electron-security-and-process-boundaries §3 显式带全量
  *    安全项(该规则晚于主窗/RSB 窗,新窗口必须逐项写明,不吃默认值);
  *  - `webviewTag: true`:面板体就是 <webview>(cindy-ghost:// 分区)。附加闸/
@@ -21,6 +21,8 @@ import { markAppContentWindow } from '../windowFocusClassifier.js';
 import { readWindowBehaviorSettings } from '../window-behavior-settings-store.js';
 import { installExternalLinkGuards } from '../secondary-windows.js';
 import { installSelectionContextMenu } from '../selection-context-menu.js';
+import { applyAppearanceToWindow } from '../appearance-settings-ipc.js';
+import { markGhostPanelWebContentsId } from './registry.js';
 
 const log = createLogger('ghost-panel-window');
 
@@ -57,7 +59,7 @@ export function createGhostPanelWindow(ghostId: string, title: string): BrowserW
     acceptFirstMouse: !swallowActivationClick,
     ...platformOptions,
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
+      preload: path.join(__dirname, 'ghostPanelWindowPreload.js'),
       spellcheck: false,
       webviewTag: true,
       // 安全规则 §3 全量显式项(新建窗口不吃默认值,逐项写明):
@@ -73,14 +75,30 @@ export function createGhostPanelWindow(ghostId: string, title: string): BrowserW
       navigateOnDragDrop: false,
     },
   });
+  // Keep the detached plugin renderer in sync with its own native fullscreen
+  // state; the main window's listener cannot describe this BrowserWindow.
+  win.on('enter-full-screen', () => {
+    if (!win.isDestroyed()) win.webContents.send('fullscreen-change', true);
+  });
+  win.on('leave-full-screen', () => {
+    if (!win.isDestroyed()) win.webContents.send('fullscreen-change', false);
+  });
+  markGhostPanelWebContentsId(win.webContents.id);
   markAppContentWindow(win);
+  applyAppearanceToWindow(win);
+  win.webContents.on('did-finish-load', () => {
+    if (win.isDestroyed()) return;
+    applyAppearanceToWindow(win);
+  });
   installSelectionContextMenu(win);
   windowState.manage(win);
 
   installExternalLinkGuards(win);
 
+  // ready-to-show 不再直接 show();由 controller 的双阶段就绪握手控制展示时机。
+  // 窗口以 show:false 创建,首次显示由 controller 在 presentation-ready 后触发。
   win.once('ready-to-show', () => {
-    if (!win.isDestroyed()) win.show();
+    // no-op: 窗口由 controller 控制展示
   });
 
   const hash = '/ghost-panel-window';

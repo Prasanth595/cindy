@@ -1,0 +1,651 @@
+/**
+ * Pi RPC 资源发现事实夹具（#2009）。
+ *
+ * 这组测试故意绕过 PiAgent 的生产启动装配：它只验证仓库 pin 的 Pi
+ * `--mode rpc` 在隔离 `PI_CODING_AGENT_DIR` 下实际返回什么。不要把这里的
+ * `--approve` 当作生产策略；它只是与 `--no-approve` 组成可重复的 trust 观测对照。
+ */
+
+import { execFileSync } from 'node:child_process';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { afterEach, describe, expect, it } from 'vitest';
+
+import { applyPiDisabledSkillSettings, piDisabledDiscoveryPaths } from '../skill-activation.js';
+import { scanPiCustomizations } from '../customization-scanner.js';
+import { capturePiRuntimeCapabilityManifest } from '../runtime-capabilities.js';
+import { runGetCommands, type PiCommand } from './pi-rpc-test-harness.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = path.resolve(__dirname, '../../../../../..');
+const PLATFORM_KEY = `${process.platform}-${process.arch}`;
+const PI_BINARY = path.join(
+  REPO_ROOT,
+  'apps',
+  'pi-bin',
+  PLATFORM_KEY,
+  process.platform === 'win32' ? 'pi.exe' : 'pi',
+);
+
+interface NormalizedSkill {
+  name: string;
+  description: string;
+  source: string;
+  scope: string;
+  baseDir: string;
+}
+
+interface Fixture {
+  root: string;
+  configHome: string;
+  repoRoot: string;
+  workingDir: string;
+  sessionDir: string;
+  normalizedRoots: Array<{ root: string; label: string }>;
+}
+
+const fixtureRoots: string[] = [];
+
+afterEach(() => {
+  for (const root of fixtureRoots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+function writeSkill(dir: string, name: string): void {
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    path.join(dir, 'SKILL.md'),
+    `---\nname: ${name}\ndescription: fixture ${name}\n---\nfixture ${name}\n`,
+  );
+}
+
+function writeDummyModels(configHome: string): void {
+  mkdirSync(configHome, { recursive: true });
+  writeFileSync(
+    path.join(configHome, 'models.json'),
+    JSON.stringify({
+      providers: {
+        dummy: {
+          name: 'Dummy',
+          baseUrl: 'http://127.0.0.1:9',
+          api: 'anthropic-messages',
+          apiKey: 'dummy',
+          models: [{
+            id: 'dummy-model',
+            name: 'Dummy Model',
+            reasoning: false,
+            input: ['text'],
+            contextWindow: 100_000,
+            maxTokens: 4_096,
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+          }],
+        },
+      },
+    }, null, 2) + '\n',
+  );
+}
+
+function canonicalPath(value: string): string {
+  try {
+    return realpathSync(value);
+  } catch {
+    return path.resolve(value);
+  }
+}
+
+function expectedExplicitProjectSkillScope(fixture: Fixture): 'project' | 'temporary' {
+  if (process.platform === 'win32') return 'project';
+  // The pinned Pi reports `project` on Linux and macOS when the lexical git
+  // root is canonical. macOS's /var -> /private/var temp-dir alias instead
+  // yields `temporary`; do not assume that alias also exists on Linux.
+  if (
+    (process.platform === 'darwin' || process.platform === 'linux')
+    && path.resolve(fixture.repoRoot) === canonicalPath(fixture.repoRoot)
+  ) {
+    return 'project';
+  }
+  return 'temporary';
+}
+
+async function createFixture(prefix = 'pi-rpc-fixture-'): Promise<Fixture> {
+  const root = mkdtempSync(path.join(tmpdir(), prefix));
+  fixtureRoots.push(root);
+  const configHome = path.join(root, 'config-home');
+  const repoRoot = path.join(root, 'repo');
+  const workingDir = path.join(repoRoot, 'project');
+  const sessionDir = path.join(root, 'sessions');
+
+  mkdirSync(workingDir, { recursive: true });
+  mkdirSync(sessionDir, { recursive: true });
+  // Pi uses the nearest git root to bound ancestor .agents/skills discovery.
+  try {
+    execFileSync('git', ['init', '--quiet', repoRoot]);
+  } catch {
+    // Keep a bounded repo marker when Git is unavailable in minimal images.
+    mkdirSync(path.join(repoRoot, '.git'), { recursive: true });
+  }
+  writeDummyModels(configHome);
+
+  writeSkill(path.join(configHome, 'skills', 'global-skill'), 'global-skill');
+  writeSkill(path.join(workingDir, '.pi', 'skills', 'project-pi-skill'), 'project-pi-skill');
+  writeSkill(path.join(workingDir, '.agents', 'skills', 'project-agents-skill'), 'project-agents-skill');
+  writeSkill(path.join(repoRoot, '.agents', 'skills', 'ancestor-agents-skill'), 'ancestor-agents-skill');
+  // This is the historical scanner path. It must stay a negative control for Pi RPC.
+  writeSkill(path.join(workingDir, '.pi', 'agent', 'skills', 'wrong-pi-agent-skill'), 'wrong-pi-agent-skill');
+
+  return {
+    root,
+    configHome,
+    repoRoot,
+    workingDir,
+    sessionDir,
+    normalizedRoots: [
+      { root: configHome, label: '<configHome>' },
+      { root: path.join(workingDir, '.pi'), label: '<projectPi>' },
+      { root: path.join(workingDir, '.agents'), label: '<projectAgents>' },
+      { root: path.join(repoRoot, '.agents'), label: '<ancestorAgents>' },
+    ],
+  };
+}
+
+function normalizeBaseDir(value: unknown, roots: Array<{ root: string; label: string }>): string {
+  if (typeof value !== 'string' || value.trim().length === 0) return '<missing>';
+  const actual = canonicalPath(value);
+  for (const { root, label } of roots) {
+    const expected = canonicalPath(root);
+    if (actual === expected || actual.startsWith(`${expected}${path.sep}`)) return label;
+  }
+  return '<outside-fixture>';
+}
+
+function normalizeSkills(commands: PiCommand[], fixture: Fixture): NormalizedSkill[] {
+  return commands
+    .filter((command) => command.source === 'skill')
+    .map((command) => ({
+      name: typeof command.name === 'string' ? command.name : '<missing>',
+      description: typeof command.description === 'string' ? command.description : '<missing>',
+      source: typeof command.sourceInfo?.source === 'string' ? command.sourceInfo.source : '<missing>',
+      scope: typeof command.sourceInfo?.scope === 'string' ? command.sourceInfo.scope : '<missing>',
+      baseDir: normalizeBaseDir(command.sourceInfo?.baseDir, fixture.normalizedRoots),
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+describe.skipIf(!existsSync(PI_BINARY))('Pinned Pi RPC resource discovery facts', () => {
+  it('applies session-local Skill exclusions without removing native package resources', async () => {
+    const fixture = await createFixture('pi-rpc-skill-exclusions-');
+    const hiddenGlobal = path.join(fixture.configHome, 'skills', 'global-skill', 'SKILL.md');
+    const packageRoot = path.join(fixture.root, 'native-package');
+    writeSkill(path.join(packageRoot, 'skills', 'package-on'), 'package-on');
+    writeSkill(path.join(packageRoot, 'skills', 'package-off'), 'package-off');
+    writeFileSync(path.join(packageRoot, 'package.json'), JSON.stringify({ name: 'fixture-native', pi: { skills: ['./skills'] } }));
+    const external = path.join(fixture.root, 'external', 'alias-source');
+    writeSkill(external, 'alias-source');
+    symlinkSync(external, path.join(fixture.configHome, 'skills', 'alias-link'), process.platform === 'win32' ? 'junction' : 'dir');
+    const settingsPath = path.join(fixture.configHome, 'settings.json');
+    writeFileSync(settingsPath, JSON.stringify(applyPiDisabledSkillSettings({ packages: [packageRoot] }, piDisabledDiscoveryPaths([
+      hiddenGlobal, external, path.join(packageRoot, 'skills', 'package-off', 'SKILL.md'),
+    ], [path.join(fixture.configHome, 'skills')]))));
+    const options = { binaryPath: PI_BINARY, cwd: fixture.workingDir,
+      configHome: fixture.configHome, sessionDir: fixture.sessionDir, approve: false };
+    const disabled = await runGetCommands(options);
+    const names = disabled.commands.map((command) => command.name);
+    expect(names).not.toContain('skill:global-skill');
+    expect(names).not.toContain('skill:package-off');
+    expect(names).not.toContain('skill:alias-source');
+    expect(names).toContain('skill:package-on');
+    expect(existsSync(hiddenGlobal)).toBe(true);
+    writeFileSync(settingsPath, JSON.stringify({ packages: [packageRoot] }));
+    const enabled = await runGetCommands(options);
+    expect(enabled.commands.map((command) => command.name)).toEqual(expect.arrayContaining([
+      'skill:global-skill', 'skill:package-off', 'skill:package-on',
+    ]));
+  });
+
+  it('records isolated global skills and omits unapproved project resources', async () => {
+    const fixture = await createFixture('pi-rpc-no-trust-');
+    const result = await runGetCommands({
+      binaryPath: PI_BINARY,
+      cwd: fixture.workingDir,
+      configHome: fixture.configHome,
+      sessionDir: fixture.sessionDir,
+      approve: false,
+    });
+    const skills = normalizeSkills(result.commands, fixture);
+
+    const manifest = await capturePiRuntimeCapabilityManifest(
+      { request: async () => ({ type: 'response', command: 'get_commands', success: true, data: { commands: result.commands } }) },
+      {},
+      1,
+      'ready',
+    );
+    expect(manifest.status).toBe('loaded');
+    expect(manifest.commands).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'skill:global-skill',
+        description: 'fixture global-skill',
+        source: 'skill',
+        sourceInfo: expect.objectContaining({
+          source: 'auto',
+          scope: 'user',
+          baseDir: fixture.configHome,
+        }),
+      }),
+    ]));
+
+    expect(skills).toEqual([{
+      name: 'skill:global-skill',
+      description: 'fixture global-skill',
+      source: 'auto',
+      scope: 'user',
+      baseDir: '<configHome>',
+    }]);
+  });
+
+  it('loads a shared global skill from the user .agents root without project approval', async () => {
+    const fixture = await createFixture('pi-rpc-shared-global-');
+    const sharedSkill = path.join(
+      fixture.root,
+      'home',
+      '.agents',
+      'skills',
+      'shared-global-skill',
+    );
+    writeSkill(sharedSkill, 'shared-global-skill');
+
+    const result = await runGetCommands({
+      binaryPath: PI_BINARY,
+      cwd: fixture.workingDir,
+      configHome: fixture.configHome,
+      sessionDir: fixture.sessionDir,
+      approve: false,
+    });
+
+    expect(result.commands).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'skill:shared-global-skill',
+        source: 'skill',
+        sourceInfo: expect.objectContaining({
+          scope: 'user',
+          path: path.join(sharedSkill, 'SKILL.md'),
+        }),
+      }),
+    ]));
+  });
+
+  it('scanner superset differs from unapproved runtime only by project trust', async () => {
+    const fixture = await createFixture('pi-rpc-scanner-trust-gap-');
+    const result = await runGetCommands({
+      binaryPath: PI_BINARY,
+      cwd: fixture.workingDir,
+      configHome: fixture.configHome,
+      sessionDir: fixture.sessionDir,
+      approve: false,
+    });
+    const loadedNames = new Set(
+      normalizeSkills(result.commands, fixture)
+        .filter((skill) => skill.scope === 'project')
+        .map((skill) => skill.name),
+    );
+    const scanned = await scanPiCustomizations({ workingDirs: [fixture.workingDir] });
+    const discovered = scanned.items.filter((item) => item.scope === 'repo');
+    const discoveredNames = new Set(discovered.map((item) => `skill:${item.name}`));
+
+    expect([...loadedNames].every((name) => discoveredNames.has(name))).toBe(true);
+    expect([...discoveredNames].filter((name) => !loadedNames.has(name)).sort()).toEqual([
+      'skill:ancestor-agents-skill',
+      'skill:project-agents-skill',
+      'skill:project-pi-skill',
+    ]);
+    expect(discovered.every((item) => item.runtimeStatus === 'discovered')).toBe(true);
+  });
+
+  it('records project .pi/skills and current/ancestor .agents/skills only with explicit trust', async () => {
+    const fixture = await createFixture('pi-rpc-trust-');
+    const result = await runGetCommands({
+      binaryPath: PI_BINARY,
+      cwd: fixture.workingDir,
+      configHome: fixture.configHome,
+      sessionDir: fixture.sessionDir,
+      approve: true,
+    });
+    const skills = normalizeSkills(result.commands, fixture);
+    const scanned = await scanPiCustomizations({ workingDirs: [fixture.workingDir] });
+    const discoveredProjectNames = new Set(
+      scanned.items
+        .filter((item) => item.scope === 'repo')
+        .map((item) => `skill:${item.name}`),
+    );
+    const loadedProjectNames = new Set(
+      skills
+        .filter((skill) => skill.scope === 'project')
+        .map((skill) => skill.name),
+    );
+    const loadedProjectBaseDirs = new Map(
+      result.commands.flatMap((command) => {
+        const baseDir = command.sourceInfo?.baseDir;
+        if (
+          command.source !== 'skill'
+          || command.sourceInfo?.scope !== 'project'
+          || typeof baseDir !== 'string'
+        ) {
+          return [];
+        }
+        return [[command.name, canonicalPath(baseDir)] as const];
+      }),
+    );
+    expect(discoveredProjectNames).toEqual(new Set([
+      'skill:ancestor-agents-skill',
+      'skill:project-agents-skill',
+      'skill:project-pi-skill',
+    ]));
+    expect([...loadedProjectNames].every((name) => discoveredProjectNames.has(name))).toBe(true);
+    expect([...discoveredProjectNames].filter((name) => !loadedProjectNames.has(name))).toEqual([]);
+    expect(loadedProjectBaseDirs).toEqual(new Map([
+      ['skill:ancestor-agents-skill', canonicalPath(path.join(fixture.repoRoot, '.agents'))],
+      ['skill:project-agents-skill', canonicalPath(path.join(fixture.workingDir, '.agents'))],
+      ['skill:project-pi-skill', canonicalPath(path.join(fixture.workingDir, '.pi'))],
+    ]));
+
+    expect(skills).toEqual([
+      {
+        name: 'skill:ancestor-agents-skill',
+        description: 'fixture ancestor-agents-skill',
+        source: 'auto',
+        scope: 'project',
+        baseDir: '<ancestorAgents>',
+      },
+      {
+        name: 'skill:global-skill',
+        description: 'fixture global-skill',
+        source: 'auto',
+        scope: 'user',
+        baseDir: '<configHome>',
+      },
+      {
+        name: 'skill:project-agents-skill',
+        description: 'fixture project-agents-skill',
+        source: 'auto',
+        scope: 'project',
+        baseDir: '<projectAgents>',
+      },
+      {
+        name: 'skill:project-pi-skill',
+        description: 'fixture project-pi-skill',
+        source: 'auto',
+        scope: 'project',
+        baseDir: '<projectPi>',
+      },
+    ]);
+    expect(skills.some((skill) => skill.name.includes('wrong-pi-agent'))).toBe(false);
+  });
+
+  it('keeps two concurrent config homes and resource results isolated', async () => {
+    const first = await createFixture('pi-rpc-concurrent-a-');
+    const second = await createFixture('pi-rpc-concurrent-b-');
+    writeSkill(path.join(first.configHome, 'skills', 'only-first'), 'only-first');
+    writeSkill(path.join(second.configHome, 'skills', 'only-second'), 'only-second');
+
+    const [firstResult, secondResult] = await Promise.all([
+      runGetCommands({
+        binaryPath: PI_BINARY,
+        cwd: first.workingDir,
+        configHome: first.configHome,
+        sessionDir: first.sessionDir,
+        approve: false,
+      }),
+      runGetCommands({
+        binaryPath: PI_BINARY,
+        cwd: second.workingDir,
+        configHome: second.configHome,
+        sessionDir: second.sessionDir,
+        approve: false,
+      }),
+    ]);
+
+    const firstNames = normalizeSkills(firstResult.commands, first).map((skill) => skill.name);
+    const secondNames = normalizeSkills(secondResult.commands, second).map((skill) => skill.name);
+    expect(firstNames).toContain('skill:only-first');
+    expect(firstNames).not.toContain('skill:only-second');
+    expect(secondNames).toContain('skill:only-second');
+    expect(secondNames).not.toContain('skill:only-first');
+  });
+
+  it('loads repeated explicit project skills under no-approve and no-skills', async () => {
+    const fixture = await createFixture('pi-rpc-explicit-skills-only-');
+    const explicitSkills = [
+      path.join(fixture.workingDir, '.pi', 'skills', 'project-pi-skill'),
+      path.join(fixture.repoRoot, '.agents', 'skills', 'ancestor-agents-skill'),
+    ];
+    const result = await runGetCommands({
+      binaryPath: PI_BINARY,
+      cwd: fixture.workingDir,
+      configHome: fixture.configHome,
+      sessionDir: fixture.sessionDir,
+      approve: false,
+      extraArgs: [
+        '--no-skills',
+        '--no-extensions',
+        ...explicitSkills.flatMap((skillPath) => ['--skill', skillPath]),
+      ],
+    });
+
+    expect(normalizeSkills(result.commands, fixture).map((skill) => skill.name)).toEqual([
+      'skill:ancestor-agents-skill',
+      'skill:project-pi-skill',
+    ]);
+  });
+
+  it('keeps global discovery while explicit project skills bypass only the project trust gate', async () => {
+    const fixture = await createFixture('pi-rpc-explicit-skills-additive-');
+    const explicitSkill = path.join(
+      fixture.workingDir,
+      '.pi',
+      'skills',
+      'project-pi-skill',
+    );
+    const result = await runGetCommands({
+      binaryPath: PI_BINARY,
+      cwd: fixture.workingDir,
+      configHome: fixture.configHome,
+      sessionDir: fixture.sessionDir,
+      approve: false,
+      extraArgs: ['--no-extensions', '--skill', explicitSkill],
+    });
+
+    expect(normalizeSkills(result.commands, fixture).map((skill) => skill.name)).toEqual([
+      'skill:global-skill',
+      'skill:project-pi-skill',
+    ]);
+    expect(result.commands).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'skill:project-pi-skill',
+        source: 'skill',
+        sourceInfo: expect.objectContaining({
+          path: path.join(explicitSkill, 'SKILL.md'),
+          source: 'local',
+          scope: expectedExplicitProjectSkillScope(fixture),
+        }),
+      }),
+    ]));
+  });
+
+  it('loads an explicit immutable skill snapshot from a non-auto-scanned configHome directory', async () => {
+    const fixture = await createFixture('pi-rpc-config-home-snapshot-');
+    const snapshotSkill = path.join(
+      fixture.configHome,
+      'project-resources',
+      'skills',
+      '0',
+      'snapshot-skill',
+    );
+    writeSkill(snapshotSkill, 'snapshot-skill');
+    const result = await runGetCommands({
+      binaryPath: PI_BINARY,
+      cwd: fixture.workingDir,
+      configHome: fixture.configHome,
+      sessionDir: fixture.sessionDir,
+      approve: false,
+      extraArgs: ['--no-extensions', '--skill', snapshotSkill],
+    });
+
+    expect(result.commands).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'skill:snapshot-skill',
+        source: 'skill',
+        sourceInfo: expect.objectContaining({
+          baseDir: snapshotSkill,
+          path: path.join(snapshotSkill, 'SKILL.md'),
+          source: 'local',
+          scope: 'temporary',
+        }),
+      }),
+    ]));
+    expect(result.commands.some((command) => command.name === 'skill:project-pi-skill')).toBe(false);
+  });
+
+  it('reports the exact file provenance for an explicit single-file skill', async () => {
+    const fixture = await createFixture('pi-rpc-explicit-file-skill-');
+    const explicitSkill = path.join(fixture.workingDir, '.pi', 'skills', 'single-file.md');
+    writeFileSync(
+      explicitSkill,
+      '---\nname: single-file\ndescription: fixture single file\n---\nfixture single file\n',
+    );
+    const result = await runGetCommands({
+      binaryPath: PI_BINARY,
+      cwd: fixture.workingDir,
+      configHome: fixture.configHome,
+      sessionDir: fixture.sessionDir,
+      approve: false,
+      extraArgs: ['--no-extensions', '--skill', explicitSkill],
+    });
+
+    expect(result.commands).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'skill:single-file',
+        source: 'skill',
+        sourceInfo: expect.objectContaining({
+          baseDir: path.dirname(explicitSkill),
+          path: explicitSkill,
+          source: 'local',
+          scope: expectedExplicitProjectSkillScope(fixture),
+        }),
+      }),
+    ]));
+  });
+
+  it('reports one deterministic runtime command when explicit approved paths share a skill name', async () => {
+    const fixture = await createFixture('pi-rpc-explicit-duplicate-name-');
+    const first = path.join(fixture.workingDir, '.pi', 'skills', 'duplicate-first');
+    const second = path.join(fixture.repoRoot, '.agents', 'skills', 'duplicate-second');
+    writeSkill(first, 'duplicate-name');
+    writeSkill(second, 'duplicate-name');
+
+    const result = await runGetCommands({
+      binaryPath: PI_BINARY,
+      cwd: fixture.workingDir,
+      configHome: fixture.configHome,
+      sessionDir: fixture.sessionDir,
+      approve: false,
+      extraArgs: [
+        '--no-extensions',
+        '--skill', first,
+        '--skill', second,
+      ],
+    });
+
+    const duplicates = result.commands.filter((command) => command.name === 'skill:duplicate-name');
+    expect(duplicates).toHaveLength(1);
+    expect(duplicates[0]).toMatchObject({
+      source: 'skill',
+      sourceInfo: {
+        baseDir: first,
+        source: 'local',
+        scope: expectedExplicitProjectSkillScope(fixture),
+      },
+    });
+  });
+
+  it('executes only explicit host extensions and never installs or executes project packages/extensions', async () => {
+    const fixture = await createFixture('pi-rpc-resource-hard-gates-');
+    const trustedExtensionMarker = path.join(fixture.root, 'trusted-extension-loaded');
+    const projectExtensionMarker = path.join(fixture.root, 'project-extension-loaded');
+    const packageExtensionMarker = path.join(fixture.root, 'package-extension-loaded');
+    const npmMarker = path.join(fixture.root, 'npm-invoked');
+    const gitTrace = path.join(fixture.root, 'git-trace.log');
+    const trustedExtension = path.join(fixture.configHome, 'trusted-extension.ts');
+    const projectExtension = path.join(fixture.workingDir, '.pi', 'extensions', 'project.ts');
+    const localPackage = path.join(fixture.root, 'local-package');
+    const packageExtension = path.join(localPackage, 'extensions', 'package.ts');
+    const npmProbe = path.join(fixture.root, 'npm-probe.mjs');
+
+    mkdirSync(path.dirname(projectExtension), { recursive: true });
+    mkdirSync(path.dirname(packageExtension), { recursive: true });
+    const markerExtension = (marker: string) => [
+      "import { writeFileSync } from 'node:fs';",
+      `writeFileSync(${JSON.stringify(marker)}, 'loaded');`,
+      'export default function () {}',
+    ].join('\n');
+    writeFileSync(trustedExtension, markerExtension(trustedExtensionMarker));
+    writeFileSync(projectExtension, markerExtension(projectExtensionMarker));
+    writeFileSync(packageExtension, markerExtension(packageExtensionMarker));
+    writeFileSync(path.join(localPackage, 'package.json'), JSON.stringify({
+      name: 'fixture-local-package',
+      version: '1.0.0',
+      pi: { extensions: ['./extensions/package.ts'] },
+    }));
+    writeFileSync(
+      npmProbe,
+      `import { writeFileSync } from 'node:fs'; writeFileSync(${JSON.stringify(npmMarker)}, 'called'); process.exit(17);\n`,
+    );
+    writeFileSync(path.join(fixture.workingDir, '.pi', 'settings.json'), JSON.stringify({
+      npmCommand: [process.execPath, npmProbe],
+      packages: [
+        'npm:fixture-must-not-install',
+        'git:http://127.0.0.1:9/fixture-must-not-clone',
+        localPackage,
+      ],
+      extensions: [projectExtension],
+    }));
+
+    const result = await runGetCommands({
+      binaryPath: PI_BINARY,
+      cwd: fixture.workingDir,
+      configHome: fixture.configHome,
+      sessionDir: fixture.sessionDir,
+      approve: false,
+      offline: false,
+      extraEnv: {
+        GIT_TRACE: gitTrace,
+        GIT_TERMINAL_PROMPT: '0',
+      },
+      extraArgs: [
+        '--no-extensions',
+        '--extension', trustedExtension,
+        '--skill', path.join(fixture.workingDir, '.pi', 'skills', 'project-pi-skill'),
+      ],
+    });
+
+    expect(normalizeSkills(result.commands, fixture).map((skill) => skill.name)).toEqual([
+      'skill:global-skill',
+      'skill:project-pi-skill',
+    ]);
+    expect(existsSync(trustedExtensionMarker)).toBe(true);
+    expect(existsSync(projectExtensionMarker)).toBe(false);
+    expect(existsSync(packageExtensionMarker)).toBe(false);
+    expect(existsSync(npmMarker)).toBe(false);
+    expect(existsSync(path.join(fixture.workingDir, '.pi', 'npm'))).toBe(false);
+    expect(existsSync(path.join(fixture.workingDir, '.pi', 'git'))).toBe(false);
+    expect(existsSync(gitTrace) ? readFileSync(gitTrace, 'utf8') : '').not.toMatch(/\bclone\b/i);
+  });
+});

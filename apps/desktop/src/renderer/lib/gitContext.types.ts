@@ -22,9 +22,10 @@ export interface GitContextSnapshot {
  *   telemetry  = 从 agent tool-call(Codex cwd / cc 编辑路径)推出的真实工作目录,可信
  *   worktree   = app 托管 worktree 的 live 路径,可信
  *   workingDir = 兜底用 session.working_dir(共享主 checkout,低信任,优先让位 PR 分支)
+ *   remote      = 远端 SSH 主机上直接探测到的目录分支,可信
  *   null       = 无可解析目录
  */
-export type GitContextDirSource = 'telemetry' | 'worktree' | 'workingDir' | null;
+export type GitContextDirSource = 'telemetry' | 'worktree' | 'workingDir' | 'remote' | null;
 
 /** git-context:get-for-session 的返回:解析出的目录 + 其 HEAD + 来源。 */
 export interface SessionGitDirResult {
@@ -33,39 +34,9 @@ export interface SessionGitDirResult {
   source: GitContextDirSource;
 }
 
-/** session 关联的一条 PR 引用(session_pr_refs 行)。 */
-export interface SessionPrRef {
-  id: string;
-  sessionId: string;
-  owner: string;
-  repo: string;
-  prNumber: number;
-  url: string;
-  firstSeenAt: number;
-  lastSeenAt: number;
-}
-
-export type PrStatusKind = 'open' | 'draft' | 'merged' | 'closed';
-
-/** git-context:pr-status 单条结果。 */
-export type PrStatusResult =
-  | {
-      ok: true;
-      owner: string;
-      repo: string;
-      prNumber: number;
-      status: PrStatusKind;
-      title: string;
-      htmlUrl: string;
-      /** PR 源分支名(GitHub `head.ref`);徽标拿不到本地工作目录时兜底显示分支。 */
-      branch: string;
-      /** 未解决 review thread 数;null = 查询失败 / token 不支持 GraphQL。 */
-      unresolvedCount: number | null;
-    }
-  | {
-      ok: false;
-      owner: string;
-      repo: string;
-      prNumber: number;
-      reason: 'no-token' | 'not-found' | 'fetch-failed';
-    };
+export type {
+  SessionPrRef,
+  PrStatusKind,
+  PrStatusResult,
+  PrStatusFailureReason,
+} from '@cindy/maker-shared';

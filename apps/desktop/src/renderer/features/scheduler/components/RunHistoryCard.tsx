@@ -32,11 +32,8 @@ import {
 import { AgentMark } from './AgentMark';
 import { AttentionDot } from '@/components/sidebar/AttentionDot';
 import { formatDuration, formatRunTimestamp, formatStartedAgo } from '../lib/formatters';
-import { formatTurnCostMoney } from '@/lib/usageFormat';
-import {
-  legacyUsdMoney,
-  usdMoney,
-} from '../../../../shared/regionalMoney';
+import { formatCompactTokens, formatTurnCostMoney } from '@/lib/usageFormat';
+import { legacyUsdMoney } from '../../../../shared/regionalMoney';
 import { isUnreadScheduleRun } from '../lib/runUnread';
 import { markScheduleRunReadAndSync } from '../lib/scheduleRunReadSync';
 
@@ -51,7 +48,7 @@ function StatusChip({ status }: { status: RunStatus }) {
       className={cn(
         // 高度去掉固定值，由 py + 文字行高决定，避免 13px 字号被 18px 框压扁
         'inline-flex items-center gap-1.5 rounded-full px-2.5 py-1',
-        'text-[12px] font-medium leading-none whitespace-nowrap',
+        'text-12 font-medium leading-none whitespace-nowrap',
         filled
           ? 'bg-[var(--chat-input-chip-bg)] text-[var(--msg-assistant-text)]'
           : 'border border-[var(--cmd-palette-border)] bg-transparent text-[var(--cmd-palette-item-meta)]',
@@ -155,40 +152,26 @@ export function RunHistoryCard({
 
   const metaText =
     run.status === 'running'
-      ? formatStartedAgo(run.firedAt)
+      ? formatStartedAgo(run.firedAt, Date.now(), t)
       : t('scheduler.runs.took', { duration: formatDuration(run.firedAt, run.finishedAt) });
-  const costText = run.status === 'running'
-    ? null
-    : run.costAttribution === 'legacy'
-      ? t('scheduler.runs.legacyCostUnavailable')
-      : run.costAttribution === 'unavailable'
-        ? t('scheduler.runs.costUnavailable')
-        : run.costAttribution === 'exact' ||
-            run.costAttribution === 'direct' ||
-            run.costAttribution === 'mixed' ||
-            run.costAttribution === 'zero'
-          ? (() => {
-          const costMoney =
-            run.costMoney ??
-            legacyUsdMoney(run.costUsd ?? 0);
-          const valueMoney =
-            run.estimatedValueMoney ??
-            usdMoney(run.estimatedValueUsd ?? 0, 'value-estimate', 'legacy-usd');
-          return [
-          costMoney.amount > 0
-            ? t('scheduler.runs.runCost', { cost: formatTurnCostMoney(costMoney) })
-            : null,
-          valueMoney.amount > 0
-            ? t('scheduler.runs.runValue', { value: formatTurnCostMoney(valueMoney) })
-            : null,
-        ]
-          .filter(Boolean)
-          .join(' · ') ||
-            t('scheduler.runs.runCost', {
-              cost: formatTurnCostMoney(costMoney),
-            });
-            })()
-          : null;
+  const costText = (() => {
+    if (run.status === 'running') return null;
+    if (run.costAttribution === 'legacy') {
+      return t('scheduler.runs.legacyCostUnavailable');
+    }
+
+    const costMoney = run.costMoney ?? legacyUsdMoney(run.costUsd ?? 0);
+    if (costMoney.amount > 0 || run.costAttribution === 'zero') {
+      return t('scheduler.runs.runCost', { cost: formatTurnCostMoney(costMoney) });
+    }
+    if (typeof run.totalTokens === 'number' && run.totalTokens > 0) {
+      return t('scheduler.runs.runTokens', {
+        tokens: formatCompactTokens(run.totalTokens),
+      });
+    }
+    if (run.costAttribution) return t('scheduler.runs.costUnavailable');
+    return null;
+  })();
 
   // 终态且未读 → 在 agent 图标右上角点一个状态点(全端统一色表:失败结局红 / 成功绿)。
   // running 不算未读（结果还没出来，没什么"漏看"）。
@@ -276,7 +259,7 @@ export function RunHistoryCard({
             )}
           </span>
           <span className="truncate text-14 font-medium text-[var(--msg-assistant-text)]">
-            {formatRunTimestamp(run.firedAt)}
+            {formatRunTimestamp(run.firedAt, Date.now(), t)}
           </span>
         </div>
         <StatusChip status={run.status} />
@@ -354,17 +337,11 @@ export function RunHistoryCard({
                 <DropdownMenuContent
                   align="end"
                   sideOffset={4}
-                  className={cn(
-                    'min-w-[140px] rounded-xl p-1',
-                    'border-[var(--cmd-palette-border)] bg-[var(--cmd-palette-bg)] text-[var(--msg-assistant-text)]',
-                  )}
+                  className="min-w-[140px]"
                 >
                   <DropdownMenuItem
                     onSelect={() => void onDelete(run)}
-                    className={cn(
-                      'cursor-pointer h-8 px-3 rounded-md text-sm',
-                      'text-[hsl(var(--destructive))] focus:bg-[var(--cmd-palette-item-hover)]',
-                    )}
+                    variant="danger"
                   >
                     <Trash2 size={13} strokeWidth={2} className="mr-2" />
                     {t('scheduler.runs.delete')}

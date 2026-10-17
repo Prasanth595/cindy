@@ -1,38 +1,69 @@
+import { pickFileIcon } from '@/components/ui/file-type-icon';
+import { Button } from '@/components/ui/button';
+import { MENU_CURRENT_ROW_ATTR, currentMarkedRow } from '@/components/ui/dropdown-menu-highlight';
+import {
+  COMPOSER_MENU_ROW,
+  MenuHighlightLayer,
+  menuPanelAttrs,
+  menuRowAttrs,
+  useMenuPanel,
+  withMenuLabels,
+} from '@/components/ui/menu-row';
 /**
- * command-palette F2 / F5: `@` resource panel.
+ * Unified composer suggestion panel (command-palette F2 / F5, `@` + `+`).
  *
- * Presentational popover that renders the filtered list of files, dirs,
- * and agents scanned from workingDir. All scanning / ranking logic lives
- * in `atResourceService.ts`; this component handles:
- *   - focus-row tracking (↑↓ / hover)
+ * 2026-08 unification (Codex Desktop pattern): this panel serves BOTH the
+ * typed `@` trigger and the composer `+` button (synthetic activation — no
+ * `@` char in the doc, typing still filters). It renders the union of:
+ *   - action rows from the legacy `+` MorphPopover menu (attach files, new
+ *     goal, plan mode, collaboration, add reference directory)
+ *   - scanned resources (files / dirs / agents / tabs / windows / tasks)
+ *   - installed plugins (unavailable ones stay visible but disabled)
+ *   - the reference-directories management section (empty query only)
+ *
+ * All scanning / ranking / assembly lives in `atResourceService.ts` +
+ * `composerSuggestion.ts`; ChatInput passes the final ordered `entries`.
+ * This component handles:
+ *   - focus-row tracking (↑↓ / hover; disabled rows are skipped by the host)
  *   - empty / loading / error states
- *   - click-outside close
+ *   - root-query sections (Add / Plugins / Reference directories)
+ *   - click-outside close (ignoring the `+` trigger button)
  *
- * Per F2 spec: 480px width, 44px row height, no tabs, no group headers,
- * agents and files share the same list.
+ * Per F2 spec: 480px width and 44px row height. The 480px is owned by the
+ * standalone `@` popover, or by MorphPopover's `panelWidth` when `embedded`.
+ * Embedded content must be `w-full` — a second 480px inside the 1px-bordered
+ * Morph shell overflows by 2px and flashes a 2s horizontal scrollbar.
  */
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
-  ArrowLeft,
-  File as FileIcon,
+  Bot,
+  Check,
+  ClipboardList,
   Folder as FolderIcon,
+  FolderPlus,
   Globe2,
   History,
   Monitor,
   Paperclip,
   Plug,
+  RotateCw,
   Sparkles,
+  Target,
+  UsersRound,
+  X,
 } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
 import { Tip } from '@/components/ui/tooltip';
+import { GhostPluginIcon } from '@/features/plugin/GhostPluginIcon';
+import type { AtResourceItem } from '@/lib/atResourceService';
 import {
-  AT_FILE_PICKER_RESOURCE,
-  AT_MENTION_SEARCH_RESULT_LIMIT,
-  filterAtResources,
-  type AtResourceItem,
-} from '@/lib/atResourceService';
+  composerSuggestionEntryKey,
+  type ComposerSuggestionAction,
+  type ComposerSuggestionEntry,
+} from '@/lib/composerSuggestion';
+import { extraDirBasename, extraDirDisplayLabel, isLibraryExtraDirSlot } from './extraDirsActions';
 
 const TOOLTIP_FALLBACK_H = 120;
 const VIEWPORT_PAD = 8;
@@ -42,47 +73,87 @@ type TooltipMeasure = {
   height: number;
 };
 
+function isPluginItem(item: AtResourceItem): boolean {
+  return item.type === 'plugin-command' || item.type === 'plugin-resource';
+}
+
+function isPluginEntry(entry: ComposerSuggestionEntry): boolean {
+  return entry.kind === 'resource' && isPluginItem(entry.item);
+}
+
+function isAddDirEntry(entry: ComposerSuggestionEntry): boolean {
+  return entry.kind === 'action'
+    && entry.action.id === 'add-extra-dir';
+}
+
 export type AtPanelState =
   | { kind: 'loading' }
   | { kind: 'error'; message: string }
   | { kind: 'ready'; items: AtResourceItem[]; truncated: boolean; searching?: boolean };
 
+interface ReferenceDirsSection {
+  dirs: string[];
+  onRemove: (path: string) => void;
+}
+
 interface AtMentionPanelProps {
-  /** Query — everything after `@` trigger up to the cursor. */
+  /** Query — text after the `@` trigger (typed) or the synthetic anchor (`+`). */
   query: string;
-  /** Scan state managed by the host (ChatInput). */
+  /** Scan state managed by the host (ChatInput) — drives loading/error/hints. */
   state: AtPanelState;
+  /** Final ordered entry list (actions + resources), assembled by the host. */
+  entries: ComposerSuggestionEntry[];
   focusedIndex: number;
   onFocusedIndexChange: (i: number) => void;
-  onSelect: (item: AtResourceItem) => void;
+  onSelect: (entry: ComposerSuggestionEntry) => void;
   onClose: () => void;
   onRetry: () => void;
-  /** Selected Plugin provider; its query is scoped and never broadcast. */
-  scopedProviderName?: string;
-  /** Whether the local task can launch the native file picker. */
-  filePickerEnabled?: boolean;
-  onBack?: () => void;
+  /** Reference-directories management rows (empty query only; `+`-menu parity). */
+  referenceDirs?: ReferenceDirsSection | null;
+  /** Explicit read-write directory grants (empty query only). */
+  writableDirs?: ReferenceDirsSection | null;
+  /** `+` 的 MorphPopover 内嵌形态；容器、阴影与 outside-click 由 MorphPopover 负责。 */
+  embedded?: boolean;
   /** Panel max-height in px. Defaults to 400 (chat view); NewMaker passes a smaller value so the popover doesn't cover the logo. */
   maxHeight?: number;
 }
 
+const ACTION_ICONS: Record<ComposerSuggestionAction['id'], typeof Paperclip> = {
+  'retry-plugins': RotateCw,
+  'attach-files': Paperclip,
+  'new-goal': Target,
+  'plan-mode': ClipboardList,
+  collaboration: UsersRound,
+  'add-extra-dir': FolderPlus,
+};
+
 export function AtMentionPanel({
   query,
   state,
+  entries,
   focusedIndex,
   onFocusedIndexChange,
   onSelect,
   onClose,
   onRetry,
-  scopedProviderName,
-  filePickerEnabled = false,
-  onBack,
+  referenceDirs = null,
+  writableDirs = null,
+  embedded = false,
   maxHeight = 400,
 }: AtMentionPanelProps) {
   const { t } = useTranslation();
   const rootRef = useRef<HTMLDivElement>(null);
   const focusedRef = useRef<HTMLButtonElement>(null);
-  const panelRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  // Glide highlight on the focused index; arrow keys are pressed in the editor.
+  const highlightPanelRef = useMenuPanel(panelRef, {
+    lockWidth: false,
+    options: {
+      current: currentMarkedRow,
+      currentAttributes: [MENU_CURRENT_ROW_ATTR],
+      keyboardSource: document,
+    },
+  });
   const tooltipRef = useRef<HTMLDivElement>(null);
   const [panelScroll, setPanelScroll] = useState(0);
   const [tooltipMeasure, setTooltipMeasure] = useState<TooltipMeasure>({
@@ -91,42 +162,60 @@ export function AtMentionPanel({
   });
   const [tooltipPos, setTooltipPos] = useState<{ top: number; maxHeight: number } | null>(null);
 
-  const filtered = useMemo(() => {
-    if (state.kind !== 'ready') return [];
-    if (scopedProviderName) return state.items.slice(0, AT_MENTION_SEARCH_RESULT_LIMIT);
-    const items = filePickerEnabled
-      ? [AT_FILE_PICKER_RESOURCE, ...state.items]
-      : state.items;
-    return filterAtResources(items, query);
-  }, [state, query, scopedProviderName, filePickerEnabled]);
-  const hasScope = !!scopedProviderName;
-  const isEmptyRootQuery = !hasScope && !query.trim();
+  const isEmptyRootQuery = !query.trim();
+  // Empty-query buckets (assembly order in composerSuggestion.ts guarantees
+  // add → plugins → add-extra-dir, so bucketing preserves entry indices).
+  const indexed = entries.map((entry, index) => ({ entry, index }));
+  const addEntries = isEmptyRootQuery
+    ? indexed.filter(({ entry }) => !isPluginEntry(entry) && !isAddDirEntry(entry))
+    : [];
+  const pluginEntries = isEmptyRootQuery ? indexed.filter(({ entry }) => isPluginEntry(entry)) : [];
+  const addDirEntry = isEmptyRootQuery
+    ? indexed.find(({ entry }) => entry.kind === 'action' && entry.action.id === 'add-extra-dir')
+    : undefined;
+  // Merge presentation only: removal keeps each persisted grant's original path.
+  const directoryRows = [referenceDirs, writableDirs].flatMap((section) =>
+    section ? section.dirs.map((path) => ({ path, onRemove: section.onRemove })) : [],
+  );
+  const addSectionVisible = isEmptyRootQuery && addEntries.length > 0;
+  const pluginSectionVisible = isEmptyRootQuery && pluginEntries.length > 0;
+  const directoriesVisible = isEmptyRootQuery && (directoryRows.length > 0 || !!addDirEntry);
 
   useEffect(() => {
-    if (filtered.length === 0) return;
-    if (focusedIndex < 0 || focusedIndex >= filtered.length) {
+    if (entries.length === 0) return;
+    if (focusedIndex < 0 || focusedIndex >= entries.length) {
       onFocusedIndexChange(0);
     }
-  }, [filtered.length, focusedIndex, onFocusedIndexChange]);
+  }, [entries.length, focusedIndex, onFocusedIndexChange]);
 
   useEffect(() => {
-    focusedRef.current?.scrollIntoView({ block: 'nearest' });
+    focusedRef.current?.scrollIntoView?.({ block: 'nearest' });
   }, [focusedIndex]);
 
   useEffect(() => {
+    if (embedded) return;
     const handleClickOutside = (e: MouseEvent) => {
       if (!rootRef.current) return;
-      if (!rootRef.current.contains(e.target as Node)) {
-        onClose();
+      const target = e.target as Node;
+      if (rootRef.current.contains(target)) return;
+      // The `+` trigger toggles the panel itself — let its own click handler
+      // decide, otherwise mousedown-close + click-toggle would reopen it.
+      if (
+        target instanceof Element &&
+        target.closest('[data-composer-suggestion-trigger]')
+      ) {
+        return;
       }
+      onClose();
     };
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [onClose]);
+  }, [embedded, onClose]);
 
-  const focusedItem = filtered[focusedIndex];
-  const showTooltip = !!focusedItem?.description;
-  const tooltipKey = showTooltip
+  const focusedEntry = entries[focusedIndex];
+  const focusedItem = focusedEntry?.kind === 'resource' ? focusedEntry.item : undefined;
+  const showTooltip = !embedded && !!focusedItem?.description;
+  const tooltipKey = showTooltip && focusedItem
     ? `${focusedItem.type}:${focusedItem.relPath}:${focusedItem.name}:${focusedItem.description ?? ''}`
     : null;
   const tooltipHeight = tooltipMeasure.key === tooltipKey
@@ -140,13 +229,17 @@ export function AtMentionPanel({
     }
     const panel = panelRef.current;
     const root = rootRef.current;
-    if (!panel || !root) return;
+    const focusedEl = focusedRef.current;
+    if (!panel || !root || !focusedEl) return;
     const panelRect = panel.getBoundingClientRect();
     const rootRect = root.getBoundingClientRect();
     const bottomBoundary = Math.min(panelRect.bottom, window.innerHeight - VIEWPORT_PAD);
     const maxTooltipHeight = Math.max(1, Math.min(maxHeight, bottomBoundary - VIEWPORT_PAD));
     const measuredHeight = Math.min(tooltipHeight, maxTooltipHeight);
-    const rawTop = (hasScope ? 46 : 6) + focusedIndex * 44 - panelScroll;
+    // Anchor the flyout to the focused row's actual on-screen position — the
+    // section layout varies (Add / Plugins / Reference dirs headers), so
+    // arithmetic row offsets are no longer reliable.
+    const rawTop = focusedEl.getBoundingClientRect().top - rootRect.top;
     const minTop = VIEWPORT_PAD - rootRect.top;
     const bottomBoundaryInRoot = bottomBoundary - rootRect.top;
     const top = Math.max(minTop, Math.min(rawTop, bottomBoundaryInRoot - measuredHeight));
@@ -154,7 +247,7 @@ export function AtMentionPanel({
       top: Math.round(top),
       maxHeight: Math.round(maxTooltipHeight),
     });
-  }, [showTooltip, focusedIndex, panelScroll, maxHeight, tooltipHeight, hasScope]);
+  }, [showTooltip, focusedIndex, focusedItem, panelScroll, maxHeight, tooltipHeight]);
 
   const tooltipVisible = showTooltip && !!tooltipPos;
   useLayoutEffect(() => {
@@ -175,8 +268,84 @@ export function AtMentionPanel({
     return () => observer.disconnect();
   }, [tooltipVisible, tooltipKey]);
 
-  const renderItemRow = (item: AtResourceItem, idx: number) => {
+  const renderSectionHeader = (label: string) => (
+    <div
+      className={cn(
+        'flex h-[24px] items-center px-[10px]',
+        'text-12 font-medium text-[var(--cmd-palette-item-meta)]',
+      )}
+    >
+      {label}
+    </div>
+  );
+
+  const renderActionRow = (action: ComposerSuggestionAction, idx: number) => {
     const focused = idx === focusedIndex;
+    const Icon = ACTION_ICONS[action.id];
+    const isCheckbox = action.checked !== undefined;
+    // Collaboration keeps its Thinking-Orange enabled state from the legacy
+    // `+` menu (id-driven presentation; the data model stays lean).
+    const emphasized = action.id === 'collaboration' && action.checked === true;
+    const row = (
+      <button
+        key={`action:${action.id}`}
+        ref={focused ? focusedRef : undefined}
+        type="button"
+        role={isCheckbox ? 'menuitemcheckbox' : undefined}
+        aria-checked={isCheckbox ? action.checked : undefined}
+        aria-disabled={action.disabled ? true : undefined}
+        disabled={action.disabled}
+        aria-label={
+          action.disabledReason ? `${action.label}: ${action.disabledReason}` : undefined
+        }
+        onMouseDown={(e) => {
+          e.preventDefault();
+        }}
+        onClick={() => {
+          if (action.disabled) return;
+          onSelect({ kind: 'action', action });
+        }}
+        onMouseEnter={() => {
+          if (!action.disabled) onFocusedIndexChange(idx);
+        }}
+        // Shared menu row: the panel's glide highlight follows the focused index, a checked
+        // action is the check and 500; collaboration's orange tints the text only.
+        {...menuRowAttrs({ checked: action.checked === true, current: focused, disabled: action.disabled })}
+        className={cn(
+          COMPOSER_MENU_ROW,
+          'flex w-full items-center gap-2 px-3 py-2 text-left',
+          emphasized && 'text-[var(--warning-accent)]',
+          action.disabled && 'cursor-not-allowed opacity-50',
+        )}
+      >
+        {withMenuLabels(
+          <>
+            <Icon size={14} className="shrink-0" />
+            <span className="min-w-0 flex-1 truncate">{action.label}</span>
+            {isCheckbox && action.checked && (
+              <Check size={13} className="ml-auto shrink-0 text-[var(--model-item-check)]" />
+            )}
+          </>,
+        )}
+      </button>
+    );
+    if (action.disabled && action.disabledReason) {
+      return (
+        <Tip key={`action:${action.id}`} text={action.disabledReason} side="right">
+          <span className="block">{row}</span>
+        </Tip>
+      );
+    }
+    return row;
+  };
+
+  const renderResourceRow = (
+    entry: Extract<ComposerSuggestionEntry, { kind: 'resource' }>,
+    idx: number,
+  ) => {
+    const item = entry.item;
+    const focused = idx === focusedIndex;
+    const disabled = entry.disabled === true;
     let meta: string;
     if (item.type === 'file-picker') {
       meta = '';
@@ -188,8 +357,12 @@ export function AtMentionPanel({
       meta = item.description || t('newChat.atMention.desktopWindow');
     } else if (item.type === 'session') {
       meta = t('newChat.atMention.task');
-    } else if (item.type === 'plugin-provider') {
-      meta = t('newChat.atMention.pluginResources');
+    } else if (item.type === 'bot') {
+      meta = t('newChat.atMention.bot');
+    } else if (item.type === 'plugin-command') {
+      // Plugin rows follow the compact icon + name presentation used by the
+      // installed-plugin menu; the command remains an internal selection key.
+      meta = '';
     } else if (item.type === 'plugin-resource') {
       meta = item.sourceLabel || t('newChat.atMention.pluginResource');
     } else {
@@ -213,41 +386,63 @@ export function AtMentionPanel({
             ? Monitor
             : item.type === 'session'
               ? History
-              : item.type === 'plugin-provider' || item.type === 'plugin-resource'
+              : item.type === 'bot'
+                ? Bot
+              : item.type === 'plugin-command' || item.type === 'plugin-resource'
                 ? Plug
-              : FileIcon;
+              : pickFileIcon(item.name);
 
     return (
       <button
-        key={`${item.type}:${item.relPath}`}
+        key={composerSuggestionEntryKey(entry)}
         ref={focused ? focusedRef : undefined}
         type="button"
+        disabled={disabled}
+        aria-disabled={disabled ? true : undefined}
         onMouseDown={(e) => {
           e.preventDefault();
-          onSelect(item);
         }}
-        onMouseEnter={() => onFocusedIndexChange(idx)}
+        onClick={() => {
+          if (disabled) return;
+          onSelect(entry);
+        }}
+        onMouseEnter={() => {
+          if (!disabled) onFocusedIndexChange(idx);
+        }}
+        {...menuRowAttrs({ current: focused, disabled })}
         className={cn(
+          COMPOSER_MENU_ROW,
           'flex w-full items-center gap-2',
-          'h-[44px] px-[10px] rounded-[6px]',
-          'text-left outline-none transition-colors',
-          focused && 'bg-[var(--cmd-palette-item-hover)]',
+          'h-[44px] px-[10px] text-left',
+          disabled && 'cursor-not-allowed opacity-45',
         )}
       >
-        <Icon size={16} className="shrink-0 text-[var(--cmd-palette-item-icon)]" />
-        <span
-          className={cn(
-            'min-w-0 truncate text-[14px] font-medium',
-            'text-[var(--cmd-palette-item-text)]',
-          )}
-        >
-          {displayName}
-        </span>
-        {meta && (
+        {isPluginItem(item) ? (
+          <GhostPluginIcon
+            iconDataUrl={item.iconDataUrl}
+            iconId={item.pluginId ?? item.relPath}
+            iconName={item.type === 'plugin-resource' ? (item.sourceLabel ?? item.name) : item.name}
+            size="menu"
+          />
+        ) : (
+          <Icon size={16} className="shrink-0 text-[var(--cmd-palette-item-icon)]" />
+        )}
+        {withMenuLabels(<span className="min-w-0 truncate">{displayName}</span>)}
+        {disabled && entry.disabledReason ? (
+          <span
+            className={cn(
+              'shrink-0 text-12 font-normal truncate max-w-[240px]',
+              'text-[var(--cmd-palette-item-meta)]',
+              'ml-auto',
+            )}
+          >
+            {entry.disabledReason}
+          </span>
+        ) : meta ? (
           <Tip text={meta} mono>
             <span
               className={cn(
-                'shrink-0 text-[12px] truncate max-w-[240px]',
+                'shrink-0 text-12 font-normal truncate max-w-[240px]',
                 'text-[var(--cmd-palette-item-meta)]',
                 'ml-auto',
               )}
@@ -255,131 +450,209 @@ export function AtMentionPanel({
               {meta}
             </span>
           </Tip>
-        )}
+        ) : null}
       </button>
     );
   };
 
+  const renderEntryRow = ({ entry, index }: { entry: ComposerSuggestionEntry; index: number }) =>
+    entry.kind === 'action'
+      ? renderActionRow(entry.action, index)
+      : renderResourceRow(entry, index);
+
+  const hasDirectoryRows = isEmptyRootQuery && directoryRows.length > 0;
+  const showLoadingSkeleton = state.kind === 'loading' && entries.length === 0 && !hasDirectoryRows;
+  const showErrorState = state.kind === 'error' && entries.length === 0 && !hasDirectoryRows;
+  const showEmptyState = !showLoadingSkeleton && !showErrorState && entries.length === 0 && !hasDirectoryRows;
+
   return (
     <div
       ref={rootRef}
-      className={cn('pointer-events-auto absolute left-0 bottom-full mb-2 z-50')}
+      className={cn(
+        'pointer-events-auto',
+        embedded ? 'relative' : 'absolute left-0 bottom-full mb-2 z-50',
+      )}
     >
       <div
-        ref={panelRef}
+        ref={highlightPanelRef}
         onScroll={(e) => setPanelScroll(e.currentTarget.scrollTop)}
+        {...menuPanelAttrs}
         className={cn(
-          'w-[480px] overflow-y-auto',
-          'rounded-[12px] border p-[6px]',
-          'bg-[var(--cmd-palette-bg)]',
-          'border-[var(--cmd-palette-border)]',
+          'relative',
+          // embedded: fill the Morph shell. A nested w-[480px] is 2px wider
+          // than the border-box panel and paints a horizontal scrollbar thumb
+          // for ~2s via the global .is-scrolling auto-hide.
+          embedded ? 'w-full min-w-0' : 'w-[480px]',
+          'overflow-x-hidden overflow-y-auto',
+          'p-[6px]',
+          !embedded && [
+            'rounded-[12px] border',
+            'bg-[var(--cmd-palette-bg)]',
+            'border-[var(--cmd-palette-border)]',
+          ],
         )}
-        style={{ boxShadow: 'var(--cmd-palette-shadow)', maxHeight }}
+        // Registered floating-layer shadow, as on the shared menus (DESIGN §4 / §6).
+        style={{ boxShadow: embedded ? undefined : 'var(--shadow-menu)', maxHeight }}
       >
-        {hasScope && (
-          <div className="sticky top-0 z-10 flex h-[40px] items-center gap-2 bg-[var(--cmd-palette-bg)] px-[4px]">
-            <button
-              type="button"
-              aria-label={t('newChat.atMention.backToAll')}
-              onMouseDown={(event) => {
-                event.preventDefault();
-                onBack?.();
-              }}
-              className={cn(
-                'flex size-[32px] shrink-0 items-center justify-center rounded-[6px]',
-                'text-[var(--cmd-palette-item-meta)] hover:bg-[var(--cmd-palette-item-hover)]',
-              )}
-            >
-              <ArrowLeft size={16} />
-            </button>
-            <span className="min-w-0 truncate text-[13px] font-medium text-[var(--cmd-palette-item-text)]">
-              {scopedProviderName}
-            </span>
-            {scopedProviderName && (
-              <span className="ml-auto shrink-0 text-[12px] text-[var(--cmd-palette-item-meta)]">
-                {t('newChat.atMention.pluginResources')}
-              </span>
-            )}
-          </div>
-        )}
-        {state.kind === 'loading' && (
+        <MenuHighlightLayer />
+        {showLoadingSkeleton && (
           <div className="space-y-[4px] p-[4px]">
             {[0, 1, 2].map((i) => (
               <div
                 key={i}
-                className="h-[44px] rounded-[6px] bg-[var(--cmd-palette-item-hover)] opacity-40 animate-pulse"
+                className="h-[44px] rounded-lg bg-[var(--cmd-palette-item-hover)] opacity-40 animate-pulse"
               />
             ))}
           </div>
         )}
-        {state.kind === 'error' && (
+        {showErrorState && (
           <div className="flex flex-col items-center justify-center py-[16px] gap-[10px]">
-            <div className="text-[13px] text-[var(--destructive)]">
+            <div className="text-13 text-[var(--destructive)]">
               {t('newChat.atMention.scanFailed')}
             </div>
-            <div className="text-[12px] text-[var(--cmd-palette-item-meta)] px-[12px] text-center">
-              {state.message}
+            <div className="text-12 text-[var(--cmd-palette-item-meta)] px-[12px] text-center">
+              {state.kind === 'error' ? state.message : ''}
             </div>
-            <button
+            <Button
+              variant="secondary"
+              size="sm"
+              compact
               type="button"
               onMouseDown={(e) => {
                 e.preventDefault();
+              }}
+              onClick={() => {
                 onRetry();
               }}
-              className={cn(
-                'h-[28px] px-[12px] rounded-full text-[12px] font-medium',
-                'bg-[var(--cmd-palette-item-hover)] text-[var(--cmd-palette-item-text)]',
-              )}
             >
               {t('newChat.atMention.retry')}
-            </button>
+            </Button>
           </div>
         )}
-        {state.kind === 'ready' && filtered.length === 0 && (
+        {showEmptyState && (
           <div
             className={cn(
               'flex items-center justify-center',
-              'select-none h-[40px] text-[13px]',
+              'select-none h-[40px] text-13',
               'text-[var(--cmd-palette-empty)]',
             )}
           >
-            {state.searching
+            {state.kind === 'ready' && state.searching
               ? t('newChat.atMention.searching')
               : isEmptyRootQuery
                 ? t('newChat.atMention.typeToSearchFiles')
                 : t('newChat.atMention.noMatch')}
           </div>
         )}
-        {state.kind === 'ready' && filtered.length > 0 && (
+        {(entries.length > 0 || hasDirectoryRows) && (
           <>
-            {filtered.map((item, idx) => renderItemRow(item, idx))}
+            {isEmptyRootQuery ? (
+              <>
+                {addSectionVisible && renderSectionHeader(t('newChat.atMention.add'))}
+                {addEntries.map(renderEntryRow)}
+                {pluginSectionVisible && renderSectionHeader(t('extraDirs.pluginsTitle'))}
+                {pluginEntries.map(renderEntryRow)}
+                {directoriesVisible && (addSectionVisible || pluginSectionVisible) && (
+                  <div role="separator" className="my-2 border-t border-[var(--cmd-palette-border)]" />
+                )}
+                {directoriesVisible && (
+                  <>
+                    {directoryRows.length > 0 && renderSectionHeader(t('extraDirs.sectionTitle'))}
+                    {directoryRows.length > 0 && (
+                      <div role="list" aria-label={t('extraDirs.sectionTitle')}>
+                        {directoryRows.map(({ path: p, onRemove }) => (
+                          <div
+                            key={p}
+                            {...menuRowAttrs()}
+                            className={cn(COMPOSER_MENU_ROW, 'group flex h-[44px] items-center gap-2 px-[10px]')}
+                          >
+                            <FolderPlus
+                              size={16}
+                              className="shrink-0 text-[var(--cmd-palette-item-icon)] opacity-60"
+                            />
+                            <Tip
+                              text={isLibraryExtraDirSlot(p) ? extraDirDisplayLabel(p) : p}
+                              mono={!isLibraryExtraDirSlot(p)}
+                              side="top"
+                            >
+                              <span className="min-w-0 flex-1 truncate text-left">
+                                {extraDirDisplayLabel(p)}
+                              </span>
+                            </Tip>
+                            {isLibraryExtraDirSlot(p) ? null : (
+                              <button
+                                type="button"
+                                onMouseDown={(e) => e.preventDefault()}
+                                onClick={() => onRemove(p)}
+                                className={cn(
+                                  'rounded-full p-1 opacity-0 transition-opacity',
+                                  'hover:bg-[var(--cmd-palette-item-hover)]',
+                                  'group-hover:opacity-70 hover:!opacity-100',
+                                  'focus-visible:opacity-100 focus-visible:outline-none',
+                                  'focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]',
+                                )}
+                                aria-label={t('extraDirs.remove', { name: extraDirBasename(p) })}
+                              >
+                                <X size={12} className="text-[var(--cmd-palette-item-text)]" />
+                              </button>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {addDirEntry && renderEntryRow(addDirEntry)}
+                  </>
+                )}
+              </>
+            ) : (
+              indexed.map(renderEntryRow)
+            )}
             {isEmptyRootQuery && (
               <div
                 className={cn(
-                  'select-none px-[10px] py-[8px] text-[12px]',
+                  'mt-2 border-t border-[var(--cmd-palette-border)] select-none px-[10px] py-[8px] text-12',
                   'text-[var(--cmd-palette-item-meta)]',
                 )}
               >
                 {t('newChat.atMention.typeToSearchFiles')}
               </div>
             )}
-            {!isEmptyRootQuery && state.truncated && (
+            {!isEmptyRootQuery && state.kind === 'ready' && state.truncated && (
               <div
                 className={cn(
-                  'select-none px-[10px] py-[8px] text-[12px]',
+                  'select-none px-[10px] py-[8px] text-12',
                   'text-[var(--cmd-palette-item-meta)]',
                 )}
               >
                 {t('newChat.atMention.keepTyping')}
               </div>
             )}
+            {state.kind === 'error' && (
+              <button
+                type="button"
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                }}
+                onClick={() => {
+                  onRetry();
+                }}
+                {...menuRowAttrs()}
+                className={cn(
+                  COMPOSER_MENU_ROW,
+                  'flex w-full items-center gap-2 px-[10px] py-[8px] text-left',
+                  'text-12 text-[var(--destructive)]',
+                )}
+              >
+                {t('newChat.atMention.scanFailed')} · {t('newChat.atMention.retry')}
+              </button>
+            )}
           </>
         )}
       </div>
 
       {/* Agent tooltip — same pattern as SlashCommandPalette tooltip.
-           Only shown for agent items that have a description. */}
-      {showTooltip && tooltipPos && (
+           Only shown for resource entries that have a description. */}
+      {showTooltip && tooltipPos && focusedItem && (
         <div
           ref={tooltipRef}
           className={cn(
@@ -394,10 +667,10 @@ export function AtMentionPanel({
             maxHeight: tooltipPos.maxHeight,
           }}
         >
-          <div className="text-[14px] font-medium text-[var(--cmd-palette-item-text)]">
+          <div className="text-14 font-medium text-[var(--cmd-palette-item-text)]">
             {focusedItem.name}
           </div>
-          <div className="mt-[8px] text-[13px] leading-[1.5] text-[var(--cmd-palette-tooltip-body)]">
+          <div className="mt-[8px] text-13 leading-[1.5] text-[var(--cmd-palette-tooltip-body)]">
             {focusedItem.description}
           </div>
         </div>

@@ -6,32 +6,41 @@
  * 2026-07-29 用户裁决(对齐 Claude Code):分支与 worktree 合并为**一个** pill——
  * 左半分支区、竖分隔线、右半 checkbox + "worktree",两个点击区各管各的。
  *
- * 状态不变量(2026-07-29 用户裁决,实测后第二版):**勾选状态只属于用户**——
+ * 状态不变量:**勾选状态只属于用户**——
  *   - 系统/环境因素(切项目、探测结果、播种)永远不改 checkbox;资格不满足只是
- *     禁用 + tooltip,发送时由上层按「勾选 && 合格」静默降级,记忆永不被抹;
- *   - 用户点击 checkbox 本体(source='chip')→ 改状态并写工作端勾选记忆;
- *   - 用户选分支(source='branch-pick')→ 勾选**跟随本次选择**双向联动
- *     (选非当前分支必须隔离 → 亮;选回当前 HEAD → 灭;见 branchPick.ts),
- *     但只对本次草稿生效、不写记忆——分支选择表达的是"这一次从哪启动",
- *     不是"以后都默认 worktree"。
+ *     在 OFF 时禁用开启;
+ *   - 唯一改动路径 = 用户点击 checkbox 本体,并写入工作端勾选记忆;
+ *   - 分支选择始终只修改 worktree 源分支,永远不联动 checkbox。
  *
- * 分支区语义:菜单永远可点(资格允许时);未勾时菜单脚注说明"选其他分支将以
- * worktree 隔离启动",已勾时脚注说明"选当前分支将退回直接启动"。
+ * 2026-08-07 用户裁决(取代 2026-07-29「已 ON 保留关闭入口 + fail-closed」形态):
+ * 勾选记忆**只对具备 worktree 资格的目录生效**——
+ *   - 探测成功且确认不合格(非 git 仓库 / git 未安装 / 已在 worktree 内)时整条控件
+ *     隐藏,发送侧按普通会话放行;记忆本身保留不动,回到合格目录自动恢复;
+ *   - 探测进行中 / 探测失败(断线、老端通道缺失等)时**不算**确认不合格:已 ON 则
+ *     照旧显示并由上层 fail closed 拦截——一次弱网不能把用户要求的隔离静默降级。
+ * 两种状态的区分经 onConfirmedIneligibleChange 上报(null = 尚未确认)。
+ *
+ * 分支区语义:始终选择新 worktree 的源分支;checkbox 只决定本次新 session 是否
+ * 真正创建 worktree。两者是独立控制,允许用户先选分支、再决定是否隔离。
  *
  * worktree 名称 **自动生成**（不暴露 UI），由 useSuggestName 拉取后透传给上层。
  */
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback } from 'react';
-import { GitBranch, ChevronDown, Folder, MessageCircle } from 'lucide-react';
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useCallback,
+  useId,
+  type KeyboardEvent,
+} from 'react';
+import { GitBranch, ChevronDown, Folder, MessageCircle, Search } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { cn } from '@/lib/utils';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Tip, Tooltip } from '@/components/ui/tooltip';
 import {
   FolderPickerPopover,
@@ -60,13 +69,10 @@ export interface WorktreeChipsRowProps {
   emptyProjectLabel?: string;
   enabled: boolean;
   /**
-   * 用户切换 worktree。source 决定是否写工作端勾选记忆:
-   *  - 'chip':点 checkbox 本体 → 持久化;
-   *  - 'branch-pick':分支选择的双向联动(用户动作,但表达的是"这一次从哪启动")
-   *    → 仅本次草稿,不落记忆。
-   * 系统/环境路径不得调用它替用户翻状态。
+   * 用户点击 checkbox 本体切换 worktree——**唯一**的状态改动路径,上层必持久化
+   * (写工作端勾选记忆)。系统任何路径都不得调用它替用户翻状态。
    */
-  onEnabledChange: (v: boolean, source: 'chip' | 'branch-pick') => void;
+  onEnabledChange: (v: boolean) => void;
   sourceBranch: string;
   onSourceBranchChange: (v: string) => void;
   onBaseRepoChange?: (baseRepo: string | null) => void;
@@ -75,9 +81,20 @@ export interface WorktreeChipsRowProps {
    * 上层发送侧必须把非 true 视为不具备该能力。
    */
   onRecoveryKeyDiscardSupportChange?: (supported: boolean | null) => void;
+  /**
+   * 探测**成功**且确认目录不具备 worktree 资格(非 git 仓库 / git 未安装 / 已在
+   * worktree 内)时为 true;null = 探测中或探测失败(未确认,上层必须维持 fail
+   * closed)。true 时上层发送门放行普通会话——勾选记忆只对合格目录生效。
+   */
+  onConfirmedIneligibleChange?: (confirmed: boolean | null) => void;
   onSuggestedNameChange?: (name: string) => void;
   worktreeDisabled?: boolean;
+  /** Shared creation/environment gate for both halves of the joined control. */
   disabled?: boolean;
+  /** Branch preference read/write gate; must not disable the checkbox half. */
+  branchDisabled?: boolean;
+  /** Checkbox preference write gate; must not disable the branch half. */
+  checkboxDisabled?: boolean;
   /**
    * device-link 被控端 deviceId。非空表示 cwd 是被控端路径,git 探测 / 分支列表 /
    * 建议名全部经隧道在被控端执行(本机 git 对远程路径必然误报"不是 git 仓库")。
@@ -113,9 +130,12 @@ export function WorktreeChipsRow({
   onSourceBranchChange,
   onBaseRepoChange,
   onRecoveryKeyDiscardSupportChange,
+  onConfirmedIneligibleChange,
   onSuggestedNameChange,
   worktreeDisabled,
   disabled,
+  branchDisabled,
+  checkboxDisabled,
   deviceLinkDeviceId,
   deviceLinkReconnectEpoch = 0,
   variant = 'full',
@@ -130,36 +150,58 @@ export function WorktreeChipsRow({
     deviceLinkDeviceId,
     deviceLinkReconnectEpoch,
   );
-  const baseRepo = detect.data?.repoRoot ?? null;
+  // 探测成功且三种资格(已装 git / 是 git 仓库 / 未嵌套)同时满足为 true;
+  // detect.data 未到达(探测中/失败)时为 null——与「确认不合格」不同,后者必须
+  // fail closed。baseRepo 与 confirmedIneligible 皆从此派生,保证两处使用同一条件。
+  const gitEligible: boolean | null = detect.data
+    ? detect.data.gitInstalled && detect.data.isGitRepo && !detect.data.isInsideWorktree
+    : null;
+  const baseRepo = gitEligible ? (detect.data!.repoRoot ?? null) : null;
+  const confirmedIneligible: boolean | null = detect.data ? !gitEligible : null;
 
-  // repoRoot 参与发送侧 worktree 创建，必须在 paint / 下一次用户输入前同步收敛；
-  // useDetectCwd 同时按 {cwd, deviceId} 做 render 阶段 fence，切目标时这里先写 null。
+  // 只有明确具备 worktree 资格的仓库才向发送侧提供 repoRoot。发送 / Goal 的 ON 门
+  // 据此 fail closed，不能静默降级。useDetectCwd 同时按 {cwd, deviceId} 做 render
+  // 阶段 fence，切目标时这里先写 null。
   useLayoutEffect(() => {
     onBaseRepoChange?.(baseRepo);
     onRecoveryKeyDiscardSupportChange?.(
       detect.data ? detect.data.supportsRecoveryKeyDiscard === true : null,
     );
+    onConfirmedIneligibleChange?.(confirmedIneligible);
   }, [
     baseRepo,
     detect.data,
+    // confirmedIneligible 从 detect.data 纯派生，同一 render 下与 detect.data 同步变化；
+    // 保留仅满足 exhaustive-deps lint，运行时不会独立触发此 effect。
+    confirmedIneligible,
     onBaseRepoChange,
     onRecoveryKeyDiscardSupportChange,
+    onConfirmedIneligibleChange,
   ]);
 
   const cantUseReason = useMemo<string | null>(() => {
     if (detect.loading) return t('newChat.worktree.detecting');
-    if (!detect.data) return null;
+    if (!detect.data) {
+      // 探测失败(非 loading 且无回包):与「确认非 git」不同,这里维持 fail closed,
+      // 控件保留、给出失败原因,不能让一次断线看起来像"目录不合格被隐藏"。
+      // worktreeDisabled 时根本没发起探测(hook 收到 null),不属于失败。
+      return cwd && !worktreeDisabled ? t('newChat.worktree.detectFailed') : null;
+    }
     const d = detect.data;
     if (!d.gitInstalled) return t('newChat.worktree.gitMissing');
     if (!d.isGitRepo) return t('newChat.worktree.notGitRepo');
+    // 2026-08-07 裁决:isInsideWorktree 时 confirmedIneligible=true → 整条控件隐藏,
+    // 此分支的 tooltip 当前不可达,但保留以解耦 cantUseReason 与控件显隐逻辑。
     if (d.isInsideWorktree) return t('newChat.worktree.alreadyInWorktree');
     return null;
-  }, [detect.data, detect.loading, t]);
+  }, [cwd, detect.data, detect.loading, t, worktreeDisabled]);
 
-  const switchDisabled = disabled || worktreeDisabled || !!cantUseReason || detect.loading || !cwd;
+  const environmentDisabled =
+    worktreeDisabled || !!cantUseReason || detect.loading || !cwd || baseRepo === null;
+  const switchDisabled = disabled || checkboxDisabled || (environmentDisabled && !enabled);
 
   // 状态不变量:这里**没有**任何自动改写 enabled 的 effect——勾选状态只属于用户,
-  // 资格不满足只体现为 checkbox 禁用(switchDisabled)+发送侧「勾选 && 合格」降级。
+  // 资格不满足时 OFF 不能开启；已 ON 必须仍能显式关闭，发送侧同时保留输入并阻塞创建。
 
   const effectiveWorktreeEnabled = enabled && !advancedHidden && !worktreeDisabled;
   // 分支列表懒加载 latch:worktree 未开时不预拉,首次点开分支 chip 菜单才拉,
@@ -170,11 +212,6 @@ export function WorktreeChipsRow({
     deviceLinkDeviceId,
   );
   const suggested = useSuggestName(effectiveWorktreeEnabled ? baseRepo : null, deviceLinkDeviceId);
-
-  useEffect(() => {
-    if (!effectiveWorktreeEnabled || sourceBranch || !branches.current) return;
-    onSourceBranchChange(branches.current);
-  }, [effectiveWorktreeEnabled, sourceBranch, branches.current, onSourceBranchChange]);
 
   const lastNameRef = useRef('');
   useEffect(() => {
@@ -205,17 +242,18 @@ export function WorktreeChipsRow({
 
   // ── 分支 chip 状态 ──
   const currentBranch = detect.data?.currentBranch ?? null;
-  // worktree ON 显源分支,列表加载失败/未返回时回退 'HEAD'(与发送管线的源分支
-  // 回退值一致,表示当前 checkout 而不是猜测 main)—— ON 状态下 chip 是唯一的
-  // 分支入口,绝不能因加载失败而消失。OFF 显仓库当前 HEAD 分支；detached HEAD
-  // 没有分支名时仍显示 HEAD，让默认未勾选用户保有开启 worktree 的入口。
-  const branchLabel = effectiveWorktreeEnabled
-    ? sourceBranch || branches.current || 'HEAD'
-    : (currentBranch ?? 'HEAD');
-  const showBranchChip = !advancedHidden && !!detect.data?.isGitRepo;
-  // 分支菜单永远可点(worktree 开不了的仓库除外——已在 worktree 内等场景选分支
-  // 无法产生任何效果,菜单保持只读展示)。
-  const branchInteractive = !disabled && (effectiveWorktreeEnabled || !switchDisabled);
+  // 分支与 checkbox 独立:未勾时也要回显用户刚选的源分支,否则菜单虽然可点、
+  // 选择后却仍显示当前 HEAD,看起来像没有生效。首次未选择时回退当前 checkout。
+  const branchLabel = sourceBranch || branches.current || currentBranch || 'HEAD';
+  // 确认不合格(2026-08-07 裁决)→ 整条控件隐藏,勾选记忆保留、发送侧放行普通会话;
+  // 探测中/失败(confirmedIneligible === null)时已 ON 仍显示,由上层 fail closed。
+  const showBranchChip =
+    !advancedHidden
+    && confirmedIneligible !== true
+    && (enabled || !!detect.data?.isGitRepo);
+  // 分支选择与 checkbox 是两条独立轴；仅环境不具备 worktree 资格或创建在途时禁用。
+  const branchInteractive =
+    !(disabled || branchDisabled || environmentDisabled) && baseRepo !== null;
 
   const handleBranchPick = useCallback(
     (picked: string) => {
@@ -223,20 +261,9 @@ export function WorktreeChipsRow({
         { worktreeEnabled: effectiveWorktreeEnabled, currentBranch, sourceBranch: branchLabel },
         picked,
       );
-      if (effect.kind === 'set-source') {
-        onSourceBranchChange(effect.branch);
-      } else if (effect.kind === 'enable-worktree') {
-        // 同帧一起写:sourceBranch 非空会让"worktree 开启后回填 current"的
-        // effect 自然跳过,不会覆盖用户的选择。branch-pick 档 → 不落记忆。
-        onEnabledChange(true, 'branch-pick');
-        onSourceBranchChange(effect.branch);
-      } else if (effect.kind === 'disable-worktree') {
-        // 选回当前 HEAD → 勾选跟随熄灭(仅本次草稿);清源分支,下次开启重新回填。
-        onEnabledChange(false, 'branch-pick');
-        onSourceBranchChange('');
-      }
+      if (effect.kind === 'set-source') onSourceBranchChange(effect.branch);
     },
-    [effectiveWorktreeEnabled, currentBranch, branchLabel, onSourceBranchChange, onEnabledChange],
+    [effectiveWorktreeEnabled, currentBranch, branchLabel, onSourceBranchChange],
   );
 
   const branchWorktree = showBranchChip ? (
@@ -247,6 +274,7 @@ export function WorktreeChipsRow({
       branchesFailed={branches.failed}
       onRetryBranches={branches.refetch}
       checked={enabled}
+      branchSourceSelected={!!sourceBranch}
       branchInteractive={branchInteractive}
       checkboxDisabled={switchDisabled}
       cantUseReason={cantUseReason ?? undefined}
@@ -256,13 +284,13 @@ export function WorktreeChipsRow({
         // 上次拉取失败的话,重新打开菜单就自动重试一次,不逼用户去点重试项。
         if (branches.failed && !branches.loading) branches.refetch();
       }}
-      onToggle={(v) => onEnabledChange(v, 'chip')}
+      onToggle={onEnabledChange}
       compact={compact}
     />
   ) : null;
 
   // advancedOnly:项目选择交给页面自己的 pill,这里出 [分支 │ ☑ worktree] 联合控件
-  // (cwd 为空 / 非 git 仓库时整体不渲染)。
+  // (cwd 为空时不渲染；环境失效但记忆仍 ON 时保留关闭入口)。
   if (variant === 'advancedOnly') {
     if (advancedHidden) return null;
     return branchWorktree;
@@ -358,7 +386,7 @@ function FolderChipBig({
           className={cn(
             'inline-flex h-[42px] items-center gap-2.5 rounded-full',
             'border border-border bg-[var(--chat-input-bg)] px-[18px]',
-            'text-[14px] font-medium text-foreground',
+            'text-14 font-medium text-foreground',
             'transition-colors hover:bg-sidebar-item-hover',
             'disabled:cursor-not-allowed disabled:opacity-50',
           )}
@@ -395,6 +423,7 @@ function BranchWorktreeChip({
   branchesFailed,
   onRetryBranches,
   checked,
+  branchSourceSelected,
   branchInteractive,
   checkboxDisabled,
   cantUseReason,
@@ -411,7 +440,9 @@ function BranchWorktreeChip({
   onRetryBranches: () => void;
   /** worktree 勾选状态(工作端记忆原样直出;禁用时也照常显示,不做视觉造假)。 */
   checked: boolean;
-  /** 分支菜单是否可开(仅已勾时 = 源分支选择器;未勾只读展示当前 HEAD)。 */
+  /** 用户是否已经显式选择过源分支(用于区分 tooltip 与首次展示的当前 HEAD)。 */
+  branchSourceSelected: boolean;
+  /** 分支菜单是否可开(与 checkbox 状态独立)。 */
   branchInteractive: boolean;
   checkboxDisabled?: boolean;
   cantUseReason?: string;
@@ -424,18 +455,92 @@ function BranchWorktreeChip({
 }) {
   const { t } = useTranslation();
 
+  // 分支菜单内搜索词(2026-08-20 用户裁决:对齐 Codex 分支选择器,菜单顶部加搜索框)。
+  // 菜单关闭即清空——搜索只是本次挑选的临时过滤,不是需要记忆的偏好。
+  const [branchMenuOpen, setBranchMenuOpen] = useState(false);
+  const [branchQuery, setBranchQuery] = useState('');
+  const normalizedBranchQuery = branchQuery.trim().toLowerCase();
+  const visibleBranches = normalizedBranchQuery
+    ? branches.filter((b) => b.toLowerCase().includes(normalizedBranchQuery))
+    : branches;
+
+  // 组合框键盘导航(2026-09-08 Codex review:改用 aria-activedescendant 组合框结构):
+  // 焦点始终留在输入框,方向键只移动高亮项,Enter 选中高亮项——不再依赖菜单
+  // typeahead 或焦点冒泡,可打印字符输入与选项导航各走各的,互不干扰。
+  const [activeBranchIndex, setActiveBranchIndex] = useState(0);
+  const listboxId = useId();
+  const optionRefs = useRef<Array<HTMLDivElement | null>>([]);
+  // 过滤后列表可能变短,钳住下标避免指向已不可见的项;空列表用 -1 表示无高亮。
+  const clampedActiveIndex =
+    visibleBranches.length === 0 ? -1 : Math.min(activeBranchIndex, visibleBranches.length - 1);
+
+  useEffect(() => {
+    if (!branchMenuOpen || clampedActiveIndex < 0) return;
+    optionRefs.current[clampedActiveIndex]?.scrollIntoView({ block: 'nearest' });
+  }, [branchMenuOpen, clampedActiveIndex]);
+
+  // 打开菜单、或菜单开着时分支列表异步到达/刷新,都要把高亮重新定位到当前源
+  // 分支——不能依赖 branches 数组里恰好排第几位(该接口不保证顺序,参见
+  // WorktreeManager.listBranches 用的是 `git branch` 默认序)。只在用户还没
+  // 输入搜索词时接管,避免打断已经在筛选/用方向键挑选的操作。
+  useEffect(() => {
+    if (!branchMenuOpen || normalizedBranchQuery) return;
+    const current = branches.indexOf(branchLabel);
+    setActiveBranchIndex(current >= 0 ? current : 0);
+  }, [branchMenuOpen, branches, branchLabel, normalizedBranchQuery]);
+
+  const pickBranch = (branch: string) => {
+    onPick(branch);
+    setBranchMenuOpen(false);
+    setBranchQuery('');
+  };
+
+  const onSearchKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    // IME 组合中的键击属于候选词编辑:导航/Enter 不应触发选择。
+    // (组合中的 Escape 不关弹层由 PopoverContent 的 onEscapeKeyDown 拦截——
+    // Radix 的 Escape 监听在 document 捕获阶段,这里的 stopPropagation 拦不住。)
+    if (e.nativeEvent.isComposing) return;
+    switch (e.key) {
+      // Home/End 不拦截:焦点有意留在可编辑输入框里(combobox 模式),这两个键要
+      // 保留原生的"光标跳行首/行尾"文本编辑行为;只有方向键才用于选项导航
+      // (对齐仓库里唯一同构的先例 LoginPage.tsx 的 SSO 组织历史下拉,同样没有
+      // 拦截 Home/End)。
+      case 'ArrowDown':
+      case 'ArrowUp': {
+        e.preventDefault();
+        if (clampedActiveIndex < 0) return;
+        setActiveBranchIndex(
+          e.key === 'ArrowDown'
+            ? (clampedActiveIndex + 1) % visibleBranches.length
+            : (clampedActiveIndex - 1 + visibleBranches.length) % visibleBranches.length,
+        );
+        return;
+      }
+      case 'Enter': {
+        if (clampedActiveIndex < 0) return;
+        e.preventDefault();
+        pickBranch(visibleBranches[clampedActiveIndex]);
+        return;
+      }
+      default:
+        // Escape 及其余键照常冒泡:Escape 由 Radix Popover 关闭弹层并把焦点还给 trigger。
+        break;
+    }
+  };
+
   const branchSegment = (
     <button
       type="button"
-      disabled={!branchInteractive}
+      aria-disabled={!branchInteractive}
+      tabIndex={branchInteractive ? 0 : -1}
       data-testid="create-agent-branch-chip"
       className={cn(
         'inline-flex h-full min-w-0 items-center transition-colors',
         // 只读态不弹菜单但也不该像 disabled 一样淡出 —— 分支信息本身是有效展示。
         !branchInteractive && 'cursor-default',
         compact
-          ? 'max-w-[180px] gap-1.5 pl-3 pr-2 text-[12px] font-medium leading-[14px]'
-          : 'max-w-[220px] gap-2.5 pl-[18px] pr-2.5 text-[14px] font-medium',
+          ? 'max-w-[180px] gap-1.5 pl-3 pr-2 text-12 font-medium leading-[1.167]'
+          : 'max-w-[220px] gap-2.5 pl-[18px] pr-2.5 text-14 font-medium',
         branchInteractive &&
           (compact
             ? 'hover:bg-[var(--create-agent-control-bg-hover)] active:bg-[var(--create-agent-control-bg-pressed)]'
@@ -460,7 +565,7 @@ function BranchWorktreeChip({
   const branchTipped = (
     <Tip
       text={
-        checked
+        checked || branchSourceSelected
           ? t('newChat.branchChip.sourceTooltip')
           : t('newChat.branchChip.currentTooltip')
       }
@@ -470,57 +575,133 @@ function BranchWorktreeChip({
   );
 
   const branchArea = branchInteractive ? (
-    <DropdownMenu
+    <Popover
+      open={branchMenuOpen}
       onOpenChange={(open) => {
-        if (open) onOpenRequested();
+        setBranchMenuOpen(open);
+        if (open) {
+          onOpenRequested();
+          // 高亮定位交给上面的 useEffect(依赖 branches,分支异步到达/刷新时
+          // 会自动重新定位到当前源分支,不再只在“打开那一刻”算一次)。
+        } else {
+          setBranchQuery('');
+        }
       }}
     >
-      <DropdownMenuTrigger asChild>{branchTipped}</DropdownMenuTrigger>
-      <DropdownMenuContent
+      <PopoverTrigger asChild>{branchTipped}</PopoverTrigger>
+      <PopoverContent
         align="end"
         sideOffset={4}
-        className="max-h-[280px] min-w-[200px] overflow-y-auto rounded-xl border border-border bg-popover p-1 shadow-lg"
+        // IME 组合中的 Escape 只是取消候选,不能关弹层(CJK 高频路径)。
+        // 注意 Radix 的 Escape 监听挂在 document 捕获阶段,在输入框里
+        // stopPropagation 拦不住它,必须在 onEscapeKeyDown 里 preventDefault。
+        onEscapeKeyDown={(e) => {
+          if (e.isComposing) e.preventDefault();
+        }}
+        className="max-h-[280px] w-auto min-w-[200px] overflow-y-auto rounded-xl border border-border bg-popover p-1 shadow-lg"
       >
         {branchesLoading ? (
-          <div className="px-3 py-1.5 text-[13px] text-muted-foreground">
+          <div className="px-3 py-1.5 text-13 text-muted-foreground">
             {t('newChat.branchChip.loading')}
           </div>
         ) : branchesFailed || branches.length === 0 ? (
           /* 失败与空列表都给重试入口(空列表也可能是隧道/瞬时问题);
-             onSelect 阻止默认关闭,重试期间菜单留在原地显示 loading。 */
-          <DropdownMenuItem
-            onSelect={(e) => {
-              e.preventDefault();
-              onRetryBranches();
-            }}
-            className="cursor-pointer rounded-[8px] px-3 py-1.5 text-[13px] text-muted-foreground focus:bg-accent focus:text-accent-foreground"
+             点击不关闭弹层,重试期间留在原地显示 loading。 */
+          <button
+            type="button"
+            onClick={onRetryBranches}
+            className={cn(
+              'w-full cursor-pointer rounded-[8px] px-3 py-1.5 text-left text-13 text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]',
+            )}
           >
             {t('newChat.branchChip.loadFailed')}
-          </DropdownMenuItem>
+          </button>
         ) : (
-          branches.map((b) => (
-            <DropdownMenuItem
-              key={b}
-              onSelect={() => onPick(b)}
+          <>
+            <div className="sticky top-0 z-10 bg-popover pb-1">
+              <div className="relative">
+                <Search
+                  size={12}
+                  className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground"
+                />
+                <input
+                  // 打开菜单的下一个动作几乎总是输入过滤:等 Radix 的 open autofocus
+                  // 落定后再补一次聚焦;已聚焦时(用户在输入)不重抢。
+                  ref={(el) => {
+                    if (el && document.activeElement !== el) {
+                      requestAnimationFrame(() => el.focus());
+                    }
+                  }}
+                  role="combobox"
+                  aria-expanded
+                  aria-autocomplete="list"
+                  aria-controls={listboxId}
+                  aria-activedescendant={
+                    clampedActiveIndex >= 0
+                      ? `${listboxId}-option-${clampedActiveIndex}`
+                      : undefined
+                  }
+                  value={branchQuery}
+                  onChange={(e) => {
+                    setBranchQuery(e.target.value);
+                    // 过滤集合变了,高亮回到首项,避免停留在已不可见的位置。
+                    setActiveBranchIndex(0);
+                  }}
+                  onKeyDown={onSearchKeyDown}
+                  placeholder={t('newChat.branchChip.searchPlaceholder')}
+                  aria-label={t('newChat.branchChip.searchPlaceholder')}
+                  className={cn(
+                    'h-8 w-full rounded-full border border-border bg-transparent',
+                    'pl-7 pr-2 text-13 text-foreground outline-none',
+                    // DESIGN.md §4 Inputs & Forms:单行 input 一律 pill 圆角;
+                    // placeholder 走 --text-placeholder(过浅会像已填写内容);
+                    // focus 走 --focus-ring 一对 token(对齐 FileFilterInput)。
+                    'placeholder:text-[var(--text-placeholder)]',
+                    'focus:border-[var(--focus-ring)] focus:ring-1 focus:ring-[var(--focus-ring-soft)]',
+                  )}
+                />
+              </div>
+            </div>
+            <div role="listbox" id={listboxId} aria-label={t('newChat.branchChip.label')}>
+              {visibleBranches.map((b, index) => (
+                <div
+                  key={b}
+                  ref={(el) => {
+                    optionRefs.current[index] = el;
+                  }}
+                  id={`${listboxId}-option-${index}`}
+                  role="option"
+                  aria-selected={b === branchLabel}
+                  onMouseMove={() => setActiveBranchIndex(index)}
+                  onClick={() => pickBranch(b)}
+                  className={cn(
+                    'cursor-pointer rounded-[8px] px-3 py-1.5 text-13 text-foreground',
+                    index === clampedActiveIndex
+                      ? 'bg-accent text-accent-foreground'
+                      : b === branchLabel && 'bg-accent/60',
+                  )}
+                >
+                  {b}
+                </div>
+              ))}
+            </div>
+            {/* 常驻播报区域，让过滤为空时的文本更新可被读屏感知；列表关联始终保留。 */}
+            <div
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
               className={cn(
-                'cursor-pointer rounded-[8px] px-3 py-1.5 text-[13px] text-foreground',
-                'focus:bg-accent focus:text-accent-foreground',
-                b === branchLabel && 'bg-accent/60',
+                'text-13 text-muted-foreground',
+                visibleBranches.length === 0 && 'px-3 py-1.5',
               )}
             >
-              {b}
-            </DropdownMenuItem>
-          ))
+              {visibleBranches.length === 0 ? t('newChat.branchChip.noMatch') : null}
+            </div>
+          </>
         )}
-        {/* 脚注说明双向联动语义:未勾 → 选其他分支将开 worktree;已勾 → 选回
-            当前分支将退回直接启动。用户第一次遇到"勾选跟着分支走"时不至于意外。 */}
-        <div className="mt-1 border-t border-border px-3 pb-1 pt-1.5 text-[11px] leading-snug text-muted-foreground">
-          {checked
-            ? t('newChat.branchChip.exitWorktreeHint')
-            : t('newChat.branchChip.worktreeHint')}
-        </div>
-      </DropdownMenuContent>
-    </DropdownMenu>
+      </PopoverContent>
+    </Popover>
   ) : (
     branchTipped
   );
@@ -537,8 +718,8 @@ function BranchWorktreeChip({
         'inline-flex h-full items-center transition-colors',
         'disabled:cursor-not-allowed disabled:opacity-50',
         compact
-          ? 'gap-1.5 pl-2 pr-3 text-[12px] font-medium leading-[14px]'
-          : 'gap-2.5 pl-2.5 pr-[18px] text-[14px] font-medium',
+          ? 'gap-1.5 pl-2 pr-3 text-12 font-medium leading-[1.167]'
+          : 'gap-2.5 pl-2.5 pr-[18px] text-14 font-medium',
         !checkboxDisabled &&
           (compact
             ? 'hover:bg-[var(--create-agent-control-bg-hover)] active:bg-[var(--create-agent-control-bg-pressed)]'

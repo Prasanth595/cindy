@@ -10,8 +10,10 @@ describe('computer use plugin IPC invariants', () => {
 
     await expect(
       refreshCodexMcpEnvironment({
-        restartCodex: vi.fn(async () => {
+        restartCodex: vi.fn(async (refresh) => {
           calls.push('restart-codex');
+          await refresh();
+          calls.push('release-startups');
         }),
         shutdownCodexEnvironment: vi.fn(async () => {
           calls.push('shutdown-bridge');
@@ -19,7 +21,7 @@ describe('computer use plugin IPC invariants', () => {
       }),
     ).resolves.toEqual({ codexMcpRefreshed: true });
 
-    expect(calls).toEqual(['restart-codex', 'shutdown-bridge']);
+    expect(calls).toEqual(['restart-codex', 'shutdown-bridge', 'release-startups']);
   });
 
   it('keeps the existing bridge alive and reports deferred when Codex is busy', async () => {
@@ -48,7 +50,7 @@ describe('computer use plugin IPC invariants', () => {
 
     await expect(
       refreshCodexMcpEnvironment({
-        restartCodex: vi.fn(async () => undefined),
+        restartCodex: vi.fn(async (refresh) => refresh()),
         shutdownCodexEnvironment: vi.fn(async () => {
           throw new Error('bridge shutdown failed');
         }),
@@ -60,6 +62,22 @@ describe('computer use plugin IPC invariants', () => {
       expect.stringContaining('old bridge could not shut down'),
       { error: 'bridge shutdown failed' },
     );
+  });
+
+  it('schedules a retry when the shared host is busy', async () => {
+    const onDeferred = vi.fn();
+
+    await expect(
+      refreshCodexMcpEnvironment({
+        restartCodex: vi.fn(async () => {
+          throw new Error('codex busy');
+        }),
+        shutdownCodexEnvironment: vi.fn(async () => undefined),
+        onDeferred,
+      }),
+    ).resolves.toEqual({ codexMcpRefreshed: false });
+
+    expect(onDeferred).toHaveBeenCalledOnce();
   });
 
   it('returns the non-blocking refresh result after global plugin persistence', () => {
@@ -86,6 +104,7 @@ describe('computer use plugin IPC invariants', () => {
 
     for (const body of [setEnabledBody, clearEnabledBody]) {
       expect(body).toContain('GLOBAL_PLUGIN_IDS.has(id)');
+      expect(body).toContain("id !== 'browser'");
       expect(body).toContain('await getPluginRegistry()');
       expect(body).toContain('return { codexMcpRefreshed: true };');
       expect(body).toContain('return refreshCodexMcpEnvironment({');

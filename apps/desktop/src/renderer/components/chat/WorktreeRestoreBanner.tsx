@@ -3,7 +3,7 @@
  * ---------------------------------------------------------------------------
  * 自足组件(仿 UpgradeBanner):按 sessionId 自查 worktree:restore-status,两种
  * 状态渲染(其余自渲染 null,父级无需条件编排):
- *   - restorable(目录没了但 xdt/<name> 分支还在)→「工作区已被回收 → 恢复工作区」;
+ *   - restorable(目录没了但 cindy/<name> 或历史 xdt/<name> 分支还在)→恢复入口;
  *   - present + hasSnapshot(目录还在,但残留待 apply 的快照——典型是回收时
  *     stash 成功但目录删除失败,或上次恢复只重建了目录、快照 apply 失败)
  *     →「有未应用的更改快照 → 恢复更改」,文案不再谎称"目录不存在"。
@@ -33,7 +33,7 @@ import { FolderX, RefreshCw, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
-import { useRefreshWorktrees } from '@/contexts/WorktreeContext';
+import { useRefreshWorktreeForSession } from '@/contexts/WorktreeContext';
 import { addSessionAttention } from '@/lib/sessionAttentionStore';
 import { ackErrorAlertHandled } from '@/lib/errorAlertAck';
 import { refreshPendingAlerts } from '@/hooks/usePendingAlertAttention';
@@ -66,7 +66,7 @@ export function WorktreeRestoreBanner({
   style?: React.CSSProperties;
 }) {
   const { t } = useTranslation();
-  const refreshWorktrees = useRefreshWorktrees();
+  const refreshWorktreeForSession = useRefreshWorktreeForSession();
   const [phase, setPhase] = useState<BannerPhase>('hidden');
   const [variant, setVariant] = useState<BannerVariant>('missing');
   /** 本组件给哪个会话打过红点 —— 清点只清自己打的,不误伤 live error 等其它来源。 */
@@ -152,11 +152,13 @@ export function WorktreeRestoreBanner({
           // 恢复成功 = 告警消失,清**发起时那个会话**的红点(过期完成会被忽略)。
           clearOwnAttentionFor(target);
         }
-        void refreshWorktrees();
+        void refreshWorktreeForSession(target);
       } else {
-        toast.error(t('chat.worktreeRestoreBanner.failed', {
-          message: t(restoreFailureKey(result.reason as RestoreFailureReason | undefined)),
-        }));
+        toast.error(
+          t('chat.worktreeRestoreBanner.failed', {
+            message: t(restoreFailureKey(result.reason as RestoreFailureReason | undefined)),
+          }),
+        );
         setPhase('restorable');
       }
     } catch {
@@ -167,7 +169,7 @@ export function WorktreeRestoreBanner({
       );
       setPhase('restorable');
     }
-  }, [clearOwnAttentionFor, refreshWorktrees, sessionId, t]);
+  }, [clearOwnAttentionFor, refreshWorktreeForSession, sessionId, t]);
 
   if (phase === 'hidden') return null;
   const restoring = phase === 'restoring';

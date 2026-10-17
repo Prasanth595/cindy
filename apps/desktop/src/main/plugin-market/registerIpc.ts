@@ -3,35 +3,116 @@ import os from 'node:os';
 import { ipcMain } from 'electron';
 
 import { isIpcError } from '../../shared/ipc-errors.js';
-import type { GhostManifest } from '../../shared/ghost.js';
-import { setGhostUninstallLedgerPreparer } from '../cindy-brain/index.js';
+import { ServerApiError } from '../serverApiClient.js';
+import { isPluginMarketPassthroughErrorCode } from './api.js';
+import {
+  isGhostInstallApprovalToken,
+  type GhostManifest,
+} from '../../shared/ghost.js';
+import { installedGhostStoragePart } from '../../shared/pluginIdentity.js';
+import {
+  isPluginMarketCustomIconKey,
+  type PluginMarketSnapshot,
+} from '../../shared/pluginMarket.js';
+import {
+  createWindowGhostInstallConsentPrompt,
+  sendToTrustedAppWindows,
+  getGhostManager,
+  setGhostUninstallLedgerPreparer,
+} from '../cindy-brain/index.js';
 import { createLogger } from '../logger.js';
+import { getActiveAppSession } from '../appSessionState.js';
+import { markGhostRecommendationInstalled } from '../cindy-brain/ghostRecommendationStore.js';
 import { assertTrustedAppRendererEvent } from '../security/trustedAppRenderer.js';
 import { requireObject, requireString, throwIpcError } from '../utils/ipcValidate.js';
 import { parseMarketSource } from './sources/parse.js';
-import { PluginMarketService } from './service.js';
+import { LocalIconRequestGate } from './localIconRequestGate.js';
+import {
+  getPluginMarketService as service,
+  type PluginMarketSnapshotOptions,
+} from './service.js';
 
 const log = createLogger('plugin-market-ipc');
 let registered = false;
-let serviceSingleton: PluginMarketService | null = null;
+const REMOVAL_NOTICE_AVAILABLE_CHANNEL = 'plugin-market:removal-notice-available';
+const UPDATE_CONSENT_HOLDS_CHANGED_CHANNEL = 'plugin-market:update-consent-holds-changed';
+const localIconRequestGate = new LocalIconRequestGate();
 
-function service(): PluginMarketService {
-  serviceSingleton ??= new PluginMarketService();
-  return serviceSingleton;
+function signalRemovalNoticeAvailable(): void {
+  if (!service().hasPendingRemovalNotice()) return;
+  sendToTrustedAppWindows(REMOVAL_NOTICE_AVAILABLE_CHANNEL, undefined);
+}
+
+function signalUpdateConsentHoldsChanged(): void {
+  sendToTrustedAppWindows(UPDATE_CONSENT_HOLDS_CHANGED_CHANNEL, undefined);
+}
+
+async function snapshotAndSignalRemovalNotice(options?: PluginMarketSnapshotOptions) {
+  try {
+    return await service().snapshot(options);
+  } finally {
+    // 清理已成功但后续默认安装等步骤失败时，pending 仍必须通知 Renderer；
+    // snapshot 的原始异常继续向上抛，不把通知信号伪装成整轮成功。
+    signalRemovalNoticeAvailable();
+  }
 }
 
 /**
  * Reuse the market snapshot reconciliation outside the Plugins page so
- * default-install plugins are provisioned as soon as an app owner is ready.
- * The Plugins page keeps the same call as a later retry path.
+ * default-install plugins are provisioned and stable-source updates are applied
+ * as soon as an app owner is ready. The Plugins page remains a later retry path.
  */
-export async function syncDefaultMarketPlugins(): Promise<void> {
+export type DefaultMarketPluginSyncOutcome = 'completed' | 'deferred' | 'failed';
+
+export function defaultMarketPluginSyncOutcome(
+  snapshot: PluginMarketSnapshot,
+  reconciliationOutcome: 'completed' | 'failed' = 'completed',
+): DefaultMarketPluginSyncOutcome {
+  // The organization catalog was not reconciled. Only an upgrade can fix a
+  // client-version rejection; every other reason may clear on retry.
+  const organizationRetryable =
+    Boolean(snapshot.organizationAccessError)
+    && snapshot.organizationAccessError !== 'PLUGIN_NAMESPACE_CLIENT_REQUIRED';
+  if (
+    (snapshot.unavailableReason === null || snapshot.unavailableReason === 'not-configured')
+    && reconciliationOutcome === 'completed'
+    && !organizationRetryable
+  ) {
+    return 'completed';
+  }
+  if (
+    snapshot.unavailableReason === 'session-switching'
+    || snapshot.unavailableReason === 'authentication-required'
+  ) {
+    return 'deferred';
+  }
+  return 'failed';
+}
+
+export async function syncDefaultMarketPlugins(): Promise<DefaultMarketPluginSyncOutcome> {
   try {
-    await service().snapshot();
+    let reconciliationOutcome: 'completed' | 'failed' | null = null;
+    const snapshot = await snapshotAndSignalRemovalNotice({
+      onDefaultReconciliationOutcome: (outcome) => {
+        reconciliationOutcome = outcome;
+      },
+    });
+    const outcome = defaultMarketPluginSyncOutcome(
+      snapshot,
+      reconciliationOutcome ?? 'completed',
+    );
+    if (outcome === 'failed') {
+      log.warn('default plugin startup sync incomplete', {
+        unavailableReason: snapshot.unavailableReason,
+        organizationAccessError: snapshot.organizationAccessError ?? null,
+      });
+    }
+    return outcome;
   } catch (error) {
-    log.warn('default plugin startup sync failed', {
+    log.warn('Plugin market background sync failed', {
       error: error instanceof Error ? error.message : String(error),
     });
+    return 'failed';
   }
 }
 
@@ -45,6 +126,9 @@ async function invokePluginMarket<T>(operation: () => Promise<T>): Promise<T> {
     return await operation();
   } catch (error) {
     if (isIpcError(error)) throw error;
+    if (error instanceof ServerApiError && isPluginMarketPassthroughErrorCode(error.code)) {
+      throwIpcError(error.code, 'Plugin market operation failed');
+    }
     log.warn('plugin market IPC failed', {
       error: error instanceof Error ? error.message : String(error),
     });
@@ -61,13 +145,44 @@ export function registerPluginMarketIpc(): void {
   );
   ipcMain.handle('plugin-market:snapshot', (event) => {
     assertTrustedAppRendererEvent(event);
-    return invokePluginMarket(() => service().snapshot());
+    return invokePluginMarket(() =>
+      snapshotAndSignalRemovalNotice({
+        deferReconciliation: true,
+        onConsentHoldsChanged: signalUpdateConsentHoldsChanged,
+      }),
+    );
+  });
+  ipcMain.handle('plugin-market:consume-removal-notice', (event) => {
+    assertTrustedAppRendererEvent(event);
+    return invokePluginMarket(async () => service().consumeRemovalNotice());
   });
   ipcMain.handle('plugin-market:detail', (event, pluginId: unknown) => {
     assertTrustedAppRendererEvent(event);
     return invokePluginMarket(() =>
       service().detail(requireString(pluginId, 'pluginId')),
     );
+  });
+  ipcMain.handle('plugin-market:local-icons', (event, raw: unknown) => {
+    assertTrustedAppRendererEvent(event);
+    if (!Array.isArray(raw) || raw.length > 8) {
+      throwIpcError('INVALID_PARAMS', 'local icon requests must contain at most 8 entries');
+    }
+    const requests = raw.map((entry) => {
+      const payload = requireObject(entry);
+      const pluginId = requireString(payload.pluginId, 'pluginId');
+      const expectedIconKey = requireString(payload.expectedIconKey, 'expectedIconKey');
+      if (pluginId.length > 1024 || !isPluginMarketCustomIconKey(expectedIconKey)) {
+        throwIpcError('INVALID_PARAMS', 'Invalid local Plugin icon request');
+      }
+      return { pluginId, expectedIconKey };
+    });
+    return invokePluginMarket(() => {
+      const request = localIconRequestGate.tryRun(() => service().localIcons(requests));
+      if (!request) {
+        throwIpcError('PRECONDITION_FAILED', 'Too many local Plugin icon requests');
+      }
+      return request;
+    });
   });
   ipcMain.handle(
     'plugin-market:install',
@@ -77,40 +192,65 @@ export function registerPluginMarketIpc(): void {
         typeof options === 'object' && options !== null
           ? (options as {
               expectedReleaseId?: unknown;
+              expectedInstalledApproval?: unknown;
               expectedManifest?: unknown;
-              allowPermissionExpansion?: unknown;
-              reviewedBaseline?: unknown;
-              approvedPackageSha256?: unknown;
+              allowSourceReplacement?: unknown;
             })
           : null;
       const expectedReleaseId = requireString(obj?.expectedReleaseId, 'expectedReleaseId');
+      const expectedInstalledApproval = obj?.expectedInstalledApproval;
       const expectedManifest =
-        obj?.expectedManifest === undefined || obj?.expectedManifest === null
+        obj?.expectedManifest === undefined
           ? undefined
-          : requireObject(obj.expectedManifest);
-      const allowPermissionExpansion = obj?.allowPermissionExpansion === true;
-      // 扩权批准的审阅基线:只收字符串,野值按缺席处理(缺席 = 保持旧行为)。
-      const reviewedBaseline =
-        typeof obj?.reviewedBaseline === 'string' ? obj.reviewedBaseline : undefined;
-      const approvedPackageSha256 =
-        typeof obj?.approvedPackageSha256 === 'string'
-          ? obj.approvedPackageSha256
-          : undefined;
+          : (requireObject(obj.expectedManifest) as unknown as GhostManifest);
       if (
-        approvedPackageSha256 !== undefined &&
-        !/^[a-f0-9]{64}$/.test(approvedPackageSha256)
+        expectedInstalledApproval !== undefined &&
+        !isGhostInstallApprovalToken(expectedInstalledApproval)
       ) {
-        throwIpcError('INVALID_PARAMS', 'approvedPackageSha256 is invalid');
+        throwIpcError(
+          'INVALID_PARAMS',
+          'expectedInstalledApproval must come from ghosts:list',
+        );
       }
-      return invokePluginMarket(() =>
-        service().install(requireString(pluginId, 'pluginId'), {
-          expectedReleaseId,
-          ...(expectedManifest ? { expectedManifest: expectedManifest as unknown as GhostManifest } : {}),
-          allowPermissionExpansion,
-          ...(reviewedBaseline !== undefined ? { reviewedBaseline } : {}),
-          ...(approvedPackageSha256 !== undefined ? { approvedPackageSha256 } : {}),
-        }),
+      const allowSourceReplacement = obj?.allowSourceReplacement;
+      if (typeof allowSourceReplacement !== 'boolean') {
+        throwIpcError('INVALID_PARAMS', 'allowSourceReplacement must be a boolean');
+      }
+      const owner = getActiveAppSession();
+      const previouslyInstalled = new Set(
+        getGhostManager()
+          .list()
+          .map((g) => installedGhostStoragePart(g)),
       );
+      return invokePluginMarket(async () => {
+        const result = await service().install(
+          requireString(pluginId, 'pluginId'),
+          {
+            expectedReleaseId,
+            ...(expectedInstalledApproval !== undefined ? { expectedInstalledApproval } : {}),
+            ...(expectedManifest !== undefined ? { expectedManifest } : {}),
+            allowSourceReplacement,
+          },
+          // 首装与扩权更新的确认框投给发起安装的这个窗口。
+          {
+            consent: {
+              prompt: createWindowGhostInstallConsentPrompt(event.sender),
+              initiator: 'user',
+            },
+          },
+        );
+        if (
+          getActiveAppSession().generation === owner.generation &&
+          !previouslyInstalled.has(installedGhostStoragePart(result.ghost))
+        ) {
+          try {
+            markGhostRecommendationInstalled(installedGhostStoragePart(result.ghost));
+          } catch {
+            log.warn('ghost recommendation install history unavailable');
+          }
+        }
+        return result;
+      });
     },
   );
   ipcMain.handle('plugin-market:uninstall', (event, pluginId: unknown) => {

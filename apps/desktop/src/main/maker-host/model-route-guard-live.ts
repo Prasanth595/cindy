@@ -6,14 +6,14 @@
  *   - scheduler runner 经 deps 注入(测试最小 harness 不接线 = 不裁决);
  *   - help / sessionTaskSummary 的 agent one-shot 兜底用 isAgentOneShotRouteDisabled。
  * 目录读取失败降级为 override-only 保守裁决(见 overrideOnlyVerdict)——不把目录
- * 故障升级成全体用户的功能不可用,也不给配置过停用的用户开绕过口。纯读
- * (allowSideEffects 缺省 false),自愈另有主进程业务入口负责。
+ * 故障升级成全体用户的功能不可用,也不给配置过停用的用户开绕过口。普通裁决纯读
+ * (allowSideEffects 缺省 false)；scheduler 默认来源解析是可信主进程业务入口，
+ * 会显式允许认领已有原生订阅凭证。
  */
 
 import {
   getModel,
-  connectedProvidersForAgent,
-  isModelSelectableForNewRoute,
+  effectiveSourceIdForModel,
   isModelDisabled,
   isProviderDisabled,
   modelSupportsFastMode,
@@ -24,16 +24,25 @@ import {
   type ProviderView,
 } from '@cindy/model-providers';
 
+import { resolveNewTaskDefaultRoute } from '../../shared/draftModelCalibration.js';
+import { activeOwnerScopeKey } from '../appSessionState.js';
+import { resolveScheduledModelSelection, type ScheduledModelSelection } from '../maker-ipc/scheduledModelSelection';
 import { getDesktopProviderService } from './createDesktopProviderService.js';
-import { getActiveCatalog } from './active-catalog.js';
+import {
+  getActiveCatalog,
+  isXdGatewayPaymentRequiredRoute,
+} from './active-catalog.js';
 import { readModelDisableOverrides } from './model-disable-store.js';
+import { getNewTaskDraftSelection } from './newMakerDefaultsCache.js';
 import {
   isRegistryTombstoneForConsumer,
   MODEL_PLANE_POLICIES,
 } from './model-plane/modelPlanePolicy.js';
 import {
   checkModelRoute,
+  materializeExclusiveProviderRoute,
   resolveLenientRoute,
+  shouldApplyExclusiveProviderReroute,
   type ModelRouteGuardOptions,
   type ModelRouteVerdict,
 } from './model-route-guard.js';
@@ -53,6 +62,9 @@ function tombstoneGuardOptions(
   catalog: ReturnType<typeof getActiveCatalog>,
 ): ModelRouteGuardOptions {
   return {
+    isPaymentRequiredTombstone: (providerId, modelId, agent) =>
+      (providerId === null || providerId === 'xd') &&
+      isXdGatewayPaymentRequiredRoute(modelId, agent),
     isRetiredTombstone: (providerId, modelId, agent) => {
       const providerIds = providerId ? [providerId] : MODEL_PLANE_POLICIES.keys();
       return [...providerIds].some((id) =>
@@ -63,26 +75,74 @@ function tombstoneGuardOptions(
 }
 
 /**
- * 无模型的 headless 调度不能给 Pi 硬塞 Claude 型号：Pi 的可用面由实时连接来源
- * 决定。按模型选择器同一 rail（已连接、runtime 可用、未停用）取首个可聊天模型，
- * 并把 providerId 与 model 成对返回，避免 BYOM 同名模型落到 Cindy 默认路由。
+ * Headless defaults are trusted main-process operations, not untrusted status projections.
+ * Allow the provider service to claim an existing native subscription before materializing
+ * the route; otherwise legacy/local owners can look disconnected until another UI read heals it.
+ */
+function listTrustedDefaultRouteProviders(): Promise<ProviderView[]> {
+  return getDesktopProviderService().listProviders({
+    allowSideEffects: true,
+    waitForDiscovery: true,
+    getCatalog: getActiveCatalog,
+  });
+}
+
+/**
+ * Headless 调度的实时来源快照：
+ * - 给定 modelId 时按模型选择器同一 rail 物化实际 provider；
+ * - 未给 modelId 时按新建任务口径(resolveNewTaskDefaultRoute)挑默认模型，并把
+ *   providerId/model 成对返回；一个可用来源都没有 → null。
+ * 这样 spawn 凭证、proxy endpoint 与会话持久化不会各自重新猜一次默认来源。
  */
 export async function resolveDefaultScheduleRoute(
   agent: AgentKind,
   preferredProviderId?: string | null,
-): Promise<{ model: string; providerId: string } | null> {
-  const views = await listRouteGuardProviders();
-  const connected = connectedProvidersForAgent(views, agent);
-  const candidates = preferredProviderId
-    ? connected.filter((provider) => provider.id === preferredProviderId)
-    : connected;
-  for (const provider of candidates) {
-    for (const model of provider.models[agent] ?? []) {
-      if (!isModelSelectableForNewRoute(model, { userProvider: provider.source === 'user' })) continue;
-      return { model: model.id, providerId: provider.id };
+  modelId?: string,
+): Promise<{ model: string; providerId: string | null; catalogKnown?: boolean } | null> {
+  const views = await listTrustedDefaultRouteProviders();
+  const preferredModelId = modelId?.trim();
+  if (preferredModelId) {
+    const providerId = effectiveSourceIdForModel(
+      views,
+      preferredProviderId,
+      preferredModelId,
+      agent,
+    );
+    if (providerId) return { model: preferredModelId, providerId };
+
+    // A schedule may intentionally name a model newer than the current catalog. Keep
+    // the legacy null-provider/native-default path for that case; a catalog-known
+    // model with no connected source must still fail closed in the scheduler.
+    const catalogKnown = views.some((provider) =>
+      (provider.models[agent] ?? []).some((model) => model.id === preferredModelId),
+    );
+    if (!catalogKnown && agent === 'claude-code') {
+      return { model: preferredModelId, providerId: null, catalogKnown: false };
     }
+    return null;
   }
-  return null;
+  return resolveNewTaskDefaultRoute({
+    providers: views,
+    agent,
+    draft: getNewTaskDraftSelection(activeOwnerScopeKey(), agent),
+    requiredProviderId: preferredProviderId,
+  });
+}
+
+/**
+ * 没指定模型的无人值守入口(/learn、IM 新建任务等)按新建任务口径解析 (模型, 来源);
+ * 一个可用来源都没有 → null,调用方明确失败。
+ */
+export async function resolveNewTaskDefaultModelRoute(
+  agent: AgentKind,
+  requiredProviderId?: string | null,
+): Promise<{ model: string; providerId: string } | null> {
+  return resolveNewTaskDefaultRoute({
+    providers: await listTrustedDefaultRouteProviders(),
+    agent,
+    draft: getNewTaskDraftSelection(activeOwnerScopeKey(), agent),
+    requiredProviderId,
+  });
 }
 
 /** 该 agent 的静态原生默认来源偏好(nativeDefaultSourceId 的无 rail 近似)。 */
@@ -148,6 +208,28 @@ export async function verdictForModelRoute(
   return checkModelRoute(views, agent, model, providerId, guardOptions);
 }
 
+/** Resume 旧会话:只钉死独占来源,不把停用轴 reject 套到已在跑的会话上。 */
+export async function pinExclusiveSessionProvider(
+  agent: AgentKind,
+  model: string,
+  providerId: string | null,
+): Promise<string | undefined> {
+  let views: ProviderView[];
+  try {
+    views = await listRouteGuardProviders();
+  } catch {
+    return undefined;
+  }
+  const exclusive = materializeExclusiveProviderRoute(views, agent, model, providerId);
+  return exclusive.kind === 'pin' ? exclusive.providerId : undefined;
+}
+
+export function shouldApplyExclusiveProviderRerouteLive(
+  providerId: string | null | undefined,
+): boolean {
+  return shouldApplyExclusiveProviderReroute(providerId, getActiveCatalog().providers);
+}
+
 /**
  * resolveLenientRoute 的桌面接线壳(语义见 model-route-guard.ts 头注):IM control:new /
  * learn 蒸馏等自动化直建会话入口用。目录读取失败按「原样放行」处理。
@@ -174,6 +256,13 @@ export async function resolveLenientSessionRoute(
     // 目录故障降级:override-only 保守裁决(同 overrideOnlyVerdict 语义)。命中即
     // 逐级丢弃;目录不可得时没有 pick 兜底可用,model 置空由调用方失败收口。
     if (!model) return { model, providerId, degraded: false };
+    const exclusive = materializeExclusiveProviderRoute([], agent, model, providerId);
+    if (exclusive.kind === 'reject') {
+      return { model: undefined, providerId: null, degraded: true };
+    }
+    if (exclusive.kind === 'pin') {
+      return { model, providerId: exclusive.providerId, degraded: false };
+    }
     if (checkModelRoute([], agent, model, providerId, guardOptions).kind === 'reject') {
       return { model: undefined, providerId: null, degraded: true };
     }
@@ -206,6 +295,16 @@ export async function resolveLenientSessionRoute(
     }
   }
   return route;
+}
+
+/** Resolve one provider-specific snapshot after route admission for fresh and bound sends. */
+export async function resolveScheduledModelSelectionLive(
+  selection: ScheduledModelSelection,
+): Promise<ScheduledModelSelection> {
+  const providers = await getDesktopProviderService().listProviders({
+    allowSideEffects: false, catalog: getActiveCatalog(),
+  });
+  return resolveScheduledModelSelection(selection, providers);
 }
 
 /**

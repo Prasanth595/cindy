@@ -78,11 +78,7 @@ export function buildMobileModelSections(args: {
 }): MobileModelSections {
   const connected = connectedProvidersForAgent([...args.providers], args.agentKind);
 
-  // 生效来源必须按当前模型收窄(与桌面 0f75dd560 修复同口径):显式选中的来源要
-  // 「已连接且**确实提供当前模型**」才用它;否则在提供该模型的已连接来源里取原生默认;
-  // 一个都没有 → null(绝不拼出「来源 A 图标 + 只有来源 B 提供的模型」的不存在路由,
-  // 也不再让断开/不提供该模型的显式来源粘在药丸上)。未传 selectedModelId(无从收窄)
-  // 时保持旧口径:显式已连接来源 → agent 原生默认。
+  // 显式连接失效或不提供当前模型时返回 null；只有未指定连接才解析默认来源。
   // 口径 = **实际路由**(actualSourceIdForModel,不剔除停用拷贝,桌面同款):本函数
   // 服务的是已建会话的选择器,运行中会话继续走它真正在用的来源,高亮/药丸必须跟
   // 真实扣费路由,不能显示成准入过滤后的替代来源(PR #744 review 第十轮)。
@@ -96,8 +92,8 @@ export function buildMobileModelSections(args: {
         args.selectedModelId,
         args.agentKind,
       )
-    : args.selectedProviderId && connected.some((p) => p.id === args.selectedProviderId)
-      ? args.selectedProviderId
+    : args.selectedProviderId
+      ? connected.some((p) => p.id === args.selectedProviderId) ? args.selectedProviderId : null
       : nativeDefaultSourceId(connected, args.agentKind);
 
   // 当前来源被供应商级停用(仍连接着,但 connected 剔除了它)时补进分段输入,
@@ -179,7 +175,10 @@ export function isSelectedSourceDisconnected(args: {
  * 口径同 maker-shared `reconcileRuntimeDraftWithCapabilities`。仅供 flat 回退路径
  * (旧被控端无供应商结构、无记忆可用)消费;分段路径走 resolveRowSelection。
  */
-export function reconcileEffortForModel(model: SectionModel, currentEffort: string): string {
+export function reconcileEffortForModel(
+  model: { efforts: readonly string[]; defaultEffort: string | null },
+  currentEffort: string,
+): string {
   const efforts = model.efforts as readonly string[];
   if (efforts.length === 0) return '';
   if (efforts.includes(currentEffort)) return currentEffort;
@@ -248,4 +247,21 @@ export function resolveRowSelection(args: {
     : false;
 
   return { model: row.model.id, providerId: row.provider.id, effort, fastMode };
+}
+
+/**
+ * 记忆的 fastMode 恢复前重验(codex review P2):恢复值必须与手动选行同款
+ * `fastEditable` 门控对齐——行必须仍在目录中,且 agent 有 Fast 能力、该 (供应商,
+ * 模型) 支持 Fast;任一不满足即不可恢复(置 false),避免恢复出「UI 显示关、
+ * 实际创建发 true」的矛盾态。
+ */
+export function isFastRestorable(
+  agentKind: AgentKind,
+  providerId: string,
+  modelId: string,
+  modelRows: readonly ProviderModelRow[],
+  hasFastModeCap: boolean,
+): boolean {
+  const row = modelRows.find((r) => r.provider.id === providerId && r.model.id === modelId);
+  return !!row && hasFastModeCap && modelSupportsFastMode(row.provider, row.model.id, agentKind);
 }

@@ -39,13 +39,62 @@ function toolUse(id: string, toolName: string, input: unknown, seconds: number):
 }
 
 describe('messageRenderModel', () => {
+  it('keeps completed work folded when the next remote run starts before its user row arrives', () => {
+    const messages = [
+      message({ id: 'u1', role: 'user', content: 'start', createdAt: at(1) }),
+      toolUse('read1', 'Read', { file_path: '/repo/a.ts' }, 2),
+      message({ id: 'progress1', role: 'assistant', content: 'Checking the result.', createdAt: at(3) }),
+      toolUse('read2', 'Read', { file_path: '/repo/b.ts' }, 4),
+      message({ id: 'final1', role: 'assistant', content: 'Done.', agentMeta: { turnCompleted: true }, createdAt: at(5) }),
+      message({ id: 'pwd', role: 'system', content: '', systemCardType: 'pwd', createdAt: at(6) }),
+    ];
+    const before = buildMobileMessageRenderItems(messages, { isSessionStreaming: false });
+    expect(before.map((item) => item.key)).toEqual([
+      'message-u1', 'work-summary-read1', 'message-final1', 'message-pwd',
+    ]);
+    const waitingForEcho = buildMobileMessageRenderItems(messages, { isSessionStreaming: true });
+    expect(waitingForEcho).toEqual(before);
+    const afterEcho = buildMobileMessageRenderItems([
+      ...messages,
+      message({ id: 'u2', role: 'user', content: 'Continue', createdAt: at(7) }),
+    ], { isSessionStreaming: true });
+    expect(afterEcho.slice(0, before.length)).toEqual(before);
+  });
+
+  it('does not mistake a pause between progress messages for a completed turn', () => {
+    const messages = [
+      message({ id: 'u1', role: 'user', content: 'start', createdAt: at(1) }),
+      toolUse('read1', 'Read', { file_path: '/repo/a.ts' }, 2),
+      message({ id: 'progress1', role: 'assistant', content: 'Checking more.', createdAt: at(3) }),
+      toolUse('read2', 'Read', { file_path: '/repo/b.ts' }, 4),
+      message({ id: 'progress2', role: 'assistant', content: 'Still checking.', createdAt: at(5) }),
+    ];
+    expect(buildMobileMessageRenderItems(messages, { isSessionStreaming: true }).map((item) => item.key))
+      .toEqual(['message-u1', 'work-read1', 'message-progress1', 'work-read2', 'message-progress2']);
+  });
+
+  it('keeps a background subagent running after the parent reply is sealed', () => {
+    const items = buildMobileMessageRenderItems([
+      message({ id: 'u1', role: 'user', content: 'start', createdAt: at(1) }),
+      toolUse('agent1', 'Agent', { description: 'Background work' }, 2),
+      message({ id: 'final', role: 'assistant', content: 'Main work done.', agentMeta: { turnCompleted: true }, createdAt: at(3) }),
+      message({ id: 'child', role: 'assistant', content: 'Still working.', agentMeta: { parentUuid: 'agent1', isStreaming: true }, createdAt: at(4) }),
+    ], { isSessionStreaming: true });
+    const subagent = items.find((item) => item.type === 'subagent_group');
+    expect(subagent?.status).toBe('running');
+    expect(subagent?.childItems.some((item) => item.type === 'message' && item.message.isStreaming)).toBe(true);
+  });
+
   it('appends live auto-resume state while folding an earlier retry from the same interruption', () => {
     const priorRetry = message({ id: 'retry-1', role: 'user', content: '', agentMeta: { autoResume: true } });
     const items = buildMobileMessageRenderItems([message({ id: 'a', role: 'assistant', content: 'partial', agentMeta: { isStreaming: true } }), priorRetry], {
       isSessionStreaming: true,
       autoResumePending: { error: 'socket hang up', attempt: 2, maxAttempts: 5, sessionTotal: 3 },
     });
-    expect(expectType(items[0], 'message').message.isTurnFinalAssistant).toBe(true);
+    const interrupted = expectType(items[0], 'work_group');
+    expect(interrupted.isStreaming).toBe(false);
+    expect(interrupted.children).toHaveLength(1);
+    expect(interrupted.children[0]).toMatchObject({ type: 'message', message: { body: 'partial' } });
     expect(expectType(items[1], 'message').message).toMatchObject({
       systemCardType: 'auto-resume',
       systemCardData: { error: 'socket hang up', attempt: 2, maxAttempts: 5, sessionTotal: 3, live: true },
@@ -227,7 +276,7 @@ describe('messageRenderModel', () => {
     expect(todo.todos).toEqual([{ content: 'Implement', status: 'completed', activeForm: undefined }]);
   });
 
-  it('counts restored thinking duration in completed work groups', () => {
+  it('anchors completed work duration to the user message like desktop', () => {
     const items = buildMobileMessageRenderItems([
       message({ id: 'user', role: 'user', content: 'start', createdAt: at(1) }),
       message({
@@ -241,7 +290,7 @@ describe('messageRenderModel', () => {
 
     expect(items.map((item) => item.type)).toEqual(['message', 'work_group', 'message']);
     const group = expectType(items[1], 'work_group');
-    expect(group.durationMs).toBe(23_000);
+    expect(group.durationMs).toBe(24_000);
   });
 
   it('keeps unfinished trailing work visible when no final assistant answer exists yet', () => {
@@ -488,14 +537,14 @@ describe('messageRenderModel', () => {
       expect(turnFinalKeys(items)).toEqual(['a1-final', 'a2-final']);
     });
 
-    it('marks every sealed SDK turn when a background task auto-continues the user request', () => {
-      const items = buildMobileMessageRenderItems([
+    function backgroundContinuation(mainSummary: string) {
+      return buildMobileMessageRenderItems([
         message({ id: 'u1', role: 'user', content: { text: 'q' }, createdAt: at(1) }),
         toolUse('main-work', 'Read', { file_path: '/repo/a.ts' }, 2),
         message({
           id: 'main-summary',
           role: 'assistant',
-          content: '正式总结',
+          content: mainSummary,
           agentMeta: { turnCompleted: true },
           createdAt: at(3),
         }),
@@ -508,6 +557,30 @@ describe('messageRenderModel', () => {
           createdAt: at(5),
         }),
       ]);
+    }
+
+    it('folds an earlier short sealed reply when a background task auto-continues the user request', () => {
+      const items = backgroundContinuation('还有一个后台任务在跑。');
+
+      // 折进「已工作」后仍是一次 SDK turn 的收尾正文,展开可见其操作行。
+      expect(turnFinalKeys(items)).toEqual(['main-summary', 'gate-followup']);
+      expect(items.map((item) => item.type)).toEqual(['message', 'work_group', 'message']);
+    });
+
+    it('keeps an earlier sealed reply with a markdown image visible across a background auto-continuation', () => {
+      const items = backgroundContinuation('图表如下 ![chart](https://example.com/chart.png)');
+
+      expect(items.map((item) => item.type)).toEqual([
+        'message',
+        'work_group',
+        'message',
+        'work_group',
+        'message',
+      ]);
+    });
+
+    it('keeps an earlier sealed delivery-prose summary visible across a background auto-continuation', () => {
+      const items = backgroundContinuation('## 正式总结\n\n- 第一条\n- 第二条\n- 第三条');
 
       expect(turnFinalKeys(items)).toEqual(['main-summary', 'gate-followup']);
       expect(items.map((item) => item.type)).toEqual([

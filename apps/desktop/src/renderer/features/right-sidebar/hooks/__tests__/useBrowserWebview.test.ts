@@ -181,7 +181,7 @@ describe('useBrowserWebview', () => {
     expect(result!.webview).toBe(mockWebview);
   });
 
-  it('touches an existing entry through acquire when it becomes visible', async () => {
+  it('keeps an existing wrapper stable when a visible tab becomes hidden', async () => {
     const { browserWebviewPool } = await import('../../lib/browserWebviewPool');
     const existing: MockPoolEntry = {
       wrapper: document.createElement('div'),
@@ -191,12 +191,20 @@ describe('useBrowserWebview', () => {
     poolMocks.currentEntry = existing;
     let result: UseBrowserWebviewResult | null = null;
 
-    render(createElement(HookProbe, {
+    const view = render(createElement(HookProbe, {
       visible: true,
       onResult: (next) => { result = next; },
     }));
 
     expect(browserWebviewPool.acquire).toHaveBeenCalledOnce();
+    expect(result!.wrapper).toBe(existing.wrapper);
+    expect(result!.webview).toBe(mockWebview);
+
+    view.rerender(createElement(HookProbe, {
+      visible: false,
+      onResult: (next) => { result = next; },
+    }));
+
     expect(result!.wrapper).toBe(existing.wrapper);
     expect(result!.webview).toBe(mockWebview);
   });
@@ -214,7 +222,7 @@ describe('useBrowserWebview', () => {
     });
 
     expect(browserWebviewPool.acquire).toHaveBeenCalledOnce();
-    expect(result!.wrapper).toBeNull();
+    expect(result!.wrapper).not.toBeNull();
     expect(result!.webview).toBe(mockWebview);
     expect(mockWebview.addEventListener).toHaveBeenCalledWith(
       'render-process-gone',
@@ -377,6 +385,57 @@ describe('useBrowserWebview', () => {
       mockWebview.dispatch('page-favicon-updated', { favicons: [] });
     });
     expect(result!.favicon).toBe('');
+  });
+
+  it('skips non-persistable favicon candidates and keeps a safe fallback', () => {
+    let result: UseBrowserWebviewResult | null = null;
+    render(createElement(HookProbe, {
+      visible: true,
+      onResult: (next) => { result = next; },
+    }));
+
+    act(() => {
+      mockWebview.dispatch('page-favicon-updated', {
+        favicons: [
+          `data:image/png;base64,${'x'.repeat(20 * 1024)}`,
+          'blob:https://example.com/favicon',
+          `https://example.com/${'x'.repeat(20 * 1024)}`,
+          'https://example.com/favicon.ico',
+        ],
+      });
+    });
+    expect(result!.favicon).toBe('https://example.com/favicon.ico');
+  });
+
+  it('persists small data: favicons and returns null when every candidate is non-persistable', () => {
+    let result: UseBrowserWebviewResult | null = null;
+    render(createElement(HookProbe, {
+      visible: true,
+      onResult: (next) => { result = next; },
+    }));
+
+    act(() => {
+      mockWebview.dispatch('page-favicon-updated', {
+        favicons: ['data:image/png;base64,eA=='],
+      });
+    });
+    // 小 data: 是自包含、可跨重启的,应当被持久化(SPA dev-server 场景)。
+    expect(result!.favicon).toBe('data:image/png;base64,eA==');
+
+    act(() => {
+      mockWebview.dispatch('page-favicon-updated', {
+        favicons: ['blob:https://example.com/favicon'],
+      });
+    });
+    // 全部候选不可持久化 → null(保留已有持久化图标,不覆盖)。
+    expect(result!.favicon).toBeNull();
+
+    act(() => {
+      mockWebview.dispatch('page-favicon-updated', {
+        favicons: ['file:///etc/passwd', 'javascript:alert(1)'],
+      });
+    });
+    expect(result!.favicon).toBeNull();
   });
 
   it('does not treat a suppressed stale navigation report as a missing favicon', () => {

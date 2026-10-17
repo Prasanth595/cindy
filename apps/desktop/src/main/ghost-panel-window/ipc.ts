@@ -15,7 +15,12 @@ import { MAKER_INVOKE } from '../maker-ipc/channels.js';
 import { createLogger } from '../logger.js';
 import { assertTrustedAppRendererEvent, isTrustedAppRendererEvent } from '../security/trustedAppRenderer.js';
 import { throwIpcError } from '../utils/ipcValidate.js';
-import { isValidGhostId } from '../../shared/ghost.js';
+import { isValidPluginStoragePart } from '../../shared/pluginIdentity.js';
+import {
+  GHOST_PANEL_WINDOW_PRESENTATION_READY_CHANNEL,
+  GHOST_PANEL_WINDOW_RENDERER_READY_CHANNEL,
+  GHOST_PANEL_WINDOW_CLOSE_REQUEST_RESOLVED_CHANNEL,
+} from '../../shared/ghostPanelWindow.js';
 import type { GhostPanelWindowsController } from './controller.js';
 
 const log = createLogger('ghost-panel-window-ipc');
@@ -31,7 +36,7 @@ export function registerGhostPanelWindowIpc(controller: GhostPanelWindowsControl
 
   ipcMain.handle(MAKER_INVOKE.GHOST_PANEL_WINDOW_OPEN, (event, ghostId: unknown) => {
     assertTrustedAppRendererEvent(event);
-    if (!isValidGhostId(ghostId)) {
+    if (!isValidPluginStoragePart(ghostId)) {
       throwIpcError('INVALID_PARAMS', 'ghostId must be a valid ghost id');
     }
     controller.open(ghostId);
@@ -41,7 +46,7 @@ export function registerGhostPanelWindowIpc(controller: GhostPanelWindowsControl
     MAKER_INVOKE.GHOST_PANEL_WINDOW_SET_DETACHED,
     (event, ghostId: unknown, detached: unknown) => {
       assertTrustedAppRendererEvent(event);
-      if (!isValidGhostId(ghostId)) {
+      if (!isValidPluginStoragePart(ghostId)) {
         throwIpcError('INVALID_PARAMS', 'ghostId must be a valid ghost id');
       }
       if (typeof detached !== 'boolean') {
@@ -59,5 +64,25 @@ export function registerGhostPanelWindowIpc(controller: GhostPanelWindowsControl
       return;
     }
     event.returnValue = controller.getState();
+  });
+
+  // ── 双阶段就绪握手(对齐 §3.1 基线) ────────────────────────────────
+
+  ipcMain.handle(GHOST_PANEL_WINDOW_RENDERER_READY_CHANNEL, (event) => {
+    assertTrustedAppRendererEvent(event);
+    controller.markRendererReady(event.sender);
+  });
+
+  ipcMain.handle(GHOST_PANEL_WINDOW_PRESENTATION_READY_CHANNEL, (event) => {
+    assertTrustedAppRendererEvent(event);
+    controller.markPresentationReady(event.sender);
+  });
+
+  ipcMain.handle(GHOST_PANEL_WINDOW_CLOSE_REQUEST_RESOLVED_CHANNEL, (event, approved: unknown) => {
+    assertTrustedAppRendererEvent(event);
+    if (typeof approved !== 'boolean') {
+      throwIpcError('INVALID_PARAMS', 'approved required (boolean)');
+    }
+    controller.resolveCloseRequest(event.sender, approved);
   });
 }

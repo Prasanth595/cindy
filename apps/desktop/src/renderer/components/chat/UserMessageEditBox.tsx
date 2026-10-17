@@ -1,3 +1,4 @@
+import { Button } from '@/components/ui/button';
 /**
  * UserMessageEditBox
  * ---------------------------------------------------------------------------
@@ -16,11 +17,9 @@
  * isTurnRunning 与 renderer 状态的毫秒级尾差由
  * commitEditAndResendWithRunningRetry 的有限重试消化。
  *
- * 文件回滚提示:mount 时静默跑一次 rewindPreview(dryRun),上一轮有文件改动
- * 时在按钮左侧给一行小字("发送将撤销上一轮 N 个文件的改动"),不弹完整
- * Dialog —— 这是相对 Codex(完全不提示文件不会回滚)的体验差异化。preview
- * 失败(老消息无 checkpoint 等)只是不显示提示,不阻塞发送(commit 链路自带
- * forkSession 兜底,与 RewindPreviewDialog 的 Empty 态同语义)。
+ * 文件回滚提示:mount 时静默跑一次 rewindPreview(dryRun)。上一轮有文件改动
+ * 时在按钮左侧给一行小字;conversation-only 时明确告诉用户文件不会恢复,
+ * 避免静默叠加旧改动。preview 失败不阻塞发送。
  *
  * 键盘:Enter 发送(与主 composer 一致)、Shift+Enter 换行、Esc 取消。
  * 附件:v1 不支持编辑态增删,原消息附件由编排层原样重建重发(chips 在
@@ -30,12 +29,21 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import {
+  findSlashCommandToken,
+  leadingSlashCommandRange,
+  restoreSlashCommandRuntimeAlias,
+  slashCommandRangeCoversToken,
+} from '@cindy/maker-shared/composer-palette';
 import { cn } from '@/lib/utils';
-import { Spinner } from '@/components/ui/spinner';
 import { ListComposerTextarea } from '@/components/new-chat/ListComposerTextarea';
 import { toast } from '@/lib/toast';
 import { ApiError } from '@/lib/httpClient';
 import { rewindPreview } from '@/lib/sessionService';
+import {
+  readSendFollowCancelGeneration,
+  tryRequestFollowLatest,
+} from '@/components/chat/autoFollowIntent';
 import { commitEditAndResendWithRunningRetry } from '@/lib/editLastUserMessage';
 import type { RewindDraftImage } from '@/lib/rewindDraftAttachments';
 import type { FileRef, PastedTextRange, SlashCommandRange } from '@/lib/imageRef';
@@ -121,8 +129,10 @@ export function UserMessageEditBox({
   // 运行中发送的挂起标记:等 sessionRunning 翻 false 后由 effect 接力提交。
   const pendingSendRef = useRef(false);
   const waitTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // null = preview 未返回/失败(不显示提示);number = 上一轮改动的文件数。
-  const [rollbackFileCount, setRollbackFileCount] = useState<number | null>(null);
+  // null = preview 未返回/失败(不显示提示)。
+  const [rollbackHint, setRollbackHint] = useState<
+    { kind: 'files'; count: number } | { kind: 'conversation-only' } | null
+  >(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   // 静默 preview 文件回滚影响。失败/软拒绝都归 null(不提示、不阻塞)。
@@ -137,7 +147,9 @@ export function UserMessageEditBox({
         if (cancelled) return;
         const fileCount = result.filesChanged?.length ?? 0;
         if (result.canRewind && fileCount > 0) {
-          setRollbackFileCount(fileCount);
+          setRollbackHint({ kind: 'files', count: fileCount });
+        } else if (result.canRewind && result.conversationOnly) {
+          setRollbackHint({ kind: 'conversation-only' });
         }
       })
       .catch(() => {
@@ -172,7 +184,14 @@ export function UserMessageEditBox({
   const doCommit = useCallback(async () => {
     try {
       const visibleTextUnchanged = text === initialText;
-      const submitText = visibleTextUnchanged ? (initialSubmitText ?? text) : text;
+      const originalWireText = initialSubmitText ?? initialText;
+      const originalHadConfirmedRange = slashCommandRangeCoversToken(
+        slashCommandRanges,
+        findSlashCommandToken(originalWireText),
+      );
+      const submitText = visibleTextUnchanged
+        ? originalWireText
+        : restoreSlashCommandRuntimeAlias(originalWireText, text, slashCommandRanges);
       const preserveQuoteMetadata = quotesEncoded && visibleTextUnchanged;
       const preservedAgentReferences =
         visibleTextUnchanged && agentReferences && agentReferences.length > 0
@@ -182,10 +201,22 @@ export function UserMessageEditBox({
         visibleTextUnchanged && pastedTextRanges && pastedTextRanges.length > 0
           ? [...pastedTextRanges]
           : undefined;
-      const preservedSlashCommandRanges =
-        visibleTextUnchanged && slashCommandRanges !== undefined
-          ? [...slashCommandRanges]
+      const rebuiltSlashRange = leadingSlashCommandRange(submitText);
+      const submitTokenIsRuntimeAlias = rebuiltSlashRange
+        ? submitText.slice(rebuiltSlashRange.start, rebuiltSlashRange.end).toLowerCase().startsWith('/skill:')
+        : false;
+      const preservedSlashCommandRanges = visibleTextUnchanged && slashCommandRanges !== undefined
+        ? [...slashCommandRanges]
+        : submitTokenIsRuntimeAlias && originalHadConfirmedRange && rebuiltSlashRange
+          ? [rebuiltSlashRange]
           : undefined;
+      const followStartGeneration = readSendFollowCancelGeneration(sessionId);
+      // 点发送就跟底。等受理会让阅读历史时的残留上翻把票作废。
+      tryRequestFollowLatest({
+        sourceSessionId: sessionId,
+        currentSessionId: sessionId,
+        startGeneration: followStartGeneration,
+      });
       if (onCommitOverride) {
         // 被拦消息:普通重发(不 rewind)。失败抛错落入下方 catch 保留编辑态。
         await onCommitOverride({
@@ -207,10 +238,9 @@ export function UserMessageEditBox({
           ...(preservedAgentReferences ? { agentReferences: preservedAgentReferences } : {}),
           ...(preservedPastedTextRanges ? { pastedTextRanges: preservedPastedTextRanges } : {}),
           ...(preservedSlashCommandRanges !== undefined ? { slashCommandRanges: preservedSlashCommandRanges } : {}),
+          ...(rollbackHint?.kind === 'conversation-only' ? { allowFileRestore: false } : {}),
         });
       }
-      // 先归零守卫再 onSent:onSent 让父组件立刻卸载本组件,晚于它的 setState
-      // 在已卸载组件上是无效 no-op(bot review 指出的死代码顺序问题)。
       submittingRef.current = false;
       setSubmitting(false);
       onSent();
@@ -233,7 +263,7 @@ export function UserMessageEditBox({
       submittingRef.current = false;
       setSubmitting(false);
     }
-  }, [sessionId, messageClientId, text, initialText, initialSubmitText, images, files, workingDir, quotesEncoded, agentReferences, pastedTextRanges, slashCommandRanges, onSent, onCommitOverride, t]);
+  }, [sessionId, messageClientId, text, initialText, initialSubmitText, images, files, workingDir, quotesEncoded, agentReferences, pastedTextRanges, slashCommandRanges, rollbackHint, onSent, onCommitOverride, t]);
 
   const handleSend = useCallback(() => {
     if (!canSend || submittingRef.current) return;
@@ -319,40 +349,39 @@ export function UserMessageEditBox({
         )}
       />
       <div className="mt-2 flex items-center justify-end gap-2">
-        {rollbackFileCount !== null && rollbackFileCount > 0 && (
-          <span className="min-w-0 flex-1 truncate text-left text-[11px] text-[var(--text-tertiary)]">
-            {t('chat.userMessage.editRollbackHint', { count: rollbackFileCount })}
+        {rollbackHint?.kind === 'files' && (
+          <span className="min-w-0 flex-1 truncate text-left text-11 text-[var(--text-tertiary)]">
+            {t('chat.userMessage.editRollbackHint', { count: rollbackHint.count })}
           </span>
         )}
-        <button
+        {rollbackHint?.kind === 'conversation-only' && (
+          <span className="min-w-0 flex-1 truncate text-left text-11 text-[var(--text-tertiary)]">
+            {t('chat.userMessage.editConversationOnlyHint')}
+          </span>
+        )}
+        <Button
+          variant="secondary"
+          size="sm"
+          compact
           type="button"
           onClick={onCancel}
           disabled={submitting}
-          className={cn(
-            'h-7 shrink-0 rounded-full px-3 text-[12px] font-medium',
-            'border border-[var(--msg-user-border)] bg-transparent',
-            'text-[var(--text-secondary)]',
-            'hover:bg-[var(--cmd-palette-item-hover)] transition-colors',
-            'disabled:opacity-40 disabled:pointer-events-none',
-          )}
+          className="shrink-0"
         >
           {t('chat.userMessage.editCancel')}
-        </button>
-        <button
+        </Button>
+        <Button
+          variant="cta"
+          size="sm"
+          compact
+          loading={submitting}
           type="button"
           onClick={handleSend}
           disabled={!canSend}
-          className={cn(
-            'inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full px-3',
-            'text-[12px] font-medium',
-            'bg-[var(--accent-cta-bg)] text-[var(--accent-pure-cta-fg)]',
-            'hover:opacity-90 transition-opacity',
-            'disabled:opacity-40 disabled:pointer-events-none',
-          )}
+          className="shrink-0"
         >
-          {submitting && <Spinner size={12} />}
           {t('chat.userMessage.editSend')}
-        </button>
+        </Button>
       </div>
     </div>
   );

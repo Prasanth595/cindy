@@ -15,6 +15,7 @@
  * inside the store.
  */
 
+import type { InputHandoffSnapshot } from '@cindy/device-link';
 import {
   useCallback,
   useEffect,
@@ -26,6 +27,7 @@ import {
 
 import {
   makerChatStore,
+  EMPTY_LIGHT_STATE,
   EMPTY_SESSION_STATE,
   EMPTY_TASK_UPDATES,
   type AgentStatus,
@@ -39,13 +41,16 @@ import {
   type PendingAskUser,
   type PendingPluginSetup,
   type PluginSetupCommandInFlight,
+  type PluginSetupCommandError,
   type PluginSetupInlineFormValues,
   type PluginSetupViewerState,
   type PendingIssueConfirm,
   type PendingRenameSessionsConfirm,
   type PendingGhostGrantConfirm,
+  type PendingRemoteDesktopConfirmation,
   type PendingPlanReview,
   type PlanViewerState,
+  type QueueItemContentUpdate,
   type QueuedMessage,
   type SessionChatLightState,
   type SessionChatState,
@@ -55,7 +60,9 @@ import type { AttachedFile, MentionedResource } from '@/lib/fileTypes';
 import type { PastedTextRange, SlashCommandRange } from '@/lib/imageRef';
 import type { AgentInputReference } from '@cindy/maker-shared/agent-input-projection';
 import { createLogger } from '@/lib/logger';
+import { isRemoteSessionSticky } from '@/lib/makerTransport';
 import type { UsageLimitRecoveryHint } from '@/lib/usageLimitRecovery';
+import type { ToolLoopErrorDetails } from '@cindy/maker-core';
 
 const log = createLogger('UseCCAgentChat');
 
@@ -110,8 +117,8 @@ interface UseCCAgentChatReturn {
   setQueueEditLock: (clientId: string, locked: boolean) => void;
   /** F-QUEUE-DEFER: 从队列中移除一条未派发消息(行尾 ✕)。已在派发的不可移除。 */
   removeFromQueue: (clientId: string) => void;
-  /** F-QUEUE-DEFER: 修改一条未派发消息的文本(行尾 ✏️)。空文本/找不到/未变化时 no-op。 */
-  updateQueueItem: (clientId: string, newText: string) => void;
+  /** F-QUEUE-DEFER: replace one queued message's complete composer content. */
+  updateQueueItemContent: (clientId: string, update: QueueItemContentUpdate) => Promise<boolean>;
   sendMessage: (
     text: string,
     model: string,
@@ -126,6 +133,9 @@ interface UseCCAgentChatReturn {
       agentReferences?: AgentInputReference[];
       pastedTextRanges?: PastedTextRange[];
       slashCommandRanges?: SlashCommandRange[];
+      beforeEnqueue?: () => Promise<boolean>;
+      onRemoteOptimisticFailure?: (clientId: string, error?: unknown) => void;
+      annotationBurnFailure?: 'abort';
     },
   ) => Promise<boolean>;
   compactSession: (
@@ -149,6 +159,9 @@ interface UseCCAgentChatReturn {
       agentReferences?: AgentInputReference[];
       pastedTextRanges?: PastedTextRange[];
       slashCommandRanges?: SlashCommandRange[];
+      beforeEnqueue?: () => Promise<boolean>;
+      onRemoteOptimisticFailure?: (clientId: string, error?: unknown) => void;
+      annotationBurnFailure?: 'abort';
     },
   ) => Promise<boolean>;
   steerQueuedMessage: (clientId: string) => Promise<boolean>;
@@ -158,6 +171,8 @@ interface UseCCAgentChatReturn {
   clearSession: () => void;
   /** Dismiss the error banner without retrying. */
   clearError: () => void;
+  /** 取消账号限额重置后的自动继续(错误与重试保留)。 */
+  cancelUsageLimitWait: () => void;
   /** Retry the main-owned typed recovery target. */
   retryLastError: () => Promise<void>;
   /** silent-stop 耗尽横幅「继续」:清横幅并发隐藏续跑指令(充值守卫额度)。 */
@@ -177,21 +192,29 @@ interface UseCCAgentChatReturn {
   /** 当前 terminal error 的稳定 reason key(如 'silent-stop-exhausted');ErrorBanner
    *  据此渲染专用 action。仅 error 非空时有意义。 */
   errorReason: string | null;
+  /** Structured details for a tool-loop terminal error, when available. */
+  toolLoop: ToolLoopErrorDetails | null;
   /** error 是非终止 recoverableError(turn 在跑,daemon 自动重试中):ErrorBanner
    *  网络分支据此显示「正在自动重试…」而非「可点击重试」。 */
   errorIsRecoverable: boolean;
   /** Explicit retry target for ErrorBanner; null means retry is unsafe or unavailable. */
   errorRetryText: string | null;
+  /** live 终态错误绑定的持久化 error 行 clientId;无则没有 persist 续跑依据。 */
+  errorPersistId: string | null;
+  /** 本视图已处置的 persistId;尾部横幅跳过,避免同一错误再弹。 */
+  disposedErrorPersistId: string | null;
   /** 凭证切换等待态(main 透传):挡路会话结束后自动重发,渲染等待横幅。 */
   credentialSwitchWait: { clientId?: string; blockedBySessionIds: string[] } | null;
+  /** 账号限额等待:错误横幅附「将于 X 自动继续 · 取消」。 */
+  usageLimitWait: { resumeAt: number } | null;
   /** 已离队、正在 coordinator dispatch/turn 边界内的 Continue clientId。 */
   continuationInFlightClientId: string | null;
   /** 当前 vendor turn 的续跑发起项 clientId，steer 后及 Renderer 重载仍保持。 */
   continuationTurnClientId: string | null;
   /** 续跑边界投影能力；legacy 时保留旧被控端的兼容兜底。 */
   continuationInFlightProjectionCapability: ContinuationInFlightProjectionCapability;
-  /** F-SYNC-2: Load older messages (prepend to top) */
-  loadOlderMessages: () => void;
+  /** F-SYNC-2: Load older messages; automatic=true remembers a successful auto-fill. */
+  loadOlderMessages: (automatic?: boolean) => Promise<boolean>;
   isLoadingMore: boolean;
   hasMoreMessages: boolean;
   historyWindowHasIsland: boolean;
@@ -205,6 +228,7 @@ interface UseCCAgentChatReturn {
   pendingPluginSetup: PendingPluginSetup | null;
   pluginSetupViewerState: PluginSetupViewerState;
   pluginSetupCommandInFlight: PluginSetupCommandInFlight | null;
+  pluginSetupCommandError: PluginSetupCommandError | null;
   setPluginSetupViewerState: (next: PluginSetupViewerState) => void;
   respondToPluginSetup: (
     requestId: string,
@@ -238,6 +262,7 @@ interface UseCCAgentChatReturn {
           title: string;
           body: string;
           type: 'bug' | 'feature';
+          submissionIdentity: PendingIssueConfirm['submissionIdentity'];
           publicName?: string;
           uiLanguage: string;
         }
@@ -249,6 +274,10 @@ interface UseCCAgentChatReturn {
   respondToRenameSessionsConfirm: (result: { confirmed: true } | { confirmed: false }) => void;
   /** ghost_grant_confirm: Currently pending ghost file-grant confirm card */
   pendingGhostGrantConfirm: PendingGhostGrantConfirm | null;
+  /** Device Link Desktop controller: read-only host confirmation status. */
+  pendingRemoteDesktopConfirmation: PendingRemoteDesktopConfirmation | null;
+  /** 代输入: current step snapshot (structure only; values stay in the card). */
+  pendingInputHandoff: InputHandoffSnapshot | null;
   /** ghost_grant_confirm: Respond to the pending ghost file-grant confirm card */
   respondToGhostGrantConfirm: (
     result: { confirmed: true; allowDirs?: boolean } | { confirmed: false },
@@ -341,8 +370,8 @@ function useHeavyChatSnapshot(
 function useLiveChatLightState(sessionId: string | undefined): SessionChatLightState {
   return useSyncExternalStore(
     (cb) => (sessionId ? makerChatStore.subscribeLight(sessionId, cb) : NOOP_UNSUBSCRIBE),
-    () => (sessionId ? makerChatStore.getLightSnapshot(sessionId) : EMPTY_SESSION_STATE),
-    () => (sessionId ? makerChatStore.getLightSnapshot(sessionId) : EMPTY_SESSION_STATE),
+    () => (sessionId ? makerChatStore.getLightSnapshot(sessionId) : EMPTY_LIGHT_STATE),
+    () => (sessionId ? makerChatStore.getLightSnapshot(sessionId) : EMPTY_LIGHT_STATE),
   );
 }
 
@@ -400,6 +429,9 @@ export function useCCAgentChat(
         agentReferences?: AgentInputReference[];
         pastedTextRanges?: PastedTextRange[];
         slashCommandRanges?: SlashCommandRange[];
+        beforeEnqueue?: () => Promise<boolean>;
+        onRemoteOptimisticFailure?: (clientId: string, error?: unknown) => void;
+        annotationBurnFailure?: 'abort';
       },
     ): Promise<boolean> => {
       if (!sessionId) return Promise.resolve(false);
@@ -454,6 +486,9 @@ export function useCCAgentChat(
         agentReferences?: AgentInputReference[];
         pastedTextRanges?: PastedTextRange[];
         slashCommandRanges?: SlashCommandRange[];
+        beforeEnqueue?: () => Promise<boolean>;
+        onRemoteOptimisticFailure?: (clientId: string, error?: unknown) => void;
+        annotationBurnFailure?: 'abort';
       },
     ) => {
       if (!sessionId) return Promise.resolve(false);
@@ -503,6 +538,11 @@ export function useCCAgentChat(
     makerChatStore.clearError(sessionId);
   }, [sessionId]);
 
+  const cancelUsageLimitWait = useCallback(() => {
+    if (!sessionId) return;
+    makerChatStore.cancelUsageLimitWait(sessionId);
+  }, [sessionId]);
+
   const continueAfterSilentStop = useCallback(() => {
     if (!sessionId) return;
     makerChatStore.continueAfterSilentStop(sessionId);
@@ -540,9 +580,9 @@ export function useCCAgentChat(
     [sessionId],
   );
 
-  const loadOlderMessages = useCallback(() => {
-    if (!sessionId) return;
-    makerChatStore.loadOlderMessages(sessionId);
+  const loadOlderMessages = useCallback((automatic = false): Promise<boolean> => {
+    if (!sessionId) return Promise.resolve(false);
+    return makerChatStore.loadOlderMessages(sessionId, automatic);
   }, [sessionId]);
 
   const respondToPermission = useCallback(
@@ -561,6 +601,7 @@ export function useCCAgentChat(
             title: string;
             body: string;
             type: 'bug' | 'feature';
+            submissionIdentity: PendingIssueConfirm['submissionIdentity'];
             publicName?: string;
             uiLanguage: string;
           }
@@ -684,11 +725,15 @@ export function useCCAgentChat(
 
       // 2) Debounce the disk write — coalesce rapid keystrokes.
       if (planWriteTimerRef.current) clearTimeout(planWriteTimerRef.current);
+      // Remote paths belong to the host. Keep the draft in memory and send it
+      // back as editedPlan on approval; never autosave it on this client.
+      if (isRemoteSessionSticky(sessionId)) return;
       // Skip the IPC entirely when there's no path (defensive — shouldn't
       // happen in practice; ExitPlanMode always carries planFilePath).
       if (!planFilePath) return;
       planWriteTimerRef.current = setTimeout(() => {
         planWriteTimerRef.current = null;
+        if (isRemoteSessionSticky(sessionId)) return;
         window.electronAPI.maker
           .writePlanFile({ requestId, planFilePath, content })
           .then((result) => {
@@ -738,6 +783,11 @@ export function useCCAgentChat(
     lightState.isStreaming ||
     lightState.agentStatus.isRunning ||
     hasPendingSteer ||
+    // 远程会话豁免 pendingTaskWake:device-link 与 SSH 镜像事件有设计内的丢失
+    // 窗口(断连/重连),taskUpdates 不在 reconcile 对账覆盖内,终态 drop 后无自愈
+    // 路径。与 makerChatStore.hasBackgroundAgentWork 的远程豁免同口径。
+    (lightState.pendingTaskWake > 0 && sessionId && !isRemoteSessionSticky(sessionId) && !makerChatStore.getSnapshot(sessionId)?.remoteHostId) ||
+    (sessionId != null && makerChatStore.hasBackgroundAgentWork(sessionId)) ||
     (pendingQueueLength > 0 && !lightState.queuePaused);
 
   const setQueueExpanded = useCallback(
@@ -785,10 +835,10 @@ export function useCCAgentChat(
     [sessionId],
   );
 
-  const updateQueueItem = useCallback(
-    (clientId: string, newText: string) => {
-      if (!sessionId) return;
-      makerChatStore.updateQueueItem(sessionId, clientId, newText);
+  const updateQueueItemContent = useCallback(
+    (clientId: string, update: QueueItemContentUpdate) => {
+      if (!sessionId) return Promise.resolve(false);
+      return makerChatStore.updateQueueItemContent(sessionId, clientId, update);
     },
     [sessionId],
   );
@@ -811,7 +861,7 @@ export function useCCAgentChat(
     setQueueInteractionLock,
     setQueueEditLock,
     removeFromQueue,
-    updateQueueItem,
+    updateQueueItemContent,
     sendMessage,
     compactSession,
     steerMessage,
@@ -819,6 +869,7 @@ export function useCCAgentChat(
     stopSession,
     clearSession,
     clearError,
+    cancelUsageLimitWait,
     retryLastError,
     continueAfterSilentStop,
     insertSystemCard,
@@ -833,16 +884,21 @@ export function useCCAgentChat(
     errorReason:
       lightState.error != null
         ? (lightState.errorReason ?? null)
-        : (lightState.recoverableError != null ? (lightState.errorReason ?? null) : null),
+        : lightState.recoverableError != null
+          ? (lightState.errorReason ?? null)
+          : null,
+    toolLoop: lightState.error ? (lightState.toolLoop ?? null) : null,
     // 当前 error 是非终止 recoverableError(turn 在跑,daemon 自动重试中):
     // ErrorBanner 网络分支据此显示「正在自动重试…」而非「可点击重试」。
     errorIsRecoverable: !lightState.error && lightState.recoverableError != null,
     errorRetryText: lightState.errorRetryText,
+    errorPersistId: lightState.errorPersistId,
+    disposedErrorPersistId: lightState.disposedErrorPersistId,
     credentialSwitchWait: lightState.credentialSwitchWait,
+    usageLimitWait: lightState.error ? (lightState.usageLimitWait ?? null) : null,
     continuationInFlightClientId: lightState.continuationInFlightClientId,
     continuationTurnClientId: lightState.continuationTurnClientId,
-    continuationInFlightProjectionCapability:
-      lightState.continuationInFlightProjectionCapability,
+    continuationInFlightProjectionCapability: lightState.continuationInFlightProjectionCapability,
     loadOlderMessages,
     isLoadingMore: lightState.isLoadingMore,
     hasMoreMessages: lightState.hasMoreMessages,
@@ -853,6 +909,7 @@ export function useCCAgentChat(
     pendingPluginSetup: lightState.pendingPluginSetup,
     pluginSetupViewerState: lightState.pluginSetupViewerState,
     pluginSetupCommandInFlight: lightState.pluginSetupCommandInFlight,
+    pluginSetupCommandError: lightState.pluginSetupCommandError,
     setPluginSetupViewerState,
     respondToPluginSetup,
     askUserViewerState: lightState.askUserViewerState,
@@ -868,6 +925,8 @@ export function useCCAgentChat(
     pendingRenameSessionsConfirm: lightState.pendingRenameSessionsConfirm,
     respondToRenameSessionsConfirm,
     pendingGhostGrantConfirm: lightState.pendingGhostGrantConfirm,
+    pendingRemoteDesktopConfirmation: lightState.pendingRemoteDesktopConfirmation,
+    pendingInputHandoff: lightState.pendingInputHandoff,
     respondToGhostGrantConfirm,
     planViewerState: lightState.planViewerState,
     setPlanViewerState,

@@ -38,10 +38,13 @@ import {
 } from '@/session/remoteMedia';
 
 export interface RemoteAbsFileFetchDeps {
+  stream?: boolean;
   maker: Pick<MobileMakerTransport, 'fetchRemoteMedia'>;
   deviceId: string;
   openLink: (deviceId: string) => Promise<unknown>;
   presignGet: (ossKey: string) => Promise<MobileRemoteMediaPresignResult>;
+  /** 取消信号(如页面卸载、导出提示上的「取消」):中止取件,不再重试。 */
+  isCancelled?: () => boolean;
 }
 
 /** 缓存 TTL:只护住一次预览/分享动作链,把「同路径覆写吃旧字节」窗口压到 1 分钟。 */
@@ -97,19 +100,40 @@ export async function fetchRemoteAbsFileToUrl(
   const sshKey = eff
     ? `${eff.sessionId}\u0000${eff.remoteHostId}\u0000${eff.workdir}`
     : '';
-  const key = `${deps.deviceId}\u0000${absPath}\u0000${sshKey}`;
+  const key = `${deps.deviceId}\u0000${absPath}\u0000${sshKey}\u0000${deps.stream === false ? 'file' : 'stream'}`;
   const cached = lookupCache(key, Date.now());
   if (cached) return cached.url;
-  const resolved = await withTransientRemoteRetry(async () => {
-    await deps.openLink(deps.deviceId);
-    // kind 只影响结果的 previewable 标志(此处不消费),按 image 占位。
-    return resolveMobileRemoteMedia(
-      { kind: 'image', url: remoteFileMediaUrl(absPath, undefined, ssh) },
-      { fetchRemoteMedia: deps.maker.fetchRemoteMedia, presignGet: deps.presignGet },
-    );
-  });
-  rememberFetch(key, resolved, Date.now());
-  return resolved.url;
+  // 与 exportRemoteFileToUrl 同一写法:轮询 isCancelled 转成取件的 AbortSignal。
+  const abort = deps.isCancelled ? new AbortController() : null;
+  const check = () => {
+    if (deps.isCancelled?.()) abort?.abort();
+  };
+  const assertActive = () => {
+    check();
+    if (abort?.signal.aborted) throw new Error(i18n.t('files.export.leftPage'));
+  };
+  const timer = abort ? setInterval(check, 100) : null;
+  try {
+    const fetchOpts = {
+      ...(deps.stream === false ? { stream: false } : {}),
+      ...(abort ? { signal: abort.signal } : {}),
+    };
+    const resolved = await withTransientRemoteRetry(async () => {
+      assertActive();
+      await deps.openLink(deps.deviceId);
+      // kind 只影响结果的 previewable 标志(此处不消费),按 image 占位。
+      return resolveMobileRemoteMedia(
+        { kind: 'image', url: remoteFileMediaUrl(absPath, undefined, ssh) },
+        { fetchRemoteMedia: deps.maker.fetchRemoteMedia, presignGet: deps.presignGet },
+        Object.keys(fetchOpts).length ? fetchOpts : undefined,
+      );
+    });
+    rememberFetch(key, resolved, Date.now());
+    assertActive();
+    return resolved.url;
+  } finally {
+    if (timer) clearInterval(timer);
+  }
 }
 
 /**
@@ -142,14 +166,19 @@ export async function fetchRemoteAbsFileOnce(
    * 流量与磁盘已经花掉了(review P2)。老被控端忽略这两个参数,故手机侧判断照旧保留。
    */
   constraints?: RemoteMediaFetchConstraints | null,
+  signal?: AbortSignal,
+  onProgress?: (loaded: number, total: number) => void,
 ): Promise<MobileResolvedRemoteMedia> {
   return withTransientRemoteRetry(async () => {
+    const assertActive = () => { if (signal?.aborted) throw new Error('PREVIEW_CANCELLED'); };
+    assertActive();
     await deps.openLink(deps.deviceId);
+    assertActive();
     // kind 只影响结果的 previewable 标志(此处不消费),按 image 占位。
     return resolveMobileRemoteMedia(
       { kind: 'image', url: remoteFileMediaUrl(absPath, undefined, ssh, constraints) },
       { fetchRemoteMedia: deps.maker.fetchRemoteMedia, presignGet: deps.presignGet },
-      onOssKey ? { onOssKey } : undefined,
+      { onOssKey, signal, stream: false, ...(onProgress ? { onProgress } : {}) },
     );
   });
 }

@@ -1,5 +1,5 @@
 import type { GhostManifest, InstalledGhost } from './ghost';
-import type { PluginIconMetadata } from '@cindy/plugin-protocol';
+import type { PluginDownloadStatistics, PluginIconMetadata, PluginUsageStatistics } from '@cindy/plugin-protocol';
 
 export type PluginMarketScope = 'public' | 'organization' | 'personal';
 export type PluginMarketInstallState =
@@ -13,8 +13,12 @@ export type PluginMarketItemSource = 'server' | 'git-market' | 'local-market';
 
 /** Renderer-safe Plugin 市场列表项；所有字段都来自协议或本地安装事实。 */
 export interface PluginMarketItem {
+  usageStatistics?: PluginUsageStatistics;
+  downloadStatistics?: PluginDownloadStatistics;
   pluginId: string;
   ghostId: string;
+  /** Host-verified namespace. Missing is legacy wire; null is root. */
+  namespace?: string | null;
   name: string;
   description: string | null;
   author: string | null;
@@ -25,12 +29,23 @@ export interface PluginMarketItem {
   version: string;
   publishedAt: string;
   icon: PluginIconMetadata | null;
+  /**
+   * 自定义市场图标的本地身份键。它是 Main 根据当前来源事实计算的本地投影身份，
+   * 不包含本地路径或字节；读取失败或事实不确定时也可能携带该键并由 localIcons
+   * 返回 missing/retryable。服务端市场与未声明 icon 的自定义插件不携带。
+   */
+  customIconKey?: string;
   installState: PluginMarketInstallState;
   enabled: boolean | null;
   /** 来源类型；服务端市场项为 'server'。 */
   sourceType: PluginMarketItemSource;
   /** 来源市场名（自定义市场项必填；服务端项为 null）。 */
   sourceMarketName: string | null;
+  /**
+   * 新版本比已装版本权限变多，后台更新已暂停、等待用户确认。只在 Main 按真实包
+   * 判定过后出现；缺省表示未知或无需确认，不能据此推断可以静默更新。
+   */
+  updateRequiresConsent?: true;
 }
 /** 市场快照。服务不可用时 renderer 保留本地插件并只展示非阻断提示。 */
 export interface PluginMarketSnapshot {
@@ -38,38 +53,77 @@ export interface PluginMarketSnapshot {
   unavailableReason: string | null;
   /** 已添加的自定义市场名（按添加顺序）；驱动"自定义"筛选 tab 的可见性。 */
   customSourceNames: string[];
+  /** 本轮发现失败的自定义市场名；失败来源不影响其它来源和官方市场。 */
+  unavailableCustomSourceNames: string[];
+  /**
+   * 企业目录单独不可用时的错误码，包含客户端尚未认识的新码。null 或缺失表示本轮没有这个状态；
+   * 公开目录和已安装插件照常。
+   */
+  organizationAccessError?: string | null;
 }
 
-/** 详情额外携带经 Desktop 当前 runtime validator 验证过的完整清单。 */
+/** 服务端清理的一次性汇总提示：按 owner 缓存，consume 前跨多轮对账累加，consume 后即清。 */
+export interface PluginRemovalUserNotice {
+  count: number;
+  /** 累计单条且插件名经安全过滤后非空时为插件名；其余情况为 null，只展示数量。 */
+  name: string | null;
+}
+
+/** 详情携带安装前展示给用户的 manifest；官方来自 release，自定义来自本地发现。 */
 export interface PluginMarketDetail extends PluginMarketItem {
   manifest: GhostManifest;
 }
 
-/** Main 验证真实下载包后，交给 Renderer 展示的权限复核事实。 */
-export interface PluginMarketPackageReview {
-  /** 已按当前界面语言本地化，仅用于展示；安全指纹由 Main 基于原始清单计算。 */
-  manifest: GhostManifest;
-  packageSha256: string;
-  /** 产生复核结果时的已装权限基线；null 表示当时尚未安装。 */
-  installedBaseline: string | null;
+/** Main 生成并接受的自定义市场图标身份键形状；首位 0 为保留值。 */
+export const PLUGIN_MARKET_CUSTOM_ICON_KEY_RE = /^[1-9a-f][a-f0-9]{63}$/;
+export const PLUGIN_MARKET_CUSTOM_ICON_SOURCE_TOKEN_LENGTH = 16;
+export const PLUGIN_MARKET_CUSTOM_ICON_PROJECTION_TOKEN_LENGTH = 16;
+
+export function isPluginMarketCustomIconKey(value: string): boolean {
+  return PLUGIN_MARKET_CUSTOM_ICON_KEY_RE.test(value);
 }
+
+/** Renderer 只用这个不透明 token 做同来源传输限流，不解析 Main 侧身份事实。 */
+export function pluginMarketCustomIconSourceToken(value: string): string | null {
+  if (!isPluginMarketCustomIconKey(value)) return null;
+  return value.slice(1, 1 + PLUGIN_MARKET_CUSTOM_ICON_SOURCE_TOKEN_LENGTH);
+}
+
+/** Main 从图标键恢复快照投影代际，用于读取时重算并核对完整键。 */
+export function pluginMarketCustomIconProjectionToken(value: string): string | null {
+  if (!isPluginMarketCustomIconKey(value)) return null;
+  const start = 1 + PLUGIN_MARKET_CUSTOM_ICON_SOURCE_TOKEN_LENGTH;
+  return value.slice(start, start + PLUGIN_MARKET_CUSTOM_ICON_PROJECTION_TOKEN_LENGTH);
+}
+
+/** Renderer 请求 Main 按当前自定义市场事实读取一个本地图标。 */
+export interface PluginMarketLocalIconRequest {
+  pluginId: string;
+  expectedIconKey: string;
+}
+
+/** Main 的批量图标读取结果；请求身份原样带回，供 Renderer 安全归并。 */
+export type PluginMarketLocalIconResult =
+  | (PluginMarketLocalIconRequest & { status: 'loaded'; dataUrl: string })
+  | (PluginMarketLocalIconRequest & { status: 'missing' | 'retryable' });
 
 export interface PluginMarketInstallOptions {
-  /** 用户审阅时看到的目标 release；Main 会在下载前重新核对。 */
+  /** 用户点击时看到的目标 release；Main 会在下载前重新核对。 */
   expectedReleaseId: string;
-  /** 自定义市场审阅过的完整清单；服务端市场由 Main 读取 release 清单。 */
+  /** 自定义来源详情读取时的完整清单；Main 会在打包前重新核对。 */
   expectedManifest?: GhostManifest;
-  allowPermissionExpansion?: boolean;
-  /** 用户审阅扩权时的已装权限基线。 */
-  reviewedBaseline?: string;
-  /** 用户确认过的真实下载包；Main 会重新下载并核对 SHA。 */
-  approvedPackageSha256?: string;
+  /**
+   * receipt 模型的并发护栏：receipt 派生 token。读取与落位之间安装状态若变化即拒绝。
+   */
+  expectedInstalledApproval?: string;
+  /** 仅详情页上用户明确点击“替换”时为 true；更新和批量更新不得切换来源。 */
+  allowSourceReplacement?: boolean;
 }
 
-/** 安装成功，或真实包权限与市场展示不一致而需要用户复核。 */
-export type PluginMarketInstallResult =
-  | { ghost: InstalledGhost; reviewRequired?: never }
-  | { ghost?: never; reviewRequired: PluginMarketPackageReview };
+/** 市场安装成功后返回已落位插件。 */
+export interface PluginMarketInstallResult {
+  ghost: InstalledGhost;
+}
 
 /* ------------------------------------------------------------------------ */
 /* 自定义市场源（Git / 本地文件夹）                                           */
@@ -95,6 +149,10 @@ export interface MarketSourceConfig {
 export interface MarketSourceSummary extends MarketSourceConfig {
   /** 最近一次发现到的插件数；发现失败时为 0 并携带 status。 */
   pluginCount: number;
+  /** 清单中因内容非法被跳过的插件条目数。 */
+  skippedCount: number;
+  /** 清单中因权限、文件锁或瞬时 I/O 暂时无法读取的插件条目数。 */
+  unreadableCount: number;
   status: 'ok' | 'error';
   /** status === 'error' 时的 IPC 错误码（Renderer 按码本地化）。 */
   errorCode: string | null;

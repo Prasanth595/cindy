@@ -1,5 +1,5 @@
 /**
- * ghostPanelBubbleState —— 插件停靠面板「最小化为浮动气泡」的 renderer 端状态。
+ * ghostPanelBubbleState —— 插件停靠面板的最小化状态(历史命名沿用 bubble)。
  *
  * 纯视图态,renderer 自有(localStorage 持久化,重启保留),不经 main:
  * 与 maximize(会话态)/ detach(main 持久化)三分天下——气泡既要重启保留
@@ -18,6 +18,7 @@
 import { useSyncExternalStore } from 'react';
 
 import { GHOST_PANEL_KIND_PREFIX, type InstalledGhost } from '../../shared/ghost';
+import { installedGhostStoragePart } from '../../shared/pluginIdentity';
 
 const STORAGE_KEY = 'xdt:ghostPanelBubble:v1';
 
@@ -31,6 +32,7 @@ export type GhostPanelBubbleMap = Record<string, GhostPanelBubbleEntry>;
 
 let cache: GhostPanelBubbleMap | null = null;
 const subscribers = new Set<() => void>();
+let storageListenerWired = false;
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -65,7 +67,27 @@ function load(): GhostPanelBubbleMap {
 
 function ensureLoaded(): GhostPanelBubbleMap {
   if (cache === null) cache = load();
+  ensureStorageListener();
   return cache;
+}
+
+/** Keep the in-memory mirror aligned when another BrowserWindow changes the bubble state. */
+function ensureStorageListener(): void {
+  if (storageListenerWired || typeof window === 'undefined') return;
+  storageListenerWired = true;
+  window.addEventListener('storage', (event) => {
+    if (event.storageArea !== window.localStorage || event.key !== STORAGE_KEY) return;
+    let next: unknown = {};
+    if (event.newValue) {
+      try {
+        next = JSON.parse(event.newValue);
+      } catch {
+        next = {};
+      }
+    }
+    cache = sanitize(next);
+    subscribers.forEach((cb) => cb());
+  });
 }
 
 /** 整表替换 + 持久化 + 通知(引用变化即订阅者更新信号)。 */
@@ -122,12 +144,12 @@ export function setGhostPanelBubblePosition(ghostId: string, x: number, y: numbe
  * 卸载删条目;失去气泡资格(停用/无 panel/tab 形态/身份卡关按钮)强制还原。
  */
 export function reconcileGhostPanelBubbles(
-  ghosts: readonly Pick<InstalledGhost, 'manifest' | 'enabled'>[],
+  ghosts: readonly Pick<InstalledGhost, 'manifest' | 'enabled' | 'namespace'>[],
 ): void {
   const cur = ensureLoaded();
   const ids = Object.keys(cur);
   if (ids.length === 0) return;
-  const byId = new Map(ghosts.map((g) => [g.manifest.id, g]));
+  const byId = new Map(ghosts.map((g) => [installedGhostStoragePart(g), g]));
   let changed = false;
   const next: GhostPanelBubbleMap = { ...cur };
   for (const id of ids) {
@@ -170,6 +192,7 @@ export function useGhostPanelBubbleState(): GhostPanelBubbleMap {
 export function __resetGhostPanelBubbleStateForTest(): void {
   cache = null;
   subscribers.clear();
+  storageListenerWired = false;
   try {
     window.localStorage.removeItem(STORAGE_KEY);
   } catch {

@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { InstalledGhost } from '../../../shared/ghost';
 import { exportGhostPackage, sanitizeExportFileNamePart } from '../exportGhostPackage';
+import { MAX_BASIC_ZIP_ENTRIES } from '../GhostManager';
 import { signGhostPackage } from '../ghostSignature';
 
 /** 测试用发布者密钥对(每次进程一对,签名/验签都走真实 ed25519)。 */
@@ -36,6 +37,8 @@ const canSymlink = (() => {
 let workDir: string;
 let ghostDir: string;
 
+const FILE_WRITE_BATCH_SIZE = 16;
+
 beforeEach(async () => {
   workDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'cindy-ghost-export-test-'));
   ghostDir = path.join(workDir, 'hello');
@@ -59,8 +62,26 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  await fs.promises.rm(workDir, { recursive: true, force: true });
+  await fs.promises.rm(workDir, {
+    recursive: true,
+    force: true,
+    maxRetries: process.platform === 'win32' ? 5 : 0,
+    retryDelay: 20,
+  });
 });
+
+async function writeCacheFiles(count: number): Promise<void> {
+  for (let start = 0; start < count; start += FILE_WRITE_BATCH_SIZE) {
+    const batchSize = Math.min(FILE_WRITE_BATCH_SIZE, count - start);
+    const results = await Promise.allSettled(
+      Array.from({ length: batchSize }, (_, offset) =>
+        fs.promises.writeFile(path.join(ghostDir, `cache-${start + offset}.dat`), 'x'),
+      ),
+    );
+    const failure = results.find((result) => result.status === 'rejected');
+    if (failure?.status === 'rejected') throw failure.reason;
+  }
+}
 
 function makeGhost(): InstalledGhost {
   return {
@@ -76,6 +97,7 @@ function makeGhost(): InstalledGhost {
     },
     dir: ghostDir,
     enabled: true,
+    approval: { state: 'approved', revision: '00000000-0000-4000-8000-000000000001' },
   };
 }
 
@@ -115,6 +137,19 @@ function makeDeps(overrides: Partial<Parameters<typeof exportGhostPackage>[1]> =
 }
 
 describe('exportGhostPackage', () => {
+  it.skipIf(process.platform === 'win32')(
+    'round-trips installed Unix execute bits while stripping special bits',
+    async () => {
+      await fs.promises.chmod(path.join(ghostDir, 'main.js'), 0o4755);
+      const result = await exportGhostPackage('hello', makeDeps());
+      expect(result.status).toBe('saved');
+      if (result.status !== 'saved') return;
+
+      const zip = await JSZip.loadAsync(await fs.promises.readFile(result.savedPath));
+      expect(Number(zip.files['main.js'].unixPermissions) & 0o7777).toBe(0o755);
+    },
+  );
+
   it('打包安装目录为可重新装入的 .cindy(跳过主机点文件)', async () => {
     const deps = makeDeps();
     const result = await exportGhostPackage('hello', deps);
@@ -212,9 +247,7 @@ describe('exportGhostPackage', () => {
   it('目录内容超过装入侧条目上限:如实 too_large', async () => {
     // 普通(非 Node)插件装入上限 256 条目;运行期写入的杂散文件可能
     // 把目录撑过上限,导出不能成功却装不回。
-    for (let i = 0; i < 260; i++) {
-      await fs.promises.writeFile(path.join(ghostDir, `cache-${i}.dat`), 'x');
-    }
+    await writeCacheFiles(MAX_BASIC_ZIP_ENTRIES + 1);
     const result = await exportGhostPackage('hello', makeDeps());
     expect(result).toEqual({ status: 'error', code: 'too_large' });
   });
@@ -223,14 +256,21 @@ describe('exportGhostPackage', () => {
     await writeStatement(['ghost.json', 'locales/en.json', 'main.js']);
     // 第一次读 main.js 返回陈旧字节(模拟并发更新读到旧目录):
     // 哈希与 statement 不符,必须整体重读,最终包内容应为真实字节。
-    const realReadFile = fs.promises.readFile;
+    const realOpen = fs.promises.open;
     let staleServed = false;
-    const spy = vi.spyOn(fs.promises, 'readFile').mockImplementation(async (p: any, opts: any) => {
+    const spy = vi.spyOn(fs.promises, 'open').mockImplementation(async (p: any, flags: any) => {
+      const fileHandle = await realOpen(p, flags);
       if (String(p).endsWith('main.js') && !staleServed) {
-        staleServed = true;
-        return Buffer.from('stale-bytes');
+        const realHandleReadFile = fileHandle.readFile.bind(fileHandle);
+        fileHandle.readFile = vi.fn(async (...args: any[]) => {
+          if (!staleServed) {
+            staleServed = true;
+            return Buffer.from('stale-bytes');
+          }
+          return realHandleReadFile(...args);
+        }) as unknown as typeof fileHandle.readFile;
       }
-      return realReadFile(p, opts) as any;
+      return fileHandle;
     });
     try {
       const result = await exportGhostPackage('hello', makeDeps());

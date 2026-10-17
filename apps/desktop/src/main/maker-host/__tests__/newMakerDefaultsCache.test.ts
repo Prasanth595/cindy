@@ -1,9 +1,15 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  getNewTaskDraftSelection,
+  getSelectedNewMakerRoute,
   getRemoteNewMakerDefaults,
+  getRemoteNewMakerDefaultsByVendor,
+  getThinkingEnabledFromMemory,
   getWorkerDefaultsFromNewMaker,
   setNewMakerDraftCache,
+  syncNewMakerDraftCache,
+  getNewMakerModelTuning,
   setProviderModelMemoryCache,
   type NewMakerDraftSnapshot,
 } from '../newMakerDefaultsCache.js';
@@ -77,6 +83,58 @@ describe('getRemoteNewMakerDefaults (device-link 远程草稿镜像)', () => {
     expect(getRemoteNewMakerDefaults('codex')).toEqual({ worktreeEnabled: true });
   });
 
+  it('镜像每个 vendor 的显式模型选择状态，供控制端决定是否应用区域默认', () => {
+    seed({
+      lastByVendor: {
+        cc: { model: 'claude-opus-4-8' },
+        pi: { model: 'claude-sonnet-4-6' },
+      },
+      modelChosenByVendor: { cc: false, pi: true },
+      fastModeByModel: {},
+      effortByModel: {},
+    });
+
+    expect(getRemoteNewMakerDefaults('claude-code')).toMatchObject({
+      model: 'claude-opus-4-8',
+      modelChosenByUser: false,
+    });
+    expect(getRemoteNewMakerDefaults('pi')).toMatchObject({
+      model: 'claude-sonnet-4-6',
+      modelChosenByUser: true,
+    });
+  });
+
+  it('草稿变更广播快照始终包含 claude-code、codex、pi 三个槽', () => {
+    seed({
+      lastByVendor: { pi: { model: 'claude-sonnet-4-6' } },
+      modelChosenByVendor: { pi: false },
+      fastModeByModel: {},
+      effortByModel: {},
+    });
+
+    const snapshot = getRemoteNewMakerDefaultsByVendor();
+    expect(Object.keys(snapshot)).toEqual(['claudeCode', 'codex', 'pi']);
+    expect(snapshot.pi).toMatchObject({
+      model: 'claude-sonnet-4-6',
+      modelChosenByUser: false,
+    });
+  });
+
+  it('reads thinkingEnabled from the provider model memory mirror', () => {
+    setProviderModelMemoryCache({
+      'pi:cindy-local-ollama': {
+        effortByModel: {},
+        fastByModel: {},
+        thinkingByModel: { 'qwen3.8:27b-mxfp8': false },
+      },
+    });
+    expect(
+      getThinkingEnabledFromMemory('pi', 'cindy-local-ollama', 'qwen3.8:27b-mxfp8'),
+    ).toBe(false);
+    expect(getThinkingEnabledFromMemory('pi', 'cindy-local-ollama', 'gpt-oss:20b')).toBeUndefined();
+    expect(getThinkingEnabledFromMemory('pi', null, 'qwen3.8:27b-mxfp8')).toBeUndefined();
+  });
+
   it('providerModelMemory 镜像就绪时随返回(device-link 草稿列表行的真实读源)', () => {
     setProviderModelMemoryCache({
       'claude-code:anthropic': { effortByModel: { 'claude-opus-4-8': 'low' }, fastByModel: { 'claude-opus-4-8': true } },
@@ -101,4 +159,73 @@ describe('getRemoteNewMakerDefaults (device-link 远程草稿镜像)', () => {
       providerId: 'xd',
     });
   });
+});
+
+it('does not reuse the selected default route across owners or older snapshots', () => {
+  const selectedRoute = { harness: 'codex' as const, providerId: 'openai', model: 'luna', effort: 'medium', fastMode: false };
+  const snapshot = { selectedRoute, lastByVendor: {}, effortByModel: {}, fastModeByModel: {} };
+  setNewMakerDraftCache(snapshot, 'owner-a');
+  expect(getSelectedNewMakerRoute('owner-a')).toEqual(selectedRoute);
+  expect(getSelectedNewMakerRoute('owner-b')).toBeUndefined();
+  setNewMakerDraftCache({ lastByVendor: {}, effortByModel: {}, fastModeByModel: {} }, 'owner-a');
+  expect(getSelectedNewMakerRoute('owner-a')).toBeUndefined();
+});
+
+it('scopes the headless new-task draft selection to the owner that pushed it', () => {
+  setNewMakerDraftCache({
+    lastByVendor: { cc: { model: 'claude-opus-5-5', providerId: 'anthropic' } },
+    modelChosenByVendor: { cc: true },
+    effortByModel: {},
+    fastModeByModel: {},
+  }, 'owner-a');
+  expect(getNewTaskDraftSelection('owner-a', 'claude-code')).toEqual({
+    model: 'claude-opus-5-5', providerId: 'anthropic', chosenByUser: true,
+  });
+  // 切账号后新 renderer 还没推快照的窗口:不拿上一个账号的偏好。
+  expect(getNewTaskDraftSelection('owner-b', 'claude-code')).toBeNull();
+});
+
+describe('owner-fenced new task and Bot default mirror', () => {
+  const owner = { dataOwnerId: 'B', ownerGeneration: 3 };
+  const route = { harness: 'codex', model: 'luna', providerId: 'openai', effort: 'medium', fastMode: false } as const;
+  const payload = { ownerStamp: owner, selectedRoute: route, lastByVendor: { codex: { model: 'luna' } }, fastModeByModel: {}, effortByModel: {} };
+  it('uses one accepted snapshot for ordinary task and Bot defaults', () => {
+    expect(syncNewMakerDraftCache(payload, owner, 'B:3', false)).toBe(true);
+    expect(getSelectedNewMakerRoute('B:3')).toEqual(route);
+    expect(getRemoteNewMakerDefaults('codex').model).toBe('luna');
+  });
+  it.each([undefined, { dataOwnerId: 'A', ownerGeneration: 3 }, { dataOwnerId: 'B', ownerGeneration: 2 }])('rejects unstamped or late account snapshots: %j', (stamp) => {
+    syncNewMakerDraftCache(payload, owner, 'B:3', false);
+    expect(syncNewMakerDraftCache({ ...payload, ownerStamp: stamp, selectedRoute: { ...route, model: 'sol' } }, owner, 'B:3', false)).toBe(false);
+    expect(getSelectedNewMakerRoute('B:3')).toEqual(route);
+  });
+  it('rejects a snapshot while the account boundary is pending', () => {
+    expect(syncNewMakerDraftCache(payload, owner, 'B:3', true)).toBe(false);
+  });
+  it('clears the selected route when the current owner clears the default', () => {
+    syncNewMakerDraftCache(payload, owner, 'B:3', false);
+    syncNewMakerDraftCache({ ...payload, selectedRoute: undefined }, owner, 'B:3', false);
+    expect(getSelectedNewMakerRoute('B:3')).toBeUndefined();
+  });
+});
+
+it('reads remembered tuning only from the matching owner snapshot, with preset-first and source fallbacks', () => {
+  const payload = { ownerStamp: { dataOwnerId: 'A', ownerGeneration: 4 }, lastByVendor: {},
+    effortByModel: { target: 'medium', old: 'low' }, fastModeByModel: { target: true, old: true },
+    providerModelMemory: {
+      'codex:provider': { effortByModel: { target: 'low' }, fastByModel: { target: false } },
+      'codex:*': { effortByModel: { target: 'high' }, fastByModel: { target: true } },
+      'pi:provider': { effortByModel: { target: 'minimal' }, fastByModel: {} },
+    } };
+  expect(syncNewMakerDraftCache(payload, payload.ownerStamp, 'A:4', false)).toBe(true);
+  // 权威 `${agent}:*` 优先:同一个模型换个来源(provider → other)仍然是同一档,
+  // 不会被 provider 槽的旧副本拽回旧档位(那就是「推理强度自己变低」在 main 侧的形态)。
+  expect(getNewMakerModelTuning('A:4', 'codex', 'provider', 'target')).toEqual({ effort: 'high', fastMode: true });
+  expect(getNewMakerModelTuning('A:4', 'codex', 'other', 'target')).toEqual({ effort: 'high', fastMode: true });
+  // 该 agent 没有 `*` 槽 → 回落 provider 槽;fast 该槽没记过 → 再回落 newMakerDraft 根表。
+  expect(getNewMakerModelTuning('A:4', 'pi', 'provider', 'target').effort).toBe('minimal');
+  expect(getNewMakerModelTuning('A:4', 'codex', 'provider', 'old')).toEqual({ effort: 'low', fastMode: true });
+  expect(getNewMakerModelTuning('B:4', 'codex', 'provider', 'target')).toEqual({});
+  expect(syncNewMakerDraftCache(payload, { dataOwnerId: 'B', ownerGeneration: 4 }, 'B:4', false)).toBe(false);
+  expect(getNewMakerModelTuning('B:4', 'codex', 'provider', 'target')).toEqual({});
 });

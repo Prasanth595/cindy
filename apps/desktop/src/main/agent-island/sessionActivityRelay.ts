@@ -7,6 +7,7 @@ const MAX_REPLAY_TERMINAL_PAYLOADS = 200;
 type Timer = ReturnType<typeof setTimeout>;
 
 interface SessionActivityRelayOptions {
+  isCompletionHandledByTeammate?: (sessionId: string) => Promise<boolean>;
   minIntervalMs?: number;
   now?: () => number;
   setTimer?: (fn: () => void, ms: number) => Timer;
@@ -18,6 +19,14 @@ interface SessionActivityRelayEntry {
   lastSignature: string;
   pending: SessionActivityPayload | null;
   timer: Timer | null;
+}
+
+interface CompletionCheck {
+  startedAtMs: number | null;
+  payload: SessionActivityPayload;
+  checking: boolean;
+  decision: Promise<boolean>;
+  resolve: (handled: boolean) => void;
 }
 
 /**
@@ -32,11 +41,15 @@ export class SessionActivityRelay {
   private readonly clearTimer: (timer: Timer) => void;
   private readonly entries = new Map<string, SessionActivityRelayEntry>();
   private readonly terminalReplayPayloads = new Map<string, SessionActivityPayload>();
+  private readonly completionChecks = new Map<string, CompletionCheck>();
+  private readonly awaitingTerminal = new Set<string>();
+  private readonly checkCompletion?: (sessionId: string) => Promise<boolean>;
 
   constructor(
     private readonly emit: (payload: SessionActivityPayload) => void,
     options: SessionActivityRelayOptions = {},
   ) {
+    this.checkCompletion = options.isCompletionHandledByTeammate;
     this.minIntervalMs = Math.max(0, options.minIntervalMs ?? DEFAULT_MIN_INTERVAL_MS);
     this.now = options.now ?? (() => Date.now());
     this.setTimer = options.setTimer ?? ((fn, ms) => setTimeout(fn, ms));
@@ -48,7 +61,14 @@ export class SessionActivityRelay {
     for (const activity of list) {
       if (!activity.sessionId) continue;
       activeSessionIds.add(activity.sessionId);
-      this.publishOne(toSessionActivityPayload(activity));
+      const payload = toSessionActivityPayload(activity);
+      if (this.checkCompletion && payload.phase === 'completed' && payload.attention && payload.completionNotification !== 'silent') {
+        this.publishCompletion(activity, payload);
+      } else {
+        this.awaitingTerminal.delete(activity.sessionId);
+        this.cancelCompletionCheck(activity.sessionId);
+        this.publishOne(payload);
+      }
     }
 
     for (const sessionId of [...this.entries.keys()]) {
@@ -61,6 +81,8 @@ export class SessionActivityRelay {
     for (const entry of this.entries.values()) {
       if (entry.timer) this.clearTimer(entry.timer);
     }
+    for (const sessionId of this.completionChecks.keys()) this.cancelCompletionCheck(sessionId);
+    this.awaitingTerminal.clear();
     this.entries.clear();
     this.terminalReplayPayloads.clear();
   }
@@ -70,9 +92,33 @@ export class SessionActivityRelay {
    * Runtime reset should not leave remote lists showing stale running rows.
    */
   reset(): void {
+    for (const sessionId of this.completionChecks.keys()) this.cancelCompletionCheck(sessionId);
+    this.awaitingTerminal.clear();
     for (const sessionId of [...this.entries.keys()]) {
       this.clear(sessionId);
     }
+  }
+
+  /** A status completion precedes the native done/result handoff boundary. */
+  awaitCompletionTerminal(sessionId: string): void {
+    if (this.checkCompletion && !this.completionChecks.has(sessionId)) this.awaitingTerminal.add(sessionId);
+  }
+
+  completeTerminal(sessionId: string): void {
+    this.awaitingTerminal.delete(sessionId);
+    const check = this.completionChecks.get(sessionId);
+    if (check) this.checkCompletionOwnership(sessionId, check);
+  }
+
+  /** Local notification channels share the source relay's same terminal decision. */
+  waitForCompletionNotification(sessionId: string): Promise<boolean> | undefined {
+    return this.completionChecks.get(sessionId)?.decision;
+  }
+
+  private cancelCompletionCheck(sessionId: string): void {
+    // A new turn/read/reset supersedes this event; never release its stale notice.
+    this.completionChecks.get(sessionId)?.resolve(true);
+    this.completionChecks.delete(sessionId);
   }
 
   /**
@@ -80,16 +126,15 @@ export class SessionActivityRelay {
    * 远端删除不存在的条目是 no-op)并记入 terminal replay(重连 replay 时补发,
    * 推送当下丢失也能收敛)。
    *
-   * 为什么需要:publish() 的隐式收敛(clear 不在 list 里的 entry / attention 翻
-   * false 的 entry)依赖 entries 里还留着该会话 —— 桌面重启(entries 清零)或
-   * 收尾包推送丢失后,远端列表行可能仍挂着 attention=true 的旧条目,而 entries
-   * 已无记录,任何后续 publish 都不会再为它发出任何帧,绿/红点永久挂死。
+   * 为什么需要:publish() 的隐式收敛依赖 list 里还留着该会话。桌面重启(entries
+   * 清零)或收尾包推送丢失后,远端列表行可能仍挂着 attention=true 的旧条目,而
+   * entries 已无记录,任何后续 publish 都不会再为它发出任何帧。
    *
    * 为什么 entries 有条目时必须不动:条目存在说明本进程与远端就该会话有活跃
-   * 同步流 —— 它可能是 running / needs-interaction 的 live 帧(此刻发收尾包会把
-   * 远端正在展示的运行 / 等待授权指示误清成"已完成",needs-interaction 是稳定态,
-   * 没有后续事件能补回),也可能是刚发出的未读终态;两者都由紧随的 publish()
-   * 正常路径收敛(live 继续、已读走 clear 发收尾包),这里插手只会产生误清或重复帧。
+   * 同步流 —— 可能是 running / needs-interaction,也可能是刚发出的未读终态。
+   * 异步 not-found 回执若在查询窗口内碰上新一轮 completed/error,动手清掉会把
+   * 新绿点/红点误清,并绕过 error 的 passive 免疫。live 与未读终态都由紧随的
+   * publish() / 独立未读账本收敛。
    */
   ensureSessionTerminalClear(sessionId: string): void {
     if (this.entries.has(sessionId)) return;
@@ -113,12 +158,50 @@ export class SessionActivityRelay {
     for (const activity of list) {
       if (!activity.sessionId) continue;
       seenSessionIds.add(activity.sessionId);
-      const payload = toSessionActivityPayload(activity);
+      const check = this.completionChecks.get(activity.sessionId);
+      const payload = activity.phase === 'completed' && activity.attention && activity.completionNotification !== 'silent' && check?.startedAtMs === activity.startedAtMs
+        ? check.payload : toSessionActivityPayload(activity);
       emit(isPublishableActivity(payload) ? payload : toTerminalActivityPayload(activity.sessionId));
     }
     for (const [sessionId, payload] of this.terminalReplayPayloads) {
       if (!seenSessionIds.has(sessionId)) emit(payload);
     }
+  }
+
+  private publishCompletion(activity: AgentIslandSessionActivity, payload: SessionActivityPayload): void {
+    const previous = this.completionChecks.get(activity.sessionId);
+    if (previous && previous.startedAtMs === activity.startedAtMs) {
+      previous.payload = { ...payload, completionNotification: previous.payload.completionNotification };
+      this.publishOne(previous.payload);
+      return;
+    }
+    this.cancelCompletionCheck(activity.sessionId);
+    let resolve!: (handled: boolean) => void;
+    const check: CompletionCheck = {
+      startedAtMs: activity.startedAtMs,
+      payload: { ...payload, completionNotification: 'pending' },
+      checking: false,
+      decision: new Promise<boolean>(r => { resolve = r; }),
+      resolve: handled => resolve(handled),
+    };
+    this.completionChecks.set(activity.sessionId, check);
+    this.publishOne(check.payload);
+    if (!this.awaitingTerminal.has(activity.sessionId)) this.checkCompletionOwnership(activity.sessionId, check);
+  }
+
+  private checkCompletionOwnership(sessionId: string, check: CompletionCheck): void {
+    if (check.checking) return;
+    check.checking = true;
+    // The event adapter registers settlement later in the same synchronous done
+    // delivery. No status event or timer can decide ownership before that point.
+    void Promise.resolve().then(() => this.completionChecks.get(sessionId) === check
+      ? this.checkCompletion!(sessionId) : true).catch(() => false).then((handled) => {
+      // A new turn, read acknowledgement, reset or disposal invalidates the old check.
+      if (this.completionChecks.get(sessionId) !== check) return;
+      check.payload = { ...check.payload, completionNotification: handled ? 'teammate' : undefined };
+      check.resolve(handled);
+      this.publishOne(check.payload);
+    });
   }
 
   private publishOne(payload: SessionActivityPayload): void {
@@ -167,6 +250,8 @@ export class SessionActivityRelay {
   }
 
   private clear(sessionId: string): void {
+    this.awaitingTerminal.delete(sessionId);
+    this.cancelCompletionCheck(sessionId);
     const entry = this.entries.get(sessionId);
     if (!entry) return;
     if (entry.timer) this.clearTimer(entry.timer);
@@ -216,8 +301,10 @@ export class SessionActivityRelay {
 
 function toSessionActivityPayload(activity: AgentIslandSessionActivity): SessionActivityPayload {
   return {
+    ...(activity.completionNotification ? { completionNotification: activity.completionNotification } : {}),
     sessionId: activity.sessionId,
     phase: activity.phase,
+    workingPhase: activity.workingPhase,
     compactDetail: activity.compactDetail,
     interactionKind: activity.interactionKind,
     attention: activity.attention,
@@ -248,7 +335,9 @@ function toTerminalActivityPayload(sessionId: string): SessionActivityPayload {
 function activitySignature(payload: SessionActivityPayload): string {
   return [
     payload.phase,
+    payload.completionNotification ?? '',
     payload.compactDetail,
+    payload.workingPhase,
     payload.interactionKind ?? '',
     payload.attention === true ? '1' : '0',
   ].join('\u0000');

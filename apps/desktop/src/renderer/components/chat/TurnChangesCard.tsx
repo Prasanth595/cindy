@@ -1,0 +1,347 @@
+import { FileTypeIcon } from '@/components/ui/file-type-icon';
+import { Button } from '@/components/ui/button';
+import { useEffect, useRef, useState } from 'react';
+import {
+  AlertTriangle,
+  ChevronDown,
+  ChevronUp,
+  FileDiff,
+  LoaderCircle,
+  Redo2,
+  Undo2,
+} from 'lucide-react';
+import { useTranslation } from 'react-i18next';
+
+import { openTurnReview } from '@/features/right-sidebar/lib/openTurnReview';
+import { useSidebarHostSessionId } from '@/features/right-sidebar/lib/sidebarHostSession';
+import { shouldOpenTextLightboxForOrigin } from '@/lib/filePreview';
+import { resolveToolFilePath } from '@/lib/localPathResolver';
+import { toast } from '@/lib/toast';
+import { makerApiForSticky } from '@/lib/makerTransport';
+import { getStickySessionDeviceId } from '@/features/device-link/stickySessionOrigin';
+import { getDataOwnerGeneration, isDataOwnerGenerationCurrent } from '@/contexts/dataOwnerGeneration';
+import { turnChangeReadApiFor } from '@/lib/gitReviewTransport';
+import { basename, cn } from '@/lib/utils';
+import { extractIpcError } from '@/utils/ipcError';
+import { isBrowserOpenablePath } from '../../../shared/browserOpenableExts';
+import type { TurnChangeFileSummary, TurnChangeSetSummary } from '../../../shared/turnChangeSet';
+import { useChatSessionFile } from './ChatSessionFileContext';
+import { TextLightbox } from './TextLightbox';
+import { useFileChipContextMenu } from './useFileChipContextMenu';
+import { isHtmlFilePath } from './useOpenWithMenu';
+import { activateInlineLinkFromKeyboard } from './linkInteraction';
+
+const MAX_VISIBLE_FILES = 3;
+
+function TurnChangeFileRow({
+  sessionId,
+  cwd,
+  file,
+  onOpenReview,
+}: {
+  sessionId: string;
+  cwd: string;
+  file: TurnChangeFileSummary;
+  onOpenReview: () => void;
+}) {
+  const fileRowRef = useRef<HTMLButtonElement>(null);
+  const [sourcePreviewOpen, setSourcePreviewOpen] = useState(false);
+  const sessionFileContext = useChatSessionFile();
+  const absolutePath = resolveToolFilePath(file.path, cwd);
+  const htmlWithSession = isHtmlFilePath(absolutePath) ? sessionId : undefined;
+  const contextMenu = useFileChipContextMenu({
+    fileName: absolutePath,
+    getAbsPath: () => absolutePath,
+    canOpenInBrowser: isBrowserOpenablePath(absolutePath),
+    sidebarOpenSessionId: htmlWithSession,
+    onViewSource: htmlWithSession
+      ? async () => {
+          if (!(await shouldOpenTextLightboxForOrigin(sessionFileContext, absolutePath))) return;
+          setSourcePreviewOpen(true);
+        }
+      : undefined,
+  });
+
+  return (
+    <>
+      <button
+        ref={fileRowRef}
+        type="button"
+        title={absolutePath}
+        onClick={(event) => contextMenu.onActivate(event, onOpenReview)}
+        onAuxClick={(event) => { if (event.button === 1) contextMenu.onActivate(event, onOpenReview); }}
+        onKeyDown={activateInlineLinkFromKeyboard}
+        onContextMenu={contextMenu.onContextMenu}
+        className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left transition-colors hover:bg-[var(--surface-hover)]"
+      >
+        <FileTypeIcon name={file.path} size={15} className="shrink-0 text-[var(--text-secondary)]" />
+        <span className="min-w-0 flex-1 truncate text-13 text-[var(--text-primary)]">
+          {file.path}
+        </span>
+        <span className="shrink-0 whitespace-nowrap font-mono text-12 tabular-nums">
+          {file.additions > 0 && (
+            <span className="text-[var(--diff-add-fg)]">+{file.additions}</span>
+          )}{' '}
+          {file.deletions > 0 && (
+            <span className="text-[var(--diff-del-fg)]">-{file.deletions}</span>
+          )}
+        </span>
+      </button>
+      {contextMenu.menu}
+      {sourcePreviewOpen && (
+        <TextLightbox
+          filePath={absolutePath}
+          fileName={basename(absolutePath)}
+          triggerRef={fileRowRef}
+          onClose={() => setSourcePreviewOpen(false)}
+        />
+      )}
+    </>
+  );
+}
+
+export function TurnChangesCard({
+  renderItemKey,
+  sessionId,
+  changeSet,
+}: {
+  renderItemKey?: string;
+  sessionId: string;
+  changeSet: TurnChangeSetSummary;
+}) {
+  const { t } = useTranslation();
+  const [expanded, setExpanded] = useState(false);
+  const [applying, setApplying] = useState(false);
+  const [workspaceStateOverride, setWorkspaceStateOverride] = useState<
+    TurnChangeSetSummary['workspaceState'] | null
+  >(null);
+  const activeCard = useRef<string | null>(null);
+  const cardKey = JSON.stringify([sessionId, changeSet.id]);
+  activeCard.current = cardKey;
+  useEffect(() => {
+    activeCard.current = cardKey;
+    return () => { activeCard.current = null; };
+  }, [cardKey]);
+  const latestWorkspaceStateRef = useRef(changeSet.workspaceState);
+  latestWorkspaceStateRef.current = changeSet.workspaceState;
+  const files = changeSet.files;
+  const visibleFiles = expanded ? files : files.slice(0, MAX_VISIBLE_FILES);
+  const hiddenCount = changeSet.fileCount - visibleFiles.length;
+  const omittedCount = Math.max(0, changeSet.fileCount - files.length);
+  const workspaceState = workspaceStateOverride ?? changeSet.workspaceState;
+  const appliesCapturedSubset = changeSet.state === 'partial' && changeSet.isReversible;
+
+  useEffect(() => {
+    setWorkspaceStateOverride(null);
+  }, [changeSet.workspaceState]);
+
+  useEffect(() => {
+    setWorkspaceStateOverride(null);
+    setApplying(false);
+  }, [changeSet.id]);
+
+  // 内嵌在 RSB(协同 worker 面板)里时把 review tab 开到宿主(lead)的可见桶;
+  // 主实例 hostSessionId 为 null,openTurnReview 落到本会话桶,行为不变。
+  const hostSessionId = useSidebarHostSessionId();
+  const openReview = (selectedDiffId?: string): void => {
+    void openTurnReview(sessionId, [changeSet.id], {
+      selectedDiffId: selectedDiffId ?? null,
+      hostSessionId,
+    });
+  };
+
+  const applyTurnChange = async (): Promise<void> => {
+    if (applying || !changeSet.isReversible) return;
+    const action = workspaceState === 'undone' ? 'reapply' : 'undo';
+    const owner = getDataOwnerGeneration();
+    const deviceId = getStickySessionDeviceId(sessionId);
+    const current = () => activeCard.current === cardKey &&
+      isDataOwnerGenerationCurrent(owner) && getStickySessionDeviceId(sessionId) === deviceId;
+    const notifyApplied = () => toast.success(t(
+      appliesCapturedSubset
+        ? action === 'undo'
+          ? 'chat.turnChanges.undoPartialSuccess'
+          : 'chat.turnChanges.reapplyPartialSuccess'
+        : action === 'undo'
+          ? 'chat.turnChanges.undoSuccess'
+          : 'chat.turnChanges.reapplySuccess',
+    ));
+    setApplying(true);
+    try {
+      const result = await makerApiForSticky(sessionId).applyTurnChangeSet(
+        sessionId,
+        changeSet.id,
+        action,
+      );
+      if (!current()) return;
+      setWorkspaceStateOverride(
+        result.summary.workspaceState === latestWorkspaceStateRef.current
+          ? null
+          : result.summary.workspaceState,
+      );
+      notifyApplied();
+    } catch (error) {
+      if (!current()) return;
+      // A lost response does not prove the host failed to write. Reconcile once;
+      // never replay the mutation. Reconnect also refreshes the cards.
+      if (deviceId) {
+        try {
+          const summaries = await turnChangeReadApiFor(deviceId).listTurnChangeSets(sessionId);
+          const summary = summaries.find((item) => item.id === changeSet.id);
+          if (current() && summary) {
+            setWorkspaceStateOverride(
+              summary.workspaceState === latestWorkspaceStateRef.current ? null : summary.workspaceState,
+            );
+            if (summary.workspaceState === (action === 'undo' ? 'undone' : 'applied')) {
+              notifyApplied();
+              return;
+            }
+          }
+        } catch { /* Reconnect refresh in useTurnChangeSets remains authoritative. */ }
+      }
+      if (!current()) return;
+      const code = extractIpcError(error)?.code;
+      const key = code === 'SESSION_RUNNING'
+        ? 'chat.turnChanges.actionRunning'
+        : code === 'TURN_CHANGE_GIT_UNAVAILABLE'
+          ? 'chat.turnChanges.gitUnavailable'
+        : code === 'STALE_DIFF' || code === 'PRECONDITION_FAILED'
+          ? 'chat.turnChanges.actionConflict'
+          : code === 'UNSUPPORTED_CAPABILITY'
+            ? 'chat.turnChanges.actionUnavailable'
+            : 'chat.turnChanges.actionFailed';
+      toast.error(t(key));
+    } finally {
+      if (current()) setApplying(false);
+    }
+  };
+
+  return (
+    <section data-render-item-key={renderItemKey} className="my-1 overflow-hidden rounded-xl border border-[var(--border-default)] bg-[var(--surface-elevated)]">
+      <div className="flex min-h-16 items-center gap-3 px-4 py-3">
+        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[var(--surface-chip)] text-[var(--text-secondary)]">
+          <FileDiff size={18} />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-14 font-medium text-[var(--text-primary)]">
+            {files.length > 0
+              ? t('chat.turnChanges.title', { count: changeSet.fileCount })
+              : t('chat.turnChanges.partialTitle')}
+          </div>
+          {files.length > 0 && (
+            // 零文件卡的语义是「发生了变更但没录下内容」,+0 −0 会被误读成
+            // 「没有变化」,所以增删统计只在录到文件时显示。
+            <div className="mt-0.5 font-mono text-12 tabular-nums">
+              <span className="text-[var(--diff-add-fg)]">+{changeSet.additions}</span>{' '}
+              <span className="text-[var(--diff-del-fg)]">-{changeSet.deletions}</span>
+            </div>
+          )}
+          {changeSet.state === 'partial' && (
+            <div className="mt-1 flex items-center gap-1 text-11 text-[var(--warning-fg)]">
+              <AlertTriangle size={12} />
+              <span>{t(
+                files.length === 0
+                  ? 'chat.turnChanges.partialNone'
+                  : appliesCapturedSubset
+                    ? 'chat.turnChanges.partialReversible'
+                    : 'chat.turnChanges.partial',
+              )}</span>
+            </div>
+          )}
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          {changeSet.isReversible && (
+            <Button
+              variant="secondary"
+              size="md"
+              compact
+              tone="quiet"
+              loading={applying}
+              type="button"
+              disabled={applying}
+              title={appliesCapturedSubset ? t('chat.turnChanges.partialActionHint') : undefined}
+              aria-label={t(
+                appliesCapturedSubset
+                  ? workspaceState === 'undone'
+                    ? 'chat.turnChanges.reapplyPartialAria'
+                    : 'chat.turnChanges.undoPartialAria'
+                  : workspaceState === 'undone'
+                    ? 'chat.turnChanges.reapplyAria'
+                    : 'chat.turnChanges.undoAria',
+              )}
+              onClick={() => void applyTurnChange()}
+            >
+              {applying ? (
+                <LoaderCircle size={15} className="animate-spin" />
+              ) : workspaceState === 'undone' ? (
+                <Redo2 size={15} />
+              ) : (
+                <Undo2 size={15} />
+              )}
+              {t(workspaceState === 'undone' ? 'chat.turnChanges.reapply' : 'chat.turnChanges.undo')}
+            </Button>
+          )}
+          {files.length > 0 && (
+            // 零文件卡没有可展示的 diff,审查面板必然为空;这类卡只承担
+            // 「有变更但未记录」的警示职责,不提供死路入口。
+            <Button variant="secondary" size="md" compact type="button" onClick={() => openReview()}>
+              {t('chat.turnChanges.review')}
+            </Button>
+          )}
+        </div>
+      </div>
+
+      {files.length > 0 && (
+        <div className="border-t border-[var(--border-default)] px-3 py-2">
+          {visibleFiles.map((file) => (
+            <TurnChangeFileRow
+              key={file.id}
+              sessionId={sessionId}
+              cwd={changeSet.cwd}
+              file={file}
+              onOpenReview={() => openReview(file.id)}
+            />
+          ))}
+          {!expanded && hiddenCount > 0 && (
+            <button
+              type="button"
+              onClick={() => setExpanded(true)}
+              className={cn(
+                'flex h-8 items-center gap-1 rounded-lg px-2 text-13 text-[var(--text-secondary)]',
+                'transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)]',
+              )}
+            >
+              {t('chat.turnChanges.showMore', { count: hiddenCount })}
+              <ChevronDown size={14} />
+            </button>
+          )}
+          {expanded && omittedCount > 0 && (
+            <Button
+              variant="secondary"
+              size="md"
+              compact
+              tone="quiet"
+              type="button"
+              onClick={() => openReview()}
+            >
+              {t('chat.turnChanges.reviewRemaining', { count: omittedCount })}
+            </Button>
+          )}
+          {expanded && files.length > MAX_VISIBLE_FILES && (
+            <button
+              type="button"
+              onClick={() => setExpanded(false)}
+              className={cn(
+                'flex h-8 items-center gap-1 rounded-lg px-2 text-13 text-[var(--text-secondary)]',
+                'transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)]',
+              )}
+            >
+              {t('chat.turnChanges.showLess')}
+              <ChevronUp size={14} />
+            </button>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}

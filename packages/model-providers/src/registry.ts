@@ -94,7 +94,16 @@ export type ModelDiscoveryFailureState = Partial<
 
 /** 供应商 + 连接状态。 */
 export interface ProviderView extends Provider {
+  /** 本机是否允许同账号另一台电脑调用该供应商；缺省等同关闭。 */
+  remoteInvocationEnabled?: boolean;
+  /** Definition remains available for adding a removed local connection again. */
+  removed?: boolean;
+  subscriptionAccount?: { source: 'local' | 'oauth' | 'unknown'; identity?: string; reconnectRequired?: boolean };
+  /** Public account identity and credential origin, never credential material. */
+  openAiAccount?: { source: 'local' | 'oauth' | 'unknown'; identity?: string; reconnectRequired?: boolean };
   connected: boolean;
+  /** Ready media execution channels, independent of chat authorization. Absent on older hosts. */
+  availableMediaModelIds?: string[];
   /** Non-secret presentation metadata resolved before routing details cross device-link. */
   logoKind?: ProviderLogoKind;
   /** 动态清单发现的最近一次失败（已剥掉 detail）；成功或从未失败时缺席。 */
@@ -154,7 +163,7 @@ export function buildRegistry(
     // 原引用透传零分配 —— PR #744 review)。前缀误命中(如 'a:' 命中 'a:b:model')只
     // 多做一次无害映射,不影响正确性。
     let models = p.models;
-    let mediaOverrides: Pick<Provider, 'imageModels' | 'videoModels'> = {};
+    let mediaOverrides: Pick<Provider, 'imageModels' | 'videoModels' | 'audioModels' | 'embeddingModels'> = {};
     if (disabledKeys.length > 0 && disabledKeys.some((k) => k.startsWith(`${p.id}:`))) {
       const mapped: Provider['models'] = {};
       for (const agent of Object.keys(p.models) as AgentKind[]) {
@@ -163,13 +172,18 @@ export function buildRegistry(
         );
       }
       models = mapped;
-      // 专属媒体清单(imageModels/videoModels,不挂 agent)同样烘焙停用标志:
-      // 设置页据此渲染/切换只经媒体清单下发的图像、视频型号(PR #744 review)。
+      // 专属媒体清单(imageModels/videoModels/embeddingModels,不挂 agent)同样烘焙
+      // 停用标志:设置页据此渲染/切换只经这些清单下发的图像、视频、向量型号
+      // (PR #744 review;向量于 PR #1707 review 补入 —— 派生侧一直在读
+      // isModelDisabled,但设置页没有对应的行,等于停用轴有实现无入口,
+      // 用户没法单独拦住某个向量型号的付费调用)。
       const mapMedia = (list: NonNullable<Provider['imageModels']>) =>
         list.map((m) => (isModelDisabled(access, p.id, m.id) ? { ...m, disabled: true } : m));
       mediaOverrides = {
         ...(p.imageModels ? { imageModels: mapMedia(p.imageModels) } : {}),
         ...(p.videoModels ? { videoModels: mapMedia(p.videoModels) } : {}),
+        ...(p.audioModels ? { audioModels: mapMedia(p.audioModels) } : {}),
+        ...(p.embeddingModels ? { embeddingModels: mapMedia(p.embeddingModels) } : {}),
       };
     }
     return {
@@ -303,7 +317,7 @@ export function nativeDefaultSourceId(rail: ProviderView[], agent: AgentKind | n
  *
  * 来源选择必须先收窄到「已连接且确实提供当前模型」的集合，再应用显式选择 / 原生默认：
  * 否则当 XD key 被清除、但 OpenAI 仍连接时，Claude 会话会把 OpenAI 当成 agent 级兜底，
- * 拼出「OpenAI 图标 + Opus」这种不可能路由。显式来源失效时返回同模型的默认可用来源；
+ * 拼出「OpenAI 图标 + Opus」这种不可能路由。显式来源失效时返回 null，不替换账号；
  * 当前模型没有任何已连接且可用于新路由的来源时返回 null。retired tombstone 与本地
  * disabled 都不参与本函数；运行中会话的真实来源展示必须改用 actualSourceIdForModel。
  */
@@ -320,7 +334,7 @@ export function effectiveSourceIdForModel(
       isModelSelectableForNewRoute(model, { userProvider: provider.source === 'user' })
     );
   });
-  if (providerId && sources.some((provider) => provider.id === providerId)) return providerId;
+  if (providerId) return sources.some((provider) => provider.id === providerId) ? providerId : null;
   return nativeDefaultSourceId(sources, agent);
 }
 
@@ -342,7 +356,7 @@ export function actualSourceIdForModel(
   // a catalog correction that reclassifies an id as image/audio must not make a running agent
   // session dispatch into a non-chat endpoint.
   const sources = chatEligibleSourcesForModel(views, modelId, agent, { includeDisabled: true });
-  if (providerId && sources.some((provider) => provider.id === providerId)) return providerId;
+  if (providerId) return sources.some((provider) => provider.id === providerId) ? providerId : null;
   return nativeDefaultSourceId(sources, agent);
 }
 

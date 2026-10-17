@@ -3,10 +3,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const store = vi.hoisted(() => new Map<string, string>());
 const envState = vi.hoisted(() => ({
   activeRealm: 'cn' as 'cn' | 'global',
+  buildRegion: 'cn' as 'cn' | 'global' | 'dev',
   endpointByRealm: {
     cn: 'https://relay.cn.example',
     global: 'https://relay.global.example',
   },
+}));
+const devEnvironmentState = vi.hoisted(() => ({
+  active: 'dev' as 'dev' | 'release',
 }));
 const mocks = vi.hoisted(() => ({
   asyncGetItem: vi.fn(async (key: string) => store.get(key) ?? null),
@@ -40,12 +44,18 @@ vi.mock('react-native', () => ({
 }));
 
 vi.mock('@/config/env', () => ({
-  AUTH_REGION: 'cn',
+  get AUTH_REGION() {
+    return envState.buildRegion;
+  },
   BUILD_AUTH_REGION: 'cn',
   getActiveMobileSessionRealm: () => envState.activeRealm,
   loadMobileEndpointsForRealm: mocks.loadMobileEndpointsForRealm,
   getMobileEndpointForRealm: (realm: 'cn' | 'global') =>
     envState.endpointByRealm[realm],
+}));
+
+vi.mock('@/config/devServerEnvironment', () => ({
+  getDevServerEnvironment: () => devEnvironmentState.active,
 }));
 
 import {
@@ -56,6 +66,10 @@ import {
 
 const REGISTERED_KEY = 'cindy.push.registered';
 const PENDING_KEY = 'cindy.push.pendingUnregister';
+const DEV_REGISTERED_KEY = `${REGISTERED_KEY}.dev`;
+const RELEASE_REGISTERED_KEY = `${REGISTERED_KEY}.release`;
+const DEV_PENDING_KEY = `${PENDING_KEY}.dev`;
+const RELEASE_PENDING_KEY = `${PENDING_KEY}.release`;
 
 function setStoredRealms(key: string, realms: Array<'cn' | 'global'>): void {
   store.set(key, JSON.stringify({ version: 1, realms }));
@@ -73,6 +87,8 @@ describe('push notification realm routing', () => {
     vi.clearAllMocks();
     store.clear();
     envState.activeRealm = 'cn';
+    envState.buildRegion = 'cn';
+    devEnvironmentState.active = 'dev';
     mocks.getPermissionsAsync.mockResolvedValue({
       status: 'granted',
       canAskAgain: false,
@@ -109,6 +125,95 @@ describe('push notification realm routing', () => {
       'revocationToken',
     );
     expect(readStoredRealms(REGISTERED_KEY)).toEqual(['global']);
+  });
+
+  it('dev 构建复用 cn 推送构建线向开发环境注册', async () => {
+    envState.buildRegion = 'dev';
+    expect((await import('@/config/env')).AUTH_REGION).toBe('dev');
+    const apiFetch = vi.fn().mockResolvedValue({ registered: true });
+
+    await expect(
+      syncPushRegistration({ enabled: true, apiFetch }),
+    ).resolves.toBe('registered');
+
+    expect(apiFetch).toHaveBeenCalledWith(
+      '/api/device-link/push-token',
+      expect.objectContaining({
+        baseUrl: 'https://relay.cn.example',
+        method: 'PUT',
+        body: expect.objectContaining({
+          token: 'apns-device-token',
+          appVariant: 'cn',
+        }),
+      }),
+    );
+    expect(readStoredRealms(DEV_REGISTERED_KEY)).toEqual(['cn']);
+    expect(store.has(REGISTERED_KEY)).toBe(false);
+  });
+
+  it('CindyDev 的 Dev 与 Release 推送状态互相隔离', async () => {
+    envState.buildRegion = 'dev';
+    const apiFetch = vi.fn().mockResolvedValue({ registered: true });
+
+    await syncPushRegistration({ enabled: true, apiFetch });
+    devEnvironmentState.active = 'release';
+    await syncPushRegistration({ enabled: true, apiFetch });
+
+    expect(readStoredRealms(DEV_REGISTERED_KEY)).toEqual(['cn']);
+    expect(readStoredRealms(RELEASE_REGISTERED_KEY)).toEqual(['cn']);
+    expect(apiFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('注册期间切换 CindyDev 环境仍把补偿状态留在原 namespace', async () => {
+    envState.buildRegion = 'dev';
+    let releaseRead: (() => void) | undefined;
+    const readGate = new Promise<void>((resolve) => {
+      releaseRead = resolve;
+    });
+    mocks.asyncGetItem.mockImplementationOnce(async (key: string) => {
+      expect(key).toBe(DEV_REGISTERED_KEY);
+      await readGate;
+      return null;
+    });
+    const apiFetch = vi.fn();
+
+    const registration = syncPushRegistration({ enabled: true, apiFetch });
+    await vi.waitFor(() => {
+      expect(mocks.asyncGetItem).toHaveBeenCalledWith(DEV_REGISTERED_KEY);
+    });
+    await unregisterPushTokenBestEffort(null, 'cn');
+    devEnvironmentState.active = 'release';
+    releaseRead?.();
+
+    await expect(registration).resolves.toBe('skipped');
+    expect(apiFetch).not.toHaveBeenCalled();
+    expect(readStoredRealms(DEV_REGISTERED_KEY)).toEqual(['cn']);
+    expect(readStoredRealms(DEV_PENDING_KEY)).toEqual(['cn']);
+    expect(store.has(RELEASE_REGISTERED_KEY)).toBe(false);
+    expect(store.has(RELEASE_PENDING_KEY)).toBe(false);
+  });
+
+  it('Release 环境不读取旧 CindyDev 的无后缀状态', async () => {
+    envState.buildRegion = 'dev';
+    devEnvironmentState.active = 'release';
+    setStoredRealms(REGISTERED_KEY, ['global']);
+    const apiFetch = vi.fn().mockResolvedValue({ registered: true });
+
+    await syncPushRegistration({ enabled: true, apiFetch });
+
+    expect(readStoredRealms(RELEASE_REGISTERED_KEY)).toEqual(['cn']);
+    expect(readStoredRealms(REGISTERED_KEY)).toEqual(['global']);
+  });
+
+  it('Dev 环境把旧 CindyDev 的无后缀状态迁移到环境专属 key', async () => {
+    envState.buildRegion = 'dev';
+    setStoredRealms(REGISTERED_KEY, ['global']);
+    const apiFetch = vi.fn().mockResolvedValue({ registered: true });
+
+    await syncPushRegistration({ enabled: true, apiFetch });
+
+    expect(readStoredRealms(DEV_REGISTERED_KEY)).toEqual(['cn', 'global']);
+    expect(store.has(REGISTERED_KEY)).toBe(false);
   });
 
   it('切换区域前用旧 token 向显式冻结的旧区域撤销', async () => {

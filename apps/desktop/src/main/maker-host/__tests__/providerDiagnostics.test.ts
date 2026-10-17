@@ -9,9 +9,14 @@
  *   - resolveSavedProbeSpec 从 active-catalog + 注入 key reader 解析（仅 user 供应商）。
  */
 
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 
-import { BUNDLED_CATALOG, buildUserProvider } from '@cindy/model-providers';
+const probeLog = vi.hoisted(() => ({ warn: vi.fn(), info: vi.fn(), debug: vi.fn(), trace: vi.fn(), error: vi.fn() }));
+vi.mock('../logger-adapter', () => ({
+  createMakerLogger: () => ({ ...probeLog, child: () => probeLog }),
+}));
+
+import { BUNDLED_CATALOG, buildUserProvider, PROVIDER_MODEL_CATALOG, providerPresetOAuth } from '@cindy/model-providers';
 
 import { classifyProviderError } from '../../../shared/providerErrors.js';
 import {
@@ -27,6 +32,7 @@ import { setCustomProviders } from '../active-catalog.js';
 afterEach(() => {
   setCustomProviders([]);
   setDiagnosticsKeyReader(() => null);
+  probeLog.warn.mockClear();
 });
 
 describe('classifyProviderError', () => {
@@ -34,34 +40,55 @@ describe('classifyProviderError', () => {
     expect(classifyProviderError({ status: 401 }).code).toBe('AUTH_INVALID');
     expect(classifyProviderError({ status: 402 }).code).toBe('QUOTA_EXCEEDED');
     expect(classifyProviderError({ status: 403 }).code).toBe('AUTH_FORBIDDEN');
-    expect(classifyProviderError({ status: 429 })).toMatchObject({ code: 'RATE_LIMITED', retryable: true });
-    expect(classifyProviderError({ status: 529 })).toMatchObject({ code: 'RATE_LIMITED', retryable: true });
-    expect(classifyProviderError({ status: 503 })).toMatchObject({ code: 'UPSTREAM_ERROR', retryable: true });
+    expect(classifyProviderError({ status: 429 })).toMatchObject({
+      code: 'RATE_LIMITED',
+      retryable: true,
+    });
+    expect(classifyProviderError({ status: 529 })).toMatchObject({
+      code: 'RATE_LIMITED',
+      retryable: true,
+    });
+    expect(classifyProviderError({ status: 503 })).toMatchObject({
+      code: 'UPSTREAM_ERROR',
+      retryable: true,
+    });
   });
 
   it('404：模型措辞 → MODEL_NOT_FOUND，否则 ENDPOINT_NOT_FOUND', () => {
     expect(
-      classifyProviderError({ status: 404, bodyText: '{"error":{"message":"model: glm-x not found"}}' }).code,
+      classifyProviderError({
+        status: 404,
+        bodyText: '{"error":{"message":"model: glm-x not found"}}',
+      }).code,
     ).toBe('MODEL_NOT_FOUND');
-    expect(classifyProviderError({ status: 404, bodyText: 'no route' }).code).toBe('ENDPOINT_NOT_FOUND');
+    expect(classifyProviderError({ status: 404, bodyText: 'no route' }).code).toBe(
+      'ENDPOINT_NOT_FOUND',
+    );
   });
 
   it('400 按错误体 pattern 分流', () => {
     expect(
-      classifyProviderError({ status: 400, bodyText: 'The model `x` does not exist or you do not have access' }).code,
+      classifyProviderError({
+        status: 400,
+        bodyText: 'The model `x` does not exist or you do not have access',
+      }).code,
     ).toBe('MODEL_NOT_FOUND');
-    expect(classifyProviderError({ status: 400, bodyText: 'prompt is too long: 250000 tokens' }).code).toBe(
-      'CONTEXT_TOO_LONG',
+    expect(
+      classifyProviderError({ status: 400, bodyText: 'prompt is too long: 250000 tokens' }).code,
+    ).toBe('CONTEXT_TOO_LONG');
+    expect(classifyProviderError({ status: 400, bodyText: 'insufficient_quota' }).code).toBe(
+      'QUOTA_EXCEEDED',
     );
-    expect(classifyProviderError({ status: 400, bodyText: 'insufficient_quota' }).code).toBe('QUOTA_EXCEEDED');
-    expect(classifyProviderError({ status: 400, bodyText: 'Extra inputs are not permitted' }).code).toBe(
-      'WIRE_INCOMPATIBLE',
-    );
+    expect(
+      classifyProviderError({ status: 400, bodyText: 'Extra inputs are not permitted' }).code,
+    ).toBe('WIRE_INCOMPATIBLE');
     expect(classifyProviderError({ status: 400, bodyText: 'something odd' }).code).toBe('UNKNOWN');
   });
 
   it('403 命中鉴权措辞归 AUTH_INVALID（部分网关 key 无效报 403）', () => {
-    expect(classifyProviderError({ status: 403, bodyText: 'invalid api key provided' }).code).toBe('AUTH_INVALID');
+    expect(classifyProviderError({ status: 403, bodyText: 'invalid api key provided' }).code).toBe(
+      'AUTH_INVALID',
+    );
   });
 
   it('网络层错误 → UPSTREAM_UNREACHABLE / TIMEOUT（均可重试）', () => {
@@ -107,6 +134,45 @@ describe('buildProbeRequest', () => {
     });
   });
 
+  it('adds the OpenCode Go session header to the probe request', () => {
+    const { url, init } = buildProbeRequest({
+      agent: 'codex',
+      wireProtocol: 'openai-chat',
+      baseUrl: 'https://opencode.ai/zen/go/v1',
+      modelId: 'deepseek-v4.1-flash',
+      apiKey: 'go-secret',
+    });
+    expect(url).toBe('https://opencode.ai/zen/go/v1/chat/completions');
+    const headers = init.headers as Record<string, string>;
+    expect(headers['x-opencode-session']).toMatch(/^[0-9a-f-]{36}$/);
+    expect(headers.authorization).toBe('Bearer go-secret');
+  });
+
+  it('recognizes an OpenCode Go preset on a mirror base URL', () => {
+    const { init } = buildProbeRequest({
+      agent: 'codex',
+      wireProtocol: 'openai-chat',
+      baseUrl: 'https://mirror.example/v1',
+      catalogPresetId: 'opencode-go',
+      modelId: 'deepseek-v4.1-flash',
+      apiKey: 'go-secret',
+    });
+    const headers = init.headers as Record<string, string>;
+    expect(headers['x-opencode-session']).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  it('leaves other presets on mirror base URLs without the session header', () => {
+    const { init } = buildProbeRequest({
+      agent: 'codex',
+      wireProtocol: 'openai-chat',
+      baseUrl: 'https://mirror.example/v1',
+      catalogPresetId: 'moonshot',
+      modelId: 'kimi-k2',
+      apiKey: 'sk-mirror',
+    });
+    expect((init.headers as Record<string, string>)['x-opencode-session']).toBeUndefined();
+  });
+
   it('Codex Anthropic Messages probe matches runtime joining for a versioned base URL', () => {
     const { url } = buildProbeRequest({
       agent: 'codex',
@@ -125,9 +191,7 @@ describe('buildProbeRequest', () => {
       requestPath: '/tenant/messages?beta=true',
       modelId: 'claude-sonnet-4-6',
     });
-    expect(url).toBe(
-      'https://provider.example/api/v1/tenant/messages?tenant=alpha&beta=true',
-    );
+    expect(url).toBe('https://provider.example/api/v1/tenant/messages?tenant=alpha&beta=true');
   });
 
   it('cc wire：/v1/messages + anthropic-version + 双鉴权头（与 api-key-header 路由分支对齐）', () => {
@@ -175,7 +239,8 @@ describe('buildProbeRequest', () => {
     ['minimax-cn', 'https://api.minimaxi.com/v1/responses'],
     ['minimax-global', 'https://api.minimax.io/v1/responses'],
   ])('%s 预设拼出官方 Responses 端点', (presetId, expectedUrl) => {
-    const runtime = BUNDLED_CATALOG.presets?.find((preset) => preset.id === presetId)?.runtimes.codex;
+    const runtime = BUNDLED_CATALOG.presets?.find((preset) => preset.id === presetId)?.runtimes
+      .codex;
     expect(runtime).toBeDefined();
     const { url, init } = buildProbeRequest({
       agent: 'codex',
@@ -228,18 +293,18 @@ describe('buildProbeRequest', () => {
       modelId: 'custom-model',
       requestPath: '/infer?stream=1&mode=fast',
     });
-    expect(url).toBe(
-      'https://gateway.example/api/infer?tenant=alpha&stream=1&mode=fast',
-    );
+    expect(url).toBe('https://gateway.example/api/infer?tenant=alpha&stream=1&mode=fast');
   });
 
   it('rejects base URL credentials when applying an exact request path', () => {
-    expect(() => buildProbeRequest({
-      agent: 'codex',
-      baseUrl: 'https://user:pass@gateway.example/api',
-      modelId: 'custom-model',
-      requestPath: '/infer',
-    })).toThrow('invalid provider base URL');
+    expect(() =>
+      buildProbeRequest({
+        agent: 'codex',
+        baseUrl: 'https://user:pass@gateway.example/api',
+        modelId: 'custom-model',
+        requestPath: '/infer',
+      }),
+    ).toThrow('invalid provider base URL');
   });
 
   it('无 key 时不注入鉴权头（端点可能靠自定义 headers 鉴权）', () => {
@@ -306,37 +371,125 @@ describe('runProviderProbe（注入 fetch，不联网）', () => {
     expect(r).toMatchObject({ ok: false, code: 'UPSTREAM_UNREACHABLE' });
   });
 
+  it('失败探测在主进程留痕:字段含 agent/model/上游 origin/status/分类码/脱敏摘要,不含路径与凭证(#4954)', async () => {
+    const r = await runProviderProbe(
+      { agent: 'codex', baseUrl: 'https://opencode.example/zen/go/v1?token=secret-q', modelId: 'kimi-k2', apiKey: 'sk-live-abcdef123456', wireProtocol: 'openai-chat' },
+      async () => fakeResponse(400, '{"error":{"message":"model kimi-k2 is not served by this endpoint","authorization":"Bearer sk-live-abcdef123456"}}'),
+    );
+    expect(r).toMatchObject({ ok: false, code: 'UNKNOWN', status: 400 });
+    expect(probeLog.warn).toHaveBeenCalledTimes(1);
+    const [msg, ctx] = probeLog.warn.mock.calls[0] as [string, Record<string, unknown>];
+    expect(msg).toBe('provider connection probe failed');
+    expect(ctx).toMatchObject({ agent: 'codex', model: 'kimi-k2', upstream: 'https://opencode.example', wireProtocol: 'openai-chat', status: 400, code: 'UNKNOWN' });
+    expect(typeof ctx.latencyMs).toBe('number');
+    expect(String(ctx.detail)).toContain('not served by this endpoint');
+    // 路径、query 与凭证不得进入日志。
+    const serialized = JSON.stringify(ctx);
+    expect(serialized).not.toContain('/zen/go/v1');
+    expect(serialized).not.toContain('secret-q');
+    expect(serialized).not.toContain('sk-live-abcdef123456');
+  });
+
+  it('拿到 SSE 响应头后读首帧中断:异常照常抛出,但主进程已留痕(#4963 review)', async () => {
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) { controller.error(new Error('socket hang up')); },
+    });
+    await expect(runProviderProbe(
+      { agent: 'codex', baseUrl: 'https://x.example/v1', modelId: 'm', apiKey: 'k', wireProtocol: 'openai-chat' },
+      async () => new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+    )).rejects.toThrow('socket hang up');
+    expect(probeLog.warn).toHaveBeenCalledTimes(1);
+    expect(probeLog.warn.mock.calls[0][1]).toMatchObject({ code: 'UNKNOWN', model: 'm', upstream: 'https://x.example' });
+    expect(String((probeLog.warn.mock.calls[0][1] as Record<string, unknown>).detail)).toContain('socket hang up');
+  });
+
+  it('成功探测不写 warn 日志', async () => {
+    await runProviderProbe(
+      { agent: 'claude-code', baseUrl: 'https://x.example', modelId: 'm', apiKey: 'k' },
+      async () => fakeResponse(200, '{}'),
+    );
+    expect(probeLog.warn).not.toHaveBeenCalled();
+  });
+
+  it('网络层失败同样留痕(无 status,带分类码)', async () => {
+    const err = new Error('fetch failed');
+    (err as Error & { cause?: { code: string } }).cause = { code: 'ECONNREFUSED' };
+    await runProviderProbe(
+      { agent: 'codex', baseUrl: 'https://nope.example', modelId: 'm' },
+      async () => { throw err; },
+    );
+    expect(probeLog.warn).toHaveBeenCalledTimes(1);
+    expect(probeLog.warn.mock.calls[0][1]).toMatchObject({ code: 'UPSTREAM_UNREACHABLE', upstream: 'https://nope.example', status: undefined });
+  });
+
   it('openai-chat 探测:200 text/event-stream → ok', async () => {
     const r = await runProviderProbe(
-      { agent: 'codex', baseUrl: 'https://x.example', modelId: 'm', apiKey: 'k', wireProtocol: 'openai-chat' },
-      async () => new Response('data: {}\n\n', { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+      {
+        agent: 'codex',
+        baseUrl: 'https://x.example',
+        modelId: 'm',
+        apiKey: 'k',
+        wireProtocol: 'openai-chat',
+      },
+      async () =>
+        new Response('data: {}\n\n', {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+        }),
     );
     expect(r.ok).toBe(true);
   });
 
   it('openai-chat 探测:200 SSE 顶层 error 帧 → 分类失败', async () => {
     const r = await runProviderProbe(
-      { agent: 'codex', baseUrl: 'https://x.example', modelId: 'm', apiKey: 'k', wireProtocol: 'openai-chat' },
-      async () => new Response(
-        'data: {"error":{"type":"server_error","message":"model overloaded"}}\n\n',
-        { status: 200, headers: { 'content-type': 'text/event-stream' } },
-      ),
+      {
+        agent: 'codex',
+        baseUrl: 'https://x.example',
+        modelId: 'm',
+        apiKey: 'k',
+        wireProtocol: 'openai-chat',
+      },
+      async () =>
+        new Response('data: {"error":{"type":"server_error","message":"model overloaded"}}\n\n', {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+        }),
     );
     expect(r).toMatchObject({ ok: false, code: 'UPSTREAM_ERROR', status: 200 });
   });
 
   it('openai-chat 探测:200 SSE 无 data 帧 → WIRE_INCOMPATIBLE', async () => {
     const r = await runProviderProbe(
-      { agent: 'codex', baseUrl: 'https://x.example', modelId: 'm', apiKey: 'k', wireProtocol: 'openai-chat' },
-      async () => new Response(': keepalive\n\n', { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+      {
+        agent: 'codex',
+        baseUrl: 'https://x.example',
+        modelId: 'm',
+        apiKey: 'k',
+        wireProtocol: 'openai-chat',
+      },
+      async () =>
+        new Response(': keepalive\n\n', {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+        }),
     );
     expect(r).toMatchObject({ ok: false, code: 'WIRE_INCOMPATIBLE', status: 200 });
   });
 
   it('openai-chat 探测:200 但非 SSE(application/json)→ WIRE_INCOMPATIBLE(与真实桥同口径)', async () => {
     const r = await runProviderProbe(
-      { agent: 'codex', baseUrl: 'https://x.example', modelId: 'm', apiKey: 'k', wireProtocol: 'openai-chat' },
-      async () => new Response('{"choices":[]}', { status: 200, headers: { 'content-type': 'application/json' } }),
+      {
+        agent: 'codex',
+        baseUrl: 'https://x.example',
+        modelId: 'm',
+        apiKey: 'k',
+        wireProtocol: 'openai-chat',
+      },
+      async () =>
+        new Response('{"choices":[]}', {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
     );
     expect(r).toMatchObject({ ok: false, code: 'WIRE_INCOMPATIBLE', status: 200 });
   });
@@ -344,7 +497,8 @@ describe('runProviderProbe（注入 fetch，不联网）', () => {
   it('原生 Responses(codex 无 openai-chat)不做 SSE 校验:200 JSON 仍 ok', async () => {
     const r = await runProviderProbe(
       { agent: 'codex', baseUrl: 'https://x.example', modelId: 'm', apiKey: 'k' },
-      async () => new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } }),
+      async () =>
+        new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } }),
     );
     expect(r.ok).toBe(true);
   });
@@ -369,7 +523,9 @@ describe('resolveSavedProbeSpec / testProviderConnection(saved)', () => {
 
   it('从 active-catalog 解析 user 供应商 + 注入 key reader 读 key', () => {
     setCustomProviders([buildUserProvider(config)]);
-    setDiagnosticsKeyReader((id, agent) => (id === 'my-relay' && agent === 'claude-code' ? 'sk-saved' : null));
+    setDiagnosticsKeyReader((id, agent) =>
+      id === 'my-relay' && agent === 'claude-code' ? 'sk-saved' : null,
+    );
     const spec = resolveSavedProbeSpec('my-relay', 'claude-code');
     expect(spec).toMatchObject({
       baseUrl: 'https://relay.example/anthropic',
@@ -425,6 +581,142 @@ describe('resolveSavedProbeSpec / testProviderConnection(saved)', () => {
     expect(seenUrl).toBe('https://api.deepseek.com/chat/completions');
   });
 
+  it('Pi 的常用 Chat 默认仍显式进入 saved 探测，不误走 /responses', async () => {
+    setCustomProviders([
+      buildUserProvider({
+        id: 'pi-chat',
+        name: 'Pi Chat',
+        runtimes: {
+          pi: {
+            baseUrl: 'https://pi-chat.example/v1',
+            wireProtocol: 'openai-chat',
+            models: [{ id: 'chat-model', name: 'Chat Model' }],
+          },
+        },
+      }),
+    ]);
+    setDiagnosticsKeyReader(() => 'pi-chat-key');
+
+    expect(resolveSavedProbeSpec('pi-chat', 'pi').wireProtocol).toBe('openai-chat');
+    let seenUrl = '';
+    await testProviderConnection(
+      { kind: 'saved', providerId: 'pi-chat', agent: 'pi' },
+      async (url) => {
+        seenUrl = String(url);
+        return new Response('data: [DONE]\n\n', {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+        });
+      },
+    );
+    expect(seenUrl).toBe('https://pi-chat.example/v1/chat/completions');
+  });
+
+  it('Pi saved 探测优先使用单模型协议覆盖', () => {
+    setCustomProviders([
+      buildUserProvider({
+        id: 'pi-model-override',
+        name: 'Pi Model Override',
+        runtimes: {
+          pi: {
+            baseUrl: 'https://pi-override.example/v1',
+            wireProtocol: 'openai-chat',
+            models: [
+              {
+                id: 'messages-model',
+                name: 'Messages Model',
+                piApi: 'anthropic-messages',
+              },
+            ],
+          },
+        },
+      }),
+    ]);
+
+    expect(resolveSavedProbeSpec('pi-model-override', 'pi')).toMatchObject({
+      baseUrl: 'https://pi-override.example/v1',
+      modelId: 'messages-model',
+      wireProtocol: 'anthropic-messages',
+    });
+  });
+
+  it('仅选择 glm-5.3 时 saved 探测使用模型级 Responses 路由', async () => {
+    setCustomProviders([
+      buildUserProvider({
+        id: 'glm-responses-only',
+        name: 'GLM Responses Only',
+        runtimes: {
+          codex: {
+            baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4',
+            wireProtocol: 'openai-chat',
+            requestPath: '/legacy/chat',
+            models: [
+              {
+                id: 'glm-5.3',
+                name: 'GLM-5.3',
+                route: {
+                  baseUrl: 'https://open.bigmodel.cn/api/v1',
+                  wireProtocol: 'openai-responses',
+                },
+              },
+            ],
+          },
+        },
+      }),
+    ]);
+    setDiagnosticsKeyReader(() => 'glm-key');
+
+    expect(resolveSavedProbeSpec('glm-responses-only', 'codex')).toMatchObject({
+      baseUrl: 'https://open.bigmodel.cn/api/v1',
+      modelId: 'glm-5.3',
+      wireProtocol: 'openai-responses',
+      requestPath: undefined,
+    });
+    let seenUrl = '';
+    await testProviderConnection(
+      { kind: 'saved', providerId: 'glm-responses-only', agent: 'codex' },
+      async (url) => {
+        seenUrl = String(url);
+        return fakeResponse(200, '{}');
+      },
+    );
+    expect(seenUrl).toBe('https://open.bigmodel.cn/api/v1/responses');
+  });
+
+  it('无模型级 route 的 glm-5.2 saved 探测继续使用 runtime V4 Chat 路由', async () => {
+    setCustomProviders([
+      buildUserProvider({
+        id: 'glm-chat-only',
+        name: 'GLM Chat Only',
+        runtimes: {
+          codex: {
+            baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4',
+            wireProtocol: 'openai-chat',
+            requestPath: '/chat/completions',
+            models: [{ id: 'glm-5.2', name: 'GLM-5.2' }],
+          },
+        },
+      }),
+    ]);
+    setDiagnosticsKeyReader(() => 'glm-key');
+
+    expect(resolveSavedProbeSpec('glm-chat-only', 'codex')).toMatchObject({
+      baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4',
+      modelId: 'glm-5.2',
+      wireProtocol: 'openai-chat',
+      requestPath: '/chat/completions',
+    });
+    let seenUrl = '';
+    await testProviderConnection(
+      { kind: 'saved', providerId: 'glm-chat-only', agent: 'codex' },
+      async (url) => {
+        seenUrl = String(url);
+        return fakeResponse(200, 'data: [DONE]\n\n');
+      },
+    );
+    expect(seenUrl).toBe('https://open.bigmodel.cn/api/coding/paas/v4/chat/completions');
+  });
+
   it('saved 探测沿用自定义供应商的精确请求路径', async () => {
     setCustomProviders([
       buildUserProvider({
@@ -440,8 +732,7 @@ describe('resolveSavedProbeSpec / testProviderConnection(saved)', () => {
       }),
     ]);
     setDiagnosticsKeyReader(() => 'sk-exact');
-    expect(resolveSavedProbeSpec('exact-path', 'codex').requestPath)
-      .toBe('/tenant/acme/infer');
+    expect(resolveSavedProbeSpec('exact-path', 'codex').requestPath).toBe('/tenant/acme/infer');
   });
 
   it('不存在 / 非 user 供应商 / 无该 runtime → 抛错（handler 映射 INVALID_PARAMS）', () => {
@@ -459,8 +750,21 @@ describe('resolveSavedProbeSpec / testProviderConnection(saved)', () => {
         models: {
           ...provider.models,
           'claude-code': [
-            { id: 'text-embedding-3-large', name: 'Embedding', contextWindow: 8191, efforts: [], defaultEffort: null, mode: 'embedding' },
-            { id: 'glm-5.2', name: 'GLM', contextWindow: 128_000, efforts: [], defaultEffort: null },
+            {
+              id: 'text-embedding-3-large',
+              name: 'Embedding',
+              contextWindow: 8191,
+              efforts: [],
+              defaultEffort: null,
+              mode: 'embedding',
+            },
+            {
+              id: 'glm-5.2',
+              name: 'GLM',
+              contextWindow: 128_000,
+              efforts: [],
+              defaultEffort: null,
+            },
           ],
         },
       },
@@ -477,7 +781,14 @@ describe('resolveSavedProbeSpec / testProviderConnection(saved)', () => {
         models: {
           ...provider.models,
           'claude-code': [
-            { id: 'text-embedding-3-large', name: 'Embedding', contextWindow: 8191, efforts: [], defaultEffort: null, mode: 'embedding' },
+            {
+              id: 'text-embedding-3-large',
+              name: 'Embedding',
+              contextWindow: 8191,
+              efforts: [],
+              defaultEffort: null,
+              mode: 'embedding',
+            },
           ],
         },
       },
@@ -585,4 +896,126 @@ describe('resolveSavedProbeSpec / testProviderConnection(saved)', () => {
     ).rejects.toThrow(/disabled/);
     expect(fetchCalled).toBe(false);
   });
+});
+
+
+it('probes Google using generateContent instead of falling through to Responses', () => {
+  const request = buildProbeRequest({ agent: 'codex', wireProtocol: 'google-generative-ai',
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta', modelId: 'new-gemini', apiKey: 'fixture-key' });
+  expect(request.url).toBe('https://generativelanguage.googleapis.com/v1beta/models/new-gemini:generateContent');
+  expect(request.init.headers).toMatchObject({ 'x-goog-api-key': 'fixture-key' });
+  expect(request.init.headers).not.toHaveProperty('authorization');
+  expect(JSON.parse(String(request.init.body))).toMatchObject({ contents: [{ role: 'user', parts: [{ text: 'ping' }] }], generationConfig: { maxOutputTokens: 16 } });
+});
+
+
+describe('native SDK connection probes', () => {
+  it.each(['saved', 'adhoc', 'header-only'] as const)('uses the Vertex SDK for a %s connection, not the public Gemini path', async kind => {
+    const row = PROVIDER_MODEL_CATALOG.providers['google-vertex'][0];
+    const baseUrl = 'https://us-central1-aiplatform.googleapis.com';
+    const fetchSpy = vi.fn(async (url: unknown, init?: RequestInit) => {
+      expect(String(url)).toContain('/v1/publishers/google/models/');
+      expect(String(url)).toContain(':streamGenerateContent');
+      expect(JSON.parse(String(init?.body)).generationConfig.maxOutputTokens).toBeGreaterThan(0);
+      expect(JSON.parse(String(init?.body)).generationConfig.maxOutputTokens).toBeLessThanOrEqual(16);
+      return new Response(`data: ${JSON.stringify({ candidates: [{ content: { role: 'model', parts: [{ text: 'ok' }] }, finishReason: 'STOP' }] })}\n\n`,
+        { headers: { 'content-type': 'text/event-stream' } });
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+    const wrongTransport = vi.fn(async () => { throw new Error('must use the native Vertex SDK'); });
+    setCustomProviders([buildUserProvider({ id: 'vertex-test', name: 'Vertex', auth: { method: 'apiKey' },
+      runtimes: { pi: { baseUrl, wireProtocol: 'google-generative-ai', catalogPresetId: 'google-vertex',
+        models: [{ id: row.id, name: row.name, piApi: 'google-vertex' }] } },
+    })]);
+    setDiagnosticsKeyReader(() => 'fixture-vertex-key');
+    try {
+      const result = await testProviderConnection(kind === 'saved'
+        ? { kind, providerId: 'vertex-test', agent: 'pi' }
+        : { kind: 'adhoc', spec: { agent: 'pi', baseUrl, modelId: row.id, api: 'google-vertex',
+          wireProtocol: 'google-generative-ai', ...(kind === 'header-only'
+            ? { headers: { 'X-Goog-Api-Key': 'fixture-vertex-key' } } : { apiKey: 'fixture-vertex-key' }) } }, wrongTransport);
+      expect(result, JSON.stringify(result)).toMatchObject({ ok: true });
+      expect(fetchSpy).toHaveBeenCalledOnce();
+      expect(wrongTransport).not.toHaveBeenCalled();
+    } finally { vi.unstubAllGlobals(); }
+  });
+
+  it('does not turn an SDK authentication error into a successful probe', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{"error":{"code":401,"message":"invalid api key"}}', { status: 401 })));
+    try {
+      const result = await runProviderProbe({ agent: 'pi', baseUrl: 'https://us-central1-aiplatform.googleapis.com',
+        modelId: 'gemini-fixture', api: 'google-vertex', wireProtocol: 'google-generative-ai', apiKey: 'fixture-key' });
+      expect(result).toMatchObject({ ok: false, code: 'AUTH_INVALID', status: 401 });
+    } finally { vi.unstubAllGlobals(); }
+  });
+});
+
+
+it('keeps the Copilot SDK identity but uses the assigned enterprise host for connection tests', () => {
+  const row = PROVIDER_MODEL_CATALOG.providers['github-copilot'].find(row => row.execution.pi.api === 'openai-responses')!;
+  setCustomProviders([buildUserProvider({ id: 'copilot-probe', name: 'Copilot',
+    auth: { method: 'oauth', oauth: providerPresetOAuth('github-copilot')! },
+    runtimes: { codex: { baseUrl: row.upstream, catalogPresetId: 'github-copilot', wireProtocol: 'openai-responses',
+      models: [{ id: row.id, name: row.name, api: 'openai-responses' }] } },
+  })]);
+  setDiagnosticsOAuthTokenReader(() => 'fixture;proxy-ep=proxy.enterprise.githubcopilot.com;');
+  try {
+    expect(resolveSavedProbeSpec('copilot-probe', 'codex')).toMatchObject({
+      baseUrl: 'https://api.enterprise.githubcopilot.com', api: 'openai-responses',
+      nativeModel: { upstream: row.upstream, execution: { pi: { headers: expect.objectContaining({ 'Copilot-Integration-Id': 'vscode-chat' }) } } },
+    });
+  } finally { setDiagnosticsOAuthTokenReader(() => null); }
+});
+
+
+it('does not let a saved Vertex probe inherit Desktop ADC against an unrelated host', async () => {
+  setCustomProviders([buildUserProvider({
+    id: 'vertex-attacker', name: 'Vertex', auth: { method: 'apiKey' },
+    runtimes: { pi: { baseUrl: 'https://attacker.example', wireProtocol: 'google-generative-ai',
+      models: [{ id: 'gemini-fixture', name: 'Gemini', piApi: 'google-vertex' }] } },
+  })]);
+  const fetchSpy = vi.fn(async () => { throw new Error('must not send'); });
+  const result = await testProviderConnection(
+    { kind: 'saved', providerId: 'vertex-attacker', agent: 'pi' }, fetchSpy);
+  expect(result).toMatchObject({ ok: false, code: 'AUTH_INVALID' });
+  expect(fetchSpy).not.toHaveBeenCalled();
+});
+
+it('does not let a Bedrock probe inherit Desktop IAM against an unrelated host even with a dummy key', async () => {
+  const fetchSpy = vi.fn(async () => { throw new Error('must not send'); });
+  const result = await runProviderProbe({
+    agent: 'pi',
+    baseUrl: 'https://attacker.example',
+    modelId: 'claude-fixture',
+    api: 'bedrock-converse-stream',
+    apiKey: 'not-an-aws-key',
+  }, fetchSpy);
+  expect(result).toMatchObject({ ok: false, code: 'AUTH_INVALID' });
+  expect(fetchSpy).not.toHaveBeenCalled();
+});
+
+it('does not let an adhoc Vertex probe inherit Desktop ADC against an unrelated host', async () => {
+  const fetchSpy = vi.fn(async () => { throw new Error('must not send');
+  });
+  const result = await runProviderProbe({
+    agent: 'pi',
+    baseUrl: 'https://attacker.example',
+    modelId: 'gemini-fixture',
+    api: 'google-vertex',
+    wireProtocol: 'google-generative-ai',
+    authMethod: 'apiKey',
+  }, fetchSpy);
+  expect(result).toMatchObject({ ok: false, code: 'AUTH_INVALID' });
+  expect(fetchSpy).not.toHaveBeenCalled();
+});
+
+it('does not replace an explicit Chat probe with the preset’s Google SDK', async () => {
+  const fetcher = vi.fn<typeof fetch>(async (url, init) => {
+    expect(String(url)).toBe('https://proxy.example/v1/chat/completions');
+    expect(JSON.parse(String(init?.body))).toMatchObject({ model: 'gemini-2.5-flash', messages: expect.any(Array) });
+    return new Response('data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } });
+  });
+  expect(await runProviderProbe({ agent: 'pi', baseUrl: 'https://proxy.example/v1', modelId: 'gemini-2.5-flash',
+    catalogPresetId: 'google-vertex', wireProtocol: 'openai-chat', apiKey: 'fixture-key' }, fetcher)).toMatchObject({ ok: true });
+  expect(fetcher).toHaveBeenCalledOnce();
 });

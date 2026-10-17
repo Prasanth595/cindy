@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -8,7 +8,9 @@ vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key }),
 }));
 
-vi.mock('@/components/ui/tooltip', () => ({
+vi.mock('@/components/ui/tooltip', async (importOriginal) => ({
+  // Keep Tip's real ref/event forwarding for the composed menu trigger.
+  ...(await importOriginal<typeof import('@/components/ui/tooltip')>()),
   Tooltip: {
     Root: ({ children }: { children: ReactNode }) => <>{children}</>,
     Trigger: ({ children }: { children: ReactNode }) => <>{children}</>,
@@ -38,7 +40,7 @@ describe('MessageActionBar', () => {
     });
   });
 
-  it('groups continue, add-to-chat, link copy, rewind, and delete under ellipsis', async () => {
+  it('keeps fork beside copy and groups the remaining actions under ellipsis', async () => {
     const onFork = vi.fn(async () => undefined);
     const onAddToChat = vi.fn();
     const onRewind = vi.fn();
@@ -62,9 +64,9 @@ describe('MessageActionBar', () => {
       name: 'chat.messageActionBar.moreActions',
     });
     expect(trigger).toBeTruthy();
-    expect(screen.queryByRole('button', {
+    expect(screen.getByRole('button', {
       name: 'chat.messageActionBar.fork',
-    })).toBeNull();
+    })).toBeTruthy();
     expect(screen.queryByRole('button', {
       name: 'chat.messageActionBar.rewind',
     })).toBeNull();
@@ -72,13 +74,14 @@ describe('MessageActionBar', () => {
       name: 'chat.messageActionBar.fork',
     })).toBeNull();
 
-    fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false });
-    expect(screen.getAllByRole('menuitem', {
-      name: 'chat.messageActionBar.fork',
-    })).toHaveLength(1);
-    expect(screen.getByRole('menuitem', {
+    expect(screen.getByRole('button', {
       name: 'chat.messageActionBar.fork',
     }).querySelector('.lucide-split')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'chat.messageActionBar.fork' }));
+    await waitFor(() => expect(onFork).toHaveBeenCalledTimes(1));
+
+    fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false });
     expect(screen.getByRole('menuitem', {
       name: 'chat.quote.addToChat',
     }).querySelector('.lucide-message-square-plus')).toBeTruthy();
@@ -92,14 +95,6 @@ describe('MessageActionBar', () => {
       name: 'chat.messageActionBar.delete',
     }).querySelector('.lucide-trash2')).toBeTruthy();
 
-    fireEvent.click(
-      screen.getByRole('menuitem', {
-        name: 'chat.messageActionBar.fork',
-      }),
-    );
-    await waitFor(() => expect(onFork).toHaveBeenCalledTimes(1));
-
-    fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false });
     fireEvent.click(
       screen.getByRole('menuitem', {
         name: 'chat.quote.addToChat',
@@ -132,6 +127,76 @@ describe('MessageActionBar', () => {
     await waitFor(() => expect(onDelete).toHaveBeenCalledTimes(1));
   });
 
+  it.each(['left', 'right'] as const)('preserves edit and rewind callbacks with %s alignment', (align) => {
+    const onEdit = vi.fn();
+    const onRewind = vi.fn();
+    render(<MessageActionBar copyText="body" align={align} hovered onEdit={onEdit} onRewind={onRewind} />);
+    fireEvent.click(screen.getByRole('button', { name: 'chat.messageActionBar.edit' }));
+    expect(onEdit).toHaveBeenCalledTimes(1);
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'chat.messageActionBar.moreActions' }), { button: 0, ctrlKey: false });
+    fireEvent.click(screen.getByRole('menuitem', { name: 'chat.messageActionBar.rewind' }));
+    expect(onRewind).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['left', 'right'] as const)('does not invent user actions without callbacks with %s alignment', (align) => {
+    render(<MessageActionBar copyText="body" align={align} hovered />);
+    expect(screen.queryByRole('button', { name: 'chat.messageActionBar.edit' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'chat.messageActionBar.moreActions' })).toBeNull();
+  });
+
+  it('keeps teammate actions visible, exposes Reply, and hides fork and usage', async () => {
+    const onFork = vi.fn(async () => undefined);
+    const onAddToChat = vi.fn();
+    const onDelete = vi.fn(async () => undefined);
+    const deepLink = 'cindy://session/session-a?message=message-a';
+
+    const { container } = render(
+      <MessageActionBar
+        copyText="message body"
+        copyLinkText={deepLink}
+        align="left"
+        hovered={false}
+        simplifiedBotConversation
+        onFork={onFork}
+        onAddToChat={onAddToChat}
+        onDelete={onDelete}
+        turnMoney={{ amount: 1.5, currency: 'CNY', approximate: false, kind: 'actual-cost' }}
+        turnUsageDetails={{
+          inputTokens: 10,
+          outputTokens: 5,
+          cacheReadTokens: 0,
+          cacheCreateTokens: 0,
+          totalTokens: 15,
+          cacheHitRate: 0,
+        }}
+      />,
+    );
+
+    const actionBar = container.firstElementChild;
+    expect(actionBar?.classList.contains('opacity-100')).toBe(true);
+    expect(actionBar?.classList.contains('pointer-events-none')).toBe(false);
+    expect(screen.queryByRole('button', { name: 'chat.messageActionBar.fork' })).toBeNull();
+    expect(screen.queryByText('¥1.50')).toBeNull();
+    expect(screen.queryByText('chat.messageActionBar.turnTokens')).toBeNull();
+
+    const reply = screen.getByRole('button', { name: 'chat.messageActionBar.reply' });
+    expect(reply.querySelector('.lucide-chat-reply')).toBeTruthy();
+    fireEvent.click(reply);
+    expect(onAddToChat).toHaveBeenCalledTimes(1);
+
+    const trigger = screen.getByRole('button', {
+      name: 'chat.messageActionBar.moreActions',
+    });
+    fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false });
+    expect(screen.queryByRole('menuitem', { name: 'chat.quote.addToChat' })).toBeNull();
+    expect(screen.getByRole('menuitem', {
+      name: 'chat.messageActionBar.copyLink',
+    })).toBeTruthy();
+    expect(screen.getByRole('menuitem', {
+      name: 'chat.messageActionBar.delete',
+    })).toBeTruthy();
+  });
+
   it('does not restore pointer focus to the ellipsis trigger after close', async () => {
     render(
       <MessageActionBar
@@ -155,6 +220,52 @@ describe('MessageActionBar', () => {
     await waitFor(() => expect(document.activeElement).not.toBe(trigger));
   });
 
+  it('keeps the ellipsis icon static while the direct fork action is running', async () => {
+    let resolveFork!: () => void;
+    const onFork = vi.fn(
+      () => new Promise<void>((resolve) => {
+        resolveFork = resolve;
+      }),
+    );
+    const onEdit = vi.fn();
+
+    render(
+      <MessageActionBar
+        copyText="message body"
+        align="right"
+        hovered
+        onFork={onFork}
+        onAddToChat={vi.fn()}
+        onEdit={onEdit}
+      />,
+    );
+
+    const forkButton = screen.getByRole('button', {
+      name: 'chat.messageActionBar.fork',
+    });
+    const moreButton = screen.getByRole('button', {
+      name: 'chat.messageActionBar.moreActions',
+    });
+    const editButton = screen.getByRole('button', {
+      name: 'chat.messageActionBar.edit',
+    });
+
+    fireEvent.click(forkButton);
+    await waitFor(() => expect(forkButton.querySelector('.animate-spinner')).toBeTruthy());
+    expect(moreButton.querySelector('.lucide-ellipsis')).toBeTruthy();
+    expect(moreButton.querySelector('.lucide-loader-circle')).toBeNull();
+    expect((moreButton as HTMLButtonElement).disabled).toBe(false);
+    expect((editButton as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(editButton);
+    expect(onEdit).not.toHaveBeenCalled();
+
+    resolveFork();
+    await waitFor(() => {
+      expect(forkButton.querySelector('.animate-spinner')).toBeNull();
+      expect((editButton as HTMLButtonElement).disabled).toBe(false);
+    });
+  });
+
   it('restores focus to the ellipsis trigger for keyboard users', async () => {
     render(
       <MessageActionBar
@@ -168,7 +279,7 @@ describe('MessageActionBar', () => {
     const trigger = screen.getByRole('button', {
       name: 'chat.messageActionBar.moreActions',
     });
-    trigger.focus();
+    act(() => trigger.focus());
     fireEvent.keyDown(trigger, { key: 'ArrowDown' });
     const item = await screen.findByRole('menuitem', {
       name: 'chat.quote.addToChat',
@@ -178,7 +289,7 @@ describe('MessageActionBar', () => {
     await waitFor(() => expect(document.activeElement).toBe(trigger));
   });
 
-  it('renders the user-turn total and SDK segment details on separate lines', () => {
+  it('renders the user-turn total and aggregated details on separate lines', () => {
     render(
       <MessageActionBar
         copyText="message body"
@@ -203,6 +314,17 @@ describe('MessageActionBar', () => {
           cacheCreateTokens: 0,
           totalTokens: 15,
           cacheHitRate: 0,
+          models: ['claude-fable-5[1m]', 'claude-opus-5[1m]'],
+          perModelCost: [
+            {
+              model: 'claude-fable-5',
+              money: { amount: 0.75, currency: 'CNY', approximate: false, kind: 'actual-cost' },
+            },
+            {
+              model: 'claude-opus-5',
+              money: { amount: 1.25, currency: 'CNY', approximate: false, kind: 'actual-cost' },
+            },
+          ],
         }}
       />,
     );
@@ -210,13 +332,15 @@ describe('MessageActionBar', () => {
     const tooltip = screen.getByText(
       (_, element) =>
         element?.classList.contains('whitespace-pre-line') === true &&
-        element.textContent?.includes('chat.messageActionBar.userTurnCostTotalLine') === true,
+        element.textContent?.includes('chat.messageActionBar.userTurnCostDetailsTitle') === true,
     );
     expect(tooltip.textContent).toBe(
       [
-        'chat.messageActionBar.userTurnCostTotalLine',
         'chat.messageActionBar.userTurnCostDetailsTitle',
         'usageDetails.costLine',
+        'usageDetails.costBreakdownHeader',
+        'usageDetails.modelCostLine',
+        'usageDetails.modelCostLine',
         'usageDetails.tokenLine',
         'usageDetails.cacheLine',
       ].join('\n'),

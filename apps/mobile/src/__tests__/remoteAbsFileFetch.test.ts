@@ -4,6 +4,7 @@ import { i18n } from '@/i18n';
 import {
   adaptTextFilePreviewResult,
   fetchRemoteAbsFileToUrl,
+  fetchRemoteAbsFileOnce,
   type RemoteAbsFileFetchDeps,
 } from '@/session/remoteAbsFileFetch';
 import type { RemoteTextFilePreviewResult } from '@/device-link/mobileMakerTransport';
@@ -38,6 +39,51 @@ function makeDeps(overrides: Partial<{
 }
 
 describe('fetchRemoteAbsFileToUrl', () => {
+  // Unit regression: cancelling HTML preparation while opening a link must not
+  // enqueue the file read once that link eventually opens.
+  it('does not start a preview file read after cancellation during link setup', async () => {
+    const { deps, openLink, fetchRemoteMedia } = makeDeps();
+    const controller = new AbortController();
+    openLink.mockImplementation(async () => { controller.abort(); });
+    await expect(fetchRemoteAbsFileOnce(deps, '/page.html', undefined, undefined, undefined, controller.signal))
+      .rejects.toThrow('PREVIEW_CANCELLED');
+    expect(fetchRemoteMedia).not.toHaveBeenCalled();
+    expect(openLink).toHaveBeenCalledOnce();
+  });
+  it('separates streaming and complete-file cache entries in either order', async () => {
+    for (const first of [true, false]) {
+      const { deps, fetchRemoteMedia } = makeDeps();
+      await fetchRemoteAbsFileToUrl({ ...deps, stream: first }, '/media.mp4');
+      await fetchRemoteAbsFileToUrl({ ...deps, stream: !first }, '/media.mp4');
+      await fetchRemoteAbsFileToUrl({ ...deps, stream: first }, '/media.mp4');
+      expect(fetchRemoteMedia).toHaveBeenCalledTimes(2);
+      expect(fetchRemoteMedia.mock.calls.map((call) => (call as unknown[])[1])).toEqual(
+        first ? [undefined, { stream: false }] : [{ stream: false }, undefined],
+      );
+    }
+  });
+  it('aborts an in-flight fetch once the caller cancels and does not retry', async () => {
+    const { deps, fetchRemoteMedia, presignGet } = makeDeps();
+    let cancelled = false;
+    let seenSignal: AbortSignal | undefined;
+    fetchRemoteMedia.mockImplementation(
+      (...args: unknown[]) =>
+        new Promise((_resolve, reject) => {
+          seenSignal = (args[1] as { signal?: AbortSignal } | undefined)?.signal;
+          seenSignal?.addEventListener('abort', () => reject(new Error('aborted')));
+        }),
+    );
+    const pending = fetchRemoteAbsFileToUrl(
+      { ...deps, stream: false, isCancelled: () => cancelled },
+      '/tmp/big.zip',
+    );
+    await vi.waitFor(() => expect(seenSignal).toBeDefined());
+    cancelled = true;
+    await expect(pending).rejects.toThrow();
+    expect(seenSignal?.aborted).toBe(true);
+    expect(fetchRemoteMedia).toHaveBeenCalledTimes(1);
+    expect(presignGet).not.toHaveBeenCalled();
+  });
   it('走 media:fetch 绝对路径通道并 presign 出下载地址', async () => {
     const { deps, fetchRemoteMedia, presignGet } = makeDeps();
     const url = await fetchRemoteAbsFileToUrl(deps, '/tmp/shot.png');

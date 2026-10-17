@@ -18,8 +18,7 @@
  *   S3  测量镜像与收起态渲染共用 collapseMeasureBody(同一份投影,判定与呈现一致)。
  *   S4  previewTitle 在四种界面语言里都有,标题不复用随消息落库的 display。
  *
- * 组件级契约走静态源码扫描,与 textLightbox.test.ts / imageLightboxCloseAnywhere.test.ts
- * 同一约定:把测试留在 node 环境,不为这几条接线检查拖进 jsdom + react-dom。
+ * 组件级契约走静态源码扫描,把测试留在 node 环境,不为这几条接线检查拖进 jsdom + react-dom。
  */
 
 import { describe, it, expect } from 'vitest';
@@ -34,9 +33,12 @@ import {
 import type { PastedTextRange } from '@/lib/imageRef';
 
 const sourcePath = resolve(__dirname, '..', 'components', 'chat', 'UserMessage.tsx');
-const source = readFileSync(sourcePath, 'utf8');
+// Windows 检出会把 .tsx 变成 CRLF(.gitattributes 只对 .sh/.mjs 等固定 LF),下面的
+// 源码断言里有匹配裸 \n 的地方,不归一化就只在 Windows 上红。与本目录其它源码扫描
+// 用例(collabEntryPolicy / controlledBannerPlacement 等)同一约定。
+const source = readFileSync(sourcePath, 'utf8').replace(/\r\n/g, '\n');
 
-const LOCALES = ['zh-CN', 'en', 'ja', 'ko'] as const;
+const LOCALES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko'] as const;
 
 /** 440 行日志的最小可测替身:行数足够撞穿收起阈值。 */
 function makeLog(lines: number): string {
@@ -145,18 +147,8 @@ describe('UserMessage pasted-text chip wiring', () => {
     // 那条路径上的粘贴段就又变回不可点。召唤卡 prompt 插槽已随「卡片即消息」
     // 合并形态一并取消(chip 标注行改版):$指令 正文回归气泡,由普通正文
     // 调用点统一渲染,不再有第三个调用点。
-    expect(source.match(/handlePastedTextChipClick,/g)?.length).toBe(2);
-  });
-
-  it('S1b 两个调用点都拿到同一份 sessionReferences(不再有 undefined 占位)', () => {
-    // 召唤卡 prompt 曾经漏传 sessionReferences(PR #966 review);该插槽现已
-    // 随合并形态取消,$指令 正文并入普通正文调用点。sessionReferences 按
-    // sessionId / messageClientId 匹配、不依赖文本偏移,两处理应拿同一份。
-    // 调用点的末两个实参恒为 `sessionReferences, handlePastedTextChipClick`,
-    // 一并锁住"都可点"与"都有引用元数据"。
-    expect(
-      source.match(/sessionReferences,\s*\n\s*handlePastedTextChipClick,/g)?.length,
-    ).toBe(2);
+    // 计数包含 useCallback 定义本身 + 两个调用点。
+    expect(source.match(/handlePastedTextChipClick/g)?.length).toBe(3);
   });
 
   it('S2 ToolPayloadLightbox 以只读 text 模式挂载', () => {
@@ -172,14 +164,17 @@ describe('UserMessage pasted-text chip wiring', () => {
   });
 
   it('S3 测量镜像与收起态渲染共用同一份投影正文', () => {
-    expect(source).toContain('mayExceedVisualLineThreshold(collapseMeasureBody, collapseThreshold)');
+    expect(source).toContain(
+      'mayExceedVisualLineThreshold(collapseMeasureBody, collapseThreshold)',
+    );
     expect(source).toContain(
       'useUserMessageAutoCollapse(collapseMeasureBody, collapseMeasureEnabled, collapseThreshold)',
     );
     // 测量镜像(独立 JSX 表达式)。
     expect(source.match(/\{collapseMeasureBody\}/g)?.length).toBe(1);
-    // 收起态正文(三元分支里,不是独立表达式)。
-    expect(source).toMatch(/longMessageCollapsed\s*\n?\s*\?[\s\S]{0,400}collapseMeasureBody/);
+    // 收起态正文使用同一套静态 chip renderer,不再把投影纯文本直接塞进正文。
+    expect(source).toMatch(/longMessageCollapsed\s*\n\s*\? renderContent\(\n\s*displayBubbleBody,/);
+    expect(source).toContain('bubbleAgentReferences,\n                              false,');
     // 偏移只在 bubbleBody 与 ghostBody 同源时才折叠(引用交错的消息保持原文测量)。
     expect(source).toContain('bubbleBody === ghostBody');
   });

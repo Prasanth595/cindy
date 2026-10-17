@@ -33,15 +33,25 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 /** 从 openExternal 捕获的授权 URL 中提取回调地址与 state,模拟浏览器完成授权。 */
-function browserRedirect(authorizeUrl: string, params: (u: URL) => Record<string, string>): void {
+function browserRedirect(
+  authorizeUrl: string,
+  params: (u: URL) => Record<string, string>,
+  callbackFetch: typeof fetch = fetch,
+): Promise<void> {
   const url = new URL(authorizeUrl);
   const redirectUri = url.searchParams.get('redirect_uri');
   if (!redirectUri) throw new Error('authorize URL 缺 redirect_uri');
   const cb = new URL(redirectUri);
   for (const [k, v] of Object.entries(params(url))) cb.searchParams.set(k, v);
-  // 不 await:引擎在 race 回调,fire-and-forget 即可;失败让测试超时暴露。
-  setImmediate(() => {
-    void fetch(cb.toString()).catch(() => undefined);
+  // openExternal 会 await 本 Promise:loopback 传输失败必须原样暴露,不能吞掉后
+  // 让 OAuth flow 等到 Vitest 的外层超时。消费 body 后再结算,避免连接悬空。
+  return new Promise((resolve, reject) => {
+    setImmediate(() => {
+      void (async () => {
+        const response = await callbackFetch(cb.toString());
+        await response.arrayBuffer();
+      })().then(resolve, reject);
+    });
   });
 }
 
@@ -75,7 +85,7 @@ async function pinnedPortCase<T extends readonly unknown[]>(
   attempts = 5,
 ): Promise<T> {
   let last!: T;
-  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
     last = await body(await probeFreePort());
     if (!isListenFailed(last[0])) return last;
   }
@@ -93,6 +103,19 @@ function isListenFailed(value: unknown): boolean {
 }
 
 describe('startGhostOauthFlow', () => {
+  it('browserRedirect 把 loopback callback 传输失败直接交给调用方', async () => {
+    const authorizeUrl = new URL(BASE_CONFIG.authorizeUrl);
+    authorizeUrl.searchParams.set('redirect_uri', 'http://127.0.0.1:1/callback');
+    const callbackFailure = new Error('loopback callback unavailable');
+    const callbackFetch = vi.fn(async () => {
+      throw callbackFailure;
+    }) as unknown as typeof fetch;
+
+    await expect(
+      browserRedirect(authorizeUrl.toString(), () => ({ code: 'c0', state: 's0' }), callbackFetch),
+    ).rejects.toBe(callbackFailure);
+  });
+
   it('happy path:PKCE + state 校验 + code 换 token', async () => {
     let capturedAuthorizeUrl = '';
     const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
@@ -130,7 +153,7 @@ describe('startGhostOauthFlow', () => {
         expect(u.searchParams.get('response_type')).toBe('code');
         expect(u.searchParams.get('scope')).toBe('read:a write:b');
         expect(u.searchParams.get('code_challenge_method')).toBe('S256');
-        browserRedirect(url, (au) => ({
+        return browserRedirect(url, (au) => ({
           code: 'code-abc',
           state: au.searchParams.get('state') ?? '',
         }));
@@ -174,7 +197,7 @@ describe('startGhostOauthFlow', () => {
         // 保留参数不被意识声明顶掉。
         expect(u.searchParams.get('client_id')).toBe('client-123');
         expect(u.searchParams.get('state')).not.toBe('EVIL-STATE');
-        browserRedirect(url, (au) => ({
+        return browserRedirect(url, (au) => ({
           code: 'c2',
           state: au.searchParams.get('state') ?? '',
         }));
@@ -201,7 +224,10 @@ describe('startGhostOauthFlow', () => {
       fetchImpl: fetchImpl as unknown as typeof fetch,
       openExternal: (url) => {
         expect(new URL(url).searchParams.get('code_challenge')).toBeNull();
-        browserRedirect(url, (au) => ({ code: 'c3', state: au.searchParams.get('state') ?? '' }));
+        return browserRedirect(url, (au) => ({
+          code: 'c3',
+          state: au.searchParams.get('state') ?? '',
+        }));
       },
     });
     expect(result.ok).toBe(true);
@@ -246,7 +272,7 @@ describe('startGhostOauthFlow', () => {
       fetchImpl: vi.fn() as unknown as typeof fetch,
       openExternal: (url) => {
         // state 先行校验后,error 参数只在 state 匹配时才结算(与 grok 同口径)。
-        browserRedirect(url, (au) => ({
+        return browserRedirect(url, (au) => ({
           error: 'access_denied',
           state: au.searchParams.get('state') ?? '',
         }));
@@ -314,7 +340,10 @@ describe('startGhostOauthFlow', () => {
           config: BASE_CONFIG,
           fetchImpl: vi.fn(async () => jsonResponse({ access_token: 'at-6' })) as unknown as typeof fetch,
           openExternal: (url2) => {
-            browserRedirect(url2, (au) => ({ code: 'c6', state: au.searchParams.get('state') ?? '' }));
+            return browserRedirect(url2, (au) => ({
+              code: 'c6',
+              state: au.searchParams.get('state') ?? '',
+            }));
           },
         });
       },
@@ -330,7 +359,10 @@ describe('startGhostOauthFlow', () => {
         jsonResponse({ error: 'invalid_client', error_description: 'bad client' }, 401),
       ) as unknown as typeof fetch,
       openExternal: (url) => {
-        browserRedirect(url, (au) => ({ code: 'c7', state: au.searchParams.get('state') ?? '' }));
+        return browserRedirect(url, (au) => ({
+          code: 'c7',
+          state: au.searchParams.get('state') ?? '',
+        }));
       },
     });
     expect(result).toMatchObject({ ok: false, error: 'EXCHANGE_FAILED' });
@@ -348,7 +380,10 @@ describe('startGhostOauthFlow', () => {
         openExternal: (url) => {
           const u = new URL(url);
           expect(u.searchParams.get('redirect_uri')).toBe(`http://127.0.0.1:${freePort}/callback`);
-          browserRedirect(url, (au) => ({ code: 'c-fixed', state: au.searchParams.get('state') ?? '' }));
+          return browserRedirect(url, (au) => ({
+            code: 'c-fixed',
+            state: au.searchParams.get('state') ?? '',
+          }));
         },
       }),
     ]);
@@ -379,57 +414,69 @@ describe('startGhostOauthFlow', () => {
   });
 
   it('钉死端口:第二单顶掉第一单后立刻复用同一端口(自家僵尸监听自愈,无需回收器)', async () => {
-    const [firstResult, secondResult] = await pinnedPortCase(async (fixedPort) => {
-      let secondDone: Promise<unknown> = Promise.resolve();
-      const first = await startGhostOauthFlow({
-        config: { ...BASE_CONFIG, pkce: false, redirectPort: fixedPort },
-        fetchImpl: vi.fn() as unknown as typeof fetch,
-        openExternal: () => {
-          // 第一单占着钉死端口等回调时,第二单同端口进场——必须等到第一单的
-          // 监听真正关闭后成功 listen,而不是 LISTEN_FAILED。
-          secondDone = startGhostOauthFlow({
-            config: { ...BASE_CONFIG, pkce: false, redirectPort: fixedPort },
-            fetchImpl: vi.fn(async () => jsonResponse({ access_token: 'at-heal' })) as unknown as typeof fetch,
-            openExternal: (url2) => {
-              browserRedirect(url2, (au) => ({ code: 'c-heal', state: au.searchParams.get('state') ?? '' }));
-            },
-          });
-        },
-      });
-      return [first, await secondDone];
+    let secondDone: Promise<unknown> = Promise.resolve();
+    const firstResult = await startGhostOauthFlow({
+      config: { ...BASE_CONFIG, pkce: false },
+      fetchImpl: vi.fn() as unknown as typeof fetch,
+      openExternal: (url) => {
+        const redirectUri = new URL(url).searchParams.get('redirect_uri');
+        if (!redirectUri) throw new Error('authorize URL 缺 redirect_uri');
+        const fixedPort = Number(new URL(redirectUri).port);
+        if (!fixedPort) throw new Error('redirect_uri 缺端口');
+
+        // 第一单已由系统分配并占住端口;第二单复用该端口进场——必须等到
+        // 第一单监听真正关闭后成功 listen,而不是 LISTEN_FAILED。
+        secondDone = startGhostOauthFlow({
+          config: { ...BASE_CONFIG, pkce: false, redirectPort: fixedPort },
+          fetchImpl: vi.fn(async () => jsonResponse({ access_token: 'at-heal' })) as unknown as typeof fetch,
+          openExternal: (url2) => {
+            return browserRedirect(url2, (au) => ({
+              code: 'c-heal',
+              state: au.searchParams.get('state') ?? '',
+            }));
+          },
+        });
+      },
     });
+    const secondResult = await secondDone;
     expect(firstResult).toMatchObject({ ok: false, error: 'CANCELLED' });
     expect(secondResult).toMatchObject({ ok: true });
   });
 
   it('钉死端口:第二单还在排队时第三单进场——前两单 CANCELLED,最后一单赢', async () => {
     const neverOpen = vi.fn();
-    const [firstResult, secondResult, thirdResult] = await pinnedPortCase(
-      async (fixedPort) => {
-        let secondDone: Promise<unknown> = Promise.resolve();
-        let thirdDone: Promise<unknown> = Promise.resolve();
-        const first = await startGhostOauthFlow({
+    let secondDone: Promise<unknown> = Promise.resolve();
+    let thirdDone: Promise<unknown> = Promise.resolve();
+    const firstResult = await startGhostOauthFlow({
+      config: { ...BASE_CONFIG, pkce: false },
+      fetchImpl: vi.fn() as unknown as typeof fetch,
+      openExternal: (url) => {
+        const redirectUri = new URL(url).searchParams.get('redirect_uri');
+        if (!redirectUri) throw new Error('authorize URL 缺 redirect_uri');
+        const fixedPort = Number(new URL(redirectUri).port);
+        if (!fixedPort) throw new Error('redirect_uri 缺端口');
+
+        // 第一单已由系统分配并占住端口;第二单进场(排队等第一单收尾),
+        // 紧接着第三单进场顶掉排队中的第二单,两单都显式复用第一单的实际端口。
+        secondDone = startGhostOauthFlow({
           config: { ...BASE_CONFIG, pkce: false, redirectPort: fixedPort },
           fetchImpl: vi.fn() as unknown as typeof fetch,
-          openExternal: () => {
-            // 第二单进场(排队等第一单收尾),紧接着第三单进场顶掉排队中的第二单。
-            secondDone = startGhostOauthFlow({
-              config: { ...BASE_CONFIG, pkce: false, redirectPort: fixedPort },
-              fetchImpl: vi.fn() as unknown as typeof fetch,
-              openExternal: neverOpen,
-            });
-            thirdDone = startGhostOauthFlow({
-              config: { ...BASE_CONFIG, pkce: false, redirectPort: fixedPort },
-              fetchImpl: vi.fn(async () => jsonResponse({ access_token: 'at-third' })) as unknown as typeof fetch,
-              openExternal: (url3) => {
-                browserRedirect(url3, (au) => ({ code: 'c-third', state: au.searchParams.get('state') ?? '' }));
-              },
-            });
+          openExternal: neverOpen,
+        });
+        thirdDone = startGhostOauthFlow({
+          config: { ...BASE_CONFIG, pkce: false, redirectPort: fixedPort },
+          fetchImpl: vi.fn(async () => jsonResponse({ access_token: 'at-third' })) as unknown as typeof fetch,
+          openExternal: (url3) => {
+            return browserRedirect(url3, (au) => ({
+              code: 'c-third',
+              state: au.searchParams.get('state') ?? '',
+            }));
           },
         });
-        return [first, await secondDone, await thirdDone];
       },
-    );
+    });
+    const secondResult = await secondDone;
+    const thirdResult = await thirdDone;
     expect(firstResult).toMatchObject({ ok: false, error: 'CANCELLED' });
     expect(secondResult).toMatchObject({ ok: false, error: 'CANCELLED' });
     expect(thirdResult).toMatchObject({ ok: true });
@@ -455,7 +502,10 @@ describe('startGhostOauthFlow', () => {
       config: { ...BASE_CONFIG, pkce: false, redirectPort: heldPort },
       fetchImpl: vi.fn(async () => jsonResponse({ access_token: 'at-reclaim' })) as unknown as typeof fetch,
       openExternal: (url) => {
-        browserRedirect(url, (au) => ({ code: 'c-reclaim', state: au.searchParams.get('state') ?? '' }));
+        return browserRedirect(url, (au) => ({
+          code: 'c-reclaim',
+          state: au.searchParams.get('state') ?? '',
+        }));
       },
       reclaimPort,
     });
@@ -522,7 +572,10 @@ describe('startGhostOauthFlow', () => {
       openExternal: (url) => {
         challengeFromUrl = new URL(url).searchParams.get('code_challenge');
         expect(challengeFromUrl).toBeTruthy();
-        browserRedirect(url, (au) => ({ code: 'c-broker', state: au.searchParams.get('state') ?? '' }));
+        return browserRedirect(url, (au) => ({
+          code: 'c-broker',
+          state: au.searchParams.get('state') ?? '',
+        }));
       },
     });
     expect(result).toMatchObject({ ok: true });
@@ -545,7 +598,7 @@ describe('startGhostOauthFlow', () => {
       fetchImpl: vi.fn() as unknown as typeof fetch,
       broker,
       openExternal: (url) => {
-        browserRedirect(url, (authorizeUrl) => ({
+        return browserRedirect(url, (authorizeUrl) => ({
           code: 'c-unavailable',
           state: authorizeUrl.searchParams.get('state') ?? '',
         }));
@@ -574,7 +627,10 @@ describe('startGhostOauthFlow', () => {
       broker,
       openExternal: (url) => {
         expect(new URL(url).searchParams.get('code_challenge')).toBeNull();
-        browserRedirect(url, (au) => ({ code: 'c-np', state: au.searchParams.get('state') ?? '' }));
+        return browserRedirect(url, (au) => ({
+          code: 'c-np',
+          state: au.searchParams.get('state') ?? '',
+        }));
       },
     });
     expect(result).toMatchObject({ ok: true });
@@ -820,7 +876,10 @@ describe('startGhostOauthFlow', () => {
       fetchImpl: vi.fn(async () => jsonResponse({ access_token: 'at-sd' })) as unknown as typeof fetch,
       openExternal: (url) => {
         expect(new URL(url).searchParams.get('scope')).toBe('read:a,write:b');
-        browserRedirect(url, (au) => ({ code: 'c-sd', state: au.searchParams.get('state') ?? '' }));
+        return browserRedirect(url, (au) => ({
+          code: 'c-sd',
+          state: au.searchParams.get('state') ?? '',
+        }));
       },
     });
     expect(result).toMatchObject({ ok: true });

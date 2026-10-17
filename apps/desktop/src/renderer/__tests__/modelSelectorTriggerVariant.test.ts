@@ -2,13 +2,19 @@
 
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import React from 'react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Effort } from '@/lib/userPreferences.types';
+
+const modelSelectorI18nRef = vi.hoisted(() => ({
+  language: 'zh-CN',
+  resolvedLanguage: 'zh-CN',
+}));
 
 vi.mock('react-i18next', async (importOriginal) => ({
   ...(await importOriginal<typeof import('react-i18next')>()),
   useTranslation: () => ({
+    i18n: modelSelectorI18nRef,
     t: (
       key: string,
       options?: {
@@ -18,6 +24,8 @@ vi.mock('react-i18next', async (importOriginal) => ({
         source?: string;
         value?: string;
         model?: string;
+        current?: string;
+        next?: string;
         agent?: string;
         effort?: string;
         price?: string;
@@ -26,14 +34,24 @@ vi.mock('react-i18next', async (importOriginal) => ({
       },
     ) => {
       const translations: Record<string, string> = {
+        'modelDescriptions.complexWork': '适合复杂分析、编程与细致写作。',
+        'modelDescriptions.quickAnswers': '适合简短问答、摘要与短文写作。',
         'effortLevels.xhigh': '超高',
         'settings.providers.anthropic.title': 'Anthropic',
         'settings.providers.xd.title': 'Cindy AI',
         'newChat.modelSelector.trigger.placeholder': '选择模型',
+        'newChat.modelSelector.trigger.loading': '正在读取模型…',
+        'newChat.modelSelector.trigger.unresolved': '模型信息暂不可用',
         'newChat.modelSelector.trigger.agent.claudeCode': 'Claude Code',
         'newChat.modelSelector.trigger.agent.codex': 'Codex',
+        'newChat.modelSelector.modelListAria': '模型列表',
+        'newChat.modelSelector.hidden': '已隐藏',
         'newChat.modelSelector.pricing.free': '限时免费',
         'newChat.modelSelector.source.disconnected': '已断开',
+        'newChat.modelSelector.source.unavailable': '模型不可用',
+        'newChat.modelSelector.source.reconnect': '重新连接',
+        'newChat.modelSelector.source.manage': '管理来源',
+        'newChat.modelSelector.meta.fastBadge': '快速',
         'newChat.modelSelector.remoteLoading': '正在从远程设备读取模型…',
         'newChat.modelSelector.remoteLoadFailed': '无法读取远程设备上的模型。请检查连接后重试。',
         'newChat.modelSelector.remoteLoadFailedShort': '模型读取失败',
@@ -52,6 +70,7 @@ vi.mock('react-i18next', async (importOriginal) => ({
       if (key === 'newChat.modelSelector.source.viaSource') {
         return `Source: ${options?.source}`;
       }
+      if (key === 'newChat.modelSelector.trigger.currentAndNext') return `Current: ${options?.current}\nNext message: ${options?.next}`;
       if (key === 'newChat.modelSelector.trigger.aria') {
         return `Select model. Current: ${options?.model}`;
       }
@@ -283,12 +302,18 @@ const providersRef = vi.hoisted(() => {
       },
     },
   ] as unknown[];
-  return { DEFAULT_PROVIDERS, providers: DEFAULT_PROVIDERS, providerOrder: [] as string[] };
+  return {
+    DEFAULT_PROVIDERS,
+    providers: DEFAULT_PROVIDERS,
+    providerOrder: [] as string[],
+    loading: false,
+  };
 });
 vi.mock('@/hooks/useProviders', () => ({
   useProviders: () => ({
     providers: providersRef.providers,
     providerOrder: providersRef.providerOrder,
+    loading: providersRef.loading,
   }),
 }));
 
@@ -297,6 +322,7 @@ const deviceProvidersRef = vi.hoisted(() => ({
   loading: false,
   error: null as string | null,
   unsupported: false,
+  modelVisibilityOverrides: undefined as Record<string, boolean> | undefined,
   prefetch: vi.fn(async () => {}),
 }));
 vi.mock('@/hooks/useDeviceProviders', () => ({
@@ -308,6 +334,7 @@ vi.mock('@/hooks/useDeviceProviders', () => ({
     loading: deviceProvidersRef.loading,
     error: deviceProvidersRef.error,
     unsupported: deviceProvidersRef.unsupported,
+    modelVisibilityOverrides: deviceProvidersRef.modelVisibilityOverrides,
   }),
 }));
 
@@ -329,8 +356,17 @@ const visibleModelsRef = vi.hoisted(() => ({
 vi.mock('@/lib/providerModels', () => ({
   providerMonogram: (name: string) => name.slice(0, 1).toUpperCase(),
   // #245 新增:ModelSelector 渲染路径直接调用;fixture providers 无 routing,按不过滤透传。
-  isChatBridgedCodexProvider: () => false,
+  isLocalOnlyProviderForAgent: () => false,
   filterChatBridgedCodexProviders: (providers: unknown[]) => providers,
+  isDeviceModelVisible: (
+    overrides: Record<string, boolean> | undefined,
+    agent: string,
+    providerId: string,
+    model: { id: string; defaultEnabled?: boolean },
+  ) =>
+    overrides === undefined
+      ? true
+      : (overrides[`${agent}:${providerId}:${model.id}`] ?? model.defaultEnabled !== false),
   resolveVisibleModelAgentKind: ({ agentKind }: { agentKind: 'claude-code' | 'codex' | null }) =>
     agentKind ?? 'claude-code',
   selectVisibleModels: ({ agentKind }: { agentKind: 'claude-code' | 'codex' | null }) => {
@@ -390,7 +426,8 @@ vi.mock('@/state/modelVisibilityPrefs', () => ({
   useModelVisibilityVersion: () => 0,
 }));
 
-vi.mock('@/state/providerModelMemory', () => ({
+vi.mock('@/state/providerModelMemory', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/state/providerModelMemory')>()),
   useProviderModelMemoryVersion: () => 0,
 }));
 
@@ -399,25 +436,43 @@ vi.mock('@/state/deviceLinkModelMirror', () => ({
 }));
 
 import {
-  ModelSelector,
-  ModelSelectorContent,
+  ModelSelector as SharedModelSelector,
+  ModelSelectorContent as SharedModelSelectorContent,
+  UNIFIED_COMPACT_PANEL_MAX_WIDTH_PX,
+  UNIFIED_COMPACT_PANEL_WIDTH_CLASS,
+  modelCompactEffortLabel,
   modelEffortLabel,
   modelListMaxHeightForRows,
+  modelTagDensityForWidth,
   resolveRemoteModelListStatus,
   resolveModelSelectorAgentIdentity,
 } from '@/components/new-chat/ModelSelector';
+// Retain coverage of the capabilities-only compatibility renderer and common trigger.
+// Default A interaction contracts live in unifiedModelPanelRendering.test.tsx.
+const ModelSelector = (props: React.ComponentProps<typeof SharedModelSelector>) =>
+  React.createElement(SharedModelSelector, { unifiedPanel: false, ...props });
+const ModelSelectorContent = (props: React.ComponentProps<typeof SharedModelSelectorContent>) =>
+  React.createElement(SharedModelSelectorContent, { unifiedPanel: false, ...props });
 import { makerChatStore } from '@/lib/makerChatStore';
 
 const requestProviderModelsAutoRefresh = vi.fn(async () => ({ ok: true as const }));
 
+afterEach(() => { vi.useRealTimers(); });
+
 beforeEach(() => {
+  modelSelectorI18nRef.language = 'zh-CN';
+  modelSelectorI18nRef.resolvedLanguage = 'zh-CN';
   requestProviderModelsAutoRefresh.mockClear();
+  modelVisibilityRef.isEnabled = () => true;
+  providersRef.providers = providersRef.DEFAULT_PROVIDERS;
   providersRef.providerOrder = [];
+  providersRef.loading = false;
   agentCapabilitiesRef.loading = false;
   agentCapabilitiesRef.error = null;
   deviceProvidersRef.loading = false;
   deviceProvidersRef.error = null;
   deviceProvidersRef.unsupported = false;
+  deviceProvidersRef.modelVisibilityOverrides = undefined;
   deviceProvidersRef.prefetch.mockReset();
   deviceProvidersRef.prefetch.mockResolvedValue(undefined);
   (window as unknown as { electronAPI: unknown }).electronAPI = {
@@ -501,6 +556,16 @@ describe('resolveRemoteModelListStatus', () => {
 });
 
 describe('ModelSelector trigger variants', () => {
+  it('keeps required model status tags as the fluid picker narrows', () => {
+    expect(modelTagDensityForWidth(null)).toBe('full');
+    // 320px pane 还要扣掉图标、effort、勾选和左右 padding；英文 Subscription
+    // 会把模型名压成 GPT-...，所以此时只保留当前模型的已隐藏标识。
+    expect(modelTagDensityForWidth(320)).toBe('hidden');
+    expect(modelTagDensityForWidth(370)).toBe('subscription');
+    expect(modelTagDensityForWidth(UNIFIED_COMPACT_PANEL_MAX_WIDTH_PX)).toBe('subscription');
+    expect(modelTagDensityForWidth(UNIFIED_COMPACT_PANEL_MAX_WIDTH_PX + 1)).toBe('full');
+  });
+
   // 打开选择器既发起刷新、又把「发现在途」状态推给内容区(见 useModelDiscoveryPending),
   // 所以点击要走 act:那次刷新 resolve 后还有一次 setPending(false) 落在微任务里。
   const clickTrigger = async (): Promise<void> => {
@@ -551,6 +616,45 @@ describe('ModelSelector trigger variants', () => {
     visibleModelsRef.models = [];
     const view = render(
       React.createElement(ModelSelector, {
+        modelId: 'remote-model',
+        effort: 'medium',
+        onModelChange: vi.fn(),
+        onEffortChange: vi.fn(),
+        vendorKey: 'cc',
+        deviceId: 'dev-a',
+      }),
+    );
+    try {
+      const trigger = screen.getByRole('button', { name: /模型读取失败/ });
+      expect(trigger.textContent).toContain('模型读取失败');
+      await act(async () => {
+        fireEvent.click(trigger);
+      });
+      expect(screen.getByText('无法读取远程设备上的模型。请检查连接后重试。')).toBeTruthy();
+      expect(screen.getByRole('button', { name: '重新读取模型' })).toBeTruthy();
+      expect(screen.queryByText('没有匹配的模型')).toBeNull();
+      deviceProvidersRef.prefetch.mockRejectedValueOnce(new Error('offline'));
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: '重新读取模型' }));
+        await Promise.resolve();
+      });
+      expect(deviceProvidersRef.prefetch).toHaveBeenCalledWith('dev-a');
+    } finally {
+      view.unmount();
+      agentCapabilitiesRef.capabilities = originalCapabilities;
+      agentCapabilitiesRef.error = null;
+      visibleModelsRef.models = originalModels;
+    }
+  });
+
+  it('unified panel remote failures show retry instead of no matching models', async () => {
+    const originalCapabilities = agentCapabilitiesRef.capabilities;
+    const originalModels = visibleModelsRef.models;
+    agentCapabilitiesRef.capabilities = null;
+    agentCapabilitiesRef.error = 'offline';
+    visibleModelsRef.models = [];
+    const view = render(
+      React.createElement(SharedModelSelector, {
         modelId: 'remote-model',
         effort: 'medium',
         onModelChange: vi.fn(),
@@ -796,7 +900,7 @@ describe('ModelSelector trigger variants', () => {
     expect(modelListMaxHeightForRows(100)).toBe(300);
   });
 
-  it('bounds the default-session trigger in narrow and ultra-narrow composers', () => {
+  it('bounds the default-session trigger in wide, narrow and ultra-narrow composers', () => {
     const props = {
       modelId: 'claude-opus-4-8',
       effort: 'xhigh' as Effort,
@@ -805,7 +909,16 @@ describe('ModelSelector trigger variants', () => {
       vendorKey: 'cc' as const,
       compactToolbar: true,
     };
-    const view = render(React.createElement(ModelSelector, props));
+    const view = render(React.createElement(ModelSelector, { ...props, compactToolbar: false }));
+
+    const wideTrigger = screen.getByRole('button', {
+      name: /Current: Opus 4\.8, effort: 超高/,
+    });
+    expect(wideTrigger.className).toContain('max-w-[min(320px,100%)]');
+    expect(within(wideTrigger).getByText('Opus 4.8').className).toContain('truncate');
+    expect(wideTrigger.getAttribute('title')).toContain('Opus 4.8');
+
+    view.rerender(React.createElement(ModelSelector, props));
 
     let trigger = screen.getByRole('button', {
       name: /Current: Opus 4\.8, effort: 超高/,
@@ -830,6 +943,29 @@ describe('ModelSelector trigger variants', () => {
     // 可及名仍保留完整模型 + effort，视觉仅收起文字，不丢选择能力。
     expect(trigger.getAttribute('aria-label')).toContain('Opus 4.8');
     expect(trigger.getAttribute('aria-label')).toContain('超高');
+  });
+
+  it('caps the toolbar panel while field panels still follow their field width', () => {
+    const props = {
+      modelId: 'claude-opus-4-8',
+      effort: 'high' as Effort,
+      onModelChange: vi.fn(),
+      onEffortChange: vi.fn(),
+      vendorKey: 'cc' as const,
+      unifiedPanel: true,
+    };
+    const view = render(React.createElement(ModelSelectorContent, props));
+    let pane = view.container.querySelector('[data-unified-model-panel]') as HTMLElement;
+    expect(UNIFIED_COMPACT_PANEL_WIDTH_CLASS).toContain(
+      `max-w-[min(${UNIFIED_COMPACT_PANEL_MAX_WIDTH_PX}px,calc(100vw-48px))]`,
+    );
+    expect(pane.className).toContain(UNIFIED_COMPACT_PANEL_WIDTH_CLASS);
+
+    view.rerender(React.createElement(ModelSelectorContent, { ...props, fluidWidth: true }));
+    pane = view.container.querySelector('[data-unified-model-panel]') as HTMLElement;
+    expect(pane.className).toContain('w-full min-w-0');
+    expect(pane.className).not.toContain(UNIFIED_COMPACT_PANEL_WIDTH_CLASS);
+    expect(pane.className).not.toContain(`${UNIFIED_COMPACT_PANEL_MAX_WIDTH_PX}px`);
   });
 
   it('keeps the session Agent explicit when Claude Code uses an OpenAI-branded model', () => {
@@ -915,6 +1051,78 @@ describe('ModelSelector trigger variants', () => {
     const trigger = screen.getByRole('button', { name: /Current: Opus 4\.8/ });
     expect(trigger.textContent).not.toContain('Claude Code');
     expect(trigger.getAttribute('aria-label')).not.toContain('Claude Code');
+  });
+
+  it.each([
+    ['claude-code', false], ['claude-code', true], ['codex', false], ['codex', true],
+  ] as const)('keeps target identity and current/next context in a narrow composer (current=%s, ultra=%s)', (currentAgent, ultra) => {
+    providersRef.providers = [{
+      id: 'openai', name: 'OpenAI', connected: true, agents: ['codex'], routing: { codex: {} },
+      models: { codex: [{ id: 'gpt-6-astra', name: 'GPT-6 Astra', contextWindow: 1000000, efforts: ['high'], defaultEffort: 'high', supportsFastMode: true }] },
+    }, {
+      id: 'xd', name: 'Gateway', connected: true, agents: [currentAgent], routing: { [currentAgent]: {} },
+      models: { [currentAgent]: [{ id: 'previous-model', name: 'Previous model', efforts: ['high'], supportsFastMode: true }] },
+    }];
+    try {
+      const props = {
+        modelId: 'gpt-6-astra', effort: 'high' as Effort, fastMode: false,
+        onModelChange: vi.fn(), onEffortChange: vi.fn(), vendorKey: 'cc' as const,
+        currentProviderId: 'openai', actualRoute: true,
+        agentIdentity: resolveModelSelectorAgentIdentity(currentAgent, 'codex'),
+        engineMarkVendor: 'codex' as const, compactToolbar: true, ultraCompactToolbar: ultra,
+        currentSelection: { agentKind: currentAgent, model: 'previous-model', providerId: 'xd', effort: 'high' as const, fastMode: true },
+      };
+      const view = render(React.createElement(ModelSelector, props));
+      const trigger = screen.getByRole('button', { name: /Current:.*Previous model/ });
+      expect(trigger.title).not.toContain('previous-model');
+      expect(trigger.title).toContain('Next message: Codex · GPT-6 Astra');
+      expect(trigger.title.split('Next message:')[1]).not.toContain('快速');
+      expect(trigger.querySelector('[data-model-selection-pending]')).not.toBeNull();
+      expect(Boolean(trigger.querySelector('[data-composer-engine-mark="codex"]'))).toBe(!ultra);
+      expect(trigger.querySelector('.lucide-zap')).toBeNull();
+      view.rerender(React.createElement(ModelSelector, { ...props, agentIdentity: resolveModelSelectorAgentIdentity('codex', null) }));
+      expect(screen.getByRole('button').title).not.toContain('Next message:');
+      expect(screen.getByRole('button').querySelector('[data-model-selection-pending]')).toBeNull();
+    } finally { providersRef.providers = providersRef.DEFAULT_PROVIDERS; }
+  });
+
+  it('keeps pending capabilities on a disconnected explicit source instead of borrowing another source', () => {
+    providersRef.providers = [
+      { id: 'openai', name: 'OpenAI', connected: false, agents: ['codex'], routing: { codex: {} }, models: { codex: [{ id: 'gpt-6-astra', name: 'GPT-6 Astra', contextWindow: 1000000, efforts: ['high'], supportsFastMode: true }] } },
+      { id: 'xd', name: 'Gateway', connected: true, agents: ['codex'], routing: { codex: {} }, models: { codex: [{ id: 'gpt-6-astra', name: 'Gateway GPT-6', contextWindow: 200000, efforts: ['low'], supportsFastMode: false }] } },
+    ];
+    try {
+      render(React.createElement(ModelSelector, {
+        modelId: 'gpt-6-astra', effort: 'high' as Effort, fastMode: true,
+        onModelChange: vi.fn(), onEffortChange: vi.fn(), vendorKey: 'codex',
+        currentProviderId: 'openai', actualRoute: true, sourceDisconnected: true,
+        agentIdentity: resolveModelSelectorAgentIdentity('codex', 'codex'),
+        currentSelection: { agentKind: 'codex', model: 'gpt-6-astra', providerId: 'xd', effort: 'low', fastMode: false },
+      }));
+      const title = screen.getByRole('button').title;
+      expect(title).toContain('Next message: Codex · GPT-6 Astra');
+      expect(title.split('Next message:')[1]).toContain('快速');
+      expect(title.split('Next message:')[1]).not.toContain('Gateway GPT-6');
+    } finally { providersRef.providers = providersRef.DEFAULT_PROVIDERS; }
+  });
+
+  it.each([false, true])('keeps the chosen model and offers the appropriate recovery action (connected=%s)', async (connected) => {
+    providersRef.providers = [{ id: 'openai', name: 'OpenAI', connected, agents: ['codex'], routing: { codex: {} }, models: { codex: connected ? [] : [{ id: 'gpt-6-astra', name: 'GPT-6 Astra', contextWindow: 1000000, efforts: ['high'], defaultEffort: 'high' }] } }];
+    const navigate = vi.fn();
+    try {
+      render(React.createElement(ModelSelector, {
+        modelId: 'gpt-6-astra', effort: 'high' as Effort, onModelChange: vi.fn(), onEffortChange: vi.fn(),
+        vendorKey: 'codex', currentProviderId: 'openai', actualRoute: true, sourceDisconnected: true,
+        onProviderChange: vi.fn(), onNavigateToProviders: vi.fn(), onReconnectSource: navigate, unifiedPanel: true,
+      }));
+      const trigger = screen.getByRole('button', { name: connected ? /模型不可用/ : /已断开/ });
+      expect(trigger.textContent).toContain(connected ? '模型信息暂不可用' : 'GPT-6 Astra');
+      expect(trigger.textContent).not.toContain('gpt-6-astra');
+      fireEvent.click(trigger);
+      const recovery = await screen.findByRole('button', { name: connected ? '管理来源' : '重新连接' });
+      fireEvent.click(recovery);
+      expect(navigate).toHaveBeenCalledOnce();
+    } finally { providersRef.providers = providersRef.DEFAULT_PROVIDERS; }
   });
 
   it('keeps the disconnected status in the compact trigger title', () => {
@@ -1024,7 +1232,8 @@ describe('ModelSelector trigger variants', () => {
         name: /Next message: Codex · GPT-5\.5, effort: medium/,
       });
       expect(trigger.textContent).toContain('GPT-5.5');
-      expect(trigger.textContent).toContain('Next: Codex');
+      expect(trigger.textContent).toContain('Codex');
+      expect(trigger.textContent).not.toContain('Next:');
       expect(trigger.getAttribute('aria-label')).not.toContain('Current');
       // 切换失败时 intent 会保留供重试；重复渲染仍明确标成“下条消息”，不会隐藏身份。
       view.rerender(React.createElement(IntentTrigger, { refresh: 2 }));
@@ -1118,7 +1327,7 @@ describe('ModelSelector trigger variants', () => {
       await act(async () => {
         fireEvent.click(screen.getByRole('button', { name: /Current: Subscription Model 1/ }));
       });
-      const list = screen.getByRole('listbox', { name: 'Model list' });
+      const list = screen.getByRole('listbox', { name: '模型列表' });
 
       expect(list.className).toContain('max-h-[300px]');
       expect(list.className).toContain('overflow-y-auto');
@@ -1131,6 +1340,62 @@ describe('ModelSelector trigger variants', () => {
       visibleModelsRef.models = null;
       agentCapabilitiesRef.capabilities = originalCapabilities;
       providersRef.providers = providersRef.DEFAULT_PROVIDERS;
+    }
+  });
+
+  it('keeps the user scroll position when selection changes', () => {
+    const rect = (top: number, bottom: number): DOMRect =>
+      ({
+        top,
+        bottom,
+        left: 0,
+        right: 320,
+        width: 320,
+        height: bottom - top,
+        x: 0,
+        y: top,
+        toJSON: () => ({}),
+      }) as DOMRect;
+    const rafSpy = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      callback(0);
+      return 0;
+    });
+    const rectSpy = vi
+      .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+      .mockImplementation(function (this: HTMLElement) {
+        if (this.getAttribute('role') === 'listbox') return rect(0, 300);
+        if (this.getAttribute('data-model-selected') === 'true') return rect(120, 160);
+        return rect(0, 0);
+      });
+
+    try {
+      const view = render(
+        React.createElement(ModelSelectorContent, {
+          modelId: 'claude-opus-4-8',
+          effort: 'high',
+          onModelChange: vi.fn(),
+          onEffortChange: vi.fn(),
+          vendorKey: 'cc',
+        }),
+      );
+      const list = screen.getByRole('listbox', { name: '模型列表' });
+      Object.defineProperty(list, 'scrollTop', { configurable: true, writable: true, value: 80 });
+
+      view.rerender(
+        React.createElement(ModelSelectorContent, {
+          modelId: 'claude-sonnet-4-6',
+          effort: 'medium',
+          onModelChange: vi.fn(),
+          onEffortChange: vi.fn(),
+          vendorKey: 'cc',
+        }),
+      );
+
+      expect(list.scrollTop).toBe(80);
+      view.unmount();
+    } finally {
+      rectSpy.mockRestore();
+      rafSpy.mockRestore();
     }
   });
 
@@ -1316,6 +1581,7 @@ describe('ModelSelector trigger variants', () => {
       expect(row.textContent).not.toContain('¥12 / ¥36');
       expect(row.textContent).not.toContain('¥6 / ¥18');
       expect(row.querySelector('[data-model-promotion-badge]')).toBeNull();
+      expect(row.querySelector('[data-model-hidden-label]')).toBeNull();
 
       fireEvent.pointerEnter(row);
       expect(
@@ -1338,6 +1604,35 @@ describe('ModelSelector trigger variants', () => {
     ).toBe('超高');
     expect(modelEffortLabel(t, { effortDisplayNames: { xhigh: 'Extra High' } }, 'max', 'Max')).toBe(
       'Max',
+    );
+  });
+
+  it('uses stable English effort ids for compact row and trigger labels', () => {
+    const t = (key: string, options?: { defaultValue?: string }) =>
+      key === 'effortLevels.xhigh' ? '超高' : (options?.defaultValue ?? key);
+
+    expect(
+      modelCompactEffortLabel(
+        'en-US',
+        t,
+        { effortDisplayNames: { xhigh: 'Extra High' } },
+        'xhigh',
+        '特高',
+      ),
+    ).toBe('Extra');
+    expect(modelCompactEffortLabel('en-US', t, null, 'medium', '中')).toBe('Medium');
+    expect(modelCompactEffortLabel('zh-CN', t, null, 'xhigh', 'Extra High')).toBe('超高');
+    expect(
+      modelCompactEffortLabel(
+        'en-US',
+        t,
+        { effortDisplayNames: { 'adaptive-fast': 'Adaptive Fast' } },
+        'adaptive-fast',
+        'Capability Fast',
+      ),
+    ).toBe('Adaptive Fast');
+    expect(modelCompactEffortLabel('en-US', t, null, 'adaptive-safe', 'Adaptive Safe')).toBe(
+      'Adaptive Safe',
     );
   });
 
@@ -1533,7 +1828,7 @@ describe('ModelSelector trigger variants', () => {
     expect(trigger.textContent).not.toContain('high');
   });
 
-  it('localizes the placeholder when the current model is unavailable', () => {
+  it('localizes missing model metadata without presenting an empty selection', () => {
     render(
       React.createElement(ModelSelector, {
         modelId: 'missing-model',
@@ -1545,7 +1840,7 @@ describe('ModelSelector trigger variants', () => {
       }),
     );
 
-    expect(screen.getByRole('button', { name: /选择模型/ }).textContent).toContain('选择模型');
+    expect(screen.getByRole('button', { name: /模型信息暂不可用/ }).textContent).toContain('模型信息暂不可用');
   });
 
   it('can hide model effort and Fast editing controls for model-id-only settings', () => {
@@ -1562,7 +1857,7 @@ describe('ModelSelector trigger variants', () => {
 
     fireEvent.pointerEnter(screen.getByRole('option', { name: /Opus 4\.8/ }));
     const information = screen.getByRole('group', { name: /Opus 4\.8/ });
-    expect(within(information).getByText('Most capable for ambitious work')).toBeTruthy();
+    expect(within(information).getByText('适合复杂分析、编程与细致写作。')).toBeTruthy();
     expect(within(information).queryByRole('option')).toBeNull();
   });
 
@@ -1732,7 +2027,7 @@ describe('ModelSelector trigger variants', () => {
     expect(screen.getByTestId('model-options-popover').getAttribute('data-align')).toBe('center');
     expect(screen.getByTestId('model-options-popover').getAttribute('data-side-offset')).toBe('8');
     expect(options).toBeTruthy();
-    expect(within(options).getByText('Most capable for ambitious work')).toBeTruthy();
+    expect(within(options).getByText('适合复杂分析、编程与细致写作。')).toBeTruthy();
     expect(within(options).getByText('Source: Anthropic')).toBeTruthy();
     expect(within(options).getByText('200K context')).toBeTruthy();
     const priceTitle = within(options).getByText('newChat.modelSelector.pricing.title');
@@ -1747,7 +2042,7 @@ describe('ModelSelector trigger variants', () => {
       within(options).getByText('newChat.modelSelector.pricing.subscriptionEstimate'),
     ).toBeTruthy();
     const firstChoice = within(options).getByRole('option', { name: 'low' });
-    const description = within(options).getByText('Most capable for ambitious work');
+    const description = within(options).getByText('适合复杂分析、编程与细致写作。');
     expect(
       description.compareDocumentPosition(firstChoice) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
@@ -1766,7 +2061,7 @@ describe('ModelSelector trigger variants', () => {
     expect(screen.getByRole('group', { name: /Opus 4\.8/ })).toBeTruthy();
 
     // 列表滚动不派发 pointerleave,浮层会跟着滚出视口的锚点行跑到菜单外 → 用户滚动必须立即收起。
-    fireEvent.scroll(screen.getByRole('listbox', { name: 'Model list' }));
+    fireEvent.scroll(screen.getByRole('listbox', { name: '模型列表' }));
     expect(screen.queryByRole('group', { name: /Opus 4\.8/ })).toBeNull();
     vi.useRealTimers();
   });
@@ -1798,10 +2093,250 @@ describe('ModelSelector trigger variants', () => {
       expect(
         within(tags as HTMLElement).getByText('settings.providers.models.subscription'),
       ).toBeTruthy();
+      expect(row.querySelector('[data-model-hidden-label]')).toBeNull();
       expect(row.textContent).not.toContain('$3 / $15');
       expect(row.querySelector('[data-model-promotion-badge]')).toBeNull();
     } finally {
       providersRef.providers = providersRef.DEFAULT_PROVIDERS;
+    }
+  });
+
+  it('renders selected hidden status before its subscription label', () => {
+    providersRef.providers = [
+      {
+        ...(providersRef.DEFAULT_PROVIDERS[0] as Record<string, unknown>),
+        access: { kind: 'subscription', product: 'Claude Pro' },
+      },
+    ];
+    modelVisibilityRef.isEnabled = () => false;
+
+    try {
+      render(
+        React.createElement(ModelSelectorContent, {
+          modelId: 'claude-opus-4-8',
+          effort: 'high',
+          onModelChange: vi.fn(),
+          onEffortChange: vi.fn(),
+          vendorKey: 'cc',
+          currentProviderId: 'anthropic',
+          onProviderChange: vi.fn(),
+          fluidWidth: true,
+        }),
+      );
+
+      const row = screen.getByRole('option', { name: /Opus 4\.8/ });
+      const tags = row.querySelector('[data-model-tags]');
+      expect(tags).not.toBeNull();
+      const hidden = within(tags as HTMLElement).getByText('已隐藏');
+      const subscription = within(tags as HTMLElement).getByText(
+        'settings.providers.models.subscription',
+      );
+      expect(hidden.compareDocumentPosition(subscription) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
+        Node.DOCUMENT_POSITION_FOLLOWING,
+      );
+      expect(row.querySelector('[data-model-hidden-label]')).toBe(hidden);
+      expect(screen.queryByRole('option', { name: /Sonnet 4\.6/ })).toBeNull();
+    } finally {
+      modelVisibilityRef.isEnabled = () => true;
+      providersRef.providers = providersRef.DEFAULT_PROVIDERS;
+    }
+  });
+
+  it('keeps only the selected hidden model in the flat picker', () => {
+    providersRef.providers = [
+      {
+        ...(providersRef.DEFAULT_PROVIDERS[0] as Record<string, unknown>),
+        access: { kind: 'subscription', product: 'Claude Pro' },
+      },
+    ];
+    modelVisibilityRef.isEnabled = () => false;
+
+    render(
+      React.createElement(ModelSelectorContent, {
+        modelId: 'claude-opus-4-8',
+        effort: 'high',
+        onModelChange: vi.fn(),
+        onEffortChange: vi.fn(),
+        vendorKey: 'cc',
+        currentProviderId: 'anthropic',
+        fluidWidth: true,
+      }),
+    );
+
+    const selected = screen.getByRole('option', { name: /Opus 4\.8/ });
+    expect(selected.querySelector('[data-model-hidden-label]')?.textContent).toBe('已隐藏');
+    expect(within(selected).getByText('settings.providers.models.subscription')).toBeTruthy();
+    expect(screen.queryByRole('option', { name: /Sonnet 4\.6/ })).toBeNull();
+    expect(screen.queryByRole('option', { name: /Haiku 4\.5/ })).toBeNull();
+  });
+
+  it('prioritizes the full selected model name in the fixed 320px picker', () => {
+    providersRef.providers = [
+      {
+        ...(providersRef.DEFAULT_PROVIDERS[0] as Record<string, unknown>),
+        access: { kind: 'subscription', product: 'Claude Pro' },
+      },
+    ];
+    modelVisibilityRef.isEnabled = (_agent: string, _providerId: string, model: { id: string }) =>
+      model.id !== 'claude-opus-4-8';
+
+    try {
+      render(
+        React.createElement(ModelSelectorContent, {
+          modelId: 'claude-opus-4-8',
+          effort: 'high',
+          onModelChange: vi.fn(),
+          onEffortChange: vi.fn(),
+          vendorKey: 'cc',
+          currentProviderId: 'anthropic',
+          onProviderChange: vi.fn(),
+        }),
+      );
+
+      const selected = screen.getByRole('option', { name: /Opus 4\.8/ });
+      expect(selected.querySelector('[data-model-hidden-label]')?.textContent).toBe('已隐藏');
+      expect(selected.textContent).not.toContain('settings.providers.models.subscription');
+      expect(
+        within(screen.getByRole('option', { name: /Sonnet 4\.6/ })).getByText(
+          'settings.providers.models.subscription',
+        ),
+      ).toBeTruthy();
+    } finally {
+      modelVisibilityRef.isEnabled = () => true;
+      providersRef.providers = providersRef.DEFAULT_PROVIDERS;
+    }
+  });
+
+  it('uses the remote visibility snapshot for the selected hidden status', () => {
+    deviceProvidersRef.providers = [
+      {
+        ...(providersRef.DEFAULT_PROVIDERS[0] as Record<string, unknown>),
+        access: { kind: 'subscription', product: 'Claude Pro' },
+      },
+    ];
+    deviceProvidersRef.modelVisibilityOverrides = {
+      'claude-code:anthropic:claude-opus-4-8': false,
+    };
+
+    try {
+      render(
+        React.createElement(ModelSelectorContent, {
+          modelId: 'claude-opus-4-8',
+          effort: 'high',
+          onModelChange: vi.fn(),
+          onEffortChange: vi.fn(),
+          vendorKey: 'cc',
+          deviceId: 'remote-device',
+          currentProviderId: 'anthropic',
+        }),
+      );
+
+      const row = screen.getByRole('option', { name: /Opus 4\.8/ });
+      expect(row.querySelector('[data-model-hidden-label]')?.textContent).toBe('已隐藏');
+    } finally {
+      deviceProvidersRef.providers = [];
+      deviceProvidersRef.modelVisibilityOverrides = undefined;
+    }
+  });
+
+  it('binds the pane observer when providers arrive after the empty state', async () => {
+    type ObserverInstance = {
+      callback: ResizeObserverCallback;
+      observe: ReturnType<typeof vi.fn>;
+      disconnect: ReturnType<typeof vi.fn>;
+    };
+    const instances: ObserverInstance[] = [];
+    const originalResizeObserver = globalThis.ResizeObserver;
+    class MockResizeObserver {
+      readonly callback: ResizeObserverCallback;
+      readonly observe = vi.fn();
+      readonly unobserve = vi.fn();
+      readonly disconnect = vi.fn();
+
+      constructor(callback: ResizeObserverCallback) {
+        this.callback = callback;
+        instances.push(this);
+      }
+    }
+    Object.defineProperty(globalThis, 'ResizeObserver', {
+      configurable: true,
+      writable: true,
+      value: MockResizeObserver,
+    });
+    const rectSpy = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(
+      () =>
+        ({
+          top: 0,
+          bottom: 100,
+          left: 0,
+          right: 500,
+          width: 500,
+          height: 100,
+          x: 0,
+          y: 0,
+          toJSON: () => ({}),
+        }) as DOMRect,
+    );
+    providersRef.providers = [];
+
+    try {
+      const props = {
+        modelId: 'claude-opus-4-8',
+        effort: 'high' as Effort,
+        onModelChange: vi.fn(),
+        onEffortChange: vi.fn(),
+        vendorKey: 'cc' as const,
+        currentProviderId: 'anthropic',
+        onProviderChange: vi.fn(),
+        fluidWidth: true,
+      };
+      const view = render(React.createElement(ModelSelectorContent, props));
+
+      expect(screen.getByText('newChat.modelSelector.source.emptyTitle')).toBeTruthy();
+      expect(instances).toHaveLength(0);
+
+      providersRef.providers = providersRef.DEFAULT_PROVIDERS;
+      view.rerender(React.createElement(ModelSelectorContent, props));
+
+      await waitFor(() => expect(instances).toHaveLength(1));
+      const firstPane = document.querySelector<HTMLElement>('[data-model-tag-density]');
+      expect(firstPane).not.toBeNull();
+      expect(instances[0].observe).toHaveBeenCalledWith(firstPane);
+      expect(firstPane?.getAttribute('data-model-tag-density')).toBe('full');
+
+      act(() => {
+        instances[0].callback(
+          [
+            {
+              target: firstPane,
+              contentRect: { width: 320 },
+            } as unknown as ResizeObserverEntry,
+          ],
+          instances[0] as unknown as ResizeObserver,
+        );
+      });
+      expect(firstPane?.getAttribute('data-model-tag-density')).toBe('hidden');
+
+      providersRef.providers = [];
+      view.rerender(React.createElement(ModelSelectorContent, props));
+      await waitFor(() => expect(instances[0].disconnect).toHaveBeenCalledTimes(1));
+
+      providersRef.providers = providersRef.DEFAULT_PROVIDERS;
+      view.rerender(React.createElement(ModelSelectorContent, props));
+      await waitFor(() => expect(instances).toHaveLength(2));
+      const secondPane = document.querySelector<HTMLElement>('[data-model-tag-density]');
+      expect(secondPane).not.toBeNull();
+      expect(instances[1].observe).toHaveBeenCalledWith(secondPane);
+
+      view.unmount();
+      expect(instances[1].disconnect).toHaveBeenCalledTimes(1);
+    } finally {
+      rectSpy.mockRestore();
+      Object.defineProperty(globalThis, 'ResizeObserver', {
+        configurable: true,
+        writable: true,
+        value: originalResizeObserver,
+      });
     }
   });
 
@@ -1861,7 +2396,7 @@ describe('ModelSelector trigger variants', () => {
       const row = screen.getByRole('option', { name: /Qwen 3\.7/ });
       expect(row.className).toContain('min-h-9');
       expect(within(row).getByText('Qwen 3.7').className).toContain('leading-5');
-      expect(screen.getByRole('listbox', { name: 'Model list' }).style.maxHeight).toBe('226px');
+      expect(screen.getByRole('listbox', { name: '模型列表' }).style.maxHeight).toBe('226px');
       expect(row.textContent).not.toContain('¥6 / ¥18');
       expect(row.textContent).not.toContain('¥12 / ¥36');
       const rowBadge = within(row).getByText('立省 50%');
@@ -1974,9 +2509,34 @@ describe('ModelSelector trigger variants', () => {
 
     fireEvent.pointerEnter(screen.getByRole('option', { name: /Haiku 4\.5/ }));
     const information = screen.getByRole('group', { name: /Haiku 4\.5/ });
-    expect(within(information).getByText('Fastest for quick answers')).toBeTruthy();
+    expect(within(information).getByText('适合简短问答、摘要与短文写作。')).toBeTruthy();
     expect(within(information).getByText('200K context')).toBeTruthy();
     expect(within(information).queryByRole('option')).toBeNull();
+  });
+
+  it('opens the selected model configuration when the caller opts into click access', () => {
+    const onEffortChange = vi.fn();
+    const onDismiss = vi.fn();
+
+    render(
+      React.createElement(ModelSelectorContent, {
+        modelId: 'claude-opus-4-8',
+        effort: 'high',
+        onModelChange: vi.fn(),
+        onEffortChange,
+        onDismiss,
+        vendorKey: 'cc',
+        selectedRowClickOpensConfiguration: true,
+      }),
+    );
+
+    fireEvent.click(screen.getByRole('option', { name: /Opus 4\.8/ }));
+
+    const options = screen.getByRole('group', { name: /Opus 4\.8/ });
+    fireEvent.click(within(options).getByRole('option', { name: 'low' }));
+
+    expect(onEffortChange).toHaveBeenCalledWith('low');
+    expect(onDismiss).not.toHaveBeenCalled();
   });
 
   it('selects an inactive provider row after its effort preset is clicked', () => {
@@ -1984,7 +2544,7 @@ describe('ModelSelector trigger variants', () => {
     const onDismiss = vi.fn();
     const setEffort = vi.fn();
     const modelMemory = {
-      getEffort: vi.fn(),
+      getEffort: vi.fn(() => 'high'),
       setEffort,
       getFast: vi.fn(),
       setFast: vi.fn(),
@@ -2017,11 +2577,39 @@ describe('ModelSelector trigger variants', () => {
     fireEvent.click(within(options).getByRole('option', { name: 'high' }));
 
     expect(setEffort).toHaveBeenCalledWith('claude-code', 'anthropic', 'claude-sonnet-4-6', 'high');
-    expect(onProviderChange).toHaveBeenCalledWith('anthropic', 'claude-sonnet-4-6');
+    expect(onProviderChange).toHaveBeenCalledWith('anthropic', 'claude-sonnet-4-6', 'high');
     expect(onDismiss).not.toHaveBeenCalled();
     expect(setEffort.mock.invocationCallOrder[0]).toBeLessThan(
       onProviderChange.mock.invocationCallOrder[0],
     );
+  });
+
+  it('lets provider-based callers choose inactive-row effort without a global memory store', () => {
+    const onProviderChange = vi.fn();
+    const onDismiss = vi.fn();
+
+    render(
+      React.createElement(ModelSelectorContent, {
+        modelId: 'claude-opus-4-8',
+        effort: 'high',
+        onModelChange: vi.fn(),
+        onEffortChange: vi.fn(),
+        vendorKey: 'cc',
+        currentProviderId: 'anthropic',
+        onProviderChange,
+        onDismiss,
+      }),
+    );
+
+    const sonnetRow = screen.getByRole('option', { name: /Sonnet 4\.6/ });
+    fireEvent.pointerEnter(sonnetRow);
+
+    const options = screen.getByRole('group', { name: /Sonnet 4\.6/ });
+    expect(within(options).getByRole('option', { name: 'high' })).toBeTruthy();
+    fireEvent.click(within(options).getByRole('option', { name: 'high' }));
+
+    expect(onProviderChange).toHaveBeenCalledWith('anthropic', 'claude-sonnet-4-6', 'high');
+    expect(onDismiss).not.toHaveBeenCalled();
   });
 
   it('selects an inactive provider row after its Fast toggle is clicked', () => {
@@ -2074,7 +2662,7 @@ describe('ModelSelector trigger variants', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Fast Mode' }));
 
       expect(setFast).toHaveBeenCalledWith('claude-code', 'anthropic', 'claude-sonnet-4-6', true);
-      expect(onProviderChange).toHaveBeenCalledWith('anthropic', 'claude-sonnet-4-6');
+      expect(onProviderChange).toHaveBeenCalledWith('anthropic', 'claude-sonnet-4-6', 'medium');
       expect(onDismiss).not.toHaveBeenCalled();
       expect(setFast.mock.invocationCallOrder[0]).toBeLessThan(
         onProviderChange.mock.invocationCallOrder[0],
@@ -2257,6 +2845,9 @@ describe('ModelSelector trigger variants', () => {
       fireEvent.click(screen.getByRole('tab', { name: /Codex/ }));
       const row = await screen.findByRole('option', { name: /GPT-5\.5/ });
       expect(confirmBrowseSwitch).toHaveBeenCalledTimes(1);
+      // 确认门收**本次目标引擎**(Chris 2026-08-19):调用方靠它判「已有指向该目标的意图」,
+      // 不传目标会让确认框在任何残留意图之后永久静默。
+      expect(confirmBrowseSwitch).toHaveBeenCalledWith('codex');
       // 来源 mark 存在说明目标 Agent 仍走 provider sections，而不是退化成 flat。
       expect(row.textContent).toContain('Z');
       // 行尾与悬浮面板同读目标 Agent 的 per-(来源,模型) 记忆，不落模型默认 medium。

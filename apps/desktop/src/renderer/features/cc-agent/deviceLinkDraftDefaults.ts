@@ -15,13 +15,20 @@
  * 与「会话内切来源」同一口径,不在本函数重复一套。
  */
 
+import {
+  effectiveSourceIdForModel,
+  getModel,
+  type ProviderView,
+} from '@cindy/model-providers';
 import type { AgentCapabilities, AgentKind } from '@/hooks/useAgentCapabilities';
 import type { Effort, PermissionMode } from '@/lib/userPreferences.types';
 
 /** 被控端当前草稿的原始值(maker:get-new-maker-defaults 隧道返回;字段全可选)。 */
 export interface RemoteDraftDefaults {
   model?: string;
-  effort?: string;
+  /** false = 被控端明确未在 New Maker picker 选过模型；undefined = 旧端未知。 */
+  modelChosenByUser?: boolean;
+  effort?: string | null;
   fastMode?: boolean;
   permissionMode?: string;
   providerId?: string | null;
@@ -51,12 +58,31 @@ export interface RemoteDraftDefaults {
 /** 校准后可直接 seed 控制端草稿 holder 的一组值。 */
 export interface DeviceLinkDraftSelection {
   model: string;
-  effort: Effort;
+  effort: Effort | null;
   fastMode: boolean;
   /** 仍是被控端支持的权限档则带上;否则 undefined(由 ChatInput 回落自身默认)。 */
   permissionMode?: PermissionMode;
   /** 来源透传,合法性交 ChatInput 校准;null = 跟随被控端默认路由。 */
   providerId: string | null;
+}
+
+/**
+ * 新设备或 Agent 始终需要 seed；同一目标的新默认可更新未编辑的草稿。
+ * 仅能力刷新时，仍须被控端明确从未选过模型才重新选区域默认。
+ */
+export function shouldReseedDeviceLinkDraftDefaults(input: {
+  currentSeedKey: string | null;
+  nextSeedKey: string;
+  capabilitiesChanged: boolean;
+  defaultsChanged?: boolean;
+  controllerTouched: boolean;
+  remoteModelChosenByUser: boolean | undefined;
+}): boolean {
+  if (input.currentSeedKey !== input.nextSeedKey) return true;
+  return (
+    !input.controllerTouched && (input.defaultsChanged === true
+      || (input.capabilitiesChanged && input.remoteModelChosenByUser === false))
+  );
 }
 
 /**
@@ -77,18 +103,39 @@ export function resolveDeviceLinkDraftDefaults(
   remoteDraft: RemoteDraftDefaults | null,
   targetModel?: string,
   agentKind?: AgentKind,
+  providers?: ProviderView[],
 ): DeviceLinkDraftSelection {
   const models = capabilities.availableModels;
   const providerId = remoteDraft?.providerId ?? null;
   const permissionMode = pickPermissionMode(capabilities, remoteDraft?.permissionMode);
 
-  // 要解析哪个模型:显式 targetModel(切模型)优先;否则被控端当前选中模型(初始 seed)。
-  const wantedModelId = targetModel ?? remoteDraft?.model;
+  // 要解析哪个模型:控制端本次显式 targetModel(切模型)永远优先。初始 seed 只有在**新端明确
+  // 回传未选过模型**时才采用区域目录默认；旧端缺字段时保守保留 remoteDraft.model，避免
+  // 把无法识别的历史显式选择覆盖掉。每个 Agent 只接受自己的 v3 默认标记。
+  const markedDefault = agentKind
+    ? models
+        .map((model, index) => ({ model, index }))
+        .filter(
+          ({ model }) =>
+            model.defaultEnabled !== false &&
+            (model.newSessionDefault?.includes(agentKind) ?? false),
+        )
+        .sort(
+          (a, b) =>
+            (a.model.sortOrder ?? Number.MAX_SAFE_INTEGER) -
+              (b.model.sortOrder ?? Number.MAX_SAFE_INTEGER) || a.index - b.index,
+        )[0]?.model.id
+    : undefined;
+  const wantedModelId =
+    targetModel ??
+    (remoteDraft?.modelChosenByUser === false && providerId === null
+      ? (markedDefault ?? remoteDraft.model)
+      : remoteDraft?.model);
 
   if (models.length === 0) {
     return {
       model: wantedModelId ?? '',
-      effort: (remoteDraft?.effort as Effort) ?? 'high',
+      effort: (remoteDraft?.effort as Effort | null | undefined) ?? 'high',
       fastMode: false,
       permissionMode,
       providerId,
@@ -96,25 +143,53 @@ export function resolveDeviceLinkDraftDefaults(
   }
 
   const chosen = models.find((m) => m.id === wantedModelId) ?? models[0];
+  const selectedProviderId =
+    agentKind && providers?.length
+      ? remoteDraft?.providerId ??
+        effectiveSourceIdForModel(providers, null, chosen.id, agentKind)
+      : null;
+  const selectedProvider = selectedProviderId
+    ? providers?.find((provider) => provider.id === selectedProviderId)
+    : undefined;
+  const providerModel = selectedProvider && agentKind
+    ? getModel(selectedProvider, chosen.id, agentKind)
+    : undefined;
+  // capabilities.availableModels is a cross-provider union. If the selected source has
+  // its own entry, its effort table is authoritative; otherwise keep the flat snapshot
+  // for old hosts that do not expose provider catalogs.
+  const effortModel = providerModel ?? chosen;
   const globalPreset = agentKind ? remoteDraft?.providerModelMemory?.[`${agentKind}:*`] : undefined;
+  const providerPreset =
+    agentKind && providerId
+      ? remoteDraft?.providerModelMemory?.[`${agentKind}:${providerId}`]
+      : undefined;
   // 解析的是不是被控端当前选中模型:是 → 草稿激活值;否 → per-model 记忆(切模型还原)。
   const isActiveModel = chosen.id === remoteDraft?.model;
   // 新建草稿没有 live 会话需要保护:全局模型预设存在时,即使是首页当前显示模型也优先采用。
   // agentKind 缺失时保留旧调用方语义,方便旧测试 / 兼容入口逐步迁移。
+  // 新快照写 `${agent}:*` 权威槽;旧快照仍可能只有 `${agent}:${providerId}` 来源副本 —— 全局优先,
+  // 来源兜底(两处 doc 都这么承诺,实现必须同序,否则同模型换来源就换回旧档位)。
   const wantedEffort = (globalPreset?.effortByModel[chosen.id] ??
+    providerPreset?.effortByModel[chosen.id] ??
     (isActiveModel ? remoteDraft?.effort : remoteDraft?.effortByModel?.[chosen.id])) as
     Effort | undefined;
-  const presetFast = globalPreset?.fastByModel[chosen.id];
+  const presetFast =
+    globalPreset?.fastByModel[chosen.id] ?? providerPreset?.fastByModel[chosen.id];
   const wantedFast =
     presetFast ??
     (isActiveModel
       ? remoteDraft?.fastMode === true
       : remoteDraft?.fastModeByModel?.[chosen.id] === true);
+  const supportedEfforts = effortModel.efforts as readonly string[];
 
-  const effort: Effort =
-    wantedEffort && chosen.efforts.includes(wantedEffort)
-      ? wantedEffort
-      : (chosen.defaultEffort ?? chosen.efforts[0] ?? wantedEffort ?? 'high');
+  const effort: Effort | null =
+    supportedEfforts.length === 0
+      ? effortModel.effortsUnknown === false
+        ? null
+        : wantedEffort ?? effortModel.defaultEffort ?? 'high'
+      : wantedEffort && supportedEfforts.includes(wantedEffort)
+        ? wantedEffort
+        : (effortModel.defaultEffort ?? supportedEfforts[0] ?? wantedEffort ?? 'high');
   const fastMode = Boolean(capabilities.hasFastMode && chosen.supportsFastMode && wantedFast);
 
   return { model: chosen.id, effort, fastMode, permissionMode, providerId };

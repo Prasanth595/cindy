@@ -2,6 +2,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defineConfig, loadEnv } from 'vite';
 import { desktopClientBuildEnv } from '../../scripts/shared/client-endpoint-build-env.mjs';
+import { cindyRuntimeSourcePlugin } from './cindy-runtime-source';
 
 const configDir = path.dirname(fileURLToPath(import.meta.url));
 // 登录 scenario fixtures 的生产空 stub(implementation-plan Step 0 WHAT4 生产排除
@@ -10,6 +11,11 @@ const loginFixturesStub = path.resolve(
   configDir,
   '../../packages/auth-client/fixtures/loginScenarios.production-stub.ts',
 );
+
+// Git operations can deliver a burst of file events. Waiting briefly before a
+// development rebuild lets Rollup invalidate that burst as one graph update,
+// keeping the watcher peak bounded without changing packaged builds.
+const DEV_WATCH_BUILD_DELAY_MS = 250;
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), 'VITE_');
@@ -23,7 +29,12 @@ export default defineConfig(({ mode }) => {
   // 非 VITE_* 的 main-only 变量（不暴露到 renderer/preload；编译期注入）
   const allEnv = loadEnv(mode, process.cwd(), '');
   const readMainEnv = (key: string): string => allEnv[key] || process.env[key] || '';
+  const readMainEnvPreservingEmpty = (key: string): string =>
+    Object.prototype.hasOwnProperty.call(process.env, key)
+      ? (process.env[key] ?? '')
+      : (allEnv[key] ?? '');
   return {
+    plugins: [cindyRuntimeSourcePlugin(path.resolve(configDir, '../..'), mode === 'development')],
     resolve: {
       // 仅 fixtures 生产排除条件(v6.17 允许范围):production 构建把
       // '@cindy/auth-client/fixtures' 整模块替换为空 stub,dev 构建保留真模块。
@@ -45,6 +56,12 @@ export default defineConfig(({ mode }) => {
       'import.meta.env.VITE_ENDPOINT_MANIFEST_PEER_BASE_URL': JSON.stringify(
         readViteEnv('VITE_ENDPOINT_MANIFEST_PEER_BASE_URL'),
       ),
+      // 日志上报目标(main-only,不暴露到 renderer)。真值不进仓,由 package-desktop.mjs 经
+      // scripts/shared/log-upload-build-env.mjs 从 config/log-upload.json 读出**本区域那一个**
+      // 目标后注入。dev server / 未注入 ⇒ 空串 ⇒ 运行时判「未配置」、功能整体关闭。
+      // ⚠️ main 侧必须写成完整的 `process.env.XDT_LOG_UPLOAD_TARGET` 才能被本 define 文本替换,
+      // 见 main/log-upload/logUploadTarget.ts 的 injectedRaw()。
+      'process.env.XDT_LOG_UPLOAD_TARGET': JSON.stringify(readMainEnv('XDT_LOG_UPLOAD_TARGET')),
       // Triage bot token (dev only — production 留空，BotTokenStore 走 safeStorage)
       'process.env.TRIAGE_BOT_TOKEN': JSON.stringify(readMainEnv('TRIAGE_BOT_TOKEN')),
       // Filo Google OAuth desktop client（main-only，仓库不保存实际值）。
@@ -53,6 +70,11 @@ export default defineConfig(({ mode }) => {
       ),
       'process.env.XDT_FILO_GOOGLE_CLIENT_SECRET': JSON.stringify(
         readMainEnv('XDT_FILO_GOOGLE_CLIENT_SECRET'),
+      ),
+      // macOS WebAuthn Touch ID 的 Team ID 是公开签名身份，不是凭证。正式打包入口
+      // 只在 Developer ID 签名路径注入；ad-hoc/dev 留空，runtime fail closed。
+      'process.env.CINDY_WEBAUTHN_APPLE_TEAM_ID': JSON.stringify(
+        readMainEnvPreservingEmpty('CINDY_WEBAUTHN_APPLE_TEAM_ID').trim(),
       ),
       'process.env.XDT_VOICE_INPUT_DICTIONARY_TEXT_DEBUG': JSON.stringify(
         readMainEnv('XDT_VOICE_INPUT_DICTIONARY_TEXT_DEBUG'),
@@ -87,6 +109,8 @@ export default defineConfig(({ mode }) => {
       ),
     },
     build: {
+      watch:
+        mode === 'development' ? { buildDelay: DEV_WATCH_BUILD_DELAY_MS } : undefined,
       rollupOptions: {
         output: {
           // Keep the vendored @cindy/browser-control-runtime (including its
@@ -117,6 +141,16 @@ export default defineConfig(({ mode }) => {
         // Externalize it explicitly and ship the package via forge's
         // NATIVE_RUNTIME_DEPS (protobufjs >=7.6 dropped `@protobufjs/inquire`).
         external: [
+          // Electron's unpatched filesystem implementation. The legacy userData
+          // migration needs physical .asar files to remain ordinary files.
+          'original-fs',
+          // node:sqlite is a Node 24 / Electron 41 builtin. The Vite process that
+          // bundles main may still be Node 22, whose builtinModules list does not
+          // include sqlite, so Vite stubs the specifier as
+          // `__vite-browser-external`. Named imports like `backup` then fail and
+          // a cold dev start never reaches ready-to-show.
+          'sqlite',
+          'node:sqlite',
           'bufferutil',
           'utf-8-validate',
           'better-sqlite3',

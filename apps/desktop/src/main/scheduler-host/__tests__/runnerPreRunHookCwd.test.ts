@@ -104,6 +104,17 @@ function createRunner(getSessionMeta: Maker['getSessionMeta']) {
 }
 
 describe('MakerScheduleRunner pre-run hook cwd 解析', () => {
+  it.each(['archived', 'deleted'])('stops a %s heartbeat before running any hook', async (status) => {
+    mocks.getSessionRowSnapshot.mockResolvedValueOnce({ status });
+    const { runner, notifier } = createRunner(vi.fn() as never);
+    const pause = vi.fn(async () => undefined);
+    runner.attachScheduler({ pause } as never);
+    const result = await runner.fire(baseSchedule({ targetSessionId: 'retired-session' }), createFireContext());
+    expect(result).toMatchObject({ skipped: true });
+    expect(pause).toHaveBeenCalledWith('schedule-1', { exemptRunId: 'run-1' });
+    expect(mocks.executePreRunHook).not.toHaveBeenCalled();
+    expect(notifier.notify).not.toHaveBeenCalled();
+  });
   beforeEach(() => {
     vi.clearAllMocks();
     // hook 判 skip → fire 在 hook 分支内早退,不进 session 创建,测试聚焦 cwd 传参
@@ -121,6 +132,17 @@ describe('MakerScheduleRunner pre-run hook cwd 解析', () => {
       aborted: false,
     });
     mocks.buildSkipResultText.mockReturnValue('skipped');
+  });
+
+  it('no change starts no model and emits no chat or completion notification', async () => {
+    const { runner, maker, notifier } = createRunner(vi.fn(async () => null) as never);
+    const context = createFireContext();
+    const result = await runner.fire(baseSchedule({ silentWhenIdle: true }), context);
+    expect(result.skipped).toBe(true);
+    expect(maker.createSession).not.toHaveBeenCalled();
+    expect(mocks.createMessage).not.toHaveBeenCalled();
+    expect(notifier.notify).not.toHaveBeenCalled();
+    expect(context.onPreRunHookCompleted).toHaveBeenCalledOnce();
   });
 
   it('heartbeat 任务(workingDir 空)→ 先解析绑定会话 meta.workDir 再跑 hook', async () => {

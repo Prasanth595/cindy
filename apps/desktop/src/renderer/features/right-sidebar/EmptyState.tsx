@@ -9,7 +9,15 @@
  * 插件页独占承载,入口只在 /plugins。
  */
 
-import { ChevronRight, FileDiff, FolderOpen, Globe, ListTodo, Terminal } from 'lucide-react';
+import {
+  Bot,
+  ChevronRight,
+  FileDiff,
+  FolderOpen,
+  Globe,
+  ListTodo,
+  Terminal,
+} from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
@@ -19,7 +27,9 @@ interface EmptyStateProps {
   onAddBrowserTab: () => void;
   onAddTerminalTab: () => void;
   onAddReviewTab: () => void;
+  onAddSubagentsTab: () => void;
   onAddBackgroundTasksTab: () => void;
+  subagentsAvailable?: boolean;
 }
 
 export function EmptyState({
@@ -27,19 +37,21 @@ export function EmptyState({
   onAddBrowserTab,
   onAddTerminalTab,
   onAddReviewTab,
+  onAddSubagentsTab,
   onAddBackgroundTasksTab,
+  subagentsAvailable = false,
 }: EmptyStateProps) {
   const { t } = useTranslation();
   return (
-    <div className="flex flex-1 flex-col items-start gap-8 px-10 pb-8 pt-16">
+    <div className="flex min-h-0 flex-1 flex-col items-start gap-8 overflow-y-auto px-10 pb-8 pt-16">
       <div className="flex w-full flex-col gap-2">
-        <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--text-tertiary)]">
+        <span className="text-11 font-semibold uppercase tracking-[0.08em] text-[var(--text-tertiary)]">
           {t('rightSidebar.tabs.empty.eyebrow')}
         </span>
-        <span className="text-[22px] font-semibold leading-tight text-[var(--text-primary)]">
+        <span className="text-20 font-semibold leading-tight text-[var(--text-primary)]">
           {t('rightSidebar.tabs.empty.title')}
         </span>
-        <span className="text-[13px] leading-relaxed text-[var(--text-tertiary)]">
+        <span className="text-13 leading-relaxed text-[var(--text-tertiary)]">
           {t('rightSidebar.tabs.empty.desc')}
         </span>
       </div>
@@ -61,6 +73,14 @@ export function EmptyState({
         />
         {/* 后台任务:顺序与 + dropdown 一致(review order=15 → background-tasks
             order=17 → browser order=20)。 */}
+        {subagentsAvailable && (
+          <ActionRow
+            icon={Bot}
+            label={t('rightSidebar.tabs.empty.openSubagents')}
+            sub={t('rightSidebar.tabs.empty.subagentsSub')}
+            onClick={onAddSubagentsTab}
+          />
+        )}
         <ActionRow
           icon={ListTodo}
           label={t('rightSidebar.tabs.empty.openBackgroundTasks')}
@@ -80,7 +100,7 @@ export function EmptyState({
           onClick={onAddTerminalTab}
         />
       </div>
-      <p className="px-1 text-[11px] text-[var(--text-tertiary)]">
+      <p className="px-1 text-11 text-[var(--text-tertiary)]">
         {t('rightSidebar.tabs.empty.addMoreHint')}
       </p>
     </div>
@@ -112,8 +132,8 @@ function ActionRow({
     >
       <Icon size={16} className="text-[var(--text-secondary)]" />
       <span className="flex flex-1 flex-col gap-0.5">
-        <span className="text-[14px] font-medium text-[var(--text-primary)]">{label}</span>
-        <span className="text-[11px] text-[var(--text-tertiary)]">{sub}</span>
+        <span className="text-14 font-medium text-[var(--text-primary)]">{label}</span>
+        <span className="text-11 text-[var(--text-tertiary)]">{sub}</span>
       </span>
       <ChevronRight
         size={14}

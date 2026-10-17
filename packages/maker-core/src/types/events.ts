@@ -10,6 +10,19 @@
  */
 
 import type { WorkflowProgressEntry } from '@cindy/maker-shared/agent-task';
+import type { TokenSpeedSnapshot } from '@cindy/maker-shared/usage-format';
+import type { SubagentObservation } from '@cindy/maker-shared/subagent-observation';
+import {
+  parseToolLoopErrorDetails,
+  type ToolLoopErrorDetails,
+} from '@cindy/maker-shared/tool-loop-error';
+import type { PiRuntimeCapabilityManifest } from './pi-runtime-capabilities.js';
+
+export {
+  parseToolLoopErrorDetails,
+  type ToolLoopErrorDetails,
+  type ToolLoopErrorKind,
+} from '@cindy/maker-shared/tool-loop-error';
 
 export type AgentEventType =
   | 'text'                  // 流式文本输出（增量或完整）
@@ -20,6 +33,7 @@ export type AgentEventType =
   | 'agent_task_update'     // 子 agent / task 状态更新（Claude Code task_* + Codex collab agent）
   | 'image'                 // 模型查看 / 生成的图片 (codex 独有, claude SDK 不会发)
   | 'account_usage'         // vendor-specific 账号级用量 (codex rateLimits 等); data shape 由 emit 端自定, renderer 按 source/字段嗅探
+  | 'turn_diff'             // provider 对本轮工作区变更的累计 unified diff
   | 'interaction_request'   // 需要用户决策(permission / ask_user_question / plan_review)
   | 'interaction_dismissed' // pending interaction 被自动 resolve(如 setPermissionMode 切换)
   | 'plan_mode_changed'     // agent 自行切换计划模式(典型: 计划批准后自动退出), data: { enabled: boolean }; host 据此回写持久化 + 广播 UI
@@ -28,6 +42,17 @@ export type AgentEventType =
   | 'session_id'            // SDK session id 回填
   | 'done'                  // 一轮 turn 完成
   | 'error';                // 错误（是否结束 turn 由 error data 的 isTerminal 显式表达）
+
+export interface TurnDiffEventData {
+  /** Provider-owned turn identity. Same id updates replace, rather than append to, the prior diff. */
+  turnId: string;
+  /** Cumulative unified diff for this provider turn. */
+  diff: string;
+  /** Workspace root used when the provider computed the patch. */
+  cwd: string;
+  /** False when concurrent provider snapshots could not be safely composed. */
+  isComplete?: boolean;
+}
 
 export interface AgentErrorEventData {
   message: string;
@@ -45,6 +70,10 @@ export interface AgentErrorEventData {
   willRetry?: boolean;
   sdkError?: string;
   reason?: string;
+  /** 账号用量受限时上游给出的重置时刻(unix ms)；未知时省略。 */
+  usageResetAt?: number;
+  /** Structured details for reason='tool_use_loop_detected'. */
+  toolLoop?: ToolLoopErrorDetails;
   [key: string]: unknown;
 }
 
@@ -54,6 +83,7 @@ export interface AgentTaskUsage {
   totalTokens?: number;
   toolUses?: number;
   durationMs?: number;
+  costUsd?: number;
 }
 
 export interface AgentTaskUpdateEventData {
@@ -69,14 +99,29 @@ export interface AgentTaskUpdateEventData {
   description?: string;
   /** Provider summary or final subagent answer. */
   summary?: string;
+  /** Host-only complete terminal return; stripped before renderer/device-link broadcast. */
+  returnedResult?: string;
+  /** Distinguishes an explicit empty terminal return from an omitted field. */
+  returnedResultEmpty?: boolean;
+  /** The durable runner bounded the complete terminal return. */
+  returnedResultTruncated?: boolean;
   outputFile?: string;
   usage?: AgentTaskUsage;
   lastToolName?: string;
   taskType?: string;
+  subagentParentContext?: 'none' | 'snapshot' | 'live';
   workflowName?: string;
-  model?: string;
+  /**
+   * 实际模型名；`null` 是子代理多 receiver 观测冲突/显式清除的合法值，
+   * 用于让下游清掉旧模型徽标，而不是回退到未经证明的旧值。
+   */
+  model?: string | null;
   reasoningEffort?: string;
+  createdAt?: string;
+  updatedAt?: string;
   receiverThreadIds?: string[];
+  /** Explicit durable-workspace identity; control/task-card-only updates omit it. */
+  subagentObservation?: SubagentObservation;
   /**
    * workflow 逐 agent 进度树(taskType=local_workflow 时 task_progress 事件携带,
    * 经 `@cindy/maker-shared/agent-task` 的 normalizeWorkflowProgressEntries 收窄截断)。
@@ -96,6 +141,8 @@ export interface AgentTaskUpdateEventData {
  */
 export interface SendOrigin {
   kind: 'user' | 'scheduler' | 'goal';
+  /** IM user turns deliver their successful replies on that surface, without App completion alerts. */
+  surface?: 'im';
   /** scheduler 来源时的任务标识(供 IM 转播时显示"哪个自动任务")。 */
   scheduleId?: string;
   scheduleName?: string;
@@ -116,6 +163,20 @@ export interface AgentEvent {
   /** 事件来源标识，便于调试 */
   source?: 'claude-code' | 'codex' | 'pi';
   /**
+   * Events that finish work owned by a completed turn can still arrive after a
+   * later turn has started (for example, a V1 collab child). These are still
+   * useful to render, but must not inherit the later turn's attribution or
+   * watchdog state.
+   */
+  turnScope?: 'turn' | 'background';
+  /**
+   * Local start time of the turn that owns a background event. Main-process
+   * persistence uses this lifecycle evidence to keep pre-clear late work from
+   * repopulating a cleared conversation. Never expose it to renderer/device
+   * boundaries.
+   */
+  backgroundTurnStartedAt?: number;
+  /**
    * 本事件所属 turn 的发起来源,由 Session 在事件 fan-out 前打标(见 session.ts
    * 的 currentTurnOrigin)。turn 结束(isTerminalTurnEvent)后清空,不污染下一轮。
    * translator 不产生此字段;消费方(IM 转播等)按需读取,默认忽略。
@@ -123,6 +184,32 @@ export interface AgentEvent {
   turnOrigin?: SendOrigin;
   /** Host-owned per-turn correlation for lifecycle bookkeeping; never comes from vendor metadata. */
   turnAttemptToken?: number;
+  /**
+   * Session.turnGeneration captured when runEventLoop started the next() that
+   * dequeued this event. Adoption of a later generation must not overwrite it,
+   * so a leftover terminal keeps the older value after the next send. Host-only.
+   */
+  sessionTurnGeneration?: number;
+  /** Session.instanceId of the incarnation that dequeued this event. Host-only. */
+  sessionInstanceId?: string;
+  /**
+   * Host-only recovery notice, independent of the already completed product turn.
+   * Session delivers it on `onRuntimeRecovery`, never on product `onEvent`.
+   */
+  runtimeRecovery?: true;
+  /**
+   * A complete extension notice, independent of model text assembly and turn
+   * settlement. Hosts deliver it as its own durable message, never as a delta
+   * or a full-text replacement for the currently streaming assistant reply.
+   */
+  standaloneText?: true;
+  /**
+   * Provider-owned claim attached synchronously to a `done` boundary when that
+   * boundary has an automatic continuation. Consumers pass it back to the
+   * session lifecycle API; unlike a live task-map sample it cannot race later
+   * task notifications or a fast result-only continuation turn.
+   */
+  turnContinuationId?: number;
   /**
    * Vendor-specific 元数据透传 (claude-code 的 SDK uuid / parentUuid / sdkSessionId /
    * model / stopReason / requestId / usage 等)。host 落库时塞进 messages.agent_meta 列,
@@ -153,6 +240,41 @@ export function isTerminalTurnEvent(event: AgentEvent): boolean {
   return isTerminalAgentErrorEvent(event);
 }
 
+/**
+ * 会刷新 Session 零事件看门狗 / Codex upstream-idle 计时的事件。
+ *
+ * **白名单**，不是「排除心跳」的黑名单。`status` / `account_usage` 是传输层或用量
+ * 心跳；`turn_diff` / `compact_boundary` / `session_id` / `plan_mode_changed` /
+ * `interaction_dismissed` 是系统或诊断帧；`done` / `error`（含 `willRetry: true`
+ * 的非终态 error）由终态路径自己清 watchdog，不能再当存活证据。把这些算进存活，
+ * 会让卡死的 turn 永远像在跑（典型：自动续跑被 vendor accept 之后只剩 usage-refresh
+ * status，banner 被吞、Continue 进不去）。后台事件同样不是当前 turn 的存活证据。
+ *
+ * 超时后的终态 error 交给 interrupted-turn 自动续跑（与 reconnect-stalled
+ * 同类）；额度耗尽才把 Continue 交还用户。
+ */
+const TURN_WATCHDOG_LIVENESS_TYPES = new Set<AgentEventType>([
+  'text',
+  'thinking',
+  'tool_use',
+  'tool_result',
+  'tool_result_full',
+  'agent_task_update',
+  'image',
+  'interaction_request',
+]);
+
+export function isTurnWatchdogLivenessEvent(event: AgentEvent): boolean {
+  if (event.turnScope === 'background') return false;
+  if (event.type === 'text' || event.type === 'thinking') {
+    const text = isRecord(event.data) ? event.data.text : undefined;
+    // Match Desktop's visible-text semantics: whitespace, format and control
+    // characters alone are not progress. Keep the original event untouched.
+    return typeof text === 'string' && /[^\s\p{Cf}\p{Cc}]/u.test(text);
+  }
+  return TURN_WATCHDOG_LIVENESS_TYPES.has(event.type);
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
@@ -176,10 +298,15 @@ export interface AskUserQuestionItem {
   multiSelect?: boolean;
 }
 
+type InteractionRequestBase = {
+  requestId: string;
+  /** Provider tool/item id that owns this interaction; distinct from transport request ids. */
+  toolUseId?: string;
+};
+
 export type InteractionRequest =
-  | {
+  | (InteractionRequestBase & {
       kind: 'permission';
-      requestId: string;
       toolName: string;
       input: Record<string, unknown>;
       title?: string;
@@ -187,18 +314,18 @@ export type InteractionRequest =
       description?: string;
       suggestions?: unknown[];
       metadata?: Record<string, unknown>;
-    }
-  | {
+    })
+  | (InteractionRequestBase & {
       kind: 'ask_user_question';
-      requestId: string;
       questions: AskUserQuestionItem[];
-    }
-  | {
+      /** Optional question: the provider keeps running; absence means a blocking question. */
+      delivery?: 'async';
+    })
+  | (InteractionRequestBase & {
       kind: 'plan_review';
-      requestId: string;
       plan: string;
       planFilePath?: string;
-    };
+    });
 
 export type InteractionDecision =
   | {
@@ -232,6 +359,11 @@ export type InteractionDecision =
       kind: 'ask_user_question';
       /** 用户对每道问题的回答, key=question(或 header), value=用户回答 */
       answers: Record<string, string>;
+      /**
+       * true = 系统性 dismissal(会话 abort/close、turn 失败等自动空答),
+       * 不是用户 Skip。Codex detached continuation 据此不发起续跑 turn。
+       */
+      dismissed?: boolean;
     }
   | {
       kind: 'plan_review';
@@ -279,6 +411,21 @@ export interface UsageSnapshot {
   contextTokens: number;
   contextWindow: number;
   costUsd: number;
+  /** Turn-cumulative output tokens (includes reasoning). */
+  outputTokens?: number;
+  /** Generation-only milliseconds for this turn, including any open interval. */
+  generationDurationMs?: number;
+  /** True while the model currently owns the turn (renderer may tick locally). */
+  generationActive?: boolean;
+  /** False when live TPS must be hidden. Omitted on placeholder status frames. */
+  generationReliable?: boolean;
+  /** Host-measured live tok/s (Pi extension algorithm). Display only. */
+  tokenSpeed?: TokenSpeedSnapshot;
+  /**
+   * Host/bridge 自动 compact 已确定性失败，下次 send 应换干净原生窗口。
+   * 只由 Claude Code / Pi 的 AutoCompactController 锁存。
+   */
+  needsRollover?: boolean;
 }
 
 /**
@@ -313,6 +460,10 @@ export interface ImageEventData {
 
 export interface RewindFilesResult {
   canRewind: boolean;
+  /** True when conversation rewind can proceed but no file restore plan exists. */
+  conversationOnly?: boolean;
+  /** Git savepoints are disabled, so file restoration was not available. */
+  gitSafetyDisabled?: boolean;
   error?: string;
   filesChanged?: string[];
   insertions?: number;
@@ -325,6 +476,25 @@ export interface RewindCommitOptions {
    * Claude 路径不消费此字段。
    */
   tailTurnsToDrop?: number;
+  /**
+   * Codex thread/rollback 不可用(分页线程拒绝,或 0.156.0 起运行时已移除该方法)
+   * 时的原生边界:回退目标之前最后一个已完成 turn 的原生 turn id(持久化的
+   * nativeForkAnchor)。有它就直接 thread/fork(lastTurnId)。
+   */
+  lastTurnId?: string;
+  /**
+   * 没有持久化锚点时的兜底:回退目标之前最后一条真实模型/工具输出的时间戳
+   * (ms),由 thread/turns/list 解析出对应原生 turn 边界。与 ForkSdkSessionOptions
+   * 的 forkAtTimestampMs 语义一致。
+   */
+  forkAtTimestampMs?: number;
+  /**
+   * 宿主确认回退目标是当前原生线程的第一轮:目标之前没有属于该线程的 user 行
+   * (首条消息,或 /clear、上下文重建、切换引擎新开线程后的第一轮)。此时没有可作
+   * fork 边界的 turn,rollback 不可用时 Codex 改为按当前配置新开一条空线程替换。
+   * 只在没有 lastTurnId / forkAtTimestampMs 时生效。
+   */
+  rewindsToNativeThreadStart?: boolean;
 }
 
 export interface RewindCommitResult {
@@ -339,6 +509,13 @@ export interface ForkSdkSessionOptions {
   /** 源 session 的 SDK sessionId (从 sessions.sdk_session_id 取)。 */
   sourceSdkSessionId: string;
   /**
+   * 源原生 session 的模型与供应商来源。Codex 的隔离 fork host 需要用相同上下文
+   * 解析 credential mode；否则 provider-oauth 源任务在本机没有 fallback 凭证时会
+   * 被误判为未登录。Claude/PI 不消费这两个字段。
+   */
+  model?: string;
+  providerId?: string | null;
+  /**
    * 截断锚点 — 必须是 SDK assistant 消息的 uuid (调用方反查 + 跳 subagent)。
    * Claude 必填; Codex 协议无 message uuid, 此字段被 CodexAgent 忽略,
    * 调用方传 undefined 即可。
@@ -346,15 +523,32 @@ export interface ForkSdkSessionOptions {
   upToMessageId: string | undefined;
   /**
    * Fork 后从新 session 尾部移除多少个完整 turn。
-   * Codex 精确 fork 使用 thread/rollback 实现；Claude 路径不消费此字段。
+   * Codex 旧 daemon 使用 thread/rollback；分页 daemon 先查询原生边界。
+   * Claude 路径不消费此字段。
    */
   tailTurnsToDrop?: number;
+  /**
+   * Codex only: provider-native turn boundary for a direct thread/fork.
+   * Old/failed messages can resolve it through native turn metadata instead.
+   */
+  lastTurnId?: string;
+  /**
+   * Codex only: timestamp of the last copied event in the requested native turn.
+   * Used to resolve old/failed history without counting soft-deleted UI retries.
+   */
+  forkAtTimestampMs?: number;
   /** 新 session title (可选, 仅给 SDK 写入 jsonl 头)。 */
   title?: string;
   /** workingDir — 用于定位 Claude SDK project JSONL 并修复 fork 后的 uuid 引用。 */
   workingDir?: string;
   /** Codex only: fork from a rollout copy with reasoning response items removed. */
   stripEncryptedReasoning?: boolean;
+  /**
+   * 源 session 的 remoteHostId(fork 编排层从 DB 源 session 取, 透传给 agent)。
+   * Pi 用它做 fork 守卫判定 —— 不用 agent 实例级 lastRemoteHostId(并发会话
+   * 覆盖会误判, R4 竞态 #1)。
+   */
+  remoteHostId?: string | null;
 }
 
 export interface ForkSdkSessionResult {
@@ -371,4 +565,8 @@ export interface ForkSdkSessionResult {
    * upToMessageId 锚点能在新 jsonl 里查到。
    */
   uuidMap: Map<string, string>;
+  /** Codex only: copied native turn ids remain valid in the returned child thread. */
+  usedNativeForkAnchor?: boolean;
+  /** Pi-only runtime command catalog captured from the forked runtime, if available. */
+  runtimeCapabilities?: PiRuntimeCapabilityManifest;
 }

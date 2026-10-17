@@ -19,24 +19,13 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import {
-  FolderTree,
-  Globe,
-  Terminal,
-  GitPullRequestArrow,
-  UsersRound,
-  ListTodo,
-  Plus,
-  Puzzle,
-  X,
-  Maximize2,
-  Minimize2,
-  PanelRightClose,
-  PictureInPicture2,
-} from 'lucide-react';
+import { Activity, Bot, FolderTree, Globe, Terminal, GitPullRequestArrow, UsersRound, LayoutGrid, ListTodo, Plus, Puzzle, X, Maximize2, Minimize2, PanelRightClose, PictureInPicture2, Wrench } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
+import { ChromeIconButton } from '@/components/title-bar/ChromeIconButton';
+import { RightSidebarToggle } from '@/components/layout/RightSidebarToggle';
+import { Tip } from '@/components/ui/tooltip';
 import { SortableList } from '@/components/sidebar/SortableList';
 import { useReducedMotion } from '@/hooks/useReducedMotion';
 import { cn } from '@/lib/utils';
@@ -68,6 +57,10 @@ interface TabBarProps {
   onMaximize?: () => void;
   /** 关闭整个 RSB 的 toggle(仅 showWindowControls=true 时使用)。 */
   onCloseSidebar?: () => void;
+  /** 固定显示 / 聚焦入口；与关闭按钮分离，点击已展开侧栏时为 no-op。 */
+  onShowSidebar?: () => void;
+  /** 当前面板所在侧，用于固定入口图标方向。 */
+  panelSide?: 'left' | 'right';
   /** maximize 当前态(Phase 6)— 用来切换按钮图标 Maximize2 ↔ Minimize2,
    *  让用户视觉上知道按一下是"退出最大化"。 */
   isMaximized?: boolean;
@@ -84,6 +77,8 @@ interface TabBarProps {
    *  "拖面板"手势面(窗口拖拽区收不到鼠标事件,二者物理互斥;拖窗走左栏顶行);
    *  detached 子窗口等其它宿主不传,默认 true 维持经典拖窗行为。 */
   chromeWindowDrag?: boolean;
+  /** Whether the installed product plugin currently exposes the Host viewer. */
+  subagentsAvailable?: boolean;
 }
 
 interface TabStripProps {
@@ -113,24 +108,38 @@ interface TabStripProps {
    */
   addButtonWrapperClassName?: string;
   addButtonClassName?: string;
+  /** Whether the installed product plugin currently exposes the Host viewer. */
+  subagentsAvailable?: boolean;
 }
 
 const KIND_ICON: Record<BuiltinTabKindId, LucideIcon> = {
   'file-browser': FolderTree,
   'web-browser': Globe,
+  'retired-feature': Puzzle,
   terminal: Terminal,
   review: GitPullRequestArrow,
   'orca-workers': UsersRound,
+  subagents: Bot,
   'background-tasks': ListTodo,
+  routines: ListTodo,
+  'bot-workbench': LayoutGrid,
+  'resource-usage': Activity,
+  'cindy-make': Wrench,
 };
 
 const KIND_LABEL_KEY: Record<BuiltinTabKindId, string> = {
   'file-browser': 'rightSidebar.tabs.kinds.fileBrowser',
   'web-browser': 'rightSidebar.tabs.kinds.browser',
+  'retired-feature': 'settings.ghosts.retirement.status',
   terminal: 'rightSidebar.tabs.kinds.terminal',
   review: 'rightSidebar.tabs.kinds.review',
   'orca-workers': 'rightSidebar.tabs.kinds.collaboration',
+  subagents: 'rightSidebar.tabs.kinds.subagents',
   'background-tasks': 'rightSidebar.tabs.kinds.backgroundTasks',
+  routines: 'routines.title',
+  'bot-workbench': 'bots.workbench.title',
+  'resource-usage': 'rightSidebar.tabs.kinds.resourceUsage',
+  'cindy-make': 'settings.cindyMake.title',
 };
 
 /**
@@ -150,8 +159,7 @@ function labelKeyForTabKind(kind: TabKindId): string {
   // 而非「未知标签页」——kind 前缀本身就能识别它是谁的地盘。
   if (kind.startsWith('ghost:')) return 'rightSidebar.tabs.kinds.ghostPanel';
   return (
-    (KIND_LABEL_KEY as Partial<Record<string, string>>)[kind] ??
-    'rightSidebar.tabs.kinds.unknown'
+    (KIND_LABEL_KEY as Partial<Record<string, string>>)[kind] ?? 'rightSidebar.tabs.kinds.unknown'
   );
 }
 
@@ -187,11 +195,14 @@ export function TabBar({
   showWindowControls,
   onMaximize,
   onCloseSidebar,
+  onShowSidebar,
+  panelSide = 'right',
   isMaximized,
   onCloseOthers,
   onCloseAll,
   onDetach,
   chromeWindowDrag = true,
+  subagentsAvailable = false,
 }: TabBarProps) {
   const { t } = useTranslation();
 
@@ -216,6 +227,7 @@ export function TabBar({
         onCloseAll={onCloseAll}
         addButtonWrapperClassName="h-[36px]"
         addButtonClassName="mt-[3px]"
+        subagentsAvailable={subagentsAvailable}
       />
 
       {/* Right: window controls. 仅 showWindowControls=true(Win 端)时渲染;
@@ -229,7 +241,6 @@ export function TabBar({
           {onDetach && (
             <ChromeIconButton
               aria-label={t('rightSidebar.tabs.controls.detachAria')}
-              title={t('rightSidebar.tabs.controls.detachAria')}
               onClick={onDetach}
             >
               <PictureInPicture2 size={14} />
@@ -255,6 +266,14 @@ export function TabBar({
               <PanelRightClose size={15} />
             </ChromeIconButton>
           )}
+          {onShowSidebar && (
+            <RightSidebarToggle
+              action="show"
+              collapsed={false}
+              onToggle={onShowSidebar}
+              side={panelSide}
+            />
+          )}
         </div>
       )}
     </div>
@@ -275,10 +294,12 @@ export function TabStrip({
   pillVariant = 'flush',
   addButtonWrapperClassName,
   addButtonClassName,
+  subagentsAvailable = false,
 }: TabStripProps) {
   const { t } = useTranslation();
   const reducedMotion = useReducedMotion();
   const [dropdownOpen, setDropdownOpen] = useState(false);
+  const closeDropdown = useCallback(() => setDropdownOpen(false), []);
   const tabsScrollRef = useRef<HTMLDivElement | null>(null);
   const addButtonWrapperRef = useRef<HTMLDivElement | null>(null);
   const existingKinds = useMemo(() => new Set<TabKindId>(tabs.map((t) => t.kind)), [tabs]);
@@ -398,40 +419,41 @@ export function TabStrip({
           )}
         />
       </div>
-      {/* 「+」按钮 wrapper:scroll 容器外、shrink-0 永远可见。dropdown portal 到
-          body(fixed 定位,以本 wrapper 为 anchor),不被面板 overflow-hidden 切。 */}
+      {/* 「+」按钮 wrapper:scroll 容器外、shrink-0 永远可见。菜单 portal 到 body,
+          不被面板 overflow-hidden 切;非 modal,点菜单外的控件照常生效。 */}
       <div
         ref={addButtonWrapperRef}
         className={cn('relative flex shrink-0 items-center', addButtonWrapperClassName)}
         style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
       >
-        <button
-          type="button"
-          aria-label={t('rightSidebar.tabs.addAria')}
-          aria-haspopup="menu"
-          aria-expanded={dropdownOpen}
-          onClick={() => setDropdownOpen((v) => !v)}
-          className={cn(
-            'inline-flex h-6 w-6 items-center justify-center rounded-full transition-colors',
-            addButtonClassName,
-            dropdownOpen
-              ? 'bg-[var(--surface-chip)] text-[var(--text-primary)]'
-              : 'text-[var(--titlebar-icon)] hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)]',
-          )}
-        >
-          <Plus size={13} />
-        </button>
-        {dropdownOpen && (
+        <DropdownMenu open={dropdownOpen} onOpenChange={setDropdownOpen} modal={false}>
+          <DropdownMenuTrigger asChild>
+            <Tip text={t('rightSidebar.tabs.addAria')} side="bottom">
+              <button
+                type="button"
+                aria-label={t('rightSidebar.tabs.addAria')}
+                className={cn(
+                  'inline-flex h-6 w-6 items-center justify-center rounded-full transition-colors',
+                  addButtonClassName,
+                  dropdownOpen
+                    ? 'bg-[var(--surface-chip)] text-[var(--text-primary)]'
+                    : 'text-[var(--titlebar-icon)] hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)]',
+                )}
+              >
+                <Plus size={13} />
+              </button>
+            </Tip>
+          </DropdownMenuTrigger>
           <AddTabDropdown
+            open={dropdownOpen}
             anchorRef={addButtonWrapperRef}
-            onClose={() => setDropdownOpen(false)}
-            onSelect={(kind) => {
-              onAdd(kind);
-              setDropdownOpen(false);
-            }}
+            sessionId={sessionId}
+            onClose={closeDropdown}
+            onSelect={onAdd}
             existingKinds={existingKinds}
+            subagentsAvailable={subagentsAvailable}
           />
-        )}
+        </DropdownMenu>
       </div>
 
       {/* Tab pill 右键菜单 —— 虚拟 trigger 在右键位置弹 DropdownMenu(跟
@@ -459,12 +481,6 @@ export function TabStrip({
         <DropdownMenuContent
           align="start"
           sideOffset={2}
-          className={cn(
-            'rounded-xl p-0.5 overflow-hidden',
-            'bg-[var(--cmd-palette-bg)]',
-            'border border-[var(--cmd-palette-border)]',
-            'shadow-[var(--shadow-menu)]',
-          )}
         >
           {contextMenu && (
             <>
@@ -474,7 +490,6 @@ export function TabStrip({
                   closeContextMenu();
                   onClose(id);
                 }}
-                className="h-7 px-2.5 rounded-md text-[13px] leading-none text-[var(--msg-assistant-text)] focus:bg-[var(--cmd-palette-item-hover)]"
               >
                 {t('rightSidebar.tabs.contextMenu.close')}
               </DropdownMenuItem>
@@ -486,7 +501,6 @@ export function TabStrip({
                   closeContextMenu();
                   onCloseOthers?.(id);
                 }}
-                className="h-7 px-2.5 rounded-md text-[13px] leading-none text-[var(--msg-assistant-text)] focus:bg-[var(--cmd-palette-item-hover)] data-[disabled]:opacity-50"
               >
                 {t('rightSidebar.tabs.contextMenu.closeOthers')}
               </DropdownMenuItem>
@@ -495,7 +509,6 @@ export function TabStrip({
                   closeContextMenu();
                   onCloseAll?.();
                 }}
-                className="h-7 px-2.5 rounded-md text-[13px] leading-none text-[var(--msg-assistant-text)] focus:bg-[var(--cmd-palette-item-hover)]"
               >
                 {t('rightSidebar.tabs.contextMenu.closeAll')}
               </DropdownMenuItem>
@@ -567,7 +580,7 @@ function TabPill({
         if (e.button === 1) e.preventDefault();
       }}
       className={cn(
-        'group flex h-[30px] shrink-0 items-center gap-1.5 px-2.5 text-[12px] transition-colors',
+        'group flex h-[30px] shrink-0 items-center gap-1.5 px-2.5 text-12 transition-colors',
         pillVariant === 'chip' ? 'rounded-lg' : 'rounded-t-lg',
         active
           ? cn(
@@ -604,35 +617,25 @@ function TabPill({
           )}
         </span>
       </button>
-      <button
-        type="button"
-        data-no-drag
-        onClick={(e) => {
-          e.stopPropagation();
-          onClose();
-        }}
-        aria-label={closeAriaLabel}
-        className={cn(
-          'inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[var(--text-tertiary)] transition-opacity hover:text-[var(--text-primary)]',
-          // chip:close 常驻显形(Chrome 式)——若 hover 才显形,常态下右侧会留出
-          // 一块看不见的占位空白,文字视觉上不居中;flush(Win)维持 hover 显形不变。
-          pillVariant === 'flush' && 'opacity-0 group-hover:opacity-100',
-        )}
-      >
-        <X size={10} />
-      </button>
+      <Tip text={closeAriaLabel}>
+        <button
+          type="button"
+          data-no-drag
+          onClick={(e) => {
+            e.stopPropagation();
+            onClose();
+          }}
+          aria-label={closeAriaLabel}
+          className={cn(
+            'inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[var(--text-tertiary)] transition-opacity hover:text-[var(--text-primary)]',
+            // chip:close 常驻显形(Chrome 式)——若 hover 才显形,常态下右侧会留出
+            // 一块看不见的占位空白,文字视觉上不居中;flush(Win)维持 hover 显形不变。
+            pillVariant === 'flush' && 'opacity-0 group-hover:opacity-100',
+          )}
+        >
+          <X size={10} />
+        </button>
+      </Tip>
     </div>
-  );
-}
-
-function ChromeIconButton({ children, ...rest }: React.ButtonHTMLAttributes<HTMLButtonElement>) {
-  return (
-    <button
-      type="button"
-      {...rest}
-      className="inline-flex h-7 w-7 items-center justify-center rounded-full text-[var(--titlebar-icon)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)]"
-    >
-      {children}
-    </button>
   );
 }

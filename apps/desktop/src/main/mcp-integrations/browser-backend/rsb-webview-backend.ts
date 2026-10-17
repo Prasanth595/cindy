@@ -363,6 +363,13 @@ export class RsbWebviewBackend implements BrowserBackend {
         return this.handleDoctor(request);
       case 'start':
       case 'stop':
+        if (request.proxyServer !== undefined) {
+          return actionFailed(
+            request.action,
+            'proxyServer is unsupported by the embedded browser backend; switch to the managed browser backend',
+            'BROWSER_RUNTIME_INVALID_REQUEST',
+          );
+        }
         // Webview lifecycle is owned by the RSB itself — these are no-ops.
         return actionOk(request.action, { ready: true });
       case 'profiles':
@@ -570,15 +577,28 @@ export class RsbWebviewBackend implements BrowserBackend {
   private async handleScreenshot(req: BackendRequest): Promise<BackendResult> {
     const tabId = await this.resolveDirectActionTarget(req);
     if (!tabId) return actionFailed(req.action, 'targetId required');
+    if (req.fullPage) {
+      // The RSB webview backend captures the guest WebContents viewport only;
+      // full-page capture is not implemented here. Reject explicitly instead of
+      // silently returning a viewport crop (matches the vendored runtime's
+      // "explicitly reject unsupported params" contract).
+      return actionFailed(
+        req.action,
+        'fullPage is not supported by the RSB webview backend (captures the visible viewport only)',
+      );
+    }
     const resolved = await this.resolveTabForDirectAction(req, tabId);
     if (!resolved.ok) return resolved.result;
     return this.withTabPin(tabId, async () => {
       const image = await resolved.wc.capturePage();
-      const buffer = image.toPNG();
+      // Honor `type` instead of always encoding PNG: JPEG via toJPEG(85),
+      // matching the CDP path's default quality. MIME/bytes follow the buffer.
+      const type = req.type === 'jpeg' ? 'jpeg' : 'png';
+      const buffer = type === 'jpeg' ? image.toJPEG(85) : image.toPNG();
       return actionOk(req.action, {
         tabId,
-        mimeType: 'image/png',
-        // Base64-encoded PNG — same shape the vendored runtime returns for
+        mimeType: type === 'jpeg' ? 'image/jpeg' : 'image/png',
+        // Base64-encoded image — same shape the vendored runtime returns for
         // `screenshot` so MCP callers don't need to know which backend ran.
         data: buffer.toString('base64'),
         bytes: buffer.length,
@@ -1213,18 +1233,27 @@ export class RsbWebviewBackend implements BrowserBackend {
     tabId: string,
   ): Promise<{ ok: true; wc: WebContents } | { ok: false; result: BrowserControlResult }> {
     const ensureHost = this.opts.bridge.ensureHost;
+    const requestSessionId = this.resolveSessionId(req);
     if (ensureHost) {
       try {
         this.assertActive();
-        await ensureHost();
+        await ensureHost(requestSessionId ?? undefined);
         this.assertActive();
       } catch (err) {
-        // Window failed to come up (ready timeout etc.) — fall through, the
-        // resolve below surfaces the concrete tab error to the agent.
         this.opts.logger.warn('ensureHost failed before direct action', {
           action: req.action,
           err,
         });
+        if (requestSessionId) {
+          return {
+            ok: false,
+            result: actionFailed(
+              req.action,
+              err instanceof Error ? err.message : String(err),
+              'BROWSER_RUNTIME_UNAVAILABLE',
+            ),
+          };
+        }
       }
     }
     let resolved = this.resolveTabInActiveSession(req, tabId);

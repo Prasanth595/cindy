@@ -1,3 +1,4 @@
+import { Button } from '@/components/ui/button';
 /**
  * IssueConfirmCard
  * ---------------------------------------------------------------------------
@@ -22,6 +23,7 @@ import {
   type IssueConfirmDraft,
 } from '@/lib/issueConfirmDraftStore';
 import { cn } from '@/lib/utils';
+import { SegmentedControl } from '@/components/ui/segmented-control';
 import type { PendingIssueConfirm } from '@/lib/makerChatStore';
 import { shouldLabelRegion } from '../../../shared/regionCode';
 import { ISSUE_PUBLIC_NAME_MAX, normalizeIssuePublicName } from '../../../shared/issuePublicName';
@@ -36,6 +38,7 @@ interface IssueConfirmCardProps {
           title: string;
           body: string;
           type: 'bug' | 'feature';
+          submissionIdentity: PendingIssueConfirm['submissionIdentity'];
           publicName?: string;
           uiLanguage: string;
         }
@@ -54,25 +57,41 @@ export function IssueConfirmCard({ sessionId, pending, onRespond }: IssueConfirm
   const titleInputId = useId();
   const bodyInputId = useId();
   const publicNameInputId = useId();
-  const [draft, setDraft] = useState<IssueConfirmDraft>(
-    () =>
-      getIssueConfirmDraft(sessionId, pending.requestId) ?? {
+  const [privacyConfirmed, setPrivacyConfirmed] = useState(false);
+  const legacyFixedGithubIdentity =
+    pending.submissionIdentity.kind === 'github-user' ? pending.submissionIdentity : null;
+  const [draft, setDraft] = useState<IssueConfirmDraft>(() => {
+    const saved = getIssueConfirmDraft(sessionId, pending.requestId);
+    if (legacyFixedGithubIdentity) {
+      return {
+        ...(saved ?? pending.draft),
+        submissionIdentityKind: 'github-user',
+        publicName: undefined,
+      };
+    }
+    return (
+      saved ?? {
         ...pending.draft,
-        ...(pending.submissionIdentity.kind === 'platform'
-          ? {
-              publicName: pending.suggestedPublicName ?? t('issueAgent.confirm.anonymous'),
-            }
-          : {}),
-      },
-  );
+        submissionIdentityKind: 'platform',
+        publicName: pending.suggestedPublicName ?? t('issueAgent.confirm.anonymous'),
+      }
+    );
+  });
   const { title, body, type, publicName = '' } = draft;
+  const hasRelatedLogs = body.includes('## 相关日志');
+  const selectedIdentity =
+    legacyFixedGithubIdentity ??
+    (draft.submissionIdentityKind === 'github-user' && pending.githubUserIdentity
+      ? pending.githubUserIdentity
+      : pending.submissionIdentity);
 
   const confirmedPublicName =
-    pending.submissionIdentity.kind === 'platform' ? normalizeIssuePublicName(publicName) : null;
+    selectedIdentity.kind === 'platform' ? normalizeIssuePublicName(publicName) : null;
   const canSubmit =
+    privacyConfirmed &&
     title.trim().length > 0 &&
     body.trim().length > 0 &&
-    (pending.submissionIdentity.kind !== 'platform' || confirmedPublicName !== null);
+    (selectedIdentity.kind !== 'platform' || confirmedPublicName !== null);
 
   const updateDraft = useCallback(
     (patch: Partial<IssueConfirmDraft>) => {
@@ -81,6 +100,7 @@ export function IssueConfirmCard({ sessionId, pending, onRespond }: IssueConfirm
         next.title === draft.title &&
         next.body === draft.body &&
         next.type === draft.type &&
+        next.submissionIdentityKind === draft.submissionIdentityKind &&
         next.publicName === draft.publicName
       ) {
         return;
@@ -89,6 +109,9 @@ export function IssueConfirmCard({ sessionId, pending, onRespond }: IssueConfirm
       // cannot unmount the card before its latest edit reaches the draft slot.
       saveIssueConfirmDraft(sessionId, pending.requestId, next);
       setDraft(next);
+      // The checkbox approves the previous public payload. Any content,
+      // identity, attribution, or type change requires a fresh review.
+      setPrivacyConfirmed(false);
     },
     [draft, pending.requestId, sessionId],
   );
@@ -114,10 +137,20 @@ export function IssueConfirmCard({ sessionId, pending, onRespond }: IssueConfirm
       title: title.trim(),
       body: body.trim(),
       type,
+      submissionIdentity: selectedIdentity,
       ...(confirmedPublicName ? { publicName: confirmedPublicName } : {}),
       uiLanguage: i18n.language,
     });
-  }, [canSubmit, confirmedPublicName, onRespond, title, body, type, i18n.language]);
+  }, [
+    canSubmit,
+    confirmedPublicName,
+    onRespond,
+    title,
+    body,
+    type,
+    selectedIdentity,
+    i18n.language,
+  ]);
 
   const handleCancel = useCallback(() => {
     onRespond({ confirmed: false });
@@ -138,21 +171,25 @@ export function IssueConfirmCard({ sessionId, pending, onRespond }: IssueConfirm
     return () => window.removeEventListener('keydown', handler);
   }, [handleSubmit, handleCancel]);
 
-  const typeButton = (value: 'bug' | 'feature', label: string) => (
-    <button
-      type="button"
-      aria-pressed={type === value}
-      onClick={() => updateDraft({ type: value })}
-      className={cn(
-        'rounded-[6px] border px-2.5 py-[3px] text-12 font-medium transition-colors',
-        type === value
-          ? 'border-[var(--chat-input-border)] bg-[var(--perm-allow-btn-bg)] text-[var(--perm-allow-btn-text)]'
-          : 'border-[var(--chat-input-border)] bg-transparent text-[var(--status-bar-meta)] hover:bg-[var(--perm-code-bg)]',
-      )}
-    >
-      {label}
-    </button>
-  );
+  const identityButton = (identity: PendingIssueConfirm['submissionIdentity'], label: string) => {
+    const selected =
+      selectedIdentity.kind === identity.kind && selectedIdentity.login === identity.login;
+    return (
+      <button
+        type="button"
+        aria-pressed={selected}
+        onClick={() => updateDraft({ submissionIdentityKind: identity.kind })}
+        className={cn(
+          'rounded-full border px-3 py-2 text-13 font-medium transition-colors',
+          selected
+            ? 'border-[var(--chat-input-border)] bg-[var(--perm-allow-btn-bg)] text-[var(--perm-allow-btn-text)]'
+            : 'border-[var(--chat-input-border)] bg-transparent text-[var(--chat-input-text)] hover:bg-[var(--chat-input-bg)]',
+        )}
+      >
+        {label}
+      </button>
+    );
+  };
 
   return (
     <div
@@ -162,14 +199,22 @@ export function IssueConfirmCard({ sessionId, pending, onRespond }: IssueConfirm
       )}
     >
       {/* Title row: heading + type toggle */}
-      <div className="flex items-center justify-between gap-3">
+      <div className="cindy-segmented-row">
         <p className="text-15 font-semibold leading-tight text-[var(--chat-input-text)]">
           {t('issueAgent.confirm.title')}
         </p>
-        <div className="flex items-center gap-1.5">
-          {typeButton('bug', t('issueAgent.confirm.typeBug'))}
-          {typeButton('feature', t('issueAgent.confirm.typeFeature'))}
-        </div>
+        <SegmentedControl
+          aria-label={[t('issueAgent.confirm.typeBug'), t('issueAgent.confirm.typeFeature')].join(' / ')}
+          value={type}
+          onValueChange={(next) => updateDraft({ type: next })}
+          height={28}
+          optionHeight={24}
+          optionClassName="px-2.5"
+          options={[
+            { value: 'bug', label: t('issueAgent.confirm.typeBug') },
+            { value: 'feature', label: t('issueAgent.confirm.typeFeature') },
+          ]}
+        />
       </div>
 
       {/* Issue title input */}
@@ -213,8 +258,19 @@ export function IssueConfirmCard({ sessionId, pending, onRespond }: IssueConfirm
           'focus:outline-none focus:ring-1 focus:ring-[var(--focus-ring)]',
         )}
       />
+      <p className="mt-1 text-12 leading-snug text-[var(--status-bar-meta)]">
+        {t('issueAgent.confirm.privacyHint')}
+      </p>
+      {hasRelatedLogs && (
+        <p className="mt-1 text-12 leading-snug text-[var(--status-bar-meta)]">
+          {t('issueAgent.confirm.relatedLogsHint')}
+        </p>
+      )}
 
-      {/* 发布方式由 Main 预先选定；确认阶段只展示实际通道，不提供不可用切换。 */}
+      {/*
+        新版 Main:平台 Bot 默认 + 可选 GitHub 用户。旧版 Main 可能已固定为 GitHub
+        用户，此时只能如实展示该单一身份，不能提供旧 Main 不会执行的平台切换。
+      */}
       <div
         className={cn(
           'mt-3 rounded-[8px] border p-3',
@@ -224,22 +280,35 @@ export function IssueConfirmCard({ sessionId, pending, onRespond }: IssueConfirm
         <p className="select-none text-12 font-medium text-[var(--status-bar-meta)]">
           {t('issueAgent.confirm.submissionMethodLabel')}
         </p>
-        <p className="mt-1 text-13 leading-snug text-[var(--chat-input-text)]">
-          {pending.submissionIdentity.kind === 'github-user'
-            ? t('issueAgent.confirm.identityGithubUser', {
-                login: pending.submissionIdentity.login,
-              })
-            : t('issueAgent.confirm.identityPlatform', {
-                login: pending.submissionIdentity.login,
-              })}
-        </p>
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          {pending.submissionIdentity.kind === 'platform'
+            ? identityButton(
+                pending.submissionIdentity,
+                t('issueAgent.confirm.identityPlatform', {
+                  login: pending.submissionIdentity.login,
+                }),
+              )
+            : identityButton(
+                pending.submissionIdentity,
+                t('issueAgent.confirm.identityGithubUser', {
+                  login: pending.submissionIdentity.login,
+                }),
+              )}
+          {pending.githubUserIdentity &&
+            identityButton(
+              pending.githubUserIdentity,
+              t('issueAgent.confirm.identityGithubUser', {
+                login: pending.githubUserIdentity.login,
+              }),
+            )}
+        </div>
         <p className="mt-1 text-12 leading-snug text-[var(--status-bar-meta)]">
-          {pending.submissionIdentity.kind === 'github-user'
+          {selectedIdentity.kind === 'github-user'
             ? t('issueAgent.confirm.identityGithubUserHint')
             : t('issueAgent.confirm.identityPlatformHint')}
         </p>
 
-        {pending.submissionIdentity.kind === 'platform' && (
+        {selectedIdentity.kind === 'platform' && (
           <>
             <label
               htmlFor={publicNameInputId}
@@ -261,18 +330,16 @@ export function IssueConfirmCard({ sessionId, pending, onRespond }: IssueConfirm
                   'focus:outline-none focus:ring-1 focus:ring-[var(--focus-ring)]',
                 )}
               />
-              <button
+              <Button
+                variant="secondary"
+                size="md"
+                compact
                 type="button"
                 onClick={() => updateDraft({ publicName: t('issueAgent.confirm.anonymous') })}
-                className={cn(
-                  'shrink-0 rounded-full border px-3 py-2',
-                  'border-[var(--chat-input-border)] bg-transparent',
-                  'select-none text-13 font-medium text-[var(--chat-input-text)]',
-                  'transition-colors hover:bg-[var(--chat-input-bg)]',
-                )}
+                className="shrink-0 select-none"
               >
                 {t('issueAgent.confirm.useAnonymous')}
-              </button>
+              </Button>
             </div>
             <p className="mt-1 text-12 leading-snug text-[var(--status-bar-meta)]">
               {t('issueAgent.confirm.publicNameHint')}
@@ -292,44 +359,51 @@ export function IssueConfirmCard({ sessionId, pending, onRespond }: IssueConfirm
           appVersion: pending.env.appVersion,
           platform: pending.env.platform,
           arch: pending.env.arch,
+          osVersion: pending.env.osVersion,
           uiLanguage: i18n.language,
         })}
       </p>
+      {pending.env.harness && pending.env.modelId && (
+        <p className="mt-1 [overflow-wrap:anywhere] text-12 leading-tight text-[var(--status-bar-meta)]">
+          {t('issueAgent.confirm.runtimeLine', {
+            harness: pending.env.harness,
+            modelId: pending.env.modelId,
+          })}
+        </p>
+      )}
+
+      <label className="mt-3 flex cursor-pointer items-start gap-2 text-12 leading-snug text-[var(--chat-input-text)]">
+        <input
+          type="checkbox"
+          checked={privacyConfirmed}
+          onChange={(event) => setPrivacyConfirmed(event.target.checked)}
+          className="mt-0.5 size-3.5 shrink-0 accent-[var(--accent-cta-bg)]"
+        />
+        <span>{t('issueAgent.confirm.privacyConfirm')}</span>
+      </label>
 
       {/* Action buttons */}
       <div className="mt-4 flex items-center justify-end gap-2">
-        <button
-          type="button"
-          onClick={handleCancel}
-          className={cn(
-            'flex items-center gap-2 rounded-[8px] border px-3 py-[7px]',
-            'border-[var(--chat-input-border)] bg-transparent',
-            'text-13 font-medium text-[var(--chat-input-text)]',
-            'transition-colors hover:bg-[var(--perm-code-bg)]',
-          )}
-        >
+        <Button variant="secondary" size="md" compact type="button" onClick={handleCancel}>
           <span>{t('issueAgent.confirm.cancel')}</span>
-          <kbd className="rounded-[4px] border border-[var(--chat-input-border)] bg-[var(--perm-code-bg)] px-1.5 py-[1px] text-[11px] font-normal text-[var(--status-bar-meta)]">
+          <kbd className="rounded-[4px] border border-[var(--chat-input-border)] bg-[var(--perm-code-bg)] px-1.5 py-[1px] text-11 font-normal text-[var(--status-bar-meta)]">
             Esc
           </kbd>
-        </button>
-        <button
+        </Button>
+        <Button
+          variant="cta"
+          palette="permission"
+          size="md"
+          compact
           type="button"
           onClick={handleSubmit}
           disabled={!canSubmit}
-          className={cn(
-            'flex items-center gap-2 rounded-[8px] border px-3 py-[7px]',
-            'border-[var(--chat-input-border)]',
-            'bg-[var(--perm-allow-btn-bg)] text-[var(--perm-allow-btn-text)]',
-            'text-13 font-medium',
-            'transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50',
-          )}
         >
           <span>{t('issueAgent.confirm.submit')}</span>
-          <kbd className="rounded-[4px] border border-[var(--perm-allow-kbd-border)] bg-[var(--perm-allow-kbd-bg)] px-1.5 py-[1px] text-[11px] font-normal text-[var(--perm-allow-btn-text)] opacity-70">
+          <kbd className="rounded-[4px] border border-[var(--perm-allow-kbd-border)] bg-[var(--perm-allow-kbd-bg)] px-1.5 py-[1px] text-11 font-normal text-[var(--perm-allow-btn-text)] opacity-70">
             {window.electronAPI?.platform === 'darwin' ? '⌘↵' : 'Ctrl+Enter'}
           </kbd>
-        </button>
+        </Button>
       </div>
     </div>
   );

@@ -58,10 +58,14 @@ function parseField(token: string, range: FieldRange, allowDowSeven = false): nu
     if (part.length === 0) {
       throw new Error(`Empty cron field segment in "${token}"`);
     }
-    const [rangePart, stepPart] = part.split('/');
+    const stepSegments = part.split('/');
+    if (stepSegments.length > 2) {
+      throw new Error(`Invalid step syntax in "${part}"`);
+    }
+    const [rangePart, stepPart] = stepSegments;
     let step = 1;
     if (stepPart !== undefined) {
-      step = parseInt(stepPart, 10);
+      step = parseDecimalInteger(stepPart);
       if (!Number.isInteger(step) || step <= 0) {
         throw new Error(`Invalid step "${stepPart}" in "${part}"`);
       }
@@ -72,20 +76,24 @@ function parseField(token: string, range: FieldRange, allowDowSeven = false): nu
       lo = range.min;
       hi = range.max;
     } else if (rangePart.includes('-')) {
-      const [aStr, bStr] = rangePart.split('-');
-      lo = parseInt(aStr, 10);
-      hi = parseInt(bStr, 10);
+      const rangeSegments = rangePart.split('-');
+      if (rangeSegments.length !== 2) {
+        throw new Error(`Invalid range "${rangePart}" in "${part}"`);
+      }
+      const [aStr, bStr] = rangeSegments;
+      lo = parseDecimalInteger(aStr);
+      hi = parseDecimalInteger(bStr);
       if (!Number.isInteger(lo) || !Number.isInteger(hi) || lo > hi) {
         throw new Error(`Invalid range "${rangePart}" in "${part}"`);
       }
     } else {
-      const v = parseInt(rangePart, 10);
+      const v = parseDecimalInteger(rangePart);
       if (!Number.isInteger(v)) {
         throw new Error(`Invalid value "${rangePart}" in "${part}"`);
       }
       lo = v;
       // "N/S" expands as "N,N+S,N+2S,...,max"
-      hi = stepPart !== undefined ? range.max : v;
+      hi = stepPart !== undefined ? effectiveMax : v;
     }
     if (lo < range.min || hi > effectiveMax) {
       throw new Error(`Field "${part}" out of range [${range.min}, ${effectiveMax}]`);
@@ -96,6 +104,10 @@ function parseField(token: string, range: FieldRange, allowDowSeven = false): nu
     }
   }
   return [...out].sort((a, b) => a - b);
+}
+
+function parseDecimalInteger(value: string): number {
+  return /^\d+$/.test(value) ? Number(value) : Number.NaN;
 }
 
 // ---------- timezone helpers ----------
@@ -172,15 +184,57 @@ function tzOffsetMs(epochMs: number, tz: string): number {
   return wallAsUtc - epochSec;
 }
 
-// Convert wall-clock (y,mo,d,h,mi) in tz back to epoch ms. Handles DST edges by re-checking offset.
+// Whether the epoch instant reads exactly (y,mo,d,h,mi) on the wall clock in tz.
+function wallClockEquals(
+  epochMs: number,
+  y: number,
+  mo: number,
+  d: number,
+  h: number,
+  mi: number,
+  tz: string,
+): boolean {
+  const w = wallClock(epochMs, tz);
+  return w.y === y && w.mo === mo && w.d === d && w.h === h && w.mi === mi;
+}
+
+// Convert wall-clock (y,mo,d,h,mi) in tz back to epoch ms.
+//
+// DST edges:
+//  - Overlap (fall-back, wall time occurs twice): resolves to the LATER
+//    occurrence. nextRun/nextMonthlyFire compare candidates against a strictly
+//    increasing "from" instant; the earlier occurrence can lie in the past when
+//    `from` is already inside the repeated hour, which made the scheduler
+//    re-fire a finished schedule every tick until the wall clock left the
+//    repeated hour.
+//  - Gap (spring-forward, wall time never occurs): returns the instant the wall
+//    clock reads the requested time plus the gap size (the post-transition
+//    interpretation). Returning the pre-transition side made nextRun re-derive
+//    the missing slot forever and exhaust MAX_ITERATIONS (~4.4s of blocking
+//    Intl calls), quarantining the schedule and stalling the host tick loop.
 // Exported for sibling use (see wallClock comment above).
 export function fromWallClock(y: number, mo: number, d: number, h: number, mi: number, tz: string): number {
   const guess = Date.UTC(y, mo - 1, d, h, mi, 0);
   const off1 = tzOffsetMs(guess, tz);
   const candidate = guess - off1;
   const off2 = tzOffsetMs(candidate, tz);
-  if (off2 === off1) return candidate;
-  return guess - off2;
+  if (off2 === off1) {
+    // Offsets agree, but a fall-back transition within the next hour can make
+    // this wall time occur a second time; prefer that later occurrence.
+    const offAfter = tzOffsetMs(candidate + 3600_000, tz);
+    if (offAfter !== off1) {
+      const later = guess - offAfter;
+      if (wallClockEquals(later, y, mo, d, h, mi, tz)) return later;
+    }
+    return candidate;
+  }
+  const corrected = guess - off2;
+  if (wallClockEquals(corrected, y, mo, d, h, mi, tz)) return corrected;
+  // Nonexistent wall time: spring-forward gaps shrink the day, so the offset
+  // that applies after the jump is the larger one — clamping there guarantees
+  // the returned instant is at/after the transition, letting walkers exit the
+  // gap instead of re-entering it.
+  return guess - Math.min(off1, off2);
 }
 
 // ---------- nextRun ----------

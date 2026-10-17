@@ -10,6 +10,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { GhostNetworkSlot, type NetworkSlotDeps } from '../networkSlot';
 import {
   GHOST_FETCH_DIR_UPLOAD_MAX_BYTES_PER_FILE,
+  GHOST_FETCH_DIR_UPLOAD_MAX_TOTAL_BYTES,
   GHOST_FETCH_INFLIGHT_LIMIT,
   GHOST_FETCH_MEDIA_MAX_BYTES,
   GHOST_FETCH_RESPONSE_MAX_BYTES,
@@ -20,8 +21,9 @@ import {
 
 function fakeGhost(
   overrides: {
+    id?: string;
     enabled?: boolean;
-    slots?: string[];
+    trust?: InstalledGhost['trust'];
     /** null = 有槽无详单(老包语义);undefined = 默认 brave+tavily 双域名。 */
     network?: GhostNetworkNeeds | null;
   } = {},
@@ -44,17 +46,17 @@ function fakeGhost(
   return {
     manifest: {
       schemaVersion: 2,
-      id: 'web-search',
+      id: overrides.id ?? 'web-search',
       name: '搜索',
       version: '1.0.0',
       kind: 'chip',
       entry: 'main.js',
-      slots: overrides.slots ?? ['tool', 'network'],
       tools: [{ name: 'search_web', description: '搜索' }],
       ...(overrides.network === null ? {} : { network: overrides.network ?? defaultNetwork }),
     },
     dir: '/fake/brain/web-search',
     enabled: overrides.enabled ?? true,
+    ...(overrides.trust ? { trust: overrides.trust } : {}),
   } as InstalledGhost;
 }
 
@@ -94,10 +96,15 @@ function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
 function makeSlot(overrides: Partial<NetworkSlotDeps> = {}): {
   slot: GhostNetworkSlot;
   fetchImpl: ReturnType<typeof vi.fn>;
+  fetchPublicImpl: ReturnType<typeof vi.fn>;
   readSecret: ReturnType<typeof vi.fn>;
   saveGhostMedia: ReturnType<typeof vi.fn>;
 } {
   const fetchImpl = vi.fn(async () => fakeResponse());
+  const fetchPublicImpl = vi.fn(async () => ({
+    response: fakeResponse(),
+    release: async () => undefined,
+  }));
   const readSecret = vi.fn((_ghostId: string, key: string) =>
     key === 'brave_api_key' ? 'BSA-secret' : key === 'tavily_api_key' ? 'tvly-secret' : null,
   );
@@ -114,6 +121,7 @@ function makeSlot(overrides: Partial<NetworkSlotDeps> = {}): {
     readSecret,
     getLoginEmail: () => 'dev@example.com',
     fetchImpl: fetchImpl as unknown as NetworkSlotDeps['fetchImpl'],
+    fetchPublicImpl: fetchPublicImpl as unknown as NetworkSlotDeps['fetchPublicImpl'],
     saveGhostMedia: saveGhostMedia as unknown as NetworkSlotDeps['saveGhostMedia'],
     isSupportedMediaMime,
     // 缺省"查无此媒体":上传套件按需覆盖。
@@ -124,10 +132,102 @@ function makeSlot(overrides: Partial<NetworkSlotDeps> = {}): {
     writeSaveDeposit: async () => null,
     ...overrides,
   };
-  return { slot: new GhostNetworkSlot(deps), fetchImpl, readSecret, saveGhostMedia };
+  return { slot: new GhostNetworkSlot(deps), fetchImpl, fetchPublicImpl, readSecret, saveGhostMedia };
 }
 
 const BRAVE_URL = 'https://api.search.brave.com/res/v1/web/search?q=hi';
+
+describe('network request installation binding', () => {
+  it.each(['redirect-credential', '401-response'] as const)('does not dispatch or invalidate after replacement during %s', async (phase) => {
+    for (const replaced of [false, true]) {
+      let current = true;
+      let credentialReads = 0;
+      let requestCount = 0;
+      const invalidate = vi.fn();
+      const fetchImpl = vi.fn(async () => {
+        requestCount += 1;
+        if (requestCount > 1) return fakeResponse();
+        if (phase === '401-response') current = !replaced;
+        return fakeResponse({ status: phase === '401-response' ? 401 : 302,
+          headers: { location: `${BRAVE_URL}&redirect=1` } });
+      });
+      const { slot } = makeSlot({
+        captureRequestGuard: () => () => { if (!current) throw new Error('installation changed'); },
+        getGhost: () => fakeGhost({ network: { hosts: ['api.search.brave.com'], secrets: [{
+          key: 'token', label: 'Token', source: 'oidc-token',
+          inject: { header: 'Authorization', format: 'Bearer {value}', hosts: ['api.search.brave.com'] },
+        }] } }),
+        connectionTokens: {
+          resolve: () => ({ membershipId: 'membership', audience: 'acme:web-search', allowedHosts: ['api.search.brave.com'] }),
+          getToken: async () => {
+            credentialReads += 1;
+            if (phase === 'redirect-credential' && credentialReads === 2) current = !replaced;
+            return 'token';
+          },
+          invalidate,
+        },
+        fetchImpl,
+      });
+      expect((await slot.handleFetchRequest('web-search', { url: BRAVE_URL })).ok).toBe(!replaced);
+      expect(fetchImpl).toHaveBeenCalledTimes(replaced ? 1 : 2);
+      expect(invalidate).toHaveBeenCalledTimes(phase === '401-response' && !replaced ? 1 : 0);
+    }
+  });
+
+  it.each([false, true])('rejects late media after target replacement (replaced=%s)', async (replaced) => {
+    let target = 'original';
+    let releaseResponse!: (response: Response) => void;
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    const writeSaveDeposit = vi.fn(async () => ({ fileName: 'old.png' }));
+    const { slot, saveGhostMedia } = makeSlot({
+      captureRequestGuard: () => {
+        const expected = target;
+        return () => { if (target !== expected) throw new Error('installation changed'); };
+      },
+      fetchImpl: async () => {
+        markStarted();
+        return new Promise<Response>((resolve) => { releaseResponse = resolve; });
+      },
+      writeSaveDeposit,
+    });
+    const fetching = slot.handleFetchRequest('web-search', { url: BRAVE_URL, as: 'media' });
+    await started;
+    if (replaced) target = 'replacement';
+    releaseResponse(fakeResponse({ headers: { 'content-type': 'image/png' }, body: toArrayBuffer(new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) }));
+    expect((await fetching).ok).toBe(!replaced);
+    expect(saveGhostMedia).toHaveBeenCalledTimes(replaced ? 0 : 1);
+    expect(writeSaveDeposit).not.toHaveBeenCalled();
+  });
+
+  it('includes asynchronous credential preparation in relocation idle checks', async () => {
+    let releaseCredential!: () => void;
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    const { slot } = makeSlot({
+      getGhost: () => fakeGhost({ network: { hosts: ['api.search.brave.com'], secrets: [{
+        key: 'token', label: 'Token', source: 'oidc-token',
+        inject: { header: 'Authorization', format: 'Bearer {value}', hosts: ['api.search.brave.com'] },
+      }] } }),
+      connectionTokens: {
+        resolve: () => ({ membershipId: 'membership', audience: 'acme:web-search', allowedHosts: ['api.search.brave.com'] }),
+        getToken: async () => {
+          markStarted();
+          await new Promise<void>((resolve) => { releaseCredential = resolve; });
+          return 'token';
+        },
+        invalidate: vi.fn(),
+      },
+    });
+    const fetchPreparing = slot.handleFetchRequest('web-search', { url: BRAVE_URL });
+    await started;
+    const busy = slot.hasInFlightRequests?.('web-search');
+    releaseCredential();
+    await fetchPreparing;
+    expect(busy).toBe(true);
+    expect(slot.hasInFlightRequests?.('web-search')).toBe(false);
+  });
+});
 
 describe('networkSlot · 载荷与 URL 校验', () => {
   it('url 缺失/非 https/带端口/内嵌凭证/不是绝对地址一律拒', async () => {
@@ -178,23 +278,151 @@ describe('networkSlot · 载荷与 URL 校验', () => {
   });
 });
 
-describe('networkSlot · 资格审(槽 + 详单双闸)', () => {
-  it('意识不存在/停用/未声明 network 槽/有槽无详单一律拒', async () => {
+describe('networkSlot · 能力资格审', () => {
+  it('意识不存在/停用/未声明 network.hosts 一律拒', async () => {
     const gone = makeSlot({ getGhost: () => null });
     expect((await gone.slot.handleFetchRequest('web-search', { url: BRAVE_URL })).ok).toBe(false);
 
     const disabled = makeSlot({ getGhost: () => fakeGhost({ enabled: false }) });
     expect((await disabled.slot.handleFetchRequest('web-search', { url: BRAVE_URL })).ok).toBe(false);
 
-    const noSlot = makeSlot({ getGhost: () => fakeGhost({ slots: ['tool'], network: null }) });
+    const noSlot = makeSlot({ getGhost: () => fakeGhost({ network: null }) });
     const r1 = await noSlot.slot.handleFetchRequest('web-search', { url: BRAVE_URL });
     expect(r1.ok).toBe(false);
-    if (!r1.ok) expect(r1.message).toContain('network 卡槽');
+    if (!r1.ok) expect(r1.message).toContain('network.hosts');
 
     const noNeeds = makeSlot({ getGhost: () => fakeGhost({ network: null }) });
     const r2 = await noNeeds.slot.handleFetchRequest('web-search', { url: BRAVE_URL });
     expect(r2.ok).toBe(false);
     if (!r2.ok) expect(r2.message).toContain('network.hosts');
+  });
+
+  it('Agent 在途调用可访问未预声明域名，同一 callId 不属于本插件则拒绝', async () => {
+    const allowed = makeSlot({
+      getGhost: () => fakeGhost({ network: null }),
+      inFlightCallInfo: (callId) =>
+        callId === 'call-agent'
+          ? { ghostId: 'web-search', sessionId: 'session-1', remoteHostId: null, channel: 'session' }
+          : null,
+    });
+    expect(
+      await allowed.slot.handleFetchRequest('web-search', {
+        url: 'https://example.com/data',
+        callId: 'call-agent',
+      }),
+    ).toMatchObject({ ok: true });
+    expect(allowed.fetchPublicImpl).toHaveBeenCalledTimes(1);
+    expect(allowed.fetchImpl).not.toHaveBeenCalled();
+
+    const wrongOwner = makeSlot({
+      getGhost: () => fakeGhost({ network: null }),
+      inFlightCallInfo: () => ({ ghostId: 'another-plugin', sessionId: 'session-1', remoteHostId: null, channel: 'session' }),
+    });
+    expect(
+      await wrongOwner.slot.handleFetchRequest('web-search', {
+        url: 'https://example.com/data',
+        callId: 'call-agent',
+      }),
+    ).toMatchObject({ ok: false });
+  });
+
+  it('脚本/后台通道不能冒充 Agent 授权访问未声明域名', async () => {
+    const { slot } = makeSlot({
+      getGhost: () => fakeGhost({ network: null }),
+      inFlightCallInfo: () => ({ ghostId: 'web-search', sessionId: null, remoteHostId: undefined, channel: 'script' }),
+    });
+    expect(
+      await slot.handleFetchRequest('web-search', {
+        url: 'https://example.com/data',
+        callId: 'call-script',
+      }),
+    ).toMatchObject({ ok: false });
+  });
+
+  it('SSH remote Agent 不能借本机 Desktop 出口访问未声明域名', async () => {
+    const { slot, fetchImpl, fetchPublicImpl } = makeSlot({
+      getGhost: () => fakeGhost({ network: null }),
+      inFlightCallInfo: () => ({
+        ghostId: 'web-search',
+        sessionId: 'session-remote',
+        remoteHostId: 'ssh-host-1',
+        channel: 'session',
+      }),
+    });
+
+    expect(
+      await slot.handleFetchRequest('web-search', {
+        url: 'https://example.com/data',
+        callId: 'call-agent',
+      }),
+    ).toMatchObject({ ok: false });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(fetchPublicImpl).not.toHaveBeenCalled();
+  });
+
+  it('Agent 未声明目标的 SSRF 守门失败时不回退普通 fetch', async () => {
+    const guardedError = new Error('Blocked: resolves to private/internal/special-use IP address');
+    const guardedFetch = vi.fn(async () => { throw guardedError; });
+    const { slot, fetchImpl } = makeSlot({
+      getGhost: () => fakeGhost({ network: null }),
+      inFlightCallInfo: () => ({ ghostId: 'web-search', sessionId: 'session-1', remoteHostId: null, channel: 'session' }),
+      fetchPublicImpl: guardedFetch,
+    });
+
+    const result = await slot.handleFetchRequest('web-search', {
+      url: 'https://localhost/private',
+      callId: 'call-agent',
+    });
+
+    expect(result).toMatchObject({ ok: false });
+    expect(guardedFetch).toHaveBeenCalledTimes(1);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('Agent 在 DNS 等待期间交卷时，dispatch 前最后一次复核会阻断请求', async () => {
+    let live = true;
+    const guardedFetch: NetworkSlotDeps['fetchPublicImpl'] = vi.fn(
+      async (_url, _init, beforeDispatch) => {
+        // 模拟代理选择 / DNS 守门 await 期间外层 ghost_call 已经交卷。
+        live = false;
+        await beforeDispatch();
+        throw new Error('unreachable');
+      },
+    );
+    const { slot, fetchImpl } = makeSlot({
+      getGhost: () => fakeGhost({ network: null }),
+      inFlightCallInfo: () =>
+        live
+          ? { ghostId: 'web-search', sessionId: 'session-1', remoteHostId: null, channel: 'session' }
+          : null,
+      fetchPublicImpl: guardedFetch,
+    });
+
+    const result = await slot.handleFetchRequest('web-search', {
+      url: 'https://example.com/data',
+      callId: 'call-agent',
+    });
+
+    expect(result).toMatchObject({ ok: false });
+    if (!result.ok) expect(result.message).toContain('Agent 调用已结束');
+    expect(guardedFetch).toHaveBeenCalledTimes(1);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('Agent 访问已声明目标仍使用声明边界，不额外阻断私有服务', async () => {
+    const { slot, fetchImpl, fetchPublicImpl } = makeSlot({
+      getGhost: () => fakeGhost({ network: { hosts: ['127.0.0.1'], secrets: [] } }),
+      inFlightCallInfo: () => ({ ghostId: 'web-search', sessionId: 'session-1', remoteHostId: null, channel: 'session' }),
+    });
+
+    const result = await slot.handleFetchRequest('web-search', {
+      url: 'https://127.0.0.1/private',
+      callId: 'call-agent',
+    });
+
+    expect(result).toMatchObject({ ok: true });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchPublicImpl).not.toHaveBeenCalled();
   });
 });
 
@@ -330,6 +558,72 @@ describe('networkSlot · 重定向逐跳守门', () => {
     const r = await slot.handleFetchRequest('web-search', { url: BRAVE_URL });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.message).toContain('次数过多');
+  });
+
+  it('Agent 未声明目标的每一跳都重新经过 SSRF 守门', async () => {
+    const release = vi.fn(async () => undefined);
+    const guardedFetch = vi.fn()
+      .mockResolvedValueOnce({
+        response: redirectTo('https://cdn.example.com/next'),
+        release,
+      })
+      .mockResolvedValueOnce({ response: fakeResponse(), release });
+    const { slot, fetchImpl } = makeSlot({
+      getGhost: () => fakeGhost({ network: null }),
+      inFlightCallInfo: () => ({ ghostId: 'web-search', sessionId: 'session-1', remoteHostId: null, channel: 'session' }),
+      fetchPublicImpl: guardedFetch,
+    });
+
+    const result = await slot.handleFetchRequest('web-search', {
+      url: 'https://example.com/start',
+      callId: 'call-agent',
+    });
+
+    expect(result).toMatchObject({ ok: true });
+    expect(guardedFetch.mock.calls.map(([target]) => target)).toEqual([
+      'https://example.com/start',
+      'https://cdn.example.com/next',
+    ]);
+    expect(release).toHaveBeenCalledTimes(2);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('Agent 交卷后不再跟进未声明目标的后续重定向', async () => {
+    const liveCall = {
+      ghostId: 'web-search',
+      sessionId: 'session-1',
+      remoteHostId: null,
+      channel: 'session' as const,
+    };
+    const inFlightCallInfo = vi.fn()
+      // 入口资格、首跳资格与重定向目标预检仍在途。
+      .mockReturnValueOnce(liveCall)
+      .mockReturnValueOnce(liveCall)
+      .mockReturnValueOnce(liveCall)
+      .mockReturnValueOnce(liveCall)
+      // 真正发起第二跳前已经交卷。
+      .mockReturnValue(null);
+    const release = vi.fn(async () => undefined);
+    const guardedFetch = vi.fn(async () => ({
+      response: redirectTo('https://cdn.example.com/next'),
+      release,
+    }));
+    const { slot, fetchImpl } = makeSlot({
+      getGhost: () => fakeGhost({ network: null }),
+      inFlightCallInfo,
+      fetchPublicImpl: guardedFetch,
+    });
+
+    const result = await slot.handleFetchRequest('web-search', {
+      url: 'https://example.com/start',
+      callId: 'call-agent',
+    });
+
+    expect(result).toMatchObject({ ok: false });
+    if (!result.ok) expect(result.message).toContain('Agent 调用已结束');
+    expect(guardedFetch).toHaveBeenCalledTimes(1);
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 });
 
@@ -1197,6 +1491,183 @@ describe('networkSlot · 登录邮箱派生凭证(source:login-email)', () => {
   });
 });
 
+describe('networkSlot · GitHub CLI 优先凭证(source:gh-cli)', () => {
+  const GITHUB_URL = 'https://api.github.com/user';
+  const githubNetwork: GhostNetworkNeeds = {
+    hosts: ['api.github.com'],
+    secrets: [
+      {
+        key: 'github_pat',
+        label: 'GitHub authentication',
+        source: 'gh-cli',
+        inject: {
+          header: 'Authorization',
+          format: 'Bearer {value}',
+          hosts: ['api.github.com'],
+        },
+      },
+    ],
+  };
+
+  function makeGithubSlot(overrides: Partial<NetworkSlotDeps> = {}) {
+    return makeSlot({
+      getGhost: () => fakeGhost({
+        id: 'cindy-github',
+        network: githubNetwork,
+        trust: {
+          level: 'cindy-official',
+          publisherSigned: true,
+          publisherVerified: true,
+          reviewed: true,
+          publisherName: 'Cindy Plugin Market',
+        },
+      }),
+      readSecret: () => 'github_pat_fallback',
+      ...overrides,
+    });
+  }
+
+  it('本机 gh token 优先于保险库 PAT，且令牌不回流沙箱', async () => {
+    const readSecret = vi.fn(() => 'github_pat_fallback');
+    const { slot, fetchImpl } = makeGithubSlot({
+      readGhCliToken: async () => 'gho_from_cli',
+      readSecret,
+    });
+    const result = await slot.handleFetchRequest('web-search', { url: GITHUB_URL });
+    expect(result.ok).toBe(true);
+    expect(readSecret).not.toHaveBeenCalled();
+    expect((fetchImpl.mock.calls[0][1].headers as Record<string, string>).Authorization).toBe(
+      'Bearer gho_from_cli',
+    );
+    expect(JSON.stringify(result)).not.toContain('gho_from_cli');
+  });
+
+  it('gh 未安装或未登录时回落到已保存 PAT', async () => {
+    const { slot, fetchImpl } = makeGithubSlot({ readGhCliToken: async () => null });
+    const result = await slot.handleFetchRequest('web-search', { url: GITHUB_URL });
+    expect(result.ok).toBe(true);
+    expect((fetchImpl.mock.calls[0][1].headers as Record<string, string>).Authorization).toBe(
+      'Bearer github_pat_fallback',
+    );
+  });
+
+  it('gh 来源异常仍可回落 PAT；两边都不可用时才阻断并给出双路径指引', async () => {
+    const fallback = makeGithubSlot({
+      readGhCliToken: async () => {
+        throw new Error('spawn failed');
+      },
+    });
+    expect((await fallback.slot.handleFetchRequest('web-search', { url: GITHUB_URL })).ok).toBe(
+      true,
+    );
+
+    const unavailable = makeGithubSlot({
+      readGhCliToken: async () => null,
+      readSecret: () => null,
+    });
+    const result = await unavailable.slot.handleFetchRequest('web-search', { url: GITHUB_URL });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.message).toContain('gh auth login');
+      expect(result.message).toContain('Personal Access Token');
+    }
+    expect(unavailable.fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('仅自报 cindy-github 但没有 Host 官方 trust 时 fail-closed，不读取 gh token 也不发请求', async () => {
+    const readGhCliToken = vi.fn(async () => 'gho_should_not_be_read');
+    const readSecret = vi.fn(() => 'github_pat_fallback');
+    const { slot, fetchImpl } = makeGithubSlot({
+      getGhost: () => fakeGhost({ id: 'cindy-github', network: githubNetwork }),
+      readGhCliToken,
+      readSecret,
+    });
+    const result = await slot.handleFetchRequest('web-search', { url: GITHUB_URL });
+    expect(result.ok).toBe(false);
+    expect(readGhCliToken).not.toHaveBeenCalled();
+    expect(readSecret).not.toHaveBeenCalled();
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('官方 trust receipt 缺少 publisherName 时 fail-closed，不读取 gh token 也不发请求', async () => {
+    const readGhCliToken = vi.fn(async () => 'gho_should_not_be_read');
+    const readSecret = vi.fn(() => 'github_pat_fallback');
+    const { slot, fetchImpl } = makeGithubSlot({
+      getGhost: () => fakeGhost({
+        id: 'cindy-github',
+        network: githubNetwork,
+        trust: {
+          level: 'cindy-official',
+          publisherSigned: true,
+          publisherVerified: true,
+          reviewed: true,
+        },
+      }),
+      readGhCliToken,
+      readSecret,
+    });
+    const result = await slot.handleFetchRequest('web-search', { url: GITHUB_URL });
+    expect(result.ok).toBe(false);
+    expect(readGhCliToken).not.toHaveBeenCalled();
+    expect(readSecret).not.toHaveBeenCalled();
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['publisherSigned', { publisherSigned: false }],
+    ['publisherVerified', { publisherVerified: false }],
+    ['reviewed', { reviewed: false }],
+  ])('官方 trust receipt 的 %s 被篡改时 fail-closed', async (_field, override) => {
+    const readGhCliToken = vi.fn(async () => 'gho_should_not_be_read');
+    const { slot, fetchImpl } = makeGithubSlot({
+      getGhost: () => fakeGhost({
+        id: 'cindy-github',
+        network: githubNetwork,
+        trust: {
+          level: 'cindy-official',
+          publisherSigned: true,
+          publisherVerified: true,
+          reviewed: true,
+          publisherName: 'Cindy Plugin Market',
+          ...override,
+        },
+      }),
+      readGhCliToken,
+    });
+    const result = await slot.handleFetchRequest('web-search', { url: GITHUB_URL });
+    expect(result.ok).toBe(false);
+    expect(readGhCliToken).not.toHaveBeenCalled();
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('保留 ID 检查之外，非 cindy-github 也不能借 gh-cli trust', async () => {
+    const readGhCliToken = vi.fn(async () => 'gho_should_not_be_read');
+    const { slot, fetchImpl } = makeGithubSlot({
+      getGhost: () => fakeGhost({ id: 'third-party', network: githubNetwork }),
+      readGhCliToken,
+    });
+    const result = await slot.handleFetchRequest('web-search', { url: GITHUB_URL });
+    expect(result.ok).toBe(false);
+    expect(readGhCliToken).not.toHaveBeenCalled();
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('组织同名或尚未确认 root 的 cindy-github 不能借用 gh-cli token', async () => {
+    for (const identity of [{ namespace: 'acme' }, { namespaceState: 'pending' }] as const) {
+      const readGhCliToken = vi.fn(async () => 'gho_should_not_be_read');
+      const { slot, fetchImpl } = makeGithubSlot({
+        getGhost: () => ({ ...fakeGhost({ id: 'cindy-github', network: githubNetwork,
+          trust: { level: 'cindy-official', publisherSigned: true, publisherVerified: true,
+            reviewed: true, publisherName: 'Cindy Plugin Market' } }), ...identity }),
+        readGhCliToken,
+      });
+      expect((await slot.handleFetchRequest('web-search', { url: GITHUB_URL })).ok).toBe(false);
+      expect(readGhCliToken).not.toHaveBeenCalled();
+      expect(fetchImpl).not.toHaveBeenCalled();
+    }
+  });
+});
+
 describe('networkSlot · 目录上传(uploadDir,过户票据)', () => {
   const DEPLOY_URL = 'https://api.search.brave.com/deploy';
   const VALID_TOKEN = '11111111-2222-4333-8444-555555555555';
@@ -1277,13 +1748,15 @@ describe('networkSlot · 目录上传(uploadDir,过户票据)', () => {
   });
 
   it('读盘期间总量超限整单拒(过户后文件被撑大也兜得住)', async () => {
-    // 单块恰好取目录通道的单文件上限(50MB,不触发单文件拒),6 块累计 300MB
-    // 超过 256MB 总限——只有总量分支能拦住。原用例误用媒体上传的 64MB 常量,
+    // 单块恰好取目录通道的单文件上限(不触发单文件拒),块数按总量上限动态算,
+    // 恰好超过总限一块——只有总量分支能拦住。原用例误用媒体上传的 64MB 常量,
     // 每块先撞单文件检查,总量分支永远走不到。
     const big = new Uint8Array(GHOST_FETCH_DIR_UPLOAD_MAX_BYTES_PER_FILE);
+    const count =
+      Math.floor(GHOST_FETCH_DIR_UPLOAD_MAX_TOTAL_BYTES / big.byteLength) + 1;
     const takeDirDeposit = vi.fn(() => ({
-      totalBytes: big.byteLength * 6,
-      files: Array.from({ length: 6 }, (_, i) => ({
+      totalBytes: big.byteLength * count,
+      files: Array.from({ length: count }, (_, i) => ({
         relPath: `f${i}.bin`,
         size: big.byteLength,
         read: async () => big,

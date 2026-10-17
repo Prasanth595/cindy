@@ -1,0 +1,93 @@
+import { expandedRegistryEntries } from "../modelMetadataLayers.js";
+import type { ModelRegistry } from "../modelAccessBean.js";
+import { describe, expect, it } from "vitest";
+import rawRegistry from "../../catalog/model-registry.json";
+import {
+  modelDefaultEffort,
+  defaultEffortForCapabilities,
+} from "../effortResolution.js";
+
+describe("model-level default effort", () => {
+  it("ignores conflicting harness defaults when the model declares its own", () => {
+    expect(
+      modelDefaultEffort({
+        defaultEffort: "medium",
+        perAgent: {
+          codex: { defaultEffort: "high" },
+          pi: { defaultEffort: "xhigh" },
+        },
+      }),
+    ).toBe("medium");
+    expect(
+      modelDefaultEffort({
+        defaultEffort: null,
+        perAgent: {
+          codex: { defaultEffort: "high" },
+        },
+      }),
+    ).toBeNull();
+  });
+  it("promotes a consistent legacy value once for every harness", () => {
+    expect(
+      modelDefaultEffort({ perAgent: { codex: { defaultEffort: "medium" } } }),
+    ).toBe("medium");
+    expect(
+      modelDefaultEffort({
+        perAgent: {
+          codex: { defaultEffort: "high" },
+          "claude-code": { defaultEffort: "high" },
+        },
+      }),
+    ).toBe("high");
+  });
+  it("resolves legacy conflicts conservatively without depending on the harness order", () => {
+    expect(modelDefaultEffort({})).toBeUndefined();
+    expect(
+      modelDefaultEffort({
+        perAgent: {
+          codex: { defaultEffort: "high" },
+          "claude-code": { defaultEffort: "medium" },
+        },
+      }),
+    ).toBe("medium");
+    expect(
+      modelDefaultEffort({
+        perAgent: {
+          "claude-code": { defaultEffort: "medium" },
+          codex: { defaultEffort: "high" },
+        },
+      }),
+    ).toBe("medium");
+  });
+});
+
+describe("medium-first defaults", () => {
+  it("uses actual capabilities independent of discovery order", () => {
+    expect(defaultEffortForCapabilities(["max", "low", "medium"])).toBe(
+      "medium",
+    );
+    expect(defaultEffortForCapabilities(["minimal", "high", "max"])).toBe(
+      "high",
+    );
+    expect(defaultEffortForCapabilities(["low"])).toBe("low");
+    expect(defaultEffortForCapabilities([])).toBeNull();
+  });
+  it("keeps the maintained table consistent across harnesses without fabricating medium", () => {
+    for (const model of expandedRegistryEntries(
+      rawRegistry as unknown as ModelRegistry,
+    )) {
+      if (!model.efforts?.length) continue;
+      // Grok 4.7 (including Build Fast) uses official high; Kimi Code uses max, unlike our
+      // medium-first fallback for models without this official default.
+      expect(model.defaultEffort, model.id).toBe(
+        model.id === "moonshotai/kimi-k2.8-preview"
+          ? "max"
+          : ["xai/grok-4.7", "xai/grok-4.7-build-fast"].includes(model.id) ? "high"
+          : defaultEffortForCapabilities(model.efforts),
+      );
+      for (const override of Object.values(model.perAgent ?? {})) {
+        expect(override.defaultEffort, model.id).toBe(model.defaultEffort);
+      }
+    }
+  });
+});

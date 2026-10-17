@@ -6,6 +6,8 @@ import {
   fetchReleaseNotesIndex,
   type ReleaseNotes,
 } from '@/release-notes';
+import { useLocale } from '@/hooks/useLocale';
+import type { SupportedLocale } from '@/i18n';
 import { toast } from '@/lib/toast';
 import { createLogger } from '@/lib/logger';
 
@@ -30,6 +32,14 @@ const MAX_AGGREGATED_VERSIONS = 5;
  * `releaseNotesService`).
  */
 const PREVIEW_INDEX_BUDGET_MS = 3000;
+
+/**
+ * A fresh install/update can race the CDN publishing the current notice or
+ * the renderer mounting during startup. Retry the automatic path once after a
+ * short pause; manual and pre-install preview paths already have explicit
+ * user-driven retry/fallback behavior.
+ */
+const AUTO_NOTICE_RETRY_DELAY_MS = 2000;
 
 /** Numeric semver comparison. Returns >0 if a > b, <0 if a < b, 0 if equal. */
 function cmpVersion(a: string, b: string): number {
@@ -199,6 +209,7 @@ function versionsForManual(index: string[] | null, appVersion: string): string[]
 
 export function useUpdateNotice(): UseUpdateNoticeReturn {
   const { t } = useTranslation();
+  const { effectiveLocale } = useLocale();
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<UpdateNoticeMode | null>(null);
   const [releaseNotes, setReleaseNotes] = useState<ReleaseNotes[] | null>(null);
@@ -212,9 +223,54 @@ export function useUpdateNotice(): UseUpdateNoticeReturn {
   // Set synchronously (before any await) in onOpen so the auto-fetch path
   // can bail out if manual dialog was opened while the fetch was in flight.
   const dialogOpenedRef = useRef(false);
+  // Once a user explicitly opens either manual history or a pre-install
+  // preview, suppress the pending automatic retry for this hook lifetime.
+  // This must outlive dialogOpenedRef: dismiss() intentionally resets the
+  // latter, but the automatic attempt must not resurrect after dismissal.
+  const autoNoticeSuppressedRef = useRef(false);
   // Stored handle for the dismiss cleanup timer so onOpen can cancel it if
   // the user re-opens the dialog before the 200ms animation delay fires.
   const dismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Async entry points capture a locale. This ref prevents a slower response
+  // for the previous locale from replacing newly selected-language content.
+  const localeRef = useRef(effectiveLocale);
+  localeRef.current = effectiveLocale;
+  const previousLocaleRef = useRef(effectiveLocale);
+
+  /**
+   * Resolve a whole version set in one stable locale. If the user changes the
+   * language while requests are in flight, the raw/version cache makes the
+   * retry local and cheap while preventing a mixed-language result set.
+   */
+  const fetchVersionsForCurrentLocale = useCallback(
+    async (
+      versions: string[],
+      initialRequest?: {
+        version: string;
+        locale: SupportedLocale;
+        promise: Promise<ReleaseNotes | null>;
+      },
+    ): Promise<(ReleaseNotes | null)[]> => {
+      let requestLocale = localeRef.current;
+      let canUseInitialRequest = true;
+      for (;;) {
+        const results = await Promise.all(versions.map((version) => {
+          if (
+            canUseInitialRequest &&
+            initialRequest?.version === version &&
+            initialRequest.locale === requestLocale
+          ) {
+            return initialRequest.promise;
+          }
+          return fetchReleaseNotes(version, requestLocale);
+        }));
+        canUseInitialRequest = false;
+        if (localeRef.current === requestLocale) return results;
+        requestLocale = localeRef.current;
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     const appVersion = window.electronAPI.appVersion;
@@ -230,58 +286,98 @@ export function useUpdateNotice(): UseUpdateNoticeReturn {
     if (lastRead === appVersion) return;
 
     let cancelled = false;
+    autoNoticeSuppressedRef.current = false;
 
     (async () => {
-      // Fresh install: skip the index round-trip and show only the current
-      // version's notes. We don't want to blast a new user with 30 versions
-      // of history on first launch.
-      const index = lastRead === null ? null : await fetchReleaseNotesIndex();
-      if (cancelled) return;
+      // A transient CDN miss should not permanently lose the upgrade notice for
+      // this process. Keep the retry bounded so a genuinely unavailable CDN
+      // does not hold the renderer in a retry loop.
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        // Fresh install: skip the index round-trip and show only the current
+        // version's notes. We don't want to blast a new user with 30 versions
+        // of history on first launch.
+        const index = lastRead === null ? null : await fetchReleaseNotesIndex();
+        if (cancelled || dialogOpenedRef.current || autoNoticeSuppressedRef.current) return;
 
-      const targets = versionsToFetch(index, lastRead, appVersion).slice(
-        -MAX_AGGREGATED_VERSIONS,
-      );
-      const results = await Promise.all(targets.map((v) => fetchReleaseNotes(v)));
-      if (cancelled) return;
-      const notes = results.filter((n): n is ReleaseNotes => n !== null);
+        const targets = versionsToFetch(index, lastRead, appVersion).slice(
+          -MAX_AGGREGATED_VERSIONS,
+        );
+        const results = await fetchVersionsForCurrentLocale(targets);
+        if (cancelled || dialogOpenedRef.current || autoNoticeSuppressedRef.current) return;
+        const notes = results.filter((n): n is ReleaseNotes => n !== null);
 
-      if (notes.length === 0) return;
-      if (!notes.some((n) => n.version === appVersion)) return;
+        if (notes.length > 0 && notes.some((n) => n.version === appVersion)) {
+          // Compute the safe read-marker (unchanged from prior impl).
+          const isCurIdxMissing = index !== null && index.indexOf(appVersion) === -1;
+          const firstFailIdx = results.findIndex((n) => n === null);
+          if (isCurIdxMissing) {
+            readMarkerRef.current = lastRead ?? null;
+          } else if (firstFailIdx === -1) {
+            readMarkerRef.current = appVersion;
+          } else if (firstFailIdx === 0) {
+            const skipKey = `xdt-maker:notice-skip-tried-${targets[0]}`;
+            if (localStorage.getItem(skipKey) === null) {
+              localStorage.setItem(skipKey, '1');
+              readMarkerRef.current = lastRead ?? null;
+            } else {
+              readMarkerRef.current = targets[0];
+            }
+          } else {
+            readMarkerRef.current = targets[firstFailIdx - 1];
+          }
 
-      // Bail BEFORE computing readMarkerRef: if manual was opened while we
-      // fetched, don't write the marker (which would cause onOpen's
-      // readMarkerRef !== null guard to incorrectly abort the manual dialog).
-      if (dialogOpenedRef.current) return;
-
-      // Compute the safe read-marker (unchanged from prior impl).
-      const isCurIdxMissing = index !== null && index.indexOf(appVersion) === -1;
-      const firstFailIdx = results.findIndex((n) => n === null);
-      if (isCurIdxMissing) {
-        readMarkerRef.current = lastRead ?? null;
-      } else if (firstFailIdx === -1) {
-        readMarkerRef.current = appVersion;
-      } else if (firstFailIdx === 0) {
-        const skipKey = `xdt-maker:notice-skip-tried-${targets[0]}`;
-        if (localStorage.getItem(skipKey) === null) {
-          localStorage.setItem(skipKey, '1');
-          readMarkerRef.current = lastRead ?? null;
-        } else {
-          readMarkerRef.current = targets[0];
+          notes.reverse();
+          setMode('auto');
+          setReleaseNotes(notes);
+          setOpen(true);
+          return;
         }
-      } else {
-        readMarkerRef.current = targets[firstFailIdx - 1];
-      }
 
-      notes.reverse();
-      setMode('auto');
-      setReleaseNotes(notes);
-      setOpen(true);
+        if (
+          attempt === 0 &&
+          !cancelled &&
+          !dialogOpenedRef.current &&
+          !autoNoticeSuppressedRef.current
+        ) {
+          await new Promise<void>((resolve) => {
+            setTimeout(resolve, AUTO_NOTICE_RETRY_DELAY_MS);
+          });
+        }
+      }
     })().catch((err) => {
       log.warn('auto-fetch threw:', err);
     });
 
     return () => { cancelled = true; };
-  }, []);
+  }, [fetchVersionsForCurrentLocale]);
+
+  // Re-select every version currently owned by the hook when the language
+  // changes. Renderer raw caching keeps this local: no extra CDN/IPC request.
+  useEffect(() => {
+    if (previousLocaleRef.current === effectiveLocale) return;
+    previousLocaleRef.current = effectiveLocale;
+    const versions = releaseNotes?.map((notes) => notes.version) ?? [];
+    if (versions.length === 0) return;
+
+    let cancelled = false;
+    void Promise.all(versions.map((version) => fetchReleaseNotes(version, effectiveLocale)))
+      .then((localized) => {
+        if (cancelled || localeRef.current !== effectiveLocale) return;
+        const byVersion = new Map(
+          localized
+            .filter((notes): notes is ReleaseNotes => notes !== null)
+            .map((notes) => [notes.version, notes]),
+        );
+        setReleaseNotes((current) =>
+          current?.map((notes) => byVersion.get(notes.version) ?? notes) ?? current,
+        );
+      })
+      .catch((err) => {
+        log.warn('locale-refresh threw:', err);
+      });
+
+    return () => { cancelled = true; };
+  }, [effectiveLocale, releaseNotes]);
 
   const dismiss = useCallback(() => {
     dialogOpenedRef.current = false;
@@ -312,6 +408,7 @@ export function useUpdateNotice(): UseUpdateNoticeReturn {
     }
     // Set synchronously so the auto-fetch path can see it immediately even
     // before this async IIFE has called setOpen/setMode.
+    autoNoticeSuppressedRef.current = true;
     dialogOpenedRef.current = true;
     const appVersion = window.electronAPI.appVersion;
 
@@ -320,10 +417,14 @@ export function useUpdateNotice(): UseUpdateNoticeReturn {
       // dialog uses to render placeholders for every history entry; the
       // appVersion notes are what the top block shows immediately so the
       // dialog isn't blank-until-lazy-load on open.
-      const [index, appNotes] = await Promise.all([
-        fetchReleaseNotesIndex(),
-        fetchReleaseNotes(appVersion),
-      ]);
+      const warmupLocale = localeRef.current;
+      const appNotesWarmup = fetchReleaseNotes(appVersion, warmupLocale)
+        .catch(() => null);
+      const index = await fetchReleaseNotesIndex();
+      const [appNotes] = await fetchVersionsForCurrentLocale(
+        [appVersion],
+        { version: appVersion, locale: warmupLocale, promise: appNotesWarmup },
+      );
       // The dialog needs at least one loaded note as its initial seed.
       // If appVersion's JSON is temporarily unavailable (CDN lag / 404), try
       // the most-recent historical version from the index as fallback seed so
@@ -335,7 +436,7 @@ export function useUpdateNotice(): UseUpdateNoticeReturn {
         // so a single bad/lagging CDN file doesn't block the entire history view.
         for (const fallbackVersion of versionsForManual(index, appVersion)) {
           if (fallbackVersion === appVersion) continue;
-          const fallback = (await fetchReleaseNotes(fallbackVersion)) ?? null;
+          const [fallback] = await fetchVersionsForCurrentLocale([fallbackVersion]);
           if (fallback) {
             seed = fallback;
             break;
@@ -366,7 +467,7 @@ export function useUpdateNotice(): UseUpdateNoticeReturn {
       log.warn('manual-fetch threw:', err);
       toast.error(t('logic.toasts.fetchUpdateNoticeFailed'));
     });
-  }, [t, open]);
+  }, [t, open, fetchVersionsForCurrentLocale]);
 
   const onOpenVersion = useCallback((pendingVersion: string) => {
     // `open` is state, so two clicks in the same tick both read `false` and both
@@ -378,6 +479,7 @@ export function useUpdateNotice(): UseUpdateNoticeReturn {
       clearTimeout(dismissTimerRef.current);
       dismissTimerRef.current = null;
     }
+    autoNoticeSuppressedRef.current = true;
     dialogOpenedRef.current = true;
     const appVersion = window.electronAPI.appVersion;
 
@@ -385,7 +487,9 @@ export function useUpdateNotice(): UseUpdateNoticeReturn {
       // Kick off the pending version's notes immediately — it is the one block
       // that must be there, and the banner's probe usually leaves it cached, so
       // this resolves ~instantly and overlaps whatever the index costs.
-      const pendingNotes = fetchReleaseNotes(pendingVersion);
+      const warmupLocale = localeRef.current;
+      const pendingNotesWarmup = fetchReleaseNotes(pendingVersion, warmupLocale)
+        .catch(() => null);
       // The index only adds the *in-between* blocks. Waiting out the full CDN
       // timeout (15s, releaseNotesService) for them would make the link look
       // dead, so give it a budget and degrade to the pending version alone —
@@ -397,8 +501,9 @@ export function useUpdateNotice(): UseUpdateNoticeReturn {
         }),
       ]);
       const targets = versionsToPreview(index, appVersion, pendingVersion);
-      const results = await Promise.all(
-        targets.map((v) => (v === pendingVersion ? pendingNotes : fetchReleaseNotes(v))),
+      const results = await fetchVersionsForCurrentLocale(
+        targets,
+        { version: pendingVersion, locale: warmupLocale, promise: pendingNotesWarmup },
       );
       const notes = results.filter((n): n is ReleaseNotes => n !== null);
 
@@ -428,11 +533,11 @@ export function useUpdateNotice(): UseUpdateNoticeReturn {
       log.warn('preview-fetch threw:', err);
       toast.error(t('logic.toasts.fetchUpdateNoticeFailed'));
     });
-  }, [t, open]);
+  }, [t, open, fetchVersionsForCurrentLocale]);
 
   const loadVersion = useCallback(
-    (version: string) => fetchReleaseNotes(version),
-    [],
+    (version: string) => fetchReleaseNotes(version, effectiveLocale),
+    [effectiveLocale],
   );
 
   return {

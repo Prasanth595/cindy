@@ -1,7 +1,10 @@
 import type { InteractionDecision, InteractionRequest } from '@cindy/maker-core';
 import { escapeWecomMarkdown, type IMMessageEvent, type WecomIM } from '@cindy/im';
 
+import { autoReviewUnavailablePromptLine } from '../shared/autoReviewUnavailablePrompt';
 import { isStopCommand } from '../shared/controlCommands';
+import type { SharedPermission } from '../../maker-ipc/sharedPermission';
+import { INTERACTION_CHOICE_RECEIVED_TEXT, permissionOutcomeText } from '../shared/permissionPresentation';
 
 interface PendingInteraction {
   request: InteractionRequest;
@@ -24,7 +27,9 @@ export class WecomTextInteractions {
     });
   }
 
-  async handle(userId: string, request: InteractionRequest): Promise<InteractionDecision> {
+  async handle(userId: string, request: InteractionRequest, options?: { sharedPermission?: SharedPermission }): Promise<InteractionDecision> {
+    const shared = options?.sharedPermission;
+    if (shared?.decision) return shared.result;
     const previous = this.pending.get(userId);
     if (previous) {
       clearTimeout(previous.timer);
@@ -35,25 +40,34 @@ export class WecomTextInteractions {
     const result = new Promise<InteractionDecision>((resolve) => {
       resolvePending = resolve;
     });
+    const settle = (decision: InteractionDecision) => shared ? shared.decide(decision) : resolvePending(decision);
     const timer = setTimeout(() => {
       this.pending.delete(userId);
-      resolvePending(defaultDecision(request, 'wecom_interaction_timeout'));
+      settle(defaultDecision(request, 'wecom_interaction_timeout'));
     }, INTERACTION_TIMEOUT_MS);
     timer.unref?.();
-    this.pending.set(userId, { request, resolve: resolvePending, timer });
+    const entry = { request, resolve: settle, timer };
+    this.pending.set(userId, entry);
+    if (shared) void shared.result.then((decision) => {
+      if (this.pending.get(userId) === entry) this.pending.delete(userId);
+      clearTimeout(timer);
+      resolvePending(decision);
+    });
 
     try {
       await this.im.sendMarkdownText(userId, formatWecomInteractionPrompt(request));
-    } catch (error) {
+      if (shared) void shared.result.then((decision) => this.im.sendText(userId,
+        permissionOutcomeText(decision, request.kind === 'permission' ? request.toolName : undefined),
+      )).catch(() => {});
+    } catch {
       const current = this.pending.get(userId);
       if (current?.request.requestId === request.requestId) {
         clearTimeout(current.timer);
         this.pending.delete(userId);
       }
-      return defaultDecision(
-        request,
-        error instanceof Error ? error.message : 'wecom_interaction_send_failed',
-      );
+      // Denial reasons are classified by exact/prefix match. Raw Error.message
+      // is not a system code and would be presented as a user rejection.
+      return shared ? shared.result : defaultDecision(request, 'wecom_interaction_send_failed');
     }
     return result;
   }
@@ -86,7 +100,7 @@ export class WecomTextInteractions {
     clearTimeout(pending.timer);
     this.pending.delete(event.senderId);
     pending.resolve(decision);
-    void this.im.sendText(event.senderId, '已收到你的选择，继续处理。');
+    void this.im.sendText(event.senderId, INTERACTION_CHOICE_RECEIVED_TEXT);
     return true;
   }
 }
@@ -109,8 +123,10 @@ function previewPermissionInput(input: Record<string, unknown>): string {
 export function formatWecomInteractionPrompt(request: InteractionRequest): string {
   if (request.kind === 'permission') {
     const toolName = escapeWecomMarkdown(request.displayName ?? request.toolName);
+    const unavailable = autoReviewUnavailablePromptLine(request);
     return `需要确认工具“${toolName}”。
-
+${request.description ?? ''}
+${unavailable ? `\n${unavailable}\n` : ''}
 参数：
 \`\`\`json
 ${previewPermissionInput(request.input)}

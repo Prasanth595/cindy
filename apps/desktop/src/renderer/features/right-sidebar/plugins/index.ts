@@ -11,7 +11,12 @@
 
 import './file-browser';
 import './web-browser';
+import './retired-feature';
 import './terminal';
 import './review';
 import './orca-workers';
+import './subagents';
 import './background-tasks';
+import './resource-usage';
+import './routines';
+import './bot-workbench';

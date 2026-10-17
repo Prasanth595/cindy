@@ -4,7 +4,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const RECENT_DATE_GROUP_DAYS = 7;
 
 export type DateSessionGroupKind = 'today' | 'yesterday' | 'date' | 'older';
-export type DateSessionSortBy = 'recency' | 'time' | 'manual' | 'alphabetic';
+export type DateSessionSortBy = 'recency' | 'time' | 'manual';
 
 export interface DateSessionGroup {
   kind: DateSessionGroupKind;
@@ -19,6 +19,10 @@ function toMs(iso: string | null | undefined): number {
   if (!iso) return 0;
   const t = new Date(iso).getTime();
   return Number.isFinite(t) ? t : 0;
+}
+
+export function sessionCreatedMs(session: Session): number {
+  return toMs(session.createdAt);
 }
 
 export function sessionActivityMs(session: Session): number {

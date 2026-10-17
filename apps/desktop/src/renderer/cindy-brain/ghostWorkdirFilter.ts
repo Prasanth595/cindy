@@ -1,7 +1,7 @@
 /**
  * ghostWorkdirFilter — 意识清单的「工作目录级禁用」过滤(renderer 侧)。
  *
- * main 侧生效点(花名册 / ghost_list / ghost_call)已按会话 workdir 过滤;
+ * main 侧生效点(花名册 / ghost_list / ghost_info / ghost_call)已按会话 workdir 过滤;
  * 这里补齐 renderer 的两个入口,让被禁用的意识在该目录下彻底"不存在":
  *   - `$` 指令确认胶囊(GhostCommandDecoration 的 roster);
  *   - 发送期展开(expandGhostCommand 的 ghosts 入参,含编辑重发)。
@@ -14,6 +14,7 @@
  */
 
 import type { InstalledGhost } from '../../shared/ghost';
+import { installedGhostStoragePart } from '../../shared/pluginIdentity';
 
 /** 该 workdir 下被禁用的 ghostId 集合;无 workdir / 查询异常 = 空集。 */
 export function getWorkdirDisabledGhostIds(workdir: string | null | undefined): Set<string> {
@@ -36,6 +37,6 @@ export function filterGhostsForWorkdir(
 ): InstalledGhost[] {
   const disabled = getWorkdirDisabledGhostIds(workdir);
   if (disabled.size === 0) return ghosts;
-  const filtered = ghosts.filter((g) => !disabled.has(g.manifest.id));
+  const filtered = ghosts.filter((g) => !disabled.has(installedGhostStoragePart(g)));
   return filtered.length === ghosts.length ? ghosts : filtered;
 }

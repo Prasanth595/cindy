@@ -1,15 +1,44 @@
 /**
- * Regression coverage for Plugin detail section content and interaction behavior.
+ * Regression coverage for Plugin detail sections, shared Switch wiring and interaction behavior.
  * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
  * @vitest-environment jsdom
  */
 
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import path from 'node:path';
+import type { InstalledGhost } from '../../../../shared/ghost';
 
 const toastMocks = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn() }));
 
+vi.mock('@/hooks/useModelPricing', () => ({
+  useGatewayModelPricing: () => null,
+  useReferenceModelPricing: () => null,
+}));
+vi.mock('@/hooks/useProviders', () => ({
+  useProviders: () => ({ providers: [], providerOrder: [], loading: false }),
+}));
+vi.mock('@/hooks/useDeviceProviders', () => ({
+  useDeviceProviders: () => ({ providers: [], loading: false, unsupported: false }),
+}));
+vi.mock('@/hooks/useAgentCapabilities', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/hooks/useAgentCapabilities')>()),
+  useAgentCapabilities: () => ({ capabilities: null, loading: false }),
+}));
+vi.mock('@/hooks/useApiKey', () => ({ useApiKey: () => ({ hasSavedKey: true }) }));
+vi.mock('@/hooks/useConnectedSource', () => ({
+  useConnectedSource: () => ({ hasConnectedSource: true, loading: false }),
+}));
+
 vi.mock('@/lib/toast', () => ({ toast: toastMocks }));
+vi.mock('@/cindy-brain/GhostSettingsWebview', () => ({
+  GhostSettingsWebview: ({ account, reloadKey }: any) => (
+    <>
+      {account}
+      <div key={reloadKey} data-testid="ghost-settings-webview" />
+    </>
+  ),
+}));
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -26,9 +55,11 @@ vi.mock('react-i18next', () => ({
         'settings.ghosts.detail.closeDialog': 'Close dialog',
         'settings.ghosts.perm.networkHost': `Access ${String(options?.host ?? '')}`,
         'settings.ghosts.perm.networkHostDetail': 'Can access this declared domain.',
+        'settings.ghosts.perm.cindyTextOneshotModelDetail': `Takes effect when the model (${String(options?.model ?? '')}) is available in the catalog.`,
         'settings.ghosts.perm.command': `Command ${String(options?.command ?? '')}`,
         'settings.ghosts.perm.tool': `Tool ${String(options?.name ?? '')}`,
         'settings.ghosts.perm.cindyImageGenerate': 'Generate images',
+        'settings.ghosts.perm.cindyTextOneshot': 'Quick Q&A',
         'settings.ghosts.detail.infoTitle': 'Details',
         'settings.ghosts.detail.byAuthor': `By ${String(options?.author ?? '')}`,
         'settings.ghosts.detail.infoVersion': 'Version',
@@ -45,15 +76,19 @@ vi.mock('react-i18next', () => ({
         'settings.ghosts.detail.expandInfoValue': `Show full ${String(options?.label ?? '')}`,
         'settings.ghosts.detail.collapseInfoValue': `Collapse ${String(options?.label ?? '')}`,
         'settings.ghosts.detail.panelNotDocked': 'Not docked',
-        'settings.ghosts.detail.cindyPrefs.noModels': 'No models available',
+        'settings.providers.openai.title': 'OpenAI',
+        'settings.providers.xd.title': 'Cindy AI',
+        'settings.defaults.restore': 'Restore default',
+        'settings.ghosts.detail.oauthScopeStale':
+          'This authorization does not include newly added permissions. Reconnect to enable them.',
       };
-      return labels[key] ?? key;
+      return labels[key] ?? (options?.value !== undefined ? `${options.value} ${key}` : key);
     },
+    i18n: { language: 'en' },
   }),
 }));
 
 import type { GhostPermissionItem } from '../../../../shared/ghost';
-import { CindyCapabilityPrefs } from '@/cindy-brain/CindyCapabilityPrefs';
 import {
   DetailsSection,
   GhostPluginDetailView,
@@ -62,7 +97,7 @@ import {
   ToolDescriptionChip,
   ToolsSection,
 } from '../GhostPluginDetailView';
-import type { GhostPluginDetail } from '../lib/ghostPluginViewModel';
+import { toGhostPluginDetail, type GhostPluginDetail } from '../lib/ghostPluginViewModel';
 
 const permissions: GhostPermissionItem[] = [
   {
@@ -90,23 +125,35 @@ const permissions: GhostPermissionItem[] = [
     kind: 'cindy',
     labelKey: 'cindyImageGenerate',
   },
+  {
+    key: 'cindy:text.oneshot',
+    kind: 'cindy',
+    labelKey: 'cindyTextOneshot',
+    detailKey: 'cindyTextOneshotModelDetail',
+    detailArgs: { model: 'codex/gpt-5.5' },
+  },
 ];
 
 const detail: GhostPluginDetail = {
   id: 'builtin.example',
+  ghostId: 'builtin.example',
   name: 'Example',
   description: 'Example plugin',
   version: '1.2.3',
   enabled: true,
   canUse: true,
+  approvalState: 'approved',
+  builtin: false,
   tabPanel: false,
+  hasMainView: false,
+  mainViewTitle: null,
   author: 'XD',
   contents: ['code'],
   permissions: [],
   tools: [],
   hasSettingsUi: false,
-  cindyCapabilities: [],
-  hasErrand: false,
+  hasTaskPreferences: false,
+  hasPluginTasks: false,
   panelMinWidth: 320,
   installDir: '/tmp/cindy-brain/builtin.example',
   trust: {
@@ -118,6 +165,15 @@ const detail: GhostPluginDetail = {
   },
 };
 
+beforeEach(() => {
+  Object.defineProperty(window, 'electronAPI', {
+    configurable: true,
+    value: {
+
+    },
+  });
+});
+
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -127,6 +183,303 @@ afterEach(() => {
 });
 
 describe('Ghost plugin detail sections', () => {
+  it('does not advertise host login for a locally imported unverified GitHub plugin', () => {
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    const verify = vi.fn();
+    Object.assign(window.electronAPI, { gitContext: { githubConnection: verify } });
+    render(
+      <GhostPluginDetailView
+        ghost={
+          { manifest: { id: 'cindy-github' }, enabled: true, trust: { level: 'unverified' } } as any
+        }
+        detail={{ ...detail, id: 'cindy-github', ghostId: 'cindy-github', hasSettingsUi: true }}
+        panelStatus={null}
+        onBack={vi.fn()}
+        onToggle={vi.fn()}
+        onUse={vi.fn()}
+        onUpdate={vi.fn()}
+        onUpdateFromFile={vi.fn()}
+        onUninstall={vi.fn()}
+        toggleDisabled={false}
+      />,
+    );
+    expect(verify).not.toHaveBeenCalled();
+  });
+  it.each([
+    { layout: 'legacy', connection: { status: 'missing' } },
+    { layout: 'root', connection: { status: 'auth', source: 'token' } },
+  ])(
+    'connects GitHub in $layout layout and reloads settings after authorization',
+    async ({ layout, connection }) => {
+      vi.stubGlobal(
+        'ResizeObserver',
+        class {
+          observe() {}
+          unobserve() {}
+          disconnect() {}
+        },
+      );
+      Object.assign(window.electronAPI, {
+        gitContext: {
+          githubConnection: async () => connection,
+          onGithubConnected: () => () => {},
+          githubSetupStatus: async () => ({ phase: 'connected' }),
+          startGithubSetup: async () => ({ phase: 'connected' }),
+        },
+      });
+      const ghost: InstalledGhost = {
+        manifest: { schemaVersion: 3, minCindyVersion: '0.1.0', kind: 'chip',
+          id: 'cindy-github', name: 'GitHub', version: '1.0.0', entry: 'main.js', settingsHtml: 'settings.html' },
+        dir: path.join('plugins', ...(layout === 'root' ? ['_ns', '_root'] : []), 'cindy-github'),
+        namespace: null,
+        enabled: true,
+        approval: { state: 'approved', revision: '00000000-0000-4000-8000-000000000001' },
+        trust: { ...detail.trust, publisherName: 'Cindy Plugin Market' },
+      };
+      const { unmount } = render(
+        <GhostPluginDetailView
+          ghost={ghost}
+          detail={toGhostPluginDetail(ghost)}
+          panelStatus={null}
+          onBack={vi.fn()}
+          onToggle={vi.fn()}
+          onUse={vi.fn()}
+          onUpdate={vi.fn()}
+          onUpdateFromFile={vi.fn()}
+          onUninstall={vi.fn()}
+          toggleDisabled={false}
+        />,
+      );
+      const previousSettings = screen.getByTestId('ghost-settings-webview');
+      fireEvent.click(await screen.findByText('ccAgent.gitContext.pr.setup.stages.login.title'));
+      fireEvent.click(await screen.findByText('ccAgent.gitContext.pr.setup.connect'));
+      await waitFor(() =>
+        expect(screen.getByTestId('ghost-settings-webview')).not.toBe(previousSettings),
+      );
+      expect(screen.getByText('ccAgent.gitContext.pr.setup.done')).toBeTruthy();
+      unmount();
+    },
+  );
+  it('places Background Tasks after settings and before Tools for plugins declaring hiddenTasks', async () => {
+    vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
+    const listBackgroundTasks = vi.fn(async () => ({ items: [
+      { taskId: 'bg-1', title: 'Hidden grading', status: 'active' as const, updatedAt: Date.now(), running: false },
+    ] }));
+    Object.assign(window.electronAPI, { ghosts: { listBackgroundTasks, revealBackgroundTask: vi.fn() } });
+    const ghost = { manifest: { agent: { tasks: true, hiddenTasks: true } }, enabled: true, taskCapabilityApproved: true } as InstalledGhost;
+    render(<GhostPluginDetailView ghost={ghost} detail={{ ...detail, tools: [{ name: 'render', description: 'Render.' }] }} panelStatus="Docked" onBack={vi.fn()} onToggle={vi.fn()} onUse={vi.fn()} onUpdate={vi.fn()} onUpdateFromFile={vi.fn()} onUninstall={vi.fn()} toggleDisabled={false} />);
+    expect(await screen.findByText('Hidden grading')).toBeTruthy();
+    expect(listBackgroundTasks).toHaveBeenCalledWith(detail.id);
+    const heading = screen.getByRole('heading', { name: 'settings.ghosts.backgroundTasks.title' });
+    const tools = screen.getByRole('heading', { name: 'Tools' });
+    expect(heading.compareDocumentPosition(tools) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // Outside a router the open action is omitted; showing in the task list stays available.
+    expect(screen.queryByRole('button', { name: 'settings.ghosts.backgroundTasks.open' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'settings.ghosts.backgroundTasks.reveal' })).toBeTruthy();
+  });
+  it('lets the user retry task permission, disables duplicate clicks, and hides after approval', async () => {
+    vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
+    let finish!: (value: { granted: boolean }) => void;
+    const requestTaskApproval = vi.fn(() => new Promise<{ granted: boolean }>(resolve => { finish = resolve; }));
+    Object.assign(window.electronAPI, { ghosts: { requestTaskApproval } });
+    const ghost = { manifest: { agent: { tasks: true } }, enabled: true } as InstalledGhost;
+    const view = (approved = false) => <GhostPluginDetailView ghost={{ ...ghost, ...(approved ? { taskCapabilityApproved: true as const } : {}) }} detail={detail} panelStatus="Docked" onBack={vi.fn()} onToggle={vi.fn()} onUse={vi.fn()} onUpdate={vi.fn()} onUpdateFromFile={vi.fn()} onUninstall={vi.fn()} toggleDisabled={false} />;
+    const { rerender } = render(view());
+    const button = screen.getByRole('button', { name: 'settings.ghosts.perm.agentTasksRequest' }) as HTMLButtonElement;
+    fireEvent.click(button); fireEvent.click(button);
+    expect(requestTaskApproval).toHaveBeenCalledOnce();
+    expect(requestTaskApproval).toHaveBeenCalledWith(detail.id);
+    expect(button.disabled).toBe(true);
+    finish({ granted: false });
+    await waitFor(() => expect(button.disabled).toBe(false));
+    rerender(view(true));
+    expect(screen.queryByRole('button', { name: 'settings.ghosts.perm.agentTasksRequest' })).toBeNull();
+  });
+  it('uses the shared Cindy Switch for the plugin enabled control', () => {
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    const onToggle = vi.fn();
+    const view = (disabled = false) => (
+      <GhostPluginDetailView
+        ghost={null}
+        detail={detail}
+        panelStatus="Docked"
+        onBack={vi.fn()}
+        onToggle={onToggle}
+        onUse={vi.fn()}
+        onUpdate={vi.fn()}
+        onUpdateFromFile={vi.fn()}
+        onUninstall={vi.fn()}
+        toggleDisabled={disabled}
+      />
+    );
+    const { rerender } = render(view());
+
+    const toggle = screen.getByRole('switch', {
+      name: 'settings.ghosts.enableAria',
+    });
+    expect(toggle.className).toContain('cindy-switch');
+    expect(toggle.className).toContain('data-[state=checked]:bg-[var(--switch-track-on)]');
+    expect(toggle.firstElementChild?.className).toContain(
+      'data-[state=checked]:bg-[var(--switch-thumb-on)]',
+    );
+    fireEvent.click(toggle);
+    expect(onToggle.mock.calls).toEqual([[false]]);
+    fireEvent.click(screen.getByText('settings.ghosts.detail.enabledLabel'));
+    expect(onToggle.mock.calls).toEqual([[false], [false]]);
+    rerender(view(true));
+    fireEvent.click(toggle);
+    fireEvent.click(screen.getByText('settings.ghosts.detail.enabledLabel'));
+    expect(onToggle).toHaveBeenCalledTimes(2);
+  });
+
+  it('shows the main-view preference alongside the plugin settings UI', () => {
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    const onVisibilityChange = vi.fn();
+    render(
+      <GhostPluginDetailView
+        ghost={{
+          manifest: {
+            schemaVersion: 2,
+            id: detail.id,
+            name: detail.name,
+            version: detail.version,
+            kind: 'chip',
+            entry: 'main.js',
+            minCindyVersion: '1.2.3',
+            slots: ['main-view'],
+            settingsHtml: 'settings.html',
+            mainView: { html: 'main-view.html', title: 'Workspace' },
+          },
+          dir: detail.installDir ?? '/tmp/plugin',
+          enabled: true,
+          approval: { state: 'approved', revision: 'rev-1' },
+        }}
+        detail={{
+          ...detail,
+          hasMainView: true,
+          mainViewTitle: 'Workspace',
+          hasSettingsUi: true,
+        }}
+        panelStatus={null}
+        mainViewSidebarVisible
+        onMainViewSidebarVisibleChange={onVisibilityChange}
+        onBack={vi.fn()}
+        onToggle={vi.fn()}
+        onUse={vi.fn()}
+        onUpdate={vi.fn()}
+        onUpdateFromFile={vi.fn()}
+        onUninstall={vi.fn()}
+        toggleDisabled={false}
+      />,
+    );
+
+    const toggle = screen.getByRole('switch', {
+      name: 'settings.ghosts.detail.showInSidebar',
+    });
+    expect(toggle.getAttribute('data-state')).toBe('checked');
+    fireEvent.click(toggle);
+    expect(onVisibilityChange).toHaveBeenCalledWith(false);
+    expect(screen.getByText('settings.ghosts.detail.sidebarEntryTitle')).toBeTruthy();
+    expect(screen.getByTestId('ghost-settings-webview')).toBeTruthy();
+  });
+
+  it('keeps the existing command action when the plugin also declares main-view', () => {
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    const onUse = vi.fn();
+    render(
+      <GhostPluginDetailView
+        ghost={null}
+        detail={{ ...detail, hasMainView: true, mainViewTitle: 'Workspace' }}
+        panelStatus={null}
+        onBack={vi.fn()}
+        onToggle={vi.fn()}
+        onUse={onUse}
+        onUpdate={vi.fn()}
+        onUpdateFromFile={vi.fn()}
+        onUninstall={vi.fn()}
+        toggleDisabled={false}
+      />,
+    );
+
+    const chat = screen.getByRole('button', { name: 'settings.ghosts.detail.chatAction' });
+    expect((chat as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.queryByRole('button', { name: 'settings.ghosts.detail.openAction' })).toBeNull();
+    fireEvent.click(chat);
+    expect(onUse).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows a non-blocking stale OAuth scope badge inside the configuration section', () => {
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    render(
+      <GhostPluginDetailView
+        ghost={{
+          manifest: {
+            schemaVersion: 2,
+            id: detail.id,
+            name: detail.name,
+            version: detail.version,
+            kind: 'chip',
+            entry: 'main.js',
+            settingsHtml: 'settings.html',
+          },
+          dir: detail.installDir ?? '/tmp/plugin',
+          enabled: true,
+          approval: { state: 'approved', revision: 'rev-1' },
+          oauthScopeStale: { secretKey: 'account', missingScopeCount: 2 },
+        }}
+        detail={{ ...detail, hasSettingsUi: true }}
+        panelStatus="Docked"
+        onBack={vi.fn()}
+        onToggle={vi.fn()}
+        onUse={vi.fn()}
+        onUpdate={vi.fn()}
+        onUpdateFromFile={vi.fn()}
+        onUninstall={vi.fn()}
+        toggleDisabled={false}
+      />,
+    );
+
+    const badge = screen.getByRole('status');
+    expect(badge.textContent).toContain('newly added permissions');
+    expect(badge.className).toContain('bg-[var(--warning-bg-soft)]');
+    expect(screen.getByTestId('ghost-settings-webview')).toBeTruthy();
+  });
+
   it('keeps the detail surface on one centered content grid', () => {
     vi.stubGlobal(
       'ResizeObserver',
@@ -146,6 +499,7 @@ describe('Ghost plugin detail sections', () => {
         onToggle={vi.fn()}
         onUse={vi.fn()}
         onUpdate={vi.fn()}
+        onReapprove={vi.fn()}
         onUpdateFromFile={vi.fn()}
         onUninstall={vi.fn()}
         toggleDisabled={false}
@@ -195,6 +549,7 @@ describe('Ghost plugin detail sections', () => {
         onToggle={vi.fn()}
         onUse={vi.fn()}
         onUpdate={vi.fn()}
+        onReapprove={vi.fn()}
         onUpdateFromFile={vi.fn()}
         onUninstall={vi.fn()}
         toggleDisabled={false}
@@ -226,6 +581,7 @@ describe('Ghost plugin detail sections', () => {
         onToggle={vi.fn()}
         onUse={vi.fn()}
         onUpdate={onUpdate}
+        onReapprove={vi.fn()}
         onUpdateFromFile={vi.fn()}
         updateVersion={detail.version}
         onUninstall={vi.fn()}
@@ -241,6 +597,68 @@ describe('Ghost plugin detail sections', () => {
     expect(onUpdate).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole('button', { name: 'settings.ghosts.market.updateTo' })).toBeNull();
   });
+
+  it.each([
+    ['legacy-unapproved', 'settings.ghosts.reapproval.bodyLegacy'],
+    ['invalid', 'settings.ghosts.reapproval.bodyInvalid'],
+  ] as const)(
+    'explains the %s approval state and routes to a fresh review',
+    (approvalState, bodyKey) => {
+      vi.stubGlobal(
+        'ResizeObserver',
+        class {
+          observe() {}
+          unobserve() {}
+          disconnect() {}
+        },
+      );
+      const onReapprove = vi.fn();
+      const onUpdate = vi.fn();
+      const onToggle = vi.fn();
+      render(
+        <GhostPluginDetailView
+          ghost={null}
+          detail={{ ...detail, approvalState }}
+          panelStatus="Docked"
+          onBack={vi.fn()}
+          onToggle={onToggle}
+          onUse={vi.fn()}
+          onUpdate={onUpdate}
+          onReapprove={onReapprove}
+          onUpdateFromFile={vi.fn()}
+          updateVersion="1.2.4"
+          onUninstall={vi.fn()}
+          toggleDisabled={false}
+        />,
+      );
+
+      expect(screen.getByText('settings.ghosts.reapproval.noticeTitle')).toBeTruthy();
+      expect(screen.getByText(bodyKey)).toBeTruthy();
+      // 缺批准时"使用"与"更新"都不该顶在最前面,主动作是重新确认。
+      expect(screen.queryByRole('button', { name: 'settings.ghosts.market.updateTo' })).toBeNull();
+      // detail fixture 是指令型插件(canUse:true / tabPanel:false → 'command'),主动作按钮
+      // 标 chatAction;缺批准时 primaryEnabled=false → 禁用。
+      expect(
+        (
+          screen.getByRole('button', {
+            name: 'settings.ghosts.detail.chatAction',
+          }) as HTMLButtonElement
+        ).disabled,
+      ).toBe(true);
+
+      // 共享 Switch 和关联文字标签遵循同一禁用门控。
+      const toggle = screen.getByRole('switch', {
+        name: 'settings.ghosts.enableAria',
+      }) as HTMLButtonElement;
+      expect(toggle.disabled).toBe(true);
+      fireEvent.click(toggle);
+      expect(onToggle).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByRole('button', { name: 'settings.ghosts.reapproval.action' }));
+      expect(onReapprove).toHaveBeenCalledTimes(1);
+      expect(onUpdate).not.toHaveBeenCalled();
+    },
+  );
 
   it('disables every market update entry while an update is busy', async () => {
     vi.stubGlobal(
@@ -262,6 +680,7 @@ describe('Ghost plugin detail sections', () => {
         onToggle={vi.fn()}
         onUse={vi.fn()}
         onUpdate={onUpdate}
+        onReapprove={vi.fn()}
         onUpdateFromFile={vi.fn()}
         updateVersion="1.2.4"
         updateBusy
@@ -271,9 +690,11 @@ describe('Ghost plugin detail sections', () => {
     );
 
     expect(
-      (screen.getByRole('button', {
-        name: 'settings.ghosts.market.updateTo',
-      }) as HTMLButtonElement).disabled,
+      (
+        screen.getByRole('button', {
+          name: 'settings.ghosts.market.updateTo',
+        }) as HTMLButtonElement
+      ).disabled,
     ).toBe(true);
     fireEvent.pointerDown(
       screen.getByRole('button', { name: 'settings.ghosts.detail.moreActions' }),
@@ -298,13 +719,11 @@ describe('Ghost plugin detail sections', () => {
         disconnect() {}
       },
     );
-    // packaged 构建上 Main 会对 cindy- / filo- / xd- 前缀直接 GHOST_ID_RESERVED,
-    // 把这个必失败动作留在菜单里等于让用户选完文件才吃错误。
     // vitest 默认 DEV=true,这里显式模拟打包产物(DEV=false)。
     vi.stubEnv('DEV', false);
     // 显式标注类型:JSX prop 位置的内联展开会让 tsc 现推一个巨大的匿名类型,
     // desktop 的 typecheck 本就贴着 CI 的 4GB 堆上限跑,能省则省。
-    const officialDetail: GhostPluginDetail = { ...detail, id: 'cindy-art' };
+    const officialDetail: GhostPluginDetail = { ...detail, id: 'cindy-art', ghostId: 'cindy-art' };
     render(
       <GhostPluginDetailView
         ghost={null}
@@ -327,46 +746,54 @@ describe('Ghost plugin detail sections', () => {
     expect(
       screen.queryByRole('menuitem', { name: 'settings.ghosts.detail.updateFromFile' }),
     ).toBeNull();
-    // 卸载等其余菜单项不受影响。
+    // 只剩卸载一项时不画悬空分割线。
+    expect(screen.queryByRole('separator')).toBeNull();
     expect(screen.getByRole('menuitem', { name: 'settings.ghosts.uninstall' })).toBeTruthy();
     vi.unstubAllEnvs();
   });
 
-  it('keeps the local .cindy update entry for ordinary third-party plugins', async () => {
-    vi.stubGlobal(
-      'ResizeObserver',
-      class {
-        observe() {}
-        unobserve() {}
-        disconnect() {}
-      },
-    );
-    // 同样是打包产物,但非保留前缀:Main 不会拒,入口必须留着。
-    vi.stubEnv('DEV', false);
-    render(
-      <GhostPluginDetailView
-        ghost={null}
-        detail={detail}
-        panelStatus={null}
-        onBack={vi.fn()}
-        onToggle={vi.fn()}
-        onUse={vi.fn()}
-        onUpdate={vi.fn()}
-        onUpdateFromFile={vi.fn()}
-        onUninstall={vi.fn()}
-        toggleDisabled={false}
-      />,
-    );
+  it.each(['builtin.example', 'xd-ordinary', 'filo-ordinary'])(
+    'keeps the local .cindy update entry actionable for ordinary root %s',
+    async (ghostId) => {
+      vi.stubGlobal(
+        'ResizeObserver',
+        class {
+          observe() {}
+          unobserve() {}
+          disconnect() {}
+        },
+      );
+      vi.stubEnv('DEV', false);
+      const onUpdateFromFile = vi.fn();
+      const ordinaryDetail: GhostPluginDetail = { ...detail, id: ghostId, ghostId };
+      render(
+        <GhostPluginDetailView
+          ghost={null}
+          detail={ordinaryDetail}
+          panelStatus={null}
+          onBack={vi.fn()}
+          onToggle={vi.fn()}
+          onUse={vi.fn()}
+          onUpdate={vi.fn()}
+          onUpdateFromFile={onUpdateFromFile}
+          onUninstall={vi.fn()}
+          toggleDisabled={false}
+        />,
+      );
 
-    fireEvent.pointerDown(
-      screen.getByRole('button', { name: 'settings.ghosts.detail.moreActions' }),
-      { button: 0, ctrlKey: false },
-    );
-    expect(
-      screen.getByRole('menuitem', { name: 'settings.ghosts.detail.updateFromFile' }),
-    ).toBeTruthy();
-    vi.unstubAllEnvs();
-  });
+      fireEvent.pointerDown(
+        screen.getByRole('button', { name: 'settings.ghosts.detail.moreActions' }),
+        { button: 0, ctrlKey: false },
+      );
+      const updateItem = screen.getByRole('menuitem', {
+        name: 'settings.ghosts.detail.updateFromFile',
+      });
+      expect(screen.getByRole('separator')).toBeTruthy();
+      fireEvent.click(updateItem);
+      expect(onUpdateFromFile).toHaveBeenCalledOnce();
+      vi.unstubAllEnvs();
+    },
+  );
 
   it('renders an export menu item only when onExport is provided', async () => {
     vi.stubGlobal(
@@ -387,6 +814,7 @@ describe('Ghost plugin detail sections', () => {
       onUpdate: vi.fn(),
       onUpdateFromFile: vi.fn(),
       onUninstall: vi.fn(),
+      onReapprove: vi.fn(),
       toggleDisabled: false,
     };
 
@@ -396,7 +824,9 @@ describe('Ghost plugin detail sections', () => {
       screen.getByRole('button', { name: 'settings.ghosts.detail.moreActions' }),
       { button: 0, ctrlKey: false },
     );
-    expect(screen.queryByRole('menuitem', { name: 'settings.ghosts.detail.exportPackage' })).toBeNull();
+    expect(
+      screen.queryByRole('menuitem', { name: 'settings.ghosts.detail.exportPackage' }),
+    ).toBeNull();
     unmount();
 
     // 提供 onExport(已装插件):点击触发导出回调。
@@ -406,9 +836,7 @@ describe('Ghost plugin detail sections', () => {
       screen.getByRole('button', { name: 'settings.ghosts.detail.moreActions' }),
       { button: 0, ctrlKey: false },
     );
-    fireEvent.click(
-      screen.getByRole('menuitem', { name: 'settings.ghosts.detail.exportPackage' }),
-    );
+    fireEvent.click(screen.getByRole('menuitem', { name: 'settings.ghosts.detail.exportPackage' }));
     expect(onExport).toHaveBeenCalledTimes(1);
   });
 
@@ -423,79 +851,68 @@ describe('Ghost plugin detail sections', () => {
     expect(screen.getByText('By Cindy').className).toContain('truncate');
   });
 
-  it('marks Cindy model preferences as a card-width responsive control group', () => {
-    Object.defineProperty(window, 'electronAPI', {
-      configurable: true,
-      value: {
-        ghosts: {
-          cindyPrefsSync: () => ({
-            overrides: {},
-            image: {
-              options: [{ id: 'image-default', label: 'Image Default' }],
-              defaultModel: { id: 'image-default', label: 'Image Default' },
-            },
-            video: {
-              options: [{ id: 'video-default', label: 'Video Default' }],
-              defaultModel: { id: 'video-default', label: 'Video Default' },
-            },
-          }),
-          setCindyPref: vi.fn(),
-        },
+  it.each([
+    { name: 'quick answers only', manifest: { cindy: { text: ['oneshot'] } }, taskRows: false },
+    { name: 'plugin tasks', manifest: { agent: { tasks: true } }, taskRows: true },
+  ])('shows one model field for $name and no per-ability model card', ({ manifest, taskRows }) => {
+    vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
+    Object.assign(window.electronAPI, {
+      ghosts: {
+        errandPrefsSync: () => ({ config: {}, auxiliaryModelLabel: 'Grok 4.6' }),
+        setErrandConfig: vi.fn(async () => ({ config: {} })),
       },
+      showOpenDirectoryDialog: vi.fn(),
     });
-
-    const { container } = render(
-      <CindyCapabilityPrefs
-        ghostId="builtin.example"
-        capabilities={['image.generate']}
-        appearance="plugin"
+    const ghost: InstalledGhost = {
+      manifest: {
+        schemaVersion: 3, minCindyVersion: '0.1.0', kind: 'chip', id: 'model-plugin',
+        name: 'Model plugin', version: '1.0.0', entry: 'main.js',
+        ...(manifest as Partial<InstalledGhost['manifest']>),
+      },
+      dir: '/plugins/model-plugin',
+      namespace: null,
+      enabled: true,
+      approval: { state: 'approved', revision: '00000000-0000-4000-8000-000000000002' },
+      ...(taskRows ? { taskCapabilityApproved: true as const } : {}),
+      trust: detail.trust,
+    };
+    const projected = toGhostPluginDetail(ghost);
+    expect(projected).toMatchObject({ hasTaskPreferences: true, hasPluginTasks: taskRows });
+    render(
+      <GhostPluginDetailView
+        ghost={ghost}
+        detail={projected}
+        panelStatus={null}
+        onBack={vi.fn()}
+        onToggle={vi.fn()}
+        onUse={vi.fn()}
+        onUpdate={vi.fn()}
+        onUpdateFromFile={vi.fn()}
+        onUninstall={vi.fn()}
+        toggleDisabled={false}
       />,
     );
-
-    expect(container.querySelector('.cindy-capability-prefs')).toBeTruthy();
-    expect(container.querySelector('.cindy-capability-row')).toBeTruthy();
-    const select = screen.getByRole('combobox');
-    expect(select.className).toContain('cindy-capability-select');
-    expect(select.className).toContain('max-w-[60%]');
+    expect(screen.getByText('settings.ghosts.detail.errandPrefs.title')).toBeTruthy();
+    expect(screen.queryByText('settings.ghosts.detail.cindyPrefs.title')).toBeNull();
+    expect(screen.getAllByText('settings.ghosts.detail.errandPrefs.model')).toHaveLength(1);
+    expect(screen.getByText(`settings.ghosts.detail.errandPrefs.${taskRows ? 'desc' : 'descModelOnly'}`)).toBeTruthy();
+    expect(Boolean(screen.queryByText('settings.ghosts.detail.errandPrefs.permission'))).toBe(taskRows);
+    expect(Boolean(screen.queryByText('settings.ghosts.detail.errandPrefs.workdir'))).toBe(taskRows);
   });
 
-  it('replaces the select with tertiary copy for ability categories the catalog has no models for', () => {
-    Object.defineProperty(window, 'electronAPI', {
-      configurable: true,
-      value: {
-        ghosts: {
-          cindyPrefsSync: () => ({
-            overrides: { 'video.generate': 'retired-video-model' },
-            image: {
-              options: [{ id: 'image-default', label: 'Image Default' }],
-              defaultModel: { id: 'image-default', label: 'Image Default' },
-            },
-            // 目录没给视频清单 = 能力暂不可用。
-            video: { options: [], defaultModel: null },
-          }),
-          setCindyPref: vi.fn(),
-        },
+  it('does not show the model card for media-only plugins (media always follows the system default)', () => {
+    const ghost: InstalledGhost = {
+      manifest: {
+        schemaVersion: 3, minCindyVersion: '0.1.0', kind: 'chip', id: 'art', name: 'Art',
+        version: '1.0.0', entry: 'main.js', cindy: { image: ['generate', 'edit'], embed: ['text'] },
       },
-    });
-
-    const { container } = render(
-      <CindyCapabilityPrefs
-        ghostId="builtin.example"
-        capabilities={['image.generate', 'video.generate', 'video.edit']}
-        appearance="plugin"
-      />,
-    );
-
-    // 三行都在(插件确实申请了这三项能力),但只有图像那行给下拉。
-    expect(container.querySelectorAll('.cindy-capability-row')).toHaveLength(3);
-    expect(screen.getAllByRole('combobox')).toHaveLength(1);
-
-    const empties = container.querySelectorAll('.cindy-capability-empty');
-    expect(empties).toHaveLength(2);
-    empties.forEach((node) => {
-      expect(node.textContent).toBe('No models available');
-      expect(node.className).toContain('text-[var(--text-tertiary)]');
-    });
+      dir: '/plugins/art',
+      namespace: null,
+      enabled: true,
+      approval: { state: 'approved', revision: '00000000-0000-4000-8000-000000000003' },
+      trust: detail.trust,
+    };
+    expect(toGhostPluginDetail(ghost)).toMatchObject({ hasTaskPreferences: false, hasPluginTasks: false });
   });
 
   it('shows only the Tool description after an explicit click', async () => {
@@ -574,6 +991,13 @@ describe('Ghost plugin detail sections', () => {
     expect(within(dialog).getByText('Command render')).toBeTruthy();
     expect(within(dialog).queryByText('Tool render')).toBeNull();
     expect(within(dialog).getByText('Generate images')).toBeTruthy();
+    // detailArgs 的 model 插值必须替换占位符,不能显示裸 {{model}}(Greptile 2026-08-07)。
+    expect(
+      within(dialog).getByText(
+        'Takes effect when the model (codex/gpt-5.5) is available in the catalog.',
+      ),
+    ).toBeTruthy();
+    expect(within(dialog).queryByText(/Takes effect when the model \(\{\{model\}\}\)/)).toBeNull();
   });
 
   it('uses the same elevated theme surface for Tool bubbles and Permission cards', () => {
@@ -678,4 +1102,15 @@ describe('Ghost plugin detail sections', () => {
       within(dialog).getByText((_, element) => element?.textContent === 'scope.read\nscope.write'),
     ).toBeTruthy();
   });
+});
+
+it('adds shared counts to installed detail metadata while preserving author and version', () => {
+  const { container } = render(<GhostPluginMetadata author="Cindy" version="1.7.5" marketItem={{
+    sourceType: 'server', scope: 'organization',
+    downloadStatistics: { requestCount: '1284' },
+    usageStatistics: { usageCount: '8932', usageCountLast7Days: '12', asOf: '2026-10-13T00:00:00Z' },
+  } as import('../../../../shared/pluginMarket').PluginMarketItem} />);
+  expect(container.textContent).toContain('By Cindy·v1.7.5');
+  expect(container.textContent).toContain('1,284 settings.ghosts.usage.downloadsValue');
+  expect(container.textContent).toContain('8,932 settings.ghosts.usage.usesValue');
 });

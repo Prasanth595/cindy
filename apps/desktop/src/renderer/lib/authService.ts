@@ -6,9 +6,11 @@ import type {
   DesktopAccountDeletionConfirmInput,
   DesktopAccountDeletionConfirmResult,
   DesktopAccountDeletionStatusResult,
+  DesktopAccountSwitcherSnapshot,
   DesktopLoginAction,
   DesktopLoginActionResult,
 } from '../../shared/authIpc';
+export type { DesktopSavedAccount } from '../../shared/authIpc';
 import type { Effort } from '@/lib/userPreferences.types';
 
 /** Renderer-safe projection of the authenticated auth-server membership. */
@@ -36,12 +38,17 @@ export interface AuthState {
   user: User | null;
   mode: 'signed-out' | 'local' | 'cloud';
   dataOwnerId: string | null;
+  ownerGeneration: number;
+  /** Main marks the transient signed-out projection while an owner boundary is pending. */
+  ownerBoundaryPending?: boolean;
   canEnterApp: boolean;
   isAuthenticated: boolean;
   isCanary: boolean;
   deviceId: string;
   hasAccountDeletionReceipt: boolean;
   accountDeletionRestored: boolean;
+  /** 持久凭证库(safeStorage)连续多个刷新周期不可用(#1687);恢复后自动回 false。 */
+  credentialStoreUnavailable: boolean;
 }
 
 export interface AuthService {
@@ -49,6 +56,11 @@ export interface AuthService {
   getLoginState(): Promise<DesktopLoginActionResult>;
   dispatchLoginAction(action: DesktopLoginAction): Promise<DesktopLoginActionResult>;
   logout(): Promise<void>;
+  listAccounts(): Promise<DesktopAccountSwitcherSnapshot>;
+  syncAccounts(): Promise<DesktopAccountSwitcherSnapshot>;
+  switchAccount(accountKey: string): Promise<void>;
+  beginAddAccount(): Promise<DesktopLoginActionResult>;
+  cancelAddAccount(): Promise<void>;
   enterLocalMode(): Promise<AuthState>;
   exitLocalMode(): Promise<AuthState>;
   getAccountDeletionAvailability(): Promise<DesktopAccountDeletionAvailabilityResult>;
@@ -69,12 +81,15 @@ export function createAuthService(): AuthService {
       user: rawState.user as User | null,
       mode: rawState.mode,
       dataOwnerId: rawState.dataOwnerId,
+      ownerGeneration: rawState.ownerGeneration,
+      ownerBoundaryPending: rawState.ownerBoundaryPending === true,
       canEnterApp: rawState.canEnterApp,
       isAuthenticated: rawState.isAuthenticated,
       isCanary: rawState.isCanary === true,
       deviceId: rawState.deviceId,
       hasAccountDeletionReceipt: rawState.hasAccountDeletionReceipt === true,
       accountDeletionRestored: rawState.accountDeletionRestored === true,
+      credentialStoreUnavailable: rawState.credentialStoreUnavailable === true,
     };
     listeners.forEach((listener) => listener(normalized));
   });
@@ -86,12 +101,15 @@ export function createAuthService(): AuthService {
         user: raw.user as User | null,
         mode: raw.mode,
         dataOwnerId: raw.dataOwnerId,
+        ownerGeneration: raw.ownerGeneration,
+        ownerBoundaryPending: raw.ownerBoundaryPending === true,
         canEnterApp: raw.canEnterApp,
         isAuthenticated: raw.isAuthenticated,
         isCanary: raw.isCanary === true,
         deviceId: raw.deviceId,
         hasAccountDeletionReceipt: raw.hasAccountDeletionReceipt === true,
         accountDeletionRestored: raw.accountDeletionRestored === true,
+        credentialStoreUnavailable: raw.credentialStoreUnavailable === true,
       };
     },
 
@@ -105,6 +123,26 @@ export function createAuthService(): AuthService {
 
     async logout(): Promise<void> {
       await window.electronAPI.authLogout();
+    },
+
+    listAccounts() {
+      return window.electronAPI.authListAccounts();
+    },
+
+    syncAccounts() {
+      return window.electronAPI.authSyncAccounts();
+    },
+
+    switchAccount(accountKey) {
+      return window.electronAPI.authSwitchAccount(accountKey);
+    },
+
+    beginAddAccount() {
+      return window.electronAPI.authBeginAddAccount();
+    },
+
+    cancelAddAccount() {
+      return window.electronAPI.authCancelAddAccount();
     },
 
     async enterLocalMode(): Promise<AuthState> {
@@ -149,6 +187,7 @@ export function createAuthService(): AuthService {
 export type {
   AuthFlowState,
   DesktopAccountDeletionChallenge,
+  DesktopAccountSwitcherSnapshot,
   DesktopLoginAction,
   DesktopLoginActionResult,
 };

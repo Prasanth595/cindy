@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
+import { useTranslation } from 'react-i18next';
 import {
   Link2,
   MessageSquarePlus,
-  Split,
   Trash2,
   Undo2,
   type LucideIcon,
@@ -16,7 +16,6 @@ import type { MobileMessageMenuActionId, MobileMessageMenuItem } from '@/session
 import { fontWeight, iconSize, iconStroke, lineHeight, radius, spacing, typeScale, useTheme, useThemedStyles, type ThemeColors } from '@/theme';
 
 const ACTION_ICONS: Record<MobileMessageMenuActionId, LucideIcon> = {
-  fork: Split,
   'add-to-chat': MessageSquarePlus,
   'copy-link': Link2,
   rewind: Undo2,
@@ -25,16 +24,19 @@ const ACTION_ICONS: Record<MobileMessageMenuActionId, LucideIcon> = {
 
 /** Touch-first counterpart of desktop's compact More dropdown. */
 export function MessageActionSheet({
+  disabledActions,
   items,
   onAction,
   onClose,
   visible,
 }: {
+  disabledActions?: readonly MobileMessageMenuActionId[];
   items: readonly MobileMessageMenuItem[];
   onAction(action: MobileMessageMenuActionId): void;
   onClose(): void;
   visible: boolean;
 }) {
+  const { t } = useTranslation();
   const styles = useThemedStyles(makeStyles);
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
@@ -62,6 +64,7 @@ export function MessageActionSheet({
 
   return (
     <SheetModal
+      nativePresentation
       backdropTestID="message.actions.backdrop"
       onBackdropPress={closeWithoutAction}
       onClosed={handleClosed}
@@ -73,15 +76,22 @@ export function MessageActionSheet({
           <BlurBackdrop intensity={32} overlayColor={colors.sheetActionSurface} />
           {items.map((item) => {
             const Icon = ACTION_ICONS[item.id];
-            const color = item.destructive ? colors.destructive : colors.sheetActionText;
+            const color = item.destructive ? colors.destructive : colors.textPrimary;
+            const disabled = disabledActions?.includes(item.id) === true;
             return (
               <View key={item.id}>
                 {item.separatorBefore ? <View style={styles.separator} /> : null}
                 <Pressable
                   accessibilityLabel={item.label}
                   accessibilityRole="button"
+                  accessibilityState={{ disabled }}
+                  disabled={disabled}
                   onPress={() => select(item.id)}
-                  style={({ pressed }) => [styles.actionRow, pressed && styles.pressed]}
+                  style={({ pressed }) => [
+                    styles.actionRow,
+                    disabled && styles.disabled,
+                    pressed && styles.pressed,
+                  ]}
                   testID={`message.actions.${item.id}`}
                 >
                   <Icon color={color} size={iconSize.lg} strokeWidth={iconStroke.regular} />
@@ -94,14 +104,14 @@ export function MessageActionSheet({
           })}
         </View>
         <Pressable
-          accessibilityLabel="取消"
+          accessibilityLabel={t('session.common.cancel')}
           accessibilityRole="button"
           onPress={closeWithoutAction}
           style={({ pressed }) => [styles.cancelCard, pressed && styles.pressed]}
           testID="message.actions.cancel"
         >
           <BlurBackdrop intensity={32} overlayColor={colors.sheetActionSurface} />
-          <Text style={styles.cancelText}>取消</Text>
+          <Text style={styles.cancelText}>{t('session.common.cancel')}</Text>
         </Pressable>
       </View>
     </SheetModal>
@@ -125,12 +135,13 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     paddingHorizontal: spacing.lg,
   },
   separator: { backgroundColor: colors.sheetActionBorder, height: StyleSheet.hairlineWidth },
+  disabled: { opacity: 0.42 },
   actionLabel: {
-    color: colors.sheetActionText,
+    color: colors.textPrimary,
     flexShrink: 1,
-    fontSize: typeScale.listBody,
-    fontWeight: fontWeight.semibold,
-    lineHeight: lineHeight.listBody,
+    fontSize: typeScale.bodySmall,
+    fontWeight: fontWeight.medium,
+    lineHeight: lineHeight.bodySmall,
   },
   danger: { color: colors.destructive },
   cancelCard: {
@@ -144,10 +155,10 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     overflow: 'hidden',
   },
   cancelText: {
-    color: colors.sheetActionText,
-    fontSize: typeScale.listBody,
-    fontWeight: fontWeight.semibold,
-    lineHeight: lineHeight.listBody,
+    color: colors.textPrimary,
+    fontSize: typeScale.bodySmall,
+    fontWeight: fontWeight.medium,
+    lineHeight: lineHeight.bodySmall,
   },
   pressed: { opacity: 0.72 },
 });

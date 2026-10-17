@@ -10,7 +10,10 @@ import {
   projectSentInlinePlainText,
   projectSentRanges,
 } from '@/components/chat/UserMessage';
-import { SentAgentReferenceChip } from '@/components/chat/SentAgentReferenceChip';
+import {
+  SentAgentReferenceChip,
+  sentAgentReferenceDisplayLabel,
+} from '@/components/chat/SentAgentReferenceChip';
 import { formatQuoteForSend, parseChatQuoteSegments } from '@/lib/chatQuotes';
 
 afterEach(cleanup);
@@ -101,6 +104,17 @@ describe('sent structured reference chips', () => {
       } satisfies AgentInputReference,
     },
     {
+      label: 'Dash Bot',
+      reference: {
+        kind: 'bot',
+        start: 0,
+        end: 5,
+        href: 'cindy://bot/bot-dash-1',
+        botId: 'bot-dash-1',
+        name: 'Dash Bot',
+      } satisfies AgentInputReference,
+    },
+    {
       label: '客户 ACME',
       reference: {
         kind: 'plugin-resource',
@@ -122,5 +136,64 @@ describe('sent structured reference chips', () => {
     expect(chip?.textContent).toBe(label);
     expect(chip?.querySelector('svg')).not.toBeNull();
     expect(container.textContent).not.toContain('cindy://');
+  });
+
+  it('renders static sent references without focus or button semantics', () => {
+    const { container } = render(
+      <SentAgentReferenceChip
+        interactive={false}
+        reference={browserReference().reference}
+      />,
+    );
+    const chip = container.querySelector('[data-inline-reference-chip]');
+
+    expect(chip).not.toBeNull();
+    expect(chip?.getAttribute('role')).toBeNull();
+    expect(chip?.getAttribute('tabindex')).toBeNull();
+    expect(container.querySelector('button')).toBeNull();
+  });
+
+  it('keeps static message references in the quote-chip shape', () => {
+    const { container } = render(
+      <SentAgentReferenceChip
+        interactive={false}
+        reference={{
+          kind: 'message',
+          start: 0,
+          end: 16,
+          href: 'cindy://session/session-1?message=message-1',
+          sessionId: 'session-1',
+          messageClientId: 'message-1',
+          text: 'Quoted message',
+        }}
+      />,
+    );
+
+    expect(container.textContent).toContain('Quoted message');
+    expect(container.querySelector('[data-inline-reference-chip]')).not.toBeNull();
+    expect(container.querySelector('button')).toBeNull();
+  });
+
+  it('falls back to neutral labels instead of internal ids when text or title is missing', () => {
+    const messageLabel = sentAgentReferenceDisplayLabel({
+      kind: 'message',
+      start: 0,
+      end: 16,
+      href: 'cindy://session/session-1?message=message-1',
+      sessionId: 'session-1',
+      messageClientId: 'message-1',
+    });
+    const sessionLabel = sentAgentReferenceDisplayLabel({
+      kind: 'session',
+      start: 0,
+      end: 16,
+      href: 'cindy://session/session-1',
+      sessionId: 'session-1',
+    });
+
+    expect(messageLabel).toBeTruthy();
+    expect(messageLabel).not.toContain('message-1');
+    expect(sessionLabel).toBeTruthy();
+    expect(sessionLabel).not.toContain('session-1');
   });
 });

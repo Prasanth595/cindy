@@ -23,6 +23,58 @@ vi.mock('../mediaStaging', async (importOriginal) => {
 });
 
 describe('WechatIM host boundary', () => {
+  it.each([
+    { text: '解释这张图', delivered: true },
+    { text: '', delivered: true },
+    { text: '解释这张图', delivered: false },
+  ])('keeps quoted media records separate from delivery facts: %j', ({ text, delivered }) => {
+    const replyContext = __testing.formatWechatQuote({
+      messageId: 'reply-1', senderId: 'peer-1', contextToken: 'context', text, media: [],
+      quote: { text: '原图', media: [{ kind: 'image' }] },
+    });
+    const turn = __testing.prepareWechatTaskTurn(__testing.parseTaskPayload(JSON.stringify({
+      text, replyContext,
+      attachments: delivered ? [{
+        kind: 'image', storage: 'cindy-media', absPath: 'quoted-image.png',
+        originalName: 'quoted-image.png', mimeType: 'image/png',
+      }] : [],
+      unsupportedMedia: delivered ? [] : ['image:download-failed'],
+    })));
+    expect(turn.text).toBe(text);
+    expect(turn.agentText).toContain('原消息记录含 1 个附件');
+    expect(turn.agentText).not.toContain('见本轮消息说明');
+    expect(turn.contextSnapshot?.replyMessageCount).toBe(1);
+    if (text && delivered) {
+      expect(turn.agentText).not.toContain('[消息说明]');
+    } else if (delivered) {
+      expect(turn.agentText).toContain('本轮实际提供了 1 个附件');
+    } else {
+      expect(turn.agentText).toContain('image:download-failed');
+      expect(turn.agentText).not.toContain('本轮实际提供了');
+    }
+  });
+
+  it('keeps quote and unavailable-media facts out of the original user text', () => {
+    const payload = __testing.parseTaskPayload(JSON.stringify({
+      text: '', replyContext: '这张图是什么意思？', attachments: [],
+      unsupportedMedia: ['image:download-failed'],
+    }));
+    const turn = __testing.prepareWechatTaskTurn(payload);
+    expect(turn.text).toBe('');
+    expect(turn.agentText).toContain('这张图是什么意思？');
+    expect(turn.agentText).toContain('image:download-failed');
+    expect(turn.agentText).not.toMatch(/请检查|本轮仅处理文字|实际提供了/);
+    expect(turn.contextSnapshot?.replyMessageCount).toBe(1);
+  });
+
+  it('reads an old queued payload without changing its text or requiring migration', () => {
+    const payload = __testing.parseTaskPayload(JSON.stringify({
+      text: '[引用：旧消息] 原话', attachments: [], unsupportedMedia: [],
+    }));
+    expect(__testing.prepareWechatTaskTurn(payload)).toEqual({
+      text: '[引用：旧消息] 原话', agentText: '[引用：旧消息] 原话',
+    });
+  });
   beforeEach(() => {
     mediaMocks.removeReleasedWechatFiles.mockClear();
   });
@@ -62,6 +114,40 @@ describe('WechatIM host boundary', () => {
     expect(__testing.normalizeFinalOutputText('hello')).toBe('hello');
   });
 
+  it('distinguishes agent-unsupported from permission-mode-unsupported pre-dispatch failures', () => {
+    // Agent 未声明 turnPermissionPolicy(如 Pi):换权限模式无效,文案引导换 Agent。
+    expect(__testing.wechatPreDispatchFailureText('TURN_PERMISSION_POLICY_UNSUPPORTED:agent:ask')).toContain(
+      '换成 Claude Code 或 Codex',
+    );
+    expect(__testing.wechatPreDispatchFailureText('TURN_PERMISSION_POLICY_UNSUPPORTED:agent:auto')).not.toContain(
+      '权限模式',
+    );
+    // 当前权限模式若是换 Agent 后仍不兼容的档位(bypassPermissions / acceptEdits),
+    // 换 Agent 指引应附带 /permission 提示,避免新 Agent 再次命中权限模式错误。
+    expect(
+      __testing.wechatPreDispatchFailureText(
+        'TURN_PERMISSION_POLICY_UNSUPPORTED:agent:bypassPermissions',
+      ),
+    ).toContain('/permission');
+    expect(
+      __testing.wechatPreDispatchFailureText('TURN_PERMISSION_POLICY_UNSUPPORTED:agent:acceptEdits'),
+    ).toContain('/permission');
+    expect(__testing.wechatPreDispatchFailureText('TURN_PERMISSION_POLICY_UNSUPPORTED:agent:ask')).not.toContain(
+      '/permission',
+    );
+    // 权限模式在 unsupportedPermissionModes 里(如 bypassPermissions):文案引导调权限模式。
+    expect(
+      __testing.wechatPreDispatchFailureText('TURN_PERMISSION_POLICY_UNSUPPORTED:mode:bypassPermissions'),
+    ).toContain('权限模式');
+    // 旧格式 / 渠道侧 unsupported_turn_permission 兼容分支:同样按权限模式处理。
+    expect(__testing.wechatPreDispatchFailureText('TURN_PERMISSION_POLICY_UNSUPPORTED:ask')).toContain(
+      '权限模式',
+    );
+    expect(__testing.wechatPreDispatchFailureText('unsupported_turn_permission')).toContain('权限模式');
+    expect(__testing.wechatPreDispatchFailureText('missing_auth')).toContain('模型服务');
+    expect(__testing.wechatPreDispatchFailureText('boom')).toContain('稍后重试');
+  });
+
   it('dispatches attachment-only WeChat messages to the agent', () => {
     expect(__testing.hasWechatTaskContent('', [])).toBe(false);
     expect(
@@ -73,6 +159,26 @@ describe('WechatIM host boundary', () => {
         },
       ] as never),
     ).toBe(true);
+  });
+
+  it('排队等待 provider 受理时按 task session 回退微信 peer', () => {
+    const activeTasks = new Map<
+      string,
+      { routeSessionId?: string; task: { sessionId: string } }
+    >([
+      ['peer-queued', { task: { sessionId: 'wechat-task-session' } }],
+      ['peer-other', { task: { sessionId: 'other-session' } }],
+    ]);
+
+    expect(__testing.activePeerIdForSession(activeTasks, 'wechat-task-session')).toBe(
+      'peer-queued',
+    );
+
+    activeTasks.get('peer-queued')!.routeSessionId = 'accepted-route-session';
+    expect(__testing.activePeerIdForSession(activeTasks, 'wechat-task-session')).toBeNull();
+    expect(__testing.activePeerIdForSession(activeTasks, 'accepted-route-session')).toBe(
+      'peer-queued',
+    );
   });
 
   it('keeps staged files only for accepted poll tasks', () => {
@@ -153,6 +259,72 @@ describe('WechatIM host boundary', () => {
     expect(question).toEqual({
       kind: 'ask_user_question',
       answers: { 选择环境: '生产' },
+    });
+  });
+
+  it('自动审批故障时在微信确认提示里写明原因', () => {
+    const ordinary = __testing.formatWechatInteractionPrompt({
+      kind: 'permission',
+      requestId: 'r-ordinary',
+      toolName: 'Bash',
+      input: {},
+    });
+    expect(ordinary).toContain('需要确认工具“Bash”');
+    expect(ordinary).not.toContain('自动审批没完成');
+
+    const unavailable = __testing.formatWechatInteractionPrompt({
+      kind: 'permission',
+      requestId: 'r-unavailable',
+      toolName: 'Bash',
+      input: {},
+      metadata: { autoReviewUnavailable: true },
+    });
+    expect(unavailable).toContain('自动审批没完成，请确认要不要允许这次操作。');
+    expect(unavailable).toContain('回复“允许”执行一次');
+  });
+
+  it('cancels only the matching one-shot interaction when its central route closes', async () => {
+    const im = new WechatIM(deps());
+    vi.spyOn(im, 'sendText').mockResolvedValue({ messageId: 'interaction-prompt' });
+    const request = {
+      kind: 'permission' as const,
+      requestId: 'request-current',
+      toolName: 'bash',
+      input: { command: 'pnpm test' },
+    };
+    const pending = im.handleTextInteraction('peer-1', request, { timeoutMs: 60_000 });
+    await Promise.resolve();
+
+    expect(im.cancelTextInteraction('peer-1', 'request-stale', {
+      kind: 'permission',
+      behavior: 'deny',
+      reason: 'stale_route',
+    })).toBe(false);
+    expect(im.cancelTextInteraction('peer-1', 'request-current', {
+      kind: 'permission',
+      behavior: 'deny',
+      reason: 'interaction_route_released',
+    })).toBe(true);
+    await expect(pending).resolves.toEqual({
+      kind: 'permission',
+      behavior: 'deny',
+      reason: 'interaction_route_released',
+    });
+  });
+
+  it('投递失败时用稳定系统码收口，不把 Error.message 当成拒绝原因', async () => {
+    const im = new WechatIM(deps());
+    vi.spyOn(im, 'sendText').mockRejectedValue(new Error('socket hang up'));
+
+    await expect(im.handleTextInteraction('peer-1', {
+      kind: 'permission',
+      requestId: 'request-send-failed',
+      toolName: 'bash',
+      input: { command: 'pnpm test' },
+    })).resolves.toEqual({
+      kind: 'permission',
+      behavior: 'deny',
+      reason: 'wechat_interaction_send_failed',
     });
   });
 

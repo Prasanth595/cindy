@@ -7,24 +7,30 @@
 
 import { useEffect } from 'react';
 import { AppState, Platform } from 'react-native';
-import Constants from 'expo-constants';
 import * as Updates from 'expo-updates';
 import {
+  APP_BINARY_VERSION,
   IS_OTA_SELFHOST,
   IS_TESTFLIGHT_BUILD,
   REVIEW_MODE,
 } from '@/config/env';
 import { shouldCheckBundleUpdate } from './bundleUpdate';
+import { isGooglePlayInstallation } from './androidInstallSource';
 import { fetchLatestRelease } from './fetchLatestRelease';
 import { createResumeUpdateChecker } from './resumeUpdateCheck';
 import { promptBundleUpdate } from './useBundleUpdatePrompt';
-import { isCanaryChannel } from './canaryChannelStore';
+import { resolveUpdateChannelForDevice } from './canaryChannelStore';
+import { runSelfHostedOtaRequest } from './otaRequestCoordinator';
+import type { UpdateChannel } from '@cindy/maker-shared/update-channel';
 
-export function useResumeUpdateCheck(isCanary = isCanaryChannel()): void {
+export function useResumeUpdateCheck(
+  channel: UpdateChannel = resolveUpdateChannelForDevice(),
+): void {
   const bundleCheckEnabled = shouldCheckBundleUpdate({
     isSelfHosted: IS_OTA_SELFHOST,
     isReviewMode: REVIEW_MODE,
     isTestFlightBuild: IS_TESTFLIGHT_BUILD,
+    isGooglePlayInstallation: isGooglePlayInstallation(),
   });
 
   useEffect(() => {
@@ -34,6 +40,7 @@ export function useResumeUpdateCheck(isCanary = isCanaryChannel()): void {
     let current = true;
     const checker = createResumeUpdateChecker({
       otaEnabled: IS_OTA_SELFHOST && !__DEV__ && Updates.isEnabled,
+      withOtaClient: (operation) => runSelfHostedOtaRequest(channel, operation),
       checkForUpdateAsync: () => Updates.checkForUpdateAsync(),
       fetchUpdateAsync: () => Updates.fetchUpdateAsync(),
       bundleCheckEnabled,
@@ -41,10 +48,11 @@ export function useResumeUpdateCheck(isCanary = isCanaryChannel()): void {
         Platform.OS === 'android' ? 'android' : 'ios',
         undefined,
         undefined,
-        isCanary,
+        channel,
       ),
       getCurrentRuntimeVersion: () => Updates.runtimeVersion,
-      getCurrentVersion: () => Constants.expoConfig?.version ?? null,
+      // 与 useBundleUpdatePrompt / useForcedUpdateRecheck 同口径:强更比较按原生真值,热更后不漂移。
+      getCurrentVersion: () => APP_BINARY_VERSION || null,
       onForcedUpdate: promptBundleUpdate,
       now: () => Date.now(),
       isCurrent: () => current,
@@ -57,5 +65,5 @@ export function useResumeUpdateCheck(isCanary = isCanaryChannel()): void {
       current = false;
       subscription.remove();
     };
-  }, [bundleCheckEnabled, isCanary]);
+  }, [bundleCheckEnabled, channel]);
 }

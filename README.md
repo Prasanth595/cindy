@@ -41,6 +41,9 @@ API keys, or use local models.
 See [cindy.app](https://cindy.app) for service details,
 [pricing](https://cindy.app/#pricing), and [downloads](https://cindy.app/download/).
 
+Linux users: see the [Ubuntu, Arch Linux and Omarchy installation guide](docs/linux.md)
+for installation, updates, keyring setup and migration from a manual install.
+
 ## Yours to shape
 
 Open source means more than visible — it means changeable:
@@ -63,7 +66,6 @@ Ready out of the box, never boxed in — start with
 | `apps/mobile` | Expo / React Native mobile client |
 | `packages/*` | Shared client capabilities (auth, device-link, agent orchestration, model providers, …) |
 | `apps/*-bin` | Tool binaries shipped with the desktop app; none are committed — claude-code, codex, and ripgrep are downloaded per platform by `pnpm install`, and the Android platform-tools binaries are fetched (pinned version, sha256-verified) before Windows packaging |
-| `cindy-protocol/` | Wire protocol shared with the server (git submodule) |
 
 **Not in this repo:** the backend service lives in a separate
 repository and is not part of this monorepo.
@@ -81,18 +83,15 @@ repository and is not part of this monorepo.
 
 ## Getting started
 
-Contributor setup, public submodule initialization, Git LFS, dependency updates,
-and access requirements are maintained in
+Contributor setup, Git LFS, dependency updates, and access requirements are maintained in
 [`CONTRIBUTING.en.md`](CONTRIBUTING.en.md).
-The public checkout only needs the protocol submodule; plugins are installed through
-SkillHub or manually.
+Plugins are installed through SkillHub or manually.
 
 Minimal entry point:
 
 ```bash
 git clone https://github.com/makecindy/cindy.git
 cd cindy
-git submodule update --init --recursive cindy-protocol
 git lfs pull
 pnpm install
 ```
@@ -125,6 +124,11 @@ auto-updates also come from the official CDN). This is intentional — external
 developers don't need to self-host a server: sign in with your own Cindy
 account in a dev build and develop / test directly against the official
 servers.
+
+Skill Hub migration uses two separate manifest fields: released clients keep
+using `skillhubApiBaseUrl` (the deprecated XD proxy), while current clients use
+`cindySkillHubApiBaseUrl`. The current client deliberately does not fall back to
+the legacy field when the new endpoint is absent.
 
 ## Architecture
 

@@ -32,7 +32,9 @@ vi.mock('@/lib/sessionService', () => ({
   touchUserSend: vi.fn(async () => ({})),
 }));
 
-import { makerChatStore } from '@/lib/makerChatStore';
+import { makerChatStore, getRemoteHistoryView } from '@/lib/makerChatStore';
+import { projectHistoryView, type HistoryViewSnapshot } from '@cindy/maker-shared/message-window';
+import { decodeRemoteHistory, encodeRemoteHistory, fitsRemoteHistoryCache } from '../../shared/remoteHistoryCache';
 import { remoteProjectsStore } from '@/features/device-link/remoteProjectsStore';
 import { listMessagesFor } from '@/lib/makerTransport';
 import { collectSessionListSnapshot } from '@/features/device-link/refreshRemoteSessions';
@@ -40,8 +42,16 @@ import {
   cancelSessionListPersist,
   clearCachedDevice,
   clearCachedMessages,
+  clearMirrorCacheAccountState,
+  readCachedMessages,
+  readCachedSessionList,
   scheduleSessionListPersist,
+  persistListMessage,
 } from '@/features/device-link/mirrorCacheClient';
+import {
+  __testing as dataOwnerGenTesting,
+  setDataOwnerGeneration,
+} from '@/contexts/dataOwnerGeneration';
 import * as messageService from '@/lib/messageService';
 
 const DEVICE_ID = 'dev-A';
@@ -123,12 +133,31 @@ function emptyProjection(sessionId: string) {
 
 /** 盘上缓存的替身:key 为 `${deviceId}::${sessionId}`。 */
 let cachedMessages = new Map<string, Record<string, unknown>[]>();
-/** get 的返回形状:main 会把当前会话级作废计数一起带回来。 */
-type CachedRead = { messages: Record<string, unknown>[]; invalidation: number };
+/** get 的返回形状:main 会把当前会话级作废计数与 owner root / 账号代际一起带回来。 */
+type CachedRead = {
+  messages: Record<string, unknown>[];
+  invalidation: number;
+  ownerToken?: string;
+  accountCounter?: number;
+};
 let cachedInvalidation = 7;
-const getMessages = vi.fn(async (deviceId: string, sessionId: string) => ({
+let cachedOwnerToken = 'opaque-owner-token-a';
+let cachedAccountCounter = 0;
+const getMessages = vi.fn<
+  (
+    deviceId: string,
+    sessionId: string,
+  ) => Promise<{
+    messages: Record<string, unknown>[];
+    invalidation: number;
+    ownerToken?: string;
+    accountCounter?: number;
+  }>
+>(async (deviceId: string, sessionId: string) => ({
   messages: cachedMessages.get(`${deviceId}::${sessionId}`) ?? [],
   invalidation: cachedInvalidation,
+  ownerToken: cachedOwnerToken,
+  accountCounter: cachedAccountCounter,
 }));
 // 显式签名(而非从实现推断):断言里要读 mock.calls[0][0/1],推断成空元组就取不到。
 const putMessages = vi.fn<
@@ -137,12 +166,16 @@ const putMessages = vi.fn<
     sessionId: string,
     rows: readonly Record<string, unknown>[],
     expectedInvalidation?: number,
+    expectedOwnerToken?: string,
+    expectedAccountCounter?: number,
+    historyView?: string,
+    mergeListMessage?: boolean,
   ) => Promise<{ ok: true }>
 >(async () => ({ ok: true as const }));
 
 /**
- * 断言"某次写入发生过"。不用 toHaveBeenCalledWith:写入现在还带第 4 个参数
- * (main 侧作废计数,值随路径不同),逐参数写死会让断言变脆。
+ * 断言"某次写入发生过"。不用 toHaveBeenCalledWith:写入现在还带第 4~6 个参数
+ * (main 侧作废计数 / owner root / 账号代际,值随路径不同),逐参数写死会让断言变脆。
  */
 function expectPut(deviceId: string, sessionId: string, rows: unknown[]): void {
   const hit = putMessages.mock.calls.some(
@@ -151,9 +184,25 @@ function expectPut(deviceId: string, sessionId: string, rows: unknown[]): void {
   );
   expect(hit).toBe(true);
 }
-const getSessionList = vi.fn(async () => ({ devices: [] as never[] }));
+
+function expectNoPut(deviceId: string, sessionId: string, rows: unknown[]): void {
+  const hit = putMessages.mock.calls.some(
+    ([d, s2, r]) =>
+      d === deviceId && s2 === sessionId && JSON.stringify(r) === JSON.stringify(rows),
+  );
+  expect(hit).toBe(false);
+}
+const getSessionList = vi.fn(async () => ({
+  devices: [] as never[],
+  ownerToken: cachedOwnerToken,
+  accountCounter: cachedAccountCounter,
+}));
 const putSessionList = vi.fn<
-  (devices: readonly Record<string, unknown>[]) => Promise<{ ok: true }>
+  (
+    devices: readonly Record<string, unknown>[],
+    expectedOwnerToken?: string,
+    expectedAccountCounter?: number,
+  ) => Promise<{ ok: true }>
 >(async () => ({ ok: true as const }));
 const clearCache = vi.fn(async () => ({ ok: true as const }));
 
@@ -205,6 +254,8 @@ beforeEach(() => {
   cachedMessages = new Map();
   invoke.mockClear();
   cachedInvalidation = 7;
+  cachedOwnerToken = 'opaque-owner-token-a';
+  cachedAccountCounter = 0;
   getMessages.mockClear();
   putMessages.mockClear();
   putSessionList.mockClear();
@@ -214,10 +265,318 @@ beforeEach(() => {
 afterEach(() => {
   makerChatStore.__teardownGlobalListeners();
   remoteProjectsStore.clear();
+  // 清掉 per-session owner root / 作废计数残留,保持测试隔离。
+  clearMirrorCacheAccountState();
+  dataOwnerGenTesting.reset();
   vi.unstubAllGlobals();
 });
 
 describe('冷缓存 hydrate', () => {
+  // Regression: one pre-received row prevented the disk history from hydrating.
+  // Unit: open through the real store with its network request held pending.
+  it('merges older disk history under a list-pushed reply before the network returns', async () => {
+    const s = sid();
+    setDataOwnerGeneration('owner-a', 1);
+    registerRemote(s);
+    const old = dbMessage(s, 'old', 'earlier history', '2026-10-10T00:00:00.000Z');
+    const latest = dbMessage(s, 'new', 'latest reply', '2026-10-10T00:01:00.000Z');
+    cachedMessages.set(`${DEVICE_ID}::${s}`, [old as unknown as Record<string, unknown>]);
+    let push!: Parameters<typeof window.electronAPI.deviceLink.onRemotePush>[0];
+    window.electronAPI.deviceLink.onRemotePush = vi.fn(callback => { push = callback; return () => {}; });
+    makerChatStore.initGlobalListeners();
+    push({ deviceId: DEVICE_ID, channel: 'local-db:messages:created', payload: { sessionId: s, listMessage: true, message: latest } });
+    remoteListPromise = new Promise<Message[]>(() => {});
+    makerChatStore.ensureInitialMessages(s);
+    await flush(30);
+    expect(makerChatStore.getSnapshot(s).messages.map(message => message.content)).toEqual(['earlier history', 'latest reply']);
+  });
+
+  // Unit: a live detail push wins even when an older disk receipt arrives later.
+  // The prior tests only mixed distinct IDs or two comparable cached receipts.
+  it.each([false, true])('keeps an unmarked live body when disk hydration is delayed (cached page=%s)', async (cachedPage) => {
+    const s = sid();
+    setDataOwnerGeneration('owner-a', 1);
+    registerRemote(s);
+    const live = dbMessage(s, 'reply', 'live body', '2026-10-11T00:00:01.000Z');
+    let release!: () => void;
+    if (cachedPage) getMessages.mockResolvedValueOnce({ messages: [], invalidation: cachedInvalidation,
+      ownerToken: cachedOwnerToken, accountCounter: cachedAccountCounter,
+      historyView: encodeRemoteHistory({ items: projectHistoryView([{ ...live, content: 'old page' }], false),
+        details: new Map(), expanded: new Set(), readReceipt: { run: 'old-run', order: 1 },
+        ready: true, loading: false, error: null, nextCursor: null, hasMore: false }) } as CachedRead);
+    getMessages.mockImplementationOnce(async () => {
+      await new Promise<void>(resolve => { release = resolve; });
+      return { messages: [{ ...live, content: 'old disk body', cacheReceipt: { run: 'old-run', order: 99 } }],
+        invalidation: cachedInvalidation, ownerToken: cachedOwnerToken, accountCounter: cachedAccountCounter };
+    });
+    let push!: Parameters<typeof window.electronAPI.deviceLink.onRemotePush>[0];
+    window.electronAPI.deviceLink.onRemotePush = vi.fn(callback => { push = callback; return () => {}; });
+    makerChatStore.initGlobalListeners();
+    remoteListPromise = new Promise<Message[]>(() => {});
+    if (cachedPage) remoteProjectsStore.markDeviceDisconnected(DEVICE_ID);
+    makerChatStore.ensureInitialMessages(s);
+    await flush(30);
+    if (cachedPage) expect(makerChatStore.getSnapshot(s).messages.map(message => message.content)).toEqual(['old page']);
+    push({ deviceId: DEVICE_ID, channel: 'local-db:messages:created', payload: { sessionId: s, message: live } });
+    expect(makerChatStore.getSnapshot(s).messages[0].cacheReceipt).toBeUndefined();
+    release();
+    await flush(30);
+    expect(makerChatStore.getSnapshot(s).messages.map(message => message.content)).toEqual(['live body']);
+  });
+
+  it.each([true, false])('shows list text while pending and only its owner persists receipts (owner=%s)', async (ownsRemoteListCache) => {
+    const s = sid();
+    setDataOwnerGeneration('owner-a', 1);
+    registerRemote(s);
+    let push!: Parameters<typeof window.electronAPI.deviceLink.onRemotePush>[0];
+    window.electronAPI.deviceLink.onRemotePush = vi.fn(callback => { push = callback; return () => {}; });
+    makerChatStore.initGlobalListeners({ ownsRemoteListCache });
+    const row = dbMessage(s, 'prefetched', '完整长正文'.repeat(2000), '2026-10-10T00:00:00.000Z');
+    push({ deviceId: DEVICE_ID, channel: 'local-db:messages:created', payload: { sessionId: s, listMessage: true, message: row } });
+    await flush(30);
+    expect(makerChatStore.getSnapshot(s).messages.map(message => message.content)).toEqual([row.content]);
+    expect(invoke.mock.calls.filter(([, channel]) => channel.startsWith('local-db:messages:'))).toEqual([]);
+    if (ownsRemoteListCache) {
+      expect(putMessages.mock.calls.find(([device, session]) => device === DEVICE_ID && session === s)?.[2])
+        .toEqual([{ ...row, cacheReceipt: { run: expect.any(String), order: expect.any(Number) } }]);
+    } else expect(putMessages).not.toHaveBeenCalled();
+    remoteListPromise = new Promise<Message[]>(() => {});
+    makerChatStore.ensureInitialMessages(s);
+    await flush(30);
+    expect(makerChatStore.getSnapshot(s).messages.map(message => message.content)).toEqual([row.content]);
+  });
+
+  it('merges prefetched list text into the protected disk window', async () => {
+    const s = sid();
+    const earlier = dbMessage(s, 'old', 'earlier', '2026-10-10T00:00:00.000Z');
+    const latest = dbMessage(s, 'new', '完整正文'.repeat(2000), '2026-10-10T00:01:00.000Z');
+    cachedMessages.set(`${DEVICE_ID}::${s}`, [earlier as unknown as Record<string, unknown>]);
+    persistListMessage(DEVICE_ID, s, latest);
+    await vi.waitFor(() => expectPut(DEVICE_ID, s, [latest]));
+    expect(putMessages.mock.calls[0].slice(3, 6)).toEqual([7, cachedOwnerToken, 0]);
+    expect(putMessages.mock.calls[0].slice(6)).toEqual([undefined, true]);
+  });
+
+  it('reclaims never-opened list messages through the existing idle budget', async () => {
+    vi.useFakeTimers();
+    const s = sid();
+    try {
+      setDataOwnerGeneration('owner-a', 1);
+      registerRemote(s);
+      let push!: Parameters<typeof window.electronAPI.deviceLink.onRemotePush>[0];
+      window.electronAPI.deviceLink.onRemotePush = vi.fn(callback => { push = callback; return () => {}; });
+      makerChatStore.initGlobalListeners();
+      makerChatStore.__activeViewTest.setSoftEvictionBudget({ messages: 0, characters: 0 });
+      const row = dbMessage(s, 'prefetched', 'full body', '2026-10-10T00:00:00.000Z');
+      push({ deviceId: DEVICE_ID, channel: 'local-db:messages:created', payload: { sessionId: s, listMessage: true, message: row } });
+      expect(makerChatStore.__activeViewTest.getLastViewedAt(s)).toBeDefined();
+      expect(makerChatStore.getSnapshot(s).messages).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(makerChatStore.getSnapshot(s).messages).toHaveLength(0);
+    } finally {
+      makerChatStore.__activeViewTest.setSoftEvictionBudget(null);
+      makerChatStore.purgeSession(s);
+      makerChatStore.__teardownGlobalListeners();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(['prefix', 'collapsed', 'latest'] as const)('never clears the mirror when read ahead exceeds its budget (%s)', async (kind) => {
+    const s = sid();
+    const old = dbMessage(s, 'old', 'x'.repeat(400_000), '2026-10-11T00:00:01.000Z');
+    const anchor = dbMessage(s, 'anchor', 'anchor', '2026-10-11T00:00:02.000Z');
+    const previous: HistoryViewSnapshot<Message> = {
+      items: projectHistoryView([old, anchor], false), details: new Map(), expanded: new Set(),
+      ready: true, loading: false, error: null, hasMore: false, nextCursor: null,
+    };
+    if (kind === 'collapsed') {
+      previous.items = [{ type: 'work', key: 'work', summary: {
+        key: 'work', firstMessageId: old.id, lastMessageId: old.id, revision: 'r1',
+        startedAtMs: Date.parse(old.createdAt), endedAtMs: Date.parse(old.createdAt),
+        messageCount: 1, toolCount: 1, isStreaming: false,
+      } }, ...projectHistoryView([anchor], false)];
+      previous.details = new Map([['work', { messages: [old], revision: 'r1', lastMessageId: old.id,
+        complete: true, loading: false, error: null }]]);
+    }
+    const historyView = encodeRemoteHistory(previous);
+    expect(fitsRemoteHistoryCache(historyView)).toBe(true);
+    getMessages.mockResolvedValue({ messages: [], invalidation: 0, ownerToken: cachedOwnerToken, accountCounter: 0, historyView } as CachedRead);
+    remoteProjectsStore.setDeviceSessions(DEVICE_ID, 'Mac A', [
+      { id: s, status: 'active', updatedAt: '2026-10-11T00:00:09.000Z' },
+    ] as never);
+    const reply = dbMessage(s, 'new', 'y'.repeat(kind === 'latest' ? 600_000 : 180_000), '2026-10-11T00:00:09.000Z');
+    invoke.mockImplementationOnce((async () => ({ version: 1,
+      items: projectHistoryView([anchor, reply], false), hasMore: true, nextCursor: anchor.id,
+    })) as unknown as Parameters<typeof invoke.mockImplementationOnce>[0]);
+    try {
+      await makerChatStore.prefetchRemoteHistories(DEVICE_ID);
+      await flush(30);
+      expect(clearCache).not.toHaveBeenCalled();
+      if (kind === 'latest') {
+        expect(putMessages).not.toHaveBeenCalled();
+        invoke.mockImplementationOnce((async () => ({ version: 1,
+          items: projectHistoryView([anchor, { ...reply, content: 'small reply' }], false), hasMore: true, nextCursor: anchor.id,
+        })) as unknown as Parameters<typeof invoke.mockImplementationOnce>[0]);
+        await makerChatStore.prefetchRemoteHistories(DEVICE_ID);
+        await vi.waitFor(() => expect(putMessages).toHaveBeenCalled());
+        expect(invoke.mock.calls.filter(([, channel]) => channel === 'local-db:messages:view')).toHaveLength(2);
+      } else {
+        await vi.waitFor(() => expect(putMessages).toHaveBeenCalled());
+        const text = putMessages.mock.calls.at(-1)![6]!;
+        expect(fitsRemoteHistoryCache(text)).toBe(true);
+        const saved = decodeRemoteHistory(text)!;
+        expect(saved.items.at(-1)?.key).toBe(reply.clientId);
+        expect(saved.details.size).toBe(0);
+        expect(saved).toMatchObject(kind === 'prefix'
+          ? { hasMore: true, nextCursor: anchor.id } : { hasMore: false, nextCursor: null });
+      }
+    } finally {
+      getMessages.mockReset();
+      getMessages.mockImplementation(async (deviceId: string, sessionId: string) => ({
+        messages: cachedMessages.get(`${deviceId}::${sessionId}`) ?? [],
+        invalidation: cachedInvalidation, ownerToken: cachedOwnerToken, accountCounter: cachedAccountCounter,
+      }));
+    }
+  });
+
+  it('reads changed tasks ahead into the mirror after a refresh that may follow missed pushes', async () => {
+    const s = sid();
+    const old = dbMessage(s, 'old', 'cached reply', '2026-10-11T00:00:01.000Z');
+    const reply = dbMessage(s, 'new', 'reply written while away', '2026-10-11T00:00:09.000Z');
+    const historyView = encodeRemoteHistory({ items: projectHistoryView([{ ...old, clientId: old.clientId }], false),
+      details: new Map(), expanded: new Set(), ready: true, loading: false, error: null, nextCursor: null, hasMore: false });
+    getMessages.mockResolvedValue({ messages: [], invalidation: 0, ownerToken: cachedOwnerToken, accountCounter: 0, historyView } as CachedRead);
+    remoteProjectsStore.setDeviceSessions(DEVICE_ID, 'Mac A', [
+      { id: s, status: 'active', updatedAt: '2026-10-11T00:00:09.000Z' },
+    ] as never);
+    invoke.mockImplementationOnce((async (_deviceId: string, channel: string) => {
+      expect(channel).toBe('local-db:messages:view');
+      return { version: 1, items: projectHistoryView([old, reply], false), hasMore: false, nextCursor: null };
+    }) as unknown as Parameters<typeof invoke.mockImplementationOnce>[0]);
+    try {
+      await makerChatStore.prefetchRemoteHistories(DEVICE_ID);
+      await vi.waitFor(() => expect(putMessages).toHaveBeenCalled());
+      const written = putMessages.mock.calls.at(-1)!;
+      expect(written.slice(0, 3)).toEqual([DEVICE_ID, s, []]);
+      expect(written[6]).toContain('reply written while away');
+      // The same version is not read again.
+      await makerChatStore.prefetchRemoteHistories(DEVICE_ID);
+      expect(invoke.mock.calls.filter(([, channel]) => channel === 'local-db:messages:view')).toHaveLength(1);
+      // A cleared mirror entry invalidates that record.
+      clearCachedMessages(DEVICE_ID, s);
+      getMessages.mockResolvedValue({ messages: [], invalidation: 0, ownerToken: cachedOwnerToken, accountCounter: 0 } as CachedRead);
+      await makerChatStore.prefetchRemoteHistories(DEVICE_ID);
+      expect(invoke.mock.calls.filter(([, channel]) => channel === 'local-db:messages:view')).toHaveLength(2);
+    } finally {
+      getMessages.mockReset();
+      getMessages.mockImplementation(async (deviceId: string, sessionId: string) => ({
+        messages: cachedMessages.get(`${deviceId}::${sessionId}`) ?? [],
+        invalidation: cachedInvalidation, ownerToken: cachedOwnerToken, accountCounter: cachedAccountCounter,
+      }));
+    }
+  });
+
+  // Turn-end read ahead is targeted; duplicate end events must not refetch.
+  it('reads only the completed task and coalesces its duplicate completion', async () => {
+    const completed = sid();
+    const other = sid();
+    const running = sid();
+    remoteProjectsStore.setDeviceSessions(DEVICE_ID, 'Mac A', [
+      { id: completed, status: 'active', updatedAt: '2026-10-11T00:00:00Z', lastTurnEndedAt: 100 },
+      { id: other, status: 'active', updatedAt: '2026-10-11T00:00:00Z', lastTurnEndedAt: 100 },
+      { id: running, status: 'active', updatedAt: '2026-10-11T00:00:00Z', lastTurnEndedAt: 100, activeTurnStartedAt: 200 },
+    ] as never);
+    invoke.mockImplementationOnce((async (_device: string, channel: string, args: unknown[]) => {
+      expect(channel).toBe('local-db:messages:view');
+      expect(args[0]).toBe(completed);
+      return { version: 1, items: projectHistoryView([dbMessage(completed, 'reply', 'finished body', '2026-10-11T00:00:01Z')], false),
+        hasMore: false, nextCursor: null };
+    }) as unknown as Parameters<typeof invoke.mockImplementationOnce>[0]);
+    await makerChatStore.prefetchRemoteHistories(DEVICE_ID, new Set([completed, running]));
+    await flush(30);
+    expect(putMessages.mock.calls.at(-1)?.[6]).toContain('finished body');
+    await makerChatStore.prefetchRemoteHistories(DEVICE_ID, new Set([completed]));
+    expect(invoke.mock.calls.filter(([, channel]) => channel === 'local-db:messages:view')).toHaveLength(1);
+  });
+
+  // Mirror the mobile queue regression through Desktop's real store and disk writer.
+  it.each([false, true])('keeps a completion outside the queued reconnect budget (recent first=%s)', async (recentFirst) => {
+    const held = sid();
+    const done = sid();
+    const running = Array.from({ length: 5 }, () => sid());
+    remoteProjectsStore.setDeviceSessions(DEVICE_ID, 'Mac A', [
+      { id: held, status: 'active', updatedAt: '2026-10-11T00:00:00Z' },
+      { id: done, status: 'active', updatedAt: '2026-10-11T00:00:01Z', lastTurnEndedAt: 100 },
+      ...running.map(id => ({ id, status: 'active', updatedAt: '2026-10-11T00:00:09Z', activeTurnStartedAt: 100 })),
+    ] as never);
+    let release!: () => void;
+    const original = invoke.getMockImplementation()!;
+    invoke.mockImplementation((async (_device: string, channel: string, args: unknown[]) => {
+      expect(channel).toBe('local-db:messages:view');
+      const id = String(args[0]);
+      if (id === held) await new Promise<void>(resolve => { release = resolve; });
+      return { version: 1, items: projectHistoryView([dbMessage(id, 'reply', id, '2026-10-11T00:00:10Z')], false), hasMore: false, nextCursor: null };
+    }) as unknown as Parameters<typeof invoke.mockImplementation>[0]);
+    try {
+      const first = makerChatStore.prefetchRemoteHistories(DEVICE_ID, new Set([held]));
+      await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+      const reconnect = () => makerChatStore.prefetchRemoteHistories(DEVICE_ID);
+      const completion = () => makerChatStore.prefetchRemoteHistories(DEVICE_ID, new Set([done]));
+      if (recentFirst) { await reconnect(); await completion(); }
+      else { await completion(); await reconnect(); }
+      release();
+      await first;
+      await flush(30);
+      expect(invoke.mock.calls.map(([, , args]) => args[0])).toEqual(expect.arrayContaining([done, ...running]));
+      expect(putMessages.mock.calls.find(([, id]) => id === done)?.[6]).toContain(done);
+    } finally { invoke.mockImplementation(original); }
+  });
+
+  it('restores the structured view through the actual offline session entry', async () => {
+    const s = sid();
+    const rows = [{ id: 'cached', clientId: 'cached', role: 'user', content: 'offline history', createdAt: '2026-09-17T00:00:00Z' }];
+    const historyView = encodeRemoteHistory({ items: projectHistoryView(rows, false), details: new Map(), expanded: new Set(),
+      ready: true, loading: false, error: null, nextCursor: 'older', hasMore: true });
+    getMessages.mockResolvedValueOnce({ messages: [], invalidation: 0, ownerToken: cachedOwnerToken, accountCounter: 0, historyView } as CachedRead);
+    registerRemote(s);
+    remoteProjectsStore.markDeviceDisconnected(DEVICE_ID);
+    makerChatStore.ensureInitialMessages(s);
+    await flush(30);
+    expect(getRemoteHistoryView(s)?.getSnapshot().items).toEqual(projectHistoryView(rows, false));
+    expect(makerChatStore.getSnapshot(s).messages.map((row) => row.content)).toEqual(['offline history']);
+    expect(invoke).not.toHaveBeenCalled();
+    makerChatStore.purgeSession(s);
+  });
+
+  // A restart restores two caches: the structured page and a later durable list receipt.
+  // Neither resolution order may hide the newer body while the Host is offline.
+  it.each([[false, true], [true, true], [false, false], [true, false]])('restores disk receipts only in a comparable run (raw delayed=%s, same run=%s)', async (delayed, sameRun) => {
+    const s = sid();
+    const old = dbMessage(s, 'reply', 'old body', '2026-10-11T00:00:01.000Z');
+    const latest = { ...old, content: 'latest body', cacheReceipt: { run: sameRun ? 'cached' : 'other-old-run', order: 2 } };
+    const historyView = encodeRemoteHistory({ items: projectHistoryView([old], false), details: new Map(), expanded: new Set(),
+      readReceipt: { run: 'cached', order: 1 }, ready: true, loading: false, error: null, nextCursor: null, hasMore: false });
+    let reads = 0;
+    getMessages.mockImplementation(async () => {
+      if (++reads === 2 && delayed) await flush(30);
+      return { messages: [latest], historyView, invalidation: cachedInvalidation,
+        ownerToken: cachedOwnerToken, accountCounter: cachedAccountCounter };
+    });
+    registerRemote(s);
+    remoteProjectsStore.markDeviceDisconnected(DEVICE_ID);
+    makerChatStore.ensureInitialMessages(s);
+    await flush(60);
+    expect(makerChatStore.getSnapshot(s).messages.map(row => row.content)).toEqual([sameRun ? 'latest body' : 'old body']);
+    getRemoteHistoryView(s)?.setActive(true);
+    expect(makerChatStore.getSnapshot(s).messages.map(row => row.content)).toEqual([sameRun ? 'latest body' : 'old body']);
+    expect(invoke).not.toHaveBeenCalled();
+    makerChatStore.purgeSession(s);
+    getMessages.mockImplementation(async (deviceId, sessionId) => ({
+      messages: cachedMessages.get(`${deviceId}::${sessionId}`) ?? [], invalidation: cachedInvalidation,
+      ownerToken: cachedOwnerToken, accountCounter: cachedAccountCounter,
+    }));
+  });
+
   it('首拉未回来时用缓存种入,行带 cacheHydrated 且不置 historyLoaded', async () => {
     const s = sid();
     cachedMessages.set(`${DEVICE_ID}::${s}`, [
@@ -545,6 +904,125 @@ describe('缓存写点纪律', () => {
     expect(putMessages.mock.calls[0]?.[3]).toBe(11);
   });
 
+  it('本地还没有 owner root 时,写入不携带 owner root(由 store fail-closed 决定去留)', async () => {
+    // review(#1783 / codex P1):owner root 只信任受保护读(如 readCachedMessages)带回的已知值;
+    // 不知道时**不做异步补读** —— 补读 IPC 若在账号切换后才被 main 处理,会把新账号的 root
+    // 当成本次请求的 owner 锚点,反而让旧账号在途响应通过比对。未知即传 undefined,由 store
+    // 侧 fail-closed 丢弃(缓存是纯优化)。
+    const s = sid();
+    registerRemote(s);
+    // 不预置 knownOwnerToken:直接发起远端请求,owner root 未知。
+    cachedOwnerToken = 'opaque-owner-token-b';
+    remoteList = [dbMessage(s, 'm1', 'x', '2026-01-01T00:00:00.000Z')];
+
+    await listMessagesFor(s);
+    await flush(20);
+
+    // 写入仍会发出(会话计数在),但第 5 个参数(owner root)应为 undefined。
+    expect(putMessages).toHaveBeenCalledTimes(1);
+    expect(putMessages.mock.calls[0]?.[4]).toBeUndefined();
+  });
+
+  it('账号切换后复用同一 sessionId:旧账号残留 owner root 被清,新账号可重建缓存', async () => {
+    // review(#1801):knownOwnerToken 是 per-session、在某账号下读缓存时记下的。账号切换后若
+    // B 复用同一 sessionId,不清理的话会一直带着 A 的 root 提交,被 store fail-closed 持续
+    // 拒写 → B 的缓存静默失效。账号边界必须清空 per-session 残留,让 owner 重新从受保护读
+    // 获取。
+    const s = sid();
+    registerRemote(s);
+
+    // 账号 A:先有一次成功的缓存读,让 knownOwnerToken 记住 A 的 root。
+    cachedOwnerToken = 'opaque-owner-token-a';
+    await readCachedMessages(DEVICE_ID, s);
+    expect(putMessages).not.toHaveBeenCalled();
+
+    // 账号边界:登出 A / 切到 B。
+    cachedOwnerToken = 'opaque-owner-token-b';
+    clearMirrorCacheAccountState();
+
+    // 账号 B:复用同一 sessionId。真实时序里 B 的 hydrate 会先做一次受保护的缓存读(把
+    // knownOwnerToken 重设为 B 的 root),随后远端请求的写入才能带上正确的 B root —— 而不是
+    // A 的残留。这里复现「边界清空 → B 重新读到 B root → 写入带 B root」的完整序列。
+    await readCachedMessages(DEVICE_ID, s);
+    remoteList = [dbMessage(s, 'm1', 'x', '2026-01-01T00:00:00.000Z')];
+    await listMessagesFor(s);
+    await flush(20);
+
+    expect(putMessages).toHaveBeenCalledTimes(1);
+    expect(putMessages.mock.calls[0]?.[4]).toBe('opaque-owner-token-b');
+  });
+
+  it('在途缓存读在账号切换后才完成 → 不把旧账号 owner root 写回 knownOwnerToken', async () => {
+    // review(Greptile P1):readCachedMessages 的 IPC 在途期间账号切换,clearMirrorCacheAccountState
+    // 已清掉旧 token;读完成时若直接写回,会把 A 的 owner root / 代际重新种回,导致 B 复用同一
+    // sessionId 时被 main fail-closed 持续拒写。读完成前先校验 owner 仍是发起时身份,不是则丢弃。
+    const s = sid();
+    registerRemote(s);
+
+    // 账号 A 发起一次受保护缓存读,让它挂起(读完成前切换账号)
+    setDataOwnerGeneration('owner-a', 1);
+    let resolveRead!: (v: CachedRead) => void;
+    getMessages.mockImplementationOnce(
+      () =>
+        new Promise<CachedRead>((resolve) => {
+          resolveRead = resolve;
+        }),
+    );
+    const readPromise = readCachedMessages(DEVICE_ID, s);
+    await flush(2);
+
+    // 账号切换:dataOwnerGeneration 推进到 B(模拟 runtime 替换刷新直接发布新 owner)
+    setDataOwnerGeneration('owner-b', 2);
+    clearMirrorCacheAccountState();
+    // 旧读完成,返回 A 的 root + A 的消息 —— 但 owner 已变:
+    //  1. 不应写回 knownOwnerToken;
+    //  2. **不应把 A 的消息返回**给 hydrate(否则 B 会看到 A 的消息,远端首拉失败时持续保留,
+    //     跨账号泄漏)(review: Greptile P1 security)。
+    resolveRead({
+      messages: [{ id: 'a-msg', role: 'user', content: 'secret A message' }] as never,
+      invalidation: 0,
+      ownerToken: 'opaque-owner-token-a',
+      accountCounter: 0,
+    });
+    const rows = await readPromise;
+    expect(rows).toEqual([]);
+
+    // B 发起远端请求:owner root 应未知(B 的受保护读还没跑),写入不携带 A 的残留
+    cachedOwnerToken = 'opaque-owner-token-b';
+    remoteList = [dbMessage(s, 'm1', 'x', '2026-01-01T00:00:00.000Z')];
+    await listMessagesFor(s);
+    await flush(20);
+
+    expect(putMessages).toHaveBeenCalledTimes(1);
+    // 若旧 A root 被写回,这里会带上 A 的 root;正确行为是 undefined(B 尚未重读)
+    expect(putMessages.mock.calls[0]?.[4]).toBeUndefined();
+  });
+
+  it('accountCounter 不可读(-1)时整份读作废:消息不种入、owner root 不缓存', async () => {
+    // review(Codex P2):owner root 与账号代际必须**成对**缓存。main 在「计数不可读」时返回
+    // -1,此时若仍单独缓存 owner root,ownerTokenAtRequestStart 会短路返回 root、
+    // accountCounterAtRequestStart 却 undefined → 非空写入被 store fail-closed 拒到下次
+    // hydrate。counter 无效 = root 也不记,整份读作废返回 []。
+    const s = sid();
+    registerRemote(s);
+    cachedMessages.set(`${DEVICE_ID}::${s}`, [
+      dbMessage(s, 'm1', 'x', '2026-01-01T00:00:00.000Z') as unknown as Record<string, unknown>,
+    ]);
+    cachedAccountCounter = -1; // main 返回「计数不可读」哨兵
+
+    const rows = await readCachedMessages(DEVICE_ID, s);
+    expect(rows).toEqual([]); // 不把盘上缓存内容种入
+
+    // 远端请求:写入不应携带任何残留令牌(counter 无效 → root 也没缓存)
+    remoteList = [dbMessage(s, 'm2', 'x', '2026-01-01T00:00:01.000Z')];
+    await listMessagesFor(s);
+    await flush(20);
+
+    expect(putMessages).toHaveBeenCalledTimes(1);
+    expect(putMessages.mock.calls[0]?.[4]).toBeUndefined(); // owner root
+    expect(putMessages.mock.calls[0]?.[5]).toBeUndefined(); // account counter
+  });
+
   it('翻页(before / beforeTs)不写缓存:老窗口不是"最近一页"', async () => {
     const s = sid();
     registerRemote(s);
@@ -631,6 +1109,29 @@ describe('remoteProjectsStore.hydrateFromCache', () => {
     const sessions = remoteProjectsStore.getDeviceSessions('dev-cold');
     expect(sessions.map((s) => s.id)).toEqual(['fresh']);
     expect(sessions[0].deviceLinkConnectionStatus).toBe('connected');
+  });
+
+  it('缓存里的 archived 行可先显示，但重连后仍需按需权威校准', () => {
+    remoteProjectsStore.hydrateFromCache([
+      {
+        deviceId: 'dev-cold',
+        deviceName: 'Cold',
+        sessions: [{ id: 'cached-archived', status: 'archived' }] as never,
+      },
+    ]);
+    expect(remoteProjectsStore.hasLoadedSessionStatus('dev-cold', 'archived')).toBe(false);
+
+    remoteProjectsStore.setDeviceSessions('dev-cold', 'Cold', [{ id: 'fresh-active' }] as never);
+
+    expect(remoteProjectsStore.getDeviceSessions('dev-cold', 'archived')).toEqual([
+      expect.objectContaining({
+        id: 'cached-archived',
+        status: 'archived',
+        deviceLinkConnectionStatus: 'connected',
+      }),
+    ]);
+    expect(remoteProjectsStore.hasLoadedSessionStatus('dev-cold', 'active')).toBe(true);
+    expect(remoteProjectsStore.hasLoadedSessionStatus('dev-cold', 'archived')).toBe(false);
   });
 
   it('空会话列表的设备不种入(不画出一台空壳设备)', () => {
@@ -849,22 +1350,299 @@ describe('清某设备缓存不牵连别的设备', () => {
   });
 });
 
-describe('会话离场时清消息缓存', () => {
+describe('session-list 去抖回写的账号令牌时序', () => {
+  it('排程时令牌未知、触发前补读成功 → 使用同账号的最新令牌写入', async () => {
+    // review(codex P2):若排程时把 undefined 冻结进闭包,即使 debounce 期间令牌补齐,
+    // 非空快照仍会被 main fail-closed 丢弃;相同 reconcile 数据不再通知时缓存持续陈旧。
+    vi.useFakeTimers();
+    try {
+      setDataOwnerGeneration('owner-a', 1);
+      clearMirrorCacheAccountState();
+      scheduleSessionListPersist(() => [
+        { deviceId: 'dev-A', deviceName: 'Mac A', sessions: [{ id: 's-a' }] as never },
+      ]);
+
+      // debounce 触发前,受保护列表读把当前账号令牌补齐。
+      await readCachedSessionList();
+      await vi.advanceTimersByTimeAsync(2_000);
+
+      expect(putSessionList).toHaveBeenCalledTimes(1);
+      expect(putSessionList.mock.calls[0]?.[1]).toBe(cachedOwnerToken);
+      expect(putSessionList.mock.calls[0]?.[2]).toBe(cachedAccountCounter);
+    } finally {
+      cancelSessionListPersist();
+      vi.useRealTimers();
+    }
+  });
+
+  it('排程后账号切换 → 不用新账号令牌提交旧账号排下的快照', async () => {
+    vi.useFakeTimers();
+    try {
+      setDataOwnerGeneration('owner-a', 1);
+      await readCachedSessionList();
+      scheduleSessionListPersist(() => [
+        { deviceId: 'dev-A', deviceName: 'Mac A', sessions: [{ id: 'secret-a' }] as never },
+      ]);
+
+      setDataOwnerGeneration('owner-b', 2);
+      clearMirrorCacheAccountState();
+      cachedOwnerToken = 'opaque-owner-token-b';
+      await readCachedSessionList();
+      await vi.advanceTimersByTimeAsync(2_000);
+
+      expect(putSessionList).not.toHaveBeenCalled();
+    } finally {
+      cancelSessionListPersist();
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('cancelSessionListPersist 不丢 owner token(relay-stopped 非账号边界)', () => {
+  // review(codex P2):cancelSessionListPersist 既在账号边界也在 relay-stopped(服务停掉而非登出)
+  // 时被调用。若它在普通 cancel 时清掉 owner root / 账号代际,同一挂载实例重新 online 后
+  // scheduleSessionListPersist 会持续带 undefined 写非空快照,被 main fail-closed 丢弃 ——
+  // 侧边栏冷缓存直到重挂载都不刷新。清空只归真正的账号边界 clearMirrorCacheAccountState()。
+  it('relay stopped(普通 cancel)后,列表回写仍携带 owner root / 账号代际', async () => {
+    vi.useFakeTimers();
+    try {
+      // 先有一次受保护读,让 knownSessionListOwnerToken / knownSessionListAccountCounter 就位
+      await readCachedSessionList();
+      // relay-stopped:普通 cancel,不应清 token
+      cancelSessionListPersist();
+      // 重新 online 后排一次列表回写 → 必须仍带 owner root / 账号代际
+      scheduleSessionListPersist(() => [
+        { deviceId: 'dev-A', deviceName: 'Mac A', sessions: [{ id: 's-a' }] as never },
+      ]);
+      await vi.advanceTimersByTimeAsync(2_000);
+
+      expect(putSessionList).toHaveBeenCalledTimes(1);
+      expect(putSessionList.mock.calls[0]?.[1]).toBe(cachedOwnerToken);
+      expect(putSessionList.mock.calls[0]?.[2]).toBe(cachedAccountCounter);
+    } finally {
+      cancelSessionListPersist();
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('会话作废计数补读的等待纪律', () => {
+  it('独立 getMessages IPC 永久挂起时,超时后以 undefined 计数安全降级', async () => {
+    // review(copilot suppressed):没有受保护 hydrate 读时,invalidationAtRequestStart 会独立
+    // getMessages;若 IPC 永不 settle,persistCachedMessages 会永久卡在 Promise.all。
+    vi.useFakeTimers();
+    try {
+      const s = sid();
+      registerRemote(s);
+      let resolveRead!: (value: CachedRead) => void;
+      getMessages.mockImplementationOnce(
+        () =>
+          new Promise<CachedRead>((resolve) => {
+            resolveRead = resolve;
+          }),
+      );
+      remoteList = [dbMessage(s, 'm1', 'x', '2026-01-01T00:00:00.000Z')];
+
+      await listMessagesFor(s);
+      await vi.advanceTimersByTimeAsync(2_999);
+      expect(putMessages).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(putMessages).toHaveBeenCalledTimes(1);
+      expect(putMessages.mock.calls[0]?.[3]).toBeUndefined(); // main invalidation
+      expect(putMessages.mock.calls[0]?.[4]).toBeUndefined(); // owner root
+      expect(putMessages.mock.calls[0]?.[5]).toBeUndefined(); // account counter
+
+      // 底层 IPC 在超时后迟到,不能再把旧结果写进 knownMainInvalidation。
+      resolveRead({
+        messages: [],
+        invalidation: 99,
+        ownerToken: 'opaque-owner-token-a',
+        accountCounter: 0,
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      putMessages.mockClear();
+      remoteList = [dbMessage(s, 'm2', 'y', '2026-01-01T00:00:01.000Z')];
+      await listMessagesFor(s);
+      await vi.advanceTimersByTimeAsync(0);
+
+      // 若迟到结果污染了已知计数,第二次不会重新 get;正确行为是重新补读并拿默认值 7。
+      expect(getMessages).toHaveBeenCalledTimes(2);
+      expect(putMessages).toHaveBeenCalledTimes(1);
+      expect(putMessages.mock.calls[0]?.[3]).toBe(cachedInvalidation);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('补读完成前切换账号:旧账号计数作废且不写回 knownMainInvalidation', async () => {
+    const s = sid();
+    registerRemote(s);
+    setDataOwnerGeneration('owner-a', 1);
+    let resolveRead!: (value: CachedRead) => void;
+    getMessages.mockImplementationOnce(
+      () =>
+        new Promise<CachedRead>((resolve) => {
+          resolveRead = resolve;
+        }),
+    );
+    remoteList = [dbMessage(s, 'm1', 'x', '2026-01-01T00:00:00.000Z')];
+    await listMessagesFor(s);
+
+    setDataOwnerGeneration('owner-b', 2);
+    clearMirrorCacheAccountState();
+    resolveRead({
+      messages: [],
+      invalidation: 99,
+      ownerToken: 'opaque-owner-token-a',
+      accountCounter: 0,
+    });
+    await flush(20);
+
+    // The renderer now drops the old owner's write before dispatch as well.
+    expect(putMessages).not.toHaveBeenCalled();
+
+    // 第二次仍须补读:99 属于旧 owner,不能成为 B 的已知计数。
+    putMessages.mockClear();
+    remoteList = [dbMessage(s, 'm2', 'y', '2026-01-01T00:00:01.000Z')];
+    await listMessagesFor(s);
+    await flush(20);
+    expect(getMessages).toHaveBeenCalledTimes(2);
+    expect(putMessages.mock.calls[0]?.[3]).toBe(cachedInvalidation);
+  });
+});
+
+describe('在途受保护读的等待纪律', () => {
+  it('IPC 永久挂起时写入不被无限阻塞:超时后降级为 undefined 令牌', async () => {
+    // review(copilot P1):ownerTokenAtRequestStart 在有 pendingProtectedRead 时把 Promise 交给
+    // persistCachedMessages(它 Promise.all 等待)。若那笔 get 既不 resolve 也不 reject
+    // (main 卡死 / 通道断开但 Promise 没 settle),该会话后续缓存写入会被**永久**堵住。
+    // 缓存是 best-effort:超时降级为 undefined,由 store fail-closed 丢这一次写。
+    vi.useFakeTimers();
+    try {
+      const s = sid();
+      registerRemote(s);
+      // 永不 settle 的读:模拟挂死的 IPC
+      getMessages.mockImplementationOnce(() => new Promise(() => {}));
+      void readCachedMessages(DEVICE_ID, s);
+      await vi.advanceTimersByTimeAsync(0);
+
+      remoteList = [dbMessage(s, 'm1', 'x', '2026-01-01T00:00:00.000Z')];
+      await listMessagesFor(s);
+      // 超时窗口内写入还在等(不该抢跑派发)
+      await vi.advanceTimersByTimeAsync(500);
+      expect(putMessages).not.toHaveBeenCalled();
+
+      // 超时后必须降级派发,而不是永久挂着
+      await vi.advanceTimersByTimeAsync(4_000);
+      expect(putMessages).toHaveBeenCalledTimes(1);
+      expect(putMessages.mock.calls[0]?.[4]).toBeUndefined(); // owner root
+      expect(putMessages.mock.calls[0]?.[5]).toBeUndefined(); // account counter
+
+      // 永久挂起的 entry 必须在超时后从 map 摘掉:第二次写不应再重复白等 3 秒。
+      putMessages.mockClear();
+      remoteList = [dbMessage(s, 'm2', 'y', '2026-01-01T00:00:01.000Z')];
+      await listMessagesFor(s);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(putMessages).toHaveBeenCalledTimes(1);
+      expect(putMessages.mock.calls[0]?.[4]).toBeUndefined();
+      expect(putMessages.mock.calls[0]?.[5]).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('账号切换后 B 不等 A 的在途读:立即降级,不白等一场', async () => {
+    // review(Greptile P1):clearMirrorCacheAccountState 清空已知令牌却保留 A 的
+    // pendingProtectedRead。B 复用同一 sessionId 时会去等那笔注定拿不到令牌的旧读
+    // (它完成时因代际不符不写令牌)—— 白等一个超时窗口后仍是 undefined。
+    const s = sid();
+    registerRemote(s);
+    getMessages.mockImplementationOnce(() => new Promise(() => {})); // A 的读挂在途
+    void readCachedMessages(DEVICE_ID, s);
+    await flush(2);
+
+    // 账号切换到 B
+    setDataOwnerGeneration('owner-b', 2);
+    clearMirrorCacheAccountState();
+
+    // B 复用同一 sessionId 发起远端请求:不该等 A 的在途读,直接 undefined 令牌
+    remoteList = [dbMessage(s, 'm1', 'x', '2026-01-01T00:00:00.000Z')];
+    await listMessagesFor(s);
+    await flush(20);
+
+    expect(putMessages).toHaveBeenCalledTimes(1);
+    expect(putMessages.mock.calls[0]?.[4]).toBeUndefined();
+    expect(putMessages.mock.calls[0]?.[5]).toBeUndefined();
+  });
+});
+
+describe('列表读在账号切换后整份作废', () => {
+  it('在途 getSessionList 在切账号后完成:不返回旧账号设备、不缓存旧令牌', async () => {
+    // review(copilot P1):readCachedSessionList 原先只挡令牌写回,仍把旧账号的 devices
+    // 返回给调用方;冷启动 hydrate 会把这份快照直接种进侧边栏 → B 看到 A 的设备与会话标题。
+    let resolveRead!: (v: {
+      devices: unknown[];
+      ownerToken?: string;
+      accountCounter?: number;
+    }) => void;
+    getSessionList.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveRead = resolve as never;
+        }) as never,
+    );
+    const readPromise = readCachedSessionList();
+    await flush(2);
+
+    setDataOwnerGeneration('owner-b', 2);
+    clearMirrorCacheAccountState();
+
+    // 旧读带着 A 的设备快照完成
+    resolveRead({
+      devices: [
+        { deviceId: 'dev-A', deviceName: "Alice's Mac", sessions: [{ id: 'secret-a-session' }] },
+      ],
+      ownerToken: 'opaque-owner-token-a',
+      accountCounter: 0,
+    });
+
+    // 整份作废:一条都不能返回给侧边栏
+    expect(await readPromise).toEqual([]);
+
+    // 令牌也不该被旧读写回 —— 否则 B 的列表回写会带上 A 的 root 被 fail-closed 拒写
+    vi.useFakeTimers();
+    try {
+      scheduleSessionListPersist(() => [
+        { deviceId: 'dev-B', deviceName: 'Mac B', sessions: [{ id: 's-b' }] as never },
+      ]);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(putSessionList).toHaveBeenCalledTimes(1);
+      expect(putSessionList.mock.calls[0]?.[1]).toBeUndefined();
+      expect(putSessionList.mock.calls[0]?.[2]).toBeUndefined();
+    } finally {
+      cancelSessionListPersist();
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('会话删除时清消息缓存', () => {
   // review(codex P1):会话可能不在当前(有界)分片里、甚至这台设备还没有分片,但它完全可能
   // 有一份上次打开时留下的缓存文件 —— 早退就等于把"别的控制端刚删掉的会话"的正文留在盘上。
-  it('会话不在分片里(甚至没有分片)时,终态推送同样清缓存', () => {
-    // 没有分片:直接对一台未知设备发终态 patch
+  it('会话不在分片里(甚至没有分片)时,deleted 推送同样清缓存', () => {
+    // 没有分片:直接对一台未知设备发 deleted patch
     remoteProjectsStore.applyPatch('dev-unknown', 'sess-ghost', { status: 'deleted' });
     expectPut('dev-unknown', 'sess-ghost', []);
 
     // 有分片但会话不在窗口内
     remoteProjectsStore.setDeviceSessions(DEVICE_ID, 'Mac A', [{ id: 's-in' }] as never);
     putMessages.mockClear();
-    remoteProjectsStore.applyPatch(DEVICE_ID, 's-outside-window', { status: 'archived' });
+    remoteProjectsStore.applyPatch(DEVICE_ID, 's-outside-window', { status: 'deleted' });
     expectPut(DEVICE_ID, 's-outside-window', []);
   });
 
-  it('被控端把会话标 deleted / archived → 清掉该会话的缓存文件', () => {
+  it('deleted 清缓存，archived 保留缓存供归档任务离线查看', () => {
     remoteProjectsStore.setDeviceSessions(DEVICE_ID, 'Mac A', [
       { id: 's-del' },
       { id: 's-arch' },
@@ -874,7 +1652,7 @@ describe('会话离场时清消息缓存', () => {
     remoteProjectsStore.applyPatch(DEVICE_ID, 's-arch', { status: 'archived' });
 
     expectPut(DEVICE_ID, 's-del', []);
-    expectPut(DEVICE_ID, 's-arch', []);
+    expectNoPut(DEVICE_ID, 's-arch', []);
   });
 });
 

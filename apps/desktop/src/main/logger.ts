@@ -15,8 +15,8 @@
  *
  * 注意: cc 子进程的内部 debug 由 cc 二进制通过 SDK debugFile 选项直接 fopen 写入一个
  * raw 中转文件 (sessions/<id>/cc-debug.raw.log, 路径由 resolveSessionCcDebugFile 给出;
- * 无 session 时回退全局 cc-debug.raw.log), **不经过本 logger 的 emit**。bootstrap 的
- * tailer 扫描这些 raw 文件, 逐行调 writeCcDebugLine() 归一化汇入对应 session 的 agent 流。
+ * 无 session 时回退全局 cc-debug.raw.log), **不经过本 logger 的 emit**。tailer 跟踪当前
+ * CC 进程注册的 raw 文件, 有界读取并调 writeCcDebugLine() 汇入对应 session 的 agent 流。
  *
  * 旧的 maker.log / cc-proxy.log / cc-debug.log 已并入, 启动期由 purgeLegacyAgentLogs()
  * 清掉, 不再生成 (旧 main.log 保留作历史归档, 不删)。
@@ -33,6 +33,11 @@
  * writer (with scope prefixed `r:`) so the right stream holds the full picture
  * (`r:maker*` 也归入 agent 流)。
  *
+ * ⚠️ 安全不变量: main-*.log 的**记录边界**(行首 `[ts] [LEVEL] [scope] `)是日志上报判断
+ * 「这条记录来自哪个来源、要不要放行」的依据。写侧因此必须保证除记录首行外没有行以该特征
+ * 开头 —— emit() 对 msg 走 escapeMainLogContinuationLines(), 且每次打开 main 当天文件写一行
+ * 格式哨兵。正文与理由见 shared/mainLogRecordFormat.ts; 放宽任一侧都是隐私变更。
+ *
  * Rotation: main-*.log / agent-*.ndjson / sessions/<id>/*.ndjson 统一按天切 + 保留 30 天
  * (30 天没活动的 session 目录整个删)。例外: cc-debug.raw.log (cc 外部进程写的中转文件,
  * 没法按天) 启动期砍头保尾 (keepRecentSync)。
@@ -42,6 +47,15 @@ import { app } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
 import util from 'node:util';
+import { BoundedLogWriter } from './bounded-log-writer.js';
+import { CcDebugRawTailer } from './cc-debug-raw-tailer.js';
+
+import { LOG_RETENTION_DAYS } from '../shared/logRetention';
+import {
+  escapeMainLogContinuationLines,
+  RECORD_FORMAT_SENTINEL_MSG,
+  RECORD_FORMAT_SENTINEL_SCOPE,
+} from '../shared/mainLogRecordFormat';
 
 export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal';
 
@@ -67,7 +81,6 @@ let initialized = false;
 // ── 落盘 slot + 按天 rotate ───────────────────────────────────────────────────
 // 所有最终日志统一按天: main 与 agent 各一个 DailySlot, 跨天开新文件 + 只保留最近
 // LOG_RETENTION_DAYS 天 (cleanupOldDailyLogs)。main 写纯文本行, agent 写结构化 NDJSON。
-const LOG_RETENTION_DAYS = 30;
 const AGENT_LOG_EXT = '.ndjson';
 
 // cc-debug.raw.log 例外: cc 子进程自己 fopen 写的中转文件, 没法按天切, 仍用启动期
@@ -107,6 +120,18 @@ const SESSIONS_DIR = 'sessions';
 const MAX_OPEN_SESSION_SLOTS = 32;
 const sessionSlots = new Map<string, DailySlot>();
 let logRootDir = '';
+const agentLogWriter = new BoundedLogWriter();
+let droppedAgentRecords = 0;
+const ccDebugRawTailer = new CcDebugRawTailer(writeCcDebugLine);
+
+/** Called once per local CC process; release on that process's exit/error. */
+export function trackSessionCcDebugFile(file: string, sessionId = ''): () => void {
+  return ccDebugRawTailer.register(file, sessionId);
+}
+
+export function setCcDebugTailingEnabled(enabled: boolean): void {
+  ccDebugRawTailer.setEnabled(enabled);
+}
 
 // scope 路由: maker-host adapter 用 'maker' / 'maker/xxx' 作为根 scope,
 // renderer 转发会被加 'r:' 前缀, 所以 'r:maker' / 'r:maker/xxx' 也算。
@@ -519,6 +544,27 @@ function purgeLegacyAgentLogs(dir: string): void {
   }
 }
 
+/**
+ * 往 main 当天文件写一行「记录格式哨兵」。
+ *
+ * 上报侧只采**第 0 字节就是哨兵**的文件(整份可信), 否则整份不采: 本模块引入续行转义之前
+ * 写下的日志没有转义, 其中可能含伪造的记录头 (见 shared/mainLogRecordFormat.ts)。
+ * 注意判据是「第 0 字节」而不是「出现过」—— 哨兵行的形状正文可以逐字构造, 见
+ * log-upload/mainLogReader.startsWithFormatSentinel。所以这里对**追加**到存量文件的那一次
+ * 写入只是留个人工可读的标记, 不会让那份文件变成可采的。
+ *
+ * 故意**绕过 emit 的等级过滤**直接写流: 走 emit 的话, `LOG_LEVEL=warn` 这类配置会让
+ * 哨兵不落地, 上报侧于是跳过整个文件、一条也采不到 —— 一个日志等级配置不该把上报能力
+ * 静默关掉。
+ */
+function writeRecordFormatSentinel(slot: DailySlot): void {
+  if (!slot.stream) return;
+  const line =
+    `[${localTimestamp(new Date())}] [${LEVEL_TAG.info}] ` +
+    `[${RECORD_FORMAT_SENTINEL_SCOPE}] ${RECORD_FORMAT_SENTINEL_MSG}\n`;
+  try { slot.stream.write(line); } catch { /* stream broken — silent */ }
+}
+
 // 按天切换: dateKey 变了就关旧 stream、开当天文件, 并触发保留清理。main / agent 共用。
 function ensureDailySlot(slot: DailySlot, now: Date): void {
   if (!slot.dir) return; // 未 init
@@ -531,10 +577,17 @@ function ensureDailySlot(slot: DailySlot, now: Date): void {
   slot.dateKey = key;
   try {
     slot.stream = fs.createWriteStream(dailyLogPath(slot, key), { flags: 'a' });
+    const stream = slot.stream;
+    stream.on('error', () => {
+      if (slot.stream === stream) slot.stream = null;
+    });
   } catch (err) {
     origStderr(`[logger] failed to open ${slot.prefix}${key}${slot.ext}: ${(err as Error).message}\n`);
     slot.stream = null;
   }
+  // 只有 main 流是纯文本按行解析的, 需要哨兵; agent / session 流是 NDJSON, 记录边界由
+  // JSON 行本身保证, 不存在伪造记录头的问题。
+  if (slot === mainSlot) writeRecordFormatSentinel(slot);
   void cleanupOldDailyLogs(slot.dir, slot.prefix, slot.ext);
 }
 
@@ -596,20 +649,34 @@ function writeMainLine(line: string): void {
 
 // agent NDJSON 写入点: maker/proxy (经 emit) 与 cc-debug (经 writeCcDebugLine) 都汇到这里。
 // 有 sessionId → 写 sessions/<id>/<date>.ndjson; 无 → 写 logs 根 agent-<date>.ndjson。
-function writeAgentRecord(rec: Omit<AgentLogRecord, 'seq'>): void {
+function writeAgentRecord(rec: Omit<AgentLogRecord, 'seq'>, retryable = false): boolean {
+  // Bound serialization too. Raw debug is already fragmented by the tailer.
+  const msg = rec.msg.length > 128 * 1024
+    ? `${rec.msg.slice(0, 128 * 1024)} [log record truncated]` : rec.msg;
+  const full = { ...rec, msg, seq: agentSeq, ...(droppedAgentRecords ? { droppedRecords: droppedAgentRecords } : {}) };
+  const line = `${JSON.stringify(full)}\n`;
+  const rejected = (): false => {
+    // Raw diagnostics remain on disk and the tailer retries; other synchronous
+    // producers cannot wait, so report omitted records on the next accepted one.
+    if (!retryable) droppedAgentRecords = Math.min(Number.MAX_SAFE_INTEGER, droppedAgentRecords + 1);
+    return false;
+  };
+  // Check before opening a new session stream: LRU eviction must not turn a
+  // saturated writer into an unbounded queue of pending open/close operations.
+  if (!agentLogWriter.canAccept(line)) return rejected();
   const slot = rec.sessionId ? sessionAgentSlot(rec.sessionId) : agentSlot;
-  if (!slot) return;
+  if (!slot) return rejected();
   ensureDailySlot(slot, new Date(rec.ts));
-  if (!slot.stream) return;
-  const full: AgentLogRecord = { ...rec, seq: agentSeq++ };
-  try { slot.stream.write(`${JSON.stringify(full)}\n`); } catch { /* stream broken — silent */ }
+  if (!slot.stream || !agentLogWriter.write(slot.stream, line)) return rejected();
+  agentSeq++;
+  droppedAgentRecords = 0;
+  return true;
 }
 
 // cc 子进程 debug 行 (格式 "<UTC-ISO> [LEVEL] [scope?] msg") 解析归一化后汇入 agent 流。
-// 由 bootstrap-electron 的 cc-debug tailer 逐行调用, sessionId 来自 raw 文件所在的
-// sessions/<id>/ 目录 (per-session debugFile)。无 sessionId 时归根 agent 流。
+// 由进程注册驱动的 cc-debug tailer 调用, sessionId 来自启动参数。无 sessionId 时归根 agent 流。
 const CC_DEBUG_LINE_RE = /^(\d{4}-\d{2}-\d{2}T[\d:.]+Z)\s+\[(\w+)\]\s*(?:\[([^\]]+)\])?\s*([\s\S]*)$/;
-export function writeCcDebugLine(rawLine: string, sessionId = ''): void {
+export function writeCcDebugLine(rawLine: string, sessionId = ''): boolean {
   const m = CC_DEBUG_LINE_RE.exec(rawLine);
   let ts: number;
   let level: LogLevel;
@@ -627,7 +694,7 @@ export function writeCcDebugLine(rawLine: string, sessionId = ''): void {
     scope = 'cc';
     msg = rawLine;
   }
-  writeAgentRecord({ ts, tz: -new Date(ts).getTimezoneOffset(), level, source: 'cc-debug', scope, sessionId, msg });
+  return writeAgentRecord({ ts, tz: -new Date(ts).getTimezoneOffset(), level, source: 'cc-debug', scope, sessionId, msg }, true);
 }
 
 function emit(level: LogLevel, scope: string, args: unknown[]): void {
@@ -665,7 +732,10 @@ function emit(level: LogLevel, scope: string, args: unknown[]): void {
     return;
   }
 
-  const line = `[${ts}] [${LEVEL_TAG[level]}] [${scope}] ${msg}\n`;
+  // 续行转义是**安全不变量**, 不是排版: 上报侧按行首特征切记录并据此放行来源,
+  // 续行若能伪装成放行来源的记录头, 被封禁来源的多行内容就能把用户内容送出去。
+  // 详见 shared/mainLogRecordFormat.ts。
+  const line = `[${ts}] [${LEVEL_TAG[level]}] [${scope}] ${escapeMainLogContinuationLines(msg)}\n`;
   writeMainLine(line);
   if (isDevMode) {
     // dev 额外双写终端,实时观察用

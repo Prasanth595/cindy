@@ -26,7 +26,9 @@
 import { randomUUID } from 'node:crypto';
 
 import type { Logger } from '../../../interfaces/logger.js';
-import { AppServerClient } from './client.js';
+import type { CodexSessionMcpConfigInput, CodexSubagentRoutingProfile } from '../../base-agent.js';
+import { AppServerClient, type RequestProgressDeadline } from './client.js';
+import { CODEX_EXTERNAL_AUTH_REFRESH, CodexExternalAuthSession, assertCodexEphemeralAuth, type CodexExternalAuth } from './external-auth.js';
 import type { Transport } from './transport.js';
 import {
   Method,
@@ -40,6 +42,7 @@ import {
   type FileChangeRequestApprovalResponse,
   type McpServerElicitationRequestParams,
   type McpServerElicitationRequestResponse,
+  type CodexMcpServerStatusListResponse,
   type PermissionsRequestApprovalParams,
   type PermissionsRequestApprovalResponse,
   type ServerRequestResolvedNotification,
@@ -56,11 +59,14 @@ import {
   type ThreadUnsubscribeResponse,
   type TurnPlanUpdatedNotification,
   type TurnCompletedNotification,
+  type TurnDiffUpdatedNotification,
   type TurnStartedNotification,
   type ReasoningSummaryTextDeltaNotification,
   type ReasoningSummaryPartAddedNotification,
   type ReasoningTextDeltaNotification,
+  type ReasoningEffort,
   type AccountRateLimitsUpdatedNotification,
+  type AgentMessageDeltaNotification,
   type ThreadStatusChangedNotification,
   type ThreadSettingsUpdatedNotification,
   type ItemGuardianApprovalReviewStartedNotification,
@@ -72,7 +78,7 @@ import {
  * 我们订阅的 notification 方法集 — 这之外的 (大部分 delta + plan/diff/hook/etc.)
  * 在 initialize 时通过 optOutNotificationMethods 告诉 server 别推, 省 IPC 带宽。
  *
- * agentMessage 文本流我们仍走 item/updated 全量字段算 diff (省一类 delta);
+ * agentMessage 正文订阅专用 delta；item/updated 全量字段保留为兼容兜底与校准来源。
  * reasoning summary 流必须订阅 delta — claude code 等价体验需要逐字出 thinking 文本,
  * item/completed 给的是终态全文 (用来校准), 中间过程靠 delta 才能动起来。
  */
@@ -80,10 +86,12 @@ const SUBSCRIBED_METHODS = [
   'thread/started',
   'turn/started',
   'turn/completed',
+  'turn/diff/updated',
   'thread/tokenUsage/updated', // Codex usage 走单独通知 (不在 turn/completed 上), 必订
   'item/started',
   'item/updated',
   'item/completed',
+  'item/agentMessage/delta',
   'turn/plan/updated',             // Codex update_plan snapshots
   'item/reasoning/summaryTextDelta', // 流式 reasoning 文本增量 (OpenAI summary)
   'item/reasoning/summaryPartAdded', // summary 分段标记 (插 \n\n 分隔用)
@@ -99,12 +107,9 @@ const SUBSCRIBED_METHODS = [
 ] as const;
 
 const NOTIFICATIONS_TO_OPT_OUT = [
-  'item/agentMessage/delta',
   'item/plan/delta',
   'item/commandExecution/outputDelta',
   'item/fileChange/outputDelta',
-  // 后续要做实时 patch / plan 流时再去掉:
-  'turn/diff/updated',
 ];
 
 const DEFAULT_THREAD_UNSUBSCRIBE_TIMEOUT_MS = 5_000;
@@ -135,11 +140,14 @@ export interface ThreadEventHandlers {
   descendantNotification?: (childThreadId: string, method: string, params: unknown) => void;
   turnStarted?: (params: TurnStartedNotification['params']) => void;
   turnCompleted?: (params: TurnCompletedNotification['params']) => void;
+  turnDiffUpdated?: (params: TurnDiffUpdatedNotification['params']) => void;
   /** 每次 turn 都会推一次 (turn 完成前), 与 turn/completed 在同 turnId 下成对出现。 */
   tokenUsageUpdated?: (params: ThreadTokenUsageUpdatedNotification['params']) => void;
   itemStarted?: (params: ItemStartedNotification['params']) => void;
   itemUpdated?: (params: ItemUpdatedNotification['params']) => void;
   itemCompleted?: (params: ItemCompletedNotification['params']) => void;
+  /** 正文的逐段增量；item/completed 仍会下发最终全文做权威校准。 */
+  agentMessageDelta?: (params: AgentMessageDeltaNotification['params']) => void;
   /** Codex native update_plan snapshots. */
   turnPlanUpdated?: (params: TurnPlanUpdatedNotification['params']) => void;
   /** OpenAI reasoning summary 单段内的文本增量 (按 summaryIndex 区分段)。 */
@@ -172,6 +180,21 @@ export interface ThreadEventHandlers {
   autoApprovalReviewCompleted?: (params: ItemGuardianApprovalReviewCompletedNotification) => void;
   guardianWarning?: (params: GuardianWarningNotification) => void;
   error?: (params: ErrorNotification['params']) => void;
+  /**
+   * Host 被永久替换（强制退役，如账号切换 / auth 失效）时发给每个订阅者的结构化
+   * 生命周期信号。订阅者按自身真实状态收口：
+   *
+   * - 空闲 / 已完成的订阅者静默失效，不产生任何错误事件——不应把一次内部 host 替换
+   *   渲染成历史会话的终止错误（#1391 场景：闲置数小时的已完成会话在切账号时被打
+   *   永久红框）。
+   * - 真实在飞（turn in-flight / turn/start pending / overload retry）的订阅者清理
+   *   在途状态并产生一次终态 error + Done，保证 isTurnRunning 复位、上层 busy 判定 /
+   *   Stop 锁 / 输入队列不卡死（2026-07-19 auth app_session_terminated 实排）。
+   *
+   * 提供该回调时，host **不再**广播 transport error（否则空 turnId 的错误无法被
+   * pending/retry 会话收口）。未提供时保持旧行为（广播 transport error）。
+   */
+  hostForcedRetire?: (signal: { reason: string }) => void;
 
   // ── ServerRequest (Phase 2 approval) ─────────────────────────────────────
   // server → client 的 request, 必须返回 response (否则 server 卡 turn)。
@@ -213,6 +236,10 @@ export interface ThreadSubscription {
 }
 
 export interface AppServerHostOptions {
+  /** Applied before the host becomes ready, and reapplied after every transport restart. */
+  externalAuth?: CodexExternalAuth;
+  /** Required for every cross-home runtime, including gateway-only routes. */
+  requireEphemeralAuth?: boolean;
   /**
    * Transport 工厂; host 每次 bootstrap (含 transport-error 后的重连) 都调一次。
    * 本地 codex 用 `createStdioTransport({binaryPath, cwd, env, extraArgs})`,
@@ -233,19 +260,67 @@ export interface AppServerHostOptions {
    * 关联中的 JSON-RPC response 明确返回 cloudRequirements Auth/relogin 时调用一次
    * (单次 latch 在 client 内)。stderr 始终只作为诊断日志。
    */
-  onAuthInvalidated?: (reason: string) => void;
+  onAuthInvalidated?: (
+    reason: string,
+    context?: { credentialGeneration?: string | null },
+  ) => void;
+  /** Returns the credential generation frozen for the current concrete transport. */
+  captureCredentialGeneration?: () => string | null;
   /**
    * Host 创建时冻结的事实:该 app-server 的 model_provider.base_url 是否走
    * 本机 codex proxy。session 级 prompt gate 只读这个值,不再 live 读取全局状态。
    */
   codexProxyActive?: boolean;
+  /** Host creation snapshot: this exact process received the Browser companion. */
+  codexBrowserUseAvailable?: boolean;
+  /** Exact verified Chrome plugin version provisioned into this process. */
+  codexBrowserUseVersion?: string;
+  /** Maximum wait for the provisioned Browser companion to publish its MCP tools. */
+  codexBrowserUseStartupTimeoutMs?: number;
   /**
-   * Host 创建时冻结的事实:spawn args 里定义的 OpenAI 身份 provider id(仅
-   * oauth-bearer spawn 存在)。thread/start|resume 据此对订阅直连会话开远端压缩。
+   * Host 创建时冻结的 ChatGPT OpenAI transport identity，仅 oauth-bearer spawn 存在。
    */
   remoteCompactionProviderId?: string;
+  /** Cindy Provider codex/* 的内部 OpenAI transport identity。 */
+  cindyRemoteCompactionProviderId?: string;
+  localCompactionProviderId?: string;
+  /** Generic custom Provider identities and capabilities frozen into this process. */
+  codexCustomProviderRoutes?: Array<{
+    providerId: string;
+    modelProviderId: string;
+    capabilities: Readonly<Record<string, boolean | undefined>>;
+    responseModels: readonly string[];
+  }>;
   /** Per-thread host-owned MCP URL overrides keyed by the Session instance. */
-  buildSessionMcpConfig?: (sessionInstanceId: string) => Record<string, unknown>;
+  buildSessionMcpConfig?: (
+    sessionInstanceId: string,
+    session?: CodexSessionMcpConfigInput,
+  ) => Record<string, unknown>;
+  /** Cindy-side fallback used only when a subagent's actual model is not reported. */
+  subagentModelFallback?: string;
+  /** Frozen provider/model/effort identity for the configured locked subagent route. */
+  subagentRoute?: {
+    providerId: string;
+    catalogModel: string;
+    reasoningEffort?: ReasoningEffort | null;
+  };
+  smartSubagentRoutes?: Array<{
+    providerId: string;
+    catalogModel: string;
+    reasoningEffort?: ReasoningEffort | null;
+  }>;
+  /** Frozen identity of the Subagent routing/catalog snapshot used by this host. */
+  codexSubagentRoutingSignature?: string;
+  getSubagentIdentity?: (childThreadId: string) => {
+    model: string;
+    reasoningEffort?: string;
+  } | undefined;
+  /** Whether the OpenAI identity provider may use Responses WebSocket on this host. */
+  codexOpenAiWebSocketsEnabled?: boolean;
+  /** Host-level Subagent route profile used to prevent incompatible local host reuse. */
+  codexSubagentRoutingProfile?: CodexSubagentRoutingProfile;
+  /** One-shot cleanup for resources owned by this Host generation, run only on terminal retire. */
+  onRetired?: () => void | Promise<void>;
 }
 
 interface BufferedNotification {
@@ -254,19 +329,42 @@ interface BufferedNotification {
   ts: number;
 }
 
+/** All native attempts have exited before this error is exposed to a task startup. */
+export class CodexNativeInitializationStoppedError extends Error {}
+
 export class AppServerHost {
+  private readonly externalAuth: CodexExternalAuthSession | undefined;
   private readonly connectionId = randomUUID();
   private readonly logger: Logger;
   private readonly bufferTtlMs: number;
   private readonly threadUnsubscribeTimeoutMs: number;
 
   private client: AppServerClient | null = null;
+  // Negative proof belongs to the exact transport, not readiness or provider.
+  // Any application RPC may load a thread (including future protocol methods).
+  // Bootstrap initialize/config/auth and the read-only writer probe do not.
+  private readonly writerCandidates = new WeakSet<AppServerClient>();
   /** 同次 ensureStarted 并发调用共享一个 init Promise (避免重复 spawn)。 */
   private startPromise: Promise<InitializeResponse> | null = null;
+  private nativeInitializationEpoch = 0;
 
   private readonly subscribers = new Map<string, ThreadEventHandlers>();
   /** root / descendant threadId → 当前拥有该子树订阅的 root threadId。 */
   private readonly lineageRoots = new Map<string, string>();
+  /**
+   * 父 turn 尚在对账时的 provisional child claim。
+   *
+   * reserve 只保活 child 缓冲与 server request waiter，不安装 root 路由；
+   * 父 turn 被接受后由 registerDescendantLineage commit，判成孤儿则 discard。
+   */
+  private readonly pendingLineage = new Map<
+    string,
+    { parentThreadId: string; rootThreadId: string }
+  >();
+  /** Server request may race the child thread/started notification that establishes lineage. */
+  private readonly threadHandlerWaiters = new Map<string, Set<() => void>>();
+  /** One post-start MCP inventory probe per server/tool for this concrete process. */
+  private readonly mcpToolAvailability = new Map<string, Promise<boolean>>();
   /** 找不到 subscriber 时按 threadId 暂存的 notification, drain on subscribe。 */
   private readonly buffered = new Map<string, BufferedNotification[]>();
   /** 血缘迭代重建的重入闸(routeDescendantThreadStarted 与重建互相调用)。 */
@@ -278,9 +376,12 @@ export class AppServerHost {
   private lastAccountRateLimits: AccountRateLimitsUpdatedNotification['params'] | null = null;
 
   private shuttingDown = false;
+  private shutdownPromise: Promise<void> | null = null;
   private retired = false;
+  private retirementPromise: Promise<void> | null = null;
 
   constructor(private readonly opts: AppServerHostOptions) {
+    this.externalAuth = opts.externalAuth ? new CodexExternalAuthSession(opts.externalAuth) : undefined;
     if (typeof opts.createTransport !== 'function') {
       throw new Error('AppServerHost: createTransport factory is required');
     }
@@ -294,9 +395,134 @@ export class AppServerHost {
     return this.opts.codexProxyActive === true;
   }
 
+  isCodexBrowserUseAvailable(): boolean {
+    return this.opts.codexBrowserUseAvailable === true;
+  }
+
+  getCodexBrowserUseVersion(): string | null {
+    return this.opts.codexBrowserUseVersion ?? null;
+  }
+
+  /**
+   * Verify that an MCP server connected and published a concrete tool. Static
+   * spawn provisioning is not enough: this is the post-initialize gate that
+   * prevents a Skill from being shown when its runtime tool never registered.
+   */
+  waitForMcpTool(
+    serverName: string,
+    toolName: string,
+    opts: { timeoutMs?: number; pollIntervalMs?: number } = {},
+  ): Promise<boolean> {
+    const key = `${serverName}\0${toolName}`;
+    const cached = this.mcpToolAvailability.get(key);
+    if (cached) return cached;
+    const probe = this.probeMcpTool(
+      serverName,
+      toolName,
+      opts.timeoutMs ?? this.opts.codexBrowserUseStartupTimeoutMs ?? 10_000,
+      opts.pollIntervalMs ?? 100,
+    );
+    this.mcpToolAvailability.set(key, probe);
+    // A negative readiness probe is a point-in-time result, not a permanent
+    // host capability fact. The MCP child may finish starting later, so the
+    // next session must be allowed to retry. Successful probes stay cached.
+    void probe.then((available) => {
+      if (!available && this.mcpToolAvailability.get(key) === probe) {
+        this.mcpToolAvailability.delete(key);
+      }
+    });
+    return probe;
+  }
+
+  private async probeMcpTool(
+    serverName: string,
+    toolName: string,
+    timeoutMs: number,
+    pollIntervalMs: number,
+  ): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    try {
+      while (!this.shuttingDown && Date.now() < deadline) {
+        let cursor: string | null = null;
+        do {
+          const remaining = deadline - Date.now();
+          if (remaining <= 0) return false;
+          const response: CodexMcpServerStatusListResponse =
+            await this.request<CodexMcpServerStatusListResponse>(
+              Method.McpServerStatusList,
+              { cursor, limit: 100, detail: 'toolsAndAuthOnly', threadId: null },
+              { timeoutMs: remaining },
+            );
+          const server = response.data.find((entry) => entry.name === serverName);
+          if (server && Object.hasOwn(server.tools, toolName)) return true;
+          cursor = response.nextCursor;
+        } while (cursor !== null);
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) return false;
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, Math.min(pollIntervalMs, remaining));
+        });
+      }
+    } catch (error) {
+      this.logger.warn('MCP tool readiness probe failed', {
+        serverName,
+        toolName,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    return false;
+  }
+
   /** oauth spawn 定义的 OpenAI 身份 provider id;非 oauth spawn / 未下发 → null。 */
   getRemoteCompactionProviderId(): string | null {
     return this.opts.remoteCompactionProviderId ?? null;
+  }
+
+  getLocalCompactionProviderId(): string | null {
+    return this.opts.localCompactionProviderId ?? null;
+  }
+
+  getCindyRemoteCompactionProviderId(): string | null {
+    return this.opts.cindyRemoteCompactionProviderId ?? null;
+  }
+
+  getCustomProviderModelProviderId(
+    providerId: string | null | undefined,
+    model: string | null | undefined,
+  ): string | null {
+    if (!providerId || !model) return null;
+    const route = this.opts.codexCustomProviderRoutes?.find(
+      (candidate) => candidate.providerId === providerId,
+    );
+    return route?.responseModels.includes(model) ? route.modelProviderId : null;
+  }
+
+  getCustomProviderThreadPolicy(
+    providerId: string | null | undefined,
+    model: string | null | undefined,
+  ): {
+    dynamicIdentity: boolean;
+    disableSubagents: boolean;
+    disableModelOverrides: boolean;
+  } {
+    const route = providerId && model
+      ? this.opts.codexCustomProviderRoutes?.find(
+          (candidate) =>
+            candidate.providerId === providerId && candidate.responseModels.includes(model),
+        )
+      : undefined;
+    if (!route) {
+      return { dynamicIdentity: false, disableSubagents: false, disableModelOverrides: false };
+    }
+    const child = this.opts.subagentRoute;
+    const childCompatible = !child || (
+      child.providerId === route.providerId && route.responseModels.includes(child.catalogModel)
+    );
+    return {
+      dynamicIdentity: true,
+      disableSubagents: !childCompatible,
+      disableModelOverrides: true,
+    };
   }
 
   /**
@@ -304,9 +530,48 @@ export class AppServerHost {
    * Anonymous/legacy callers keep the spawn-level unbound URLs, which preserves
    * ordinary MCP compatibility while permission-sensitive tools fail closed.
    */
-  getSessionMcpConfig(sessionInstanceId?: string): Record<string, unknown> {
+  getSessionMcpConfig(
+    sessionInstanceId?: string,
+    session?: CodexSessionMcpConfigInput,
+  ): Record<string, unknown> {
     if (!sessionInstanceId || !this.opts.buildSessionMcpConfig) return {};
-    return this.opts.buildSessionMcpConfig(sessionInstanceId);
+    return this.opts.buildSessionMcpConfig(sessionInstanceId, session);
+  }
+
+  /** Display metadata only; observed thread model always wins. */
+  getSubagentModelFallback(): string | undefined {
+    return this.opts.subagentModelFallback;
+  }
+
+  getSubagentRoute(): {
+    providerId: string;
+    catalogModel: string;
+    reasoningEffort?: ReasoningEffort | null;
+  } | undefined {
+    return this.opts.subagentRoute;
+  }
+
+  getSmartSubagentRoutes(): AppServerHostOptions['smartSubagentRoutes'] {
+    return this.opts.smartSubagentRoutes;
+  }
+
+  getSubagentRoutingSignature(): string | undefined {
+    return this.opts.codexSubagentRoutingSignature;
+  }
+
+  getObservedSubagentIdentity(childThreadId: string): {
+    model: string;
+    reasoningEffort?: string;
+  } | undefined {
+    return this.opts.getSubagentIdentity?.(childThreadId);
+  }
+
+  getOpenAiWebSocketsEnabled(): boolean {
+    return this.opts.codexOpenAiWebSocketsEnabled !== false;
+  }
+
+  getSubagentRoutingProfile(): CodexSubagentRoutingProfile {
+    return this.opts.codexSubagentRoutingProfile ?? 'default';
   }
 
   getConnectionId(): string {
@@ -324,16 +589,28 @@ export class AppServerHost {
       return Promise.reject(new Error('AppServerHost: cannot ensureStarted() after retirement'));
     }
     if (this.shuttingDown) {
+      if (!this.shutdownPromise) {
+        return this.shutdown('recheck failed shutdown before restart', { throwOnTransportError: true })
+          .then(() => this.ensureStarted(capabilities));
+      }
       return Promise.reject(new Error('AppServerHost: cannot ensureStarted() during shutdown'));
     }
     if (this.startPromise) return this.startPromise;
-    this.startPromise = this.bootstrap(capabilities).catch((err) => {
-      // bootstrap 失败 → 清掉 startPromise 让下次调用能重试
-      this.startPromise = null;
-      this.client = null;
+    const startPromise = this.bootstrap(capabilities).catch(async (err) => {
+      // 旧启动的迟到失败不能关闭新 client；重试必须等旧进程真正退出。
+      if (this.startPromise === startPromise) {
+        try {
+          await this.shutdown('AppServerHost bootstrap failed', { throwOnTransportError: true });
+        } catch (closeError) {
+          this.logger.warn('failed to close app-server client after bootstrap failure', {
+            error: closeError instanceof Error ? closeError.message : String(closeError),
+          });
+        }
+      }
       throw err;
     });
-    return this.startPromise;
+    this.startPromise = startPromise;
+    return startPromise;
   }
 
   /**
@@ -355,6 +632,7 @@ export class AppServerHost {
         started,
         new Promise<never>((_, reject) => {
           timer = setTimeout(() => {
+            this.nativeInitializationEpoch++;
             reject(new Error(`app-server startup (for ${label}) timed out after ${timeoutMs}ms`));
           }, timeoutMs);
           timer.unref?.();
@@ -368,26 +646,56 @@ export class AppServerHost {
     }
   }
 
-  private async bootstrap(capabilities?: InitializeCapabilities): Promise<InitializeResponse> {
+  private async bootstrap(
+    capabilities?: InitializeCapabilities,
+    nativeAttempt = 0,
+    nativeEpoch = this.nativeInitializationEpoch,
+  ): Promise<InitializeResponse> {
     const client = new AppServerClient({
       createTransport: this.opts.createTransport,
       logger: this.opts.logger,
-      onTransportError: (err) => this.handleTransportError(err),
+      onTransportError: (err) => {
+        // Keep the shared startPromise while recovering this one pre-protocol
+        // failure. Every other transport error retains the normal host lifecycle.
+        if (!client.nativeSqliteInitializationFailed()) this.handleTransportError(err);
+      },
       onAuthInvalidated: this.opts.onAuthInvalidated,
+      captureCredentialGeneration: this.opts.captureCredentialGeneration,
     });
     this.client = client;
+
+    if (this.externalAuth) {
+      client.setRequestHandler(CODEX_EXTERNAL_AUTH_REFRESH, async (params) => {
+        if (this.client !== client || this.shuttingDown || this.retired) {
+          throw new Error('Codex account authentication host has retired');
+        }
+        const request = params as { reason?: unknown; previousAccountId?: unknown } | null;
+        if (request?.reason !== 'unauthorized') throw new Error('Unsupported Codex authentication refresh');
+        const tokens = await this.externalAuth!.tokens(true, request.previousAccountId);
+        if (this.client !== client || this.shuttingDown || this.retired) {
+          throw new Error('Codex account authentication host has retired');
+        }
+        return tokens;
+      });
+    }
 
     // 注册 notification handlers BEFORE initialize: server 在握手响应前可能就推了
     // banner / 启动 notification, 漏接就丢。
     for (const method of SUBSCRIBED_METHODS) {
-      client.onNotification(method, (params) => this.routeNotification(method, params));
+      client.onNotification(method, (params) => {
+        if (extractThreadId(method, params)) this.writerCandidates.add(client);
+        this.routeNotification(method, params);
+      });
     }
 
     // ServerRequest handlers (Phase 2 approval) — 同样在 initialize 前注册,
     // 防 server 在握手过程中就发出 approval (虽然实际不会, 但 defensive)。
     client.setRequestHandler(Method.CommandExecutionRequestApproval, async (rawParams) => {
       const params = rawParams as CommandExecutionRequestApprovalParams;
-      const handlers = this.handlersForThread(params.threadId);
+      const resolvedHandlers = this.resolveRequestHandlers(params.threadId);
+      const handlers = resolvedHandlers instanceof Promise
+        ? await resolvedHandlers
+        : resolvedHandlers;
       if (!handlers?.commandExecutionApproval) {
         this.logger.warn('commandExecution approval without subscriber → decline', {
           threadId: params.threadId,
@@ -408,7 +716,10 @@ export class AppServerHost {
 
     client.setRequestHandler(Method.FileChangeRequestApproval, async (rawParams) => {
       const params = rawParams as FileChangeRequestApprovalParams;
-      const handlers = this.handlersForThread(params.threadId);
+      const resolvedHandlers = this.resolveRequestHandlers(params.threadId);
+      const handlers = resolvedHandlers instanceof Promise
+        ? await resolvedHandlers
+        : resolvedHandlers;
       if (!handlers?.fileChangeApproval) {
         this.logger.warn('fileChange approval without subscriber → decline', {
           threadId: params.threadId,
@@ -429,7 +740,10 @@ export class AppServerHost {
 
     client.setRequestHandler(Method.McpServerElicitationRequest, async (rawParams) => {
       const params = rawParams as McpServerElicitationRequestParams;
-      const handlers = this.handlersForThread(params.threadId);
+      const resolvedHandlers = this.resolveRequestHandlers(params.threadId);
+      const handlers = resolvedHandlers instanceof Promise
+        ? await resolvedHandlers
+        : resolvedHandlers;
       if (!handlers?.mcpServerElicitation) {
         this.logger.warn('MCP server elicitation without subscriber -> decline', {
           threadId: params.threadId,
@@ -451,7 +765,10 @@ export class AppServerHost {
 
     client.setRequestHandler(Method.PermissionsRequestApproval, async (rawParams) => {
       const params = rawParams as PermissionsRequestApprovalParams;
-      const handlers = this.handlersForThread(params.threadId);
+      const resolvedHandlers = this.resolveRequestHandlers(params.threadId);
+      const handlers = resolvedHandlers instanceof Promise
+        ? await resolvedHandlers
+        : resolvedHandlers;
       if (!handlers?.permissionsApproval) {
         this.logger.warn('permissions approval without subscriber → decline', {
           threadId: params.threadId,
@@ -471,7 +788,10 @@ export class AppServerHost {
 
     client.setRequestHandler(Method.ToolRequestUserInput, async (rawParams, meta) => {
       const params = rawParams as ToolRequestUserInputParams;
-      const handlers = this.handlersForThread(params.threadId);
+      const resolvedHandlers = this.resolveRequestHandlers(params.threadId);
+      const handlers = resolvedHandlers instanceof Promise
+        ? await resolvedHandlers
+        : resolvedHandlers;
       if (!handlers?.requestUserInput) {
         this.logger.warn('requestUserInput without subscriber -> empty response', {
           threadId: params.threadId,
@@ -493,7 +813,10 @@ export class AppServerHost {
 
     client.setRequestHandler(Method.DynamicToolCall, async (rawParams, meta) => {
       const params = rawParams as DynamicToolCallParams;
-      const handlers = this.handlersForThread(params.threadId);
+      const resolvedHandlers = this.resolveRequestHandlers(params.threadId);
+      const handlers = resolvedHandlers instanceof Promise
+        ? await resolvedHandlers
+        : resolvedHandlers;
       if (!handlers?.dynamicToolCall) {
         this.logger.warn('dynamicToolCall without subscriber -> failed result', {
           threadId: params.threadId,
@@ -531,7 +854,32 @@ export class AppServerHost {
       optOutNotificationMethods: NOTIFICATIONS_TO_OPT_OUT,
       ...capabilities,
     };
-    const resp = await client.initialize(this.opts.clientInfo, mergedCapabilities);
+    let resp: InitializeResponse;
+    try {
+      resp = await client.initialize(this.opts.clientInfo, mergedCapabilities);
+    } catch (error) {
+      if (!client.nativeSqliteInitializationFailed()) throw error;
+      // No task/config/authentication RPC has been submitted. The transport
+      // proves natural exit; still use the existing strict close barrier.
+      await client.close({ reason: 'native SQLite initialization failed', throwOnTransportError: true });
+      if (nativeAttempt >= 2 || nativeEpoch !== this.nativeInitializationEpoch
+        || this.retired || this.shuttingDown || this.client !== client) {
+        throw new CodexNativeInitializationStoppedError('Codex native SQLite initialization stopped', { cause: error });
+      }
+      this.logger.warn('retrying exited native SQLite initialization', { attempt: nativeAttempt + 2, maxAttempts: 3 });
+      return this.bootstrap(capabilities, nativeAttempt + 1, nativeEpoch);
+    }
+    if (this.opts.requireEphemeralAuth || this.externalAuth) {
+      // Requirements can override CLI configuration. Reject before any task RPC
+      // or token installation; initialization has already loaded native config.
+      await assertCodexEphemeralAuth((method, params) => client.request(method, params, { timeoutMs: 10_000 }));
+    }
+    if (this.externalAuth) {
+      await this.externalAuth.authenticate((method, params) => client.request(method, params, { timeoutMs: 10_000 }));
+      if (this.client !== client || this.shuttingDown || this.retired) {
+        throw new Error('Codex account authentication host has retired');
+      }
+    }
     this.logger.info('shared app-server up', {
       userAgent: resp.userAgent,
       codexHome: resp.codexHome,
@@ -547,11 +895,12 @@ export class AppServerHost {
    * `opts.timeoutMs` 按需传入: 裸 RPC 默认**无超时** (协议上 response 可能任意晚),
    * 但 turn/start 这类「daemon 失联就永远挂住」的关键路径应显式给上限 —
    * 超时 reject 后上层按 turn 启动失败收口, 而不是让 UI 无限 generating。
+   * `extendWhileProgress` 只顺延请求本身的等待, startup 仍按 timeoutMs 计。
    */
   async request<R = unknown>(
     method: string,
     params?: unknown,
-    opts?: { timeoutMs?: number },
+    opts?: { timeoutMs?: number; beforeDispatch?: () => void; extendWhileProgress?: RequestProgressDeadline },
   ): Promise<R> {
     // 冷启动 / transport 重建时 ensureStarted 本身也可能永不返回 (远端 daemon
     // bootstrap 挂死 / SSH 通道无响应) — 调用方显式给 timeoutMs 时同样给它
@@ -568,6 +917,7 @@ export class AppServerHost {
           started,
           new Promise<never>((_, reject) => {
             timer = setTimeout(() => {
+              this.nativeInitializationEpoch++;
               reject(new Error(`app-server startup (for ${method}) timed out after ${opts.timeoutMs}ms`));
             }, opts.timeoutMs);
             timer.unref?.();
@@ -586,10 +936,14 @@ export class AppServerHost {
         throw new Error(`app-server startup (for ${method}) consumed the entire ${opts.timeoutMs}ms timeout budget`);
       }
       if (!this.client) throw new Error('AppServerHost: client missing after ensureStarted (unreachable)');
+      opts?.beforeDispatch?.();
+      if (method !== 'thread/loaded/list') this.writerCandidates.add(this.client);
       return this.client.request<R>(method, params, { ...opts, timeoutMs: remaining });
     }
     await started;
     if (!this.client) throw new Error('AppServerHost: client missing after ensureStarted (unreachable)');
+    opts?.beforeDispatch?.();
+    if (method !== 'thread/loaded/list') this.writerCandidates.add(this.client);
     return this.client.request<R>(method, params, opts);
   }
 
@@ -612,20 +966,43 @@ export class AppServerHost {
    * **必须** 在 app.before-quit 显式调一次 — Windows 子进程不会随父进程死,
    * 不显式收割就成孤儿。
    */
-  async shutdown(reason = 'AppServerHost.shutdown()'): Promise<void> {
-    if (this.shuttingDown) return;
-    this.shuttingDown = true;
-    this.subscribers.clear();
-    this.lineageRoots.clear();
-    this.buffered.clear();
-    const c = this.client;
-    this.client = null;
-    this.startPromise = null;
+  async shutdown(
+    reason = 'AppServerHost.shutdown()',
+    opts?: { throwOnTransportError?: boolean },
+  ): Promise<void> {
+    this.nativeInitializationEpoch++;
+    if (!this.shutdownPromise) {
+      this.shuttingDown = true;
+      const client = this.client;
+      const shutdownPromise = Promise.resolve().then(async () => {
+        await client?.close({ reason, throwOnTransportError: true });
+        if (this.client === client) this.client = null;
+        // start() 的同步 transport 回调可能在 ensureStarted 赋值前触发关闭。
+        this.startPromise = null;
+        // 只在关闭成功后开放重启；失败保留 barrier，避免新旧 writer 并存。
+        this.shutdownPromise = null;
+        this.shuttingDown = false;
+      }).catch((error) => {
+        // 本次结果可以重查，但 client 与 shuttingDown 保留到真实关闭成功。
+        if (this.shutdownPromise === shutdownPromise) this.shutdownPromise = null;
+        throw error;
+      });
+      this.shutdownPromise = shutdownPromise;
+      this.startPromise = null;
+      // MCP readiness belongs to the concrete app-server process.
+      this.mcpToolAvailability.clear();
+      this.subscribers.clear();
+      this.lineageRoots.clear();
+      this.pendingLineage.clear();
+      this.buffered.clear();
+      for (const threadId of this.threadHandlerWaiters.keys()) {
+        this.notifyThreadHandlerWaiters(threadId);
+      }
+    }
     try {
-      if (c) await c.close({ reason });
-    } finally {
-      // 重置, 允许之后的 ensureStarted 重新 spawn (transport error 恢复路径)
-      this.shuttingDown = false;
+      await this.shutdownPromise;
+    } catch (error) {
+      if (opts?.throwOnTransportError) throw error;
     }
   }
 
@@ -633,13 +1010,36 @@ export class AppServerHost {
    * 终态关停。凭据/账号切换后旧 host 不能再被旧 session 闭包重新拉起；
    * transport error 自愈仍走普通 shutdown(),保留同对象重启能力。
    */
-  async retire(reason = 'AppServerHost.retire()'): Promise<void> {
+  async retire(
+    reason = 'AppServerHost.retire()',
+    opts?: { throwOnTransportError?: boolean },
+  ): Promise<void> {
     this.retired = true;
-    await this.shutdown(reason);
+    if (!this.retirementPromise) {
+      const retirementPromise = Promise.resolve().then(async () => {
+        await this.shutdown(reason, { throwOnTransportError: true });
+        await Promise.resolve()
+          .then(() => this.opts.onRetired?.())
+          .catch((error) => {
+            this.logger.warn('app-server Host retirement cleanup failed', {
+              error: error instanceof Error ? error.message : String(error),
+            });
+          });
+      }).catch((error) => {
+        if (this.retirementPromise === retirementPromise) this.retirementPromise = null;
+        throw error;
+      });
+      this.retirementPromise = retirementPromise;
+    }
+    try {
+      await this.retirementPromise;
+    } catch (error) {
+      if (opts?.throwOnTransportError) throw error;
+    }
   }
 
   /**
-   * 强制收割前把终态 transport error 广播给仍在订阅的 session。
+   * 强制收割前通知订阅者（结构化生命周期信号）。
    *
    * retire()/shutdown() 会静默清空 subscribers —— 常规路径(凭证切换/app 退出)由
    * 上层先 Session.close 收尾,这是对的;但 auth 失效等强制路径会带着 in-flight turn
@@ -647,14 +1047,61 @@ export class AppServerHost {
    * 的输入队列 / Stop 的 queueAbortPending 锁 / 凭证切换 busy 判定全部永久卡死
    * (2026-07-19 实排:auth app_session_terminated 触发 retire 后会话假 busy 数小时)。
    * 只广播、不清订阅 —— 紧随其后的 retire() 负责清理。
+   *
+   * 但**不能**对每个订阅者广播 transport error：空闲/已完成的订阅者（没有 in-flight
+   * turn，例如闲置数小时的已完成会话）收到终态 error 后会被写入永久红框，而它并没有
+   * 任何真实工作被中断——这只是一次内部 host 替换（#1391 场景）。而真实在飞的
+   * turn/start pending / overload retry 订阅者若只收到**空 turnId** 的 transport
+   * error，现有 error handler 的 `targetsPendingTurn`（要求非空 turnId）与
+   * `wasTurnRunning`（不含 overload retry）无法把它收口，busy 状态会永久卡死。
+   *
+   * 因此改为发送结构化 `hostForcedRetire` 信号，由每个订阅者按自身完整状态收口
+   * （空闲→静默失效；在飞→终态 error + Done）。未提供该回调的订阅者退回旧行为
+   * （广播 transport error），保证兼容。
    */
   notifySubscribersOfForcedRetire(reason: string): void {
     if (this.subscribers.size === 0) return;
-    this.logger.warn('forced retire with live subscribers — broadcasting terminal transport error', {
+    let notified = 0;
+    let fellBack = 0;
+    for (const [threadId, handlers] of this.subscribers) {
+      if (handlers.hostForcedRetire) {
+        notified += 1;
+        try {
+          handlers.hostForcedRetire({ reason });
+          continue;
+        } catch (e) {
+          // handler 抛错 → 该订阅者收不到结构化信号, 强退场景最需要兜底:
+          // 回退到旧 transport-error 广播, 至少保证有一条终态错误触发收口,
+          // 否则 busy 永久卡死 (copilot review on #1720)。
+          this.logger.warn('forced retire handler threw — falling back to transport error', {
+            threadId,
+            message: (e as Error).message,
+          });
+        }
+      }
+      // 旧订阅者（未接 hostForcedRetire）保持旧行为：广播 transport error。
+      fellBack += 1;
+      try {
+        handlers.error?.({
+          threadId,
+          turnId: '',
+          willRetry: false,
+          scope: 'transport',
+          error: { message: `app-server force-retired: ${reason}` },
+        });
+      } catch (e) {
+        this.logger.warn('forced retire broadcast handler threw', {
+          threadId,
+          message: (e as Error).message,
+        });
+      }
+    }
+    this.logger.warn('forced retire with live subscribers — notifying session lifecycles', {
       subscribers: this.subscribers.size,
+      notified,
+      fellBack,
       reason,
     });
-    this.broadcastTransportErrorToSubscribers(`app-server force-retired: ${reason}`);
   }
 
   // ── 订阅 / 路由 ───────────────────────────────────────────────────────────
@@ -678,8 +1125,10 @@ export class AppServerHost {
     if (this.subscribers.has(threadId)) {
       this.logger.warn('overwriting thread subscription', { threadId });
     }
+    if (this.client) this.writerCandidates.add(this.client);
     this.subscribers.set(threadId, handlers);
     this.lineageRoots.set(threadId, threadId);
+    this.notifyThreadHandlerWaiters(threadId);
 
     // 排空缓存 (thread/started 比 subscribe 早到的固有竞争)
     const buf = this.buffered.get(threadId);
@@ -828,20 +1277,215 @@ export class AppServerHost {
     return rootThreadId ? this.subscribers.get(rootThreadId) : undefined;
   }
 
+  private resolveRequestHandlers(
+    threadId: string,
+  ): ThreadEventHandlers | Promise<ThreadEventHandlers | undefined> | undefined {
+    const current = this.handlersForThread(threadId);
+    // Keep known root/descendant dispatch synchronous. requestUserInput and
+    // dynamicToolCall register their broker entry in the first synchronous
+    // statements; yielding here would let a same-turn serverRequest/resolved
+    // notification cancel the request before that registration (Codex P1).
+    if (current || this.subscribers.size === 0) return current;
+    return this.waitForThreadHandlers(threadId);
+  }
+
+  /**
+   * 血缘边登记的共享核心:解析 root、幂等去重、写入 lineageRoots。
+   * null = 无法归属(参数非法 / root 不在 / handlers 已释放)。能归属时一定返回
+   * root 与 handlers;`establishedNewEdge` 区分本次是否真的落了新边——重复登记
+   * (spawn 路径已建边后新版 codex 补发 thread/started)不再落表,但调用方仍拿得到
+   * handlers 去转发 thread 元数据(model 等),不能把重复当成完全的 no-op 吞掉。
+   * 新边落表后唤醒该子线程上等待血缘的 server request(见 waitForThreadHandlers):
+   * spawn 登记与 thread/started 两条路径都可能是 waiter 等的那次解析。
+   */
+  private establishDescendantLineage(
+    childThreadId: string,
+    parentThreadId: string,
+  ): {
+    rootThreadId: string;
+    handlers: ThreadEventHandlers;
+    establishedNewEdge: boolean;
+    releasedRequestWaiters: boolean;
+  } | null {
+    if (!childThreadId || !parentThreadId || parentThreadId === childThreadId) return null;
+    const rootThreadId = this.lineageRoots.get(parentThreadId)
+      ?? (this.subscribers.has(parentThreadId) ? parentThreadId : null);
+    if (!rootThreadId || childThreadId === rootThreadId) return null;
+
+    const handlers = this.subscribers.get(rootThreadId);
+    if (!handlers) return null;
+
+    if (this.lineageRoots.get(childThreadId) === rootThreadId) {
+      return {
+        rootThreadId,
+        handlers,
+        establishedNewEdge: false,
+        releasedRequestWaiters: false,
+      };
+    }
+
+    this.lineageRoots.set(childThreadId, rootThreadId);
+    const releasedRequestWaiters = this.notifyThreadHandlerWaiters(childThreadId);
+    return { rootThreadId, handlers, establishedNewEdge: true, releasedRequestWaiters };
+  }
+
+  /**
+   * 保留一条待确认的 spawn 血缘，但不安装 root 路由。
+   *
+   * 这是 turn reconciliation 之前的 provisional 状态：child notification 会继续
+   * 留在 child 自己的缓冲里，child server request 会等待；只有父 turn 被确认后，
+   * registerDescendantLineage 才会把它变成 live route。重复 reserve 幂等。
+   */
+  reserveDescendantLineage(childThreadId: string, parentThreadId: string): void {
+    if (!childThreadId || !parentThreadId || childThreadId === parentThreadId) return;
+    if (this.lineageRoots.has(childThreadId)) return;
+    const rootThreadId = this.lineageRoots.get(parentThreadId)
+      ?? (this.subscribers.has(parentThreadId) ? parentThreadId : null);
+    if (!rootThreadId || !this.subscribers.has(rootThreadId)) return;
+    const existing = this.pendingLineage.get(childThreadId);
+    if (existing) {
+      if (existing.parentThreadId !== parentThreadId || existing.rootThreadId !== rootThreadId) {
+        this.logger.warn('ignoring conflicting pending descendant lineage', {
+          childThreadId,
+          parentThreadId,
+          existing,
+        });
+      }
+      return;
+    }
+    this.pendingLineage.set(childThreadId, { parentThreadId, rootThreadId });
+  }
+
+  /**
+   * 丢弃尚未 commit 的 spawn 血缘：清掉 child 缓冲并唤醒请求 waiter 走 fail-closed。
+   * parentThreadId 可选，用于防止迟到/重复的旧 turn 清掉新 claim。
+   */
+  discardPendingDescendantLineage(childThreadId: string, parentThreadId?: string): void {
+    const pending = this.pendingLineage.get(childThreadId);
+    if (!pending || (parentThreadId && pending.parentThreadId !== parentThreadId)) return;
+    this.pendingLineage.delete(childThreadId);
+    this.buffered.delete(childThreadId);
+    this.notifyThreadHandlerWaiters(childThreadId);
+  }
+
+  /**
+   * Cindy 侧主动登记「子线程 → 父线程」血缘(spawn item 是唯一可靠来源)。
+   *
+   * codex 0.145 会把 spawn 出的子线程自动 attach 到本连接并转发它的
+   * item / tokenUsage / turn 通知,但 `thread/started` 只在显式 thread/start /
+   * fork RPC 时发,**内部 spawn 的子线程从来不发**(codex-rs
+   * `thread_processor.rs` 仅两处 emit)。只等 thread/started 建血缘,子线程的全部
+   * 通知都会在 TTL 缓冲里静默过期:子代理卡没有任何实时数据、终态永远不到,
+   * 卡片停在 spawn 时的 running 帧永久转圈;子线程的 approval 请求也会因
+   * handlersForThread 查不到 root 而被自动 decline(2026-08-04 生产实测)。
+   *
+   * 调用方(codex session)从 spawn item 的 agentThreadId / receiverThreadIds
+   * 拿到子线程 id 后立即登记。幂等:更新版 codex 若补发 thread/started,
+   * routeDescendantThreadStarted 只跳过重复建边与缓冲重放,thread 元数据
+   * (model 等)仍会照常转发给订阅者。
+   */
+  registerDescendantLineage(childThreadId: string, parentThreadId: string): void {
+    const pending = this.pendingLineage.get(childThreadId);
+    if (pending && pending.parentThreadId !== parentThreadId) {
+      this.logger.warn('ignoring descendant lineage commit for a conflicting pending claim', {
+        childThreadId,
+        parentThreadId,
+        pending,
+      });
+      return;
+    }
+    if (pending && pending.parentThreadId === parentThreadId) {
+      this.pendingLineage.delete(childThreadId);
+    }
+    const established = this.establishDescendantLineage(childThreadId, parentThreadId);
+    if (!established) {
+      if (pending?.parentThreadId === parentThreadId) {
+        this.buffered.delete(childThreadId);
+        this.notifyThreadHandlerWaiters(childThreadId);
+      }
+      return;
+    }
+    if (!established.establishedNewEdge) return;
+    const replayBufferedNotifications = (): void => {
+      // `thread/started` may already be buffered under this child id when the
+      // root subscription replays a spawn item and establishes lineage late.
+      // Preserve and forward that metadata (notably thread.model) before the
+      // ordinary descendant drain deletes the whole buffer and skips starts.
+      this.replayBufferedThreadStarts(childThreadId);
+      // 子线程在登记前已到达的通知缓存在它自己的 id 下,补投进 descendant 通道;
+      // 它名下若已缓冲了孙线程的 thread/started,一并重建整条血缘链。
+      this.drainBufferedDescendantNotifications(childThreadId, established.rootThreadId, established.handlers);
+      this.replayBufferedDescendantThreadStarts(established.rootThreadId);
+    };
+    // Resolving a lineage waiter schedules the server-request handler's await
+    // continuation. Let that continuation register its broker entry before a
+    // buffered serverRequest/resolved notification is replayed; otherwise the
+    // cancellation is lost and a request the server already closed reaches UI.
+    if (established.releasedRequestWaiters) queueMicrotask(replayBufferedNotifications);
+    else replayBufferedNotifications();
+  }
+
+  /**
+   * Give an already-owned descendant a short window for its thread/started
+   * notification to establish lineage. This closes an observed ordering race
+   * for node_repl elicitation while preserving fail-closed routing: unknown
+   * threads still decline after the bounded wait and can never fan out to an
+   * arbitrary subscriber.
+   */
+  private waitForThreadHandlers(threadId: string): Promise<ThreadEventHandlers | undefined> {
+    const current = this.handlersForThread(threadId);
+    if (current) return Promise.resolve(current);
+    return new Promise((resolve) => {
+      let settled = false;
+      let timer: NodeJS.Timeout | null = null;
+      const finish = (): void => {
+        if (settled) return;
+        const handlers = this.handlersForThread(threadId);
+        // A reserved spawn may legitimately outlive the normal notification TTL while
+        // the parent turn is being reconciled. Keep waiting until commit/discard settles
+        // it; unknown threads still use the bounded fail-closed window below.
+        if (!handlers && this.pendingLineage.has(threadId) && !this.shuttingDown) {
+          timer = setTimeout(finish, this.bufferTtlMs);
+          timer.unref?.();
+          return;
+        }
+        settled = true;
+        if (timer) clearTimeout(timer);
+        const waiters = this.threadHandlerWaiters.get(threadId);
+        waiters?.delete(finish);
+        if (waiters?.size === 0) this.threadHandlerWaiters.delete(threadId);
+        resolve(handlers);
+      };
+      // Use the same bounded lineage window as early thread notifications.
+      // Both races are caused by thread/started crossing the subscribe/request
+      // boundary, so they should expire together instead of using a shorter
+      // empirical timeout that can fail only under load.
+      timer = setTimeout(finish, this.bufferTtlMs);
+      timer.unref?.();
+      const waiters = this.threadHandlerWaiters.get(threadId) ?? new Set<() => void>();
+      waiters.add(finish);
+      this.threadHandlerWaiters.set(threadId, waiters);
+    });
+  }
+
+  private notifyThreadHandlerWaiters(threadId: string): boolean {
+    const waiters = [...(this.threadHandlerWaiters.get(threadId) ?? [])];
+    for (const finish of waiters) finish();
+    return waiters.length > 0;
+  }
+
   private routeDescendantThreadStarted(params: ThreadStartedNotification['params']): void {
     const childThreadId = params.thread.id;
     const parentThreadId = params.thread.parentThreadId;
-    if (!parentThreadId || parentThreadId === childThreadId) return;
-
-    const rootThreadId = this.lineageRoots.get(parentThreadId)
-      ?? (this.subscribers.has(parentThreadId) ? parentThreadId : null);
-    if (!rootThreadId) return;
-    if (this.lineageRoots.get(childThreadId) === rootThreadId) return;
-
-    const handlers = this.subscribers.get(rootThreadId);
-    if (!handlers) return;
-
-    this.lineageRoots.set(childThreadId, rootThreadId);
+    if (!parentThreadId) return;
+    // A provisional spawn claim owns this child until parent turn reconciliation. Do not let
+    // an early thread/started install a live root route for a turn that may later be orphaned.
+    if (this.pendingLineage.has(childThreadId)) return;
+    const established = this.establishDescendantLineage(childThreadId, parentThreadId);
+    if (!established) return;
+    const { rootThreadId, handlers, establishedNewEdge, releasedRequestWaiters } = established;
+    // 血缘重复(spawn 路径已建边)也要转发:thread/started 是 thread.model 等实际
+    // 元数据的唯一载体,吞掉它会让「实际线程模型优先」永远等不到观测值(codex review)。
     if (handlers.descendantThreadStarted) {
       try {
         handlers.descendantThreadStarted(params);
@@ -854,16 +1498,22 @@ export class AppServerHost {
         });
       }
     }
-    // 血缘刚建立:该子线程在此之前到达的 item / tokenUsage / turn 通知都缓存在**它自己的
-    // id** 下(那时既不是 subscriber 也没有 lineage)。root 侧的 drain 只排空 root id 的队列,
-    // 这些永远排不到 → 早期工具数、token 丢失,漏掉 turn/completed 还会让卡片永久停在
-    // running(codex review)。这里按到达顺序补投进 descendant 通道。
-    this.drainBufferedDescendantNotifications(childThreadId, rootThreadId, handlers);
-    // 本次血缘建立可能解锁**孙**线程:孙的 thread/started 缓存在它自己的 id 下,上面的 drain
-    // 只排空 childThreadId 的队列,而且它按契约会跳过 thread/started —— 不再扫一遍,孙线程的
-    // 血缘永远建不起来,它的 tool / token / 终态通知会一直烂在缓冲区直到过期(卡片漏计,并
-    // 可能一直显示运行中或提前完成)(review)。复用 root 订阅时那套迭代重建。
-    this.replayBufferedDescendantThreadStarts(rootThreadId);
+    // 重复建边只补元数据转发:缓冲早已在首次建边时排空,重放在这里只会空转。
+    if (!establishedNewEdge) return;
+    const replayBufferedNotifications = (): void => {
+      // 血缘刚建立:该子线程在此之前到达的 item / tokenUsage / turn 通知都缓存在**它自己的
+      // id** 下(那时既不是 subscriber 也没有 lineage)。root 侧的 drain 只排空 root id 的队列,
+      // 这些永远排不到 → 早期工具数、token 丢失,漏掉 turn/completed 还会让卡片永久停在
+      // running(codex review)。这里按到达顺序补投进 descendant 通道。
+      this.drainBufferedDescendantNotifications(childThreadId, rootThreadId, handlers);
+      // 本次血缘建立可能解锁**孙**线程:孙的 thread/started 缓存在它自己的 id 下,上面的 drain
+      // 只排空 childThreadId 的队列,而且它按契约会跳过 thread/started —— 不再扫一遍,孙线程的
+      // 血缘永远建不起来,它的 tool / token / 终态通知会一直烂在缓冲区直到过期(卡片漏计,并
+      // 可能一直显示运行中或提前完成)(review)。复用 root 订阅时那套迭代重建。
+      this.replayBufferedDescendantThreadStarts(rootThreadId);
+    };
+    if (releasedRequestWaiters) queueMicrotask(replayBufferedNotifications);
+    else replayBufferedNotifications();
   }
 
   /**
@@ -893,6 +1543,20 @@ export class AppServerHost {
           message: (e as Error).message,
         });
       }
+    }
+  }
+
+  /**
+   * Forward buffered starts for one thread without consuming its buffer.
+   * The following ordinary drain owns deletion and skips these entries, so
+   * starts are delivered exactly once and ahead of item/usage/turn replay.
+   */
+  private replayBufferedThreadStarts(threadId: string): void {
+    const buffered = this.buffered.get(threadId);
+    if (!buffered) return;
+    for (const item of buffered) {
+      if (item.method !== 'thread/started') continue;
+      this.routeDescendantThreadStarted(item.params as ThreadStartedNotification['params']);
     }
   }
 
@@ -946,6 +1610,13 @@ export class AppServerHost {
         this.lineageRoots.delete(threadId);
       }
     }
+    for (const [threadId, pending] of this.pendingLineage) {
+      if (pending.rootThreadId === rootThreadId) {
+        this.pendingLineage.delete(threadId);
+        this.buffered.delete(threadId);
+        this.notifyThreadHandlerWaiters(threadId);
+      }
+    }
   }
 
   private dispatchToHandlers(handlers: ThreadEventHandlers, method: string, params: unknown): void {
@@ -954,10 +1625,12 @@ export class AppServerHost {
       case 'thread/started': fn = handlers.threadStarted as (p: never) => void; break;
       case 'turn/started': fn = handlers.turnStarted as (p: never) => void; break;
       case 'turn/completed': fn = handlers.turnCompleted as (p: never) => void; break;
+      case 'turn/diff/updated': fn = handlers.turnDiffUpdated as (p: never) => void; break;
       case 'thread/tokenUsage/updated': fn = handlers.tokenUsageUpdated as (p: never) => void; break;
       case 'item/started': fn = handlers.itemStarted as (p: never) => void; break;
       case 'item/updated': fn = handlers.itemUpdated as (p: never) => void; break;
       case 'item/completed': fn = handlers.itemCompleted as (p: never) => void; break;
+      case 'item/agentMessage/delta': fn = handlers.agentMessageDelta as (p: never) => void; break;
       case 'turn/plan/updated': fn = handlers.turnPlanUpdated as (p: never) => void; break;
       case 'item/reasoning/summaryTextDelta': fn = handlers.reasoningSummaryTextDelta as (p: never) => void; break;
       case 'item/reasoning/summaryPartAdded': fn = handlers.reasoningSummaryPartAdded as (p: never) => void; break;
@@ -989,6 +1662,10 @@ export class AppServerHost {
     setTimeout(() => {
       const cur = this.buffered.get(threadId);
       if (!cur) return;
+      // A provisional spawn claim owns this buffer until parent turn reconciliation;
+      // do not expire the child lifecycle/terminal events just because the normal TTL elapsed.
+      // commit/discard removes it explicitly.
+      if (this.pendingLineage.has(threadId)) return;
       const cutoff = Date.now() - this.bufferTtlMs;
       const remaining = cur.filter((x) => x.ts > cutoff);
       if (remaining.length === 0) {
@@ -1000,34 +1677,17 @@ export class AppServerHost {
   }
 
   /**
-   * 子进程 crash / IO 错误: 广播给所有 subscriber 的 error handler, 让上层每个
-   * session 都能 emit 'error' AgentEvent + 结束自己的 event queue, 然后强制 shutdown
-   * (此后任何 subscribeThread/request 都会拒绝, 上层下次需要时拿不到 host)。
-   *
-   * 注意: shutdown 之后 startPromise = null, 下一次 ensureStarted 可以重新 spawn。
-   * 但当前内存里的 subscribers 都已被清掉 — 上层 session 拿到 error 后该自己 close。
+   * 子进程 crash / IO 错误: 将所有 subscriber 作为 host 强制退役处理，让每个
+   * session 按自己的真实状态收口（空闲静默结束 event queue，在飞任务发终态
+   * error + Done），然后强制 shutdown。此后下一次 ensureStarted 可以重新 spawn。
    */
   private handleTransportError(err: Error): void {
-    this.logger.error('transport error, notifying subscribers + shutting down', { message: err.message });
-    this.broadcastTransportErrorToSubscribers(`app-server transport error: ${err.message}`);
+    this.logger.error('transport error, retiring subscribers + shutting down', { message: err.message });
+    // Treat a transport crash as a forced host replacement. Idle sessions must
+    // end their event queues, while sessions with in-flight work need the
+    // structured terminal error + Done sequence from their own handlers.
+    this.notifySubscribersOfForcedRetire(`transport error: ${err.message}`);
     void this.shutdown(`transport error: ${err.message}`);
-  }
-
-  /** ErrorNotification 的 shape 不能完全合成 (没真实 turnId), 用最小可信字段。 */
-  private broadcastTransportErrorToSubscribers(message: string): void {
-    for (const [threadId, handlers] of this.subscribers) {
-      try {
-        handlers.error?.({
-          threadId,
-          turnId: '',
-          willRetry: false,
-          scope: 'transport',
-          error: { message },
-        });
-      } catch (e) {
-        this.logger.warn('error broadcast handler threw', { threadId, message: (e as Error).message });
-      }
-    }
   }
 
   // ── 诊断辅助 (测试 / 日志) ────────────────────────────────────────────────
@@ -1035,6 +1695,20 @@ export class AppServerHost {
   /** 当前活跃 subscriber 数 — diagnostics, 不参与业务。 */
   get activeSubscriptions(): number {
     return this.subscribers.size;
+  }
+
+  /** Whether this process already owns the live state for a root thread. */
+  hasThreadSubscription(threadId: string): boolean {
+    return this.subscribers.has(threadId);
+  }
+
+  /**
+   * Opaque concrete process identity which may own a writer. Null proves no
+   * application request/thread evidence in this process. A failed shutdown keeps
+   * the client (and evidence); a confirmed exit/restart gets a fresh identity.
+   */
+  get writerCandidate(): object | null {
+    return this.client && this.writerCandidates.has(this.client) ? this.client : null;
   }
 
   /** 是否已经 spawn 过子进程 (但可能已 close)。 */

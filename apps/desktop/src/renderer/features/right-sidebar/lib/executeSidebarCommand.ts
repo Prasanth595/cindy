@@ -1,7 +1,9 @@
+import { openRoutinesTab } from './openRoutinesTab';
+import { ensureBotWorkbenchTab, openBotWorkbenchTab } from './openBotWorkbenchTab';
 /** 执行 main 已裁决并推给当前 renderer host 的 RSB command。 */
 
 import type { RsbWindowCommand } from '../../../../shared/rightSidebarWindow';
-import { addOrFocusSingletonTab, ensureHydrated } from '../store';
+import { addOrFocusSingletonTab, closeTab, ensureHydrated, getBucket } from '../store';
 import {
   closeOrcaWorkersTabAfterTeamEnd,
   ensureOrcaWorkersTab,
@@ -12,10 +14,21 @@ import {
   openFileInSidebarFileBrowser,
 } from './openInSidebarFileBrowser';
 import { openBackgroundTasksTab } from './openBackgroundTasksTab';
+import { openSubagentsTab } from './openSubagentsTab';
+import { openTurnReview } from './openTurnReview';
 import { openUrlInSidebarBrowser } from './openInSidebarBrowser';
 
 /** 在 main 已选定的当前 renderer host 中执行命令，不自行选择宿主。 */
 export async function executeSidebarCommand(command: RsbWindowCommand): Promise<void> {
+  if (command.type === 'open-routines-tab') {
+    await openRoutinesTab(command.sessionId, command.botId);
+    return;
+  }
+  if (command.type === 'open-bot-workbench-tab') {
+    if (command.focusTab === true) await openBotWorkbenchTab(command.sessionId, command.botId);
+    else await ensureBotWorkbenchTab(command.sessionId, command.botId);
+    return;
+  }
   if (command.type === 'open-web-browser') {
     await openUrlInSidebarBrowser(command.sessionId, command.url);
     return;
@@ -48,6 +61,38 @@ export async function executeSidebarCommand(command: RsbWindowCommand): Promise<
     await openBackgroundTasksTab(command.sessionId, {
       ...(command.focusTaskId ? { focusTaskId: command.focusTaskId } : {}),
     });
+    return;
+  }
+  if (command.type === 'open-subagents-tab') {
+    await openSubagentsTab(command.sessionId, {
+      ...(command.focusRunId && command.focusProvider
+        ? { focusRunId: command.focusRunId, focusProvider: command.focusProvider }
+        : {}),
+      focusTab: command.focusTab !== false,
+      revealSidebar: command.revealSidebar !== false,
+      userInitiated: false,
+    });
+    return;
+  }
+  if (command.type === 'open-turn-review') {
+    await openTurnReview(command.sessionId, command.changeSetIds, {
+      selectedDiffId: command.selectedDiffId ?? null,
+      selectedPath: command.selectedPath ?? null,
+      requestNonce: command.requestNonce,
+      hostSessionId: command.hostSessionId ?? null,
+    });
+    return;
+  }
+  if (command.type === 'toggle-review-tab') {
+    await ensureHydrated(command.sessionId);
+    const bucket = getBucket(command.sessionId);
+    const reviewTab = bucket.tabs.find((tab) => tab.kind === 'review');
+    const hostAlreadyVisible = typeof document === 'undefined' || document.visibilityState === 'visible';
+    if (reviewTab && bucket.activeTabId === reviewTab.id && hostAlreadyVisible) {
+      await closeTab(command.sessionId, reviewTab.id);
+      return;
+    }
+    await addOrFocusSingletonTab(command.sessionId, 'review', null);
     return;
   }
   await ensureHydrated(command.sessionId);

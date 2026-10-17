@@ -43,23 +43,39 @@
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false,
-      "permissions": ["android.permission.MODIFY_AUDIO_SETTINGS"]
+      "permissions": ["android.permission.MODIFY_AUDIO_SETTINGS"],
+      "blockedPermissions": [
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.READ_MEDIA_AUDIO",
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.READ_MEDIA_VIDEO",
+        "android.permission.READ_MEDIA_VISUAL_USER_SELECTED"
+      ]
     },
     "web": {
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
+      "./plugins/with-message-menu-icons",
       "./plugins/with-third-party-notices",
       "./plugins/with-google-signin-modular-headers",
       "./plugins/with-wechat-opensdk-modulemap",
+      "./plugins/with-async-storage-db-size",
       [
         "expo-build-properties",
         {
+          "android": {
+            "enableMinifyInReleaseBuilds": true,
+            "enableShrinkResourcesInReleaseBuilds": true
+          },
           "ios": {
-            "buildReactNativeFromSource": true
+            "buildReactNativeFromSource": true,
+            "enableSceneSupport": true
           }
         }
       ],
+      "./plugins/with-android-release-optimization",
       [
         "expo-splash-screen",
         {
@@ -81,8 +97,21 @@
       "expo-router",
       "expo-apple-authentication",
       "expo-notifications",
+      "./plugins/with-communication-notifications",
       "expo-secure-store",
       "expo-web-browser",
+      [
+        "expo-sharing",
+        {
+          "ios": {
+            "enabled": true,
+            "activationRule": {
+              "supportsFileWithMaxCount": 20,
+              "supportsImageWithMaxCount": 20
+            }
+          }
+        }
+      ],
       [
         "expo-font",
         {
@@ -111,6 +140,8 @@
           }
         }
       ],
+      "./plugins/with-incoming-share-files",
+      "./plugins/with-remote-desktop-presentation",
       "./plugins/with-foreground-only-audio",
       [
         "expo-audio",
@@ -134,7 +165,8 @@
         {
           "photosPermission": "Cindy needs photo library access to show recent photos and screenshots for quick attaching.",
           "savePhotosPermission": false,
-          "isAccessMediaLocationEnabled": false
+          "isAccessMediaLocationEnabled": false,
+          "granularPermissions": []
         }
       ]
     ],

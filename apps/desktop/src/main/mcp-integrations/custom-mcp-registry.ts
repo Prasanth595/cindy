@@ -3,12 +3,12 @@
  * `mcpProviders` 数组。
  *
  * 背景:ClaudeCodeAgent / CodexAgent 的 `mcpProviders` 数组在 maker-host 启动时
- * **构建一次**并存进 agent 实例;两处消费点(claude buildMcpServers / codex
- * codexEnvironment)每次 startSession 时**重新遍历该数组**。因此只要**原地**改这两个
- * 数组的内容(不换引用),下一次新建会话就会看到最新的自定义 MCP;进行中的会话不受影响
+ * **构建一次**并存进 agent 实例;Claude/Codex/Pi 的消费点每次 startSession 时
+ * **重新遍历该数组**。因此只要**原地**改已注册数组的内容(不换引用),下一次新建会话
+ * 就会看到最新的自定义 MCP;进行中的会话不受影响
  * (与内置 plugin 的 mtime-cached 语义一致)。
  *
- * 用法:maker-host 构造两个 agent 后,把它们各自的 mcpProviders 数组注册进来
+ * 用法:maker-host 构造各 agent 的 provider 数组后,把实际 mcpProviders 引用注册进来
  * (`registerCustomMcpArrays`),再在启动时与每次 CRUD 后调 `refreshCustomMcpProviders`。
  * refresh 会把数组里旧的 CustomMcpProvider 全部移除、按当前 DB 重新追加。
  */
@@ -16,9 +16,15 @@
 import { createLogger } from '../logger.js';
 import type { McpProvider } from '@cindy/maker-core';
 
-import { isUnsafeMcpServerId, listCustomMcpServers } from '../maker-host/custom-mcp-store.js';
+import {
+  isUnsafeMcpServerId,
+  listCustomMcpServers,
+  validateCustomMcpConfig,
+} from '../maker-host/custom-mcp-store.js';
 import { readCustomMcpToken } from '../secrets/providerSecretStore.js';
 import { CustomMcpProvider } from './custom-mcp-provider.js';
+import { createAppServerProxy } from '../mcp-apps/serverProxy.js';
+import { registerAppServer, resetAppServers, clearAppServerConfigs } from '../mcp-apps/runtime.js';
 
 const log = createLogger('custom-mcp-registry');
 
@@ -38,6 +44,7 @@ export function registerCustomMcpArrays(...arrays: McpProvider[][]): void {
 /** 清空注册表（切账号 / resetMaker 时调用，防止旧数组引用残留）。 */
 export function resetCustomMcpRegistry(): void {
   registeredArrays.length = 0;
+  resetAppServers();
 }
 
 /**
@@ -66,17 +73,36 @@ export const __resetCustomMcpRegistryForTest = resetCustomMcpRegistry;
  */
 export async function refreshCustomMcpProviders(): Promise<void> {
   let providers: CustomMcpProvider[] = [];
+  // 按名字去重统计：同一个撞名配置会在每个已注册数组各命中一次，累加会虚报。
+  const skippedNames = new Set<string>();
   try {
     const configs = await listCustomMcpServers();
-    providers = configs.map((c) => new CustomMcpProvider(c, readCustomMcpToken));
+    const reservedIds = getBuiltinMcpServerNames();
+    providers = configs.flatMap((config) => {
+      const validation = validateCustomMcpConfig(config, reservedIds);
+      if (!validation.ok) {
+        const serverName = typeof config.id === 'string' ? config.id : '<invalid>';
+        if (!skippedNames.has(serverName)) {
+          log.warn('skipping invalid persisted custom MCP config; edit and save it again', {
+            serverName,
+            reason: validation.message,
+          });
+        }
+        skippedNames.add(serverName);
+        return [];
+      }
+      const provider = new CustomMcpProvider(config, readCustomMcpToken, createAppServerProxy);
+      return [provider];
+    });
   } catch (err) {
     log.warn('list custom mcp servers failed; leaving providers unchanged', {
       error: err instanceof Error ? err.message : String(err),
     });
     return;
   }
-  // 按名字去重统计：同一个撞名配置会在每个已注册数组各命中一次，累加会虚报。
-  const skippedNames = new Set<string>();
+  // Saved endpoint changes revoke open Views, while existing Agent calls retain their snapshot.
+  clearAppServerConfigs();
+  for (const provider of providers) registerAppServer(provider.name, () => provider.appServerConfig());
   for (const arr of registeredArrays) {
     // 原地移除旧的 custom provider,再追加新的一批(不换数组引用)。
     for (let i = arr.length - 1; i >= 0; i--) {

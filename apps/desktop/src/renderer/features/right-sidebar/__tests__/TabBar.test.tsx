@@ -39,6 +39,7 @@ function renderStrip(overrides?: {
   onClose?: () => void;
   onActivate?: () => void;
   onReorder?: (orderedIds: string[]) => void;
+  subagentsAvailable?: boolean;
 }) {
   const onClose = vi.fn(overrides?.onClose);
   const onActivate = vi.fn(overrides?.onActivate);
@@ -51,10 +52,89 @@ function renderStrip(overrides?: {
       onClose={onClose}
       onReorder={onReorder}
       onAdd={vi.fn()}
+      subagentsAvailable={overrides?.subagentsAvailable}
     />,
   );
   return { onClose, onActivate, onReorder };
 }
+
+describe('TabStrip retired feature boundary', () => {
+  it('does not expose the Host viewer before the product plugin is enabled', () => {
+    renderStrip();
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'rightSidebar.tabs.addAria' }), {
+      button: 0,
+      ctrlKey: false,
+    });
+    expect(screen.queryByText('rightSidebar.tabs.kinds.iosSimulator')).toBeNull();
+  });
+
+  it('does not offer the removed viewer in the add menu', () => {
+    renderStrip();
+    const addButton = screen.getByRole('button', { name: 'rightSidebar.tabs.addAria' });
+    vi.spyOn(addButton.parentElement as HTMLElement, 'getBoundingClientRect').mockReturnValue({
+      x: 20,
+      y: 20,
+      top: 20,
+      right: 44,
+      bottom: 44,
+      left: 20,
+      width: 24,
+      height: 24,
+      toJSON: () => ({}),
+    });
+    fireEvent.pointerDown(addButton, { button: 0, ctrlKey: false });
+    expect(screen.queryByText('rightSidebar.tabs.kinds.iosSimulator')).toBeNull();
+  });
+});
+
+describe('TabStrip Pi Subagents gate', () => {
+  it('does not expose Subagents for Claude Code or Codex tasks', () => {
+    renderStrip();
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'rightSidebar.tabs.addAria' }), {
+      button: 0,
+      ctrlKey: false,
+    });
+    expect(screen.queryByText('rightSidebar.tabs.kinds.subagents')).toBeNull();
+  });
+
+  it('exposes Subagents for Pi tasks', () => {
+    renderStrip({ subagentsAvailable: true });
+    const addButton = screen.getByRole('button', { name: 'rightSidebar.tabs.addAria' });
+    vi.spyOn(addButton.parentElement as HTMLElement, 'getBoundingClientRect').mockReturnValue({
+      x: 20,
+      y: 20,
+      top: 20,
+      right: 44,
+      bottom: 44,
+      left: 20,
+      width: 24,
+      height: 24,
+      toJSON: () => ({}),
+    });
+    fireEvent.pointerDown(addButton, { button: 0, ctrlKey: false });
+    expect(screen.getByText('rightSidebar.tabs.kinds.subagents')).toBeTruthy();
+  });
+});
+
+describe('TabStrip Cindy Make menu visibility', () => {
+  it('keeps Cindy Make out of the add menu', () => {
+    renderStrip();
+    const addButton = screen.getByRole('button', { name: 'rightSidebar.tabs.addAria' });
+    vi.spyOn(addButton.parentElement as HTMLElement, 'getBoundingClientRect').mockReturnValue({
+      x: 20,
+      y: 20,
+      top: 20,
+      right: 44,
+      bottom: 44,
+      left: 20,
+      width: 24,
+      height: 24,
+      toJSON: () => ({}),
+    });
+    fireEvent.pointerDown(addButton, { button: 0, ctrlKey: false });
+    expect(screen.queryByText('settings.cindyMake.title')).toBeNull();
+  });
+});
 
 afterEach(() => cleanup());
 

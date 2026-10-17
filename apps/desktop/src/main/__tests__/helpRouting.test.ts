@@ -121,4 +121,14 @@ describe('HELP_KNOWLEDGE invariants', () => {
     // 对应意识详情页收单,帮助文档随面板一并退役。
     expect(HELP_KNOWLEDGE.find((d) => d.id === 'api-keys')).toBeUndefined();
   });
+
+  it('collaboration guidance includes Pi as a lead and worker, locally or over SSH (round 42)', () => {
+    const collaboration = HELP_KNOWLEDGE.find((d) => d.id === 'collaboration');
+
+    expect(collaboration?.content).toContain('Claude Code, Codex, and Pi can lead locally or over SSH');
+    expect(collaboration?.content).toContain('Claude Code, Codex, or Pi');
+    // 轮 42:Pi SSH remote 能力落地后「local-only」表述已过时,不得再出现。
+    expect(collaboration?.content).not.toContain('Pi sessions are local-only');
+    expect(collaboration?.content).not.toContain('SSH remote leads currently use Claude Code or Codex');
+  });
 });

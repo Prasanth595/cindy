@@ -7,6 +7,28 @@ const read = (relativePath: string): string =>
   readFileSync(resolve(__dirname, '..', relativePath), 'utf8').replace(/\r\n/g, '\n');
 
 describe('remote Orca Worker creation context', () => {
+  it('uses SSH-filtered candidates for remote-project models and provider selection', () => {
+    const draft = read('features/cc-agent/NewMakerDraftRoute.tsx');
+    const start = draft.indexOf('const selection = await loadSshSessionModelSelection(');
+    const end = draft.indexOf('const newSession = await createSession(', start);
+    expect(start).toBeGreaterThan(-1);
+    const selection = draft.slice(start, end);
+    expect(selection).toContain('providers: localProviders');
+    expect(selection).toContain('agentKind: capabilityAgentKind');
+    expect(selection).toContain('if (!selection.ok)');
+    // Behavioral filtering and source pinning are covered in sshSessionModelSelection.test.ts.
+    expect(selection).toContain('target.hostId');
+    expect(read('components/settings/RemoteHostDetail.tsx')).toContain('loadSshSessionModelSelection(hostId)');
+  });
+
+  it('writes the SSH no-effort sentinel instead of omitting the session field', () => {
+    const draft = read('features/cc-agent/NewMakerDraftRoute.tsx');
+    const start = draft.indexOf('const newSession = await createSession(');
+    const end = draft.indexOf('if (!newSession)', start);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    expect(draft.slice(start, end)).toContain("effort: sshEffort ?? '',");
+  });
   it('scopes capabilities, providers, and the nested model selector to the controlled device', () => {
     const popover = read('features/cc-agent/CreateWorkerPopover.tsx');
 
@@ -40,28 +62,32 @@ describe('remote Orca Worker creation context', () => {
   it('passes the same device context through both Worker creation entry points', () => {
     const sessionView = read('features/cc-agent/CCAgentSessionView.tsx');
     const workerPanel = read('features/cc-agent/OrcaWorkerPanel.tsx');
-    const workersPlugin = read('features/right-sidebar/plugins/orca-workers/index.tsx');
+    const workersTabBody = read(
+      'features/right-sidebar/plugins/orca-workers/OrcaWorkersTabBody.tsx',
+    );
 
     expect(sessionView).toContain('deviceId={remoteDeviceId}');
-    expect(workerPanel).toContain('deviceId={deviceId}');
-    expect(workersPlugin).toContain('deviceId={leadSession?.deviceLinkDeviceId}');
+    expect(workerPanel).toContain('deviceId={deviceId ?? undefined}');
+    expect(workersTabBody).toContain('deviceId: ctx.deviceLinkDeviceId');
   });
 
   it('never uses the controller API key to gate a remote model row', () => {
     const selector = read('components/new-chat/ModelSelector.tsx');
 
-    // 本地会话仍只按 codex/ + hasSavedKey 准入;SSH 远程额外按订阅直连前缀禁用
-    // (不可路由)。device-link 远程在目录未就绪或真实读取失败时禁用旧行，
+    // 本地会话按 codex/ + hasSavedKey 准入,但该 key gate 只属于 XD 网关折扣路由,
+    // 自定义(user)供应商的同前缀模型不受 Cindy 登录门禁(#1568);SSH 远程额外按订阅
+    // 直连前缀禁用(不可路由)。device-link 远程在目录未就绪或真实读取失败时禁用旧行，
     // 只有明确判定老被控端不支持 provider:list 时才回退 capabilities flat list；
     // 任一远程路径都不得回退到 controller key 判定。
     expect(selector).toContain('if (!deviceId) {');
     expect(selector).toContain('if (subscriptionDirectDisabledReason(id)) return true;');
-    expect(selector).toContain("return id.startsWith('codex/') && !hasSavedKey;");
+    expect(selector).toContain("if (isCustomRoutedProvider(provider)) return false;");
+    expect(selector).toContain('return isCodexGatewayWireModel(id) && !hasSavedKey;');
     expect(selector).toContain("if (remoteModelListStatus !== 'ready') return true;");
     expect(selector).toContain(
       'if (remoteProviders.error) return remoteProviders.unsupported ? false : true;',
     );
-    expect(selector).toContain('const rowAgentKind = resolveVisibleModelAgentKind({');
+    expect(selector).toContain('const rowAgentKind = rowAgent ?? resolveVisibleModelAgentKind({');
     expect(selector).toContain('providerOffersModel(provider, id, rowAgentKind)');
   });
 });

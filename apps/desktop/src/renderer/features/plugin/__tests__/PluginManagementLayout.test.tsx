@@ -5,7 +5,7 @@
  */
 
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { MemoryRouter, useLocation } from 'react-router-dom';
+import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('react-i18next', () => ({
@@ -24,6 +24,8 @@ vi.mock('react-i18next', () => ({
 }));
 
 import {
+  PLUGIN_INSTALLED_CARD_GRID_CLASS,
+  PLUGIN_MANAGEMENT_CONTENT_CONTAINER_CLASS,
   PLUGIN_MANAGEMENT_CARD_GRID_CLASS,
   PluginManagementLayout,
   PluginManagementPage,
@@ -40,6 +42,18 @@ function CurrentPath() {
 
 function ActiveMainView() {
   return <output data-testid="active-main-view">{useActiveMainView().activeKey}</output>;
+}
+
+function ActiveMainViewNavigationProbe() {
+  const navigate = useNavigate();
+  return (
+    <>
+      <ActiveMainView />
+      <button type="button" onClick={() => navigate('/apps/workspace')}>
+        Open main view
+      </button>
+    </>
+  );
 }
 
 describe('PluginManagementLayout', () => {
@@ -62,6 +76,21 @@ describe('PluginManagementLayout', () => {
     });
   });
 
+  it('keeps Plugins / Skills inside Settings when onSelectTab is provided', () => {
+    const onSelectTab = vi.fn();
+    render(
+      <MemoryRouter initialEntries={['/settings?tab=ghosts']}>
+        <PluginManagementLayout activeTab="plugins" embedded onSelectTab={onSelectTab}>
+          <CurrentPath />
+        </PluginManagementLayout>
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Skills' }));
+    expect(onSelectTab).toHaveBeenCalledWith('skills');
+    expect(screen.getByTestId('current-path').textContent).toBe('/settings');
+  });
+
   it('keeps the Plugin sidebar view active for a direct Skill deep link', () => {
     render(
       <MemoryRouter initialEntries={['/skillhub/local/skill/global/example']}>
@@ -70,6 +99,20 @@ describe('PluginManagementLayout', () => {
     );
 
     expect(screen.getByTestId('active-main-view').textContent).toBe('plugins');
+  });
+
+  it('clears the sticky Plugin active state when entering a plugin main view', async () => {
+    render(
+      <MemoryRouter initialEntries={['/plugins']}>
+        <ActiveMainViewNavigationProbe />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByTestId('active-main-view').textContent).toBe('plugins');
+    fireEvent.click(screen.getByRole('button', { name: 'Open main view' }));
+    await waitFor(() => {
+      expect(screen.getByTestId('active-main-view').textContent).toBe('');
+    });
   });
 
   it('uses the same constrained frame for the tab row and page content', () => {
@@ -88,12 +131,18 @@ describe('PluginManagementLayout', () => {
     expect(tabFrame?.className).toContain('max-w-[920px]');
     expect(tabFrame?.parentElement?.className).toContain('px-3');
     expect(pageFrame?.className).toContain('max-w-[920px]');
+    expect(pageFrame?.className).toContain(PLUGIN_MANAGEMENT_CONTENT_CONTAINER_CLASS);
   });
 
   it('uses a content-width responsive card grid for both catalogs', () => {
     expect(PLUGIN_MANAGEMENT_CARD_GRID_CLASS).toContain('auto-fit');
     expect(PLUGIN_MANAGEMENT_CARD_GRID_CLASS).toContain('min(100%,22.5rem)');
     expect(PLUGIN_MANAGEMENT_CARD_GRID_CLASS).not.toMatch(/\b(?:sm|md|lg):grid-cols-/);
+  });
+
+  it('keeps a lone installed card on one of the two catalog tracks', () => {
+    expect(PLUGIN_INSTALLED_CARD_GRID_CLASS).toContain('grid-cols-2');
+    expect(PLUGIN_INSTALLED_CARD_GRID_CLASS).not.toContain('auto-fit');
   });
 
   it('keeps catalog children in a height-constrained flex column so their main area can scroll', () => {
@@ -186,6 +235,33 @@ describe('PluginManagementLayout', () => {
 
     fireEvent.keyDown(searchInput, { key: 'Escape' });
     expect(document.activeElement).not.toBe(searchInput);
+  });
+
+  it('ignores a held Escape auto-repeat so one press clears without also blurring', () => {
+    const onQueryChange = vi.fn();
+    render(
+      <MemoryRouter>
+        <PluginManagementLayout activeTab="skills" query="calendar" onQueryChange={onQueryChange}>
+          <span>Content</span>
+        </PluginManagementLayout>
+      </MemoryRouter>,
+    );
+
+    const searchInput = screen.getByRole('textbox', { name: 'Search skills' });
+    searchInput.focus();
+    const repeat = new KeyboardEvent('keydown', {
+      key: 'Escape',
+      repeat: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    act(() => {
+      searchInput.dispatchEvent(repeat);
+    });
+
+    expect(onQueryChange).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(searchInput);
+    expect(repeat.defaultPrevented).toBe(true);
   });
 
   it('leaves the search query and focus intact when IME handles Escape', () => {

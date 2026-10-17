@@ -45,6 +45,8 @@ export interface ApiFetchOptions {
   token?: string | null;
   /** 跳过 401 自动 refresh（避免无限循环；refresh 自身调用时禁用）。 */
   skipAutoRefresh?: boolean;
+  /** Fixed-identity teardown requests must not invalidate a newer active account. */
+  skipSessionInvalidation?: boolean;
   /**
    * 目标服务 base URL(必传;来自 clientEndpoints 的对应字段或注入方)。
    * 区域相关服务必须传 resolver：401 refresh 可能切换登录区域，重试前要重新
@@ -56,9 +58,16 @@ export interface ApiFetchOptions {
   /** Keep upstream response/network details out of local logs for sensitive flows. */
   redactErrorDetails?: boolean;
   /**
+   * 日志里代替真实 path 的**路由模板**。`redactedLogPath` 只按前缀保留固定段数,对
+   * `/collection/<id>` 这类「ID 就在浅层」的路径挡不住(如 `/api/plugins/<pluginId>` 的 id
+   * 是第 3 段,会外泄用户装的第三方插件身份)。这类调用方**必须**传一个不含身份/入参的模板
+   * （如 `/api/plugins`），日志一律用它,不用真实 path（2026-08-06 review）。
+   */
+  logLabel?: string;
+  /**
    * Upstream business codes that may cross a redacted boundary. Messages and
    * response bodies remain hidden; every code must be explicitly allowlisted
-   * by the caller.
+   * by the caller. These codes are also safe to include in redacted logs.
    */
   allowedRedactedErrorCodes?: readonly string[];
 }
@@ -105,11 +114,11 @@ async function rawFetch<T>(apiPath: string, opts: ApiFetchOptions): Promise<RawR
     if (opts.redactErrorDetails) {
       log.error(
         'serverApiFetch.redacted_network_error',
-        'path=' + redactedLogPath(apiPath),
+        'path=' + (opts.logLabel ?? redactedLogPath(apiPath)),
         'method=' + method,
       );
     } else {
-      log.error('fetch failed', apiPath, err);
+      log.error('fetch failed', opts.logLabel ?? apiPath, err);
     }
     return { ok: false, status: 0, data: null };
   } finally {
@@ -142,8 +151,12 @@ export async function serverApiFetch<T>(apiPath: string, opts: ApiFetchOptions):
   if (!result.ok) {
     const errCode = readErrorCode(result.data) ?? statusToCode(result.status);
     const errMsg = readErrorMessage(result.data) ?? `请求失败 (${result.status})`;
+    const publicCode =
+      opts.redactErrorDetails && !opts.allowedRedactedErrorCodes?.includes(errCode)
+        ? statusToCode(result.status)
+        : errCode;
     if (
-      result.status === 401 &&
+      !opts.skipSessionInvalidation && result.status === 401 &&
       (errCode === 'ACCOUNT_UNAVAILABLE' ||
         (refreshedAndRetried && isRefreshableUnauthorizedCode(errCode)))
     ) {
@@ -158,25 +171,27 @@ export async function serverApiFetch<T>(apiPath: string, opts: ApiFetchOptions):
     if (opts.redactErrorDetails) {
       log.warn(
         'serverApiFetch.redacted_not_ok',
-        'path=' + redactedLogPath(apiPath),
+        'path=' + (opts.logLabel ?? redactedLogPath(apiPath)),
         'method=' + (opts.method ?? 'GET'),
         'status=' + result.status,
-        'code=' + statusToCode(result.status),
+        'code=' + publicCode,
       );
     } else {
-      log.warn(
+      // logLabel 表示 path 里带身份;上游 `msg` 同样可能回显身份(如「skill <name> not found」),
+      // 设了 logLabel 就一并不记 msg。注意这只影响**日志**;抛给调用方的 ServerApiError 仍带真实
+      // code/message(SkillHub 依赖 err.code 做 VERSION_RACE 等分支,不能动)。
+      const fields = [
         'serverApiFetch.not_ok',
-        'path=' + apiPath,
+        'path=' + (opts.logLabel ?? apiPath),
         'method=' + (opts.method ?? 'GET'),
         'status=' + result.status,
         'code=' + errCode,
-        'msg=' + errMsg,
-      );
+      ];
+      if (!opts.logLabel) fields.push('msg=' + errMsg);
+      log.warn(...fields);
     }
     throw new ServerApiError(
-      opts.redactErrorDetails && !opts.allowedRedactedErrorCodes?.includes(errCode)
-        ? statusToCode(result.status)
-        : errCode,
+      publicCode,
       result.status,
       opts.redactErrorDetails ? `请求失败 (${result.status})` : errMsg,
     );

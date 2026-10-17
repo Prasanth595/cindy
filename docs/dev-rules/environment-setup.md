@@ -17,12 +17,9 @@ git lfs version
 
 ## 安装
 
-公开贡献者只初始化普通开发必需且公开可访问的 submodule，不要索取、复制或写入凭证：
-
 ```bash
 git clone https://github.com/makecindy/cindy.git
 cd cindy
-git submodule update --init --recursive cindy-protocol
 git lfs pull
 pnpm install
 ```
@@ -33,8 +30,31 @@ pnpm install
 自动补下载，仍无法准备才会中止 dev 启动并给出明确错误。
 正常情况下无需手动安装二进制。
 
+postinstall 最后还会按 Electron `install.js` 的语义复核 `node_modules/electron/dist`，
+缺失或版本不符就补装（`node scripts/ensure-deps.mjs --electron-binary`；设置了
+`ELECTRON_SKIP_BINARY_DOWNLOAD` 或 `ELECTRON_OVERRIDE_DIST_PATH` 时跳过）。原因：pnpm 的
+side-effects cache 一旦记下「electron 已构建但没有产物」，同机之后每次安装都会跳过 Electron
+自己的 postinstall，留下缺 dist 的安装，桌面端单测会整片报 `Electron failed to install
+correctly`。`pnpm test:unit` 等 workspace 测试开跑前也会只读检查一次依赖与 Electron，
+未就绪时以 `DEPENDENCY_SETUP_INCOMPLETE` 直接给出处置命令，不再让几十个测试文件各自报错。
+
 新 worktree 不共享 `node_modules`。确认 checkout 已完成且根 `package.json` 存在后，
-在该 worktree 内重新运行 `pnpm install`。
+在该 worktree 内重新运行 `pnpm install`；不要加 `--ignore-scripts`，上述补装都在安装
+脚本里完成。
+
+Cindy Make 的设置入口和指令前置弹窗共用源码准备流程：切到 `cindy-personal` 后，
+按锁文件预热包含开发依赖的 pnpm store 缓存，成功后才标记源码就绪。预热使用
+`pnpm fetch --frozen-lockfile --prefer-offline --prod=false --ignore-scripts
+--config.node-linker=isolated --config.enable-modules-dir=false`，只下载／复用缓存，
+不为个人分支建立依赖目录、不执行安装脚本；这两个 config 参数仅作用于预热子进程。
+每次准备都由 pnpm 校验当前锁文件和缓存，缺失或变化的包才补下载，不用就绪标记跳过校验。
+实现与回归见 [sourcePreparation.ts](../../apps/desktop/src/main/cindy-make/sourcePreparation.ts)
+及其[测试](../../apps/desktop/src/main/cindy-make/__tests__/sourcePreparation.test.ts)。
+用户继续后，开发任务的 worktree 使用已选定的系统或 Cindy 管理
+工具（含原生依赖构建所需的 Python），并通过
+`pnpm install --frozen-lockfile --prefer-offline --prod=false` 优先复用
+准备阶段填充的 pnpm store 缓存，并执行必要的安装脚本；各 worktree 仍保留独立的 `node_modules`，不复制或
+链接个人分支的依赖目录。安装失败或取消可在现有 checkout 上重试，不重置个人分支。
 
 ## Linux：Electron SUID sandbox 权限
 
@@ -63,10 +83,6 @@ sudo chmod 4755 chrome-sandbox
 
 ## 不变量
 
-- submodule 版本由父仓 gitlink 锁定；普通同步不得使用 `git submodule update --remote`。
-- 旧 checkout 拉到 `.gitmodules` URL 迁移后，开发脚本会先执行
-  `git submodule sync -- cindy-protocol`；手动更新 submodule 前也应先执行同一命令，
-  避免继续使用 `.git/config` 缓存的旧仓库地址。
 - 公开版本不包含内建插件种子；插件通过 SkillHub 或手动安装。不要把任何访问令牌写入
   仓库、Git 配置或脚本。
 - Desktop runtime 二进制（claude／codex／ripgrep／pi）的版本由仓库维护者统一判断与升级；贡献者和

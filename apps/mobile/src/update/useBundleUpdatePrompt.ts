@@ -7,15 +7,18 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, Linking, Platform } from 'react-native';
-import Constants from 'expo-constants';
+import * as Application from 'expo-application';
 import * as Updates from 'expo-updates';
 import { i18n } from '@/i18n';
 import {
+  APP_BINARY_VERSION,
   IS_OTA_SELFHOST,
   IS_TESTFLIGHT_BUILD,
   REVIEW_MODE,
 } from '@/config/env';
 import { fetchLatestRelease } from './fetchLatestRelease';
+import { androidInstaller } from './androidInstaller';
+import { isGooglePlayInstallation } from './androidInstallSource';
 import {
   evaluateBundleUpdate,
   preferredInstallUrl,
@@ -23,7 +26,8 @@ import {
 } from './bundleUpdate';
 import type { BundleUpdateCheckOutcome } from './manualUpdateCheck';
 import { enterForcedUpdate } from './forcedUpdateStore';
-import { isCanaryChannel } from './canaryChannelStore';
+import { resolveUpdateChannelForDevice } from './canaryChannelStore';
+import type { UpdateChannel } from '@cindy/maker-shared/update-channel';
 
 type CheckState = 'idle' | 'checking' | 'up-to-date' | 'update-available' | 'error';
 
@@ -32,8 +36,8 @@ interface Options {
   auto?: boolean;
   /** 无更新时是否提示(设置页手动检查用 true,启动静默用 false)。 */
   notifyWhenUpToDate?: boolean;
-  /** 自建更新通道；缺省读取启动时已 hydrate 的本地快照。 */
-  isCanary?: boolean;
+  /** 自建更新通道；缺省读取启动时已 hydrate 的本地快照(canary+beta 收敛)。 */
+  channel?: UpdateChannel;
 }
 
 async function openInstall(url: string): Promise<void> {
@@ -41,19 +45,50 @@ async function openInstall(url: string): Promise<void> {
     await Linking.openURL(url);
     // itms-services 安装全程由 iOS 系统接管:App 内没有任何回调/进度 UI,唯一反馈是
     // 桌面图标上的进度环。不提示的话用户点完"安装"会以为没反应(平台限制,无法在
-    // App 内展示进度),所以这里补一句引导;Android 走 APK 下载页,不需要这条提示。
+    // App 内展示进度),所以这里补一句引导;Android 的浏览器回退不需要这条提示。
     // 注意 openURL 在系统接下 URL 时即 resolve,早于用户在系统弹框里点「安装/取消」,
     // 无法得知用户的选择,措辞必须是条件引导式,不能断言"安装已开始"。
     if (url.startsWith('itms-services://')) {
       Alert.alert(i18n.t('update.installHintTitle'), i18n.t('update.installHintBody'));
     }
   } catch {
-    Alert.alert(i18n.t('update.openInstallFailedTitle'), i18n.t('update.openInstallFailedBody'));
+    Alert.alert(i18n.t('update.openInstallFailedTitle'), i18n.t(
+      Platform.OS === 'android' ? 'update.android.browserFailed' : 'update.openInstallFailedBody',
+    ));
   }
 }
 
-/** 阻断屏的「去更新」出口:解析安装地址并交给系统。无可用地址则 no-op。 */
-export function openBundleInstall(target: { itmsUrl?: string; installUrl?: string }): void {
+async function openGooglePlay(packageName: string): Promise<void> {
+  const id = encodeURIComponent(packageName);
+  try {
+    await Linking.openURL(`market://details?id=${id}`);
+  } catch {
+    await openInstall(`https://play.google.com/store/apps/details?id=${id}`);
+  }
+}
+
+type BundleInstallTarget = { version?: string; itmsUrl?: string; installUrl?: string; releaseNotes?: string };
+
+/** Android 应用内安装:旧原生包、网页地址或 Play 安装返回 false,由调用方走原有出口。 */
+function startAndroidInstall(target: BundleInstallTarget, confirm: boolean): boolean {
+  if (Platform.OS !== 'android' || isGooglePlayInstallation() || !target.version || !target.installUrl) return false;
+  const releaseNotes = target.releaseNotes?.trim();
+  return androidInstaller.start({
+    version: target.version,
+    installUrl: target.installUrl,
+    ...(releaseNotes ? { releaseNotes } : {}),
+  }, { confirm });
+}
+
+/** 普通更新与强更共用的安装出口；旧 Android 包及网页地址保留浏览器回退。 */
+export function openBundleInstall(target: BundleInstallTarget): void {
+  if (Platform.OS === 'android' && isGooglePlayInstallation()) {
+    // A stale forced-update target must never hand a Play install to the APK installer.
+    const packageName = Application.applicationId;
+    if (packageName) void openGooglePlay(packageName);
+    return;
+  }
+  if (startAndroidInstall(target, false)) return;
   const url = preferredInstallUrl(target);
   if (url) void openInstall(url);
 }
@@ -76,6 +111,9 @@ export function promptBundleUpdate(evaluation: ReturnType<typeof evaluateBundleU
     enterForcedUpdate(evaluation.target);
     return;
   }
+  // Android 应用内安装:发现即呈现更新卡(版本、更新内容、授权与下载同卡完成),
+  // 不再先弹系统对话框;卡内主按钮才是用户的确认。
+  if (startAndroidInstall(evaluation.target, true)) return;
 
   const notes = evaluation.target.releaseNotes?.trim();
   const message = [
@@ -84,36 +122,37 @@ export function promptBundleUpdate(evaluation: ReturnType<typeof evaluateBundleU
   ].join('');
   Alert.alert(i18n.t('update.newVersionTitle'), message, [
     { text: i18n.t('update.later'), style: 'cancel' },
-    { text: i18n.t('update.goUpdate'), onPress: () => void openInstall(url) },
+    { text: i18n.t('update.goUpdate'), onPress: () => openBundleInstall(evaluation.target!) },
   ]);
 }
 
 export function useBundleUpdatePrompt({
   auto = true,
   notifyWhenUpToDate = false,
-  isCanary = isCanaryChannel(),
+  channel = resolveUpdateChannelForDevice(),
 }: Options = {}) {
   const [state, setState] = useState<CheckState>('idle');
   const bundleCheckEnabled = shouldCheckBundleUpdate({
     isSelfHosted: IS_OTA_SELFHOST,
     isReviewMode: REVIEW_MODE,
     isTestFlightBuild: IS_TESTFLIGHT_BUILD,
+    isGooglePlayInstallation: isGooglePlayInstallation(),
   });
-  const inFlightChannels = useRef(new Set<boolean>());
+  const inFlightChannels = useRef(new Set<UpdateChannel>());
   const channelEpochRef = useRef(0);
-  const previousChannelRef = useRef(isCanary);
+  const previousChannelRef = useRef(channel);
   // render 已经是 channel 切换对本 hook 可见的最早时点；在这里递增 epoch，
   // 让旧账号请求即使恰好晚返回，也不能更新新账号的 UI。
-  if (previousChannelRef.current !== isCanary) {
-    previousChannelRef.current = isCanary;
+  if (previousChannelRef.current !== channel) {
+    previousChannelRef.current = channel;
     channelEpochRef.current += 1;
   }
 
   const checkNow = useCallback(async (): Promise<BundleUpdateCheckOutcome> => {
     // 审核模式与 TestFlight 都禁止整包外跳；这里再挡一层，不依赖调用方记得隐藏入口。
     if (!bundleCheckEnabled) return 'skipped';
-    if (inFlightChannels.current.has(isCanary)) return 'busy';
-    inFlightChannels.current.add(isCanary);
+    if (inFlightChannels.current.has(channel)) return 'busy';
+    inFlightChannels.current.add(channel);
     const requestEpoch = channelEpochRef.current;
     setState('checking');
     try {
@@ -123,12 +162,14 @@ export function useBundleUpdatePrompt({
         Platform.OS === 'android' ? 'android' : 'ios',
         undefined,
         undefined,
-        isCanary,
+        channel,
       );
       if (requestEpoch !== channelEpochRef.current) return 'skipped';
       const evaluation = evaluateBundleUpdate({
         currentRuntimeVersion: Updates.runtimeVersion,
-        currentVersion: Constants.expoConfig?.version ?? null,
+        // 强更门槛(minVersion)按原生真值比,避免热更后 expoConfig.version 被内嵌旧值
+        // 覆盖导致原生已达标的机器被误判为低于门槛、错误触发强更。
+        currentVersion: APP_BINARY_VERSION || null,
         latest,
       });
       if (evaluation.needsUpdate) {
@@ -148,16 +189,16 @@ export function useBundleUpdatePrompt({
       if (notifyWhenUpToDate) Alert.alert(i18n.t('update.checkFailedTitle'), i18n.t('update.checkFailedBody'));
       return 'error';
     } finally {
-      inFlightChannels.current.delete(isCanary);
+      inFlightChannels.current.delete(channel);
     }
-  }, [bundleCheckEnabled, isCanary, notifyWhenUpToDate]);
+  }, [bundleCheckEnabled, channel, notifyWhenUpToDate]);
 
   useEffect(() => {
     if (auto && bundleCheckEnabled) void checkNow();
     // auto hook 在登录/切账号导致 channel 变化时再检查一次，避免新的账号
     // 继续沿用旧账号的 release 指针；手动检查入口仍由调用方通过 checkNow 触发。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [auto, bundleCheckEnabled, isCanary]);
+  }, [auto, bundleCheckEnabled, channel]);
 
   return { state, checkNow };
 }

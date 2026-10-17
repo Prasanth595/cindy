@@ -2,8 +2,22 @@ import { describe, expect, it, vi } from 'vitest';
 import type { DingTalkIM } from '@cindy/im';
 
 import { __testing, handleDingTalkTextInteraction } from '../interaction';
+import { createSharedPermission } from '../../../maker-ipc/sharedPermission';
 
 describe('dingtalk text interactions', () => {
+  it('settles the shared permission when the text reply times out', async () => {
+    const sharedPermission = createSharedPermission();
+    const im = {
+      requestTextReply: vi.fn(async () => { throw new Error('DINGTALK_INTERACTION_TIMEOUT'); }),
+      sendText: vi.fn(async () => {}),
+    } as unknown as DingTalkIM;
+    await expect(handleDingTalkTextInteraction(im, 'owner', {
+      kind: 'permission', requestId: 'timeout', toolName: 'Bash', input: {},
+    }, { sharedPermission })).resolves.toMatchObject({ kind: 'permission', behavior: 'deny' });
+    expect(sharedPermission.decide({ kind: 'permission', behavior: 'allow' })).toBe(false);
+    await expect(sharedPermission.result).resolves.toMatchObject({ reason: 'dingtalk_interaction_timeout_or_cancelled' });
+  });
+
   it('parses explicit allow and deny replies', () => {
     const request = {
       kind: 'permission' as const,
@@ -20,6 +34,27 @@ describe('dingtalk text interactions', () => {
       behavior: 'deny',
       reason: 'dingtalk_user_denied',
     });
+  });
+
+  it('自动审批故障时在钉钉确认提示里写明原因', () => {
+    const ordinary = __testing.formatInteractionPrompt({
+      kind: 'permission',
+      requestId: 'request-1',
+      toolName: 'shell_command',
+      input: {},
+    });
+    expect(ordinary).toBe('需要确认操作：shell_command\n回复“允许”继续，或回复“拒绝”取消。');
+
+    const unavailable = __testing.formatInteractionPrompt({
+      kind: 'permission',
+      requestId: 'request-1',
+      toolName: 'shell_command',
+      input: {},
+      metadata: { autoReviewUnavailable: true },
+    });
+    expect(unavailable).toContain('自动审批没完成，请确认要不要允许这次操作。');
+    expect(unavailable).toContain('需要确认操作：shell_command');
+    expect(unavailable).toContain('回复“允许”继续');
   });
 
   it('maps a numbered answer to the matching option label', () => {

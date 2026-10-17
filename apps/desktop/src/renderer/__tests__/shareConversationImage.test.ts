@@ -1,0 +1,543 @@
+// @vitest-environment jsdom
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+const loadImageSourceBase64 = vi.fn();
+const isImageBytesReachable = vi.fn();
+
+vi.mock('@/lib/annotationBurnIn', () => ({
+  loadImageSourceBase64: (src: string) => loadImageSourceBase64(src),
+  isImageBytesReachable: (src: string) => isImageBytesReachable(src),
+  blobToDataUrl: vi.fn(),
+}));
+
+const {
+  SHARE_EXCLUDE_ATTR,
+  SHARE_MESSAGE_ATTR,
+  SHARE_PENDING_IMAGE_ATTR,
+  SHARE_SESSION_ATTR,
+  SHARE_SOURCE_ATTR,
+  ShareImageTooLargeError,
+  appendShareMessages,
+  assertShareImageReadableSize,
+  buildShareImageFooter,
+  buildShareStageMotionFreeze,
+  expandScrollableBlocks,
+  inlineCloneImages,
+  prepareShareMessageClone,
+  queryShareableMessageIds,
+  redactTextNodes,
+  stripCloneAnchors,
+  stripInteractiveElements,
+  stripMessageSources,
+} = await import('@/lib/shareConversationImage');
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  document.body.innerHTML = '';
+});
+afterEach(() => vi.unstubAllGlobals());
+
+function root(html: string): HTMLElement {
+  const el = document.createElement('div');
+  el.innerHTML = html;
+  return el;
+}
+
+describe('stripInteractiveElements', () => {
+  it('删掉所有打了排除标记的元素,保留正文', () => {
+    const el = root(`
+      <div class="body">正文内容</div>
+      <div ${SHARE_EXCLUDE_ATTR}><button>复制</button></div>
+      <p>段落<span ${SHARE_EXCLUDE_ATTR}>hover 工具栏</span></p>
+    `);
+    stripInteractiveElements(el);
+    expect(el.querySelectorAll(`[${SHARE_EXCLUDE_ATTR}]`)).toHaveLength(0);
+    expect(el.querySelector('button')).toBeNull();
+    expect(el.textContent).toContain('正文内容');
+    expect(el.textContent).toContain('段落');
+    expect(el.textContent).not.toContain('hover 工具栏');
+  });
+});
+
+describe('stripMessageSources', () => {
+  it('分享图不带任何消息来源标注,只留正文', () => {
+    const el = root(`
+      <span ${SHARE_SOURCE_ATTR}>张三</span>
+      <div ${SHARE_SOURCE_ATTR}>
+        <button data-message-origin="scheduler">由自动化「Nightly」发送</button>
+        <span data-message-origin="device">从手机「iPhone」发送</span>
+      </div>
+      <div class="hook-card">
+        <div ${SHARE_SOURCE_ATTR}>Cindy · 来自 Slack</div>
+        <div class="body">帮我看下这个报错</div>
+      </div>
+      <div class="bubble">正文内容</div>
+    `);
+    stripMessageSources(el);
+    expect(el.querySelectorAll(`[${SHARE_SOURCE_ATTR}]`)).toHaveLength(0);
+    expect(el.querySelector('[data-message-origin]')).toBeNull();
+    expect(el.textContent).not.toMatch(/张三|自动化|手机|Slack/);
+    expect(el.textContent).toContain('帮我看下这个报错');
+    expect(el.textContent).toContain('正文内容');
+  });
+});
+
+describe('prepareShareMessageClone', () => {
+  // 只发 $指令 的用户消息:气泡内只有插件标注行,气泡本身也打了来源标记。
+  const chipOnlyMessage = () =>
+    root(`
+      <div ${SHARE_MESSAGE_ATTR}="m1" data-user-msg-id="m1">
+        <div class="bubble" ${SHARE_SOURCE_ATTR}>
+          <div ${SHARE_SOURCE_ATTR}><button aria-expanded="false">GitHub 已调用</button></div>
+        </div>
+        <div ${SHARE_EXCLUDE_ATTR}><button>复制</button></div>
+      </div>
+    `).firstElementChild as HTMLElement;
+
+  it('清洗后没有内容的消息返回 null,不在图里留空白或空图', () => {
+    expect(prepareShareMessageClone(chipOnlyMessage())).toBeNull();
+  });
+
+  it('插件标注去掉后保留正文,且不改动原节点', () => {
+    const node = root(`
+      <div ${SHARE_MESSAGE_ATTR}="m1">
+        <div class="bubble">
+          <div ${SHARE_SOURCE_ATTR} class="border-b"><button aria-expanded="false">GitHub</button></div>
+          <div>帮我过审这个 PR</div>
+        </div>
+      </div>
+    `).firstElementChild as HTMLElement;
+    const clone = prepareShareMessageClone(node);
+    expect(clone?.textContent?.trim()).toBe('帮我过审这个 PR');
+    expect(clone?.querySelector('.border-b')).toBeNull();
+    expect(clone?.hasAttribute(SHARE_MESSAGE_ATTR)).toBe(false);
+    expect(node.querySelector(`[${SHARE_SOURCE_ATTR}]`)).not.toBeNull();
+  });
+
+  it('只有音频播放器或分隔线等非文字内容的消息照常保留', () => {
+    for (const html of [
+      '<div><p><audio controls src="xdt-audio://a.mp3"></audio></p></div>',
+      '<div><div class="markdown"><hr /></div></div>',
+    ]) {
+      expect(prepareShareMessageClone(root(html).firstElementChild as HTMLElement)).not.toBeNull();
+    }
+  });
+
+  it('只有图片附件的消息照常保留', () => {
+    const node = root(`<div><img src="data:image/png;base64,AAAA" alt="" /></div>`)
+      .firstElementChild as HTMLElement;
+    expect(prepareShareMessageClone(node)).not.toBeNull();
+  });
+
+  it('流里仍在加载的图片照常进图:去掉加载占位,恢复显示', () => {
+    const node = root(`
+      <div ${SHARE_MESSAGE_ATTR}="media-1">
+        <span ${SHARE_EXCLUDE_ATTR} role="status"></span>
+        <img ${SHARE_PENDING_IMAGE_ATTR} src="cindy-media://shot.png" style="max-width: 480px; display: none;" />
+      </div>
+    `).firstElementChild as HTMLElement;
+    const clone = prepareShareMessageClone(node);
+    const img = clone?.querySelector('img');
+    expect(clone?.querySelector('[role="status"]')).toBeNull();
+    expect(img?.hasAttribute(SHARE_PENDING_IMAGE_ATTR)).toBe(false);
+    expect(img?.style.display).toBe('');
+    expect(img?.style.maxWidth).toBe('480px');
+    // 原节点不受影响,流里照旧等加载完成。
+    expect(node.querySelector('img')?.style.display).toBe('none');
+  });
+});
+
+describe('appendShareMessages', () => {
+  const message = (text: string | null) =>
+    root(
+      text === null
+        ? `<div><div ${SHARE_SOURCE_ATTR}><button aria-expanded="false">GitHub</button></div></div>`
+        : `<div><p>${text}</p></div>`,
+    ).firstElementChild as HTMLElement;
+  // 序列里每项 = [消息在可选序列中的位置, 正文(null = 只剩插件标注)]
+  const assemble = (items: Array<[number, string | null]>) => {
+    const stage = document.createElement('div');
+    const ids = items.map(([index]) => `m${index}`);
+    const order = new Map(ids.map((id, i) => [id, items[i][0]]));
+    const count = appendShareMessages(
+      stage,
+      items.map(([, text]) => message(text)),
+      ids,
+      order,
+    );
+    const layout = Array.from(stage.children).map((child) =>
+      child.hasAttribute('data-share-gap') ? '⋯' : (child.textContent ?? '').trim(),
+    );
+    return { count, layout };
+  };
+
+  it('跳过空消息时,它之前的跳选断点延续到下一条有内容的消息', () => {
+    expect(
+      assemble([
+        [1, 'A'],
+        [5, null],
+        [6, 'B'],
+      ]),
+    ).toEqual({ count: 2, layout: ['A', '⋯', 'B'] });
+  });
+
+  it('相邻选中、中间只是一条空消息时不加断点', () => {
+    expect(
+      assemble([
+        [1, 'A'],
+        [2, null],
+        [3, 'B'],
+      ]),
+    ).toEqual({ count: 2, layout: ['A', 'B'] });
+  });
+
+  it('图首不放断点;全空时返回 0', () => {
+    expect(
+      assemble([
+        [1, null],
+        [5, 'B'],
+      ]).layout,
+    ).toEqual(['B']);
+    expect(
+      assemble([
+        [1, null],
+        [2, null],
+      ]),
+    ).toEqual({ count: 0, layout: [] });
+  });
+});
+
+describe('stripCloneAnchors', () => {
+  it('清掉会污染全局 querySelector 的锚点属性(含根节点自身)', () => {
+    const el = document.createElement('div');
+    el.setAttribute(SHARE_SESSION_ATTR, 's1');
+    el.setAttribute(SHARE_MESSAGE_ATTR, 'm1');
+    el.setAttribute('data-message-client-id', 'client-root');
+    el.innerHTML = `<div data-user-msg-id="m1" data-message-client-ids="client-a client-b"><span ${SHARE_MESSAGE_ATTR}="m2">x</span></div>`;
+
+    stripCloneAnchors(el);
+
+    expect(el.hasAttribute(SHARE_SESSION_ATTR)).toBe(false);
+    expect(el.hasAttribute(SHARE_MESSAGE_ATTR)).toBe(false);
+    expect(el.hasAttribute('data-message-client-id')).toBe(false);
+    expect(el.querySelectorAll('[data-user-msg-id]')).toHaveLength(0);
+    expect(el.querySelectorAll('[data-message-client-ids]')).toHaveLength(0);
+    expect(el.querySelectorAll(`[${SHARE_MESSAGE_ATTR}]`)).toHaveLength(0);
+  });
+
+  it('保留 id —— mermaid / KaTeX 产物内部有 url(#id) 自引用', () => {
+    const el = root('<svg><clipPath id="mmd-clip-1"></clipPath></svg>');
+    stripCloneAnchors(el);
+    expect(el.querySelector('#mmd-clip-1')).not.toBeNull();
+  });
+});
+
+describe('redactTextNodes', () => {
+  it('脱掉裸 Bearer token,保留其余正文', () => {
+    const el = root('<p>调用失败,令牌 Bearer sk-abc123456789 已过期</p>');
+    redactTextNodes(el);
+    expect(el.textContent).not.toContain('sk-abc123456789');
+    expect(el.textContent).toContain('[REDACTED]');
+    expect(el.textContent).toContain('已过期');
+  });
+
+  it('header 形式的凭证连同该行剩余内容一起吞掉(既有实现的保守策略)', () => {
+    const el = root('<p>Authorization: Bearer sk-abc123456789 trailing</p>');
+    redactTextNodes(el);
+    expect(el.textContent).not.toContain('sk-abc123456789');
+    expect(el.textContent).not.toContain('trailing');
+  });
+
+  it('脱掉 key 形式的凭证', () => {
+    const el = root('<code>api_key=sk-livesecretvalue123</code>');
+    redactTextNodes(el);
+    expect(el.textContent).not.toContain('sk-livesecretvalue123');
+  });
+
+  it('不改变 DOM 结构(代码高亮的 span 切分必须原样保留)', () => {
+    const el = root(
+      '<pre><code><span class="a">const t = </span><span class="b">"Bearer sk-zzzzzzzzzz"</span></code></pre>',
+    );
+    redactTextNodes(el);
+    expect(el.querySelectorAll('span')).toHaveLength(2);
+    expect(el.querySelector('span.a')?.textContent).toBe('const t = ');
+    expect(el.querySelector('span.b')?.textContent).not.toContain('sk-zzzzzzzzzz');
+  });
+
+  it('普通正文不被改动', () => {
+    const el = root('<p>今天天气不错,我们来聊聊架构设计。</p>');
+    const before = el.innerHTML;
+    redactTextNodes(el);
+    expect(el.innerHTML).toBe(before);
+  });
+});
+
+describe('inlineCloneImages', () => {
+  it('preserves bundled relative avatars without routing app assets through privileged image reads', async () => {
+    isImageBytesReachable.mockReturnValue(false);
+    const fetchAsset = vi.fn().mockResolvedValue({ ok: true, blob: async () => new Blob(['avatar'], { type: 'image/png' }) });
+    vi.stubGlobal('fetch', fetchAsset);
+    const el = root('<img src="./assets/cindy.png" loading="lazy" srcset="other.png 2x" />');
+    await inlineCloneImages(el);
+    expect(fetchAsset).toHaveBeenCalledWith('./assets/cindy.png');
+    expect(loadImageSourceBase64).not.toHaveBeenCalled();
+    expect(el.querySelector('img')?.getAttribute('src')).toBe('data:image/png;base64,YXZhdGFy');
+    expect(el.querySelector('img')?.getAttribute('loading')).toBe('eager');
+    expect(el.querySelector('img')?.hasAttribute('srcset')).toBe(false);
+  });
+
+  it('drops relative asset responses that are HTML instead of images', async () => {
+    isImageBytesReachable.mockReturnValue(false);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, blob: async () => new Blob(['fallback'], { type: 'text/html' }) }));
+    const el = root('<img src="/missing.png" />');
+    await inlineCloneImages(el);
+    expect(el.querySelector('img')).toBeNull();
+  });
+
+  it('自定义协议图换成 data URL(否则 canvas 会被 taint)', async () => {
+    isImageBytesReachable.mockReturnValue(true);
+    loadImageSourceBase64.mockResolvedValue({ base64: 'AAAA', mimeType: 'image/png' });
+
+    const el = root('<img src="cindy-media://blobs/abc.png" srcset="x 2x" loading="lazy" />');
+    await inlineCloneImages(el);
+
+    const img = el.querySelector('img');
+    expect(img?.getAttribute('src')).toBe('data:image/png;base64,AAAA');
+    expect(img?.getAttribute('loading')).toBe('eager');
+    expect(img?.hasAttribute('srcset')).toBe(false);
+  });
+
+  it('已是 data URL 的图也走统一字节层,执行大小限制并归一化', async () => {
+    isImageBytesReachable.mockReturnValue(true);
+    loadImageSourceBase64.mockResolvedValue({ base64: 'BBBB', mimeType: 'image/png' });
+    const el = root('<img src="data:image/png;base64,BBBB" loading="lazy" />');
+    await inlineCloneImages(el);
+
+    expect(loadImageSourceBase64).toHaveBeenCalledWith('data:image/png;base64,BBBB');
+    expect(el.querySelector('img')?.getAttribute('src')).toBe('data:image/png;base64,BBBB');
+    expect(el.querySelector('img')?.getAttribute('loading')).toBe('eager');
+  });
+
+  it('data URL 超出统一字节层上限时移除,不进入 decode / 光栅化', async () => {
+    isImageBytesReachable.mockReturnValue(true);
+    loadImageSourceBase64.mockRejectedValue(new Error('图片过大'));
+    const el = root('<img src="data:image/png;base64,TOO-LARGE" />');
+
+    await inlineCloneImages(el);
+
+    expect(el.querySelector('img')).toBeNull();
+  });
+
+  it('字节不可达的图直接移除(留着会渲染成 broken 图标)', async () => {
+    isImageBytesReachable.mockReturnValue(false);
+    const el = root('<img src="weird-scheme://nope" />');
+    await inlineCloneImages(el);
+    expect(el.querySelector('img')).toBeNull();
+  });
+
+  it('取字节失败时移除该图,不让整张图失败', async () => {
+    isImageBytesReachable.mockReturnValue(true);
+    loadImageSourceBase64.mockRejectedValue(new Error('read failed'));
+
+    const el = root('<img src="cindy-media://blobs/gone.png" /><p>正文</p>');
+    await inlineCloneImages(el);
+
+    expect(el.querySelector('img')).toBeNull();
+    expect(el.textContent).toContain('正文');
+  });
+
+  it('没有 src 的 img 被移除', async () => {
+    const el = root('<img alt="" />');
+    await inlineCloneImages(el);
+    expect(el.querySelector('img')).toBeNull();
+  });
+});
+
+describe('assertShareImageReadableSize', () => {
+  it('窄长聊天记录超过 4096px 仍可保持至少 1x', () => {
+    const el = root('');
+    Object.defineProperties(el, {
+      scrollWidth: { value: 800 },
+      scrollHeight: { value: 10_000 },
+    });
+    expect(() => assertShareImageReadableSize(el)).not.toThrow();
+  });
+
+  it('达到分享长图单边上限时仍允许 1x', () => {
+    const el = root('');
+    Object.defineProperties(el, {
+      scrollWidth: { value: 800 },
+      scrollHeight: { value: 16_384 },
+    });
+    expect(() => assertShareImageReadableSize(el)).not.toThrow();
+  });
+
+  it('超过分享长图单边上限时拒绝生成不可读缩略图', () => {
+    const el = root('');
+    Object.defineProperties(el, {
+      scrollWidth: { value: 800 },
+      scrollHeight: { value: 16_385 },
+    });
+    expect(() => assertShareImageReadableSize(el)).toThrow(ShareImageTooLargeError);
+  });
+
+  it('单边未超限但输出像素超过预算时仍拒绝', () => {
+    const el = root('');
+    Object.defineProperties(el, {
+      scrollWidth: { value: 4096 },
+      scrollHeight: { value: 4097 },
+    });
+    expect(() => assertShareImageReadableSize(el)).toThrow(ShareImageTooLargeError);
+  });
+});
+
+describe('expandScrollableBlocks', () => {
+  function withSize(
+    el: HTMLElement,
+    size: { scrollWidth: number; clientWidth: number; scrollHeight: number; clientHeight: number },
+  ): void {
+    Object.defineProperties(el, {
+      scrollWidth: { value: size.scrollWidth },
+      clientWidth: { value: size.clientWidth },
+      scrollHeight: { value: size.scrollHeight },
+      clientHeight: { value: size.clientHeight },
+    });
+  }
+
+  function expandWithOverflow(
+    el: HTMLElement,
+    overflowByClass: Record<string, { overflowX: string; overflowY: string }>,
+  ): void {
+    const getComputedStyle = vi.spyOn(window, 'getComputedStyle').mockImplementation(
+      (target) =>
+        (overflowByClass[(target as HTMLElement).className] ?? {
+          overflowX: 'visible',
+          overflowY: 'visible',
+        }) as CSSStyleDeclaration,
+    );
+    try {
+      expandScrollableBlocks(el);
+    } finally {
+      getComputedStyle.mockRestore();
+    }
+  }
+
+  it('没溢出的表格滚动容器也去掉滚动,避免产物里冒出系统滚动条', () => {
+    const el = root('<div class="table-scroll"><table></table></div>');
+    const scroller = el.querySelector<HTMLElement>('.table-scroll')!;
+    withSize(scroller, { scrollWidth: 600, clientWidth: 600, scrollHeight: 120, clientHeight: 120 });
+
+    expandWithOverflow(el, { 'table-scroll': { overflowX: 'auto', overflowY: 'auto' } });
+
+    expect(scroller.style.overflowX).toBe('visible');
+    expect(scroller.style.overflowY).toBe('visible');
+    expect(scroller.style.width).toBe('');
+    expect(scroller.style.maxHeight).toBe('');
+  });
+
+  it('横向溢出时按内容宽度展开,且两轴同时改成 visible', () => {
+    const el = root('<div class="wide"></div><div class="plain"></div>');
+    const wide = el.querySelector<HTMLElement>('.wide')!;
+    const plain = el.querySelector<HTMLElement>('.plain')!;
+    withSize(wide, { scrollWidth: 200, clientWidth: 100, scrollHeight: 20, clientHeight: 20 });
+
+    expandWithOverflow(el, { wide: { overflowX: 'auto', overflowY: 'auto' } });
+
+    expect(wide.style.overflowX).toBe('visible');
+    expect(wide.style.overflowY).toBe('visible');
+    expect(wide.style.width).toBe('max-content');
+    expect(wide.style.maxWidth).toBe('none');
+    expect(wide.style.maxHeight).toBe('');
+    expect(plain.style.overflowX).toBe('');
+  });
+
+  it('纵向溢出时解除固定高度与最大高度', () => {
+    const el = root('<pre class="tall"></pre>');
+    const tall = el.querySelector<HTMLElement>('.tall')!;
+    tall.style.height = '96px';
+    withSize(tall, { scrollWidth: 100, clientWidth: 100, scrollHeight: 400, clientHeight: 96 });
+
+    expandWithOverflow(el, { tall: { overflowX: 'visible', overflowY: 'scroll' } });
+
+    expect(tall.style.overflowY).toBe('visible');
+    expect(tall.style.height).toBe('auto');
+    expect(tall.style.maxHeight).toBe('none');
+    expect(tall.style.width).toBe('');
+  });
+});
+
+describe('queryShareableMessageIds', () => {
+  it('按文档顺序返回本会话已渲染的可选消息 id', () => {
+    document.body.innerHTML = `
+      <div ${SHARE_SESSION_ATTR}="s1" ${SHARE_MESSAGE_ATTR}="m1"></div>
+      <div ${SHARE_SESSION_ATTR}="s1" ${SHARE_MESSAGE_ATTR}="m2"></div>
+      <div ${SHARE_SESSION_ATTR}="s1" ${SHARE_MESSAGE_ATTR}="m3"></div>
+    `;
+    expect(queryShareableMessageIds('s1')).toEqual(['m1', 'm2', 'm3']);
+  });
+
+  it('不串到另一个会话的内嵌消息流', () => {
+    document.body.innerHTML = `
+      <div ${SHARE_SESSION_ATTR}="s1" ${SHARE_MESSAGE_ATTR}="mine"></div>
+      <div ${SHARE_SESSION_ATTR}="s2" ${SHARE_MESSAGE_ATTR}="theirs"></div>
+    `;
+    expect(queryShareableMessageIds('s1')).toEqual(['mine']);
+    expect(queryShareableMessageIds('s2')).toEqual(['theirs']);
+  });
+
+  it('没有已渲染消息时返回空数组', () => {
+    expect(queryShareableMessageIds('s1')).toEqual([]);
+  });
+
+  it('完整转义引号、反斜杠与控制字符', () => {
+    const sessionId = 's"\\\n\r\f\u0001';
+    const message = document.createElement('div');
+    message.setAttribute(SHARE_SESSION_ATTR, sessionId);
+    message.setAttribute(SHARE_MESSAGE_ATTR, 'escaped');
+    document.body.appendChild(message);
+
+    expect(queryShareableMessageIds(sessionId)).toEqual(['escaped']);
+  });
+});
+
+describe('buildShareStageMotionFreeze', () => {
+  it('只作用于导出 stage,关掉入场动画与过渡,避免图片按动画中途的透明度入图', () => {
+    const css = buildShareStageMotionFreeze().textContent ?? '';
+    expect(css).toContain('[data-share-export] *');
+    expect(css).toContain('animation:none!important');
+    expect(css).toContain('transition:none!important');
+  });
+});
+
+describe('buildShareImageFooter', () => {
+  it('形象与 logo 横向锁定,不附加网址', () => {
+    const footer = buildShareImageFooter({
+      logoSrc: 'logo.png',
+      characterSrc: 'character.jpg',
+    });
+    const imgs = Array.from(footer.querySelectorAll('img'));
+    expect(imgs.map((el) => el.getAttribute('src'))).toEqual(['character.jpg', 'logo.png']);
+    expect(imgs[0].parentElement).toBe(imgs[1].parentElement);
+    expect(footer.textContent).toBe('');
+  });
+
+  it('角色图标保持小尺寸、圆角与源素材颜色', () => {
+    const footer = buildShareImageFooter({
+      logoSrc: 'logo.png',
+      characterSrc: 'character.jpg',
+    });
+    const character = footer.querySelector('img');
+    expect(character?.style.width).toBe('40px');
+    expect(character?.style.height).toBe('40px');
+    expect(character?.style.borderRadius).toBe('8px');
+    expect(character?.style.objectFit).toBe('cover');
+    expect(character?.style.filter).toBe('');
+    expect(character?.style.opacity).toBe('');
+  });
+
+  it('没有形象时只放 logo', () => {
+    const footer = buildShareImageFooter({ logoSrc: 'logo.png' });
+    const imgs = Array.from(footer.querySelectorAll('img'));
+    expect(imgs.map((el) => el.getAttribute('src'))).toEqual(['logo.png']);
+  });
+});

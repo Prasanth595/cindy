@@ -49,15 +49,18 @@ vi.mock('@/lib/imageRef', () => ({
 
 vi.mock('@/lib/composerDraftStore', () => ({
   saveDraft: vi.fn(),
+  setRemoteOptimisticAttachmentUrls: vi.fn(),
   plainTextToTiptapDoc: (s: string) => ({
     type: 'doc',
     content: [{ type: 'paragraph', content: [{ type: 'text', text: s }] }],
   }),
 }));
 
-import { makerChatStore } from '@/lib/makerChatStore';
+import { EMPTY_SESSION_STATE, handleStreamEvent, makerChatStore } from '@/lib/makerChatStore';
+import { findActiveReconnect } from '@/lib/autoResumePresentation';
 import * as messageService from '@/lib/messageService';
 import type { Message } from '@/lib/ccAgent.types';
+import type { ChatMessage } from '@/lib/makerChatStore';
 import { CONTINUE_AFTER_ERROR_PROMPT } from '../../shared/interruptedTurn.js';
 
 const inputStop = vi.fn(async () => projection({ queuePaused: false }));
@@ -66,13 +69,25 @@ const inputGetProjection = vi.fn<() => Promise<unknown>>(async () =>
 );
 
 let inputProjectionCb: ((projection: unknown) => void) | null = null;
+let makerEventCb: ((payload: unknown) => void) | null = null;
+let makerStatusCb: ((payload: unknown) => void) | null = null;
 
 function makeElectronApiStub() {
   const fanOut = () => () => () => {};
   return {
     maker: {
-      onEvent: fanOut(),
-      onStatusChanged: fanOut(),
+      onEvent: (cb: (payload: unknown) => void) => {
+        makerEventCb = cb;
+        return () => {
+          makerEventCb = null;
+        };
+      },
+      onStatusChanged: (cb: (payload: unknown) => void) => {
+        makerStatusCb = cb;
+        return () => {
+          makerStatusCb = null;
+        };
+      },
       onInputProjection: (cb: (projection: unknown) => void) => {
         inputProjectionCb = cb;
         return () => {
@@ -230,6 +245,8 @@ describe('mapServerMessages auto-resume 分隔线', () => {
       .messages.find((m) => m.clientId === 'manual-continue');
     expect(row?.isSyntheticTrigger).toBe(true);
     expect(row?.systemCardType).toBeUndefined();
+    expect(row?.content).toBe('');
+    expect(row?.isContinuationTrigger).toBe(true);
   });
 });
 
@@ -244,6 +261,8 @@ describe('applyInputProjection 自愈进行中提示', () => {
     makerChatStore.__teardownGlobalListeners();
     delete (globalThis as { window?: unknown }).window;
     inputProjectionCb = null;
+    makerEventCb = null;
+    makerStatusCb = null;
     vi.useRealTimers();
     vi.clearAllMocks();
   });
@@ -260,6 +279,68 @@ describe('applyInputProjection 自愈进行中提示', () => {
     expect(card?.systemCardData).toEqual(PENDING_INFO);
     // 自愈期间红横幅必须是空的 —— 这正是本次交互改动的核心。
     expect(snapshot.error).toBeNull();
+  });
+
+  it('keeps recovery running until a pre-dispatch failure settles as error', () => {
+    expect(makerChatStore.hasSessionRecoveryPending(SID)).toBe(false);
+    inputProjectionCb!(projection({ autoResumePending: PENDING_INFO }));
+    expect(makerChatStore.hasSessionRecoveryPending(SID)).toBe(true);
+    expect(makerChatStore.getRunningSnapshot().get(SID)?.isRunning).toBe(true);
+    inputProjectionCb!(projection({ pendingQueue: [{ clientId: 'retry', autoResume: true }] }));
+    expect(makerChatStore.hasSessionRecoveryPending(SID)).toBe(true);
+    expect(makerChatStore.getSnapshot(SID).agentStatus.isRunning).toBe(false);
+    expect(makerChatStore.getRunningSnapshot().get(SID)?.isRunning).toBe(true);
+    inputProjectionCb!(projection({ error: 'Selected model is at capacity.' }));
+    expect(makerChatStore.hasSessionRecoveryPending(SID)).toBe(false);
+    expect(makerChatStore.hasSessionTerminalError(SID)).toBe(true);
+    expect(makerChatStore.getRunningSnapshot().get(SID)).toMatchObject({
+      isRunning: false, hasError: true,
+    });
+  });
+
+  it('供应商组换电脑期间任务仍算运行中，没换成时以错误结束(侧栏红点与失败通知照常)', () => {
+    inputProjectionCb!(projection({
+      autoResumePending: {
+        error: "You've hit your session limit",
+        attempt: 0,
+        maxAttempts: 0,
+        sessionTotal: 0,
+        groupSwitchPending: { cause: 'usage-limit' },
+      },
+    }));
+    expect(makerChatStore.getSnapshot(SID).error).toBeNull();
+    expect(makerChatStore.getRunningSnapshot().get(SID)?.isRunning).toBe(true);
+    inputProjectionCb!(projection({ error: "You've hit your session limit" }));
+    expect(makerChatStore.getRunningSnapshot().get(SID)).toMatchObject({ isRunning: false, hasError: true });
+  });
+
+  it('does not classify a normal Continue as recovery when it finishes before projection cleanup', () => {
+    makerEventCb!({ sessionId: SID, event: { type: 'status', data: { isRunning: true } } });
+    inputProjectionCb!(projection({ continuationInFlightClientId: 'manual-continue' }));
+    expect(makerChatStore.hasSessionRecoveryPending(SID)).toBe(false);
+    expect(makerChatStore.getRunningSnapshot().get(SID)?.isRunning).toBe(true);
+    makerEventCb!({ sessionId: SID, event: { type: 'done', data: {} } });
+    expect(makerChatStore.getSnapshot(SID).continuationInFlightClientId).toBe('manual-continue');
+    expect(makerChatStore.getRunningSnapshot().get(SID)).toMatchObject({
+      isRunning: false, hasError: false,
+    });
+    inputProjectionCb!(projection());
+    expect(makerChatStore.hasSessionRecoveryPending(SID)).toBe(false);
+  });
+
+  it('does not mark a paused or restored auto-resume queue as running', () => {
+    const pendingQueue = [{ clientId: 'retry', autoResume: true }];
+    inputProjectionCb!(projection({ pendingQueue, queuePaused: true }));
+    expect(makerChatStore.hasSessionRecoveryPending(SID)).toBe(false);
+    expect(makerChatStore.getRunningSnapshot().get(SID)?.isRunning ?? false).toBe(false);
+    inputProjectionCb!(projection({ pendingQueue }));
+    expect(makerChatStore.getRunningSnapshot().get(SID)?.isRunning).toBe(true);
+    inputProjectionCb!(projection({ pendingQueue, queuePaused: true }));
+    expect(makerChatStore.hasSessionRecoveryPending(SID)).toBe(false);
+    expect(makerChatStore.getRunningSnapshot().get(SID)?.isRunning ?? false).toBe(false);
+    // Pausing the remaining queue does not cancel an already-drained retry.
+    inputProjectionCb!(projection({ queuePaused: true, autoResumePending: PENDING_INFO }));
+    expect(makerChatStore.getRunningSnapshot().get(SID)?.isRunning).toBe(true);
   });
 
   it('进度更新时同一张卡的 systemCardData 必须跟着变(1/5 → 2/5)', () => {
@@ -319,6 +400,118 @@ describe('applyInputProjection 自愈进行中提示', () => {
     ).toBe(false);
   });
 
+  it('Pi 的 Reconnecting 进度也走同一条原生重连活动行', () => {
+    makerEventCb?.({
+      sessionId: SID,
+      event: {
+        type: 'error',
+        source: 'pi',
+        data: { message: 'Reconnecting... 2/6', isTerminal: false, willRetry: true },
+      },
+    });
+    expect(
+      makerChatStore
+        .getSnapshot(SID)
+        .messages.some((m) => m.clientId === '__codex_reconnect_pending__'),
+    ).toBe(true);
+    expect(makerChatStore.hasSessionRecoveryPending(SID)).toBe(true);
+  });
+
+  it('无关 projection 不误删原生重连行,接管 projection 到达时才交棒', () => {
+    makerEventCb?.({
+      sessionId: SID,
+      event: {
+        type: 'error',
+        source: 'codex',
+        data: { message: 'Reconnecting... 1/5', isTerminal: false, willRetry: true },
+      },
+    });
+    expect(
+      makerChatStore
+        .getSnapshot(SID)
+        .messages.some((m) => m.clientId === '__codex_reconnect_pending__'),
+    ).toBe(true);
+
+    inputProjectionCb!(projection());
+    expect(
+      makerChatStore
+        .getSnapshot(SID)
+        .messages.some((m) => m.clientId === '__codex_reconnect_pending__'),
+      '普通队列 projection 不应打断仍在进行的原生重连',
+    ).toBe(true);
+
+    inputProjectionCb!(projection({ autoResumePending: PENDING_INFO }));
+    const rows = makerChatStore.getSnapshot(SID).messages;
+    expect(rows.some((m) => m.clientId === '__codex_reconnect_pending__')).toBe(false);
+    expect(rows.some((m) => m.clientId === PENDING_CARD_ID)).toBe(true);
+  });
+
+  it('credentialSwitchWait projection 会收掉原生重连行', () => {
+    makerEventCb?.({
+      sessionId: SID,
+      event: {
+        type: 'error',
+        source: 'codex',
+        data: { message: 'Reconnecting... 1/5', isTerminal: false, willRetry: true },
+      },
+    });
+    expect(
+      makerChatStore
+        .getSnapshot(SID)
+        .messages.some((m) => m.clientId === '__codex_reconnect_pending__'),
+    ).toBe(true);
+
+    inputProjectionCb!(
+      projection({ credentialSwitchWait: { clientId: 'queued-1', blockedBySessionIds: [SID] } }),
+    );
+
+    const snapshot = makerChatStore.getSnapshot(SID);
+    expect(snapshot.credentialSwitchWait).toEqual({
+      clientId: 'queued-1',
+      blockedBySessionIds: [SID],
+    });
+    expect(
+      snapshot.messages.some((m) => m.clientId === '__codex_reconnect_pending__'),
+    ).toBe(false);
+  });
+
+  it('Stop 会同步撤掉原生重连活动行', () => {
+    makerEventCb?.({
+      sessionId: SID,
+      event: {
+        type: 'error',
+        source: 'codex',
+        data: { message: 'Reconnecting... 1/5', isTerminal: false, willRetry: true },
+      },
+    });
+    expect(
+      makerChatStore
+        .getSnapshot(SID)
+        .messages.some((m) => m.clientId === '__codex_reconnect_pending__'),
+    ).toBe(true);
+
+    makerChatStore.stopSession(SID);
+
+    expect(
+      makerChatStore
+        .getSnapshot(SID)
+        .messages.some((m) => m.clientId === '__codex_reconnect_pending__'),
+    ).toBe(false);
+  });
+
+  it('status=closed 即使缺少 done 也会撤掉 Cindy 接管活动行', () => {
+    inputProjectionCb!(projection({ autoResumePending: PENDING_INFO }));
+    expect(
+      makerChatStore.getSnapshot(SID).messages.some((m) => m.clientId === PENDING_CARD_ID),
+    ).toBe(true);
+
+    makerStatusCb?.({ sessionId: SID, status: 'closed' });
+
+    expect(
+      makerChatStore.getSnapshot(SID).messages.some((m) => m.clientId === PENDING_CARD_ID),
+    ).toBe(false);
+  });
+
   it('救不回来时错误回落成横幅,提示卡同时撤掉', () => {
     inputProjectionCb!(projection({ autoResumePending: PENDING_INFO }));
     inputProjectionCb!(
@@ -328,6 +521,309 @@ describe('applyInputProjection 自愈进行中提示', () => {
     const snapshot = makerChatStore.getSnapshot(SID);
     expect(snapshot.messages.some((m) => m.clientId === PENDING_CARD_ID)).toBe(false);
     expect(snapshot.error).toBe('API Error: Connection closed mid-response.');
+  });
+});
+
+describe('Codex 原生重连进行态与终态接管交棒', () => {
+  const composerReconnect = (state: typeof EMPTY_SESSION_STATE) => findActiveReconnect({
+    messages: state.messages,
+    sessionRunning: state.agentStatus.isRunning || state.isStreaming,
+    continuationTurnClientId: state.continuationTurnClientId,
+    projectionCapability: state.continuationInFlightProjectionCapability,
+  });
+
+  it.each(['codex', 'pi'] as const)('%s reconnect overrides stale generation until substantive output or termination', (source) => {
+    const generating = {
+      ...EMPTY_SESSION_STATE,
+      agentStatus: { ...EMPTY_SESSION_STATE.agentStatus, isRunning: true, status: 'Generating...',
+        startedAt: 1, outputTokens: 465, generationDurationMs: 10000 },
+    };
+    const pending = handleStreamEvent(generating, {
+      sessionId: SID, source, type: 'error',
+      data: { message: 'Reconnecting... 1/5', isTerminal: false, willRetry: true },
+    });
+    expect(composerReconnect(pending)).toMatchObject({ attempt: 1, maxAttempts: 5 });
+    const whitespace = handleStreamEvent(pending, {
+      sessionId: SID, source, type: 'text', data: { text: ' ', isFinal: false },
+    });
+    expect(composerReconnect(whitespace)).not.toBeNull();
+    const statusOnly = handleStreamEvent(whitespace, {
+      sessionId: SID, source, type: 'status', data: { status: 'Generating...' },
+    });
+    expect(composerReconnect(statusOnly)).not.toBeNull();
+    for (const event of [
+      { type: 'text' as const, data: { text: 'Recovered', isFinal: false } },
+      { type: 'tool_use' as const, data: { toolName: 'shell', toolUseId: 't1', input: { command: 'pwd' } } },
+      { type: 'done' as const, data: {} },
+      { type: 'error' as const, data: { message: 'Retries exhausted', isTerminal: true } },
+    ]) {
+      expect(composerReconnect(handleStreamEvent(statusOnly, { ...event, source, sessionId: SID }))).toBeNull();
+    }
+  });
+
+  const reconnectEvent = (message: string, isTerminal: boolean) => ({
+    sessionId: SID,
+    type: 'error' as const,
+    source: 'codex' as const,
+    data: {
+      message,
+      isTerminal,
+      willRetry: !isTerminal,
+    },
+  });
+  const stateWithCindyPending = (error = PENDING_INFO.error) => {
+    const pendingCard = {
+      ...serverMessage({
+        clientId: PENDING_CARD_ID,
+        content: '',
+      }),
+      systemCardType: 'auto-resume-pending' as const,
+      systemCardData: { ...PENDING_INFO, error },
+    } as ChatMessage;
+    return {
+      ...EMPTY_SESSION_STATE,
+      messages: [pendingCard],
+    };
+  };
+
+  it('Reconnecting N/M 原地更新到灰色活动行,正常事件到达后撤掉', () => {
+    const first = handleStreamEvent(
+      EMPTY_SESSION_STATE,
+      reconnectEvent('Reconnecting... 1/5', false),
+    );
+    const firstCard = first.messages.find((m) => m.clientId === '__codex_reconnect_pending__');
+    expect(firstCard?.systemCardType).toBe('auto-resume-pending');
+    expect(firstCard?.systemCardData).toEqual({ attempt: 1, maxAttempts: 5 });
+    expect(first.recoverableError).toBeNull();
+
+    const second = handleStreamEvent(first, reconnectEvent('Reconnecting... 2/5', false));
+    const cards = second.messages.filter((m) => m.clientId === '__codex_reconnect_pending__');
+    expect(cards).toHaveLength(1);
+    expect(cards[0]?.systemCardData).toMatchObject({ attempt: 2, maxAttempts: 5 });
+    expect(cards[0]?.createdAt).toBe(firstCard?.createdAt);
+
+    const recovered = handleStreamEvent(second, {
+      sessionId: SID,
+      type: 'text',
+      data: { text: '继续工作', isFinal: false },
+    });
+    expect(recovered.messages.some((m) => m.clientId === '__codex_reconnect_pending__')).toBe(
+      false,
+    );
+  });
+
+  it('重连期间无关任务更新和工具结果不会提前清除原生活动行', () => {
+    const reconnecting = handleStreamEvent(
+      EMPTY_SESSION_STATE,
+      reconnectEvent('Reconnecting... 1/5', false),
+    );
+    const withTaskUpdate = handleStreamEvent(reconnecting, {
+      sessionId: SID,
+      type: 'agent_task_update',
+      source: 'codex',
+      data: { provider: 'codex', taskId: 'task-1', status: 'running' },
+    });
+    const withToolResult = handleStreamEvent(withTaskUpdate, {
+      sessionId: SID,
+      type: 'tool_result',
+      source: 'codex',
+      data: { toolUseIds: ['tool-1'] },
+    });
+
+    expect(withToolResult.messages.some((m) => m.clientId === '__codex_reconnect_pending__')).toBe(
+      true,
+    );
+  });
+
+  it('协作子代理的 collab tool_use 不会提前清除原生活动行', () => {
+    const reconnecting = handleStreamEvent(
+      EMPTY_SESSION_STATE,
+      reconnectEvent('Reconnecting... 1/5', false),
+    );
+    const withCollabTool = handleStreamEvent(reconnecting, {
+      sessionId: SID,
+      type: 'tool_use',
+      source: 'codex',
+      data: { toolUseId: 'tool-1', toolName: 'collab:spawn', input: { task: '审查' } },
+    });
+
+    expect(
+      withCollabTool.messages.some((m) => m.clientId === '__codex_reconnect_pending__'),
+    ).toBe(true);
+  });
+
+  it('普通根 turn tool_use 仍会清除原生活动行', () => {
+    const reconnecting = handleStreamEvent(
+      EMPTY_SESSION_STATE,
+      reconnectEvent('Reconnecting... 1/5', false),
+    );
+    const withRootTool = handleStreamEvent(reconnecting, {
+      sessionId: SID,
+      type: 'tool_use',
+      source: 'codex',
+      data: { toolUseId: 'tool-1', toolName: 'shell', input: { command: 'pwd' } },
+    });
+
+    expect(
+      withRootTool.messages.some((m) => m.clientId === '__codex_reconnect_pending__'),
+    ).toBe(false);
+  });
+
+  it('带 turnContinuationId 的 done 不会清除原生活动行', () => {
+    const reconnecting = handleStreamEvent(
+      EMPTY_SESSION_STATE,
+      reconnectEvent('Reconnecting... 1/5', false),
+    );
+    const withContinuationDone = handleStreamEvent(reconnecting, {
+      sessionId: SID,
+      type: 'done',
+      data: { reason: 'foreground-done' },
+      turnContinuationId: 1,
+    });
+
+    expect(
+      withContinuationDone.messages.some((m) => m.clientId === '__codex_reconnect_pending__'),
+    ).toBe(true);
+    expect(withContinuationDone.isStreaming).toBe(true);
+    expect(withContinuationDone.agentStatus.isRunning).toBe(true);
+  });
+
+  it.each([
+    ['认证', 'Reconnecting... 1/5 (401 Missing bearer)', { errorStatus: 401 }, /missing bearer/i],
+    [
+      '额度',
+      'Reconnecting... 1/5 (rate limit)',
+      { usageLimit: true, errorStatus: 429 },
+      /rate limit/i,
+    ],
+  ])('无关任务更新不会吞掉%s类可操作错误', (_label, message, extra, expected) => {
+    const event = reconnectEvent(message, false);
+    const actionable = handleStreamEvent(EMPTY_SESSION_STATE, {
+      ...event,
+      data: { ...event.data, ...extra },
+    });
+    const afterTaskUpdate = handleStreamEvent(actionable, {
+      sessionId: SID,
+      type: 'agent_task_update',
+      source: 'codex',
+      data: { provider: 'codex', taskId: 'task-1', status: 'running' },
+    });
+
+    expect(afterTaskUpdate.recoverableError).toMatch(expected);
+  });
+
+  it('已有 Cindy 接管活动行时,迟到的非终态重连继续保持接管态', () => {
+    const next = handleStreamEvent(
+      stateWithCindyPending(),
+      reconnectEvent('Reconnecting... 4/5', false),
+    );
+    expect(next.error).toBeNull();
+    expect(next.recoverableError).toBeNull();
+    expect(next.messages.some((m) => m.clientId === PENDING_CARD_ID)).toBe(true);
+    expect(next.messages.some((m) => m.clientId === '__codex_reconnect_pending__')).toBe(false);
+    expect(next.isStreaming).toBe(false);
+    expect(next.agentStatus.isRunning).toBe(false);
+  });
+
+  it('认证和额度类非终态重连保留可操作错误,不伪装成灰色活动行', () => {
+    const authEvent = reconnectEvent('Reconnecting... 1/5 (401 Missing bearer)', false);
+    const authNext = handleStreamEvent(EMPTY_SESSION_STATE, {
+      ...authEvent,
+      data: { ...authEvent.data, errorStatus: 401 },
+    });
+    expect(authNext.messages.some((m) => m.clientId === '__codex_reconnect_pending__')).toBe(false);
+    expect(authNext.recoverableError).toContain('Missing bearer');
+
+    const usageEvent = reconnectEvent('Reconnecting... 1/5 (rate limit)', false);
+    const usageNext = handleStreamEvent(EMPTY_SESSION_STATE, {
+      ...usageEvent,
+      data: { ...usageEvent.data, usageLimit: true, errorStatus: 429 },
+    });
+    expect(usageNext.messages.some((m) => m.clientId === '__codex_reconnect_pending__')).toBe(
+      false,
+    );
+    expect(usageNext.recoverableError).toContain('rate limit');
+
+    const stringStatusNext = handleStreamEvent(EMPTY_SESSION_STATE, {
+      ...reconnectEvent('Reconnecting... 1/5', false),
+      data: {
+        ...reconnectEvent('Reconnecting... 1/5', false).data,
+        status: '401',
+      },
+    });
+    expect(
+      stringStatusNext.messages.some((m) => m.clientId === '__codex_reconnect_pending__'),
+    ).toBe(false);
+    expect(stringStatusNext.recoverableError).toContain('Reconnecting');
+  });
+
+  it('已有 Cindy 接管活动行时,随后到达的终态 maker:event 不再点亮红 banner', () => {
+    const message =
+      'Codex backend unreachable — the daemon retried 4 times over 133s without success (last error: "Reconnecting... 3/5").';
+    const next = handleStreamEvent(stateWithCindyPending(message), reconnectEvent(message, true));
+    expect(next.error).toBeNull();
+    expect(next.recoverableError).toBeNull();
+    expect(next.messages.some((m) => m.clientId === PENDING_CARD_ID)).toBe(true);
+  });
+
+  it.each([
+    [
+      'codex reconnect stall',
+      'Codex app-server has been reconnecting for 120s without making progress.',
+      'codex_reconnect_stalled',
+    ],
+    ['network timeout', 'Request timed out', undefined],
+    ['service unavailable', '503 Service Unavailable', undefined],
+    ['upstream overload', 'Selected model is at capacity', 'upstream-overload'],
+  ])('已有 Cindy 接管活动行时,%s 的终态广播保持灰色接管态', (_label, message, reason) => {
+    const event = reconnectEvent(message, true);
+    const next = handleStreamEvent(stateWithCindyPending(message), {
+      ...event,
+      data: { ...event.data, ...(reason ? { reason } : {}) },
+    });
+    expect(next.error).toBeNull();
+    expect(next.messages.some((m) => m.clientId === PENDING_CARD_ID)).toBe(true);
+  });
+
+  it('残留接管卡不会吞掉正文不匹配的新网络终态错误', () => {
+    const next = handleStreamEvent(
+      stateWithCindyPending('Request timed out'),
+      reconnectEvent('503 Service Unavailable', true),
+    );
+    expect(next.error).toContain('503 Service Unavailable');
+    expect(next.messages.some((m) => m.clientId === PENDING_CARD_ID)).toBe(false);
+  });
+
+  it('残留接管卡不能吞掉新的认证终态错误', () => {
+    const next = handleStreamEvent(stateWithCindyPending(), {
+      ...reconnectEvent('Codex authentication failed: Missing bearer token.', true),
+      data: {
+        ...reconnectEvent('Codex authentication failed: Missing bearer token.', true).data,
+        errorStatus: 401,
+      },
+    });
+    expect(next.error).toMatch(/missing bearer/i);
+    expect(next.messages.some((m) => m.clientId === PENDING_CARD_ID)).toBe(false);
+  });
+
+  it('终态错误之后的迟到非终态重连不会重新创建活动行或点亮 running', () => {
+    const terminal = handleStreamEvent(
+      EMPTY_SESSION_STATE,
+      reconnectEvent('Codex backend unreachable — retry budget exhausted.', true),
+    );
+    const late = handleStreamEvent(terminal, reconnectEvent('Reconnecting... 5/5', false));
+    expect(late.error).toContain('Codex backend unreachable');
+    expect(late.messages.some((m) => m.clientId === '__codex_reconnect_pending__')).toBe(false);
+    expect(late.isStreaming).toBe(false);
+    expect(late.agentStatus.isRunning).toBe(false);
+  });
+
+  it('没有 Cindy 接管活动行时,同一终态仍回落红 banner', () => {
+    const next = handleStreamEvent(
+      EMPTY_SESSION_STATE,
+      reconnectEvent('Codex backend unreachable — retry budget exhausted.', true),
+    );
+    expect(next.error).toContain('Codex backend unreachable');
   });
 });
 
@@ -437,7 +933,12 @@ describe('同一次中断事件的多次重连折叠成一行', () => {
     vi.clearAllMocks();
   });
 
-  const resumeRow = (clientId: string, attempt: number, outcome?: 'succeeded' | 'failed', at = '2026-06-12T00:00:0') =>
+  const resumeRow = (
+    clientId: string,
+    attempt: number,
+    outcome?: 'succeeded' | 'failed',
+    at = '2026-06-12T00:00:0',
+  ) =>
     serverMessage({
       clientId,
       role: 'user',
@@ -450,6 +951,24 @@ describe('同一次中断事件的多次重连折叠成一行', () => {
         ...(outcome ? { autoResumeOutcome: outcome } : {}),
       } as Message['agentMeta'],
     });
+
+  it('keeps separate resume groups with substantive boundaries and trailing normal rows', async () => {
+    vi.mocked(messageService.list).mockResolvedValueOnce([
+      resumeRow('r1', 1), resumeRow('r2', 2),
+      serverMessage({ clientId: 'boundary', role: 'assistant', content: 'visible', createdAt: '2026-06-12T00:00:05.000Z' }),
+      resumeRow('r3', 1, undefined, '2026-06-12T00:00:1'),
+      resumeRow('r4', 2, undefined, '2026-06-12T00:00:1'),
+      serverMessage({ clientId: 'tail', role: 'assistant', content: 'done', createdAt: '2026-06-12T00:00:20.000Z' }),
+    ]);
+    makerChatStore.ensureInitialMessages(SID);
+    await flush();
+    await flush();
+    expect(makerChatStore.getSnapshot(SID).messages.filter((m) => m.systemCardType === 'auto-resume')
+      .map((m) => m.clientId)).toEqual(['r2', 'r4']);
+    const messages = makerChatStore.getSnapshot(SID).messages;
+    inputProjectionCb!(projection());
+    expect(makerChatStore.getSnapshot(SID).messages).toBe(messages);
+  });
 
   it('连续三次重连只渲染最后一条(带最新计数),前两条退回隐藏占位', async () => {
     vi.mocked(messageService.list).mockResolvedValueOnce([
@@ -523,7 +1042,10 @@ describe('同一次中断事件的多次重连折叠成一行', () => {
     const cards = makerChatStore
       .getSnapshot(SID)
       .messages.filter((m) => m.systemCardType === 'auto-resume');
-    expect(cards.map((m) => m.clientId), '同一次中断只该留最新那一行').toEqual(['r2']);
+    expect(
+      cards.map((m) => m.clientId),
+      '同一次中断只该留最新那一行',
+    ).toEqual(['r2']);
   });
 
   it('进行中的 ephemeral 行会盖掉它前面那条已落库的重连行', async () => {
@@ -541,5 +1063,59 @@ describe('同一次中断事件的多次重连折叠成一行', () => {
     expect(cards).toHaveLength(1);
     expect(cards[0]?.clientId).toBe(PENDING_CARD_ID);
     expect(rows.find((m) => m.clientId === 'r1')?.systemCardType).toBeUndefined();
+  });
+});
+
+describe('供应商组换电脑期间不报错(provider-groups.md §6.1)', () => {
+  const LIMIT_MESSAGE = "You've hit your session limit · resets 12:40am";
+  const switchingCard = (error = LIMIT_MESSAGE) => ({
+    ...serverMessage({ clientId: PENDING_CARD_ID, content: '' }),
+    systemCardType: 'auto-resume-pending' as const,
+    systemCardData: { error, attempt: 0, maxAttempts: 0, sessionTotal: 0, groupSwitchPending: { cause: 'usage-limit' } },
+  }) as ChatMessage;
+  const terminalError = (source: 'claude-code' | 'pi', message = LIMIT_MESSAGE) => ({
+    sessionId: SID,
+    type: 'error' as const,
+    source,
+    data: { message, isTerminal: true },
+  });
+
+  it.each(['claude-code', 'pi'] as const)('%s 的终态错误回声不点亮横幅，也不撤掉「正在换一台电脑继续」', (source) => {
+    const next = handleStreamEvent(
+      { ...EMPTY_SESSION_STATE, messages: [switchingCard()] },
+      terminalError(source),
+    );
+    expect(next.error).toBeNull();
+    expect(next.messages.some((m) => m.clientId === PENDING_CARD_ID)).toBe(true);
+  });
+
+  it('换电脑期间到达的另一次错误照常报错', () => {
+    const next = handleStreamEvent(
+      { ...EMPTY_SESSION_STATE, messages: [switchingCard()] },
+      terminalError('claude-code', 'Something else broke'),
+    );
+    expect(next.error).toBe('Something else broke');
+  });
+
+  it('不是换电脑的接管行不改变非 Codex 错误的呈现', () => {
+    const plainCard = {
+      ...serverMessage({ clientId: PENDING_CARD_ID, content: '' }),
+      systemCardType: 'auto-resume-pending' as const,
+      systemCardData: { ...PENDING_INFO, error: LIMIT_MESSAGE },
+    } as ChatMessage;
+    const next = handleStreamEvent({ ...EMPTY_SESSION_STATE, messages: [plainCard] }, terminalError('claude-code'));
+    expect(next.error).toBe(LIMIT_MESSAGE);
+  });
+
+  it('输入框状态写「正在换一台电脑继续」所需的标记随进行中行带出', () => {
+    const info = findActiveReconnect({
+      messages: [switchingCard()],
+      sessionRunning: false,
+      continuationTurnClientId: null,
+      projectionCapability: 'supported',
+    });
+    expect(info?.groupSwitchPending).toEqual({ cause: 'usage-limit' });
+    // 不是重连：没有次数。
+    expect(info?.attempt).toBeUndefined();
   });
 });

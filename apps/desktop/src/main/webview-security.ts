@@ -24,10 +24,17 @@
 
 import path from 'node:path';
 
-import { app, type BrowserWindow, type WebContents } from 'electron';
+import { app, session, type BrowserWindow, type Session, type WebContents } from 'electron';
 
-import { BROWSER_PARTITION } from '../shared/webviewPartition';
-import { GHOST_PARTITION_PREFIX } from '../shared/ghost';
+import {
+  BROWSER_PARTITION,
+  LOGIN_CAPTCHA_CANCEL_HASH,
+  LOGIN_CAPTCHA_PAGE_PATH,
+  LOGIN_CAPTCHA_PARTITION,
+} from '../shared/webviewPartition';
+import { GHOST_PARTITION_PREFIX, ghostInstallApprovalToken, type GhostPanelMediaTarget } from '../shared/ghost';
+import { installedGhostStoragePart } from '../shared/pluginIdentity';
+import { getActiveAppSession, type AppSessionMode } from './appSessionState.js';
 import {
   matchesElectronInput,
   type AppShortcutCombo,
@@ -37,10 +44,16 @@ import { getAppShortcutStore } from './app-shortcuts/index.js';
 import {
   handleGhostExternalLinkNavigation,
   handleGhostPreviewNavigation,
+  noteGhostUserGesture,
   resolveGhostWebviewAttach,
 } from './cindy-brain/index.js';
 import { classifyGhostPanelNavigation } from './cindy-brain/previewGate.js';
+import { ghostMediaHandoverDragScript, ghostMediaHandoverTargetTracker } from './cindy-brain/ghostMediaHandoverTargetTracker.js';
 import { registerGhostWebContents } from './cindy-brain/runtime/electronSandboxAdapter.js';
+import {
+  attributeRsbNativePopupSurface,
+  createRsbNativePopupSurface,
+} from './rsb-browser-bridge/native-popup-surfaces.js';
 
 /**
  * RSB 浏览器 webview 的 guest 注入层(页面评论 overlay)产物路径。
@@ -154,6 +167,175 @@ export function applyGhostWebviewHardening(
   webPreferences.webviewTag = false;
   webPreferences.plugins = false;
   delete webPreferences.preload;
+}
+
+type GhostWebviewAttachResolver = typeof resolveGhostWebviewAttach;
+
+/**
+ * 把 Renderer 的 ghost-only claim 换成 Main 已核准的 owner partition，并同步
+ * 应用插件 WebView 安全锁。返回 null 时调用方必须拒绝 attach。
+ */
+export function authorizeGhostWebviewAttach(
+  webPreferences: Record<string, unknown>,
+  params: Record<string, string>,
+  resolver: GhostWebviewAttachResolver = resolveGhostWebviewAttach,
+): { id: string; instanceId: string; owner: { mode: AppSessionMode; dataOwnerId: string }; isCurrent(): boolean } | null {
+  let resolved: ReturnType<GhostWebviewAttachResolver> = null;
+  try {
+    resolved = resolver(params.partition, params.src);
+  } catch {
+    // session/protocol 注册失败也必须 fail closed。
+  }
+  if (!resolved) return null;
+
+  const partitionClaim = params.partition;
+  const entryUrl = params.src;
+  const generation = getActiveAppSession().generation;
+  const instanceId = installedGhostStoragePart(resolved.ghost);
+  const approval = ghostInstallApprovalToken(resolved.ghost.approval);
+  const directory = resolved.ghost.dir;
+  const version = resolved.ghost.manifest.version;
+  const owner = resolved.owner;
+
+  // Electron 在触发 will-attach-webview 前已经把 params.partition 复制进
+  // webPreferences.partition，之后创建 guest 时读取的是后者。两边都必须由
+  // Main 的核准结果覆盖，否则只改 attribute dict 不会改变真实 session。
+  params.partition = resolved.partition;
+  webPreferences.partition = resolved.partition;
+  applyGhostWebviewHardening(webPreferences, params);
+  return {
+    id: resolved.ghost.manifest.id,
+    instanceId,
+    owner: resolved.owner,
+    isCurrent: () => {
+      const active = getActiveAppSession();
+      if (active.generation !== generation || active.mode !== owner.mode || active.dataOwnerId !== owner.dataOwnerId) return false;
+      try {
+        const current = resolver(partitionClaim, entryUrl);
+        return current !== null && current.owner.mode === owner.mode && current.owner.dataOwnerId === owner.dataOwnerId
+          && installedGhostStoragePart(current.ghost) === instanceId && current.ghost.dir === directory
+          && current.ghost.manifest.version === version && ghostInstallApprovalToken(current.ghost.approval) === approval;
+      } catch {
+        return false;
+      }
+    },
+  };
+}
+
+/**
+ * 登录页人机验证(Turnstile 托管挑战页)webview 的加固:与意识面板同一套锁死集——
+ * 零弹窗、零 preload、保留调用方已验证的专属内存分区。挑战页是我们自己的
+ * auth-server 托管页,token 回传只靠 location.hash(did-navigate-in-page),
+ * 不需要任何注入面。
+ */
+export function applyLoginCaptchaWebviewHardening(
+  webPreferences: Record<string, unknown>,
+  params: Record<string, string>,
+): void {
+  delete params.disablewebsecurity;
+  delete params.webpreferences;
+  delete params.allowpopups;
+  // 分区不动:调用方(will-attach listener)已验证过 partition ↔ src。
+
+  webPreferences.sandbox = true;
+  webPreferences.devTools = true;
+  webPreferences.nodeIntegration = false;
+  webPreferences.nodeIntegrationInSubFrames = false;
+  webPreferences.nodeIntegrationInWorker = false;
+  webPreferences.contextIsolation = true;
+  webPreferences.webSecurity = true;
+  webPreferences.allowRunningInsecureContent = false;
+  webPreferences.webviewTag = false;
+  webPreferences.plugins = false;
+  delete webPreferences.preload;
+}
+
+/**
+ * CAPTCHA guest 使用独立 session，但 session 默认安全策略不能依赖 Electron
+ * 版本的隐式行为。挑战只需要网络、脚本与 iframe，不需要任何设备/系统权限，
+ * 也不应向本机写入下载，因此权限与下载通道都显式 fail-closed。
+ */
+const hardenedLoginCaptchaSessions = new WeakSet<object>();
+
+export function hardenLoginCaptchaSession(
+  captchaSession: Pick<
+    Session,
+    'setPermissionRequestHandler' | 'setPermissionCheckHandler' | 'on'
+  >,
+): void {
+  // partition session 会跨多次挑战复用；不要为每次 webview attach 累加监听器。
+  if (hardenedLoginCaptchaSessions.has(captchaSession)) return;
+  captchaSession.setPermissionRequestHandler((_webContents, _permission, callback) => {
+    callback(false);
+  });
+  captchaSession.setPermissionCheckHandler(() => false);
+  captchaSession.on('will-download', (event) => {
+    event.preventDefault();
+  });
+  hardenedLoginCaptchaSessions.add(captchaSession);
+}
+
+/**
+ * 登录 captcha webview 允许加载的 auth 服务端 origin 集合的解析钩子。
+ * 与 popupOpenerResolver 同模式注入(保持本模块单向解耦):bootstrap 在 auth
+ * 初始化处用 clientEndpointsService 的 authApiBaseUrl(两 realm + dev)接线。
+ * 未注入(启动早期 / 单测未接线)时 fail-closed:一律拒附加。
+ */
+export type LoginCaptchaOriginResolver = () => readonly string[];
+
+let loginCaptchaOriginResolver: LoginCaptchaOriginResolver | null = null;
+
+export function setLoginCaptchaOriginResolver(
+  resolver: LoginCaptchaOriginResolver | null,
+): void {
+  loginCaptchaOriginResolver = resolver;
+}
+
+/**
+ * captcha webview 的附加与顶层导航白名单:协议(https,或 loopback 上的 http,
+ * 兼容本地 dev auth-server)+ origin 命中注入集合 + 路径精确等于托管挑战页。
+ * fragment 变更(token 回传通道)不产生导航事件,天然不受本闸约束。
+ */
+export function isAllowedLoginCaptchaUrl(rawUrl: string | undefined): boolean {
+  if (!rawUrl || !loginCaptchaOriginResolver) return false;
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    return false;
+  }
+  const loopback = parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1';
+  if (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && loopback)) {
+    return false;
+  }
+  if (parsed.pathname !== LOGIN_CAPTCHA_PAGE_PATH) return false;
+  let origins: readonly string[];
+  try {
+    origins = loginCaptchaOriginResolver();
+  } catch {
+    return false;
+  }
+  return origins.includes(parsed.origin);
+}
+
+/** CAPTCHA guest 的 popup 与顶层导航闸；重定向和普通导航必须走同一白名单。 */
+export function installLoginCaptchaGuestHandlers(guestContents: WebContents): void {
+  guestContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  const guardTopLevelNavigation = (event: Electron.Event, url: string) => {
+    if (isAllowedLoginCaptchaUrl(url)) return;
+    event.preventDefault();
+  };
+  guestContents.on('will-navigate', guardTopLevelNavigation);
+  guestContents.on('will-redirect', guardTopLevelNavigation);
+  // guest 获得焦点后键盘事件不会冒泡到宿主 Renderer。Main 只拦 Esc，并通过
+  // 静态 location.hash 复用既有无日志回传通道，让模态层仍可被键盘取消。
+  guestContents.on('before-input-event', (event, input) => {
+    if (!isGuestShortcutKeyDownType(input.type) || input.key !== 'Escape') return;
+    event.preventDefault();
+    void guestContents
+      .executeJavaScript(`location.hash = ${JSON.stringify(LOGIN_CAPTCHA_CANCEL_HASH)}`, true)
+      .catch(() => undefined);
+  });
 }
 
 /** Renderer 接收 popup 路由消息的 IPC channel。main → renderer。 */
@@ -280,6 +462,8 @@ export interface RsbBrowserPopupPayload {
    *  bucket——没有它时只能落在"用户正在看的 session",agent 后台 session 触发的
    *  popup 会串进无关会话。 */
   openerSessionId?: string;
+  /** Main-owned WebContentsView surface that preserves the popup browsing context. */
+  nativePopupSurfaceId?: string;
 }
 
 /**
@@ -412,28 +596,36 @@ function routeBrowserPopup(
   openerWebContentsId: number | undefined,
   payload: RsbBrowserPopupPayload,
 ): void {
+  const finish = (opener: ResolvedPopupOpener | null) => {
+    if (payload.nativePopupSurfaceId && opener) {
+      attributeRsbNativePopupSurface(payload.nativePopupSurfaceId, {
+        tabId: opener.openerTabId,
+      });
+    }
+    sendBrowserPopup(hostContents, { ...payload, ...(opener ?? {}) });
+  };
   if (openerWebContentsId === undefined || !popupOpenerResolver) {
-    sendBrowserPopup(hostContents, payload);
+    finish(null);
     return;
   }
   const opener = resolvePopupOpener(openerWebContentsId);
   if (opener) {
-    sendBrowserPopup(hostContents, { ...payload, ...opener });
+    finish(opener);
     return;
   }
   void waitForPopupOpener(openerWebContentsId).then((late) => {
-    sendBrowserPopup(hostContents, { ...payload, ...(late ?? {}) });
+    finish(late);
   });
 }
 
 /**
- * about:blank deferred popup 的隐藏中转 BrowserWindow 的 webPreferences。
- * 完整安全集,对齐 docs/dev-rules/electron-security-and-process-boundaries.md
- * 第 3 节的 BrowserWindow 契约 —— 这是一个真实的(隐藏)BrowserWindow,即使
- * 只活到"偷到第一个真实 URL"也不许比主窗宽松。导出供单测钉住字段完整性。
+ * Chromium child popup 的完整安全集。Electron 用这些偏好创建传给
+ * `createWindow` 的真实 popup WebContents；main 随后把同一个 context 放进
+ * WebContentsView。字段对齐 BrowserWindow 安全契约，导出供单测钉住。
  */
 export const BLANK_POPUP_WINDOW_WEB_PREFERENCES = Object.freeze({
   sandbox: true,
+  devTools: true,
   nodeIntegration: false,
   nodeIntegrationInSubFrames: false,
   nodeIntegrationInWorker: false,
@@ -442,6 +634,7 @@ export const BLANK_POPUP_WINDOW_WEB_PREFERENCES = Object.freeze({
   allowRunningInsecureContent: false,
   experimentalFeatures: false,
   plugins: false,
+  disableDialogs: false,
   navigateOnDragDrop: false,
   partition: BROWSER_PARTITION,
   webviewTag: false,
@@ -555,15 +748,12 @@ export function installDeferredPopupRouter(
  * 模块入口(bootstrap-electron)在 app ready 前调一次即可,所有现在 / 未来创建的窗口
  * 都生效。
  *
- * setWindowOpenHandler 路由策略(对齐 Codex `main-cC-d0ezP.js:48849` 智能路由,
- * 但简化为 RSB tab):
- *   - guest 内 `window.open(url)` / `<a target="_blank">` / window.location 跨 host:
- *     若 url 已经是 http(s),直接 deny 真窗口并把 url + disposition 推给 host
- *     webContents(主窗 renderer),由 RightSidebarShell 收到后 `store.addTab` 创建
- *     新的 web-browser RSB tab。
- *   - 若 popup 先打开 about:blank,再由 opener 脚本写入真实地址(典型登录流),
- *     临时允许一个隐藏 BrowserWindow,只用于捕获后续 will-navigate URL;捕获后
- *     立即关闭隐藏窗口并路由成 RSB tab。用户不会看到原生弹窗。
+ * setWindowOpenHandler 路由策略:
+ *   - http(s) 与 about:blank popup 都让 Chromium 创建真实 child WebContents;
+ *   - `createWindow` 接管 Electron 预创建的 `options.webContents`,把**同一个**
+ *     browsing context 放进 main-owned WebContentsView,再路由成 RSB tab;
+ *   - 不能另建 `<webview>`:那会让 opener 手里的 WindowProxy 指向已关闭的旧
+ *     context,破坏 OAuth/SSO 对 closed/location/close 的依赖。
  *   - 推消息走 channel `rsb:browser-popup`,renderer 端通过 preload 的 fanOut 订阅。
  *
  * 这里 `contents` 闭包指向 host webContents(主窗 renderer),`guestContents` 是
@@ -571,28 +761,229 @@ export function installDeferredPopupRouter(
  * 触发),但回调里用 host 的 contents.send 发消息——renderer 端收到的就是主窗 renderer
  * 进程。
  */
+export function installBrowserGuestHandlers(
+  hostContents: WebContents,
+  guestContents: WebContents,
+): void {
+  guestContents.setWindowOpenHandler((details) => {
+    if (!isRoutablePopupUrl(details.url) && !isInitialBlankPopupUrl(details.url)) {
+      return { action: 'deny' };
+    }
+    return {
+      action: 'allow',
+      outlivesOpener: false,
+      overrideBrowserWindowOptions: {
+        show: false,
+        autoHideMenuBar: true,
+        webPreferences: { ...BLANK_POPUP_WINDOW_WEB_PREFERENCES },
+      },
+      createWindow: (options) => {
+        // Electron supplies this runtime-only field when createWindow is used
+        // to adopt Chromium's already-created popup browsing context. It is
+        // intentionally absent from BrowserWindowConstructorOptions.d.ts.
+        const popupContents = (
+          options as typeof options & { webContents?: WebContents }
+        ).webContents;
+        if (!popupContents) {
+          throw new Error('Electron did not provide popup WebContents to createWindow');
+        }
+        const surfaceId = createRsbNativePopupSurface(hostContents, popupContents);
+        if (!surfaceId) {
+          popupContents.close();
+          return popupContents;
+        }
+        // Popup-of-popup keeps the same security and WindowProxy semantics.
+        installBrowserGuestHandlers(hostContents, popupContents);
+        routeBrowserPopup(hostContents, guestContents.id, {
+          url: details.url,
+          disposition: details.disposition,
+          nativePopupSurfaceId: surfaceId,
+        });
+        return popupContents;
+      },
+    };
+  });
+
+  // Chromium guest key events do not bubble to the host renderer. Forward the
+  // browser-level shortcuts through the existing host channel for both
+  // ordinary webviews and adopted popup WebContents.
+  guestContents.on('before-input-event', (event, input) => {
+    if (!isGuestShortcutKeyDownType(input.type)) return;
+    const store = getAppShortcutStore();
+    const action = resolveGuestShortcutAction(input, (id) =>
+      store.getEffectiveCombos(id),
+    );
+    if (!action) return;
+    event.preventDefault();
+    let target: WebContents | null = null;
+    try {
+      target = popupHostResolver?.() ?? null;
+    } catch {
+      target = null;
+    }
+    target = target && !target.isDestroyed() ? target : hostContents;
+    if (target.isDestroyed()) return;
+    if (action.kind === 'focus-url-bar') {
+      target.send(RSB_BROWSER_FOCUS_URL_BAR_CHANNEL, null);
+    } else {
+      target.send(RSB_BROWSER_COMMAND_CHANNEL, { command: action.command });
+    }
+  });
+}
+
+interface GhostGuestNavigationHandlers {
+  gesture?: typeof noteGhostUserGesture;
+  preview: (
+    ghostId: string,
+    url: string,
+    hostContents: WebContents,
+    guestContents: WebContents,
+    isOwnerActive: () => boolean,
+    instanceId?: string,
+  ) => void;
+  external: typeof handleGhostExternalLinkNavigation;
+}
+
+interface GhostGuestOwnerIdentity {
+  mode: AppSessionMode;
+  dataOwnerId: string;
+}
+
+function isGhostGuestOwnerActive(owner: GhostGuestOwnerIdentity): boolean {
+  const activeOwner = getActiveAppSession();
+  return activeOwner.mode === owner.mode && activeOwner.dataOwnerId === owner.dataOwnerId;
+}
+
+/**
+ * settingsHtml 与 panel 共用的 Ghost guest 导航接线。策略仍集中在
+ * previewGate / cindy-brain；这里仅保证普通 will-navigate 被主机接管，
+ * popup 路径继续一律拒绝，并把 did-attach 时的真实 hostContents 原样传入。
+ */
+export function installGhostGuestNavigationHandlers(
+  hostContents: WebContents,
+  guestContents: WebContents,
+  ghostId: string,
+  isOwnerActive: () => boolean,
+  handlers: GhostGuestNavigationHandlers = {
+    preview: handleGhostPreviewNavigation,
+    external: handleGhostExternalLinkNavigation,
+  },
+  instanceId?: string,
+  isAttachCurrent?: () => boolean,
+): void {
+  if (instanceId && isAttachCurrent) {
+    installGhostMediaHandoverSource(hostContents, guestContents, { ghostId, instanceId }, () => isOwnerActive() && isAttachCurrent());
+  }
+  guestContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  const isCurrent = () => isOwnerActive() && (!isAttachCurrent || isAttachCurrent());
+  const noteGesture = () => {
+    if (!isCurrent()) return;
+    (handlers.gesture ?? noteGhostUserGesture)(instanceId ?? ghostId);
+  };
+  guestContents.on('before-mouse-event', (_event, mouse) => {
+    if (mouse.type === 'mouseDown') noteGesture();
+  });
+  guestContents.on('before-input-event', (_event, input) => {
+    if (input.type === 'keyDown') noteGesture();
+  });
+  guestContents.on('will-navigate', (event, url) => {
+    // owner commit 后、Renderer 卸载旧 guest 前仍可能收到导航事件。旧页
+    // 不能借新 owner 的同名插件声明或授权代开外链。
+    if (!isCurrent()) {
+      event.preventDefault();
+      return;
+    }
+    const nav = classifyGhostPanelNavigation(url, ghostId);
+    if (nav === 'allow') return;
+    event.preventDefault();
+    if (nav === 'preview') {
+      handlers.preview(ghostId, url, hostContents, guestContents, isCurrent, instanceId);
+    } else if (nav === 'external') {
+      handlers.external(ghostId, url, hostContents, guestContents, isCurrent, instanceId);
+    }
+  });
+}
+
+export function installGhostMediaHandoverSource(
+  hostContents: WebContents,
+  guestContents: WebContents,
+  target: GhostPanelMediaTarget & { instanceId: string },
+  isAttachCurrent: () => boolean,
+): void {
+  let sourceToken: string | null = null;
+  const revoke = () => {
+    if (sourceToken) ghostMediaHandoverTargetTracker.revoke(sourceToken);
+    sourceToken = null;
+  };
+  const isCurrent = () => !hostContents.isDestroyed() && !guestContents.isDestroyed() && isAttachCurrent();
+  guestContents.on('dom-ready', () => {
+    revoke();
+    if (!isCurrent()) return;
+    const token = ghostMediaHandoverTargetTracker.register({ ...target, isCurrent });
+    sourceToken = token;
+    void guestContents.executeJavaScript(ghostMediaHandoverDragScript(token)).catch(() => {
+      ghostMediaHandoverTargetTracker.revoke(token);
+      if (sourceToken === token) sourceToken = null;
+    });
+  });
+  guestContents.on('did-navigate', revoke);
+  guestContents.on('render-process-gone', revoke);
+  guestContents.once('destroyed', () => {
+    revoke();
+    hostContents.removeListener('destroyed', revoke);
+  });
+  hostContents.once('destroyed', revoke);
+}
+
 export function installWebviewHardener(): void {
   app.on('web-contents-created', (_event, contents) => {
     // will-attach → did-attach 对同一个 guest 同步成对触发;用闭包变量把
-    // will 阶段的意识判定带给 did 阶段(意识 guest 走独立接线,不装浏览器
-    // 的 popup 路由与快捷键转发)。
-    let pendingGhostAttach: { id: string } | null = null;
+    // will 阶段的意识/captcha 判定带给 did 阶段(这两类 guest 走独立接线,
+    // 不装浏览器的 popup 路由与快捷键转发)。
+    let pendingGhostAttach: ReturnType<typeof authorizeGhostWebviewAttach> = null;
+    let pendingCaptchaAttach = false;
     contents.on('will-attach-webview', (e, webPreferences, params) => {
+      pendingCaptchaAttach = false;
       // 意识面板分支:声明了意识分区的 webview 必须验明正身——
       // 分区/地址/已装清单三对齐才放行并保留专属分区;验证失败直接拒附加
       // (绝不回落到浏览器分区,那会让 cindy-ghost:// 内容跑进错误 session)。
       if (typeof params.partition === 'string' && params.partition.startsWith(GHOST_PARTITION_PREFIX)) {
-        const ghost = resolveGhostWebviewAttach(params.partition, params.src);
-        if (!ghost) {
+        const authorized = authorizeGhostWebviewAttach(
+          webPreferences as unknown as Record<string, unknown>,
+          params,
+        );
+        if (!authorized) {
           e.preventDefault();
           pendingGhostAttach = null;
           return;
         }
-        applyGhostWebviewHardening(webPreferences as unknown as Record<string, unknown>, params);
-        pendingGhostAttach = { id: ghost.manifest.id };
+        pendingGhostAttach = authorized;
         return;
       }
       pendingGhostAttach = null;
+      // 登录 captcha 分支:同意识分区一样"验明正身否则拒附加",绝不回落到
+      // 浏览器分区(那会把挑战页装进 RSB 持久 session 并注入页面评论 preload)。
+      // src 必须命中 auth origin 白名单 + 托管页固定路径(fail-closed)。
+      if (params.partition === LOGIN_CAPTCHA_PARTITION) {
+        if (!isAllowedLoginCaptchaUrl(params.src)) {
+          e.preventDefault();
+          return;
+        }
+        try {
+          // 在 guest 获准附加前先锁死专属 session 的权限请求与权限检查；
+          // 任一初始化异常都拒绝附加，不能让远程内容落到默认权限策略。
+          hardenLoginCaptchaSession(session.fromPartition(LOGIN_CAPTCHA_PARTITION));
+        } catch {
+          e.preventDefault();
+          return;
+        }
+        applyLoginCaptchaWebviewHardening(
+          webPreferences as unknown as Record<string, unknown>,
+          params,
+        );
+        pendingCaptchaAttach = true;
+        return;
+      }
       applyWebviewHardening(
         webPreferences as unknown as Record<string, unknown>,
         params,
@@ -602,8 +993,17 @@ export function installWebviewHardener(): void {
       );
     });
     contents.on('did-attach-webview', (_e, guestContents) => {
+      if (pendingCaptchaAttach) {
+        pendingCaptchaAttach = false;
+        // 挑战页零弹窗;顶层导航只允许停留在托管挑战页白名单内(Turnstile 的
+        // 挑战 UI 活在子 iframe 里,顶层不应发生任何跨源导航)。token 回传走
+        // location.hash → did-navigate-in-page,不经过 will-navigate。
+        installLoginCaptchaGuestHandlers(guestContents);
+        return;
+      }
       if (pendingGhostAttach) {
-        const ghostId = pendingGhostAttach.id;
+        const authorized = pendingGhostAttach;
+        const ghostId = authorized.id;
         pendingGhostAttach = null;
         // 崩溃豁免登记(lifecycle 的全局 render-process-gone 守卫据此放行,
         // 面板错误接管态负责用户侧收尾)。
@@ -611,70 +1011,19 @@ export function installWebviewHardener(): void {
         // 意识面板零弹窗、零跳转:window.open 全拒,导航锁死在自己协议同源内。
         // 两个声明式例外(都是拦下导航、主机代办,面板侧依旧零桥):
         //   - /preview/ 预览链接 → 主窗口弹 lightbox(cindy-brain/previewGate.ts);
-        //   - https 外链 → 外链闸(身份卡声明过的控制台地址才放行)转系统浏览器。
-        guestContents.setWindowOpenHandler(() => ({ action: 'deny' }));
-        guestContents.on('will-navigate', (event, url) => {
-          const nav = classifyGhostPanelNavigation(url, ghostId);
-          if (nav === 'allow') return;
-          event.preventDefault();
-          if (nav === 'preview') {
-            handleGhostPreviewNavigation(ghostId, url, contents, guestContents);
-          } else if (nav === 'external') {
-            handleGhostExternalLinkNavigation(ghostId, url, guestContents);
-          }
-        });
+        //   - https 外链 → 外链闸(声明/授信直开,其余二次确认)转系统浏览器。
+        installGhostGuestNavigationHandlers(
+          contents,
+          guestContents,
+          ghostId,
+          () => isGhostGuestOwnerActive(authorized.owner),
+          undefined,
+          authorized.instanceId,
+          authorized.isCurrent,
+        );
         return;
       }
-      guestContents.setWindowOpenHandler((details) => {
-        if (isRoutablePopupUrl(details.url)) {
-          routeBrowserPopup(contents, guestContents.id, {
-            url: details.url,
-            disposition: details.disposition,
-          });
-          return { action: 'deny' };
-        }
-
-        if (isInitialBlankPopupUrl(details.url)) {
-          return {
-            action: 'allow',
-            overrideBrowserWindowOptions: {
-              show: false,
-              autoHideMenuBar: true,
-              webPreferences: { ...BLANK_POPUP_WINDOW_WEB_PREFERENCES },
-            },
-          };
-        }
-
-        return { action: 'deny' };
-      });
-      guestContents.on('did-create-window', (popupWindow, details) => {
-        installDeferredPopupRouter(contents, popupWindow, details.disposition, guestContents.id);
-      });
-      // 拦截 webview guest 内的"浏览器级"快捷键 —— Electron webview 是独立
-      // webContents,guest 触发的 keydown 不冒泡到 host 的 window,host renderer
-      // 的全局监听器拿不到。要让 Ctrl/Cmd+L 在用户焦点在 guest 网页内时也能
-      // 触发 chrome 的 URL bar 聚焦,必须在 main 端拦截 before-input-event,推
-      // 消息给 host renderer。Codex `main-cC-d0ezP.js:48846` 也用同一事件做同
-      // 一件事。
-      //
-      // 组合键从 app-shortcuts store 实时读生效值 (默认 + 用户 override),与
-      // host 侧 BrowserTabBody 的监听保持同一份 registry,改绑后两端行为一致。
-      // 命中即 preventDefault + 转发,guest 网页不会再收到这次按键。
-      guestContents.on('before-input-event', (event, input) => {
-        if (!isGuestShortcutKeyDownType(input.type)) return;
-        const store = getAppShortcutStore();
-        const action = resolveGuestShortcutAction(input, (id) =>
-          store.getEffectiveCombos(id),
-        );
-        if (!action) return;
-        event.preventDefault();
-        if (contents.isDestroyed()) return;
-        if (action.kind === 'focus-url-bar') {
-          contents.send(RSB_BROWSER_FOCUS_URL_BAR_CHANNEL, null);
-        } else {
-          contents.send(RSB_BROWSER_COMMAND_CHANNEL, { command: action.command });
-        }
-      });
+      installBrowserGuestHandlers(contents, guestContents);
     });
   });
 }

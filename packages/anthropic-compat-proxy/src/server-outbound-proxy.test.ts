@@ -1,3 +1,4 @@
+import dns from 'node:dns';
 import { createServer as createHttpServer } from 'node:http';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -86,6 +87,52 @@ describe('anthropic-compat-proxy outbound proxy wiring', () => {
     expect(connects).toEqual(['upstream.invalid:443']);
   });
 
+  it('classifies a closed loopback HTTP CONNECT proxy port as upstream_loopback_refused (#4100)', async () => {
+    // 先拿一个刚释放的回环端口:代理进程 / SSH 隧道没起来的形态。
+    const placeholder = createHttpServer();
+    const closedPort = await listenOnAvailableLoopbackPort(placeholder);
+    await new Promise<void>((r) => placeholder.close(() => r()));
+
+    proxy = await createAnthropicCompatProxy({
+      upstream: 'https://upstream.invalid',
+      transformRequest: [],
+      resolveOutboundProxy: () => `http://127.0.0.1:${closedPort}`,
+    });
+
+    const res = await fetch(`${proxy.url}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'x', messages: [] }),
+    });
+    expect(res.status).toBe(502);
+    const body = await res.json() as { error: { code?: string; message: string } };
+    expect(body.error.code).toBe('upstream_loopback_refused');
+    expect(body.error.message).toContain(`outbound proxy at 127.0.0.1:${closedPort}`);
+    expect(body.error.message).toContain('nothing is listening');
+  });
+
+  it('classifies a closed loopback SOCKS5 proxy port as upstream_loopback_refused (#4100)', async () => {
+    const placeholder = createHttpServer();
+    const closedPort = await listenOnAvailableLoopbackPort(placeholder);
+    await new Promise<void>((r) => placeholder.close(() => r()));
+
+    proxy = await createAnthropicCompatProxy({
+      upstream: 'http://upstream.invalid:8080/v1',
+      transformRequest: [],
+      resolveOutboundProxy: () => `socks5://127.0.0.1:${closedPort}`,
+    });
+
+    const res = await fetch(`${proxy.url}/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'x', messages: [] }),
+    });
+    expect(res.status).toBe(502);
+    const body = await res.json() as { error: { code?: string; message: string } };
+    expect(body.error.code).toBe('upstream_loopback_refused');
+    expect(body.error.message).toContain(`outbound proxy at 127.0.0.1:${closedPort}`);
+  });
+
   it('tunnels upstreams through SOCKS5 and hands the domain to the proxy unresolved', async () => {
     const seen: Array<{ url: string; host?: string }> = [];
     const upstream = createHttpServer((req, res) => {
@@ -166,6 +213,25 @@ describe('anthropic-compat-proxy outbound proxy wiring', () => {
   });
 
   it('falls back to direct connection when the resolver throws or returns unsupported urls', async () => {
+    // 本用例是文件里唯一真的对 .invalid 假域做**直连**(前面的用例域名都原样交给
+    // 代理桩,不走本地解析)。macOS 上 NXDOMAIN 即时返回,但 Windows 的解析器会
+    // 带着 DNS 搜索后缀逐个重查,轻松拖过测试超时。桩掉 .invalid 的 lookup 让它
+    // 立即 ENOTFOUND —— 仍走真实 net.connect 失败路径,只是把结果变成确定性的;
+    // 其余域名(本文件只有 IP 字面量,压根不进 lookup)原样放行。
+    const realLookup = dns.lookup;
+    vi.spyOn(dns, 'lookup').mockImplementation(((hostname: string, options: unknown, callback?: unknown) => {
+      const cb = (typeof options === 'function' ? options : callback) as (err: NodeJS.ErrnoException | null) => void;
+      if (!hostname.endsWith('.invalid')) {
+        return (realLookup as (...args: unknown[]) => unknown)(hostname, options, callback);
+      }
+      const err: NodeJS.ErrnoException = Object.assign(
+        new Error(`getaddrinfo ENOTFOUND ${hostname}`),
+        { code: 'ENOTFOUND', syscall: 'getaddrinfo', hostname },
+      );
+      queueMicrotask(() => cb(err));
+    }) as typeof dns.lookup);
+    cleanups.push(() => { vi.restoreAllMocks(); });
+
     const warns: string[] = [];
     proxy = await createAnthropicCompatProxy({
       upstream: 'http://upstream.invalid:8080',

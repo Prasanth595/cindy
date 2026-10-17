@@ -59,8 +59,14 @@ function assertMainWindowSender(
 
 function throwBillingFetchError(error: unknown): never {
   if (error instanceof ServerApiError) {
+    if (error.code === 'PLAN_CHANGE_RENEWAL_PREPAID') {
+      throwIpcError('PLAN_CHANGE_RENEWAL_PREPAID', 'next renewal is already paid');
+    }
     if (error.code === 'PLAN_CHANGE_NOT_AVAILABLE') {
       throwIpcError('PLAN_CHANGE_NOT_AVAILABLE', 'target plan is not available');
+    }
+    if (error.code === 'RESUME_NOT_AVAILABLE') {
+      throwIpcError('RESUME_NOT_AVAILABLE', 'subscription is not resumable');
     }
     if (error.statusCode === 400) {
       throwIpcError('INVALID_PARAMS', 'billing request was rejected');
@@ -365,6 +371,18 @@ export function createBillingHandlers(
         projectBillingSubscription,
       );
     }),
+    [BILLING_INVOKE.RESUME_CURRENT_SUBSCRIPTION]: protect(async (raw) => {
+      if (raw !== undefined) {
+        throwIpcError('INVALID_PARAMS', 'subscription resume does not accept a payload');
+      }
+      return projectResponse(
+        await invoke<unknown>('/api/billing/subscription/resume', {
+          method: 'POST',
+          allowedRedactedErrorCodes: ['RESUME_NOT_AVAILABLE'],
+        }),
+        projectBillingSubscription,
+      );
+    }),
     [BILLING_INVOKE.REFRESH_SUBSCRIPTION_PURCHASE]: protect(async (raw) => {
       const { purchaseAttemptId } = parseIdPayload(raw, 'purchaseAttemptId');
       return projectResponse(
@@ -385,7 +403,7 @@ export function createBillingHandlers(
           method: 'POST',
           body: { targetOfferCode },
           headers: { 'Idempotency-Key': idempotencyKey },
-          allowedRedactedErrorCodes: ['PLAN_CHANGE_NOT_AVAILABLE'],
+          allowedRedactedErrorCodes: ['PLAN_CHANGE_NOT_AVAILABLE', 'PLAN_CHANGE_RENEWAL_PREPAID'],
         }),
         projectBillingPlanChange,
       );
@@ -395,7 +413,7 @@ export function createBillingHandlers(
       return projectResponse(
         await invoke<unknown>(
           `/api/billing/subscription/plan-changes/${encodeURIComponent(planChangeId)}/confirm`,
-          { method: 'POST' },
+          { method: 'POST', allowedRedactedErrorCodes: ['PLAN_CHANGE_RENEWAL_PREPAID'] },
         ),
         projectBillingPlanChange,
       );

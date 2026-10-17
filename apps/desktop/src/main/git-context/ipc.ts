@@ -3,7 +3,7 @@
  *
  * Channels(invoke):
  *   git-context:get             (workdir) → GitContextSnapshot
- *   git-context:get-for-session ({sessionId,workingDir,worktreePath}) → SessionGitDirResult
+ *   git-context:get-for-session ({sessionId,workingDir,worktreePath,remoteHostId}) → SessionGitDirResult
  *   git-context:watch           (workdir) → void(开始监听 HEAD,refcount)
  *   git-context:unwatch       (workdir) → void
  *   git-context:pr-refs:list  (sessionId) → SessionPrRef[]
@@ -14,20 +14,36 @@
  *   git-context:pr-refs-changed { sessionId }
  *
  * GitHub token 只用本地 gh CLI 登录态(`gh auth token`,零配置)——agent 干活
- * 本来就靠 gh,凭证天然就有;未登录时降级 no-token,UI 提示让 agent 跑一次
- * gh auth login 即可。不做 app 级 PAT 绑定(设计收敛,见 PR #94 讨论)。
+ * 本来就靠 gh,凭证天然就有;拿不到时按原因降级 gh-missing / gh-not-logged-in,
+ * 徽标点击打开内置 gh 安装和设备码登录。不做 app 级 PAT 绑定。
  */
 
 import { BrowserWindow, ipcMain } from 'electron';
 import { GithubClient } from '@cindy/github-client';
+import { eq } from 'drizzle-orm';
 
 import { createLogger } from '../logger.js';
-import { getCurrentDbClientUserId } from '../localDb/client/current';
+import { getCurrentDbClientUserId, getDbClient } from '../localDb/client/current';
+import { sessions } from '../localDb/schema.js';
 import { outboundFetch } from '../maker-host/outbound-fetch.js';
-import { requireString, throwIpcError } from '../utils/ipcValidate';
+import { optionalNullableString, requireString, throwIpcError } from '../utils/ipcValidate';
 import { getSharedGhCliTokenSource } from './ghCliTokenSource.js';
+import { registerGithubSetupIpc } from './githubSetupIpc.js';
 import { GitContextService } from './GitContextService.js';
-import { resolveSessionGitDirLive } from './sessionDirResolver.js';
+import {
+  findLiveLinkedWorktreeLive,
+  getSessionGitTelemetryCandidateLive,
+  resolveSessionGitDirLive,
+} from './sessionDirResolver.js';
+import {
+  resolveAuthoritativeSessionGitTarget,
+  resolveReadyRemoteGitHost,
+  resolveRemoteSessionGitDir,
+} from './remoteSessionDirResolver.js';
+import { ensureRemoteHostReady, getRemoteSshPool } from '../remote-ssh/index.js';
+import { isDeviceLinkInvoke } from '../device-link/invoke-context.js';
+import { assertTrustedAppRendererEvent } from '../security/trustedAppRenderer.js';
+import * as worktreeStore from '../worktree/worktreeStore.js';
 import {
   ensurePrRefsBackfill,
   listAllPrRefs,
@@ -35,6 +51,7 @@ import {
   setPrRefsChangedListener,
 } from './prRefsStore.js';
 import {
+  filterPrStatusQueriesForRefs,
   PrStatusService,
   type PrStatusQuery,
   type PrRemoteState,
@@ -45,6 +62,7 @@ const log = createLogger('git-context/ipc');
 export const GIT_CONTEXT_INVOKE = {
   GET: 'git-context:get',
   GET_FOR_SESSION: 'git-context:get-for-session',
+  FIND_LINKED_WORKTREE: 'git-context:find-linked-worktree',
   WATCH: 'git-context:watch',
   UNWATCH: 'git-context:unwatch',
   PR_REFS_LIST: 'git-context:pr-refs:list',
@@ -71,8 +89,8 @@ function broadcastToAllWindows(channel: string, payload: unknown): void {
 /** gh CLI 登录态来源(进程内共享单例,内置 5min 正 / 30s 负缓存)。 */
 const ghCliTokenSource = getSharedGhCliTokenSource();
 
-async function readGithubToken(): Promise<string | null> {
-  return ghCliTokenSource.readToken();
+async function readGithubToken() {
+  return ghCliTokenSource.readTokenDetailed();
 }
 
 /** GraphQL 查未解决 review thread 数(REST 不暴露 isResolved)。上限 100。 */
@@ -97,7 +115,12 @@ async function fetchUnresolvedCount(client: GithubClient, q: PrStatusQuery): Pro
 
 async function fetchPrRemote(token: string, q: PrStatusQuery): Promise<PrRemoteState> {
   // fetchImpl:api.github.com 是境外端点,走吃系统代理的通道(见 maker-host/outbound-fetch)。
-  const client = new GithubClient({ token, owner: q.owner, repo: q.repo, fetchImpl: outboundFetch });
+  const client = new GithubClient({
+    token,
+    owner: q.owner,
+    repo: q.repo,
+    fetchImpl: outboundFetch,
+  });
   // 核心状态走 REST(所有 token 类型通用);未解决数走 GraphQL 增强信号,
   // 失败(老 fine-grained PAT 不支持 GraphQL 等)降级 null,不拖垮整条状态。
   const [pr, unresolved] = await Promise.all([
@@ -131,6 +154,7 @@ export function registerGitContextIpc(): void {
     readToken: readGithubToken,
     fetchPr: fetchPrRemote,
   });
+  registerGithubSetupIpc(() => prStatusService?.invalidate());
   setPrRefsChangedListener((sessionId) =>
     broadcastToAllWindows(GIT_CONTEXT_PUSH.PR_REFS_CHANGED, { sessionId }),
   );
@@ -143,18 +167,94 @@ export function registerGitContextIpc(): void {
   // 按 session 解析「对话真实工作目录」+ 其 HEAD + 来源:从 agent tool-call 遥测
   // 推断(Codex cwd / cc 编辑路径),拿不到才回退 worktree / working_dir。
   // renderer 用返回的 workdir 去 watch,用 source 决定分支信任度。
-  ipcMain.handle(GIT_CONTEXT_INVOKE.GET_FOR_SESSION, async (_e, payload: unknown) => {
+  ipcMain.handle(GIT_CONTEXT_INVOKE.GET_FOR_SESSION, async (event, payload: unknown) => {
     const obj = payload as {
       sessionId?: unknown;
       workingDir?: unknown;
       worktreePath?: unknown;
+      remoteHostId?: unknown;
     };
     const sessionId = requireString(obj?.sessionId, 'sessionId');
-    const fallbackWorkingDir =
+    let fallbackWorkingDir =
       typeof obj?.workingDir === 'string' && obj.workingDir !== '' ? obj.workingDir : null;
-    const fallbackWorktreePath =
+    let fallbackWorktreePath =
       typeof obj?.worktreePath === 'string' && obj.worktreePath !== '' ? obj.worktreePath : null;
+    const requestedRemoteHostId = optionalNullableString(obj?.remoteHostId) ?? null;
+    let remoteHostId = requestedRemoteHostId;
+
+    // Any remote SSH exec must be anchored to main-owned session state. The
+    // renderer cannot choose an arbitrary registered host/path, and a
+    // device-link controller cannot override the controlled device's paths or
+    // nested SSH host with a stale/forged projection.
+    const deviceLinkInvoke = isDeviceLinkInvoke();
+    // The SSH branch can hydrate a persisted host and execute a command on it;
+    // only Cindy's own top-level renderer may start that privileged path.
+    // device-link invokes are authorized by their existing async context.
+    if (requestedRemoteHostId !== null && !deviceLinkInvoke) {
+      assertTrustedAppRendererEvent(event);
+    }
+    if (deviceLinkInvoke || requestedRemoteHostId) {
+      try {
+        const db = getDbClient().drizzle;
+        const [row] = await db
+          .select({
+            workingDir: sessions.workingDir,
+            worktreePath: sessions.worktreePath,
+            remoteHostId: sessions.remoteHostId,
+          })
+          .from(sessions)
+          .where(eq(sessions.id, sessionId))
+          .limit(1);
+        if (!row) return { workdir: null, head: null, source: null };
+        const target = resolveAuthoritativeSessionGitTarget({
+          stored: row,
+          requestedRemoteHostId,
+          isDeviceLink: deviceLinkInvoke,
+          liveLocalWorktreePath: worktreeStore.get(sessionId)?.path ?? null,
+        });
+        if (!target) return { workdir: null, head: null, source: null };
+        fallbackWorkingDir = target.workingDir;
+        fallbackWorktreePath = target.worktreePath;
+        remoteHostId = target.remoteHostId;
+      } catch (err) {
+        log.warn('remote git context session lookup failed', {
+          sessionId,
+          err: err instanceof Error ? err.message : String(err),
+        });
+        return { workdir: null, head: null, source: null };
+      }
+    }
+    if (remoteHostId) {
+      const host = await resolveReadyRemoteGitHost(remoteHostId, {
+        ensureReady: ensureRemoteHostReady,
+        getHost: (hostId) => getRemoteSshPool().get(hostId),
+      });
+      if (!host) return { workdir: null, head: null, source: null };
+      const telemetryPath = await getSessionGitTelemetryCandidateLive(
+        sessionId,
+        // SSH sessions run through the bash-based remote runtime; a
+        // device-link session without nested SSH probes its controlled
+        // Desktop filesystem and must retain that process platform.
+        'linux',
+      );
+      return resolveRemoteSessionGitDir({
+        telemetryPath,
+        fallbackWorktreePath,
+        fallbackWorkingDir,
+        host,
+      });
+    }
     return resolveSessionGitDirLive({ sessionId, fallbackWorktreePath, fallbackWorkingDir });
+  });
+
+  // 侧栏任务信息 worktree 徽标:本机 Desktop 专用。扫遥测里仍活着的 linked worktree,
+  // 不跟 get-for-session 的「只看最近一次」语义。device-link / SSH 不走这条。
+  ipcMain.handle(GIT_CONTEXT_INVOKE.FIND_LINKED_WORKTREE, async (event, payload: unknown) => {
+    if (isDeviceLinkInvoke()) return null;
+    assertTrustedAppRendererEvent(event);
+    const obj = payload as { sessionId?: unknown };
+    const sessionId = requireString(obj?.sessionId, 'sessionId');
+    return findLiveLinkedWorktreeLive(sessionId);
   });
 
   ipcMain.handle(GIT_CONTEXT_INVOKE.WATCH, async (_e, workdir: unknown) => {
@@ -186,10 +286,17 @@ export function registerGitContextIpc(): void {
   });
 
   ipcMain.handle(GIT_CONTEXT_INVOKE.PR_STATUS, async (_e, queries: unknown) => {
-    if (!Array.isArray(queries)) {
+    let rawQueries: unknown = queries;
+    let remoteSessionId: string | null = null;
+    if (isDeviceLinkInvoke()) {
+      const obj = queries as { sessionId?: unknown; queries?: unknown };
+      remoteSessionId = requireString(obj?.sessionId, 'sessionId');
+      rawQueries = obj?.queries;
+    }
+    if (!Array.isArray(rawQueries)) {
       throwIpcError('INVALID_PARAMS', 'queries 必须是数组');
     }
-    const parsed: PrStatusQuery[] = (queries as unknown[]).map((q) => {
+    let parsed: PrStatusQuery[] = (rawQueries as unknown[]).map((q) => {
       const obj = q as { owner?: unknown; repo?: unknown; prNumber?: unknown };
       const owner = requireString(obj?.owner, 'owner');
       const repo = requireString(obj?.repo, 'repo');
@@ -199,7 +306,26 @@ export function registerGitContextIpc(): void {
       }
       return { owner, repo, prNumber };
     });
-    return prStatusService!.getStatuses(parsed);
+    if (remoteSessionId) {
+      // A remote controller may only ask for statuses of PRs already extracted
+      // from that session's messages. This blocks a bare status-channel call
+      // from querying an unrelated private repository with the controlled
+      // device's gh token; intentionally mentioning a PR in the task remains
+      // part of the existing remote-control product behavior.
+      try {
+        const refs = await listPrRefs(remoteSessionId);
+        parsed = filterPrStatusQueriesForRefs(parsed, refs);
+      } catch (err) {
+        // DB failures must not turn into an unfiltered token-bearing request;
+        // fail closed and let the remote renderer retry on its next refresh.
+        log.warn('remote PR refs lookup failed (fail closed)', {
+          sessionId: remoteSessionId,
+          err: err instanceof Error ? err.message : String(err),
+        });
+        return [];
+      }
+    }
+    return prStatusService!.getStatuses(parsed, { remote: remoteSessionId !== null });
   });
 }
 

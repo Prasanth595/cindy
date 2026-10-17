@@ -14,9 +14,8 @@
 
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 
-import { sortPresetsForLocale } from '@cindy/model-providers';
+import { sortPresetsForRegion } from '@cindy/model-providers';
 import type { ProviderPreset, ProviderView } from '@cindy/model-providers';
-import { useTranslation } from 'react-i18next';
 
 import { useAuth } from '@/contexts/AuthContext';
 import { useProviders } from '@/hooks/useProviders';
@@ -54,7 +53,7 @@ export interface DetectedProviderRow {
 }
 
 export interface UseProviderOnboardingReturn {
-  /** 是否应展示引导:providers 已加载 && 零已连接来源 && 未被 dismiss。 */
+  /** 已加载且零已连接来源；可跳过的引导还受 dismiss 控制。 */
   visible: boolean;
   loading: boolean;
   /** 登录三态:cloud 引导连接 Cindy AI;signed-out/local 引导去登录。 */
@@ -81,6 +80,8 @@ export interface UseProviderOnboardingReturn {
 }
 
 interface UseProviderOnboardingOptions {
+  /** 必须先连接来源的恢复入口传 false，不读取普通引导的关闭偏好。 */
+  dismissible?: boolean;
   /** 卡片需要预设目录时传 true(banner 不需要,省一次 IPC)。 */
   loadPresets?: boolean;
 }
@@ -88,7 +89,6 @@ interface UseProviderOnboardingOptions {
 export function useProviderOnboarding(
   options?: UseProviderOnboardingOptions,
 ): UseProviderOnboardingReturn {
-  const { i18n } = useTranslation();
   const { mode } = useAuth();
   const { providers, loading } = useProviders();
 
@@ -104,7 +104,7 @@ export function useProviderOnboarding(
     if (!loading && hasAnyConnected) resetProviderOnboardingDismissal();
   }, [loading, hasAnyConnected]);
 
-  const visible = !loading && !hasAnyConnected && !dismissed;
+  const visible = !loading && !hasAnyConnected && (options?.dismissible === false || !dismissed);
 
   const xdProvider = useMemo(() => providers.find((p) => p.id === 'xd'), [providers]);
 
@@ -163,8 +163,8 @@ export function useProviderOnboarding(
   }, [detections, providers]);
 
   const presets = useMemo(
-    () => (rawPresets ? sortPresetsForLocale(rawPresets, i18n.language) : []),
-    [rawPresets, i18n.language],
+    () => (rawPresets ? sortPresetsForRegion(rawPresets, CURRENT_CINDY_REGION) : []),
+    [rawPresets],
   );
 
   // 主列/折叠区装配(区域策略见 UseProviderOnboardingReturn.primaryRows 注释)。

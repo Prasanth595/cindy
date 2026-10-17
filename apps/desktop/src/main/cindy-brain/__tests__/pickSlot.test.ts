@@ -3,9 +3,10 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { InstalledGhost } from '../../../shared/ghost';
+import { installedGhostMutationTargetToken } from '../../../shared/pluginIdentity';
 import { GhostPickSlot, type PickSlotDeps } from '../pickSlot';
 
-function pickGhost(options: { slots?: string[]; enabled?: boolean } = {}): InstalledGhost {
+function pickGhost(options: { pick?: boolean; node?: boolean; enabled?: boolean } = {}): InstalledGhost {
   return {
     manifest: {
       schemaVersion: 2,
@@ -14,8 +15,8 @@ function pickGhost(options: { slots?: string[]; enabled?: boolean } = {}): Insta
       version: '1.0.0',
       kind: 'chip',
       entry: 'main.js',
-      slots: options.slots ?? ['pick', 'node'],
-      ...(options.slots?.includes('node') ?? true
+      ...(options.pick === false ? {} : { pick: true }),
+      ...(options.node !== false
         ? { node: { entry: 'node/worker.cjs', protocol: 'json-rpc-stdio' } }
         : {}),
     },
@@ -28,6 +29,7 @@ function makeSlot(overrides: Partial<PickSlotDeps> = {}) {
   let clock = 0;
   const deps: PickSlotDeps = {
     getGhost: () => pickGhost(),
+    getMutationTarget: () => 'installed-target',
     showDirectoryDialog: vi.fn(async () => '/Users/me/projects'),
     depositDir: vi.fn(() => ({
       ok: true as const,
@@ -40,8 +42,8 @@ function makeSlot(overrides: Partial<PickSlotDeps> = {}) {
 }
 
 describe('pickSlot · 资格审与载荷校验', () => {
-  it('未声明 pick 槽 / 未启用 一律 PERMISSION_DENIED', async () => {
-    const noSlot = makeSlot({ getGhost: () => pickGhost({ slots: ['node'] }) });
+  it('未声明 pick 能力 / 未启用 一律 PERMISSION_DENIED', async () => {
+    const noSlot = makeSlot({ getGhost: () => pickGhost({ pick: false }) });
     expect(await noSlot.slot.handleRequest('pick-ghost', { mode: 'directory' })).toMatchObject({
       ok: false,
       errorCode: 'PERMISSION_DENIED',
@@ -68,8 +70,8 @@ describe('pickSlot · 资格审与载荷校验', () => {
     ).toMatchObject({ ok: false, errorCode: 'INVALID_REQUEST' });
   });
 
-  it('未声明 node 槽的插件必须 deposit:true,否则选完什么都拿不到 = 拒单', async () => {
-    const { slot } = makeSlot({ getGhost: () => pickGhost({ slots: ['pick'] }) });
+  it('未声明 node 能力的插件必须 deposit:true,否则选完什么都拿不到 = 拒单', async () => {
+    const { slot } = makeSlot({ getGhost: () => pickGhost({ node: false }) });
     expect(await slot.handleRequest('pick-ghost', { mode: 'directory' })).toMatchObject({
       ok: false,
       errorCode: 'INVALID_REQUEST',
@@ -92,6 +94,7 @@ describe('pickSlot · 授权 = 用户亲选', () => {
       dir_deposit: { token: 't' },
     });
     expect(deps.showDirectoryDialog).toHaveBeenCalledWith({
+      ghostId: 'pick-ghost',
       ghostName: 'Pick Ghost',
       purpose: '选择项目父目录',
     });
@@ -103,7 +106,7 @@ describe('pickSlot · 授权 = 用户亲选', () => {
     expect(nodeOnly).toMatchObject({ ok: true, path: '/Users/me/projects' });
     expect((nodeOnly as { dir_deposit?: unknown }).dir_deposit).toBeUndefined();
 
-    const depositOnly = makeSlot({ getGhost: () => pickGhost({ slots: ['pick'] }) });
+    const depositOnly = makeSlot({ getGhost: () => pickGhost({ node: false }) });
     const r = await depositOnly.slot.handleRequest('pick-ghost', {
       mode: 'directory',
       deposit: true,
@@ -151,6 +154,54 @@ describe('pickSlot · 授权 = 用户亲选', () => {
     });
     await slot.handleRequest('pick-ghost', { mode: 'directory', deposit: true });
     expect(recordPickedDir).toHaveBeenCalledWith('pick-ghost', '/Users/me/projects');
+  });
+});
+
+describe('pickSlot · 晚到的选择结果', () => {
+  it.each(['root-reuse', 'source-switch', 'owner-switch', 'disabled', 'unchanged'])(
+    '%s 不把旧授权交给新目标',
+    async (change) => {
+      let current = {
+        ...pickGhost(),
+        namespace: 'acme' as string | null,
+        approval: { state: 'approved' as const, revision: 'receipt-1' },
+      };
+      let owner = 'owner-1';
+      let release!: (value: string | null) => void;
+      const dialog = new Promise<string | null>((resolve) => { release = resolve; });
+      const recordPickedDir = vi.fn();
+      const { slot, deps } = makeSlot({
+        getGhost: () => current,
+        getMutationTarget: () => installedGhostMutationTargetToken(current, owner),
+        showDirectoryDialog: () => dialog,
+        recordPickedDir,
+      });
+      const pending = slot.handleRequest('pick-ghost', { mode: 'directory', deposit: true });
+      if (change === 'root-reuse') current = { ...current, namespace: null };
+      if (change === 'source-switch') {
+        current = { ...current, approval: { state: 'approved', revision: 'receipt-2' } };
+      }
+      if (change === 'owner-switch') owner = 'owner-2';
+      if (change === 'disabled') current = { ...current, enabled: false };
+      release('/Users/me/projects');
+      if (change === 'unchanged') {
+        expect(await pending).toMatchObject({ ok: true });
+        expect(recordPickedDir).toHaveBeenCalledOnce();
+        expect(deps.depositDir).toHaveBeenCalledOnce();
+      } else {
+        expect(await pending).toMatchObject({ ok: false, errorCode: 'PERMISSION_DENIED' });
+        expect(recordPickedDir).not.toHaveBeenCalled();
+        expect(deps.depositDir).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it('无法绑定目标时不打开选择框', async () => {
+    const { slot, deps } = makeSlot({ getMutationTarget: () => null });
+    expect(await slot.handleRequest('pick-ghost', { mode: 'directory' })).toMatchObject({
+      ok: false, errorCode: 'PERMISSION_DENIED',
+    });
+    expect(deps.showDirectoryDialog).not.toHaveBeenCalled();
   });
 });
 

@@ -21,31 +21,29 @@ const LOCALE_DIR = path.join(
   '../../src/renderer/i18n/locales',
 );
 
-/** 页面语言 → renderer locale 候选(主干 4 语,中文全并进 zh-CN)。 */
+/** 页面语言 → renderer locale 候选。 */
 export const OAUTH_LANG_TO_APP_LOCALES: Record<OAuthResultPageLang, string[]> = {
   zh: ['zh-CN'],
+  'zh-TW': ['zh-TW', 'zh-CN'],
   en: ['en'],
   ja: ['ja'],
   ko: ['ko'],
 };
 
 /** 页面语言全集,与 OAUTH_LANG_TO_APP_LOCALES 保持同源。 */
-export const OAUTH_RESULT_LANGS = Object.keys(
-  OAUTH_LANG_TO_APP_LOCALES,
-) as OAuthResultPageLang[];
+export const OAUTH_RESULT_LANGS = Object.keys(OAUTH_LANG_TO_APP_LOCALES) as OAuthResultPageLang[];
 
 export interface LoginBrowserCallbackCopy {
   successTitle: string;
   successBody: string;
+  closeCountdown: string;
   errorTitle: string;
   errorBody: string;
   returnButton: string;
 }
 
 /** 读取生产 `login.browserCallback.*` 文案,并插值 {{appName}}。 */
-export function loadLoginCallbackCopy(
-  lang: OAuthResultPageLang,
-): LoginBrowserCallbackCopy {
+export function loadLoginCallbackCopy(lang: OAuthResultPageLang): LoginBrowserCallbackCopy {
   for (const locale of OAUTH_LANG_TO_APP_LOCALES[lang]) {
     const file = path.join(LOCALE_DIR, locale, 'common.json');
     if (!existsSync(file)) continue;
@@ -64,6 +62,7 @@ export function loadLoginCallbackCopy(
     return {
       successTitle: resolve('successTitle'),
       successBody: resolve('successBody'),
+      closeCountdown: resolve('closeCountdown'),
       errorTitle: resolve('errorTitle'),
       errorBody: resolve('errorBody'),
       returnButton: resolve('returnButton'),

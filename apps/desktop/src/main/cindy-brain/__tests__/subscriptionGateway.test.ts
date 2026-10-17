@@ -13,11 +13,17 @@ import {
   GhostTapPendingQueue,
   GhostTurnOriginTracker,
   GhostTurnTranslator,
+  createGhostPrimarySessionFocusTracker,
   createGhostSessionFocusTracker,
   ghostActivityId,
   isGhostEligibleSessionRow,
+  isGhostSessionSwitchEligibleRow,
   normalizeTurnUsage,
   readStatusIsRunning,
+  resolveGhostPrimarySessionId,
+  resolveGhostUserHookModel,
+  withGhostAssistantHookModel,
+  withGhostUserHookModel,
   type GhostSubscriptionGatewayDeps,
 } from '../subscriptionGateway';
 import {
@@ -27,6 +33,225 @@ import {
   type GhostPipeEventPush,
   type InstalledGhost,
 } from '../../../shared/ghost';
+import { installedGhostStoragePart } from '../../../shared/pluginIdentity.js';
+
+describe('did-session-switched primary session resolution', () => {
+  it('allows ordinary sessions and Orca leads, but never workers or background sessions', () => {
+    expect(isGhostSessionSwitchEligibleRow({ source: 'desktop', orcaRole: null })).toBe(true);
+    expect(isGhostSessionSwitchEligibleRow({ source: 'shared', orcaRole: 'lead' })).toBe(true);
+    expect(isGhostSessionSwitchEligibleRow({ source: 'plugin', orcaRole: 'lead' })).toBe(true);
+    expect(isGhostSessionSwitchEligibleRow({ source: 'desktop', orcaRole: 'worker' })).toBe(false);
+    expect(isGhostSessionSwitchEligibleRow({ source: 'desktop', orcaRole: 'unknown' })).toBe(false);
+    expect(isGhostSessionSwitchEligibleRow({ source: 'scheduler', orcaRole: null })).toBe(false);
+  });
+
+  it('keeps ordinary and lead ids, and maps a worker to its lead', async () => {
+    const roles = new Map<string, string | null>([
+      ['ordinary', null],
+      ['lead', 'lead'],
+      ['worker', 'worker'],
+    ]);
+    const readSession = vi.fn(async (sessionId: string) =>
+      roles.has(sessionId) ? { orcaRole: roles.get(sessionId) } : null,
+    );
+    const resolveWorkerLead = vi.fn(async () => 'lead');
+
+    await expect(
+      resolveGhostPrimarySessionId('ordinary', readSession, resolveWorkerLead),
+    ).resolves.toBe('ordinary');
+    await expect(resolveGhostPrimarySessionId('lead', readSession, resolveWorkerLead)).resolves.toBe(
+      'lead',
+    );
+    await expect(
+      resolveGhostPrimarySessionId('worker', readSession, resolveWorkerLead),
+    ).resolves.toBe('lead');
+    expect(resolveWorkerLead).toHaveBeenCalledTimes(1);
+    expect(resolveWorkerLead).toHaveBeenCalledWith('worker');
+  });
+
+  it('fails closed for missing rows, unknown roles, missing teams, and lookup failures', async () => {
+    const noTeam = vi.fn(async () => null);
+    await expect(
+      resolveGhostPrimarySessionId('missing', async () => null, noTeam),
+    ).resolves.toBeNull();
+    await expect(
+      resolveGhostPrimarySessionId('unknown', async () => ({ orcaRole: 'unknown' }), noTeam),
+    ).resolves.toBeNull();
+    await expect(
+      resolveGhostPrimarySessionId('worker', async () => ({ orcaRole: 'worker' }), noTeam),
+    ).resolves.toBeNull();
+    await expect(
+      resolveGhostPrimarySessionId(
+        'worker',
+        async () => {
+          throw new Error('db unavailable');
+        },
+        noTeam,
+      ),
+    ).resolves.toBeNull();
+  });
+});
+
+describe('createGhostPrimarySessionFocusTracker', () => {
+  it('deduplicates different workers that resolve to the same lead', async () => {
+    const published: string[] = [];
+    const notify = vi.fn(async (sessionId: string, claim: () => Promise<boolean>) => {
+      if (await claim()) published.push(sessionId);
+    });
+    const tracker = createGhostPrimarySessionFocusTracker(async () => 'lead', notify);
+
+    tracker.note('worker-1');
+    await vi.waitFor(() => expect(published).toEqual(['lead']));
+    tracker.note('worker-2');
+    await Promise.resolve();
+
+    expect(published).toEqual(['lead']);
+  });
+
+  it('ignores a stale async resolution after focus changes', async () => {
+    let resolveFirst!: (sessionId: string | null) => void;
+    let resolveSecond!: (sessionId: string | null) => void;
+    const first = new Promise<string | null>((resolve) => {
+      resolveFirst = resolve;
+    });
+    const second = new Promise<string | null>((resolve) => {
+      resolveSecond = resolve;
+    });
+    const resolve = vi.fn((sessionId: string) => (sessionId === 'worker-1' ? first : second));
+    const published: string[] = [];
+    const notify = vi.fn(async (sessionId: string, claim: () => Promise<boolean>) => {
+      if (await claim()) published.push(sessionId);
+    });
+    const tracker = createGhostPrimarySessionFocusTracker(resolve, notify);
+
+    tracker.note('worker-1');
+    tracker.note('worker-2');
+    resolveSecond('lead-2');
+    await vi.waitFor(() => expect(published).toEqual(['lead-2']));
+    resolveFirst('lead-1');
+    await Promise.resolve();
+
+    expect(published).toEqual(['lead-2']);
+  });
+
+  it('claims publication at the final async boundary', async () => {
+    const pending: Array<{ sessionId: string; claim: () => Promise<boolean> }> = [];
+    const tracker = createGhostPrimarySessionFocusTracker(async () => 'lead', (sessionId, claim) => {
+      pending.push({ sessionId, claim });
+    });
+
+    tracker.note('worker-1');
+    await vi.waitFor(() => expect(pending).toHaveLength(1));
+    tracker.note('worker-2');
+    await vi.waitFor(() => expect(pending).toHaveLength(2));
+
+    await expect(pending[0]?.claim()).resolves.toBe(false);
+    await expect(pending[1]?.claim()).resolves.toBe(true);
+    await expect(pending[1]?.claim()).resolves.toBe(false);
+  });
+
+  it('rejects a lead mapping that changes before publication', async () => {
+    let currentLead = 'lead-1';
+    const pending: Array<{ sessionId: string; claim: () => Promise<boolean> }> = [];
+    const tracker = createGhostPrimarySessionFocusTracker(
+      async () => currentLead,
+      (sessionId, claim) => pending.push({ sessionId, claim }),
+    );
+
+    tracker.note('worker');
+    await vi.waitFor(() => expect(pending).toHaveLength(1));
+    currentLead = 'lead-2';
+
+    expect(pending[0]?.sessionId).toBe('lead-1');
+    await expect(pending[0]?.claim()).resolves.toBe(false);
+  });
+
+  it('allows the same unresolved focus to retry after the first lookup fails', async () => {
+    let attempts = 0;
+    const published: string[] = [];
+    const notify = vi.fn(async (sessionId: string, claim: () => Promise<boolean>) => {
+      if (await claim()) published.push(sessionId);
+    });
+    const tracker = createGhostPrimarySessionFocusTracker(async () => {
+      attempts += 1;
+      return attempts === 1 ? null : 'lead';
+    }, notify);
+
+    tracker.note('worker');
+    await vi.waitFor(() => expect(attempts).toBe(1));
+    tracker.note('worker');
+    await vi.waitFor(() => expect(published).toEqual(['lead']));
+
+    expect(attempts).toBe(3);
+  });
+
+  it('preserves the published lead while a same-lead worker focus is unresolved', async () => {
+    let workerBAttempts = 0;
+    const published: string[] = [];
+    const notify = vi.fn(async (sessionId: string, claim: () => Promise<boolean>) => {
+      if (await claim()) published.push(sessionId);
+    });
+    const tracker = createGhostPrimarySessionFocusTracker(async (sessionId) => {
+      if (sessionId === 'worker-b') {
+        workerBAttempts += 1;
+        return workerBAttempts === 1 ? null : 'lead-a';
+      }
+      return 'lead-a';
+    }, notify);
+
+    tracker.note('worker-a');
+    await vi.waitFor(() => expect(published).toEqual(['lead-a']));
+    tracker.note('worker-b');
+    await vi.waitFor(() => expect(workerBAttempts).toBe(1));
+    tracker.note('worker-b');
+    await vi.waitFor(() => expect(workerBAttempts).toBe(3));
+
+    expect(published).toEqual(['lead-a']);
+  });
+
+  it('allows the same focus to retry when the publication recheck fails', async () => {
+    let attempts = 0;
+    const pending: Array<{ sessionId: string; claim: () => Promise<boolean> }> = [];
+    const tracker = createGhostPrimarySessionFocusTracker(
+      async () => {
+        attempts += 1;
+        return attempts === 2 ? null : 'lead';
+      },
+      (sessionId, claim) => pending.push({ sessionId, claim }),
+    );
+
+    tracker.note('worker');
+    await vi.waitFor(() => expect(pending).toHaveLength(1));
+    await expect(pending[0]?.claim()).resolves.toBe(false);
+
+    tracker.note('worker');
+    await vi.waitFor(() => expect(pending).toHaveLength(2));
+    await expect(pending[1]?.claim()).resolves.toBe(true);
+    expect(attempts).toBe(4);
+  });
+
+  it('clears deduplication when focus explicitly leaves the session', async () => {
+    const published: string[] = [];
+    const notify = vi.fn(async (sessionId: string, claim: () => Promise<boolean>) => {
+      if (await claim()) published.push(sessionId);
+    });
+    const tracker = createGhostPrimarySessionFocusTracker(
+      async (sessionId) => (sessionId === 'hidden-worker' ? null : 'lead'),
+      notify,
+    );
+
+    tracker.note('worker');
+    await vi.waitFor(() => expect(published).toHaveLength(1));
+    tracker.note(null);
+    tracker.note('lead');
+    await vi.waitFor(() => expect(published).toHaveLength(2));
+    tracker.note(null);
+    tracker.note('lead');
+    await vi.waitFor(() => expect(published).toHaveLength(3));
+
+    expect(published).toEqual(['lead', 'lead', 'lead']);
+  });
+});
 
 function ghost(
   id: string,
@@ -41,7 +266,6 @@ function ghost(
       version: '1.0.0',
       kind: 'chip',
       entry: 'main.js',
-      slots: ['subscribe'],
       ...(subscribe ? { subscribe } : {}),
     },
     dir: `/fake/${id}`,
@@ -57,21 +281,79 @@ function makeGateway(overrides: Partial<GhostSubscriptionGatewayDeps> = {}) {
     listGhosts: () => [ghost('a', { topics: ['turn'] })],
     isRunning: (id) => running.has(id),
     wake: vi.fn(async (g: InstalledGhost) => {
-      running.add(g.manifest.id);
+      running.add(installedGhostStoragePart(g));
     }),
     sendToGhost: (ghostId, payload) => {
       sent.push({ ghostId, payload });
     },
     now: () => 1_000,
     newHookId: () => `hook-${++hookSeq}`,
+    resolveMessageHookContext: () => ({}),
     ...overrides,
   };
   return { gw: new GhostSubscriptionGateway(deps), sent, running, deps };
 }
 
+describe('subscriptionGateway owner boundary', () => {
+  it('drops buffered events when the owner changes during wake', async () => {
+    let releaseWake!: () => void;
+    let ownerValid = true;
+    const onInvalidated = vi.fn();
+    const wake = vi.fn(() => new Promise<void>((resolve) => { releaseWake = resolve; }));
+    const { gw, sent } = makeGateway({
+      listGhosts: () => [ghost('a', { topics: ['activity'] })],
+      wake,
+      ownerScope: {
+        capture: () => ({ ownerId: 'owner-a', generation: 1 }),
+        isCurrent: () => ownerValid,
+        isStable: () => ownerValid,
+        onInvalidated,
+      },
+    });
+
+    gw.publish('activity', 'did-thinking-start', { sessionId: 's1', blockId: 'b1' });
+    await vi.waitFor(() => expect(wake).toHaveBeenCalledOnce());
+    ownerValid = false;
+    releaseWake();
+
+    await vi.waitFor(() => expect(onInvalidated).toHaveBeenCalledWith('a'));
+    expect(sent).toHaveLength(0);
+  });
+});
+
 const TURN_DATA = { sessionId: 's1', agent: 'claude-code' };
 
 describe('did- 旁听扇出', () => {
+  it('does not deliver an old buffered event after its physical key has been reused', async () => {
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const { gw, sent, running } = makeGateway({ wake: () => pending });
+    gw.publish('turn', 'did-turn-start', TURN_DATA);
+    gw.dropGhost('a');
+    running.add('a');
+    release();
+    await pending;
+    await Promise.resolve();
+    expect(sent).toHaveLength(0);
+    gw.publish('turn', 'did-turn-start', TURN_DATA);
+    expect(sent).toHaveLength(1);
+    expect((sent[0]!.payload as { seq: number }).seq).toBe(1);
+  });
+  it('isolates same-name subscriber queues and never sends organization events to root', () => {
+    const root = ghost('helper', undefined);
+    const organization = { ...ghost('helper', { topics: ['turn'] }), namespace: 'acme', dir: '/fake/_ns/acme/helper' };
+    const { gw, sent, running } = makeGateway({ listGhosts: () => [root, organization] });
+    running.add('helper');
+    running.add('_ns__acme__helper');
+    gw.publish('turn', 'did-turn-start', TURN_DATA);
+    expect(sent.map((event) => event.ghostId)).toEqual(['_ns__acme__helper']);
+    root.manifest.subscribe = { topics: ['turn'] };
+    gw.publish('turn', 'did-turn-start', TURN_DATA);
+    expect(sent.map((event) => [event.ghostId, (event.payload as { seq: number }).seq])).toEqual([
+      ['_ns__acme__helper', 1], ['helper', 1], ['_ns__acme__helper', 2],
+    ]);
+  });
+
   it('只投声明了该 topic 的启用意识;seq 单调', async () => {
     const { gw, sent, running } = makeGateway({
       listGhosts: () => [
@@ -255,6 +537,21 @@ describe('GhostActivityTracker', () => {
 });
 
 describe('will- 拦截', () => {
+  it.each(['will-user-message', 'will-assistant-message'] as const)('wakes and routes %s only to its selected organization instance', async (hook) => {
+    const root = ghost('helper', undefined);
+    const org = { ...ghost('helper', { hooks: [hook] }), namespace: 'acme', dir: '/fake/_ns/acme/helper' };
+    const { gw, sent, running } = makeGateway({ listGhosts: () => [root, org] });
+    const screening = hook === 'will-user-message'
+      ? gw.screenUserMessage({ sessionId: 's', text: 'input' })
+      : gw.screenAssistantMessage({ sessionId: 's', text: 'input' });
+    await vi.waitFor(() => expect(sent).toHaveLength(1));
+    expect(running).toEqual(new Set(['_ns__acme__helper']));
+    expect(sent[0]!.ghostId).toBe('_ns__acme__helper');
+    const hookId = (sent[0]!.payload as unknown as { hookId: string }).hookId;
+    gw.handleVerdict('helper', { type: 'event-verdict', hookId, action: 'rewrite', text: 'wrong instance' });
+    gw.handleVerdict('_ns__acme__helper', { type: 'event-verdict', hookId, action: 'rewrite', text: 'organization' });
+    expect(await screening).toMatchObject({ action: 'rewrite', ghostId: '_ns__acme__helper', text: 'organization' });
+  });
   beforeEach(() => {
     vi.useFakeTimers();
   });
@@ -286,15 +583,22 @@ describe('will- 拦截', () => {
   });
 
   it('allow 继续问下一个;全 allow 放行', async () => {
-    const { gw, sent, running } = makeGateway({ listGhosts: () => HOOK_GHOSTS });
+    const context = { model: 'gpt-5.6' };
+    const { gw, sent, running } = makeGateway({
+      listGhosts: () => HOOK_GHOSTS,
+      resolveMessageHookContext: () => context,
+    });
     running.add('h1').add('h2');
     const p = gw.screenUserMessage({ sessionId: 's1', text: 'hi' });
+    expect(sent[0]?.payload).toMatchObject({ name: 'will-user-message', data: context });
     gw.handleVerdict('h1', {
       type: 'event-verdict',
       hookId: (sent[0].payload as { hookId: string }).hookId,
       action: 'allow',
     });
     await vi.waitFor(() => expect(sent).toHaveLength(2));
+    const secondData = (sent[1]?.payload as { data: Record<string, unknown> }).data;
+    expect(secondData).toEqual({ sessionId: 's1', text: 'hi', model: 'gpt-5.6' });
     gw.handleVerdict('h2', {
       type: 'event-verdict',
       hookId: (sent[1].payload as { hookId: string }).hookId,
@@ -397,6 +701,38 @@ describe('will- 拦截', () => {
     expect(sent).toHaveLength(3);
   });
 
+  it('无匹配钩子时不读取上下文', async () => {
+    const resolveMessageHookContext = vi.fn(() => ({ model: 'gpt-5.6' }));
+    const { gw } = makeGateway({ listGhosts: () => [], resolveMessageHookContext });
+    expect(await gw.screenUserMessage({ sessionId: 's1', text: 'hi' })).toEqual({ action: 'allow' });
+    expect(resolveMessageHookContext).not.toHaveBeenCalled();
+  });
+
+  it('同轮插话使用运行中会话的模型快照', async () => {
+    const resolveMessageHookContext = vi.fn(() => ({ model: 'next-model' }));
+    const { gw, sent, running } = makeGateway({
+      listGhosts: () => [HOOK_GHOSTS[0]],
+      resolveMessageHookContext,
+    });
+    running.add('h1');
+    const p = withGhostUserHookModel('live-model', () =>
+      gw.screenUserMessage({ sessionId: 's1', text: 'steer' }),
+    );
+    expect(sent[0]?.payload).toMatchObject({ data: { model: 'live-model' } });
+    expect(resolveMessageHookContext).not.toHaveBeenCalled();
+    gw.handleVerdict('h1', {
+      type: 'event-verdict',
+      hookId: (sent[0].payload as { hookId: string }).hookId,
+      action: 'allow',
+    });
+    expect(await p).toEqual({ action: 'allow' });
+  });
+
+  it('排队轮次使用入队时捕获的模型', () => {
+    expect(resolveGhostUserHookModel(false, 'new-selection', 'queued-model')).toBe('queued-model');
+    expect(resolveGhostUserHookModel(true, 'live-model', 'queued-model')).toBe('live-model');
+  });
+
   it('verdict 归属校验:冒名/未知 hookId 静默丢;迟到 verdict 无副作用', async () => {
     const { gw, sent, running } = makeGateway({ listGhosts: () => [HOOK_GHOSTS[0]] });
     running.add('h1');
@@ -409,8 +745,8 @@ describe('will- 拦截', () => {
     gw.handleVerdict('h1', { type: 'event-verdict', hookId, action: 'block' }); // 迟到
   });
 
-  it('wake 挂死(load 永不完成):3s 整体上界照样放行,不卡发送', async () => {
-    const { gw } = makeGateway({
+  it('wake 挂死(load 永不完成):超时后终止投递续体,不卡发送', async () => {
+    const { gw, sent } = makeGateway({
       listGhosts: () => [HOOK_GHOSTS[0]],
       isRunning: () => false,
       wake: vi.fn(() => new Promise<never>(() => {})), // 永不 settle
@@ -418,6 +754,50 @@ describe('will- 拦截', () => {
     const p = gw.screenUserMessage({ sessionId: 's1', text: 'hi' });
     await vi.advanceTimersByTimeAsync(GHOST_HOOK_TIMEOUT_MS + 10);
     expect(await p).toEqual({ action: 'allow' });
+    expect(sent).toEqual([]);
+  });
+
+  it('入口钩子的唤醒与裁决共享同一个整体超时', async () => {
+    let finishWake!: () => void;
+    const wake = vi.fn(() => new Promise<void>((resolve) => {
+      finishWake = resolve;
+    }));
+    const { gw, sent } = makeGateway({
+      listGhosts: () => [HOOK_GHOSTS[0]],
+      isRunning: () => false,
+      wake,
+    });
+    const p = gw.screenUserMessage({ sessionId: 's1', text: 'hi' });
+    await vi.advanceTimersByTimeAsync(GHOST_HOOK_TIMEOUT_MS - 100);
+    finishWake();
+    await vi.waitFor(() => expect(sent).toHaveLength(1));
+
+    await vi.advanceTimersByTimeAsync(200);
+    expect(await p).toEqual({ action: 'allow' });
+    gw.handleVerdict('h1', {
+      type: 'event-verdict',
+      hookId: (sent[0].payload as { hookId: string }).hookId,
+      action: 'block',
+    });
+  });
+
+  it('上下文读取挂死:无上下文投递后仍受整体超时约束', async () => {
+    const { gw, sent, running } = makeGateway({
+      listGhosts: () => [HOOK_GHOSTS[0]],
+      resolveMessageHookContext: () => new Promise<never>(() => {}),
+    });
+    running.add('h1');
+    const p = gw.screenUserMessage({ sessionId: 's1', text: 'hi' });
+    await vi.advanceTimersByTimeAsync(GHOST_HOOK_TIMEOUT_MS / 2);
+    expect((sent[0].payload as { data: unknown }).data).toEqual({ sessionId: 's1', text: 'hi' });
+    const hookId = (sent[0].payload as { hookId: string }).hookId;
+    await vi.advanceTimersByTimeAsync(GHOST_HOOK_TIMEOUT_MS / 2 + 1);
+    expect(await p).toEqual({ action: 'allow' });
+    gw.handleVerdict('h1', {
+      type: 'event-verdict',
+      hookId,
+      action: 'block',
+    });
   });
 
   it('投递失败计入熔断并放行;成功裁决清零失败计数', async () => {
@@ -458,10 +838,19 @@ describe('will-assistant-message 出口钩子拦截(screenAssistantMessage)', ()
     ghost('h2', { hooks: ['will-assistant-message'] }),
   ];
 
-  it('全 allow → 放行', async () => {
-    const { gw, sent, running } = makeGateway({ listGhosts: () => OUT_GHOSTS });
+  it('使用本轮模型快照而不是下一轮选择', async () => {
+    const resolveMessageHookContext = vi.fn(() => ({ model: 'next-model' }));
+    const { gw, sent, running } = makeGateway({
+      listGhosts: () => OUT_GHOSTS,
+      resolveMessageHookContext,
+    });
     running.add('h1').add('h2');
-    const p = gw.screenAssistantMessage({ sessionId: 's1', text: 'AI 回复' });
+    const p = withGhostAssistantHookModel(Promise.resolve('claude-opus-5'), () =>
+      gw.screenAssistantMessage({ sessionId: 's1', text: 'AI 回复' }),
+    );
+    await vi.waitFor(() => expect(sent).toHaveLength(1));
+    expect(sent[0]?.payload).toMatchObject({ data: { model: 'claude-opus-5' } });
+    expect(resolveMessageHookContext).not.toHaveBeenCalled();
     gw.handleVerdict('h1', {
       type: 'event-verdict',
       hookId: (sent[0].payload as { hookId: string }).hookId,
@@ -476,6 +865,30 @@ describe('will-assistant-message 出口钩子拦截(screenAssistantMessage)', ()
     expect(await p).toEqual({ action: 'allow' });
     // 下发的事件名是出口钩子名。
     expect((sent[0].payload as { name: string }).name).toBe('will-assistant-message');
+  });
+
+  it('出口钩子按自身预算等待较慢的本轮模型快照', async () => {
+    let resolveModel!: (model: string) => void;
+    const model = new Promise<string>((resolve) => {
+      resolveModel = resolve;
+    });
+    const { gw, sent, running } = makeGateway({ listGhosts: () => [OUT_GHOSTS[0]] });
+    running.add('h1');
+    const p = withGhostAssistantHookModel(model, () =>
+      gw.screenAssistantMessage({ sessionId: 's1', text: 'AI 回复' }),
+    );
+
+    await vi.advanceTimersByTimeAsync(GHOST_HOOK_TIMEOUT_MS);
+    expect(sent).toHaveLength(0);
+    resolveModel('claude-opus-5');
+    await vi.waitFor(() => expect(sent).toHaveLength(1));
+    expect(sent[0]?.payload).toMatchObject({ data: { model: 'claude-opus-5' } });
+    gw.handleVerdict('h1', {
+      type: 'event-verdict',
+      hookId: (sent[0].payload as { hookId: string }).hookId,
+      action: 'allow',
+    });
+    expect(await p).toEqual({ action: 'allow' });
   });
 
   it('rewrite 链式叠加:h2 看到 h1 改写后的文本,末个署名', async () => {
@@ -672,6 +1085,110 @@ describe('GhostTurnTranslator(status/done/error → did-turn-*)', () => {
     // 宽限定时器已取消,到期不再补发 interrupted
     vi.advanceTimersByTime(1_000);
     expect(ends).toHaveLength(1);
+  });
+
+  it('claimed SDK boundaries keep one plugin turn open and accumulate usage', () => {
+    const nowRef = { t: 0 };
+    const { tr, starts, ends } = makeTranslator(nowRef);
+    tr.handleEvent({ type: 'status', data: { isRunning: true } });
+
+    nowRef.t = 300;
+    tr.handleEvent({
+      type: 'status',
+      data: { status: 'Done', isRunning: false },
+      turnContinuationId: 7,
+    });
+    tr.handleEvent({
+      type: 'done',
+      data: { usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 4 } },
+      turnContinuationId: 7,
+    });
+    expect(starts).toHaveLength(1);
+    expect(ends).toHaveLength(0);
+
+    tr.handleEvent({ type: 'status', data: { isRunning: true } });
+    expect(starts).toHaveLength(1);
+    nowRef.t = 900;
+    tr.handleEvent({ type: 'status', data: { status: 'Done', isRunning: false } });
+    tr.handleEvent({
+      type: 'done',
+      data: { usage: { input_tokens: 3, output_tokens: 2, cache_creation_input_tokens: 6 } },
+    });
+
+    expect(ends).toEqual([
+      {
+        sessionId: 's1',
+        agent: 'claude-code',
+        model: 'opus',
+        durationMs: 900,
+        endReason: 'completed',
+        usage: {
+          inputTokens: 13,
+          outputTokens: 7,
+          cacheReadTokens: 4,
+          cacheCreationTokens: 6,
+        },
+      },
+    ]);
+  });
+
+  it('does not emit an empty usage object for zero-value continuation segments', () => {
+    const nowRef = { t: 0 };
+    const { tr, ends } = makeTranslator(nowRef);
+    tr.handleEvent({ type: 'status', data: { isRunning: true } });
+    tr.handleEvent({
+      type: 'done',
+      data: { usage: { input_tokens: 0, output_tokens: 0 } },
+      turnContinuationId: 8,
+    });
+    tr.handleEvent({
+      type: 'done',
+      data: { usage: { input_tokens: 0, output_tokens: 0 } },
+    });
+
+    expect(ends).toEqual([
+      {
+        sessionId: 's1',
+        agent: 'claude-code',
+        model: 'opus',
+        durationMs: 0,
+        endReason: 'completed',
+      },
+    ]);
+  });
+
+  it.each([false, true])('retains output-limit usage exactly once (continuation=%s)', (continuation) => {
+    const { tr, ends } = makeTranslator({ t: 0 });
+    tr.handleEvent({ type: 'status', source: 'pi', data: { isRunning: true } });
+    if (continuation) {
+      tr.handleEvent({ type: 'done', source: 'pi', turnContinuationId: 7,
+        data: { usage: { inputTokens: 2, outputTokens: 3 } } });
+    }
+    const usage = { inputTokens: 10, outputTokens: 16_000, cacheReadTokens: 4, cacheCreationTokens: 6 };
+    tr.handleEvent({ type: 'error', source: 'pi',
+      data: { reason: 'output-limit', isTerminal: true, usage } });
+    expect(ends).toEqual([expect.objectContaining({
+      endReason: 'error', agent: 'pi',
+      usage: { ...usage, inputTokens: continuation ? 12 : 10, outputTokens: continuation ? 16_003 : 16_000 },
+    })]);
+    tr.handleEvent({ type: 'done', source: 'pi', data: { status: 'failed', usage } });
+    tr.handleEvent({ type: 'status', source: 'pi', data: { isRunning: false } });
+    vi.advanceTimersByTime(1_000);
+    expect(ends).toHaveLength(1);
+    tr.handleEvent({ type: 'status', source: 'pi', data: { isRunning: true } });
+    tr.handleEvent({ type: 'done', source: 'pi', data: { usage: { inputTokens: 1 } } });
+    expect(ends[1]).toMatchObject({ endReason: 'completed', usage: { inputTokens: 1 } });
+    expect((ends[1] as { usage: unknown }).usage).toEqual({ inputTokens: 1 });
+  });
+
+  it('ignores nonterminal error usage and preserves errors without usage', () => {
+    const { tr, ends } = makeTranslator({ t: 0 });
+    tr.handleEvent({ type: 'status', data: { isRunning: true } });
+    tr.handleEvent({ type: 'error', data: { isTerminal: false, usage: { inputTokens: 99 } } });
+    expect(ends).toHaveLength(0);
+    tr.handleEvent({ type: 'error', data: { isTerminal: true } });
+    expect(ends).toEqual([expect.objectContaining({ endReason: 'error' })]);
+    expect(ends[0]).not.toHaveProperty('usage');
   });
 
   it('status false 后宽限窗内无 done/error = interrupted;terminal error 定性 error', () => {

@@ -1,4 +1,3 @@
-import * as Notifications from 'expo-notifications';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Platform } from 'react-native';
 import type { ClientEndpointRegion } from '@cindy/maker-shared/client-endpoints';
@@ -10,6 +9,11 @@ import {
   getMobileEndpointForRealm,
   loadMobileEndpointsForRealm,
 } from '@/config/env';
+import {
+  getDevServerEnvironment,
+  type DevServerEnvironment,
+} from '@/config/devServerEnvironment';
+import Notifications from './nativeNotifications';
 import { buildPushTokenRegistrationBody } from './pushRegistrationModel';
 
 /**
@@ -19,7 +23,8 @@ import { buildPushTokenRegistrationBody } from './pushRegistrationModel';
  * - 注册目标是 device-link server 的 PUT /push-token(Bearer 鉴权与 WS 同源);
  *   关闭开关 / 登出 / 换账号或区域时注销(DELETE,幂等)。
  * - 仅 iOS(APNs):Android 需 FCM / 国内厂商通道,二期接入(server 侧已预留
- *   provider='fcm' 字段)。
+ *   provider='fcm' 字段)。原生模块只在 iOS 存在,所有调用一律经
+ *   `./nativeNotifications`(Android 由平台扩展顶成空实现,原因见该文件)。
  * - App 在前台时压掉系统横幅(WS 活着,会话本来就在实时刷新)。
  */
 
@@ -39,6 +44,36 @@ const PUSH_UNREGISTER_TIMEOUT_MS = 3_000;
 interface PushRealmState {
   version: typeof PUSH_REALM_STATE_VERSION;
   realms: ClientEndpointRegion[];
+}
+
+interface PushStateScope {
+  environment: DevServerEnvironment;
+  legacyRealm: ClientEndpointRegion;
+}
+
+/** 一次 mutation 内冻结存储 namespace，不能在异步读写之间重新取当前环境。 */
+function capturePushStateScope(
+  legacyRealm: ClientEndpointRegion = BUILD_AUTH_REGION,
+): PushStateScope {
+  return { environment: getDevServerEnvironment(), legacyRealm };
+}
+
+function pushStateStorageKeys(
+  baseKey: string,
+  environment: DevServerEnvironment,
+): {
+  primary: string;
+  migrationFallback: string | null;
+} {
+  if (AUTH_REGION !== 'dev') {
+    return { primary: baseKey, migrationFallback: null };
+  }
+  return {
+    primary: `${baseKey}.${environment}`,
+    // 旧 CindyDev 只连接 Dev；无环境后缀的存量状态只能归到 Dev，绝不能
+    // 在首次切到 Release 时误迁移过去。
+    migrationFallback: environment === 'dev' ? baseKey : null,
+  };
 }
 
 /** React effects / token listener / 设置页可能同时触发，串行化避免注册与撤销倒序。 */
@@ -68,12 +103,18 @@ function isClientEndpointRegion(value: unknown): value is ClientEndpointRegion {
  */
 async function readPushRealms(
   key: string,
-  legacyRealm: ClientEndpointRegion = BUILD_AUTH_REGION,
+  scope: PushStateScope,
 ): Promise<Set<ClientEndpointRegion>> {
   try {
-    const raw = await AsyncStorage.getItem(key);
+    const storageKeys = pushStateStorageKeys(key, scope.environment);
+    const primaryRaw = await AsyncStorage.getItem(storageKeys.primary);
+    const raw =
+      primaryRaw ??
+      (storageKeys.migrationFallback
+        ? await AsyncStorage.getItem(storageKeys.migrationFallback)
+        : null);
     if (!raw || raw === '0') return new Set();
-    if (raw === '1') return new Set([legacyRealm]);
+    if (raw === '1') return new Set([scope.legacyRealm]);
     const parsed: unknown = JSON.parse(raw);
     if (
       typeof parsed !== 'object' ||
@@ -94,36 +135,48 @@ async function readPushRealms(
 async function writePushRealms(
   key: string,
   realms: ReadonlySet<ClientEndpointRegion>,
+  scope: PushStateScope,
 ): Promise<void> {
+  const storageKeys = pushStateStorageKeys(key, scope.environment);
   if (realms.size === 0) {
-    await AsyncStorage.removeItem(key);
+    await AsyncStorage.removeItem(storageKeys.primary);
+    if (storageKeys.migrationFallback) {
+      await AsyncStorage.removeItem(storageKeys.migrationFallback).catch(
+        () => undefined,
+      );
+    }
     return;
   }
   const state: PushRealmState = {
     version: PUSH_REALM_STATE_VERSION,
     realms: (['cn', 'global'] as const).filter((realm) => realms.has(realm)),
   };
-  await AsyncStorage.setItem(key, JSON.stringify(state));
+  await AsyncStorage.setItem(storageKeys.primary, JSON.stringify(state));
+  if (storageKeys.migrationFallback) {
+    await AsyncStorage.removeItem(storageKeys.migrationFallback).catch(
+      () => undefined,
+    );
+  }
 }
 
 async function addPushRealm(
   key: string,
   realm: ClientEndpointRegion,
-  legacyRealm: ClientEndpointRegion = realm,
+  scope: PushStateScope,
 ): Promise<void> {
-  const realms = await readPushRealms(key, legacyRealm);
+  const realms = await readPushRealms(key, scope);
   realms.add(realm);
-  await writePushRealms(key, realms);
+  await writePushRealms(key, realms, scope);
 }
 
 async function removePushRealm(
   key: string,
   realm: ClientEndpointRegion,
-  legacyRealm: ClientEndpointRegion = realm,
+  scope: PushStateScope,
 ): Promise<void> {
-  const realms = await readPushRealms(key, legacyRealm);
+  const realms = await readPushRealms(key, scope);
   realms.delete(realm);
-  await writePushRealms(key, realms);
+  await writePushRealms(key, realms, scope);
 }
 
 function normalizeDeviceToken(value: unknown): string | null {
@@ -248,10 +301,14 @@ async function syncPushRegistrationInternal(
   if (!isPushSupported()) return 'unsupported';
   if (lifecycleGeneration !== pushLifecycleGeneration) return 'skipped';
   const realm = getActiveMobileSessionRealm();
+  const stateScope = capturePushStateScope(realm);
   const baseUrl = deviceLinkBaseForRealm(realm);
 
   if (!opts.enabled) {
-    const registeredRealms = await readPushRealms(PUSH_REGISTERED_KEY, realm);
+    const registeredRealms = await readPushRealms(
+      PUSH_REGISTERED_KEY,
+      stateScope,
+    );
     if (lifecycleGeneration !== pushLifecycleGeneration) return 'skipped';
     if (!registeredRealms.has(realm)) return 'skipped';
     const token = await getNativeDeviceTokenBestEffort();
@@ -263,13 +320,13 @@ async function syncPushRegistrationInternal(
         ...(token ? { body: pushDeleteBody(token) } : {}),
       });
     } catch (error) {
-      await addPushRealm(PUSH_PENDING_UNREGISTER_KEY, realm).catch(
+      await addPushRealm(PUSH_PENDING_UNREGISTER_KEY, realm, stateScope).catch(
         () => undefined,
       );
       throw error;
     }
-    await removePushRealm(PUSH_REGISTERED_KEY, realm);
-    await removePushRealm(PUSH_PENDING_UNREGISTER_KEY, realm);
+    await removePushRealm(PUSH_REGISTERED_KEY, realm, stateScope);
+    await removePushRealm(PUSH_PENDING_UNREGISTER_KEY, realm, stateScope);
     return 'unregistered';
   }
 
@@ -292,9 +349,9 @@ async function syncPushRegistrationInternal(
 
   // PUT 响应丢失时无法判断服务端是否提交，发出前即标记“可能已注册”；
   // 后续只能在该区域持有有效会话时做幂等 DELETE。
-  await addPushRealm(PUSH_REGISTERED_KEY, realm);
+  await addPushRealm(PUSH_REGISTERED_KEY, realm, stateScope);
   if (lifecycleGeneration !== pushLifecycleGeneration) {
-    await addPushRealm(PUSH_PENDING_UNREGISTER_KEY, realm);
+    await addPushRealm(PUSH_PENDING_UNREGISTER_KEY, realm, stateScope);
     return 'skipped';
   }
   try {
@@ -305,17 +362,17 @@ async function syncPushRegistrationInternal(
     });
   } catch (error) {
     if (lifecycleGeneration !== pushLifecycleGeneration) {
-      await addPushRealm(PUSH_PENDING_UNREGISTER_KEY, realm).catch(
+      await addPushRealm(PUSH_PENDING_UNREGISTER_KEY, realm, stateScope).catch(
         () => undefined,
       );
     }
     throw error;
   }
   if (lifecycleGeneration !== pushLifecycleGeneration) {
-    await addPushRealm(PUSH_PENDING_UNREGISTER_KEY, realm);
+    await addPushRealm(PUSH_PENDING_UNREGISTER_KEY, realm, stateScope);
     return 'skipped';
   }
-  await removePushRealm(PUSH_PENDING_UNREGISTER_KEY, realm);
+  await removePushRealm(PUSH_PENDING_UNREGISTER_KEY, realm, stateScope);
   return 'registered';
 }
 
@@ -338,20 +395,24 @@ async function unregisterPushTokenBestEffortInternal(
   accessToken: string | null,
 ): Promise<void> {
   if (!isPushSupported()) return;
+  const stateScope = capturePushStateScope(realm);
   try {
-    const registeredRealms = await readPushRealms(PUSH_REGISTERED_KEY, realm);
+    const registeredRealms = await readPushRealms(
+      PUSH_REGISTERED_KEY,
+      stateScope,
+    );
     if (!registeredRealms.has(realm)) return;
 
-    await addPushRealm(PUSH_PENDING_UNREGISTER_KEY, realm);
+    await addPushRealm(PUSH_PENDING_UNREGISTER_KEY, realm, stateScope);
     if (!accessToken) return;
 
     await deletePushTokenWithAccessToken(realm, accessToken);
-    await removePushRealm(PUSH_REGISTERED_KEY, realm);
-    await removePushRealm(PUSH_PENDING_UNREGISTER_KEY, realm);
+    await removePushRealm(PUSH_REGISTERED_KEY, realm, stateScope);
+    await removePushRealm(PUSH_PENDING_UNREGISTER_KEY, realm, stateScope);
   } catch {
     // 离线/超时/旧 token 失效不能阻断退出或切换。标记只在以后登录同一区域时
     // 重试，绝不引入服务端互信或客户端跨区 token 发送。
-    await addPushRealm(PUSH_PENDING_UNREGISTER_KEY, realm).catch(
+    await addPushRealm(PUSH_PENDING_UNREGISTER_KEY, realm, stateScope).catch(
       () => undefined,
     );
   }
@@ -376,9 +437,10 @@ async function retryPendingUnregisterInternal(
 ): Promise<void> {
   if (!isPushSupported()) return;
   const realm = getActiveMobileSessionRealm();
+  const stateScope = capturePushStateScope(realm);
   const pendingRealms = await readPushRealms(
     PUSH_PENDING_UNREGISTER_KEY,
-    realm,
+    stateScope,
   );
   if (!pendingRealms.has(realm)) return;
 
@@ -389,8 +451,8 @@ async function retryPendingUnregisterInternal(
       method: 'DELETE',
       ...(token ? { body: pushDeleteBody(token) } : {}),
     });
-    await removePushRealm(PUSH_PENDING_UNREGISTER_KEY, realm);
-    await removePushRealm(PUSH_REGISTERED_KEY, realm);
+    await removePushRealm(PUSH_PENDING_UNREGISTER_KEY, realm, stateScope);
+    await removePushRealm(PUSH_REGISTERED_KEY, realm, stateScope);
   } catch {
     // 仍失败：保留当前区域标记，下次同区登录继续补偿。
   }

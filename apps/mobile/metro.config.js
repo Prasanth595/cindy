@@ -3,6 +3,16 @@ const { getDefaultConfig } = require('expo/metro-config');
 
 const config = getDefaultConfig(__dirname);
 const workspaceRoot = path.resolve(__dirname, '../..');
+// Shared endpoint discovery bundles the public manifests from the repository config directory.
+config.watchFolders = [...config.watchFolders, path.join(workspaceRoot, 'config')];
+// Keep upload routing build-time-only, with the desktop validator as the single configuration source.
+// Missing config is allowed for local/open-source builds; malformed or cross-region config is not.
+const { mobileLogUploadBuildEnv, mobileLogUploadConfigRequired } = require('../../scripts/shared/log-upload-build-env.mjs');
+Object.assign(process.env, mobileLogUploadBuildEnv({
+  repoRoot: workspaceRoot,
+  authRegion: process.env.EXPO_PUBLIC_CINDY_AUTH_REGION || 'global',
+  allowMissing: !mobileLogUploadConfigRequired(),
+}));
 const workspaceNodeModules = path.join(workspaceRoot, 'node_modules');
 const appNodeModules = path.join(__dirname, 'node_modules');
 const sharedArrayBufferPolyfill = path.join(__dirname, 'src/polyfills/sharedArrayBuffer.js');
@@ -11,6 +21,7 @@ const sharedArrayBufferPolyfill = path.join(__dirname, 'src/polyfills/sharedArra
 const workspaceTsSourcePackages = [
   'auth-client',
   'device-link',
+  'device-link-protocol',
   'maker-shared',
   'model-providers',
 ];
@@ -19,7 +30,7 @@ config.resolver.disableHierarchicalLookup = true;
 // 关掉层级查找后,Metro 只查显式列出的 node_modules。pnpm hoisted 布局(根 .npmrc
 // node-linker=hoisted)下,workspace:* 依赖**不会**提升到根 node_modules,只链接在消费方包
 // 自己的 node_modules 下(如 packages/device-link/node_modules/@cindy/device-link-protocol →
-// cindy-protocol submodule)——不把这些目录列进来,TS 源码包引用的任何 workspace 依赖在
+// packages/device-link-protocol)——不把这些目录列进来,TS 源码包引用的任何 workspace 依赖在
 // 打 bundle 时都会 Unable to resolve(2026-07-16 iOS 冷更实踩)。
 // 追加在末尾:常规依赖仍按 app → 根的原顺序命中,行为不变,只补此前查不到的路径。
 // 边界:只覆盖这一层——若这些包的 workspace 依赖自己再新增 workspace 依赖(或新的 TS 源码包
@@ -35,7 +46,7 @@ config.resolver.extraNodeModules = {
   ...config.resolver.extraNodeModules,
   '@cindy/device-link-protocol': path.join(
     workspaceRoot,
-    'cindy-protocol/packages/device-link-protocol',
+    'packages/device-link-protocol',
   ),
   react: path.join(appNodeModules, 'react'),
   'react-native': path.join(workspaceNodeModules, 'react-native'),

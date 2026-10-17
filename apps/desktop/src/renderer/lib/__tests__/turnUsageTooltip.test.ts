@@ -18,11 +18,22 @@ vi.mock('../../../shared/brandRegion', () => ({
 
 import { buildTurnUsageDetails, normalizeTurnUsageDetails } from '../../../shared/turnUsageDetails';
 import { formatModelShort } from '../usageFormat';
-import { buildTurnUsageTooltipLines } from '../turnUsageTooltip';
+import {
+  buildTurnUsageTooltipLines,
+  formatOutputTokenRate,
+  formatTurnDuration,
+} from '../turnUsageTooltip';
 
 // t 桩: 返回 `key` 或 `key|{json opts}`, 便于断言哪条 i18n key 被用到及其插值。
-const t = ((key: string, opts?: Record<string, unknown>) =>
-  opts ? `${key}|${JSON.stringify(opts)}` : key) as unknown as TFunction;
+const t = ((key: string, opts?: Record<string, unknown>) => {
+  if (key === 'usageDetails.durationSeconds') return `${opts?.value}秒`;
+  if (key === 'usageDetails.durationMinutesSeconds') {
+    return `${opts?.minutes}分 ${opts?.seconds}秒`;
+  }
+  if (key === 'usageDetails.durationHoursMinutes') return `${opts?.hours} 小时 ${opts?.minutes} 分`;
+  if (key === 'usageDetails.durationDaysHoursMinutes') return `${opts?.days} 天 ${opts?.hours} 小时 ${opts?.minutes} 分`;
+  return opts ? `${key}|${JSON.stringify(opts)}` : key;
+}) as unknown as TFunction;
 
 describe('formatModelShort', () => {
   it('claude 家族 → 简短标签 (剥 [1m] / 尾部日期)', () => {
@@ -39,6 +50,13 @@ describe('formatModelShort', () => {
   it('认不出 → 回退 (空串原样)', () => {
     expect(formatModelShort('deepseek-v3')).toBe('deepseek-v3');
     expect(formatModelShort('')).toBe('');
+  });
+});
+
+describe('formatOutputTokenRate', () => {
+  it('does not round a positive sub-0.1 TPS rate down to zero', () => {
+    const details = buildTurnUsageDetails({ outputTokens: 1, durationMs: 25_000 })!;
+    expect(formatOutputTokenRate(details)).toBe('<0.1');
   });
 });
 
@@ -185,6 +203,72 @@ describe('buildTurnUsageTooltipLines — 无金额 (token 回退) tooltip', () =
     const out = buildTurnUsageTooltipLines({ details, t });
     expect(out).toContain('usageDetails.noBilledCost');
     expect(out.some((l) => l.includes('priceUnavailable'))).toBe(false);
+  });
+});
+
+describe('buildTurnUsageTooltipLines — 输出速度', () => {
+  it('有输出 token 和有效耗时时显示平均 TPS', () => {
+    const details = buildTurnUsageDetails({
+      inputTokens: 2,
+      outputTokens: 235,
+      cacheCreateTokens: 25_470,
+      durationMs: 8_954,
+      model: 'anthropic/claude-opus-5',
+    })!;
+
+    expect(buildTurnUsageTooltipLines({ details, t, costUsd: 0.17 })).toContain(
+      'usageDetails.performanceRateLine|{"rate":"26.2"}',
+    );
+  });
+
+  it('does not hide a valid sub-100ms generation behind an arbitrary threshold', () => {
+    const details = buildTurnUsageDetails({ outputTokens: 2, durationMs: 50 })!;
+    expect(buildTurnUsageTooltipLines({ details, t })).toContain(
+      'usageDetails.performanceRateLine|{"rate":"40"}',
+    );
+  });
+
+  it('旧消息没有耗时时不显示 TPS', () => {
+    const details = buildTurnUsageDetails({ outputTokens: 235 })!;
+    expect(
+      buildTurnUsageTooltipLines({ details, t }).some((line) =>
+        line.startsWith('usageDetails.performanceLine'),
+      ),
+    ).toBe(false);
+  });
+
+  it('shows full-turn wall-clock separately from generation speed', () => {
+    const details = buildTurnUsageDetails({
+      outputTokens: 100,
+      durationMs: 2_000,
+      turnDurationMs: 12_345,
+    })!;
+    const out = buildTurnUsageTooltipLines({ details, t });
+    expect(out).toContain('usageDetails.performanceLine|{"rate":"50","duration":"12.3秒"}');
+  });
+
+  it('shows wall-clock alone without a fake missing-speed placeholder', () => {
+    const details = buildTurnUsageDetails({
+      inputTokens: 100,
+      turnDurationMs: 12_345,
+    })!;
+    expect(buildTurnUsageTooltipLines({ details, t })).toContain(
+      'usageDetails.timeLine|{"duration":"12.3秒"}',
+    );
+  });
+
+  it('normalizes rounded minute boundaries instead of showing 1m 60s', () => {
+    expect(formatTurnDuration(59_960)).toBe('1m 00s');
+    expect(formatTurnDuration(119_600)).toBe('2m 00s');
+    expect(formatTurnDuration(12_345, t)).toBe('12.3秒');
+    expect(formatTurnDuration(119_600, t)).toBe('2分 00秒');
+    expect(formatTurnDuration(3_599_600)).toBe('1h 0m');
+    expect(formatTurnDuration(77_516_000)).toBe('21h 31m');
+    expect(formatTurnDuration(77_516_000, t)).toBe('21 小时 31 分');
+    expect(formatTurnDuration(86_399_600, t)).toBe('1 天 0 小时 0 分');
+    expect(formatTurnDuration(86_700_000)).toBe('1d 0h 5m');
+    expect(formatTurnDuration(183_845_000)).toBe('2d 3h 4m');
+    expect(formatTurnDuration(183_845_000, t)).toBe('2 天 3 小时 4 分');
   });
 });
 

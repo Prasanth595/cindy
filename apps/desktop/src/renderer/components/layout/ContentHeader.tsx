@@ -22,23 +22,32 @@
  * 右栏（Sidebar 侧保持无横线的连续表面）；设置页隐形 chrome 连边框也不画。
  */
 
-import type { ReactNode } from 'react';
+import { createContext, useContext, type ReactNode } from 'react';
 
 import { useFeatureContentHeader } from '@/features/feature-context';
 import { useMacFullscreen } from '@/hooks/useMacFullscreen';
 import { cn } from '@/lib/utils';
 import { CHROME_ACTIONS_GEOMETRY } from './chromeActionsGeometry';
 
+export const CONTENT_HEADER_HEIGHT_PX = 46;
+
+const ContentHeaderHiddenContext = createContext(false);
+
+/** Routes whose top is entirely non-host content (such as a plugin webview) can
+ * add a window drag area exactly when the common header is hidden. */
+export function useIsContentHeaderHidden(): boolean {
+  return useContext(ContentHeaderHiddenContext);
+}
+
 /**
- * Windows 窗口控制按钮宽度（3 × 46px）。窗口控制按钮已 hoist 到 MainLayout
- * 顶层浮层（恒钉窗口右上角、浮在右栏之上），这里在右端留出等宽占位，防止
- * 注入的 header 内容滑到浮动 min/max/close 按钮下面。
+ * Windows 窗口控制按钮宽度（3 × 46px）。固定侧栏入口位于下一行的内容区，
+ * 不占用本标题栏。
  */
 const WIN_CONTROLS_WIDTH = 138;
 
 /**
- * mac 右栏折叠按钮宽度占位（按钮 28 + 右距 8;2026-07 随左右按钮簇统一缩到
- * 28px 规格族）。开关已 hoist 到 MainLayout 顶层浮层（钉窗口右上角，见
+ * mac 右栏固定唤起按钮宽度占位（按钮 28 + 右距 8）。按钮已 hoist 到 MainLayout
+ * 顶层浮层（钉窗口右上角，见
  * MainLayout 的 mac 浮层），这里同 Windows 一样在右端留等宽占位，防止注入的
  * header 内容滑到浮动开关下面。
  */
@@ -66,13 +75,14 @@ interface ContentHeaderProps {
   showCollapsedActions: boolean;
   /** 左侧栏是否处于 rail 态（拖到最窄但仍保留图标列）。 */
   isSidebarRail: boolean;
-  /** mac 右上浮层按钮是否在场(2026-07-09 口径:右栏在场即 true,不分贴哪侧 ——
-   *  折叠 toggle 恒钉窗口右上角,面板贴左时它压在本 header 右端)。mac 据此在
-   *  右端留折叠按钮占位 + 决定是否留住空 header;Windows 仅影响空 header 判定,
+  /** mac 右上固定唤起按钮是否在场。mac 据此在右端留按钮占位并决定是否留住空
+   *  header；Windows 仅影响空 header 判定，
    *  占位恒为窗口控制按钮宽。 */
   rightSidebarAvailable: boolean;
   /** MainLayout 经 useContentHeaderHidden 预判的结果(与 --content-header-h 同源)。 */
   hidden: boolean;
+  /** 右端占位左侧、紧挨 mac 右栏开关的按钮(任务所在电脑的远程桌面等);按钮自挖 no-drag。 */
+  trailing?: ReactNode;
 }
 
 export function ContentHeader({
@@ -81,6 +91,7 @@ export function ContentHeader({
   isSidebarRail,
   rightSidebarAvailable,
   hidden,
+  trailing,
 }: ContentHeaderProps) {
   const { isMac, isFullscreen } = useMacFullscreen();
   const headerContent = useFeatureContentHeader();
@@ -107,7 +118,7 @@ export function ContentHeader({
   //     mac 红绿灯的所在行，藏了按钮会压在页面内容上
   //   - mac —— Windows 上这条空 header 仍保留为拖拽细条（窗口控制按钮已
   //     hoist 到 MainLayout 顶层浮层，但顶栏仍是 Windows 拖动窗口的抓手）
-  //   - 右栏开关在场（rightSidebarAvailable，mac 把开关放在本 header 右端）——
+  //   - 右栏唤起入口在场（rightSidebarAvailable，mac 把入口放在本 header 右端）——
   //     即使无注入内容也留住空 header 当开关落点，否则全屏聊天视图在 mac 上会
   //     失去关闭右栏的入口
   // 设置页天然不满足 sidebarVisible，维持隐形 chrome 现状。
@@ -119,7 +130,7 @@ export function ContentHeader({
   return (
     <header
       className={cn(
-        // 46px 行高:红绿灯钉 y=16(实测灯心 ≈23 = 46/2,macOS 渲染比理论低约 1pt),标题/图标与
+        // 46px 行高 (与 CONTENT_HEADER_HEIGHT_PX 同步):红绿灯钉 y=16(实测灯心 ≈23 = 46/2,macOS 渲染比理论低约 1pt),标题/图标与
         // 红绿灯同轴(对齐 Codex 的紧凑 titlebar)。与 ChromeActions / Sidebar
         // 顶行 / MainLayout 右上浮层同一常量,改动必须连同 main 侧
         // trafficLightPosition 一起同步。
@@ -171,13 +182,14 @@ export function ContentHeader({
           元素自行 no-drag。 */}
       <div className="flex h-full min-w-0 flex-1 items-center">{headerContent}</div>
 
+      {trailing}
+
       {/* 右端占位 —— 平台分流（两端都只留占位，不再放交互按钮）：
-          - mac：全屏聊天视图在场时（rightSidebarAvailable）留出折叠按钮等宽占位。
-            折叠按钮本身已 hoist 到 MainLayout 顶层浮层（钉窗口右上角，右栏打开时
-            落在右栏顶部 toolbar 条右端，实现「始终在最右」）；这里仅占位防注入
+          - mac：全屏聊天视图在场时（rightSidebarAvailable）留出固定唤起按钮等宽占位。
+            按钮本身已 hoist 到 MainLayout 顶层浮层（钉窗口右上角）；这里仅占位防注入
             内容被压到浮层按钮下。不在场则右端留空。
           - Windows：留出 WIN_CONTROLS_WIDTH 等宽占位（窗口控制按钮已 hoist 到
-            MainLayout 顶层浮层）；右栏开关走聊天视图的 chip 栈，不在这里。 */}
+            MainLayout 顶层浮层）；固定侧栏入口位于下一行内容区。 */}
       {isMac ? (
         rightSidebarAvailable && (
           <div aria-hidden className="h-full shrink-0" style={{ width: MAC_RIGHT_TOGGLE_WIDTH }} />
@@ -201,6 +213,7 @@ export function ContentHeaderSlot({
   showCollapsedActions,
   isSidebarRail,
   rightSidebarAvailable,
+  trailing,
   children,
 }: Omit<ContentHeaderProps, 'hidden'> & { children: ReactNode }) {
   const hidden = useContentHeaderHidden({ sidebarVisible, rightSidebarAvailable });
@@ -212,11 +225,17 @@ export function ContentHeaderSlot({
         isSidebarRail={isSidebarRail}
         rightSidebarAvailable={rightSidebarAvailable}
         hidden={hidden}
+        trailing={trailing}
       />
       <div
-        style={{ display: 'contents', ['--content-header-h' as string]: hidden ? '0px' : '46px' }}
+        style={{
+          display: 'contents',
+          ['--content-header-h' as string]: hidden ? '0px' : `${CONTENT_HEADER_HEIGHT_PX}px`,
+        }}
       >
-        {children}
+        <ContentHeaderHiddenContext.Provider value={hidden}>
+          {children}
+        </ContentHeaderHiddenContext.Provider>
       </div>
     </>
   );
