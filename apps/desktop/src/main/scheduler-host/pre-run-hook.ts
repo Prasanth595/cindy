@@ -74,6 +74,9 @@ export interface PreRunHookInput {
  */
 const XDT_NODE_PREFIX = /^xdt-node\s+/;
 
+// Darwin has 104 bytes in sun_path, including its terminating NUL.
+const UNIX_SOCKET_PATH_MAX_BYTES = 103;
+
 /** 一轮独占的启动回执。只证明 Node 启动，不代替脚本最终退出结果。 */
 interface NodeRuntimeReceipt {
   importArgument: string;
@@ -88,9 +91,23 @@ async function createNodeRuntimeReceipt(): Promise<NodeRuntimeReceipt> {
   // Node's preload allowlist uses physical paths; avoid macOS /var aliases.
   const directory = mkdtempSync(path.join(realpathSync(os.tmpdir()), 'cindy-pre-run-node-'));
   const bootstrapPath = path.join(directory, 'isolate.cjs');
-  const endpoint = process.platform === 'win32'
+  let endpoint = process.platform === 'win32'
     ? '\\\\.\\pipe\\cindy-pre-run-node-' + value
     : path.join(directory, 'receipt.sock');
+  let socketDirectory: string | undefined;
+  if (process.platform !== 'win32' && Buffer.byteLength(endpoint) > UNIX_SOCKET_PATH_MAX_BYTES) {
+    try {
+      // TMPDIR can exceed sun_path even with a short filename. Keep the
+      // bootstrap in the requested temp root, and only the socket in an
+      // exclusive short POSIX temp directory. Do not canonicalize /tmp: its
+      // physical target can be longer, while AF_UNIX uses the supplied path.
+      socketDirectory = mkdtempSync(path.join('/tmp', 'cindy-pre-run-socket-'));
+      endpoint = path.join(socketDirectory, 'receipt.sock');
+    } catch (error) {
+      try { rmSync(directory, { recursive: true, force: true }); } catch { /* best effort */ }
+      throw error;
+    }
+  }
   const sockets = new Set<Socket>();
   const server = createServer((socket) => {
     sockets.add(socket);
@@ -146,6 +163,9 @@ async function createNodeRuntimeReceipt(): Promise<NodeRuntimeReceipt> {
         server.close(() => resolve());
       });
       try { rmSync(directory, { recursive: true, force: true }); } catch { /* best effort */ }
+      if (socketDirectory) {
+        try { rmSync(socketDirectory, { recursive: true, force: true }); } catch { /* best effort */ }
+      }
     },
   };
   try {

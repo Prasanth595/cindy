@@ -9,7 +9,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { setMainLocale } from '../../i18n';
@@ -24,7 +24,7 @@ vi.mock('node:fs', async (importOriginal) => {
     ...actual,
     mkdtempSync: ((...args: Parameters<typeof actual.mkdtempSync>) => {
       const directory = actual.mkdtempSync(...args);
-      if (path.basename(String(args[0])) === 'cindy-pre-run-node-') {
+      if (['cindy-pre-run-node-', 'cindy-pre-run-socket-'].includes(path.basename(String(args[0])))) {
         ownedReceiptDirectories.push(String(directory));
       }
       return directory;
@@ -317,6 +317,43 @@ describe('resolveHookCommand(xdt-node 前缀解析)', () => {
       for (const directory of foreignReceiptDirectories.splice(0)) rmSync(directory, { recursive: true, force: true });
     }
   });
+  for (const [name, segment] of [['ASCII', 'x'.repeat(120)], ['UTF-8', '界'.repeat(40)]] as const) {
+    it.skipIf(process.platform === 'win32').each([0, 2])('executes with a long ' + name + ' TMPDIR (exit %s)', async (exitCode) => {
+      const dir = mkdtempSync(path.join(tmpdir(), 'hook-runtime-long-temp-'));
+      const originalTmpdir = process.env.TMPDIR;
+      try {
+        const longTemp = path.join(realpathSync(dir), segment);
+        mkdirSync(longTemp);
+        expect(Buffer.byteLength(path.join(longTemp, 'cindy-pre-run-node-XXXXXX', 'receipt.sock'))).toBeGreaterThan(103);
+        process.env.TMPDIR = longTemp;
+        writeFileSync(path.join(dir, 'gate.mjs'), [
+          "import { writeFileSync } from 'node:fs';",
+          "let input = ''; process.stdin.setEncoding('utf8');",
+          "process.stdin.on('data', chunk => { input += chunk; });",
+          "process.stdin.on('end', () => {",
+          "  writeFileSync('executed.json', JSON.stringify(JSON.parse(input)));",
+          "  console.log('CINDY_PRECHECK_OK'); process.exit(" + exitCode + ');',
+          '});',
+        ].join('\n'));
+        const result = await executePreRunHook({
+          command: 'xdt-node gate.mjs', cwd: dir, stdinPayload: payload, timeoutMs: 5_000,
+        });
+        expect(result.stderr).toBe('');
+        expect(result.exitCode).toBe(exitCode);
+        expect(result.decision).toBe(exitCode === 0 ? 'run' : 'skip');
+        expect(result.checkSucceeded).toBe(true);
+        expect(result.stdout).toBe('CINDY_PRECHECK_OK\n');
+        expect(JSON.parse(readFileSync(path.join(dir, 'executed.json'), 'utf8'))).toEqual(payload);
+        expect(ownedReceiptDirectories.some(directory => path.dirname(directory) === longTemp)).toBe(true);
+        expect(ownedReceiptDirectories.some(directory => path.basename(directory).startsWith('cindy-pre-run-socket-'))).toBe(true);
+        for (const directory of ownedReceiptDirectories) expect(existsSync(directory)).toBe(false);
+      } finally {
+        if (originalTmpdir === undefined) delete process.env.TMPDIR;
+        else process.env.TMPDIR = originalTmpdir;
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  }
   for (const flag of permissionFlags) {
     it.skipIf(!supportedPermissionFlags.has(flag)).each([0, 2])('keeps ' + flag + ' checks executable without granting business writes (exit %s)', async (exitCode) => {
       const dir = mkdtempSync(path.join(tmpdir(), 'hook-runtime-permission-'));
