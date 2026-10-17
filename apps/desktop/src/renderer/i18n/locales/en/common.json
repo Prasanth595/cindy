@@ -12921,7 +12921,10 @@
         "stderr": "stderr",
         "truncated": "output truncated",
         "noOutput": "No output",
-        "runtimeNotStarted": "{{appName}} built-in Node runtime did not start. The pre-run check was not executed. Use a working Node command for this check.",
+        "startupUnverified": "{{appName}} did not receive Node startup verification. This run was blocked. Check the Node command and its preload configuration.",
+        "failureWithReason": "Pre-run check failed: {{reason}}",
+        "failureWithExitCode": "Pre-run check failed with exit code {{code}}",
+        "failureWithoutExitCode": "Pre-run check failed without a valid exit code",
         "receiptUnavailable": "{{appName}} could not prepare Node startup verification. The pre-run check was not executed."
       }
     },

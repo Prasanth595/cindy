@@ -362,7 +362,7 @@ export async function executePreRunHook(input: PreRunHookInput): Promise<PreRunH
       input.signal?.removeEventListener('abort', onAbort);
       const exitCode = partial.exitCode;
       const runtimeError = receipt && !receipt.started
-        ? t('scheduler.runs.preRun.runtimeNotStarted')
+        ? t('scheduler.runs.preRun.startupUnverified')
         : undefined;
       const status = aborted
         ? 'aborted'
@@ -474,7 +474,10 @@ export async function executePreRunHook(input: PreRunHookInput): Promise<PreRunH
 
 /** 给 run 错误、通知和日志共用的前置检查失败摘要。 */
 export function formatPreRunHookFailure(result: PreRunHookResult): string {
-  if (result.status === 'timed_out') return result.error ?? 'pre-run hook timed out';
-  if (result.error) return `pre-run hook failed: ${result.error}`;
-  return `pre-run hook failed with exit code ${result.exitCode ?? 'unknown'}`;
+  if (result.status === 'timed_out') return result.error ?? t('scheduler.runs.preRun.status.timed_out');
+  const reason = result.error;
+  if (reason) return t('scheduler.runs.preRun.failureWithReason').replaceAll('{{reason}}', () => reason);
+  return result.exitCode === null
+    ? t('scheduler.runs.preRun.failureWithoutExitCode')
+    : t('scheduler.runs.preRun.failureWithExitCode').replaceAll('{{code}}', String(result.exitCode));
 }

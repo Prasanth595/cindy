@@ -8,6 +8,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -288,6 +289,22 @@ describe('resolvePreRunHookTimeoutMs(无默认超时)', () => {
 });
 
 describe('resolveHookCommand(xdt-node 前缀解析)', () => {
+  // Probe the actual executable, not its major version. Supported releases
+  // differ in whether the stable spelling and experimental alias are exposed.
+  const permissionFlags = ['--permission', '--experimental-permission'] as const;
+  const supportedPermissionFlags = new Set<string>();
+  for (const flag of permissionFlags) {
+    const probe = spawnSync(process.execPath, [flag, '--no-warnings', '--eval', ''], {
+      encoding: 'utf8', timeout: 5_000,
+    });
+    if (probe.status === 0) supportedPermissionFlags.add(flag);
+    else if (probe.error || probe.signal || probe.status !== 9
+      || !probe.stderr.includes('bad option: ' + flag)) {
+      throw new Error('Could not probe Node permission flag ' + flag + ': ' + (probe.error?.message ?? probe.stderr));
+    }
+  }
+  if (supportedPermissionFlags.size === 0) throw new Error('Node supports neither permission flag; permission coverage is required');
+
   const foreignReceiptDirectories: string[] = [];
   beforeEach(() => {
     ownedReceiptDirectories.length = 0;
@@ -300,33 +317,32 @@ describe('resolveHookCommand(xdt-node 前缀解析)', () => {
       for (const directory of foreignReceiptDirectories.splice(0)) rmSync(directory, { recursive: true, force: true });
     }
   });
-  it.each([
-    ['--permission', 0], ['--permission', 2],
-    ['--experimental-permission', 0], ['--experimental-permission', 2],
-  ] as const)('keeps permission-mode checks executable without granting business writes (%s, exit %s)', async (flag, exitCode) => {
-    const dir = mkdtempSync(path.join(tmpdir(), 'hook-runtime-permission-'));
-    try {
-      writeFileSync(path.join(dir, 'gate.mjs'), [
-        "import { writeFileSync } from 'node:fs';",
-        "try { writeFileSync('business-denied', 'must not be allowed'); process.exit(90); }",
-        "catch (error) { if (error.code !== 'ERR_ACCESS_DENIED') throw error; }",
-        "console.log('gate-executed:business-write-denied');",
-        "console.log('CINDY_PRECHECK_OK'); process.exit(" + exitCode + ');',
-      ].join('\n'));
-      const result = await executePreRunHook({
-        command: 'xdt-node --no-warnings ' + flag + ' gate.mjs',
-        cwd: dir, stdinPayload: payload, timeoutMs: 5_000,
-      });
-      expect(result.stderr).toBe('');
-      expect(result.exitCode).toBe(exitCode);
-      expect(result.decision).toBe(exitCode === 0 ? 'run' : 'skip');
-      expect(result.stdout).toBe('gate-executed:business-write-denied\nCINDY_PRECHECK_OK\n');
-      expect(result.checkSucceeded).toBe(true);
-      expect(existsSync(path.join(dir, 'business-denied'))).toBe(false);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
+  for (const flag of permissionFlags) {
+    it.skipIf(!supportedPermissionFlags.has(flag)).each([0, 2])('keeps ' + flag + ' checks executable without granting business writes (exit %s)', async (exitCode) => {
+      const dir = mkdtempSync(path.join(tmpdir(), 'hook-runtime-permission-'));
+      try {
+        writeFileSync(path.join(dir, 'gate.mjs'), [
+          "import { writeFileSync } from 'node:fs';",
+          "try { writeFileSync('business-denied', 'must not be allowed'); process.exit(90); }",
+          "catch (error) { if (error.code !== 'ERR_ACCESS_DENIED') throw error; }",
+          "console.log('gate-executed:business-write-denied');",
+          "console.log('CINDY_PRECHECK_OK'); process.exit(" + exitCode + ');',
+        ].join('\n'));
+        const result = await executePreRunHook({
+          command: 'xdt-node --no-warnings ' + flag + ' gate.mjs',
+          cwd: dir, stdinPayload: payload, timeoutMs: 5_000,
+        });
+        expect(result.stderr).toBe('');
+        expect(result.exitCode).toBe(exitCode);
+        expect(result.decision).toBe(exitCode === 0 ? 'run' : 'skip');
+        expect(result.stdout).toBe('gate-executed:business-write-denied\nCINDY_PRECHECK_OK\n');
+        expect(result.checkSucceeded).toBe(true);
+        expect(existsSync(path.join(dir, 'business-denied'))).toBe(false);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  }
 
   it.each([0, 2, 'preload-exit'] as const)('isolates startup proof before a user CJS preload forks (outcome %s)', async (exitCode) => {
     const dir = mkdtempSync(path.join(tmpdir(), 'hook-runtime-cjs-fork-'));
@@ -367,6 +383,7 @@ describe('resolveHookCommand(xdt-node 前缀解析)', () => {
         expect(result.exitCode).toBe(0);
         expect(result.decision).toBe('block');
         expect(result.checkSucceeded).toBeUndefined();
+        expect(result.error).toBe('Cindy did not receive Node startup verification. This run was blocked. Check the Node command and its preload configuration.');
         expect(existsSync(path.join(dir, 'gate-ran.json'))).toBe(false);
         expect(JSON.parse(readFileSync(path.join(dir, 'child-ran.json'), 'utf8'))).toEqual(['-r', './preload.cjs']);
         return;
@@ -493,12 +510,12 @@ describe('resolveHookCommand(xdt-node 前缀解析)', () => {
   });
 
   it.each([
-    ['zh-CN', 'Cindy 内置 Node 未启动，前置检查未执行。请为此检查使用可运行的 Node 命令'],
-    ['zh-TW', 'Cindy 內建 Node 未啟動，前置檢查未執行。請為此檢查使用可執行的 Node 命令'],
-    ['en', 'Cindy built-in Node runtime did not start. The pre-run check was not executed. Use a working Node command for this check.'],
-    ['ja', 'Cindy 内蔵の Node が起動せず、事前チェックは実行されませんでした。このチェックには実行可能な Node コマンドを使用してください。'],
-    ['ko', 'Cindy 내장 Node가 시작되지 않아 사전 검사가 실행되지 않았습니다. 이 검사에는 실행 가능한 Node 명령을 사용하세요.'],
-  ] as const)('records the unavailable runtime error in %s', async (locale, message) => {
+    ['zh-CN', 'Cindy 未收到 Node 启动验证，已阻止本次执行。请检查 Node 命令及其预加载配置', '前置检查失败：'],
+    ['zh-TW', 'Cindy 未收到 Node 啟動驗證，已阻止本次執行。請檢查 Node 命令及其預載入設定', '前置檢查失敗：'],
+    ['en', 'Cindy did not receive Node startup verification. This run was blocked. Check the Node command and its preload configuration.', 'Pre-run check failed: '],
+    ['ja', 'Cindy は Node の起動確認を受け取れなかったため、今回の実行をブロックしました。Node コマンドとプリロード設定を確認してください。', '事前チェックが失敗しました: '],
+    ['ko', 'Cindy가 Node 시작 확인을 받지 못해 이번 실행을 차단했습니다. Node 명령과 사전 로드 설정을 확인하세요.', '사전 검사 실패: '],
+  ] as const)('formats the missing verification and persisted failure summary in %s', async (locale, message, prefix) => {
     const dir = mkdtempSync(path.join(tmpdir(), 'hook-runtime-locale-'));
     const originalExecPath = process.execPath;
     try {
@@ -510,7 +527,7 @@ describe('resolveHookCommand(xdt-node 前缀解析)', () => {
       expect(result.status).toBe('failed');
       expect(result.decision).toBe('block');
       expect(result.error).toBe(message);
-      expect(formatPreRunHookFailure(result)).toContain(message);
+      expect(formatPreRunHookFailure(result)).toBe(prefix + message);
     } finally {
       process.execPath = originalExecPath;
       setMainLocale('en');
@@ -626,7 +643,7 @@ describe('resolveHookCommand(xdt-node 前缀解析)', () => {
       const result = await pending;
       expect(result.status).toBe(mode === 'timeout' ? 'timed_out' : 'aborted');
       expect(result.decision).toBe('block');
-      expect(result.error ?? '').not.toContain('runtime did not start');
+      expect(result.error ?? '').not.toContain('startup verification');
       const pids = JSON.parse(readFileSync(path.join(dir, 'pids.json'), 'utf8')) as number[];
       await vi.waitFor(() => {
         for (const pid of pids) expect(() => process.kill(pid, 0)).toThrow();

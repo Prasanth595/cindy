@@ -12864,7 +12864,10 @@
         "stderr": "stderr",
         "truncated": "出力は切り詰められました",
         "noOutput": "出力なし",
-        "runtimeNotStarted": "{{appName}} 内蔵の Node が起動せず、事前チェックは実行されませんでした。このチェックには実行可能な Node コマンドを使用してください。",
+        "startupUnverified": "{{appName}} は Node の起動確認を受け取れなかったため、今回の実行をブロックしました。Node コマンドとプリロード設定を確認してください。",
+        "failureWithReason": "事前チェックが失敗しました: {{reason}}",
+        "failureWithExitCode": "事前チェックが失敗しました（終了コード {{code}}）",
+        "failureWithoutExitCode": "事前チェックが失敗しました。有効な終了コードがありません",
         "receiptUnavailable": "{{appName}} は Node の起動確認を準備できず、事前チェックは実行されませんでした。"
       }
     },

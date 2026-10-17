@@ -12864,7 +12864,10 @@
         "stderr": "stderr",
         "truncated": "輸出已截斷",
         "noOutput": "無輸出",
-        "runtimeNotStarted": "{{appName}} 內建 Node 未啟動，前置檢查未執行。請為此檢查使用可執行的 Node 命令",
+        "startupUnverified": "{{appName}} 未收到 Node 啟動驗證，已阻止本次執行。請檢查 Node 命令及其預載入設定",
+        "failureWithReason": "前置檢查失敗：{{reason}}",
+        "failureWithExitCode": "前置檢查失敗，退出碼 {{code}}",
+        "failureWithoutExitCode": "前置檢查失敗，未取得有效退出碼",
         "receiptUnavailable": "{{appName}} 無法準備 Node 啟動驗證，前置檢查未執行"
       }
     },

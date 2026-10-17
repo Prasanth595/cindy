@@ -12864,7 +12864,10 @@
         "stderr": "stderr",
         "truncated": "输出已截断",
         "noOutput": "无输出",
-        "runtimeNotStarted": "{{appName}} 内置 Node 未启动，前置检查未执行。请为此检查使用可运行的 Node 命令",
+        "startupUnverified": "{{appName}} 未收到 Node 启动验证，已阻止本次执行。请检查 Node 命令及其预加载配置",
+        "failureWithReason": "前置检查失败：{{reason}}",
+        "failureWithExitCode": "前置检查失败，退出码 {{code}}",
+        "failureWithoutExitCode": "前置检查失败，未获得有效退出码",
         "receiptUnavailable": "{{appName}} 无法准备 Node 启动验证，前置检查未执行"
       }
     },
