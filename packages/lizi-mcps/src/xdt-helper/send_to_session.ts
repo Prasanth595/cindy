@@ -134,7 +134,7 @@ const DESCRIPTION = [
   "- 目标在另一台电脑:target_session_id 传 deviceId::sessionId(history 类目 list_sessions 用 device 参数查到的 id 就是这个形式),消息经远程控制通道发给那台电脑上的既有任务,对方显示来自本任务。要求对方电脑在线并已开启远程控制;只支持发给既有任务(不能在另一台电脑新建),message_purpose 只能是 user-visible 或省略。",
   "- 不传 target_session_id → create:为业务对象新建一个专属 session。workingDir / Agent / model / effort / Fast 缺省继承当前 session；可用 agent_kind / model / effort / fast 显式覆盖目标执行配置。host 会在创建前按目标 Agent 的模型能力校验，非法组合结构化失败，不静默换模型。wake_kind 返 created,并回传 target_session_id 供调用方建立绑定。",
   "",
-  "【request_receipt(完成回执,可选)】true 时,目标任务消费本消息的 turn 收口后,宿主自动向发起任务回投一条隐藏回执(含 target_session_id 与回执 id,不含对方回复正文)。仅支持本机目标(deviceId::sessionId 拒绝);与委派任务互斥(委派已有完成自动回传);终态失败的 turn 不发回执。回执仅表示处理已收口,不保证成功,结果与实际状态用 get_chat_history 核实;宿主重启窗口或极端插话时序下回执可能丢失(尽力而为)。回执会在发起任务里唤醒一轮,用于接续工作。",
+  "【request_receipt(完成回执,可选)】true 时,目标任务消费本消息的 turn 收口后,宿主自动向发起任务回投一条隐藏回执(含 target_session_id 与回执 id,不含对方回复正文)。仅支持本机既有任务(必传 target_session_id;create 模式与 deviceId::sessionId 都拒绝);与委派任务互斥(委派已有完成自动回传);终态失败的 turn 不发回执。回执仅表示处理已收口,不保证成功,结果与实际状态用 get_chat_history 核实;宿主重启窗口或极端插话时序下回执可能丢失(尽力而为)。为可靠观测完成,回执请求的输入统一走持久队列,wake_kind 返 queued(空闲目标也会立即派发,无需重试)。回执会在发起任务里唤醒一轮,用于接续工作。",
   "",
   "【执行配置(仅 create 模式)】agent_kind 可选 claude-code / codex / pi；model 使用宿主模型目录返回的精确 id；effort / fast 按目标模型能力校验。只改 Agent 却留下不属于目标 Agent 的继承模型会返 INVALID_ARGS，不会自动挑列表第一项。跨 Agent/model 时模型来源交给 host 既有默认路由解析。完全不传这些字段时保持原有 dispatcher 继承行为。jump 模式忽略这些字段，不修改既有 session。",
   "",
@@ -258,7 +258,7 @@ export function registerSendToSessionTool(
         .boolean()
         .optional()
         .describe(
-          "可选:true = 目标任务消费本消息的 turn 收口后,宿主自动回投完成回执到发起任务(不含对方回复正文)。仅本机目标;与委派任务互斥;终态失败的 turn 不发回执;回执为尽力而为,不保证成功,结果以 get_chat_history 为准。",
+          "可选:true = 目标任务消费本消息的 turn 收口后,宿主自动回投完成回执到发起任务(不含对方回复正文)。仅本机既有任务(传了它就必传 target_session_id);与委派任务互斥;终态失败的 turn 不发回执;回执为尽力而为,不保证成功,结果以 get_chat_history 为准。",
         ),
     },
     handler: async ({
@@ -276,6 +276,12 @@ export function registerSendToSessionTool(
     }) => {
       const ctx = deps.getSessionContext();
       const qualified = parseQualifiedSessionId(target_session_id);
+      if (request_receipt && !target_session_id) {
+        return errorPayload(
+          "INVALID_ARGS",
+          "request_receipt 仅支持发给既有任务;create 模式不支持回执(新建任务的完成回传用委派链路)。省略 target_session_id 会静默新建,若本意是发给既有任务请先 list_sessions 查 id。",
+        );
+      }
       if (request_receipt && qualified && qualified.deviceId !== "local") {
         return errorPayload(
           "INVALID_ARGS",

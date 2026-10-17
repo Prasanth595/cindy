@@ -35,29 +35,43 @@ export function buildHandoffReceiptMessage(params: {
 const MAX_ATTEMPTS = 3;
 
 /**
- * 终态失败轮次的回执闸门:同一 sessionId 上记录最近一次终态 error 的 turn 代次。
- * done 快照若属同一(或更早)失败代次,不得回投「已收口」回执;可重试 error 不记。
- * 状态为进程内保守近似:会话废弃后残留一个数字,量级与会话数同阶。
+ * 终态失败轮次的回执闸门:按 sessionId+sessionInstanceId 记录最近一次终态 error 的
+ * turn 代次。代次是单实例计数,实例重建后从 0 重来 —— 归属必须含实例,否则旧实例
+ * 的失败记录会拦截新实例的全部回执;旧实例关闭时可能只有终态 error 没有配对 done
+ * (settleUnfinishedTurn),记录随旧实例键作废,不做跨实例清理。done 快照若属同一
+ * (或更旧)失败代次,不得回投「已收口」回执;可重试 error 不记。
  */
 export function createHandoffReceiptGate() {
   const failedGenerations = new Map<string, number>();
+  const keyOf = (sessionId: string, instanceId: string | undefined) =>
+    `${sessionId}:${instanceId ?? 'unknown'}`;
   return {
-    markTerminalError(sessionId: string, generation: number | undefined): void {
+    markTerminalError(
+      sessionId: string,
+      instanceId: string | undefined,
+      generation: number | undefined,
+    ): void {
       if (typeof generation !== 'number') return;
-      const prev = failedGenerations.get(sessionId);
-      if (prev === undefined || generation >= prev) failedGenerations.set(sessionId, generation);
+      const key = keyOf(sessionId, instanceId);
+      const prev = failedGenerations.get(key);
+      if (prev === undefined || generation >= prev) failedGenerations.set(key, generation);
     },
     /** 返回该 done 是否属于已记录的失败代次;顺带清理被更新代次越过的陈旧记录。 */
-    isFailedTurn(sessionId: string, generation: number | undefined): boolean {
-      const failed = failedGenerations.get(sessionId);
+    isFailedTurn(
+      sessionId: string,
+      instanceId: string | undefined,
+      generation: number | undefined,
+    ): boolean {
+      const key = keyOf(sessionId, instanceId);
+      const failed = failedGenerations.get(key);
       if (failed === undefined) return false;
       if (typeof generation !== 'number') return true;
       if (failed < generation) {
-        failedGenerations.delete(sessionId);
+        failedGenerations.delete(key);
         return false;
       }
-      if (failed === generation) failedGenerations.delete(sessionId);
-      // failed > generation:done 比”(比)失败记录更旧(乱序/陈旧终态),保守当作失败。
+      if (failed === generation) failedGenerations.delete(key);
+      // failed > generation:done 比失败记录更旧(乱序/陈旧终态),保守当作失败。
       return true;
     },
   };

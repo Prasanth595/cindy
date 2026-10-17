@@ -673,25 +673,29 @@ describe("send_to_session → 另一台电脑上的任务", () => {
   });
 
   // request_receipt:工具层只做透传与远端拒绝;回投语义由宿主(maker-ipc handoffReceipts)守约。
-  it("request_receipt 透传给本机投递, 结果回传 receipt_id", async () => {
+  it("request_receipt 透传给本机既有任务投递, 结果回传 receipt_id", async () => {
     const { registry, sendToSession } = setup();
     (sendToSession as ReturnType<typeof vi.fn>).mockResolvedValue({
       ok: true,
       targetSessionId: "tgt-1",
       agentKind: "claude-code",
-      wakeKind: "resumed",
+      wakeKind: "queued",
       targetTitle: null,
       targetLastUserSendAt: null,
       receiptId: "nonce-1",
     });
     const sent = parse(
       await registry.call("send_to_session", {
+        target_session_id: "tgt-1",
         message: "do work",
         request_receipt: true,
       }),
     );
     expect(sendToSession).toHaveBeenCalledWith(
-      expect.objectContaining({ requestReceipt: true }),
+      expect.objectContaining({
+        targetSessionId: "tgt-1",
+        requestReceipt: true,
+      }),
     );
     expect(sent).toMatchObject({
       ok: true,
@@ -700,7 +704,7 @@ describe("send_to_session → 另一台电脑上的任务", () => {
     });
   });
 
-  it("request_receipt 省略时不透传; 远端目标带 request_receipt 明确拒绝且不发出", async () => {
+  it("request_receipt 省略时不透传; create 模式与远端目标都明确拒绝且不发出", async () => {
     const omitted = setup();
     await omitted.registry.call("send_to_session", {
       target_session_id: "parent",
@@ -709,6 +713,18 @@ describe("send_to_session → 另一台电脑上的任务", () => {
     expect(omitted.sendToSession).toHaveBeenCalledWith(
       expect.not.objectContaining({ requestReceipt: expect.anything() }),
     );
+
+    // create 模式拒绝:首派不经持久队列,宿主观测不到 turn 完成。
+    const createCase = setup();
+    const createResult = await createCase.registry.call("send_to_session", {
+      message: "new task",
+      request_receipt: true,
+    });
+    expect(parse(createResult)).toMatchObject({
+      ok: false,
+      errorCode: "INVALID_ARGS",
+    });
+    expect(createCase.sendToSession).not.toHaveBeenCalled();
 
     const s = remoteSetup();
     const result = await s.registry.call("send_to_session", {

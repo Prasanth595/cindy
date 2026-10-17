@@ -108,25 +108,38 @@ describe('buildHandoffReceiptMessage', () => {
 describe('handoff receipt gate (终态失败轮次不回投)', () => {
   it('同代次 error→done 配对被拦; 成功后不再拦截', () => {
     const gate = createHandoffReceiptGate();
-    gate.markTerminalError('s1', 7);
-    expect(gate.isFailedTurn('s1', 7)).toBe(true);
+    gate.markTerminalError('s1', 'instA', 7);
+    expect(gate.isFailedTurn('s1', 'instA', 7)).toBe(true);
     // 拦截后同代次记录已清, 重放的 done 不再拦(幂等由确定性 clientId 负责)。
-    expect(gate.isFailedTurn('s1', 7)).toBe(false);
+    expect(gate.isFailedTurn('s1', 'instA', 7)).toBe(false);
   });
 
   it('失败后的更新代次正常回投, 并清理陈旧记录', () => {
     const gate = createHandoffReceiptGate();
-    gate.markTerminalError('s1', 7);
-    expect(gate.isFailedTurn('s1', 8)).toBe(false);
-    expect(gate.isFailedTurn('s1', 8)).toBe(false);
+    gate.markTerminalError('s1', 'instA', 7);
+    expect(gate.isFailedTurn('s1', 'instA', 8)).toBe(false);
+    expect(gate.isFailedTurn('s1', 'instA', 8)).toBe(false);
   });
 
   it('未标记失败(可重试 error / 从未失败)时放行; 乱序旧 done 保守拦截', () => {
     const gate = createHandoffReceiptGate();
-    expect(gate.isFailedTurn('s2', 3)).toBe(false);
-    gate.markTerminalError('s2', 9);
-    expect(gate.isFailedTurn('s2', 4)).toBe(true);
-    gate.markTerminalError('s3', undefined);
-    expect(gate.isFailedTurn('s3', 5)).toBe(false);
+    expect(gate.isFailedTurn('s2', 'instA', 3)).toBe(false);
+    gate.markTerminalError('s2', 'instA', 9);
+    expect(gate.isFailedTurn('s2', 'instA', 4)).toBe(true);
+    gate.markTerminalError('s3', 'instA', undefined);
+    expect(gate.isFailedTurn('s3', 'instA', 5)).toBe(false);
+  });
+
+  it('失败归属按实例隔离: 旧实例失败不拦截重建实例的回执(代次从零重来)', () => {
+    const gate = createHandoffReceiptGate();
+    // 旧实例: 失败在代次 5, 关闭时可能没有配对 done, 记录残留。
+    gate.markTerminalError('s1', 'instA', 5);
+    // 新实例: 代次从 0 重来, 成功 done 必须放行。
+    expect(gate.isFailedTurn('s1', 'instB', 0)).toBe(false);
+    expect(gate.isFailedTurn('s1', 'instB', 1)).toBe(false);
+    // 旧实例键不被新实例污染: 旧实例自己的失败 done 仍被拦。
+    expect(gate.isFailedTurn('s1', 'instA', 5)).toBe(true);
+    // 无 instanceId 的事件(异常路径)独立归属, 不撞有实例的记录。
+    expect(gate.isFailedTurn('s1', undefined, 5)).toBe(false);
   });
 });

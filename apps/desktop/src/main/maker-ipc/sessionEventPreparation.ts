@@ -225,8 +225,9 @@ export function prepareSessionEvent(
     ? (deps.agentInputCoordinatorHolder?.getActiveInputClientIds?.(session.id, event.sessionTurnGeneration) ?? [])
       .filter(id => id.startsWith(HANDOFF_RECEIPT_INPUT_PREFIX)) : [];
   // 同代次内 error→done 配对时(claude-code translator 无条件推 done),该 done 不得回投回执。
+  // 代次是单实例计数,归属必须含 sessionInstanceId。
   const handoffReceiptTurnFailed = event.type === 'done'
-    ? handoffReceiptGate.isFailedTurn(session.id, event.sessionTurnGeneration)
+    ? handoffReceiptGate.isFailedTurn(session.id, event.sessionInstanceId, event.sessionTurnGeneration)
     : false;
   const activeInputId = event.turnScope === 'background' ? null
     : deps.agentInputCoordinatorHolder?.getActiveInputClientId(session.id, event.sessionTurnGeneration);
@@ -487,7 +488,7 @@ export function prepareSessionEvent(
   let isGatewayProxyTokenRecovery = false;
   if (isTerminalTurnErrorEvent(event)) {
     finalizeTurnChangeSet(session.id, null, 'partial');
-    handoffReceiptGate.markTerminalError(session.id, event.sessionTurnGeneration);
+    handoffReceiptGate.markTerminalError(session.id, event.sessionInstanceId, event.sessionTurnGeneration);
     // **任何**终态失败都先把上一条重连记录钉成失败 —— 不管这次错误本身是否值得自愈。
     // 只在"命中白名单、准备再接管"时才 settle 的话,非白名单的终态(认证 / 计费 /
     // invalid-request)会让记录悬空,随后一个无关 turn 的首个产出事件就把它标成

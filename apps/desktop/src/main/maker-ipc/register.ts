@@ -10835,6 +10835,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     sourcePlugin?: AgentInputQueuedMessage['sourcePlugin'];
   }): Promise<SendToSessionInternalResult> {
     if (!params.requestReceipt) return sendToSessionInternalBase(params);
+    if (!params.targetSessionId) {
+      return { ok: false, errorCode: 'INVALID_ARGS', message: 'request_receipt v1 supports existing sessions only; create mode dispatches its first message outside the durable input queue and cannot observe turn completion. Delegate tasks already return completion automatically.' };
+    }
     if (!params.dispatcherSessionId || params.dispatcherSessionId.includes(':')) {
       return { ok: false, errorCode: 'INVALID_ARGS', message: 'request_receipt requires a session-bound caller whose session id contains no colon' };
     }
@@ -10850,7 +10853,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       return { ok: false, errorCode: 'INVALID_ARGS', message: 'request_receipt could not build a receipt client id.' };
     }
     const { requestReceipt: _requestReceipt, ...baseParams } = params;
-    const result = await sendToSessionInternalBase({ ...baseParams, clientId: receiptClientId });
+    // 回执输入必须走持久队列(forceQueue):空闲直发不经 inputCoordinator,
+    // activeTurn.item 不会建立,完成钩子从 getActiveInputClientIds 读不到该输入,
+    // 回执永远不会触发。与 coordination / delegated-continuation 同一模式。
+    const result = await sendToSessionInternalBase({ ...baseParams, clientId: receiptClientId, forceQueue: true });
     return result.ok ? { ...result, receiptId: nonce } : result;
   }
 
