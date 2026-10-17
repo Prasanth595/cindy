@@ -76,7 +76,7 @@ vi.mock('../WebMicAudioEngine', () => ({
   prewarmVoiceInputMicrophoneWithAutomaticFallback: vi.fn().mockResolvedValue(undefined),
 }));
 
-import { useVoiceInput } from '../useVoiceInput';
+import { useVoiceInput, type VoiceInputTextTarget } from '../useVoiceInput';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -104,7 +104,7 @@ function chunk(index: number, amplitude = 512): PcmChunk {
 // useVoiceInput.start() 同步 claim 录音后立刻返回是否占用;启动流程(采集、授权
 // 确认、连接)在后台继续,测试里捕获的 starting 是 claim 结果,启动收尾由 act
 // 的刷新覆盖。
-function mount() {
+function mount(textTarget?: VoiceInputTextTarget) {
   const connection = deferred<{ ok: true; runId: string }>();
   const mute = deferred<{ ok: true }>();
   const permissionRequired = vi.fn();
@@ -139,7 +139,7 @@ function mount() {
     off: vi.fn(),
   } as unknown as Editor;
   const hook = renderHook(() =>
-    useVoiceInput(editor, false, undefined, { onMicrophonePermissionRequired: permissionRequired }),
+    useVoiceInput(textTarget ? null : editor, false, undefined, { textTarget, onMicrophonePermissionRequired: permissionRequired }),
   );
   return { ...hook, api, connection, mute, permissionRequired };
 }
@@ -494,4 +494,90 @@ describe('local voice capture independent of startup checks and cloud', () => {
     expect(h.result.current.isBusy).toBe(false);
     expect(h.api.start).not.toHaveBeenCalled();
   });
+});
+
+// #6270: the question's controlled textarea must receive recognized text without
+// a Tiptap editor; late refinement must not overwrite a user's edited answer.
+// Existing startup cases only supply an Editor. Minimal input: replace `old`
+// at 7..10 in `before old after`, then refine and edit that inserted segment.
+// Standalone file: 21.15s wall / 1.32s tests (initial run, 15 tests; cold transforms
+// and jsdom account for the time above 10s; no real audio/network is used).
+it('dictates into a plain text selection and preserves a subsequent user edit', async () => {
+  let text = 'before old after';
+  const target: VoiceInputTextTarget = {
+    read: () => ({ inputValue: text, selectionStart: 7, selectionEnd: 10 }),
+    replace: (from, to, value) => {
+      text = text.slice(0, from) + value + text.slice(to);
+    },
+    focus: vi.fn(),
+  };
+  const h = mount(target);
+  await act(async () => {
+    h.mute.resolve({ ok: true });
+    h.connection.resolve({ ok: true, runId: 'answer' });
+    expect(h.result.current.start()).toBe(true);
+  });
+  const emit = h.api.onEvent.mock.calls.at(-1)![0];
+  act(() =>
+    emit({
+      type: 'submitted',
+      runId: 'answer',
+      text: 'spoken',
+      segment: {
+        id: 'answer-segment',
+        source: 'mic',
+        status: 'submitted',
+        text: 'spoken',
+        updatedAt: 0,
+      },
+    }),
+  );
+  expect(text).toBe('before spoken after');
+  act(() =>
+    emit({
+      type: 'refined',
+      runId: 'answer',
+      text: 'polished',
+      range: {
+        id: 'answer-range',
+        segmentIds: ['answer-segment'],
+        startOffset: 7,
+        endOffset: 13,
+        userTouched: false,
+      },
+      segment: {
+        id: 'answer-segment',
+        source: 'mic',
+        status: 'refined',
+        text: 'polished',
+        basedOnText: 'spoken',
+        updatedAt: 0,
+      },
+    }),
+  );
+  expect(text).toBe('before polished after');
+  text = 'before edited after';
+  act(() =>
+    emit({
+      type: 'refined',
+      runId: 'answer',
+      text: 'polished',
+      range: {
+        id: 'answer-range',
+        segmentIds: ['answer-segment'],
+        startOffset: 7,
+        endOffset: 13,
+        userTouched: false,
+      },
+      segment: {
+        id: 'answer-segment',
+        source: 'mic',
+        status: 'refined',
+        text: 'polished',
+        basedOnText: 'spoken',
+        updatedAt: 0,
+      },
+    }),
+  );
+  expect(text).toBe('before edited after');
 });

@@ -199,7 +199,9 @@ it.each([
   expect(fs.readFileSync(`${opts.targetPath}.part`, 'utf8')).toBe('abc');
   expect(readMeta(opts.targetPath)?.downloadedBytes).toBe(3);
   send.mockResolvedValueOnce(resumed('def'));
-  await expect(execute({ ...opts, signal: undefined })).resolves.toMatchObject({ size: 6 });
+  // Keep the 20 ms failure budget out of the successful recovery's real filesystem I/O.
+  const recoveryOpts = { ...opts, signal: undefined, timeout: undefined };
+  await expect(execute(recoveryOpts)).resolves.toMatchObject({ size: 6 });
   expect(send.mock.calls[1][1].headers).toMatchObject({ Range: 'bytes=3-', 'If-Range': 'v1' });
   expect(fs.readFileSync(opts.targetPath, 'utf8')).toBe(BODY);
   expect(readMeta(opts.targetPath)).toBeNull();

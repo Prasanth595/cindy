@@ -4,6 +4,24 @@ import { createElement } from 'react';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+// These card interaction tests isolate the microphone/cloud lifecycle, which is
+// covered by voice-input/useVoiceInput.startup.test.ts.
+vi.mock('@/voice-input/useVoiceInput', () => ({
+  useVoiceInput: (_editor: unknown, _disabled: unknown, _messages: unknown,
+    options: { textTarget: { read: () => { selectionStart: number; selectionEnd: number };
+      replace: (from: number, to: number, text: string) => void } }) => ({
+    state: 'idle', isBusy: false, isListening: false,
+    draftText: '', lastError: null, getState: () => 'idle',
+    start: () => {
+      const target = options.textTarget;
+      const range = target.read();
+      target.replace(range.selectionStart, range.selectionEnd, 'spoken answer');
+      return true;
+    },
+    stop: async () => {}, cancel: async () => {},
+  }),
+}));
+
 import '@/i18n';
 import type { PendingAskUser } from '@/lib/makerChatStore';
 import { AskUserQuestionPrompt } from '../components/new-chat/AskUserQuestionPrompt';
@@ -122,4 +140,23 @@ describe('AskUserQuestionPrompt long answers', () => {
       'Choose details': JSON.stringify(['A', 'Extra\ncontext']),
     });
   });
+});
+
+// #6270 integration: the card receives the shared hook's target write, retains
+// editable draft state, and submits the answer text rather than entry copy.
+// Earlier long-answer tests only covered keyboard changes. Minimal inputs are
+// one optional-answer question and one no-option question; microphone/cloud are
+// isolated above, while the real hook's target behavior has separate coverage.
+it.each([false, true])('submits edited dictation from the answer field (options=%s)', (hasOptions) => {
+  const onAnswer = vi.fn();
+  const view = renderAskUser({ requestId: 'voice-question', questions: [{
+    question: 'Answer?', options: hasOptions ? [{ label: 'A' }] : [],
+  }] }, onAnswer);
+  if (hasOptions) fireEvent.click(view.getByText('Type something else…'));
+  fireEvent.click(view.getByRole('button', { name: 'Start voice input' }));
+  const field = view.getByPlaceholderText('Type your answer…') as HTMLTextAreaElement;
+  expect(field.value).toBe('spoken answer');
+  fireEvent.change(field, { target: { value: 'spoken answer, edited' } });
+  fireEvent.keyDown(field, { key: 'Enter' });
+  expect(onAnswer).toHaveBeenCalledWith('voice-question', { 'Answer?': 'spoken answer, edited' });
 });

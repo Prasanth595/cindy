@@ -4,6 +4,14 @@ import { createElement } from 'react';
 import { cleanup, fireEvent, render, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+// These card interaction tests isolate the microphone/cloud lifecycle, which is
+// covered by voice-input/useVoiceInput.startup.test.ts.
+vi.mock('@/voice-input/useVoiceInput', () => ({
+  useVoiceInput: () => ({ state: 'idle', isBusy: false, isListening: false,
+    draftText: '', lastError: null, getState: () => 'idle',
+    start: () => false, stop: async () => {}, cancel: async () => {} }),
+}));
+
 import i18n from '@/i18n';
 import type { PendingAskUser } from '@/lib/makerChatStore';
 import { AskUserQuestionPrompt } from '../components/new-chat/AskUserQuestionPrompt';

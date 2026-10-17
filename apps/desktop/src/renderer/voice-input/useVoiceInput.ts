@@ -3,6 +3,7 @@ import type { Editor } from '@tiptap/core';
 import type { Node as PMNode } from '@tiptap/pm/model';
 import type { Transaction } from '@tiptap/pm/state';
 import { useTranslation } from 'react-i18next';
+import { takeRefinementContextHead, takeRefinementContextTail } from '@cindy/voice-input-core';
 import type {
   DictationRefinementContext,
   VoiceInputDraftSource,
@@ -173,7 +174,15 @@ type StopCompletionWaiter = {
   waitForRefinement: boolean;
 };
 
+/** A controlled plain-text field; offsets are zero-based string positions. */
+export type VoiceInputTextTarget = {
+  read: () => { inputValue: string; selectionStart: number; selectionEnd: number } | null;
+  replace: (from: number, to: number, text: string) => void;
+  focus: () => void;
+};
+
 export type UseVoiceInputOptions = {
+  textTarget?: VoiceInputTextTarget;
   onMicrophonePermissionRequired?: (error: string) => void | Promise<void>;
   /** When false, keep refining in the background but do not write the live editor. */
   shouldApplyToEditor?: () => boolean;
@@ -181,7 +190,8 @@ export type UseVoiceInputOptions = {
 };
 
 /**
- * useVoiceInput wires ChatInput to the main-process dictation controller.
+ * useVoiceInput wires a rich-text editor or controlled text target to the shared
+ * main-process dictation controller.
  *
  * Partial ASR is displayed as ghost draft text so user typing is not overwritten.
  * On Stop, main submits the best ASR text and this hook inserts it at the
@@ -383,6 +393,11 @@ export function useVoiceInput(
     // editor and leave keyboard input feeling stuck after dictation ends.
     window.requestAnimationFrame(() => {
       window.setTimeout(() => {
+        const target = optionsRef.current?.textTarget;
+        if (target && !disabledRef.current) {
+          target.focus();
+          return;
+        }
         const current = editorRef.current;
         if (!current || current.isDestroyed || disabledRef.current) return;
         if (!current.isEditable) {
@@ -536,6 +551,8 @@ export function useVoiceInput(
   ]);
 
   const readEditorSnapshot = useCallback(() => {
+    const snapshot = optionsRef.current?.textTarget?.read();
+    if (snapshot) return snapshot;
     const current = editorRef.current;
     if (!current || current.isDestroyed) {
       return {
@@ -552,6 +569,8 @@ export function useVoiceInput(
   }, []);
 
   const readEditorSelectionRange = useCallback((): EditorTextRange | null => {
+    const snapshot = optionsRef.current?.textTarget?.read();
+    if (snapshot) return { from: snapshot.selectionStart, to: snapshot.selectionEnd };
     const current = editorRef.current;
     if (!current || current.isDestroyed) return null;
     return {
@@ -787,6 +806,20 @@ export function useVoiceInput(
       settings: voiceInputSettings,
     });
     const replyToMessage = buildReplyToMessageFromChatMessages(chatMessages);
+    const textSnapshot = optionsRef.current?.textTarget?.read();
+    if (textSnapshot) {
+      const range = insertionRangeRef.current ?? {
+        from: textSnapshot.selectionStart,
+        to: textSnapshot.selectionEnd,
+      };
+      return {
+        ...baseContext,
+        replyToMessage,
+        selectionBefore: takeRefinementContextTail(textSnapshot.inputValue.slice(0, range.from)),
+        selectedText: takeRefinementContextHead(textSnapshot.inputValue.slice(range.from, range.to)),
+        selectionAfter: takeRefinementContextHead(textSnapshot.inputValue.slice(range.to)),
+      };
+    }
     if (!current || current.isDestroyed) {
       return {
         ...baseContext,
@@ -837,6 +870,18 @@ export function useVoiceInput(
 
   const insertSubmittedText = useCallback((text: string): { start: number; end: number } | null => {
     if (optionsRef.current?.shouldApplyToEditor?.() === false) return null;
+    const target = optionsRef.current?.textTarget;
+    const snapshot = target?.read();
+    if (target && snapshot) {
+      const range = insertionRangeRef.current ?? {
+        from: snapshot.selectionStart,
+        to: snapshot.selectionEnd,
+      };
+      insertionRangeRef.current = null;
+      target.replace(range.from, range.to, text);
+      target.focus();
+      return { start: range.from, end: range.from + text.length };
+    }
     const current = editorRef.current;
     if (!current || current.isDestroyed) return null;
     current.commands.focus();
@@ -879,6 +924,26 @@ export function useVoiceInput(
         refinedText: event.text,
       });
       return false;
+    }
+    const target = optionsRef.current?.textTarget;
+    const snapshot = target?.read();
+    if (target && snapshot) {
+      const currentText = snapshot.inputValue.slice(range.start, range.end);
+      const basedOnText =
+        event.segment.basedOnText ?? range.rawTranscriptText ?? range.submittedText;
+      if (
+        range.end > snapshot.inputValue.length ||
+        (currentText !== range.submittedText && currentText !== basedOnText)
+      )
+        return false;
+      target.replace(range.start, range.end, event.text);
+      submittedRangesRef.current.set(segmentId, {
+        ...range,
+        end: range.start + event.text.length,
+        submittedText: event.text,
+      });
+      if (range.historyEntryId) updateVoiceInputHistoryEntry(range.historyEntryId, event.text);
+      return true;
     }
     if (!current || current.isDestroyed) {
       log.debug('refinement skipped: editor unavailable', {
@@ -1240,7 +1305,7 @@ export function useVoiceInput(
     const currentState = stateRef.current;
     if (
       disabled ||
-      !editorRef.current ||
+      (!editorRef.current && !optionsRef.current?.textTarget?.read()) ||
       stopInFlightRef.current ||
       currentState === 'listening' ||
       currentState === 'submitting' ||
@@ -1758,7 +1823,7 @@ export function useVoiceInput(
   stopWithGateRef.current = stopWithGate;
 
   useEffect(() => {
-    const editorUnavailable = !editor || editor.isDestroyed || disabled;
+    const editorUnavailable = disabled || (!options?.textTarget && (!editor || editor.isDestroyed));
     if (!editorUnavailable) return;
     const currentState = stateRef.current;
     if (
@@ -1775,7 +1840,7 @@ export function useVoiceInput(
       editorDestroyed: Boolean(editor?.isDestroyed),
     });
     void cancel();
-  }, [cancel, disabled, editor]);
+  }, [cancel, disabled, editor, options?.textTarget]);
 
   return {
     state,

@@ -16,13 +16,16 @@ import { Button } from '@/components/ui/button';
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type RefObject,
   type TextareaHTMLAttributes,
 } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ArrowRight } from 'lucide-react';
+import { ArrowRight , Mic, Square, LoaderCircle } from 'lucide-react';
+import { useVoiceInput, type VoiceInputTextTarget } from '@/voice-input/useVoiceInput';
+import { VoiceInputStatusNotice } from '@/voice-input/VoiceInputStatusNotice';
 import { visibleAskOptions } from '@cindy/maker-shared';
 
 import { InteractionPromptCardShell } from '@/components/interaction-portal';
@@ -40,6 +43,8 @@ interface AutoGrowingAnswerTextareaProps extends Omit<
 > {
   textareaRef: RefObject<HTMLTextAreaElement | null>;
   value: string;
+onVoiceText: (value: string) => void;
+  onVoiceBusyChange: (busy: boolean) => void;
 }
 
 /**
@@ -51,18 +56,122 @@ function AutoGrowingAnswerTextarea({
   textareaRef,
   value,
   className,
+  onVoiceText,
+  onVoiceBusyChange,
   ...props
 }: AutoGrowingAnswerTextareaProps) {
   useAutoResize(textareaRef, value, ASK_USER_ANSWER_MAX_HEIGHT_PX);
 
+  const { t } = useTranslation();
+  const valueRef = useRef(value);
+  const onTextRef = useRef(onVoiceText);
+  valueRef.current = value;
+  onTextRef.current = onVoiceText;
+  const target = useMemo<VoiceInputTextTarget>(
+    () => ({
+      read: () => {
+        const field = textareaRef.current;
+        return field
+          ? {
+              inputValue: valueRef.current,
+              selectionStart: field.selectionStart,
+              selectionEnd: field.selectionEnd,
+            }
+          : null;
+      },
+      replace: (from, to, text) => {
+        const next = valueRef.current.slice(0, from) + text + valueRef.current.slice(to);
+        valueRef.current = next;
+        onTextRef.current(next);
+        requestAnimationFrame(() =>
+          textareaRef.current?.setSelectionRange(from + text.length, from + text.length),
+        );
+      },
+      focus: () => textareaRef.current?.focus(),
+    }),
+    [textareaRef],
+  );
+  const voice = useVoiceInput(null, props.disabled, undefined, { textTarget: target });
+  const disabledRef = useRef(props.disabled);
+  disabledRef.current = props.disabled;
+  const voiceRef = useRef(voice);
+  voiceRef.current = voice;
+  useEffect(() => {
+    onVoiceBusyChange(voice.isBusy);
+    return () => onVoiceBusyChange(false);
+  }, [voice.isBusy, onVoiceBusyChange]);
+  useEffect(
+    () =>
+      window.electronAPI?.voiceInput?.onGlobalShortcutTrigger?.((payload) => {
+        const current = voiceRef.current;
+        // Idle shortcuts retain the existing global overlay and focused-field paste
+        // route. Only a recording started by this field belongs to this inline hook.
+        if (disabledRef.current || !current.isBusy) return;
+        if (payload?.id) window.electronAPI.voiceInput.claimGlobalShortcutTrigger(payload.id);
+        if (current.getState() === 'listening') void current.stop().catch(() => undefined);
+      }),
+    [],
+  );
+  const label = t(
+    voice.isListening ? 'newChat.chatInput.voiceInput.stop' : 'newChat.chatInput.voiceInput.start',
+  );
   return (
+    <div className="min-w-0 flex-1">
+      <div className="flex items-end gap-2">
     <textarea
       {...props}
       ref={textareaRef}
       rows={1}
       value={value}
+      readOnly={voice.isBusy}
+          onKeyDown={(event) => {
+            if (voice.isBusy) {
+              if (event.key === 'Escape') {
+                event.preventDefault();
+                event.stopPropagation();
+                void voice.cancel().catch(() => undefined);
+              } else if (event.key === 'Enter') event.preventDefault();
+              return;
+            }
+            props.onKeyDown?.(event);
+          }}
       className={cn('resize-none', className)}
     />
+        <Tip text={label}>
+          <Button
+            variant="secondary"
+            tone="quiet"
+            size="md"
+            compact
+            className="w-8 shrink-0 px-0"
+            type="button"
+            aria-label={label}
+            aria-pressed={voice.isListening}
+            disabled={props.disabled || (voice.isBusy && !voice.isListening)}
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => {
+              textareaRef.current?.focus();
+              if (voice.isListening) void voice.stop().catch(() => undefined);
+              else voice.start();
+            }}
+          >
+            {voice.isListening ? (
+              <Square size={15} />
+            ) : voice.isBusy ? (
+              <LoaderCircle size={15} className="animate-spin" />
+            ) : (
+              <Mic size={15} />
+            )}
+          </Button>
+        </Tip>
+      </div>
+      {voice.draftText && (
+        <div role="status" className="text-13 text-[var(--text-secondary)]">
+          {voice.draftText}
+        </div>
+      )}
+      {voice.lastError && <VoiceInputStatusNotice message={voice.lastError} />}
+    </div>
   );
 }
 
@@ -153,14 +262,16 @@ function AskUserQuestionForm({
     draft && draft.requestId === requestId ? draft.answers : {},
   );
   // Multi-select: set of selected labels for current question
-  const [selectedLabels, setSelectedLabels] = useState<Set<string>>(() => new Set(draft?.selectedLabels ?? []));
+  const [selectedLabels, setSelectedLabels] = useState<Set<string>>(() => new Set(draft?.selectedLabels ?? []),
+  );
   // Custom input
+  const [voiceBusy, setVoiceBusy] = useState(false);
   const [customInput, setCustomInput] = useState(draft?.customInput ?? '');
   const [showCustomInput, setShowCustomInput] = useState(draft?.showCustomInput ?? false);
   const startedRef = useRef(draft?.started === true);
   const draftRef = useRef<AskUserDraft>({ requestId, currentIndex, answers });
   draftRef.current = { requestId, currentIndex, answers, customInput, showCustomInput,
-    selectedLabels: [...selectedLabels], started: startedRef.current };
+    selectedLabels: [...selectedLabels], started: startedRef.current , };
   const markStarted = useCallback(() => {
     startedRef.current = true;
     onDraftChange({ ...draftRef.current, started: true });
@@ -241,7 +352,7 @@ function AskUserQuestionForm({
   // Save the unfinished field as well as completed answers across unmounts.
   useEffect(() => {
     onDraftChange(draftRef.current);
-  }, [requestId, currentIndex, answers, customInput, selectedLabels, showCustomInput, onDraftChange]);
+  }, [requestId, currentIndex, answers, customInput, selectedLabels, showCustomInput, onDraftChange,]);
 
   // ── Snapshot current buttons before animation starts ──
   const snapshotButtons = useCallback(() => {
@@ -282,11 +393,12 @@ function AskUserQuestionForm({
         )}
       </>
     );
-  }, [currentIndex, isMultiSelect, isLastQuestion, existingAnswer, selectedLabels, customInput, pending.resumeOnSubmit, t]);
+  }, [currentIndex, isMultiSelect, isLastQuestion, existingAnswer, selectedLabels, customInput, pending.resumeOnSubmit, t,]);
 
   // ── Advance to next question or submit all ──
   const advance = useCallback(
     (answer: string) => {
+      if (voiceBusy) return;
       const updated = { ...answers, [currentQ.question]: answer };
       setAnswers(updated);
 
@@ -314,6 +426,7 @@ function AskUserQuestionForm({
     },
     [
       answers,
+      voiceBusy,
       currentIndex,
       currentQ,
       totalQuestions,
@@ -342,7 +455,7 @@ function AskUserQuestionForm({
       else next.add(label);
       return next;
     });
-  }, [markStarted]);
+  }, [markStarted],);
 
   // ── Multi-select: Next button → encode as JSON array string ──
   const handleNext = useCallback(() => {
@@ -358,7 +471,7 @@ function AskUserQuestionForm({
 
   // ── Back ──
   const handleBack = useCallback(() => {
-    if (currentIndex === 0) return;
+    if (currentIndex === 0|| voiceBusy) return;
     snapshotButtons();
     setSlideDirection('right');
     setIsAnimating(true);
@@ -374,7 +487,7 @@ function AskUserQuestionForm({
         setSlideDirection(null);
       });
     }, 200);
-  }, [currentIndex, answers, computeSelectionForIndex, snapshotButtons]);
+  }, [currentIndex, answers, computeSelectionForIndex, snapshotButtons, voiceBusy]);
 
   // ── Skip ──
   const handleSkip = useCallback(() => {
@@ -506,6 +619,7 @@ function AskUserQuestionForm({
               compact
               type="button"
               onClick={handleBack}
+              disabled={voiceBusy}
             >
               <span className="flex items-center gap-1.5">
                 <span>&#8592;</span>
@@ -521,6 +635,7 @@ function AskUserQuestionForm({
             compact
             type="button"
             onClick={handleSkip}
+            disabled={voiceBusy}
           >
             {t('chat.askUserQuestion.skip')}
           </Button>
@@ -590,8 +705,15 @@ function AskUserQuestionForm({
               </div>
             )}
             <AutoGrowingAnswerTextarea
+              key={currentIndex}
+              disabled={viewerState === 'minimized' || isAnimating}
               textareaRef={inputRef}
               value={customInput}
+              onVoiceText={(text) => {
+                markStarted();
+                setCustomInput(text);
+              }}
+              onVoiceBusyChange={setVoiceBusy}
               onCompositionStart={markStarted}
               onChange={(e) => { markStarted(); setCustomInput(e.target.value); }}
               onKeyDown={(e) => {
@@ -618,7 +740,7 @@ function AskUserQuestionForm({
                 <button
                   type="button"
                   onClick={handleCustomSubmit}
-                  disabled={!customInput.trim()}
+                  disabled={voiceBusy || !customInput.trim()}
                   data-testid={isLastQuestion ? undefined : 'ask-user-custom-next'}
                   aria-label={isLastQuestion ? undefined : t('chat.askUserQuestion.next')}
                   className={cn(
@@ -783,8 +905,15 @@ function AskUserQuestionForm({
         {options.length === 0 && (
           <div className="flex items-end gap-2">
             <AutoGrowingAnswerTextarea
+              key={currentIndex}
+              disabled={viewerState === 'minimized' || isAnimating}
               textareaRef={inputRef}
               value={customInput}
+              onVoiceText={(text) => {
+                markStarted();
+                setCustomInput(text);
+              }}
+              onVoiceBusyChange={setVoiceBusy}
               onCompositionStart={markStarted}
               onChange={(e) => { markStarted(); setCustomInput(e.target.value); }}
               onKeyDown={(e) => {
@@ -809,7 +938,7 @@ function AskUserQuestionForm({
               <button
                 type="button"
                 onClick={submitDirectAnswer}
-                disabled={!customInput.trim()}
+                disabled={voiceBusy || !customInput.trim()}
                 data-testid={isLastQuestion ? undefined : 'ask-user-custom-next'}
                 aria-label={isLastQuestion ? undefined : t('chat.askUserQuestion.next')}
                 className={cn(

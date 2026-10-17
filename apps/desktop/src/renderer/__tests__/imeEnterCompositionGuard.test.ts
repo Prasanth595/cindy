@@ -15,6 +15,16 @@ import { createElement } from 'react';
 import { cleanup, fireEvent, render } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+// Keep IME keyboard assertions independent of the microphone/cloud lifecycle.
+// The real voice hook is covered by voice-input/useVoiceInput.startup.test.ts.
+vi.mock('@/voice-input/useVoiceInput', () => ({
+  useVoiceInput: () => ({
+    state: 'idle', isBusy: false, isListening: false,
+    draftText: '', lastError: null, getState: () => 'idle',
+    start: () => false, stop: async () => {}, cancel: async () => {},
+  }),
+}));
+
 import '@/i18n';
 import type { PendingAskUser } from '@/lib/makerChatStore';
 import { AskUserQuestionPrompt } from '../components/new-chat/AskUserQuestionPrompt';
