@@ -1,3 +1,4 @@
+import { ErrorNotice } from '@/components/ui/error-notice';
 /**
  * 「远程与分享」页的「用量」块(供应商组 §7、§10)：与设置 → 用量同一套版式(2026-10-17 用户确认原型)——
  * 右上筛选(使用方、组内电脑、时间范围与日期)，下面依次是概览、按人、近 30 天每日 token、活跃热力图、
@@ -390,7 +391,7 @@ export function ProviderUsageSection({
           {t('providerShare.manage.loading')}
         </p>
       ) : status === 'failed' && !history ? (
-        <p role="alert" className="-mt-1 mb-3 text-12 text-[var(--error-fg)]">{t('providerGroup.usage.loadFailed')}</p>
+        <ErrorNotice role="alert" className="-mt-1 mb-3" message={t('providerGroup.usage.loadFailed')} />
       ) : legacy ? (
         <p role="status" className="-mt-1 mb-3 text-12 text-[var(--text-tertiary)]">
           {t('providerGroup.usage.legacyNote', { device: selfDeviceName ?? t('providerGroup.usage.unknownDevice') })}

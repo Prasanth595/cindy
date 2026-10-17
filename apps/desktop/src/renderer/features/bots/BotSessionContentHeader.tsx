@@ -6,10 +6,12 @@
  * you are talking to, and the way into their settings. Two entrances, both
  * leading to the same place — the name/avatar lockup itself, and the gear at the
  * right end of the bar — because "click the name" is the discoverable one and
- * "the gear is on the right" is the learned one. Local teammates also get a
- * permanent way into their workbench here: the sidebar tab can be closed, and
- * nothing else reopens it — plus the IM-style "add people" entry that turns
- * this chat into a group or brings the teammate into one.
+ * "the gear is on the right" is the learned one. Every teammate with a live main
+ * task (this computer's or another computer's) also gets a permanent way into its
+ * workbench here: the tab opens by itself only once, the first time something
+ * waits on you, and nothing else reopens it after a close — plus, for local
+ * teammates, the IM-style "add people" entry that turns this chat into a group
+ * or brings the teammate into one.
  */
 import { useMemo } from 'react';
 import { LayoutGrid, Settings2 } from 'lucide-react';
@@ -31,7 +33,7 @@ export interface BotChatIdentity {
   templateId?: string;
   deviceId?: string;
   deviceName?: string;
-  /** 本机伙伴主任务的 session id;有它才有工作台入口。远程名册里为 null。 */
+  /** 伙伴主任务的 session id(本机或那台电脑上的);有它才有工作台入口。名册里尚未就绪时为 null。 */
   sessionId?: string | null;
   name: string;
   avatar?: string | null;
@@ -81,7 +83,7 @@ export function BotSessionContentHeader({ bot }: { bot: BotChatIdentity }) {
           </span>
         ) : null}
         {bot.canonicalChat && !bot.deviceId ? <BotAddToGroupMenu botId={bot.id} /> : null}
-        {!bot.deviceId && bot.sessionId ? (
+        {bot.sessionId ? (
           <button
             type="button"
             onClick={() => void openBotWorkbenchTab(bot.sessionId!, bot.id).catch(() => undefined)}

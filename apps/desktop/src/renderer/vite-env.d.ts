@@ -4906,12 +4906,6 @@ interface ElectronAPI {
       };
       workbench: {
         get: (botId: string) => Promise<import('../shared/botWorkbench').BotWorkbench | null>;
-        addDirectory: (
-          botId: string,
-          path: string,
-        ) => Promise<{ ok: true } | { ok: false; errorCode: 'NOT_A_DIRECTORY' | 'TOO_MANY' }>;
-        /** `deviceId`: the folder is on that computer (cloud companions); absent for this computer's. */
-        removeDirectory: (botId: string, path: string, deviceId?: string) => Promise<void>;
         readTask: (
           botId: string,
           taskId: string,
@@ -4919,23 +4913,18 @@ interface ElectronAPI {
           | { ok: true; taskId: string; transcript: import('../shared/botWorkbench').WorkbenchTranscript }
           | { ok: false; errorCode: string; message: string }
         >;
-        candidates: (
-          botId: string,
-        ) => Promise<
-          | {
-              ok: true;
-              candidates: Array<{
-                source: 'claude' | 'codex' | 'pi';
-                id: string;
-                projectDir: string | null;
-                updatedAt: string;
-                archived: boolean;
-              }>;
-            }
-          | { ok: false; errorCode: string; message: string }
-        >;
         /** 每个在用本机伙伴的逐任务责任 ID；旧宿主缺字段时不推断。`delegatedSessionIds` 只含伙伴自己开的后台任务。 */
         followScopes: () => Promise<Array<{ botId: string; sessionIds?: string[]; delegatedSessionIds?: string[] }>>;
+      };
+      /** 伙伴自主跟进：工作台「一眼」投影与账号级「自动跟进所有任务」设置（shared/botAutonomy.ts）。 */
+      autonomy: {
+        glance: (botId: string) => Promise<import('../shared/botAutonomy').BotGlance>;
+        getSettings: () => Promise<import('../shared/botAutonomy').BotAutonomySettingsView>;
+        setSettings: (
+          patch: import('../shared/botAutonomy').BotAutonomySettings,
+        ) => Promise<import('../shared/botAutonomy').BotAutonomySettingsView>;
+        /** 删除 override，重新跟随当前版本默认。 */
+        resetSettings: () => Promise<import('../shared/botAutonomy').BotAutonomySettingsView>;
       };
       listSkills: (botId: string) => Promise<import('../shared/botSkill').BotSkillSummary[]>;
       memory: {
@@ -5503,6 +5492,8 @@ interface ElectronAPI {
       cb: (payload: { botId: string; change: 'created' | 'updated' }) => void,
     ) => () => void;
     onBotWorkbenchChanged: (cb: (payload: { botId: string }) => void) => () => void;
+    /** 状态表或「自动跟进所有任务」设置变化（节流 ≤ 1 次/秒）；缺 botIds = 全部伙伴。 */
+    onBotAutonomyChanged: (cb: (payload: { botIds?: string[] }) => void) => () => void;
     runBotLifecycleAction: (
       request: import('../shared/botLifecycle').BotLifecycleActionRequest,
     ) => Promise<import('../shared/botLifecycle').BotLifecycleActionResult>;

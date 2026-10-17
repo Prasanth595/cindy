@@ -10,6 +10,7 @@
  * 受邀者任务里，凭证类操作没有批准时先在本机弹确认卡，等待期间这条连接后面的消息排在它后面。
  */
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -138,7 +139,121 @@ export function mapExecServerParams(value: unknown, workspace: ExecutorWorkspace
   }
   if (Array.isArray(result.argv)) result.argv = result.argv.map((part) => typeof part === 'string' ? workspace.mapCommand(part, resolveExecutorShell().dialect) : part);
   if (typeof result.command === 'string') result.command = workspace.mapCommand(result.command, resolveExecutorShell().dialect);
+  if (result.sandbox !== undefined) result.sandbox = mapExecServerSandbox(result.sandbox, workspace);
   return mapFileData ? mapExecServerFileData(result, workspace, method) : result;
+}
+
+type JsonRecord = Record<string, unknown>;
+
+function asJsonRecord(value: unknown): JsonRecord | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as JsonRecord : null;
+}
+
+/**
+ * 本机能用的绝对路径：任务电脑是 Windows 时必须带盘符或是 UNC，以 `/` 开头的 POSIX 路径不算；
+ * 是 POSIX 时 `//server/share` 是 Windows 网络路径(本机 exec-server 不认带主机名的 file URI)，也不算。
+ */
+function isLocalAbsolutePath(value: string): boolean {
+  return process.platform === 'win32'
+    ? /^(?:[A-Za-z]:[\\/]|[\\/]{2}[^\\/])/.test(value)
+    : path.posix.isAbsolute(value) && !/^[\\/]{2}/.test(value);
+}
+
+/** 转换沙箱用到的 Agent 一侧信息：它的路径约定按虚拟工作区(Agent 主机上的路径)判断，不按单个 URI 的长相猜。 */
+interface SandboxMapping {
+  workspace: ExecutorWorkspace;
+  windowsAgent: boolean;
+}
+
+/** Agent 发来的 file URI 还原成它那边的路径写法(Windows Agent：`file:///C:/x` → `C:/x`；UNC 带回主机名)。 */
+function agentPathFromUri(value: unknown, windowsAgent: boolean): string | null {
+  if (typeof value !== 'string' || !value.startsWith('file://')) return null;
+  try {
+    const url = new URL(value);
+    const pathname = decodeURIComponent(url.pathname);
+    if (url.host) return `//${url.host}${pathname}`;
+    // POSIX 上 `/C:/secret` 是根目录下的普通路径，只有 Windows Agent 才去掉盘符前的 `/`。
+    return windowsAgent ? pathname.replace(/^\/([A-Za-z]:)/, '$1') : pathname;
+  } catch {
+    return null;
+  }
+}
+
+/** 虚拟工作区内的 file URI 换成本机 file URI；Agent 主机自己的路径返回 null。 */
+function localUriFromAgent(value: unknown, { workspace, windowsAgent }: SandboxMapping): string | null {
+  const agentPath = agentPathFromUri(value, windowsAgent);
+  const local = agentPath === null ? null : workspace.localPathFromAgent(agentPath);
+  return local === null ? null : pathToFileURL(local).href;
+}
+
+/**
+ * 沙箱上下文里解释权限条目用的目录(policyContext 里同名字段同样处理)。用户目录对不上时用本机的：
+ * Codex 缺了它会把 `~/…` 规则当作解析失败、一律拒绝读取。
+ */
+function mapSandboxDirs(record: JsonRecord, mapping: SandboxMapping): JsonRecord {
+  const result = { ...record };
+  if (result.cwd !== undefined) {
+    const local = localUriFromAgent(result.cwd, mapping);
+    if (local === null) delete result.cwd;
+    else result.cwd = local;
+  }
+  if (result.userHomeDir !== undefined) {
+    result.userHomeDir = localUriFromAgent(result.userHomeDir, mapping) ?? pathToFileURL(os.homedir()).href;
+  }
+  for (const key of ['workspaceRoots', 'temporaryDirectories']) {
+    const items = result[key];
+    if (Array.isArray(items)) result[key] = items.flatMap((item) => localUriFromAgent(item, mapping) ?? []);
+  }
+  return result;
+}
+
+/**
+ * 一条文件权限：虚拟工作区内的路径换成本机路径。Agent 主机自己的路径(如它的 Codex 记忆目录)在本机
+ * 没有对应位置，读写授权直接丢掉，只收不放。禁止规则不因转换失效：路径条目在本机也是合法绝对路径时
+ * 原样保留(不合法的会让本机 exec-server 拒绝整个请求)；没映射上的禁止 glob 一律原样保留——相对的由本机
+ * 按工作目录解释，Agent 主机的绝对路径在本机匹配不到东西，无需判断它是不是绝对路径。特殊路径(`:tmpdir`、
+ * 项目根等)由本机 exec-server 按映射后的目录解释。
+ */
+function mapSandboxEntry(entry: unknown, mapping: SandboxMapping): unknown[] {
+  const record = asJsonRecord(entry);
+  const target = asJsonRecord(record?.path);
+  if (!record || !target) return [entry];
+  const deny = record.access === 'deny' || record.access === 'none';
+  if (target.type === 'path') {
+    const local = localUriFromAgent(target.path, mapping);
+    if (local !== null) return [{ ...record, path: { ...target, path: local } }];
+    const agentPath = agentPathFromUri(target.path, mapping.windowsAgent);
+    return deny && agentPath !== null && isLocalAbsolutePath(agentPath) ? [entry] : [];
+  }
+  if (target.type === 'glob_pattern' && typeof target.pattern === 'string') {
+    const local = mapping.workspace.localGlobFromAgent(target.pattern);
+    if (local !== null) return [{ ...record, path: { ...target, pattern: local } }];
+    // 读写 glob 只有明确是绝对路径(盘符加分隔符、`/` 开头、`\\server`)才是 Agent 主机的路径，丢掉；判断不准只会少放。
+    return deny || !/^(?:[A-Za-z]:[\\/]|\/|\\\\)/.test(target.pattern) ? [entry] : [];
+  }
+  return [entry];
+}
+
+/**
+ * Codex 请求(process/start、fs/*)里的 `sandbox`：权限条目和解释它们用的目录都是 Agent 主机上看到的
+ * file URI。原样转给本机 exec-server，两端系统不同时会因路径不属于本机被拒(`invalid sandbox
+ * permission path URI`)，相同时则放行的是本机不存在的虚拟目录。这里换成本机路径，规则见 mapSandboxEntry。
+ */
+function mapExecServerSandbox(value: unknown, workspace: ExecutorWorkspace): unknown {
+  const record = asJsonRecord(value);
+  const agentPrefixes = workspace.agentPathPrefixes();
+  if (!record || agentPrefixes.length === 0) return value;
+  const mapping: SandboxMapping = { workspace, windowsAgent: /^(?:[A-Za-z]:|[\\/]{2})/.test(agentPrefixes[0]) };
+  const sandbox = mapSandboxDirs(record, mapping);
+  const policyContext = asJsonRecord(sandbox.policyContext);
+  if (policyContext) sandbox.policyContext = mapSandboxDirs(policyContext, mapping);
+  const permissions = asJsonRecord(sandbox.permissions);
+  const fileSystem = asJsonRecord(permissions?.file_system);
+  if (permissions && fileSystem && Array.isArray(fileSystem.entries)) {
+    const entries = fileSystem.entries.flatMap((entry) => mapSandboxEntry(entry, mapping));
+    sandbox.permissions = { ...permissions, file_system: { ...fileSystem, entries } };
+  }
+  return sandbox;
 }
 
 /**

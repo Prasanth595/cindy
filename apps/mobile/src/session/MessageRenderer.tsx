@@ -7,6 +7,7 @@ import { CompanionLearningFooter } from './CompanionLearningFooter';
 import { CompanionTaskResultCard } from './CompanionTaskResultCard';
 import { botTaskResultKey, readBotTaskResults } from '@cindy/maker-shared/botCollaboration';
 import { AgentErrorDetails } from './AgentErrorDetails';
+import { ErrorNotice } from '@/components/ErrorNotice';
 import { FileTypeIcon } from '@/components/FileTypeIcon';
 import { CompanionMessageActions } from './CompanionMessageActions';
 import { useMessageHistoryActive, useMessageHistoryPositioning } from './messageHistoryActivity';
@@ -3924,7 +3925,11 @@ function MessageBubble({
         />
       ) : null}
       {attachmentStripNode}
-      {hasBubbleContent || (!attachmentStripNode && messageQuotes.length === 0) ? bubble : null}
+      {item.message.role === 'error' ? (
+        <ErrorNotice message={displayBubbleBody}>
+          {item.message.rawError ? <AgentErrorDetails key={item.message.key} message={item.message.rawError} /> : null}
+        </ErrorNotice>
+      ) : hasBubbleContent || (!attachmentStripNode && messageQuotes.length === 0) ? bubble : null}
       {actions.companion && item.message.kind === 'assistant' && item.message.body.trim() ? (
         <CompanionLearningFooter receipts={item.message.source.agentMeta?.botLearning}
           onOpenSettings={actions.onOpenCompanionSettings} />
@@ -3935,7 +3940,6 @@ function MessageBubble({
             deviceId={actions.remoteDeviceId ?? ''} parentSessionId={item.message.source.sessionId}
             renderMarkdown={text => <CompanionCardMarkdown text={text} actions={actions} />} />
         )) : null}
-      {item.message.rawError ? <AgentErrorDetails key={item.message.key} message={item.message.rawError} /> : null}
       {item.message.kind === 'assistant' && item.message.modelMismatch ? (
         // 模型降级提示(对齐桌面 AssistantMessage):所选模型本轮被上游静默替换,
         // 常显在气泡下方,icon 用 warning 橙、文字保持 tertiary 灰阶。

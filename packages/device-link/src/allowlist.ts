@@ -561,6 +561,11 @@ const EXTENDED_INVOKE_CHANNELS: readonly string[] = [
   // memory, prompts, configuration, or native UI/file mutations.
   'local-db:bots:list',
   'local-db:bots:get',
+  // 伙伴自主跟进的工作台「一眼」：只读宿主内存状态表的投影（任务标题、等你的一句话摘要、
+  // 分钟数、设备名），不含工作目录、提示词、工具入参或代输入值；handler 只放远程可见的伙伴。
+  // 放行标准：① 只读 ② 同账号已授权控制端本就能经 maker:list-active / sessions:get-many 看到
+  // 同样的任务标题与状态 ③ 没有任何写入或本机特权动作。设置读写（settings-*）不放行。
+  'local-db:bots:autonomy:glance',
   // Same-account opted-in controllers may inspect and stop a companion's own
   // child task and read a participant-checked private thread. No profile mutation.
   'maker:bot-delegations:list',
@@ -709,6 +714,8 @@ export const REMOTE_INVOKE_ALLOWLIST: ReadonlySet<string> = new Set([
  */
 export const PUSH_FORWARD_ALLOWLIST: ReadonlySet<string> = new Set([
   'maker:bot-delegation:changed',
+  // 伙伴自主跟进状态变化（payload 只有 { botIds? }，节流 ≤1 次/秒），控制端据此重读「一眼」。
+  'maker:bot-autonomy:changed',
   'maker:bot-direct-message:changed',
   // maker-ipc MAKER_PUSH
   'maker:event',

@@ -1,3 +1,4 @@
+import { ErrorNotice } from '@/components/ui/error-notice';
 import { Slider } from '@/components/ui/slider';
 import { Button, type ButtonProps } from '@/components/ui/button';
 import {
@@ -966,18 +967,16 @@ export function WorkLouderCodexSettings({
       </WorkLouderCodexPartEditor>
 
       {error && (
-        <div className="flex items-center justify-between gap-3 rounded-xl border border-[var(--error-border)] bg-[var(--error-bg)] px-4 py-3 text-12 text-[var(--error-fg)]">
-          <span>{t(workLouderCopyKey(model, `errors.${error}`))}</span>
-          {error === 'load' && (
-            <button
-              type="button"
-              onClick={() => void reload()}
-              className="font-medium underline underline-offset-2"
-            >
-              {t('settings.shortcuts.workLouderCodex.retry')}
-            </button>
-          )}
-        </div>
+        <ErrorNotice
+          message={t(workLouderCopyKey(model, `errors.${error}`))}
+          actions={
+            error === 'load' && (
+              <Button size="sm" compact onClick={() => void reload()}>
+                {t('settings.shortcuts.workLouderCodex.retry')}
+              </Button>
+            )
+          }
+        />
       )}
 
       {state?.device.inputMonitoringPermission === 'denied' && (

@@ -79,12 +79,12 @@ import {
   saveBotSkillForSession,
 } from '../maker-ipc/botSkillService.js';
 import {
-  addBotWorkbenchProjectForCaller,
   captureBotCreatedTaskResponsibility,
-  removeBotWorkbenchProjectForCaller,
   runBotWorkbenchTool,
-  type BotWorkbenchSendDeps,
+  type BotWorkbenchHostDeps,
 } from '../maker-ipc/botWorkbenchTools.js';
+import { createTaskDigestReader } from './taskDigest.js';
+import { createDesktopTaskDigestDeps, createRemoteWorkbenchMessageReader } from './taskDigestHost.js';
 import { createTaskToolCallAuthorizer } from '../maker-ipc/taskToolCallAuthorizer.js';
 import {
   getSessionRowSnapshot,
@@ -217,7 +217,24 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
     };
   }
 
-  const workbenchSend: BotWorkbenchSendDeps = {
+  const remoteSessionHandoff = deps.historyRemote
+    ? createRemoteSessionHandoff({
+        captureAccess: deps.historyRemote.captureAccess,
+        invoke: deps.invokeRemote,
+      })
+    : null;
+  // 跨电脑投递的来源:发起任务的 id 与标题(对方按「由任务「X」发送」标注来源)。
+  const remoteHandoffSender = async (dispatcherSessionId: string) => {
+    const dbClient = tryGetDbClient();
+    const [row] = dbClient
+      ? await dbClient.drizzle.select({ title: sessions.title }).from(sessions)
+        .where(eq(sessions.id, dispatcherSessionId)).limit(1).catch(() => [])
+      : [];
+    return { sessionId: dispatcherSessionId, ...(row?.title ? { title: row.title } : {}) };
+  };
+
+  // 工作台继续 / 跨电脑读取:与 send_to_session、get_chat_history 同一条宿主路径。
+  const workbenchHost: BotWorkbenchHostDeps = {
     sendToSession: wrap(async (svc, { targetSessionId, message, dispatcherSessionId }) => {
       const result = await svc.sendToSession({ targetSessionId, message, dispatcherSessionId });
       return result.ok
@@ -228,22 +245,34 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
           }
         : { ok: false as const, errorCode: result.errorCode, message: result.message };
     }),
-    startBackgroundTask: async ({ callerSessionId, workingDir, title, objective }) => {
-      const svc = tryGetBotDelegationService();
-      if (!svc) return { ok: false, errorCode: 'HOST_NOT_READY', message: 'Session task service not initialized' };
-      const result = await svc.startSessionTask({ callerSessionId, objective, title, workingDir });
-      return result.ok
-        ? { ok: true as const, sessionId: result.childSessionId }
-        : { ok: false as const, errorCode: result.errorCode, message: result.message };
+    sendToRemoteSession: async ({ deviceId, sessionId, message, dispatcherSessionId }) => {
+      if (!remoteSessionHandoff) {
+        return { ok: false as const, errorCode: 'REMOTE_UNAVAILABLE', message: '这台电脑没有开启跨电脑发送' };
+      }
+      const result = await remoteSessionHandoff({ deviceId, sessionId }, {
+        message,
+        sender: () => remoteHandoffSender(dispatcherSessionId),
+      });
+      return result.ok ? { ok: true as const, wakeKind: result.wakeKind } : result;
     },
+    readRemoteMessages: createRemoteWorkbenchMessageReader(deps.invokeRemote),
   };
 
-  const remoteSessionHandoff = deps.historyRemote
-    ? createRemoteSessionHandoff({
-        captureAccess: deps.historyRemote.captureAccess,
-        invoke: deps.invokeRemote,
-      })
-    : null;
+  const readTaskDigest = createTaskDigestReader(createDesktopTaskDigestDeps({
+    invokeRemote: deps.invokeRemote,
+    ...(deps.historyRemote ? { listDevices: deps.historyRemote.listDevices } : {}),
+    getSessionRuntime: async (sessionId) => {
+      const svc = tryGetOrcaCollabService();
+      return svc ? svc.getSessionRuntime({ targetSessionId: sessionId }) : { ok: false as const };
+    },
+    listSessionQueuedCounts: async (sessionIds) => {
+      const svc = tryGetOrcaCollabService();
+      return svc ? svc.listSessionQueuedCounts(sessionIds) : { ok: false as const };
+    },
+    // git-context 牵连 Electron 窗口广播,按需加载,不让工具装配一引用就把它带进来。
+    readSessionPrStatuses: async (sessionId) =>
+      (await import('../git-context/ipc.js')).readSessionPrStatuses(sessionId),
+  }));
 
   const authorizeTaskToolCall = createTaskToolCallAuthorizer({
     getDb: () => (isAppSessionBoundaryPending() ? null : tryGetDbClient()),
@@ -781,14 +810,7 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
             sendToRemoteSession: async ({ deviceId, sessionId, message, dispatcherSessionId }) =>
               remoteSessionHandoff({ deviceId, sessionId }, {
                 message,
-                sender: async () => {
-                  const dbClient = tryGetDbClient();
-                  const [row] = dbClient
-                    ? await dbClient.drizzle.select({ title: sessions.title }).from(sessions)
-                      .where(eq(sessions.id, dispatcherSessionId)).limit(1).catch(() => [])
-                    : [];
-                  return { sessionId: dispatcherSessionId, ...(row?.title ? { title: row.title } : {}) };
-                },
+                sender: () => remoteHandoffSender(dispatcherSessionId),
               }),
           }
         : {}),
@@ -1051,8 +1073,8 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
         },
         list: (params) => listBotSkillsForSession(params),
       },
-      // 工作台:伙伴继续主人交给它的项目里的任务,或按主人本人的话记下 / 移除项目。授权在
-      // botWorkbenchAccess 里逐次确定性校验;投递复用 send_to_session 的同一条宿主路径。
+      // 工作台「一眼」:总调度伙伴可读 / 继续全部任务(含在线电脑),其它伙伴只碰自己开的或接手的。
+      // 授权在 botWorkbenchAccess 里逐次确定性校验;投递复用 send_to_session 的同一条宿主路径。
       // 停止走通用的 stop_session_turn。
       botWorkbench: {
         todos: async (caller, operation, input) => {
@@ -1072,14 +1094,10 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
             return {ok:true,...await access.ingest(input as Parameters<typeof access.ingest>[0])};
           } catch(error) { return {ok:false,errorCode:error instanceof TodoError ? error.code : 'INTERNAL',message:error instanceof Error?error.message:'INTERNAL'}; }
         },
-        setResponsibility: (params) => runBotWorkbenchTool(workbenchSend, (access) => access.setResponsibility(params)),
-        get: (params) => runBotWorkbenchTool(workbenchSend, (access) => access.get(params)),
-        read: (params) => runBotWorkbenchTool(workbenchSend, (access) => access.read(params)),
-        set: (params) => runBotWorkbenchTool(workbenchSend, (access) => access.set(params)),
-        setMany: (params) => runBotWorkbenchTool(workbenchSend, (access) => access.setMany(params)),
-        continueTask: (params) => runBotWorkbenchTool(workbenchSend, (access) => access.continueTask(params)),
-        addProject: (params) => addBotWorkbenchProjectForCaller(params),
-        removeProject: (params) => removeBotWorkbenchProjectForCaller(params),
+        setResponsibility: (params) => runBotWorkbenchTool(workbenchHost, (access) => access.setResponsibility(params)),
+        get: (params) => runBotWorkbenchTool(workbenchHost, (access) => access.get(params)),
+        read: (params) => runBotWorkbenchTool(workbenchHost, (access) => access.read(params)),
+        continueTask: (params) => runBotWorkbenchTool(workbenchHost, (access) => access.continueTask(params)),
       },
       skillhub: createSkillhubAgentTools({
         isCurrentSession: (context) => !!context.sessionId
@@ -1118,6 +1136,11 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
         },
         searchChatHistory: async (args) => {
           try { const result = await searchChatHistoryHybrid(args); return { ok: true, result }; }
+          catch (err) { const msg = err instanceof Error ? err.message : String(err); const errorCode = isDbClientNotReadyError(err) ? 'HOST_NOT_READY' : 'INTERNAL'; return { ok: false, errorCode, message: msg }; }
+        },
+        // get_task_digest:一件任务的短摘要(本机或 deviceId::sessionId 只读)。
+        taskDigest: async (args) => {
+          try { return await readTaskDigest(args); }
           catch (err) { const msg = err instanceof Error ? err.message : String(err); const errorCode = isDbClientNotReadyError(err) ? 'HOST_NOT_READY' : 'INTERNAL'; return { ok: false, errorCode, message: msg }; }
         },
       },

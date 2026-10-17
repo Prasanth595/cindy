@@ -1,3 +1,4 @@
+import { ErrorNotice } from '@/components/ui/error-notice';
 /**
  * Plugin "Model & tasks" preferences: the plugin's single model field (used by
  * Cindy quick answers and by the tasks the plugin creates) plus the task
@@ -269,7 +270,7 @@ export function PluginTaskPrefs({
         </>,
       ) : null}
 
-      {error ? <p role="alert" className="text-12 leading-5 text-[var(--text-secondary)]">{error}</p> : null}
+      {error ? <ErrorNotice role="alert" message={error} /> : null}
     </fieldset>
   );
 }

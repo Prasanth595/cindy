@@ -22,6 +22,12 @@ afterEach(() => { fs.rmSync(root, { recursive: true, force: true }); });
 /** Agent 写进文件的路径还原到本机时沿用它的分隔符，源码字符串里不会冒出 `\f`、`\b` 这类转义。 */
 function written(local: string, virtual: string): string { return virtual.startsWith('C:') ? local : local.replace(/\\/g, '/'); }
 
+/** 转发给 exec-server 的 Codex 请求里与沙箱有关的字段。 */
+interface MappedSandboxRequest {
+  cwd?: string;
+  sandbox: { cwd?: string; userHomeDir?: string; permissions: { file_system: { entries: unknown[] } } };
+}
+
 function setup(virtual: string) {
   const project = path.join(root, 'real project');
   fs.mkdirSync(project);
@@ -395,6 +401,124 @@ describe('virtual workspace', () => {
     await executor.close();
   });
 
+  it.skipIf(process.platform === 'win32')('maps Codex sandbox permissions from a Windows agent and drops paths that only exist on the agent computer', () => {
+    const project = path.join(root, 'real project');
+    const temp = path.join(root, 'temp');
+    fs.mkdirSync(project);
+    fs.mkdirSync(temp);
+    const workspace = new ExecutorWorkspace({ workingDir: project, aliases: [
+      { from: 'C:\\Agent\\mirror\\workspace', to: project },
+      { from: 'C:\\Agent\\mirror\\tmp', to: temp },
+    ] });
+    workspace.setVirtualRoot('C:\\Agent\\mirror');
+    const local = (target: string) => pathToFileURL(target).href;
+    const sandbox = {
+      permissions: { type: 'managed', network: 'restricted', file_system: { type: 'restricted', entries: [
+        { path: { type: 'special', value: { kind: 'root' } }, access: 'read' },
+        { path: { type: 'path', path: 'file:///C:/Agent/mirror/workspace' }, access: 'write' },
+        { path: { type: 'path', path: 'file:///c:/agent/mirror/workspace/.git' }, access: 'read' },
+        { path: { type: 'glob_pattern', pattern: 'C:\\Agent\\mirror\\workspace\\**\\*.env' }, access: 'deny' },
+        { path: { type: 'glob_pattern', pattern: '**/*.pem' }, access: 'deny' },
+        { path: { type: 'path', path: 'file:///C:/Agent/codex-home/memories' }, access: 'write' },
+        { path: { type: 'glob_pattern', pattern: 'C:\\Agent\\codex-home\\**' }, access: 'write' },
+        { path: { type: 'path', path: 'file:///C:/Agent/secrets' }, access: 'deny' },
+        // Windows 网络路径：POSIX 本机的 exec-server 不认带主机名的 file URI，留下会让每条命令都被拒。
+        { path: { type: 'path', path: 'file://server/share/secret' }, access: 'deny' },
+        // 没映射上的禁止 glob 原样保留：在本机匹配不到东西，也不会让请求被拒。
+        { path: { type: 'glob_pattern', pattern: '\\\\server\\share\\**' }, access: 'deny' },
+      ] } },
+      cwd: 'file:///C:/Agent/mirror/workspace',
+      policyContext: { cwd: 'file:///C:/Agent/mirror/workspace', workspaceRoots: ['file:///C:/Agent/mirror/workspace', 'file:///C:/Agent/other'] },
+      userHomeDir: 'file:///C:/Agent/home',
+      temporaryDirectories: ['file:///C:/Agent/mirror/tmp', 'file:///C:/Agent/AppTemp'],
+      windowsSandboxLevel: 'disabled',
+    };
+    const params = mapExecServerParams({ argv: ['/bin/zsh', '-lc', 'true'], cwd: 'file:///C:/Agent/mirror/workspace', sandbox }, workspace, 'process/start') as MappedSandboxRequest;
+    expect(params.cwd).toBe(local(project));
+    expect(params.sandbox).toEqual({
+      permissions: { type: 'managed', network: 'restricted', file_system: { type: 'restricted', entries: [
+        { path: { type: 'special', value: { kind: 'root' } }, access: 'read' },
+        { path: { type: 'path', path: local(project) }, access: 'write' },
+        { path: { type: 'path', path: local(path.join(project, '.git')) }, access: 'read' },
+        { path: { type: 'glob_pattern', pattern: project + '/**/*.env' }, access: 'deny' },
+        { path: { type: 'glob_pattern', pattern: '**/*.pem' }, access: 'deny' },
+        { path: { type: 'glob_pattern', pattern: '\\\\server\\share\\**' }, access: 'deny' },
+      ] } },
+      cwd: local(project),
+      policyContext: { cwd: local(project), workspaceRoots: [local(project)] },
+      // 对不上的用户目录换成本机的：Codex 缺了它会把 `~/…` 规则当解析失败、一律拒绝读取。
+      userHomeDir: local(os.homedir()),
+      temporaryDirectories: [local(temp)],
+      windowsSandboxLevel: 'disabled',
+    });
+    // fs/* 请求带同一个沙箱上下文。
+    const read = mapExecServerParams({ path: 'file:///C:/Agent/mirror/workspace/a.txt', sandbox }, workspace, 'fs/readFile') as MappedSandboxRequest;
+    expect(read.sandbox).toEqual(params.sandbox);
+  });
+
+  it('keeps glob characters in the local directory name literal when mapping absolute sandbox globs', () => {
+    const project = path.join(root, 'project[1]{a}');
+    fs.mkdirSync(project);
+    const workspace = new ExecutorWorkspace({ workingDir: project, aliases: [{ from: 'C:\\Agent\\mirror\\workspace', to: project }] });
+    workspace.setVirtualRoot('C:\\Agent\\mirror');
+    const literal = path.join(root, 'project[[]1[]][{]a[}]');
+    expect(workspace.localGlobFromAgent('C:\\Agent\\mirror\\workspace\\**\\*.env')).toBe(literal + '/**/*.env');
+    expect(workspace.localGlobFromAgent('C:\\Agent\\mirror\\workspace')).toBe(literal);
+    expect(workspace.localGlobFromAgent('C:\\Agent\\other\\**')).toBeNull();
+    // POSIX Agent 的模式里反斜杠是转义，不能当成分隔符。
+    const posix = new ExecutorWorkspace({ workingDir: project, aliases: [{ from: '/home/agent/workspace', to: project }] });
+    expect(posix.localGlobFromAgent('/home/agent/workspace/\\*.lock')).toBe(literal + '/\\*.lock');
+  });
+
+  it.skipIf(process.platform === 'win32')('escapes a backslash in a POSIX local directory name when mapping absolute sandbox globs', () => {
+    // POSIX 目录名可以含反斜杠；Codex 的 POSIX glob 把它当转义符，不转义的话禁止规则会对不上真实目录。
+    const project = path.join(root, 'project\\name');
+    fs.mkdirSync(project);
+    const workspace = new ExecutorWorkspace({ workingDir: project, aliases: [{ from: 'C:\\Agent\\mirror\\workspace', to: project }] });
+    expect(workspace.localGlobFromAgent('C:\\Agent\\mirror\\workspace\\**\\*.env')).toBe(root + '/project\\\\name/**/*.env');
+  });
+
+  it('maps Codex sandbox permissions from a POSIX agent and keeps deny rules that are valid on this computer', async () => {
+    const { workspace, project, executor } = setup('/home/agent/workspace');
+    const sandbox = {
+      permissions: { type: 'managed', network: 'restricted', file_system: { type: 'restricted', entries: [
+        { path: { type: 'path', path: 'file:///home/agent/workspace' }, access: 'write' },
+        { path: { type: 'path', path: 'file:///home/agent/.codex/memories' }, access: 'write' },
+        { path: { type: 'path', path: 'file:///home/agent/.ssh' }, access: 'deny' },
+        // POSIX Agent 的 `/C:/secret` 是根目录下的普通路径，不是 Windows 盘符。
+        { path: { type: 'path', path: 'file:///C:/secret' }, access: 'deny' },
+        // 相对 glob 不能被误认成绝对路径丢掉：以转义开头(名字就叫 `*.pem` 的文件)、文件名里带冒号。
+        { path: { type: 'glob_pattern', pattern: '\\*.pem' }, access: 'deny' },
+        { path: { type: 'glob_pattern', pattern: 'a:*.pem' }, access: 'deny' },
+        { path: { type: 'glob_pattern', pattern: 'a:*.cache' }, access: 'write' },
+        // Agent 主机自己的绝对路径：写入授权丢掉，禁止规则保留。
+        { path: { type: 'glob_pattern', pattern: '/home/agent/.codex/**' }, access: 'write' },
+        { path: { type: 'glob_pattern', pattern: '/home/agent/.aws/**' }, access: 'deny' },
+      ] } },
+      cwd: 'file:///home/agent/workspace',
+      userHomeDir: 'file:///home/agent',
+    };
+    const params = mapExecServerParams({ path: 'file:///home/agent/workspace/a.txt', sandbox }, workspace, 'fs/readFile') as MappedSandboxRequest;
+    expect(params.sandbox.permissions.file_system.entries).toEqual([
+      { path: { type: 'path', path: pathToFileURL(project).href }, access: 'write' },
+      // 任务电脑是 Windows 时 POSIX 路径不是本机路径，禁止条目也无从对应。
+      ...(process.platform === 'win32' ? [] : [
+        { path: { type: 'path', path: 'file:///home/agent/.ssh' }, access: 'deny' },
+        { path: { type: 'path', path: 'file:///C:/secret' }, access: 'deny' },
+      ]),
+      { path: { type: 'glob_pattern', pattern: '\\*.pem' }, access: 'deny' },
+      { path: { type: 'glob_pattern', pattern: 'a:*.pem' }, access: 'deny' },
+      { path: { type: 'glob_pattern', pattern: 'a:*.cache' }, access: 'write' },
+      { path: { type: 'glob_pattern', pattern: '/home/agent/.aws/**' }, access: 'deny' },
+    ]);
+    expect(params.sandbox.cwd).toBe(pathToFileURL(project).href);
+    expect(params.sandbox.userHomeDir).toBe(pathToFileURL(os.homedir()).href);
+    // 没有虚拟工作区(旧版对端)时沙箱原样转发，与之前一致。
+    const plain = new ExecutorWorkspace({ workingDir: project });
+    expect((mapExecServerParams({ sandbox }, plain) as MappedSandboxRequest).sandbox).toBe(sandbox);
+    await executor.close();
+  });
+
   it('projects Cindy MCP path arguments and JSON/SSE results while leaving file content arguments intact', async () => {
     const { workspace, project, executor } = setup('/Users/agent/workspace');
     let received: any;
@@ -631,7 +755,7 @@ describe('virtual workspace', () => {
     }
   });
 
-  it('maps workbench project paths in direct and stringified generic-tool arguments', async () => {
+  it('maps path fields in direct and stringified generic-tool arguments, leaving opaque todo labels alone', async () => {
     const virtual = '/Users/agent/workspace';
     const { project, executor } = setup(virtual);
     const forwarded: Array<Record<string, unknown>> = [];
@@ -647,21 +771,21 @@ describe('virtual workspace', () => {
       },
     });
     try {
-      for (const args of [
-        { project: virtual },
-        JSON.stringify({ project: virtual }),
-        { items: [{ project: virtual }] },
-      ]) {
+      // 伙伴待办里的 project 只是原样回传的标签(2026-10-17 放弃「项目」后不再授权),不做路径还原。
+      const calls: Array<[string, unknown]> = [
+        ['list_dir', { path: virtual }],
+        ['list_dir', JSON.stringify({ path: virtual })],
+        ['preflight_teammate_todo_events', { events: [{ source: 's', sequence: 1, key: 'k', project: virtual }] }],
+      ];
+      for (const [name, args] of calls) {
         await router({ method: 'POST', path: '/mcp/cindy_helper', headers: [], body: Buffer.from(JSON.stringify({
-          jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'call_tool', arguments: {
-            name: args && typeof args === 'object' && !Array.isArray(args) && 'items' in args ? 'set_workbench_tasks' : 'set_workbench_task', args,
-          } },
+          jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'call_tool', arguments: { name, args } },
         })).toString('base64') });
       }
       expect(forwarded).toEqual([
-        { name: 'set_workbench_task', args: { project } },
-        { name: 'set_workbench_task', args: JSON.stringify({ project }) },
-        { name: 'set_workbench_tasks', args: { items: [{ project }] } },
+        { name: 'list_dir', args: { path: project } },
+        { name: 'list_dir', args: JSON.stringify({ path: project }) },
+        { name: 'preflight_teammate_todo_events', args: { events: [{ source: 's', sequence: 1, key: 'k', project: virtual }] } },
       ]);
     } finally {
       await executor.close();

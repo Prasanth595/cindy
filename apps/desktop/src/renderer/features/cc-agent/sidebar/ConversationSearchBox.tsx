@@ -1,4 +1,5 @@
 import { Button } from '@/components/ui/button';
+import { ErrorNotice } from '@/components/ui/error-notice';
 import {
   Fragment,
   useCallback,
@@ -606,7 +607,7 @@ export function SearchResultsBody({
             {t('ccAgent.search.searching')}
           </div>
         ) : status === 'error' ? (
-          <div className="px-3 py-4 text-center text-12 text-[var(--error-fg)]">{t('ccAgent.search.failed')}</div>
+          <ErrorNotice className="m-3" message={t('ccAgent.search.failed')} />
         ) : (
           results.map((item) => (
             <SearchResultRow
@@ -637,9 +638,7 @@ export function SearchResultsBody({
   }
   if (status === 'error') {
     return (
-      <div className="px-3 py-6 text-center text-12 text-[var(--error-fg)]">
-        {t('ccAgent.search.failed')}
-      </div>
+      <ErrorNotice className="m-3" message={t('ccAgent.search.failed')} />
     );
   }
   if (results.length === 0) {

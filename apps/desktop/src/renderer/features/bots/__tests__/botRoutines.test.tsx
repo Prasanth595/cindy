@@ -251,3 +251,32 @@ it('hands the editor back step to the host back button and focuses a new routine
   fireEvent.click(screen.getByRole('button', { name: 'routines.add' }));
   expect(document.activeElement).toBe(screen.getByLabelText('routines.name'));
 });
+
+it('shows the host-owned follow-up as a pause-only built-in row that never opens the editor', async () => {
+  // 宿主内置的「跟进」：引擎只接受 enabled 变化（BUILTIN_ROUTINE），界面不给改指令、触发条件或删除的入口。
+  const builtin: Routine = {
+    ...existing, id: 'builtin-follow-up-bot', name: 'follow-up', prompt: 'host template', builtin: 'follow-up',
+  };
+  const api = setup();
+  api.list.mockResolvedValue([builtin, existing]);
+  render(<BotRoutines botId="bot" />);
+
+  const toggle = await screen.findByRole('switch', { name: 'routines.builtinFollowUp.name' });
+  expect(screen.queryByText('follow-up')).toBeNull();
+  // 内置规则的触发条件很多且来源重复，只写一句固定白话，不逐条列出。
+  const row = toggle.parentElement!;
+  expect(row.textContent).toContain('routines.builtinFollowUp.hint');
+  expect(row.textContent).not.toContain('routines.everyMinutes');
+  fireEvent.click(screen.getByText('routines.builtinFollowUp.name'));
+  expect(screen.queryByLabelText('routines.instructions')).toBeNull();
+
+  fireEvent.click(toggle);
+  await waitFor(() => expect(api.save).toHaveBeenCalledTimes(1));
+  expect(api.save).toHaveBeenCalledWith(
+    'bot',
+    { name: 'follow-up', prompt: 'host template', enabled: false, triggers: builtin.triggers },
+    'builtin-follow-up-bot',
+  );
+  expect(api.remove).not.toHaveBeenCalled();
+  expect(screen.getByText('Daily report')).toBeTruthy();
+});

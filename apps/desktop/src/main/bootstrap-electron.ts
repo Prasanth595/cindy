@@ -1152,6 +1152,7 @@ import {
   getProjectAutomationLoader,
 } from './scheduler-host/index.js';
 import { configureRoutineHost } from './routines/service.js';
+import { configureBotAutonomyHost, initBotAutonomy } from './bot-autonomy/service.js';
 import { getBotRemoteResourceSource } from './localDb/ipc/bots.js';
 import {
   registerScheduleHandlers,
@@ -1213,6 +1214,9 @@ configureRoutineHost({
   getScheduler: getSchedulerIfInitialized,
   getScheduleStorage,
 });
+// 伙伴自主跟进：跟随例行任务引擎生命周期（引擎每次创建后重新登记 host:sessions 事件源）。
+configureBotAutonomyHost({ getMainWindow: () => mainWindowRef });
+initBotAutonomy();
 
 /**
  * Phase 4: 不再用 `_schedulerStarted` flag —— `startScheduler()` 内部以 `_scheduler`

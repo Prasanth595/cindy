@@ -1,3 +1,4 @@
+import { ErrorNotice } from '@/components/ui/error-notice';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import * as Dialog from '@radix-ui/react-dialog';
@@ -1169,19 +1170,18 @@ export function ScheduleFormDialog({
                         )}
                       />
                       {hookGenFailure && (
-                        <div
+                        <ErrorNotice
                           role="alert"
-                          className="rounded-lg border border-[var(--error-border)] bg-[var(--error-bg)] px-3 py-2.5"
+                          message={t(
+                            `scheduler.editor.preRunHook.aiFailure.${hookGenFailure.reason}`,
+                          )}
                         >
-                          <p className="text-12 leading-[1.45] text-[var(--error-fg-strong)]">
-                            {t(`scheduler.editor.preRunHook.aiFailure.${hookGenFailure.reason}`)}
-                          </p>
                           {hookGenFailure.attempts.length > 0 && (
                             <div className="mt-2">
-                              <p className="text-11 text-[var(--error-fg)]">
+                              <p className="text-11 text-[var(--text-secondary)]">
                                 {t('scheduler.editor.preRunHook.aiFailure.checkedCandidates')}
                               </p>
-                              <ul className="mt-1 space-y-0.5 text-11 leading-[1.4] text-[var(--error-fg)]">
+                              <ul className="mt-1 space-y-0.5 text-11 leading-[1.4] text-[var(--text-secondary)]">
                                 {hookGenFailure.attempts.map((attempt, index) => (
                                   <li key={`${attempt.providerId}:${attempt.model}:${index}`}>
                                     <span className="font-mono">
@@ -1212,7 +1212,7 @@ export function ScheduleFormDialog({
                           >
                             {t('scheduler.editor.preRunHook.aiFailure.openProviders')}
                           </Button>
-                        </div>
+                        </ErrorNotice>
                       )}
                       <div className="flex items-center justify-end gap-2">
                             <Button

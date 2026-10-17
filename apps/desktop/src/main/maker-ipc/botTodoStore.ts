@@ -14,8 +14,7 @@ import {
   type TeammateTodo,
 } from '@cindy/maker-shared/teammate-todo';
 import { withCrossProcessLock } from '../device-link/crossProcessLock.js';
-import type { WorkbenchTaskJudgment } from '../../shared/botWorkbench.js';
-import { parseWorkbenchTaskId } from '../../shared/botWorkbench.js';
+import { parseLegacyWorkbenchTaskId, type LegacyWorkbenchJudgment } from './botWorkbenchLegacy.js';
 
 function validText(value: unknown, max: number, required = false): boolean {
   return typeof value === 'string' && value.length <= max && (!required || !!value.trim());
@@ -65,13 +64,13 @@ export interface BotTodoStore {
 /** A separate versioned affair store preserves the old task/project file unchanged. */
 export function createBotTodoStore(
   file: string,
-  legacy: () => Promise<Record<string, WorkbenchTaskJudgment>>,
+  legacy: () => Promise<Record<string, LegacyWorkbenchJudgment>>,
   assertCurrent = () => {},
 ): BotTodoStore {
-  const fingerprint = (j: WorkbenchTaskJudgment) =>
+  const fingerprint = (j: LegacyWorkbenchJudgment) =>
     createHash('sha256').update(JSON.stringify(j)).digest('hex');
-  const legacyItem = (legacyId: string, j: WorkbenchTaskJudgment): TeammateTodo | null => {
-    const ref = parseWorkbenchTaskId(legacyId);
+  const legacyItem = (legacyId: string, j: LegacyWorkbenchJudgment): TeammateTodo | null => {
+    const ref = parseLegacyWorkbenchTaskId(legacyId);
     if (!ref || !['github', 'idea'].includes(ref.kind)) return null;
     const at = j.updatedAt;
     return {

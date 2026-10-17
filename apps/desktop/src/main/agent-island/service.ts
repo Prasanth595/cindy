@@ -1630,6 +1630,18 @@ export class AgentIslandService {
   }
 
   /**
+   * Whether a foreground tool call is between tool_use and tool_result. A long
+   * tool (e.g. a build) emits no activity until it returns; Bot follow-up uses
+   * this public boolean so a healthy long call is not judged stuck. Never
+   * exposes the tool name or arguments.
+   */
+  isToolCallInFlight(sessionId: string): boolean {
+    const session = this.state.sessions.get(sessionId);
+    return !!session && session.running && session.phase === 'running'
+      && (session.currentToolUseId !== null || session.workingTools.size > 0);
+  }
+
+  /**
    * Subscribe to canonical activity transitions. Future Bot consumers attach here;
    * this service remains unaware of Bot/runtime implementations.
    */

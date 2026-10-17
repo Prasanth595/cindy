@@ -1,3 +1,4 @@
+import { ErrorNotice } from '@/components/ui/error-notice';
 import { useTranslation } from 'react-i18next';
 import { RotateCcw, ImagePlus, Film } from 'lucide-react';
 import { useEffect, useCallback, useRef, useState } from 'react';
@@ -298,9 +299,7 @@ export function WallpaperSection() {
         </p>
       </div>
       {(error || (wallpaperId === 'custom' && playbackFailed)) && (
-        <p role="alert" className="text-12 text-[var(--text-primary)]">
-          {error || t('settings.appearance.wallpaper.customPlaybackFailed')}
-        </p>
+        <ErrorNotice role="alert" message={error || t('settings.appearance.wallpaper.customPlaybackFailed')} />
       )}
 
       <div className="h-px bg-[var(--settings-input-border)]" />

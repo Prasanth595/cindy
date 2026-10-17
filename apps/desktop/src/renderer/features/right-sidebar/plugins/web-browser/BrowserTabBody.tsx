@@ -1,4 +1,5 @@
 import { Button } from '@/components/ui/button';
+import { ErrorNotice } from '@/components/ui/error-notice';
 /**
  * BrowserTabBody —— web-browser tab 的 TabBody。
  *
@@ -29,7 +30,7 @@ import { Button } from '@/components/ui/button';
  */
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { AlertTriangle, Gauge, RotateCw, X } from 'lucide-react';
+import { Gauge, RotateCw, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { normalizePersistableFavicon } from '../../../../../shared/faviconPersistence';
@@ -630,12 +631,8 @@ function BrowserCrashBanner({
           : 'rightSidebar.browser.crash.crashedDesc';
   return (
     <div className="modal-scrim absolute inset-0 flex items-center justify-center">
-      <div className="modal-panel flex max-w-xs flex-col items-center gap-3 px-6 py-5 text-center">
-        <AlertTriangle size={28} strokeWidth={1.5} className="text-[var(--error-fg)]" />
-        <div className="text-13 font-medium text-[var(--text-primary)]">{t(titleKey)}</div>
-        <div className="text-12 text-[var(--text-secondary)]">{t(descKey)}</div>
-        <div className="mt-1 flex items-center gap-2">
-          <Button variant="cta" size="sm" compact type="button" onClick={onRecover}>
+      <ErrorNotice className="modal-panel max-w-xs" message={t(titleKey)} description={t(descKey)} actions={<>
+          <Button size="sm" compact type="button" onClick={onRecover}>
             <RotateCw size={12} strokeWidth={2.5} />
             {t('rightSidebar.browser.crash.reload')}
           </Button>
@@ -644,8 +641,7 @@ function BrowserCrashBanner({
               {t('rightSidebar.browser.crash.forceKill')}
             </Button>
           )}
-        </div>
-      </div>
+        </>} />
     </div>
   );
 }

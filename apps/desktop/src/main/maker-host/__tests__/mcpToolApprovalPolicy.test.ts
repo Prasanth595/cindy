@@ -550,5 +550,16 @@ describe('cross-device actions use the task permission mode', () => {
     expect(helper('sess-9')).toBe('auto-approve');
     expect(helper('local::sess-9')).toBe('auto-approve');
     expect(helper(undefined)).toBe('auto-approve');
+    // A follow-up continue into another computer's task is the same cross-computer write.
+    const follow = (taskId: string, toolName: string) => getDesktopMcpToolApprovalPolicy({
+      serverName: 'cindy_helper',
+      toolName,
+      toolParams: toolName === 'call_tool'
+        ? { name: 'continue_workbench_task', args: { task_id: taskId, message: 'continue' } }
+        : { task_id: taskId, message: 'continue' },
+    });
+    expect(follow('mbp::sess-9', 'call_tool')).toBe('prompt-each-time');
+    expect(follow('mbp::sess-9', 'continue_workbench_task')).toBe('prompt-each-time');
+    expect(follow('sess-9', 'continue_workbench_task')).toBe('auto-approve');
   });
 });
