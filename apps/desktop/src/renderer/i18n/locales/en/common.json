@@ -252,7 +252,8 @@
           "output": "Output",
           "amount": "Est. Cost"
         },
-        "estimateNote": "Amounts are estimated from local unit prices and don’t reflect the provider’s actual bill."
+        "estimateNote": "Amounts are estimated from local unit prices and don’t reflect the provider’s actual bill.",
+        "moreAria": "More actions for {{name}}"
       },
       "removeConfirm": {
         "title": "Remove Sharing with {{name}}?",
@@ -277,7 +278,8 @@
         "approveAria": "Agree to {{name}} using it",
         "toastApproved": "{{name}} can now use {{provider}} through {{owner}}’s provider group",
         "toastRejected": "Declined {{name}}’s request",
-        "toastRevoked": "Withdrew agreement for {{name}}. Running sessions were stopped."
+        "toastRevoked": "Withdrew agreement for {{name}}. Running sessions were stopped.",
+        "listTitle": "Using it through {{owner}}’s provider group"
       }
     },
     "toast": {
@@ -471,7 +473,8 @@
         "total": "Total usage",
         "amount": "Estimated cost",
         "people": "People",
-        "models": "Models"
+        "models": "Models",
+        "computers": "Computers used"
       },
       "selfTag": "You",
       "relayName": "Via {{device}}",
@@ -485,7 +488,44 @@
       "collapseAria": "Hide usage details for {{name}}",
       "table": {
         "member": "Computer / model"
-      }
+      },
+      "filter": {
+        "partyAria": "Filter by person",
+        "allParties": "Everyone",
+        "selfDetail": "This computer and your other computers combined",
+        "relayDetail": "Individual people aren’t visible",
+        "computerAria": "Filter by computer in the group",
+        "allComputers": "All computers in the group"
+      },
+      "focus": {
+        "clear": "Show all",
+        "only": "Show only {{name}}"
+      },
+      "byParty": {
+        "title": "By person",
+        "col": {
+          "party": "Person",
+          "computers": "Computers used",
+          "actions": "Actions"
+        }
+      },
+      "byComputer": {
+        "title": "By computer",
+        "col": {
+          "computer": "Computer in the group",
+          "parties": "People"
+        }
+      },
+      "stack": {
+        "aria": "Color the bars by",
+        "party": "Person",
+        "computer": "Computer",
+        "model": "Model"
+      },
+      "loadFailed": "Couldn’t read usage right now. It will try again automatically.",
+      "legacyNote": "Cindy on {{device}} needs an update. Showing all-time totals for now.",
+      "coverage": "Daily stats start on {{date}}",
+      "emptyRange": "No usage in this period"
     },
     "section": {
       "title": "Provider Group",
@@ -9834,7 +9874,17 @@
       "mergeBusy": "One of the Cindys is still replying. Merge once it finishes",
       "mergePaused": "One of the Cindys is paused. Resume it in its settings, then merge",
       "mergeOffline": "Can’t reach “{{device}}”. Merge once it’s online",
-      "mergeOutdated": "“{{device}}” runs an older Cindy. Update it first"
+      "mergeOutdated": "“{{device}}” runs an older Cindy. Update it first",
+      "homeOfflineShort": "Main computer offline",
+      "homeReadOnly": "Main computer: {{device}}",
+      "moveTo": "Move to “{{device}}”",
+      "transferTitle": "Move {{name}} to “{{device}}”?",
+      "transferDescription": "From now on {{name}} runs on “{{device}}”. The working directory and connections stay on this computer, and the conversation here becomes history.",
+      "transferAction": "Move to “{{device}}”",
+      "transferred": "{{name}} moved to “{{device}}”",
+      "transferConflict": "{{name}}’s main computer has already changed, so it wasn’t moved",
+      "transferOffline": "Can’t reach the server. {{name}} still runs on this computer",
+      "transferFailed": "Couldn’t move {{name}} to “{{device}}”"
     },
     "channels": {
       "title": "Messaging platforms",
@@ -14815,6 +14865,8 @@
       "workerLabel": "Worker ({{agent}})",
       "leadNotFound": "Orca lead session not found",
       "waitingForWorker": "Waiting for worker",
+      "workerHiddenInSeparateWindow": "Worker conversations aren't shown in a separate window",
+      "viewWorkerInMainWindow": "View in main window",
       "remoteWorkerLoading": "Loading the task on {{device}}…",
       "remoteWorkerUnreachable": "{{device}} can't be reached right now. This Worker's task will appear again once it reconnects.",
       "closeAria": "Close"

@@ -128,7 +128,9 @@ export function ComposerAttachmentTray({
       {pendingUploads.map((pending) => (pending.kind === 'image' ? (
         <View key={pending.localId} style={styles.thumbCard} testID={`${testIDPrefix}.attachmentPendingThumb`}>
           <View style={styles.thumbPressable}>
-            <Image contentFit="cover" source={{ uri: pending.previewUri }} style={styles.thumbImage} transition={0} />
+            {pending.previewUri ? (
+              <Image contentFit="cover" source={{ uri: pending.previewUri }} style={styles.thumbImage} transition={0} />
+            ) : null}
             {pending.failed ? (
               // 失败态:遮罩变为可点的「重试」——弱网下让用户原地重试,不用重新找图。
               <Pressable

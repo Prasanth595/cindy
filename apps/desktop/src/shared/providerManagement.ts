@@ -12,7 +12,7 @@ export type ProviderGroupManagementCommand = Extract<
 
 export type ProviderShareManagementCommand = Extract<
   ProviderShareCommand,
-  { action: 'owned' | 'own-usage' | 'create-link' | 'approve' | 'reject' | 'set-member' | 'reshare-decide' }
+  { action: 'owned' | 'own-usage' | 'usage-history' | 'create-link' | 'approve' | 'reject' | 'set-member' | 'reshare-decide' }
 >;
 
 export type ProviderManagementRequest =

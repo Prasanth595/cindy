@@ -250,7 +250,8 @@
           "output": "出力",
           "amount": "推定金額"
         },
-        "estimateNote": "金額はローカルの単価に基づく推定で、プロバイダーの実際の請求額ではありません。"
+        "estimateNote": "金額はローカルの単価に基づく推定で、プロバイダーの実際の請求額ではありません。",
+        "moreAria": "{{name}} の他の操作"
       },
       "removeConfirm": {
         "title": "{{name}} との共有を削除しますか？",
@@ -273,7 +274,8 @@
         "approveAria": "{{name}} の利用に同意する",
         "toastApproved": "{{name}} が {{owner}} のプロバイダーグループ経由で {{provider}} を使えるようにしました",
         "toastRejected": "{{name}} のリクエストを拒否しました",
-        "toastRevoked": "{{name}} への同意を取り消しました。実行中のセッションは停止しました"
+        "toastRevoked": "{{name}} への同意を取り消しました。実行中のセッションは停止しました",
+        "listTitle": "{{owner}} のプロバイダーグループ経由で利用"
       }
     },
     "toast": {
@@ -467,7 +469,8 @@
         "total": "合計使用量",
         "amount": "推定金額",
         "people": "利用者",
-        "models": "モデル"
+        "models": "モデル",
+        "computers": "使ったパソコン"
       },
       "selfTag": "あなた",
       "relayName": "{{device}} 経由",
@@ -480,7 +483,44 @@
       "collapseAria": "{{name}} の使用量の内訳を閉じる",
       "table": {
         "member": "パソコン / モデル"
-      }
+      },
+      "filter": {
+        "partyAria": "利用者で絞り込む",
+        "allParties": "全員",
+        "selfDetail": "このパソコンとほかのパソコンの合計",
+        "relayDetail": "個々の利用者は見えません",
+        "computerAria": "グループ内のパソコンで絞り込む",
+        "allComputers": "グループ内のすべてのパソコン"
+      },
+      "focus": {
+        "clear": "すべて表示",
+        "only": "{{name}} だけ表示"
+      },
+      "byParty": {
+        "title": "人別",
+        "col": {
+          "party": "利用者",
+          "computers": "使ったパソコン",
+          "actions": "操作"
+        }
+      },
+      "byComputer": {
+        "title": "パソコン別",
+        "col": {
+          "computer": "グループ内のパソコン",
+          "parties": "利用者"
+        }
+      },
+      "stack": {
+        "aria": "棒の色分け",
+        "party": "人",
+        "computer": "パソコン",
+        "model": "モデル"
+      },
+      "loadFailed": "使用量を読み込めませんでした。しばらくすると自動で再試行します。",
+      "legacyNote": "{{device}} の Cindy のアップデートが必要です。今は全期間の合計だけを表示しています。",
+      "coverage": "日別の集計は {{date}} から",
+      "emptyRange": "この期間の使用量はありません"
     },
     "section": {
       "title": "プロバイダーグループ",
@@ -9788,7 +9828,17 @@
       "mergeBusy": "まだ返信中の Cindy があります。返信が終わってから統合してください",
       "mergePaused": "一時停止中の Cindy があります。設定で再開してから統合してください",
       "mergeOffline": "「{{device}}」に接続できません。オンラインになってから統合してください",
-      "mergeOutdated": "「{{device}}」の Cindy が古いバージョンです。先に更新してください"
+      "mergeOutdated": "「{{device}}」の Cindy が古いバージョンです。先に更新してください",
+      "homeOfflineShort": "メインのパソコンがオフライン",
+      "homeReadOnly": "メインのパソコン：{{device}}",
+      "moveTo": "「{{device}}」に移す",
+      "transferTitle": "{{name}} を「{{device}}」に移しますか？",
+      "transferDescription": "これから {{name}} は「{{device}}」で動作します。作業ディレクトリと接続はこのパソコンに残り、このパソコンの会話は履歴になります。",
+      "transferAction": "「{{device}}」に移す",
+      "transferred": "{{name}} を「{{device}}」に移しました",
+      "transferConflict": "{{name}} のメインのパソコンはすでに変わっているため、移しませんでした",
+      "transferOffline": "サーバーに接続できません。{{name}} は引き続きこのパソコンで動作します",
+      "transferFailed": "{{name}} を「{{device}}」に移せませんでした"
     },
     "channels": {
       "title": "メッセージプラットフォーム",
@@ -14753,6 +14803,8 @@
       "workerLabel": "Worker ({{agent}})",
       "leadNotFound": "Orca lead session が見つかりません",
       "waitingForWorker": "Worker を待機中",
+      "workerHiddenInSeparateWindow": "別ウィンドウでは Worker の会話を表示しません",
+      "viewWorkerInMainWindow": "メインウィンドウで表示",
       "remoteWorkerLoading": "{{device}} 上のタスクを読み込み中…",
       "remoteWorkerUnreachable": "{{device}} に現在接続できません。再接続すると、この Worker のタスクが再び表示されます。",
       "closeAria": "閉じる"

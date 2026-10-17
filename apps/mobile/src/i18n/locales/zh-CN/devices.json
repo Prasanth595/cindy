@@ -241,6 +241,11 @@
     }
   },
   "list": {
+    "projectActions": {
+      "newTask": "新建任务",
+      "allTasks": "全部任务",
+      "search": "搜索"
+    },
     "taskSuggestions": {
       "connected": "电脑已连接",
       "title": "不在电脑旁，\n也能开始一件事。",

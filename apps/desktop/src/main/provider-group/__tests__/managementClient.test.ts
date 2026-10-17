@@ -180,6 +180,14 @@ describe('provider management client', () => {
     expect(host.watch).not.toHaveBeenCalled();
   });
 
+  // 旧版组所在电脑不认识按天明细：明确拒绝成「需要更新」，管理页据此退回所有时间的合计，不重试。
+  it('reports a share command an old group computer does not know as needing an update', async () => {
+    const old = vi.fn(async () => ({ ok: false, error: { code: 'IPC_ERROR', message: '[INVALID_PARAMS] Unknown command' } })) as unknown as ProviderGroupRemoteInvoke;
+    const request: ProviderManagementRequest = { action: 'manage-share', command: { action: 'usage-history', providerId: 'anthropic' } };
+    await expect(invokeProviderManagement(old, 'group-host', request)).rejects.toThrow(/UNSUPPORTED_CAPABILITY/);
+    expect(old).toHaveBeenCalledTimes(1);
+  });
+
   it('forwards conditional writes and never retries a conflict or falls back to an unconditional old-host write', async () => {
     const request: ProviderManagementRequest = {
       action: 'manage-group', command: { action: 'delete-if-current', providerId: 'anthropic', expectedConfig: null },

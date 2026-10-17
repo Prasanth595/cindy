@@ -2379,7 +2379,11 @@ export function dropAllControllers(
 ): void {
   stopFilePeers();
   remoteAgentHandler?.abortAll();
-  remoteDesktop.stop();
+  remoteDesktop.stop(
+    undefined,
+    undefined,
+    reason === 'user' ? 'user-stop' : reason === 'shutdown' ? 'shutdown' : 'disabled',
+  );
   void remoteCredentialHost.closeAll().catch(() => remoteCredentialHost.dispose());
   const controllerIds = new Set([
     ...subscriptions.getControllerIds(),
@@ -2442,7 +2446,7 @@ function deactivateControllerState(
   changed = acceptedLinkControllers.delete(deviceId) || changed;
   stopFilePeers(deviceId);
   if (transientSignalingLoss) remoteDesktop.signalingLost(deviceId);
-  else remoteDesktop.stop(deviceId);
+  else remoteDesktop.stop(deviceId, undefined, 'peer-closed');
   void remoteCredentialHost.close(deviceId).catch(() => remoteCredentialHost.dispose());
   changed = controllerConnectionEpochByDevice.delete(deviceId) || changed;
   changed = controllerLinkGenerationByDevice.delete(deviceId) || changed;
@@ -2528,7 +2532,7 @@ export function forgetControllerInvokeState(deviceId: string): void {
 /** 显式撤销时清理短时离线队列与 remembered topic，避免恢复后重放撤权期间数据。 */
 export function purgeRevokedController(deviceId: string): void {
   stopFilePeers(deviceId);
-  remoteDesktop.stop(deviceId);
+  remoteDesktop.stop(deviceId, undefined, 'authorization-lost');
   const changed = deactivateControllerState(deviceId);
   topicSubscriptionControllers.delete(deviceId);
   offlinePushQueue.clear(deviceId);
@@ -2579,7 +2583,7 @@ async function handleFrame(client: DeviceLinkClient, env: Envelope): Promise<voi
       clearRemoteInvokeStateFor(src);
       stopFilePeers(src);
       invalidatePluginOauth(src);
-      remoteDesktop.stop(src);
+      remoteDesktop.stop(src, undefined, 'peer-closed');
       void remoteCredentialHost.close(src).catch(() => remoteCredentialHost.dispose());
       offlinePushQueue.clear(src);
       const deactivated = deactivateControllerState(src);

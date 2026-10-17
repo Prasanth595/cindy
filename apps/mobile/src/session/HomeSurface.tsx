@@ -5,6 +5,7 @@ import type { HomeMode } from './homeViewPreferenceStore';
 import { TaskTagDots } from '@/session/TaskTags';
 import { ResidentHomeList, useResidentHomeList } from './ResidentHomeList';
 import { HomeNewTaskButton } from './HomeNewTaskButton';
+import { SwipeableProjectHeader } from './SwipeableProjectHeader';
 import { useRetainedHomeState, getHomeViewSession } from './homeViewSession';
 import { rememberRecentTask } from './recentTasks';
 import { homeListStyles, SESSION_ROW_LONG_PRESS_MS, SessionStatusMark, SessionStatusPulse } from '@/session/HomeListVisuals';
@@ -2372,9 +2373,10 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
   }, [auth, loggingOut, router, t]);
 
   const toggleProject = useCallback((key: string) => {
+    if (swipeRegistry.closeOpenRow()) return;
     runDisclosure(() => setCollapsedProjectKeys((current) =>
       current.includes(key) ? current.filter((item) => item !== key) : [...current, key]));
-  }, [runDisclosure]);
+  }, [runDisclosure, swipeRegistry]);
 
   const showAllDialogueSessions = useCallback(() => {
     runDisclosure(() => setDialogueShowAll(true));
@@ -2463,6 +2465,7 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
     key: string;
     title: string;
   }) => {
+    swipeRegistry.closeOpenRow();
     const expectedAccountGeneration = accountGeneration;
     const epoch = projectDragEpochRef.current + 1;
     projectDragEpochRef.current = epoch;
@@ -2520,7 +2523,7 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
         if (pending === 0) finish();
       });
     }
-  }, [accountGeneration, projectDragY, visibleProjectKeys]);
+  }, [accountGeneration, projectDragY, visibleProjectKeys, swipeRegistry]);
 
   const moveProjectDrag = useCallback((absoluteY: number) => {
     const session = projectDragRef.current;
@@ -2672,8 +2675,9 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
     runDisclosure(() => setPinnedCollapsed((collapsed) => !collapsed));
   }, [runDisclosure]);
 
-  const openProjectSessions = useCallback((project: MobileHomeProjectGroup) => {
+  const openProjectSessions = useCallback((project: MobileHomeProjectGroup, search = false) => {
     if (!project.deviceId) return;
+    swipeRegistry.closeOpenRow();
     guardedPush({
       pathname: '/devices/[deviceId]',
       // 带上 workingDir + 项目名,让目标页只显示「这个项目」的会话(名副其实地"查看全部 N 条")。
@@ -2683,12 +2687,13 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
         deviceId: project.deviceId,
         name: project.deviceName,
         statusFilter,
+        ...(search ? { search: '1' } : {}),
         ...(project.workingDir
           ? { workingDir: project.workingDir, projectName: project.title }
           : {}),
       },
     });
-  }, [guardedPush, statusFilter]);
+  }, [guardedPush, statusFilter, swipeRegistry]);
 
   // renderItem 提取为稳定引用:打开「选项」sheet 等与列表数据无关的页面状态变更不再改变
   // renderItem 身份,SectionList 可见行不随之全量重渲染(review P2:每行 Swipeable 动画树
@@ -2710,6 +2715,7 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
       onArchive={archiveSession}
       onOpenAutomationGroup={openAutomationGroup}
       onOpenProjectSessions={openProjectSessions}
+      onNewProjectTask={openNewSession}
       onOpenSession={openSession}
       onShowOptions={showSessionOptions}
       onToggleAutomationGroup={toggleAutomationGroup}
@@ -2743,6 +2749,7 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
     expandedAutomationGroups,
     openAutomationGroup,
     openProjectSessions,
+    openNewSession,
     openSession,
     pinnedCollapsed,
     sections,
@@ -3730,6 +3737,8 @@ function ProjectRow({
   onDragStart,
   onOpenAutomationGroup,
   onOpenProject,
+  onNewTask,
+  onSearchProject,
   onOpenSession,
   onToggle,
   onToggleAutomationGroup,
@@ -3751,6 +3760,8 @@ function ProjectRow({
   onDragStart?: (input: { absoluteY: number; count: number; key: string; title: string }) => void;
   onOpenAutomationGroup(group: RemoteAutomationSessionGroup): void;
   onOpenProject(): void;
+  onNewTask(): void;
+  onSearchProject(): void;
   onOpenSession(item: RemoteSessionListItem): void;
   onToggle(): void;
   onToggleAutomationGroup(key: string): void;
@@ -3761,7 +3772,7 @@ function ProjectRow({
   showAll?: boolean;
   /** 前一行也是块(项目组 / 自动化组)时不画顶线:前块底线已是这根分割线。 */
   suppressTopBorder?: boolean;
-  /** 提供时项目子行挂与顶层普通会话行同款的左右滑操作(组行仍不挂,子行经透传可滑)。 */
+  /** 项目标题与子任务共用同一滑动互斥注册表。 */
   swipe?: SessionSwipeControls;
 }) {
   const styles = useThemedStyles(makeStyles);
@@ -3862,6 +3873,7 @@ function ProjectRow({
     ? `${project.title} (${machineIdentity.displayLabel})`
     : project.title;
   const reorderable = kind === 'project' && !!onDragStart && !!onDragMove && !!onDragEnd;
+  const actionable = kind === 'project' && !!project.deviceId && !!project.workingDir && !!swipe;
   const dragGesture = useMemo(() => {
     if (!onDragStart || !onDragMove || !onDragEnd || kind !== 'project') return null;
     const start = onDragStart;
@@ -3869,6 +3881,8 @@ function ProjectRow({
     const finish = onDragEnd;
     return Gesture.Pan()
       .activateAfterLongPress(380)
+      .activeOffsetY([-8, 8])
+      .failOffsetX([-12, 12])
       .onStart((event) => {
         runOnJS(start)({
           absoluteY: event.absoluteY,
@@ -3891,6 +3905,19 @@ function ProjectRow({
         ? t('devices.list.a11y.dialogue')
         : t('devices.list.a11y.project', { title: displayTitle })}
       accessibilityRole="button"
+      accessibilityActions={actionable ? [
+        { name: 'newTask', label: t('devices.list.projectActions.newTask') },
+        { name: 'allTasks', label: t('devices.list.projectActions.allTasks') },
+        { name: 'search', label: t('devices.list.projectActions.search') },
+      ] : undefined}
+      onAccessibilityAction={actionable ? (event) => {
+        swipe?.registry.closeOpenRow();
+        switch (event.nativeEvent.actionName) {
+          case 'newTask': onNewTask(); break;
+          case 'allTasks': onOpenProject(); break;
+          case 'search': onSearchProject(); break;
+        }
+      } : undefined}
       accessibilityState={{ expanded: !collapsed }}
       accessibilityValue={collapsedStatusA11y ? { text: collapsedStatusA11y } : undefined}
       onLayout={(event) => {
@@ -3971,7 +3998,12 @@ function ProjectRow({
           viewportHeight={viewportHeight}
         />
       ) : null}
-      {dragGesture ? <GestureDetector gesture={dragGesture}>{header}</GestureDetector> : header}
+      {actionable && swipe ? (
+        <SwipeableProjectHeader projectKey={project.key} registry={swipe.registry}
+          onNewTask={onNewTask} onOpenTasks={onOpenProject} onSearch={onSearchProject}>
+          {dragGesture ? <GestureDetector gesture={dragGesture}>{header}</GestureDetector> : header}
+        </SwipeableProjectHeader>
+      ) : dragGesture ? <GestureDetector gesture={dragGesture}>{header}</GestureDetector> : header}
 
       {collapsed ? null : (
         <DisclosureItem exit style={styles.projectChildren} testID="home.projectChildren">
@@ -4090,6 +4122,7 @@ function HomeListRowInner({
   onArchive,
   onOpenAutomationGroup,
   onOpenProjectSessions,
+  onNewProjectTask,
   onOpenSession,
   onProjectDragEnd,
   onProjectDragMove,
@@ -4117,7 +4150,8 @@ function HomeListRowInner({
   nextIsBlock: boolean;
   onArchive(session: RemoteSession): void;
   onOpenAutomationGroup(group: RemoteAutomationSessionGroup): void;
-  onOpenProjectSessions(project: MobileHomeProjectGroup): void;
+  onOpenProjectSessions(project: MobileHomeProjectGroup, search?: boolean): void;
+  onNewProjectTask(project: MobileHomeProjectGroup): void;
   onOpenSession(item: RemoteSessionListItem): void;
   onProjectDragEnd?: () => void;
   onProjectDragMove?: (absoluteY: number) => void;
@@ -4151,6 +4185,8 @@ function HomeListRowInner({
         onDragStart={item.kind === 'project' ? onProjectDragStart : undefined}
         onOpenAutomationGroup={onOpenAutomationGroup}
         onOpenProject={item.kind === 'dialogue' ? onShowAllDialogue : () => onOpenProjectSessions(item.project)}
+        onNewTask={() => onNewProjectTask(item.project)}
+        onSearchProject={() => onOpenProjectSessions(item.project, true)}
         onOpenSession={onOpenSession}
         onToggle={() => onToggleProject(item.project.key)}
         onToggleAutomationGroup={onToggleAutomationGroup}

@@ -241,6 +241,11 @@
     }
   },
   "list": {
+    "projectActions": {
+      "newTask": "新增任務",
+      "allTasks": "全部任務",
+      "search": "搜尋"
+    },
     "taskSuggestions": {
       "connected": "電腦已連線",
       "title": "不在電腦旁，\n也能開始一件事。",

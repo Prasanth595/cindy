@@ -20,6 +20,11 @@ export function providerShareManagementCommand<C extends ProviderShareManagement
     : window.electronAPI.providerShare.command(command);
 }
 
+/** 远程管理时那台电脑是旧版本、明确不认识这个命令(Main 已统一成 UNSUPPORTED_CAPABILITY)。 */
+export function isProviderManagementOutdated(error: unknown): boolean {
+  return extractIpcError(error)?.code === 'UNSUPPORTED_CAPABILITY';
+}
+
 export function providerManagementErrorKey(error: unknown, remote: boolean): string {
   const code = extractIpcError(error)?.code;
   if (remote && code === 'UNSUPPORTED_CAPABILITY') return 'providerGroup.management.unsupported';

@@ -2,31 +2,32 @@
  * 「{供应商} · 远程与分享」页(供应商分享 §7.2；供应商组 §10)。从设置 → 模型供应商「允许被远程调用」一行的
  * 「远程与分享」入口进入，可返回。本机或同账号组所在电脑共用这一页，设置、分享与用量始终读取管理对象所在电脑。
  *
- * 打开期间每次 OWNED_CHANGED 都按当前时间段重读(main 因此保持快速拉取，申请能尽快出现)；
- * 关闭、恢复、删除、同意、拒绝都立即生效，结果以 toast 说明。
+ * 打开期间每次 OWNED_CHANGED 都重读(main 因此保持快速拉取，申请能尽快出现)；
+ * 关闭、恢复、删除、同意、拒绝都立即生效，结果以 toast 说明。用量读管理对象所在电脑的按天明细，
+ * 时间段、人与电脑由「用量」块自己筛选；打开、分享变化时与每分钟各读一次。
+ *
+ * 分享的人不再单列「已分享的人」：状态与关闭、删除并进「用量」块里这个人的那一行(2026-10-16 用户要求)。
+ * 同日用户反馈页面底部的「生成分享链接」太难找：它放到标题右侧，待处理紧跟标题，不再单设「分享」块；
+ * 分享前要知道的(Agent 在哪运行、用量算谁的)由申请弹窗的同意说明在审批时讲清。
  */
-import { ArrowLeft, ChevronRight, CircleMinus, MoreHorizontal } from 'lucide-react';
-import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
+import { ArrowLeft } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { ProviderView } from '@cindy/model-providers';
 
 import { Button } from '@/components/ui/button';
-import { Collapse } from '@/components/ui/collapse';
 import { useConfirmDialog } from '@/components/ui/confirm-dialog-provider';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
-import { Tip } from '@/components/ui/tooltip';
 import { useDeviceLinkDeviceList } from '@/features/device-link/useDeviceLinkDeviceList';
 import { useDeviceProviders } from '@/hooks/useDeviceProviders';
 import { useProviders } from '@/hooks/useProviders';
 import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
 import { ProviderGroupSection } from '@/features/provider-group/ProviderGroupSection';
-import { providerManagementErrorKey, providerShareManagementCommand } from '@/features/provider-group/providerManagement';
+import {
+  isProviderManagementOutdated,
+  providerManagementErrorKey,
+  providerShareManagementCommand,
+} from '@/features/provider-group/providerManagement';
 import { getDataOwnerGeneration, isDataOwnerGenerationCurrent } from '@/contexts/dataOwnerGeneration';
 import type { ProviderGroupConfig } from '../../../shared/providerGroup';
 
@@ -35,13 +36,14 @@ import type {
   ProviderShareMemberView,
   ProviderShareOwnerState,
   ProviderShareReshareView,
-  ProviderShareUsageRange,
+  ProviderUsageHistoryView,
 } from '../../../shared/providerShare';
 import { ProviderShareLinkDialog } from './ProviderShareLinkDialog';
 import { pendingResharesFromOwned, sharesClaudeLoginEmail, type ProviderShareGate, type ProviderSharePendingRequest } from './providerShareFormat';
-import { ProviderUsageSection } from './ProviderUsageSection';
+import { ProviderUsageSection, type ProviderUsageStatus } from './ProviderUsageSection';
 import { presentProviderShareApproval, publishProviderShareOwnerState, removeProviderSharePendingRequest } from './providerShareStore';
 import { ShareAvatar } from './ShareAvatar';
+import type { ProviderShareMemberActions } from './ShareMemberControls';
 import { useShareTimeFormat } from './useShareTimeFormat';
 
 export type { ProviderShareGate };
@@ -76,69 +78,109 @@ export function ProviderShareManagePage({
   const selfDeviceName = deviceId ? deviceName ?? devices?.find((device) => device.deviceId === deviceId)?.name ?? null
     : devices?.find((device) => device.isSelf)?.name ?? null;
   const [remoteGroup, setRemoteGroup] = useState<ProviderGroupConfig | null>(initialGroup ?? null);
-  const [range, setRange] = useState<ProviderShareUsageRange>('month');
   const [state, setState] = useState<ProviderShareOwnerState | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
   const [loadErrorKey, setLoadErrorKey] = useState<string | null>(null);
-  const [own, setOwn] = useState<ProviderOwnUsageView | null>(null);
-  const [ownFailed, setOwnFailed] = useState(false);
+  const [history, setHistory] = useState<ProviderUsageHistoryView | null>(null);
+  const [usageStatus, setUsageStatus] = useState<ProviderUsageStatus>('loading');
+  const [legacyOwn, setLegacyOwn] = useState<ProviderOwnUsageView | null>(null);
   const [linkOpen, setLinkOpen] = useState(false);
   const [approvalRequestId, setApprovalRequestId] = useState<string | null>(null);
   const approvalTriggerRef = useRef<HTMLElement | null>(null);
   const [busy, setBusy] = useState<ReadonlySet<string>>(() => new Set());
   const loadSeq = useRef(0);
-  const remoteLoadRange = useRef<ProviderShareUsageRange | null>(null);
-  const rangeRef = useRef(range);
-  rangeRef.current = range;
+  const remoteLoading = useRef(false);
+  const historySeq = useRef(0);
+  const historyLoading = useRef(false);
 
   const load = useCallback(async () => {
-    const range = rangeRef.current;
-    if (deviceId && remoteLoadRange.current === range) return;
-    remoteLoadRange.current = range;
+    if (deviceId && remoteLoading.current) return;
+    remoteLoading.current = true;
     const seq = ++loadSeq.current;
     const owner = getDataOwnerGeneration();
-    // 本机与我的其他电脑的用量读这台电脑自己的账本，不依赖分享服务，与分享的成员一起按同一个时间段读。
-    const [owned, ownUsage] = await Promise.allSettled([
-      providerShareManagementCommand({ action: 'owned', range }, deviceId),
-      providerShareManagementCommand({ action: 'own-usage', providerId, range }, deviceId),
-    ]);
+    // 成员的用量由「用量」块从按天明细里取；这里按所有时间读，只在那台电脑是旧版本时当作合计用。
+    const owned = await providerShareManagementCommand({ action: 'owned', range: 'all' }, deviceId)
+      .then((value) => ({ ok: true as const, value }), (reason: unknown) => ({ ok: false as const, reason }));
     if (seq !== loadSeq.current) return;
-    remoteLoadRange.current = null;
+    remoteLoading.current = false;
     if (!isDataOwnerGenerationCurrent(owner)) return;
-    if (owned.status === 'fulfilled') {
+    if (owned.ok) {
       setState(owned.value);
       setLoadFailed(false);
       setLoadErrorKey(null);
-      if (!deviceId) publishProviderShareOwnerState(owned.value);
+      publishProviderShareOwnerState(owned.value, deviceId ? { hostDeviceId: deviceId } : undefined);
     } else {
       setLoadFailed(true);
       setLoadErrorKey(providerManagementErrorKey(owned.reason, Boolean(deviceId)));
     }
-    if (ownUsage.status === 'fulfilled') {
-      setOwn(ownUsage.value);
-      setOwnFailed(false);
-    } else {
-      setOwnFailed(true);
+  }, [deviceId]);
+
+  /**
+   * 用量的按天明细(你自己、转来的与分享的人)。读不到时保留上次读到的；那台电脑是旧版本、不认识这个命令时
+   * 退回所有时间的合计(你自己读 own-usage，分享的人用 owned 里的成员用量)。
+   */
+  const loadHistory = useCallback(async () => {
+    if (historyLoading.current) return;
+    historyLoading.current = true;
+    const seq = ++historySeq.current;
+    const owner = getDataOwnerGeneration();
+    const current = () => seq === historySeq.current && isDataOwnerGenerationCurrent(owner);
+    try {
+      const result = await providerShareManagementCommand({ action: 'usage-history', providerId }, deviceId);
+      if (!current()) return;
+      setHistory(result);
+      setLegacyOwn(null);
+      setUsageStatus('ready');
+    } catch (error) {
+      if (!current()) return;
+      if (deviceId && isProviderManagementOutdated(error)) {
+        const legacy = await providerShareManagementCommand({ action: 'own-usage', providerId, range: 'all' }, deviceId)
+          .catch(() => null);
+        if (!current()) return;
+        if (legacy) {
+          setHistory(null);
+          setLegacyOwn(legacy);
+          setUsageStatus('legacy');
+          return;
+        }
+      }
+      setUsageStatus('failed');
+    } finally {
+      if (seq === historySeq.current) historyLoading.current = false;
     }
   }, [providerId, deviceId]);
 
   useEffect(() => {
     void load();
-  }, [load, range]);
+    void loadHistory();
+  }, [load, loadHistory]);
 
   useEffect(() => {
-    const off = window.electronAPI.providerShare.onOwnedChanged(() => void load());
+    const off = window.electronAPI.providerShare.onOwnedChanged(() => {
+      void load();
+      void loadHistory();
+    });
     return () => {
       off();
+      // 作废在途的读取；它们回来后不再写状态，也不再挡住下一次读取。
       loadSeq.current += 1;
+      historySeq.current += 1;
+      remoteLoading.current = false;
+      historyLoading.current = false;
     };
-  }, [load]);
+  }, [load, loadHistory]);
 
+  // 远程管理时 5 秒读一次分享(申请尽快出现)；用量每分钟读一次，本机与远程相同。
   useEffect(() => {
     if (!deviceId) return;
     const timer = window.setInterval(() => { if (document.visibilityState !== 'hidden') void load(); }, 5_000);
     return () => window.clearInterval(timer);
   }, [deviceId, load]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => { if (document.visibilityState !== 'hidden') void loadHistory(); }, 60_000);
+    return () => window.clearInterval(timer);
+  }, [loadHistory]);
 
   // 同一个供应商在这台电脑上只应有一条分享；稳妥起见合并同供应商的全部记录。
   const { members, requests, reshares } = useMemo(() => {
@@ -149,7 +191,7 @@ export function ProviderShareManagePage({
         pending.push({
           request,
           share: { shareId: share.shareId, providerId: share.providerId, providerLabel: share.providerLabel },
-          ...(deviceId ? { hostDeviceId: deviceId } : {}),
+          hostDeviceId: deviceId,
         });
       }
     }
@@ -160,7 +202,7 @@ export function ProviderShareManagePage({
       // 转分享请求(provider-sharing.md §4.3)：成员想经自己的供应商组把这里分享的供应商转给别人用。
       reshares: pendingResharesFromOwned(shares),
     };
-  }, [providerId, deviceId, state]);
+  }, [deviceId, providerId, state]);
 
   const approvalItem = requests.find((item) => item.request.requestId === approvalRequestId);
   const closeApproval = useCallback(() => {
@@ -188,20 +230,24 @@ export function ProviderShareManagePage({
     }
   }, []);
 
-  const reject = useCallback(
-    (item: ProviderSharePendingRequest) =>
+  const decide = useCallback(
+    (item: ProviderSharePendingRequest, action: 'approve' | 'reject') =>
       withBusy(item.request.requestId, async () => {
         try {
-          await providerShareManagementCommand({ action: 'reject', requestId: item.request.requestId }, deviceId);
+          await providerShareManagementCommand({ action, requestId: item.request.requestId }, deviceId);
           // 远程管理时，本机生成链接带来的申请也在待审批里(由本机弹窗)，一并移除。
           removeProviderSharePendingRequest(item.request.requestId);
-          toast.success(t('providerShare.toast.rejected', { name: item.request.displayName }));
+          toast.success(
+            action === 'approve'
+              ? t('providerShare.toast.approved', { name: item.request.displayName, provider: providerName })
+              : t('providerShare.toast.rejected', { name: item.request.displayName }),
+          );
         } catch (error) {
           toast.error(t(providerManagementErrorKey(error, Boolean(deviceId))));
         }
         void load();
       }),
-    [load, deviceId, t, withBusy],
+    [load, providerName, deviceId, t, withBusy],
   );
 
   const setMember = useCallback(
@@ -272,6 +318,13 @@ export function ProviderShareManagePage({
   // 审批只用当前目录中的目标供应商分类；进入管理页时的旧投影不能证明它仍然存在。
   const providerClassificationReady = providerForApproval !== undefined
     && (!deviceId || (!remoteCatalog.loading && remoteCatalog.error === null));
+  const memberActions = useMemo<ProviderShareMemberActions>(() => ({
+    busy: (id) => loadFailed || busy.has(id),
+    canApproveReshare: providerClassificationReady,
+    onTogglePause: (member) => void setMember(member, member.status === 'paused' ? 'resume' : 'pause'),
+    onRemove: (member) => void removeMember(member),
+    onReshare: (member, reshare, decision) => void decideReshare(reshare, member.displayName, decision),
+  }), [busy, decideReshare, loadFailed, providerClassificationReady, removeMember, setMember]);
 
   return (
     // 这一页自己滚动(设置页外层在「模型供应商」分区不滚)。始终预留滚动条槽位：展开组内电脑的配额、
@@ -311,6 +364,7 @@ export function ProviderShareManagePage({
           {t('providerGroup.management.note', { device: selfDeviceName ?? deviceId })}
         </p>
       )}
+
       {(gate !== 'on' || (state && !ready) || loadFailed) && (
         <p
           role="status"
@@ -371,7 +425,7 @@ export function ProviderShareManagePage({
                     size="sm"
                     compact
                     disabled={loadFailed || busy.has(item.request.requestId)}
-                    onClick={() => void reject(item)}
+                    onClick={() => void decide(item, 'reject')}
                   >
                     {t('providerShare.approve.reject')}
                   </Button>
@@ -446,54 +500,16 @@ export function ProviderShareManagePage({
 
       <ProviderUsageSection
         providerId={providerId}
-        providerName={providerName}
-        own={own}
-        ownFailed={ownFailed}
+        history={history}
+        status={usageStatus}
+        legacyOwn={legacyOwn}
         members={members}
-        membersLoading={!state && !loadFailed}
+        memberActions={memberActions}
         selfDeviceName={selfDeviceName}
         ownerDeviceId={deviceId}
         groupConfig={deviceId ? remoteGroup : undefined}
-        range={range}
-        onRangeChange={setRange}
         time={time}
       />
-
-      <section className="mt-6 shrink-0" aria-labelledby="provider-share-members-title">
-        <div className="mb-2 flex flex-wrap items-center gap-2">
-          <h3 id="provider-share-members-title" className="text-13 font-medium text-[var(--settings-section-title)]">
-            {t('providerShare.manage.members.title')}
-          </h3>
-          {members.length > 0 && <span className="text-13 text-[var(--text-tertiary)]">{members.length}</span>}
-        </div>
-        <div className="overflow-hidden rounded-xl border border-[var(--settings-theme-card-border)] bg-[var(--settings-theme-card-bg)]">
-          {members.length === 0 ? (
-            <p className="px-4 py-7 text-center text-13 leading-[1.5] text-[var(--text-secondary)]">
-              {/* 分享服务未就绪时列表为空不代表没分享给任何人：上方提示已说明原因。 */}
-              {state?.ready
-                ? t('providerShare.manage.members.empty')
-                : state || loadFailed
-                  ? '—'
-                  : t('providerShare.manage.loading')}
-            </p>
-          ) : (
-            members.map((member, index) => (
-              <MemberRow
-                key={member.memberId}
-                member={member}
-                first={index === 0}
-                busy={loadFailed || busy.has(member.memberId)}
-                time={time}
-                onPause={() => void setMember(member, member.status === 'paused' ? 'resume' : 'pause')}
-                onRemove={() => void removeMember(member)}
-                reshareBusy={(id) => loadFailed || busy.has(id)}
-                canApproveReshare={providerClassificationReady}
-                onReshare={(reshare, decision) => void decideReshare(reshare, member.displayName, decision)}
-              />
-            ))
-          )}
-        </div>
-      </section>
 
       {linkOpen && (
         <ProviderShareLinkDialog
@@ -502,207 +518,6 @@ export function ProviderShareManagePage({
           providerLabel={providerName}
           onClose={() => setLinkOpen(false)}
         />
-      )}
-    </div>
-  );
-}
-
-function MemberRow({
-  member,
-  first,
-  busy,
-  time,
-  onPause,
-  onRemove,
-  reshareBusy,
-  canApproveReshare,
-  onReshare,
-}: {
-  member: ProviderShareMemberView;
-  first: boolean;
-  busy: boolean;
-  time: ReturnType<typeof useShareTimeFormat>;
-  onPause: () => void;
-  onRemove: () => void;
-  reshareBusy: (id: string) => boolean;
-  canApproveReshare: boolean;
-  onReshare: (reshare: ProviderShareReshareView, decision: 'approve' | 'reject') => void;
-}) {
-  const { t } = useTranslation();
-  const paused = member.status === 'paused';
-  // 转分享里已处理过的人(待处理的在上方「待处理」一栏)：可以撤回已同意的，或改为同意。
-  const decided = (member.reshares ?? []).filter((reshare) => reshare.state !== 'pending');
-  const approvedCount = decided.filter((reshare) => reshare.state === 'approved').length;
-  const declinedCount = decided.length - approvedCount;
-  // 这些人默认收起成一行摘要，点开才逐人列出(2026-10-16 用户要求可折叠)。
-  const [reshareOpen, setReshareOpen] = useState(false);
-  const reshareListId = useId();
-  const statusText = paused
-    ? t('providerShare.manage.members.statusPaused')
-    : member.runningTasks > 0
-      ? t('providerShare.manage.members.statusRunning', { count: member.runningTasks })
-      : t('providerShare.manage.members.statusActive');
-  const moreLabel = t('providerGroup.member.moreAria', { name: member.displayName });
-  // 用量在上方「用量」块里按人列出(供应商组 §10)，这里只管分享本身。
-  return (
-    <div className={cn(!first && 'border-t border-[var(--settings-theme-card-border)]')}>
-      {/* 有转分享摘要时信息列多一行，头像和操作贴着第一行；没有时保持居中。 */}
-      <div
-        data-testid="provider-share-member-row"
-        className={cn('flex flex-wrap gap-3 px-4 py-3', decided.length > 0 ? 'items-start' : 'items-center')}
-      >
-        <ShareAvatar
-          displayName={member.displayName}
-          avatarUrl={member.avatarUrl}
-          className={cn(paused && 'opacity-70')}
-        />
-        <div className="flex min-w-[180px] flex-1 flex-col gap-0.5">
-          <div className={cn('flex flex-wrap items-center gap-2 text-13', paused && 'opacity-70')}>
-            <span className="font-medium text-[var(--text-primary)]">{member.displayName}</span>
-            <span className="inline-flex items-center gap-1.5 text-12 text-[var(--text-secondary)]">
-              <span
-                aria-hidden="true"
-                className={cn(
-                  'h-1.5 w-1.5 shrink-0 rounded-full',
-                  paused ? 'bg-[var(--remote-status-disconnected)]' : 'bg-[var(--remote-status-ready)]',
-                )}
-              />
-              {statusText}
-            </span>
-          </div>
-          <div className={cn('flex flex-wrap gap-1.5 text-12 text-[var(--text-secondary)]', paused && 'opacity-70')}>
-            <span>{t('providerShare.manage.members.joined', { date: time.date(Date.parse(member.joinedAt)) })}</span>
-            <span aria-hidden="true">·</span>
-            <span>
-              {member.lastUsedAt
-                ? t('providerShare.manage.members.lastUsed', { time: time.relative(member.lastUsedAt) })
-                : t('providerShare.manage.members.neverUsed')}
-            </span>
-          </div>
-          {decided.length > 0 && (
-            // 经这个成员的供应商组转给别人用的人(provider-sharing.md §4.3)：收起时只是一行摘要，挂在这个成员名下。
-            <button
-              type="button"
-              data-testid="provider-share-reshare-toggle"
-              aria-expanded={reshareOpen}
-              aria-controls={reshareOpen ? reshareListId : undefined}
-              onClick={() => setReshareOpen((open) => !open)}
-              className="group -ml-1 mt-1.5 flex w-fit max-w-full items-center gap-2 rounded-full py-0.5 pl-1 pr-2 text-left text-12 text-[var(--text-secondary)] transition-colors motion-reduce:transition-none hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
-            >
-              <ChevronRight
-                size={14}
-                aria-hidden="true"
-                className={cn(
-                  'shrink-0 text-[var(--text-tertiary)] transition-transform duration-150 motion-reduce:transition-none group-hover:text-[var(--text-secondary)]',
-                  reshareOpen && 'rotate-90',
-                )}
-              />
-              <span aria-hidden="true" className="flex shrink-0">
-                {decided.slice(0, 3).map((reshare, index) => (
-                  <ShareAvatar
-                    key={reshare.id}
-                    displayName={reshare.name}
-                    avatarUrl={reshare.avatarUrl}
-                    size="xs"
-                    className={cn('ring-2 ring-[var(--settings-theme-card-bg)]', index > 0 && '-ml-1.5')}
-                  />
-                ))}
-              </span>
-              <span className="min-w-0 truncate">
-                {approvedCount > 0
-                  ? t('providerShare.manage.reshare.summaryUsing', { count: approvedCount, owner: member.displayName })
-                  : t('providerShare.manage.reshare.summaryOwner', { owner: member.displayName })}
-                {declinedCount > 0 && ` · ${t('providerShare.manage.reshare.summaryDeclined', { count: declinedCount })}`}
-              </span>
-            </button>
-          )}
-        </div>
-        <div className="flex shrink-0 items-center gap-1.5">
-          <Button variant="secondary" size="sm" compact disabled={busy} onClick={onPause}>
-            {t(paused ? 'providerShare.manage.members.resume' : 'providerShare.manage.members.pause')}
-          </Button>
-          {/* 删除不可撤销且要二次确认：收进「⋯」，与供应商组里移除电脑同一写法，行内不再挂红字。 */}
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Tip text={moreLabel}>
-                <button
-                  type="button"
-                  aria-label={moreLabel}
-                  disabled={busy}
-                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[var(--text-tertiary)] transition-colors hover:bg-[var(--surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] disabled:opacity-50"
-                >
-                  <MoreHorizontal size={18} />
-                </button>
-              </Tip>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem
-                variant="danger"
-                disabled={busy}
-                aria-label={t('providerShare.manage.members.removeAria', { name: member.displayName })}
-                onClick={onRemove}
-              >
-                <CircleMinus size={18} className="mr-2.5" />
-                {t('providerShare.manage.members.remove')}
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
-      </div>
-      {decided.length > 0 && (
-        <Collapse open={reshareOpen} id={reshareListId}>
-          {/* 与昵称一列左对齐(px-4 + 头像 32 + gap-3 = ml-11 之后)，浅底小框把这几个人圈成一组。 */}
-          <div className="px-4 pb-3">
-            <div
-              data-testid="provider-share-reshare-list"
-              className="ml-11 overflow-hidden rounded-lg border border-[var(--border-default)] bg-[var(--surface)]"
-            >
-              {decided.map((reshare, index) => {
-                const approved = reshare.state === 'approved';
-                return (
-                  <div
-                    key={reshare.id}
-                    data-testid="provider-share-reshare-item"
-                    className={cn(
-                      'flex items-center gap-2.5 py-2 pl-3 pr-2',
-                      index > 0 && 'border-t border-[var(--border-default)]',
-                    )}
-                  >
-                    <ShareAvatar
-                      displayName={reshare.name}
-                      avatarUrl={reshare.avatarUrl}
-                      size="sm"
-                      className={cn(!approved && 'opacity-70')}
-                    />
-                    <span className="flex min-w-0 flex-1 items-baseline gap-2 text-13">
-                      <span className={cn('truncate text-[var(--text-primary)]', !approved && 'opacity-70')}>
-                        {reshare.name}
-                      </span>
-                      <span className="shrink-0 text-12 text-[var(--text-secondary)]">
-                        {t(approved ? 'providerShare.manage.reshare.stateApproved' : 'providerShare.manage.reshare.stateRejected')}
-                      </span>
-                    </span>
-                    {/* 撤回后还能改回同意，不是破坏性操作：用安静按钮，红色只留给删除分享。 */}
-                    <Button
-                      variant="secondary"
-                      tone="quiet"
-                      size="sm"
-                      compact
-                      disabled={reshareBusy(reshare.id) || (!approved && !canApproveReshare)}
-                      aria-label={t(
-                        approved ? 'providerShare.manage.reshare.revokeAria' : 'providerShare.manage.reshare.approveAria',
-                        { name: reshare.name },
-                      )}
-                      onClick={() => onReshare(reshare, approved ? 'reject' : 'approve')}
-                    >
-                      {t(approved ? 'providerShare.manage.reshare.revoke' : 'providerShare.manage.reshare.approve')}
-                    </Button>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        </Collapse>
       )}
     </div>
   );

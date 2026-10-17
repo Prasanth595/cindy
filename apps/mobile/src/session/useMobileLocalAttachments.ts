@@ -23,6 +23,7 @@ import { retainComposerAttachmentFile } from './durableOutboxFiles';
 import * as ImagePicker from 'expo-image-picker';
 import { formatRemoteError } from '@/device-link/remoteStatus';
 import { canBrowsePhotoLibraryDirectly } from '@/session/photoLibraryPolicy';
+import { pickDeferredLibraryPhotos } from '@/session/deferredPhotoLibrary';
 import {
   MOBILE_MAX_ATTACHMENTS,
   assertMobileDocumentSize,
@@ -315,7 +316,9 @@ export function useMobileLocalAttachments(
         }
       }
       if (candidate.cleanupLocalUris) {
-        for (const uri of localUris) pastedImageLocalUrisRef.current.add(uri);
+        for (const uri of localUris) {
+          if (uri.startsWith('file://')) pastedImageLocalUrisRef.current.add(uri);
+        }
       }
       if (!isActive()) return;
       // Keep the actual PUT bytes for all file kinds until the composer hands them off.
@@ -330,7 +333,7 @@ export function useMobileLocalAttachments(
       uploadedSourcesRef.current.set(attachment.id, {
         ...candidate, uri: stageUri, name: attachment.name, mimeType: attachment.mimeType,
         size: attachment.size, resolve: undefined, skipPreprocess: true, cleanupLocalUris: undefined,
-        onAbandoned: undefined,
+        onAbandoned: undefined, onConsumed: undefined,
       });
       optionsRef.current.onUploaded(attachment, deliveredCandidate, localId);
       if (candidate.cleanupLocalUris) {
@@ -457,6 +460,24 @@ export function useMobileLocalAttachments(
           optionsRef.current.onError(source === 'camera'
             ? t('composer.upload.cameraPermission')
             : t('composer.upload.photoPermission'));
+          return;
+        }
+      }
+
+      if (source === 'library' && Platform.OS === 'ios') {
+        const candidates = await pickDeferredLibraryPhotos(begun.remainingSlots);
+        if (candidates !== null) {
+          if (!isAttachmentScopeActive()) {
+            for (const candidate of candidates) candidate.onAbandoned?.();
+            return;
+          }
+          // 原图尚未从 iCloud 取回也能立即入队、claim 到乐观消息。
+          // 读取与上传共用既有取消/重试/作用域生命周期，不另建下载队列。
+          for (const candidate of candidates.slice(begun.remainingSlots)) candidate.onAbandoned?.();
+          const accepted = candidates.slice(0, begun.remainingSlots);
+          if (accepted.length === 0) return;
+          enqueueUploads(accepted, { token: optionsRef.current.getAccessToken() });
+          optionsRef.current.onPicked?.();
           return;
         }
       }

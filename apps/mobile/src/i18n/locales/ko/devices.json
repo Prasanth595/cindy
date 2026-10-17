@@ -241,6 +241,11 @@
     }
   },
   "list": {
+    "projectActions": {
+      "newTask": "새 작업",
+      "allTasks": "모든 작업",
+      "search": "검색"
+    },
     "taskSuggestions": {
       "connected": "컴퓨터에 연결됨",
       "title": "컴퓨터 앞에 없어도\n일을 시작할 수 있어요.",

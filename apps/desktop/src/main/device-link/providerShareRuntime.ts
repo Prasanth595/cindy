@@ -8,6 +8,7 @@ import {
   PROVIDER_SHARE_LINK_TTL_MS,
   PROVIDER_SHARE_NEUTRAL_DEVICE_NAME,
   PROVIDER_SHARE_RECEIVED_CATALOGS_CHANNEL,
+  MAX_FRAME_BYTES,
   parseProviderSharePeer,
   scrubProviderShareLabel,
   scrubSharedProviderCatalog,
@@ -27,6 +28,8 @@ import {
   type ProviderShareUsageRange,
   type ProviderOwnUsageView,
   type ProviderPartyUsageView,
+  type ProviderUsageDayView,
+  type ProviderUsageHistoryView,
 } from '../../shared/providerShare.js';
 import { getDeviceId } from '../authManager.js';
 import { isDataOwnerPushStamp } from '../../shared/dataOwnerPush.js';
@@ -100,7 +103,7 @@ import {
   type ProviderShareReshareEvents,
   type ProviderShareReshareRecord,
 } from './providerShareReshare.js';
-import { getProviderShareUsageStore } from './providerShareUsageStore.js';
+import { getProviderShareUsageStore, providerUsageLocalDay } from './providerShareUsageStore.js';
 import { readDeviceLinkSettings, readLastKnownDeviceNames } from './settings-store.js';
 import { currentProviderPartyUsageStore, type ProviderPartyUsage } from '../usage/providerPartyUsageStore.js';
 
@@ -332,6 +335,8 @@ export function parseProviderShareCommand(raw: unknown): ProviderShareCommand {
       return { action: 'owned', range: usageRange(value.range) };
     case 'own-usage':
       return { action: 'own-usage', providerId: text(value.providerId, 'providerId'), range: usageRange(value.range) };
+    case 'usage-history':
+      return { action: 'usage-history', providerId: text(value.providerId, 'providerId') };
     case 'create-link':
       return { action: 'create-link', providerId: text(value.providerId, 'providerId') };
     case 'approve':
@@ -475,6 +480,152 @@ async function ownUsage(providerId: string, range: ProviderShareUsageRange): Pro
   };
 }
 
+/**
+ * 按天明细的预算：远程管理时整份经设备互联回包(单帧 2MB)。行数预算先保留最新的行，
+ * 再按实际 UTF-8 JSON 大小预留 invoke 信封空间；两种裁剪都会通过 coverageStart 告知界面。
+ */
+const USAGE_HISTORY_MAX_ROWS = 5_000;
+const USAGE_HISTORY_FRAME_SAFETY_BYTES = 1_024;
+const USAGE_HISTORY_MAX_BYTES = MAX_FRAME_BYTES - USAGE_HISTORY_FRAME_SAFETY_BYTES;
+
+type UsageHistoryRowRef =
+  | { group: 'self'; row: number; day: string; order: number }
+  | { group: 'relay'; party: number; row: number; day: string; order: number }
+  | { group: 'member'; party: number; row: number; day: string; order: number };
+
+/**
+ * 让 usage-history 回包同时满足行数和物理帧预算。按日期从新到旧选行；同一天保持 self、relay、member
+ * 及各自账本的既有顺序。二分查找保留前 N 行，避免每删一行都重新序列化整份历史。
+ */
+export function trimProviderUsageHistory(history: ProviderUsageHistoryView): ProviderUsageHistoryView {
+  const refs: UsageHistoryRowRef[] = [];
+  let order = 0;
+  history.self.days.forEach((row, index) => refs.push({ group: 'self', row: index, day: row.day, order: order++ }));
+  history.relays.forEach((party, partyIndex) => {
+    party.days.forEach((row, rowIndex) => refs.push({ group: 'relay', party: partyIndex, row: rowIndex, day: row.day, order: order++ }));
+  });
+  history.members.forEach((party, partyIndex) => {
+    party.days.forEach((row, rowIndex) => refs.push({ group: 'member', party: partyIndex, row: rowIndex, day: row.day, order: order++ }));
+  });
+  refs.sort((a, b) => b.day.localeCompare(a.day) || a.order - b.order);
+
+  const materialize = (count: number): ProviderUsageHistoryView => {
+    const kept = refs.slice(0, count);
+    const selfRows = new Set(kept.filter((ref) => ref.group === 'self').map((ref) => ref.row));
+    const relayRows = new Map<number, Set<number>>();
+    const memberRows = new Map<number, Set<number>>();
+    for (const ref of kept) {
+      if (ref.group === 'relay') {
+        const rows = relayRows.get(ref.party) ?? new Set<number>();
+        rows.add(ref.row);
+        relayRows.set(ref.party, rows);
+      } else if (ref.group === 'member') {
+        const rows = memberRows.get(ref.party) ?? new Set<number>();
+        rows.add(ref.row);
+        memberRows.set(ref.party, rows);
+      }
+    }
+    const truncated = count < refs.length;
+    // 二次裁剪(估价后)若没有再删行，保留第一次裁剪已经记录的覆盖起点。
+    const coverageStart = truncated && kept.length > 0
+      ? kept.reduce((day, ref) => day < ref.day ? day : ref.day, kept[0]!.day)
+      : history.coverageStart;
+    return {
+      ...history,
+      coverageStart,
+      self: { ...history.self, days: history.self.days.filter((_, index) => selfRows.has(index)) },
+      relays: history.relays.map((party, partyIndex) => ({
+        ...party,
+        days: party.days.filter((_, rowIndex) => relayRows.get(partyIndex)?.has(rowIndex) ?? false),
+      })),
+      members: history.members.map((party, partyIndex) => ({
+        ...party,
+        days: party.days.filter((_, rowIndex) => memberRows.get(partyIndex)?.has(rowIndex) ?? false),
+      })),
+    };
+  };
+
+  const fits = (count: number): boolean => Buffer.byteLength(JSON.stringify(materialize(count)), 'utf8') <= USAGE_HISTORY_MAX_BYTES;
+  let count = Math.min(refs.length, USAGE_HISTORY_MAX_ROWS);
+  if (!fits(count)) {
+    let low = 0;
+    let high = count;
+    while (low < high) {
+      const middle = Math.ceil((low + high) / 2);
+      if (fits(middle)) low = middle;
+      else high = middle - 1;
+    }
+    count = low;
+  }
+  return materialize(count);
+}
+
+/**
+ * 这个供应商的用量按天明细(provider-groups.md §7)：你自己与经其他电脑转来的读本机账本，分享的人读分享账本
+ * (只含这个供应商的分享里现在的成员)。时间段、人与组内电脑由界面筛选。
+ */
+async function usageHistory(providerId: string): Promise<ProviderUsageHistoryView> {
+  const own = currentProviderPartyUsageStore().history(providerId);
+  const shares = running ? getProviderShareHostSnapshot().filter((share) => share.providerId === providerId) : [];
+  const memberKeys = new Set(shares.flatMap((share) => share.members.map((member) => JSON.stringify([share.shareId, member.memberId]))));
+  // 多取一行作为裁剪哨兵，使上层知道历史未完整展开；删除的成员在展开前就排除。
+  const members = getProviderShareUsageStore()?.history(new Set(shares.map((share) => share.shareId)), {
+    maxRows: USAGE_HISTORY_MAX_ROWS + 1,
+    memberKeys,
+  }) ?? [];
+  const lastKnownNames = readLastKnownDeviceNames();
+  const history = trimProviderUsageHistory({
+    providerId,
+    todayKey: providerUsageLocalDay(Date.now()),
+    coverageStart: null,
+    self: {
+      ...own.self,
+      days: own.self.days.map((row) => ({ ...row, providerId, amount: null })),
+    },
+    relays: own.relays.map((relay) => ({
+      ...relay,
+      deviceName: getControllerDisplayName(relay.deviceId) ?? lastKnownNames[relay.deviceId] ?? null,
+      days: relay.days.map((row) => ({ ...row, providerId, amount: null })),
+    })),
+    members: members.map((member) => ({
+      ...member,
+      days: member.days.map((row) => ({ ...row, amount: null })),
+    })),
+  });
+
+  const days = async (
+    rows: ReadonlyArray<ProviderUsageDayView & { sdkCostUsd?: number }>,
+  ): Promise<ProviderUsageDayView[]> =>
+    Promise.all(rows.map(async (row) => {
+      const usage = { ...row, sdkCostUsd: row.sdkCostUsd ?? 0 };
+      return {
+        day: usage.day,
+        kind: usage.kind,
+        providerId: usage.providerId,
+        memberKey: usage.memberKey,
+        model: usage.model,
+        turns: usage.turns,
+        inputTokens: usage.inputTokens,
+        outputTokens: usage.outputTokens,
+        cacheReadTokens: usage.cacheReadTokens,
+        cacheCreateTokens: usage.cacheCreateTokens,
+        amount: await estimate(usage),
+      };
+    }));
+  return trimProviderUsageHistory({
+    ...history,
+    self: { ...history.self, days: await days(history.self.days) },
+    relays: await Promise.all(history.relays.map(async (relay) => ({
+      ...relay,
+      days: await days(relay.days),
+    }))),
+    members: await Promise.all(history.members.map(async (member) => ({
+      ...member,
+      days: await days(member.days),
+    }))),
+  });
+}
+
 async function createLink(
   providerId: string,
   assertCurrent: () => void = () => undefined,
@@ -522,6 +673,8 @@ async function execute(command: ProviderShareCommand, assertCurrent: () => void 
       return ownerState(command.range);
     case 'own-usage':
       return ownUsage(command.providerId, command.range);
+    case 'usage-history':
+      return usageHistory(command.providerId);
     case 'create-link': {
       const created = await createLink(command.providerId, assertCurrent);
       await clearProviderShareRequestQuiet(command.providerId);

@@ -241,6 +241,11 @@
     }
   },
   "list": {
+    "projectActions": {
+      "newTask": "New task",
+      "allTasks": "All tasks",
+      "search": "Search"
+    },
     "taskSuggestions": {
       "connected": "Computer connected",
       "title": "Away from your computer?\nYou can still get started.",

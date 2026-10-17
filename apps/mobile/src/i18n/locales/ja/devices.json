@@ -241,6 +241,11 @@
     }
   },
   "list": {
+    "projectActions": {
+      "newTask": "新しいタスク",
+      "allTasks": "すべてのタスク",
+      "search": "検索"
+    },
     "taskSuggestions": {
       "connected": "コンピューターに接続済み",
       "title": "コンピューターから離れていても、\n始められます。",

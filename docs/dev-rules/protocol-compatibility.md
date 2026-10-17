@@ -1488,6 +1488,8 @@ G 与 O 之间不变。受邀者能调用的 channel 不变(仍是 `maker:remote
   - C 侧：任务此刻所在电脑与供应商和绑定那台对得上才算经组(绑定没清掉的空档里不报)；每轮记进按账号的账本(`group` 行，
     只用来报告，不算进 C 自己的供应商)，防抖 5s 报从那天起的一份；启动(账号确定)
     后整份报一次补上次没送到的；送不到按 30s 起、最长 10 分钟退避重报，不截断单日或未报告的旧日期。
+  - 日期归一：`day` 是报告端本地日期，但接收端按 `lastAt` 在自己的时区重新计算日期；增量请求和替换时各多带两天，
+    避免跨时区的午夜边界漏掉或重复历史。
 - **超出单次 3000 行或 UTF-8 字节预算时用新动作 `usage-part` 分批传完整报告**：
   - 请求 `{ action: 'usage-part', seq, sinceDay, offset, total, rows }`；每批仍最多 3000 行，整份最多 20000 行，
     同时按实际 JSON 序列化后的 UTF-8 字节数切批（包含转义开销），请求预算取可靠消息/普通帧上限的较小值再预留 64 KiB 给 invoke 头；offset 按实际批次行数推进。
@@ -1525,8 +1527,16 @@ G 与 O 之间不变。受邀者能调用的 channel 不变(仍是 `maker:remote
 - **`provider-group:remote` 新增 `action: 'manage-group'` / `'manage-share'`**(同一 channel、同一同账号 allowlist，
   受邀者与共享任务访客照旧 `CHANNEL_NOT_ALLOWED`)：请求 `{ action, command }`，`command` 与本机命令同构，结构与校验在
   `apps/desktop/src/shared/providerManagement.ts`。`manage-group` 只收 `get` / `candidates` / `save-if-current` / `delete-if-current`；
-  `manage-share` 只收 `owned` / `own-usage` / `create-link` / `approve` / `reject` / `set-member` / `reshare-decide`，其余回
+  `manage-share` 只收 `owned` / `own-usage` / `usage-history` / `create-link` / `approve` / `reject` / `set-member` / `reshare-decide`，其余回
   `[PERMISSION_DENIED]`。回包 `{ result, respondedAt }`，`respondedAt` 只用于把链接有效期换算到 C 的时钟。
+  - `usage-history`(2026-10-17，供应商组 §7)：只读，`{ action, providerId }`，回这个供应商用量的按天明细
+    `{ providerId, todayKey, coverageStart, self, relays, members }`(结构在 `apps/desktop/src/shared/providerShare.ts`)，
+    日期是 O 的本地日期，金额在 O 上估算；`members` 只含 O 上这个供应商的分享里现在的成员。最多 5,000 行，按日期从新到旧
+    截取，最新一天允许只保留一部分，再按实际 UTF-8 JSON 字节数裁剪，均用 `coverageStart` 标出保留下来的最早日期，
+    整包为单帧 2MB 预留 invoke 信封空间。旧 O 不认识该动作，`parseProviderShareCommand` 回
+    `[INVALID_PARAMS] Unknown command`，C 的 Main 把 `manage-share` 的这个回包统一成 `[UNSUPPORTED_CAPABILITY]`(与
+    `unknown provider group action` 同一处)，管理页退回 `own-usage` 与 `owned`(range=all)的所有时间合计并提示更新 O，不重试。
+    旧 C 不发这个动作，照旧读 `own-usage` / `owned`，O 对两者的回包不变。
   - O 在执行前后核对账号未切换；`approve` / `reject` / `set-member` 先刷新快照，申请或成员不在 O 的分享里回 `[NOT_FOUND]`；
     `owned` 的回包只含 `{ ready, shares }`，不带 O 自己的弹窗安排。不再转发给第三台电脑。
   - `reshare-decide` 只修改 O 当前账号的本机转分享记录，写锁内和返回前继续核对账号边界；撤回由 O 停止对应中转任务。

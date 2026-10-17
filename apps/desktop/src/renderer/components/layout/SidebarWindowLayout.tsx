@@ -33,12 +33,8 @@ import { ToastContainer } from '@/components/ui/toast';
 import { useDeviceLinkRemoteProjects } from '@/features/device-link/useDeviceLinkRemoteProjects';
 import { onRequestRightSidebarVisibility } from '@/features/right-sidebar/lib/sidebarCommands';
 import { executeSidebarCommand } from '@/features/right-sidebar/lib/executeSidebarCommand';
-import {
-  closeTab,
-  getBucket,
-  getTabSnapshot,
-  importTabSnapshot,
-} from '@/features/right-sidebar/store';
+import { mergeSidebarWindowBack } from '@/features/right-sidebar/lib/mergeSidebarWindowBack';
+import { closeTab, getBucket, importTabSnapshot } from '@/features/right-sidebar/store';
 import { WindowControls } from '@/components/title-bar/WindowControls';
 import { ChromeIconButton } from '@/components/title-bar/ChromeIconButton';
 import { useAppShortcut } from '@/hooks/useAppShortcut';
@@ -290,9 +286,7 @@ export function SidebarWindowLayout() {
           {/* 合并回主窗口:关偏好 + 关本窗,主窗恢复内嵌展开 */}
           <ChromeIconButton
             onClick={() => {
-              const snapshot = getTabSnapshot(interactiveSessionId);
-              const handoff = snapshot ? { snapshots: [snapshot] } : undefined;
-              void window.electronAPI.rightSidebarWindow.setDetached(false, handoff).catch((err) => {
+              void mergeSidebarWindowBack(interactiveSessionId).catch((err) => {
                 log.warn('merge back failed', err);
               });
             }}
