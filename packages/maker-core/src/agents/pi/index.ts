@@ -7542,10 +7542,14 @@ export class PiAgent extends BaseAgent {
       // 都会掉回默认档，表现为「推理强度自动变低」。目标档 = 显式 effort > 会话原档位
       // （mutableEffort）；新模型不支持（含未声明档位）时保持 pi 默认，与能力收敛一致。
       const restoredEffort = setOpts?.effort ?? mutableEffort;
+      // 恢复门必须用**本次落定的** activeEffortSnapshot（含用户新声明），不能用启动时冻结的
+      // nextEffortSnapshot：目标模型启动时只有 low、用户随后声明了 max 并带 effort=max 切入时，
+      // 预检已放行、set_model 已成功，若这里仍按冻结快照判断就会静默不发 set_thinking_level，
+      // 实际跑在 Pi 自己的默认档上（切模请求本身没应用用户显式指定的档位）。
       if (
         restoredEffort &&
-        nextEffortSnapshot && nextEffortSnapshot.length > 0 &&
-        nextEffortSnapshot.includes(restoredEffort)
+        activeEffortSnapshot && activeEffortSnapshot.length > 0 &&
+        activeEffortSnapshot.includes(restoredEffort)
       ) {
         // 恢复请求失败（被拒或超时/链路抛错）都不能让 setModel 失败：模型路由此刻已确认,
         // 抛错只会跳过下面的子代理快照收尾（pending 卡死委派），档位本身却救不回来。

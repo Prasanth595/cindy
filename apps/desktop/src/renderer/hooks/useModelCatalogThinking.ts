@@ -154,7 +154,15 @@ export function useModelCatalogThinking(target: ModelCatalogThinkingTarget | nul
     const unsubscribe = window.electronAPI?.maker?.onProvidersChanged?.(() => {
       void run();
     });
-    if (!stableTarget) return;
+    // 订阅在任何 target 状态下都必须交还清理函数：抽屉关闭（target=null）时若直接 return，
+    // 订阅会逐次开关累积泄漏 —— 之后每次保存广播都会让泄漏回调调 run()，它 setState(EMPTY)
+    // 并递增 generation，把正在保存的回声顶掉，补读前界面会错误显示「跟随供应商」。
+    // 空目标只跳过初始 GET（run() 内部对空目标本就是 no-op）。
+    if (!stableTarget) {
+      return () => {
+        unsubscribe?.();
+      };
+    }
     void run();
     return () => {
       unsubscribe?.();

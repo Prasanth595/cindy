@@ -5308,8 +5308,18 @@ describe("Pi provider-aware model routing", () => {
     });
 
     // 带新声明的 effort 切模：预检放行、set_model 发出、会话落到 model-b。
+    const beforeSwitch = captured.requests.length;
     await handle.setModel!("model-b", { providerId: "tier-preflight", effort: "max" });
     expect(captured.runtimeModel).toBe("model-b");
+
+    // 切模请求本身就必须应用用户显式指定的档位：pi CLI 在 set_model 后会把思考档位重置
+    // 成新模型自己的默认，恢复门若仍按启动时冻结的快照（只有 low）判断，就会静默不发
+    // set_thinking_level，实际跑在默认档上。恢复门必须用落定后的活动快照（含新声明的 max）。
+    expect(
+      captured.requests.slice(beforeSwitch).filter(
+        (request) => request.type === "set_thinking_level",
+      ),
+    ).toEqual([{ type: "set_thinking_level", level: "max" }]);
 
     // 切模成功后活动快照已含新档位，随后 setEffort(max) 能真的下发。
     captured.requests.length = 0;
