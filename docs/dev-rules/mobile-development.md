@@ -63,7 +63,7 @@ pnpm mobile:sim:start -- --region=cn
 不要用临时 Metro、端口探测或手工修改 `.env` 代替这些脚本。多 worktree、原生构建、
 登录态和日志排查见 `apps/mobile/docs/simulator-debugging.md`。
 
-## 键盘避让（含底部浮窗）
+## 键盘避让（含底部浮窗与全屏输入页）
 
 - 页面级输入区统一用 `KeyboardAvoidingView` + `keyboardAvoidingBehaviorForPlatform`
   （iOS `padding`、Android `height`），见 `src/session/mobileNativeShellLayout.ts`。
@@ -73,6 +73,11 @@ pnpm mobile:sim:start -- --region=cn
   所以 `SheetModal` 在 `keyboardAvoiding` 时按实测差值自己让位：键盘整体高度 − 系统已让出的
   高度（`src/session/sheetKeyboardAvoidance.ts`）。缩窗设备上差值为 0，不会与 `adjustResize`
   叠加；折叠屏分区/悬浮窗由 `region` 定位，不叠加这一层。
+- 全屏输入页（SafeAreaView 下的 `flex:1` 内容层）同理：edge-to-edge 下 KAV 的 `height`
+  依赖的 viewport 变化不再发生，`behavior: undefined`（只靠系统缩窗）也会失效。这类容器统一用
+  `KeyboardAvoidingFlex`（`src/session/mobileKeyboardAvoidance.ts`）：iOS 继续走 KAV padding，
+  Android 按同一差值模型做 `paddingBottom`（已扣的导航栏 inset 不重复扣除）。不要再在
+  Android 上写 `behavior={undefined}` 的新输入页；改到输入面时优先迁移到该容器。
 - 新增含输入框的浮窗必须传 `keyboardAvoiding`；纯动作浮窗不要订阅键盘。
 - 验证必须在真机或模拟器上开软键盘检查：当前输入框与底部确定/取消完整可见，收起后布局
   恢复、没有额外空白或闪烁。单测通过不能替代这一步。
