@@ -1,17 +1,19 @@
 import { getMobileAuthOwner, isMobileAuthOwnerCurrent } from '@/auth/authOwnerGeneration';
 import { i18n } from '@/i18n';
 import { getCurrentMobileOutboxRecords, mobileDurableOutbox } from './mobileDurableOutbox';
+import { mergeNewSessionEditFollowUps } from './mergeNewSessionEditFollowUps';
 import {
   beginNewSessionReturnToEdit, markNewSessionDurableEditReady, getNewSessionCreationTask, prepareNewSessionCreationForEdit,
   stashNewSessionDraftForEdit, type NewSessionCreationTask,
 } from './newSessionCreation';
 
 /** Shared by both entry screens; finish recovery even if the initiating screen leaves. */
-export async function returnNewSessionToEdit({ sessionId, deviceId, isCurrent, onReady, stashDraft = stashNewSessionDraftForEdit }: {
+export async function returnNewSessionToEdit({ sessionId, deviceId, isCurrent, onReady, getToken, stashDraft = stashNewSessionDraftForEdit }: {
   sessionId: string;
   deviceId: string;
+  getToken?: () => Promise<string | null>;
   isCurrent: () => boolean;
-  onReady: (params: { deviceId: string; deviceName: string; recoverySessionId?: string; editSessionId?: string }) => void;
+  onReady: (params: { deviceId: string; deviceName: string; recoverySessionId?: string; editSessionId?: string }) => void | Promise<void>;
   stashDraft?: (task: NewSessionCreationTask) => void;
 }): Promise<void> {
   const owner = getMobileAuthOwner();
@@ -19,7 +21,9 @@ export async function returnNewSessionToEdit({ sessionId, deviceId, isCurrent, o
   const task = getNewSessionCreationTask(sessionId);
   if (!ownerCurrent() || !isCurrent() || task?.deviceId !== deviceId) return;
   if (task.readyForEdit && !task.returningToEdit) {
-    onReady({ deviceId, deviceName: task.deviceName,
+    if (task.readyForEdit === 'durable') await mergeNewSessionEditFollowUps(sessionId, deviceId, getToken);
+    if (!ownerCurrent() || !isCurrent() || getNewSessionCreationTask(sessionId)?.deviceId !== deviceId) return;
+    await onReady({ deviceId, deviceName: task.deviceName,
       ...(task.readyForEdit === 'durable' ? { recoverySessionId: sessionId } : { editSessionId: sessionId }) });
     return;
   }
@@ -36,17 +40,19 @@ export async function returnNewSessionToEdit({ sessionId, deviceId, isCurrent, o
         && record.item.sessionId === sessionId && record.creation);
     if (durableFirst) {
       await mobileDurableOutbox.update(durableFirst, {
-        suspended: true, state: 'failed', error: i18n.t('session.screen.firstMessageNotSent'),
+        suspended: true, state: 'failed',
+        error: prepared.error || durableFirst.error || i18n.t('session.screen.firstMessageNotSent'),
         creation: { ...durableFirst.creation!, editReady: true },
       });
+      await mergeNewSessionEditFollowUps(sessionId, deviceId, getToken);
       if (!taskCurrent()) return;
       markNewSessionDurableEditReady(sessionId, deviceId);
-      if (isCurrent()) onReady({ deviceId, deviceName: prepared.deviceName, recoverySessionId: sessionId });
+      if (isCurrent()) await onReady({ deviceId, deviceName: prepared.deviceName, recoverySessionId: sessionId });
       return;
     }
     stashDraft(prepared);
     // Keep the failed row reachable until the matching form takes ownership.
-    if (isCurrent()) onReady({ deviceId, deviceName: prepared.deviceName, editSessionId: sessionId });
+    if (isCurrent()) await onReady({ deviceId, deviceName: prepared.deviceName, editSessionId: sessionId });
   } finally {
     release();
   }

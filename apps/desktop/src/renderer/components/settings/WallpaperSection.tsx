@@ -10,7 +10,7 @@ import { Slider } from '@/components/ui/slider';
 import { Tip } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 import { useWallpaperSettings } from '@/hooks/useWallpaperSettings';
-import { getBuiltinWallpaperPreview, isSceneWallpaper } from '@/lib/wallpaper';
+import { getBuiltinWallpaperPreview, isCdnWallpaper, isSceneWallpaper } from '@/lib/wallpaper';
 import {
   APPEARANCE_LIMITS,
   DEFAULT_APPEARANCE_SETTINGS,
@@ -62,8 +62,8 @@ export function WallpaperSection() {
     };
   }, [cancelBlurPreview, previewBlur]);
   const customVideo = isCustomWallpaperVideo(customWallpaperUrl);
-  const downloading = isSceneWallpaper(wallpaperId) && downloadPending;
-  const retryable = isSceneWallpaper(wallpaperId) && downloadFailed && !downloadPending;
+  const downloading = isCdnWallpaper(wallpaperId) && downloadPending;
+  const retryable = isCdnWallpaper(wallpaperId) && downloadFailed && !downloadPending;
   const chooseWallpaper = async () => {
     setBusy(true);
     setError('');
@@ -250,7 +250,7 @@ export function WallpaperSection() {
         })}
       </div>
 
-      {/* Only the selected CDN scene downloads; the grid stays available while it loads. */}
+      {/* Only the selected wallpaper downloads; the grid stays available while it loads. */}
       {downloading && (
         <DownloadMeter
           progress={{

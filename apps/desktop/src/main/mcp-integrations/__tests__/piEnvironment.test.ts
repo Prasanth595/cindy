@@ -31,6 +31,7 @@ import {
   CODEX_DISABLED_BUILTIN_PLUGIN_IDS_KEY,
 } from '../codexBuiltinToolPolicy.js';
 import { CINDY_MAKE_VENDOR_OPTION_KEY } from '../../../shared/cindyMakeSession.js';
+import { BOT_IM_CHANNELS_VENDOR_KEY } from '../../../shared/botImConnection.js';
 import {
   getPiExtraSpawnConfig,
   invalidatePiEnvironment,
@@ -421,6 +422,47 @@ describe('piEnvironment per-session identity', () => {
       'custom_probe',
     ]);
     make?.disposeSessionCtx?.();
+  });
+
+  it('exposes cindy_telegram_bot only to a Session carrying a Telegram channel marker', async () => {
+    const providers = [makeProvider('cindy_telegram_bot'), makeProvider('custom_probe')];
+    const desktop = await getPiExtraSpawnConfig(providers, noopLogger(), {
+      sessionId: 'pi-desktop',
+      workingDir: '/repo',
+      vendorOptions: {},
+    });
+    expect(desktop?.mcpBridge?.servers.map((server) => server.name)).toEqual(['custom_probe']);
+    desktop?.disposeSessionCtx?.();
+
+    const lane = await getPiExtraSpawnConfig(providers, noopLogger(), {
+      sessionId: 'pi-lane',
+      workingDir: '/bots/bot/workspace',
+      vendorOptions: { telegramChatId: 'g/-100123', source: 'telegram' },
+    });
+    expect(lane?.mcpBridge?.servers.map((server) => server.name)).toEqual([
+      'cindy_telegram_bot',
+      'custom_probe',
+    ]);
+    lane?.disposeSessionCtx?.();
+
+    const canonical = await getPiExtraSpawnConfig(providers, noopLogger(), {
+      sessionId: 'pi-main',
+      workingDir: '/bots/bot/workspace',
+      vendorOptions: { [BOT_IM_CHANNELS_VENDOR_KEY]: ['telegram'] },
+    });
+    expect(canonical?.mcpBridge?.servers.map((server) => server.name)).toEqual([
+      'cindy_telegram_bot',
+      'custom_probe',
+    ]);
+    canonical?.disposeSessionCtx?.();
+
+    const feishuOnly = await getPiExtraSpawnConfig(providers, noopLogger(), {
+      sessionId: 'pi-feishu-only',
+      workingDir: '/bots/bot/workspace',
+      vendorOptions: { [BOT_IM_CHANNELS_VENDOR_KEY]: ['feishu'] },
+    });
+    expect(feishuOnly?.mcpBridge?.servers.map((server) => server.name)).toEqual(['custom_probe']);
+    feishuOnly?.disposeSessionCtx?.();
   });
 
   it('omits a stable built-in server when the frozen Bot Toolset disables it', async () => {

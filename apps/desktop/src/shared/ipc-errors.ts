@@ -297,6 +297,7 @@ export type IpcErrorCode =
   | 'BROWSER_FILE_UNSUPPORTED_TYPE'
   | 'BROWSER_FILE_NOT_FOUND'
   | 'BROWSER_FILE_OPEN_FAILED'
+  | 'HTML_PREVIEW_CANCELLED'
   // 会话分享(.cshare 导出/导入)
   | 'SHARE_FILE_INVALID' // 不是 .cshare / 头或 manifest 损坏 / payload 不是 zip
   | 'SHARE_PASSWORD_REQUIRED' // 文件已加密但未提供密码
@@ -514,6 +515,7 @@ const IPC_ERROR_CODES: ReadonlySet<IpcErrorCode> = new Set<IpcErrorCode>([
   'BROWSER_FILE_UNSUPPORTED_TYPE',
   'BROWSER_FILE_NOT_FOUND',
   'BROWSER_FILE_OPEN_FAILED',
+  'HTML_PREVIEW_CANCELLED',
   'SHARE_FILE_INVALID',
   'SHARE_PASSWORD_REQUIRED',
   'SHARE_PASSWORD_WRONG',

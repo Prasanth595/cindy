@@ -290,7 +290,7 @@ describe('handleRemoteMedia', () => {
       });
       const r = await handleRemoteMedia(URL_BLOB, null);
       expect(remoteInvoke).toHaveBeenCalledWith('dev-1', 'device-link:media:fetch', [
-        { url: BLOB_URL, prepareOnly: true },
+        { url: BLOB_URL, prepareOnly: true, metadataOnly: true },
       ]);
       expect(r.status).toBe(200);
     });
@@ -355,7 +355,7 @@ describe('handleRemoteMedia', () => {
 
     const r = await handleRemoteMedia(URL_IMG, null);
     expect(remoteInvoke).toHaveBeenCalledWith('dev-1', 'device-link:media:fetch', [
-      { url: 'xdt-image://s/a.png', prepareOnly: true },
+      { url: 'xdt-image://s/a.png', prepareOnly: true, metadataOnly: true },
     ]);
     expect(downloadToBuffer).toHaveBeenCalledWith('oss/k.png');
     expect(removeRemote).toHaveBeenCalledWith('oss/k.png'); // 用后删
@@ -458,7 +458,7 @@ describe('handleRemoteMedia', () => {
 
     const r = await handleRemoteMedia(URL_IMG, null);
     expect(remoteInvoke).toHaveBeenNthCalledWith(1, 'dev-1', 'device-link:media:fetch', [
-      { url: 'xdt-image://s/a.png', prepareOnly: true },
+      { url: 'xdt-image://s/a.png', prepareOnly: true, metadataOnly: true },
     ]);
     expect(remoteInvoke).toHaveBeenNthCalledWith(2, 'dev-1', 'device-link:media:fetch', [
       { url: 'xdt-image://s/a.png', skipCache: true },

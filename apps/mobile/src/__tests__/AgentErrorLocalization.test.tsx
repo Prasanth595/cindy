@@ -109,6 +109,17 @@ describe.each(SUPPORTED_LOCALES)('mobile errors in %s', locale => {
 
 
 describe.each(SUPPORTED_LOCALES)('known mobile remote errors in %s', locale => {
+  it.each(['DEVICE_LIMIT', 'TOTAL_LIMIT'])('recognizes wrapped %s errors from the remote computer', async reason => {
+    await i18n.changeLanguage(locale);
+    const message = `LAZY_CREATE_FAILED: [REMOTE_AGENT_BUSY] [${reason}] upstream diagnostic`;
+    const key = `session.remoteError.REMOTE_AGENT_${reason}`;
+    expect(unclassifiedAgentErrorI18nKey(message)).toBe(key);
+    const [normalized] = normalizeRemoteMessages([row(message)]);
+    expect(normalized.body).toBe(i18n.t(key));
+    expect(normalized.body).not.toContain('upstream diagnostic');
+    expect(unclassifiedAgentErrorI18nKey('[REMOTE_AGENT_BUSY] too many tasks')).toBe('session.remoteError.REMOTE_AGENT_BUSY');
+  });
+
   it('has every desktop bracket-code translation without relying on fallback languages', async () => {
     await i18n.changeLanguage(locale);
     const desktop = JSON.parse(readFileSync(`../desktop/src/renderer/i18n/locales/${locale}/common.json`, 'utf8'));

@@ -250,7 +250,8 @@
           "output": "輸出",
           "amount": "估算金額"
         },
-        "estimateNote": "金額按本機單價估算，不代表供應商實際帳單。"
+        "estimateNote": "金額按本機單價估算，不代表供應商實際帳單。",
+        "moreAria": "{{name}} 的更多操作"
       },
       "removeConfirm": {
         "title": "刪除對 {{name}} 的分享？",
@@ -273,7 +274,8 @@
         "approveAria": "同意 {{name}} 使用",
         "toastApproved": "已同意 {{name}} 經 {{owner}} 的供應商組使用 {{provider}}",
         "toastRejected": "已拒絕 {{name}} 的請求",
-        "toastRevoked": "已撤回對 {{name}} 的同意，正在執行的任務已停止"
+        "toastRevoked": "已撤回對 {{name}} 的同意，正在執行的任務已停止",
+        "listTitle": "經 {{owner}} 的供應商組使用"
       }
     },
     "toast": {
@@ -447,6 +449,20 @@
       "rejectedBody": "{{name}} 沒有同意分享 {{provider}}",
       "reshareTitle": "新的使用請求",
       "reshareBody": "{{name}} 想經 {{owner}} 的供應商組使用你分享的 {{provider}}"
+    },
+    "runLimits": {
+      "title": "遠端任務數量",
+      "description": "適用於這台電腦提供的所有供應商，包括自己的其他電腦和分享給他人的裝置。已回答完但尚未釋放的任務也佔名額，本機直接執行的任務不計入。",
+      "perDevice": "每台使用裝置最多保留的任務數",
+      "total": "所有使用裝置合計最多保留的任務數",
+      "invalid": "請填寫 1～{{max}} 的整數，單台裝置的上限不能超過合計上限。",
+      "usage": "目前佔用 {{used}} / {{total}}，來自 {{devices}} 台裝置；單台裝置最多佔用 {{largest}} 個。",
+      "applyHint": "儲存後立即生效。調低上限不會中斷現有任務，只會限制新增。供應商組轉送按直接連線的裝置計數。",
+      "save": "儲存",
+      "reset": "恢復預設",
+      "saved": "遠端任務數量設定已儲存",
+      "retry": "重新載入",
+      "loading": "正在載入…"
     }
   },
   "providerGroup": {
@@ -467,7 +483,8 @@
         "total": "總用量",
         "amount": "估算金額",
         "people": "使用方",
-        "models": "模型"
+        "models": "模型",
+        "computers": "用到的電腦"
       },
       "selfTag": "你",
       "relayName": "經 {{device}} 轉來",
@@ -480,7 +497,44 @@
       "collapseAria": "收起 {{name}} 的用量明細",
       "table": {
         "member": "電腦 / 模型"
-      }
+      },
+      "filter": {
+        "partyAria": "篩選使用方",
+        "allParties": "所有人",
+        "selfDetail": "本機和你其他電腦的合計",
+        "relayDetail": "看不到具體是誰",
+        "computerAria": "篩選組內電腦",
+        "allComputers": "所有組內電腦"
+      },
+      "focus": {
+        "clear": "看全部",
+        "only": "只看 {{name}}"
+      },
+      "byParty": {
+        "title": "按人",
+        "col": {
+          "party": "使用方",
+          "computers": "用到的電腦",
+          "actions": "操作"
+        }
+      },
+      "byComputer": {
+        "title": "按電腦",
+        "col": {
+          "computer": "組內電腦",
+          "parties": "使用方"
+        }
+      },
+      "stack": {
+        "aria": "柱子按什麼分色",
+        "party": "按人",
+        "computer": "按電腦",
+        "model": "按模型"
+      },
+      "loadFailed": "暫時讀不到用量，稍後會自動重試。",
+      "legacyNote": "{{device}} 的 Cindy 需要更新，暫時只能看所有時間的合計。",
+      "coverage": "按天統計從 {{date}} 起",
+      "emptyRange": "這段時間沒有用量"
     },
     "section": {
       "title": "供應商組",
@@ -8868,7 +8922,8 @@
         "failed": "沒做完",
         "paused": "已暫停",
         "disabled": "已停用"
-      }
+      },
+      "dirElsewhere": "在「{{device}}」上"
     },
     "remoteSettings": {
       "empty": "暫無內容",
@@ -9718,7 +9773,11 @@
       "setupDeferred": "可在夥伴對話中繼續登入與驗證。",
       "automationInvalid": "自動化定義無法轉換，尚未建立。",
       "itemFailed": "此項未完成，可重試並查看匯入詳情。",
-      "chatPartial": "夥伴已建立，但部分資料未完整儲存。以下項目仍需處理；其他內容和對話可以正常使用。"
+      "chatPartial": "夥伴已建立，但部分資料未完整儲存。以下項目仍需處理；其他內容和對話可以正常使用。",
+      "imBotOwnerMissing": "沒找到主人的使用者 ID，請到夥伴的「訊息平台」頁把這個機器人連上。",
+      "imBotGatewayRunning": "原本的閘道還在使用這個機器人。先停掉它，再到「訊息平台」頁連線。",
+      "imBotInUse": "這個機器人已經在這台電腦上使用了：在 設定 → IM 機器人 裡，或是在另一位夥伴那裡。",
+      "imBotConnectFailed": "沒能連上這個機器人，請到夥伴的「訊息平台」頁重試。"
     },
     "learning": {
       "memory": "已記住：{{title}}",
@@ -9729,9 +9788,7 @@
       "homeLabel": "主力電腦",
       "thisComputer": "這台電腦",
       "homeOffline": "主力電腦「{{device}}」離線",
-      "homeOfflineShort": "主力電腦離線",
       "homeUnreachable": "主力電腦「{{device}}」沒有開放遠端控制",
-      "homeReadOnly": "主力電腦：{{device}}",
       "continueHere": "在這台電腦繼續",
       "takeOverHint": "在這台電腦繼續後，{{name}} 改在這裡執行，下面的對話一起帶過來。",
       "takingOver": "正在這台電腦上準備 {{name}}…",
@@ -9749,6 +9806,45 @@
       "devicesFailed": "未能讀取電腦清單",
       "noTargets": "沒有可接手的電腦。另一台電腦需要上線、登入同一帳號，並開啟「允許同帳號裝置控制本機」",
       "resumeToMove": "先恢復 {{name}}，再換到另一台電腦",
+      "transferBusy": "{{name}} 還在回覆，等這一輪結束再換電腦",
+      "targetUnavailable": "「{{device}}」現在無法使用，它需要上線並開啟遠端控制",
+      "shadowTitle": "這個夥伴已在「{{device}}」上執行",
+      "shadowHint": "這裡的對話只能檢視。",
+      "openOnHome": "開啟「{{device}}」上的夥伴",
+      "runsOn": "在「{{device}}」上執行",
+      "runsHere": "在這台電腦上執行",
+      "switchHint": "更換 {{name}} 執行的電腦",
+      "switchTo": "換到「{{device}}」",
+      "switchHere": "換到這台電腦",
+      "switchTitle": "把 {{name}} 換到「{{device}}」執行？",
+      "switchDescription": "從現在起 {{name}} 在「{{device}}」上執行，對話紀錄一起帶過去。工作目錄、連線和本機檔案留在原來的電腦上。",
+      "switchAction": "換到「{{device}}」",
+      "switched": "{{name}} 已換到「{{device}}」執行",
+      "switchConflict": "{{name}} 的主力電腦已經變了，這次沒有更換",
+      "switchOffline": "連線不上，{{name}} 的主力電腦沒有變",
+      "switchFailed": "未能把 {{name}} 換到「{{device}}」",
+      "homeOutdated": "主力電腦「{{device}}」上的 Cindy 版本較舊，請先更新它，或在那台電腦上更換",
+      "arrivingLater": "{{name}} 已換到這台電腦，還在準備中，稍後會出現在夥伴列表裡",
+      "busyTitle": "{{name}} 還在回覆",
+      "busyDescription": "可以等這一輪結束後再換到「{{device}}」，也可以停止這一輪馬上換。",
+      "busyWait": "等回覆完再換",
+      "busyStop": "停止並換",
+      "waitingForTurn": "等 {{name}} 回覆完，再換到「{{device}}」…",
+      "mergeLabel": "合併重複的 Cindy",
+      "mergeHint": "你有 {{count}} 個 Cindy：{{devices}}",
+      "mergeTitle": "把 {{count}} 個 Cindy 合成一個？",
+      "mergeDescription": "合併後只留下一個 Cindy。其他 Cindy 的對話紀錄、記憶、技能、待辦和例行任務會併進來；同名但內容不同的記憶和技能另存一份，不會覆蓋。其他 Cindy 會停用，它們的資料仍保留在雲端和原來的電腦上。",
+      "mergeKeep": "保留哪一個的名字、個性和設定",
+      "mergeAction": "合成一個",
+      "merged": "{{count}} 個 Cindy 已合成一個，帶過來 {{messages}} 則訊息",
+      "mergedRenamed": "{{count}} 個 Cindy 已合成一個，帶過來 {{messages}} 則訊息；同名的內容另存為：{{renamed}}",
+      "mergeFailed": "沒能合併，可以稍後再試一次（已合併的部分不會重複）",
+      "mergeBusy": "有一個 Cindy 還在回覆，等它回覆完再合併",
+      "mergePaused": "有一個 Cindy 已暫停，先在它的設定裡恢復，再合併",
+      "mergeOffline": "「{{device}}」現在連不上，它上線後再合併",
+      "mergeOutdated": "「{{device}}」上的 Cindy 版本較舊，請先更新它再合併",
+      "homeOfflineShort": "主力電腦離線",
+      "homeReadOnly": "主力電腦：{{device}}",
       "moveTo": "交給「{{device}}」",
       "transferTitle": "把 {{name}} 交給「{{device}}」？",
       "transferDescription": "從現在起 {{name}} 在「{{device}}」上執行。工作目錄和連線留在這台電腦，這台電腦上的對話變為歷史紀錄。",
@@ -9756,12 +9852,144 @@
       "transferred": "{{name}} 已交給「{{device}}」",
       "transferConflict": "{{name}} 的主力電腦已經變了，這次沒有交出",
       "transferOffline": "連不上伺服器，{{name}} 仍在這台電腦執行",
-      "transferBusy": "{{name}} 還在回覆，等這一輪結束再換電腦",
-      "transferFailed": "未能把 {{name}} 交給「{{device}}」",
-      "targetUnavailable": "「{{device}}」現在無法使用，它需要上線並開啟遠端控制",
-      "shadowTitle": "這個夥伴已在「{{device}}」上執行",
-      "shadowHint": "這裡的對話只能檢視。",
-      "openOnHome": "開啟「{{device}}」上的夥伴"
+      "transferFailed": "未能把 {{name}} 交給「{{device}}」"
+    },
+    "channels": {
+      "title": "訊息平台",
+      "platform": {
+        "telegram": "Telegram",
+        "feishu": "飛書",
+        "lark": "Lark",
+        "wecom": "企業微信",
+        "dingtalk": "釘釘",
+        "discord": "Discord"
+      },
+      "status": {
+        "connected": "已連線",
+        "connecting": "連線中…",
+        "offline": "已離線",
+        "conflict": "另一台裝置正在使用這個機器人",
+        "error": "發生錯誤",
+        "idle": "未連線"
+      },
+      "remove": "移除",
+      "removeAria": "移除 {{platform}}",
+      "empty": "{{name}} 還沒有訊息平台。把你在 Telegram、飛書、企業微信、釘釘或 Discord 申請的機器人加進來，{{name}} 就會在那裡回覆。",
+      "externalNote": "傳訊息給這個機器人的人都是在和 {{name}} 對話。你自己的訊息依 {{name}} 的權限執行；其他人各有一條隱藏任務，權限受限。",
+      "sharedMemoryNote": "{{name}} 會把這裡和其它對話裡的資訊一起使用。想隔開記憶，請換一位夥伴。",
+      "groups": {
+        "title": "群組",
+        "hint": "{{name}} 進過的群組會出現在這裡。「全回應」= 每則訊息都看，{{name}} 自行判斷要不要插話（每則都會消耗 token）。",
+        "empty": "還沒有群組。把機器人拉進群組、有人說話後就會出現在這裡。",
+        "loadFailed": "無法讀取群組清單",
+        "saveFailed": "沒有儲存成功，已恢復原本的模式",
+        "retry": "重新讀取",
+        "mode": {
+          "mention": "僅 @",
+          "always": "全回應"
+        }
+      },
+      "lanes": {
+        "title": "隱藏任務",
+        "hint": "每個群組、話題和其他人的私聊各有一條隱藏任務。哪條卡住或答非所問，可以讓它重新開始，記錄會保留。",
+        "ownerName": "你的私聊",
+        "kind": {
+          "ownerDm": "主任務",
+          "group": "群組",
+          "topic": "話題",
+          "guestDm": "私聊"
+        },
+        "state": {
+          "running": "正在回覆",
+          "failed": "上次回覆出錯"
+        },
+        "noActivity": "還沒有訊息",
+        "messageCount_other": "目前上下文 {{count}} 則訊息",
+        "reset": "重新開始",
+        "resetAria": "讓「{{lane}}」重新開始",
+        "resetConfirm": {
+          "title": "讓「{{lane}}」重新開始？",
+          "description": "下一則訊息會從乾淨的上下文開始，進行中的回覆會停下。完整記錄仍留在這條隱藏任務裡，{{name}} 的記憶不變。",
+          "ownerDescription": "這是 {{name}} 的主任務，桌面上的對話和這裡的私聊共用它。下一則訊息會從乾淨的上下文開始，進行中的回覆會停下；記錄、記憶和檔案都會保留。",
+          "confirm": "重新開始",
+          "cancel": "取消"
+        },
+        "resetDone": "「{{lane}}」已重新開始，下一則訊息從乾淨的上下文開始。",
+        "resetFailed": "未能重新開始，請稍後再試",
+        "loadFailed": "無法讀取隱藏任務",
+        "empty": "還沒有群組或其他人的私聊。有人在群組或私聊裡和 {{name}} 說話後，會出現在這裡。"
+      },
+      "add": {
+        "button": "新增平台",
+        "title": "為 {{name}} 新增平台",
+        "description": "貼上你在平台上申請的機器人憑證，只存在這台電腦上。",
+        "platformLabel": "平台",
+        "telegram": {
+          "tokenLabel": "Bot Token",
+          "tokenPlaceholder": "貼上 @BotFather 產生的 Token",
+          "ownerLabel": "你的 Telegram 使用者 ID",
+          "ownerPlaceholder": "純數字 ID（向 @userinfobot 查詢）",
+          "ownerHint": "來自這個 ID 的訊息依 {{name}} 自己的權限執行，其他人都視為訪客。"
+        },
+        "feishu": {
+          "serviceLabel": "服務",
+          "appIdLabel": "App ID",
+          "appIdPlaceholder": "cli_xxxxxxxxxxxxxxxx",
+          "appSecretLabel": "App Secret",
+          "appSecretPlaceholder": "貼上 App Secret"
+        },
+        "wecom": {
+          "botIdLabel": "Bot ID",
+          "botIdPlaceholder": "企業微信管理後台裡的 Bot ID",
+          "secretLabel": "Secret",
+          "secretPlaceholder": "企業微信管理後台裡的 Bot Secret",
+          "ownerHint": "首個私聊這個機器人的人會成為它的主人，按 {{name}} 自己的權限執行。請先建立智慧機器人並開啟長連線。"
+        },
+        "dingtalk": {
+          "appKeyLabel": "Client ID",
+          "appKeyPlaceholder": "貼上機器人應用的 Client ID",
+          "appSecretLabel": "Client Secret",
+          "appSecretPlaceholder": "貼上機器人應用的 Client Secret",
+          "ownerHint": "首個私聊這個機器人的人會成為它的主人，按 {{name}} 自己的權限執行。群組裡被 @ 時才回覆。"
+        },
+        "discord": {
+          "tokenLabel": "Bot Token",
+          "tokenPlaceholder": "貼上 Discord Bot Token",
+          "ownerLabel": "你的 Discord 使用者 ID",
+          "ownerPlaceholder": "17–20 位數字 ID",
+          "ownerHint": "只有來自這個 ID 的私聊會交給 {{name}}，按 {{name}} 自己的權限執行。"
+        },
+        "confirm": "連線",
+        "connecting": "連線中…",
+        "errors": {
+          "invalidToken": "這不像 Bot Token，格式應為 123456:ABC…",
+          "invalidOwner": "使用者 ID 應該是一串數字。",
+          "invalidFeishu": "App ID 和 App Secret 都要填。",
+          "invalidWecom": "Bot ID 和 Secret 都要填。",
+          "invalidDingtalk": "Client ID 和 Client Secret 都要填。",
+          "invalidDiscordToken": "這不像 Bot Token。",
+          "invalidDiscordOwner": "使用者 ID 應該是 17–20 位數字。",
+          "conflict": "這個機器人已經在這台電腦上使用了：在 設定 → IM 機器人 裡，或是在另一位夥伴那裡。",
+          "botUnavailable": "{{name}} 目前無法使用，等 TA 恢復後再試。",
+          "connectFailed": "未能連線：{{reason}}",
+          "failed": "未能完成，請稍後再試。",
+          "personalBotGone": "設定 → IM 機器人 裡已經沒有這個機器人了，請改為填寫憑證。"
+        },
+        "source": {
+          "label": "連線方式",
+          "existing": "使用已在 Cindy 設定的機器人",
+          "manual": "填寫新的憑證",
+          "moveNote": "這個機器人會從 設定 → IM 機器人 移過來，那裡將變為空；原本的私訊和群組改由 {{name}} 接著回覆。"
+        }
+      },
+      "removeConfirm": {
+        "title": "移除 {{platform}}？",
+        "description": "這個機器人不再回覆，憑證會從這台電腦刪除，它的隱藏任務會封存。{{name}} 的記憶和個性不變。",
+        "confirm": "移除",
+        "cancel": "取消",
+        "failed": "未能移除，請稍後再試",
+        "ok": "知道了"
+      }
     }
   },
   "common": {
@@ -11148,6 +11376,9 @@
       "previewFailed": "無法準備網頁預覽，請檢查目錄和連線後重試",
       "previewNotFound": "找不到 HTML 檔案，請確認檔案仍然存在",
       "previewFetching": "正在準備網頁預覽…",
+      "previewConnectionBusy": "連線壅塞，網頁預覽尚未完成，請稍後重試",
+      "previewTimeout": "等待遠端網頁逾時，請稍後重試",
+      "previewDisconnected": "尚未連通遠端裝置，連線恢復後可重試",
       "previewTooLarge": "正在準備的預覽過多，請稍後重試",
       "previewUnsupported": "遠端裝置暫不支援目錄預覽，請更新該裝置上的 Cindy 後重試",
       "fetching": "正在從遠端獲取檔案…",
@@ -11410,7 +11641,8 @@
         "labelStrip": "已整理歷史圖片",
         "toggleHint": "檢視交接內容",
         "handoffTitle": "交接內容——整理後傳送給後續對話的上下文摘要(不計入對話記錄，僅在此展示)",
-        "handoffTitleEnglishSource": "交接內容——整理後傳送給後續對話的上下文摘要，原文為英文(不計入對話記錄，僅在此展示)"
+        "handoffTitleEnglishSource": "交接內容——整理後傳送給後續對話的上下文摘要，原文為英文(不計入對話記錄，僅在此展示)",
+        "labelIdleGap": "隔了一段時間再聊，已整理上下文後繼續"
       },
       "review": {
         "running": "正在審查當前成果",
@@ -11566,7 +11798,11 @@
       "referencedMessages": "引用訊息（{{count}}）",
       "referencedContext": "引用訊息",
       "groupBackground": "群組背景",
-      "viewThread": "檢視 thread 上下文 ({{count}})"
+      "viewThread": "檢視 thread 上下文 ({{count}})",
+      "memberFromGroup": "{{name}} · 來自 {{platform}} 群組「{{group}}」",
+      "memberFromPlatform": "{{name}} · 來自 {{platform}} 群組",
+      "guestFromDm": "{{name}} · 來自 {{platform}} 私訊（非主人）",
+      "unknownSender": "群組成員"
     },
     "rewind": {
       "noFilesToRollback": "沒有偵測到可恢復的專案檔案改動",
@@ -11649,7 +11885,9 @@
       "REMOTE_AGENT_SHARE_PAUSED": "對方已暫停對你的分享，恢復前不能使用這些模型。可以換成其他模型繼續。",
       "REMOTE_AGENT_SHARE_REMOVED": "這個分享已無法使用（對方刪除了分享或你已退出）。可以換成其他模型繼續。",
       "REMOTE_AGENT_SHARE_UNAVAILABLE": "分享的供應商暫時無法使用：對方電腦可能不在線，或對方暫時關閉了分享。可以稍後再試，或換成其他模型繼續。",
-      "REMOTE_AGENT_GROUP_UNAVAILABLE": "供應商組裡的電腦現在都不能執行這個任務：可能都離線、已暫停分配、正在冷卻，或沒有這個模型。可以到這個供應商的「遠端與分享」頁查看組內電腦。"
+      "REMOTE_AGENT_GROUP_UNAVAILABLE": "供應商組裡的電腦現在都不能執行這個任務：可能都離線、已暫停分配、正在冷卻，或沒有這個模型。可以到這個供應商的「遠端與分享」頁查看組內電腦。",
+      "REMOTE_AGENT_DEVICE_LIMIT": "這台裝置保留的遠端任務數已達上限。可封存暫時不用的任務，或請遠端電腦的主人在「遠端與分享」中提高上限。",
+      "REMOTE_AGENT_TOTAL_LIMIT": "遠端電腦保留的任務總數已達上限。請那台電腦的主人釋放暫時不用的任務，或在「遠端與分享」中提高上限。"
     },
     "generatedFiles": {
       "title": "本條訊息生成的檔案",
@@ -14584,6 +14822,8 @@
       "workerLabel": "Worker ({{agent}})",
       "leadNotFound": "找不到 Orca lead 任務",
       "waitingForWorker": "等待 Worker",
+      "workerHiddenInSeparateWindow": "獨立視窗中不顯示 Worker 對話",
+      "viewWorkerInMainWindow": "在主視窗查看",
       "remoteWorkerLoading": "正在讀取 {{device}} 上的任務…",
       "remoteWorkerUnreachable": "{{device}} 目前無法連線，恢復後會自動顯示這個 Worker 的任務。",
       "closeAria": "關閉"

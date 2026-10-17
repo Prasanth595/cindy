@@ -108,7 +108,7 @@ export function PeerFileTransport() {
   const sinks = useRef(
     new Map<
       string,
-      { handle: ReturnType<File["open"]>; size: number; offset: number }
+      { handle: ReturnType<File["open"]>; size: number; offset: number; onProgress?: (loaded: number, total: number) => void }
     >(),
   );
   const epoch = useRef(0);
@@ -266,6 +266,7 @@ export function PeerFileTransport() {
       url: string | null,
       signal?: AbortSignal,
       readTrace?: number,
+      onProgress?: (loaded: number, total: number) => void,
     ): Promise<LocalMedia | null> => {
       const current = captureDevice(device);
       // Keep a device close from turning into an upload fallback or reopening its link.
@@ -437,7 +438,8 @@ export function PeerFileTransport() {
         target = new File(directory, randomUUID());
         target.create();
         const handle = target.open();
-        sinks.current.set(id, { handle, size: file.size, offset: 0 });
+        sinks.current.set(id, { handle, size: file.size, offset: 0, onProgress });
+        try { onProgress?.(0, file.size); } catch { /* UI observers cannot interrupt a transfer. */ }
         // Detect stalled writes even with Debug recording off. Route sampling is
         // diagnostic only; a slow route must not interrupt a progressing download.
         let sampling = false;
@@ -576,7 +578,7 @@ export function PeerFileTransport() {
     };
     const queueRead = createFileReadQueue();
     const unregister = installPeerFileDownload(
-      (device, url, signal, readTrace, metadata) => {
+      (device, url, signal, readTrace, metadata, onProgress) => {
         const active = captureDevice(device);
         return queueRead(
           "connection",
@@ -593,12 +595,13 @@ export function PeerFileTransport() {
             const cached = metadata?.skipCache ? null : await cache?.read(device, url, metadata, () => active() && !signal?.aborted).catch(() => null);
             check(cached);
             if (cached) {
+              try { onProgress?.(cached.size, cached.size); } catch { /* Observer only. */ }
               mobileDebugLog('debug', 'files', 'file cache hit', { trace: readTrace, size: cached.size });
               return cached;
             }
-            if (metadata) await cache?.prune(metadata.size).catch(() => false);
+            if (metadata) await cache?.prune(device, url, metadata.size).catch(() => false);
             check();
-            const result = await transfer(device, url, signal, readTrace);
+            const result = await transfer(device, url, signal, readTrace, onProgress);
             if (result && active() && !signal?.aborted)
               await cache?.store(device, url, metadata, result).catch(() => undefined);
             check(result);
@@ -862,6 +865,7 @@ export function PeerFileTransport() {
                   throw new Error();
                 sink.handle.writeBytes(bytes);
                 sink.offset += bytes.length;
+                try { sink.onProgress?.(sink.offset, sink.size); } catch { /* Observer only. */ }
                 for (const operation of pending.current.values())
                   operation.refresh?.();
                 ok = true;

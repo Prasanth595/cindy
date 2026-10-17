@@ -95,6 +95,7 @@ function makeHarness(opts?: {
   logger?: ConstructorParameters<typeof DeviceLinkClient>[0]['logger'];
   peerFailurePolicy?: ConstructorParameters<typeof DeviceLinkClient>[0]['peerFailurePolicy'];
   peerResetReadRetry?: ConstructorParameters<typeof DeviceLinkClient>[0]['peerResetReadRetry'];
+  invokeMetrics?: ConstructorParameters<typeof DeviceLinkClient>[0]['invokeMetrics'];
 }): Harness {
   const sockets: FakeWs[] = [];
   const client = new DeviceLinkClient({
@@ -115,6 +116,7 @@ function makeHarness(opts?: {
     },
     peerFailurePolicy: opts?.peerFailurePolicy,
     peerResetReadRetry: opts?.peerResetReadRetry,
+    invokeMetrics: opts?.invokeMetrics,
     timing: {
       reconnectBaseMs: 5,
       reconnectMaxMs: 40,
@@ -130,6 +132,67 @@ function makeHarness(opts?: {
 const tick = (ms = 0): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 describe('outbound invoke admission', () => {
+  it('distinguishes a suspended reliable peer from legacy reads and another healthy controller', async () => {
+    const h = makeHarness({ timing: { pingIntervalMs: 60_000 } });
+    try {
+      h.client.start(); await tick(); h.current().ack();
+      expect(h.client.needsLinkRecovery('legacy')).toBe(false);
+      await establishInboundReliableLink(h, 'stream-a', 1, 'peer-a');
+      await establishInboundReliableLink(h, 'stream-b', 1, 'peer-b');
+      expect(h.client.needsLinkRecovery('peer-a')).toBe(false);
+      h.client.restartConnection('system-resume');
+      await tick(); h.current().ack();
+      expect(h.client.needsLinkRecovery('peer-a')).toBe(true);
+      expect(h.client.needsLinkRecovery('peer-b')).toBe(true);
+      expect(h.client.needsLinkRecovery('legacy')).toBe(false);
+      await establishInboundReliableLink(h, 'stream-b', 1, 'peer-b');
+      expect(h.client.needsLinkRecovery('peer-b')).toBe(false);
+      const socket = h.current();
+      const response = h.client.invoke('legacy', { channel: 'local-db:sessions:list', args: [] });
+      const frame = socket.sent.find(env => env.kind === 'invoke' && env.dst === 'legacy')!;
+      socket.push({ v: 1, kind: 'invoke-result', src: 'legacy', id: frame.id, payload: { ok: true, result: [] } });
+      await expect(response).resolves.toEqual({ ok: true, result: [] });
+      await establishInboundReliableLink(h, 'stream-a', 1, 'peer-a');
+      expect(h.client.needsLinkRecovery('peer-a')).toBe(false);
+      expect(h.client.needsLinkRecovery('peer-b')).toBe(false);
+      expect(h.current()).toBe(socket);
+      h.client.closeLink('peer-a', 'user');
+      expect(h.client.needsLinkRecovery('peer-a')).toBe(false);
+      expect(h.client.needsLinkRecovery('peer-b')).toBe(false);
+    } finally { h.client.stop(); }
+  });
+
+  it('uses actual socket pressure to serialize background reads without blocking foreground work', async () => {
+    vi.useFakeTimers();
+    const h = makeHarness({ timing: { pingIntervalMs: 60_000, requestTimeoutMs: 30_000 } });
+    const calls: Promise<unknown>[] = [];
+    try {
+      h.client.start();
+      await vi.advanceTimersByTimeAsync(0);
+      const ws = h.current();
+      ws.ack();
+      ws.bufferedAmount = 200 * 1024;
+      for (let i = 0; i < 4; i++) calls.push(h.client.invoke('host', {
+        channel: 'local-db:sessions:list', args: [i],
+      }, 30_000, { background: true }).catch(e => e));
+      expect(ws.sent.filter(e => e.kind === 'invoke')).toHaveLength(1);
+      const foreground = h.client.invoke('host', { channel: 'file-browser:remote-op', args: [{ op: 'stat' }] });
+      calls.push(foreground.catch(e => e));
+      const current = ws.sent.filter(e => e.kind === 'invoke');
+      expect(current).toHaveLength(2);
+      ws.push({ v: PROTOCOL_VERSION, kind: 'invoke-result', src: 'host', id: current[1].id, payload: { ok: true, result: 'file' } });
+      await expect(foreground).resolves.toEqual({ ok: true, result: 'file' });
+      ws.bufferedAmount = 0;
+      ws.push({ v: PROTOCOL_VERSION, kind: 'invoke-result', src: 'host', id: current[0].id, payload: { ok: true, result: [] } });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(ws.sent.filter(e => e.kind === 'invoke')).toHaveLength(5);
+    } finally {
+      h.client.stop();
+      await Promise.all(calls);
+      vi.useRealTimers();
+    }
+  });
+
   it('waits for a 20-second mobile history recovery without widening other requests or replaying it', async () => {
     vi.useFakeTimers();
     const h = makeHarness({ timing: { pingIntervalMs: 60_000, requestTimeoutMs: 15_000 } });
@@ -205,7 +268,9 @@ describe('outbound invoke admission', () => {
 
   it('rechecks a queued write before dispatch and releases its slot when the caller cancels', async () => {
     vi.useFakeTimers();
-    const h = makeHarness({ timing: { pingIntervalMs: 60_000, requestTimeoutMs: 30_000 } });
+    const metrics = vi.fn();
+    const h = makeHarness({ timing: { pingIntervalMs: 60_000, requestTimeoutMs: 30_000 },
+      invokeMetrics: { enabled: () => true, record: metrics } });
     const calls: Promise<unknown>[] = [];
     try {
       h.client.start(); await vi.advanceTimersByTimeAsync(1); h.current().ack();
@@ -230,6 +295,7 @@ describe('outbound invoke admission', () => {
       expect(sent()).toHaveLength(13);
       expect(sent().at(-1)?.payload).toMatchObject({ channel: 'maker:send', args: ['fresh'] });
       expect(sent().some(e => (e.payload as { args: unknown[] }).args[0] === 'stale')).toBe(false);
+      expect(metrics.mock.calls.filter(([event]) => event.phase === 'sent')).toHaveLength(13);
     } finally {
       h.client.stop(); await Promise.all(calls); vi.useRealTimers();
     }
@@ -726,7 +792,7 @@ function makeRelayClient(
   relay: MemoryRelay,
   deviceId: string,
   timing?: ConstructorParameters<typeof DeviceLinkClient>[0]['timing'],
-  extra?: Pick<ConstructorParameters<typeof DeviceLinkClient>[0], 'transferCodec'>,
+  extra?: Pick<ConstructorParameters<typeof DeviceLinkClient>[0], 'transferCodec' | 'invokeMetrics'>,
 ): DeviceLinkClient {
   return new DeviceLinkClient({
     ...extra,
@@ -7856,7 +7922,9 @@ describe('定时重发的单趟预算(TRANSPORT_RETRY_PASS_BUDGET)', () => {
     };
     const relay = new MemoryRelay();
     const host = makeRelayClient(relay, 'desktop', undefined, { transferCodec: codec });
-    const controller = makeRelayClient(relay, 'ios', undefined, { transferCodec: codec });
+    const metrics = vi.fn();
+    const controller = makeRelayClient(relay, 'ios', undefined, { transferCodec: codec,
+      invokeMetrics: { enabled: () => true, record: metrics } });
     let rows = Array.from({ length: 400 }, (_, i) => ({ id: `session-${i}`, title: '弱网任务', status: 'idle' }));
     const handled: Envelope[] = [];
     const offHost = host.onFrame((env) => {
@@ -7895,12 +7963,29 @@ describe('定时重发的单趟预算(TRANSPORT_RETRY_PASS_BUDGET)', () => {
     expect(second).toEqual({ ok: true, result: rows });
     expect((handled[1]!.payload as InvokePayload).transfer?.ifNoneMatch).toEqual(expect.any(String));
     expect(resultBytes() - firstBytes).toBeLessThan(1_000);
+    // Unit: measure encoded logical payloads, not the reconstructed full page.
+    expect(metrics.mock.calls.map(([event]) => event.phase)).toEqual(['sent', 'result', 'sent', 'result']);
+    const encodedResponses = (relay.deliveredTo.get('ios') ?? []).filter(env => env.kind === 'invoke-result')
+      .map(env => Buffer.byteLength(parseTransportPayload(env.payload)?.data ?? JSON.stringify(env.payload)));
+    expect(metrics.mock.calls[1][0]).toMatchObject({ gzip: true, notModified: false, payloadBytes: encodedResponses[0] });
+    expect(metrics.mock.calls[3][0]).toMatchObject({ notModified: true, payloadBytes: encodedResponses[1] });
+    // A failed diagnostics sink cannot turn a valid response into a failed read.
+    metrics.mockImplementation(() => { throw new Error('diagnostic sink failed'); });
     // Each call returns its own object: a consumer mutating one result cannot corrupt the cache.
     expect(second.ok && second.result).not.toBe(first.ok && first.result);
 
     rows = rows.map((row, i) => (i === 0 ? { ...row, status: 'running' } : row));
     await expect(call()).resolves.toEqual({ ok: true, result: rows });
     expect(handled).toHaveLength(3);
+
+    // Cold-cache burst: the thirteenth call waits for admission. A completed
+    // earlier result must supply its validator before that queued call is sent.
+    const burst = Array.from({ length: 13 }, () => controller.invoke('desktop', {
+      channel: 'local-db:sessions:list', args: [{ filter: 'archived' }],
+    }, 1_000));
+    await relay.settle();
+    expect(await Promise.all(burst)).toEqual(Array.from({ length: 13 }, () => ({ ok: true, result: rows })));
+    expect((handled.at(-1)!.payload as InvokePayload).transfer?.ifNoneMatch).toEqual(expect.any(String));
 
     offHost();
     host.stop();
@@ -8803,6 +8888,67 @@ describe('定时重发的单趟预算(TRANSPORT_RETRY_PASS_BUDGET)', () => {
     }, { pingIntervalMs: 600_000, transportRetryIntervalMs: 2_000 });
   });
 
+  // Unit tier, production client and a fake clock: reproduce the observed
+  // 1.85MB/128Kbit slow delivery, then verify learned pacing on a smaller result.
+  it('waits for a two-minute large delivery, learns its rate, and keeps another peer responsive', async () => {
+    await withFakeTimers(async (h, advance) => {
+      const linked = establishInboundReliableLink(h, 'healthy-stream', 1, 'healthy');
+      await advance(1);
+      await linked;
+      const ws = h.current();
+      const resets = vi.fn();
+      h.client.onPeerTransportReset(resets);
+      h.client.sendInvokeResult('dev-b', 'large-page', { ok: true, result: 'x'.repeat(1_852_521) });
+      const first = ws.sent.find(e => e.kind === 'invoke-result')!;
+      const meta = parseTransportPayload(first.payload)!.meta;
+      const request = h.client.invoke('healthy', { channel: 'file-browser:remote-op', args: [{ op: 'stat' }] });
+      const sent = ws.sent.find(e => e.kind === 'invoke' && e.dst === 'healthy')!;
+      const healthyMeta = parseTransportPayload(sent.payload)!.meta;
+      ws.push({ v: PROTOCOL_VERSION, kind: 'push', src: 'healthy', payload: {
+        channel: DEVICE_LINK_TRANSPORT_ACK_CHANNEL, payload: { streamId: healthyMeta.streamId, ackSeq: healthyMeta.seq },
+      } });
+      ws.push({ v: PROTOCOL_VERSION, kind: 'invoke-result', src: 'healthy', id: sent.id, payload: { ok: true, result: 'ok' } });
+      await expect(request).resolves.toEqual({ ok: true, result: 'ok' });
+      await advance(116_000);
+      expect(sendsBySeq(ws).get(meta.seq)).toBe(1);
+      expect(resets).not.toHaveBeenCalled();
+      ws.push({ v: PROTOCOL_VERSION, kind: 'push', src: 'dev-b', payload: {
+        channel: DEVICE_LINK_TRANSPORT_ACK_CHANNEL, payload: { streamId: meta.streamId, ackSeq: meta.seq },
+      } });
+      expect(h.client.getReliableSendQueueDepth('dev-b')).toBe(0);
+      h.client.sendInvokeResult('dev-b', 'next-page', { ok: true, result: 'y'.repeat(200 * 1024) });
+      const next = parseTransportPayload(ws.sent.find(e => e.id === 'next-page')!.payload)!.meta;
+      // Size-only pacing would resend at 26s; measured delivery allows ~19s,
+      // so the original 26s floor still applies for this faster observation.
+      await advance(24_000);
+      expect(sendsBySeq(ws).get(next.seq)).toBe(1);
+      await advance(2_000);
+      expect(sendsBySeq(ws).get(next.seq)).toBe(2);
+      expect(ws.closed).toBeNull();
+    }, { pingIntervalMs: 600_000, transportRetryIntervalMs: 2_000 });
+  });
+
+  // PR #6288: one cumulative ACK must measure the whole burst, not interpret
+  // its small tail as a slow link. Unit/fake clock; existing cases ACK one message.
+  it('samples cumulative delivery bytes together so a small tail does not delay a later lost frame', async () => {
+    await withFakeTimers(async (h, advance) => {
+      const ws = h.current();
+      h.client.sendInvokeResult('dev-b', 'burst-head', { ok: true, result: 'x'.repeat(200 * 1024) });
+      h.client.sendInvokeResult('dev-b', 'burst-tail', { ok: true, result: 'x'.repeat(64 * 1024) });
+      const tail = parseTransportPayload(ws.sent.find(e => e.id === 'burst-tail')!.payload)!.meta;
+      await advance(9_000);
+      ws.push({ v: PROTOCOL_VERSION, kind: 'push', src: 'dev-b', payload: {
+        channel: DEVICE_LINK_TRANSPORT_ACK_CHANNEL,
+        payload: { streamId: tail.streamId, ackSeq: tail.seq },
+      } });
+      expect(h.client.getReliableSendQueueDepth('dev-b')).toBe(0);
+      h.client.sendInvokeResult('dev-b', 'lost-next', { ok: true, result: 'x'.repeat(200 * 1024) });
+      const next = parseTransportPayload(ws.sent.find(e => e.id === 'lost-next')!.payload)!.meta;
+      await advance(26_000);
+      expect(sendsBySeq(ws).get(next.seq)).toBe(2);
+    }, { pingIntervalMs: 600_000, transportRetryIntervalMs: 2_000 });
+  });
+
   it('a large response delivered after 18s is not duplicated while waiting for its first ACK', async () => {
     await withFakeTimers(async (h, advance) => {
       h.client.sendInvokeResult('dev-b', 'slow-page', { ok: true, result: 'x'.repeat(200 * 1024) });
@@ -8823,6 +8969,14 @@ describe('定时重发的单趟预算(TRANSPORT_RETRY_PASS_BUDGET)', () => {
       await advance(40_000);
       expect([...sendsBySeq(ws).values()]).toEqual([1]);
       expect(h.client.getReliableSendQueueDepth('dev-b')).toBe(0);
+      h.client.sendInvokeResult('dev-b', 'paced-next', { ok: true, result: 'x'.repeat(200 * 1024) });
+      const next = parseTransportPayload(ws.sent.find(e => e.id === 'paced-next')!.payload)!.meta;
+      // The previous 18s ACK gives a 27s delivery allowance. Without learning
+      // from actual ACKs, size-only pacing would duplicate this at 26s.
+      await advance(26_000);
+      expect(sendsBySeq(ws).get(next.seq)).toBe(1);
+      await advance(2_000);
+      expect(sendsBySeq(ws).get(next.seq)).toBe(2);
       expect(ws.closed).toBeNull();
     }, { pingIntervalMs: 600_000, transportRetryIntervalMs: 2_000 });
   });
@@ -9036,8 +9190,8 @@ describe('定时重发的单趟预算(TRANSPORT_RETRY_PASS_BUDGET)', () => {
       // 预算 4 帧、每条 3 片:队头那条发完(3 帧)后,第二条会超预算 → 发送前就被拦下,
       // 留到下一趟。所以本趟只重发队头 1 条、只写出 3 帧。
       const framesBefore = framesSent(ws);
-      // Large messages first receive a bounded transmission budget (15 ticks).
-      await advance(3_000);
+      // ~263KiB needs 17 size intervals before this first retry.
+      await advance(3_400);
       const retried = retriedSeqs(sendsBySeq(ws));
       expect(retried).toEqual([seqs[0]]);
       // 本趟真实写出的帧数不超过 max(预算, 队头分片数) —— 这才是「上限」的准确表述
@@ -9062,7 +9216,7 @@ describe('定时重发的单趟预算(TRANSPORT_RETRY_PASS_BUDGET)', () => {
       }
       const ws = h.current();
       const seqs = [...sendsBySeq(ws).keys()].sort((a, b) => a - b);
-      await advance(3_000);
+      await advance(5_000);
       // 队头仍受分片预算约束；小消息不会因队头冷却而饥饿。
       expect(retriedSeqs(sendsBySeq(ws))).toEqual(seqs);
     }, {

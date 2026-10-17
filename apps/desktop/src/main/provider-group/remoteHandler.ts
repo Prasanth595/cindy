@@ -134,7 +134,8 @@ export async function handleProviderGroupRemote(
       const { key, kind, agentDeviceId, providerId: memberProviderId } = pick.member;
       return { kind: 'member', member: { key, kind, agentDeviceId, providerId: memberProviderId }, label: pick.label };
     }
-    case 'cool': {
+    case 'cool':
+    case 'cool-model': {
       const config = deps.readGroup(request.providerId);
       if (!config || !config.members.some((m) => m.key === request.memberKey)) return {};
       const now = deps.now();
@@ -144,7 +145,10 @@ export async function handleProviderGroupRemote(
           now + PROVIDER_GROUP_MAX_REMOTE_COOLDOWN_MS,
         )
         : now + PROVIDER_GROUP_FAILURE_COOLDOWN_MS;
-      scope.router.markCooling(request.providerId, request.memberKey, until);
+      // Old controllers cannot identify the affected model: never turn their report into a week-long account ban.
+      const model = request.cause === 'usage-limit' ? request.model : undefined;
+      scope.router.markCooling(request.providerId, request.memberKey,
+        model ? until : Math.min(until, now + PROVIDER_GROUP_FAILURE_COOLDOWN_MS), model);
       return {};
     }
     case 'leases':

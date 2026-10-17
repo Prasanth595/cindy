@@ -521,7 +521,7 @@ describe('provider group failover vs. the terminal-error drain close (#5880)', (
     const h = setup();
     await h.failOnB(B_LIMITED);
     await h.releaseAndSettle();
-    expect(h.router.coolingUntil('anthropic', MAC_B.key)).not.toBeNull();
+    expect(h.router.coolingUntil('anthropic', MAC_B.key, MODEL)).not.toBeNull();
     expect(h.markTried).toHaveBeenCalledWith(SID, MAC_B.key);
     expectSwitchedToLocalAndContinued(h);
   });

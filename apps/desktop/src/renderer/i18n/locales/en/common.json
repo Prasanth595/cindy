@@ -252,7 +252,8 @@
           "output": "Output",
           "amount": "Est. Cost"
         },
-        "estimateNote": "Amounts are estimated from local unit prices and don’t reflect the provider’s actual bill."
+        "estimateNote": "Amounts are estimated from local unit prices and don’t reflect the provider’s actual bill.",
+        "moreAria": "More actions for {{name}}"
       },
       "removeConfirm": {
         "title": "Remove Sharing with {{name}}?",
@@ -277,7 +278,8 @@
         "approveAria": "Agree to {{name}} using it",
         "toastApproved": "{{name}} can now use {{provider}} through {{owner}}’s provider group",
         "toastRejected": "Declined {{name}}’s request",
-        "toastRevoked": "Withdrew agreement for {{name}}. Running sessions were stopped."
+        "toastRevoked": "Withdrew agreement for {{name}}. Running sessions were stopped.",
+        "listTitle": "Using it through {{owner}}’s provider group"
       }
     },
     "toast": {
@@ -451,6 +453,20 @@
       "rejectedBody": "{{name}} declined to share {{provider}}",
       "reshareTitle": "New Usage Request",
       "reshareBody": "{{name}} wants to use your shared {{provider}} through {{owner}}’s provider group"
+    },
+    "runLimits": {
+      "title": "Remote session limits",
+      "description": "Applies to all providers on this computer, including your other computers and devices using shared providers. Idle sessions count until released. Sessions run directly on this computer do not count.",
+      "perDevice": "Maximum sessions per connected device",
+      "total": "Maximum sessions across all connected devices",
+      "invalid": "Enter whole numbers from 1 to {{max}}. The per-device limit cannot exceed the total limit.",
+      "usage": "{{used}} / {{total}} sessions held by {{devices}} devices; the busiest device holds {{largest}}.",
+      "applyHint": "Changes apply immediately. Lowering a limit only blocks new sessions; existing sessions continue. Group relays count toward the directly connected device.",
+      "save": "Save",
+      "reset": "Restore defaults",
+      "saved": "Remote session limits saved",
+      "retry": "Reload",
+      "loading": "Loading…"
     }
   },
   "providerGroup": {
@@ -471,7 +487,8 @@
         "total": "Total usage",
         "amount": "Estimated cost",
         "people": "People",
-        "models": "Models"
+        "models": "Models",
+        "computers": "Computers used"
       },
       "selfTag": "You",
       "relayName": "Via {{device}}",
@@ -485,7 +502,44 @@
       "collapseAria": "Hide usage details for {{name}}",
       "table": {
         "member": "Computer / model"
-      }
+      },
+      "filter": {
+        "partyAria": "Filter by person",
+        "allParties": "Everyone",
+        "selfDetail": "This computer and your other computers combined",
+        "relayDetail": "Individual people aren’t visible",
+        "computerAria": "Filter by computer in the group",
+        "allComputers": "All computers in the group"
+      },
+      "focus": {
+        "clear": "Show all",
+        "only": "Show only {{name}}"
+      },
+      "byParty": {
+        "title": "By person",
+        "col": {
+          "party": "Person",
+          "computers": "Computers used",
+          "actions": "Actions"
+        }
+      },
+      "byComputer": {
+        "title": "By computer",
+        "col": {
+          "computer": "Computer in the group",
+          "parties": "People"
+        }
+      },
+      "stack": {
+        "aria": "Color the bars by",
+        "party": "Person",
+        "computer": "Computer",
+        "model": "Model"
+      },
+      "loadFailed": "Couldn’t read usage right now. It will try again automatically.",
+      "legacyNote": "Cindy on {{device}} needs an update. Showing all-time totals for now.",
+      "coverage": "Daily stats start on {{date}}",
+      "emptyRange": "No usage in this period"
     },
     "section": {
       "title": "Provider Group",
@@ -8914,7 +8968,8 @@
         "failed": "Didn't finish",
         "paused": "Paused",
         "disabled": "Turned off"
-      }
+      },
+      "dirElsewhere": "On “{{device}}”"
     },
     "remoteSettings": {
       "empty": "Nothing here yet.",
@@ -9764,7 +9819,11 @@
       "setupDeferred": "Continue sign-in and verification in the teammate chat.",
       "automationInvalid": "The automation definition could not be converted; it was not created.",
       "itemFailed": "This item is unfinished. Retry or view import details.",
-      "chatPartial": "Your teammate is created, but some content was not fully saved. The items below still need attention; other content and chat remain available."
+      "chatPartial": "Your teammate is created, but some content was not fully saved. The items below still need attention; other content and chat remain available.",
+      "imBotOwnerMissing": "No owner user ID was found. Finish connecting this bot on the teammate’s Messaging platforms page.",
+      "imBotGatewayRunning": "The original gateway is still using this bot. Stop it, then connect the bot on Messaging platforms.",
+      "imBotInUse": "This bot is already connected on this computer, in Settings → IM bots or on another teammate.",
+      "imBotConnectFailed": "Couldn’t connect this bot. Try again on the teammate’s Messaging platforms page."
     },
     "learning": {
       "memory": "Remembered: {{title}}",
@@ -9775,9 +9834,7 @@
       "homeLabel": "Main Computer",
       "thisComputer": "This computer",
       "homeOffline": "Main computer “{{device}}” is offline",
-      "homeOfflineShort": "Main computer offline",
       "homeUnreachable": "Main computer “{{device}}” doesn’t allow remote control",
-      "homeReadOnly": "Main computer: {{device}}",
       "continueHere": "Continue on This Computer",
       "takeOverHint": "{{name}} will run here from now on, and the conversation below comes along.",
       "takingOver": "Getting {{name}} ready on this computer…",
@@ -9795,6 +9852,45 @@
       "devicesFailed": "Couldn’t load your computers",
       "noTargets": "No computer can take over. The other computer must be online, signed in to the same account, and have “Allow same-account devices to control this machine” turned on",
       "resumeToMove": "Resume {{name}} before moving it to another computer",
+      "transferBusy": "{{name}} is still working on a reply. Move it after the reply finishes",
+      "targetUnavailable": "“{{device}}” isn’t available. It must be online with remote control turned on",
+      "shadowTitle": "This teammate now runs on “{{device}}”",
+      "shadowHint": "The conversation here is read only.",
+      "openOnHome": "Open on “{{device}}”",
+      "runsOn": "Runs on “{{device}}”",
+      "runsHere": "Runs on this computer",
+      "switchHint": "Change the computer {{name}} runs on",
+      "switchTo": "Move to “{{device}}”",
+      "switchHere": "Move to This Computer",
+      "switchTitle": "Run {{name}} on “{{device}}”?",
+      "switchDescription": "From now on {{name}} runs on “{{device}}”, and the chat history comes along. Working directories, connections and local files stay on the computer they are on.",
+      "switchAction": "Move to “{{device}}”",
+      "switched": "{{name}} now runs on “{{device}}”",
+      "switchConflict": "{{name}}’s main computer has already changed, so it wasn’t moved",
+      "switchOffline": "Couldn’t connect. {{name}}’s main computer hasn’t changed",
+      "switchFailed": "Couldn’t move {{name}} to “{{device}}”",
+      "homeOutdated": "The main computer “{{device}}” runs an older Cindy. Update it, or change the main computer there",
+      "arrivingLater": "{{name}} moved to this computer and is still getting ready. It will appear in your teammates soon",
+      "busyTitle": "{{name}} is still replying",
+      "busyDescription": "Move it to “{{device}}” once this reply finishes, or stop the reply and move it now.",
+      "busyWait": "Move When Done",
+      "busyStop": "Stop and Move",
+      "waitingForTurn": "Waiting for {{name}} to finish, then moving it to “{{device}}”…",
+      "mergeLabel": "Merge Duplicate Cindys",
+      "mergeHint": "You have {{count}} Cindys: {{devices}}",
+      "mergeTitle": "Merge {{count}} Cindys into one?",
+      "mergeDescription": "Only one Cindy remains. The others’ chat history, memories, skills, todos and routines come along; a memory or skill with the same name but different content is kept as a second copy, never overwritten. The other Cindys are turned off; their data stays in the cloud and on their computers.",
+      "mergeKeep": "Keep the name, personality and settings of",
+      "mergeAction": "Merge",
+      "merged": "{{count}} Cindys merged into one, with {{messages}} messages brought along",
+      "mergedRenamed": "{{count}} Cindys merged into one, with {{messages}} messages brought along. Kept as copies: {{renamed}}",
+      "mergeFailed": "Couldn’t merge. Try again later (what was merged won’t be duplicated)",
+      "mergeBusy": "One of the Cindys is still replying. Merge once it finishes",
+      "mergePaused": "One of the Cindys is paused. Resume it in its settings, then merge",
+      "mergeOffline": "Can’t reach “{{device}}”. Merge once it’s online",
+      "mergeOutdated": "“{{device}}” runs an older Cindy. Update it first",
+      "homeOfflineShort": "Main computer offline",
+      "homeReadOnly": "Main computer: {{device}}",
       "moveTo": "Move to “{{device}}”",
       "transferTitle": "Move {{name}} to “{{device}}”?",
       "transferDescription": "From now on {{name}} runs on “{{device}}”. The working directory and connections stay on this computer, and the conversation here becomes history.",
@@ -9802,12 +9898,145 @@
       "transferred": "{{name}} moved to “{{device}}”",
       "transferConflict": "{{name}}’s main computer has already changed, so it wasn’t moved",
       "transferOffline": "Can’t reach the server. {{name}} still runs on this computer",
-      "transferBusy": "{{name}} is still working on a reply. Move it after the reply finishes",
-      "transferFailed": "Couldn’t move {{name}} to “{{device}}”",
-      "targetUnavailable": "“{{device}}” isn’t available. It must be online with remote control turned on",
-      "shadowTitle": "This teammate now runs on “{{device}}”",
-      "shadowHint": "The conversation here is read only.",
-      "openOnHome": "Open on “{{device}}”"
+      "transferFailed": "Couldn’t move {{name}} to “{{device}}”"
+    },
+    "channels": {
+      "title": "Messaging platforms",
+      "platform": {
+        "telegram": "Telegram",
+        "feishu": "Feishu",
+        "lark": "Lark",
+        "wecom": "WeCom",
+        "dingtalk": "DingTalk",
+        "discord": "Discord"
+      },
+      "status": {
+        "connected": "Connected",
+        "connecting": "Connecting…",
+        "offline": "Offline",
+        "conflict": "Another device is using this bot",
+        "error": "Error",
+        "idle": "Not connected"
+      },
+      "remove": "Remove",
+      "removeAria": "Remove {{platform}}",
+      "empty": "{{name}} has no messaging platform yet. Add a bot you created on Telegram, Feishu, WeCom, DingTalk or Discord, and {{name}} will reply there.",
+      "externalNote": "Anyone who messages this bot is talking to {{name}}. Your own messages run with {{name}}’s permissions; everyone else gets a separate hidden task with restricted permissions.",
+      "sharedMemoryNote": "{{name}} uses information from here and from other conversations together. To keep memories separate, use another teammate.",
+      "groups": {
+        "title": "Groups",
+        "hint": "Groups {{name}} has joined show up here. “Always” = read every message and let {{name}} decide whether to chime in (each one costs tokens).",
+        "empty": "No groups yet. Add the bot to a group; it appears here once someone speaks.",
+        "loadFailed": "Couldn't load groups",
+        "saveFailed": "Not saved; reverted to the previous mode",
+        "retry": "Reload",
+        "mode": {
+          "mention": "@ only",
+          "always": "Always"
+        }
+      },
+      "lanes": {
+        "title": "Hidden tasks",
+        "hint": "Each group, topic, and DM from someone else has its own hidden task. If one gets stuck or goes off track, start it over. Its history is kept.",
+        "ownerName": "Your DM",
+        "kind": {
+          "ownerDm": "Main task",
+          "group": "Group",
+          "topic": "Topic",
+          "guestDm": "DM"
+        },
+        "state": {
+          "running": "Replying",
+          "failed": "Last reply failed"
+        },
+        "noActivity": "No messages yet",
+        "messageCount_one": "{{count}} message in context",
+        "messageCount_other": "{{count}} messages in context",
+        "reset": "Start over",
+        "resetAria": "Start “{{lane}}” over",
+        "resetConfirm": {
+          "title": "Start “{{lane}}” over?",
+          "description": "The next message starts with a clean context, and any reply in progress stops. The full history stays in this hidden task, and {{name}}’s memory is unchanged.",
+          "ownerDescription": "This is {{name}}’s main task, shared by your desktop conversation and this DM. The next message starts with a clean context, and any reply in progress stops. History, memory, and files are kept.",
+          "confirm": "Start over",
+          "cancel": "Cancel"
+        },
+        "resetDone": "“{{lane}}” started over. The next message begins with a clean context.",
+        "resetFailed": "Couldn’t start it over. Try again later.",
+        "loadFailed": "Couldn’t load hidden tasks",
+        "empty": "No groups or DMs from others yet. They show up here once someone talks to {{name}} in a group or a DM."
+      },
+      "add": {
+        "button": "Add platform",
+        "title": "Add a platform for {{name}}",
+        "description": "Paste the credentials of a bot you created on the platform. They stay on this computer.",
+        "platformLabel": "Platform",
+        "telegram": {
+          "tokenLabel": "Bot token",
+          "tokenPlaceholder": "Paste the token from @BotFather",
+          "ownerLabel": "Your Telegram user ID",
+          "ownerPlaceholder": "Numeric ID (ask @userinfobot)",
+          "ownerHint": "Messages from this ID run with {{name}}’s own permissions. Everyone else is treated as a guest."
+        },
+        "feishu": {
+          "serviceLabel": "Service",
+          "appIdLabel": "App ID",
+          "appIdPlaceholder": "cli_xxxxxxxxxxxxxxxx",
+          "appSecretLabel": "App Secret",
+          "appSecretPlaceholder": "Paste the app secret"
+        },
+        "wecom": {
+          "botIdLabel": "Bot ID",
+          "botIdPlaceholder": "Bot ID from WeCom administration",
+          "secretLabel": "Secret",
+          "secretPlaceholder": "Bot Secret from WeCom administration",
+          "ownerHint": "The first person to DM this bot becomes its owner and runs with {{name}}’s permissions. Create an intelligent bot and enable long connection first."
+        },
+        "dingtalk": {
+          "appKeyLabel": "Client ID",
+          "appKeyPlaceholder": "Paste the bot application’s Client ID",
+          "appSecretLabel": "Client Secret",
+          "appSecretPlaceholder": "Paste the bot application’s Client Secret",
+          "ownerHint": "The first person to DM this bot becomes its owner and runs with {{name}}’s permissions. In groups it replies when @-mentioned."
+        },
+        "discord": {
+          "tokenLabel": "Bot Token",
+          "tokenPlaceholder": "Paste the Discord Bot Token",
+          "ownerLabel": "Your Discord user ID",
+          "ownerPlaceholder": "17–20 digit ID",
+          "ownerHint": "Only DMs from this ID reach {{name}}, with {{name}}’s own permissions."
+        },
+        "confirm": "Connect",
+        "connecting": "Connecting…",
+        "errors": {
+          "invalidToken": "That doesn’t look like a bot token. It should look like 123456:ABC…",
+          "invalidOwner": "The user ID should be a number.",
+          "invalidFeishu": "Fill in both the App ID and the App Secret.",
+          "invalidWecom": "Fill in both the Bot ID and the Secret.",
+          "invalidDingtalk": "Fill in both the Client ID and the Client Secret.",
+          "invalidDiscordToken": "That doesn’t look like a bot token.",
+          "invalidDiscordOwner": "The user ID should be 17–20 digits.",
+          "conflict": "This bot is already connected on this computer, in Settings → IM bots or on another teammate.",
+          "botUnavailable": "{{name}} is unavailable right now. Try again once it’s back.",
+          "connectFailed": "Couldn’t connect: {{reason}}",
+          "failed": "Couldn’t finish. Try again later.",
+          "personalBotGone": "This bot is no longer set up in Settings → IM bots. Enter its credentials instead."
+        },
+        "source": {
+          "label": "How to connect",
+          "existing": "Use the bot already set up in Cindy",
+          "manual": "Enter new credentials",
+          "moveNote": "The bot moves out of Settings → IM bots, which will be left empty. Its chats continue with {{name}}."
+        }
+      },
+      "removeConfirm": {
+        "title": "Remove {{platform}}?",
+        "description": "This bot stops replying, its credentials are deleted from this computer, and its hidden tasks are archived. {{name}}’s memory and personality stay the same.",
+        "confirm": "Remove",
+        "cancel": "Cancel",
+        "failed": "Couldn’t remove it. Try again later.",
+        "ok": "OK"
+      }
     }
   },
   "common": {
@@ -11199,6 +11428,9 @@
       "previewFailed": "Could not prepare the web preview. Check the directory and connection, then try again.",
       "previewNotFound": "The HTML file was not found. Check that it still exists.",
       "previewFetching": "Preparing Web Preview…",
+      "previewConnectionBusy": "The connection is busy. The web preview is not ready yet. Please try again shortly.",
+      "previewTimeout": "The remote web preview timed out. Please try again shortly.",
+      "previewDisconnected": "The remote device is not connected. Try again when the connection returns.",
       "previewTooLarge": "Too many previews are being prepared. Please try again shortly.",
       "previewUnsupported": "Update Cindy on the remote device to preview this directory.",
       "fetching": "Fetching file from remote…",
@@ -11461,7 +11693,8 @@
         "labelStrip": "Historical images reorganized",
         "toggleHint": "View handoff context",
         "handoffTitle": "Handoff — the context summary sent to the next stretch of this conversation (not part of the chat transcript; shown only here)",
-        "handoffTitleEnglishSource": "Handoff — the context summary sent to the next stretch of this conversation (not part of the chat transcript; shown only here)"
+        "handoffTitleEnglishSource": "Handoff — the context summary sent to the next stretch of this conversation (not part of the chat transcript; shown only here)",
+        "labelIdleGap": "Picking up after a pause; context reorganized to continue"
       },
       "review": {
         "running": "Reviewing current work",
@@ -11617,7 +11850,11 @@
       "referencedMessages": "Referenced messages ({{count}})",
       "referencedContext": "Referenced messages",
       "groupBackground": "Group chat background",
-      "viewThread": "View thread context ({{count}})"
+      "viewThread": "View thread context ({{count}})",
+      "memberFromGroup": "{{name}} · from {{platform}} group “{{group}}”",
+      "memberFromPlatform": "{{name}} · from a {{platform}} group",
+      "guestFromDm": "{{name}} · from {{platform}} DM (not the owner)",
+      "unknownSender": "Group member"
     },
     "rewind": {
       "noFilesToRollback": "No restorable project file changes were detected",
@@ -11700,7 +11937,9 @@
       "REMOTE_AGENT_SHARE_PAUSED": "The owner has paused this share for you, so these models can’t be used until it’s resumed. Switch to another model to continue.",
       "REMOTE_AGENT_SHARE_REMOVED": "This share is no longer available (the owner removed it or you left). Switch to another model to continue.",
       "REMOTE_AGENT_SHARE_UNAVAILABLE": "The shared provider is temporarily unavailable. The owner's computer may be offline, or sharing is turned off for now. Try again later, or switch to another model to continue.",
-      "REMOTE_AGENT_GROUP_UNAVAILABLE": "No computer in the provider group can run this task right now. They may be offline, paused, cooling down, or missing this model. Check the group on this provider’s Remote & Sharing page."
+      "REMOTE_AGENT_GROUP_UNAVAILABLE": "No computer in the provider group can run this task right now. They may be offline, paused, cooling down, or missing this model. Check the group on this provider’s Remote & Sharing page.",
+      "REMOTE_AGENT_DEVICE_LIMIT": "This device has reached its remote session limit. Archive unused sessions or ask the provider owner to raise the limit in Remote & sharing.",
+      "REMOTE_AGENT_TOTAL_LIMIT": "The provider computer has reached its total remote session limit. Ask the owner to release unused sessions or raise the limit in Remote & sharing."
     },
     "generatedFiles": {
       "title": "Files created this message",
@@ -14645,6 +14884,8 @@
       "workerLabel": "Worker ({{agent}})",
       "leadNotFound": "Orca lead session not found",
       "waitingForWorker": "Waiting for worker",
+      "workerHiddenInSeparateWindow": "Worker conversations aren't shown in a separate window",
+      "viewWorkerInMainWindow": "View in main window",
       "remoteWorkerLoading": "Loading the task on {{device}}…",
       "remoteWorkerUnreachable": "{{device}} can't be reached right now. This Worker's task will appear again once it reconnects.",
       "closeAria": "Close"

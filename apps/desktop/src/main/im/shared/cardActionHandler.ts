@@ -79,6 +79,7 @@ import {
   updateModelEffort,
   updatePermissionMode,
 } from './sessionRepo';
+import { COMPANION_MANAGED_COMMAND_FALLBACK } from './botCommands';
 import { markImSessionManualRouteOverride } from './manualRouteOverride';
 import { changeSessionPermissionMode } from './permissionModeControl';
 import type { ImCardBuilders } from './cardBuilders';
@@ -1319,6 +1320,15 @@ export function createCardActionHandler(
     });
     if (attached) {
       await patchProjectCard(im, event.messageId, projectUi.attachedUnsupported);
+      return;
+    }
+    // 连接已交给伙伴(交出前发出的旧卡片迟到按压): 伙伴的工作目录是它的 Home, 不在渠道里切。
+    if (turnRunner.companionBotIdFor?.(botContextId)) {
+      await patchProjectCard(
+        im,
+        event.messageId,
+        adapter.ui.slash.companionManagedCommand ?? COMPANION_MANAGED_COMMAND_FALLBACK,
+      );
       return;
     }
 

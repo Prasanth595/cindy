@@ -50,7 +50,21 @@ export interface TransferDeps {
   pauseSource(item: ImportItem, snapshot: ImportSnapshot, resumeInterruptedPause: boolean): Promise<void>;
   resumeSource(item: ImportItem, snapshot: ImportSnapshot): Promise<void>;
   enableRoutine(botId: string, routineId: string, item: ImportItem): Promise<void>;
+  /**
+   * Turn an imported Telegram / Discord credential into the companion's own bot connection.
+   * Resolves to an advisory issue code when it could not; the credential stays saved for delivery.
+   */
+  connectImBot?(botId: string, item: ImportItem): Promise<string | undefined>;
 }
+
+/** Advisory outcomes of connecting an imported bot. They never block automations that only deliver through it. */
+export const IMPORT_IM_BOT_ISSUES: ReadonlySet<string> = new Set([
+  'IMPORT_IM_BOT_OWNER_MISSING',
+  'IMPORT_IM_BOT_GATEWAY_RUNNING',
+  'IMPORT_IM_BOT_IN_USE',
+  'IMPORT_IM_BOT_CONNECT_FAILED',
+]);
+const IM_BOT_FORMATS = new Set(['telegram', 'discord']);
 
 /** Preserve previously accepted IDs; compact only IDs the memory service could never save. */
 function recoveredDocumentId(id: string): string {
@@ -273,7 +287,14 @@ export async function transferCompanion(snapshot: ImportSnapshot, selection: Com
     await save();
   }
   for (const item of items.filter(item => item.view.category === 'connections')) {
-    const issue = item.view.dependsOn?.some(id => !selected.has(id)) ? 'AUTOMATION_DEPENDENCY_NOT_SELECTED' : item.view.issues?.[0];
+    let issue = item.view.dependsOn?.some(id => !selected.has(id)) ? 'AUTOMATION_DEPENDENCY_NOT_SELECTED' : item.view.issues?.[0];
+    if (!issue && deps.connectImBot && IM_BOT_FORMATS.has(item.credential?.format ?? '')) {
+      const index = checkIndexes.get(item.view.id);
+      const prior = index === undefined ? undefined : receipt.result.checks[index]?.message;
+      // Background reconciliation keeps an earlier advisory outcome instead of retrying the platform.
+      issue = reconcileOnly && prior && IMPORT_IM_BOT_ISSUES.has(prior) ? prior : await deps.connectImBot(botId, item);
+      deps.assertOwner();
+    }
     check(item.view.id, issue ? 'needs-attention' : 'copied', issue);
   }
   receipt.result.canonicalSessionId = await deps.createConversation(botId);
@@ -284,7 +305,7 @@ export async function transferCompanion(snapshot: ImportSnapshot, selection: Com
     if (visited.has(id)) return false;
     visited.add(id);
     const item = byId.get(id);
-    return !!item?.captureIssue || item?.view.enabled === false && (item.view.category === 'skills' || !!item.mcp) || needsAttention(id) || !!item?.view.issues?.length || !!item?.view.dependsOn?.some(child => missingDependency(child, visited));
+    return !!item?.captureIssue || item?.view.enabled === false && (item.view.category === 'skills' || !!item.mcp) || needsAttention(id) && !IMPORT_IM_BOT_ISSUES.has(receipt.result.checks[checkIndexes.get(id)!]?.message ?? '') || !!item?.view.issues?.length || !!item?.view.dependsOn?.some(child => missingDependency(child, visited));
   };
   let automationDependencies: ReturnType<typeof indexAutomationDependencies> | undefined;
   for (const item of items.filter(item => item.automation)) {

@@ -4171,10 +4171,18 @@ export class AgentInputCoordinator {
    *   input signal(#1930),但**其余清理必须照常**(activeTurn / steer / queue
    *   状态不能残留,否则 rebuild 失败或 close 后不 rebuild 时 coordinator
    *   残留旧状态阻塞后续发送)。
+   * @param opts.wakeQueuedInput 为 true 时，收口后若仍有用户排队消息就重新 drain。
+   *   用于非请求关闭(进程退出 / 远端 Agent 断连)：这类关闭不带 done 事件，
+   *   turn-done 唤醒永远不会来，队首会静默滞留到用户再次操作。drain 走
+   *   lazy create-session 重建运行时；暂停、recovery 等 gate 照常拦截。
    */
   onSessionClosed(
     sessionId: string,
-    opts?: { preserveInputBoundary?: boolean; preserveAutoResumeIntent?: boolean },
+    opts?: {
+      preserveInputBoundary?: boolean;
+      preserveAutoResumeIntent?: boolean;
+      wakeQueuedInput?: boolean;
+    },
   ): void {
     const state = this.getState(sessionId);
     // Planned-upgrade suppression is per Session incarnation. Replacement
@@ -4239,6 +4247,8 @@ export class AgentInputCoordinator {
       // Old provider busy is gone with this Session. The 10s SESSION_RUNNING
       // retry was cleared above; wake the hidden CONTINUE onto the replacement.
       this.scheduleDrain(sessionId, 'session-closed-preserved-auto-resume');
+    } else if (opts?.wakeQueuedInput && state.pendingQueue.length > 0) {
+      this.scheduleDrain(sessionId, 'session-closed-unexpected');
     }
   }
 

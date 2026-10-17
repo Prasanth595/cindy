@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { buildAttachmentOssRef, buildPeerAttachmentRef } from '@cindy/device-link';
 import type { LedgerDb } from '../../cindy-media/ledger';
 
 const state = vi.hoisted(() => ({
@@ -19,6 +20,7 @@ vi.mock('../mediaTransfer', () => ({ removeRemote: vi.fn() }));
 vi.mock('electron', () => ({ app: { getPath: () => state.root } }));
 vi.mock('../../appSessionState', () => ({
   getActiveAppSession: () => ({ mode: 'cloud', dataOwnerId: state.owner }),
+  activeOwnerScopeKey: () => `${state.owner}:${state.generation}`,
 }));
 vi.mock('../../localDb/client/current', () => ({ getDbClient: () => ({ drizzle: state.db }) }));
 vi.mock('../broadcast-tap', () => ({
@@ -31,6 +33,7 @@ import { listAllBlobRecords, listCacheBlobsByLru } from '../../cindy-media/ledge
 import { resolveHashRef } from '../../cindy-media/blobStore';
 import {
   invalidateRemoteMediaPersistentWrites,
+  createSentImageRetainer,
   remoteMediaPersistentCache,
 } from '../remoteMediaPersistentCache';
 import { remoteFileVersionCache } from '../remoteFileVersionCache';
@@ -93,6 +96,35 @@ it('reuses image bytes after closing and reopening the database, across login ge
   const cached = await remoteMediaPersistentCache('computer', url)!.get(1024);
   expect(cached?.bytes).toEqual(png);
   expect((await listCacheBlobsByLru(state.db, 'remote-media')).length).toBe(1);
+});
+
+// Existing DB-tier coverage only persisted downloaded images. Sent bytes must populate
+// that same index before any read from the host, and survive process/database restart.
+it.each(['oss', 'peer'] as const)('retains a sent %s image by the final content address across restart', async (transport) => {
+  const metadata = { sha256: createHash('sha256').update(png).digest('hex'), size: png.length, mimeType: 'image/png' };
+  const ref = transport === 'oss' ? buildAttachmentOssRef({ ...metadata, ossKey: 'uploads/image' })
+    : buildPeerAttachmentRef({ ...metadata, ticket: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' });
+  const source = path.join(state.root, 'sent.png');
+  await fs.writeFile(source, png);
+  await createSentImageRetainer('computer')(transport === 'oss' ? png : source, ref);
+  await fs.rm(source);
+  raw.close();
+  state.generation++;
+  reopen();
+  expect((await remoteMediaPersistentCache('computer', url)!.get(1024))?.bytes).toEqual(png);
+  expect(await remoteMediaPersistentCache('another-computer', url)!.get(1024)).toBeNull();
+});
+
+it.each(['switch-account', 'clear-cache', 'changed-source'] as const)('does not retain stale sent pixels after %s', async (change) => {
+  const retain = createSentImageRetainer('computer');
+  const ref = buildAttachmentOssRef({ ossKey: 'uploads/image', size: png.length,
+    sha256: createHash('sha256').update(png).digest('hex'), mimeType: 'image/png' });
+  if (change === 'switch-account') { state.owner = 'bob'; state.generation++; }
+  if (change === 'clear-cache') invalidateRemoteMediaPersistentWrites();
+  const pending = retain(change === 'changed-source' ? Buffer.alloc(png.length) : png, ref);
+  if (change === 'changed-source') await pending;
+  else await expect(pending).rejects.toThrow();
+  expect(await listCacheBlobsByLru(state.db, 'remote-media')).toEqual([]);
 });
 
 it('direct transfers and preview downloads share one persistent index and cleanup category', async () => {

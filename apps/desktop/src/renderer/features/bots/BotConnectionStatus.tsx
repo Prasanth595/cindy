@@ -11,20 +11,23 @@ export function BotConnectionStatus({
   connectionKnown,
   deviceName,
   inline = false,
-  homeOffline = false,
+  quiet = false,
   className,
 }: {
   online?: boolean | null;
   connectionKnown?: boolean;
-  /** The device is this companion's main computer (cloud companions): say so when offline. */
-  homeOffline?: boolean;
+  /**
+   * A cloud companion (docs/product-rules/cloud-companions.md §3.1): like IM, its main computer
+   * being unreachable is not announced; only a message that cannot be delivered says so.
+   */
+  quiet?: boolean;
   deviceName?: string;
   inline?: boolean;
   className?: string;
 }) {
   const { t } = useTranslation();
-  const offline = isBotKnownOffline(online, connectionKnown);
-  const status = offline ? t(homeOffline ? 'bots.cloud.homeOfflineShort' : 'bots.remote.offline') : '';
+  const offline = !quiet && isBotKnownOffline(online, connectionKnown);
+  const status = offline ? t('bots.remote.offline') : '';
   const name = deviceName?.trim();
   const label = [status, name].filter(Boolean).join(' · ');
   if (inline) {

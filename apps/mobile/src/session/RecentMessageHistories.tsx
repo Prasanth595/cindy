@@ -155,7 +155,10 @@ export function RecentMessageHistories({ activeKey, children, topInset = 0, bott
   return <View ref={anchor} collapsable={false} pointerEvents={NativeHistorySlot ? 'auto' : 'none'} onLayout={measure} style={styles.container}>
     {/* Dock retained content immediately. `ready` gates new props and positioning,
         not visibility: a new route starts with unmeasured chrome even on a cache hit. */}
-    {NativeHistorySlot ? <NativeHistorySlot surfaceId={context.namespace + activeKey} selected={focused}
+    {/* A mounted route keeps its docking slot eligible even while covered.
+        UIKit restores it during interactive back, before JS focus changes.
+        The stack's getId keeps one route per task; focus still gates activity. */}
+    {NativeHistorySlot ? <NativeHistorySlot surfaceId={context.namespace + activeKey} selected
       pointerEvents={interactive && ready ? 'auto' : 'none'} style={StyleSheet.absoluteFill} /> : null}
   </View>;
 }

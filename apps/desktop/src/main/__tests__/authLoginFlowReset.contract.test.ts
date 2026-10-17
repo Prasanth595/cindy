@@ -823,7 +823,7 @@ describe('auth login-flow reset', () => {
     );
     expect(coldBody).not.toContain('rememberResourceSession(refreshData');
 
-    const refreshStart = source.indexOf('export async function refresh(): Promise<boolean> {');
+    const refreshStart = source.indexOf('export async function refresh(');
     const refreshEnd = source.indexOf('\n}\n\nexport async function logout()', refreshStart);
     const refreshBody = source.slice(refreshStart, refreshEnd);
     const runtimePolicyGuard = refreshBody.indexOf('!canRestoreAuthSessionForMembership(');
@@ -890,7 +890,7 @@ describe('auth login-flow reset', () => {
   });
 
   it('drops a runtime refresh result after logout or a newer login changes auth generation', () => {
-    const refreshStart = source.indexOf('export async function refresh(): Promise<boolean> {');
+    const refreshStart = source.indexOf('export async function refresh(');
     const refreshEnd = source.indexOf('\n}\n\nexport async function logout()', refreshStart);
     const refreshBody = source.slice(refreshStart, refreshEnd);
     expect(refreshBody).toContain('const refreshEpoch = authStateEpoch;');
@@ -939,7 +939,7 @@ describe('auth login-flow reset', () => {
   });
 
   it('reconnects realm-bound main clients after a runtime realm change commits its new token', () => {
-    const refreshStart = source.indexOf('export async function refresh(): Promise<boolean> {');
+    const refreshStart = source.indexOf('export async function refresh(');
     const refreshEnd = source.indexOf('\n}\n\nexport async function logout()', refreshStart);
     const refreshBody = source.slice(refreshStart, refreshEnd);
 
@@ -985,7 +985,7 @@ describe('auth login-flow reset', () => {
     expect(ownerCommitBody).toContain('await authSessionTeardown(opts.reason);');
     expect(ownerCommitBody).toContain('notifyAuthListeners();');
 
-    const refreshStart = source.indexOf('export async function refresh(): Promise<boolean> {');
+    const refreshStart = source.indexOf('export async function refresh(');
     const refreshEnd = source.indexOf('\n}\n\nexport async function logout()', refreshStart);
     const refreshBody = source.slice(refreshStart, refreshEnd);
     expect(refreshBody).toContain(

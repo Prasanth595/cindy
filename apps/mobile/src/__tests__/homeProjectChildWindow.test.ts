@@ -45,7 +45,7 @@ describe('home project child window', () => {
     expect(anchor).toBe(36);
     layout = { pageY: -3956 }; // The entire child area has actually left the screen.
     react(prepare(), null);
-    expect(anchor).toBe(-1);
+    expect(anchor).toBe(36);
     layout = { pageY: -3800 }; // Reverse scrolling brings the final rows back.
     react(prepare(), -1);
     expect(anchor).toBe(48);
@@ -72,7 +72,7 @@ describe('home project child window', () => {
     expect(initialRange.trailingSpacerHeight).toBeGreaterThan(0);
   });
 
-  it('keeps off-screen child content unmounted and anchors it once visible', () => {
+  it('skips anchor updates outside the viewport and locates children once visible', () => {
     const childOffsets = buildHomeProjectChildOffsets(Array.from({ length: 112 }, () => 78));
 
     expect(resolveHomeProjectChildAnchor({

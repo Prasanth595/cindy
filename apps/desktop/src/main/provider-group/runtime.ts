@@ -125,8 +125,8 @@ const routerFacade: ProviderGroupRouter = {
     return activeOwnerScopeKey() === runtime.owner ? view : { providerId, config: null, members: [] };
   },
   running: (providerId, memberKey) => runtimeForActiveOwner().router.running(providerId, memberKey),
-  markCooling: (providerId, memberKey, until) => runtimeForActiveOwner().router.markCooling(providerId, memberKey, until),
-  coolingUntil: (providerId, memberKey) => runtimeForActiveOwner().router.coolingUntil(providerId, memberKey),
+  markCooling: (providerId, memberKey, until, model) => runtimeForActiveOwner().router.markCooling(providerId, memberKey, until, model),
+  coolingUntil: (providerId, memberKey, model) => runtimeForActiveOwner().router.coolingUntil(providerId, memberKey, model),
   markTried: (sessionId, memberKey) => runtimeForActiveOwner().router.markTried(sessionId, memberKey),
   triedThisTurn: (sessionId) => runtimeForActiveOwner().router.triedThisTurn(sessionId),
   resetTurn: (sessionId) => runtimeForActiveOwner().router.resetTurn(sessionId),

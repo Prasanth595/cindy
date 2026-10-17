@@ -15,15 +15,11 @@ const state = vi.hoisted(() => ({
   connectionEpoch: 0,
   accountGeneration: 1,
   task: null as NewSessionCreationTask | null,
-  retryCreation: vi.fn(),
-  returnToEdit: vi.fn(),
   router: { canGoBack: vi.fn(() => true), back: vi.fn(), replace: vi.fn() },
 }));
 vi.mock('@/session/newSessionCreation', () => ({
   useNewSessionCreationTask: () => state.task,
-  retryNewSessionCreation: state.retryCreation,
 }));
-vi.mock('@/session/returnNewSessionToEdit', () => ({ returnNewSessionToEdit: state.returnToEdit }));
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock('@/device-link/remoteStatus', () => ({ formatRemoteError: (error: Error) => error.message }));
 vi.mock('@/theme', () => ({ useTheme: () => ({ colors: {} }), useThemedStyles: () => ({}) }));
@@ -73,8 +69,6 @@ beforeEach(() => {
   state.connectionEpoch = 0;
   state.accountGeneration = 1;
   state.task = null;
-  state.retryCreation.mockReset();
-  state.returnToEdit.mockReset();
   state.router.canGoBack.mockReset().mockReturnValue(true);
   state.router.back.mockReset();
   state.router.replace.mockReset();
@@ -140,23 +134,6 @@ describe('mobile Cindy Make links', () => {
     expect(state.unsubscribe).not.toHaveBeenCalled();
   });
 
-  it('keeps retry and edit locked after remounting while task recovery is still pending', async () => {
-    state.task = { ...failedCreation(), returningToEdit: true };
-    await renderGate();
-    await act(async () => root.render(null));
-    await renderGate();
-    for (const id of ['session.creationRetry', 'session.creationEdit']) {
-      expect(container.querySelector<HTMLButtonElement>(`[data-testid="${id}"]`)?.disabled).toBe(true);
-      await click(id);
-    }
-    expect(state.retryCreation).not.toHaveBeenCalled();
-    expect(state.returnToEdit).not.toHaveBeenCalled();
-    state.task = { ...state.task!, returningToEdit: false };
-    await renderGate();
-    await click('session.creationRetry');
-    expect(state.retryCreation).toHaveBeenCalledOnce();
-  });
-
   it('offers a manual metadata retry after an empty response without reconnecting', async () => {
     await renderGate();
     expect(container.textContent).toContain('session.entry.missing');
@@ -168,17 +145,14 @@ describe('mobile Cindy Make links', () => {
     expect(container.textContent).toBe('Composer');
   });
 
-  it.each(['memory', 'durable'] as const)('keeps a prepared %s draft reachable after remount without retrying its cancelled creation', async readyForEdit => {
+  it.each(['memory', 'durable'] as const)('mounts the recovery owner for a prepared %s draft without a choice screen', async readyForEdit => {
     state.task = { ...failedCreation(), readyForEdit };
     await renderGate();
     await act(async () => root.render(null));
     await renderGate();
-    expect(container.querySelector<HTMLButtonElement>('[data-testid="session.creationRetry"]')?.disabled).toBe(true);
-    expect(container.querySelector<HTMLButtonElement>('[data-testid="session.creationEdit"]')?.disabled).toBe(false);
-    await click('session.creationRetry');
-    expect(state.retryCreation).not.toHaveBeenCalled();
-    await click('session.creationEdit');
-    expect(state.returnToEdit).toHaveBeenCalledOnce();
+    expect(container.textContent).toBe('Composer');
+    expect(container.querySelector('button')).toBeNull();
+    expect(state.maker.getSession).not.toHaveBeenCalled();
   });
 
   it('shows link failures and returns home when a cold link has no back stack', async () => {
@@ -289,100 +263,30 @@ describe('mobile Cindy Make links', () => {
     expect(container.textContent).toBe('redirect:/');
   });
 
-  it('does not navigate after leaving a pending return-to-edit operation', async () => {
-    state.task = failedCreation();
-    let finish!: () => void;
-    state.returnToEdit.mockImplementation(({ onReady, isCurrent }) => new Promise<void>(resolve => {
-      finish = () => {
-        if (isCurrent()) onReady({ deviceId: 'device-a', deviceName: 'PC' });
-        resolve();
-      };
-    }));
-    await renderGate();
-    await click('session.creationEdit');
-    await act(async () => root.render(null));
-    await act(async () => finish());
-    expect(state.router.replace).not.toHaveBeenCalled();
-  });
-
-  it('shows creation failure before metadata exists, retries the same task and opens after success', async () => {
-    state.task = failedCreation();
+  it.each(['running', 'create-failed'] as const)('keeps the optimistic task mounted during %s without remote metadata', async status => {
+    state.task = { ...failedCreation(), status };
     state.sessions = [{ id: 'new-task', deviceLinkDeviceId: 'device-a' }];
     await renderGate();
-    expect(container.textContent).toContain('REMOTE_AGENT_GROUP_UNAVAILABLE');
-    expect(container.textContent).not.toContain('Composer');
+    expect(container.textContent).toBe('Composer');
+    expect(container.querySelector('button')).toBeNull();
     expect(state.maker.getSession).not.toHaveBeenCalled();
-    state.retryCreation.mockImplementation(() => { state.task = { ...state.task!, status: 'running' }; });
-    await click('session.creationRetry');
-    expect(state.retryCreation).toHaveBeenCalledWith('new-task');
-    await renderGate();
-    expect(container.textContent).toContain('session.new.slowSend.creating');
-    expect(state.maker.getSession).not.toHaveBeenCalled();
-    state.task = null;
-    state.maker.getSession.mockResolvedValue({ id: 'new-task', source: 'desktop' });
+    state.connectionEpoch += 1;
     await renderGate();
     expect(container.textContent).toBe('Composer');
   });
 
-  it.each(['durable', 'cleanup-ack'] as const)('keeps %s recovery accessible with known metadata and blocks retries after remount', async stateKind => {
-    state.task = { ...failedCreation(), ...(stateKind === 'durable'
-      ? { readyForEdit: 'durable' as const } : { worktreeCleanupAcknowledged: true }) };
-    state.sessions = [{ id: 'new-task', deviceLinkDeviceId: 'device-a', source: 'desktop' }];
-    await renderGate();
-    await act(async () => root.render(null));
-    await renderGate();
-    expect(container.textContent).not.toContain('Composer');
-    await click('session.creationRetry');
-    expect(state.retryCreation).not.toHaveBeenCalled();
-    await click('session.creationEdit');
-    expect(state.returnToEdit).toHaveBeenCalled();
-  });
-
-  it('keeps recovery available after leaving and reopening a failed creation', async () => {
-    state.task = failedCreation();
-    await renderGate();
-    await act(async () => root.render(null));
-    await renderGate();
-    expect(container.textContent).toContain('REMOTE_AGENT_GROUP_UNAVAILABLE');
-    expect(container.querySelector('[data-testid="session.creationEdit"]')).not.toBeNull();
-  });
-
-  it('uses shared edit recovery and prevents duplicate edits or concurrent creation retries', async () => {
-    state.task = failedCreation();
-    let finish!: () => void;
-    state.returnToEdit.mockImplementation(({ onReady, isCurrent }) => new Promise<void>(resolve => {
-      finish = () => {
-        if (isCurrent()) onReady({ deviceId: 'device-a', deviceName: 'PC', recoverySessionId: 'new-task' });
-        resolve();
-      };
-    }));
-    await renderGate();
-    await click('session.creationEdit');
-    await click('session.creationEdit');
-    await click('session.creationRetry');
-    expect(state.returnToEdit).toHaveBeenCalledTimes(1);
-    expect(state.retryCreation).not.toHaveBeenCalled();
-    await act(async () => finish());
-    expect(state.router.replace).toHaveBeenCalledWith({ pathname: '/sessions/new', params: {
-      deviceId: 'device-a', deviceName: 'PC', recoverySessionId: 'new-task',
-    } });
-  });
-
-  it('keeps the failure page and retry actions when worktree recovery fails', async () => {
-    state.task = failedCreation();
-    state.returnToEdit.mockRejectedValue(new Error('worktree cleanup pending'));
-    await renderGate();
-    await click('session.creationEdit');
-    expect(container.textContent).toContain('worktree cleanup pending');
-    expect(state.router.replace).not.toHaveBeenCalled();
-    await click('session.creationRetry');
-    expect(state.retryCreation).toHaveBeenCalledWith('new-task');
+  it('does not extend optimistic entry to file routes', async () => {
+    state.task = { ...failedCreation(), status: 'running' };
+    await act(async () => root.render(
+      <CindyMakeSessionGate sessionId="new-task" deviceId="device-a"><span>Files</span></CindyMakeSessionGate>,
+    ));
+    expect(container.textContent).not.toContain('Files');
   });
 
   it('does not show another device creation recovery or bypass a known Make source', async () => {
     state.task = { ...failedCreation(), deviceId: 'device-b' };
     await renderGate();
-    expect(container.textContent).not.toContain('REMOTE_AGENT_GROUP_UNAVAILABLE');
+    expect(container.textContent).not.toContain('Composer');
     state.task = failedCreation();
     state.sessions = [{ id: 'new-task', deviceLinkDeviceId: 'device-a', source: 'cindy-make' }];
     await renderGate();

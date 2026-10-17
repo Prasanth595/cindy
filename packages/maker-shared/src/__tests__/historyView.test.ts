@@ -183,6 +183,38 @@ const ungroupedStructure = {
 };
 
 describe('shared history view lifecycle', () => {
+  // Unit: Mobile's session coordinator owns resume reads. Previously activation
+  // issued a pre-ACK page even when the coordinated batch would read after ACK.
+  it('preserves cached content on managed resume and still reconciles changes during a read', async () => {
+    vi.useFakeTimers();
+    const page = (content: string) => ({ version: 1 as const,
+      items: projectHistoryView([row(0, 'user', content)], false), hasMore: false, nextCursor: null });
+    const read = vi.fn(async () => page('cached'));
+    const view = new HistoryViewController({ page: read, refreshOnResume: false,
+      details: async () => ({ version: 1 as const, messages: [], hasMore: false, nextCursor: null }),
+      expanded: async () => undefined });
+    try {
+      await view.refresh();
+      view.setActive(false);
+      view.setNetworkAvailable(false);
+      view.setActive(true);
+      view.setNetworkAvailable(true);
+      expect(read).toHaveBeenCalledTimes(1);
+      expect(view.getSnapshot()).toMatchObject({ ready: true, stale: true, items: page('cached').items });
+      let resolve!: (value: ReturnType<typeof page>) => void;
+      read.mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+      const syncing = view.refresh();
+      view.invalidate(); // Edit/delete/completion received after the read began.
+      await vi.advanceTimersByTimeAsync(500);
+      read.mockResolvedValue(page('edited'));
+      resolve(page('cached'));
+      await syncing;
+      await vi.advanceTimersByTimeAsync(500);
+      expect(read).toHaveBeenCalledTimes(3);
+      expect(view.getSnapshot().items).toEqual(page('edited').items);
+    } finally { view.setActive(false); vi.useRealTimers(); }
+  });
+
   it.each([true, false])('retains loaded history only when regrouping proves the same source start (%s)', async (overlap) => {
     const prefix = projectHistoryView([row(0, 'user', 'Earlier')], false);
     const rows = [row(1, 'assistant', 'Looking into it'), row(2, 'thinking', 'details'),

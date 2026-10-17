@@ -46,7 +46,7 @@ describe("authManager credential-store escalation wiring", () => {
 
 
   it('transient-unreadable 分支喂失败计数并在翻转时广播,但仍保持瞬时语义', () => {
-    const start = authSource.indexOf('export async function refresh(): Promise<boolean> {');
+    const start = authSource.indexOf('export async function refresh(');
     const end = authSource.indexOf('const diskTokenChangedBeforeRefresh', start);
     const body = authSource.slice(start, end);
 
@@ -68,7 +68,7 @@ describe("authManager credential-store escalation wiring", () => {
 
 
   it('成功读到持久会话时喂恢复并在翻转时广播', () => {
-    const start = authSource.indexOf('export async function refresh(): Promise<boolean> {');
+    const start = authSource.indexOf('export async function refresh(');
     const end = authSource.indexOf('const diskTokenChangedBeforeRefresh', start);
     const body = authSource.slice(start, end);
     expect(body).toContain(

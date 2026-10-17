@@ -1,7 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { promises as fs } from 'node:fs';
+import { sharedTaskHostPeer } from '@cindy/device-link';
 const peer = vi.hoisted(() => vi.fn());
 const remove = vi.hoisted(() => vi.fn());
 const owner = vi.hoisted(() => ({ current: true }));
+const cache = vi.hoisted(() => ({ get: vi.fn(), put: vi.fn(), invalidate: vi.fn() }));
+vi.mock('../remoteFileVersionCache', () => ({ remoteFileVersionCache: () => cache }));
 vi.mock('../filePeer', () => ({ tryPeerFile: peer }));
 vi.mock('../mediaTransfer', () => ({ removeRemote: remove }));
 vi.mock('../broadcast-tap', () => ({
@@ -16,6 +20,68 @@ beforeEach(() => {
   peer.mockResolvedValue(null);
 });
 describe('desktop shared file access', () => {
+  it('reads through an older shared host without sending unknown metadata-only fields', async () => {
+    const result = { ossKey: '', size: 3, mimeType: 'text/plain', inlineBase64: 'YWJj' };
+    const invoke = vi.fn(async (_device, _channel, [request]) => {
+      if ('metadataOnly' in request) throw new Error('PERMISSION_DENIED');
+      return { ok: true, result };
+    });
+    const device = sharedTaskHostPeer('shared', 'host');
+    expect(await readRemoteDeviceFile(device, 'xdt-file://open?path=/a.txt', invoke)).toEqual(result);
+    expect(await readRemoteDeviceFile(device, 'xdt-file://open?path=/a.txt', invoke)).toEqual(result);
+    expect(invoke).toHaveBeenCalledTimes(2);
+  });
+  it('waits for the current same-size version when filling an outer version cache', async () => {
+    const old = { ossKey: '', size: 3, mimeType: 'text/html', version: '1'.repeat(64), inlineBase64: 'b2xk' };
+    const fresh = { ...old, version: '2'.repeat(64), inlineBase64: 'bmV3' };
+    const invoke = vi.fn().mockResolvedValue({ ok: true, result: old });
+    const url = 'xdt-file://open?path=/versioned.html';
+    await readRemoteDeviceFile('versioned', url, invoke);
+    cache.get.mockResolvedValue('/cache/old');
+    const read = vi.spyOn(fs, 'readFile').mockResolvedValue(Buffer.from('old'));
+    let reply!: (value: unknown) => void;
+    invoke.mockImplementationOnce(() => new Promise(resolve => { reply = resolve; }));
+    let settled = false;
+    const pending = readRemoteDeviceFile('versioned', url, invoke, { cacheFirst: false })
+      .then(result => { settled = true; return result; });
+    try {
+      await vi.waitFor(() => expect(reply).toBeTypeOf('function'));
+      expect(settled).toBe(false);
+      expect(read).not.toHaveBeenCalled();
+      reply({ ok: true, result: fresh });
+      expect(await pending).toEqual(fresh);
+      expect(cache.invalidate).not.toHaveBeenCalled();
+    } finally { read.mockRestore(); }
+  });
+  it('returns cached HTML before a blocked host version check completes', async () => {
+    const result = { ossKey: '', size: 3, mimeType: 'text/html', version: 'c'.repeat(64), inlineBase64: 'YWJj' };
+    cache.get.mockResolvedValueOnce(null).mockResolvedValueOnce('/cache/instant');
+    const read = vi.spyOn(fs, 'readFile').mockResolvedValueOnce(Buffer.from('abc'));
+    const invoke = vi.fn(async (_device, _channel, [args]) => ({ ok: true, result: args.metadataOnly
+      ? { ...result, inlineBase64: undefined, transferRequired: true } : result }));
+    let reply!: (value: any) => void;
+    try {
+      await readRemoteDeviceFile('instant', 'xdt-file://open?path=/cached.html', invoke);
+      invoke.mockImplementationOnce(() => new Promise(resolve => { reply = resolve; }));
+      expect(await readRemoteDeviceFile('instant', 'xdt-file://open?path=/cached.html', invoke)).toEqual(result);
+      expect(invoke).toHaveBeenCalledTimes(3);
+      reply({ ok: true, result });
+    } finally { read.mockRestore(); }
+  });
+  it('checks metadata then reads the same durable cache used by large files', async () => {
+    const result = { ossKey: '', size: 3, mimeType: 'text/html', version: 'a'.repeat(64), inlineBase64: 'YWJj' };
+    cache.get.mockResolvedValueOnce(null).mockResolvedValueOnce('/cache/html');
+    const read = vi.spyOn(fs, 'readFile').mockResolvedValueOnce(Buffer.from('abc'));
+    const invoke = vi.fn(async (_device, _channel, [args]) => ({ ok: true, result: args.metadataOnly
+      ? { ...result, inlineBase64: undefined, transferRequired: true } : result }));
+    try {
+      expect(await readRemoteDeviceFile('d', 'xdt-file://open?path=/a.html', invoke)).toEqual(result);
+      expect(cache.put).toHaveBeenCalledWith(Buffer.from('abc'));
+      expect(await readRemoteDeviceFile('d', 'xdt-file://open?path=/a.html', invoke)).toEqual(result);
+      expect(invoke).toHaveBeenCalledTimes(3);
+      expect(peer).not.toHaveBeenCalled();
+    } finally { read.mockRestore(); }
+  });
   it.each(['abort', 'stop', 'owner'] as const)('keeps business requests cancelled while permitting owner-safe close (%s)', async reason => {
     const abort = new AbortController();
     const invoke = vi.fn(async () => ({ ok: true, result: { ossKey: '', size: 5, mimeType: 'text/plain', transferRequired: true } }));

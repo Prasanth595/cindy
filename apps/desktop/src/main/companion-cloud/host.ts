@@ -13,11 +13,18 @@ import { getDbClient } from '../localDb/client/current.js';
 import { createBotProfile, getBotMemoryService, setBotProfileAvatar, updateBotProfile } from '../localDb/ipc/bots.js';
 import { decodeBotAvatarImage } from '../localDb/ipc/botAvatarSelection.js';
 import { createMessage } from '../localDb/ipc/messages.js';
-import { botProfiles, botSessionLinks, messages } from '../localDb/schema.js';
+import { commitChatImageUrls } from '../cindy-media/chatAttachments.js';
+import { botProfileVersions, botProfiles, botSessionLinks, messages } from '../localDb/schema.js';
+import { inferBotTemplatePresetId } from '../../shared/botTemplatePreset.js';
 import { resolveBotCanonicalSession } from '../maker-ipc/botCanonicalSessionRegistry.js';
 import { botProfileDir, botProfileMemoryDir, readBotProfileFolder, writeBotProfileFolder } from '../maker-ipc/botProfileFolder.js';
 import { onBotRemoteResourceChanged } from '../maker-ipc/botRemoteResourceInvalidation.js';
 import { deleteBotSkillForBot, listBotSkillSourcesForBot, readBotSkillSourceForBot, saveBotSkillSourceForBot } from '../maker-ipc/botSkillService.js';
+import { companionTodoStore } from '../maker-ipc/botTodoAccess.js';
+import { mergeCompanionWorkbench, readCompanionWorkbench } from '../maker-ipc/botWorkbenchService.js';
+import { importCompanionRoutines, listCompanionRoutines, type CompanionRoutineValue } from '../routines/service.js';
+import type { TeammateTodo } from '@cindy/maker-shared/teammate-todo';
+import { portableTodo, travellingTodos } from './travel.js';
 import type { CompanionMaterializeHost } from './materialize.js';
 import { companionHomes } from './homes.js';
 import type { CompanionMirrorCursor, CompanionMirrorRow } from './mirror.js';
@@ -27,24 +34,40 @@ import type { CompanionLog } from './types.js';
 import {
   COMPANION_MEMORY_PREFIX,
   COMPANION_PROFILE_KEY,
+  COMPANION_ROUTINE_PREFIX,
   COMPANION_SKILL_PREFIX,
+  COMPANION_TODO_PREFIX,
+  COMPANION_WORKBENCH_KEY,
   type CompanionPreferenceValue,
 } from './uploader.js';
 
 /** Derived memory files: USER.md travels inside the profile, MEMORY.md is a rebuilt index. */
 const SKIPPED_MEMORY_FILES = new Set(['USER.md', 'MEMORY.md']);
 
-export async function readCompanionValues(botId: string): Promise<CompanionPreferenceValue[]> {
+function profileTemplateId(capabilitiesJson: string | null, identitySource: string): string | null {
+  try {
+    const value = (JSON.parse(capabilitiesJson ?? '{}') as { templateId?: unknown }).templateId;
+    if (typeof value === 'string' && value) return value;
+  } catch { /* fall back to the identity */ }
+  return inferBotTemplatePresetId(identitySource);
+}
+
+export async function readCompanionValues(botId: string, selfDeviceId: string | null = null): Promise<CompanionPreferenceValue[]> {
   const userDataDir = ownerScopedUserDataPath();
   const [row] = await getDbClient().drizzle
-    .select({ displayName: botProfiles.displayName, description: botProfiles.description })
-    .from(botProfiles).where(eq(botProfiles.id, botId)).limit(1);
+    .select({ displayName: botProfiles.displayName, description: botProfiles.description, capabilities: botProfileVersions.capabilitiesJson })
+    .from(botProfiles)
+    .leftJoin(botProfileVersions, and(eq(botProfileVersions.botId, botProfiles.id), eq(botProfileVersions.version, botProfiles.currentVersion)))
+    .where(eq(botProfiles.id, botId)).limit(1);
   if (!row) return [];
   // Strict: an unreadable SOUL/USER/prompt file aborts the cycle instead of uploading it as empty.
   const folder = await readBotProfileFolder(userDataDir, botId, { strict: true });
+  // Which preset it was made from: every computer can then tell the copies of Cindy apart from a
+  // teammate that is only named Cindy (the merge never goes by name).
+  const templateId = profileTemplateId(row.capabilities, folder.identitySource);
   const values: CompanionPreferenceValue[] = [{ key: COMPANION_PROFILE_KEY, value: {
     name: row.displayName, description: row.description, soul: folder.identitySource,
-    systemPrompt: folder.systemPromptOverride, user: folder.userContextSource,
+    systemPrompt: folder.systemPromptOverride, user: folder.userContextSource, ...(templateId ? { templateId } : {}),
   } }];
   const memoryDir = botProfileMemoryDir(userDataDir, botId);
   // Only a missing folder means "no memories"; any other read error aborts this cycle so the
@@ -64,6 +87,21 @@ export async function readCompanionValues(botId: string): Promise<CompanionPrefe
       slug: skill.slug, content: skill.source, ...(skill.enabled ? {} : { enabled: false }),
     } });
   }
+  // Todos, routines and the workbench move with the companion too (cloud-companions.md §2). A read
+  // failure aborts the cycle like the files above, so nothing is tombstoned by mistake.
+  // These parts are read separately: one that cannot be read now (e.g. routines before their engine
+  // is ready) leaves its cloud values untouched instead of stopping the profile and memories.
+  const part = async (prefix: string, read: () => Promise<CompanionPreferenceValue[]>) => {
+    try { values.push(...await read()); } catch { values.push({ key: prefix, value: null, unread: true }); }
+  };
+  await part(COMPANION_TODO_PREFIX, async () => travellingTodos((await companionTodoStore(botId).read()).items)
+    .map(item => ({ key: `${COMPANION_TODO_PREFIX}${item.id}`, value: portableTodo(item) })));
+  await part(COMPANION_ROUTINE_PREFIX, async () => (await listCompanionRoutines(botId, selfDeviceId))
+    .map(routine => ({ key: `${COMPANION_ROUTINE_PREFIX}${routine.id}`, value: routine })));
+  if (selfDeviceId) await part(COMPANION_WORKBENCH_KEY, async () => {
+    const workbench = await readCompanionWorkbench(userDataDir, botId, selfDeviceId);
+    return workbench.directories.length || Object.keys(workbench.tasks).length ? [{ key: COMPANION_WORKBENCH_KEY, value: workbench }] : [];
+  });
   return values;
 }
 
@@ -105,8 +143,29 @@ type MaterializeLocal = Omit<CompanionMaterializeHost, 'latestRows'>;
 function createMaterializer(input: {
   ensureCanonicalSession: (botId: string) => Promise<string>;
   rebuildContext: (sessionId: string) => Promise<'rebuilt' | 'busy'>;
+  selfDeviceId?: () => string | null;
 }): MaterializeLocal {
   return {
+    applyTodos: async (botId, items, remove, fence) => {
+      fence.assertCurrent();
+      const todos = items.filter((item): item is TeammateTodo => !!item && typeof item === 'object'
+        && typeof (item as { id?: unknown }).id === 'string' && (item as { id: string }).id.startsWith('todo:')
+        && typeof (item as { title?: unknown }).title === 'string' && Array.isArray((item as { history?: unknown }).history));
+      await companionTodoStore(botId).importItems(todos, remove);
+    },
+    applyRoutines: async (botId, routines, remove, fence) => {
+      fence.assertCurrent();
+      const valid = routines.filter((routine): routine is CompanionRoutineValue => !!routine && typeof routine === 'object'
+        && typeof (routine as { id?: unknown }).id === 'string' && !!(routine as { input?: unknown }).input
+        && Array.isArray((routine as { input: { triggers?: unknown } }).input.triggers));
+      await importCompanionRoutines(botId, valid, remove, input.selfDeviceId?.() ?? null);
+    },
+    applyWorkbench: async (botId, value, fence, options) => {
+      const self = input.selfDeviceId?.();
+      if (!self) throw new Error('DEVICE_UNKNOWN');
+      fence.assertCurrent();
+      await mergeCompanionWorkbench(ownerScopedUserDataPath(), botId, self, value, options);
+    },
     readProfile: async botId => {
       const [row] = await getDbClient().drizzle
         .select({ status: botProfiles.status, displayName: botProfiles.displayName, description: botProfiles.description })
@@ -174,8 +233,22 @@ function createMaterializer(input: {
     // Same row shape as ordinary messages; the client id keeps it out of the mirror.
     insertHistory: async (sessionId, row, fence) => {
       fence.assertCurrent();
+      // Files brought from the room open like any attachment of the message.
+      const files = row.attachments ?? [];
+      const images = files.flatMap(file => file.url ? [{ url: file.url, mimeType: file.mimeType, originalName: file.name, size: file.size }] : []);
+      const others = files.flatMap(file => !file.url && file.path ? [{ name: file.name, path: file.path }] : []);
+      const names = row.role === 'assistant' ? files.map(file => `[附件: ${file.name}]`) : [];
+      // The room's image copies were cached only: they belong to this task before the message is
+      // written. A failed commit fails the import while the message is still absent, so the retry
+      // downloads and commits again instead of treating it as imported with recyclable images.
+      if (images.length) {
+        const commit = await commitChatImageUrls({ sessionId, urls: images.map(image => image.url) });
+        if (commit.failed > 0) throw new Error('HISTORY_IMAGE_COMMIT_FAILED');
+        fence.assertCurrent();
+      }
       await createMessage(sessionId, { clientId: row.clientId, role: row.role, createdAt: row.createdAt,
-        content: row.role === 'user' ? { text: row.text, images: [], files: [] } : [{ type: 'text', text: row.text }] });
+        content: row.role === 'user' ? { text: row.text, images, files: others }
+          : [{ type: 'text', text: [row.text, ...names].filter(Boolean).join('\n') }] });
     },
     rebuildContext: sessionId => input.rebuildContext(sessionId),
   };
@@ -229,6 +302,13 @@ export function companionShadowStore() {
   };
 }
 
+/** Every live task the companion runs in: its main task, group lanes and delegations. */
+async function companionSessionIds(botId: string): Promise<string[]> {
+  const rows = await getDbClient().drizzle.select({ sessionId: botSessionLinks.sessionId }).from(botSessionLinks)
+    .where(and(eq(botSessionLinks.botId, botId), isNull(botSessionLinks.archivedAt)));
+  return rows.map(row => row.sessionId);
+}
+
 export function createCompanionCloudHost(input: {
   deliverToCanonical: CompanionCloudHost['deliverToCanonical'];
   ensureCanonicalSession: (botId: string) => Promise<string>;
@@ -237,6 +317,11 @@ export function createCompanionCloudHost(input: {
   isTurnActive?: (sessionId: string) => boolean;
   listDevices: () => Promise<DeviceLinkDeviceView[]>;
   probeCompanionCloud?: (deviceId: string) => Promise<boolean>;
+  homeLink?: CompanionCloudHost['homeLink'];
+  /** This computer's device-link id: names its workbench folders and routine check commands. */
+  selfDeviceId?: () => string | null;
+  /** Stop the turn running (and the input queued) in this Session, like the user's Stop. */
+  stopTurn?: (sessionId: string) => Promise<void>;
   log?: CompanionLog;
 }): CompanionCloudHost {
   // Every reader (send guards, routines, lists) sees only the active owner's homes, and that
@@ -249,9 +334,12 @@ export function createCompanionCloudHost(input: {
         `${createHash('sha256').update(`${endpoint}\n${humanActorId}`).digest('hex')}.json`),
       current, log: input.log,
     }),
-    readValues: readCompanionValues,
+    readValues: botId => readCompanionValues(botId, input.selfDeviceId?.() ?? null),
+    // No main task yet is nothing to sync; conflicting ones are not: syncing, a hand-over and a merge
+    // must stop rather than count this computer's history as sent.
     canonicalSession: async botId => {
       const resolved = await resolveBotCanonicalSession(botId);
+      if (resolved.status === 'conflict') throw new Error('COMPANION_TASK_CONFLICT');
       return resolved.status === 'resolved' ? resolved.sessionId : null;
     },
     rowsAfter: readMirrorRowsAfter,
@@ -260,13 +348,14 @@ export function createCompanionCloudHost(input: {
     onLocalChange: onBotRemoteResourceChanged,
     materializer: createMaterializer(input),
     listDevices: input.listDevices,
-    ...(input.isTurnActive ? { isBotBusy: async (botId: string) => {
-      // Every live task the companion runs in: its main task, group lanes and delegations.
-      const rows = await getDbClient().drizzle.select({ sessionId: botSessionLinks.sessionId }).from(botSessionLinks)
-        .where(and(eq(botSessionLinks.botId, botId), isNull(botSessionLinks.archivedAt)));
-      return rows.some(row => input.isTurnActive!(row.sessionId));
+    ...(input.isTurnActive ? { isBotBusy: async (botId: string) =>
+      (await companionSessionIds(botId)).some(sessionId => input.isTurnActive!(sessionId)) } : {}),
+    ...(input.isTurnActive && input.stopTurn ? { stopBotTurns: async (botId: string) => {
+      const busy = (await companionSessionIds(botId)).filter(sessionId => input.isTurnActive!(sessionId));
+      await Promise.all(busy.map(sessionId => input.stopTurn!(sessionId)));
     } } : {}),
     ...(input.probeCompanionCloud ? { probeCompanionCloud: input.probeCompanionCloud } : {}),
+    ...(input.homeLink ? { homeLink: input.homeLink } : {}),
     installationId: companionInstallationId,
     shadows: companionShadowStore(),
   };

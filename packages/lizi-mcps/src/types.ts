@@ -95,11 +95,88 @@ export interface FeishuBotSendMessageResult {
   reason?: string;
 }
 
+/**
+ * 当前 tool-call 的归属 session(host 从 LiziMcpSessionContext 取)。宿主据此选出
+ * 这一轮真正要出站的 bot:个人设置页那份 FeishuIM,或触发本轮的伙伴自有连接。
+ * 没有它(hook 会话 / 桌面任务)就回落到个人 bot。
+ */
+export interface FeishuBotHostSession {
+  sessionId?: string;
+  sessionInstanceId?: string;
+}
+
+/**
+ * 飞书轮次内工具用到的 transport 子集(结构类型:桌面侧传的是触发本轮的那条连接自己的
+ * `FeishuIM`,单测可用假对象)。所有方法都以这条连接的 bot 身份出站。
+ */
+export interface FeishuBotLaneTransport {
+  getService(): 'feishu' | 'lark';
+  getBotAppId(): string | null;
+  sendText(userId: string, text: string): Promise<{ messageId: string }>;
+  sendMarkdownText(userId: string, markdown: string): Promise<{ messageId: string }>;
+  replyText(replyToMessageId: string, text: string): Promise<{ messageId: string }>;
+  replyMarkdownText(replyToMessageId: string, markdown: string): Promise<{ messageId: string }>;
+  sendFile(userId: string, absPath: string, displayName?: string): Promise<FeishuBotSendFileResult & { messageId?: string }>;
+  reactToMessage(messageId: string, emojiType: string): Promise<string | null>;
+  removeMessageReaction(messageId: string, reactionId: string): Promise<void>;
+  getChatInfo(chatId: string): Promise<Record<string, unknown>>;
+  listChatMembers(
+    chatId: string,
+    opts?: { pageToken?: string; pageSize?: number },
+  ): Promise<{
+    items: Array<{ memberId: string; name: string }>;
+    memberTotal: number | null;
+    nextPageToken: string | null;
+  }>;
+  getMessage(messageId: string): Promise<Record<string, unknown> | null>;
+  pinMessage(messageId: string): Promise<void>;
+  unpinMessage(messageId: string): Promise<void>;
+  recallMessage(messageId: string): Promise<void>;
+  callApi(args: {
+    method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+    path: string;
+    params?: Record<string, unknown>;
+    data?: unknown;
+  }): Promise<Record<string, unknown>>;
+}
+
+/**
+ * 飞书轮次的逐轮作用域(桌面 `im/shared/channelToolScope.ts` 的租约投影)。由渠道在
+ * provider 开始本轮前登记、终态释放;**不来自模型参数**。没有作用域的调用一律 fail closed。
+ */
+export interface FeishuBotLaneScope {
+  im: FeishuBotLaneTransport;
+  /** lane userId(私聊 open_id 或 `g/{chatId}[/{threadId}]`),transport 解码后出站。 */
+  laneUserId: string;
+  /** 飞书原生 chat_id(私聊是 p2p chat)。 */
+  chatId: string;
+  /** 话题 id;非话题为空串。 */
+  threadId: string;
+  chatKind: 'direct' | 'group';
+  /** 触发本轮的是不是主人(Main 校验过的身份)。 */
+  requesterIsOwner: boolean;
+  /** 触发消息的 message_id(回复 / 表情的默认目标)。 */
+  triggerMessageId: string;
+  /** 伙伴自有连接(true)还是设置页个人 bot(false)。 */
+  companion: boolean;
+  /**
+   * 当前任务工作目录(来自本次 tool-call 的 session ctx,不来自模型参数);非主人触发的
+   * 轮次 send_file 只能发这里面的文件,缺省时一律拒绝。
+   */
+  workingDir?: string;
+}
+
 export interface FeishuBotMcpHostDeps {
+  /**
+   * 读取当前 session 的飞书逐轮作用域;非飞书轮次 / 轮次已结束返回 null。宿主实现
+   * 用 `session.sessionId` + `sessionInstanceId` 查租约(旧实例借不到新实例权限)。
+   */
+  readLaneScope?(session: FeishuBotHostSession): FeishuBotLaneScope | null;
   sendFile(
     chatId: string,
     absPath: string,
     displayName?: string,
+    session?: FeishuBotHostSession,
   ): Promise<FeishuBotSendFileResult>;
   /**
    * Push a markdown text message to the given chat (private DM). Backed by
@@ -114,6 +191,7 @@ export interface FeishuBotMcpHostDeps {
     markdown: string,
     /** Trusted calling session, only for notifications to the bot owner. */
     notificationSessionId?: string,
+    session?: FeishuBotHostSession,
   ): Promise<FeishuBotSendMessageResult>;
   /**
    * Return the bot's TOFU-recorded owner openId — i.e. the person who first
@@ -125,7 +203,7 @@ export interface FeishuBotMcpHostDeps {
    * Returns null when no owner has been bound yet — user must DM the bot once
    * first (same precondition as scheduler feishu-completion notifications).
    */
-  getOwnerOpenId(): string | null;
+  getOwnerOpenId(session?: FeishuBotHostSession): string | null;
   logger?: LiziMcpLogger;
 }
 

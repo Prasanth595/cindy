@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import {
-  HistoryViewController, HistoryViewHandoff, projectHistoryView, renderHistoryView, historyViewLeaves,
+  HistoryViewController, HistoryViewHandoff, projectHistoryView, renderHistoryView, historyViewLeaves, nextHistoryCacheReceipt,
 } from '@cindy/maker-shared/message-window';
 import { buildRenderItems, groupWorkRuns, selectVisibleMessages, collectTurnFinalAssistantClientIds,
   findLastUserMessageClientId, planSessionBelongsToLatestUserTurn } from '../components/chat/MessageStream';
@@ -53,6 +53,26 @@ function fixture() {
 }
 
 describe('desktop remote history uses the shared live-to-history handoff', () => {
+  // Same-ID body updates must survive cache restore and yield to a later Host read.
+  it('renders a later list receipt instead of the old cached body', async () => {
+    const { view, render, setSource } = fixture();
+    const old = { ...row('reply'), content: 'old cached body' };
+    const readReceipt = nextHistoryCacheReceipt();
+    const received = { ...old, content: 'updated received body', cacheReceipt: nextHistoryCacheReceipt() };
+    view.setActive(false);
+    await view.restoreCachedView(async () => ({ items: projectHistoryView([old], false), details: new Map(),
+      expanded: new Set(), nextCursor: null, hasMore: false, loading: false, ready: true, error: null,
+      readReceipt }));
+    expect(render([received]).text).toContain('updated received body');
+    expect(render([received]).text).not.toContain('old cached body');
+    setSource([{ ...old, content: 'authoritative body' }]);
+    view.setActive(true);
+    await view.refresh();
+    expect(render([received]).text).toContain('authoritative body');
+    expect(render([received]).text).not.toContain('updated received body');
+    view.setActive(false);
+  });
+
   it.each([false, true])('places a late harness boundary before the reserved send (history ready=%s)', async (ready) => {
     const { view, render, setSource } = fixture();
     if (ready) await view.refresh();

@@ -239,6 +239,9 @@ export function companionImportReasonKey(code?: string): string {
     SOURCE_AUTOMATION_INVALID: 'automationInvalid', AUTOMATION_TRIGGER_NEEDS_ADAPTER: 'automationInvalid',
     AUTOMATION_DATA_READ_FAILED: 'readFailed', AUTOMATION_READ_NOT_VERIFIED: 'readFailed',
     NATIVE_AUTH_REFRESH_REQUIRED: 'authRefresh', AUTOMATION_DEPENDENCY_NOT_SELECTED: 'missingSelection',
+    // 导入的 Telegram / Discord 机器人没能直接变成伙伴的消息平台连接(凭证仍保留给自动化投递)。
+    IMPORT_IM_BOT_OWNER_MISSING: 'imBotOwnerMissing', IMPORT_IM_BOT_GATEWAY_RUNNING: 'imBotGatewayRunning',
+    IMPORT_IM_BOT_IN_USE: 'imBotInUse', IMPORT_IM_BOT_CONNECT_FAILED: 'imBotConnectFailed',
   };
   return code && keys[code] || 'itemFailed';
 }

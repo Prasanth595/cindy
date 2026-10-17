@@ -155,6 +155,26 @@ describe('resident five-task message lists outside route lifetimes', () => {
     expect(container.querySelector('button')).toBeNull();
     expect(unmounts).toEqual(['a']);
   });
+  // Regression: preview -> interactive back exposes the native slot before JS
+  // focus returns. The slot must accept its retained surface while subscriptions
+  // and positioning remain paused. Existing reentry tests only used focused slots.
+  it('keeps the native docking slot ready while a file preview covers the task', async () => {
+    state.native = true;
+    await show('a', 'cached');
+    const original = container.querySelector<HTMLButtonElement>('[data-task="a"]')!;
+    await act(async () => original.click());
+    state.focused = false;
+    await show('a', 'cached');
+    expect(container.querySelector('[data-slot]')?.getAttribute('data-selected')).toBe('true');
+    expect(original.dataset.active).toBe('false');
+    expect(original.dataset.positioning).toBe('false');
+    expect(original.closest('[data-store-gate]')?.getAttribute('data-store-gate')).toBe('false');
+    state.focused = true;
+    await show('a', 'cached');
+    expect(container.querySelector('[data-task="a"]')).toBe(original);
+    expect(original.textContent).toBe('cached:420');
+    expect(unmounts).toEqual([]);
+  });
   it('shows cached native content before new route data and chrome are ready', async () => {
     state.native = true;
     await show('a', 'cached');

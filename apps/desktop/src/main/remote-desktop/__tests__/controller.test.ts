@@ -3,6 +3,12 @@ import { readFileSync } from 'node:fs';
 import { RemoteDesktopController, type DesktopControllerDeps } from '../controller';
 import { enumerateDesktopSources } from '../captureSource';
 import type { RemoteDesktopIceReply, RemoteDesktopLease } from '@cindy/device-link';
+import { createHash } from 'node:crypto';
+
+const diagnosticLog = vi.hoisted(() => vi.fn());
+vi.mock('../../logger', () => ({
+  createLogger: () => ({ debug: diagnosticLog, warn: vi.fn() }),
+}));
 
 function harness() {
   let now = 1000;
@@ -39,6 +45,93 @@ function harness() {
       controller.request('phone', { op: 'start', displayId: '1' }) as Promise<RemoteDesktopLease>,
   };
 }
+it('records bounded received heartbeats and the unchanged expiration deadline without lease secrets', async () => {
+  diagnosticLog.mockClear();
+  const h = harness();
+  const { lease } = await h.start();
+  for (let i = 0; i < 10; i++) {
+    h.advance(3000);
+    await h.controller.request('phone', { op: 'heartbeat', lease });
+  }
+  expect(diagnosticLog).not.toHaveBeenCalled();
+  h.advance(11999);
+  expect(h.controller.state).not.toBeNull();
+  h.advance(1);
+  expect(h.controller.state).toBeNull();
+  expect(diagnosticLog).toHaveBeenCalledOnce();
+  const data = diagnosticLog.mock.calls[0][1];
+  expect(data).toMatchObject({
+    reason: 'heartbeat-expired',
+    at: 43000,
+    startedAt: 1000,
+    expiresAt: 43000,
+    session: createHash('sha256').update(lease).digest('hex').slice(0, 16),
+  });
+  expect(data.heartbeats).toHaveLength(8);
+  expect(data.heartbeats[0]).toEqual({ receivedAt: 10000, result: 'relay-accepted' });
+  expect(JSON.stringify(data)).not.toContain(lease);
+  expect(JSON.stringify(data)).not.toContain('phone');
+});
+
+it.each([
+  'peer-offline',
+  'signaling-lost',
+  'authorization-lost',
+  'authentication-changed',
+  'remote-stop',
+  'resume-replaced',
+  'takeover',
+] as const)('identifies %s at the existing stop boundary', async (reason) => {
+  diagnosticLog.mockClear();
+  const h = harness();
+  let authentication = 'original';
+  h.deps.authenticationSession = () => authentication;
+  const { lease } = await h.start();
+  h.controller.signalingLost('unrelated');
+  expect(diagnosticLog).not.toHaveBeenCalled();
+  if (reason === 'peer-offline') h.controller.signalingLost('phone');
+  else if (reason === 'signaling-lost') h.controller.signalingLost();
+  else if (reason === 'authorization-lost') {
+    h.revoke();
+    h.controller.tick();
+  } else if (reason === 'authentication-changed') {
+    authentication = 'replacement';
+    h.controller.tick();
+  } else if (reason === 'remote-stop') await h.controller.request('phone', { op: 'stop', lease });
+  else
+    await h.controller.request(reason === 'takeover' ? 'other' : 'phone', {
+      op: 'start',
+      displayId: '1',
+      ...(reason === 'takeover' ? { takeover: true } : { resume: true }),
+    });
+  expect(diagnosticLog).toHaveBeenCalledOnce();
+  expect(diagnosticLog.mock.calls[0][1].reason).toBe(reason);
+});
+
+it('keeps the original stop reason through lock completion and tolerates a failed logger', async () => {
+  diagnosticLog.mockClear();
+  const h = harness();
+  let finish!: () => void;
+  h.deps.lockScreen = () =>
+    new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+  const { lease } = await h.start();
+  await h.controller.request('phone', { op: 'heartbeat', lease, lockOnExit: true });
+  diagnosticLog.mockImplementationOnce(() => {
+    throw new Error('logger unavailable');
+  });
+  const stopped = h.controller.stop(undefined, undefined, 'capture-exited');
+  await Promise.resolve();
+  h.controller.signalingLost();
+  finish();
+  await stopped;
+  expect(h.controller.state).toBeNull();
+  expect(diagnosticLog).toHaveBeenCalledOnce();
+  expect(diagnosticLog.mock.calls[0][1].reason).toBe('capture-exited');
+  expect(h.deps.stopVideo).toHaveBeenCalled();
+});
+
 it('finishes native host setup before exposing a lease or allocating temporary displays', async () => {
   const h = harness();
   let done!: () => void;

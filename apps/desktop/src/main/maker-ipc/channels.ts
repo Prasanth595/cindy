@@ -817,12 +817,20 @@ export const MAKER_INVOKE = {
   COMPANION_CLOUD_STATE: 'maker:companion-cloud:state',
   /** Make this computer the companion's home (cloud-companions.md §3.1). */
   COMPANION_CLOUD_TAKE_OVER: 'maker:companion-cloud:take-over',
-  /** Hand the companion to another of the owner's computers. */
-  COMPANION_CLOUD_TRANSFER: 'maker:companion-cloud:transfer',
+  /** Move the companion to another computer from any computer (hand over, ask its home, or take over). */
+  COMPANION_CLOUD_SWITCH_HOME: 'maker:companion-cloud:switch-home',
   /** Read the companion's 1:1 room (works while its home is offline). */
   COMPANION_CLOUD_TRANSCRIPT: 'maker:companion-cloud:transcript',
-  /** Computers a companion can be handed to. */
-  COMPANION_CLOUD_DEVICES: 'maker:companion-cloud:devices',
+  /** Where a companion can move, seen from this computer. */
+  COMPANION_CLOUD_HOME_CHOICES: 'maker:companion-cloud:home-choices',
+  /** The copies of Cindy in the cloud, when there are several to merge. */
+  COMPANION_CLOUD_CINDY_COPIES: 'maker:companion-cloud:cindy-copies',
+  /** Merge the other copies of Cindy into the kept one (on its home). */
+  COMPANION_CLOUD_MERGE_CINDY: 'maker:companion-cloud:merge-cindy',
+  /** A file of the companion's room, brought to this computer (works while its home is offline). */
+  COMPANION_CLOUD_ATTACHMENT: 'maker:companion-cloud:attachment',
+  /** Local copy of an avatar from another computer or the cloud (looked up first, optionally fetched). */
+  COMPANION_AVATAR_RESOLVE: 'maker:companion-avatar:resolve',
 } as const;
 
 /**

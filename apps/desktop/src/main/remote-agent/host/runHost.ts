@@ -1,3 +1,5 @@
+import { parseProviderSharePeer } from '@cindy/device-link';
+import { DEFAULT_REMOTE_AGENT_LIMITS, type RemoteAgentLimits, type RemoteAgentLimitUsage } from '../../../shared/remoteAgentLimits.js';
 /**
  * 远程 Agent 运行服务(被控端：提供 Agent 登录、订阅与供应商的电脑)。
  *
@@ -23,7 +25,6 @@ import { gunzip } from 'node:zlib';
 
 import {
   REMOTE_AGENT_MAX_PAYLOAD_BYTES,
-  REMOTE_AGENT_MAX_RUNS_PER_CONTROLLER,
   REMOTE_AGENT_METHODS,
   REMOTE_AGENT_POLL_MAX_BYTES,
   REMOTE_AGENT_READ_MAX_BYTES,
@@ -94,11 +95,6 @@ export const REMOTE_AGENT_HOST_UNREAD_BYTES = 64 * 1024 * 1024;
 export const REMOTE_AGENT_HOST_IDLE_MS = 3 * 60_000;
 /** 结束后保留一段时间供控制端读完收尾事件。 */
 export const REMOTE_AGENT_HOST_RETAIN_MS = 60_000;
-/**
- * 供应商组的组所在电脑(同账号控制端)替多个受邀者中转过来时，它在本机的任务按受邀者(relay)各算
- * REMOTE_AGENT_MAX_RUNS_PER_CONTROLLER；这个控制端合计不超过这里。受邀者控制端填的 relay 不放宽额度。
- */
-export const REMOTE_AGENT_MAX_RELAYED_RUNS_PER_CONTROLLER = REMOTE_AGENT_MAX_RUNS_PER_CONTROLLER * 4;
 /** 「需要换一台」凭证多久内有效(受邀者那边交接通常几秒内完成，重开时带回)。 */
 export const GROUP_SWITCH_TOKEN_TTL_MS = 10 * 60_000;
 /** 距上一次换电脑超过这么久算新的一轮(与供应商组本机任务的一轮同一口径)。 */
@@ -165,6 +161,7 @@ export interface OwnerProviderRouteBinding {
 }
 
 export interface RemoteAgentHostDeps {
+  readLimits?(): RemoteAgentLimits;
   isAgentAvailable(kind: RemoteAgentKind): boolean;
   startHosted(input: HostedStartInput): Promise<AgentSessionHandle>;
   /** 本机仍允许该控制端远程控制(总开关打开且未撤销)。 */
@@ -297,12 +294,12 @@ export interface RemoteAgentGroupRelayDeps {
    * 那台在启动阶段没能接下任务：按组的口径判定(provider-group/failurePolicy)，那台账号的问题冷却它。返回 true =
    * 可以换下一台；false = 换到哪台都一样(模型停用、请求无效等)，照原来的错误报给受邀者。
    */
-  noteStartFailure(providerId: string, member: GroupRelayMember, error: unknown): boolean;
+  noteStartFailure(providerId: string, member: GroupRelayMember, error: unknown, model?: string): boolean;
   /**
    * 那台上的任务运行中失败(终态错误，或一轮进行中任务意外结束)：问题出在那台电脑本身时按组的口径冷却它，组设置
    * 允许自动换电脑时返回 true(可以换一台)；用户停止、上下文超限等换到哪台都一样的失败返回 false。
    */
-  noteRunFailure(providerId: string, member: GroupRelayMember, failure: RelayRunFailure): boolean;
+  noteRunFailure(providerId: string, member: GroupRelayMember, failure: RelayRunFailure, model?: string): boolean;
   /** 计入那台组内电脑的负载(按它是否正在运行一轮)。 */
   trackRun(providerId: string, memberKey: string): GroupRelayLoad;
   /** 删掉受邀者后，请接过它任务的组内电脑清掉留下的会话记录与目录。 */
@@ -536,6 +533,27 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
   const shadowLocks = new Map<string, Promise<unknown>>();
   let sweepTimer: ReturnType<typeof setInterval> | null = null;
   const key = (controller: string, id: string) => `${controller}\0${id}`;
+  const limitDeviceOf = (controller: string) => parseProviderSharePeer(controller)?.deviceId ?? controller;
+  function usageByDevice(): Map<string, number> {
+    const counts = new Map<string, number>();
+    for (const run of runs.values()) {
+      // 清理完成前仍占名额，包括正在关闭的实例。
+      if (run.closedAt !== undefined) continue;
+      const device = limitDeviceOf(run.controller);
+      counts.set(device, (counts.get(device) ?? 0) + 1);
+    }
+    return counts;
+  }
+  function assertRunCapacity(controller: string): void {
+    const limits = deps.readLimits?.() ?? DEFAULT_REMOTE_AGENT_LIMITS;
+    const counts = usageByDevice();
+    if ((counts.get(limitDeviceOf(controller)) ?? 0) >= limits.perDevice) {
+      fail('REMOTE_AGENT_BUSY', '[DEVICE_LIMIT] remote task limit for this device reached');
+    }
+    if ([...counts.values()].reduce((sum, count) => sum + count, 0) >= limits.total) {
+      fail('REMOTE_AGENT_BUSY', '[TOTAL_LIMIT] remote task limit for the provider computer reached');
+    }
+  }
   const trustOf = (controller: string): RemoteAgentControllerTrust => deps.controllerTrust?.(controller) ?? 'owner';
   /** 按控制端分开存放的目录名(影子工作区、附件与受邀者目录)。 */
   const controllerDir = (controller: string) => createHash('sha256').update(controller).digest('hex').slice(0, 16);
@@ -1122,7 +1140,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
     if (!relayDeps || !start || !run.providerId || run.closing || run.handle) return false;
     run.groupFreshStart = undefined;
     const local = localGroupMember(run.providerId);
-    if (!relayDeps.noteStartFailure(run.providerId, local, error)) return false;
+    if (!relayDeps.noteStartFailure(run.providerId, local, error, payload.options.model)) return false;
     const tried = new Set<string>([...start.avoid, local.memberKey]);
     const next = await relayDeps.plan({
       kind: run.kind,
@@ -1280,8 +1298,8 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
     const relayDeps = deps.groupRelay;
     if (!relayDeps || !run.providerId || !run.hostSessionId) return null;
     const canSwitch = phase === 'start'
-      ? relayDeps.noteStartFailure(run.providerId, member, failure.message ?? '')
-      : relayDeps.noteRunFailure(run.providerId, member, failure);
+      ? relayDeps.noteStartFailure(run.providerId, member, failure.message ?? '', model)
+      : relayDeps.noteRunFailure(run.providerId, member, failure, model);
     if (!canSwitch) return null;
     // 旧版受邀者不认识这个状态：照旧只转出原来的错误。
     if (!run.acceptsGroupSwitch) return null;
@@ -1548,7 +1566,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
         }
         tried.add(current.memberKey);
         // 与本机自己的任务同一个判定：换到哪台都一样的失败不再换，照原来的错误报给受邀者。
-        if (!relayDeps.noteStartFailure(groupProviderId, current, error)) break;
+        if (!relayDeps.noteStartFailure(groupProviderId, current, error, backend.model ?? payload.options.model)) break;
         deps.log?.warn('remote agent: provider group computer did not take the shared task; trying the next one', {
           runId: run.id,
           member: current.memberKey,
@@ -2027,7 +2045,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
             kind,
             available: deps.isAgentAvailable(kind) && (!guest || GUEST_SUPPORTED_AGENTS.has(kind)),
           })),
-          maxRuns: REMOTE_AGENT_MAX_RUNS_PER_CONTROLLER,
+          maxRuns: (deps.readLimits?.() ?? DEFAULT_REMOTE_AGENT_LIMITS).perDevice,
           uploadChunkBytes: REMOTE_AGENT_UPLOAD_CHUNK_BYTES,
           maxPayloadBytes: REMOTE_AGENT_MAX_PAYLOAD_BYTES,
           virtualWorkspace: true,
@@ -2094,16 +2112,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
           if (reshareKey) fail('REMOTE_AGENT_RESHARE_NOT_ALLOWED', 'the owner of this computer has not agreed to this user');
           failProviderNotAllowed();
         }
-        // 运行数按受邀者作用域各算一份；同一控制端替多个受邀者中转时另有合计上限。只有同账号控制端(组所在电脑)
-        // 的 relay 才各算一份：受邀者自己填的 relay 只把它的数据分开存放，不能用来绕开它的运行数上限。
-        const active = [...runs.values()].filter((run) => run.controller === controller && run.closedAt === undefined);
-        const scope = guestScopeOf(controller, relayKey);
-        const scoped = controllerTrust === 'guest'
-          ? active.length
-          : active.filter((run) => guestScopeOf(run.controller, run.relayKey) === scope).length;
-        if (scoped >= REMOTE_AGENT_MAX_RUNS_PER_CONTROLLER || active.length >= REMOTE_AGENT_MAX_RELAYED_RUNS_PER_CONTROLLER) {
-          fail('REMOTE_AGENT_BUSY', 'too many tasks are running from this computer');
-        }
+        assertRunCapacity(controller);
         if (trust === 'guest') {
           // 受邀者必须用虚拟工作区：本机 Agent 只看到会话目录内的路径，附加目录也映射在其中。
           if (payload.virtualWorkspace !== true) {
@@ -2180,6 +2189,13 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
           reserved?.release();
           if (reshareKey) fail('REMOTE_AGENT_RESHARE_NOT_ALLOWED', 'the owner of this computer has not agreed to this user');
           failProviderNotAllowed();
+        }
+        // 供应商查询/组分配有 await；最终检查与登记间不能再等待，防止并发 open 超额。
+        try {
+          assertRunCapacity(controller);
+        } catch (error) {
+          reserved?.release();
+          throw error;
         }
         const run: Run = {
           id: request.runId,
@@ -2309,6 +2325,10 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
 
   return {
     handle,
+    limitUsage(): RemoteAgentLimitUsage {
+      const counts = [...usageByDevice().values()];
+      return { total: counts.reduce((sum, count) => sum + count, 0), devices: counts.length, largestDevice: Math.max(0, ...counts) };
+    },
     resolveClaudeSessionId(sdkSessionId: string): string | null {
       if (disposed || !sdkSessionId || sdkSessionId === '<pending>') return null;
       for (const run of runs.values()) {

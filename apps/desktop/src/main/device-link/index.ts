@@ -172,7 +172,7 @@ import {
   pollContactsDeviceSyncSettingChange,
   setContactsDeviceLinkOwnerActive,
 } from '../contacts-sync/driver';
-import { invokeWithClosedLinkRecovery, requiresSessionLink } from './linkRecovery';
+import { ensureInvokeLinkReady, invokeWithClosedLinkRecovery, requiresSessionLink } from './linkRecovery';
 import { invalidatePluginOauth } from '../plugin-oauth/runtime.js';
 import {
   createResponsivenessTracker,
@@ -612,14 +612,20 @@ function recoverFromRelayAuthFailure(): void {
     return;
   }
   lastRelayAuthRecoveryAt = now;
+  const recoveryClient = client;
+  const recoveryScope = activeOwnerScopeKey();
   void authManager
-    .refresh()
+    // A relay 401 proves reachability; an interface-change hint does not.
+    .refresh({ networkRecovered: true })
     .then((ok) => {
       // refresh 在途期间持有权可能已被另一个共享 userData 实例夺走
       // (onDemote → teardownActiveLink 已停掉 client):此时 connectNow 会把
       // 已停的 client 拉活、绕过仲裁重连,重新制造双连接 / last-wins 互踢。
       // 重连前重新确认本实例仍是持有者。
-      if (ok && arbiter?.isOwner()) client?.connectNow('relay-auth-recovered');
+      if (ok && client === recoveryClient && activeOwnerScopeKey() === recoveryScope
+        && !linkTornDown && !isAppSessionBoundaryPending() && arbiter?.isOwner()) {
+        client?.connectNow('relay-auth-recovered');
+      }
     })
     .catch((err) => {
       log.warn('relay auth recovery refresh threw (non-fatal)', err);
@@ -732,8 +738,9 @@ export function initDeviceLinkService(options: DeviceLinkServiceOptions = {}): v
 
   responsivenessTracker = createResponsivenessTracker({
     // 探测直接走 client.invoke(guardInvoke 已在 tracker 内持有探测席位,不能再套
-    // remoteInvoke 的外层门禁,否则自旋)。sessions:list 属 UNLINKED legacy 通道,无需 link。
-    probeInvoke: (deviceId, channel, args) => {
+    // remoteInvoke 的外层门禁,否则自旋)。曾协商可靠传输的 peer 必须先恢复 link，
+    // 否则 sessions:list 也只会滞留发送队列，反复得到 BACKPRESSURE。
+    probeInvoke: async (deviceId, channel, args) => {
       if (!client)
         throw new Error('[DEVICE_LINK_NOT_CONNECTED] device-link client not initialized');
       if (parseSharedTaskPeer(deviceId)) {
@@ -747,7 +754,27 @@ export function initDeviceLinkService(options: DeviceLinkServiceOptions = {}): v
           invoke: (probeChannel, probeArgs) => probeClient.invoke(deviceId, { channel: probeChannel, args: probeArgs }),
         });
       }
-      return client.invoke(deviceId, { channel, args }, resolveRemoteInvokeTimeoutMs(channel, args, 'desktop'));
+      const probeClient = client;
+      const scope = activeOwnerScopeKey();
+      const closeEpoch = openLinkCloseEpochs.get(deviceId) ?? 0;
+      const assertCurrent = (): void => {
+        if (revokedByRemote.has(deviceId)) {
+          throw new DeviceLinkError('ACCESS_REVOKED', 'access revoked by target device');
+        }
+        if (client !== probeClient || linkTornDown || activeOwnerScopeKey() !== scope
+          || isAppSessionBoundaryPending() || (openLinkCloseEpochs.get(deviceId) ?? 0) !== closeEpoch
+          || !arbiter?.isOwner()) {
+          throw new DeviceLinkError('NOT_CONNECTED', 'responsiveness probe superseded');
+        }
+        assertRemoteControlTargetEnabled(deviceId);
+      };
+      await ensureInvokeLinkReady(
+        () => probeClient.needsLinkRecovery(deviceId),
+        () => openRemoteLink(deviceId, { observed: false }),
+        assertCurrent,
+      );
+      return probeClient.invoke(deviceId, { channel, args }, resolveRemoteInvokeTimeoutMs(channel, args, 'desktop'),
+        { preSend: assertCurrent });
     },
     onUnresponsiveChanged: (deviceId, unresponsive, recovered) => {
       broadcast(DEVICE_LINK_PUSH.RESPONSIVENESS_CHANGED, { deviceId, unresponsive, recovered });
@@ -1811,7 +1838,7 @@ export async function remoteInvoke(
   deviceId: string,
   channel: string,
   args: unknown[],
-  options?: { preSend?: () => void },
+  options?: { preSend?: () => void; background?: boolean },
 ): Promise<InvokeResultPayload> {
   options?.preSend?.();
   assertNotStandby();
@@ -1837,7 +1864,7 @@ export async function remoteInvoke(
     preSend();
     if (!client?.isLinkReady(deviceId))
       throw new DeviceLinkError('LINK_NOT_OPEN', 'file cleanup requires an existing link');
-    return client.invoke(deviceId, { channel, args }, resolveRemoteInvokeTimeoutMs(channel, args, 'desktop'), { preSend });
+    return client.invoke(deviceId, { channel, args }, resolveRemoteInvokeTimeoutMs(channel, args, 'desktop'), { ...options, preSend });
   }
   const invoke = async (): Promise<InvokeResultPayload> => {
     // 熔断门禁(外层 guardInvoke)在连接等待之前:open 态快速失败,不消耗 1.5s 等待。
@@ -1852,12 +1879,18 @@ export async function remoteInvoke(
       // 必须是 async：失效时返回 rejected promise，不能同步抛出绕过调用方的 .catch。
       const accelerated = await tryPeerInvoke(deviceId, channel, args, async (peer, nextChannel, nextArgs) => {
         preSend();
-        return remoteInvoke(peer, nextChannel, nextArgs, { preSend });
+        return remoteInvoke(peer, nextChannel, nextArgs, { ...options, preSend });
       });
       preSend();
       if (accelerated) return accelerated;
     }
-    return client.invoke(deviceId, { channel, args }, resolveRemoteInvokeTimeoutMs(channel, args, 'desktop'), { preSend });
+    const invokeClient = client;
+    await ensureInvokeLinkReady(
+      () => invokeClient.needsLinkRecovery(deviceId),
+      () => openRemoteLink(deviceId, { observed: false }),
+      preSend,
+    );
+    return invokeClient.invoke(deviceId, { channel, args }, resolveRemoteInvokeTimeoutMs(channel, args, 'desktop'), { ...options, preSend });
   };
   const run = (): Promise<InvokeResultPayload> =>
     invokeWithClosedLinkRecovery(
@@ -1968,7 +2001,7 @@ export async function remoteSubscribe(
     let liveTopics = liveTopicsNow();
     if (liveTopics.length === 0) return { ok: true, result: null };
     if (!client) throw new Error('[DEVICE_LINK_NOT_CONNECTED] device-link client not initialized');
-    if (requiresSessionLink(liveTopics) && !client.isLinkReady(deviceId)) {
+    if (client.needsLinkRecovery(deviceId) || (requiresSessionLink(liveTopics) && !client.isLinkReady(deviceId))) {
       if ((openLinkCloseEpochs.get(deviceId) ?? 0) !== closeEpoch) {
         throw new DeviceLinkError('LINK_NOT_OPEN', 'link closed while waiting to reconnect');
       }
@@ -1979,6 +2012,9 @@ export async function remoteSubscribe(
       if (liveTopics.length === 0) return { ok: true, result: null };
     }
     assertRemoteControlTargetEnabledAfterReopen(deviceId);
+    if ((openLinkCloseEpochs.get(deviceId) ?? 0) !== closeEpoch) {
+      throw new DeviceLinkError('LINK_NOT_OPEN', 'link closed while restoring subscriptions');
+    }
     if (!client) throw new Error('[DEVICE_LINK_NOT_CONNECTED] device-link client not initialized');
     return client.invoke(deviceId, {
       channel: DL_SUBSCRIBE_CHANNEL,

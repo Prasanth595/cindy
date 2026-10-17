@@ -43,6 +43,59 @@ afterEach(async () => {
 });
 
 describe('history read ahead after a list refresh', () => {
+  // A bounded reconnect read is not a superset of completion targets. Hold one
+  // real read pending, then enqueue both request kinds in either order.
+  it.each([false, true])('retains completion targets alongside a queued reconnect (recent first=%s)', async (recentFirst) => {
+    setMobileAuthOwner('user-1');
+    const running = Array.from({ length: 5 }, (_, i) => session(`running-${i}`, '2026-10-11T00:00:09Z', { activeTurnStartedAt: 100 }));
+    remoteSessionStore.setDeviceSessions(DEVICE, 'Mac', [
+      session('held', '2026-10-11T00:00:01Z'), session('done', '2026-10-11T00:00:02Z', { lastTurnEndedAt: 100 }), ...running,
+    ]);
+    let release!: () => void;
+    const reader = { readHistoryView: vi.fn(async (id: string) => {
+      if (id === 'held') await new Promise<void>(resolve => { release = resolve; });
+      return page([row(id, 9)]);
+    }) };
+    const first = prefetchRemoteHistories(DEVICE, reader, () => true, new Set(['held']));
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+    const reconnect = () => prefetchRemoteHistories(DEVICE, reader, () => true);
+    const completion = () => prefetchRemoteHistories(DEVICE, reader, () => true, new Set(['done']));
+    if (recentFirst) { await reconnect(); await completion(); }
+    else { await completion(); await reconnect(); }
+    release();
+    await first;
+    expect(reader.readHistoryView.mock.calls.map(([id]) => id)).toEqual(expect.arrayContaining(['done', ...running.map(s => s.id)]));
+    expect((await readHistoryDisk(historyDiskAuthority(DEVICE, 'done')))?.items).toEqual(page([row('done', 9)]).items);
+  });
+
+  // Unit regression: completion must warm its own disk page without reading
+  // unrelated running tasks; ordinary preview/ack patches must not cause traffic.
+  it('reads only the completed task and ignores repeated completion and preview patches', async () => {
+    setMobileAuthOwner('user-1');
+    const start = Date.parse('2026-10-11T00:00:01Z');
+    remoteSessionStore.setDeviceSessions(DEVICE, 'Mac', [
+      session('s', '2026-10-11T00:00:01Z', { activeTurnStartedAt: start }),
+      session('running', '2026-10-11T00:00:09Z', { activeTurnStartedAt: start }),
+    ]);
+    const reader = { readHistoryView: vi.fn(async () => page([row('reply', 9)])) };
+    const reads: Promise<void>[] = [];
+    const off = remoteSessionStore.onSessionHistoryPrefetchRequested((device, id) => {
+      reads.push(prefetchRemoteHistories(device, reader, () => true, id ? new Set([id]) : undefined));
+    });
+    try {
+      remoteSessionStore.applySessionPatch(DEVICE, 's', { preview: 'still running' });
+      expect(reader.readHistoryView).not.toHaveBeenCalled();
+      remoteSessionStore.applySessionPatch(DEVICE, 's', { lastTurnEndedAt: start + 10_000 });
+      await Promise.all(reads);
+      expect(reader.readHistoryView.mock.calls).toEqual([['s']]);
+      expect((await readHistoryDisk(historyDiskAuthority(DEVICE, 's')))?.items).toEqual(page([row('reply', 9)]).items);
+      remoteSessionStore.applySessionPatch(DEVICE, 's', { lastTurnEndedAt: start + 10_000 });
+      remoteSessionStore.applySessionPatch(DEVICE, 's', { preview: 'final reply' });
+      await Promise.all(reads);
+      expect(reader.readHistoryView).toHaveBeenCalledTimes(1);
+    } finally { off(); }
+  });
+
   it.each(['prefix', 'collapsed', 'latest'] as const)('handles an oversized %s without losing the offline cache', async (kind) => {
     setMobileAuthOwner('user-1');
     const old = row('old', 1, 'x'.repeat(1_250_000));
@@ -85,7 +138,7 @@ describe('history read ahead after a list refresh', () => {
 
   it('fires on the first list and on a reconnect reseed, not on ordinary refreshes', () => {
     const seen: string[] = [];
-    const off = remoteSessionStore.onSessionListRefreshAfterGap((deviceId) => seen.push(deviceId));
+    const off = remoteSessionStore.onSessionHistoryPrefetchRequested((deviceId) => seen.push(deviceId));
     remoteSessionStore.setDeviceSessions(DEVICE, 'Mac', [session('s', '2026-10-11T00:00:01.000Z')]);
     remoteSessionStore.setDeviceSessions(DEVICE, 'Mac', [session('s', '2026-10-11T00:00:02.000Z')]);
     remoteSessionStore.requestReseed(DEVICE);

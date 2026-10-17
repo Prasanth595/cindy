@@ -6,7 +6,7 @@ import { cn } from '@/lib/utils';
 import { useBotProfiles, useBotUnreadCounts } from './botStore';
 import { useRemoteBots } from './useRemoteBots';
 import { useCompanionCloud } from './companionCloudStore';
-import { cloudRemoteBots, withoutShadowedBots } from './companionCloudPresentation';
+import { cloudRemoteBots, withoutCloudCompanions, withoutShadowedBots } from './companionCloudPresentation';
 import { cindyDeviceKey, cindyDeviceOptions, type CindyDeviceOption } from './cindyDeviceRoster';
 import { formatBotUnreadBadge } from './botListDisplay';
 import { isBotKnownOffline } from './BotConnectionStatus';
@@ -90,9 +90,9 @@ export function CindyHeaderDevicePicker({ bot }: { bot: BotChatIdentity }) {
   const navigate = useNavigate();
   const cloud = useCompanionCloud();
   // A demoted local Cindy is not the "local" option: she runs on her main computer.
-  const bots = withoutShadowedBots(useBotProfiles(), cloud);
+  const bots = withoutCloudCompanions(withoutShadowedBots(useBotProfiles(), cloud), cloud);
   // Copies other computers still list for a Cindy that runs elsewhere are not choices either.
-  const remoteBots = cloudRemoteBots(cloud, useRemoteBots());
+  const remoteBots = withoutCloudCompanions(cloudRemoteBots(cloud, useRemoteBots()), cloud);
   const devices = useDeviceLinkDeviceList();
   const unread = useBotUnreadCounts();
   const options = cindyDeviceOptions(

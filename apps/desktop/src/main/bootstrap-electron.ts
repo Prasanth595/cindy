@@ -90,6 +90,7 @@ import {
 import { isAllowedBillingMailtoRequest } from '../shared/billing.js';
 import path from 'node:path';
 import fs from 'node:fs';
+import { textFilePreviewResult, TEXT_PREVIEW_LIMIT_MB } from './text-file-preview';
 import os from 'node:os';
 import { pipeline } from 'node:stream/promises';
 import { execFile, execFileSync, spawn } from 'node:child_process';
@@ -284,6 +285,7 @@ import {
   feishuIm,
   telegramIm,
   prepareImDefaultSettingsChange,
+  registerBotImConnectionIpc,
   registerTelegramBotConfigIpc,
   startImOrchestrators,
   startImConnection,
@@ -7221,7 +7223,7 @@ const registerIpcHandlers = () => {
 
   // ── TextLightbox IPC (text-lightbox F4/F5) ──
   //
-  // Reads a text file for the TextLightbox preview. Hard cap is 20 MB per
+  // Reads a text file for the TextLightbox preview. Hard cap is 10 MiB per
   // text-lightbox spec; over-cap files are rejected with `oversize` so the
   // renderer can render the Oversize body without re-statting the file.
   // Reuses the same `isPathAllowed` blocklist as file-attachment IPCs.
@@ -7229,13 +7231,14 @@ const registerIpcHandlers = () => {
     'text-file:read-preview',
     async (
       _event: Electron.IpcMainInvokeEvent,
-      params: { filePath: string },
+      params: { filePath: string; allowFileTransfer?: boolean },
     ): Promise<{
       success: boolean;
       error?: string;
       /** 'oversize' = file > MAX_PREVIEW_MB; renderer should switch to Oversize body. */
       reason?: 'oversize' | 'not_found' | 'forbidden' | 'read_failed';
       data?: string;
+      transferRequired?: boolean;
       size: number;
       /** Preview cap in MB — surfaced so renderer can render dynamic copy
        * ("exceeding the {limitMb} MB preview limit") without hard-coding. */
@@ -7251,7 +7254,7 @@ const registerIpcHandlers = () => {
         // (renderer reads `limitMb` to render dynamic copy).
         // 10MB:预览走同步全文读 + 主线程高亮渲染,再大会明显卡;附件走路径透传
         // 不占这条预览成本(附件层已不在 renderer 做大小限制),两者解耦。
-        const MAX_PREVIEW_MB = 10;
+        const MAX_PREVIEW_MB = TEXT_PREVIEW_LIMIT_MB;
         const MAX_PREVIEW = MAX_PREVIEW_MB * 1024 * 1024;
 
         if (!filePath || !path.isAbsolute(filePath)) {
@@ -7293,8 +7296,8 @@ const registerIpcHandlers = () => {
           return { success: false, reason: 'oversize', size, limitMb: MAX_PREVIEW_MB };
         }
 
-        const data = await fs.promises.readFile(filePath, 'utf8');
-        return { success: true, data, size, limitMb: MAX_PREVIEW_MB };
+        const data = await fs.promises.readFile(filePath);
+        return textFilePreviewResult(data, params.allowFileTransfer === true);
       } catch (err) {
         return {
           success: false,
@@ -9637,6 +9640,8 @@ app.on('ready', async () => {
   // Telegram 个人 bot 行为/人格/群参与配置的 IPC(设置卡数据面),与 im.registerIpc
   // 同期无条件注册;不能放 host.ts 模块顶层(mock electron 的单测收集期会炸)。
   registerTelegramBotConfigIpc();
+  // 伙伴自有 IM 机器人连接的 IPC(伙伴设置「消息平台」页数据面), 同期无条件注册。
+  registerBotImConnectionIpc();
   // 把 telegram transport 注入 device-link 的跨设备上下线执行器。用注入而非
   // 静态 import: device-link 侧直接引 im/host 会把整个 IM 子系统拽进它的依赖链
   // (host.ts 模块顶层就调 app.getPath / ipcMain.handle),而 main 进程又禁止运行时

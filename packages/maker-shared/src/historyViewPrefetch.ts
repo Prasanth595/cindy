@@ -5,11 +5,26 @@ import { historyViewEndMs } from './historyViewHandoff.js';
 /** Recently changed tasks read ahead after a list refresh; older tasks wait to be opened. */
 export const HISTORY_PREFETCH_SESSION_LIMIT = 5;
 
+export interface HistoryPrefetchRequest { recent: boolean; targets: Set<string> }
+
+/** Recent tasks have a budget; explicit completion targets must survive that budget. */
+export function mergeHistoryPrefetchRequest(
+  previous: HistoryPrefetchRequest | undefined, targets?: ReadonlySet<string>, recent = targets === undefined,
+): HistoryPrefetchRequest {
+  return { recent: recent || previous?.recent === true, targets: new Set([...previous?.targets ?? [], ...targets ?? []]) };
+}
+
 export interface HistoryPrefetchSession {
   id: string;
   updatedAt: string;
   activeTurnStartedAt?: number | null;
   lastTurnEndedAt?: number | null;
+}
+
+/** Durable turn-end patches, rather than activity text, trigger read ahead. */
+export function historyTurnEnded(previous: { lastTurnEndedAt?: number | null }, patch: { lastTurnEndedAt?: unknown }): boolean {
+  return typeof patch.lastTurnEndedAt === 'number' && Number.isFinite(patch.lastTurnEndedAt)
+    && patch.lastTurnEndedAt > (previous.lastTurnEndedAt ?? 0);
 }
 
 /** A turn that started after the last one ended keeps writing rows without touching `updatedAt`. */
@@ -37,13 +52,14 @@ export function historyPrefetchVersion(session: HistoryPrefetchSession): string 
  */
 export function selectHistoryPrefetchSessions<S extends HistoryPrefetchSession>(
   sessions: readonly S[],
-  options: { eligible(session: S): boolean; prefetchedAt(sessionId: string): string | undefined; limit?: number },
+  options: { eligible(session: S): boolean; prefetchedAt(sessionId: string): string | undefined; limit?: number; targets?: ReadonlySet<string> },
 ): S[] {
   const rank = (session: S) => isTurnRunning(session) ? Number.POSITIVE_INFINITY : activityMs(session);
   return sessions
     .filter((session) => activityMs(session) > 0 && options.eligible(session))
     .sort((a, b) => rank(b) - rank(a) || activityMs(b) - activityMs(a))
-    .slice(0, options.limit ?? HISTORY_PREFETCH_SESSION_LIMIT)
+    .filter((session, index) => index < (options.limit ?? HISTORY_PREFETCH_SESSION_LIMIT)
+      || (options.targets?.has(session.id) && !isTurnRunning(session)))
     .filter((session) => {
       const version = historyPrefetchVersion(session);
       return version === undefined || options.prefetchedAt(session.id) !== version;

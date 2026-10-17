@@ -3,7 +3,7 @@ import { ApiError } from '@/api/client';
 import { createChatServerClient, type ChatActor, type ChatMessage } from '@/chat/chatServerClient';
 import {
   CLOUD_SWITCH_TIMEOUT_MS, cloudActorForRow, cloudCompanionMessages, cloudSwitchAfterSetHome, cloudSwitchCandidates,
-  cloudSwitchTick, cloudCompanionRows, type CloudSwitchState,
+  cloudSwitchTick, cloudCompanionRows, cloudHomeTargets, type CloudSwitchState,
 } from '@/chat/cloudCompanion';
 import type { HostedRemoteCollectionItem } from '@/device-link/remoteResources';
 
@@ -58,6 +58,17 @@ describe('cloud companion rows', () => {
       message(13, id(9), 'gone', { deleted: true }), message(14, id(9), 'notice', { origin: 'system' }), message(15, id(1), '  '),
     ], id(1));
     expect(view.map(item => [item.text, item.fromCompanion])).toEqual([['hello', false], ['reply', true]]);
+  });
+  it('orders by message time, so older history uploaded later still appears first', () => {
+    const at = (n: number, time: string): ChatMessage => ({ id: id(n), seq: String(n), authorId: id(9), author: { kind: 'human', name: '' },
+      createdAt: time, deleted: false, threadRootId: null, content: [{ type: 'text', text: `m${n}` }] });
+    const view = cloudCompanionMessages([at(20, '2026-10-14T00:00:00Z'), at(30, '2026-09-01T00:00:00Z')], id(1));
+    expect(view.map(item => item.text)).toEqual(['m30', 'm20']);
+  });
+
+  it('offers the computers the main computer names, never itself or this phone', () => {
+    const targets = [{ deviceId: 'home', online: true }, { deviceId: 'phone', online: true }, { deviceId: 'mac', online: true }, { deviceId: 'off', online: false }];
+    expect(cloudHomeTargets(targets, 'home', 'phone').map(target => target.deviceId)).toEqual(['mac']);
   });
 });
 

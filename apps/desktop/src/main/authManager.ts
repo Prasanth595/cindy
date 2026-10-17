@@ -3318,9 +3318,9 @@ function scheduleNonXdOrgBetaDefault(input: {
  */
 let coldStartAuthInFlight: Promise<AuthState> | null = null;
 
-function scheduleRefreshRetryAfterTransientFailure(epoch: number, retryAt?: number): void {
+function scheduleRefreshRetryAfterTransientFailure(epoch: number, retryAt?: number, networkFailure = false): void {
   if (epoch !== authStateEpoch) return;
-  const delay = refreshBackoff.defer(epoch, retryAt);
+  const delay = refreshBackoff.defer(epoch, retryAt, networkFailure);
   if (refreshTimer !== null) {
     clearTimeout(refreshTimer);
     refreshTimer = null;
@@ -5723,12 +5723,24 @@ export async function dispatchLoginAction(action: unknown): Promise<DesktopLogin
   }
 }
 
-export async function refresh(): Promise<boolean> {
+export async function refresh(options?: { networkRecovered?: boolean }): Promise<boolean> {
   if (getActiveAppSession().mode === 'local') {
     log.debug('runtime refresh skipped in local mode');
     return false;
   }
-  if (refreshPromise !== null) return refreshPromise;
+  if (refreshPromise !== null) {
+    if (!options?.networkRecovered) return refreshPromise;
+    const recoveryEpoch = authStateEpoch;
+    const refreshed = await refreshPromise;
+    if (refreshed || authStateEpoch !== recoveryEpoch) return refreshed;
+    // Another recovery caller may already have started the next single flight.
+    if (refreshPromise !== null) return refreshPromise;
+    if (!refreshBackoff.networkRecovered(recoveryEpoch)) return false;
+    // Consume this hint once, including when the old network failure arrived
+    // after it. A failure of the new attempt must retain its own cooldown.
+    return refresh();
+  }
+  if (options?.networkRecovered) refreshBackoff.networkRecovered(authStateEpoch);
   // Explicit callers (including chat polling and resume) share the same wait
   // as the retry timer; skipped calls must not move the deadline forward.
   if (refreshBackoff.remaining(authStateEpoch) > 0) return false;
@@ -5854,12 +5866,12 @@ export async function refresh(): Promise<boolean> {
           log.warn(
             `runtime refresh failed for a stale token after replacement retries status=${result.status} code=${code ?? '<none>'} — retrying no sooner than ${RUNTIME_REFRESH_RETRY_MS / 1000}s`,
           );
-          scheduleRefreshRetryAfterTransientFailure(refreshEpoch, result.retryAt);
+          scheduleRefreshRetryAfterTransientFailure(refreshEpoch, result.retryAt, result.status === 0);
         } else {
           log.warn(
             `runtime refresh failed transiently status=${result.status} code=${code ?? '<none>'} — retrying no sooner than ${RUNTIME_REFRESH_RETRY_MS / 1000}s`,
           );
-          scheduleRefreshRetryAfterTransientFailure(refreshEpoch, result.retryAt);
+          scheduleRefreshRetryAfterTransientFailure(refreshEpoch, result.retryAt, result.status === 0);
         }
         return false;
       }

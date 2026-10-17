@@ -92,6 +92,9 @@ export async function activateMessageUrl(
   }
 }
 
+// Repeated clicks share preparation and navigation, not a completed-result cache.
+const pendingHtmlPreviews = new Map<string, Promise<void>>();
+
 /** Local HTML opens in place; remote HTML uses the viewer-local HTTP preview. */
 export async function openHtmlFileByPreference(
   sessionId: string,
@@ -122,36 +125,77 @@ export async function openHtmlFileByPreference(
     }
     return;
   }
-  let loading: string | null = null;
-  const delayed = setTimeout(() => {
-    loading = toast.loading(t('chat.remoteFile.previewFetching'));
-  }, 600);
-  try {
-    const result = await window.electronAPI.fileBrowser.previewHtml({
-      origin: context.origin,
-      workdir: context.workingDir,
-      absPath,
-    });
-    if ((target ?? getLinkOpenPreference('local')) === 'sidebar' && sessionId) {
-      await openInSidebar(sessionId, result.url, t);
-    } else {
-      const opened = await window.electronAPI.openExternal(result.url);
-      if (!opened.success) toast.error(t('chat.markdownRenderer.openInBrowserFailed'));
+  const resolvedTarget = target ?? getLinkOpenPreference('local');
+  const key = JSON.stringify([sessionId, context.origin, context.workingDir, absPath, resolvedTarget]);
+  const pending = pendingHtmlPreviews.get(key);
+  if (pending) return pending;
+  const opening = prepareRemoteHtml().finally(() => {
+    if (pendingHtmlPreviews.get(key) === opening) pendingHtmlPreviews.delete(key);
+  });
+  pendingHtmlPreviews.set(key, opening);
+  return opening;
+
+  async function prepareRemoteHtml(): Promise<void> {
+    const requestId = crypto.randomUUID();
+    let cancelled = false;
+    let finished = false;
+    let loading: string | null = null;
+    const cancel = () => {
+      if (cancelled || finished) return;
+      cancelled = true;
+      pendingHtmlPreviews.delete(key);
+      void window.electronAPI.fileBrowser.cancelHtmlPreview(requestId).catch(() => {});
+      if (loading) toast.dismiss(loading);
+    };
+    window.addEventListener('beforeunload', cancel);
+    const delayed = setTimeout(() => {
+      if (cancelled) return;
+      loading = toast.loading(t('chat.remoteFile.previewFetching'), {
+        action: { label: t('commonUi.confirmDialog.cancel'), onClick: cancel },
+        onClose: cancel,
+      });
+    }, 600);
+    try {
+      const result = await window.electronAPI.fileBrowser.previewHtml({
+        origin: context.origin,
+        workdir: context.workingDir,
+        absPath,
+        requestId,
+      });
+      if (cancelled) return;
+      finished = true;
+      if (resolvedTarget === 'sidebar' && sessionId) {
+        await openInSidebar(sessionId, result.url, t);
+      } else {
+        const opened = await window.electronAPI.openExternal(result.url);
+        if (!opened.success) toast.error(t('chat.markdownRenderer.openInBrowserFailed'));
+      }
+    } catch (error) {
+      const code = extractIpcError(error)?.code;
+      if (cancelled || code === 'HTML_PREVIEW_CANCELLED') return;
+      const key =
+        code === 'DEVICE_LINK_BUSY'
+          ? 'previewConnectionBusy'
+          : code === 'DEVICE_LINK_TIMEOUT'
+            ? 'previewTimeout'
+            : code === 'DEVICE_LINK_NOT_CONNECTED' ||
+                code === 'DEVICE_LINK_DEVICE_OFFLINE' ||
+                code === 'DEVICE_LINK_DEVICE_UNRESPONSIVE'
+              ? 'previewDisconnected'
+              : code === 'HTML_PREVIEW_TOO_LARGE'
+                ? 'previewTooLarge'
+                : code === 'HTML_PREVIEW_UNSUPPORTED'
+                  ? 'previewUnsupported'
+                  : code === 'NOT_FOUND'
+                    ? 'previewNotFound'
+                    : 'previewFailed';
+      toast.error(t(`chat.remoteFile.${key}`));
+    } finally {
+      finished = true;
+      window.removeEventListener('beforeunload', cancel);
+      clearTimeout(delayed);
+      if (loading) toast.dismiss(loading);
     }
-  } catch (error) {
-    const code = extractIpcError(error)?.code;
-    const key =
-      code === 'HTML_PREVIEW_TOO_LARGE'
-        ? 'previewTooLarge'
-        : code === 'HTML_PREVIEW_UNSUPPORTED'
-          ? 'previewUnsupported'
-          : code === 'NOT_FOUND'
-            ? 'previewNotFound'
-            : 'previewFailed';
-    toast.error(t(`chat.remoteFile.${key}`));
-  } finally {
-    clearTimeout(delayed);
-    if (loading) toast.dismiss(loading);
   }
 }
 

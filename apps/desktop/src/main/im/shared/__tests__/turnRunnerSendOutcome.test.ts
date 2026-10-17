@@ -39,6 +39,7 @@ const mocks = vi.hoisted(() => ({
     reactToMessage: vi.fn(),
     removeMessageReaction: vi.fn(),
     sendText: vi.fn(),
+    sendFile: vi.fn(),
     sendMarkdownText: vi.fn(),
     startStreamingText: vi.fn(),
     patchMarkdownCard: vi.fn(),
@@ -3137,6 +3138,49 @@ describe('turnRunner send outcome policy (feishu adapter characterization)', () 
     expect(unsub).toHaveBeenCalledTimes(1);
   });
 
+  it.each([
+    ['telegram', false], ['telegram', true], ['feishu', false],
+    ['feishu', true], ['discord', false], ['discord', true],
+  ] as const)('%s 空成功结果不补发占位（过程消息：%s）', async (channel, withProgress) => {
+    const handle = {
+      messageId: 'telegram-progress',
+      append: vi.fn(), replace: vi.fn(), finalize: vi.fn(), close: vi.fn(),
+    };
+    mocks.feishuIm.startStreamingText.mockResolvedValue(handle);
+    runner = createTurnRunner({ ...fakeAdapter, channel }, fakeRepo, fakeCards);
+    const h = setupSession(async () => ({ accepted: true }));
+    await runDefaultTurn();
+    if (withProgress) {
+      h.emit({ type: 'text', data: { text: ' \n ', isFinal: true } });
+      await flushMicrotasks();
+    }
+    mocks.feishuIm.sendText.mockClear();
+    h.emit({ type: 'done', data: {} });
+    await waitForAssertion(() => {
+      expect(mocks.logger.info.mock.calls.some((c) => String(c[0]).includes('turn done'))).toBe(true);
+    });
+    expect(mocks.feishuIm.sendText).not.toHaveBeenCalled();
+    expect(mocks.feishuIm.consumePendingOpenerCard).not.toHaveBeenCalled();
+    if (withProgress) expect(handle.finalize).toHaveBeenCalledWith('');
+    else expect(handle.finalize).not.toHaveBeenCalled();
+  });
+
+  it.each(['wechat', 'wecom', 'dingtalk'] as const)('%s 空结果仍提交终态，不经过普通发消息兜底', async (channel) => {
+    const commitFinal = vi.fn(async () => undefined);
+    runner = createTurnRunner({
+      ...fakeAdapter, channel,
+      output: { kind: 'chunked-text', im: mocks.feishuIm as unknown as ChannelIM, commitFinal },
+    }, fakeRepo, fakeCards);
+    const h = setupSession(async () => ({ accepted: true }));
+    await runDefaultTurn();
+    mocks.feishuIm.sendText.mockClear();
+    h.emit({ type: 'done', data: {} });
+    await waitForAssertion(() => expect(commitFinal).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 'ou_user', text: '', terminal: 'done',
+    })));
+    expect(mocks.feishuIm.sendText).not.toHaveBeenCalled();
+  });
+
   it('clears the retry notice when the retried turn succeeds with no output', async () => {
     // 不变量锁定(review #844 codex P1 提出的担心, 实测不成立但值得锁住):
     // 重投成功而那一轮零输出时, 没有任何进展 handler 会清掉"正在自动重试" —— 卡片
@@ -3172,8 +3216,8 @@ describe('turnRunner send outcome policy (feishu adapter characterization)', () 
     });
     const finalView = String(handle.finalize.mock.calls[0][0]);
     expect(finalView).not.toContain('正在自动重试');
-    // 过程区清空后应回落到空回复兜底, 而不是把状态行当正文。
-    expect(finalView).toContain('空回复');
+    // 空正文交给传输层撤回进度卡，不把状态行当正文。
+    expect(finalView).toBe('');
   });
 
   it('waits for the pending retry card before finalizing a terminal overload error', async () => {
@@ -4295,6 +4339,24 @@ describe('turnRunner send outcome policy (feishu adapter characterization)', () 
   });
 
 describe('初始流式输出面创建失败的收口降级(#2164)', () => {
+  // Unit: real turn events; missing stream must not drop generated media.
+  it.each(['', 'image ready'])('keeps generated media when stream creation fails (body=%s)', async (body) => {
+    mocks.feishuIm.startStreamingText.mockRejectedValue(new Error('card create denied'));
+    mocks.resolveXdtImageUrl.mockReturnValue({ absPath: '/media/generated.png' });
+    const h = setupSession(async () => ({ accepted: true }));
+    await runDefaultTurn();
+    mocks.feishuIm.sendText.mockClear();
+    h.emit({ type: 'tool_result_full', data: { fullText: '{"xdt_image_url":"xdt-image://generated.png"}' } });
+    if (body) h.emit({ type: 'text', data: { text: body, isFinal: true } });
+    h.emit({ type: 'done', data: {} });
+    await flushMicrotasks();
+    await waitForAssertion(() => expect(mocks.feishuIm.sendFile).toHaveBeenCalledExactlyOnceWith(
+      'ou_user', '/media/generated.png', undefined, { threadTs: undefined },
+    ));
+    if (body) expect(mocks.feishuIm.sendText).toHaveBeenCalledWith('ou_user', body, { threadTs: undefined });
+    else expect(mocks.feishuIm.sendText).not.toHaveBeenCalled();
+  });
+
   it('startStreamingText 拒绝 + 短文本:正文经 sendText 一次性送达,turn 正常完成', async () => {
     mocks.feishuIm.startStreamingText.mockRejectedValue(new Error('card create denied'));
     const h = setupSession(async () => ({ accepted: true }));
@@ -4385,7 +4447,7 @@ describe('初始流式输出面创建失败的收口降级(#2164)', () => {
     );
   });
 
-  it('空正文 + 建卡失败:保留「本轮无文本输出」提示', async () => {
+  it('空正文 + 建卡失败: 不补发占位提示', async () => {
     mocks.feishuIm.startStreamingText.mockRejectedValue(new Error('card create denied'));
     const h = setupSession(async () => ({ accepted: true }));
     const onTurnComplete = vi.fn();
@@ -4400,15 +4462,11 @@ describe('初始流式输出面创建失败的收口降级(#2164)', () => {
     h.emit({ type: 'done', data: {}, source: 'claude-code' });
     await waitForAssertion(() => {
       expect(onTurnComplete).toHaveBeenCalledTimes(1);
-      expect(mocks.feishuIm.sendText).toHaveBeenCalledWith(
-        'ou_user',
-        expect.stringContaining('本轮无文本输出'),
-        expect.anything(),
-      );
+      expect(mocks.feishuIm.sendText).not.toHaveBeenCalled();
     });
   });
 
-  it('无文本输出兜底发送认领暂存 opener', async () => {
+  it('无文本输出清理本轮 opener，不另发兜底', async () => {
     mocks.feishuIm.startStreamingText.mockRejectedValue(new Error('card create denied'));
     mocks.feishuIm.getPendingOpenerTrigger.mockReturnValue('msg-user');
     mocks.feishuIm.consumePendingOpenerCard.mockResolvedValue(false);
@@ -4424,11 +4482,8 @@ describe('初始流式输出面创建失败的收口降级(#2164)', () => {
     await flushMicrotasks();
     h.emit({ type: 'done', data: {}, source: 'claude-code' });
     await waitForAssertion(() => {
-      expect(mocks.feishuIm.sendText).toHaveBeenCalledWith(
-        'ou_user',
-        expect.stringContaining('本轮无文本输出'),
-        expect.objectContaining({ fallbackOpenerId: 'om_deferred' }),
-      );
+      expect(mocks.feishuIm.consumePendingOpenerCard).toHaveBeenCalledWith('ou_user', '');
+      expect(mocks.feishuIm.sendText).not.toHaveBeenCalled();
     });
   });
 
@@ -4471,11 +4526,7 @@ describe('初始流式输出面创建失败的收口降级(#2164)', () => {
     await waitForAssertion(() => {
       expect(onTurnB).toHaveBeenCalledTimes(1);
       expect(mocks.feishuIm.consumePendingOpenerCard).toHaveBeenCalledTimes(1);
-      expect(mocks.feishuIm.sendText).toHaveBeenCalledWith(
-        'ou_user',
-        expect.stringContaining('本轮无文本输出'),
-        expect.anything(),
-      );
+      expect(mocks.feishuIm.sendText).not.toHaveBeenCalled();
     });
   });
 });

@@ -441,7 +441,7 @@ export interface ContextOverflowRolloverDeps {
     sessionId: string,
     handoff: string,
     meta: {
-      reason: 'context-overflow' | 'model-window-switch' | 'pi-prompt-timeout' | 'native-session-recovery';
+      reason: ContextRebuildReason;
       sourceUserClientId: string | null;
       sourceAgentKind?: 'cc' | 'codex' | 'pi';
       sourceModel?: string | null;
@@ -484,6 +484,53 @@ export function isCanonicalBotContext(row: { source?: string | null; botRole?: s
 
 export function canContinueContextRecovery(row: { source?: string | null; botRole?: string | null }): boolean {
   return row.source === 'desktop' || isCanonicalBotContext(row);
+}
+
+export type ContextRebuildReason =
+  | 'context-overflow'
+  | 'model-window-switch'
+  | 'pi-prompt-timeout'
+  | 'native-session-recovery'
+  | 'idle-gap';
+
+/**
+ * 伙伴的对话(主对话 + IM 群 / 话题 / 外部私聊专线 + 伙伴群聊专线)共用同一套上下文自管理
+ * 规则:到线换窗、工具结果入交接、空闲间隔刷新。委派 / 历史任务不是对话,不在此列。
+ */
+export function isBotChatContext(row: { source?: string | null; botRole?: string | null }): boolean {
+  return (
+    row.source === 'bot' &&
+    (row.botRole === 'canonical' || row.botRole === 'channel' || row.botRole === 'group')
+  );
+}
+
+/**
+ * 伙伴对话空闲这么久之后的下一条消息,先换一个干净的原生会话再发:老话题不再占着模型
+ * 工作上下文把新话题带偏。完整记录仍在同一条任务里,交接只带最近一段 + 检索指引。
+ * 主对话与 IM 专线同一条线,不按渠道各设一套。
+ */
+export const BOT_IDLE_GAP_REBUILD_MS = 12 * 60 * 60 * 1000;
+
+/**
+ * 空闲间隔 = 上一次活动到本次发送之间的时长。本次要发的 user 若已落库(IM 群预落库、
+ * 桌面先写后发),它自己不算活动,基准取它的落库时刻;否则基准取现在。createdAt 缺失 /
+ * 非正数的记录不参与(老数据或测试桩),算不出就不触发。
+ */
+export function measureIdleGap(
+  source: ReadonlyArray<Pick<OverflowSourceMessage, 'createdAt'>>,
+  pendingUserIndex: number,
+  now: number,
+): number | null {
+  const activity = pendingUserIndex >= 0 ? source.slice(0, pendingUserIndex) : source;
+  let latest = 0;
+  for (const message of activity) {
+    if (Number.isFinite(message.createdAt) && message.createdAt > latest) latest = message.createdAt;
+  }
+  if (latest <= 0) return null;
+  const pending = pendingUserIndex >= 0 ? source[pendingUserIndex] : undefined;
+  const reference =
+    pending && Number.isFinite(pending.createdAt) && pending.createdAt > 0 ? pending.createdAt : now;
+  return Math.max(0, reference - latest);
 }
 
 export type OverflowClaimResult = 'claimed' | 'in-flight' | 'idle';
@@ -656,9 +703,9 @@ export function createContextOverflowRollover(deps: ContextOverflowRolloverDeps)
         toLabel: label,
         sessionId,
         reason: oversized ? 'native-session-recovery' : 'context-overflow',
-        includeToolResults: oversized || isCanonicalBotContext(sessionRow),
-        companion: isCanonicalBotContext(sessionRow),
-        ...(await companionRecall(sessionId, isCanonicalBotContext(sessionRow))),
+        includeToolResults: oversized || isBotChatContext(sessionRow),
+        companion: isBotChatContext(sessionRow),
+        ...(await companionRecall(sessionId, isBotChatContext(sessionRow))),
         workingMemory: await readWorkingMemoryNote(sessionId),
       });
       await deps.commitRebuild(sessionId, handoff, {
@@ -850,8 +897,8 @@ export function createContextOverflowRollover(deps: ContextOverflowRolloverDeps)
       toLabel: label,
       sessionId,
       reason: 'model-window-switch',
-      companion: isCanonicalBotContext(sessionRow),
-      ...(await companionRecall(sessionId, isCanonicalBotContext(sessionRow))),
+      companion: isBotChatContext(sessionRow),
+      ...(await companionRecall(sessionId, isBotChatContext(sessionRow))),
       workingMemory: await readWorkingMemoryNote(sessionId),
     });
     await deps.commitRebuild(sessionId, handoff, {
@@ -883,9 +930,10 @@ export function createContextOverflowRollover(deps: ContextOverflowRolloverDeps)
     if (!sessionRow.sdkSessionId) return false;
     const live = deps.getLiveSession(sessionId);
     if (live?.isTurnRunning() || (live?.listBackgroundTasks?.().length ?? 0) > 0) return false;
-    const companion = isCanonicalBotContext(sessionRow);
+    // 伙伴的 IM 专线与主对话同一套规则:到线换窗、带工具结果、空闲间隔刷新。
+    const botChat = isBotChatContext(sessionRow);
     const source = await deps.listMessages(sessionId);
-    const lastError = findLatestRebuildableError(source, sessionRow.agentKind === 'pi', companion);
+    const lastError = findLatestRebuildableError(source, sessionRow.agentKind === 'pi', botChat);
     const liveUsage = live?.getUsageSnapshot?.();
     const hasLiveTokens =
       liveUsage !== undefined &&
@@ -915,7 +963,7 @@ export function createContextOverflowRollover(deps: ContextOverflowRolloverDeps)
     // 账本的内容。只有落在 70%–90% 之间才去读账本;提前换窗必须拿到渲染好的账本段并原样
     // 带进交接——同一个快照只读一次,免得判新鲜之后第二次读取失败,交接反而没带账本。
     let earlyWorkingMemory: string | undefined;
-    const pressure = companion
+    const pressure = botChat
       ? shouldRebuildForContextPressure(usedTokens, window * BOT_CONTEXT_CHECKPOINT_RATIO) ||
         (shouldRebuildForContextPressure(usedTokens, window * BOT_CONTEXT_CHECKPOINT_RATIO_FRESH) &&
           (await isWorkingMemoryFresh(sessionId)) &&
@@ -923,14 +971,37 @@ export function createContextOverflowRollover(deps: ContextOverflowRolloverDeps)
       : shouldRebuildForContextPressure(usedTokens, window);
     const compactFailed = liveUsage?.needsRollover === true;
     const piByteRecoveryFailed = sessionRow.agentKind === 'pi' && isPiRequestBodyRecoveryExhausted(lastError);
+    // 空闲间隔:伙伴对话隔了半天以上再开口,先换干净的原生会话,老话题不带偏新话题。
+    // 本次要发的 user 已落库时它自己不算活动(见 measureIdleGap);同一条消息因发送失败
+    // 重试时,上一次已按空闲间隔重建过就不再重建。
+    let pendingUserIndexForGap = -1;
+    for (let i = source.length - 1; i >= 0; i -= 1) {
+      const message = source[i];
+      if (message && message.role === 'user' && !isSyntheticUser(message)) {
+        if (source.slice(i + 1).every((later) => later.role === 'error')) pendingUserIndexForGap = i;
+        break;
+      }
+    }
+    const idleGapMs = botChat ? measureIdleGap(source, pendingUserIndexForGap, Date.now()) : null;
+    let idleGap = idleGapMs !== null && idleGapMs >= BOT_IDLE_GAP_REBUILD_MS;
+    if (idleGap && pendingUserIndexForGap >= 0) {
+      const previous = await deps.findLatestRebuildMeta(sessionId);
+      if (
+        previous?.reason === 'idle-gap' &&
+        previous.sourceUserClientId === source[pendingUserIndexForGap]?.clientId
+      ) {
+        idleGap = false;
+      }
+    }
     const tokenViolated =
       isContextOverflowErrorData(lastError) ||
       isPiPromptRpcTimeoutError(lastError) ||
       pressure ||
       compactFailed ||
-      (companion && isCompanionCompactFailure(lastError));
+      idleGap ||
+      (botChat && isCompanionCompactFailure(lastError));
     const oversized = isOversizedHistoryErrorData(lastError);
-    const historyHealth = (oversized || companion) && sessionRow.agentKind === 'codex'
+    const historyHealth = (oversized || botChat) && sessionRow.agentKind === 'codex'
       ? await deps.classifyCodexHistory?.(sessionRow.sdkSessionId)
       : undefined;
     const action = decideCindyCompression({
@@ -954,9 +1025,20 @@ export function createContextOverflowRollover(deps: ContextOverflowRolloverDeps)
       lastUserIndex = -1;
     }
     if (!lastUser) return false;
-    const rebuildReason = isPiPromptRpcTimeoutError(lastError)
+    const otherTrigger =
+      isContextOverflowErrorData(lastError) ||
+      isPiPromptRpcTimeoutError(lastError) ||
+      pressure ||
+      compactFailed ||
+      (botChat && isCompanionCompactFailure(lastError)) ||
+      piByteRecoveryFailed ||
+      historyHealth === 'oversized' ||
+      oversized;
+    const rebuildReason: ContextRebuildReason = isPiPromptRpcTimeoutError(lastError)
       ? 'pi-prompt-timeout'
-      : 'context-overflow';
+      : idleGap && !otherTrigger
+        ? 'idle-gap'
+        : 'context-overflow';
     // 待发出/失败的 user 还会由本次 send 或 Retry 再 wire 一次，交接里不能带。
     // 已完成的最后一轮（后面有非 error）要留在交接里。
     // lastUser 若不在 handoff 窗口里（index < 0），窗口全是其后的 tool/assistant，算已完成。
@@ -977,10 +1059,16 @@ export function createContextOverflowRollover(deps: ContextOverflowRolloverDeps)
       fromLabel: label,
       toLabel: label,
       sessionId,
-      reason: companion || isOversizedHistoryErrorData(lastError) ? 'native-session-recovery' : rebuildReason,
-      includeToolResults: companion || isOversizedHistoryErrorData(lastError),
-      companion,
-      ...(await companionRecall(sessionId, companion)),
+      reason:
+        rebuildReason === 'idle-gap'
+          ? 'idle-gap'
+          : botChat || isOversizedHistoryErrorData(lastError)
+            ? 'native-session-recovery'
+            : rebuildReason,
+      ...(rebuildReason === 'idle-gap' && idleGapMs !== null ? { idleGapMs } : {}),
+      includeToolResults: botChat || isOversizedHistoryErrorData(lastError),
+      companion: botChat,
+      ...(await companionRecall(sessionId, botChat)),
       workingMemory: earlyWorkingMemory ?? (await readWorkingMemoryNote(sessionId)),
     });
     await deps.commitRebuild(sessionId, handoff, {
@@ -996,6 +1084,8 @@ export function createContextOverflowRollover(deps: ContextOverflowRolloverDeps)
     deps.onRebuilt?.(sessionId);
     deps.log.info('unhealthy native session rebuilt before send; skip compact/resume', {
       sessionId,
+      reason: rebuildReason,
+      ...(rebuildReason === 'idle-gap' ? { idleGapMs } : {}),
       sourceUserClientId: lastUser.clientId,
     });
     return true;
@@ -1033,14 +1123,17 @@ export function createContextOverflowRollover(deps: ContextOverflowRolloverDeps)
             source = (await deps.listMessages(sessionId)).filter((message) => message.role !== 'error');
             assertCanCommit();
           }
+          // 显式重启(target=null)对伙伴的每段对话一视同仁: 主任务与 IM / 群专线按空闲间隔
+          // 刷新同一口径写交接(isBotChatContext)。换路由恢复仍只认主任务。
+          const companionChat = target ? isCanonicalBotContext(row) : isBotChatContext(row);
           const handoff = buildHandoffText(source, {
             fromLabel: engineLabelForOverflow(row.agentKind),
             toLabel: engineLabelForOverflow(row.agentKind),
             sessionId,
             reason: 'native-session-recovery',
             includeToolResults: !target || isCanonicalBotContext(row),
-            companion: isCanonicalBotContext(row),
-            ...(await companionRecall(sessionId, isCanonicalBotContext(row))),
+            companion: companionChat,
+            ...(await companionRecall(sessionId, companionChat)),
             workingMemory: await readWorkingMemoryNote(sessionId),
           });
           // Durable handoff, SDK reset and complete target route succeed or fail together.

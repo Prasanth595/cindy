@@ -1,4 +1,5 @@
 import { readTokenSpeedSnapshot, type TokenSpeedSnapshot } from '@cindy/maker-shared/usage-format';
+import { historyTurnEnded, nextHistoryCacheReceipt } from '@cindy/maker-shared/message-window';
 import { normalizeTaskTags, reconcileTaskTags } from '@cindy/maker-shared';
 import {
   createContext,
@@ -715,7 +716,7 @@ const pendingRefreshSessions = new Set<string>();
 const reseedHandlers = new Map<string, Set<() => void>>();
 // A whole-list read after app start or a reconnect reseed may follow a gap in live pushes.
 // Listeners read changed tasks ahead; ordinary list refreshes while pushes flow do not fire.
-const sessionListRefreshListeners = new Set<(deviceId: string) => void>();
+const sessionListRefreshListeners = new Set<(deviceId: string, sessionId?: string) => void>();
 const sessionListRefreshArmed = new Set<string>();
 const sessionListRefreshSeen = new Set<string>();
 const subs = new Set<() => void>();
@@ -3533,6 +3534,7 @@ export const remoteSessionStore = {
       return;
     }
     let shouldReseedAfterPatch = false;
+    const turnEnded = historyTurnEnded(shard.sessions[idx], patch);
     if (patch.status === 'deleted' || patch.status === 'archived') {
       protectedQuestions.delete(sessionId);
       visibleInteractionCache.delete(sessionId);
@@ -3574,6 +3576,9 @@ export const remoteSessionStore = {
       shouldReseedAfterPatch = wasPinned && unpinned;
     }
     recomputeSessions();
+    if (turnEnded && patch.status !== 'deleted' && patch.status !== 'archived') {
+      for (const listener of sessionListRefreshListeners) listener(deviceId, sessionId);
+    }
     if (shouldReseedAfterPatch) this.requestReseed(deviceId);
   },
 
@@ -4604,8 +4609,9 @@ export const remoteSessionStore = {
       const fromList = payload.listMessage === true;
       if (fromList && (!sessionId || !listMessageWriteAllowed(sessionId, deviceId))) return;
       if (sessionId && message) {
-        this.appendMessage(sessionId, message, { listMessage: fromList });
-        if (fromList) void cacheSessionListMessage(deviceId, sessionId, message);
+        const received = fromList ? { ...message, cacheReceipt: nextHistoryCacheReceipt() } : message;
+        this.appendMessage(sessionId, received, { listMessage: fromList });
+        if (fromList) void cacheSessionListMessage(deviceId, sessionId, received);
       }
       return;
     }
@@ -5402,8 +5408,8 @@ export const remoteSessionStore = {
     reseedHandlers.get(deviceId)?.forEach((handler) => handler());
   },
 
-  /** Whole-list reads that may follow missed pushes (first read per app run, reconnect reseed). */
-  onSessionListRefreshAfterGap(listener: (deviceId: string) => void): () => void {
+  /** First/reconnected lists, or a specific task whose durable turn just ended. */
+  onSessionHistoryPrefetchRequested(listener: (deviceId: string, sessionId?: string) => void): () => void {
     sessionListRefreshListeners.add(listener);
     return () => { sessionListRefreshListeners.delete(listener); };
   },

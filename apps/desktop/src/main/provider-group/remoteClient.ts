@@ -19,6 +19,7 @@ import {
   type ProviderGroupView,
 } from '../../shared/providerGroup.js';
 import { throwIpcError } from '../utils/ipcValidate.js';
+import { PROVIDER_GROUP_FAILURE_COOLDOWN_MS } from './cooling.js';
 
 /** 留出 invoke 路由头的空间，同时适配可靠传输和旧端普通帧；预算按 JSON 的 UTF-8 字节数计。 */
 export const PROVIDER_GROUP_USAGE_REQUEST_MAX_BYTES = Math.min(MAX_FRAME_BYTES, MAX_TRANSPORT_MESSAGE_BYTES) - 64 * 1024;
@@ -43,6 +44,7 @@ export interface ProviderGroupRemoteClient {
     memberKey: string;
     cause: ProviderGroupRemoteCoolCause;
     resetAt?: number | null;
+    model?: string;
   }): Promise<void>;
   leases(ownerDeviceId: string, seq: number, entries: readonly ProviderGroupRemoteLease[]): Promise<void>;
   view(ownerDeviceId: string, providerId: string, modelOrOptions?: string | { model?: string; includeGuestSupport?: boolean }): Promise<ProviderGroupView>;
@@ -90,13 +92,23 @@ export function createProviderGroupRemoteClient(invoke: ProviderGroupRemoteInvok
     },
 
     async cool(ownerDeviceId, input) {
-      await call(ownerDeviceId, {
-        action: 'cool',
+      const scoped = input.cause === 'usage-limit' && !!input.model;
+      const request = {
+        action: scoped ? 'cool-model' : 'cool',
         providerId: input.providerId,
         memberKey: input.memberKey,
         cause: input.cause,
+        ...(input.model ? { model: input.model } : {}),
         ...(typeof input.resetAt === 'number' ? { resetAt: input.resetAt } : {}),
-      });
+      };
+      try {
+        await call(ownerDeviceId, request);
+      } catch (error) {
+        // Old owners reject unknown actions. A short legacy cooldown must not carry the model's weekly reset.
+        if (!scoped || !(error instanceof Error) || !/unknown provider group action/.test(error.message)) throw error;
+        await call(ownerDeviceId, { ...request, action: 'cool', model: undefined,
+          resetAt: Date.now() + PROVIDER_GROUP_FAILURE_COOLDOWN_MS });
+      }
     },
 
     async leases(ownerDeviceId, seq, entries) {

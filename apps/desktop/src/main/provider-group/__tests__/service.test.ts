@@ -451,7 +451,8 @@ describe('onTurnError (automatic switch)', () => {
     }));
     expect(h.deps.fallback).not.toHaveBeenCalled();
     // 撞到用量上限的那台进入冷却，新任务不会分到它。
-    expect(h.router.coolingUntil('anthropic', 'local')).toBe(1_000_000 + PROVIDER_GROUP_DEFAULT_COOLDOWN_MS);
+    expect(h.router.coolingUntil('anthropic', 'local', MODEL)).toBe(1_000_000 + PROVIDER_GROUP_DEFAULT_COOLDOWN_MS);
+    expect(h.router.coolingUntil('anthropic', 'local', 'claude-sonnet-5')).toBeNull();
   });
 
   it('switches back to this computer with its provider when a remote member fails', async () => {
@@ -506,7 +507,7 @@ describe('onTurnError (automatic switch)', () => {
     const h = harness({ row: { sdkSessionId: 'native-1' } });
     h.service.onTurnError('s1', { sdkError: 'rate_limit' }, 7);
     await flush();
-    expect(h.router.coolingUntil('anthropic', 'local')).not.toBeNull();
+    expect(h.router.coolingUntil('anthropic', 'local', MODEL)).not.toBeNull();
     expect(h.deps.switchAgentLocation).toHaveBeenCalledWith(
       's1',
       expect.objectContaining({ agentDeviceId: 'mini', providerId: MINI.providerId }),
@@ -685,7 +686,7 @@ describe('onTurnError (automatic switch)', () => {
     h.bindings.set('s1', { providerId: 'anthropic', memberKey: MINI.key, at: 1 });
     h.service.onTurnError('s1', { sdkError: 'rate_limit' }, 1);
     await flush();
-    expect(h.router.coolingUntil('anthropic', 'local')).not.toBeNull();
+    expect(h.router.coolingUntil('anthropic', 'local', MODEL)).not.toBeNull();
     expect(h.router.coolingUntil('anthropic', MINI.key)).toBeNull();
     expect(h.deps.switchAgentLocation).toHaveBeenCalledWith(
       's1',
@@ -1157,6 +1158,17 @@ describe('beforeSend', () => {
     await h.service.beforeSend('s1');
     expect(h.row.agentDeviceId).toBe('mini');
     expect(h.router.coolingUntil('anthropic', 'local')).toBeNull();
+  });
+
+  it('only moves before sending when the cooldown covers this task’s model', async () => {
+    const h = harness({ row: { sdkSessionId: 'native' } });
+    h.bindings.set('s1', { providerId: 'anthropic', memberKey: 'local', at: 1 });
+    h.router.markCooling('anthropic', 'local', 2_000_000, 'claude-fable-5');
+    await h.service.beforeSend('s1');
+    expect(h.deps.switchAgentLocation).not.toHaveBeenCalled();
+    h.router.markCooling('anthropic', 'local', 2_000_000, MODEL);
+    await h.service.beforeSend('s1');
+    expect(h.bindings.get('s1')?.memberKey).toBe(MINI.key);
   });
 
   it('moves a task off a computer that is cooling down', async () => {

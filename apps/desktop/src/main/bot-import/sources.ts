@@ -182,7 +182,9 @@ async function connections(items: ImportItem[], source: ImportSource, values: Re
       mcp: { name, enabled, ...(command ? { command, args: Array.isArray(record.args) ? record.args.map(string) : [], cwd, transport: 'stdio' as const } : { url, transport: record.transport === 'sse' ? 'sse' as const : 'http' as const }),
         env: scalarEnv(record.env), headers: scalarEnvHeaders(record.headers) } });
   }
-  const telegram = object(object(values.channels).telegram);
+  const channels = object(values.channels);
+  const ownerAllowFrom = listOf(object(values.commands).ownerAllowFrom);
+  const telegram = object(channels.telegram);
   const accounts = Object.keys(object(telegram.accounts)).length ? object(telegram.accounts) : { default: telegram };
   for (const [account, raw] of Object.entries(accounts)) {
     const settings = object(raw);
@@ -192,7 +194,33 @@ async function connections(items: ImportItem[], source: ImportSource, values: Re
       const file = sourcePath(deps.home, settings.tokenFile, source.root);
       token = (await readText(path.dirname(file), file, budget))?.trim() ?? '';
     }
-    if (token) items.push({ view: { id: entryId('telegram', account), name: `Telegram · ${account}`, category: 'connections', selected: true, dependsOn: references.map(key => entryId('env', key)) }, envDependencies: { names: references, entries: [] }, credential: { format: 'telegram', value: { token, account } } });
+    // Owner: Hermes TELEGRAM_ALLOWED_USERS; OpenClaw commands.ownerAllowFrom (telegram:<id>), then the
+    // account's effective allowFrom (an omitted account list inherits channels.telegram.allowFrom).
+    const ownerUserId = source.kind === 'hermes'
+      ? singleUserId(listOf(env.TELEGRAM_ALLOWED_USERS), [], TELEGRAM_USER_ID)
+      : singleUserId(ownerAllowFrom.filter(entry => /^telegram:/i.test(String(entry))), ['telegram:'], TELEGRAM_USER_ID)
+        ?? singleUserId(listOf(settings.allowFrom ?? telegram.allowFrom), ['telegram:', 'tg:'], TELEGRAM_USER_ID);
+    if (token) items.push({ view: { id: entryId('telegram', account), name: `Telegram · ${account}`, category: 'connections', selected: true, dependsOn: references.map(key => entryId('env', key)) }, envDependencies: { names: references, entries: [] }, credential: { format: 'telegram', value: { token, account, ...(ownerUserId ? { ownerUserId } : {}) } } });
+  }
+  // Discord: OpenClaw channels.discord[.accounts.*].token (plain string or env SecretRef; DISCORD_BOT_TOKEN
+  // is the default-account fallback once a channels.discord block exists); Hermes DISCORD_BOT_TOKEN.
+  const discord = object(channels.discord);
+  const discordAccounts = Object.keys(object(discord.accounts)).length ? object(discord.accounts) : { default: discord };
+  for (const [account, raw] of Object.entries(discordAccounts)) {
+    const settings = object(raw);
+    let token = secretReference(settings.token);
+    if (!token && account === 'default' && env.DISCORD_BOT_TOKEN
+      && (source.kind === 'hermes' || Object.hasOwn(channels, 'discord'))) token = '${DISCORD_BOT_TOKEN}';
+    if (!token) continue;
+    const references = [...token.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g)].map(match => match[1]!);
+    // Owner: Hermes DISCORD_ALLOWED_USERS; OpenClaw commands.ownerAllowFrom (discord:<id>), then the
+    // first set of allowFrom / legacy dm.allowFrom on the account, then on channels.discord.
+    const inherited = [settings.allowFrom, object(settings.dm).allowFrom, discord.allowFrom, object(discord.dm).allowFrom].find(value => value !== undefined);
+    const ownerUserId = source.kind === 'hermes'
+      ? singleUserId(listOf(env.DISCORD_ALLOWED_USERS), [], DISCORD_USER_ID)
+      : singleUserId(ownerAllowFrom.filter(entry => /^discord:/i.test(String(entry))), ['discord:'], DISCORD_USER_ID)
+        ?? singleUserId(listOf(inherited), ['discord:', 'user:'], DISCORD_USER_ID);
+    items.push({ view: { id: entryId('discord', account), name: `Discord · ${account}`, category: 'connections', selected: true, dependsOn: references.map(key => entryId('env', key)) }, envDependencies: { names: references, entries: [] }, credential: { format: 'discord', value: { token, account, ...(ownerUserId ? { ownerUserId } : {}) } } });
   }
   // Keep native auth metadata without exposing its contents or inventing a refresh protocol.
   // API keys have a direct environment equivalent; provider OAuth needs its native refresh adapter.
@@ -214,6 +242,35 @@ async function connections(items: ImportItem[], source: ImportSource, values: Re
         ...(apiKey && variable ? {} : { issues: ['NATIVE_AUTH_REFRESH_REQUIRED'] }) }, ...(apiKey && variable ? { env: { [variable]: apiKey } } : {}), credential: { format: 'native-auth', value: { source: source.kind, file: name, profile: id, value: profile } } });
     }
   }
+}
+
+const TELEGRAM_USER_ID = /^\d{4,20}$/;
+const DISCORD_USER_ID = /^\d{17,20}$/;
+
+/** Allowlists are arrays in OpenClaw config and comma-separated strings in Hermes env. */
+function listOf(value: unknown): unknown[] {
+  if (Array.isArray(value)) return value;
+  if (typeof value === 'string') return value.split(',');
+  return [];
+}
+
+/** Only a single explicit user ID is an owner. Wildcards, access groups and multi-user lists are not guessed. */
+function singleUserId(entries: unknown[], prefixes: string[], pattern: RegExp): string | undefined {
+  const ids = new Set<string>();
+  for (const entry of entries) {
+    let value = typeof entry === 'number' && Number.isSafeInteger(entry) ? String(entry) : typeof entry === 'string' ? entry.trim() : '';
+    const prefix = prefixes.find(candidate => value.toLowerCase().startsWith(candidate));
+    if (prefix) value = value.slice(prefix.length);
+    if (pattern.test(value)) ids.add(value);
+  }
+  return ids.size === 1 ? [...ids][0] : undefined;
+}
+
+/** A plain token, or an OpenClaw env SecretRef kept as a source reference until selection. */
+function secretReference(value: unknown): string {
+  if (typeof value === 'string') return value.trim();
+  const ref = object(value);
+  return ref.source === 'env' && typeof ref.id === 'string' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(ref.id) ? `\${${ref.id}}` : '';
 }
 
 function scalarEnvHeaders(value: unknown): Record<string, string> {

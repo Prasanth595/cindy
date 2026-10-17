@@ -18,6 +18,7 @@ const read = (relative: string): string =>
   readFileSync(resolve(__dirname, relative), 'utf8').replace(/\r\n/g, '\n');
 
 const draftRouteSource = read('../features/cc-agent/NewMakerDraftRoute.tsx');
+const remoteDraftHooksSource = read('../features/cc-agent/useRemoteDraftDefaults.ts');
 const chatInputSource = read('../components/new-chat/ChatInput.tsx');
 
 describe('草稿页:建到被控电脑的任务也能选第三台电脑', () => {
@@ -66,7 +67,7 @@ describe('草稿页:建到被控电脑的任务也能选第三台电脑', () => 
     const invoke = draftRouteSource.indexOf("'maker:apply-new-maker-draft-pref'", push);
     expect(guard).toBeGreaterThan(push);
     expect(invoke).toBeGreaterThan(guard);
-    expect(draftRouteSource).toContain('if (capabilities && !effectiveAgentDeviceId) {');
+    expect(remoteDraftHooksSource).toContain('if (capabilities && !effectiveAgentDeviceId) {');
   });
 
   it('权限在被控电脑上生效:换 Agent 所在电脑沿用被控电脑草稿的权限档,被夹掉时也不掺本机偏好', () => {

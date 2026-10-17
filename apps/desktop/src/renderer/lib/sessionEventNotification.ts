@@ -79,7 +79,11 @@ export async function botOwnedSessionNotificationTitle(
       && (row as { id?: unknown }).id === sessionId,
     ) as { title?: unknown; role?: unknown; kind?: unknown } | undefined;
     if (!session) continue;
-    if (session.role === 'group' || session.kind === 'group') return BOT_GROUP_LANE_SESSION;
+    // 群专线与伙伴的 IM 专线都是隐藏专线，不发系统通知。
+    if (
+      session.role === 'group' || session.kind === 'group'
+      || session.role === 'channel' || session.kind === 'channel'
+    ) return BOT_GROUP_LANE_SESSION;
     const sessionTitle = typeof session.title === 'string' ? session.title.trim() : '';
     return sessionTitle && sessionTitle !== bot.name
       ? `${bot.name} · ${sessionTitle}`

@@ -250,7 +250,8 @@
           "output": "出力",
           "amount": "推定金額"
         },
-        "estimateNote": "金額はローカルの単価に基づく推定で、プロバイダーの実際の請求額ではありません。"
+        "estimateNote": "金額はローカルの単価に基づく推定で、プロバイダーの実際の請求額ではありません。",
+        "moreAria": "{{name}} の他の操作"
       },
       "removeConfirm": {
         "title": "{{name}} との共有を削除しますか？",
@@ -273,7 +274,8 @@
         "approveAria": "{{name}} の利用に同意する",
         "toastApproved": "{{name}} が {{owner}} のプロバイダーグループ経由で {{provider}} を使えるようにしました",
         "toastRejected": "{{name}} のリクエストを拒否しました",
-        "toastRevoked": "{{name}} への同意を取り消しました。実行中のセッションは停止しました"
+        "toastRevoked": "{{name}} への同意を取り消しました。実行中のセッションは停止しました",
+        "listTitle": "{{owner}} のプロバイダーグループ経由で利用"
       }
     },
     "toast": {
@@ -447,6 +449,20 @@
       "rejectedBody": "{{name}} は {{provider}} の共有を承認しませんでした",
       "reshareTitle": "新しい利用リクエスト",
       "reshareBody": "{{name}} が {{owner}} のプロバイダーグループ経由で、あなたの共有した {{provider}} を使いたいと希望しています"
+    },
+    "runLimits": {
+      "title": "リモートセッション数",
+      "description": "自分の他のパソコンと共有先のデバイスを含め、このパソコンのすべてのプロバイダーに適用されます。応答済みでも解放されていないセッションは含まれます。このパソコンで直接実行するセッションは含まれません。",
+      "perDevice": "接続デバイスごとの最大セッション数",
+      "total": "全接続デバイスの合計最大セッション数",
+      "invalid": "1～{{max}} の整数を入力してください。デバイスごとの上限は合計上限以下にしてください。",
+      "usage": "使用中 {{used}} / {{total}}、{{devices}} 台から接続。1 台あたりの最多使用数は {{largest}} です。",
+      "applyHint": "保存後すぐに適用されます。上限を下げても既存のセッションは中断せず、新規作成のみ制限します。グループ経由の接続は直接接続しているデバイスに集計されます。",
+      "save": "保存",
+      "reset": "既定値に戻す",
+      "saved": "リモートセッション数を保存しました",
+      "retry": "再読み込み",
+      "loading": "読み込み中…"
     }
   },
   "providerGroup": {
@@ -467,7 +483,8 @@
         "total": "合計使用量",
         "amount": "推定金額",
         "people": "利用者",
-        "models": "モデル"
+        "models": "モデル",
+        "computers": "使ったパソコン"
       },
       "selfTag": "あなた",
       "relayName": "{{device}} 経由",
@@ -480,7 +497,44 @@
       "collapseAria": "{{name}} の使用量の内訳を閉じる",
       "table": {
         "member": "パソコン / モデル"
-      }
+      },
+      "filter": {
+        "partyAria": "利用者で絞り込む",
+        "allParties": "全員",
+        "selfDetail": "このパソコンとほかのパソコンの合計",
+        "relayDetail": "個々の利用者は見えません",
+        "computerAria": "グループ内のパソコンで絞り込む",
+        "allComputers": "グループ内のすべてのパソコン"
+      },
+      "focus": {
+        "clear": "すべて表示",
+        "only": "{{name}} だけ表示"
+      },
+      "byParty": {
+        "title": "人別",
+        "col": {
+          "party": "利用者",
+          "computers": "使ったパソコン",
+          "actions": "操作"
+        }
+      },
+      "byComputer": {
+        "title": "パソコン別",
+        "col": {
+          "computer": "グループ内のパソコン",
+          "parties": "利用者"
+        }
+      },
+      "stack": {
+        "aria": "棒の色分け",
+        "party": "人",
+        "computer": "パソコン",
+        "model": "モデル"
+      },
+      "loadFailed": "使用量を読み込めませんでした。しばらくすると自動で再試行します。",
+      "legacyNote": "{{device}} の Cindy のアップデートが必要です。今は全期間の合計だけを表示しています。",
+      "coverage": "日別の集計は {{date}} から",
+      "emptyRange": "この期間の使用量はありません"
     },
     "section": {
       "title": "プロバイダーグループ",
@@ -8868,7 +8922,8 @@
         "failed": "完了しませんでした",
         "paused": "一時停止中",
         "disabled": "オフ"
-      }
+      },
+      "dirElsewhere": "「{{device}}」上"
     },
     "remoteSettings": {
       "empty": "まだ項目がありません。",
@@ -9718,7 +9773,11 @@
       "setupDeferred": "パートナーとのチャットでログインと確認を続けられます。",
       "automationInvalid": "自動化の定義を変換できず、作成されていません。",
       "itemFailed": "この項目は未完了です。再試行するか詳細を確認してください。",
-      "chatPartial": "パートナーは作成されましたが、一部の情報は完全に保存されていません。以下の項目は対応が必要です。他の情報とチャットは利用できます。"
+      "chatPartial": "パートナーは作成されましたが、一部の情報は完全に保存されていません。以下の項目は対応が必要です。他の情報とチャットは利用できます。",
+      "imBotOwnerMissing": "オーナーのユーザー ID が見つかりませんでした。仲間の「メッセージプラットフォーム」ページでこのボットを接続してください。",
+      "imBotGatewayRunning": "元のゲートウェイがまだこのボットを使っています。停止してから「メッセージプラットフォーム」で接続してください。",
+      "imBotInUse": "このボットはすでにこのコンピューターで使われています（設定 → IM ボット、または別の仲間）。",
+      "imBotConnectFailed": "このボットに接続できませんでした。仲間の「メッセージプラットフォーム」ページでやり直してください。"
     },
     "learning": {
       "memory": "記憶しました：{{title}}",
@@ -9729,9 +9788,7 @@
       "homeLabel": "メインのパソコン",
       "thisComputer": "このパソコン",
       "homeOffline": "メインのパソコン「{{device}}」がオフラインです",
-      "homeOfflineShort": "メインのパソコンがオフライン",
       "homeUnreachable": "メインのパソコン「{{device}}」はリモート操作を許可していません",
-      "homeReadOnly": "メインのパソコン：{{device}}",
       "continueHere": "このパソコンで続ける",
       "takeOverHint": "このパソコンで続けると、{{name}} はこちらで動作し、下の会話も引き継がれます。",
       "takingOver": "このパソコンで {{name}} を準備しています…",
@@ -9749,6 +9806,45 @@
       "devicesFailed": "パソコンの一覧を読み込めませんでした",
       "noTargets": "引き継げるパソコンがありません。別のパソコンがオンラインで、同じアカウントでログインし、「同一アカウントのデバイスによる操作を許可」をオンにしている必要があります",
       "resumeToMove": "{{name}} を再開してから別のパソコンに移動してください",
+      "transferBusy": "{{name}} はまだ返信中です。返信が終わってから移動してください",
+      "targetUnavailable": "「{{device}}」は今は使えません。オンラインでリモート操作がオンになっている必要があります",
+      "shadowTitle": "この仲間は「{{device}}」で動作しています",
+      "shadowHint": "ここの会話は閲覧のみできます。",
+      "openOnHome": "「{{device}}」で開く",
+      "runsOn": "「{{device}}」で実行中",
+      "runsHere": "このパソコンで実行中",
+      "switchHint": "{{name}} を実行するパソコンを変更",
+      "switchTo": "「{{device}}」に移す",
+      "switchHere": "このパソコンに移す",
+      "switchTitle": "{{name}} を「{{device}}」で実行しますか？",
+      "switchDescription": "今後 {{name}} は「{{device}}」で実行され、チャット履歴も一緒に移ります。作業ディレクトリ、接続、ローカルのファイルは元のパソコンに残ります。",
+      "switchAction": "「{{device}}」に移す",
+      "switched": "{{name}} は「{{device}}」で実行されるようになりました",
+      "switchConflict": "{{name}} のメインのパソコンはすでに変更されているため、移しませんでした",
+      "switchOffline": "接続できません。{{name}} のメインのパソコンは変わっていません",
+      "switchFailed": "{{name}} を「{{device}}」に移せませんでした",
+      "homeOutdated": "メインのパソコン「{{device}}」の Cindy が古いバージョンです。更新するか、そのパソコンで変更してください",
+      "arrivingLater": "{{name}} はこのパソコンに移り、準備中です。まもなくチームメイト一覧に表示されます",
+      "busyTitle": "{{name}} はまだ返信中です",
+      "busyDescription": "この返信が終わってから「{{device}}」に移すか、返信を止めてすぐに移せます。",
+      "busyWait": "終わってから移す",
+      "busyStop": "止めて移す",
+      "waitingForTurn": "{{name}} の返信が終わるのを待ってから「{{device}}」に移します…",
+      "mergeLabel": "重複した Cindy を統合",
+      "mergeHint": "Cindy が {{count}} 人います：{{devices}}",
+      "mergeTitle": "{{count}} 人の Cindy を1人に統合しますか？",
+      "mergeDescription": "統合後は Cindy が1人だけ残ります。ほかの Cindy のチャット履歴、記憶、スキル、ToDo、ルーティンが引き継がれます。同じ名前で内容が違う記憶とスキルは別に保存され、上書きされません。ほかの Cindy はオフになり、データはクラウドと元のパソコンに残ります。",
+      "mergeKeep": "名前、性格、設定を残す Cindy",
+      "mergeAction": "統合",
+      "merged": "{{count}} 人の Cindy を1人に統合し、{{messages}} 件のメッセージを引き継ぎました",
+      "mergedRenamed": "{{count}} 人の Cindy を1人に統合し、{{messages}} 件のメッセージを引き継ぎました。別名で保存：{{renamed}}",
+      "mergeFailed": "統合できませんでした。あとでもう一度お試しください（統合済みの部分は重複しません）",
+      "mergeBusy": "まだ返信中の Cindy があります。返信が終わってから統合してください",
+      "mergePaused": "一時停止中の Cindy があります。設定で再開してから統合してください",
+      "mergeOffline": "「{{device}}」に接続できません。オンラインになってから統合してください",
+      "mergeOutdated": "「{{device}}」の Cindy が古いバージョンです。先に更新してください",
+      "homeOfflineShort": "メインのパソコンがオフライン",
+      "homeReadOnly": "メインのパソコン：{{device}}",
       "moveTo": "「{{device}}」に移す",
       "transferTitle": "{{name}} を「{{device}}」に移しますか？",
       "transferDescription": "これから {{name}} は「{{device}}」で動作します。作業ディレクトリと接続はこのパソコンに残り、このパソコンの会話は履歴になります。",
@@ -9756,12 +9852,144 @@
       "transferred": "{{name}} を「{{device}}」に移しました",
       "transferConflict": "{{name}} のメインのパソコンはすでに変わっているため、移しませんでした",
       "transferOffline": "サーバーに接続できません。{{name}} は引き続きこのパソコンで動作します",
-      "transferBusy": "{{name}} はまだ返信中です。返信が終わってから移動してください",
-      "transferFailed": "{{name}} を「{{device}}」に移せませんでした",
-      "targetUnavailable": "「{{device}}」は今は使えません。オンラインでリモート操作がオンになっている必要があります",
-      "shadowTitle": "この仲間は「{{device}}」で動作しています",
-      "shadowHint": "ここの会話は閲覧のみできます。",
-      "openOnHome": "「{{device}}」で開く"
+      "transferFailed": "{{name}} を「{{device}}」に移せませんでした"
+    },
+    "channels": {
+      "title": "メッセージプラットフォーム",
+      "platform": {
+        "telegram": "Telegram",
+        "feishu": "飛書",
+        "lark": "Lark",
+        "wecom": "WeCom",
+        "dingtalk": "DingTalk",
+        "discord": "Discord"
+      },
+      "status": {
+        "connected": "接続済み",
+        "connecting": "接続中…",
+        "offline": "オフライン",
+        "conflict": "別のデバイスがこのボットを使用中",
+        "error": "エラー",
+        "idle": "未接続"
+      },
+      "remove": "削除",
+      "removeAria": "{{platform}} を削除",
+      "empty": "{{name}} にはまだメッセージプラットフォームがありません。Telegram、飛書、WeCom、DingTalk、Discord で作成したボットを追加すると、{{name}} がそこで返信します。",
+      "externalNote": "このボットにメッセージを送る人は全員 {{name}} と話すことになります。あなた自身のメッセージは {{name}} の権限で実行され、それ以外の人には権限を制限した非表示のタスクが個別に用意されます。",
+      "sharedMemoryNote": "{{name}} はここでの情報と他の会話の情報をまとめて使います。記憶を分けたい場合は別の仲間を使ってください。",
+      "groups": {
+        "title": "グループ",
+        "hint": "{{name}} が参加したグループがここに表示されます。「常時」= すべてのメッセージを読み、{{name}} が発言するかを自分で判断します（毎回トークンを消費）。",
+        "empty": "まだグループがありません。ボットをグループに追加し、誰かが発言すると表示されます。",
+        "loadFailed": "グループ一覧を読み込めませんでした",
+        "saveFailed": "保存できず、以前のモードに戻しました",
+        "retry": "再読み込み",
+        "mode": {
+          "mention": "@ のみ",
+          "always": "常時"
+        }
+      },
+      "lanes": {
+        "title": "非表示のタスク",
+        "hint": "グループ、トピック、ほかの人からの DM ごとに非表示のタスクがあります。止まったり話がかみ合わなくなったりしたら、やり直せます。履歴は残ります。",
+        "ownerName": "あなたとの DM",
+        "kind": {
+          "ownerDm": "メインタスク",
+          "group": "グループ",
+          "topic": "トピック",
+          "guestDm": "DM"
+        },
+        "state": {
+          "running": "返信中",
+          "failed": "前回の返信でエラー"
+        },
+        "noActivity": "まだメッセージがありません",
+        "messageCount_other": "現在のコンテキストに {{count}} 件のメッセージ",
+        "reset": "やり直す",
+        "resetAria": "「{{lane}}」をやり直す",
+        "resetConfirm": {
+          "title": "「{{lane}}」をやり直しますか？",
+          "description": "次のメッセージはまっさらなコンテキストから始まり、進行中の返信は停止します。履歴はこの非表示のタスクにすべて残り、{{name}} の記憶は変わりません。",
+          "ownerDescription": "これは {{name}} のメインタスクで、デスクトップでの会話とこの DM で共有しています。次のメッセージはまっさらなコンテキストから始まり、進行中の返信は停止します。履歴、記憶、ファイルはすべて残ります。",
+          "confirm": "やり直す",
+          "cancel": "キャンセル"
+        },
+        "resetDone": "「{{lane}}」をやり直しました。次のメッセージはまっさらなコンテキストから始まります。",
+        "resetFailed": "やり直せませんでした。しばらくしてからもう一度お試しください",
+        "loadFailed": "非表示のタスクを読み込めませんでした",
+        "empty": "グループやほかの人からの DM はまだありません。グループや DM で誰かが {{name}} に話しかけると、ここに表示されます。"
+      },
+      "add": {
+        "button": "プラットフォームを追加",
+        "title": "{{name}} にプラットフォームを追加",
+        "description": "プラットフォームで作成したボットの認証情報を貼り付けてください。このコンピューターにのみ保存されます。",
+        "platformLabel": "プラットフォーム",
+        "telegram": {
+          "tokenLabel": "Bot Token",
+          "tokenPlaceholder": "@BotFather が発行した Token を貼り付け",
+          "ownerLabel": "あなたの Telegram ユーザー ID",
+          "ownerPlaceholder": "数字のみの ID（@userinfobot で確認）",
+          "ownerHint": "この ID からのメッセージは {{name}} 自身の権限で実行されます。それ以外の人はゲストとして扱われます。"
+        },
+        "feishu": {
+          "serviceLabel": "サービス",
+          "appIdLabel": "App ID",
+          "appIdPlaceholder": "cli_xxxxxxxxxxxxxxxx",
+          "appSecretLabel": "App Secret",
+          "appSecretPlaceholder": "App Secret を貼り付け"
+        },
+        "wecom": {
+          "botIdLabel": "Bot ID",
+          "botIdPlaceholder": "WeCom 管理画面の Bot ID",
+          "secretLabel": "Secret",
+          "secretPlaceholder": "WeCom 管理画面の Bot Secret",
+          "ownerHint": "最初にこのボットへ DM を送った人がオーナーになり、{{name}} 自身の権限で実行されます。先にインテリジェントボットを作成し、長時間接続を有効にしてください。"
+        },
+        "dingtalk": {
+          "appKeyLabel": "Client ID",
+          "appKeyPlaceholder": "ボットアプリの Client ID を貼り付け",
+          "appSecretLabel": "Client Secret",
+          "appSecretPlaceholder": "ボットアプリの Client Secret を貼り付け",
+          "ownerHint": "最初にこのボットへ DM を送った人がオーナーになり、{{name}} 自身の権限で実行されます。グループでは @ されたときだけ返信します。"
+        },
+        "discord": {
+          "tokenLabel": "Bot Token",
+          "tokenPlaceholder": "Discord Bot Token を貼り付け",
+          "ownerLabel": "あなたの Discord ユーザー ID",
+          "ownerPlaceholder": "17〜20 桁の数字 ID",
+          "ownerHint": "この ID からの DM だけが {{name}} に届き、{{name}} 自身の権限で実行されます。"
+        },
+        "confirm": "接続",
+        "connecting": "接続中…",
+        "errors": {
+          "invalidToken": "Bot Token の形式ではないようです。123456:ABC… の形式です。",
+          "invalidOwner": "ユーザー ID は数字で入力してください。",
+          "invalidFeishu": "App ID と App Secret の両方を入力してください。",
+          "invalidWecom": "Bot ID と Secret の両方を入力してください。",
+          "invalidDingtalk": "Client ID と Client Secret の両方を入力してください。",
+          "invalidDiscordToken": "Bot Token の形式ではないようです。",
+          "invalidDiscordOwner": "ユーザー ID は 17〜20 桁の数字です。",
+          "conflict": "このボットはすでにこのコンピューターで使われています（設定 → IM ボット、または別の仲間）。",
+          "botUnavailable": "{{name}} は現在利用できません。復帰後にもう一度お試しください。",
+          "connectFailed": "接続できませんでした：{{reason}}",
+          "failed": "完了できませんでした。しばらくしてからもう一度お試しください。",
+          "personalBotGone": "設定 → IM ボット にこのボットはもうありません。認証情報を入力してください。"
+        },
+        "source": {
+          "label": "接続方法",
+          "existing": "Cindy で設定済みのボットを使う",
+          "manual": "新しい認証情報を入力",
+          "moveNote": "このボットは 設定 → IM ボット から移され、そちらは空になります。これまでの個人チャットとグループチャットは {{name}} が引き継いで返信します。"
+        }
+      },
+      "removeConfirm": {
+        "title": "{{platform}} を削除しますか？",
+        "description": "このボットは返信を停止し、認証情報はこのコンピューターから削除され、非表示のタスクはアーカイブされます。{{name}} の記憶と性格は変わりません。",
+        "confirm": "削除",
+        "cancel": "キャンセル",
+        "failed": "削除できませんでした。しばらくしてからもう一度お試しください",
+        "ok": "OK"
+      }
     }
   },
   "common": {
@@ -11149,6 +11377,9 @@
       "previewFailed": "Web プレビューを準備できませんでした。ディレクトリと接続を確認して再試行してください。",
       "previewNotFound": "HTML ファイルが見つかりません。ファイルが存在するか確認してください。",
       "previewFetching": "Web プレビューを準備しています…",
+      "previewConnectionBusy": "接続が混雑しているため、Web プレビューの準備が完了していません。しばらくしてから再試行してください。",
+      "previewTimeout": "リモート Web プレビューがタイムアウトしました。しばらくしてから再試行してください。",
+      "previewDisconnected": "リモートデバイスに接続できていません。接続が回復したら再試行してください。",
       "previewTooLarge": "準備中のプレビューが多すぎます。しばらくしてから再試行してください。",
       "previewUnsupported": "ディレクトリをプレビューするには、リモート端末の Cindy を更新してください。",
       "fetching": "リモートからファイルを取得しています…",
@@ -11411,7 +11642,8 @@
         "labelStrip": "履歴の画像を整理しました",
         "toggleHint": "引き継ぎ内容を表示",
         "handoffTitle": "引き継ぎ内容——整理後にこの会話の続きへ渡したコンテキスト要約(チャット履歴には含まれず、ここでのみ表示)",
-        "handoffTitleEnglishSource": "引き継ぎ内容——整理後にこの会話の続きへ渡したコンテキスト要約。原文は英語(チャット履歴には含まれず、ここでのみ表示)"
+        "handoffTitleEnglishSource": "引き継ぎ内容——整理後にこの会話の続きへ渡したコンテキスト要約。原文は英語(チャット履歴には含まれず、ここでのみ表示)",
+        "labelIdleGap": "しばらく間が空いたため、整理して続行しました"
       },
       "review": {
         "running": "現在の成果をレビュー中",
@@ -11567,7 +11799,11 @@
       "referencedMessages": "参照メッセージ（{{count}}）",
       "referencedContext": "参照メッセージ",
       "groupBackground": "グループチャットの背景",
-      "viewThread": "スレッドの文脈を見る ({{count}})"
+      "viewThread": "スレッドの文脈を見る ({{count}})",
+      "memberFromGroup": "{{name}} · {{platform}} グループ「{{group}}」から",
+      "memberFromPlatform": "{{name}} · {{platform}} グループから",
+      "guestFromDm": "{{name}} · {{platform}} の DM から（オーナー以外）",
+      "unknownSender": "グループメンバー"
     },
     "rewind": {
       "noFilesToRollback": "復元できるプロジェクトファイルの変更は検出されませんでした",
@@ -11650,7 +11886,9 @@
       "REMOTE_AGENT_SHARE_PAUSED": "共有した人があなたへの共有を一時停止したため、再開されるまでこれらのモデルは使えません。別のモデルに切り替えて続けられます。",
       "REMOTE_AGENT_SHARE_REMOVED": "この共有は利用できなくなりました（共有した人が削除したか、あなたが退出しました）。別のモデルに切り替えて続けられます。",
       "REMOTE_AGENT_SHARE_UNAVAILABLE": "共有されたプロバイダーは一時的に利用できません。共有した人のパソコンがオフラインか、共有が一時的にオフになっている可能性があります。後でもう一度試すか、別のモデルに切り替えて続けられます。",
-      "REMOTE_AGENT_GROUP_UNAVAILABLE": "プロバイダーグループ内のパソコンは現在このセッションを実行できません。オフライン、割り当て停止中、クールダウン中、またはこのモデルがない可能性があります。このプロバイダーの「リモートと共有」ページでグループを確認してください。"
+      "REMOTE_AGENT_GROUP_UNAVAILABLE": "プロバイダーグループ内のパソコンは現在このセッションを実行できません。オフライン、割り当て停止中、クールダウン中、またはこのモデルがない可能性があります。このプロバイダーの「リモートと共有」ページでグループを確認してください。",
+      "REMOTE_AGENT_DEVICE_LIMIT": "このデバイスのリモートセッション数が上限に達しました。不要なセッションをアーカイブするか、提供者に「リモートと共有」で上限の変更を依頼してください。",
+      "REMOTE_AGENT_TOTAL_LIMIT": "提供者のパソコンのリモートセッション総数が上限に達しました。提供者に不要なセッションの解放、または「リモートと共有」での上限変更を依頼してください。"
     },
     "generatedFiles": {
       "title": "このメッセージで作成されたファイル",
@@ -14584,6 +14822,8 @@
       "workerLabel": "Worker ({{agent}})",
       "leadNotFound": "Orca lead session が見つかりません",
       "waitingForWorker": "Worker を待機中",
+      "workerHiddenInSeparateWindow": "別ウィンドウでは Worker の会話を表示しません",
+      "viewWorkerInMainWindow": "メインウィンドウで表示",
       "remoteWorkerLoading": "{{device}} 上のタスクを読み込み中…",
       "remoteWorkerUnreachable": "{{device}} に現在接続できません。再接続すると、この Worker のタスクが再び表示されます。",
       "closeAria": "閉じる"

@@ -89,6 +89,7 @@ import {
   registerBotWorkbenchTools,
   type BotWorkbenchCallbacks,
 } from './xdt-helper/bot_workbench.js';
+import { registerTeammateHomeTools, type TeammateHomeCallbacks } from './xdt-helper/teammate_home.js';
 import {
   registerBotCapabilityTools,
   withCindyGatedBotToolDescriptions,
@@ -151,7 +152,7 @@ export const HELPER_CATEGORY_DESCRIPTIONS: Record<(typeof CATEGORY_ENUM)[number]
   handoff: '给已有任务发消息，或新建任务。发给已有任务可跨电脑（deviceId::sessionId）；新建只在本机。',
   skills: 'Skill 的搜索、发布与学习。本机与 SkillHub。',
   app_update: `检查与安装本机的 ${BRAND_NAME} 更新。本机。`,
-  bots: '伙伴：资料、能力、工作台、待办、后台任务与伙伴间消息。伙伴间消息可跨电脑（list_agents / send_to_agent）；其余本机。',
+  bots: '伙伴：资料、能力、工作台、待办、后台任务、伙伴间消息与主力电脑。伙伴间消息（list_agents / send_to_agent）与主力电脑（get_teammate_home / move_teammate_home）可跨电脑；其余本机。',
 };
 
 interface SessionTaskCallbacks {
@@ -818,6 +819,8 @@ export interface XdtHelperMcpDeps {
    */
   botWorkbench?: BotWorkbenchCallbacks;
   botCapabilities?: BotCapabilityCallbacks;
+  /** Which computer runs a teammate, and moving it to another (cloud companions). */
+  teammateHome?: TeammateHomeCallbacks;
   /**
    * 官方反馈 issue 提交回调(弹确认卡片 → 用户确认 → POST server)。host 注入后,
    * feedback 类工具 submit_github_issue 会被注册; 不注入则不出现在 list_tools 里。
@@ -1028,6 +1031,12 @@ export function createXdtHelperMcpServer(
     });
   }
 
+  if (deps.teammateHome) {
+    registerTeammateHomeTools(registry, {
+      getSessionContext: () => resolveLiziMcpSessionContext(sessionCtx),
+      callbacks: deps.teammateHome,
+    });
+  }
   if (deps.botCapabilities) {
     registerBotCapabilityTools(registry, {
       getSessionContext: () => resolveLiziMcpSessionContext(sessionCtx),

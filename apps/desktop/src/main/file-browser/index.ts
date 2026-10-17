@@ -71,6 +71,7 @@ import { getRemoteWatchRegistry } from './remote-watch.js';
 import { throwRemoteFsIpcError } from './remote.js';
 import { watcherManager, type FileTreeEvent } from './watcher.js';
 import { registerHtmlPreviewIpc } from './html-preview-ipc.js';
+import { statSshPreviewMetadata } from './html-preview-read.js';
 import { toWorkdirRel } from '../../shared/workdirPath.js';
 
 const log = createLogger('file-browser/ipc');
@@ -176,8 +177,11 @@ interface WatchArgs extends RemoteRoutedArgs {
  * ({ok,result}|{ok:false,error}),handler 的真实返回值在 result 里——renderer
  * 通路由 ipc.ts 解包,main 直调必须自己解,否则读信封字段恒错(真机实踩)。
  */
-async function deviceOpInvoke<T>(deviceId: string, opArgs: Record<string, unknown>): Promise<T> {
-  const payload = await remoteInvoke(deviceId, FILE_BROWSER_REMOTE_OP_CHANNEL, [opArgs]);
+async function deviceOpInvoke<T>(deviceId: string, opArgs: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
+  const options = signal ? { preSend: () => signal.throwIfAborted() } : undefined;
+  const payload = options
+    ? await remoteInvoke(deviceId, FILE_BROWSER_REMOTE_OP_CHANNEL, [opArgs], options)
+    : await remoteInvoke(deviceId, FILE_BROWSER_REMOTE_OP_CHANNEL, [opArgs]);
   if (!payload.ok) {
     throw new Error(`[${payload.error.code}] ${payload.error.message}`);
   }
@@ -196,6 +200,8 @@ async function fetchRemoteBigFile(
     mtimeMs: number;
     remoteHostId?: string | null;
     deviceId?: string | null;
+    /** HTML background reads must validate beyond the outer size/mtime cache key. */
+    revalidate?: boolean;
   },
   onProgress: (received: number, total: number, phase?: 'upload' | 'download') => void,
   signal?: AbortSignal,
@@ -226,6 +232,8 @@ async function fetchRemoteBigFile(
           remoteInvoke,
           {
             // Cache fills are shared: closing one preview must not cancel another consumer.
+            // This fill is keyed by the caller's stat; never relabel stale bytes as that version.
+            cacheFirst: false,
             workdir: args.workdir,
             relPath: args.relPath,
             maxBytes: Math.max(1, args.size),
@@ -332,6 +340,7 @@ async function fetchRemoteBigFile(
       },
       onProgress,
       signal,
+      { revalidate: args.revalidate },
     );
   }
   if (args.remoteHostId) {
@@ -355,6 +364,7 @@ async function fetchRemoteBigFile(
       ),
       onProgress,
       signal,
+      { revalidate: args.revalidate },
     );
   }
   throw new Error('fetch-remote requires remoteHostId or deviceId');
@@ -397,18 +407,23 @@ export function registerFileBrowserIpc(): void {
   // 日志设施由宿主注入——desktop 侧接统一 logger(规则 12),scope 与抽包前一致。
   setFileBrowserCoreLoggerFactory(createLogger);
   registerHtmlPreviewIpc({
-    stat: async (args, root, relPath) => {
+    cached: (args, root, relPath) => {
+      if (args.origin.kind === 'local') return Promise.resolve(null);
+      return findStaleCached({
+        transport: args.origin.kind,
+        endpointId: args.origin.kind === 'device' ? args.origin.deviceId : args.origin.remoteHostId,
+        workdir: root,
+        relPath,
+      });
+    },
+    stat: async (args, root, relPath, signal) => {
+      signal?.throwIfAborted();
       if (args.origin.kind === 'device') {
         return deviceOpInvoke<import('@cindy/file-browser-core').FileStat>(args.origin.deviceId, {
           op: 'stat', workdir: root, relPath,
-        });
+        }, signal);
       }
-      if (args.origin.kind !== 'ssh') throw new Error('BAD_ARGS');
-      await getRemoteFileBrowser().request(args.origin.remoteHostId, 'stat', {
-        workdir: args.workdir,
-        relPath: toWorkdirRel(args.workdir, args.absPath)!,
-      });
-      return getRemoteFileBrowser().request(args.origin.remoteHostId, 'stat', { workdir: root, relPath });
+      return statSshPreviewMetadata(getRemoteFileBrowser(), args, root, relPath, signal);
     },
     read: async (args, root, entry, signal) => {
       if (signal?.aborted) throw new Error('PREVIEW_CANCELLED');
@@ -418,6 +433,7 @@ export function registerFileBrowserIpc(): void {
           relPath: entry.relPath,
           size: entry.size,
           mtimeMs: entry.mtimeMs,
+          revalidate: true,
           deviceId: args.origin.kind === 'device' ? args.origin.deviceId : undefined,
           remoteHostId: args.origin.kind === 'ssh' ? args.origin.remoteHostId : undefined,
         },

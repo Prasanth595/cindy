@@ -41,12 +41,16 @@ afterEach(() => {
 });
 
 describe('application wallpaper lifecycle', () => {
-  it('switches from a pending CDN scene to an offline still without using the late download', async () => {
-    let finish!: (url: string) => void;
+  // User request 2026-10-17: static originals now load asynchronously too.
+  // Preserve the selected preview when the previous scene completes late, then
+  // show the selected CDN still. This extends the former offline-only case;
+  // minimum input: scene -> still with out-of-order completion; unit tier.
+  it('switches from a pending scene to a CDN still without using the late scene download', async () => {
+    const finishes = new Map<string, (url: string) => void>();
     const ensureImage = vi.fn(
-      () =>
+      (id: string) =>
         new Promise<string>((resolve) => {
-          finish = resolve;
+          finishes.set(id, resolve);
         }),
     );
     const ensureVideo = vi.fn();
@@ -80,9 +84,14 @@ describe('application wallpaper lifecycle', () => {
     const background = () =>
       document.documentElement.style.getPropertyValue('--app-wallpaper-image');
     expect(background()).toContain('cindy-whisper.webp');
-    await act(async () => finish(`cindy-media://client-wallpaper/${'a'.repeat(64)}.webp`));
+    await act(async () =>
+      finishes.get('cindy-window')!(`cindy-media://client-wallpaper/${'a'.repeat(64)}.webp`),
+    );
     expect(background()).toContain('cindy-whisper.webp');
-    expect(ensureImage).toHaveBeenCalledTimes(1);
+    const stillUrl = `cindy-media://client-wallpaper/${'b'.repeat(64)}.webp`;
+    await act(async () => finishes.get('cindy-whisper')!(stillUrl));
+    expect(background()).toContain(stillUrl);
+    expect(ensureImage).toHaveBeenCalledTimes(2);
     expect(ensureVideo).not.toHaveBeenCalled();
   });
 

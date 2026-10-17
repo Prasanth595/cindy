@@ -188,6 +188,39 @@ describe('installed agent imports', () => {
     const selection = { requestId: 'fixture-oauth-request', previewId: 'preview', name: 'Ada', takeover: false, entryIds: [] };
     expect(validateImportSelection(selection, snapshot).some(item => item.credential)).toBe(false);
   });
+  // Owner IDs let the import create the companion's own bot connection (OpenClaw channels/telegram.md,
+  // channels/discord.md, tools/slash-commands.md; Hermes TELEGRAM_/DISCORD_ALLOWED_USERS).
+  it('reads OpenClaw bot owners from ownerAllowFrom or the inherited allowFrom, and Discord SecretRef tokens', async () => {
+    await write('.openclaw/openclaw.json', JSON.stringify({
+      commands: { ownerAllowFrom: ['discord:123456789012345678'] },
+      channels: {
+        telegram: { allowFrom: ['tg:424242'], accounts: { main: { botToken: '1234567:fixture-a' }, team: { botToken: '1234567:fixture-b', allowFrom: ['1', '2', '*'] } } },
+        discord: { token: { source: 'env', provider: 'default', id: 'DISCORD_BOT_TOKEN' }, allowFrom: ['user:999999999999999999'] },
+      },
+      env: { vars: { DISCORD_BOT_TOKEN: 'fixture-discord-token' } },
+    }));
+    const reader = deps(); const [source] = await discoverImportSources(reader);
+    const snapshot = await inspectImportSource(source!, reader);
+    const values = Object.fromEntries(snapshot.items.filter(item => item.credential?.format === 'telegram' || item.credential?.format === 'discord')
+      .map(item => [item.view.name, item.credential!.value]));
+    expect(values).toEqual({
+      'Telegram · main': { token: '1234567:fixture-a', account: 'main', ownerUserId: '424242' },
+      // Several allowed users are not one owner; the import asks for it instead of guessing.
+      'Telegram · team': { token: '1234567:fixture-b', account: 'team' },
+      'Discord · default': { token: '${DISCORD_BOT_TOKEN}', account: 'default', ownerUserId: '123456789012345678' },
+    });
+    const discord = snapshot.items.find(item => item.credential?.format === 'discord')!;
+    expect(resolveImportReferences(discord.credential!.value, selectedImportEnvironment(snapshot.items))).toMatchObject({ token: 'fixture-discord-token' });
+  });
+
+  it('reads Hermes bot owners from the single allowed user', async () => {
+    await write('.hermes/config.yaml', 'name: Ada\n');
+    await write('.hermes/.env', 'TELEGRAM_BOT_TOKEN=12345:fake-telegram-token\nTELEGRAM_ALLOWED_USERS=424242\nDISCORD_BOT_TOKEN=fake-discord-token\nDISCORD_ALLOWED_USERS=111111111111111111,222222222222222222');
+    const reader = deps(); const [source] = await discoverImportSources(reader);
+    const snapshot = await inspectImportSource(source!, reader);
+    expect(snapshot.items.find(item => item.credential?.format === 'telegram')?.credential?.value).toEqual({ token: '${TELEGRAM_BOT_TOKEN}', account: 'default', ownerUserId: '424242' });
+    expect(snapshot.items.find(item => item.credential?.format === 'discord')?.credential?.value).toEqual({ token: '${DISCORD_BOT_TOKEN}', account: 'default' });
+  });
   it('keeps secret references unexpanded until the final env and connection selection', async () => {
     await write('.hermes/config.yaml', 'name: Ada\nmcp_servers:\n  data:\n    url: https://example.invalid/mcp\n    headers:\n      Authorization: Bearer ${DATA_TOKEN}\n');
     await write('.hermes/.env', 'DATA_TOKEN=fake-selected-secret\nTELEGRAM_BOT_TOKEN=12345:fake-telegram-token');

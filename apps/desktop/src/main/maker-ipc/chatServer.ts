@@ -9,7 +9,8 @@ import { readFile as readMedia } from '../cindy-media/blobStore.js';
 import { getAccessToken, refresh } from '../authManager.js';
 import { retryAfterDeadline } from '@cindy/auth-client';
 import { parseChatInvitationToken } from '@cindy/device-link';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, promises as fsp } from 'node:fs';
+import { MIRROR_ATTACHMENT_MAX_BYTES } from '../companion-cloud/mirror.js';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { migrateLocalGroups, type ChatContentBlock } from './chatServerMigration.js';
@@ -751,7 +752,14 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     companion ??= startCompanionCloud({ api, host, endpoint: config.baseUrl, humanActorId: selfId, selfDeviceId: self, current, log: deps.log,
       bots: () => actors.filter(a => a.kind === 'bot' && !a.disabled && a.homeDeviceId === self && localBot(a.id)?.status === 'active'
         && !companion?.isShadowed(a.externalId)).map(a => ({ botId: a.externalId, actorId: a.id, name: a.name })),
-      actors: () => actors, refresh: refreshHomes, publish: publishHomes, syncProfile: syncActorProfiles });
+      paused: botId => profiles.find(p => p.id === botId)?.status === 'paused',
+      actors: () => actors, refresh: refreshHomes, publish: publishHomes, syncProfile: syncActorProfiles,
+      // The owner's attachments go with the conversation; other devices download them from the room.
+      media: { upload: async (room, source, files, author) => {
+        // The conversation mirror is not a file backup: large files stay a name in the room.
+        for (const file of files) if (file.path && (await fsp.stat(file.path)).size > MIRROR_ATTACHMENT_MAX_BYTES) throw new Error('ATTACHMENT_TOO_LARGE');
+        return media.upload(room, source, files, author);
+      }, download: (room, mediaId) => media.download(room, mediaId) } });
     const runtime = companion;
     await registerCompanionHomes({ api, selfDeviceId: self, actors, log: deps.log,
       botIds: profiles.filter(p => p.status === 'active').map(p => p.id), isDemoted: botId => runtime.state.isDemoted(botId) });

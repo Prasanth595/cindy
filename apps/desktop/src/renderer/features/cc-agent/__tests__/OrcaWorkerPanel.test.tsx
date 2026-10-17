@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, render, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { OrcaWorkerPanel } from '../OrcaWorkerPanel';
@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   sessionViewProps: null as Record<string, unknown> | null,
   remotePaneProps: null as Record<string, unknown> | null,
   selection: {} as Record<string, unknown>,
+  selectionInput: null as Record<string, unknown> | null,
   sessions: [] as Array<{ id: string; agentDeviceId?: string | null; orcaRole?: 'lead' }>,
   sessionsLoading: false,
   sidebarWindow: false,
@@ -63,6 +64,10 @@ vi.mock('../../right-sidebar/plugins/orca-workers/actions', () => ({
   clearOrcaWorkersSelectionIntent: vi.fn(),
   consumeOrcaWorkersFocusHint: vi.fn(),
   consumeOrcaWorkersSearchJump: vi.fn(),
+  writeOrcaWorkersFocusIntent: vi.fn(),
+}));
+vi.mock('../../right-sidebar/lib/mergeSidebarWindowBack', () => ({
+  mergeSidebarWindowBack: vi.fn(),
 }));
 vi.mock('@/lib/toast', () => ({ toast: { error: mocks.toastError } }));
 vi.mock('../CCAgentSessionView', () => ({
@@ -96,7 +101,9 @@ vi.mock('../RolePillDropdown', () => ({
   },
 }));
 vi.mock('../hooks/useOrcaWorkerSelection', () => ({
-  useOrcaWorkerSelection: () => ({
+  useOrcaWorkerSelection: (input: Record<string, unknown>) => {
+    mocks.selectionInput = input;
+    return {
     workers: [],
     focusedWorker: null,
     activeWorkerCount: 0,
@@ -114,7 +121,8 @@ vi.mock('../hooks/useOrcaWorkerSelection', () => ({
     handleArchiveWorker: vi.fn(),
     workerPermissionMode: 'auto',
     ...mocks.selection,
-  }),
+    };
+  },
 }));
 
 function deferred<T>() {
@@ -307,6 +315,106 @@ describe('OrcaWorkerPanel worker on another computer', () => {
   });
 });
 
+describe('OrcaWorkerPanel in the separate sidebar window', () => {
+  const localWorker = {
+    workerId: 'w-1',
+    sessionId: 'worker-s1',
+    role: 'developer',
+    agent: 'claude-code',
+    model: 'm',
+    effort: null,
+    label: null,
+    status: 'running',
+    focused: true,
+    idleSince: null,
+  };
+
+  function selectWorker(worker: Record<string, unknown>) {
+    mocks.selection = {
+      workers: [worker],
+      focusedWorker: worker,
+      selectedWorkerRecord: worker,
+      selectedWorkerId: worker.workerId,
+      workerSessionId: worker.sessionId,
+    };
+  }
+
+  beforeEach(() => {
+    mocks.sidebarWindow = true;
+    mocks.sessionViewProps = null;
+    mocks.remotePaneProps = null;
+  });
+
+  afterEach(() => {
+    cleanup();
+    mocks.sidebarWindow = false;
+    mocks.selection = {};
+    mocks.sessionViewProps = null;
+    mocks.remotePaneProps = null;
+  });
+
+  it('shows a main-window entry instead of mounting the Worker conversation', () => {
+    selectWorker(localWorker);
+    const onViewWorkerInMainWindow = vi.fn();
+    const view = render(
+      <OrcaWorkerPanel
+        leadSessionId="lead-1"
+        deviceId={null}
+        viewVisible
+        onViewWorkerInMainWindow={onViewWorkerInMainWindow}
+      />,
+    );
+
+    expect(mocks.sessionViewProps).toBeNull();
+    expect(mocks.remotePaneProps).toBeNull();
+    expect(view.getByText('orca.split.workerHiddenInSeparateWindow')).toBeTruthy();
+    fireEvent.click(view.getByRole('button', { name: 'orca.split.viewWorkerInMainWindow' }));
+    expect(onViewWorkerInMainWindow).toHaveBeenCalledWith('worker-s1');
+    // 对话没显示出来，不能当作用户在看：不自动确认「已完成」，也不清提醒。
+    expect(mocks.selectionInput).toMatchObject({ viewVisible: false });
+    expect(mocks.toolbarProps.clearAttentionWhenVisible).toBe(false);
+  });
+
+  it('does not mount the remote Worker pane either', () => {
+    selectWorker({
+      ...localWorker,
+      executionDevice: {
+        deviceId: 'mac-mini',
+        remoteSessionId: 'remote-1',
+        deviceName: 'Mac mini',
+        reachable: true,
+      },
+    });
+    const view = render(
+      <OrcaWorkerPanel leadSessionId="lead-1" deviceId={null} viewVisible onViewWorkerInMainWindow={vi.fn()} />,
+    );
+
+    expect(mocks.remotePaneProps).toBeNull();
+    expect(mocks.sessionViewProps).toBeNull();
+    expect(view.getByText('orca.split.workerHiddenInSeparateWindow')).toBeTruthy();
+  });
+
+  it('keeps the waiting placeholder when no Worker is selected', () => {
+    const view = render(
+      <OrcaWorkerPanel leadSessionId="lead-1" deviceId={null} viewVisible onViewWorkerInMainWindow={vi.fn()} />,
+    );
+
+    expect(view.getByText('orca.split.waitingForWorker')).toBeTruthy();
+    expect(view.queryByText('orca.split.workerHiddenInSeparateWindow')).toBeNull();
+  });
+
+  it('still embeds the Worker conversation in the main window', () => {
+    mocks.sidebarWindow = false;
+    selectWorker(localWorker);
+    const view = render(<OrcaWorkerPanel leadSessionId="lead-1" deviceId={null} viewVisible />);
+
+    expect(mocks.sessionViewProps).toMatchObject({ sessionIdProp: 'worker-s1' });
+    expect(view.queryByText('orca.split.workerHiddenInSeparateWindow')).toBeNull();
+    expect(mocks.selectionInput).toMatchObject({ viewVisible: true });
+    expect(mocks.toolbarProps.clearAttentionWhenVisible).toBe(true);
+  });
+});
+
 describe('OrcaWorkersTabBody Lead Agent context', () => {
   const ctx = {
     tabId: 'orca-tab',
@@ -341,7 +449,9 @@ describe('OrcaWorkersTabBody Lead Agent context', () => {
   });
 
   // Detached tabs own their watcher even while hidden. Only an actually
-  // visible collaboration view may clear attention or refresh its projection.
+  // visible collaboration view may refresh its projection. The detached window
+  // shows a placeholder instead of the Worker conversation, so even a visible
+  // detached tab must not clear attention.
   // Hook tests alone cannot catch dropping these caller-side lifecycle inputs.
   it('keeps detached attention watching while hidden and refreshes only on visibility', () => {
     mocks.sidebarWindow = true;
@@ -356,7 +466,7 @@ describe('OrcaWorkersTabBody Lead Agent context', () => {
     mocks.windowVisible = true;
     view.rerender(<OrcaWorkersTabBody ctx={ctx} state={{}} active />);
     expect(mocks.watchAttention).toHaveBeenLastCalledWith(['lead-1'], 'lead-1');
-    expect(mocks.toolbarProps.clearAttentionWhenVisible).toBe(true);
+    expect(mocks.toolbarProps.clearAttentionWhenVisible).toBe(false);
     expect(mocks.refreshProjection).toHaveBeenCalledWith('lead-1');
     expect(mocks.refreshSettings).toHaveBeenCalledWith('lead-1');
 

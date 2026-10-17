@@ -107,6 +107,28 @@ describe('companion profile uploader', () => {
     expect(t.rows.get('companion.memory.v1:a.md')?.value).toEqual({ filename: 'a.md', content: 'new home' });
   });
 
+  it('leaves a part that could not be read untouched in the cloud, and refuses a hand-over', async () => {
+    const t = setup();
+    const routine = { key: 'companion.routine.v1:r1', value: { id: 'r1' } };
+    t.setValues([profile('soul'), routine]);
+    await t.uploader.syncBot('bot', 'actor');
+    // The routine engine is not ready this time: the profile still goes up, the routine is not tombstoned.
+    t.setValues([profile('soul v2'), { key: 'companion.routine.v1:', value: null, unread: true }]);
+    await t.uploader.syncBot('bot', 'actor');
+    expect(t.writes().map(w => [w.key, w.value === null])).toEqual([
+      ['companion.profile.v1', false], ['companion.routine.v1:r1', false], ['companion.profile.v1', false]]);
+    await expect(t.uploader.syncBot('bot', 'actor', Number.POSITIVE_INFINITY, { requireAll: true })).rejects.toThrow('COMPANION_READ_INCOMPLETE');
+  });
+
+  it('clears a todo that left the travelling window from the cloud', async () => {
+    const t = setup();
+    t.setValues([profile('soul'), { key: 'companion.todo.v1:todo:1', value: { id: 'todo:1' } }]);
+    await t.uploader.syncBot('bot', 'actor');
+    t.setValues([profile('soul')]);
+    await t.uploader.syncBot('bot', 'actor');
+    expect(t.writes().filter(w => w.key === 'companion.todo.v1:todo:1').map(w => w.value)).toEqual([{ id: 'todo:1' }, null]);
+  });
+
   it('spreads a large first upload over cycles', async () => {
     const t = setup();
     t.setValues(Array.from({ length: 45 }, (_, i) => memory(`m${i}.md`, `v${i}`)));

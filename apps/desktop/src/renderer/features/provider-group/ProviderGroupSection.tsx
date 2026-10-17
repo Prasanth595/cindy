@@ -409,7 +409,7 @@ function MemberRow({
             onClick={() => setQuotaOpen((open) => !open)}
             className="group -m-1 flex min-w-[200px] flex-1 items-center gap-3 rounded-lg p-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
           >
-            {/* 组内电脑用设备图标；人像头像留给下方「分享」块里真实的人。账号行的图标在电脑那一层。 */}
+            {/* 组内电脑用设备图标；人像头像留给下方「用量」里真实的人。账号行的图标在电脑那一层。 */}
             {accountName === null && (
               <span
                 aria-hidden="true"

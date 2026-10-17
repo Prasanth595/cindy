@@ -231,9 +231,23 @@ function setPendingReshares(next: readonly ProviderSharePendingReshare[]): void 
 }
 
 /** 一份 owned 快照是本机待审批申请(含转分享请求)的权威来源：整体替换。 */
-export function publishProviderShareOwnerState(state: ProviderShareOwnerState): void {
-  setPendingReshares(state.ready ? pendingResharesFromOwned(state.shares) : []);
-  setPending(pendingRequestsFromOwnerState(state));
+export function publishProviderShareOwnerState(state: ProviderShareOwnerState, options: { hostDeviceId?: string } = {}): void {
+  // 远程管理页只把审批申请交给本机审批宿主；转分享请求仍由管理对象本机维护。
+  if (!options.hostDeviceId) setPendingReshares(state.ready ? pendingResharesFromOwned(state.shares) : []);
+  const pending = pendingRequestsFromOwnerState(state);
+  if (!options.hostDeviceId) {
+    setPending(pending);
+    return;
+  }
+  // 远程快照只覆盖这台被管理电脑，不能抹掉本机或其他被管理电脑的待审批申请。
+  // watchedRequests 属于另一台电脑的审批宿主；远程快照只发布当前被管理电脑自己的申请。
+  const remotePending = pending
+    .filter((item) => !item.hostDeviceId || item.hostDeviceId === options.hostDeviceId)
+    .map((item) => item.hostDeviceId ? item : { ...item, hostDeviceId: options.hostDeviceId });
+  setPending([
+    ...pendingRequests.filter((item) => item.hostDeviceId !== options.hostDeviceId),
+    ...remotePending,
+  ]);
 }
 
 export function getProviderSharePendingReshares(): readonly ProviderSharePendingReshare[] {

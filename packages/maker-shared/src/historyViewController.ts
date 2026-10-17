@@ -1,4 +1,5 @@
 import {
+  nextHistoryCacheReceipt, type HistoryCacheReceipt,
   readHistoryWorkDetails, retainHistoryViewPrefix, isHistoryViewUnavailable, historyWorkSummaries, historyViewLeaves, type HistoryDetailPage, type HistoryMessageSource,
   type HistoryViewItem, type HistoryViewPage, type HistoryWorkPatch, type HistoryWorkSummary,
 } from './historyView.js';
@@ -26,9 +27,13 @@ export interface HistoryViewSnapshot<T extends HistoryMessageSource> {
    * disk, or was read before the view went inactive/offline. Cleared by a latest-page read.
    */
   stale?: boolean;
+  /** Controller-local start of the latest page read, also retained in its disk cache. */
+  readReceipt?: HistoryCacheReceipt;
 }
 
 export interface HistoryViewTransport<T extends HistoryMessageSource> {
+  /** False when the owning screen already coordinates focus/reconnect snapshots. */
+  refreshOnResume?: boolean;
   page(before?: string): Promise<HistoryViewPage<T>>;
   details(summary: HistoryWorkSummary, after?: string): Promise<HistoryDetailPage<T>>;
   /** Full replacement of this view's intent; empty releases detail streaming. */
@@ -74,7 +79,7 @@ export class HistoryViewController<T extends HistoryMessageSource> {
     this.publish({ loading: false, ...(available ? {} : { stale: this.state.ready }),
       details: new Map([...this.state.details].map(([key, detail]) =>
         [key, detail.loading ? { ...detail, loading: false } : detail])) });
-    if (available && this.active) void this.refresh();
+    if (available && this.active && this.transport.refreshOnResume !== false) void this.refresh();
   }
   getSnapshot = (): HistoryViewSnapshot<T> => this.state;
   /** Pagination feedback only; background validation must not disturb the reading viewport. */
@@ -158,6 +163,7 @@ export class HistoryViewController<T extends HistoryMessageSource> {
     if (!this.isActive() || this.state.loading || (older && !this.state.hasMore)) return;
     const generation = this.generation;
     const before = older ? this.state.nextCursor ?? undefined : undefined;
+    const readReceipt = nextHistoryCacheReceipt();
     this.publish({ loading: true, error: null });
     try {
       const page = await this.transport.page(before);
@@ -179,7 +185,7 @@ export class HistoryViewController<T extends HistoryMessageSource> {
       const stableItems = items.length === this.state.items.length
         && items.every((item, index) => item === this.state.items[index]) ? this.state.items : items;
       this.publish({ items: stableItems, ready: true, loading: false,
-        ...(older ? {} : { stale: false }),
+        ...(older ? {} : { stale: false, readReceipt }),
         hasMore: retained.hasMore, nextCursor: retained.nextCursor });
       for (const summary of historyWorkSummaries(items)) {
         if (this.state.expanded.has(summary.key)) void this.loadDetails(summary);
@@ -338,7 +344,10 @@ export class HistoryViewController<T extends HistoryMessageSource> {
 
   /** View blur/background and source resets invalidate all outstanding reads. */
   setActive(active: boolean): void {
-    if (active === this.active) { if (active && !this.state.ready) void this.refresh(); return; }
+    if (active === this.active) {
+      if (active && !this.state.ready && this.transport.refreshOnResume !== false) void this.refresh();
+      return;
+    }
     if (this.refreshTimer) clearTimeout(this.refreshTimer);
     this.refreshTimer = null;
     this.active = active;
@@ -348,14 +357,14 @@ export class HistoryViewController<T extends HistoryMessageSource> {
     this.detailRuns.clear();
     this.publish({ loading: false, ...(active ? {} : { stale: this.state.ready }) });
     this.sendIntent();
-    if (active) void this.refresh();
+    if (active && this.transport.refreshOnResume !== false) void this.refresh();
   }
   reset(): void {
     this.generation++;
     this.cacheGeneration++;
     this.detailRuns.clear();
     this.publish({ items: [], details: new Map(), expanded: new Set(), ready: false,
-      nextCursor: null, hasMore: false, loading: false, error: null, stale: false });
+      nextCursor: null, hasMore: false, loading: false, error: null, stale: false, readReceipt: undefined });
     this.sendIntent();
     if (this.active) void this.refresh();
   }

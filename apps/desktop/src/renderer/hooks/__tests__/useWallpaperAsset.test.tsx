@@ -2,11 +2,7 @@
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useWallpaperAsset } from '../useWallpaperAsset';
-import {
-  SELECTABLE_WALLPAPER_IDS,
-  type WallpaperId,
-  type WallpaperDownloadProgress,
-} from '@/../shared/appearanceSettings';
+import { type WallpaperId, type WallpaperDownloadProgress } from '@/../shared/appearanceSettings';
 import manifest from '@/../shared/wallpaper-video-manifest.json';
 
 const image = vi.fn();
@@ -85,22 +81,24 @@ describe('on-demand wallpaper assets', () => {
     unmount();
     expect(progressListeners.size).toBe(0);
   });
-  it('keeps the current still catalog offline and downloads only selected manifest-backed media', async () => {
+  // User request 2026-10-17: selecting a still now downloads its image, while
+  // inactive images and still-only videos stay idle. Existing scene-only tests
+  // missed that distinction. Minimal input: one selected static ID; unit tier.
+  it('downloads only selected and visible media and never requests a still-only video', async () => {
     const { rerender } = renderHook(
       ({ id, enabled }: { id: WallpaperId; enabled: boolean }) => {
-        useWallpaperAsset(id, 'image', true);
+        useWallpaperAsset(id, 'image', enabled);
         return useWallpaperAsset(id, 'video', enabled);
       },
       { initialProps: { id: 'none' as WallpaperId, enabled: false } },
     );
-    for (const id of SELECTABLE_WALLPAPER_IDS) {
-      if (!Object.hasOwn(manifest, id)) rerender({ id, enabled: true });
-    }
+    rerender({ id: 'custom', enabled: true });
+    rerender({ id: 'wheatfield-watch', enabled: false });
     expect(image).not.toHaveBeenCalled();
     expect(video).not.toHaveBeenCalled();
-    rerender({ id: 'cindy-window', enabled: false });
+    rerender({ id: 'wheatfield-watch', enabled: true });
     await waitFor(() => expect(decode).toHaveBeenCalledOnce());
-    expect(image).toHaveBeenCalledWith('cindy-window');
+    expect(image).toHaveBeenCalledWith('wheatfield-watch');
     expect(video).not.toHaveBeenCalled();
     rerender({ id: 'cindy-window', enabled: true });
     await waitFor(() => expect(video).toHaveBeenCalledOnce());

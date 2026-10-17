@@ -65,6 +65,7 @@ import {
 } from './index';
 import { getActiveControllers } from './dispatch';
 import { rewriteOutboundMedia, withPeerAttachmentUpload } from './outboundMedia';
+import { createSentImageRetainer } from './remoteMediaPersistentCache';
 import { withOutboundReviewConfirmation } from '../maker-ipc/reviewOutboundInput.js';
 import { confirmReviewArtifacts } from '../reviewer/confirmReviewArtifacts.js';
 import { tryUploadPeerAttachment } from './filePeer';
@@ -133,7 +134,7 @@ export interface DeviceLinkIpcDeps {
   apiFetch<T>(path: string, opts?: { method?: string; body?: unknown }): Promise<T>;
   openLink(deviceId: string): Promise<LinkAcceptPayload>;
   closeLink(deviceId: string): void;
-  invoke(deviceId: string, channel: string, args: unknown[]): Promise<InvokeResultPayload>;
+  invoke(deviceId: string, channel: string, args: unknown[], options?: { background?: boolean }): Promise<InvokeResultPayload>;
   /** 分享者电脑的只读请求：先建后台链路再发(relay 只在建链时登记受邀者的电脑)。缺省时用 invoke。 */
   invokeProviderShareHost?(target: string, channel: string, args: unknown[]): Promise<InvokeResultPayload>;
   subscribe(deviceId: string, topics: string[]): Promise<InvokeResultPayload>;
@@ -593,6 +594,7 @@ export async function handleInvoke(
   deviceId: unknown,
   channel: unknown,
   args: unknown,
+  scheduling?: unknown,
 ): Promise<unknown> {
   if (typeof deviceId !== 'string' || !deviceId.trim()) {
     throwIpcError('INVALID_PARAMS', 'deviceId is required');
@@ -707,7 +709,8 @@ export async function handleInvoke(
       }
       callArgs = await withPeerAttachmentUpload((source, mime) => peer ? Promise.resolve(null) : tryUploadPeerAttachment(normalizedDeviceId, source, mime, deps.invoke), () =>
         withSharedTaskMedia(peer?.role === 'host' ? peer.sharedTaskId : undefined,
-          () => existing ? deps.rewriteOutboundMedia!(channel, callArgs, existing) : deps.rewriteOutboundMedia!(channel, callArgs)));
+          () => existing ? deps.rewriteOutboundMedia!(channel, callArgs, existing) : deps.rewriteOutboundMedia!(channel, callArgs)),
+        createSentImageRetainer(normalizedDeviceId));
      } catch (err) {
        if (isIpcError(err) && err.code === 'DEVICE_LINK_CHANNEL_NOT_ALLOWED') {
          throw err;
@@ -733,7 +736,12 @@ export async function handleInvoke(
 
   let result: InvokeResultPayload;
   try {
-    result = await deps.invoke(normalizedDeviceId, channel, callArgs);
+    // Local admission hint only: never forward this field or change authorization.
+    const background = scheduling && typeof scheduling === 'object'
+      && 'background' in scheduling && scheduling.background === true;
+    result = background
+      ? await deps.invoke(normalizedDeviceId, channel, callArgs, { background: true })
+      : await deps.invoke(normalizedDeviceId, channel, callArgs);
   } catch (err) {
     rethrowDeviceLinkError(err);
   }
@@ -1539,7 +1547,7 @@ export function registerDeviceLinkIpc(deps: DeviceLinkIpcDeps = defaultDeps()): 
   });
   ipcMain.handle(DEVICE_LINK_INVOKE.INVOKE, (e, payload: unknown) => {
     requireDeviceLinkCapability();
-    const p = (payload ?? {}) as { deviceId?: unknown; channel?: unknown; args?: unknown };
+    const p = (payload ?? {}) as { deviceId?: unknown; channel?: unknown; args?: unknown; scheduling?: unknown };
     if (typeof p.deviceId === 'string' && parseProviderShareAgentDeviceId(p.deviceId)) {
       assertTrustedAppRendererEvent(e);
       return handleProviderShareInvoke(deps, p.deviceId, p.channel, p.args);
@@ -1551,7 +1559,7 @@ export function registerDeviceLinkIpc(deps: DeviceLinkIpcDeps = defaultDeps()): 
         () => handleInvoke(diagnostics.forWindow(deps, e.sender.id), p.deviceId, p.channel, p.args),
       );
     }
-    return handleInvoke(diagnostics.forWindow(deps, e.sender.id), p.deviceId, p.channel, p.args);
+    return handleInvoke(diagnostics.forWindow(deps, e.sender.id), p.deviceId, p.channel, p.args, p.scheduling);
   });
   // 多窗口订阅引用计数:每个发起订阅的窗口(WebContents)挂一次 'destroyed' 清理,
   // 窗口关闭时释放它持有的全部引用,聚合出降零 topics 才向 relay 发 unsubscribe

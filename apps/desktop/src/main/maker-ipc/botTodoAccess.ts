@@ -58,6 +58,24 @@ export function configureBotTodoDispatch(value: Dispatch, inspect?: InspectRecei
   dispatch = value;
   inspectReceipts = inspect ?? null;
 }
+/**
+ * The companion's todo file without the active-profile check: a companion moving to this
+ * computer is restored (and uploaded) while its local copy is not runnable yet.
+ */
+export function companionTodoStore(botId: string) {
+  const owner = activeOwnerScopeKey(),
+    root = ownerScopedUserDataPath();
+  const assertCurrent = () => {
+    if (isAppSessionBoundaryPending() || activeOwnerScopeKey() !== owner)
+      throw new TodoError('OWNER_SCOPE_CHANGED');
+  };
+  return createBotTodoStore(
+    path.join(botProfileDir(root, botId), 'todos.v1.json'),
+    async () => (await readBotWorkbenchState(root, botId)).tasks,
+    assertCurrent,
+  );
+}
+
 export async function todoAccess(botId: string): Promise<BotTodoAccess> {
   const owner = activeOwnerScopeKey(),
     root = ownerScopedUserDataPath();

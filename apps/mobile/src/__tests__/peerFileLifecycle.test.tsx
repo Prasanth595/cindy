@@ -386,7 +386,10 @@ it.each(["unknown", "timeout", "route-change", "debug-enabled"])("samples paths 
     : normal(...args));
   const controller = new AbortController();
   let settled = false;
-  const transfer = state.download("device", "url", controller.signal).then((result: unknown) => {
+  // Production receiver callback must report written bytes with Debug off, and a UI
+  // observer failure must not turn an acknowledged write into a failed transfer.
+  const progress = vi.fn(() => { throw new Error('observer'); });
+  const transfer = state.download("device", "url", controller.signal, undefined, undefined, progress).then((result: unknown) => {
     settled = true;
     return result;
   });
@@ -396,8 +399,12 @@ it.each(["unknown", "timeout", "route-change", "debug-enabled"])("samples paths 
     await vi.advanceTimersByTimeAsync(0);
     const receive = state.commands.find((c) => c.action === "receive");
     expect(receive).toBeDefined();
+    expect(progress).toHaveBeenLastCalledWith(0, 100_000);
+    act(() => message({ type: 'write', id: 'bad-offset', args: [receive.args[0], 2, 'YQ=='] }));
+    expect(progress).toHaveBeenCalledOnce();
     for (let offset = 0; offset < 75; offset++) {
       act(() => message({ type: "write", id: `write-${offset}`, args: [receive.args[0], offset, "YQ=="] }));
+      expect(progress).toHaveBeenLastCalledWith(offset + 1, 100_000);
       await vi.advanceTimersByTimeAsync(1000);
       // Neither an unknown/changing route nor a long total duration ends a live transfer.
       expect(settled).toBe(false);

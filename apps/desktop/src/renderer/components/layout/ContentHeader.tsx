@@ -22,12 +22,22 @@
  * 右栏（Sidebar 侧保持无横线的连续表面）；设置页隐形 chrome 连边框也不画。
  */
 
-import type { ReactNode } from 'react';
+import { createContext, useContext, type ReactNode } from 'react';
 
 import { useFeatureContentHeader } from '@/features/feature-context';
 import { useMacFullscreen } from '@/hooks/useMacFullscreen';
 import { cn } from '@/lib/utils';
 import { CHROME_ACTIONS_GEOMETRY } from './chromeActionsGeometry';
+
+export const CONTENT_HEADER_HEIGHT_PX = 46;
+
+const ContentHeaderHiddenContext = createContext(false);
+
+/** Routes whose top is entirely non-host content (such as a plugin webview) can
+ * add a window drag area exactly when the common header is hidden. */
+export function useIsContentHeaderHidden(): boolean {
+  return useContext(ContentHeaderHiddenContext);
+}
 
 /**
  * Windows 窗口控制按钮宽度（3 × 46px）。固定侧栏入口位于下一行的内容区，
@@ -120,7 +130,7 @@ export function ContentHeader({
   return (
     <header
       className={cn(
-        // 46px 行高:红绿灯钉 y=16(实测灯心 ≈23 = 46/2,macOS 渲染比理论低约 1pt),标题/图标与
+        // 46px 行高 (与 CONTENT_HEADER_HEIGHT_PX 同步):红绿灯钉 y=16(实测灯心 ≈23 = 46/2,macOS 渲染比理论低约 1pt),标题/图标与
         // 红绿灯同轴(对齐 Codex 的紧凑 titlebar)。与 ChromeActions / Sidebar
         // 顶行 / MainLayout 右上浮层同一常量,改动必须连同 main 侧
         // trafficLightPosition 一起同步。
@@ -218,9 +228,14 @@ export function ContentHeaderSlot({
         trailing={trailing}
       />
       <div
-        style={{ display: 'contents', ['--content-header-h' as string]: hidden ? '0px' : '46px' }}
+        style={{
+          display: 'contents',
+          ['--content-header-h' as string]: hidden ? '0px' : `${CONTENT_HEADER_HEIGHT_PX}px`,
+        }}
       >
-        {children}
+        <ContentHeaderHiddenContext.Provider value={hidden}>
+          {children}
+        </ContentHeaderHiddenContext.Provider>
       </div>
     </>
   );

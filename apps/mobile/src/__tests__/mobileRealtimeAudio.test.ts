@@ -1,5 +1,8 @@
 import { requireNativeModule } from 'expo-modules-core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { logMobileVoice } from '@/session/mobileVoiceDiagnostics';
+
+vi.mock('@/session/mobileVoiceDiagnostics', () => ({ logMobileVoice: vi.fn() }));
 
 vi.mock('expo-modules-core', () => ({
   EventEmitter: class {
@@ -30,6 +33,26 @@ afterEach(async () => {
 });
 
 describe('mobileRealtimeAudio', () => {
+  it.each([undefined, { inputPortTypes: ['MicrophoneBuiltIn'], inputSampleRate: 48000, inputChannels: 1 }])(
+    'logs input metadata and supports installed modules without it: %j', async (input) => {
+      const native = {
+        addListener: vi.fn(() => ({ remove: vi.fn() })),
+        start: vi.fn(async () => input),
+        stop: vi.fn(async () => undefined),
+      };
+      vi.mocked(requireNativeModule).mockReturnValue(native);
+      const { startMobileRealtimeAudio } = await import('@/session/mobileRealtimeAudio');
+      const stop = await startMobileRealtimeAudio({ onChunk: vi.fn() });
+      expect(logMobileVoice).toHaveBeenLastCalledWith('debug', 'capture input', {
+        backend: 'ios-native',
+        inputPortTypes: input?.inputPortTypes ?? ['unknown'],
+        inputSampleRate: input?.inputSampleRate,
+        inputChannels: input?.inputChannels,
+      });
+      await stop();
+    },
+  );
+
   it('waits for the previous singleton recorder to finish starting and stopping before reuse', async () => {
     let finishStart!: () => void;
     let finishStop!: () => void;

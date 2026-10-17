@@ -286,6 +286,7 @@ export function MobileOutboxBridge() {
             token,
             deviceId: r.deviceId,
             sharedTaskId: parseSharedTaskPeer(r.deviceId)?.sharedTaskId,
+            isActive: () => isCurrent() && mobileDurableOutbox.getSnapshot().includes(r),
           },
         );
         if (!isCurrent() || !mobileDurableOutbox.getSnapshot().includes(r)) {

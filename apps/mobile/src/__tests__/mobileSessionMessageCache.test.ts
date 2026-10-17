@@ -190,6 +190,24 @@ describe('mobileSessionMessageCache', () => {
     expect(rows[1].content).toBe(content);
   });
 
+  // Unit regression: a blurred page's deferred write must not erase list pushes
+  // received after that write was captured; explicit replacement still wins.
+  it('preserves a later list receipt through a delayed page flush', async () => {
+    const { cacheSessionMessages, cacheSessionListMessage, getCachedSessionMessages,
+      captureSessionMessageCacheWriteAuthority, cacheSessionMessagesIfCurrent,
+      replaceCachedSessionMessages } = await import('@/session/mobileSessionMessageCache');
+    const old = makeMessage({ id: 'same', clientId: 'same', createdAt: isoAt(1), content: 'old' });
+    await cacheSessionMessages('host-a', 'session-1', [old]);
+    const authority = captureSessionMessageCacheWriteAuthority('host-a', 'session-1')!;
+    const newer = { ...old, content: 'updated', cacheReceipt: { ...authority.capturedReceipt, order: authority.capturedReceipt.order + 1 } };
+    await cacheSessionListMessage('host-a', 'session-1', newer);
+    await cacheSessionMessagesIfCurrent(authority, [old]);
+    expect(await getCachedSessionMessages('host-a', 'session-1')).toEqual([newer]);
+    await replaceCachedSessionMessages('host-a', 'session-1', []);
+    await cacheSessionMessagesIfCurrent(authority, [old]);
+    expect(await getCachedSessionMessages('host-a', 'session-1')).toEqual([]);
+  });
+
   it('returns [] for missing cache or blank ids', async () => {
     const { getCachedSessionMessages, cacheSessionMessages } = await import('@/session/mobileSessionMessageCache');
 

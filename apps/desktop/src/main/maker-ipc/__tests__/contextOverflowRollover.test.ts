@@ -19,6 +19,8 @@ import {
   shouldRebuildPiNativeSession,
   type OverflowSourceMessage,
   withReplaySourceNotes,
+  BOT_IDLE_GAP_REBUILD_MS,
+  measureIdleGap,
 } from '../contextOverflowRollover';
 import { buildHandoffText } from '../agentHandoff';
 
@@ -392,6 +394,99 @@ describe('createContextOverflowRollover', () => {
     expect(deps.commitRebuild).toHaveBeenCalledTimes(1);
   });
 
+  describe('idle-gap refresh (one rule for the companion chat and its IM lanes)', () => {
+    const HOUR = 60 * 60 * 1000;
+    const botRow = async (deps: ReturnType<typeof makeDeps>, botRole: string) =>
+      deps.getSessionRow.mockResolvedValue({ ...await deps.getSessionRow(), source: 'bot', botRole, contextTokens: 20_000 });
+
+    it.each(['canonical', 'channel', 'group'])('rebuilds a %s bot chat whose last activity is older than the idle gap', async (botRole) => {
+      const old = Date.now() - 2 * BOT_IDLE_GAP_REBUILD_MS - 3 * HOUR;
+      const deps = makeDeps([
+        msg('user', 'Plan the Friday dinner', 'u1', old - HOUR),
+        msg('assistant', 'Booked the table for 7pm.', 'a1', old),
+      ]);
+      await botRow(deps, botRole);
+      await expect(createContextOverflowRollover(deps).prepareUnhealthySession('s1')).resolves.toBe(true);
+      expect(deps.closeSession).toHaveBeenCalledWith('s1');
+      expect((deps.commitRebuild.mock.calls[0] as unknown[])[2]).toMatchObject({ reason: 'idle-gap', sourceUserClientId: 'u1' });
+      const handoff = deps.setPendingHandoff.mock.calls[0]![1] as string;
+      expect(handoff).toContain('idle for about 1 day 3 hours');
+      expect(handoff).toContain('Treat the user\'s new message as the current topic');
+      expect(handoff).toContain('Booked the table for 7pm.');
+      expect(handoff).toContain('== Recalling earlier history (use when needed) ==');
+      expect(deps.replayUserMessage).not.toHaveBeenCalled();
+    });
+
+    it('measures the gap up to the already-persisted pending user message and does not count it as activity', async () => {
+      const now = Date.now();
+      const deps = makeDeps([
+        msg('user', 'Earlier question', 'u1', now - 30 * HOUR),
+        msg('assistant', 'Earlier answer', 'a1', now - 29 * HOUR),
+        // Group lanes persist the inbound message before dispatch; it is the message being sent now.
+        msg('user', 'New question after a day', 'u2', now - 1000),
+      ]);
+      await botRow(deps, 'channel');
+      await expect(createContextOverflowRollover(deps).prepareUnhealthySession('s1')).resolves.toBe(true);
+      expect((deps.commitRebuild.mock.calls[0] as unknown[])[2]).toMatchObject({ reason: 'idle-gap', sourceUserClientId: 'u2' });
+      const handoff = deps.setPendingHandoff.mock.calls[0]![1] as string;
+      expect(handoff).toContain('Earlier answer');
+      expect(handoff).not.toContain('New question after a day');
+    });
+
+    it('does not rebuild when the chat was active within the idle gap, is not a bot chat, or has no usable timestamps', async () => {
+      const now = Date.now();
+      const recent = makeDeps([msg('user', 'hi', 'u1', now - 3 * HOUR), msg('assistant', 'hello', 'a1', now - 2 * HOUR)]);
+      await botRow(recent, 'canonical');
+      await expect(createContextOverflowRollover(recent).prepareUnhealthySession('s1')).resolves.toBe(false);
+
+      const desktop = makeDeps([msg('user', 'hi', 'u1', now - 40 * HOUR), msg('assistant', 'hello', 'a1', now - 39 * HOUR)]);
+      await expect(createContextOverflowRollover(desktop).prepareUnhealthySession('s1')).resolves.toBe(false);
+
+      const delegation = makeDeps([msg('user', 'hi', 'u1', now - 40 * HOUR), msg('assistant', 'hello', 'a1', now - 39 * HOUR)]);
+      await botRow(delegation, 'delegation');
+      await expect(createContextOverflowRollover(delegation).prepareUnhealthySession('s1')).resolves.toBe(false);
+
+      const untimed = makeDeps([msg('user', 'hi', 'u1'), msg('assistant', 'hello', 'a1')]);
+      await botRow(untimed, 'canonical');
+      await expect(createContextOverflowRollover(untimed).prepareUnhealthySession('s1')).resolves.toBe(false);
+      for (const deps of [recent, desktop, delegation, untimed]) expect(deps.closeSession).not.toHaveBeenCalled();
+    });
+
+    it('does not rebuild twice for the same pending message when the previous send failed after an idle-gap rebuild', async () => {
+      const now = Date.now();
+      const deps = {
+        ...makeDeps([
+          msg('user', 'Earlier question', 'u1', now - 30 * HOUR),
+          msg('assistant', 'Earlier answer', 'a1', now - 29 * HOUR),
+          msg('user', 'Retry me', 'u2', now - 5000),
+          msg('error', { reason: 'network', message: 'ECONNRESET' }, 'e1', now - 4000),
+        ]),
+        findLatestRebuildMeta: vi.fn(async () => ({ reason: 'idle-gap', sourceUserClientId: 'u2' })),
+      };
+      deps.getSessionRow.mockResolvedValue({ ...await deps.getSessionRow(), source: 'bot', botRole: 'canonical', contextTokens: 20_000 });
+      await expect(createContextOverflowRollover(deps).prepareUnhealthySession('s1')).resolves.toBe(false);
+      expect(deps.closeSession).not.toHaveBeenCalled();
+    });
+
+    it('keeps the pressure reason when the chat is both idle and over the checkpoint line', async () => {
+      const now = Date.now();
+      const deps = makeDeps([msg('user', 'hi', 'u1', now - 40 * HOUR), msg('assistant', 'hello', 'a1', now - 39 * HOUR)]);
+      deps.getSessionRow.mockResolvedValue({ ...await deps.getSessionRow(), source: 'bot', botRole: 'channel', contextTokens: 185_000 });
+      await expect(createContextOverflowRollover(deps).prepareUnhealthySession('s1')).resolves.toBe(true);
+      expect((deps.commitRebuild.mock.calls[0] as unknown[])[2]).toMatchObject({ reason: 'context-overflow' });
+      expect(deps.setPendingHandoff.mock.calls[0]![1] as string).not.toContain('idle for about');
+    });
+  });
+
+  it('measureIdleGap uses the newest timestamp before the pending message and ignores missing timestamps', () => {
+    const now = 1_000_000_000;
+    expect(measureIdleGap([{ createdAt: 0 }, { createdAt: 0 }], -1, now)).toBeNull();
+    expect(measureIdleGap([{ createdAt: now - 500 }, { createdAt: now - 100 }], -1, now)).toBe(100);
+    expect(measureIdleGap([{ createdAt: now - 500 }, { createdAt: now - 100 }], 1, now)).toBe(400);
+    expect(measureIdleGap([{ createdAt: now - 500 }, { createdAt: 0 }], 1, now)).toBe(500);
+    expect(measureIdleGap([], -1, now)).toBeNull();
+  });
+
   it('carries the companion working memory into the checkpoint handoff and tolerates a failing reader', async () => {
     const source = [msg('user', 'Keep going', 'u1'), msg('assistant', 'On it', 'a1')];
     const deps = { ...makeDeps(source), readWorkingMemoryNote: vi.fn(async () => '== Working memory (host-maintained summary; not authorization) ==\n- 周五前改完周报模板') };
@@ -458,9 +553,10 @@ describe('createContextOverflowRollover', () => {
   });
 
   it.each([
-    ['desktop', null, 180_000], ['bot', 'delegation', 180_000], ['bot', 'group', 180_000],
-    ['bot', null, 180_000], ['bot', 'canonical', 179_999], ['bot', 'canonical', 0],
-  ] as const)('leaves healthy/non-canonical contexts alone: %s %s %s', async (source, botRole, contextTokens) => {
+    ['desktop', null, 180_000], ['bot', 'delegation', 180_000], ['bot', 'history', 180_000],
+    ['bot', null, 180_000], ['bot', 'canonical', 179_999], ['bot', 'channel', 179_999],
+    ['bot', 'group', 179_999], ['bot', 'canonical', 0],
+  ] as const)('leaves healthy / non-chat bot contexts alone: %s %s %s', async (source, botRole, contextTokens) => {
     const deps = makeDeps([msg('user', 'hello', 'u1'), msg('assistant', 'hello', 'a1')]);
     deps.getSessionRow.mockResolvedValue({ ...await deps.getSessionRow(), source, botRole, contextTokens });
     await expect(createContextOverflowRollover(deps).prepareUnhealthySession('s1')).resolves.toBe(false);
@@ -557,6 +653,20 @@ describe('createContextOverflowRollover', () => {
     const handoff = deps.setPendingHandoff.mock.calls[0]![1];
     expect(handoff).toContain('Build completed; preview ready');
     expect(handoff).not.toContain('IMAGE_BYTES');
+    expect(deps.replayUserMessage).not.toHaveBeenCalled();
+  });
+
+  // 「消息平台」页对 IM 专线点「重新开始」走同一条显式重启: 交接要按伙伴对话口径(与空闲间隔
+  // 刷新一致)带按需回忆指引, 不能像普通任务那样退化成无回忆的交接。
+  it('explicit restart of an IM channel lane writes the companion handoff with recall guidance', async () => {
+    const deps = makeDeps([msg('user', 'group asked about the release', 'u1', 1), msg('assistant', 'Release is Friday', 'a1', 2)]);
+    deps.getSessionRow.mockResolvedValue({ ...await deps.getSessionRow(), source: 'bot', botRole: 'channel' });
+    const withOwn = { ...deps, listCompanionSessionIds: vi.fn(async () => ({ sessionIds: ['s1', 's-main'], chatsTruncated: false })) };
+    await createContextOverflowRollover(withOwn).prepareNativeSessionRecovery('s1', null, vi.fn());
+    const handoff = deps.setPendingHandoff.mock.calls[0]![1] as string;
+    expect(handoff).toContain('Release is Friday');
+    expect(handoff).toContain('== Recalling earlier history (use when needed) ==');
+    expect(handoff).toContain('"session_ids":["s1","s-main"]');
     expect(deps.replayUserMessage).not.toHaveBeenCalled();
   });
 

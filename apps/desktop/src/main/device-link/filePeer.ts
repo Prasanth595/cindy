@@ -749,7 +749,7 @@ export function tryPeerFile(
     signal,
   );
 }
-async function copyReceivedFile(source: ReceivedFile): Promise<ReceivedFile> {
+export async function copyReceivedFile(source: ReceivedFile): Promise<ReceivedFile> {
   const directory = await fs.mkdtemp(path.join(app.getPath('temp'), 'cindy-file-peer-'));
   const destination = path.join(directory, 'file');
   const dispose = () => fs.rm(directory, { recursive: true, force: true });

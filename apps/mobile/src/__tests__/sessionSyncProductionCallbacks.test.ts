@@ -1,8 +1,10 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import ts from 'typescript';
-import { describe, expect, it, vi } from 'vitest';
-import { createRemoteSyncCoordinator } from '@/device-link/remoteSyncTask';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createRemoteSyncCoordinator, waitForCachedSubscription } from '@/device-link/remoteSyncTask';
+import { createTransientTopicSubscriptionCoordinator } from '@/device-link/transientTopicSubscription';
+import { SubscriptionAcknowledgements } from '@/device-link/subscriptionAcknowledgements';
 import { runConnectionScopedSessionMetadataRead, waitForIndependentSnapshotReads } from '@/device-link/sessionSnapshotSingleFlight';
 import { syncSessionMessageWindow } from '@/session/sessionMessageWindowSync';
 import { shouldClearOperationErrorAfterSync } from '@/session/sessionSyncErrorRecovery';
@@ -56,6 +58,7 @@ function historyAvailable(status: string, presence: boolean | null): boolean {
     `return ${expression.getText(source)};`)(status, () => presence, 'd1');
 }
 const tick = () => new Promise((done) => setTimeout(done, 0));
+afterEach(() => vi.useRealTimers());
 const session = { id: 's1', updatedAt: '2026-09-06T00:00:00Z', _count: { messages: 100 } };
 const page = {
   messages: [{ id: 'm1' }] as { id: string; clientId?: string }[], limit: 1, reducedByPayloadTooLarge: false,
@@ -112,8 +115,10 @@ function fixture(reopen = false, remoteHistoryAvailable = true) {
     sessionSubscriptionIdentityRef: { current: JSON.stringify(['d1', 's1', 1]) },
     createRemoteSyncReopenCoordinator: () => ({ captureVersion: () => 0 }),
     reopenLink: async () => undefined, openLink: async () => undefined,
-    subscribe: async () => undefined, sessionsSubscriptionCoordinatorRef: { current: null },
+    subscribe: async () => undefined,
+    sessionsSubscriptionCoordinatorRef: { current: createTransientTopicSubscriptionCoordinator() },
     // Retry delays / transport single-flight are tested separately; preserve callbacks and fences here.
+    waitForCachedSubscription: (async () => undefined) as typeof waitForCachedSubscription,
     retryRemoteSyncRead: (_run: unknown, read: () => unknown) => read(),
     runConnectionScopedSessionMetadataRead, waitForIndependentSnapshotReads, syncSessionMessageWindow,
     runSessionProjectionSnapshotSingleFlight: (_scope: unknown, _epoch: unknown, read: () => unknown) => read(),
@@ -153,6 +158,33 @@ function fixture(reopen = false, remoteHistoryAvailable = true) {
 }
 
 describe('production session recovery callbacks', () => {
+  // Existing callback-execution guard: PR #6325 missed a focused reconnect where
+  // only the new list topic is ACKed. Use the real waiter and ACK table here so
+  // an old completed Promise cannot start the actual page's history read early.
+  it('waits for current detail ACK before the cached reconnect read', async () => {
+    vi.useFakeTimers();
+    const f = fixture(true);
+    const acks = new SubscriptionAcknowledgements(() => {});
+    const topics = ['sessions', 'session:s1'] as const;
+    acks.set('d1', new Set(topics));
+    acks.delete('d1');
+    acks.set('d1', new Set(['sessions']));
+    f.bindings.waitForCachedSubscription = waitForCachedSubscription;
+    f.bindings.getSubscriptionIdentity = () => acks.identity('d1', topics);
+    const coordinator = createRemoteSyncCoordinator(pageCallback('syncSession', f.bindings));
+    coordinator.setContext('d1:s1:reconnect');
+    const sync = coordinator.request({ reason: 'connection' });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(f.state.rows).toEqual([{ id: 'cached', clientId: 'cached' }]);
+    expect(f.maker.listMessages).not.toHaveBeenCalled();
+    acks.set('d1', new Set(topics));
+    await vi.advanceTimersByTimeAsync(50);
+    await sync;
+    expect(f.maker.listMessages).toHaveBeenCalledTimes(1);
+    expect(f.state.rows).toEqual(page.messages);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it.each([null, true])('recovers cached history with an online relay and presence=%s', async (presence) => {
     // A failed roster request leaves presence unknown even after link/subscription
     // recovery. Evaluate the real page gate and then execute its real sync callback.

@@ -1,13 +1,44 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import ts from 'typescript';
 import { i18n } from '@/i18n';
 import { startBoundedStartupRead } from '@/session/mobileHomeStartup';
-import { resolveConnectionBannerSyncActionVisibility, resolveHomeConnectionFeedback } from '@/components/connectionBannerVisibility';
-import { describeRemoteError } from '@/device-link/remoteStatus';
+import { resolveConnectionBannerSyncActionVisibility, resolveConnectionBannerVisibility, resolveHomeConnectionFeedback } from '@/components/connectionBannerVisibility';
+import { connectionHealthCopy, describeRemoteError } from '@/device-link/remoteStatus';
 
 function readSource(relativePath: string): string {
   return readFileSync(resolve(process.cwd(), relativePath), 'utf8').replace(/\r\n/g, '\n');
+}
+
+// Exercise Home's actual feedback expressions: literal-source assertions missed
+// phone-wide outages and broke when the same shared policy gained that input.
+const homeSource = ts.createSourceFile('HomeSurface.tsx', readSource('src/session/HomeSurface.tsx'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+const feedbackExpressions = new Map<string, string>();
+const feedbackNames = new Set(['healthCopy', 'showConnectionRow', 'showHomeSyncAction', 'showHomeRecoveryProgress', 'connectionTitle']);
+function collectFeedback(node: ts.Node) {
+  if (ts.isVariableDeclaration(node) && feedbackNames.has(node.name.getText(homeSource)) && node.initializer) {
+    feedbackExpressions.set(node.name.getText(homeSource), ts.transpileModule(`const result = ${node.initializer.getText(homeSource)};`, {
+      compilerOptions: { target: ts.ScriptTarget.ES2022 },
+    }).outputText);
+  }
+  ts.forEachChild(node, collectFeedback);
+}
+collectFeedback(homeSource);
+function homeFeedback(overrides: Record<string, unknown>) {
+  const bindings: Record<string, unknown> = {
+    network: 'available', networkUnavailable: false, status: 'online',
+    selectedDeviceDisconnected: false, activeConnectionIssue: null,
+    homeDeviceRecovery: false, homeDeviceUnresponsive: false, connectionError: null,
+    resolveConnectionBannerSyncActionVisibility, resolveConnectionBannerVisibility, connectionHealthCopy,
+    t: (key: string) => i18n.t(key), homeConnectionTitle: () => 'online', ...overrides,
+  };
+  for (const name of feedbackNames) {
+    const expression = feedbackExpressions.get(name);
+    if (!expression) throw new Error(`Missing Home feedback: ${name}`);
+    bindings[name] = new Function(...Object.keys(bindings), `${expression}\nreturn result;`)(...Object.values(bindings));
+  }
+  return bindings;
 }
 
 describe('mobile Home connection feedback', () => {
@@ -25,10 +56,20 @@ describe('mobile Home connection feedback', () => {
     const source = readSource('src/session/HomeSurface.tsx');
     expect(source).toContain('resolveHomeConnectionFeedback(error, homeRecoveringDeviceIds, describeRemoteError)');
     expect(source).toContain('deviceUnresponsive: homeDeviceRecovery,');
-    expect(source).toContain('const showHomeSyncAction = resolveConnectionBannerSyncActionVisibility(');
-    expect(source).toContain('const showConnectionRow = selectedDeviceDisconnected || resolveConnectionBannerVisibility(');
     expect(source).toContain('deviceUnresponsive: homeDeviceUnresponsive,');
-    expect(source).toContain("homeDeviceRecovery ? t(homeDeviceUnresponsive ? 'deviceLink.deviceUnresponsiveTitle' : 'deviceLink.recovery.syncing')");
+    expect(homeFeedback({})).toMatchObject({ showConnectionRow: false, showHomeSyncAction: false });
+    expect(homeFeedback({ selectedDeviceDisconnected: true })).toMatchObject({
+      showConnectionRow: true, connectionTitle: i18n.t('deviceLink.cachedHistory.title'),
+    });
+    expect(homeFeedback({ homeDeviceRecovery: true, homeDeviceUnresponsive: true })).toMatchObject({
+      showConnectionRow: true, showHomeSyncAction: false, showHomeRecoveryProgress: true,
+      connectionTitle: i18n.t('deviceLink.deviceUnresponsiveTitle'),
+    });
+    expect(homeFeedback({ connectionError: 'failed' })).toMatchObject({ showConnectionRow: true, showHomeSyncAction: true });
+    expect(homeFeedback({ network: 'unavailable', networkUnavailable: true, connectionError: 'failed' })).toMatchObject({
+      showConnectionRow: true, showHomeSyncAction: false, showHomeRecoveryProgress: false,
+      connectionTitle: i18n.t('deviceLink.localNetwork.title'),
+    });
     expect(source).toContain("recoveringDeviceIds.has(id) || rawDeviceConnectionStates[id] === 'syncing'");
     const hydrate = source.slice(source.indexOf('const hydrateDeviceSessions = useCallback('), source.indexOf('const probeRevokedDeviceAccess'));
     expect(hydrate.indexOf("updateDeviceConnectionState(device.deviceId, 'syncing')")).toBeLessThan(hydrate.indexOf('const promise = hydrateDeviceSessionsOnce('));
@@ -520,9 +561,7 @@ describe('mobile home desktop-first surface', () => {
     expect(source).toContain("updateDeviceConnectionState(device.deviceId, 'syncing');");
     expect(source).toContain("updateDeviceConnectionState(device.deviceId, 'failed');");
     expect(source).toContain("updateDeviceConnectionState(device.deviceId, 'idle');");
-    expect(source).toContain(
-      'const showConnectionRow = selectedDeviceDisconnected || resolveConnectionBannerVisibility(',
-    );
+    // Row visibility is exercised through Home's actual expressions above.
     expect(source).toContain('homeSyncDeviceIds.filter((id) => unresponsiveDevices.has(id)');
     expect(source).toContain('function DeviceMenuItem');
     expect(source).not.toContain('function DeviceConnectionSpinner');

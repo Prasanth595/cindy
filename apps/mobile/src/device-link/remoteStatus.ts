@@ -3,7 +3,8 @@ import {
   isDeviceUnresponsiveRemoteError,
   isTransientRemoteError,
 } from '@cindy/maker-shared/device-link-contract';
-import type { DeviceLinkConnectionIssueKind, DeviceLinkStatus } from '@cindy/device-link';
+import type { DeviceLinkConnectionIssue, DeviceLinkConnectionIssueKind, DeviceLinkStatus } from '@cindy/device-link';
+import type { LocalNetworkStatus } from '@/device-link/localNetworkStatus';
 import { i18n } from '@/i18n';
 
 export {
@@ -38,6 +39,33 @@ export function connectionIssueTitle(kind: DeviceLinkConnectionIssueKind): strin
 
 export function connectionIssueHint(kind: DeviceLinkConnectionIssueKind): string {
   return i18n.t(CONNECTION_ISSUE_COPY_KEYS[kind].hint);
+}
+
+/** Shared by Home and detail banners. Only native evidence blames the phone;
+ * only an online service's device verdict blames the computer. */
+export function connectionHealthCopy(input: {
+  network: LocalNetworkStatus;
+  status: DeviceLinkStatus;
+  issue: DeviceLinkConnectionIssue | null;
+  deviceDisconnected?: boolean;
+  deviceUnresponsive?: boolean;
+}): { title: string; hint: string } | null {
+  if (input.network === 'unavailable') {
+    return { title: i18n.t('deviceLink.localNetwork.title'), hint: i18n.t('deviceLink.localNetwork.hint') };
+  }
+  if (input.issue && (input.status !== 'online' || input.issue.kind === 'unstable')) {
+    return { title: connectionIssueTitle(input.issue.kind), hint: connectionIssueHint(input.issue.kind) };
+  }
+  if (input.status !== 'online') {
+    return { title: i18n.t('deviceLink.serviceConnection.title'), hint: i18n.t('deviceLink.serviceConnection.hint') };
+  }
+  if (input.deviceDisconnected) {
+    return { title: i18n.t('deviceLink.cachedHistory.title'), hint: i18n.t('deviceLink.cachedHistory.hint') };
+  }
+  if (input.deviceUnresponsive) {
+    return { title: i18n.t('deviceLink.deviceUnresponsiveTitle'), hint: i18n.t('deviceLink.deviceUnresponsiveHint') };
+  }
+  return null;
 }
 
 export function relayStatusLabel(status: DeviceLinkStatus): string {
@@ -197,4 +225,3 @@ export function describeRemoteComposerBlockingError(error: string | null): strin
   if (!COMPOSER_BLOCKING_MARKERS.some((marker) => error.includes(marker))) return null;
   return localizedStableRemoteError(error);
 }
-

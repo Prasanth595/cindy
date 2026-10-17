@@ -6,6 +6,24 @@ export const HISTORY_VIEW_PAGE_ITEMS = 20;
 export const HISTORY_VIEW_PAGE_BYTES = 1024 * 1024;
 export const HISTORY_DETAIL_PAGE_BYTES = 256 * 1024;
 
+/** Local ordering only: the run changes on restart, and order never uses the wall clock. */
+export interface HistoryCacheReceipt { run: string; order: number }
+const cacheReceiptRun = `${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+let cacheReceiptOrder = 0;
+export function nextHistoryCacheReceipt(): HistoryCacheReceipt {
+  return { run: cacheReceiptRun, order: ++cacheReceiptOrder };
+}
+export function isHistoryCacheReceipt(value: unknown): value is HistoryCacheReceipt {
+  const receipt = value as HistoryCacheReceipt | null;
+  return !!receipt && typeof receipt.run === 'string' && Number.isSafeInteger(receipt.order) && receipt.order > 0;
+}
+/** Only a current-run push can supersede a restored page from another run. */
+export function historyCacheReceiptFollows(receipt: unknown, read: unknown, restored = false): boolean {
+  if (!isHistoryCacheReceipt(receipt)) return false;
+  if (!isHistoryCacheReceipt(read)) return true;
+  return receipt.run === read.run ? receipt.order > read.order : restored && receipt.run === cacheReceiptRun;
+}
+
 export function isHistoryViewUnavailable(error: unknown): boolean {
   return /CHANNEL_NOT_ALLOWED|UNSUPPORTED_CAPABILITY|not registered|No handler/i.test(String(error));
 }
@@ -28,6 +46,8 @@ export interface HistoryMessageSource {
   content: unknown;
   createdAt: string;
   rowid?: number;
+  /** Controller-local order of a durable push; never a Host revision. */
+  cacheReceipt?: HistoryCacheReceipt;
   toolUseId?: string | null;
   agentMeta?: object | null;
   /** Host outline only; transferred in work summaries, never as a replacement body. */

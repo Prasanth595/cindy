@@ -260,10 +260,14 @@ it('resets identity-bound row state before a recycled cell displays another item
     expect(expandedStateSource).toContain('blockId ? store.subscribe(listener) : () => {}');
   });
 
-it('measures every mounted shareable message, including expanded group children', () => {
+it('measures mounted shareable messages for manual sharing sticky selection', () => {
     const source = readFileSync(resolve(process.cwd(), 'src/session/MessageRenderer.tsx'), 'utf8');
-    const readerStart = source.indexOf('const readActuallyVisibleShareableMessageIds');
-    const readerEnd = source.indexOf('useEffect(() => {', readerStart);
+    // Native measurements still drive manual sharing's pinned checkbox, including
+    // expanded group children. Screenshot-driven automatic selection was removed.
+    const readerStart = source.indexOf('const runStickyShareCheck');
+    const readerEnd = source.indexOf('const scheduleStickyShareCheck', readerStart);
+    expect(readerStart).toBeGreaterThan(-1);
+    expect(readerEnd).toBeGreaterThan(readerStart);
     const readerSource = source.slice(readerStart, readerEnd);
 
     expect(source).toContain('shareableMessageViewsRef = useRef(new Map<string, View>())');

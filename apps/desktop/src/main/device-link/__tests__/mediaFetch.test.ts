@@ -170,6 +170,17 @@ describe('fetchLocalMediaToOss — scheme 路由', () => {
       expect(logDebug.mock.calls.flat().join('\n')).not.toMatch(/xdt-|path=|\/cache\//);
     },
   );
+  it('returns only authorized metadata for small files when requested', async () => {
+    const read = vi.fn(), close = vi.fn();
+    openMock.mockResolvedValue({ stat: async () => ({ isFile: () => true, size: 5, mtimeMs: 1 }), read, close });
+    imageResolve.mockReturnValue({ absPath: '/cache/a.png', mimeType: 'image/png' });
+    const result = await fetchLocalMediaToOss({ url: 'xdt-image://sess/a.png', prepareOnly: true, metadataOnly: true });
+    expect(result).toMatchObject({ size: 5, transferRequired: true, version: expect.stringMatching(/^[a-f0-9]{64}$/) });
+    expect(result.inlineBase64).toBeUndefined();
+    expect(read).not.toHaveBeenCalled();
+    expect(uploadLocalFile).not.toHaveBeenCalled();
+    expect(close).toHaveBeenCalledOnce();
+  });
   it('revalidates source identity without reading/uploading bytes, including restored mtime', async () => {
     let ctimeMs = 1;
     const read = vi.fn();
