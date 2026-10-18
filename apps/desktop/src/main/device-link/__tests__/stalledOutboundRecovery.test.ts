@@ -2,12 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createStalledOutboundRecovery } from '../stalledOutboundRecovery';
 
 function make(over: { canRecover?: boolean; reopening?: boolean } = {}) {
-  const state = { canRecover: over.canRecover ?? true, reopening: over.reopening ?? false };
+  const state = { canRecover: over.canRecover ?? true, reopening: over.reopening ?? false, relayOnline: true };
   const trigger = vi.fn();
   const recovery = createStalledOutboundRecovery({
     canRecover: () => state.canRecover,
     trigger,
     isReopening: () => state.reopening,
+    isRelayOnline: () => state.relayOnline,
   });
   return { state, trigger, recovery };
 }
@@ -66,6 +67,29 @@ describe('createStalledOutboundRecovery', () => {
     expect(recovery.pendingRetryDelayMs('dev-a')).toBe(60_000);
 
     recovery.reset('dev-a');
+    expect(recovery.hasPendingRetry('dev-a')).toBe(false);
+  });
+
+  it('本机 relay 离线时到点的重试保留恢复状态,重新上线后接着重开且不重复通知界面', async () => {
+    const { state, trigger, recovery } = make();
+    recovery.onGaveUp('dev-a');
+    state.relayOnline = false;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(trigger).not.toHaveBeenCalled();
+    expect(recovery.isRecovering('dev-a')).toBe(true);
+
+    state.relayOnline = true;
+    recovery.resumeAfterRelayOnline();
+    expect(trigger.mock.calls).toEqual([['dev-a', { notifyReset: false }]]);
+  });
+
+  it('relay 重新上线时已不需要重开的设备直接移出恢复状态', () => {
+    const { state, trigger, recovery } = make();
+    recovery.onGaveUp('dev-a');
+    state.canRecover = false;
+    recovery.resumeAfterRelayOnline();
+    expect(trigger).not.toHaveBeenCalled();
+    expect(recovery.isRecovering('dev-a')).toBe(false);
     expect(recovery.hasPendingRetry('dev-a')).toBe(false);
   });
 

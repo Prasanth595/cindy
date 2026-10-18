@@ -505,6 +505,7 @@ const stalledOutboundRecovery = createStalledOutboundRecovery({
   }),
   trigger: (deviceId, opts) => transportTimeoutReopen.trigger(deviceId, opts),
   isReopening: (deviceId) => transportTimeoutReopen.isActive(deviceId),
+  isRelayOnline: () => !!client && !linkTornDown && client.getStatus() === 'online',
   log: { info: (msg) => log.info(msg) },
 });
 
@@ -888,7 +889,8 @@ export function initDeviceLinkService(options: DeviceLinkServiceOptions = {}): v
       // 可能正 park 在上线等待里,状态抖动时提前删登记会让同设备的下一次调用
       // 开出第二个物理 link-open,破坏单飞(review P2);而已上管道的请求断线
       // 时由 client 层 reject,settle 清理有界,不会滞留。
-      // relay 离线:重开循环全部终止,恢复交给断线重连后的 presence 闪断路径。
+      // relay 离线:重开循环全部终止,恢复交给断线重连后的 presence 闪断路径;
+      // 出站链路的停滞恢复保留恢复中的设备,上线后由 stalledOutboundRecovery 接着重开。
       transportTimeoutReopen.dispose();
     }
     // 断线期间 relay 不会为对端补发 offline presence,重连后同一台电脑仍以

@@ -6,7 +6,9 @@
  * 钉住三件事:
  *  1. 虚拟机暂停/恢复后,没有 presence 上线通知也能由本机重开;
  *  2. 不会重复建链:多个恢复事件、用户手动打开同时发生时,对端只收到一次 link-open;
- *  3. 旧状态清理干净:恢复、用户断开、对端永久关闭之后,不会有迟到的定时器再建链。
+ *  3. 旧状态清理干净:恢复、用户断开、对端永久关闭之后,不会有迟到的定时器再建链;
+ *     本机 relay 断线不算「不再需要」,重新上线后接着重开;
+ *  4. 故障半径:同一 relay 上的健康 peer 在故障 peer 多轮重开期间零感知。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -66,12 +68,22 @@ class FlowRelay {
   readonly deliveredLinkOpens = new Map<string, number>();
   /** 丢弃匹配的帧(模拟对端恢复后不主动发任何恢复信号)。 */
   drop: ((senderId: string, envelope: Envelope) => boolean) | null = null;
+  /** 连不上 relay 的设备:新连接立刻被关闭,对它的帧按离线处理。 */
+  readonly unreachable = new Set<string>();
 
   makeWebSocket(deviceId: string): FlowWs {
     const socket = new FlowWs(this, deviceId);
     this.sockets.set(deviceId, socket);
-    setTimeout(() => socket.emit('open'), 0);
+    setTimeout(() => {
+      if (this.unreachable.has(deviceId)) socket.emit('close', 1006, 'relay unreachable');
+      else socket.emit('open');
+    }, 0);
     return socket;
+  }
+
+  /** 断开某台设备到 relay 的连接(它的 client 会自己重连)。 */
+  disconnect(deviceId: string): void {
+    this.sockets.get(deviceId)?.emit('close', 1006, 'dropped');
   }
 
   route(senderId: string, socket: FlowWs, envelope: Envelope): void {
@@ -84,7 +96,7 @@ class FlowRelay {
       return;
     }
     if (!envelope.dst) return;
-    if (this.offline.has(envelope.dst)) {
+    if (this.offline.has(envelope.dst) || this.unreachable.has(envelope.dst)) {
       socket.push({
         v: PROTOCOL_VERSION,
         kind: 'relay-error',
@@ -137,8 +149,12 @@ function makeClient(relay: FlowRelay, deviceId: string): DeviceLinkClient {
   });
   // 被控端行为:收到 link-open 就接受(与 dispatch 的 handleLinkOpen 等价的最小版本)。
   client.onFrame((env) => {
-    if (env.kind !== 'link-open' || !env.src || !env.id) return;
-    client.sendLinkAccept(env.src, env.id, { appVersion: '1.0.0', allowlistHash: 'hash' });
+    if (!env.src || !env.id) return;
+    if (env.kind === 'link-open') {
+      client.sendLinkAccept(env.src, env.id, { appVersion: '1.0.0', allowlistHash: 'hash' });
+    } else if (env.kind === 'invoke' && (env.payload as { channel?: string } | undefined)?.channel === 'test:ping') {
+      client.sendInvokeResult(env.src, env.id, { ok: true, result: 'pong' });
+    }
   });
   return client;
 }
@@ -197,8 +213,13 @@ function wireController(ctrl: DeviceLinkClient) {
     }),
     trigger: (deviceId, opts) => loop.trigger(deviceId, opts),
     isReopening: (deviceId) => loop.isActive(deviceId),
+    isRelayOnline: () => ctrl.getStatus() === 'online',
   });
   attachStalledOutboundRecovery(ctrl, recovery);
+  // index.ts:relay 离线时重开循环全部终止。
+  ctrl.onStatusChange((status) => {
+    if (status !== 'online') loop.dispose();
+  });
   // index.ts 的 link-close 路由:transport-timeout 重开,其它 reason 终止循环。
   ctrl.onFrame((env) => {
     if (env.kind !== 'link-close' || !env.src) return;
@@ -235,13 +256,17 @@ async function setup() {
   const relay = new FlowRelay();
   const ctrl = makeClient(relay, 'ctrl');
   const vm = makeClient(relay, 'vm');
+  // 同一 relay 上的健康邻居,用来验证故障半径。
+  const nb = makeClient(relay, 'nb');
   const host = wireController(ctrl);
   ctrl.start();
   vm.start();
+  nb.start();
   await settle(50);
   expect(ctrl.getStatus()).toBe('online');
   expect(vm.getStatus()).toBe('online');
-  return { relay, ctrl, vm, host };
+  expect(nb.getStatus()).toBe('online');
+  return { relay, ctrl, vm, nb, host };
 }
 
 /** 本机先正常打开远程控制。 */
@@ -291,6 +316,7 @@ afterEach(() => {
   env.host.recovery.dispose();
   env.ctrl.stop();
   env.vm.stop();
+  env.nb.stop();
   vi.useRealTimers();
 });
 
@@ -516,5 +542,88 @@ describe('出站链路主动重开:完整流程', () => {
     expect(env.host.openRemoteLinkCalls()).toBe(0);
     expect(env.relay.linkOpensTo('vm')).toBe(0);
     expect(env.host.recovery.hasPendingRetry('vm')).toBe(false);
+  });
+  it('健康邻居在故障 peer 多轮重开期间零感知:请求照常完成,链路不复位、不重建', async () => {
+    await establish(env);
+    const openNb = env.host.openRemoteLink('nb');
+    await settle(10);
+    await openNb;
+    expect(env.ctrl.isLinkReady('nb')).toBe(true);
+    const lost: string[] = [];
+    env.ctrl.onOutboundLinkLost((deviceId) => lost.push(deviceId));
+
+    await pauseVm(env);
+    // 第一轮、慢速重试、第二轮,每个阶段都向邻居发请求。
+    for (const advance of [5_000, ONE_ROUND_MS, 60_000, ONE_ROUND_MS]) {
+      await settle(advance);
+      const ping = env.ctrl.invoke('nb', { channel: 'test:ping', args: [] });
+      await settle(10);
+      await expect(ping).resolves.toMatchObject({ ok: true, result: 'pong' });
+      expect(env.ctrl.isLinkReady('nb')).toBe(true);
+    }
+
+    // 故障 peer 确实经历了多轮重开。
+    expect(env.host.openRemoteLinkCalls()).toBeGreaterThanOrEqual(2 + 10);
+    expect(env.host.recovery.pendingRetryDelayMs('vm')).toBe(120_000);
+    // 邻居:没有被重开、没有掉线事件、没有界面重置、也不在恢复中。
+    expect(env.relay.linkOpensTo('nb')).toBe(1);
+    expect(lost).not.toContain('nb');
+    expect(env.host.resets).not.toContain('nb');
+    expect(env.host.recovery.isRecovering('nb')).toBe(false);
+    expect(env.ctrl.getStatus()).toBe('online');
+  });
+
+  it('本机 relay 断线期间到点的重试不丢:重新上线后接着重开', async () => {
+    await establish(env);
+    await pauseVm(env);
+    await settle(ONE_ROUND_MS);
+    expect(env.host.recovery.pendingRetryDelayMs('vm')).toBe(60_000);
+
+    // 本机到 relay 的连接断了,而且一时连不回去;慢速重试在这期间到点。
+    env.relay.unreachable.add('ctrl');
+    env.relay.disconnect('ctrl');
+    await settle(100);
+    expect(env.ctrl.getStatus()).not.toBe('online');
+    const calls = env.host.openRemoteLinkCalls();
+    await settle(60_000);
+    expect(env.host.openRemoteLinkCalls()).toBe(calls);
+    expect(env.host.recovery.hasPendingRetry('vm')).toBe(false);
+    expect(env.host.recovery.isRecovering('vm')).toBe(true);
+
+    // 虚拟机已经回来,本机 relay 也恢复;没有订阅,也没有新的 presence 事件。
+    env.relay.offline.delete('vm');
+    // 对端恢复后不发 transport-timeout,只能靠本机自己接上。
+    env.relay.drop = (sender, envelope) => sender === 'vm' && envelope.kind === 'link-close';
+    env.relay.unreachable.delete('ctrl');
+    await settle(200);
+    expect(env.ctrl.getStatus()).toBe('online');
+
+    expect(env.ctrl.isLinkReady('vm')).toBe(true);
+    expect(env.relay.linkOpensTo('vm')).toBe(2);
+    expect(env.host.recovery.isRecovering('vm')).toBe(false);
+    expect(env.host.recovery.hasPendingRetry('vm')).toBe(false);
+  });
+
+  it('本机 relay 断线终止了进行中的重开循环:重新上线后接着重开', async () => {
+    await establish(env);
+    await pauseVm(env);
+    await settle(1_500); // 第一轮还在退避中。
+    expect(env.host.loop.isActive('vm')).toBe(true);
+
+    env.relay.unreachable.add('ctrl');
+    env.relay.disconnect('ctrl');
+    await settle(100);
+    expect(env.host.loop.isActive('vm')).toBe(false);
+    expect(env.host.recovery.isRecovering('vm')).toBe(true);
+
+    env.relay.offline.delete('vm');
+    // 对端恢复后不发 transport-timeout,只能靠本机自己接上。
+    env.relay.drop = (sender, envelope) => sender === 'vm' && envelope.kind === 'link-close';
+    env.relay.unreachable.delete('ctrl');
+    await settle(200);
+
+    expect(env.ctrl.isLinkReady('vm')).toBe(true);
+    expect(env.relay.linkOpensTo('vm')).toBe(2);
+    expect(env.host.recovery.isRecovering('vm')).toBe(false);
   });
 });
