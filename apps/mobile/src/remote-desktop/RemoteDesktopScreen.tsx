@@ -198,12 +198,14 @@ const LABELS: Record<string, string> = {
 };
 
 export default function RemoteDesktopScreen() {
-  const { deviceId: rawId, deviceName: rawName } = useLocalSearchParams<{
+  const { deviceId: rawId, deviceName: rawName, handoff: rawHandoff } = useLocalSearchParams<{
     deviceId: string;
     deviceName?: string;
+    handoff?: string;
   }>();
   const deviceId = typeof rawId === "string" ? rawId : "";
   const deviceName = typeof rawName === "string" ? rawName : deviceId;
+  const handoff = typeof rawHandoff === "string" && rawHandoff ? rawHandoff : undefined;
   const router = useRouter();
   const focused = useIsFocused();
   return (
@@ -218,6 +220,7 @@ export default function RemoteDesktopScreen() {
       <RemoteDesktopSession
         deviceId={deviceId}
         deviceName={deviceName}
+        handoff={handoff}
         focused={focused}
         onBack={() => goBackGuarded(router)}
       />
@@ -228,6 +231,7 @@ export default function RemoteDesktopScreen() {
 export function RemoteDesktopSession({
   deviceId,
   deviceName,
+  handoff,
   focused,
   onBack,
   onRestore,
@@ -236,6 +240,8 @@ export function RemoteDesktopSession({
 }: {
   deviceId: string;
   deviceName: string;
+  /** 代输入 live view: only the window this waiting request is about (the host picks it). */
+  handoff?: string;
   focused: boolean;
   onBack(): void;
   onRestore?(): void;
@@ -336,7 +342,6 @@ export function RemoteDesktopSession({
   []);
   const [viewerReadyRevision, setViewerReadyRevision] = useState(0);
   const active = useRef<RemoteDesktopLease | null>(null);
-  const wantsControl = useRef(true);
   // View only is a local guard against stray touches. The host keeps control
   // and its input helper, so switching never waits for the computer.
   const [viewOnlySelected, setViewOnlySelected] = useState(false);
@@ -349,8 +354,9 @@ export function RemoteDesktopSession({
   const pendingHostControl = useRef<boolean | null>(null);
   const controlInFlight = useRef(false);
   const controlRestoration = useRef<Promise<void> | null>(null);
-  // Revoking background permission must not lose the pending fullscreen input restore.
-  const restoreAfterPipDisabled = useRef(false);
+  // A foreground event can arrive while control/settings are still settling.
+  // Finish that restore as soon as the existing operation settles.
+  const foregroundRestorePending = useRef(false);
   const finishBackgroundTransition = useRef<(() => void) | null>(null);
   const recovery = useRef({
     enabled: true,
@@ -450,6 +456,8 @@ export function RemoteDesktopSession({
   );
   const [busy, setBusy] = useState(false);
   const [inputMode, setInputMode] = useInputModePreference();
+  const inputModeRef = useRef(inputMode);
+  inputModeRef.current = inputMode;
   const canInput = Boolean(lease?.controlling) && !viewOnlySelected;
   const mode: Mode = canInput ? inputMode : "pan";
   const [operations, setOperations] = useState(false);
@@ -842,7 +850,7 @@ export function RemoteDesktopSession({
       presentation.current = false;
       actualPresentation.current = false;
       pipPrepared.current = false;
-      restoreAfterPipDisabled.current = false;
+      foregroundRestorePending.current = false;
       presentationGeneration.current++;
       settingInFlight.current = false;
       pendingPresentation.current?.(false);
@@ -967,8 +975,8 @@ export function RemoteDesktopSession({
    * The host owns the control bit. When it reports that this viewer no longer
    * controls — input injection failed, the input helper went away, or control
    * was retracted — drop to view only instead of rebuilding the session: the
-   * lease, the picture and the existing view-only hint all survive, and taking
-   * control again retries from where the user is.
+   * lease and picture survive. Known input failures restore control immediately;
+   * the existing heartbeat retries missed or failed foreground recovery.
    */
   const releaseControl = useCallback(() => {
     const current = active.current;
@@ -988,10 +996,11 @@ export function RemoteDesktopSession({
    * anything else rebuilds the session. Sitting next to the two actions it
    * chooses between keeps the three call sites from drifting apart.
    */
-  const resolveControlFailure = (cause: unknown) => {
+  const resolveControlFailure = (cause: unknown, restoreInput = false) => {
     switch (controlFailureAction(cause)) {
       case "release":
         releaseControl();
+        if (restoreInput) restoreInlinePresentationRef.current();
         break;
       case "ignore":
         break;
@@ -1004,7 +1013,6 @@ export function RemoteDesktopSession({
     controlling: boolean,
   ) => {
     pendingHostControl.current = null;
-    wantsControl.current = controlling;
     if (current.controlling !== controlling) {
       current.controlling = controlling;
       if (!controlling) {
@@ -1025,9 +1033,10 @@ export function RemoteDesktopSession({
     enabled: boolean,
   ) => {
     if (controlInFlight.current) return;
+    if (enabled) foregroundRestorePending.current = false;
     controlInFlight.current = true;
     pendingHostControl.current = enabled;
-    return request<{ controlling: boolean }>({
+    const operation = request<{ controlling: boolean }>({
       op: "control",
       lease: current.lease,
       enabled,
@@ -1041,15 +1050,27 @@ export function RemoteDesktopSession({
         resolveControlFailure(cause);
       })
       .finally(() => {
-        if (active.current === current) controlInFlight.current = false;
+        if (active.current !== current) return;
+        controlInFlight.current = false;
+        if (foregroundRestorePending.current) restoreInlinePresentationRef.current();
       });
+    // PiP must wait for both recovery grants and overflow releases before it
+    // authorizes background viewing; an older operation cannot clear a new one.
+    controlRestoration.current = operation;
+    void operation.finally(() => {
+      if (controlRestoration.current === operation) controlRestoration.current = null;
+    });
+    return operation;
   };
   const requestHostControlRef = useRef(requestHostControl);
   const restoreInlinePresentation = () => {
     const current = active.current;
+    const canControl = capsRef.current?.value.canControl === true;
     if (
       !current ||
-      (!pipPrepared.current && !restoreAfterPipDisabled.current) ||
+      ((current.controlling || !canControl) &&
+        !pipPrepared.current &&
+        !foregroundRestorePending.current) ||
       presentation.current ||
       actualPresentation.current ||
       !focusedRef.current ||
@@ -1057,33 +1078,46 @@ export function RemoteDesktopSession({
       AppState.currentState !== "active"
     )
       return;
+    if (
+      connecting.current ||
+      controlInFlight.current ||
+      settingInFlight.current ||
+      pendingHostControl.current === false
+    ) {
+      foregroundRestorePending.current = true;
+      return;
+    }
     pipPrepared.current = false;
-    restoreAfterPipDisabled.current = false;
+    foregroundRestorePending.current = false;
     send({
       type: "pipPolicy",
       enabled: pipEnabledRef.current && frameReady,
       authorized: false,
     });
-    // Returning to a visible viewer restores the user's previous input mode
-    // through the host's normal authorization path, never by a local override.
-    const restoration = wantsControl.current
-      ? requestHostControlRef.current(current, true)
-      : request({
-          op: "presentation",
-          lease: current.lease,
-          enabled: false,
-        })
-          .then(() => {})
-          .catch((cause) => {
-            if (active.current === current) fail(cause);
-          });
-    if (restoration) {
+    if (!canControl) {
+      // View-only hosts still need to leave background video/lease policy.
+      // A new PiP entry must await this reply before authorizing background again.
+      const restoration = request({
+        op: "presentation",
+        lease: current.lease,
+        enabled: false,
+      })
+        .then(() => {})
+        .catch((cause) => {
+          if (active.current === current) fail(cause);
+        });
       controlRestoration.current = restoration;
       void restoration.finally(() => {
         if (controlRestoration.current === restoration)
           controlRestoration.current = null;
       });
+      return;
     }
+    // Capable hosts retain foreground control; view only guards input locally.
+    // A temporary release/refusal must not replace that intent. App/route/PiP
+    // events restore immediately; heartbeats retry when a transition was busy
+    // or its request failed, using the same lease and host permission checks.
+    requestHostControlRef.current(current, true);
   };
   const restoreInlinePresentationRef = useRef(restoreInlinePresentation);
   restoreInlinePresentationRef.current = restoreInlinePresentation;
@@ -1122,8 +1156,9 @@ export function RemoteDesktopSession({
             displayId: displayId ?? recovery.current.displayId,
             resume: resuming,
             takeover,
+            ...(handoff ? { handoff } : {}),
             // Hosts with `autoControl` grant control with the lease.
-            control: wantsControl.current,
+            control: true,
             onStart: () => {
               recovery.current.resuming = true;
             },
@@ -1132,7 +1167,8 @@ export function RemoteDesktopSession({
               mark("capabilities");
               capsRef.current = { deviceId, value: result };
               setHostCaps({ deviceId, value: result });
-              if (supportsAutoUnlock(result.platform)) {
+              // A window view never unlocks the computer: it shows a window on an unlocked desktop.
+              if (!handoff && supportsAutoUnlock(result.platform)) {
                 // Linux capture may be unavailable until its locker releases the session.
                 if (result.platform === "linux") {
                   return securityRef.current.maybeUnlock(async () => {
@@ -1220,11 +1256,16 @@ export function RemoteDesktopSession({
             videoSettingsRef.current.audio &&
             !audioUnavailable.current,
         });
-        send({ type: "mode", mode });
+        // Playback/display preparation can yield after React has already sent
+        // the controlling mode. Do not overwrite it with connect's old "pan".
+        send({
+          type: "mode",
+          mode: inputAllowed(next.controlling) ? inputModeRef.current : "pan",
+        });
         // Entering remote desktop is the user's intent to control. The existing
         // host permission and ownership gates still decide whether it is allowed.
         if (next.controlling) send({ type: "control", enabled: inputAllowed(true) });
-        else if (result.canControl && wantsControl.current) {
+        else if (result.canControl) {
           try {
             const control = await viewerSession.current!.control(true);
             if (current !== generation.current) return;
@@ -1241,14 +1282,17 @@ export function RemoteDesktopSession({
       } catch (cause) {
         if (current === generation.current) fail(cause);
       } finally {
-        if (current === generation.current) connecting.current = false;
+        if (current === generation.current) {
+          connecting.current = false;
+          if (foregroundRestorePending.current) restoreInlinePresentationRef.current();
+        }
       }
     },
     [
       deviceId,
       fail,
+      handoff,
       landscape,
-      mode,
       request,
       resolveControlFailure,
       send,
@@ -1467,22 +1511,32 @@ export function RemoteDesktopSession({
           // The host owns the control bit. Follow it when it retracts control;
           // when a local transition timed out, retry a release or restore the
           // local bit so a held key cannot stay down behind a view-only phone.
-          if (active.current !== current || presentation.current) return;
+          if (
+            active.current !== current ||
+            presentation.current ||
+            actualPresentation.current ||
+            !focusedRef.current ||
+            AppState.currentState !== "active"
+          )
+            return;
           if (result.controlling === false) {
-            // startInput can still be settling while this heartbeat was in
-            // flight. Clearing a pending take-control here would leave later
-            // host-true beats with nothing to restore after a lost reply.
-            if (pendingHostControl.current === true) return;
+            // Do not consume an intent while its request is settling. Once it
+            // settles, host-false is a reason to retry, not to remain stuck.
+            if (controlInFlight.current) return;
             pendingHostControl.current = null;
             if (current.controlling) releaseControl();
-            return;
-          }
-          if (pendingHostControl.current === false) {
+          } else if (pendingHostControl.current === false) {
             requestHostControlRef.current(current, false);
             return;
-          }
-          if (!current.controlling && pendingHostControl.current === true)
+          } else if (
+            result.controlling === true &&
+            !controlInFlight.current &&
+            !current.controlling &&
+            pendingHostControl.current === true
+          ) {
             applyConfirmedControl(current, true);
+          }
+          restoreInlinePresentationRef.current();
         })
         .catch((cause) => {
           if (active.current !== current) return;
@@ -2145,7 +2199,9 @@ export function RemoteDesktopSession({
         // posts control:false, which clears that release without flushing it.
         // Tell the host to drop control (stopInput still injects a native
         // release) so a held key/button cannot stay down while we view only.
+        if (!current.controlling) break;
         releaseControl();
+        foregroundRestorePending.current = true;
         requestHostControl(current, false);
         break;
       }
@@ -2203,7 +2259,7 @@ export function RemoteDesktopSession({
         })()
           .catch((cause) => {
             if (!ownsBatch()) return;
-            resolveControlFailure(cause);
+            resolveControlFailure(cause, true);
           })
           .finally(() => {
             if (!ownsBatch()) return;
@@ -2252,7 +2308,6 @@ export function RemoteDesktopSession({
         presentation.current = false;
         send({ type: "presentation", enabled: false });
       }
-      wantsControl.current = true;
       if (pendingHostControl.current === false) {
         // Overflow timed out with an unconfirmed host release. Taking control
         // first would skip stopInput while a key/button may still be held.
@@ -2341,6 +2396,8 @@ export function RemoteDesktopSession({
       }
     } finally {
       settingInFlight.current = false;
+      if (active.current === current && foregroundRestorePending.current)
+        restoreInlinePresentationRef.current();
       if (alive.current) setSettingsRevision((value) => value + 1);
     }
   };
@@ -2512,6 +2569,7 @@ export function RemoteDesktopSession({
         finishBackgroundTransition.current = null;
       if (presentationGeneration.current === transition)
         settingInFlight.current = false;
+      if (currentTransition()) restoreInlinePresentationRef.current();
       if (alive.current) setSettingsRevision((value) => value + 1);
     }
   };
@@ -2551,7 +2609,7 @@ export function RemoteDesktopSession({
       presentationGeneration.current++;
       send({ type: "pipPolicy", enabled: false });
       send({ type: "presentation", enabled: false });
-      restoreAfterPipDisabled.current ||= pipPrepared.current;
+      foregroundRestorePending.current ||= pipPrepared.current;
       pipPrepared.current = false;
       const current = active.current;
       if (current)
@@ -2747,6 +2805,8 @@ export function RemoteDesktopSession({
     } finally {
       settingInFlight.current = false;
       setSettingBusy(false);
+      if (active.current === current && foregroundRestorePending.current)
+        restoreInlinePresentationRef.current();
     }
   };
   // The host restores its own mode when a viewer leaves. Reapply this phone's
@@ -2781,8 +2841,7 @@ export function RemoteDesktopSession({
     if (
       earlyDisplayFailed.current ||
       rememberedDisplayGaveUp.current ||
-      !hostCaps.canControl ||
-      !wantsControl.current
+      !hostCaps.canControl
     )
       return false;
     const remembered = await readRememberedResolution(
@@ -3310,10 +3369,10 @@ export function RemoteDesktopSession({
               <RemoteDesktopPanel
                 railAnchor={systemSideRail ? {
                   right: (sideRailWidth - navigationChrome.target) / 2,
-                  top: (sideRailTop + navigationChrome.target + spacing.lg + windowSize.height - insets.bottom - navigationChrome.target * (caps?.omarchyMenu ? 5 : 4)) / 2,
+                  top: (sideRailTop + navigationChrome.target + spacing.lg + windowSize.height - insets.bottom - navigationChrome.target * (handoff ? 2 : caps?.omarchyMenu ? 5 : 4)) / 2,
                 } : undefined}
                 toolbarOnLeft={toolbarOnLeft}
-                toolbarActionCount={caps?.omarchyMenu ? 5 : 4}
+                toolbarActionCount={handoff ? 2 : caps?.omarchyMenu ? 5 : 4}
                 visible={operations && focused}
                 landscape={landscape}
                 topInset={edgePadding.paddingTop}
@@ -3326,7 +3385,7 @@ export function RemoteDesktopSession({
                     ? undefined
                     : () => setControlPage("controls")
                 }
-                caption={`${deviceName} · ${showConnectionStatus ? connectionLabel : t(`remoteDesktop.${status}`)}`}
+                caption={`${lease?.window ? t("remoteDesktop.handoffWindow", { app: lease.window.app }) : deviceName} · ${showConnectionStatus ? connectionLabel : t(`remoteDesktop.${status}`)}`}
                 onClose={() => setOperations(false)}
                 footer={
                   <RemoteDesktopDisconnect onPress={() => void leave()} />
@@ -3395,7 +3454,7 @@ export function RemoteDesktopSession({
                     onResolution: changeResolution,
                   }}
                   inputMode={inputMode}
-                  displays={caps?.displays ?? []}
+                  displays={handoff ? [] : (caps?.displays ?? [])}
                   displayId={recovery.current.displayId ?? lease?.display.id}
                   onViewOnly={() => void toggleControl()}
                   onInputMode={(value) => {
@@ -3493,6 +3552,7 @@ export function RemoteDesktopSession({
           >
             <RemoteDesktopToolbar
               landscape={landscape || systemSideRail}
+              windowOnly={Boolean(handoff)}
               onWorkspaceLeft={
                 caps?.workspaceNavigation
                   ? () => workspaceAction("workspaceLeft")

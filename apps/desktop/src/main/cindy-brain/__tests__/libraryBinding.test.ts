@@ -368,6 +368,17 @@ describe('LibraryBindingStore', () => {
     expect(await relocateLibraryMetaOwner(path.join(defaultRootBase, 'missing'), 'hello', '_ns__acme__hello')).toBe(false);
   });
 
+  it('clears the uninstall marker when asked, including on a repeat after the owner already moved', async () => {
+    const root = path.join(defaultRootBase, 'hello');
+    const file = path.join(root, '.cindy-library', 'meta.json');
+    await fs.promises.mkdir(path.dirname(file), { recursive: true });
+    await fs.promises.writeFile(file, JSON.stringify({ version: 1, ghostId: '_ns__acme__hello', createdAt: 1, orphaned: { at: 2, name: 'old' } }));
+    const options = { clearOrphaned: true };
+    expect(await relocateLibraryMetaOwner(root, 'hello', '_ns__acme__hello', () => {}, options)).toBe(true);
+    expect(JSON.parse(await fs.promises.readFile(file, 'utf8'))).toEqual({ version: 1, ghostId: '_ns__acme__hello', createdAt: 1 });
+    expect(await relocateLibraryMetaOwner(root, 'hello', '_ns__acme__hello', () => {}, options)).toBe(false);
+  });
+
   it('无 binding → 默认根;绑定后解析到 <candidate>/<ghostId>', async () => {
     const store = new LibraryBindingStore(deps);
     const before = await store.resolveLibraryRoot(GHOST_ID);

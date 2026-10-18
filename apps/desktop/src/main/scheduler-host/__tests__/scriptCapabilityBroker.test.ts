@@ -5,6 +5,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 import type { Schedule } from '@cindy/maker-scheduler';
+import { AUTO_REVIEW_DELEGATED_CONTINUATION } from '@cindy/maker-core';
 import { GhostCardService } from '../../cindy-brain/cardService.js';
 import { GhostFsSlot } from '../../cindy-brain/fsSlot.js';
 import { GhostPipeDispatcher } from '../../cindy-brain/pipeDispatcher.js';
@@ -491,6 +492,16 @@ describe('SchedulerScriptCapabilityBroker', () => {
     await expect(broker.call({ method: 'sessions.dispatch', params: { target_session_id: 'other', message: 'update' } },
       new Set(['sessions.dispatch']), context)).rejects.toMatchObject({ code: 'INVALID_ARGS' });
     expect(sendToSessionMock).not.toHaveBeenCalled();
+  });
+
+  it('marks script follow-ups as continuations of the target user authorization', async () => {
+    sendToSessionMock.mockResolvedValue({ ok: true, targetSessionId: 'owner', agentKind: 'claude-code', wakeKind: 'queued' });
+    await new SchedulerScriptCapabilityBroker().call(
+      { method: 'sessions.dispatch', params: { target_session_id: 'owner', message: 'CI failed; fix the PR' } },
+      new Set(['sessions.dispatch']),
+      { schedule: schedule() },
+    );
+    expect(sendToSessionMock.mock.calls[0]?.[0][AUTO_REVIEW_DELEGATED_CONTINUATION]).toBe(true);
   });
 
   it('dispatches sessions with host-owned create defaults from the schedule', async () => {

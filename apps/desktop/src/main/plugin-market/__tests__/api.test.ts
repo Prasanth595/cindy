@@ -18,6 +18,20 @@ vi.mock('../../clientEndpointsService.js', () => ({
 const PLUGIN_A = `c${'a'.repeat(24)}`;
 const PLUGIN_B = `c${'b'.repeat(24)}`;
 
+it('reports only the bounded event contract with explicit auth and rechecks before HTTP serialization', async () => {
+  const guard = vi.fn();
+  const events = [{ eventId: 'event-1', releaseId: 'release-1', occurredAt: '2026-10-12T00:00:00.000Z' }];
+  const fetcher = vi.fn().mockImplementation(async (_path, options) => {
+    expect(options).toMatchObject({ method: 'POST', token: 'test-token', skipAutoRefresh: true, skipSessionInvalidation: true });
+    expect(options.bodyFactory()).toEqual({ events });
+    return { accepted: ['event-1'], duplicate: [], rejected: [] };
+  });
+  expect(await new PluginMarketApi(fetcher).reportUsage('plugin/id', events, { token: 'test-token', assertCurrent: guard }))
+    .toMatchObject({ accepted: ['event-1'] });
+  expect(fetcher.mock.calls[0][0]).toBe('/api/plugins/plugin%2Fid/usage-events');
+  expect(guard).toHaveBeenCalledTimes(3);
+});
+
 function summary(id: string, ghostId: string) {
   return {
     id,

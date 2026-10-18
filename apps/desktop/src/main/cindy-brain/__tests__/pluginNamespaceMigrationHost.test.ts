@@ -130,3 +130,33 @@ describe('pending resident migration host', () => {
     await vi.waitFor(() => expect(reconcile).toHaveBeenCalledWith(true));
   });
 });
+
+describe('legacy bare instance reclaim', () => {
+  const removed = {
+    pluginId: 'plugin-a', ghostId: 'hello', releaseId: 'release-a', version: '1.0.0', sha256: 'a'.repeat(64),
+    scope: 'organization' as const, organizationId: 'org-acme', source: 'market' as const,
+    installed: false, updatedAt: '2026-10-01T00:00:00.000Z',
+  };
+  const signedIn = {
+    isAuthenticated: true,
+    user: { membershipKind: 'org', orgId: 'org-acme', orgSlug: 'acme' },
+  };
+
+  it('reads the ledger and the signed-in organization', () => {
+    const lookup = vi.fn(() => ({ kind: 'found', records: [removed] }));
+    const host = createNamespaceMigrationHost(deps({
+      getPluginMarketLedger: () => ({ lookupInstallationsForNamespaceMigration: lookup }),
+      getAuthState: () => signedIn,
+    }));
+    expect(host.canReclaimLegacyBareInstance({ ghostId: 'hello', namespace: 'acme', pluginId: 'plugin-a' })).toBe(true);
+    expect(lookup).toHaveBeenCalledWith('hello');
+  });
+
+  it('refuses an unreadable ledger', () => {
+    const host = createNamespaceMigrationHost(deps({
+      getPluginMarketLedger: () => ({ lookupInstallationsForNamespaceMigration: () => ({ kind: 'invalid' }) }),
+      getAuthState: () => signedIn,
+    }));
+    expect(host.canReclaimLegacyBareInstance({ ghostId: 'hello', namespace: 'acme', pluginId: 'plugin-a' })).toBe(false);
+  });
+});

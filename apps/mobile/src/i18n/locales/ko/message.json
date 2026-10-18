@@ -9,7 +9,9 @@
     }
   },
   "renderer": {
+    "failedSamplingAttempt": "완료되지 않은 답변입니다. 내용은 참고용으로만 확인해 주세요.",
     "moreActions": "추가 메시지 작업",
+    "reply": "답장",
     "newMessagesToBottom": "새 메시지, 맨 아래로 이동",
     "jumpToBottom": "맨 아래로 이동",
     "openForkOrigin": "분기 원본 메시지 열기",
@@ -389,5 +391,11 @@
     "memory": "기억했어요: {{title}}",
     "skillCreated": "스킬 생성: {{title}}",
     "skillUpdated": "스킬 업데이트: {{title}}"
+  },
+  "richAnswer": {
+    "playVideo": "동영상 재생",
+    "openVideoSource": "원본 동영상 열기",
+    "calculationUnavailable": "이 값을 계산할 수 없습니다.",
+    "incomplete": "일부 내용을 표시하지 못했습니다."
   }
 }

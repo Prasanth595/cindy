@@ -10,7 +10,6 @@ import { setMobileDebugSink } from '@/debug/mobileDebugLog';
 import { Platform } from 'react-native';
 import { clearSharedTaskInvitationIntent, receiveSharedTaskInvitationIntent, getPendingSharedTaskInvitationIntent } from '@/device-link/sharedTaskInvitationIntent';
 import SharedSessionScreen from '../../app/shared-session';
-import { ClipboardSharedTaskPrompt } from '@/session/ClipboardSharedTaskPrompt';
 
 const h = vi.hoisted(() => ({
   params: {} as { sessionId?: string; deviceId?: string; sharedTaskId?: string; expectedOwnedSharedTaskId?: string; mode?: string }, generation: 1,
@@ -18,7 +17,7 @@ const h = vi.hoisted(() => ({
   link: { sharedTaskAvailable: true, invoke: vi.fn(), openLink: vi.fn(), closeLink: vi.fn(), readDeviceList: vi.fn() },
   api: { list: vi.fn(), get: vi.fn(), join: vi.fn(), leave: vi.fn(), close: vi.fn() },
   store: { getSessions: vi.fn(), removeDevice: vi.fn(), setDeviceSessions: vi.fn(), upsertDeviceSession: vi.fn() },
-  t: (key: string, options?: { title?: string; link?: string }) => key === 'sharedTask.invitationMessage' ? `Join “${options?.title}”\n${options?.link}\nOpen the link, or copy it and open Cindy on mobile.` : options?.title ? key + ':' + options.title : key,
+  t: (key: string, options?: { title?: string; link?: string }) => key === 'sharedTask.invitationMessage' ? `Join “${options?.title}”\n${options?.link}\nOpen the link, or paste it into Join Shared Task in Cindy.` : options?.title ? key + ':' + options.title : key,
 }));
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: h.t }) }));
 vi.mock('@react-native-async-storage/async-storage', () => ({ default: { getItem: vi.fn(async () => null), setItem: vi.fn(async () => undefined) } }));
@@ -217,41 +216,8 @@ it('copies a shareable invitation message with a link accepted by automatic and 
   const content = vi.mocked(writeClipboardText).mock.lastCall![0];
   expect(content).toContain('Design review');
   expect(content).toContain(invitationLink);
-  expect(content).toContain('copy it and open Cindy on mobile');
+  expect(content).toContain('paste it into Join Shared Task in Cindy');
   expect(parseSharedTaskInvitation(content, 'https://relay.example.test')).toEqual({ ok: true, invitation: 'A'.repeat(43) });
-});
-it('uses an automatically detected clipboard invitation without a paste or nickname control', async () => {
-  receiveSharedTaskInvitationIntent(invitationIntent, 'clipboard');
-  h.link.invoke.mockResolvedValue({ id: 'task' });
-  await act(async () => root.render(createElement('div', null, 'Current task', createElement(ClipboardSharedTaskPrompt, { accountName: 'Account Guest' }))));
-  expect(element.querySelector('textarea')).toBeNull();
-  expect(element.textContent).toContain('Current task');
-  expect(element.textContent).toContain('sharedTask.invitationDetected');
-  expect(element.textContent).not.toContain('sharedTask.pasteInvitation');
-  expect(h.api.join).not.toHaveBeenCalled();
-  expect(h.router.replace).not.toHaveBeenCalled();
-  await click('sharedTask.join');
-  expect(getPendingSharedTaskInvitationIntent()?.source).toBe('link');
-  await render();
-  expect(h.api.join).toHaveBeenCalledExactlyOnceWith('A'.repeat(43), 'Account Guest');
-  expect(h.router.replace).toHaveBeenCalledWith({ pathname: '/sessions/[sessionId]', params: { sessionId: 'task', deviceId: sharedTaskHostPeer('shared', 'desktop'), deviceName: 'Design review' } });
-  expect(element.querySelector('[aria-label="sharedTask.joinNickname"]')).toBeNull();
-});
-it('dismisses clipboard confirmation without navigating away from the current page', async () => {
-  receiveSharedTaskInvitationIntent(invitationIntent, 'clipboard');
-  await act(async () => root.render(createElement('div', null, 'Current settings', createElement(ClipboardSharedTaskPrompt, { accountName: 'Account Guest' }))));
-  await click('sharedTask.notNow');
-  expect(element.textContent).toBe('Current settings');
-  expect(getPendingSharedTaskInvitationIntent()).toBeNull();
-  expect(h.router.replace).not.toHaveBeenCalled();
-  expect(h.api.join).not.toHaveBeenCalled();
-});
-it('does not let a mounted management screen consume an unconfirmed clipboard invitation', async () => {
-  h.params = { mode: 'manage' };
-  receiveSharedTaskInvitationIntent(invitationIntent, 'clipboard');
-  await render();
-  expect(getPendingSharedTaskInvitationIntent()?.source).toBe('clipboard');
-  expect(h.api.join).not.toHaveBeenCalled();
 });
 it('rejects an invitation from another service without joining', async () => {
   await render(); await fill('sharedTask.invitation', invitationLink.replace('relay.example.test', 'other.example.test'));

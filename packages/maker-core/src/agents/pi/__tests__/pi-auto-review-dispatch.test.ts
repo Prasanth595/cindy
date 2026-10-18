@@ -696,6 +696,23 @@ describe('pi auto-review dispatch & spawn config (mocked pi process)', () => {
     await handle.close();
   });
 
+  it.each(['local', 'remote'] as const)('gives only a local task\'s shell the 代输入 askpass variables (%s)', async (mode) => {
+    const deps = buildDeps();
+    const remoteTransport = deps.getRemotePiTransport!;
+    deps.getRemotePiTransport = async (host, options) => {
+      captured.env = options.env;
+      return remoteTransport(host, options);
+    };
+    deps.runtimeConfig.taskShellEnv = ({ sessionId }) => ({ CINDY_INPUT_HANDOFF_ROUTE: `route-${sessionId}` });
+    const agent = new PiAgent(deps);
+    const handle = await agent.startSession({ sessionId: 'askpass', workingDir: cwd, model: 'm',
+      ...(mode === 'remote' ? { remoteHostId: 'remote-1' } : {}),
+    });
+    // A remote computer's prompts must not reach this computer's owner.
+    expect(captured.env.CINDY_INPUT_HANDOFF_ROUTE).toBe(mode === 'local' ? 'route-askpass' : undefined);
+    await handle.close();
+  });
+
   it('lets Pi discover user-installed packages natively instead of gating them on Cindy metadata', async () => {
     const packageRoot = path.join(agentHome, 'future-pi-package-shape');
     mkdirSync(packageRoot, { recursive: true });
@@ -818,6 +835,7 @@ describe('pi auto-review dispatch & spawn config (mocked pi process)', () => {
     });
     const pollCount = () => scan.mock.calls.filter(([root]) => root.startsWith(agentHome + path.sep)).length;
     let handle: PiTestSessionHandle | undefined;
+    let settleMockRun: (() => void) | undefined;
     try {
       handle = await start();
       // Wait for the initial filesystem iterator to finish before sampling cadence.
@@ -843,11 +861,16 @@ describe('pi auto-review dispatch & spawn config (mocked pi process)', () => {
       mkdirSync(runDir, { recursive: true });
       writeFileSync(path.join(runDir, 'runner.cjs'), '');
       writeFileSync(path.join(runDir, 'config.json'), '{}');
-      writeFileSync(path.join(runDir, 'status.json'), JSON.stringify({
+      const status = {
         version: 1, runId, taskId: 'poll-wake', parentSessionId: 's1',
         runtimeOwnerId: captured.env.CINDY_PI_SUBAGENT_OWNER_ID,
         runnerInstanceId: `launch-pending-${runId}`, state: 'queued',
         startedAt: now, updatedAt: now, tasks: [],
+      };
+      const statusFile = path.join(runDir, 'status.json');
+      writeFileSync(statusFile, JSON.stringify(status));
+      settleMockRun = () => writeFileSync(statusFile, JSON.stringify({
+        ...status, state: 'stopped', updatedAt: Date.now(), endedAt: Date.now(),
       }));
       fireSubagentRunnerRequest('poll-launch', 'launch', runId);
       await waitForResponse('poll-launch');
@@ -870,8 +893,15 @@ describe('pi auto-review dispatch & spawn config (mocked pi process)', () => {
     } finally {
       holdScan = false; releaseScan?.();
       clock.mockRestore();
-      await handle?.close();
-      interval.mockRestore(); scan.mockRestore();
+      try {
+        // No real runner consumes stop in this fixture. Retire its synthetic
+        // run before account-boundary close, rather than spending the 4s grace
+        // inside a 5s test and leaking these mocks into the next parameter case.
+        try { settleMockRun?.(); }
+        finally { await handle?.close(); }
+      } finally {
+        interval.mockRestore(); scan.mockRestore();
+      }
     }
   });
 
@@ -3226,6 +3256,7 @@ describe('pi auto-review dispatch & spawn config (mocked pi process)', () => {
     deps.resolvePiGlobalContextHome = vi.fn(() => { throw new Error('Bot must not read user context'); });
     deps.getGhostRosterPrompt = vi.fn(() => 'BOT ROSTER');
     deps.runtimeConfig.memoryEnabled = false;
+    deps.runtimeConfig.answerDeliveryPrompt = 'DELIVERY PROTOCOL';
     const handle = await new PiAgent(deps).startSession({
       sessionId: 'bot-read-only-session',
       workingDir: cwd,
@@ -3259,8 +3290,12 @@ describe('pi auto-review dispatch & spawn config (mocked pi process)', () => {
       // 不从 cwd 链加载项目/全局 AGENTS.md。
       expect(captured.args).toContain('--no-context-files');
       expect(deps.resolvePiGlobalContextHome).not.toHaveBeenCalled();
+      // 本 PR 把追加提示词写进 configHome 文件而非 spawn argv（argv 有上限，
+      // 顶穿会让 pi 启动失败），所以按 readAppendedSystemPrompt() 读文件断言，
+      // 不能沿用 argv 下标口径 —— 那正是本 PR 移除的写法。
       const botPrompt = readAppendedSystemPrompt();
       expect(botPrompt).toContain('BOT SOUL');
+      expect(botPrompt).toContain('DELIVERY PROTOCOL');
       expect(botPrompt).not.toContain('BOT ROSTER');
       expect(botPrompt).not.toContain('You are Cindy.');
       expect(botPrompt).not.toContain('GLOBAL USER PROMPT');

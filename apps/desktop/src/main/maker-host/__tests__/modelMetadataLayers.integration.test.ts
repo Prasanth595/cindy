@@ -584,3 +584,20 @@ describe('metadata layers through the active catalog', () => {
     );
   });
 });
+
+
+it('keeps complex quotes with their provider snapshot and clears them on successful replacement', () => {
+  const displayPricing = { items: [{ label: 'Generated video', tier: 'HD', price: 0.5, unit: 'second', quantity: 1, priceType: 'estimated' as const }], notes: ['Billed by output duration.'] };
+  const video = { id: 'example-video', name: 'Video', mode: 'video_generation', agents: [] as const,
+    currency: 'USD' as const, costDiscount: 0.2, displayPricing,
+    modalities: { input: ['text'], output: ['video'] } };
+  setActiveCatalog({ ...BUNDLED_CATALOG });
+  setXdGatewayModels([{ ...video, agents: [] }], { authoritative: true });
+  const provider = () => getActiveCatalog().providers.find((p) => p.id === 'xd')!;
+  expect(provider().videoModels?.[0]).toMatchObject({ displayPricing, currency: 'USD', costDiscount: 0.2 });
+  expect(Object.values(provider().models).flat().some((m) => m?.id === video.id)).toBe(false);
+  setXdGatewayModels([{ ...video, displayPricing: undefined, agents: [] }], { authoritative: true });
+  expect(provider().videoModels?.[0]).not.toHaveProperty('displayPricing');
+  setXdGatewayModels([], { authoritative: true });
+  expect(provider().videoModels).toEqual([]);
+});

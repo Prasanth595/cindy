@@ -1,5 +1,6 @@
 import {
-  readHistoryWorkDetails, isHistoryViewUnavailable, historyWorkSummaries, historyViewLeaves, type HistoryDetailPage, type HistoryMessageSource,
+  nextHistoryCacheReceipt, type HistoryCacheReceipt,
+  readHistoryWorkDetails, retainHistoryViewPrefix, isHistoryViewUnavailable, historyWorkSummaries, historyViewLeaves, type HistoryDetailPage, type HistoryMessageSource,
   type HistoryViewItem, type HistoryViewPage, type HistoryWorkPatch, type HistoryWorkSummary,
 } from './historyView.js';
 
@@ -26,9 +27,13 @@ export interface HistoryViewSnapshot<T extends HistoryMessageSource> {
    * disk, or was read before the view went inactive/offline. Cleared by a latest-page read.
    */
   stale?: boolean;
+  /** Controller-local start of the latest page read, also retained in its disk cache. */
+  readReceipt?: HistoryCacheReceipt;
 }
 
 export interface HistoryViewTransport<T extends HistoryMessageSource> {
+  /** False when the owning screen already coordinates focus/reconnect snapshots. */
+  refreshOnResume?: boolean;
   page(before?: string): Promise<HistoryViewPage<T>>;
   details(summary: HistoryWorkSummary, after?: string): Promise<HistoryDetailPage<T>>;
   /** Full replacement of this view's intent; empty releases detail streaming. */
@@ -74,7 +79,7 @@ export class HistoryViewController<T extends HistoryMessageSource> {
     this.publish({ loading: false, ...(available ? {} : { stale: this.state.ready }),
       details: new Map([...this.state.details].map(([key, detail]) =>
         [key, detail.loading ? { ...detail, loading: false } : detail])) });
-    if (available && this.active) void this.refresh();
+    if (available && this.active && this.transport.refreshOnResume !== false) void this.refresh();
   }
   getSnapshot = (): HistoryViewSnapshot<T> => this.state;
   /** Pagination feedback only; background validation must not disturb the reading viewport. */
@@ -158,28 +163,18 @@ export class HistoryViewController<T extends HistoryMessageSource> {
     if (!this.isActive() || this.state.loading || (older && !this.state.hasMore)) return;
     const generation = this.generation;
     const before = older ? this.state.nextCursor ?? undefined : undefined;
+    const readReceipt = nextHistoryCacheReceipt();
     this.publish({ loading: true, error: null });
     try {
       const page = await this.transport.page(before);
       if (page == null) throw new Error('[CHANNEL_NOT_ALLOWED] History view is unavailable');
       if (!this.active || generation !== this.generation) return;
-      let items = page.items;
+      const retained = older ? page : retainHistoryViewPrefix(page, this.state);
+      let items = retained.items;
       if (older) {
         const keys = new Set(items.map((item) => item.key));
         items = [...items, ...this.state.items.filter((item) => !keys.has(item.key))];
-      } else if (page.hasMore && this.state.items.length) {
-        const firstSourceId = (item: HistoryViewItem<T> | undefined) => item?.type === 'work'
-          ? item.summary.firstMessageId : item?.messages[0]?.id;
-        const first = page.items[0];
-        const sourceId = firstSourceId(first);
-        const boundary = this.state.items.findIndex((item) => item.key === first?.key
-          || (sourceId !== undefined && firstSourceId(item) === sourceId));
-        // Completed outer groups can replace the running top-level key while
-        // retaining its exact source start. Never infer a prefix from a later overlap.
-        // Only retain a prefix with a proven overlap. Reset/rewind cannot leave an island.
-        if (boundary > 0) items = [...this.state.items.slice(0, boundary), ...items];
       }
-      const retainedPrefix = !older && items.length > page.items.length;
       // A background validation of the same page must not replace rendering
       // identities. Applies to both Mobile and Desktop history consumers.
       const previous = new Map(this.state.items.map((item) => [item.key, item]));
@@ -190,9 +185,8 @@ export class HistoryViewController<T extends HistoryMessageSource> {
       const stableItems = items.length === this.state.items.length
         && items.every((item, index) => item === this.state.items[index]) ? this.state.items : items;
       this.publish({ items: stableItems, ready: true, loading: false,
-        ...(older ? {} : { stale: false }),
-        hasMore: retainedPrefix ? this.state.hasMore : page.hasMore,
-        nextCursor: retainedPrefix ? this.state.nextCursor : page.nextCursor });
+        ...(older ? {} : { stale: false, readReceipt }),
+        hasMore: retained.hasMore, nextCursor: retained.nextCursor });
       for (const summary of historyWorkSummaries(items)) {
         if (this.state.expanded.has(summary.key)) void this.loadDetails(summary);
       }
@@ -350,7 +344,10 @@ export class HistoryViewController<T extends HistoryMessageSource> {
 
   /** View blur/background and source resets invalidate all outstanding reads. */
   setActive(active: boolean): void {
-    if (active === this.active) { if (active && !this.state.ready) void this.refresh(); return; }
+    if (active === this.active) {
+      if (active && !this.state.ready && this.transport.refreshOnResume !== false) void this.refresh();
+      return;
+    }
     if (this.refreshTimer) clearTimeout(this.refreshTimer);
     this.refreshTimer = null;
     this.active = active;
@@ -360,14 +357,14 @@ export class HistoryViewController<T extends HistoryMessageSource> {
     this.detailRuns.clear();
     this.publish({ loading: false, ...(active ? {} : { stale: this.state.ready }) });
     this.sendIntent();
-    if (active) void this.refresh();
+    if (active && this.transport.refreshOnResume !== false) void this.refresh();
   }
   reset(): void {
     this.generation++;
     this.cacheGeneration++;
     this.detailRuns.clear();
     this.publish({ items: [], details: new Map(), expanded: new Set(), ready: false,
-      nextCursor: null, hasMore: false, loading: false, error: null, stale: false });
+      nextCursor: null, hasMore: false, loading: false, error: null, stale: false, readReceipt: undefined });
     this.sendIntent();
     if (this.active) void this.refresh();
   }

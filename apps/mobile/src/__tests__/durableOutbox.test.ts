@@ -905,14 +905,41 @@ describe("app-owned delivery and reconciliation", () => {
     restarted.deps.projection.mockResolvedValue(durable ? projection('id-1', 'accepted')
       : { pendingQueue: [] } as unknown as DeliveryProjection);
     const saved = deferred<boolean>();
-    const run = createDurableOutboxDelivery({ ...restarted.deps, cacheHistory: () => saved.promise }).run();
-    await vi.waitFor(() => expect(restarted.deps.history).toHaveBeenCalled());
+    const cacheRestoredHistory = vi.fn(() => saved.promise);
+    const run = createDurableOutboxDelivery({ ...restarted.deps, cacheHistory: cacheRestoredHistory }).run();
+    await vi.waitFor(() => expect(cacheRestoredHistory).toHaveBeenCalled());
     expect(restarted.store.getSnapshot()[0]?.cleanupOutcome).toBeUndefined();
     saved.resolve(true);
     await run;
     expect(restarted.store.getSnapshot()).toEqual([]);
     expect(restarted.deps.enqueue).not.toHaveBeenCalled();
     expect(restarted.deps.cleanup).toHaveBeenCalledOnce();
+  });
+  // Unit regression: a recovered host-owned record plus confirmed local history
+  // must retire its pending bubble even when projection/history RPCs are unavailable.
+  // Existing restart cases returned those RPCs before checking the local cache.
+  it('releases an already cached host-owned send before contacting the host', async () => {
+    const { store, deps } = await setup();
+    await store.add({ ...message(), state: 'host-owned', retrySafe: true });
+    deps.projection.mockRejectedValue(new Error('offline'));
+    await createDurableOutboxDelivery({ ...deps, cacheHistory: async () => true }).run();
+    expect(store.getSnapshot()).toEqual([]);
+    expect(deps.cleanup).toHaveBeenCalledOnce();
+    expect(deps.projection).not.toHaveBeenCalled();
+    expect(deps.history).not.toHaveBeenCalled();
+    expect(deps.enqueue).not.toHaveBeenCalled();
+  });
+  it.each(['unconfirmed', 'cancelling'] as const)('does not bypass remote reconciliation for a %s send', async (kind) => {
+    const { store, deps } = await setup();
+    await store.add({ ...message(), state: kind === 'cancelling' ? 'host-owned' : 'confirming',
+      retrySafe: true, cancelRequested: kind === 'cancelling' });
+    deps.projection.mockRejectedValue(new Error('offline'));
+    const cacheHistory = vi.fn(async () => true);
+    await createDurableOutboxDelivery({ ...deps, cacheHistory }).run();
+    expect(store.getSnapshot()).toHaveLength(1);
+    expect(cacheHistory).not.toHaveBeenCalled();
+    expect(deps.cleanup).not.toHaveBeenCalled();
+    expect(deps.projection).toHaveBeenCalledOnce();
   });
   it('does not block later legacy sends while the first confirmed row awaits caching', async () => {
     const { store, deps } = await setup();

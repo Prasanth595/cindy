@@ -1,12 +1,16 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { MoreHorizontal, Plus, ChevronDown, ChevronRight } from 'lucide-react';
+import { Check, ChevronRight, MoreHorizontal, Plus, Search, SlidersHorizontal } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import {
@@ -77,7 +81,12 @@ export function TodoPanel({ transport, botId }: { transport: TodoTransport; botI
     [order, setOrder] = useState('dueOrder'),
     [page, setPage] = useState(0),
     [doneOpen, setDoneOpen] = useState(false),
-    [donePage, setDonePage] = useState(0);
+    [donePage, setDonePage] = useState(0),
+    [searchOpen, setSearchOpen] = useState(false),
+    // 删除 / 不再提示虽可恢复,仍先确认一次。
+    [confirming, setConfirming] = useState<{ item: TeammateTodo; operation: 'delete' | 'mute' } | null>(
+      null,
+    );
   const [detail, setDetail] = useState<string | null>(null),
     [form, setForm] = useState<Partial<
       Record<
@@ -247,6 +256,52 @@ export function TodoPanel({ transport, botId }: { transport: TodoTransport; botI
         : x.legacyId && x.next?.label === 'Continue'
           ? tr('continue')
           : (x.next?.label ?? tr('view'));
+  /** 能直接推进的下一步(原来的操作按钮):放在「…」菜单第一项。 */
+  const actionable = (x: TeammateTodo) =>
+    x.status === 'open' &&
+    !!x.next &&
+    x.next.kind !== 'view' &&
+    (!x.action || x.action.state === 'failed');
+  /** 第二行:到期 · 来源(交办 / 发现 · 来源名)· 推进状态;不写进展,进展在详情里。 */
+  const meta = (x: TeammateTodo) => {
+    const parts: ReactNode[] = [];
+    if (!todoVisible(x) && x.decision) {
+      parts.push(
+        tr(
+          x.decision.kind === 'deleted'
+            ? 'deleted'
+            : x.decision.kind === 'muted'
+              ? 'muted'
+              : 'deferred',
+        ),
+      );
+    }
+    const date = todoDateLabel(x, i18n.language);
+    if (date) {
+      const deadline = effectiveTodoDeadline(x);
+      const overdue = todoOverdue(x) && x.status !== 'done';
+      parts.push(
+        <span key="date" className={overdue ? 'todo-overdue' : undefined}>
+          {!deadline && x.deadlineCandidate
+            ? tr('candidate') + ' '
+            : !deadline && x.suggestedDate
+              ? tr('suggested') + ' '
+              : ''}
+          {date}
+          {overdue ? ' · ' + tr('overdue') : ''}
+        </span>,
+      );
+    }
+    parts.push(tr(x.origin));
+    if (x.sources[0]?.label) parts.push(x.sources[0].label);
+    if (x.action && x.status === 'open') parts.push(label(x));
+    return parts.map((part, index) => (
+      <Fragment key={index}>
+        {index > 0 ? ' · ' : null}
+        {part}
+      </Fragment>
+    ));
+  };
   const list = (data: TeammateTodo[]) =>
     data.map((x) => (
       <li className="todo-row" key={x.id} data-todo-id={x.id}>
@@ -259,89 +314,59 @@ export function TodoPanel({ transport, botId }: { transport: TodoTransport; botI
           title={x.title}
           aria-label={x.title}
         >
-          <span className="todo-title">{x.title}</span>
-          <span className="todo-progress">
-            {!todoVisible(x) && x.decision
-              ? tr(
-                  x.decision.kind === 'deleted'
-                    ? 'deleted'
-                    : x.decision.kind === 'muted'
-                      ? 'muted'
-                      : 'deferred',
-                ) + ' · '
-              : ''}
-            {x.origin === 'discovered' ? tr('discovered') + ' · ' : ''}
-            {x.progress || x.next?.instruction || x.outcome}
+          <span className="todo-lead" aria-hidden>
+            {x.status === 'done' ? (
+              <Check size={12} strokeWidth={2} />
+            ) : (
+              <span className={'todo-circle' + (todoVisible(x) ? '' : ' todo-circle-hidden')} />
+            )}
+          </span>
+          <span className="todo-copy">
+            <span className="todo-title">{x.title}</span>
+            <span className="todo-meta">{meta(x)}</span>
           </span>
         </button>
-        <div className="todo-rail">
-          <button
-            className={'todo-date' + (todoOverdue(x) && x.status !== 'done' ? ' todo-overdue' : '')}
-            aria-label={tr('deadline')}
-            onClick={() => edit(x, 'deadline')}
-          >
-            {!effectiveTodoDeadline(x) && x.deadlineCandidate
-              ? tr('candidate') + ' '
-              : !effectiveTodoDeadline(x) && x.suggestedDate
-                ? tr('suggested') + ' '
-                : ''}
-            {todoDateLabel(x, i18n.language)}
-            {todoOverdue(x) && x.status !== 'done' ? ' · ' + tr('overdue') : ''}
-          </button>
-          <Button
-            className="todo-action"
-            variant="secondary"
-            title={label(x)}
-            disabled={busy}
-            onClick={() => act(x)}
-          >
-            <span>{label(x)}</span>
-          </Button>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                className="todo-more"
-                variant="secondary"
-                tone="quiet"
-                aria-label={tr('more')}
-              >
-                <MoreHorizontal size={16} />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem onSelect={() => edit(x, 'edit')}>{tr('edit')}</DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => edit(x, 'deadline')}>
-                {tr('deadline')}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button type="button" className="todo-more" aria-label={tr('more')}>
+              <MoreHorizontal size={14} />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            {actionable(x) ? (
+              <DropdownMenuItem disabled={busy} onSelect={() => act(x)}>
+                {label(x)}
               </DropdownMenuItem>
-              {x.status === 'done' ? (
-                <DropdownMenuItem onSelect={() => void update(x, { operation: 'reopen' })}>
-                  {tr('reopen')}
+            ) : null}
+            <DropdownMenuItem onSelect={() => edit(x, 'edit')}>{tr('edit')}</DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => edit(x, 'deadline')}>{tr('deadline')}</DropdownMenuItem>
+            {x.status === 'done' ? (
+              <DropdownMenuItem onSelect={() => void update(x, { operation: 'reopen' })}>
+                {tr('reopen')}
+              </DropdownMenuItem>
+            ) : (
+              <DropdownMenuItem onSelect={() => edit(x, 'complete')}>{tr('complete')}</DropdownMenuItem>
+            )}
+            {x.decision ? (
+              <DropdownMenuItem onSelect={() => void update(x, { operation: 'restore' })}>
+                {tr('restore')}
+              </DropdownMenuItem>
+            ) : (
+              <>
+                <DropdownMenuItem onSelect={() => edit(x, 'later')}>{tr('later')}</DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => setConfirming({ item: x, operation: 'mute' })}>
+                  {tr('mute')}
                 </DropdownMenuItem>
-              ) : (
-                <DropdownMenuItem onSelect={() => edit(x, 'complete')}>
-                  {tr('complete')}
+                <DropdownMenuItem
+                  variant="danger"
+                  onSelect={() => setConfirming({ item: x, operation: 'delete' })}
+                >
+                  {tr('delete')}
                 </DropdownMenuItem>
-              )}
-              {x.decision ? (
-                <DropdownMenuItem onSelect={() => void update(x, { operation: 'restore' })}>
-                  {tr('restore')}
-                </DropdownMenuItem>
-              ) : (
-                <>
-                  <DropdownMenuItem onSelect={() => edit(x, 'later')}>
-                    {tr('later')}
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onSelect={() => void update(x, { operation: 'delete' })}>
-                    {tr('delete')}
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onSelect={() => void update(x, { operation: 'mute' })}>
-                    {tr('mute')}
-                  </DropdownMenuItem>
-                </>
-              )}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
+              </>
+            )}
+          </DropdownMenuContent>
+        </DropdownMenu>
       </li>
     ));
   const localInput = (value: string | undefined) => {
@@ -394,7 +419,7 @@ export function TodoPanel({ transport, botId }: { transport: TodoTransport; botI
   );
   const save = () => {
     if (!form) return;
-    let patch: TodoPatch =
+    const patch: TodoPatch =
       mode === 'edit'
         ? { title: form.title, outcome: form.outcome, progress: form.progress }
         : mode === 'deadline'
@@ -470,75 +495,118 @@ export function TodoPanel({ transport, botId }: { transport: TodoTransport; botI
   return (
     <section className="todo-panel" aria-label={tr('title')}>
       <header className="todo-header">
-        <h2>{tr('title')}</h2>
-        <Button
-          variant="secondary"
-          tone="quiet"
-          aria-label={tr('new')}
-          onClick={() => edit(undefined, 'edit')}
-        >
-          <Plus size={16} />
-        </Button>
+        <h2>
+          {tr('title')}
+          {rows.length > 0 ? <span className="todo-count">{rows.length}</span> : null}
+        </h2>
+        <div className="todo-header-actions">
+          <button
+            type="button"
+            className="todo-icon"
+            aria-label={tr('search')}
+            aria-pressed={searchOpen}
+            onClick={() => {
+              if (searchOpen && query) {
+                setQuery('');
+                setPage(0);
+                setDonePage(0);
+              }
+              setSearchOpen(!searchOpen);
+            }}
+          >
+            <Search size={13} />
+          </button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                className="todo-icon"
+                aria-label={tr('filter')}
+                data-active={view !== 'open' || origin !== 'all' || order !== 'dueOrder' ? '' : undefined}
+              >
+                <SlidersHorizontal size={13} />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuRadioGroup
+                value={view}
+                onValueChange={(value) => {
+                  setView(value as typeof view);
+                  setPage(0);
+                  setDonePage(0);
+                }}
+              >
+                <DropdownMenuRadioItem value="open">{tr('open')}</DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="hidden">{tr('hidden')}</DropdownMenuRadioItem>
+              </DropdownMenuRadioGroup>
+              <DropdownMenuSeparator />
+              <DropdownMenuLabel>{tr('origin')}</DropdownMenuLabel>
+              <DropdownMenuRadioGroup
+                value={origin}
+                onValueChange={(value) => {
+                  setOrigin(value);
+                  setPage(0);
+                  setDonePage(0);
+                }}
+              >
+                {['all', 'assigned', 'discovered'].map((k) => (
+                  <DropdownMenuRadioItem key={k} value={k}>
+                    {tr(k)}
+                  </DropdownMenuRadioItem>
+                ))}
+              </DropdownMenuRadioGroup>
+              <DropdownMenuSeparator />
+              <DropdownMenuLabel>{tr('order')}</DropdownMenuLabel>
+              <DropdownMenuRadioGroup
+                value={order}
+                onValueChange={(value) => {
+                  setOrder(value);
+                  initialOrder.current = new Map(
+                    sorted(items, value).map((x, rank) => [x.id, rank]),
+                  );
+                  setPage(0);
+                  setDonePage(0);
+                }}
+              >
+                {['dueOrder', 'createdOrder'].map((k) => (
+                  <DropdownMenuRadioItem key={k} value={k}>
+                    {tr(k)}
+                  </DropdownMenuRadioItem>
+                ))}
+              </DropdownMenuRadioGroup>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <button
+            type="button"
+            className="todo-icon"
+            aria-label={tr('new')}
+            onClick={() => edit(undefined, 'edit')}
+          >
+            <Plus size={14} />
+          </button>
+        </div>
       </header>
-      <div className="todo-tools">
-        <input
-          aria-label={tr('search')}
-          placeholder={tr('search')}
-          value={query}
-          onChange={(e) => {
-            setQuery(e.target.value);
-            setPage(0);
-            setDonePage(0);
-          }}
-        />
-        <select
-          aria-label={tr('open')}
-          value={view}
-          onChange={(e) => {
-            setView(e.target.value as typeof view);
-            setPage(0);
-            setDonePage(0);
-          }}
-        >
-          <option value="open">{tr('open')}</option>
-          <option value="hidden">{tr('hidden')}</option>
-        </select>
-      </div>
-      <div className="todo-filters">
-        <select
-          aria-label={tr('origin')}
-          value={origin}
-          onChange={(e) => {
-            setOrigin(e.target.value);
-            setPage(0);
-            setDonePage(0);
-          }}
-        >
-          {['all', 'assigned', 'discovered'].map((k) => (
-            <option key={k} value={k}>
-              {tr(k)}
-            </option>
-          ))}
-        </select>
-        <select
-          aria-label={tr('order')}
-          value={order}
-          onChange={(e) => {
-            setOrder(e.target.value);
-            initialOrder.current = new Map(
-              sorted(items, e.target.value).map((x, rank) => [x.id, rank]),
-            );
-            setPage(0);
-            setDonePage(0);
-          }}
-        >
-          {['dueOrder', 'createdOrder'].map((k) => (
-            <option key={k} value={k}>
-              {tr(k)}
-            </option>
-          ))}
-        </select>
-      </div>
+      {searchOpen && (
+        <div className="todo-search">
+          <input
+            autoFocus
+            aria-label={tr('search')}
+            placeholder={tr('search')}
+            value={query}
+            onChange={(e) => {
+              setQuery(e.target.value);
+              setPage(0);
+              setDonePage(0);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') {
+                setQuery('');
+                setSearchOpen(false);
+              }
+            }}
+          />
+        </div>
+      )}
       {error && (
         <p role="alert" className="todo-error">
           {tr(error)}{' '}
@@ -556,12 +624,14 @@ export function TodoPanel({ transport, botId }: { transport: TodoTransport; botI
       )}
       {pagination(rows.length, visiblePage, setPage, tr('title'))}
       <button
+        type="button"
         className="todo-done-toggle"
         aria-expanded={doneOpen}
         onClick={() => setDoneOpen(!doneOpen)}
       >
-        {doneOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />} {tr('done')} ·{' '}
-        {completed.length}
+        <ChevronRight size={13} className={doneOpen ? 'todo-chevron-open' : undefined} />
+        <span>{tr('done')}</span>
+        <span className="todo-count">{completed.length}</span>
       </button>
       {doneOpen && (
         <>
@@ -571,6 +641,25 @@ export function TodoPanel({ transport, botId }: { transport: TodoTransport; botI
           {pagination(completed.length, visibleDonePage, setDonePage, tr('done'))}
         </>
       )}
+      <ConfirmDialog
+        open={confirming !== null}
+        onOpenChange={(open) => {
+          if (!open && !pending.current) setConfirming(null);
+        }}
+        title={confirming ? tr(confirming.operation + 'ConfirmTitle') : ''}
+        description={confirming ? tr(confirming.operation + 'ConfirmBody') : undefined}
+        confirmText={confirming ? tr(confirming.operation) : undefined}
+        cancelText={tr('cancel')}
+        confirmVariant={confirming?.operation === 'delete' ? 'destructive' : 'default'}
+        loading={busy}
+        onConfirm={() => {
+          const target = confirming;
+          if (!target) return;
+          void update(target.item, { operation: target.operation }).then(() => {
+            if (current()) setConfirming(null);
+          });
+        }}
+      />
       <ConfirmDialog
         open={detail !== null}
         onOpenChange={(open) => {

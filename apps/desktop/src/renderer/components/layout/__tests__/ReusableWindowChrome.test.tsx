@@ -348,7 +348,7 @@ describe('reusable auxiliary window chrome', () => {
 
   it('restores right-sidebar tab bodies only after the visible window has fresh context', async () => {
     render(<SidebarWindowLayout />);
-    expect(mocks.initGlobalListeners).toHaveBeenCalledWith({ ownsRemoteAuthRetry: false });
+    expect(mocks.initGlobalListeners).toHaveBeenCalledWith({ ownsRemoteAuthRetry: false, ownsRemoteListCache: false });
     expect(mocks.sidebarShellVisible).toBe(false);
 
     await act(async () => mocks.sidebarVisibilityListener?.({ visible: true }));

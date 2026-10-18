@@ -1,5 +1,6 @@
 import { useNativeGlassButtonStyle } from "@/platform/chrome/nativeGlassButtonStyle.ios";
 import { iconSize, useTheme } from '@/theme';
+import { NativeErrorNotice } from '@/components/NativeErrorNotice.ios';
 import { ComposerNativeSection as Section } from './ComposerNativeSection';
 import {
   createContext,
@@ -75,7 +76,7 @@ export function ContextSheet(props: ContextSheetProps) {
         {props.children}
         {props.error ? (
           <Section>
-            <Text modifiers={[foregroundStyle(colors.errorText)]}>{props.error}</Text>
+            <NativeErrorNotice message={props.error} />
           </Section>
         ) : null}
       </ComposerSheet>
@@ -193,6 +194,11 @@ export function ContextSheetNote({ text, tone = 'secondary', testID }: {
       {text}
     </Text>
   );
+}
+
+/** 由现有 Section 提供独立操作失败的卡片容器。 */
+export function ContextSheetError({ text, testID }: { text: string; testID?: string }) {
+  return <NativeErrorNotice message={text} testID={testID} />;
 }
 
 export function ContextSheetChoiceRow<T extends string>(props: ContextSheetChoiceRowProps<T>) {

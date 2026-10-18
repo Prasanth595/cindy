@@ -76,6 +76,7 @@ export type IpcErrorCode =
   | 'INTERNAL'
   | 'ALREADY_EXISTS'
   | 'PRECONDITION_FAILED'
+  | 'PROVIDER_GROUP_CHANGED' // 编辑期间组设置已变化，拒绝覆盖，需重新读取
   | 'HTML_PREVIEW_TOO_LARGE'
   | 'HTML_PREVIEW_UNSUPPORTED'
   // 本地模型切换窗口保护的可行动失败原因。device-link 继续降级为
@@ -296,6 +297,7 @@ export type IpcErrorCode =
   | 'BROWSER_FILE_UNSUPPORTED_TYPE'
   | 'BROWSER_FILE_NOT_FOUND'
   | 'BROWSER_FILE_OPEN_FAILED'
+  | 'HTML_PREVIEW_CANCELLED'
   // 会话分享(.cshare 导出/导入)
   | 'SHARE_FILE_INVALID' // 不是 .cshare / 头或 manifest 损坏 / payload 不是 zip
   | 'SHARE_PASSWORD_REQUIRED' // 文件已加密但未提供密码
@@ -335,6 +337,7 @@ const IPC_ERROR_CODES: ReadonlySet<IpcErrorCode> = new Set<IpcErrorCode>([
   'ALREADY_EXISTS',
   'IDENTITY_CONFLICT',
   'PRECONDITION_FAILED',
+  'PROVIDER_GROUP_CHANGED',
   'HTML_PREVIEW_TOO_LARGE',
   'HTML_PREVIEW_UNSUPPORTED',
   'MODEL_CONTEXT_USAGE_UNKNOWN',
@@ -512,6 +515,7 @@ const IPC_ERROR_CODES: ReadonlySet<IpcErrorCode> = new Set<IpcErrorCode>([
   'BROWSER_FILE_UNSUPPORTED_TYPE',
   'BROWSER_FILE_NOT_FOUND',
   'BROWSER_FILE_OPEN_FAILED',
+  'HTML_PREVIEW_CANCELLED',
   'SHARE_FILE_INVALID',
   'SHARE_PASSWORD_REQUIRED',
   'SHARE_PASSWORD_WRONG',

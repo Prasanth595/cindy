@@ -9,9 +9,11 @@ import { sshNativeCodexProvider, sshModel } from '@/features/cc-agent/__tests__/
 import { ChatInput } from '../ChatInput';
 import * as providerMemory from '@/state/providerModelMemory';
 import * as draftMemory from '@/state/newMakerDraft';
+import { getEffortChangeCoordinator } from '../effortChangeQueue';
 
 const h = vi.hoisted(() => ({ t: (key: string) => key, confirm: vi.fn(), editor: null as Editor | null, listening: false, stop: vi.fn().mockResolvedValue(undefined),
   setModel: vi.fn(), selectModel: undefined as undefined | ((id: string) => Promise<void | boolean>), selectEffort: undefined as string | null | undefined, remoteProviders: [] as ProviderView[],
+  localProviders: [] as ProviderView[],
   remoteStatus: 'ready' as 'ready' | 'loading' | 'error',
 }));
 vi.mock('react-i18next', async (original) => ({ ...await original<typeof import('react-i18next')>(), useTranslation: () => ({ t: h.t }) }));
@@ -56,7 +58,7 @@ vi.mock('@/voice-input/useVoiceInput', () => ({ useVoiceInput: (editor: Editor |
   h.editor = editor;
   return { state: h.listening ? 'listening' : 'idle', isListening: h.listening, isBusy: h.listening, draftText: '', start: vi.fn(), stop: h.stop, cancel: vi.fn() };
 } }));
-vi.mock('@/hooks/useProviders', () => ({ useProviders: () => ({ providers: [], loading: false }) }));
+vi.mock('@/hooks/useProviders', () => ({ useProviders: () => ({ providers: h.localProviders, loading: false }) }));
 vi.mock('@/hooks/useDeviceProviders', () => ({ useDeviceProviders: () => ({ providers: [], loading: false, unsupported: false }) }));
 vi.mock('@/hooks/useConnectedSource', () => ({ useConnectedSource: () => ({ hasConnectedSource: true, loading: false }) }));
 vi.mock('@/hooks/useAvailableAgents', () => ({ useAvailableAgents: () => ({ agents: [], loading: false }) }));
@@ -90,13 +92,48 @@ const attachments: ComponentProps<typeof ChatInput>['attachmentState'] = {
   removeFile: noOp, updateFile: noOp, discardFiles: noOp, clearFiles: noOp, restoreFiles: (files) => [...files],
 };
 beforeEach(() => { h.listening = false; h.stop.mockClear(); h.selectEffort = undefined; window.electronAPI = api; vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} }); });
-afterEach(() => { cleanup(); h.remoteProviders = []; h.remoteStatus = 'ready'; h.setModel.mockReset(); h.confirm.mockReset(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+afterEach(() => { cleanup(); h.remoteProviders = []; h.localProviders = []; h.remoteStatus = 'ready'; h.setModel.mockReset(); h.confirm.mockReset(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 const props = {
   sessionId: 'loading-test', initialWorkingDir: '/workspace', runtimeAgentKind: 'codex' as const,
   vendorKey: 'codex' as const, deviceLinkDeviceId: 'test-host', attachmentState: attachments,
   hideRuntimeControls: true, showFolderPicker: false, disableAutofocus: true,
 };
+
+it.each([null, 'test-host'])('preserves no-effort after creation when sending the second message (%s)', async (deviceLinkDeviceId) => {
+  h.localProviders = [sshNativeCodexProvider([sshModel('qwen3:14b', { efforts: [], defaultEffort: null })])];
+  const onSend = vi.fn().mockResolvedValue(true);
+  const view = render(<ChatInput {...props} sessionId={undefined} deviceLinkDeviceId={null}
+    initialModel="qwen3:14b" initialEffort={null} onSend={onSend} />);
+  await waitFor(() => expect(view.container.querySelector('[contenteditable]')).not.toBeNull());
+  await act(async () => { h.editor!.commands.setContent('<p>First message</p>'); });
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'newChat.sendButton.send' })); });
+  await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+  expect(onSend.mock.calls[0][2]).toBe('');
+
+  view.rerender(<ChatInput {...props} sessionId={`no-effort-created-${deviceLinkDeviceId}`} deviceLinkDeviceId={deviceLinkDeviceId}
+    initialModel="qwen3:14b" initialEffort={onSend.mock.calls[0][2]} onSend={onSend} />);
+  await waitFor(() => expect(view.container.querySelector('[contenteditable]')).not.toBeNull());
+  await act(async () => { h.editor!.commands.setContent('<p>Second message</p>'); });
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'newChat.sendButton.send' })); });
+  await waitFor(() => expect(onSend).toHaveBeenCalledTimes(2));
+  expect(onSend.mock.calls[1][0]).toBe('Second message');
+  expect(onSend.mock.calls[1][2]).toBe('');
+});
+
+it.each([null, ''])('adopts an explicit no-effort session snapshot without reusing a stale committed tier (%j)', async (initialEffort) => {
+  h.localProviders = [sshNativeCodexProvider([sshModel('qwen3:14b', { efforts: [], defaultEffort: null })])];
+  const sessionId = `no-effort-existing-${initialEffort === null ? 'null' : 'empty'}`;
+  getEffortChangeCoordinator().setCommittedEffort(sessionId, 'high');
+  const onSend = vi.fn().mockResolvedValue(true);
+  const view = render(<ChatInput {...props} sessionId={sessionId} deviceLinkDeviceId={null}
+    initialModel="qwen3:14b" initialEffort={initialEffort} onSend={onSend} />);
+  await waitFor(() => expect(view.container.querySelector('[contenteditable]')).not.toBeNull());
+  await act(async () => { h.editor!.commands.setContent('<p>Continue without effort</p>'); });
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'newChat.sendButton.send' })); });
+  await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+  expect(onSend.mock.calls[0][2]).toBe('');
+});
 
 it('keeps the shared guest model visible but locks selection without locking message input', async () => {
   const onSend = vi.fn().mockResolvedValue(undefined);

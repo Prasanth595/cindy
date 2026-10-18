@@ -2,6 +2,20 @@
 export const PLUGIN_OAUTH_CHANNEL = "device-link:plugin-oauth:v3";
 export const PLUGIN_OAUTH_LOCAL_CHANNEL = "plugin-oauth:assist";
 export const PLUGIN_OAUTH_TTL_MS = 5 * 60_000;
+/**
+ * Sealed JSON body limits. A Host offer may carry one 代输入 step screenshot;
+ * what the owner device sends back stays as small as before.
+ */
+export const PLUGIN_OAUTH_SEALED_MAX_BYTES = { offer: 480_000, callback: 32_000 } as const;
+/** A well-formed base64url box for a direction: IV (12) + body + tag (16). */
+export function isPluginOauthBox(direction: "offer" | "callback", box: unknown): box is string {
+  return (
+    typeof box === "string" &&
+    box.length >= 40 &&
+    box.length <= Math.ceil(((PLUGIN_OAUTH_SEALED_MAX_BYTES[direction] + 28) * 4) / 3) &&
+    /^[A-Za-z0-9_-]+$/.test(box)
+  );
+}
 
 export interface PluginOauthAction {
   requestId: string;
@@ -18,6 +32,8 @@ export type PluginOauthRequest =
       authorizationV1?: true;
       secretSubmission?: true;
       connectionSubmission?: true;
+      /** Input handoff step submission (代输入); bound to a Host-owned card. */
+      inputHandoff?: true;
     } & PluginOauthAction)
   | { op: "status"; id: string }
   | { op: "cancel"; id: string }
@@ -96,6 +112,7 @@ export function parsePluginOauthRequest(
       ...(value.authorizationV1 === true ? ["authorizationV1"] : []),
       ...(value.secretSubmission === true ? ["secretSubmission"] : []),
       ...(value.connectionSubmission === true ? ["connectionSubmission"] : []),
+      ...(value.inputHandoff === true ? ["inputHandoff"] : []),
     ])
   ) {
     const action = parsePluginOauthAction({
@@ -118,6 +135,7 @@ export function parsePluginOauthRequest(
         ...(value.connectionSubmission === true
           ? { connectionSubmission: true }
           : {}),
+        ...(value.inputHandoff === true ? { inputHandoff: true } : {}),
       };
   }
   if (

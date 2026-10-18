@@ -44,6 +44,7 @@ function fixture() {
     remoteSessionStore: store, isExplicitRemoteNotFoundError, pickWriteFields, writeGuardFields,
     goBackToHome: vi.fn(), Alert: { alert: vi.fn() }, humanizeRemoteError: String,
     animateListChange: undefined, t: (key: string) => key,
+    withNewSessionCreationRemoval: (_sid: string, _device: string, _status: string, remove: () => Promise<unknown>) => remove(),
   };
   return { bindings, reject, store, release, isLatest };
 }

@@ -3,6 +3,7 @@ import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { HostedRemoteCollectionItem, RemoteResourceHostTarget } from '@/device-link/remoteResources';
+import { REMOTE_RESOURCE_STARTUP_TIMEOUT_MS } from '@/device-link/remoteResourceAvailability';
 const h = vi.hoisted(() => ({
   auth: { user: { id: 'owner' }, accountGeneration: 1 }, focused: true,
   link: { connectionEpoch: 1, status: 'online', presenceVersion: 1, getPresenceAvailability: vi.fn(() => true as boolean | null),
@@ -177,8 +178,26 @@ it('shows disk-cached rows during the first slow network read without claiming a
   h.list.mockReturnValue(new Promise(() => {}));
   await render();
   expect(result.items[0].item.ref.id).toBe('cached-visible');
-  expect(result.loading).toBe(false); expect(result.syncing).toBe(true);
+  expect(result.loading).toBe(true); expect(result.syncing).toBe(true);
   expect(result.isOnline(targets[0])).toBe(false);
+});
+
+it('ends a stalled cold relay wait with cached rows and retries after reconnect', async () => {
+  vi.useFakeTimers();
+  h.cached = [cached(targets[0], 'cached-startup')];
+  h.link.status = 'connecting';
+  await render();
+  expect(h.list).not.toHaveBeenCalled();
+  expect(result.loading).toBe(true);
+  await act(async () => vi.advanceTimersByTimeAsync(REMOTE_RESOURCE_STARTUP_TIMEOUT_MS));
+  expect(result.loading).toBe(false);
+  expect(result.error).toContain('devices.resources.hostOffline');
+  expect(result.items.map(row => row.item.ref.id)).toEqual(['cached-startup']);
+  h.link.status = 'online'; h.link.connectionEpoch++;
+  h.list.mockResolvedValue({ items: [item('fresh-after-reconnect')] });
+  await render();
+  expect(h.list).toHaveBeenCalled();
+  expect(result.error).toBeNull();
 });
 
 it('commits and persists a successful host before a slow sibling settles', async () => {
@@ -189,6 +208,7 @@ it('commits and persists a successful host before a slow sibling settles', async
   expect(result.items.map(row => row.item.ref.id)).toEqual(['fresh-mac']);
   expect(result.isOnline(targets[0])).toBe(true);
   expect(result.syncing).toBe(true);
+  expect(result.loading).toBe(true);
   expect(h.persist).toHaveBeenCalledWith('owner', 'teammates', result.items);
   await act(async () => finish({ items: [] }));
   expect(result.syncing).toBe(false);

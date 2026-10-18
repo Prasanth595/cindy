@@ -1,3 +1,4 @@
+import { ErrorNotice } from '@/components/ui/error-notice';
 /**
  * FileBodyView — middle pane of the workdir-browse view.
  *
@@ -985,18 +986,11 @@ export const FileBodyView = forwardRef<FileBodyHandle, FileBodyViewProps>(functi
 
       {/* 保存错误 toast —— 出现在按钮组下方,主动重试或切文件后清掉。 */}
       {saveError && (
-        <div
+        <ErrorNotice
           role="alert"
-          className={cn(
-            'absolute right-[18px] top-[54px] z-10 max-w-[360px]',
-            'rounded-md border px-3 py-1.5 text-12',
-            'border-red-300/70 bg-red-50/95 text-red-700',
-            'dark:border-red-800/60 dark:bg-red-950/80 dark:text-red-300',
-            'shadow-sm',
-          )}
-        >
-          {t('ccAgent.workdirBrowse.fileBody.saveFailed', { message: saveError })}
-        </div>
+          className="absolute right-[18px] top-[54px] z-10 max-w-[360px]"
+          message={t('ccAgent.workdirBrowse.fileBody.saveFailed', { message: saveError })}
+        />
       )}
 
       {

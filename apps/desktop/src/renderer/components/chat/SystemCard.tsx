@@ -1,4 +1,5 @@
 import { formatCompactionDuration, formatSessionDuration, formatShellDuration } from '@/lib/sessionDurationFormat';
+import { InputHandoffRecordRow, readInputHandoffRecordData } from '@/features/input-handoff/InputHandoffRecordRow';
 import { Button } from '@/components/ui/button';
 import { BotSessionTaskResultCard } from '@/features/bots/BotSessionTaskResultCard';
 /**
@@ -56,6 +57,8 @@ import { getSessionDeviceId } from '@/features/device-link/remoteProjectsStore';
 
 interface SystemCardProps {
   cardType:
+    | 'mcp-app'
+    | 'input-handoff'
     | 'cindy-make-doctor'
     | 'cindy-make'
     | 'help'
@@ -1227,13 +1230,17 @@ function ContextRebuildCard({ data }: { data?: Record<string, unknown> }) {
       ? 'timeout'
       : data?.reason === 'codex-history-strip'
         ? 'strip'
-        : 'overflow';
+        : data?.reason === 'idle-gap'
+          ? 'idle'
+          : 'overflow';
   const label = t(
     reason === 'timeout'
       ? 'chat.systemCard.contextRebuild.labelTimeout'
       : reason === 'strip'
         ? 'chat.systemCard.contextRebuild.labelStrip'
-        : 'chat.systemCard.contextRebuild.labelOverflow',
+        : reason === 'idle'
+          ? 'chat.systemCard.contextRebuild.labelIdleGap'
+          : 'chat.systemCard.contextRebuild.labelOverflow',
   );
 
   return (
@@ -1462,6 +1469,10 @@ export function SystemCard({
       return <BotAuthorizationCardView data={data} sessionId={sessionId} />;
     case 'bot-direct-message':
       return <BotDirectMessageCard data={data} sessionId={sessionId} />;
+    case 'input-handoff': {
+      const record = readInputHandoffRecordData(data);
+      return record ? <InputHandoffRecordRow record={record} at={typeof data?.at === 'string' ? data.at : undefined} /> : null;
+    }
     default:
       return null;
   }

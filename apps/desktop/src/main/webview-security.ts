@@ -25,6 +25,7 @@
 import path from 'node:path';
 
 import { app, session, type BrowserWindow, type Session, type WebContents } from 'electron';
+import { CURRENT_APP_ID } from '../shared/brandRegion';
 
 import {
   BROWSER_PARTITION,
@@ -107,6 +108,7 @@ export function applyWebviewHardening(
   // 也跑在我们指定的隔离 session 里(cookies / IDB / cache 单一来源)。Codex
   // 用 Tb('app') 映射拿 partition 字符串,我们用单一常量,实质等价。
   params.partition = BROWSER_PARTITION;
+  webPreferences.partition = BROWSER_PARTITION;
 
   // ── webPreferences:guest 页面的渲染环境 ────────────────────────────────────
   // 全部对齐 Codex tY(line 49849-49859):
@@ -935,6 +937,26 @@ export function installGhostMediaHandoverSource(
   hostContents.once('destroyed', revoke);
 }
 
+const browserVideoReferrers = new WeakSet<Session>();
+
+/** Login redirects/reloads can replace the app Referer with the player's own URL. */
+export function installBrowserVideoReferrer(browserSession: Session): void {
+  if (browserVideoReferrers.has(browserSession)) return;
+  // Single owner for this browser session's header listener; default-session MCP
+  // hooks are separate. Preserve a website's real embedding origin when present.
+  browserSession.webRequest.onBeforeSendHeaders({ urls: ['https://www.youtube.com/embed/*'] }, (details, callback) => {
+    const headers = { ...details.requestHeaders };
+    const key = Object.keys(headers).find(name => name.toLowerCase() === 'referer');
+    const referrer = key ? headers[key] : undefined;
+    if (!referrer || /^https:\/\/www\.youtube\.com(?:\/|$)/i.test(referrer)) {
+      if (key) delete headers[key];
+      headers.Referer = `https://${CURRENT_APP_ID}/`;
+    }
+    callback({ requestHeaders: headers });
+  });
+  browserVideoReferrers.add(browserSession);
+}
+
 export function installWebviewHardener(): void {
   app.on('web-contents-created', (_event, contents) => {
     // will-attach → did-attach 对同一个 guest 同步成对触发;用闭包变量把
@@ -944,6 +966,7 @@ export function installWebviewHardener(): void {
     let pendingCaptchaAttach = false;
     contents.on('will-attach-webview', (e, webPreferences, params) => {
       pendingCaptchaAttach = false;
+      pendingGhostAttach = null;
       // 意识面板分支:声明了意识分区的 webview 必须验明正身——
       // 分区/地址/已装清单三对齐才放行并保留专属分区;验证失败直接拒附加
       // (绝不回落到浏览器分区,那会让 cindy-ghost:// 内容跑进错误 session)。
@@ -984,6 +1007,7 @@ export function installWebviewHardener(): void {
         pendingCaptchaAttach = true;
         return;
       }
+      installBrowserVideoReferrer(session.fromPartition(BROWSER_PARTITION));
       applyWebviewHardening(
         webPreferences as unknown as Record<string, unknown>,
         params,

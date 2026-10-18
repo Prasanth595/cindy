@@ -19,6 +19,10 @@ import { ErrorBanner } from '../ErrorBanner';
 import { ErrorMessageCard } from '../ErrorMessageCard';
 import { ErrorTailErrorBanner } from '../InterruptedTurnBanner';
 import { remoteErrorMessageForBanner } from '@/lib/makerChatStore';
+import { buildErrorDiagnosisPrompt, prefillErrorDiagnosisDraft } from '@/lib/errorDiagnosisPrompt';
+import { clearDraft, getDraft, plainTextToTiptapDoc, saveDraft } from '@/lib/composerDraftStore';
+import { NEW_MAKER_DRAFT_KEY } from '@/features/cc-agent/newMakerDraftKeys';
+import { getDraft as getNewMakerDraft, patchDraft } from '@/state/newMakerDraft';
 
 const locales = { en, 'zh-CN': zhCN, 'zh-TW': zhTW, ja, ko };
 const raw = JSON.stringify({ error: {
@@ -26,6 +30,49 @@ const raw = JSON.stringify({ error: {
   type: 'invalid_request_error', code: 'unsupported_value', param: 'parallel_tool_calls',
 } });
 afterEach(cleanup);
+
+// 诊断入口只在展开详情后出现；预填给新任务的提示带出错任务链接，且与详情同样脱敏。
+it('offers diagnosis after expanding details with a redacted prompt for the failed session', async () => {
+  const i18n = createInstance();
+  await i18n.init({ lng: 'en', resources: { en: { translation: en } }, interpolation: { escapeValue: false } });
+  const onDiagnose = vi.fn();
+  const error = 'Unexpected provider failure; api_key=private-test-value';
+  render(<I18nextProvider i18n={i18n}><ErrorBanner error={error} onRetry={vi.fn()} onDiagnose={onDiagnose} /></I18nextProvider>);
+  expect(screen.queryByText(en.chat.errorBanner.diagnose)).toBeNull();
+  fireEvent.click(screen.getByText(en.chat.errorBanner.networkShowRaw));
+  fireEvent.click(screen.getByText(en.chat.errorBanner.diagnose));
+  const prompt = buildErrorDiagnosisPrompt(i18n.t, 'cindy://session/s1', { ...onDiagnose.mock.calls[0][0], reason: 'unexpected api_key=private-reason-value' });
+  expect(prompt).toContain('cindy://session/s1');
+  expect(prompt).toContain(en.chat.errorBanner.replyFailed);
+  expect(prompt).toContain('Unexpected provider failure');
+  expect(prompt).not.toContain('private-test-value');
+  expect(prompt).toContain('reason: unexpected');
+  expect(prompt).not.toContain('private-reason-value');
+});
+
+// 新建任务页已有未发送内容时，诊断预填只追加，不能丢掉用户的文字与附件。
+it('appends the diagnosis prompt to an unsent new-task draft instead of replacing it', () => {
+  const attachment = { id: 'a1', name: 'note.txt', path: '/tmp/note.txt' } as never;
+  patchDraft({ workingDir: '/tmp/my-project', extraDirs: ['/tmp/extra'] });
+  saveDraft(NEW_MAKER_DRAFT_KEY, { text: plainTextToTiptapDoc('我写到一半的内容'), attachments: [attachment], pendingGhostId: 'plugin-1' });
+  prefillErrorDiagnosisDraft('请帮我诊断这个错误');
+  const draft = getDraft(NEW_MAKER_DRAFT_KEY)!;
+  const text = JSON.stringify(draft.text);
+  expect(text.indexOf('我写到一半的内容')).toBeGreaterThanOrEqual(0);
+  expect(text.indexOf('请帮我诊断这个错误')).toBeGreaterThan(text.indexOf('我写到一半的内容'));
+  expect(draft.attachments).toHaveLength(1);
+  expect(draft.pendingGhostId).toBe('plugin-1');
+  expect(getNewMakerDraft().workingDir).toBe('/tmp/my-project');
+  expect(getNewMakerDraft().extraDirs).toEqual(['/tmp/extra']);
+  clearDraft(NEW_MAKER_DRAFT_KEY);
+  // 用户清空输入框后 Tiptap 仍留一个空段落：按空草稿处理，复位工作区目标，残留的目录授权不带进诊断任务。
+  patchDraft({ workingDir: '/tmp/my-project', extraDirs: ['/tmp/extra'] });
+  saveDraft(NEW_MAKER_DRAFT_KEY, { text: { type: 'doc', content: [{ type: 'paragraph' }] }, attachments: [] });
+  prefillErrorDiagnosisDraft('请帮我诊断这个错误');
+  expect(getNewMakerDraft().extraDirs).toEqual([]);
+  expect(getNewMakerDraft().workingDir).toBeNull();
+  clearDraft(NEW_MAKER_DRAFT_KEY);
+});
 
 describe.each(SUPPORTED_LOCALES)('error presentation in %s', locale => {
   it('keeps the localized blocked-input fallback visible instead of a reply-failure summary', async () => {

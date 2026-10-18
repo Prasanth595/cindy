@@ -24,6 +24,17 @@ export interface AppearanceOverrides {
 
 export type WallpaperMotion = 'static' | 'dynamic';
 
+export const WALLPAPER_DOWNLOAD_PROGRESS_CHANNEL =
+  'appearance-settings:wallpaper-download-progress';
+
+/** Local Desktop transfer telemetry; never persisted or sent through device-link. */
+export interface WallpaperDownloadProgress {
+  wallpaperId: WallpaperId;
+  kind: 'image' | 'video';
+  loaded: number;
+  total: number;
+}
+
 export interface AppearanceSettings {
   uiFamily: string;
   codeFamily: string;
@@ -61,13 +72,28 @@ export const APPEARANCE_LIMITS = {
   wallpaperBlur: { min: 0, max: 20, step: 1 },
 } as const;
 
-export const WALLPAPER_IDS = [
+/** Current picker order; saved selections also accept the hidden compatibility IDs below. */
+export const SELECTABLE_WALLPAPER_IDS = [
   'none',
-  'cindy-window',
-  'cindy-studio',
-  'cindy-dream',
+  'cindy-whisper',
+  'cindy-night-glance',
+  'cindy-scarlet-stroll',
+  'cindy-neon',
+  'cindy-prism',
+  'night-launch',
+  'silent-orbits',
+  'dune-dawn',
+  'planet-dawn',
+  'indigo-folds',
+  'dune-sphere',
+  'ocean-clouds',
+  'rose-quartz',
   'custom',
 ] as const;
+
+/** Removed from the picker; saved selections keep working until the user switches away. */
+export const RETIRED_WALLPAPER_IDS = ['cindy-window', 'cindy-studio', 'cindy-dream'] as const;
+export const WALLPAPER_IDS = [...SELECTABLE_WALLPAPER_IDS, ...RETIRED_WALLPAPER_IDS] as const;
 export type WallpaperId = (typeof WALLPAPER_IDS)[number];
 
 export function normalizeCustomWallpaperUrl(value: unknown): string {

@@ -1,5 +1,5 @@
 /** 群设置由管理电脑保存；项目文件夹仅可查看。 */
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, View } from 'react-native';
 import { ChevronDown, Ellipsis, Folder, Plus } from 'lucide-react-native';
 import { useTranslation } from 'react-i18next';
@@ -13,7 +13,8 @@ import {
   type BotGroupReplyMode,
   type BotGroupSpeakingMode,
 } from '@cindy/maker-shared/botGroupChat';
-import { isActiveBotGroupMember } from '@cindy/maker-shared/botGroupPresentation';
+import { chatGroupMembership, isActiveBotGroupMember } from '@cindy/maker-shared/botGroupPresentation';
+import { useAuth } from '@/auth/AuthContext';
 import { Text, TextInput } from '@/components/AppText';
 import { MainWindowOptionButton } from '@/components/MobilePrimitives';
 import { mobileInteractionStyles } from '@/components/mobileInteractionStyles';
@@ -30,7 +31,7 @@ import { BotGroupMenu } from './BotGroupMenu';
 import { useBotGroupSettingsManagement } from './useBotGroupSettingsManagement';
 import { canManageBotGroup } from './botGroupRemote';
 
-type Busy = 'name' | 'members' | 'organizer' | 'replyMode' | 'speakingMode' | 'delete' | null;
+type Busy = 'name' | 'members' | 'organizer' | 'replyMode' | 'speakingMode' | 'delete' | 'lifecycle' | null;
 type Act = (actionId: BotGroupRemoteActionId, input?: Record<string, unknown>) => Promise<unknown>;
 
 type SettingsProps = {
@@ -62,19 +63,29 @@ function ServerGroupSettings(props: SettingsProps) {
     identityFor={(id, name) => lookup(id, name, group.members.find(member => member.botId === id))}
     online={!!management.selected && !management.loading} readOnly={!management.selected || management.loading}
     act={async (action, input) => { const receipt = await management.act(action, input); props.onRefresh?.(); return receipt; }}
-    management={management} />;
+    management={management} lifecycle={props} />;
 }
 
-function BotGroupSettingsContent({ visible, group, host, identityFor, online, act, onClose, onClosed, onDeleted, readOnly = false, management }: SettingsProps & {
+function BotGroupSettingsContent({ visible, group, host, identityFor, online, act, onClose, onClosed, onDeleted, readOnly = false, management, lifecycle }: SettingsProps & {
   management?: ReturnType<typeof useBotGroupSettingsManagement>;
+  lifecycle?: SettingsProps;
 }) {
   const { t, i18n } = useTranslation();
+  const { accountGeneration } = useAuth();
+  const lifecycleProps = lifecycle ?? { visible, group, host, online, act, onDeleted };
+  const lifecycleGroup = lifecycleProps.group;
+  const membership = chatGroupMembership(lifecycleGroup);
+  const scope = useMemo(() => ({ accountGeneration, groupId: lifecycleGroup.id, deviceId: lifecycleProps.host.deviceId, visible }),
+    [accountGeneration, lifecycleGroup.id, lifecycleProps.host.deviceId, visible]);
+  const active = useRef<typeof scope | null>(scope); active.current = scope;
+  useEffect(() => () => { active.current = null; }, []);
   const { colors } = useTheme();
   const styles = useThemedStyles(makeStyles);
   const [name, setName] = useState(group.name);
   const [busy, setBusy] = useState<Busy>(null);
   const busyRef = useRef<Busy>(null);
   const [errors, setErrors] = useState<Partial<Record<Exclude<Busy, null>, string>>>({});
+  useEffect(() => { busyRef.current = null; setBusy(null); setErrors({}); }, [scope]);
   const [picking, setPicking] = useState(false);
   const [memberQuery, setMemberQuery] = useState('');
   const serverManaged = group.serverBacked === true && group.supportsSettingsManagement === true;
@@ -91,32 +102,33 @@ function BotGroupSettingsContent({ visible, group, host, identityFor, online, ac
 
   const memberIds = group.members.map((member) => member.botId);
 
-  const owner = group.members.some(member => member.isOwned && member.role === 'owner');
+  const { owner } = chatGroupMembership(group);
   const leavesGroup = group.serverBacked === true && management === undefined && !owner;
   const archivesGroup = (serverManaged && !leavesGroup) || management !== undefined;
   const canRemove = serverManaged || group.members.length > BOT_GROUP_MIN_MEMBERS;
   const canAdd = serverManaged || group.members.length < BOT_GROUP_MAX_MEMBERS;
   const addable = teammates.rows.filter((row) => !memberIds.includes(row.item.ref.id));
   const permissionLocked = serverManaged && !canManageBotGroup(group);
-  const unavailable = readOnly || permissionLocked || !online;
+  const unavailable = readOnly || permissionLocked || !online || !!lifecycleGroup.dissolvedAt;
   const locked = unavailable || busy !== null;
   const deleteLocked = leavesGroup ? readOnly || !online || busy !== null : locked || (serverManaged && !owner);
 
   const run = async (section: Exclude<Busy, null>, actionId: BotGroupRemoteActionId, input: Record<string, unknown>, fallbackKey: string) => {
     const leaving = actionId === 'delete' && leavesGroup;
     if (readOnly || (permissionLocked && !leaving) || !online || busyRef.current) return false;
+    const captured = scope;
     busyRef.current = section;
     setBusy(section);
     setErrors((current) => ({ ...current, [section]: undefined }));
     try {
       await act(actionId, serverManaged && !leaving ? { expectedRevision: group.revision, ...input } : input);
+      // Legacy deletion reports success to the owning screen even if this sheet unmounted.
       return true;
     } catch (error) {
-      setErrors((current) => ({ ...current, [section]: botGroupActionErrorText(t, error, fallbackKey) }));
+      if (active.current === captured) setErrors((current) => ({ ...current, [section]: botGroupActionErrorText(t, error, fallbackKey) }));
       return false;
     } finally {
-      busyRef.current = null;
-      setBusy(null);
+      if (active.current === captured) { busyRef.current = null; setBusy(null); }
     }
   };
 
@@ -147,6 +159,20 @@ function BotGroupSettingsContent({ visible, group, host, identityFor, online, ac
     });
     if (!confirmed) return;
     if (await run('delete', 'delete', {}, 'groupChat.settings.deleteFailed')) onDeleted();
+  };
+
+  const runLifecycle = async (action: 'dissolve' | 'leave' | 'hide') => {
+    if (busyRef.current || !visible || !lifecycleProps.online) return;
+    const captured = scope;
+    busyRef.current = 'lifecycle'; setBusy('lifecycle');
+    try {
+      if (!await showConfirm({ title: t(`groupChat.lifecycle.${action}`), message: t(`groupChat.lifecycle.${action}Note`),
+        cancelLabel: t('devices.common.cancel'), confirmLabel: t(`groupChat.lifecycle.${action}`), destructive: true }) || active.current !== captured) return;
+      await lifecycleProps.act(action, action === 'dissolve' ? { expectedRevision: lifecycleGroup.revision } : undefined);
+      // The owning screen completes hide/leave navigation even if this sheet unmounted.
+    } catch (error) {
+      if (active.current === captured) setErrors(current => ({ ...current, lifecycle: botGroupActionErrorText(t, error, 'groupChat.lifecycle.failed') }));
+    } finally { if (active.current === captured) { busyRef.current = null; setBusy(null); } }
   };
 
   const error = (section: Exclude<Busy, null>) => errors[section]
@@ -323,7 +349,7 @@ function BotGroupSettingsContent({ visible, group, host, identityFor, online, ac
       </View>
 
       </View>
-      <View style={[styles.section, (readOnly || !online) && styles.inheritedInactive]}>
+      {(!group.serverBacked || (canManageBotGroup(group) && !leavesGroup && !group.dissolvedAt)) && <View style={[styles.section, (readOnly || !online) && styles.inheritedInactive]}>
         <Pressable accessibilityRole="button" accessibilityLabel={t(archivesGroup ? 'groupChat.settings.archive' : 'groupChat.settings.delete')} disabled={deleteLocked}
           onPress={() => void remove()}
           style={({ pressed }) => [styles.group, styles.memberRow, pressed && mobileInteractionStyles.pressed, !readOnly && online && deleteLocked && styles.inactive]}
@@ -333,7 +359,23 @@ function BotGroupSettingsContent({ visible, group, host, identityFor, online, ac
         </Pressable>
         <Text style={styles.note}>{t(archivesGroup ? 'groupChat.settings.archiveNote' : 'groupChat.settings.deleteNote')}</Text>
         {error('delete')}
-      </View>
+      </View>}
+      {lifecycleGroup.serverBacked && <View style={styles.section} testID="botGroup.settings.lifecycle">
+        {lifecycleGroup.dissolvedAt ? <Text style={styles.note}>{t('groupChat.lifecycle.dissolved')}</Text> : null}
+        {(['dissolve', 'leave', 'hide'] as const).filter(action => action === 'hide' || (!lifecycleGroup.dissolvedAt &&
+          (action === 'dissolve' ? membership.owner : membership.canLeave))).map(action => {
+          const supported = (action === 'leave' ? lifecycleGroup.supportsGroupLeave : action === 'dissolve' ? lifecycleGroup.supportsDissolve : lifecycleGroup.supportsListRemoval) === true;
+          const disabled = !supported || !lifecycleProps.online || busy !== null;
+          return <Pressable key={action} accessibilityRole="button" disabled={disabled} accessibilityState={{ disabled }}
+            onPress={() => void runLifecycle(action)} testID={`botGroup.settings.${action}`}
+            style={({ pressed }) => [styles.group, styles.memberRow, pressed && mobileInteractionStyles.pressed, disabled && styles.inactive]}>
+            <Text style={[styles.rowTitle, styles.destructive]}>{t(`groupChat.lifecycle.${action}`)}</Text>
+          </Pressable>;
+        })}
+        {((membership.owner && !lifecycleGroup.supportsDissolve) || !lifecycleGroup.supportsListRemoval || (membership.canLeave && !lifecycleGroup.supportsGroupLeave))
+          ? <Text style={styles.note}>{t('groupChat.lifecycle.unavailable')}</Text> : null}
+        {error('lifecycle')}
+      </View>}
     </View>
   </CompanionSheet>;
 }

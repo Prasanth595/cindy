@@ -1,3 +1,4 @@
+import { NativeErrorNotice } from '@/components/NativeErrorNotice.ios';
 import { useNativeGlassButtonStyle } from "@/platform/chrome/nativeGlassButtonStyle.ios";
 import { useState, type ComponentProps } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -46,7 +47,7 @@ export function ContextSheetGoalCreateForm({ busy, disabled = false, disabledHin
         <LimitPicker label={t('interaction.contextSheet.noProgressLimit')} value={limits.noProgressLimit} presets={[2, 3, 5]} busy={busy} onChange={value => patch({ noProgressLimit: value })} testID="contextSheet.goalNoProgressOptions" />
       </DisclosureGroup>
     </Section>
-    {error || (disabled && disabledHint) ? <Section><Text modifiers={[foregroundStyle(error ? colors.errorText : colors.textSecondary)]}>{error || disabledHint}</Text></Section> : null}
+    {error ? <Section><NativeErrorNotice message={error} /></Section> : disabled && disabledHint ? <Section><Text modifiers={[foregroundStyle(colors.textSecondary)]}>{disabledHint}</Text></Section> : null}
     <Section>
       <Button onPress={submit} testID="contextSheet.goalStartButton" modifiers={[
         ...glassStyle, frame({ maxWidth: Infinity, minHeight: 44 }),
@@ -92,7 +93,7 @@ export function ContextSheetGoalView(props: ContextSheetGoalViewProps) {
       <Text modifiers={[font({ textStyle: 'footnote' }), foregroundStyle(colors.textSecondary)]}>{t('interaction.contextSheet.goalMeta', { turns, tokens })}</Text>
       {reason ? <Text modifiers={[foregroundStyle(colors.textSecondary)]}>{reason}</Text> : null}
     </Section>
-    {error ? <Section><Text modifiers={[foregroundStyle(colors.errorText)]}>{error}</Text></Section> : null}
+    {error ? <Section><NativeErrorNotice message={error} /></Section> : null}
     <Section>
       {goal.status === 'active' ? action(t('interaction.contextSheet.pause'), props.onPauseGoal, 'contextSheet.goalPauseButton') : null}
       {['paused', 'blocked', 'usageLimited'].includes(goal.status) ? action(t('interaction.contextSheet.resume'), props.onResumeGoal, 'contextSheet.goalResumeButton') : null}

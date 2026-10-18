@@ -30,6 +30,7 @@ import type { ExecutorWorkspace } from '../executor/workspace';
 import { isProviderShareCredentialSessionApproval } from '../../../shared/providerShareCredentialConsent';
 import { encodeSendOptions, encodeUserMessage } from '../wire';
 import { RemoteAgentRemoteError, type RemoteAgentRunClient } from './runClient';
+import { localPlanReview, RemoteEventProjection } from './eventProjection';
 
 const MAX_REMEMBERED_SEND_CALLBACKS = 64;
 
@@ -216,6 +217,7 @@ export interface RemoteAgentHandleController {
 export function createRemoteAgentHandle(deps: RemoteHandleDeps): RemoteAgentHandleController {
   const { client, started } = deps;
   const queue = new EventQueue();
+  const projection = new RemoteEventProjection(deps.workspace);
   let state: Record<string, unknown> = { ...started.state };
   let resolver: InteractionResolver | null = null;
   let disposed = false;
@@ -229,6 +231,7 @@ export function createRemoteAgentHandle(deps: RemoteHandleDeps): RemoteAgentHand
   const dispose = async () => {
     if (disposed) return;
     disposed = true;
+    for (const projected of projection.flush()) queue.push(projected);
     queue.end();
     await deps.dispose().catch(() => undefined);
   };
@@ -399,10 +402,17 @@ export function createRemoteAgentHandle(deps: RemoteHandleDeps): RemoteAgentHand
           : { kind: 'permission', behavior: 'deny', reason: 'interaction_unavailable' };
       return { type: 'interaction', result: decision };
     }
-    const decision = await resolver(request);
+    let decision = await resolver(localPlanReview(request, deps.workspace));
     if (decision.kind === 'permission' && decision.behavior === 'allow') {
       const effective = decision.updatedInput ? { ...request, input: decision.updatedInput } : request;
       for (const action of approvalActionsFor(effective, deps.workspace)) deps.recordApproval(action);
+    }
+    // 用户改过的计划按本机路径展示，交回 Agent 前换回它那边的写法。
+    if (decision.kind === 'plan_review') {
+      decision = { ...decision,
+        ...(typeof decision.editedPlan === 'string' ? { editedPlan: deps.workspace.mapTextForAgent(decision.editedPlan) } : {}),
+        ...(!decision.dismissed && typeof decision.reason === 'string' ? { reason: deps.workspace.mapTextForAgent(decision.reason) } : {}),
+      };
     }
     return { type: 'interaction', result: JSON.parse(JSON.stringify(decision)) };
   }
@@ -412,7 +422,7 @@ export function createRemoteAgentHandle(deps: RemoteHandleDeps): RemoteAgentHand
     onEvent(event) {
       if (!event || typeof event !== 'object' || typeof (event as AgentEvent).type !== 'string') return;
       const typed = event as AgentEvent;
-      queue.push(deps.mapEvent ? deps.mapEvent(typed) : typed);
+      for (const projected of projection.project(deps.mapEvent ? deps.mapEvent(typed) : typed)) queue.push(projected);
     },
     onState(next) {
       state = { ...state, ...next };
@@ -453,6 +463,7 @@ export function createRemoteAgentHandle(deps: RemoteHandleDeps): RemoteAgentHand
       return true;
     },
     onClosed(reason, message) {
+      for (const projected of projection.flush()) queue.push(projected);
       // 'superseded'：同一任务被重新打开、旧实例让位给新实例，不是错误，静默收起。
       if (reason !== 'closed' && reason !== 'detached' && reason !== 'ended' && reason !== 'superseded') {
         queue.push({

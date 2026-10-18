@@ -77,6 +77,7 @@ describe('GhostLibrarySlot', () => {
   let createVault: ReturnType<typeof vi.fn>;
   let createSqlService: ReturnType<typeof vi.fn>;
   let getGhost: GhostLibrarySlotDeps['getGhost'];
+  let slotDeps: GhostLibrarySlotDeps;
   let clock: number;
 
   beforeEach(async () => {
@@ -128,6 +129,7 @@ describe('GhostLibrarySlot', () => {
     showSaveDialog = vi.fn(async () => ({ canceled: true }));
     writeClipboardPng = vi.fn(async () => {});
     syncAgentReadonlyExtraDir = vi.fn(async () => {});
+    slotDeps = deps;
     slot = new GhostLibrarySlot(deps);
   });
 
@@ -150,6 +152,33 @@ describe('GhostLibrarySlot', () => {
     });
     return { resume, started };
   }
+
+  it('settles host preparation before a request resolves the library root', async () => {
+    let release!: () => void;
+    const prepared = new Promise<void>((resolve) => { release = resolve; });
+    await slot.disposeAll();
+    const prepareRequest = vi.fn(() => prepared);
+    slot = new GhostLibrarySlot({ ...slotDeps, prepareRequest });
+    const pending = slot.handleLibraryRequest(GHOST_ID, { op: 'open' });
+    expect(prepareRequest).toHaveBeenCalledWith(GHOST_ID);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(resolveLibraryRoot).not.toHaveBeenCalled();
+    release();
+    await expect(pending).resolves.toMatchObject({ ok: true });
+    expect(resolveLibraryRoot).toHaveBeenCalled();
+  });
+
+  it('does not run host preparation for capability queries, invalid ops or undeclared plugins', async () => {
+    const prepareRequest = vi.fn(() => Promise.resolve());
+    await slot.disposeAll();
+    slot = new GhostLibrarySlot({ ...slotDeps, prepareRequest });
+    await expect(slot.handleLibraryRequest(GHOST_ID, { op: 'capabilities' })).resolves.toMatchObject({ ok: true });
+    await expect(slot.handleLibraryRequest(GHOST_ID, { op: 'nope' })).resolves.toMatchObject({ ok: false });
+    ghosts.set(GHOST_ID, makeGhost(false));
+    await expect(slot.handleLibraryRequest(GHOST_ID, { op: 'open' })).resolves.toMatchObject({ errorCode: 'NOT_DECLARED' });
+    await expect(slot.resolvePanelFilePath(GHOST_ID, 'a.txt')).resolves.toBeNull();
+    expect(prepareRequest).not.toHaveBeenCalled();
+  });
 
   it('资格审:未声明 library 能力/停用 → NOT_DECLARED', async () => {
     ghosts.set(GHOST_ID, makeGhost(false));

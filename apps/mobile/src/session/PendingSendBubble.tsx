@@ -56,6 +56,8 @@ import {
   type ResolveRemoteMediaFn,
 } from '@/session/remoteMedia';
 import type { MobileOutboxThumb } from '@/session/sessionOutbox';
+import type { MessagePayload } from '@/session/messagePayload';
+import { pendingSendGalleryImage } from '@/session/pendingSendImages';
 import {
   fontWeight,
   iconSize,
@@ -157,28 +159,45 @@ function useThumbCellUri(
 
 function ThumbCell({
   thumb,
+  slot,
   resolveRemoteMedia,
   renderImage,
+  onOpenImage,
 }: {
   renderImage: (uri: string | null, sourceUri: string | null, onError: () => void) => ReactNode;
   thumb: MobileOutboxThumb;
+  slot: number;
   resolveRemoteMedia?: ResolveRemoteMediaFn;
+  onOpenImage?: (payload: MessagePayload) => void;
 }) {
   const styles = useThemedStyles(makeStyles);
   const { colors } = useTheme();
   const [failedUris, setFailedUris] = useState<readonly string[]>([]);
   const uri = useThumbCellUri(thumb, resolveRemoteMedia, failedUris);
+  const image = pendingSendGalleryImage(thumb, uri, slot);
+  const canOpen = !!image && !!onOpenImage;
   return (
-    <View style={styles.thumbCell}>
+    <Pressable
+      accessibilityLabel={image?.title}
+      accessibilityRole="button"
+      accessibilityState={{ disabled: !canOpen }}
+      disabled={!canOpen}
+      onPress={(event) => {
+        event.stopPropagation();
+        if (image) onOpenImage?.(image.payload);
+      }}
+      style={styles.thumbCell}
+      testID={`pendingSend.image.${thumb.key}`}
+    >
       {renderImage(uri, thumb.uri, () => {
         if (uri) setFailedUris((failed) => failed.includes(uri) ? failed : [...failed, uri]);
       })}
       {thumb.uploading ? (
-        <View style={styles.thumbUploadingOverlay}>
+        <View pointerEvents="none" style={styles.thumbUploadingOverlay}>
           <ActivityIndicator color={colors.ctaText} size="small" />
         </View>
       ) : null}
-    </View>
+    </Pressable>
   );
 }
 
@@ -187,19 +206,22 @@ function AttachmentThumbStrip({
   resolveRemoteMedia,
   renderImage,
   gap,
+  onOpenImage,
 }: {
   renderImage: (uri: string | null, sourceUri: string | null, onError: () => void) => ReactNode;
   gap: number;
   thumbs: readonly MobileOutboxThumb[];
   resolveRemoteMedia?: ResolveRemoteMediaFn;
+  onOpenImage?: (payload: MessagePayload) => void;
 }) {
   const styles = useThemedStyles(makeStyles);
   useSentAttachmentThumbsVersion();
   if (thumbs.length === 0) return null;
   return (
     <View style={[styles.thumbStrip, { gap }]} testID="pendingSend.thumbStrip">
-      {thumbs.map((thumb) => (
-        <ThumbCell renderImage={renderImage} key={thumb.key} resolveRemoteMedia={resolveRemoteMedia} thumb={thumb} />
+      {thumbs.map((thumb, slot) => (
+        <ThumbCell renderImage={renderImage} key={thumb.key} resolveRemoteMedia={resolveRemoteMedia}
+          thumb={thumb} slot={slot} onOpenImage={onOpenImage} />
       ))}
     </View>
   );
@@ -214,6 +236,7 @@ export function PendingSendBubble({
   renderFile,
   screenWidth,
   viewerDeviceId,
+  onOpenImage,
 }: {
   /** 当前查看设备:排队消息就是本机发的时不显示设备标签(与已发送消息同一规则)。 */
   viewerDeviceId?: string | null;
@@ -225,6 +248,7 @@ export function PendingSendBubble({
   actions: PendingSendBubbleActions;
   /** 远端媒体取件(粘贴时已上传到媒体总仓的图靠它取缩略图)。 */
   resolveRemoteMedia?: ResolveRemoteMediaFn;
+  onOpenImage?: (payload: MessagePayload) => void;
 }) {
   const styles = useThemedStyles(makeStyles);
   const { colors } = useTheme();
@@ -409,6 +433,7 @@ export function PendingSendBubble({
             <View key={`attachments:${item.clientId}`} onLayout={measureBadgeAnchor} style={[styles.attachmentStrip, { gap: layout.attachmentGap }]}>
               <AttachmentThumbStrip
                 gap={layout.attachmentGap}
+                onOpenImage={onOpenImage}
                 renderImage={renderImage}
                 resolveRemoteMedia={resolveRemoteMedia}
                 thumbs={item.thumbs}

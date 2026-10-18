@@ -102,8 +102,10 @@ vi.mock('../../secrets/providerSecretStore.js', () => ({
 
 // getAuthEnv 前置的共享 skills 预热会碰真实文件系统 —— 剪断(与本测试无关)。
 vi.mock('../shared-global-skills.js', () => ({
-  prepareSharedGlobalSkillLinks: async () => ({ warnings: [] }),
+  prepareSharedGlobalSkillLinks: async () => ({ warnings: [], persistentWarnings: [] }),
   prepareSharedProjectSkillLinks: async () => ({ warnings: [] }),
+  sharedGlobalSkillLinksFingerprint: async () => 'test',
+  SHARED_GLOBAL_SKILL_SYNC_DISABLED_NOTICE: 'sync disabled',
 }));
 
 vi.mock('../built-in-skills.js', () => ({

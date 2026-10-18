@@ -74,6 +74,8 @@ vi.mock('../../logger.js', () => ({
   createLogger: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
 }));
 vi.mock('../../cindy-brain/index.js', () => ({
+  refreshPluginUsageBindings: vi.fn(async () => undefined),
+  confirmLegacyLibraryReattach: async () => false,
   getGhostManager: () => ({
     list: () =>
       (runtime.listSequence ? runtime.listSequence() : runtime.ghosts).map((ghost) => ({

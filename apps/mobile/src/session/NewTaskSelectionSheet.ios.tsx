@@ -1,3 +1,4 @@
+import { NativeErrorNotice } from '@/components/NativeErrorNotice.ios';
 import { Button, Image, Picker, ProgressView, Text, Toggle } from '@expo/ui/swift-ui';
 import { disabled, font, foregroundStyle, frame, pickerStyle, tag, tint } from '@expo/ui/swift-ui/modifiers';
 import { useTranslation } from 'react-i18next';
@@ -77,7 +78,7 @@ export function NewTaskSelectionSheet(p: NewTaskSelectionSheetProps) {
             onIsOnChange={p.onShowHidden} modifiers={[disabled(p.busy), tint(colors.inputCaret)]} testID="newSession.remoteBrowseShowHidden" />
         </Section>
         {p.loading ? <Section><ProgressView /></Section> : null}
-        {p.error ? <Section><Text modifiers={[foregroundStyle(colors.errorText)]}>{p.error}</Text></Section> : null}
+        {p.error ? <Section><NativeErrorNotice message={p.error} /></Section> : null}
         <Section>
           {!p.loading && !p.error && p.entries.length === 0 ? <Text>{newSessionText('emptyDirectory')}</Text> : null}
           {p.entries.map(entry => <ComposerNativeRow key={entry.path} title={entry.name}

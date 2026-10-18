@@ -1,3 +1,4 @@
+import { NativeErrorNotice } from '@/components/NativeErrorNotice.ios';
 import {
   Button,
   HStack,
@@ -166,7 +167,7 @@ export function UnifiedModelPickerView(p: UnifiedMobilePickerViewProps) {
     <>
       {p.error ? (
         <Section>
-          <Text modifiers={[foregroundStyle(colors.errorText)]}>{p.error}</Text>
+          <NativeErrorNotice message={p.error} />
         </Section>
       ) : null}
       {p.groups.map((group) => (
@@ -348,7 +349,7 @@ export function UnifiedModelPickerView(p: UnifiedMobilePickerViewProps) {
     >
       {p.error ? (
         <Section>
-          <Text modifiers={[foregroundStyle(colors.errorText)]}>{p.error}</Text>
+          <NativeErrorNotice message={p.error} />
         </Section>
       ) : null}
       {page === "sources" ? (

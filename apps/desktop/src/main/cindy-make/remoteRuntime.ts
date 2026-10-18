@@ -25,6 +25,7 @@ import { broadcastMakeRemoteChanged } from './remoteBroadcast.js';
 import { projectMakeRemoteCard, type MakeRemoteSnapshot } from './remoteProjection.js';
 import type { CindyMakeCompletionMeta } from '../../shared/cindyMakeSession.js';
 import { CINDY_MAKE_ENABLED } from '@cindy/maker-shared/cindy-make-feature';
+import { readPersonalRemoteProjection } from './personalRemoteRuntime.js';
 
 const unavailable = () =>
   new RemoteResourceRegistryError('NOT_FOUND', 'Cindy Make task is unavailable');
@@ -124,6 +125,8 @@ export function registerMakeRemoteResources(isRunning: (id: string) => boolean):
     );
     const sharedBuild = readCindyMakeBuildState();
     const merge = cindyMakeManager.getState().upstreamMerge;
+    const personal = await readPersonalRemoteProjection().catch(() => undefined);
+    if (!isCurrent()) throw unavailable();
     const snapshot: MakeRemoteSnapshot = {
       sessionId,
       revision: '',
@@ -139,6 +142,7 @@ export function registerMakeRemoteResources(isRunning: (id: string) => boolean):
       recoverable,
       sourceMergePending:
         !!merge && merge.status !== 'merged' && (merge.hasWorkspace || merge.cancellationRequested),
+      ...(personal ? { personal } : {}),
     };
     snapshot.revision = createHash('sha256')
       .update(JSON.stringify([snapshot, rows[0]?.clientId, session.clearedAt]))

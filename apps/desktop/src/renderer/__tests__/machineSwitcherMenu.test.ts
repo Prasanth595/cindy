@@ -576,7 +576,7 @@ describe('远程机器切换入口并入 SidebarTopNav(置顶段上方,固定不
     expect(menuSource).toContain('useRemoteSessionBootstrapLoading(selectedDeviceId)');
     expect(menuSource).toContain('aria-busy={remoteSessionBootstrapLoading}');
     expect(menuSource).toMatch(
-      /<span className="truncate leading-none">\{triggerText\}<\/span>\s*<ChevronDown[\s\S]*?animate-spinner motion-reduce:animate-none/,
+      /<span className="truncate">\{triggerText\}<\/span>\s*<ChevronDown[\s\S]*?animate-spinner motion-reduce:animate-none/,
     );
     expect(menuSource).toContain('<Loader2 size={12} strokeWidth={1.8} />');
   });

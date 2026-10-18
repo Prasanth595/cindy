@@ -1355,7 +1355,9 @@ describe('dispatcher 核心语义', () => {
     d.handleDispatch('conn-1', dispatch({ requestId: 'req-2' }), c.send);
     await tick();
     expect(c.last('task.ack')!.payload).toMatchObject({ result: 'accepted', sessionId: first });
-    expect(fr.calls[1]).toMatchObject({ isNew: false, sessionId: first, workingDir: INSIDE });
+    expect(fr.calls[1]).toMatchObject({
+      isNew: false, sessionId: first, workingDir: INSIDE, workspaceAlias: 'xdmaker',
+    });
 
     fr.finish({ finalText: '在子目录里跑完了' });
     await tick();

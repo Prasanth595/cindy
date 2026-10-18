@@ -1686,4 +1686,90 @@ describe('device-link controller mirror — end-to-end scenarios', () => {
     expect(host.invoke).not.toHaveBeenCalledWith(DEVICE_ID, 'local-db:messages:list', expect.anything());
     expect(makerChatStore.getSnapshot(s).messages).toHaveLength(0);
   });
+
+  // Codex review(PR #6251)：控制端断线期间被控端又跑了一轮并失败(错误 B)，控制端漏收新一轮启动、
+  // B 的事件与落库信号，重连投影只带来 B 的文案。关闭时按已加载历史的尾部认领：尾部已是 B 的行才
+  // 标 B；尾部仍是 A(文案不同)则什么都不标，绝不把 A 当成 B 标掉。
+  it.each([
+    ['tail already holds B', true],
+    ['tail still holds A', false],
+  ] as const)('dismisses only the persisted tail row that matches a reconnected live error: %s', async (_label, tailIsB) => {
+    const s = sid();
+    const errorRow = (id: string, message: string, ts: string): Message => ({
+      ...dbMessage(s, id, '', ts, 'error'),
+      clientId: `err-${id}`,
+      content: { message },
+    });
+    host.seedSession(s, {}, [
+      dbMessage(s, 'question', 'question', '2026-10-16T00:00:00Z', 'user'),
+      errorRow('a', 'remote error A', '2026-10-16T00:00:01Z'),
+    ]);
+    remoteProjectsStore.setDeviceSessions(DEVICE_ID, 'Mac A', [{ id: s } as Session]);
+    await makerChatStore.ensureInitialMessages(s);
+    await flush();
+
+    host.push('maker:input:projection', { ...emptyProjection(s), error: 'remote error A' });
+    host.push('maker:event', {
+      sessionId: s,
+      persistId: 'err-a',
+      event: { type: 'error', source: 'claude-code', data: { isTerminal: true, message: 'remote error A' } },
+    });
+    host.push('local-db:session:error-persisted', { sessionId: s, persistId: 'err-a' });
+    expect(makerChatStore.getSnapshot(s).error).toBeNull();
+    expect(makerChatStore.getSnapshot(s).errorPersistId).toBeNull();
+
+    // 断线期间被控端跑了一轮并失败：B 已落库时控制端没收到推送；B 还没落库时被控端只有 A。
+    // 重连后打开任务重拉历史，再收到带 B 文案的投影。
+    if (tailIsB) {
+      host.hostMessage(s, errorRow('b', 'remote error B', '2026-10-16T00:00:02Z'), { lossy: true });
+    }
+    await makerChatStore.ensureInitialMessages(s);
+    await flush();
+    expect(makerChatStore.getSnapshot(s).historyLoaded).toBe(true);
+    expect(makerChatStore.getSnapshot(s).messages.at(-1)?.clientId).toBe(tailIsB ? 'err-b' : 'err-a');
+    host.push('maker:input:projection', { ...emptyProjection(s), error: 'remote error B' });
+    expect(makerChatStore.getSnapshot(s).error).toBe('remote error B');
+
+    makerChatStore.clearError(s);
+    await flush();
+    const dismissed = host.invoke.mock.calls.filter(([, channel]) => channel === 'local-db:messages:dismiss-error');
+    expect(dismissed).toEqual(tailIsB ? [[DEVICE_ID, 'local-db:messages:dismiss-error', [s, 'err-b']]] : []);
+  });
+
+  // 人工 review(PR #6251)：同文案的 B 在被控端落库前就被关掉，兜底只能标尾部的 A；B 的落库
+  // 信号到达后经隧道读被控端历史，确认是同文案的 error 行再经隧道补标。
+  it('dismisses a same-text remote error row through the tunnel once it persists after close', async () => {
+    const s = sid();
+    const errorRow = (id: string, ts: string): Message => ({
+      ...dbMessage(s, id, '', ts, 'error'),
+      clientId: `err-${id}`,
+      content: { message: 'remote turn failed' },
+    });
+    host.seedSession(s, {}, [
+      dbMessage(s, 'question', 'question', '2026-10-16T00:00:00Z', 'user'),
+      errorRow('a', '2026-10-16T00:00:01Z'),
+    ]);
+    remoteProjectsStore.setDeviceSessions(DEVICE_ID, 'Mac A', [{ id: s } as Session]);
+    await makerChatStore.ensureInitialMessages(s);
+    await flush();
+    expect(makerChatStore.getSnapshot(s).messages.at(-1)?.clientId).toBe('err-a');
+
+    host.push('maker:input:projection', { ...emptyProjection(s), error: 'remote turn failed' });
+    makerChatStore.clearError(s);
+    await flush();
+    const dismissCalls = () =>
+      host.invoke.mock.calls.filter(([, channel]) => channel === 'local-db:messages:dismiss-error');
+    expect(dismissCalls()).toEqual([[DEVICE_ID, 'local-db:messages:dismiss-error', [s, 'err-a']]]);
+
+    host.hostMessage(s, errorRow('b', '2026-10-16T00:00:02Z'), { lossy: true });
+    host.push('local-db:session:error-persisted', { sessionId: s, persistId: 'err-b' });
+    await flush();
+    await flush();
+    expect(dismissCalls()).toEqual([
+      [DEVICE_ID, 'local-db:messages:dismiss-error', [s, 'err-a']],
+      [DEVICE_ID, 'local-db:messages:dismiss-error', [s, 'err-b']],
+    ]);
+    expect(makerChatStore.getSnapshot(s).disposedErrorPersistId).toBe('err-b');
+  });
 });
+

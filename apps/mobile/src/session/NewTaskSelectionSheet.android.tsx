@@ -1,3 +1,4 @@
+import { ErrorNotice } from '@/components/ErrorNotice';
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, View, useWindowDimensions } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -208,17 +209,7 @@ export function NewTaskSelectionSheet(p: NewTaskSelectionSheetProps) {
             {p.loading ? (
               <ActivityIndicator color={colors.textSecondary} />
             ) : null}
-            {p.error ? (
-              <Text
-                style={{
-                  color: colors.errorText,
-                  fontSize: typeScale.footnote,
-                  lineHeight: lineHeight.caption,
-                }}
-              >
-                {p.error}
-              </Text>
-            ) : null}
+            {p.error ? <ErrorNotice message={p.error} /> : null}
             {!p.loading && !p.error && !p.entries.length ? (
               <Text
                 style={{

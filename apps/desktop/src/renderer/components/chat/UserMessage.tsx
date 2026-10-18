@@ -95,6 +95,7 @@ import { UserMessageEditBox } from './UserMessageEditBox';
 import HookTaskCard from './HookTaskCard';
 import { useFileChipContextMenu } from './useFileChipContextMenu';
 import { UserAttachmentChip } from './UserAttachmentChip';
+import { UserMessageImageLink } from './UserMessageImageLink';
 import {
   AUTOMATION_USER_MESSAGE_VISUAL_LINE_THRESHOLD,
   LONG_USER_MESSAGE_VISUAL_LINE_THRESHOLD,
@@ -113,6 +114,7 @@ import { splitHostCapabilityDirective } from '@/cindy-brain/hostCapabilityInvoca
 import {
   GhostFulfillmentContext,
   GhostSummonCard,
+  hasGhostSummonFulfillment,
   type GhostSummonDisplay,
 } from './GhostSummonCard';
 import { MessageSourceLabels } from './MessageSourceLabels';
@@ -245,6 +247,7 @@ function UserFileChip({
   // 按 workdir 风格直接 join(与 useResolvedMarkdownTarget 的 remote 分支同策)。
   const chipRemote = isRemoteFileOrigin(useChatSessionFile().origin);
   const ctxMenu = useFileChipContextMenu({
+    fileName: refText,
     getAbsPath: async () => {
       if (chipRemote) return resolveLocalPath(refText, workingDir);
       const r = await resolveLocalPathSmart(refText, workingDir);
@@ -262,7 +265,10 @@ function UserFileChip({
         tooltip={refText}
         tooltipMono
         ariaLabel={fileName}
-        onClick={onClick}
+        onClick={(event) => ctxMenu.onActivate(event, () => onClick(event))}
+        onAuxClick={(event) => {
+          if (event.button === 1) ctxMenu.onActivate(event, () => onClick(event));
+        }}
         onContextMenu={ctxMenu.onContextMenu}
         className="relative top-[-1px] -my-[1px] max-w-[min(240px,55vw)] align-middle"
       />
@@ -327,15 +333,11 @@ function renderTextWithLinks(
     } else {
       const p = match.text;
       result.push(
-        <button
+        <UserMessageImageLink
           key={`${keyPrefix}-img-${match.index}`}
-          type="button"
-          onClick={() => onImageClick?.(toLocalFileUrl(p))}
-          // 同 UserMessageUrlLink:可点 = 正文色 + 常显下划线,不再靠 --msg-link 颜色。
-          className="underline underline-offset-2 cursor-pointer break-all"
-        >
-          {p}
-        </button>,
+          path={p}
+          onOpen={onImageClick}
+        />,
       );
     }
     lastIndex = match.index + match.length;
@@ -970,7 +972,7 @@ export function UserMessage({
   const ghostMentionFulfilled =
     ghostDirective?.kind === 'mention' &&
     Boolean(
-      ghostFulfilledIds && ghostDirective.ghosts.some((g) => ghostFulfilledIds.has(g.ghostId)),
+      ghostDirective.ghosts.some((g) => hasGhostSummonFulfillment(ghostFulfilledIds, g.ghostId)),
     );
   // 语义自主召唤:消息一个触发词都没命中(无任何追加段),AI 本轮仍真调了
   // ghost_call → 合成 semantic 展示数据,渲染同一行召唤标注(与硬指令/兑现
@@ -1415,6 +1417,7 @@ export function UserMessage({
             {fileAttachmentNodes}
             <HookTaskCard
               im={hookSource.im}
+              origin={hookSource.origin}
               userText={displayContent}
               collapseUserText={hookSource.contentFormat === 'user-text'}
               threadContext={hookSource.threadContext}
