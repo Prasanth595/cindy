@@ -230,7 +230,8 @@ Desktop 的压缩保持 gzip level 4 与同步发送／错误处理契约，手�
 共用这一实现。收益按 gzip 的 base64 长度与原始 JSON 的 UTF-8 **字节数**比较，缩小超过
 10% 才采用；大小门槛、解压上限与缓存预算仍按原有字符数计。Node 编解码及数字统计复用
 `@cindy/device-link/node-compression` 独立入口，跨平台主入口与 Mobile 不加载 Node 模块。
-DEBUG 统计只记原始／gzip／wire 字节与压缩耗时，不记录正文或凭证。
+DEBUG 统计只记原始／gzip／wire 字节与压缩耗时（按 5 分钟窗口汇总，单次 ≥100ms 单独记），
+不记录正文或凭证。
 回归见 Desktop `device-link/__tests__/transferCodec.test.ts`（实际 zlib／pako 解码）。
 
 Mobile 开启本地诊断时，在原有 30 秒／卡顿区间统计内汇总 `relayTransfers`：每个 channel

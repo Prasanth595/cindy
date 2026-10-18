@@ -208,12 +208,29 @@ describe('通知入口在伙伴投影未加载时的路由', () => {
     expect(loadProfiles).toHaveBeenCalledTimes(1);
   });
 
+  // 灵动岛 / 通知点进普通任务曾要先等整份伙伴列表重读完（实测 0.1–7 秒）才开始跳转。
+  it('投影不认识的任务立刻打开普通任务页，不等伙伴投影重读', () => {
+    const openOrdinary = vi.fn();
+    const resolveBotRoute = vi.fn(() => new Promise<BotSessionEntryTarget | null>(() => undefined));
+    const open = createSessionEntryNavigator({
+      readKnownBotRoute: () => null,
+      resolveBotRoute,
+      openBotRoute: vi.fn(),
+      consumeAlert: vi.fn(),
+      openOrdinary,
+    });
+    open('plain', 'message-1', 'entry-1');
+    expect(openOrdinary).toHaveBeenCalledWith('plain', 'message-1', expect.any(Function));
+    expect(resolveBotRoute).toHaveBeenCalledWith('plain');
+  });
+
   it('连续点击时，先点的慢查询不会覆盖后点的导航', async () => {
     const pending = new Map<string, (target: BotSessionEntryTarget | null) => void>();
     const openBotRoute = vi.fn();
     const openOrdinary = vi.fn();
     const consumeAlert = vi.fn();
     const open = createSessionEntryNavigator({
+      readKnownBotRoute: () => null,
       resolveBotRoute: (sessionId) => new Promise((resolve) => pending.set(sessionId, resolve)),
       openBotRoute,
       consumeAlert,
@@ -221,38 +238,114 @@ describe('通知入口在伙伴投影未加载时的路由', () => {
     });
     open('first');
     open('second', 'message-1');
-    pending.get('second')!(null);
-    await Promise.resolve();
-    expect(openOrdinary).toHaveBeenCalledWith('second', 'message-1', expect.any(Function));
-    // A superseded click neither navigates nor disposes its Session's alert.
+    // A superseded click's late re-read neither navigates nor disposes its Session's alert.
     pending.get('first')!({ route: '/bots/groups/g-1', consumesAlert: true });
     await Promise.resolve();
     expect(openBotRoute).not.toHaveBeenCalled();
     expect(consumeAlert).not.toHaveBeenCalled();
     // The ordinary path's own late async route checks the same latest gate.
-    const isLatest = openOrdinary.mock.calls[0]![2] as () => boolean;
-    expect(isLatest()).toBe(true);
+    const isFirstLatest = openOrdinary.mock.calls[0]![2] as () => boolean;
+    const isSecondLatest = openOrdinary.mock.calls[1]![2] as () => boolean;
+    expect(isFirstLatest()).toBe(false);
+    expect(isSecondLatest()).toBe(true);
     open('third');
-    expect(isLatest()).toBe(false);
+    expect(isSecondLatest()).toBe(false);
   });
 
-  it('后台任务走普通任务入口，保留消息锚点与灵动岛上报', async () => {
+  it('后台任务走普通任务入口，保留消息锚点与灵动岛上报，也不重读投影', async () => {
     const openBotRoute = vi.fn();
     const openOrdinary = vi.fn();
     const consumeAlert = vi.fn();
+    const resolveBotRoute = vi.fn(async () => null);
     const open = createSessionEntryNavigator({
-      resolveBotRoute: async () => ({ route: '/cc-agent/s-task', consumesAlert: false }),
+      readKnownBotRoute: () => ({ route: '/cc-agent/s-task', consumesAlert: false }),
+      resolveBotRoute,
       consumeAlert,
       openBotRoute,
       openOrdinary,
     });
     open('s-task', 'message-9', 'entry-task');
-    await Promise.resolve();
-    await Promise.resolve();
     open.locationCommitted('/cc-agent/s-task');
     expect(consumeAlert).not.toHaveBeenCalled();
     expect(openBotRoute).not.toHaveBeenCalled();
+    expect(resolveBotRoute).not.toHaveBeenCalled();
     expect(openOrdinary).toHaveBeenCalledWith('s-task', 'message-9', expect.any(Function));
+  });
+
+  describe('投影尚未认识的伙伴任务：先开普通任务页，重读后转到伙伴页（§6.2）', () => {
+    function setup() {
+      let resolveTarget!: (target: BotSessionEntryTarget | null) => void;
+      const openBotRoute = vi.fn();
+      const openOrdinary = vi.fn();
+      const consumeAlert = vi.fn();
+      const open = createSessionEntryNavigator({
+        readKnownBotRoute: () => null,
+        resolveBotRoute: () => new Promise((resolve) => { resolveTarget = resolve; }),
+        openBotRoute,
+        consumeAlert,
+        openOrdinary,
+      });
+      const isOrdinaryLatest = () => (openOrdinary.mock.lastCall![2] as () => boolean)();
+      return { open, openBotRoute, consumeAlert, resolve: (t: BotSessionEntryTarget | null) => resolveTarget(t), isOrdinaryLatest };
+    }
+    const lane: BotSessionEntryTarget = { route: '/bots/groups/g-1', consumesAlert: true };
+
+    it('已落在该任务的普通页时转到伙伴页，并照常处置这次点击', async () => {
+      const { open, openBotRoute, consumeAlert, resolve } = setup();
+      open.locationCommitted('/cc-agent/new');
+      open('s-lane', undefined, 'entry-1');
+      open.locationCommitted('/cc-agent/s-lane');
+      resolve(lane);
+      await Promise.resolve();
+      expect(openBotRoute).toHaveBeenCalledWith('/bots/groups/g-1', undefined);
+      open.locationCommitted('/bots/groups/g-1');
+      expect(consumeAlert).toHaveBeenCalledWith('s-lane', 'entry-1');
+    });
+
+    it('普通页还没落地就重读完成：取消普通页导航，直接去伙伴页', async () => {
+      const { open, openBotRoute, resolve, isOrdinaryLatest } = setup();
+      open.locationCommitted('/cc-agent/new');
+      open('s-lane');
+      resolve(lane);
+      await Promise.resolve();
+      expect(openBotRoute).toHaveBeenCalledWith('/bots/groups/g-1', undefined);
+      expect(isOrdinaryLatest()).toBe(false);
+    });
+
+    it('离开后又回到普通页也算去过别处：不再拉回伙伴页，也不处置', async () => {
+      const { open, openBotRoute, consumeAlert, resolve } = setup();
+      open.locationCommitted('/cc-agent/new');
+      open('s-lane', undefined, 'entry-3');
+      open.locationCommitted('/cc-agent/s-lane');
+      open.locationCommitted('/elsewhere');
+      open.locationCommitted('/cc-agent/s-lane');
+      resolve(lane);
+      await Promise.resolve();
+      expect(openBotRoute).not.toHaveBeenCalled();
+      expect(consumeAlert).not.toHaveBeenCalled();
+    });
+
+    it('普通页导航因投影已更新直接落到伙伴页时，照常处置这次点击', async () => {
+      const { open, consumeAlert, resolve } = setup();
+      open.locationCommitted('/cc-agent/new');
+      open('s-lane', undefined, 'entry-4');
+      open.locationCommitted('/bots/groups/g-1');
+      resolve(lane);
+      await Promise.resolve();
+      expect(consumeAlert).toHaveBeenCalledExactlyOnceWith('s-lane', 'entry-4');
+    });
+
+    it('用户已去了别处时不再拉回伙伴页，也不处置', async () => {
+      const { open, openBotRoute, consumeAlert, resolve } = setup();
+      open.locationCommitted('/cc-agent/new');
+      open('s-lane', undefined, 'entry-2');
+      open.locationCommitted('/elsewhere');
+      resolve(lane);
+      await Promise.resolve();
+      open.locationCommitted('/bots/groups/g-1');
+      expect(openBotRoute).not.toHaveBeenCalled();
+      expect(consumeAlert).not.toHaveBeenCalled();
+    });
   });
 
   describe('灵动岛点击的处置等目标地址提交后才发', () => {
@@ -265,7 +358,8 @@ describe('通知入口在伙伴投影未加载时的路由', () => {
       const openBotRoute = vi.fn(over.openBotRoute ?? (() => undefined));
       const consumeAlert = vi.fn();
       const open = createSessionEntryNavigator({
-        resolveBotRoute: async (sessionId) => targets[sessionId] ?? null,
+        readKnownBotRoute: (sessionId) => targets[sessionId] ?? null,
+        resolveBotRoute: async () => null,
         openBotRoute,
         consumeAlert,
         openOrdinary: vi.fn(),
@@ -359,59 +453,12 @@ describe('通知入口在伙伴投影未加载时的路由', () => {
       expect(consumeAlert).not.toHaveBeenCalled();
     });
 
-    it('解析尚未完成时地址已提交（改去别处或自己打开了目标）：照常导航但不代为处置', async () => {
-      let resolveTarget!: (target: BotSessionEntryTarget | null) => void;
-      const openBotRoute = vi.fn();
-      const consumeAlert = vi.fn();
-      const open = createSessionEntryNavigator({
-        resolveBotRoute: () => new Promise((resolve) => { resolveTarget = resolve; }),
-        openBotRoute,
-        consumeAlert,
-        openOrdinary: vi.fn(),
-      });
-      open.locationCommitted('/cc-agent/new');
-      // The user moves elsewhere while the Bot projection is still loading.
-      open('s-lane', undefined, 'entry-5');
-      open.locationCommitted('/elsewhere');
-      resolveTarget(targets['s-lane']!);
-      await settle();
-      expect(openBotRoute).toHaveBeenCalledWith('/bots/groups/g-1', undefined);
-      open.locationCommitted('/bots/groups/g-1');
-      expect(consumeAlert).not.toHaveBeenCalled();
-
-      // The user opens the target address themselves before the lookup returns.
-      open('s-lane', undefined, 'entry-6');
-      open.locationCommitted('/cc-agent/new');
-      open.locationCommitted('/bots/groups/g-1');
-      resolveTarget(targets['s-lane']!);
-      await settle();
-      open.locationCommitted('/bots/groups/g-1');
-      expect(consumeAlert).not.toHaveBeenCalled();
-
-      // A history target does not get the click id handed to its gate either.
-      open('s-old', undefined, 'entry-9');
-      open.locationCommitted('/elsewhere');
-      resolveTarget(targets['s-old']!);
-      await settle();
-      expect(openBotRoute).toHaveBeenLastCalledWith('/bots/bot-a/history/s-old', undefined);
-    });
-
     it('导航抛错时丢弃待处置，之后到达同一地址也不处置', async () => {
-      const failures: unknown[] = [];
-      const onRejection = (reason: unknown) => failures.push(reason);
-      process.on('unhandledRejection', onRejection);
-      try {
-        const { open, consumeAlert } = setup({ openBotRoute: () => { throw new Error('blocked'); } });
-        open.locationCommitted('/cc-agent/new');
-        open('s-lane', undefined, 'entry-4');
-        await settle();
-        await new Promise((resolve) => setTimeout(resolve, 0));
-        open.locationCommitted('/bots/groups/g-1');
-        expect(consumeAlert).not.toHaveBeenCalled();
-      } finally {
-        process.off('unhandledRejection', onRejection);
-      }
-      expect(failures).toHaveLength(1);
+      const { open, consumeAlert } = setup({ openBotRoute: () => { throw new Error('blocked'); } });
+      open.locationCommitted('/cc-agent/new');
+      expect(() => open('s-lane', undefined, 'entry-4')).toThrow('blocked');
+      open.locationCommitted('/bots/groups/g-1');
+      expect(consumeAlert).not.toHaveBeenCalled();
     });
   });
 

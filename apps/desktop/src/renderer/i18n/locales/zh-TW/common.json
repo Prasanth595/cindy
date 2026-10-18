@@ -711,6 +711,9 @@
     "controlledByDevice": "{{name}} 正在遠端控制桌面",
     "viewedByDevice": "{{name}} 正在遠端檢視桌面",
     "disconnect": "中斷連線",
+    "disconnectChoiceDetail": "中斷後本次遠端桌面結束，對方之後仍可重新連線。",
+    "disconnectRevoke": "同時撤銷這台裝置的訪問權限",
+    "disconnectRevokeHint": "撤銷後對方無法再遠端連線本機，需在「設定 → 遠端連線」中恢復。",
     "back": "返回",
     "connect": "連線",
     "connecting": "連線中…",
@@ -1265,6 +1268,7 @@
     "tabs": {
       "storage": "儲存空間",
       "general": "通用",
+      "appearance": "外觀",
       "billing": "用量和計費",
       "usage": "用量歷史",
       "personalization": "個性化",
@@ -1591,6 +1595,7 @@
     "appearance": {
       "title": "外觀",
       "modeLabel": "顯示模式",
+      "sidebarAndPanels": "側邊欄與面板",
       "themeLabel": "主題",
       "themeAriaLabel": "主題選擇",
       "localBadge": "(本地)",
@@ -1617,6 +1622,7 @@
       },
       "font": {
         "reset": "恢復預設",
+        "title": "字體",
         "defaultPreset": "預設",
         "presets": "預設",
         "custom": "自定義",
@@ -1655,8 +1661,12 @@
           "ui": "中文字型預覽，清晰銳利 ABC xyz · a/b/c/d · a,b · 0123456789 !?@&"
         }
       },
-      "missingLightNotice": "{{name}} 主題沒有提供淺色方案，已顯示其深色方案。",
-      "missingDarkNotice": "{{name}} 主題沒有提供深色方案，已顯示其淺色方案。",
+      "singleVariant": {
+        "lightOnly": "僅淺色",
+        "darkOnly": "僅深色",
+        "lightNotice": "{{name}} 只有淺色方案，顯示模式固定為淺色；換成其他主題後恢復你的選擇。",
+        "darkNotice": "{{name}} 只有深色方案，顯示模式固定為深色；換成其他主題後恢復你的選擇。"
+      },
       "theme": {
         "light": "淺色",
         "dark": "深色",
@@ -1696,31 +1706,18 @@
           "cindy-studio": "Cindy · 未來工作室",
           "cindy-dream": "Cindy · 夢境漫遊",
           "cindy-whisper": "Cindy · 悄悄話",
-          "cindy-crimson": "Cindy · 緋紅之境",
           "cindy-night-glance": "Cindy · 夜色回眸",
           "cindy-scarlet-stroll": "Cindy · 赤夜漫步",
           "cindy-neon": "Cindy · 霓光側影",
           "cindy-prism": "Cindy · 稜鏡碎光",
-          "wheatfield-watch": "麥田守望",
-          "teacup-cat": "杯中黑貓",
-          "cloud-roaming": "雲下遠行",
           "night-launch": "夜航流光",
-          "stardust-vortex": "星塵漩渦",
           "silent-orbits": "靜謐星軌",
           "dune-dawn": "沙海晨光",
           "planet-dawn": "星海晨曦",
-          "neon-valley": "霓虹峽谷",
-          "silent-circuit": "靜默電路",
           "indigo-folds": "靛藍層疊",
-          "moon-solitude": "孤影望月",
           "dune-sphere": "沙丘圓石",
           "ocean-clouds": "滄海流雲",
-          "blush-leaves": "淺絳疏影",
-          "white-wilderness": "白原孤旅",
           "rose-quartz": "薔薇晶礦",
-          "silver-veins": "黛岩銀脈",
-          "dawn-arc": "暗界晨弧",
-          "tidal-lines": "潮汐流線",
           "custom": "自訂桌布"
         },
         "visibilityLabel": "桌布可見度",
@@ -1749,7 +1746,7 @@
         "reset": "恢復預設佈局",
         "resetSuccess": "已恢復預設面板佈局",
         "resetFailed": "無法恢復面板配置",
-        "saved": "面板位置已儲存；可在「設定 → 一般」的「外觀」區段恢復預設配置",
+        "saved": "面板位置已儲存；可在「設定 → 外觀」恢復預設配置",
         "saveFailed": "無法儲存面板位置"
       }
     },
@@ -4576,7 +4573,7 @@
     "agentResource": {
       "saveFailed": "儲存失敗，請重試。",
       "title": "Agent 資源佔用",
-      "description": "限制 Agent 命令列任務的系統資源佔用，避免並行測試、構建把機器拖卡。預設全速（不干預）。併發上限即刻生效；優先順序降檔對已在跑的 Agent 處理程序約 15 秒內生效；把優先順序調回正常和工具鏈限核只對新啟動的 Agent 處理程序生效。僅作用於本機 Agent；遠端（SSH）機器上的 Agent 不受本設定約束。",
+      "description": "限制 Agent 命令列任務佔用的系統資源，避免並行測試或構建拖慢電腦。預設全速，只作用於本機 Agent，不影響遠端（SSH）機器。",
       "preset": "檔位",
       "presets": {
         "full": "全速",
@@ -4592,18 +4589,19 @@
       "maxConcurrent": "併發命令上限",
       "maxConcurrentHint": "Claude Code 引擎所有命令的併發上限，超出的排隊等待；0 表示不限。Codex 命令在自身沙箱內執行、不經此閘門，由優先順序與限核層覆蓋。",
       "priority": "程序優先順序",
-      "priorityHint": "調低後 Agent 只用空閒資源，前臺應用優先。從低檔調回後只對新啟動的 Agent 程序生效。",
+      "priorityHint": "調低後 Agent 只用空閒資源，前臺應用優先；約 15 秒內對執行中的 Agent 生效，調回正常只對新啟動的 Agent 生效。",
       "priorityOptions": {
         "normal": "正常",
         "low": "低",
         "lowest": "最低"
       },
       "capThreads": "限制工具鏈並行度",
-      "capThreadsHint": "注入 VITEST_MAX_FORKS、MAKEFLAGS 等環境變數，防止單條測試或構建命令佔滿全部 CPU 核心；你自己設定過的同名變數不會被覆蓋。"
+      "capThreadsHint": "注入 VITEST_MAX_FORKS、MAKEFLAGS 等環境變數，防止單條測試或構建命令佔滿全部 CPU 核心；只對新啟動的 Agent 生效，你自己設定過的同名變數不會被覆蓋。"
     },
     "piPackages": {
       "title": "Pi 擴充功能",
       "entryTitle": "Pi 擴充功能設定",
+      "manageLabel": "管理擴充功能",
       "entryDescription": "安裝、啟用或解除安裝 Cindy 的 Pi 擴充功能",
       "backToGeneral": "返回一般",
       "description": "擴充功能安裝在這台裝置的 Cindy 中。無論任務由本機、手機或其他已連線用戶端發起，只要由這台裝置的普通 Pi 執行都會生效；Review 不載入。",
@@ -9085,6 +9083,8 @@
     "globalSettings": {
       "restoreHint": "恢復預設後將跟隨用戶端預設模型設定，個別夥伴的自訂模型保持不變。",
       "restoreFailed": "恢復預設失敗，請重試。",
+      "defaultModel": "預設模型",
+      "defaultModelHint": "夥伴預設使用的模型，單個夥伴可以在自己的設定裡另選。",
       "title": "伙伴",
       "description": "和伙伴有關的通用設定。單個伙伴的設定在{{pronoun}}自己的頁面裡。",
       "rosterNote": "預置陣容會隨版本更新。"
@@ -10937,6 +10937,7 @@
     "verificationFailed": "暫時無法確認 ChatGPT 登入是否已恢復，請重新檢測。"
   },
   "chat": {
+    "failedSamplingAttempt": "此回覆未完成，內容僅供參考。",
     "jumpToBottom": "跳到底部",
     "prevMessageJump": "跳到上一則提問：{{preview}}",
     "askUserQuestion": {
@@ -11169,6 +11170,9 @@
       "streamInterruptedNoRetry": "模型輸出中途中斷了。通常是上游暫時故障，請稍後重試。",
       "networkShowRaw": "錯誤詳情",
       "networkHideRaw": "收起詳情",
+      "diagnose": "診斷",
+      "diagnoseTitle": "在新任務中診斷這個錯誤",
+      "diagnosePrompt": "請幫我診斷這個錯誤：找出原因，並告訴我怎麼解決。\n\n出錯任務：{{sessionUrl}}\n錯誤提示：{{message}}\n錯誤詳情：\n{{details}}\n\n如果確認是 Cindy 本身的問題，請告訴我，我可以選擇向 Cindy 團隊提交 issue。",
       "gatewayProxyTokenInvalid": "Cindy AI 憑據已失效。請點「重試」。若仍失敗，請退出後重新登入",
       "gatewayProxyTokenInvalidNoRetry": "Cindy AI 憑據已失效。若後續仍失敗，請退出後重新登入",
       "modelAccessDenied": "目前上游帳號無權存取此模型。請切換模型，或向供應商確認模型存取權限",
@@ -11196,6 +11200,21 @@
       "continuing": "繼續中…",
       "continueTitle": "從中斷處繼續完成任務（不會重複已完成的步驟）",
       "dismissTitle": "關閉此中斷提示"
+    },
+    "interruptedResumeDialog": {
+      "title": "繼續上次中斷的任務",
+      "description_one": "{{appName}} 上次意外結束，有 {{count}} 個任務沒做完。選取的任務會根據對話紀錄判斷進度，從中斷的地方接著做。",
+      "description_other": "{{appName}} 上次意外結束，有 {{count}} 個任務沒做完。選取的任務會根據對話紀錄判斷進度，從中斷的地方接著做。",
+      "selectAll": "全選",
+      "selectedCount": "已選 {{selected}} / {{total}}",
+      "interruptedAgo": "{{time}}前中斷",
+      "interruptedJustNow": "剛剛中斷",
+      "continueSelected_one": "繼續 {{count}} 個任務",
+      "continueSelected_other": "繼續 {{count}} 個任務",
+      "continueNone": "繼續任務",
+      "later": "暫不繼續",
+      "continueFailed_one": "有 {{count}} 個任務未能繼續，可以開啟任務後重試。",
+      "continueFailed_other": "有 {{count}} 個任務未能繼續，可以開啟任務後重試。"
     },
     "unreadFailedScheduleBanner": {
       "text": "先前有自動執行失敗。",
@@ -14799,6 +14818,7 @@
     "addUnavailable": "當前無法在分欄中開啟該任務，請先在主區域開啟一個任務再重試"
   },
   "extraDirs": {
+    "libraryReadOnlyLabel": "Mivo 作品庫（唯讀）",
     "retryRemotePlugins": "遠端插件載入失敗，點擊重試",
     "menuAria": "操作選單",
     "tooltipEmpty": "更多操作",
@@ -16550,5 +16570,11 @@
     "messageSource": "由 $t(mcpApps.appName)「{{name}}」傳送",
     "serverId": "MCP 伺服器 ID：{{id}}",
     "exitFullscreen": "離開全螢幕"
+  },
+  "richAnswer": {
+    "playVideo": "播放影片",
+    "openVideoSource": "開啟原影片",
+    "calculationUnavailable": "此項暫時無法計算。",
+    "incomplete": "部分內容未能顯示。"
   }
 }

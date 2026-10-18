@@ -329,24 +329,44 @@ device/network verification before claiming a measured connection-success gain.
 
 Control is a lease-scoped capability, not the session itself. When the host can
 no longer inject input — the native helper died, it reported a failed injection,
-or its write path failed — it releases control and keeps everything else: the
-lease, the capture owner, the video track and the last picture. It does not call
+or its write path failed — it stops the old input helper and immediately attempts
+one repair on the same lease. Successful repair preserves privacy masks, host
+mute and clipboard settings as well as capture, video and the last picture.
+Failure falls back to the existing control-release cleanup. It does not call
 `stop()` on the host. A desktop viewer may still end its own lease when it sees
 the lost control; the mobile viewer can keep watching.
 
 The host also releases control when its own input path refuses a batch before
 injecting anything, so the two sides cannot disagree about who controls: a later
 take-control genuinely restarts the helper instead of being skipped as "already
-controlling".
+controlling". Repair uses the normal authorization, display and lease checks;
+stop, takeover, background presentation and layout changes supersede it. A
+replacement helper that fails before new input does not restart itself again;
+fresh input or a new viewer control request permits another attempt. The
+host-side behavior is covered in
+[`controller.test.ts`](../apps/desktop/src/main/remote-desktop/__tests__/controller.test.ts).
 
 The mobile viewer follows the host's control bit instead of rebuilding the session. A
 rejected input batch, a failed control request or a heartbeat that reports
-`controlling: false` all drop the phone to view only with the existing view-only
-hint and take-control action; media and lease identity are untouched. A dropped
+`controlling: false` all stop local input while media and lease identity stay
+untouched. For control-capable hosts in a visible foreground viewer, input
+rejection and return from PiP immediately request control through the host's
+normal permission checks. If
+control or settings are still settling, their completion continues the pending
+restore without waiting for a timer. The existing 3-second heartbeat is only a
+fallback after a failed or uncertain attempt; a temporary host refusal does not
+change the intent to control. Actual PiP, pending presentation,
+background/inactive state, route blur, offline signaling and in-flight control
+or settings changes defer recovery. The local **View only** choice still blocks
+input after host control returns. Hosts without input capability instead send
+`presentation enabled:false` on return from PiP, restoring foreground video and
+signaling policy without requesting control. A new PiP entry waits for that
+reply before authorizing background viewing again. A dropped
 stalled batch (WebView overflow) also asks the host to drop control: posting
 `control:false` to the WebView clears its queued release without flushing it, so
 only an explicit host `control enabled:false` (which stops the input helper and
-injects a native release) can let go of a held key or button. If that host
+injects a native release) can let go of a held key or button. Its confirmation
+immediately requests fresh control, dropping the stale queue. If that host
 request times out, the viewer keeps the intended control bit and the next
 heartbeat retries the release (or restores local control after a lost
 take-control reply) instead of ignoring a host-`true` while the phone stays
@@ -359,7 +379,13 @@ a control request that collides with one still settling — do not rebuild the
 session: a batch that may have been injected must not be answered with a
 release that discards its key-up, and the heartbeat still owns liveness. Errors
 that do mean the lease is gone (`DESKTOP_LEASE_EXPIRED`, `DESKTOP_STOPPED`,
-revocation, an unsupported channel) still recover the session as before.
+revocation, an unsupported channel) still follow the existing session failure
+policy; an explicit stop or permission refusal never triggers automatic control
+reacquisition. Recovery never replays old clicks or keys, replaces the lease or
+resets shared device-link connections. Fullscreen restore, transient refusal,
+overflow release ordering and late replies are covered through the real mobile
+screen in
+[`screen.test.tsx`](../apps/mobile/src/remote-desktop/__tests__/screen.test.tsx).
 
 Desktop viewers require control. They request it on every connection and do not
 offer a view-only action. If the host refuses control, revokes it later, rejects

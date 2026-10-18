@@ -4845,6 +4845,10 @@ interface ElectronAPI {
       setPinnedCardSummaries: (enabled: boolean) => Promise<void>;
       /** interrupted-turn-resume:「疑似中断」(startedAt > endedAt)的 active 会话 id。 */
       interruptedPending: () => Promise<string[]>;
+      /** 启动「继续上次中断的任务」弹窗:中断会话 + 中断时间 + 中断前正在做的事。 */
+      interruptedResumeCandidates: () => Promise<
+        { sessionId: string; interruptedAt: number; activity: string | null }[]
+      >;
       /** 红点派生的周期性重算源:尾部停在未 dismissed 错误行的 active 会话 id。 */
       errorTailPending: () => Promise<string[]>;
       /** 批量处置未处理告警(「全部标为已读」)。failed = 未处置成功的会话 id。 */

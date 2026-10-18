@@ -2359,3 +2359,21 @@ describe('pi translator live token speed', () => {
     }
   });
 });
+
+// Regression: [image] retained text but lost the actual media. Unit, native RPC entry.
+it('retains tool image bytes and a video resource alongside text', () => {
+  const ctx = createPiTranslateContext(noopLogger);
+  const { queue, events } = makeQueue();
+  translatePiEvent(ev({ type: 'tool_execution_end', toolCallId: 'media', result: {
+    content: [{ type: 'text', text: 'preview' },
+      { type: 'image', mimeType: 'image/png', data: 'aW1hZ2U=' },
+      { type: 'resource_link', mimeType: 'video/mp4', uri: 'https://example.com/clip.mp4' }],
+  } }), queue, ctx);
+  expect(events.find(e => e.type === 'tool_result_full')?.data).toMatchObject({
+    toolUseId: 'media', fullText: 'preview\n[image]', processMedia: [
+      { kind: 'image', mimeType: 'image/png', data: 'aW1hZ2U=' },
+      { kind: 'video', url: 'https://example.com/clip.mp4' },
+    ],
+  });
+  disposePiTranslateContext(ctx);
+});

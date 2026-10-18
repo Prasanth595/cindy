@@ -237,12 +237,19 @@ export class RemoteDesktopController {
   /** Revoke input synchronously; optional OS restoration must never retain it
    * or stop a replacement helper after an asynchronous restore settles.
    */
-  private revokeControl(): Promise<void> {
+  private revokeControl(preserveSafety = false): Promise<void> {
     if (this.active) this.active.controlling = false;
     this.controlGeneration++;
     this.clipboardTransfer.reset();
     this.deps.stopInput();
-    const restoring = this.clearSafety();
+    // Repairing just the input helper must not expose a privacy-masked desktop
+    // or unmute the host without the viewer seeing a settings change.
+    const restoring = preserveSafety
+      ? Promise.resolve()
+      : this.clearSafety().catch((error) => {
+          log.warn('Safety restoration failed after control loss', error);
+          throw error;
+        });
     this.deps.changed();
     return restoring;
   }
@@ -250,6 +257,7 @@ export class RemoteDesktopController {
   private lastFrame = -Infinity;
   private controlGeneration = 0;
   private inputStarting = false;
+  private inputRecoveryUsed = false;
   private userStopped = new Map<string, string>();
   private lastEnded: { peer: string; lease: string } | null = null;
   constructor(private readonly deps: DesktopControllerDeps) {}
@@ -580,21 +588,61 @@ export class RemoteDesktopController {
    * control bit, so release control and keep everything else: ending the lease
    * here would tear down capture and media, and every phone tap would surface as
    * a reconnect even though the desktop session itself is healthy. The viewer
-   * observes the new state on its next heartbeat or input attempt. A pending
-   * start is also cancelled so a failed helper cannot restore control later.
+   * can ask again if recovery fails. Native failures opt into one immediate
+   * restart; layout changes only release until their geometry is confirmed.
+   * A pending start is cancelled, never recursively restarted.
    */
-  releaseControl(): void {
+  async releaseControl(recoverInput = false): Promise<void> {
     const active = this.active;
     if (!active || (!active.controlling && !this.inputStarting)) return;
-    void this.revokeControl().catch(() => log.warn('Safety restoration failed after control loss'));
+    const recover =
+      recoverInput &&
+      active.controlling &&
+      !this.inputStarting &&
+      !this.inputRecoveryUsed &&
+      !this.starting &&
+      !this.displayChanging &&
+      !active.backgroundViewing;
+    if (recover) this.inputRecoveryUsed = true;
+    try {
+      const restoring = this.revokeControl(recover);
+      const generation = this.controlGeneration;
+      await restoring;
+      // A takeover can be awaiting capabilities before it changes the lease or
+      // generation. Its explicit decision takes precedence over this repair.
+      if (
+        !recover ||
+        this.starting ||
+        this.displayChanging ||
+        this.active !== active ||
+        generation !== this.controlGeneration
+      )
+        return;
+      this.require(active.peer, active.lease);
+      const restarting = this.takeControl(active.peer, active, true);
+      const restartGeneration = this.controlGeneration;
+      try {
+        await restarting;
+      } catch (error) {
+        if (this.active === active && restartGeneration === this.controlGeneration)
+          await this.revokeControl();
+        throw error;
+      }
+    } catch (error) {
+      // The viewer retains its picture and can retry via the normal permission
+      // path. No recursive restart if the replacement helper also fails.
+      if (recover) log.debug('Input recovery deferred', error);
+    }
   }
   /** Starts input for the lease's current display; shared by `control` and `autoControl`. */
   private async takeControl(
     peer: string,
     active: NonNullable<RemoteDesktopController['active']>,
+    recovering = false,
   ): Promise<void> {
     if (this.locking) throw new Error('DESKTOP_BUSY');
     if (this.inputStarting) throw new Error('DESKTOP_INPUT_BUSY');
+    if (!recovering) this.inputRecoveryUsed = false;
     this.setBackgroundViewing(active, false);
     this.clipboardTransfer.reset();
     const generation = ++this.controlGeneration;
@@ -696,7 +744,11 @@ export class RemoteDesktopController {
     if (!active.controlling) throw new Error('DESKTOP_VIEW_ONLY');
     if (sequence <= active.sequence) return; // never replay a click after retries/reconnect
     active.sequence = sequence;
+    const generation = this.controlGeneration;
     this.deps.input(request.events);
+    // Fresh user activity permits another repair, but an idle crash-looping
+    // helper cannot repeatedly restart itself after its ready handshake.
+    if (generation === this.controlGeneration) this.inputRecoveryUsed = false;
   }
   async request(peer: string, raw: unknown): Promise<unknown> {
     const request = parseRemoteDesktopRequest(raw);

@@ -1862,7 +1862,8 @@ export function getMaker(): Maker {
         let buildSessionMcpConfig:
           | ((sessionInstanceId: string) => Record<string, unknown>)
           | undefined;
-        if (!isReview) {
+        // Review hosts and native-storage-only (archive) hosts never expose Cindy MCP tools.
+        if (!isReview && !ctx.nativeStorageOnly) {
           try {
             const cfg = await getCodexExtraSpawnConfig({
               mcpProviders: providers,

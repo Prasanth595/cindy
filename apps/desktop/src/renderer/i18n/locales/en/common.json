@@ -723,6 +723,9 @@
     "controlledByDevice": "{{name}} is controlling your desktop",
     "viewedByDevice": "{{name}} is viewing your desktop",
     "disconnect": "Disconnect",
+    "disconnectChoiceDetail": "Disconnecting ends this remote desktop session; the device can connect again later.",
+    "disconnectRevoke": "Also revoke this device's access",
+    "disconnectRevokeHint": "It can no longer connect to this machine until you restore it under Settings → Remote Connection.",
     "back": "Back",
     "connect": "Connect",
     "connecting": "Connecting…",
@@ -1294,6 +1297,7 @@
     "tabs": {
       "storage": "Storage",
       "general": "General",
+      "appearance": "Appearance",
       "billing": "Usage and billing",
       "usage": "Usage history",
       "personalization": "Personalization",
@@ -1620,6 +1624,7 @@
     "appearance": {
       "title": "Appearance",
       "modeLabel": "Appearance Mode",
+      "sidebarAndPanels": "Sidebar & panels",
       "themeLabel": "Theme",
       "themeAriaLabel": "Theme selection",
       "localBadge": "(Local)",
@@ -1646,6 +1651,7 @@
       },
       "font": {
         "reset": "Reset to default",
+        "title": "Fonts",
         "defaultPreset": "Default",
         "presets": "Presets",
         "custom": "Custom",
@@ -1684,8 +1690,12 @@
           "ui": "The quick brown fox jumps over the lazy dog ABC xyz · a/b/c/d · a,b · 0123456789 !?@&"
         }
       },
-      "missingLightNotice": "{{name}} has no light variant; showing its dark variant instead.",
-      "missingDarkNotice": "{{name}} has no dark variant; showing its light variant instead.",
+      "singleVariant": {
+        "lightOnly": "Light only",
+        "darkOnly": "Dark only",
+        "lightNotice": "{{name}} only has a light variant, so the appearance mode stays light. Your choice comes back when you switch themes.",
+        "darkNotice": "{{name}} only has a dark variant, so the appearance mode stays dark. Your choice comes back when you switch themes."
+      },
       "theme": {
         "light": "Light",
         "dark": "Dark",
@@ -1725,31 +1735,18 @@
           "cindy-studio": "Cindy · Future Atelier",
           "cindy-dream": "Cindy · Dream Voyage",
           "cindy-whisper": "Cindy · Whisper",
-          "cindy-crimson": "Cindy · Crimson Realm",
           "cindy-night-glance": "Cindy · Night Glance",
           "cindy-scarlet-stroll": "Cindy · Scarlet Stroll",
           "cindy-neon": "Cindy · Neon Silhouette",
           "cindy-prism": "Cindy · Prism Shards",
-          "wheatfield-watch": "Wheatfield Watch",
-          "teacup-cat": "Teacup Cat",
-          "cloud-roaming": "Under the Clouds",
           "night-launch": "Night Launch",
-          "stardust-vortex": "Stardust Vortex",
           "silent-orbits": "Silent Orbits",
           "dune-dawn": "Dune Dawn",
           "planet-dawn": "Planet Dawn",
-          "neon-valley": "Neon Valley",
-          "silent-circuit": "Silent Circuit",
           "indigo-folds": "Indigo Folds",
-          "moon-solitude": "Moon Gazer",
           "dune-sphere": "Dune Sphere",
           "ocean-clouds": "Ocean Clouds",
-          "blush-leaves": "Blush Leaves",
-          "white-wilderness": "White Wilderness",
           "rose-quartz": "Rose Quartz",
-          "silver-veins": "Silver Veins",
-          "dawn-arc": "Dawn Arc",
-          "tidal-lines": "Tidal Lines",
           "custom": "Custom wallpaper"
         },
         "visibilityLabel": "Wallpaper Visibility",
@@ -1778,7 +1775,7 @@
         "reset": "Restore default layout",
         "resetSuccess": "Default panel layout restored",
         "resetFailed": "Could not restore the panel layout.",
-        "saved": "Panel position saved. Restore the default layout in the Appearance section under Settings → General.",
+        "saved": "Panel position saved. Restore the default layout in Settings → Appearance.",
         "saveFailed": "Could not save panel positions."
       }
     },
@@ -4607,7 +4604,7 @@
     "agentResource": {
       "saveFailed": "Failed to save. Try again.",
       "title": "Agent Resource Usage",
-      "description": "Limit how much system capacity Agent command-line work can consume, so parallel tests or builds don't freeze your machine. Defaults to full speed (no intervention). The concurrency limit applies immediately; priority lowering reaches running Agent processes within about 15 seconds; raising priority back to Normal and toolchain thread caps only apply to newly started Agent processes. Applies to local Agents only; Agents on remote (SSH) machines are not governed by these settings.",
+      "description": "Limit the system resources Agent command-line work can use, so parallel tests or builds don't slow down your computer. Defaults to full speed and applies only to local Agents, not remote (SSH) machines.",
       "preset": "Profile",
       "presets": {
         "full": "Full Speed",
@@ -4623,18 +4620,19 @@
       "maxConcurrent": "Concurrent Command Limit",
       "maxConcurrentHint": "Maximum number of commands the Claude Code engine may run at once; extra commands wait in a queue. 0 means unlimited. Codex commands run inside their own sandbox without a per-command hook and are covered by the priority and thread-cap layers instead.",
       "priority": "Process Priority",
-      "priorityHint": "Lower it so Agents only use idle capacity and foreground apps stay responsive. Raising it back only applies to newly started Agent processes.",
+      "priorityHint": "Lower it so Agents only use idle capacity and foreground apps stay responsive. Lowering reaches running Agents within about 15 seconds; raising it back to Normal only applies to newly started Agents.",
       "priorityOptions": {
         "normal": "Normal",
         "low": "Low",
         "lowest": "Lowest"
       },
       "capThreads": "Cap Toolchain Parallelism",
-      "capThreadsHint": "Injects environment variables such as VITEST_MAX_FORKS and MAKEFLAGS so a single test or build command can't take every CPU core. Variables you set yourself are never overridden."
+      "capThreadsHint": "Injects environment variables such as VITEST_MAX_FORKS and MAKEFLAGS so a single test or build command can't take every CPU core. Applies only to newly started Agents; variables you set yourself are never overridden."
     },
     "piPackages": {
       "title": "Pi extensions",
       "entryTitle": "Pi extension settings",
+      "manageLabel": "Manage extensions",
       "entryDescription": "Install, enable, or uninstall extensions for Cindy's Pi",
       "backToGeneral": "Back to General",
       "description": "Extensions stay in Cindy on this device. Any ordinary Pi task executed here can use them, even when started from a phone or another connected client. Review does not load them.",
@@ -9124,6 +9122,8 @@
     "globalSettings": {
       "restoreHint": "Restoring defaults follows the client’s default model settings. Individual teammates’ custom models stay unchanged.",
       "restoreFailed": "Could not restore defaults. Try again.",
+      "defaultModel": "Default model",
+      "defaultModelHint": "Teammates use this model by default. Each teammate can pick a different one in their own settings.",
       "title": "Teammates",
       "description": "Settings shared by all teammates. Anything about one teammate lives on their own page.",
       "rosterNote": "The shipped roster grows with each release."
@@ -10977,6 +10977,7 @@
     "verificationFailed": "Cindy couldn’t confirm whether the ChatGPT sign-in has recovered. Check again."
   },
   "chat": {
+    "failedSamplingAttempt": "This reply did not complete. Its content is for reference only.",
     "jumpToBottom": "Jump to bottom",
     "prevMessageJump": "Jump to previous prompt: {{preview}}",
     "sessionLoading": "Loading task",
@@ -11214,6 +11215,9 @@
       "streamInterruptedNoRetry": "The model stream was interrupted. This is usually a temporary upstream issue. Try again in a little while.",
       "networkShowRaw": "Error Details",
       "networkHideRaw": "Hide Details",
+      "diagnose": "Diagnose",
+      "diagnoseTitle": "Diagnose this error in a new session",
+      "diagnosePrompt": "Please diagnose this error: find the cause and tell me how to fix it.\n\nSession: {{sessionUrl}}\nError: {{message}}\nDetails:\n{{details}}\n\nIf you find it's a problem with Cindy itself, let me know so I can choose whether to file an issue with the Cindy team.",
       "gatewayProxyTokenInvalid": "Cindy AI credentials are no longer valid. Click Retry. If it happens again, sign out and sign back in",
       "gatewayProxyTokenInvalidNoRetry": "Cindy AI credentials are no longer valid. If it happens again, sign out and sign back in",
       "modelAccessDenied": "The upstream account cannot access this model. Select another model or check its access with the provider",
@@ -11241,6 +11245,21 @@
       "continuing": "Continuing…",
       "continueTitle": "Continue from where the task left off (completed steps will not be repeated)",
       "dismissTitle": "Dismiss this interruption notice"
+    },
+    "interruptedResumeDialog": {
+      "title": "Resume interrupted sessions",
+      "description_one": "{{appName}} quit unexpectedly and {{count}} session didn't finish. Selected sessions will check the conversation and pick up where they left off.",
+      "description_other": "{{appName}} quit unexpectedly and {{count}} sessions didn't finish. Selected sessions will check the conversation and pick up where they left off.",
+      "selectAll": "Select all",
+      "selectedCount": "{{selected}} of {{total}} selected",
+      "interruptedAgo": "interrupted {{time}} ago",
+      "interruptedJustNow": "interrupted just now",
+      "continueSelected_one": "Resume {{count}} session",
+      "continueSelected_other": "Resume {{count}} sessions",
+      "continueNone": "Resume",
+      "later": "Not now",
+      "continueFailed_one": "{{count}} session couldn't resume. Open it to try again.",
+      "continueFailed_other": "{{count}} sessions couldn't resume. Open them to try again."
     },
     "unreadFailedScheduleBanner": {
       "text": "An automatic run failed.",
@@ -14854,6 +14873,7 @@
     "addUnavailable": "This session can’t be opened in the current split. Open a session in the main area and try again."
   },
   "extraDirs": {
+    "libraryReadOnlyLabel": "Mivo Library (Read-Only)",
     "retryRemotePlugins": "Remote plugins failed to load. Retry",
     "menuAria": "Composer actions",
     "tooltipEmpty": "More actions",
@@ -16609,5 +16629,11 @@
     "messageSource": "Sent by $t(mcpApps.appName) “{{name}}”",
     "serverId": "MCP Server ID: {{id}}",
     "exitFullscreen": "Exit Fullscreen"
+  },
+  "richAnswer": {
+    "playVideo": "Play video",
+    "openVideoSource": "Open original video",
+    "calculationUnavailable": "Unable to calculate this value.",
+    "incomplete": "Some content could not be displayed."
   }
 }

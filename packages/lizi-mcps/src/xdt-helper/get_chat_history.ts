@@ -18,6 +18,7 @@ import { z } from 'zod';
 import type { XdtHelperToolRegistry } from '../lizi_xdtHelperToolRegistry.js';
 import type { XdtHelperHistoryDeps, HistoryRole } from './_history_types.js';
 import { okPayload, errorPayload } from './_payload.js';
+import { stringArrayParam } from './_array-param.js';
 import { encodeCursor, decodeCursor } from './_history_cursor.js';
 import { resolveHistoryScope } from './_history_scope.js';
 
@@ -99,9 +100,7 @@ export function registerGetChatHistoryTool(
     description: DESCRIPTION,
     inputShape: {
       // device-link hosts may use one `deviceId::sessionId`; the host enforces the trusted route.
-      session_ids: z
-        .array(z.string().min(1))
-        .max(50)
+      session_ids: stringArrayParam(z.array(z.string().min(1)).max(50))
         .optional()
         .describe('一批 sessionId(最多 50 个)。与 workdir / 时间段可叠加(AND)。'),
       workdir: z
@@ -120,8 +119,7 @@ export function registerGetChatHistoryTool(
         .enum(['cc', 'codex', 'pi'])
         .optional()
         .describe('按 session.agentKind 过滤; 不传 = 全部返。'),
-      roles: z
-        .array(z.enum(ROLE_VALUES))
+      roles: stringArrayParam(z.array(z.enum(ROLE_VALUES)))
         .optional()
         .describe(
           '只返这些 role 的消息。不传 = 默认只返问答类(user/assistant/ask_user/plan_review),' +

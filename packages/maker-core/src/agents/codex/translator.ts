@@ -1,3 +1,4 @@
+import { nativeToolMediaFields, type NativeToolMedia } from '@cindy/maker-shared/tool-process-media';
 /**
  * Codex app-server v2 Notification → maker-core 语义 AgentEvent 翻译器。
  *
@@ -74,6 +75,8 @@ import type {
 // 但因为 reasoning text 现在是数组 join 出来的, reasoningTextLen 跟踪 join 后总长。
 
 export interface CodexRuntimeState {
+  /** Text since the last completed tool belongs to the current sampling request. */
+  samplingSegments: Map<string, { threadId: string; turnId: string; attempt: number; itemIds: Set<string> }>;
   /** item.id → reasoning 第一次 emit 'start' 的时间 (Date.now ms)。 */
   reasoningStartedAt: Map<string, number>;
   /** item.id → reasoning 已 emit 文本字符长度 (上次 join 后总长)。 */
@@ -130,6 +133,7 @@ export interface CodexRuntimeState {
 
 export function newCodexRuntimeState(): CodexRuntimeState {
   return {
+    samplingSegments: new Map(),
     reasoningStartedAt: new Map(),
     reasoningTextLen: new Map(),
     itemTextLen: new Map(),
@@ -350,6 +354,8 @@ interface TranslatorLog {
 export interface CodexTranslateContext {
   rt: CodexRuntimeState;
   log: TranslatorLog;
+  /** A failed sample cannot remain the adapter's successful final-text fallback. */
+  onSamplingAttemptFailed?: () => void;
   /**
    * Maker Memory flush 观察器 — codex contextCompaction completed 时调,
    * controller 重置 fired 阈值 (compact 后 context 又有空间, 可重新触发)。
@@ -380,6 +386,51 @@ export interface CodexTranslateContext {
 // ── 主入口: 三个 item.* notification 的统一分发 ────────────────────────────────
 
 type ItemPhase = 'started' | 'updated' | 'completed';
+// Host-executed tool results prove the preceding response was accepted. Built-in
+// search/image items can complete inside the still-open SSE response and do not.
+const SAMPLING_ACCEPTED_TOOL_TYPES = new Set([
+  'commandExecution', 'mcpToolCall', 'dynamicToolCall', 'collabAgentToolCall', 'fileChange',
+]);
+
+function isSamplingStreamFailure(error: ClassifiedCodexError): boolean {
+  return error.errorInfoTag === 'responseStreamDisconnected' ||
+    error.errorInfoTag === 'responseTooManyFailedAttempts' ||
+    /stream disconnected|retrying sampling request|stream ended before.*response\.completed/i.test(error.message);
+}
+
+function samplingSegment(rt: CodexRuntimeState, threadId: string, turnId: string) {
+  const key = JSON.stringify([threadId, turnId]);
+  let segment = rt.samplingSegments.get(key);
+  if (!segment) {
+    segment = { threadId, turnId, attempt: 1, itemIds: new Set<string>() };
+    rt.samplingSegments.set(key, segment);
+  }
+  return segment;
+}
+
+/** Exact identities, never prose similarity or final_answer-only filtering (#6351). */
+function failSamplingSegment(rt: CodexRuntimeState, threadId: string, turnId: string) {
+  const segment = rt.samplingSegments.get(JSON.stringify([threadId, turnId]));
+  if (!segment) return undefined;
+  const agentMessageIds = [...segment.itemIds];
+  segment.itemIds.clear();
+  const attempt = segment.attempt++;
+  return agentMessageIds.length ? { threadId, turnId, attempt, agentMessageIds } : undefined;
+}
+
+/** A stopped retry remains auditable; a successful turn never marks its last reply failed. */
+export function finishCodexSamplingTurn(
+  rt: CodexRuntimeState, threadId: string, turnId: string, status: string,
+  error?: Parameters<typeof classifyCodexError>[0],
+) {
+  const key = JSON.stringify([threadId, turnId]);
+  const segment = rt.samplingSegments.get(key);
+  const failure = status !== 'completed' && segment &&
+    (segment.attempt > 1 || (error && isSamplingStreamFailure(classifyCodexError(error))))
+    ? failSamplingSegment(rt, threadId, turnId) : undefined;
+  rt.samplingSegments.delete(key);
+  return failure;
+}
 
 export function translateItemNotification(
   phase: ItemPhase,
@@ -399,6 +450,14 @@ export function translateItemNotification(
   if (typeof itemType !== 'string') {
     ctx.log.warn('item missing type field', { phase, itemKeys: Object.keys(item) });
     return;
+  }
+  if (itemType === 'agentMessage') {
+    samplingSegment(ctx.rt, notification.threadId, notification.turnId).itemIds.add(item.id);
+  } else if (phase === 'completed' &&
+    SAMPLING_ACCEPTED_TOOL_TYPES.has(itemType)) {
+    // Tool results prove earlier generation was accepted. Its commentary and
+    // side effects must not be invalidated by a later sampling request failing.
+    ctx.rt.samplingSegments.delete(JSON.stringify([notification.threadId, notification.turnId]));
   }
   noteCodexGenerationBoundary(
     ctx.rt,
@@ -562,12 +621,18 @@ export function translateErrorNotification(
   ctx: CodexTranslateContext,
 ): void {
   const classified = classifyCodexError(params.error);
-  const message = classified.message;
   const safeMessage = classified.message;
   const errorStatus = classified.errorStatus;
   const isCapacityError = classified.isCapacityError;
-  const errorInfoTag = classified.errorInfoTag;
   const safeErrorData = classified.data;
+  const segment = ctx.rt.samplingSegments.get(JSON.stringify([params.threadId, params.turnId]));
+  const streamFailed = isSamplingStreamFailure(classified) || (!params.willRetry && (segment?.attempt ?? 1) > 1);
+  const assistantAttemptFailure = streamFailed
+    ? failSamplingSegment(ctx.rt, params.threadId, params.turnId) : undefined;
+  if (assistantAttemptFailure) {
+    Object.assign(safeErrorData, { assistantAttemptFailure });
+    ctx.onSamplingAttemptFailed?.();
+  }
   // willRetry=true 的暂时错误 (transient API blip / 5xx blip), server 自己会重试 — 默认
   // 不 emit error event 给 UI,否则会把瞬时错误暴露成用户可见失败。**但** auth 缺失
   // (401/Unauthorized/Missing bearer) 是 daemon 怎么 retry 也不可能自愈的 —— 必须
@@ -581,7 +646,7 @@ export function translateErrorNotification(
     ctx.log.warn('codex error (will retry)', { message: safeMessage, threadId: params.threadId, turnId: params.turnId });
     // Codex 自带明确的有限重连进度时，每档都透出，让 UI 从 1/5 持续更新到 5/5。
     // 这是非终止状态：turn 仍由 app-server 继续，不结束也不另起一次不安全的请求重放。
-    if (parseReconnectAttemptMessage(safeMessage)) {
+    if (assistantAttemptFailure || parseReconnectAttemptMessage(safeMessage)) {
       queue.push({
         type: 'error',
         data: { ...safeErrorData, isTerminal: false, willRetry: true },
@@ -690,6 +755,9 @@ export function translateErrorNotification(
     },
     source: 'codex',
   });
+  if (!params.willRetry) {
+    ctx.rt.samplingSegments.delete(JSON.stringify([params.threadId, params.turnId]));
+  }
 }
 
 export function translatePlanUpdatedNotification(
@@ -1162,6 +1230,7 @@ export function translateAgentMessageDelta(
   ctx: CodexTranslateContext,
 ): void {
   if (!params.delta) return;
+  samplingSegment(ctx.rt, params.threadId, params.turnId).itemIds.add(params.itemId);
   const currentText = ctx.rt.itemRawText.get(params.itemId) ?? '';
   const previousDeltaText = ctx.rt.itemDeltaText.get(params.itemId) ?? '';
   let rawText: string;
@@ -1500,7 +1569,7 @@ function handleMcpToolCall(
   }
   queue.push({
     type: 'tool_result_full',
-    data: { toolUseId: item.id, fullText, isError },
+    data: { toolUseId: item.id, fullText, isError, ...nativeToolMediaFields(item.result?.content) },
     source: 'codex',
   });
   queue.push({
@@ -1821,7 +1890,7 @@ function handleDynamicToolCall(
   const fullText = dynamicContentItemsToText(item.contentItems);
   queue.push({
     type: 'tool_result_full',
-    data: { toolUseId: item.id, fullText, isError },
+    data: { toolUseId: item.id, fullText, isError, ...nativeToolMediaFields(item.contentItems) },
     source: 'codex',
   });
   queue.push({
@@ -2147,21 +2216,22 @@ function toCodexTaskUpdate(
   };
 }
 
-// ── imageView → image event (kind='view') ────────────────────────────────────
-// 模型读了一张本地图。codex 一般只发 completed (path 必有), started/updated 防御性同样发 — 同一
-// blockId, renderer 自己判重。
+// Native image reads are tool steps, with their preview inside the work group.
+// Only completed items have usable media; emit the step once.
 
 function handleImageView(
   phase: ItemPhase,
   item: ImageViewItem,
   queue: AsyncQueue<AgentEvent>,
 ): void {
-  if (phase === 'updated') return;
-  queue.push({
-    type: 'image',
-    data: { kind: 'view', blockId: item.id, path: item.path },
-    source: 'codex',
-  });
+  if (phase !== 'completed') return;
+  queue.push({ type: 'tool_use', source: 'codex',
+    data: { toolUseId: item.id, toolName: 'view_image', input: { path: item.path } } });
+  queue.push({ type: 'tool_result_full', source: 'codex',
+    data: { toolUseId: item.id, fullText: item.path,
+      processMedia: [{ kind: 'image', path: item.path } satisfies NativeToolMedia] } });
+  queue.push({ type: 'tool_result', source: 'codex',
+    data: { toolUseIds: [item.id], summary: 'done' } });
 }
 
 // ── imageGeneration → image event (kind='generation') ────────────────────────

@@ -38,6 +38,7 @@ import { registerGrokLoginTools, type GrokLoginCallbacks } from './xdt-helper/gr
 import { registerInputHandoffTool, type InputHandoffCallbacks } from './xdt-helper/input_handoff.js';
 import { jsonObjectArg } from './json-object-arg.js';
 import { registerAsyncQuestionTool, supportsAsyncQuestionTool, type AskUserQuestionAsyncCallback } from './xdt-helper/ask_user_question_async.js';
+import { stringArrayParam } from './xdt-helper/_array-param.js';
 
 import { XdtHelperToolRegistry } from './lizi_xdtHelperToolRegistry.js';
 import { registerCreateProjectTool, type CreateProjectCallback } from './xdt-helper/create_project.js';
@@ -397,7 +398,7 @@ function registerStartSessionTaskEntry(
       title: z.string().min(1).max(120).optional(),
       working_dir: z.string().min(1).max(1_024).optional(),
       use_worktree: z.boolean().optional(),
-      context_refs: z.array(z.string().max(512)).max(32).optional(),
+      context_refs: stringArrayParam(z.array(z.string().max(512)).max(32)).optional(),
       timeout_ms: z.number().int().min(1_000).max(86_400_000).optional(),
     },
     handler: async ({ instruction, title, working_dir, use_worktree, context_refs, timeout_ms, model_selection }) => {

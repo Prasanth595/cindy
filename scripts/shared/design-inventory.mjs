@@ -806,6 +806,8 @@ export function catalogSurfaces() {
         'apps/desktop/src/renderer/components/ui/switch.tsx',
         'apps/desktop/src/renderer/components/ui/confirm-dialog.tsx',
         'apps/desktop/src/renderer/components/ui/select.tsx',
+        'apps/desktop/src/renderer/components/ui/select-parts.tsx',
+        'apps/desktop/src/renderer/components/ui/select.css',
         'apps/desktop/src/renderer/components/ui/button.tsx',
         'apps/desktop/src/renderer/components/ui/form-field.tsx',
         'apps/desktop/src/renderer/features/remote-desktop/viewerWindow.css',

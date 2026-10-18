@@ -704,6 +704,9 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
   const [retryingDeviceIds, setRetryingDeviceIds] = useState<ReadonlySet<string>>(new Set());
   const retryingDeviceIdsRef = useRef<Set<string>>(new Set());
   const [statusFilter, setStatusFilter] = useRetainedHomeState<HomeStatusFilter>(viewSession, 'statusFilter', 'active');
+  const requestedListFilter = active ? remoteListStatusFilter(statusFilter) : 'active';
+  const homeListFilterRef = useRef(requestedListFilter);
+  const homeListFilterChanged = homeListFilterRef.current !== requestedListFilter;
   const [collapsedProjectKeys, setCollapsedProjectKeys] = useRetainedHomeState<string[]>(viewSession, 'collapsedProjectKeys', []);
   const [pinnedCollapsed, setPinnedCollapsed] = useRetainedHomeState(viewSession, 'pinnedCollapsed', false);
   // 已展开的自动化组 key(页面级 state:SectionList 虚拟化回收行组件时展开态不丢)。
@@ -807,6 +810,25 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
     }
     return diff;
   }, [advanceHomeSyncGeneration, releaseHomeListOwner]);
+
+  useLayoutEffect(() => {
+    // Neither the previous computer's error nor the previous filter's error
+    // describes the new list scope. Clear it before painting its loading state.
+    setError(null);
+    if (homeListFilterRef.current === requestedListFilter) return;
+    homeListFilterRef.current = requestedListFilter;
+    // A new filter is a new list scope even on the same computer. Reuse the
+    // existing generation fence so an old active/archive response cannot settle it.
+    for (const deviceId of homeSyncTargetDeviceIdsRef.current) {
+      advanceHomeSyncGeneration(deviceId);
+      homeListFreshnessRef.current.invalidate(deviceId);
+    }
+    setDeviceConnectionStates((current) => {
+      const next = { ...current };
+      for (const deviceId of homeSyncTargetDeviceIdsRef.current) next[deviceId] = 'syncing';
+      return next;
+    });
+  }, [advanceHomeSyncGeneration, requestedListFilter, selectedDeviceId]);
 
   useEffect(() => () => {
     const owned = [...homeListOwnedDeviceIdsRef.current];
@@ -944,7 +966,7 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
             const epoch = remoteSessionStore.captureDeviceSessionListMutationEpoch(device.deviceId);
             const list = await invoke<RemoteSession[]>(device.deviceId, 'local-db:sessions:list', [
               LIST_LIMIT,
-              active ? remoteListStatusFilter(statusFilter) : 'active',
+              requestedListFilter,
               { includePinned: true, fresh: true },
             ]);
             return [list, epoch] as const;
@@ -1048,7 +1070,7 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
         superseded: false,
       };
     }
-  }, 'foreground'), [HOME_LIST_SUBSCRIPTION_OWNER, homeCacheUserId, invoke, isCurrentHomeSyncTarget, markDeviceOffline, markHomeScheduleIndexDirty, refreshDeviceScheduleIndex, statusFilter, active, subscribe, updateDeviceConnectionState]);
+  }, 'foreground'), [HOME_LIST_SUBSCRIPTION_OWNER, homeCacheUserId, invoke, isCurrentHomeSyncTarget, markDeviceOffline, markHomeScheduleIndexDirty, refreshDeviceScheduleIndex, requestedListFilter, subscribe, updateDeviceConnectionState]);
 
   const hydrateDeviceSessions = useCallback((
     device: DeviceView,
@@ -1058,6 +1080,7 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
     const expectedHomeSyncGeneration = homeSyncGenerationByDeviceRef.current.get(device.deviceId);
     if (
       expectedHomeSyncGeneration === undefined
+      || homeListFilterRef.current !== requestedListFilter
       || homeAccountGenerationRef.current !== expectedAccountGeneration
       || !isCurrentHomeSyncTarget(device.deviceId, expectedHomeSyncGeneration)
     ) {
@@ -1108,7 +1131,7 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
       () => settle(false),
     );
     return promise;
-  }, [accountGeneration, hydrateDeviceSessionsOnce, isCurrentHomeSyncTarget, updateDeviceConnectionState]);
+  }, [accountGeneration, hydrateDeviceSessionsOnce, isCurrentHomeSyncTarget, requestedListFilter, updateDeviceConnectionState]);
   hydrateDeviceSessionsRef.current = hydrateDeviceSessions;
 
   const probeRevokedDeviceAccess = useCallback(async (
@@ -2161,8 +2184,13 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
   }, [homeListCacheHydrated, initialHomeSettled]);
   // Hydration can settle without another content-size event (for example a warm cache).
   useEffect(() => { restoreListPosition(); }, [restoreListPosition, sections]);
-  const initialHomeLoading = !initialHomeSettled && !connectionError;
-  const initialHomeError = !initialHomeSettled && !!connectionError;
+  // Empty is a result of the current scope, not a synonym for "no cached rows".
+  // Include the render before effects acquire a newly selected computer/filter.
+  const homeListScopePending = homeListFilterChanged || isTaskSuggestionsSyncPending(
+    homeSyncDeviceIds, homeListOwnedDeviceIdsRef.current, rawDeviceConnectionStates,
+  );
+  const initialHomeLoading = (!initialHomeSettled || homeListScopePending || indexedSearch.status === 'searching') && !connectionError;
+  const initialHomeError = !!connectionError;
   // 首次同步完成后校验恢复/当前选中的设备,不成立时回退「所有对话」并同步持久化:
   // - 设备已不存在(解绑):home.selectedDeviceId 是归一化后的口径,查不到会变 null,
   //   若不回退,表头显示旧设备名而列表实际展示全部会话,两者口径不一致。

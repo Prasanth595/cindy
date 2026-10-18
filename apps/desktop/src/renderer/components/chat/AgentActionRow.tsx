@@ -1,3 +1,6 @@
+import { readToolProcessMedia, readToolProcessText } from '@cindy/maker-shared/tool-process-media';
+import { ChatVideoView } from './ChatVideoView';
+import { ChatImageView } from './ChatImageView';
 import { FileTypeIcon } from '@/components/ui/file-type-icon';
 /**
  * AgentActionRow
@@ -788,12 +791,14 @@ export function AgentActionRow({
   onActivateOverride,
 }: AgentActionRowProps) {
   const { t } = useTranslation();
-  const compactedToolResult = parseToolResultCompactionMarker(toolResult);
+  const processMedia = useMemo(() => readToolProcessMedia(toolResult), [toolResult]);
+  const resultText = readToolProcessText(toolResult);
+  const compactedToolResult = parseToolResultCompactionMarker(resultText);
   const displayedToolResult = compactedToolResult
     ? t('chat.toolResultCompacted', {
         size: formatToolResultCompactionBytes(compactedToolResult.originalBytes),
       })
-    : toolResult;
+    : resultText;
   // 会话文件来源:remote 时 Read 图片走远程媒体改写、文件打开走远程分流。
   const fileCtx = useChatSessionFile();
   const toolName = message.toolName ?? '';
@@ -1170,6 +1175,13 @@ export function AgentActionRow({
           className="min-w-0 truncate px-2 pb-[3px] pl-[30px] font-mono text-12 leading-[1.5] text-[var(--msg-tool-card-chevron)]"
         >
           {rawCommand}
+        </div>
+      )}
+      {processMedia.length > 0 && (
+        <div className="flex min-w-0 flex-col gap-3 py-2 pl-8" data-tool-process-media="true">
+          {processMedia.map((media) => media.kind === 'image'
+            ? <ChatImageView key={media.url} src={media.url} variant="tool-output" sessionId={fileCtx.sessionId} filename={media.url.split('/').pop() ?? media.kind} />
+            : <ChatVideoView key={media.url} src={media.url} variant="tool-output" sessionId={fileCtx.sessionId} filename={media.url.split('/').pop() ?? media.kind} />)}
         </div>
       )}
       {chipFilePath ? fileChipMenu.menu : null}

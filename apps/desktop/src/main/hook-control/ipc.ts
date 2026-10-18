@@ -125,8 +125,12 @@ let codexMcpRefreshPending = false;
 let codexMcpRefreshRunning = false;
 let codexMcpRefreshRetryTimer: NodeJS.Timeout | null = null;
 let latestSlackToolProviderEnabled = false;
+let codexMcpRefreshRetryDelayMs = 0;
 
-const CODEX_MCP_REFRESH_RETRY_MS = 2_000;
+// busy 重试按指数退避:伙伴等本地 Codex 会话可能连续忙几十分钟,固定 2 秒重试会把日志刷满
+// (2026-10-19 实排:一次启动 987 条 deferred)。新的可用性变化会把退避归零。
+const CODEX_MCP_REFRESH_RETRY_MIN_MS = 2_000;
+const CODEX_MCP_REFRESH_RETRY_MAX_MS = 60_000;
 
 function hookControlAvailable(): boolean {
   return getAppCapabilities().canUseCindyAccountServices;
@@ -185,6 +189,7 @@ function disabledHookView(): SlackHookView {
 function requestCodexMcpRefreshForSlackAvailability(enabled: boolean): void {
   latestSlackToolProviderEnabled = enabled;
   codexMcpRefreshPending = true;
+  codexMcpRefreshRetryDelayMs = 0;
   if (codexMcpRefreshRetryTimer !== null) {
     clearTimeout(codexMcpRefreshRetryTimer);
     codexMcpRefreshRetryTimer = null;
@@ -200,13 +205,20 @@ async function drainCodexMcpRefreshForSlackAvailability(): Promise<void> {
       codexMcpRefreshPending = false;
       try {
         await restartCodexAfterAuthModeChange(shutdownCodexEnvironment);
+        codexMcpRefreshRetryDelayMs = 0;
         log.info('Codex MCP environment refreshed after Slack provider availability changed', {
           enabled: latestSlackToolProviderEnabled,
         });
       } catch (err) {
         codexMcpRefreshPending = true;
-        log.warn('Codex MCP refresh deferred after Slack provider availability changed', {
+        codexMcpRefreshRetryDelayMs = codexMcpRefreshRetryDelayMs === 0
+          ? CODEX_MCP_REFRESH_RETRY_MIN_MS
+          : Math.min(codexMcpRefreshRetryDelayMs * 2, CODEX_MCP_REFRESH_RETRY_MAX_MS);
+        // 首次推迟 warn 一次;之后的退避重试只记 debug,避免同一原因刷屏。
+        const logDeferred = codexMcpRefreshRetryDelayMs === CODEX_MCP_REFRESH_RETRY_MIN_MS ? log.warn : log.debug;
+        logDeferred('Codex MCP refresh deferred after Slack provider availability changed', {
           enabled: latestSlackToolProviderEnabled,
+          retryInMs: codexMcpRefreshRetryDelayMs,
           error: err instanceof Error ? err.message : String(err),
         });
         break;
@@ -219,7 +231,7 @@ async function drainCodexMcpRefreshForSlackAvailability(): Promise<void> {
     codexMcpRefreshRetryTimer = setTimeout(() => {
       codexMcpRefreshRetryTimer = null;
       void drainCodexMcpRefreshForSlackAvailability();
-    }, CODEX_MCP_REFRESH_RETRY_MS);
+    }, codexMcpRefreshRetryDelayMs || CODEX_MCP_REFRESH_RETRY_MIN_MS);
     codexMcpRefreshRetryTimer.unref?.();
   }
 }

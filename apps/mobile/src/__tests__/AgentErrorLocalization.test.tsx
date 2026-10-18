@@ -13,6 +13,7 @@ import { AgentErrorDetails } from '@/session/AgentErrorDetails';
 import { resolveSessionTailBanner } from '@/session/sessionTailBannerModel';
 import { normalizeRemoteMessages } from '@/session/messageNormalize';
 import type { InputProjection, RemoteMessage } from '@/session/types';
+import { buildErrorDiagnosisPrompt } from '@/session/errorDiagnosisPrompt';
 
 vi.mock('react-native', async () => {
   const { createElement } = await import('react');
@@ -23,7 +24,7 @@ vi.mock('react-native', async () => {
     StyleSheet: { create: (s: unknown) => s, hairlineWidth: 1 } };
 });
 vi.mock('@/components/AppText', async () => ({ Text: (await import('react-native')).Text }));
-vi.mock('lucide-react-native', () => ({ Pause: () => null, Play: () => null, CircleAlert: () => null, Split: () => null, X: () => null, ChevronRight: () => null, ChevronDown: () => null }));
+vi.mock('lucide-react-native', () => ({ Pause: () => null, Play: () => null, CircleAlert: () => null, Split: () => null, X: () => null, ChevronRight: () => null, ChevronDown: () => null, Stethoscope: () => null }));
 vi.mock('@/theme', async () => {
   const tokens = await import('@/theme/tokens');
   return { ...tokens, useTheme: () => ({ colors: tokens.lightColors }),
@@ -42,6 +43,25 @@ const clickText = (text: string) => {
   const button = [...host.querySelectorAll('button')].find(b => b.textContent === text);
   expect(button).toBeTruthy(); button!.click();
 };
+
+// 诊断入口只在展开详情后出现；预填给新任务的提示带出错任务链接，且与详情同样脱敏。
+it('offers diagnosis after expanding details with a redacted prompt for the failed session', async () => {
+  await i18n.changeLanguage('en');
+  const onDiagnose = vi.fn();
+  const error = 'Unexpected provider failure; api_key=private-test-value';
+  await act(async () => root.render(<SessionTailBanner
+    state={{ kind: 'error-tail', text: 'Reply failed', rawError: error, reason: 'tool_use_loop_detected', clientId: 'e', continueKind: 'error', retryable: true }}
+    onContinue={vi.fn()} onDismiss={vi.fn()} onDiagnose={onDiagnose} />));
+  expect(host.querySelector('[data-testid="agentError.diagnose"]')).toBeNull();
+  await act(async () => clickText(i18n.t('session.tail.showErrorDetails')));
+  await act(async () => host.querySelector<HTMLButtonElement>('[data-testid="agentError.diagnose"]')!.click());
+  const prompt = buildErrorDiagnosisPrompt(i18n.t, 'cindy://session/s1', { ...onDiagnose.mock.calls[0][0], reason: 'unexpected api_key=private-reason-value' });
+  expect(prompt).toContain('cindy://session/s1');
+  expect(prompt).toContain('Reply failed');
+  expect(prompt).toContain('reason: unexpected');
+  expect(prompt).not.toContain('private-test-value');
+  expect(prompt).not.toContain('private-reason-value');
+});
 
 describe.each(SUPPORTED_LOCALES)('mobile errors in %s', locale => {
   it.each(['live', 'tail'] as const)('offers explicit %s recovery without automatically retrying', async surface => {

@@ -1,3 +1,8 @@
+import { materializeToolProcessMedia } from '../cindy-media/toolProcessMedia.js';
+vi.mock('../cindy-media/toolProcessMedia.js', () => ({ materializeToolProcessMedia: vi.fn(async () => [
+  { kind: 'image', url: 'cindy-media://blobs/' + 'a'.repeat(64) + '.png' },
+]) }));
+vi.mock('../localDb/client/current.js', () => ({ getDbClient: vi.fn(() => ({ drizzle: {} })) }));
 vi.mock('../botTaskReplyResults.js', () => ({ readTaskResultsForReply: vi.fn(async () => []) }));
 import { readTaskResultsForReply } from '../botTaskReplyResults.js';
 /**
@@ -15,6 +20,55 @@ import { readTaskResultsForReply } from '../botTaskReplyResults.js';
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+// #6351: a completed text item can still belong to a failed sampling request.
+// The observable contract is durable metadata plus the existing row broadcast;
+// original text, successful retries and other turns/sessions must stay intact.
+it('marks exact failed assistant items, including a live block, without rewriting prose', async () => {
+  const sessionId = 'sampling-failure';
+  const otherSession = 'sampling-other-session';
+  clearSessionPersistState(sessionId);
+  clearSessionPersistState(otherSession);
+  const first = onAssistantTextEvent(sessionId, { agentMessageId: 'failed-1',
+    text: 'First opening', isFinal: true, isFullText: true }, null);
+  const second = onAssistantTextEvent(sessionId, { agentMessageId: 'failed-2',
+    text: 'Partial opening', isFinal: false }, null);
+  onAssistantTextEvent(otherSession, { agentMessageId: 'failed-1',
+    text: 'Other session', isFinal: true }, null);
+  onAssistantAttemptFailure(sessionId, { assistantAttemptFailure: {
+    threadId: 'native-thread', turnId: 'native-turn', attempt: 1,
+    agentMessageIds: ['failed-1', 'failed-2', 'unknown-item'],
+  } });
+  // A textless completion after this failure must not seal the failed reply.
+  expect(consumeLastTopLevelAssistantPersistId(sessionId)).toBeUndefined();
+  onAssistantTextEvent(sessionId, { agentMessageId: 'success',
+    text: 'Successful opening', isFinal: true, isFullText: true }, null);
+  await drainPersistQueue();
+  expect(patchMessageAgentMetaWithResult).toHaveBeenCalledWith(sessionId, first, {
+    failedSamplingAttempt: { threadId: 'native-thread', turnId: 'native-turn', attempt: 1, itemId: 'failed-1' },
+    turnCompleted: false,
+  });
+  expect(createMessage).toHaveBeenCalledWith(sessionId, expect.objectContaining({
+    clientId: second, content: 'Partial opening', agentMeta: expect.objectContaining({
+      failedSamplingAttempt: { threadId: 'native-thread', turnId: 'native-turn', attempt: 1, itemId: 'failed-2' },
+    }),
+  }), expect.anything());
+  expect(createMessage).toHaveBeenCalledWith(sessionId, expect.objectContaining({
+    content: 'Successful opening', agentMeta: null,
+  }), expect.anything());
+  expect(updateMessageContent).not.toHaveBeenCalled();
+  expect(broadcastMessageAgentMetaUpdate).toHaveBeenCalledWith(sessionId, first, expect.anything());
+  expect(vi.mocked(patchMessageAgentMetaWithResult).mock.calls.every(([id]) => id === sessionId)).toBe(true);
+  resetTurnPersistState(sessionId);
+  vi.mocked(patchMessageAgentMetaWithResult).mockClear();
+  onAssistantAttemptFailure(sessionId, { assistantAttemptFailure: {
+    threadId: 'native-thread', turnId: 'native-turn', attempt: 1, agentMessageIds: ['failed-1'],
+  } });
+  await drainPersistQueue();
+  expect(patchMessageAgentMetaWithResult).not.toHaveBeenCalled();
+  clearSessionPersistState(sessionId);
+  clearSessionPersistState(otherSession);
+});
 
 vi.mock('../localDb/ipc/messages.js', () => ({
   broadcastMessageAgentMetaUpdate: vi.fn(async () => true),
@@ -76,6 +130,7 @@ import {
   __resetMediaToolResultPoolForTesting,
 } from '../mcp-integrations/mediaToolResultFallback.js';
 import {
+  persistToolProcessMedia,
   onToolUseEvent,
   onAgentTaskUpdateEvent,
   persistCodexPlanOnDone,
@@ -84,6 +139,7 @@ import {
   onToolResultFullEvent,
   prepareSyntheticToolEventForBroadcast,
   onAssistantTextEvent,
+  onAssistantAttemptFailure,
   drainPersistQueue,
   onStandaloneTextEvent,
   getSessionTextSnapshot,
@@ -4084,4 +4140,84 @@ it('persists bound results with the final seal, and a failed result lookup canno
   vi.mocked(readTaskResultsForReply).mockRejectedValueOnce(new Error('DB unavailable'));
   await expect(markAssistantTurnCompleted(SESSION, 'other', undefined, ['bot-delegation-completion:job'])).resolves.toBe(true);
   expect(patchMessageAgentMetaWithResult).toHaveBeenCalledWith(SESSION, 'other', { turnCompleted: true });
+});
+
+// Unit regression: a late import updates the original result, never the next turn.
+it('persists process media on its accepted result and broadcasts the durable row', async () => {
+  onToolUseEvent(SESSION, { toolUseId: 'native-image', toolName: 'Read', input: {} }, null);
+  const result = onToolResultFullEvent(SESSION, { toolUseId: 'native-image', fullText: 'read' }, null)!;
+  await persistToolProcessMedia(SESSION, result.persistId, result.content, [{ kind: 'image', data: 'bytes' }]);
+  await drainPersistQueue();
+  const updated = vi.mocked(updateMessageContent).mock.calls.find(([, id]) => id === result.persistId);
+  expect(JSON.parse(updated![2] as string)).toEqual({ text: 'read', cindy_process_media: [
+    { kind: 'image', url: 'cindy-media://blobs/' + 'a'.repeat(64) + '.png' },
+  ] });
+  expect(broadcastMessageRow).toHaveBeenCalledWith(SESSION, expect.anything(), ownerScopeState.scope);
+  expect(materializeToolProcessMedia).toHaveBeenCalled();
+});
+
+// Unit: a pending SSH import must not hold the shared persistence queue, and
+// summaries arriving before/after it completes must retain the same media row.
+it('keeps unrelated writes flowing and merges later summaries with process media', async () => {
+  const refs = [{ kind: 'image' as const, url: 'cindy-media://blobs/' + 'a'.repeat(64) + '.png' }];
+  let finish!: (value: typeof refs) => void;
+  vi.mocked(materializeToolProcessMedia).mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  onToolUseEvent(SESSION, { toolUseId: 'image-race', toolName: 'Read', input: {} }, null);
+  const result = onToolResultFullEvent(SESSION, { toolUseId: 'image-race', fullText: '' }, null)!;
+  const pending = persistToolProcessMedia(SESSION, result.persistId, '', [{ kind: 'image', path: '/remote/image.png' }]);
+  onToolResultEvent(SESSION, { toolUseIds: ['image-race'], summary: 'Image read' }, null);
+  onToolUseEvent('unrelated-session', { toolUseId: 'other', toolName: 'Read', input: {} }, null);
+  await drainPersistQueue();
+  expect(createMessage).toHaveBeenCalledWith('unrelated-session', expect.objectContaining({ role: 'tool_use' }), expect.anything());
+  finish(refs);
+  await pending;
+  await drainPersistQueue();
+  expect(JSON.parse(vi.mocked(updateMessageContent).mock.calls.at(-1)![2] as string)).toEqual({ text: 'Image read', cindy_process_media: refs });
+  const summary = onToolResultEvent(SESSION, { toolUseIds: ['image-race'], summary: 'Image read successfully' }, null)!;
+  expect(JSON.parse(summary.content).cindy_process_media).toEqual(refs);
+  onToolResultFullEvent(SESSION, { toolUseId: 'image-race', fullText: 'Final image description' }, null);
+  await drainPersistQueue();
+  expect(JSON.parse(vi.mocked(updateMessageContent).mock.calls.at(-1)![2] as string)).toEqual({ text: 'Final image description', cindy_process_media: refs });
+});
+
+// Unit regression for #6372: background results have a separate content map.
+// Either completion order must keep the summary and media on the original row,
+// even when the summary releases the background state while import is pending.
+it.each(['summary-first', 'media-first'] as const)('retains background process media (%s)', async (order) => {
+  const refs = [{ kind: 'image' as const, url: 'cindy-media://blobs/' + 'a'.repeat(64) + '.png' }];
+  let finish!: (value: typeof refs) => void;
+  vi.mocked(materializeToolProcessMedia).mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  onToolUseEvent(SESSION, { toolUseId: 'background-image', toolName: 'collab:spawnAgent', input: {} }, null, 'background');
+  const result = onToolResultFullEvent(SESSION, { toolUseId: 'background-image', fullText: '' }, null, 'background')!;
+  const pending = persistToolProcessMedia(SESSION, result.persistId, '', [{ kind: 'image', data: 'bytes' }], undefined, 'background');
+  if (order === 'media-first') {
+    finish(refs);
+    await pending;
+    await drainPersistQueue();
+  }
+  const summary = onToolResultEvent(SESSION, { toolUseIds: ['background-image'], summary: 'Image read' }, null, 'background')!;
+  expect(summary.persistId).toBe(result.persistId);
+  await drainPersistQueue();
+  if (order === 'summary-first') {
+    finish(refs);
+    await pending;
+    await drainPersistQueue();
+  }
+  const updates = vi.mocked(updateMessageContent).mock.calls;
+  expect(updates.at(-1)?.slice(0, 2)).toEqual([SESSION, result.persistId]);
+  expect(JSON.parse(updates.at(-1)![2] as string)).toEqual({ text: 'Image read', cindy_process_media: refs });
+});
+
+it('does not publish a pending media import after its owner is superseded', async () => {
+  let finish!: (value: any[]) => void;
+  vi.mocked(materializeToolProcessMedia).mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  onToolUseEvent(SESSION, { toolUseId: 'owner-image', toolName: 'Read', input: {} }, null);
+  const result = onToolResultFullEvent(SESSION, { toolUseId: 'owner-image', fullText: '' }, null)!;
+  const pending = persistToolProcessMedia(SESSION, result.persistId, '', [{ kind: 'image', path: '/image.png' }]);
+  await drainPersistQueue();
+  ownerScopeState.current = false;
+  finish([{ kind: 'image', url: 'cindy-media://blobs/' + 'a'.repeat(64) + '.png' }]);
+  await pending;
+  await drainPersistQueue();
+  expect(updateMessageContent).not.toHaveBeenCalled();
 });

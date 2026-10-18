@@ -9,6 +9,7 @@
     }
   },
   "renderer": {
+    "failedSamplingAttempt": "この返信は完了しませんでした。内容は参考情報としてご覧ください。",
     "moreActions": "その他のメッセージ操作",
     "reply": "返信",
     "newMessagesToBottom": "新着メッセージあり、最下部へ移動",
@@ -390,5 +391,11 @@
     "memory": "記憶しました：{{title}}",
     "skillCreated": "スキルを作成：{{title}}",
     "skillUpdated": "スキルを更新：{{title}}"
+  },
+  "richAnswer": {
+    "playVideo": "動画を再生",
+    "openVideoSource": "元の動画を開く",
+    "calculationUnavailable": "この値を計算できません。",
+    "incomplete": "一部の内容を表示できませんでした。"
   }
 }

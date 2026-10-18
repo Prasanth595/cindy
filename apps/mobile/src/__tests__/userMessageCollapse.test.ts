@@ -158,8 +158,8 @@ const collapseStart = bubbleStatements.indexOf(bodyStatement('automationOrigin',
 const collapseEnd = bubbleStatements.indexOf(bodyStatement('longMessageCollapsed', 'MessageBubble'));
 const collapseCode = bubbleStatements.slice(collapseStart, collapseEnd + 1).map(statement => statement.getText(rendererSource)).join(String.fromCharCode(10));
 const markdownStateCode = ['contentWidth', 'handleSettledWidthLayout', 'pinSettledWidth', 'settledTextStyle', 'renderSingleBlock']
-  .map(name => bodyStatement(name, 'MarkdownBody').getText(rendererSource)).join(String.fromCharCode(10));
-const markdownReturn = rendererFunction('MarkdownBody').body!.statements.find(ts.isReturnStatement);
+  .map(name => bodyStatement(name, 'MarkdownBodyBase').getText(rendererSource)).join(String.fromCharCode(10));
+const markdownReturn = rendererFunction('MarkdownBodyBase').body!.statements.find(ts.isReturnStatement);
 if (!markdownReturn) throw new Error('MarkdownBody return was not found');
 
 let root: Root;
@@ -202,7 +202,7 @@ const MarkdownBody = MarkdownHarness;
 function BubbleHarness({ body, kind = 'user', automationOrigin: origin }) {
   const styles = {};
   const isUser = kind === 'user';
-  const item = { message: { kind, body, automationOrigin: origin } };
+  const item = { message: { key: "message", source: { clientId: "message" }, kind, body, automationOrigin: origin } };
   const displayBubbleBody = body;
   const bubbleBody = body;
   const hasPluginInvocations = false;

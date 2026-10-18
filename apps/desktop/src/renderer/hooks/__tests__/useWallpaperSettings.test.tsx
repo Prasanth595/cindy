@@ -12,7 +12,7 @@ function Controls() {
   return (
     <>
       <button onClick={() => settings.setWallpaper('cindy-window')}>Choose</button>
-      <button onClick={() => settings.setWallpaper('cindy-whisper')}>Choose Still</button>
+      <button onClick={() => settings.setWallpaper('night-launch')}>Choose Still</button>
       <button onClick={settings.resetWallpaper}>Reset</button>
       <button onClick={() => settings.setMotion('dynamic')}>Animate</button>
       <button onClick={() => settings.setMotion('static')}>Static</button>
@@ -79,17 +79,17 @@ describe('application wallpaper lifecycle', () => {
     await waitFor(() => expect(ensureImage).toHaveBeenCalledExactlyOnceWith('cindy-window'));
     fireEvent.click(screen.getByText('Choose Still'));
     await waitFor(() =>
-      expect(setPatch).toHaveBeenCalledExactlyOnceWith({ wallpaperId: 'cindy-whisper' }),
+      expect(setPatch).toHaveBeenCalledExactlyOnceWith({ wallpaperId: 'night-launch' }),
     );
     const background = () =>
       document.documentElement.style.getPropertyValue('--app-wallpaper-image');
-    expect(background()).toContain('cindy-whisper.webp');
+    expect(background()).toContain('night-launch.webp');
     await act(async () =>
       finishes.get('cindy-window')!(`cindy-media://client-wallpaper/${'a'.repeat(64)}.webp`),
     );
-    expect(background()).toContain('cindy-whisper.webp');
+    expect(background()).toContain('night-launch.webp');
     const stillUrl = `cindy-media://client-wallpaper/${'b'.repeat(64)}.webp`;
-    await act(async () => finishes.get('cindy-whisper')!(stillUrl));
+    await act(async () => finishes.get('night-launch')!(stillUrl));
     expect(background()).toContain(stillUrl);
     expect(ensureImage).toHaveBeenCalledTimes(2);
     expect(ensureVideo).not.toHaveBeenCalled();

@@ -92,6 +92,9 @@ import {
   listInterruptedPendingSessionIds,
   setOnSessionTurnEndedPersisted,
 } from '../sessionActiveTurn';
+import { listInterruptedResumeCandidateRows } from '../interruptedResumeCandidates';
+import { formatIslandToolDetail } from '../../agent-island/toolDetail';
+import { createLocalizedToolRowWording } from '../../agent-island/toolWording';
 import { dismissErrorMessage, rebroadcastAgentSwitchBoundary } from './messages';
 import { SESSION_READ_BATCH_LIMIT } from '../../../shared/sessionRead';
 import { isDeviceLinkInvoke } from '../../device-link/invoke-context.js';
@@ -1519,6 +1522,23 @@ export function registerSessionIpc(
   // 断定飞行中的 turn 来自上一个进程。周期性重跑会把运行中的会话误判为中断。
   ipcMain.handle('local-db:sessions:interrupted-pending', async () => {
     return listInterruptedPendingSessionIds();
+  });
+
+  // 启动「继续上次中断的任务」弹窗:同一批中断会话,附中断时间与中断那一轮最后一次
+  // 工具调用的文案(与灵动岛同源)。查询带 bootAt 守卫,任何时刻调用都不会把本进程
+  // 正在跑的 turn 算进来。只服务本机顶层 renderer,不进 device-link allowlist。
+  ipcMain.handle('local-db:sessions:interrupted-resume-candidates', async (event) => {
+    assertTrustedAppRendererEvent(event);
+    const rows = await listInterruptedResumeCandidateRows();
+    const wording = createLocalizedToolRowWording();
+    return rows.map(({ sessionId, interruptedAt, lastToolUse }) => ({
+      sessionId,
+      interruptedAt,
+      activity: lastToolUse
+        ? (formatIslandToolDetail(lastToolUse.toolName, lastToolUse.input, { wording })
+          ?? lastToolUse.toolName)
+        : null,
+    }));
   });
 
   // 「尾部停在未 dismissed 错误行」的 active 会话 id —— 红点派生的周期性重算源。

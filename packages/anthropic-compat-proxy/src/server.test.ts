@@ -3678,6 +3678,84 @@ describe('anthropic-compat-proxy 客户端中断传播', () => {
     expect(errorLogs.filter((m) => m.includes('upstream response stream error'))).toHaveLength(0);
   });
 
+  // 回归:Codex CLI 收到 response.completed 即断开,上游 body 往往尚未 end —— 日志里 ~97%
+  // 的 /responses 被误记成 client-aborted。终态事件后断开须按正常完成收口(仍释放上游),
+  // 只有终态前断开才是失败。
+  it.each([
+    {
+      name: 'terminal event forwarded → complete',
+      events: 'event: response.created\ndata: {"type":"response.created"}\n\n'
+        + 'event: response.completed\ndata: {"type":"response.completed","response":{}}\n\n',
+      waitFor: 'response.completed',
+      expected: { type: 'complete', status: 200 },
+      observerEnds: 1,
+      disconnectLogs: 0,
+    },
+    {
+      name: 'terminal event only half sent (no blank line yet) → client-aborted',
+      events: 'event: response.created\ndata: {"type":"response.created"}\n\n'
+        + 'event: response.completed\n',
+      waitFor: 'response.completed',
+      expected: { type: 'failure', failure: 'client-aborted' },
+      observerEnds: 0,
+      disconnectLogs: 1,
+    },
+    {
+      name: 'no terminal event yet → client-aborted',
+      events: 'event: response.created\ndata: {"type":"response.created"}\n\n',
+      waitFor: 'response.created',
+      expected: { type: 'failure', failure: 'client-aborted' },
+      observerEnds: 0,
+      disconnectLogs: 1,
+    },
+  ])('client close after SSE: $name', async ({ events: sse, waitFor, expected, observerEnds, disconnectLogs }) => {
+    let sawUpstreamClose!: () => void;
+    const upstreamClosed = new Promise<void>((r) => { sawUpstreamClose = r; });
+    const upstream = await startFakeUpstream((_idx, _body, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write(sse);
+      // 永不 end:上游在终态事件后仍保持 body 打开。
+      res.on('close', () => sawUpstreamClose());
+    });
+    upstreamClose = upstream.close;
+    const lifecycle: Array<Record<string, unknown>> = [];
+    const infoLogs: string[] = [];
+    let ends = 0;
+    proxy = await createAnthropicCompatProxy({
+      upstream: upstream.url,
+      transformRequest: [],
+      logger: { info: (msg) => { infoLogs.push(msg); } },
+      routingTransform: () => ({
+        forwardLifecycle: {
+          onComplete: (status) => lifecycle.push({ type: 'complete', status }),
+          onFailure: (failure) => lifecycle.push({ type: 'failure', failure }),
+        },
+      }),
+      responseObserver: () => ({ onEnd: () => { ends += 1; } }),
+    });
+
+    const controller = new AbortController();
+    const res = await fetch(`${proxy.url}/v1/responses`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'test-model', stream: true }),
+      signal: controller.signal,
+    });
+    const reader = (res.body as ReadableStream<Uint8Array>).getReader();
+    const decoder = new TextDecoder();
+    let received = '';
+    while (!received.includes(waitFor)) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      received += decoder.decode(value, { stream: true });
+    }
+    controller.abort();
+    await upstreamClosed;
+    await vi.waitFor(() => expect(lifecycle).toEqual([expected]));
+    expect(ends).toBe(observerEnds);
+    expect(infoLogs.filter((m) => m.includes('client disconnected'))).toHaveLength(disconnectLogs);
+  });
+
   it('透明重试后的上游 2xx SSE 中断时,立即收口且旧 listener 不误报客户端断开', async () => {
     const errorLogs: Array<{ msg: string; ctx?: Record<string, unknown> }> = [];
     const infoLogs: string[] = [];

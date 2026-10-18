@@ -711,6 +711,9 @@
     "controlledByDevice": "{{name}}에서 데스크톱을 원격으로 제어 중",
     "viewedByDevice": "{{name}}에서 데스크톱을 원격으로 보는 중",
     "disconnect": "연결 끊기",
+    "disconnectChoiceDetail": "연결을 끊으면 이번 원격 데스크톱이 종료되며, 상대 기기는 나중에 다시 연결할 수 있습니다.",
+    "disconnectRevoke": "이 기기의 액세스 권한도 철회",
+    "disconnectRevokeHint": "철회하면 이 컴퓨터에 더 이상 연결할 수 없으며, 설정 → 원격 연결에서 복원할 수 있습니다.",
     "back": "뒤로",
     "connect": "연결",
     "connecting": "연결 중…",
@@ -1265,6 +1268,7 @@
     "tabs": {
       "storage": "저장 공간",
       "general": "일반",
+      "appearance": "외관",
       "billing": "사용량 및 결제",
       "usage": "사용 기록",
       "personalization": "개인화",
@@ -1591,6 +1595,7 @@
     "appearance": {
       "title": "외관",
       "modeLabel": "표시 모드",
+      "sidebarAndPanels": "사이드바 및 패널",
       "themeLabel": "테마",
       "themeAriaLabel": "테마 선택",
       "localBadge": "(로컬)",
@@ -1617,6 +1622,7 @@
       },
       "font": {
         "reset": "기본값으로 재설정",
+        "title": "글꼴",
         "defaultPreset": "기본값",
         "presets": "프리셋",
         "custom": "사용자 지정",
@@ -1655,8 +1661,12 @@
           "ui": "한글 글꼴은 또렷하고 읽기 쉬워요 ABC xyz · a/b/c/d · a,b · 0123456789 !?@&"
         }
       },
-      "missingLightNotice": "{{name}} 테마는 라이트 변형을 제공하지 않아 다크 변형을 표시했습니다.",
-      "missingDarkNotice": "{{name}} 테마는 다크 변형을 제공하지 않아 라이트 변형을 표시했습니다.",
+      "singleVariant": {
+        "lightOnly": "라이트 전용",
+        "darkOnly": "다크 전용",
+        "lightNotice": "{{name}} 테마는 라이트 변형만 있어 표시 모드가 라이트로 고정됩니다. 다른 테마로 바꾸면 선택한 설정으로 돌아갑니다.",
+        "darkNotice": "{{name}} 테마는 다크 변형만 있어 표시 모드가 다크로 고정됩니다. 다른 테마로 바꾸면 선택한 설정으로 돌아갑니다."
+      },
       "theme": {
         "light": "라이트",
         "dark": "다크",
@@ -1696,31 +1706,18 @@
           "cindy-studio": "Cindy · 미래의 아틀리에",
           "cindy-dream": "Cindy · 꿈속 여행",
           "cindy-whisper": "Cindy · 속삭임",
-          "cindy-crimson": "Cindy · 진홍빛 세계",
           "cindy-night-glance": "Cindy · 밤의 눈길",
           "cindy-scarlet-stroll": "Cindy · 붉은 밤 산책",
           "cindy-neon": "Cindy · 네온 옆모습",
           "cindy-prism": "Cindy · 프리즘 조각",
-          "wheatfield-watch": "밀밭의 파수꾼",
-          "teacup-cat": "찻잔 속 검은 고양이",
-          "cloud-roaming": "구름 아래 여행",
           "night-launch": "밤하늘로의 비상",
-          "stardust-vortex": "별가루 소용돌이",
           "silent-orbits": "고요한 궤도",
           "dune-dawn": "모래 언덕의 새벽",
           "planet-dawn": "행성의 새벽",
-          "neon-valley": "네온 계곡",
-          "silent-circuit": "고요한 회로",
           "indigo-folds": "겹겹의 쪽빛",
-          "moon-solitude": "달을 바라보는 그림자",
           "dune-sphere": "모래 언덕의 구체",
           "ocean-clouds": "바다 위 흐르는 구름",
-          "blush-leaves": "연분홍 잎 그림자",
-          "white-wilderness": "하얀 들판의 홀로 여행",
           "rose-quartz": "장미 수정",
-          "silver-veins": "검은 바위의 은빛 결",
-          "dawn-arc": "새벽의 곡선",
-          "tidal-lines": "물결의 선",
           "custom": "사용자 지정 배경화면"
         },
         "visibilityLabel": "배경화면 표시 강도",
@@ -1749,7 +1746,7 @@
         "reset": "기본 레이아웃 복원",
         "resetSuccess": "기본 패널 레이아웃을 복원했습니다",
         "resetFailed": "패널 배치를 복원하지 못했습니다.",
-        "saved": "패널 위치를 저장했습니다. 설정 → 일반의 모양 섹션에서 기본 레이아웃으로 복원할 수 있습니다.",
+        "saved": "패널 위치를 저장했습니다. 설정 → 외관에서 기본 레이아웃으로 복원할 수 있습니다.",
         "saveFailed": "패널 위치를 저장하지 못했습니다."
       }
     },
@@ -4576,7 +4573,7 @@
     "agentResource": {
       "saveFailed": "저장하지 못했습니다. 다시 시도해 주세요.",
       "title": "Agent 리소스 사용량",
-      "description": "Agent의 명령줄 작업이 시스템 자원을 과도하게 사용하지 않도록 제한하여, 병렬 테스트나 빌드로 컴퓨터가 느려지는 것을 방지합니다. 기본값은 전속력(제한 없음)입니다. 동시 실행 상한은 즉시 적용됩니다. 우선순위 낮추기는 실행 중인 Agent 프로세스에도 약 15초 이내에 적용됩니다. 우선순위를 보통으로 되돌리는 것과 툴체인 스레드 상한은 새로 시작된 Agent 프로세스에만 적용됩니다. 이 설정은 로컬 Agent에만 적용되며, 원격(SSH) 컴퓨터의 Agent에는 적용되지 않습니다.",
+      "description": "Agent의 명령줄 작업이 사용하는 시스템 자원을 제한하여 병렬 테스트나 빌드로 컴퓨터가 느려지는 것을 방지합니다. 기본값은 전속력이며, 로컬 Agent에만 적용되고 원격(SSH) 컴퓨터에는 영향을 주지 않습니다.",
       "preset": "프로필",
       "presets": {
         "full": "전속력",
@@ -4592,18 +4589,19 @@
       "maxConcurrent": "동시 실행 명령 상한",
       "maxConcurrentHint": "Claude Code 엔진이 동시에 실행할 수 있는 명령 수의 상한이며, 초과분은 대기열에서 기다립니다. 0은 무제한입니다. Codex 명령은 자체 샌드박스에서 실행되어 이 상한의 적용을 받지 않으며, 우선순위와 스레드 상한으로 보완됩니다.",
       "priority": "프로세스 우선순위",
-      "priorityHint": "낮추면 Agent는 유휴 자원만 사용하고 전면 앱이 우선됩니다. 다시 높이면 새로 시작된 Agent 프로세스에만 적용됩니다.",
+      "priorityHint": "낮추면 Agent는 유휴 자원만 사용하고 전면 앱이 우선됩니다. 낮추기는 실행 중인 Agent에도 약 15초 이내에 적용되며, 보통으로 되돌리면 새로 시작된 Agent에만 적용됩니다.",
       "priorityOptions": {
         "normal": "보통",
         "low": "낮음",
         "lowest": "최저"
       },
       "capThreads": "툴체인 병렬 처리 제한",
-      "capThreadsHint": "VITEST_MAX_FORKS, MAKEFLAGS 등의 환경 변수를 주입하여 단일 테스트나 빌드 명령이 모든 CPU 코어를 점유하지 않도록 합니다. 직접 설정한 동일한 변수는 덮어쓰지 않습니다."
+      "capThreadsHint": "VITEST_MAX_FORKS, MAKEFLAGS 등의 환경 변수를 주입하여 단일 테스트나 빌드 명령이 모든 CPU 코어를 점유하지 않도록 합니다. 새로 시작된 Agent에만 적용되며, 직접 설정한 동일한 변수는 덮어쓰지 않습니다."
     },
     "piPackages": {
       "title": "Pi 확장",
       "entryTitle": "Pi 확장 설정",
+      "manageLabel": "확장 관리",
       "entryDescription": "Cindy의 Pi 확장을 설치, 활성화 또는 제거",
       "backToGeneral": "일반으로 돌아가기",
       "description": "확장은 이 기기의 Cindy에 설치됩니다. 이 기기의 일반 Pi에서 실행되는 작업이라면 기기 자체, 휴대전화 또는 다른 연결된 클라이언트 어디에서 시작해도 사용할 수 있습니다. Review에서는 불러오지 않습니다.",
@@ -9085,6 +9083,8 @@
     "globalSettings": {
       "restoreHint": "기본값으로 복원하면 클라이언트의 기본 모델 설정을 따릅니다. 개별 파트너의 사용자 지정 모델은 유지됩니다.",
       "restoreFailed": "기본값을 복원하지 못했습니다. 다시 시도해 주세요.",
+      "defaultModel": "기본 사용 모델",
+      "defaultModelHint": "파트너가 기본으로 사용하는 모델입니다. 개별 파트너는 각자의 설정에서 다른 모델을 선택할 수 있어요.",
       "title": "파트너",
       "description": "파트너 전체에 적용되는 설정입니다. 개별 파트너 설정은 각자의 페이지에 있어요.",
       "rosterNote": "기본 제공되는 구성원은 버전마다 늘어납니다."
@@ -10937,6 +10937,7 @@
     "verificationFailed": "ChatGPT 로그인이 복구되었는지 확인할 수 없습니다. 다시 확인해 주세요."
   },
   "chat": {
+    "failedSamplingAttempt": "완료되지 않은 답변입니다. 내용은 참고용으로만 확인해 주세요.",
     "jumpToBottom": "맨 아래로 이동",
     "prevMessageJump": "이전 질문으로 이동: {{preview}}",
     "sessionLoading": "세션 불러오는 중",
@@ -11170,6 +11171,9 @@
       "streamInterruptedNoRetry": "모델 출력이 중간에 중단되었습니다. 보통은 일시적인 상위 서비스 장애입니다. 잠시 후 다시 시도해 주세요",
       "networkShowRaw": "오류 상세 정보",
       "networkHideRaw": "상세 정보 접기",
+      "diagnose": "진단",
+      "diagnoseTitle": "새 세션에서 이 오류 진단",
+      "diagnosePrompt": "이 오류를 진단해서 원인과 해결 방법을 알려 주세요.\n\n오류가 발생한 세션: {{sessionUrl}}\n오류 메시지: {{message}}\n오류 상세:\n{{details}}\n\nCindy 자체의 문제로 확인되면 알려 주세요. Cindy 팀에 issue를 제출할지는 제가 선택할게요.",
       "gatewayProxyTokenInvalid": "Cindy AI 자격 증명이 더 이상 유효하지 않습니다. 재시도를 클릭하세요. 반복되면 로그아웃 후 다시 로그인하세요",
       "gatewayProxyTokenInvalidNoRetry": "Cindy AI 자격 증명이 더 이상 유효하지 않습니다. 반복되면 로그아웃 후 다시 로그인하세요",
       "modelAccessDenied": "연결된 서비스 계정에 이 모델의 접근 권한이 없습니다. 다른 모델로 전환하거나 제공자에게 모델 접근 권한을 확인하세요",
@@ -11197,6 +11201,21 @@
       "continuing": "계속하는 중…",
       "continueTitle": "중단된 지점부터 작업을 계속합니다(완료된 단계는 반복하지 않습니다)",
       "dismissTitle": "이 중단 알림 닫기"
+    },
+    "interruptedResumeDialog": {
+      "title": "중단된 세션 이어서 하기",
+      "description_one": "{{appName}}이(가) 지난번에 예기치 않게 종료되어 세션 {{count}}개가 끝나지 않았습니다. 선택한 세션은 대화 기록으로 진행 상황을 확인하고 중단된 곳부터 이어서 진행합니다.",
+      "description_other": "{{appName}}이(가) 지난번에 예기치 않게 종료되어 세션 {{count}}개가 끝나지 않았습니다. 선택한 세션은 대화 기록으로 진행 상황을 확인하고 중단된 곳부터 이어서 진행합니다.",
+      "selectAll": "모두 선택",
+      "selectedCount": "{{total}}개 중 {{selected}}개 선택",
+      "interruptedAgo": "{{time}} 전 중단",
+      "interruptedJustNow": "방금 중단",
+      "continueSelected_one": "세션 {{count}}개 이어서 하기",
+      "continueSelected_other": "세션 {{count}}개 이어서 하기",
+      "continueNone": "이어서 하기",
+      "later": "나중에",
+      "continueFailed_one": "세션 {{count}}개를 이어서 진행하지 못했습니다. 세션을 열어 다시 시도하세요.",
+      "continueFailed_other": "세션 {{count}}개를 이어서 진행하지 못했습니다. 세션을 열어 다시 시도하세요."
     },
     "unreadFailedScheduleBanner": {
       "text": "실패한 자동 실행이 있습니다.",
@@ -14799,6 +14818,7 @@
     "addUnavailable": "현재 분할 창에서 이 세션을 열 수 없습니다. 기본 영역에서 세션을 연 후 다시 시도하세요."
   },
   "extraDirs": {
+    "libraryReadOnlyLabel": "Mivo 라이브러리(읽기 전용)",
     "retryRemotePlugins": "원격 플러그인을 불러오지 못했습니다. 다시 시도",
     "menuAria": "작업 메뉴",
     "tooltipEmpty": "더 많은 작업",
@@ -16550,5 +16570,11 @@
     "messageSource": "$t(mcpApps.appName) “{{name}}”에서 전송",
     "serverId": "MCP 서버 ID: {{id}}",
     "exitFullscreen": "전체 화면 종료"
+  },
+  "richAnswer": {
+    "playVideo": "동영상 재생",
+    "openVideoSource": "원본 동영상 열기",
+    "calculationUnavailable": "이 값을 계산할 수 없습니다.",
+    "incomplete": "일부 내용을 표시하지 못했습니다."
   }
 }

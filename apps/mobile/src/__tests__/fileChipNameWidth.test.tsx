@@ -7,6 +7,7 @@ import type { ResolveRemoteMediaFn } from '@/session/remoteMedia';
 
 // This suite exercises attachment layout; keep the unrelated native App surface out of Node.
 vi.mock('@/session/McpAppCard', () => ({ McpAppCard: () => null }));
+vi.mock('react-native-webview', () => ({ WebView: () => null }));
 
 // Keeps the rendered React Native styles of the real file chip (#5875). Node has no Yoga, so the
 // content-sized width below applies Yoga's own flex-basis rule to those styles instead of a layout pass.
@@ -38,6 +39,7 @@ vi.mock('react-i18next', async (importOriginal) => ({
   useTranslation: () => ({ t: (key: string) => key }),
 }));
 vi.mock('lucide-react-native', () => Object.fromEntries([
+  'Mail', 'CalendarDays', 'Folder', 'ChartColumn', 'Info', 'Clock', 'MapPin', 'Coffee', 'Image', 'Users', 'Star',
   'Database', 'FileArchive', 'FileAudio', 'FileChartColumn', 'FileCode', 'FileImage', 'FileSpreadsheet', 'FileText', 'FileVideo',
   'ArrowLeftRight', 'ArrowUp', 'Bot', 'Check', 'ChevronDown', 'ChevronRight', 'ChevronUp', 'Circle', 'CircleAlert', 'CircleCheck',
   'CircleDashed', 'CircleStop', 'Copy', 'Ellipsis', 'ExternalLink', 'File', 'Ghost', 'Layers', 'ListTodo', 'LoaderCircle',

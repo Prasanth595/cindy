@@ -711,6 +711,9 @@
     "controlledByDevice": "{{name}} がデスクトップを操作しています",
     "viewedByDevice": "{{name}} がデスクトップを表示しています",
     "disconnect": "切断",
+    "disconnectChoiceDetail": "切断すると今回のリモートデスクトップが終了し、相手は後で再接続できます。",
+    "disconnectRevoke": "このデバイスのアクセス権も撤回する",
+    "disconnectRevokeHint": "撤回すると本機に接続できなくなります。「設定 → リモート接続」で復元できます。",
     "back": "戻る",
     "connect": "接続",
     "connecting": "接続中…",
@@ -1265,6 +1268,7 @@
     "tabs": {
       "storage": "ストレージ",
       "general": "一般",
+      "appearance": "外観",
       "billing": "使用量と請求",
       "usage": "使用履歴",
       "personalization": "パーソナライズ",
@@ -1591,6 +1595,7 @@
     "appearance": {
       "title": "外観",
       "modeLabel": "表示モード",
+      "sidebarAndPanels": "サイドバーとパネル",
       "themeLabel": "テーマ",
       "themeAriaLabel": "テーマの選択",
       "localBadge": "(ローカル)",
@@ -1617,6 +1622,7 @@
       },
       "font": {
         "reset": "デフォルトに戻す",
+        "title": "フォント",
         "defaultPreset": "デフォルト",
         "presets": "プリセット",
         "custom": "カスタム",
@@ -1655,8 +1661,12 @@
           "ui": "日本語フォントは読みやすく美しい ABC xyz · a/b/c/d · a,b · 0123456789 !?@&"
         }
       },
-      "missingLightNotice": "{{name}} はライトバリアントを提供していないため、ダークバリアントを表示しています。",
-      "missingDarkNotice": "{{name}} はダークバリアントを提供していないため、ライトバリアントを表示しています。",
+      "singleVariant": {
+        "lightOnly": "ライトのみ",
+        "darkOnly": "ダークのみ",
+        "lightNotice": "{{name}} はライトバリアントのみのため、表示モードはライトに固定されます。ほかのテーマに切り替えると、選んだ設定に戻ります。",
+        "darkNotice": "{{name}} はダークバリアントのみのため、表示モードはダークに固定されます。ほかのテーマに切り替えると、選んだ設定に戻ります。"
+      },
       "theme": {
         "light": "ライト",
         "dark": "ダーク",
@@ -1696,31 +1706,18 @@
           "cindy-studio": "Cindy · 未来のアトリエ",
           "cindy-dream": "Cindy · 夢の旅",
           "cindy-whisper": "Cindy · ささやき",
-          "cindy-crimson": "Cindy · 深紅の世界",
           "cindy-night-glance": "Cindy · 夜の振り返り",
           "cindy-scarlet-stroll": "Cindy · 赤い夜の散歩",
           "cindy-neon": "Cindy · ネオンの横顔",
           "cindy-prism": "Cindy · プリズムのかけら",
-          "wheatfield-watch": "麦畑の見守り",
-          "teacup-cat": "カップの黒猫",
-          "cloud-roaming": "雲の下の旅",
           "night-launch": "夜空への飛翔",
-          "stardust-vortex": "星屑の渦",
           "silent-orbits": "静かな軌道",
           "dune-dawn": "砂丘の夜明け",
           "planet-dawn": "惑星の夜明け",
-          "neon-valley": "ネオンの谷",
-          "silent-circuit": "静かな回路",
           "indigo-folds": "藍色の重なり",
-          "moon-solitude": "月を望む孤影",
           "dune-sphere": "砂丘の球体",
           "ocean-clouds": "海と流れる雲",
-          "blush-leaves": "淡紅の葉影",
-          "white-wilderness": "白原のひとり旅",
           "rose-quartz": "ローズクォーツ",
-          "silver-veins": "黒岩の銀脈",
-          "dawn-arc": "夜明けの弧",
-          "tidal-lines": "潮の流線",
           "custom": "カスタム壁紙"
         },
         "visibilityLabel": "壁紙の表示濃度",
@@ -1749,7 +1746,7 @@
         "reset": "初期レイアウトに戻す",
         "resetSuccess": "パネルレイアウトを初期状態に戻しました",
         "resetFailed": "パネル配置を復元できませんでした。",
-        "saved": "パネル位置を保存しました。［設定 → 一般］の［外観］セクションで初期レイアウトに戻せます。",
+        "saved": "パネル位置を保存しました。［設定 → 外観］で初期レイアウトに戻せます。",
         "saveFailed": "パネルの位置を保存できませんでした。"
       }
     },
@@ -4576,7 +4573,7 @@
     "agentResource": {
       "saveFailed": "保存に失敗しました。もう一度お試しください。",
       "title": "Agent リソース使用量",
-      "description": "Agent のコマンドライン作業によるシステム負荷を制限し、並列テストやビルドでマシンが固まるのを防ぎます。デフォルトはフルスピード（制限なし）。同時実行上限は即時反映されます。優先度の引き下げは実行中の Agent プロセスにも約 15 秒以内に適用されます。優先度を標準へ戻す操作とツールチェーンのスレッド上限は、新しく起動した Agent プロセスにのみ適用されます。本設定はローカルの Agent にのみ適用され、リモート（SSH）マシン上の Agent には影響しません。",
+      "description": "Agent のコマンドライン作業が使うシステムリソースを制限し、並列テストやビルドでパソコンが重くなるのを防ぎます。デフォルトはフルスピードで、ローカルの Agent にのみ適用され、リモート（SSH）マシンには影響しません。",
       "preset": "プロファイル",
       "presets": {
         "full": "フルスピード",
@@ -4592,18 +4589,19 @@
       "maxConcurrent": "同時実行コマンド数の上限",
       "maxConcurrentHint": "Claude Code エンジンが同時に実行できるコマンド数の上限です。超えた分はキューで待機します。0 は無制限です。Codex のコマンドは自身のサンドボックス内で実行されるためこの上限の対象外で、優先度とスレッド上限でカバーされます。",
       "priority": "プロセス優先度",
-      "priorityHint": "下げると Agent はアイドルリソースのみを使い、前面のアプリが優先されます。上げ直した場合は新しく起動した Agent プロセスにのみ適用されます。",
+      "priorityHint": "下げると Agent はアイドルリソースのみを使い、前面のアプリが優先されます。引き下げは実行中の Agent にも約 15 秒以内に適用され、標準へ戻した場合は新しく起動した Agent にのみ適用されます。",
       "priorityOptions": {
         "normal": "標準",
         "low": "低",
         "lowest": "最低"
       },
       "capThreads": "ツールチェーンの並列度を制限",
-      "capThreadsHint": "VITEST_MAX_FORKS や MAKEFLAGS などの環境変数を注入し、1 つのテストやビルドが全 CPU コアを占有しないようにします。自分で設定した同名の変数は上書きされません。"
+      "capThreadsHint": "VITEST_MAX_FORKS や MAKEFLAGS などの環境変数を注入し、1 つのテストやビルドが全 CPU コアを占有しないようにします。新しく起動した Agent にのみ適用され、自分で設定した同名の変数は上書きされません。"
     },
     "piPackages": {
       "title": "Pi 拡張機能",
       "entryTitle": "Pi 拡張機能の設定",
+      "manageLabel": "拡張機能を管理",
       "entryDescription": "Cindy の Pi 拡張機能をインストール、有効化、アンインストール",
       "backToGeneral": "一般に戻る",
       "description": "拡張機能はこのデバイスの Cindy にインストールされます。このデバイス上の通常 Pi で実行されるタスクなら、端末本体、スマートフォン、ほかの接続済みクライアントのどこから開始しても利用できます。Review では読み込みません。",
@@ -9085,6 +9083,8 @@
     "globalSettings": {
       "restoreHint": "復元後はクライアントの既定のモデル設定に従います。各パートナーのカスタムモデルは変更されません。",
       "restoreFailed": "既定値を復元できませんでした。もう一度お試しください。",
+      "defaultModel": "デフォルトのモデル",
+      "defaultModelHint": "パートナーが標準で使うモデルです。個々のパートナーは自分の設定で別のモデルを選べます。",
       "title": "パートナー",
       "description": "パートナー全体に共通する設定です。個々のパートナーの設定は、その子のページにあります。",
       "rosterNote": "あらかじめ用意された顔ぶれは、バージョンごとに増えていきます。"
@@ -10937,6 +10937,7 @@
     "verificationFailed": "ChatGPT ログインが復旧したか確認できませんでした。再確認してください。"
   },
   "chat": {
+    "failedSamplingAttempt": "この返信は完了しませんでした。内容は参考情報としてご覧ください。",
     "jumpToBottom": "一番下へ移動",
     "prevMessageJump": "前の質問へ移動：{{preview}}",
     "sessionLoading": "セッションを読み込み中",
@@ -11170,6 +11171,9 @@
       "streamInterruptedNoRetry": "モデル出力が途中で中断されました。一時的な上流障害であることが多いので、しばらくしてから再試行してください",
       "networkShowRaw": "エラーの詳細",
       "networkHideRaw": "詳細を閉じる",
+      "diagnose": "診断",
+      "diagnoseTitle": "新しいセッションでこのエラーを診断",
+      "diagnosePrompt": "このエラーを診断して、原因と解決方法を教えてください。\n\nエラーが起きたセッション：{{sessionUrl}}\nエラー表示：{{message}}\nエラー詳細：\n{{details}}\n\nCindy 自体の問題だと分かった場合は教えてください。Cindy チームに issue を提出するかどうかは私が選びます。",
       "gatewayProxyTokenInvalid": "Cindy AI の認証情報が無効になりました。「再試行」をクリックしてください。繰り返す場合はサインアウトしてから再ログインしてください",
       "gatewayProxyTokenInvalidNoRetry": "Cindy AI の認証情報が無効になりました。繰り返す場合はサインアウトしてから再ログインしてください",
       "modelAccessDenied": "接続先のアカウントにはこのモデルへのアクセス権限がありません。別のモデルに切り替えるか、プロバイダーにアクセス権限を確認してください",
@@ -11197,6 +11201,21 @@
       "continuing": "再開中…",
       "continueTitle": "中断した箇所からタスクを続行します（完了済みのステップは繰り返しません）",
       "dismissTitle": "この中断通知を閉じる"
+    },
+    "interruptedResumeDialog": {
+      "title": "中断したセッションを再開",
+      "description_one": "{{appName}} が前回予期せず終了し、{{count}} 件のセッションが完了していません。選択したセッションは会話履歴から進捗を確認し、中断したところから再開します。",
+      "description_other": "{{appName}} が前回予期せず終了し、{{count}} 件のセッションが完了していません。選択したセッションは会話履歴から進捗を確認し、中断したところから再開します。",
+      "selectAll": "すべて選択",
+      "selectedCount": "{{selected}} / {{total}} 件を選択",
+      "interruptedAgo": "{{time}}前に中断",
+      "interruptedJustNow": "たった今中断",
+      "continueSelected_one": "{{count}} 件を再開",
+      "continueSelected_other": "{{count}} 件を再開",
+      "continueNone": "再開",
+      "later": "後で",
+      "continueFailed_one": "{{count}} 件のセッションを再開できませんでした。セッションを開いて再試行してください。",
+      "continueFailed_other": "{{count}} 件のセッションを再開できませんでした。セッションを開いて再試行してください。"
     },
     "unreadFailedScheduleBanner": {
       "text": "自動実行に失敗した記録があります。",
@@ -14799,6 +14818,7 @@
     "addUnavailable": "このセッションは現在の分割で開けません。メイン領域でセッションを開いてから、もう一度お試しください。"
   },
   "extraDirs": {
+    "libraryReadOnlyLabel": "Mivo ライブラリ（読み取り専用）",
     "retryRemotePlugins": "リモートプラグインを読み込めませんでした。再試行",
     "menuAria": "操作メニュー",
     "tooltipEmpty": "その他の操作",
@@ -16550,5 +16570,11 @@
     "messageSource": "$t(mcpApps.appName)「{{name}}」から送信",
     "serverId": "MCP サーバー ID：{{id}}",
     "exitFullscreen": "全画面表示を終了"
+  },
+  "richAnswer": {
+    "playVideo": "動画を再生",
+    "openVideoSource": "元の動画を開く",
+    "calculationUnavailable": "この値を計算できません。",
+    "incomplete": "一部の内容を表示できませんでした。"
   }
 }

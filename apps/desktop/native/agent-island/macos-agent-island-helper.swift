@@ -3121,13 +3121,14 @@ struct PillBadge: View {
     Text(text)
       .font(badgeFont)
       .foregroundColor(Color.white.opacity(0.92))
-      // Multi-digit counts must widen the capsule instead of wrapping into two lines.
       .lineLimit(1)
-      .fixedSize(horizontal: true, vertical: false)
       .padding(.horizontal, Self.contentInset)
       .frame(minWidth: metrics.minWidth, minHeight: compact ? 18 : 20)
       .background(Color.white.opacity(emphasized ? 0.11 : 0.065))
       .clipShape(Capsule())
+      // Fix the whole capsule, not just the text: a squeezed `minWidth` frame would
+      // otherwise shrink the background while multi-digit text overflows it.
+      .fixedSize(horizontal: true, vertical: false)
   }
 
   private func activeTotalBadge(active: Int, total: Int, emphasized: Bool) -> some View {
@@ -3140,13 +3141,14 @@ struct PillBadge: View {
         .foregroundColor(Color.white.opacity(0.92))
     }
     .font(badgeFont)
-    // Multi-digit counts must widen the capsule instead of wrapping into two lines.
     .lineLimit(1)
-    .fixedSize(horizontal: true, vertical: false)
     .padding(.horizontal, Self.contentInset)
     .frame(minWidth: metrics.minWidth, minHeight: compact ? 18 : 20)
     .background(Color.white.opacity(emphasized ? 0.11 : 0.065))
     .clipShape(Capsule())
+    // Fix the whole capsule, not just the text: a squeezed `minWidth` frame would
+    // otherwise shrink the background while multi-digit text overflows it.
+    .fixedSize(horizontal: true, vertical: false)
   }
 
   private var metrics: Metrics {

@@ -511,6 +511,37 @@ describe('sessionActiveTurn', () => {
     ]);
   });
 
+  it('listInterruptedResumeCandidateRows reads the interrupted turn time and last tool use', async () => {
+    const { listInterruptedResumeCandidateRows } = await import('../interruptedResumeCandidates.js');
+    const client = createTestDbClient();
+    const startedAt = Date.now() - 10_000;
+    await seedSession(client, 's-tools', { startedAt });
+    await seedSession(client, 's-silent', { startedAt });
+    const insert = (id: string, sid: string, role: string, content: unknown, createdAt: number, rewindAt?: number) =>
+      client.exec(
+        'INSERT INTO messages (id, client_id, session_id, role, content, created_at, rewind_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [id, id, sid, role, JSON.stringify(content), createdAt, rewindAt ?? null],
+      );
+    // 上一轮的工具调用不属于被中断的这一轮。
+    await insert('m-old', 's-tools', 'tool_use', { toolName: 'Read', input: { file_path: '/a' } }, startedAt - 1);
+    await insert('m-1', 's-tools', 'tool_use', { toolName: 'Read', input: { file_path: '/b' } }, startedAt + 100);
+    await insert('m-2', 's-tools', 'tool_use', { toolName: 'Bash', input: { command: 'pnpm test' } }, startedAt + 200);
+    await insert('m-3', 's-tools', 'assistant', 'running tests', startedAt + 300);
+    // 被 rewind 的行既不算中断时间,也不算最后一次工具调用。
+    await insert('m-4', 's-tools', 'tool_use', { toolName: 'Write', input: {} }, startedAt + 400, startedAt + 500);
+    await insert('m-5', 's-silent', 'tool_use', { toolName: 'Read', input: {} }, startedAt - 1);
+
+    const rows = await listInterruptedResumeCandidateRows();
+    expect(rows.sort((a, b) => a.sessionId.localeCompare(b.sessionId))).toEqual([
+      { sessionId: 's-silent', interruptedAt: startedAt, lastToolUse: null },
+      {
+        sessionId: 's-tools',
+        interruptedAt: startedAt + 300,
+        lastToolUse: { toolName: 'Bash', input: { command: 'pnpm test' } },
+      },
+    ]);
+  });
+
   it('excludes plugin background tasks from both red-dot legs', async () => {
     const { listInterruptedPendingSessionIds, listErrorTailPendingSessionIds } = await import('../sessionActiveTurn.js');
     const client = createTestDbClient();

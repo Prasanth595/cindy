@@ -55,8 +55,8 @@ afterEach(() => {
 describe('wallpaper download feedback', () => {
   // User request 2026-10-17: still-only originals share download progress/retry
   // with scenes, but have no motion switch. Existing cases only exercised
-  // cindy-window; minimum additional input is cindy-whisper; unit tier.
-  it.each(['cindy-window', 'cindy-whisper'] as const)(
+  // cindy-window; minimum additional input is night-launch (cindy-whisper gained motion on 2026-10-17); unit tier.
+  it.each(['cindy-window', 'night-launch'] as const)(
     'shows progress for %s while keeping its tile visible',
     (id) => {
       state.id = id;
@@ -73,7 +73,7 @@ describe('wallpaper download feedback', () => {
           .getAttribute('aria-checked'),
       ).toBe('true');
       expect(screen.getAllByRole('progressbar')).toEqual([status]);
-      if (id === 'cindy-whisper')
+      if (id === 'night-launch')
         expect(screen.queryByText('settings.appearance.wallpaper.motionLabel')).toBeNull();
       expect(status.getAttribute('aria-valuenow')).toBe('0');
       for (const progress of [0.25, 0.75, 1]) {
@@ -91,7 +91,7 @@ describe('wallpaper download feedback', () => {
     },
   );
 
-  it.each(['cindy-window', 'cindy-whisper'] as const)(
+  it.each(['cindy-window', 'night-launch'] as const)(
     'keeps manual retry reachable for %s and lets new tiles change selection',
     (id) => {
       state.id = id;
@@ -107,10 +107,10 @@ describe('wallpaper download feedback', () => {
       expect(state.select).not.toHaveBeenCalled();
       fireEvent.click(
         screen.getByRole('radio', {
-          name: 'settings.appearance.wallpaper.options.cindy-whisper',
+          name: 'settings.appearance.wallpaper.options.night-launch',
         }),
       );
-      expect(state.select).toHaveBeenCalledWith('cindy-whisper');
+      expect(state.select).toHaveBeenCalledWith('night-launch');
       expect(state.retry).toHaveBeenCalledOnce();
 
       state.pending = true;

@@ -422,6 +422,7 @@ import {
 } from '@/session/queueEditLifecycle';
 import { findErrorTailClientId, isContinuationQueueItem, resolveSessionTailBanner } from '@/session/sessionTailBannerModel';
 import { SessionTailBanner } from '@/session/SessionTailBanner';
+import { buildErrorDiagnosisPrompt, type ErrorDiagnosisSource } from '@/session/errorDiagnosisPrompt';
 import { useHistoryRecoveryNavigation } from '@/session/useHistoryRecoveryNavigation';
 import { canOfferCodexHistoryRecovery } from '@cindy/maker-shared/error-redaction';
 import {
@@ -618,6 +619,7 @@ import {
 } from '@/session/messageScroll';
 import { countMobileRenderItemDiffs } from '@/session/messagePresentation';
 import {
+  buildMobileSessionDeepLink,
   buildMobileSessionMessageDeepLink,
   parseSessionDeepLinkUrl,
   resolveSessionLinkDeviceId,
@@ -3076,6 +3078,20 @@ function SessionScreenContent() {
       guardedPush({ pathname: '/sessions/new', params: { deviceId, deviceName } });
     });
   }, [deviceId, deviceName, guardedPush, queueDrawerNavigation]);
+  // 诊断任务建在出错任务所在的电脑上，链接不带 device；共享任务的访客读不到原任务，不提供。
+  const canDiagnoseError = !!deviceId && !!sessionId && !isSharedTaskPeer(deviceId);
+  const handleDiagnoseError = useCallback((source: ErrorDiagnosisSource) => {
+    if (!deviceId || !sessionId) return;
+    guardedPush({
+      pathname: '/sessions/new',
+      params: {
+        deviceId,
+        deviceName,
+        deviceExplicit: '1',
+        draft: buildErrorDiagnosisPrompt(t, buildMobileSessionDeepLink(sessionId), source),
+      },
+    });
+  }, [deviceId, deviceName, guardedPush, sessionId, t]);
   const handleComposerInputPressIn = useCallback(() => {
     if (voiceRecordingActiveRef.current || voiceState === 'listening') {
       // Tapping the input to stop dictation means the user wants to type.
@@ -10186,6 +10202,7 @@ function SessionScreenContent() {
                             onRecoverHistory={canRecoverHistory ? () => void recoverReadableHistory() : undefined}
                             onContinue={() => void continueTailBanner()}
                             onDismiss={dismissTailBanner}
+                            onDiagnose={canDiagnoseError ? handleDiagnoseError : undefined}
                             state={tailBannerState}
                           />
                         ) : null}
@@ -10211,6 +10228,7 @@ function SessionScreenContent() {
                           onCancelUsageLimitWait={cancelUsageLimitWait}
                           onResume={resumeQueue}
                           onRetryError={retryQueueError}
+                          onDiagnose={canDiagnoseError ? handleDiagnoseError : undefined}
                           projection={inputProjection}
                           readOnlyReason={queueAvailabilityReason}
                         />

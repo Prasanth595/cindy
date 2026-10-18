@@ -65,6 +65,7 @@ import {
   isPiImageInputUnsupportedError,
 } from '../../../shared/inputError';
 import type { ToolLoopErrorDetails } from '@cindy/maker-core';
+import type { ErrorDiagnosisSource } from '@/lib/errorDiagnosisPrompt';
 
 interface ErrorBannerProps {
   error: string;
@@ -121,6 +122,8 @@ interface ErrorBannerProps {
   silentEncryptedRetryEnabled?: boolean;
   onForkStripEncrypted?: () => void | Promise<void>;
   forkStripEncryptedRunning?: boolean;
+  /** 展开详情后的「诊断」：上层带着错误与出错任务去新任务里排查。 */
+  onDiagnose?: (error: ErrorDiagnosisSource) => void;
   /** 当前 error 是非终止的 recoverableError(turn 还在跑,agent/daemon 在自动
    *  重试,如 codex 网络 retry-loop 透出)。网络类分支据此区分文案:「正在自动
    *  重试…」vs「服务暂时不可达,可点击重试」。历史尾部行恒为 false。 */
@@ -155,6 +158,7 @@ export function ErrorBanner({
   silentEncryptedRetryEnabled = false,
   onForkStripEncrypted,
   forkStripEncryptedRunning = false,
+  onDiagnose,
   isRecoverable = false,
   sessionSource,
   style,
@@ -681,6 +685,11 @@ export function ErrorBanner({
           : undefined
       }
       details={canShowErrorDetails ? error : undefined}
+      onDiagnose={
+        onDiagnose
+          ? () => onDiagnose({ message: displayError, details: error, reason: errorReason })
+          : undefined
+      }
       onDismiss={onCancel}
       icon={
         openAiConnectionRecoveredSinceError ? (

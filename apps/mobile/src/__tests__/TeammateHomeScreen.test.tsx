@@ -97,6 +97,16 @@ beforeEach(() => {
 });
 afterEach(() => { act(() => root?.unmount()); root = undefined; });
 describe('teammate home entry', () => {
+  it('hides an unverified cached roster while keeping cloud-only rows available', async () => {
+    h.roster.loading = true; h.roster.error = null;
+    await render();
+    expect(h.list.items).toEqual([]);
+    h.cloud.supported = true;
+    h.cloud.actors = [{ id: 'actor', kind: 'bot', externalId: 'writer', name: 'Writer', avatar: null, homeDeviceId: 'mac' }];
+    await render();
+    expect(h.list.items).toHaveLength(1);
+    expect(h.list.items[0].item.revision).toBe('cloud');
+  });
   it('lands on the roster and never opens the remembered teammate on its own', async () => {
     // A remembered, online teammate on a settled roster used to be reopened at launch (#4912); the
     // roster is the destination now, in every focus, refresh and remount.

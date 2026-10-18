@@ -391,6 +391,10 @@ Orca 协同角色名，与 Worker 成对。五语统一保留英文 Lead，不�
 
 标准 MCP Apps 协议提供的交互应用；卡片标题与消息来源沿用协议名称，各语言保留 MCP App，待术语评审后固化。
 
+### Mivo Library
+
+#5929：引用目录系统项沿用 Mivo 品牌，仅本地化展示；通用 library 能力的品牌命名仍待维护者裁决。
+
 ### Audio Generation
 
 V4 模型类型 audio_generation，包含通用声音生成；与 audio_speech 语音合成分别展示。
