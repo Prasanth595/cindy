@@ -27,6 +27,7 @@ import { Text } from '@/components/AppText';
 import { Pause, Play } from 'lucide-react-native';
 import { describeAgentAuthError } from '@/device-link/remoteStatus';
 import type { InputProjection } from '@/session/types';
+import type { ErrorDiagnosisSource } from '@/session/errorDiagnosisPrompt';
 import { inputProjectionErrorI18nKey } from '@/session/inputProjectionError';
 import { localizeAgentError, localizeUnclassifiedAgentError, requiresAgentErrorConfigurationChange } from '@/session/agentErrorI18n';
 import {
@@ -51,6 +52,8 @@ export interface InlineQueueSectionProps {
   onClearError(): void;
   /** 取消账号限额重置后的自动继续(只在投影带 usageLimitWait 时出现)。 */
   onCancelUsageLimitWait?(): void;
+  /** 展开详情后的「诊断」：上层带着错误与出错任务去新任务里排查。 */
+  onDiagnose?(error: ErrorDiagnosisSource): void;
 }
 
 export function InlineQueueSection({
@@ -63,6 +66,7 @@ export function InlineQueueSection({
   onRetryError,
   onClearError,
   onCancelUsageLimitWait,
+  onDiagnose,
 }: InlineQueueSectionProps) {
   const styles = useThemedStyles(makeStyles);
   const { colors } = useTheme();
@@ -112,7 +116,13 @@ export function InlineQueueSection({
           dismissBusy={busy}
           dismissHint={errorDisabledReason ?? undefined}
         >
-          <AgentErrorDetails message={projection.error} actions={<>
+          <AgentErrorDetails message={projection.error} onDiagnose={onDiagnose
+            ? () => onDiagnose({
+              message: projectionError ?? '',
+              details: projection.error ?? '',
+              reason: projection.errorReason,
+            })
+            : undefined} actions={<>
             {retryable ? <ErrorNoticeAction
               primary
               disabled={!!retryDisabledReason}

@@ -99,8 +99,11 @@
 - 所有官方壁纸原图均为 OSS/CDN 按需分发（2026-10-17 用户裁决，将三款场景的已有下载链路
   扩展到其余静态图片，替代静态原图随包的决定）。包内仅保留
   `renderer/assets/wallpapers/previews/` 中的三款 640×400 WebP 与 `thumbnails/` 中的静态缩略图；
-  原始高清图和 2304×1440 MP4 保留为发布输入，不进入 Renderer 资源依赖图。
-  清单中静态条目只有 `delivery` 与 `image`，顶层视频元数据仅用于三款动态场景；
+  原始高清图和 MP4 保留为发布输入，不进入 Renderer 资源依赖图。
+  清单中静态条目只有 `delivery` 与 `image`，顶层视频元数据仅用于带动态版的场景；
+  2026-10-17 起五张 Cindy 壁纸（悄悄话、夜色回眸、赤夜漫步、霓光侧影、棱镜碎光）增加 1920×1080 动态版，
+  窗边陪伴、未来工作室、梦境漫游从选择器下架（`RETIRED_WALLPAPER_IDS`），清单条目与 CDN 对象保留，
+  已选用户的静态与动态照常可用，并在其设置中临时显示为选中项；
   静态条目不暴露动态选项、不下载视频。默认无壁纸和浏览设置列表不下载，
   选中且可见时下载对应高清图，动态模式且未启用减少动态效果时再下载视频；下载或解码失败保留可用背景。
   传输复用统一下载器并保留 guardedOutboundFetch 的来源校验，清单大小及 SHA-256 校验后入仓。
@@ -111,9 +114,11 @@
   回归见 `main/__tests__/wallpaperVideo.test.ts` 的升级离线复用及损坏修复测试，
   `customWallpaper.test.ts` 覆盖自定义媒体操作不误删官方图片和视频。
   发布脚本默认核验仓内原始素材，`--directory` 也接受按 hash 命名的导出目录或旧 `-hd.mp4` 输入。
-  `node scripts/publish-wallpaper-videos.mjs --verify-only` 离线核验；
+  `node scripts/publish-wallpaper-videos.mjs --verify-only --directory=<原始素材目录>` 离线核验（MP4 原片不入库，
+  需指向导出目录）；`--check-cdn` 只按清单读取线上对象，干净检出即可运行；
   `node scripts/publish-wallpaper-videos.mjs --check-cdn --region=global` 只读校验清单全部线上文件；
-  实际发布使用 `node --env-file=<发布配置> scripts/publish-wallpaper-videos.mjs --region=global`。
+  实际发布使用 `node --env-file=<发布配置> scripts/publish-wallpaper-videos.mjs --directory=<原始素材目录> --region=global`，
+  目录与离线核验为同一份受审核素材（按 `<sha256>.<ext>` 或 `<壁纸 ID>.<ext>` 命名）。
   中国大陆版显式用 `--region=cn`，内部 dev 环境显式用 `--region=dev`；三个环境分别发布并校验，
   资源先于对应客户端上线。只读校验优先读取本环境的 `XDT_GLOBAL_CDN_BASE_URL` / `XDT_CDN_BASE_URL` /
   `XDT_DEVCH_CDN_BASE_URL`，未配置时读取对应 endpoint 文件；dev 不回落到生产配置。

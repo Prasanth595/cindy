@@ -479,6 +479,8 @@ export function BotTaskCard({
               <MarkdownRenderer
                 workingDir={workingDir}
                 currentSessionId={childSessionId ?? undefined}
+                renderRichAnswers
+                streamFadeKey={`bot-result:${childSessionId ?? parentSessionId}:${card.delegationId}`}
                 content={resultText}
               />
             ) : (

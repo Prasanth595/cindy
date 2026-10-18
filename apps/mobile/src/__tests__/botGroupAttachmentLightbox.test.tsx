@@ -7,6 +7,8 @@ import type { ResolveRemoteMediaFn } from '@/session/remoteMedia';
 
 // This suite exercises attachments; MCP App's native WebView is covered by mcpAppCard.test.tsx.
 vi.mock('@/session/McpAppCard', () => ({ McpAppCard: () => null }));
+// The shared message renderer also imports the site-video native surface.
+vi.mock('react-native-webview', () => ({ WebView: () => null }));
 
 // Group attachments open the real shared ImageLightbox here (#5875): the timeline strip, the payload
 // conversion and the viewer are production code; only native surfaces and unrelated views are replaced.
@@ -43,6 +45,7 @@ vi.mock('react-native', async () => {
   };
 });
 vi.mock('lucide-react-native', () => Object.fromEntries([
+  'Mail', 'CalendarDays', 'Folder', 'ChartColumn', 'Info', 'Clock', 'MapPin', 'Coffee', 'Image', 'Users', 'Star',
   'Database', 'FileArchive', 'FileAudio', 'FileChartColumn', 'FileCode', 'FileImage', 'FileSpreadsheet', 'FileText', 'FileVideo',
   'ArrowLeftRight', 'ArrowUp', 'Bot', 'Check', 'ChevronDown', 'ChevronRight', 'ChevronUp', 'Circle', 'CircleAlert', 'CircleCheck',
   'CircleDashed', 'CircleStop', 'Copy', 'Ellipsis', 'ExternalLink', 'File', 'Ghost', 'Layers', 'ListTodo', 'LoaderCircle',

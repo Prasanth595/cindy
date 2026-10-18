@@ -1,3 +1,4 @@
+import { hasRichAnswer, richAnswerText } from '@cindy/maker-shared/rich-answer';
 import { BotLearningFooter } from '@/features/bots/BotLearningFooter';
 import { BotSessionTaskResultCard } from '@/features/bots/BotSessionTaskResultCard';
 import { botTaskResultKey, type BotCollaborationMeta } from '@cindy/maker-shared/botCollaboration';
@@ -141,6 +142,7 @@ const StreamingBody = memo(function StreamingBody({
     <>
       {committedText && (
         <MarkdownRenderer
+            renderRichAnswers
           workingDir={workingDir}
           content={committedText}
           isStreaming
@@ -197,6 +199,7 @@ interface AssistantMessageProps {
   showActionBar?: boolean;
   /** 伙伴对话使用常显、无费用、无 Fork 的轻量消息操作栏。 */
   simplifiedBotConversation?: boolean;
+  failedSamplingAttempt?: boolean;
   botLearning?: unknown;
   botTaskResults?: BotCollaborationMeta[];
   /** Per-turn 费用 (USD) — 仅该轮最后一条 assistant 有值, action bar 时间旁显示。 */
@@ -226,6 +229,7 @@ export const AssistantMessage = memo(function AssistantMessage({
   currentSessionId,
   currentSessionTitle,
   content,
+  failedSamplingAttempt,
   isStreaming,
   createdAt,
   messageClientId,
@@ -336,6 +340,11 @@ export const AssistantMessage = memo(function AssistantMessage({
           'text-[var(--msg-assistant-text)]',
         )}
       >
+        {failedSamplingAttempt && (
+          <div className="mb-1 text-13 font-normal leading-[1.384615]" style={{ color: 'var(--text-secondary)' }}>
+            {t('chat.failedSamplingAttempt')}
+          </div>
+        )}
         {ghostRenderCard && messageClientId && !showOriginal ? (
           // 出口钩子自绘:意识卡片替换气泡(净化后的静态 HTML,沙箱 iframe)。
           // 复用 GhostToolCard(自带主机身份头 + 主题注入 + 沙箱),turn 级无
@@ -350,7 +359,7 @@ export const AssistantMessage = memo(function AssistantMessage({
             running={false}
             sessionId={currentSessionId}
           />
-        ) : isStreaming && USE_LINE_COMMIT_STREAMING ? (
+        ) : isStreaming && USE_LINE_COMMIT_STREAMING && !hasRichAnswer(content) ? (
           <StreamingBody
             workingDir={workingDir}
             content={displayContent}
@@ -365,6 +374,7 @@ export const AssistantMessage = memo(function AssistantMessage({
           // MarkdownRenderer。isStreaming 透传 — true 时 MarkdownRenderer 内部启用
           // 100ms throttle, false 时无节流, 行为和该文件性能优化前完全一致。
           <MarkdownRenderer
+            renderRichAnswers
             workingDir={workingDir}
             content={displayContent}
             isStreaming={isStreaming}
@@ -422,7 +432,7 @@ export const AssistantMessage = memo(function AssistantMessage({
       {!isStreaming && showActionBar && (
         <MessageActionBar
           createdAt={createdAt}
-          copyText={content}
+          copyText={richAnswerText(content)}
           copyLinkText={messageDeepLink}
           align="left"
           hovered={hovered}

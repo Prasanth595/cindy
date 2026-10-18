@@ -23470,6 +23470,10 @@ function redactEventForRenderer(event: AgentEvent): AgentEvent {
   const data = event.data as Record<string, unknown>;
   const safeData = { ...data };
   let changed = false;
+  if ('processMedia' in safeData) {
+    delete safeData.processMedia;
+    changed = true;
+  }
   if (
     typeof safeData.toolName === 'string' &&
     Object.prototype.hasOwnProperty.call(safeData, 'input')

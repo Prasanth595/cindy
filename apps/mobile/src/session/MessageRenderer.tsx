@@ -1,3 +1,8 @@
+import { VideoSitePreview } from './VideoSitePreview';
+import { youtubeVideo } from '@cindy/maker-shared/rich-answer';
+import { richVisualStyle, splitRichAnswer, richAnswerText, richMediaSource, richMarkdown, richString, type RichNode } from '@cindy/maker-shared/rich-answer';
+import { RichAnswer } from './RichAnswer';
+import { readToolProcessMedia, readToolProcessText } from '@cindy/maker-shared/tool-process-media';
 import { PluginCardActions } from '@/plugins/PluginCardActions';
 import { McpAppCard } from './McpAppCard';
 import { RichContentContext } from './richContentContext';
@@ -26,7 +31,7 @@ import { CompanionEntering } from '@/session/CompanionEntering';
 import { mobileDebugEnabled, mobileDebugLog } from '@/debug/mobileDebugLog';
 import { createScrollDebugSampler } from '@/debug/scrollDebugSampler';
 import { errorText, resolvedUrlKind } from '@/debug/fileDiagnostics';
-import { createContext, Fragment, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type Dispatch, type ReactElement, type ReactNode, type SetStateAction } from 'react';
+import { createContext, Fragment, memo, useId, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type Dispatch, type ReactElement, type ReactNode, type SetStateAction } from 'react';
 import { useTranslation } from 'react-i18next';
 import { MessageLoadingImage, MessageImagePlaceholder } from './MessageLoadingImage';
 import { InputHandoffRecordRow } from '@/inputHandoff/InputHandoffRecordRow';
@@ -2532,11 +2537,15 @@ export function MessageRenderer({
       useNativeDriver: true,
     });
     initialRevealAnimationRef.current = revealAnimation;
-    revealAnimation.start(({ finished }) => {
+    revealAnimation.start(() => {
       if (initialRevealAnimationRef.current === revealAnimation) {
         initialRevealAnimationRef.current = null;
       }
-      if (finished) finish();
+      // Native cancellation must also release the initial visibility gate. Once
+      // this handle is cleared, positioning cannot reveal the list through it,
+      // and a retained list will not rerun initial positioning on reentry.
+      // finish() fences callbacks from a previous history or an unmounted list.
+      finish();
     });
 
     // Seek once, then reconcile the bookmark as estimated row heights become measured.
@@ -2921,7 +2930,7 @@ const RenderItemView = memo(function RenderItemView({
         ? <AuthorizationMessageCard message={item.message} />
         : item.message.companion
         ? <CompanionMessageCard message={item.message}
-            renderMarkdown={(text) => <CompanionCardMarkdown text={text} actions={actions} />} />
+            renderMarkdown={(text) => <CompanionCardMarkdown messageKey={item.key} text={text} actions={actions} />} />
         : item.message.orcaCard
         ? (
           <>
@@ -3435,7 +3444,8 @@ function MessageBubble({
   const shareSelectionActive = actions.shareSelectionActive === true
     && shareableMessage;
   const isFirstUserMessage = item.message.kind === 'user' && clientId === actions.firstUserMessageClientId;
-  const copyText = buildMobileMessageCopyText(item.message);
+  const rawCopyText = buildMobileMessageCopyText(item.message);
+  const copyText = item.message.kind === 'assistant' ? richAnswerText(rawCopyText) : rawCopyText;
   const canUseCompletedActions = !isStreamingAssistant;
   // 操作行只挂在每轮收尾正文、且该行确实是一条发言(判据见
   // mobileMessageShowsActionBar):中间句不再逐条带复制/分叉/时间,系统边界卡整行
@@ -3804,6 +3814,8 @@ function MessageBubble({
           />
         ) : (
           <MarkdownBody
+            renderRichAnswers={item.message.kind === 'assistant'}
+            richStateKey={item.message.source.clientId ?? item.message.key}
             allowIosUITextView={!shouldCollapseLongMessage}
             markdownImageCacheKey={item.message.key}
             layout={contentLayout}
@@ -3925,6 +3937,11 @@ function MessageBubble({
         />
       ) : null}
       {attachmentStripNode}
+      {item.message.failedSamplingAttempt ? (
+        <Text style={styles.failedSamplingAttemptText}>
+          {t('message.renderer.failedSamplingAttempt')}
+        </Text>
+      ) : null}
       {item.message.role === 'error' ? (
         <ErrorNotice message={displayBubbleBody}>
           {item.message.rawError ? <AgentErrorDetails key={item.message.key} message={item.message.rawError} /> : null}
@@ -3938,7 +3955,7 @@ function MessageBubble({
         && item.message.body.trim() ? readBotTaskResults(item.message.source.agentMeta?.botTaskResults).map(meta => (
           <CompanionTaskResultCard key={botTaskResultKey(meta)} meta={meta} attached
             deviceId={actions.remoteDeviceId ?? ''} parentSessionId={item.message.source.sessionId}
-            renderMarkdown={text => <CompanionCardMarkdown text={text} actions={actions} />} />
+            renderMarkdown={text => <CompanionCardMarkdown messageKey={`${item.key}:${botTaskResultKey(meta)}`} text={text} actions={actions} />} />
         )) : null}
       {item.message.kind === 'assistant' && item.message.modelMismatch ? (
         // 模型降级提示(对齐桌面 AssistantMessage):所选模型本轮被上游静默替换,
@@ -4240,7 +4257,7 @@ function ToolGroupCard({
  * 媒体条 / 结果预览,再点收起。展开态走共享进程内记忆(blockId 前缀 `toolrow-`,
  * 与组级 `tools-` key 空间天然隔离)。无详情可展的行不显示 chevron、不可点击。
  */
-type ToolDetailActions = Pick<MessageActions, 'onLoadToolInput' | 'onOpenPayload'>;
+type ToolDetailActions = Pick<MessageActions, 'onLoadToolInput' | 'onOpenPayload' | 'onResolveRemoteMedia'>;
 
 function ToolActionRow({
   actions,
@@ -4258,8 +4275,7 @@ function ToolActionRow({
   const { colors } = useTheme();
   const { t } = useTranslation();
   const styles = useThemedStyles(makeStyles);
-  // 媒体不在行内渲染:tool 产出的图/视频由紧随 tool_group 的独立 ToolMediaBlock
-  // 承载(对齐桌面 AgentActionRow「媒体跳出折叠卡」的语义),行内不再重复。
+  // 明确交付媒体仍由 ToolMediaBlock 承载；原生过程媒体留在所属工具步骤内。
   const hasDetails = !!(row.detail || tool.body || tool.diff || tool.secondaryBody);
   const [expanded, toggleExpanded] = useFoldableExpandedState(`toolrow-${rowKey ?? tool.key}`, false);
   const showDetails = expanded && hasDetails;
@@ -4287,6 +4303,15 @@ function ToolActionRow({
         <Text style={[styles.toolName, styles.toolNameFlex]} numberOfLines={1}>{row.label}</Text>
         {chevronNode}
       </Pressable>
+      {readToolProcessMedia(tool.secondaryBody).map((entry) => (
+        <MediaPreview key={entry.url} label={mediaLabel({ ...entry, previewable: false })}
+          layout={contentLayout} media={{ ...entry, previewable: false }}
+          onOpen={actions.onOpenPayload ? () => actions.onOpenPayload!(buildMediaPayload(
+            { ...entry, previewable: false }, mediaLabel({ ...entry, previewable: false }),
+          )) : undefined}
+          onResolveRemoteMedia={actions.onResolveRemoteMedia}
+          variant={entry.kind === 'image' ? 'attachment' : 'card'} />
+      ))}
       {showDetails ? (
         <View style={styles.toolRowDetails}>
           {row.detail || tool.body ? (
@@ -5589,16 +5614,16 @@ const ViewabilityGatedMathFormula = memo(function ViewabilityGatedMathFormula({
 });
 
 /** A frozen task result reads like a reply: same Markdown, links and file chips (Desktop MarkdownRenderer). */
-function CompanionCardMarkdown({ text, actions }: { text: string; actions: MessageActions }) {
+function CompanionCardMarkdown({ text, actions, messageKey }: { text: string; actions: MessageActions; messageKey: string }) {
   const layout = useMemo(() => buildMessageContentLayout({ screenWidth: actions.screenWidth }), [actions.screenWidth]);
-  return <MarkdownBody layout={layout} text={text} selectable
+  return <MarkdownBody renderRichAnswers markdownImageCacheKey={messageKey} layout={layout} text={text} selectable
     onOpenPayload={actions.onOpenPayload} onOpenSessionLink={actions.onOpenSessionLink} />;
 }
 
 // 消息正文统一走原生 markdown 渲染(流式与完成态同一条路径,完成时无"原生→WebView"的切换跳变)。
 // 文本选择 = 完成态消息的各块 Text 原生 selectable:长按文字就地弹系统选择手柄/Copy 菜单,
 // 不跳转界面;整条复制走操作条按钮。选择按块进行(原生 Text 能力边界,跨段选择做不到)。
-function MarkdownBody({
+function MarkdownBodyBase({
   allowIosUITextView = true,
   markdownImageCacheKey,
   layout,
@@ -5610,6 +5635,9 @@ function MarkdownBody({
   text,
 }: {
   /** 超长展开正文在 iOS 回退 RN Text,避免超高 UITextView 空白;仍保留整块复制。 */
+  renderRichAnswers?: boolean;
+  /** Persisted row ids may replace stream ids; clientId stays stable across that handoff. */
+  richStateKey?: string;
   allowIosUITextView?: boolean;
   /** 本地 Markdown 图片的稳定消息身份,避免后续消息复用同一路径的旧媒体缓存。 */
   markdownImageCacheKey?: string;
@@ -7118,7 +7146,7 @@ function ToolResultPreview({
   onOpen?: (payload: MessagePayload) => void;
 }) {
   const styles = useThemedStyles(makeStyles);
-  const payload = buildToolResultPayload(tool);
+  const payload = buildToolResultPayload({ ...tool, secondaryBody: readToolProcessText(tool.secondaryBody) });
   if (!payload) return null;
   const preview = summarizeMessagePayloadPreview(payload, { maxPreviewChars: TOOL_RESULT_PREVIEW_MAX_CHARS });
   // 「查看内容」hint 只在纯文本结果确实被截断(字符上限或行数上限)时显示——预览已
@@ -8801,6 +8829,12 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     gap: 4,
     maxWidth: '86%',
   },
+  failedSamplingAttemptText: {
+    color: colors.textSecondary,
+    fontSize: typeScale.footnote,
+    lineHeight: lineHeight.caption,
+    fontWeight: fontWeight.regular,
+  },
   modelMismatchText: {
     color: colors.textTertiary,
     flexShrink: 1,
@@ -9819,3 +9853,51 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   todoPending: { color: colors.textTertiary },
   todoDone: { fontWeight: fontWeight.medium },
 });
+
+export function MarkdownBody(props: Parameters<typeof MarkdownBodyBase>[0]) {
+  const instanceKey = useId();
+  const origin = useContext(ChatFilePathContext);
+  const renderMedia = (node: RichNode) => <RichAnswerMedia node={node} body={props} />;
+  const parts = useMemo(() => props.renderRichAnswers ? splitRichAnswer(props.text) : [], [props.text, props.renderRichAnswers]);
+  if (!parts.some(part => part.kind === 'rich')) return <MarkdownBodyBase {...props} />;
+  return <View style={{ gap: spacing.lg }}>{parts.map(part => part.kind === 'rich'
+    ? <RichAnswer renderMedia={renderMedia} key={part.key} source={part.source} complete={part.complete || !props.streaming}
+        stateKey={`${origin?.deviceId ?? ''}:${origin?.sessionId ?? ''}:${props.richStateKey ?? props.markdownImageCacheKey ?? instanceKey}:${part.key}`}
+        renderMarkdown={(text, id) => <MarkdownBodyBase {...props} text={text} markdownImageCacheKey={`${props.markdownImageCacheKey}:${part.key}:${id}`} />} />
+    : <MarkdownBodyBase {...props} key={part.key} text={part.source} streaming={!part.complete && props.streaming} />)}</View>;
+}
+
+/** Each composed column supplies its actual width; media never assumes a full message row. */
+function RichAnswerMedia({ node, body }: { node: RichNode; body: Parameters<typeof MarkdownBodyBase>[0] }) {
+  const origin = useContext(ChatFilePathContext);
+  const resolver = useContext(MarkdownRemoteMediaContext);
+  const [width, setWidth] = useState(0);
+  const raw = richMediaSource(node);
+  if (!raw || (node.kind !== 'image' && node.kind !== 'video' && node.kind !== 'audio')) return null;
+  if (node.kind === 'video' && youtubeVideo(raw)) return <VideoSitePreview src={raw} title={richString(node, 'alt', 'YouTube')} />;
+  const direct = /^(?:https?|xdt-audio|xdt-video|cindy-media):\/\//.test(raw);
+  const url = direct ? raw : mobileMarkdownManagedImagePreviewUrl(raw, origin?.workdir, body.markdownImageCacheKey, origin?.remoteHostId, origin?.sessionId);
+  // Outside-workdir files retain the existing explicit-open path; never fetch them automatically.
+  if (!url) return <MarkdownBodyBase {...body} text={richMarkdown(node) ?? ''} streaming={false} />;
+  const label = richString(node, 'alt', node.kind);
+  const media: NormalizedToolMedia = { kind: node.kind, url, title: label, previewable: isDirectPreviewableMediaUrl(url) };
+  // Rich answers also render outside LegendList (cloud companions). Keep ordinary
+  // state there, but remount the preview when a recycled row or streamed media
+  // patch changes its identity, so resolved thumbnails/errors cannot cross images.
+  const previewKey = JSON.stringify([origin?.deviceId, origin?.sessionId, body.richStateKey ?? body.markdownImageCacheKey, node.id, url]);
+  const visual = richVisualStyle(node);
+  const imageWidth = typeof visual.width === 'number' || typeof visual.width === 'string'
+    ? width : Math.min(body.layout.imagePreviewWidth, width);
+  const naturalFrameHeight = imageWidth * body.layout.imagePreviewHeight / body.layout.imagePreviewWidth;
+  const imageHeight = Math.min(typeof visual.maxHeight === 'number' ? visual.maxHeight : Infinity,
+    Math.max(typeof visual.minHeight === 'number' ? visual.minHeight : 0,
+      typeof visual.height === 'number' ? visual.height : naturalFrameHeight));
+  const layout = { ...body.layout, imagePreviewWidth: imageWidth,
+    imagePreviewHeight: imageHeight,
+    mediaPreviewWidth: Math.min(body.layout.mediaPreviewWidth, width) };
+  return <View style={{ minWidth: 0 }} onLayout={event => setWidth(event.nativeEvent.layout.width)}>
+    {width > 0 ? <MediaPreview key={previewKey} layout={layout} media={media} label={label} onResolveRemoteMedia={resolver}
+      usePreviewState={useState}
+      onOpen={body.onOpenPayload ? () => body.onOpenPayload!(buildMediaPayload(media, label)) : undefined} /> : null}
+  </View>;
+}

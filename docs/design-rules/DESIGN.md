@@ -76,26 +76,27 @@ align with the same wallpaper instead of introducing an opaque footer rectangle.
 Built-in SVG wallpapers are decorative assets, not new semantic UI colors.
 Verify actual Light/Dark screenshots across host pages and the expanded tool pane.
 
-The built-in picker retains Window Companion, Future Atelier and Dream Wander,
-with their Static / Dynamic choice, alongside 26 supplied still images: character,
-cat, landscape, space and abstract artworks (user curation, 2026-10-16). The supplied
-stills use metadata-free WebP at their source resolution, delivered on demand from
-the CDN (user decision, 2026-10-17). Only lightweight thumbnails and the three scene
-previews ship with the app. Blue Gaze and Amber Light are hidden from the picker.
-Previously saved selections keep their artwork and motion behavior;
-removing a catalog choice does not rewrite appearance preferences or delete source images.
+The built-in picker lists 13 artworks (user curation, 2026-10-17): the Cindy group —
+Whisper, Night Glance, Scarlet Stroll, Neon Silhouette, Prism Shards — followed by
+Night Launch, Silent Orbits, Dune Dawn, Planet Dawn, Indigo Folds, Dune Sphere,
+Ocean Clouds and Rose Quartz. All five Cindy wallpapers offer Static / Dynamic; their
+1920×1080, 24fps, 10-second loops keep the source composition as first and last frame.
+The other eight are stills. All official originals are metadata-free WebP/MP4 delivered
+on demand from the CDN (user decision, 2026-10-17); only lightweight thumbnails and the
+three legacy scene previews ship with the app.
+Window Companion, Future Atelier and Dream Wander are retired from the picker
+(`RETIRED_WALLPAPER_IDS`, 2026-10-17). Their manifest entries and CDN objects stay, so a
+saved selection keeps its still and motion; while one is in use it appears selected right
+after None with its Static / Dynamic choice, and it disappears once the user switches away.
+Removing a catalog choice never rewrites appearance preferences or deletes CDN objects.
 All official images share the existing on-demand downloader, verified cache reuse,
-and preview fallback; only the original three scenes offer video. Download progress and retry appear
+and preview fallback; only manifest entries with video metadata offer motion. Download progress and retry appear
 below the grid when needed while the thumbnails remain available for selection.
 Reuse the settings DownloadMeter. Browsing the grid or hiding the wallpaper does not
 download originals; only a selected, visible image is requested. Reuse valid cached
 images offline and after upgrades. Do not request CDN assets for IDs absent from the manifest.
-The original three scenes lead the Cindy group, followed by Whisper, Crimson Realm, Night Glance, Scarlet Stroll,
-Neon Silhouette, Prism Shards, followed by the two cat wallpapers Wheatfield Watch
-and Teacup Cat. Other artwork follows this group; Moon Gazer (formerly Giant Moon Platform) sits
-directly after the two cat wallpapers, and Cloud Roaming follows Indigo Folds. Six
-supplied stills were dropped from the picker before release (Palm Shadows, Dusk Arrow,
-Rainy Stop, Window Rest, Golden Tides, Forest River) and are not shipped.
+Earlier unreleased artwork (including Blue Gaze, Amber Light and the 2026-10-16 batch
+trimmed on 2026-10-17) is not shipped and needs no compatibility.
 The new artwork uses the existing continuous cover fit, theme-derived visibility
 and blur controls. None remains the default and restores the theme canvas.
 The picker remains an inline compact grid (user choice, 2026-10-15): use
@@ -452,6 +453,10 @@ card/container
   hover     --surface-hover       #e5e5e5 / #3c3c3a
 ```
 
+### Desktop settings rows
+
+Desktop Settings sections put the 16px/500 section title outside the card. A card groups related settings as rows: label (13px/500) and hint (12px) on the left, the control on the right, `px-4 py-4` per row, and an inset divider between visible rows only. Related switches share one card instead of one card each; a row that opens a sub-page uses the same row with a trailing chevron. Use the shared classes in [settingsRowClasses.ts](../../apps/desktop/src/renderer/components/settings/settingsRowClasses.ts). Settings → General follows this throughout (owner request, 2026-10-17); other Settings pages still contain 20px single-row cards and are not declared migrated.
+
 ### Provider detail header
 
 All provider connections share one header pattern, independent of builtin/custom storage or login source.
@@ -514,13 +519,14 @@ Ordinary confirmations opt into standard buttons with `presentation="standard"` 
 ### Select & Dropdown
 
 - **Trigger**: same as a single-line input — pill (9999px), Card bg, 1px Board border, carrying the current value + a chevron.
-- **Panel**: a container — 12px radius, 1px Board border, 6–8px padding. Select listbox panels use the Card bg (`--surface-elevated`) and no shadow (separation comes from the overlay / layer colors).
+- **Panel**: a container — 12px radius, 1px Board border, 6–8px padding. Select listbox panels use the Card bg (`--surface-elevated`) and the soft, downward `--shadow-menu` elevation in both modes, like the menu panels below (owner decision, 2026-10-18; supersedes their former no-shadow rule and does not authorize shadows on in-page controls). Existing local panel-color aliases remain compatible.
 - **Menu and popover panels** (shared defaults in `components/ui/dropdown-menu.tsx` / `popover.tsx`): 12px radius and the registered floating-layer shadow `--shadow-menu` (a §6 token-gated exception) written as `shadow-[shadow:var(--shadow-menu)]` — the untyped `shadow-[var(--shadow-menu)]` is a Tailwind shadow *colour* and renders no shadow. `DropdownMenuContent` / `DropdownMenuSubContent` use `p-1`, `bg-[var(--cmd-palette-bg)]`, `border-[var(--cmd-palette-border)]` and `text-[var(--cmd-palette-item-text)]`; under Cindy themes that surface is glass (`--surface-translucent-overlay` + `blur(6px)`, globals.css), and on Windows (`html[data-platform='win32']`) every `--cmd-palette-bg` surface is opaque with no `backdrop-filter` (§15.12). `PopoverContent` stays opaque `bg-popover`. `DropdownMenuSeparator` uses `--cmd-palette-border`. Row highlights use the 8px inner tier.
 - **Menu text** (`components/ui/dropdown-menu.tsx`): option rows (Item / CheckboxItem / RadioItem / SubTrigger) are `text-14` / `leading-[1.43]` (32px row with `py-1.5`) on `--cmd-palette-item-text`; shortcuts `text-12` / `leading-[1.33]` / 400 on `--cmd-palette-item-meta`; group labels `text-12` / 500 on `--cmd-palette-item-meta`; destructive rows `variant="danger"` on `--error-fg`; disabled rows 50% opacity. The text colour is the same at rest and on hover. The highlighted (`data-menu-active` / `data-[highlighted]`), checked or open row is 500 (§3 ladder) and its default-stroke Lucide icons go 1.5 → 2, on `--motion-instant` / `--motion-ease-out` (instant under reduced motion). Width never moves: row text and `truncate` spans reserve the 500 width with an invisible zero-height `::after` copy (`content: attr(data-menu-label) / ""`, so `textContent`, typeahead and the accessible name are unchanged), and the shared panels lock their laid-out width (`lockMenuWidth`, re-measured on content, window, image or font changes). A caller's own text colour, weight or inline width wins.
 - **Menu hover highlight** (`components/ui/dropdown-menu-highlight.ts`): one `--sidebar-item-hover` surface (8px) per `DropdownMenuContent` / `DropdownMenuSubContent` glides between rows with `transform`; the row nearest the pointer anywhere in the panel wins, and separators do not interrupt the glide. Entering fades in from the checked row (or the target), leaving fades out; keyboard follows Radix's highlighted item, and an open SubTrigger stays highlighted while its submenu is in use. Motion: `transform` / `opacity` on `--motion-instant` / `--motion-ease-out` (fade-out `--motion-ease-in`), size snaps, no slide under reduced motion. Danger rows use the same grey layer. Rows whose caller sets its own `focus:` / `hover:` / `data-[highlighted]:` / `data-[state=open]:` background keep it and get no layer; `hoverHighlight={false}` restores per-row fills. Sidebar menus (`features/cc-agent/sidebar/menuStyles.ts`: `MENU_ITEM_CLASS` / `MENU_ROW_CLASS` = `h-8 gap-2`, triggers `cursor-pointer`) use the same highlight.
 - **Panel width must bind to the trigger width** — never narrower or wider than the control that opened it, except for the explicitly scoped device-navigation treatment below. Radix Select: `position="popper"` + `width: var(--radix-select-trigger-width)`; other primitives measure the trigger. Ordinary form fields retain this equal-width invariant.
 - **Compact Cindy device navigation (sidebar and teammate chat header only)**: the trigger fits the device label, unread indicator and chevron, retaining its 24px height. The sidebar's remaining row area opens chat; the header trigger caps at 176px and may shrink with its available space. Long labels truncate and retain their full title. Its listbox is independently 256px wide, capped by the available viewport width, so device names, offline state and unread indicators remain usable even when the trigger says only “本机”. This exception belongs to `CindyDevicePicker`, not the shared Select default or other dropdowns. Keep the existing Radix keyboard/focus behavior and theme tokens. Browser hit-target regression: `apps/desktop/scripts/fixtures/cindy-device-picker/verify-device-picker.cjs`.
-- **Select listbox option rows** (Select only; dropdown menu rows follow the Menu entries above): selected / hovered highlight fills use the **8px inner radius** (see §5 — the panel is a 12px container, the row highlight is the inner 8px tier; the inner radius must be smaller than the container's to nest cleanly). Highlight bg via `--surface-hover` / Radix `data-[highlighted]`; selected rows get the chip fill, unselected rows stay transparent.
+- **Select listbox option rows** (Select only; dropdown menu rows follow the Menu entries above): rows use the **8px inner radius** (§5 — inner tier inside the 12px panel) and join the **shared menu hover highlight** above — one `--sidebar-item-hover` layer per listbox viewport, same glide, fade and reduced-motion behaviour as the dropdown menu (2026-10-18, supersedes the per-row `--surface-hover` / chip fills). The saved value is marked by its checkmark (and the caller's checked text style), not by a fill; Radix's highlighted option drives the layer for keyboard browsing, including the saved option it focuses on open. Rows whose caller sets its own `data-[highlighted]:` / `hover:` / `focus:` background keep it and get no layer. Group labels, wrapped descriptions, disabled options and scroll controls retain their semantics.
+- **Shared Select implementation (2026-10-18)**: use `components/ui/select.tsx` for single-value fields; rich/grouped consumers use its `SelectParts` compound API (`components/ui/select-parts.tsx`) instead of importing `@radix-ui/react-select` directly. Both share the trigger, panel, highlight and motion. Trigger rings use `focus-visible`, including after menu dismissal: mouse-only open/close leaves no ring, keyboard navigation keeps a visible focus cue. Radix still owns focus return, keyboard/typeahead, cancellation and value callbacks. Panel entry/exit reuses §14.4's `float-in` / `float-out` with the transform origin following the actual top/bottom collision placement; reduced motion removes the animation.
 - **Composer dropdown rows — one contract with the shared menu** (2026-10-04, supersedes 2026-07-22): the composer menus keep their own shells — MorphPopover (model / permission / + / agent; §14.4 container transform unchanged), the / and @ lists, the bot-chat @ list and the settings search results — but use the shared menu row parts from `components/ui/menu-row.tsx`: `COMPOSER_MENU_ROW` (8px radius, menu text / weight / motion), `menuRowAttrs`, `withMenuLabels`, and one glide highlight per panel (`useMenuPanel` + `MenuHighlightLayer`, the same `--sidebar-item-hover` layer as the shared menu). Rows inside a glide panel set no `hover:` / `focus:` fill of their own (rows that sit outside any glide panel — the model config card's engine rows, the legacy follow-session and "manage providers" rows — keep a `hover:bg-sidebar-item-hover` fill in the same grey). The selected row is marked by a check + 500 and never by a fill — permission, + and agent menus. **The model menu is the one exception** (owner ruling 2026-10-04, keeping the 2026-08-13 ruling): its chosen row keeps a whole-row `--sidebar-item-hover` fill with no check (`data-[menu-active]:bg-transparent`, so the fill steps aside while the glide layer covers that row instead of stacking two translucent layers), the model name stays 500, and the effort / follow-session rows keep their fill and existing check; it still takes the shared glide highlight and the glass panel. Danger-tier orange / blue tints the **text only**. Lists that keep focus in a text input (/, @, bot @, settings search) stay focus-in-input: the highlight follows their own current index (`data-menu-current` or `aria-selected`) through `attachMenuHighlight`'s `current` option, never Radix focus. Panels: MorphPopover ends on `--menu-panel-surface` (the shared menu's glass under Cindy themes, opaque on Windows) with `--cmd-palette-border` and `--shadow-menu`; the / and @ lists and the model config flyout use the same 12px panel and `--shadow-menu` (the softer `--cmd-palette-shadow` stays for the command palette and the / tooltip). Group labels use the shared label (12 / 500 / `--cmd-palette-item-meta`). When touching any composer menu's row styles, change them through `menu-row.tsx` — never one menu alone.
 
 FormField → Select forwards descriptions, required/error semantics, and the semantic error border; native browser required validation remains opt-in by the business form.
@@ -863,6 +869,8 @@ Source: `apps/desktop/src/renderer/themes/`
 - `registry.ts` — the `builtinThemes` registry + `listThemesByType('light' | 'dark')`
 
 Theme switching: `useTheme.ts` provides `theme` (System / Light / Dark mode) plus `lightThemeId` / `darkThemeId` (which concrete theme). Settings → Appearance is the UI entry.
+
+Settings → Appearance opens with a 20px/500 page title (line height 1.3, 24px above the first section), one step above the 16px section titles. The theme card follows the page title directly, without its own section title; Wallpaper, Fonts, Sidebar & panels and Reply Animation follow, each titled outside its card and laid out as settings rows (see “Desktop settings rows”). In the theme card, Theme, Appearance mode and Local themes are separate rows divided by lines. Theme is a single row whose picker is the same 320×36 pill select as Settings → General → Display language (same trigger, popover, option and selected styles). Theme, Local themes and Wallpaper carry no extra description line. Wide controls (wallpaper grid, sliders, and the font pickers, whose preview popovers must match the trigger width) sit under their row label. The appearance mode is one row: label on the left, three 92×60 window thumbnails on the right with a 12px caption. Each thumbnail draws a miniature Cindy window (sidebar, user message, reply lines, composer with send dot) from the selected color theme’s own `surface`, `surface-chip`, `border-default`, `surface-elevated`, `text-primary` and `text-tertiary` values; “System” shows the light half on the left and the dark half on the right. The selected thumbnail gets a 2px `--settings-theme-preview-border-active` ring with a 2px gap (12px outer / 8px inner radius), unselected ones show the ordinary preview border on hover. The theme picker comes before the appearance mode. A theme family with only one variant is tagged “Light only” / “Dark only” in the theme list. While such a theme is selected, the three mode cards are disabled and show the variant actually rendered, with one line under the mode label explaining it; the saved mode is not changed and applies again when a two-variant theme is chosen (owner request, 2026-10-17). Implementation: [AppearanceSection.tsx](../../apps/desktop/src/renderer/components/settings/AppearanceSection.tsx); regressions in `AppearanceSection.accessibility.test.tsx`.
 
 ### Token Tiers
 
@@ -2143,3 +2151,7 @@ and media position (`ui/media-scrubber`, seconds in/out). Native media controls 
 > **(6) 需拆开读**〔2026-07-29 二次修正〕：手机短屏 / 长屏的**品牌簇**（立绘 / SLOGAN / 字标）新稿基准与避脸落值**保留生效**；同条的**功能区落位**（`loginY` **622 / 827**）在 2026-07-28 曾随跳过登录剥离一并退回 main 原值（694 / 933），但那会与已换新稿的品牌簇拼出稿内不存在的 92 / 131.65 间距（实机可见空白），**2026-07-29 审图后恢复为新稿标注值**（方案 B，60 落到底部留白；详见上方 §16.2「面板 500→440 少掉的 60 去向」）。dh<1334 段**不采用**该条曾写过的 `dh-712`，而是「紧凑底距 18 + 钳到 622」（`dh-712` 会压盖窄屏字标，见 §16.2 对应条目）。**pad 竖屏推导值**（`loginY` 573.353 / `splashOffset` 206）仍然**作废**、保持 main 原值 621 / 158——pad 无 figma 新稿帧，其品牌簇也未换新稿基准，内部自洽，不受本次修正影响。
 > 手机端保持无游客 / 无账号行为不变。详见
 > [`design-decision-log.md`](./design-decision-log.md)「2026-07-28」条。
+
+## 流式正文与可组合组件（2026-10-18）
+
+用户确认的答案方向：正文由流式编辑器与共享组件库承载，模型自由组合图文、图表和交互布局；普通任务与伙伴采用同一能力。每个完整节点增量出现，局部修订保留稳定控件身份和用户操作值。视觉沿现有正文、控件和媒体规范，不以整页 HTML 预览框替代连续正文。两端主题与窄屏同等实现。协议、能力发现与当前验收边界见 [流式正文与可组合组件](../rich-answers.md)。

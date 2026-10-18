@@ -30,6 +30,7 @@ import { BuiltinPanelBridgeProvider } from '@/panels/BuiltinPanelBridge';
 import { WindowControls } from '@/components/title-bar/WindowControls';
 import { UpdateNoticeDialog } from '@/components/UpdateNoticeDialog';
 import { FeishuConflictDialogHost } from '@/components/feishuBot/FeishuConflictDialogHost';
+import { InterruptedTasksResumeDialog } from '@/features/cc-agent/InterruptedTasksResumeDialog';
 import { GlobalDropImportListener } from '@/components/layout/GlobalDropImportListener';
 import { SessionShareImportWizard } from '@/components/settings/SessionShareImportWizard';
 import { ControlledBanner } from '@/features/remote-device/ControlledBanner';
@@ -107,7 +108,7 @@ import { makeFolderPickerNewMakerRouteState } from '@/features/cc-agent/lib/newM
 import { makeGenericNewMakerRouteState } from '@/features/cc-agent/lib/genericNewMakerRouteState';
 import { resolveSessionRoute } from '@/lib/orcaSessionIdentity';
 import { ensureBotProfilesLoaded, getBotProfiles } from '@/features/bots/botStore';
-import { createSessionEntryNavigator, resolveBotRouteForSessionEntry } from '@/features/bots/botSessionOwners';
+import { botRouteForOwnedSession, createSessionEntryNavigator, resolveBotRouteForSessionEntry } from '@/features/bots/botSessionOwners';
 import { useSessionEntryLocationCommits } from '@/features/bots/useSessionEntryLocationCommits';
 import { islandEntryRouteState, requestIslandEntryAlertDisposal } from '@/features/bots/islandEntryAlert';
 import { requestProviderShareJoin } from '@/features/provider-share/joinIntent';
@@ -563,6 +564,7 @@ export function MainLayout() {
   // One navigator for the layout's lifetime: its sequence must span re-renders so a
   // late lookup for an earlier notification cannot override a newer click.
   const [navigateToSession] = useState(() => createSessionEntryNavigator({
+    readKnownBotRoute: (sessionId) => botRouteForOwnedSession(getBotProfiles(), sessionId),
     resolveBotRoute: (sessionId) => resolveBotRouteForSessionEntry(sessionId, {
       readProfiles: getBotProfiles,
       loadProfiles: ensureBotProfilesLoaded,
@@ -1731,6 +1733,10 @@ export function MainLayout() {
           loadVersion={noticeLoadVersion}
           onDismiss={dismissNotice}
         />
+      )}
+      {/* 意外退出后重启:列出被中断的任务供一键继续;更新说明弹窗关闭后再出现。 */}
+      {!isSecondaryWindow() && (
+        <InterruptedTasksResumeDialog suspended={Boolean(releaseNotes && noticeOpen)} />
       )}
       {/* FeiShu Bot conflict dialog -- subscribes to main process push and surfaces a global modal */}
       <FeishuConflictDialogHost />

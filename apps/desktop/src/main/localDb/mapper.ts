@@ -1,3 +1,4 @@
+import { richAnswerText } from '@cindy/maker-shared/rich-answer';
 /**
  * chat-data-localization F5：IPC 边界 row ↔ camel/ISO 转换。
  *
@@ -154,7 +155,7 @@ export function finalizePlainPreview(
   // role='user' 的正常落库行,但对用户不可见 —— 预览显示隐藏英文指令会暴露
   // 实现细节。返回 null 与"无预览"同渲染语义。
   if (isSyntheticTriggerText(next)) return null;
-  if (role === 'assistant') next = stripInternalWebCitations(next);
+  if (role === 'assistant') next = richAnswerText(stripInternalWebCitations(next));
   // Strip formatting before the display limit: URLs must not consume the preview budget.
   const collapsed = markdownPreviewText(next);
   if (!collapsed) return null;

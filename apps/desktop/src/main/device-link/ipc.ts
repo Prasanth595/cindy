@@ -1421,8 +1421,8 @@ export async function retryUnsubscribeAfterWindowGone(
 
 export function registerDeviceLinkIpc(deps: DeviceLinkIpcDeps = defaultDeps()): void {
   const diagnosticsLog = createLogger('device-link:ipc-diagnostics');
-  const diagnostics = createDeviceLinkIpcDiagnostics((event, fields) =>
-    diagnosticsLog.info(event, fields),
+  const diagnostics = createDeviceLinkIpcDiagnostics((event, fields, level) =>
+    level === 'debug' ? diagnosticsLog.debug(event, fields) : diagnosticsLog.info(event, fields),
   );
   // Submit the final partial interval at shutdown start, giving the async log
   // writer the subsequent cleanup phases to drain before app.exit().

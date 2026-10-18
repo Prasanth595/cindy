@@ -1,3 +1,4 @@
+import { nativeToolMediaFields } from '@cindy/maker-shared/tool-process-media';
 /**
  * pi RPC 事件 → AgentEvent 翻译层。
  *
@@ -918,7 +919,7 @@ export function translatePiEvent(
         : rawText;
       queue.push({
         type: 'tool_result_full',
-        data: { toolUseId, fullText, isError },
+        data: { toolUseId, fullText, isError, ...nativeToolMediaFields((event.result as { content?: unknown } | null)?.content) },
         source: 'pi',
       });
       queue.push({

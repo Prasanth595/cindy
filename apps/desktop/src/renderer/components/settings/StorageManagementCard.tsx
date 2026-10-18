@@ -20,7 +20,7 @@ import { useEffect, useId, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Check, ChevronDown, RefreshCw } from 'lucide-react';
 import * as AlertDialog from '@radix-ui/react-alert-dialog';
-import * as Select from '@radix-ui/react-select';
+import { SelectParts as Select } from '@/components/ui/select';
 
 import { cn } from '@/lib/utils';
 import { toast } from '@/lib/toast';
@@ -947,8 +947,8 @@ function DatabaseSlimmingSection({
                 align="end"
                 sideOffset={6}
                 className={cn(
-                  'z-[10010] min-w-[var(--radix-select-trigger-width)] rounded-xl p-1.5',
-                  'border border-[var(--settings-input-border)] bg-[var(--settings-theme-card-bg)] shadow-[var(--shadow-menu)]',
+                  'z-[10010] w-[var(--radix-select-trigger-width)] rounded-xl p-1.5',
+                  'border border-[var(--settings-input-border)] bg-[var(--settings-theme-card-bg)]',
                 )}
               >
                 <Select.Viewport className="flex flex-col gap-0.5">
@@ -958,8 +958,8 @@ function DatabaseSlimmingSection({
                       value={String(age)}
                       className={cn(
                         'flex h-8 cursor-pointer select-none items-center justify-between gap-2 rounded-lg px-2.5 text-12 outline-none transition-colors',
-                        'text-[var(--settings-input-text)] data-[highlighted]:bg-[var(--settings-menu-bg-hover)]',
-                        'data-[state=checked]:bg-[var(--settings-menu-bg-selected)] data-[state=checked]:font-medium data-[state=checked]:text-[var(--settings-menu-text-selected)]',
+                        'text-[var(--settings-input-text)]',
+                        'data-[state=checked]:font-medium data-[state=checked]:text-[var(--settings-menu-text-selected)]',
                       )}
                     >
                       <Select.ItemText>

@@ -5,6 +5,7 @@
   "sourceLocale": "en",
   "punctuationExempt": ["desktop:settings.help.qnaFeedbackBodyTemplate"],
   "terms": [
+    {"id": "mivo-library", "status": "proposed", "en": "Mivo Library", "translations": {"zh-CN": "Mivo 作品库", "zh-TW": "Mivo 作品庫", "ja": "Mivo ライブラリ", "ko": "Mivo 라이브러리"}, "note": "#5929：引用目录系统项沿用 Mivo 品牌，仅本地化展示；通用 library 能力的品牌命名仍待维护者裁决。"},
     {"id": "mcp-app", "status": "proposed", "en": "MCP App", "translations": {"zh-CN": "MCP App", "zh-TW": "MCP App", "ja": "MCP App", "ko": "MCP App"}, "note": "标准 MCP Apps 协议提供的交互应用；卡片标题与消息来源沿用协议名称，各语言保留 MCP App，待术语评审后固化。"},
     {"id": "dissolve-group", "status": "proposed", "en": "Dissolve group", "translations": {"zh-CN": "解散群聊", "zh-TW": "解散群聊", "ja": "グループを解散", "ko": "그룹 해산"}, "checkCase": false, "note": "Irreversible group termination, distinct from archive, leave and personal list removal."},
     {"id": "input-handoff", "status": "proposed", "en": "Input Handoff", "translations": {"zh-CN": "代输入", "zh-TW": "代輸入", "ja": "代理入力", "ko": "대리 입력"}, "checkCase": false, "note": "Agent 遇到需要主人填写的界面（选择、文本、密码、验证码、授权）时，由宿主读出当前一步，主人在本机或远程设备上填写，值只交给宿主、不进模型与记录。不是远程控制。"},

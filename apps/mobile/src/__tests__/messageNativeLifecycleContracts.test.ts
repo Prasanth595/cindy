@@ -251,7 +251,16 @@ it('resets identity-bound row state before a recycled cell displays another item
     expect(source).toContain('const [failedLocalUris, setFailedLocalUris] = usePreviewState<readonly string[]>([]);');
     expect(source.match(/const \[intrinsicSize, setIntrinsicSize\] = usePreviewState</g)).toHaveLength(2);
     expect(source.match(/usePreviewState=\{usePreviewState\}/g)).toHaveLength(2);
-    expect(source).not.toContain('usePreviewState={useState}');
+    // Rich answers also live outside LegendList. Their ordinary state is safe
+    // only behind a message/source identity key; keep the original list contract
+    // for every other preview. Regression: PR #6373 used unkeyed React state.
+    const richMediaStart = source.indexOf('function RichAnswerMedia(');
+    expect(richMediaStart).toBeGreaterThan(-1);
+    expect(source.slice(0, richMediaStart)).not.toContain('usePreviewState={useState}');
+    const richMediaSource = source.slice(richMediaStart);
+    expect(richMediaSource).toContain('const previewKey = JSON.stringify([origin?.deviceId, origin?.sessionId, body.richStateKey ?? body.markdownImageCacheKey, node.id, url]);');
+    expect(richMediaSource).toContain('<MediaPreview key={previewKey}');
+    expect(richMediaSource).toContain('usePreviewState={useState}');
     const groupSource = readFileSync(
       resolve(process.cwd(), 'src/session/BotGroupMessageAttachments.tsx'), 'utf8',
     );

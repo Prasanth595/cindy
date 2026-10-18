@@ -142,6 +142,7 @@ export function AtMentionPanel({
   maxHeight = 400,
 }: AtMentionPanelProps) {
   const { t } = useTranslation();
+  const libraryReadOnlyLabel = t('extraDirs.libraryReadOnlyLabel');
   const rootRef = useRef<HTMLDivElement>(null);
   const focusedRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
@@ -571,12 +572,12 @@ export function AtMentionPanel({
                               className="shrink-0 text-[var(--cmd-palette-item-icon)] opacity-60"
                             />
                             <Tip
-                              text={isLibraryExtraDirSlot(p) ? extraDirDisplayLabel(p) : p}
+                              text={isLibraryExtraDirSlot(p) ? extraDirDisplayLabel(p, libraryReadOnlyLabel) : p}
                               mono={!isLibraryExtraDirSlot(p)}
                               side="top"
                             >
                               <span className="min-w-0 flex-1 truncate text-left">
-                                {extraDirDisplayLabel(p)}
+                                {extraDirDisplayLabel(p, libraryReadOnlyLabel)}
                               </span>
                             </Tip>
                             {isLibraryExtraDirSlot(p) ? null : (

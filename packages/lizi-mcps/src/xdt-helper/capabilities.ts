@@ -17,6 +17,7 @@
  *    因为后者是 Cindy 最差异化的能力,值得独立索引项让模型一眼能查到。
  */
 
+import { RICH_ANSWER_GUIDE } from '@cindy/maker-shared/rich-answer-guide';
 import { BRAND_NAME } from '@cindy/maker-shared/branding';
 
 export interface CapabilityEntry {
@@ -27,6 +28,12 @@ export interface CapabilityEntry {
 }
 
 export const CAPABILITIES: readonly CapabilityEntry[] = [
+  {
+    key: 'rich-answers',
+    title: '流式正文与可组合组件',
+    oneLiner: '模型可自由组合正文图文、图表与交互控件，增量更新；按需查询组件协议，不要求另存 HTML。',
+    detail: RICH_ANSWER_GUIDE,
+  },
   {
     key: 'grok-login',
     title: 'Grok / SuperGrok 授权登录',

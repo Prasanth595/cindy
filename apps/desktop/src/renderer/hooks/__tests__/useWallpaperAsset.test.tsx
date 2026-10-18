@@ -93,12 +93,12 @@ describe('on-demand wallpaper assets', () => {
       { initialProps: { id: 'none' as WallpaperId, enabled: false } },
     );
     rerender({ id: 'custom', enabled: true });
-    rerender({ id: 'wheatfield-watch', enabled: false });
+    rerender({ id: 'dune-dawn', enabled: false });
     expect(image).not.toHaveBeenCalled();
     expect(video).not.toHaveBeenCalled();
-    rerender({ id: 'wheatfield-watch', enabled: true });
+    rerender({ id: 'dune-dawn', enabled: true });
     await waitFor(() => expect(decode).toHaveBeenCalledOnce());
-    expect(image).toHaveBeenCalledWith('wheatfield-watch');
+    expect(image).toHaveBeenCalledWith('dune-dawn');
     expect(video).not.toHaveBeenCalled();
     rerender({ id: 'cindy-window', enabled: true });
     await waitFor(() => expect(video).toHaveBeenCalledOnce());

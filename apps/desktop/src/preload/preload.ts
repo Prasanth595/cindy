@@ -5630,6 +5630,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
       /** interrupted-turn-resume:「疑似中断」(startedAt > endedAt)的 active 会话 id。 */
       interruptedPending: (): Promise<string[]> =>
         ipcRenderer.invoke('local-db:sessions:interrupted-pending'),
+      /** 启动「继续上次中断的任务」弹窗:中断会话 + 中断时间 + 中断前正在做的事。 */
+      interruptedResumeCandidates: (): Promise<
+        { sessionId: string; interruptedAt: number; activity: string | null }[]
+      > => ipcRenderer.invoke('local-db:sessions:interrupted-resume-candidates'),
       /** 红点派生的周期性重算源:尾部停在未 dismissed 错误行的 active 会话 id。
        *  与 interruptedPending 分开消费——后者只在启动首拉一次(它对正在跑的 turn
        *  天然成立,周期性重跑会把运行中的会话误判为中断)。 */

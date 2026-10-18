@@ -157,6 +157,9 @@ export interface AgentRuntimeConfig {
    * Codex: SDK 不支持，传了也忽略。
    */
   systemPrompt?: string;
+  /** Host-owned answer presentation protocol. Shared by normal and Bot sessions;
+   * appended to native instructions, never replaces the CLI's own prompt. */
+  answerDeliveryPrompt?: string;
 
   /**
    * 是否启用 agent 的自动记忆 (Claude auto-memory / Codex experimental memories)。

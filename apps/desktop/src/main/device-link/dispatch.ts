@@ -1,3 +1,4 @@
+import { hasRichAnswer, compactRichAnswer, richAnswerText } from '@cindy/maker-shared/rich-answer';
 import type { RemoteAgentLimitUsage } from '../../shared/remoteAgentLimits.js';
 import { executeTaskTags, TASK_TAG_CHANNEL } from '../localDb/ipc/taskTags.js';
 import { encodeMessageBodies, versionMessageBody } from './sessionMessageReuse.js';
@@ -211,13 +212,15 @@ const textEncoder = new TextEncoder();
 // per-peer queue bounded, with room for that body plus its message envelope.
 const offlinePushQueue = createOfflinePushQueue({ maxBytes: 2 * 1024 * 1024 });
 
-// Serialize the async DB check at the final wire boundary, retaining per-peer
-// order even when replies arrive out of order. Bounds match best-effort push:
-// dropped frames recover through the existing Session snapshot mechanism.
+// Start the async DB check at the final wire boundary and deliver in per-peer
+// order even when replies arrive out of order. Checks issued in the same pass
+// (all peers of one fan-out) share one batched read that is issued after all of
+// them arrived; see projectRemoteBotPush. Bounds
+// match best-effort push: dropped frames recover through the Session snapshot.
 const botPushChecks = new Map<string, { tail: Promise<void>; bytes: number; count: number }>();
 function sendBotCheckedPush(
   dst: string, channel: string, payload: unknown, send: (payload: unknown) => void,
-  failed: (error: unknown) => void,
+  failed: (error: unknown) => void, payloadBytes?: number,
 ): void | Promise<void> {
   const sharedTaskFence = captureSharedTaskPush(dst, channel, payload);
   if (!sharedTaskFence) return;
@@ -225,7 +228,7 @@ function sendBotCheckedPush(
   send = (projected) => { if (sharedTaskFence()) deliver(projected); };
   if (!hasRemoteBotSessionLookup()) { send(payload); return; }
   let size: number;
-  try { size = byteLength(JSON.stringify(payload)); } catch (error) { failed(error); return; }
+  try { size = payloadBytes ?? measurePushPayloadBytes(payload); } catch (error) { failed(error); return; }
   const queue = botPushChecks.get(dst) ?? { tail: Promise.resolve(), bytes: 0, count: 0 };
   if (queue.count >= 64 || queue.bytes + size > 8 * 1024 * 1024) {
     failed(new DeviceLinkError('BACKPRESSURE', 'remote push authorization queue full'));
@@ -234,9 +237,16 @@ function sendBotCheckedPush(
   const client = activeClient;
   const linkEpoch = remoteInvokeLinkEpoch.get(dst) ?? 0;
   const owner = broadcastTap.captureDataOwnerBroadcastScope();
+  // A push that is already at the head of an idle queue starts its read now, so all peers of
+  // one fan-out share a round. One queued behind another reads only when it reaches the head:
+  // an earlier read would be a visibility verdict taken before waiting out the slower pushes.
+  const atHead = queue.count === 0;
   queue.count += 1; queue.bytes += size;
+  const early = atHead ? projectRemoteBotPush(payload, channel) : null;
+  // Settled below in per-peer order; do not surface as unhandled meanwhile.
+  early?.catch(() => undefined);
   queue.tail = queue.tail.then(async () => {
-    const projected = await projectRemoteBotPush(payload, channel);
+    const projected = await (early ?? projectRemoteBotPush(payload, channel));
     if (projected !== null && activeClient === client && (remoteInvokeLinkEpoch.get(dst) ?? 0) === linkEpoch && !isControllerRevoked(dst) && broadcastTap.isDataOwnerBroadcastScopeCurrent(owner)) send(projected);
   }).catch(failed).finally(() => {
     queue.count -= 1; queue.bytes -= size;
@@ -244,6 +254,23 @@ function sendBotCheckedPush(
   });
   botPushChecks.set(dst, queue);
   return queue.tail;
+}
+
+/**
+ * Push payloads are shared by reference across every peer of one fan-out and
+ * are not mutated after broadcast (batching already holds them by reference).
+ * Remember their UTF-8 JSON size so each peer and each staging step does not
+ * stringify the same event again.
+ */
+const pushPayloadBytes = new WeakMap<object, number>();
+function measurePushPayloadBytes(payload: unknown): number {
+  const key = payload !== null && typeof payload === 'object' ? payload : null;
+  const known = key ? pushPayloadBytes.get(key) : undefined;
+  if (known !== undefined) return known;
+  const json = JSON.stringify(payload);
+  const bytes = json ? byteLength(json) : 0;
+  if (key) pushPayloadBytes.set(key, bytes);
+  return bytes;
 }
 
 /** 只排队可由 session snapshot 对账、且不携带权限终态的会话域事件。 */
@@ -1537,11 +1564,10 @@ function readPushSessionId(payload: unknown): string | null {
 
 function estimateMakerEventBytes(payload: unknown): number {
   try {
-    const json = JSON.stringify(payload);
     // 必须按 UTF-8 计:String.length 是 UTF-16 码元数,中文/emoji 会显著低估,
     // 字节阈值随之形同虚设(单批可能被撑到需要分片或 PAYLOAD_TOO_LARGE)。
     // byteLength 与可靠传输层计算分片大小用的是同一个函数,口径一致。
-    return json ? byteLength(json) : 0;
+    return measurePushPayloadBytes(payload);
   } catch {
     // 不可序列化的 payload 交给 sendPush 报错处理;这里只保证估算不抛。
     return 0;
@@ -1688,7 +1714,9 @@ function flushMakerEventBatchSession(
         }, () => {
           outcome.droppedEvents += slice.length;
           stageSessionSync(dst, sessionId, historyRequired);
-        });
+        // Queue accounting only: the events were already measured while staging,
+        // so do not stringify the whole batch once more per peer.
+        }, slice.reduce<number>((bytes, event) => bytes + estimateMakerEventBytes(event) + 1, byteLength(sessionId) + 32));
       } catch (err) {
         stageSessionSync(dst, sessionId, historyRequired);
         // 发不出去就丢这一片(不降级、不重试、不滞留):理由与四轮 review 的推导见
@@ -3876,7 +3904,15 @@ function sanitizeRemoteMessage(record: Record<string, unknown>): Record<string, 
 }
 
 function compactRemoteMessageContent(content: unknown, limit: number): unknown {
-  if (typeof content === 'string') return truncateRemoteInvokeString(content, limit);
+  if (typeof content === 'string') {
+    if (encodedByteLength(content) > limit && hasRichAnswer(content)) {
+      const snapshot = compactRichAnswer(content);
+      // Complete references and operations only; never send a cut JSON line.
+      if (encodedByteLength(snapshot) <= limit) return snapshot;
+      return truncateRemoteInvokeString(richAnswerText(content), limit);
+    }
+    return truncateRemoteInvokeString(content, limit);
+  }
   const serialized = safeJsonStringify(content);
   if (!serialized || encodedByteLength(serialized) <= limit) return content;
   return REMOTE_INVOKE_TRUNCATED_CONTENT;
