@@ -85,8 +85,9 @@ function CompatibleSheetModal({
   // 旋转/分屏/折叠后旧基线作废。
   const [windowProbeHeight, setWindowProbeHeight] = useState(geometry.height);
   const windowBaseline = useRef({ width: 0, height: 0, content: 0 });
+  // 只按窗口宽度分组:IME 弹起会改变高度(adjustResize 设备),按高度分组会把基线换成
+  // 键盘弹起后的高度、误判成「系统没让位」而双重避让;旋转/并排分屏都会改变宽度。
   const windowBaselineHeight = windowBaseline.current.width === windowWidth
-    && windowBaseline.current.height === windowHeight
     ? windowBaseline.current.content
     : windowProbeHeight;
   // 背板淡入 + 面板滑入共用一条 progress;关闭淡出/滑出播完后再卸载 Modal。
@@ -179,6 +180,17 @@ function CompatibleSheetModal({
       visible={mounted}
     >
       <GestureHandlerRootView style={styles.gestureRoot}>
+      {/* 窗口探针:不受本组件让位 padding 影响,只用于判断系统是否真的为 IME 让出了空间。 */}
+      <View pointerEvents="none" style={StyleSheet.absoluteFill} onLayout={event => {
+        const measured = event.nativeEvent.layout.height;
+        const baseline = windowBaseline.current;
+        if (baseline.width !== windowWidth) {
+          windowBaseline.current = { width: windowWidth, height: windowHeight, content: measured };
+        } else if (measured > baseline.content) {
+          baseline.content = measured;
+        }
+        setWindowProbeHeight(measured);
+      }} />
       <Animated.View style={backdropStyle}>
         <BlurBackdrop />
         <Pressable
@@ -200,16 +212,6 @@ function CompatibleSheetModal({
       <View pointerEvents="box-none" style={displaced ? {
         position: 'absolute', left: region.x, top: region.y, width: region.width, height: region.height,
       } : keyboardLift > 0 ? [styles.keyboardLayer, { paddingBottom: keyboardLift }] : styles.keyboardLayer}>
-        <View pointerEvents="none" style={StyleSheet.absoluteFill} onLayout={event => {
-          const measured = event.nativeEvent.layout.height;
-          const baseline = windowBaseline.current;
-          if (baseline.width !== windowWidth || baseline.height !== windowHeight) {
-            windowBaseline.current = { width: windowWidth, height: windowHeight, content: measured };
-          } else if (measured > baseline.content) {
-            baseline.content = measured;
-          }
-          setWindowProbeHeight(measured);
-        }} />
         <KeyboardAvoidingView
           enabled={keyboardAvoiding && !displaced && Platform.OS !== 'android'}
           behavior={keyboardAvoidingBehavior}

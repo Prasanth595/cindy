@@ -47,8 +47,10 @@ function nonNegative(value: number): number {
 export function computeAndroidSheetKeyboardLift(
   input: AndroidSheetKeyboardLiftInput,
 ): number {
-  const imeFullHeight = nonNegative(input.imeHeight) + nonNegative(input.systemBarBottom);
-  if (imeFullHeight <= 0) return 0;
+  // 先要求 IME 真的可见:否则只看系统栏底会在键盘收起后仍返回 24~48dp,把纯动作浮窗顶起来。
+  const imeHeight = nonNegative(input.imeHeight);
+  if (imeHeight <= 0) return 0;
+  const imeFullHeight = imeHeight + nonNegative(input.systemBarBottom);
   const shrink = (Number.isFinite(input.baselineContentHeight) ? input.baselineContentHeight : 0)
     - (Number.isFinite(input.contentHeight) ? input.contentHeight : 0);
   if (!(shrink > ANDROID_SHEET_KEYBOARD_RESIZE_THRESHOLD)) return Math.round(imeFullHeight);

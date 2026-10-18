@@ -38,6 +38,8 @@ describe('computeAndroidSheetKeyboardLift', () => {
 
   it('stays at zero while the keyboard is hidden', () => {
     expect(computeAndroidSheetKeyboardLift({ ...base, imeHeight: 0 })).toBe(0);
+    // 键盘收起但系统栏底仍为正:不能只补系统栏。
+    expect(computeAndroidSheetKeyboardLift({ ...base, imeHeight: 0, systemBarBottom: 24 })).toBe(0);
     expect(computeAndroidSheetKeyboardLift({ ...base, imeHeight: -8, systemBarBottom: 0 })).toBe(0);
   });
 

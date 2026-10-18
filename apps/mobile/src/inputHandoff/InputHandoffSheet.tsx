@@ -10,14 +10,8 @@ import {
   Pressable,
   ScrollView,
   View,
-  useWindowDimensions,
-  type StyleProp,
-  type ViewStyle,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useRef, type ReactNode } from "react";
-import { computeAndroidKeyboardInsetLift } from "@/session/mobileKeyboardAvoidance";
-import { useMobileKeyboardState } from "@/session/useMobileKeyboardState";
 import { useTranslation } from "react-i18next";
 import { AppWindow, Globe, Lock, QrCode, SquareTerminal } from "lucide-react-native";
 import type { InputHandoffSnapshot } from "@cindy/device-link";
@@ -43,7 +37,10 @@ export function InputHandoffSheet(props: InputHandoffSheetProps) {
   const remote = snapshot.remoteInput === true;
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <InputHandoffKeyboardLayer style={styles.sheetBackdrop}>
+      <KeyboardAvoidingView
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        style={styles.sheetBackdrop}
+      >
         <Pressable accessibilityRole="button" accessibilityLabel={t("interaction.inputHandoff.action.close")} style={{ flex: 1 }} onPress={onClose} />
         <View style={[styles.sheetPanel, { paddingBottom: Math.max(insets.bottom, spacing.lg) }]} testID="interaction.inputHandoff.sheet">
           <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ gap: spacing.lg }}>
@@ -91,7 +88,7 @@ export function InputHandoffSheet(props: InputHandoffSheetProps) {
             <InputHandoffQuietLinks {...props} />
           </ScrollView>
         </View>
-      </InputHandoffKeyboardLayer>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
@@ -192,48 +189,4 @@ function InputHandoffQuietLinks({ snapshot, busy, onPicture, onLiveView, qr }: I
       ) : null}
     </View>
   );
-}
-
-/** Android edge-to-edge 下弹层不缩窗：按同一差值模型给整层让位（iOS 走 KAV padding）。 */
-function InputHandoffKeyboardLayer({
-  style,
-  children,
-}: {
-  style?: StyleProp<ViewStyle>;
-  children: ReactNode;
-}) {
-  if (Platform.OS === "ios") {
-    return <KeyboardAvoidingView behavior="padding" style={style}>{children}</KeyboardAvoidingView>;
-  }
-  return <AndroidKeyboardLayer style={style}>{children}</AndroidKeyboardLayer>;
-}
-
-function AndroidKeyboardLayer({
-  style,
-  children,
-}: {
-  style?: StyleProp<ViewStyle>;
-  children: ReactNode;
-}) {
-  const keyboard = useMobileKeyboardState();
-  const insets = useSafeAreaInsets();
-  const { height: viewportHeight } = useWindowDimensions();
-  const fullHeight = useStableFullHeight(viewportHeight, keyboard.visible);
-  const lift = computeAndroidKeyboardInsetLift({
-    imeHeight: keyboard.height,
-    systemBarBottom: insets.bottom,
-    fullHeight,
-    viewportHeight,
-    windowVisibleBottom: keyboard.screenY,
-  });
-  return <View style={[style, lift > 0 ? { paddingBottom: lift } : null]}>{children}</View>;
-}
-
-/** 键盘未弹起时跟踪全屏高；弹起期间冻结，防止把键盘顶边误记成窗口变化。 */
-function useStableFullHeight(viewportHeight: number, keyboardVisible: boolean): number {
-  const fullHeight = useRef(viewportHeight);
-  if (!keyboardVisible && fullHeight.current !== viewportHeight) {
-    fullHeight.current = viewportHeight;
-  }
-  return fullHeight.current;
 }
