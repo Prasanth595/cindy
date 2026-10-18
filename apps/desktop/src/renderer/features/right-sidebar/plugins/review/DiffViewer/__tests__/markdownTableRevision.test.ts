@@ -26,9 +26,19 @@ function render(content: string): string {
   );
 }
 
-const BEFORE = ['| 名称 | 取值 | 备注 |', '| --- | --- | --- |', '| 质量上限 | 30 | 与旧版一致 |', '| 学习率 | 0.01 | 固定值 |'].join('\n');
+const BEFORE = [
+  '| 名称 | 取值 | 备注 |',
+  '| --- | --- | --- |',
+  '| 质量上限 | 30 | 与旧版一致 |',
+  '| 学习率 | 0.01 | 固定值 |',
+].join('\n');
 
-const AFTER = ['| 名称 | 取值 | 备注 |', '| --- | --- | --- |', '| 质量上限 | 40 | 与旧版一致 |', '| 学习率 | 0.01 | 固定值 |'].join('\n');
+const AFTER = [
+  '| 名称 | 取值 | 备注 |',
+  '| --- | --- | --- |',
+  '| 质量上限 | 40 | 与旧版一致 |',
+  '| 学习率 | 0.01 | 固定值 |',
+].join('\n');
 
 describe('buildMarkdownTableRevision — 单元格级', () => {
   /** 按 GFM 的奇偶规则数一行表格的列数（独立实现，用于交叉验证）。 */
@@ -73,12 +83,16 @@ describe('buildMarkdownTableRevision — 单元格级', () => {
     // 实机案例（FR 任务表）：`（建筑/车辆/人物，**无 HP**）` → `（**车辆/人员**，**无 HP**）`。
     // 改动只拿到 `**` 的一半，逐片段注入会被 CommonMark 拆坏；单元格级先过局部校验，
     // 失败后走通用两段式（区域注入），不再把整张表拖回块级装饰。
-    const before = ['| 编号 | 需求 |', '| --- | --- |', '| FR-002 | （建筑/车辆/人物，**无 HP**）保留 |'].join(
-      '\n',
-    );
-    const after = ['| 编号 | 需求 |', '| --- | --- |', '| FR-002 | （**车辆/人员**，**无 HP**）保留 |'].join(
-      '\n',
-    );
+    const before = [
+      '| 编号 | 需求 |',
+      '| --- | --- |',
+      '| FR-002 | （建筑/车辆/人物，**无 HP**）保留 |',
+    ].join('\n');
+    const after = [
+      '| 编号 | 需求 |',
+      '| --- | --- |',
+      '| FR-002 | （**车辆/人员**，**无 HP**）保留 |',
+    ].join('\n');
     const injected = buildMarkdownTableRevision(before, after);
     expect(injected).not.toBeNull();
     // 加粗新增的 `**` 留在标记外，只标真正变动的文本（中间 `车辆/人` 不动）。
@@ -141,7 +155,10 @@ describe('buildMarkdownTableRevision — 单元格级', () => {
   });
 
   it('still marks a whole cell that contains a formula (inside the math)', () => {
-    const injected = buildMarkdownTableRevision('', '| 名称 | 取值 |\n| --- | --- |\n| 上限 | $m \\le 40$ |');
+    const injected = buildMarkdownTableRevision(
+      '',
+      '| 名称 | 取值 |\n| --- | --- |\n| 上限 | $m \\le 40$ |',
+    );
     expect(injected).toContain('$\\textcolor{inherit}{\\underline{m \\le 40}}$');
     expect(injected).not.toContain('htmlClass');
     const html = render(injected as string);
@@ -149,11 +166,18 @@ describe('buildMarkdownTableRevision — 单元格级', () => {
     expect(html).toContain('underline');
   });
 
-  it('treats a pipe after an even backslash run as a column separator (regression)', () => {    // `\\|`：两个反斜杠本身就是字面量，管道**仍然是**分隔符（GFM 按连续反斜杠的奇偶判定）。
+  it('treats a pipe after an even backslash run as a column separator (regression)', () => {
+    // `\\|`：两个反斜杠本身就是字面量，管道**仍然是**分隔符（GFM 按连续反斜杠的奇偶判定）。
     // 旧实现见到 `\` 紧跟 `|` 就当转义，把两格并成一格 → 列边界被静默改写，而校验只看
     // 行数 / 列数，看不出来。四列表：`x \\` 是第三格（一个反斜杠），`y` 是第四格。
-    const before = ['| a | b | c | d |', '| --- | --- | --- | --- |', '| 1 | 旧 | x \\\\| y |'].join('\n');
-    const after = ['| a | b | c | d |', '| --- | --- | --- | --- |', '| 1 | 新 | x \\\\| y |'].join('\n');
+    const before = [
+      '| a | b | c | d |',
+      '| --- | --- | --- | --- |',
+      '| 1 | 旧 | x \\\\| y |',
+    ].join('\n');
+    const after = ['| a | b | c | d |', '| --- | --- | --- | --- |', '| 1 | 新 | x \\\\| y |'].join(
+      '\n',
+    );
     const injected = buildMarkdownTableRevision(before, after);
     expect(injected).not.toBeNull();
     const dataRow = injected?.split('\n')[2] ?? '';
@@ -349,5 +373,19 @@ describe('buildMarkdownTableRevision — 回退边界', () => {
       expect(revised).not.toContain('\\sout{');
       expect(revised).not.toContain('\\underline{');
     }
+  });
+});
+
+describe('buildMarkdownTableRevision — 大表预算', () => {
+  it('数据行超预算时放弃逐行对齐，回退整块（不卡渲染）', () => {
+    const build = (rows: number, tag: string): string => {
+      const lines = ['| a | b |', '| --- | --- |'];
+      for (let i = 0; i < rows; i += 1) lines.push(`| ${tag}${i} | y |`);
+      return lines.join('\n') + '\n';
+    };
+    // 两侧各约一千行、合计远低于整篇源码上限，但逐行对齐是无界的同步比较。
+    expect(buildMarkdownTableRevision(build(1001, 'a'), build(1001, 'b'))).toBeNull();
+    // 预算内仍走细粒度。
+    expect(buildMarkdownTableRevision(build(2, 'a'), build(2, 'b'))).not.toBeNull();
   });
 });

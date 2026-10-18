@@ -78,9 +78,15 @@ describe('buildMarkdownListRevision — 不接手的形态', () => {
 
   it('refuses nested lists and multi-line items', () => {
     expect(buildMarkdownListRevision('- 甲\n  - 子\n', '- 甲\n  - 子\n  - 子二\n')).toBeNull();
-    expect(
-      buildMarkdownListRevision('- 甲\n  续行\n', '- 甲\n  续行改\n'),
-    ).toBeNull();
+    expect(buildMarkdownListRevision('- 甲\n  续行\n', '- 甲\n  续行改\n')).toBeNull();
+  });
+});
+
+describe('buildMarkdownListRevision — 有序列表编号', () => {
+  it('有序列表只改编号时不得静默：拿不到细粒度结果就整块回退', () => {
+    // 正文全同时词级比较无改动，输出曾是一行无标记的「2. 甲」—— 编号变化完全看不见。
+    // 细粒度路径给不出带标记的结果时交回块级装饰（null），改动仍可见。
+    expect(buildMarkdownListRevision('1. 甲\n', '2. 甲\n')).toBeNull();
   });
 });
 

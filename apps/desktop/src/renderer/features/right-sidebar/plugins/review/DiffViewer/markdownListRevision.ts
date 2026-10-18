@@ -33,7 +33,11 @@ import {
 } from '@/components/chat/remarkReviewAnnotations';
 
 import { buildMarkdownMathRevision, mathMarksAreIntact } from './markdownMathRevision';
-import { buildMarkdownRevision, parseRevisionTree, REVISION_MAX_SOURCE_CHARS } from './markdownRevision';
+import {
+  buildMarkdownRevision,
+  parseRevisionTree,
+  REVISION_MAX_SOURCE_CHARS,
+} from './markdownRevision';
 import { mathMarksToSide } from './markdownTableRevision';
 
 const parser = unified().use(remarkParse).use(remarkGfm).use(remarkMath);
@@ -74,7 +78,8 @@ function parseList(source: string): ParsedList | null {
   if ((list as { spread?: boolean }).spread === true) return null;
   const lines = source.split(/\r?\n/);
   const items: ListItemSource[] = [];
-  const loose = (list as { spread?: boolean }).spread === true;  const rawItems = list.children;
+  const loose = (list as { spread?: boolean }).spread === true;
+  const rawItems = list.children;
   for (let index = 0; index < rawItems.length; index += 1) {
     const rawItem = rawItems[index];
     const item = rawItem as {
@@ -94,8 +99,9 @@ function parseList(source: string): ParsedList | null {
     const match = /^(\s*(?:[-*+]|\d{1,9}[.)])\s+)([\s\S]*)$/.exec(lines[start - 1] ?? '');
     if (!match) return null;
     // 项间原文（含空行）：用 after 侧的分隔重建，loose / tight 结构才不会静默变化。
-    const nextStart = (rawItems[index + 1] as { position?: { start?: { line?: number } } } | undefined)
-      ?.position?.start?.line;
+    const nextStart = (
+      rawItems[index + 1] as { position?: { start?: { line?: number } } } | undefined
+    )?.position?.start?.line;
     const gapAfter =
       typeof nextStart === 'number' && nextStart > end
         ? `\n${lines.slice(end, nextStart - 1).join('\n')}`
@@ -128,6 +134,16 @@ export function buildMarkdownListRevision(before: string, after: string): string
     beforeList.items.map((item) => item.body),
     afterList.items.map((item) => item.body),
   );
+
+  // 有序列表的编号 / 项目符号变了时，这条路径拿不出正确结果：按 body 对齐会把
+  // `1. 甲` → `2. 甲` 判成 equal，新版行原样输出 —— 编号变化成了**无标记**的一行
+  // （Greptile P2）；改成按 prefix+body 对齐又会让整项替换拿不到能过 validate 的注入。
+  // 两者取轻的：整块回退，交回块级装饰 —— 改动可见，只是粒度粗。
+  // 只比重叠位置：增删项本来就会让长度不同，那不是编号冲突。
+  const overlap = Math.min(beforeList.items.length, afterList.items.length);
+  for (let index = 0; index < overlap; index += 1) {
+    if (beforeList.items[index].prefix !== afterList.items[index].prefix) return null;
+  }
 
   const out: string[] = [];
   let beforeIndex = 0;

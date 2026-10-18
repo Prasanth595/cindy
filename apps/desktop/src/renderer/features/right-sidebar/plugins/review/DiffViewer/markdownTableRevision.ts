@@ -27,7 +27,12 @@ import {
   remarkReviewAnnotations,
 } from '@/components/chat/remarkReviewAnnotations';
 
-import { hasMathRevisionMarks, markInlineWhole, mathMarksAreIntact, reviseInlineMixed } from './markdownMathRevision';
+import {
+  hasMathRevisionMarks,
+  markInlineWhole,
+  mathMarksAreIntact,
+  reviseInlineMixed,
+} from './markdownMathRevision';
 import {
   buildMarkdownRevision,
   parseRevisionTree,
@@ -41,6 +46,16 @@ type MarkKind = 'insert' | 'delete';
 
 /** GFM 对齐行：`| --- | :---: |` 这类。 */
 const ALIGN_ROW_PATTERN = /^\s*\|?[\s:|-]+\|[\s:|-]*$/;
+
+/**
+ * 逐行对齐与逐格词级比较没有时间预算：两侧各约一万行的短行表格合计仍可能低于
+ * REVISION_MAX_SOURCE_CHARS（那是**整篇源码**口径），而整张表只算**一个**顶层块，
+ * 块数上限也拦不住。比较全部发生在渲染期间，会把窗口卡住。数据行超预算就放弃
+ * 表格路径、回退旧表删除 / 新表新增 —— 改动依然可见。
+ *
+ * 段落 / 列表侧由 REVISION_MAX_SOURCE_CHARS 按单块字符数兜底，这里不重复设限。
+ */
+const MAX_REVISED_TABLE_ROWS = 1_000;
 
 interface TableSource {
   header: string[];
@@ -466,6 +481,13 @@ export function buildMarkdownTableRevision(before: string, after: string): strin
     // 只改列对齐行时逐格文字全同，修订片段不会带任何标记，这处格式变化就看不见了
     //（Greptile P2）—— 放弃表格路径，回退旧表删除 / 新表新增，改动可见。
     if (beforeTable.align !== afterTable.align) return null;
+    // 行数超预算时逐行对齐开销不可控（见 MAX_REVISED_TABLE_ROWS），同样放弃。
+    if (
+      beforeTable.rows.length > MAX_REVISED_TABLE_ROWS ||
+      afterTable.rows.length > MAX_REVISED_TABLE_ROWS
+    ) {
+      return null;
+    }
     header = afterTable.header.map(
       (cell, index) => reviseCell(beforeTable.header[index] ?? '', cell) ?? cell,
     );
@@ -489,5 +511,7 @@ export function buildMarkdownTableRevision(before: string, after: string): strin
   ].join('\n');
 
   const reference = afterTable ? after : before;
-  return validateTableRevision(injected, reference, rows.length, afterTable !== null) ? injected : null;
+  return validateTableRevision(injected, reference, rows.length, afterTable !== null)
+    ? injected
+    : null;
 }
