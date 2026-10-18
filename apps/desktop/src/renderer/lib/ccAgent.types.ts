@@ -88,7 +88,8 @@ export type MessageAutomationOrigin = MessageSchedulerOrigin | MessageSessionOri
 export type StoredMessageOrigin =
   | MessageSchedulerOrigin
   | (MessageSessionOrigin & { displayText?: string })
-  | { kind: 'orca'; senderLabel?: string; displayText?: string; senderSessionId?: string };
+  | { kind: 'orca'; senderLabel?: string; displayText?: string; senderSessionId?: string }
+  | { kind: 'bridge'; key: string; displayText?: string };
 
 /**
  * Claude Code SDK 元信息——按消息类型不同填不同子集。

@@ -100,6 +100,9 @@ export type PartnerDispatchResult =
   | { ok: true; wakeKind: 'resumed' | 'already-active' | 'created' | 'queued' }
   | { ok: false; errorCode: string; message: string };
 
+/** 当前账号作用域(模式 + dataOwner + generation)。任务跨 await 用它做归属校验。 */
+export type PartnerOwnerScope = string;
+
 /** 宿主注入面(生产在 maker-ipc/register.ts 接线;测试注入内存 fake)。 */
 export interface PartnerBridgeDeps {
   /** 读某 key 的专属会话映射;null = 还没建过。 */
@@ -115,8 +118,16 @@ export interface PartnerBridgeDeps {
   getDraftDefaults(agentKind?: 'cc' | 'codex' | 'pi'): PartnerDraftDefaults;
   /** 宿主侧路径校验 + 规范化(非绝对路径/不存在/不是目录返回 null)。 */
   normalizeWorkingDir(dir: string): Promise<string | null>;
+  /** 捕获提交时的账号作用域;任务执行中据此 fail closed。 */
+  captureOwnerScope(): PartnerOwnerScope;
+  isOwnerScopeCurrent(scope: PartnerOwnerScope): boolean;
   isSessionBusy(sessionId: string): boolean;
-  dispatch(params: { targetSessionId: string; message: string }): Promise<PartnerDispatchResult>;
+  dispatch(params: {
+    targetSessionId: string;
+    message: string;
+    /** 会话分间键;作为 host-owned 来源标记写进消息 origin。 */
+    key: string;
+  }): Promise<PartnerDispatchResult>;
   /** 中止该会话当前这一轮(取消任务时调用)。 */
   abortSession(sessionId: string): Promise<void>;
   getObservableSession(sessionId: string): ObservableSession | null;

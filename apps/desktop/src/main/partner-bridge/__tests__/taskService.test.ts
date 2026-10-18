@@ -73,6 +73,8 @@ function createHarness() {
     },
     getDraftDefaults: () => ({}),
     normalizeWorkingDir: async (dir) => (dir.startsWith('/') ? dir : null),
+    captureOwnerScope: () => 'local:local-v1:0',
+    isOwnerScopeCurrent: (scope) => scope === 'local:local-v1:0',
     isSessionBusy: () => false,
     dispatch: async (params) => {
       dispatched.push(params);

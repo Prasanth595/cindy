@@ -14064,8 +14064,24 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       return sessionId;
     },
     getDraftDefaults: (agentKind) => {
-      // 先定 agent,再取该 agent 自己的草稿默认。未登录的本地模式默认模型可能
-      // 是 codex 侧的托管模型,写死 claude-code 会拿不到凭证(真机:no_key)。
+      // 优先跟随 New Maker 当前激活的 route:renderer 会给每个 vendor 都填默认值,
+      // 按 vendor 优先级判断会永远落在 cc 上(真机:默认模型是 codex 却建了 cc)。
+      const route = getSelectedNewMakerRoute(activeOwnerScopeKey());
+      const routeVendor = route
+        ? route.harness === 'claude'
+          ? ('cc' as const)
+          : route.harness
+        : null;
+      if (route && routeVendor && (!agentKind || agentKind === routeVendor)) {
+        return {
+          agentKind: routeVendor,
+          model: route.model,
+          effort: route.effort,
+          fastMode: route.fastMode,
+          ...(route.providerId !== null ? { providerId: route.providerId } : {}),
+        };
+      }
+      // 请求指定了另一个 agent:只取该 agent 自己的默认,不串用别的 agent 的模型。
       const pick = (vendor: 'cc' | 'codex' | 'pi') => {
         const defaults = getWorkerDefaultsFromNewMaker(
           vendor === 'cc' ? 'claude-code' : vendor,
@@ -14089,13 +14105,23 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     isSessionBusy: (sessionId) =>
       isSessionInTurn(sessionId) ||
       inputCoordinator.getQueueControlSnapshot(sessionId).pendingQueue.length > 0,
-    dispatch: async ({ targetSessionId, message }) => {
+    captureOwnerScope: () => activeOwnerScopeKey(),
+    isOwnerScopeCurrent: (scope) => activeOwnerScopeKey() === scope,
+    dispatch: async ({ targetSessionId, message, key }) => {
+      // 投递边界再复查一次忙状态:宁可直接拒绝,也不把外部消息塞进用户队列。
+      if (
+        isSessionInTurn(targetSessionId) ||
+        inputCoordinator.getQueueControlSnapshot(targetSessionId).pendingQueue.length > 0
+      ) {
+        return { ok: false, errorCode: 'BUSY', message: '会话正忙,本单未入队' };
+      }
       // 会话是"只建了 DB 行"的懒启动态:不恢复已保存的权限档,首轮会落到
       // bypassPermissions,默认的 plan 任务就绕过了只读限制。
       const r = await sendToSessionInternal({
         targetSessionId,
         message,
         resumeWithStoredPermissionMode: true,
+        origin: { kind: 'bridge', key, displayText: message },
       });
       if (!r.ok) return { ok: false, errorCode: r.errorCode, message: r.message };
       return { ok: true, wakeKind: r.wakeKind };

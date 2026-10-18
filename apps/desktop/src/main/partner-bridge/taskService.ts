@@ -244,6 +244,7 @@ export function createPartnerTaskService(deps: PartnerBridgeDeps): PartnerTaskSe
     request: PartnerTurnRequest,
     permissionMode: PartnerPermissionMode,
     workingDir: string | undefined,
+    ownerScope: string,
     inflightTask: InflightTask,
   ): Promise<void> {
     const cancelled = new Promise<never>((_, reject) => {
@@ -255,6 +256,10 @@ export function createPartnerTaskService(deps: PartnerBridgeDeps): PartnerTaskSe
     const session = await resolveSession(request, permissionMode, workingDir);
     if (!session.ok) {
       fail(task, session.errorCode, session.message);
+      return;
+    }
+    if (!deps.isOwnerScopeCurrent(ownerScope)) {
+      fail(task, 'OWNER_CHANGED', '任务执行期间切换了账号,本单已停止;请在新账号下重新提交');
       return;
     }
     const sessionId = session.sessionId;
@@ -276,7 +281,11 @@ export function createPartnerTaskService(deps: PartnerBridgeDeps): PartnerTaskSe
     const dispatchedAt = now();
     let dispatched: PartnerDispatchResult;
     try {
-      dispatched = await deps.dispatch({ targetSessionId: sessionId, message: request.prompt });
+      dispatched = await deps.dispatch({
+        targetSessionId: sessionId,
+        message: request.prompt,
+        key: request.key,
+      });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       fail(task, classifyTurnSetupError(message), message);
@@ -470,10 +479,18 @@ export function createPartnerTaskService(deps: PartnerBridgeDeps): PartnerTaskSe
         cancel: null,
       };
       inflight.set(task.taskId, inflightTask);
+      const ownerScope = deps.captureOwnerScope();
       deps.log.info('partner task accepted', { taskId: task.taskId, key, permissionMode });
 
       // 后台跑,调用方立刻拿到 taskId 去轮询或等回调。
-      void runTask(task, { ...request, key, prompt, ...(callbackUrl ? { callbackUrl } : {}) }, permissionMode, workingDir, inflightTask)
+      void runTask(
+        task,
+        { ...request, key, prompt, ...(callbackUrl ? { callbackUrl } : {}) },
+        permissionMode,
+        workingDir,
+        ownerScope,
+        inflightTask,
+      )
         .catch((err: unknown) => {
           deps.log.warn('partner task crashed', {
             taskId: task.taskId,
