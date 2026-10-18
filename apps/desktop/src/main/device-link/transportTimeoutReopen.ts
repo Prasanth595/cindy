@@ -19,8 +19,8 @@ export interface TransportTimeoutReopenDeps {
   onReset?(deviceId: string): void;
   /** Notify only a still-current, authorized successful recovery. */
   onReopened?(deviceId: string): void;
-  /** 这一轮次数用完仍没连上。调用方可以过一会儿再 trigger，不拆共享中转。 */
-  onGaveUp?(deviceId: string): void;
+  /** 这一轮次数用完仍没连上(附最后一次失败)。调用方可以过一会儿再 trigger，不拆共享中转。 */
+  onGaveUp?(deviceId: string, lastError: unknown): void;
   /** 某设备开始新一轮(已有循环在跑时不调用)。dispose 不会调 onGaveUp,调用方据此记住它。 */
   onStarted?(deviceId: string): void;
   /** 重开链路(通常是 openRemoteLink;自带同 device in-flight 去重)。 */
@@ -175,7 +175,7 @@ export function createTransportTimeoutReopenLoop(
             `transport-timeout reopen gave up for ${deviceId.slice(0, 8)} after ${n} attempts: ${String(err)}`,
           );
           finishEntry(deviceId, entry);
-          deps.onGaveUp?.(deviceId);
+          deps.onGaveUp?.(deviceId, err);
           return;
         }
         const delay = baseDelayMs * 2 ** (n - 1);

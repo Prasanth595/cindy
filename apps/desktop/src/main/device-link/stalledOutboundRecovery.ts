@@ -35,9 +35,9 @@ export interface StalledOutboundRecoveryDeps {
   /** 授权与状态门:出站链路需要重开、relay 在线、本机持有、未禁用、未被撤权。 */
   canRecover(deviceId: string): boolean;
   /**
-   * relay 重新上线后复验已登记设备用的判据,缺省同 canRecover。已登记的循环可能来自
-   * transport-timeout / before-link / 接管等入口,它们按自己的控制意图启动,不一定有
-   * 本机建成过的出站链路。
+   * 由其它入口直接启动的循环(transport-timeout / before-link / 接管,见 track / restart)
+   * 复验用的判据,缺省同 canRecover。这些循环按自己的控制意图启动,不一定有本机建成过的
+   * 出站链路;新事件登记的设备仍只用 canRecover,不借这个更宽的判据。
    */
   canResume?(deviceId: string): boolean;
   /** 本机 relay 是否在线。离线是暂时的:不清掉恢复中的设备,等重新上线再试。 */
@@ -82,6 +82,10 @@ export function createStalledOutboundRecovery(
   const rounds = new Map<string, number>();
   /** 恢复中的设备:触发过重开、还没恢复也没被判定不再需要。relay 重连后据此接着重开。 */
   const recovering = new Set<string>();
+  /** 其中由其它入口直接启动循环登记的设备,复验用 canResume。 */
+  const directLoops = new Set<string>();
+  /** 本模块自己 trigger 时循环回调的 onStarted 不算直接入口。 */
+  let selfTriggering = false;
 
   const clearPendingRetry = (deviceId: string): void => {
     const entry = timers.get(deviceId);
@@ -93,6 +97,7 @@ export function createStalledOutboundRecovery(
   const reset = (deviceId: string): void => {
     rounds.delete(deviceId);
     recovering.delete(deviceId);
+    directLoops.delete(deviceId);
     clearPendingRetry(deviceId);
   };
 
@@ -100,11 +105,13 @@ export function createStalledOutboundRecovery(
     rounds.delete(deviceId);
     clearPendingRetry(deviceId);
     recovering.add(deviceId);
+    directLoops.add(deviceId);
   };
 
   const recover = (deviceId: string, reason: StalledOutboundRecoveryReason): void => {
-    // 事件本身就是新证据(新一次断开、对端或本机重新上线):退避从头算,马上重开。
-    if (reason !== 'retry-timer') {
+    // 对端相关的事件是新证据(新一次断开或对端重新上线):退避从头算,马上重开。
+    // 本机 relay 重新上线不说明对端怎样,保留已有退避。
+    if (reason !== 'retry-timer' && reason !== 'relay-online') {
       rounds.delete(deviceId);
       clearPendingRetry(deviceId);
     }
@@ -114,7 +121,7 @@ export function createStalledOutboundRecovery(
       recovering.add(deviceId);
       return;
     }
-    const allowed = reason === 'relay-online' && deps.canResume
+    const allowed = directLoops.has(deviceId) && deps.canResume
       ? deps.canResume(deviceId)
       : deps.canRecover(deviceId);
     if (!allowed) {
@@ -128,9 +135,14 @@ export function createStalledOutboundRecovery(
     deps.log?.info(`re-opening stalled outbound link for ${deviceId.slice(0, 8)} (${reason})`);
     // 定时重试时链路状态没有新变化,界面已在上一次重置时作废过,不再重复通知;
     // transport-reset 的通知已由调用方发过。成功后仍会发 PEER_LINK_REOPENED。
-    deps.trigger(deviceId, {
-      notifyReset: reason === 'link-lost' || reason === 'route-offline' || reason === 'presence-online',
-    });
+    selfTriggering = true;
+    try {
+      deps.trigger(deviceId, {
+        notifyReset: reason === 'link-lost' || reason === 'route-offline' || reason === 'presence-online',
+      });
+    } finally {
+      selfTriggering = false;
+    }
   };
 
   return {
@@ -153,15 +165,22 @@ export function createStalledOutboundRecovery(
     restart,
     track(deviceId) {
       recovering.add(deviceId);
+      if (!selfTriggering) directLoops.add(deviceId);
     },
     resumeAfterRelayOnline() {
-      for (const deviceId of [...recovering]) recover(deviceId, 'relay-online');
+      // 只接上被 relay 断线打断的设备:还在正常等待的计时器保留剩余延迟,不让 relay 一次
+      // 抖动把所有离线 peer 的退避打回起点、同时扇出 link-open。
+      for (const deviceId of [...recovering]) {
+        if (timers.has(deviceId) || deps.isReopening(deviceId)) continue;
+        recover(deviceId, 'relay-online');
+      }
     },
     dispose() {
       for (const entry of timers.values()) clearTimer(entry.timer);
       timers.clear();
       rounds.clear();
       recovering.clear();
+      directLoops.clear();
     },
     hasPendingRetry: (deviceId) => timers.has(deviceId),
     isRecovering: (deviceId) => recovering.has(deviceId),

@@ -16,7 +16,7 @@ import {
   PROTOCOL_VERSION,
   type Envelope,
 } from '@cindy/device-link';
-import { shouldRecoverStalledOutboundLink } from '../linkRecovery';
+import { isPermanentReopenError, shouldRecoverStalledOutboundLink } from '../linkRecovery';
 import {
   createTransportTimeoutReopenLoop,
   routeLinkCloseForReopen,
@@ -68,6 +68,8 @@ class FlowRelay {
   readonly deliveredLinkOpens = new Map<string, number>();
   /** 丢弃匹配的帧(模拟对端恢复后不主动发任何恢复信号)。 */
   drop: ((senderId: string, envelope: Envelope) => boolean) | null = null;
+  /** 关闭了「允许远程控制」的设备:对它的帧返回 REMOTE_DISABLED。 */
+  readonly remoteDisabled = new Set<string>();
   /** 连不上 relay 的设备:新连接立刻被关闭,对它的帧按离线处理。 */
   readonly unreachable = new Set<string>();
 
@@ -96,6 +98,15 @@ class FlowRelay {
       return;
     }
     if (!envelope.dst) return;
+    if (this.remoteDisabled.has(envelope.dst)) {
+      socket.push({
+        v: PROTOCOL_VERSION,
+        kind: 'relay-error',
+        ...(envelope.id ? { id: envelope.id } : {}),
+        payload: { code: 'REMOTE_DISABLED', message: 'remote control disabled', dst: envelope.dst },
+      });
+      return;
+    }
     if (this.offline.has(envelope.dst) || this.unreachable.has(envelope.dst)) {
       socket.push({
         v: PROTOCOL_VERSION,
@@ -190,7 +201,9 @@ function wireController(ctrl: DeviceLinkClient) {
       recovery.reset(deviceId);
       reopened.push(deviceId);
     },
-    onGaveUp: (deviceId) => recovery.onGaveUp(deviceId),
+    onGaveUp: (deviceId, lastError) => (isPermanentReopenError(lastError)
+      ? recovery.reset(deviceId)
+      : recovery.onGaveUp(deviceId)),
     onStarted: (deviceId) => recovery.track(deviceId),
     reopen: async (deviceId) => {
       if (!ctrl.isLinkReady(deviceId)) await openRemoteLink(deviceId);
@@ -712,5 +725,28 @@ describe('出站链路主动重开:完整流程', () => {
 
     expect(env.ctrl.isLinkReady('vm')).toBe(true);
     expect(env.host.recovery.isRecovering('vm')).toBe(false);
+  });
+  it('对端关闭远程控制(REMOTE_DISABLED):不主动重开,直接入口的循环失败后也不排慢速重试', async () => {
+    await establish(env);
+    env.relay.remoteDisabled.add('vm');
+    void env.ctrl.invoke('vm', { channel: 'test:ping', args: [] }).catch(() => undefined);
+    for (let waited = 0; env.ctrl.isLinkReady('vm') && waited < 10_000; waited += 100) {
+      await settle(100);
+    }
+    expect(env.ctrl.isLinkReady('vm')).toBe(false);
+    await settle(ONE_ROUND_MS);
+    expect(env.host.openRemoteLinkCalls()).toBe(1);
+    expect(env.host.recovery.isRecovering('vm')).toBe(false);
+
+    // 其它入口直接启动的一轮也以 REMOTE_DISABLED 告终:不再排 60 秒起的慢速重试。
+    env.host.loop.trigger('vm');
+    await settle(ONE_ROUND_MS);
+    expect(env.host.loop.isActive('vm')).toBe(false);
+    expect(env.host.recovery.hasPendingRetry('vm')).toBe(false);
+    expect(env.host.recovery.isRecovering('vm')).toBe(false);
+    const calls = env.host.openRemoteLinkCalls();
+    await settle(30 * 60_000);
+    expect(env.host.openRemoteLinkCalls()).toBe(calls);
+    expect(env.relay.linkOpensTo('vm')).toBe(1);
   });
 });

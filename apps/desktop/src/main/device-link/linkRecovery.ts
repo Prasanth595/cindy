@@ -19,6 +19,24 @@ export function shouldRecoverStalledOutboundLink(input: {
     && !input.revokedByRemote;
 }
 
+/** 再试也不会成功的重开失败:对端关闭远程控制、撤销授权、本机禁用或待命、协议不兼容。 */
+const PERMANENT_REOPEN_ERROR_CODES: ReadonlySet<string> = new Set([
+  'REMOTE_DISABLED',
+  'ACCESS_REVOKED',
+  'VERSION_MISMATCH',
+  'CHANNEL_NOT_ALLOWED',
+  'DEVICE_LINK_CONTROL_DISABLED',
+  'DEVICE_LINK_STANDBY',
+]);
+
+/** 一轮重开以这些错误告终时，不再排慢速重试。 */
+export function isPermanentReopenError(err: unknown): boolean {
+  const code = err instanceof DeviceLinkError
+    ? err.code
+    : /\[([A-Z_]+)\]/.exec(err instanceof Error ? err.message : String(err))?.[1];
+  return code !== undefined && PERMANENT_REOPEN_ERROR_CODES.has(code);
+}
+
 const STALLED_OUTBOUND_RETRY_BASE_MS = 60_000;
 const STALLED_OUTBOUND_RETRY_MAX_MS = 10 * 60_000;
 

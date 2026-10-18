@@ -175,6 +175,7 @@ import {
 import {
   ensureInvokeLinkReady,
   invokeWithClosedLinkRecovery,
+  isPermanentReopenError,
   requiresSessionLink,
   shouldRecoverStalledOutboundLink,
 } from './linkRecovery';
@@ -400,7 +401,10 @@ const transportTimeoutReopen = createTransportTimeoutReopenLoop({
     stalledOutboundRecovery.reset(deviceId);
     broadcast(DEVICE_LINK_PUSH.PEER_LINK_REOPENED, { deviceId });
   },
-  onGaveUp: (deviceId) => stalledOutboundRecovery.onGaveUp(deviceId),
+  // 对端关闭远程控制 / 撤权等永久失败不排慢速重试。
+  onGaveUp: (deviceId, lastError) => (isPermanentReopenError(lastError)
+    ? stalledOutboundRecovery.reset(deviceId)
+    : stalledOutboundRecovery.onGaveUp(deviceId)),
   // transport-timeout / before-link / 接管等入口直接 trigger;登记后 relay 断线终止循环也能接上。
   onStarted: (deviceId) => stalledOutboundRecovery.track(deviceId),
   reopen: async (deviceId) => {

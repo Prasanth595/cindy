@@ -236,7 +236,7 @@ describe('createTransportTimeoutReopenLoop', () => {
     });
     loop.trigger('dev-a');
     await vi.advanceTimersByTimeAsync(0);
-    expect(onGaveUp).toHaveBeenCalledWith('dev-a');
+    expect(onGaveUp).toHaveBeenCalledWith('dev-a', expect.objectContaining({ message: 'offline' }));
     expect(loop.isActive('dev-a')).toBe(false);
     loop.dispose();
   });

@@ -250,6 +250,42 @@ describe('outbound invoke admission', () => {
     } finally { h.client.stop(); }
   });
 
+  it('REMOTE_DISABLED 让出站链路掉线时不触发主动重开通知', async () => {
+    const h = makeHarness({ timing: { pingIntervalMs: 60_000 } });
+    try {
+      h.client.start(); await tick(); h.current().ack();
+      const lost: string[] = [];
+      h.client.onOutboundLinkLost((deviceId) => lost.push(deviceId));
+      const open = h.client.openLink('dev-c', {
+        controllerName: 'Test',
+        protocolVersion: 1,
+        appVersion: '1',
+      });
+      const sentOpen = h.current().sent.find((e) => e.kind === 'link-open' && e.dst === 'dev-c')!;
+      h.current().push({
+        v: PROTOCOL_VERSION,
+        kind: 'link-accept',
+        id: sentOpen.id,
+        src: 'dev-c',
+        payload: {
+          appVersion: '1',
+          allowlistHash: 'hash',
+          capabilities: [DEVICE_LINK_CAPABILITY_RELIABLE_TRANSPORT],
+          transportStreamId: 'stream-out',
+          transportBaseSeq: 1,
+        },
+      });
+      await open;
+      h.current().push({
+        v: PROTOCOL_VERSION,
+        kind: 'relay-error',
+        payload: { code: 'REMOTE_DISABLED', message: 'remote control disabled', dst: 'dev-c' },
+      });
+      expect(h.client.isLinkReady('dev-c')).toBe(false);
+      expect(lost).toEqual([]);
+    } finally { h.client.stop(); }
+  });
+
   it('对端永久关闭后，之后的入站链路断开不会被当成要重开的出站链路', async () => {
     const h = makeHarness({ timing: { pingIntervalMs: 60_000 } });
     try {

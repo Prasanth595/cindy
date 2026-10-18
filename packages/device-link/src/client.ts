@@ -1219,8 +1219,8 @@ export class DeviceLinkClient {
   }
 
   /**
-   * 本机已建成的出站可靠链路因 relay 路由失败(DEVICE_OFFLINE / REMOTE_DISABLED)
-   * 从 ready 变成 down。与 onPeerRouteStateChanged 不同:路由离线通知按链路代次
+   * 本机已建成的出站可靠链路因对端离线(DEVICE_OFFLINE)从 ready 变成 down。
+   * REMOTE_DISABLED 是对端关闭了远程控制,重开不会成功,不通知。与 onPeerRouteStateChanged 不同:路由离线通知按链路代次
    * 去重,而且常常先由一次 legacy 请求触发,那时可靠链路还是 ready;真正标成 down
    * 往往是稍后可靠帧重发再吃到错误,那一刻不会再有路由通知。Host 据此主动重开。
    * 同步回调:调用时 peer 状态还在变更中,host 应推迟到下一轮再判断。
@@ -2628,7 +2628,7 @@ export class DeviceLinkClient {
           // 跨过；其它单帧错误改成同 seq skip。
           if (p.reliableDst) {
             if (terminalRouteFailure && !stalePeerRouteError) {
-              this.markOutboundRouteLinkDown(p.reliableDst, this.getPeerTransport(p.reliableDst));
+              this.markOutboundRouteLinkDown(p.reliableDst, this.getPeerTransport(p.reliableDst), payload.code);
               this.abandonReliablePending(
                 p.reliableDst,
                 `relay rejected reliable link (${payload.code})`,
@@ -2642,7 +2642,7 @@ export class DeviceLinkClient {
         }
         if (payload.dst && terminalRouteFailure && !stalePeerRouteError) {
           const peer = this.getPeerTransport(payload.dst);
-          this.markOutboundRouteLinkDown(payload.dst, peer);
+          this.markOutboundRouteLinkDown(payload.dst, peer, payload.code);
           peer.recoveryNeedsAck = true;
           peer.recoveryFramesSent = 0;
           if (peer.retryTimer) {
@@ -3694,10 +3694,11 @@ export class DeviceLinkClient {
     return this.isPeerSendReady(peer) && peer.receiveReady;
   }
 
-  /** relay 路由失败导致的 link down;本机出站链路因此从 ready 掉下来时通知 host。 */
-  private markOutboundRouteLinkDown(dst: string, peer: PeerTransportState): void {
+  /** relay 路由失败导致的 link down;本机出站链路因对端离线从 ready 掉下来时通知 host。 */
+  private markOutboundRouteLinkDown(dst: string, peer: PeerTransportState, code: string): void {
     const wasReady = this.isPeerSendReady(peer);
     this.markPeerLinkDown(peer);
+    if (code !== 'DEVICE_OFFLINE') return;
     if (!wasReady || !peer.outboundLinkEstablished || peer.outboundExplicitlyClosed) return;
     for (const cb of this.outboundLinkLostHandlers) {
       try {

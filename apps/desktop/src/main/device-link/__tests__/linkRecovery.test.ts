@@ -4,6 +4,7 @@ import {
   ensureInvokeLinkReady,
   invokeWithClosedLinkRecovery,
   requiresSessionLink,
+  isPermanentReopenError,
   shouldRecoverStalledOutboundLink,
   stalledOutboundRetryDelayMs,
 } from '../linkRecovery.js';
@@ -14,6 +15,21 @@ describe('stalled outbound retry backoff', () => {
       60_000, 120_000, 240_000, 480_000, 600_000, 600_000, 600_000,
     ]);
     expect(stalledOutboundRetryDelayMs(-1)).toBe(60_000);
+  });
+});
+
+describe('permanent reopen errors', () => {
+  it('对端关闭远程控制 / 撤权 / 本机禁用不再排慢速重试;离线、超时照常重试', () => {
+    expect([
+      new DeviceLinkError('REMOTE_DISABLED', 'off'),
+      new DeviceLinkError('ACCESS_REVOKED', 'revoked'),
+      new Error('[DEVICE_LINK_CONTROL_DISABLED] control disabled'),
+    ].map(isPermanentReopenError)).toEqual([true, true, true]);
+    expect([
+      new DeviceLinkError('DEVICE_OFFLINE', 'offline'),
+      new DeviceLinkError('INVOKE_TIMEOUT', 'timeout'),
+      new Error('socket closed'),
+    ].map(isPermanentReopenError)).toEqual([false, false, false]);
   });
 });
 

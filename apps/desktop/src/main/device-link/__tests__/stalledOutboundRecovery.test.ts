@@ -83,9 +83,12 @@ describe('createStalledOutboundRecovery', () => {
     expect(trigger.mock.calls).toEqual([['dev-a', { notifyReset: false }]]);
   });
 
-  it('relay 重新上线时已不需要重开的设备直接移出恢复状态', () => {
+  it('relay 重新上线时,被断线打断但已不需要重开的设备直接移出恢复状态', async () => {
     const { state, trigger, recovery } = make();
     recovery.onGaveUp('dev-a');
+    state.relayOnline = false;
+    await vi.advanceTimersByTimeAsync(60_000); // 慢速重试在离线时到点,被打断。
+    state.relayOnline = true;
     state.canRecover = false;
     recovery.resumeAfterRelayOnline();
     expect(trigger).not.toHaveBeenCalled();
@@ -125,6 +128,49 @@ describe('createStalledOutboundRecovery', () => {
     recovery.track('dev-a');
     recovery.resumeAfterRelayOnline();
     expect(trigger.mock.calls).toEqual([['dev-a', { notifyReset: false }]]);
+  });
+
+  it('新事件登记的设备在 relay 上线后用 canRecover 复验;自己触发的循环不算直接入口', () => {
+    const state = { relayOnline: true, recoverable: true };
+    const trigger = vi.fn();
+    const recovery = createStalledOutboundRecovery({
+      canRecover: () => state.recoverable,
+      canResume: () => true,
+      // 与真实接线一样:循环开始时回调 track。
+      trigger: (deviceId, opts) => { trigger(deviceId, opts); recovery.track(deviceId); },
+      isReopening: () => false,
+      isRelayOnline: () => state.relayOnline,
+    });
+    recovery.recover('self', 'link-lost');
+    state.relayOnline = false;
+    recovery.recover('event', 'route-offline');
+    state.relayOnline = true;
+    state.recoverable = false;
+    trigger.mockClear();
+    recovery.resumeAfterRelayOnline();
+    expect(trigger).not.toHaveBeenCalled();
+    expect(recovery.isRecovering('self')).toBe(false);
+    expect(recovery.isRecovering('event')).toBe(false);
+  });
+
+  it('relay 重新上线不清掉仍在等待的退避,只接上被打断的设备且不清零轮次', async () => {
+    const { state, trigger, recovery } = make();
+    recovery.onGaveUp('waiting');
+    await vi.advanceTimersByTimeAsync(60_000);
+    recovery.onGaveUp('waiting');
+    expect(recovery.pendingRetryDelayMs('waiting')).toBe(120_000);
+    recovery.onGaveUp('interrupted');
+    state.relayOnline = false;
+    await vi.advanceTimersByTimeAsync(60_000); // interrupted 的计时器在离线时到点。
+    trigger.mockClear();
+
+    state.relayOnline = true;
+    recovery.resumeAfterRelayOnline();
+    expect(trigger.mock.calls).toEqual([['interrupted', { notifyReset: false }]]);
+    expect(recovery.pendingRetryDelayMs('waiting')).toBe(120_000);
+    // interrupted 再失败一次时按第 2 轮排期,没有被打回 60 秒。
+    recovery.onGaveUp('interrupted');
+    expect(recovery.pendingRetryDelayMs('interrupted')).toBe(120_000);
   });
 
   it('dispose 后已排期的定时器不会再触发', async () => {
