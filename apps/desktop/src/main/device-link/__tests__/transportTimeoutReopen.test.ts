@@ -197,6 +197,37 @@ describe('createTransportTimeoutReopenLoop', () => {
     loop.dispose();
   });
 
+  it('notifyReset: false 时只重开、不通知界面重置；默认仍通知', async () => {
+    const onReset = vi.fn();
+    const loop = createTransportTimeoutReopenLoop({
+      onReset,
+      reopen: vi.fn().mockResolvedValue(undefined),
+      shouldAbort: () => false,
+    });
+    loop.trigger('dev-a', { notifyReset: false });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onReset).not.toHaveBeenCalled();
+    loop.trigger('dev-b');
+    expect(onReset).toHaveBeenCalledWith('dev-b');
+    loop.dispose();
+  });
+
+  it('次数耗尽时通知调用方，便于稍后只重开这一个对端', async () => {
+    const onGaveUp = vi.fn();
+    const loop = createTransportTimeoutReopenLoop({
+      reopen: vi.fn().mockRejectedValue(new Error('offline')),
+      shouldAbort: () => false,
+      baseDelayMs: 10,
+      maxAttempts: 1,
+      onGaveUp,
+    });
+    loop.trigger('dev-a');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onGaveUp).toHaveBeenCalledWith('dev-a');
+    expect(loop.isActive('dev-a')).toBe(false);
+    loop.dispose();
+  });
+
   it('reopen 同步 throw 转入失败退避分支,不成为未捕获异常并最终收口', async () => {
     let calls = 0;
     const reopen = vi.fn((): Promise<unknown> => {

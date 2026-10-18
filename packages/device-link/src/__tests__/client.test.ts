@@ -162,6 +162,138 @@ describe('outbound invoke admission', () => {
     } finally { h.client.stop(); }
   });
 
+  it('只把本机曾经连上、后来发不出去的出站链路标成需要重开', async () => {
+    const h = makeHarness({ timing: { pingIntervalMs: 60_000 } });
+    try {
+      h.client.start(); await tick(); h.current().ack();
+      await establishInboundReliableLink(h, 'stream-in', 1, 'dev-b');
+      const inbound = h.client as unknown as {
+        peerTransport: Map<string, { sendPhase: string }>;
+      };
+      inbound.peerTransport.get('dev-b')!.sendPhase = 'down';
+      expect(h.client.needsOutboundReopen('dev-b')).toBe(false);
+
+      const open = h.client.openLink('dev-c', {
+        controllerName: 'Test',
+        protocolVersion: 1,
+        appVersion: '1',
+      });
+      const sentOpen = h.current().sent.find((e) => e.kind === 'link-open' && e.dst === 'dev-c')!;
+      h.current().push({
+        v: PROTOCOL_VERSION,
+        kind: 'link-accept',
+        id: sentOpen.id,
+        src: 'dev-c',
+        payload: {
+          appVersion: '1',
+          allowlistHash: 'hash',
+          capabilities: [DEVICE_LINK_CAPABILITY_RELIABLE_TRANSPORT],
+          transportStreamId: 'stream-out',
+          transportBaseSeq: 1,
+        },
+      });
+      await open;
+      expect(h.client.needsOutboundReopen('dev-c')).toBe(false);
+      const outbound = h.client as unknown as {
+        peerTransport: Map<string, { sendPhase: string }>;
+      };
+      outbound.peerTransport.get('dev-c')!.sendPhase = 'down';
+      expect(h.client.needsOutboundReopen('dev-c')).toBe(true);
+      h.client.closeLink('dev-c', 'user');
+      expect(h.client.needsOutboundReopen('dev-c')).toBe(false);
+    } finally { h.client.stop(); }
+  });
+
+  it('出站链路因 DEVICE_OFFLINE 从 ready 掉线时通知一次；只被对方控制的链路不通知', async () => {
+    const h = makeHarness({ timing: { pingIntervalMs: 60_000 } });
+    try {
+      h.client.start(); await tick(); h.current().ack();
+      const lost: string[] = [];
+      h.client.onOutboundLinkLost((deviceId) => lost.push(deviceId));
+      const offline = (dst: string): void => h.current().push({
+        v: PROTOCOL_VERSION,
+        kind: 'relay-error',
+        payload: { code: 'DEVICE_OFFLINE', message: 'offline', dst },
+      });
+
+      await establishInboundReliableLink(h, 'stream-in', 1, 'dev-b');
+      offline('dev-b');
+      expect(lost).toEqual([]);
+
+      const open = h.client.openLink('dev-c', {
+        controllerName: 'Test',
+        protocolVersion: 1,
+        appVersion: '1',
+      });
+      const sentOpen = h.current().sent.find((e) => e.kind === 'link-open' && e.dst === 'dev-c')!;
+      h.current().push({
+        v: PROTOCOL_VERSION,
+        kind: 'link-accept',
+        id: sentOpen.id,
+        src: 'dev-c',
+        payload: {
+          appVersion: '1',
+          allowlistHash: 'hash',
+          capabilities: [DEVICE_LINK_CAPABILITY_RELIABLE_TRANSPORT],
+          transportStreamId: 'stream-out',
+          transportBaseSeq: 1,
+        },
+      });
+      await open;
+      expect(h.client.hasOpenOutboundLink('dev-c')).toBe(true);
+      offline('dev-c');
+      expect(lost).toEqual(['dev-c']);
+      expect(h.client.needsOutboundReopen('dev-c')).toBe(true);
+      // 已经 down 了，再来的路由错误不重复通知。
+      offline('dev-c');
+      expect(lost).toEqual(['dev-c']);
+    } finally { h.client.stop(); }
+  });
+
+  it('对端永久关闭后，之后的入站链路断开不会被当成要重开的出站链路', async () => {
+    const h = makeHarness({ timing: { pingIntervalMs: 60_000 } });
+    try {
+      h.client.start(); await tick(); h.current().ack();
+      const open = h.client.openLink('dev-c', {
+        controllerName: 'Test',
+        protocolVersion: 1,
+        appVersion: '1',
+      });
+      const sentOpen = h.current().sent.find((e) => e.kind === 'link-open' && e.dst === 'dev-c')!;
+      h.current().push({
+        v: PROTOCOL_VERSION,
+        kind: 'link-accept',
+        id: sentOpen.id,
+        src: 'dev-c',
+        payload: {
+          appVersion: '1',
+          allowlistHash: 'hash',
+          capabilities: [DEVICE_LINK_CAPABILITY_RELIABLE_TRANSPORT],
+          transportStreamId: 'stream-out',
+          transportBaseSeq: 1,
+        },
+      });
+      await open;
+      h.current().push({
+        v: PROTOCOL_VERSION,
+        kind: 'link-close',
+        src: 'dev-c',
+        payload: { reason: 'user' },
+      });
+      await tick();
+      expect(h.client.needsOutboundReopen('dev-c')).toBe(false);
+
+      // 对方反过来控制本机：入站可靠链路建成后再断开。
+      await establishInboundReliableLink(h, 'stream-in', 1, 'dev-c');
+      const internals = h.client as unknown as {
+        peerTransport: Map<string, { sendPhase: string; reliable: boolean }>;
+      };
+      expect(internals.peerTransport.get('dev-c')!.reliable).toBe(true);
+      internals.peerTransport.get('dev-c')!.sendPhase = 'down';
+      expect(h.client.needsOutboundReopen('dev-c')).toBe(false);
+    } finally { h.client.stop(); }
+  });
+
   it('uses actual socket pressure to serialize background reads without blocking foreground work', async () => {
     vi.useFakeTimers();
     const h = makeHarness({ timing: { pingIntervalMs: 60_000, requestTimeoutMs: 30_000 } });

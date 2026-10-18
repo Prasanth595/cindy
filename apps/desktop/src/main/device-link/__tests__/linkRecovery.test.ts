@@ -4,7 +4,40 @@ import {
   ensureInvokeLinkReady,
   invokeWithClosedLinkRecovery,
   requiresSessionLink,
+  shouldRecoverStalledOutboundLink,
+  stalledOutboundRetryDelayMs,
 } from '../linkRecovery.js';
+
+describe('stalled outbound retry backoff', () => {
+  it('从 60 秒开始逐轮翻倍，最长 10 分钟', () => {
+    expect([0, 1, 2, 3, 4, 5, 20].map(stalledOutboundRetryDelayMs)).toEqual([
+      60_000, 120_000, 240_000, 480_000, 600_000, 600_000, 600_000,
+    ]);
+    expect(stalledOutboundRetryDelayMs(-1)).toBe(60_000);
+  });
+});
+
+describe('stalled outbound link recovery', () => {
+  const ready = {
+    needsOutboundReopen: true,
+    controlDisabledLocally: false,
+    revokedByRemote: false,
+    clientOnline: true,
+    isOwner: true,
+  };
+
+  it('reopens one previously established outbound link without waiting for presence', () => {
+    expect(shouldRecoverStalledOutboundLink(ready)).toBe(true);
+  });
+
+  it('does not reopen when the user closed it, control is disabled, or this instance is not the owner', () => {
+    expect(shouldRecoverStalledOutboundLink({ ...ready, needsOutboundReopen: false })).toBe(false);
+    expect(shouldRecoverStalledOutboundLink({ ...ready, controlDisabledLocally: true })).toBe(false);
+    expect(shouldRecoverStalledOutboundLink({ ...ready, revokedByRemote: true })).toBe(false);
+    expect(shouldRecoverStalledOutboundLink({ ...ready, clientOnline: false })).toBe(false);
+    expect(shouldRecoverStalledOutboundLink({ ...ready, isOwner: false })).toBe(false);
+  });
+});
 
 describe('device-link closed link recovery', () => {
   it('waits for the reliable link before sending a new read, while another peer proceeds', async () => {

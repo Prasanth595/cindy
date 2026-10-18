@@ -172,7 +172,13 @@ import {
   pollContactsDeviceSyncSettingChange,
   setContactsDeviceLinkOwnerActive,
 } from '../contacts-sync/driver';
-import { ensureInvokeLinkReady, invokeWithClosedLinkRecovery, requiresSessionLink } from './linkRecovery';
+import {
+  ensureInvokeLinkReady,
+  invokeWithClosedLinkRecovery,
+  requiresSessionLink,
+  shouldRecoverStalledOutboundLink,
+} from './linkRecovery';
+import { attachStalledOutboundRecovery, createStalledOutboundRecovery } from './stalledOutboundRecovery';
 import { invalidatePluginOauth } from '../plugin-oauth/runtime.js';
 import {
   createResponsivenessTracker,
@@ -390,9 +396,16 @@ let sharedHostSourceEpoch = 0;
 const transportTimeoutReopen = createTransportTimeoutReopenLoop({
   // Local Main→Renderer projection only; the relay and neighboring peers remain online.
   onReset: (deviceId) => broadcast(DEVICE_LINK_PUSH.PEER_LINK_RESET, { deviceId }),
-  onReopened: (deviceId) => broadcast(DEVICE_LINK_PUSH.PEER_LINK_REOPENED, { deviceId }),
+  onReopened: (deviceId) => {
+    stalledOutboundRecovery.reset(deviceId);
+    broadcast(DEVICE_LINK_PUSH.PEER_LINK_REOPENED, { deviceId });
+  },
+  onGaveUp: (deviceId) => stalledOutboundRecovery.onGaveUp(deviceId),
   reopen: async (deviceId) => {
-    await openRemoteLink(deviceId);
+    // 退避等待期间链路可能已由别的路径恢复(用户打开远程视图、对端重开):
+    // 不再对已就绪的链路多发一次 link-open。transport-timeout / before-link /
+    // 接管这几个入口触发时链路都不是 ready,不受影响。
+    if (!client?.isLinkReady(deviceId)) await openRemoteLink(deviceId);
     // link 重建成功后定向补一次订阅重放:transport-timeout 场景被控端保留了
     // 订阅状态,重放是幂等 no-op;before-link 死锁场景(link-accept 曾丢失)
     // 被控端可能从未提交过订阅(幽灵订阅防护),不补就只恢复了链路、缺推送流。
@@ -471,8 +484,29 @@ function hasOutboundControlIntent(deviceId: string): boolean {
   // (review P1)。openLink 是「意图续新」,client 侧会自动清除该标记。
   if (client.isOutboundExplicitlyClosed(deviceId)) return false;
   if (snapshotSubscriptions(deviceId).length > 0) return true;
+  // 本机建成过、没被任一端关闭的出站可靠链路：即使订阅和在途请求都已经清掉，
+  // 这也是「本机还要控制对方」的证据。否则虚拟机暂停恢复后，界面不再发请求，
+  // 重开循环会因为「没有控制意图」立刻停掉；重开成功后也会吞掉 PEER_LINK_REOPENED。
+  if (client.hasOpenOutboundLink(deviceId)) return true;
   return client.hasPendingRequestsTo(deviceId);
 }
+
+/**
+ * 出站可靠链路发不出去时重开这一个对端(见 stalledOutboundRecovery.ts)。
+ * presence 过期也不等「重新上线」通知;一轮用完按退避再试。
+ */
+const stalledOutboundRecovery = createStalledOutboundRecovery({
+  canRecover: (deviceId) => !!client && !linkTornDown && shouldRecoverStalledOutboundLink({
+    needsOutboundReopen: client.needsOutboundReopen(deviceId),
+    controlDisabledLocally: readDeviceLinkSettings().disabledControlDeviceIds.includes(deviceId),
+    revokedByRemote: revokedByRemote.has(deviceId),
+    clientOnline: client.getStatus() === 'online',
+    isOwner: arbiter === null || arbiter.isOwner(),
+  }),
+  trigger: (deviceId, opts) => transportTimeoutReopen.trigger(deviceId, opts),
+  isReopening: (deviceId) => transportTimeoutReopen.isActive(deviceId),
+  log: { info: (msg) => log.info(msg) },
+});
 
 /**
  * ownership 接管后的重建补发:接管前到达的 before-link 帧那时会被 shouldAbort
@@ -835,6 +869,10 @@ export function initDeviceLinkService(options: DeviceLinkServiceOptions = {}): v
     // also invalidates this Desktop's remote view, without reopening other peers.
     broadcast(DEVICE_LINK_PUSH.PEER_LINK_RESET, { deviceId });
   });
+  // 必须注册在上面两个 handler 之后：路由离线先清 active controller，
+  // transport-reset 先广播 PEER_LINK_RESET，再由这里决定是否主动重开出站链路。
+  // 虚拟机往往几秒内就回到中转，不能只等可能不来的 presence-online。
+  attachStalledOutboundRecovery(client, stalledOutboundRecovery);
 
   client.onStatusChange((status) => {
     if (status !== 'online') {
@@ -910,6 +948,8 @@ export function initDeviceLinkService(options: DeviceLinkServiceOptions = {}): v
     log.info(
       `re-opening control link for ${deviceId.slice(0, 8)} after before-link reliable frame`,
     );
+    // 对端还在发可靠帧，说明它活着：已排期的慢速重试作废，本轮失败后退避从头算。
+    stalledOutboundRecovery.reset(deviceId);
     transportTimeoutReopen.trigger(deviceId);
     return true;
   });
@@ -957,6 +997,7 @@ export function initDeviceLinkService(options: DeviceLinkServiceOptions = {}): v
     // 收敛)。
     if (available && wasAvailable !== true) {
       replayActiveSubscriptions(`presence-online:${snap.deviceId.slice(0, 8)}`, snap.deviceId);
+      stalledOutboundRecovery.recover(snap.deviceId, 'presence-online');
     }
     // 词典同步不看「允许被控」开关(push 帧不是控制类帧,这是自己设备之间的数据
     // 流动),但撤销过的设备必须排除 —— 判定统一走 shouldExchangeDictionaryWith,
@@ -1376,6 +1417,7 @@ function teardownActiveLink(): void {
   // 熔断状态是账号 / 链路作用域的:登出或失去持有权后全部翻篇,不串到下一段链路。
   responsivenessTracker?.resetAll();
   subscriptionReplayScheduler.teardown();
+  stalledOutboundRecovery.dispose();
   presenceAvailableByDevice.clear();
   revokedByRemote.clear();
   sharedHostStreams.clear();
@@ -1776,9 +1818,12 @@ export function closeRemoteLink(deviceId: string): void {
   //   5. remoteInvoke / remoteSubscribe 在途调用(经 4 的代次在发送/重开前自败);
   //   6. OAuth 授权事务与本机回调监听(翻代后在后续操作前自败);
   //   7. MCP App View 的跨调用轮询与清理(绑定打开时的代次，翻代后自败);
-  //   8. 独立文件连接及其排队/协商请求(stopFilePeers 翻代，迟到结果只清理)。
+  //   8. 独立文件连接及其排队/协商请求(stopFilePeers 翻代，迟到结果只清理);
+  //   9. 出站链路慢速重试定时器与退避计数(stalledOutboundRecovery.reset;
+  //      closeLink 同时清掉 outboundLinkEstablished,迟到的掉线事件也不会再重开)。
   // 新增任何 per-device 重试/恢复机制时必须同步登记到本清单。
   transportTimeoutReopen.cancel(deviceId);
+  stalledOutboundRecovery.reset(deviceId);
   cancelSubscriptionReplay(deviceId);
   // 在途建链可能正 park 在上线等待里(map 删除挡不住它):翻代,让它在等待
   // 结束后的复验处自我取消。

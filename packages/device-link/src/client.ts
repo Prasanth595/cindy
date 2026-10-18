@@ -646,6 +646,12 @@ interface PeerTransportState {
    * 主动控制方向必须保留可恢复。openLink(意图续新)与收到 link-accept 时清除。
    */
   outboundExplicitlyClosed: boolean;
+  /**
+   * 本机曾经作为控制端完成过出站 link-accept。链路被标成 down 之后仍保留，
+   * 用来区分「要重新打开的出站连接」和「只被对方控制过」的入站状态。
+   * 本机显式关闭出站方向，或收到对端的永久 link-close 时清掉。
+   */
+  outboundLinkEstablished: boolean;
   /** 对端是否声明理解 transport-timeout 的瞬时重置语义(能力协商,见 transport.ts)。 */
   supportsTransportTimeoutClose: boolean;
   /** 显式关闭后收到的 allowlisted legacy invoke；只放行与 requestId 配对的一次回程。 */
@@ -822,6 +828,7 @@ export class DeviceLinkClient {
   private peerTransportResetHandlers = new Set<
     (change: DeviceLinkPeerTransportReset) => void
   >();
+  private outboundLinkLostHandlers = new Set<(deviceId: string) => void>();
   /** Avoid emitting the same authoritative route failure once per queued frame. */
   private peerOfflineNotifiedGeneration = new Map<
     string,
@@ -1109,6 +1116,30 @@ export class DeviceLinkClient {
     return !!peer?.reliable && !this.isPeerSendReady(peer);
   }
 
+  /**
+   * 本机出站可靠链路曾经建成，现在发不出去，且没有被用户显式关掉。
+   * 入站控制（对方连本机）不会置位，避免在没有出站意图时反向建链。
+   */
+  needsOutboundReopen(dst: string): boolean {
+    const peer = this.peerTransport.get(dst);
+    return !!peer
+      && this.hasOpenOutboundLink(dst)
+      && !this.isPeerSendReady(peer);
+  }
+
+  /**
+   * 本机建成过、且没被任一端关闭的出站可靠链路(不论当前是否 ready)。
+   * 供 host 判断「本机仍在控制对方」:重开成功后链路已 ready,needsOutboundReopen
+   * 变回 false,但这条链路仍是本机的控制意图,恢复通知不能因此被吞掉。
+   */
+  hasOpenOutboundLink(dst: string): boolean {
+    const peer = this.peerTransport.get(dst);
+    return !!peer
+      && peer.outboundLinkEstablished
+      && !peer.outboundExplicitlyClosed
+      && peer.reliable;
+  }
+
   /** Mirror admission only: listing-only/legacy peers need no bidirectional link. */
   canSendPush(dst: string): boolean {
     if (this.status !== 'online') return false;
@@ -1185,6 +1216,18 @@ export class DeviceLinkClient {
   ): () => void {
     this.peerTransportResetHandlers.add(cb);
     return () => this.peerTransportResetHandlers.delete(cb);
+  }
+
+  /**
+   * 本机已建成的出站可靠链路因 relay 路由失败(DEVICE_OFFLINE / REMOTE_DISABLED)
+   * 从 ready 变成 down。与 onPeerRouteStateChanged 不同:路由离线通知按链路代次
+   * 去重,而且常常先由一次 legacy 请求触发,那时可靠链路还是 ready;真正标成 down
+   * 往往是稍后可靠帧重发再吃到错误,那一刻不会再有路由通知。Host 据此主动重开。
+   * 同步回调:调用时 peer 状态还在变更中,host 应推迟到下一轮再判断。
+   */
+  onOutboundLinkLost(cb: (deviceId: string) => void): () => void {
+    this.outboundLinkLostHandlers.add(cb);
+    return () => this.outboundLinkLostHandlers.delete(cb);
   }
 
   getConnectionIssue(): DeviceLinkConnectionIssue | null {
@@ -1415,6 +1458,7 @@ export class DeviceLinkClient {
         // 会让 transport-timeout 重开用户已关闭的控制方向。
         peer.linkAcceptedInbound = false;
         peer.outboundExplicitlyClosed = true;
+        peer.outboundLinkEstablished = false;
         // 显式关闭只撤掉 streaming 可靠层。listing / topic 控制帧仍不依赖
         // link-open，后续应回退到 legacy，而不是被统一挡成 LINK_NOT_OPEN。
         peer.reliable = false;
@@ -2497,6 +2541,7 @@ export class DeviceLinkClient {
               acceptedLinkGeneration,
             );
             peer.outboundExplicitlyClosed = false;
+            peer.outboundLinkEstablished = true;
             // 注意:不得在此将 linkAcceptedInbound 改回 false。互控场景下本机可能
             // 既是对端的被控端(入站已 accept)又是其控制端(本帧 accept 出站
             // link),两个方向共享同一份 PeerTransportState——覆盖会让入站方向
@@ -2583,7 +2628,7 @@ export class DeviceLinkClient {
           // 跨过；其它单帧错误改成同 seq skip。
           if (p.reliableDst) {
             if (terminalRouteFailure && !stalePeerRouteError) {
-              this.markPeerLinkDown(this.getPeerTransport(p.reliableDst));
+              this.markOutboundRouteLinkDown(p.reliableDst, this.getPeerTransport(p.reliableDst));
               this.abandonReliablePending(
                 p.reliableDst,
                 `relay rejected reliable link (${payload.code})`,
@@ -2597,7 +2642,7 @@ export class DeviceLinkClient {
         }
         if (payload.dst && terminalRouteFailure && !stalePeerRouteError) {
           const peer = this.getPeerTransport(payload.dst);
-          this.markPeerLinkDown(peer);
+          this.markOutboundRouteLinkDown(payload.dst, peer);
           peer.recoveryNeedsAck = true;
           peer.recoveryFramesSent = 0;
           if (peer.retryTimer) {
@@ -2702,6 +2747,9 @@ export class DeviceLinkClient {
           // sendLinkAccept 会重新置位;transport-timeout(瞬时重置)不走本分支
           // 也不清此标记。
           peer.linkAcceptedInbound = false;
+          // 对端永久关闭后，本机之前的出站连接也不算「待恢复」了。否则对方之后反过来
+          // 控制本机、入站可靠链路再断开时，会被误判成要本机主动重开出站方向。
+          peer.outboundLinkEstablished = false;
           // 对端关闭与本地 closeLink 语义对称：撤掉 streaming 可靠层，
           // 后续不依赖 link-open 的 listing/control invoke 可回退 legacy。
           peer.reliable = false;
@@ -3646,6 +3694,20 @@ export class DeviceLinkClient {
     return this.isPeerSendReady(peer) && peer.receiveReady;
   }
 
+  /** relay 路由失败导致的 link down;本机出站链路因此从 ready 掉下来时通知 host。 */
+  private markOutboundRouteLinkDown(dst: string, peer: PeerTransportState): void {
+    const wasReady = this.isPeerSendReady(peer);
+    this.markPeerLinkDown(peer);
+    if (!wasReady || !peer.outboundLinkEstablished || peer.outboundExplicitlyClosed) return;
+    for (const cb of this.outboundLinkLostHandlers) {
+      try {
+        cb(dst);
+      } catch (err) {
+        this.log.error('device-link outbound link lost handler failed', err);
+      }
+    }
+  }
+
   private markPeerLinkDown(peer: PeerTransportState): void {
     peer.duplicateOpenRepair = null;
     peer.confirmedGapRepair = null;
@@ -3677,6 +3739,7 @@ export class DeviceLinkClient {
         explicitlyClosed: false,
         linkAcceptedInbound: false,
         outboundExplicitlyClosed: false,
+        outboundLinkEstablished: false,
         supportsTransportTimeoutClose: false,
         unlinkedLegacyResponseIds: new Set(),
         pending: new Map(),

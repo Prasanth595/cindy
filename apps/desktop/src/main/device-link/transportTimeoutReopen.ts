@@ -19,6 +19,8 @@ export interface TransportTimeoutReopenDeps {
   onReset?(deviceId: string): void;
   /** Notify only a still-current, authorized successful recovery. */
   onReopened?(deviceId: string): void;
+  /** 这一轮次数用完仍没连上。调用方可以过一会儿再 trigger，不拆共享中转。 */
+  onGaveUp?(deviceId: string): void;
   /** 重开链路(通常是 openRemoteLink;自带同 device in-flight 去重)。 */
   reopen(deviceId: string): Promise<unknown>;
   /** 返回 true 则终止该设备的循环(撤权 / client 不在 / 待命态 / relay 离线)。 */
@@ -35,8 +37,11 @@ interface ReopenEntry {
 }
 
 export interface TransportTimeoutReopenLoop {
-  /** 触发一轮恢复;该设备已有循环在跑(含等待退避)时为 no-op。 */
-  trigger(deviceId: string): void;
+  /**
+   * 触发一轮恢复;该设备已有循环在跑(含等待退避)时为 no-op。
+   * `notifyReset: false` 时不调 onReset:调用方已通知过,或只是定时重试、链路状态没有新变化。
+   */
+  trigger(deviceId: string, opts?: { notifyReset?: boolean }): void;
   /** 终止并清理某设备的循环(撤权 / 显式关闭时调用)。 */
   cancel(deviceId: string): void;
   /** 终止全部循环(relay 断开 / 停机)。 */
@@ -168,6 +173,7 @@ export function createTransportTimeoutReopenLoop(
             `transport-timeout reopen gave up for ${deviceId.slice(0, 8)} after ${n} attempts: ${String(err)}`,
           );
           finishEntry(deviceId, entry);
+          deps.onGaveUp?.(deviceId);
           return;
         }
         const delay = baseDelayMs * 2 ** (n - 1);
@@ -177,8 +183,8 @@ export function createTransportTimeoutReopenLoop(
   };
 
   return {
-    trigger(deviceId: string): void {
-      deps.onReset?.(deviceId);
+    trigger(deviceId: string, opts?: { notifyReset?: boolean }): void {
+      if (opts?.notifyReset !== false) deps.onReset?.(deviceId);
       if (entries.has(deviceId)) return;
       const entry: ReopenEntry = { timer: null };
       entries.set(deviceId, entry);
