@@ -46,8 +46,14 @@ const mocks = vi.hoisted(() => ({
   /** 灵动岛活动镜像:sessionId -> phase。侧栏据此显示「正在输入…」。 */
   islandActivity: new Map<string, { sessionId: string; phase: string; compactDetail?: string }>(),
   cloud: { enabled: false, selfDeviceId: null, humanActorId: null, actors: [], demotedBotIds: [] } as import('../../../../shared/companionCloud').CompanionCloudSnapshot,
+  groups: [] as import('../../../../shared/botGroupChat').BotGroupSummary[],
 }));
 vi.mock('../companionCloudStore', () => ({ useCompanionCloud: () => mocks.cloud }));
+// 群聊行只在段尾汇总提醒时被读到,测试用一份可替换的列表;其余导出保持真实。
+vi.mock('../botGroupStore', async importOriginal => ({
+  ...await importOriginal<typeof import('../botGroupStore')>(),
+  useBotGroupList: () => ({ groups: mocks.groups }),
+}));
 
 vi.mock('../useRemoteBots', () => ({ useRemoteBots: () => mocks.remoteBots }));
 vi.mock('@/features/device-link/useDeviceLinkDeviceList', () => ({
@@ -156,6 +162,7 @@ beforeEach(() => {
   mocks.devices = [];
   mocks.islandActivity = new Map();
   mocks.cloud = { enabled: false, selfDeviceId: null, humanActorId: null, actors: [], demotedBotIds: [] };
+  mocks.groups = [];
   Object.defineProperty(window, 'electronAPI', {
     configurable: true,
     writable: true,
@@ -923,6 +930,64 @@ describe('TeammatesSection 行数收敛', () => {
     expect(within(toggle).getByLabelText('bots.list.unread:{"count":4}')).toBeTruthy();
     expect(within(toggle).getByLabelText('bots.list.needsAttention')).toBeTruthy();
     expect(within(toggle).getByText('+3')).toBeTruthy();
+    // 提醒同时进入按钮的可访问名称:显式 aria-label 不得再把它盖掉。
+    expect(screen.getByRole('button', { name: /bots\.list\.unread/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /bots\.list\.needsAttention/ })).toBeTruthy();
+    expect(toggle.hasAttribute('aria-label')).toBe(false);
+  });
+
+  it('被收起的群聊在等用户处理时,段尾同样保留提醒', async () => {
+    const groupSummary = (overrides: Record<string, unknown> = {}) => ({
+      id: 'g-waiting',
+      name: '等开始的群',
+      replyMode: 'all',
+      speakingMode: 'auto',
+      members: [
+        { botId: 'bot-0', name: 'Mate 0', avatar: '', avatarColor: 'red', status: 'active' },
+        { botId: 'bot-1', name: 'Mate 1', avatar: '', avatarColor: 'blue', status: 'active' },
+      ],
+      organizerBotId: 'bot-0',
+      projectDir: null,
+      lastMessage: null,
+      speakingBotIds: [],
+      planningBotId: null,
+      // 分工还在等「开始」:不产生未读,但被收起后仍然要能看见。
+      openPlan: {
+        id: 'p1',
+        status: 'proposed',
+        currentStep: null,
+        stepCount: 2,
+        currentBotName: null,
+        currentStepStatus: null,
+      },
+      createdAt: 1,
+      updatedAt: 1,
+      ...overrides,
+    });
+
+    mocks.profiles = roster(ROWS + 2);
+    mocks.groups = [groupSummary()] as unknown as typeof mocks.groups;
+    await renderSidebar();
+
+    expect(screen.queryByText('等开始的群')).toBeNull();
+    expect(screen.getByRole('button', { name: /bots\.list\.needsAttention/ })).toBeTruthy();
+  });
+
+  it('取消置顶后,焦点还在行上时先保留这一行', async () => {
+    const total = ROWS + 3;
+    // Mate 1 只靠置顶留在默认一批里;取消置顶会让它掉出去。
+    mocks.profiles = roster(total, 1);
+    const view = await renderSidebar();
+    const row = screen.getByText('Mate 1').closest('button')!;
+    act(() => row.focus());
+
+    mocks.profiles = roster(total);
+    view.rerender(<TeammatesSection />);
+    // 菜单关闭后焦点回到行上,这一行先留着,不能让焦点掉到 body。
+    expect(screen.getByText('Mate 1')).toBeTruthy();
+
+    act(() => fireEvent.blur(row));
+    expect(screen.queryByText('Mate 1')).toBeNull();
   });
 
   it('只认 pathname:侧栏槽位拿不到 useParams,参数里带 botId 不算打开', async () => {

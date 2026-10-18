@@ -49,7 +49,8 @@ import { BotGroupSidebarAvatar } from './BotGroupAvatars';
 import { refreshBotGroups, useBotGroupList } from './botGroupStore';
 import { BOT_GROUP_SETTINGS_PARAM } from './botGroupPresentation';
 import { chatErrorKey } from './chatError';
-import { subscribeBotReadState, getBotLastReadAtMap, isBotGroupUnread } from './botReadState';
+import { subscribeBotReadState, getBotLastReadAtMap, botGroupUnreadCount } from './botReadState';
+import { botGroupNeedsAttention } from './botGroupAttention';
 import { withoutBotHiddenLanes } from './botGroupLane';
 import {
   botListSubtitle,
@@ -168,6 +169,9 @@ export function TeammatesSection() {
   const archivedBots = bots.filter((bot) => bot.status === 'archived');
   const [showHidden, setShowHidden] = useState(false);
   const [showAllChats, setShowAllChats] = useState(false);
+  // 焦点所在的行、以及右键菜单打开中的行,即使只是靠置顶留在列表里,也不能在
+  // 取消置顶后立刻卸载 —— 否则焦点会掉到 body(见下面的 keep)。
+  const [focusedChatKey, setFocusedChatKey] = useState<string | null>(null);
   const [archiveBusy, setArchiveBusy] = useState(false);
   const archiveBusyRef = useRef(false);
   const [archiveError, setArchiveError] = useState('');
@@ -352,30 +356,52 @@ export function TeammatesSection() {
       ? isOpenRemoteBot(chat.bot.deviceId, chat.bot.id)
       : isOpenBot(chat.bot.id);
   };
+  const chatKey = (chat: (typeof visibleChats)[number]): string => {
+    if (chat.kind === 'group') return `group:${chat.group.id}`;
+    if (chat.kind === 'cindy') return 'cindy-devices';
+    return 'deviceId' in chat.bot ? remoteBotKey(chat.bot) : chat.bot.id;
+  };
   // 未读与「需要处理」的口径只在这里写一次:行内、收起态头像行、段尾「展开全部」
   // 三处必须一致,否则被收起的提醒会凭空消失。
   const chatUnreadCount = (chat: (typeof visibleChats)[number]): number => {
-    if (chat.kind === 'group') return isBotGroupUnread(chat.group) ? 1 : 0;
-    if (chat.kind === 'cindy') return cindyOptions.some((option) => option.unread) ? 1 : 0;
+    if (chat.kind === 'group') return botGroupUnreadCount(chat.group);
+    if (chat.kind === 'cindy') {
+      return cindyOptions.reduce(
+        (total, option) => total + (option.unreadCount ?? (option.unread ? 1 : 0)),
+        0,
+      );
+    }
     return 'deviceId' in chat.bot
       ? (isRemoteBotUnread(chat.bot) ? 1 : 0)
       : (unreadByBotId[chat.bot.id] ?? 0);
   };
   const chatNeedsAttention = (chat: (typeof visibleChats)[number]): boolean => {
-    if (chat.kind === 'group') return false;
+    if (chat.kind === 'group') return botGroupNeedsAttention(chat.group, bots, islandActivity);
     if (chat.kind === 'cindy') {
       const bot = currentCindy?.bot;
       return Boolean(bot && 'needsAttention' in bot && bot.needsAttention);
     }
     return 'needsAttention' in chat.bot && Boolean(chat.bot.needsAttention);
   };
+  const menuChatKey =
+    contextMenu?.kind === 'bot'
+      ? contextMenu.id
+      : contextMenu?.kind === 'group'
+        ? `group:${contextMenu.id}`
+        : null;
   // 默认只展开最近对话的一批(置顶与正在看的行豁免),其余收进段尾的「展开全部」:
   // 伙伴段与下面的任务列表共用一条滚动轴,这里不能无限长。展开是本次挂载的临时
   // 状态,不落盘 —— 「默认」就是 5 条,重开一次回到默认。
   const { rows: displayedChats, hiddenCount: hiddenChatCount } = showAllChats
     ? { rows: visibleChats, hiddenCount: 0 }
     : limitTeammateRows(visibleChats, {
-        keep: (chat) => chat.pinned || isOpenChat(chat),
+        keep: (chat) =>
+          chat.pinned ||
+          isOpenChat(chat) ||
+          // 取消置顶会让这一行从默认收敛的一批里掉出去;只要焦点还在它身上(或右键
+          // 菜单还开着),就留到焦点离开为止,避免键盘焦点掉到 body。
+          chatKey(chat) === focusedChatKey ||
+          chatKey(chat) === menuChatKey,
       });
   // 被收起的那几行也要在段尾交代清楚:还有未读 / 还有伙伴需要处理时,不能只留一个
   // 数量 —— 收起态头像行的 +N 也是这么保留未读点的。
@@ -561,9 +587,7 @@ export function TeammatesSection() {
         <div ref={avatarRowRef} className="flex flex-nowrap items-center gap-2 overflow-hidden py-1 pr-0 pl-[22px]">
           {(() => {
             const entries = visibleChats.map((entry) => {
-              const key = entry.kind === 'group' ? `group:${entry.group.id}`
-                : entry.kind === 'cindy' ? 'cindy-devices'
-                  : 'deviceId' in entry.bot ? remoteBotKey(entry.bot) : entry.bot.id;
+              const key = chatKey(entry);
               const name = entry.kind === 'group' ? entry.group.name
                 : entry.kind === 'cindy' ? currentCindy?.bot.name ?? '' : entry.bot.name;
               const selected = isOpenChat(entry);
@@ -719,6 +743,15 @@ export function TeammatesSection() {
               return (
                 <div
                   key={bot.id}
+                  // 焦点在行内(含右键菜单把焦点还给行按钮)时,这一行即使不再命中
+                  // 默认收敛的一批也先留着;焦点离开后自然收起。
+                  onFocus={() => {
+                    if (focusedChatKey !== bot.id) setFocusedChatKey(bot.id);
+                  }}
+                  onBlur={(event) => {
+                    if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+                    setFocusedChatKey((current) => (current === bot.id ? null : current));
+                  }}
                   className={cn(
                     'group relative flex w-full items-center rounded-xl transition-colors',
                     selected
@@ -827,11 +860,6 @@ export function TeammatesSection() {
                 type="button"
                 onClick={() => setShowAllChats((value) => !value)}
                 aria-expanded={showAllChats}
-                aria-label={
-                  showAllChats
-                    ? t('bots.list.showFewerRowsAria')
-                    : t('bots.list.showAllRowsAria', { count: hiddenChatCount })
-                }
                 className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-12 text-[var(--sidebar-list-muted)] outline-none transition-colors hover:bg-sidebar-item-hover focus-visible:ring-2 focus-visible:ring-ring"
               >
                 {showAllChats ? (
@@ -839,8 +867,15 @@ export function TeammatesSection() {
                 ) : (
                   <ChevronDown size={13} strokeWidth={2} className="shrink-0" />
                 )}
-                <span className="min-w-0 flex-1 truncate">
+                {/* 不挂 aria-label:视觉文案与 +N 对读屏隐藏,由下面这句完整描述 +
+                    未读/待处理的 aria 标签共同组成按钮的可访问名称。 */}
+                <span aria-hidden className="min-w-0 flex-1 truncate">
                   {t(showAllChats ? 'bots.list.showFewerRows' : 'bots.list.showAllRows')}
+                </span>
+                <span className="sr-only">
+                  {showAllChats
+                    ? t('bots.list.showFewerRowsAria')
+                    : t('bots.list.showAllRowsAria', { count: hiddenChatCount })}
                 </span>
                 {showAllChats ? null : (
                   <>
@@ -859,7 +894,9 @@ export function TeammatesSection() {
                         className="size-[7px] shrink-0 rounded-full bg-[var(--bot-unread-bg)]"
                       />
                     ) : null}
-                    <span className="shrink-0 tabular-nums">+{hiddenChatCount}</span>
+                    <span aria-hidden className="shrink-0 tabular-nums">
+                      +{hiddenChatCount}
+                    </span>
                   </>
                 )}
               </button>
