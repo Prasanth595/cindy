@@ -212,6 +212,19 @@ describe('createTransportTimeoutReopenLoop', () => {
     loop.dispose();
   });
 
+  it('新一轮开始时通知调用方一次;循环在跑时再次 trigger 不重复通知', async () => {
+    const onStarted = vi.fn();
+    const loop = createTransportTimeoutReopenLoop({
+      reopen: () => new Promise(() => undefined),
+      shouldAbort: () => false,
+      onStarted,
+    });
+    loop.trigger('dev-a');
+    loop.trigger('dev-a');
+    expect(onStarted.mock.calls).toEqual([['dev-a']]);
+    loop.dispose();
+  });
+
   it('次数耗尽时通知调用方，便于稍后只重开这一个对端', async () => {
     const onGaveUp = vi.fn();
     const loop = createTransportTimeoutReopenLoop({

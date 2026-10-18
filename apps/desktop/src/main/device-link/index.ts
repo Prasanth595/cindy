@@ -401,6 +401,8 @@ const transportTimeoutReopen = createTransportTimeoutReopenLoop({
     broadcast(DEVICE_LINK_PUSH.PEER_LINK_REOPENED, { deviceId });
   },
   onGaveUp: (deviceId) => stalledOutboundRecovery.onGaveUp(deviceId),
+  // transport-timeout / before-link / 接管等入口直接 trigger;登记后 relay 断线终止循环也能接上。
+  onStarted: (deviceId) => stalledOutboundRecovery.track(deviceId),
   reopen: async (deviceId) => {
     // 退避等待期间链路可能已由别的路径恢复(用户打开远程视图、对端重开):
     // 不再对已就绪的链路多发一次 link-open。transport-timeout / before-link /
@@ -951,7 +953,7 @@ export function initDeviceLinkService(options: DeviceLinkServiceOptions = {}): v
       `re-opening control link for ${deviceId.slice(0, 8)} after before-link reliable frame`,
     );
     // 对端还在发可靠帧，说明它活着：已排期的慢速重试作废，本轮失败后退避从头算。
-    stalledOutboundRecovery.reset(deviceId);
+    stalledOutboundRecovery.restart(deviceId);
     transportTimeoutReopen.trigger(deviceId);
     return true;
   });

@@ -191,6 +191,7 @@ function wireController(ctrl: DeviceLinkClient) {
       reopened.push(deviceId);
     },
     onGaveUp: (deviceId) => recovery.onGaveUp(deviceId),
+    onStarted: (deviceId) => recovery.track(deviceId),
     reopen: async (deviceId) => {
       if (!ctrl.isLinkReady(deviceId)) await openRemoteLink(deviceId);
     },
@@ -624,6 +625,62 @@ describe('出站链路主动重开:完整流程', () => {
 
     expect(env.ctrl.isLinkReady('vm')).toBe(true);
     expect(env.relay.linkOpensTo('vm')).toBe(2);
+    expect(env.host.recovery.isRecovering('vm')).toBe(false);
+  });
+  it('掉线事件推迟处理时撞上本机 relay 断线:仍登记为恢复中,重新上线后重开', async () => {
+    await establish(env);
+    // 链路掉线通知发出后、推迟一轮的处理执行前,本机 relay 断开(微任务先于 0ms 定时器)。
+    let raced = false;
+    env.ctrl.onOutboundLinkLost(() => {
+      if (raced) return;
+      raced = true;
+      queueMicrotask(() => {
+        env.relay.unreachable.add('ctrl');
+        env.relay.disconnect('ctrl');
+      });
+    });
+    expect(await pauseVm(env)).toBe(true);
+    expect(raced).toBe(true);
+    expect(env.ctrl.getStatus()).not.toBe('online');
+    expect(env.host.openRemoteLinkCalls()).toBe(1);
+    expect(env.host.recovery.isRecovering('vm')).toBe(true);
+
+    env.relay.offline.delete('vm');
+    env.relay.drop = (sender, envelope) => sender === 'vm' && envelope.kind === 'link-close';
+    env.relay.unreachable.delete('ctrl');
+    await settle(200);
+
+    expect(env.ctrl.isLinkReady('vm')).toBe(true);
+    expect(env.relay.linkOpensTo('vm')).toBe(2);
+    expect(env.host.recovery.isRecovering('vm')).toBe(false);
+  });
+
+  it('对端 transport-timeout 直接启动的重开被本机 relay 断线终止:重新上线后接着重开', async () => {
+    await establish(env);
+    // 对端发来瞬时重置后不再回应(帧被静默丢弃,不产生 DEVICE_OFFLINE / 路由离线事件),
+    // 所以只有 link-close 路由直接启动的重开循环,不经停滞恢复的任何其它入口。
+    env.relay.drop = (sender, envelope) => envelope.dst === 'vm' || sender === 'vm';
+    env.relay.inject('vm', 'ctrl', {
+      v: PROTOCOL_VERSION,
+      kind: 'link-close',
+      payload: { reason: 'transport-timeout' },
+    });
+    await settle(1_500); // 循环在退避中。
+    expect(env.host.loop.isActive('vm')).toBe(true);
+    expect(env.host.recovery.isRecovering('vm')).toBe(true);
+
+    env.relay.unreachable.add('ctrl');
+    env.relay.disconnect('ctrl');
+    await settle(100);
+    expect(env.host.loop.isActive('vm')).toBe(false);
+    expect(env.host.recovery.isRecovering('vm')).toBe(true);
+
+    // 对端恢复回应,但不再发 transport-timeout。
+    env.relay.drop = (sender, envelope) => sender === 'vm' && envelope.kind === 'link-close';
+    env.relay.unreachable.delete('ctrl');
+    await settle(200);
+
+    expect(env.ctrl.isLinkReady('vm')).toBe(true);
     expect(env.host.recovery.isRecovering('vm')).toBe(false);
   });
 });

@@ -93,6 +93,24 @@ describe('createStalledOutboundRecovery', () => {
     expect(recovery.hasPendingRetry('dev-a')).toBe(false);
   });
 
+  it('relay 离线时到达的事件先登记,上线后复验再重开;restart / track 只登记、不清除', () => {
+    const { state, trigger, recovery } = make();
+    state.relayOnline = false;
+    recovery.recover('dev-a', 'link-lost');
+    expect(trigger).not.toHaveBeenCalled();
+    expect(recovery.isRecovering('dev-a')).toBe(true);
+
+    recovery.onGaveUp('dev-b');
+    recovery.restart('dev-b');
+    expect(recovery.hasPendingRetry('dev-b')).toBe(false);
+    expect(recovery.isRecovering('dev-b')).toBe(true);
+    recovery.track('dev-c');
+
+    state.relayOnline = true;
+    recovery.resumeAfterRelayOnline();
+    expect(trigger.mock.calls.map(([id]) => id).sort()).toEqual(['dev-a', 'dev-b', 'dev-c']);
+  });
+
   it('dispose 后已排期的定时器不会再触发', async () => {
     const { trigger, recovery } = make();
     recovery.onGaveUp('dev-a');

@@ -21,6 +21,8 @@ export interface TransportTimeoutReopenDeps {
   onReopened?(deviceId: string): void;
   /** 这一轮次数用完仍没连上。调用方可以过一会儿再 trigger，不拆共享中转。 */
   onGaveUp?(deviceId: string): void;
+  /** 某设备开始新一轮(已有循环在跑时不调用)。dispose 不会调 onGaveUp,调用方据此记住它。 */
+  onStarted?(deviceId: string): void;
   /** 重开链路(通常是 openRemoteLink;自带同 device in-flight 去重)。 */
   reopen(deviceId: string): Promise<unknown>;
   /** 返回 true 则终止该设备的循环(撤权 / client 不在 / 待命态 / relay 离线)。 */
@@ -188,6 +190,7 @@ export function createTransportTimeoutReopenLoop(
       if (entries.has(deviceId)) return;
       const entry: ReopenEntry = { timer: null };
       entries.set(deviceId, entry);
+      deps.onStarted?.(deviceId);
       attempt(deviceId, entry, 1);
     },
     cancel(deviceId: string): void {

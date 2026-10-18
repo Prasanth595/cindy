@@ -13,9 +13,10 @@
  * 清理:链路以任何方式恢复、被任一端关闭、对端证明自己还活着,或判定不再需要
  * 重开时,定时器和退避一起清掉;不会留下迟到的定时器去重开已关闭或已恢复的链路。
  *
- * 本机 relay 断线不算「不再需要」:断线期间到点的重试、以及被 relay 离线终止的重开
- * 循环,都保留在恢复中的设备集合里,relay 重新上线后接着重开。presence 是增量流,
- * 没有订阅的设备在重连后不一定再有任何事件。
+ * 本机 relay 断线不算「不再需要」:断线期间到达的掉线事件、到点的重试,以及被 relay
+ * 离线终止的重开循环(不论从哪个入口启动,见 track),都保留在恢复中的设备集合里,
+ * relay 重新上线后逐个复验并接着重开。presence 是增量流,没有订阅的设备在重连后不一定
+ * 再有任何事件。
  */
 import type { DeviceLinkClient } from '@cindy/device-link';
 import { stalledOutboundRetryDelayMs } from './linkRecovery';
@@ -50,6 +51,10 @@ export interface StalledOutboundRecovery {
   onGaveUp(deviceId: string): void;
   /** 链路已恢复 / 已关闭 / 对端仍活着:清定时器,退避从头算。 */
   reset(deviceId: string): void;
+  /** 对端仍活着但要重开(transport-timeout / before-link):退避从头算,仍算恢复中。 */
+  restart(deviceId: string): void;
+  /** 重开循环从任一入口启动时登记,relay 断线终止循环后重连仍能接上。 */
+  track(deviceId: string): void;
   /** 本机 relay 重新上线:恢复中的设备逐个重新判断并重开。 */
   resumeAfterRelayOnline(): void;
   dispose(): void;
@@ -85,6 +90,12 @@ export function createStalledOutboundRecovery(
     clearPendingRetry(deviceId);
   };
 
+  const restart = (deviceId: string): void => {
+    rounds.delete(deviceId);
+    clearPendingRetry(deviceId);
+    recovering.add(deviceId);
+  };
+
   const recover = (deviceId: string, reason: StalledOutboundRecoveryReason): void => {
     // 事件本身就是新证据(新一次断开、对端或本机重新上线):退避从头算,马上重开。
     if (reason !== 'retry-timer') {
@@ -92,7 +103,9 @@ export function createStalledOutboundRecovery(
       clearPendingRetry(deviceId);
     }
     if (!deps.isRelayOnline()) {
-      // 暂时无法判断也无法重开;已在恢复中的设备留着,relay 上线后由 resumeAfterRelayOnline 接上。
+      // 暂时无法判断也无法重开:先登记,relay 上线后由 resumeAfterRelayOnline 复验 canRecover。
+      // 掉线事件被推迟一轮处理,可能正好撞上本机 relay 断线;不登记就再也没有触发。
+      recovering.add(deviceId);
       return;
     }
     if (!deps.canRecover(deviceId)) {
@@ -128,6 +141,10 @@ export function createStalledOutboundRecovery(
       timers.set(deviceId, { timer, delayMs });
     },
     reset,
+    restart,
+    track(deviceId) {
+      recovering.add(deviceId);
+    },
     resumeAfterRelayOnline() {
       for (const deviceId of [...recovering]) recover(deviceId, 'relay-online');
     },
@@ -184,9 +201,14 @@ export function attachStalledOutboundRecovery(
     // 出站握手以任何路径完成(本轮重开、用户打开远程视图、订阅重放):不再需要定时重试。
     client.onPeerStreamAccepted((deviceId) => recovery.reset(deviceId)),
     client.onFrame((env) => {
-      // transport-timeout:对端还活着,重开循环由 link-close 路由接管,退避从头算;
+      if (env.kind !== 'link-close' || !env.src) return;
+      // transport-timeout:对端还活着,重开循环由 link-close 路由接管,退避从头算但仍算恢复中;
       // 其它 reason 是永久关闭,不得留下定时器。
-      if (env.kind === 'link-close' && env.src) recovery.reset(env.src);
+      if ((env.payload as { reason?: string } | undefined)?.reason === 'transport-timeout') {
+        recovery.restart(env.src);
+      } else {
+        recovery.reset(env.src);
+      }
     }),
   ];
   return () => {
