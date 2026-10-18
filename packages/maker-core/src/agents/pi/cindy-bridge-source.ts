@@ -2966,6 +2966,8 @@ class CindyMcpGateway {
    * 因此重启后同 schema 直接沿用；读不到或损坏按未披露处理（fail-closed）。
    */
   private readonly disclosedSchemas = new Map<string, string>();
+  /** 本进程**本次运行**新增/更新过的 key。落盘时只有这些覆盖磁盘值。 */
+  private readonly dirtyDisclosureKeys = new Set<string>();
   private disclosureNotePending = false;
   private botMemoryFacadeEnabled = false;
   private botHelperFacadeEnabled = false;
@@ -3008,11 +3010,13 @@ class CindyMcpGateway {
   }
 
   /**
-   * 落盘：先读回并**合并**磁盘上已有记录再原子替换。
-   * 多实例可共用运行目录（同会话可能同时开着另一个 Cindy 实例），直接覆盖本进程
-   * 的全量快照会把另一个实例刚写的披露抹掉（下次启动又触发一次自愈），因此合并是
-   * 必需的，单纯原子写入避免不了丢记录。锁用同目录独占创建，跨进程可见；拿不到锁
-   * 就退化为不写（本进程内存里的披露仍然有效）。
+   * 落盘：以**磁盘上的记录**为基，只让本进程本次真正新增/更新的记录覆盖它。
+   * 多实例可共用运行目录（同会话可能同时开着另一个 Cindy 实例），写本进程的全量
+   * 快照会把另一个实例刚更新的指纹退回旧值：实例 A 启动时读入旧指纹，B 随后保存
+   * 新指纹，之后 A 披露别的工具时把 A 的旧值一并写回，下次启动又被拦一次。
+   * 只合并「本进程没有的 key」同样挡不住这一种 —— 那个 key 本进程有，只是值是旧的，
+   * 所以必须区分「本次改动过」(dirty) 与「启动时读来的旧值」。
+   * 锁用同目录独占创建，跨进程可见；拿不到锁就退化为不写（本进程内存里的披露仍然有效）。
    */
   private persistDisclosures(): void {
     const file = this.disclosureFile();
@@ -3022,20 +3026,26 @@ class CindyMcpGateway {
       const lockPath = file + '.lock';
       if (!acquireDisclosureLock(lockPath)) return;
       try {
-        const merged = new Map<string, string>(this.disclosedSchemas);
+        let base: Map<string, string> | null = null;
         try {
           const existing = JSON.parse(readFileSync(file, 'utf8')) as {
             version?: unknown; entries?: unknown;
           };
           if (existing?.version === 1 && existing.entries && typeof existing.entries === 'object') {
+            base = new Map<string, string>();
             for (const [key, fingerprint] of Object.entries(existing.entries as Record<string, unknown>)) {
               if (typeof fingerprint === 'string' && /^[a-f0-9]{64}$/.test(fingerprint)) {
-                if (!merged.has(key)) merged.set(key, fingerprint);
+                base.set(key, fingerprint);
               }
             }
           }
         } catch {
-          // 磁盘记录缺失/损坏：按只有本进程记录处理。
+          // 磁盘记录缺失/损坏：无从判断谁更新，退回本进程快照（宁可多披露一次）。
+        }
+        const merged = base ?? new Map<string, string>(this.disclosedSchemas);
+        for (const key of this.dirtyDisclosureKeys) {
+          const fingerprint = this.disclosedSchemas.get(key);
+          if (fingerprint) merged.set(key, fingerprint);
         }
         writeFileSync(temp, JSON.stringify({ version: 1, entries: Object.fromEntries(merged) }), { mode: 0o600 });
         renameSync(temp, file);
@@ -3227,6 +3237,7 @@ class CindyMcpGateway {
     const fingerprint = this.schemaFingerprint(call.tool);
     if (this.disclosedSchemas.get(key) === fingerprint) return false;
     this.disclosedSchemas.set(key, fingerprint);
+    this.dirtyDisclosureKeys.add(key);
     this.persistDisclosures();
     return true;
   }

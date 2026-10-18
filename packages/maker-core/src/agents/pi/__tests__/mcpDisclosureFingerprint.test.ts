@@ -194,6 +194,8 @@ function loadGateway(options: {
     lockContent,
     callRaw: (args: Record<string, unknown> = { message: 'hi' }) =>
       callTool.execute('call-1', { server: 'cindy_orca', tool: 'send_to_worker', args }),
+    callNamed: (server: string, tool: string, args: Record<string, unknown> = {}) =>
+      callTool.execute('call-named', { server, tool, args }),
     // 默认模拟真实模型的两步：第一次被路标拦下 → 查完 schema 重发。只有验证拦截语义的用例
     // 用 callRaw；其他错误（如 zod 拒参）原样抛出，不在此处吞掉。
     call: async (args: Record<string, unknown> = { message: 'hi' }) => {
@@ -289,6 +291,32 @@ describe('MCP gateway schema disclosure', () => {
     // 原子替换：先写 tmp 再 rename
     expect(renames).toHaveLength(1);
     expect(renames[0]).toContain('.tmp');
+  });
+
+  it('does not roll back a newer fingerprint another instance wrote for a key this instance only read at startup', async () => {
+    // 关键：这个 key 本进程**有**记录 —— 只是启动时读来的旧值。另一个实例随后把它
+    // 更新成新指纹，本进程再披露别的工具触发落盘。按「本进程快照优先」合并会把旧值
+    // 一起写回，把对方的更新退回（下次启动又被拦一次）。只有区分「本次改动过」与
+    // 「启动时读来」才挡得住（删掉 dirty 判断这条测试就会红）。
+    const key = 'cindy_orca\u0000send_to_worker';
+    const { gateway, httpClient, callNamed, requests, disk, externalWrite } = loadGateway({
+      stored: { version: 1, entries: { [key]: fingerprint(TOOL) } },
+    });
+
+    // 本实例启动之后，另一个实例把同一个 key 更新成新 schema 的指纹
+    externalWrite({ version: 1, entries: { [key]: fingerprint(TOOL_CHANGED) } });
+
+    // 本实例披露另一个工具（自己 dirty 的 key），触发落盘
+    const other: ToolDescriptor = { name: 'list_workers', description: '列出 worker' };
+    gateway.add('cindy_orca', httpClient, [TOOL, other]);
+    await callNamed('cindy_orca', 'list_workers').catch(() => undefined);
+    await callNamed('cindy_orca', 'list_workers');
+
+    expect(requests.length).toBeGreaterThan(0);
+    // 对方的新指纹必须还在，本实例的旧值不能盖回去
+    expect(disk.value?.entries[key]).toBe(fingerprint(TOOL_CHANGED));
+    // 本次真正披露的工具照常落盘
+    expect(disk.value?.entries['cindy_orca\u0000list_workers']).toBe(fingerprint(other));
   });
 
   it('recovers a lock left behind by a crashed instance and persists', async () => {
