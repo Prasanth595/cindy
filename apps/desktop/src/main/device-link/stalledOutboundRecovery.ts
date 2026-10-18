@@ -34,6 +34,12 @@ export type StalledOutboundRecoveryReason =
 export interface StalledOutboundRecoveryDeps {
   /** 授权与状态门:出站链路需要重开、relay 在线、本机持有、未禁用、未被撤权。 */
   canRecover(deviceId: string): boolean;
+  /**
+   * relay 重新上线后复验已登记设备用的判据,缺省同 canRecover。已登记的循环可能来自
+   * transport-timeout / before-link / 接管等入口,它们按自己的控制意图启动,不一定有
+   * 本机建成过的出站链路。
+   */
+  canResume?(deviceId: string): boolean;
   /** 本机 relay 是否在线。离线是暂时的:不清掉恢复中的设备,等重新上线再试。 */
   isRelayOnline(): boolean;
   /** 交给 per-device 单飞的重开循环。 */
@@ -108,7 +114,10 @@ export function createStalledOutboundRecovery(
       recovering.add(deviceId);
       return;
     }
-    if (!deps.canRecover(deviceId)) {
+    const allowed = reason === 'relay-online' && deps.canResume
+      ? deps.canResume(deviceId)
+      : deps.canRecover(deviceId);
+    if (!allowed) {
       reset(deviceId);
       return;
     }

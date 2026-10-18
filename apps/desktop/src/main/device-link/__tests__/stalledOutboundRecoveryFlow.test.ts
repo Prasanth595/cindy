@@ -199,19 +199,26 @@ function wireController(ctrl: DeviceLinkClient) {
       clientOnline: ctrl.getStatus() === 'online',
       isOwner: true,
       controlDisabledLocally: disabled.has(deviceId),
-      hasOutboundControlIntent: !ctrl.isOutboundExplicitlyClosed(deviceId)
-        && (subscribed.has(deviceId) || ctrl.hasOpenOutboundLink(deviceId) || ctrl.hasPendingRequestsTo(deviceId)),
+      hasOutboundControlIntent: hasOutboundControlIntent(deviceId),
     }),
   });
 
+  const hasOutboundControlIntent = (deviceId: string): boolean => !ctrl.isOutboundExplicitlyClosed(deviceId)
+    && (subscribed.has(deviceId) || ctrl.hasOpenOutboundLink(deviceId) || ctrl.hasPendingRequestsTo(deviceId));
+  const gate = (deviceId: string, needsOutboundReopen: boolean): boolean => shouldRecoverStalledOutboundLink({
+    needsOutboundReopen,
+    controlDisabledLocally: disabled.has(deviceId),
+    revokedByRemote: false,
+    clientOnline: ctrl.getStatus() === 'online',
+    isOwner: true,
+  });
   const recovery = createStalledOutboundRecovery({
-    canRecover: (deviceId) => shouldRecoverStalledOutboundLink({
-      needsOutboundReopen: ctrl.needsOutboundReopen(deviceId),
-      controlDisabledLocally: disabled.has(deviceId),
-      revokedByRemote: false,
-      clientOnline: ctrl.getStatus() === 'online',
-      isOwner: true,
-    }),
+    canRecover: (deviceId) => gate(deviceId, ctrl.needsOutboundReopen(deviceId)),
+    canResume: (deviceId) => gate(
+      deviceId,
+      ctrl.needsOutboundReopen(deviceId)
+        || (!ctrl.isLinkReady(deviceId) && hasOutboundControlIntent(deviceId)),
+    ),
     trigger: (deviceId, opts) => loop.trigger(deviceId, opts),
     isReopening: (deviceId) => loop.isActive(deviceId),
     isRelayOnline: () => ctrl.getStatus() === 'online',
@@ -677,6 +684,29 @@ describe('出站链路主动重开:完整流程', () => {
 
     // 对端恢复回应,但不再发 transport-timeout。
     env.relay.drop = (sender, envelope) => sender === 'vm' && envelope.kind === 'link-close';
+    env.relay.unreachable.delete('ctrl');
+    await settle(200);
+
+    expect(env.ctrl.isLinkReady('vm')).toBe(true);
+    expect(env.host.recovery.isRecovering('vm')).toBe(false);
+  });
+  it('出站握手完成前被本机 relay 断线终止的直接入口重开:按原控制意图在重新上线后接着重开', async () => {
+    // 本机从未建成到 vm 的出站链路,但仍在控制它(这里用订阅表示;在途请求同一判据)。
+    // 像 before-link 那样由其它入口直接启动循环,vm 暂不回应,握手完成前本机 relay 断开。
+    env.host.subscribed.add('vm');
+    env.relay.drop = (sender, envelope) => envelope.dst === 'vm' || sender === 'vm';
+    env.host.loop.trigger('vm');
+    await settle(500);
+    expect(env.host.loop.isActive('vm')).toBe(true);
+    expect(env.ctrl.hasOpenOutboundLink('vm')).toBe(false);
+    expect(env.host.recovery.isRecovering('vm')).toBe(true);
+
+    env.relay.unreachable.add('ctrl');
+    env.relay.disconnect('ctrl');
+    await settle(100);
+    expect(env.host.loop.isActive('vm')).toBe(false);
+
+    env.relay.drop = null;
     env.relay.unreachable.delete('ctrl');
     await settle(200);
 

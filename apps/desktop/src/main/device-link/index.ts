@@ -497,14 +497,27 @@ function hasOutboundControlIntent(deviceId: string): boolean {
  * 出站可靠链路发不出去时重开这一个对端(见 stalledOutboundRecovery.ts)。
  * presence 过期也不等「重新上线」通知;一轮用完按退避再试。
  */
-const stalledOutboundRecovery = createStalledOutboundRecovery({
-  canRecover: (deviceId) => !!client && !linkTornDown && shouldRecoverStalledOutboundLink({
-    needsOutboundReopen: client.needsOutboundReopen(deviceId),
+function canRecoverOutboundLink(deviceId: string, needsOutboundReopen: boolean): boolean {
+  return !!client && !linkTornDown && shouldRecoverStalledOutboundLink({
+    needsOutboundReopen,
     controlDisabledLocally: readDeviceLinkSettings().disabledControlDeviceIds.includes(deviceId),
     revokedByRemote: revokedByRemote.has(deviceId),
     clientOnline: client.getStatus() === 'online',
     isOwner: arbiter === null || arbiter.isOwner(),
-  }),
+  });
+}
+
+const stalledOutboundRecovery = createStalledOutboundRecovery({
+  // 新事件只为本机建成过的出站链路重开:订阅判据几乎覆盖所有同账号设备('sessions'),
+  // 用它会在对端上线时以控制身份连上每一台。
+  canRecover: (deviceId) => !!client && canRecoverOutboundLink(deviceId, client.needsOutboundReopen(deviceId)),
+  // relay 重连后接上已登记的循环:沿用循环自己的方向判据(订阅 / 已建出站链路 / 在途请求),
+  // 否则 before-link 等入口在出站握手完成前被断线终止就再也接不上。
+  canResume: (deviceId) => !!client && canRecoverOutboundLink(
+    deviceId,
+    client.needsOutboundReopen(deviceId)
+      || (!client.isLinkReady(deviceId) && hasOutboundControlIntent(deviceId)),
+  ),
   trigger: (deviceId, opts) => transportTimeoutReopen.trigger(deviceId, opts),
   isReopening: (deviceId) => transportTimeoutReopen.isActive(deviceId),
   isRelayOnline: () => !!client && !linkTornDown && client.getStatus() === 'online',

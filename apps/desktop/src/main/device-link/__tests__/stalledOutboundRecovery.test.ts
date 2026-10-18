@@ -111,6 +111,22 @@ describe('createStalledOutboundRecovery', () => {
     expect(trigger.mock.calls.map(([id]) => id).sort()).toEqual(['dev-a', 'dev-b', 'dev-c']);
   });
 
+  it('relay 重新上线时用 canResume 复验已登记设备,其它事件仍用 canRecover', () => {
+    const trigger = vi.fn();
+    const recovery = createStalledOutboundRecovery({
+      canRecover: () => false,
+      canResume: () => true,
+      trigger,
+      isReopening: () => false,
+      isRelayOnline: () => true,
+    });
+    recovery.recover('dev-a', 'link-lost');
+    expect(trigger).not.toHaveBeenCalled();
+    recovery.track('dev-a');
+    recovery.resumeAfterRelayOnline();
+    expect(trigger.mock.calls).toEqual([['dev-a', { notifyReset: false }]]);
+  });
+
   it('dispose 后已排期的定时器不会再触发', async () => {
     const { trigger, recovery } = make();
     recovery.onGaveUp('dev-a');
