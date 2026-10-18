@@ -5,7 +5,6 @@ import {
   AlertTriangle,
   Archive,
   ArchiveRestore,
-  Users,
   ChevronDown,
   ChevronRight,
   ChevronUp,
@@ -16,7 +15,7 @@ import {
   Settings,
   Trash2,
 } from 'lucide-react';
-import { matchPath, useLocation, useNavigate, useParams } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 
 import { cn } from '@/lib/utils';
@@ -59,6 +58,7 @@ import {
   formatBotUnreadBadge,
 } from './botListDisplay';
 import { botDeviceLabel, partitionBotRoster } from './botRosterDisplay';
+import { resolveOpenChatRoute } from './botSidebarRoute';
 import { readTeammatesSectionCollapsed, writeTeammatesSectionCollapsed } from './teammatesSectionPrefs';
 import { limitTeammateRows } from './teammatesRowLimit';
 import {
@@ -125,9 +125,18 @@ export function TeammatesSection() {
   const navigate = useNavigate();
   const { pathname } = useLocation();
   const { dataOwnerId } = useAuth();
-  const { botId, deviceId, groupId } = useParams();
-  // The registered sidebar slot can sit outside the group's route context.
-  const selectedGroupId = matchPath('/bots/groups/:groupId', pathname)?.params.groupId;
+  // 侧栏槽位渲染在 Shell 的上半槽里、不在 /bots 的路由子树内，useParams() 在这里
+  // 拿不到子路由参数 —— 「正在看哪个聊天」统一从 pathname 解析（见
+  // useViewedBotSessionId 的同一条处理）。
+  const openChatRoute = resolveOpenChatRoute(pathname);
+  const selectedGroupId = openChatRoute?.kind === 'group' ? openChatRoute.groupId : undefined;
+  const isOpenBot = (id: string) => openChatRoute?.kind === 'bot' && openChatRoute.botId === id;
+  const isOpenRemoteBot = (deviceId: string, botId: string) =>
+    openChatRoute?.kind === 'remote' &&
+    openChatRoute.deviceId === deviceId &&
+    openChatRoute.botId === botId;
+  const isOpenGroup = (id: string) =>
+    openChatRoute?.kind === 'group' && openChatRoute.groupId === id;
   const [collapsed, setCollapsed] = useState(() => readTeammatesSectionCollapsed(dataOwnerId));
   const avatarRowRef = useRef<HTMLDivElement>(null);
   const avatarCapacity = useAvatarRowCapacity(avatarRowRef, collapsed);
@@ -238,7 +247,14 @@ export function TeammatesSection() {
   const cindyOptions = cindyDeviceOptions(withoutCloudCompanions(bots, cloud), withoutCloudCompanions(remoteBots, cloud),
     devices ?? [], unreadByBotId, t('bots.devicePicker.local'));
   const hasMultipleCindys = cindyOptions.length > 1;
-  const routeCindy = cindyOptions.find(option => option.key === cindyDeviceKey({ id: botId ?? '', deviceId }));
+  const openChatBotId =
+    openChatRoute?.kind === 'bot' || openChatRoute?.kind === 'remote'
+      ? openChatRoute.botId
+      : undefined;
+  const openChatDeviceId = openChatRoute?.kind === 'remote' ? openChatRoute.deviceId : undefined;
+  const routeCindy = cindyOptions.find(
+    option => option.key === cindyDeviceKey({ id: openChatBotId ?? '', deviceId: openChatDeviceId }),
+  );
   // Follow the open Cindy chat; otherwise the local-first roster is the default.
   const currentCindy = routeCindy ?? cindyOptions[0];
   const showCindy = hasMultipleCindys && Boolean(currentCindy);
@@ -329,15 +345,29 @@ export function TeammatesSection() {
       activityAt: Math.max(...cindyOptions.map(option => 'activityAt' in option.bot ? option.bot.activityAt : option.bot.lastMessageAt ?? option.bot.createdAt)) }] : []),
   ].sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.activityAt - a.activityAt);
 
-  // 「这一条是不是当前打开的那个聊天」:与收起态头像行同一条判断(那段在行内自己
-  // 算了一遍,因为要顺带算未读点)。侧栏槽位可能在群聊路由上下文之外,所以群聊
-  // 同时认路由参数和 pathname。
   const isOpenChat = (chat: (typeof visibleChats)[number]): boolean => {
-    if (chat.kind === 'group') return chat.group.id === (selectedGroupId ?? groupId);
+    if (chat.kind === 'group') return isOpenGroup(chat.group.id);
     if (chat.kind === 'cindy') return Boolean(routeCindy);
     return 'deviceId' in chat.bot
-      ? chat.bot.id === botId && chat.bot.deviceId === deviceId
-      : !deviceId && chat.bot.id === botId;
+      ? isOpenRemoteBot(chat.bot.deviceId, chat.bot.id)
+      : isOpenBot(chat.bot.id);
+  };
+  // 未读与「需要处理」的口径只在这里写一次:行内、收起态头像行、段尾「展开全部」
+  // 三处必须一致,否则被收起的提醒会凭空消失。
+  const chatUnreadCount = (chat: (typeof visibleChats)[number]): number => {
+    if (chat.kind === 'group') return isBotGroupUnread(chat.group) ? 1 : 0;
+    if (chat.kind === 'cindy') return cindyOptions.some((option) => option.unread) ? 1 : 0;
+    return 'deviceId' in chat.bot
+      ? (isRemoteBotUnread(chat.bot) ? 1 : 0)
+      : (unreadByBotId[chat.bot.id] ?? 0);
+  };
+  const chatNeedsAttention = (chat: (typeof visibleChats)[number]): boolean => {
+    if (chat.kind === 'group') return false;
+    if (chat.kind === 'cindy') {
+      const bot = currentCindy?.bot;
+      return Boolean(bot && 'needsAttention' in bot && bot.needsAttention);
+    }
+    return 'needsAttention' in chat.bot && Boolean(chat.bot.needsAttention);
   };
   // 默认只展开最近对话的一批(置顶与正在看的行豁免),其余收进段尾的「展开全部」:
   // 伙伴段与下面的任务列表共用一条滚动轴,这里不能无限长。展开是本次挂载的临时
@@ -347,6 +377,16 @@ export function TeammatesSection() {
     : limitTeammateRows(visibleChats, {
         keep: (chat) => chat.pinned || isOpenChat(chat),
       });
+  // 被收起的那几行也要在段尾交代清楚:还有未读 / 还有伙伴需要处理时,不能只留一个
+  // 数量 —— 收起态头像行的 +N 也是这么保留未读点的。
+  const hiddenChats = showAllChats
+    ? []
+    : visibleChats.filter((chat) => !displayedChats.includes(chat));
+  const hiddenUnreadCount = hiddenChats.reduce(
+    (total, chat) => total + chatUnreadCount(chat),
+    0,
+  );
+  const hiddenNeedsAttention = hiddenChats.some(chatNeedsAttention);
 
   useEffect(() => {
     if (roster.visible.length + remoteBots.length + groups.length === 0) return;
@@ -444,7 +484,7 @@ export function TeammatesSection() {
 
   const renderGroupRow = (group: BotGroupSummary) => (
     <BotGroupSidebarRow key={'group:' + group.id} group={group} bots={bots}
-      islandActivity={islandActivity} now={now} selected={group.id === groupId}
+      islandActivity={islandActivity} now={now} selected={isOpenGroup(group.id)}
       onOpenGroup={id => navigate('/bots/groups/' + encodeURIComponent(id))}
       onContextMenu={event => {
         event.preventDefault(); event.stopPropagation();
@@ -526,13 +566,8 @@ export function TeammatesSection() {
                   : 'deviceId' in entry.bot ? remoteBotKey(entry.bot) : entry.bot.id;
               const name = entry.kind === 'group' ? entry.group.name
                 : entry.kind === 'cindy' ? currentCindy?.bot.name ?? '' : entry.bot.name;
-              const selected = entry.kind === 'group' ? entry.group.id === groupId
-                : entry.kind === 'cindy' ? Boolean(routeCindy)
-                  : 'deviceId' in entry.bot ? entry.bot.id === botId && entry.bot.deviceId === deviceId
-                    : !deviceId && entry.bot.id === botId;
-              const unread = entry.kind === 'group' ? isBotGroupUnread(entry.group)
-                : entry.kind === 'cindy' ? cindyOptions.some(option => option.unread)
-                  : 'deviceId' in entry.bot ? isRemoteBotUnread(entry.bot) : (unreadByBotId[entry.bot.id] ?? 0) > 0;
+              const selected = isOpenChat(entry);
+              const unread = chatUnreadCount(entry) > 0;
               return { entry, key, name, selected, unread };
             });
             const overflow = entries.length > avatarCapacity;
@@ -636,7 +671,7 @@ export function TeammatesSection() {
               }
               const bot = entry.bot;
               if ('deviceId' in bot) {
-                const selected = bot.id === botId && bot.deviceId === deviceId;
+                const selected = isOpenRemoteBot(bot.deviceId, bot.id);
                 const deviceName = botDeviceLabel({ deviceId: bot.deviceId, name: bot.deviceName }, rosterDevices);
                 return (
                   <button key={remoteBotKey(bot)} type="button" aria-current={selected ? 'page' : undefined}
@@ -655,7 +690,7 @@ export function TeammatesSection() {
                   </button>
                 );
               }
-              const selected = !deviceId && bot.id === botId;
+              const selected = isOpenBot(bot.id);
               const unread = unreadByBotId[bot.id] ?? 0;
               const subtitle = botListSubtitle(bot);
               // TA 正在回话时，第二行临时让位给「正在输入…」——聊天列表里这一行
@@ -785,8 +820,9 @@ export function TeammatesSection() {
               );
             })}
             {showAllChats || hiddenChatCount > 0 ? (
-              // 段尾的「展开全部 / 收起」:与行同宽、同圆角,单行高度;折叠只是显示
-              // 收敛,不换滚动容器(§ 伙伴段与任务并存)。
+              // 段尾的「展开全部 / 收起」:与行同宽、单行高度;折叠只是显示收敛,
+              // 不换滚动容器(§ 伙伴段与任务并存)。它是行内控件而不是内容容器,
+              // 按 DESIGN.md §5 Step 2 的 inner-control / 行高亮档用 8px。
               <button
                 type="button"
                 onClick={() => setShowAllChats((value) => !value)}
@@ -796,7 +832,7 @@ export function TeammatesSection() {
                     ? t('bots.list.showFewerRowsAria')
                     : t('bots.list.showAllRowsAria', { count: hiddenChatCount })
                 }
-                className="flex w-full items-center gap-2 rounded-xl px-2.5 py-1.5 text-left text-12 text-[var(--sidebar-list-muted)] outline-none transition-colors hover:bg-sidebar-item-hover focus-visible:ring-2 focus-visible:ring-ring"
+                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-12 text-[var(--sidebar-list-muted)] outline-none transition-colors hover:bg-sidebar-item-hover focus-visible:ring-2 focus-visible:ring-ring"
               >
                 {showAllChats ? (
                   <ChevronUp size={13} strokeWidth={2} className="shrink-0" />
@@ -807,7 +843,24 @@ export function TeammatesSection() {
                   {t(showAllChats ? 'bots.list.showFewerRows' : 'bots.list.showAllRows')}
                 </span>
                 {showAllChats ? null : (
-                  <span className="shrink-0 tabular-nums">+{hiddenChatCount}</span>
+                  <>
+                    {/* 被收起的行如果还有事,提醒必须留在这里:未读点沿用伙伴行的
+                        同一颗蓝点,「需要处理」沿用行内的警示图标。 */}
+                    {hiddenNeedsAttention ? (
+                      <AlertTriangle
+                        size={13}
+                        className="shrink-0 text-[var(--warning-fg)]"
+                        aria-label={t('bots.list.needsAttention')}
+                      />
+                    ) : null}
+                    {hiddenUnreadCount > 0 ? (
+                      <span
+                        aria-label={t('bots.list.unread', { count: hiddenUnreadCount })}
+                        className="size-[7px] shrink-0 rounded-full bg-[var(--bot-unread-bg)]"
+                      />
+                    ) : null}
+                    <span className="shrink-0 tabular-nums">+{hiddenChatCount}</span>
+                  </>
                 )}
               </button>
             ) : null}
@@ -866,7 +919,7 @@ export function TeammatesSection() {
                   <span>{t('bots.lifecycle.stoppedBots')}</span>
                 </div>
                 {archivedBots.map((bot) => {
-                  const selected = bot.id === botId;
+                  const selected = isOpenBot(bot.id);
                   return (
                     <div
                       key={bot.id}
@@ -915,7 +968,7 @@ export function TeammatesSection() {
           if (!open) setDeleteTarget(null);
         }}
         onDeleted={(deletedBotId) => {
-          if (botId !== deletedBotId) return;
+          if (!isOpenBot(deletedBotId)) return;
           const fallback = bots.find(
             (candidate) => candidate.id !== deletedBotId && candidate.status !== 'archived',
           );

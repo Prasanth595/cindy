@@ -352,6 +352,8 @@ describe('TeammatesSection group chats', () => {
   it('lists groups alongside teammates with an author preview and opens them', async () => {
     mocks.groups = [group(), group({ id: 'g2', name: '读书会', lastMessage: null, updatedAt: 1 })];
     mocks.params = { groupId: 'g1' };
+    // 侧栏渲染在路由元素之外，选中态只认 pathname。
+    mocks.pathname = '/bots/groups/g1';
     await renderSidebar();
     expect(screen.queryByText('bots.groupChat.sidebar.title')).toBeNull();
     const rows = screen.getAllByRole('button', { current: 'page' });

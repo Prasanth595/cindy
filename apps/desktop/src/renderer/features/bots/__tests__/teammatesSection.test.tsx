@@ -5,7 +5,7 @@ vi.mock('@/components/ui/confirm-dialog-provider', () => ({
   useConfirmDialog: () => ({ confirm: vi.fn() }),
 }));
 
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterAll, beforeAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/lib/makerChatStore', () => { const running = new Map(); return { makerChatStore: { subscribeAll: () => () => {}, getRunningSnapshot: () => running } }; });
@@ -38,6 +38,7 @@ const mocks = vi.hoisted(() => ({
   unread: {} as Record<string, number>,
   groupMessages: new Map<string, unknown[]>(),
   params: {} as { botId?: string; deviceId?: string },
+  pathname: '/bots',
   refreshBotProfiles: vi.fn(),
   setBotHidden: vi.fn(async () => undefined),
   setBotPinned: vi.fn(async () => undefined),
@@ -72,7 +73,7 @@ vi.mock('@/hooks/useSessionRunningStatus', () => ({
 vi.mock('react-router-dom', async importOriginal => ({
   ...await importOriginal<typeof import('react-router-dom')>(),
   useNavigate: () => mocks.navigate,
-  useLocation: () => ({ pathname: '/bots', search: '', hash: '' }),
+  useLocation: () => ({ pathname: mocks.pathname, search: '', hash: '' }),
   useParams: () => mocks.params,
 }));
 vi.mock('../botStore', () => ({
@@ -149,6 +150,7 @@ beforeEach(() => {
   mocks.unread = {};
   mocks.groupMessages = new Map();
   mocks.params = {};
+  mocks.pathname = '/bots';
   mocks.profiles = [];
   mocks.remoteBots = [];
   mocks.devices = [];
@@ -241,12 +243,12 @@ describe('one Cindy entry across devices', () => {
     const cloud = await screen.findByRole('option', { name: /Cloud/ });
     fireEvent.click(cloud);
     expect(mocks.navigate).toHaveBeenCalledWith('/bots/remote/cloud/cindy-default');
-    mocks.params = { deviceId: 'cloud', botId: 'cindy-default' };
+    mocks.pathname = '/bots/remote/cloud/cindy-default';
     view.rerender(<TeammatesSection />);
     expect(screen.getByText('Cloud preview')).toBeTruthy();
     expect(screen.queryByText('Local preview')).toBeNull();
     expect(screen.getByRole('button', { name: 'Cindy · Cloud' }).getAttribute('aria-current')).toBe('page');
-    mocks.params = { botId: 'writer' };
+    mocks.pathname = '/bots/writer';
     view.rerender(<TeammatesSection />);
     expect(screen.getByText('Local preview')).toBeTruthy();
     expect(screen.queryByText('Cloud preview')).toBeNull();
@@ -285,7 +287,7 @@ describe('one Cindy entry across devices', () => {
   it('follows a remote deep link and falls back to local if that device is removed', async () => {
     mocks.profiles = [bot({ id: 'cindy-default', name: 'Cindy', lastMessagePreview: 'Local preview' })];
     mocks.remoteBots = [remote('cloud', 'Cloud')];
-    mocks.params = { botId: 'cindy-default', deviceId: 'cloud' };
+    mocks.pathname = '/bots/remote/cloud/cindy-default';
     const view = await renderSidebar();
     expect(screen.getByText('Cloud preview')).toBeTruthy();
     mocks.remoteBots = [];
@@ -445,7 +447,7 @@ describe('TeammatesSection header', () => {
     try {
       mocks.profiles = Array.from({ length: 6 }, (_, index) => bot({ id: `bot-${index}`, name: `Mate ${index}` }));
       mocks.unread = { 'bot-5': 1 };
-      mocks.params = { botId: 'bot-4' };
+      mocks.pathname = '/bots/bot-4';
       await renderSidebar();
       fireEvent.click(header());
       const avatars = screen.getAllByRole('button', { name: /^Mate \d$/ });
@@ -463,7 +465,7 @@ describe('TeammatesSection header', () => {
   it('marks the open chat in the collapsed avatar row', async () => {
     mocks.profiles = [bot({ id: 'bot-1', name: 'PR steward' }), bot({ id: 'bot-2', name: 'Writer' })];
     mocks.unread = { 'bot-1': 2 };
-    mocks.params = { botId: 'bot-1' };
+    mocks.pathname = '/bots/bot-1';
     await renderSidebar();
     fireEvent.click(header());
     // The chat being read is current and does not also advertise its unread replies.
@@ -473,7 +475,7 @@ describe('TeammatesSection header', () => {
 
   it('leaves session notifications to the task sidebar', async () => {
     mocks.profiles = [bot({ id: 'bot-1', name: 'PR steward' })];
-    mocks.params = { botId: 'bot-1' };
+    mocks.pathname = '/bots/bot-1';
     await renderSidebar();
     expect(mocks.observeSession).not.toHaveBeenCalled();
   });
@@ -896,7 +898,7 @@ describe('TeammatesSection 行数收敛', () => {
     // 置顶的 Mate 2 与正在看的 Mate 1 都排在最近一批之外。
     const total = ROWS + 9;
     mocks.profiles = roster(total, 2);
-    mocks.params = { botId: 'bot-1' };
+    mocks.pathname = '/bots/bot-1';
     await renderSidebar();
 
     expect(screen.getByText('Mate 2')).toBeTruthy();
@@ -906,5 +908,31 @@ describe('TeammatesSection 行数收敛', () => {
     expect(screen.queryByText(`Mate ${total - ROWS - 1}`)).toBeNull();
     const hidden = total - (ROWS + 2);
     expect(screen.getByRole('button', { name: `bots.list.showAllRowsAria:{"count":${hidden}}` })).toBeTruthy();
+  });
+
+  it('被收起的行还有未读或需要处理时,段尾按钮上保留提醒', async () => {
+    // 8 个伙伴:展示最近 5 个,Mate 2 / Mate 1 / Mate 0 被收起。
+    mocks.profiles = roster(ROWS + 3).map((profile) =>
+      profile.id === 'bot-1' ? { ...profile, needsAttention: true } : profile,
+    );
+    mocks.unread = { 'bot-0': 4 };
+    await renderSidebar();
+
+    const toggle = screen.getByRole('button', { name: /bots.list.showAllRowsAria/ });
+    // 收起后行里的未读数与警示图标不再可见,提醒必须落在段尾按钮上。
+    expect(within(toggle).getByLabelText('bots.list.unread:{"count":4}')).toBeTruthy();
+    expect(within(toggle).getByLabelText('bots.list.needsAttention')).toBeTruthy();
+    expect(within(toggle).getByText('+3')).toBeTruthy();
+  });
+
+  it('只认 pathname:侧栏槽位拿不到 useParams,参数里带 botId 不算打开', async () => {
+    const total = ROWS + 9;
+    mocks.profiles = roster(total);
+    // 侧栏渲染在路由元素之外,useParams() 恒为空;这里刻意塞一个值证明不再依赖它。
+    mocks.params = { botId: 'bot-1' };
+    mocks.pathname = '/bots/roster';
+    await renderSidebar();
+
+    expect(screen.queryByText('Mate 1')).toBeNull();
   });
 });

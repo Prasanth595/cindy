@@ -8961,10 +8961,10 @@
       "moreActions": "More actions for {{name}}",
       "sectionExpand": "Expand teammates",
       "sectionCollapse": "Collapse teammates",
-      "showAllRows": "Show all teammates",
-      "showAllRowsAria": "Show all teammates, {{count}} not shown yet",
+      "showAllRows": "Show all",
+      "showAllRowsAria": "Show all teammates and group chats in this section, {{count}} not shown yet",
       "showFewerRows": "Show fewer",
-      "showFewerRowsAria": "Show fewer teammates, keeping the recently active ones",
+      "showFewerRowsAria": "Show fewer teammates and group chats, keeping the recently active ones",
       "noResults": "No matching teammates or groups"
     },
     "cancel": "Cancel",
