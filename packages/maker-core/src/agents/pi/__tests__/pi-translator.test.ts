@@ -2269,7 +2269,7 @@ describe('pi translator live token speed', () => {
   const speedOf = (event: AgentEvent | undefined) =>
     (event?.data as { tokenSpeed?: Record<string, unknown> } | undefined)?.tokenSpeed;
 
-  it('counts streamed text, pauses on non-writing tools and snaps to real output at the end', () => {
+  it('counts streamed text, pauses on tools and snaps to real output at the end', () => {
     vi.useFakeTimers();
     try {
       const ctx = createPiTranslateContext(noopLogger);
@@ -2287,10 +2287,11 @@ describe('pi translator live token speed', () => {
       expect(live).toMatchObject({ streaming: true, tokens: 6, elapsedMs: 500 });
       expect(live?.rate).toBeGreaterThan(0);
 
-      // A bash call: its arguments are not counted and its execution is paused out.
+      // A bash call: count generated arguments, exclude execution time.
       update({ type: 'toolcall_start', contentIndex: 1, toolCall: { name: 'bash' } }, 1_600);
       update({ type: 'toolcall_delta', contentIndex: 1, delta: '{"command":"ls -la"}', toolCall: { name: 'bash' } }, 1_700);
       update({ type: 'toolcall_end', contentIndex: 1, toolCall: { name: 'bash' } }, 2_000);
+      expect(ctx.tokenSpeed.snapshot(10_000)).toMatchObject({ tokens: 17, elapsedMs: 1_000 });
       update({ type: 'text_delta', contentIndex: 0, delta: 'seven eight' }, 12_000);
 
       vi.setSystemTime(12_500);
@@ -2333,7 +2334,7 @@ describe('pi translator live token speed', () => {
     }
   });
 
-  it('counts file-writing tool arguments and starts each turn fresh', () => {
+  it.each(['write', 'mcp__custom_tool'])('counts %s arguments, excludes execution and starts each turn fresh', (name) => {
     vi.useFakeTimers();
     try {
       const ctx = createPiTranslateContext(noopLogger);
@@ -2342,9 +2343,13 @@ describe('pi translator live token speed', () => {
       translatePiEvent(ev({ type: 'agent_start' }), queue, ctx);
       translatePiEvent(ev({ type: 'message_update', assistantMessageEvent: {
         type: 'toolcall_delta', contentIndex: 0, delta: 'a b c',
-        partial: { content: [{ type: 'toolCall', name: 'write' }] },
+        partial: { content: [{ type: 'toolCall', name }] },
       } }), queue, ctx);
       expect(speedOf(events.filter((e) => e.type === 'status').at(-1))).toMatchObject({ tokens: 3 });
+      vi.setSystemTime(2_000);
+      translatePiEvent(ev({ type: 'message_update', assistantMessageEvent: { type: 'toolcall_end', toolCall: { name } } }), queue, ctx);
+      vi.setSystemTime(12_000);
+      expect(ctx.tokenSpeed.snapshot()?.elapsedMs).toBe(1_000);
       translatePiEvent(ev({ type: 'agent_settled' }), queue, ctx);
       events.length = 0;
       translatePiEvent(ev({ type: 'agent_start' }), queue, ctx);

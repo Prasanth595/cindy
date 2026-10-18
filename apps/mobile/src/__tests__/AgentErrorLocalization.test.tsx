@@ -23,7 +23,7 @@ vi.mock('react-native', async () => {
     StyleSheet: { create: (s: unknown) => s, hairlineWidth: 1 } };
 });
 vi.mock('@/components/AppText', async () => ({ Text: (await import('react-native')).Text }));
-vi.mock('lucide-react-native', () => ({ Pause: () => null, Play: () => null }));
+vi.mock('lucide-react-native', () => ({ Pause: () => null, Play: () => null, CircleAlert: () => null, Split: () => null, X: () => null, ChevronRight: () => null, ChevronDown: () => null }));
 vi.mock('@/theme', async () => {
   const tokens = await import('@/theme/tokens');
   return { ...tokens, useTheme: () => ({ colors: tokens.lightColors }),
@@ -48,12 +48,13 @@ describe.each(SUPPORTED_LOCALES)('mobile errors in %s', locale => {
     await i18n.changeLanguage(locale);
     const recover = vi.fn();
     const retry = vi.fn();
+    const dismiss = vi.fn();
     const error = 'stream disconnected before completion: stream closed before response.completed';
     const renderBanner = (busy: boolean) => surface === 'live'
       ? <InlineQueueSection projection={{ error, errorRetryText: 'original' } as InputProjection} busy={busy}
-          onRecoverHistory={recover} onRetryError={retry} onClearError={vi.fn()} onResume={vi.fn()} />
+          onRecoverHistory={recover} onRetryError={retry} onClearError={dismiss} onResume={vi.fn()} />
       : <SessionTailBanner state={{ kind: 'error-tail', text: error, rawError: error, clientId: 'e', continueKind: 'error', retryable: true }}
-          busy={busy} onRecoverHistory={recover} onContinue={retry} onDismiss={vi.fn()} />;
+          busy={busy} onRecoverHistory={recover} onContinue={retry} onDismiss={dismiss} />;
     await act(async () => root.render(renderBanner(false)));
     expect(host.textContent).toContain(i18n.t('session.tail.readableHistoryRecoveryDescription'));
     expect(recover).not.toHaveBeenCalled();
@@ -62,9 +63,17 @@ describe.each(SUPPORTED_LOCALES)('mobile errors in %s', locale => {
     expect(retry).not.toHaveBeenCalled();
     await act(async () => root.render(renderBanner(true)));
     const button = host.querySelector<HTMLButtonElement>('[data-testid="session.readableHistoryRecovery"]')!;
+    const closeId = surface === 'live' ? 'queue.inline.clearErrorButton' : 'session.tailBanner.dismiss';
+    const close = host.querySelector<HTMLButtonElement>(`[data-testid="${closeId}"]`)!;
+    expect(close.disabled).toBe(true);
+    await act(async () => close.click());
+    expect(dismiss).not.toHaveBeenCalled();
     expect(button.disabled).toBe(true);
     await act(async () => button.click());
     expect(recover).toHaveBeenCalledOnce();
+    await act(async () => root.render(renderBanner(false)));
+    await act(async () => host.querySelector<HTMLButtonElement>(`[data-testid="${closeId}"]`)!.click());
+    expect(dismiss).toHaveBeenCalledOnce();
   });
 
   it.each(['live', 'tail'] as const)('localizes %s, preserves retry and switches locale without another request', async surface => {
@@ -109,6 +118,17 @@ describe.each(SUPPORTED_LOCALES)('mobile errors in %s', locale => {
 
 
 describe.each(SUPPORTED_LOCALES)('known mobile remote errors in %s', locale => {
+  it.each(['DEVICE_LIMIT', 'TOTAL_LIMIT'])('recognizes wrapped %s errors from the remote computer', async reason => {
+    await i18n.changeLanguage(locale);
+    const message = `LAZY_CREATE_FAILED: [REMOTE_AGENT_BUSY] [${reason}] upstream diagnostic`;
+    const key = `session.remoteError.REMOTE_AGENT_${reason}`;
+    expect(unclassifiedAgentErrorI18nKey(message)).toBe(key);
+    const [normalized] = normalizeRemoteMessages([row(message)]);
+    expect(normalized.body).toBe(i18n.t(key));
+    expect(normalized.body).not.toContain('upstream diagnostic');
+    expect(unclassifiedAgentErrorI18nKey('[REMOTE_AGENT_BUSY] too many tasks')).toBe('session.remoteError.REMOTE_AGENT_BUSY');
+  });
+
   it('has every desktop bracket-code translation without relying on fallback languages', async () => {
     await i18n.changeLanguage(locale);
     const desktop = JSON.parse(readFileSync(`../desktop/src/renderer/i18n/locales/${locale}/common.json`, 'utf8'));

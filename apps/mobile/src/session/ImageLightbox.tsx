@@ -17,7 +17,7 @@
  */
 import { useNavigation } from 'expo-router';
 import { Image } from 'expo-image';
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   ActivityIndicator,
@@ -174,6 +174,8 @@ export interface ImageLightboxAnnotationConfig {
 export interface ImageLightboxProps {
   images: readonly MobileMessageGalleryImage[];
   initialUrl: string;
+  /** Same-content attachment slots can share a URL; prefer the clicked attachment's identity. */
+  initialImageKey?: string;
   onClose(): void;
   onResolveRemoteMedia?: ResolveRemoteMediaFn;
   /** 关闭时逐出本次取过的视频(与通用查看器一致;图片缩略图常驻列表不逐出)。 */
@@ -213,6 +215,7 @@ export interface ImageLightboxProps {
 export const ImageLightbox = memo(function ImageLightbox({
   images,
   initialUrl,
+  initialImageKey,
   onClose,
   onResolveRemoteMedia,
   onReleaseRemoteMedia,
@@ -226,7 +229,41 @@ export const ImageLightbox = memo(function ImageLightbox({
   const { width, height } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const urls = useMemo(() => images.map((image) => image.url), [images]);
-  const [activeIndex, setActiveIndex] = useState(() => lightboxInitialIndex(urls, initialUrl));
+  const initialKeyIndex = initialImageKey ? images.findIndex((image) => image.key === initialImageKey) : -1;
+  const initialIndex = initialKeyIndex >= 0 ? initialKeyIndex : lightboxInitialIndex(urls, initialUrl);
+  const [activePage, setActivePage] = useState(() => {
+    const image = images[initialIndex];
+    return { key: image?.key, url: image?.url, galleryImageKey: image?.payload.galleryImageKey,
+      galleryImageSlot: image?.payload.galleryImageSlot, index: initialIndex };
+  });
+  // 地址升级或相邻附件就绪时，页码跟随图片身份，不跟随旧数组下标。
+  // 普通消息在流式工作组收尾时会换 key，仍按原地址找回；删除当前页才钳制下标。
+  const keyIndex = images.findIndex((image) => image.key === activePage.key);
+  // Replacement and earlier uploads can settle in one render. Preserve the thumbnail slot,
+  // not the old readable-page index, when the active attachment identity disappears.
+  const slotIndex = keyIndex < 0 && activePage.galleryImageKey && activePage.galleryImageSlot !== undefined
+    ? images.findIndex((image) => image.payload.galleryImageSlot === activePage.galleryImageSlot) : -1;
+  // Stable attachment keys distinguish duplicate URLs. A missing key means replacement/removal;
+  // URL fallback is only for ordinary message pages whose render keys can be rebuilt.
+  const urlIndex = keyIndex < 0 && !activePage.galleryImageKey
+    ? images.findIndex((image) => image.url === activePage.url) : -1;
+  const activeIndex = keyIndex >= 0 ? keyIndex : slotIndex >= 0 ? slotIndex : urlIndex >= 0 ? urlIndex
+    : Math.max(0, Math.min(activePage.index, images.length - 1));
+  const activePageKey = images[activeIndex]?.key;
+  const activePageUrl = images[activeIndex]?.url;
+  const activeGalleryImageKey = images[activeIndex]?.payload.galleryImageKey;
+  const activeGalleryImageSlot = images[activeIndex]?.payload.galleryImageSlot;
+  // 记住这次实际显示的身份与位置；换图或钳制后，后续更新继续跟随新图，不能找回旧图。
+  useLayoutEffect(() => {
+    if (activePageKey === undefined || activePageUrl === undefined) return;
+    setActivePage((previous) => previous.key === activePageKey
+      && previous.url === activePageUrl && previous.index === activeIndex
+      && previous.galleryImageKey === activeGalleryImageKey
+      && previous.galleryImageSlot === activeGalleryImageSlot
+      ? previous
+      : { key: activePageKey, url: activePageUrl, galleryImageKey: activeGalleryImageKey,
+        galleryImageSlot: activeGalleryImageSlot, index: activeIndex });
+  }, [activePageKey, activePageUrl, activeGalleryImageKey, activeGalleryImageSlot, activeIndex]);
   const [zoomed, setZoomed] = useState(false);
   /** 捏合/平移进行中 chrome 不接收触摸,避免底栏抢走双指。 */
   const [chromeInteractive, setChromeInteractive] = useState(true);
@@ -259,6 +296,9 @@ export const ImageLightbox = memo(function ImageLightbox({
   const [sharing, setSharing] = useState(false);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
+  useEffect(() => {
+    if (images.length === 0) onCloseRef.current();
+  }, [images.length]);
   const [strokes, setStrokes] = useState<AnnotationStroke[]>([]);
   // 取消 / 返回回调经 ref 读最新笔迹与文案:它们进入手势 deps(onRequestClose),
   // 不能因每次作画 / 父层重渲染而让整张手势图重建。
@@ -285,15 +325,15 @@ export const ImageLightbox = memo(function ImageLightbox({
     });
   }, []);
 
-  // 打开/翻页时装载该页既有笔迹(托盘再编辑);标注模式中禁翻页,不会中途换页。
-  // 依赖「活跃图 key」而非 images 数组引用:父层因附件上传落定 / 流式回复等
-  // 原因重建图集(语义未变)时,不能把用户正在画的笔迹重置掉(review P1);
+  // 打开/换图时装载该图既有笔迹(托盘再编辑)，标注模式中禁用手动翻页。
+  // 只依赖「活跃图 key」，不依赖数组引用或页码：附件就绪可能让同一张图前移/后移，
+  // 不能因此重置已画笔迹或正在画的一笔；
   // 真正换图(翻页 / 打开另一张)时 key 变化,照常重载。images 经 ref 读最新。
   const activeImageKeyForStrokes = images[activeIndex]?.key ?? null;
   const imagesRef = useRef(images);
   imagesRef.current = images;
   useEffect(() => {
-    const image = imagesRef.current[activeIndex];
+    const image = imagesRef.current.find((entry) => entry.key === activeImageKeyForStrokes);
     const initial = image ? annotation?.initialStrokesFor?.(image) : undefined;
     setStrokes(initial ? [...initial] : []);
     draftStrokeRef.current = null;
@@ -302,7 +342,7 @@ export const ImageLightbox = memo(function ImageLightbox({
     setDraftStroke(null);
     // annotation 语义上只在打开时取一次快照,翻页时按新页(key)重取
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeIndex, activeImageKeyForStrokes]);
+  }, [activeImageKeyForStrokes]);
 
   /**
    * 画笔落点(容器坐标 + 当页 transform 状态,LightboxPage 手势经 runOnJS 上抛)。
@@ -433,13 +473,10 @@ export const ImageLightbox = memo(function ImageLightbox({
   const imageErrorRetryUsedRef = useRef<Set<string>>(new Set());
   const listRef = useRef<FlatList<MobileMessageGalleryImage>>(null);
 
-  // 旋转(宽度变化)时按 activeIndex 重锚:FlatList 保留的是旧宽度下的像素
-  // contentOffset,不重锚会让可见页与页码 / 分享目标错位。
+  // 旋转或图集变动导致页码变化时重锚，保持画面、页码和分享目标一致。
   useEffect(() => {
     listRef.current?.scrollToOffset({ animated: false, offset: activeIndex * width });
-    // activeIndex 不进依赖:翻页由手势滚动驱动,这里只响应宽度突变
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [width]);
+  }, [activeIndex, width]);
 
   const resolveImage = useCallback((
     image: MobileMessageGalleryImage,
@@ -577,15 +614,18 @@ export const ImageLightbox = memo(function ImageLightbox({
   }));
 
   const activeUri = activeImage ? displayUriFor(activeImage) : null;
+  // Expo can display library handles, but sharing/annotation need the file or remote
+  // original supplied later by the existing upload pipeline. Do not enable dead-end actions.
+  const activeActionsReady = !!activeUri && !/^(?:ph|content|assets-library):\/\//.test(activeUri);
   const pageLabel = lightboxPageLabel(activeIndex, images.length);
   // 工具栏从打开那一刻就在:原图还在取件时先置灰,就绪即可用,不让工具「晚到」。
   // 取件结果是 data: 等不可分享地址时才收起分享。
   const shareVisible = !!onShareImage && !!activeImage && !activeIsVideo
     && (!activeUri || canShareLightboxImage(activeUri));
-  const shareEnabled = shareVisible && !!activeUri;
+  const shareEnabled = shareVisible && activeActionsReady;
 
   const handleShare = useCallback(() => {
-    if (!activeImage || !activeUri || !onShareImage || sharingRef.current || submittingRef.current) return;
+    if (!activeImage || !activeUri || !activeActionsReady || !onShareImage || sharingRef.current || submittingRef.current) return;
     const state = resolveMap[activeImage.url];
     const mimeType = (state?.status === 'ready' ? state.media.mimeType : undefined)
       ?? activeImage.payload.media.mimeType;
@@ -603,7 +643,7 @@ export const ImageLightbox = memo(function ImageLightbox({
         sharingRef.current = false;
         setSharing(false);
       });
-  }, [activeImage, activeUri, onShareImage, resolveMap]);
+  }, [activeImage, activeUri, activeActionsReady, onShareImage, resolveMap]);
 
   // 活跃页 MIME:取件结果优先,保留附件已知类型,最后兜底 URI 后缀。
   const activeResolveState = activeImage ? resolveMap[activeImage.url] : undefined;
@@ -623,7 +663,7 @@ export const ImageLightbox = memo(function ImageLightbox({
   // 画笔要等图片自然尺寸就位(坐标换算基准),否则进入标注后作画静默无效:
   // 此前按钮置灰禁用,与撤销的禁用态同观感。宿主给出暂不可标注的原因时,按钮
   // 同样置灰但可点,点按说明原因(否则用户不知道为什么不能画)。
-  const annotateReady = annotateVisible && !!activeUri && !!activeNaturalSize;
+  const annotateReady = annotateVisible && activeActionsReady && !!activeNaturalSize;
   const annotateBlockedReason = annotateReady && activeImage
     ? annotation?.annotationBlockedReason?.(activeImage)
     : undefined;
@@ -640,10 +680,10 @@ export const ImageLightbox = memo(function ImageLightbox({
   }, [annotateReady, activeImage, annotation, t]);
   // 独立直发(发送到对话):不要求可标注——gif 等不可画的图同样能转发。
   const directSubmitVisible = !!annotation?.allowDirectSubmit && !!activeImage && !activeIsVideo;
-  const directSubmitEnabled = directSubmitVisible && !!activeUri;
+  const directSubmitEnabled = directSubmitVisible && activeActionsReady;
 
   const handleSubmitAnnotation = useCallback(() => {
-    if (!annotation || !activeImage || !activeUri || submittingRef.current || sharingRef.current) return;
+    if (!annotation || !activeImage || !activeUri || !activeActionsReady || submittingRef.current || sharingRef.current) return;
     submittingRef.current = true;
     setAnnotationSubmitting(true);
     // 点击提交时另一根手指可能还在画,把屏幕上最后一笔也纳入同一快照。
@@ -668,7 +708,7 @@ export const ImageLightbox = memo(function ImageLightbox({
         submittingRef.current = false;
         setAnnotationSubmitting(false);
       });
-  }, [annotation, activeImage, activeUri, activeMimeType, activeNaturalSize, strokes]);
+  }, [annotation, activeImage, activeUri, activeActionsReady, activeMimeType, activeNaturalSize, strokes]);
 
   // Android 物理返回键触发 Modal.onRequestClose,不受手势层/按钮层的
   // isAnnotating 禁用覆盖(review 发现:会绕开"标注模式中关闭均禁用"保护
@@ -717,11 +757,13 @@ export const ImageLightbox = memo(function ImageLightbox({
           decelerationRate="fast"
           getItemLayout={(_, index) => ({ length: width, offset: width * index, index })}
           horizontal
-          initialScrollIndex={lightboxInitialIndex(urls, initialUrl)}
+          initialScrollIndex={initialIndex}
           keyExtractor={(image) => image.key}
           onMomentumScrollEnd={(event) => {
             const index = lightboxPageIndex(event.nativeEvent.contentOffset.x, width, images.length);
-            setActiveIndex(index);
+            const image = images[index];
+            setActivePage({ key: image?.key, url: image?.url, galleryImageKey: image?.payload.galleryImageKey,
+              galleryImageSlot: image?.payload.galleryImageSlot, index });
           }}
           pagingEnabled
           ref={listRef}

@@ -78,6 +78,10 @@ import { isRemoteSessionWriteBlocked } from '../lib/remoteSessionWriteGuard';
 import { prefetchDirtyWorktreeForRemoval } from '@/lib/worktreeRemovalWarning';
 import { resolveSessionCardBody } from './sessionCardPreview';
 import { useSessionAttentionKind } from '@/lib/sessionAttentionStore';
+import {
+  mergeOrcaLeadAttentionKind,
+  useOrcaLeadWorkerAttentionKind,
+} from '../lib/orcaLeadWorkerAttention';
 import { useSessionAttentionUrgency } from '../contexts/SessionAttentionUrgencyContext';
 import { useRemoteSessionScheduleInfo } from '@/features/device-link/remoteProjectsStore';
 import { useRemoteSessionActivity } from '@/features/device-link/remoteSessionActivityStore';
@@ -173,7 +177,10 @@ export const SessionCard = withSidebarNavigation<SessionCardProps>(function Sess
   // list 变体与文字模式共用右侧状态优先级:
   // error > awaiting > running > done > time。远程会话由被控端活动镜像覆盖
   // 本地 attention 链路，与 SessionItem 完全一致。
-  const attentionKind = useSessionAttentionKind(session.id);
+  // Orca Lead 另并入其 Worker 的出错 / 等待确认,见 lib/orcaLeadWorkerAttention.ts。
+  const ownAttentionKind = useSessionAttentionKind(session.id);
+  const orcaWorkerAttentionKind = useOrcaLeadWorkerAttentionKind(session.id);
+  const attentionKind = mergeOrcaLeadAttentionKind(ownAttentionKind, orcaWorkerAttentionKind);
   const isUrgentFromContext = useSessionAttentionUrgency(session.id);
   const remoteActivity = useRemoteSessionActivity(session.id, session.deviceLinkDeviceId);
   const remoteSchedule = useRemoteSessionScheduleInfo(session.id);
@@ -188,7 +195,10 @@ export const SessionCard = withSidebarNavigation<SessionCardProps>(function Sess
     isRunning: session.deviceLinkDeviceId
       ? remoteActivity?.phase === 'running'
       : isRunning || cindyMakeActivity != null,
-    hasAttentionNotification: hasAttentionNotification || remoteSchedule?.hasUnreadRun === true,
+    hasAttentionNotification:
+      hasAttentionNotification ||
+      orcaWorkerAttentionKind !== undefined ||
+      remoteSchedule?.hasUnreadRun === true,
   });
   const leftIconRunning = sessionActivity.currentTurnActive === true;
   const rightStatusKind = resolveSidebarRightStatus(sessionActivity);

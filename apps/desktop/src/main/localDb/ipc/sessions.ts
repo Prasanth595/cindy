@@ -28,6 +28,7 @@ import { getDbClient } from '../client/current';
 import * as currentDb from '../client/current';
 import type { DbClient } from '../client/DbClient';
 import { sessions, messages } from '../schema';
+import { clearSessionAttention } from '../../appBadgeService';
 import {
   selectSessionListRows,
   selectSessionWithCount,
@@ -80,6 +81,7 @@ import { assertRendererSessionSourceAllowed } from './sessionSourceGuard.js';
 import type { SessionReference } from '../../../shared/sessionReference.js';
 import * as broadcastTap from '../../device-link/broadcast-tap.js';
 import { notifyAgentIslandSessionPatch } from '../agentIslandSessionPatch';
+import { ensureHiddenSessionRegistryLoaded } from '../hiddenSessionRegistry.js';
 import { noteSessionClearBoundary } from '../../messagePersistBroadcaster';
 import {
   ackSessionTurnEndedDurable,
@@ -1257,6 +1259,8 @@ export function registerSessionIpc(
       // sidebar-card-mode: 首次 list(db 必然 ready)触发一次置顶摘要回填——
       // 老置顶会话没有 turn-done 触发点。模块内部 once 守卫 + 串行 + swallow。
       void import('../../sessionTaskSummary.js').then((m) => m.backfillPinnedSessionSummaries());
+      // 首次 list 即账号库就绪:预热插件后台任务索引,灵动岛/通知的同步判定从此可用。
+      void ensureHiddenSessionRegistryLoaded();
       const cap = clampLimit(limit, 20);
       const includePinned = shouldIncludePinnedSessions(options);
       const fresh = shouldBypassSessionListSingleFlight(options);
@@ -1301,7 +1305,12 @@ export function registerSessionIpc(
         // (feishu/slack/discord)与本机自动化(scheduler/learn/shared);
         // feishu 会话以「对话」分组展示(workspaceKind='dialogue')。/review 审查任务
         // 只从来源任务的审查卡片打开,不进普通任务列表(用量历史仍包含)。
-        const sourceFilter = inArray(sessions.source, DESKTOP_TASK_LIST_SESSION_SOURCES);
+        // 插件后台隐藏任务(hidden_at 非空)同样不进任务列表,只在插件详情页「后台任务」
+        // 查看与接手;手机/远控经 device-link 调同一 handler,口径一致。
+        const sourceFilter = and(
+          inArray(sessions.source, DESKTOP_TASK_LIST_SESSION_SOURCES),
+          isNull(sessions.hiddenAt),
+        );
         const statusWhere = () =>
           statusFilter ? eq(sessions.status, statusFilter) : ne(sessions.status, 'deleted');
         const rows = await selectSessionListRows(db, and(sourceFilter, statusWhere(), ids ? inArray(sessions.id, ids) : undefined), cap, before);
@@ -2036,6 +2045,9 @@ export async function updateSessionInDb(
       row.summary = null;
     }
     const updated = sessionToCamel(row);
+    if (updated.status === 'deleted' && isOwnerScopeCurrent(ownerScope)) {
+      clearSessionAttention(sid, 'explicit');
+    }
     const projectTargetChanged = p.workspaceKind !== undefined || p.workingDir !== undefined;
     const settingsChanged = Object.keys(p).some((key) => REMOTE_PERSIST_FIELDS.has(key));
     const titleChanged = p.title !== undefined;
@@ -2137,6 +2149,26 @@ export async function updateSessionInDb(
   });
 }
 
+/** Sending continues an ordinary archived task. Serialize with archive/delete and
+ * use the normal status writer so native projection and all clients see active. */
+export async function restoreArchivedSessionForSend(sessionId: string): Promise<void> {
+  const ownerScope = captureOwnerScope();
+  const db = getDbClient().drizzle;
+  await withSessionRouteLock(sessionId, async () => {
+    const [row] = await db.select({
+      status: sessions.status, source: sessions.source, orcaRole: sessions.orcaRole,
+      orcaRemoteLead: sessions.orcaRemoteLead,
+    }).from(sessions).where(eq(sessions.id, sessionId)).limit(1);
+    if (!isOwnerScopeCurrent(ownerScope)) throwIpcError('PRECONDITION_FAILED', 'Task owner changed');
+    if (row?.status === 'deleted') throwIpcError('NOT_FOUND', 'Session does not exist');
+    if (row?.status !== 'archived') return;
+    if (row.source === 'bot' || row.orcaRole === 'worker' || row.orcaRemoteLead) {
+      throwIpcError('PRECONDITION_FAILED', 'Restore the managed task before continuing');
+    }
+    await patchSessionMetaInDb(sessionId, { status: 'active' });
+  });
+}
+
 export async function patchSessionMetaInDb(
   sessionId: string,
   patch: {
@@ -2202,6 +2234,9 @@ export async function patchSessionMetaInDb(
     }
     return sessionToCamel(row);
   });
+  if (updated.status === 'deleted' && isOwnerScopeCurrent(ownerScope)) {
+    clearSessionAttention(sessionId, 'explicit');
+  }
   notifyAgentIslandSessionPatch(updated.id, {
     status: updated.status,
     title: updated.title,
@@ -2508,6 +2543,9 @@ export async function deleteBotProfileAndDetachSessionsInDb(
   }
 
   for (const id of committedSessionIds) {
+    if (status === 'deleted' && isOwnerScopeCurrent(ownerScope)) {
+      clearSessionAttention(id, 'explicit');
+    }
     notifyAgentIslandSessionPatch(id, { status });
     broadcastSessionPatched(id, { status, source: 'desktop' }, ownerScope);
     notifyGhostSessionStatusChange(id, status, null);

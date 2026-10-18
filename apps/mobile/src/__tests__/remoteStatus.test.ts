@@ -130,6 +130,8 @@ describe('remoteStatus', () => {
       expect(connectionIssueTitle('too-many-connections')).toBe('Too many connections');
       expect(connectionIssueHint('version-mismatch')).toContain('Update to the latest version');
       expect(connectionIssueTitle('unstable')).toBe('Connection keeps dropping');
+      expect(connectionIssueTitle('device-removed')).toBe('Device removed');
+      expect(connectionIssueHint('device-removed')).toContain('Sign out');
     } finally {
       await i18n.changeLanguage(previousLanguage);
     }

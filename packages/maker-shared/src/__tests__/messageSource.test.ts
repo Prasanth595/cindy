@@ -138,6 +138,14 @@ describe('messageSourceSenderFromMeta', () => {
 });
 
 describe('messageSourceIdEntries', () => {
+  it('uses the same MCP server identity for UI hints and model source notes', () => {
+    const meta = { sourcePlugin: { pluginId: 'mcp-app:reports', name: 'Reports' } };
+    expect(messageSourceIdEntries(meta)).toEqual([{ kind: 'mcpApp', id: 'reports' }]);
+    expect(describeMessageSourceSender(messageSourceSenderFromMeta(meta)!)).toBe(
+      '由 MCP App「Reports」(mcp_server_id: reports) 发送',
+    );
+  });
+
   it('lists the ids of the visible sender label, in the same priority as the label', () => {
     expect(
       messageSourceIdEntries({

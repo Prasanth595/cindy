@@ -104,6 +104,7 @@ vi.mock('../../logger.js', () => ({
   createLogger: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
 }));
 vi.mock('../../cindy-brain/index.js', () => ({
+  refreshPluginUsageBindings: vi.fn(async () => undefined),
   confirmLegacyLibraryReattach: (plugin: unknown) => runtime.confirmLegacyLibraryReattach(plugin),
   getGhostManager: () => ({
     resumePendingResidentsOffline: runtime.resumeOfflineResidents,
@@ -943,6 +944,7 @@ describe('PluginMarketService migration and defaultInstall', () => {
     expect(snapshot.items[0]?.installState).toBe('installed');
     expect(h.ledger.installationForGhost(item.ghostId)).toEqual({
       ...legacyRecord,
+      serverRoot: runtime.pluginApiBaseUrl,
       rawManifestSha256: crypto.createHash('sha256').update(bytes).digest('hex'),
     });
   });
@@ -1187,6 +1189,14 @@ describe('PluginMarketService migration and defaultInstall', () => {
       unavailableReason: null,
     });
     expect(runtime.install).not.toHaveBeenCalled();
+  });
+
+  it('passes exact server download statistics through snapshots and details', async () => {
+    const downloadStatistics = { requestCount: '18446744073709551615', last7DaysRequestCount: '12' };
+    const item = { ...summary(), downloadStatistics };
+    const h = harness([item]);
+    await expect(h.service.snapshot()).resolves.toMatchObject({ items: [{ downloadStatistics }] });
+    await expect(h.service.detail(item.id)).resolves.toMatchObject({ downloadStatistics });
   });
 
   it('remembers the listed organization prefix after a successful snapshot', async () => {
@@ -2584,6 +2594,7 @@ describe('PluginMarketService migration and defaultInstall', () => {
 
     expect(h.ledger.installationForGhost('cindy-github')).toEqual({
       ...original,
+      serverRoot: runtime.pluginApiBaseUrl,
       manifestDigest: ghostManifestDigest(rawManifest),
       rawManifestSha256: crypto.createHash('sha256').update(packageBytes).digest('hex'),
     });

@@ -32,7 +32,7 @@ vi.mock('../botPronounContext', () => ({
   BotPronounProvider: ({ children }: { children: ReactNode }) => children,
 }));
 vi.mock('../useRemoteBots', () => ({ useRemoteBots: () => [{ id: 'remote-bot', deviceId: 'other-mac', name: 'Remote' }] }));
-vi.mock('../RemoteBotSettings', () => ({ RemoteBotSettings: ({ bot }: { bot: { deviceId: string } }) => <div data-testid="remote-settings">{bot.deviceId}</div> }));
+vi.mock('../RemoteBotSettings', () => ({ RemoteBotSettings: ({ bot, initialPage }: { bot: { deviceId: string }; initialPage?: string }) => <div data-testid="remote-settings" data-initial-page={initialPage}>{bot.deviceId}</div> }));
 vi.mock('../botStore', () => ({
   useBotProfiles: () => [
     { id: 'bot-1', name: 'Filo', status: 'active', sessions: [], capabilities: {}, skills: [] },
@@ -46,8 +46,10 @@ vi.mock('../BotsHomeView', async () => {
   return {
     BotSettings: ({
       beforeCloseRef,
+      initialPage,
     }: {
       beforeCloseRef: { current: (() => Promise<boolean>) | null };
+      initialPage?: string;
     }) => {
       useEffect(() => {
         beforeCloseRef.current = guard;
@@ -56,7 +58,7 @@ vi.mock('../BotsHomeView', async () => {
         };
       }, [beforeCloseRef]);
       return (
-        <div data-testid="simple-bot-settings">
+        <div data-testid="simple-bot-settings" data-initial-page={initialPage}>
           <Popover>
             <PopoverTrigger>Choose model</PopoverTrigger>
             <PopoverContent>
@@ -142,6 +144,28 @@ describe('BotSettingsDrawer', () => {
       expect(router.state.location.pathname).toBe(kind === 'sidebar' ? '/cc-agent' : '/bots/bot-1');
     },
   );
+
+  it('deep-links local teammates to the messaging platforms page but not remote ones', () => {
+    const local = render(
+      <RouterProvider
+        router={createMemoryRouter([{ path: '*', element: <BotSettingsDrawer /> }], {
+          initialEntries: ['/bots/bot-1?settings=1&settingsPage=channels'],
+        })}
+      />,
+    );
+    expect(screen.getByTestId('simple-bot-settings').getAttribute('data-initial-page')).toBe(
+      'channels',
+    );
+    local.unmount();
+    render(
+      <RouterProvider
+        router={createMemoryRouter([{ path: '*', element: <BotSettingsDrawer /> }], {
+          initialEntries: ['/bots/remote/other-mac/remote-bot?settings=1&settingsPage=channels'],
+        })}
+      />,
+    );
+    expect(screen.getByTestId('remote-settings').getAttribute('data-initial-page')).toBe('home');
+  });
 
   it('allows wheel events in portaled model lists while blocking background scrolling', async () => {
     render(

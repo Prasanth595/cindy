@@ -3,6 +3,7 @@ import { getDeviceLinkInvokeContext } from '../device-link/invoke-context.js';
 import { assertSharedTaskQueueMutation } from './sharedTaskInput.js';
 import { isBotGroupClientId } from '../../shared/botGroupChat.js';
 import { SchedulerQueuedPreparationError } from './schedulerQueuedPreparation.js';
+import { MCP_APP_MESSAGE_GUARD, isUnrestorableMcpAppMessage, queuedAppMessageGuard, type McpAppMessageGuard } from '../mcp-apps/message.js';
 /**
  * AgentInputCoordinator — main 侧排队输入事务协调器。
  *
@@ -205,6 +206,8 @@ function hasRetryableQueuedContent(item: AgentInputQueuedMessage): boolean {
 }
 
 export interface AgentInputSendOpts {
+  /** Main-only App grant, checked by the send/steer transaction at dispatch. */
+  readonly [MCP_APP_MESSAGE_GUARD]?: McpAppMessageGuard;
   readonly [AUTO_REVIEW_DELEGATED_CONTINUATION]?: true;
   /** Main-owned identity of the zero-output user turn being replaced. */
   retryUserClientId?: string;
@@ -1577,7 +1580,17 @@ export class AgentInputCoordinator {
     // have lost the originating execution's callbacks; a new claim on this
     // lane must never authorize their prompts (including restored plan inputs).
     const staleGroupItems = restorable.filter((item) => isBotGroupClientId(item.clientId));
-    const restored = restorable.filter((item) => item.origin?.kind !== 'scheduler' && !isBotGroupClientId(item.clientId));
+    // App grants are Main-only Symbols, lost across JSON persistence. Drop the
+    // stale row instead of putting a permanent authorization error at the queue
+    // head. Its normal discard settlement runs exactly once, even if another
+    // non-restorable origin also applies.
+    const staleAppItems = restorable.filter((item) =>
+      item.origin?.kind !== 'scheduler' && !isBotGroupClientId(item.clientId) && isUnrestorableMcpAppMessage(item));
+    const restored = restorable.filter((item) =>
+      item.origin?.kind !== 'scheduler' && !isBotGroupClientId(item.clientId) && !isUnrestorableMcpAppMessage(item));
+    for (const item of staleAppItems) {
+      this.deps.onDiscardedQueuedMessage?.(sessionId, item);
+    }
     for (const item of staleGroupItems) {
       if (item.origin?.kind !== 'scheduler') this.deps.onDiscardedQueuedMessage?.(sessionId, item);
     }
@@ -2537,7 +2550,9 @@ export class AgentInputCoordinator {
         item.persistedContent,
         referenceContexts,
       );
+      const appMessageGuard = queuedAppMessageGuard(item);
       await this.deps.steerToAgent(sessionId, buildMakerUserMessage(item, referenceContexts), {
+        ...(appMessageGuard ? { [MCP_APP_MESSAGE_GUARD]: appMessageGuard } : {}),
         ...(item.sharedTaskAuthor ? { sharedTaskAuthor: item.sharedTaskAuthor } : {}),
         [AUTO_REVIEW_SOURCE_CONTENT]: queuedAutoReviewText(item),
         ...(item.autoReviewUserText && typeof item.autoReviewUserText === 'object' && item.autoReviewUserText.kind === 'delegated-continuation'
@@ -4156,10 +4171,18 @@ export class AgentInputCoordinator {
    *   input signal(#1930),但**其余清理必须照常**(activeTurn / steer / queue
    *   状态不能残留,否则 rebuild 失败或 close 后不 rebuild 时 coordinator
    *   残留旧状态阻塞后续发送)。
+   * @param opts.wakeQueuedInput 为 true 时，收口后若仍有用户排队消息就重新 drain。
+   *   用于非请求关闭(进程退出 / 远端 Agent 断连)：这类关闭不带 done 事件，
+   *   turn-done 唤醒永远不会来，队首会静默滞留到用户再次操作。drain 走
+   *   lazy create-session 重建运行时；暂停、recovery 等 gate 照常拦截。
    */
   onSessionClosed(
     sessionId: string,
-    opts?: { preserveInputBoundary?: boolean; preserveAutoResumeIntent?: boolean },
+    opts?: {
+      preserveInputBoundary?: boolean;
+      preserveAutoResumeIntent?: boolean;
+      wakeQueuedInput?: boolean;
+    },
   ): void {
     const state = this.getState(sessionId);
     // Planned-upgrade suppression is per Session incarnation. Replacement
@@ -4224,6 +4247,8 @@ export class AgentInputCoordinator {
       // Old provider busy is gone with this Session. The 10s SESSION_RUNNING
       // retry was cleared above; wake the hidden CONTINUE onto the replacement.
       this.scheduleDrain(sessionId, 'session-closed-preserved-auto-resume');
+    } else if (opts?.wakeQueuedInput && state.pendingQueue.length > 0) {
+      this.scheduleDrain(sessionId, 'session-closed-unexpected');
     }
   }
 
@@ -4399,6 +4424,7 @@ export class AgentInputCoordinator {
   /** Renderer projection may carry routing hints, but never quoted history bodies. */
   private toProjectedItem(item: AgentInputQueuedMessage): AgentInputQueuedMessage {
     const projected = { ...item };
+    Reflect.deleteProperty(projected, MCP_APP_MESSAGE_GUARD);
     delete projected[HOST_ONLY_AGENT_PREFIX];
     delete projected.hostAcceptedAtMs;
     delete projected.autoReviewUserText;
@@ -4895,6 +4921,7 @@ export class AgentInputCoordinator {
     state.activeTurn = active;
     this.emit(sessionId);
 
+    let appMessageGuardRejected = false;
     try {
       // 意识拦截钩(订阅槽①):落库/派发之前问一遍——block 即丢弃本项
       // (不入库不起 turn),通知宿主降级气泡,继续放行后续排队消息;
@@ -4962,7 +4989,16 @@ export class AgentInputCoordinator {
       // may synchronously emit the new turn's started marker before it returns;
       // post-dispatch acknowledgements must remain older than that marker.
       const preVendorDispatchAt = Math.max(0, Date.now() - 1);
+      const appMessageGuard = queuedAppMessageGuard(head);
       const result = await this.deps.sendToAgent(sessionId, makerUserMessage, head.createOpts, {
+        ...(appMessageGuard ? { [MCP_APP_MESSAGE_GUARD]: async () => {
+          try {
+            await appMessageGuard();
+          } catch (error) {
+            appMessageGuardRejected = true;
+            throw error;
+          }
+        } } : {}),
         ...(head.supersedesUserClientId ? { retryUserClientId: head.supersedesUserClientId } : {}),
         [AUTO_REVIEW_SOURCE_CONTENT]: queuedAutoReviewText(head),
         ...(head.autoReviewUserText && typeof head.autoReviewUserText === 'object' && head.autoReviewUserText.kind === 'delegated-continuation'
@@ -5056,6 +5092,10 @@ export class AgentInputCoordinator {
       if (this.discardOnStaleActiveTurn(sessionId, active, isSendDispatched(result))) return;
       active.persisting = false;
       if (!isSendDispatched(result)) {
+        if (appMessageGuardRejected) {
+          this.discardRevokedAppInput(sessionId, active, head);
+          return;
+        }
         const rewound = await this.rewindSchedulerPreparationFailure(sessionId, active, head, result);
         if (this.discardOnStaleActiveTurn(sessionId, active)) return;
         this.handleSendNotDispatched(sessionId, active, head, result, rewound);
@@ -5109,6 +5149,10 @@ export class AgentInputCoordinator {
       this.emit(sessionId);
     } catch (err) {
       if (this.discardOnStaleActiveTurn(sessionId, active)) return;
+      if (appMessageGuardRejected) {
+        this.discardRevokedAppInput(sessionId, active, head);
+        return;
+      }
       // 派发 / 落库失败(含 SESSION_RUNNING 让位):暂存的 error 候选到此作废,补落它的行。
       // 放在分支之前 —— 三条出口都不会再走到接管决策。
       this.discardDeferredResumableCandidate(sessionId, active);
@@ -5196,6 +5240,27 @@ export class AgentInputCoordinator {
       // be replayed now; otherwise Agent Island stays in "running" indefinitely.
       this.deps.onQueueEmptied?.(sessionId);
     }
+  }
+
+  /** A failed live View grant cannot become valid again by retrying this item. */
+  private discardRevokedAppInput(
+    sessionId: string,
+    active: ActiveTurn,
+    item: AgentInputQueuedMessage,
+  ): void {
+    const state = this.getState(sessionId);
+    this.discardDeferredResumableCandidate(sessionId, active);
+    state.activeTurn = null;
+    this.clearCredentialSwitchWait(state);
+    this.notifyRejectedUserTurn(sessionId, item);
+    if (active.persisted) {
+      this.notifyUndispatchedUserTurn(sessionId, item, 'failed');
+    } else {
+      this.deps.onDiscardedQueuedMessage?.(sessionId, item);
+    }
+    this.emit(sessionId);
+    this.scheduleDrain(sessionId, 'mcp-app-grant-revoked');
+    this.deps.onQueueEmptied?.(sessionId);
   }
 
   /** Only proven preparation rejection can erase a scheduled continuation row.

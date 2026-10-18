@@ -1122,7 +1122,6 @@ function renderTable(headers, aligns, rows) {
 export function renderGeneratedBlock(
   surfaces,
   {
-    snapshotDate = 'UNSET',
     generateCommand = 'pnpm design:inventory',
     routerCoverage = { mapped: [], missing: [] },
     redirects = [],
@@ -1144,7 +1143,7 @@ export function renderGeneratedBlock(
     '本区块由 `scripts/design-inventory.mjs` 生成，请勿手改。',
     '重新生成：`pnpm design:inventory`；校验：`pnpm check:design-inventory`。',
     '',
-    `计数快照日期：${snapshotDate}。生成命令：\`${generateCommand}\`。裸颜色匹配与 \`scripts/hardcoded-color-audit.mjs\` 共用 \`scripts/shared/hardcoded-color-match.mjs\`（HEX / RGB / HSL / OKLCH 等字面通道），两者在共享 matcher 内统一排除纯语义包装、注释及 PR 编号；数值颜色函数还需位于样式属性、CSS 声明/函数或任意值语境，普通文案字符串里的颜色函数文本不计入；字面 fallback 仍计入——语义 token 消费与注释引用不是迁移债务；裸圆角为粗粒度（\`rounded*\` class、\`border-radius:\` 与 React style 对象的 \`borderRadius:\`）。Token 计数为样式源里 \`var(--token)\` / \`hsl(var(--token)\` 的去重 ID 数；Mobile 的 ThemeColors / typeScale 等 RN 属性不计入此列，不能将 0 解释为未使用 Token。`,
+    `生成命令：\`${generateCommand}\`。裸颜色匹配与 \`scripts/hardcoded-color-audit.mjs\` 共用 \`scripts/shared/hardcoded-color-match.mjs\`（HEX / RGB / HSL / OKLCH 等字面通道），两者在共享 matcher 内统一排除纯语义包装、注释及 PR 编号；数值颜色函数还需位于样式属性、CSS 声明/函数或任意值语境，普通文案字符串里的颜色函数文本不计入；字面 fallback 仍计入——语义 token 消费与注释引用不是迁移债务；裸圆角为粗粒度（\`rounded*\` class、\`border-radius:\` 与 React style 对象的 \`borderRadius:\`）。Token 计数为样式源里 \`var(--token)\` / \`hsl(var(--token)\` 的去重 ID 数；Mobile 的 ThemeColors / typeScale 等 RN 属性不计入此列，不能将 0 解释为未使用 Token。`,
     '',
     `登记 surface 数：${surfaces.length}。平台包含 Desktop 与 Mobile；静态入口发现不表示已迁移或已实机验证。`,
     '',
@@ -1410,7 +1409,7 @@ export function mobileCatalogSurfaces() {
     ['chat.sharing', '共享任务邀请与成员；供应商分享链接提示', ['shared-session.tsx', 'provider-share.tsx']],
     ['chat.new', '新建任务', ['sessions/new.tsx']],
     ['files', '任务文件与预览', ['files/[sessionId].tsx', 'files/preview/[sessionId].tsx']],
-    ['settings', '设置（含调试与日志上传可见入口）', ['settings.tsx', 'settings/device-name.tsx', 'settings/user-bubble.tsx', 'settings/voice-dictionary.tsx']],
+    ['settings', '设置（含调试与日志上传可见入口）', ['settings.tsx', 'settings/device-name.tsx', 'settings/user-bubble.tsx', 'settings/voice-dictionary.tsx', 'settings/voice-speaker-filter.tsx']],
     ['auth', '登录与添加账号', ['(auth)/login.tsx', 'add-account.tsx']],
     ['account-deletion', '账号注销', ['account-deletion.tsx']],
   ];

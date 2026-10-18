@@ -3,6 +3,8 @@ import { MAKER_EVENT_BATCH_CHANNEL, SESSION_SYNC_CHANNEL } from '@cindy/device-l
 import { clampLiveRowCreatedAt } from '@/session/messagePaging';
 import { MOBILE_TOOL_INPUT_PROJECTION_THRESHOLD_BYTES } from '@/session/messageToolPayloadProjection';
 import { remoteSessionStore, resolveSessionWriteDevices, sessionPendingWrites } from '@/session/remoteSessionStore';
+import { buildMobileSessionMessageDeepLink, parseSessionDeepLinkUrl, resolveSessionLinkDeviceId } from '@/session/sessionLinks';
+import { sessionMenuCopyLink } from '@/session/sessionMenu';
 import type { InputProjection, PendingInteraction, RemoteMessage, RemoteSession } from '@/session/types';
 import { setJankMetricsEnabled, takeJankMetrics } from '@/debug/jankMetrics';
 
@@ -135,6 +137,34 @@ function pending(kind: string, requestId?: string, persistId?: string): PendingI
 
 describe('remoteSessionStore', () => {
   beforeEach(() => remoteSessionStore.clear());
+
+  it('keeps an edited async question across disconnection but removes it on explicit history clearing', () => {
+    remoteSessionStore.setDeviceSessions('dev-1', 'Mac', [session('s1')]);
+    const item: PendingInteraction = { persistId: 'p1',
+      request: { kind: 'ask_user_question', requestId: 'q1', delivery: 'async', questions: [{ question: 'Q?' }] } };
+    remoteSessionStore.setPendingInteractions('s1', [item]);
+    remoteSessionStore.protectAsyncQuestion('s1', item);
+    remoteSessionStore.applyRemotePush('dev-1', 'maker:interaction-dismissed', {
+      sessionId: 's1', requestId: 'q1', reason: 'resolved', decision: { dismissed: true },
+    });
+    const visible = remoteSessionStore.getVisiblePendingInteractions('s1');
+    expect(remoteSessionStore.getVisiblePendingInteractions('s1')).toBe(visible);
+    remoteSessionStore.markDeviceOffline('dev-1');
+    expect(remoteSessionStore.getPendingInteractions('s1')).toHaveLength(0);
+    expect(remoteSessionStore.getVisiblePendingInteractions('s1')[0]).toMatchObject({ retainedDraft: true });
+    remoteSessionStore.invalidateSessionMessageWindow('s1', 'dev-1');
+    expect(remoteSessionStore.getVisiblePendingInteractions('s1')).toHaveLength(0);
+  });
+
+  it.each(['deleted', 'archived', 'logout'] as const)('drops protected cards on %s', (action) => {
+    remoteSessionStore.setDeviceSessions('dev-1', 'Mac', [session('s1')]);
+    remoteSessionStore.protectAsyncQuestion('s1', { request: {
+      kind: 'ask_user_question', requestId: 'q1', delivery: 'async',
+    } });
+    if (action === 'logout') remoteSessionStore.clear();
+    else remoteSessionStore.applySessionPatch('dev-1', 's1', { status: action });
+    expect(remoteSessionStore.getVisiblePendingInteractions('s1')).toHaveLength(0);
+  });
 
   it('keeps Make mirrors for transport while excluding them from visible session snapshots', () => {
     remoteSessionStore.setDeviceSessions('dev-1', 'Mac', [
@@ -5164,6 +5194,35 @@ describe('remoteSessionStore', () => {
     // 路由维度:deviceLinkDeviceId 保持物理 shard id,sessionDeviceIndex 指向物理 shard(patch 不丢)。
     expect(byId.get('s-stale')?.deviceLinkDeviceId).toBe('stale-mac');
     expect(remoteSessionStore.getSessionDeviceId('s-stale')).toBe('stale-mac');
+  });
+
+  it('keeps links generated after re-link routed to the new device after archival removes the lookup', () => {
+    const routeDeviceId = 'old-mac';
+    remoteSessionStore.setDeviceIdentity([{ deviceId: routeDeviceId, name: 'Mac' }]);
+    remoteSessionStore.setDeviceSessions(routeDeviceId, 'Mac', [session('source')]);
+    const before = remoteSessionStore.getSessions()[0]!;
+    expect(parseSessionDeepLinkUrl(buildMobileSessionMessageDeepLink(
+      'source', 'anchor', { session: before, deviceId: routeDeviceId },
+    ))?.deviceId).toBe(routeDeviceId);
+
+    remoteSessionStore.setDeviceIdentity([{ deviceId: 'new-mac', name: 'Mac' }]);
+    const current = remoteSessionStore.getSessions()[0]!;
+    expect(current.canonicalDeviceId).toBe('new-mac');
+    expect(current.deviceLinkDeviceId).toBe(routeDeviceId);
+    const links = [
+      buildMobileSessionMessageDeepLink('source', 'anchor', { session: current, deviceId: routeDeviceId }),
+      sessionMenuCopyLink(current),
+    ];
+    remoteSessionStore.applySessionPatch(routeDeviceId, 'source', { status: 'archived' });
+    expect(remoteSessionStore.getSessionDeviceId('source')).toBeUndefined();
+    for (const link of links) {
+      const target = parseSessionDeepLinkUrl(link)!;
+      expect(resolveSessionLinkDeviceId({
+        listedDeviceId: remoteSessionStore.getSessionDeviceId(target.sessionId),
+        linkedDeviceId: target.deviceId,
+        currentDeviceId: 'other-mac',
+      })).toBe('new-mac');
+    }
   });
 
   it('dedupes the same session id across stale/current shards, keeping the current shard copy', () => {

@@ -35,6 +35,7 @@ import { evictTaskTagCatalog } from '../task-tags/taskTagEvents';
 import { useEffect, useRef } from 'react';
 import { isSharedTaskPeer } from '@cindy/device-link';
 import { projectScheduleEvent } from '@cindy/maker-shared/schedule-events';
+import { historyTurnEnded } from '@cindy/maker-shared/message-window';
 import { useAuth } from '@/contexts/AuthContext';
 import { isDeviceLinkRemotePushCurrent } from '@/lib/remoteDataOwnerPushFence';
 import { createLogger } from '@/lib/logger';
@@ -53,6 +54,7 @@ import {
 } from './remoteSessionActivityStore';
 import { revokedDevicesStore } from './revokedDevicesStore';
 import { unresponsiveDevicesStore } from './unresponsiveDevicesStore';
+import { subscribeDeviceLinkDeviceRemoval } from './useDeviceLinkDeviceList';
 import { collectSessionListSnapshot, refreshRemoteDeviceSessions } from './refreshRemoteSessions';
 import {
   cancelSessionListPersist,
@@ -373,11 +375,12 @@ export function useDeviceLinkRemoteProjects(
 
     let disposed = false;
     /**
-     * 「已明确离场、不许被冷缓存种回来」的设备 id。撤销访问 / 关闭被控 / 本机停用控制这三条
+     * 「已明确离场、不许被冷缓存种回来」的设备 id。删除 / 撤销访问 / 关闭被控 / 本机停用控制
      * 路径都会往里加 —— 它们清盘是异步的,而 mount 时那次 readCachedSessionList 可能早已
      * 读到旧快照(review: codex P1)。
      */
     const cacheHydrationBlocked = new Set<string>();
+    let directoryGeneration = 0;
     /** relay 在线时才跑 anti-entropy；初始状态未知时保守暂停，避免离线失败重试。 */
     let linkOnline: boolean | null = null;
     /** push 一旦到达即权威：迟到的 getState 快照不得覆盖更新的 link status。 */
@@ -661,10 +664,11 @@ export function useDeviceLinkRemoteProjects(
 
     /** 全量重播(初始 + WS 重连):listDevices 带 isSelf,权威。 */
     const reseed = (): void => {
+      const generation = directoryGeneration;
       void window.electronAPI.deviceLink
         .listDevices()
         .then(({ devices }) => {
-          if (disposed) return;
+          if (disposed || generation !== directoryGeneration) return;
           for (const d of devices) {
             applyDevice({
               deviceId: d.deviceId,
@@ -851,6 +855,19 @@ export function useDeviceLinkRemoteProjects(
     const offRemotePush = window.electronAPI.deviceLink.onRemotePush((push, localOwnerStamp) => {
       if (disposed || !eligible.has(push.deviceId)) return;
       if (!isDeviceLinkRemotePushCurrent(push, localOwnerStamp)) return;
+      if (windowRole === 'main' && push.channel === 'local-db:sessions:patched') {
+        const payload = push.payload as { sessionId?: string; patch?: { lastTurnEndedAt?: unknown } } | null;
+        if (typeof payload?.sessionId === 'string' && payload.patch && historyTurnEnded({}, payload.patch)) {
+          const sessionId = payload.sessionId;
+          // Let the ordinary push router apply metadata first, independent of
+          // listener registration order. Only this completed task is eligible.
+          queueMicrotask(() => {
+            if (!disposed && eligible.has(push.deviceId) && isDeviceLinkRemotePushCurrent(push, localOwnerStamp)) {
+              void makerChatStore.prefetchRemoteHistories(push.deviceId, new Set([sessionId]));
+            }
+          });
+        }
+      }
       if (push.channel === 'maker:schedule:event') {
         // 推送照收；闲着不跟事件去拉整份自动化索引。人回来 wake/10s 用 scope both 补上。
         const watching =
@@ -942,6 +959,24 @@ export function useDeviceLinkRemoteProjects(
       if (eligible.has(deviceId)) eligible.set(deviceId, name);
     });
 
+    const offRemoval = subscribeDeviceLinkDeviceRemoval((deviceId) => {
+      // Deletion is authoritative even if the directory is unavailable or a cold read is in flight.
+      directoryGeneration += 1;
+      cacheHydrationBlocked.add(deviceId);
+      clearCachedDevice(deviceId);
+      cancelDeviceReseeds(deviceId);
+      clearArchivedSessionRetry(deviceId);
+      sessionsSubscribeRetry.delete(deviceId);
+      if (eligible.delete(deviceId)) {
+        window.electronAPI.deviceLink.unsubscribe(deviceId, ['sessions']).catch(() => {});
+      }
+      removeRemoteSessionActivityForDevice(deviceId);
+      evictTaskTagCatalog(deviceId);
+      evictDeviceCapabilities(deviceId);
+      evictDeviceProviders(deviceId);
+      evictDeviceGitSafetySettings(deviceId);
+    });
+
     // 冷缓存回写由「分片变更」驱动,而不是只在一次成功 refresh 之后:
     // 被控端推来的 archived / deleted 增量(applyPatch)只改内存,若 app 在下一次 10 秒对账
     // 之前退出,下次离线冷启动就会把那条已归档 / 已删除的会话又 hydrate 回侧边栏
@@ -968,6 +1003,7 @@ export function useDeviceLinkRemoteProjects(
       offAccessRevoked();
       offControlTarget();
       offRename();
+      offRemoval();
       offShardChange();
       offResponsiveness();
       unresponsiveDevicesStore.clearAll();

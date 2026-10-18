@@ -8,7 +8,6 @@ const env = vi.hoisted(() => ({
   root: '',
   active: true,
   pending: false,
-  projects: ['/cindy'],
   notify: vi.fn(),
   cancel: vi.fn(async () => true),
 }));
@@ -37,7 +36,7 @@ vi.mock('../../localDb/client/current.js', () => ({
   }),
 }));
 vi.mock('../botWorkbenchService.js', () => ({
-  readBotWorkbenchState: async () => ({ directories: env.projects, tasks: {} }),
+  readLegacyWorkbenchJudgments: async () => ({}),
   broadcastBotWorkbenchChanged: env.notify,
 }));
 vi.mock('../botRemoteResourceInvalidation.js', () => ({
@@ -97,24 +96,24 @@ describe('Todo public access', () => {
     env.active = false;
     await expect(todoAccess('bot-one')).rejects.toMatchObject({ code: 'NOT_FOUND' });
   });
-  it('checks every scoped source and does not advance rejected events', async () => {
+  // 放弃「项目」(2026-10-17):来源不再按项目目录裁剪;任务来源可指向本机或跨电脑任务。
+  it('accepts sources from any folder or task and never preflights a folder as out of scope', async () => {
     const access = await todoAccess('bot-one');
-    await expect(
-      access.ingest({
-        source: 'mail',
-        sequence: 1,
-        patch: {
-          ...patch,
-          sources: [
-            { kind: 'github', id: '1', label: 'Cindy', project: '/cindy' },
-            { kind: 'mail', id: '2', label: 'Unrelated', project: '/private' },
-          ],
-        },
-      }),
-    ).rejects.toMatchObject({ code: 'SOURCE_OUTSIDE_SCOPE' });
+    const result = await access.ingest({
+      source: 'mail',
+      sequence: 1,
+      patch: {
+        ...patch,
+        sources: [
+          { kind: 'mail', id: '2', label: 'Unrelated', project: '/private' },
+          { kind: 'task', id: 'laptop::session-9', label: '另一台电脑的任务' },
+        ],
+      },
+    });
+    expect(result.todo?.sources.map((s) => s.id)).toEqual(['2', 'laptop::session-9']);
     expect(
-      await access.preflight([{ source: 'mail', sequence: 1, key: patch.key, project: '/cindy' }]),
-    ).toMatchObject([{ decision: 'review' }]);
+      await access.preflight([{ source: 'mail', sequence: 2, key: 'other', project: '/elsewhere' }]),
+    ).toMatchObject([{ decision: 'review', project: '/elsewhere' }]);
   });
   it('single-click dispatches only once and preserves received vs accepted', async () => {
     let resolve: (value: { ok: boolean }) => void = () => {};

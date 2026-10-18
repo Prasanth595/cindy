@@ -25,6 +25,7 @@ import {
   rawReaddir,
   rawStat,
   rawWriteFile,
+  readExistingText,
   ReadStateTracker,
   textResult,
   type FileWriteHooks,
@@ -312,7 +313,7 @@ export class RemoteExecutor {
           const target = this.resolvePath(str(body, 'path'));
           await this.authorize({ kind: 'write', path: target }, signal);
           if (typeof body.data !== 'string') throw new ExecutorRequestError('INVALID', 'data must be a base64 string');
-          const data = this.workspace.mapInputFromAgent(Buffer.from(body.data, 'base64'));
+          const data = this.workspace.mapInputFromAgent(Buffer.from(body.data, 'base64'), await readExistingText(target));
           await this.writeHooks.beforeWrite(target);
           await rawWriteFile(target, data);
           return {};
@@ -429,7 +430,8 @@ export class RemoteExecutor {
           const content = args.content;
           if (typeof content !== 'string') return textResult('content must be a string.', true);
           await this.authorizeTool({ kind: 'write', path: target }, signal);
-          return this.mapToolResult(await ccWrite(target, this.workspace.mapTextFromAgent(content), this.readState, this.writeHooks, this.workspace.toAgentPath(target)));
+          const local = this.workspace.mapContentFromAgent(content, await readExistingText(target));
+          return this.mapToolResult(await ccWrite(target, local, this.readState, this.writeHooks, this.workspace.toAgentPath(target)));
         }
         case 'Edit': {
           const target = this.resolvePath(str(args, 'file_path'), this.shell.getCwd());
@@ -438,10 +440,11 @@ export class RemoteExecutor {
           }
           await this.authorizeTool({ kind: 'write', path: target }, signal);
           return this.mapToolResult(await ccEdit(target, {
-            old_string: this.workspace.mapTextFromAgent(args.old_string),
-            new_string: this.workspace.mapTextFromAgent(args.new_string),
+            old_string: args.old_string,
+            new_string: args.new_string,
             replace_all: args.replace_all === true,
-          }, this.readState, this.writeHooks, this.workspace.toAgentPath(target)));
+          }, this.readState, this.writeHooks, this.workspace.toAgentPath(target),
+          (oldString, newString, original) => this.workspace.mapEditFromAgent(oldString, newString, original)));
         }
         case 'NotebookEdit': {
           const target = this.resolvePath(str(args, 'notebook_path'), this.shell.getCwd());
@@ -452,10 +455,10 @@ export class RemoteExecutor {
           await this.authorizeTool({ kind: 'write', path: target }, signal);
           return this.mapToolResult(await ccNotebookEdit(target, {
             cell_id: optionalString(args, 'cell_id'),
-            new_source: this.workspace.mapTextFromAgent(args.new_source),
+            new_source: args.new_source,
             cell_type: cellType,
             edit_mode: editMode,
-          }, this.readState, this.writeHooks));
+          }, this.readState, this.writeHooks, (source, original) => this.workspace.mapContentFromAgent(source, original)));
         }
         case 'WebFetch':
           if (!this.opts.webFetch) return textResult(`Unknown tool: ${name}`, true);

@@ -61,6 +61,7 @@ vi.mock('@/session/expandedBlockMemory', () => ({ useFoldableExpandedState: () =
 vi.mock('@/platform/chrome', () => ({ NativePullDownMenu: () => null, showActionMenu: vi.fn(), usesNativePullDownMenu: () => false, usesSystemActionMenu: () => false }));
 vi.mock('@/session/MobileComposerInputRow', () => ({ MobileComposerInputRow: () => null, MOBILE_COMPOSER_VOICE_ANCHOR_RIGHT: 0, MOBILE_COMPOSER_CONTROL_SIZE: 44 }));
 vi.mock('@/session/ImageLightbox', () => ({ ImageLightbox: () => null }));
+vi.mock('@/session/McpAppCard', () => ({ McpAppCard: () => null }));
 vi.mock('@/session/mermaidWebView', () => ({ MermaidDiagram: () => null }));
 vi.mock('@/session/mathWebView', () => ({ MathFormulaWebView: () => null }));
 vi.mock('@/session/mediaPlayerWebView', () => ({ RemoteMediaPlayerWebView: () => null }));

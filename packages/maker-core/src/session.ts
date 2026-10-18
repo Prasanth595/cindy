@@ -312,8 +312,11 @@ function appendManagedImageReferences(
 }
 
 export interface SessionSendOptions extends SendOptions {
-  /** Host-owned authorization refresh after all async preparation, before vendor dispatch. */
-  resolveAutoReviewUserIntent?: () => Promise<AutoReviewUserIntent>;
+  /**
+   * Host-owned authorization refresh after all preparation, before vendor dispatch.
+   * Returning undefined preserves the existing intent; an empty intent still clears it.
+   */
+  resolveAutoReviewUserIntent?: () => Promise<AutoReviewUserIntent | undefined>;
   /**
    * Turn reservation 建立后的原子准备钩子。
    *
@@ -488,6 +491,13 @@ export class Session {
   private closePromise: Promise<void> | null = null;
   /** close/detach 一进入同步入口就置位，早于底层 handle 的异步关闭完成。 */
   private terminationStarted = false;
+  /**
+   * The runtime itself began this teardown (dead handle, crashed loop, failed
+   * dispatch, abort / terminal-error recovery). External close()/closeIfIdle()/
+   * detach() callers never set it, so a direct product close is not mistaken
+   * for a self-close even when no Maker close reason was recorded.
+   */
+  private runtimeInitiatedClose = false;
   private eventLoopStarted = false;
   /**
    * 最近一次已观察到的终态事件属于哪个 turn generation；事件迭代器可能在上一轮
@@ -946,7 +956,8 @@ export class Session {
         }
       }
       if (resolveAutoReviewUserIntent) {
-        handleOpts[AUTO_REVIEW_USER_INTENT] = await resolveAutoReviewUserIntent();
+        const intent = await resolveAutoReviewUserIntent();
+        if (intent !== undefined) handleOpts[AUTO_REVIEW_USER_INTENT] = intent;
         const cancelledAfterAuthorization = finishCancelledBeforeDispatch();
         if (cancelledAfterAuthorization !== null) return cancelledAfterAuthorization;
       }
@@ -1039,7 +1050,7 @@ export class Session {
           this.pendingPriorGeneration = null;
           originInstalled = false;
         }
-        await this.close();
+        await this.closeFromRuntime();
       }
       throw e;
     } finally {
@@ -1156,7 +1167,10 @@ export class Session {
     return msg;
   }
 
-  async steer(message: UserMessage | string, opts?: SendOptions): Promise<void> {
+  async steer(
+    message: UserMessage | string,
+    opts?: SendOptions & Pick<SessionSendOptions, 'beforeProviderStart'>,
+  ): Promise<void> {
     let msg: UserMessage = typeof message === 'string'
       ? { type: 'user', content: message }
       : message;
@@ -1177,6 +1191,13 @@ export class Session {
     // 层 B：steer 追加图片同样走视觉桥（与 send 一致），否则纯文本模型收到的
     // 原始 image block 会被后端忽略或拒绝（Greptile P1）。
     msg = await this.bridgedVisionMessage(msg, opts?.signal);
+    const { beforeProviderStart, ...handleOpts } = opts ?? {};
+    // Host grants must survive all asynchronous preparation, including steer.
+    // Keep the private authorization hook out of provider options.
+    if (beforeProviderStart) {
+      await beforeProviderStart();
+      this.ensureActive();
+    }
     // 异步视觉转换期间 turn 可能已完成/被中止（视觉后端慢、用户已切任务等）：
     // 转换结果此时已无人接收，必须先复查原 turn 生命周期再调用 handle.steer，
     // 否则底层以「No active turn to steer」拒绝或 Pi 把迟到消息交给已结束的 turn。
@@ -1188,7 +1209,7 @@ export class Session {
     const previousSteerGeneration = this.steerAcceptedGeneration;
     this.steerAcceptedGeneration = steerTurnGeneration;
     try {
-      await this.handle.steer(msg, { ...opts, [AUTO_REVIEW_SOURCE_CONTENT]: autoReviewSourceContent });
+      await this.handle.steer(msg, { ...handleOpts, [AUTO_REVIEW_SOURCE_CONTENT]: autoReviewSourceContent });
     } catch (error) {
       if (this.steerAcceptedGeneration === steerTurnGeneration) {
         this.steerAcceptedGeneration = previousSteerGeneration;
@@ -1419,6 +1440,17 @@ export class Session {
   /** True once teardown has started, including an unconfirmed failed close. */
   hasStartedClosing(): boolean {
     return this.terminationStarted;
+  }
+
+  /** True when this runtime, not an external caller, started its own teardown. */
+  wasClosedByRuntime(): boolean {
+    return this.runtimeInitiatedClose;
+  }
+
+  /** Self-close: only claims the cause when no teardown has started yet. */
+  private closeFromRuntime(): Promise<void> {
+    if (!this.terminationStarted && this.status !== 'closed') this.runtimeInitiatedClose = true;
+    return this.close();
   }
 
   /**
@@ -3062,7 +3094,7 @@ export class Session {
         generation,
         graceMs: TERMINAL_ERROR_DRAIN_GRACE_MS,
       });
-      void this.close().catch((error) => {
+      void this.closeFromRuntime().catch((error) => {
         this.logger.warn('terminal error drain close failed', { error: String(error) });
       });
     }, TERMINAL_ERROR_DRAIN_GRACE_MS);
@@ -3303,7 +3335,7 @@ export class Session {
       { trigger: ctx.trigger, graceMs: ctx.graceMs },
     );
     try {
-      await this.close();
+      await this.closeFromRuntime();
     } catch (e) {
       this.logger.warn('abort recovery close failed', { trigger: ctx.trigger, error: String(e) });
     }
@@ -3356,7 +3388,7 @@ export class Session {
       this.logger.error('event loop crashed', { error: String(e) });
       if (this.closePromise || this.status === 'closed') return;
       // 先占住 closing gate，避免 terminal error listener 在死掉的 iterator 上重新 send。
-      const closing = this.close();
+      const closing = this.closeFromRuntime();
       if (this.terminalEventObservedGeneration !== this.turnGeneration) {
         this.fanOutEvent({
           type: 'error',
@@ -3393,6 +3425,7 @@ export class Session {
     const unfinishedTurn =
       this.hasUnsettledTurn();
     this.logger.debug('event loop ended (handle dead), auto-closing session', { unfinishedTurn });
+    this.runtimeInitiatedClose = true;
     this.terminationStarted = true;
     this.closePromise = Promise.resolve();
     this.settleUnfinishedTurn('Session event loop stopped unexpectedly without a terminal event');

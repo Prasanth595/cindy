@@ -67,20 +67,21 @@ export interface DeviceLinkDraftSelection {
 }
 
 /**
- * 判断同一远程草稿是否应在 capabilities 刷新后重新校准。
- * 新设备或 Agent 始终需要 seed；同一目标只有在被控端明确从未选过模型、且控制端也尚未
- * 编辑运行配置时才允许重校准。旧端的未知状态与任一侧的显式选择都必须保守保留。
+ * 新设备或 Agent 始终需要 seed；同一目标的新默认可更新未编辑的草稿。
+ * 仅能力刷新时，仍须被控端明确从未选过模型才重新选区域默认。
  */
 export function shouldReseedDeviceLinkDraftDefaults(input: {
   currentSeedKey: string | null;
   nextSeedKey: string;
   capabilitiesChanged: boolean;
+  defaultsChanged?: boolean;
   controllerTouched: boolean;
   remoteModelChosenByUser: boolean | undefined;
 }): boolean {
   if (input.currentSeedKey !== input.nextSeedKey) return true;
   return (
-    input.capabilitiesChanged && !input.controllerTouched && input.remoteModelChosenByUser === false
+    !input.controllerTouched && (input.defaultsChanged === true
+      || (input.capabilitiesChanged && input.remoteModelChosenByUser === false))
   );
 }
 

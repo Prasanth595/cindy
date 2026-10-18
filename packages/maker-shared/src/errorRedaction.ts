@@ -52,6 +52,9 @@ const DETERMINISTIC_USAGE_EXHAUSTION_PATTERNS = [
   /\b(?:exceeded[-_]?budget|budget[-_]?exceeded)\b/i,
   /\b(?:account|session|usage)\s+budget\b.{0,16}\b(?:exhausted|exceeded)\b/i,
   /\b(?:exhausted|exceeded)\b.{0,16}\b(?:account|session|usage)\s+budget\b/i,
+  // ChatGPT workspace member spend cap (Codex): "You hit your spend cap set by the
+  // owner of your workspace". The owner must raise it; waiting does not help.
+  /\bspend(?:ing)?[-_ ]?cap\b/i,
   /余额不足|欠费/i,
 ];
 

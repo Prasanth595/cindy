@@ -33,6 +33,7 @@ export * from "./peerTransferCooldown.js";
 export * from "./peerInvoke.js";
 export * from "./peerAttachment.js";
 export * from "./fileAccess.js";
+export * from "./fileTransferPolicy.js";
 export * from "./filePeerRuntime.js";
 
 export { FILE_PEER_RUNTIME_SOURCE } from "./filePeerRuntimeSource.js";
@@ -42,6 +43,7 @@ export * from "./sharedTaskInvitation.js";
 export * from "./sharedTaskProbe.js";
 export * from "./providerShareApi.js";
 export * from "./providerShareInvitation.js";
+export * from "./chatInvitation.js";
 export * from "./providerShareCatalog.js";
 export * from "./providerShareEnvelope.js";
 export * from "./providerGroup.js";

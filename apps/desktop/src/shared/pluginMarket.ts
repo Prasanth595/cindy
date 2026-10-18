@@ -1,5 +1,5 @@
 import type { GhostManifest, InstalledGhost } from './ghost';
-import type { PluginIconMetadata } from '@cindy/plugin-protocol';
+import type { PluginDownloadStatistics, PluginIconMetadata, PluginUsageStatistics } from '@cindy/plugin-protocol';
 
 export type PluginMarketScope = 'public' | 'organization' | 'personal';
 export type PluginMarketInstallState =
@@ -13,6 +13,8 @@ export type PluginMarketItemSource = 'server' | 'git-market' | 'local-market';
 
 /** Renderer-safe Plugin 市场列表项；所有字段都来自协议或本地安装事实。 */
 export interface PluginMarketItem {
+  usageStatistics?: PluginUsageStatistics;
+  downloadStatistics?: PluginDownloadStatistics;
   pluginId: string;
   ghostId: string;
   /** Host-verified namespace. Missing is legacy wire; null is root. */

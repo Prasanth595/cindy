@@ -55,7 +55,10 @@ export function UnifiedModelRow({
   onPaymentRequired,
   sourceLabel,
 }: {
-  /** Supplied only in the combined All / Favorites views. */
+  /**
+   * Supplied only in the combined All / Favorites views; omitted = the local description.
+   * The panel omits it only for this catalog's own Cindy AI (see UnifiedModelPanel aggregateSourceLabel).
+   */
   sourceLabel?: string;
   entry: UnifiedModelEntry;
   anchor: UnifiedAnchor;
@@ -306,7 +309,7 @@ export function UnifiedModelRow({
             还平白吃掉一列宽度);选中态语义由 aria-selected 承载。模型面板是输入框菜单
             「选中 = 勾 + 500」约定的唯一例外,2026-10-04 用户再次确认保留整行底色、不加勾。 */}
       </div>
-      {sourceLabel && entry.providerId !== 'xd' ? (
+      {sourceLabel ? (
         <ModelSourceDetails
           providerId={entry.providerId}
           label={providerAccountLabel(

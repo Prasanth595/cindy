@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { isAbsolute } from 'node:path';
 
 import type { Schedule, ScriptCapability } from '@cindy/maker-scheduler';
+import { AUTO_REVIEW_DELEGATED_CONTINUATION } from '@cindy/maker-core';
 
 import type { GhostToolCallResult } from '../../shared/ghost.js';
 import { hasDeliveryNamespace, installedGhostStoragePart } from '../../shared/pluginIdentity.js';
@@ -401,7 +402,9 @@ export class SchedulerScriptCapabilityBroker implements ScriptCapabilityBroker {
           title: typeof params.title === 'string' ? params.title : undefined,
           useWorktree: false,
           // 投递到已有任务时沿用该任务自己的配置,只有新建任务才需要默认路由。
-          ...(targetSessionId ? {} : { createDefaults: await this.createDefaultsFor(schedule) }),
+          ...(targetSessionId
+            ? { [AUTO_REVIEW_DELEGATED_CONTINUATION]: true as const }
+            : { createDefaults: await this.createDefaultsFor(schedule) }),
         });
         if (!result.ok) fail(result.errorCode, result.message);
         return {

@@ -189,7 +189,7 @@ Cindy 在 X 上发出的那条公开回复。zh-CN 取「回帖」以强调它�
 
 ### Workbench
 
-伙伴主任务右侧栏里的标签：主人交给伙伴的项目，以及项目里的任务、自动化与产出（docs/product-rules/cindy-bots-runtime.md「工作台」一节）。只指这个伙伴视图，不泛指任务列表或其它面板。先登记为 proposed，待 Chris 实机试用后再定。
+伙伴主任务右侧栏里的标签：一眼看清这位伙伴手上「等你」与「在做」的任务，加一行页脚（docs/product-rules/cindy-bots-runtime.md「工作台」一节）。只指这个伙伴视图，不泛指任务列表或其它面板。先登记为 proposed，待 Chris 实机试用后再定。
 
 ### Security check
 
@@ -215,6 +215,10 @@ Cindy AI 个人账号的免费会员身份标签。只在服务端明确下发 a
 
 用户通过 /cindy-make 显式开启的本机定制流程。输入区承接准备与每轮完成选择；修改时使用普通输入框。完成后可继续修改、启动隔离测试或生成个人版，版本切换由原生客户端处理。Doctor 自身只检查。
 
+### Submit to Cindy
+
+把 Cindy Make 的一项修改整理成 Pull Request 提交到官方仓库。面向普通用户写「提交给官方」，对话框说明里才出现 Pull Request；状态写「等待审核 / 已被官方采纳 / 官方未采纳」，不写 open / merged / closed。
+
 ### Make history
 
 Cindy Make 设置中保留全部制作、修改轮次与合入记录的列表；结束制作及清理工作目录后仍可回看。
@@ -222,6 +226,10 @@ Cindy Make 设置中保留全部制作、修改轮次与合入记录的列表；
 ### Add back to personal version
 
 重新应用之前明确撤销的制作改动，区别于把尚未合入的新修改首次加入个人源码。
+
+### Saved in
+
+Cindy Make 版本控制概览中的一行，说明个人版保存在哪里：只在这台电脑，或用户自己 GitHub 上官方仓库的公开副本（fork）。面向普通用户不写 fork，写「你的 GitHub」。
 
 ### Remove from personal version
 
@@ -275,6 +283,10 @@ OAuth 2.0 Device Authorization Grant 中由用户在另一设备验证页输入�
 
 钉钉机器人连接的产品名称，沿用官方品牌写法；先登记为 proposed，待产品术语评审后再决定是否固化。
 
+### Dissolve group
+
+Irreversible group termination, distinct from archive, leave and personal list removal.
+
 ### Doubao
 
 模型显示品牌采用官方中文名称，版本号和变体原样保留；仅用于展示与搜索，不改模型 ID 或用户保存的名称。
@@ -295,6 +307,10 @@ OAuth 2.0 Device Authorization Grant 中由用户在另一设备验证页输入�
 
 远程桌面操作菜单的安全设置；仅用于可选的本机保存密码自动解锁。
 
+### Follow Up on All Sessions
+
+伙伴设置里的开关与工作台小标：账号里只有一位伙伴负责定时看一遍所有任务（实现里叫 scheduler / 总调度，默认 Cindy 助理）。面向用户不写「总调度」「调度员」，一律用这句；在别的伙伴上打开就移过去，关闭则没有伙伴统一跟进。session 按已裁决译法写「任务 / Session / セッション / 세션」。
+
 ### Group Admin
 
 可管理群资料和成员，但不能替伙伴主人授权工具或私人资料。群设置内可简称管理员 / Admin。
@@ -302,6 +318,10 @@ OAuth 2.0 Device Authorization Grant 中由用户在另一设备验证页输入�
 ### Group chat
 
 伙伴群聊：用户把 2–6 位伙伴放进一个群，用户说一句，伙伴们按规则接话（docs/product-rules/bot-group-chat.md）。群是独立对象，不是任务，也不是某位伙伴的主任务；群里的单条往来仍叫「消息」（见 task-and-conversation-naming）。英文分两层：侧栏标题与按钮用 Title Case（Group Chats、New Group Chat），句中用小写 group chat——故 checkCase 为 false。zh-CN 短句里可简称「群」（群名称、群设置）。与企业微信「群机器人」（wecom-group-bot）等 IM 平台的群概念无关。先登记为 proposed：第一阶段刚落地，等 UI 走查后再定。
+
+### Main Chat
+
+伙伴群聊的主时间线（产品规则里也称「主群」），与话题相对。中文 UI 写「群聊」（如「同时发到群聊」「贴回群聊」），不写「主聊天」——「聊天」是 Chat 条目的禁用译法。贴回指把话题回复以引用形式发到这里，原回复不移动。
 
 ### Group Nickname
 
@@ -366,6 +386,10 @@ Orca 协同角色名，与 Worker 成对。五语统一保留英文 Lead，不�
 ### Erika
 
 灵动岛角色皮肤名(设置页「图标皮肤」列表)。角色专名,四语统一保留拉丁原词,不做音译(避免「艾莉卡 / エリカ / 에리카」多套写法)。
+
+### MCP App
+
+标准 MCP Apps 协议提供的交互应用；卡片标题与消息来源沿用协议名称，各语言保留 MCP App，待术语评审后固化。
 
 ### Audio Generation
 
@@ -616,6 +640,10 @@ Cindy 里的**持久 AI 助手实体**（原名 Bot）：有长期身份、自�
 ### Voice dictionary
 
 语音输入的用户自定义术语表(人名、产品名、代号与其常见误识别写法),在同账号的电脑之间自动同步、手机只读查看。当前先采用四语直译并登记为待讨论术语,避免与「自定义词典」「术语表」「用户词库」等说法混用。
+
+### Voiceprint
+
+语音输入「识别我的声音」录入的本人声音特征，只存在本机、不同步。可写「录入声纹」「删除声纹」；不要写成声音指纹、声音模板。
 
 ### Wallpaper
 

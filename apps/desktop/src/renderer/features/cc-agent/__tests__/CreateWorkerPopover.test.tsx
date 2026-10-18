@@ -1861,6 +1861,29 @@ describe('CreateWorkerPopover remote providers', () => {
 
   afterEach(() => cleanup());
 
+  // 模型面板底部「配置模型」：Worker 的 Agent 已选在分享上时也要能跳设置(由面板决定显示)；
+  // 只有任务在远程控制的电脑上时不接线。
+  it('keeps provider navigation wired while the Worker agent already uses a share', async () => {
+    render(
+      <CreateWorkerPopover
+        open
+        onClose={vi.fn()}
+        onCreate={vi.fn()}
+        leadAgentDeviceId="share:abc"
+        remoteAgentDevices={[{ deviceId: 'share:abc', name: '来自 Magi 的分享' }]}
+      />,
+    );
+    const selector = await screen.findByTestId('model-selector');
+    expect(selector.dataset.agentDevice).toBe('share:abc');
+    expect(selector.dataset.navigateWired).toBe('true');
+  });
+
+  it("does not wire provider navigation for a Lead on a remote-controlled computer", async () => {
+    render(<CreateWorkerPopover open onClose={vi.fn()} onCreate={vi.fn()} deviceId="lead-pc" />);
+    const selector = await screen.findByTestId('model-selector');
+    expect(selector.dataset.navigateWired).toBe('false');
+  });
+
   it("reads the Lead's remote computer by default and submits that location", async () => {
     const onCreate = vi.fn();
     render(

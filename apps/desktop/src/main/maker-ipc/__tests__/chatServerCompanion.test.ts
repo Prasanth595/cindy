@@ -83,7 +83,7 @@ describe('Chat Server cloud companions', () => {
     vi.stubEnv('XDT_ISOLATED', '1');
     fixture.profiles = [{ id: 'local-bot', displayName: 'Mia', avatar: null, status: 'active' }];
     fixture.sockets = [];
-    me = { actor: { id: selfId }, deviceId: 'desk-1', capabilities: { companionHome: true } };
+    me = { actor: { id: selfId }, deviceId: 'desk-1', capabilities: { companionHome: true, directRoomClaim: true } };
     home = null; claimed = false;
     directMembers = [{ id: selfId, state: 'joined' }, { id: botActor, state: 'joined' }];
     patch = () => { home = 'desk-1'; return { body: { id: botActor, homeDeviceId: 'desk-1' } }; };
@@ -250,6 +250,8 @@ describe('Chat Server cloud companions', () => {
   it('delivers a 1:1 room message to the canonical Session and completes without content', async () => {
     await vi.advanceTimersByTimeAsync(2000);
     await vi.advanceTimersByTimeAsync(0);
+    // The server only hands 1:1 room work to a claim that declares it can run it.
+    expect(calls('/executions/claim')[0]![2]).toMatchObject({ directRoomVersion: 1, accessPolicyVersion: 1, planVersion: 1 });
     expect(host.deliverToCanonical).toHaveBeenCalledWith('local-bot', 'hi\n[附件: a.png]', `chat-direct:${execution.id}:${sourceId}`);
     expect(deps.ensureLane).not.toHaveBeenCalled();
     expect(deps.dispatch).not.toHaveBeenCalled();
@@ -259,6 +261,22 @@ describe('Chat Server cloud companions', () => {
     expect(results[0]![2]).toMatchObject({ action: 'complete', continueDiscussion: false });
     expect(results[0]![2]).not.toHaveProperty('content');
     expect(results[0]![3]).toBe(botActor);
+  });
+
+  it('claims without directRoomVersion from a server that does not offer the capability', async () => {
+    me = { ...me, capabilities: { companionHome: true } };
+    await vi.advanceTimersByTimeAsync(2000);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(calls('/executions/claim').length).toBeGreaterThan(0);
+    for (const call of calls('/executions/claim')) expect(call[2]).not.toHaveProperty('directRoomVersion');
+  });
+
+  it('never declares 1:1 room work from a copy that cannot hand it to the main task', async () => {
+    me = { ...me, capabilities: { directRoomClaim: true } };
+    await vi.advanceTimersByTimeAsync(2000);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(calls('/executions/claim').length).toBeGreaterThan(0);
+    for (const call of calls('/executions/claim')) expect(call[2]).not.toHaveProperty('directRoomVersion');
   });
 
   it('never treats someone else\'s 1:1 room as the companion\'s own room', async () => {

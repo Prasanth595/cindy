@@ -217,7 +217,7 @@ export function isCrossDeviceSourceSessionId(sessionId: string | undefined): boo
   return split > 0 && split < sessionId.length - 2;
 }
 
-export type MessageSourceIdKind = 'plugin' | 'teammate' | 'session' | 'automation' | 'member';
+export type MessageSourceIdKind = 'plugin' | 'mcpApp' | 'teammate' | 'session' | 'automation' | 'member';
 
 export interface MessageSourceIdEntry {
   kind: MessageSourceIdKind;
@@ -231,7 +231,11 @@ export interface MessageSourceIdEntry {
  */
 export function messageSourceIdEntries(meta: unknown): MessageSourceIdEntry[] {
   const sender = messageSourceSenderFromMeta(meta);
-  if (sender?.kind === 'plugin') return [{ kind: 'plugin', id: sender.pluginId }];
+  if (sender?.kind === 'plugin') {
+    return sender.pluginId.startsWith('mcp-app:')
+      ? [{ kind: 'mcpApp', id: sender.pluginId.slice(8) }]
+      : [{ kind: 'plugin', id: sender.pluginId }];
+  }
   if (sender?.kind === 'shared-member') return [{ kind: 'member', id: sender.memberId }];
   if (sender?.kind === 'session') {
     return [
@@ -269,6 +273,7 @@ export function describeMessageSourceSender(sender: MessageSourceSender): string
       return ref ? `由任务${ref} 发送` : '由其他任务发送';
     }
     case 'plugin':
+      if (sender.pluginId.startsWith('mcp-app:')) return `由 MCP App${formatSourceRef(sender.name, 'mcp_server_id', sender.pluginId.slice(8))} 发送`;
       return `由插件${formatSourceRef(sender.name, 'plugin_id', sender.pluginId)} 发送`;
     case 'shared-member':
       return `由共享任务成员${formatSourceRef(sender.name, 'member_id', sender.memberId)} 发送`;

@@ -62,6 +62,9 @@ describe('isBotGroupMessageQuotable', () => {
     expect(isBotGroupMessageQuotable(message({ threadRootId: OTHER }))).toBe(false);
     expect(isBotGroupMessageQuotable(message({ kind: 'notice', authorKind: 'system' }))).toBe(false);
     expect(isBotGroupMessageQuotable(message({ kind: 'plan' }))).toBe(false);
+    // A thread share's own text is only its card's fallback.
+    expect(isBotGroupMessageQuotable(message({ threadShare: { messageId: OTHER, threadRootId: OTHER, status: 'available', authorKind: 'bot',
+      authorBotId: 'b', authorName: 'Bot', sharedByAuthor: false, content: 'reply', attachments: [], createdAt: 1, edited: false } }))).toBe(false);
   });
 });
 

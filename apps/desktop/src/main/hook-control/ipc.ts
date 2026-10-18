@@ -1175,6 +1175,10 @@ export function registerHookControlIpc(): void {
       if (providerId !== null && providerId.length > 128) {
         throwIpcError('INVALID_PARAMS', 'providerId too long');
       }
+      const agentDeviceId = p.agentDeviceId == null ? null : requireString(p.agentDeviceId, 'agentDeviceId');
+      if (agentDeviceId && (!/^[A-Za-z0-9_.:-]{1,128}$/.test(agentDeviceId) || !providerId)) {
+        throwIpcError('INVALID_PARAMS', 'remote provider route invalid');
+      }
       // 条目总量上限(codex review): 键合法性校验挡不住海量唯一 teamId 的无限
       // 追加 —— 新增(非替换/删除)且已达上限时拒绝。按精确键判新增(不能用
       // getWorkspaceProviderSource, 它的 teamId null 兜底会把新 team 误判为已存在)。
@@ -1194,7 +1198,7 @@ export function registerHookControlIpc(): void {
       // throwIpcError 协议给稳定错误码, 细节留 main 日志。
       let entries: ReturnType<typeof setWorkspaceProviderSource>;
       try {
-        entries = setWorkspaceProviderSource(channel, teamId, workspace, providerId);
+        entries = setWorkspaceProviderSource(channel, teamId, workspace, providerId, agentDeviceId);
       } catch (err) {
         log.warn(
           `workspace provider source write failed: ${err instanceof Error ? err.message : String(err)}`,

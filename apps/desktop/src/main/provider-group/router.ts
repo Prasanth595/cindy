@@ -21,11 +21,11 @@ import type { ProviderGroupDirectory, ResolvedProviderGroupMember } from './dire
 import { pickProviderGroupMember, type SchedulableMember } from './scheduler.js';
 import { createGuestSupportReader } from './sharedStatus.js';
 import { providerGroupUsageState } from './usage.js';
+import { coolingScope, currentCooling, PROVIDER_GROUP_COOLING_SCOPE_CAP, type ProviderGroupPersistedCooling } from './cooling.js';
+export { PROVIDER_GROUP_FAILURE_COOLDOWN_MS, type ProviderGroupPersistedCooling } from './cooling.js';
 
 /** 撞到用量上限但拿不到重置时刻时，默认冷却多久。 */
 export const PROVIDER_GROUP_DEFAULT_COOLDOWN_MS = 30 * 60_000;
-/** 连不上 / 登录失效等失败后，短时间内不再给它分新任务。 */
-export const PROVIDER_GROUP_FAILURE_COOLDOWN_MS = 2 * 60_000;
 /**
  * 「这一轮已试过」多久后作废：一轮里每台最多试一次；换过去之后正常跑了一阵再出错，算新的一轮。
  */
@@ -36,9 +36,6 @@ export const PROVIDER_GROUP_TURN_WINDOW_MS = 30 * 60_000;
  * 完成、留在缓存里)；一台能接的都还没有时照旧等全部读完，不会因为慢就误报都不能用。
  */
 export const PROVIDER_GROUP_PICK_QUICK_MS = 3_000;
-
-/** 落盘的冷却：供应商 → 组内电脑 → 冷却到何时(unix ms)。 */
-export type ProviderGroupPersistedCooling = Record<string, Record<string, number>>;
 
 export interface ProviderGroupRouterDeps {
   directory: ProviderGroupDirectory;
@@ -99,8 +96,8 @@ export interface ProviderGroupRouter {
   view(providerId: string, options?: string | { model?: string; includeGuestSupport?: boolean }): Promise<ProviderGroupView>;
   /** 经本组分到这台、正在运行的任务数。 */
   running(providerId: string, memberKey: string): number;
-  markCooling(providerId: string, memberKey: string, until: number): void;
-  coolingUntil(providerId: string, memberKey: string): number | null;
+  markCooling(providerId: string, memberKey: string, until: number, model?: string): void;
+  coolingUntil(providerId: string, memberKey: string, model?: string): number | null;
   /** 记一次「这一轮试过这台」，返回这一轮已试过的全部。 */
   markTried(sessionId: string, memberKey: string): ReadonlySet<string>;
   triedThisTurn(sessionId: string): ReadonlySet<string>;
@@ -114,11 +111,13 @@ function coolKey(providerId: string, memberKey: string): string {
 
 export function createProviderGroupRouter(deps: ProviderGroupRouterDeps): ProviderGroupRouter {
   const guestSupportReader = deps.readCaps ? createGuestSupportReader(deps.readCaps) : null;
-  const cooling = new Map<string, number>();
+  const cooling = new Map<string, Record<string, number>>();
+  let hasLegacyCooling = false;
   try {
     for (const [providerId, members] of Object.entries(deps.coolingStore?.read() ?? {})) {
-      for (const [memberKey, until] of Object.entries(members)) {
-        if (until > deps.now()) cooling.set(coolKey(providerId, memberKey), until);
+      for (const [memberKey, value] of Object.entries(members)) {
+        if (typeof value === 'number') hasLegacyCooling = true;
+        cooling.set(coolKey(providerId, memberKey), currentCooling(value, deps.now()));
       }
     }
   } catch {
@@ -129,10 +128,11 @@ export function createProviderGroupRouter(deps: ProviderGroupRouterDeps): Provid
     if (!deps.coolingStore) return;
     const now = deps.now();
     const value: ProviderGroupPersistedCooling = {};
-    for (const [key, until] of cooling) {
-      if (until <= now) continue;
+    for (const [key, remembered] of cooling) {
+      const scopes = currentCooling(remembered, now);
+      if (Object.keys(scopes).length === 0) continue;
       const split = key.indexOf('\u0000');
-      (value[key.slice(0, split)] ??= {})[key.slice(split + 1)] = until;
+      (value[key.slice(0, split)] ??= {})[key.slice(split + 1)] = scopes;
     }
     try {
       deps.coolingStore.write(value);
@@ -140,6 +140,9 @@ export function createProviderGroupRouter(deps: ProviderGroupRouterDeps): Provid
       // 落盘失败只影响重启后的记忆，本次运行照常避开。
     }
   }
+
+  // 固定首次加载时截短的截止时间，重启或切回账号不能重新起算两分钟。
+  if (hasLegacyCooling) persistCooling();
 
   const lastPicked = new Map<string, string>();
   const tried = new Map<string, { at: number; keys: Set<string> }>();
@@ -156,15 +159,15 @@ export function createProviderGroupRouter(deps: ProviderGroupRouterDeps): Provid
     return entry.keys;
   }
 
-  function coolingUntil(providerId: string, memberKey: string): number | null {
+  function coolingUntil(providerId: string, memberKey: string, model?: string): number | null {
     const key = coolKey(providerId, memberKey);
-    const until = cooling.get(key);
-    if (until === undefined) return null;
-    if (until <= deps.now()) {
+    const scopes = currentCooling(cooling.get(key), deps.now());
+    if (Object.keys(scopes).length === 0) {
       cooling.delete(key);
       return null;
     }
-    return until;
+    const until = Math.max(scopes[''] ?? 0, scopes[coolingScope(model)] ?? 0);
+    return until || null;
   }
 
   function running(providerId: string, memberKey: string): number {
@@ -208,7 +211,7 @@ export function createProviderGroupRouter(deps: ProviderGroupRouterDeps): Provid
       const config = deps.readGroup(input.providerId);
       if (!config) return { kind: 'none' };
       const usable = (r: ResolvedProviderGroupMember) =>
-        offersModel(r, input.agentKind, input.model) && coolingUntil(input.providerId, r.member.key) === null
+        offersModel(r, input.agentKind, input.model) && coolingUntil(input.providerId, r.member.key, input.model) === null
         && !providerGroupUsageState(r.claudeUsage, input.model, deps.now()).limited;
       // 「暂停对外分配」只拦本机以外的新任务；除此之外本机任务与其他使用方同一套组策略，不另设本机优先。
       const paused = (r: ResolvedProviderGroupMember) =>
@@ -271,11 +274,13 @@ export function createProviderGroupRouter(deps: ProviderGroupRouterDeps): Provid
             ? (r.member.kind === 'local' || r.state === 'ok' ? await readSupport(r.member) : 'unknown' as const)
             : undefined;
           const quota = providerGroupUsageState(r.claudeUsage, model, deps.now());
-          const remembered = coolingUntil(providerId, r.member.key);
+          const remembered = coolingUntil(providerId, r.member.key, model);
           const until = quota.limited && quota.resetAtMs === null ? null
             : remembered === null ? quota.resetAtMs
             : quota.resetAtMs === null ? remembered : Math.max(remembered, quota.resetAtMs);
           const count = memberRunning(providerId, r);
+          // 那台电脑上这个供应商现在的显示名，读不到时用加入时的快照：同一台电脑有几个账号时界面按它区分。
+          const providerName = r.view?.name || r.member.providerName;
           const state = r.member.paused
             ? 'paused' as const
             : r.state !== 'ok'
@@ -289,6 +294,7 @@ export function createProviderGroupRouter(deps: ProviderGroupRouterDeps): Provid
             key: r.member.key,
             kind: r.member.kind,
             label: r.label,
+            ...(providerName ? { providerName } : {}),
             ...(r.ownerName ? { ownerName: r.ownerName } : {}),
             ...(r.appVersion ? { appVersion: r.appVersion } : {}),
             ...(guestSupport ? { guestSupport } : {}),
@@ -307,9 +313,14 @@ export function createProviderGroupRouter(deps: ProviderGroupRouterDeps): Provid
 
     running,
 
-    markCooling(providerId, memberKey, until) {
+    markCooling(providerId, memberKey, until, model) {
       const key = coolKey(providerId, memberKey);
-      cooling.set(key, Math.max(cooling.get(key) ?? 0, until));
+      const scopes = currentCooling(cooling.get(key), deps.now());
+      const scope = coolingScope(model);
+      // Always leave room for account-wide authentication/overload failures.
+      if (scope && !(scope in scopes) && Object.keys(scopes).length >= PROVIDER_GROUP_COOLING_SCOPE_CAP - 1) return;
+      scopes[scope] = Math.max(scopes[scope] ?? 0, until);
+      cooling.set(key, scopes);
       persistCooling();
     },
 

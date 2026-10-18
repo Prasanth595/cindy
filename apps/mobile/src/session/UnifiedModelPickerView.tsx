@@ -1,3 +1,4 @@
+import { ErrorNotice } from '@/components/ErrorNotice';
 /**
  * 统一模型选择器的 Android / 兼容呈现(iOS 见 UnifiedModelPickerView.ios.tsx)。
  *
@@ -811,7 +812,7 @@ export function UnifiedModelPickerView(p: UnifiedMobilePickerViewProps) {
                     removeClippedSubviews={false}
                     ListHeaderComponent={
                       p.error ? (
-                        <Text style={styles.error}>{p.error}</Text>
+                        <ErrorNotice message={p.error} />
                       ) : null
                     }
                     ListEmptyComponent={
@@ -846,7 +847,7 @@ export function UnifiedModelPickerView(p: UnifiedMobilePickerViewProps) {
           }
         >
           {!showSecondary && p.error ? (
-            <Text style={styles.error}>{p.error}</Text>
+            <ErrorNotice message={p.error} />
           ) : null}
           {listPage}
         </SheetSurface>
@@ -870,7 +871,7 @@ export function UnifiedModelPickerView(p: UnifiedMobilePickerViewProps) {
             testID={p.testID}
             title={title}
           >
-            {p.error ? <Text style={styles.error}>{p.error}</Text> : null}
+            {p.error ? <ErrorNotice message={p.error} /> : null}
             {page === "sources"
               ? sourcesPage
               : page === "harness" && options

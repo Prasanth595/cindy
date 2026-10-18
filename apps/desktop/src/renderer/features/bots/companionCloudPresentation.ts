@@ -2,13 +2,27 @@ import type { CompanionCloudActor, CompanionCloudSnapshot } from '../../../share
 import type { RemoteBot } from './remoteBotRoster';
 
 /**
- * Local copies whose home moved to another computer stay out of the roster and entry choice.
- * The shadow list is persisted in main, so it applies offline and with the feature off too.
+ * Local copies whose home moved to another computer stay out of the roster and entry choice:
+ * the companion is listed once, where it runs. The shadow list is persisted in main, so it
+ * applies offline and with the feature off too; a known cloud home elsewhere hides the copy
+ * even before its demotion is published.
  */
 export function withoutShadowedBots<T extends { id: string }>(bots: readonly T[], cloud: CompanionCloudSnapshot): T[] {
-  if (cloud.demotedBotIds.length === 0) return [...bots];
   const shadowed = new Set(cloud.demotedBotIds);
-  return bots.filter((bot) => !shadowed.has(bot.id));
+  const elsewhere = new Set(cloud.enabled && cloud.selfDeviceId ? cloud.actors.flatMap((actor) =>
+    actor.homeDeviceId && actor.homeDeviceId !== cloud.selfDeviceId ? [actor.externalId] : []) : []);
+  if (shadowed.size === 0 && elsewhere.size === 0) return [...bots];
+  return bots.filter((bot) => !shadowed.has(bot.id) && !elsewhere.has(bot.id));
+}
+
+/**
+ * Companions the cloud already lists once (their home is known) are not per-computer copies:
+ * leave them out of the older multi-computer Cindy picker.
+ */
+export function withoutCloudCompanions<T extends { id: string }>(bots: readonly T[], cloud: CompanionCloudSnapshot): T[] {
+  if (!cloud.enabled) return [...bots];
+  const homed = new Set(cloud.actors.flatMap((actor) => actor.homeDeviceId ? [actor.externalId] : []));
+  return bots.filter((bot) => !homed.has(bot.id));
 }
 
 /** The cloud companion whose home is `deviceId`, when the feature is on. */
@@ -17,11 +31,10 @@ export function cloudCompanionAt(cloud: CompanionCloudSnapshot, deviceId: string
   return cloud.actors.find((actor) => actor.externalId === botId && actor.homeDeviceId === deviceId) ?? null;
 }
 
-/** A remote companion whose home computer cannot be reached right now. */
-export function isCloudHomeOffline(cloud: CompanionCloudSnapshot, bot: Pick<RemoteBot, 'id' | 'deviceId' | 'online'> | undefined, deviceId?: string, botId?: string): boolean {
-  const actor = cloudCompanionAt(cloud, bot?.deviceId ?? deviceId, bot?.id ?? botId);
-  if (!actor || actor.homeDeviceId === cloud.selfDeviceId) return false;
-  return !bot?.online;
+/** A remote companion homed on that computer: its connection is not announced (cloud-companions.md §3.1). */
+export function isCloudCompanionRemote(cloud: CompanionCloudSnapshot, bot: Pick<RemoteBot, 'id' | 'deviceId'>): boolean {
+  const actor = cloudCompanionAt(cloud, bot.deviceId, bot.id);
+  return !!actor && actor.homeDeviceId !== cloud.selfDeviceId;
 }
 
 /**
@@ -66,4 +79,15 @@ export function cloudRemoteBots(cloud: CompanionCloudSnapshot, remoteBots: reado
 export function homeDeviceName(cloud: CompanionCloudSnapshot, botId: string, fallback: string): string {
   const actor = cloud.actors.find((candidate) => candidate.externalId === botId);
   return actor?.homeDevice?.name?.trim() || fallback;
+}
+
+/**
+ * Whether this computer runs `botId`: it holds the profile, the copy is not shadowed, and the
+ * companion's known home (when the feature is on) is this computer. Sessions and tasks of a
+ * companion live only on its home computer, so only there can they be looked up locally.
+ */
+export function companionRunsHere(cloud: CompanionCloudSnapshot, localBotIds: readonly string[], botId: string): boolean {
+  if (!localBotIds.includes(botId) || cloud.demotedBotIds.includes(botId)) return false;
+  const home = cloud.enabled ? cloud.actors.find((actor) => actor.externalId === botId)?.homeDeviceId : undefined;
+  return !home || home === cloud.selfDeviceId;
 }

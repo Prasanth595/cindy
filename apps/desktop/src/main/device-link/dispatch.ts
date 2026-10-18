@@ -1,3 +1,4 @@
+import type { RemoteAgentLimitUsage } from '../../shared/remoteAgentLimits.js';
 import { executeTaskTags, TASK_TAG_CHANNEL } from '../localDb/ipc/taskTags.js';
 import { encodeMessageBodies, versionMessageBody } from './sessionMessageReuse.js';
 import type { TaskTagRequest } from '@cindy/maker-shared';
@@ -392,14 +393,20 @@ export interface RemoteAgentHandler {
   abortAll(): void;
   /** 结束匹配控制端的任务(供应商分享被关闭)。 */
   abortControllers?(match: (controller: string) => boolean): Promise<void>;
+  /** 结束匹配控制端替某个人(转分享键)转来的任务(转分享的同意被撤回)。 */
+  abortReshare?(match: (controller: string) => boolean, reshareKey: string): Promise<void>;
   /** 结束并清理匹配控制端留在本机的数据(供应商分享被删除)。 */
   purgeControllers?(match: (controller: string) => boolean): Promise<void>;
   /** 有进行中任务的控制端。 */
   activeControllers?(): string[];
+  limitUsage?(): RemoteAgentLimitUsage;
   /** 正在运行一轮的任务的控制端(每个任务一项)。 */
   turnRunningControllers?(): string[];
-  /** 分享详情的匿名组状态；不开放同账号组管理通道。 */
-  sharedGroupStatus?(providerId: string): Promise<ProviderShareGroupState[] | null>;
+  /**
+   * 分享详情的匿名组状态；不开放同账号组管理通道。guestController 是读状态的受邀者：分享来的组内电脑按它的
+   * 主人是否同意过这个人显示(转分享)。
+   */
+  sharedGroupStatus?(providerId: string, guestController?: string): Promise<ProviderShareGroupState[] | null>;
 }
 let remoteAgentHandler: RemoteAgentHandler | null = null;
 
@@ -999,6 +1006,12 @@ let readSessionTextSnapshot: ((sessionId: string) => unknown | null) | null = nu
 
 export function setSessionTextSnapshotReader(reader: typeof readSessionTextSnapshot): void {
   readSessionTextSnapshot = reader;
+}
+
+// Ordinary same-account inbound links only; shared/provider guests never notify.
+let onOrdinaryPeerLinkAccepted: ((deviceId: string) => void) | null = null;
+export function setOrdinaryPeerLinkAcceptedListener(cb: typeof onOrdinaryPeerLinkAccepted): void {
+  onOrdinaryPeerLinkAccepted = cb;
 }
 
 export function setControllersChangedListener(cb: ControllersChangedListener | null): void {
@@ -2368,7 +2381,11 @@ export function dropAllControllers(
 ): void {
   stopFilePeers();
   remoteAgentHandler?.abortAll();
-  remoteDesktop.stop();
+  remoteDesktop.stop(
+    undefined,
+    undefined,
+    reason === 'user' ? 'user-stop' : reason === 'shutdown' ? 'shutdown' : 'disabled',
+  );
   void remoteCredentialHost.closeAll().catch(() => remoteCredentialHost.dispose());
   const controllerIds = new Set([
     ...subscriptions.getControllerIds(),
@@ -2431,7 +2448,7 @@ function deactivateControllerState(
   changed = acceptedLinkControllers.delete(deviceId) || changed;
   stopFilePeers(deviceId);
   if (transientSignalingLoss) remoteDesktop.signalingLost(deviceId);
-  else remoteDesktop.stop(deviceId);
+  else remoteDesktop.stop(deviceId, undefined, 'peer-closed');
   void remoteCredentialHost.close(deviceId).catch(() => remoteCredentialHost.dispose());
   changed = controllerConnectionEpochByDevice.delete(deviceId) || changed;
   changed = controllerLinkGenerationByDevice.delete(deviceId) || changed;
@@ -2517,7 +2534,7 @@ export function forgetControllerInvokeState(deviceId: string): void {
 /** 显式撤销时清理短时离线队列与 remembered topic，避免恢复后重放撤权期间数据。 */
 export function purgeRevokedController(deviceId: string): void {
   stopFilePeers(deviceId);
-  remoteDesktop.stop(deviceId);
+  remoteDesktop.stop(deviceId, undefined, 'authorization-lost');
   const changed = deactivateControllerState(deviceId);
   topicSubscriptionControllers.delete(deviceId);
   offlinePushQueue.clear(deviceId);
@@ -2568,7 +2585,7 @@ async function handleFrame(client: DeviceLinkClient, env: Envelope): Promise<voi
       clearRemoteInvokeStateFor(src);
       stopFilePeers(src);
       invalidatePluginOauth(src);
-      remoteDesktop.stop(src);
+      remoteDesktop.stop(src, undefined, 'peer-closed');
       void remoteCredentialHost.close(src).catch(() => remoteCredentialHost.dispose());
       offlinePushQueue.clear(src);
       const deactivated = deactivateControllerState(src);
@@ -2811,6 +2828,7 @@ function handleLinkOpen(
     flushMakerEventBatchesFor(src);
     drainOfflinePushQueueTo(src, [LEGACY_TOPIC]);
   }
+  onOrdinaryPeerLinkAccepted?.(src);
   log.info(`control link opened by ${shortId(src)} (${name})`);
 }
 
@@ -4189,7 +4207,7 @@ async function projectProviderShareRead(
     const providers = result && typeof result === 'object' ? (result as { providers?: unknown }).providers : null;
     const offered = Array.isArray(providers) && providers.some((p) => p?.id === providerId && p.remoteInvocationEnabled === true);
     const states = wantsStatus && offered
-      ? await remoteAgentHandler?.sharedGroupStatus?.(providerId).catch(() => null) ?? null
+      ? await remoteAgentHandler?.sharedGroupStatus?.(providerId, src).catch(() => null) ?? null
       : null;
     return { ok: true, value: projectProviderListForShare(result, providerId, providerShareGuestRunning(src), states) };
   }
@@ -4346,6 +4364,17 @@ export async function revokeProviderShareControllers(
   }
   const handler = remoteAgentHandler;
   await (purge ? handler?.purgeControllers?.(guarded) : handler?.abortControllers?.(guarded));
+}
+
+/**
+ * 转分享的同意被撤回(provider-sharing.md §4.3)：结束受邀者的组替那个人转来的任务。连接不断(受邀者自己与它
+ * 分享的其他人照常用)；只有分享的受邀者对端能匹配。
+ */
+export async function abortProviderShareReshareRuns(
+  match: (controller: string) => boolean,
+  reshareKey: string,
+): Promise<void> {
+  await remoteAgentHandler?.abortReshare?.((controller) => isProviderSharePeer(controller) && match(controller), reshareKey);
 }
 
 async function runAuthorizedInvoke(
@@ -4782,6 +4811,7 @@ export const __testing = {
     controllerDisplayNameByDevice.clear();
     reportedControllerNameByDevice.clear();
     onSessionsSubscribed = null;
+    onOrdinaryPeerLinkAccepted = null;
     readSessionTextSnapshot = null;
     activeClient = null;
     offlinePushQueue.clear();
@@ -4837,3 +4867,8 @@ export const __testing = {
     activeClient = c;
   },
 };
+
+/** 提供方管理用的本机占用，不暴露给分享受邀者。 */
+export function remoteAgentLimitUsage(): RemoteAgentLimitUsage {
+  return remoteAgentHandler?.limitUsage?.() ?? { total: 0, devices: 0, largestDevice: 0 };
+}

@@ -123,12 +123,16 @@ export class ExecutorGate {
     this.mode = mode;
   }
 
-  /**
-   * 本机用户在凭证确认卡上选择了「本任务总是允许」，或新执行器按任务级记录恢复了这项授权
-   * (credentialGrants.ts)。权限档变化即失效。
-   */
+  /** 本机用户在凭证确认卡上选择了「本任务总是允许」。 */
   allowCredentialsForSession(): void {
     if (this.confirmsCredentials()) this.credentialsAllowedForSession = true;
+  }
+
+  /** 新执行器按任务级记录恢复「本任务总是允许」；不受当前分享级信任开关影响。 */
+  restoreCredentialsForSession(): void {
+    // 任务级记录的恢复与当前分享级信任开关独立：信任开启时暂时不需要确认，
+    // 但关闭后仍应保留已经明确授予的任务级授权。
+    this.credentialsAllowedForSession = true;
   }
 
   /** 这个任务此刻要不要把凭证类操作交给本机用户确认。 */

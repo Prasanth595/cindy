@@ -255,7 +255,8 @@ export function assertSharedTaskInvoke(
   if (channel === 'device-link:media:fetch') {
     const request = record(args[0]);
     if (args.length !== 1 || !request || typeof request.url !== 'string' ||
-          Object.keys(request).some((key) => !['url', 'skipCache', 'thumbnail', 'prepareOnly'].includes(key)) ||
+          Object.keys(request).some((key) => !['url', 'skipCache', 'thumbnail', 'prepareOnly', 'metadataOnly'].includes(key)) ||
+        (request.metadataOnly !== undefined && typeof request.metadataOnly !== 'boolean') ||
         !capture.authorize('attachment.read')) deny();
     // The media handler validates ledger/workdir ownership before reading bytes.
     return;

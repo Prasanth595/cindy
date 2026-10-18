@@ -53,6 +53,13 @@ import type { RemoteSession } from '@/session/types';
 const readTextLf = (...args: Parameters<typeof readFileSync>): string =>
   String(readFileSync(...args)).replace(/\r\n/g, '\n');
 
+// Existing source contracts follow the extracted hooks; load their text once.
+const newSessionSources = [
+  'app/sessions/new.tsx',
+  'src/session/useNewSessionDefaultSelection.ts',
+  'src/session/useNewSessionHostDefaults.ts',
+].map(path => readTextLf(resolve(process.cwd(), path), 'utf8')).join('\n');
+
 // 文案已 i18n 化;固定 zh-CN 让字面量断言与语言环境解耦(全局 mock 默认 en-US)。
 beforeAll(async () => {
   await i18n.changeLanguage('zh-CN');
@@ -408,7 +415,7 @@ describe('stored agent restore gating', () => {
   });
 
   it('gates the stored agent restore on real data and leaves the auto-default unblocked', () => {
-    const source = readTextLf(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8');
+    const source = newSessionSources;
     const storedStart = source.indexOf('const storedAgentKind = newSessionPreferences?.agentKind;');
     const autoStart = source.indexOf('const result = resolveNewSessionAutoDefault({');
     const storedSource = source.slice(storedStart, source.indexOf('storedAgentRestoreRef.current = restoreState', storedStart));
@@ -426,7 +433,7 @@ describe('stored agent restore gating', () => {
   });
 
   it('reads and writes the host new-task defaults instead of inferring from task history', () => {
-    const source = readTextLf(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8');
+    const source = newSessionSources;
     // 读:与桌面远程新建同一读源,三个 agent 一次读齐。
     expect(source).toContain('return maker.getNewMakerDefaults(agentKind);');
     expect(source).toContain('return hostDraftRuntimeFromDefaults(defaults, agentKind);');
@@ -449,7 +456,7 @@ describe('stored agent restore gating', () => {
     // 切 agent 先等被控电脑默认读完再选模型,不把目录默认当成最终选择(Greptile P1)。
     const switchStart = source.indexOf('const switchAgent = useCallback(');
     const switchBody = source.slice(switchStart, source.indexOf('\n  }, [', switchStart));
-    const waitAt = switchBody.indexOf('await waitHostDraftDefaults(selectedDeviceId);');
+    const waitAt = switchBody.indexOf('await waitHostDraftDefaults(selectedDeviceId, nextKind);');
     expect(waitAt).toBeGreaterThan(-1);
     expect(waitAt).toBeLessThan(switchBody.indexOf('pickAgentDefaultRuntime({'));
   });
@@ -472,7 +479,7 @@ describe('pickAgentDefaultRuntime on hosts without provider:list', () => {
   });
 
   it('passes capabilities models only for unsupported hosts, on both stored-agent restore and agent switch', () => {
-    const source = readTextLf(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8');
+    const source = newSessionSources;
     expect(source).toContain('flatModels: flatModelsForUnsupportedHost(selectedDeviceId, storedAgentKind, deviceProvidersRef.current.unsupported),');
     expect(source).toContain('flatModels: flatModelsForUnsupportedHost(selectedDeviceId, nextKind, deviceProvidersRef.current.unsupported),');
     expect(source).toContain('if (!providersUnsupported || !deviceId) return undefined;');
@@ -509,7 +516,7 @@ describe('isNewSessionRuntimePending', () => {
   });
 
   it('rolls back the restore marker and device lock when an automatic write is dropped', () => {
-    const source = readTextLf(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8');
+    const source = newSessionSources;
     const storedStart = source.indexOf('const storedAgentKind = newSessionPreferences?.agentKind;');
     const storedEffect = source.slice(storedStart, source.indexOf('}, [', storedStart));
     expect(storedEffect).toContain('if (storedAgentRestoreRef.current === restoreState) storedAgentRestoreRef.current = previousRestore;');
@@ -520,7 +527,7 @@ describe('isNewSessionRuntimePending', () => {
   });
 
   it('binds the settled model to the computer it was settled for', () => {
-    const source = readTextLf(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8');
+    const source = newSessionSources;
     // 切到另一台电脑后重新等待,不能沿用上一台电脑落定的模型直接创建。
     expect(source).toContain('settled: !!selectedDeviceId && runtimeSettledDeviceId === selectedDeviceId,');
     expect(source).toContain("settleRuntime('stored-agent', deviceAtTrigger);");
@@ -529,7 +536,7 @@ describe('isNewSessionRuntimePending', () => {
   });
 
   it('drops the previous computer\'s auto-picked model on device switch and gates goal creation too', () => {
-    const source = readTextLf(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8');
+    const source = newSessionSources;
     const selectStart = source.indexOf('const selectDevice = useCallback(');
     const selectDevice = source.slice(selectStart, source.indexOf('const handleBack = useCallback(', selectStart));
     // 用户没手动选过模型时清掉旧电脑的自动选择并重新等待;手动选过的保留。
@@ -548,7 +555,7 @@ describe('isNewSessionRuntimePending', () => {
     expect(() => assertSubmitModelResolved({ model: '' }, 'delisted-model'))
       .toThrow('delisted-model 在这台电脑上已不可用，请重新选择模型后再发送。');
     // 三处提交终检(创建前两处 + 鉴权后重验)都要经过这道拦截。
-    const source = readTextLf(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8');
+    const source = newSessionSources;
     expect(source.split('assertSubmitModelResolved(resolved, effectiveDraft.model);').length - 1).toBe(3);
   });
 });
@@ -1218,7 +1225,7 @@ describe('new session default device follows the home device filter', () => {
   });
 
   it('treats the deviceExplicit route flag as an explicit device on the new-session screen', () => {
-    const newSource = readTextLf(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8');
+    const newSource = newSessionSources;
     expect(newSource).toContain('deviceExplicit?: string;');
     expect(newSource).toContain("readRouteString(params.deviceExplicit) === '1'");
   });
@@ -1275,7 +1282,7 @@ describe('new session model', () => {
       { seq: 3, deviceId: '' },
     )).toBe(false);
 
-    const newSource = readTextLf(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8');
+    const newSource = newSessionSources;
     expect(newSource).toContain('browseSeqRef.current += 1');
     expect(newSource).toContain('selectedDeviceIdRef.current = option.deviceId');
     expect(newSource).toContain('isCurrentRemoteBrowseRequest');
@@ -1288,13 +1295,13 @@ describe('new session model', () => {
     expect(shouldRetryRemoteBrowseDrives(false, 0)).toBe(false);
     expect(shouldRetryRemoteBrowseDrives(undefined, 0)).toBe(false);
 
-    const newSource = readTextLf(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8');
+    const newSource = newSessionSources;
     expect(newSource).toContain('shouldRetryRemoteBrowseDrives');
     expect(newSource).toContain('result.drivesPending');
   });
 
   it('keeps the Android drive pill at 34pt and wraps it in a 44pt hit target', () => {
-    const newSource = readTextLf(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8');
+    const newSource = newSessionSources;
     expect(newSource).toContain('styles.browseDriveHit');
     expect(newSource).toMatch(/browseDriveHit:\s*\{[^}]*minHeight:\s*44/);
     expect(newSource).toMatch(/browseDriveHit:\s*\{[^}]*minWidth:\s*44/);
@@ -1430,7 +1437,7 @@ describe('new session model', () => {
   });
 
   it('wires the new-session screen to gate agents by list-available-agents and coerce off unavailable', () => {
-    const newSource = readTextLf(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8');
+    const newSource = newSessionSources;
     // 拉被控端 runtime 注册集合,渲染按可用集过滤,选中不可用时 coerce。
     expect(newSource).toContain('maker.listAvailableAgents()');
     expect(newSource).toContain('onAgentsChanged');
@@ -1613,7 +1620,7 @@ describe('new session model', () => {
   });
 
   it('keeps the recent-project list nested-scrollable with a visible scroll indicator (#5013)', () => {
-    const source = readTextLf(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8');
+    const source = newSessionSources;
     // Scope the guard to this list: the remote directory FlatList already has
     // these props, so checking the whole page would miss the Android regression.
     // Native gesture dispatch still needs Android emulator/device verification.
@@ -1958,7 +1965,7 @@ describe('new session model', () => {
 
 describe('new session composer surface', () => {
   it('keeps the controlled caret at the end after palette insertion and draft restore', () => {
-    const newSource = readTextLf(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8');
+    const newSource = newSessionSources;
     const slashStart = newSource.indexOf('const selectSlashCommand = useCallback');
     const slashEnd = newSource.indexOf('const selectAtResource = useCallback', slashStart);
     const slashSource = newSource.slice(slashStart, slashEnd);
@@ -1984,7 +1991,7 @@ describe('new session composer surface', () => {
   });
 
   it('does not double-apply the Android safe-area inset to the top navigation', () => {
-    const newSource = readTextLf(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8');
+    const newSource = newSessionSources;
 
     expect(newSource).toContain(
       "const NEW_SESSION_SCREEN_TOP_PADDING = Platform.OS === 'android' ? 0 : spacing.xl;",
@@ -1993,7 +2000,7 @@ describe('new session composer surface', () => {
   });
 
   it('uses the shared platform keyboard avoidance rule for the new-session composer', () => {
-    const newSource = readTextLf(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8');
+    const newSource = newSessionSources;
     const normalizedNewSource = newSource.replace(/\r\n/g, '\n');
 
     expect(newSource).toContain("import { keyboardAvoidingBehaviorForPlatform } from '@/session/mobileNativeShellLayout';");
@@ -2004,7 +2011,7 @@ describe('new session composer surface', () => {
   });
 
   it('uses the shared mobile composer row rather than a separate input implementation', () => {
-    const newSource = readTextLf(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8');
+    const newSource = newSessionSources;
     const sessionSource = readTextLf(resolve(process.cwd(), 'app/sessions/[sessionId].tsx'), 'utf8');
     const sharedSource = readTextLf(resolve(process.cwd(), 'src/session/MobileComposerInputRow.tsx'), 'utf8');
     const newComposerStart = newSource.indexOf('<MobileComposerInputRow');
@@ -2328,7 +2335,7 @@ describe('new session worktree wiring (source locks)', () => {
   //  - 两步共用同一预生成 sessionId(工作端 close-session 按绑定回收 worktree);
   //  - 成功后以 meta.path 替换 effectiveDraft.workingDir 再进管线;
   //  - 失败(业务 {ok:false} / invoke 抛错)早退留在表单,不建会话。
-  const newSource = readTextLf(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8');
+  const newSource = newSessionSources;
 
   it('runs worktree:create before the optimistic pipeline with the same preset sessionId', () => {
     const requestIdx = newSource.indexOf('const createRequest = buildWorktreeCreateRequest({');
@@ -2550,7 +2557,7 @@ describe('submit guard catalog wiring (source locks)', () => {
   //    deviceAtCreate 捕获 + ensureDeviceAlive/abortIfDeviceSwitched,handoff
   //    (startNewSessionCreation / maker.createSession / goal.set)前必复核;
   //    已 precreate 后失配必须走 ledger 补偿(forgetPendingPrecreatedWorktree)。
-  const newSource = readTextLf(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8');
+  const newSource = newSessionSources;
 
   it('both submit guards resolve catalog trust via the generation-safe helper', () => {
     const guardCalls = newSource.match(/resolveSubmitGuardCatalog\(\{/g) ?? [];
@@ -2811,7 +2818,7 @@ describe('fast memory restore wiring (source locks)', () => {
   //  - 必须存在延迟恢复 effect:目标 caps 就绪后按 (agent, 来源, 模型) 记忆重评,
   //    通过才打开 fastMode——「永久清除合法记忆」与「恢复出目标不支持的 fast」
   //    两个故障形态都靠这对接线闭合。
-  const newSource = readTextLf(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8');
+  const newSource = newSessionSources;
 
   it('both restore sites gate on target-agent cached capabilities, never the closure state', () => {
     const gated = newSource.match(/isFastRestorable\(next\.agentKind, next\.providerId, next\.model, rowsNow, targetAgentHasFast\(selectedDeviceId, next\.agentKind\)\)/g) ?? [];

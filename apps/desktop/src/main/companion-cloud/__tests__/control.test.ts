@@ -20,7 +20,8 @@ afterEach(() => { runtime?.dispose(); runtime = undefined; });
 function setup(options: { home: string | null; handler?: ApiHandler; devices?: DeviceLinkDeviceView[]; profiles?: string[];
   installationId?: string; probe?: (deviceId: string) => Promise<boolean>; values?: Array<{ key: string; value: unknown }>;
   readValues?: () => Promise<Array<{ key: string; value: unknown }>>; syncProfile?: (botId: string) => Promise<void>;
-  turnActive?: () => boolean }) {
+  turnActive?: () => boolean; homeLink?: CompanionCloudHost['homeLink']; stopBotTurns?: CompanionCloudHost['stopBotTurns'];
+  canonicalSession?: CompanionCloudHost['canonicalSession']; paused?: (botId: string) => boolean }) {
   const actors: CompanionRuntimeActor[] = [{ id: 'actor-1', kind: 'bot', externalId: 'bot_mia', name: 'Mia', avatar: null, homeDeviceId: options.home }];
   const { api, calls } = fakeApi(options.handler ?? ((route, method) => {
     // The home has uploaded the profile snapshot a take-over builds from.
@@ -38,16 +39,19 @@ function setup(options: { home: string | null; handler?: ApiHandler; devices?: D
   const host: CompanionCloudHost = {
     homes: createCompanionHomeRegistry(), openState: () => state,
     readValues: options.readValues ?? (async () => options.values ?? [{ key: 'companion.profile.v1', value: { name: 'Mia' } }]),
-    canonicalSession: async () => 'session-1', rowsAfter: async () => [], latestRows: async () => [],
+    canonicalSession: options.canonicalSession ?? (async () => 'session-1'), rowsAfter: async () => [], latestRows: async () => [],
     deliverToCanonical: async () => ({ ok: true }),
     materializer: local.host, listDevices: async () => options.devices ?? [],
     ...(options.installationId ? { installationId: () => options.installationId! } : {}),
     ...(options.probe ? { probeCompanionCloud: options.probe } : {}),
     ...(options.turnActive ? { isBotBusy: async () => options.turnActive!() } : {}),
+    ...(options.homeLink ? { homeLink: options.homeLink } : {}),
+    ...(options.stopBotTurns ? { stopBotTurns: options.stopBotTurns } : {}),
   };
   runtime = startCompanionCloud({ api, host, endpoint: 'https://chat', humanActorId: 'human', selfDeviceId: 'desk', current: () => true,
     bots: () => actors.filter(a => a.homeDeviceId === 'desk' && !state.isDemoted(a.externalId)).map(a => ({ botId: a.externalId, actorId: a.id, name: a.name })),
-    actors: () => actors, refresh, publish, ...(options.syncProfile ? { syncProfile: options.syncProfile } : {}) });
+    actors: () => actors, refresh, publish, ...(options.syncProfile ? { syncProfile: options.syncProfile } : {}),
+    ...(options.paused ? { paused: options.paused } : {}) });
   return { runtime, actors, calls, local, state, refresh, publish };
 }
 
@@ -228,6 +232,18 @@ describe('transfer', () => {
     expect(failing.state.isDemoted('bot_mia')).toBe(false);
   });
 
+  it('uploads an edit made while the name and avatar were being published, before moving the home', async () => {
+    let values: Array<{ key: string; value: unknown }> = [{ key: 'companion.profile.v1', value: { name: 'Mia' } }];
+    const t = setup({ home: 'desk', devices: [device('laptop')], readValues: async () => values,
+      syncProfile: async () => { values = [...values, { key: 'companion.memory.v1:late.md', value: { content: 'saved meanwhile' } }]; } });
+    expect(await t.runtime.transfer('bot_mia', 'laptop')).toEqual({ ok: true });
+    const late = t.calls.findIndex(call => call.method === 'PUT' && String(call.route).includes('late.md')
+      || (call.data as { key?: string } | undefined)?.key === 'companion.memory.v1:late.md');
+    const patch = t.calls.findIndex(call => call.method === 'PATCH');
+    expect(late).toBeGreaterThanOrEqual(0);
+    expect(late).toBeLessThan(patch);
+  });
+
   it('does not move the home while a turn is still running, checked before and after the flush', async () => {
     const busy = setup({ home: 'desk', devices: [device('laptop')], turnActive: () => true });
     expect(await busy.runtime.transfer('bot_mia', 'laptop')).toEqual({ ok: false, code: 'BUSY' });
@@ -254,6 +270,129 @@ describe('transfer', () => {
   it('only transfers from the home computer', async () => {
     const t = setup({ home: 'laptop', devices: [device('tablet')] });
     expect(await t.runtime.transfer('bot_mia', 'tablet')).toMatchObject({ ok: false, code: 'FAILED', homeDeviceId: 'laptop' });
+  });
+});
+
+describe('moving a companion that is still working', () => {
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('waits for the turn to finish when asked, then moves it', async () => {
+    vi.useFakeTimers();
+    let busy = true;
+    const t = setup({ home: 'desk', devices: [device('laptop')], turnActive: () => busy });
+    const moved = t.runtime.transfer('bot_mia', 'laptop', { whenBusy: 'wait' });
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(t.calls.some(call => call.method === 'PATCH')).toBe(false);
+    busy = false;
+    await vi.advanceTimersByTimeAsync(2_000);
+    vi.useRealTimers();
+    expect(await moved).toEqual({ ok: true });
+    expect(t.actors[0]!.homeDeviceId).toBe('laptop');
+  });
+
+  it('gives up as busy when the turn does not finish in time', async () => {
+    vi.useFakeTimers();
+    const t = setup({ home: 'desk', devices: [device('laptop')], turnActive: () => true });
+    const moved = t.runtime.transfer('bot_mia', 'laptop', { whenBusy: 'wait' });
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(await moved).toEqual({ ok: false, code: 'BUSY' });
+    expect(t.calls.some(call => call.method === 'PATCH')).toBe(false);
+  });
+
+  it('stops the turn first when asked', async () => {
+    vi.useFakeTimers();
+    let busy = true;
+    const stopBotTurns = vi.fn(async () => { busy = false; });
+    const t = setup({ home: 'desk', devices: [device('laptop')], turnActive: () => busy, stopBotTurns });
+    const moved = t.runtime.transfer('bot_mia', 'laptop', { whenBusy: 'stop' });
+    await vi.advanceTimersByTimeAsync(2_000);
+    vi.useRealTimers();
+    expect(await moved).toEqual({ ok: true });
+    expect(stopBotTurns).toHaveBeenCalledWith('bot_mia');
+  });
+
+  it('still refuses by default', async () => {
+    const t = setup({ home: 'desk', devices: [device('laptop')], turnActive: () => true });
+    expect(await t.runtime.transfer('bot_mia', 'laptop')).toEqual({ ok: false, code: 'BUSY' });
+  });
+
+  it('passes the choice to the home when asked from another computer', async () => {
+    const handOver = vi.fn(async () => ({ ok: true as const }));
+    const t = setup({ home: 'laptop', devices: [device('laptop')], homeLink: {
+      version: async () => 2, targets: async () => [{ deviceId: 'tablet', name: 'Tablet', online: true }], handOver } });
+    expect(await t.runtime.switchHome('bot_mia', 'tablet', { whenBusy: 'stop' })).toEqual({ ok: true });
+    expect(handOver).toHaveBeenCalledWith('laptop', 'bot_mia', 'tablet', { whenBusy: 'stop' });
+  });
+});
+
+describe('switch home from any computer', () => {
+  const link = (version: number, targets = [{ deviceId: 'desk', name: '', online: true }, { deviceId: 'tablet', name: 'Tablet', online: true }]) => ({
+    version: vi.fn(async () => version),
+    targets: vi.fn(async () => targets),
+    handOver: vi.fn(async (): Promise<{ ok: true } | { ok: false; code: 'BUSY' }> => ({ ok: true })),
+  });
+
+  it('hands over from here when this computer is the home', async () => {
+    const t = setup({ home: 'desk', devices: [device('laptop')] });
+    expect(await t.runtime.homeChoices('bot_mia')).toEqual({ homeDeviceId: 'desk', homeName: '', mode: 'local', targets: [{ deviceId: 'laptop', name: 'laptop', online: true }] });
+    expect(await t.runtime.switchHome('bot_mia', 'laptop')).toEqual({ ok: true });
+    expect(t.state.isDemoted('bot_mia')).toBe(true);
+  });
+
+  it('asks the online home to hand the companion over, and re-reads homes when it moved here', async () => {
+    const homeLink = link(2);
+    const t = setup({ home: 'laptop', devices: [device('laptop'), device('desk', { isSelf: true, name: 'Desk' })], homeLink });
+    expect(await t.runtime.homeChoices('bot_mia')).toEqual({ homeDeviceId: 'laptop', homeName: 'laptop', mode: 'remote', targets: [
+      { deviceId: 'desk', name: 'Desk', online: true, isSelf: true },
+      { deviceId: 'tablet', name: 'Tablet', online: true, isSelf: false },
+    ] });
+    expect(await t.runtime.switchHome('bot_mia', 'desk')).toEqual({ ok: true });
+    expect(homeLink.handOver).toHaveBeenCalledWith('laptop', 'bot_mia', 'desk', undefined);
+    expect(t.refresh).toHaveBeenCalled();
+    // The home itself moves it: this computer never writes the home directly.
+    expect(t.calls.some(call => call.method === 'PATCH')).toBe(false);
+  });
+
+  it('passes the home\'s refusal through unchanged', async () => {
+    const homeLink = link(2);
+    homeLink.handOver.mockResolvedValue({ ok: false, code: 'BUSY' });
+    const t = setup({ home: 'laptop', devices: [device('laptop')], homeLink });
+    expect(await t.runtime.switchHome('bot_mia', 'tablet')).toEqual({ ok: false, code: 'BUSY' });
+  });
+
+  it('refuses a computer the home did not offer', async () => {
+    const homeLink = link(2);
+    const t = setup({ home: 'laptop', devices: [device('laptop')], homeLink });
+    expect(await t.runtime.switchHome('bot_mia', 'phone')).toEqual({ ok: false, code: 'TARGET_UNAVAILABLE' });
+    expect(homeLink.handOver).not.toHaveBeenCalled();
+  });
+
+  it('only offers this computer when the home cannot be reached, and takes it over', async () => {
+    const homeLink = link(0);
+    const t = setup({ home: 'laptop', devices: [device('laptop'), device('desk', { isSelf: true, name: 'Desk' })], homeLink });
+    expect(await t.runtime.homeChoices('bot_mia')).toEqual({ homeDeviceId: 'laptop', homeName: 'laptop', mode: 'takeOver',
+      targets: [{ deviceId: 'desk', name: 'Desk', online: true, isSelf: true }] });
+    const offline = setup({ home: 'laptop', devices: [device('laptop', { online: false })], homeLink });
+    expect((await offline.runtime.homeChoices('bot_mia')).mode).toBe('takeOver');
+    expect(await offline.runtime.switchHome('bot_mia', 'desk')).toEqual({ ok: true });
+    expect(offline.calls.find(call => call.method === 'PATCH')).toMatchObject({ data: { homeDeviceId: 'desk', expectedHomeDeviceId: 'laptop' } });
+    expect(homeLink.handOver).not.toHaveBeenCalled();
+  });
+
+  it('does not offer a move when the home runs an older Cindy', async () => {
+    const homeLink = link(1);
+    const t = setup({ home: 'laptop', devices: [device('laptop')], homeLink });
+    expect(await t.runtime.homeChoices('bot_mia')).toEqual({ homeDeviceId: 'laptop', homeName: 'laptop', mode: 'unavailable', reason: 'HOME_OUTDATED', targets: [] });
+    expect(await t.runtime.switchHome('bot_mia', 'desk')).toEqual({ ok: false, code: 'HOME_OUTDATED' });
+    expect(homeLink.targets).not.toHaveBeenCalled();
+  });
+
+  it('re-reads homes when the hand-over answer is lost', async () => {
+    const homeLink = link(2);
+    homeLink.handOver.mockRejectedValue(new Error('[INVOKE_TIMEOUT] no answer'));
+    const t = setup({ home: 'laptop', devices: [device('laptop')], homeLink });
+    expect((await t.runtime.switchHome('bot_mia', 'tablet')).ok).toBe(false);
+    expect(t.refresh).toHaveBeenCalled();
   });
 });
 
@@ -521,5 +660,98 @@ describe('installation guard', () => {
       && JSON.stringify((call.data as { value: unknown }).value) === JSON.stringify({ installationId: 'install-a', deviceId: 'desk' }))).toBe(true);
     await vi.waitFor(() => expect(t.state.isDemoted('bot_mia')).toBe(false));
     expect(t.runtime.isShadowed('bot_mia')).toBe(false);
+  });
+});
+
+describe('merging copies of Cindy', () => {
+  function mergeSetup(options: { sourceHome: string; flush?: ReturnType<typeof vi.fn>; turnActive?: () => boolean;
+    canonicalSession?: CompanionCloudHost['canonicalSession']; paused?: (botId: string) => boolean }) {
+    const order: string[] = [];
+    const flush = options.flush ?? vi.fn(async () => { order.push('flush'); return { ok: true as const }; });
+    const homeLink = { version: vi.fn(async () => 2), targets: vi.fn(async () => []), handOver: vi.fn(async () => ({ ok: true as const })), flush };
+    const t = setup({ home: 'desk', homeLink, ...(options.turnActive ? { turnActive: options.turnActive } : {}),
+      ...(options.canonicalSession ? { canonicalSession: options.canonicalSession } : {}),
+      ...(options.paused ? { paused: options.paused } : {}), handler: (route, method) => {
+      if (route === '/preferences') return method === 'GET' ? [{ key: 'companion.profile.v1', value: { ...MIA, templateId: 'cindy' }, revision: 1 }] : { revision: 1 };
+      if (route === '/conversations') return { id: ROOM };
+      if (route.includes('/messages?')) return [];
+      if (route.endsWith('/import')) return {};
+      if (method === 'PATCH') { order.push(`patch ${route}`); return {}; }
+      throw new Error(`unexpected ${method} ${route}`);
+    } });
+    t.actors.splice(0, t.actors.length,
+      { id: 'actor-keep', kind: 'bot', externalId: 'cindy-default', name: 'Cindy', avatar: null, homeDeviceId: 'desk' },
+      { id: 'actor-from', kind: 'bot', externalId: 'bot_lap', name: 'Cindy', avatar: null, homeDeviceId: options.sourceHome });
+    return { ...t, order, flush };
+  }
+
+  it('has the other copy\'s computer send what it has not sent yet before reading it, and retires it last', async () => {
+    const t = mergeSetup({ sourceHome: 'laptop' });
+    expect(await t.runtime.mergeCindy('cindy-default', ['bot_lap'])).toMatchObject({ ok: true, merged: 1 });
+    expect(t.flush).toHaveBeenCalledWith('laptop', 'bot_lap');
+    // Once before reading it, once more right before retiring it.
+    expect(t.order).toEqual(['flush', 'flush', 'patch /actors/actor-from']);
+  });
+
+  it('does not merge while the other copy is still replying, and leaves it active', async () => {
+    const flush = vi.fn(async () => ({ ok: false as const, code: 'BUSY' }));
+    const t = mergeSetup({ sourceHome: 'laptop', flush });
+    expect(await t.runtime.mergeCindy('cindy-default', ['bot_lap'])).toEqual({ ok: false, code: 'BUSY' });
+    expect(t.order).toEqual([]);
+  });
+
+  it('sends a copy homed here itself, and waits while it is busy', async () => {
+    let busy = true;
+    const t = mergeSetup({ sourceHome: 'desk', turnActive: () => busy });
+    expect(await t.runtime.mergeCindy('cindy-default', ['bot_lap'])).toEqual({ ok: false, code: 'BUSY' });
+    busy = false;
+    expect(await t.runtime.mergeCindy('cindy-default', ['bot_lap'])).toMatchObject({ ok: true, merged: 1 });
+    expect(t.flush).not.toHaveBeenCalled();
+  });
+
+  it('leaves the copies active when the kept Cindy has no task here to take the conversation', async () => {
+    const t = mergeSetup({ sourceHome: 'laptop', canonicalSession: async () => null });
+    expect(await t.runtime.mergeCindy('cindy-default', ['bot_lap'])).toMatchObject({ ok: false });
+    expect(t.order).toEqual(['flush']);
+  });
+
+  it('re-checks every copy right before retiring it, and stops when one got busy meanwhile', async () => {
+    let calls = 0;
+    const flush = vi.fn(async () => (++calls === 1 ? { ok: true as const } : { ok: false as const, code: 'BUSY' }));
+    const t = mergeSetup({ sourceHome: 'laptop', flush });
+    expect(await t.runtime.mergeCindy('cindy-default', ['bot_lap'])).toEqual({ ok: false, code: 'BUSY' });
+    expect(flush).toHaveBeenCalledTimes(2);
+    expect(t.order.filter(step => step.startsWith('patch'))).toEqual([]);
+  });
+
+  it('does not count a copy as sent when a turn started during its flush', async () => {
+    let checks = 0;
+    // Idle when asked first, busy once the flush is done.
+    const t = mergeSetup({ sourceHome: 'desk', turnActive: () => ++checks > 1 });
+    expect(await t.runtime.flushHere('bot_lap')).toEqual({ ok: false, code: 'BUSY' });
+  });
+
+  it('stops the merge when a copy\'s main task cannot be told, instead of counting its history as sent', async () => {
+    const t = mergeSetup({ sourceHome: 'desk', canonicalSession: async (botId) => {
+      if (botId === 'bot_lap') throw new Error('COMPANION_TASK_CONFLICT');
+      return 'session-1';
+    } });
+    expect(await t.runtime.mergeCindy('cindy-default', ['bot_lap'])).toMatchObject({ ok: false });
+    expect(t.order.filter(step => step.startsWith('patch'))).toEqual([]);
+  });
+
+  it('asks to resume a paused copy, kept or merged, instead of failing part way', async () => {
+    const source = mergeSetup({ sourceHome: 'desk', paused: (botId) => botId === 'bot_lap' });
+    expect(await source.runtime.mergeCindy('cindy-default', ['bot_lap'])).toEqual({ ok: false, code: 'PAUSED' });
+    runtime?.dispose();
+    const kept = mergeSetup({ sourceHome: 'laptop', paused: (botId) => botId === 'cindy-default' });
+    expect(await kept.runtime.mergeCindy('cindy-default', ['bot_lap'])).toEqual({ ok: false, code: 'PAUSED' });
+    expect(kept.flush).not.toHaveBeenCalled();
+  });
+
+  it('answers a flush request only as the copy\'s home', async () => {
+    const t = mergeSetup({ sourceHome: 'laptop' });
+    expect(await t.runtime.flushHere('bot_lap')).toEqual({ ok: false, code: 'HOME_CONFLICT' });
+    expect(await t.runtime.flushHere('cindy-default')).toEqual({ ok: true });
   });
 });

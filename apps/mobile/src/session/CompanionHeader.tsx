@@ -12,6 +12,8 @@ import { CHAT_HEADER_GLYPH_STROKE, CHAT_HEADER_MARK_SIZE, ChatIdentityHeader, Ch
 import { CompanionPresenceRing } from './CompanionPresenceRing';
 import { CompanionProfileSheet } from './CompanionProfileSheet';
 import { useTeammateNavigation } from './useTeammateNavigation';
+import { CloudHomeSwitchSheet } from './CloudHomeSwitchSheet';
+import { useCloudCompanionHome } from '@/chat/useCloudCompanion';
 
 /** Presence dot before the computer name (the list's dot, sized for a 12pt line). */
 const PRESENCE_DOT = 6;
@@ -37,6 +39,10 @@ function CompanionHeaderContent({ resource, deviceId, deviceName, online, contro
   const styles = useThemedStyles(makeStyles);
   const {colors}=useTheme();
   const navigation = useTeammateNavigation();
+  // A cloud companion is one teammate wherever it runs: name its main computer and offer to change it.
+  const cloud = useCloudCompanionHome(true);
+  const homed = cloud.supported && cloud.actors.some(actor => actor.kind === 'bot' && actor.externalId === resource.ref.id && actor.homeDeviceId === deviceId);
+  const [homeSheet, setHomeSheet] = useState(false);
   const [profile, setProfile] = useState(false);
   const [todos, setTodos] = useState(false);
   const [initialPage, setInitialPage] = useState<'home' | 'memory' | 'capabilities'>('home');
@@ -44,7 +50,9 @@ function CompanionHeaderContent({ resource, deviceId, deviceName, online, contro
   const pending = useRef<(() => void) | null>(null);
   const name = resolveRemoteText(resource.display.title, i18n.language);
   const afterProfile = (action: () => void) => { pending.current = action; setProfile(false); };
-  const connection = online ? '' : t('devices.resources.hostOffline');
+  // A cloud companion does not show its computer's presence (it belongs to the account, like an IM
+  // contact); a message that cannot get through is what asks to switch computers.
+  const connection = online || homed ? '' : t('devices.resources.hostOffline');
   return <>
     <ChatIdentityHeader testIDPrefix="companion"
       mark={<>
@@ -53,8 +61,8 @@ function CompanionHeaderContent({ resource, deviceId, deviceName, online, contro
       </>}
       title={name}
       subtitle={<View style={styles.subtitleRow}>
-        <View style={[styles.presence, online ? styles.presenceOn : styles.presenceOff]} testID="companion.header.presence" />
-        <ChatIdentitySubtitle>{connection ? `${connection} · ${deviceName}` : deviceName}</ChatIdentitySubtitle>
+        {homed ? null : <View style={[styles.presence, online ? styles.presenceOn : styles.presenceOff]} testID="companion.header.presence" />}
+        <ChatIdentitySubtitle>{[connection, homed ? t('devices.cloudCompanion.runsOn', { device: deviceName }) : deviceName].filter(Boolean).join(' · ')}</ChatIdentitySubtitle>
       </View>}
       identityLabel={[name, deviceName, connection].filter(Boolean).join(', ')}
       identityHint={t('devices.companions.openProfile', { name })}
@@ -67,7 +75,11 @@ function CompanionHeaderContent({ resource, deviceId, deviceName, online, contro
     <CompanionProfileSheet initialPage={initialPage} visible={profile} onClose={() => setProfile(false)} onClosed={() => { const action = pending.current; pending.current = null; action?.(); }}
       resource={resource} collectionId={resource.ref.collectionId} deviceId={deviceId} deviceName={deviceName} online={online}
       onDeleted={() => void navigation.chooseMode('teammates')}
-      onOpenSearch={() => afterProfile(onSearch)} />
+      onOpenSearch={() => afterProfile(onSearch)}
+      {...(homed && online ? { onOpenHome: () => afterProfile(() => setHomeSheet(true)) } : {})} />
+    {homed ? <CloudHomeSwitchSheet visible={homeSheet} onClose={() => setHomeSheet(false)} botId={resource.ref.id} name={name}
+      homeDeviceId={deviceId} homeName={deviceName}
+      onMoved={() => { setHomeSheet(false); void navigation.chooseMode('teammates'); }} /> : null}
   </>;
 }
 

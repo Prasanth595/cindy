@@ -82,7 +82,7 @@ interface ForkNativeSource {
   nextSwitch: MessagePosition | null;
   /** false = 原生会话已因同引擎换窗失效，只复制可见历史，首次发送走交接。 */
   reuseVendorSession: boolean;
-  rebuildReason?: 'context-overflow' | 'model-window-switch' | 'pi-prompt-timeout' | 'native-session-recovery';
+  rebuildReason?: 'context-overflow' | 'model-window-switch' | 'pi-prompt-timeout' | 'native-session-recovery' | 'idle-gap';
 }
 
 interface ForkTimelineMessage {
@@ -163,7 +163,7 @@ async function seedForkHandoffAfterSameEngineRebuild(opts: {
   agentKind: DbAgentKind;
   model: string;
   providerId: string | null;
-  reason: 'context-overflow' | 'model-window-switch' | 'pi-prompt-timeout' | 'native-session-recovery';
+  reason: 'context-overflow' | 'model-window-switch' | 'pi-prompt-timeout' | 'native-session-recovery' | 'idle-gap';
 }): Promise<void> {
   const handoffMessages: HandoffSourceMessage[] = opts.rows
     .filter(
@@ -184,7 +184,8 @@ async function seedForkHandoffAfterSameEngineRebuild(opts: {
     fromLabel: label,
     toLabel: label,
     sessionId: opts.sessionId,
-    reason: opts.reason,
+    // fork 出的新任务不知道原来隔了多久,空闲间隔边界按「换了干净原生会话」的通用口径交接。
+    reason: opts.reason === 'idle-gap' ? 'native-session-recovery' : opts.reason,
   });
   await commitContextRebuild(opts.sessionId, handoff, {
     reason: opts.reason,
@@ -208,7 +209,7 @@ async function seedForkHandoffAfterSameEngineRebuild(opts: {
 }
 
 interface ParsedContextRebuildBoundary {
-  reason: 'context-overflow' | 'model-window-switch' | 'pi-prompt-timeout' | 'native-session-recovery';
+  reason: 'context-overflow' | 'model-window-switch' | 'pi-prompt-timeout' | 'native-session-recovery' | 'idle-gap';
   sourceAgentKind?: DbAgentKind;
   sourceModel?: string | null;
   sourceProviderId?: string | null;
@@ -221,7 +222,8 @@ function parseContextRebuildBoundary(content: string): ParsedContextRebuildBound
       parsed.reason !== 'context-overflow' &&
       parsed.reason !== 'model-window-switch' &&
       parsed.reason !== 'pi-prompt-timeout' &&
-      parsed.reason !== 'native-session-recovery'
+      parsed.reason !== 'native-session-recovery' &&
+      parsed.reason !== 'idle-gap'
     ) {
       return null;
     }
@@ -247,7 +249,7 @@ function parseContextRebuildBoundary(content: string): ParsedContextRebuildBound
 
 function parseContextRebuildReason(
   content: string,
-): 'context-overflow' | 'model-window-switch' | 'pi-prompt-timeout' | 'native-session-recovery' | null {
+): 'context-overflow' | 'model-window-switch' | 'pi-prompt-timeout' | 'native-session-recovery' | 'idle-gap' | null {
   return parseContextRebuildBoundary(content)?.reason ?? null;
 }
 

@@ -53,7 +53,8 @@ function isEntry(raw: unknown): raw is WorkspaceProviderSourceEntry {
     HOOK_WORKSPACE_ALIAS_RE.test(r.workspace) &&
     typeof r.providerId === 'string' &&
     r.providerId.length > 0 &&
-    r.providerId.length <= 128
+    r.providerId.length <= 128 &&
+    (r.agentDeviceId == null || (typeof r.agentDeviceId === 'string' && /^[A-Za-z0-9_.:-]{1,128}$/.test(r.agentDeviceId)))
   );
 }
 
@@ -97,10 +98,18 @@ export function getWorkspaceProviderSource(
   teamId: string | null,
   workspace: string,
 ): string | null {
+  return getWorkspaceProviderRoute(channel, teamId, workspace)?.providerId ?? null;
+}
+
+export function getWorkspaceProviderRoute(
+  channel: HookProviderChannel,
+  teamId: string | null,
+  workspace: string,
+): WorkspaceProviderSourceEntry | null {
   const entries = readFileEntries(filePath());
   return (
-    entries.find((e) => sameKey(e, channel, teamId, workspace))?.providerId ??
-    entries.find((e) => sameKey(e, channel, null, workspace))?.providerId ??
+    entries.find((e) => sameKey(e, channel, teamId, workspace)) ??
+    entries.find((e) => sameKey(e, channel, null, workspace)) ??
     null
   );
 }
@@ -111,11 +120,13 @@ export function setWorkspaceProviderSource(
   teamId: string | null,
   workspace: string,
   providerId: string | null,
+  agentDeviceId?: string | null,
 ): WorkspaceProviderSourceEntry[] {
   const fp = filePath();
   const rest = readFileEntries(fp).filter((e) => !sameKey(e, channel, teamId, workspace));
   const next =
-    providerId === null ? rest : [...rest, { channel, teamId, workspace, providerId }];
+    providerId === null ? rest : [...rest, { channel, teamId, workspace, providerId,
+      ...(agentDeviceId ? { agentDeviceId } : {}) }];
   writeFileEntries(fp, next);
   return next;
 }

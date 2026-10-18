@@ -241,7 +241,7 @@ export default function SharedSessionScreen() {
     if (enter) await openTask(joined.sharedTaskId, current);
   }, false, 'join');
   useEffect(() => {
-    if (incomingInvitation?.source !== 'link' || !isAuthenticated || sessionId || deviceId || sharedTaskId) return;
+    if (!incomingInvitation || !isAuthenticated || sessionId || deviceId || sharedTaskId) return;
     const input = buildSharedTaskInvitationLink(incomingInvitation.invitation, incomingInvitation.server);
     // Claim before waiting for relay capability. Leaving this screen discards the invitation.
     epoch.current++; pending.current = false; setBusy(false);

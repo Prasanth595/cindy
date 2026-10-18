@@ -32,7 +32,7 @@ import {
   stripInternalWebCitations,
 } from '@cindy/maker-shared/internal-citation';
 
-import { TokenSpeedMeter } from '../shared/token-speed.js';
+import { UsageTokenSpeedMeter } from '../shared/token-speed.js';
 import type { AgentEvent, AgentTaskStatus, AgentTaskUpdateEventData } from '../../types/events.js';
 import { normalizeAccountRateLimitSnapshot } from '../../types/account-rate-limits.js';
 import type { AsyncQueue } from '../shared/async-queue.js';
@@ -80,8 +80,8 @@ export interface CodexRuntimeState {
   reasoningTextLen: Map<string, number>;
   /** item.id → agentMessage 已 emit 文本字符长度(citation 归一化后的空间,见 handleAgentMessage)。 */
   itemTextLen: Map<string, number>;
-  /** Live tok/s shown in the status bar (Pi extension algorithm). */
-  tokenSpeed: TokenSpeedMeter;
+  /** Live tok/s from accepted usage and its paired generation time. */
+  tokenSpeed: UsageTokenSpeedMeter;
   /** Current model-active interval start; null while tools/approvals own the turn. */
   generationStartedAt: number | null;
   /** Tool/approval boundaries currently owning the turn. Generation resumes after all finish. */
@@ -133,7 +133,7 @@ export function newCodexRuntimeState(): CodexRuntimeState {
     reasoningStartedAt: new Map(),
     reasoningTextLen: new Map(),
     itemTextLen: new Map(),
-    tokenSpeed: new TokenSpeedMeter(),
+    tokenSpeed: new UsageTokenSpeedMeter(),
     generationStartedAt: null,
     generationPendingToolIds: new Set(),
     generationDurationMs: 0,
@@ -319,9 +319,6 @@ function noteCodexGenerationBoundary(
     // for pause pairing but fail closed for TPS.
     rt.generationTimingReliable = false;
   }
-  if (phase === 'started' && (item.type === 'reasoning' || item.type === 'agentMessage')) {
-    rt.tokenSpeed.start();
-  }
   if (
     typeof item.type !== 'string' ||
     !CODEX_GENERATION_PAUSE_ITEM_TYPES.has(item.type)
@@ -335,7 +332,6 @@ function noteCodexGenerationBoundary(
   const pauseId = `item:${item.id}`;
   if (phase === 'started') {
     // The model finished emitting this call; its execution is not generation time.
-    rt.tokenSpeed.pause(receivedAt);
     pauseCodexGeneration(rt, turnId, pauseId, receivedAt);
     return;
   }
@@ -1118,7 +1114,6 @@ function emitAgentMessageProgress(
   ctx.rt.itemRawText.set(itemId, rawText);
   ctx.rt.itemTextLen.set(itemId, emitted.length);
   if (delta.length === 0) return;
-  ctx.rt.tokenSpeed.recordDelta(delta);
   queue.push({
     type: 'text',
     data: { text: delta, isFinal: false, agentMessageId: itemId,
@@ -1334,7 +1329,6 @@ export function translateReasoningSummaryTextDelta(
   ctx: CodexTranslateContext,
 ): void {
   if (!params.delta) return;
-  ctx.rt.tokenSpeed.recordDelta(params.delta);
   ensureReasoningStarted(params.itemId, queue, ctx);
   const prevLen = ctx.rt.reasoningTextLen.get(params.itemId) ?? 0;
   ctx.rt.reasoningTextLen.set(params.itemId, prevLen + params.delta.length);
@@ -1369,7 +1363,6 @@ export function translateReasoningTextDelta(
   ctx: CodexTranslateContext,
 ): void {
   if (!params.delta) return;
-  ctx.rt.tokenSpeed.recordDelta(params.delta);
   ensureReasoningStarted(params.itemId, queue, ctx);
   const prevLen = ctx.rt.reasoningTextLen.get(params.itemId) ?? 0;
   ctx.rt.reasoningTextLen.set(params.itemId, prevLen + params.delta.length);

@@ -17,6 +17,8 @@ import {
   NEW_BOT_DEFAULT_HARNESS,
 } from '../../../shared/botDefaults';
 import { getBotLastReadAtMap, pruneBotReadState, seedMissingBotReadState } from './botReadState';
+import type { BotAutonomySettingsView } from '../../../shared/botAutonomy';
+import { registerLoadedBotProfilesReader } from './botSessionOwners';
 import type { BotGender } from '../../../shared/botGender';
 import { BOT_FAILURE_REASONS, type BotFailureReason } from '../../../shared/botFailureReason';
 import type { BotCapabilityBaseline } from '../../../shared/botCapabilitySelection';
@@ -57,6 +59,11 @@ export interface BotCapabilities {
   permissions: 'ask' | 'auto' | 'trusted';
   /** 代输入: may this companion ask the owner to finish an on-screen step. Missing = allowed. */
   inputHandoff?: boolean;
+  /**
+   * 它开的任务是否也交给「自动跟进所有任务」的伙伴跟（它暂停或不在时接手）。
+   * 缺省 = false：别的伙伴开的任务，负责所有任务的伙伴默认只看不跟（shared/botAutonomy.ts）。
+   */
+  allowSchedulerFollow?: boolean;
 }
 
 export interface BotModelOverride {
@@ -141,11 +148,17 @@ function normalizeStringList(value: unknown): string[] {
 export interface BotSessionProjection {
   id: string;
   title: string;
-  /** `group` is a hidden group-chat lane; see botGroupLane.ts before counting sessions. */
-  kind: 'chat' | 'worker' | 'history' | 'group';
+  /**
+   * `group` is a hidden group-chat lane, `channel` a hidden personal-IM lane (a
+   * Telegram / Feishu group handed to the Bot); see botGroupLane.ts before
+   * counting sessions.
+   */
+  kind: 'chat' | 'worker' | 'history' | 'group' | 'channel';
   updatedAt: number;
   status?: 'active' | 'archived' | 'deleted';
-  role?: 'canonical' | 'delegation' | 'history' | 'group';
+  role?: 'canonical' | 'delegation' | 'history' | 'group' | 'channel';
+  /** Group-lane only: the group whose chat owns this hidden Session. */
+  groupId?: string;
   profileVersion?: number;
   runtimeSnapshot?: {
     profileVersion: number;
@@ -857,6 +870,8 @@ export function getBotProfiles(): BotProfile[] {
   ensureProfileOwner();
   return profiles;
 }
+// Route helpers in lib/ read the loaded projection through this registry (no store import).
+registerLoadedBotProfilesReader(() => (hasLoadedBotProfiles() ? getBotProfiles() : null));
 
 export function subscribeBotProfiles(listener: () => void): () => void {
   listeners.add(listener);
@@ -1203,4 +1218,86 @@ export function removeBotProfile(id: string): void {
 export async function retryBotInvitation(id: string): Promise<void> {
   await botsApi()?.update({ id, retryInvitation: true });
   refreshBotProfiles();
+}
+
+// ── 自动跟进所有任务（账号级，只存 override） ─────────────────────────────
+// 宿主是唯一事实源：这里只缓存最近一次读到的视图，按需读取，收到
+// onBotAutonomyChanged 后重读；换账号时丢弃旧视图与在途读取。
+
+let autonomyView: BotAutonomySettingsView | null = null;
+let autonomyOwner = getDataOwnerGeneration();
+let autonomyRequest = 0;
+let autonomyOff: (() => void) | null = null;
+const autonomyListeners = new Set<() => void>();
+
+function autonomyApi() {
+  return window.electronAPI?.localDb?.bots?.autonomy;
+}
+
+function ensureAutonomyOwner(): void {
+  if (isDataOwnerGenerationCurrent(autonomyOwner)) return;
+  autonomyOwner = getDataOwnerGeneration();
+  autonomyView = null;
+  autonomyRequest += 1;
+}
+
+function applyAutonomyView(view: BotAutonomySettingsView, owner: ReturnType<typeof getDataOwnerGeneration>): void {
+  if (!isDataOwnerGenerationCurrent(owner)) return;
+  ensureAutonomyOwner();
+  autonomyView = view;
+  for (const listener of autonomyListeners) listener();
+}
+
+function loadAutonomySettings(): void {
+  const api = autonomyApi();
+  if (!api) return;
+  ensureAutonomyOwner();
+  const owner = getDataOwnerGeneration();
+  const request = ++autonomyRequest;
+  void api.getSettings().then((view) => {
+    if (request === autonomyRequest) applyAutonomyView(view, owner);
+  }).catch(() => undefined);
+}
+
+export function subscribeBotAutonomySettings(listener: () => void): () => void {
+  autonomyListeners.add(listener);
+  if (autonomyListeners.size === 1) {
+    autonomyOff = window.electronAPI?.maker?.onBotAutonomyChanged?.(() => loadAutonomySettings()) ?? null;
+    loadAutonomySettings();
+  }
+  return () => {
+    autonomyListeners.delete(listener);
+    if (autonomyListeners.size === 0) {
+      autonomyOff?.();
+      autonomyOff = null;
+    }
+  };
+}
+
+export function getBotAutonomySettings(): BotAutonomySettingsView | null {
+  ensureAutonomyOwner();
+  return autonomyView;
+}
+
+/** null = 还没读到（或宿主不支持）；界面在读到之前不显示开关状态。 */
+export function useBotAutonomySettings(): BotAutonomySettingsView | null {
+  return useSyncExternalStore(subscribeBotAutonomySettings, getBotAutonomySettings, getBotAutonomySettings);
+}
+
+/** 把「自动跟进所有任务」交给某个伙伴（null = 没有伙伴负责）。写入的是用户 override。 */
+export async function setBotSchedulerBotId(schedulerBotId: string | null): Promise<void> {
+  const api = autonomyApi();
+  if (!api) throw new Error('Bot autonomy settings are not ready');
+  const owner = getDataOwnerGeneration();
+  autonomyRequest += 1;
+  applyAutonomyView(await api.setSettings({ schedulerBotId }), owner);
+}
+
+/** 恢复默认 = 删除 override，跟随当前版本默认（出厂 Cindy 助理）。 */
+export async function resetBotAutonomySettings(): Promise<void> {
+  const api = autonomyApi();
+  if (!api) throw new Error('Bot autonomy settings are not ready');
+  const owner = getDataOwnerGeneration();
+  autonomyRequest += 1;
+  applyAutonomyView(await api.resetSettings(), owner);
 }

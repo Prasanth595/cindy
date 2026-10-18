@@ -11,11 +11,12 @@ async function moveWorkbenchToFront(sessionId: string, tabId: string): Promise<v
 }
 
 /**
- * 伙伴主任务页首次进入时提供默认的「工作台」标签。
+ * 伙伴第一次有事等主人时，自动提供一次「工作台」标签（触发方见 BotSessionView：只在该伙伴的
+ * 「等你」从 0 变成 >0 时调用；进入伙伴页本身不再打开）。
  *
- * 只在标签和布局记录都不存在时创建并展开(首次进入默认打开);已有记录或标签时不动,
- * 用户之后收起右侧栏或切到文件 / 浏览器的选择都保留。这是程序自发的动作:
- * detached 形态下只把命令交给已打开的子窗口,不因此弹出窗口或抢前台。
+ * 只在标签和布局记录都不存在时创建并展开：这条布局记录就是「已经自动开过一次」的标记，
+ * 已有记录或标签时不动，用户之后收起右侧栏或关掉标签的选择都保留，不会再被自动打开。
+ * 这是程序自发的动作：detached 形态下只把命令交给已打开的子窗口，不因此弹出窗口或抢前台。
  */
 export async function ensureBotWorkbenchTab(
   sessionId: string,
@@ -35,11 +36,11 @@ export async function ensureBotWorkbenchTab(
   if (!isCurrent() || readPanelCollapsedRecord('right-tabs', { sessionId }) !== null) return;
   if (getBucket(sessionId).tabs.some((tab) => tab.kind === 'bot-workbench')) {
     // Older layouts can contain the tab without a visibility record. Preserve
-    // their effective visibility and remember that this is no longer a first visit.
+    // their effective visibility and remember that the one automatic open is used up.
     writePanelCollapsed('right-tabs', { sessionId }, readPanelCollapsed('right-tabs', { sessionId }, true));
     return;
   }
-  // Use the existing per-session layout record as the first-visit marker. Commit
+  // Use the existing per-session layout record as the "opened once" marker. Commit
   // the default before async tab creation so a later user close wins permanently.
   const defaultRevision = writePanelCollapsed('right-tabs', { sessionId }, false);
   let tab;

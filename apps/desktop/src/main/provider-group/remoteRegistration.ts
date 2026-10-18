@@ -18,8 +18,10 @@ import {
   readProviderRunningTurnsByProvider,
 } from './runtime.js';
 import { readProviderGroup } from './store.js';
+import { isProviderManagementRequest } from '../../shared/providerManagement.js';
+import { handleProviderManagementRequest } from './management.js';
 
-export function registerProviderGroupRemoteHandler(): void {
+export function registerProviderGroupRemoteHandler(options: { onGroupChanged?: (providerId: string) => void } = {}): void {
   const deps: ProviderGroupRemoteHandlerDeps = {
     scope: getProviderGroupOwnerScope,
     readGroup: readProviderGroup,
@@ -30,7 +32,8 @@ export function registerProviderGroupRemoteHandler(): void {
     sessionGroup: readProviderGroupOfSession,
   };
   setProviderGroupRemoteHandler({
-    handle: (controller, raw) => handleProviderGroupRemote(deps, controller, raw),
+    handle: (controller, raw) => isProviderManagementRequest(raw)
+      ? handleProviderManagementRequest(raw, options) : handleProviderGroupRemote(deps, controller, raw),
     decorateProviderList: async (result) =>
       decorateProviderListWithGroups(result, readProviderGroup, await readProviderRunningTurnsByProvider()),
     sharedGroupSize: (providerId) => sharedProviderGroupSize(deps, providerId),

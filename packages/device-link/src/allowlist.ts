@@ -35,7 +35,15 @@ import {
   ORCA_REMOTE_WORKER_RELEASE_CHANNEL,
 } from './orcaRemoteWorker.js';
 import { TASK_MIGRATION_CHANNEL } from './taskMigration.js';
-import { COMPANION_CLOUD_CAPS_CHANNEL } from './companionCloud.js';
+import {
+  COMPANION_CLOUD_CAPS_CHANNEL,
+  COMPANION_CLOUD_FLUSH_CHANNEL,
+  COMPANION_CLOUD_HAND_OVER_CHANNEL,
+  COMPANION_CLOUD_HAND_OVER_TIMEOUT_MS,
+  COMPANION_CLOUD_MERGE_CHANNEL,
+  COMPANION_CLOUD_MERGE_TIMEOUT_MS,
+  COMPANION_CLOUD_TARGETS_CHANNEL,
+} from './companionCloud.js';
 import { SESSION_ACTIVITY_CHANNEL, SESSION_SYNC_CHANNEL } from './topics.js';
 import { REMOTE_DESKTOP_INVOKE_MS } from './remoteDesktopIce.js';
 import {
@@ -177,6 +185,8 @@ const CORE_INVOKE_CHANNELS: readonly string[] = [
   'maker:close-session',
   'maker:abort-session',
   'maker:send',
+  // Task-bound official MCP App bridge. No credentials or arbitrary endpoint selection.
+  'maker:mcp-apps:v1',
   DL_SESSION_HANDOFF_CHANNEL,
   'maker:steer',
   'maker:list-active',
@@ -438,6 +448,17 @@ const EXTENDED_INVOKE_CHANNELS: readonly string[] = [
   // 云端伙伴：交出伙伴前探测目标电脑是否支持接手(只读常量，无 sender 依赖、无本机 UI 副作用)。
   // 老版本无 handler → CHANNEL_NOT_ALLOWED，交出方拒绝该目标。
   COMPANION_CLOUD_CAPS_CHANNEL,
+  // 云端伙伴：在任一台电脑上更换伙伴的主力电脑。只读读取主力电脑视角的可接手电脑，以及请主力电脑
+  // 交出伙伴(写)。准入同本机伙伴设置的「主力电脑」一行：同账号 + 主力电脑开启远程控制时控制端本就
+  // 能远程改这个伙伴；交出走被控端同一业务流程(同步、忙碌检查、比较后改主力电脑)，handler 不依赖
+  // sender、无本机 UI 副作用。仅同账号远控，不进 sharedTask 访客白名单。老版本无 handler →
+  // CHANNEL_NOT_ALLOWED；控制端按 caps 版本隐藏入口。
+  COMPANION_CLOUD_TARGETS_CHANNEL,
+  COMPANION_CLOUD_HAND_OVER_CHANNEL,
+  // 云端伙伴：请保留的那个 Cindy 所在电脑合并其他 Cindy（写；同账号远控，准入同上，业务 handler 只在
+  // 本机运行保留的那个 Cindy 时执行）。合并前请各来源 Cindy 的主力电脑先同步（写，只上传、不改主力电脑）。
+  COMPANION_CLOUD_MERGE_CHANNEL,
+  COMPANION_CLOUD_FLUSH_CHANNEL,
   // —— Rewind / Fork / Title / Context ——
   'maker:rewind:preview',
   'maker:rewind:commit',
@@ -540,6 +561,11 @@ const EXTENDED_INVOKE_CHANNELS: readonly string[] = [
   // memory, prompts, configuration, or native UI/file mutations.
   'local-db:bots:list',
   'local-db:bots:get',
+  // 伙伴自主跟进的工作台「一眼」：只读宿主内存状态表的投影（任务标题、等你的一句话摘要、
+  // 分钟数、设备名），不含工作目录、提示词、工具入参或代输入值；handler 只放远程可见的伙伴。
+  // 放行标准：① 只读 ② 同账号已授权控制端本就能经 maker:list-active / sessions:get-many 看到
+  // 同样的任务标题与状态 ③ 没有任何写入或本机特权动作。设置读写（settings-*）不放行。
+  'local-db:bots:autonomy:glance',
   // Same-account opted-in controllers may inspect and stop a companion's own
   // child task and read a participant-checked private thread. No profile mutation.
   'maker:bot-delegations:list',
@@ -688,6 +714,8 @@ export const REMOTE_INVOKE_ALLOWLIST: ReadonlySet<string> = new Set([
  */
 export const PUSH_FORWARD_ALLOWLIST: ReadonlySet<string> = new Set([
   'maker:bot-delegation:changed',
+  // 伙伴自主跟进状态变化（payload 只有 { botIds? }，节流 ≤1 次/秒），控制端据此重读「一眼」。
+  'maker:bot-autonomy:changed',
   'maker:bot-direct-message:changed',
   // maker-ipc MAKER_PUSH
   'maker:event',
@@ -834,6 +862,10 @@ export const INVOKE_TIMEOUT_OVERRIDES_MS: Readonly<Record<string, number>> = {
   [DL_SESSION_HANDOFF_CHANNEL]: 65_000,
   // 运行设备准备工作目录并启动 Worker 的 Agent，可能超过默认 30s。
   [ORCA_REMOTE_WORKER_OPEN_CHANNEL]: ORCA_REMOTE_WORKER_OPEN_TIMEOUT_MS,
+  // 交出伙伴先把积压对话与全部资料传到服务器，再改主力电脑。
+  [COMPANION_CLOUD_HAND_OVER_CHANNEL]: COMPANION_CLOUD_HAND_OVER_TIMEOUT_MS,
+  [COMPANION_CLOUD_MERGE_CHANNEL]: COMPANION_CLOUD_MERGE_TIMEOUT_MS,
+  [COMPANION_CLOUD_FLUSH_CHANNEL]: COMPANION_CLOUD_HAND_OVER_TIMEOUT_MS,
   // listing tier 轻量 DB 读:毫秒级查询,12s 仍等不到只能是链路问题,快速失败喂给熔断器。
   // 12s 同时覆盖被控端冷启动 DB 迁移的常见时长(那类失败是快速返回的 DbClient not ready,
   // 不吃满超时),不会误伤首拉重试。

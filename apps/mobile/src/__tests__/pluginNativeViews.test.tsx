@@ -140,11 +140,20 @@ vi.mock("react-native", () => ({
   TextInput: () => null,
   Pressable: (p: any) => p.children,
   ActivityIndicator: () => null,
+  AccessibilityInfo: { isReduceMotionEnabled: async () => false, addEventListener: () => ({ remove() {} }) },
   StyleSheet: { create: (s: any) => s },
 }));
 vi.mock("lucide-react-native", () => ({
+  CircleAlert: () => null,
   Puzzle: () => null,
   Wrench: () => null,
+}));
+vi.mock('@/components/AppText', async () => {
+  const native = await import('react-native');
+  return { Text: native.Text, TextInput: native.TextInput, MAX_FONT_SIZE_MULTIPLIER: 1.2 };
+});
+vi.mock('@/components/MobilePrimitives', () => ({
+  MainWindowActionButton: ({ action }: any) => createElement('button', { onClick: action.onPress, disabled: action.disabled || action.busy }, action.label),
 }));
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({ t: (key: string) => key, i18n: { language: "en" } }),

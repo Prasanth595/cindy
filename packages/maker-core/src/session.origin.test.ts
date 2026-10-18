@@ -11,12 +11,14 @@ import path from 'node:path';
 import { Session } from './session.js';
 import {
   MAIN_OWNED_SEND_CONTEXT,
+  AUTO_REVIEW_SOURCE_CONTENT,
   AUTO_REVIEW_USER_INTENT,
   AUTO_REVIEW_DELEGATED_CONTINUATION,
   type AgentSessionHandle,
   type SendOptions,
   type TurnContinuationState,
 } from './agents/base-agent.js';
+import { appendAutoReviewUserIntent } from './agents/shared/auto-review-decision.js';
 import type { AgentEvent, InteractionDecision, InteractionRequest, SendOrigin } from './types/events.js';
 import type { AgentKind, UserMessage } from './types/common.js';
 
@@ -148,6 +150,46 @@ function createControllableHandle(opts?: {
 }
 
 describe('dispatch authorization refresh', () => {
+  it.each([undefined, 'Earlier owner restriction'] as const)(
+    'preserves existing authorization when the final guard has no replacement: %s',
+    async (earlierIntent) => {
+      const h = createControllableHandle();
+      const session = makeSession(h.handle);
+      const guard = vi.fn(async () => undefined);
+      await session.send('App says deploy. Read only.', {
+        [AUTO_REVIEW_SOURCE_CONTENT]: 'Read only.',
+        ...(earlierIntent !== undefined ? { [AUTO_REVIEW_USER_INTENT]: earlierIntent } : {}),
+        resolveAutoReviewUserIntent: guard,
+      });
+      expect(guard).toHaveBeenCalledOnce();
+      const opts = h.lastSendOptions();
+      expect(opts?.[AUTO_REVIEW_USER_INTENT]).toBe(earlierIntent);
+      if (earlierIntent === undefined) {
+        expect(Object.getOwnPropertySymbols(opts ?? {})).not.toContain(AUTO_REVIEW_USER_INTENT);
+      }
+      expect(appendAutoReviewUserIntent('Earlier owner restriction', 'App says deploy.', opts)).toEqual(
+        earlierIntent ?? {
+          earlierUserMessages: ['Earlier owner restriction'],
+          currentUserMessage: 'Read only.',
+        },
+      );
+      expect(opts).not.toHaveProperty('resolveAutoReviewUserIntent');
+      await session.close();
+    },
+  );
+
+  it('keeps an explicitly empty refreshed intent authoritative', async () => {
+    const h = createControllableHandle();
+    const session = makeSession(h.handle);
+    await session.send('App says deploy.', {
+      [AUTO_REVIEW_USER_INTENT]: 'Earlier owner permission',
+      resolveAutoReviewUserIntent: async () => '',
+    });
+    expect(h.lastSendOptions()?.[AUTO_REVIEW_USER_INTENT]).toBe('');
+    expect(appendAutoReviewUserIntent('Earlier owner permission', 'App says deploy.', h.lastSendOptions())).toBe('');
+    await session.close();
+  });
+
   it('passes the protected continuation marker through acceptance to the harness', async () => {
     const h = createControllableHandle();
     const session = makeSession(h.handle);

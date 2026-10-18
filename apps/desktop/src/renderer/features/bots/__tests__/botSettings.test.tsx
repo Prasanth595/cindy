@@ -19,7 +19,7 @@ vi.mock('@/components/onboarding/ConnectProviderCard', () => ({
 const translate = (key: string, opts?: Record<string, unknown>) =>
   key.startsWith('settings.builtinTools.plugins.') ? String(opts?.defaultValue ?? key) : opts ? `${key}:${JSON.stringify(opts)}` : key;
 vi.mock('@/contexts/AuthContext', () => ({ useAuth: () => ({ dataOwnerId: 'fixture-owner' }) }));
-vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: translate }) }));
+vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: translate, i18n: { language: 'en' } }) }));
 
 const mocks = vi.hoisted(() => {
   const sessionGet = vi.fn();
@@ -92,9 +92,17 @@ vi.mock('../botStore', () => ({
     mocks.modelListeners.add(listener);
     return () => mocks.modelListeners.delete(listener);
   },
+  useBotAutonomySettings: () => null,
+  setBotSchedulerBotId: vi.fn(),
+  resetBotAutonomySettings: vi.fn(),
 }));
 vi.mock('../BotLifecycleSettings', () => ({
   BotLifecycleSettings: () => <div data-testid="bot-lifecycle-settings" />,
+}));
+vi.mock('../BotChannelsPage', () => ({
+  BotChannelsPage: ({ bot }: { bot: { id: string } }) => (
+    <div data-testid="bot-channels-page">{bot.id}</div>
+  ),
 }));
 vi.mock('@/components/new-chat/ModelSelector', () => ({
   ModelSelector: ({ unifiedAgents, onUnifiedSelect, modelId, onEffortChange, onNavigateToProviders }: {
@@ -136,6 +144,7 @@ vi.mock('@/components/chat/MarkdownRenderer', () => ({
 }));
 
 import { BotsHomeView, BotSettings } from '../BotsHomeView';
+import { ConfirmDialogProvider } from '@/components/ui/confirm-dialog-provider';
 
 function capabilities(overrides: Partial<BotCapabilities> = {}): BotCapabilities {
   return {
@@ -524,6 +533,29 @@ describe('Bot settings profile consolidation', () => {
     expect((await screen.findByRole('alert')).textContent).toContain('missing');
   });
 
+  it('keeps the teammate todos the heartbeat maintains visible on the routines page', async () => {
+    // 伙伴自主跟进：心跳叫醒伙伴后它会更新自己的待办；工作台不再平铺待办，主人在这里看。
+    const api = window.electronAPI as unknown as Record<string, Record<string, unknown>>;
+    api.routines = {
+      list: vi.fn(async () => []), sources: vi.fn(async () => []),
+      history: vi.fn(async () => []), onChanged: vi.fn(() => () => undefined),
+    };
+    (api.localDb.bots as Record<string, unknown>).todos = {
+      list: vi.fn(async () => ({ items: [{
+        id: 'todo-1', revision: 1, key: 'self:1', origin: 'discovered', title: '回复 Dash 的部署窗口问题',
+        progress: '', outcome: '', value: '', next: null, sources: [], associations: [], status: 'open',
+        createdAt: '2026-10-01T00:00:00.000Z', updatedAt: '2026-10-01T00:00:00.000Z', sourceDeadline: null,
+        deadlineCandidate: null, suggestedDate: null, decision: null, history: [], action: null,
+      }] })),
+    };
+    api.maker.onBotWorkbenchChanged = vi.fn(() => () => undefined);
+    mocks.initialSearch = 'settings=1&tab=growth';
+    render(<ConfirmDialogProvider><BotSettings bot={bot()} onBack={vi.fn()} onOpenSession={vi.fn()} /></ConfirmDialogProvider>);
+    fireEvent.click(screen.getByRole('button', { name: 'routines.title' }));
+    expect(await screen.findByText('回复 Dash 的部署窗口问题')).toBeTruthy();
+    expect(screen.getByRole('region', { name: 'teammateTodo.title' })).toBeTruthy();
+  });
+
   it('starts at grouped settings and opens real inner pages without exposing hidden inputs', async () => {
     renderSettings({}, 'settings=1&tab=growth');
     expect(screen.queryByRole('textbox')).toBeNull();
@@ -538,6 +570,24 @@ describe('Bot settings profile consolidation', () => {
     fireEvent.click(screen.getByRole('button', { name: 'bots.settingsTabs.model' }));
     expect(screen.getByRole('region', { name: 'bots.settingsTabs.model' })).toBeTruthy();
     expect(screen.queryByRole('textbox', { name: 'bots.nameLabel' })).toBeNull();
+  });
+
+  it('lists messaging platforms after capabilities and opens it from the home row or a deep link', () => {
+    const view = renderSettings();
+    const rows = screen
+      .getAllByRole('button')
+      .map((button) => button.textContent)
+      .filter((text) => text === 'bots.capabilities.title' || text === 'bots.channels.title');
+    expect(rows).toEqual(['bots.capabilities.title', 'bots.channels.title']);
+    fireEvent.click(screen.getByRole('button', { name: 'bots.channels.title' }));
+    expect(screen.getByTestId('bot-channels-page').textContent).toBe('bot-1');
+    expect(screen.getByRole('heading', { name: 'bots.channels.title' })).toBeTruthy();
+    view.unmount();
+
+    render(
+      <BotSettings bot={bot()} initialPage="channels" onBack={vi.fn()} onOpenSession={vi.fn()} />,
+    );
+    expect(screen.getByTestId('bot-channels-page')).toBeTruthy();
   });
 
   it('keeps the current inner page and its draft when saving before navigation fails', async () => {

@@ -5,9 +5,11 @@
  */
 import { createHash } from 'node:crypto';
 import { isSubagentParentToolUseId } from '@cindy/maker-shared/message-render';
+import { messageSourceSenderFromMeta } from '@cindy/maker-shared/message-source';
+import { imChannelDisplayName } from '../../shared/imMessageSource.js';
 import { visibleMessageText } from '../localDb/conversationSearch.pure.js';
 import type { CompanionCloudState } from './state.js';
-import { chatRejection, type CompanionApi } from './types.js';
+import { chatRejection, errorCode, isTransientAttachmentFailure, type CompanionApi, type CompanionLog } from './types.js';
 
 export interface CompanionMirrorRow {
   id: string;
@@ -34,6 +36,8 @@ const PART_BYTES = 60_000;
 const RESCAN_WINDOW_MS = 10 * 60_000;
 const RESCAN_LIMIT = 200;
 const RECENT_IDS = 400;
+/** Owner attachments the mirror uploads at most (larger ones stay a name in the room). */
+export const MIRROR_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024;
 
 const parse = (raw: string | null): unknown => {
   if (!raw) return null;
@@ -56,16 +60,63 @@ function attachmentNames(content: unknown): string[] {
 }
 
 /**
- * Host-stamped sender/source metadata (message-source.md). A user row carrying any of these
- * was sent by another task, teammate, plugin, IM channel, automation, Orca or a shared-task
- * member — not typed by the owner — so it never goes up as the owner's words.
- * `sourceDevice` (the owner on another device) is the one source that stays.
+ * User rows the companion's own chat hides (automatic continuations, coordination between
+ * teammates): not part of the visible conversation, so not in the room either.
  */
-const NON_OWNER_SOURCE_KEYS = ['origin', 'sourcePlugin', 'sharedTaskAuthor', 'imSource', 'hookSource', 'sourceGroup',
-  'botTaskCoordination', 'autoReviewUserText', 'autoResume'] as const;
+const HIDDEN_INPUT_KEYS = ['botTaskCoordination', 'autoResume'] as const;
+
+const SCHEDULER_LABEL = '定时任务';
+
+/**
+ * Where a visible user row came from when the owner did not type it here, in the words the chat
+ * shows next to it (message-source.md): the room shows the same conversation as the chat, with the
+ * same attribution. Owner input (also from another device; `autoReviewUserText` marks it) has none.
+ */
+export function mirrorSourceLabel(meta: Record<string, unknown>): string | null {
+  const sender = messageSourceSenderFromMeta(meta);
+  const quote = (name: unknown) => (typeof name === 'string' && name.trim() ? `「${name.trim().slice(0, 80)}」` : '');
+  if (sender?.kind === 'plugin') return `来自插件${quote(sender.name)}`;
+  if (sender?.kind === 'session') return sender.botId ? `来自伙伴${quote(sender.botName)}` : `来自任务${quote(sender.title)}`;
+  if (sender?.kind === 'shared-member') return `来自共享任务成员${quote(sender.name)}`;
+  const origin = meta.origin && typeof meta.origin === 'object' ? meta.origin as Record<string, unknown> : null;
+  if (origin?.kind === 'scheduler') return `来自${SCHEDULER_LABEL}`;
+  if (origin?.kind === 'orca') return '来自协同任务';
+  for (const key of ['imSource', 'hookSource'] as const) {
+    const source = meta[key] && typeof meta[key] === 'object' ? meta[key] as Record<string, unknown> : null;
+    if (source) return `来自${imChannelDisplayName(source.im) ?? '外部渠道'}`;
+  }
+  if (meta.sourceGroup) return '来自群聊';
+  return null;
+}
+
+/** A file the owner sent with a message, as the room media upload reads it. */
+export interface CompanionMirrorAttachment {
+  id: string; name: string; category: 'image' | 'file'; mimeType: string; size: number; url: string | null; path: string | null;
+}
+
+/**
+ * The owner's attachments of a mirrored user row (images from the media store, files by path on
+ * this computer). Only rows that are part of the visible conversation have any.
+ */
+export function mirrorAttachments(row: CompanionMirrorRow): CompanionMirrorAttachment[] {
+  if (row.role !== 'user' || mirrorMessageText(row) === null) return [];
+  const content = parse(row.content);
+  if (!content || typeof content !== 'object' || Array.isArray(content)) return [];
+  const record = content as Record<string, unknown>;
+  const list = (value: unknown) => (Array.isArray(value) ? value : []).map(item => (item && typeof item === 'object' ? item as Record<string, unknown> : {}));
+  const text = (value: unknown) => (typeof value === 'string' ? value : '');
+  const name = (item: Record<string, unknown>, fallback: string) =>
+    ([item.originalName, item.name].find((value): value is string => typeof value === 'string' && !!value.trim()) ?? fallback).replace(/[\r\n]+/g, ' ').slice(0, 200);
+  return [
+    ...list(record.images).map((item, index) => ({ id: `${row.id}:image:${index}`, name: name(item, '图片'), category: 'image' as const,
+      mimeType: text(item.mimeType) || 'image/png', size: typeof item.size === 'number' ? item.size : 0, url: text(item.url) || null, path: null })),
+    ...list(record.files).map((item, index) => ({ id: `${row.id}:file:${index}`, name: name(item, '文件'), category: 'file' as const,
+      mimeType: text(item.mimeType) || 'application/octet-stream', size: typeof item.size === 'number' ? item.size : 0, url: null, path: text(item.path) || null })),
+  ].filter(attachment => attachment.url || attachment.path);
+}
 
 /** Room text of a canonical row, or null when the row is not part of the visible conversation. */
-export function mirrorMessageText(row: CompanionMirrorRow): string | null {
+export function mirrorMessageText(row: CompanionMirrorRow, options: { placeholders?: boolean } = {}): string | null {
   if (row.role !== 'user' && row.role !== 'assistant') return null;
   if (row.clientId.startsWith(COMPANION_DIRECT_CLIENT_PREFIX) || row.clientId.startsWith(COMPANION_HISTORY_CLIENT_PREFIX)) return null;
   const parsedMeta = parse(row.agentMeta);
@@ -76,13 +127,21 @@ export function mirrorMessageText(row: CompanionMirrorRow): string | null {
     || (meta.parentToolUseId ?? null) !== null || (meta.parent_tool_use_id ?? null) !== null
     // Claude sub-agent rows; same predicate as the renderer (a legacy transcript link is not one).
     || (typeof meta.parentUuid === 'string' && !!meta.parentUuid && isSubagentParentToolUseId(meta.parentUuid)))) return null;
-  if (row.role === 'user' && NON_OWNER_SOURCE_KEYS.some(key => meta[key] !== undefined && meta[key] !== null && meta[key] !== false)) return null;
-  const text = visibleMessageText(row.role, row.content);
+  if (row.role === 'user' && HIDDEN_INPUT_KEYS.some(key => meta[key] !== undefined && meta[key] !== null && meta[key] !== false)) return null;
+  // A delegated continuation (not something said in this chat) carries this marker as an object.
+  if (row.role === 'user' && meta.autoReviewUserText && typeof meta.autoReviewUserText === 'object') return null;
+  // IM input keeps the person's own words apart from the context the host put around them.
+  const im = row.role === 'user' && meta.imSource && typeof meta.imSource === 'object' ? meta.imSource as Record<string, unknown> : null;
+  const typed = typeof im?.userText === 'string' && im.userText.trim() ? im.userText.trim() : visibleMessageText(row.role, row.content);
+  const label = row.role === 'user' ? mirrorSourceLabel(meta) : null;
+  const text = label && typed ? `〔${label}〕\n${typed}` : typed;
   // Attachments count on their own: an images-only message is still the owner's message.
   // Hidden synthetic inputs carry no attachments, so they stay out.
   const names = row.role === 'user' ? attachmentNames(parse(row.content)) : [];
   const result = [text, ...names.map(name => `[附件: ${name}]`)].filter(Boolean).join('\n').trim();
-  return result || null;
+  if (!result) return null;
+  // With the files themselves in the room, only the typed text goes along (it may be empty).
+  return options.placeholders === false ? text.trim() : result;
 }
 
 /** Split into room-sized parts without breaking surrogate pairs. */
@@ -100,18 +159,26 @@ export function splitMirrorText(text: string): string[] {
 }
 
 interface ImportMessage {
-  sourceId: string; authorId: string; createdAt: string; content: Array<{ type: 'text'; text: string }>;
+  sourceId: string; authorId: string; createdAt: string; content: Array<{ type: string; text?: string; mediaId?: string; caption?: string }>;
 }
+
+/** Room media blocks of uploaded files, in order (chatServerMedia upload). */
+export type CompanionMediaUpload = (roomId: string, source: string, attachments: CompanionMirrorAttachment[], authorId: string) =>
+  Promise<Array<{ type: string; mediaId?: string; caption?: string }>>;
 
 export function createCompanionMirror(deps: {
   api: CompanionApi;
   state: CompanionCloudState;
   humanActorId: () => string;
+  /** Null when the companion has no main task yet; throws when it cannot be told, so nothing counts as sent. */
   canonicalSession: (botId: string) => Promise<string | null>;
   /** Strictly after the cursor, ascending by (createdAt, id); user/assistant rows that were not rewound. */
   rowsAfter: (sessionId: string, cursor: CompanionMirrorCursor, limit: number) => Promise<CompanionMirrorRow[]>;
   /** Newest first, same filters as rowsAfter. */
   latestRows: (sessionId: string, limit: number) => Promise<CompanionMirrorRow[]>;
+  /** Uploads the owner's attachments so other devices can open them; absent keeps name placeholders. */
+  uploadMedia?: CompanionMediaUpload;
+  log?: CompanionLog;
 }) {
   async function ensureRoom(botId: string, actorId: string, name: string): Promise<string> {
     const known = deps.state.bot(botId);
@@ -137,20 +204,41 @@ export function createCompanionMirror(deps: {
    */
   async function importRows(botId: string, actorId: string, roomId: string, sessionId: string, rows: CompanionMirrorRow[], advance = true) {
     const parts: Array<{ message: ImportMessage; row: number; last: boolean; bytes: number }> = [];
-    rows.forEach((row, index) => {
-      const text = mirrorMessageText(row);
-      if (!text) return;
-      const pieces = splitMirrorText(text);
+    for (const [index, row] of rows.entries()) {
+      if (!mirrorMessageText(row)) continue;
+      const sourceId = `cindy:${sessionId}:${row.id}`;
+      const authorId = row.role === 'user' ? deps.humanActorId() : actorId;
+      // The files themselves when they can be uploaded; a file that cannot (too large, gone, an old
+      // address form) keeps its name in the text, as before.
+      const media: Array<{ type: string; mediaId?: string; caption?: string }> = [];
+      const uploaded: string[] = [];
+      for (const file of deps.uploadMedia ? mirrorAttachments(row) : []) {
+        if (file.size > MIRROR_ATTACHMENT_MAX_BYTES) continue;
+        try { media.push(...await deps.uploadMedia!(roomId, sourceId, [file], authorId)); uploaded.push(file.name); }
+        catch (error) {
+          // A file that may still go up stops this pass (the cursor stays), so the retry sends it.
+          if (isTransientAttachmentFailure(error)) throw error;
+          deps.log?.warn('Companion attachment upload skipped; name only', { code: errorCode(error) });
+        }
+      }
+      // Every attachment that did not go up (as listed in the row) keeps its name in the text.
+      const names = attachmentNames(parse(row.content));
+      for (const name of uploaded) { const at = names.indexOf(name); if (at >= 0) names.splice(at, 1); }
+      const text = media.length
+        ? [mirrorMessageText(row, { placeholders: false }) ?? '', ...names.map(name => `[附件: ${name}]`)].filter(Boolean).join('\n')
+        : mirrorMessageText(row) ?? '';
+      const pieces = text ? splitMirrorText(text) : [''];
       pieces.forEach((piece, n) => {
+        const last = n === pieces.length - 1;
         const message: ImportMessage = {
-          sourceId: `cindy:${sessionId}:${row.id}${n ? `:p${n}` : ''}`.slice(0, 200),
-          authorId: row.role === 'user' ? deps.humanActorId() : actorId,
+          sourceId: `${sourceId}${n ? `:p${n}` : ''}`.slice(0, 200),
+          authorId,
           createdAt: new Date(row.createdAt).toISOString(),
-          content: [{ type: 'text', text: piece }],
+          content: [...(piece ? [{ type: 'text', text: piece }] : []), ...(last ? media : [])],
         };
-        parts.push({ message, row: index, last: n === pieces.length - 1, bytes: Buffer.byteLength(JSON.stringify(message)) });
+        parts.push({ message, row: index, last, bytes: Buffer.byteLength(JSON.stringify(message)) });
       });
-    });
+    }
     const moveTo = (upTo: number) => {
       if (!advance) return;
       let index = upTo;
@@ -208,6 +296,8 @@ export function createCompanionMirror(deps: {
       const from = eligible.length > COMPANION_BACKFILL_LIMIT ? eligible[eligible.length - COMPANION_BACKFILL_LIMIT]! : 0;
       if (rows.length) await importRows(botId, actorId, roomId, sessionId, rows.slice(from));
       else deps.state.update(botId, actorId, entry => { entry.mirror = { sessionId, createdAt: 0, id: '' }; });
+      // Before a hand-over the older history goes up too: this copy stops mirroring once demoted.
+      if (options.drain) await backfillBot(botId, actorId, roomId, sessionId, true);
       return;
     }
     // Assistant rows are stamped when they start and persisted later, and imported history can
@@ -221,10 +311,39 @@ export function createCompanionMirror(deps: {
     let after: CompanionMirrorCursor = { createdAt: cursor.createdAt, id: cursor.id };
     for (let page = 0; options.drain || page < MAX_PAGES; page += 1) {
       const rows = await deps.rowsAfter(sessionId, after, PAGE);
-      if (!rows.length) return;
+      if (!rows.length) break;
       await importRows(botId, actorId, roomId, sessionId, rows);
       after = rows[rows.length - 1]!;
-      if (rows.length < PAGE) return;
+      if (rows.length < PAGE) break;
+    }
+    await backfillBot(botId, actorId, roomId, sessionId, options.drain === true);
+  }
+
+  /**
+   * Upload the Session's history from before the mirror cursor (older conversation, or this
+   * computer's own history from before it took the companion over), oldest first, a bounded
+   * amount per pass. The room dedupes by source id, so rows already there are no-ops; it orders
+   * by arrival, so readers sort by message time.
+   */
+  async function backfillBot(botId: string, actorId: string, roomId: string, sessionId: string, drain: boolean) {
+    const entry = deps.state.bot(botId);
+    const mirror = entry?.mirror;
+    if (!mirror || mirror.sessionId !== sessionId) return;
+    const progress = entry?.backfill?.sessionId === sessionId ? entry.backfill : { sessionId, createdAt: 0, id: '' };
+    if (progress.done) return;
+    const behindMirror = (row: CompanionMirrorRow) => row.createdAt < mirror.createdAt || (row.createdAt === mirror.createdAt && row.id <= mirror.id);
+    let after: CompanionMirrorCursor = { createdAt: progress.createdAt, id: progress.id };
+    for (let page = 0; drain || page < MAX_PAGES; page += 1) {
+      const fetched = await deps.rowsAfter(sessionId, after, PAGE);
+      const rows = fetched.filter(behindMirror);
+      // Rows this computer imported recently are already in the room.
+      const recent = new Set(deps.state.bot(botId)?.mirror?.recent ?? []);
+      const pending = rows.filter(row => !recent.has(row.id));
+      if (pending.length) await importRows(botId, actorId, roomId, sessionId, pending, false);
+      if (rows.length) after = rows[rows.length - 1]!;
+      const done = rows.length < fetched.length || fetched.length < PAGE;
+      deps.state.update(botId, actorId, next => { next.backfill = { sessionId, createdAt: after.createdAt, id: after.id, ...(done ? { done: true } : {}) }; });
+      if (done) return;
     }
   }
 

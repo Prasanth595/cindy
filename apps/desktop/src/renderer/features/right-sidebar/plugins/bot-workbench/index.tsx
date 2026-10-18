@@ -8,8 +8,10 @@ interface BotWorkbenchTabState {
 }
 
 /**
- * 伙伴工作台:只由伙伴主任务页自动创建(不进「+」菜单),每个任务至多一个。
- * 只在已确认是本机的任务里渲染;device-link 远程或归属未解析时不显示内容。
+ * 伙伴工作台「一眼」：伙伴主任务里的右侧栏标签，每个任务至多一个。伙伴第一次有事等主人时
+ * 自动打开一次（BotSessionView）；之后关掉不再自动开，可从聊天头部入口或「+」菜单重新打开。
+ * 内容只读宿主的 glance 投影：本机伙伴读本机，别的电脑上的伙伴经 device-link 读那台。
+ * 任务归属尚未解析（deviceLinkDeviceId === undefined）或 SSH 远程任务不渲染。
  */
 const plugin: TabKindPlugin<BotWorkbenchTabState> = {
   kind: 'bot-workbench',
@@ -20,13 +22,17 @@ const plugin: TabKindPlugin<BotWorkbenchTabState> = {
     order: 0,
     enabled: true,
     singleton: true,
-    hiddenFromMenu: true,
   },
   TabPillTitle: ({ t }) => <>{t('bots.workbench.title')}</>,
   TabPillIcon: () => <LayoutGrid size={13} />,
   TabBody: ({ state, ctx }: TabKindBodyProps<BotWorkbenchTabState>) =>
-    state.botId && ctx.deviceLinkDeviceId === null && !ctx.remoteHostId ? (
-      <BotWorkbench key={state.botId} botId={state.botId} sessionId={ctx.sessionId} />
+    state.botId && ctx.deviceLinkDeviceId !== undefined && !ctx.remoteHostId ? (
+      <BotWorkbench
+        key={`${ctx.deviceLinkDeviceId ?? ''}:${state.botId}`}
+        botId={state.botId}
+        sessionId={ctx.sessionId}
+        hostDeviceId={ctx.deviceLinkDeviceId}
+      />
     ) : null,
   defaultState: () => ({ botId: '' }),
   hydrateState: (raw) => ({

@@ -38,7 +38,6 @@ import {
 import type { UsageTracker } from '../shared/usage-tracker.js';
 import { isModelAccessDenied } from './model-access-error.js';
 import { attachLiveGeneration, sampleGenerationDuration } from '../shared/live-generation-snapshot.js';
-import { isFileWritingTool } from '../shared/token-speed.js';
 import {
   beginClaudeGeneration,
   beginClaudeGenerationAtRequestStart,
@@ -704,12 +703,14 @@ interface TranslateContext {
   /**
    * upstream-response-idle watchdog / loop guard: assistant / stream_event 含 tool_use 时回调。
    * parentToolUseId 用于隔离并发 subagent；缺省表示顶层 agent。
+   * inputStreaming 表示参数尚在流入，不能据此认定工具已执行并暂停上游计时。
    */
   onToolUseStart?: (
     toolUseId: string,
     toolName?: unknown,
     input?: unknown,
     parentToolUseId?: string,
+    inputStreaming?: boolean,
   ) => void;
   /**
    * upstream-response-idle watchdog: user 含 tool_result 时出队, 配对 onToolUseStart。
@@ -1695,7 +1696,7 @@ function observeClaudeTokenSpeed(
     case 'content_block_delta': {
       const delta = event.delta;
       const text = delta?.type === 'input_json_delta'
-        ? (isFileWritingTool(tools.get(index)) ? delta.partial_json : undefined)
+        ? (tools.has(index) ? delta.partial_json : undefined)
         : delta?.text ?? delta?.thinking;
       if (typeof text === 'string' && speed.recordDelta(text)) {
         queue.push({ type: 'status', data: ccLiveStatus(ctx, 'Generating...', true), source: 'claude-code' });
@@ -1703,7 +1704,7 @@ function observeClaudeTokenSpeed(
       return;
     }
     case 'content_block_stop':
-      if (tools.has(index) && !isFileWritingTool(tools.get(index))) speed.pause();
+      if (tools.has(index)) speed.pause();
       return;
   }
 }
@@ -1732,7 +1733,7 @@ function handleStreamEvent(
 
   if (!parentToolUseId) observeClaudeTokenSpeed(event, queue, ctx);
 
-  // 冗余 add: 防 SDK 顺序契约变化 (stream_event 先于 assistant message yield), Set 幂等。
+  // 流式开头先登记工具身份；完整 assistant 消息才表示参数已交付。
   if (event.type === 'content_block_start') {
     const cb = event.content_block;
     if (cb && cb.type === 'text') {
@@ -1742,12 +1743,13 @@ function handleStreamEvent(
     if (cb && cb.type === 'tool_use') {
       const toolUseId = rememberClaudeToolUseId(ctx, cb.id, cb.name);
       if (toolUseId) {
-        // watchdog / loop-guard 仍要立刻拿到 tool id。生成计时要等
-        // message_delta 或完整 assistant tool_use: content_block_start
+        // loop-guard 仍要立刻拿到 tool id；上游 watchdog 等完整 assistant
+        // tool_use 或 canUseTool 才停表。生成计时要等 message_delta 或完整
+        // assistant tool_use: content_block_start
         // 早于参数 input_json_delta,这里停表会把参数生成时间从分母抠掉,
         // 而后续 message_delta 仍把这些 token 加进 outputTokens。
         if (!parentToolUseId) ctx.rt.mainRequestToolUseIds.add(toolUseId);
-        ctx.onToolUseStart?.(toolUseId, cb.name, cb.input, parentToolUseId);
+        ctx.onToolUseStart?.(toolUseId, cb.name, cb.input, parentToolUseId, true);
       }
     }
   }

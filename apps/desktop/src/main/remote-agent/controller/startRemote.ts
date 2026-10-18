@@ -239,7 +239,7 @@ export async function startRemoteAgentSession(
   // 同一任务、同一分享、原始权限档未变时恢复之前的「本任务总是允许」(Orca Worker 等会在两轮之间被回收重建)。
   const grant = credentialConsent?.grant;
   const grantPermission = () => credentialGrantPermission(permissionMode, planMode);
-  if (grant?.restore(grantPermission())) gate.allowCredentialsForSession();
+  if (grant?.restore(grantPermission())) gate.restoreCredentialsForSession();
   let controller: RemoteAgentHandleController | null = null;
   const executor = new RemoteExecutor({
     workspace,

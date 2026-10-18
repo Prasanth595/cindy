@@ -32,7 +32,7 @@ import {
 import type { AgentEvent, AgentTaskUpdateEventData, UsageSnapshot } from '../../types/index.js';
 import type { AsyncQueue } from '../shared/async-queue.js';
 import { attachLiveGeneration } from '../shared/live-generation-snapshot.js';
-import { TokenSpeedMeter, isFileWritingTool } from '../shared/token-speed.js';
+import { TokenSpeedMeter } from '../shared/token-speed.js';
 import type { UsageSegment } from '../shared/usage-tracker.js';
 import {
   UPSTREAM_OVERLOAD_REASON,
@@ -1233,8 +1233,6 @@ function observePiTokenSpeed(
       ctx.tokenSpeed.start();
       return;
     case 'toolcall_delta':
-      if (!isFileWritingTool(piDeltaToolName(delta))) return;
-    // falls through
     case 'text_delta':
     case 'thinking_delta':
       if (typeof delta.delta === 'string' && ctx.tokenSpeed.recordDelta(delta.delta)) {
@@ -1242,18 +1240,9 @@ function observePiTokenSpeed(
       }
       return;
     case 'toolcall_end':
-      if (!isFileWritingTool(piDeltaToolName(delta))) ctx.tokenSpeed.pause();
+      ctx.tokenSpeed.pause();
       return;
   }
-}
-
-function piDeltaToolName(delta: Record<string, unknown>): unknown {
-  const toolCall = delta.toolCall as { name?: unknown } | undefined;
-  if (toolCall?.name !== undefined) return toolCall.name;
-  const partial = delta.partial as { content?: Array<{ type?: unknown; name?: unknown }> } | undefined;
-  const index = typeof delta.contentIndex === 'number' ? delta.contentIndex : 0;
-  const block = partial?.content?.[index];
-  return block?.type === 'toolCall' ? block.name : undefined;
 }
 
 function handleAssistantDelta(

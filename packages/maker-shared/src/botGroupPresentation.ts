@@ -21,6 +21,19 @@ export function isActiveBotGroupMember(member: Pick<BotGroupMemberView, 'status'
   return member.status === 'active';
 }
 
+/** UI affordances only; the server must authorize every mutation against current membership. */
+export function chatGroupMembership(group: Pick<BotGroupSummary, 'serverBacked' | 'members'>) {
+  const self = group.members.find(member => member.isSelf === true);
+  const owned = (member: BotGroupMemberView) => member.isOwned === true || member.isSelf === true;
+  const owner = group.serverBacked === true && group.members.some(member => owned(member) && member.role === 'owner');
+  const manager = owner || (group.serverBacked === true && group.members.some(member => owned(member) && member.role === 'admin'));
+  // Leaving also removes this account's companions. Another owner from this same account
+  // therefore cannot satisfy LAST_OWNER, even when the human is only an ordinary member.
+  const otherOwner = group.members.some(member => member.isOwned === false && !member.isSelf && member.role === 'owner');
+  const canLeave = group.serverBacked === true && !!self?.actorId && (!owner || otherOwner);
+  return { self, owner, manager, canLeave };
+}
+
 /** Latest activity first, like every other chat list. */
 export function sortBotGroups(groups: readonly BotGroupSummary[]): BotGroupSummary[] {
   const activityAt = (group: BotGroupSummary) =>
@@ -112,6 +125,9 @@ export type BotGroupErrorVariant =
   | 'permissionDenied'
   | 'serviceError'
   | 'groupArchived'
+  | 'groupDissolved'
+  | 'lifecycleUnavailable'
+  | 'lastOwner'
   | 'memberLimit'
   | 'memberUnavailable'
   | 'mentionUnavailable'
@@ -133,6 +149,9 @@ const ERROR_VARIANTS: ReadonlyMap<string, BotGroupErrorVariant> = new Map<BotGro
   ['PERMISSION_DENIED', 'permissionDenied'],
   ['SERVICE_ERROR', 'serviceError'],
   ['GROUP_ARCHIVED', 'groupArchived'],
+  ['GROUP_DISSOLVED', 'groupDissolved'],
+  ['LIFECYCLE_UNAVAILABLE', 'lifecycleUnavailable'],
+  ['LAST_OWNER', 'lastOwner'],
   ['MEMBER_LIMIT', 'memberLimit'],
   ['MEMBER_UNAVAILABLE', 'memberUnavailable'],
   ['MENTION_UNAVAILABLE', 'mentionUnavailable'],

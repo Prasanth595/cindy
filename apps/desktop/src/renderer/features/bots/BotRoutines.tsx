@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Clock3, Check, CircleAlert, Pause, Plus } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { cronToHuman } from '@/features/scheduler/lib/cronToHuman';
@@ -35,8 +35,14 @@ export function BotRoutines({
   beforeLeaveRef,
   backRef,
   embedded = false,
+  header,
+  footer,
 }: {
   embedded?: boolean;
+  /** Settings shown above the list (not inside the editor), e.g. the teammate's follow-up switches. */
+  header?: ReactNode;
+  /** Shown below the list (not inside the editor), e.g. the teammate's todos. */
+  footer?: ReactNode;
   botId: string;
   beforeLeaveRef?: { current: (() => Promise<boolean>) | null };
   /** Host back button: steps from the editor to the list first (the inline back button is then omitted). */
@@ -256,13 +262,23 @@ export function BotRoutines({
           </Button>
         </div>
       )}
+      {!draft && header ? <div className="mb-5">{header}</div> : null}
       {!draft ? (
         <div className="space-y-2">
           {loading ? <Spinner size={18} /> : null}
           {!loading && !error && !routines.length && (
             <p className="text-[var(--text-secondary)]">{t('routines.empty')}</p>
           )}
-          {routines.map((routine) => (
+          {routines.map((routine) => routine.builtin === 'follow-up' ? (
+            <BuiltinFollowUpRow
+              key={routine.id}
+              routine={routine}
+              disabled={busy}
+              onEnabledChange={(enabled) =>
+                void act(() => window.electronAPI.routines.save(botId, routineInput({ ...routine, enabled }), routine.id))
+              }
+            />
+          ) : (
             <button
               key={routine.id}
               type="button"
@@ -288,7 +304,9 @@ export function BotRoutines({
             </button>
           ))}
         </div>
-      ) : (
+      ) : null}
+      {!draft && footer ? <div className="mt-6">{footer}</div> : null}
+      {draft ? (
         <fieldset ref={editorRef} disabled={busy} className="min-w-0 space-y-5">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <label className="flex items-center gap-2">
@@ -560,7 +578,7 @@ export function BotRoutines({
             ))}
           </div>
         </fieldset>
-      )}
+      ) : null}
     </section>
   );
 }
@@ -830,5 +848,55 @@ function IntegerInput({
         if (next !== null) onChange(next);
       }}
     />
+  );
+}
+
+function routineInput(routine: Routine): RoutineInput {
+  return {
+    name: routine.name,
+    prompt: routine.prompt,
+    enabled: routine.enabled,
+    triggers: routine.triggers,
+    ...(routine.silentWhenIdle !== undefined ? { silentWhenIdle: routine.silentWhenIdle } : {}),
+    ...(routine.preRunHook !== undefined ? { preRunHook: routine.preRunHook } : {}),
+  };
+}
+
+/**
+ * 宿主内置的「跟进」：指令与触发条件由宿主维护，这里不进编辑器、不能删，只能暂停或恢复。
+ */
+function BuiltinFollowUpRow({
+  routine,
+  disabled,
+  onEnabledChange,
+}: {
+  routine: Routine;
+  disabled: boolean;
+  onEnabledChange: (enabled: boolean) => void;
+}) {
+  const { t } = useTranslation();
+  const name = t('routines.builtinFollowUp.name');
+  return (
+    <div className="flex min-h-12 w-full items-start gap-3 rounded-lg px-3 py-3">
+      {routine.activity ? (
+        <Spinner size={16} className="mt-1 shrink-0" />
+      ) : routine.enabled ? (
+        <Clock3 size={16} className="mt-1 shrink-0" />
+      ) : (
+        <Pause size={16} className="mt-1 shrink-0" />
+      )}
+      <span className="min-w-0 flex-1">
+        <span className="block truncate">{name}</span>
+        {/* 触发条件由宿主维护、条数多且来源重复，这里只写一句白话，不逐条列出。 */}
+        <span className="block text-12 text-[var(--text-secondary)]">{t('routines.builtinFollowUp.hint')}</span>
+      </span>
+      <Switch
+        aria-label={name}
+        className="mt-0.5 shrink-0"
+        checked={routine.enabled}
+        disabled={disabled}
+        onCheckedChange={(enabled) => onEnabledChange(enabled === true)}
+      />
+    </div>
   );
 }

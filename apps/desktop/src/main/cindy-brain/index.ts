@@ -346,7 +346,6 @@ import { submitAndAwaitVideo } from '../cindy-proxy-media/video/run.js';
 
 import {
   deriveCindyMediaConfig,
-  filterLegacyCindyMediaConfig,
   selectExecutableCoreMediaModels,
   type CindyCapabilityKind,
   type CindyMediaCatalogConfig,
@@ -458,6 +457,9 @@ import { getSessionFsSnapshot, getSessionRowSnapshot } from '../localDb/ipc/sess
 import { getTeamByWorkerSession } from '../localDb/orcaTeamStore.js';
 import { getDirDepositVault, getSaveDepositVault, isPathInsideDir } from './dirDeposit.js';
 import { readInstalledGhostManifestSnapshot } from '../installedGhostManifest.js';
+import { registerPluginUsageIpc } from '../plugin-usage/ipc.js';
+import { currentPluginUsageService } from '../plugin-usage/current.js';
+import { pluginUsageIdentity } from '../plugin-usage/identity.js';
 import {
   ghostManifestDigest,
   PluginMarketLedger,
@@ -532,23 +534,10 @@ import {
   formatAuxiliaryModelRefLabel,
   getEffectiveAuxiliaryModelChain,
 } from '../utility-model/resolveAuxiliaryModelChain.js';
-import { utilityModelPinOptions } from '../../shared/utilityModelProfiles.js';
 import { isKnownEmbeddingModel } from '@cindy/embedding-client';
-import {
-  buildTextOneshotPinOptions,
-  encodeCatalogPin,
-  resolveOneshotCatalogModel,
-} from '../utility-model/textOneshotPinOptions.js';
+import { resolveOneshotCatalogModel } from '../utility-model/textOneshotPinOptions.js';
 import { hasOneshotProviderCredential } from '../utility-model/oneshotProviderUsability.js';
-import {
-  CINDY_CAPABILITY_KEYS,
-  readGhostCindyOverrides,
-  readGhostCindyInflightLimit,
-  writeGhostCindyOverride,
-  relocateGhostCindyPrefs,
-  type CindyCapabilityKey,
-} from './cindyPrefsStore.js';
-import { isCindyOverrideModelAllowed } from './cindyOverrideWhitelist.js';
+import { readGhostCindyInflightLimit, relocateGhostCindyPrefs } from './cindyPrefsStore.js';
 import { createGhostComposerListHandler } from './ghostComposerIpc.js';
 import { GHOST_COMPOSER_LIST_CHANNEL } from '../../shared/ghostComposer.js';
 import {
@@ -1251,10 +1240,11 @@ export async function suspendAllGhosts(): Promise<void> {
   resetNodeRuntimeBrokerForAccountBoundary();
   brainRootCache = null;
   const roots = listGhostOwnerProjectionRoots();
-  // Legacy links live in the shared home roots; serialize with other Cindy processes.
-  const skillCleanup = await withSharedSkillRootsLock(() =>
-    removeGhostSkillLinksForRoots(roots, undefined,
-      roots.map((root) => path.join(ghostSkillPluginRoot(root), 'skills'))));
+  // Private revocation is protected by this instance's owner boundary. Only
+  // an actual legacy shared-link removal needs the machine-wide writer lock.
+  const skillCleanup = await removeGhostSkillLinksForRoots(roots, undefined,
+    roots.map((root) => path.join(ghostSkillPluginRoot(root), 'skills')),
+    withSharedSkillRootsLock);
   for (const warning of skillCleanup.warnings) {
     log.warn('ghost owner skill cleanup warning', { warning });
   }
@@ -2023,6 +2013,20 @@ export function getGhostPipeDispatcher(): GhostPipeDispatcher {
         return r.ok ? { ok: true } : { ok: false, reason: r.reason };
       },
       sendToGhost: (ghostId, payload) => sendToGhostLogic(ghostId, payload),
+      prepareUsage: (ghost, callId, toolName, sessionId) => {
+        const service = currentPluginUsageService();
+        if (!service) return null;
+        if (ghost.approval.state !== 'approved') return null;
+        const handle = service.captureBound(installedGhostStoragePart(ghost), ghost.approval.revision);
+        if (!handle) {
+          void bindPluginUsage(ghost);
+          return null;
+        }
+        return {
+          accepted: occurredAt => service.accept(handle, callId, toolName, sessionId ?? null, occurredAt),
+          settled: outcome => service.settle(handle, callId, outcome),
+        };
+      },
       log,
     });
   }
@@ -3016,6 +3020,46 @@ function pluginMarketAuthorizationTargetFor(ghostId: string): { ghostId: string;
   if (ghost) return { ghostId: ghost.manifest.id, ...deliveryNamespaceFields(ghost) };
   const identity = parsePluginInstanceId(ghostId);
   return identity ?? { ghostId };
+}
+
+/** Reuse the verified install ledger; an official label never establishes distribution identity. */
+function readPluginUsageIdentity(ghost: InstalledGhost) {
+  try {
+    const result = readInstalledGhostManifestSnapshot(ghost.dir, GHOST_INSTALL_MANIFEST_MAX_BYTES);
+    return pluginUsageIdentity(ghost, getPluginMarketLedger().installationForPlugin({ ghostId: ghost.manifest.id, ...deliveryNamespaceFields(ghost) }),
+      result.ok ? installedMarketManifestIdentity(result.snapshot) : null,
+      pluginUsageServerRoot());
+  } catch { return null; }
+}
+
+function pluginUsageServerRoot(): string {
+  try { return getClientEndpoint('pluginApiBaseUrl').replace(/\/+$/, ''); }
+  catch { return ''; }
+}
+
+async function bindPluginUsage(ghost: InstalledGhost, previousRevision?: string): Promise<void> {
+  const scope = activeOwnerScopeKey();
+  const service = currentPluginUsageService();
+  if (!service) return;
+  try {
+    await withGhostInstallLock(ghost.manifest.id, async () => {
+      if (activeOwnerScopeKey() !== scope || isAppSessionBoundaryPending()) return;
+      // A fallback bind can wait behind update/uninstall. Read the final committed identity.
+      const installed = findInstalledGhostByInstanceId(getGhostManager().list(), installedGhostStoragePart(ghost));
+      const identity = installed && readPluginUsageIdentity(installed);
+      if (identity) await service.bind(identity, previousRevision);
+    });
+  }
+  catch { log.warn('plugin usage binding unavailable'); }
+}
+
+/** Initialize generations before normal tool traffic; no old call is buffered for later replay. */
+export async function refreshPluginUsageBindings(): Promise<void> {
+  const scope = activeOwnerScopeKey();
+  for (const ghost of getGhostManager().list()) {
+    if (activeOwnerScopeKey() !== scope || isAppSessionBoundaryPending()) return;
+    await bindPluginUsage(ghost);
+  }
 }
 
 /** Read Manifest and byte identity together from one installed ghost.json snapshot. */
@@ -4224,36 +4268,6 @@ function getGhostMediaPreferenceConfig(
   };
 }
 
-/** 存量钉定已失效或旧插件无法表达时，一次性升级为当前可用选型。 */
-function resolveAndMigrateGhostMediaPreference(
-  ghostId: string,
-  capability: GhostMediaCapability,
-  config: CindyMediaPreferenceConfig,
-  preference: string | undefined,
-): CindyMediaPreferenceModel | null {
-  const selected = resolveMediaPreferenceOrDefault(config, preference);
-  if (preference && selected && preference !== selected.id) {
-    try {
-      writeGhostCindyOverride(ghostId, capability, selected.id);
-      log.info('migrating stale ghost media preference to available model', {
-        ghostId,
-        capability,
-        previousPreference: preference,
-        nextPreference: selected.id,
-      });
-    } catch (error) {
-      log.warn('persisting migrated ghost media preference failed; using runtime fallback', {
-        ghostId,
-        capability,
-        previousPreference: preference,
-        fallbackPreference: selected.id,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
-  return selected;
-}
-
 /**
  * 插件配置页的模型目录；这里只读目录，不提供任何生成入口。Host 只按 Gateway mode
  * 切图片/视频大类并透传 modalities，具体动作支持度由插件自行解释。
@@ -4351,9 +4365,9 @@ async function getGhostConfigurableMediaModels(
 }
 
 /**
- * 读取插件在 Host「Cindy 能力」中的现有媒体选型。
- * 已配置模型失效，或旧插件无法表达完整来源时，回落到当前第一个
- * 可用模型，并一次性迁移存量配置，保证页面展示与实际执行一致。
+ * 读取插件当前会用到的媒体选型。插件没有逐项媒体覆盖(2026-10 起详情页只有
+ * 一个「模型」字段,只管快问快答与新建任务),这里始终返回系统默认选型;
+ * 旧插件无法表达完整来源时同样按兼容规则收敛到一个可用来源。
  */
 function getGhostConfiguredMediaModel(
   ghostId: string,
@@ -4381,13 +4395,7 @@ function getGhostConfiguredMediaModel(
   }
 
   const config = getGhostMediaPreferenceConfig(ghostId, mediaCapability);
-  const override = readGhostCindyOverrides(ghostId)[mediaCapability];
-  const selected = resolveAndMigrateGhostMediaPreference(
-    ghostId,
-    mediaCapability,
-    config,
-    override,
-  );
+  const selected = resolveMediaPreferenceOrDefault(config, undefined);
   if (!selected) {
     return {
       ok: false,
@@ -4973,6 +4981,39 @@ configureProviderMediaRuntime({
 });
 
 /**
+ * 插件详情「模型」字段(与插件新建任务共用 pluginTaskPrefsStore)→ 快问快答的
+ * 供应商×agent×模型。每单现读;未选 = null = 跟随身份卡声明/系统辅助模型链。
+ */
+function getPluginOneshotModelSelection(
+  ghostId: string,
+): { providerId?: string; agentKind: AgentKind; model: string } | null {
+  const config = readPluginTaskConfig(ghostId);
+  if (!config.model) return null;
+  if (!config.agentKind || config.agentKind === 'pi') {
+    // 两种情况按目录解析一条快问快答可路由的 供应商×agent×模型:
+    // - 手改文件只写了 model;
+    // - 用户给插件选的是 Pi 路线(快问快答只有 codex / claude-code 通道):同一
+    //   供应商×模型换成可用通道执行。
+    // 用户显式选了供应商时钉死该供应商:解析结果落到别家(该供应商不可用/无通道)
+    // 一律不采用,绝不换另一家同名模型执行计费。解析不到或不一致都按用户显式选择
+    // 原样返回(执行侧推断不出即如实失败),不悄悄换回系统链。
+    const resolved = resolveOneshotCatalogModel(
+      getActiveCatalog(),
+      readModelDisableOverrides(),
+      config.model,
+      config.providerId ? [config.providerId, ...readProviderOrder()] : readProviderOrder(),
+      hasOneshotProviderCredential,
+    );
+    if (resolved && (!config.providerId || resolved.providerId === config.providerId)) return resolved;
+  }
+  return {
+    agentKind: config.agentKind === 'cc' ? 'claude-code' : (config.agentKind ?? 'codex'),
+    model: config.model,
+    ...(config.providerId ? { providerId: config.providerId } : {}),
+  };
+}
+
+/**
  * Plugin media and storage use the same process-local AppSession owner
  * boundary as the rest of the owner-scoped runtime.
  */
@@ -5053,38 +5094,9 @@ export function getGhostCindySlot(): GhostCindySlot {
       // 画面参数按型号二次校验的数据源(registry capabilities)。
       imageCapabilities: getGhostImageCapabilities,
       videoCapabilities: getGhostVideoCapabilities,
-      getMediaOverride: (ghostId, capability) => {
-        const value = readGhostCindyOverrides(ghostId)[capability as CindyCapabilityKey] ?? null;
-        if (!value) return null;
-        const mediaCapability = capability as GhostMediaCapability;
-        const config = getGhostMediaPreferenceConfig(ghostId, mediaCapability);
-        const videoRegistry = capability.startsWith('video.') ? getVideoProviderRegistry() : null;
-        // Core 专用选型不能交给旧执行器。复用存量配置迁移，确保回退后
-        // 用户保存的 provider + modelId 与实际执行一致，不影响 Core 清单。
-        const executableConfig = filterLegacyCindyMediaConfig(
-          config,
-          (model) => capability.startsWith('video.')
-            ? videoRegistry?.hasAlias(model.modelId, model.providerId) ?? false
-            : getImageChannelRegistry().isProviderLegacyReady(model.providerId, model.modelId),
-        );
-        const selected = resolveAndMigrateGhostMediaPreference(
-          ghostId,
-          mediaCapability,
-          executableConfig,
-          value,
-        );
-        return selected
-          ? {
-              providerId: selected.providerId,
-              modelId: selected.modelId,
-              label: selected.label,
-            }
-          : null;
-      },
-      getOverride: (ghostId, capability) => {
-        const value = readGhostCindyOverrides(ghostId)[capability as CindyCapabilityKey] ?? null;
-        return value && !decodeMediaPreference(value) ? value : null;
-      },
+      // 插件详情「模型」字段(与插件新建任务共用 pluginTaskPrefsStore);每单现读,
+      // 未选 = null = 跟随身份卡声明/系统辅助模型链,辅助模型改动后自动跟随。
+      getOneshotModelSelection: getPluginOneshotModelSelection,
       getImageConfig: getCatalogImageConfig,
       getVideoConfig: getCatalogVideoConfig,
       getEmbedConfig: getCatalogEmbedConfig,
@@ -5154,11 +5166,14 @@ export function getGhostCindySlot(): GhostCindySlot {
         const r = await requestUtilityText(getMaker(), prompt, {
           maxTokens,
           timeoutMs,
-          // 路由两形态:轻量档位键走链档钉(不认的值下游忽略回默认链);
-          // 目录钉走显式供应商路径(钉死,不回落)。
-          ...(route?.kind === 'utility-profile' ? { pinnedProfileId: route.profileId } : {}),
-          ...(route?.kind === 'catalog'
-            ? { providerId: route.providerId, agentKind: route.agentKind, model: route.model }
+          // 用户选的模型 / 身份卡声明走显式供应商路径(钉死,不回落);
+          // 缺省 route = 系统辅助模型链。
+          ...(route
+            ? {
+                ...(route.providerId ? { providerId: route.providerId } : {}),
+                agentKind: route.agentKind,
+                model: route.model,
+              }
             : {}),
         });
         if (r.ok) {
@@ -6797,6 +6812,7 @@ export async function installAndDock(
     /** The user agreed to reattach the library left under the bare id. */
     reclaimLegacyBareInstance?: boolean;
     beforePackagePlacement?: () => void;
+    deferUsageBinding?: boolean;
   },
 ): Promise<InstalledGhost> {
   return withGhostInstallLock(opts.ghostId, () => installAndDockLocked(manager, lizFilePath, opts));
@@ -6818,6 +6834,7 @@ async function installAndDockLocked(
     /** The user agreed to reattach the library left under the bare id. */
     reclaimLegacyBareInstance?: boolean;
     beforePackagePlacement?: () => void;
+    deferUsageBinding?: boolean;
   },
 ): Promise<InstalledGhost> {
   // 确认依据的 manifest 必须就是 expectedPackageSha256 钉住的那份包；锁内现读受体
@@ -6878,6 +6895,7 @@ async function installAndDockLocked(
   }
   // 常驻意识(launch: resident)且装入即开启:立刻拉起电子脑。
   spawnIfResident(result.ghost);
+  if (!opts.deferUsageBinding) await bindPluginUsage(result.ghost);
   return result.ghost;
 }
 
@@ -7066,6 +7084,8 @@ async function updateLocalGhostPackageLocked(
     throwInstallError(result.rejection);
   }
   runtime.resetFuse(instanceId);
+  await bindPluginUsage(result.ghost,
+    !detachMarketRecord && previousGhost?.approval.state === 'approved' ? previousGhost.approval.revision : undefined);
   const store = getLayoutStore();
   const docked = layoutWithGhostPanel(store.getLayout(), result.ghost.manifest, installedGhostStoragePart(result.ghost));
   if (docked) {
@@ -7451,10 +7471,12 @@ async function installOrUpdateMarketGhostPackageLocked(
         expectedPackageSha256: inspected.packageSha256,
         consent: { decision: expected.consent, manifest: inspected.manifest },
         beforePackagePlacement: expected.beforeCommitInLock,
+        deferUsageBinding: true,
         ...(trustOverride ? { trustOverride } : {}),
         namespace: marketNamespace,
       });
       await expected.afterCommitInLock?.(installedGhost, commitEvidence);
+      await bindPluginUsage(installedGhost);
       return installedGhost;
     }
 
@@ -7537,6 +7559,7 @@ async function installOrUpdateMarketGhostPackageLocked(
     }
     spawnIfResident(result.ghost);
     await expected.afterCommitInLock?.(result.ghost, commitEvidence);
+    await bindPluginUsage(result.ghost);
     return result.ghost;
   } finally {
     releaseMutation?.();
@@ -7615,6 +7638,8 @@ async function uninstallGhostAndCleanupLocked(
       const result = await mutation.uninstall(relId, { notify: false });
       if ('rejection' in result) throwUninstallError(result.rejection);
     }));
+    try { await currentPluginUsageService()?.detach(storagePart); }
+    catch { log.warn('plugin usage uninstall binding unavailable'); }
     await pluginDownloads.removePlugin(storagePart, downloadRoot, downloadScope).catch(err => log.warn('plugin download cache cleanup failed', { id: storagePart, error: String(err) }));
     removeGhostSecrets(storagePart);
     removeGhostKvBestEffort(
@@ -8914,97 +8939,6 @@ export function registerGhostIpc(): void {
     return resolved;
   });
 
-  // ── cindy 槽后端覆盖(解析表第②层;意识详情页「Cindy 能力」区)──
-  // 读走 sendSync:详情页首帧要和其它信息同帧渲染(规则 7 无跳变),
-  // 文件读取极小。写走 invoke,白名单在此校验(存储层不感知模型清单)。
-  ipcMain.on('ghosts:cindy-prefs', (event, ghostId: unknown) => {
-    const storedOverrides = typeof ghostId === 'string' ? readGhostCindyOverrides(ghostId) : {};
-    const overrides = { ...storedOverrides };
-    for (const capability of GHOST_MEDIA_CAPABILITIES) {
-      const value = storedOverrides[capability];
-      if (!value) continue;
-      const selected = resolveAndMigrateGhostMediaPreference(
-        ghostId as string,
-        capability,
-        getGhostMediaPreferenceConfig(ghostId as string, capability),
-        value,
-      );
-      if (selected) overrides[capability] = selected.id;
-      else delete overrides[capability];
-    }
-    // 每类目一份 options + defaultModel(当前包含 image/video 两类;下拉按
-    // 能力键的类目取对应清单)。defaultModel:目录默认选型的展示信息
-    // ("默认(GPT Image 2)"),让用户看得见"跟随"当下跟的是谁;
-    // null = 目录没有该类目的模型(能力暂不可用),渲染层据此显示灰字而非下拉。
-    const byKind = (cfg: CindyMediaCatalogConfig | CindyMediaPreferenceConfig) => {
-      const standard = cfg.defaults?.standard;
-      return {
-        options: cfg.models,
-        defaultModel:
-          standard === undefined ? null : (cfg.models.find((m) => m.id === standard) ?? null),
-      };
-    };
-    // 文本类(快问快答)的可选项 = 当前供应商目录里的全部文本模型(2026-08-05
-    // 与刘佳黎定稿:安装插件即承担其成本,主机如实展示可选面)。每一项精确钉
-    // 一组 供应商×agent×模型(cat: 编码)。defaultModel = 当前辅助模型链链首,
-    // declaredModel = 身份卡声明的偏好(解析得到才给)——让"跟随默认"
-    // 行如实说出当前实际跟的是谁。
-    const textChain = getEffectiveAuxiliaryModelChain();
-    const textDefaultId = textChain.refs[0] ?? null;
-    const textDefaultLabel =
-      textDefaultId === null ? null : formatAuxiliaryModelRefLabel(textDefaultId);
-    const textOptions = buildTextOneshotPinOptions(
-      getActiveCatalog(),
-      readModelDisableOverrides(),
-      readProviderOrder(),
-      hasOneshotProviderCredential,
-    );
-    // 纯展示口径,不走 findAvailableGhost 的"当前会话可用"闸:插件被当前项目
-    // 停用时卡片的其余部分(overrides/options)照常渲染,声明偏好也不该凭空消失。
-    const declaredRaw = typeof ghostId === 'string'
-      ? (findInstalledGhostByInstanceId(getGhostManager().list(), ghostId) ??
-          getGhostManager().list().find((g) => g.manifest.id === ghostId))?.manifest.cindy?.oneshotModel
-      : undefined;
-    const declaredResolved = declaredRaw
-      ? resolveOneshotCatalogModel(
-          getActiveCatalog(),
-          readModelDisableOverrides(),
-          declaredRaw,
-          readProviderOrder(),
-          hasOneshotProviderCredential,
-        )
-      : null;
-    event.returnValue = {
-      overrides,
-      image: byKind(getGhostMediaPreferenceConfig(ghostId as string, 'image.generate')),
-      imageEdit: byKind(getGhostMediaPreferenceConfig(ghostId as string, 'image.edit')),
-      video: byKind(getGhostMediaPreferenceConfig(ghostId as string, 'video.generate')),
-      videoEdit: byKind(getGhostMediaPreferenceConfig(ghostId as string, 'video.edit')),
-      text: {
-        options: textOptions,
-        defaultModel:
-          textDefaultId === null || textDefaultLabel === null
-            ? null
-            : { id: textDefaultId, label: textDefaultLabel },
-        declaredModel:
-          declaredResolved && declaredRaw
-            ? {
-                id: encodeCatalogPin(
-                  declaredResolved.providerId,
-                  declaredResolved.agentKind,
-                  declaredResolved.model,
-                ),
-                label: declaredRaw,
-              }
-            : null,
-        // 存量轻量档位钉(目录扩展前钉下的合法值)的展示名表:渲染层据此给
-        // 老钉值回显友好名,而不是把合法档位钉当 stale 原样露出 id。
-        utilityProfiles: utilityModelPinOptions(),
-      },
-      // 向量类与图像/视频同源(都走目录派生),不同于文本类的轻量链档位。
-      embed: byKind(getCatalogEmbedConfig()),
-    };
-  });
   // ── 目录级禁用(ghostWorkdirPrefs;插件页的项目范围视图)──
   // 读走 sendSync:切换范围时禁用清单要与卡片同帧渲染(规则 7 无跳变),
   // 文件读取极小且带 mtime 缓存。写走 invoke;写后广播 ghosts:changed
@@ -9043,64 +8977,16 @@ export function registerGhostIpc(): void {
     },
   );
 
-  ipcMain.handle(
-    'ghosts:cindy-prefs:set',
-    (_event, ghostId: unknown, capability: unknown, model: unknown) => {
-      if (typeof ghostId !== 'string' || ghostId.trim().length === 0) {
-        throwIpcError('INVALID_PARAMS', 'ghostId must be a non-empty string');
-      }
-      if (!(CINDY_CAPABILITY_KEYS as readonly string[]).includes(capability as string)) {
-        throwIpcError('INVALID_PARAMS', `unknown capability: ${String(capability)}`);
-      }
-      // 白名单按能力键类目分流:image.*/video.*/embed.* 钉各媒体目录模型 id;
-      // text.*(快问快答)钉轻量档位键或目录钉(cat: 编码)——与消费方(cindySlot
-      // route)同一判据,否则存进去的值链路不认。刻意不查凭证态(与清单的凭证
-      // 过滤不同):凭证是瞬态(可以后补/会过期),钉档是持久意图;执行侧
-      // fail-closed 兜底,不在这层把「暂时没配 key」当成非法值。
-      if (
-        !isCindyOverrideModelAllowed(capability as string, model, {
-          image: getGhostMediaPreferenceConfig(
-            ghostId,
-            capability === 'image.edit' ? 'image.edit' : 'image.generate',
-          ).models,
-          video: getGhostMediaPreferenceConfig(
-            ghostId,
-            capability === 'video.edit' ? 'video.edit' : 'video.generate',
-          ).models,
-          embed: getCatalogEmbedConfig().models,
-          textPinIds: buildTextOneshotPinOptions(
-            getActiveCatalog(),
-            readModelDisableOverrides(),
-          ).map((o) => o.id),
-        })
-      ) {
-        throwIpcError(
-          'INVALID_PARAMS',
-          'model must be null or an allowed model of the capability category',
-        );
-      }
-      const ghost = findGhostForInstanceId(ghostId);
-      if (!ghost) throwIpcError('NOT_FOUND', '插件实例已变化，请刷新后重试');
-      const storedId = installedGhostStoragePart(ghost);
-      const overrides = writeGhostCindyOverride(
-        storedId,
-        capability as CindyCapabilityKey,
-        model as string | null,
-      );
-      getGhostSetupChangeBus().emit(storedId, {
-        source: 'host_config',
-        ref: `cindy-pref:${String(capability)}`,
-      });
-      return { overrides };
-    },
-  );
-
   // Plugin task preferences: ordinary tasks and the legacy errand adapter share
   // this configuration. Keep existing IPC names for renderer compatibility.
   // Save validates the current route; creation/execution revalidate independently.
+  // The same model fields also drive the plugin's quick answers (cindy.text.oneshot);
+  // auxiliaryModelLabel names the system auxiliary model the "follow default" row uses.
   ipcMain.on('ghosts:errand-prefs', (event, ghostId: unknown) => {
+    const auxiliaryRef = getEffectiveAuxiliaryModelChain().refs[0] ?? null;
     event.returnValue = {
       config: typeof ghostId === 'string' ? readPluginTaskConfig(ghostId) : {},
+      auxiliaryModelLabel: auxiliaryRef === null ? null : formatAuxiliaryModelRefLabel(auxiliaryRef),
     };
   });
   ipcMain.handle('ghosts:errand-prefs:set', async (event, ghostId: unknown, config: unknown) => {
@@ -9527,6 +9413,16 @@ export function registerGhostIpc(): void {
     if (typeof id !== 'string' || !isGhostInstanceId(id)) throwIpcError('INVALID_PARAMS', '非法插件 id');
     return getGhostLibraryOverview(id);
   });
+  registerPluginUsageIpc({
+    ipcMain, assertTrusted: assertTrustedAppRendererEvent, service: currentPluginUsageService,
+    lockId: id => findGhostForInstanceId(id)?.manifest.id ?? id,
+    identity: id => {
+      requireGhostAvailableForActiveSession(id);
+      const ghost = findGhostForInstanceId(id);
+      return ghost ? readPluginUsageIdentity(ghost) : null;
+    },
+    warn: () => log.warn('plugin usage IPC unavailable'),
+  });
   ipcMain.handle('ghosts:library-pick-location', async (event, id: unknown) => {
     assertTrustedAppRendererEvent(event);
     if (typeof id !== 'string' || !isGhostInstanceId(id)) throwIpcError('INVALID_PARAMS', '非法插件 id');
@@ -9780,6 +9676,7 @@ export function registerGhostIpc(): void {
             requireGhostAvailableForActiveSession(id);
             return getGhostPipeDispatcher().callGhostTool({
               ghostId: id,
+              recordUsage: false,
               tool: request.tool,
               args: args as Record<string, unknown>,
             });

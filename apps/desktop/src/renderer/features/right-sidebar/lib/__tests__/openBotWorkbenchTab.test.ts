@@ -49,7 +49,7 @@ function workbenchId() {
 }
 
 describe('bot workbench layout preference', () => {
-  it('creates the workbench first and opens only on the first visit', async () => {
+  it('creates the workbench first and opens only on the first automatic open (nothing recorded yet)', async () => {
     await ensureHydrated('bot-main');
     const files = await addTab('bot-main', 'file-browser');
     await Promise.all([ensureBotWorkbenchTab('bot-main', 'bot-1'), ensureBotWorkbenchTab('bot-main', 'bot-1')]);
@@ -173,7 +173,7 @@ describe('bot workbench layout preference', () => {
     expect(visibility).toHaveBeenCalledTimes(choice === 'none' ? 1 : 0);
   });
 
-  it('routes passive detached first visits without reopening, and skips them after a recorded close', async () => {
+  it('routes a passive detached first automatic open without reopening, and skips it after a recorded close', async () => {
     vi.mocked(routeSidebarCommand).mockResolvedValue('queued');
     await ensureBotWorkbenchTab('bot-main', 'bot-1');
     expect(routeSidebarCommand).toHaveBeenCalledWith(

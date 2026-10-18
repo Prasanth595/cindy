@@ -40,9 +40,11 @@
 | 对象     | 操作                                                       | 本机 | 跨电脑           |
 | -------- | ---------------------------------------------------------- | ---- | ---------------- |
 | 任务     | 列出、搜索、读聊天记录、发现电脑                           | 有   | 有               |
+| 任务     | 读摘要（状态、最后的要求与回答、模型路线、PR、排队数）     | 有   | 有（2026-10-17） |
 | 任务     | 给既有任务发消息                                           | 有   | 有（2026-10-14） |
 | 任务     | 新建任务                                                   | 有   | 无               |
-| 任务     | 改名、归档 / 取消归档、移动、标签                          | 有   | 无               |
+| 任务     | 归档 / 取消归档                                             | 有   | 有（2026-10-16） |
+| 任务     | 改名、移动、标签                                            | 有   | 无               |
 | 任务     | 看输入队列；编辑 / 撤回 / 调序自己发的排队消息；插话；停止 | 有   | 无               |
 | 任务     | 模型、推理强度、Fast                                       | 有   | 无               |
 | 任务     | 删除、Fork、Rewind、切换权限档、代用户确认权限或回答提问   | 无   | 无               |
@@ -51,7 +53,10 @@
 | 定时任务 | 删除单条运行记录、标记已读                                 | 无   | 无               |
 | 项目     | 列出、登记、改名、移除；工作目录列表                       | 有   | 无               |
 | 伙伴     | 发现伙伴、伙伴间消息                                       | 有   | 有               |
-| 伙伴     | 资料、能力、工作台、待办、后台任务                         | 有   | 无               |
+| 伙伴     | 资料、能力、待办、后台任务                                 | 有   | 无               |
+| 伙伴     | 工作台一眼（等你 / 在做）                                  | 有   | 无               |
+| 伙伴     | 跟进任务：读取与继续（自动跟进所有任务的伙伴）             | 有   | 有（2026-10-17） |
+| 伙伴     | 查看与更换主力电脑                                         | 有   | 有（2026-10-17） |
 
 表里「无」的项是待补的缺口，不是有意的限制。其中「切换权限档」「代用户确认权限或回答提问」
 会让 Agent 改变约束自己的那一层，补之前需要单独的产品决定。
@@ -65,5 +70,10 @@
   `apps/desktop/src/main/mcp-integrations/schedulerDevices.ts`。
 - 跨电脑发消息：`apps/desktop/src/main/mcp-integrations/sessionHandoffRemote.ts`、
   `apps/desktop/src/main/maker-ipc/sessionHandoffIpc.ts`。
+- 任务摘要（`get_task_digest`）：`packages/lizi-mcps/src/xdt-helper/get_task_digest.ts`（输出合同 ≤2KB）、
+  `apps/desktop/src/main/mcp-integrations/taskDigest.ts` 与 `taskDigestHost.ts`（跨电脑只读，复用
+  `local-db:sessions:get`、`maker:list-active`、历史消息与 PR 状态通道）。
+- 伙伴跟进任务：`apps/desktop/src/main/maker-ipc/botWorkbenchAccess.ts`（授权：自动跟进所有任务的伙伴
+  可读取与继续全部任务，含在线电脑；其它伙伴只碰自己开的或接手的任务）。
 - 协议与兼容见 [`../dev-rules/protocol-compatibility.md`](../dev-rules/protocol-compatibility.md)
   「Agent 跨电脑管理定时任务与发消息」。

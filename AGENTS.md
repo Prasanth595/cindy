@@ -156,6 +156,15 @@
 - 新增或修改 Desktop 日志、IPC 错误处理、main 侧业务逻辑与测试、跨平台（macOS／
   Windows）行为，或任何 UI 文案的 i18n 落地前，必须先读
   `docs/dev-rules/engineering-conventions.md`。
+- 新增或改写任一测试前，必须先读
+  `docs/dev-rules/engineering-conventions.md` §3.2「新增测试的价值门槛」。测试必须通过
+  真实生产入口验证可观察结果，并说明 Bug／规则依据、现有覆盖缺口、最小失败输入和 tier；
+  没有新的结果、错误、权限、持久化、协议或时序差异时停止增加用例。纯跨文件安全、
+  权限、协议或设计契约才进入 guard；不得为了覆盖率、测试数量或复制常量／JSX／CSS／
+  源码字面量而新增测试。同时遵守该节「性能预算」：新文件单独运行本机 5 秒内并在 PR
+  填实测耗时；被测模块只加载一次，不在 `beforeEach`／逐用例 helper 里 `vi.resetModules()`；
+  不做 ≥100ms 真实等待；同一模块的用例并入已有文件。`pnpm check:test-hygiene` 在 CI
+  阻断违规，基线只减不增，不得手改基线放行。
 - 修改客户端日志采集／脱敏／上报链路（`apps/desktop/src/main/log-upload/**`）、`logger.ts`
   的 main 日志行格式、崩溃判定或待补传标记前，必须先读
   `docs/dev-rules/log-upload-and-redaction.md`。其中三条是**不变量**：**记录边界**（写侧

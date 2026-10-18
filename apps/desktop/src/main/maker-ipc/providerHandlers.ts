@@ -289,6 +289,11 @@ export interface ProviderHandlerDeps {
   beginRouteMutation(providerId: string): (() => void) & { commit?: () => void };
   /** CRUD 成功后广播变更（生产 = 向所有窗口 send PROVIDER_CHANGED）。 */
   broadcastChanged(): void;
+  /**
+   * 自定义供应商删除后立即让供应商组转分享同步；删除组配置本身是异步落盘，不能等下一轮轮询。
+   * 生产接线为 providerGroupReshare.kick，单测可注入内存桩。
+   */
+  kickProviderGroupReshare?(reason: string): void;
   /** Non-sensitive spawn-config signature for one custom Provider config. */
   codexCustomProviderConfigSignature?(config: CustomProviderConfig): string;
   /** Force-retire the shared local Codex Host and hold its change guard before mutation. */
@@ -2270,7 +2275,10 @@ export function registerProviderHandlers(
             deps.broadcastPricingChanged();
             // 删除连接即删除它的供应商组(provider-groups.md §3)：同名重建会得到同一个 id，不能让旧组复活。
             await writeProviderGroup(providerId, null)
-              .then(() => pruneProviderGroupBindings(providerId, null))
+              .then(() => {
+                deps.kickProviderGroupReshare?.('provider-delete');
+                return pruneProviderGroupBindings(providerId, null);
+              })
               .catch((error) => {
                 log.warn('provider group cleanup after provider deletion failed', {
                   providerId,

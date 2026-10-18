@@ -28,6 +28,7 @@ vi.mock('react-native', async () => {
     View: React.forwardRef(({ children, onLayout, ...props }: any, ref) => {
       React.useImperativeHandle(ref, () => ({
         measureLayout: (_: any, callback: any) => callback(0, 80, state.anchorWidth, 720),
+        measureInWindow: (callback: any) => callback(0, 80, state.anchorWidth, 720),
       }));
       React.useEffect(() => { onLayout?.(); }, [onLayout]);
       return <div data-pointer={props.pointerEvents}>{children}</div>;

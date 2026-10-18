@@ -1,7 +1,8 @@
 import { Button } from '@/components/ui/button';
+import { ErrorNotice } from '@/components/ui/error-notice';
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { CircleAlert, Copy, FolderOpen } from 'lucide-react';
+import { Copy, FolderOpen } from 'lucide-react';
 import type { ContextMenuEvent, WebviewTag } from 'electron';
 
 import {
@@ -52,15 +53,11 @@ export function GhostPanelError({
     onReload ?? (() => void window.electronAPI.ghosts.reload(instanceId).catch(() => {}));
   return (
     <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-4">
-      <CircleAlert size={22} className="text-[var(--error-fg)]" />
-      <p className="text-center text-12 leading-relaxed text-[var(--text-secondary)]">
-        {t(
+      <ErrorNotice className="w-full" message={t(
           state === 'fused'
             ? 'settings.ghosts.panelError.fused'
             : 'settings.ghosts.panelError.crashed',
-        )}
-      </p>
-      <div className="flex items-center gap-2">
+        )} actions={<>
         <Button variant="secondary" size="sm" compact
           type="button"
           onClick={reload}
@@ -79,7 +76,7 @@ export function GhostPanelError({
         >
           {t('settings.ghosts.panelError.close')}
         </Button>
-      </div>
+      </>} />
     </div>
   );
 }

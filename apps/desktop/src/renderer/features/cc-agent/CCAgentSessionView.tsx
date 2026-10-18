@@ -61,7 +61,6 @@ import {
 
 import { cn, basename } from '@/lib/utils';
 import { Spinner } from '@/components/ui/spinner';
-import { BotWorkingStatus } from '@/features/bots/BotWorkingStatus';
 import { setRemoteReceiptDisplayReady } from '@/lib/sessionAttentionStore';
 import { shortSessionId } from '@/lib/sessionId';
 import { ChatInput } from '@/components/new-chat/ChatInput';
@@ -345,6 +344,7 @@ import {
   shouldRevealOrcaWorkersBeforeFirstPaint,
 } from './lib/orcaPassiveReveal';
 import { didOpenOrcaWorkersTab, revealOrcaWorkersWithRetry } from './lib/orcaWorkersRevealRetry';
+import { nextCollabEnabledEdge, type CollabEnabledBaseline } from './lib/collabEnabledEdge';
 import {
   closeOrcaWorkersTabAfterTeamEnd,
   ensureOrcaWorkersTab,
@@ -1003,9 +1003,7 @@ function CCAgentSessionContent({
   // Bot route gates have already checked durable ownership. The async runtime
   // snapshot may be absent during load/reconnect; it must never change the skin.
   const botChatIdentity = resolveBotChatIdentity(botIdentity, sessionId);
-  // 伙伴没有 RunningStatusBar，折叠呼吸灯继续留在输入框上方，不能随状态行一起消失。
-  const showCenteredControlledBanner =
-    hasControlledBanner && (!controlledBannerCollapsed || Boolean(botChatIdentity));
+  const showCenteredControlledBanner = hasControlledBanner && !controlledBannerCollapsed;
   // assistant 气泡左侧的伙伴头像。节点在整场对话里是同一个,memo 住让 MessageItem
   // 的 memo 比较仍然成立(否则每帧新节点 = 全流重渲染)。
   const botAssistantAvatar = useMemo(
@@ -2101,7 +2099,7 @@ function CCAgentSessionContent({
     devices: providerShareDevices,
     nameFor: providerShareDeviceName,
     isReceived: isReceivedProviderShare,
-  } = useProviderShareAgentDevices([agentDeviceId, pendingAgentDeviceId]);
+  } = useProviderShareAgentDevices([session?.agentDeviceId, pendingAgentDeviceId], remoteDeviceId);
   // 被控电脑上的任务 Agent 现在 / 挂着的位置是分享时:分享按账号授予,本机也收到了同一条就经本机
   // 的分享通道读它的目录,模型按钮按分享显示(否则只能读到被控电脑自己的目录,显示「模型信息暂
   // 不可用」)。本机没收到的分享读不到,维持原样。
@@ -2142,10 +2140,8 @@ function CCAgentSessionContent({
             devices: selectableDevices,
             controlledDeviceId: remoteDeviceId,
             keepDeviceIds: [controlledAgentDeviceId, pendingAgentDeviceId],
-            shareDevices: [...(controlledShareIds ?? [])].map((deviceId) => ({
-              deviceId,
-              name: providerShareDeviceName(deviceId) ?? deviceId,
-            })),
+            // 新分享落点须由被控端名单确认；不要求任务先使用它。
+            shareDevices: providerShareDevices,
           })
         : undefined;
     }
@@ -3015,22 +3011,26 @@ function CCAgentSessionContent({
   // 同步打开 tab, effect 触发时 addOrFocusSingletonTab 会幂等聚焦已有 tab。
   // 用 ref 跟踪 prevCollabEnabled 只在边沿触发;已处于协同中的会话 mount 时由上方
   // 常驻 tab effect 打开协同 tab,这里不重复处理。
+  // 基线带 sessionId:切任务时视图实例复用，换任务只记基线不触发；任务数据未就绪
+  // (session 为空或还是上一个任务的)按未知处理，见 nextCollabEnabledEdge。
   // doc rail (isCompactRail) 完全跳过 — WorkdirBrowseRoute 已经按 orcaRole reactive
   // 自动切到 OrcaSplitView toggle 布局, 不需要 router-level navigate。
-  const prevCollabEnabledRef = useRef<boolean | null>(null);
+  const prevCollabEnabledRef = useRef<CollabEnabledBaseline | null>(null);
+  const knownCollabEnabled = session?.id === collabSessionId ? collabEnabled : null;
   useEffect(() => {
-    if (prevCollabEnabledRef.current === null) {
-      prevCollabEnabledRef.current = collabEnabled;
-      return;
-    }
-    const prev = prevCollabEnabledRef.current;
-    prevCollabEnabledRef.current = collabEnabled;
+    const { baseline, edge } = nextCollabEnabledEdge(
+      prevCollabEnabledRef.current,
+      collabSessionId,
+      knownCollabEnabled,
+    );
+    prevCollabEnabledRef.current = baseline;
+    if (!edge) return;
     if (isCompactRail) return;
     if (!collabSessionId) return;
 
     // false → true 边沿:外部 MCP/team 刚开启协同，属于新的显式意图；即使该会话
-    // 历史上收起过右栏，也应重新展开并聚焦协同 tab。mount 时 prev=null 已在上方返回。
-    if (!prev && collabEnabled) {
+    // 历史上收起过右栏，也应重新展开并聚焦协同 tab。mount 与切任务时只记基线，不会走到这里。
+    if (edge === 'enabled') {
       void revealOrcaWorkersTab(collabSessionId).catch((err) => {
         log.warn('revealOrcaWorkersTab after external enable failed', err);
       });
@@ -3038,7 +3038,7 @@ function CCAgentSessionContent({
     }
 
     // true → false 边沿:关闭协同 tab;兼容 /orca 路由仍在场时, navigate 回单 session 路由。
-    if (prev && !collabEnabled) {
+    if (edge === 'disabled') {
       void closeOrcaWorkersTabAfterTeamEnd(collabSessionId).catch((err) => {
         log.warn('closeOrcaWorkersTabAfterTeamEnd failed', err);
       });
@@ -3046,7 +3046,7 @@ function CCAgentSessionContent({
         navigate(`/cc-agent/${collabSessionId}`, { replace: true });
       }
     }
-  }, [collabEnabled, collabSessionId, isCompactRail, isOrcaMode, navigate, ownsWindowRoute]);
+  }, [collabSessionId, isCompactRail, isOrcaMode, knownCollabEnabled, navigate, ownsWindowRoute]);
 
   // F-COLLAB: 关闭协同复用 useStopOrcaCollab hook(与 OrcaWorkflowRoute Worker pane × 同一份逻辑)。
   // navigate 触发条件:仅兼容 orca route 仍在场时需要跳回单 session 路由。
@@ -5175,27 +5175,7 @@ function CCAgentSessionContent({
               className="mx-auto grid grid-cols-1 grid-rows-1 items-center"
               style={{ width: inputWidth }}
             >
-              {botChatIdentity ? (
-                <BotWorkingStatus
-                  key={sessionId}
-                  sessionId={sessionId ?? undefined}
-                  remote={remoteDeviceId ? { deviceId: remoteDeviceId, botId: botChatIdentity.id } : undefined}
-                  visible={composerRuntimeVisible}
-                  status={
-                    pendingPermission ? 'Waiting on approval'
-                      : pendingAskUser ? 'Waiting on input'
-                        : composerStatus
-                  }
-                  messages={messages}
-                  startedAt={agentStatus.startedAt}
-                  foregroundRunning={agentStatus.isRunning || isStreaming}
-                  backgroundWorkActive={
-                    backgroundTasksActive || runningWorkflow !== null || Boolean(agentStatus.sideTaskRunning)
-                  }
-                  avatar={botAssistantAvatar}
-                  inputWidth={inputWidth}
-                />
-              ) : !pendingPlanReview || (hasControlledBanner && controlledBannerCollapsed) ? (
+              {!pendingPlanReview || (hasControlledBanner && controlledBannerCollapsed) ? (
                 <RunningStatusBar
                   key={sessionId}
                   sessionKey={sessionId ?? null}
@@ -5324,11 +5304,11 @@ function CCAgentSessionContent({
                   onContinue={handleErrorTailContinue}
                   onDismiss={handleErrorTailDismiss}
                   style={{ width: inputWidth }}
-                  className="py-1"
                 />
               ) : (
                 <ErrorTailErrorBanner
                   errorText={errorTailText}
+                  dismissOnEscape={viewVisible && ownsHardwareTaskActions}
                   errorReason={errorTailMsg?.errorReason}
                   toolLoop={errorTailMsg?.toolLoop}
                   onContinue={handleErrorTailContinue}
@@ -5352,7 +5332,6 @@ function CCAgentSessionContent({
                   }
                   forkStripEncryptedRunning={forkStripEncryptedRunning}
                   style={{ width: inputWidth }}
-                  className="py-1"
                 />
               ))}
 
@@ -5371,7 +5350,6 @@ function CCAgentSessionContent({
                   onContinue={handleSessionInterruptContinue}
                   onDismiss={handleSessionInterruptDismiss}
                   style={{ width: inputWidth }}
-                  className="py-1"
                 />
               )}
 
@@ -5401,6 +5379,7 @@ function CCAgentSessionContent({
             }) && (
               <ErrorBanner
                 error={error}
+                dismissOnEscape={viewVisible && ownsHardwareTaskActions}
                 errorReason={errorReason}
                 toolLoop={toolLoop}
                 isRecoverable={errorIsRecoverable}
@@ -5429,7 +5408,6 @@ function CCAgentSessionContent({
                 }
                 forkStripEncryptedRunning={forkStripEncryptedRunning}
                 style={{ width: inputWidth }}
-                className="py-1"
               />
             )}
 
@@ -5440,7 +5418,6 @@ function CCAgentSessionContent({
               <WorktreeRestoreBanner
                 sessionId={sessionId}
                 style={{ width: inputWidth }}
-                className="py-1"
               />
             )}
 
@@ -5651,9 +5628,9 @@ function CCAgentSessionContent({
                   runtimeAgentKind={session ? dbToMakerAgentKind(session.agentKind) : null}
                   runtimeEffective={session?.runtimeEffective}
                   runtimePending={session?.runtimePending}
-                  // 协同会话不参与跨引擎切换；session 未加载时保留 undefined 未知态，
-                  // 仅在完整元数据确认非 Orca 后传 null 开放入口。
+                  // session 未加载时保留 undefined 未知态；Orca 原地切换与换电脑分别门控。
                   sessionOrcaRole={session ? (session.orcaRole ?? null) : undefined}
+                  sessionOrcaRemoteWorker={!!session?.orcaRemoteLead}
                   initialWorkingDir={session?.workingDir}
                   remoteHostId={session?.remoteHostId ?? null}
                   deviceLinkDeviceId={rightSidebarDeviceLinkDeviceId}
@@ -5953,14 +5930,16 @@ function CCAgentSessionContent({
         </div>
 
         {/* TopRightChipStack:聊天视图右上 chip 浮层。
-          Windows 固定侧栏入口由 MainLayout 承载；当入口位于右侧时在本栈第一行
-          保留等尺寸占位，让消息跳转等 portal chip 自然落到下一行。
+          Windows 固定侧栏入口与远程桌面入口由 MainLayout 承载；任一入口位于右侧时
+          在本栈第一行保留等尺寸占位，面板展开后也不遮住消息跳转等 portal chip。
           MessageStream 内部的 PrevMessageJumpChip 通过 portal 挂入同一栈,自然落到下一行。
           "本次会话改动文件列表"已迁移到 RSB review tab,不再保留浮动按钮 + 滑入抽屉。 */}
         <TopRightChipStack>
           {!isMac &&
             (ownsRoute || showRsbToggle) &&
-            rightSidebarCollapsed &&
+            (rightSidebarCollapsed ||
+              (rightSidebarDeviceLinkDeviceId &&
+                !isSharedTaskPeer(rightSidebarDeviceLinkDeviceId))) &&
             rightSidebarSide === 'right' && <div aria-hidden className="h-7 w-7 shrink-0" />}
         </TopRightChipStack>
       </section>

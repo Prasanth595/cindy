@@ -1,34 +1,109 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
+import { ChevronDown, ChevronRight } from 'lucide-react-native';
 import { Pressable, StyleSheet, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 import { redactSensitiveText } from '@cindy/maker-shared/error-redaction';
 import { Text } from '@/components/AppText';
-import { useThemedStyles, type ThemeColors } from '@/theme';
+import {
+  iconSize,
+  iconStroke,
+  useTheme,
+  useThemedStyles,
+  type ThemeColors,
+} from '@/theme';
+import { mobileInteractionStyles } from '@/components/mobileInteractionStyles';
 import { lineHeight, radius, spacing, typeScale } from '@/theme/tokens';
 
 /** Local disclosure only: never retries a request or changes the persisted error. */
-export function AgentErrorDetails({ message }: { message: string }) {
+export function AgentErrorDetails({
+  message,
+  actions,
+}: {
+  message: string;
+  actions?: ReactNode;
+}) {
   const { t } = useTranslation();
   const styles = useThemedStyles(makeStyles);
+  const { colors } = useTheme();
   const [expanded, setExpanded] = useState(false);
-  useEffect(() => { setExpanded(false); }, [message]);
+  useEffect(() => {
+    setExpanded(false);
+  }, [message]);
   return (
     <View>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityState={{ expanded }}
-        onPress={() => setExpanded(value => !value)}
-        style={styles.toggle}
-      >
-        <Text style={styles.label}>{t(expanded ? 'session.tail.hideErrorDetails' : 'session.tail.showErrorDetails')}</Text>
-      </Pressable>
-      {expanded ? <Text selectable style={styles.detail}>{redactSensitiveText(message)}</Text> : null}
+      <View style={styles.actions}>
+        {actions}
+        <Pressable
+          accessibilityRole="button"
+          accessibilityState={{ expanded }}
+          onPress={() => setExpanded((value) => !value)}
+          style={({ pressed }) => [
+            styles.toggle,
+            pressed && mobileInteractionStyles.pressed,
+          ]}
+        >
+          {expanded ? (
+            <ChevronDown
+              color={colors.textSecondary}
+              size={iconSize.sm}
+              strokeWidth={iconStroke.regular}
+            />
+          ) : (
+            <ChevronRight
+              color={colors.textSecondary}
+              size={iconSize.sm}
+              strokeWidth={iconStroke.regular}
+            />
+          )}
+          <Text style={styles.label}>
+            {t(
+              expanded
+                ? 'session.tail.hideErrorDetails'
+                : 'session.tail.showErrorDetails',
+            )}
+          </Text>
+        </Pressable>
+      </View>
+      {expanded ? (
+        <Text selectable style={styles.detail}>
+          {redactSensitiveText(message)}
+        </Text>
+      ) : null}
     </View>
   );
 }
 
-const makeStyles = (colors: ThemeColors) => StyleSheet.create({
-  toggle: { alignSelf: 'flex-start', justifyContent: 'center', minHeight: 44, borderRadius: radius.pill, paddingHorizontal: spacing.sm },
-  label: { color: colors.textSecondary, fontSize: typeScale.caption, lineHeight: lineHeight.caption },
-  detail: { color: colors.textSecondary, fontSize: typeScale.caption, lineHeight: lineHeight.caption },
-});
+const makeStyles = (colors: ThemeColors) =>
+  StyleSheet.create({
+    actions: {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      alignItems: 'center',
+      columnGap: spacing.md,
+      rowGap: spacing.sm,
+    },
+    toggle: {
+      alignSelf: 'flex-start',
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: spacing.xs,
+      minHeight: 44,
+      borderRadius: radius.pill,
+      paddingHorizontal: spacing.sm,
+    },
+    label: {
+      flexShrink: 1,
+      color: colors.textSecondary,
+      fontSize: typeScale.footnote,
+      lineHeight: lineHeight.caption,
+    },
+    detail: {
+      marginTop: spacing.sm,
+      color: colors.textSecondary,
+      fontSize: typeScale.footnote,
+      lineHeight: lineHeight.caption,
+      backgroundColor: colors.surface,
+      padding: spacing.sm,
+      borderRadius: radius.control,
+    },
+  });

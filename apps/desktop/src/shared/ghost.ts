@@ -195,7 +195,8 @@ export interface GhostCardNeeds {
  * - errand 会话默认跑在专属对话目录、权限档默认 plan(只读);用户可在
  *   设置里按插件放开到 acceptEdits/auto,**永不提供 bypassPermissions**
  *   (2026-07-31 Lizi 定案);
- * - errand 会话在侧边栏可见、可旁观、可随时停,不存在隐身会话;
+ * - errand 会话在侧边栏可见、可旁观、可随时停,不存在隐身会话(errand 不支持
+ *   隐藏;普通任务的后台隐藏只经 `tasks` + `hiddenTasks` 声明,见下);
  * - 每插件同时最多 1 单在途,任务表在内存(重启即丢,查询按"查无此单、
  *   可重新提交"处理)。
  */
@@ -203,6 +204,17 @@ export interface GhostAgentNeeds {
   background?: boolean;
   errand?: boolean;
   tasks?: boolean;
+  /**
+   * hiddenTasks = 「可创建不显示在任务列表里的后台任务」(2026-10)。
+   *
+   * 必须与 `tasks: true` 同时声明(清单校验强制)。任务默认仍对用户可见;只有声明
+   * 本项后,插件才能经 `cindy.tasks.create({hidden: true})` / `cindy.tasks.setHidden`
+   * 把**自己创建的**普通任务放到后台:不进任务列表、搜索、未结束提示、新任务通知与
+   * 灵动岛。透明性兜底(全部主机代码强制):用户始终能在插件详情页「后台任务」查看、
+   * 打开并「显示到任务列表」;插件卸载时其后台任务自动恢复显示。不授予其它任务的
+   * 访问权,也不改变任务权限。未声明时 hidden / setHidden 返回 PERMISSION_DENIED。
+   */
+  hiddenTasks?: boolean;
   /**
    * schedule = 「可以请你新建自动化任务」(2026-08-04)。
    *
@@ -544,8 +556,7 @@ export type GhostCindyTextAction = (typeof GHOST_CINDY_TEXT_ACTIONS)[number];
  * 自己的 kv / 文件里解决。
  *
  * 为什么与 text.oneshot 分成两档而不是塞进同一个能力键:两者花的是不同的钱
- * (轻量任务模型链 vs embedding 模型),用户在能力偏好里钉的也是两套不同的型号,
- * 合成一档就没法只授权其中一样。信任面同 oneshot —— 只花额度,拿不到任何宿主
+ * (轻量任务模型链 vs embedding 模型),合成一档就没法只授权其中一样。信任面同 oneshot —— 只花额度,拿不到任何宿主
  * 能力,不进会话。
  */
 export const GHOST_CINDY_EMBED_ACTIONS = ['text'] as const;
@@ -565,9 +576,9 @@ export type GhostCindySearchAction = (typeof GHOST_CINDY_SEARCH_ACTIONS)[number]
 /**
  * cindy 槽能力详单(卡槽⑤配套,原名模型槽,2026-07-11 设计定案):声明"这个意识被允许
  * 向主机点哪几类代办"——类目与动作之外只有**意图级**字段(oneshotModel 偏好,
- * 2026-08-05 起),**不构成任何硬依赖**(选型权在主机的解析表:调用时显式点名 >
- * 用户在详情页的钉档(意识专属覆盖)> 意识声明的偏好模型 > 用户能力偏好 >
- * 出厂默认;意识只表达意图,永不腐烂)。插件详情与代办资格审共同消费。
+ * 2026-08-05 起),**不构成任何硬依赖**(选型权在主机:快问快答 = 用户在详情页给
+ * 插件选的模型 > 意识声明的偏好模型 > 系统辅助模型链;媒体/向量 = 调用时显式点名 >
+ * 档位 > 目录默认;意识只表达意图,永不腐烂)。插件详情与代办资格审共同消费。
  */
 export interface GhostCindyNeeds {
   /** 图像类:generate=出图,edit=改图(改图仅限本意识名下媒体)。 */
@@ -585,7 +596,7 @@ export interface GhostCindyNeeds {
   /**
    * 快问快答偏好模型(目录模型 id,如 "codex/gpt-5.5";须与 text 含 "oneshot"
    * 成对)。主机能从当前供应商目录解析到(且用户未停用)就用它,解析不到按
-   * 未声明处理;用户在详情页的钉档永远优先于本声明。
+   * 未声明处理;用户在插件详情给插件选的模型永远优先于本声明。
    * 未实现本字段的兼容宿主保留声明但不使用它；插件仍需处理旧宿主差异。
    */
   oneshotModel?: string;
@@ -1925,6 +1936,14 @@ export function ghostPermissionProjectionFingerprint(manifest: GhostManifest): s
   );
 }
 
+/**
+ * 插件是否声明了后台隐藏任务能力。只认 `tasks: true` + `hiddenTasks: true` 组合:
+ * 已安装快照里不成对的历史值只作为未知数据保留,不授予(见 validateGhostManifestInput)。
+ */
+export function ghostDeclaresHiddenTasks(manifest: Pick<GhostManifest, 'agent'> | null | undefined): boolean {
+  return manifest?.agent?.tasks === true && manifest.agent.hiddenTasks === true;
+}
+
 export function ghostPermissionItems(manifest: GhostManifest): GhostPermissionItem[] {
   const items: GhostPermissionItem[] = [];
   for (const [category, actions] of Object.entries(manifest.cindy ?? {})) {
@@ -2001,6 +2020,17 @@ export function ghostPermissionItems(manifest: GhostManifest): GhostPermissionIt
     }
     if (manifest.agent?.tasks === true) {
       items.unshift({ key: 'agent:tasks', kind: 'agent', labelKey: 'agentTasks', detailKey: 'agentTasksDetail' });
+    }
+    // 后台隐藏任务:独立 key 单列(理由同 schedule —— 并进 agent:tasks 会让更新里
+    // 新增 hiddenTasks 时 added 为空,扩权复核拦不住)。排在 agent:tasks 之后。
+    if (ghostDeclaresHiddenTasks(manifest)) {
+      const tasksIndex = items.findIndex((item) => item.key === 'agent:tasks');
+      items.splice(tasksIndex + 1, 0, {
+        key: 'agent:hidden-tasks',
+        kind: 'agent',
+        labelKey: 'agentHiddenTasks',
+        detailKey: 'agentHiddenTasksDetail',
+      });
     }
     // 「可以请你新建自动化任务」:独立 key 单列一档。理由同 badge/errand ——
     // diffGhostPermissionItems 按 key + detail 比对,若并进任何既有 key,已装插件
@@ -4347,10 +4377,20 @@ function validateGhostManifestInput(value: unknown, preserveHistoricalTasks: boo
     if (!preserveHistoricalTasks && agentRaw.tasks !== undefined && typeof agentRaw.tasks !== 'boolean') {
       return { ok: false, reason: 'agent.tasks must be boolean' };
     }
+    // hiddenTasks 依赖 tasks。已安装快照(preserveHistoricalTasks)不因历史值拒绝,
+    // 非 true+true 组合只作为未知数据保留,运行期经 ghostDeclaresHiddenTasks 判定不授予。
+    if (!preserveHistoricalTasks && agentRaw.hiddenTasks !== undefined) {
+      if (typeof agentRaw.hiddenTasks !== 'boolean') {
+        return { ok: false, reason: 'agent.hiddenTasks must be boolean' };
+      }
+      if (agentRaw.hiddenTasks === true && agentRaw.tasks !== true) {
+        return { ok: false, reason: 'agent.hiddenTasks: true 需要同时声明 agent.tasks: true' };
+      }
+    }
     if (agentRaw.schedule !== undefined && typeof agentRaw.schedule !== 'boolean') {
       return { ok: false, reason: 'agent.schedule 必须是布尔值' };
     }
-    if (agentRaw.background !== true && agentRaw.errand !== true && agentRaw.schedule !== true && agentRaw.tasks !== true && Object.keys(unknownDeclarationFields(agentRaw, preserveHistoricalTasks ? ['background', 'errand', 'schedule'] : ['background', 'errand', 'schedule', 'tasks'])).length === 0) {
+    if (agentRaw.background !== true && agentRaw.errand !== true && agentRaw.schedule !== true && agentRaw.tasks !== true && Object.keys(unknownDeclarationFields(agentRaw, preserveHistoricalTasks ? ['background', 'errand', 'schedule'] : ['background', 'errand', 'schedule', 'tasks', 'hiddenTasks'])).length === 0) {
       return {
         ok: false,
         reason:
@@ -4358,10 +4398,11 @@ function validateGhostManifestInput(value: unknown, preserveHistoricalTasks: boo
       };
     }
     agent = {
-      ...unknownDeclarationFields(agentRaw, preserveHistoricalTasks ? ['background', 'errand', 'schedule'] : ['background', 'errand', 'schedule', 'tasks']),
+      ...unknownDeclarationFields(agentRaw, preserveHistoricalTasks ? ['background', 'errand', 'schedule'] : ['background', 'errand', 'schedule', 'tasks', 'hiddenTasks']),
       ...(agentRaw.background === true ? { background: true } : {}),
       ...(agentRaw.errand === true ? { errand: true } : {}),
       ...(agentRaw.tasks === true ? { tasks: true } : {}),
+      ...(agentRaw.tasks === true && agentRaw.hiddenTasks === true ? { hiddenTasks: true } : {}),
       ...(agentRaw.schedule === true ? { schedule: true } : {}),
     };
   }
@@ -6807,7 +6848,7 @@ export type GhostAgentModelsResult =
 export const GHOST_MEDIA_MODEL_TYPES = ['image', 'video'] as const;
 export type GhostMediaModelType = (typeof GHOST_MEDIA_MODEL_TYPES)[number];
 
-/** Host「Cindy 能力」区域现有的四项媒体模型配置键。 */
+/** 四项 Cindy 媒体能力键(cindy-preference 只读查询用;插件没有逐项选模,返回系统默认选型)。 */
 export const GHOST_MEDIA_CAPABILITIES = [
   'image.generate',
   'image.edit',

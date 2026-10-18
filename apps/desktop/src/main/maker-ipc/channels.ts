@@ -777,6 +777,11 @@ export const MAKER_INVOKE = {
   BOT_DELEGATIONS_LIST: 'maker:bot-delegations:list',
   /** Cindy Bot 父任务取消仍在运行或等待中的委派。 */
   BOT_DELEGATION_CANCEL: 'maker:bot-delegation:cancel',
+  /**
+   * 主人在伙伴聊天的任务卡上「补一句」后，给伙伴聊天留一条「已告诉后台任务：「…」」。
+   * 消息本身由渲染端以主人身份发进子任务；只本机可用，不进 device-link 白名单。
+   */
+  BOT_DELEGATION_NOTE_TRACE: 'maker:bot-delegation:note-trace',
   /** Read one hidden Bot-to-Bot conversation after a timeline trace is opened. */
   BOT_DIRECT_MESSAGE_THREAD_GET: 'maker:bot-direct-message-thread:get',
   /** 伙伴群聊：列表、详情、创建、修改、成员、删除、发言、继续讨论与停止。 */
@@ -786,7 +791,9 @@ export const MAKER_INVOKE = {
   CHAT_SERVER_STATUS: 'maker:chat-server:status',
   CHAT_SERVER_THREAD: 'maker:chat-server:thread',
   CHAT_SERVER_REPLY: 'maker:chat-server:reply',
+  CHAT_SERVER_SHARETOMAIN: 'maker:chat-server:shareToMain',
   CHAT_SERVER_REACT: 'maker:chat-server:react',
+  CHAT_SERVER_REACTORS: 'maker:chat-server:reactors',
   CHAT_SERVER_CREATEINVITE: 'maker:chat-server:createInvite',
   CHAT_SERVER_REVOKEINVITE: 'maker:chat-server:revokeInvite',
   CHAT_SERVER_PREVIEWINVITE: 'maker:chat-server:previewInvite',
@@ -810,12 +817,20 @@ export const MAKER_INVOKE = {
   COMPANION_CLOUD_STATE: 'maker:companion-cloud:state',
   /** Make this computer the companion's home (cloud-companions.md §3.1). */
   COMPANION_CLOUD_TAKE_OVER: 'maker:companion-cloud:take-over',
-  /** Hand the companion to another of the owner's computers. */
-  COMPANION_CLOUD_TRANSFER: 'maker:companion-cloud:transfer',
+  /** Move the companion to another computer from any computer (hand over, ask its home, or take over). */
+  COMPANION_CLOUD_SWITCH_HOME: 'maker:companion-cloud:switch-home',
   /** Read the companion's 1:1 room (works while its home is offline). */
   COMPANION_CLOUD_TRANSCRIPT: 'maker:companion-cloud:transcript',
-  /** Computers a companion can be handed to. */
-  COMPANION_CLOUD_DEVICES: 'maker:companion-cloud:devices',
+  /** Where a companion can move, seen from this computer. */
+  COMPANION_CLOUD_HOME_CHOICES: 'maker:companion-cloud:home-choices',
+  /** The copies of Cindy in the cloud, when there are several to merge. */
+  COMPANION_CLOUD_CINDY_COPIES: 'maker:companion-cloud:cindy-copies',
+  /** Merge the other copies of Cindy into the kept one (on its home). */
+  COMPANION_CLOUD_MERGE_CINDY: 'maker:companion-cloud:merge-cindy',
+  /** A file of the companion's room, brought to this computer (works while its home is offline). */
+  COMPANION_CLOUD_ATTACHMENT: 'maker:companion-cloud:attachment',
+  /** Local copy of an avatar from another computer or the cloud (looked up first, optionally fetched). */
+  COMPANION_AVATAR_RESOLVE: 'maker:companion-avatar:resolve',
 } as const;
 
 /**
@@ -976,6 +991,8 @@ export const MAKER_PUSH = {
   /** 伙伴工作台已接手的项目变化(payload: { botId });renderer 收到后重读项目列表。 */
   BOT_WORKBENCH_CHANGED: 'maker:bot-workbench:changed',
   BOT_LIFECYCLE_CHANGED: 'maker:bot-lifecycle:changed',
+  /** 伙伴自主跟进状态表或「自动跟进所有任务」设置变化（节流 ≤1 次/秒，payload: { botIds?: string[] }，缺省 = 全部伙伴）；renderer 重读「一眼」。 */
+  BOT_AUTONOMY_CHANGED: 'maker:bot-autonomy:changed',
   /**
    * 被控端「当前 New Maker 草稿」全量变更广播。SYNC_NEW_MAKER_DRAFT 落 main 缓存后随即发,
    * 经 device-link tap 转发给控制端(account 级 → sessions topic),控制端刷新远程草稿显示镜像。

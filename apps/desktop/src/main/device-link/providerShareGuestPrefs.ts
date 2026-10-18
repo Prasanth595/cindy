@@ -35,11 +35,21 @@ interface StoredPrefs {
 
 const SHARE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,121}$/;
 
+interface PendingSetting {
+  file: string | null;
+  shareId: string;
+  region: Region;
+  cancelled: boolean;
+}
+
 let resolvePath: (() => string) | null = null;
 let cache: { file: string | null; shares: Map<string, GuestPrefRecord> } | null = null;
 let writes: Promise<void> = Promise.resolve();
 let pendingWrites = 0;
 let generation = 0;
+const pendingSettings = new Set<PendingSetting>();
+// 退出或权威名单清理立即撤权；不能等前面的磁盘写入结束才停止跳过确认。
+const revokedShares = new Map<string | null, Map<string, object>>();
 
 /** 由本机接线在启动时提供文件位置(按当前账号解析)；传 null 回到只在内存里。 */
 export function configureProviderShareGuestPrefs(options: { resolvePath: (() => string) | null }): void {
@@ -147,25 +157,63 @@ async function writeFile(file: string, snapshot: StoredPrefs, assertCurrent: () 
 
 /** 这个分享的任务里凭证类操作是否不再确认(默认 false)。 */
 export function isProviderShareCredentialConsentSkipped(shareId: string): boolean {
-  return load().get(shareId)?.skipCredentialConsent === true;
+  const file = currentFile();
+  if (revokedShares.get(file)?.has(shareId)) return false;
+  return load(file).get(shareId)?.skipCredentialConsent === true;
 }
 
 /** 打开或关掉「信任 {分享者}」。关掉就是删掉记录(只存 override)。 */
 export async function setProviderShareCredentialConsent(shareId: string, region: Region, skip: boolean): Promise<void> {
   if (!SHARE_ID.test(shareId)) throw new Error('Invalid provider share id');
   const file = currentFile();
-  await persist(file, (shares) => {
-    if (!skip) return shares.delete(shareId);
-    if (shares.get(shareId)?.region === region) return false;
-    shares.set(shareId, { region, skipCredentialConsent: true });
-    return true;
+  const setting: PendingSetting = { file, shareId, region, cancelled: false };
+  pendingSettings.add(setting);
+  try {
+    await persist(file, (shares) => {
+      if (setting.cancelled) return false;
+      if (!skip) return shares.delete(shareId);
+      if (shares.get(shareId)?.region === region) return false;
+      shares.set(shareId, { region, skipCredentialConsent: true });
+      return true;
+    });
+    if (!setting.cancelled) revokedShares.get(file)?.delete(shareId);
+  } finally {
+    pendingSettings.delete(setting);
+  }
+}
+
+/** 在内存中立即撤权，再在同一跨进程锁内删除磁盘记录；失败也不恢复信任。 */
+function removePrefs(file: string | null, matches: (shareId: string, region: Region) => boolean): Promise<void> {
+  const revoked = revokedShares.get(file) ?? new Map<string, object>();
+  revokedShares.set(file, revoked);
+  const removal = {};
+  for (const setting of pendingSettings) {
+    if (setting.file === file && matches(setting.shareId, setting.region)) {
+      setting.cancelled = true;
+      revoked.set(setting.shareId, removal);
+    }
+  }
+  for (const [shareId, record] of load(file)) {
+    if (matches(shareId, record.region)) revoked.set(shareId, removal);
+  }
+  return persist(file, (shares) => {
+    const previousSize = shares.size;
+    for (const [shareId, record] of shares) {
+      if (matches(shareId, record.region)) shares.delete(shareId);
+    }
+    return shares.size !== previousSize;
+  }).then(() => {
+    for (const [shareId, token] of revoked) {
+      if (token === removal) revoked.delete(shareId);
+    }
+    if (revoked.size === 0 && revokedShares.get(file) === revoked) revokedShares.delete(file);
   });
 }
 
 /** 绑定退出请求发起时的账号文件，完成退出后只清理该账号的偏好。 */
 export function captureProviderShareGuestPrefsRemoval(shareId: string): () => Promise<void> {
   const file = currentFile();
-  return () => persist(file, (shares) => shares.delete(shareId));
+  return () => removePrefs(file, (id) => id === shareId);
 }
 
 /** 受邀者退出了这个分享：忘掉它的偏好。 */
@@ -181,13 +229,7 @@ export function pruneProviderShareGuestPrefs(present: ReadonlySet<string>, confi
   if (confirmedRegions.length === 0) return;
   const file = currentFile();
   if (pendingWrites === 0 && ![...load(file)].some(([shareId, record]) => confirmedRegions.includes(record.region) && !present.has(shareId))) return;
-  return persist(file, (shares) => {
-    const previousSize = shares.size;
-    for (const [shareId, record] of shares) {
-      if (confirmedRegions.includes(record.region) && !present.has(shareId)) shares.delete(shareId);
-    }
-    return shares.size !== previousSize;
-  }).catch(() => undefined);
+  return removePrefs(file, (shareId, region) => confirmedRegions.includes(region) && !present.has(shareId)).catch(() => undefined);
 }
 
 /** 等最近一次写入落盘(测试与退出前用)。 */
@@ -201,4 +243,6 @@ export function resetProviderShareGuestPrefsForTests(): void {
   invalidateProviderShareGuestPrefsCache();
   writes = Promise.resolve();
   pendingWrites = 0;
+  pendingSettings.clear();
+  revokedShares.clear();
 }

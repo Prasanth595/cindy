@@ -43,6 +43,7 @@ import { buildWireMessageSourceNote, readWireSourceDevice, readWireSourcePlugin 
 import { buildCindyMakeTaskNote } from '../cindy-make/taskNote.js';
 import { getResolvedMainLocale } from '../i18n.js';
 import { buildUiLanguageErrorNote, turnUiLanguageFromSendOpts } from './uiLanguageErrorNote.js';
+import type { RepeatableWireNotes, WireNotePlan } from './wireNoteMemory.js';
 import {
   excludeDirectoryGrantConflicts,
   directoryGrantsForRuntime,
@@ -55,6 +56,8 @@ import type { MakerSessionCreateOpts } from './sessionRequest.js';
 import { channelTurnSourceFor, withChannelTurnSource } from './channelTurnSignal.js';
 import type { CindyLearnInvocationGrant } from '../learn-host/invocationGrant.js';
 import { AUTO_REVIEW_DELEGATED_CONTINUATION, currentAutoReviewResourceIntent, readAutoReviewUserText, restoreAutoReviewUserIntent, type AutoReviewHistoryMessage } from './autoReviewUserIntent.js';
+import { mcpAppModelContext } from '../mcp-apps/runtime.js';
+import { MCP_APP_MESSAGE_GUARD, type McpAppMessageGuard } from '../mcp-apps/message.js';
 
 type CreateOpts = MakerSessionCreateOpts;
 
@@ -245,6 +248,8 @@ export function revokeTrustedDesktopQueuedOrigin(item: AgentInputQueuedMessage):
 }
 
 type MakerSendOptions = {
+  /** Main-only live card guard, never serialized to queue history or provider options. */
+  readonly [MCP_APP_MESSAGE_GUARD]?: McpAppMessageGuard;
   readonly [AUTO_REVIEW_DELEGATED_CONTINUATION]?: true;
   retryUserClientId?: string;
   toolsDisabled?: boolean;
@@ -498,6 +503,8 @@ export interface MakerSendTransactionDeps {
    * 随后本事务按空 session 走 lazy-create,避免 peek 之后对已关闭对象 send。
    */
   prepareUnhealthySession?(sessionId: string): Promise<boolean | void>;
+  /** Restore durable task status before route changes or native session resume. */
+  restoreArchivedSessionForSend?(sessionId: string): Promise<void>;
   /**
    * session-agent-switch:pending 交接读取(agentHandoff 注册表)。命中时把交接
    * 文本前置进 wire payload(不影响 persistUserMessage 落库显示内容),并在
@@ -508,6 +515,14 @@ export interface MakerSendTransactionDeps {
   peekWorkingDirectoryRecoveryNote?(sessionId: string, workingDir: string): string | null;
   readWorkingDirectoryRecoveryCreateOpts(sessionId: string): Promise<CreateOpts>;
   consumeWorkingDirectoryRecoveryNote?(sessionId: string, note: string): void;
+  /**
+   * 伙伴工作记忆刷新(botWorkingMemory):原生自动压缩之后的下一次发送前置一次账本,
+   * 只进 wire payload;交接首条(pending handoff)已含账本时不重复。
+   * 返回 null = 没有待刷新;`note` 为 null = 有标记但该会话没有账本(仍要消费)。
+   * accepted 后只消费当时读到的 `generation`:发送在途时再来一次压缩边界,新一代留给下次。
+   */
+  peekWorkingMemoryRefresh?(sessionId: string): Promise<{ generation: number; note: string | null } | null>;
+  consumeWorkingMemoryRefresh?(sessionId: string, generation: number): void;
   /**
    * 计划对账:会话里若有待处理计划,返回一段只进 wire payload 的指示文本。
    * sealedTurnId 只用于已完成计划的一次性保护,跨过 accepted 后才消费。
@@ -544,6 +559,16 @@ export interface MakerSendTransactionDeps {
    * 命中时每轮把任务说明追加到 wire 用户消息(不落库、不显示),见 cindy-make/taskNote.ts。
    */
   isCindyMakeSession?(sessionId: string): Promise<boolean>;
+  /**
+   * 逐轮环境说明去重(见 wireNoteMemory.ts):返回本轮真正要前置的段;与上一次已被
+   * 引擎接受的内容相同的段不再重复。`force` 在交接首条(原生上下文刚重建)时整体重发。
+   * 缺省(未注入)= 每轮全发,行为与旧版一致。
+   */
+  planRepeatableWireNotes?(
+    sessionId: string,
+    notes: RepeatableWireNotes,
+    opts: { force: boolean },
+  ): WireNotePlan;
   log: MakerSendTransactionLog;
   workdirDiagnostics?: WorkdirDiagnosticLogger;
 }
@@ -985,6 +1010,9 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
       if (typeof sessionId !== 'string') throwIpcError('INVALID_PARAMS', 'sessionId required');
       const dispatchProductTurn = deps.prepareProductTurn?.(sessionId);
       const requestedSendOpts = (sendOpts ?? {}) as MakerSendOptions;
+      if (!requestedSendOpts.signal?.aborted) {
+        await deps.restoreArchivedSessionForSend?.(sessionId);
+      }
       // session-agent-switch:pending 切换在发送时刻生效(用户语义:「消息真正发出
       // 去时才切」)。必须在 getSession 之前——apply 会 close 旧引擎的 live session,
       // 让下方走 lazy-create 按 DB 新值 spawn 新引擎。
@@ -1218,9 +1246,17 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
         ? prependNoteToWireUserMessage(normalized as HandoffWireMessage, workdirRecoveryNote)
         : normalized;
       const pendingHandoff = (await deps.peekPendingHandoff?.(sessionId)) ?? null;
-      const withHandoff = pendingHandoff
-        ? prependHandoffToUserMessage(withRecoveryNote as HandoffWireMessage, pendingHandoff)
+      // 原生压缩后的账本刷新:交接首条已含账本时不重复(但同样在 accepted 后消费当时那一代)。
+      const workingMemoryRefresh = shouldPrependMobileClientPromptNote(normalized, sess.agentKind)
+        ? ((await deps.peekWorkingMemoryRefresh?.(sessionId).catch(() => null)) ?? null)
+        : null;
+      const workingMemoryRefreshNote = !pendingHandoff ? workingMemoryRefresh?.note ?? null : null;
+      const withWorkingMemoryRefresh = workingMemoryRefreshNote
+        ? prependNoteToWireUserMessage(withRecoveryNote as HandoffWireMessage, workingMemoryRefreshNote)
         : withRecoveryNote;
+      const withHandoff = pendingHandoff
+        ? prependHandoffToUserMessage(withWorkingMemoryRefresh as HandoffWireMessage, pendingHandoff)
+        : withWorkingMemoryRefresh;
       // 计划对账:旧的未收口计划让 agent 顺手交代(更新/修订/清掉)。位置在交接段
       // 之前——两段各自带"以下是用户的新消息"式结束标记,对账在外层不破坏交接正文。
       // 只对"用户真的开口"的普通新轮次注入,判定用白名单而非枚举内部来源
@@ -1330,31 +1366,56 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
       // context 盖章);没有设备信息时沿用旧的手机判据(直连走 deps 注入的 async context,
       // 排队走 so.fromMobileClient)。
       const sourceDevice = readWireSourceDevice(so.sourceDevice);
-      const mobileClientNote = shouldPrependMobileClientPromptNote(normalized, sess.agentKind)
+      const allowsEnvironmentNotes = shouldPrependMobileClientPromptNote(normalized, sess.agentKind);
+      const mobileClientNote = allowsEnvironmentNotes
         ? buildClientEnvironmentNote({
             device: sourceDevice,
             host: sourceDevice ? deps.readHostDeviceIdentity?.() : undefined,
             legacyMobile: deps.isMobileClientInvoke?.() === true || so.fromMobileClient === true,
           })
         : null;
-      const withMobileNote = mobileClientNote
-        ? prependNoteToWireUserMessage(withSourceNote as HandoffWireMessage, mobileClientNote)
-        : withSourceNote;
       // 个人版制作任务说明:与手机说明同层、同占位规则(原生命令必须留在消息开头)。
       const cindyMakeNote =
         (await deps.isCindyMakeSession?.(sessionId).catch(() => false)) === true &&
-        shouldPrependMobileClientPromptNote(normalized, sess.agentKind)
+        allowsEnvironmentNotes
           ? buildCindyMakeTaskNote()
           : null;
-      const withCindyMakeNote = cindyMakeNote
-        ? prependNoteToWireUserMessage(withMobileNote as HandoffWireMessage, cindyMakeNote)
-        : withMobileNote;
-      const uiLanguageNote = shouldPrependMobileClientPromptNote(normalized, sess.agentKind)
+      const uiLanguageNote = allowsEnvironmentNotes
         ? buildUiLanguageErrorNote(turnUiLanguageFromSendOpts(so, getResolvedMainLocale()))
         : null;
-      const outgoing = uiLanguageNote
-        ? prependNoteToWireUserMessage(withCindyMakeNote as HandoffWireMessage, uiLanguageNote)
+      // 这三段是"环境说明":同一原生上下文里内容没变就不重复发(wireNoteMemory)。交接首条
+      // (原生上下文刚重建)整体重发;只有引擎接受后才记为已发送。斜杠命令轮次本来就不带
+      // 说明,也不改写记忆——它不代表模型已经看过新的环境。
+      const repeatableNotes: RepeatableWireNotes = {
+        'client-environment': mobileClientNote,
+        'cindy-make': cindyMakeNote,
+        'ui-language': uiLanguageNote,
+      };
+      const wireNotePlan = allowsEnvironmentNotes
+        ? (deps.planRepeatableWireNotes?.(sessionId, repeatableNotes, { force: pendingHandoff !== null }) ?? null)
+        : null;
+      const plannedNotes = wireNotePlan?.notes ?? repeatableNotes;
+      const withMobileNote = plannedNotes['client-environment']
+        ? prependNoteToWireUserMessage(withSourceNote as HandoffWireMessage, plannedNotes['client-environment'])
+        : withSourceNote;
+      const withCindyMakeNote = plannedNotes['cindy-make']
+        ? prependNoteToWireUserMessage(withMobileNote as HandoffWireMessage, plannedNotes['cindy-make'])
+        : withMobileNote;
+      let outgoing = plannedNotes['ui-language']
+        ? prependNoteToWireUserMessage(withCindyMakeNote as HandoffWireMessage, plannedNotes['ui-language'])
         : withCindyMakeNote;
+      const appContext = shouldPrependMobileClientPromptNote(normalized, sess.agentKind)
+        ? await mcpAppModelContext(sessionId)
+        : undefined;
+      if (appContext?.text) {
+        outgoing = prependNoteToWireUserMessage(outgoing as HandoffWireMessage, appContext.text);
+      }
+      const assertAppCurrent = so[MCP_APP_MESSAGE_GUARD] || appContext?.text
+        ? async () => {
+            await so[MCP_APP_MESSAGE_GUARD]?.();
+            await appContext?.assertCurrent();
+          }
+        : undefined;
       const meta = await deps.getSessionMeta(sessionId).catch(() => null);
       let persistUserMessage = readPersistUserMessageOption(so);
       const trustedDesktopQueueReceipt = readTrustedDesktopQueueReceipt(persistUserMessage);
@@ -1550,7 +1611,22 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
           persistUserMessage?.botTaskCoordination !== undefined,
         ), () => sess.send(outgoing as never, {
           ...(retryTranscriptUserEntryId ? { retryTranscriptUserEntryId } : {}),
-          ...(resolveScheduledIntent ? { resolveAutoReviewUserIntent: resolveScheduledIntent } : {}),
+          ...(assertAppCurrent
+            ? {
+                beforeProviderStart: assertAppCurrent,
+                resolveAutoReviewUserIntent: async () => {
+                  const intent = resolveScheduledIntent
+                    ? await resolveScheduledIntent()
+                    : restoredAutoReviewIntent ?? (so[MCP_APP_MESSAGE_GUARD]
+                      ? restoreAutoReviewUserIntent([])
+                      : undefined);
+                  // Session awaits this existing authorization hook after all
+                  // preparation (including vision), immediately before dispatch.
+                  await assertAppCurrent();
+                  return intent;
+                },
+              }
+            : resolveScheduledIntent ? { resolveAutoReviewUserIntent: resolveScheduledIntent } : {}),
           [AUTO_REVIEW_SOURCE_CONTENT]: autoReviewSourceContent,
           ...(so[AUTO_REVIEW_DELEGATED_CONTINUATION] ? { [AUTO_REVIEW_DELEGATED_CONTINUATION]: true as const } : {}),
           ...(so[INHERITED_CAPABILITY_SELECTION] !== undefined
@@ -1719,6 +1795,7 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
         }));
         sendAccepted = sendResult.accepted;
         if (sendAccepted) {
+          appContext?.consume();
           cleanupAfterAcceptance?.();
           await cleanupAcceptedNonPersistedMaterialization();
         } else {
@@ -1741,8 +1818,15 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
           // 只有跨过不可逆 dispatch 边界才消费;未派发保留 pending 下次重试。
           deps.consumePendingHandoff?.(sessionId);
         }
+        // 环境说明同样只在引擎接受后记为已发送;被拒 / 抛错时下次照常重发。
+        if (sendResult.accepted) wireNotePlan?.commit();
         if (workdirRecoveryNote && sendResult.accepted) {
           deps.consumeWorkingDirectoryRecoveryNote?.(sessionId, workdirRecoveryNote);
+        }
+        // 只消费构造本次说明时读到的那一代;交接首条已带账本时同样消费。发送期间新来的
+        // 压缩边界代次不同,留给下一次发送。
+        if (workingMemoryRefresh && sendResult.accepted) {
+          deps.consumeWorkingMemoryRefresh?.(sessionId, workingMemoryRefresh.generation);
         }
         if (planReconcile?.sealedTurnId && sendResult.accepted) {
           try {

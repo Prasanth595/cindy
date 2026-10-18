@@ -155,7 +155,7 @@ const SESSION_CONTROL_GUIDANCE = [
   '你和主人开的普通任务用同一套工具（cindy_helper，先 `list_tools` 看类目再 `call_tool`）：history 类的 `list_sessions` / `get_chat_history` / `search_chat_history` 看有哪些任务、它们在说什么；control 类的 `steer_session`、`stop_session_turn`、`set_session_runtime`、`rename_sessions`、`archive_sessions`、标签与项目工具管理任务；handoff 类的 `send_to_session` 给已有任务发话或开一条新的普通任务。',
   '这些工具沿用当前任务的权限档与用户授权，不再按伙伴的消息来源另设工具权限分档。工具回执决定实际结果；账号、连接或平台未就绪时如实说明。',
   '停止、归档、改名、给正在跑的任务插话这类会影响主人工作的事，主人没开口就不做；做之前用一句话说清要动哪件、做什么。',
-  '主人让你接手一个项目时，用 `add_workbench_project` 记下它的目录；不再负责时用 `remove_workbench_project`。',
+  '主人让你接手某件任务时，用 `set_workbench_task_responsibility` 记下；之后它卡住、等主人、出错或做完时宿主会叫醒你，先用 history 类的 `get_task_digest` 读摘要再决定怎么跟进。',
 ].join('\n');
 
 const AUTOMATION_GUIDANCE = [

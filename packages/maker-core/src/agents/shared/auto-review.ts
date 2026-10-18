@@ -1577,43 +1577,50 @@ function stripDataLiterals(command: string): string {
     );
 }
 
+type CommandScanPattern = Pick<RegExp, 'test'>;
+
+function ghAuthShowsToken(command: string): boolean {
+  // A slash also establishes a command boundary for /usr/bin/gh and ./gh.
+  // Avoid rescanning an arbitrary path prefix from every shell separator.
+  const heads = /(?:^|[\s|&;(\/])gh\s+auth\s+[a-z][\w-]*/g;
+  const boundary = /[|;&\n]/g;
+  // Sticky: scan the suffix only from the first auth head in each segment.
+  // Keep --show-token[=value], -t/-wt/-tw[=value] and separator boundaries.
+  // The lookahead makes the short-option letter run linear even for a long
+  // cluster containing many t's followed by an invalid trailing '-'.
+  const flags = /[^|;&\n]*?\s(?:--show-token(?:$|[\s=|&;)])|-(?=[a-zA-Z]*t)[a-zA-Z]+(?:=[^\s|;&]*)?(?![\w-]))/y;
+  let scannedUntil = -1;
+  let head: RegExpExecArray | null;
+  while ((head = heads.exec(command))) {
+    const argsStart = heads.lastIndex;
+    // Preserve overlapping heads and heads whose whitespace spans a newline.
+    // Only a head ending beyond the already-scanned segment needs another scan.
+    heads.lastIndex = head.index + 1;
+    if (argsStart <= scannedUntil) continue;
+    flags.lastIndex = argsStart;
+    if (flags.test(command)) return true;
+    boundary.lastIndex = argsStart;
+    scannedUntil = boundary.exec(command)?.index ?? command.length;
+  }
+  return false;
+}
+
 /**
  * 读取或打出可复用凭证的确定性红线(ALWAYS_ASK_PATTERNS 的子集)。单独成表：供应商分享的受邀者
  * 任务在完全访问下也要确认这一类(shellCommandReadsCredentials)。
  */
-const CREDENTIAL_ALWAYS_ASK_PATTERNS: readonly RegExp[] = [
-  // `--show-token` = 把**可复用的凭证**打进 stdout,从而进模型上下文与会话记录。等同于
-  // 读凭证文件,按凭证同级作**确定性必问** —— 只把它挡在 gh 只读白名单外还不够:落灰区
-  // 意味着可能被轻量审阅器静默放行(`gh auth status` 看起来就是一条状态查询)。
-  // 覆盖 `--show-token` / `--show-token=true` 两种形态(review 二轮 P1)。
-  // **必须限定在 `gh auth` 命令位**:这个字符串出现在别处只是普通文本或参数,
-  // `echo --show-token`、`grep -rn -- --show-token src` 原本是直接放行的,不限定就被打成
-  // 硬弹窗 —— 正是本 PR 要消灭的那类误报(review 报)。命令位写法与下面的短选项一致。
-  // 首尾边界要**对称**:命令位允许分隔符开头(`ls;gh auth …`),flag 后面同样可以紧跟
-  // `;` `|` `&` `)` 而不带空格 —— 只补开头是把同一条边界修了一半(review 报)。
-  /(?:^|[\s|&;(])(?:\S*\/)?gh\s+auth\s+[a-z][\w-]*[^|;&\n]*?\s--show-token(?:$|[\s=|&;)])/,
-  // 短选项形态:`gh auth status -t` 与含 `t` 的簇写(`-wt`/`-tw`)是同一个 flag,只把它挡在
-  // gh 只读白名单外不够 —— 落灰区就可能被轻量审阅器静默放行(review 三轮 P1)。`-t` 本身
-  // 在别的命令里含义完全不同(`docker -t`、`tar -t`),所以**限定在 `gh auth` 命令位**上匹配。
-  // `(?:\S*\/)?` 让绝对/相对路径调用同样命中(`/usr/bin/gh auth status -t`,review 四轮 P1)——
-  // 只匹配裸 `gh` 等于给一个换写法就绕过的口子。
-  // 子命令与 `-t` 之间允许**任意**中间参数:`gh auth status --hostname github.com -t` 是
-  // 合法组合,原来只允许非选项 token 会漏(review 报)。用 `[^|;&\n]*?` 限定在同一段内。
-  // 结尾的 `(?:=[^\s|;&]*)?` 覆盖 `-t=true` 这类**带等号的 truthy 布尔值** —— gh 照常接受,
-  // 而原来的 `(?![\w=-])` 把等号形态排除在外,令牌仍会被打进模型上下文(review 报)。
-  // 命令位判据用 `(?:^|[\s|&;(])` 而不是 `(?:^|\s)`:分隔符后可以不带空格
-  // (`ls;gh auth token`、`ls&&gh auth token`、`(gh auth token)`),而分段之后不会再重扫
-  // 确定性红线 —— 只认空白等于给一个删空格就绕过的口子(review 报)。与 ALWAYS_ASK_PATTERNS 里 `su`
-  // 那条的边界写法一致。
-  /(?:^|[\s|&;(])(?:\S*\/)?gh\s+auth\s+[a-z][\w-]*[^|;&\n]*?\s-[a-zA-Z]*t[a-zA-Z]*(?:=[^\s|;&]*)?(?![\w-])/,
-  // `gh auth token` 直接把令牌打到 stdout,与 `--show-token` 同级(同族一次收完)。
-  /(?:^|[\s|&;(])(?:\S*\/)?gh\s+auth\s+token\b/,
+const CREDENTIAL_ALWAYS_ASK_PATTERNS: readonly CommandScanPattern[] = [
+  // Token flags belong to gh auth only: echo/grep --show-token and docker -t
+  // must not become credential prompts. Use the same scanner in both gates.
+  { test: ghAuthShowsToken },
+  // `gh auth token` directly prints a reusable credential.
+  /(?:^|[\s|&;(\/])gh\s+auth\s+token\b/,
   ...SENSITIVE_CREDENTIAL_PATH_PATTERNS,                  // 凭证/密钥路径(见上)
   /\bsecurity\s+(?:find|dump|export|add)-/,               // macOS keychain
   /\$\{?[A-Za-z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|APIKEY|_PAT)[A-Za-z0-9_]*\}?/i, // 敏感环境变量展开(echo "$API_KEY" 等)
 ];
 
-const ALWAYS_ASK_PATTERNS: readonly RegExp[] = [
+const ALWAYS_ASK_PATTERNS: readonly CommandScanPattern[] = [
   /\b(?:sudo|doas|runuser)\b/,                           // 提权(runuser 名字独特,直接词界)
   ...CREDENTIAL_ALWAYS_ASK_PATTERNS,                     // 凭证文件、钥匙串、令牌(见上)
   // 裸 `su`(切换到其它用户/root)同属提权,但 "su" 常出现在无关文本里 → 只在命令位(段首/分隔符后,或
@@ -6246,37 +6253,34 @@ function gitUsesConfigOverride(tokens: readonly string[]): boolean {
  * 前置段按只读命令执行时，才允许把这次读取交给执行器做本机凭证豁免；认不出的段一律
  * 按可能有副作用处理，保持 fail-closed。
  */
-function priorShellSegmentsMayMutate(
+function shellSegmentMutation(
   segments: readonly ExecutableSegment[],
-  segmentIndex: number,
+  index: number,
   workspaceRoots: string[],
   opts: ShellReviewOptions,
   segmentCwds: readonly (string | undefined)[],
-  allowResolvedDirectoryChanges = false,
-): boolean {
-  for (let index = 0; index < segmentIndex; index += 1) {
-    const segmentCwd = segmentCwds[index];
-    const segmentOpts: ShellReviewOptions = {
-      ...opts,
-      cwd: segmentCwd ?? opts.cwd,
-      cwdUnknown: segmentCwd === undefined ? true : opts.cwdUnknown,
-    };
-    // git status may refresh the index, so it cannot establish a stable pre-read state
-    // for a later credential exemption even though its output is otherwise read-only.
-    const tokens = stripShellControlTokens(tokenize(segments[index].text));
-    const unwrapped = unwrapCommand(tokens, segmentOpts.cwd ?? workspaceRoots[0], segmentOpts.cwdUnknown === true);
-    if (allowResolvedDirectoryChanges && !process.env.CDPATH
-      && tokens[0] === 'cd' && tokens.length === 2 && !tokens[1].startsWith('-')
-      && segments[index].separatorAfter === 'and' && segmentCwds[index + 1] !== undefined
-      && !segmentHasSideEffectRedirectOrSubstitution(segments[index].text)) continue;
-    const invocation = unwrapped.tokens[0] && executableName(unwrapped.tokens[0]) === 'git'
-      ? parseGitInvocation(unwrapped.tokens, workspaceRoots, segmentOpts)
-      : undefined;
-    if (invocation?.sub === 'status' || classifyShellSegment(segments[index].text, workspaceRoots, segmentOpts) !== 'auto-approve') {
-      return true;
-    }
-  }
-  return false;
+): { mayMutate: boolean; mayMutateFiles: boolean } {
+  const segment = segments[index];
+  const segmentCwd = segmentCwds[index];
+  const segmentOpts: ShellReviewOptions = {
+    ...opts,
+    cwd: segmentCwd ?? opts.cwd,
+    cwdUnknown: segmentCwd === undefined ? true : opts.cwdUnknown,
+  };
+  // git status may refresh the index, so it cannot establish a stable pre-read state
+  // for a later credential exemption even though its output is otherwise read-only.
+  const tokens = stripShellControlTokens(tokenize(segment.text));
+  const unwrapped = unwrapCommand(tokens, segmentOpts.cwd ?? workspaceRoots[0], segmentOpts.cwdUnknown === true);
+  const resolvedDirectoryChange = !process.env.CDPATH
+    && tokens[0] === 'cd' && tokens.length === 2 && !tokens[1].startsWith('-')
+    && segment.separatorAfter === 'and' && segmentCwds[index + 1] !== undefined
+    && !segmentHasSideEffectRedirectOrSubstitution(segment.text);
+  const invocation = unwrapped.tokens[0] && executableName(unwrapped.tokens[0]) === 'git'
+    ? parseGitInvocation(unwrapped.tokens, workspaceRoots, segmentOpts)
+    : undefined;
+  const mayMutate = invocation?.sub === 'status'
+    || classifyShellSegment(segment.text, workspaceRoots, segmentOpts) !== 'auto-approve';
+  return { mayMutate, mayMutateFiles: mayMutate && !resolvedDirectoryChange };
 }
 
 /**
@@ -6305,7 +6309,19 @@ function shellCommandReadsDotenv(
   // 调用方核实 Git 或文件读取时需要各段的实际目录。
   const segmentCwds = opts.gitContentRead || opts.gitConfigRead || opts.fileReadRequiresConsent
     ? segmentWorkingDirs(segments, workspaceRoots, opts) : [];
+  const sharesGitCredentialChecks = opts.gitContentRead !== undefined || opts.gitConfigRead !== undefined;
+  let previousMayMutate = false;
+  let previousMayMutateFiles = false;
   for (const [segmentIndex, { text: segment }] of segments.entries()) {
+    // Accumulate the prefix once, instead of reclassifying all prior segments for
+    // every read. Updating at entry also covers earlier segments that continued.
+    // File checks may accept a resolved cd; Git checks retain the stricter state.
+    if (segmentIndex > 0 && (sharesGitCredentialChecks || opts.fileReadRequiresConsent)
+      && (!previousMayMutate || (opts.fileReadRequiresConsent && !previousMayMutateFiles))) {
+      const previous = shellSegmentMutation(segments, segmentIndex - 1, workspaceRoots, opts, segmentCwds);
+      previousMayMutate ||= previous.mayMutate;
+      previousMayMutateFiles ||= previous.mayMutateFiles;
+    }
     const inputRedirections = parseShellInputRedirections(segment);
     if (inputRedirections.hasUnresolvedTarget) return true;
     const inspectionCommand = inputRedirections.targets.length > 0
@@ -6319,15 +6335,14 @@ function shellCommandReadsDotenv(
     );
     const tokens = unwrapped.tokens;
     const bin = executableName(tokens[0] ?? '');
-    const sharesGitCredentialChecks = opts.gitContentRead !== undefined || opts.gitConfigRead !== undefined;
     const configOverride = bin === 'git' && gitUsesConfigOverride(tokens);
     const priorMutation = sharesGitCredentialChecks || opts.fileReadRequiresConsent
-      ? priorShellSegmentsMayMutate(segments, segmentIndex, workspaceRoots, opts, segmentCwds)
+      ? previousMayMutate
         || segmentHasSideEffectRedirectOrSubstitution(segment)
         || configOverride
       : false;
     const priorFileMutation = opts.fileReadRequiresConsent
-      ? priorShellSegmentsMayMutate(segments, segmentIndex, workspaceRoots, opts, segmentCwds, true)
+      ? previousMayMutateFiles
         || segmentHasSideEffectRedirectOrSubstitution(segment)
         || rawTokens[0] !== tokens[0]
       : false;
@@ -6527,7 +6542,7 @@ function fetchesCloudMetadata(quotesOnly: string): boolean {
   return false;
 }
 
-function matchesAnyVariant(patterns: readonly RegExp[], variants: ReturnType<typeof deterministicScanVariants>): boolean {
+function matchesAnyVariant(patterns: readonly CommandScanPattern[], variants: ReturnType<typeof deterministicScanVariants>): boolean {
   const texts = Object.values(variants);
   return patterns.some((re) => texts.some((text) => re.test(text)));
 }
@@ -6544,8 +6559,9 @@ export function shellCommandReadsCredentials(
   depth = 0,
 ): boolean {
   if (typeof command !== 'string' || command.trim().length === 0) return false;
-  // 超长命令解析器不展开扫描，按需要确认处理(与 classifyShellCommand 同样不放过)。
-  if (command.length > MAX_AUTO_REVIEW_ACTION_TEXT_CHARS) return true;
+  // 确定性扫描与模型审阅的 4096 字符预算无关。普通长编辑脚本不能仅因长度
+  // 被当作凭证读取；仍扫描完整文本，独立上限用于限制解析资源消耗。
+  if (command.length > 256 * 1024) return true;
   if (shellCommandReadsDotenv(command, workspaceRoots, opts, depth)) return true;
   const variants = deterministicScanVariants(opts.credentialTextTransform?.(command) ?? command);
   return matchesAnyVariant(CREDENTIAL_ALWAYS_ASK_PATTERNS, variants) || fetchesCloudMetadata(variants.quotesOnly);

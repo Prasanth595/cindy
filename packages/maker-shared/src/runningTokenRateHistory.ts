@@ -170,7 +170,7 @@ export function clearRateHistoryCache(): void {
 }
 
 /**
- * Host-measured tok/s (Pi `pi-token-speed` algorithm, see maker-core
+ * Host-measured tok/s (usage intervals or streaming estimates, see maker-core
  * `token-speed.ts`). Optional additive status field: old hosts omit it and the
  * counter-based history above stays in charge.
  */
@@ -213,9 +213,11 @@ export function recordTokenSpeed(
     lastReport: null,
     speedOffsetMs: offset,
     speedElapsedMs: speed.elapsedMs,
-    // No reading yet this turn: keep showing the token count rather than "0 tok/s".
-    latestRate: speed.streaming && speed.rate <= 0 ? (reset ? null : history.latestRate) : speed.rate,
-    latestSampleAt: input.now ?? Date.now(),
+    // The final average has its own UI field. It is not a new recent-speed sample.
+    // Without a live reading this turn, keep showing the token count.
+    latestRate: speed.streaming && speed.rate > 0 ? speed.rate : (reset ? null : history.latestRate),
+    latestSampleAt: speed.streaming && speed.rate > 0
+      ? (input.now ?? Date.now()) : (reset ? undefined : history.latestSampleAt),
   };
   const at = offset + speed.elapsedMs;
   const lastAt = reset ? offset : (history.samples.at(-1)?.durationMs ?? offset);

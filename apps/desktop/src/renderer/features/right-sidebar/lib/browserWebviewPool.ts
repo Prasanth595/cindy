@@ -2,11 +2,10 @@
  * BrowserWebviewPool —— RSB web-browser plugin 的 webview 实例池(LRU, K=5)。
  *
  * 为什么要 pool:每个 web-browser tab 在 DOM 上有自己的 body slot,但 `<webview>`
- * 一旦被 React unmount(切到别的 tab / 切 RSB 整体卸载/重挂),guest webContents
- * 会被 detach + 销毁,下次切回来要重新加载,Cookie / form state / 浏览历史全丢。
- * 业界做法:把 webview DOM 节点保活在脱离当前 tab 子树的"停车区" container 里,
- * 切 tab 时用 vanilla `appendChild` 把同一个 DOM 节点搬到目标 slot —— 浏览器 DOM
- * 移动不会 detach iframe / webview 内部的 webContents,实现"切 tab 不重载"。
+ * 被 React unmount 或跨父节点搬动时，guest webContents 会被销毁/重建，
+ * 未提交表单、页面内存和浏览历史不能靠复用 DOM 对象保留。池用"停车区"
+ * 暂存没有 body slot 的 wrapper；已附着页面的 guest 保留依靠 Shell 让宿主
+ * 常驻并保持祖先位置稳定。正常切换只隐藏宿主，不能经过停车区。
  *
  * **关键:不要用 React Portal**。Portal 内部跨 reconcile 的搬动会触发 React 把
  * 节点 remove + insert,这中间一帧会让 webview detach 丢 webContents。所以
@@ -19,7 +18,7 @@
  *
  * 生命周期:
  *   - acquire(tabId):取/创建 entry,LRU 标 touch,超 K 淘汰最旧
- *   - getWrapper(tabId):返回 wrapper DOM(caller appendChild 到自己 slot)
+ *   - acquire / peek 的 wrapper:首次附着到 body slot，切换时留在原 slot
  *   - touch(tabId):tab 被激活时显式触发 LRU 时间戳更新
  *   - release(tabId):tab 关闭时显式销毁
  *
@@ -38,8 +37,8 @@ export type BrowserWebviewGuestFailure =
 
 interface PoolEntry {
   tabId: string;
-  /** webview 的外层 wrapper 容器,LRU 在它身上(caller 把它 appendChild 到自己
-   *  slot;切走时 caller 应把它 appendChild 回 pool container)。 */
+  /** webview 的外层 wrapper。首次附着到 caller slot 后，切换只隐藏常驻宿主。
+   *  真正卸载时可停回 pool container 暂存 DOM，但跨父节点移动不保留 guest。 */
   wrapper: HTMLDivElement;
   /** 真 `<webview>` 元素,挂在 wrapper 内部。 */
   webview: WebviewTag;
@@ -73,8 +72,8 @@ class BrowserWebviewPoolImpl {
 
   /**
    * pool 的"停车区" off-screen 容器 —— 没挂到任何 tab body slot 的 wrapper
-   * 暂存在这里。位置 `left:-9999px;top:0;` 让浏览器知道节点 still attached(
-   * webview 才会保活),但用户看不见。
+   * 暂存在这里。位置 `left:-9999px;top:0;` 让节点接入 document 但用户看不见，
+   * 供初始 guest 物化；移入/移出这里不保证原 guest 或页面状态保留。
    *
    * lazy 创建:首次 acquire 时才挂到 document.body。
    */
@@ -87,10 +86,8 @@ class BrowserWebviewPoolImpl {
     }
     const div = document.createElement('div');
     div.id = POOL_CONTAINER_ID;
-    // off-screen but attached:webview webContents 只有 host wrapper attached 到
-    // document 的 render tree 才不被销毁。`position: fixed; left: -9999px` 是
-    // 标准的 off-screen 技巧,visibility: hidden 会触发部分 webview 实现把
-    // webContents 暂停 paint,不用。
+    // off-screen but attached：供尚无 body slot 的 wrapper 物化 guest。
+    // 接入 document 不代表跨父节点搬动能保留同一个 webContents。
     div.style.cssText = 'position:fixed;left:-9999px;top:0;width:1px;height:1px;pointer-events:none;';
     document.body.appendChild(div);
     this.container = div;

@@ -80,6 +80,9 @@ describe('listCandidates', () => {
     // 分享来的电脑只用分享者的昵称称呼，不用分享者的电脑名(provider-sharing.md §6)。
     expect(candidates[1]).toMatchObject({ label: 'Magi', ownerName: 'Magi' });
     expect(JSON.stringify(candidates)).not.toContain('s1-pc');
+    // 分享者那台电脑只带设备 id，用来把同一台的几个分享收在一起。
+    expect(candidates[1].hostDeviceId).toBe('host-s1');
+    expect(candidates[0].hostDeviceId).toBeUndefined();
   });
 
   it('marks computers already in the group', async () => {
@@ -114,7 +117,9 @@ describe('resolveMembers', () => {
   });
 
   it('reads quota only for available Claude subscriptions on this account’s computers', async () => {
-    const readClaudeUsage = vi.fn(async (_member: ProviderGroupMember) => ({ updatedAt: 1_000, fiveHour: { utilization: 25 } }));
+    const readClaudeUsage = vi.fn<(member: ProviderGroupMember) => Promise<{ updatedAt: number; fiveHour: { utilization: number } }>>(
+      async () => ({ updatedAt: 1_000, fiveHour: { utilization: 25 } }),
+    );
     const directory = createProviderGroupDirectory(deps({ readClaudeUsage }));
     const member = (kind: 'local' | 'device' | 'share', agentDeviceId: string | null, providerId: string) => ({
       key: `${kind}:${agentDeviceId}:${providerId}`, kind, agentDeviceId, providerId, limit: 4, weight: 1, paused: false,

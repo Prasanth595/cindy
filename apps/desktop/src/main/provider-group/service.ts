@@ -129,6 +129,7 @@ export interface ProviderGroupRemoteGroups {
     memberKey: string;
     cause: ProviderGroupRemoteCoolCause;
     resetAt: number | null;
+    model?: string;
   }): Promise<void>;
   view(ownerDeviceId: string, providerId: string, model?: string): Promise<ProviderGroupView>;
   /** 忘掉组所在电脑目录的缓存(组员失败后下次现读)。 */
@@ -363,9 +364,9 @@ interface GroupSource {
     exclude: ReadonlySet<string>;
   }): Promise<SourcePick>;
   /** 记进组的状态(只在判定说要记时调用：那台账号的问题)。 */
-  cool(providerId: string, memberKey: string, cause: ProviderGroupFailureCause, resetAt: number | null): void;
+  cool(providerId: string, memberKey: string, cause: ProviderGroupFailureCause, resetAt: number | null, model: string): void;
   /** 组的状态里这台现在冷却中(组所在电脑记着它账号的问题)。 */
-  isKnownDown(providerId: string, memberKey: string): Promise<boolean>;
+  isKnownDown(providerId: string, memberKey: string, model?: string): Promise<boolean>;
   /** 发送前：这台现在该不该换掉；null = 读不到，照常发送。 */
   shouldMoveAway(providerId: string, config: ProviderGroupConfig, memberKey: string, model: string): Promise<{ reason: string } | false | null>;
   invalidate(member: ProviderGroupMember): void;
@@ -577,8 +578,9 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
     providerId: string,
     memberKey: string,
     route: ProviderGroupRoute,
+    model?: string,
   ): Promise<boolean> {
-    if (source && (await withTimeout(source.isKnownDown(providerId, memberKey), PROVIDER_GROUP_BEFORE_SEND_TIMEOUT_MS))) {
+    if (source && (await withTimeout(source.isKnownDown(providerId, memberKey, model), PROVIDER_GROUP_BEFORE_SEND_TIMEOUT_MS))) {
       return true;
     }
     if (!route.agentDeviceId || !deps.directory.offlineForMs) return false;
@@ -673,18 +675,18 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
         },
       };
     },
-    cool(providerId, memberKey, cause, resetAt) {
+    cool(providerId, memberKey, cause, resetAt, model) {
       if (!isAccountCause(cause)) return;
-      router.markCooling(providerId, memberKey, coolUntil(cause, resetAt));
+      router.markCooling(providerId, memberKey, coolUntil(cause, resetAt), cause === 'usage-limit' ? model : undefined);
     },
-    async isKnownDown(providerId, memberKey) {
-      return router.coolingUntil(providerId, memberKey) !== null;
+    async isKnownDown(providerId, memberKey, model) {
+      return router.coolingUntil(providerId, memberKey, model) !== null;
     },
     async shouldMoveAway(providerId, config, memberKey, model) {
       const resolved = await withTimeout(deps.directory.resolveMembers(providerId, config), PROVIDER_GROUP_BEFORE_SEND_TIMEOUT_MS);
       const state = resolved?.find((r) => r.member.key === memberKey);
       if (!state) return null;
-      const cooling = router.coolingUntil(providerId, memberKey) !== null
+      const cooling = router.coolingUntil(providerId, memberKey, model) !== null
         || providerGroupUsageState(state.claudeUsage, model, deps.now()).limited;
       if (state.state === 'ok' && !cooling) return false;
       return { reason: cooling ? 'cooling' : state.state };
@@ -735,15 +737,15 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
           ?? { ...pick.member, limit: 1, weight: 1, paused: false };
         return { kind: 'member', member, label: pick.label, labelOf };
       },
-      cool(providerId, memberKey, cause, resetAt) {
+      cool(providerId, memberKey, cause, resetAt, model) {
         // 连不上、起不来只由发现它的这台电脑自己避开(这一轮已试过)，不替全组判断：可能只是这台连不过去。
         if (!isAccountCause(cause)) return;
-        void remote.cool(ownerDeviceId, { providerId, memberKey, cause, resetAt }).catch((error) => {
+        void remote.cool(ownerDeviceId, { providerId, memberKey, cause, resetAt, ...(cause === 'usage-limit' ? { model } : {}) }).catch((error) => {
           deps.log.warn('provider group: reporting a computer to cool down failed', { error: errorText(error) });
         });
       },
-      async isKnownDown(providerId, memberKey) {
-        const view = await remote.view(ownerDeviceId, providerId);
+      async isKnownDown(providerId, memberKey, model) {
+        const view = await remote.view(ownerDeviceId, providerId, model);
         return view.members.find((m) => m.key === memberKey)?.state === 'cooling';
       },
       async shouldMoveAway(providerId, _config, memberKey, model) {
@@ -1054,7 +1056,7 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
           hooks?.reconnecting?.(attempt, PROVIDER_GROUP_RECONNECT_MAX_ATTEMPTS);
         }, {
           connectionLost: decision.connection === 'lost',
-          knownDown: () => knownDown(source, binding.providerId, current.key, route),
+          knownDown: () => knownDown(source, binding.providerId, current.key, route, row.model ?? undefined),
         });
         if (outcome === 'stopped') return;
         if (outcome === 'back') {
@@ -1257,7 +1259,7 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
   }): Promise<void> {
     const { sessionId, signals, decision, binding, source, config, row, current, lease, isCurrent, handBack, hooks } = input;
     const { cause } = decision;
-    if (decision.cool) source.cool(binding.providerId, current.key, cause, deps.readResetAt(signals));
+    if (decision.cool) source.cool(binding.providerId, current.key, cause, deps.readResetAt(signals), row.model);
     source.invalidate(current);
     const tried = router.markTried(sessionId, current.key);
     // 这条消息发出前刚换不过去的电脑不再重复去试、重复去等。
@@ -1324,7 +1326,7 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
           error: errorText(error),
         });
         router.markTried(sessionId, pick.member.key);
-        if (target.cool) source.cool(binding.providerId, pick.member.key, target.cause, null);
+        if (target.cool) source.cool(binding.providerId, pick.member.key, target.cause, null, row.model);
         skipped.failed(pick.member, isUnreachableTarget(target));
         continue;
       }
@@ -1552,7 +1554,7 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
         return null;
       }
       if (!config?.autoSwitch) return null;
-      if (decision.cool) source.cool(context.groupProviderId, context.member.key, cause, null);
+      if (decision.cool) source.cool(context.groupProviderId, context.member.key, cause, null, context.model);
       source.invalidate(context.member);
       const tried = router.markTried(context.sessionId, context.member.key);
       const pick = await source.pick({
@@ -1690,7 +1692,7 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
       if (reason === 'offline') {
         const outcome = await waitBeforeSend(
           sessionId, currentRoute, current.key, checkFresh, options,
-          () => knownDown(source, binding.providerId, current.key, currentRoute),
+          () => knownDown(source, binding.providerId, current.key, currentRoute, row.model ?? undefined),
         );
         if (outcome !== 'gone') return;
         options?.progress?.('switching');
@@ -1730,12 +1732,13 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
           const route = source.routeOf(pick.member, localProviderId);
           await deps.writeBinding(sessionId, bindingFor(source, binding.providerId, pick.member.key));
           try {
+            // 写绑定、交接期间用户停止(停止这次发送或「全部停止」)：交接在改动之前停下，留在原电脑。
             await deps.switchAgentLocation(sessionId, {
               agentKind: row.agentKind,
               model: row.model,
               providerId: route.providerId,
               agentDeviceId: route.agentDeviceId,
-            }, { beforeSend: true });
+            }, { beforeSend: true, isCurrent });
             deps.log.info('provider group: moved a task before sending', {
               sessionId,
               from: current.key,
@@ -1759,7 +1762,7 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
             });
             if (!failedTargets.includes(pick.member.key)) failedTargets.push(pick.member.key);
             router.markTried(sessionId, pick.member.key);
-            if (target.cool) source.cool(binding.providerId, pick.member.key, target.cause, null);
+            if (target.cool) source.cool(binding.providerId, pick.member.key, target.cause, null, row.model);
             skipped.failed(pick.member, isUnreachableTarget(target));
           }
         }

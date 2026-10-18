@@ -495,6 +495,62 @@ describe('Codex managed Skill startup', () => {
 });
 
 describe('Codex archive synchronization', () => {
+  it.each(['success', 'without-path', 'unarchive-fails', 'resume-fails-again', 'other-thread'] as const)(
+    'recovers archived resume without replacing the thread (%s)', async outcome => {
+      const id = '11111111-1111-4111-8111-111111111111';
+      const archivedPath = '/history/archived_sessions/history.jsonl';
+      const restoredPath = '/history/sessions/history.jsonl';
+      const recordCodexThreadLocation = vi.fn(async () => {});
+      const agent = new CodexAgent(createDeps({}, {
+        ...(outcome !== 'without-path' ? { prepareCodexResumeSession: async () => archivedPath } : {}),
+        recordCodexThreadLocation,
+      }));
+      let archived = true;
+      let resumes = 0;
+      const resumePaths: unknown[] = [];
+      const host = installFakeHost(agent, (method, params) => {
+        if (method === Method.ThreadResume) {
+          resumes++;
+          resumePaths.push((params as { path?: string }).path);
+          if (archived || outcome === 'resume-fails-again') {
+            const errorId = outcome === 'other-thread' ? 'other' : id;
+            throw Object.assign(new Error(`codex app-server thread/resume error -32600: session ${errorId} is archived. Run \`codex unarchive ${errorId}\` to unarchive it first.`),
+              { code: -32600, data: undefined });
+          }
+          return { thread: { id, path: restoredPath }, model: 'gpt-5.4' };
+        }
+        if (method === 'thread/read') return { thread: {
+          id, path: archived ? archivedPath : restoredPath, status: { type: 'idle' },
+        } };
+        if (method === 'thread/unarchive') {
+          if (outcome === 'unarchive-fails') throw new Error('unarchive unavailable');
+          archived = false;
+          return {};
+        }
+        return undefined;
+      }, { codexHome: '/history' });
+      try {
+        const start = agent.startSession({ sessionId: 'restore', model: 'gpt-5.4',
+          workingDir: '/repo', resumeSessionId: id });
+        const successful = outcome === 'success' || outcome === 'without-path';
+        if (successful) {
+          const handle = await start;
+          expect(handle.id).toBe(id);
+          expect(resumePaths).toEqual([outcome === 'without-path' ? undefined : archivedPath, restoredPath]);
+          expect(recordCodexThreadLocation).toHaveBeenCalledWith(id, '/history', restoredPath);
+          await handle.close();
+        } else {
+          await expect(start).rejects.toThrow(outcome === 'unarchive-fails' ? 'unarchive unavailable' : 'is archived');
+        }
+        expect(resumes).toBe(successful || outcome === 'resume-fails-again' ? 2 : 1);
+        const methods = host.request.mock.calls.map(([method]) => method);
+        expect(methods.filter(method => method === 'thread/unarchive')).toHaveLength(outcome === 'other-thread' ? 0 : 1);
+        expect(methods).not.toContain(Method.ThreadStart);
+        expect(methods).not.toContain(Method.TurnStart);
+      } finally { await agent.dispose(); }
+    },
+  );
+
   it('uses the retained writer and records the native archive path without closing sibling tasks', async () => {
     const storage = { historyHome: '/history', sqliteHome: '/state' };
     const resolveCodexThreadStorage = vi.fn(async () => storage);
@@ -1078,6 +1134,136 @@ describe('Codex official OAuth host isolation', () => {
 });
 
 describe('CodexAgent spawn configuration', () => {
+  it.each(['shared', 'isolated', 'custom-context'])('rebuilds a %s gateway host with the rotated key and resumes the same thread', async (scope) => {
+    MockCodexTransport.onCreate = transport => transport.setMockResponse(Method.ThreadStart, {
+      result: { thread: { id: '11111111-1111-4111-8111-111111111111' }, model: 'gpt-5.4', modelProvider: 'cindy_gateway', cwd: '/repo' },
+    });
+    let key = 'test-old-gateway-key';
+    const deps = createDeps({}, {
+      resolveCodexLocalAuthPolicy: () => scope === 'shared' ? 'legacy-shared' : 'isolated',
+      ...(scope === 'custom-context' ? { resolveCodexThreadContextWindow: () => 700_000 } : {}),
+      prepareCodexExtraSpawnConfig: async () => ({ extraArgs: [], extraEnv: {}, codexProxyActive: true }),
+    });
+    deps.auth.getState = async () => ({ authenticated: true, authSource: 'api-key' });
+    deps.auth.getAuthEnv = async () => ({ XDT_CODEX_API_KEY: key });
+    const agent = new CodexAgent(deps);
+    try {
+      const session = await agent.startSession({ sessionId: 'gateway', providerId: 'xd', model: 'gpt-5.4', workingDir: '/repo' });
+      const original = createdTransports[0];
+      expect(createdStdioOptions[0].env?.XDT_CODEX_API_KEY).toBe(key);
+      key = 'test-new-gateway-key';
+      const guard = await agent.beginLocalHostCredentialChange('gateway key rotation', {
+        allLocalHosts: true, credentialMode: 'gateway-key',
+      });
+      try {
+        expect(guard.affectedHostKeys).toContain(session.codexHostKey);
+        expect(() => guard.assertIdle()).toThrow(/active Codex session/);
+        await session.close();
+        guard.assertIdle();
+        await guard.retireActiveHost();
+        expect(original.closed).toBe(true);
+        await guard.finalize();
+      } finally { guard.release(); }
+      const restored = await agent.startSession({ sessionId: 'gateway', providerId: 'xd', model: 'gpt-5.4', workingDir: '/repo', resumeSessionId: session.id });
+      expect(createdStdioOptions.at(-1)?.env?.XDT_CODEX_API_KEY).toBe(key);
+      const resume = createdTransports.at(-1)!.lines.map(line => JSON.parse(line))
+        .find(message => message.method === Method.ThreadResume);
+      expect(resume.params.threadId).toBe(session.id);
+      await restored.close();
+    } finally { await agent.dispose(); }
+  });
+
+  it('excludes OAuth, custom provider and remote hosts from gateway key rotation', async () => {
+    const deps = createDeps({}, {
+      resolveCodexLocalAuthPolicy: provider => provider === 'xd' || provider === 'cprov-test' ? 'isolated' : 'legacy-shared',
+      resolveCodexThreadContextWindow: () => 700_000,
+      prepareCodexExtraSpawnConfig: async () => ({ extraArgs: [], extraEnv: {}, codexProxyActive: true }),
+      getRemoteCodexTransport: () => {
+        const transport = new MockCodexTransport();
+        createdTransports.push(transport);
+        return transport;
+      },
+    });
+    deps.auth.getState = async opts => ({ authenticated: true, authSource: opts?.credentialMode === 'gateway-key' ? 'api-key' : 'oauth' });
+    const agent = new CodexAgent(deps);
+    try {
+      const gateway = await agent.startSession({ sessionId: 'gateway', providerId: 'xd', model: 'gpt-5.4', workingDir: '/repo' });
+      const siblings = [];
+      for (const providerId of ['openai', 'cprov-test']) {
+        siblings.push(await agent.startSession({ sessionId: providerId, providerId, model: 'gpt-5.4', workingDir: '/repo' }));
+      }
+      siblings.push(await agent.startSession({ sessionId: 'remote', remoteHostId: 'ssh', model: 'gpt-5.4', workingDir: '/repo' }));
+      const guard = await agent.beginLocalHostCredentialChange('gateway key rotation', {
+        allLocalHosts: true, credentialMode: 'gateway-key',
+      });
+      try {
+        expect(guard.affectedHostKeys).toEqual([gateway.codexHostKey]);
+        await gateway.close();
+        guard.assertIdle();
+        await guard.retireActiveHost();
+        expect(createdTransports[0].closed).toBe(true);
+        expect(createdTransports.slice(1).every(transport => !transport.closed)).toBe(true);
+        await guard.finalize();
+      } finally { guard.release(); }
+      for (const sibling of siblings) await sibling.close();
+    } finally { await agent.dispose(); }
+  });
+
+  it('retires only the selected gateway host while another gateway host remains active', async () => {
+    const deps = createDeps({}, {
+      resolveCodexLocalAuthPolicy: () => 'isolated',
+      resolveCodexThreadContextWindow: () => 700_000,
+      prepareCodexExtraSpawnConfig: async () => ({ extraArgs: [], extraEnv: {}, codexProxyActive: true }),
+    });
+    deps.auth.getState = async () => ({ authenticated: true, authSource: 'api-key' });
+    const agent = new CodexAgent(deps);
+    try {
+      const first = await agent.startSession({ sessionId: 'first-gateway', providerId: 'xd', model: 'gpt-5.4', workingDir: '/repo' });
+      const second = await agent.startSession({ sessionId: 'second-gateway', providerId: 'xd', model: 'gpt-5.4', workingDir: '/repo' });
+      expect(agent.getLocalHostKeysForCredentialMode('gateway-key')).toEqual([first.codexHostKey, second.codexHostKey]);
+      const guard = await agent.beginLocalHostCredentialChange('saved gateway key', {
+        allLocalHosts: true, credentialMode: 'gateway-key', targetHostKey: first.codexHostKey,
+      });
+      try {
+        expect(guard.affectedHostKeys).toEqual([first.codexHostKey]);
+        await first.close();
+        guard.assertIdle();
+        await guard.finalize();
+        expect(createdTransports[0].closed).toBe(true);
+        expect(createdTransports[1].closed).toBe(false);
+      } finally { guard.release(); }
+      await second.close();
+    } finally { await agent.dispose(); }
+  });
+
+  it('defers gateway host retirement while an isolated host is starting', async () => {
+    const started = deferred<void>();
+    const finish = deferred<void>();
+    const agent = new CodexAgent(createDeps({}, {
+      resolveCodexLocalAuthPolicy: () => 'isolated',
+      prepareCodexExtraSpawnConfig: async () => {
+        started.resolve();
+        await finish.promise;
+        return { extraArgs: [], extraEnv: {}, codexProxyActive: true };
+      },
+    }));
+    const startup = agent.startSession({ sessionId: 'starting-gateway', providerId: 'xd', model: 'gpt-5.4', workingDir: '/repo' });
+    await started.promise;
+    const guard = await agent.beginLocalHostCredentialChange('gateway key rotation', {
+      allLocalHosts: true, credentialMode: 'gateway-key',
+    });
+    try {
+      expect(() => guard.assertIdle()).toThrow(/active Codex session/);
+      await expect(guard.retireActiveHost()).rejects.toThrow(/active Codex session/);
+    } finally {
+      guard.release();
+      finish.resolve();
+    }
+    const handle = await startup;
+    await handle.close();
+    await agent.dispose();
+  });
+
   it('holds account session recovery until the MCP bridge replacement is ready', async () => {
     MockCodexTransport.onCreate = transport => transport.setMockResponse(Method.McpServerStatusList, {
       result: { data: [{ name: 'cindy_scheduler', tools: { list_tools: {}, call_tool: {} } }], nextCursor: null },
@@ -7998,7 +8184,8 @@ describe('CodexAgent MCP thread context hooks', () => {
         result: { outcome: 'reset' },
       });
     };
-    const registerLocalCodexAppServerProcess = vi.fn();
+    const disposeRegistration = vi.fn();
+    const registerLocalCodexAppServerProcess = vi.fn(() => disposeRegistration);
     const prepareCodexExtraSpawnConfig = vi.fn(async () => ({
       extraArgs: [],
       extraEnv: {},
@@ -8018,6 +8205,8 @@ describe('CodexAgent MCP thread context hooks', () => {
       pid: 7_001,
       role: 'control-plane-service',
     });
+    // transport 在进程退出时调用该 disposer 注销登记。
+    expect(createdStdioOptions[0]?.onProcessSpawned?.(7_001)).toBe(disposeRegistration);
     expect(prepareCodexExtraSpawnConfig).toHaveBeenCalledWith([], {
       remoteHostId: undefined,
       credentialMode: 'oauth-bearer',
@@ -10095,6 +10284,7 @@ describe('CodexAgent MCP thread context hooks', () => {
     const result = await Promise.race([
       iterator.next(),
       new Promise<never>((_, reject) => {
+        // real-wait: enforce the production idle-stream close timeout after an app-server crash.
         const timer = setTimeout(() => reject(new Error('idle session event stream did not close')), 200);
         timer.unref?.();
       }),
@@ -18743,6 +18933,7 @@ describe('CodexAgent MCP thread context hooks', () => {
       const expectSample = (outputTokens: number, generationDurationMs: number) =>
         expect(handle.getUsageSnapshot()).toMatchObject({
           outputTokens, generationDurationMs, generationReliable: true,
+          tokenSpeed: { tokens: outputTokens, elapsedMs: generationDurationMs, rate: 100, streaming: true },
         });
       expectSample(100, 1_000);
       const tool = { id: 'tool-1', type: 'mcpToolCall', server: 'test', tool: 'read', arguments: {} };
@@ -18783,6 +18974,7 @@ describe('CodexAgent MCP thread context hooks', () => {
       expect(events.find((event) => event.type === 'done')?.data.usage.durationMs).toBe(5_000);
       expect(events.filter((event) => event.type === 'status').at(-1)?.data).toMatchObject({
         status: 'Done', outputTokens: 500, generationDurationMs: 5_000,
+        tokenSpeed: { tokens: 500, elapsedMs: 5_000, average: 100, streaming: false },
       });
       await handle.send({ type: 'user', content: 'next turn' });
       expect(handle.getUsageSnapshot().outputTokens).toBe(0);
