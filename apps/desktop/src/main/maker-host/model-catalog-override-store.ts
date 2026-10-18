@@ -29,6 +29,7 @@ import { desktopMakerLogger } from './logger-adapter.js';
 import { createOverrideSettingsFile } from './override-settings-file.js';
 import {
   EMPTY_MODEL_CATALOG_OVERRIDES,
+  MAX_OVERRIDE_ENTRIES_PER_SECTION,
   sanitizeModelCatalogOverrides,
   type ModelCatalogOverrideEntry,
   type ModelCatalogOverrides,
@@ -167,6 +168,25 @@ function assertNoPatchEntriesWouldBeLost(): void {
   }
 }
 
+/**
+ * 条目被限定了作用范围时（如手改的 `agents:['codex']`），把公共字段写进 base
+ * 对不在名单里的引擎不会生效：目录合并按 agents 过滤，而读回不检查 agents ——
+ * 抽屉显示「已声明」，运行期仍用旧能力（评审 P1）。把本次目标引擎并进名单，
+ * 让声明真正生效，而不是静默丢弃。
+ *
+ * 名单为空（无限制）或目标没带 agent 时不做任何事：base 本来就对该条目全部引擎生效。
+ */
+function widenAgentsForDeclaredTargets(
+  entry: ModelCatalogOverrideEntry,
+  agents: readonly AgentKind[],
+): void {
+  const declared = entry.agents;
+  if (!declared || agents.length === 0) return;
+  const missing = agents.filter((agent) => !declared.includes(agent));
+  if (missing.length === 0) return;
+  entry.agents = [...declared, ...missing];
+}
+
 /** 从条目里拿指定 agent 的有效图片能力声明（perAgent 覆盖 base，与合并侧一致）。 */
 function effectiveImageInput(
   entry: ModelCatalogOverrideEntry | undefined,
@@ -194,6 +214,14 @@ export async function setModelCatalogImageInput(
 ): Promise<ModelCatalogOverrides> {
   const targets = Array.isArray(target) ? target : [target as ModelCatalogImageInputTarget];
   const keys = [...new Set(targets.map((t) => patchKey(t.providerId, t.modelId)))];
+  // 一个 key 可能对应多个引擎（调用方传该行的全部引擎），按键归组供下面拓宽作用范围。
+  const agentsByKey = new Map<string, AgentKind[]>();
+  for (const t of targets) {
+    if (!t.agent) continue;
+    const key = patchKey(t.providerId, t.modelId);
+    agentsByKey.set(key, [...(agentsByKey.get(key) ?? []), t.agent]);
+  }
+  const agentsForKey = (key: string): AgentKind[] => agentsByKey.get(key) ?? [];
   return store.updateAtomic((current) => {
     assertNoPatchEntriesWouldBeLost();
     const patches: Record<string, ModelCatalogOverrideEntry> = { ...current.value.patches };
@@ -204,6 +232,7 @@ export async function setModelCatalogImageInput(
       else base.supportsImageInput = value;
       if (Object.keys(base).length > 0) entry.base = base;
       else delete entry.base;
+      widenAgentsForDeclaredTargets(entry, agentsForKey(key));
       if (entry.perAgent) {
         const perAgent = { ...entry.perAgent };
         for (const agent of Object.keys(perAgent) as AgentKind[]) {
@@ -220,8 +249,24 @@ export async function setModelCatalogImageInput(
       if (entry.base || entry.perAgent || entry.agents) patches[key] = entry;
       else delete patches[key];
     }
+    assertPatchCountWithinLimit(patches);
     return { patches };
   });
+}
+
+/**
+ * 写入面挡住条目数超限：sanitize 只保留按键排序后的前 MAX_OVERRIDE_ENTRIES_PER_SECTION 条，
+ * 超出的尾部（含本次新写的）下次读就被丢掉，且丢失检查随后会把文件判为不可写，
+ * 用户必须手改文件才能继续在设置里保存（评审 P2）。这里提前拒绝本次保存。
+ */
+function assertPatchCountWithinLimit(patches: Record<string, ModelCatalogOverrideEntry>): void {
+  const count = Object.keys(patches).length;
+  if (count <= MAX_OVERRIDE_ENTRIES_PER_SECTION) return;
+  throw new ModelCatalogOverrideLossError(
+    `model-catalog-overrides.json 的 patches 条目已达上限 ${MAX_OVERRIDE_ENTRIES_PER_SECTION}，` +
+      `本次保存后将有 ${count} 条；超出上限的条目下次启动就会被丢弃。` +
+      '请先在文件里删掉不再需要的条目再保存。',
+  );
 }
 
 /**
@@ -272,6 +317,13 @@ export async function setModelCatalogThinking(
 ): Promise<ModelCatalogOverrides> {
   const targets = Array.isArray(target) ? target : [target as ModelCatalogThinkingStoreTarget];
   const keys = [...new Set(targets.map((t) => patchKey(t.providerId, t.modelId)))];
+  const agentsByKey = new Map<string, AgentKind[]>();
+  for (const t of targets) {
+    if (!t.agent) continue;
+    const key = patchKey(t.providerId, t.modelId);
+    agentsByKey.set(key, [...(agentsByKey.get(key) ?? []), t.agent]);
+  }
+  const agentsForKey = (key: string): AgentKind[] => agentsByKey.get(key) ?? [];
   // 档位与默认档的自洽性在写入面就挡住：非法组合会让 sanitize 整条判无效，用户看着
   // "保存了但没生效"，而真正原因（档位不自洽）不会出现在任何界面上。
   if (value !== null) {
@@ -298,6 +350,7 @@ export async function setModelCatalogThinking(
       }
       if (Object.keys(base).length > 0) entry.base = base;
       else delete entry.base;
+      widenAgentsForDeclaredTargets(entry, agentsForKey(key));
       if (entry.perAgent) {
         const perAgent = { ...entry.perAgent };
         for (const agent of Object.keys(perAgent) as AgentKind[]) {
@@ -315,6 +368,7 @@ export async function setModelCatalogThinking(
       if (entry.base || entry.perAgent || entry.agents) patches[key] = entry;
       else delete patches[key];
     }
+    assertPatchCountWithinLimit(patches);
     return { patches };
   });
 }

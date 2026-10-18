@@ -10,6 +10,8 @@ import path from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
 
+import { MAX_OVERRIDE_ENTRIES_PER_SECTION } from '../model-plane/localCatalogOverrides.js';
+
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'model-catalog-overrides-test-'));
 const owner = { current: 'owner-a' };
 
@@ -52,6 +54,41 @@ describe('model-catalog-override-store / 图片输入能力声明', () => {
 
     await setModelCatalogImageInput(target, false);
     expect(readModelCatalogImageInput(target)).toEqual({ value: false, isCustomized: true });
+  });
+
+  it('条目限定了 agents 时把目标引擎并进名单，让声明真正生效', async () => {
+    // 目录合并按 agents 过滤，读回却不检查 —— 不并进 pi 就会「显示已声明、运行期不生效」。
+    owner.current = 'owner-image-agents';
+    writeOwnerFile({
+      version: 1,
+      patches: { [key]: { agents: ['codex'], base: { name: 'Mimo' } } },
+    });
+
+    await setModelCatalogImageInput({ ...target, agent: 'pi' }, true);
+    expect(readModelCatalogOverrides().patches[key]?.agents).toEqual(['codex', 'pi']);
+  });
+
+  it('已有条目无 agents 限制时不加名单', async () => {
+    owner.current = 'owner-image-no-agents';
+    writeOwnerFile({ version: 1, patches: { [key]: { base: { name: 'Mimo' } } } });
+
+    await setModelCatalogImageInput({ ...target, agent: 'pi' }, true);
+    expect(readModelCatalogOverrides().patches[key]?.agents).toBeUndefined();
+  });
+
+  it('写入后条目数超上限时拒绝保存，不留下会被下次读取丢弃的条目', async () => {
+    owner.current = 'owner-image-limit';
+    const full: Record<string, unknown> = {};
+    for (let i = 0; i < MAX_OVERRIDE_ENTRIES_PER_SECTION; i++) full[`p:model-${i}`] = { base: {} };
+    writeOwnerFile({ version: 1, patches: full });
+
+    await expect(
+      setModelCatalogImageInput({ providerId: 'p', modelId: 'one-more' }, true),
+    ).rejects.toThrow(/上限/);
+    // 文件没被改动：原有 1024 条仍完整
+    expect(Object.keys(readModelCatalogOverrides().patches)).toHaveLength(
+      MAX_OVERRIDE_ENTRIES_PER_SECTION,
+    );
   });
 
   it('value=null 删除该键回到跟随目录，条目空掉时整条删除', async () => {
