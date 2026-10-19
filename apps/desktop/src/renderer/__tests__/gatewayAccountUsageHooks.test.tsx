@@ -6,6 +6,7 @@ import { useClaudeAccountUsageResult } from '../hooks/useClaudeAccountUsage';
 
 const state = vi.hoisted(() => ({
   owner: 'credit-a',
+  generation: 1,
   membership: 'personal',
   credit: vi.fn(),
   quota: vi.fn(),
@@ -13,6 +14,7 @@ const state = vi.hoisted(() => ({
 vi.mock('../contexts/AuthContext', () => ({
   useAuth: () => ({
     dataOwnerId: state.owner,
+    dataOwnerGeneration: state.generation,
     mode: 'cloud',
     user: { membershipKind: state.membership },
   }),
@@ -26,6 +28,7 @@ const credit = (available: string) => ({
 });
 beforeEach(() => {
   state.owner = 'credit-a';
+  state.generation = 1;
   state.membership = 'personal';
   state.credit.mockReset();
   state.quota.mockReset();
@@ -253,4 +256,20 @@ it('coalesces unlimited reads across two mounted panes without ping-pong refresh
   await act(async () => { resolveRead({ quotaState: 'unlimited' }); });
   expect(first.result.current.unlimited && second.result.current.unlimited).toBe(true);
   expect(state.quota).toHaveBeenCalledTimes(3);
+});
+
+// Unit regression: projection repair keeps the account ID but advances its generation.
+// Existing account-switch tests cannot detect stale unlimited state for the same account.
+it('invalidates unlimited immediately when the same owner generation changes', async () => {
+  state.owner = 'generation-repair';
+  state.membership = 'org';
+  state.quota.mockResolvedValueOnce({ quotaState: 'unlimited' });
+  const view = renderHook(() => useClaudeAccountUsageResult(true));
+  await waitFor(() => expect(view.result.current.unlimited).toBe(true));
+  state.quota.mockResolvedValueOnce({ spend: 12, maxBudget: 100, currency: 'CNY', todaySpend: null, fetchedAt: 1 });
+  state.generation += 1;
+  view.rerender();
+  expect(view.result.current.unlimited).toBe(false);
+  await waitFor(() => expect(view.result.current.usage?.maxBudget).toBe(100));
+  expect(state.quota).toHaveBeenCalledTimes(2);
 });

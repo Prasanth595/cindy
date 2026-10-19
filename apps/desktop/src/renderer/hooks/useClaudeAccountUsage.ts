@@ -88,12 +88,12 @@ function isSnapshot(v: unknown): v is ClaudeAccountUsageSnapshot {
 }
 
 export function useClaudeAccountUsageResult(enabled: boolean) {
-  const { dataOwnerId, mode, user } = useAuth();
+  const { dataOwnerId, dataOwnerGeneration, mode, user } = useAuth();
   const ownerKey =
     enabled &&
     dataOwnerId &&
     (mode === 'local' || (mode === 'cloud' && user?.membershipKind === 'org'))
-      ? `${mode}:${dataOwnerId}`
+      ? `${mode}:${dataOwnerId}:${dataOwnerGeneration}`
       : null;
   const [snapshot, setSnapshot] = useState<OwnerBoundSnapshot | null>(() =>
     ownerKey && lastSnapshot?.ownerKey === ownerKey ? lastSnapshot : null,
