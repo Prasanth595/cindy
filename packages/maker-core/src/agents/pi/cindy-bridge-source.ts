@@ -2583,6 +2583,8 @@ const CINDY_DIRECT_BOT_TOOLS = new Set([
   CINDY_CREATE_TEAMMATE_TOOL,
   'routine_list', 'routine_save', 'routine_sources',
   'routine_history', 'routine_delete', 'routine_run_now', 'schedule_notify_current_run', 'schedule_set_pre_run_hook',
+  // Follow-up loop: a woken companion reads the short task summary first, then its glance.
+  'get_task_digest', 'get_workbench', 'read_workbench_task', 'continue_workbench_task',
 ]);
 
 interface ConnectedMcpTool {
@@ -3036,6 +3038,28 @@ class CindyMcpGateway {
     return this.disclosedSchemas.has(mcpGatewayKey(call.tool.serverName, call.tool.name));
   }
 
+  /**
+   * 该工具是否采用 Cindy 通用 call_tool 的 {name, args} 信封。
+   *
+   * 判据必须用**形状指纹**而不是名字或单个字段：Pi 也接入用户自接的第三方 MCP，它们可能
+   * 同样叫 call_tool（但信封是 {tool_name, arguments}），也可能有个叫 name 的必填字符串
+   * 参数却是文件名（配 content 直传）。所以要求三个信号同时成立 —— properties.name 是
+   * string、properties.args 是 object、且 required 含 name —— 才认定是 Cindy 的信封。
+   * 少一个都不套用这条自纠错说明，让调用按检视到的 schema 原样走到服务端，由服务端报它
+   * 真实的参数要求：普通工具缺字段时不能被引向错误的嵌套形状。
+   */
+  private requiresNameEnvelope(tool: ConnectedMcpTool): boolean {
+    const schema = tool.inputSchema as {
+      required?: unknown;
+      properties?: Record<string, { type?: unknown } | undefined>;
+    } | null;
+    const properties = schema?.properties;
+    return Array.isArray(schema?.required)
+      && schema.required.includes('name')
+      && properties?.name?.type === 'string'
+      && properties?.args?.type === 'object';
+  }
+
   list(serverName?: string): Array<{ server: string; name: string; description: string }> {
     return [...this.tools.values()]
       .filter((tool) => !this.botMemoryFacadeEnabled || tool.serverName !== 'cindy_memory')
@@ -3181,6 +3205,20 @@ class CindyMcpGateway {
   }> {
     const resolved = this.resolveCall(params);
     if (!resolved) throw new Error(this.unknownCallMessage(params));
+    if (this.requiresNameEnvelope(resolved.tool) && typeof recordInput(resolved.args).name !== 'string') {
+      // 该工具的 schema 自己声明了必填的字符串 name(即 Cindy 通用 call_tool 的 {name, args}
+      // 信封), 而模型没给 —— 多半是把内层字段平铺进来了。工具名无法猜, 但正确形态可以一次
+      // 说清, 让模型自纠错, 也省掉一轮往返。判定只看 schema 而不是工具名: 用户自接的第三方
+      // MCP 里可能也有叫 call_tool 的工具, 信封形状不同, 不能按名字连坐。
+      const keys = Object.keys(recordInput(resolved.args));
+      throw new Error(
+        resolved.tool.serverName + '/' + resolved.tool.name +
+        ' expects the envelope {"name": <tool>, "args": {<its parameters>}}; ' +
+        (keys.length > 0
+          ? 'you passed ' + JSON.stringify(keys) + ' directly — put the selected tool name in args.name.'
+          : 'args.name is required.'),
+      );
+    }
     if (!this.isSchemaDisclosed(resolved)) {
       throw new Error(
         'Inspect this tool before execution by calling cindy_mcp_list_tools with ' +
@@ -3450,7 +3488,16 @@ class CindyMcpGateway {
         { name: 'routine_run_now', description: 'Run one of your saved routines now when requested.' },
       ].map((tool) => ({ ...tool, properties: { id: { type: 'string', minLength: 1 } }, required: ['id'] })),
     ];
-    for (const tool of routineTools) {
+    // Follow-up tools use the same direct facade so a routine-woken companion does not need
+    // nested discovery before reading the event's task.
+    const taskIdProperty = { type: 'string', minLength: 1, description: 'Local task ID, or deviceId::sessionId for another computer.' };
+    const followUpTools = [
+      { name: 'get_task_digest', description: 'Read a short (<=2KB) summary of one task: phase, elapsed minutes, last ask and answer, pending question, error, route, suggested next route, PR status and queue. Read this before deciding how to follow up.', properties: { session_id: taskIdProperty }, required: ['session_id'] },
+      { name: 'get_workbench', description: 'Your workbench at a glance: tasks waiting for the owner and tasks in progress, with the last sweep time.', properties: {}, required: [] },
+      { name: 'read_workbench_task', description: 'Read the recent bounded transcript of a task you follow (all tasks if you follow every task).', properties: { task_id: taskIdProperty }, required: ['task_id'] },
+      { name: 'continue_workbench_task', description: 'Send one message into a task you follow so it continues. Use get_task_digest first; never resend after DELIVERY_UNKNOWN without checking.', properties: { task_id: taskIdProperty, message: { type: 'string', minLength: 1, maxLength: 4000 } }, required: ['task_id', 'message'] },
+    ];
+    for (const tool of [...routineTools, ...followUpTools]) {
       if (!this.resolveDirectHelperTool(tool.name, {})) continue;
       pi.registerTool({
         name: tool.name,
@@ -3512,19 +3559,31 @@ class CindyMcpGateway {
       label: 'Call a Cindy MCP tool',
       description:
         'Invoke a tool after inspecting its exact input schema with cindy_mcp_list_tools. Pass the exact server and ' +
-        'tool names plus args as an object. If the server rejects the arguments, the error repeats that schema.',
+        'tool names, then args exactly as that tool\'s inspected schema. When the selected tool is itself a generic ' +
+        'call_tool, its arguments are the envelope {"name": <tool>, "args": {<its parameters>}}; omit the inner args ' +
+        'for tools that take no parameters. If the server rejects the arguments, the error repeats that schema.',
       parameters: {
         type: 'object',
         properties: {
           server: { type: 'string', description: 'Exact server name from cindy_mcp_list_tools.' },
           tool: { type: 'string', description: 'Exact tool name from cindy_mcp_list_tools.' },
+          // args 就是「所选工具自己的参数」, 形状随工具而变, 所以 additionalProperties 保持 true
+          // (直调形态合法)。但通用 call_tool 的信封 {name, args} 在此之前对模型完全不可见 ——
+          // 模型看不到 name/args, 就把内层字段直接塞进 args 并丢掉 name (2026-10-15 实测
+          // MiniMax-M3.1 / deepseek-v4.1-flash / step-5 三会话均复现), 服务端只报 expected
+          // string/name。故把信封形状作为**无类型约束**的提示属性挂出来: 声明结构给模型看,
+          // 不约束任何值, 避免误伤参数名恰好叫 args 或 name 的直调工具。
           args: {
             type: 'object',
-            description: 'Arguments for the selected tool as a JSON object.',
+            description: 'Arguments for the selected tool as a JSON object; omit when the selected tool takes none.',
+            properties: {
+              name: { description: 'Generic call_tool envelope only: the target tool name.' },
+              args: { description: 'Generic call_tool envelope only: the target tool parameters.' },
+            },
             additionalProperties: true,
           },
         },
-        required: ['server', 'tool', 'args'],
+        required: ['server', 'tool'],
         additionalProperties: false,
       },
       execute: async (_toolCallId: string, params: unknown, signal?: AbortSignal) => this.executeCall(params, signal),

@@ -56,7 +56,9 @@ const mocks = vi.hoisted(() => ({
   resolveXdtImageUrl: vi.fn(),
   generateAndPersistFbotTitle: vi.fn(),
   dbSelect: vi.fn(),
+  readRemoteRoute: vi.fn(),
 }));
+vi.mock('../../remoteProviderRoute', () => ({ readImRemoteProviderRoute: mocks.readRemoteRoute }));
 
 vi.mock('../../../logger', () => ({ createLogger: () => mocks.logger }));
 vi.mock('../../../maker-host', () => ({ getMaker: mocks.getMaker }));
@@ -1102,6 +1104,17 @@ describe('turnRunner 自动任务转播(scheduler turn → 远程控制 thread)'
   const withOrigin = (e: Partial<AgentEvent>): AgentEvent =>
     ({ ...e, turnOrigin: schedulerOrigin }) as AgentEvent;
 
+  it('successful background work without a reply removes the progress card and its title', async () => {
+    const stub = streamingHandleStub();
+    mocks.slackIm.startStreamingText.mockResolvedValue(stub);
+    const h = await attachAndIdle();
+    h.emit(withOrigin({ type: 'tool_use', data: { toolName: 'Read', input: { file_path: '/x/a.ts' } } }));
+    await vi.waitFor(() => expect(mocks.slackIm.startStreamingText).toHaveBeenCalledTimes(1));
+    h.emit(withOrigin({ type: 'done', data: {} }));
+    await vi.waitFor(() => expect(stub.finalize).toHaveBeenCalledExactlyOnceWith(''));
+    expect(mocks.slackIm.startStreamingText).toHaveBeenCalledTimes(1);
+  });
+
   it('does not forward child output or settle on a child terminal during scheduled turns', async () => {
     const stub = streamingHandleStub();
     mocks.slackIm.startStreamingText.mockResolvedValue(stub);
@@ -1256,6 +1269,17 @@ describe('turnRunner 自动任务转播(scheduler turn → 远程控制 thread)'
 });
 
 describe('notification replies reuse the originating session without takeover', () => {
+  it('cold-opens a shared session on its saved execution computer', async () => {
+    mocks.dbSelect.mockReturnValue({ from: () => ({ where: () => ({ limit: async () => [{
+      ...rowFor('original-session'), status: 'active', agentDeviceId: 'share:owner', providerId: 'remote-provider', sdkSessionId: 'remote-sdk',
+    }] }) }) });
+    mocks.readRemoteRoute.mockResolvedValue({ provider: { name: 'Shared provider' } });
+    await reply('shared-thread');
+    expect(mocks.getMaker().createSession).toHaveBeenCalledWith(expect.objectContaining({
+      agentDeviceId: 'share:owner', providerId: 'remote-provider', resumeSessionId: 'remote-sdk',
+    }));
+    expect(mocks.readRemoteRoute).toHaveBeenCalledWith(expect.objectContaining({ agentDeviceId: 'share:owner', providerId: 'remote-provider' }));
+  });
   function origin(status = 'active') {
     mocks.dbSelect.mockReturnValue({ from: () => ({ where: () => ({ limit: async () => [{
       ...rowFor('original-session'), sdkSessionId: 'original-sdk-session', status,

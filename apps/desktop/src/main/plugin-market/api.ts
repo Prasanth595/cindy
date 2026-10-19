@@ -9,6 +9,9 @@ import {
   type OrganizationPluginAccessError,
   type PluginRemovalNotice,
   type PluginDownloadResponse,
+  parsePluginUsageAck,
+  type PluginUsageEventInput,
+  type PluginUsageAck,
 } from '@cindy/plugin-protocol';
 
 import { getClientEndpoint } from '../clientEndpointsService.js';
@@ -192,5 +195,30 @@ export class PluginMarketApi {
         this.requestOptions(),
       ),
     );
+  }
+
+  async reportUsage(
+    pluginId: string,
+    events: PluginUsageEventInput[],
+    context: { token: string | null; assertCurrent(): void },
+  ): Promise<PluginUsageAck> {
+    context.assertCurrent();
+    const response = await this.fetcher<unknown>(
+      `/api/plugins/${encodeURIComponent(pluginId)}/usage-events`,
+      {
+        ...this.requestOptions(),
+        method: 'POST',
+        token: context.token,
+        timeoutMs: 5_000,
+        skipAutoRefresh: true,
+        skipSessionInvalidation: true,
+        bodyFactory: () => {
+          context.assertCurrent();
+          return { events };
+        },
+      },
+    );
+    context.assertCurrent();
+    return parsePluginUsageAck(response, events.map(event => event.eventId));
   }
 }

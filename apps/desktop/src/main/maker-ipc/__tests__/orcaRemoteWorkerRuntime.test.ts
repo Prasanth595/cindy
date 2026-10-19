@@ -26,9 +26,11 @@ interface FakeHistoryMessage {
 }
 
 interface FakeDevice {
+  agentKind?: string;
   offline: boolean;
   running: boolean;
   receipts: Record<string, string>;
+  acceptedAgents: Record<string, string>;
   assistant: { id: string; content: unknown } | null;
   terminalError: boolean;
   history?: FakeHistoryMessage[];
@@ -43,6 +45,7 @@ function setup(device: Partial<FakeDevice> = {}) {
     offline: false,
     running: false,
     receipts: {},
+    acceptedAgents: {},
     assistant: { id: 'msg-0', content: '旧回复' },
     terminalError: false,
     enqueued: [],
@@ -50,7 +53,7 @@ function setup(device: Partial<FakeDevice> = {}) {
     released: 0,
     ...device,
   };
-  const invoke = vi.fn(async (_deviceId: string, channel: string, args: unknown[]) => {
+  const invoke = vi.fn(async (_deviceId: string, channel: string, args: unknown[]): Promise<unknown> => {
     if (state.offline) throw new Error('[DEVICE_OFFLINE] target offline');
     switch (channel) {
       case 'maker:list-active':
@@ -62,7 +65,7 @@ function setup(device: Partial<FakeDevice> = {}) {
         return {
           id: 'remote-1',
           status: 'active',
-          agentKind: 'cc',
+          agentKind: state.agentKind ?? 'cc',
           workingDir: '/Users/demo/Interviews',
           model: 'claude-opus-5-5',
           effort: 'high',
@@ -99,6 +102,11 @@ function setup(device: Partial<FakeDevice> = {}) {
         state.enqueued.push(args[1]);
         state.receipts[(args[1] as { clientId: string }).clientId] = 'pending';
         return {};
+      case 'local-db:messages:around-client-id': {
+        const clientId = args[1] as string;
+        const agentKind = state.acceptedAgents[clientId];
+        return agentKind ? [{ clientId, role: 'user', agentKind }] : [];
+      }
       case 'maker:input:get-projection': {
         const ids = (args[1] as { deliveryClientIds: string[] }).deliveryClientIds;
         return {
@@ -146,7 +154,7 @@ describe('orca remote worker runtime', () => {
     const { runtime, state } = setup();
     await expect(
       runtime.dispatch({ proxySessionId: 'proxy-1', rawContent: '转写这段访谈', clientId: 'c-1' }),
-    ).resolves.toEqual({ ok: true, mode: 'dispatched' });
+    ).resolves.toEqual({ ok: true, mode: 'queued', agentKind: 'claude-code' });
     expect(state.enqueued).toHaveLength(1);
     expect(state.enqueued[0]).toMatchObject({
       clientId: 'c-1',
@@ -393,14 +401,65 @@ describe('orca remote worker runtime', () => {
     expect(runtime.hasPendingReport('proxy-1')).toBe(false);
   });
 
-  it('treats a lost enqueue reply as delivered when the device already holds the message', async () => {
+  it.each(['cc', 'codex', 'pi'])('does not claim Agent %s accepted when the enqueue reply is lost and delivery is pending', async (agentKind) => {
     const lost = Object.assign(new Error('[INVOKE_TIMEOUT] no reply'), { inFlight: true });
-    const { runtime, state } = setup({ enqueueError: lost, receipts: { 'c-1': 'pending' } });
+    const { runtime, state, invoke } = setup({ agentKind, enqueueError: lost, receipts: { 'c-1': 'pending' } });
     await expect(
       runtime.dispatch({ proxySessionId: 'proxy-1', rawContent: 'x', clientId: 'c-1' }),
-    ).resolves.toEqual({ ok: true, mode: 'dispatched' });
+    ).resolves.toEqual({ ok: true, mode: 'queued', agentKind: agentKind === 'cc' ? 'claude-code' : agentKind });
+    expect(invoke.mock.calls.filter(([, channel]) => channel === 'maker:input:enqueue')).toHaveLength(1);
     expect(state.enqueued).toHaveLength(0);
     expect(runtime.hasPendingReport('proxy-1')).toBe(true);
+  });
+
+  const kinds = ['cc', 'codex', 'pi'] as const;
+  it.each(kinds.flatMap(from => kinds.filter(to => to !== from).map(to => ({ from, to }))))(
+    'reports the accepted input Agent after a pending $from → $to switch, even if the task switches again', async ({ from, to }) => {
+      const { runtime, state, invoke } = setup({ agentKind: from });
+      const original = invoke.getMockImplementation()!;
+      invoke.mockImplementation(async (deviceId, channel, args) => {
+        const result = await original(deviceId, channel, args);
+        if (channel === 'maker:input:enqueue') {
+          state.acceptedAgents['c-1'] = to;
+          state.receipts['c-1'] = 'accepted';
+          state.agentKind = from; // A later switch must not relabel this accepted input.
+        }
+        return result;
+      });
+      await expect(runtime.dispatch({ proxySessionId: 'proxy-1', rawContent: 'task', clientId: 'c-1' }))
+        .resolves.toMatchObject({ ok: true, mode: 'dispatched', agentKind: to === 'cc' ? 'claude-code' : to });
+      expect(state.enqueued[0]).toMatchObject({ createOpts: { agentKind: from === 'cc' ? 'claude-code' : from } });
+      expect(invoke).toHaveBeenCalledWith('mac-mini', 'local-db:messages:around-client-id',
+        ['remote-1', 'c-1', { radius: 0, contentCharLimit: 1 }]);
+    },
+  );
+
+  it.each(['read-failed', 'old-peer', 'wrong-client', 'wrong-role'])('keeps delivered input queued when accepted-Agent evidence is %s', async reason => {
+    const { runtime, state, invoke } = setup();
+    const original = invoke.getMockImplementation()!;
+    invoke.mockImplementation(async (deviceId, channel, args) => {
+      if (channel === 'local-db:messages:around-client-id') {
+        if (reason === 'read-failed') throw new Error('[INVOKE_TIMEOUT] no reply');
+        return [{ clientId: reason === 'wrong-client' ? 'other' : 'c-1',
+          role: reason === 'wrong-role' ? 'assistant' : 'user',
+          ...(reason === 'old-peer' ? {} : { agentKind: 'pi' }) }];
+      }
+      return original(deviceId, channel, args);
+    });
+    await expect(runtime.dispatch({ proxySessionId: 'proxy-1', rawContent: 'task', clientId: 'c-1' }))
+      .resolves.toMatchObject({ ok: true, mode: 'queued' });
+    expect(state.enqueued).toHaveLength(1);
+    expect(runtime.hasPendingReport('proxy-1')).toBe(true);
+    expect(runtime.isReachable('proxy-1')).toBe(true);
+  });
+
+  it('recovers the accepting Agent after a lost enqueue acknowledgement without resending', async () => {
+    const lost = Object.assign(new Error('[INVOKE_TIMEOUT] no reply'), { inFlight: true });
+    const { runtime, invoke } = setup({ agentKind: 'cc', enqueueError: lost,
+      receipts: { 'c-1': 'accepted' }, acceptedAgents: { 'c-1': 'pi' } });
+    await expect(runtime.dispatch({ proxySessionId: 'proxy-1', rawContent: 'task', clientId: 'c-1' }))
+      .resolves.toMatchObject({ ok: true, mode: 'dispatched', agentKind: 'pi' });
+    expect(invoke.mock.calls.filter(([, channel]) => channel === 'maker:input:enqueue')).toHaveLength(1);
   });
 
   it('does not re-report an already bridged reply and ends with an error when no new reply appears', async () => {

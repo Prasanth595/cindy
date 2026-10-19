@@ -1,3 +1,4 @@
+import { ErrorNotice } from '@/components/ErrorNotice';
 /**
  * Context 面板的「目标模式」二级视图(对照设计稿 S3)。
  *
@@ -212,7 +213,7 @@ export function ContextSheetGoalCreateForm({
         </>
       ) : null}
       {error ? (
-        <Text style={styles.errorText}>{error}</Text>
+        <ErrorNotice message={error} />
       ) : disabled && disabledHint ? (
         <Text style={styles.hintText} testID="contextSheet.goalDisabledHint">{disabledHint}</Text>
       ) : null}
@@ -277,7 +278,7 @@ function GoalStatusView({
         {t('interaction.contextSheet.goalMeta', { turns: turnsText, tokens: tokensText })}
       </Text>
       {reasonText ? <Text style={styles.hintText}>{reasonText}</Text> : null}
-      {error ? <Text style={styles.errorText}>{error}</Text> : null}
+      {error ? <ErrorNotice message={error} /> : null}
       <View style={styles.actionGroup}>
         {canPause ? (
           <GoalActionButton busy={busy} label={t('interaction.contextSheet.pause')} onPress={onPauseGoal} testID="contextSheet.goalPauseButton" />

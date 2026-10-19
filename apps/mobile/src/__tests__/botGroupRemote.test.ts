@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { HostedRemoteCollectionItem } from '@/device-link/remoteResources';
+import { chatGroupMembership } from '@cindy/maker-shared/botGroupPresentation';
 import {
   botGroupChatDataFromResource,
   botGroupErrorCode,
@@ -10,6 +11,7 @@ import {
   nextBotGroupSendAttempt,
   orderedBotGroups,
   parseBotGroupChatData,
+  canManageBotGroup,
 } from '@/session/botGroupRemote';
 
 function chatData(overrides: Record<string, unknown> = {}) {
@@ -88,6 +90,25 @@ describe('parseBotGroupChatData', () => {
     expect(parseBotGroupChatData(chatData())!.messages.every(message => !message.quote && !message.deleted)).toBe(true);
   });
 
+  it('keeps a validated task card only on a teammate message (bot-group-chat.md §10)', () => {
+    const meta = { v: 1, role: 'delegation-request', delegationId: 'task-1', fromBotId: 'mimi', fromBotName: '咪咪', toBotId: null,
+      toBotName: 'Cindy', parentSessionId: 'group-lane', childSessionId: 'child-1', objective: '写官网首页' };
+    const task = { meta, state: 'started', title: '官网首页' };
+    const posted = (id: string, authorKind: 'bot' | 'user', value: unknown) => ({ id, sequence: 7, kind: 'message', authorKind,
+      authorBotId: authorKind === 'bot' ? 'mimi' : null, authorName: '', content: '', noticeCode: null, planId: null, files: [], createdAt: 70, task: value });
+    const parsed = parseBotGroupChatData(chatData({ messages: [
+      posted('t1', 'bot', task),
+      posted('t2', 'bot', { ...task, state: 'paused' }),
+      posted('t3', 'bot', { ...task, meta: { ...meta, role: 'delegation-result' } }),
+      posted('t4', 'user', task),
+    ] }))!;
+    const byId = new Map(parsed.messages.map(message => [message.id, message]));
+    expect(byId.get('t1')?.task).toEqual(task);
+    expect(byId.get('t2')?.task).toBeUndefined();
+    expect(byId.get('t3')?.task).toBeUndefined();
+    expect(byId.get('t4')?.task).toBeUndefined();
+  });
+
   it('preserves a server join notice through the phone projection', () => {
     const joined = { id: 'joined', sequence: 20, kind: 'notice', authorKind: 'system', authorBotId: null,
       authorName: 'Taylor', content: 'Taylor joined the group', noticeCode: 'member-joined',
@@ -120,6 +141,9 @@ describe('parseBotGroupChatData', () => {
       { id: 'x1', name: 'shot.png', category: 'image', mimeType: 'image/png', size: 12, url: 'cindy-media://blobs/abc.png', path: '/Users/me/shot.png' },
       { id: 'x2', name: 'brief.pdf', category: 'pdf', mimeType: 'application/pdf', size: 30, url: null, path: null, annotated: 'yes' },
       { id: 'x3', name: 'odd.bin', category: 'future', mimeType: 7, size: -1, url: 'https://elsewhere.example/x.png' },
+      { id: 'x4', name: 'late.png', category: 'file', mimeType: '', size: 0, url: null, path: null, state: 'loading' },
+      { id: 'x5', name: 'gone.md', category: 'file', mimeType: '', size: 0, url: null, path: null, state: 'unavailable' },
+      { id: 'x6', name: 'odd-state.txt', category: 'file', mimeType: '', size: 0, url: null, path: null, state: 'future' },
       { id: '', name: 'no-id.png' },
       'garbage',
     ];
@@ -129,6 +153,10 @@ describe('parseBotGroupChatData', () => {
       { id: 'x1', name: 'shot.png', category: 'image', mimeType: 'image/png', size: 12, url: 'cindy-media://blobs/abc.png', path: null },
       { id: 'x2', name: 'brief.pdf', category: 'pdf', mimeType: 'application/pdf', size: 30, url: null, path: null },
       { id: 'x3', name: 'odd.bin', category: 'file', mimeType: '', size: 0, url: null, path: null },
+      // The computer's loading / unavailable state survives; an unknown state is dropped.
+      { id: 'x4', name: 'late.png', category: 'file', mimeType: '', size: 0, url: null, path: null, state: 'loading' },
+      { id: 'x5', name: 'gone.md', category: 'file', mimeType: '', size: 0, url: null, path: null, state: 'unavailable' },
+      { id: 'x6', name: 'odd-state.txt', category: 'file', mimeType: '', size: 0, url: null, path: null },
     ]);
     // Older computers: no attachments, no flag.
     const old = parseBotGroupChatData(chatData())!;
@@ -187,6 +215,20 @@ describe('group rows', () => {
 });
 
 describe('actions', () => {
+  it('preserves leave and owner authority through the remote projection without granting management to ordinary members', () => {
+    const members = [
+      { botId: 'me', actorId: 'me', name: 'Me', isSelf: true, isOwned: true, role: 'member' },
+      { botId: 'bot', actorId: 'bot', name: 'Bot', isOwned: true, role: 'owner' },
+    ];
+    const ownGroup = parseBotGroupChatData(chatData({ serverBacked: true, supportsSettingsManagement: true, revision: 1, members }))!;
+    expect(chatGroupMembership(ownGroup)).toMatchObject({ owner: true, manager: true, canLeave: false });
+    expect(canManageBotGroup(ownGroup)).toBe(true);
+    const memberGroup = parseBotGroupChatData(chatData({ serverBacked: true, supportsSettingsManagement: true, revision: 1,
+      members: [members[0], { ...members[1], isOwned: false }] }))!;
+    expect(chatGroupMembership(memberGroup)).toMatchObject({ owner: false, manager: false, canLeave: true });
+    expect(canManageBotGroup(memberGroup)).toBe(false);
+  });
+
   it.each([
     [Object.assign(new Error('PLAN_OPEN'), { code: 'INVALID_PARAMS' }), 'PLAN_OPEN'],
     ['[INVALID_PARAMS] MEMBER_LIMIT', 'MEMBER_LIMIT'],

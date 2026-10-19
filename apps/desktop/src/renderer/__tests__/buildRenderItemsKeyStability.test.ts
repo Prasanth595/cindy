@@ -162,7 +162,7 @@ describe('Bot 流式正文呈现', () => {
     expect(visibleProse()).toEqual(['first', 'second']);
   });
 
-  it('运行中从首字隐藏未封口正文与工具，不保留过程入口', () => {
+  it('运行中从首字隐藏未封口正文，工具留在普通工作组里', () => {
     const messages = [
       mkUser('u1'),
       mkTool('t1', 'Bash'),
@@ -175,7 +175,10 @@ describe('Bot 流式正文呈现', () => {
     expect(
       visible.flatMap((item) => (item.type === 'message' ? [item.message.clientId] : [])),
     ).toEqual(['u1']);
-    expect(visible.some((item) => item.type === 'work_group')).toBe(false);
+    // 与普通任务同一个工作组：正文开始后，前面的动作段不再是运行中尾段。
+    const groups = visible.filter((item) => item.type === 'work_group');
+    expect(groups).toHaveLength(1);
+    expect(groups[0].type === 'work_group' && groups[0].children.map((child) => child.type)).toEqual(['tool_segment']);
   });
 
   // Contracts: claude-code/translator assistant text blocks; pi/translator
@@ -240,7 +243,10 @@ describe('Bot 流式正文呈现', () => {
         expect(project().find(item => item.type === 'message'
           && item.message.clientId === 'answer-2')?.key).toBe(streamingFinalKey);
       }
-      expect(project().filter((item) => item.type === 'work_group')).toHaveLength(0);
+      // Intermediate prose and both tool runs fold into one normal summary group.
+      const groups = project().filter((item) => item.type === 'work_group');
+      expect(groups).toHaveLength(1);
+      expect(groups[0].key.startsWith('work-summary-')).toBe(true);
       expect(state.messages.filter((message) => message.role === 'assistant').map((message) => message.content))
         .toEqual(['我查一下：', '已找到线索，继续核实', '这是最终答复']);
       state = { ...state, isStreaming: false };

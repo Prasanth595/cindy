@@ -1414,6 +1414,7 @@ describe('Maker session close events', () => {
       if (event.type === 'session:closed' && event.sessionId === 'session-crash') {
         expect(event.reason).toBe('unexpected');
         expect(maker.getSessionCloseReason(event.session)).toBe('unexpected');
+        expect(event.session.wasClosedByRuntime()).toBe(true);
         resolveClosed();
       }
     });
@@ -2554,6 +2555,7 @@ describe('Maker Pi runtime skill status', () => {
       vi.spyOn(fsPromises, 'realpath').mockImplementation(async (...args) => {
         if (!delayed) {
           delayed = true;
+          // real-wait: keep the realpath operation pending to exercise the cancellation race.
           await new Promise((resolve) => setTimeout(resolve, 300));
         }
         return realRealpath(...args);
@@ -3521,6 +3523,7 @@ describe('Session turn send guard', () => {
       await closed;
       expect(vi.getTimerCount()).toBe(0);
       expect(terminalErrors).toEqual([]);
+      expect(session.wasClosedByRuntime()).toBe(true);
     } finally {
       vi.useRealTimers();
     }
@@ -3638,6 +3641,32 @@ describe('Session turn send guard', () => {
     await closePromise;
     expect(session.getStatus()).toBe('closed');
     expect(handle.close).toHaveBeenCalledTimes(1);
+    // An external close that began first keeps ownership of the cause.
+    expect(session.wasClosedByRuntime()).toBe(false);
+  });
+
+  it('does not report direct close() or closeIfIdle() as a runtime self-close', async () => {
+    const createIdleSession = (id: string) => {
+      const handle = createHandle({ id: `thread-${id}` });
+      handle.close = vi.fn(async () => undefined);
+      return new Session({
+        id,
+        agentKind: 'codex',
+        workDir: '/repo',
+        handle,
+        capabilities: createAgent(async () => handle).capabilities,
+        logger: createLogger(),
+      });
+    };
+    const direct = createIdleSession('session-direct-close');
+    await direct.close();
+    expect(direct.getStatus()).toBe('closed');
+    expect(direct.wasClosedByRuntime()).toBe(false);
+
+    const idle = createIdleSession('session-close-if-idle');
+    await expect(idle.closeIfIdle()).resolves.toBe(true);
+    expect(idle.getStatus()).toBe('closed');
+    expect(idle.wasClosedByRuntime()).toBe(false);
   });
 
   it('does not revive a closed session when abort is called after the event iterator crashes', async () => {

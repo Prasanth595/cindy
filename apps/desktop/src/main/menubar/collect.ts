@@ -6,7 +6,7 @@
  * that fails only drops its own source; the rest of the panel still renders.
  */
 
-import type { ProviderView } from '@cindy/model-providers';
+import { actualSourceIdForModel, type ProviderView } from '@cindy/model-providers';
 import { CINDY_MAKE_ENABLED, isCindyMakeSource } from '@cindy/maker-shared/cindy-make-feature';
 import { matchCodexBucketForModel } from '@cindy/maker-shared/codex-usage-buckets';
 import type {
@@ -17,6 +17,7 @@ import { isXaiWeeklyUsageCurrent } from '@cindy/maker-shared/subscription-usage'
 import { isSessionActivityRunning, type SessionActivitySnapshot } from '@cindy/maker-shared/session-activity';
 
 import type { MenubarModelUsage, MenubarUsageScope, MenubarUsageScopeData } from '../../shared/menubarQuota.js';
+import { dbToMakerAgentKind } from '../../shared/agentKindConversion.js';
 import { providerWeeklyQuotaSource } from '../../shared/providerQuotaSource.js';
 import { formatModelShort } from '../../shared/usageModelLabel.js';
 import type { CodexAccountUsagePayload, RateLimitSnapshot, RateLimitWindow } from '../usageBroadcaster.js';
@@ -64,6 +65,8 @@ export interface MenubarSessionRow {
   model: string | null;
   agentKind: string | null;
   source?: string | null;
+  /** Provider the session sends to; marks the source a running task is drawing on. */
+  providerId?: string | null;
 }
 
 export interface MenubarCollectDeps {
@@ -152,6 +155,10 @@ export async function collectMenubarInputs(deps: MenubarCollectDeps): Promise<Me
   };
 
   const tasks = await collectTasks(deps, localUsage, today, safe);
+  const consuming = consumingSourceIds(tasks, providers);
+  for (const source of sources) {
+    if (consuming.has(source.id)) source.consuming = true;
+  }
 
   let updatedAtMs: number | null = null;
   for (const source of sources) {
@@ -444,6 +451,44 @@ export function paygSource(provider: ProviderView): MenubarPaygInput | null {
   };
 }
 
+/**
+ * Sources a running task on this computer is drawing on: the subscription or provider it
+ * sends to, or the Cindy balance for Cindy-managed providers (the ones `paygSource` hides
+ * because they bill the balance). A session without an explicit provider runs on the
+ * implicit default route; it is resolved the way the running route is (`actualSourceIdForModel`),
+ * so that tube ripples too.
+ */
+export function consumingSourceIds(tasks: readonly MenubarTaskInput[], providers: readonly ProviderView[]): Set<string> {
+  const ids = new Set<string>();
+  for (const task of tasks) {
+    if (!task.running) continue;
+    const explicit = task.providerId?.trim() || null;
+    let resolved: string | null = null;
+    if (task.routeModel) {
+      try {
+        resolved = actualSourceIdForModel(
+          providers as ProviderView[],
+          explicit,
+          task.routeModel,
+          dbToMakerAgentKind(task.routeAgentKind),
+        );
+      } catch {
+        // A provider view missing its runtime map only costs the ripple, never the whole read.
+        resolved = null;
+      }
+    }
+    // An explicit provider the catalog no longer offers this model on is still what the
+    // session sends to; keep marking it.
+    const sourceId = resolved ?? explicit;
+    if (!sourceId) continue;
+    const provider = providers.find((candidate) => candidate.id === sourceId);
+    if (!provider) continue;
+    const managed = provider.auth.method === 'managed' || provider.access?.kind === 'managed' || provider.id === 'xd';
+    ids.add(managed ? MENUBAR_BALANCE_SOURCE_ID : provider.id);
+  }
+  return ids;
+}
+
 // ── Usage ────────────────────────────────────────────────────────────────────
 
 function clampPercent(value: number): number {
@@ -598,6 +643,9 @@ async function collectTasks(
           running,
           startedAtMs: running ? (activity?.startedAtMs ?? null) : null,
           lastActiveAtMs: activity?.lastActivityAtMs ?? info?.lastActiveAt ?? deps.nowMs,
+          providerId: row?.providerId ?? null,
+          routeModel: model || null,
+          routeAgentKind: row?.agentKind ?? null,
         };
       }),
     );

@@ -43,7 +43,12 @@ export interface RemoteWorkerTurnEnd {
 }
 
 export type RemoteWorkerDispatchResult =
-  | { ok: true; mode: 'dispatched' | 'queued' }
+  | {
+      ok: true;
+      mode: 'dispatched' | 'queued';
+      /** Accepted input's Agent; queued deliveries retain the pre-enqueue Agent. */
+      agentKind: AgentInputCreateOpts['agentKind'];
+    }
   | {
       ok: false;
       code: 'DEVICE_UNREACHABLE' | 'SESSION_NOT_FOUND' | 'SEND_FAILED';
@@ -656,10 +661,11 @@ export function createOrcaRemoteWorkerRuntime(deps: OrcaRemoteWorkerRuntimeDeps)
         }
         const baseline = state.awaiting?.baselineMessageId ?? (await lastAssistantMessage(ref)).id;
         if (!current(state)) throw new Error('remote worker owner changed');
+        const createOpts = createOptsFromRow(row);
         const item = buildRemoteWorkerQueuedMessage({
           clientId: params.clientId,
           rawContent: params.rawContent,
-          createOpts: createOptsFromRow(row),
+          createOpts,
           createdAt: new Date(deps.now()).toISOString(),
         });
         prepared = {
@@ -683,11 +689,31 @@ export function createOrcaRemoteWorkerRuntime(deps: OrcaRemoteWorkerRuntimeDeps)
         }
         if (!current(state) || state.awaiting !== prepared)
           throw new Error('remote worker owner or dispatch changed');
-        const accept = (): RemoteWorkerDispatchResult => {
+        const accept = async (): Promise<RemoteWorkerDispatchResult> => {
           setReachable(ref.deviceId, true);
-          const mode = state.inTurn ? 'queued' : 'dispatched';
           schedule();
-          return { ok: true, mode };
+          // Enqueue only acknowledges durable delivery. The send boundary can
+          // still be applying a harness switch; neither the earlier session row
+          // nor the last running-state poll identifies the accepting runtime.
+          // Read the engine stamped on this exact accepted input, even if the
+          // session has since switched again. Missing/old-peer evidence stays
+          // queued and must never turn an already delivered input into a retry.
+          try {
+            const rows = await deps.invoke(ref.deviceId, 'local-db:messages:around-client-id', [
+              ref.remoteSessionId, params.clientId, { radius: 0, contentCharLimit: 1 },
+            ]) as Array<{ clientId?: unknown; role?: unknown; agentKind?: unknown }>;
+            const accepted = Array.isArray(rows)
+              ? rows.find((entry) => entry.clientId === params.clientId && entry.role === 'user')
+              : undefined;
+            const kind = accepted?.agentKind;
+            if (kind === 'cc' || kind === 'claude-code' || kind === 'codex' || kind === 'pi') {
+              return { ok: true, mode: 'dispatched', agentKind: agentKindOf(kind === 'cc' ? 'claude-code' : kind) };
+            }
+          } catch {
+            // The input may still be queued, or this read may be unavailable.
+            // Existing polling owns recovery; do not re-enqueue or tear down the link.
+          }
+          return { ok: true, mode: 'queued', agentKind: createOpts.agentKind };
         };
         try {
           await deps.invoke(ref.deviceId, 'maker:input:enqueue', [ref.remoteSessionId, item]);

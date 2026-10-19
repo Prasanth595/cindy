@@ -296,7 +296,7 @@ describe('switching computers within a group on another computer', () => {
     const h = bound({ picks: [OWNER_LOCAL] });
     h.service.onTurnError('s1', { sdkError: 'rate_limit' }, 3);
     await flush();
-    expect(h.remote.cool).toHaveBeenCalledWith(OWNER, { providerId: 'anthropic', memberKey: STUDIO.key, cause: 'usage-limit', resetAt: 5_000 });
+    expect(h.remote.cool).toHaveBeenCalledWith(OWNER, { providerId: 'anthropic', memberKey: STUDIO.key, cause: 'usage-limit', resetAt: 5_000, model: MODEL });
     expect(h.remote.pick).toHaveBeenCalledWith(OWNER, expect.objectContaining({ exclude: expect.arrayContaining([STUDIO.key]) }));
     expect(h.deps.switchAgentLocation).toHaveBeenCalledWith('s1', expect.objectContaining({ agentDeviceId: OWNER, providerId: 'anthropic' }), expect.anything());
     expect(h.deps.continueSession).toHaveBeenCalledWith('s1', 7, expect.objectContaining({
@@ -484,7 +484,7 @@ describe('switching computers within a group on another computer', () => {
     expect(h.deps.switchAgentLocation).toHaveBeenCalledWith(
       's1',
       expect.objectContaining({ agentDeviceId: 'share:s1', providerId: 'anthropic' }),
-      { beforeSend: true },
+      { beforeSend: true, isCurrent: expect.any(Function) },
     );
     const healthy = bound();
     await healthy.service.beforeSend('s1');
@@ -503,7 +503,7 @@ describe('old tasks already running on the group computer', () => {
     const h = harness({ row: { sdkSessionId: 'native-1' }, picks: [STUDIO] });
     h.service.onTurnError('s1', { sdkError: 'rate_limit' }, 3);
     await flush();
-    expect(h.remote.cool).toHaveBeenCalledWith(OWNER, { providerId: 'anthropic', memberKey: OWNER_LOCAL.key, cause: 'usage-limit', resetAt: 5_000 });
+    expect(h.remote.cool).toHaveBeenCalledWith(OWNER, { providerId: 'anthropic', memberKey: OWNER_LOCAL.key, cause: 'usage-limit', resetAt: 5_000, model: MODEL });
     expect(h.deps.switchAgentLocation).toHaveBeenCalledWith(
       's1',
       expect.objectContaining({ agentDeviceId: 'studio', providerId: STUDIO.providerId }),

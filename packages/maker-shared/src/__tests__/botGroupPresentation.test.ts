@@ -8,8 +8,30 @@ import {
   mergeBotGroupMessages,
   projectBotGroupExecutionFailures,
   botGroupExecutionFailureBatches,
+  chatGroupMembership,
 } from '../botGroupPresentation.js';
-import { BOT_GROUP_RUNTIME_FAILURE_CODES, readBotGroupExecutionFailure, type BotGroupErrorCode, type BotGroupExecutionFailureView, type BotGroupMessageView, type BotGroupNoticeCode, type BotGroupPlanView } from '../botGroupChat.js';
+import { BOT_GROUP_RUNTIME_FAILURE_CODES, readBotGroupExecutionFailure, type BotGroupErrorCode, type BotGroupExecutionFailureView, type BotGroupMemberView, type BotGroupMessageView, type BotGroupNoticeCode, type BotGroupPlanView } from '../botGroupChat.js';
+
+describe('server group membership affordances', () => {
+  const self = { actorId: 'self', isSelf: true, isOwned: true, role: 'member' } as BotGroupMemberView;
+  const ownBot = { actorId: 'own-bot', actorKind: 'bot', isOwned: true, role: 'owner' } as BotGroupMemberView;
+  const otherOwner = { actorId: 'other-owner', isOwned: false, role: 'owner' } as BotGroupMemberView;
+  it.each([
+    { members: [self, otherOwner], owner: false, manager: false, canLeave: true },
+    { members: [{ ...self, role: 'admin' as const }, otherOwner], owner: false, manager: true, canLeave: true },
+    { members: [{ ...self, role: 'owner' as const }], owner: true, manager: true, canLeave: false },
+    { members: [self, ownBot], owner: true, manager: true, canLeave: false },
+    { members: [{ ...self, role: 'owner' as const }, ownBot], owner: true, manager: true, canLeave: false },
+    { members: [self, ownBot, otherOwner], owner: true, manager: true, canLeave: true },
+    { members: [self, ownBot, { ...otherOwner, isOwned: undefined }], owner: true, manager: true, canLeave: false },
+    { members: [otherOwner], owner: false, manager: false, canLeave: false },
+  ])('projects owner=$owner, manager=$manager, canLeave=$canLeave for $members', ({ members, ...expected }) => {
+    expect(chatGroupMembership({ serverBacked: true, members })).toMatchObject(expected);
+  });
+  it('does not infer a server permission for a legacy local group', () => {
+    expect(chatGroupMembership({ members: [self, ownBot] })).toMatchObject({ owner: false, manager: false, canLeave: false });
+  });
+});
 
 describe('execution failures are a projection of the current snapshot', () => {
   it('reconciles all loaded sources in bounded deduplicated requests', () => {

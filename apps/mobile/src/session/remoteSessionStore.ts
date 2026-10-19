@@ -1,4 +1,5 @@
 import { readTokenSpeedSnapshot, type TokenSpeedSnapshot } from '@cindy/maker-shared/usage-format';
+import { historyTurnEnded, nextHistoryCacheReceipt } from '@cindy/maker-shared/message-window';
 import { normalizeTaskTags, reconcileTaskTags } from '@cindy/maker-shared';
 import {
   createContext,
@@ -43,6 +44,7 @@ import { isDefaultDraftSessionTitle } from '@cindy/maker-shared/session-title';
 import { CINDY_MAKE_ENABLED, isCindyMakeSource } from '@cindy/maker-shared/cindy-make-feature';
 import { EMPTY_INPUT_PROJECTION, normalizeInputProjection } from '@/session/inputProjection';
 import { sortPendingInteractions } from '@/session/interactionModel';
+import { clearAskUserDraft } from '@/session/interactionDraftStore';
 import { applySessionModelPrefPush } from '@/session/sessionModelMirror';
 import {
   createLatestWriteGuard,
@@ -252,6 +254,9 @@ const listMessageKeys = new Map<string, Set<string>>();
 // overwrite a newer live state with the first stale 0/N snapshot.
 const livePlanSnapshots = new Map<string, Map<string, LivePlanSnapshot>>();
 const pendingInteractions = new Map<string, PendingInteraction[]>();
+// Editing is local to the controller. It must not keep a provider turn alive.
+const protectedQuestions = new Map<string, PendingInteraction>();
+const visibleInteractionCache = new Map<string, { raw: PendingInteraction[]; protected?: PendingInteraction; result: PendingInteraction[] }>();
 /**
  * 这个会话的 pending 列表当前是不是**权威**的(来自被控端的一次全量快照)。
  *
@@ -711,7 +716,7 @@ const pendingRefreshSessions = new Set<string>();
 const reseedHandlers = new Map<string, Set<() => void>>();
 // A whole-list read after app start or a reconnect reseed may follow a gap in live pushes.
 // Listeners read changed tasks ahead; ordinary list refreshes while pushes flow do not fire.
-const sessionListRefreshListeners = new Set<(deviceId: string) => void>();
+const sessionListRefreshListeners = new Set<(deviceId: string, sessionId?: string) => void>();
 const sessionListRefreshArmed = new Set<string>();
 const sessionListRefreshSeen = new Set<string>();
 const subs = new Set<() => void>();
@@ -1038,6 +1043,7 @@ function sessionStoreProtected(sessionId: string, includeVisible = true): boolea
   if (readSessionRunStatus(sessionId).isRunning) return true;
   if (sessionMakerTurnRunning.get(sessionId) === true) return true;
   if ((pendingInteractions.get(sessionId)?.length ?? 0) > 0) return true;
+  if (protectedQuestions.has(sessionId)) return true;
   if ((inputProjections.get(sessionId)?.pendingQueue.length ?? 0) > 0) return true;
   if (sessionMessageLifecycle.hasLocalWork(sessionId)) return true;
   if (retentionForSession(sessionId) === 'regular' && hasComposerDraft(sessionId)) return true;
@@ -1123,6 +1129,8 @@ function invalidateSessionMessageWindowState(
 }
 
 function removeSessionRuntimeState(sessionId: string): void {
+  protectedQuestions.delete(sessionId);
+  visibleInteractionCache.delete(sessionId);
   void clearHistoryDisk(undefined, sessionId);
   clearRemoteHistoryViews(undefined, sessionId);
   invalidateSessionMessageWindowState(sessionId, false);
@@ -3268,9 +3276,11 @@ export const remoteSessionStore = {
    * 清内存与磁盘预览并登记一次刷新；页面可见时立即 load，隐藏时下次打开再拉。
    */
   invalidateSessionMessageWindow(sessionId: string, deviceId?: string): void {
+    const removedDraft = protectedQuestions.delete(sessionId);
+    visibleInteractionCache.delete(sessionId);
     void clearHistoryDisk(deviceId, sessionId);
     resetRemoteHistoryViews(deviceId, sessionId);
-    const changed = invalidateSessionMessageWindowState(sessionId, true);
+    const changed = invalidateSessionMessageWindowState(sessionId, true) || removedDraft;
     clearSessionMessageCache(sessionId, deviceId);
     if (changed) {
       bumpMessageVersion(sessionId);
@@ -3429,18 +3439,26 @@ export const remoteSessionStore = {
     recomputeSessions();
   },
 
-  // 冷启动乐观 hydrate:仅当该设备 shard 尚不存在时,用本地首页快照缓存种入(先画缓存)。
-  // 「if absent」是关键不变量——fresh loadHome 数据若已先到则绝不覆盖;fresh 之后到会走
-  // setDeviceSessions 正常对账替换。与 hydrateMessagesIfEmpty 同一套语义,只作用于会话 shard。
+  // 单条详情/发件箱恢复不代表整份首页列表已经加载。首轮列表尚未到达时，缓存可以
+  // 补齐缺失行，但已有行始终优先。收到列表或列表变更后不再种入旧快照（含权威空列表、
+  // 归档/删除与设备移除），复用现有列表刷新记录和 mutation fence。
   hydrateDeviceSessionsIfEmpty(deviceId: string, deviceName: string, rawSessions: readonly RemoteSession[]): void {
-    if (!deviceId || rawSessions.length === 0 || shards.has(deviceId)) return;
+    if (!deviceId || rawSessions.length === 0 || sessionListRefreshSeen.has(deviceId)
+      || deviceSessionListMutationEpochs.has(deviceId)) return;
+    const existing = shards.get(deviceId);
+    const existingIds = new Set(existing?.sessions.map((session) => session.id));
+    const missing = rawSessions.filter((session) => !existingIds.has(session.id)
+      && sessionPendingWrites.pendingFields(session.id).length === 0);
+    if (missing.length === 0) return;
+    const currentDeviceName = existing?.deviceName ?? deviceName;
     shards.set(deviceId, {
       deviceId,
-      deviceName,
+      deviceName: currentDeviceName,
       // cacheSeeded 打标:缓存行字段经瘦身/截断(240 字符),只能撑首屏渲染与跳转,
       // 不能作为发送参数;会话页据此在 fresh 元数据到达前禁发(codex review R15)。
       // fresh 路径(setDeviceSessions / upsertDeviceSession)用服务器新对象,天然无标自净。
-      sessions: rawSessions.map((s) => stamp({ ...s, cacheSeeded: true }, deviceId, deviceName)),
+      sessions: [...(existing?.sessions ?? []), ...missing.map((s) =>
+        stamp({ ...s, cacheSeeded: true }, deviceId, currentDeviceName))],
     });
     recomputeSessions();
   },
@@ -3502,6 +3520,9 @@ export const remoteSessionStore = {
   },
 
   applySessionPatch(deviceId: string, sessionId: string, patch: Partial<RemoteSession>): void {
+    // Local optimistic removals must fence a late startup cache just like remote pushes,
+    // even when the removed row has not reached this shard yet.
+    if (patch.status === 'deleted' || patch.status === 'archived') bumpDeviceSessionListMutationEpoch(deviceId);
     const shard = shards.get(deviceId);
     if (!shard) {
       if (patch.status === 'active') reseedHandlers.get(deviceId)?.forEach((handler) => handler());
@@ -3513,7 +3534,10 @@ export const remoteSessionStore = {
       return;
     }
     let shouldReseedAfterPatch = false;
+    const turnEnded = historyTurnEnded(shard.sessions[idx], patch);
     if (patch.status === 'deleted' || patch.status === 'archived') {
+      protectedQuestions.delete(sessionId);
+      visibleInteractionCache.delete(sessionId);
       void clearHistoryDisk(deviceId, sessionId);
       clearRemoteHistoryViews(deviceId, sessionId);
       shard.sessions = shard.sessions.filter((s) => s.id !== sessionId);
@@ -3552,6 +3576,9 @@ export const remoteSessionStore = {
       shouldReseedAfterPatch = wasPinned && unpinned;
     }
     recomputeSessions();
+    if (turnEnded && patch.status !== 'deleted' && patch.status !== 'archived') {
+      for (const listener of sessionListRefreshListeners) listener(deviceId, sessionId);
+    }
     if (shouldReseedAfterPatch) this.requestReseed(deviceId);
   },
 
@@ -4582,8 +4609,9 @@ export const remoteSessionStore = {
       const fromList = payload.listMessage === true;
       if (fromList && (!sessionId || !listMessageWriteAllowed(sessionId, deviceId))) return;
       if (sessionId && message) {
-        this.appendMessage(sessionId, message, { listMessage: fromList });
-        if (fromList) void cacheSessionListMessage(deviceId, sessionId, message);
+        const received = fromList ? { ...message, cacheReceipt: nextHistoryCacheReceipt() } : message;
+        this.appendMessage(sessionId, received, { listMessage: fromList });
+        if (fromList) void cacheSessionListMessage(deviceId, sessionId, received);
       }
       return;
     }
@@ -4764,6 +4792,9 @@ export const remoteSessionStore = {
       const sessionId = readString(payload, 'sessionId');
       const requestId = readString(payload, 'requestId');
       if (sessionId && requestId) {
+        if (payload.reason === 'resolved' && !(isRecord(payload.decision) && payload.decision.dismissed === true)) {
+          this.confirmProtectedQuestion(sessionId, requestId);
+        }
         // 注意:这里**不**提前回收延长抑制条目——push 到达只说明被控端已确认,
         // 不排除仍有「决定提交前发出、此刻还在途」的旧 getPendingInteractions
         // 快照晚于本 push 返回(弱网高发);提前回收会让那份旧快照把已解决的卡
@@ -5292,6 +5323,8 @@ export const remoteSessionStore = {
     listMessageKeys.clear();
     emptySessionMessageStructureTokens.clear();
     livePlanSnapshots.clear();
+    protectedQuestions.clear();
+    visibleInteractionCache.clear();
     if (pendingInteractions.size > 0) {
       pendingInteractions.clear();
       bumpHomeStatusVersion();
@@ -5375,8 +5408,8 @@ export const remoteSessionStore = {
     reseedHandlers.get(deviceId)?.forEach((handler) => handler());
   },
 
-  /** Whole-list reads that may follow missed pushes (first read per app run, reconnect reseed). */
-  onSessionListRefreshAfterGap(listener: (deviceId: string) => void): () => void {
+  /** First/reconnected lists, or a specific task whose durable turn just ended. */
+  onSessionHistoryPrefetchRequested(listener: (deviceId: string, sessionId?: string) => void): () => void {
     sessionListRefreshListeners.add(listener);
     return () => { sessionListRefreshListeners.delete(listener); };
   },
@@ -5546,6 +5579,41 @@ export const remoteSessionStore = {
 
   getPendingInteractions(sessionId: string): PendingInteraction[] {
     return pendingInteractions.get(sessionId) ?? emptyPendingInteractions;
+  },
+
+  protectAsyncQuestion(sessionId: string, item: PendingInteraction): void {
+    if (item.request.kind !== 'ask_user_question' || item.request.delivery !== 'async') return;
+    if (protectedQuestions.get(sessionId)?.request.requestId === item.request.requestId) return;
+    protectedQuestions.set(sessionId, { ...item, retainedDraft: true });
+    emit();
+  },
+
+  releaseProtectedQuestion(sessionId: string, requestId: string): void {
+    if (protectedQuestions.get(sessionId)?.request.requestId !== requestId) return;
+    protectedQuestions.delete(sessionId);
+    visibleInteractionCache.delete(sessionId);
+    emit();
+  },
+
+  /** Both the resolve receipt and a resolved push complete the same draft. */
+  confirmProtectedQuestion(sessionId: string, requestId: string): void {
+    if (protectedQuestions.get(sessionId)?.request.requestId !== requestId) return;
+    // Register the existing stale-snapshot suppression before publishing removal.
+    this.settleOptimisticInteractionDismiss(sessionId, requestId, { kind: 'confirmed' });
+    clearAskUserDraft(requestId);
+    this.dismissInteraction(sessionId, requestId);
+    this.releaseProtectedQuestion(sessionId, requestId);
+  },
+
+  getVisiblePendingInteractions(sessionId: string): PendingInteraction[] {
+    const raw = this.getPendingInteractions(sessionId);
+    const retained = protectedQuestions.get(sessionId);
+    if (!retained) return raw;
+    const cached = visibleInteractionCache.get(sessionId);
+    if (cached?.raw === raw && cached.protected === retained) return cached.result;
+    const result = [retained, ...raw.filter((item) => item.request.requestId !== retained.request.requestId)];
+    visibleInteractionCache.set(sessionId, { raw, protected: retained, result });
+    return result;
   },
 
   /**
@@ -6263,7 +6331,7 @@ export function useRemoteNewMakerWorktreeBranchPreference(
 export function useSessionPendingInteractions(sessionId: string): PendingInteraction[] {
   return useSyncExternalStore(
     remoteSessionStore.subscribe,
-    () => remoteSessionStore.getPendingInteractions(sessionId),
+    () => remoteSessionStore.getVisiblePendingInteractions(sessionId),
   );
 }
 

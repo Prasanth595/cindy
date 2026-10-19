@@ -9,7 +9,9 @@
     }
   },
   "renderer": {
+    "failedSamplingAttempt": "This reply did not complete. Its content is for reference only.",
     "moreActions": "More message actions",
+    "reply": "Reply",
     "newMessagesToBottom": "New messages, jump to bottom",
     "jumpToBottom": "Jump to bottom",
     "openForkOrigin": "Open fork source message",
@@ -389,5 +391,11 @@
     "memory": "Remembered: {{title}}",
     "skillCreated": "Created skill: {{title}}",
     "skillUpdated": "Updated skill: {{title}}"
+  },
+  "richAnswer": {
+    "playVideo": "Play video",
+    "openVideoSource": "Open original video",
+    "calculationUnavailable": "Unable to calculate this value.",
+    "incomplete": "Some content could not be displayed."
   }
 }

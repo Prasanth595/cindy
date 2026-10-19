@@ -62,6 +62,8 @@ export interface PluginMarketInstallationRecord {
    * clients that still interpret it as a normalized digest.
    */
   rawManifestSha256?: string;
+  /** Verified delivery endpoint; absent legacy records require catalog verification before reporting. */
+  serverRoot?: string;
 }
 
 export type PluginMarketAuthorizationTarget = { ghostId: string; namespace?: string | null };
@@ -474,7 +476,12 @@ export class PluginMarketLedger {
 
   markRemovedRecordIfUnchanged(record: PluginMarketInstallationRecord, userId: string | null): boolean {
     const current = this.installationForPlugin(record);
-    if (!current || canonicalJson(current) !== canonicalJson(record)) return false;
+    if (!current) return false;
+    // A verified reporting-root backfill does not replace the captured installation.
+    // Every other provenance field (and an already pinned root) still participates in CAS.
+    const expected = record.serverRoot === undefined && current.serverRoot
+      ? { ...record, serverRoot: current.serverRoot } : record;
+    if (canonicalJson(current) !== canonicalJson(expected)) return false;
     this.markRemovedRecord(current, userId);
     return true;
   }
@@ -540,6 +547,15 @@ export class PluginMarketLedger {
     const data = this.read();
     this.putRecord(data, record);
     this.write(data);
+  }
+
+  backfillServerRoot(expected: PluginMarketInstallationRecord, serverRoot: string): boolean {
+    const data = this.read();
+    const current = data.installations[pluginLedgerRecordKey(expected)];
+    if (!current || current.serverRoot || canonicalJson(current) !== canonicalJson(expected)) return false;
+    data.installations[pluginLedgerRecordKey(current)] = { ...current, serverRoot };
+    this.write(data);
+    return true;
   }
 
   /**

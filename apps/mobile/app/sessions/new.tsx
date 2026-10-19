@@ -1,11 +1,14 @@
+import { useNewSessionHostDefaults } from '@/session/useNewSessionHostDefaults';
+import { ErrorNotice } from '@/components/ErrorNotice';
+import { useNewSessionDefaultSelection } from '@/session/useNewSessionDefaultSelection';
 import { parseGoalCommand } from '@cindy/maker-shared/goal-command';
 import { mergeMobileGoalCommand, parseMobileDesktopCommand } from '@/session/desktopSlashCommands';
 import { modelNeedsReselection } from '@/session/modelReselection';
 import { completePrecreatedWorktreeRecovery } from '@/session/completePrecreatedWorktreeRecovery';
 import { outboxCreationRetryIdentity } from '@/session/cancelledCreationDraft';
 import { isRemoteTaskSuggestionId } from '@/session/remoteTaskSuggestionsModel';
-import { mobileDurableOutbox, holdDurableOutboxCreation, getCurrentMobileOutboxRecords } from '@/session/mobileDurableOutbox';
-import { retainOutboxFile, durableOutboxUploadUri, removeRetainedOutboxFiles, outboxAttachmentNeedsLocalBytes } from '@/session/durableOutboxFiles';
+import { mobileDurableOutbox, getCurrentMobileOutboxRecords } from '@/session/mobileDurableOutbox';
+import { persistNewSessionCreationDraft } from '@/session/persistNewSessionCreationDraft';
 import { buildOutboxItem, createOutboxClientId } from '@/session/sessionOutbox';
 import type { DurableOutboxRecord } from '@/session/durableOutbox';
 import { stripTrailingPathSeparators } from '@cindy/maker-shared/path-text';
@@ -18,6 +21,7 @@ import { resolveWorkspacePickerFrame, type WorkspacePickerFrame } from '@/sessio
 import { simpleScreenSafeAreaEdges } from '@/platform/chrome/SimpleStackHeader';
 import { readComposerEntry, useComposerDock } from '@/session/composerMorph';
 import { useComposerPillOpen } from '@/session/useComposerPillOpen';
+import { useComposerImageExpansion } from '@/session/useComposerImageExpansion';
 import { DockKeyboardBottomSpacer } from '@/session/ComposerDockKeyboardFollow';
 import { mobileInteractionStyles } from '@/components/mobileInteractionStyles';
 import { composerGeometry } from '@/session/composerGeometry';
@@ -111,6 +115,7 @@ import {
 import { useAuth } from '@/auth/AuthContext';
 import { discardMobileUploadedAttachment } from '@/session/mobileAttachmentUpload';
 import { discardNewSessionUploadedAttachments } from '@/session/newSessionAttachmentCleanup';
+import { useAutoResumeNewSessionDraft, useNewSessionDurableEdit } from '@/session/useNewSessionDraftRecovery';
 import { goBackGuarded } from '@/utils/backGuard';
 import { buildMobileImageAttachmentCandidate } from '@/session/mobileImageAttachment';
 import { useMobileLocalAttachments } from '@/session/useMobileLocalAttachments';
@@ -169,6 +174,7 @@ import { RecentPhotosStrip } from '@/session/ContextSheetMediaViews';
 import { ContextSheetGoalCreateForm } from '@/session/ContextSheetGoalView';
 import type { MobileGoalLimitsInput } from '@cindy/maker-shared/device-link-contract';
 import { ComposerAttachmentCollapsedBadge, ComposerAttachmentTray } from '@/session/ComposerAttachmentTray';
+import { useComposerPendingImagePreview } from '@/session/useComposerPendingImagePreview';
 import { SlowSendNotice, type SlowSendPhase } from '@/session/SlowSendNotice';
 import { ImageLightbox } from '@/session/ImageLightbox';
 import {
@@ -193,32 +199,25 @@ import {
 } from '@/session/composerPalette';
 import { mobileDebugLog } from '@/debug/mobileDebugLog';
 import {
-  type StoredAgentRestoreState,
   applyRemoteAgentPick,
   assertSubmitModelResolved,
   DEFAULT_NEW_SESSION_DRAFT,
   NEW_SESSION_AGENT_OPTIONS,
   availableNewSessionAgentOptions,
-  canResolveStoredAgentRuntime,
   defaultPermissionModeForNewSessionAgent,
   buildRemoteCreateSessionOptions,
   buildRecentWorkspaceOptions,
   filterRemoteDirectoryEntries,
   isCurrentRemoteBrowseRequest,
   isNewSessionRuntimePending,
-  isStoredAgentRestorePending,
-  nextStoredAgentRestoreStep,
   normalizeRemoteDirectoryDrives,
   shouldRetryRemoteBrowseDrives,
   normalizeCreateSessionResult,
   isNewSessionDraftMissingPayloadOnly,
   parseNewSessionDeviceOptions,
   pickAgentDefaultRuntime,
-  hostDraftRuntimeFromDefaults,
-  isHostDraftDefaultsReady,
   pickInitialNewSessionWorkspace,
   pickNewSessionDefaultDevice,
-  resolveNewSessionAutoDefault,
   sessionFromCreateResult,
   compensatePrecreatedWorktree,
   reconcileEffortAfterFallback,
@@ -235,6 +234,7 @@ import {
 } from '@/session/newSession';
 import { isDefaultDraftSessionTitle } from '@cindy/maker-shared/session-title';
 import { newSessionText } from '@/session/newSessionMessages';
+
 import { i18n } from '@/i18n';
 import {
   getMobileAuthOwner,
@@ -245,7 +245,8 @@ import { useTranslation } from 'react-i18next';
 import {
   createNewSessionId,
   drainStashedNewSessionDraft,
-  getNewSessionCreationTask,
+  hasLiveNewSessionCreation,
+  holdNewSessionCreationDraft,
   startNewSessionCreation,
 } from '@/session/newSessionCreation';
 import {
@@ -354,6 +355,7 @@ import {
   createMobileVoiceControllerSession,
   type MobileVoiceControllerSession,
 } from '@/session/mobileVoiceController';
+import { createMobileSpeakerGate, warmMobileSpeakerFilter } from '@/session/mobileSpeakerFilter';
 import {
   createMobileVoiceDictionaryLearningTracker,
   type MobileVoiceDictionaryLearningTracker,
@@ -503,6 +505,8 @@ export default function NewRemoteSessionScreen() {
     suggestion?: string;
     draft?: string;
     recoverySessionId?: string;
+    editSessionId?: string;
+    creationError?: string;
   }>();
   const routeDeviceId = String(params.deviceId ?? '');
   const routeDeviceName = String(params.deviceName ?? routeDeviceId);
@@ -607,7 +611,10 @@ export default function NewRemoteSessionScreen() {
   const [creating, setCreating] = useState(false);
   const [createStartedAt, setCreateStartedAt] = useState<number | null>(null);
   const [createPhase, setCreatePhase] = useState<SlowSendPhase>('preparing');
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(() => {
+    const creationError = readRouteString(params.creationError);
+    return creationError ? t('session.screen.createFailedNotice', { message: creationError }) : null;
+  });
   const [capabilities, setCapabilities] = useState<MobileAgentCapabilities | null>(null);
   const [capabilitiesLoading, setCapabilitiesLoading] = useState(false);
   const [, setCapabilitiesError] = useState<string | null>(null);
@@ -807,7 +814,7 @@ export default function NewRemoteSessionScreen() {
   // composer 托盘里正被全屏查看的图片附件 id(null = 关闭)。
   const [composerPreviewAttachmentId, setComposerPreviewAttachmentId] = useState<string | null>(null);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
-  // 乐观创建失败后「返回编辑」的草稿回填:会话页 stash → 跳回本页 → 挂载时 drain。
+  // 创建失败后返回编辑；再次打开空白新建页时，继续同设备/项目的草稿。
   // 附件是已上传完成的引用,原样回列即可继续使用;notice 是「有内容没能带回」的告知
   // (创建期间发出的消息可能超出单条上限,装不下的只能丢,但不能静默丢,review P1)。
   // 声明在 attachmentError 之后:notice 就落在附件错误行上。
@@ -847,33 +854,32 @@ export default function NewRemoteSessionScreen() {
     router.replace('/devices');
     return true;
   }, [router]);
-  useEffect(() => {
-    const owner = outboxOwner;
-    if (leaveForeignOutboxRecovery()) return;
-    const sid = String(params.recoverySessionId ?? '');
-    if (!sid) return;
-    let active = true;
-    let restored = false;
-    const restore = () => {
-      if (!active || restored || !isMobileAuthOwnerCurrent(owner)) return;
-      const record = getCurrentMobileOutboxRecords().find((r) => r.item.sessionId === sid && r.creation);
-      if (!record?.creation || record.prepared) return;
-      restored = true;
+  const hasRecoveryInput = () => !!(outboxRecoveryRef.current
+    || firstMessageRef.current || attachmentsRef.current.length || hasAttachmentInput()
+    || incomingShareReceivedRef.current || userTouchedDeviceRef.current
+    || userTouchedRuntimeRef.current || userTouchedWorkspaceRef.current);
+  const { edit: editRecoveredDraft, flush: flushRecoveredDraft } = useNewSessionDurableEdit({
+    sessionId: String(params.recoverySessionId ?? ''), deviceId: routeDeviceId, owner: outboxOwner,
+    getToken: auth.getAccessToken,
+    hasInput: hasRecoveryInput,
+    leaveForeignRecovery: leaveForeignOutboxRecovery,
+    onError: error => setError(formatRemoteError(error)),
+    onEdited: record => { outboxRecoveryRef.current = record; },
+    onRestore: record => {
       outboxRecoveryRef.current = record;
       userTouchedDeviceRef.current = true;
       restoreCreationDraft(record.creation.draft,
         record.item.attachmentSlots.filter((a): a is RemoteSerializedAttachment => a !== null),
         { enabled: record.creation.planModeArm, restorePermissionMode: record.creation.restorePermissionMode },
         record.deviceId);
+      if (record.creation.notice) setAttachmentError(record.creation.notice);
+      if (record.error) setError(t('session.screen.createFailedNotice', { message: record.error }));
       setSelectedDeviceId(record.deviceId);
       setSelectedDeviceName(record.creation.deviceName);
-    };
-    const unsubscribe = mobileDurableOutbox.subscribe(restore);
-    void mobileDurableOutbox.ready().then(restore);
-    return () => { active = false; unsubscribe(); };
-  }, [params.recoverySessionId, outboxOwner, leaveForeignOutboxRecovery, restoreCreationDraft]);
+    },
+  });
   useEffect(() => {
-    const stashed = drainStashedNewSessionDraft();
+    const stashed = drainStashedNewSessionDraft(readRouteString(params.editSessionId) ?? undefined, routeDeviceId);
     if (!stashed) return;
     restoreCreationDraft(stashed.draft, [...stashed.attachments], undefined, stashed.deviceId || undefined);
     if (stashed.notice) setAttachmentError(stashed.notice);
@@ -890,8 +896,7 @@ export default function NewRemoteSessionScreen() {
       setSelectedDeviceId(stashed.deviceId);
       setSelectedDeviceName(stashed.deviceName || stashed.deviceId);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅挂载时领取一次信箱
-  }, []);
+  }, [params.editSessionId, routeDeviceId, restoreCreationDraft]);
   // 圈点标注接线 api 的 ref 中转(同会话页):hook 实例声明在 removeAttachment
   // 之后,onUploaded 等回调延迟执行经 ref 读最新实例。
   const composerAnnotationsRef = useRef<UseComposerImageAnnotationsResult | null>(null);
@@ -899,6 +904,7 @@ export default function NewRemoteSessionScreen() {
   const {
     pendingUploads,
     pastePlaceholderCount,
+    imageSelectionRevision,
     beginPastePlaceholders,
     failPastePlaceholders,
     addImages: addLocalImageAttachments,
@@ -910,7 +916,9 @@ export default function NewRemoteSessionScreen() {
     discardAllPendingUploads,
     waitForPendingUploads,
     getPendingUploadCount,
+    hasAttachmentInput,
     getUploadedSource,
+    getUploadedAttachmentId,
     releaseUploadedSources,
   } = useMobileLocalAttachments({
     getAccessToken: () => auth.getAccessToken(),
@@ -947,7 +955,16 @@ export default function NewRemoteSessionScreen() {
     setAttachmentError(null);
   }), [auth.getAccessToken, discardAllPendingUploads]);
   const incomingShareBatch = useIncomingShareBatch();
+  const incomingShareReceivedRef = useRef(false);
+  if (incomingShareBatch) incomingShareReceivedRef.current = true;
   const isShareTargetFocused = useIsFocused();
+  useAutoResumeNewSessionDraft({
+    enabled: !(params.recoverySessionId || params.editSessionId || params.draft || params.suggestion
+      || visualInitialDraft || !newSessionPreferencesLoaded),
+    deviceId: selectedDeviceId, workingDir: initialWorkingDir, owner: outboxOwner,
+    hasInput: hasRecoveryInput,
+    onResume: next => router.setParams(next),
+  });
   useEffect(() => {
     if (!isShareTargetFocused || !auth.isAuthenticated || !incomingShareBatch
       || getMobileAuthOwner().accountId !== auth.user?.id) return;
@@ -1033,8 +1050,6 @@ export default function NewRemoteSessionScreen() {
   const atLoadSeqRef = useRef(0);
   const initialWorkspaceKeyRef = useRef<string | null>(null);
   const appliedDefaultDeviceKeyRef = useRef<string | null>(null);
-  // 上次 agent 的恢复进度(唯一写入者:下面的恢复 effect)。见 nextStoredAgentRestoreStep。
-  const storedAgentRestoreRef = useRef<StoredAgentRestoreState | null>(null);
   // 权限记忆只在偏好加载后恢复一次(之后由用户选择 / 切 agent 驱动),防止重复覆盖。
   const appliedPermissionMemoryRef = useRef(false);
   const userTouchedDeviceRef = useRef(false);
@@ -1080,107 +1095,11 @@ export default function NewRemoteSessionScreen() {
   const autoDefaultDeviceRef = useRef<string | null>(null);
   // 被控电脑的「新建任务默认」(与桌面远程新建同一读源 maker:get-new-maker-defaults):
   // 默认模型 = 那台电脑上新建任务时用户上次选的模型,不再从任务列表推断「最近使用」。
-  // 选中设备后一次读齐三个 agent,供自动默认 / 恢复上次 agent / 切 agent 同步取用。
-  // 旧被控端(CHANNEL_NOT_ALLOWED)或重试后仍失败都算读完,回落目录区域默认,不无限等待。
-  const [hostDraftDefaults, setHostDraftDefaults] = useState<{
-    deviceId: string;
-    byAgent: Partial<Record<NewSessionAgentKind, NewSessionRuntime | null>>;
-  } | null>(null);
-  const hostDraftDefaultsRef = useRef(hostDraftDefaults);
-  hostDraftDefaultsRef.current = hostDraftDefaults;
-  // 在途读取:切 agent 时等它读完再选模型,避免先落目录默认、又因已手动切换而再也补不回来。
-  const hostDraftDefaultsLoadRef = useRef<{ deviceId: string; promise: Promise<void> } | null>(null);
-  useEffect(() => {
-    if (!selectedDeviceId || deviceLinkStatus !== 'online') return undefined;
-    if (hostDraftDefaultsRef.current?.deviceId === selectedDeviceId) return undefined;
-    const deviceId = selectedDeviceId;
-    let cancelled = false;
-    const readAgent = async (agentKind: NewSessionAgentKind) => {
-      for (let attempt = 0; ; attempt += 1) {
-        const defaults = await withTransientRemoteRetry(async () => {
-          await openLink(deviceId);
-          return maker.getNewMakerDefaults(agentKind);
-        }, { maxAttempts: 2 }).catch(() => undefined);
-        if (cancelled) return null;
-        // 被控端刚启动、渲染进程还没推来草稿时回 {}:稍后重读,不把它当成「从未选过模型」;
-        // 有限次后(含不带该字段的旧被控端)按无默认处理。读取失败不重读。
-        if (defaults === undefined || isHostDraftDefaultsReady(defaults) || attempt >= 2) {
-          return hostDraftRuntimeFromDefaults(defaults, agentKind);
-        }
-        await new Promise<void>((resolve) => setTimeout(resolve, 1_500));
-        if (cancelled) return null;
-      }
-    };
-    const promise = Promise.all(
-      NEW_SESSION_AGENT_OPTIONS.map(async ({ kind }) => [kind, await readAgent(kind)] as const),
-    ).then((entries) => {
-      if (cancelled) return;
-      const next = { deviceId, byAgent: Object.fromEntries(entries) };
-      // 同步更新镜像:等待中的切 agent 回调在下一次渲染前就要读到结果。
-      hostDraftDefaultsRef.current = next;
-      setHostDraftDefaults(next);
-    });
-    hostDraftDefaultsLoadRef.current = { deviceId, promise };
-    return () => {
-      cancelled = true;
-    };
-  }, [deviceLinkStatus, maker, openLink, selectedDeviceId]);
-  // 等该设备的被控电脑默认读完(读完、失败都算);没有在途读取(离线 / 未选设备)时不等,
-  // 按目录默认继续。effect 重跑会换一份新的在途读取,跟着等新的那份(有限次)。
-  const waitHostDraftDefaults = useCallback(async (deviceId: string) => {
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      if (hostDraftDefaultsRef.current?.deviceId === deviceId) return;
-      const load = hostDraftDefaultsLoadRef.current;
-      if (!load || load.deviceId !== deviceId) return;
-      await load.promise;
-    }
-  }, []);
-  const hostDefaultsSettled = !!selectedDeviceId && hostDraftDefaults?.deviceId === selectedDeviceId;
-  // 本页已写回被控电脑的选择(按设备、agent):优先于读取结果,避免选择前发出的读取
-  // 晚到后把旧模型带回来(切到别的 agent 再切回时)。
-  const hostChoiceOverridesRef = useRef(new Map<string, Partial<Record<NewSessionAgentKind, NewSessionRuntime>>>());
-  const hostRuntimeFor = useCallback(
-    (agentKind: NewSessionAgentKind): NewSessionRuntime | null => {
-      const deviceId = selectedDeviceRef.current;
-      const chosen = hostChoiceOverridesRef.current.get(deviceId)?.[agentKind];
-      if (chosen) return chosen;
-      const current = hostDraftDefaultsRef.current;
-      return current && current.deviceId === deviceId
-        ? current.byAgent[agentKind] ?? null
-        : null;
-    },
-    [],
-  );
-  // 在新建任务页选的模型 / 档位写回被控电脑的新建任务默认(与桌面远程新建同一写法
-  // maker:apply-new-maker-draft-pref active=true),下次在这台电脑上新建任务——不论手机、
-  // 桌面还是远程桌面——默认都是它。由选择入口发请求,本 effect 在草稿提交后读最终值写出;
-  // 写失败不打扰,本页草稿照常生效。远程 Agent(模型属于另一台电脑)不写回被控电脑。
-  const [hostChoiceRequest, setHostChoiceRequest] = useState<{ seq: number; markModelChoice: boolean } | null>(null);
-  const hostChoiceSentSeqRef = useRef(0);
-  const requestHostChoiceWrite = useCallback((markModelChoice: boolean) => {
-    setHostChoiceRequest((current) => ({ seq: (current?.seq ?? 0) + 1, markModelChoice }));
-  }, []);
-  useEffect(() => {
-    if (!hostChoiceRequest || hostChoiceRequest.seq === hostChoiceSentSeqRef.current) return;
-    hostChoiceSentSeqRef.current = hostChoiceRequest.seq;
-    if (!selectedDeviceId || remoteAgentChoice || !draft.model) return;
-    const { agentKind, model, providerId, effort, fastMode } = draft;
-    void maker.applyNewMakerDraftPref({
-      agent: agentKind,
-      providerId: providerId ?? '',
-      modelId: model,
-      active: true,
-      markModelChoice: hostChoiceRequest.markModelChoice,
-      ...(effort ? { effort } : {}),
-      fast: fastMode,
-    }).catch(() => undefined);
-    // 记下本页选择:切到别的 agent 再切回时取到它,不被在途或更早的读取结果覆盖。
-    const overrides = hostChoiceOverridesRef.current;
-    overrides.set(selectedDeviceId, {
-      ...overrides.get(selectedDeviceId),
-      [agentKind]: { agentKind, model, effort, providerId },
-    });
-  }, [draft, hostChoiceRequest, maker, remoteAgentChoice, selectedDeviceId]);
+  // 同账号同设备先用跨页缓存,再后台读齐三个 agent;刷新不阻塞新建或覆盖手动选择。
+  // 无缓存时才等待首读;旧被控端或重试后仍失败也算读完,回落目录默认,不无限等待。
+  const { hostDraftDefaults, hostDefaultsSettled, hostRuntimeFor, waitHostDraftDefaults, requestHostChoiceWrite } = useNewSessionHostDefaults({
+    selectedDeviceId, deviceLinkStatus, maker, openLink, outboxOwner, remoteAgentChoice, draft
+  });
   // selectedDeviceId 的渲染期镜像:异步回调(权限确认 .then)提交前比对触发时捕获的设备,
   // 不一致即放弃写入 —— 防止确认弹窗期间用户切了设备,回调把旧设备的来源/配置写进草稿
   // (Greptile review P1:异步切换写入旧设备来源)。
@@ -1398,228 +1317,32 @@ export default function NewRemoteSessionScreen() {
     routeDeviceName,
   ]);
 
-  useEffect(() => {
-    const storedAgentKind = newSessionPreferences?.agentKind;
-    if (!newSessionPreferencesLoaded || !storedAgentKind) return;
-    if (userTouchedRuntimeRef.current) return;
-    const restored = storedAgentRestoreRef.current;
-    if (!isStoredAgentRestorePending({
-      storedAgentKind,
-      appliedStoredAgentKind: restored?.phase === 'done' ? restored.agentKind : null,
-      expectedDeviceId: preferredDefaultDevice?.deviceId ?? '',
-      selectedDeviceId,
-    })) return;
-    // agent 偏好一到就恢复;模型要等被控电脑的新建任务默认与目录,否则选不出模型。
-    const step = nextStoredAgentRestoreStep({
-      storedAgentKind,
-      restored,
-      modelReady: canResolveStoredAgentRuntime({
-        deviceId: selectedDeviceId,
-        hostDefaultsSettled,
-        hostRuntime: hostRuntimeFor(storedAgentKind),
-        catalogReady: deviceProviders.ready,
-        providersUnsupported: deviceProviders.unsupported,
-      }),
-    });
-    if (!step) return;
-    mobileDebugLog('debug', 'new-session', 'stored agent restore', { step, agentKind: storedAgentKind });
-    const previousRestore = restored;
-    const restoreState: StoredAgentRestoreState = { agentKind: storedAgentKind, phase: step === 'agent' ? 'agent' : 'done' };
-    storedAgentRestoreRef.current = restoreState;
-    // 现场按最新目录算该 agent 的默认运行配置(rows 与 ready 必须同一代,codex review P2)。
-    const resolveStoredRuntime = (currentEffort: string) => {
-      const rowsNow = flattenProviderSections(
-        buildMobileModelSections({
-          providers: deviceProvidersRef.current.providers,
-          agentKind: storedAgentKind,
-          visibilityOverrides: deviceProvidersRef.current.modelVisibilityOverrides,
-        }).sections,
-      );
-      const next = pickAgentDefaultRuntime({
-        agentKind: storedAgentKind,
-        hostRuntime: hostRuntimeFor(storedAgentKind),
-        modelRows: rowsNow,
-        currentEffort,
-        catalogReady: catalogReadyRef.current,
-        visibilityOverrides: deviceProvidersRef.current.modelVisibilityOverrides,
-        flatModels: flatModelsForUnsupportedHost(selectedDeviceId, storedAgentKind, deviceProvidersRef.current.unsupported),
-      });
-      return {
-        model: next.model,
-        effort: next.effort,
-        providerId: next.providerId,
-        // fast 按 (agent, 来源, 模型) 记忆恢复,无记忆置 false;恢复前过与手动选行
-        // 同款的 fastEditable 门控(codex review P2:目录/能力变化后不得恢复出
-        // UI 显示关、实际发 true 的矛盾态)。agent 级门控只认目标 agent 的缓存
-        // 能力表(codex review P1:此刻闭包里的 capabilities 属于切换前 agent 或
-        // 为 null);目标 caps 未就绪 → false,由延迟恢复 effect 就绪后补评。
-        fastMode: next.providerId
-          && isFastRestorable(next.agentKind, next.providerId, next.model, rowsNow, targetAgentHasFast(selectedDeviceId, next.agentKind))
-          ? (draftMemory.getFast(next.agentKind, next.providerId, next.model) ?? false)
-          : false,
-      };
-    };
-    if (step === 'model') {
-      // agent 与权限已在第一步恢复;只补模型,不动 agent 与权限(期间用户改过权限/计划模式不被覆盖)。
-      setDraft((current) => (current.agentKind === storedAgentKind
-        ? { ...current, ...resolveStoredRuntime(current.effort) }
-        : current));
-      settleRuntime('stored-agent-model', selectedDeviceId);
-      return;
-    }
-    // 该路径同时负责恢复 agent 权限，下面的通用权限记忆 effect 不再重复弹框。
-    appliedPermissionMemoryRef.current = true;
-    const previousAutoDefaultDevice = autoDefaultDeviceRef.current;
-    if (selectedDeviceId) autoDefaultDeviceRef.current = selectedDeviceId;
-    let applied = false;
-    const storedPermissionMode = newSessionPreferences?.permissionModeByAgent[storedAgentKind];
-    const nextPermissionMode =
-      storedPermissionMode ??
-      defaultPermissionModeForNewSessionAgent(storedAgentKind);
-    let cancelled = false;
-    const deviceAtTrigger = selectedDeviceId;
-    const seqAtTrigger = ++runtimeActionSeqRef.current;
-    void (async () => {
-      const confirmed = await confirmFullAccessChange(draft.permissionMode, nextPermissionMode, {
-        restoringRememberedChoice: storedPermissionMode !== undefined,
-      });
-      if (cancelled) return;
-      // 确认期间设备已切换 → 放弃本次写入,新设备自己的恢复/自动默认 effect 会接管。
-      if (deviceAtTrigger !== selectedDeviceRef.current) return;
-      // 确认期间用户又切了 agent / 手动选了模型 → 旧回调不得覆盖新选择。
-      if (seqAtTrigger !== runtimeActionSeqRef.current) return;
-      applied = true;
-      setDraft((current) => ({
-        ...current,
-        ...resolveStoredRuntime(current.effort),
-        agentKind: storedAgentKind,
-        // 上次明确选择过的权限直接沿用；内置默认若升级到 Full access 仍需确认。
-        permissionMode: confirmed ? nextPermissionMode : current.permissionMode,
-      }));
-      // 'agent' 只恢复了 agent,模型仍是占位,等数据到了由 'model' 落定。
-      if (step === 'full') settleRuntime('stored-agent', deviceAtTrigger);
-    })();
-    return () => {
-      cancelled = true;
-      // 写入前依赖已变(effect 重跑):撤回「已恢复」与设备锁,让重跑的 effect 重新恢复。
-      // 否则标记已落、草稿却没写,两条默认路径都不再处理,页面停在占位模型。
-      if (applied) return;
-      if (storedAgentRestoreRef.current === restoreState) storedAgentRestoreRef.current = previousRestore;
-      if (autoDefaultDeviceRef.current === selectedDeviceId) autoDefaultDeviceRef.current = previousAutoDefaultDevice;
-    };
-  }, [
-    draft.permissionMode,
-    deviceProviders.ready,
-    deviceProviders.unsupported,
-    deviceProviders.providers,
-    deviceProviders.modelVisibilityOverrides,
-    hostDefaultsSettled,
-    hostDraftDefaults,
-    hostRuntimeFor,
+  useNewSessionDefaultSelection({
     newSessionPreferences,
-    newSessionPreferences?.agentKind,
     newSessionPreferencesLoaded,
-    preferredDefaultDevice?.deviceId,
+    userTouchedRuntimeRef,
+    preferredDefaultDevice,
     selectedDeviceId,
-  ]);
-
-  // 权限记忆恢复:偏好加载后按当前 agent 恢复上次选过的档(一次;对齐桌面 lastByVendor)。
-  // storedAgentKind 路径由上面的 effect 覆盖;这里兜住「没存过 agent 但存过权限」的场景。
-  useEffect(() => {
-    if (!newSessionPreferencesLoaded || appliedPermissionMemoryRef.current) return;
-    appliedPermissionMemoryRef.current = true;
-    // 有存储的 agent 时由上面的 agent 恢复 effect 统一处理，避免同一轮出现两个确认框。
-    if (newSessionPreferences?.agentKind) return;
-    const remembered = newSessionPreferences?.permissionModeByAgent[draft.agentKind];
-    if (!remembered || remembered === draft.permissionMode) return;
-    let cancelled = false;
-    const seqAtTrigger = runtimeActionSeqRef.current;
-    void confirmFullAccessChange(draft.permissionMode, remembered, {
-      restoringRememberedChoice: true,
-    }).then((confirmed) => {
-      if (cancelled || !confirmed || seqAtTrigger !== runtimeActionSeqRef.current) return;
-      setDraft((current) => ({ ...current, permissionMode: remembered }));
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [draft.agentKind, draft.permissionMode, newSessionPreferences, newSessionPreferencesLoaded]);
-
-  // 新建任务默认运行配置 = 被控电脑记住的当前 agent 新建任务默认(model+effort+来源,与桌面远程新建同源);
-  // 没有则优先区域默认、再用模型列表最上面那个。一旦用户手动选过模型即不再覆盖;切设备(未手动选过)按新设备重算。
-  // 决策逻辑全在纯函数 resolveNewSessionAutoDefault 里(便于单测);此 effect 只负责"调纯函数 → setDraft + 更新 ref"。
-  // 被控电脑默认与 providers 都是异步到达,任一就绪后此 effect 再触发。
-  useEffect(() => {
-    if (!newSessionPreferencesLoaded) return;
-    const result = resolveNewSessionAutoDefault({
-      userTouched: userTouchedRuntimeRef.current,
-      appliedDeviceId: autoDefaultDeviceRef.current,
-      selectedDeviceId,
-      hostDefaultsSettled,
-      hostRuntime: hostRuntimeFor(draft.agentKind),
-      modelRows,
-      rowsAgentKind: draft.agentKind,
-      catalogReady: deviceProviders.ready,
-      visibilityOverrides: deviceProviders.modelVisibilityOverrides,
-      providersUnsupported: deviceProviders.unsupported,
-      // provider-aware 模式只用经过可见性过滤的 rows;目录确实不可用时才回退
-      // capabilities(上游 main 移植,merge 2026-08-07)。
-      availableModels: deviceProviders.unsupported
-        ? capabilities?.availableModels
-        : undefined,
-      currentEffort: draft.effort,
-    });
-    if (!result) return;
-    const previousAutoDefaultDevice = autoDefaultDeviceRef.current;
-    autoDefaultDeviceRef.current = result.appliedDeviceId;
-    let applied = false;
-    const nextAgentKind = result.patch.agentKind ?? draft.agentKind;
-    const storedPermissionMode = appliedPermissionMemoryRef.current
-      ? undefined
-      : newSessionPreferences?.permissionModeByAgent[nextAgentKind];
-    const nextPermissionMode = appliedPermissionMemoryRef.current
-      ? draft.permissionMode
-      : storedPermissionMode ?? defaultPermissionModeForNewSessionAgent(nextAgentKind);
-    let cancelled = false;
-    void confirmFullAccessChange(draft.permissionMode, nextPermissionMode, {
-      restoringRememberedChoice: storedPermissionMode !== undefined,
-    }).then((confirmed) => {
-      if (cancelled || userTouchedRuntimeRef.current) return;
-      applied = true;
-      settleRuntime(result.source, result.appliedDeviceId);
-      setDraft((current) => {
-        // 自动默认重算(设备切换/最近会话变化)改了 (agent, model, providerId) 组合 →
-        // fastMode 按新组合重验(Codex review P2):A 设备记忆恢复的 fastMode:true 不得
-        // 随 `...current` 带进 B 的组合(若 B 的模型行不支持 Fast,终检/延迟恢复/能力
-        // 协调三条路径都不会处理它)。组合变化时保守关闭,由延迟恢复 effect 在 B 的
-        // 组合 + 能力就绪后按记忆重评(手动关过 → 记忆为 false,不会重新打开)。
-        const nextModel = result.patch.model ?? current.model;
-        // providerId 用 `!== undefined` 而非 `??`:patch 显式带 providerId:null(来源
-        // 切回默认路由)是真实的组合变化,`??` 会取回旧值抹掉该变化(Codex review P2)。
-        const nextProviderId = result.patch.providerId !== undefined
-          ? result.patch.providerId
-          : current.providerId;
-        const nextAgentKind = result.patch.agentKind ?? current.agentKind;
-        const comboChanged = nextModel !== current.model
-          || nextProviderId !== current.providerId
-          || nextAgentKind !== current.agentKind;
-        return {
-          ...current,
-          ...result.patch,
-          ...(comboChanged ? { fastMode: false } : {}),
-          // 自动恢复上次明确选择的权限不再重复确认；内置默认仍按升级规则确认。
-          permissionMode: confirmed ? nextPermissionMode : current.permissionMode,
-        };
-      });
-    });
-    return () => {
-      cancelled = true;
-      // 写入前 effect 重跑:撤回设备锁,重跑时按最新数据重新应用,不把这台设备误记为已应用。
-      if (!applied && autoDefaultDeviceRef.current === result.appliedDeviceId) {
-        autoDefaultDeviceRef.current = previousAutoDefaultDevice;
-      }
-    };
-  }, [capabilities?.availableModels, deviceProviders.loading, draft.effort, draft.permissionMode, draft.agentKind, modelRows, deviceProviders.ready, deviceProviders.modelVisibilityOverrides, deviceProviders.unsupported, modelSections.connected.length, newSessionPreferences, newSessionPreferencesLoaded, selectedDeviceId, hostDefaultsSettled, hostDraftDefaults, hostRuntimeFor]);
+    hostDraftDefaults,
+    hostDefaultsSettled,
+    hostRuntimeFor,
+    deviceProviders,
+    deviceProvidersRef,
+    catalogReadyRef,
+    flatModelsForUnsupportedHost,
+    targetAgentHasFast,
+    draftMemory,
+    autoDefaultDeviceRef,
+    setDraft,
+    settleRuntime,
+    appliedPermissionMemoryRef,
+    draft,
+    runtimeActionSeqRef,
+    selectedDeviceRef,
+    capabilities,
+    modelRows,
+    modelSections,
+  });
 
   // 目录就绪后的来源终检(codex review P1):自动默认/恢复在目录加载期信任的来源可能已失效
   // (provider 被删/断开/模型下架),就绪后必须复核——联合回退整对 (model, providerId)
@@ -2091,7 +1814,12 @@ export default function NewRemoteSessionScreen() {
     armed: composerVoiceHoldArmed,
     draftText: draft.firstMessage,
   });
+  const composerIncomingImageCount = pendingUploads.filter((item) => item.kind === 'image').length + pastePlaceholderCount;
+  const pendingImagePreview = useComposerPendingImagePreview({ attachments, previews: attachmentPreviews, pendingUploads, getUploadedAttachmentId });
+  const composerImageCount = attachments.filter((item) => item.category === 'image').length + composerIncomingImageCount;
+  const { active: composerImageHoldActive, collapse: collapseComposerImages } = useComposerImageExpansion(composerImageCount, imageSelectionRevision);
   const composerCardActive = firstMessageInputFocused || composerPillOpen.opening
+    || composerImageHoldActive
     || modelSheetOpen
     || permissionSheetOpen
     || voiceStartPending
@@ -2101,9 +1829,10 @@ export default function NewRemoteSessionScreen() {
   // 下拉收起 = 退出聚焦激活态(模型浮窗已是独立 Modal,拖拽手势够不到它,无需在此关闭)。
   // 语音结束 hold 态未聚焦,blur 是 no-op,需显式解除 hold 才能收回简洁态。
   const handleComposerSnapToAuto = useCallback(() => {
+    collapseComposerImages();
     setComposerVoiceHoldArmed(false);
     firstMessageInputRef.current?.blur();
-  }, []);
+  }, [collapseComposerImages]);
   const composerResize = useComposerResize({
     autoMaxContentHeight: MOBILE_COMPOSER_INPUT_MAX_HEIGHT,
     // 简洁态一律收到单行(下拉收起和点别处收键盘的结果一致);
@@ -2167,10 +1896,11 @@ export default function NewRemoteSessionScreen() {
   const patchDraft = useCallback((patch: Partial<NewSessionDraft>) => {
     if (patch.firstMessage !== undefined) {
       firstMessageRef.current = patch.firstMessage;
+      if (!creatingRef.current) editRecoveredDraft({ firstMessage: patch.firstMessage });
       voiceDictionaryLearningTrackerRef.current?.inspectDraft(patch.firstMessage);
     }
     setDraft((current) => ({ ...current, ...patch }));
-  }, []);
+  }, [editRecoveredDraft]);
 
   const openPluginPalette = useCallback(() => {
     const next = composerDocumentProjectedText(appendComposerPluginTrigger(textComposerDocument(firstMessageRef.current)));
@@ -2198,9 +1928,10 @@ export default function NewRemoteSessionScreen() {
   const setFirstMessageDraft = useCallback((next: SetStateAction<string>) => {
     const value = typeof next === 'function' ? next(firstMessageRef.current) : next;
     firstMessageRef.current = value;
+    if (!creatingRef.current) editRecoveredDraft({ firstMessage: value });
     setDraft((current) => ({ ...current, firstMessage: value }));
     voiceDictionaryLearningTrackerRef.current?.inspectDraft(value);
-  }, []);
+  }, [editRecoveredDraft]);
 
   const handleFirstMessageInputContentSizeChange = useCallback((event: TextInputContentSizeChangeEvent) => {
     const nextHeight = Math.max(
@@ -3855,6 +3586,7 @@ export default function NewRemoteSessionScreen() {
           credential.settings?.language,
           CINDY_MANAGED_REFINER_PROVIDER,
         );
+      const audioGate = await createMobileSpeakerGate();
       if (voiceStartupSeqRef.current !== startupSeq) {
         // This run never opened the microphone; release only its claimed ASR.
         void prewarmedVoice?.asr.stop().catch(() => undefined);
@@ -3867,6 +3599,8 @@ export default function NewRemoteSessionScreen() {
       voicePendingSelectionEchoesRef.current = [];
       const controller = createMobileVoiceControllerSession({
         credential,
+        // "Recognize my voice": undefined unless enabled, enrolled and the models are on disk.
+        audioGate,
         ...(prewarmedVoice ? { asr: prewarmedVoice.asr } : {}),
         connectionProvider: (providerId: string) => voiceContext.createAsrConnection(providerId),
         refinerTargetProvider: (providerId: string, options?: { refreshAccessToken?: boolean }) =>
@@ -4038,6 +3772,7 @@ export default function NewRemoteSessionScreen() {
     // Keep the native audio-session warmup on the synchronous press-down path
     // (prewarmMobileVoiceStart re-runs it idempotently below).
     prewarmMobileRealtimeAudio();
+    warmMobileSpeakerFilter();
     // 托管预热:凭登录态提前拿 voice-server 票据并开 ASR WebSocket。
     prewarmMobileVoiceStart(selectedDeviceId, {
       getAccessToken: () => auth.getAccessToken(),
@@ -4373,7 +4108,7 @@ export default function NewRemoteSessionScreen() {
       restoringRememberedChoice: storedPermissionMode !== undefined,
     }).then(async (confirmed) => {
       // 被控电脑默认还在读:等读完再选模型(切换已标记手动,之后自动默认不会再补)。
-      await waitHostDraftDefaults(selectedDeviceId);
+      await waitHostDraftDefaults(selectedDeviceId, nextKind);
       // 确认期间设备已切换 → 放弃本次写入,新设备自己的 effect 会接管(Greptile P1)。
       if (selectedDeviceId !== selectedDeviceRef.current) return;
       // 确认期间用户又切了 agent / 手动选了模型 → 旧回调不得覆盖新选择(Greptile P1)。
@@ -4486,6 +4221,7 @@ export default function NewRemoteSessionScreen() {
   }, [setFirstMessageDraft]);
 
   const removeAttachment = useCallback((id: string) => {
+    if (!creatingRef.current) editRecoveredDraft({ removeAttachmentId: id });
     // 已上传中转区的对象移除时 best-effort 回收,避免未发送附件在 OSS 留孤儿(同会话页)。
     const removed = attachments.find((item) => item.id === id);
     if (removed) discardMobileUploadedAttachment(removed, { getToken: () => auth.getAccessToken() });
@@ -4508,7 +4244,7 @@ export default function NewRemoteSessionScreen() {
     // 标注附件退场时同步清「矢量笔迹 + 原图副本」的再编辑真相。
     composerAnnotationsRef.current?.forgetAttachment(id);
     releaseUploadedSources([id]);
-  }, [attachments, auth]);
+  }, [attachments, auth, editRecoveredDraft]);
 
   // 圈点标注(托盘再编辑)与附件管线的接线(新建会话页无聊天场景,chat 配置不用)。
   const composerAnnotations = useComposerImageAnnotations({
@@ -4605,6 +4341,7 @@ export default function NewRemoteSessionScreen() {
   const renderComposerAttachmentTray = () => (
     <ComposerAttachmentTray
       attachments={attachments}
+      onPreviewPending={pendingImagePreview.open}
       onPreview={setComposerPreviewAttachmentId}
       onRemove={removeAttachment}
       onRemovePending={removePendingUpload}
@@ -4773,6 +4510,10 @@ export default function NewRemoteSessionScreen() {
       const deviceAtCreate = selectedDeviceId;
       if (selectedDeviceRef.current !== deviceAtCreate) return;
       const ensureDeviceAlive = (): boolean => selectedDeviceRef.current === deviceAtCreate;
+      // A full submission below saves the current form again, so an earlier
+      // incremental write failure must not permanently block another attempt.
+      await flushRecoveredDraft().catch(() => undefined);
+      if (!isCurrentOwner() || !ensureDeviceAlive()) return;
       if (voiceRecordingActiveRef.current || voiceState === 'listening') {
         const latestDraftText = await finishVoiceRecording();
         if (!isCurrentOwner()) return;
@@ -4819,7 +4560,7 @@ export default function NewRemoteSessionScreen() {
           return;
         }
         const obligationOwnedByLiveTask = (sessionId: string) => (
-          getNewSessionCreationTask(sessionId) !== null
+          hasLiveNewSessionCreation(sessionId)
           || isPrecreatedWorktreeRegistrationInFlight(sessionId)
         );
         // 本设备上一次未完成的 obligation 先恢复。其它设备记录、仍被正常创建
@@ -4914,18 +4655,22 @@ export default function NewRemoteSessionScreen() {
         })()
         : null;
       if (!isCurrentOwner()) return;
-      releaseDurableCreation = holdDurableOutboxCreation(sessionId);
+      releaseDurableCreation = holdNewSessionCreationDraft(sessionId);
       const firstMessageClientId = recovering?.item.clientId ?? createOutboxClientId();
       // Legacy Plan requires a live session-wide permission change. Keep its existing
       // online creation pipeline instead of introducing deferred permission mutations.
       const useDurableCreation = legacyPlanRestore === null;
       if (recovering && !useDurableCreation) throw new Error(t('session.outbox.legacyPlanRecovery'));
       if (useDurableCreation) {
-        let firstRecord: DurableOutboxRecord = {
+        const firstRecord: DurableOutboxRecord = {
           version: 1, accountId: authOwnerAtCreate.accountKey, deviceId: deviceIdSnapshot,
           ...(recoveryIdentity ? { storageSessionId: recoveryIdentity.storageSessionId } : {}),
-          createdAt: recovering?.createdAt ?? Date.now(), state: 'queued', suspended: creatingWorktree, uploads: [], clearBoundaryMs: null,
+          createdAt: recovering?.createdAt ?? Date.now(), state: recovering ? 'failed' : 'queued',
+          suspended: !!recovering || creatingWorktree, uploads: [], clearBoundaryMs: null,
           creation: { draft: effectiveDraft, deviceName: selectedDeviceName,
+            // Replacing a restored draft does not hand it to the background pipeline.
+            // Keep its recovery intent durable until the creation pipeline takes over.
+            ...(recovering ? { editReady: true } : {}),
             ...(creatingWorktree ? { originalWorkingDir: effectiveDraft.workingDir } : {}),
             planModeArm: planModeCapability && planModeDraftOn, restorePermissionMode: legacyPlanRestore },
           item: buildOutboxItem({
@@ -4935,30 +4680,12 @@ export default function NewRemoteSessionScreen() {
             readyPreviews: sendAttachments.map((a) => attachmentPreviews[a.id] ?? null), claimedUploads: [],
           }),
         };
-        let filesCommitted = false;
-        try {
-          for (let slot = 0; slot < sendAttachments.length; slot++) {
-            const attachment = sendAttachments[slot];
-            const source = getUploadedSource(attachment.id);
-            const oldSlot = recovering?.item.attachmentSlots.findIndex((a) => a?.id === attachment.id);
-            const oldUpload = recovering?.uploads.find((u) => u.slot === oldSlot);
-            if (source) firstRecord.uploads.push(await retainOutboxFile(firstRecord, slot, source));
-            else if (recovering && oldUpload) firstRecord.uploads.push(await retainOutboxFile(firstRecord, slot, {
-              ...oldUpload, uri: durableOutboxUploadUri(recovering, oldUpload),
-            }));
-            else if (outboxAttachmentNeedsLocalBytes(attachment)) throw new Error(t('session.screen.attachmentsNotCarriedBack', { count: 1 }));
-          }
-          if (!isCurrentOwner() || !ensureDeviceAlive()) return;
-          if (recovering) {
-            const latest = getCurrentMobileOutboxRecords().find((r) => r.item.clientId === firstMessageClientId && r.item.sessionId === recovering.item.sessionId);
-            if (latest !== recovering || latest.prepared) throw new Error('OUTBOX_STALE_WRITE');
-            firstRecord = await mobileDurableOutbox.update(latest, firstRecord);
-          } else await mobileDurableOutbox.add(firstRecord);
-          filesCommitted = true;
-        } finally {
-          if (!filesCommitted) await removeRetainedOutboxFiles(firstRecord).catch(() => undefined);
-        }
-        outboxRecoveryRef.current = firstRecord;
+        const saved = await persistNewSessionCreationDraft({
+          record: firstRecord, recovering, getUploadedSource,
+          isCurrent: () => isCurrentOwner() && ensureDeviceAlive(),
+        });
+        if (!saved) return;
+        outboxRecoveryRef.current = saved;
         if (!isCurrentOwner() || !ensureDeviceAlive()) return;
         releaseUploadedSources(sendAttachments.map((a) => a.id));
       }
@@ -5124,7 +4851,7 @@ export default function NewRemoteSessionScreen() {
         const current = outboxRecoveryRef.current;
         if (!current?.creation || current.item.sessionId !== sessionId) throw new Error('OUTBOX_STALE_WRITE');
         const updated = await mobileDurableOutbox.update(current, {
-          creation: { ...current.creation, draft: effectiveDraft }, suspended: false,
+          creation: { ...current.creation, draft: effectiveDraft }, suspended: !!current.creation.editReady,
         });
         outboxRecoveryRef.current = updated;
         if (!isCurrentOwner() || !ensureDeviceAlive()) return;
@@ -5367,6 +5094,7 @@ export default function NewRemoteSessionScreen() {
     draft,
     remoteAgentPick,
     finishVoiceRecording,
+    flushRecoveredDraft,
     leaveForeignOutboxRecovery,
     getPresenceAvailability,
     maker,
@@ -5531,7 +5259,7 @@ export default function NewRemoteSessionScreen() {
           return;
         }
         const sessionIsClaimed = (pendingSessionId: string) => (
-          getNewSessionCreationTask(pendingSessionId) !== null
+          hasLiveNewSessionCreation(pendingSessionId)
           || isPrecreatedWorktreeRegistrationInFlight(pendingSessionId)
         );
         const recovery = await recoverPendingPrecreatedWorktrees(worktreeAccountId, {
@@ -6586,7 +6314,7 @@ export default function NewRemoteSessionScreen() {
                     {newSessionText('showHiddenDirectories')}
                   </Text>
                 </Pressable>
-                {browseError ? <Text style={styles.errorText}>{browseError}</Text> : null}
+                {browseError ? <ErrorNotice message={browseError} /> : null}
                 <FlatList
                   style={styles.browseList}
                   contentContainerStyle={styles.browseListContent}
@@ -6611,7 +6339,7 @@ export default function NewRemoteSessionScreen() {
             ) : null}
 
             {error ? (
-              <Text style={styles.errorText}>{describeAgentAuthError(error) ?? error}</Text>
+              <ErrorNotice message={describeAgentAuthError(error) ?? error} />
             ) : null}
             {/* 发送前鉴权提示:选中 agent 在被控端无已连接供应商时提前告知;
                 error 已展示(含被门禁拦截的同款文案)时不重复出现。 */}
@@ -7251,6 +6979,7 @@ export default function NewRemoteSessionScreen() {
         options={runtimeOptions.permissionOptions}
         testID="newSession.permissionSheet"
       />
+      {pendingImagePreview.host}
       {composerPreviewUrl && composerGalleryImages.length > 0 ? (
         // composer 托盘图片的全屏查看(沿用聊天消息同款 ImageLightbox;本地图无需远端取件)。
         // annotation:托盘图可圈点标注 / 再编辑,保存后烧录替换附件重新上传。

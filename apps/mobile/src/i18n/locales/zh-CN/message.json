@@ -9,7 +9,9 @@
     }
   },
   "renderer": {
+    "failedSamplingAttempt": "此回复未完成，内容仅供参考。",
     "moreActions": "更多消息操作",
+    "reply": "回复",
     "newMessagesToBottom": "有新消息，跳到底部",
     "jumpToBottom": "跳到底部",
     "openForkOrigin": "打开分叉来源消息",
@@ -389,5 +391,11 @@
     "memory": "已记住：{{title}}",
     "skillCreated": "已建立技能：{{title}}",
     "skillUpdated": "已更新技能：{{title}}"
+  },
+  "richAnswer": {
+    "playVideo": "播放视频",
+    "openVideoSource": "打开原视频",
+    "calculationUnavailable": "此项暂时无法计算。",
+    "incomplete": "部分内容未能显示。"
   }
 }

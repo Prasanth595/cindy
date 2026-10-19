@@ -185,6 +185,8 @@ export interface CodexObservedSubagentIdentity {
 const observedSubagentIdentityByThread = new Map<string, CodexObservedSubagentIdentity>();
 const reviewerModelBySession = new Map<string, string>();
 const httpRecoveryReasonByThread = new Map<string, string>();
+/** WS 已确认、尚未在落回的 HTTP 请求上激活对应 strip 的 recovery 原因（一次性消费）。 */
+const pendingHttpRecoveryStripByThread = new Map<string, string>();
 
 const CODEX_AUTO_REVIEW_MODEL = 'codex-auto-review';
 const CODEX_GUARDIAN_SUBAGENT = 'guardian';
@@ -324,6 +326,7 @@ export function armCodexHttpRecovery(args: {
     sessionToThreads.set(sessionId, threads);
     threadToSession.set(threadId, sessionId);
   }
+  pendingHttpRecoveryStripByThread.set(threadId, reason);
   log.info('codex websocket recovery fallback armed', {
     sessionId,
     threadId,
@@ -332,6 +335,29 @@ export function armCodexHttpRecovery(args: {
     ...(disconnectedWebSockets === 0 ? { scopedSocketAlreadyClosed: true } : {}),
   });
   return reason;
+}
+
+/**
+ * WS 已确认的 body recovery 原因，在 426 落回 HTTP 后的首个请求上直接激活对应 strip，
+ * 不再等上游 400。ChatGPT 订阅后端对解不开的 encrypted_content 在 WS 上回 400 错误帧，
+ * 同一历史走 HTTP 时却回 200 + SSE error 事件；只认 400/422 的 recoveryRules 永远不触发，
+ * 任务每轮都以 "stream closed before response.completed" 失败（2026-10-18 实测）。
+ * 激活与上游 400 触发的 rule.onRetry 等价：按本次请求的 model 标记，换模型后照常 reconcile。
+ * 必须排在各 active strip transform 之前，同一请求即生效。
+ */
+function createArmedHttpRecoveryStripTransform(): RequestTransform {
+  return (body, ctx) => {
+    if (!isPlainObject(body) || typeof body.model !== 'string' || !body.model) return null;
+    const threadId = selectedThreadIdFromHeaders(ctx.headers);
+    const reason = pendingHttpRecoveryStripByThread.get(threadId);
+    if (!reason) return null;
+    pendingHttpRecoveryStripByThread.delete(threadId);
+    const rule = CODEX_BODY_RECOVERY_RULES.find((candidate) => candidate.id === reason);
+    if (!rule?.enabled() || !rule.onRetry) return null;
+    rule.onRetry(threadId, body.model);
+    log.info('codex HTTP recovery strip activated from websocket error', { threadId, reason, model: body.model });
+    return null;
+  };
 }
 
 // codex 走 Responses API,每轮**全量重发**整个 thread 历史;导入的存量长会话
@@ -3144,6 +3170,7 @@ function createTransformRequestChain(
     execAdapter.releaseResponse(requestId);
   };
   const transforms: RequestTransform[] = [
+    createArmedHttpRecoveryStripTransform(),
     createActiveStripTransform({
       controller: encryptedStripController,
       enabled: () => readSilentEncryptedRetrySettings().enabled,
@@ -3884,6 +3911,7 @@ function clearSessionThreads(sessionId: string): string[] {
       smartSubagentRoutesByThread.delete(threadId);
       observedSubagentIdentityByThread.delete(threadId);
       httpRecoveryReasonByThread.delete(threadId);
+      pendingHttpRecoveryStripByThread.delete(threadId);
     }
   }
   return threadIds;
@@ -3932,6 +3960,7 @@ export async function disposeCodexProxy(): Promise<void> {
   observedSubagentIdentityByThread.clear();
   reviewerModelBySession.clear();
   httpRecoveryReasonByThread.clear();
+  pendingHttpRecoveryStripByThread.clear();
 
   if (_startPromise) {
     await _startPromise.catch(() => undefined);

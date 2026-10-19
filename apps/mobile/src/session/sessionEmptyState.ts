@@ -42,8 +42,12 @@ export interface RemoteListEmptyStateInput {
   itemCount: number;
   /** 本次打开是否已完成过至少一次成功同步(lastSyncedAt != null)。 */
   hasSyncedThisOpen: boolean;
+  /** 当前筛选或搜索仍在读取；上一次成功不能证明这次为空。 */
+  loading?: boolean;
+  /** 读取失败由连接提示负责展示，不同时声称列表为空。 */
+  failed?: boolean;
 }
 
 export function shouldSuppressRemoteListEmptyState(input: RemoteListEmptyStateInput): boolean {
-  return input.itemCount === 0 && !input.hasSyncedThisOpen;
+  return input.itemCount === 0 && (!input.hasSyncedThisOpen || input.loading === true || input.failed === true);
 }

@@ -1042,6 +1042,12 @@ export interface AgentDeps {
       requestedCredentialMode?: AgentCredentialMode;
       /** Marks app-server work that must not share the normal local task host. */
       hostPurpose?: 'control-plane' | 'review' | 'custom-context';
+      /**
+       * Control-plane host that only serves native thread storage RPCs
+       * (thread/read, thread/archive, thread/unarchive) and never runs a turn,
+       * so it must not start the Cindy MCP bridge.
+       */
+      nativeStorageOnly?: boolean;
       /** Wire model id whose native catalog entry must allow the requested window. */
       customContextModel?: string;
       /** Requested context window for a one-session custom-context host. */

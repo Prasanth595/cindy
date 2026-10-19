@@ -8,6 +8,7 @@ import { AUTO_REVIEW_DELEGATED_CONTINUATION, restoreAutoReviewUserIntent, type A
 import { createPluginTaskReviewResolver, type PluginReviewSnapshot } from '../pluginTaskReviewContext.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AgentInputCoordinator } from '../agent-input-coordinator.js';
+import { MCP_APP_MESSAGE_CLIENT_PREFIX, MCP_APP_MESSAGE_GUARD } from '../../mcp-apps/message.js';
 import { hasAcceptedUserTaskInput } from '../pluginTaskInput.js';
 import { runSchedulerQueuedPreparation } from '../schedulerQueuedPreparation.js';
 import {
@@ -70,6 +71,210 @@ const mocks = vi.hoisted(() => {
     touchUserSendInDb: vi.fn(async () => {}),
     logger,
   };
+});
+
+describe('MCP App queued message grants', () => {
+  function appItem(guard: () => Promise<void>) {
+    return {
+      ...makeItem(`${MCP_APP_MESSAGE_CLIENT_PREFIX}fixture`, '\\/compact'),
+      sourcePlugin: { pluginId: 'mcp-app:example', name: 'example' },
+      autoReviewUserText: { kind: 'delegated-continuation' as const },
+      [MCP_APP_MESSAGE_GUARD]: guard,
+    };
+  }
+
+  function guardedHarness() {
+    const h = createHarness();
+    const dispatched = vi.fn();
+    h.sendToAgent.mockImplementation(async (_id, _message, _opts, sendOpts) => {
+      await sendOpts[MCP_APP_MESSAGE_GUARD]?.();
+      dispatched();
+      return sendSuccess();
+    });
+    h.steerToAgent.mockImplementation(async (_id, _message, sendOpts) => {
+      await sendOpts[MCP_APP_MESSAGE_GUARD]?.();
+      dispatched();
+    });
+    return { ...h, dispatched };
+  }
+
+  it.each([
+    { persisted: false, returned: false },
+    { persisted: true, returned: false },
+    { persisted: false, returned: true },
+    { persisted: true, returned: true },
+  ])('discards a revoked App input and dispatches the following user message: %j', async ({ persisted, returned }) => {
+    const h = guardedHarness(), sid = 'app-busy';
+    let visible = true;
+    const guard = vi.fn(async () => { if (!visible) throw new Error('MCP_APP_CARD_UNAVAILABLE'); });
+    const send = h.sendToAgent.getMockImplementation()!;
+    h.sendToAgent.mockImplementation(async (sessionId, message, createOpts, sendOpts) => {
+      if (persisted && sendOpts[MCP_APP_MESSAGE_GUARD]) {
+        await sendOpts.persistUserMessage?.onPersisted?.();
+      }
+      try {
+        return await send(sessionId, message, createOpts, sendOpts);
+      } catch (error) {
+        if (!returned) throw error;
+        return { kind: 'session-dispatch', source: 'test', dispatched: false,
+          reason: 'cancelled-before-dispatch', message: String(error), context: 'send' };
+      }
+    });
+    await h.coordinator.ensureQueueRestored(sid);
+    h.setRunning(true);
+    h.coordinator.enqueue(sid, appItem(guard));
+    h.coordinator.enqueue(sid, makeItem('following', 'Next user message'));
+    expect(Object.getOwnPropertySymbols(h.coordinator.getProjection(sid).pendingQueue[0]!)).not.toContain(MCP_APP_MESSAGE_GUARD);
+    await flush();
+    expect(h.sendToAgent).not.toHaveBeenCalled();
+    visible = false;
+    h.setRunning(false);
+    h.coordinator.wakeSession(sid, 'app-fixture-idle');
+    await vi.waitFor(() => expect(h.dispatched).toHaveBeenCalledOnce());
+    await flush();
+    expect(guard).toHaveBeenCalledOnce();
+    expect(h.dispatched).toHaveBeenCalledOnce();
+    expect(h.sendToAgent).toHaveBeenCalledTimes(2);
+    expect(h.sendToAgent.mock.calls[1]![3].persistUserMessage?.clientId).toBe('following');
+    const revoked = expect.objectContaining({ clientId: `${MCP_APP_MESSAGE_CLIENT_PREFIX}fixture` });
+    expect(h.onRejectedUserTurn).toHaveBeenCalledExactlyOnceWith(sid, revoked);
+    if (persisted) {
+      expect(h.onUndispatchedUserTurn).toHaveBeenCalledExactlyOnceWith(sid, revoked, 'failed');
+      expect(h.onDiscardedQueuedMessage).not.toHaveBeenCalled();
+    } else {
+      expect(h.onDiscardedQueuedMessage).toHaveBeenCalledExactlyOnceWith(sid, revoked);
+      expect(h.onUndispatchedUserTurn).not.toHaveBeenCalled();
+    }
+    expect(h.coordinator.getProjection(sid)).toMatchObject({ error: null, recovery: null, pendingQueue: [] });
+    expect(latestSnapshotClientIds(h.persistQueueSnapshot)).not.toContain(`${MCP_APP_MESSAGE_CLIENT_PREFIX}fixture`);
+  });
+
+  it('settles an App-only queue after revocation without requiring retry before the next user message', async () => {
+    const h = guardedHarness(), sid = 'app-revoked-only';
+    const guard = vi.fn(async () => { throw new Error('MCP_APP_CARD_UNAVAILABLE'); });
+    await h.coordinator.ensureQueueRestored(sid);
+    h.coordinator.enqueue(sid, appItem(guard));
+    await flush();
+    expect(guard).toHaveBeenCalledOnce();
+    expect(h.coordinator.getProjection(sid)).toMatchObject({ error: null, recovery: null, pendingQueue: [] });
+    expect(h.coordinator.hasPendingQueuedWork(sid)).toBe(false);
+    expect(latestSnapshotClientIds(h.persistQueueSnapshot)).toEqual([]);
+    h.coordinator.wakeSession(sid, 'later-idle');
+    h.coordinator.enqueue(sid, makeItem('later', 'Next user message'));
+    await flush();
+    expect(h.dispatched).toHaveBeenCalledOnce();
+    expect(guard).toHaveBeenCalledOnce();
+    expect(h.sendToAgent.mock.calls[1]![3].persistUserMessage?.clientId).toBe('later');
+  });
+
+  it('keeps send failures retryable when the live App guard itself succeeded', async () => {
+    const h = guardedHarness(), sid = 'app-send-failure';
+    const guard = vi.fn(async () => {});
+    h.sendToAgent.mockImplementationOnce(async (_id, _message, _opts, sendOpts) => {
+      await sendOpts[MCP_APP_MESSAGE_GUARD]?.();
+      throw new Error('MCP_APP_CARD_UNAVAILABLE');
+    });
+    await h.coordinator.ensureQueueRestored(sid);
+    h.coordinator.enqueue(sid, appItem(guard));
+    await flush();
+    expect(guard).toHaveBeenCalledOnce();
+    expect(h.onDiscardedQueuedMessage).not.toHaveBeenCalled();
+    expect(h.coordinator.getProjection(sid).recovery).toEqual({ kind: 'queue-head', clientId: `${MCP_APP_MESSAGE_CLIENT_PREFIX}fixture` });
+    expect(h.coordinator.getProjection(sid).pendingQueue).toHaveLength(1);
+  });
+
+  it('keeps the grant through queue copies and asynchronous drain preparation', async () => {
+    const h = guardedHarness(), sid = 'app-preparing';
+    let visible = true;
+    const guard = vi.fn(async () => { if (!visible) throw new Error('MCP_APP_CARD_UNAVAILABLE'); });
+    h.getSdkSessionId.mockImplementationOnce(async () => { visible = false; return 'sdk-session'; });
+    await h.coordinator.ensureQueueRestored(sid);
+    h.coordinator.enqueue(sid, appItem(guard));
+    await flush();
+    expect(guard).toHaveBeenCalledOnce();
+    expect(h.dispatched).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])('drops crash-restored App grants and lets the following message run (legacy=%s)', async (legacy) => {
+    const h = guardedHarness(), sid = 'app-restored';
+    const guard = vi.fn(async () => {});
+    const restored = JSON.parse(JSON.stringify(appItem(guard)));
+    if (legacy) restored.clientId = 'legacy-app-row';
+    else delete restored.sourcePlugin;
+    h.setLoadQueueSnapshot(async () => [restored, makeItem('following', 'Next user message')]);
+    await h.coordinator.ensureQueueRestored(sid);
+    expect(h.coordinator.getProjection(sid).pendingQueue.map(item => item.clientId)).toEqual(['following']);
+    expect(h.onDiscardedQueuedMessage).toHaveBeenCalledExactlyOnceWith(sid, restored);
+    h.coordinator.resume(sid);
+    await flush();
+    expect(h.dispatched).toHaveBeenCalledOnce();
+    expect(h.sendToAgent.mock.calls[0]![3].persistUserMessage?.clientId).toBe('following');
+    expect(guard).not.toHaveBeenCalled();
+    expect(h.coordinator.getProjection(sid)).toMatchObject({ error: null, recovery: null, pendingQueue: [] });
+    expect(latestSnapshotClientIds(h.persistQueueSnapshot)).not.toContain(restored.clientId);
+  });
+
+  it('drops crash-restored App-only snapshots without pausing or creating retry recovery', async () => {
+    const h = guardedHarness(), sid = 'app-restored-only';
+    const restored = JSON.parse(JSON.stringify(appItem(async () => {})));
+    h.setLoadQueueSnapshot(async () => [restored]);
+    await h.coordinator.ensureQueueRestored(sid);
+    await flush();
+    expect(h.coordinator.getProjection(sid)).toMatchObject({
+      error: null, recovery: null, pendingQueue: [], queuePaused: false,
+    });
+    expect(h.onDiscardedQueuedMessage).toHaveBeenCalledExactlyOnceWith(sid, restored);
+    expect(latestSnapshotClientIds(h.persistQueueSnapshot)).toEqual([]);
+    expect(h.dispatched).not.toHaveBeenCalled();
+  });
+
+  it('dispatches a live App queue grant while keeping it out of queue snapshots', async () => {
+    const h = guardedHarness(), sid = 'app-live';
+    const guard = vi.fn(async () => {});
+    await h.coordinator.ensureQueueRestored(sid);
+    h.coordinator.enqueue(sid, appItem(guard));
+    await flush();
+    expect(guard).toHaveBeenCalledOnce();
+    expect(h.dispatched).toHaveBeenCalledOnce();
+    const snapshots = JSON.stringify(h.persistQueueSnapshot.mock.calls);
+    expect(snapshots).not.toContain('MCP_APP_MESSAGE_GUARD');
+  });
+
+  it.each([true, false])('uses the Main-owned App row when a projection is steered (visible=%s)', async (visible) => {
+    const h = guardedHarness(), sid = 'app-steer';
+    const guard = vi.fn(async () => { if (!visible) throw new Error('MCP_APP_CARD_UNAVAILABLE'); });
+    await h.coordinator.ensureQueueRestored(sid);
+    h.setRunning(true);
+    h.coordinator.enqueue(sid, appItem(guard));
+    const projected = JSON.parse(JSON.stringify(h.coordinator.getProjection(sid).pendingQueue[0]));
+    expect(await h.coordinator.steer(sid, projected, { removeFromQueue: true })).toBe(visible);
+    expect(guard).toHaveBeenCalledOnce();
+    expect(h.dispatched).toHaveBeenCalledTimes(visible ? 1 : 0);
+    expect(h.sendToAgent).not.toHaveBeenCalled();
+  });
+
+  it('checks the live App row after asynchronous steer preparation', async () => {
+    const h = guardedHarness(), sid = 'app-steer-preparing';
+    let visible = true;
+    const guard = vi.fn(async () => { if (!visible) throw new Error('MCP_APP_CARD_UNAVAILABLE'); });
+    const prepared = deferred<void>();
+    h.steerToAgent.mockImplementationOnce(async (_id, _message, sendOpts) => {
+      await prepared.promise;
+      await sendOpts[MCP_APP_MESSAGE_GUARD]?.();
+      h.dispatched();
+    });
+    await h.coordinator.ensureQueueRestored(sid);
+    h.setRunning(true);
+    h.coordinator.enqueue(sid, appItem(guard));
+    const projected = JSON.parse(JSON.stringify(h.coordinator.getProjection(sid).pendingQueue[0]));
+    const steering = h.coordinator.steer(sid, projected, { removeFromQueue: true });
+    await vi.waitFor(() => expect(h.steerToAgent).toHaveBeenCalledOnce());
+    visible = false;
+    prepared.resolve();
+    expect(await steering).toBe(false);
+    expect(guard).toHaveBeenCalledOnce();
+    expect(h.dispatched).not.toHaveBeenCalled();
+  });
 });
 
 describe('INPUT_ENQUEUE crash-restored remote Worker pause', () => {
@@ -4677,6 +4882,66 @@ describe('AgentInputCoordinator send transaction', () => {
     expect(capturedSignal?.aborted).toBe(true);
   });
 
+  describe('unexpected close without a terminal event', () => {
+    // 远端 Agent 断连 / 进程退出时 Session 自行关闭,不发 done:排队消息只能靠
+    // close 收口时唤醒,否则会静默滞留到用户再次操作。
+    async function closeWithQueuedInput(
+      sid: string,
+      close: (h: ReturnType<typeof createHarness>) => void,
+      beforeClose?: (h: ReturnType<typeof createHarness>) => void,
+    ) {
+      const h = createHarness();
+      h.coordinator.enqueue(sid, makeItem('q-running', 'first'));
+      await flush();
+      h.coordinator.enqueue(sid, makeItem('q-waiting', 'second'));
+      await flush();
+      expect(h.sendToAgent).toHaveBeenCalledTimes(1);
+      expect(h.coordinator.getProjection(sid).pendingQueue.map((item) => item.clientId)).toEqual([
+        'q-waiting',
+      ]);
+      beforeClose?.(h);
+      h.setRunning(false);
+      close(h);
+      await flush();
+      return h;
+    }
+
+    it('dispatches the queued head when the close asks to wake queued input', async () => {
+      const sid = 'unexpected-close-wakes-queue';
+      const h = await closeWithQueuedInput(sid, (harness) =>
+        harness.coordinator.onSessionClosed(sid, { wakeQueuedInput: true }),
+      );
+
+      expect(h.sendToAgent).toHaveBeenCalledTimes(2);
+      expect(h.sendToAgent.mock.calls[1]?.[1]).toEqual({ type: 'user', content: 'second' });
+      expect(h.coordinator.getProjection(sid).pendingQueue).toEqual([]);
+    });
+
+    it('keeps the queue waiting on a plain close', async () => {
+      const sid = 'plain-close-keeps-queue';
+      const h = await closeWithQueuedInput(sid, (harness) => harness.coordinator.onSessionClosed(sid));
+
+      expect(h.sendToAgent).toHaveBeenCalledTimes(1);
+      expect(h.coordinator.getProjection(sid).pendingQueue.map((item) => item.clientId)).toEqual([
+        'q-waiting',
+      ]);
+    });
+
+    it('does not dispatch a queue the user paused with Stop', async () => {
+      const sid = 'unexpected-close-respects-paused-queue';
+      const h = await closeWithQueuedInput(
+        sid,
+        (harness) => harness.coordinator.onSessionClosed(sid, { wakeQueuedInput: true }),
+        (harness) => harness.coordinator.stop(sid, { keepQueue: true, pauseQueue: true }),
+      );
+
+      expect(h.sendToAgent).toHaveBeenCalledTimes(1);
+      const projection = h.coordinator.getProjection(sid);
+      expect(projection.queuePaused).toBe(true);
+      expect(projection.pendingQueue.map((item) => item.clientId)).toEqual(['q-waiting']);
+    });
+  });
+
   it('releases compact active turn when close races before dispatch outcome', async () => {
     const h = createHarness();
     const sid = 'compact-close-before-dispatch-outcome';
@@ -4862,13 +5127,13 @@ describe('AgentInputCoordinator send transaction', () => {
     }
   });
 
-  it('keeps a host preflight failure recoverable with host-send code and no dispatch', async () => {
+  it.each(['WORKDIR_MISSING', 'LAZY_CREATE_FAILED'] as const)('keeps %s recoverable without leaving an active turn', async code => {
     const h = createHarness();
     const sid = 'host-preflight-failure';
     const first = makeItem('q-1', 'first');
 
     h.sendToAgent.mockResolvedValueOnce(
-      hostSendFailure('WORKDIR_MISSING', 'working directory is missing'),
+      hostSendFailure(code, 'session preparation failed'),
     );
 
     h.coordinator.enqueue(sid, first);
@@ -4877,14 +5142,15 @@ describe('AgentInputCoordinator send transaction', () => {
     const projection = latestProjection(h.projections);
     expect(projection.pendingQueue.map((q) => q.clientId)).toEqual(['q-1']);
     expect(projection.recovery).toEqual({ kind: 'queue-head', clientId: 'q-1' });
-    expect(projection.error).toContain('WORKDIR_MISSING');
-    expect(projection.error).toContain('working directory is missing');
+    expect(projection.error).toContain(code);
+    expect(projection.error).toContain('session preparation failed');
+    expect(h.coordinator.hasActiveTurnForRewind(sid)).toBe(false);
     expect(mocks.createMessage).not.toHaveBeenCalled();
     expect(h.sendToAgent).toHaveBeenCalledTimes(1);
     expect(latestWarnPayload()).toEqual(
       expect.objectContaining({
         kind: 'host-send',
-        code: 'WORKDIR_MISSING',
+        code,
         clientId: 'q-1',
       }),
     );

@@ -4,6 +4,7 @@ import {
   releasePeerMedia,
 } from "./peerFileRegistry";
 import { withTransientRemoteRetry } from "./remoteRetry";
+import { getActiveMobileSessionRealm } from '@/config/env';
 import { expandGhostCommand, parseGhostCommandWord, splitGhostDirective } from '@cindy/maker-shared/ghost-command';
 import { composerPluginListSchema, isComposerPluginCatalogUnsupportedError, type ComposerPlugin } from '@/session/remoteComposerPlugins';
 import type { OrcaWorkerAgentKind, OrcaWorkerPermissionMode } from "@cindy/maker-shared/orca-team";
@@ -43,6 +44,7 @@ import {
   createDeviceFileOperations,
   exportDeviceFile,
   assertFileReadActive,
+  validFileVersion,
   type DeviceFileResult,
 } from "@cindy/device-link";
 import { errorText, mediaExtOf, nextFileTrace } from "@/debug/fileDiagnostics";
@@ -247,6 +249,8 @@ export interface RemoteTextFilePreviewResult {
   error?: string;
   reason?: "oversize" | "not_found" | "forbidden" | "read_failed";
   data?: string;
+  /** Only returned when the caller opts into the existing file transfer path. */
+  transferRequired?: boolean;
   size: number;
   limitMb?: number;
 }
@@ -899,7 +903,7 @@ export interface MobileMakerTransport {
     listDir(path: string): Promise<RemoteDirectoryListResult>;
     statPath(path: string): Promise<RemotePathStatResult>;
     mkdirP(path: string): Promise<{ resolvedPath: string }>;
-    readTextFilePreview(path: string): Promise<RemoteTextFilePreviewResult>;
+    readTextFilePreview(path: string, options?: { allowFileTransfer?: boolean; signal?: AbortSignal }): Promise<RemoteTextFilePreviewResult>;
   };
   /** 完整文件浏览(workdir 相对路径语义,被控端 file-browser:remote-op 聚合通道)。 */
   fileBrowser: {
@@ -911,6 +915,7 @@ export interface MobileMakerTransport {
       beforeInvoke?: () => Promise<unknown>,
       options?: {
         stream?: boolean;
+        retainBackground?: MobileRemoteMediaFetchOptions['retainBackground'];
         /** Upload progress while the computer stages the file in cloud storage. */
         onProgress?: (uploaded: number, total: number) => void;
       },
@@ -1006,6 +1011,8 @@ export type SessionMetaPatch = Partial<
 >;
 
 export const MOBILE_MAKER_CHANNELS = MOBILE_REMOTE_INVOKE_CHANNELS;
+const fileReferences = new Map<string, string>();
+let fileReferencesOwner = '';
 
 export function createMobileMakerTransport({
   deviceId,
@@ -1014,8 +1021,17 @@ export function createMobileMakerTransport({
 }: MobileMakerTransportDeps): MobileMakerTransport {
   const fileOwner = getMobileAuthOwner();
   const callerIsCurrent = isCurrent;
-  isCurrent = () =>
+  const fileIsCurrent = () =>
     isMobileAuthOwnerCurrent(fileOwner) && callerIsCurrent?.() !== false;
+  isCurrent = fileIsCurrent;
+  const fileCacheOwner = JSON.stringify([getActiveMobileSessionRealm(), fileOwner.accountId]);
+  const referenceOwner = JSON.stringify([fileOwner.accountKey, fileOwner.generation]);
+  if (fileReferencesOwner !== referenceOwner) { fileReferences.clear(); fileReferencesOwner = referenceOwner; }
+  const getFileCache = async () => {
+    if (!fileOwner.accountId || !fileIsCurrent()) return null;
+    const { createPeerFileCache } = await import('./peerFileCache');
+    return createPeerFileCache(fileCacheOwner);
+  };
   const call = <T>(channel: string, args: unknown[] = []): Promise<T> => {
     if (!deviceId)
       return Promise.reject(new Error("remote device id is required"));
@@ -1054,15 +1070,36 @@ export function createMobileMakerTransport({
     fallback?: () => Promise<MobileRemoteMediaFetchResult>,
     stream = opts?.stream ?? true,
   ) => {
-    const fetch = (prepareOnly: boolean) =>
-      call<MobileRemoteMediaFetchResult>(DEVICE_LINK_MEDIA_FETCH_CHANNEL, [
+    const fetch = async (prepareOnly: boolean, metadataOnly = false) => {
+      if (!fileIsCurrent() || opts?.signal?.aborted) throw new Error('FILE_PEER_CANCELLED');
+      await opts?.beforeFetch?.();
+      if (!fileIsCurrent() || opts?.signal?.aborted) throw new Error('FILE_PEER_CANCELLED');
+      return call<MobileRemoteMediaFetchResult>(DEVICE_LINK_MEDIA_FETCH_CHANNEL, [
         {
           url,
           prepareOnly,
+          // Older shared hosts use a closed request-field allowlist.
+          ...(metadataOnly && !isSharedTaskPeer(deviceId) ? { metadataOnly: true } : {}),
           ...(opts?.skipCache ? { skipCache: true } : {}),
           ...(opts?.thumbnail ? { thumbnail: true } : {}),
         },
       ]);
+    };
+    const withDownload = (result: MobileRemoteMediaFetchResult): MobileRemoteMediaFetchResult => {
+      if (stream || opts?.thumbnail || !result.ossKey || !validFileVersion(result.version)) return result;
+      return { ...result, cacheDownload: async (downloadUrl) => {
+        const active = () => fileIsCurrent() && !opts?.signal?.aborted;
+        if (!active()) throw new Error('FILE_PEER_CANCELLED');
+        const cache = await getFileCache().catch(() => null);
+        const local = await cache?.download(deviceId, url, result, downloadUrl, active, opts?.signal).catch(() => null);
+        if (!active()) {
+          const uri = local && peerMediaUri(local);
+          if (uri) releasePeerMedia(uri);
+          throw new Error('FILE_PEER_CANCELLED');
+        }
+        return local ?? null;
+      } };
+    };
     // Chat thumbnails are high-volume and already covered by the list; trace full-file reads only.
     const trace = opts?.thumbnail ? 0 : nextFileTrace();
     const stage = <T>(
@@ -1107,7 +1144,27 @@ export function createMobileMakerTransport({
       "result",
       () =>
         readDeviceFile({
+          cacheFirst: stream || opts?.revalidate || opts?.skipCache || opts?.thumbnail || isSharedTaskPeer(deviceId) ? undefined : {
+            read: async () => (await getFileCache())?.readLatest(deviceId, url, () => fileIsCurrent() && !opts?.signal?.aborted) ?? null,
+            retain: async (result) => { await opts?.retainBackground?.(withDownload(result), fileIsCurrent); },
+          },
           stream,
+          inline: () => fetch(true),
+          revalidate: () => fetch(true, true),
+          inlineCache: opts?.thumbnail ? undefined : {
+            read: async (metadata) => {
+              const cache = await getFileCache();
+              if (opts?.skipCache) {
+                await cache?.invalidate(deviceId, url);
+                return null;
+              }
+              return cache?.readInline(deviceId, url, metadata, () => isCurrent() && !opts?.signal?.aborted) ?? null;
+            },
+            store: async (result) => {
+              const cache = await getFileCache();
+              if (isCurrent() && !opts?.signal?.aborted) await cache?.storeInline(deviceId, url, result);
+            },
+          },
           peerResultIsTransient: true,
           isCurrent,
           discard: (result) => {
@@ -1122,17 +1179,20 @@ export function createMobileMakerTransport({
           },
           signal: opts?.signal,
           prepare: () =>
-            stage("prepare", () => fetch(!opts?.thumbnail), describeResult),
+            stage("prepare", () => fetch(!opts?.thumbnail, !opts?.thumbnail), describeResult),
           peer: (metadata) =>
             metadata.size <= FILE_PEER_MAX_BYTES
               ? stage(
                   "direct",
-                  () => tryMobilePeerFile(deviceId, url, opts?.signal, trace || undefined),
+                  () => tryMobilePeerFile(deviceId, url, opts?.signal, trace || undefined,
+                    opts?.skipCache ? { ...metadata, skipCache: true } : metadata, opts?.onProgress),
                   (result) => ({ hit: result !== null }),
                 )
               : Promise.resolve(null),
-          fallback: () =>
-            stage("upload", fallback ?? (() => fetch(false)), describeResult),
+          fallback: () => {
+            try { opts?.onProgress?.(0, 0); } catch { /* Observer only; upload bytes are unavailable. */ }
+            return stage("upload", fallback ?? (() => fetch(false)), describeResult);
+          },
         }),
       (result) => ({
         route: peerMediaUri(result)
@@ -1142,7 +1202,7 @@ export function createMobileMakerTransport({
             : "upload",
         size: result.size,
       }),
-    );
+    ).then(withDownload);
   };
 
   return {
@@ -1514,8 +1574,8 @@ export function createMobileMakerTransport({
       listDir: (path) => call("fs:list-dir", [{ path }]),
       statPath: (path) => call("fs:stat-path", [{ path }]),
       mkdirP: (path) => call("fs:mkdir-p", [{ path }]),
-      readTextFilePreview: (filePath) =>
-        call("text-file:read-preview", [{ filePath }]),
+      readTextFilePreview: (filePath, options) =>
+        call("text-file:read-preview", [{ filePath, ...(options?.allowFileTransfer ? { allowFileTransfer: true } : {}) }]),
     },
     fileBrowser: {
       cacheScope: JSON.stringify([fileOwner.accountKey, deviceId]),
@@ -1528,13 +1588,18 @@ export function createMobileMakerTransport({
             assertFileReadActive(signal);
             return fileOp<T>(args);
           });
+        const referenceKey = JSON.stringify([referenceOwner, deviceId, workdir, relPath]);
+        const knownUrl = fileReferences.get(referenceKey);
+        const fallback = () =>
+          exportDeviceFile(retryOp, workdir, relPath, signal, options?.onProgress);
+        const fetchOptions = { signal, beforeFetch: beforeInvoke, retainBackground: options?.retainBackground };
+        if (knownUrl && !isSharedTaskPeer(deviceId))
+          return fetchMedia(knownUrl, fetchOptions, fallback, options?.stream ?? false);
         const caps = await retryOp<{ fileRead?: boolean }>({
           op: "caps",
           workdir,
         });
         assertFileReadActive(signal);
-        const fallback = () =>
-          exportDeviceFile(retryOp, workdir, relPath, signal, options?.onProgress);
         if (!caps.fileRead) {
           mobileDebugLog("debug", "files", "file export without direct read", {
             reason: "host-lacks-file-read",
@@ -1549,7 +1614,8 @@ export function createMobileMakerTransport({
         assertFileReadActive(signal);
         if (!reference.ok)
           throw new Error(reference.message ?? "FILE_READ_FAILED");
-        return fetchMedia(reference.url, { signal }, fallback, options?.stream ?? false);
+        if (fileIsCurrent()) fileReferences.set(referenceKey, reference.url);
+        return fetchMedia(reference.url, fetchOptions, fallback, options?.stream ?? false);
       },
       caps: (workdir) =>
         call("file-browser:remote-op", [{ op: "caps", workdir }]),

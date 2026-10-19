@@ -16,7 +16,7 @@ import { getDbClient } from '../localDb/client/current.js';
 import { saveCancelledInputDelivery } from '../localDb/agentInputQueueSnapshots.js';
 import { botProfiles } from '../localDb/schema.js';
 import { botProfileDir } from './botProfileFolder.js';
-import { broadcastBotWorkbenchChanged, readBotWorkbenchState } from './botWorkbenchService.js';
+import { broadcastBotWorkbenchChanged, readLegacyWorkbenchJudgments } from './botWorkbenchService.js';
 import { broadcastBotRemoteResourceChanged } from './botRemoteResourceInvalidation.js';
 import { resolveWorkbenchCaller } from './botWorkbenchTools.js';
 import { createBotTodoStore, type TodoIngestInput, type TodoIngestResult } from './botTodoStore.js';
@@ -58,6 +58,24 @@ export function configureBotTodoDispatch(value: Dispatch, inspect?: InspectRecei
   dispatch = value;
   inspectReceipts = inspect ?? null;
 }
+/**
+ * The companion's todo file without the active-profile check: a companion moving to this
+ * computer is restored (and uploaded) while its local copy is not runnable yet.
+ */
+export function companionTodoStore(botId: string) {
+  const owner = activeOwnerScopeKey(),
+    root = ownerScopedUserDataPath();
+  const assertCurrent = () => {
+    if (isAppSessionBoundaryPending() || activeOwnerScopeKey() !== owner)
+      throw new TodoError('OWNER_SCOPE_CHANGED');
+  };
+  return createBotTodoStore(
+    path.join(botProfileDir(root, botId), 'todos.v1.json'),
+    () => readLegacyWorkbenchJudgments(root, botId),
+    assertCurrent,
+  );
+}
+
 export async function todoAccess(botId: string): Promise<BotTodoAccess> {
   const owner = activeOwnerScopeKey(),
     root = ownerScopedUserDataPath();
@@ -77,10 +95,9 @@ export async function todoAccess(botId: string): Promise<BotTodoAccess> {
     .limit(1);
   assertCurrent();
   if (!bot || bot.status !== 'active') throw new TodoError('NOT_FOUND');
-  const readLegacy = () => readBotWorkbenchState(root, botId);
   const store = createBotTodoStore(
     path.join(botProfileDir(root, botId), 'todos.v1.json'),
-    async () => (await readLegacy()).tasks,
+    () => readLegacyWorkbenchJudgments(root, botId),
     assertCurrent,
   );
   const changed = () => {
@@ -139,26 +156,32 @@ export async function todoAccess(botId: string): Promise<BotTodoAccess> {
       return { items: state.items, version: 1 as const };
     },
     settle,
+    // Projects are gone: a source may name a folder, a task (local id or deviceId::id) or nothing.
     patch: async (p: TodoPatch) => {
-      const state = await readLegacy();
-      for (const s of p.sources ?? [])
-        if (s.project && !state.directories.includes(s.project))
-          throw new TodoError('SOURCE_OUTSIDE_SCOPE');
       const saved = await store.patch(p);
       changed();
       return saved;
     },
     ingest: async (p: TodoIngestInput) => {
-      const scope = await readLegacy();
-      for (const s of p.patch?.sources ?? [])
-        if (s.project && !scope.directories.includes(s.project))
-          throw new TodoError('SOURCE_OUTSIDE_SCOPE');
       const saved = await store.ingest(p);
       changed();
       return saved;
     },
-    preflight: async (events: Parameters<typeof preflightTodoEvents>[1]) =>
-      preflightTodoEvents(await store.read(), events, (await readLegacy()).directories),
+    // A folder hint never puts an event out of scope; it is echoed back unchanged.
+    preflight: async (events: Parameters<typeof preflightTodoEvents>[1]) => {
+      const unscoped = Array.isArray(events)
+        ? events.map((e) => {
+            if (!e) return e;
+            const rest = { ...e };
+            delete rest.project;
+            return rest;
+          })
+        : events;
+      return preflightTodoEvents(await store.read(), unscoped, []).map((e, index) => {
+        const project = events[index]?.project;
+        return project === undefined ? e : { ...e, project };
+      });
+    },
     act: async (id: string, revision: number, requestId: string, locale?: string) => {
       if (!bot.sessionId || !dispatch) throw new TodoError('HOST_NOT_READY');
       await recoverReceived();

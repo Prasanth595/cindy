@@ -26,6 +26,7 @@ import { pluginInstanceRegistryPath } from '../pluginInstanceRegistry.js';
 let workDir: string;
 let rootDir: string;
 let manager: GhostManager;
+const directoryLinkType = process.platform === 'win32' ? 'junction' : 'dir';
 const demoSkillSource = '---\nname: demo\ndescription: Demo skill\n---\n\nDemo\n';
 
 const mutateSnapshot: NonNullable<GhostManagerOptions['mutateSnapshot']> = async ({ parentDir, ...request }) => {
@@ -77,12 +78,12 @@ it.each(['_ns', '_ns/_root'])('rejects linked %s parents for content recovery an
   await fs.promises.mkdir(outside, { recursive: true });
   await fs.promises.mkdir(path.dirname(contentNs), { recursive: true });
   await fs.promises.writeFile(path.join(outside, 'sentinel'), 'keep');
-  await fs.promises.symlink(outside, contentNs, 'dir');
+  await fs.promises.symlink(outside, contentNs, directoryLinkType);
   expect(() => assertManagedPluginParentSync(rootDir, relId)).toThrow();
 
   const store = new GhostInstallReceiptStore(() => stateRoot);
   await fs.promises.mkdir(path.dirname(path.join(stateRoot, reservedRoot)), { recursive: true });
-  await fs.promises.symlink(outside, path.join(stateRoot, reservedRoot), 'dir');
+  await fs.promises.symlink(outside, path.join(stateRoot, reservedRoot), directoryLinkType);
   await expect(store.writePendingMutation(relId, {
     kind: 'install', packageSha256: 'a'.repeat(64),
   })).rejects.toThrow();
@@ -97,7 +98,7 @@ it('does not recover an interrupted namespaced uninstall through a linked conten
   await fs.promises.mkdir(path.join(outside, 'acme', 'hello'), { recursive: true });
   await fs.promises.writeFile(path.join(outside, 'acme', 'hello', 'sentinel'), 'keep');
   await fs.promises.mkdir(rootDir, { recursive: true });
-  await fs.promises.symlink(outside, path.join(rootDir, '_ns'), 'dir');
+  await fs.promises.symlink(outside, path.join(rootDir, '_ns'), directoryLinkType);
   const store = new GhostInstallReceiptStore(() => stateRoot);
   await store.writePendingMutation('_ns/acme/hello', { kind: 'uninstall' });
   manager = createManager({ getStateDir: () => stateRoot });
@@ -111,7 +112,7 @@ it('refuses to publish a namespaced receipt through a linked approval parent', a
   const outside = path.join(workDir, 'outside');
   await fs.promises.mkdir(outside);
   await fs.promises.writeFile(path.join(outside, 'sentinel'), 'keep');
-  await fs.promises.symlink(outside, path.join(stateRoot, '_ns'), 'dir');
+  await fs.promises.symlink(outside, path.join(stateRoot, '_ns'), directoryLinkType);
   const store = new GhostInstallReceiptStore(() => stateRoot);
   const approval = store.read('hello');
   expect(approval.state).toBe('approved');
@@ -172,6 +173,39 @@ async function stampLegacyOrganizationInstall(id = 'hello', withSkill = false): 
 }
 
 describe('GhostManager namespace migration census', () => {
+  it.each([false, true])('repairs the same release in a migrated bare directory without changing storage identity (enabled=%s)', async (enabled) => {
+    const archive = vi.fn();
+    manager = createManager({ mutateSnapshot, onArchiveSourceState: archive });
+    await stampLegacyOrganizationInstall('hello', true);
+    await manager.setEnabled('hello', enabled);
+    const previous = manager.list()[0];
+    expect(manager.approvedInstallEvidence('hello')?.packageSha256).toBeNull();
+    const pkg = await makeCindy('hello', true);
+    const inspected = await manager.inspect(pkg);
+    if ('rejection' in inspected) throw new Error('expected valid market package');
+
+    const result = await manager.update(pkg, {
+      namespace: 'acme', expectedInstalledApproval: ghostInstallApprovalToken(previous.approval),
+      expectedPackageSha256: inspected.packageSha256,
+    });
+
+    expect(result).toMatchObject({ ghost: { dir: previous.dir, namespace: 'acme', enabled, manifest: { version: '1.0.0' } } });
+    const restored = manager.list()[0];
+    expect(installedGhostStoragePart(restored)).toBe(installedGhostStoragePart(previous));
+    expect(archive).not.toHaveBeenCalled();
+    expect(await manager.verifyApprovedSkillSnapshot(restored)).toBe(true);
+    const evidence = manager.approvedInstallEvidence('hello');
+    expect(evidence?.packageSha256).toBe(inspected.packageSha256);
+    expect(resolveGhostFirstPartyPrivilege({
+      ghostId: 'hello', namespace: 'acme', builtin: false, installOrigin: 'manual',
+      currentOrganization: { organizationId: 'org-acme', orgSlug: 'acme' },
+      marketRecord: {
+        scope: 'organization', organizationId: 'org-acme', source: 'market', installed: true,
+        sha256: inspected.packageSha256, approvedPackageSha256: evidence?.packageSha256 ?? null,
+      },
+    })).toMatchObject({ brokerEligible: true, basis: 'market-organization-current' });
+  });
+
   it('retries a failed first directory scan instead of persisting an empty census', async () => {
     await plantLegacyInstall('hello');
     const actualRead = fs.readdirSync;

@@ -221,6 +221,7 @@ function Foo() {
 
 ### iOS 外壳 vs Cindy 内容
 
+- **项目标题滑动（iOS / Android）**：仅标题整行横移，展开的子任务不随之移动。左滑露出「新建任务」，超过屏宽 55% 松手打开预填项目电脑与目录的新建页；发送后才创建任务。右滑露出「全部任务」「搜索」，必须点按，搜索限定当前项目并聚焦输入框。点标题继续展开／收起，已有滑开行时先收起操作；自定义排序仍为长按后纵向拖动。项目与任务共用滑动互斥注册表，滚动收行，左屏缘保留返回手势。动作沿用普通任务的圆形到胶囊形态，按钮直径为 56pt，间距使用 spacing.md、图标使用 iconSize.swipeAction；使用双模式 token，并通过标题的无障碍动作提供等价入口。只对有明确电脑和目录的项目启用，不把对话或 Cindy Make 聚合组视为单一目录。实现见 `src/session/SwipeableProjectHeader.tsx`、`HomeSurface.tsx`。
 - **任务／伙伴切换**：按左任务、右伙伴的顺序做同一套横向滑动转场，抽屉和标题下拉选择都复用 HomeModePanes；不重建已访问列表，不丢搜索或滚动位置。滑动用不回弹的临界阻尼弹簧（参数见 DESIGN.md §14.4），快速反向切换从当前位置继续；系统减弱动态效果或尚未取得该偏好时直接切换。滑动只用于 iOS；Android 顶栏画在各自页面里，滑动会带着顶栏一起走，因此保持直接切换。导航栏和顶部模糊固定不动，模糊由 HomeModePanes 统一绘制一层。
 - **首页菜单提示点**：可见圆点直径 6pt，原生工具栏用同尺寸画布的有点／无点模板图，避免空的数字徽章被系统放大。图标位置、按钮外框和点击范围不随提示点出现而变化。
 
@@ -291,6 +292,7 @@ iOS 新增与改造界面遵循 [iOS 原生界面规范](../../../docs/design-ru
 - 库:**lucide-react-native**(统一,不混用其它图标库)。
 - **图标选择必须与桌面版保持一致**:同一动作 / 语义,手机和桌面用**同一个** lucide 图标。新增图标前先去桌面对应组件确认它用的是哪个(如权限模式用 `Hand`/`CodeXml`/`ClipboardList`/`Sparkles`/`TriangleAlert`,见桌面 `new-chat/PermissionSelector.tsx`),**不要**另选近似图标(如别用 `Shield` 系列代替)。这样跨端心智模型一致。
   - 已沉淀的对齐映射:权限模式的图标 + 语义色见 `src/session/permissionPresentation.ts`(严格对照桌面 PermissionSelector:`auto`→`permAutoAccent`、`bypassPermissions`→`statusAccent`,其余中性)。
+  - **伙伴私聊回复**：消息下方的回复按钮使用 `ChatReplyIcon`，与 Desktop 共用同一款扁圆、下尾的纯气泡路径。复用原「添加到对话」操作，并从伙伴更多菜单移除重复入口；普通任务的「添加到对话」仍用 `MessageSquarePlus`。手机尚未提供的群聊／话题引用回复入口不因此新增。实现见 `src/session/CompanionMessageActions.tsx`。
   - **模型下拉对齐桌面 provider-aware 结构**:同一 model 可挂多家「供应商(来源)」,选行 = 选「来源 + 模型」,选择经 device-link 把 `model + providerId` 路由到被控端。**复用 `@cindy/model-providers` 的 `buildProviderSections` 作分段唯一真相**(`src/session/providerModelSections.ts`),被控端供应商目录经隧道 `maker:provider:list` 取(`src/device-link/useDeviceProviders.ts`);0 供应商 / 旧被控端回退 capabilities 扁平列表。**来源 mark 与桌面同源**:三个内置供应商(Claude / Codex / XD)用官方单色 SVG mark(path 常量在 `src/components/vendorIconPaths.ts`,与桌面 ClaudeMark / CodexMark / XDIncMark 逐字同源),自定义供应商回退首字母 monogram(`MobileProviderMark`)。早期「手机故意不搬品牌 SVG、全用 monogram」的决策已在「模型选择列表与桌面完全对齐」改造(2026-07)中推翻:react-native-svg 本就在依赖里,复制 path 常量零成本,而跨端一眼可辨的来源图标价值更高。唯一保留差异:monogram 容器用 pill 圆角(桌面 4px 方盒)——圆角遵守手机二元规则,不引入中间值。
   - **Agent 身份与厂牌分槽**:`MobileAgentMark` / `MobileVendorIcon` 只表示运行时 Agent，使用 Claude Code 像素脸或 Codex CLI `>_` 多瓣花；Anthropic / OpenAI 来源与模型品牌继续由 `MobileProviderMark` / `MobileModelIconMark` 表示。两类 mark 即使名称相近也不得互换。
 - **设备「已撤销访问权限」状态**:控制端(手机)被某台被控电脑撤销访问时,设备 chip 用 `Lock` 图标(`colors.textSecondary`)替代状态圆点 —— 与「离线 / 未开启远控」的灰圆点明确区分,读作「被锁在外」,且不引入非调色板色(遵守 §1 灰度 + teal/orange 约束)。**无桌面对端**:桌面是被控方(管理「允许哪些控制器」),没有「控制器被撤销」这一侧视图,故此处不套用「与桌面同图标」规则。点按该 chip 弹 `RevokedAccessTip`(说明 + 「重试访问」),重试复用 device-link 探测路径(成功经 `withAccessRevokedHandling` 清除本地撤销标记);重连 / 回前台也会静默重试自愈。

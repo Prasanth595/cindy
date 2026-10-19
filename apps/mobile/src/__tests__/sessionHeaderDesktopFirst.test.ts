@@ -40,8 +40,12 @@ describe('mobile session header desktop-first surface', () => {
 
   it('releases the new-session handoff heavy topic when the session screen unmounts', () => {
     const source = readTextLf(resolve(process.cwd(), 'app/sessions/[sessionId].tsx'), 'utf8');
+    const gate = readTextLf(resolve(process.cwd(), 'src/session/CindyMakeSessionGate.tsx'), 'utf8');
 
-    expect(source).toMatch(
+    expect(source).toMatch(/<CindyMakeSessionGate\b[^>]*\bownsSessionSubscription[\s>]/);
+    expect(gate).toContain('useEffect(() => () => {');
+    expect(gate).toContain('if (!ownsSessionSubscription || !deviceId || !sessionId) return;');
+    expect(gate).toMatch(
       /unsubscribe\(`session:\$\{sessionId\}`, deviceId, \['sessions', `session:\$\{sessionId\}`\]\)/,
     );
   });

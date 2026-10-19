@@ -1,4 +1,5 @@
 import { formatDuration } from '@cindy/maker-shared/message-render';
+import { parseMcpAppHistory } from '@cindy/maker-shared/mcp-apps';
 import { collectPluginInvocations, type PluginInvocation } from './pluginInvocations';
 import { extractPayloadToolResultFiles, extractPayloadToolCardIds, type PayloadToolFile } from '@cindy/maker-shared/payload-summary';
 import { placeBotTaskCardsAfterIntroduction, readBotCollaborationMeta, type BotCollaborationMeta } from '@cindy/maker-shared/botCollaboration';
@@ -121,6 +122,7 @@ export interface NormalizedRemoteMessage {
   isStreaming?: boolean;
   /** Host 在 SDK done 边界写入；后台自动续跑时同一 turn 可有多次 seal，最后一次是最终答复。 */
   turnCompleted?: boolean;
+  failedSamplingAttempt?: boolean;
   turnMoney?: RemoteMoney;
   /** 旧 Desktop 消息兼容字段。 */
   turnCostUsd?: number;
@@ -290,6 +292,13 @@ export function normalizeRemoteMessages(
   for (const message of sorted) {
     if (message.role === 'tool_result') continue;
     if (message.role === 'assistant') {
+      const app = message.agentMeta?.mcpApp === true ? parseMcpAppHistory(message.content) : undefined;
+      if (app) {
+        result.push({ key: messageNormalizeKey(message), source: message, kind: 'system', role: message.role,
+          label: 'system:mcp-app', body: '', systemCardType: 'mcp-app',
+          systemCardData: { title: app.title, fallbackText: app.text }, align: 'agent', createdAt: message.createdAt });
+        continue;
+      }
       const authorization = readRecord(message.agentMeta?.botAuthorization);
       const snapshot = readRecord(authorization?.snapshot);
       if (authorization?.v === 1 && authorization.sessionId === message.sessionId && snapshot?.kind === 'plugin_setup') {
@@ -596,6 +605,7 @@ export function normalizeRemoteMessages(
         : {}),
       ...turnCost,
       ...readModelMismatch(message),
+      ...(message.role === 'assistant' && message.agentMeta?.failedSamplingAttempt ? { failedSamplingAttempt: true } : {}),
       ...(message.role === 'assistant' ? { sourceGroup: readMessageSourceGroup(message.agentMeta) } : {}),
       ...(message.role === 'assistant' && message.agentMeta?.explicitDelivery === true ? { explicitDelivery: true } : {}),
       ...(message.role === 'user' ? readAutomationOrigin(message) : {}),
@@ -1029,6 +1039,7 @@ export function remoteMessageCompletesTurn(
   message: RemoteMessage,
   turnCost = readTurnCost(message),
 ): boolean {
+  if (message.agentMeta?.failedSamplingAttempt) return false;
   return message.role === 'assistant' && (
     message.agentMeta?.turnCompleted === true
     || (turnCost.turnMoney?.amount ?? 0) > 0

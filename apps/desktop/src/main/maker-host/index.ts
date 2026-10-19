@@ -126,6 +126,7 @@ import { tapWindowBroadcast } from '../device-link/broadcast-tap.js';
 import { remoteBackgroundInvoke, remoteInvoke } from '../device-link/index.js';
 import { handleListDevices, defaultDeps as deviceDirectoryDeps } from '../device-link/ipc.js';
 import { parseProviderShareAgentDeviceId } from '../device-link/providerShareGuest.js';
+import { isProviderShareCredentialConsentSkipped } from '../device-link/providerShareGuestPrefs.js';
 import { t } from '../i18n.js';
 import { createHistoryRemoteDeps } from '../mcp-integrations/historyDevices.js';
 import { WorktreePool } from '../worktree/index.js';
@@ -235,13 +236,14 @@ import { resolveDesktopClaudeSubagentModelAccess } from './subagent-model-access
 import { claudeSubagentUsageBridge } from './claude-subagent-usage-bridge.js';
 import { createAutoPermissionReviewer } from './auto-permission-reviewer.js';
 import { createToolLoopReviewer } from './tool-loop-reviewer.js';
-import { requestUtilityText } from '../utility-model/oneShotCandidates.js';
+import { createCustomAutoReviewFallback, requestUtilityText } from '../utility-model/oneShotCandidates.js';
 import {
   AUTO_REVIEW_ROUTER_GUARD_TIMEOUT_MS,
   createAutoReviewModelRouter,
 } from './auto-review-model-router.js';
 import { ensureCurrentAccountProviderReadiness } from './account-provider-readiness-ensure.js';
 import { ACCOUNT_PROVIDER_NOT_READY_CODE } from '../../shared/accountProviderReadiness.js';
+import { listBotImConnectionsForBot } from '../im/shared/botImConnectionStore.js';
 import {
   armCodexHttpRecovery,
   clearCodexProxyAuthInjection,
@@ -363,7 +365,8 @@ import {
   registerCodexProcessRole,
 } from '../process-monitor/codex-process-registry.js';
 import { getOutboundPathSnapshotFor } from './outbound-proxy-resolver.js';
-import { createDesktopMakerMemoryManager, attachAgentsToMakerMemory } from './maker-memory-host.js';
+import { attachAgentsToMakerMemory, createDesktopMakerMemoryManager } from './maker-memory-host.js';
+import { createMemoryReviewOneShot } from './memory-review-one-shot.js';
 import { prepareExternalCodexSessionForResume, readCodexThreadStorageForArchive } from './codex-local-sessions.js';
 import {
   rehydrateCloseSuppression,
@@ -426,6 +429,7 @@ export function setProviderAccessRuntimeRefreshListener(listener: (() => void) |
 
 const requestAutoReviewText = createAutoReviewModelRouter({
   logger: desktopMakerLogger,
+  createAuxiliaryFallback: createCustomAutoReviewFallback,
 });
 
 let autoReviewContextResolver: AutoReviewDelegate['prepareRequest'];
@@ -591,6 +595,53 @@ let _codexCredentialChangeGuard: CodexLocalCredentialChangeGuard | null = null;
 let _beforeLocalCodexSessionStartHook: (() => Promise<void>) | null = null;
 export function setBeforeLocalCodexSessionStartHook(hook: (() => Promise<void>) | null): void {
   _beforeLocalCodexSessionStartHook = hook;
+}
+
+/** IPC owns the existing idle retry and input queue wake lifecycle. */
+let _scheduleCodexGatewayKeyRefresh: (() => void) | null = null;
+export function setCodexGatewayKeyRefreshHook(hook: () => void): void {
+  _scheduleCodexGatewayKeyRefresh = hook;
+  // Credential sync can precede IPC registration while utility hosts already
+  // exist. Reconcile those consumers once when the idle retry service attaches.
+  hook();
+}
+
+export function scheduleCodexGatewayKeyRefresh(): void {
+  _scheduleCodexGatewayKeyRefresh?.();
+}
+
+export function listCodexGatewayHostKeys(): string[] {
+  return _codexAgent?.getLocalHostKeysForCredentialMode('gateway-key') ?? [];
+}
+
+/** Refresh one gateway consumer after persistence, without changing OAuth state or other hosts. */
+export async function refreshCodexGatewayHost(
+  targetHostKey: string,
+  stillValid: () => Promise<boolean>,
+): Promise<void> {
+  if (_codexCredentialChangeGuard) throw new CodexCredentialModeSwitchBusyError([]);
+  const maker = _maker;
+  const agent = _codexAgent;
+  if (!maker || !agent) return;
+  const guard = await agent.beginLocalHostCredentialChange('Cindy AI key changed', {
+    allLocalHosts: true,
+    credentialMode: 'gateway-key',
+    targetHostKey,
+    busyError: () => new CodexCredentialModeSwitchBusyError([]),
+  });
+  try {
+    if (!await stillValid() || _maker !== maker || _codexAgent !== agent) return;
+    await prepareLocalCodexCredentialModeSwitch({
+      maker,
+      isSessionInTurn,
+      hostKeys: guard.affectedHostKeys.filter(key => agent.getLocalHostKeysForCredentialMode('gateway-key').includes(key)),
+    });
+    if (_maker !== maker || _codexAgent !== agent) return;
+    guard.assertIdle();
+    await guard.finalize();
+  } finally {
+    guard.release();
+  }
 }
 
 // Process-lifetime IPC binding: its reconciler reads the dynamic Maker facade and
@@ -944,7 +995,12 @@ export function getMaker(): Maker {
 
     // Maker Memory manager — 先建 (agents={}), agents 创建后再 attach。
     // sqliteFactory + basePath 在工厂内部用 Electron API 准备好, maker-core 拿不到。
-    const makerMemoryManager = createDesktopMakerMemoryManager();
+    const makerMemoryManager = createDesktopMakerMemoryManager({
+      // memory_review 不锁死 review agent 的默认模型(haiku 在部分供应商网关上
+      // 不在账号可用清单, 403 user_model_access_denied): 先走共享辅助模型链,
+      // 链上没产出再由 manager 回退默认路由。
+      reviewOneShot: createMemoryReviewOneShot(),
+    });
 
     // Plugin registry — 先于 agent 构造, 让 createDesktopMcpProviders 拿 registry
     // 包进每个 MCP provider 的 isEnabled 闭包里。registry 内部读 <userData>/plugin-prefs.json
@@ -1766,12 +1822,13 @@ export function getMaker(): Maker {
             extraEnv: {},
             codexProxyActive: false,
             codexBrowserUseAvailable: true,
-            buildSessionMcpConfig: (instance: string) =>
+            buildSessionMcpConfig: (instance: string, session?: { vendorOptions?: Record<string, unknown> }) =>
               buildRemoteCodexSessionMcpConfig(ctx.remoteHostId!, instance, {
                 bridgeInstanceId: getActiveCodexBridgeInstanceId(),
                 serverNames: getActiveCodexBridgeServerNames() ?? [],
                 collabEnabled: pluginRegistry.isEnabled('collab'),
                 makerMemoryEnabled: _maker?.makerMemory?.isEnabled() ?? false,
+                vendorOptions: session?.vendorOptions,
               }),
           };
         }
@@ -1805,7 +1862,8 @@ export function getMaker(): Maker {
         let buildSessionMcpConfig:
           | ((sessionInstanceId: string) => Record<string, unknown>)
           | undefined;
-        if (!isReview) {
+        // Review hosts and native-storage-only (archive) hosts never expose Cindy MCP tools.
+        if (!isReview && !ctx.nativeStorageOnly) {
           try {
             const cfg = await getCodexExtraSpawnConfig({
               mcpProviders: providers,
@@ -2673,6 +2731,9 @@ export function getMaker(): Maker {
         return result.skills;
       },
       listMcpServers: listBotRuntimeMcpServers,
+      // 伙伴绑了哪些平台的机器人(不含凭证): 主任务据此挂渠道原生 API 工具(见 hydrate 内注释)。
+      listBotImChannels: ({ botId }) =>
+        [...new Set(listBotImConnectionsForBot(botId).map((connection) => connection.channel))],
       listToolsets: async ({ botId, agentKind, workingDir, remoteHostId }) => {
         const registry = getPluginRegistry();
         return Promise.all(
@@ -2764,6 +2825,11 @@ export function getMaker(): Maker {
         webFetch: guardedOutboundFetch,
         // 受邀者任务读写凭证类文件时，本机确认卡上的说明(provider-sharing.md §9 第 7 条)。
         sharedProviderCredentialNotice: () => t('newChat.sharedProviderCredential.description'),
+        // 受邀者在「分享给我的供应商」里对这个分享打开了「信任 {分享者}」：不弹卡，与本机任务一致。
+        skipSharedProviderCredentialConsent: (deviceId) => {
+          const shareId = parseProviderShareAgentDeviceId(deviceId);
+          return shareId !== null && isProviderShareCredentialConsentSkipped(shareId);
+        },
         logger: desktopMakerLogger,
       }),
       makerMemory: makerMemoryManager,

@@ -1,6 +1,7 @@
 import { ClipboardTransfer } from './clipboardTransfer';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createLogger } from '../logger';
+import { DesktopHeartbeatHistory } from '../../shared/remoteDesktopDiagnostics';
 import type { ViewerDisplayHandle } from './viewerDisplay';
 import {
   parseRemoteDesktopRequest,
@@ -22,6 +23,27 @@ import {
 } from '@cindy/device-link';
 
 const log = createLogger('remote-desktop:controller');
+
+export type DesktopStopReason =
+  | 'host-stop'
+  | 'authorization-lost'
+  | 'authentication-changed'
+  | 'handoff-ended'
+  | 'heartbeat-expired'
+  | 'peer-offline'
+  | 'signaling-lost'
+  | 'peer-closed'
+  | 'capture-exited'
+  | 'capture-stop'
+  | 'user-stop'
+  | 'remote-stop'
+  | 'takeover'
+  | 'resume-replaced'
+  | 'shutdown'
+  | 'disabled'
+  | 'display-changed'
+  | 'display-failed'
+  | 'input-failed';
 
 /** The one window a 代输入 live view shows; resolved by the host, never by a viewer. */
 export interface DesktopHandoffWindow {
@@ -162,6 +184,12 @@ export class RemoteDesktopController {
         peer: string;
         readonly sourceDisplayId: string;
         expires: number;
+        diagnostics: {
+          id: string;
+          startedAt: number;
+          heartbeats: DesktopHeartbeatHistory;
+          stopReason?: DesktopStopReason;
+        };
         sequence: number;
         authenticationSession: string | undefined;
         backgroundViewing?: boolean;
@@ -209,12 +237,19 @@ export class RemoteDesktopController {
   /** Revoke input synchronously; optional OS restoration must never retain it
    * or stop a replacement helper after an asynchronous restore settles.
    */
-  private revokeControl(): Promise<void> {
+  private revokeControl(preserveSafety = false): Promise<void> {
     if (this.active) this.active.controlling = false;
     this.controlGeneration++;
     this.clipboardTransfer.reset();
     this.deps.stopInput();
-    const restoring = this.clearSafety();
+    // Repairing just the input helper must not expose a privacy-masked desktop
+    // or unmute the host without the viewer seeing a settings change.
+    const restoring = preserveSafety
+      ? Promise.resolve()
+      : this.clearSafety().catch((error) => {
+          log.warn('Safety restoration failed after control loss', error);
+          throw error;
+        });
     this.deps.changed();
     return restoring;
   }
@@ -222,6 +257,7 @@ export class RemoteDesktopController {
   private lastFrame = -Infinity;
   private controlGeneration = 0;
   private inputStarting = false;
+  private inputRecoveryUsed = false;
   private userStopped = new Map<string, string>();
   private lastEnded: { peer: string; lease: string } | null = null;
   constructor(private readonly deps: DesktopControllerDeps) {}
@@ -256,7 +292,8 @@ export class RemoteDesktopController {
   /** The 代输入 request finished: its live view has nothing left to show. */
   endHandoff(requestId: string): void {
     const active = this.active;
-    if (active?.handoff?.requestId === requestId) void this.stop(active.peer, false);
+    if (active?.handoff?.requestId === requestId)
+      void this.stop(active.peer, false, 'handoff-ended');
   }
   isBackgroundViewing(lease: string): boolean {
     return this.active?.lease === lease && this.active.backgroundViewing === true;
@@ -293,17 +330,17 @@ export class RemoteDesktopController {
   tick(): void {
     const active = this.active;
     if (!active) return;
-    if (
-      !this.deps.authorized(active.peer) ||
-      !this.authenticationCurrent(active.peer, active.authenticationSession)
-    ) {
+    if (!this.deps.authorized(active.peer)) {
       this.lockAbort?.abort();
-      void this.stop(undefined, false);
+      void this.stop(undefined, false, 'authorization-lost');
+    } else if (!this.authenticationCurrent(active.peer, active.authenticationSession)) {
+      this.lockAbort?.abort();
+      void this.stop(undefined, false, 'authentication-changed');
     } else if (active.handoff && this.deps.handoffCurrent?.(active.handoff.requestId) === false) {
       // The 代输入 request finished: nothing is left to show.
-      void this.stop(undefined, false);
+      void this.stop(undefined, false, 'handoff-ended');
     } else if (!this.locking && active.expires <= this.now()) {
-      void this.stop();
+      void this.stop(undefined, undefined, 'heartbeat-expired');
     }
   }
   /** Losing the signaling socket is expected while the phone shows PiP.
@@ -319,9 +356,13 @@ export class RemoteDesktopController {
       !active.controlling
     )
       return;
-    this.stop(peer);
+    this.stop(peer, undefined, peer ? 'peer-offline' : 'signaling-lost');
   }
-  stop(peer?: string, lockScreen = this.exitLockEnabled()): Promise<void> {
+  stop(
+    peer?: string,
+    lockScreen = this.exitLockEnabled(),
+    reason: DesktopStopReason = 'host-stop',
+  ): Promise<void> {
     if (peer && this.active?.peer !== peer) {
       // Cancelling a takeover candidate must not revoke the current owner's work.
       if (this.startingPeer === peer) this.startingPeer = null;
@@ -329,6 +370,28 @@ export class RemoteDesktopController {
     }
     if (this.stopping) return this.stopping;
     const active = this.active;
+    if (active && !active.diagnostics.stopReason) {
+      active.diagnostics.stopReason = reason;
+      const at = this.now();
+      const heartbeats = active.diagnostics.heartbeats.snapshot();
+      try {
+        log.debug('lease stopping', {
+          at,
+          session: active.diagnostics.id,
+          reason,
+          lockScreen,
+          controlling: active.controlling,
+          backgroundViewing: active.backgroundViewing === true,
+          // Wall timestamps correlate events and expose the existing lease deadline;
+          // subtracting them would misreport durations when the system clock changes.
+          startedAt: active.diagnostics.startedAt,
+          expiresAt: active.expires,
+          heartbeats,
+        });
+      } catch {
+        /* Diagnostics must never prevent revocation or cleanup. */
+      }
+    }
     if (active && lockScreen && this.deps.lockScreen) {
       this.locking = true;
       const cancellation = new AbortController();
@@ -353,7 +416,7 @@ export class RemoteDesktopController {
           this.stopping = null;
           this.lockAbort = null;
           this.locking = false;
-          if (this.active === active) await this.stop(active.peer, false);
+          if (this.active === active) await this.stop(active.peer, false, reason);
         });
       this.stopping = pending;
       // Timer/disconnect callers have no reply channel; explicit callers still
@@ -471,7 +534,7 @@ export class RemoteDesktopController {
       };
       return control ? await this.withControl(peer, active, reply) : reply;
     } catch (error) {
-      if (this.active === active) this.stop(peer, false);
+      if (this.active === active) this.stop(peer, false, 'display-failed');
       throw error;
     } finally {
       this.resolutionWrite = null;
@@ -513,7 +576,7 @@ export class RemoteDesktopController {
   /** Join the same restoration used by disconnects before the process exits. */
   async stopAndRestore(): Promise<void> {
     try {
-      await this.stop();
+      await this.stop(undefined, undefined, 'shutdown');
     } finally {
       // Locking retains the lease until it settles, even on failure. Only then
       // can restoration start; process shutdown must also await that work.
@@ -525,21 +588,61 @@ export class RemoteDesktopController {
    * control bit, so release control and keep everything else: ending the lease
    * here would tear down capture and media, and every phone tap would surface as
    * a reconnect even though the desktop session itself is healthy. The viewer
-   * observes the new state on its next heartbeat or input attempt. A pending
-   * start is also cancelled so a failed helper cannot restore control later.
+   * can ask again if recovery fails. Native failures opt into one immediate
+   * restart; layout changes only release until their geometry is confirmed.
+   * A pending start is cancelled, never recursively restarted.
    */
-  releaseControl(): void {
+  async releaseControl(recoverInput = false): Promise<void> {
     const active = this.active;
     if (!active || (!active.controlling && !this.inputStarting)) return;
-    void this.revokeControl().catch(() => log.warn('Safety restoration failed after control loss'));
+    const recover =
+      recoverInput &&
+      active.controlling &&
+      !this.inputStarting &&
+      !this.inputRecoveryUsed &&
+      !this.starting &&
+      !this.displayChanging &&
+      !active.backgroundViewing;
+    if (recover) this.inputRecoveryUsed = true;
+    try {
+      const restoring = this.revokeControl(recover);
+      const generation = this.controlGeneration;
+      await restoring;
+      // A takeover can be awaiting capabilities before it changes the lease or
+      // generation. Its explicit decision takes precedence over this repair.
+      if (
+        !recover ||
+        this.starting ||
+        this.displayChanging ||
+        this.active !== active ||
+        generation !== this.controlGeneration
+      )
+        return;
+      this.require(active.peer, active.lease);
+      const restarting = this.takeControl(active.peer, active, true);
+      const restartGeneration = this.controlGeneration;
+      try {
+        await restarting;
+      } catch (error) {
+        if (this.active === active && restartGeneration === this.controlGeneration)
+          await this.revokeControl();
+        throw error;
+      }
+    } catch (error) {
+      // The viewer retains its picture and can retry via the normal permission
+      // path. No recursive restart if the replacement helper also fails.
+      if (recover) log.debug('Input recovery deferred', error);
+    }
   }
   /** Starts input for the lease's current display; shared by `control` and `autoControl`. */
   private async takeControl(
     peer: string,
     active: NonNullable<RemoteDesktopController['active']>,
+    recovering = false,
   ): Promise<void> {
     if (this.locking) throw new Error('DESKTOP_BUSY');
     if (this.inputStarting) throw new Error('DESKTOP_INPUT_BUSY');
+    if (!recovering) this.inputRecoveryUsed = false;
     this.setBackgroundViewing(active, false);
     this.clipboardTransfer.reset();
     const generation = ++this.controlGeneration;
@@ -591,7 +694,7 @@ export class RemoteDesktopController {
   stopByUser(): void {
     const target = this.active ?? this.lastEnded;
     if (target) this.userStopped.set(target.peer, target.lease);
-    this.stop();
+    this.stop(undefined, undefined, 'user-stop');
   }
   async stopPrivacyByUser(): Promise<void> {
     const active = this.active;
@@ -606,7 +709,7 @@ export class RemoteDesktopController {
     try {
       await ending;
     } finally {
-      if (this.active === active) this.stop(active.peer);
+      if (this.active === active) this.stop(active.peer, undefined, 'user-stop');
     }
   }
   private require(peer: string, lease: string) {
@@ -620,8 +723,10 @@ export class RemoteDesktopController {
   /** Only the trusted capture renderer may forward live DataChannel pongs. */
   viewHeartbeat(lease: string): void {
     this.tick();
-    if (this.active?.lease === lease && this.active.backgroundViewing && !this.active.controlling)
+    if (this.active?.lease === lease && this.active.backgroundViewing && !this.active.controlling) {
       this.active.expires = this.now() + REMOTE_DESKTOP_LEASE_MS;
+      this.active.diagnostics.heartbeats.add({ receivedAt: this.now(), result: 'media-accepted' });
+    }
   }
   /** Also used by the exact capture renderer's DataChannel bridge. */
   input(lease: string, sequence: number, events: unknown): void {
@@ -639,7 +744,11 @@ export class RemoteDesktopController {
     if (!active.controlling) throw new Error('DESKTOP_VIEW_ONLY');
     if (sequence <= active.sequence) return; // never replay a click after retries/reconnect
     active.sequence = sequence;
+    const generation = this.controlGeneration;
     this.deps.input(request.events);
+    // Fresh user activity permits another repair, but an idle crash-looping
+    // helper cannot repeatedly restart itself after its ready handshake.
+    if (generation === this.controlGeneration) this.inputRecoveryUsed = false;
   }
   async request(peer: string, raw: unknown): Promise<unknown> {
     const request = parseRemoteDesktopRequest(raw);
@@ -752,11 +861,11 @@ export class RemoteDesktopController {
       if (request.resume && this.userStopped.has(peer)) throw new Error('DESKTOP_STOPPED');
       if (request.takeover && this.active) {
         this.userStopped.set(this.active.peer, this.active.lease);
-        void this.stop(this.active.peer, false);
+        void this.stop(this.active.peer, false, 'takeover');
       }
       // A lost start reply can leave our own lease alive. Rotate it using the
       // existing cleanup so the new viewer can restart its input sequence at 0.
-      else if (resumesActive) this.stop(peer, false);
+      else if (resumesActive) this.stop(peer, false, 'resume-replaced');
       if (this.viewerDisplay || this.originalResolution) {
         const restorationGeneration = this.controlGeneration;
         await this.restoreStoppedDisplay();
@@ -786,6 +895,11 @@ export class RemoteDesktopController {
         peer,
         sourceDisplayId: display.id,
         expires: this.now() + REMOTE_DESKTOP_LEASE_MS,
+        diagnostics: {
+          id: createHash('sha256').update(lease.lease).digest('hex').slice(0, 16),
+          startedAt: this.now(),
+          heartbeats: new DesktopHeartbeatHistory(),
+        },
         sequence: -1,
         authenticationSession,
         // Ending a look at one window never locks the whole computer.
@@ -922,7 +1036,7 @@ export class RemoteDesktopController {
             throw new Error('DESKTOP_VIEWER_DISPLAY_UNAVAILABLE');
           if (!this.viewerDisplay) {
             const handle = await this.deps.createViewerDisplay(active.display.id, current, () => {
-              if (this.active === active) this.stop(peer);
+              if (this.active === active) this.stop(peer, undefined, 'display-failed');
             });
             if (!current()) {
               handle.dispose();
@@ -981,7 +1095,7 @@ export class RemoteDesktopController {
           // Input restarts on the new geometry within the same request.
           return request.control ? await this.withControl(peer, active, reply) : reply;
         } catch (error) {
-          if (this.active === active) this.stop(peer, false);
+          if (this.active === active) this.stop(peer, false, 'display-failed');
           throw error;
         } finally {
           this.resolutionWrite = null;
@@ -993,12 +1107,14 @@ export class RemoteDesktopController {
           throw new Error('DESKTOP_LOCK_UNAVAILABLE');
         // Plain stop is also used for viewer recovery and display handoff.
         // Explicit exit sends lockScreen; involuntary host stops use the policy.
-        await this.stop(peer, request.lockScreen === true && !active.handoff);
+        await this.stop(peer, request.lockScreen === true && !active.handoff, 'remote-stop');
         return { ok: true };
       }
       case 'heartbeat':
-        if (request.lockOnExit !== undefined && !active.handoff) active.lockOnExit = request.lockOnExit;
+        if (request.lockOnExit !== undefined && !active.handoff)
+          active.lockOnExit = request.lockOnExit;
         active.expires = this.now() + REMOTE_DESKTOP_LEASE_MS;
+        active.diagnostics.heartbeats.add({ receivedAt: this.now(), result: 'relay-accepted' });
         return { controlling: active.controlling };
       case 'presentation': {
         this.setBackgroundViewing(active, request.enabled);
@@ -1127,7 +1243,7 @@ export class RemoteDesktopController {
           if (!current()) throw new Error('DESKTOP_LEASE_EXPIRED');
           // Release old geometry before the native write can emit display events.
           // Completion must not inspect or stop a replacement lease.
-          this.stop(peer, false);
+          this.stop(peer, false, 'display-changed');
         };
         try {
           if (this.viewerDisplay) {
@@ -1157,7 +1273,7 @@ export class RemoteDesktopController {
           await this.deps.resolution(active.sourceDisplayId, request.modeId, beforeChange);
           return { ok: true };
         } catch (error) {
-          if (restoringViewer && current()) this.stop(peer, false);
+          if (restoringViewer && current()) this.stop(peer, false, 'display-failed');
           throw error;
         }
       }

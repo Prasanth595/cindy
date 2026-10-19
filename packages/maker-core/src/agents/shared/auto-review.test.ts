@@ -4685,6 +4685,36 @@ describe('删除也是写通道:普通 rm / mv 源 / cmd del(第四十八批评�
 });
 
 describe('shellCommandReadsCredentials — 只认凭证那一部分红线', () => {
+  it.each([800, 3200, 6400, 24000])('scans repeated gh auth heads in under a second (%i repetitions)', (count) => {
+    const command = 'gh auth a '.repeat(count);
+    const start = performance.now();
+    expect(shellCommandReadsCredentials(command, roots)).toBe(false);
+    expect(performance.now() - start).toBeLessThan(1000);
+  });
+
+  it('keeps token flags at the end of long auth segments without repeated backtracking', () => {
+    const prefix = 'gh auth a '.repeat(24000);
+    for (const flag of ['--show-token', '--show-token=true', '-t', '-wt=true', '-tw']) {
+      expect(shellCommandReadsCredentials(prefix + flag, roots), flag).toBe(true);
+    }
+    const invalidCluster = 'gh auth status -' + 't'.repeat(240000) + '-';
+    const start = performance.now();
+    expect(shellCommandReadsCredentials(invalidCluster, roots)).toBe(false);
+    expect(performance.now() - start).toBeLessThan(1000);
+  });
+
+  it('does not carry auth context into another command segment', () => {
+    for (const separator of [';', '|', '&', '\n']) {
+      expect(shellCommandReadsCredentials(`gh auth status${separator}echo --show-token`, roots)).toBe(false);
+      expect(shellCommandReadsCredentials(`gh auth status${separator}/usr/bin/gh auth status --hostname github.com -wt`, roots)).toBe(true);
+    }
+    for (const command of ['gh auth a gh auth\nstatus -t', 'gh auth gh auth\nstatus --show-token']) {
+      expect(shellCommandReadsCredentials(command, roots), command).toBe(true);
+    }
+    expect(shellCommandReadsCredentials('./gh auth status --show-token', roots)).toBe(true);
+    expect(shellCommandReadsCredentials('notgh auth status --show-token', roots)).toBe(false);
+  });
+
   it('读凭证 / 密钥文件、钥匙串、令牌与云 metadata 都算', () => {
     for (const command of [
       'cat ~/.ssh/id_rsa',
@@ -4722,6 +4752,37 @@ describe('shellCommandReadsCredentials — 只认凭证那一部分红线', () =
 
 // 两个附加选项只供供应商分享的受邀者任务用(apps/desktop/src/main/remote-agent/credentials.ts)。
 describe('shellCommandReadsCredentials — 分享任务的附加选项', () => {
+  it('accumulates prior mutations without tainting earlier reads or losing the file-only cd exemption', () => {
+    vi.stubEnv('CDPATH', undefined);
+    try {
+      const files: boolean[] = [];
+      const git: boolean[] = [];
+      expect(shellCommandReadsCredentials(
+        'echo a;cd /repo/examples && cat example.pub;git diff;touch generated;cat example.pub;git diff', roots, {
+          cwd: '/repo',
+          platform: 'linux',
+          fileReadRequiresConsent: (read) => { files.push(read.priorSegmentsMayMutate === true); return false; },
+          gitContentRead: (read) => { git.push(read.priorSegmentsMayMutate === true); return true; },
+        },
+      )).toBe(false);
+      expect(files).toEqual([false, true]);
+      expect(git).toEqual([true, true]);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('keeps a mutation sticky across later read-only segments for both Git read callbacks', () => {
+    const reads: boolean[] = [];
+    const record = (read: GitRead) => { reads.push(read.priorSegmentsMayMutate === true); return true; };
+    expect(shellCommandReadsCredentials(
+      'echo a;git config --list;git diff;git add -A;echo done;git config --list;git diff', roots, {
+        cwd: '/repo', gitContentRead: record, gitConfigRead: record,
+      },
+    )).toBe(false);
+    expect(reads).toEqual([false, false, true, true]);
+  });
+
   it.each([
     "bash -c 'cat .env'",
     "python -c 'open(\".env\").read()'",

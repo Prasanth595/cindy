@@ -1,7 +1,8 @@
 import { Button } from '@/components/ui/button';
+import { ErrorNotice } from '@/components/ui/error-notice';
 import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { CircleAlert, LayoutGrid, MoonStar } from 'lucide-react';
+import { LayoutGrid, MoonStar } from 'lucide-react';
 import type { WebviewTag } from 'electron';
 
 import { useAuth } from '@/contexts/AuthContext';
@@ -111,20 +112,10 @@ function CrashedHint({
 }): ReactNode {
   const { t } = useTranslation();
   return (
-    <div className="flex flex-col items-center gap-3 px-6 py-9">
-      <CircleAlert size={20} className="text-[var(--error-fg)]" />
-      <p
-        className={cn(
-          'text-center text-[var(--text-secondary)]',
-          appearance === 'plugin' ? 'text-13 leading-5' : 'text-12 leading-relaxed',
-        )}
-      >
-        {t('settings.ghosts.panelError.crashed')}
-      </p>
-      <Button variant="secondary" size="sm" compact type="button" onClick={onReload}>
+    <ErrorNotice className="m-4" message={t('settings.ghosts.panelError.crashed')}
+      actions={<Button size="sm" compact type="button" onClick={onReload}>
         {t('settings.ghosts.panelError.reload')}
-      </Button>
-    </div>
+      </Button>} />
   );
 }
 

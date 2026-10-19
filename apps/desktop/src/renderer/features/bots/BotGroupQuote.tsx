@@ -5,11 +5,12 @@
  * （原消息可定位时点击跳过去）。左侧竖线与 Markdown 引用块同一 token；摘要只占一到两行，
  * 长消息不会撑开时间线。原消息已删除时只显示作者与「原消息已删除」，不再露出快照。
  */
-import { MessageSquareReply, Paperclip, X } from 'lucide-react';
+import { Paperclip, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 
 import { Tip } from '@/components/ui/tooltip';
+import { ChatReplyIcon } from '@/components/chat/ChatReplyIcon';
 import { cn } from '@/lib/utils';
 import type { BotGroupQuoteDisplay } from '../../../shared/botGroupChat';
 
@@ -97,7 +98,7 @@ export function BotGroupQuotePreview({ display, onRemove }: { display: BotGroupQ
   const removeLabel = t('bots.groupChat.quote.remove');
   return (
     <div data-testid="bot-group-quote-preview" data-quote-state={display.state} className="flex min-w-0 select-none items-center gap-2">
-      <MessageSquareReply size={14} aria-hidden className="shrink-0 text-[var(--text-secondary)]" />
+      <ChatReplyIcon size={14} aria-hidden className="shrink-0 text-[var(--text-secondary)]" />
       <span aria-hidden className="h-4 w-0.5 shrink-0 bg-[var(--msg-blockquote-border)]" />
       <QuoteLines display={display} compact />
       <Tip text={removeLabel}>

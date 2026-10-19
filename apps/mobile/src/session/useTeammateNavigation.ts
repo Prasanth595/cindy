@@ -49,7 +49,8 @@ export function useTeammateNavigation() {
       }
     } finally { if (pendingAccount.current === accountGeneration) pendingAccount.current = null; }
   }, [accountGeneration, navigation, preferences.setMode, router]);
-  const openTeammate = useCallback(async (hosted: HostedRemoteCollectionItem) => {
+  /** `replace` swaps the current screen (the cloud view handing over to the new main computer). */
+  const openTeammate = useCallback(async (hosted: HostedRemoteCollectionItem, options?: { replace?: boolean }) => {
     const identity = teammateIdentity(hosted);
     if (!identity || pendingAccount.current === accountGeneration) return;
     // Fence rapid taps before the async preference write, not only at router.push.
@@ -69,10 +70,12 @@ export function useTeammateNavigation() {
           && !remoteSessionStore.getSessionDeviceId(preview.id)) {
           remoteSessionStore.upsertDeviceSession(hosted.host.deviceId, hosted.host.deviceName, preview);
         }
-        push(teammateResourceRoute(hosted, i18n.language));
+        const route = teammateResourceRoute(hosted, i18n.language);
+        if (options?.replace) router.replace(route);
+        else push(route);
       }
     } finally { if (pendingAccount.current === accountGeneration) pendingAccount.current = null; }
-  }, [accountGeneration, i18n.language, preferences.selectTeammate, push, user?.id]);
+  }, [accountGeneration, i18n.language, preferences.selectTeammate, push, router, user?.id]);
   const openCreatedTeammate = useCallback(async (host: RemoteResourceHostTarget, ref: RemoteResourceRef) => {
     if (!mounted.current || current.current !== accountGeneration || !host.deviceId || !ref.id || !ref.collectionId
       || ref.kind !== 'bot' || pendingAccount.current === accountGeneration) return;

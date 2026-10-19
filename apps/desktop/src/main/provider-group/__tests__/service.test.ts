@@ -157,7 +157,7 @@ async function flush() {
 describe('own tasks after this computer becomes available again', () => {
   it.each([false, true].flatMap((paused) =>
     (['start', 'turn', 'before-send', 'healthy'] as const).map((phase) => ({ paused, phase })),
-  ))('prefers local only when another choice is needed ($phase, paused=$paused)', async ({ paused, phase }) => {
+  ))('reselects by the group strategy, not local first, when another choice is needed ($phase, paused=$paused)', async ({ paused, phase }) => {
     const h = harness({ members: [MINI, STUDIO, { ...LOCAL, paused }], offline: [LOCAL.key] });
     // 数据库读取返回快照，后续保存路由不会修改已经读出的行。
     h.deps.readSessionRow.mockImplementation(async () => ({ ...h.row }));
@@ -167,7 +167,7 @@ describe('own tasks after this computer becomes available again', () => {
 
     if (phase === 'start') {
       const next = await h.service.nextAfterStartFailure(context!, new Error('[REMOTE_AGENT_UNAVAILABLE] failed to start'));
-      expect(next?.member.key).toBe(LOCAL.key);
+      expect(next?.member.key).toBe(STUDIO.key);
     } else if (phase === 'turn') {
       await h.service.onTurnError('s1', { sdkError: 'rate_limit' }, 1);
       expect(h.deps.continueSession).toHaveBeenCalledTimes(1);
@@ -182,9 +182,9 @@ describe('own tasks after this computer becomes available again', () => {
       expect(h.deps.persistRoute).toHaveBeenCalledTimes(1);
       expect(h.deps.switchAgentLocation).not.toHaveBeenCalled();
     } else {
-      // 组顺序本来会选仍可用的 STUDIO；本机自用故障重选仍优先已恢复的本机。
-      expect(h.row).toMatchObject({ agentDeviceId: null, providerId: 'anthropic' });
-      expect(h.bindings.get('s1')?.memberKey).toBe(LOCAL.key);
+      // 本机任务与其他使用方同一套组策略：按组顺序选仍可用的 STUDIO，不因本机已恢复就回到本机。
+      expect(h.row).toMatchObject({ agentDeviceId: STUDIO.agentDeviceId, providerId: STUDIO.providerId });
+      expect(h.bindings.get('s1')?.memberKey).toBe(STUDIO.key);
       if (phase !== 'start') expect(h.deps.switchAgentLocation).toHaveBeenCalledTimes(1);
     }
     expect(h.config.members[2].paused).toBe(paused);
@@ -205,11 +205,11 @@ describe('assignBeforeStart', () => {
     expect(incoming.kind === 'member' && incoming.member.key).toBe(MINI.key);
   });
 
-  it('prefers this computer for own tasks regardless of the group order', async () => {
+  it('follows the group order for own tasks instead of preferring this computer', async () => {
     const h = harness({ members: [MINI, LOCAL] });
     const context = await h.service.assignBeforeStart({ sessionId: 's1', agentKind: 'claude-code', model: MODEL });
-    expect(context?.member.key).toBe('local');
-    expect(h.deps.persistRoute).not.toHaveBeenCalled();
+    expect(context?.member.key).toBe(MINI.key);
+    expect(h.deps.persistRoute).toHaveBeenCalledWith('s1', { agentDeviceId: 'mini', providerId: MINI.providerId });
   });
 
   it('falls back through the group when a paused local member cannot start its own task', async () => {
@@ -451,7 +451,8 @@ describe('onTurnError (automatic switch)', () => {
     }));
     expect(h.deps.fallback).not.toHaveBeenCalled();
     // 撞到用量上限的那台进入冷却，新任务不会分到它。
-    expect(h.router.coolingUntil('anthropic', 'local')).toBe(1_000_000 + PROVIDER_GROUP_DEFAULT_COOLDOWN_MS);
+    expect(h.router.coolingUntil('anthropic', 'local', MODEL)).toBe(1_000_000 + PROVIDER_GROUP_DEFAULT_COOLDOWN_MS);
+    expect(h.router.coolingUntil('anthropic', 'local', 'claude-sonnet-5')).toBeNull();
   });
 
   it('switches back to this computer with its provider when a remote member fails', async () => {
@@ -506,7 +507,7 @@ describe('onTurnError (automatic switch)', () => {
     const h = harness({ row: { sdkSessionId: 'native-1' } });
     h.service.onTurnError('s1', { sdkError: 'rate_limit' }, 7);
     await flush();
-    expect(h.router.coolingUntil('anthropic', 'local')).not.toBeNull();
+    expect(h.router.coolingUntil('anthropic', 'local', MODEL)).not.toBeNull();
     expect(h.deps.switchAgentLocation).toHaveBeenCalledWith(
       's1',
       expect.objectContaining({ agentDeviceId: 'mini', providerId: MINI.providerId }),
@@ -685,7 +686,7 @@ describe('onTurnError (automatic switch)', () => {
     h.bindings.set('s1', { providerId: 'anthropic', memberKey: MINI.key, at: 1 });
     h.service.onTurnError('s1', { sdkError: 'rate_limit' }, 1);
     await flush();
-    expect(h.router.coolingUntil('anthropic', 'local')).not.toBeNull();
+    expect(h.router.coolingUntil('anthropic', 'local', MODEL)).not.toBeNull();
     expect(h.router.coolingUntil('anthropic', MINI.key)).toBeNull();
     expect(h.deps.switchAgentLocation).toHaveBeenCalledWith(
       's1',
@@ -1064,7 +1065,7 @@ describe('beforeSend', () => {
     expect(h.deps.switchAgentLocation).toHaveBeenCalledWith(
       's1',
       { agentKind: 'claude-code', model: MODEL, providerId: 'anthropic', agentDeviceId: null },
-      { beforeSend: true },
+      { beforeSend: true, isCurrent: expect.any(Function) },
     );
     expect(h.bindings.get('s1')?.memberKey).toBe('local');
     expect(h.deps.continueSession).not.toHaveBeenCalled();
@@ -1107,7 +1108,7 @@ describe('beforeSend', () => {
     expect(reopen.deps.switchAgentLocation).toHaveBeenCalledWith(
       's1',
       expect.objectContaining({ agentDeviceId: null }),
-      { beforeSend: true },
+      { beforeSend: true, isCurrent: expect.any(Function) },
     );
 
     // 会话还开着：信缓存的状态，不现读。
@@ -1157,6 +1158,17 @@ describe('beforeSend', () => {
     await h.service.beforeSend('s1');
     expect(h.row.agentDeviceId).toBe('mini');
     expect(h.router.coolingUntil('anthropic', 'local')).toBeNull();
+  });
+
+  it('only moves before sending when the cooldown covers this task’s model', async () => {
+    const h = harness({ row: { sdkSessionId: 'native' } });
+    h.bindings.set('s1', { providerId: 'anthropic', memberKey: 'local', at: 1 });
+    h.router.markCooling('anthropic', 'local', 2_000_000, 'claude-fable-5');
+    await h.service.beforeSend('s1');
+    expect(h.deps.switchAgentLocation).not.toHaveBeenCalled();
+    h.router.markCooling('anthropic', 'local', 2_000_000, MODEL);
+    await h.service.beforeSend('s1');
+    expect(h.bindings.get('s1')?.memberKey).toBe(MINI.key);
   });
 
   it('moves a task off a computer that is cooling down', async () => {

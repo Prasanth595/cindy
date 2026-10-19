@@ -50,6 +50,12 @@ export interface DurableOutboxRecord {
     draft: NewSessionDraft;
     originalWorkingDir?: string;
     cancelled?: true;
+    /** Creation was handed back to the editor; restore its entry after restart. */
+    editReady?: true;
+    /** Content that could not be carried back, shown beside the restored attachments. */
+    notice?: string;
+    /** Messages already copied into this draft; makes interrupted consolidation idempotent. */
+    mergedFollowUpClientIds?: string[];
     deviceName: string;
     planModeArm: boolean;
     restorePermissionMode: string | null;
@@ -65,6 +71,14 @@ export interface OutboxStorage {
 
 export function isDurableOutboxSettled(record: DurableOutboxRecord): boolean {
   return record.cleanupOutcome !== undefined;
+}
+
+/** A failed creation belongs to its editor until a new creation takes it over. */
+export function isDurableCreationDraft(record: DurableOutboxRecord): boolean {
+  return record.suspended === true && record.state === 'failed'
+    && !!(record.creation?.editReady || record.creation?.cancelled)
+    && !record.prepared && !record.template && !record.enqueueStarted && record.sendAtMs === undefined
+    && !record.cancelRequested && !isDurableOutboxSettled(record);
 }
 
 /**
@@ -120,15 +134,24 @@ export function createDurableOutbox(storage: OutboxStorage, reconcileDraft?: (
   };
   const mutate = async (
     record: DurableOutboxRecord,
-    next: DurableOutboxRecord | null,
+    change: DurableOutboxRecord | null | ((current: DurableOutboxRecord) => DurableOutboxRecord | null),
     adding = false,
+    expectedRecords: readonly DurableOutboxRecord[] = [],
   ): Promise<DurableOutboxRecord | null> => {
     const epoch = generation;
     await store.ready();
     return serialize(async () => {
       assertOwner(record.accountId, epoch);
       const current = records.find((r) => keyFor(r) === keyFor(record));
-      if (adding ? current !== undefined : current !== record)
+      const editing = typeof change === 'function';
+      // Keystrokes share this store's write queue; each edits the preceding saved
+      // revision, never an old render snapshot. Clearing does not permit re-add.
+      if (editing && !current) return null;
+      if (editing ? (!current || current.item.sessionId !== record.item.sessionId || !isDurableCreationDraft(current))
+        : adding ? current !== undefined : current !== record)
+        throw new Error("OUTBOX_STALE_WRITE");
+      const next = editing ? change(current!) : change;
+      if (expectedRecords.some((expected) => !records.includes(expected)))
         throw new Error("OUTBOX_STALE_WRITE");
       if (next && keyFor(next) !== keyFor(record)) throw new Error("OUTBOX_IDENTITY_CHANGED");
       if (next && next.item.sessionId !== record.item.sessionId
@@ -229,14 +252,17 @@ export function createDurableOutbox(storage: OutboxStorage, reconcileDraft?: (
     update: (
       record: DurableOutboxRecord,
       patch: Partial<DurableOutboxRecord>,
+      expectedRecords: readonly DurableOutboxRecord[] = [],
     ) =>
       mutate(record, {
         ...record,
         ...patch,
         accountId: record.accountId,
         deviceId: record.deviceId,
-      }) as Promise<DurableOutboxRecord>,
+      }, false, expectedRecords) as Promise<DurableOutboxRecord>,
     remove: (record: DurableOutboxRecord) => mutate(record, null),
+    editCreationDraft: (record: DurableOutboxRecord, edit: (current: DurableOutboxRecord) => DurableOutboxRecord | null) =>
+      mutate(record, edit),
     ready: (): Promise<void> => store.activate(accountId),
   };
   return store;

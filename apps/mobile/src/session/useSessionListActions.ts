@@ -24,6 +24,7 @@ import {
   type SessionSwipeAction,
 } from '@/session/swipeRowRegistry';
 import type { RemoteSession } from '@/session/types';
+import { withNewSessionCreationRemoval } from '@/session/newSessionCreation';
 
 /**
  * 首页与设备详情共用的任务行写回 / 滑动 / 选项菜单 / 重命名。
@@ -59,7 +60,8 @@ export function useSessionListActions(options?: { animateListChange?: (apply: ()
     }
     const releasePending = sessionPendingWrites.track(session.id, fields);
     try {
-      const updated = await sessionMetaWriteQueue.enqueue(session.id, fields, () => retryPatchWhileLatest(
+      const updated = await withNewSessionCreationRemoval(session.id, rpcDeviceId, patch.status,
+        () => sessionMetaWriteQueue.enqueue(session.id, fields, () => retryPatchWhileLatest(
         write.isLatest,
         (assertStillLatest) => invoke<RemoteSession>(
           rpcDeviceId,
@@ -67,7 +69,7 @@ export function useSessionListActions(options?: { animateListChange?: (apply: ()
           [session.id, patch],
           { preSend: assertStillLatest },
         ),
-      ));
+      )), write.isLatest);
       if (updated && write.isLatest()) {
         const currentUpdatedAt = remoteSessionStore.getSessions()
           .find((s) => s.id === session.id)?.updatedAt ?? null;

@@ -107,6 +107,7 @@ function createDb(): void {
       fast_mode INTEGER NOT NULL DEFAULT 0,
       cleared_at INTEGER,
       pinned_at INTEGER,
+      hidden_at INTEGER,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
       agent_kind TEXT NOT NULL DEFAULT 'cc',

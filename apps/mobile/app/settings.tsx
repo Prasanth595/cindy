@@ -5,7 +5,7 @@ import * as Clipboard from 'expo-clipboard';
 import * as Updates from 'expo-updates';
 import { useUpdates } from 'expo-updates';
 import { useRouter } from 'expo-router';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import {
   Alert,
   DevSettings,
@@ -112,6 +112,11 @@ import {
   SettingsGroup,
   SettingsSwitchRow,
 } from '@/session/SettingsGroupRows';
+import {
+  getMobileSpeakerFilterSnapshot,
+  hydrateMobileSpeakerFilter,
+  subscribeMobileSpeakerFilter,
+} from '@/session/mobileSpeakerFilter';
 import { useSettingsDeviceDirectory } from '@/session/settingsDeviceDirectory';
 import { confirmLogout } from '@/session/confirmLogout';
 import { THEME_PREFERENCES, useTheme, useThemedStyles, type ThemeColors } from '@/theme';
@@ -725,6 +730,14 @@ export default function SettingsScreen() {
     push('/settings/voice-dictionary');
   }, [push]);
 
+  const speakerFilter = useSyncExternalStore(subscribeMobileSpeakerFilter, getMobileSpeakerFilterSnapshot);
+  useEffect(() => {
+    void hydrateMobileSpeakerFilter();
+  }, []);
+  const openVoiceSpeakerFilter = useCallback(() => {
+    push('/settings/voice-speaker-filter');
+  }, [push]);
+
   // dictionaryRevision 只作为依赖存在:缓存是模块级的,刷新完成后靠它触发重算。
   const dictionaryEntries = useMemo(
     () =>
@@ -879,6 +892,23 @@ export default function SettingsScreen() {
               value={t('settings.voiceDictionary.entryCount', { count: dictionaryEntries.length })}
             />
           </SettingsGroup>
+
+          {/* 识别我的声音:声纹只在本机;老安装包缺原生推理模块时不显示入口 */}
+          {speakerFilter.supported ? (
+            <SettingsGroup
+              footer={t('settings.voiceSpeakerFilter.entryHint')}
+              title={t('settings.voiceSpeakerFilter.sectionTitle')}
+            >
+              <ActionInfoRow
+                accessibilityLabel={t('settings.voiceSpeakerFilter.openAccessibility')}
+                key="voice-speaker-filter"
+                label={t('settings.voiceSpeakerFilter.label')}
+                onPress={openVoiceSpeakerFilter}
+                testID="settings.voiceSpeakerFilter.row"
+                value={t(speakerFilter.enabled ? 'settings.voiceSpeakerFilter.on' : 'settings.voiceSpeakerFilter.off')}
+              />
+            </SettingsGroup>
+          ) : null}
 
           <SettingsGroup title={t('sharedTask.title')}>
             <ActionInfoRow

@@ -13,6 +13,7 @@ import {
   prepareSharedGlobalSkillLinks,
   prepareSharedProjectSkillLinks,
   projectWorkingDirFromSkillPath,
+  sharedGlobalSkillLinksFingerprint,
   sharedGlobalSkillsPaths,
   sharedProjectSkillsPaths,
 } from '../maker-host/shared-global-skills';
@@ -149,6 +150,8 @@ describe('prepareSharedGlobalSkillLinks', () => {
     expect(result.warnings).toEqual([
       'cross-agent global skill sync is disabled; set crossAgentSyncEnabled to opt in',
     ]);
+    // Stable opt-out state: callers cache past it instead of retrying every launch.
+    expect(result.persistentWarnings).toEqual(result.warnings);
     // 未 opt-in 时，不把 Claude 的用户技能拉进 ~/.agents/skills。
     await expect(fs.lstat(path.join(paths.sharedSkillsDir, 'claude-only'))).rejects.toMatchObject({
       code: 'ENOENT',
@@ -363,6 +366,8 @@ describe('prepareSharedGlobalSkillLinks', () => {
     const result = await prepareSharedGlobalSkillLinks({ homeDir, isCrossAgentSyncEnabled: () => true });
 
     expect(result.warnings.some((warning) => warning.includes('duplicate'))).toBe(true);
+    // A user-owned path we never overwrite is persistent, not a retryable failure.
+    expect(result.persistentWarnings).toEqual(result.warnings);
     expect(await sameRealPath(path.join(paths.sharedSkillsDir, 'duplicate'), sharedSkill)).toBe(true);
     expect(await sameRealPath(path.join(paths.claudeSkillsDir, 'duplicate'), claudeSkill)).toBe(true);
     expect(await sameRealPath(path.join(paths.sharedSkillsDir, 'duplicate'), path.join(paths.claudeSkillsDir, 'duplicate'))).toBe(false);
@@ -383,6 +388,24 @@ describe('prepareSharedGlobalSkillLinks', () => {
     expect(result.warnings.some((warning) => warning.includes('user-link'))).toBe(true);
     expect(await sameRealPath(claudeLink, externalSkill)).toBe(true);
     expect(await sameRealPath(claudeLink, sharedSkill)).toBe(false);
+  });
+
+  // Cache-key contract for the 30s completion cache in auth-adapters: without it a cached
+  // run would hide a crossAgentSyncEnabled toggle or a newly added global skill.
+  it('changes the preparation fingerprint on a sync toggle or a root listing change only', async () => {
+    const root = await makeTmpDir();
+    const homeDir = path.join(root, 'home');
+    const paths = sharedGlobalSkillsPaths(homeDir);
+    await writeSkill(paths.claudeSkillsDir, 'existing');
+    const fingerprint = (enabled: boolean) =>
+      sharedGlobalSkillLinksFingerprint({ homeDir, isCrossAgentSyncEnabled: () => enabled });
+
+    const before = await fingerprint(false);
+    expect(await fingerprint(false)).toBe(before);
+    expect(await fingerprint(true)).not.toBe(before);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await writeSkill(paths.claudeSkillsDir, 'added');
+    expect(await fingerprint(false)).not.toBe(before);
   });
 
   it('cleans up broken managed links after the source skill is removed', async () => {

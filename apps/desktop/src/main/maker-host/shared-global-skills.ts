@@ -31,7 +31,17 @@ export interface SharedGlobalSkillLinksResult {
   changed: boolean;
   actions: LinkAction[];
   warnings: string[];
+  /**
+   * Subset of `warnings` that describe stable user-owned state rather than a failed
+   * attempt: the cross-agent sync opt-out and user paths we deliberately never
+   * overwrite. Retrying cannot clear them, so callers may cache past them and report
+   * them once instead of on every run.
+   */
+  persistentWarnings: string[];
 }
+
+export const SHARED_GLOBAL_SKILL_SYNC_DISABLED_NOTICE =
+  'cross-agent global skill sync is disabled; set crossAgentSyncEnabled to opt in';
 
 interface PrepareOptions {
   homeDir?: string;
@@ -318,9 +328,10 @@ async function linkEntriesIntoRoot(
   targetRoot: string,
   useRelativeTarget = false,
   assertMutationAllowed?: () => void,
-): Promise<{ actions: LinkAction[]; changed: boolean; warnings: string[] }> {
+): Promise<{ actions: LinkAction[]; changed: boolean; warnings: string[]; persistentWarnings: string[] }> {
   const actions: LinkAction[] = [];
   const warnings: string[] = [];
+  const persistentWarnings: string[] = [];
   let changed = false;
   const targetRootCompare = (await realPathOrNull(targetRoot)) ?? normalizeForCompare(targetRoot);
 
@@ -354,13 +365,14 @@ async function linkEntriesIntoRoot(
     };
     actions.push(action);
     if (result.status === 'conflict' || result.status === 'error') {
-      warnings.push(
-        `cannot link skill ${entry.name} from ${entry.path} to ${targetPath}: ${result.reason ?? result.status}`,
-      );
+      const warning = `cannot link skill ${entry.name} from ${entry.path} to ${targetPath}: ${result.reason ?? result.status}`;
+      warnings.push(warning);
+      // A conflict is a user-owned path we never overwrite; only I/O errors are retryable.
+      if (result.status === 'conflict') persistentWarnings.push(warning);
     }
   }
 
-  return { actions, changed, warnings };
+  return { actions, changed, warnings, persistentWarnings };
 }
 
 /**
@@ -395,6 +407,7 @@ export async function prepareSharedGlobalSkillLinks(
   const codexRootCompare = (await realPathOrNull(paths.codexSkillsDir)) ?? normalizeForCompare(paths.codexSkillsDir);
 
   const warnings: string[] = [];
+  const persistentWarnings: string[] = [];
   const actions: LinkAction[] = [];
   let changed = false;
   const managedRoots = Array.from(new Set([
@@ -434,6 +447,7 @@ export async function prepareSharedGlobalSkillLinks(
     );
     actions.push(...claudeToShared.actions);
     warnings.push(...claudeToShared.warnings);
+    persistentWarnings.push(...claudeToShared.persistentWarnings);
     changed = changed || claudeToShared.changed;
 
     const codexToClaude = await linkEntriesIntoRoot(
@@ -444,6 +458,7 @@ export async function prepareSharedGlobalSkillLinks(
     );
     actions.push(...codexToClaude.actions);
     warnings.push(...codexToClaude.warnings);
+    persistentWarnings.push(...codexToClaude.persistentWarnings);
     changed = changed || codexToClaude.changed;
 
     const codexToShared = await linkEntriesIntoRoot(
@@ -454,10 +469,12 @@ export async function prepareSharedGlobalSkillLinks(
     );
     actions.push(...codexToShared.actions);
     warnings.push(...codexToShared.warnings);
+    persistentWarnings.push(...codexToShared.persistentWarnings);
     changed = changed || codexToShared.changed;
   } else if (claudeEntries.length > 0 || codexEntries.length > 0) {
     // 未 opt-in 且存在可同步的用户技能时才提示；纯 Ghost 对账不打扰。
-    warnings.push('cross-agent global skill sync is disabled; set crossAgentSyncEnabled to opt in');
+    warnings.push(SHARED_GLOBAL_SKILL_SYNC_DISABLED_NOTICE);
+    persistentWarnings.push(SHARED_GLOBAL_SKILL_SYNC_DISABLED_NOTICE);
   }
 
   const sharedEntries = await listSkillEntries('shared', paths.sharedSkillsDir);
@@ -469,6 +486,7 @@ export async function prepareSharedGlobalSkillLinks(
   );
   actions.push(...sharedToClaude.actions);
   warnings.push(...sharedToClaude.warnings);
+  persistentWarnings.push(...sharedToClaude.persistentWarnings);
   changed = changed || sharedToClaude.changed;
 
   opts.assertOwnerStable?.();
@@ -477,7 +495,33 @@ export async function prepareSharedGlobalSkillLinks(
     changed,
     actions,
     warnings,
+    persistentWarnings,
   };
+}
+
+/**
+ * Cheap inputs of `prepareSharedGlobalSkillLinks` for completion caches: the opt-in
+ * setting plus each global root's mtime (adding, removing or renaming a top-level skill
+ * entry bumps it). A cached run must not hide a settings toggle or a new/removed skill.
+ */
+export async function sharedGlobalSkillLinksFingerprint(
+  opts: Pick<PrepareOptions, 'homeDir' | 'isCrossAgentSyncEnabled'> = {},
+): Promise<string> {
+  const paths = sharedGlobalSkillsPaths(opts.homeDir);
+  let crossAgentSyncEnabled: boolean | null;
+  try {
+    crossAgentSyncEnabled = opts.isCrossAgentSyncEnabled
+      ? opts.isCrossAgentSyncEnabled()
+      : (await import('./shared-global-skills-settings.js')).readSharedGlobalSkillsSettings().crossAgentSyncEnabled;
+  } catch {
+    crossAgentSyncEnabled = null;
+  }
+  const mtimes = await Promise.all(
+    [paths.sharedSkillsDir, paths.claudeSkillsDir, paths.codexSkillsDir].map(async (dir) => {
+      try { return (await fsp.stat(dir)).mtimeMs; } catch { return null; }
+    }),
+  );
+  return JSON.stringify([crossAgentSyncEnabled, ...mtimes]);
 }
 
 /**

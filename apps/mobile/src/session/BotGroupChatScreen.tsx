@@ -19,6 +19,7 @@ import {
   type NativeScrollEvent,
   type NativeSyntheticEvent,
 } from 'react-native';
+import { showConfirm } from '@/platform/chrome';
 import { Stack, useRouter } from 'expo-router';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
@@ -68,6 +69,7 @@ import { SessionHeaderNativeBlur } from './SessionHeaderNativeControls';
 import { CompanionEntering } from './CompanionEntering';
 import { BotGroupComposer, type BotGroupSendInput } from './BotGroupComposer';
 import { BotGroupMessageAttachments } from './BotGroupMessageAttachments';
+import { BotGroupTaskCard } from './BotGroupTaskCard';
 import { BotGroupMarkdownText, BotGroupUserText } from './BotGroupMessageText';
 import { BotGroupQuote } from './BotGroupQuote';
 import {
@@ -192,6 +194,42 @@ export function BotGroupChatScreen({ deviceId, deviceName, groupId }: { deviceId
     Alert.alert(chat.online ? botGroupActionErrorText(t, error, fallbackKey) : t(offlineKey));
   }, [chat.online, offlineKey, t]);
 
+  const hidePending = useRef(false);
+  const hideScope = useRef('');
+  const currentHideScope = `${groupId}:${deviceId}:${accountGeneration}`;
+  hideScope.current = currentHideScope;
+  useEffect(() => () => { hideScope.current = ''; }, []);
+  const leftScope = useRef('');
+  const focusedRef = useRef(focused); focusedRef.current = focused;
+  const leaveCurrentChat = useCallback((captured: string) => {
+    if (!focusedRef.current || hideScope.current !== captured || leftScope.current === captured) return;
+    leftScope.current = captured;
+    leave();
+  }, [leave]);
+  useEffect(() => {
+    if (focused && chat.listHidden) leaveCurrentChat(currentHideScope);
+  }, [focused, chat.listHidden, currentHideScope, leaveCurrentChat]);
+  const actFromSettings: typeof chat.act = async (action, input) => {
+    const captured = currentHideScope;
+    const receipt = await chat.act(action, input);
+    // The list listener may already have unmounted settings; the screen still
+    // owns this route and can complete navigation after the acknowledgement.
+    if (action === 'hide' || action === 'leave') leaveCurrentChat(captured);
+    return receipt;
+  };
+  const removeFromList = async () => {
+    if (hidePending.current) return;
+    hidePending.current = true;
+    const captured = currentHideScope;
+    try {
+      if (!await showConfirm({ title: t('groupChat.lifecycle.hide'), message: t('groupChat.lifecycle.hideNote'),
+        cancelLabel: t('devices.common.cancel'), confirmLabel: t('groupChat.lifecycle.hide'), destructive: true }) || hideScope.current !== captured) return;
+      await chat.act('hide');
+      leaveCurrentChat(captured);
+    } catch (error) { if (hideScope.current === captured) Alert.alert(botGroupActionErrorText(t, error, 'groupChat.lifecycle.failed')); }
+    finally { hidePending.current = false; }
+  };
+
   const continueRound = async () => {
     if (continuing) return;
     setContinuing(true);
@@ -295,6 +333,7 @@ export function BotGroupChatScreen({ deviceId, deviceName, groupId }: { deviceId
         copy={t(errorCopyKey)}>
         <View style={styles.emptyActions}>
           <MainWindowActionButton action={{ label: t('shared.back'), onPress: leave, testID: 'botGroup.leave' }} />
+          {!failed ? <MainWindowActionButton action={{ label: t('groupChat.lifecycle.hide'), onPress: () => void removeFromList(), testID: 'botGroup.hide' }} /> : null}
           {failed ? <MainWindowActionButton action={{ label: t('devices.resources.retry'), tone: 'primary', onPress: chat.reload, testID: 'botGroup.retry' }} /> : null}
         </View>
       </MainWindowEmptyState>
@@ -308,6 +347,7 @@ export function BotGroupChatScreen({ deviceId, deviceName, groupId }: { deviceId
       )}
     >
       {floatingHeader ? null : offlineNote}
+      {group.dissolvedAt ? <Text style={styles.offline}>{t('groupChat.lifecycle.dissolved')}</Text> : null}
       <ScrollView ref={scrollRef} style={styles.flex} contentContainerStyle={[styles.timeline, floatingHeader && { paddingTop: headerHeight + spacing.md }]}
         scrollIndicatorInsets={floatingHeader ? { top: headerHeight } : undefined} keyboardShouldPersistTaps="handled"
         keyboardDismissMode="interactive"
@@ -330,7 +370,7 @@ export function BotGroupChatScreen({ deviceId, deviceName, groupId }: { deviceId
           onEditStep={(planId, step, action, botId) => void editPlanStep(planId, step, action, botId)}
           onInteractionError={(message) => { if (message) Alert.alert(message); }} />
       </ScrollView>
-      <BotGroupComposer members={group.members} identityFor={identityFor} deviceId={deviceId} online={chat.online && !group.archived}
+      <BotGroupComposer members={group.members} identityFor={identityFor} deviceId={deviceId} online={chat.online && !group.archived && !group.dissolvedAt}
         running={group.round.status === 'running'} planState={botGroupComposerPlanState(openBotGroupPlan(group))}
         divisionSupported={!chat.server} attachmentsSupported={group.supportsAttachments === true} onSend={send} onStop={stop} />
     </KeyboardAvoidingView>;
@@ -350,7 +390,7 @@ export function BotGroupChatScreen({ deviceId, deviceName, groupId }: { deviceId
       {body}
     </>}
     {group ? <BotGroupSettingsSheet readOnly={chat.server} visible={settings} group={group} host={host} identityFor={identityFor} online={chat.online}
-      act={chat.act} onClose={() => setSettings(false)}
+      act={actFromSettings} onClose={() => setSettings(false)}
       onRefresh={chat.reload}
       onClosed={() => { if (leaveAfterSettings.current) { leaveAfterSettings.current = false; leave(); } }}
       onDeleted={onGroupDeleted} /> : null}
@@ -537,6 +577,14 @@ function BotGroupTimelineItem({
           onStart={() => onPlanAction('start')} onDismiss={() => onPlanAction('dismiss')} onEditStep={onEditStep} />
         : <>
           {quoteDisplay ? <BotGroupQuote display={quoteDisplay} /> : null}
+          {/* A task this teammate started from the group; mine is live, another owner's is a snapshot.
+              An author no longer in the group is unknown: its task may run on another computer, so it
+              stays a snapshot rather than a lookup on this one (same rule as the desktop timeline).
+              The live card reads the owned companion's home computer when it is known (the group may
+              be opened through another computer, or straight from the Chat Server with none); else
+              the computer the group was opened through. */}
+          {message.task ? <BotGroupTaskCard task={message.task} owned={member !== undefined && member.isOwned !== false}
+            deviceId={member?.homeDeviceId || deviceId || ''} /> : null}
           {message.attachments?.length ? <BotGroupMessageAttachments messageId={message.id} attachments={message.attachments} align="left" onResolveRemoteMedia={resolveMedia} resolveServerMedia={resolveServerMedia} /> : null}
           {message.content.trim() ? <BotGroupMarkdownText content={message.content} /> : null}
           <BotGroupHandoffFiles files={message.files} />

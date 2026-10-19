@@ -16,6 +16,8 @@ const h = vi.hoisted(() => ({
   groups: { loading: false, refreshing: false, error: null as string | null, items: [] as HostedRemoteCollectionItem[], supported: false, isOnline: () => true, refresh: vi.fn() },
   groupTargetsSeen: [] as unknown[],
   create: {} as any, chrome: {} as any, titleArgs: [] as number[], nativeHeader: true, headerHeight: 106, barEdge: 'none',
+  cloud: { supported: false, actors: [] as Array<{ id: string; kind: string; externalId: string; name: string; avatar: null; homeDeviceId: string | null }>,
+    deviceNames: new Map<string, string>(), refresh: vi.fn(), setHome: vi.fn() },
 }));
 vi.mock('react-native', async () => {
   const { createElement: el } = await import('react');
@@ -57,6 +59,7 @@ vi.mock('@/session/AccountSwitcherSheet', () => ({ AccountSwitcherSheet: (props:
 vi.mock('@/session/HomeHeaderGlassButton', () => ({ HomeHeaderGlassButton: () => null }));
 vi.mock('@/session/TeammateList', () => ({ TeammateList: (props: unknown) => { h.list = props; return null; } }));
 vi.mock('@/session/useTeammateRoster', () => ({ useTeammateRoster: () => ({ ...h.roster }) }));
+vi.mock('@/chat/useCloudCompanion', () => ({ useCloudCompanionHome: () => h.cloud }));
 vi.mock('@/session/useBotGroupRoster', () => ({ useBotGroupRoster: (targets: unknown) => { h.groupTargetsSeen.push(targets); return h.groups; } }));
 vi.mock('@/session/useTeammateNavigation', async original => {
   const actual = await original<typeof import('@/session/useTeammateNavigation')>();
@@ -90,9 +93,20 @@ beforeEach(() => {
   h.modeMenu = {}; h.nativeMenus = true; h.nativeHeader = true; h.headerHeight = 106; h.barEdge = 'none'; h.chrome = {};
   h.groups.loading = false; h.groups.refreshing = false; h.groups.error = null;
   h.roster.loading = false; h.roster.error = null; h.roster.isOnline.mockReturnValue(true);
+  h.cloud.supported = false; h.cloud.actors = []; h.cloud.deviceNames = new Map();
 });
 afterEach(() => { act(() => root?.unmount()); root = undefined; });
 describe('teammate home entry', () => {
+  it('hides an unverified cached roster while keeping cloud-only rows available', async () => {
+    h.roster.loading = true; h.roster.error = null;
+    await render();
+    expect(h.list.items).toEqual([]);
+    h.cloud.supported = true;
+    h.cloud.actors = [{ id: 'actor', kind: 'bot', externalId: 'writer', name: 'Writer', avatar: null, homeDeviceId: 'mac' }];
+    await render();
+    expect(h.list.items).toHaveLength(1);
+    expect(h.list.items[0].item.revision).toBe('cloud');
+  });
   it('lands on the roster and never opens the remembered teammate on its own', async () => {
     // A remembered, online teammate on a settled roster used to be reopened at launch (#4912); the
     // roster is the destination now, in every focus, refresh and remount.
@@ -209,6 +223,68 @@ describe('server groups in the actual teammate home', () => {
     h.groups.loading = false; h.groups.error = 'CHAT_LIST_FAILED';
     await render(); expect(h.list.error).toBe('CHAT_LIST_FAILED');
     await act(async () => h.list.onRefresh()); expect(h.groups.refresh).toHaveBeenCalledOnce();
+  });
+});
+
+describe('cloud companions (main computer offline)', () => {
+  const actorId = '00000000-0000-4000-8000-000000000001';
+  const copy = (deviceId: string): HostedRemoteCollectionItem => ({ ...teammate, key: `${deviceId}:writer`, host: { deviceId, deviceName: deviceId.toUpperCase() } });
+  it('keeps a listed companion quiet and in its normal chat while its main computer looks offline', async () => {
+    h.cloud.supported = true;
+    h.cloud.actors = [{ id: actorId, kind: 'bot', externalId: 'writer', name: 'Writer', avatar: null, homeDeviceId: 'mac' }];
+    h.roster.items = [teammate, copy('pc')];
+    h.roster.isOnline.mockReturnValue(false);
+    await render();
+    expect(h.list.items.map((row: HostedRemoteCollectionItem) => row.key)).toEqual(['mac:bot']);
+    expect(h.list.quietPresence(teammate)).toBe(true);
+    await act(async () => h.list.onSelect(teammate));
+    expect(h.nav.openTeammate).toHaveBeenCalledExactlyOnceWith(teammate);
+    expect(h.push).not.toHaveBeenCalledWith(expect.objectContaining({ pathname: '/companions/cloud/[actorId]' }));
+  });
+  it('opens the cloud conversation only for a companion this phone knows from the cloud alone', async () => {
+    h.cloud.supported = true;
+    h.cloud.deviceNames = new Map([['mac', 'Mac']]);
+    h.cloud.actors = [{ id: actorId, kind: 'bot', externalId: 'writer', name: 'Writer', avatar: null, homeDeviceId: 'mac' }];
+    h.roster.items = [copy('pc')];
+    await render();
+    const [row] = h.list.items as HostedRemoteCollectionItem[];
+    expect(row.item.revision).toBe('cloud');
+    expect(h.list.quietPresence(row)).toBe(true);
+    await act(async () => h.list.onSelect(row));
+    expect(h.push).toHaveBeenLastCalledWith({ pathname: '/companions/cloud/[actorId]',
+      params: { actorId, botId: 'writer', deviceId: 'mac', deviceName: 'Mac', title: 'Writer' } });
+    expect(h.nav.openTeammate).not.toHaveBeenCalled();
+  });
+  it('re-reads main computers when the listed rows change and on pull-to-refresh', async () => {
+    h.cloud.supported = true;
+    h.cloud.refresh = vi.fn();
+    h.roster.items = [teammate];
+    await render();
+    const afterMount = h.cloud.refresh.mock.calls.length;
+    await render();
+    expect(h.cloud.refresh).toHaveBeenCalledTimes(afterMount);
+    // Another device moved the companion: the new main computer now lists it.
+    h.roster.items = [teammate, copy('pc')];
+    await render();
+    expect(h.cloud.refresh).toHaveBeenCalledTimes(afterMount + 1);
+    // Both computers were already cached: the new main computer re-lists the same row.
+    h.roster.items = [teammate, { ...copy('pc'), item: { ...copy('pc').item, revision: 'taken-over' } }];
+    await render();
+    expect(h.cloud.refresh).toHaveBeenCalledTimes(afterMount + 2);
+    await act(async () => h.list.onRefresh());
+    expect(h.cloud.refresh).toHaveBeenCalledTimes(afterMount + 3);
+  });
+  it('keeps the per-computer behavior on an older server or an online computer', async () => {
+    h.cloud.actors = [{ id: actorId, kind: 'bot', externalId: 'writer', name: 'Writer', avatar: null, homeDeviceId: 'mac' }];
+    h.roster.items = [teammate, copy('pc')];
+    h.roster.isOnline.mockReturnValue(false);
+    await render();
+    expect(h.list.items).toHaveLength(2);
+    expect(h.list.quietPresence(teammate)).toBe(false);
+    h.cloud.supported = true; h.roster.isOnline.mockReturnValue(true);
+    await render();
+    await act(async () => h.list.onSelect(teammate));
+    expect(h.nav.openTeammate).toHaveBeenCalledExactlyOnceWith(teammate);
   });
 });
 

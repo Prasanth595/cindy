@@ -75,6 +75,8 @@
     "next": "Next",
     "answerRequired": "Select or enter an answer to continue.",
     "submit": "Submit",
+    "sendAndContinue": "Send and continue",
+    "closeAnswer": "Close",
     "planReviewTitle": "Review Claude's plan",
     "planExpand": "Expand plan",
     "planEditHint": "Use edit mode to adjust the plan",

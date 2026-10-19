@@ -24,6 +24,7 @@ const h = vi.hoisted(() => ({ root: '', botId: '', created: false, verified: fal
   snapshot: null as unknown as ImportSnapshot, store: null as unknown as ReturnType<typeof createCompanionEnvironmentStore>,
   routines: [] as Routine[], pause: vi.fn(), lifecycle: vi.fn(), sourceEnvironment: {} as Record<string, string>,
   profile: { config: {} } as Record<string, unknown>, importMedia: vi.fn(), writeProfile: vi.fn(), importDocument: vi.fn(), readName: vi.fn(), secretValues: new Map<string, string>(),
+  connectImBot: vi.fn(),
 }));
 vi.mock('electron', () => ({ app: { getPath: () => h.root } }));
 vi.mock('../../appSessionState.js', () => ({ activeOwnerScopeKey: () => h.root, ownerScopedUserDataPath: () => h.root, getActiveAppSession: () => ({ dataOwnerId: 'fixture-owner' }), isAppSessionBoundaryPending: () => h.boundary }));
@@ -54,6 +55,7 @@ vi.mock('../runtime.js', () => ({ recoverCompanionEnvironmentRemovals: vi.fn(asy
   finishRemoval: (...args: Parameters<typeof h.store.finishRemoval>) => h.store.finishRemoval(...args),
 } }));
 vi.mock('../memoryMedia.js', () => ({ importMemoryMedia: h.importMedia }));
+vi.mock('../imBotConnections.js', () => ({ connectImportedImBot: h.connectImBot }));
 vi.mock('../../localDb/ipc/messages.js', () => ({ createMessage: vi.fn() }));
 vi.mock('../../routines/service.js', () => ({
   updateBotRoutineLifecycle: h.lifecycle,
@@ -83,6 +85,7 @@ import { indexAutomationDependencies, normalizeAutomation } from '../sourceAutom
 beforeEach(async () => {
   h.root = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-import-host-test-'));
   h.created = false; h.verified = false; h.sourceEnabled = true; h.failReadyWrite = false; h.boundary = false; h.routines = []; h.pause.mockReset(); h.sourceEnvironment = {};
+  h.connectImBot.mockReset().mockResolvedValue(undefined);
   h.lifecycle.mockReset().mockImplementation(async (_botId: string, action: string) => {
     if (action === 'delete') h.routines = [];
   });
@@ -479,6 +482,8 @@ it.each([false, true])('redacts all known credentials from profile/memory copies
   const stored = (await h.store.read(h.root, result.botId, () => {}))!;
   if (deselected) { expect(stored.env).toEqual({}); expect(stored.mcp).toEqual([]); expect(stored.credentials).toEqual([]); }
   else {
+    // The selected bot token reaches the companion's own connection resolved, same as the stored copy.
+    expect(h.connectImBot).toHaveBeenCalledWith(result.botId, { format: 'telegram', value: { token: secrets[6], account: 'default' } });
     expect(stored.env.DATA_TOKEN).toBe(secrets[0]);
     expect(stored.mcp[0]?.env?.REFERENCED).toBe(secrets[0]);
     expect(stored.mcp[0]?.headers?.Authorization).toBe(`Bearer ${secrets[2]}`);
@@ -520,7 +525,10 @@ it.each([false, true])('publishes command env/argv/stdin credentials safely (com
   const [source] = await listCompanionImportSources('fixture');
   const remote = await readRemoteCompanionImport(`preview:${source!.id}`, 'fixture', false);
   for (const value of [secret, nested, ...urlSecrets, ...literalSecrets]) expect(JSON.stringify(remote)).not.toContain(value);
+  // A remote controller that did not advertise the bots category gets the legacy projection; local previews get bots.
+  expect(vi.mocked(inspectImportSource).mock.calls.at(-1)?.[3]).toEqual({ bots: false });
   const preview = await previewCompanionImport(source!.id, 'fixture');
+  expect(vi.mocked(inspectImportSource).mock.calls.at(-1)?.[3]).toEqual({ bots: true });
   const requestId = 'fixture-json-command-publication';
   const result = await startCompanionImport({ requestId, previewId: preview.id, name: 'Ada',
     entryIds: ['source-env', 'memory', 'skill', ...(selected ? ['task'] : [])], takeover: false }, 'fixture');
@@ -662,7 +670,10 @@ it('does not reintroduce a credential-bearing skill slug in the generated resour
   const preview = await previewCompanionImport(source!.id, 'fixture');
   const requestId = 'fixture-slug-12345';
   const result = await startCompanionImport({ requestId, previewId: preview.id, name: 'Ada', entryIds: ['skill', 'env'], takeover: false }, 'fixture');
-  await vi.waitFor(async () => expect((await getCompanionImportResult(requestId))?.status).toBe('complete'));
+  // Acceptance may precede filesystem writes; join the import transaction before
+  // checking published content or letting teardown remove its directory.
+  const completed = await withBotProfileLocks([result.botId], () => getCompanionImportResult(requestId));
+  expect(completed?.status).toBe('complete');
   const directory = path.join(h.root, 'bots', result.botId, 'skills');
   const [slug] = await fs.readdir(directory);
   expect(slug).toMatch(/^import-[a-f0-9]+$/);

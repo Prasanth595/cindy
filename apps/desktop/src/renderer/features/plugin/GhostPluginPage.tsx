@@ -26,7 +26,6 @@ import {
   AlertTriangle,
   ArrowUp,
   Bot,
-  Check,
   ChevronDown,
   ChevronRight,
   MessageCircle,
@@ -130,6 +129,7 @@ import {
 import { usePluginListScrollRestoration } from './lib/usePluginListScrollRestoration';
 import { GhostPagePanelHost } from './GhostPagePanelHost';
 import { GhostPluginDetailView } from './GhostPluginDetailView';
+import { PluginSharedUsage } from './PluginSharedUsage';
 import {
   currentMainViewVisibilityOwner,
   readMainViewSidebarVisible,
@@ -167,6 +167,8 @@ type PluginPresentationFilter = 'all' | PluginPresentationOrigin;
 
 type PresentedGhostPluginItem = GhostPluginListItem & {
   origin: PluginPresentationOrigin;
+  marketItem: PluginMarketItem | null;
+  author: string | null;
   /** 市场存在更新时的市场记录;列表卡片据此显示更新徽标与直达入口。 */
   marketUpdate: PluginMarketItem | null;
 };
@@ -428,6 +430,7 @@ export function GhostPluginPage({
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { confirm } = useConfirmDialog();
+
   const showPluginMarketActionError = useCallback(
     async (error: unknown) => {
       // 用户在安装确认框里取消不是失败，不弹错误提示。
@@ -436,7 +439,7 @@ export function GhostPluginPage({
     },
     [t],
   );
-  const { user, mode, dataOwnerId } = useAuth();
+  const { user, mode, dataOwnerId, dataOwnerGeneration } = useAuth();
   const [recommendationNonce] = useState(() => searchParams.get('recommendation'));
   const pendingRecommendation = useSyncExternalStore(
     subscribePendingPluginSuggestion,
@@ -743,8 +746,8 @@ export function GhostPluginPage({
           return {
             ...toGhostPluginListItem(ghost, presentation),
             origin: pluginPresentationOrigin(marketItem),
-            // 同版本展示刷新由 main 标成 installed;legacy-unresolved 仍保留
-            // update-available,以便用户用市场包替换未验证的本地字节。
+            marketItem,
+            author: presentation?.author ?? ghost.manifest.author ?? null,
             marketUpdate: ghost.retirement ? null : pluginUpdateForInstalledVersion(marketItem),
           };
         }),
@@ -1668,8 +1671,11 @@ export function GhostPluginPage({
           {recommendationNotice}
           <div className="min-h-0 flex-1">
             <GhostPluginDetailView
+              usageOwnerKey={`${panelOwnerKey}:${dataOwnerGeneration}`}
+              confirmClearUsage={() => confirm({ title: t('settings.ghosts.usage.clearTitle'), description: t('settings.ghosts.usage.clearDescription'), confirmText: t('settings.ghosts.usage.clear'), confirmVariant: 'destructive' })}
               ghost={selectedGhost}
               detail={selectedDetail}
+              marketItem={selectedMarketInstall}
               panelStatus={panelStatus}
               enabledOverride={
                 selectedGhost
@@ -1857,6 +1863,8 @@ export function GhostPluginPage({
                         key={item.id}
                         item={item}
                         sourceLabel={t(`settings.ghosts.page.origin.${item.origin}`)}
+                        marketItem={item.marketItem}
+                        author={item.author}
                         updateVersion={item.marketUpdate?.version}
                         updateNeedsConsent={item.marketUpdate?.updateRequiresConsent === true}
                         updateBusy={
@@ -1887,6 +1895,8 @@ export function GhostPluginPage({
                             key={item.id}
                             item={item}
                             sourceLabel={t(`settings.ghosts.page.origin.${item.origin}`)}
+                            marketItem={item.marketItem}
+                            author={item.author}
                             updateVersion={item.marketUpdate?.version}
                             updateNeedsConsent={item.marketUpdate?.updateRequiresConsent === true}
                             updateBusy={
@@ -2153,6 +2163,7 @@ export function MarketPluginCard({
   onIconLoadError: () => void;
 }) {
   const { t } = useTranslation();
+  const metadataId = useId();
   const marketIcon = usePluginMarketIcon(item, { deferUntilVisible: true });
   const unavailable = busy;
   const replacementDescriptionId = useId();
@@ -2172,7 +2183,7 @@ export function MarketPluginCard({
         onClick={onSelect}
         disabled={unavailable}
         aria-label={item.name}
-        aria-describedby={replacementDescription ? replacementDescriptionId : undefined}
+        aria-describedby={replacementDescription ? `${metadataId} ${replacementDescriptionId}` : metadataId}
         className={cn(
           'flex min-w-0 flex-1 items-start gap-4 self-stretch text-left',
           'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]',
@@ -2191,26 +2202,17 @@ export function MarketPluginCard({
           <span className="truncate text-15 font-medium text-[var(--text-primary)]">
             {item.name}
           </span>
-          <span className="mt-1 flex min-w-0 items-center gap-1.5 overflow-hidden whitespace-nowrap text-11 text-[var(--text-tertiary)]">
+          <span id={metadataId} className="mt-1 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-11 text-[var(--text-tertiary)]">
             <span className="shrink-0">
               {t(`settings.ghosts.page.origin.${pluginPresentationOrigin(item)}`)}
             </span>
-            <span className="shrink-0" aria-hidden="true">
-              ·
-            </span>
-            <span className="shrink-0">v{item.version}</span>
-            <span className="shrink-0" aria-hidden="true">
-              ·
-            </span>
-            <span className="min-w-0 truncate font-mono">{item.ghostId}</span>
             {item.author ? (
               <>
-                <span className="shrink-0" aria-hidden="true">
-                  ·
-                </span>
-                <span className="min-w-0 truncate">{item.author}</span>
+                <span aria-hidden="true">·</span>
+                <span className="min-w-0 max-w-[120px] truncate">{item.author}</span>
               </>
             ) : null}
+            <PluginSharedUsage detail={item} variant="list" />
           </span>
           <span
             id={replacementDescription ? replacementDescriptionId : undefined}
@@ -2366,6 +2368,8 @@ function GhostPluginActions({
 export function GhostPluginCard({
   item,
   sourceLabel,
+  marketItem,
+  author,
   updateVersion,
   updateNeedsConsent = false,
   updateBusy = false,
@@ -2378,12 +2382,13 @@ export function GhostPluginCard({
 }: {
   item: GhostPluginListItem;
   sourceLabel?: string;
+  marketItem?: PluginMarketItem | null;
+  author?: string | null;
   /** 市场存在新版本时的目标版本;与 onUpdate 同时提供。 */
   updateVersion?: string;
   /** 新版本权限变多、后台更新已暂停等用户确认(Main 按真实包判定)。 */
   updateNeedsConsent?: boolean;
   updateBusy?: boolean;
-  /** 本卡正在更新:更新胶囊换成 Spinner。 */
   updatePending?: boolean;
   onUpdate?: () => void;
   effectiveEnabled?: boolean;
@@ -2392,9 +2397,9 @@ export function GhostPluginCard({
   onIconLoadError?: () => void;
 }) {
   const { t } = useTranslation();
+  const metadataId = useId();
   const enabled = effectiveEnabled ?? item.enabled;
-  // 未读(badge 槽):单条卡片走**呼吸**点(AttentionDot 形态规范——聚合入口
-  // 静态、单条呼吸)。有摘要时顶替静态描述:用户扫一眼就知道新内容是什么。
+  // 单卡未读点使用呼吸动效，未读摘要替换静态描述。
   const unread = useGhostUnread(item.id);
   const unreadSummary = useGhostUnreadSummary(item.id);
   const primary = ghostPrimaryAction(item);
@@ -2443,6 +2448,7 @@ export function GhostPluginCard({
       onClick={onManage}
       onKeyDown={handleCardKeyDown}
       aria-label={item.name}
+      aria-describedby={metadataId}
       className={cn(
         'group flex min-h-[108px] w-full cursor-pointer select-none items-start gap-4 rounded-xl border-[0.5px] border-[var(--border-default)] bg-[var(--surface-elevated)] p-4 text-left',
         'transition-[background-color,border-color,transform] duration-150 ease-out',
@@ -2466,8 +2472,15 @@ export function GhostPluginCard({
           </span>
           {item.retirement?.unread ? <AttentionDot tone="awaiting" size={6} className="mt-px" /> : unread ? <AttentionDot breathing size={6} className="mt-px" /> : null}
         </span>
-        <span className="mt-1 block min-w-0 truncate text-11 text-[var(--text-tertiary)]">
-          {sourceLabel ? `${sourceLabel} · ` : ''}v{item.version}
+        <span id={metadataId} className="mt-1 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-11 text-[var(--text-tertiary)]">
+          {sourceLabel ? <span className="shrink-0">{sourceLabel}</span> : null}
+          {author ? (
+            <>
+              {sourceLabel ? <span aria-hidden="true">·</span> : null}
+              <span className="min-w-0 max-w-[120px] truncate">{author}</span>
+            </>
+          ) : null}
+          {marketItem ? <PluginSharedUsage detail={marketItem} variant="list" /> : null}
           {item.retirement ? (
             <span> · {t('settings.ghosts.retirement.status')}</span>
           ) : item.oauthAuthorizationExpired ? (
@@ -2475,12 +2488,6 @@ export function GhostPluginCard({
               {' · '}
               <AlertTriangle size={11} className="inline" aria-hidden="true" />
               <span>{t('settings.ghosts.page.oauthAuthorizationExpired')}</span>
-            </span>
-          ) : !updateVersion ? (
-            <span className="inline-flex items-center gap-1">
-              {' · '}
-              <Check size={11} className="inline" aria-hidden="true" />
-              {t('settings.ghosts.page.upToDate')}
             </span>
           ) : updateNeedsConsent ? (
             <span className="inline-flex items-center gap-1 text-[var(--text-secondary)]">
@@ -2491,9 +2498,6 @@ export function GhostPluginCard({
           ) : null}
           {!enabled && !item.retirement ? ` · ${t('settings.ghosts.disabledTag')}` : ''}
         </span>
-        {/* 未读摘要顶替静态描述:静态描述用户早读过了,"新内容是什么"才是这一刻
-            的信息。摘要文字提到 primary 档以区别于常态描述(不另加色,颜色语义
-            留给那颗点)。 */}
         <span
           className={cn(
             'mt-1.5 line-clamp-2 text-13 leading-5',
@@ -2503,7 +2507,7 @@ export function GhostPluginCard({
           {item.retirement ? t('settings.ghosts.retirement.cardNotice') : unreadSummary || item.description || item.id}
         </span>
       </span>
-      {/* 右列只在真实控件上拦截冒泡;空白与「由 Agent 调用」提示仍走整卡进详情。 */}
+      {/* 仅真实控件拦截冒泡，右列空白仍可进入详情。 */}
       <span className="flex shrink-0 flex-col items-end justify-between gap-2 self-stretch">
         <span className="flex items-center gap-1.5">
           {updateVersion && onUpdate ? (

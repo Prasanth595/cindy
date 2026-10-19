@@ -248,7 +248,8 @@ it('drops a late response when switching companions and fences a disconnected/re
   await render(true); expect(result.ready).toBe(false);
 });
 
-it.each([false, true])('keeps local composing available while dispatch readiness=%s', ready => {
+it.each([false, true].flatMap(ready => [undefined, 'running', 'create-failed'].map(status => ({ ready, status }))))(
+  'keeps composing for dispatch readiness=$ready except during failed creation handoff ($status)', ({ ready, status }) => {
   const expressions = new Map<string, string>();
   const visit = (node: ts.Node) => {
     if (ts.isVariableDeclaration(node) && node.initializer) expressions.set(node.name.getText(screen), node.initializer.getText(screen));
@@ -257,13 +258,13 @@ it.each([false, true])('keeps local composing available while dispatch readiness
   visit(screen);
   const names = ['canUseComposer', 'remoteRealtimeControlsUnavailable', 'outboxConnectionState'];
   const code = names.map(name => `const ${name} = ${expressions.get(name)};`).join('\n');
-  const gates = new Function('ready', `
+  const gates = new Function('ready', 'creationTask', `
     const companionEntry = { ready, canCompose: true }, sessionOperationLayout = { canUseComposer: true }, sessionResourceCards = { blocked: false };
     const status = 'online', targetAvailableForDispatch = true, isDeviceUnresponsive = false, outboxRecoverySyncHeld = false, loading = false;
     ${code}
     return { canUseComposer, remoteRealtimeControlsUnavailable, outboxConnectionState };
-  `)(ready);
-  expect(gates.canUseComposer).toBe(true);
+  `)(ready, status ? { status } : undefined);
+  expect(gates.canUseComposer).toBe(status !== 'create-failed');
   expect(gates.remoteRealtimeControlsUnavailable).toBe(!ready);
   expect(gates.outboxConnectionState.autoRecoveringError).toBe(!ready);
 });
@@ -374,7 +375,7 @@ it.each(['/context', '/learn keep this', '/help', 'keep this message'])('preserv
     ts.forEachChild(node, visit);
   };
   visit(screen);
-  expect(guard).toBeDefined();
+  if (!guard) throw new Error('Missing production remote-command guard');
   const error = vi.fn();
   const consume = vi.fn();
   const run = new Function('args', `

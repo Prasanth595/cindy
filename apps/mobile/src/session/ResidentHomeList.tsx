@@ -94,9 +94,11 @@ export function ResidentHomeList({ children, focused, top, left, right }: {
   const measure = useCallback(() => {
     const revision = ++measureRevision.current;
     if (!context?.enabled || !latest.current.focused || !context.host.current) return;
-    anchor.current?.measureLayout(context.host.current, (x, y, width, height) => {
-      if (revision !== measureRevision.current || !latest.current.focused || width <= 0 || height <= 0) return;
-      context.publish({ owner, frame: { left: x, top: y, width, height }, children: latest.current.children });
+    anchor.current?.measureInWindow((x, y, width, height) => {
+      context.host.current?.measureInWindow((hostX, hostY) => {
+        if (revision !== measureRevision.current || !latest.current.focused || width <= 0 || height <= 0) return;
+        context.publish({ owner, frame: { left: x - hostX, top: y - hostY, width, height }, children: latest.current.children });
+      });
     });
   }, [context, owner]);
   useLayoutEffect(() => {

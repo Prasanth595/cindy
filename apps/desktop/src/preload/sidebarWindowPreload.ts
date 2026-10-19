@@ -68,7 +68,7 @@ function readPreferredSystemLocale(): ApplicationMenuLocale {
   }
 }
 
-const appearanceSnapshot = createAppearanceSnapshotBridge();
+const appearanceSnapshot = createAppearanceSnapshotBridge({ wallpaperAssets: true });
 
 const fanOutFullscreenChange = (cb: (isFullscreen: boolean) => void): (() => void) =>
   onPayload('fullscreen-change', cb);
@@ -139,8 +139,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   deviceLink: {
     getState: (): Promise<unknown> => ipcRenderer.invoke(DEVICE_LINK_INVOKE.GET_STATE),
     listDevices: (): Promise<unknown> => ipcRenderer.invoke(DEVICE_LINK_INVOKE.LIST_DEVICES),
-    invoke: (deviceId: string, channel: string, args: unknown[]): Promise<unknown> =>
-      ipcRenderer.invoke(DEVICE_LINK_INVOKE.INVOKE, { deviceId, channel, args }),
+    invoke: (deviceId: string, channel: string, args: unknown[], scheduling?: { background?: boolean }): Promise<unknown> =>
+      ipcRenderer.invoke(DEVICE_LINK_INVOKE.INVOKE, { deviceId, channel, args, ...(scheduling ? { scheduling } : {}) }),
     subscribe: (deviceId: string, topics: string[]): Promise<{ ok: true }> =>
       ipcRenderer.invoke(DEVICE_LINK_INVOKE.SUBSCRIBE, { deviceId, topics }),
     unsubscribe: (deviceId: string, topics: string[]): Promise<{ ok: true }> =>
@@ -157,6 +157,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       onPayload(DEVICE_LINK_PUSH.CONTROL_TARGET_CHANGED, cb),
     onResponsivenessChanged: (cb: (payload: unknown) => void): (() => void) =>
       onPayload(DEVICE_LINK_PUSH.RESPONSIVENESS_CHANGED, cb),
+    onPeerLinkReopened: (cb: (payload: unknown) => void): (() => void) =>
+      onPayload(DEVICE_LINK_PUSH.PEER_LINK_REOPENED, cb),
     onPeerLinkReset: (cb: (payload: unknown) => void): (() => void) =>
       onPayload(DEVICE_LINK_PUSH.PEER_LINK_RESET, cb),
     mirrorCache: {
@@ -224,8 +226,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     cachePut: (params: unknown): Promise<unknown> => ipcRenderer.invoke('maker:file-browser:cache-put', params),
     onTransferProgress: (cb: (event: unknown) => void): (() => void) => onPayload('maker:file-browser:transfer', cb),
     previewHtml: (params: unknown): Promise<unknown> => ipcRenderer.invoke('maker:html-preview:open', params),
+    cancelHtmlPreview: (requestId: string): Promise<{ ok: true }> => ipcRenderer.invoke('maker:html-preview:cancel', requestId),
     chatFetch: (params: unknown): Promise<unknown> => ipcRenderer.invoke('maker:chat-file:fetch', params),
     chatDownload: (params: unknown): Promise<unknown> => ipcRenderer.invoke('maker:chat-file:download', params),
+    chatCancel: (requestId: string): Promise<unknown> => ipcRenderer.invoke('maker:chat-file:cancel', requestId),
     chatStat: (params: unknown): Promise<unknown> => ipcRenderer.invoke('maker:chat-file:stat', params),
   },
   terminal: {

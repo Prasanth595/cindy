@@ -42,6 +42,7 @@ import { promises as fs } from 'node:fs';
 import { structuredPatch } from 'diff';
 import { syncCodexArchiveState } from './archive-state.js';
 import { readCodexThreadMcpServerTools } from './mcp-server-tools.js';
+import { readAccountRateLimitsWithRefresh } from './app-server/account-rate-limits.js';
 
 import {
   BaseAgent,
@@ -174,6 +175,7 @@ import {
   beginCodexGenerationTurn,
   codexGenerationDurationMs,
   finalizeCodexGenerationTurn,
+  finishCodexSamplingTurn,
   pauseCodexGeneration,
   resetCodexGenerationTiming,
   resumeCodexGeneration,
@@ -358,7 +360,10 @@ function statusTextForItem(item: { type?: string; command?: string; tool?: strin
  * 把 minimal 收敛到 low。max / ultra 直接透传，不再静默降级为 xhigh(issue #352)。
  * 某模型是否真支持某档位由目录 efforts 与 UI/reconcile 门控保证。
  */
-function clampEffortForCodex(model: string, e: Effort): CodexEffort {
+function clampEffortForCodex(model: string, e: Effort): CodexEffort | undefined {
+  // Desktop's persisted no-effort sentinel is an empty string, not a Codex enum.
+  // Keep it in session state, but let app-server use its default on the wire.
+  if (!e) return undefined;
   if (e === 'minimal' && !CODEX_MINIMAL_EFFORT_MODELS.has(model)) return 'low';
   return e;
 }
@@ -438,9 +443,11 @@ function buildCodexDeveloperInstructions(parts: {
   botProfileContextPrompt?: string;
   botUserProfilePrompt?: string;
   userPrompt?: string;
+  answerDeliveryPrompt?: string;
 }): string {
   return [
     parts.botProfilePrompt,
+    parts.answerDeliveryPrompt,
     MAKER_CODEX_SYSTEM_PROMPT_APPEND,
     parts.makerMemoryRules,
     parts.contactsRules,
@@ -1160,6 +1167,11 @@ export function isExactNoRolloutThreadResumeError(error: unknown, threadId: stri
 function isExactUnloadedThreadReadError(error: unknown, threadId: string): boolean {
   return isExactThreadLookupError(error,
     `codex app-server thread/read error -32600: thread not loaded: ${threadId}`);
+}
+
+function isExactArchivedThreadResumeError(error: unknown, threadId: string): boolean {
+  return isExactThreadLookupError(error,
+    `codex app-server thread/resume error -32600: session ${threadId} is archived. Run \`codex unarchive ${threadId}\` to unarchive it first.`);
 }
 
 function isExactThreadLookupError(error: unknown, message: string): boolean {
@@ -1957,6 +1969,8 @@ export class CodexAgent extends BaseAgent {
       if (!opts.remoteHostId) this.archiveHostKeys.add(key);
       const host = await this.getHost(opts.remoteHostId, undefined, {
         keyOverride: key, hostPurpose: 'control-plane',
+        // Local archive hosts never run turns; skip the MCP bridge they would never use.
+        ...(!opts.remoteHostId ? { nativeStorageOnly: true } : {}),
         ...(storage ? { historyHome: storage.historyHome, sqliteHome: storage.sqliteHome } : {}),
       });
       return { key, host };
@@ -2327,10 +2341,26 @@ export class CodexAgent extends BaseAgent {
     }
   }
 
+  /** Current local consumers, including unresolved startup which may freeze this credential. */
+  getLocalHostKeysForCredentialMode(credentialMode?: AgentCredentialMode): string[] {
+    return [...new Set([
+      ...this.hosts.keys(), ...this.hostPromises.keys(),
+      ...this.hostSessionBindingLeases.keys(), ...this.retiringHosts.keys(),
+    ])].filter((candidate) => {
+      if (candidate.startsWith('remote:')) return false;
+      if (!credentialMode) return true;
+      const mode = this.hostEffectiveCredentialModes.get(candidate)
+        ?? this.hostCredentialModes.get(candidate)
+        ?? this.hostPromises.get(candidate)?.credentialMode;
+      return mode === undefined || mode === credentialMode;
+    });
+  }
+
   async beginLocalHostCredentialChange(
     reason = 'CodexAgent local credential state changed',
-    options: { allLocalHosts?: boolean; forceRetire?: boolean; busyError?: () => Error } = {},
+    options: { allLocalHosts?: boolean; credentialMode?: AgentCredentialMode; targetHostKey?: string; forceRetire?: boolean; busyError?: () => Error } = {},
   ): Promise<{
+    affectedHostKeys: readonly string[];
     assertIdle(): void;
     retireActiveHost(): Promise<void>;
     finalize(): Promise<void>;
@@ -2347,7 +2377,18 @@ export class CodexAgent extends BaseAgent {
       if (pending.length === 0) break;
       await Promise.allSettled(pending);
     }
-    this.bumpHostGeneration(LOCAL_CONFIGURATION_CHANGE_KEY);
+    // 配置代次只在变更真正落地(host 被退役 / finalize 通过 busy 检查)时才推进。
+    // 预约本身已经通过 hostCredentialModeSwitches 挡住新的 host 获取;若在预约时就推进代次,
+    // 一次因 busy 被拒绝、随后 release 的变更也会让所有正在准备 host 的会话判定「路由已变」而
+    // 重来——hook-control 每 2 秒重试一次被拒的 MCP 刷新时,新启动的 Codex 任务会连续撞满 7 次
+    // 重试并以 LAZY_CREATE_FAILED 收场(2026-10-19 实排:伙伴会话长时间 busy,窗口期内任何 Codex
+    // 任务都无法启动)。
+    let generationBumped = false;
+    const commitConfigurationChange = (): void => {
+      if (generationBumped) return;
+      generationBumped = true;
+      this.bumpHostGeneration(LOCAL_CONFIGURATION_CHANGE_KEY);
+    };
 
     let releaseSwitch!: () => void;
     const switchPromise = new Promise<void>((resolve) => {
@@ -2367,10 +2408,8 @@ export class CodexAgent extends BaseAgent {
     };
 
     const affectedKeys = (): string[] => options.allLocalHosts
-      ? [...new Set([
-          ...this.hosts.keys(), ...this.hostPromises.keys(),
-          ...this.hostSessionBindingLeases.keys(), ...this.retiringHosts.keys(),
-        ])].filter((candidate) => !candidate.startsWith('remote:'))
+      ? this.getLocalHostKeysForCredentialMode(options.credentialMode)
+        .filter((candidate) => options.targetHostKey === undefined || candidate === options.targetHostKey)
       : [key];
     const activeUseCount = (): number => affectedKeys().reduce((count, candidate) => {
       const host = this.hosts.get(candidate);
@@ -2383,13 +2422,16 @@ export class CodexAgent extends BaseAgent {
       for (const candidate of affectedKeys()) {
         await this.retireHostKey(candidate, reason, {
           failIfActive: options.allLocalHosts === true && options.forceRetire !== true,
+          rejectBeforeMutation: options.allLocalHosts === true && options.forceRetire !== true,
           logPrefix: 'codex local credential hard cut',
           throwOnShutdownFailure: true,
         });
       }
+      commitConfigurationChange();
     };
 
     return {
+      affectedHostKeys: affectedKeys(),
       assertIdle: () => {
         const count = activeUseCount();
         if (count > 0) {
@@ -2412,6 +2454,7 @@ export class CodexAgent extends BaseAgent {
               await retire();
             } else {
               await this.disposeLocalHostForCredentialChangeUnlocked(key, reason);
+              commitConfigurationChange();
             }
           }
         } finally {
@@ -2523,6 +2566,8 @@ export class CodexAgent extends BaseAgent {
       localAuthPolicy?: 'isolated' | 'legacy-shared';
       keyOverride?: string;
       hostPurpose?: 'control-plane' | 'review' | 'custom-context';
+      /** Archive-only control host: native storage RPCs, no turns, no MCP bridge. */
+      nativeStorageOnly?: boolean;
       customContextModel?: string;
       customContextWindow?: number;
       sqliteHome?: string;
@@ -2756,6 +2801,7 @@ assertRouteCurrent();
         opts.localAuthPolicy,
         opts.routeIsCurrent,
         opts.deviceHostedGuestProviderId,
+        opts.nativeStorageOnly,
       ).finally(() => {
         // 成功: this.hosts 已赋值, 后续走快路径; 失败: 清掉 promise 让下次调用能重试
         const current = this.hostPromises.get(key);
@@ -2977,7 +3023,7 @@ assertRouteCurrent();
     // oauth-bearer prevents a gateway/provider host from reading or mutating the wrong
     // account context; getHost refuses to replace a differently-authenticated active host.
     return this.withStartedAccountHost(providerId,
-      host => host.request<AccountRateLimitsResponse>(Method.AccountRateLimitsRead, undefined));
+      host => readAccountRateLimitsWithRefresh((method, params, options) => host.request(method, params, options)));
   }
 
   /** Consume one reset credit on the non-model app-server control plane. */
@@ -3004,6 +3050,7 @@ assertRouteCurrent();
     localAuthPolicy?: 'isolated' | 'legacy-shared',
     routeIsCurrent?: () => boolean,
     deviceHostedGuestProviderId?: string,
+    nativeStorageOnly?: boolean,
   ): Promise<AppServerHost> {
     const seq = (this.createHostSeqByKey.get(key) ?? 0) + 1;
     this.createHostSeqByKey.set(key, seq);
@@ -3140,6 +3187,7 @@ assertRouteCurrent();
                 ? { requestedCredentialMode: credentialMode }
                 : {}),
               ...(hostPurpose ? { hostPurpose } : {}),
+              ...(nativeStorageOnly ? { nativeStorageOnly } : {}),
               ...(hostPurpose === 'custom-context'
                 ? {
                     customContextModel,
@@ -3316,15 +3364,15 @@ assertRouteCurrent();
         binaryPath,
         env,
         extraArgs,
-        onProcessSpawned: (pid) => {
-          this.deps.registerLocalCodexAppServerProcess?.({
-            pid,
-            role:
-              hostPurpose === 'control-plane'
-                ? 'control-plane-service'
-                : 'task-host',
-          });
-        },
+        // 必须把注销函数交回 transport：进程退出后登记要随之移除，
+        // 退出回收（codex-tool-tree-reaper）据此认领 PID，残留登记遇 PID 复用会误杀。
+        onProcessSpawned: (pid) => this.deps.registerLocalCodexAppServerProcess?.({
+          pid,
+          role:
+            hostPurpose === 'control-plane'
+              ? 'control-plane-service'
+              : 'task-host',
+        }),
       });
     }
 
@@ -3720,7 +3768,7 @@ assertRouteCurrent();
     const usageTracker = new UsageTracker();
     const translatorRt: CodexRuntimeState = newCodexRuntimeState();
     const liveUsageSnapshot = () => attachLiveGeneration(usageTracker.snapshot(), {
-      tokenSpeed: translatorRt.tokenSpeed.snapshot(),
+      tokenSpeed: translatorRt.generationTimingReliable ? translatorRt.tokenSpeed.snapshot() : undefined,
       outputTokens: usageTracker.getTurnUsage().output,
       durationMs: translatorRt.generationOutputDurationMs,
       openStartedAt: translatorRt.generationStartedAt,
@@ -6259,6 +6307,7 @@ assertRouteCurrent();
       if (closed) return;
       closed = true;
       cancelInteractionContinuation(reason);
+      translatorRt.samplingSegments.clear();
       resetCodexGenerationTiming(translatorRt);
       resetUpstreamIdleForTurnEnd();
       unregisterCodexMcpContext(threadId);
@@ -6640,7 +6689,7 @@ assertRouteCurrent();
           mode: 'plan',
           settings: {
             model: mutableModel,
-            reasoning_effort: clampEffortForCodex(mutableModel, mutableEffort),
+            reasoning_effort: clampEffortForCodex(mutableModel, mutableEffort) ?? null,
             developer_instructions: null,
           },
         };
@@ -6651,7 +6700,7 @@ assertRouteCurrent();
           mode: 'default',
           settings: {
             model: mutableModel,
-            reasoning_effort: clampEffortForCodex(mutableModel, mutableEffort),
+            reasoning_effort: clampEffortForCodex(mutableModel, mutableEffort) ?? null,
             developer_instructions: developerInstructions,
           },
         };
@@ -6948,6 +6997,7 @@ assertRouteCurrent();
       ? ''
       : (this.deps.getGhostRosterPrompt?.({ workingDir: opts.workingDir }) ?? '');
     const developerInstructions = buildCodexDeveloperInstructions({
+      answerDeliveryPrompt: reviewMode ? undefined : this.deps.runtimeConfig.answerDeliveryPrompt,
       makerMemoryRules,
       contactsRules,
       ghostRosterPrompt,
@@ -7154,7 +7204,7 @@ assertRouteCurrent();
       try {
         acquireHostBindingLeaseIfNeeded();
         assertCurrentHost('thread/resume');
-        const resp = await withMcpDiscoveryContext(() => {
+        const resume = () => withMcpDiscoveryContext(() => {
           assertCurrentHost('thread/resume dispatch');
           return host.request<ThreadResumeResponse>(Method.ThreadResume, params, {
             ...criticalThreadRpcOptions(),
@@ -7164,6 +7214,28 @@ assertRouteCurrent();
             },
           });
         });
+        let resp: ThreadResumeResponse;
+        try {
+          resp = await resume();
+        } catch (error) {
+          // A task can be restored before background archive projection catches up.
+          // Recover only this exact native refusal, on the same host/history roots.
+          // Missing indexed history must keep its existing fail-closed behavior.
+          if (indexedRolloutMissing || !isExactArchivedThreadResumeError(error, opts.resumeSessionId)) throw error;
+          // The native refusal proves resume did not load a writer. Restore the
+          // pre-dispatch cancellation/route fence before another native request.
+          startup.threadDispatched = false;
+          assertCurrentHost('thread/unarchive');
+          const restoredPath = await syncCodexArchiveState(
+            (method, requestParams) => host.request(method, requestParams, criticalThreadRpcOptions()),
+            opts.resumeSessionId, false, () => assertCurrentHost('thread/unarchive'),
+          );
+          await recordNativeThreadLocation({ id: opts.resumeSessionId, path: restoredPath });
+          preparedResumePath = restoredPath;
+          params.path = restoredPath;
+          // One retry of session preparation; no user turn has been dispatched.
+          resp = await resume();
+        }
         assertCurrentHost('thread/resume');
         if (Object.hasOwn(resp, 'serviceTier')) {
           mutableServiceTier = normalizeServiceTier(resp.serviceTier) ?? null;
@@ -8557,6 +8629,7 @@ assertRouteCurrent();
 
       resetCodexGenerationTiming(translatorRt);
       turnDiffSnapshots.clear();
+      translatorRt.samplingSegments.clear();
       proposedPlanText = null;
       translatorRt.lastAuthErrorKey = null;
       translatorRt.networkRetryNotice = null;
@@ -11012,7 +11085,7 @@ assertRouteCurrent();
       const realTurnUsage = usageTracker.getTurnUsage();
       const realTurnUsageSegments = usageTracker.getTurnUsageSegments();
       finalizeCodexGenerationTurn(translatorRt, turn.id);
-      translatorRt.tokenSpeed.stop(realTurnUsage.output);
+      translatorRt.tokenSpeed.stop();
       const generationDurationMs = codexGenerationDurationMs(translatorRt);
       const codexDoneUsage = {
         promptTokens: realTurnUsage.input,
@@ -11106,6 +11179,9 @@ assertRouteCurrent();
       // 到这里 = 这个 turn 的终态**要出 UI**, 逻辑 send 就此收口。墓碑压掉的那条路在上面
       // 已经 return, 所以退避中的正常重投(死 turn 恒有墓碑)不会被误撤。
       revokeOverloadRetryOnTerminalSettle(`turn_${turn.status}`);
+      const assistantAttemptFailure = finishCodexSamplingTurn(
+        translatorRt, params.threadId, turn.id, turn.status, turn.error,
+      );
 
       if (turn.status === 'failed' || turn.status === 'interrupted') {
         // 失败 / 中断的 plan turn 不发审批 — 半截计划没有审批意义, 循环就此结束。
@@ -11118,6 +11194,7 @@ assertRouteCurrent();
             type: 'error',
             data: {
               ...classified.data,
+              ...(assistantAttemptFailure ? { assistantAttemptFailure } : {}),
               isTerminal: true,
             },
             source: 'codex',
@@ -11134,6 +11211,7 @@ assertRouteCurrent();
               message: '任务执行失败（模型未返回错误详情）。',
               isTerminal: true,
               reason: 'turn-failed',
+              ...(assistantAttemptFailure ? { assistantAttemptFailure } : {}),
             },
             source: 'codex',
           });
@@ -11143,6 +11221,7 @@ assertRouteCurrent();
           data: {
             type: 'codex/event/task_complete',
             cancelled: turn.status === 'interrupted',
+            ...(assistantAttemptFailure ? { assistantAttemptFailure } : {}),
             usage: codexDoneUsage,
             raw: turn,
           },
@@ -11233,7 +11312,7 @@ assertRouteCurrent();
           data: {
             status: 'Done',
             ...attachLiveGeneration(endSnap, {
-              tokenSpeed: translatorRt.tokenSpeed.snapshot(),
+              tokenSpeed: translatorRt.generationTimingReliable ? translatorRt.tokenSpeed.snapshot() : undefined,
               outputTokens: realTurnUsage.output,
               durationMs: translatorRt.generationOutputDurationMs,
               openStartedAt: null,
@@ -12299,6 +12378,14 @@ assertRouteCurrent();
               translatorRt.generationDurationMs,
               translatorRt.generationStartedAt,
             );
+            if (translatorRt.generationTimingReliable) {
+              translatorRt.tokenSpeed.recordUsage(
+                usageTracker.getTurnUsage().output,
+                translatorRt.generationOutputDurationMs,
+              );
+            } else {
+              translatorRt.tokenSpeed.invalidate();
+            }
           }
           maybePushUsageRefresh();
           // Maker Memory flush 观察 (A 轻版: 只打日志). makerMemoryEnabled 关时 controller 为 null。
@@ -12664,7 +12751,8 @@ assertRouteCurrent();
           refreshCodexAutoReviewerRoute(params.threadId);
         }
         // ReasoningEffort 的 'none' 不属于 Effort; 排除后其余值都是合法 Effort, 无需 cast。
-        if (s.effort && s.effort !== 'none') mutableEffort = s.effort;
+        // A server default must not replace an explicit no-effort session choice.
+        if (mutableEffort && s.effort && s.effort !== 'none') mutableEffort = s.effort;
         if (before !== (mutableServiceTier ?? null)) {
           log.debug('thread/settings/updated reconciled serviceTier', {
             threadId: params.threadId,
@@ -12912,6 +13000,7 @@ assertRouteCurrent();
         translateErrorNotification(effectiveParams, eventQueue, {
           rt: translatorRt,
           log,
+          onSamplingAttemptFailed: () => assistantReplyByTurn.delete(effectiveParams.turnId),
           tryTakeOverOverload: () => {
             // 只接管 app-server 本来就不重试的容量拒绝(原始 willRetry !== true)。
             // TurnRetryTracker 把持续 retry 升级成终态的那条路径不接管：那说明
@@ -13012,6 +13101,7 @@ assertRouteCurrent();
       if (closed) return;
       closed = true;
       cancelInteractionContinuation('session_closed', true);
+      translatorRt.samplingSegments.clear();
       resetCodexGenerationTiming(translatorRt);
       clearReconnectStall();
       resetUpstreamIdleForTurnEnd();
@@ -13719,7 +13809,7 @@ assertRouteCurrent();
               if (turnParams.collaborationMode) {
                 turnParams.collaborationMode.settings.model = mutableModel;
                 turnParams.collaborationMode.settings.reasoning_effort =
-                  clampEffortForCodex(mutableModel, mutableEffort);
+                  clampEffortForCodex(mutableModel, mutableEffort) ?? null;
               }
               workspacePermissionProfileActive = 'permissions' in turnThreadWorkspaceConfig;
               workspacePermissionProfileFingerprint = workspacePermissionProfileActive
@@ -14297,7 +14387,7 @@ assertRouteCurrent();
         mutableEffort = newEffort;
         // thread 已启动 → 立即经 thread/settings/update 生效; 未启动由首个 turn/start
         // 携带 (TurnStartParams.effort, v2.rs:5800)。发 clamp 后的值, 与 turn/start 一致。
-        await pushThreadSettings({ effort: clamped });
+        if (clamped !== undefined) await pushThreadSettings({ effort: clamped });
       },
 
       getEffort() {
@@ -15295,6 +15385,8 @@ assertRouteCurrent();
       expectedGeneration?: number;
       /** Propagate shutdown failure to callers that must not mutate persisted state afterward. */
       throwOnShutdownFailure?: boolean;
+      /** Refuse (counting an in-flight creation as active) before cancelling or mutating anything. */
+      rejectBeforeMutation?: boolean;
     },
   ): Promise<void> {
     const retiring = this.retiringHosts.get(key);
@@ -15325,6 +15417,23 @@ assertRouteCurrent();
         reason,
       });
       return;
+    }
+    // 本地配置变更守卫(allLocalHosts)的拒绝必须发生在任何状态改动之前:下面处理 in-flight 创建时会
+    // 推进 key 代次并摘掉 hostPromises,若之后才因 active 抛错,正在创建的 host 会以「superseded」
+    // 失败,等于一次被拒绝的退役仍然打掉了正在启动的会话。in-flight 创建本身也算 active(与守卫
+    // assertIdle 口径一致)。只对该守卫生效:远程 daemon 重启清理同样 failIfActive,却依赖取消
+    // 模型发现等占用的 in-flight 创建(review #6396)。
+    if (opts.failIfActive && opts.rejectBeforeMutation) {
+      const host = this.hosts.get(key);
+      const activeUseCount = (host
+        ? this.hostActiveUseCount(key, host)
+        : (this.hostSessionBindingLeases.get(key) ?? 0))
+        + (this.hostPromises.has(key) ? 1 : 0);
+      if (activeUseCount > 0) {
+        throw new Error(
+          `Cannot restart local Codex host while ${activeUseCount} active Codex session(s) are attached`,
+        );
+      }
     }
     const inflight = this.hostPromises.get(key);
     if (inflight) {

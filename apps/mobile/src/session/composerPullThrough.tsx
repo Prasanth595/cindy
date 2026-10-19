@@ -1,6 +1,6 @@
-import { useCallback, useMemo, useRef, type Ref } from 'react';
-import { Animated, type ScrollView, type ScrollViewProps, type View } from 'react-native';
-import { measure, runOnJS, useAnimatedRef, useSharedValue, type AnimatedRef, type SharedValue } from 'react-native-reanimated';
+import { useCallback, useMemo, useRef, useState, type Ref } from 'react';
+import { Animated, Platform, type ScrollView, type ScrollViewProps, type View } from 'react-native';
+import { measure, runOnJS, useAnimatedReaction, useAnimatedRef, useSharedValue, type AnimatedRef, type SharedValue } from 'react-native-reanimated';
 import { Gesture, GestureDetector } from '@/platform/gestureHandler';
 
 /**
@@ -53,6 +53,16 @@ export function composerPullTranslation(input: { y: number; startY: number }): n
   return Math.max(0, input.y - input.startY);
 }
 
+/**
+ * 手势是否应挂在列表上。RNGH 编排器一旦接管列表触摸流，Android 上正文 selectable
+ * 文本一拖就进选区、列表不滚（2026-10-16 模拟器 A/B 实测）。因此 Android 只在
+ * 真正可能接手时挂手势；iOS 触摸管线没有这个问题，保持常挂（#5946 行为不变）。
+ */
+export function resolvePullThroughAttach(input: { android: boolean; armed: boolean; busy: boolean }): boolean {
+  'worklet';
+  return !input.android || input.armed || input.busy;
+}
+
 const PHASE_IDLE = 0;
 const PHASE_TRACKING = 1;
 const PHASE_HANDED_OFF = 2;
@@ -65,9 +75,16 @@ type PullThroughScrollViewProps = ScrollViewProps & {
 /**
  * 聊天记录列表的滚动容器（LegendList renderScrollComponent）。
  *
- * 原生滚动照常进行：Native 手势只让列表加入 RNGH 编排；追踪手势 manualActivation 永不激活，
- * 只读触摸位置，不认领手势、不取消行内点击。接手时把列表滚动关掉（输入框接管这次拖动，
- * 两边不同时动）；抬手后恢复。追踪不依赖 Native 手势存活——关掉滚动会让原生滚动手势取消。
+ * 原生滚动照常进行：Manual 追踪手势永不激活，只读触摸位置；接手时把列表滚动关掉
+ * （输入框接管这次拖动，两边不同时动）；抬手后恢复。追踪不依赖 Native 手势存活——
+ * 关掉滚动会让原生滚动手势取消。
+ *
+ * 但 RNGH 编排器接管触摸流本身有代价：Android 上正文 selectable 文本一拖就进选区、
+ * 列表不滚（2026-10-16 模拟器 A/B 实测，详见 PR）。所以手势只在接手窗口内启用：
+ * Android 限展开卡片态（armed）或接手进行中（busy——armed 会在拖动收起输入框时翻
+ * false，半途摘手势会让 frozen 滚动没机会被 end() 恢复）；iOS 无此问题，保持常挂。
+ * shortcut: armed 态下拖列表仍会触发 Android 选中问题，待 RNGH/上游修复后撤掉这层门；
+ * 另外编排器只在起手（ACTION_DOWN）时认领手势，拖动中途 armed 才变 true 的那次拖动不会接手。
  */
 export function ComposerPullThroughScrollView({ bridge, ref, ...props }: PullThroughScrollViewProps) {
   const scrollRef = useRef<ScrollView | null>(null);
@@ -85,6 +102,23 @@ export function ComposerPullThroughScrollView({ bridge, ref, ...props }: PullThr
   const phase = useSharedValue(PHASE_IDLE);
   const previousY = useSharedValue(0);
   const composerTop = useSharedValue(0);
+  const android = Platform.OS === 'android';
+  // bridge.armed（展开卡片态）与 event.active（接手进行中）是 UI 线程真相；镜像成
+  // 「手势是否启用」的 JS 态。reaction 的输入在接手期间每帧都被写，react 里必须用
+  // previous 挡掉同值，否则每帧都跨线程回 JS。runOnJS(setAttach) 必须内联调用：
+  // 它的返回值若存进变量再被 worklet 捕获，会序列化成不可直接调用的 RemoteFunction
+  // 代理，UI 线程一调就报 Tried to synchronously call a Remote Function。
+  const [attach, setAttach] = useState(
+    resolvePullThroughAttach({ android, armed: bridge.armed.value === true, busy: bridge.event.value.active === true }),
+  );
+  useAnimatedReaction(
+    () => ({ armed: bridge.armed.value === true, busy: bridge.event.value.active === true }),
+    (next, previous) => {
+      if (previous && next.armed === previous.armed && next.busy === previous.busy) return;
+      runOnJS(setAttach)(resolvePullThroughAttach({ android, armed: next.armed, busy: next.busy }));
+    },
+    [bridge, android],
+  );
   const gesture = useMemo(() => {
     const { armed, event, grabberRef } = bridge;
     const end = (y: number, successful: boolean) => {
@@ -96,8 +130,11 @@ export function ComposerPullThroughScrollView({ bridge, ref, ...props }: PullThr
       }
       phase.value = PHASE_IDLE;
     };
-    const tracker = Gesture.Pan()
-      .manualActivation(true)
+    // A manual-activation Pan still installs a UIPanGestureRecognizer. iOS's
+    // interactive-pop recognizer waits for that pending pan, so even an unarmed
+    // composer blocks edge-back. Manual observes touches without a competing pan.
+    const tracker = Gesture.Manual()
+      .enabled(attach)
       .onTouchesDown((touches) => {
         'worklet';
         phase.value = PHASE_IDLE;
@@ -143,8 +180,8 @@ export function ComposerPullThroughScrollView({ bridge, ref, ...props }: PullThr
         // 被其它手势挤掉时不会再收到抬手：按取消收尾，输入框回到原高度。
         end(NaN, false);
       });
-    return Gesture.Simultaneous(Gesture.Native(), tracker);
-  }, [bridge, composerTop, phase, previousY, setFrozen]);
+    return Gesture.Simultaneous(Gesture.Native().enabled(attach), tracker);
+  }, [attach, android, bridge, composerTop, phase, previousY, setFrozen]);
 
   return (
     <GestureDetector gesture={gesture}>

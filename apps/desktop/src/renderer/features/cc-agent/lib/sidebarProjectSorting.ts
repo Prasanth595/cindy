@@ -1,6 +1,7 @@
 import type { Session } from '@/lib/ccAgent.types';
 
 import type { FilterProjectOrder, FilterSortBy } from '../hooks/helpers/sidebarFilterCore';
+import { compareSessionGroupsByPriority, type MainListPriorityContext } from './mainListModel';
 import { normalizeManualProjectOrder } from '../hooks/helpers/sidebarFilterCore';
 import { sessionCreatedMs } from './dateSessionGrouping';
 import { projectKeyComparisonKey, type ProjectNode } from './projectGrouping';
@@ -25,6 +26,7 @@ export function sortProjectsForSidebar(
   manualProjectOrder: readonly string[],
   projectOrder: FilterProjectOrder = 'activity',
   localPlatform: string = '',
+  priorityContext?: MainListPriorityContext,
 ): ProjectNode[] {
   const withSortedSessions = projects.map((project) => ({
     ...project,
@@ -58,6 +60,12 @@ export function sortProjectsForSidebar(
         Math.max(0, ...b.sessions.map(sessionCreatedMs)) -
           Math.max(0, ...a.sessions.map(sessionCreatedMs)) ||
         (a.sessions[0]?.id ?? '').localeCompare(b.sessions[0]?.id ?? ''),
+    );
+  }
+
+  if (sortBy === 'priority' && priorityContext) {
+    return withSortedSessions.sort((a, b) =>
+      compareSessionGroupsByPriority(a.sessions, b.sessions, priorityContext),
     );
   }
 
