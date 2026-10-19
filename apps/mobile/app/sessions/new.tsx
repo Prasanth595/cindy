@@ -401,7 +401,8 @@ import { mobileAgentLabel, mobileAgentVendor } from '@/session/sessionAgentSwitc
 import { MobileModelIconMark } from '@/session/MobileProviderMark';
 import { draftModelMemoryFor, hydrateDraftModelMemory } from '@/session/draftModelMemory';
 import { effortLabelFromRuntime, rowFastEditable } from '@/session/modelPickerRows';
-import { useRemoteAgentCatalogs } from '@/session/useRemoteAgentCatalogs';
+import { useRemoteAgentCatalogs, useRemoteAgentCatalogsWithStatus } from '@/session/useRemoteAgentCatalogs';
+import { restoredRemoteAgentUnusable as restoredRemoteAgentUnusableCheck } from '@/session/remoteAgentCatalogs';
 import { useTheme, useThemedStyles, type ThemeColors } from '@/theme';
 import { fontWeight, iconSize, iconStroke, lineHeight, navigationChrome, radius, spacing, typeScale } from '@/theme/tokens';
 
@@ -644,6 +645,8 @@ export default function NewRemoteSessionScreen() {
   const [remoteAgentChoice, setRemoteAgentChoice] = useState<{
     controlledDeviceId: string;
     pick: NewSessionRemoteAgentPick;
+    /** 打开新建页时按记忆恢复的(不是本页刚选的):那台电脑 / 那个分享此刻用不了就退回被控电脑默认。 */
+    restored?: true;
   } | null>(null);
   // 只对选它时的那台被控电脑与那个 Agent 成立:换了电脑、在别处换了 Agent 就不再生效(按条件
   // 判,不靠 effect 清——恢复草稿时电脑与草稿同一轮写入,effect 会把刚恢复的选择误清)。
@@ -1160,7 +1163,7 @@ export default function NewRemoteSessionScreen() {
     () => (remoteAgentPick ? [remoteAgentPick.deviceId] : []),
     [remoteAgentPick],
   );
-  const remoteAgentCatalogs = useRemoteAgentCatalogs({
+  const { catalogs: remoteAgentCatalogs, settled: remoteAgentCatalogsSettled } = useRemoteAgentCatalogsWithStatus({
     // 选择器打开时读其他电脑与分享;已选远程模型时还要按那份目录显示模型药丸。
     enabled: remoteAgentSupported && (modelSheetOpen || remoteAgentPick !== null),
     controlledDeviceId: selectedDeviceId,
@@ -1193,6 +1196,29 @@ export default function NewRemoteSessionScreen() {
     }).activeSourceId;
     return remoteAgentCatalog.providers.find((provider) => provider.id === sourceId) ?? null;
   }, [remoteAgentCatalog, remoteAgentPick]);
+  // 恢复上次在这台被控电脑上给当前 agent 选的另一台电脑 / 分享来的模型。每个(电脑, agent)只试一次,
+  // 本页用户自己改过运行配置就不再恢复。
+  const remoteAgentRestoreKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!newSessionPreferencesLoaded || !selectedDeviceId || userTouchedRuntimeRef.current) return;
+    const key = JSON.stringify([selectedDeviceId, draft.agentKind]);
+    if (remoteAgentRestoreKeyRef.current === key) return;
+    remoteAgentRestoreKeyRef.current = key;
+    const saved = newSessionPreferences?.remoteAgentByDevice[selectedDeviceId]?.[draft.agentKind];
+    if (!saved || isSharedTaskPeer(selectedDeviceId)) return;
+    setRemoteAgentChoice({ controlledDeviceId: selectedDeviceId, pick: saved, restored: true });
+  }, [draft.agentKind, newSessionPreferences, newSessionPreferencesLoaded, selectedDeviceId]);
+  // 恢复出来的选择此刻用不了(被控电脑不再提供远程模型、那台离线或读不到、模型已不在那份目录里)
+  // → 退回被控电脑的默认;记忆保留,那台恢复后下次打开照样选回。
+  const restoredRemoteAgentUnusable = !!remoteAgentChoice?.restored && !!remoteAgentPick && (
+    (deviceProviders.ready && !remoteAgentSupported)
+    || (remoteAgentSupported && restoredRemoteAgentUnusableCheck({
+      pick: remoteAgentPick, catalog: remoteAgentCatalog ?? undefined, settled: remoteAgentCatalogsSettled,
+    }))
+  );
+  useEffect(() => {
+    if (restoredRemoteAgentUnusable) setRemoteAgentChoice(null);
+  }, [restoredRemoteAgentUnusable]);
   const catalogReadyRef = useRef(deviceProviders.ready);
   catalogReadyRef.current = deviceProviders.ready;
   // 供应商目录本身的渲染期镜像:异步回调(权限确认 .then)提交时用它现场重建目标
@@ -2580,6 +2606,12 @@ export default function NewRemoteSessionScreen() {
     void loadBrowsePath(draft.workingDir.trim() || '~');
   }, [draft.workingDir, loadBrowsePath, patchDraft, selectedDeviceId, initialWorkingDir]);
 
+  // 选回被控电脑自己的模型:不再在下次打开时恢复这个 agent 选过的其他电脑 / 分享来的模型。
+  const forgetRemoteAgentPick = useCallback((agentKind: NewSessionAgentKind) => {
+    if (!selectedDeviceId) return;
+    void saveNewSessionPreferences({ remoteAgentForDevice: { deviceId: selectedDeviceId, agentKind, pick: null } });
+  }, [selectedDeviceId]);
+
   // 选「供应商 + 模型」(provider-aware):resolveRowSelection 原子落 model + providerId +
   // effort + fast 四件套(effort 优先级与桌面同源:该来源记忆 → 沿用当前档 → 模型默认;
   // 同模型换来源不沿用当前档;fast 按 (来源, 模型) 记忆恢复,fastEditable 门控)。
@@ -2587,6 +2619,7 @@ export default function NewRemoteSessionScreen() {
     userTouchedRuntimeRef.current = true; // 用户手动选了模型 → 不再自动覆盖运行配置
     runtimeActionSeqRef.current += 1; // 使在途的切 agent/恢复回调失效(最新者胜)
     setRemoteAgentChoice(null);
+    forgetRemoteAgentPick(draft.agentKind);
     setDraft((current) => {
       const next = resolveRowSelection({
         row,
@@ -2610,7 +2643,7 @@ export default function NewRemoteSessionScreen() {
     });
     requestHostChoiceWrite(true);
     setModelSheetOpen(false);
-  }, [capabilities, draftMemory, requestHostChoiceWrite]);
+  }, [capabilities, draft.agentKind, draftMemory, forgetRemoteAgentPick, requestHostChoiceWrite]);
 
   // source.deviceId 非空 = 选的是另一台电脑(或分享来的)目录里的行:Agent 在那里运行。
   const selectUnifiedModel = useCallback(async (
@@ -2647,7 +2680,18 @@ export default function NewRemoteSessionScreen() {
         providerId: config.providerId, effort: config.effort, fastMode, permissionMode: permission }));
       requestHostChoiceWrite(true);
     }
-    void saveNewSessionPreferences({ agentKind: config.agent });
+    // 选其他电脑 / 分享来的模型就记下(下次打开新建页恢复);选回被控电脑自己的就清掉。
+    void saveNewSessionPreferences({
+      agentKind: config.agent,
+      remoteAgentForDevice: {
+        deviceId: deviceAtStart,
+        agentKind: config.agent,
+        pick: remoteDeviceId
+          ? { deviceId: remoteDeviceId, agentKind: config.agent, model: config.modelId,
+            providerId: config.providerId, effort: config.effort, fastMode }
+          : null,
+      },
+    });
     return true;
   }, [creating, selectedDeviceId, maker, newSessionPreferences, draft.agentKind, draft.permissionMode, requestHostChoiceWrite]);
 
@@ -2656,12 +2700,13 @@ export default function NewRemoteSessionScreen() {
     userTouchedRuntimeRef.current = true; // 用户手动选了模型 → 不再自动覆盖运行配置
     runtimeActionSeqRef.current += 1; // 使在途的切 agent/恢复回调失效(最新者胜)
     setRemoteAgentChoice(null);
+    forgetRemoteAgentPick(draft.agentKind);
     explicitProviderModelSelectionRef.current = null;
     setDraft((current) =>
       reconcileRuntimeDraftWithCapabilities({ ...current, model: option.id, providerId: null }, capabilities));
     requestHostChoiceWrite(true);
     setModelSheetOpen(false);
-  }, [capabilities, requestHostChoiceWrite]);
+  }, [capabilities, draft.agentKind, forgetRemoteAgentPick, requestHostChoiceWrite]);
 
   // 选中行的 effort/fast 变更:落 draft(live 真相)+ 写草稿记忆(下次选回恢复)。
   // 记忆槽的来源 id:显式选中的来源,未显式选时用当前高亮的默认来源(activeSourceIdRef)。

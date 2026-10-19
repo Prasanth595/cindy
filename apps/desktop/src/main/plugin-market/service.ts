@@ -561,8 +561,10 @@ export interface PluginMarketSnapshotOptions {
  */
 export interface PluginMarketInstallContext {
   consent: { prompt: GhostInstallConsentPrompt; initiator: GhostInstallConsentInitiator };
-  /** Main-only caller authority, rechecked immediately before package placement. */
+  /** Main-only caller authority and installed approval, checked before replacement. */
   assertCurrent?: () => void;
+  /** Owner/peer/cancellation only; remains valid after the package directory swap. */
+  assertScope?: () => void;
 }
 
 /**
@@ -1455,7 +1457,7 @@ export class PluginMarketService {
     options: PluginMarketInstallOptions,
     context: PluginMarketInstallContext,
   ): Promise<PluginMarketInstallResult> {
-    const { assertCurrent } = context;
+    const { assertCurrent, assertScope = assertCurrent } = context;
     assertCurrent?.();
     const customRef = parseCustomMarketPluginId(pluginId);
     if (customRef) {
@@ -1471,6 +1473,7 @@ export class PluginMarketService {
         },
         captureMarketOwner(),
         assertCurrent,
+        assertScope,
       );
     }
     if (!isValidPluginResourceId(pluginId)) {
@@ -1515,6 +1518,7 @@ export class PluginMarketService {
           origin: 'market',
         },
         beforeCommitInLock: assertCurrent,
+        assertCurrent: assertScope,
         expectedInstalled: Boolean(existing),
         acquireMutation: true,
         ...(options.expectedInstalledApproval !== undefined
@@ -1731,6 +1735,7 @@ export class PluginMarketService {
     consent: GhostInstallConsentPolicy,
     owner = captureMarketOwner(),
     assertCurrent?: () => void,
+    assertScope = assertCurrent,
   ): Promise<PluginMarketInstallResult> {
     const automatic = consent.mode === 'automatic';
     if (options.expectedManifest === undefined) {
@@ -1902,6 +1907,7 @@ export class PluginMarketService {
             sourceChanged = Boolean(current && !routeStillMatches);
           },
           expectedInstalledApproval: options.expectedInstalledApproval,
+          assertCurrent: assertScope,
           beforePackagePlacement: () => {
             requireSameMarketOwner(owner);
             assertCurrent?.();
@@ -2222,6 +2228,7 @@ export class PluginMarketService {
       /** 是否保留现有来源，或按明确意图切换来源。 */
       sourceReplacementMode?: ServerSourceReplacementMode;
       beforeCommitInLock?: () => void;
+      assertCurrent?: () => void;
       /** 发起操作时的安装意图;下载窗口期目标被另一窗口卸载时拒绝滑入首装。 */
       expectedInstalled: boolean;
       /**
@@ -2380,6 +2387,7 @@ export class PluginMarketService {
                   options.beforeCommitInLock?.();
                 }
               : options.beforeCommitInLock,
+            assertCurrent: options.assertCurrent,
           },
           owner,
           ledger,
@@ -2407,6 +2415,7 @@ export class PluginMarketService {
       expectedInstalledApproval?: string;
       sourceReplacementMode: ServerSourceReplacementMode;
       beforeCommitInLock?: () => void;
+      assertCurrent?: () => void;
       expectedInstalled: boolean;
       verifiedServerRoot?: string;
     },
@@ -2486,6 +2495,7 @@ export class PluginMarketService {
         pluginId: plugin.id,
         version: plugin.currentRelease.version,
         consent: options.consent,
+        assertCurrent: options.assertCurrent,
         ...(options.reclaimLegacyBareInstance && !installedNow ? { reclaimLegacyBareInstance: true } : {}),
         ...(sourceChanged ? { sourceChanged: true } : {}),
         ...deliveryNamespaceFields(plugin),

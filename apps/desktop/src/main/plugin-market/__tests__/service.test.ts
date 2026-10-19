@@ -5935,6 +5935,27 @@ describe('Agent catalog discovery and install boundary', () => {
     expect(place).not.toHaveBeenCalled();
     expect(h.ledger.installationForGhost(item.ghostId)).toBeNull();
   });
+  it('keeps caller authority available after the early market commit check', async () => {
+    const item = summary();
+    const h = harness([item]);
+    let current = true;
+    const place = vi.fn();
+    runtime.install.mockImplementation(async (_file, options) => {
+      options.beforeCommitInLock?.();
+      await Promise.resolve();
+      current = false;
+      options.assertCurrent?.();
+      place();
+      throw new Error('unreachable');
+    });
+    await expect(h.service.install(item.id, reviewedInstallOptions(item), {
+      ...TEST_INSTALL_CONTEXT,
+      assertCurrent: vi.fn(),
+      assertScope: () => { if (!current) throw new Error('authority expired'); },
+    })).rejects.toThrow('authority expired');
+    expect(place).not.toHaveBeenCalled();
+    expect(h.ledger.installationForGhost(item.ghostId)).toBeNull();
+  });
 });
 
 describe('PluginMarketService install consent', () => {
