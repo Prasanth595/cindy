@@ -1625,6 +1625,8 @@ export async function createMessage(
      * durable user row.
      */
     expectedClearBoundaryMs?: number | null;
+    /** Skip a host-written opening if the user has already spoken, checked in the insert transaction. */
+    requireNoUserMessage?: boolean;
     /**
      * Owner scope captured before an async main-side write.  A stale scope
      * must not broadcast a row into the next signed-in owner.
@@ -1677,6 +1679,7 @@ export async function createMessage(
     createdAt: insertRow.createdAt,
     guarded,
     expectedClearBoundaryMs: guarded ? (expected ?? null) : undefined,
+    ...(opts?.requireNoUserMessage ? { requireNoUserMessage: true } : {}),
   };
   try {
     const inserted = await dbClient.tx('message.insert', { ...insertArgs,

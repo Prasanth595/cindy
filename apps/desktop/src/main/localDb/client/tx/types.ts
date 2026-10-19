@@ -428,6 +428,8 @@ export interface MessageInsertArgs {
   createdAt: number;
   guarded: boolean;
   expectedClearBoundaryMs?: number | null;
+  /** Host-only opening guard, evaluated atomically with the insert. */
+  requireNoUserMessage?: boolean;
   /** Host-only publication; stages belong to a connection-local TEMP table. */
   publication?: 'stage' | 'publish' | 'discard' | 'rollback';
 }

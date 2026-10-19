@@ -933,6 +933,33 @@ describe('Agent Island display state', () => {
     expect(display.pillSnapshot.priorityCompactTitle).toBe('目标模式测试');
   });
 
+  // Companion Sessions run in the companion's private home: before companion identity the
+  // island titled them by a filtered task title and labelled the home folder "workspace".
+  it.each([
+    { name: 'own chat', groupName: undefined, projectName: null },
+    { name: 'group line', groupName: 'Cindy开发', projectName: 'Cindy开发' },
+  ])('shows a companion Session by its companion, not its home folder ($name)', ({ groupName, projectName }) => {
+    const state = createAgentIslandState();
+    const companion = {
+      name: 'Claude',
+      ...(groupName ? { groupName } : {}),
+      hue: 'teal' as const,
+      glyph: 'C',
+      glyphIsInitial: true,
+    };
+    const workingDir = '/Users/alice/Library/Application Support/Cindy/owners/o1/bots/b1/workspace';
+
+    applyAgentIslandUserPrompt(state, { sessionId: 's1', agentKind: 'claude-code', workingDir }, 'hi', 1_000);
+    applyAgentIslandMetadata(state, { sessionId: 's1', title: 'Group title', workingDir, companion }, 1_100);
+    // Later events keep re-sending the home folder; the companion context must win.
+    applyAgentIslandEvent(state, { sessionId: 's1', workingDir }, finalTextEvent('你好'), 1_200);
+
+    const display = buildAgentIslandDisplayState(state, 1_250);
+
+    expect(display.sessions[0]).toMatchObject({ title: 'Claude', projectName, companion });
+    expect(display.pillSnapshot.priorityCompactTitle).toBe('Claude');
+  });
+
   it('keeps only the latest three activity preview lines', () => {
     const state = createAgentIslandState();
 

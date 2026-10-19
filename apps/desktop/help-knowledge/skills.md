@@ -31,6 +31,8 @@ Skills are reusable agent capabilities you package as a folder and load into you
 
 **Creating or learning a Skill from the composer:**
 
+- To create a Cindy **plugin** (`.cindy` with `ghost.json`), choose **Create with Cindy** from the Plugins page's add menu. This selects the separate built-in `cindy-plugin-creator` Skill, including when a user Skill has the same name. Its references cover plugin APIs and packaging; see the Plugins topic.
+
 - Cindy includes `/cindy-skill-creator`. Invoke it with a description of the Skill you want, such as `/cindy-skill-creator Create a Skill that checks release notes`. Invoking it without a description asks what you want to create.
 - The current Agent creates or updates the Skill directly with its normal file tools. It does not use the `/learn` staging flow.
 - Ask for a Skill in the composer, for example “Find a release-notes Skill” or `/cindy-skill-creator Search our organization's code-review Skills`. The Agent can search SkillHub's public marketplace or your organization's catalog. Without a specified scope, organization identities search both; personal identities search the public marketplace. Results identify their source, including when two Skills share a name. Search alone does not install anything.

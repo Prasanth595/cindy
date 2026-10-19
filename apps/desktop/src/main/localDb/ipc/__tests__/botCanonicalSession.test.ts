@@ -224,6 +224,7 @@ import {
   updateBotProfile as updateStoredBotProfile,
   getBotRemoteResourceSource,
   listBotRemoteResourceSources,
+  prepareImportedBotInvitation,
 } from '../bots';
 import { tx as runWorkerTx } from '../../worker/opHandlers/tx.js';
 import * as modelSettings from '../../../maker-host/bot-model-chain-settings-store.js';
@@ -1138,6 +1139,37 @@ describe('Bot canonical Session lifecycle', () => {
     expect(
       h.sqlite!.prepare('SELECT id FROM bot_profiles WHERE id = ?').get('bot-unknown-template'),
     ).toBeUndefined();
+  });
+
+  it('prepares one original welcome only after a native import has saved its identity', async () => {
+    const invitation = await import('../../../maker-ipc/botInvitation');
+    const queued = vi.spyOn(invitation, 'queueBotInvitation').mockImplementation(() => {});
+    try {
+      await invoke('local-db:bots:create', { id: 'native-welcome', name: 'Native package', identitySource: 'Saved package identity', prepareInvitation: false });
+      expect(queued).not.toHaveBeenCalled();
+      await prepareImportedBotInvitation('native-welcome', 'native-request', 'zh-CN');
+      const profile = await invoke('local-db:bots:get', 'native-welcome');
+      expect(profile.identitySource).toBe('Saved package identity');
+      expect(profile.invitation).toMatchObject({ stage: 'welcome' });
+      const version = h.sqlite!.prepare('SELECT capabilities_json FROM bot_profile_versions WHERE bot_id = ? AND version = ?').get('native-welcome', profile.currentVersion) as { capabilities_json: string };
+      expect(JSON.parse(version.capabilities_json).invitation).toMatchObject({ id: 'import-welcome:native-request', stage: 'welcome', locale: 'zh-CN' });
+      expect(queued).toHaveBeenCalledTimes(1);
+      await prepareImportedBotInvitation('native-welcome', 'native-request', 'en');
+      expect(queued).toHaveBeenCalledTimes(1);
+      expect((await invoke('local-db:bots:get', 'native-welcome')).currentVersion).toBe(profile.currentVersion);
+    } finally { queued.mockRestore(); }
+  });
+
+  it('refuses to prepare a native welcome after deletion or archival', async () => {
+    const invitation = await import('../../../maker-ipc/botInvitation');
+    const queued = vi.spyOn(invitation, 'queueBotInvitation').mockImplementation(() => {});
+    try {
+      await expect(prepareImportedBotInvitation('missing-native', 'native-request')).rejects.toThrow('[NOT_FOUND]');
+      await invoke('local-db:bots:create', { id: 'archived-native', name: 'Archived native', prepareInvitation: false });
+      h.sqlite!.prepare("UPDATE bot_profiles SET status = 'archived' WHERE id = ?").run('archived-native');
+      await expect(prepareImportedBotInvitation('archived-native', 'native-request')).rejects.toThrow('[NOT_FOUND]');
+      expect(queued).not.toHaveBeenCalled();
+    } finally { queued.mockRestore(); }
   });
 
   it('creates a real gallery portrait when the shared tool entry receives only a name', async () => {

@@ -6266,7 +6266,8 @@
         "updateTo": "更新到 v{{version}}",
         "updateAria": "將 {{name}} 更新到 v{{version}}",
         "createWithCindy": "使用 Cindy 建立",
-        "createPrompt": "我要建立一個 Cindy 插件。請先呼叫 ghost_forge_guide 獲取手冊目錄，先讀第 0 章「設計對齊」，再用 section 引數讀透相關章節（動手前至少讀完能力總覽、沙箱紅線與打包流程），不要直接開始實現。先從提問開始：優先用帶選項的提問卡片，每張卡片聚焦一個關鍵決策並標註你的推薦項，把我可能不知道的設計選項主動擺出來讓我選——比如介面形態（停靠面板、插件頁內面板、對話卡片還是無介面）、$ 點名詞、啟動模式、後台能力（旁聽事件、應用內輕提示、未讀角標、確認彈窗）、是否聯網、是否需要設定頁、要不要隨包 Node 行程跑重活、要不要圖片影片等媒體能力；並逐步確認插件要解決的問題、目標使用者、互動流程、所需工具與連線、權限邊界和驗收標準。設計確認後，再按規範實現並自檢；最後呼叫 ghost_forge_pack 校驗並產生 .cindy 產物，不要聲稱已安裝。",
+        "createPrompt": "幫我建立一個 Cindy 插件。",
+        "creatorUnavailable": "內建插件建立技能暫時無法使用",
         "filterAll": "全部",
         "filtersAria": "按來源篩選插件",
         "origin": {
@@ -9844,6 +9845,42 @@
       "transferOffline": "連不上伺服器，{{name}} 仍在這台電腦執行",
       "transferFailed": "未能把 {{name}} 交給「{{device}}」"
     },
+    "market": {
+      "heading": "發現夥伴",
+      "description": "帶著方法和技能加入，與你一起把工作往前推進。",
+      "invite": "邀請加入",
+      "open": "打開夥伴",
+      "remove": "移除夥伴",
+      "back": "返回列表",
+      "loading": "正在載入夥伴…",
+      "empty": "沒有找到夥伴",
+      "loadFailed": "暫時無法載入夥伴清單，請稍後重新開啟。",
+      "installFailed": "尚未完成新增。已儲存的內容會保留，可以再試一次。",
+      "nameExists": "已有同名夥伴。請先在夥伴設定中改名，再邀請加入。",
+      "installing": "正在儲存夥伴資料和技能…",
+      "memoryDisabled": "記憶已關閉，方法知識尚未匯入；不會自動開啟記憶。",
+      "knowledge": "知識與記憶",
+      "skills": "技能",
+      "routines": "例行任務",
+      "capabilities": "關鍵能力",
+      "workTogether": "我的配置",
+      "tools": "工作工具",
+      "remembersLead": "會記住你的",
+      "pluginInstalled": "已安裝",
+      "pluginNotInstalled": "未安裝",
+      "routineOff": "預設關閉",
+      "itemFailed": {
+        "routine": "例行任務「{{name}}」沒能儲存。",
+        "skill": "技能「{{name}}」沒能儲存。",
+        "knowledge": "知識「{{name}}」沒能儲存。",
+        "other": "「{{name}}」沒能儲存。",
+        "unknown": "有一項內容沒能儲存。"
+      },
+      "partialReady": "其他內容已就緒，可以先開始使用。",
+      "partialUnsaved": "夥伴還沒有儲存，請重新儲存。",
+      "retry": "重新儲存"
+    },
+    "starterOptions": "起步選項",
     "channels": {
       "title": "訊息平台",
       "platform": {
@@ -14005,6 +14042,9 @@
       },
       "learn": {
         "description": "從目前任務、描述的工作流程或 SkillHub 技能中提煉可重用技能，並透過 Cindy 的審查流程儲存。"
+      },
+      "pluginCreator": {
+        "description": "建立、修改、偵錯與打包 Cindy 插件，也可按需發佈。"
       }
     },
     "common": {

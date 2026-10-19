@@ -183,6 +183,10 @@ Anthropic Messages API / wire protocol 的用户可见名称。四语统一保�
 
 远程桌面操作菜单的安全设置；仅用于可选的本机保存密码自动解锁。
 
+### Discover Teammates
+
+预制伙伴目录与邀请入口，仅 Desktop。入口菜单项与弹窗标题同用 bots.market.heading，不再另设英文品牌名 Bot Market；英文句中小写 teammates（Discover teammates 作动作时），作功能名保持 Discover Teammates。
+
 ### reply (the bot's public post on X)
 
 Cindy 在 X 上发出的那条公开回复。zh-CN 取「回帖」以强调它是**一条公开帖子**而不是私聊消息——这正是 X 与 Slack / Telegram 的性质差异, 也是风险告知的核心。与「消息」区分开: 后者按 task-and-conversation-naming 只用于任务内的单条往来。proposed 同上。

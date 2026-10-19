@@ -6297,7 +6297,8 @@
         "updateTo": "Update to v{{version}}",
         "updateAria": "Update {{name}} to v{{version}}",
         "createWithCindy": "Create with Cindy",
-        "createPrompt": "I want to create a Cindy plugin. First call ghost_forge_guide to get the handbook's table of contents, read chapter 0 (design alignment) first, then read the relevant chapters via the section parameter (at minimum the capability overview, sandbox red-lines, and packaging chapters) before writing any code; do not start implementing yet. Begin by asking questions: prefer option-based question cards, one key decision per card with your recommended choice marked, and proactively surface design options I may not know about — such as the UI form (docked panel, panel inside the Plugins page, chat card, or no UI), a $ command word, launch mode, background abilities (event listening, in-app toast notifications, unread badges, confirmation dialogs), network access, whether a settings page is needed, whether a bundled Node process should do heavy lifting, and whether image/video media abilities are needed. Step by step, confirm the problem to solve, target users, interaction flow, required tools and connections, permission boundaries, and acceptance criteria. After I confirm the design, implement and validate it according to the specification, then call ghost_forge_pack to validate and produce the .cindy package; do not claim that it was installed.",
+        "createPrompt": "Help me create a Cindy plugin.",
+        "creatorUnavailable": "The built-in plugin creation Skill is unavailable.",
         "filterAll": "All",
         "filtersAria": "Filter plugins by source",
         "origin": {
@@ -9883,6 +9884,42 @@
       "transferOffline": "Can’t reach the server. {{name}} still runs on this computer",
       "transferFailed": "Couldn’t move {{name}} to “{{device}}”"
     },
+    "market": {
+      "heading": "Discover Teammates",
+      "description": "Practical methods and skills for moving work forward together.",
+      "invite": "Invite",
+      "open": "Open",
+      "remove": "Remove Teammate",
+      "back": "Back to List",
+      "loading": "Loading teammates…",
+      "empty": "No teammates found",
+      "loadFailed": "Teammates could not load. Try reopening this later.",
+      "installFailed": "Adding the teammate wasn't finished. Saved content is kept; you can try again.",
+      "nameExists": "A teammate already has this name. Rename them in teammate settings before inviting.",
+      "installing": "Saving teammate profile and skills…",
+      "memoryDisabled": "Memory is off, so reference knowledge was not imported. Memory stays off.",
+      "knowledge": "Knowledge and Memory",
+      "skills": "Skills",
+      "routines": "Routines",
+      "capabilities": "Key Capabilities",
+      "workTogether": "My Setup",
+      "tools": "Work Tools",
+      "remembersLead": "Remembers your",
+      "pluginInstalled": "Installed",
+      "pluginNotInstalled": "Not installed",
+      "routineOff": "Off by default",
+      "itemFailed": {
+        "routine": "Routine “{{name}}” could not be saved.",
+        "skill": "Skill “{{name}}” could not be saved.",
+        "knowledge": "Knowledge “{{name}}” could not be saved.",
+        "other": "“{{name}}” could not be saved.",
+        "unknown": "One item could not be saved."
+      },
+      "partialReady": "Everything else is ready, so you can start using the teammate.",
+      "partialUnsaved": "The teammate is not saved yet. Save again to finish.",
+      "retry": "Save Again"
+    },
+    "starterOptions": "Starter options",
     "channels": {
       "title": "Messaging platforms",
       "platform": {
@@ -14059,6 +14096,9 @@
       },
       "learn": {
         "description": "Distill a reusable Skill from this task, a described workflow, or a SkillHub Skill through Cindy's review flow."
+      },
+      "pluginCreator": {
+        "description": "Create, edit, debug, and package Cindy plugins, or publish them when requested."
       }
     },
     "common": {

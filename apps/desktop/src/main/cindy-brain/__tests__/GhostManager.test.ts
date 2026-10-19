@@ -104,6 +104,28 @@ function goodManifest(id = 'hello'): Record<string, unknown> {
 }
 
 describe('GhostManager enable revision boundary', () => {
+  // Regression: one list() used two validated receipt reads per plugin. Unit
+  // coverage also rejects a cross-call cache: the next scan must see revocation.
+  it('reads each receipt once per scan and observes changed approval on the next scan', async () => {
+    await manager.install(await makeCindy('scan.cindy', goodManifest()));
+    const read = vi.spyOn(GhostInstallReceiptStore.prototype, 'readForRecovery');
+    try {
+      expect(manager.list()[0]).toMatchObject({ enabled: true, approval: { state: 'approved' } });
+      expect(read).toHaveBeenCalledTimes(1);
+      read.mockClear();
+      const receiptPath = path.join(workDir, 'ghosts-install-state', '_ns', '_root', 'hello.json');
+      const receipt = JSON.parse(fs.readFileSync(receiptPath, 'utf8'));
+      receipt.enabled = false;
+      fs.writeFileSync(receiptPath, JSON.stringify(receipt));
+      expect(manager.list()[0]).toMatchObject({ enabled: false, approval: { state: 'approved' } });
+      expect(read).toHaveBeenCalledTimes(1);
+      fs.writeFileSync(receiptPath, '{invalid');
+      expect(manager.list()[0]).toMatchObject({ enabled: false, approval: { state: 'invalid' } });
+    } finally {
+      read.mockRestore();
+    }
+  });
+
   it('rejects a delayed enable change bound to an obsolete approval revision', async () => {
     await manager.install(await makeCindy('original.cindy', goodManifest(), { 'main.js': 'module.exports = {};' }));
     const original = manager.list()[0];

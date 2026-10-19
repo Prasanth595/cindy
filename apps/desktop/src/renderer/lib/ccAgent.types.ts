@@ -286,6 +286,8 @@ export interface CcMeta {
   /** Turn of a Bot's hidden group-chat lane; the group chat surfaces its result and failures. */
   botGroupLane?: boolean;
   botAuthorization?: import('../../shared/botAuthorization').BotAuthorizationCard;
+  /** Market opening: starter choices rendered as buttons below the message until the user speaks. */
+  botStarterOptions?: string[];
   botDirectMessage?: import('../../shared/botDirectMessage').BotDirectMessageMeta;
 
   /**

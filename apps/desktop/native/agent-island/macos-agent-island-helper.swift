@@ -1365,9 +1365,21 @@ struct AgentIslandPermissionAction: Codable, Equatable {
   let canAllowForSession: Bool
 }
 
+/// The companion a Bot Session speaks for; drawn instead of the agent mark.
+struct AgentIslandCompanion: Codable, Equatable {
+  let name: String
+  let groupName: String?
+  let hue: String
+  let imageJpeg: String?
+  let glyph: String
+  let glyphIsInitial: Bool
+}
+
 struct AgentIslandSession: Codable, Equatable, Identifiable {
   let sessionId: String
   let title: String
+  // Older main-process payloads have no companion field.
+  var companion: AgentIslandCompanion? = nil
   let projectName: String?
   let detail: String
   let compactDetail: String
@@ -3444,21 +3456,48 @@ struct ExpandedSessionRow: View, Equatable {
     4
   }
 
+  /// Every row shares one leading column, so titles and summaries line up whether the
+  /// row speaks as a companion (avatar) or reports a task (agent mark / status icon).
   private var rowMainContent: some View {
-    VStack(alignment: .leading, spacing: rowSpacing) {
-      ExpandedSessionHeaderLine(
-        session: session,
-        strings: strings,
-        titleFontSize: 13,
-        mascotSkin: mascotSkin,
-        onFocus: onFocus
-      )
-      ExpandedRowSummaryLine(session: session, strings: strings)
-        .padding(.leading, 28)
+    HStack(alignment: .center, spacing: 10) {
+      Group {
+        if let companion = session.companion {
+          AgentIslandCompanionStatusAvatar(session: session, companion: companion, size: expandedRowLeadingSize)
+        } else {
+          StatusDot(
+            session: session,
+            compact: false,
+            showsRunningAnimation: showsRunningIcon,
+            mascotSkin: mascotSkin,
+            size: 26
+          )
+        }
+      }
+      .frame(width: expandedRowLeadingSize, height: expandedRowLeadingSize)
+      VStack(alignment: .leading, spacing: rowSpacing) {
+        ExpandedSessionHeaderLine(
+          session: session,
+          strings: strings,
+          titleFontSize: 13,
+          onFocus: onFocus
+        )
+        ExpandedRowSummaryLine(session: session, strings: strings)
+      }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
   }
+
+  private var showsRunningIcon: Bool {
+    switch session.phase {
+    case "needs-interaction", "completed":
+      return false
+    default:
+      return true
+    }
+  }
 }
+
+private let expandedRowLeadingSize: CGFloat = 32
 
 func expandedCardFillOpacity(session: AgentIslandSession, hovered: Bool) -> Double {
   let base = session.phase == "needs-interaction" ? 0.065 : 0.035
@@ -3474,40 +3513,47 @@ struct ExpandedSessionHeaderLine: View {
   let session: AgentIslandSession
   let strings: AgentIslandStrings
   let titleFontSize: CGFloat
-  let mascotSkin: String
   let onFocus: () -> Void
 
-  private var showsMascot: Bool {
-    switch session.phase {
-    case "needs-interaction", "completed":
-      return false
-    default:
-      return true
-    }
+  /// A finished companion turn reads as a message: the reply is the content, no "Done" tag.
+  private var isCompanionReply: Bool {
+    session.companion != nil && session.phase == "completed"
+  }
+
+  private var titleText: Text {
+    let title = Text(expandedPrimaryTitle(for: session, strings: strings))
+      .foregroundColor(Color.white.opacity(0.92))
+    guard let group = companionGroupName else { return title }
+    // The group yields first when the line is too narrow: the speaker stays readable.
+    return title + Text(" · \(group)").foregroundColor(Color.white.opacity(0.42))
+  }
+
+  private var titleHelp: String {
+    let title = expandedPrimaryTitle(for: session, strings: strings)
+    guard let group = companionGroupName else { return title }
+    return "\(title) · \(group)"
+  }
+
+  private var companionGroupName: String? {
+    let group = session.companion?.groupName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return group.isEmpty ? nil : group
   }
 
   var body: some View {
     HStack(alignment: .center, spacing: 8) {
-      StatusDot(
-        session: session,
-        compact: false,
-        showsRunningAnimation: showsMascot,
-        mascotSkin: mascotSkin
-      )
 
-      Text(expandedPrimaryTitle(for: session, strings: strings))
+      titleText
         .font(.system(size: titleFontSize, weight: .medium))
-        .foregroundColor(Color.white.opacity(0.92))
         .lineLimit(1)
         .truncationMode(.tail)
         .layoutPriority(1)
-        .help(expandedPrimaryTitle(for: session, strings: strings))
+        .help(titleHelp)
 
       Spacer(minLength: 8)
 
       if session.phase == "needs-interaction", session.permissionAction == nil {
         InteractionInlineButton(label: strings.review, action: onFocus)
-      } else {
+      } else if !isCompanionReply {
         SessionStatusLabel(session: session, strings: strings)
       }
     }
@@ -3673,6 +3719,10 @@ struct ExpandedRowSummary {
 }
 
 func expandedPrimaryTitle(for session: AgentIslandSession, strings: AgentIslandStrings) -> String {
+  // A companion is named by its owner; never filter it like a generic agent title.
+  if let name = session.companion?.name.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
+    return name
+  }
   let title = session.title.trimmingCharacters(in: .whitespacesAndNewlines)
   if isMeaningfulExpandedTitle(title) {
     return title
@@ -3950,27 +4000,39 @@ struct StatusDot: View {
   var showsRunningAnimation = true
   var mascotSkin = defaultAgentIslandMascotSkin
   var runningMascotNamespace: Namespace.ID?
+  /// Overrides the default 18pt (compact) / 20pt slot; glyphs scale with it.
+  var size: CGFloat? = nil
+
+  private var side: CGFloat { size ?? (compact ? 18 : 20) }
+  private var glyphScale: CGFloat { side / 20 }
 
   var body: some View {
     let accent = statusAccentColor(for: session)
     ZStack {
-      if usesExpandedVendorStatusIcon {
+      if let companion = session.companion {
+        AgentIslandCompanionStatusAvatar(
+          session: session,
+          companion: companion,
+          size: side
+        )
+      } else if usesExpandedVendorStatusIcon {
         AgentIslandSessionVendorIcon(
           session: session,
           running: isRunningSession(session),
-          highlighted: session.phase == "completed" && session.attention
+          highlighted: session.phase == "completed" && session.attention,
+          size: side
         )
       } else if let mascotState = mascotAnimationState(for: session), showsRunningAnimation {
         if let runningMascotNamespace {
           RunningMascotIcon(
             skin: mascotSkin,
             state: mascotState,
-            size: compact ? 18 : 20,
+            size: side,
             namespace: runningMascotNamespace
           )
         } else {
-          AgentIslandMascotView(skin: mascotSkin, state: mascotState, size: compact ? 18 : 20)
-            .frame(width: compact ? 18 : 20, height: compact ? 18 : 20)
+          AgentIslandMascotView(skin: mascotSkin, state: mascotState, size: side)
+            .frame(width: side, height: side)
         }
       } else {
         Circle().fill(accent.opacity(session.phase == "completed" ? 0.08 : 0.13))
@@ -3978,7 +4040,7 @@ struct StatusDot: View {
           .foregroundColor(accent.opacity(session.phase == "completed" ? 0.78 : 0.96))
       }
     }
-    .frame(width: compact ? 18 : 20, height: compact ? 18 : 20)
+    .frame(width: side, height: side)
   }
 
   private var usesExpandedVendorStatusIcon: Bool {
@@ -3991,13 +4053,13 @@ struct StatusDot: View {
     switch session.phase {
     case "needs-interaction":
       Image(systemName: "questionmark.bubble")
-        .font(.system(size: 11, weight: .semibold))
+        .font(.system(size: 11 * glyphScale, weight: .semibold))
     case "completed":
       Image(systemName: "checkmark")
-        .font(.system(size: 11, weight: .semibold))
+        .font(.system(size: 11 * glyphScale, weight: .semibold))
     case "error":
       Image(systemName: "exclamationmark.triangle")
-        .font(.system(size: 10, weight: .semibold))
+        .font(.system(size: 10 * glyphScale, weight: .semibold))
     default:
       EmptyView()
     }
@@ -4046,6 +4108,7 @@ struct AgentIslandSessionVendorIcon: View {
   let session: AgentIslandSession
   let running: Bool
   let highlighted: Bool
+  var size: CGFloat = 20
   @State private var isBreathing = false
   @Environment(\.agentIslandMascotAnimationsActive) private var animationsActive
 
@@ -4054,7 +4117,7 @@ struct AgentIslandSessionVendorIcon: View {
   }
 
   private var markSize: CGFloat {
-    vendor == .cc ? 13 : 12
+    (vendor == .cc ? 13 : 12) * size / 20
   }
 
   var body: some View {
@@ -4087,7 +4150,7 @@ struct AgentIslandSessionVendorIcon: View {
     .onChange(of: running) { _, isRunning in
       isBreathing = isRunning && animationsActive
     }
-    .frame(width: 20, height: 20)
+    .frame(width: size, height: size)
   }
 
   @ViewBuilder
@@ -4099,6 +4162,124 @@ struct AgentIslandSessionVendorIcon: View {
       Text("XD")
         .font(.system(size: 8.5, weight: .bold, design: .rounded))
     }
+  }
+}
+
+/// Dark tints of the BotAvatar hue family (`--bot-avatar-*-bg`, dark); the island is always dark.
+func agentIslandCompanionHueColor(_ hue: String) -> Color {
+  let rgb: (Double, Double, Double)
+  switch hue {
+  case "red": rgb = (0x4a, 0x2e, 0x2a)
+  case "orange": rgb = (0x4a, 0x35, 0x27)
+  case "amber": rgb = (0x47, 0x3a, 0x22)
+  case "green": rgb = (0x26, 0x40, 0x2a)
+  case "teal": rgb = (0x21, 0x40, 0x3e)
+  case "blue": rgb = (0x26, 0x34, 0x49)
+  case "pink": rgb = (0x45, 0x2b, 0x39)
+  case "graphite": rgb = (0x3c, 0x3c, 0x3a)
+  default: rgb = (0x32, 0x2b, 0x48)
+  }
+  return Color(red: rgb.0 / 255, green: rgb.1 / 255, blue: rgb.2 / 255)
+}
+
+final class AgentIslandCompanionAvatarStore {
+  static let shared = AgentIslandCompanionAvatarStore()
+
+  // Keyed by the thumbnail itself: a changed avatar arrives as different bytes.
+  private var cache: [String: NSImage?] = [:]
+
+  func image(forJpegBase64 base64: String) -> NSImage? {
+    if let cached = cache[base64] { return cached }
+    let image = Data(base64Encoded: base64).flatMap { NSImage(data: $0) }
+    if cache.count >= 16 { cache.removeAll() }
+    cache[base64] = image
+    return image
+  }
+}
+
+struct AgentIslandCompanionAvatar: View {
+  let companion: AgentIslandCompanion
+  let size: CGFloat
+
+  var body: some View {
+    ZStack {
+      Circle().fill(agentIslandCompanionHueColor(companion.hue))
+      if let base64 = companion.imageJpeg,
+         let image = AgentIslandCompanionAvatarStore.shared.image(forJpegBase64: base64) {
+        Image(nsImage: image)
+          .resizable()
+          .interpolation(.high)
+          .aspectRatio(contentMode: .fill)
+      } else if companion.glyphIsInitial {
+        Text(companion.glyph)
+          .font(.system(size: size * 0.5, weight: .medium))
+          .foregroundColor(Color.white.opacity(0.92))
+      } else {
+        Text(companion.glyph)
+          .font(.system(size: size * 0.58))
+      }
+    }
+    .frame(width: size, height: size)
+    .clipShape(Circle())
+    .accessibilityLabel(companion.name)
+  }
+}
+
+/// Companion avatar plus the session state the agent mark would otherwise carry:
+/// a breathing ring while it works, a corner dot when it waits, failed or replied unread.
+struct AgentIslandCompanionStatusAvatar: View {
+  let session: AgentIslandSession
+  let companion: AgentIslandCompanion
+  let size: CGFloat
+  @State private var isBreathing = false
+  @Environment(\.agentIslandMascotAnimationsActive) private var animationsActive
+
+  private var running: Bool { isRunningSession(session) }
+
+  private var badgeSize: CGFloat { max(6, min(size * 0.3, 10)) }
+
+  private var badgeColor: Color? {
+    switch session.phase {
+    case "needs-interaction":
+      return agentIslandBlue
+    case "error":
+      return agentIslandErrorRed
+    case "completed":
+      return session.attention ? agentIslandUnreadGreen : nil
+    default:
+      return nil
+    }
+  }
+
+  var body: some View {
+    AgentIslandCompanionAvatar(companion: companion, size: size)
+      .overlay(
+        Circle()
+          .strokeBorder(agentIslandOrange, lineWidth: size >= 28 ? 2 : 1.5)
+          .opacity(running ? (animationsActive ? (isBreathing ? 0.95 : 0.3) : 0.85) : 0)
+          .animation(
+            running && animationsActive ? .easeInOut(duration: 0.75).repeatForever(autoreverses: true) : .default,
+            value: isBreathing
+          )
+      )
+      .overlay(alignment: .bottomTrailing) {
+        if let badgeColor {
+          Circle()
+            .fill(badgeColor)
+            .frame(width: badgeSize, height: badgeSize)
+            .overlay(Circle().strokeBorder(Color.black, lineWidth: size >= 28 ? 1.5 : 1.2))
+        }
+      }
+      .frame(width: size, height: size)
+      .onAppear {
+        isBreathing = running && animationsActive
+      }
+      .onChange(of: animationsActive) { _, active in
+        isBreathing = running && active
+      }
+      .onChange(of: running) { _, isRunning in
+        isBreathing = isRunning && animationsActive
+      }
   }
 }
 

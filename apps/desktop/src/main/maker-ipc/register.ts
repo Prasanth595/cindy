@@ -12,6 +12,7 @@ import { createPluginTaskStore } from './pluginTaskStore.js';
 import { createPluginBackgroundTaskHandlers, revealAllPluginHiddenTasks } from './pluginHiddenTasks.js';
 import { setSessionHidden } from '../localDb/ipc/sessionHidden.js';
 import { isSessionHiddenSync } from '../localDb/hiddenSessionRegistry.js';
+import { notifyAgentIslandBotGroupChanged } from '../localDb/agentIslandSessionPatch.js';
 import { ghostDeclaresHiddenTasks } from '../../shared/ghost.js';
 import { hasAcceptedUserTaskInput } from './pluginTaskInput.js';
 import { controlOwnedSessionExecution, isSameSessionExecution, withdrawOwnedSessionInputs } from './sessionExecutionOwnership.js';
@@ -11995,6 +11996,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       const ownerScope = scope as ReturnType<typeof captureDataOwnerBroadcastScope> | undefined;
       if (ownerScope && !isDataOwnerBroadcastScopeCurrent(ownerScope)) return;
       broadcastToAllWindows(MAKER_PUSH.BOT_GROUP_CHANGED, payload, ownerScope);
+      if (payload.change === 'updated' || payload.change === 'deleted') notifyAgentIslandBotGroupChanged(payload.groupId);
       // Phones read groups as remote resources; any change re-reads the row and the chat.
       broadcastBotGroupRemoteResourceChanged(payload.groupId);
     },

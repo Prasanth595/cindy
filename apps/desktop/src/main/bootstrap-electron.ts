@@ -557,6 +557,8 @@ import {
 import { initNotificationService, showDeviceSessionDesktopEvent } from './notificationService';
 import { initWecomGroupNotificationIpc } from './wecomGroupNotification';
 import { getAgentIslandService, initAgentIslandService } from './agent-island/service.js';
+import { setCompanionAvatarResolver } from './agent-island/companionIdentity.js';
+import { companionAvatarCache } from './companion-cloud/avatarCacheHost.js';
 import { attachWorkLouderCodexWindowReveal } from './worklouder-codex/index.js';
 import {
   disposeInputDevices,
@@ -668,7 +670,7 @@ import { rehydrateCloseSuppression } from './maker-host/rehydrateCloseSuppressio
 import {
   builtInSkillDescriptors,
 } from './maker-host/built-in-skills.js';
-import { isCindyLearnSkillEnabled } from './skillhub/activationPreferences';
+import { isCindyLearnSkillEnabled, isCindyLearnSkillEnabledForCommandListing } from './skillhub/activationPreferences';
 // Maker Core 一阶段重构（新链路）—— 静态 import 避免 dynamic import 触发 vite chunking
 // 让 imageProtocol 等需要 app.ready 前注册的模块跑在错误时机。getMaker() 是 lazy 的，
 // 静态 import 不会触发 Maker / Agent 的实例化。
@@ -4450,6 +4452,7 @@ const registerIpcHandlers = () => {
     feishuIm,
   });
   initWecomGroupNotificationIpc();
+  setCompanionAvatarResolver((request) => companionAvatarCache.resolve(request));
   initAgentIslandService({
     // The relay waits for native done before checking the durable result handoff.
     isCompletionHandledByTeammate,
@@ -6293,6 +6296,7 @@ const registerIpcHandlers = () => {
         getGoalController,
         getLearnController,
         isLearnEnabled: isCindyLearnSkillEnabled,
+        isLearnEnabledForListing: isCindyLearnSkillEnabledForCommandListing,
         remoteInvoke: (deviceId, channel, args) =>
           deviceLinkHandleInvoke(deviceLinkIpcDeps(), deviceId, channel, args),
       });

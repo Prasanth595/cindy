@@ -17,6 +17,7 @@ import {
   buildBotSessionOwners,
   createSessionEntryNavigator,
   findBotProfileForSession,
+  remoteBotRouteForSession,
   resolveBotRouteForSessionEntry,
   type BotSessionEntryTarget,
 } from '../botSessionOwners';
@@ -132,6 +133,16 @@ describe('伙伴归属表', () => {
       route: '/cc-agent/s-delegated',
       consumesAlert: false,
     });
+  });
+
+  // 主力电脑在另一台设备的伙伴不在本机投影里：此前灵动岛点击只能落到普通任务页。
+  it('主力电脑在别的设备上的伙伴，点击回到那台设备的伙伴页', () => {
+    const remote = [{ id: 'opus', deviceId: 'mac studio', sessionId: 's-remote' }];
+    expect(remoteBotRouteForSession(remote, 's-remote')).toEqual({
+      route: '/bots/remote/mac%20studio/opus',
+      consumesAlert: false,
+    });
+    expect(remoteBotRouteForSession(remote, 's-other')).toBeNull();
   });
 
   it('群专线回到它所在的群，点击即处置；缺群 id 的旧投影回伙伴主页', () => {

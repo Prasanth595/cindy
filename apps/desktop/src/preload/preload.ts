@@ -1075,6 +1075,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
       };
     },
   } satisfies ModelFavoritesHostApi,
+  botMarket: {
+    list: () => ipcRenderer.invoke('companion-import', 'packages'),
+    invite: (input: import('../shared/botMarket').BotPackageIdentity & { locale?: string }) => ipcRenderer.invoke('companion-import', 'invite-package', input),
+    status: (requestId: string) => ipcRenderer.invoke('companion-import', 'status', requestId),
+  } satisfies import('../shared/botMarket').BotMarketApi,
   companionImport: {
     sources: () => ipcRenderer.invoke('companion-import', 'sources'),
     preview: (sourceId: string) => ipcRenderer.invoke('companion-import', 'preview', sourceId),

@@ -6661,6 +6661,7 @@ export function MessageStream({
                         localFileRefs={localFileRefs}
                         assistantAvatar={assistantAvatar}
                         simplifiedBotConversation={simplifiedBotConversation}
+                        starterOptionsLocked={Boolean(lastUserMessageClientId)}
                         sessionSource={sessionSource}
                       />
                     );
@@ -6848,6 +6849,7 @@ const MessageItem = memo(function MessageItem({
   localFileRefs,
   assistantAvatar,
   simplifiedBotConversation,
+  starterOptionsLocked,
   sessionSource,
 }: {
   message: ChatMessage;
@@ -6900,6 +6902,8 @@ const MessageItem = memo(function MessageItem({
   assistantAvatar?: ReactNode;
   /** 伙伴对话消息操作栏使用轻量常显变体。 */
   simplifiedBotConversation?: boolean;
+  /** True once the user has written anything in this task, which retires the opening's starter buttons. */
+  starterOptionsLocked?: boolean;
   sessionSource?: string | null;
 }) {
   // silent-stop 自动续跑行(isSyntheticTrigger + systemCardType):渲染成
@@ -7025,6 +7029,8 @@ const MessageItem = memo(function MessageItem({
             ghostReplyPending={message.ghostReplyPending}
             simplifiedBotConversation={simplifiedBotConversation}
             botLearning={message.botLearning}
+            botStarterOptions={message.botStarterOptions}
+            starterOptionsLocked={starterOptionsLocked}
             botTaskResults={message.turnCompleted === true ? message.botTaskResults : undefined}
           />
         </>,

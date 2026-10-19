@@ -11,6 +11,7 @@ import { normalizeTaskTags } from '@cindy/maker-shared';
 import type { ImMessageSource } from '../../shared/imMessageSource';
 import { sharedTaskAuthorMemberId, sharedTaskAuthorName } from '@cindy/maker-shared';
 import { readBotAuthorizationCard } from '../../shared/botAuthorization';
+import { readBotStarterOptions } from '../../shared/botStarterOptions';
 import { applyCindyMakeCardAttention } from './cindyMakeAttention';
 import { confirmRemoteUsers, reserveRemoteUser } from './remoteUserHandoff';
 import { readRemoteHistoryCache, remoteHistoryCacheWriter } from './remoteHistoryCache';
@@ -540,6 +541,8 @@ export interface ChatMessage {
   sourceGroup?: MessageSourceGroup;
   /** Host-stamped delivery remains visible after source identity is redacted. */
   explicitDelivery?: boolean;
+  /** Market opening: starter choices shown as buttons below this message (agentMeta.botStarterOptions). */
+  botStarterOptions?: string[];
   /** Provider phase survives live deltas and durable history projection. */
   assistantPhase?: string;
   failedSamplingAttempt?: boolean;
@@ -19431,6 +19434,7 @@ function mapServerMessages(serverMsgs: Message[]): ChatMessage[] {
           : (persistedTurnMoney?.amount ?? 0) > 0 || turnUsageDetails !== undefined
             ? true
             : undefined;
+    const botStarterOptions = m.role === 'assistant' ? readBotStarterOptions(m.agentMeta?.botStarterOptions) : [];
     return {
       clientId: m.clientId,
       role: m.role,
@@ -19439,6 +19443,7 @@ function mapServerMessages(serverMsgs: Message[]): ChatMessage[] {
       ...(m.role === 'assistant' && typeof m.agentMeta?.assistantPhase === 'string' ? { assistantPhase: m.agentMeta.assistantPhase } : {}),
       ...(m.role === 'assistant' && m.agentMeta?.failedSamplingAttempt ? { failedSamplingAttempt: true } : {}),
       ...(m.role === 'assistant' && m.agentMeta?.explicitDelivery === true ? { explicitDelivery: true } : {}),
+      ...(botStarterOptions.length ? { botStarterOptions } : {}),
       ...(m.role === 'assistant' ? { botLearning: m.agentMeta?.botLearning } : {}),
       ...(m.agentMeta?.botPrivateReply === true ? { botPrivateReply: true } : {}),
       ...(m.role === 'assistant' && m.agentMeta?.turnCompleted === true

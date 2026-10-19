@@ -94,6 +94,7 @@ function BotSessionGateView() {
   const liveName = liveProfile?.name;
   const liveAvatar = liveProfile?.avatar;
   const liveAvatarColor = liveProfile?.avatarColor;
+  const liveInvitationStage = liveProfile?.invitation?.stage;
   const gateIdentity = gate.kind === 'ready' ? gate.identity : null;
   const identity = useMemo(
     () =>
@@ -271,6 +272,7 @@ function BotSessionGateView() {
           <CCAgentSessionView
             botMentions={gate.mentions}
             botIdentity={chatIdentity ?? gate.identity}
+            botInvitationStage={gate.isCanonical ? liveInvitationStage : undefined}
             botUnreadBoundaryAt={gate.unreadBoundaryAt}
             onBotReadThrough={gate.isCanonical ? onReadThrough : undefined}
             {...(readOnly ? { readOnly: true } : {})}

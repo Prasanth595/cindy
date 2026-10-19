@@ -975,6 +975,19 @@ body.resizing-pane [data-ghost-webview] {
   }
 }
 
+/* Bot Market 详情页入场(DESIGN.md §14.4):按 --rise-index 依次淡入并上移 6px,
+   相邻错峰 30ms、最多 6 段;仅 transform / opacity,减弱动态效果下直落终态。 */
+.bot-market-rise {
+  animation: bot-market-rise var(--motion-base) var(--motion-ease-out)
+    calc(var(--rise-index, 0) * 30ms) both;
+}
+@keyframes bot-market-rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   [data-voice-mic-active='true'] [data-voice-mic-bar],
   .status-bar-shimmer,
@@ -987,7 +1000,8 @@ body.resizing-pane [data-ghost-webview] {
   .thinking-dot,
   .stream-word,
   [data-stream-marker]::marker,
-  .card-col-fade {
+  .card-col-fade,
+  .bot-market-rise {
     animation: none !important;
     will-change: auto;
   }

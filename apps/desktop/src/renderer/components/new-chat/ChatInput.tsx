@@ -101,6 +101,7 @@ import {
   getOrCreateRemoteOptimisticTransitionCheckpoint,
   removeRemoteOptimisticDraftFragment,
   type RemoteOptimisticTransitionCheckpoint,
+  type BuiltInSkillDraftIntent,
   saveDraft as saveComposerDraft,
   saveComposerTextAfterAsyncTransition,
   clearDraft as clearComposerDraft,
@@ -269,6 +270,9 @@ import {
   loadAllCommands,
   nextAvailableSlashCommandIndex,
   PI_RUNTIME_SKILL_RETRY_DELAYS_MS,
+  rewriteBuiltInSkillDraftForSend,
+  leadingSlashInvocation,
+  rebaseInlineRangesAfterSlashCommandRewrite,
   type SlashCommandRosterState,
   type UnifiedCommand,
 } from '@/lib/slashCommands';
@@ -489,6 +493,7 @@ interface ChatInputProps {
     mentions?: MentionedResource[],
     opts?: {
       deliveryMode?: MessageDeliveryMode;
+      builtInSkillIntent?: BuiltInSkillDraftIntent;
       providerId?: string | null;
       /** chat-text-quote:message 开头的 blockquote 为引用功能拼接产出。 */
       quotesEncoded?: boolean;
@@ -4083,6 +4088,7 @@ export function ChatInput({
             attachments: existing?.attachments ?? [],
             quotes: existing?.quotes ?? [],
             browserComments: existing?.browserComments ?? [],
+            ...(existing?.builtInSkillIntent ? { builtInSkillIntent: existing.builtInSkillIntent } : {}),
             ...(existing?.pendingGhostId ? { pendingGhostId: existing.pendingGhostId } : {}),
             ...(existing?.focusAtEnd ? { focusAtEnd: true } : {}),
           },
@@ -5238,6 +5244,7 @@ export function ChatInput({
       const sourceSessionId = sessionId;
       const sourceRemoteGhosts = deviceLinkDeviceId ? composerGhostsRef.current : null;
       const sourceStorageKey = storageKey;
+      const sourceWorkingDir = workingDirRef.current;
       const sendInFlightKey = sourceStorageKey ?? sourceSessionId ?? '__draft__';
       if (dispatchSendInFlightKeysRef.current.has(sendInFlightKey)) return;
       const optimisticallyClearRemoteComposer = Boolean(deviceLinkDeviceId && sourceSessionId);
@@ -5284,6 +5291,7 @@ export function ChatInput({
         : () => {};
       if (!finishAgentSendDispatch) return;
       draftSaveSchedulerRef.current?.flush();
+      const builtInSkillIntent = sourceStorageKey ? getComposerDraft(sourceStorageKey)?.builtInSkillIntent : undefined;
       dispatchSendInFlightKeysRef.current.add(sendInFlightKey);
       // 发送新消息时立即递增 turnGen，并在任何 await / clearContent 前消费来源 session
       // 的推荐：旧 Promise 不能落地，正文程序化清空时也不会闪回上一轮推荐。
@@ -5358,10 +5366,12 @@ export function ChatInput({
           mentions,
           hasQuotes,
           agentReferences: serializedAgentReferences,
-          pastedTextRanges,
-          slashCommandRanges,
+          pastedTextRanges: originalPastedTextRanges,
+          slashCommandRanges: originalSlashCommandRanges,
         } = serializedContent;
         let agentReferences = serializedAgentReferences;
+        let pastedTextRanges = originalPastedTextRanges;
+        let slashCommandRanges = originalSlashCommandRanges;
         const sourceDraftExtras =
           sourceStorageKey !== undefined ? getComposerDraft(sourceStorageKey) : undefined;
         const frozenExtras =
@@ -5614,7 +5624,7 @@ export function ChatInput({
         const usedGhost = ghostCommandToken
           ? findGhostByCommand(eligibleGhosts, ghostCommandToken.word, ghostCommandToken.namespace)
           : null;
-        const routedText = expandGhostCommand(text, eligibleGhosts);
+        let routedText = expandGhostCommand(text, eligibleGhosts);
         const sendSnapshot = captureComposerSendSnapshot(
           editor.getJSON(),
           latestAttachmentsRef.current,
@@ -5637,6 +5647,29 @@ export function ChatInput({
           documentBeforeOptimisticClear = editor.getJSON();
           attachmentsBeforeOptimisticClear = [...latestAttachmentsRef.current];
           commentsBeforeOptimisticClear = [...browserCommentsRef.current];
+        }
+        // Recovered worktree drafts can now live in an existing task. Resolve
+        // their identity before optimistic clearing and ordinary slash dispatch,
+        // on every retry. Home still owns resolution after creating its worktree.
+        if (sourceSessionId && builtInSkillIntent) {
+          if (!currentModelAgentKind) return;
+          const rewritten = await rewriteBuiltInSkillDraftForSend({
+            message: routedText,
+            intent: builtInSkillIntent,
+            agentKind: currentModelAgentKind,
+            workingDir: sourceWorkingDir,
+            deviceId: deviceLinkDeviceId ?? undefined,
+            remoteHostId,
+          });
+          if (!isDataOwnerGenerationCurrent(dataOwnerAtOptimisticClear)) return;
+          if (rewritten === null) {
+            toast.error(t('settings.ghosts.page.creatorUnavailable'));
+            return;
+          }
+          agentReferences = rebaseInlineRangesAfterSlashCommandRewrite(agentReferences, routedText, rewritten);
+          pastedTextRanges = rebaseInlineRangesAfterSlashCommandRewrite(pastedTextRanges, routedText, rewritten);
+          slashCommandRanges = rebaseInlineRangesAfterSlashCommandRewrite(slashCommandRanges, routedText, rewritten);
+          routedText = rewritten;
         }
         let recentUsageMarked = false;
         const markRecentPluginUsage = () => {
@@ -5833,6 +5866,7 @@ export function ChatInput({
             sourceStorageKey,
             {
               clientId,
+              ...(builtInSkillIntent ? { builtInSkillIntent } : {}),
               text: tiptapDocHasContent(documentBeforeOptimisticClear)
                 ? documentBeforeOptimisticClear
                 : null,
@@ -6015,6 +6049,14 @@ export function ChatInput({
             {
               deliveryMode,
               providerId: sendProviderId,
+              ...(builtInSkillIntent
+                ? {
+                    builtInSkillIntent: {
+                      ...builtInSkillIntent,
+                      commandName: leadingSlashInvocation(routedText)?.name ?? builtInSkillIntent.commandName,
+                    },
+                  }
+                : {}),
               ...(hasQuotes ? { quotesEncoded: true } : {}),
               ...(agentReferences.length > 0 ? { agentReferences } : {}),
               ...(pastedTextRanges.length > 0 ? { pastedTextRanges } : {}),

@@ -29,6 +29,7 @@ import { AGENT_ISLAND_DISPLAY_CONFIG } from '../displayConfig.js';
 import type { AgentIslandNativeFrame } from '../MacAgentIslandNativeHost.js';
 import { markAppContentWindow } from '../../windowFocusClassifier.js';
 import type { AgentIslandService } from '../service.js';
+import type { AgentIslandCompanionIdentity } from '../companionIdentity.js';
 import { setDeepLinkMainWindow, takePendingDeepLink } from '../../deepLink.js';
 
 const REMOTE_DAEMON_CLOSED_REASON = 'remote_daemon_closed';
@@ -61,7 +62,10 @@ const mocks = vi.hoisted(() => ({
     userSendAt: number | null;
     workingDir: string | null;
     workspaceKind: string | null;
+    source?: string | null;
   } | null>>(() => Promise.resolve(null)),
+  readAgentIslandCompanion: vi.fn<(sessionId: string) => Promise<AgentIslandCompanionIdentity | null>>(() => Promise.resolve(null)),
+  companionAvatarThumbnail: vi.fn<(avatar: string, deviceId?: string | null) => Promise<string | undefined>>(() => Promise.resolve(undefined)),
   primaryDisplay: {
     id: 1,
     label: 'Built-in Retina Display',
@@ -137,6 +141,12 @@ vi.mock('../../localDb/ipc/sessions.js', () => ({
   getSessionRowSnapshot: mocks.getSessionRowSnapshot,
 }));
 
+vi.mock('../companionIdentity.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../companionIdentity.js')>()),
+  readAgentIslandCompanion: mocks.readAgentIslandCompanion,
+  companionAvatarThumbnail: mocks.companionAvatarThumbnail,
+}));
+
 vi.mock('../layoutPreferenceStore.js', () => ({
   readAgentIslandDetachedLayoutPreferences: mocks.readDetachedLayoutPreferences,
   readAgentIslandLayoutPreferences: mocks.readLayoutPreferences,
@@ -156,6 +166,10 @@ beforeEach(() => {
   takePendingDeepLink();
   mocks.getSessionRowSnapshot.mockReset();
   mocks.getSessionRowSnapshot.mockResolvedValue(null);
+  mocks.readAgentIslandCompanion.mockReset();
+  mocks.readAgentIslandCompanion.mockResolvedValue(null);
+  mocks.companionAvatarThumbnail.mockReset();
+  mocks.companionAvatarThumbnail.mockResolvedValue(undefined);
   mocks.displays.splice(0, mocks.displays.length, mocks.primaryDisplay);
   mocks.getPrimaryDisplay.mockReset();
   mocks.getDisplayMatching.mockReset();
@@ -1711,6 +1725,182 @@ describe('AgentIslandService native publishing', () => {
       phase: 'running',
       permissionAction: null,
     });
+  });
+
+  // Companion Sessions are Bot Sessions whose title and home folder are not what the user
+  // knows them by; the island must load the companion and follow its renames.
+  it('loads a companion identity for Bot Sessions and refreshes it when the companion changes', async () => {
+    const { AgentIslandService } = await import('../service.js');
+    const publish = vi.fn((state: AgentIslandDisplayState, frameOrFrames: AgentIslandNativeFrame | AgentIslandNativeFrame[]) => {
+      void state;
+      void frameOrFrames;
+      return true;
+    });
+    const workingDir = '/Users/alice/Library/Application Support/Cindy/owners/o1/bots/b1/workspace';
+    const identity = (name: string): AgentIslandCompanionIdentity => ({
+      botId: 'b1',
+      companion: { name, hue: 'violet', glyph: name[0]!, glyphIsInitial: true },
+    });
+    mocks.getSessionRowSnapshot.mockImplementation(async () => ({
+      status: 'active', title: 'Opus', userSendAt: null, workingDir, workspaceKind: null, source: 'bot',
+    }));
+    mocks.readAgentIslandCompanion.mockResolvedValue(identity('Opus'));
+    const service = new AgentIslandService({
+      getMainWindow: () => null,
+      nativeHost: { failed: false, publish },
+    });
+    syncEnabledForTest(service, publish);
+
+    service.handleUserPrompt({ sessionId: 's1', agentKind: 'claude-code', workingDir }, 'hi');
+    await vi.waitFor(() => expect(publish.mock.calls.at(-1)?.[0].sessions[0]).toMatchObject({
+      title: 'Opus',
+      projectName: null,
+      companion: identity('Opus').companion,
+    }));
+
+    // A title patch must not drop the companion that was already resolved.
+    service.handleSessionMetadataPatch('s1', { title: 'Renamed task' });
+    expect(publish.mock.calls.at(-1)?.[0].sessions[0]?.companion?.name).toBe('Opus');
+
+    service.handleCompanionProfileChanged('another-bot');
+    expect(mocks.readAgentIslandCompanion).toHaveBeenCalledTimes(1);
+
+    mocks.readAgentIslandCompanion.mockResolvedValue(identity('Sonnet'));
+    service.handleCompanionProfileChanged('b1');
+    await vi.waitFor(() => expect(publish.mock.calls.at(-1)?.[0].sessions[0]).toMatchObject({
+      title: 'Sonnet',
+      companion: { name: 'Sonnet' },
+    }));
+  });
+
+  // Review of #6436: a group rename never reached open group-lane cards, an older slow read
+  // could overwrite a newer one, and a failed remote avatar read stayed a glyph forever.
+  it('refreshes group-lane cards on a group rename, keeping only the latest of overlapping reads', async () => {
+    const { AgentIslandService } = await import('../service.js');
+    const publish = vi.fn((state: AgentIslandDisplayState, frameOrFrames: AgentIslandNativeFrame | AgentIslandNativeFrame[]) => {
+      void state;
+      void frameOrFrames;
+      return true;
+    });
+    const lane = (groupName: string): AgentIslandCompanionIdentity => ({
+      botId: 'b1', groupId: 'g1', companion: { name: 'Opus', groupName, hue: 'teal', glyph: 'O', glyphIsInitial: true },
+    });
+    mocks.getSessionRowSnapshot.mockImplementation(async () => ({
+      status: 'active', title: 'Opus', userSendAt: null, workingDir: '/home', workspaceKind: null, source: 'bot',
+    }));
+    mocks.readAgentIslandCompanion.mockResolvedValue(lane('旧群名'));
+    const service = new AgentIslandService({ getMainWindow: () => null, nativeHost: { failed: false, publish } });
+    syncEnabledForTest(service, publish);
+    service.handleUserPrompt({ sessionId: 's1', agentKind: 'claude-code', workingDir: '/home' }, 'hi');
+    await vi.waitFor(() => expect(publish.mock.calls.at(-1)?.[0].sessions[0]?.projectName).toBe('旧群名'));
+
+    service.handleBotGroupChanged('other-group');
+    expect(mocks.readAgentIslandCompanion).toHaveBeenCalledTimes(1);
+
+    let releaseSlow!: (identity: AgentIslandCompanionIdentity) => void;
+    mocks.readAgentIslandCompanion.mockImplementationOnce(() => new Promise((resolve) => { releaseSlow = resolve; }));
+    service.handleBotGroupChanged('g1');
+    mocks.readAgentIslandCompanion.mockResolvedValueOnce(lane('新群名'));
+    service.handleBotGroupChanged('g1');
+    await vi.waitFor(() => expect(publish.mock.calls.at(-1)?.[0].sessions[0]?.projectName).toBe('新群名'));
+    releaseSlow(lane('过期群名'));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(publish.mock.calls.at(-1)?.[0].sessions[0]?.projectName).toBe('新群名');
+  });
+
+  // Review of #6436 (round 5): a rename landing while the FIRST identity read was still
+  // encoding the avatar found no resolved companion to refresh, then the stale read committed.
+  it('re-reads an identity whose first load overlapped a companion change', async () => {
+    const { AgentIslandService } = await import('../service.js');
+    const publish = vi.fn((state: AgentIslandDisplayState, frameOrFrames: AgentIslandNativeFrame | AgentIslandNativeFrame[]) => {
+      void state;
+      void frameOrFrames;
+      return true;
+    });
+    const named = (name: string): AgentIslandCompanionIdentity => ({
+      botId: 'b1', companion: { name, hue: 'teal', glyph: name[0]!, glyphIsInitial: true },
+    });
+    mocks.getSessionRowSnapshot.mockImplementation(async () => ({
+      status: 'active', title: 'x', userSendAt: null, workingDir: '/home', workspaceKind: null, source: 'bot',
+    }));
+    let releaseFirst!: (identity: AgentIslandCompanionIdentity) => void;
+    mocks.readAgentIslandCompanion.mockImplementationOnce(() => new Promise((resolve) => { releaseFirst = resolve; }));
+    mocks.readAgentIslandCompanion.mockResolvedValue(named('新名字'));
+    const service = new AgentIslandService({ getMainWindow: () => null, nativeHost: { failed: false, publish } });
+    syncEnabledForTest(service, publish);
+    service.handleUserPrompt({ sessionId: 's1', agentKind: 'claude-code', workingDir: '/home' }, 'hi');
+    await vi.waitFor(() => expect(mocks.readAgentIslandCompanion).toHaveBeenCalledTimes(1));
+
+    // Several edits during one slow first read: only a read that saw none of them may commit.
+    service.handleCompanionProfileChanged('b1');
+    service.handleCompanionProfileChanged('b1');
+    service.handleCompanionProfileChanged('b1');
+    let releaseSecond!: (identity: AgentIslandCompanionIdentity) => void;
+    mocks.readAgentIslandCompanion.mockImplementationOnce(() => new Promise((resolve) => { releaseSecond = resolve; }));
+    releaseFirst(named('旧名字'));
+    await vi.waitFor(() => expect(mocks.readAgentIslandCompanion).toHaveBeenCalledTimes(2));
+    service.handleCompanionProfileChanged('b1');
+    releaseSecond(named('中间名字'));
+    await vi.waitFor(() => expect(publish.mock.calls.at(-1)?.[0].sessions[0]?.title).toBe('新名字'));
+    expect(mocks.readAgentIslandCompanion).toHaveBeenCalledTimes(3);
+  });
+
+  it('retries a remote companion avatar after a failed read instead of keeping the glyph forever', async () => {
+    vi.useFakeTimers();
+    try {
+      const { AgentIslandService } = await import('../service.js');
+      const publish = vi.fn((state: AgentIslandDisplayState, frameOrFrames: AgentIslandNativeFrame | AgentIslandNativeFrame[]) => {
+        void state;
+        void frameOrFrames;
+        return true;
+      });
+      const service = new AgentIslandService({ getMainWindow: () => null, nativeHost: { failed: false, publish } });
+      syncEnabledForTest(service, publish);
+      const input = {
+        sessionId: 'r1', deviceId: 'd1', deviceName: 'Studio', title: 'Opus', workingDir: null, workspaceKind: null,
+        agentKind: null, phase: 'running' as const, detail: 'x',
+        companion: { name: 'Opus', avatar: 'cindy-media://blobs/' + 'a'.repeat(64) + '.png', avatarColor: 'teal' },
+      };
+      service.setDeviceSessions([input]);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(mocks.companionAvatarThumbnail).toHaveBeenCalledTimes(1);
+      service.setDeviceSessions([input]);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(mocks.companionAvatarThumbnail).toHaveBeenCalledTimes(1);
+
+      mocks.companionAvatarThumbnail.mockResolvedValue('JPEGDATA');
+      await vi.advanceTimersByTimeAsync(61_000);
+      service.setDeviceSessions([input]);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(publish.mock.calls.at(-1)?.[0].sessions[0]?.companion?.imageJpeg).toBe('JPEGDATA');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Review of #6436: a fixed 64-entry FIFO thrashed once more companions than that were active.
+  it('keeps every remote companion identity stable when more than 64 are active', async () => {
+    const { AgentIslandService } = await import('../service.js');
+    const publish = vi.fn((state: AgentIslandDisplayState, frameOrFrames: AgentIslandNativeFrame | AgentIslandNativeFrame[]) => {
+      void state;
+      void frameOrFrames;
+      return true;
+    });
+    const service = new AgentIslandService({ getMainWindow: () => null, nativeHost: { failed: false, publish } });
+    syncEnabledForTest(service, publish);
+    const inputs = Array.from({ length: 70 }, (_, index) => ({
+      sessionId: `r${index}`, deviceId: 'd1', deviceName: 'Studio', title: `Bot${index}`, workingDir: null, workspaceKind: null,
+      agentKind: null, phase: 'running' as const, detail: 'x',
+      companion: { name: `Bot${index}`, avatar: '🦊', avatarColor: 'teal' },
+    }));
+    service.setDeviceSessions(inputs);
+    const first = publish.mock.calls.at(-1)?.[0].sessions.map((session) => session.companion);
+    const publishedBefore = publish.mock.calls.length;
+    service.setDeviceSessions(inputs);
+    expect(publish.mock.calls.length).toBe(publishedBefore);
+    expect(first).toHaveLength(70);
+    expect(new Set(first).size).toBe(70);
   });
 
   it('refreshes placeholder titles and hides dialogue workspace folders', async () => {

@@ -26,7 +26,7 @@
 
 | 内容                                                 | 权威来源                                                                                                                                                                                                                                                                                                          |
 | ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 编写手册（作者唯一教材，现拿现读）                   | `apps/desktop/src/main/cindy-brain/forge.ts` 的 `FORGE_GUIDE`，经 `ghost_forge_guide` 工具下发                                                                                                                                                                                                                    |
+| 编写手册（作者唯一教材，现拿现读）                   | `apps/desktop/resources/system-skills/cindy-plugin-creator/`；`SKILL.md` 编排创建流程，`references/` 保存完整作者契约；`ghost_forge_guide` 兼容读取同一份资料                                                                                                                                                                                                                    |
 | `ghost.json` 身份卡字段与校验                        | `packages/plugin-protocol/src/manifest.ts` 是跨消费者协议正本；`apps/desktop/src/shared/ghost.ts` 是 Desktop 运行时 validator。除下文登记的 Desktop-only 能力外，两端必须同步维护                                                                                                                                 |
 | 管子协议类型                                         | `apps/desktop/src/shared/ghost.ts`（`cindy.send` / `cindy.onHostMessage` 类型）                                                                                                                                                                                                                                   |
 | 打包限制                                             | `apps/desktop/src/main/cindy-brain/forge.ts` 的 `packGhostDir`                                                                                                                                                                                                                                                    |
@@ -653,7 +653,24 @@ Library 请求同时绑定迁移代次和安装批准，根解析、排队及开
 
 ## 6. 作者契约与编写手册同步
 
-`FORGE_GUIDE` 是 agent 替用户编写插件的**唯一教材**，由 `ghost_forge_guide` 现拿现读。
+内置 `cindy-plugin-creator` Skill 是 Agent 替用户编写插件的**唯一教材**，正本位于
+`apps/desktop/resources/system-skills/cindy-plugin-creator/`。`SKILL.md` 负责流程与按需阅读索引，
+`references/` 负责各章作者契约。插件页「让 Cindy 创建」从当前引擎的本机命令清单中选择
+已验证的内置 Skill，预填其实际命令名（Claude 同名冲突时带 `cindy:`）；始终优先内置版本，
+不可用时提示并保留原草稿，不回退到同名用户 Skill。使用普通新任务的技能调用链路；
+草稿保留内置身份，编辑正文、语音转写回填与切换 Agent 时不丢失；发送前按最终引擎和任务所在电脑的
+命令清单重新解析，并同步调整正文范围。本机与设备互联 worktree 创建后，按最终目录再次
+解析，避免来源分支不同导致同名命令归属变化；本机协同准备结束后才做最终解析，
+直接发送解析得到的官方命令，不再按短名称重新选择。内置版本不可用时停止发送并保留输入，
+恢复到已有任务的草稿及发送被拒后恢复的草稿都保留内置身份，每次重试在清空输入前重新核验。
+跨路由首条消息与远程交接恢复副本也携带同一意图；任务页面在协同／认证等待结束、实际分派前
+重新解析官方命令。恢复副本仅追加技能名和命令名，沿用按账号隔离及 7 天过期机制，兼容旧正文副本。
+未认领的远程 worktree 沿用原恢复账本回收。远程供应商沿用任务电脑的 Skill 资源；SSH
+没有 Cindy 内置清单时不回退本机。用户主动更换命令或替换草稿后不再保留原内置调用意图。
+技能随应用内置 bundle 升级，不另建安装或权限流程。
+`forgeGuide.ts` 从这些 Markdown 构造兼容的 `FORGE_GUIDE`，供旧 `ghost_forge_guide`
+调用按原章节号读取。不要在 TypeScript、工具描述或界面文案中另存一套编写流程。
+修改随包 Skill 字节时同步递增 `BUILT_IN_SKILLS_BUNDLE_VERSION`。
 **手册过期 = AI 按旧规则写出过不了校验的插件包**（校验拒装只是兜底，用户体验是“AI
 反复打包反复被拒”）。
 
@@ -675,7 +692,7 @@ Library 请求同时绑定迁移代次和安装批准，根解析、排队及开
 
 1. 协议正本 `packages/plugin-protocol/src/manifest.ts` 及其测试；
 2. Desktop 完整镜像 `apps/desktop/src/shared/ghost.ts` 及其测试；
-3. 作者文档 `FORGE_GUIDE` 的对应章节及 Forge 测试。
+3. 内置 `cindy-plugin-creator/references/` 的对应章节（兼容导出为 `FORGE_GUIDE`）及 Forge 测试。
 
 `mainView` 的现行协议在 `FORGE_GUIDE` §4.20；v2 的 `main-view` 只保留输入兼容。
 `mainView.icon` 只接受 Cindy 系统线性图标

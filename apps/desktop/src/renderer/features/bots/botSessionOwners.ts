@@ -11,6 +11,7 @@
 
 import type { BotSessionOwner } from '@/features/cc-agent/lib/projectGrouping';
 import type { BotProfile } from './botStore';
+import type { RemoteBot } from './remoteBotRoster';
 import { isBotGroupLaneSession } from './botGroupLane';
 
 /**
@@ -85,6 +86,22 @@ export function botRouteForOwnedSession(
     return { route: `/cc-agent/${encodeURIComponent(sessionId)}`, consumesAlert: false };
   }
   return { route: `${botRoute}/session/${encodeURIComponent(sessionId)}`, consumesAlert: false };
+}
+
+/**
+ * A companion whose main computer is another device: its chat opens on that device's
+ * companion page. Only its main chat is projected here, so that is all an entry can name.
+ */
+export function remoteBotRouteForSession(
+  remoteBots: readonly Pick<RemoteBot, 'id' | 'deviceId' | 'sessionId'>[],
+  sessionId: string,
+): BotSessionEntryTarget | null {
+  const bot = remoteBots.find((candidate) => candidate.sessionId === sessionId);
+  if (!bot) return null;
+  return {
+    route: `/bots/remote/${encodeURIComponent(bot.deviceId)}/${encodeURIComponent(bot.id)}`,
+    consumesAlert: false,
+  };
 }
 
 type LoadedBotProfilesReader = () => readonly BotProfile[] | null;

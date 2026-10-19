@@ -119,6 +119,7 @@ test('extractRouterFacts: 真实 router.tsx 的三类去向逐条钉死', () => 
     '/bots/:botId/session/:sessionId BotSessionView',
     '/bots/groups/:groupId BotGroupChatView',
     '/bots/list BotsListView',
+    '/bots/market/:packageId? BotMarketRoute',
     '/bots/remote/:deviceId/:botId RemoteBotSessionView',
     '/bots/roster BotRosterView',
     '/cc-agent/:sessionId CCAgentSessionView',

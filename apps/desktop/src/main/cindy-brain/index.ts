@@ -487,6 +487,7 @@ import { setGhostLibraryFileResolver } from './runtime/electronSandboxAdapter.js
 import {
   createBetterSqliteDatabase,
   resolveBetterSqliteModuleEntry,
+  resolveBetterSqliteNativeBinding,
 } from '../localDb/betterSqliteFactory.js';
 import { getGhostGrantConfirmBridge } from './ghostGrantConfirmBridge.js';
 import { getSessionFsSnapshot, getSessionRowSnapshot } from '../localDb/ipc/sessions.js';
@@ -3097,7 +3098,10 @@ async function bindPluginUsage(ghost: InstalledGhost, previousRevision?: string)
     await withGhostInstallLock(ghost.manifest.id, async () => {
       if (activeOwnerScopeKey() !== scope || isAppSessionBoundaryPending()) return;
       // A fallback bind can wait behind update/uninstall. Read the final committed identity.
-      const installed = findInstalledGhostByInstanceId(getGhostManager().list(), installedGhostStoragePart(ghost));
+      const manager = getGhostManager();
+      const instanceKey = installedGhostStoragePart(ghost);
+      const installed = manager.findInstalledInstance(instanceKey)
+        ?? findInstalledGhostByInstanceId(manager.list(), instanceKey);
       const identity = installed && readPluginUsageIdentity(installed);
       if (identity) await service.bind(identity, previousRevision);
     });
@@ -6030,6 +6034,7 @@ export function getGhostLibrarySlot(): GhostLibrarySlot {
       getDiskFreeBytes: (root) => statfsFreeBytes(root),
       workerScriptPath: defaultLibraryDbWorkerPath,
       betterSqliteModulePath: () => resolveBetterSqliteModuleEntry() ?? 'better-sqlite3',
+      betterSqliteNativeBinding: resolveBetterSqliteNativeBinding,
       log,
       syncAgentReadonlyExtraDir: syncMivoLibraryExtraDirFromSlot,
       showItemInFolder: (absPath) => {

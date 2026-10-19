@@ -258,6 +258,10 @@ refresh 与 relay 自救节流。在途 refresh 尚未返回时收到的恢复�
 
 ## Cindy 托管的预装技能
 
+`cindy-plugin-creator` 从内置 bundle 13 起提供。核验旧 bundle 时只对这个尚未引入的技能
+容许缺席；已记录的指纹以及 bundle 13 起的完整性要求不放宽。升级失败时保留旧 bundle
+的已核验技能入口，成功后随同一 `.active` 指针发布新技能，不要求用户重新安装。
+
 内置技能字节仍在 Cindy 的 `shared-system-skills` 中随应用版本管理，当前实例在
 `<userData>/managed-agent-skills/cindy` 中建立私有入口。三套 Harness 分别通过本地
 Claude plugin、Cindy 的 `CODEX_HOME/skills`、Pi 显式 `--skill` 加载；不再安装到

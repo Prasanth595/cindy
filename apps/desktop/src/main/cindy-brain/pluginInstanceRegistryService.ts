@@ -195,7 +195,7 @@ export class PluginInstanceRegistryService {
     return parsePluginInstallRelId(relId)?.ghostId === relId;
   }
 
-  sync(): PluginInstanceRegistry {
+  sync(scan: Pick<PluginInstanceRegistryServiceDeps, 'listContentEntries' | 'receiptFact'> = this.deps): PluginInstanceRegistry {
     this.deps.ensureOwner();
     const store = this.deps.registryStore();
     const opened = this.open(store);
@@ -204,9 +204,9 @@ export class PluginInstanceRegistryService {
     let registry = opened.registry;
     let dirty = false;
     const present = new Set<string>();
-    for (const listed of this.deps.listContentEntries()) {
+    for (const listed of scan.listContentEntries()) {
       present.add(listed.relId);
-      const fact = this.deps.receiptFact(listed.relId);
+      const fact = scan.receiptFact(listed.relId);
       if (fact === undefined) continue;
       const existing = findInstanceByContentRelId(registry, listed.relId);
       if (!existing) {

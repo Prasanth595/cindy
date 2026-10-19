@@ -50,12 +50,15 @@ import {
 } from '@/features/cc-agent/pendingPluginSuggestion';
 import { readPluginRecommendationSnapshot } from '@/features/cc-agent/pluginHomeSuggestions';
 import { NEW_MAKER_DRAFT_KEY } from '@/features/cc-agent/newMakerDraftKeys';
+import { CINDY_PLUGIN_CREATOR_NAME } from '../../../shared/cindyBuiltInSkills';
+import { dbToMakerAgentKind, normalizeDbAgentKind } from '../../../shared/agentKindConversion';
+import { isSlashCommandUnavailable, loadAllCommands } from '@/lib/slashCommands';
 import {
   getDraft as getComposerDraft,
   plainTextToTiptapDoc,
   saveDraft as saveComposerDraft,
 } from '@/lib/composerDraftStore';
-import { resetDraftWorkspaceTargets } from '@/state/newMakerDraft';
+import { getDraft as getWorkspaceDraft, resetDraftWorkspaceTargets } from '@/state/newMakerDraft';
 import { ghostInstallErrorKey } from '@/cindy-brain/installErrorKey';
 import { installGhostFromFile, pickAndUpdateGhost } from '@/cindy-brain/installFlow';
 import { SegmentedControl } from '@/components/ui/segmented-control';
@@ -1213,9 +1216,26 @@ function LocalGhostPluginPage({
     }
   }, [refreshMarket]);
 
-  const handleCreateWithCindy = useCallback(() => {
+  const handleCreateWithCindy = useCallback(async () => {
+    const agentKind = dbToMakerAgentKind(normalizeDbAgentKind(getWorkspaceDraft().vendor));
+    // Creation starts locally without a project. Use Main-attested identity: a
+    // same-named user Skill must never own this entry, including Claude aliases.
+    const commands = await loadAllCommands(agentKind, null);
+    const creator = commands.find((command) => (
+      command.kind === 'agent-skill'
+      && command.builtIn === true
+      && command.enabled !== false
+      && !isSlashCommandUnavailable(command)
+      && (command.name === CINDY_PLUGIN_CREATOR_NAME
+        || command.name === `cindy:${CINDY_PLUGIN_CREATOR_NAME}`)
+    ));
+    if (!creator) {
+      toast.error(t('settings.ghosts.page.creatorUnavailable'));
+      return;
+    }
     saveComposerDraft(NEW_MAKER_DRAFT_KEY, {
-      text: plainTextToTiptapDoc(t('settings.ghosts.page.createPrompt')),
+      text: plainTextToTiptapDoc(`/${creator.name} ${t('settings.ghosts.page.createPrompt')}`),
+      builtInSkillIntent: { name: CINDY_PLUGIN_CREATOR_NAME, commandName: creator.name },
       attachments: [],
       focusAtEnd: true,
     });

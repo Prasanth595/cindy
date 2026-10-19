@@ -789,9 +789,13 @@ function extraResourcesForTarget(targetPlatform: string): string[] {
     'resources/cindy-version-protocol.json',
     // Input bytes for upgrading retired preset avatars to ordinary managed images.
     'resources/legacy-teammate-avatars',
+    // Bundled preset artwork main draws outside the renderer (Agent Island companion avatars).
+    'resources/companion-preset-avatars',
     'resources/teammate-portrait-gallery.png',
     // Cindy-owned Agent Skills are materialized under userData on startup.
     'resources/system-skills',
+    // Bundled Bot Market teammate packages; packaged builds read them from process.resourcesPath (bot-import/host.ts).
+    'resources/bot-packages',
     'resources/tools',
     'drizzle',
     'resources/cc-manager',

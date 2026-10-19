@@ -17,6 +17,10 @@ const load = createGhostProductionCallbacks<{
   'getGhostCardActionDispatcher', 'resolveMobilePluginMedia', 'setGhostEnabledForUser'],
   initialize: 'let cardActionDispatcherSingleton = null;' });
 
+const loadUsageBinding = createGhostProductionCallbacks<{
+  bindPluginUsage: (ghost: InstalledGhost) => Promise<void>;
+}>({ functions: ['bindPluginUsage'] });
+
 function harness() {
   const root: InstalledGhost = { manifest: { schemaVersion: 3, id: 'helper', name: 'Root', version: '1.0.0',
     kind: 'chip', entry: 'main.js', panel: { html: 'panel.html' }, settingsHtml: 'settings.html', card: {} },
@@ -116,4 +120,48 @@ describe('production plugin instance boundaries', () => {
     await expect(dispatcher.dispatch('root-card', 'continue')).resolves.toEqual({ ok: true });
     expect(fixture.send).toHaveBeenLastCalledWith('_root__helper', expect.any(Object));
   });
+});
+
+describe('usage binding instance revalidation', () => {
+  // Unit regression: a market refresh used to rescan every plugin once per
+  // binding. Read the committed target inside the lock and retain fallback for
+  // missing registry entries, without binding a same-name replacement instance.
+  it.each(['indexed', 'fallback', 'removed', 'owner-changed'] as const)(
+    'revalidates the committed installation with %s state', async (state) => {
+      const { organization, root } = harness();
+      const committed: InstalledGhost = {
+        ...organization, approval: { state: 'approved', revision: 'committed' },
+      };
+      let locked = false;
+      let scope = 'owner-a';
+      const list = vi.fn(() => state === 'removed' ? [root] : [committed, root]);
+      const findInstalledInstance = vi.fn((key: string) => {
+        expect(locked).toBe(true);
+        expect(key).toBe(installedGhostStoragePart(organization));
+        return state === 'indexed' ? committed : undefined;
+      });
+      const bind = vi.fn(async () => {});
+      const api = loadUsageBinding({
+        activeOwnerScopeKey: () => scope,
+        currentPluginUsageService: () => ({ bind }),
+        isAppSessionBoundaryPending: () => false,
+        getGhostManager: () => ({ list, findInstalledInstance }),
+        findInstalledGhostByInstanceId,
+        readPluginUsageIdentity: (ghost: InstalledGhost) => ghost.approval,
+        withGhostInstallLock: async (_id: string, callback: () => Promise<void>) => {
+          locked = true;
+          if (state === 'owner-changed') scope = 'owner-b';
+          await callback();
+        },
+        log: { warn: vi.fn() },
+      });
+      await api.bindPluginUsage(organization);
+      if (state === 'removed' || state === 'owner-changed') {
+        expect(bind).not.toHaveBeenCalled();
+      } else {
+        expect(bind).toHaveBeenCalledExactlyOnceWith(committed.approval, undefined);
+      }
+      expect(list).toHaveBeenCalledTimes(state === 'indexed' || state === 'owner-changed' ? 0 : 1);
+    },
+  );
 });

@@ -545,6 +545,7 @@ export function catalogSurfaces() {
       reachableComponents: [
         'BotsHomeView',
         'BotsListView',
+        'BotMarketDialog',
         'BotRosterView',
         'BotSessionView',
         'RemoteBotSessionView',
@@ -565,6 +566,7 @@ export function catalogSurfaces() {
       routerPaths: [
         '/bots',
         '/bots/list',
+        '/bots/market/:packageId?',
         '/bots/:botId',
         '/bots/:botId/direct/:threadId',
         '/bots/:botId/history/:sessionId',
@@ -576,6 +578,7 @@ export function catalogSurfaces() {
       routeEntryComponents: {
         '/bots': 'BotsHomeView',
         '/bots/list': 'BotsListView',
+        '/bots/market/:packageId?': 'BotMarketRoute',
         '/bots/:botId': 'BotsHomeView',
         '/bots/:botId/direct/:threadId': 'BotDirectMessageView',
         '/bots/:botId/history/:sessionId': 'BotHistorySessionView',

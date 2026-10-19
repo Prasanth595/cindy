@@ -32,6 +32,7 @@ import {
   DEFAULT_AGENT_ISLAND_STRINGS,
   type AgentIslandActivityLine,
   type AgentIslandActivityLineKind,
+  type AgentIslandCompanionSnapshot,
   type AgentIslandDisplayPolicy,
   type AgentIslandDisplaySurface,
   type AgentIslandDisplayState,
@@ -109,6 +110,8 @@ interface AgentIslandSessionMeta {
   workingDir?: string | null;
   title?: string | null;
   workspaceKind?: string | null;
+  /** undefined = not resolved yet; null = not a companion's Session. */
+  companion?: AgentIslandCompanionSnapshot | null;
 }
 
 interface ApplyAgentIslandEventOptions {
@@ -123,6 +126,7 @@ interface AgentIslandSessionState {
   pendingDeviceCompletionNotification?: boolean;
   sessionId: string;
   title: string | null;
+  companion: AgentIslandCompanionSnapshot | null;
   projectName: string | null;
   detail: string;
   detailSource: 'tool' | 'status' | 'interaction' | null;
@@ -504,10 +508,12 @@ export function patchAgentIslandMetadata(
   const session = state.sessions.get(meta.sessionId);
   if (!session) return false;
   const previousTitle = session.title;
+  const previousCompanion = session.companion;
   const previousProjectName = session.projectName;
   const previousAgentKind = session.agentKind;
   applyMeta(session, meta);
   return previousTitle !== session.title
+    || previousCompanion !== session.companion
     || previousProjectName !== session.projectName
     || previousAgentKind !== session.agentKind;
 }
@@ -1147,6 +1153,8 @@ export function syncAgentIslandDeviceSessions(
   state: AgentIslandState,
   inputs: readonly AgentIslandRemoteSessionInput[],
   now: number,
+  /** Display identity of a remote companion chat; must return a stable object per identity. */
+  resolveCompanion: (input: AgentIslandRemoteSessionInput) => AgentIslandCompanionSnapshot | null = () => null,
 ): AgentIslandDeviceSessionSyncResult {
   const result: AgentIslandDeviceSessionSyncResult = { changed: false, baselineSessionIds: [], events: [] };
   const incoming = new Map(inputs.map((input) => [input.sessionId, input]));
@@ -1167,7 +1175,7 @@ export function syncAgentIslandDeviceSessions(
       result.baselineSessionIds.push(input.sessionId);
       result.changed = true;
     }
-    if (applyDeviceSessionMeta(session, input)) result.changed = true;
+    if (applyDeviceSessionMeta(session, input, resolveCompanion(input))) result.changed = true;
     const waitingForCompletionNotification = session.pendingDeviceCompletionNotification === true;
     const transition = applyDeviceSessionPhase(state, session, input, previous, now);
     if (input.phase === 'completed') {
@@ -1194,14 +1202,20 @@ export function syncAgentIslandDeviceSessions(
 function applyDeviceSessionMeta(
   session: AgentIslandSessionState,
   input: AgentIslandRemoteSessionInput,
+  companion: AgentIslandCompanionSnapshot | null,
 ): boolean {
-  const project = projectNameFromWorkingDir(input.workingDir, input.workspaceKind);
+  // A companion's home folder on that computer is not a project; its group is the context.
+  const project = companion
+    ? companion.groupName ?? null
+    : projectNameFromWorkingDir(input.workingDir, input.workspaceKind);
   const projectName = [project, input.deviceName].filter(Boolean).join(' · ') || null;
   const agentKind = dbToMakerAgentKind(input.agentKind);
   const changed = session.title !== input.title
+    || session.companion !== companion
     || session.projectName !== projectName
     || session.agentKind !== agentKind;
   session.title = input.title;
+  session.companion = companion;
   session.projectName = projectName;
   session.agentKind = agentKind;
   return changed;
@@ -2427,7 +2441,9 @@ function buildPillSnapshot(
 }
 
 function pillTitle(session: AgentIslandSessionState, mode: 'micro' | 'compact'): string {
-  const title = meaningfulSessionTitle(session)
+  // A companion is named by its owner; never filter it like a generic agent title.
+  const title = normalizeInlineText(session.companion?.name ?? '')
+    || meaningfulSessionTitle(session)
     || session.projectName
     || latestUserActivityTitle(session)
     || session.sessionId.slice(0, 8);
@@ -2529,6 +2545,7 @@ function getOrCreateSession(
   session = {
     sessionId: meta.sessionId,
     title: meta.title?.trim() || null,
+    companion: null,
     projectName: projectNameFromWorkingDir(meta.workingDir, meta.workspaceKind),
     detail: '',
     detailSource: null,
@@ -2632,7 +2649,11 @@ function applyMeta(session: AgentIslandSessionState, meta: AgentIslandSessionMet
   if (meta.agentKind) session.agentKind = meta.agentKind;
   const title = meta.title?.trim();
   if (title) session.title = title;
-  if (meta.workingDir !== undefined || meta.workspaceKind !== undefined) {
+  if (meta.companion !== undefined) session.companion = meta.companion;
+  if (session.companion) {
+    // A companion's working directory is its private home, not a project the user chose.
+    session.projectName = session.companion.groupName ?? null;
+  } else if (meta.workingDir !== undefined || meta.workspaceKind !== undefined) {
     session.projectName = projectNameFromWorkingDir(meta.workingDir, meta.workspaceKind);
   }
 }
@@ -2642,7 +2663,8 @@ function toSnapshot(session: AgentIslandSessionState): AgentIslandSessionSnapsho
   return {
     ...(session.phase === 'completed' && session.completionNotification ? { completionNotification: session.completionNotification } : {}),
     sessionId: session.sessionId,
-    title: session.title || session.projectName || session.sessionId.slice(0, 8),
+    title: session.companion?.name || session.title || session.projectName || session.sessionId.slice(0, 8),
+    ...(session.companion ? { companion: session.companion } : {}),
     projectName: session.projectName,
     detail: reconnectStatus ?? session.detail,
     compactDetail: compactDetailForSession(session),

@@ -10,10 +10,10 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { ComponentProps, ReactNode } from 'react';
 import type { Editor } from '@tiptap/react';
 import type { ProviderView } from '@cindy/model-providers';
-import { sshNativeCodexProvider, sshModel } from '@/features/cc-agent/__tests__/sshModelFixtures';
+import { sshNativeCodexProvider, sshModel, sshProvider } from '@/features/cc-agent/__tests__/sshModelFixtures';
 import type { AttachedFile } from '@/lib/fileTypes';
 import { ChatInput } from '../ChatInput';
-import { clearDraft, saveDraft } from '@/lib/composerDraftStore';
+import { clearDraft, getDraft, plainTextToTiptapDoc, saveDraft } from '@/lib/composerDraftStore';
 import type { AtMentionPanel } from '../AtMentionPanel';
 import type { scanAtResources } from '@/lib/atResourceService';
 import type { ExtraDirsButton } from '../ExtraDirsButton';
@@ -36,6 +36,8 @@ const h = vi.hoisted(() => ({ t: (key: string) => key, confirm: vi.fn(), editor:
   draftRange: null as UseVoiceInputResult['draftRange'],
   cancel: vi.fn().mockResolvedValue(undefined),
   realModelSelector: false,
+  listAgentSkills: vi.fn(),
+  localProviders: [] as ProviderView[],
 }));
 
 vi.mock('react-i18next', async (original) => ({ ...await original<typeof import('react-i18next')>(), useTranslation: () => ({ t: h.t }) }));
@@ -87,7 +89,7 @@ vi.mock('@/voice-input/useVoiceInput', () => ({ useVoiceInput: (editor: Editor |
   const state = h.voiceState ?? (h.listening ? 'listening' : 'idle');
   return { state, isListening: state === 'listening', isBusy: state === 'listening' || state === 'submitting' || state === 'refining', draftText: h.draftText, draftSource: h.draftSource, draftRange: h.draftRange, start: vi.fn(), stop: h.stop, cancel: h.cancel };
 } }));
-vi.mock('@/hooks/useProviders', () => ({ useProviders: () => ({ providers: [], providerOrder: [], loading: false }) }));
+vi.mock('@/hooks/useProviders', () => ({ useProviders: () => ({ providers: h.localProviders, providerOrder: [], loading: false }) }));
 vi.mock('@/hooks/useDeviceProviders', () => ({ useDeviceProviders: () => ({ providers: [], loading: false, unsupported: false }) }));
 vi.mock('@/hooks/useConnectedSource', () => ({ useConnectedSource: () => ({ hasConnectedSource: true, loading: false }) }));
 vi.mock('@/hooks/useAvailableAgents', () => ({ useAvailableAgents: () => ({ agents: [], loading: false }) }));
@@ -97,6 +99,8 @@ const noOp = () => {};
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const api: any = new Proxy({}, { get: (_obj, key) => {
   if (key === 'setModel') return h.setModel;
+  if (key === 'listAgentSkills') return h.listAgentSkills;
+  if (key === 'listAgentCommands' || key === 'listDesktopCommands') return async () => ({ success: true, commands: [] });
   if (key === 'listSync') return () => ({ ghosts: [] });
   if (key === 'getDataSnapshot') return () => { throw new Error('test bridge unavailable'); };
   if (key === 'setGlobalShortcut') return () => Promise.resolve({ ok: true });
@@ -121,6 +125,8 @@ const annotatedImage: AttachedFile = {
 };
 
 beforeEach(() => {
+  h.listAgentSkills.mockReset().mockResolvedValue({ success: true, skills: [] });
+  h.localProviders = [];
   h.editor = null;
   h.documentChanged.mockClear();
   h.listening = false;
@@ -506,4 +512,40 @@ it('restores text, attachments and strokes after an aborted annotated send', asy
   expect(clearFiles).toHaveBeenCalled();
   const restored = restoreFiles.mock.calls.at(-1)?.[0] ?? [];
   expect(restored).toEqual([expect.objectContaining({ id: 'tray-annotated', annotationStrokes: strokes })]);
+});
+
+// PR #6433 / unit: retry a recovered creator draft through the real existing-task
+// composer. A same-name project skill must never receive it; rejection must retain
+// identity for another retry. Prior annotation tests only recovered plain text.
+it('rechecks the built-in creator on every restored-task retry', async () => {
+  const intent = { name: 'cindy-plugin-creator', commandName: 'cindy-plugin-creator' };
+  const text = '/cindy-plugin-creator Make a plugin';
+  h.localProviders = [sshProvider('creator-provider', [sshModel('creator-model')], 'claude-code')];
+  const userSkill = { kind: 'agent-skill', source: 'skill', name: 'cindy-plugin-creator' };
+  h.listAgentSkills.mockResolvedValue({ success: true, skills: [userSkill] });
+  saveDraft('composer-regression', { text: plainTextToTiptapDoc(text), attachments: [], builtInSkillIntent: intent });
+  const onSend = vi.fn().mockResolvedValue(false);
+  renderComposer({ sessionId: 'creator-session', runtimeAgentKind: 'claude-code', vendorKey: 'cc',
+    initialWorkingDir: '/fixture/worktree', initialModel: 'creator-model', initialProviderId: 'creator-provider', onSend });
+  await waitFor(() => expect(h.editor?.getText().trim()).toBe(text));
+  const send = screen.getByRole('button', { name: 'newChat.sendButton.send' }) as HTMLButtonElement;
+  await waitFor(() => expect(send.disabled).toBe(false));
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'newChat.sendButton.send' })); });
+  expect(onSend).not.toHaveBeenCalled();
+  expect(h.listAgentSkills.mock.calls).toContainEqual(['claude-code', { workingDir: '/fixture/worktree', forceReload: true }]);
+  expect(getDraft('composer-regression')?.builtInSkillIntent).toEqual(intent);
+  h.listAgentSkills.mockResolvedValue({ success: true, skills: [userSkill,
+    { ...userSkill, name: 'cindy:cindy-plugin-creator', builtIn: true },
+  ] });
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'newChat.sendButton.send' })); });
+  await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+  expect(onSend.mock.calls[0][0]).toBe('/cindy:cindy-plugin-creator Make a plugin');
+  expect(onSend.mock.calls[0][6].builtInSkillIntent).toEqual({ ...intent, commandName: 'cindy:cindy-plugin-creator' });
+  expect(h.listAgentSkills).toHaveBeenCalledWith('claude-code', { workingDir: '/fixture/worktree', forceReload: true });
+  await waitFor(() => expect(h.editor?.getText().trim()).toBe(text));
+  expect(getDraft('composer-regression')?.builtInSkillIntent).toEqual(intent);
+  h.listAgentSkills.mockResolvedValue({ success: true, skills: [userSkill] });
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'newChat.sendButton.send' })); });
+  expect(onSend).toHaveBeenCalledTimes(1);
+  expect(getDraft('composer-regression')?.builtInSkillIntent).toEqual(intent);
 });
