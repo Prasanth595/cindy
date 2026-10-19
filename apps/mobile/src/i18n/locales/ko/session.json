@@ -1,4 +1,10 @@
 {
+  "leaveWhileUploading": {
+    "title": "보내기를 취소할까요?",
+    "body": "첨부 업로드가 아직 끝나지 않았습니다. 지금 나가면 이 메시지는 보내지지 않습니다.",
+    "stay": "계속 기다리기",
+    "discard": "보내지 않기"
+  },
   "entry": {
     "title": "작업 열기",
     "loading": "작업 불러오는 중…",
@@ -505,6 +511,9 @@
     "replyFailed": "답변을 완료하지 못했습니다",
     "showErrorDetails": "오류 상세 정보",
     "hideErrorDetails": "상세 정보 접기",
+    "diagnose": "진단",
+    "diagnoseHint": "새 세션에서 이 오류 진단",
+    "diagnosePrompt": "이 오류를 진단해서 원인과 해결 방법을 알려 주세요.\n\n오류가 발생한 세션: {{sessionUrl}}\n오류 메시지: {{message}}\n오류 상세:\n{{details}}\n\nCindy 자체의 문제로 확인되면 알려 주세요. Cindy 팀에 issue를 제출할지는 제가 선택할게요.",
     "interrupted": "작업 실행 도중 앱이 종료되어 중단되었습니다.",
     "continueTask": "작업 계속",
     "retry": "다시 시도",

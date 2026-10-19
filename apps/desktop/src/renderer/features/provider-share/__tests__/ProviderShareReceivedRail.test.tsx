@@ -54,6 +54,7 @@ const command = vi.fn();
 beforeEach(() => {
   resetProviderShareStoreForTests();
   joinSpy.mockClear();
+  refreshCatalog.mockClear();
   confirmSpy.mockClear();
   vi.mocked(toast.error).mockClear();
   catalogDeviceIds.length = 0;
@@ -113,6 +114,33 @@ describe('ProviderShareReceivedRailGroup', () => {
 });
 
 describe('ProviderShareReceivedDetail', () => {
+  it('refreshes an active share whose catalog is empty without an error', async () => {
+    await act(async () => { render(<ProviderShareReceivedDetail share={{ ...share, status: 'active' }} />); });
+    expect(screen.getByText('providerShare.received.modelsEmpty')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'settings.providers.models.refreshBuiltinAria' }));
+    expect(refreshCatalog).toHaveBeenCalledTimes(1);
+    expect(refreshCatalog).toHaveBeenCalledWith('share:share-1');
+    expect(screen.queryByRole('button', { name: 'providerShare.received.retryModels' })).toBeNull();
+  });
+
+  it('keeps the refresh action visible but disabled while the catalog is loading', async () => {
+    catalog.value.loading = true;
+    await act(async () => { render(<ProviderShareReceivedDetail share={{ ...share, status: 'active' }} />); });
+    const button = screen.getByRole('button', { name: 'settings.providers.models.refreshingAria' });
+    expect(button.hasAttribute('disabled')).toBe(true);
+    fireEvent.click(button);
+    expect(refreshCatalog).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { status: 'paused' as const },
+    { status: 'active' as const, hostOnline: false },
+    { status: 'active' as const, hostCapable: false },
+  ])('hides refresh when the share is unavailable: %j', async (unavailable) => {
+    await act(async () => { render(<ProviderShareReceivedDetail share={{ ...share, ...unavailable }} />); });
+    expect(screen.queryByRole('button', { name: /settings\.providers\.models\.refresh/ })).toBeNull();
+  });
+
   it('shows anonymous status only for an active grouped share', async () => {
     catalog.value.providers = [{ id: 'xd', groupSize: 2, models: {} }];
     const invoke = vi.fn(async () => ({ providers: [{ id: 'xd', groupSize: 2, groupStatus: ['available', 'needs-update'] }] }));
@@ -156,6 +184,7 @@ describe('ProviderShareReceivedDetail', () => {
     expect(catalogDeviceIds).toContain('share:share-1');
     const list = screen.getByTestId('provider-share-received-models');
     expect(Array.from(list.querySelectorAll('li')).map((item) => item.textContent)).toEqual(['Opus 5.5', 'GPT-5.5']);
+    expect(screen.getByRole('button', { name: 'settings.providers.models.refreshBuiltinAria' })).toBeTruthy();
   });
 
   it('says why the models cannot be read and offers a reload', () => {
@@ -164,6 +193,7 @@ describe('ProviderShareReceivedDetail', () => {
     };
     render(<ProviderShareReceivedDetail share={{ ...share, status: 'active' }} />);
     expect(screen.getByText('providerShare.received.modelsFailedWithCode:{"code":"DEVICE_LINK_TIMEOUT"}')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'settings.providers.models.refreshBuiltinAria' })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'providerShare.received.retryModels' }));
     expect(refreshCatalog).toHaveBeenCalledWith('share:share-1');
   });

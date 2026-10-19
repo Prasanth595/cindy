@@ -11,6 +11,7 @@
 
 import './file-browser';
 import './web-browser';
+import './mail-preview';
 import './retired-feature';
 import './terminal';
 import './review';

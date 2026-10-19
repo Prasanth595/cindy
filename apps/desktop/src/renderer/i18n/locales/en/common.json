@@ -1,4 +1,5 @@
 {
+  "mailReader": {"markReadFailed":"Could not sync read status. Check mailbox authorization and reopen this email.","title":"Mail","openMailbox":"Open in mailbox","loading":"Loading email…","failed":"Could not load this email. Check the connected mailbox account, retry, or open it in your mailbox.","retry":"Retry","to":"To","cc":"Cc","bcc":"Bcc","subject":"Subject","currentMessage":"Current email","messageCount_other":"{{count}} emails","messageCount_one":"{{count}} email","showMessages_other":"Show {{count}} emails","showMessages_one":"Show {{count}} email","expandMessage":"Expand email from {{from}}","collapseMessage":"Collapse email from {{from}}","conversationFailed":"Other emails in this conversation could not be loaded.","messageCount":"{{count}} emails","showMessages":"Show {{count}} emails"},
   "logSupport": {
     "title": "Logs and Feedback",
     "localFiles": "Choose logs from the day of the problem. Review unredacted files before sharing.",
@@ -3023,6 +3024,7 @@
           "quotaTitle": "Remaining this period",
           "quotaUsed": "Used {{used}} / Period allowance {{total}}",
           "loading": "Loading…",
+          "noPersonalLimit": "No personal spending limit set",
           "unavailable": "Temporarily unavailable. Refresh to retry.",
           "refresh": "Refresh allowance"
         },
@@ -6441,7 +6443,7 @@
         "bodyInvalid": "This plugin's installation verification record is damaged, so the plugin is paused. Reinstall the marketplace release or select the matching .cindy package again.",
         "bodyBuiltinRestart": "Something went wrong with this built-in plugin's installation verification record. Restart Cindy to recover automatically — no other action is needed."
       },
-      "install": "Install Plugin…",
+      "install": "Install from file…",
       "empty": "No plugins installed yet",
       "emptyHint": "Install from the market, or import a .cindy file from the menu above",
       "legacyRecovery": {
@@ -6465,14 +6467,19 @@
       "projectDisabledTag": "Off in this project",
       "projectSwitchLockedTip": "This plugin is disabled globally; enable it in the Global view first",
       "projectBanner": {
-        "title": "Configuring project \"{{name}}\"",
-        "desc": "Switches here only affect this project — turned-off plugins are unavailable in it",
+        "title": "Current Project: {{name}}",
+        "desc": "Switches affect only this project. Installation, updates, removal, and configuration apply to {{device}}.",
         "backToGlobal": "Back to global"
       },
       "scopePicker": {
         "global": "Global (default)",
         "ariaLabel": "Choose where plugins take effect",
-        "browse": "Choose another folder…"
+        "browse": "Choose another folder…",
+        "management": "Management scope",
+        "globalScope": "Global",
+        "computers": "Computers",
+        "projectScope": "Project Scope",
+        "projectsForComputer": "Projects on {{device}}"
       },
       "enableAria": "Enable {{name}}",
       "uninstall": "Uninstall",
@@ -6564,6 +6571,11 @@
         "unknownReviewerDetail": "The package claims a review, but this Cindy version does not recognize the reviewer key, so it is not shown as reviewed."
       },
       "perm": {
+        "mail": "Use mail drafts and send cards",
+        "mailDetail": "Edit and sync drafts in a card, with confirmation and an undo countdown before sending.",
+        "mailReader": "View mail in the app",
+        "mailReaderHost": "Open mail links from {{host}} in the app",
+        "mailMarkRead": "Mark messages as read when opened",
         "grantsTitle": "After installing it will have:",
         "toolsGroup": "Registered Tools",
         "toolsDiffGroup": "Registered Tool Changes",
@@ -6970,6 +6982,49 @@
           "requirements": "Requires an Apple Silicon Mac, macOS 15 or later, and full Xcode.",
           "dataNotice": "Your original simulator devices and app data will not be deleted. Installing Baguette does not automatically migrate devices, apps, or sign-ins."
         }
+      },
+      "remote": {
+        "device": "Manage computer",
+        "thisComputer": "This computer",
+        "offline": "Offline",
+        "confirmOn": "{{name}} on {{device}}",
+        "targetOnly": "Configuration is saved on {{device}}.",
+        "hostPreferencesUnavailable": "This computer does not support remote editing of model, task or sidebar preferences. Configure them on {{device}}.",
+        "taskWorkdirBoundary": "The working directory stays on the target computer. Change it there.",
+        "configurationLoading": "Loading settings…",
+        "configurationReadFailed": "Could not load settings.",
+        "refreshConfiguration": "Refresh Settings",
+        "enableBeforeConfigure": "This plugin is disabled. Enable it with the switch above before configuring.",
+        "settingsPageUnavailable": "Open Cindy on {{device}} to use this plugin’s settings page. This version of the target computer cannot display it remotely.",
+        "offlineNotice": "{{device}} is offline. Management is unavailable until the connection is restored.",
+        "managingTarget": "Managing {{device}}",
+        "managingDescription": "Changes are saved on this computer.",
+        "viewingTarget": "Installed on {{device}}",
+        "unsupported": "The Cindy version on {{device}} does not support remote management yet. You can view its installed plugins here. To install, update, uninstall, enable, disable or configure plugins and manage project settings, update Cindy on that computer.",
+        "refresh": "Refresh Plugins",
+        "instanceId": "Plugin Instance",
+        "detailLoading": "Reading plugin details…",
+        "detailReadFailed": "Could not read plugin details.",
+        "refreshDetail": "Refresh Details",
+        "detailUnavailable": "This computer has not provided all plugin details. Only the information it returned is shown.",
+        "retry": "Retry",
+        "readFailed": "Could not read plugins.",
+        "unknown": "The result is not confirmed. Query the original operation to check it.",
+        "success": "Completed on the target computer.",
+        "cancelled": "Cancelled.",
+        "actionFailed": "The operation failed. Refresh the list before trying again.",
+        "changed": "The plugin changed. Refresh before trying again.",
+        "uninstallOn": "Uninstall {{name}} from {{device}}?",
+        "uninstall": "Uninstall",
+        "empty": "No plugins installed on this computer.",
+        "marketUnavailable": "The target computer’s plugin market is unavailable.",
+        "personalInstall": "Personal installation",
+        "loading": "Reading plugins…",
+        "installDestination": "Install to: {{device}}",
+        "projectsUnsupported": "Update Cindy on this computer to manage project settings.",
+        "noProjects": "No projects are available on this computer yet.",
+        "projectLoading": "Reading project settings…",
+        "projectReadFailed": "Could not read project settings. Try again."
       },
       "usage": {
         "title": "Your calls",
@@ -10955,6 +11010,13 @@
     "verificationFailed": "Cindy couldn’t confirm whether the ChatGPT sign-in has recovered. Check again."
   },
   "chat": {
+    "imageDelivery": {
+      "stored": "Image delivered",
+      "failed": "Image delivery failed. Retry transferring the existing image.",
+      "retry": "Retry delivery",
+      "retrying": "Delivering…",
+      "retryFailed": "Delivery is still unavailable. Check that the source computer is online."
+    },
     "failedSamplingAttempt": "This reply did not complete. Its content is for reference only.",
     "jumpToBottom": "Jump to bottom",
     "prevMessageJump": "Jump to previous prompt: {{preview}}",
@@ -11193,6 +11255,9 @@
       "streamInterruptedNoRetry": "The model stream was interrupted. This is usually a temporary upstream issue. Try again in a little while.",
       "networkShowRaw": "Error Details",
       "networkHideRaw": "Hide Details",
+      "diagnose": "Diagnose",
+      "diagnoseTitle": "Diagnose this error in a new session",
+      "diagnosePrompt": "Please diagnose this error: find the cause and tell me how to fix it.\n\nSession: {{sessionUrl}}\nError: {{message}}\nDetails:\n{{details}}\n\nIf you find it's a problem with Cindy itself, let me know so I can choose whether to file an issue with the Cindy team.",
       "gatewayProxyTokenInvalid": "Cindy AI credentials are no longer valid. Click Retry. If it happens again, sign out and sign back in",
       "gatewayProxyTokenInvalidNoRetry": "Cindy AI credentials are no longer valid. If it happens again, sign out and sign back in",
       "modelAccessDenied": "The upstream account cannot access this model. Select another model or check its access with the provider",
@@ -11993,7 +12058,17 @@
       "linkConfirmHint": "This link is provided by a plugin and will open in your browser:",
       "linkConfirmOpen": "Open",
       "linkConfirmCancel": "Cancel",
-      "linkOpenFailed": "Failed to open link"
+      "expandFields": "Expand",
+      "collapseFields": "Collapse",
+      "formSyncFailed": "Card edits have not synced. Check the connection and continue editing; the message has not been sent.",
+      "linkOpenFailed": "Failed to open link",
+      "mailPreview": "Email preview",
+      "mailEnlarge": "Enlarge preview",
+      "mailInsertImage": "Insert into message",
+      "mailAttach": "Add attachment",
+      "mailRemoveAttachment": "Remove {{name}}",
+      "mailUpdated": "Draft updated (read-only)",
+      "mailLegacy": "Draft history (read-only)"
     },
     "ghostHook": {
       "blockedFallback": "Message blocked by a plugin; not sent",
@@ -13918,6 +13993,17 @@
     "projectSkillNotLoaded": "This Pi task hasn't loaded this project Skill. New tasks will automatically try to load it."
   },
   "skillhub": {
+    "remote": {
+      "loading": "Loading skills…",
+      "readFailed": "Could not load skills. Try again.",
+      "unsupported": "Update Cindy on the target computer to manage skills remotely.",
+      "confirm": {
+        "install": "Install {{name}} on {{device}}?",
+        "update": "Update {{name}} on {{device}} to v{{version}}?",
+        "uninstall": "Uninstall {{name}} from {{device}}?",
+        "installDescription": "The skill will be saved on the selected computer. Updates keep a backup of the existing files."
+      }
+    },
     "unifiedDetail": {
       "contentSource": "Content source",
       "local": "Local",
@@ -13935,17 +14021,13 @@
     },
     "home": {
       "title": "Skills",
-      "description": "Manage local skills, or discover and install more from Skill Hub.",
+      "description": "Manage installed skills or discover more in SkillHub.",
       "descriptionLocalOnly": "Manage the local skills installed on this device.",
       "search": "Search skills",
       "clearSearch": "Clear skill search",
       "noSearchResults": "No matching skills found",
       "catalogFiltersAria": "SkillHub categories",
       "categoryFiltersAria": "Filter skills by category",
-      "scrollCategoriesLeft": "View more categories to the left",
-      "scrollCategoriesRight": "View more categories to the right",
-      "categoryScrollAtStart": "Already at the first category",
-      "categoryScrollAtEnd": "Already at the last category",
       "catalogFilter": {
         "public": "Public",
         "organization": "Organization",

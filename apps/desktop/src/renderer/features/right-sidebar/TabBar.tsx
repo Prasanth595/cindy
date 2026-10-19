@@ -115,6 +115,7 @@ interface TabStripProps {
 const KIND_ICON: Record<BuiltinTabKindId, LucideIcon> = {
   'file-browser': FolderTree,
   'web-browser': Globe,
+  'mail-preview': Globe,
   'retired-feature': Puzzle,
   terminal: Terminal,
   review: GitPullRequestArrow,
@@ -130,6 +131,7 @@ const KIND_ICON: Record<BuiltinTabKindId, LucideIcon> = {
 const KIND_LABEL_KEY: Record<BuiltinTabKindId, string> = {
   'file-browser': 'rightSidebar.tabs.kinds.fileBrowser',
   'web-browser': 'rightSidebar.tabs.kinds.browser',
+  'mail-preview': 'mailReader.title',
   'retired-feature': 'settings.ghosts.retirement.status',
   terminal: 'rightSidebar.tabs.kinds.terminal',
   review: 'rightSidebar.tabs.kinds.review',

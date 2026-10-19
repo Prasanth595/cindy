@@ -1,4 +1,5 @@
 {
+  "mailReader": {"markReadFailed":"既読状態を同期できませんでした。メールボックスの認証を確認して開き直してください。","title":"メール","openMailbox":"メールボックスで開く","loading":"メールを読み込み中…","failed":"メールを読み込めませんでした。接続したアカウントを確認して再試行するか、メールボックスで開いてください。","retry":"再試行","to":"宛先","cc":"Cc","bcc":"Bcc","subject":"件名","currentMessage":"現在のメール","messageCount_other":"{{count}} 件のメール","messageCount_one":"{{count}} 件のメール","showMessages_other":"{{count}} 件のメールを表示","showMessages_one":"{{count}} 件のメールを表示","expandMessage":"{{from}} からのメールを展開","collapseMessage":"{{from}} からのメールを折りたたむ","conversationFailed":"前後のメールを読み込めませんでした。","messageCount":"{{count}} 件のメール","showMessages":"{{count}} 件のメールを表示"},
   "logSupport": {
     "title": "ログとフィードバック",
     "localFiles": "問題が発生した日のログを選択してください。未マスキングのため、共有前に内容を確認してください。",
@@ -2994,6 +2995,7 @@
           "quotaTitle": "今期の残り利用枠",
           "quotaUsed": "利用済み {{used}} / 今期の利用枠 {{total}}",
           "loading": "取得中…",
+          "noPersonalLimit": "個人の利用上限は未設定です",
           "unavailable": "現在取得できません。更新して再試行してください。",
           "refresh": "利用枠を更新"
         },
@@ -6410,7 +6412,7 @@
         "bodyInvalid": "このプラグインのインストール検証記録が破損しているため、実行を停止しています。元のマーケット版を再インストールするか、対応する .cindy パッケージをもう一度選択してください。",
         "bodyBuiltinRestart": "この内蔵プラグインのインストール検証記録に問題が発生しました。Cindy を再起動すると自動的に復旧します。他の操作は不要です。"
       },
-      "install": "プラグインをインストール…",
+      "install": "ファイルからインストール…",
       "empty": "まだプラグインがインストールされていません",
       "emptyHint": "マーケットからインストールするか、上のメニューから .cindy ファイルを読み込めます",
       "legacyRecovery": {
@@ -6434,14 +6436,19 @@
       "projectDisabledTag": "このプロジェクトでは無効",
       "projectSwitchLockedTip": "このプラグインはグローバルで無効です。先に「グローバル」ビューで有効にしてください",
       "projectBanner": {
-        "title": "プロジェクト「{{name}}」を設定中",
-        "desc": "ここのスイッチはこのプロジェクトのみに適用されます。オフにしたプラグインはこのプロジェクトでは使用できません",
+        "title": "現在のプロジェクト：{{name}}",
+        "desc": "スイッチの変更はこのプロジェクトにのみ適用されます。インストール・更新・アンインストール・設定は{{device}}全体に適用されます。",
         "backToGlobal": "グローバルに戻る"
       },
       "scopePicker": {
         "global": "グローバル(デフォルト)",
         "ariaLabel": "プラグインの適用範囲を選択",
-        "browse": "別のフォルダを選択…"
+        "browse": "別のフォルダを選択…",
+        "management": "管理範囲",
+        "globalScope": "グローバル",
+        "computers": "コンピューター",
+        "projectScope": "プロジェクト範囲",
+        "projectsForComputer": "{{device}}のプロジェクト"
       },
       "enableAria": "{{name}} を有効化",
       "uninstall": "アンインストール",
@@ -6533,6 +6540,11 @@
         "unknownReviewerDetail": "審査情報はありますが、現在の Cindy は審査キーを認識していないため、審査済みとは表示しません。"
       },
       "perm": {
+        "mail": "メールの下書き・送信カードを使用",
+        "mailDetail": "カードで下書きを編集・同期し、送信前に確認と取り消しカウントダウンを表示します。",
+        "mailReader": "アプリ内でメールを表示",
+        "mailReaderHost": "{{host}} のメールリンクをアプリ内で開く",
+        "mailMarkRead": "開いたメールを既読にする",
         "grantsTitle": "インストール後に持つ権限:",
         "toolsGroup": "登録ツール",
         "toolsDiffGroup": "登録ツールの変更",
@@ -6939,6 +6951,49 @@
           "requirements": "Apple Silicon Mac、macOS 15 以降、フルバージョンの Xcode が必要です。",
           "dataNotice": "元のシミュレーターのデバイスや App データは削除されません。Baguette をインストールしても、デバイス、App、ログイン状態は自動移行されません。"
         }
+      },
+      "remote": {
+        "device": "管理するコンピューター",
+        "thisComputer": "このコンピューター",
+        "offline": "オフライン",
+        "confirmOn": "{{device}} 上の {{name}}",
+        "targetOnly": "設定は {{device}} に保存されます。",
+        "hostPreferencesUnavailable": "このコンピューターはモデル・タスク・サイドバーの設定のリモート編集に対応していません。{{device}}で設定してください。",
+        "taskWorkdirBoundary": "作業ディレクトリは対象コンピューターの設定を維持します。変更は対象コンピューターで行ってください。",
+        "configurationLoading": "設定を読み込み中…",
+        "configurationReadFailed": "設定を読み込めませんでした。",
+        "refreshConfiguration": "設定を更新",
+        "enableBeforeConfigure": "このプラグインは無効です。設定するには、上のスイッチをオンにしてください。",
+        "settingsPageUnavailable": "{{device}} の Cindy でこのプラグインの設定ページを開いてください。接続先の現在のバージョンではリモート表示に対応していません。",
+        "offlineNotice": "{{device}}はオフラインです。接続が復旧すると管理を再開できます。",
+        "managingTarget": "管理対象：{{device}}",
+        "managingDescription": "変更はこのコンピューターに保存されます。",
+        "viewingTarget": "{{device}} にインストール済み",
+        "unsupported": "{{device}} の Cindy は、まだリモート管理に対応していません。インストール済みプラグインはここで確認できます。インストール、更新、アンインストール、有効・無効の切り替え、設定、プロジェクト管理を行うには、そのコンピューターの Cindy を更新してください。",
+        "refresh": "プラグインを再読み込み",
+        "instanceId": "プラグインインスタンス",
+        "detailLoading": "プラグインの詳細を読み込み中…",
+        "detailReadFailed": "プラグインの詳細を読み込めませんでした。",
+        "refreshDetail": "詳細を再読み込み",
+        "detailUnavailable": "このコンピューターからプラグインの詳細がすべて提供されていないため、取得できた情報のみ表示しています。",
+        "retry": "再試行",
+        "readFailed": "プラグインを読み込めませんでした。",
+        "unknown": "操作結果は未確認です。元の操作結果を確認してください。",
+        "success": "対象コンピューターで完了しました。",
+        "cancelled": "キャンセルしました。",
+        "actionFailed": "操作に失敗しました。一覧を更新して再試行してください。",
+        "changed": "プラグインが変更されました。更新して再試行してください。",
+        "uninstallOn": "{{device}} から {{name}} をアンインストールしますか？",
+        "uninstall": "アンインストール",
+        "empty": "このコンピューターにはプラグインがありません。",
+        "marketUnavailable": "対象コンピューターのマーケットを利用できません。",
+        "personalInstall": "個人のインストール",
+        "loading": "プラグインを読み込み中…",
+        "installDestination": "インストール先：{{device}}",
+        "projectsUnsupported": "プロジェクト設定を管理するには、対象コンピューターの Cindy を更新してください。",
+        "noProjects": "このコンピューターには選択できるプロジェクトがまだありません。",
+        "projectLoading": "プロジェクト設定を読み込み中…",
+        "projectReadFailed": "プロジェクト設定を読み込めませんでした。再試行してください。"
       },
       "usage": {
         "title": "自分の呼び出し",
@@ -10915,6 +10970,13 @@
     "verificationFailed": "ChatGPT ログインが復旧したか確認できませんでした。再確認してください。"
   },
   "chat": {
+    "imageDelivery": {
+      "stored": "画像を受け取りました",
+      "failed": "画像の転送に失敗しました。既存の画像の転送を再試行できます。",
+      "retry": "転送を再試行",
+      "retrying": "転送中…",
+      "retryFailed": "転送できません。画像を生成したパソコンがオンラインか確認してください。"
+    },
     "failedSamplingAttempt": "この返信は完了しませんでした。内容は参考情報としてご覧ください。",
     "jumpToBottom": "一番下へ移動",
     "prevMessageJump": "前の質問へ移動：{{preview}}",
@@ -11149,6 +11211,9 @@
       "streamInterruptedNoRetry": "モデル出力が途中で中断されました。一時的な上流障害であることが多いので、しばらくしてから再試行してください",
       "networkShowRaw": "エラーの詳細",
       "networkHideRaw": "詳細を閉じる",
+      "diagnose": "診断",
+      "diagnoseTitle": "新しいセッションでこのエラーを診断",
+      "diagnosePrompt": "このエラーを診断して、原因と解決方法を教えてください。\n\nエラーが起きたセッション：{{sessionUrl}}\nエラー表示：{{message}}\nエラー詳細：\n{{details}}\n\nCindy 自体の問題だと分かった場合は教えてください。Cindy チームに issue を提出するかどうかは私が選びます。",
       "gatewayProxyTokenInvalid": "Cindy AI の認証情報が無効になりました。「再試行」をクリックしてください。繰り返す場合はサインアウトしてから再ログインしてください",
       "gatewayProxyTokenInvalidNoRetry": "Cindy AI の認証情報が無効になりました。繰り返す場合はサインアウトしてから再ログインしてください",
       "modelAccessDenied": "接続先のアカウントにはこのモデルへのアクセス権限がありません。別のモデルに切り替えるか、プロバイダーにアクセス権限を確認してください",
@@ -11940,7 +12005,17 @@
       "linkConfirmHint": "このリンクはプラグインが提供したもので、ブラウザで開きます:",
       "linkConfirmOpen": "開く",
       "linkConfirmCancel": "キャンセル",
-      "linkOpenFailed": "リンクを開けませんでした"
+      "expandFields": "展開",
+      "collapseFields": "折りたたむ",
+      "formSyncFailed": "カードの変更を同期できませんでした。接続を確認して編集を続けてください。メッセージは未送信です。",
+      "linkOpenFailed": "リンクを開けませんでした",
+      "mailPreview": "メールプレビュー",
+      "mailEnlarge": "拡大表示",
+      "mailInsertImage": "本文に挿入",
+      "mailAttach": "添付ファイルを追加",
+      "mailRemoveAttachment": "{{name}}を削除",
+      "mailUpdated": "更新済みの下書き（読み取り専用）",
+      "mailLegacy": "下書きの履歴（読み取り専用）"
     },
     "ghostHook": {
       "blockedFallback": "メッセージはプラグインによりブロックされました(未送信)",
@@ -13864,6 +13939,17 @@
     "projectSkillNotLoaded": "現在の Pi タスクでは、このプロジェクト Skill はまだ読み込まれていません。新しいタスクでは自動的に読み込みを試みます。"
   },
   "skillhub": {
+    "remote": {
+      "loading": "スキルを読み込み中…",
+      "readFailed": "スキルを読み込めませんでした。再試行してください。",
+      "unsupported": "リモートでスキルを管理するには、対象のコンピューターの Cindy を更新してください。",
+      "confirm": {
+        "install": "{{device}} に {{name}} をインストールしますか？",
+        "update": "{{device}} の {{name}} を v{{version}} に更新しますか？",
+        "uninstall": "{{device}} から {{name}} をアンインストールしますか？",
+        "installDescription": "スキルは選択したコンピューターに保存されます。更新時は元のファイルのバックアップを保持します。"
+      }
+    },
     "unifiedDetail": {
       "contentSource": "表示する内容",
       "local": "ローカル",
@@ -13881,17 +13967,13 @@
     },
     "home": {
       "title": "スキル",
-      "description": "ローカルスキルを管理し、Skill Hub から新しいスキルを見つけてインストールできます。",
+      "description": "インストール済みのスキルを管理し、SkillHub で新しいスキルを探します。",
       "descriptionLocalOnly": "このデバイスにインストールされたローカルスキルを管理します。",
       "search": "スキルを検索",
       "clearSearch": "スキル検索をクリア",
       "noSearchResults": "一致するスキルが見つかりません",
       "catalogFiltersAria": "SkillHub カテゴリ",
       "categoryFiltersAria": "カテゴリでスキルを絞り込む",
-      "scrollCategoriesLeft": "左のカテゴリをさらに表示",
-      "scrollCategoriesRight": "右のカテゴリをさらに表示",
-      "categoryScrollAtStart": "最初のカテゴリです",
-      "categoryScrollAtEnd": "最後のカテゴリです",
       "catalogFilter": {
         "public": "公開",
         "organization": "組織",

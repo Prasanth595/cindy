@@ -165,6 +165,9 @@ const usageHistory = (): ProviderUsageHistoryView => ({
 
 /** 「用量」块里第 index 行(按人表)的文字。 */
 const usageRowText = (index: number) => screen.getAllByTestId('provider-usage-row')[index]!.textContent ?? '';
+const pickUsageBreakdown = (dimension: 'party' | 'computer' | 'model') =>
+  fireEvent.click(within(screen.getByRole('tablist', { name: 'providerGroup.usage.title' }))
+    .getByRole('tab', { name: `providerGroup.usage.stack.${dimension}` }));
 
 /** 这台电脑上 xd 的供应商组：本机、Studio、一台分享来的电脑。 */
 const xdGroup: ProviderGroupConfig = {
@@ -381,6 +384,35 @@ describe('ProviderShareManagePage', () => {
   });
 
   // 2026-10-17 用户确认原型：与设置 → 用量同一套，默认合计，可以只看一个人或一台电脑。
+  // 测试价值：经真实管理页验证 2026-10-19 用户要求的单卡切换与移出电脑隐藏；原覆盖同时渲染三张表，
+  // 没有「当前组只有本机、历史仍有另一台」输入。最小失败输入为 xdGroup + 一条已移出电脑的用量，tier: unit。
+  // 本机整文件实测 19.23s（收集 8.02s、27 项执行 9.63s）；新增回归 395ms。复用原有管理页 fixture，避免另开同入口的小文件。
+  it('switches one breakdown card between people, current computers and models without losing historical totals', async () => {
+    localGroups = { xd: { ...xdGroup, members: [xdGroup.members[0]!] } };
+    renderPage();
+    await waitFor(() => expect(usageRowText(0)).toContain('52.0k'));
+    expect(screen.getAllByRole('tabpanel')).toHaveLength(1);
+    expect(screen.queryByTestId('provider-usage-computer')).toBeNull();
+    expect(screen.queryByTestId('provider-usage-model')).toBeNull();
+
+    const summary = screen.getByTestId('provider-usage-summary').textContent;
+    pickUsageBreakdown('computer');
+    expect(screen.queryByTestId('provider-usage-row')).toBeNull();
+    expect(screen.getAllByTestId('provider-usage-computer').map((row) => row.getAttribute('data-computer-key')))
+      .toEqual(['local', '']);
+    expect(screen.queryByText('providerGroup.usage.removedMember')).toBeNull();
+    // 已移出电脑的历史用量归进更早的记录，合计与模型明细继续保留。
+    expect(screen.getAllByTestId('provider-usage-computer')[1]!.textContent).toContain('1.5M');
+    pickUsageBreakdown('model');
+    expect(screen.queryByTestId('provider-usage-computer')).toBeNull();
+    expect(screen.getAllByTestId('provider-usage-model').map((row) => row.textContent))
+      .toEqual(expect.arrayContaining([expect.stringContaining('Opus 5.5')]));
+    expect(screen.getByTestId('provider-usage-summary').textContent).toBe(summary);
+    pickUsageBreakdown('party');
+    expect(usageRowText(0)).toContain('52.0k');
+    expect(usageRowText(1)).toContain('1.5M');
+  });
+
   it('splits usage by computer in the group and narrows everything to one person when their row is picked', async () => {
     localGroups = { xd: xdGroup };
     const history = usageHistory();
@@ -404,6 +436,10 @@ describe('ProviderShareManagePage', () => {
       .toEqual(['self', 'member:mem-1', 'relay:studio']));
     expect(usageRowText(2)).toContain('providerGroup.usage.relayName:{"device":"Studio"}');
 
+    // 单卡默认按人，点选的人在切到按电脑后继续生效。
+    fireEvent.click(screen.getByRole('button', { name: 'Lizi' }));
+    expect(screen.getByRole('button', { name: 'Lizi' }).getAttribute('aria-pressed')).toBe('true');
+    pickUsageBreakdown('computer');
     const computers = () => screen.getAllByTestId('provider-usage-computer');
     expect(computers().map((row) => row.getAttribute('data-computer-key'))).toEqual([
       'local',
@@ -418,16 +454,14 @@ describe('ProviderShareManagePage', () => {
     expect(computers()[2]!.textContent).toContain('providerGroup.member.shareComputerUnknown');
     expect(computers()[2]!.textContent).not.toContain('%');
     expect(computers()[3]!.textContent).toContain('providerGroup.usage.unattributed');
-    expect(computers()[0]!.textContent).toContain('%');
-
-    // 点 Lizi：整块只看他，按电脑表跟着变(他没在本机上用过)。
-    fireEvent.click(screen.getByRole('button', { name: 'Lizi' }));
-    expect(screen.getByRole('button', { name: 'Lizi' }).getAttribute('aria-pressed')).toBe('true');
+    // 只看 Lizi 时，本机没有用量。
     expect(computers()[0]!.textContent).not.toContain('%');
     expect(computers()[1]!.textContent).toContain('%');
     // 再点一次回到所有人。
+    pickUsageBreakdown('party');
     fireEvent.click(screen.getByRole('button', { name: 'Lizi' }));
     expect(screen.getByRole('button', { name: 'Lizi' }).getAttribute('aria-pressed')).toBe('false');
+    pickUsageBreakdown('computer');
     expect(computers()[0]!.textContent).toContain('%');
   });
 
@@ -461,6 +495,8 @@ describe('ProviderShareManagePage', () => {
     });
 
     renderPage();
+    await findMemberRow();
+    pickUsageBreakdown('computer');
     await waitFor(() => expect(screen.getAllByTestId('provider-usage-computer').map((row) => row.getAttribute('data-computer-key')))
       .toEqual(['local', 'device:studio', 'share-host:kai-pc']));
     // 两个账号合成一台：2k + 1k + 3k + 1k。
@@ -481,6 +517,9 @@ describe('ProviderShareManagePage', () => {
 
   it('shows a provider without a group as a group of just this computer', async () => {
     renderPage();
+    await findMemberRow();
+    expect(screen.queryByRole('tab', { name: 'providerGroup.usage.stack.computer' })).toBeNull();
+    pickUsageBreakdown('model');
     await waitFor(() => expect(screen.getAllByTestId('provider-usage-model').length).toBeGreaterThan(0));
     expect(screen.getByTestId('provider-usage-summary')).toBeTruthy();
     // 只有一台：没有组内电脑的筛选与「按电脑」。

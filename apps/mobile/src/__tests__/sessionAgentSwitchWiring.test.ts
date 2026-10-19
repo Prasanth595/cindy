@@ -11,7 +11,7 @@ describe('new task remote Agent wiring', () => {
     const source = readSource('app/sessions/new.tsx');
     // 被控电脑支持远程 Agent 时,模型列表接上其他电脑与分享的供应商;被控电脑支持给 Worker 选 Agent
     // 位置时协同草稿与之不互斥,旧被控电脑仍互斥。
-    expect(source).toContain('const remoteAgentCatalogs = useRemoteAgentCatalogs({');
+    expect(source).toContain('const { catalogs: remoteAgentCatalogs, settled: remoteAgentCatalogsSettled } = useRemoteAgentCatalogsWithStatus({');
     expect(source).toContain('...(remoteAgentSupported && (!collabDraft || workerAgentLocationSupported)');
     expect(source).toContain('catalogs: remoteAgentCatalogs,\n                selectedDeviceId: remoteAgentPick?.deviceId ?? null,');
     // 供应商组:组里其他电脑收进组那一项(按被控电脑的目录比)。

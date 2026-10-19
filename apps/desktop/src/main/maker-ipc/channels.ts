@@ -43,6 +43,7 @@ export const MAKER_INVOKE = {
   INPUT_STEER: 'maker:input:steer',
   INPUT_STOP: 'maker:input:stop',
   INPUT_RESUME: 'maker:input:resume',
+  IMAGES_RETRY: 'maker:images:retry',
   INPUT_RETRY_LAST_ERROR: 'maker:input:retry-last-error',
   INPUT_CLEAR_ERROR: 'maker:input:clear-error',
   /** 取消账号限额重置后的自动继续(只撤等待,错误与手动重试保留)。 */

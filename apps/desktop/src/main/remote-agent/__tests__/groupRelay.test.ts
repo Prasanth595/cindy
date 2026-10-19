@@ -53,6 +53,8 @@ function fakeAgentHost(name: string, started: Started[], options: {
   guestRelayCapable?: boolean;
   purge?: (hostSessionIds: readonly string[], nativeIds: readonly string[]) => Promise<void>;
   groupRelay?: RemoteAgentGroupRelayDeps;
+  prepareImageEvent?: Parameters<typeof createRemoteAgentHost>[0]['prepareImageEvent'];
+  imageArtifacts?: Parameters<typeof createRemoteAgentHost>[0]['imageArtifacts'];
   /** 这台的 Agent 启动失败(启动前受邀者目录已经建好)。 */
   failStart?: boolean;
   /** 这台的 Agent 一启动就结束。 */
@@ -62,6 +64,8 @@ function fakeAgentHost(name: string, started: Started[], options: {
   resolveProvider?: NonNullable<Parameters<typeof createRemoteAgentHost>[0]['providerAccess']>['resolve'];
 }) {
   return createRemoteAgentHost({
+    prepareImageEvent: options.prepareImageEvent,
+    imageArtifacts: options.imageArtifacts,
     isAgentAvailable: () => true,
     startHosted: async (input) => {
       if (options.failStart) throw new Error('the agent could not start');
@@ -196,7 +200,7 @@ function setup(options: {
   /** mini 这台的 Agent 表现。 */
   mini?: { failStart?: boolean; endImmediately?: boolean };
   /** 组所在电脑本机的 Agent 表现(组选中本机这一台时)。 */
-  owner?: { failStart?: boolean };
+  owner?: { failStart?: boolean; prepareImageEvent?: Parameters<typeof createRemoteAgentHost>[0]['prepareImageEvent'] };
   /** 截住组所在电脑发给组内电脑的请求(模拟回包丢失、应答慢)。 */
   intercept?: (agentDeviceId: string, request: Record<string, unknown>, forward: () => Promise<unknown>) => Promise<unknown>;
 } = {}) {
@@ -314,6 +318,36 @@ describe('provider group relay for shared users', () => {
     expect(env.memberStarted.mini[0].sends).toHaveLength(1);
     expect(env.relay.trackRun).toHaveBeenCalledWith('shared-provider', MEMBER_MINI.memberKey);
     await client.close('close', 'navigation');
+  });
+
+  // #6420: the relay must retain the member's task/relay receipt, not just restage its bytes.
+  it('carries the upstream artifact identity and clear generation through the provider-group relay', async () => {
+    let finishPreparation!: () => void;
+    const waiting = new Promise<void>((resolve) => { finishPreparation = resolve; });
+    const prepareImageEvent = vi.fn(async (_sessionId: string, event: AgentEvent) => { await waiting; return event; });
+    const env = setup({ owner: { prepareImageEvent } });
+    const { client, stream, isClosed } = await openAsGuest(env, GUEST_A, openPayload(SESSION, { imageDeliveryEpoch: 123, acceptsImageDeliveryReceipts: true }));
+    try {
+      env.memberStarted.mini[0].emit({ type: 'image', source: 'codex', data: { kind: 'generation', blockId: 'image', deliveryEpoch: 999, url: 'data:image/png;base64,bytes' } } as AgentEvent);
+      env.memberStarted.mini[0].end();
+      await vi.waitFor(() => expect(prepareImageEvent).toHaveBeenCalledTimes(1));
+      expect(isClosed()).toBe(false);
+      finishPreparation();
+      const call = prepareImageEvent.mock.calls[0] as unknown as [string, AgentEvent, { agentDeviceId: string; sessionId: string; relay: string }, boolean];
+      expect(call[3]).toBe(true);
+      expect(call[0]).toBe(hostSessionIdFor(GUEST_A, SESSION));
+      expect(call[1].data).toMatchObject({ deliveryEpoch: 123 });
+      expect(call[2]).toMatchObject({ agentDeviceId: 'mini', relay: relayKeyFor(GUEST_A) });
+      const imageArtifacts = vi.fn(async (_sessionId: string) => ({ ok: true }));
+      const member = fakeAgentHost('release-member', [], { trust: () => 'owner', imageArtifacts });
+      try {
+        await member.handle(OWNER_DEVICE, { op: 'images', ...call[2], action: 'release', imageId: 'a'.repeat(64) });
+        expect(imageArtifacts.mock.calls[0]?.[0]).toBe(env.memberStarted.mini[0].input.hostSessionId);
+        await member.handle('other-owner', { op: 'images', ...call[2], action: 'release', imageId: 'a'.repeat(64) });
+        expect(imageArtifacts.mock.calls[1]?.[0]).not.toBe(imageArtifacts.mock.calls[0]?.[0]);
+      } finally { member.dispose(); }
+      await vi.waitFor(() => expect(stream.some((item) => item.t === 'event' && item.event.type === 'image')).toBe(true));
+    } finally { finishPreparation(); await client.close('close', 'navigation'); }
   });
 
   it('keeps two shared users apart on the computer even with the same task id', async () => {

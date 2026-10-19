@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { HistoryViewController, projectHistoryView, type HistoryWorkSummary } from '@cindy/maker-shared/message-window';
-import { buildMobileHistoryRenderItems } from '../session/mobileHistoryRender';
+import { buildMobileHistoryRenderItems, buildMobileSessionRenderWindow } from '../session/mobileHistoryRender';
 import { buildMobileMessageRenderItems, type MobileMessageRenderItem } from '../session/messageRenderModel';
 import type { RemoteMessage } from '../session/types';
 import { reconcileMobileMessageRenderItems } from '../session/messageRenderReconcile';
+import { buildMobileStreamingRenderWindow } from '../session/messageRenderStreamingCache';
 import { CONTINUE_AFTER_ERROR_PROMPT } from '@cindy/maker-shared/synthetic-trigger';
 
 function row(index: number, role: RemoteMessage['role'], content: unknown, toolUseId: string | null = null): RemoteMessage {
@@ -255,6 +256,37 @@ it.each([true, false])('loads a folded subagent only on expansion while retainin
     const pending = { ...expanded, deferred: { ...expanded.deferred, loading: true } };
     const reconciled = reconcileMobileMessageRenderItems([pending], [expanded]);
     expect(reconciled[0]).toBe(expanded);
+  }
+  view.setActive(false);
+});
+
+// Unit: existing history rendering tests bypassed the screen's source selection.
+// Minimal regression: distinct cached/raw answers with a previously warmed prefix.
+it.each([false, true])('selects visible rows without reading unused raw bodies (ready=%s)', async ready => {
+  const { view } = harness([row(10, 'assistant', 'Cached answer')]);
+  if (ready) await view.refresh();
+  const prefixCache = { current: null as ReturnType<typeof buildMobileStreamingRenderWindow>['prefix'] };
+  const warmed = [row(0, 'user', 'First'), row(1, 'assistant', 'Done'), row(2, 'user', 'Next'),
+    { ...row(3, 'assistant', 'Streaming'), agentMeta: { isStreaming: true } }];
+  buildMobileStreamingRenderWindow({ cacheKey: 'en', messages: warmed,
+    options: { sessionId: 'session', isSessionStreaming: true }, prefixCache });
+  expect(prefixCache.current).not.toBeNull();
+  const readRawBody = vi.fn(() => 'Raw answer');
+  const raw = row(4, 'assistant', '');
+  Object.defineProperty(raw, 'content', { get: readRawBody });
+  const result = buildMobileSessionRenderWindow({
+    raw: { cacheKey: 'en', messages: [raw], options: { sessionId: 'session' }, prefixCache },
+    history: { view, snapshot: view.getSnapshot(), messages: [], streaming: false, sessionId: 'session' },
+  });
+  expect(result.items).toMatchObject([{ type: 'message', message: { body: ready ? 'Cached answer' : 'Raw answer' } }]);
+  expect(result.diffCount).toBe(0);
+  expect(result.prefix).toBeNull();
+  expect(result.stablePrefixItemCount).toBe(0);
+  if (ready) {
+    expect(readRawBody).not.toHaveBeenCalled();
+    expect(prefixCache.current).toBeNull();
+  } else {
+    expect(readRawBody).toHaveBeenCalled();
   }
   view.setActive(false);
 });

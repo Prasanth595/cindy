@@ -410,3 +410,13 @@ describe('remote file references on the task computer', () => {
     expect(streamed).not.toContain('/Users/ag');
   });
 });
+
+// #6412: source-local image paths and Base64 are not workspace path projections.
+it('preserves native image bytes and marks source-local paths across the controller boundary', async () => {
+  const { controller } = setup('/linux/agent');
+  const input: AgentEvent = { type: 'image', source: 'codex', data: {
+    kind: 'generation', blockId: 'native', path: '/linux/agent/image.png', data: 'abc/linux/agent/xyz',
+  } };
+  const [output] = await eventsFrom(controller, [input]);
+  expect(output.data).toEqual({ ...(input.data as object), pathOrigin: 'remote-agent' });
+});

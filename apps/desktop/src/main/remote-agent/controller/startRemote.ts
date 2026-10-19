@@ -52,6 +52,7 @@ export interface PreparedRemoteMcp {
 }
 
 export interface StartRemoteAgentDeps {
+  readImageDeliveryEpoch?(sessionId: string): Promise<number>;
   invoke: RemoteAgentInvoke;
   /** 这台电脑的共享拉取器(同一台电脑上的任务共用一个 poll)；缺省时本任务单独一个。 */
   poller?: RemoteAgentPoller;
@@ -224,6 +225,7 @@ export async function startRemoteAgentSession(
   deps: StartRemoteAgentDeps,
 ): Promise<AgentSessionHandle> {
   if (!opts.sessionId) throw new Error('remote agent sessions require a session id');
+  const imageDeliveryEpoch = await deps.readImageDeliveryEpoch?.(opts.sessionId);
   // 附加目录(只读引用)与可写目录分开跟踪，运行中任一侧变化都重算执行器根目录：
   // 否则新授予的目录过不了本机 shell/root 判定，撤掉的还被本机上限当可信根。
   let extraDirs = [...new Set(opts.extraDirs ?? [])];
@@ -365,6 +367,8 @@ export async function startRemoteAgentSession(
     : [];
   const payload: RemoteAgentOpenPayload = {
     sessionId: opts.sessionId,
+    acceptsImageDeliveryReceipts: true,
+    ...(imageDeliveryEpoch !== undefined ? { imageDeliveryEpoch } : {}),
     virtualWorkspace: true,
     options: encodeStartOptions(opts),
     workspace: {

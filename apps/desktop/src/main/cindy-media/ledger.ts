@@ -404,7 +404,7 @@ export async function removeRefs(
  * publishing their managed URL; the SQL predicate runs after they settle.
  */
 export async function removeSessionAttachmentRefIfUnreferencedByLiveMessage(
-  params: { sessionId: string; hash: string },
+  params: { sessionId: string; hash: string; visibleOnly?: boolean },
   db: LedgerDb = defaultDb(),
 ): Promise<number> {
   if (!/^[0-9a-f]{64}$/.test(params.hash)) return 0;
@@ -422,6 +422,10 @@ export async function removeSessionAttachmentRefIfUnreferencedByLiveMessage(
              WHERE messages.session_id = ${params.sessionId}
                AND messages.rewind_at IS NULL
                AND messages.content LIKE ${`%${params.hash}%`}
+               ${params.visibleOnly ? sql`AND messages.role != 'message_tombstone'
+                 AND EXISTS (SELECT 1 FROM sessions
+                   WHERE sessions.id = messages.session_id AND sessions.status != 'deleted'
+                     AND (sessions.cleared_at IS NULL OR messages.created_at > sessions.cleared_at))` : sql``}
           )`,
         ),
       )

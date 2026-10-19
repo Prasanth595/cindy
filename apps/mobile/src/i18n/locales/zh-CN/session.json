@@ -1,4 +1,10 @@
 {
+  "leaveWhileUploading": {
+    "title": "放弃发送？",
+    "body": "附件还没上传完，现在离开这条消息就不会发送。",
+    "stay": "继续等待",
+    "discard": "放弃发送"
+  },
   "entry": {
     "title": "打开任务",
     "loading": "正在读取任务…",
@@ -505,6 +511,9 @@
     "replyFailed": "回复未完成",
     "showErrorDetails": "错误详情",
     "hideErrorDetails": "收起详情",
+    "diagnose": "诊断",
+    "diagnoseHint": "在新任务中诊断这个错误",
+    "diagnosePrompt": "请帮我诊断这个错误：找出原因，并告诉我怎么解决。\n\n出错任务：{{sessionUrl}}\n错误提示：{{message}}\n错误详情：\n{{details}}\n\n如果确认是 Cindy 本身的问题，请告诉我，我可以选择向 Cindy 团队提交 issue。",
     "interrupted": "任务执行到一半时应用退出，已被中断。",
     "continueTask": "继续任务",
     "retry": "重试",

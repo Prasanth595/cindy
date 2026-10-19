@@ -1,4 +1,10 @@
 {
+  "leaveWhileUploading": {
+    "title": "Discard this message?",
+    "body": "Attachments are still uploading. If you leave now, this message won't be sent.",
+    "stay": "Keep Waiting",
+    "discard": "Discard"
+  },
   "entry": {
     "title": "Open Task",
     "loading": "Loading task…",
@@ -509,6 +515,9 @@
     "replyFailed": "Could not complete the reply",
     "showErrorDetails": "Error Details",
     "hideErrorDetails": "Hide Details",
+    "diagnose": "Diagnose",
+    "diagnoseHint": "Diagnose this error in a new session",
+    "diagnosePrompt": "Please diagnose this error: find the cause and tell me how to fix it.\n\nSession: {{sessionUrl}}\nError: {{message}}\nDetails:\n{{details}}\n\nIf you find it's a problem with Cindy itself, let me know so I can choose whether to file an issue with the Cindy team.",
     "interrupted": "The app exited mid-task, so it was interrupted.",
     "continueTask": "Continue Task",
     "retry": "Retry",

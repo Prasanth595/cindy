@@ -32,6 +32,12 @@ import { CINDY_MAKE_ENABLED, isCindyMakeSource } from '@cindy/maker-shared/cindy
 import { CindyMakeSessionGate } from './CindyMakeSessionGate';
 import { dbToMakerAgentKind, normalizeDbAgentKind } from '../../../shared/agentKindConversion';
 import { useTranslation } from 'react-i18next';
+import { buildSessionDeepLink } from '@/lib/deepLink';
+import {
+  buildErrorDiagnosisPrompt,
+  prefillErrorDiagnosisDraft,
+  type ErrorDiagnosisSource,
+} from '@/lib/errorDiagnosisPrompt';
 import {
   isCodexResumeNotReadyProjectionError,
   type AgentInputReference,
@@ -2234,6 +2240,19 @@ function CCAgentSessionContent({
   const handleViewBalance = useCallback(() => {
     navigate('/settings?tab=billing');
   }, [navigate]);
+  // 诊断在本机新任务里进行；共享任务的访客读不到原任务，不提供。
+  const canDiagnoseError = !readOnly && canNavigateSession && !isSharedTaskPeer(remoteDeviceId);
+  const handleDiagnoseError = useCallback(
+    (source: ErrorDiagnosisSource) => {
+      if (!sessionId) return;
+      const sessionUrl = buildSessionDeepLink(sessionId, {
+        deviceId: rightSidebarDeviceLinkDeviceId,
+      });
+      prefillErrorDiagnosisDraft(buildErrorDiagnosisPrompt(t, sessionUrl, source));
+      navigate('/cc-agent/new');
+    },
+    [navigate, rightSidebarDeviceLinkDeviceId, sessionId, t],
+  );
   // live 错误的来源 provider 快照:错误出现时取值、任务切换时重置、错误存续期间
   // 切 provider 不跟随。语义与边界条件见 useLiveErrorSourceProvider 头注释。
   const liveErrorSourceProviderId = useLiveErrorSourceProvider(
@@ -5331,6 +5350,7 @@ function CCAgentSessionContent({
                     !readOnly && canNavigateSession && !isSharedTaskPeer(remoteDeviceId) ? handleForkStripEncrypted : undefined
                   }
                   forkStripEncryptedRunning={forkStripEncryptedRunning}
+                  onDiagnose={canDiagnoseError ? handleDiagnoseError : undefined}
                   style={{ width: inputWidth }}
                 />
               ))}
@@ -5407,6 +5427,7 @@ function CCAgentSessionContent({
                   !readOnly && canNavigateSession && !isSharedTaskPeer(remoteDeviceId) ? handleForkStripEncrypted : undefined
                 }
                 forkStripEncryptedRunning={forkStripEncryptedRunning}
+                onDiagnose={canDiagnoseError ? handleDiagnoseError : undefined}
                 style={{ width: inputWidth }}
               />
             )}

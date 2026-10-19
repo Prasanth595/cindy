@@ -138,3 +138,15 @@ export function nativeToolMediaFields(content: unknown): {
   const processMedia = collectNativeToolMedia(content);
   return processMedia.length ? { processMedia } : {};
 }
+
+/** Only the Host-issued delivery record enables retry; arbitrary paths/URLs never do. */
+export function readFailedImageDelivery(text: string | undefined): string | null {
+  if (!text?.includes('native_image_delivery')) return null;
+  try {
+    const value = record(JSON.parse(text));
+    const delivery = record(value?.native_image_delivery);
+    return value?.kind === 'generation' && delivery?.state === 'failed'
+      && typeof delivery.id === 'string' && /^[a-f0-9]{64}$/.test(delivery.id)
+      ? delivery.id : null;
+  } catch { return null; }
+}

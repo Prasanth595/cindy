@@ -1,4 +1,5 @@
 {
+  "mailReader": {"markReadFailed":"읽음 상태를 동기화하지 못했습니다. 메일함 인증을 확인하고 다시 여세요.","title":"메일","openMailbox":"메일함에서 열기","loading":"메일 읽는 중…","failed":"메일을 읽지 못했습니다. 연결된 계정을 확인하고 다시 시도하거나 메일함에서 여세요.","retry":"다시 시도","to":"받는 사람","cc":"참조","bcc":"숨은 참조","subject":"제목"},
   "title": "플러그인",
   "all": "전체",
   "unread": "읽지 않음",
@@ -33,6 +34,9 @@
   "chooseTask": "기존 작업",
   "taskHint": "작업에서 요청을 설명하면 Cindy가 적절한 플러그인을 사용합니다. 기존 작업의 모델과 권한은 유지됩니다.",
   "noMobilePage": "아직 모바일 페이지가 없습니다. 도구는 작업에서 사용할 수 있습니다.",
+  "expandFields": "펼치기",
+  "collapseFields": "접기",
+  "formSyncFailed": "카드 변경 사항이 동기화되지 않았습니다. 연결을 확인한 후 편집을 계속하세요. 메시지는 전송되지 않았습니다.",
   "pageUnconfirmed": "연결 또는 페이지 상태가 확인되지 않았습니다. 전송된 작업은 자동으로 다시 보내지 않습니다. 원래 작업이나 저장된 내용을 먼저 확인해 주세요.",
   "reopen": "페이지 다시 열기",
   "loadingPage": "플러그인 여는 중…",
@@ -124,5 +128,15 @@
   },
   "demo": {
     "hint": "데모 데이터 · 실제 설정은 변경되지 않습니다"
-  }
+  },
+  "mailPreview": "메일 미리보기",
+  "mailEnlarge": "확대 보기",
+  "mailInsertImage": "본문에 삽입",
+  "mailAttach": "첨부 파일 추가",
+  "mailUpdated": "업데이트된 초안 (읽기 전용)",
+  "mailLegacy": "초안 기록 (읽기 전용)",
+  "mailAttaching": "첨부 파일 추가 중…",
+  "mailAttachFailed": "첨부 파일을 추가하지 못했습니다. 연결을 확인한 후 다시 시도해 주세요.",
+  "mailAttachTooLarge": "메일 첨부 파일 하나의 크기는 16 MB 이하여야 합니다.",
+  "mailRemoveAttachment": "{{name}} 삭제"
 }

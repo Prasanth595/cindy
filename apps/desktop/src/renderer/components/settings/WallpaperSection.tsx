@@ -1,9 +1,9 @@
 import { ErrorNotice } from '@/components/ui/error-notice';
 import { useTranslation } from 'react-i18next';
 import { RotateCcw, ImagePlus, Film } from 'lucide-react';
-import { useEffect, useCallback, useRef, useState } from 'react';
+import { useEffect, useCallback, useId, useRef, useState } from 'react';
 import { extractIpcError } from '@/utils/ipcError';
-import { DownloadMeter } from './DownloadMeter';
+import { downloadPercent } from './DownloadMeter';
 
 import { Button } from '@/components/ui/button';
 import { SegmentedControl } from '@/components/ui/segmented-control';
@@ -30,6 +30,7 @@ export function WallpaperSection() {
   const { t } = useTranslation();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const feedbackId = useId();
   const buttons = useRef(new Map<WallpaperId, HTMLButtonElement>());
   const [focusedWallpaperId, setFocusedWallpaperId] = useState<WallpaperId | null>(null);
   const {
@@ -57,8 +58,7 @@ export function WallpaperSection() {
   const pickerIds: readonly WallpaperId[] = retiredInUse
     ? [SELECTABLE_WALLPAPER_IDS[0], retiredInUse, ...SELECTABLE_WALLPAPER_IDS.slice(1)]
     : SELECTABLE_WALLPAPER_IDS;
-  const entryId =
-    focusedWallpaperId ?? pickerIds.find((id) => id === wallpaperId) ?? pickerIds[0];
+  const entryId = focusedWallpaperId ?? pickerIds.find((id) => id === wallpaperId) ?? pickerIds[0];
   // The shared slider restores its starting value during cancellation. Clear
   // that temporary preview after its handler, returning to the latest saved value.
   const cancelBlurPreview = useCallback(() => {
@@ -74,6 +74,10 @@ export function WallpaperSection() {
   const customVideo = isCustomWallpaperVideo(customWallpaperUrl);
   const downloading = isCdnWallpaper(wallpaperId) && downloadPending;
   const retryable = isCdnWallpaper(wallpaperId) && downloadFailed && !downloadPending;
+  const progressRatio = Number.isFinite(downloadProgress)
+    ? Math.min(1, Math.max(0, downloadProgress))
+    : 0;
+  const progressPercent = downloadPercent({ percent: downloadProgress * 100 }) ?? 0;
   const chooseWallpaper = async () => {
     setBusy(true);
     setError('');
@@ -152,7 +156,14 @@ export function WallpaperSection() {
                   ? `url("${customWallpaperUrl}")`
                   : getBuiltinWallpaperPreview(id);
               return (
-                <Tip key={id} text={label}>
+                <Tip
+                  key={id}
+                  text={
+                    selected && retryable
+                      ? `${label} · ${t('settings.appearance.wallpaper.downloadFailed')} · ${t('settings.appearance.wallpaper.retryDownload')}`
+                      : label
+                  }
+                >
                   <button
                     ref={(button) => {
                       if (button) buttons.current.set(id, button);
@@ -162,6 +173,10 @@ export function WallpaperSection() {
                     role="radio"
                     aria-checked={selected}
                     aria-label={label}
+                    aria-busy={selected && downloading ? true : undefined}
+                    aria-describedby={
+                      selected && (downloading || retryable) ? feedbackId : undefined
+                    }
                     disabled={busy}
                     tabIndex={!busy && id === entryId ? 0 : -1}
                     onFocus={() => setFocusedWallpaperId(id)}
@@ -200,11 +215,11 @@ export function WallpaperSection() {
                         setWallpaper(target);
                       }
                     }}
-                    onClick={() =>
-                      id === 'custom' && !customWallpaperUrl
-                        ? void chooseWallpaper()
-                        : setWallpaper(id)
-                    }
+                    onClick={() => {
+                      if (selected && retryable) retryDownload();
+                      else if (id === 'custom' && !customWallpaperUrl) void chooseWallpaper();
+                      else setWallpaper(id);
+                    }}
                     className={cn(
                       'flex min-w-0 flex-col gap-1 rounded-xl text-left transition-colors',
                       'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--settings-theme-icon-active)]',
@@ -224,6 +239,30 @@ export function WallpaperSection() {
                         backgroundSize: 'cover',
                       }}
                     >
+                      {selected && downloading && (
+                        <span
+                          aria-hidden="true"
+                          data-wallpaper-progress="true"
+                          className="pointer-events-none absolute inset-x-1.5 bottom-1.5 h-[3px] overflow-hidden rounded-full bg-[var(--surface-chip)]"
+                        >
+                          <span
+                            // Match the downloader's 200ms sampling window without restarting
+                            // an ease-in/out on every update. Keep byte precision in the fill.
+                            className="absolute inset-0 origin-left bg-[var(--text-primary)] transition-transform duration-[var(--motion-base)] ease-linear motion-reduce:transition-none"
+                            style={{ transform: `scaleX(${progressRatio})` }}
+                          />
+                        </span>
+                      )}
+                      {selected && retryable && (
+                        <span
+                          aria-hidden="true"
+                          className="pointer-events-none absolute inset-0 flex items-center justify-center"
+                        >
+                          <span className="flex size-7 items-center justify-center rounded-full bg-[var(--surface-elevated)] text-[var(--text-primary)] shadow-sm">
+                            <RotateCcw size={14} />
+                          </span>
+                        </span>
+                      )}
                       {id === 'custom' && customVideo ? (
                         <span className="absolute inset-0 flex items-center justify-center text-[var(--settings-section-sublabel)]">
                           <Film size={22} aria-hidden="true" />
@@ -256,25 +295,26 @@ export function WallpaperSection() {
             })}
           </div>
 
-          {/* Only the selected wallpaper downloads; the grid stays available while it loads. */}
+          {/* Radio descendants are presentational to assistive technology. Keep
+              semantic feedback outside the tile while its visible bar stays inside. */}
           {downloading && (
-            <DownloadMeter
-              progress={{
-                label: t('settings.appearance.wallpaper.downloading'),
-                percent: downloadProgress * 100,
-              }}
-            />
+            <div
+              id={feedbackId}
+              role="progressbar"
+              aria-label={t('settings.appearance.wallpaper.downloading')}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={progressPercent}
+              className="sr-only"
+            >
+              {t('settings.appearance.wallpaper.downloading')}
+            </div>
           )}
           {retryable && (
-            <div role="status" className="flex items-center justify-between gap-3">
-              <p className="text-12 text-[var(--settings-section-sublabel)]">
-                {t('settings.appearance.wallpaper.downloadFailed')}
-              </p>
-              <Button variant="secondary" type="button" disabled={busy} onClick={retryDownload}>
-                <RotateCcw size={14} aria-hidden="true" />
-                {t('settings.appearance.wallpaper.retryDownload')}
-              </Button>
-            </div>
+            <p id={feedbackId} role="status" className="sr-only">
+              {t('settings.appearance.wallpaper.downloadFailed')} ·{' '}
+              {t('settings.appearance.wallpaper.retryDownload')}
+            </p>
           )}
 
           <div className="flex flex-wrap items-center gap-3">

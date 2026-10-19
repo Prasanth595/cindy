@@ -1,4 +1,10 @@
 {
+  "leaveWhileUploading": {
+    "title": "送信を中止しますか？",
+    "body": "添付のアップロードがまだ終わっていません。今離れるとこのメッセージは送信されません。",
+    "stay": "待つ",
+    "discard": "送信を中止"
+  },
   "entry": {
     "title": "タスクを開く",
     "loading": "タスクを読み込み中…",
@@ -509,6 +515,9 @@
     "replyFailed": "返信を完了できませんでした",
     "showErrorDetails": "エラーの詳細",
     "hideErrorDetails": "詳細を閉じる",
+    "diagnose": "診断",
+    "diagnoseHint": "新しいセッションでこのエラーを診断",
+    "diagnosePrompt": "このエラーを診断して、原因と解決方法を教えてください。\n\nエラーが起きたセッション：{{sessionUrl}}\nエラー表示：{{message}}\nエラー詳細：\n{{details}}\n\nCindy 自体の問題だと分かった場合は教えてください。Cindy チームに issue を提出するかどうかは私が選びます。",
     "interrupted": "タスクの実行中にアプリが終了したため、中断されました。",
     "continueTask": "タスクを続ける",
     "retry": "再試行",

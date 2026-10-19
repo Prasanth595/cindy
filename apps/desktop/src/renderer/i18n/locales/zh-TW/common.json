@@ -1,4 +1,5 @@
 {
+  "mailReader": {"markReadFailed":"未能同步已讀狀態，請檢查信箱授權後重新開啟。","title":"郵件","openMailbox":"在信箱中開啟","loading":"正在讀取郵件…","failed":"未能讀取這封郵件。請檢查連接的信箱帳號後重試，或在信箱中開啟。","retry":"重試","to":"收件人","cc":"副本","bcc":"密件副本","subject":"主旨","currentMessage":"目前郵件","messageCount_other":"共 {{count}} 封郵件","messageCount_one":"共 {{count}} 封郵件","showMessages_other":"展開 {{count}} 封郵件","showMessages_one":"展開 {{count}} 封郵件","expandMessage":"展開來自 {{from}} 的郵件","collapseMessage":"收起來自 {{from}} 的郵件","conversationFailed":"暫時無法讀取前後郵件。","messageCount":"共 {{count}} 封郵件","showMessages":"展開 {{count}} 封郵件"},
   "logSupport": {
     "title": "日誌與回饋",
     "localFiles": "選擇問題當天的日誌。檔案未經去識別化處理，請先檢查。",
@@ -2994,6 +2995,7 @@
           "quotaTitle": "本期剩餘額度",
           "quotaUsed": "已用 {{used}} / 本期額度 {{total}}",
           "loading": "正在取得…",
+          "noPersonalLimit": "未設定個人限額",
           "unavailable": "暫時無法取得，請重新整理。",
           "refresh": "重新整理額度"
         },
@@ -6401,7 +6403,7 @@
         "replaceAria": "以此市場版本取代 {{name}}",
         "replaceDescription": "已安裝相同 ID 的插件；繼續安裝會切換來源。原來源的資料將隔離保留，新來源不會繼承原帳號和金鑰，需要重新連接。"
       },
-      "install": "安裝插件…",
+      "install": "從檔案安裝…",
       "empty": "還沒有安裝任何插件",
       "emptyHint": "可從插件市場安裝，或點選右上角匯入 .cindy 檔案",
       "reapproval": {
@@ -6434,14 +6436,19 @@
       "projectDisabledTag": "本專案未生效",
       "projectSwitchLockedTip": "該插件已在全域性停用；請先切回「全域性」檢視開啟",
       "projectBanner": {
-        "title": "正在配置專案「{{name}}」",
-        "desc": "開關只影響此專案：關閉的插件在該專案中不可用",
+        "title": "目前專案：{{name}}",
+        "desc": "開關僅影響此專案；安裝、更新、解除安裝與設定會套用至{{device}}。",
         "backToGlobal": "返回全域性"
       },
       "scopePicker": {
         "global": "全域性(預設)",
         "ariaLabel": "選擇插件生效範圍",
-        "browse": "選擇其它目錄…"
+        "browse": "選擇其它目錄…",
+        "management": "管理範圍",
+        "globalScope": "全域",
+        "computers": "電腦",
+        "projectScope": "專案範圍",
+        "projectsForComputer": "{{device}}上的專案"
       },
       "enableAria": "使 {{name}} 生效",
       "uninstall": "解除安裝",
@@ -6533,6 +6540,11 @@
         "unknownReviewerDetail": "包裡帶有稽核宣告，但當前 Cindy 不認識這把稽核公鑰，因此不會顯示為已稽核。"
       },
       "perm": {
+        "mail": "使用郵件草稿與傳送卡片",
+        "mailDetail": "可在卡片中編輯和同步草稿，並在傳送前提供確認與撤銷倒數。",
+        "mailReader": "在應用程式內查看郵件",
+        "mailReaderHost": "在應用程式內開啟 {{host}} 的郵件連結",
+        "mailMarkRead": "開啟郵件時可將其標記為已讀",
         "grantsTitle": "安裝後它將擁有：",
         "toolsGroup": "註冊工具",
         "toolsDiffGroup": "註冊工具變化",
@@ -6939,6 +6951,49 @@
           "requirements": "需要 Apple Silicon Mac、macOS 15 或更新版本及完整 Xcode。",
           "dataNotice": "原模擬器的裝置和應用程式資料不會被刪除。安裝 Baguette 不會自動遷移裝置、App 或登入狀態。"
         }
+      },
+      "remote": {
+        "device": "管理電腦",
+        "thisComputer": "目前電腦",
+        "offline": "離線",
+        "confirmOn": "在 {{device}} 上操作 {{name}}",
+        "targetOnly": "設定儲存在 {{device}}。",
+        "hostPreferencesUnavailable": "這台電腦暫不支援遠端編輯模型、任務與側欄偏好，請在{{device}}上配置。",
+        "taskWorkdirBoundary": "工作目錄沿用目標電腦的設定，請在目標電腦修改。",
+        "configurationLoading": "正在讀取設定…",
+        "configurationReadFailed": "未能讀取設定。",
+        "refreshConfiguration": "重新整理設定",
+        "enableBeforeConfigure": "插件已停用，請先開啟上方開關，再進行設定。",
+        "settingsPageUnavailable": "請在 {{device}} 的 Cindy 中開啟此插件的設定頁，目標電腦目前版本暫不支援遠端顯示。",
+        "offlineNotice": "「{{device}}」已離線，暫時無法管理。連線恢復後即可繼續。",
+        "managingTarget": "正在管理「{{device}}」",
+        "managingDescription": "變更將儲存在這台電腦上。",
+        "viewingTarget": "「{{device}}」的已安裝插件",
+        "unsupported": "「{{device}}」的 Cindy 版本尚不支援遠端管理。目前可檢視它的已安裝插件；如需安裝、升級、解除安裝、啟用、停用、設定或專案管理，請先在該電腦更新 Cindy。",
+        "refresh": "重新整理插件",
+        "instanceId": "插件執行個體",
+        "detailLoading": "正在讀取插件詳情…",
+        "detailReadFailed": "未能讀取插件詳情",
+        "refreshDetail": "重新整理詳情",
+        "detailUnavailable": "該電腦未提供完整的插件詳情，此處僅顯示已傳回的資訊。",
+        "retry": "重試",
+        "readFailed": "無法讀取插件，請重試。",
+        "unknown": "操作結果尚未確認，可查詢原操作結果。",
+        "success": "目標電腦已完成操作。",
+        "cancelled": "已取消。",
+        "actionFailed": "操作失敗，請重新整理列表後重試。",
+        "changed": "插件已變更，請重新整理後重試。",
+        "uninstallOn": "從 {{device}} 卸載 {{name}}？",
+        "uninstall": "卸載",
+        "empty": "這台電腦尚未安裝插件。",
+        "marketUnavailable": "目標電腦的插件市場暫時無法使用。",
+        "personalInstall": "個人安裝",
+        "loading": "正在讀取插件…",
+        "installDestination": "安裝到：{{device}}",
+        "projectsUnsupported": "目標電腦尚不支援專案管理，請更新該電腦上的 Cindy。",
+        "noProjects": "這台電腦還沒有可選專案。",
+        "projectLoading": "正在讀取專案開關…",
+        "projectReadFailed": "專案開關讀取失敗，請重試。"
       },
       "usage": {
         "title": "個人呼叫",
@@ -10915,6 +10970,13 @@
     "verificationFailed": "暫時無法確認 ChatGPT 登入是否已恢復，請重新檢測。"
   },
   "chat": {
+    "imageDelivery": {
+      "stored": "圖片已交付",
+      "failed": "圖片交付失敗，可重試傳輸已有圖片。",
+      "retry": "重試交付",
+      "retrying": "正在交付…",
+      "retryFailed": "暫時無法交付，請確認產生圖片的電腦在線。"
+    },
     "failedSamplingAttempt": "此回覆未完成，內容僅供參考。",
     "jumpToBottom": "跳到底部",
     "prevMessageJump": "跳到上一則提問：{{preview}}",
@@ -11148,6 +11210,9 @@
       "streamInterruptedNoRetry": "模型輸出中途中斷了。通常是上游暫時故障，請稍後重試。",
       "networkShowRaw": "錯誤詳情",
       "networkHideRaw": "收起詳情",
+      "diagnose": "診斷",
+      "diagnoseTitle": "在新任務中診斷這個錯誤",
+      "diagnosePrompt": "請幫我診斷這個錯誤：找出原因，並告訴我怎麼解決。\n\n出錯任務：{{sessionUrl}}\n錯誤提示：{{message}}\n錯誤詳情：\n{{details}}\n\n如果確認是 Cindy 本身的問題，請告訴我，我可以選擇向 Cindy 團隊提交 issue。",
       "gatewayProxyTokenInvalid": "Cindy AI 憑據已失效。請點「重試」。若仍失敗，請退出後重新登入",
       "gatewayProxyTokenInvalidNoRetry": "Cindy AI 憑據已失效。若後續仍失敗，請退出後重新登入",
       "modelAccessDenied": "目前上游帳號無權存取此模型。請切換模型，或向供應商確認模型存取權限",
@@ -11939,7 +12004,17 @@
       "linkConfirmHint": "該連結由插件提供，將在系統瀏覽器中開啟：",
       "linkConfirmOpen": "開啟",
       "linkConfirmCancel": "取消",
-      "linkOpenFailed": "連結開啟失敗"
+      "expandFields": "展開",
+      "collapseFields": "收起",
+      "formSyncFailed": "卡片修改尚未同步，請檢查連線後繼續編輯；訊息尚未傳送。",
+      "linkOpenFailed": "連結開啟失敗",
+      "mailPreview": "郵件預覽",
+      "mailEnlarge": "放大檢視",
+      "mailInsertImage": "插入內文",
+      "mailAttach": "新增附件",
+      "mailRemoveAttachment": "移除 {{name}}",
+      "mailUpdated": "草稿已更新（唯讀）",
+      "mailLegacy": "歷史草稿（唯讀）"
     },
     "ghostHook": {
       "blockedFallback": "訊息被插件攔下，未傳送",
@@ -13864,6 +13939,17 @@
     "projectSkillNotLoaded": "目前的 Pi 任務尚未載入此專案 Skill，新任務會自動嘗試載入"
   },
   "skillhub": {
+    "remote": {
+      "loading": "正在讀取技能…",
+      "readFailed": "無法讀取技能，請重試。",
+      "unsupported": "目標電腦暫不支援遠端技能管理，請更新其 Cindy。",
+      "confirm": {
+        "install": "在「{{device}}」安裝「{{name}}」？",
+        "update": "將「{{device}}」的「{{name}}」更新至 v{{version}}？",
+        "uninstall": "從「{{device}}」解除安裝「{{name}}」？",
+        "installDescription": "技能將寫入所選電腦，更新前保留原檔案備份。"
+      }
+    },
     "unifiedDetail": {
       "contentSource": "內容來源",
       "local": "本機",
@@ -13881,17 +13967,13 @@
     },
     "home": {
       "title": "技能",
-      "description": "管理本地技能，或從 Skill Hub 發現並安裝更多技能。",
+      "description": "管理已安裝的技能，或從 SkillHub 探索更多技能。",
       "descriptionLocalOnly": "管理本機安裝的本地技能。",
       "search": "搜尋技能",
       "clearSearch": "清除技能搜尋",
       "noSearchResults": "沒有找到匹配的技能",
       "catalogFiltersAria": "SkillHub 分類",
       "categoryFiltersAria": "按分類篩選技能",
-      "scrollCategoriesLeft": "向左查看更多分類",
-      "scrollCategoriesRight": "向右查看更多分類",
-      "categoryScrollAtStart": "已經是第一個分類",
-      "categoryScrollAtEnd": "已經是最後一個分類",
       "catalogFilter": {
         "public": "公開",
         "organization": "組織",

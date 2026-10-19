@@ -1,4 +1,5 @@
 {
+  "mailReader": {"markReadFailed":"未能同步已读状态，请检查邮箱授权后重新打开。","title":"邮件","openMailbox":"在邮箱中打开","loading":"正在读取邮件…","failed":"未能读取这封邮件。请检查连接的邮箱账号后重试，或在邮箱中打开。","retry":"重试","to":"收件人","cc":"抄送","bcc":"密送","subject":"主题","currentMessage":"当前邮件","messageCount_other":"共 {{count}} 封邮件","messageCount_one":"共 {{count}} 封邮件","showMessages_other":"展开 {{count}} 封邮件","showMessages_one":"展开 {{count}} 封邮件","expandMessage":"展开来自 {{from}} 的邮件","collapseMessage":"收起来自 {{from}} 的邮件","conversationFailed":"暂时无法读取前后邮件。","messageCount":"共 {{count}} 封邮件","showMessages":"展开 {{count}} 封邮件"},
   "logSupport": {
     "title": "日志与反馈",
     "localFiles": "选择问题当天的日志。文件未脱敏，请先检查。",
@@ -2994,6 +2995,7 @@
           "quotaTitle": "本期剩余额度",
           "quotaUsed": "已用 {{used}} / 本期额度 {{total}}",
           "loading": "正在获取…",
+          "noPersonalLimit": "未设置个人限额",
           "unavailable": "暂时无法获取，请刷新重试。",
           "refresh": "刷新额度"
         },
@@ -6410,7 +6412,7 @@
         "bodyInvalid": "这个插件的安装验证记录已损坏，因此已暂停运行。请重新安装原市场版本，或重新选择对应的 .cindy 包。",
         "bodyBuiltinRestart": "这个内置插件的安装验证记录出了问题。重启 Cindy 即可自动恢复，无需其他操作。"
       },
-      "install": "安装插件…",
+      "install": "从文件安装…",
       "empty": "还没有安装任何插件",
       "emptyHint": "可从插件市场安装，或点击右上角导入 .cindy 文件",
       "legacyRecovery": {
@@ -6434,14 +6436,19 @@
       "projectDisabledTag": "本项目已停用",
       "projectSwitchLockedTip": "该插件已在全局停用；请先切回「全局」视图启用",
       "projectBanner": {
-        "title": "正在配置项目「{{name}}」",
-        "desc": "开关只影响此项目：关闭的插件在该项目中不可用",
+        "title": "当前项目：{{name}}",
+        "desc": "开关仅影响此项目；安装、更新、卸载和配置作用于{{device}}。",
         "backToGlobal": "返回全局"
       },
       "scopePicker": {
         "global": "全局(默认)",
         "ariaLabel": "选择插件启用范围",
-        "browse": "选择其它目录…"
+        "browse": "选择其它目录…",
+        "management": "管理范围",
+        "globalScope": "全局",
+        "computers": "电脑",
+        "projectScope": "项目范围",
+        "projectsForComputer": "{{device}}上的项目"
       },
       "enableAria": "启用 {{name}}",
       "uninstall": "卸载",
@@ -6533,6 +6540,11 @@
         "unknownReviewerDetail": "包里带有审核声明，但当前 Cindy 不认识这把审核公钥，因此不会显示为已审核。"
       },
       "perm": {
+        "mail": "使用邮件草稿与发送卡片",
+        "mailDetail": "可在卡片中编辑和同步草稿，并在发送前提供确认和撤销倒计时。",
+        "mailReader": "在应用内查看邮件",
+        "mailReaderHost": "在应用内打开 {{host}} 的邮件链接",
+        "mailMarkRead": "打开邮件时可将其标记为已读",
         "grantsTitle": "安装后它将拥有：",
         "toolsGroup": "注册工具",
         "toolsDiffGroup": "注册工具变化",
@@ -6939,6 +6951,49 @@
           "requirements": "需要 Apple Silicon Mac、macOS 15 或更高版本及完整 Xcode。",
           "dataNotice": "原模拟器的设备和应用数据不会被删除。安装 Baguette 不会自动迁移设备、App 或登录状态。"
         }
+      },
+      "remote": {
+        "device": "管理电脑",
+        "thisComputer": "当前电脑",
+        "offline": "离线",
+        "confirmOn": "在 {{device}} 上操作 {{name}}",
+        "targetOnly": "配置保存在 {{device}}。",
+        "hostPreferencesUnavailable": "这台电脑暂不支持远程编辑模型、任务和侧栏偏好，请在{{device}}上配置。",
+        "taskWorkdirBoundary": "工作目录沿用目标电脑的设置，请在目标电脑修改。",
+        "configurationLoading": "正在读取设置…",
+        "configurationReadFailed": "未能读取设置。",
+        "refreshConfiguration": "刷新设置",
+        "enableBeforeConfigure": "插件已停用，请先打开上方开关，再进行配置。",
+        "settingsPageUnavailable": "请在 {{device}} 的 Cindy 中打开此插件的设置页，目标电脑当前版本暂不支持远程显示。",
+        "offlineNotice": "「{{device}}」已离线，暂时无法管理。连接恢复后可继续。",
+        "managingTarget": "正在管理「{{device}}」",
+        "managingDescription": "更改将保存在这台电脑上。",
+        "viewingTarget": "「{{device}}」的已装插件",
+        "unsupported": "「{{device}}」的 Cindy 版本尚不支持远程管理。当前可查看它的已装插件；如需安装、升级、卸载、启停、配置或项目管理，请先在该电脑更新 Cindy。",
+        "refresh": "刷新插件",
+        "instanceId": "插件实例",
+        "detailLoading": "正在读取插件详情…",
+        "detailReadFailed": "未能读取插件详情",
+        "refreshDetail": "刷新详情",
+        "detailUnavailable": "该电脑未提供完整的插件详情，此处仅展示已返回的信息。",
+        "retry": "重试",
+        "readFailed": "无法读取插件，请重试。",
+        "unknown": "操作结果尚未确认，可查询原操作结果。",
+        "success": "目标电脑已完成操作。",
+        "cancelled": "已取消。",
+        "actionFailed": "操作失败，请刷新列表后重试。",
+        "changed": "插件已发生变化，请刷新后重试。",
+        "uninstallOn": "从 {{device}} 卸载 {{name}}？",
+        "uninstall": "卸载",
+        "empty": "这台电脑尚未安装插件。",
+        "marketUnavailable": "目标电脑的插件市场暂时不可用。",
+        "personalInstall": "个人安装",
+        "loading": "正在读取插件…",
+        "installDestination": "安装到：{{device}}",
+        "projectsUnsupported": "目标电脑暂不支持项目管理，请更新该电脑上的 Cindy。",
+        "noProjects": "这台电脑还没有可选项目。",
+        "projectLoading": "正在读取项目开关…",
+        "projectReadFailed": "项目开关读取失败，请重试。"
       },
       "usage": {
         "title": "个人调用",
@@ -10915,6 +10970,13 @@
     "verificationFailed": "暂时无法确认 ChatGPT 登录是否已恢复，请重新检测。"
   },
   "chat": {
+    "imageDelivery": {
+      "stored": "图片已交付",
+      "failed": "图片交付失败，可重试传输已有图片。",
+      "retry": "重试交付",
+      "retrying": "正在交付…",
+      "retryFailed": "暂时无法交付，请确认生成图片的电脑在线。"
+    },
     "failedSamplingAttempt": "此回复未完成，内容仅供参考。",
     "jumpToBottom": "跳到底部",
     "prevMessageJump": "跳到上一条提问：{{preview}}",
@@ -11149,6 +11211,9 @@
       "streamInterruptedNoRetry": "模型输出中途中断了。通常是上游暂时故障，请稍后重试。",
       "networkShowRaw": "错误详情",
       "networkHideRaw": "收起详情",
+      "diagnose": "诊断",
+      "diagnoseTitle": "在新任务中诊断这个错误",
+      "diagnosePrompt": "请帮我诊断这个错误：找出原因，并告诉我怎么解决。\n\n出错任务：{{sessionUrl}}\n错误提示：{{message}}\n错误详情：\n{{details}}\n\n如果确认是 Cindy 本身的问题，请告诉我，我可以选择向 Cindy 团队提交 issue。",
       "gatewayProxyTokenInvalid": "Cindy AI 凭据已失效。请点击「重试」。若仍失败，请退出后重新登录",
       "gatewayProxyTokenInvalidNoRetry": "Cindy AI 凭据已失效。若后续仍失败，请退出后重新登录",
       "modelAccessDenied": "当前上游账号无权访问此模型。请切换模型，或向供应商确认模型访问权限",
@@ -11940,7 +12005,17 @@
       "linkConfirmHint": "该链接由插件提供，将在系统浏览器中打开：",
       "linkConfirmOpen": "打开",
       "linkConfirmCancel": "取消",
-      "linkOpenFailed": "链接打开失败"
+      "expandFields": "展开",
+      "collapseFields": "收起",
+      "formSyncFailed": "卡片修改尚未同步，请检查连接后继续编辑；消息尚未发送。",
+      "linkOpenFailed": "链接打开失败",
+      "mailPreview": "邮件预览",
+      "mailEnlarge": "放大查看",
+      "mailInsertImage": "插入正文",
+      "mailAttach": "添加附件",
+      "mailRemoveAttachment": "移除 {{name}}",
+      "mailUpdated": "草稿已更新（只读）",
+      "mailLegacy": "历史草稿（只读）"
     },
     "ghostHook": {
       "blockedFallback": "消息被插件拦下，未发送",
@@ -13864,6 +13939,17 @@
     "projectSkillNotLoaded": "当前 Pi 任务尚未加载此项目 Skill，新任务会自动尝试加载"
   },
   "skillhub": {
+    "remote": {
+      "loading": "正在读取技能…",
+      "readFailed": "无法读取技能，请重试。",
+      "unsupported": "目标电脑暂不支持远程技能管理，请更新其 Cindy。",
+      "confirm": {
+        "install": "在“{{device}}”安装“{{name}}”？",
+        "update": "将“{{device}}”的“{{name}}”更新至 v{{version}}？",
+        "uninstall": "从“{{device}}”卸载“{{name}}”？",
+        "installDescription": "技能将写入所选电脑，更新前保留原文件备份。"
+      }
+    },
     "unifiedDetail": {
       "contentSource": "内容来源",
       "local": "本地",
@@ -13881,17 +13967,13 @@
     },
     "home": {
       "title": "技能",
-      "description": "管理本地技能，或从 Skill Hub 发现并安装更多技能。",
+      "description": "管理已安装的技能，或从 SkillHub 发现更多技能。",
       "descriptionLocalOnly": "管理本机安装的本地技能。",
       "search": "搜索技能",
       "clearSearch": "清除技能搜索",
       "noSearchResults": "没有找到匹配的技能",
       "catalogFiltersAria": "SkillHub 分类",
       "categoryFiltersAria": "按分类筛选技能",
-      "scrollCategoriesLeft": "向左查看更多分类",
-      "scrollCategoriesRight": "向右查看更多分类",
-      "categoryScrollAtStart": "已经是第一个分类",
-      "categoryScrollAtEnd": "已经是最后一个分类",
       "catalogFilter": {
         "public": "公开",
         "organization": "组织",

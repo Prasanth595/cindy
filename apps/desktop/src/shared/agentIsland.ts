@@ -374,7 +374,9 @@ export interface AgentIslandPillSnapshot {
   priorityMicroTitle: string;
   priorityCompactTitle: string;
   sessionCount: number;
-  activeSessionCount: number;
+  /** Running and not waiting on the user; disjoint from `attentionCount`. */
+  runningSessionCount: number;
+  /** Sessions blocked on the user (question / permission). */
   pendingInteractionCount: number;
   unreadCompletedCount: number;
   deferredRevealCount: number;
@@ -388,7 +390,7 @@ export function createEmptyAgentIslandPillSnapshot(): AgentIslandPillSnapshot {
     priorityMicroTitle: '',
     priorityCompactTitle: '',
     sessionCount: 0,
-    activeSessionCount: 0,
+    runningSessionCount: 0,
     pendingInteractionCount: 0,
     unreadCompletedCount: 0,
     deferredRevealCount: 0,
@@ -479,7 +481,7 @@ export const AGENT_ISLAND_COMPACT_HARDWARE_HIDDEN_PULL_DISTANCE = 48;
 // drawn by SwiftUI with the real font. The nominal value is an upper bound of what
 // gets drawn, so reserved space is never short.
 export const AGENT_ISLAND_COMPACT_BADGE_MIN_WIDTH = 22;
-export const AGENT_ISLAND_COMPACT_BADGE_ACTIVE_TOTAL_MIN_WIDTH = 30;
+export const AGENT_ISLAND_COMPACT_BADGE_PAIR_MIN_WIDTH = 30;
 export const AGENT_ISLAND_COMPACT_BADGE_CONTENT_INSET = 2;
 export const AGENT_ISLAND_COMPACT_BADGE_TEXT_SPACING = 1;
 /** Generous upper bound for one monospaced 10pt digit (real advance is ~6pt). */
@@ -522,6 +524,29 @@ export function computeAgentIslandSimulatedNotchWidth(displayWidth: number): num
   );
 }
 
+export type AgentIslandCompactBadgeCounts = Pick<
+  AgentIslandPillSnapshot,
+  'attentionCount' | 'runningSessionCount' | 'sessionCount'
+>;
+
+/**
+ * Text segments of the compact count badge, mirroring `PillBadge.segments` in
+ * `macos-agent-island-helper.swift`:
+ *
+ * - only running tasks → `running`
+ * - something needs attention and tasks are running → `attention · running`
+ * - only attention → `attention`
+ * - neither (e.g. read completions still on the island) → session count
+ */
+export function getAgentIslandCompactBadgeSegments(input: AgentIslandCompactBadgeCounts): string[] {
+  if (input.attentionCount > 0 && input.runningSessionCount > 0) {
+    return [`${input.attentionCount}`, '·', `${input.runningSessionCount}`];
+  }
+  if (input.attentionCount > 0) return [`${input.attentionCount}`];
+  if (input.runningSessionCount > 0) return [`${input.runningSessionCount}`];
+  return [`${Math.max(1, input.sessionCount)}`];
+}
+
 /**
  * Upper-bound width of the compact count badge the native helper draws, mirroring
  * `PillBadge.intrinsicWidth` in `macos-agent-island-helper.swift`.
@@ -532,14 +557,8 @@ export function computeAgentIslandSimulatedNotchWidth(displayWidth: number): num
  * monospaced 10pt advance is ~6pt, and overestimating only leaves invisible slack
  * inside the carrier's transparent inset.
  */
-export function getAgentIslandCompactBadgeWidth(input: {
-  activeSessionCount: number;
-  sessionCount: number;
-}): number {
-  const isActiveTotal = input.activeSessionCount > 0 && input.sessionCount > 1;
-  const segments = isActiveTotal
-    ? [`${input.activeSessionCount}`, '/', `${input.sessionCount}`]
-    : [`${Math.max(1, input.sessionCount)}`];
+export function getAgentIslandCompactBadgeWidth(input: AgentIslandCompactBadgeCounts): number {
+  const segments = getAgentIslandCompactBadgeSegments(input);
   const segmentsWidth = segments.reduce(
     (total, segment) => total
       + segment.length * AGENT_ISLAND_COMPACT_BADGE_CHAR_WIDTH_BOUND
@@ -547,8 +566,8 @@ export function getAgentIslandCompactBadgeWidth(input: {
     0,
   );
   const spacing = AGENT_ISLAND_COMPACT_BADGE_TEXT_SPACING * Math.max(0, segments.length - 1);
-  const minWidth = isActiveTotal
-    ? AGENT_ISLAND_COMPACT_BADGE_ACTIVE_TOTAL_MIN_WIDTH
+  const minWidth = segments.length > 1
+    ? AGENT_ISLAND_COMPACT_BADGE_PAIR_MIN_WIDTH
     : AGENT_ISLAND_COMPACT_BADGE_MIN_WIDTH;
   return Math.max(
     minWidth,
@@ -561,7 +580,7 @@ export function getAgentIslandDefaultContentWidth(input: {
   hasSession: boolean;
   displayWidth?: number;
   screenMetrics?: AgentIslandScreenLayoutMetrics | null;
-  pillSnapshot?: Pick<AgentIslandPillSnapshot, 'activeSessionCount' | 'sessionCount'> | null;
+  pillSnapshot?: AgentIslandCompactBadgeCounts | null;
 }): number {
   if (input.expanded) {
     return input.hasSession ? AGENT_ISLAND_MAX_EXPANDED_WIDTH : AGENT_ISLAND_IDLE_EXPANDED_WIDTH;
@@ -621,7 +640,7 @@ export function snapAgentIslandCompactHardwareContentWidth(input: {
   maxWidth: number;
   hasSession: boolean;
   screenMetrics?: AgentIslandScreenLayoutMetrics | null;
-  pillSnapshot?: Pick<AgentIslandPillSnapshot, 'activeSessionCount' | 'sessionCount'> | null;
+  pillSnapshot?: AgentIslandCompactBadgeCounts | null;
 }): number {
   if (!input.screenMetrics?.hasNotch) {
     return input.clampedWidth;

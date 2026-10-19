@@ -1743,6 +1743,7 @@ my-ghost/
   // 一级主视图是独立能力，见 §4.20。使用时直接声明：
   // "mainView": { "title": "工作台", "icon": "puzzle", "html": "main-view.html" }
   "settingsHtml": "settings.html",  // 可选:设置页「自定义设置区」自绘界面(见 §4.8;声明了用户填的凭证时仍必填,用于长期管理/替换/清除;调用前缺失时主机也会在统一 Setup 卡内联收单,见 §4.7)
+  "showTaskPreferences": true,     // 可选:是否显示宿主「模型与任务」卡,缺省/true 显示,false 隐藏;见 §4.8
   "settingsHeight": 360             // 可选:固定高度 px(160–800);缺省 = 随内容自适应(矮内容真收矮,高至 800);内容会动态增减时才声明,避免抖动
 }
 \`\`\`
@@ -1851,6 +1852,26 @@ v3 直接用顶层字段声明插件贡献项与自主 Host 能力，不再有 \
 \`agent\`、\`panel\`、\`mainView\`、\`card\`、\`subscribe\`、\`network\`、\`node\`、\`preview\`、
 \`skill\`；布尔能力写成字面量 \`true\`：\`notify\`、\`badge\`、\`confirm\`、\`fs\`、
 \`library\`、\`sessionContext\`、\`pick\`、\`workspace\`。不用的字段直接省略，
+邮件插件声明 \`mail: true\`，调用 Cindy 内置 \`cindyMail.register(adapter)\`
+（version 1），不生成卡片 HTML、不打包公共流程；纯邮件插件不需要 \`card\`。
+阅读邮件可声明 \`mailReader:{tool,hosts}\`，工具接收 \`{url}\` 并返回 MailMessage，默认只读。
+\`mail\` 只能省略或写字面量 \`true\`；声明 \`mailReader\` 时必须同时有 \`mail: true\`，
+且 \`tool\` 必须指向本清单 \`tools\` 中的工具。协议校验与桌面安装校验都会拒绝不完整组合。
+支持打开即已读时增加 \`mailReader.markRead:true\`，读取工具接受可选 \`markRead:true\`；
+声明中的 \`markRead\` 只能省略或为字面量 \`true\`，\`false\`、字符串等其它值不合法。
+仅用户主动打开时传入，AI 读取和邻近预加载不传。成功读取后只标记当前邮件，不标记整个会话或草稿。
+Host 派发器会移除普通工具参数中的此标记，仅可信阅读器打开请求可注入；其它明确授权的已读操作工具不受影响。
+标记失败仍返回正文和 \`markReadFailed:true\`，由 Cindy 显示提示；新增 OAuth scope 不阻断已有授权的操作。
+适配器提供 providerName、draftStorage（server/local）、selectAccount、readDraft、writeDraft。
+通过 present 展示读回草稿，beforeTool 统一 get/send/update/delete，resolveDraft 获取最新位置。
+Host 负责样式、编辑同步、发送和任务续接；同一任务同一封邮件只显示最新卡片，旧快照保留但不重复展示。插件保留凭据、MIME 和服务商请求。
+插件重启后，下一次卡片编辑或工具操作会自动读回原草稿，使用 Host 卡片中上次同步的内容、卡片编辑和邮箱最新内容做三方合并；单边变化、相同变化和不重叠的文字修改自动合并，只有无法合并的修改才保留两边内容并提示具体字段。版本标记或预览地址变化本身不算冲突。适配器返回 execution:not_executed 和 stale 读回快照时可合并后重试一次，未知操作结果不能重试。发送倒计时结束时若发现实际内容变化，展示合并稿并重新倒计时。
+图文适配器的 attachmentItems 可为已有图片 key 添加 contentId，表示将同一附件插入 HTML 正文；必须核验实际图片字节、保留 MIME 引用，不能重复上传或把预览 URL 写入邮件。
+工具说明应要求默认展示草稿卡等用户确认；只有用户已明确确认该邮件，或有效的用户/任务指令明确授权该范围内直接发送，才不再询问。写信/回复请求、编辑及自动审批本身不代表确认。
+UI 和 Agent 发送都先进入 10 秒倒计时，卡片可撤销或立即发送；beforeTool(send) 等待最终回执。
+撤销后保留草稿且不得自动重试。所有发送先创建并展示草稿，再走 beforeTool(send)，不得保留直发旁路。
+缺少 SDK 时只读可用，编辑/发送需更新 Cindy；不要绕开公共流程直接发送已展示草稿。
+
 不能写 \`false\`。\`card: {}\` 与 \`agent: {}\` 分别表示基础聊天卡片能力和用户点击后
 发起 Agent 回合；其它对象型能力必须包含该能力真正需要的详单。
 
@@ -2772,7 +2793,20 @@ cindy.onHostMessage(async function (msg) {
 - **需要用户输入文字的动作**(如"按提示词改写这张图"):按钮上再加
   \`data-ghost-prompt="占位文案"\`(≤128 字,可空串)。用户点击时主机弹标准输入框
   收集文字(textarea,回车发送/Esc 取消),card-action 事件多带 \`prompt\` 字段
-  (≤2000 字)——你不用也画不了卡内输入框,输入交互由主机代管;
+  (≤2000 字)——输入交互由主机代管;
+- **可编辑文本表单**:一张卡至多声明一个 div，其 \`data-ghost-form\` 属性为经 HTML 属性转义的
+  JSON 字段数组，每项 \`{name,label,value,multiline?,row?,collapsed?,kind?}\`；1–16 项、字段名唯一、label ≤128 字、value ≤16000 字。
+  div 内保留纯文本预览供旧客户端使用。宿主在卡片顶部用标准控件渲染；卡内仍零脚本，禁止用它收集凭证。
+  按钮加 \`data-ghost-submit="true"\`，真实点击后事件带 \`formValues: Record<string,string>\`；
+  不与 prompt 混用。插件必须校验字段和业务对象，缺少 formValues 不得执行提交（旧客户端不会发送）。
+  桌面和手机共用字段合同，手机继续校验卡片 revision；原卡收到更新后结束提交状态。
+  row 为同一行的分组名，collapsed 默认折叠字段。kind:"recipients" 将地址显示成姓名，
+  同一 row 按实际宽度折叠溢出人数，展开直接替换摘要；原字符串仍是编辑和提交的值。旧端忽略 kind。
+  div 可声明 \`data-ghost-change="change-action-id"\`：编辑即时回传 card-action + formChange:true + formValues；
+  此事件没有 userActionToken，不触发 Agent 或活动呼吸。动作 ID 标识当前编辑版本，自动保存回执保持同一 ID，
+  替换草稿/重置编辑时必须换 ID。插件合并频繁编辑，自行保存到业务系统；模型的读取和提交也必须先同步同一份编辑。
+  模型工具更新本任务旧卡时，card-update 可带 sourceCallId（当前尚未结束的工具调用 ID）；Host 核对同插件、同任务后重开旧卡。
+  表单动作活动归原 callId，完成后原地更新；不用额外画空的 spawnCallId 卡片。
 - **可放外部链接**(外链 v3,经宿主确认):写 \`<a href="https://…">官网</a>\`,或在
   任意可用标签上挂 \`data-ghost-link="https://…"\`(整块可点)。仅收**整串**
   http/https URL(≤2048 字,不合法只丢属性——文字保留、点不动)。用户点击时主机
@@ -2782,7 +2816,7 @@ cindy.onHostMessage(async function (msg) {
   一个元素只有一种点击行为;别拿链接文案冒充按钮语义,去向和文案不符只会让
   用户在确认框里看穿;
 - 不带 \`data-ghost-action\` 的图片仍是"点开看大图":用户点卡内图片主机自动弹 lightbox
-  (大图/标注/另存),零代码;复杂交互(多字段表单等)仍去你的面板做;
+  (大图/标注/另存),零代码;超出上述文本字段的复杂交互仍去你的面板做;
 - **3D 预览图**:img 再加 \`data-ghost-model="cindy-media://blobs/<指纹>.glb"\`(你名下
   已落库的 GLB 地址,整串精确匹配才生效),用户点击该图 = 应用内 3D 查看器直接加载
   这个模型(可旋转/缩放),不再是普通看大图。适合"3D 生成完成卡":预览 + 模型一次
@@ -3437,6 +3471,12 @@ tool-call 内轮询时记得定期发 tool-progress 心跳续命(见 §4"长任�
 "settingsHtml": "settings.html",   // 安装目录内相对路径;打包期校验文件必须在场
 "settingsHeight": 360              // 可选:固定高度 px(160–800);缺省 = 随内容自适应(矮内容真收矮),超 800 内部滚动
 \`\`\`
+
+**宿主默认配置卡（可选）**：顶层 \`showTaskPreferences\` 只接受布尔值。
+省略或设为 \`true\` 时，符合能力条件的插件继续显示宿主「模型与任务」卡。
+声明 \`"showTaskPreferences": false\` 可隐藏 Desktop 和手机上的该卡，供插件在自己的设置界面提供配置。
+这只是显示声明：任务 API、已有配置的读取和执行规则、权限检查均保持原样；也不会为没有相应能力的插件新增卡片。
+旧客户端不识别此字段时仍显示原卡片；依赖隐藏效果的插件应使用支持此字段的客户端版本。
 
 **渲染环境**:与面板同款沙箱页(零桥、无通用网络直连,与同插件面板/逻辑页共用浏览器存储和
 \`BroadcastChannel\`,脚本/样式/字体/媒体/数据请求仍只认同源)。所有插件 HTML 页面
