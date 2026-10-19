@@ -7,7 +7,7 @@
  *   不在伙伴链里时建议退回链首;换过去用量超过提醒线也照样建议。
  * - 现有覆盖缺口:nextBotModelRoute 的测试只覆盖伙伴自己任务的候选链降级,不涉及跟进别人任务时的失败类型、
  *   链外路线与上下文余量。
- * - 最小失败输入:工具循环出错;只带 SDK invalid_request 的出错;链外的当前路线(含同模型异供应商);
+ * - 最小失败输入:工具循环出错;只带 SDK invalid_request 或 Codex badRequest 的出错;链外的当前路线(含同模型异供应商);
  *   220K 用量从 1M 换到 272K;没有可信用量时缩窗;用量上限下的正常降级。
  * - tier:unit(纯函数,无数据库与 Electron)。
  */
@@ -52,6 +52,10 @@ describe('follow-up route suggestion', () => {
     }));
     expect(withSdk('invalid_request', 400)).toBeNull();
     expect(withSdk('max_output_tokens')).toBeNull();
+    // Codex 只带结构化 tag(如 badRequest),消息里没有可匹配的文字。
+    expect(suggestFollowUpRoute(input({
+      failure: { phase: 'errored', error: 'turn failed', errorReason: null, codexErrorInfo: 'badRequest' },
+    }))).toBeNull();
     // 那台账号的问题:换得过去。
     expect(errored('authentication_failed: OAuth token has expired', null)).toMatchObject(SOL);
   });

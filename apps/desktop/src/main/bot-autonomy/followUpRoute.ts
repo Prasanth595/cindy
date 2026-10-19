@@ -19,8 +19,8 @@ export interface FollowUpRouteInput {
   /** 调用方伙伴的有效候选链。 */
   chain: unknown;
   current: Pick<BotModelRoute, 'harness' | 'model' | 'providerId'>;
-  /** 出错的那次失败；sdkError / errorStatus 来自运行时记下的本轮终态(摘要投影里没有)。 */
-  failure: TaskDigestFailure & { sdkError?: string; errorStatus?: number };
+  /** 出错的那次失败；sdkError / errorStatus / codexErrorInfo 来自运行时记下的本轮终态(摘要投影里没有)。 */
+  failure: TaskDigestFailure & { sdkError?: string; errorStatus?: number; codexErrorInfo?: string };
   /** 这件任务已经试过的路线(runtime key)。 */
   visitedRoutes: readonly string[];
   /** SSH 远端任务不能跨 harness 切换(与候选链自动恢复同一口径)。 */
@@ -43,6 +43,7 @@ export function suggestFollowUpRoute(input: FollowUpRouteInput): BotModelRoute |
         ...(input.failure.errorReason ? { reason: input.failure.errorReason } : {}),
         ...(input.failure.sdkError ? { sdkError: input.failure.sdkError } : {}),
         ...(typeof input.failure.errorStatus === 'number' ? { errorStatus: input.failure.errorStatus } : {}),
+        ...(input.failure.codexErrorInfo ? { codexErrorInfo: input.failure.codexErrorInfo } : {}),
       },
       'run',
     );

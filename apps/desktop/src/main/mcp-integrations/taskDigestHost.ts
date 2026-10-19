@@ -49,11 +49,11 @@ export interface DesktopTaskDigestHost {
   readSessionPrStatuses(sessionId: string): Promise<Parameters<typeof formatPrStatuses>[0]>;
   /**
    * 运行时对这件任务的权威读数:上下文用量(在跑的会话读实时值,已关闭的读关闭那一刻固化的值,
-   * 都没有为 null)与本轮终态错误的结构化字段(摘要投影里没有 sdkError / errorStatus)。
+   * 都没有为 null)与本轮终态错误的结构化字段(摘要投影里没有 sdkError / errorStatus / codexErrorInfo)。
    */
   readRuntimeFacts?(sessionId: string): Promise<{
     usage: { contextTokens: number; contextWindow: number } | null;
-    terminalError: { sdkError?: string; errorStatus?: number } | null;
+    terminalError: { sdkError?: string; errorStatus?: number; codexErrorInfo?: string } | null;
   }>;
 }
 
@@ -216,17 +216,19 @@ export function createDesktopTaskDigestDeps(host: DesktopTaskDigestHost): TaskDi
         const harness = toBotHarness(current.harness);
         const runtime = (await host.readRuntimeFacts?.(targetSessionId)) ?? null;
         const live = runtime?.usage ?? null;
+        const liveTokens = positive(live?.contextTokens);
         const next = suggestFollowUpRoute({
           chain,
           current: { harness, model: current.model, providerId: current.provider_id },
           failure: { ...failure, ...(failure.phase === 'errored' ? runtime?.terminalError ?? {} : {}) },
           visitedRoutes: getSessionRuntimeControlSnapshot(targetSessionId).visitedRoutes,
           sameHarnessOnly: !!target?.remoteHostId,
-          // 库里的用量只在一轮正常收尾时落库,中断 / 崩溃后可能低报;只作没有运行时读数时的下限参考,
-          // 不能单独用来证明缩窗安全(没有运行时读数 → null,建议层不推荐更小窗口)。
-          contextTokens: live
-            ? Math.max(positive(live.contextTokens) ?? 0, positive(target?.contextTokens) ?? 0)
-            : null,
+          // 库里的用量只在一轮正常收尾时落库,中断 / 崩溃后可能低报;只作运行时读数的下限参考,
+          // 不能单独用来证明缩窗安全。刚 attach、还没回流 usage 的 runtime 先报占位 0,
+          // 只有库里也是 0 才算真 0(与 contextOverflowRollover 同一口径);其余 → null,建议层不推荐更小窗口。
+          contextTokens: liveTokens !== null
+            ? Math.max(liveTokens, positive(target?.contextTokens) ?? 0)
+            : live && target?.contextTokens === 0 ? 0 : null,
           currentContextWindow: positive(live?.contextWindow)
             ?? verifiedRouteWindow(harness, current.model, current.provider_id),
           windowOf: (candidate) => verifiedRouteWindow(candidate.harness, candidate.model, candidate.providerId),
