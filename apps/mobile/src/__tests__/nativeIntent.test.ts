@@ -13,16 +13,60 @@ import {
   takeProviderShareLinkIntent,
 } from '@/device-link/providerShareLinkIntent';
 import { redirectSystemPath } from '../../app/+native-intent';
+import {
+  clearVoiceConversationIntent,
+  getPendingVoiceConversationIntent,
+  takeVoiceConversationIntent,
+  voiceConversationIntentHref,
+} from '@/session/voiceConversationIntent';
 
 const invitation = 'A'.repeat(43);
 const incoming = 'cindy://shared-session?invitation=' + invitation + '&server=https%3A%2F%2Frelay.example.test';
 const shareInvitation = 'B'.repeat(43);
 const shareIncoming = 'cindy://provider-share/join?invitation=' + shareInvitation + '&server=https%3A%2F%2Frelay.example.test%2Fdl';
 const shareWebLink = 'https://relay.example.test/dl/provider-share/join#' + shareInvitation;
-beforeEach(() => { vi.useFakeTimers(); clearSharedTaskInvitationIntent(); clearProviderShareLinkIntent(); setMobileAuthOwner(null); });
-afterEach(() => { clearSharedTaskInvitationIntent(); clearProviderShareLinkIntent(); vi.useRealTimers(); });
+beforeEach(() => { vi.useFakeTimers(); clearSharedTaskInvitationIntent(); clearProviderShareLinkIntent(); clearVoiceConversationIntent(); setMobileAuthOwner(null); });
+afterEach(() => { clearSharedTaskInvitationIntent(); clearProviderShareLinkIntent(); clearVoiceConversationIntent(); vi.useRealTimers(); });
 
 describe('mobile native deep-link redirects', () => {
+  // Voice shortcuts are a new navigation contract: cold/warm launch must bypass
+  // home restoration without treating a restored route parameter as mic consent.
+  it.each([true, false])('opens a fresh voice launch for registered app links (initial=%s)', initial => {
+    for (const path of ['cindy://voice', 'cindycn://voice', 'cindydev://voice', 'xdt-maker://voice', '/voice', 'voice/']) {
+      const route = redirectSystemPath({ path, initial });
+      const intent = getPendingVoiceConversationIntent()!;
+      expect(route).toBe(voiceConversationIntentHref(intent));
+      expect(route).toMatch(/^\/sessions\/new\?voiceConversation=/);
+      expect(takeVoiceConversationIntent(intent.id)).toBe(false);
+      setMobileAuthOwner('voice-owner');
+      expect(takeVoiceConversationIntent(intent.id)).toBe(true);
+      // Restoring the internal route does not manufacture another launch.
+      expect(redirectSystemPath({ path: route!, initial: true })).toBe(route);
+      expect(takeVoiceConversationIntent(intent.id)).toBe(false);
+      setMobileAuthOwner(null);
+    }
+  });
+
+  it('lets the latest explicit voice or shared-task link choose the login destination', () => {
+    redirectSystemPath({ path: incoming, initial: true });
+    redirectSystemPath({ path: 'cindy://voice', initial: false });
+    expect(getPendingSharedTaskInvitationIntent()).toBeNull();
+    expect(getPendingVoiceConversationIntent()).not.toBeNull();
+    redirectSystemPath({ path: incoming, initial: false });
+    expect(getPendingSharedTaskInvitationIntent()).not.toBeNull();
+    expect(getPendingVoiceConversationIntent()).toBeNull();
+  });
+
+  it('does not claim unrelated links or start voice during an account switch', () => {
+    for (const path of ['https://voice', 'other://voice', 'cindy://voice/other', 'cindy://voice?text=hello', '/voice#old']) {
+      expect(redirectSystemPath({ path, initial: false })).toBe(path);
+      expect(getPendingVoiceConversationIntent()).toBeNull();
+    }
+    invalidateMobileAuthOwnerForSwitch();
+    expect(redirectSystemPath({ path: 'cindy://voice', initial: false })).toBe('/');
+    expect(getPendingVoiceConversationIntent()).toBeNull();
+  });
+
   it('keeps the invitation out of router state, survives login, and clears on an account change', () => {
     expect(redirectSystemPath({ path: incoming, initial: true })).toBe('/shared-session');
     expect(getPendingSharedTaskInvitationIntent()).toMatchObject({ invitation, server: 'https://relay.example.test' });

@@ -685,5 +685,25 @@
       "ORCA_CREATE_UNCONFIRMED": "建立 Worker 逾時，暫時無法確認是否成功。請先查看 Worker 列表，確認沒有新建的 Worker 後再重試。",
       "ORCA_ACTION_UNCONFIRMED": "操作逾時，暫時無法確認結果。已重新整理列表，請以目前顯示的狀態為準。"
     }
+  },
+  "voiceConversation": {
+    "idle": "語音對話已暫停",
+    "starting": "正在開啟麥克風…",
+    "listening": "正在聆聽",
+    "processing": "正在整理訊息…",
+    "sending": "正在傳送…",
+    "waiting": "正在等待回覆…",
+    "speaking": "正在朗讀回覆",
+    "paused": "語音對話已暫停",
+    "resume": "繼續",
+    "send": "立即傳送",
+    "end": "結束語音對話",
+    "autoSend": "說話稍作停頓後會自動傳送。",
+    "updateRequired": "請安裝新版應用程式以使用語音回覆。",
+    "existingDraft": "輸入框中還有未傳送的文字，請先傳送或清空，再繼續語音對話。",
+    "selectDevice": "請連接一台可用的電腦，再次開啟語音對話。",
+    "sendFailed": "訊息未傳送，請查看下方提示。",
+    "interrupted": "語音播放已中斷。",
+    "failed": "語音對話已暫停，請檢查連線和麥克風權限後繼續。"
   }
 }

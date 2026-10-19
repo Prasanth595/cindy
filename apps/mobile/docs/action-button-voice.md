@@ -1,7 +1,7 @@
 # Action Button voice conversation
 
-Status: implementation in progress in the accompanying draft PR. This document
-describes the intended behavior; it is not an announcement of a released feature.
+Status: implemented in the accompanying draft PR; native build and real-device
+validation are still required before release. This is not a release announcement.
 
 ## User experience
 
@@ -11,14 +11,16 @@ Cindy uses its existing mobile speech recognition and task delivery, reads the
 completed assistant reply with the system voice, then listens for the next turn.
 Messages and replies remain in the normal task history.
 
-The first version alternates listening and playback. A short pause after speech
-submits the message; **Send now** submits immediately. **End voice conversation**
+The first version alternates listening and playback. About 1.8 seconds without a
+transcript change submits the message; **Send now** submits immediately. Thirty
+seconds without speech stops capture. **End voice conversation**
 stops microphone capture and playback. It does not cancel a task already sent to
 the computer. Approval requests still require the usual on-screen interaction.
 
 Only the foreground task owns audio. Leaving it, locking the phone, or putting
 Cindy in the background pauses the conversation; returning does not silently
-restart the microphone. Existing unsent text must be sent or cleared before a
+restart the microphone. Use **Continue** to resume. Tapping the text input ends
+the voice loop so the existing draft can be edited. Existing unsent text must be sent or cleared before a
 voice conversation begins. Restored navigation state cannot start recording.
 
 ## Set up the shortcut after installing a compatible build
@@ -50,7 +52,8 @@ This changes the mobile runtime fingerprint. Older native builds must keep
 ordinary dictation working and display an update prompt for voice conversation.
 The feature cannot be delivered to them by an OTA update alone. Follow the
 [mobile cold-update approval rules](../../../docs/dev-rules/mobile-development.md)
-before merging and releasing a compatible store/TestFlight build.
+before merging and releasing a compatible store/TestFlight build. Android
+speech playback also requires an installed system TTS engine and language data.
 
 Before marking the PR ready, verify cold and warm shortcut launch, signed-out
 launch followed by login, microphone permission approval/denial, two complete

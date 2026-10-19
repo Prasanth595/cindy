@@ -1,0 +1,14 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'com.xdtmaker.voicespeech'
+version = '0.1.0'
+
+android {
+  namespace 'com.xdtmaker.voicespeech'
+  defaultConfig {
+    minSdkVersion 24
+  }
+}
