@@ -111,7 +111,9 @@ export function registerMakerUsageHandlers(
     if (kind === 'claude-code') {
       // Both first load and explicit refresh must reach the existing owner-scoped fetcher.
       // Cached reads retain its throttle; an empty cache gets the existing warm-start path.
-      await deps.triggerClaudeAccountUsageRefresh(deps.readClaudeAccountUsageSnapshot() === null);
+      await deps.triggerClaudeAccountUsageRefresh(
+        deps.readClaudeAccountUsageSnapshot() === null && deps.readClaudeAccountQuotaClear?.()?.quotaState !== 'unlimited',
+      );
       return deps.readClaudeAccountUsageSnapshot()
         ?? (providerId === CLAUDE_QUOTA_STATE_READ ? deps.readClaudeAccountQuotaClear?.() ?? null : null);
     }
