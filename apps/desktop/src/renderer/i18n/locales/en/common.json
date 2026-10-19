@@ -3024,6 +3024,7 @@
           "quotaTitle": "Remaining this period",
           "quotaUsed": "Used {{used}} / Period allowance {{total}}",
           "loading": "Loading…",
+          "noPersonalLimit": "No personal spending limit set",
           "unavailable": "Temporarily unavailable. Refresh to retry.",
           "refresh": "Refresh allowance"
         },

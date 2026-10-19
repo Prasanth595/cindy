@@ -347,6 +347,10 @@ export function ProviderShareReceivedDetail({ share }: { share: ProviderShareRec
           title={t('providerShare.received.modelsTitle')}
           models={models}
           note={body}
+          onRefresh={status === 'active'
+            ? () => void refreshRemoteCatalogSnapshot(catalogDeviceId).catch(() => undefined)
+            : undefined}
+          refreshing={catalog.loading}
           action={
             status === 'active' && catalog.error ? (
               <Button

@@ -2995,6 +2995,7 @@
           "quotaTitle": "今期の残り利用枠",
           "quotaUsed": "利用済み {{used}} / 今期の利用枠 {{total}}",
           "loading": "取得中…",
+          "noPersonalLimit": "個人の利用上限は未設定です",
           "unavailable": "現在取得できません。更新して再試行してください。",
           "refresh": "利用枠を更新"
         },

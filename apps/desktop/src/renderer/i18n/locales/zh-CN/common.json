@@ -2995,6 +2995,7 @@
           "quotaTitle": "本期剩余额度",
           "quotaUsed": "已用 {{used}} / 本期额度 {{total}}",
           "loading": "正在获取…",
+          "noPersonalLimit": "未设置个人限额",
           "unavailable": "暂时无法获取，请刷新重试。",
           "refresh": "刷新额度"
         },
