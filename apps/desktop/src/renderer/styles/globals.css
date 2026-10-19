@@ -2435,9 +2435,10 @@ html[data-wallpaper-active='true'] .wallpaper-composer-fade {
 
 /* Keep the decoded old canvas above the new one and fade only its opacity.
    Fixed composer copies follow the same transition, preserving the crop and
-   theme veil across the entire window without fading text or controls. */
+   theme veil across the entire window without fading text or controls.
+   Zero-specificity mode guards let local positioning and reduced motion win. */
 html[data-wallpaper-transition='true'] body::after,
-html[data-wallpaper-transition='true']:not([data-wallpaper-motion='dynamic']):not([data-wallpaper-blur='true']) :is(.wallpaper-composer-zone, .wallpaper-composer-fade)::before {
+html[data-wallpaper-transition='true']:where(:not([data-wallpaper-motion='dynamic']):not([data-wallpaper-blur='true'])) :is(.wallpaper-composer-zone, .wallpaper-composer-fade)::before {
   content: '';
   position: fixed;
   inset: 0;
