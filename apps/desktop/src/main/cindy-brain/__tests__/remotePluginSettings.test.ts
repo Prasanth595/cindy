@@ -169,12 +169,15 @@ function fixture(namespace: string | null = null) {
     },
     localDeviceId: () => 'controller-a',
     trustIdentity: vi.fn(async () => {}),
-    identity: async () => ({
-      ...identity,
-      ...identity.key.descriptor,
-      observedAtMs: Date.now(),
-      expiresAtMs: Date.now() + 60_000,
-    }),
+    identity: async () => {
+      const observedAtMs = Date.now();
+      return {
+        ...identity,
+        ...identity.key.descriptor,
+        observedAtMs,
+        expiresAtMs: observedAtMs + 60_000,
+      };
+    },
     invoke: async (_device: string, channel: string, args: unknown[]) => {
       wire.push(args);
       const result =
