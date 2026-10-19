@@ -96,6 +96,7 @@ import { createHookTransport } from './transport.js';
 import { registerSlackToolBridge, unregisterSlackToolBridge } from './slackToolBridge.js';
 import { createHookBindingStore } from './bindings.js';
 import { createHookRequestLedger } from './requestLedger.js';
+import { createHookMediaStore } from '../cindy-media/hookOutbox.js';
 import {
   buildGroupContextPrefix,
   listTelegramKnownGroupsForStableBinding,
@@ -485,6 +486,7 @@ function ensureInstances(): { store: SlackHookStore; manager: HookControlManager
     });
   }
   if (!manager) {
+    const mediaStore = createHookMediaStore();
     const dispatcher = createHookDispatcher({
       // 两个 provider 复用 dispatcher，但连接身份和服务地址彼此隔离。
       getConnection: (connectionId) => {
@@ -532,8 +534,10 @@ function ensureInstances(): { store: SlackHookStore; manager: HookControlManager
       }),
       terminalLedger: createHookRequestLedger({
         filePath: ownerScopedUserDataPath('hook-request-ledger.json'),
+        releaseMedia: mediaStore.release,
         log,
       }),
+      mediaStore,
       runner: createMakerHookSessionRunner({ log }),
       buildContextPrefix: buildGroupContextPrefix,
       // 新建 hook 会话默认预建独立 worktree(并发隔离); deps 组装与

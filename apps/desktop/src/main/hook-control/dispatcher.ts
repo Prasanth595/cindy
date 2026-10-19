@@ -33,6 +33,7 @@
  * 以 Slack 卡片呈现(允许一次/本对话总是允许/拒绝), 超时安全默认拒绝。
  */
 
+import type { HookMediaStore } from '../cindy-media/hookOutbox';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 
@@ -302,6 +303,7 @@ export interface HookDispatcherDeps {
   bindings: HookBindingStore;
   /** Durable terminal request state, injected by the Electron owner boundary. */
   terminalLedger?: HookRequestLedger;
+  mediaStore?: HookMediaStore;
   runner: HookSessionRunner;
   /**
    * 可选: 为新建 hook 会话预建独立 git worktree(并发隔离 —— 每个
@@ -718,6 +720,7 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
     getConnection,
     bindings,
     terminalLedger,
+    mediaStore,
     runner,
     prepareWorktree,
     buildContextPrefix,
@@ -1285,13 +1288,43 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
     }
   }
 
+  let mediaDisposed = false;
+  const mediaCleanupTimer = mediaStore ? setInterval(() => {
+    if (!accountActive) return;
+    terminalLedger?.prune?.();
+    void mediaStore.prune().catch(() => log.warn('hook media expiry cleanup deferred'));
+  }, 60_000) : undefined;
+  mediaCleanupTimer?.unref?.();
+
   function durableTurnEnd(turnEnd: TurnEndPayload, provider?: string): TurnEndPayload {
-    // X retries need the exact wire payload after restart, including media.
-    // Keep it in the existing bounded transport outbox; other channels retain
-    // their existing text-only cross-restart behavior.
+    // An X payload must either be staged into managed references below, or fail
+    // persistence and retain the full in-memory fallback. Other channels remain text-only.
     if (provider === 'x') return turnEnd;
     const { attachments: _attachments, ...withoutAttachments } = turnEnd;
     return withoutAttachments;
+  }
+
+  function replayManagedTerminal(
+    record: HookTerminalRecord,
+    send: (message: HookMessage) => boolean,
+    publish: (turn: TurnEndPayload) => void,
+  ): void {
+    if (!record.turnEnd || record.mediaReleased) return;
+    if (!record.media?.length) { publish(record.turnEnd); return; }
+    if (!mediaStore) return;
+    const generation = accountGeneration;
+    void mediaStore.restore(record.turnEnd, record.media).then((turn) => {
+      if (!isCurrentGeneration(generation) || sendFns.get(record.connectionId) !== send
+        || terminalDeliveryExpired(record.completedAt, Date.now())) return;
+      if (record.delivery === 'pending'
+        && terminalLedger?.get(record.connectionId, record.requestId)?.delivery === 'sent') return;
+      if (!turn) {
+        markTerminalSent(record.connectionId, record.requestId);
+        log.warn('hook media replay cancelled: task or media reference removed');
+        return;
+      }
+      publish(turn);
+    }).catch(() => log.warn('hook media restore failed; pending reply retained'));
   }
 
   function supportsDeliveryAck(connectionId: string): boolean {
@@ -1376,11 +1409,14 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
     connectionId: string,
     message: HookTurnEndMessage,
     terminal: Omit<HookTerminalRecord, 'completedAt' | 'delivery'>,
+    completedAt: number = Date.now(),
   ): void {
     // 一次取时, 账本行与两条内存队列共用同一个 completedAt —— 三个出口据以判定
     // 时效的年龄必须是同一个数, 否则「同一份结果」在不同出口有不同寿命。
-    const completedAt = Date.now();
     const durable = persistTerminal({ ...terminal, delivery: 'pending' }, completedAt);
+    if (!durable && terminal.media && mediaStore) {
+      void mediaStore.release(terminal.media).catch(() => log.warn('hook media cleanup deferred'));
+    }
     if (supportsDeliveryAck(connectionId)) {
       // ACK 模式: 会话内重发由 pendingDeliveryTurnEnds 负责; 账本保持 pending,
       // 收到任一 turn.delivery 回执才收口为 sent(见 handleTurnDelivery), 跨重启
@@ -2028,13 +2064,33 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
       running.delete(sessionId);
       return;
     }
+    const terminalCompletedAt = Date.now();
+    let durableTurn = durableTurnEnd(turnEnd, task.run.source?.im);
+    let media: HookTerminalRecord['media'];
+    if (task.run.source?.im === 'x' && turnEnd.attachments?.length && mediaStore) {
+      try {
+        media = await mediaStore.prepare(turnEnd, () => {
+          if (mediaDisposed || !isCurrentGeneration(task.accountGeneration)) throw new Error('hook owner changed');
+        });
+        const { attachments: _attachments, ...textOnly } = turnEnd;
+        durableTurn = textOnly;
+      } catch {
+        log.warn('hook media staging failed; complete reply retained in memory');
+      }
+      if (mediaDisposed || !isCurrentGeneration(task.accountGeneration)) {
+        if (media) void mediaStore.release(media).catch(() => {});
+        running.delete(sessionId);
+        return;
+      }
+    }
     // Protocol idempotency replays only the original ACK. The terminal record
     // is written as a pending outbox entry before sending; an offline frame
     // stays buffered in memory until onConnected flushes the full payload.
     sendOrBuffer(task.connectionId, makeTurnEnd(turnEnd), {
       ...terminalRecord,
-      turnEnd: durableTurnEnd(turnEnd, task.run.source?.im),
-    });
+      turnEnd: durableTurn,
+      ...(media ? { media } : {}),
+    }, terminalCompletedAt);
     // 屏障撤在正式帧进入发送 / 缓冲路径之后: 终稿发完到这里还隔着卡片 drain(最长数秒),
     // 这段时间重连仍不能拿出箱里的兜底帧抢先重放。
     publishingClientFinals.delete(publishingKey);
@@ -2650,34 +2706,37 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
         );
         return;
       }
-      if (supportsDeliveryAck(connectionId)) {
-        // ACK 模式的重放帧与 sendOrBuffer 同语义: 经 ACK 缓冲重发, 账本保持
-        // pending 直到 turn.delivery 回执收口(handleTurnDelivery)。server 既然
-        // 重投了这个 requestId, 就说明它没有该结果的持久收据。
-        if (terminalReplay.delivery === 'sent') {
-          persistTerminalRecord({ ...terminalReplay, delivery: 'pending' });
+      const replayRecord = terminalReplay;
+      replayManagedTerminal(replayRecord, send, (restoredTurn) => {
+        if (supportsDeliveryAck(connectionId)) {
+          // ACK 模式的重放帧与 sendOrBuffer 同语义: 经 ACK 缓冲重发, 账本保持
+          // pending 直到 turn.delivery 回执收口(handleTurnDelivery)。server 既然
+          // 重投了这个 requestId, 就说明它没有该结果的持久收据。
+          if (replayRecord.delivery === 'sent') {
+            persistTerminalRecord({ ...replayRecord, delivery: 'pending' });
+          }
+          trackPendingDelivery(
+            connectionId,
+            makeTurnEnd(restoredTurn),
+            replayRecord.completedAt,
+          );
+          return;
         }
-        trackPendingDelivery(
-          connectionId,
-          makeTurnEnd(terminalReplay.turnEnd),
-          terminalReplay.completedAt,
-        );
-        return;
-      }
-      if (!ackDelivered) {
-        persistTerminalRecord({ ...terminalReplay, delivery: 'pending' });
-        return;
-      }
-      if (!send(makeTurnEnd(terminalReplay.turnEnd))) {
-        persistTerminalRecord({ ...terminalReplay, delivery: 'pending' });
-        return;
-      }
-      if (
-        terminalReplay.delivery === 'pending' &&
-        !markTerminalSent(connectionId, payload.requestId)
-      ) {
-        persistTerminalRecord({ ...terminalReplay, delivery: 'sent' });
-      }
+        if (!ackDelivered) {
+          persistTerminalRecord({ ...replayRecord, delivery: 'pending' });
+          return;
+        }
+        if (!send(makeTurnEnd(restoredTurn))) {
+          persistTerminalRecord({ ...replayRecord, delivery: 'pending' });
+          return;
+        }
+        if (
+          replayRecord.delivery === 'pending' &&
+          !markTerminalSent(connectionId, payload.requestId)
+        ) {
+          persistTerminalRecord({ ...replayRecord, delivery: 'sent' });
+        }
+      });
       return;
     }
 
@@ -3203,6 +3262,8 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
       serverFeatures.delete(connectionId);
     },
     dispose() {
+      mediaDisposed = true;
+      if (mediaCleanupTimer) clearInterval(mediaCleanupTimer);
       backgroundResults.clear();
       unsubscribeBackgroundResults?.();
       clearRecoveryDeliveries();
@@ -3340,16 +3401,20 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
         if (!pending.turnEnd) continue;
         // 本进程正在发布客户端终稿: 兜底帧留给崩溃重启, 发布结束后由正常路径发送。
         if (isPublishingClientFinal(connectionId, pending.requestId)) continue;
-        if (deliveryAck) {
-          // 已在 ACK 缓冲中的条目由本函数开头的循环重放, 不再用文本帧重复补发。
-          if (pendingDeliveryTurnEnds.has(ackKey(connectionId, pending.requestId))) continue;
-          trackPendingDelivery(connectionId, makeTurnEnd(pending.turnEnd), pending.completedAt);
-          continue;
-        }
-        if (!send(makeTurnEnd(pending.turnEnd))) return;
-        if (!markTerminalSent(connectionId, pending.requestId)) {
-          persistTerminalRecord({ ...pending, delivery: 'sent' });
-        }
+        let transportFailed = false;
+        replayManagedTerminal(pending, send, (restoredTurn) => {
+          if (supportsDeliveryAck(connectionId)) {
+            // 已在 ACK 缓冲中的条目由本函数开头的循环重放, 不再用文本帧重复补发。
+            if (pendingDeliveryTurnEnds.has(ackKey(connectionId, pending.requestId))) return;
+            trackPendingDelivery(connectionId, makeTurnEnd(restoredTurn), pending.completedAt);
+            return;
+          }
+          if (!send(makeTurnEnd(restoredTurn))) { transportFailed = true; return; }
+          if (!markTerminalSent(connectionId, pending.requestId)) {
+            persistTerminalRecord({ ...pending, delivery: 'sent' });
+          }
+        });
+        if (transportFailed) return;
       }
     },
   };

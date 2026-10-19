@@ -444,3 +444,19 @@ describe('X managed video delivery', () => {
     expect(result.text).toBe(text);
   });
 });
+
+// #6447: declared tool media and Markdown share the production collector.
+// Unit: a managed WebM must never reach the X transport (no transcoding contract).
+it.each(['markdown', 'tool'] as const)('X rejects unsupported WebM from %s with an explicit warning', async (source) => {
+  const url = `cindy-media://blobs/${'a'.repeat(64)}.webm`;
+  const readFile = vi.fn(async () => Buffer.from('webm'));
+  const result = await collectOutboundAttachments(source === 'markdown' ? `[clip](${url})` : 'clip',
+    source === 'tool' ? ['/blobs/clip.webm'] : [], {
+      provider: 'x', log, readFile,
+      resolveImageUrl: () => ({ absPath: '/blobs/clip.webm', mimeType: 'video/webm' }),
+    });
+  expect(result.attachments).toEqual([]);
+  expect(result.text).toContain('clip');
+  expect(result.text).toContain('Attachment delivery incomplete');
+  expect(readFile).not.toHaveBeenCalled();
+});

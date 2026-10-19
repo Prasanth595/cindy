@@ -288,6 +288,12 @@ export async function collectOutboundAttachments(
     mimeOverride?: string,
   ): Promise<boolean> => {
     if (deps.provider === 'x' && sentMediaPaths.has(absPath)) return true;
+    if (deps.provider === 'x' && ![
+      'image/jpeg', 'image/png', 'image/webp', 'image/gif', 'video/mp4', 'video/quicktime',
+    ].includes(mimeOverride ?? guessMime(absPath))) {
+      skipped += 1;
+      return false;
+    }
     if (attachments.length >= MAX_OUT_ATTACHMENTS) {
       skipped += 1;
       return false;

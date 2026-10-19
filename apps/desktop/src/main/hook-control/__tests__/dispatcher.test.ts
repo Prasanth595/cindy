@@ -5,7 +5,7 @@
  */
 
 import path from 'node:path';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 
 import { describe, expect, it, vi } from 'vitest';
@@ -49,6 +49,7 @@ import {
   type HookSessionRunner,
   type PrepareWorktreeResult,
 } from '../dispatcher';
+import type { HookMediaStore } from '../../cindy-media/hookOutbox';
 import type { HookBindingStore } from '../bindings';
 import { isPathWithin } from '../paths';
 import { createHookRequestLedger, type HookRequestLedger, type HookTerminalRecord } from '../requestLedger';
@@ -224,6 +225,7 @@ function makeDispatcher(overrides?: {
   runner?: HookSessionRunner;
   bindings?: HookBindingStore;
   terminalLedger?: HookRequestLedger;
+  mediaStore?: HookMediaStore;
   config?: HookConnectionConfig | null;
   prepareWorktree?: HookDispatcherDeps['prepareWorktree'];
   buildContextPrefix?: HookDispatcherDeps['buildContextPrefix'];
@@ -247,6 +249,7 @@ function makeDispatcher(overrides?: {
       (() => (overrides?.config === undefined ? CONFIG : overrides.config)),
     bindings,
     terminalLedger: overrides?.terminalLedger,
+    mediaStore: overrides?.mediaStore,
     runner,
     prepareWorktree: overrides?.prepareWorktree,
     buildContextPrefix: overrides?.buildContextPrefix,
@@ -3239,14 +3242,21 @@ describe('dispatcher 核心语义', () => {
       vi.useFakeTimers();
       const firstRunner = fakeRunner();
       const directory = mkdtempSync(path.join(tmpdir(), 'hook-media-recovery-'));
-      const openLedger = () => createHookRequestLedger({ filePath: path.join(directory, 'ledger.json'), log: noopLog });
+      const mediaStore: HookMediaStore = {
+        prepare: vi.fn(async () => [{ url: `cindy-media://blobs/${'a'.repeat(64)}.mp4`,
+          refId: 'outbox-pin', name: 'clip.mp4', mimeType, bytes: 6 * 1024 * 1024 }]),
+        restore: vi.fn(async (turn) => ({ ...turn, attachments })),
+        release: vi.fn(async () => {}), prune: vi.fn(async () => {}),
+      };
+      const openLedger = () => createHookRequestLedger({ filePath: path.join(directory, 'ledger.json'),
+        log: noopLog, releaseMedia: mediaStore.release });
       const terminalLedger = openLedger();
       const attachments = [{
         mimeType,
         name: mimeType === 'video/mp4' ? 'clip.mp4' : 'shot.png',
         dataBase64: Buffer.alloc(mimeType === 'video/mp4' ? 6 * 1024 * 1024 : 32, 7).toString('base64'),
       }];
-      const first = makeDispatcher({ runner: firstRunner.runner, terminalLedger });
+      const first = makeDispatcher({ runner: firstRunner.runner, terminalLedger, mediaStore });
       const firstCollector = collector();
       let secondDispatcher: ReturnType<typeof makeDispatcher>['d'] | undefined;
       try {
@@ -3257,14 +3267,16 @@ describe('dispatcher 核心语义', () => {
         firstRunner.finish({ finalText: '重启前完成', attachments });
         await tick();
         expect(terminalLedger.get('conn-1', 'req-1')?.delivery).toBe('pending');
+        expect(readFileSync(path.join(directory, 'ledger.json'), 'utf8')).not.toContain('dataBase64');
         first.d.dispose();
 
         const secondRunner = fakeRunner();
         const restoredLedger = openLedger();
-        const second = makeDispatcher({ runner: secondRunner.runner, terminalLedger: restoredLedger });
+        const second = makeDispatcher({ runner: secondRunner.runner, terminalLedger: restoredLedger, mediaStore });
         secondDispatcher = second.d;
         const secondCollector = collector();
         second.d.onConnected('conn-1', secondCollector.send, [HOOK_FEATURE_TURN_DELIVERY]);
+        await tick();
         expect(secondRunner.calls).toHaveLength(0);
         expect(secondCollector.ofType('turn.end')).toHaveLength(1);
         expect(secondCollector.last('turn.end')?.payload).toMatchObject({
@@ -3289,6 +3301,13 @@ describe('dispatcher 核心语义', () => {
           error: null,
         });
         expect(restoredLedger.get('conn-1', 'req-1')?.delivery).toBe('sent');
+        expect(restoredLedger.get('conn-1', 'req-1')?.media).toBeUndefined();
+        if (provider === 'x') {
+          expect(mediaStore.release).toHaveBeenCalledTimes(1);
+          second.d.handleDispatch('conn-1', dispatch({ source: { im: provider } }), secondCollector.send);
+          await tick();
+          expect(secondCollector.ofType('turn.end')).toHaveLength(1); // no text-only duplicate
+        }
         await vi.advanceTimersByTimeAsync(120_000);
         expect(secondCollector.ofType('turn.end')).toHaveLength(1);
         second.d.dispose();

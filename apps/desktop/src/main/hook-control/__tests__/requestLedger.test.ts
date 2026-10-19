@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { createHookRequestLedger, type HookTerminalRecord } from '../requestLedger';
+import { createHookRequestLedger, HOOK_TERMINAL_DELIVERY_TTL_MS, type HookTerminalRecord } from '../requestLedger';
 
 const warnings: string[] = [];
 const log = { warn: (message: string) => warnings.push(message) };
@@ -47,18 +47,32 @@ afterEach(() => {
 });
 
 describe('hook request ledger', () => {
-  // Regression: a valid 6 MiB video exceeds the old 8 MB text-entry cap after
-  // base64 encoding. Unit tier checks actual disk persistence across instances.
-  it('restores a pending video larger than the text-entry budget after restart', () => {
+  // #6447: disk contains bounded references; raw wire media must fail closed.
+  it('stores managed video references and drops them after receipt or expiry', () => {
     const saved = record('x-video');
     saved.delivery = 'pending';
-    saved.turnEnd!.attachments = [{ name: 'clip.mp4', mimeType: 'video/mp4', dataBase64: Buffer.alloc(6 * 1024 * 1024, 1).toString('base64') }];
-    const first = createHookRequestLedger({ filePath: filePath(), log });
+    saved.media = [{ url: `cindy-media://blobs/${'a'.repeat(64)}.mp4`, refId: 'pin',
+      name: 'clip.mp4', mimeType: 'video/mp4', bytes: 6 * 1024 * 1024 }];
+    const released: unknown[] = [];
+    let now = saved.completedAt;
+    const open = () => createHookRequestLedger({ filePath: filePath(), log, now: () => now,
+      releaseMedia: async (media) => { released.push(media); } });
+    const first = open();
     expect(first.set(saved)).toBe(true);
-    const restored = createHookRequestLedger({ filePath: filePath(), log });
-    expect(restored.listPending('conn-1')[0]?.turnEnd?.attachments?.[0]?.dataBase64 === saved.turnEnd!.attachments[0]!.dataBase64).toBe(true);
+    const restored = open();
+    expect(restored.listPending('conn-1')[0]?.media).toEqual(saved.media);
     expect(restored.markSent('conn-1', 'x-video')).toBe(true);
-    expect(restored.listPending('conn-1')).toEqual([]);
+    expect(restored.get('conn-1', 'x-video')?.media).toBeUndefined();
+    expect(released).toEqual([saved.media]);
+    expect(restored.set(saved)).toBe(true);
+    now += HOOK_TERMINAL_DELIVERY_TTL_MS + 1;
+    restored.prune!();
+    expect(restored.get('conn-1', 'x-video')?.media).toBeUndefined();
+    expect(released).toHaveLength(2);
+    expect(fs.readFileSync(filePath(), 'utf8')).not.toContain('cindy-media://');
+    saved.completedAt = now;
+    saved.turnEnd!.attachments = [{ name: 'clip.mp4', mimeType: 'video/mp4', dataBase64: 'AAAA' }];
+    expect(restored.set(saved)).toBe(false);
   });
 
   it('跨实例读回完整终态, 且按 connectionId + requestId 隔离', () => {
