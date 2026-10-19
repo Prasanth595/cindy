@@ -55,6 +55,7 @@ import {
 
 import { emitSessionCreated } from '../localDb/ipc/sessionCreatedBroadcast.js';
 import { getMaker } from '../maker-host/index.js';
+import { setSessionEffort, setSessionFastMode } from '../maker-host/session-effort-store.js';
 import { desktopSessionStorage } from '../maker-host/session-storage.js';
 import { resolveLenientRoute } from '../maker-host/model-route-guard.js';
 import { resolveLenientSessionRoute } from '../maker-host/model-route-guard-live.js';
@@ -696,6 +697,12 @@ export function createMakerHookSessionRunner(deps: {
         }
         effort = req.companionBotId ? meta?.effort : undefined;
         companionFastMode = req.companionBotId ? meta?.fastMode : undefined;
+        if (req.companionBotId) {
+          // This lane bypasses bootstrapSession. Claude subscription bridges read
+          // these stores, not createSession options, including on cold resume.
+          setSessionEffort(req.sessionId, effort);
+          setSessionFastMode(req.sessionId, companionFastMode === true);
+        }
         permissionMode = meta?.permissionMode ?? 'bypassPermissions';
         rowProviderId = row?.providerId ?? null;
         agentDeviceId = row?.agentDeviceId ?? meta?.agentDeviceId ?? null;
