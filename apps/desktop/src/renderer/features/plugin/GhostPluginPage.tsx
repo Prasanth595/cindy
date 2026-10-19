@@ -70,11 +70,10 @@ import {
   useGhostUnreadSummary,
 } from '@/cindy-brain/ghostUnreadStore';
 import { getLastWorkingDir, subscribeToLastWorkingDir } from '@/state/lastWorkingDir';
-import { findSplitChildByPanelKind } from '../../../shared/layoutTree';
+import { useGlobalTabs } from '@/features/right-sidebar/globalTabs';
 import { resolveSystemLocale } from '../../../shared/locale';
 import {
   ghostInstallApprovalToken,
-  ghostPanelKind,
   isUserInstallReservedGhostId,
   type GhostSetupStatus,
   type InstalledGhost,
@@ -976,23 +975,19 @@ function LocalGhostPluginPage({
     setOpenPanelId((current) => nextOpenPanelIdForOwner(previous, panelOwnerKey, current));
   }, [panelOwnerKey]);
 
+  // 停靠形态的面板现在以右侧栏全局页签承载:状态只分「在右侧栏中」与「已从右侧栏关闭」。
+  const globalTabs = useGlobalTabs();
   const panelStatus = useMemo(() => {
     if (!selectedDetail || selectedDetail.panelMinWidth === null) return null;
     // 页签形态(面板收束):由插件页承载,没有停靠状态可言。
     if (selectedDetail.tabPanel) return t('settings.ghosts.detail.panelPageHosted');
-    try {
-      const kind = ghostPanelKind(selectedDetail.id);
-      const docked =
-        findSplitChildByPanelKind(window.electronAPI.layout.getStateSync().layout, kind) !== null;
-      return docked
-        ? t('settings.ghosts.detail.panelDocked', {
-            min: selectedDetail.panelMinWidth,
-          })
-        : t('settings.ghosts.detail.panelNotDocked');
-    } catch {
-      return t('settings.ghosts.detail.panelNotDocked');
-    }
-  }, [selectedDetail, t]);
+    const inSidebar = globalTabs.some(
+      (tab) => (tab.state as { instanceId?: string } | null)?.instanceId === selectedDetail.id,
+    );
+    return inSidebar
+      ? t('settings.ghosts.detail.panelInSidebar')
+      : t('settings.ghosts.detail.panelDismissed');
+  }, [globalTabs, selectedDetail, t]);
 
   const handleToggle = useCallback(
     async (id: string, enabled: boolean, displayName: string) => {

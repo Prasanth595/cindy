@@ -1727,13 +1727,6 @@
         "hint": "For unpinned sessions: Text uses one line; List adds a preview.",
         "aria": "Switch session list style"
       },
-      "ghostPanelRestore": {
-        "label": "Plugin panel restore entry",
-        "hint": "Choose where minimized plugin panels can be restored.",
-        "aria": "Choose the plugin panel restore entry",
-        "bubble": "Floating bubble",
-        "sidebar": "Sidebar"
-      },
       "wallpaper": {
         "title": "Wallpaper",
         "description": "Choose a Cindy scene, image or video for the whole app, independently of the theme.",
@@ -6627,7 +6620,7 @@
         "nodeResidentDetail": "Runs while the plugin is enabled and stops when disabled, updated, uninstalled, or when Cindy exits.",
         "tool": "Tool \"{{name}}\"",
         "command": "Chat command ${{command}}",
-        "panelLeft": "Panel \"{{title}}\" · docked left of the chat",
+        "panelLeft": "Panel \"{{title}}\" · shown in the sidebar",
         "panelTab": "Panel \"{{title}}\" · opens inside the Plugins page",
         "mainView": "Can add a “{{title}}” entry to Cindy's left navigation",
         "mainViewDetail": "Opening it displays the main view in the plugin sandbox and does not grant file, network, or credential access.",
@@ -6724,8 +6717,9 @@
         "locationCopied": "Install location copied",
         "locationCopyFailed": "Could not copy the install location. Copy it manually.",
         "openLocation": "Open install location",
-        "panelDocked": "Docked · min width {{min}}px",
-        "panelNotDocked": "Not docked (no layout record yet)",
+        "panelInSidebar": "Shown in the right sidebar (kept across tasks)",
+        "panelDismissed": "Closed from the right sidebar · reopen here or from the sidebar “+” menu",
+        "openInSidebar": "Open in the sidebar",
         "panelPageHosted": "Opens from the Plugin page · closes when you leave",
         "panelNone": "This plugin has no panel",
         "customSlotTitle": "Plugin custom settings area",
@@ -6780,7 +6774,8 @@
         "collapseTools": "Collapse Tools",
         "viewAllPermissions": "See All",
         "permissionsDialogDescription": "All {{count}} permissions requested by this Plugin",
-        "closeDialog": "Close Dialog"
+        "closeDialog": "Close Dialog",
+        "resetPlacement": "Reset to default position"
       },
       "contents": {
         "mainView": "Main view",
@@ -8053,19 +8048,7 @@
     "collapsePanel": "Collapse",
     "expandPanel": "Expand"
   },
-  "panelChrome": {
-    "maximizeAria": "Maximize panel",
-    "restoreAria": "Restore panel size",
-    "detachAria": "Open in a new window",
-    "minimizeAria": "Minimize panel",
-    "closeAria": "Close panel and disable plugin"
-  },
   "ghostPanel": {
-    "disableConfirm": {
-      "title": "Disable \"{{name}}\"?",
-      "body": "Closing this panel disables the plugin and pauses its capabilities. You can re-enable it anytime from Plugins in the left navigation.",
-      "confirm": "Disable"
-    },
     "externalLinkConfirm": {
       "title": "Allow Cindy to open an external website?",
       "message": "Allow Cindy to open an external website?",
@@ -8073,19 +8056,11 @@
       "cancel": "Cancel"
     }
   },
-  "ghostPanelWindow": {
-    "mergeBack": "Return to main window",
-    "unavailable": "This plugin panel is currently unavailable"
-  },
-  "ghostPanelBubble": {
-    "restoreAria": "Restore {{name}} panel",
-    "stackExpandAria": "{{count}} plugin panels minimized. Click to expand",
-    "stackCollapseAria": "Collapse the plugin panel list"
-  },
-  "ghostPanelRestore": {
-    "single": "Restore {{name}}",
-    "multiple": "Minimized plugin panels",
-    "multipleAria": "{{count}} plugin panels minimized. Choose a panel to restore"
+  "ghostMainView": {
+    "openInSidebar": "Open in the sidebar",
+    "openInPage": "Open as page",
+    "openInWindow": "Open in a separate window",
+    "resetPlacement": "Reset to default position"
   },
   "rightSidebar": {
     "ariaLabel": "Right sidebar",
@@ -8099,16 +8074,24 @@
       "mergeBack": "Merge back to main window",
       "followPlaceholder": "The sidebar follows the main window's current session"
     },
+    "tabWindow": {
+      "title": "Sidebar tab",
+      "mergeBack": "Merge back into the sidebar",
+      "loading": "Loading…",
+      "closed": "This tab has been closed"
+    },
     "emptyTitle": "Reserved area",
     "emptyDesc": "Right sidebar content will be added in future iterations.",
     "tabs": {
       "addAria": "Add tab",
       "addFailed": "Failed to add tab",
       "tabCloseAria": "Close tab",
+      "pinnedAria": "Global tab, kept across tasks",
       "menu": {
         "addLabel": "Add tab",
         "comingSoon": "Coming soon",
-        "alreadyOpen": "Open"
+        "alreadyOpen": "Open",
+        "pluginsLabel": "Plugins"
       },
       "kinds": {
         "fileBrowser": "File browser",
@@ -8120,19 +8103,23 @@
         "resourceUsage": "Activity Monitor",
         "collaboration": "Team",
         "unknown": "Unknown tab",
-        "ghostPanel": "Plugin panel"
+        "ghostPanel": "Plugin panel",
+        "pluginView": "Plugin view"
       },
       "controls": {
         "showAria": "Show sidebar",
         "maximizeAria": "Maximize sidebar",
         "restoreAria": "Restore sidebar",
         "closeAria": "Close sidebar",
-        "detachAria": "Open sidebar in a new window"
+        "detachAria": "Open the current tab in a new window"
       },
       "contextMenu": {
         "close": "Close",
         "closeOthers": "Close others",
-        "closeAll": "Close all"
+        "closeAll": "Close all",
+        "openInWindow": "Open in a new window",
+        "moveTo": "Move to {{target}}",
+        "moveToWindow": "Move to window:"
       },
       "empty": {
         "eyebrow": "Right Sidebar",
@@ -8154,6 +8141,12 @@
         "addMoreHint": "Use the + button at the top to choose more panel types"
       },
       "placeholderHint": "{{kind}} — content coming in a later phase"
+    },
+    "tabGroups": {
+      "left": "left side",
+      "right": "right sidebar",
+      "top": "top",
+      "bottom": "bottom"
     },
     "fileBrowser": {
       "noWorkdir": "This session has no local working directory; file browser unavailable",

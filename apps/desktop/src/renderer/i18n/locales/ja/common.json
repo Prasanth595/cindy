@@ -1698,13 +1698,6 @@
         "hint": "ピン留め以外のセッションは、テキストなら1行、リストならプレビュー付きで表示します。",
         "aria": "セッションリストの表示を切り替える"
       },
-      "ghostPanelRestore": {
-        "label": "プラグインパネルの復元場所",
-        "hint": "最小化したプラグインパネルを復元する場所を選択します。",
-        "aria": "プラグインパネルの復元場所を選択",
-        "bubble": "フローティングバブル",
-        "sidebar": "サイドバー"
-      },
       "wallpaper": {
         "title": "壁紙",
         "description": "アプリ全体に Cindy の壁紙や自分の画像・動画を設定できます。テーマは独立して選べます。",
@@ -6596,7 +6589,7 @@
         "nodeResidentDetail": "プラグインが有効な間は実行を続け、無効化、更新、アンインストール、または Cindy 終了時に停止します。",
         "tool": "ツール「{{name}}」",
         "command": "チャット指令 ${{command}}",
-        "panelLeft": "パネル「{{title}}」· チャットの左側にドッキング",
+        "panelLeft": "パネル「{{title}}」· サイドバーに表示",
         "panelTab": "パネル「{{title}}」· プラグインページ内で開く",
         "mainView": "Cindy の左側ナビゲーションに「{{title}}」への入口を追加できます",
         "mainViewDetail": "クリックするとプラグインのサンドボックス内でメインビューが開き、ファイル、ネットワーク、認証情報へのアクセスが追加で付与されることはありません。",
@@ -6693,8 +6686,9 @@
         "locationCopied": "インストール場所をコピーしました",
         "locationCopyFailed": "インストール場所をコピーできませんでした。手動でコピーしてください",
         "openLocation": "インストール場所を開く",
-        "panelDocked": "ドッキング済み · 最小幅 {{min}}px",
-        "panelNotDocked": "未ドッキング(レイアウトに位置記録なし)",
+        "panelInSidebar": "右サイドバーに表示（すべてのタスクで保持）",
+        "panelDismissed": "右サイドバーから閉じました · ここまたはサイドバーの「+」メニューから再度開けます",
+        "openInSidebar": "サイドバーで開く",
         "panelPageHosted": "プラグインページから開く · 離れると自動的に閉じます",
         "panelNone": "このプラグインにパネルはありません",
         "customSlotTitle": "プラグインのカスタム設定エリア",
@@ -6749,7 +6743,8 @@
         "collapseTools": "Tool を折りたたむ",
         "viewAllPermissions": "さらに表示",
         "permissionsDialogDescription": "この Plugin が要求する全 {{count}} 項目の権限",
-        "closeDialog": "ダイアログを閉じる"
+        "closeDialog": "ダイアログを閉じる",
+        "resetPlacement": "既定の位置に戻す"
       },
       "contents": {
         "mainView": "メインビュー",
@@ -8021,19 +8016,7 @@
     "collapsePanel": "折りたたみ",
     "expandPanel": "展開"
   },
-  "panelChrome": {
-    "maximizeAria": "パネルを最大化",
-    "restoreAria": "パネルのサイズを元に戻す",
-    "detachAria": "新しいウィンドウで開く",
-    "minimizeAria": "パネルを最小化",
-    "closeAria": "パネルを閉じてプラグインを無効化"
-  },
   "ghostPanel": {
-    "disableConfirm": {
-      "title": "「{{name}}」を無効にしますか？",
-      "body": "このパネルを閉じるとプラグインが無効になり、機能が停止します。左側ナビゲーションの「プラグイン」からいつでも再度有効にできます。",
-      "confirm": "無効にする"
-    },
     "externalLinkConfirm": {
       "title": "Cindy で外部ウェブサイトを開きますか？",
       "message": "Cindy で外部ウェブサイトを開きますか？",
@@ -8041,19 +8024,11 @@
       "cancel": "キャンセル"
     }
   },
-  "ghostPanelWindow": {
-    "mergeBack": "メインウィンドウに戻る",
-    "unavailable": "このプラグインパネルは現在利用できません"
-  },
-  "ghostPanelBubble": {
-    "restoreAria": "{{name}} パネルを元に戻す",
-    "stackExpandAria": "{{count}} 個のプラグインパネルを最小化中。クリックで展開",
-    "stackCollapseAria": "プラグインパネルの一覧を畳む"
-  },
-  "ghostPanelRestore": {
-    "single": "{{name}}を復元",
-    "multiple": "最小化したプラグインパネル",
-    "multipleAria": "{{count}}個のプラグインパネルが最小化されています。復元するパネルを選択"
+  "ghostMainView": {
+    "openInSidebar": "サイドバーで開く",
+    "openInPage": "ページで開く",
+    "openInWindow": "別ウィンドウで開く",
+    "resetPlacement": "既定の位置に戻す"
   },
   "rightSidebar": {
     "ariaLabel": "右サイドバー",
@@ -8067,16 +8042,24 @@
       "mergeBack": "メインウィンドウに戻す",
       "followPlaceholder": "サイドバーはメインウィンドウの現在のセッションに追従します"
     },
+    "tabWindow": {
+      "title": "サイドバーのタブ",
+      "mergeBack": "サイドバーに戻す",
+      "loading": "読み込み中…",
+      "closed": "このタブは閉じられました"
+    },
     "emptyTitle": "準備中の領域",
     "emptyDesc": "右サイドバーのコンテンツは今後のアップデートで追加されます。",
     "tabs": {
       "addAria": "タブを追加",
       "addFailed": "タブを追加できませんでした",
       "tabCloseAria": "タブを閉じる",
+      "pinnedAria": "グローバルタブ。タスクを切り替えても保持されます",
       "menu": {
         "addLabel": "タブを追加",
         "comingSoon": "近日対応",
-        "alreadyOpen": "開いています"
+        "alreadyOpen": "開いています",
+        "pluginsLabel": "プラグイン"
       },
       "kinds": {
         "fileBrowser": "ファイルブラウザ",
@@ -8088,19 +8071,23 @@
         "resourceUsage": "アクティビティモニタ",
         "collaboration": "コラボ",
         "unknown": "不明なタブ",
-        "ghostPanel": "プラグインパネル"
+        "ghostPanel": "プラグインパネル",
+        "pluginView": "プラグインビュー"
       },
       "controls": {
         "showAria": "サイドバーを表示",
         "maximizeAria": "サイドバーを最大化",
         "restoreAria": "最大化を解除",
         "closeAria": "サイドバーを閉じる",
-        "detachAria": "サイドバーを新しいウィンドウで開く"
+        "detachAria": "現在のタブを新しいウィンドウで開く"
       },
       "contextMenu": {
         "close": "閉じる",
         "closeOthers": "他のタブを閉じる",
-        "closeAll": "すべて閉じる"
+        "closeAll": "すべて閉じる",
+        "openInWindow": "新しいウィンドウで開く",
+        "moveTo": "{{target}}に移動",
+        "moveToWindow": "ウィンドウに移動："
       },
       "empty": {
         "eyebrow": "右サイドバー",
@@ -8122,6 +8109,12 @@
         "addMoreHint": "上部の + ボタンからほかのパネルタイプを選択できます"
       },
       "placeholderHint": "{{kind}} — コンテンツは後続フェーズで追加されます"
+    },
+    "tabGroups": {
+      "left": "左側",
+      "right": "右サイドバー",
+      "top": "上部",
+      "bottom": "下部"
     },
     "fileBrowser": {
       "noWorkdir": "このセッションにローカル作業ディレクトリが関連付けられていないため、ファイルブラウザは利用できません",

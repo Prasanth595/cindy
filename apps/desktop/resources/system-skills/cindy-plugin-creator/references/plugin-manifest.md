@@ -32,19 +32,20 @@
   "panel": { "title": "面板标题", "html": "panel.html", "position": "left",
              "minWidth": 240, "defaultFraction": 0.24,
              "systemButtons": { "maximize": false } },
-  // panel.position:面板显示形态。left(缺省)= 停靠主聊天窗左侧;
-  // "tab" = 插件页内的独占面板(用户在插件页点插件卡的「使用」打开,离开
-  // 插件页即关闭;同一时刻至多一个;此形态没有拖缝宽度,声明 minWidth /
-  // defaultFraction 会被拒装,请移除)。right 已退役(右侧是右侧边栏的地盘;
-  // 旧包声明 right 自动并入 left,用户想放右边可自己拖拽换位)。
-  // top/bottom 暂未支持(排期中)
-  // panel.systemButtons(可选,仅停靠形态):标准头系统按钮开关,缺省全开、
-  // 声明 false 逐个关闭。当前一批:maximize(撑满内容区)、detach(在独立
-  // 窗口中打开)、minimize(最小化面板;恢复入口由用户偏好决定为浮动气泡或
-  // 左侧栏)。标题条本体恒由主机绘制、
-  // 关不掉;未知键保留但不生效;position:"tab" 时声明本字段拒装
+  // panel.position:面板显示形态。left(缺省)/ right / top / bottom = 右侧栏常驻面板:
+  // 启用后自动成为聊天区对应边页签组里一个不跟对话的全局页签(切任务保留、可最大化、
+  // 可弹成独立窗口、用户可拖到任何一边或关闭;用户放置过后主机记住用户的位置,
+  // 你的声明只是首次出现时的默认);"tab" = 插件页内的独占面板(用户在插件页点插件卡的
+  // 「使用」打开,离开插件页即关闭;同一时刻至多一个;此形态没有拖缝宽度,声明 minWidth /
+  // defaultFraction 会被拒装,请移除)。minWidth / defaultFraction 仍可声明(兼容),当前
+  // 页签组宿主不消费。
+  // panel.systemButtons(可选):历史字段,保留兼容、当前不生效(右侧栏页签的
+  // 关闭 / 最大化 / 弹出按钮由主机统一提供);position:"tab" 时声明本字段拒装
   // 一级主视图是独立能力，见 §4.20。使用时直接声明：
   // "mainView": { "title": "工作台", "icon": "puzzle", "html": "main-view.html" }
+  // 可选 "open": "page"(缺省,撑满内容区)/ "sidebar"(作为页签进聊天区某一边,配 "side":
+  // left / right / top / bottom)/ "window"(弹成独立窗口);只是左侧导航入口的默认打开方式,
+  // 用户拖过 / 弹过后以用户的放置为准。可选 "multiple": true 允许同一视图同时开在多处。
   "settingsHtml": "settings.html",  // 可选:设置页「自定义设置区」自绘界面(见 §4.8;声明了用户填的凭证时仍必填,用于长期管理/替换/清除;调用前缺失时主机也会在统一 Setup 卡内联收单,见 §4.7)
   "showTaskPreferences": true,     // 可选:是否显示宿主「模型与任务」卡,缺省/true 显示,false 隐藏;见 §4.8
   "settingsHeight": 360             // 可选:固定高度 px(160–800);缺省 = 随内容自适应(矮内容真收矮,高至 800);内容会动态增减时才声明,避免抖动

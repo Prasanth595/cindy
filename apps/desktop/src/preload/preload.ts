@@ -246,6 +246,11 @@ import type {
   RsbWindowTabHandoff,
 } from '../shared/rightSidebarWindow';
 import { RSB_WINDOW_TAB_HANDOFF_CHANNEL } from '../shared/rightSidebarWindow';
+import type {
+  SidebarTabReturnedPayload,
+  SidebarTabWindowOpenRequest,
+  SidebarTabWindowsState,
+} from '../shared/sidebarTabWindow';
 import {
   RSB_NATIVE_POPUP_CLAIM_CHANNEL,
   RSB_NATIVE_POPUP_CLOSE_CHANNEL,
@@ -548,10 +553,12 @@ const fanOutRsbWindowStateChanged = createIpcFanOut('maker:rsb-window:state-chan
 const fanOutRsbWindowContextChanged = createIpcFanOut('maker:rsb-window:context-changed');
 const fanOutRsbWindowCommand = createIpcFanOut('maker:rsb-window:command');
 const fanOutRsbWindowTabHandoff = createIpcFanOut(RSB_WINDOW_TAB_HANDOFF_CHANNEL);
-// 插件停靠面板独立窗口(ghost panel window)状态推送
-const fanOutGhostPanelWindowStateChanged = createIpcFanOut(
-  'maker:ghost-panel-window:state-changed',
+// 右侧栏单页签独立窗口(sidebar tab window)状态 / 页签交回 / 页签持久化变更推送
+const fanOutSidebarTabWindowStateChanged = createIpcFanOut(
+  'maker:sidebar-tab-window:state-changed',
 );
+const fanOutSidebarTabWindowTabReturned = createIpcFanOut('maker:sidebar-tab-window:tab-returned');
+const fanOutRightSidebarTabsChanged = createIpcFanOut('maker:right-sidebar-tabs:changed');
 const fanOutBinaryDownloadProgress = createIpcFanOut('binary-download-progress');
 // Settings →「电脑使用」cua-driver 更新的下载进度(main 侧采样后广播)
 const fanOutComputerDriverUpdateProgress = createIpcFanOut('computer-driver-update-progress');
@@ -1998,35 +2005,38 @@ contextBridge.exposeInMainWorld('electronAPI', {
       fanOutRsbWindowTabHandoff((data) => cb(data as RsbWindowTabHandoff)),
   },
 
-  // ── 插件停靠面板独立窗口(ghost panel window)──────────────────────────
-  // 每 ghostId 一扇窗。状态机在 main(ghost-panel-window/controller.ts),
-  // renderer 只 invoke + 订阅广播;首帧走 sendSync(规则 7 无跳变)。
-  ghostPanelWindow: {
-    /** 首帧同步读全量状态(ghostId → { detached, lastOpen, open })。 */
-    getStateSync: (): Record<string, { detached: boolean; lastOpen: boolean; open: boolean }> =>
-      ipcRenderer.sendSync('ghost-panel-window:get-state-sync') as Record<
-        string,
-        { detached: boolean; lastOpen: boolean; open: boolean }
-      >,
-    getState: (): Promise<
-      Record<string, { detached: boolean; lastOpen: boolean; open: boolean }>
-    > => ipcRenderer.invoke('maker:ghost-panel-window:get-state'),
-    /** 幂等:已开则 show + focus。 */
-    open: (ghostId: string): Promise<void> =>
-      ipcRenderer.invoke('maker:ghost-panel-window:open', ghostId),
-    /** 写偏好;true 开窗抽离,false 关窗回停靠。返回新全量 state。 */
-    setDetached: (
-      ghostId: string,
-      detached: boolean,
-    ): Promise<Record<string, { detached: boolean; lastOpen: boolean; open: boolean }>> =>
-      ipcRenderer.invoke('maker:ghost-panel-window:set-detached', ghostId, detached),
-    onStateChanged: fanOutGhostPanelWindowStateChanged,
-  },
 
   // ── 资源用量独立子窗口 ──────────────────────────────────────────────
   // 主窗口只持有打开能力；资源窗口的关闭与就绪能力在专用 preload 中暴露。
   resourceUsageWindow: {
     open: (): Promise<void> => ipcRenderer.invoke(RESOURCE_USAGE_WINDOW_OPEN_CHANNEL),
+  },
+
+  // ── 右侧栏单页签独立窗口(sidebar tab window)──────────────────────────
+  // 每个弹出的页签一扇窗。状态机在 main(sidebar-tab-window/controller.ts),
+  // 主窗只 invoke + 订阅广播;弹出窗口自身的握手桥在 sidebarWindowPreload。
+  sidebarTabWindow: {
+    getState: (): Promise<SidebarTabWindowsState> =>
+      ipcRenderer.invoke('maker:sidebar-tab-window:get-state'),
+    /** 把页签弹出到独立窗口;已弹出则聚焦。 */
+    open: (request: SidebarTabWindowOpenRequest): Promise<void> =>
+      ipcRenderer.invoke('maker:sidebar-tab-window:open', request),
+    focus: (tabId: string): Promise<void> =>
+      ipcRenderer.invoke('maker:sidebar-tab-window:focus', tabId),
+    /** 页签已在侧边栏关闭:销毁其弹出窗口,不交回。 */
+    closeForTab: (tabId: string): Promise<void> =>
+      ipcRenderer.invoke('maker:sidebar-tab-window:close-for-tab', tabId),
+    /** 把弹在独立窗口里的全局页签(插件视图)交回侧栏;任务页签由窗口自己合并回来。 */
+    returnTab: (tabId: string): Promise<boolean> =>
+      ipcRenderer.invoke('maker:sidebar-tab-window:return-tab', tabId),
+    /** 页签拖出窗口:窗外跟随指针的预览卡(复用任务拖出的那扇预览窗口)。 */
+    beginDragPreview: (label: string, palette: SessionDragPreviewPalette): Promise<void> =>
+      ipcRenderer.invoke('maker:sidebar-tab-drag-preview:start', label, palette),
+    endDragPreview: (): void => ipcRenderer.send('maker:sidebar-tab-drag-preview:end'),
+    onStateChanged: (cb: (state: SidebarTabWindowsState) => void): (() => void) =>
+      fanOutSidebarTabWindowStateChanged((data) => cb(data as SidebarTabWindowsState)),
+    onTabReturned: (cb: (payload: SidebarTabReturnedPayload) => void): (() => void) =>
+      fanOutSidebarTabWindowTabReturned((data) => cb(data as SidebarTabReturnedPayload)),
   },
 
   agentIsland: {
@@ -5786,6 +5796,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
       /** 一次性重写 session 内 tab position(orderedIds 数组下标 = 新 position)。 */
       reorder: (input: { sessionId: string; orderedIds: string[] }): Promise<unknown> =>
         ipcRenderer.invoke('local-db:right-sidebar-tabs:reorder', input),
+      /** 其它 renderer(弹出的单页签窗口)改动了某会话的页签持久化数据。 */
+      onChanged: (cb: (payload: { sessionId: string }) => void): (() => void) =>
+        fanOutRightSidebarTabsChanged((data) => cb(data as { sessionId: string })),
     },
     subagentRuns: {
       /** Durable Cindy-owned Subagent records for one parent task. */

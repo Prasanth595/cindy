@@ -2053,27 +2053,54 @@ interface ElectronAPI {
     ) => () => void;
   };
 
-  /** 插件停靠面板独立窗口(每 ghostId 一扇窗;状态机在 main)。 */
-  ghostPanelWindow: {
-    /** 首帧同步读全量状态(ghostId → entry)。 */
-    getStateSync: () => import('../shared/ghostPanelWindow').GhostPanelWindowsState;
-    getState: () => Promise<import('../shared/ghostPanelWindow').GhostPanelWindowsState>;
-    /** 幂等:已开则 show + focus。 */
-    open: (ghostId: string) => Promise<void>;
-    /** 写偏好;true 开窗抽离,false 关窗回停靠。返回新全量 state。 */
-    setDetached: (
-      ghostId: string,
-      detached: boolean,
-    ) => Promise<import('../shared/ghostPanelWindow').GhostPanelWindowsState>;
+
+  /**
+   * 右侧栏单页签独立窗口(每个弹出的页签一扇窗;状态机在 main)。
+   * 主窗用 open / focus / closeForTab / onStateChanged / onTabReturned;
+   * 弹出窗口自身(sidebarWindowPreload)另有 getAssignment / 握手 / mergeBack 等。
+   */
+  sidebarTabWindow: {
+    getState: () => Promise<import('../shared/sidebarTabWindow').SidebarTabWindowsState>;
+    open?: (
+      request: import('../shared/sidebarTabWindow').SidebarTabWindowOpenRequest,
+    ) => Promise<void>;
+    focus: (tabId: string) => Promise<void>;
+    closeForTab: (tabId: string) => Promise<void>;
+    /** 主窗口:把弹在独立窗口里的全局页签交回侧栏(任务页签不支持)。 */
+    returnTab?: (tabId: string) => Promise<boolean>;
+    /** 主窗口:页签拖出窗口时的窗外预览卡。 */
+    beginDragPreview?: (
+      label: string,
+      palette: import('../shared/sessionDragPreview').SessionDragPreviewPalette,
+    ) => Promise<void>;
+    endDragPreview?: () => void;
     onStateChanged: (
-      cb: (state: import('../shared/ghostPanelWindow').GhostPanelWindowsState) => void,
+      cb: (state: import('../shared/sidebarTabWindow').SidebarTabWindowsState) => void,
     ) => () => void;
-    rendererReady: () => Promise<void>;
-    presentationReady: () => Promise<void>;
-    onVisibilityChanged: (cb: (payload: { visible: boolean }) => void) => () => void;
-    onCloseRequested: (cb: () => void) => () => void;
-    onMinimizeRequested: (cb: () => void) => () => void;
-    resolveCloseRequest: (approved: boolean) => Promise<void>;
+    onTabReturned?: (
+      cb: (payload: import('../shared/sidebarTabWindow').SidebarTabReturnedPayload) => void,
+    ) => () => void;
+    getAssignment?: () => Promise<
+      import('../shared/sidebarTabWindow').SidebarTabWindowAssignmentPayload | null
+    >;
+    onAssigned?: (
+      cb: (
+        assignment: import('../shared/sidebarTabWindow').SidebarTabWindowAssignmentPayload,
+      ) => void,
+    ) => () => void;
+    rendererReady?: () => Promise<void>;
+    presentationReady?: () => Promise<void>;
+    mergeBack?: (
+      request: import('../shared/sidebarTabWindow').SidebarTabWindowMergeBackRequest,
+    ) => Promise<void>;
+    adoptTab?: (
+      request: import('../shared/sidebarTabWindow').SidebarTabWindowAdoptRequest,
+    ) => Promise<void>;
+    onCloseRequested?: (cb: () => void) => () => void;
+    onVisibilityChanged?: (cb: (payload: { visible: boolean }) => void) => () => void;
+    onLocaleChanged?: (
+      cb: (locale: import('../shared/locale').SupportedLocale) => void,
+    ) => () => void;
   };
 
   agentIsland: {
@@ -5024,6 +5051,8 @@ interface ElectronAPI {
       close: (input: { id: string }) => Promise<{ ok: true }>;
       setActive: (input: { sessionId: string; id: string | null }) => Promise<{ ok: true }>;
       reorder: (input: { sessionId: string; orderedIds: string[] }) => Promise<{ ok: true }>;
+      /** 其它 renderer(主窗 ↔ 弹出的单页签窗口)改动了某会话的页签持久化数据。 */
+      onChanged?: (cb: (payload: { sessionId: string }) => void) => () => void;
     };
     subagentRuns: {
       list: (

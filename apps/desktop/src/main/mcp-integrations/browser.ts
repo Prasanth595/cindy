@@ -29,6 +29,7 @@ import {
   type BrowserBackend,
 } from './browser-backend/index.js';
 import { getRsbBrowserBridge } from '../rsb-browser-bridge/index.js';
+import type { RsbBrowserBridgeTabOp } from '../../shared/rsbBrowserBridge.js';
 import {
   readBrowserBackendSettings,
   writeBrowserBackendKind,
@@ -274,10 +275,11 @@ function createRsbBackend(): RsbWebviewBackend {
       // Lazy main-window lookup. Phase 2 uses the same pattern; once the host
       // window is available the dispatch lands cleanly, before that the request
       // rejects with `host renderer not available`.
-      getHostWebContents: () => {
+      getHostWebContents: (op) => {
         // bootstrap-electron owns mainWindowRef; we read it through the public
-        // helper to avoid a circular import.
-        const win = readMainWindowForBackend();
+        // helper to avoid a circular import. The op lets bootstrap route tab-ops
+        // for popped-out tabs to the window that actually hosts them.
+        const win = readMainWindowForBackend(op);
         return win;
       },
       // detached 偏好开 + 侧边栏子窗口关着时,tab-op 前先把子窗口拉起来并等
@@ -324,17 +326,19 @@ const browserBackendHealthService = new BrowserBackendHealthService(backendContr
  * `setMainWindowAccessorForBackend`. Without this the RsbWebviewBackend has
  * no way to reach the renderer for tab-op dispatch.
  */
-let mainWindowAccessor: () => Electron.WebContents | null = () => null;
+type HostWebContentsAccessor = (op?: RsbBrowserBridgeTabOp) => Electron.WebContents | null;
 
-function readMainWindowForBackend(): Electron.WebContents | null {
-  return mainWindowAccessor();
+let mainWindowAccessor: HostWebContentsAccessor = () => null;
+
+function readMainWindowForBackend(op?: RsbBrowserBridgeTabOp): Electron.WebContents | null {
+  return mainWindowAccessor(op);
 }
 
 /**
  * Bootstrap hook. Called from `bootstrap-electron.ts` once `mainWindowRef` is
  * known. Idempotent re-binds are safe.
  */
-export function setMainWindowAccessorForBackend(accessor: () => Electron.WebContents | null): void {
+export function setMainWindowAccessorForBackend(accessor: HostWebContentsAccessor): void {
   mainWindowAccessor = accessor;
 }
 

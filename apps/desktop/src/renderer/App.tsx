@@ -25,7 +25,6 @@ import { LoginBrandStage } from '@/components/login/LoginBrandStage';
 import { StartupLogSupport } from '@/components/log-support/StartupLogSupport';
 import { isSecondaryWindow } from '@/lib/secondaryWindow';
 import { isSidebarWindow } from '@/lib/sidebarWindow';
-import { isGhostPanelWindow } from '@/lib/ghostPanelWindow';
 import { ToastContainer } from '@/components/ui/toast';
 import { LegacyMigrationDialog } from '@/components/auth/LegacyMigrationDialog';
 import { Tooltip } from '@/components/ui/tooltip';
@@ -424,17 +423,11 @@ export function App() {
                             {/* 副窗口(「在新窗口打开」)/ 右侧栏子窗口跳过 splash:env/热更检查
                             由主窗启动时完成,附属窗 EnvCheckProvider 初始即 'passed',
                             不需要也不应再走 splash 流程。 */}
-                            {!isSecondaryWindow() &&
-                              !isSidebarWindow() &&
-                              !isGhostPanelWindow() && <LoginBrandStage />}
-                            {!isSecondaryWindow() &&
-                              !isSidebarWindow() &&
-                              !isGhostPanelWindow() && <SplashScreen />}
+                            {!isSecondaryWindow() && !isSidebarWindow() && <LoginBrandStage />}
+                            {!isSecondaryWindow() && !isSidebarWindow() && <SplashScreen />}
                             <EnvCheckGuard>
                               <MakerBootstrap />
-                              {!isSecondaryWindow() &&
-                                !isSidebarWindow() &&
-                                !isGhostPanelWindow() && <RemoteDesktopHost />}
+                              {!isSecondaryWindow() && !isSidebarWindow() && <RemoteDesktopHost />}
                               <ProjectAutomationNotifyBridge />
                               {/* confirm 槽:插件请主机弹确认框。必须在 ConfirmDialogProvider
                               内(要 useConfirmDialog);main 只投单个窗口,所以每个窗口
@@ -445,16 +438,12 @@ export function App() {
                               <PluginPublisherConfirmHost />
                               <OwnerScopedRouter />
                             </EnvCheckGuard>
-                            {!isSecondaryWindow() &&
-                              !isSidebarWindow() &&
-                              !isGhostPanelWindow() && <StartupLogSupport />}
+                            {!isSecondaryWindow() && !isSidebarWindow() && <StartupLogSupport />}
                           </LoginHandoffHost>
                           <FindInPageBar />
                           <ToastContainer />
                           {/* 首登轻量数据迁移弹窗:只挂主窗(副窗/侧栏窗不重复弹) */}
-                          {!isSecondaryWindow() && !isSidebarWindow() && !isGhostPanelWindow() && (
-                            <LegacyMigrationDialog />
-                          )}
+                          {!isSecondaryWindow() && !isSidebarWindow() && <LegacyMigrationDialog />}
                         </Tooltip.Provider>
                       </PrRefsProvider>
                     </WorktreeProvider>

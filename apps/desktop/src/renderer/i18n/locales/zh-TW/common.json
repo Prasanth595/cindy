@@ -1698,13 +1698,6 @@
         "hint": "未置頂任務：文字單行，列表附預覽",
         "aria": "切換任務列表顯示方式"
       },
-      "ghostPanelRestore": {
-        "label": "插件面板恢復入口",
-        "hint": "選擇最小化插件面板後從哪裡恢復。",
-        "aria": "選擇插件面板恢復入口",
-        "bubble": "浮動氣泡",
-        "sidebar": "側邊欄"
-      },
       "wallpaper": {
         "title": "桌布",
         "description": "為整個應用程式選擇 Cindy 場景、自己的圖片或影片，主題保持獨立。",
@@ -6596,7 +6589,7 @@
         "nodeResidentDetail": "插件啟用期間會一直執行；停用、更新、解除安裝或退出 Cindy 時關閉。",
         "tool": "工具「{{name}}」",
         "command": "對話指令 ${{command}}",
-        "panelLeft": "面板「{{title}}」· 停靠主對話區左側",
+        "panelLeft": "面板「{{title}}」· 顯示在側邊欄",
         "panelTab": "面板「{{title}}」· 插件頁內開啟",
         "mainView": "可在 Cindy 左側導航新增「{{title}}」入口",
         "mainViewDetail": "點擊後將在插件沙箱中開啟主視圖，不會因此取得檔案、網路或憑證存取權限。",
@@ -6693,8 +6686,9 @@
         "locationCopied": "安裝位置已複製",
         "locationCopyFailed": "複製安裝位置失敗，請手動複製",
         "openLocation": "開啟安裝位置",
-        "panelDocked": "已停靠 · 最小寬 {{min}}px",
-        "panelNotDocked": "未停靠(佈局中暫無位置記錄)",
+        "panelInSidebar": "顯示在右側欄（所有任務中保留）",
+        "panelDismissed": "已從右側欄關閉 · 可在此處或右側欄「+」選單重新開啟",
+        "openInSidebar": "在側邊欄中開啟",
         "panelPageHosted": "從插件頁開啟 · 離開插件頁自動關閉",
         "panelNone": "這個插件不含面板",
         "customSlotTitle": "插件自定義設定區",
@@ -6749,7 +6743,8 @@
         "collapseTools": "收起 Tool",
         "viewAllPermissions": "檢視更多",
         "permissionsDialogDescription": "該插件申請的全部 {{count}} 項權限",
-        "closeDialog": "關閉彈窗"
+        "closeDialog": "關閉彈窗",
+        "resetPlacement": "恢復預設位置"
       },
       "contents": {
         "mainView": "主視圖",
@@ -8021,19 +8016,7 @@
     "collapsePanel": "收起",
     "expandPanel": "展開"
   },
-  "panelChrome": {
-    "maximizeAria": "撐滿內容區",
-    "restoreAria": "還原面板大小",
-    "detachAria": "在獨立視窗中開啟",
-    "minimizeAria": "最小化面板",
-    "closeAria": "關閉面板並停用插件"
-  },
   "ghostPanel": {
-    "disableConfirm": {
-      "title": "停用「{{name}}」？",
-      "body": "關閉這個面板會停用插件並暫停其能力。你可以隨時在左側導航「插件」中重新啟用。",
-      "confirm": "停用"
-    },
     "externalLinkConfirm": {
       "title": "是否要讓 Cindy 開啟外部網站",
       "message": "是否要讓 Cindy 開啟外部網站",
@@ -8041,19 +8024,11 @@
       "cancel": "取消"
     }
   },
-  "ghostPanelWindow": {
-    "mergeBack": "返回主視窗",
-    "unavailable": "該插件面板當前不可用"
-  },
-  "ghostPanelBubble": {
-    "restoreAria": "恢復 {{name}} 面板",
-    "stackExpandAria": "已收起 {{count}} 個插件面板，點選展開",
-    "stackCollapseAria": "收攏插件面板列表"
-  },
-  "ghostPanelRestore": {
-    "single": "恢復 {{name}}",
-    "multiple": "已收起的插件面板",
-    "multipleAria": "已收起 {{count}} 個插件面板，點擊選擇要恢復的面板"
+  "ghostMainView": {
+    "openInSidebar": "在側邊欄中開啟",
+    "openInPage": "在頁面中開啟",
+    "openInWindow": "在獨立視窗中開啟",
+    "resetPlacement": "恢復預設位置"
   },
   "rightSidebar": {
     "ariaLabel": "右側邊欄",
@@ -8067,16 +8042,24 @@
       "mergeBack": "合併回主視窗",
       "followPlaceholder": "側邊欄跟隨主視窗的當前任務"
     },
+    "tabWindow": {
+      "title": "側邊欄標籤",
+      "mergeBack": "合併回側邊欄",
+      "loading": "正在載入…",
+      "closed": "該標籤已關閉"
+    },
     "emptyTitle": "預留區域",
     "emptyDesc": "右側邊欄內容將在後續迭代加入",
     "tabs": {
       "addAria": "新增標籤",
       "addFailed": "新增標籤失敗",
       "tabCloseAria": "關閉標籤",
+      "pinnedAria": "全域頁籤，切換任務時保留",
       "menu": {
         "addLabel": "新增標籤",
         "comingSoon": "即將支援",
-        "alreadyOpen": "已開啟"
+        "alreadyOpen": "已開啟",
+        "pluginsLabel": "插件"
       },
       "kinds": {
         "fileBrowser": "檔案瀏覽器",
@@ -8088,19 +8071,23 @@
         "resourceUsage": "資源監視器",
         "collaboration": "協同",
         "unknown": "未知標籤頁",
-        "ghostPanel": "插件面板"
+        "ghostPanel": "插件面板",
+        "pluginView": "插件視圖"
       },
       "controls": {
         "showAria": "顯示側欄",
         "maximizeAria": "最大化側欄",
         "restoreAria": "退出最大化",
         "closeAria": "關閉側欄",
-        "detachAria": "在新視窗中開啟側邊欄"
+        "detachAria": "在獨立視窗中開啟目前標籤"
       },
       "contextMenu": {
         "close": "關閉",
         "closeOthers": "關閉其他",
-        "closeAll": "關閉所有"
+        "closeAll": "關閉所有",
+        "openInWindow": "在獨立視窗中開啟",
+        "moveTo": "移到{{target}}",
+        "moveToWindow": "移到視窗："
       },
       "empty": {
         "eyebrow": "右側欄",
@@ -8122,6 +8109,12 @@
         "addMoreHint": "可透過頂部 + 按鈕選擇更多面板型別"
       },
       "placeholderHint": "{{kind}} — 內容將在後續階段加入"
+    },
+    "tabGroups": {
+      "left": "左側",
+      "right": "右側欄",
+      "top": "上方",
+      "bottom": "下方"
     },
     "fileBrowser": {
       "noWorkdir": "當前任務未關聯本地工作目錄，檔案瀏覽器不可用",
