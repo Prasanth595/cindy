@@ -168,3 +168,61 @@ it.each(['unlimited', 'invalidated'])('replays an authoritative %s read after th
   await waitFor(() => expect(reopened.result.current.loading).toBe(false));
   expect(reopened.result.current.usage).toBeNull();
 });
+
+
+it('preserves unlimited state, invalidates it on gateway change, and isolates accounts', async () => {
+  state.owner = 'unlimited-transitions';
+  state.membership = 'org';
+  let changed!: Parameters<typeof window.electronAPI.maker.usage.onClaudeAccountChanged>[0];
+  window.electronAPI.maker.usage.onClaudeAccountChanged = listener => {
+    changed = listener;
+    return () => {};
+  };
+  state.quota.mockResolvedValue({ quotaState: 'unlimited' });
+  const view = renderHook(() => useClaudeAccountUsageResult(true));
+  await waitFor(() => expect(view.result.current.unlimited).toBe(true));
+  expect(view.result.current.usage).toBeNull();
+  state.quota.mockResolvedValue(null);
+  act(() => view.result.current.refresh());
+  await waitFor(() => expect(view.result.current.loading).toBe(false));
+  expect(view.result.current.unlimited).toBe(true);
+  state.quota.mockResolvedValue({ quotaState: 'invalidated' });
+  act(() => changed(null));
+  await waitFor(() => expect(view.result.current.loading).toBe(false));
+  expect(view.result.current.unlimited).toBe(false);
+  state.quota.mockResolvedValue({ quotaState: 'unlimited' });
+  act(() => changed(null));
+  await waitFor(() => expect(view.result.current.unlimited).toBe(true));
+  const finite = { spend: 1, maxBudget: 100, currency: 'CNY' as const, todaySpend: null, fetchedAt: 1 };
+  act(() => changed(finite));
+  expect(view.result.current.unlimited).toBe(false);
+  expect(view.result.current.usage).toEqual(finite);
+  state.owner = 'another-unlimited-owner';
+  state.quota.mockResolvedValue(null);
+  view.rerender();
+  expect(view.result.current.usage).toBeNull();
+  expect(view.result.current.unlimited).toBe(false);
+  await waitFor(() => expect(view.result.current.loading).toBe(false));
+});
+
+
+it('does not loop when the quota read itself broadcasts an unlimited clear', async () => {
+  state.owner = 'unlimited-push-during-read';
+  state.membership = 'org';
+  let changed: Parameters<typeof window.electronAPI.maker.usage.onClaudeAccountChanged>[0] | undefined;
+  window.electronAPI.maker.usage.onClaudeAccountChanged = listener => {
+    changed = listener;
+    return () => {};
+  };
+  state.quota.mockImplementation(async () => {
+    await Promise.resolve();
+    changed?.(null);
+    return { quotaState: 'unlimited' };
+  });
+  const view = renderHook(() => useClaudeAccountUsageResult(true));
+  await waitFor(() => expect(view.result.current.unlimited).toBe(true));
+  expect(state.quota).toHaveBeenCalledTimes(1);
+  act(() => changed?.(null));
+  await waitFor(() => expect(view.result.current.unlimited).toBe(true));
+  expect(state.quota).toHaveBeenCalledTimes(2);
+});
