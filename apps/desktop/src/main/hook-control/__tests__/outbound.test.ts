@@ -392,3 +392,41 @@ describe('辅助函数', () => {
     expect(guessMime('/a/b.tar.gz')).toBe('application/octet-stream');
   });
 });
+
+// X video regression: real collector input -> attachment bytes/MIME/caption.
+// Existing image and xdt-file cases did not cover managed video links (unit tier).
+describe('X managed video delivery', () => {
+  it('collects a video link and generated-media side channel once, with the file limit', async () => {
+    const bytes = Buffer.alloc(6 * 1024 * 1024, 1);
+    const io = deps({ '/blobs/blobs/clip.mp4': bytes });
+    const result = await collectOutboundAttachments(
+      '完成 [视频][clip]\n\n[clip]: cindy-media://blobs/clip.mp4', ['/blobs/blobs/clip.mp4'], { ...io, provider: 'x' },
+    );
+    expect(result.attachments).toHaveLength(1);
+    expect(result.attachments[0]?.mimeType).toBe('video/mp4');
+    expect(Buffer.from(result.attachments[0]!.dataBase64, 'base64').equals(bytes)).toBe(true);
+    expect(result.text.trim()).toBe('完成 视频');
+    expect(result.skipped).toBe(0);
+  });
+
+  it('does not upload code examples and reports an unreadable managed video', async () => {
+    const io = deps({});
+    const result = await collectOutboundAttachments(
+      '`[demo](cindy-media://blobs/example.mp4)`\n[视频](cindy-media://blobs/missing.mp4)', [], { ...io, provider: 'x' },
+    );
+    expect(result.attachments).toEqual([]);
+    expect(io.readFile).toHaveBeenCalledTimes(1);
+    expect(result.skipped).toBe(1);
+    expect(result.text).not.toContain('cindy-media://blobs/missing.mp4');
+    expect(result.text).toContain('Attachment delivery incomplete');
+  });
+
+  it('keeps other channel collection unchanged', async () => {
+    const io = deps({ '/blobs/blobs/clip.mp4': Buffer.from('clip') });
+    const text = '[视频](cindy-media://blobs/clip.mp4)';
+    const result = await collectOutboundAttachments(text, [], { ...io, provider: 'telegram' });
+    expect(result.attachments).toEqual([]);
+    expect(io.readFile).not.toHaveBeenCalled();
+    expect(result.text).toBe(text);
+  });
+});

@@ -394,7 +394,7 @@ vi.mock('../../im/shared/sessionProviderLabel.js', () => ({
   resolveSessionErrorContext: vi.fn(async () => ({ providerLabel: 'OpenAI', modelLabel: 'GPT-6 Astra', taskLabel: '测试任务（sess-new）' })),
 }));
 
-import { createMakerHookSessionRunner, extractToolResultImageUrls } from '../session-runner.js';
+import { createMakerHookSessionRunner, extractToolResultMediaUrls } from '../session-runner.js';
 import { MAIN_OWNED_SEND_CONTEXT, Session, type AgentSessionHandle, type Capabilities } from '@cindy/maker-core';
 import { observeHookTurn } from '../turnObserver.js';
 import { buildHookPromptNote, SLACK_HOOK_PROMPT_NOTE } from '../outbound.js';
@@ -3712,23 +3712,30 @@ describe('providerId(来源/供应商)贯通 —— issue #854 回归', () => {
   });
 });
 
-describe('extractToolResultImageUrls 的兜底账本回落(xdt_media_produced)', () => {
+describe('extractToolResultMediaUrls 的兜底账本回落(xdt_media_produced)', () => {
+  it('X receives generated video URLs while other channels retain image-only behavior', () => {
+    const video = `cindy-media://blobs/${'a'.repeat(64)}.mp4`;
+    const text = JSON.stringify({ xdt_media_produced: [video] });
+    expect(extractToolResultMediaUrls(text, 'x')).toEqual([video]);
+    expect(extractToolResultMediaUrls(text, 'telegram')).toEqual([]);
+  });
+
   const IMG = `cindy-media://blobs/${'d'.repeat(64)}.png`;
   const MP3 = `cindy-media://blobs/${'e'.repeat(64)}.mp3`;
 
   it('意识未声明媒体字段时,从 xdt_media_produced 接走图片(过滤非图)', () => {
     const text = JSON.stringify({ ok: true, xdt_media_produced: [IMG, MP3] });
-    expect(extractToolResultImageUrls(text)).toEqual([IMG]);
+    expect(extractToolResultMediaUrls(text)).toEqual([IMG]);
   });
 
   it('声明字段与账本并存时合并去重', () => {
     const text = JSON.stringify({ ok: true, xdt_image_urls: [IMG], xdt_media_produced: [IMG] });
-    expect(extractToolResultImageUrls(text)).toEqual([IMG]);
+    expect(extractToolResultMediaUrls(text)).toEqual([IMG]);
   });
 
   it('_xdt_render_image:false 哨兵优先,全部不外发', () => {
     const text = JSON.stringify({ ok: true, xdt_media_produced: [IMG], _xdt_render_image: false });
-    expect(extractToolResultImageUrls(text)).toEqual([]);
+    expect(extractToolResultMediaUrls(text)).toEqual([]);
   });
 });
 

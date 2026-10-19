@@ -422,11 +422,11 @@ function awaitingInteractionNotice(kind: string): string {
   return AWAITING_INTERACTION_NOTICE[kind] ?? AWAITING_INTERACTION_FALLBACK;
 }
 
-/** 兜底账本条目是否图片(hook 本期只外发图片):cindy-media 地址按扩展名判。 */
+/** 兜底账本图片白名单；X 还接收 MP4/MOV 视频:cindy-media 地址按扩展名判。 */
 const PRODUCED_IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp)$/i;
 
 /** 导出仅供单测(纯函数,不碰 electron)。 */
-export function extractToolResultImageUrls(toolResultText: string): string[] {
+export function extractToolResultMediaUrls(toolResultText: string, provider?: string): string[] {
   if (!toolResultText.includes('xdt_image_url') && !toolResultText.includes('xdt_media_produced')) {
     return [];
   }
@@ -452,10 +452,10 @@ export function extractToolResultImageUrls(toolResultText: string): string[] {
     }
   }
   // 兜底账本(xdt_media_produced,ghost_call 层在意识未声明媒体字段时注入,
-  // 主机记账、意识删不掉):可能混有视频/音频/3D,这里只接走图片。
+  // 主机记账、意识删不掉):X 接走图片与视频,其余渠道维持图片。
   if (Array.isArray(parsed.xdt_media_produced)) {
     for (const u of parsed.xdt_media_produced) {
-      if (typeof u === 'string' && isRenderableImageUrl(u) && PRODUCED_IMAGE_EXT_RE.test(u)) {
+      if (typeof u === 'string' && isRenderableImageUrl(u) && (PRODUCED_IMAGE_EXT_RE.test(u) || (provider === 'x' && /\.(mp4|mov)$/i.test(u)))) {
         urls.push(u);
       }
     }
@@ -474,12 +474,13 @@ function resolveRenderableImageUrl(url: string): { absPath: string } {
  * art image_generate 等工具按设计不在文本里嵌 xdt-image markdown, 渠道侧能拿到
  * 图的唯一通路是从 tool_result JSON 里接走 URL。解析失败只 warn, 不拖垮 turn。
  */
-function collectOutboundImages(
+function collectOutboundMedia(
   fullText: string,
   sink: string[],
   log: { warn(msg: string): void },
+  provider?: string,
 ): void {
-  for (const url of extractToolResultImageUrls(fullText)) {
+  for (const url of extractToolResultMediaUrls(fullText, provider)) {
     try {
       const { absPath } = resolveRenderableImageUrl(url);
       sink.push(absPath);
@@ -546,6 +547,7 @@ async function collectOutboundForFinalText(
   extraImageAbsPaths: string[],
   allowedFileRoots: string[],
   log: { warn(msg: string): void },
+  provider?: string,
 ): Promise<{ finalText: string; attachments?: HookRunOutcome['attachments'] }> {
   // Defense in depth for X/Slack/Telegram: live Codex traffic is normalized in
   // maker-core, but older persisted/continuation text and future adapters must
@@ -571,6 +573,7 @@ async function collectOutboundForFinalText(
         throw new Error('Remote media is not available on this host');
       },
       allowedFileRoots,
+      provider,
       ...(wholeTurn !== publicText ? { refScanText: wholeTurn } : {}),
       log,
     });
@@ -1100,7 +1103,7 @@ export function createMakerHookSessionRunner(deps: {
           ? { progressBodyMode: 'whole' as const, flushProgressOnDone: true }
           : {}),
         onToolResult: (fullText) => {
-          if (allowedFileRoots.length > 0) collectOutboundImages(fullText, extraImageAbsPaths, log);
+          if (allowedFileRoots.length > 0) collectOutboundMedia(fullText, extraImageAbsPaths, log, req.source?.im);
         },
         onSilentStopSettled,
         log,
@@ -1543,7 +1546,7 @@ export function createMakerHookSessionRunner(deps: {
         observer.stop();
         const collected = observer.errorReason === 'output-limit'
           ? await collectOutboundForFinalText(
-            session.id, turnTextsFor(observer), extraImageAbsPaths, allowedFileRoots, log,
+            session.id, turnTextsFor(observer), extraImageAbsPaths, allowedFileRoots, log, req.source?.im,
           )
           : { finalText: '' };
         // 额度类失败要说清是哪个供应商: 名字只在这里按需读一次(读不到退回「当前供应商」)。
@@ -1575,6 +1578,7 @@ export function createMakerHookSessionRunner(deps: {
         extraImageAbsPaths,
         allowedFileRoots,
         log,
+        req.source?.im,
       );
       let finalText = collected.finalText;
       const outAttachments = collected.attachments;
@@ -1689,7 +1693,7 @@ function beginContinuationWatch(
       ? { progressBodyMode: 'whole' as const, flushProgressOnDone: true }
       : {}),
     onToolResult: (fullText) => {
-      if (allowedFileRoots.length > 0) collectOutboundImages(fullText, extraImageAbsPaths, log);
+      if (allowedFileRoots.length > 0) collectOutboundMedia(fullText, extraImageAbsPaths, log, req.source?.im);
     },
     onSilentStopSettled,
     log,
@@ -1733,6 +1737,7 @@ function beginContinuationWatch(
         extraImageAbsPaths,
         allowedFileRoots,
         log,
+        req.source?.im,
       );
       req.onEnd({
         status: errorMessage === null ? 'ok' : 'error',

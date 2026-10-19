@@ -264,7 +264,10 @@ export function createHookRequestLedger(deps: {
     const entries = readEntries();
     if (entries === null) return false;
     const recordSerialized = JSON.stringify(record);
-    if (utf8ByteLength(recordSerialized) > MAX_ENTRY_BYTES) {
+    // Media is already bounded by the transport/collector. Let its base64 bytes
+    // use the existing file budget so a valid video survives Desktop restart.
+    const entryLimit = record.turnEnd?.attachments?.length ? maxFileBytes : MAX_ENTRY_BYTES;
+    if (utf8ByteLength(recordSerialized) > entryLimit) {
       deps.log.warn('write hook request ledger skipped (record-too-large)');
       return false;
     }

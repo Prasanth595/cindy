@@ -47,6 +47,20 @@ afterEach(() => {
 });
 
 describe('hook request ledger', () => {
+  // Regression: a valid 6 MiB video exceeds the old 8 MB text-entry cap after
+  // base64 encoding. Unit tier checks actual disk persistence across instances.
+  it('restores a pending video larger than the text-entry budget after restart', () => {
+    const saved = record('x-video');
+    saved.delivery = 'pending';
+    saved.turnEnd!.attachments = [{ name: 'clip.mp4', mimeType: 'video/mp4', dataBase64: Buffer.alloc(6 * 1024 * 1024, 1).toString('base64') }];
+    const first = createHookRequestLedger({ filePath: filePath(), log });
+    expect(first.set(saved)).toBe(true);
+    const restored = createHookRequestLedger({ filePath: filePath(), log });
+    expect(restored.listPending('conn-1')[0]?.turnEnd?.attachments?.[0]?.dataBase64 === saved.turnEnd!.attachments[0]!.dataBase64).toBe(true);
+    expect(restored.markSent('conn-1', 'x-video')).toBe(true);
+    expect(restored.listPending('conn-1')).toEqual([]);
+  });
+
   it('跨实例读回完整终态, 且按 connectionId + requestId 隔离', () => {
     const first = createHookRequestLedger({ filePath: filePath(), log });
     const saved = record('req-1');
