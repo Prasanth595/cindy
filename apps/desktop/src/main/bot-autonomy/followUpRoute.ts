@@ -70,3 +70,30 @@ export function suggestFollowUpRoute(input: FollowUpRouteInput): BotModelRoute |
       }),
   );
 }
+
+type UsageReading = { contextTokens: number; contextWindow: number } | null | undefined;
+
+const positive = (value: unknown): number | null =>
+  typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null;
+
+/**
+ * 跟进建议用的可信上下文用量。
+ * - live:当前 runtime 的读数;刚 attach、usage 回流前是占位 0。
+ * - closed:上一段 runtime 关闭那一刻固化的读数(关闭时也可能把占位 0 固化进去)。
+ * - dbContextTokens:库里的用量,只在一轮正常收尾时落库,中断 / 崩溃后可能低报。
+ *
+ * 运行时读数(live 与 closed 取大)为 0 或缺失时一律按未知(contextTokens: null),
+ * 建议层因此不推荐更小窗口;库值只作运行时读数的下限,不能单独证明缩窗安全。
+ * 高估只会让更小窗口的候选落空，不会误缩窗。
+ */
+export function deriveFollowUpUsage(input: {
+  live: UsageReading;
+  closed: UsageReading;
+  dbContextTokens: number | null | undefined;
+}): { contextTokens: number | null; contextWindow: number | null } {
+  const runtimeTokens = Math.max(positive(input.live?.contextTokens) ?? 0, positive(input.closed?.contextTokens) ?? 0);
+  return {
+    contextTokens: runtimeTokens > 0 ? Math.max(runtimeTokens, positive(input.dbContextTokens) ?? 0) : null,
+    contextWindow: positive(input.live?.contextWindow) ?? positive(input.closed?.contextWindow),
+  };
+}

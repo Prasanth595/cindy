@@ -8,7 +8,7 @@ import type { InvokeResultPayload } from '@cindy/device-link';
 import type { HistoryDevice, TaskDigestRoute } from '@cindy/mcps';
 import type { AgentKind } from '@cindy/model-providers';
 
-import { suggestFollowUpRoute } from '../bot-autonomy/followUpRoute.js';
+import { deriveFollowUpUsage, suggestFollowUpRoute } from '../bot-autonomy/followUpRoute.js';
 import { parseActiveSessionList } from '../bot-autonomy/phase.js';
 import { getDbClient } from '../localDb/client/current.js';
 import { botProfileVersions, botSessionLinks, sessions } from '../localDb/schema.js';
@@ -48,11 +48,12 @@ export interface DesktopTaskDigestHost {
   /** 本机任务的 PR 状态(git-context 同一服务与缓存)。 */
   readSessionPrStatuses(sessionId: string): Promise<Parameters<typeof formatPrStatuses>[0]>;
   /**
-   * 运行时对这件任务的权威读数:上下文用量(在跑的会话读实时值,已关闭的读关闭那一刻固化的值,
-   * 都没有为 null)与本轮终态错误的结构化字段(摘要投影里没有 sdkError / errorStatus / codexErrorInfo)。
+   * 运行时对这件任务的读数:当前 runtime 的上下文用量(没有在跑为 null)、上一段 runtime 关闭那一刻
+   * 固化的用量(没有为 null),与本轮终态错误的结构化字段(摘要投影里没有 sdkError / errorStatus / codexErrorInfo)。
    */
   readRuntimeFacts?(sessionId: string): Promise<{
-    usage: { contextTokens: number; contextWindow: number } | null;
+    live: { contextTokens: number; contextWindow: number } | null;
+    closed: { contextTokens: number; contextWindow: number } | null;
     terminalError: { sdkError?: string; errorStatus?: number; codexErrorInfo?: string } | null;
   }>;
 }
@@ -74,9 +75,6 @@ function routeFromProfile(profile: RuntimeLike['effectiveProfile']): TaskDigestR
 const toBotHarness = (harness: TaskDigestRoute['harness']): BotHarness => (harness === 'claude-code' ? 'claude' : harness);
 const toDigestHarness = (harness: BotHarness): TaskDigestRoute['harness'] => (harness === 'claude' ? 'claude-code' : harness);
 const toAgentKind = (harness: BotHarness): AgentKind => (harness === 'claude' ? 'claude-code' : harness);
-
-const positive = (value: unknown): number | null =>
-  typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null;
 
 /** 目录里核实过的窗口(与主机切换闸门同一口径);查不到返回 null。 */
 function verifiedRouteWindow(harness: BotHarness, model: string, providerId: string | null): number | null {
@@ -215,22 +213,19 @@ export function createDesktopTaskDigestDeps(host: DesktopTaskDigestHost): TaskDi
           .limit(1);
         const harness = toBotHarness(current.harness);
         const runtime = (await host.readRuntimeFacts?.(targetSessionId)) ?? null;
-        const live = runtime?.usage ?? null;
-        const liveTokens = positive(live?.contextTokens);
+        const usage = deriveFollowUpUsage({
+          live: runtime?.live,
+          closed: runtime?.closed,
+          dbContextTokens: target?.contextTokens,
+        });
         const next = suggestFollowUpRoute({
           chain,
           current: { harness, model: current.model, providerId: current.provider_id },
           failure: { ...failure, ...(failure.phase === 'errored' ? runtime?.terminalError ?? {} : {}) },
           visitedRoutes: getSessionRuntimeControlSnapshot(targetSessionId).visitedRoutes,
           sameHarnessOnly: !!target?.remoteHostId,
-          // 库里的用量只在一轮正常收尾时落库,中断 / 崩溃后可能低报;只作运行时读数的下限参考,
-          // 不能单独用来证明缩窗安全。运行时读数为 0 可能是 usage 回流前的占位(关闭时也会被固化进缓存),
-          // 一律当作未知 → null,建议层不推荐更小窗口;真正空的任务因此少一个缩窗候选,无害。
-          contextTokens: liveTokens !== null
-            ? Math.max(liveTokens, positive(target?.contextTokens) ?? 0)
-            : null,
-          currentContextWindow: positive(live?.contextWindow)
-            ?? verifiedRouteWindow(harness, current.model, current.provider_id),
+          contextTokens: usage.contextTokens,
+          currentContextWindow: usage.contextWindow ?? verifiedRouteWindow(harness, current.model, current.provider_id),
           windowOf: (candidate) => verifiedRouteWindow(candidate.harness, candidate.model, candidate.providerId),
         });
         return next

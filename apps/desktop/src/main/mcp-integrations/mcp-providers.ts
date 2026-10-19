@@ -278,19 +278,15 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
         import('../maker-ipc/sessionLastLiveUsage.js'),
       ]);
       const session = getMakerIfReady()?.getSession(sessionId);
-      // 会话已关闭(含崩溃)时退回关闭那一刻固化的实时读数。新 attach 的 runtime 回流 usage 前报占位 0,
-      // 上一段 runtime 关闭时的读数仍是下限,两者取大(高估只会让更小窗口的候选落空)。
-      const live = session?.getUsageSnapshot() ?? null;
-      const closed = getSessionLastLiveUsage(sessionId) ?? null;
-      const usage = live || closed
-        ? {
-          contextTokens: Math.max(live?.contextTokens ?? 0, closed?.contextTokens ?? 0),
-          contextWindow: live && live.contextWindow > 0 ? live.contextWindow : closed?.contextWindow ?? 0,
-        }
-        : null;
+      // 原样交出两份运行时读数,可信用量由 deriveFollowUpUsage 统一推导。
+      const pick = (usage: { contextTokens: number; contextWindow: number } | null | undefined) =>
+        usage ? { contextTokens: usage.contextTokens, contextWindow: usage.contextWindow } : null;
+      const live = pick(session?.getUsageSnapshot());
+      const closed = pick(getSessionLastLiveUsage(sessionId));
       const terminal = session?.getObservedCurrentTurnTerminal();
       return {
-        usage,
+        live,
+        closed,
         terminalError: terminal?.kind === 'error'
           ? {
             ...(terminal.sdkError ? { sdkError: terminal.sdkError } : {}),
