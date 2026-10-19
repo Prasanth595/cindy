@@ -14,6 +14,7 @@
 //
 // 纯 JS(不进 @expo/fingerprint / 不改 runtimeVersion),可随热更下发。
 
+import { Platform } from 'react-native';
 import { clearSharedTaskInvitationIntent, receiveSharedTaskInvitationIntent } from '@/device-link/sharedTaskInvitationIntent';
 import {
   isProviderShareLinkPath,
@@ -34,6 +35,9 @@ export function redirectSystemPath({ path, initial }: { path: string; initial: b
     // Every delivered shortcut is a new launch. The route carries an opaque ID;
     // only its live, account-bound in-memory intent may start recording.
     if (isVoiceConversationLink(path)) {
+      // Action Button voice entry is iOS-only. Unsupported warm links leave the
+      // current page and ordinary dictation untouched.
+      if (Platform.OS !== 'ios') return initial ? '/' : null;
       clearSharedTaskInvitationIntent();
       const intent = receiveVoiceConversationIntent(path);
       return intent ? voiceConversationIntentHref(intent) : '/';

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AppState } from 'react-native';
+import { AppState, Platform } from 'react-native';
 import { useTranslation } from 'react-i18next';
 import { createMobileVoiceConversation, type MobileVoiceConversation, type MobileVoiceConversationState } from './mobileVoiceConversation';
 import { isMobileVoiceSpeechAvailable, speakMobileVoiceReply } from './mobileVoiceSpeech';
@@ -66,9 +66,11 @@ export function useVoiceConversation(options: Options) {
   const [visible, setVisible] = useState(false);
   const [active, setActive] = useState(AppState.currentState === 'active');
   const [expectedClientId, setExpectedClientId] = useState('');
-  const ownsScreen = (value: Lifetime) => value.alive && !value.ended && current.current === value;
+  const ownsScreen = (value: Lifetime) => Platform.OS === 'ios'
+    && value.alive && !value.ended && current.current === value;
 
   useEffect(() => {
+    if (Platform.OS !== 'ios') return;
     lifetime.alive = true;
     lifetime.started = false;
     const previousCleanup = cleanup.current;
@@ -181,6 +183,7 @@ export function useVoiceConversation(options: Options) {
   }, [lifetime]);
 
   useEffect(() => {
+    if (Platform.OS !== 'ios') return;
     const subscription = AppState.addEventListener('change', next => {
       setActive(next === 'active');
       if (next === 'active') lifetime.foregroundOnce = true;

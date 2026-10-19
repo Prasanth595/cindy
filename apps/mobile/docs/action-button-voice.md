@@ -1,7 +1,12 @@
-# Action Button voice conversation
+# iOS Action Button voice conversation
 
 Status: implemented in the accompanying draft PR; native build and real-device
 validation are still required before release. This is not a release announcement.
+
+The first release is limited to iOS. Android keeps its existing text and dictation
+features; this PR does not enable the voice-conversation entry or add Android
+native speech playback. The conversation controller and reply selection remain
+platform-independent so a later Android implementation can reuse them.
 
 ## User experience
 
@@ -44,16 +49,16 @@ and [running shortcuts with Siri](https://support.apple.com/guide/shortcuts/run-
 
 ## Delivery and verification
 
-System speech playback needs a native build: iOS uses `AVSpeechSynthesizer` and
-Android uses `TextToSpeech`. The existing speech-recognition service and model
+System speech playback needs an iOS native build with `AVSpeechSynthesizer`.
+The existing speech-recognition service and model
 configuration are reused. No new TTS provider credential is required.
 
-This changes the mobile runtime fingerprint. Older native builds must keep
+This changes the iOS runtime fingerprint; the Android fingerprint is unchanged
+from the PR base. Older iOS native builds must keep
 ordinary dictation working and display an update prompt for voice conversation.
 The feature cannot be delivered to them by an OTA update alone. Follow the
 [mobile cold-update approval rules](../../../docs/dev-rules/mobile-development.md)
-before merging and releasing a compatible store/TestFlight build. Android
-speech playback also requires an installed system TTS engine and language data.
+before merging and releasing a compatible App Store/TestFlight build.
 
 Before marking the PR ready, verify cold and warm shortcut launch, signed-out
 launch followed by login, microphone permission approval/denial, two complete

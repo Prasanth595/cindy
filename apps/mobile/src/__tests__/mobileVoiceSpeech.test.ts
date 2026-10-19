@@ -4,10 +4,11 @@ const mocks = vi.hoisted(() => ({
   module: null as null | { speak: ReturnType<typeof vi.fn>; stopSpeech: ReturnType<typeof vi.fn> },
   state: 'active',
   platform: 'ios',
+  moduleLookups: vi.fn(),
   listeners: new Set<(state: string) => void>(),
 }));
 vi.mock('expo-modules-core', () => ({
-  requireOptionalNativeModule: () => mocks.module,
+  requireOptionalNativeModule: (name: string) => { mocks.moduleLookups(name); return mocks.module; },
   UnavailabilityError: class extends Error {},
 }));
 vi.mock('react-native', () => ({
@@ -39,6 +40,7 @@ describe('mobile spoken replies', () => {
   beforeEach(() => {
     mocks.state = 'active';
     mocks.platform = 'ios';
+    mocks.moduleLookups.mockClear();
     pending = undefined;
     mocks.module = {
       speak: vi.fn((options: { requestId: string }) => new Promise<'done' | 'cancelled'>(resolve => {
@@ -75,6 +77,16 @@ describe('mobile spoken replies', () => {
     await expect(speakMobileVoiceReply('Hello')).rejects.toThrow();
     mocks.module = null;
     expect(isMobileVoiceSpeechAvailable()).toBe(false);
+  });
+
+  // The iOS-only release must never discover or invoke speech on other platforms,
+  // even if a native module with the same methods is present.
+  it.each(['android', 'web'])('does not load or invoke native speech on %s', async platform => {
+    mocks.platform = platform;
+    expect(isMobileVoiceSpeechAvailable()).toBe(false);
+    await expect(speakMobileVoiceReply('Hello')).rejects.toThrow();
+    expect(mocks.moduleLookups).not.toHaveBeenCalled();
+    expect(mocks.module!.speak).not.toHaveBeenCalled();
   });
 
   it('cancels on background and does not start a reply while already inactive', async () => {

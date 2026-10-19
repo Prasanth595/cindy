@@ -4,11 +4,11 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const native = vi.hoisted(() => ({
-  state: 'active', listeners: new Set<(state: string) => void>(),
+  platform: 'ios', state: 'active', listeners: new Set<(state: string) => void>(),
   speechAvailable: true, speak: vi.fn(), language: 'en',
   translate: (key: string) => key,
 }));
-vi.mock('react-native', () => ({ AppState: {
+vi.mock('react-native', () => ({ Platform: { get OS() { return native.platform; } }, AppState: {
   get currentState() { return native.state; },
   addEventListener: (_event: string, listener: (state: string) => void) => {
     native.listeners.add(listener);
@@ -100,7 +100,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   clearVoiceConversationIntent();
   setMobileAuthOwner('owner');
-  native.state = 'active'; native.listeners.clear(); native.speechAvailable = true;
+  native.platform = 'ios'; native.state = 'active'; native.listeners.clear(); native.speechAvailable = true;
   native.language = 'en'; native.speak.mockReset().mockResolvedValue('done');
   strict = false; draft = '';
   options = {
@@ -121,6 +121,25 @@ afterEach(async () => {
 });
 
 describe('voice conversation screen ownership', () => {
+  // iOS-only scope: a restored route must not turn unsupported native speech
+  // into an update prompt or take ownership of Android's ordinary dictation.
+  it.each(['android', 'web'])('ignores a restored voice route and ordinary dictation on %s', async platform => {
+    native.platform = platform;
+    native.speechAvailable = false;
+    await render();
+    await act(async () => { api.resume(); api.submit(); api.onTranscriptChanged('Manual dictation'); });
+    await render({ scope: 'owner:new:computer-2', deviceId: 'computer-2' });
+    await act(async () => { root.unmount(); });
+    root = createRoot(host);
+    expect(api.visible).toBe(false);
+    expect(api.error).toBeNull();
+    expect(options.startListening).not.toHaveBeenCalled();
+    expect(options.finishListening).not.toHaveBeenCalled();
+    expect(options.send).not.toHaveBeenCalled();
+    expect(options.cancelListening).not.toHaveBeenCalled();
+    expect(native.speak).not.toHaveBeenCalled();
+  });
+
   it('does not cancel ordinary dictation when an unclaimed task page changes scope or unmounts', async () => {
     const cancel = options.cancelListening;
     await render({ requestId: null });

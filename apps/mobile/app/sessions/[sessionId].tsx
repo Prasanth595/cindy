@@ -1013,6 +1013,7 @@ function SessionScreenContent() {
     visualOpenSearch?: string;
     visualSearchQuery?: string;
   }>();
+  const voiceConversationRequestId = Platform.OS === 'ios' ? readRouteParam(params.voiceConversation) : null;
   const sessionId = readRouteParam(params.sessionId) ?? '';
   const notificationResponse = readRouteParam(params.notificationResponse);
   const syncedNotificationResponseRef = useRef<string | null>(null);
@@ -5329,7 +5330,7 @@ function SessionScreenContent() {
     composerInputRef.current?.applyDocumentAndSetSelectionToEnd(nextDocument);
   }, [applyComposerDocument]);
 
-  const startVoiceRecording = useCallback(async () => {
+  const startVoiceRecording = useCallback(async (forConversation = false) => {
     if (
       voicePermissionRequestInFlightRef.current
       || voiceStartupInFlightRef.current
@@ -5492,7 +5493,7 @@ function SessionScreenContent() {
           // re-activates the AVAudioSession and stalls the record tap (see
           // mobileVoiceCue.ts). Only the end cue, which plays after capture
           // stops, is wired.
-          onReadyForEndCue: !params.voiceConversation && credential.settings?.playInteractionSound ? playMobileVoiceInputEndCue : undefined,
+          onReadyForEndCue: !forConversation && credential.settings?.playInteractionSound ? playMobileVoiceInputEndCue : undefined,
           recordHistory: (text) => recordMobileVoiceInputHistoryForHost(deviceId, text),
           updateHistoryEntry: (entryId, text) => updateMobileVoiceInputHistoryEntryForHost(deviceId, entryId, text),
           onRefinementApplied: (input) => {
@@ -5568,7 +5569,7 @@ function SessionScreenContent() {
       setVoiceState('error');
       setVoiceError(formatRemoteError(err));
     }
-  }, [deviceId, openLink, params.voiceConversation, renderItems, t, voiceIsProcessing, voiceState, writeVoiceDraft]);
+  }, [deviceId, openLink, renderItems, t, voiceIsProcessing, voiceState, writeVoiceDraft]);
 
   const cancelVoiceForAppBackground = useCallback(() => {
     const controller = voiceControllerSessionRef.current;
@@ -7108,7 +7109,7 @@ function SessionScreenContent() {
 
   const voiceConversationFocused = useIsFocused();
   const voiceConversation = useVoiceConversation({
-    requestId: readRouteParam(params.voiceConversation),
+    requestId: voiceConversationRequestId,
     scope: `${auth.accountGeneration}:${deviceId}:${sessionId}`,
     deviceId, sessionId,
     ready: canUseComposer && composerDraftHydrated && !loading && !!currentSession,
@@ -7118,7 +7119,7 @@ function SessionScreenContent() {
     voiceError,
     blocked: pending.length > 0 || !!error || !!inputProjection.error || !!queueEditingRef.current,
     startListening: async () => {
-      await startVoiceRecording();
+      await startVoiceRecording(true);
       if (!voiceRecordingActiveRef.current) throw new Error('VOICE_START_CANCELLED');
     },
     finishListening: () => finishVoiceRecording(),

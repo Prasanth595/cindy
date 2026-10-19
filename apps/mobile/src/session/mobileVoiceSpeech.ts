@@ -19,8 +19,8 @@ let sequence = 0;
 let activeRun: SpeechRun | undefined;
 
 function speechModule(): NativeVoiceSpeech | null {
-  const name = Platform.OS === 'android' ? 'XdtMobileVoiceSpeech' : 'XdtMobileRealtimeAudio';
-  const candidate = requireOptionalNativeModule<Partial<NativeVoiceSpeech>>(name);
+  if (Platform.OS !== 'ios') return null;
+  const candidate = requireOptionalNativeModule<Partial<NativeVoiceSpeech>>('XdtMobileRealtimeAudio');
   // Old native installations may contain the capture module without speech.
   return typeof candidate?.speak === 'function' && typeof candidate.stopSpeech === 'function'
     ? candidate as NativeVoiceSpeech
@@ -28,7 +28,7 @@ function speechModule(): NativeVoiceSpeech | null {
 }
 
 export function isMobileVoiceSpeechAvailable(): boolean {
-  return Platform.OS !== 'web' && speechModule() !== null;
+  return speechModule() !== null;
 }
 
 function cancelRun(run: SpeechRun): Promise<void> {
@@ -46,7 +46,7 @@ export async function stopMobileVoiceSpeech(): Promise<void> {
 /**
  * Call only after the dictation controller has stopped capture. Native speech
  * returns after playback, so the caller can safely start the next listening turn.
- * Long replies are split below Android's per-utterance limit without truncation.
+ * Long replies are split below the native bridge's utterance limit without truncation.
  */
 export async function speakMobileVoiceReply(
   text: string,

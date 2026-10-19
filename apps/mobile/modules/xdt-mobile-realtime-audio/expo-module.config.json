@@ -1,10 +1,7 @@
 {
-  "platforms": ["apple", "android"],
+  "platforms": ["apple"],
   "apple": {
     "podspecPath": "./ios/XdtMobileRealtimeAudio.podspec",
     "modules": ["XdtMobileRealtimeAudioModule"]
-  },
-  "android": {
-    "modules": ["com.xdtmaker.voicespeech.XdtMobileVoiceSpeechModule"]
   }
 }

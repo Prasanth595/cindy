@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+const native = vi.hoisted(() => ({ platform: 'ios' }));
+vi.mock('react-native', () => ({ Platform: { get OS() { return native.platform; } } }));
+
 vi.mock('@/config/env', () => ({
   WECHAT_APP_ID: 'wx-test-mobile',
   WECHAT_UNIVERSAL_LINK: 'https://login.example.com/app/',
@@ -25,10 +28,21 @@ const incoming = 'cindy://shared-session?invitation=' + invitation + '&server=ht
 const shareInvitation = 'B'.repeat(43);
 const shareIncoming = 'cindy://provider-share/join?invitation=' + shareInvitation + '&server=https%3A%2F%2Frelay.example.test%2Fdl';
 const shareWebLink = 'https://relay.example.test/dl/provider-share/join#' + shareInvitation;
-beforeEach(() => { vi.useFakeTimers(); clearSharedTaskInvitationIntent(); clearProviderShareLinkIntent(); clearVoiceConversationIntent(); setMobileAuthOwner(null); });
+beforeEach(() => { vi.useFakeTimers(); native.platform = 'ios'; clearSharedTaskInvitationIntent(); clearProviderShareLinkIntent(); clearVoiceConversationIntent(); setMobileAuthOwner(null); });
 afterEach(() => { clearSharedTaskInvitationIntent(); clearProviderShareLinkIntent(); clearVoiceConversationIntent(); vi.useRealTimers(); });
 
 describe('mobile native deep-link redirects', () => {
+  // The user scoped Action Button voice entry to iOS. Unsupported deep links
+  // must not start voice, abandon a warm page, or replace a pending invitation.
+  it.each(['android', 'web'])('does not open voice mode for cold or warm links on %s', platform => {
+    native.platform = platform;
+    redirectSystemPath({ path: incoming, initial: true });
+    expect(redirectSystemPath({ path: 'cindy://voice', initial: true })).toBe('/');
+    expect(redirectSystemPath({ path: 'cindy://voice', initial: false })).toBeNull();
+    expect(getPendingVoiceConversationIntent()).toBeNull();
+    expect(getPendingSharedTaskInvitationIntent()).not.toBeNull();
+  });
+
   // Voice shortcuts are a new navigation contract: cold/warm launch must bypass
   // home restoration without treating a restored route parameter as mic consent.
   it.each([true, false])('opens a fresh voice launch for registered app links (initial=%s)', initial => {

@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react';
+import { Platform } from 'react-native';
 import {
   getMobileAuthOwner,
   isMobileAuthOwnerCurrent,
@@ -61,7 +62,7 @@ export function clearUntransferredVoiceConversationIntent(id: string): void {
 }
 
 export function receiveVoiceConversationIntent(path: string): VoiceConversationIntent | null {
-  if (!isVoiceConversationLink(path)) return null;
+  if (Platform.OS !== 'ios' || !isVoiceConversationLink(path)) return null;
   clearVoiceConversationIntent();
   let owner = getMobileAuthOwner();
   if (owner.switching) return null;
@@ -89,7 +90,7 @@ export function voiceConversationIntentHref(intent: VoiceConversationIntent): st
 }
 
 function currentLaunch(id: string, phase: Launch['phase']): Launch | null {
-  if (!launch || launch.intent.id !== id || launch.phase !== phase) return null;
+  if (Platform.OS !== 'ios' || !launch || launch.intent.id !== id || launch.phase !== phase) return null;
   if (launch.intent.expiresAt <= Date.now()) {
     clearVoiceConversationIntent(id);
     return null;
@@ -133,7 +134,7 @@ export function takeVoiceConversationSessionHandoff(
 }
 
 export const getPendingVoiceConversationIntent = (): VoiceConversationIntent | null =>
-  launch?.phase === 'pending' ? launch.intent : null;
+  Platform.OS === 'ios' && launch?.phase === 'pending' ? launch.intent : null;
 
 export function subscribeVoiceConversationIntent(listener: () => void): () => void {
   listeners.add(listener);

@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+const native = vi.hoisted(() => ({ platform: 'ios' }));
+vi.mock('react-native', () => ({ Platform: { get OS() { return native.platform; } } }));
+
 import { invalidateMobileAuthOwnerForSwitch, setMobileAuthOwner } from '@/auth/authOwnerGeneration';
 import {
   clearVoiceConversationIntent,
@@ -19,6 +22,7 @@ import {
 
 beforeEach(() => {
   vi.useFakeTimers();
+  native.platform = 'ios';
   clearVoiceConversationIntent();
   setMobileAuthOwner(null);
 });
@@ -28,6 +32,24 @@ afterEach(() => {
 });
 
 describe('voice conversation launch ownership', () => {
+  // iOS-only scope: even an inherited launch/handoff ID cannot enable capture
+  // on another platform. Existing ownership tests only exercise signed-in iOS.
+  it.each(['android', 'web'])('refuses launch reception, claims and handoff on %s', platform => {
+    setMobileAuthOwner('first');
+    const intent = receiveVoiceConversationIntent('/voice')!;
+    native.platform = platform;
+    expect(receiveVoiceConversationIntent('/voice')).toBeNull();
+    expect(getPendingVoiceConversationIntent()).toBeNull();
+    expect(takeVoiceConversationIntent(intent.id)).toBe(false);
+    const target = { sessionId: 'task-1', deviceId: 'computer-1', clientId: 'message-1' };
+    expect(transferVoiceConversationToSession(intent.id, target)).toBe(false);
+    native.platform = 'ios';
+    expect(takeVoiceConversationIntent(intent.id)).toBe(true);
+    expect(transferVoiceConversationToSession(intent.id, target)).toBe(true);
+    native.platform = platform;
+    expect(takeVoiceConversationSessionHandoff(intent.id, target)).toBeNull();
+  });
+
   it('survives the first login and grants only one microphone start', () => {
     const intent = receiveVoiceConversationIntent('cindy://voice')!;
     expect(takeVoiceConversationIntent(intent.id)).toBe(false);
