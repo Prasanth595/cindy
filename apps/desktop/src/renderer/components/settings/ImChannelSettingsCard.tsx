@@ -102,9 +102,9 @@ export function ImChannelSettingsCard({
           </span>
 
           <span className="flex min-w-0 shrink-0 items-center gap-3">
-            <span className="hidden w-[220px] truncate text-right text-12 text-[var(--text-secondary)] md:block">
+            {routeSummary ? <span className="hidden w-[220px] truncate text-right text-12 text-[var(--text-secondary)] md:block">
               {routeSummary}
-            </span>
+            </span> : null}
             {status}
             <ChevronDown
               size={17}

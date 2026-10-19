@@ -31,6 +31,7 @@ const h = vi.hoisted(() => {
   return {
     calls,
     followPolicy: vi.fn(),
+    prepareBot: vi.fn(async (): Promise<string | null> => null),
     syncDefaultRoute: vi.fn(async () => false),
     writeDefaultRecord: vi.fn(async (_id: string, _fingerprint: string) => undefined),
     acquirePendingAgentSwitch: vi.fn(async (_id: string, _sync: () => Promise<boolean>): Promise<() => void> => () => {}),
@@ -153,6 +154,7 @@ vi.mock('../../device-link/broadcast-tap.js', () => ({
 vi.mock('../../maker-ipc/register.js', () => ({
   acquirePendingAgentSwitchForImSend: h.acquirePendingAgentSwitch,
   beginTurnChangeSetAtDispatch: h.beginTurnChangeSetAtDispatch,
+  prepareBotSessionForImSend: h.prepareBot,
   prepareUnhealthySessionForSend: vi.fn(async () => undefined),
   wireSessionToIpc: vi.fn(),
   isSessionInTurn: () => false,
@@ -318,6 +320,7 @@ function makeFakeSession(id: string) {
   const permission = makePermissionModeFake();
   return {
     id,
+    ...({ instanceId: `instance-${id}` } as { instanceId?: string }),
     workDir: 'D:/repo',
     get permissionModeState() {
       return permission.permissionModeState;
@@ -368,6 +371,7 @@ const fakeMaker = {
   getSessionMeta: vi.fn(async () => ({
     workDir: 'D:/repo',
     model: 'meta-model',
+    ...({ effort: 'high', fastMode: true } as { effort?: Effort; fastMode?: boolean }),
     sdkSessionId: 'sdk-1',
     agentKind: 'claude-code' as const,
     permissionMode: undefined as 'ask' | 'bypassPermissions' | undefined,
@@ -493,6 +497,23 @@ beforeEach(() => {
 });
 
 describe('hook task model selection on next send', () => {
+  // A companion lane inherits its current profile route and owner tool scope;
+  // a paused profile must never reach the provider (unit, production runner).
+  it('preserves X companion model options and blocks unavailable companions', async () => {
+    const runner = createMakerHookSessionRunner({ log });
+    const req = baseReq({ isNew: false, companionBotId: 'bot-one', source: { im: 'x' } });
+    expect((await runner.run(req)).status).toBe('ok');
+    expect(h.prepareBot).toHaveBeenCalledWith(req.sessionId);
+    expect(fakeMaker.createSession).toHaveBeenCalledWith(expect.objectContaining({
+      model: 'meta-model', effort: 'high', fastMode: true,
+      vendorOptions: expect.objectContaining({ source: 'x' }),
+    }));
+    fakeMaker.createSession.mockClear();
+    h.prepareBot.mockResolvedValueOnce('Companion paused');
+    expect(await runner.run(req)).toMatchObject({ status: 'error', errorMessage: 'Companion paused' });
+    expect(fakeMaker.createSession).not.toHaveBeenCalled();
+  });
+
   it('runs default following under the send lock before reading metadata', async () => {
     const readMeta = fakeMaker.getSessionMeta.getMockImplementation()!;
     h.acquirePendingAgentSwitch.mockImplementationOnce(async (id, sync) => {

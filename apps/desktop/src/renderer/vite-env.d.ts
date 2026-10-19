@@ -4384,7 +4384,9 @@ interface ElectronAPI {
     setWorkspaces: (
       workspaces: Record<string, string>,
     ) => Promise<{ hook: import('../shared/hookControlIpc').SlackHookView }>;
-    /** 该 provider 派发任务的默认工作目录别名(null = 内置「对话」伪目录)。 */
+    /** Official X assignment, compared with the caller's last observed value. */
+    setXCompanion: (botId: string | null, expectedBotId: string | null) =>
+      Promise<{ hook: import('../shared/hookControlIpc').SlackHookView }>;
     setProviderDefaultWorkspace: (
       provider: 'telegram' | 'x',
       alias: string | null,

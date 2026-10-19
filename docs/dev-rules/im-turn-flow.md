@@ -184,3 +184,11 @@ inbound ──► admitted ──► queued? ──► dispatching ──► run
 | 模型准入（`openSession`） | 只做凭证检查 | 新任务做路由检查 | 已按 Dash 指定改走 `openSession` 准入：新任务的模型 / 来源 / 推理强度 / Fast 不被支持时直接拒绝（文案「不会自动更换模型或供应商」），准入还会规范化来源与推理强度；渠道默认配置若指向已停用的模型，新任务会建不出来（以前会照建） |
 | live session 改走 `bootstrapSession` | 不注入项目上下文 / Orca 指令 | 同左 | 未改：改了等于给 IM / hook 任务新增项目上下文与 Orca 指令注入、目录授权准备等行为，属产品决定 |
 | 缺口 2b / 2e / 2f / 默认配置取值链 | 见台账 | 见台账 | 各自保留，合并只共享实现骨架 |
+
+### 官方 X 的伙伴路由
+
+`hook-control/xCompanion.ts` 通过既有 `ensureBotChannelLaneSession` 创建 X 公开专线。
+绑定正本为账号隔离的 hook store `x.companionBotId`，不修改跨端 wire 或数据库 schema。
+Dispatcher 只接受宿主解析的专线 ID 和精确工作目录，忽略入站指定的任务 ID；执行与排队恢复时
+重新核对绑定。Runner 在获取切模锁前执行伙伴模型/能力刷新，provider 启动前登记 X 的
+`LaneTurnScope`，终态释放；source 仍保留 `bot`，渠道说明逐轮追加。普通未绑定 X 路由保持原样。

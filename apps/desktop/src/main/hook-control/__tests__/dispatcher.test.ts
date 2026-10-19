@@ -5721,3 +5721,46 @@ describe('渠道 /stop 走统一明确停止', () => {
     await deactivated;
   });
 });
+
+// Official X companion routing: an authenticated dispatch uses only the host's
+// public lane, never the supplied private session. Revocation also stops queued
+// work. Ordinary workspace tests have no companion binding (unit).
+describe('official X companion assignment', () => {
+  it('routes to the companion lane and rejects queued work after unbinding', async () => {
+    const config = { ...CONFIG, id: 'account:x', workspaces: {}, companionBotId: 'bot-one' as string | null };
+    const fake = fakeRunner();
+    const out = collector();
+    const resolver = vi.fn(async () => ({ sessionId: 'public-lane', workingDir: '/companion/home' }));
+    const dispatcher = createHookDispatcher({ getConnection: () => config, bindings: memoryBindings(),
+      runner: fake.runner, resolveCompanionTarget: resolver, log: noopLog });
+    const payload = dispatch({ externalKey: 'x:thread:principal', source: { im: 'x' }, sessionId: 'private-chat' });
+    dispatcher.handleDispatch(config.id, payload, out.send);
+    await tick(30);
+    expect(fake.calls).toHaveLength(1);
+    expect(fake.calls[0]).toMatchObject({ sessionId: 'public-lane', companionBotId: 'bot-one', isNew: false });
+    expect(fake.calls[0].isDirAuthorized?.('/companion/home')).toBe(true);
+    expect(fake.calls[0].isDirAuthorized?.('/another/private/path')).toBe(false);
+    dispatcher.handleDispatch(config.id, { ...payload, requestId: 'req-2' }, out.send);
+    await tick(30);
+    config.companionBotId = null;
+    expect(fake.calls[0].isDirAuthorized?.('/companion/home')).toBe(false);
+    fake.finish();
+    await tick(60);
+    expect(fake.calls).toHaveLength(1);
+    expect(out.ofType('turn.end').some(frame => frame.payload.requestId === 'req-2' && frame.payload.status === 'error')).toBe(true);
+    dispatcher.dispose();
+  });
+  it('does not fall back to ordinary tasks when the assigned companion is unavailable', async () => {
+    const fake = fakeRunner();
+    const out = collector();
+    const dispatcher = createHookDispatcher({
+      getConnection: () => ({ ...CONFIG, companionBotId: 'missing-bot' }), bindings: memoryBindings(),
+      runner: fake.runner, resolveCompanionTarget: async () => { throw new Error('Companion unavailable'); }, log: noopLog,
+    });
+    dispatcher.handleDispatch('account:x', dispatch({ source: { im: 'x' }, externalKey: 'x:thread:principal' }), out.send);
+    await tick(30);
+    expect(fake.calls).toHaveLength(0);
+    expect(out.last('task.ack')?.payload.result).toBe('rejected');
+    dispatcher.dispose();
+  });
+});

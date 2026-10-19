@@ -7,6 +7,8 @@
  * 与 设置 → IM 机器人 里那份个人 bot 各用各的凭证; 添加时也可以把那份个人 bot 一次性移过来
  * (个人 bot 随之清空)。远端伙伴没有这一页。
  */
+
+import { HookConnectionsSection } from '@/components/settings/HookConnectionsSection';
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { Briefcase, Gamepad2, MessageSquare, Plus, Send, Zap, type LucideIcon } from 'lucide-react';
@@ -147,6 +149,7 @@ export function BotChannelsPage({ bot }: { bot: BotProfile }) {
 
   return (
     <section className="flex flex-col gap-4 pt-3" aria-label={t('bots.channels.title')}>
+      {typeof window.electronAPI.hookControl?.setXCompanion === 'function' ? <HookConnectionsSection companion={{ id: bot.id, name: bot.name }} /> : null}
       {loading && !payload ? (
         <div className="flex justify-center py-6 text-[var(--text-tertiary)]">
           <Spinner size={16} />

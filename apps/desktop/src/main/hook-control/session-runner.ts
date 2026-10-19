@@ -27,6 +27,8 @@
  * 正确。后续要精确区分时再与 maker-core 一起演进。
  */
 
+import { beginChannelToolScope } from '../im/shared/channelToolScope.js';
+
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -60,6 +62,7 @@ import {
   acquirePendingAgentSwitchForImSend,
   beginTurnChangeSetAtDispatch,
   prepareUnhealthySessionForSend,
+  prepareBotSessionForImSend,
   wireSessionToIpc,
   isSessionInTurn,
   noteSilentStopUserSend,
@@ -631,7 +634,7 @@ export function createMakerHookSessionRunner(deps: {
       const maker = getMaker();
       // 新任务的账号代次从读取偏好 / 默认配置之前算起(与个人 IM 同一判据): 中途换账号时
       // 不拿旧账号读到的配置去新账号的库里建任务。
-      const assertAccount = req.isNew ? captureChannelAccount() : undefined;
+      const assertAccount = req.isNew || req.companionBotId ? captureChannelAccount() : undefined;
       /** 新任务建行后的补写(来源、发送时间、worktree)同样只写入口账号的库。 */
       const accountStillCurrent = (): boolean => {
         try {
@@ -667,6 +670,7 @@ export function createMakerHookSessionRunner(deps: {
       let model: string | undefined = resolved?.model;
       let effort = resolved?.effort;
       let resumeSessionId: string | undefined;
+      let companionFastMode: boolean | undefined;
       let effectiveAgentKind: AgentKind = resolved?.agentKind ?? 'claude-code';
       // 新建路径 resolved 必有值(capabilities 校验过); 复用路径由下方 meta 覆盖
       let permissionMode: PermissionMode = (resolved?.permissionMode ??
@@ -690,7 +694,8 @@ export function createMakerHookSessionRunner(deps: {
           resumeSessionId = meta.sdkSessionId;
           effectiveAgentKind = meta.agentKind;
         }
-        effort = undefined;
+        effort = req.companionBotId ? meta?.effort : undefined;
+        companionFastMode = req.companionBotId ? meta?.fastMode : undefined;
         permissionMode = meta?.permissionMode ?? 'bypassPermissions';
         rowProviderId = row?.providerId ?? null;
         agentDeviceId = row?.agentDeviceId ?? meta?.agentDeviceId ?? null;
@@ -774,6 +779,7 @@ export function createMakerHookSessionRunner(deps: {
         ...(providerId !== null ? { providerId } : {}),
         ...(effort !== undefined ? { effort } : {}),
         permissionMode,
+        ...(companionFastMode !== undefined ? { fastMode: companionFastMode } : {}),
         // chat 伪目录新会话: 标记 dialogue, 落侧边栏「对话」分组而非按
         // dialogues/<日期>/<id> 目录名聚成项目节点
         ...(req.isNew && req.workspaceKind !== undefined
@@ -789,7 +795,7 @@ export function createMakerHookSessionRunner(deps: {
         //     进程生命周期(对齐 im/turnRunner「attached 不传 vendorOptions」
         //     的裁决)。hook turn 本身的渠道说明由逐 turn 的
         //     provider-aware hook prompt note 全覆盖,不依赖这里。
-        ...(req.isNew
+        ...((req.isNew || req.companionBotId)
           ? {
               vendorOptions: {
                 source:
@@ -1046,7 +1052,10 @@ export function createMakerHookSessionRunner(deps: {
         };
       };
       /** turn 收口清扫: 未决交互按默认自决 + 释放中央 route。幂等。 */
+      let releaseXCompanionScope: (() => void) | undefined;
       const finalizeInteractions = (): void => {
+        releaseXCompanionScope?.();
+        releaseXCompanionScope = undefined;
         headlessTurn.closed = true;
         headlessTurn.release?.();
         headlessTurn.release = null;
@@ -1255,7 +1264,10 @@ export function createMakerHookSessionRunner(deps: {
       // 渲染层展示的用户消息保持来源 IM 原话。逐 turn 追加固定文本,教模型
       // 用 xdt-file 引用回传文件而非误用 cindy_feishu_bot(规则 9,实踩背景
       // 见 outbound.ts 的常量注释)。
-      const promptWithNote = `${req.prompt}\n\n${buildHookPromptNote(req.source?.im)}\n\n${buildUiLanguageErrorNote(getResolvedMainLocale())}`;
+      const publicCompanionNote = req.companionBotId
+        ? '\n[渠道说明] 本轮是主人通过官方 X 账号绑定发起的公开提问，最终回答将公开回帖。请勿公开伙伴记忆或工作目录中的私人信息。回复由当前 X 通道投递，不要另用 X Manager 发帖。'
+        : '';
+      const promptWithNote = `${req.prompt}\n\n${buildHookPromptNote(req.source?.im)}${publicCompanionNote}\n\n${buildUiLanguageErrorNote(getResolvedMainLocale())}`;
       let replacementHandoff: string | null = null;
       if (req.isNew && req.replacementOfSessionId && req.source?.im === 'slack') {
         try {
@@ -1430,6 +1442,14 @@ export function createMakerHookSessionRunner(deps: {
                 sessionId: session.id,
                 sessionInstanceId: session.instanceId,
                 scope: req.groupHistoryAccess,
+              });
+            }
+            if (req.companionBotId && req.source?.im === 'x') {
+              releaseXCompanionScope = beginChannelToolScope({
+                sessionId: session.id, sessionInstanceId: session.instanceId,
+                scope: { channel: 'x', botId: req.companionBotId, companion: true,
+                  chatId: req.origin.externalKey, laneUserId: req.origin.externalKey,
+                  chatKind: 'group', requesterIsOwner: true },
               });
             }
             const routeOrigin: RoutedTurnOrigin =
@@ -1627,6 +1647,10 @@ export function createMakerHookSessionRunner(deps: {
     ...runner,
     async run(req) {
       if (req.isNew) return runner.run(req);
+      if (req.companionBotId) {
+        const blocked = await prepareBotSessionForImSend(req.sessionId);
+        if (blocked) return { status: 'error' as const, finalText: '', errorMessage: blocked, durationMs: 0 };
+      }
       // 切换可能重建引擎，必须先应用选择，再读 meta、建会话和挂观察器。
       // 与创建任务共用取值链：迁移前保留 server 偏好，迁移后由本机正本忽略旧便签。
       const overrides: HookDispatchOverrides = {

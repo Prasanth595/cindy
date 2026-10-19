@@ -179,6 +179,8 @@ export interface HookContinuationWatchRequest {
 }
 
 export interface HookRunRequest {
+  /** Host-resolved companion channel lane; never accepted from the wire. */
+  companionBotId?: string;
   /** Untruncated user body for persistence; source.userText is only a bounded display preview. */
   userText?: string;
   /** Local display snapshot; not part of the server wire protocol. */
@@ -299,6 +301,10 @@ export type PrepareWorktreeResult =
   | { ok: false; message: string };
 
 export interface HookDispatcherDeps {
+  resolveCompanionTarget?: (botId: string, externalKey: string) => Promise<{
+    sessionId: string;
+    workingDir: string;
+  }>;
   getConnection: (id: string) => HookConnectionConfig | null;
   bindings: HookBindingStore;
   /** Durable terminal request state, injected by the Electron owner boundary. */
@@ -716,6 +722,10 @@ function telegramLegacyLifecycle(
 }
 
 export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
+  // Only lanes resolved by the host receive companion workspace access. A shared Home
+  // path is not permission to take over the companion's private canonical task.
+  const companionTargets = new Map<string, { connectionId: string; botId: string; workingDir: string }>();
+
   const {
     getConnection,
     bindings,
@@ -1599,7 +1609,7 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
     if (running.has(sessionId) || activeContinuations.has(sessionId)) return;
     if (!supportsReopen(entry.connectionId)) return;
     // 目录授权按现场重算(与 execute 同一道收口): 等待期间映射可能已被改删。
-    if (!dirStillAllowed(entry.connectionId, entry.workingDir)) {
+    if (!dirStillAllowed(entry.connectionId, entry.workingDir, sessionId)) {
       log.info(
         `hook continuation skipped: the session directory is no longer authorized (reopenOf=${entry.requestId})`,
       );
@@ -1671,7 +1681,7 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
       workingDir: entry.workingDir,
       ...(entry.source ? { source: entry.source } : {}),
       laneKind: deriveLaneKind(entry.externalKey),
-      isDirAuthorized: (dir) => dirStillAllowed(entry.connectionId, dir),
+      isDirAuthorized: (dir) => dirStillAllowed(entry.connectionId, dir, sessionId),
       onClaim: () => {
         if (revoked || !isCurrentGeneration(entry.accountGeneration)) return;
         const send = sendFns.get(entry.connectionId);
@@ -1911,7 +1921,7 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
      * 而空串过 isPathWithin 会 resolve 成 cwd, 那就成了一条假放行。
      */
     const guardDir = task.run.workingDir || null;
-    if (guardDir !== null && !dirStillAllowed(task.connectionId, guardDir)) {
+    if (guardDir !== null && !dirStillAllowed(task.connectionId, guardDir, task.run.sessionId)) {
       // 路径不进日志(规则: 用集中 PII helper, 而 dispatcher 是不碰 Electron 的
       // 纯逻辑模块, 拿不到它)—— requestId 足够定位。
       log.info(
@@ -1937,7 +1947,7 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
               // This is not another turn.end: the original result remains final.
               // Only the negotiated Telegram executor can send outside that turn.
               if (!isCurrentGeneration(task.accountGeneration)
-                || !dirStillAllowed(task.connectionId, task.run.workingDir)
+                || !dirStillAllowed(task.connectionId, task.run.workingDir, task.run.sessionId)
                 || !serverFeatures.get(task.connectionId)?.includes(HOOK_FEATURE_MESSAGE_OPS)) {
                 return Promise.resolve(false);
               }
@@ -1975,7 +1985,7 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
             : {}),
           // runner 建/取到 session 后, 拿它真正要跑的那个目录回来问一次 ——
           // 那个目录可能与这里校验过的不是同一个(见 isDirAuthorized 的说明)。
-          isDirAuthorized: (dir) => dirStillAllowed(task.connectionId, dir),
+          isDirAuthorized: (dir) => dirStillAllowed(task.connectionId, dir, task.run.sessionId),
         });
       } catch (err) {
         runnerThrew = true;
@@ -2152,11 +2162,16 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
    * 它", 所以必须在这里重新查一次当前映射, 否则排着的消息会在已撤权的目录里
    * 执行(PR #733 review 指出)。连接本身没了或被停用, 同样按撤权处理。
    */
-  function dirStillAllowed(connectionId: string, dir: string): boolean {
+  function dirStillAllowed(connectionId: string, dir: string, sessionId?: string): boolean {
     const config = getConnection(connectionId);
     // 连接被停用 = 用户已经切断了这条远端通道。handleDispatch 入口就这么判,
     // 排队中的任务同样不能因为"目录还在映射里"就照跑(PR #733 review 指出)。
     if (!config || !config.enabled) return false;
+    const companion = sessionId ? companionTargets.get(sessionId) : undefined;
+    if (config.companionBotId || companion) {
+      return !!companion && companion.connectionId === connectionId
+        && companion.botId === config.companionBotId && path.resolve(companion.workingDir) === path.resolve(dir);
+    }
     if (Object.values(config.workspaces).some((root) => isPathWithin(root, dir))) return true;
     return dialogue !== undefined && (dialogue.rootDirs?.() ?? [dialogue.rootDir()])
       .some((root) => isPathWithin(root, dir));
@@ -2243,6 +2258,23 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
       connectionName: config.name,
       externalKey: payload.externalKey,
     };
+    if (config.companionBotId) {
+      if (!connectionId.endsWith(':x') || payload.source?.im !== 'x' || !deps.resolveCompanionTarget) {
+        return { reject: 'disabled' };
+      }
+      const target = await deps.resolveCompanionTarget(config.companionBotId, payload.externalKey);
+      if (!isCurrentGeneration(generation)
+        || getConnection(connectionId)?.companionBotId !== config.companionBotId) {
+        return { reject: 'disabled' };
+      }
+      companionTargets.set(target.sessionId, { connectionId, botId: config.companionBotId, workingDir: target.workingDir });
+      bindings.set(connectionId, payload.externalKey, target.sessionId);
+      return { run: {
+        ...target, companionBotId: config.companionBotId, isNew: false,
+        agentKind: null, model: null, effort: null, permissionMode: null,
+        title: null, prompt: payload.prompt, attachments: payload.attachments, origin,
+      } };
+    }
     /**
      * 同上, 但每次都重读连接配置 —— 撤权判定必须用**此刻**的映射: `config` 是
      * 消息进来那一刻的快照, 而下面要 await `runner.inspect()`。用快照判定的话,
@@ -2993,6 +3025,7 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
         // 不在这里清的话, 每次切账号都永久留下一条 sessionId + 完整工作目录路径
         // (PR #733 review 指出)。这些会话属于上一个账号, 新账号下本就不该免检。
         awaitingPersist.clear();
+        companionTargets.clear();
         staleTakeoverReplacements.clear();
         latestPromptBySession.clear();
         keyChains.clear();
@@ -3026,12 +3059,12 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
           // (PR #733 review 指出)。
           if (info === null) {
             const pendingDir = awaitingPersist.get(sessionId);
-            return pendingDir !== undefined && dirStillAllowed(connectionId, pendingDir);
+            return pendingDir !== undefined && dirStillAllowed(connectionId, pendingDir, sessionId);
           }
           return (
             info.usable === true &&
             info.workingDir !== null &&
-            dirStillAllowed(connectionId, info.workingDir)
+            dirStillAllowed(connectionId, info.workingDir, sessionId)
           );
         };
         let bindingNamespace = connectionId;
@@ -3140,7 +3173,7 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
               isCurrentGeneration(admittedGeneration) &&
               info?.usable === true &&
               info.workingDir !== null &&
-              dirStillAllowed(connectionId, info.workingDir)
+              dirStillAllowed(connectionId, info.workingDir, previous)
             ) {
               await archiveSessionRow(previous).catch((err) => {
                 log.warn(

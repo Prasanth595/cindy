@@ -10068,6 +10068,19 @@
         "cancel": "Cancel",
         "failed": "Couldn’t remove it. Try again later.",
         "ok": "OK"
+      },
+      "officialX": {
+        "bind": "Assign to this teammate",
+        "remove": "Remove teammate assignment",
+        "bindTitle": "Let {{name}} handle X questions?",
+        "bindBody": "Your public questions to @askmycindy will use {{name}}’s identity, tools, shared memory and workspace. Replies are public. The X thread is separate from your private chat history. This replaces any existing teammate assignment.",
+        "removeTitle": "Remove the X assignment?",
+        "removeBody": "Your X account stays connected. Future questions become ordinary tasks. Replies already in progress will finish.",
+        "bound": "X questions are assigned to {{name}}. Enable X and authorize your account to start.",
+        "boundElsewhere": "X is assigned to another teammate. Assigning it here replaces that teammate.",
+        "unbound": "Let {{name}} handle your questions to the official @askmycindy bot.",
+        "managed": "A teammate handles X questions. Change the assignment in that teammate’s message platform settings.",
+        "riskBody": "X questions use the teammate’s shared memory, tools and workspace, and replies are public. Do not use X for private information. The X thread does not directly use your private chat history."
       }
     }
   },

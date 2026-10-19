@@ -5176,6 +5176,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('maker:hook-control:set-provider-enabled', { provider, enabled }),
     setWorkspaces: (workspaces: Record<string, string>): Promise<{ hook: unknown }> =>
       ipcRenderer.invoke('maker:hook-control:set-workspaces', { workspaces }),
+    setXCompanion: (botId: string | null, expectedBotId: string | null): Promise<{ hook: unknown }> =>
+      ipcRenderer.invoke('maker:hook-control:set-x-companion', { botId, expectedBotId }),
     setProviderDefaultWorkspace: (
       provider: 'telegram' | 'x',
       alias: string | null,
