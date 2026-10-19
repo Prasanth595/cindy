@@ -7,7 +7,8 @@
  *   不在伙伴链里时建议退回链首;换过去用量超过提醒线也照样建议。
  * - 现有覆盖缺口:nextBotModelRoute 的测试只覆盖伙伴自己任务的候选链降级,不涉及跟进别人任务时的失败类型、
  *   链外路线与上下文余量。
- * - 最小失败输入:工具循环出错;链外的当前路线;220K 用量从 1M 换到 272K;用量上限下的正常降级。
+ * - 最小失败输入:工具循环出错;只带 SDK invalid_request 的出错;链外的当前路线(含同模型异供应商);
+ *   220K 用量从 1M 换到 272K;没有可信用量时缩窗;用量上限下的正常降级。
  * - tier:unit(纯函数,无数据库与 Electron)。
  */
 import { describe, expect, it } from 'vitest';
@@ -45,6 +46,12 @@ describe('follow-up route suggestion', () => {
     expect(errored('prompt is too long', 'context-overflow')).toBeNull();
     // 没有可判断的错误:不猜。
     expect(errored('', null)).toBeNull();
+    // 摘要投影没有 reason、只有运行时记下的 SDK 结构化字段:请求本身无效 / 输出超限。
+    const withSdk = (sdkError: string, errorStatus?: number) => suggestFollowUpRoute(input({
+      failure: { phase: 'errored', error: 'API Error', errorReason: null, sdkError, errorStatus },
+    }));
+    expect(withSdk('invalid_request', 400)).toBeNull();
+    expect(withSdk('max_output_tokens')).toBeNull();
     // 那台账号的问题:换得过去。
     expect(errored('authentication_failed: OAuth token has expired', null)).toMatchObject(SOL);
   });
@@ -52,12 +59,16 @@ describe('follow-up route suggestion', () => {
   it('leaves a task whose model the owner chose alone instead of jumping to the companion primary route', () => {
     const ownerChoice = { harness: 'claude', model: 'claude-fable-5-1', providerId: 'anthropic' } as const;
     expect(suggestFollowUpRoute(input({ current: ownerChoice }))).toBeNull();
+    // 同一模型、明确不同的供应商也是主人自己的选择。
+    expect(suggestFollowUpRoute(input({ current: { ...OPUS, providerId: 'xd' } }))).toBeNull();
   });
 
   it('skips a smaller window the current context would crowd, and keeps a larger one', () => {
     // 220K 进 272K 是 81%,过提醒线:跳过 Sol,落到同样 1M 的下一条。
     expect(suggestFollowUpRoute(input({ contextTokens: 220_000 }))).toMatchObject(GEMINI);
     expect(suggestFollowUpRoute(input({ contextTokens: 220_000, chain: [OPUS, SOL] }))).toBeNull();
+    // 没有可信用量(会话已关、库里的值可能低报):不缩窗,只留同样大或更大的窗口。
+    expect(suggestFollowUpRoute(input({ contextTokens: null }))).toMatchObject(GEMINI);
     // 窗口变大不受当前用量影响。
     expect(suggestFollowUpRoute(input({
       chain: [SOL, OPUS],

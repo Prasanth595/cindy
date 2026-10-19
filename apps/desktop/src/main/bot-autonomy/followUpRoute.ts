@@ -19,13 +19,14 @@ export interface FollowUpRouteInput {
   /** 调用方伙伴的有效候选链。 */
   chain: unknown;
   current: Pick<BotModelRoute, 'harness' | 'model' | 'providerId'>;
-  failure: TaskDigestFailure;
+  /** 出错的那次失败；sdkError / errorStatus 来自运行时记下的本轮终态(摘要投影里没有)。 */
+  failure: TaskDigestFailure & { sdkError?: string; errorStatus?: number };
   /** 这件任务已经试过的路线(runtime key)。 */
   visitedRoutes: readonly string[];
   /** SSH 远端任务不能跨 harness 切换(与候选链自动恢复同一口径)。 */
   sameHarnessOnly: boolean;
-  /** 任务当前上下文用量(tokens);未知为 0。 */
-  contextTokens: number;
+  /** 任务当前上下文用量(tokens);没有可信读数为 null(此时不推荐更小窗口)。 */
+  contextTokens: number | null;
   /** 任务当前路线的上下文窗口;未知为 null。 */
   currentContextWindow: number | null;
   /** 候选路线核实过的上下文窗口;未知为 null。 */
@@ -40,6 +41,8 @@ export function suggestFollowUpRoute(input: FollowUpRouteInput): BotModelRoute |
       {
         message: input.failure.error ?? '',
         ...(input.failure.errorReason ? { reason: input.failure.errorReason } : {}),
+        ...(input.failure.sdkError ? { sdkError: input.failure.sdkError } : {}),
+        ...(typeof input.failure.errorStatus === 'number' ? { errorStatus: input.failure.errorStatus } : {}),
       },
       'run',
     );
@@ -47,7 +50,11 @@ export function suggestFollowUpRoute(input: FollowUpRouteInput): BotModelRoute |
   }
   const chain = normalizeBotModelChain(input.chain);
   // 任务当前路线不在伙伴候选链里(主人自己选的模型)：伙伴的链不是这件任务的备选，不建议换。
-  if (botModelRouteIndex(chain, input.current) < 0) return null;
+  // 同一模型换了明确不同的供应商也算链外(候选链自动恢复用的宽松匹配在这里不适用)。
+  const index = botModelRouteIndex(chain, input.current);
+  if (index < 0) return null;
+  const matched = chain[index]!.providerId;
+  if (matched && input.current.providerId && matched !== input.current.providerId) return null;
   return nextBotModelRoute(
     chain,
     input.current,

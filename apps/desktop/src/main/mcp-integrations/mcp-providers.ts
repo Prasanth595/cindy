@@ -272,10 +272,24 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
     // git-context 牵连 Electron 窗口广播,按需加载,不让工具装配一引用就把它带进来。
     readSessionPrStatuses: async (sessionId) =>
       (await import('../git-context/ipc.js')).readSessionPrStatuses(sessionId),
-    readLiveContextUsage: async (sessionId) => {
-      const { getMakerIfReady } = await import('../maker-host/index.js');
-      const usage = getMakerIfReady()?.getSession(sessionId)?.getUsageSnapshot();
-      return usage ? { contextTokens: usage.contextTokens, contextWindow: usage.contextWindow } : null;
+    readRuntimeFacts: async (sessionId) => {
+      const [{ getMakerIfReady }, { getSessionLastLiveUsage }] = await Promise.all([
+        import('../maker-host/index.js'),
+        import('../maker-ipc/sessionLastLiveUsage.js'),
+      ]);
+      const session = getMakerIfReady()?.getSession(sessionId);
+      // 会话已关闭(含崩溃)时退回关闭那一刻固化的实时读数。
+      const usage = session?.getUsageSnapshot() ?? getSessionLastLiveUsage(sessionId) ?? null;
+      const terminal = session?.getObservedCurrentTurnTerminal();
+      return {
+        usage: usage ? { contextTokens: usage.contextTokens, contextWindow: usage.contextWindow } : null,
+        terminalError: terminal?.kind === 'error'
+          ? {
+            ...(terminal.sdkError ? { sdkError: terminal.sdkError } : {}),
+            ...(typeof terminal.errorStatus === 'number' ? { errorStatus: terminal.errorStatus } : {}),
+          }
+          : null,
+      };
     },
   }));
 

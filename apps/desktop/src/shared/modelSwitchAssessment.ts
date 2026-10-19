@@ -103,7 +103,8 @@ export function shouldHandoffAfterContextAssessment(
  * 窗口变大、目标窗口未知时与主机切换闸门同口径放行；用户自己切换不走这里。
  */
 export function agentSwitchKeepsContextHeadroom(input: {
-  contextTokens: number;
+  /** null = 没有可信的当前用量：只放行不缩窗的目标。 */
+  contextTokens: number | null;
   currentContextWindow: number | null | undefined;
   targetContextWindow: number | null | undefined;
 }): boolean {
@@ -119,5 +120,6 @@ export function agentSwitchKeepsContextHeadroom(input: {
   ) {
     return true;
   }
+  if (contextTokens === null) return false;
   return assessModelSwitchContext({ contextTokens, targetContextWindow }).level === 'ok';
 }

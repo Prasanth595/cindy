@@ -47,8 +47,14 @@ export interface DesktopTaskDigestHost {
   listSessionQueuedCounts(sessionIds: string[]): Promise<{ ok: true; counts: Record<string, number> } | { ok: false }>;
   /** 本机任务的 PR 状态(git-context 同一服务与缓存)。 */
   readSessionPrStatuses(sessionId: string): Promise<Parameters<typeof formatPrStatuses>[0]>;
-  /** 正在运行的 Agent 报告的上下文用量;没有在跑的 Agent 时返回 null(退回库里记下的用量)。 */
-  readLiveContextUsage?(sessionId: string): Promise<{ contextTokens: number; contextWindow: number } | null>;
+  /**
+   * 运行时对这件任务的权威读数:上下文用量(在跑的会话读实时值,已关闭的读关闭那一刻固化的值,
+   * 都没有为 null)与本轮终态错误的结构化字段(摘要投影里没有 sdkError / errorStatus)。
+   */
+  readRuntimeFacts?(sessionId: string): Promise<{
+    usage: { contextTokens: number; contextWindow: number } | null;
+    terminalError: { sdkError?: string; errorStatus?: number } | null;
+  }>;
 }
 
 const num = (value: unknown) => (typeof value === 'number' && Number.isFinite(value) ? value : null);
@@ -208,14 +214,19 @@ export function createDesktopTaskDigestDeps(host: DesktopTaskDigestHost): TaskDi
           .where(eq(sessions.id, targetSessionId))
           .limit(1);
         const harness = toBotHarness(current.harness);
-        const live = (await host.readLiveContextUsage?.(targetSessionId)) ?? null;
+        const runtime = (await host.readRuntimeFacts?.(targetSessionId)) ?? null;
+        const live = runtime?.usage ?? null;
         const next = suggestFollowUpRoute({
           chain,
           current: { harness, model: current.model, providerId: current.provider_id },
-          failure,
+          failure: { ...failure, ...(failure.phase === 'errored' ? runtime?.terminalError ?? {} : {}) },
           visitedRoutes: getSessionRuntimeControlSnapshot(targetSessionId).visitedRoutes,
           sameHarnessOnly: !!target?.remoteHostId,
-          contextTokens: Math.max(positive(live?.contextTokens) ?? 0, positive(target?.contextTokens) ?? 0),
+          // 库里的用量只在一轮正常收尾时落库,中断 / 崩溃后可能低报;只作没有运行时读数时的下限参考,
+          // 不能单独用来证明缩窗安全(没有运行时读数 → null,建议层不推荐更小窗口)。
+          contextTokens: live
+            ? Math.max(positive(live.contextTokens) ?? 0, positive(target?.contextTokens) ?? 0)
+            : null,
           currentContextWindow: positive(live?.contextWindow)
             ?? verifiedRouteWindow(harness, current.model, current.provider_id),
           windowOf: (candidate) => verifiedRouteWindow(candidate.harness, candidate.model, candidate.providerId),
