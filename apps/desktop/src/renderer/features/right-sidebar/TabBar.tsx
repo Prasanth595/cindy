@@ -18,8 +18,8 @@
  * i18n key 用 record 映射;Phase 2+ 改为从 plugin registry 取。
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Activity, Bot, FolderTree, Globe, Terminal, GitPullRequestArrow, UsersRound, LayoutGrid, ListTodo, Plus, Puzzle, X, Maximize2, Minimize2, PanelRightClose, PictureInPicture2, Wrench } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Activity, Bot, FolderTree, Globe, Terminal, GitPullRequestArrow, UsersRound, LayoutGrid, ListTodo, Pin, Plus, Puzzle, X, Maximize2, Minimize2, PanelRightClose, PictureInPicture2, Wrench } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
@@ -37,10 +37,19 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { AddTabDropdown } from './AddTabDropdown';
 import { getTabKind, hydrateTabState } from './registry';
+import { TAB_GROUP_IDS, tabGroupLabelKey, type TabGroupId } from './tabGroups';
 import type { BuiltinTabKindId, TabKindId, TabState } from './types';
+
+/** 右键菜单里一扇可搬入的弹出窗口:标签是它第一个页签的标题(React 节点)。 */
+export interface PopoutWindowOption {
+  windowId: string;
+  label: ReactNode;
+}
 
 interface TabBarProps {
   tabs: TabState[];
+  /** 全局页签(不跟对话):钉在条首,不参与拖拽排序,切任务不变。 */
+  pinnedTabs?: TabState[];
   activeTabId: string | null;
   sessionId?: string | null;
   onActivate: (id: string) => void;
@@ -68,11 +77,23 @@ interface TabBarProps {
   onCloseOthers?: (keepTabId: string) => void;
   /** Tab pill 右键菜单 "关闭所有"。 */
   onCloseAll?: () => void;
-  /** 「在新窗口中打开侧边栏」(开偏好 + 弹出子窗口);仅 showWindowControls=true
-   *  (Win 端)时渲染在 maximize 左侧。Mac 端按钮走 MainLayout 浮层。
+  /** 「在独立窗口中打开」当前激活页签;仅 showWindowControls=true(Win 端)时
+   *  渲染在 maximize 左侧。Mac 端按钮在 Shell 合并顶栏右端。
    *  Windows 主窗口展开态同时传入 onCloseSidebar,折叠按钮归属本 TabBar;
    *  折叠后再由聊天区角上的 chip 提供展开入口。 */
   onDetach?: () => void;
+  /** 页签右键菜单「在独立窗口中打开」:作用于被点的页签;带 windowId = 搬进已有窗口。 */
+  onDetachTab?: (tabId: string, targetWindowId?: string) => void;
+  /** 已弹出的页签窗口(右键菜单「移到窗口 …」的目标);不传 / 空 = 不显示。 */
+  popoutWindows?: PopoutWindowOption[];
+  /** 独立窗口形态:右键菜单「合并回侧边栏」。 */
+  onMergeBackTab?: (tabId: string) => void;
+  /** 本条属于哪个页签组;右键菜单「移到 …」列出其余各组。 */
+  groupId?: TabGroupId;
+  /** 页签右键菜单「移到 左侧 / 右侧栏 / 上方 / 下方」。不传 = 不显示。 */
+  onMoveTab?: (tabId: string, groupId: TabGroupId) => void;
+  /** 「+」菜单插件分组新加了全局页签(独立窗口据此收编)。 */
+  onGlobalTabSelected?: (tabId: string, existed: boolean) => void;
   /** 本条横带是否作为**窗口**拖拽区(B3):主窗口内嵌形态传 false —— 空白处是
    *  "拖面板"手势面(窗口拖拽区收不到鼠标事件,二者物理互斥;拖窗走左栏顶行);
    *  detached 子窗口等其它宿主不传,默认 true 维持经典拖窗行为。 */
@@ -83,6 +104,8 @@ interface TabBarProps {
 
 interface TabStripProps {
   tabs: TabState[];
+  /** 全局页签(不跟对话):钉在条首,不参与拖拽排序,切任务不变。 */
+  pinnedTabs?: TabState[];
   activeTabId: string | null;
   sessionId?: string | null;
   onActivate: (id: string) => void;
@@ -91,6 +114,15 @@ interface TabStripProps {
   onAdd: (kind: TabKindId) => void;
   onCloseOthers?: (keepTabId: string) => void;
   onCloseAll?: () => void;
+  /** Tab pill 右键菜单「在独立窗口中打开」。 */
+  onDetachTab?: (tabId: string, targetWindowId?: string) => void;
+  /** 见 TabBarProps.popoutWindows / onMergeBackTab。 */
+  popoutWindows?: PopoutWindowOption[];
+  onMergeBackTab?: (tabId: string) => void;
+  /** 见 TabBarProps.groupId / onMoveTab / onGlobalTabSelected。 */
+  groupId?: TabGroupId;
+  onMoveTab?: (tabId: string, groupId: TabGroupId) => void;
+  onGlobalTabSelected?: (tabId: string, existed: boolean) => void;
   className?: string;
   /**
    * pill 视觉变体:
@@ -126,6 +158,7 @@ const KIND_ICON: Record<BuiltinTabKindId, LucideIcon> = {
   'bot-workbench': LayoutGrid,
   'resource-usage': Activity,
   'cindy-make': Wrench,
+  'plugin-view': Puzzle,
 };
 
 const KIND_LABEL_KEY: Record<BuiltinTabKindId, string> = {
@@ -142,6 +175,7 @@ const KIND_LABEL_KEY: Record<BuiltinTabKindId, string> = {
   'bot-workbench': 'bots.workbench.title',
   'resource-usage': 'rightSidebar.tabs.kinds.resourceUsage',
   'cindy-make': 'settings.cindyMake.title',
+  'plugin-view': 'rightSidebar.tabs.kinds.pluginView',
 };
 
 /**
@@ -152,11 +186,11 @@ const KIND_LABEL_KEY: Record<BuiltinTabKindId, string> = {
  * (2026-07-09 事故:dev 分支写入 kind='orca-workers',release 端
  *  KIND_ICON[kind] 取到 undefined 渲染 <undefined/> → React #130 全屏崩溃。)
  */
-function iconForTabKind(kind: TabKindId): LucideIcon {
+export function iconForTabKind(kind: TabKindId): LucideIcon {
   return (KIND_ICON as Partial<Record<string, LucideIcon>>)[kind] ?? Puzzle;
 }
 
-function labelKeyForTabKind(kind: TabKindId): string {
+export function labelKeyForTabKind(kind: TabKindId): string {
   // 插件页签的意识被停用/卸下(plugin 已注销)时,pill 兜底显示「插件面板」
   // 而非「未知标签页」——kind 前缀本身就能识别它是谁的地盘。
   if (kind.startsWith('ghost:')) return 'rightSidebar.tabs.kinds.ghostPanel';
@@ -188,6 +222,7 @@ function scrollTabIntoContainerView(container: HTMLElement | null, tab: HTMLElem
 
 export function TabBar({
   tabs,
+  pinnedTabs,
   activeTabId,
   sessionId,
   onActivate,
@@ -203,6 +238,12 @@ export function TabBar({
   onCloseOthers,
   onCloseAll,
   onDetach,
+  onDetachTab,
+  popoutWindows,
+  onMergeBackTab,
+  groupId,
+  onMoveTab,
+  onGlobalTabSelected,
   chromeWindowDrag = true,
   subagentsAvailable = false,
 }: TabBarProps) {
@@ -219,6 +260,7 @@ export function TabBar({
     >
       <TabStrip
         tabs={tabs}
+        pinnedTabs={pinnedTabs}
         activeTabId={activeTabId}
         sessionId={sessionId}
         onActivate={onActivate}
@@ -227,6 +269,12 @@ export function TabBar({
         onAdd={onAdd}
         onCloseOthers={onCloseOthers}
         onCloseAll={onCloseAll}
+        onDetachTab={onDetachTab}
+        popoutWindows={popoutWindows}
+        onMergeBackTab={onMergeBackTab}
+        groupId={groupId}
+        onMoveTab={onMoveTab}
+        onGlobalTabSelected={onGlobalTabSelected}
         addButtonWrapperClassName="h-[36px]"
         addButtonClassName="mt-[3px]"
         subagentsAvailable={subagentsAvailable}
@@ -284,6 +332,7 @@ export function TabBar({
 
 export function TabStrip({
   tabs,
+  pinnedTabs = [],
   activeTabId,
   sessionId = null,
   onActivate,
@@ -292,6 +341,12 @@ export function TabStrip({
   onAdd,
   onCloseOthers,
   onCloseAll,
+  onDetachTab,
+  popoutWindows,
+  onMergeBackTab,
+  groupId = 'right',
+  onMoveTab,
+  onGlobalTabSelected,
   className,
   pillVariant = 'flush',
   addButtonWrapperClassName,
@@ -310,6 +365,8 @@ export function TabStrip({
   const [contextMenu, setContextMenu] = useState<{
     pos: { x: number; y: number };
     tabId: string;
+    /** 全局页签:右键只有「关闭」与「在独立窗口中打开」,不提供关闭其他 / 全部。 */
+    pinned: boolean;
   } | null>(null);
   const closeContextMenu = () => setContextMenu(null);
 
@@ -354,6 +411,8 @@ export function TabStrip({
   return (
     <div
       data-testid="right-sidebar-tab-strip"
+      // 页签拖到别的组(TabDragController):本条是哪个组的落点 / 起点。
+      data-tab-group-strip={groupId}
       className={cn(
         'relative flex min-w-0 flex-1 gap-1',
         pillVariant === 'chip' ? 'items-center' : 'items-end',
@@ -377,7 +436,11 @@ export function TabStrip({
               chrome 风格),chip 用 items-center(与宿主栏其它控件同一中线)。 */}
       <div
         ref={tabsScrollRef}
-        className="min-w-0 overflow-x-auto scrollbar-hide"
+        // 钉住的全局页签与可拖拽的任务页签列表并排在同一条横向滚动容器里。
+        className={cn(
+          'flex min-w-0 gap-1 overflow-x-auto scrollbar-hide',
+          pillVariant === 'chip' ? 'items-center' : 'items-end',
+        )}
         style={
           {
             WebkitAppRegion: 'no-drag',
@@ -390,6 +453,37 @@ export function TabStrip({
           } as React.CSSProperties
         }
       >
+        {pinnedTabs.length > 0 && (
+          <div
+            data-testid="right-sidebar-pinned-tabs"
+            className={cn(
+              'flex w-max shrink-0 gap-1',
+              pillVariant === 'chip' ? 'items-center' : 'items-end',
+            )}
+          >
+            {pinnedTabs.map((tab) => (
+              <TabPill
+                key={tab.id}
+                tab={tab}
+                active={tab.id === activeTabId}
+                pinned
+                pillVariant={pillVariant}
+                sessionId={sessionId}
+                fallbackLabel={t(labelKeyForTabKind(tab.kind))}
+                t={t}
+                onActivate={() => onActivate(tab.id)}
+                onClose={() => onClose(tab.id)}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setContextMenu({ pos: { x: e.clientX, y: e.clientY }, tabId: tab.id, pinned: true });
+                }}
+                scrollContainerRef={tabsScrollRef}
+                closeAriaLabel={t('rightSidebar.tabs.tabCloseAria')}
+              />
+            ))}
+          </div>
+        )}
         <SortableList
           items={tabs}
           getId={(tab) => tab.id}
@@ -413,7 +507,7 @@ export function TabStrip({
               onContextMenu={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                setContextMenu({ pos: { x: e.clientX, y: e.clientY }, tabId: tab.id });
+                setContextMenu({ pos: { x: e.clientX, y: e.clientY }, tabId: tab.id, pinned: false });
               }}
               scrollContainerRef={tabsScrollRef}
               closeAriaLabel={t('rightSidebar.tabs.tabCloseAria')}
@@ -450,6 +544,8 @@ export function TabStrip({
             open={dropdownOpen}
             anchorRef={addButtonWrapperRef}
             sessionId={sessionId}
+            groupId={groupId}
+            onGlobalTabSelected={onGlobalTabSelected}
             onClose={closeDropdown}
             onSelect={onAdd}
             existingKinds={existingKinds}
@@ -495,25 +591,87 @@ export function TabStrip({
               >
                 {t('rightSidebar.tabs.contextMenu.close')}
               </DropdownMenuItem>
-              <DropdownMenuItem
-                disabled={tabs.length <= 1}
-                onClick={() => {
-                  if (tabs.length <= 1) return;
-                  const id = contextMenu.tabId;
-                  closeContextMenu();
-                  onCloseOthers?.(id);
-                }}
-              >
-                {t('rightSidebar.tabs.contextMenu.closeOthers')}
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                onClick={() => {
-                  closeContextMenu();
-                  onCloseAll?.();
-                }}
-              >
-                {t('rightSidebar.tabs.contextMenu.closeAll')}
-              </DropdownMenuItem>
+              {!contextMenu.pinned && (
+                <DropdownMenuItem
+                  disabled={tabs.length <= 1}
+                  onClick={() => {
+                    if (tabs.length <= 1) return;
+                    const id = contextMenu.tabId;
+                    closeContextMenu();
+                    onCloseOthers?.(id);
+                  }}
+                >
+                  {t('rightSidebar.tabs.contextMenu.closeOthers')}
+                </DropdownMenuItem>
+              )}
+              {!contextMenu.pinned && (
+                <DropdownMenuItem
+                  onClick={() => {
+                    closeContextMenu();
+                    onCloseAll?.();
+                  }}
+                >
+                  {t('rightSidebar.tabs.contextMenu.closeAll')}
+                </DropdownMenuItem>
+              )}
+              {onMoveTab &&
+                TAB_GROUP_IDS.filter((target) => target !== groupId).map((target) => (
+                  <DropdownMenuItem
+                    key={target}
+                    data-testid={`right-sidebar-tab-move-${target}`}
+                    onClick={() => {
+                      const id = contextMenu.tabId;
+                      closeContextMenu();
+                      onMoveTab(id, target);
+                    }}
+                  >
+                    {t('rightSidebar.tabs.contextMenu.moveTo', {
+                      target: t(tabGroupLabelKey(target)),
+                    })}
+                  </DropdownMenuItem>
+                ))}
+              {onDetachTab && (
+                <DropdownMenuItem
+                  onClick={() => {
+                    const id = contextMenu.tabId;
+                    closeContextMenu();
+                    onDetachTab(id);
+                  }}
+                >
+                  {t('rightSidebar.tabs.contextMenu.openInWindow')}
+                </DropdownMenuItem>
+              )}
+              {onDetachTab &&
+                popoutWindows?.map((option) => (
+                  <DropdownMenuItem
+                    key={option.windowId}
+                    data-testid={`right-sidebar-tab-move-window-${option.windowId}`}
+                    onClick={() => {
+                      const id = contextMenu.tabId;
+                      closeContextMenu();
+                      onDetachTab(id, option.windowId);
+                    }}
+                  >
+                    <span className="flex min-w-0 items-center gap-1">
+                      <span className="shrink-0">
+                        {t('rightSidebar.tabs.contextMenu.moveToWindow')}
+                      </span>
+                      <span className="truncate">{option.label}</span>
+                    </span>
+                  </DropdownMenuItem>
+                ))}
+              {onMergeBackTab && (
+                <DropdownMenuItem
+                  data-testid="right-sidebar-tab-merge-back"
+                  onClick={() => {
+                    const id = contextMenu.tabId;
+                    closeContextMenu();
+                    onMergeBackTab(id);
+                  }}
+                >
+                  {t('rightSidebar.tabWindow.mergeBack')}
+                </DropdownMenuItem>
+              )}
             </>
           )}
         </DropdownMenuContent>
@@ -522,9 +680,26 @@ export function TabStrip({
   );
 }
 
+/**
+ * 页签标题(复用插件的 TabPillTitle;未注册 kind 落到固定文案)。右键菜单「移到窗口 …」
+ * 用它给窗口起名:窗口里第一个页签叫什么,窗口就叫什么。
+ */
+export function TabTitleLabel({ tab, sessionId }: { tab: TabState; sessionId: string | null }) {
+  const { t } = useTranslation();
+  const plugin = getTabKind(tab.kind);
+  const TitleNode = plugin?.TabPillTitle;
+  const hydratedState = hydrateTabState(plugin, tab.state);
+  return TitleNode ? (
+    <TitleNode state={hydratedState} sessionId={sessionId} active={false} t={t} />
+  ) : (
+    <>{t(labelKeyForTabKind(tab.kind))}</>
+  );
+}
+
 function TabPill({
   tab,
   active,
+  pinned = false,
   pillVariant,
   sessionId,
   fallbackLabel,
@@ -537,6 +712,8 @@ function TabPill({
 }: {
   tab: TabState;
   active: boolean;
+  /** 全局页签:标题前带图钉,提示它不随任务切换。 */
+  pinned?: boolean;
   /** 见 TabStripProps.pillVariant:flush = 贴底三边框 tab,chip = 居中四边框 chip。 */
   pillVariant: 'flush' | 'chip';
   sessionId: string | null;
@@ -566,6 +743,8 @@ function TabPill({
   return (
     <div
       ref={pillRef}
+      data-pinned={pinned || undefined}
+      data-tab-pill={tab.id}
       onContextMenu={onContextMenu}
       // 中键(滚轮键)关闭当前 tab —— 对齐浏览器等多 tab 应用的通用习惯。
       // auxclick 对所有非主键(中/右键)都会触发,这里只认中键(button === 1);
@@ -599,6 +778,13 @@ function TabPill({
         onClick={onActivate}
         className="flex items-center gap-1.5 max-w-[160px]"
       >
+        {pinned && (
+          <Pin
+            size={10}
+            aria-label={t('rightSidebar.tabs.pinnedAria')}
+            className="shrink-0 text-[var(--text-tertiary)]"
+          />
+        )}
         <span
           className={cn(
             'shrink-0',

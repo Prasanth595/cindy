@@ -12,7 +12,8 @@
   · **未声明 command**:不拒装,但插件页"使用"按钮禁用,用户无法通过插件页一键启用
     或用 $command 点名;AI 工具调用不受影响(见 §2 说明)
 - `tools` 为空 · panel 详单缺少实际形态(既没有 html，也不是有效的 tab/停靠配置)
-- mainView.html 文件缺失/路径不安全、icon 不在系统图标白名单
+- mainView.html 文件缺失/路径不安全、icon 不在系统图标白名单、open 不是 page / sidebar /
+  window、side 不是四条边之一或在 open 非 sidebar 时声明、multiple 不是字面量 true
 - settingsHtml 路径不合法/文件不在包里 · settingsHeight 越界(160–800)或没配 settingsHtml 单独声明
 - panel.systemButtons 格式错(不是对象、已知键的值非布尔,或 position:"tab" 时声明——插件页内面板没有标准头)
 - keywords(已废弃字段,旧包兼容保留,新插件别写)有单字词 · kind 写了但不是 "chip"(可省略) · schemaVersion 不是 3 · 缺 minCindyVersion

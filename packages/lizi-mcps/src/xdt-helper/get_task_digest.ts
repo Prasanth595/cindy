@@ -109,7 +109,7 @@ export function boundTaskDigest(raw: TaskDigestWire): TaskDigestWire {
 
 const DESCRIPTION = [
   '读一件任务的短摘要(≤2KB):状态 phase、已持续分钟数、主人最后的要求、助手最后一句、待回答的问题、错误、当前模型路线、',
-  '建议换到的下一条路线(你的候选链里还没试过的那条,没有则 null)、PR 状态、排队消息数、谁开的 / 谁在跟。',
+  '建议换到的下一条路线(只在出错或撞用量上限、换模型确实有用且装得下当前上下文时,给你候选链里还没试过的那条;否则 null,此时提醒主人)、PR 状态、排队消息数、谁开的 / 谁在跟。',
   'idle_minutes 距最后一次动静的分钟数;tool_in_flight 为 true 表示有工具调用(如长时间构建、测试)正在执行,宿主不知道时不出现。',
   '被程序叫醒跟进任务时先读这一份再决定;要看原文再用 get_chat_history。',
   '作用范围:本机任务直接传 id;另一台电脑上的任务传 deviceId::sessionId(只读,对方须在线)。',

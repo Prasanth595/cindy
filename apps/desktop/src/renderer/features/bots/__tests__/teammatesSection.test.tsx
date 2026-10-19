@@ -72,8 +72,9 @@ vi.mock('@/hooks/useSessionRunningStatus', () => ({
 vi.mock('react-router-dom', async importOriginal => ({
   ...await importOriginal<typeof import('react-router-dom')>(),
   useNavigate: () => mocks.navigate,
-  useLocation: () => ({ pathname: '/bots', search: '', hash: '' }),
-  useParams: () => mocks.params,
+  useLocation: () => ({ pathname: mocks.params.deviceId
+    ? `/bots/remote/${mocks.params.deviceId}/${mocks.params.botId}`
+    : mocks.params.botId ? `/bots/${mocks.params.botId}` : '/bots', search: '', hash: '' }),
 }));
 vi.mock('../botStore', () => ({
   useBotProfiles: () => mocks.profiles,
@@ -397,6 +398,25 @@ describe('teammate host labels', () => {
 
 describe('TeammatesSection header', () => {
   const header = () => screen.getByRole('button', { name: 'bots.title' });
+
+  // #6444: six rows used to shrink to five before SectionCollapse could animate.
+  // Existing tests cover the avatar end state, not the closing interval. Unit tier:
+  // render the real section with six entries and advance fake time (no real wait).
+  it('keeps the full list mounted until the section collapse finishes', () => {
+    vi.useFakeTimers();
+    mocks.profiles = Array.from({ length: 6 }, (_, index) => bot({
+      id: `mate-${index}`, name: `Mate ${index}`, lastMessagePreview: 'Ready',
+    }));
+    render(<TeammatesSection />);
+    fireEvent.click(screen.getByRole('button', { name: 'ccAgent.sidebar.showAllSessions:{"count":6}' }));
+    expect(screen.getAllByText('Ready')).toHaveLength(6);
+    fireEvent.click(header());
+    expect(screen.getAllByText('Ready')).toHaveLength(6);
+    act(() => vi.advanceTimersByTime(200));
+    expect(screen.queryByText('Ready')).toBeNull();
+    fireEvent.click(header());
+    expect(screen.getAllByText('Ready')).toHaveLength(5);
+  });
 
   it('starts expanded and collapses into a row of avatars that is remembered per account', async () => {
     mocks.profiles = [

@@ -5,7 +5,6 @@ import { MainLayout } from '@/components/layout/MainLayout';
 import { MainEntryRedirect } from '@/components/layout/MainEntryRedirect';
 import { RouteErrorFallback } from '@/components/error/RouteErrorFallback';
 import { SidebarWindowLayout } from '@/components/layout/SidebarWindowLayout';
-import { GhostPanelWindowLayout } from '@/components/layout/GhostPanelWindowLayout';
 import { SettingsView } from '@/components/settings/SettingsView';
 import { LoginPage } from '@/components/login/LoginPage';
 import { AddAccountLoginPage } from '@/components/login/AddAccountLoginPage';
@@ -82,13 +81,6 @@ export const router = createHashRouter([
           {
             path: 'sidebar-window',
             element: <SidebarWindowLayout />,
-            errorElement: <RouteErrorFallback variant="section" />,
-          },
-          // 插件面板独立窗口(?ghostPanelWindow=<id>)的根路由 —— 同样与
-          // MainLayout 平级,只挂 46px chrome + 面板体。
-          {
-            path: 'ghost-panel-window',
-            element: <GhostPanelWindowLayout />,
             errorElement: <RouteErrorFallback variant="section" />,
           },
           {

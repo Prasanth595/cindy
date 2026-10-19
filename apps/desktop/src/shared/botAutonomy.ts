@@ -88,6 +88,11 @@ export interface WatchedSession {
    */
   canonicalOfBotId?: string | null;
   error: string | null;
+  /**
+   * 出错时 runtime 给的稳定原因(如 tool_use_loop_detected),不含原文;没有就是 null / 缺省。
+   * 只用来判断换模型能不能解决,不展示给伙伴。
+   */
+  errorReason?: string | null;
   /** 哪个伙伴开的这件任务（bot_delegations / task-responsibility），没有就是 null。 */
   creatorBotId: string | null;
   /**

@@ -44,6 +44,8 @@ export type { OrcaTeamWorker, OrcaCollaborationSettings, OrcaWorkerAgentKind, Or
 /** 创建 Worker 表单(开启协同与追加 Worker 共用)。 */
 export interface OrcaWorkerFormValue {
   role: string;
+  /** 手动选择或恢复的完整路线；仅供控制端表单使用，不进入创建协议。 */
+  modelSelectionExplicit?: boolean;
   agent: OrcaWorkerAgentKind;
   /** null = 跟随被控端默认(该 Agent 上次新建任务的选择,回落 Lead 模型)。 */
   model: { id: string; providerId: string | null; effort: string | null; fast: boolean } | null;
@@ -151,6 +153,8 @@ export function narrowOrcaWorkerProvider(
     && chatEligibleSourcesForModel(views, model.id, form.agent).some((candidate) => candidate.id === model.providerId)
     ? model.providerId
     : null;
+  // 独立记忆不能把失效来源悄悄换成另一套凭证；保留原选择由宿主明确拒绝。
+  if (form.modelSelectionExplicit && model.providerId && providerId !== model.providerId) return form;
   const narrowed = providerId === model.providerId ? form : { ...form, model: { ...model, providerId } };
   const sourceId = providerId ?? effectiveSourceIdForModel(views, null, model.id, form.agent);
   const provider = sourceId ? views.find((candidate) => candidate.id === sourceId) : undefined;

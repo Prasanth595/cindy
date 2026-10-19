@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 
+import { setDataOwnerGeneration } from '@/contexts/dataOwnerGeneration';
+
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { useState } from 'react';
 import userEvent from '@testing-library/user-event';
@@ -74,6 +76,7 @@ const mocks = vi.hoisted(() => ({
     id: string;
     name: string;
     connected: boolean;
+    remoteInvocationEnabled?: boolean;
     agents: string[];
     models: Record<
       string,
@@ -187,6 +190,7 @@ vi.mock('@/components/new-chat/ModelSelector', () => ({
       <button data-testid="pick-claude-model" onClick={() => props.onUnifiedSelect?.({ engine: 'cc', modelId: 'claude-sonnet-4-6', providerId: 'anthropic', effort: 'high', fast: false, favoriteUid: null })} />
       <button data-testid="pick-codex-config" onClick={() => props.onUnifiedSelect?.({ engine: 'codex', modelId: 'gpt-5.5', providerId: 'xd', effort: 'low', fast: false, favoriteUid: null })} />
       {/* 远程供应商栏里的行带着它所属的电脑(null = 任务所在电脑)。 */}
+      <button data-testid="pick-shared-codex" onClick={() => (props.onUnifiedSelect as ((selection: unknown) => void) | undefined)?.({ engine: 'codex', modelId: 'codex/gpt-5.5', providerId: 'openai', effort: 'high', fast: false, favoriteUid: null, agentDevice: { deviceId: 'share:s1', name: 'Shared' } })} />
       <button data-testid="pick-remote-codex" onClick={() => (props.onUnifiedSelect as ((selection: unknown) => void) | undefined)?.({ engine: 'codex', modelId: 'codex/gpt-5.5', providerId: 'openai', effort: 'high', fast: false, favoriteUid: null, agentDevice: { deviceId: 'agent-pc', name: 'Agent PC' } })} />
       <button data-testid="pick-home-codex" onClick={() => (props.onUnifiedSelect as ((selection: unknown) => void) | undefined)?.({ engine: 'codex', modelId: 'codex/gpt-5.5', providerId: 'xd', effort: 'high', fast: false, favoriteUid: null, agentDevice: null })} />
       <button
@@ -1845,7 +1849,7 @@ describe('CreateWorkerPopover execution device', () => {
 
 // 远程供应商与本机供应商一视同仁(2026-10-10)：Worker 的 Agent 可以放到另一台电脑或分享上。
 describe('CreateWorkerPopover remote providers', () => {
-  const devices = [{ deviceId: 'agent-pc', name: 'Agent PC' }];
+  const devices = [{ deviceId: 'agent-pc', name: 'Agent PC' }, { deviceId: 'share:s1', name: 'Shared' }];
   const submit = () => fireEvent.click(screen.getByRole('button', { name: 'orca.createWorker.submit' }));
 
   beforeEach(() => {
@@ -1853,6 +1857,7 @@ describe('CreateWorkerPopover remote providers', () => {
     resetProviderModelMemoryForTest();
     mocks.modelsByAgent.codex = [model('codex/gpt-5.5')];
     mocks.capabilitiesByAgent.codex = { availableModels: [{ id: 'codex/gpt-5.5' }] };
+    mocks.capabilitiesByAgent['claude-code'] = { availableModels: [] };
     mocks.localProviders = [];
     mocks.remoteProviders = [];
     mocks.remoteUnsupported = false;
@@ -1919,6 +1924,115 @@ describe('CreateWorkerPopover remote providers', () => {
     expect(mocks.deviceProvidersFor).toBeUndefined();
     submit();
     await waitFor(() => expect(onCreate).toHaveBeenLastCalledWith(expect.objectContaining({ agentDeviceId: null })));
+  });
+
+  // 回归 7af90460e2：真实弹窗提交后重新挂载，模型与来源应仍是 Worker 的选择。
+  // 原有用例只在一次打开内换位置，漏掉再次打开被 Lead 覆盖；unit，最小输入是选行、提交、换 Lead 后重开。
+  it.each([
+    { pick: 'pick-remote-codex', location: 'agent-pc', provider: 'openai', nextLead: null, host: undefined },
+    { pick: 'pick-shared-codex', location: 'share:s1', provider: 'openai', nextLead: null, host: 'controlled-pc' },
+    { pick: 'pick-home-codex', location: null, provider: 'xd', nextLead: 'agent-pc', host: undefined },
+  ])('remembers the submitted Worker selection independently of the Lead: $pick', async ({ pick, location, provider, nextLead, host }) => {
+    mocks.capabilitiesByAgent['claude-code'] = { availableModels: [], supportsOrcaWorkerAgentDevice: true } as never;
+    window.localStorage.setItem('workerCreationPrefs', JSON.stringify({
+      lastAgent: 'codex', codex: { model: 'gpt-main', effort: 'high', fast: false },
+    }));
+    mocks.modelsByAgent.codex = [model('gpt-main'), model('codex/gpt-5.5')];
+    mocks.localProviders = [{
+      id: 'xd', name: 'XD', connected: true, agents: ['codex'],
+      models: { codex: mocks.modelsByAgent.codex },
+    }];
+    mocks.remoteProviders = [{
+      id: 'openai', name: 'OpenAI', connected: true, remoteInvocationEnabled: true,
+      agents: ['codex'], models: { codex: [model('codex/gpt-5.5')] },
+    }];
+    const onCreate = vi.fn();
+    const view = render(
+      <CreateWorkerPopover open deviceId={host} onClose={vi.fn()} onCreate={onCreate} remoteAgentDevices={devices} />,
+    );
+    fireEvent.click(screen.getByTestId(pick));
+    submit();
+    await waitFor(() => expect(onCreate).toHaveBeenCalledTimes(1));
+    view.unmount();
+    setProviderModelChoice('codex', 'xd', 'gpt-main', 'high');
+
+    render(
+      <CreateWorkerPopover open deviceId={host} onClose={vi.fn()} onCreate={onCreate} leadAgentDeviceId={nextLead} remoteAgentDevices={devices} />,
+    );
+    expect(screen.getByTestId('model-selector').dataset.remoteSelected).toBe(String(location));
+    expect(screen.getByTestId('model-selector').dataset.currentProvider).toBe(provider);
+    submit();
+    await waitFor(() => expect(onCreate).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(onCreate).toHaveBeenLastCalledWith(expect.objectContaining({
+      agentDeviceId: location, providerId: provider, model: 'codex/gpt-5.5',
+    })));
+  });
+
+  // 记忆恢复后目录/能力可能改变：不可静默换来源、换模型或换账号复用。
+  it.each(['provider', 'model', 'old-host', 'account'])('keeps a restored route isolated when %s changes', async (change) => {
+    mocks.remoteProviders = [{ id: 'openai', name: 'OpenAI', connected: true,
+      remoteInvocationEnabled: true, agents: ['codex'], models: { codex: [model('codex/gpt-5.5')] } }];
+    const onCreate = vi.fn();
+    const view = render(<CreateWorkerPopover open onClose={vi.fn()} onCreate={onCreate} remoteAgentDevices={devices} />);
+    fireEvent.click(screen.getByTestId('pick-remote-codex'));
+    submit();
+    await waitFor(() => expect(onCreate).toHaveBeenCalledTimes(1));
+    view.unmount();
+    if (change === 'provider') {
+      mocks.remoteProviders[0]!.connected = false;
+      mocks.remoteProviders.push({ id: 'fallback', name: 'Fallback', connected: true, remoteInvocationEnabled: true,
+        agents: ['codex'], models: { codex: [{ ...model('codex/gpt-5.5'), efforts: ['low'], defaultEffort: 'low' }] } });
+    }
+    if (change === 'model') mocks.remoteProviders[0]!.models.codex = [model('other-model')];
+    if (change === 'account') setDataOwnerGeneration('another-owner');
+    try {
+      render(<CreateWorkerPopover open onClose={vi.fn()} onCreate={onCreate}
+        remoteAgentDevices={change === 'old-host' ? undefined : devices} />);
+      if (change === 'account') {
+        expect(screen.getByTestId('model-selector').dataset.agentDevice).toBe('');
+      } else {
+        expect(screen.getByTestId('model-selector').dataset.agentDevice).toBe('agent-pc');
+        expect(screen.getByTestId('model-selector').dataset.effort).toBe('high');
+        expect((screen.getByRole('button', { name: 'orca.createWorker.submit' }) as HTMLButtonElement).disabled).toBe(true);
+        submit();
+        expect(onCreate).toHaveBeenCalledTimes(1);
+      }
+    } finally { setDataOwnerGeneration(null); }
+  });
+
+  it('keeps following the Lead after default submission or an unsubmitted model change', async () => {
+    const onCreate = vi.fn();
+    const view = render(
+      <CreateWorkerPopover open onClose={vi.fn()} onCreate={onCreate} leadAgentDeviceId="agent-pc" remoteAgentDevices={devices} />,
+    );
+    submit();
+    await waitFor(() => expect(onCreate).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByTestId('pick-home-codex'));
+    view.unmount();
+    render(
+      <CreateWorkerPopover open onClose={vi.fn()} onCreate={onCreate} leadAgentDeviceId="other-pc" remoteAgentDevices={devices} />,
+    );
+    expect(screen.getByTestId('model-selector').dataset.agentDevice).toBe('other-pc');
+  });
+
+  it('does not reuse a submitted local Worker selection on another task host or SSH', async () => {
+    const onCreate = vi.fn();
+    const view = render(
+      <CreateWorkerPopover open onClose={vi.fn()} onCreate={onCreate} remoteAgentDevices={devices} />,
+    );
+    fireEvent.click(screen.getByTestId('pick-remote-codex'));
+    submit();
+    await waitFor(() => expect(onCreate).toHaveBeenCalledTimes(1));
+    view.unmount();
+
+    const remote = render(
+      <CreateWorkerPopover open onClose={vi.fn()} onCreate={onCreate} deviceId="other-host" remoteAgentDevices={devices} />,
+    );
+    expect(screen.getByTestId('model-selector').dataset.agentDevice).toBe('');
+    expect(mocks.deviceProvidersFor).toBe('other-host');
+    remote.unmount();
+    render(<CreateWorkerPopover open sshRemote onClose={vi.fn()} onCreate={onCreate} />);
+    expect(screen.getByTestId('model-selector').dataset.agentDevice).toBe('');
   });
 
   it("keeps following the Lead's location until the user picks one, without wiping the form", async () => {

@@ -5,7 +5,7 @@
  *  - 没有记忆时用共享首次默认值(Codex `codex/gpt-5.5`、high、完全访问)。
  *
  * 与桌面控制端一样存在发起创建的这一端(手机本地,按登录账号隔离),不读写被控端的偏好。
- * 模型来源(provider)不记:桌面控制远程设备时同样不记来源,换设备后跟随被控端默认路由。
+ * 手动提交的完整模型选择按任务所在电脑隔离，远程模型不覆盖旧版逐 Agent 记忆。
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
@@ -27,7 +27,14 @@ export interface OrcaWorkerAgentPrefs {
   fast: boolean;
 }
 
+export interface OrcaWorkerModelSelection {
+  agent: OrcaWorkerAgentKind;
+  agentDeviceId: string | null;
+  model: { id: string; providerId: string | null; effort: string | null; fast: boolean };
+}
+
 export interface OrcaWorkerCreationPrefs {
+  modelSelectionByHost?: Record<string, OrcaWorkerModelSelection>;
   lastAgent: OrcaWorkerAgentKind;
   agents: Record<OrcaWorkerAgentKind, OrcaWorkerAgentPrefs>;
   workerPermissionMode: OrcaWorkerPermissionMode;
@@ -64,7 +71,20 @@ export function sanitizeOrcaWorkerCreationPrefs(value: unknown): OrcaWorkerCreat
       fast: item?.fast === true,
     };
   };
+  const selections = record(raw.modelSelectionByHost);
+  const modelSelectionByHost = Object.fromEntries(Object.entries(selections ?? {}).flatMap(([host, value]) => {
+    const item = record(value);
+    const model = record(item?.model);
+    if (!item || !model || !AGENTS.includes(item.agent as OrcaWorkerAgentKind)
+      || (item.agentDeviceId !== null && (typeof item.agentDeviceId !== 'string' || !item.agentDeviceId.trim()))
+      || typeof model.id !== 'string' || !model.id.trim()
+      || (model.providerId !== null && (typeof model.providerId !== 'string' || !model.providerId.trim()))
+      || (model.effort !== null && typeof model.effort !== 'string')) return [];
+    return [[host, { agent: item.agent as OrcaWorkerAgentKind, agentDeviceId: item.agentDeviceId,
+      model: { id: model.id, providerId: model.providerId, effort: model.effort, fast: model.fast === true } }]];
+  })) as Record<string, OrcaWorkerModelSelection>;
   return {
+    ...(selections ? { modelSelectionByHost } : {}),
     lastAgent: AGENTS.includes(raw.lastAgent as OrcaWorkerAgentKind)
       ? raw.lastAgent as OrcaWorkerAgentKind
       : defaults.lastAgent,
@@ -119,6 +139,10 @@ export function saveOrcaWorkerCreationPrefs(scope: string, prefs: OrcaWorkerCrea
 export interface OrcaWorkerSubmittedChoice {
   agent: OrcaWorkerAgentKind;
   permissionMode: OrcaWorkerPermissionMode;
+  /** 普通任务的提交可更新该 host 的完整路线；SSH / 运行设备不传。 */
+  taskHostDeviceId?: string;
+  /** null = 本次提交改用逐 Agent 默认，删除该 host 的旧完整路线；缺省 = 不改。 */
+  selection?: OrcaWorkerModelSelection | null;
   model: { id: string; effort: string | null; fast: boolean } | null;
 }
 
@@ -127,8 +151,15 @@ export function mergeOrcaWorkerChoice(
   previous: OrcaWorkerCreationPrefs,
   submitted: OrcaWorkerSubmittedChoice,
 ): OrcaWorkerCreationPrefs {
+  let modelSelectionByHost = previous.modelSelectionByHost;
+  if (submitted.taskHostDeviceId && submitted.selection !== undefined) {
+    modelSelectionByHost = { ...modelSelectionByHost };
+    if (submitted.selection) modelSelectionByHost[submitted.taskHostDeviceId] = submitted.selection;
+    else delete modelSelectionByHost[submitted.taskHostDeviceId];
+  }
   return {
     ...previous,
+    ...(modelSelectionByHost ? { modelSelectionByHost } : {}),
     lastAgent: submitted.agent,
     workerPermissionMode: submitted.permissionMode,
     agents: submitted.model

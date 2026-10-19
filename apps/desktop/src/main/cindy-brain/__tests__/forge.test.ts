@@ -2151,14 +2151,12 @@ describe('FORGE_GUIDE', () => {
       '面板(panel.html/css/js)',
       'panel.position',
       '右侧栏页签',
-      // 2026-07-25 标准头系统按钮:主机画标题条,systemButtons 逐个关
-      // (maximize 撑满 / detach 独立窗口 / minimize 气泡);§2 样例与 §5
-      // 面板章节同步。
+      // 2026-10 停靠面板收束:panel.position left = 右侧栏常驻面板(不跟对话的全局
+      // 页签),systemButtons 保留兼容但不生效;§0 / §2 样例与 §5 面板章节同步。
       'systemButtons',
-      '撑满内容区',
-      '在独立窗口中打开',
-      'minimize',
-      '最小化面板',
+      '右侧栏常驻面板',
+      '全局页签',
+      '弹成独立 OS 窗口',
       // Manifest v3:直接字段声明能力；未知字段保留但不授权。
       'v3 直接用顶层字段声明插件贡献项与自主 Host 能力',
       'v2 的 `slots` 只用于存量包兼容',
@@ -2179,7 +2177,7 @@ describe('FORGE_GUIDE', () => {
       '`mainView.title`',
       '`mainView.icon`',
       '`puzzle`、`globe`、`code`、`folder`、`database`、`chart-column`',
-      '只控制主视图的侧边栏入口',
+      '只控制主视图的左侧导航入口',
       // 2026-07-28 图标与官方仓门禁(#809):§1/§2 的 icon 字段说明、
       // §8.1 官方插件仓的四语言 locale 与 assets/icon.png 惯例。
       '"icon": "assets/icon.png"',

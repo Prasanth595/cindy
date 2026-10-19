@@ -23,7 +23,7 @@ import { throwIpcError } from '../utils/ipcValidate.js';
 import { resolveSchedulerBotId } from './follower.js';
 import { readBotDirectory } from './hostData.js';
 import type { BotAutonomyRuntime, GlanceOptions } from './runtime.js';
-import { errorCode } from './taskWatch.js';
+import { errorCode, type BotAutonomyInputProjection } from './taskWatch.js';
 
 const log = createLogger('bot-autonomy');
 
@@ -61,7 +61,7 @@ export function scopeIsCurrent(scope: string): boolean {
 export function noteBotAutonomyInputProjection(projection: unknown): void {
   const runtime = current?.runtime;
   if (!runtime || !projection || typeof projection !== 'object') return;
-  runtime.watch.applyInputProjection(projection as { sessionId: string; error?: string | null; usageLimitWait?: unknown });
+  runtime.watch.applyInputProjection(projection as BotAutonomyInputProjection);
 }
 
 function emptyGlance(botId: string): BotGlance {

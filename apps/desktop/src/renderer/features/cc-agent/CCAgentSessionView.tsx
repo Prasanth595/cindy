@@ -5620,6 +5620,8 @@ function CCAgentSessionContent({
                 ) : pendingAskUser ? (
                   <AskUserQuestionPrompt
                     sessionId={sessionId}
+                    workingDir={session?.workingDir ?? ''}
+                    remoteHostId={session?.remoteHostId}
                     pending={pendingAskUser}
                     onAnswer={answerUserQuestion}
                     viewerState={askUserViewerState}

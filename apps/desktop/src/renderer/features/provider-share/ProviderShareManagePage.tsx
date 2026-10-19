@@ -1,3 +1,5 @@
+import { ProviderShareVisibilitySection } from './ProviderShareVisibilitySection';
+import { RemoteAgentIdleReleaseSection } from './RemoteAgentIdleReleaseSection';
 import { RemoteAgentLimitsSection } from './RemoteAgentLimitsSection';
 /**
  * 「{供应商} · 远程与分享」页(供应商分享 §7.2；供应商组 §10)。从设置 → 模型供应商「允许被远程调用」一行的
@@ -40,6 +42,8 @@ import type {
   ProviderUsageHistoryView,
 } from '../../../shared/providerShare';
 import { ProviderShareLinkDialog } from './ProviderShareLinkDialog';
+import { ProviderShareMemberNoteDialog } from './ProviderShareMemberNoteDialog';
+import { providerShareMemberName } from '../../../shared/providerShareMemberNote';
 import { pendingResharesFromOwned, sharesClaudeLoginEmail, type ProviderShareGate, type ProviderSharePendingRequest } from './providerShareFormat';
 import { ProviderUsageSection, type ProviderUsageStatus } from './ProviderUsageSection';
 import { presentProviderShareApproval, publishProviderShareOwnerState, removeProviderSharePendingRequest } from './providerShareStore';
@@ -80,6 +84,8 @@ export function ProviderShareManagePage({
     : devices?.find((device) => device.isSelf)?.name ?? null;
   const [remoteGroup, setRemoteGroup] = useState<ProviderGroupConfig | null>(initialGroup ?? null);
   const [state, setState] = useState<ProviderShareOwnerState | null>(null);
+  const [noteMemberId, setNoteMemberId] = useState<string | null>(null);
+  const noteTriggerRef = useRef<HTMLButtonElement | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
   const [loadErrorKey, setLoadErrorKey] = useState<string | null>(null);
   const [history, setHistory] = useState<ProviderUsageHistoryView | null>(null);
@@ -263,7 +269,7 @@ export function ProviderShareManagePage({
                 : status === 'resume'
                   ? 'providerShare.toast.resumed'
                   : 'providerShare.toast.removed',
-              { name: member.displayName },
+              { name: providerShareMemberName(member) },
             ),
           );
         } catch (error) {
@@ -299,9 +305,9 @@ export function ProviderShareManagePage({
     async (member: ProviderShareMemberView) => {
       const ok = await confirm({
         presentation: 'standard',
-        title: t('providerShare.manage.removeConfirm.title', { name: member.displayName }),
+        title: t('providerShare.manage.removeConfirm.title', { name: providerShareMemberName(member) }),
         description: t('providerShare.manage.removeConfirm.description', {
-          name: member.displayName,
+          name: providerShareMemberName(member),
           provider: providerName,
         }),
         confirmText: t('providerShare.manage.removeConfirm.confirm'),
@@ -324,8 +330,10 @@ export function ProviderShareManagePage({
     canApproveReshare: providerClassificationReady,
     onTogglePause: (member) => void setMember(member, member.status === 'paused' ? 'resume' : 'pause'),
     onRemove: (member) => void removeMember(member),
-    onReshare: (member, reshare, decision) => void decideReshare(reshare, member.displayName, decision),
+    onEditNote: (member, trigger) => { noteTriggerRef.current = trigger; setNoteMemberId(member.memberId); },
+    onReshare: (member, reshare, decision) => void decideReshare(reshare, providerShareMemberName(member), decision),
   }), [busy, decideReshare, loadFailed, providerClassificationReady, removeMember, setMember]);
+  const noteMember = members.find((member) => member.memberId === noteMemberId);
 
   return (
     // 这一页自己滚动(设置页外层在「模型供应商」分区不滚)。始终预留滚动条槽位：展开组内电脑的配额、
@@ -459,13 +467,13 @@ export function ProviderShareManagePage({
                   <div className="flex flex-wrap items-baseline gap-2 text-13">
                     <span className="font-medium text-[var(--text-primary)]">{item.reshare.name}</span>
                     <span className="text-12 text-[var(--text-secondary)]">
-                      {t('providerShare.manage.reshare.applying', { owner: item.owner.displayName })}
+                      {t('providerShare.manage.reshare.applying', { owner: providerShareMemberName(item.owner) })}
                     </span>
                   </div>
                   <div className="flex flex-wrap gap-1.5 text-12 text-[var(--text-secondary)]">
                     <span>{t('providerShare.manage.reshare.requestedAt', { time: time.relative(item.reshare.requestedAt) })}</span>
                     <span aria-hidden="true">·</span>
-                    <span>{t('providerShare.manage.reshare.usageHint', { name: item.reshare.name, owner: item.owner.displayName })}</span>
+                    <span>{t('providerShare.manage.reshare.usageHint', { name: item.reshare.name, owner: providerShareMemberName(item.owner) })}</span>
                   </div>
                 </div>
                 <div className="flex shrink-0 items-center gap-1.5">
@@ -474,7 +482,7 @@ export function ProviderShareManagePage({
                     size="sm"
                     compact
                     disabled={loadFailed || busy.has(item.reshare.id)}
-                    onClick={() => void decideReshare(item.reshare, item.owner.displayName, 'reject')}
+                    onClick={() => void decideReshare(item.reshare, providerShareMemberName(item.owner), 'reject')}
                   >
                     {t('providerShare.manage.reshare.reject')}
                   </Button>
@@ -483,7 +491,7 @@ export function ProviderShareManagePage({
                     size="sm"
                     compact
                     disabled={loadFailed || !providerClassificationReady || busy.has(item.reshare.id)}
-                    onClick={() => void decideReshare(item.reshare, item.owner.displayName, 'approve')}
+                    onClick={() => void decideReshare(item.reshare, providerShareMemberName(item.owner), 'approve')}
                   >
                     {t('providerShare.manage.reshare.approve')}
                   </Button>
@@ -498,6 +506,8 @@ export function ProviderShareManagePage({
         providerId={providerId} providerName={providerName} deviceId={deviceId} deviceName={deviceName}
         initialConfig={initialGroup} remoteProvider={remoteProvider} onConfigChange={setRemoteGroup}
       />
+
+      <ProviderShareVisibilitySection key={`${deviceId ?? 'local'}:${providerId}`} providerId={providerId} deviceId={deviceId} />
 
       <RemoteAgentLimitsSection key={deviceId ?? 'local'} deviceId={deviceId} />
 
@@ -514,12 +524,31 @@ export function ProviderShareManagePage({
         time={time}
       />
 
+      {/* 这台电脑作为使用方的设置(与上面提供方的额度分开)：只对这台生效，管理另一台电脑时不显示，免得以为改的是那台。 */}
+      {!deviceId && <RemoteAgentIdleReleaseSection />}
+
       {linkOpen && (
         <ProviderShareLinkDialog
           deviceId={deviceId}
           providerId={providerId}
           providerLabel={providerName}
           onClose={() => setLinkOpen(false)}
+        />
+      )}
+      {noteMember && (
+        <ProviderShareMemberNoteDialog
+          key={`${deviceId ?? 'local'}:${noteMember.memberId}`}
+          member={noteMember}
+          returnFocusTo={noteTriggerRef.current}
+          deviceId={deviceId}
+          onClose={() => setNoteMemberId(null)}
+          onSaved={() => {
+            setNoteMemberId(null);
+            // 保存前发出的轮询不能把旧备注写回来；作废旧读取后再取已落盘的备注。
+            loadSeq.current += 1;
+            remoteLoading.current = false;
+            void load();
+          }}
         />
       )}
     </div>

@@ -49,7 +49,7 @@ export function BotGroupSpeakerRow({ deviceId, identity, sessionId, activity, on
     const offTopic = startFocusedTopicSubscription({ deviceId, owner: `bot-group-speaker:${lane}`, topic: `session:${lane}`, subscribe, unsubscribe });
     // Seed prompts raised before this screen subscribed; later ones arrive as pushes.
     void invoke<PendingInteraction[]>(deviceId, 'maker:get-pending-interactions', [lane]).then((list) => {
-      if (!cancelled && Array.isArray(list)) remoteSessionStore.setPendingInteractions(lane, list);
+      if (!cancelled && Array.isArray(list)) remoteSessionStore.setPendingInteractions(lane, list, { deviceId });
     }).catch(() => undefined);
     return () => { cancelled = true; offTopic(); };
   }, [deviceId, invoke, lane, online, subscribe, unsubscribe]));

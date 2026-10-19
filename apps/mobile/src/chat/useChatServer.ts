@@ -76,17 +76,21 @@ export function useChatServerRoster(enabled: boolean) {
       const [rooms, self] = await Promise.all([api.client.list(), api.client.me()]);
       const rows: ReturnType<typeof chatRoomRow>[] = [];
       const fresh = new Map<string, { owner: string; head: string | undefined; value: ChatSnapshot }>();
+      // Keep archived IDs in `rooms` for computer-copy deduplication, but do not
+      // download their histories or project them into the default teammate list.
+      const visibleRooms = rooms.filter(room => !room.archived);
       let partial = false;
       // List provides room heads, so unchanged rooms need no history download on polling.
-      for (let offset = 0; offset < rooms.length; offset += 4) {
-        await Promise.all(rooms.slice(offset, offset + 4).map(async room => {
+      for (let offset = 0; offset < visibleRooms.length; offset += 4) {
+        await Promise.all(visibleRooms.slice(offset, offset + 4).map(async room => {
           try {
             const cached = snapshots.current.get(room.id);
             const value = cached?.owner === api.owner && room.head !== undefined && cached.head === room.head
               && !run.reasons.some(reason => ['changed', 'connected', 'visible'].includes(reason))
               ? cached.value : await api.client.snapshot(room.id);
             fresh.set(room.id, { owner: api.owner, head: room.head, value });
-            rows.push(chatRoomRow(room, value, self));
+            // An archive can land between the list and the newer snapshot.
+            if (!value.room.archived) rows.push(chatRoomRow(room, value, self));
           } catch (error) {
             if (!chatAccessLost(error)) { partial = true; rows.push(chatRoomRow(room)); }
           }

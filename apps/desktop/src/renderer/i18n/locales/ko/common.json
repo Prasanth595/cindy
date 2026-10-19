@@ -1,5 +1,26 @@
 {
-  "mailReader": {"markReadFailed":"읽음 상태를 동기화하지 못했습니다. 메일함 인증을 확인하고 다시 여세요.","title":"메일","openMailbox":"메일함에서 열기","loading":"메일 읽는 중…","failed":"메일을 읽지 못했습니다. 연결된 계정을 확인하고 다시 시도하거나 메일함에서 여세요.","retry":"다시 시도","to":"받는 사람","cc":"참조","bcc":"숨은 참조","subject":"제목","currentMessage":"현재 메일","messageCount_other":"메일 {{count}}개","messageCount_one":"메일 {{count}}개","showMessages_other":"메일 {{count}}개 펼치기","showMessages_one":"메일 {{count}}개 펼치기","expandMessage":"{{from}}의 메일 펼치기","collapseMessage":"{{from}}의 메일 접기","conversationFailed":"앞뒤 메일을 불러오지 못했습니다.","messageCount":"메일 {{count}}개","showMessages":"메일 {{count}}개 펼치기"},
+  "mailReader": {
+    "markReadFailed": "읽음 상태를 동기화하지 못했습니다. 메일함 인증을 확인하고 다시 여세요.",
+    "title": "메일",
+    "openMailbox": "메일함에서 열기",
+    "loading": "메일 읽는 중…",
+    "failed": "메일을 읽지 못했습니다. 연결된 계정을 확인하고 다시 시도하거나 메일함에서 여세요.",
+    "retry": "다시 시도",
+    "to": "받는 사람",
+    "cc": "참조",
+    "bcc": "숨은 참조",
+    "subject": "제목",
+    "currentMessage": "현재 메일",
+    "messageCount_other": "메일 {{count}}개",
+    "messageCount_one": "메일 {{count}}개",
+    "showMessages_other": "메일 {{count}}개 펼치기",
+    "showMessages_one": "메일 {{count}}개 펼치기",
+    "expandMessage": "{{from}}의 메일 펼치기",
+    "collapseMessage": "{{from}}의 메일 접기",
+    "conversationFailed": "앞뒤 메일을 불러오지 못했습니다.",
+    "messageCount": "메일 {{count}}개",
+    "showMessages": "메일 {{count}}개 펼치기"
+  },
   "logSupport": {
     "title": "로그 및 피드백",
     "localFiles": "문제가 발생한 날짜의 로그를 선택하세요. 민감 정보가 가려지지 않았으므로 공유 전에 확인하세요.",
@@ -277,6 +298,17 @@
         "toastRejected": "{{name}}님의 요청을 거절했습니다",
         "toastRevoked": "{{name}}님에 대한 동의를 철회했습니다. 실행 중인 세션은 중지되었습니다",
         "listTitle": "{{owner}}님의 제공자 그룹을 통해 사용"
+      },
+      "memberNote": {
+        "add": "메모 설정",
+        "edit": "메모 수정",
+        "title": "사용자 메모 설정",
+        "label": "메모",
+        "username": "사용자 이름: {{name}}",
+        "hint": "최대 {{count}}자. 비워 두면 삭제됩니다. 나에게만 표시됩니다.",
+        "save": "메모 저장",
+        "saving": "메모 저장 중…",
+        "saveFailed": "메모를 저장할 수 없습니다"
       }
     },
     "toast": {
@@ -462,6 +494,52 @@
       "save": "저장",
       "reset": "기본값 복원",
       "saved": "원격 세션 수 제한을 저장했습니다",
+      "retry": "새로고침",
+      "loading": "불러오는 중…"
+    },
+    "insights": {
+      "visibilityTitle": "공유 정보",
+      "visibilityNote": "이 공유 제공자의 모든 사용자에게 적용됩니다. 조회 권한을 꺼도 모델 사용에는 영향을 주지 않습니다.",
+      "allowQuota": "남은 사용 한도 조회 허용",
+      "allowUsage": "사용량 상세 조회 허용",
+      "saveFailed": "공유 조회 권한을 저장하지 못했습니다",
+      "quotaTitle": "남은 사용 한도",
+      "quotaNote": "계정 전체가 함께 사용하는 한도이며, 나에게만 배정된 한도가 아닙니다.",
+      "groupNote": "계정별로 표시하며 백분율은 합산하지 않습니다. 일부 계정만 표시될 수 있습니다. 다른 사람에게 공유받은 계정은 제외되며, 여러 컴퓨터에서 사용하는 같은 계정이 따로 표시될 수 있습니다.",
+      "account": "계정 {{number}}",
+      "noOwnAccounts": "이 그룹에는 한도를 공개할 수 있는 소유 계정이 없습니다",
+      "usageNote": "공유자와 현재 사용자의 이전 사용량을 표시합니다. 금액은 추정치입니다.",
+      "relayNote": "전달된 사용량은 최종 사용자를 알 수 없어 별도로 집계하며, 공유자 본인의 사용량에 포함하지 않습니다.",
+      "relay": "전달된 사용량",
+      "you": "나",
+      "owner": "공유자",
+      "notShared": "공유자가 남은 사용 한도를 공개하지 않았습니다",
+      "usageNotShared": "공유자가 사용량 상세를 공개하지 않았습니다",
+      "usageUnavailable": "일시적으로 사용량 상세를 읽을 수 없습니다",
+      "denied": "현재 이 공유 정보를 볼 수 없습니다",
+      "unsupported": "이 제공자는 사용 한도 조회를 지원하지 않습니다",
+      "unavailable": "일시적으로 한도 또는 사용량을 읽을 수 없습니다",
+      "offline": "공유자의 컴퓨터가 오프라인이거나 연결이 끊어졌습니다",
+      "needs-update": "공유자가 Cindy를 업데이트해야 볼 수 있습니다",
+      "unlimited": "개인 한도가 설정되지 않았습니다",
+      "session": "현재 기간",
+      "week": "매주",
+      "scoped": "별도 기간",
+      "remaining": "{{percent}}% 남음",
+      "resets": "초기화: {{time}}",
+      "updated": "업데이트: {{time}}",
+      "usageTitle": "사용량 세부 정보",
+      "allowUsageDescription": "켜면 이 공유 제공자의 모든 사용자가 공유자와 다른 모든 사용자의 표시 이름 및 과거 사용량 상세 내역을 볼 수 있습니다."
+    },
+    "idleRelease": {
+      "title": "이 컴퓨터가 다른 컴퓨터의 모델을 사용할 때",
+      "description": "이 컴퓨터의 세션이 다른 컴퓨터의 모델을 사용할 때, 그 컴퓨터가 동시에 실행할 수 있는 수에는 한도가 있습니다. 한도에 가까워지면 아래 시간보다 오래 유휴 상태인 세션을 잠시 연결 해제해 새 세션에 자리를 양보하도록 설정할 수 있습니다. 해당 세션에 메시지를 보내면 자동으로 다시 연결되며 이전 대화는 그대로 남아 있습니다. 실행 중인 세션은 연결을 해제하지 않습니다. 연결이 해제된 동안에도 이 컴퓨터의 백그라운드 명령은 계속 실행됩니다.",
+      "minutes": "유휴 해제(분)",
+      "hint": "기본값은 0이며 연결을 해제하지 않습니다. 한도에 도달하면 한도 안내가 표시됩니다. 1~120으로 설정하면 그 시간(분) 동안 유휴 상태일 때만 연결을 해제합니다.",
+      "invalid": "0~{{max}} 사이의 정수를 입력하세요.",
+      "save": "저장",
+      "reset": "기본값 복원",
+      "saved": "유휴 해제 설정을 저장했습니다",
       "retry": "새로고침",
       "loading": "불러오는 중…"
     }
@@ -1686,13 +1764,6 @@
         "label": "목록 표시",
         "hint": "고정하지 않은 세션: 텍스트는 한 줄로, 목록은 미리보기와 함께 표시합니다.",
         "aria": "세션 목록 표시 방식 전환"
-      },
-      "ghostPanelRestore": {
-        "label": "플러그인 패널 복원 위치",
-        "hint": "최소화한 플러그인 패널을 어디에서 복원할지 선택합니다.",
-        "aria": "플러그인 패널 복원 위치 선택",
-        "bubble": "플로팅 버블",
-        "sidebar": "사이드바"
       },
       "wallpaper": {
         "title": "배경화면",
@@ -3920,6 +3991,15 @@
         "workingDirSaved": "WeChat 새 대화 작업 디렉터리가 업데이트되었습니다",
         "workingDirReset": "WeChat 새 대화가 기본 디렉터리를 사용합니다",
         "workingDirFailed": "작업 디렉터리를 업데이트하지 못했습니다. 다시 선택하세요."
+      },
+      "companion": {
+        "assigned": "연결된 팀메이트가 답장합니다",
+        "description": "WeChat에서 {{name}}와 대화하며 기억과 기본 작업을 공유합니다. 이 컴퓨터의 WeChat 연결은 한 번에 한 팀메이트에게만 연결할 수 있습니다.",
+        "other": "WeChat이 다른 팀메이트에게 연결되어 있습니다. 해당 팀메이트의 연결 설정이나 개인 WeChat 설정에서 먼저 연결을 해제하세요.",
+        "permissionNote": "WeChat은 작업별 권한 확인을 유지합니다. 팀메이트에 Claude Code 또는 Codex를 선택하고 권한을 자동 검토 또는 확인으로 설정하세요.",
+        "remove": "팀메이트 연결 해제",
+        "useExisting": "연결된 WeChat으로 {{name}}와 대화",
+        "updateFailed": "연결을 변경하지 못했습니다. WeChat 작업이 끝난 뒤 다시 시도하고 팀메이트를 사용할 수 있는지 확인하세요."
       }
     },
     "discordBot": {
@@ -6585,9 +6665,9 @@
         "nodeResidentDetail": "플러그인이 활성화된 동안 실행되며 비활성화, 업데이트, 제거 또는 Cindy 종료 시 중지됩니다.",
         "tool": "도구 \"{{name}}\"",
         "command": "채팅 명령 ${{command}}",
-        "panelLeft": "패널 \"{{title}}\" · 채팅 왼쪽에 도킹",
+        "panelLeft": "패널 \"{{title}}\" · 사이드바에 표시",
         "panelTab": "패널 \"{{title}}\" · 플러그인 페이지에서 열기",
-        "mainView": "Cindy 사이드바에 “{{title}}” 항목을 추가할 수 있음",
+        "mainView": "Cindy 왼쪽 내비게이션에 “{{title}}” 항목을 추가할 수 있음",
         "mainViewDetail": "클릭하면 플러그인 샌드박스에서 메인 보기가 열리며 파일, 네트워크 또는 자격 증명 접근 권한이 추가로 부여되지 않습니다.",
         "code": "실행 코드",
         "codeDetail": "격리된 샌드박스에서 실행되며 파일과 네트워크에 접근할 수 없습니다.",
@@ -6606,7 +6686,7 @@
         "notify": "시스템 알림 표시 가능(화면 상단의 가벼운 알림)",
         "notifyDetail": "알림 내용은 이 플러그인이 제공하며 알림에는 이름이 표시됩니다. 자동으로 사라지며 작업을 방해하지 않습니다.",
         "badge": "플러그인 입구에 읽지 않음 표시를 켤 수 있음",
-        "badgeDetail": "새 내용이 있으면 사이드바 플러그인 입구와 자체 카드에 초록 점을 켜고 한 줄 요약을 함께 표시할 수 있습니다. 패널을 열면 사라집니다. 소리를 내지 않고 진동하지도 않으며 시스템 알림 센터에도 들어가지 않고, 시스템 알림과는 별개의 권한입니다.",
+        "badgeDetail": "새 내용이 있으면 왼쪽 내비게이션의 플러그인 입구와 자체 카드에 초록 점을 켜고 한 줄 요약을 함께 표시할 수 있습니다. 패널을 열면 사라집니다. 소리를 내지 않고 진동하지도 않으며 시스템 알림 센터에도 들어가지 않고, 시스템 알림과는 별개의 권한입니다.",
         "confirm": "확인 대화상자로 동의를 요청할 수 있음",
         "confirmDetail": "작업 전에 Cindy 자체와 동일한 확인 대화상자를 열어 물어볼 수 있습니다. 질문 내용은 플러그인이 제공하며 대화상자에는 그 이름이 표시됩니다. 확인이든 취소든 직접 클릭해야 하고 플러그인은 스스로 누를 수 없습니다. 동시에 하나만 열 수 있으며 너무 자주 요청하면 차단됩니다.",
         "fsWrite": "파일을 쓸 수 있음(생성/수정)",
@@ -6682,8 +6762,9 @@
         "locationCopied": "설치 위치를 복사했습니다",
         "locationCopyFailed": "설치 위치를 복사하지 못했습니다. 수동으로 복사하세요",
         "openLocation": "설치 위치 열기",
-        "panelDocked": "도킹됨 · 최소 너비 {{min}}px",
-        "panelNotDocked": "도킹되지 않음(레이아웃에 위치 기록 없음)",
+        "panelInSidebar": "오른쪽 사이드바에 표시(모든 작업에서 유지)",
+        "panelDismissed": "오른쪽 사이드바에서 닫음 · 여기 또는 사이드바 “+” 메뉴에서 다시 열 수 있습니다",
+        "openInSidebar": "사이드바에서 열기",
         "panelPageHosted": "플러그인 페이지에서 열림 · 벗어나면 자동으로 닫힘",
         "panelNone": "이 플러그인에는 패널이 없습니다",
         "customSlotTitle": "플러그인 사용자 정의 설정 영역",
@@ -6729,16 +6810,17 @@
         "settingsUnavailableUntilRestore": "이 설정을 다시 사용하려면 플러그인을 복원하세요.",
         "oauthScopeStale": "현재 인증에 새로 추가된 권한이 포함되어 있지 않습니다. 다시 연결해 권한을 받으세요.",
         "configurationTitle": "설정",
-        "sidebarEntryTitle": "사이드바 항목",
-        "showInSidebar": "사이드바에 표시",
-        "sidebarEntryDescription": "켜면 “{{title}}” 항목이 사이드바에 표시됩니다. 맨 위에 둘지 “더 보기”에 넣을지는 “더 보기 → 사용자 지정”에서 바꿀 수 있습니다. 숨겨도 플러그인이 비활성화되지는 않습니다.",
+        "sidebarEntryTitle": "내비게이션 항목",
+        "showInSidebar": "왼쪽 내비게이션에 표시",
+        "sidebarEntryDescription": "켜면 “{{title}}” 항목이 왼쪽 내비게이션에 “자동화”, “플러그인”과 나란히 표시됩니다. 맨 위에 둘지 “더 보기”에 넣을지는 “더 보기 → 사용자 지정”에서 바꿀 수 있습니다. 숨겨도 플러그인이 비활성화되지는 않습니다.",
         "openTool": "Tool {{name}} 세부 정보 보기",
         "noToolDescription": "이 Tool에는 설명이 없습니다.",
         "viewAllTools": "더 보기",
         "collapseTools": "Tool 접기",
         "viewAllPermissions": "더 보기",
         "permissionsDialogDescription": "이 Plugin이 요청하는 전체 {{count}}개 권한",
-        "closeDialog": "대화 상자 닫기"
+        "closeDialog": "대화 상자 닫기",
+        "resetPlacement": "기본 위치로 복원"
       },
       "contents": {
         "mainView": "메인 보기",
@@ -8010,19 +8092,7 @@
     "collapsePanel": "접기",
     "expandPanel": "펼치기"
   },
-  "panelChrome": {
-    "maximizeAria": "패널 최대화",
-    "restoreAria": "패널 크기 복원",
-    "detachAria": "새 창에서 열기",
-    "minimizeAria": "패널 최소화",
-    "closeAria": "패널 닫기 및 플러그인 비활성화"
-  },
   "ghostPanel": {
-    "disableConfirm": {
-      "title": "\"{{name}}\" 플러그인을 비활성화할까요?",
-      "body": "이 패널을 닫으면 플러그인이 비활성화되고 기능이 중지됩니다. 사이드바의 '플러그인'에서 언제든지 다시 활성화할 수 있습니다.",
-      "confirm": "비활성화"
-    },
     "externalLinkConfirm": {
       "title": "Cindy에서 외부 웹사이트를 열까요?",
       "message": "Cindy에서 외부 웹사이트를 열까요?",
@@ -8030,19 +8100,11 @@
       "cancel": "취소"
     }
   },
-  "ghostPanelWindow": {
-    "mergeBack": "메인 창으로 돌아가기",
-    "unavailable": "이 플러그인 패널은 현재 사용할 수 없습니다"
-  },
-  "ghostPanelBubble": {
-    "restoreAria": "{{name}} 패널 복원",
-    "stackExpandAria": "플러그인 패널 {{count}}개가 최소화됨. 클릭하여 펼치기",
-    "stackCollapseAria": "플러그인 패널 목록 접기"
-  },
-  "ghostPanelRestore": {
-    "single": "{{name}} 복원",
-    "multiple": "최소화된 플러그인 패널",
-    "multipleAria": "플러그인 패널 {{count}}개가 최소화되었습니다. 복원할 패널 선택"
+  "ghostMainView": {
+    "openInSidebar": "사이드바에서 열기",
+    "openInPage": "페이지로 열기",
+    "openInWindow": "별도 창에서 열기",
+    "resetPlacement": "기본 위치로 복원"
   },
   "rightSidebar": {
     "ariaLabel": "오른쪽 사이드바",
@@ -8056,16 +8118,24 @@
       "mergeBack": "메인 창으로 되돌리기",
       "followPlaceholder": "사이드바는 메인 창의 현재 세션을 따라갑니다"
     },
+    "tabWindow": {
+      "title": "사이드바 탭",
+      "mergeBack": "사이드바로 되돌리기",
+      "loading": "불러오는 중…",
+      "closed": "이 탭은 닫혔습니다"
+    },
     "emptyTitle": "준비 중인 영역",
     "emptyDesc": "오른쪽 사이드바 콘텐츠는 향후 업데이트에서 추가됩니다.",
     "tabs": {
       "addAria": "탭 추가",
       "addFailed": "탭을 추가하지 못했습니다",
       "tabCloseAria": "탭 닫기",
+      "pinnedAria": "전역 탭, 작업을 전환해도 유지됩니다",
       "menu": {
         "addLabel": "탭 추가",
         "comingSoon": "지원 예정",
-        "alreadyOpen": "열림"
+        "alreadyOpen": "열림",
+        "pluginsLabel": "플러그인"
       },
       "kinds": {
         "fileBrowser": "파일 브라우저",
@@ -8077,19 +8147,23 @@
         "resourceUsage": "활성 상태 보기",
         "collaboration": "협업",
         "unknown": "알 수 없는 탭",
-        "ghostPanel": "플러그인 패널"
+        "ghostPanel": "플러그인 패널",
+        "pluginView": "플러그인 보기"
       },
       "controls": {
         "showAria": "사이드바 표시",
         "maximizeAria": "사이드바 최대화",
         "restoreAria": "최대화 해제",
         "closeAria": "사이드바 닫기",
-        "detachAria": "사이드바를 새 창에서 열기"
+        "detachAria": "현재 탭을 새 창에서 열기"
       },
       "contextMenu": {
         "close": "닫기",
         "closeOthers": "다른 탭 닫기",
-        "closeAll": "모두 닫기"
+        "closeAll": "모두 닫기",
+        "openInWindow": "새 창에서 열기",
+        "moveTo": "{{target}}(으)로 이동",
+        "moveToWindow": "창으로 이동:"
       },
       "empty": {
         "eyebrow": "오른쪽 사이드바",
@@ -8111,6 +8185,12 @@
         "addMoreHint": "위쪽 + 버튼에서 다른 패널 유형을 선택할 수 있어요"
       },
       "placeholderHint": "{{kind}} — 콘텐츠는 이후 단계에서 추가됩니다"
+    },
+    "tabGroups": {
+      "left": "왼쪽",
+      "right": "오른쪽 사이드바",
+      "top": "위쪽",
+      "bottom": "아래쪽"
     },
     "fileBrowser": {
       "noWorkdir": "현재 세션에 로컬 작업 디렉터리가 연결되지 않아 파일 브라우저를 사용할 수 없습니다",
@@ -8975,6 +9055,7 @@
       "duplicate": "동료 복제",
       "moreActions": "{{name}} 추가 작업",
       "sectionExpand": "동료 펼치기",
+      "showLess": "접기",
       "sectionCollapse": "동료 접기",
       "noResults": "검색과 일치하는 파트너나 그룹이 없어요"
     },
@@ -9901,7 +9982,7 @@
       },
       "remove": "제거",
       "removeAria": "{{platform}} 제거",
-      "empty": "{{name}}에게는 아직 메시지 플랫폼이 없습니다. Telegram, Feishu, WeCom, DingTalk, Discord에서 만든 봇을 추가하면 {{name}}이(가) 그곳에서 답합니다.",
+      "empty": "기존 봇을 추가하거나 아래에서 개인 WeChat을 연결하면 {{name}}이 그곳에서 답장합니다.",
       "externalNote": "이 봇에게 메시지를 보내는 사람은 모두 {{name}}과(와) 대화하게 됩니다. 내 메시지는 {{name}}의 권한으로 실행되고, 다른 사람에게는 권한이 제한된 숨겨진 작업이 따로 만들어집니다.",
       "sharedMemoryNote": "{{name}}은(는) 여기의 정보와 다른 대화의 정보를 함께 사용합니다. 기억을 분리하려면 다른 동료를 사용하세요.",
       "groups": {
@@ -10016,6 +10097,19 @@
         "cancel": "취소",
         "failed": "제거하지 못했어요. 잠시 후 다시 시도해 주세요",
         "ok": "확인"
+      },
+      "officialX": {
+        "bind": "이 파트너에게 연결",
+        "remove": "파트너 연결 해제",
+        "bindTitle": "X 질문을 {{name}}에게 맡길까요?",
+        "bindBody": "공식 @askmycindy에 보낸 공개 질문을 {{name}}의 정체성, 도구, 공유 기억과 작업 폴더로 처리합니다. 답글은 공개됩니다. X 대화 기록은 비공개 채팅과 분리됩니다. 기존 파트너 연결이 있으면 교체됩니다.",
+        "removeTitle": "X 파트너 연결을 해제할까요?",
+        "removeBody": "X 계정 연결은 유지되며 이후 질문은 일반 작업으로 처리됩니다. 이미 진행 중인 답변은 완료됩니다.",
+        "bound": "{{name}}이 X 질문을 담당합니다. X를 켜고 계정을 인증하면 사용할 수 있습니다.",
+        "boundElsewhere": "X가 다른 파트너에 연결되어 있습니다. 여기에 연결하면 기존 파트너를 교체합니다.",
+        "unbound": "공식 @askmycindy에 보낸 질문을 {{name}}에게 맡길 수 있습니다.",
+        "managed": "파트너가 X 질문을 담당합니다. 해당 파트너의 메시지 플랫폼 설정에서 연결을 변경할 수 있습니다.",
+        "riskBody": "X 질문에는 파트너의 공유 기억, 도구와 작업 폴더가 사용되며 답글은 공개됩니다. 개인 정보를 다루는 용도로 사용하지 마세요. 비공개 채팅 기록을 직접 사용하지 않습니다."
       }
     }
   },
@@ -11942,7 +12036,8 @@
       "REMOTE_AGENT_SHARE_UNAVAILABLE": "공유된 제공자를 일시적으로 사용할 수 없습니다. 공유한 사람의 컴퓨터가 오프라인이거나 공유가 잠시 꺼져 있을 수 있습니다. 나중에 다시 시도하거나 다른 모델로 바꿔 계속할 수 있습니다.",
       "REMOTE_AGENT_GROUP_UNAVAILABLE": "제공자 그룹의 컴퓨터가 지금 이 세션을 실행할 수 없습니다. 모두 오프라인이거나, 배정이 일시 중지되었거나, 대기 중이거나, 이 모델이 없을 수 있습니다. 이 제공자의 원격 및 공유 페이지에서 그룹을 확인하세요.",
       "REMOTE_AGENT_DEVICE_LIMIT": "이 기기의 원격 세션 수가 한도에 도달했습니다. 사용하지 않는 세션을 보관하거나 제공자에게 원격 및 공유에서 한도를 높여 달라고 요청하세요.",
-      "REMOTE_AGENT_TOTAL_LIMIT": "제공자 컴퓨터의 전체 원격 세션 수가 한도에 도달했습니다. 제공자에게 불필요한 세션을 해제하거나 원격 및 공유에서 한도를 높여 달라고 요청하세요."
+      "REMOTE_AGENT_TOTAL_LIMIT": "제공자 컴퓨터의 전체 원격 세션 수가 한도에 도달했습니다. 제공자에게 불필요한 세션을 해제하거나 원격 및 공유에서 한도를 높여 달라고 요청하세요.",
+      "REMOTE_AGENT_RESUME_LOST": "상대 컴퓨터의 이전 대화에 다시 연결하지 못해 Agent가 그 맥락 없이 계속합니다."
     },
     "generatedFiles": {
       "title": "이 메시지에서 생성된 파일",

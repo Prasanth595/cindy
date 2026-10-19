@@ -1,5 +1,26 @@
 {
-  "mailReader": {"markReadFailed":"Could not sync read status. Check mailbox authorization and reopen this email.","title":"Mail","openMailbox":"Open in mailbox","loading":"Loading email…","failed":"Could not load this email. Check the connected mailbox account, retry, or open it in your mailbox.","retry":"Retry","to":"To","cc":"Cc","bcc":"Bcc","subject":"Subject","currentMessage":"Current email","messageCount_other":"{{count}} emails","messageCount_one":"{{count}} email","showMessages_other":"Show {{count}} emails","showMessages_one":"Show {{count}} email","expandMessage":"Expand email from {{from}}","collapseMessage":"Collapse email from {{from}}","conversationFailed":"Other emails in this conversation could not be loaded.","messageCount":"{{count}} emails","showMessages":"Show {{count}} emails"},
+  "mailReader": {
+    "markReadFailed": "Could not sync read status. Check mailbox authorization and reopen this email.",
+    "title": "Mail",
+    "openMailbox": "Open in mailbox",
+    "loading": "Loading email…",
+    "failed": "Could not load this email. Check the connected mailbox account, retry, or open it in your mailbox.",
+    "retry": "Retry",
+    "to": "To",
+    "cc": "Cc",
+    "bcc": "Bcc",
+    "subject": "Subject",
+    "currentMessage": "Current email",
+    "messageCount_other": "{{count}} emails",
+    "messageCount_one": "{{count}} email",
+    "showMessages_other": "Show {{count}} emails",
+    "showMessages_one": "Show {{count}} email",
+    "expandMessage": "Expand email from {{from}}",
+    "collapseMessage": "Collapse email from {{from}}",
+    "conversationFailed": "Other emails in this conversation could not be loaded.",
+    "messageCount": "{{count}} emails",
+    "showMessages": "Show {{count}} emails"
+  },
   "logSupport": {
     "title": "Logs and Feedback",
     "localFiles": "Choose logs from the day of the problem. Review unredacted files before sharing.",
@@ -281,6 +302,17 @@
         "toastRejected": "Declined {{name}}’s request",
         "toastRevoked": "Withdrew agreement for {{name}}. Running sessions were stopped.",
         "listTitle": "Using it through {{owner}}’s provider group"
+      },
+      "memberNote": {
+        "add": "Set Note",
+        "edit": "Edit Note",
+        "title": "Set User Note",
+        "label": "Note",
+        "username": "Username: {{name}}",
+        "hint": "Up to {{count}} characters. Leave blank to clear. Only visible to you.",
+        "save": "Save Note",
+        "saving": "Saving note…",
+        "saveFailed": "Could not save note"
       }
     },
     "toast": {
@@ -466,6 +498,52 @@
       "save": "Save",
       "reset": "Restore defaults",
       "saved": "Remote session limits saved",
+      "retry": "Reload",
+      "loading": "Loading…"
+    },
+    "insights": {
+      "visibilityTitle": "Shared Information",
+      "visibilityNote": "Applies to everyone using this shared provider. Turning off viewing permissions does not affect model use.",
+      "allowQuota": "Allow Viewing Remaining Allowance",
+      "allowUsage": "Allow Viewing Usage Details",
+      "saveFailed": "Could not save sharing permissions",
+      "quotaTitle": "Remaining Allowance",
+      "quotaNote": "This allowance is shared by the account, not reserved for you.",
+      "groupNote": "Accounts are shown separately; percentages are not added. Some accounts may be omitted. Accounts borrowed from others are excluded, and the same account on multiple computers may appear more than once.",
+      "account": "Account {{number}}",
+      "noOwnAccounts": "This group has no owned accounts whose allowance can be shared",
+      "usageNote": "Historical usage includes the owner and current users. Amounts are estimates.",
+      "relayNote": "Relayed usage is grouped separately because the end users are unknown. It is not counted as the owner’s own usage.",
+      "relay": "Relayed Usage",
+      "you": "You",
+      "owner": "Owner",
+      "notShared": "The owner has not shared the remaining allowance",
+      "usageNotShared": "The owner has not shared usage details",
+      "usageUnavailable": "Usage details are temporarily unavailable",
+      "denied": "This share cannot be viewed right now",
+      "unsupported": "Allowance reading is not supported for this provider",
+      "unavailable": "Allowance or usage is temporarily unavailable",
+      "offline": "The owner’s computer is offline or disconnected",
+      "needs-update": "The owner needs to update Cindy to share this information",
+      "unlimited": "No personal limit set",
+      "session": "Current Period",
+      "week": "Weekly",
+      "scoped": "Separate Period",
+      "remaining": "{{percent}}% remaining",
+      "resets": "Resets: {{time}}",
+      "updated": "Updated {{time}}",
+      "usageTitle": "Usage Details",
+      "allowUsageDescription": "When enabled, everyone using this shared provider can view the sharer's and every other user's display names and detailed usage history."
+    },
+    "idleRelease": {
+      "title": "When this computer uses models on other computers",
+      "description": "When tasks on this computer use models on another computer, that computer limits how many of them it runs at once. As the limit gets close, you can let tasks idle longer than the time below disconnect temporarily to make room for new tasks. Send one a message and it reconnects automatically, with the earlier conversation intact. Tasks that are running are never disconnected; while a task is disconnected, its background commands on this computer keep running.",
+      "minutes": "Idle release (minutes)",
+      "hint": "The default is 0, which never disconnects; when the limit is reached you see the limit message. With 1–120, a task can disconnect only after it has been idle this long.",
+      "invalid": "Enter a whole number from 0 to {{max}}.",
+      "save": "Save",
+      "reset": "Restore defaults",
+      "saved": "Idle release setting saved",
       "retry": "Reload",
       "loading": "Loading…"
     }
@@ -1715,13 +1793,6 @@
         "label": "List Style",
         "hint": "For unpinned sessions: Text uses one line; List adds a preview.",
         "aria": "Switch session list style"
-      },
-      "ghostPanelRestore": {
-        "label": "Plugin panel restore entry",
-        "hint": "Choose where minimized plugin panels can be restored.",
-        "aria": "Choose the plugin panel restore entry",
-        "bubble": "Floating bubble",
-        "sidebar": "Sidebar"
       },
       "wallpaper": {
         "title": "Wallpaper",
@@ -3951,6 +4022,15 @@
         "workingDirSaved": "Working directory for new WeChat conversations updated",
         "workingDirReset": "New WeChat conversations now use the default directory",
         "workingDirFailed": "Could not update the working directory. Select it again."
+      },
+      "companion": {
+        "assigned": "Replies come from the linked teammate",
+        "description": "Chat with {{name}} on WeChat, sharing memory and the main task. This computer’s WeChat connection can belong to one teammate at a time.",
+        "other": "WeChat is linked to another teammate. Remove that link in their connection settings or Personal WeChat settings first.",
+        "permissionNote": "WeChat keeps per-action permission checks. Choose Claude Code or Codex for this teammate, with Auto-review or Ask permissions.",
+        "remove": "Remove teammate link",
+        "useExisting": "Use connected WeChat with {{name}}",
+        "updateFailed": "Could not update the link. Wait for WeChat tasks to finish, then retry and check that the teammate is available."
       }
     },
     "discordBot": {
@@ -6616,9 +6696,9 @@
         "nodeResidentDetail": "Runs while the plugin is enabled and stops when disabled, updated, uninstalled, or when Cindy exits.",
         "tool": "Tool \"{{name}}\"",
         "command": "Chat command ${{command}}",
-        "panelLeft": "Panel \"{{title}}\" · docked left of the chat",
+        "panelLeft": "Panel \"{{title}}\" · shown in the sidebar",
         "panelTab": "Panel \"{{title}}\" · opens inside the Plugins page",
-        "mainView": "Can add a “{{title}}” entry to Cindy's sidebar",
+        "mainView": "Can add a “{{title}}” entry to Cindy's left navigation",
         "mainViewDetail": "Opening it displays the main view in the plugin sandbox and does not grant file, network, or credential access.",
         "code": "Executable code",
         "codeDetail": "Runs in an isolated sandbox with no access to your files or network.",
@@ -6637,7 +6717,7 @@
         "notify": "Can show system tips (light banner at the top of the screen)",
         "notifyDetail": "Tip text is provided by this plugin and labeled with its name; tips fade automatically and never block your work.",
         "badge": "Can light an unread mark on the Plugins entry",
-        "badgeDetail": "When it has something new, it can show a green dot on the sidebar Plugins entry and on its own card, with a one-line summary. Opening its panel clears the dot. The dot makes no sound, does not vibrate, never reaches your system notification center, and is a permission separate from system tips.",
+        "badgeDetail": "When it has something new, it can show a green dot on the Plugins entry in the left navigation and on its own card, with a one-line summary. Opening its panel clears the dot. The dot makes no sound, does not vibrate, never reaches your system notification center, and is a permission separate from system tips.",
         "confirm": "Can ask for your confirmation in a dialog",
         "confirmDetail": "Before acting it can open a dialog that looks like Cindy's own to ask you. The question comes from the plugin and the dialog is labeled with its name; only you can click confirm or cancel — the plugin cannot. At most one dialog at a time, and asking too often is blocked.",
         "fsWrite": "Can write files (create / modify)",
@@ -6713,8 +6793,9 @@
         "locationCopied": "Install location copied",
         "locationCopyFailed": "Could not copy the install location. Copy it manually.",
         "openLocation": "Open install location",
-        "panelDocked": "Docked · min width {{min}}px",
-        "panelNotDocked": "Not docked (no layout record yet)",
+        "panelInSidebar": "Shown in the right sidebar (kept across tasks)",
+        "panelDismissed": "Closed from the right sidebar · reopen here or from the sidebar “+” menu",
+        "openInSidebar": "Open in the sidebar",
         "panelPageHosted": "Opens from the Plugin page · closes when you leave",
         "panelNone": "This plugin has no panel",
         "customSlotTitle": "Plugin custom settings area",
@@ -6760,16 +6841,17 @@
         "settingsUnavailableUntilRestore": "Restore the plugin to use this configuration again.",
         "oauthScopeStale": "This authorization does not include newly added permissions. Reconnect to grant them.",
         "configurationTitle": "Configuration",
-        "sidebarEntryTitle": "Sidebar entry",
-        "showInSidebar": "Show in sidebar",
-        "sidebarEntryDescription": "When turned on, “{{title}}” appears in the sidebar, either at the top or under More — choose where in More → Customize. Hiding it does not disable the plugin.",
+        "sidebarEntryTitle": "Navigation Entry",
+        "showInSidebar": "Show in Left Navigation",
+        "sidebarEntryDescription": "When turned on, “{{title}}” appears in the left navigation alongside Automations and Plugins, either at the top or under More — choose where in More → Customize. Hiding it does not disable the plugin.",
         "openTool": "View details for Tool {{name}}",
         "noToolDescription": "No description is available for this Tool.",
         "viewAllTools": "See All",
         "collapseTools": "Collapse Tools",
         "viewAllPermissions": "See All",
         "permissionsDialogDescription": "All {{count}} permissions requested by this Plugin",
-        "closeDialog": "Close Dialog"
+        "closeDialog": "Close Dialog",
+        "resetPlacement": "Reset to default position"
       },
       "contents": {
         "mainView": "Main view",
@@ -8042,19 +8124,7 @@
     "collapsePanel": "Collapse",
     "expandPanel": "Expand"
   },
-  "panelChrome": {
-    "maximizeAria": "Maximize panel",
-    "restoreAria": "Restore panel size",
-    "detachAria": "Open in a new window",
-    "minimizeAria": "Minimize panel",
-    "closeAria": "Close panel and disable plugin"
-  },
   "ghostPanel": {
-    "disableConfirm": {
-      "title": "Disable \"{{name}}\"?",
-      "body": "Closing this panel disables the plugin and pauses its capabilities. You can re-enable it anytime from Plugins in the sidebar.",
-      "confirm": "Disable"
-    },
     "externalLinkConfirm": {
       "title": "Allow Cindy to open an external website?",
       "message": "Allow Cindy to open an external website?",
@@ -8062,19 +8132,11 @@
       "cancel": "Cancel"
     }
   },
-  "ghostPanelWindow": {
-    "mergeBack": "Return to main window",
-    "unavailable": "This plugin panel is currently unavailable"
-  },
-  "ghostPanelBubble": {
-    "restoreAria": "Restore {{name}} panel",
-    "stackExpandAria": "{{count}} plugin panels minimized. Click to expand",
-    "stackCollapseAria": "Collapse the plugin panel list"
-  },
-  "ghostPanelRestore": {
-    "single": "Restore {{name}}",
-    "multiple": "Minimized plugin panels",
-    "multipleAria": "{{count}} plugin panels minimized. Choose a panel to restore"
+  "ghostMainView": {
+    "openInSidebar": "Open in the sidebar",
+    "openInPage": "Open as page",
+    "openInWindow": "Open in a separate window",
+    "resetPlacement": "Reset to default position"
   },
   "rightSidebar": {
     "ariaLabel": "Right sidebar",
@@ -8088,16 +8150,24 @@
       "mergeBack": "Merge back to main window",
       "followPlaceholder": "The sidebar follows the main window's current session"
     },
+    "tabWindow": {
+      "title": "Sidebar tab",
+      "mergeBack": "Merge back into the sidebar",
+      "loading": "Loading…",
+      "closed": "This tab has been closed"
+    },
     "emptyTitle": "Reserved area",
     "emptyDesc": "Right sidebar content will be added in future iterations.",
     "tabs": {
       "addAria": "Add tab",
       "addFailed": "Failed to add tab",
       "tabCloseAria": "Close tab",
+      "pinnedAria": "Global tab, kept across tasks",
       "menu": {
         "addLabel": "Add tab",
         "comingSoon": "Coming soon",
-        "alreadyOpen": "Open"
+        "alreadyOpen": "Open",
+        "pluginsLabel": "Plugins"
       },
       "kinds": {
         "fileBrowser": "File browser",
@@ -8109,19 +8179,23 @@
         "resourceUsage": "Activity Monitor",
         "collaboration": "Team",
         "unknown": "Unknown tab",
-        "ghostPanel": "Plugin panel"
+        "ghostPanel": "Plugin panel",
+        "pluginView": "Plugin view"
       },
       "controls": {
         "showAria": "Show sidebar",
         "maximizeAria": "Maximize sidebar",
         "restoreAria": "Restore sidebar",
         "closeAria": "Close sidebar",
-        "detachAria": "Open sidebar in a new window"
+        "detachAria": "Open the current tab in a new window"
       },
       "contextMenu": {
         "close": "Close",
         "closeOthers": "Close others",
-        "closeAll": "Close all"
+        "closeAll": "Close all",
+        "openInWindow": "Open in a new window",
+        "moveTo": "Move to {{target}}",
+        "moveToWindow": "Move to window:"
       },
       "empty": {
         "eyebrow": "Right Sidebar",
@@ -8143,6 +8217,12 @@
         "addMoreHint": "Use the + button at the top to choose more panel types"
       },
       "placeholderHint": "{{kind}} — content coming in a later phase"
+    },
+    "tabGroups": {
+      "left": "left side",
+      "right": "right sidebar",
+      "top": "top",
+      "bottom": "bottom"
     },
     "fileBrowser": {
       "noWorkdir": "This session has no local working directory; file browser unavailable",
@@ -9014,6 +9094,7 @@
       "duplicate": "Duplicate teammate",
       "moreActions": "More actions for {{name}}",
       "sectionExpand": "Expand teammates",
+      "showLess": "Show less",
       "sectionCollapse": "Collapse teammates",
       "noResults": "No matching teammates or groups"
     },
@@ -9940,7 +10021,7 @@
       },
       "remove": "Remove",
       "removeAria": "Remove {{platform}}",
-      "empty": "{{name}} has no messaging platform yet. Add a bot you created on Telegram, Feishu, WeCom, DingTalk or Discord, and {{name}} will reply there.",
+      "empty": "Add a bot you already have, or connect personal WeChat below, and {{name}} will reply there.",
       "externalNote": "Anyone who messages this bot is talking to {{name}}. Your own messages run with {{name}}’s permissions; everyone else gets a separate hidden task with restricted permissions.",
       "sharedMemoryNote": "{{name}} uses information from here and from other conversations together. To keep memories separate, use another teammate.",
       "groups": {
@@ -10056,6 +10137,19 @@
         "cancel": "Cancel",
         "failed": "Couldn’t remove it. Try again later.",
         "ok": "OK"
+      },
+      "officialX": {
+        "bind": "Assign to this teammate",
+        "remove": "Remove teammate assignment",
+        "bindTitle": "Let {{name}} handle X questions?",
+        "bindBody": "Your public questions to @askmycindy will use {{name}}’s identity, tools, shared memory and workspace. Replies are public. The X thread is separate from your private chat history. This replaces any existing teammate assignment.",
+        "removeTitle": "Remove the X assignment?",
+        "removeBody": "Your X account stays connected. Future questions become ordinary tasks. Replies already in progress will finish.",
+        "bound": "X questions are assigned to {{name}}. Enable X and authorize your account to start.",
+        "boundElsewhere": "X is assigned to another teammate. Assigning it here replaces that teammate.",
+        "unbound": "Let {{name}} handle your questions to the official @askmycindy bot.",
+        "managed": "A teammate handles X questions. Change the assignment in that teammate’s message platform settings.",
+        "riskBody": "X questions use the teammate’s shared memory, tools and workspace, and replies are public. Do not use X for private information. The X thread does not directly use your private chat history."
       }
     }
   },
@@ -11986,7 +12080,8 @@
       "REMOTE_AGENT_SHARE_UNAVAILABLE": "The shared provider is temporarily unavailable. The owner's computer may be offline, or sharing is turned off for now. Try again later, or switch to another model to continue.",
       "REMOTE_AGENT_GROUP_UNAVAILABLE": "No computer in the provider group can run this task right now. They may be offline, paused, cooling down, or missing this model. Check the group on this provider’s Remote & Sharing page.",
       "REMOTE_AGENT_DEVICE_LIMIT": "This device has reached its remote session limit. Archive unused sessions or ask the provider owner to raise the limit in Remote & sharing.",
-      "REMOTE_AGENT_TOTAL_LIMIT": "The provider computer has reached its total remote session limit. Ask the owner to release unused sessions or raise the limit in Remote & sharing."
+      "REMOTE_AGENT_TOTAL_LIMIT": "The provider computer has reached its total remote session limit. Ask the owner to release unused sessions or raise the limit in Remote & sharing.",
+      "REMOTE_AGENT_RESUME_LOST": "The earlier conversation on the other computer could not be reconnected, so the agent continues without that context."
     },
     "generatedFiles": {
       "title": "Files created this message",

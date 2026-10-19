@@ -257,6 +257,36 @@ it('deduplicates server copies from multiple computers while retaining a local l
   await act(async () => { await roster.refresh(); });
   expect(roster.items.map(row => row.item.ref.id)).toEqual(['old-local-group']);
 });
+// Regression: desktop archive was honored by neither mobile list path. Keep the
+// server ID for deduplication even when the room must not become a visible row.
+it.each(['list', 'snapshot'] as const)('keeps an archived %s out on cold load, refresh and foreground, including old computer copies', async source => {
+  const allowed = h.auth.apiFetch.getMockImplementation()!;
+  const legacyHost = { deviceId: 'old-computer', deviceName: 'Old' };
+  h.targets = [legacyHost]; h.legacy.isOnline.mockReturnValue(true);
+  h.legacy.items = [{ host: legacyHost, item: { ref: { id, kind: 'bot-group', collectionId: 'bot-groups' } } }];
+  let archived = true;
+  h.auth.apiFetch.mockImplementation(async (path, options) => {
+    if (path.startsWith('/v1/conversations?')) return [{ ...room, archived: source === 'list' && archived }];
+    const value = await allowed(path, options);
+    return path.endsWith('/snapshot') ? { ...value, room: { ...room, archived } } : value;
+  });
+  await render();
+  expect(roster.items).toEqual([]);
+  if (source === 'list') expect(h.auth.apiFetch.mock.calls.some(([path]) => path.endsWith('/snapshot'))).toBe(false);
+  await act(async () => { await roster.refresh(); });
+  await act(async () => h.foreground.forEach(fn => fn('active')));
+  expect(roster.items).toEqual([]);
+  archived = false;
+  await act(async () => { await roster.refresh(); });
+  expect(roster.items).toHaveLength(1);
+  expect(roster.items[0].host.deviceId).toBe('');
+  archived = true;
+  await act(async () => { await roster.refresh(); });
+  expect(roster.items).toEqual([]);
+  h.auth.apiFetch.mockRejectedValue(new Error('offline'));
+  await act(async () => { await roster.refresh(); });
+  expect(roster.items).toEqual([]);
+});
 it('clears removed membership, exposes first-read failures and recovers on foreground', async () => {
   showChat = true; h.auth.apiFetch.mockRejectedValue(new Error('offline'));
   await render(); expect(chat.state.kind).toBe('error');
@@ -380,6 +410,9 @@ it('keeps a hidden room out of the roster even if an old server list and compute
   expect(roster.items).toEqual([]);
   expect(h.auth.apiFetch.mock.calls.some(([path]) => path.endsWith('/snapshot'))).toBe(false);
   expect(roster.error).toBeNull();
+  await act(async () => { await roster.refresh(); });
+  await act(async () => h.foreground.forEach(fn => fn('active')));
+  expect(roster.items).toEqual([]);
 });
 
 it('merges a computer-confirmed personal removal without requiring direct server access or trusting stale room data', async () => {

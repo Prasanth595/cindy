@@ -485,6 +485,11 @@
     `apps/desktop/src/main/provider-group/usageReporter.ts`；按天明细 `apps/desktop/src/main/device-link/providerShareRuntime.ts`
     (`usageHistory`)，界面 `apps/desktop/src/renderer/features/provider-share/ProviderUsageSection.tsx` 与 `providerUsageStats.ts`。
 
+组的剩余额度公开沿用所属供应商同一分享入口的两个开关（[供应商分享 §7.5](provider-sharing.md#75-剩余额度与用量明细的可见性2026-10-19)）。
+受邀者详情可按匿名账号分别查看自有账号额度，不合并百分比，也不把组内第三方分享账号的额度再公开。
+按人/模型用量复用本组账本，转来且身份不可知的用量单独匿名汇总；不公开组拓扑或私人备注。
+下述匿名 `groupStatus` 合同不变；新增内容只经独立授权的 `provider-share:insights:v1` 查询。
+
 ## 8. 告知与隐私
 
 - **组对受邀者透明，不打扰。** 分享者建组、加减组内电脑都是分享者的运维操作，受邀者不收到弹窗或提示，

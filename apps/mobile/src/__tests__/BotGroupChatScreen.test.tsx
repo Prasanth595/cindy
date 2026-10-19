@@ -960,6 +960,16 @@ describe('group settings', () => {
     expect(byId('botGroup.settings')).not.toBeNull();
   }
 
+  it('allows personal removal from an archived read-only group without management rights', async () => {
+    h.chat.server = true;
+    await openSettings(group({ serverBacked: true, archived: true, supportsListRemoval: true, supportsSettingsManagement: false,
+      members: [{ botId: 'self', actorId: 'self', name: 'Me', avatar: '', avatarColor: '', status: 'active', isSelf: true, role: 'member' }] }));
+    expect(byId('botGroup.settings.delete')).toBeNull();
+    expect(byId('botGroup.settings.hide')?.disabled).toBe(false);
+    await click('botGroup.settings.hide');
+    expect(h.chat.act).toHaveBeenCalledExactlyOnceWith('hide', undefined);
+  });
+
   it.each([true, false])('leaves after confirmed personal hide even when settings unmounts before the reply (direct=%s)', async direct => {
     h.chat.server = direct;
     let finish!: () => void;

@@ -1,5 +1,26 @@
 {
-  "mailReader": {"markReadFailed":"未能同步已讀狀態，請檢查信箱授權後重新開啟。","title":"郵件","openMailbox":"在信箱中開啟","loading":"正在讀取郵件…","failed":"未能讀取這封郵件。請檢查連接的信箱帳號後重試，或在信箱中開啟。","retry":"重試","to":"收件人","cc":"副本","bcc":"密件副本","subject":"主旨","currentMessage":"目前郵件","messageCount_other":"共 {{count}} 封郵件","messageCount_one":"共 {{count}} 封郵件","showMessages_other":"展開 {{count}} 封郵件","showMessages_one":"展開 {{count}} 封郵件","expandMessage":"展開來自 {{from}} 的郵件","collapseMessage":"收起來自 {{from}} 的郵件","conversationFailed":"暫時無法讀取前後郵件。","messageCount":"共 {{count}} 封郵件","showMessages":"展開 {{count}} 封郵件"},
+  "mailReader": {
+    "markReadFailed": "未能同步已讀狀態，請檢查信箱授權後重新開啟。",
+    "title": "郵件",
+    "openMailbox": "在信箱中開啟",
+    "loading": "正在讀取郵件…",
+    "failed": "未能讀取這封郵件。請檢查連接的信箱帳號後重試，或在信箱中開啟。",
+    "retry": "重試",
+    "to": "收件人",
+    "cc": "副本",
+    "bcc": "密件副本",
+    "subject": "主旨",
+    "currentMessage": "目前郵件",
+    "messageCount_other": "共 {{count}} 封郵件",
+    "messageCount_one": "共 {{count}} 封郵件",
+    "showMessages_other": "展開 {{count}} 封郵件",
+    "showMessages_one": "展開 {{count}} 封郵件",
+    "expandMessage": "展開來自 {{from}} 的郵件",
+    "collapseMessage": "收起來自 {{from}} 的郵件",
+    "conversationFailed": "暫時無法讀取前後郵件。",
+    "messageCount": "共 {{count}} 封郵件",
+    "showMessages": "展開 {{count}} 封郵件"
+  },
   "logSupport": {
     "title": "日誌與回饋",
     "localFiles": "選擇問題當天的日誌。檔案未經去識別化處理，請先檢查。",
@@ -277,6 +298,17 @@
         "toastRejected": "已拒絕 {{name}} 的請求",
         "toastRevoked": "已撤回對 {{name}} 的同意，正在執行的任務已停止",
         "listTitle": "經 {{owner}} 的供應商組使用"
+      },
+      "memberNote": {
+        "add": "設定備註",
+        "edit": "修改備註",
+        "title": "設定使用者備註",
+        "label": "備註",
+        "username": "使用者名稱：{{name}}",
+        "hint": "最多 {{count}} 字，留空可清除。僅你可見",
+        "save": "儲存備註",
+        "saving": "正在儲存備註…",
+        "saveFailed": "未能儲存備註"
       }
     },
     "toast": {
@@ -462,6 +494,52 @@
       "save": "儲存",
       "reset": "恢復預設",
       "saved": "遠端任務數量設定已儲存",
+      "retry": "重新載入",
+      "loading": "正在載入…"
+    },
+    "insights": {
+      "visibilityTitle": "分享可見內容",
+      "visibilityNote": "對目前供應商的所有受邀者生效。關閉查看權限不影響模型使用。",
+      "allowQuota": "允許查看剩餘額度",
+      "allowUsage": "允許查看用量明細",
+      "saveFailed": "無法儲存分享查看權限",
+      "quotaTitle": "剩餘額度",
+      "quotaNote": "這是帳號共用額度，不是分配給你的專屬額度。",
+      "groupNote": "按帳號分別顯示，不合計百分比。可能只顯示部分帳號，不包含向他人分享借來的帳號；同一帳號在多台電腦登入時也可能分列。",
+      "account": "帳號 {{number}}",
+      "noOwnAccounts": "此群組沒有可公開額度的自有帳號",
+      "usageNote": "可查看分享者與目前使用者的歷史用量，金額為估算值。",
+      "relayNote": "轉來的用量無法識別最終使用者，單獨彙總，不計入分享者本人。",
+      "relay": "轉來的用量",
+      "you": "你",
+      "owner": "分享者",
+      "notShared": "分享者尚未開放剩餘額度",
+      "usageNotShared": "分享者尚未開放用量明細",
+      "usageUnavailable": "暫時無法讀取用量明細",
+      "denied": "此分享暫時無法查看",
+      "unsupported": "此供應商暫不支援讀取額度",
+      "unavailable": "暫時無法讀取額度或用量",
+      "offline": "分享者電腦離線或連線已中斷",
+      "needs-update": "分享者的 Cindy 更新後才能查看",
+      "unlimited": "未設定個人限額",
+      "session": "目前週期",
+      "week": "每週",
+      "scoped": "獨立週期",
+      "remaining": "剩餘 {{percent}}%",
+      "resets": "重置時間：{{time}}",
+      "updated": "更新於 {{time}}",
+      "usageTitle": "用量明細",
+      "allowUsageDescription": "開啟後，此分享的所有使用者都能查看分享者及其他所有使用者的暱稱和歷史用量明細。"
+    },
+    "idleRelease": {
+      "title": "這台電腦使用其他電腦的模型",
+      "description": "這台電腦上的任務使用其他電腦上的模型時，那台電腦能同時執行的任務數量有上限。快到上限時，可以讓閒置超過下面時長的任務先暫時斷開，把位置讓給新任務；再給它傳訊息時會自動接上，之前的對話都還在。正在執行的任務不會斷開；斷開期間，這台電腦上的背景命令會繼續執行。",
+      "minutes": "閒置釋放（分鐘）",
+      "hint": "預設為 0，即從不斷開，滿了就直接提示已達上限；設為 1～120 時，閒置超過該時長的任務才可能斷開。",
+      "invalid": "請填寫 0～{{max}} 的整數。",
+      "save": "儲存",
+      "reset": "恢復預設",
+      "saved": "閒置釋放設定已儲存",
       "retry": "重新載入",
       "loading": "正在載入…"
     }
@@ -1686,13 +1764,6 @@
         "label": "列表樣式",
         "hint": "未置頂任務：文字單行，列表附預覽",
         "aria": "切換任務列表顯示方式"
-      },
-      "ghostPanelRestore": {
-        "label": "插件面板恢復入口",
-        "hint": "選擇最小化插件面板後從哪裡恢復。",
-        "aria": "選擇插件面板恢復入口",
-        "bubble": "浮動氣泡",
-        "sidebar": "側邊欄"
       },
       "wallpaper": {
         "title": "桌布",
@@ -3920,6 +3991,15 @@
         "workingDirSaved": "微信新對話工作目錄已更新",
         "workingDirReset": "微信新對話已恢復使用預設目錄",
         "workingDirFailed": "更新工作目錄失敗，請重新選擇"
+      },
+      "companion": {
+        "assigned": "由繫結的夥伴回覆",
+        "description": "在微信中與 {{name}} 對話，共用記憶和主要任務。此電腦上的微信連線一次只能交給一位夥伴。",
+        "other": "微信已交給另一位夥伴。請先在該夥伴的連線設定或個人微信設定中移除繫結。",
+        "permissionNote": "微信繼續使用逐次權限確認。請為夥伴選擇 Claude Code 或 Codex，並使用自動審查或詢問模式。",
+        "remove": "移除夥伴繫結",
+        "useExisting": "使用已連線的微信與 {{name}} 對話",
+        "updateFailed": "無法更新繫結。請等微信中的工作結束後重試，並確認夥伴仍可用。"
       }
     },
     "discordBot": {
@@ -6585,9 +6665,9 @@
         "nodeResidentDetail": "插件啟用期間會一直執行；停用、更新、解除安裝或退出 Cindy 時關閉。",
         "tool": "工具「{{name}}」",
         "command": "對話指令 ${{command}}",
-        "panelLeft": "面板「{{title}}」· 停靠主對話區左側",
+        "panelLeft": "面板「{{title}}」· 顯示在側邊欄",
         "panelTab": "面板「{{title}}」· 插件頁內開啟",
-        "mainView": "可在 Cindy 側邊欄新增「{{title}}」入口",
+        "mainView": "可在 Cindy 左側導航新增「{{title}}」入口",
         "mainViewDetail": "點擊後將在插件沙箱中開啟主視圖，不會因此取得檔案、網路或憑證存取權限。",
         "code": "可執行程式碼",
         "codeDetail": "在獨立沙箱中執行，無法訪問你的檔案與網路。",
@@ -6606,7 +6686,7 @@
         "notify": "可彈出系統提示(螢幕頂部的輕提示)",
         "notifyDetail": "提示內容由這個插件提供，提示上會標註它的名字；自動消失，不會打斷你的操作。",
         "badge": "可在插件入口點亮未讀提醒",
-        "badgeDetail": "有新內容時，它可以在側欄插件入口和自己的卡片上點亮一個綠點，並附一句話摘要；你開啟它的面板即清零。綠點不出聲、不震動，也不會進入系統通知中心，和上面的系統提示是兩項獨立權限。",
+        "badgeDetail": "有新內容時，它可以在左側導航的插件入口和自己的卡片上點亮一個綠點，並附一句話摘要；你開啟它的面板即清零。綠點不出聲、不震動，也不會進入系統通知中心，和上面的系統提示是兩項獨立權限。",
         "confirm": "可彈出確認框徵求你同意",
         "confirmDetail": "它動手前可以彈一個和 Cindy 同款的確認框來問你，問句由它提供、框上會標註它的名字；同意還是取消都由你親手點，它自己點不了。同時最多一個確認框，彈得太頻會被攔下。",
         "fsWrite": "可寫入檔案(建立/修改)",
@@ -6682,8 +6762,9 @@
         "locationCopied": "安裝位置已複製",
         "locationCopyFailed": "複製安裝位置失敗，請手動複製",
         "openLocation": "開啟安裝位置",
-        "panelDocked": "已停靠 · 最小寬 {{min}}px",
-        "panelNotDocked": "未停靠(佈局中暫無位置記錄)",
+        "panelInSidebar": "顯示在右側欄（所有任務中保留）",
+        "panelDismissed": "已從右側欄關閉 · 可在此處或右側欄「+」選單重新開啟",
+        "openInSidebar": "在側邊欄中開啟",
         "panelPageHosted": "從插件頁開啟 · 離開插件頁自動關閉",
         "panelNone": "這個插件不含面板",
         "customSlotTitle": "插件自定義設定區",
@@ -6729,16 +6810,17 @@
         "settingsUnavailableUntilRestore": "恢復插件後可繼續使用這項配置。",
         "oauthScopeStale": "當前授權未包含插件新增權限，請重新連線補齊授權。",
         "configurationTitle": "配置",
-        "sidebarEntryTitle": "側邊欄入口",
-        "showInSidebar": "顯示在側邊欄",
-        "sidebarEntryDescription": "開啟後，「{{title}}」會出現在側邊欄，顯示在最外層還是收進「更多」，可在「更多 → 自訂」中調整。隱藏入口不會停用插件。",
+        "sidebarEntryTitle": "導航入口",
+        "showInSidebar": "顯示在左側導航",
+        "sidebarEntryDescription": "開啟後，「{{title}}」會出現在左側導航，和「自動化」「插件」並列。放在最外層還是收進「更多」，可在「更多 → 自訂」中調整。隱藏入口不會停用插件。",
         "openTool": "檢視 Tool {{name}} 的詳情",
         "noToolDescription": "該 Tool 暫無描述。",
         "viewAllTools": "檢視更多",
         "collapseTools": "收起 Tool",
         "viewAllPermissions": "檢視更多",
         "permissionsDialogDescription": "該插件申請的全部 {{count}} 項權限",
-        "closeDialog": "關閉彈窗"
+        "closeDialog": "關閉彈窗",
+        "resetPlacement": "恢復預設位置"
       },
       "contents": {
         "mainView": "主視圖",
@@ -8010,19 +8092,7 @@
     "collapsePanel": "收起",
     "expandPanel": "展開"
   },
-  "panelChrome": {
-    "maximizeAria": "撐滿內容區",
-    "restoreAria": "還原面板大小",
-    "detachAria": "在獨立視窗中開啟",
-    "minimizeAria": "最小化面板",
-    "closeAria": "關閉面板並停用插件"
-  },
   "ghostPanel": {
-    "disableConfirm": {
-      "title": "停用「{{name}}」？",
-      "body": "關閉這個面板會停用插件並暫停其能力。你可以隨時在側邊欄「插件」中重新啟用。",
-      "confirm": "停用"
-    },
     "externalLinkConfirm": {
       "title": "是否要讓 Cindy 開啟外部網站",
       "message": "是否要讓 Cindy 開啟外部網站",
@@ -8030,19 +8100,11 @@
       "cancel": "取消"
     }
   },
-  "ghostPanelWindow": {
-    "mergeBack": "返回主視窗",
-    "unavailable": "該插件面板當前不可用"
-  },
-  "ghostPanelBubble": {
-    "restoreAria": "恢復 {{name}} 面板",
-    "stackExpandAria": "已收起 {{count}} 個插件面板，點選展開",
-    "stackCollapseAria": "收攏插件面板列表"
-  },
-  "ghostPanelRestore": {
-    "single": "恢復 {{name}}",
-    "multiple": "已收起的插件面板",
-    "multipleAria": "已收起 {{count}} 個插件面板，點擊選擇要恢復的面板"
+  "ghostMainView": {
+    "openInSidebar": "在側邊欄中開啟",
+    "openInPage": "在頁面中開啟",
+    "openInWindow": "在獨立視窗中開啟",
+    "resetPlacement": "恢復預設位置"
   },
   "rightSidebar": {
     "ariaLabel": "右側邊欄",
@@ -8056,16 +8118,24 @@
       "mergeBack": "合併回主視窗",
       "followPlaceholder": "側邊欄跟隨主視窗的當前任務"
     },
+    "tabWindow": {
+      "title": "側邊欄標籤",
+      "mergeBack": "合併回側邊欄",
+      "loading": "正在載入…",
+      "closed": "該標籤已關閉"
+    },
     "emptyTitle": "預留區域",
     "emptyDesc": "右側邊欄內容將在後續迭代加入",
     "tabs": {
       "addAria": "新增標籤",
       "addFailed": "新增標籤失敗",
       "tabCloseAria": "關閉標籤",
+      "pinnedAria": "全域頁籤，切換任務時保留",
       "menu": {
         "addLabel": "新增標籤",
         "comingSoon": "即將支援",
-        "alreadyOpen": "已開啟"
+        "alreadyOpen": "已開啟",
+        "pluginsLabel": "插件"
       },
       "kinds": {
         "fileBrowser": "檔案瀏覽器",
@@ -8077,19 +8147,23 @@
         "resourceUsage": "資源監視器",
         "collaboration": "協同",
         "unknown": "未知標籤頁",
-        "ghostPanel": "插件面板"
+        "ghostPanel": "插件面板",
+        "pluginView": "插件視圖"
       },
       "controls": {
         "showAria": "顯示側欄",
         "maximizeAria": "最大化側欄",
         "restoreAria": "退出最大化",
         "closeAria": "關閉側欄",
-        "detachAria": "在新視窗中開啟側邊欄"
+        "detachAria": "在獨立視窗中開啟目前標籤"
       },
       "contextMenu": {
         "close": "關閉",
         "closeOthers": "關閉其他",
-        "closeAll": "關閉所有"
+        "closeAll": "關閉所有",
+        "openInWindow": "在獨立視窗中開啟",
+        "moveTo": "移到{{target}}",
+        "moveToWindow": "移到視窗："
       },
       "empty": {
         "eyebrow": "右側欄",
@@ -8111,6 +8185,12 @@
         "addMoreHint": "可透過頂部 + 按鈕選擇更多面板型別"
       },
       "placeholderHint": "{{kind}} — 內容將在後續階段加入"
+    },
+    "tabGroups": {
+      "left": "左側",
+      "right": "右側欄",
+      "top": "上方",
+      "bottom": "下方"
     },
     "fileBrowser": {
       "noWorkdir": "當前任務未關聯本地工作目錄，檔案瀏覽器不可用",
@@ -8975,6 +9055,7 @@
       "duplicate": "複製夥伴",
       "moreActions": "{{name}} 的更多操作",
       "sectionExpand": "展開夥伴",
+      "showLess": "收起",
       "sectionCollapse": "收起夥伴",
       "noResults": "找不到符合的夥伴或群組"
     },
@@ -9901,7 +9982,7 @@
       },
       "remove": "移除",
       "removeAria": "移除 {{platform}}",
-      "empty": "{{name}} 還沒有訊息平台。把你在 Telegram、飛書、企業微信、釘釘或 Discord 申請的機器人加進來，{{name}} 就會在那裡回覆。",
+      "empty": "新增你已有的機器人，或在下方連接個人微信，{{name}} 就會在那裡回覆。",
       "externalNote": "傳訊息給這個機器人的人都是在和 {{name}} 對話。你自己的訊息依 {{name}} 的權限執行；其他人各有一條隱藏任務，權限受限。",
       "sharedMemoryNote": "{{name}} 會把這裡和其它對話裡的資訊一起使用。想隔開記憶，請換一位夥伴。",
       "groups": {
@@ -10016,6 +10097,19 @@
         "cancel": "取消",
         "failed": "未能移除，請稍後再試",
         "ok": "知道了"
+      },
+      "officialX": {
+        "bind": "連結至這位夥伴",
+        "remove": "取消夥伴連結",
+        "bindTitle": "讓 {{name}} 處理 X 提問？",
+        "bindBody": "你對官方 @askmycindy 的公開提問將交給 {{name}}，使用夥伴的身分、能力、共享記憶和工作目錄；回答會公開回覆。X 專線與私聊記錄分開。若已連結其他夥伴，本次將替換原連結。",
+        "removeTitle": "取消夥伴的 X 連結？",
+        "removeBody": "保留 X 帳號授權，後續提問恢復為一般任務。已開始的回覆會繼續完成。",
+        "bound": "X 提問已交給 {{name}}。啟用 X 並完成帳號授權後即可使用。",
+        "boundElsewhere": "X 已交給另一位夥伴。連結到這裡會替換原夥伴。",
+        "unbound": "可將官方 @askmycindy 收到的你的提問交給 {{name}}。",
+        "managed": "X 提問由夥伴處理。可在該夥伴的訊息平台設定中更改連結。",
+        "riskBody": "X 提問會使用夥伴的共享記憶、能力和工作目錄，回答會公開。請勿透過 X 處理私人資訊。專線不會直接使用夥伴的私聊記錄。"
       }
     }
   },
@@ -11941,7 +12035,8 @@
       "REMOTE_AGENT_SHARE_UNAVAILABLE": "分享的供應商暫時無法使用：對方電腦可能不在線，或對方暫時關閉了分享。可以稍後再試，或換成其他模型繼續。",
       "REMOTE_AGENT_GROUP_UNAVAILABLE": "供應商組裡的電腦現在都不能執行這個任務：可能都離線、已暫停分配、正在冷卻，或沒有這個模型。可以到這個供應商的「遠端與分享」頁查看組內電腦。",
       "REMOTE_AGENT_DEVICE_LIMIT": "這台裝置保留的遠端任務數已達上限。可封存暫時不用的任務，或請遠端電腦的主人在「遠端與分享」中提高上限。",
-      "REMOTE_AGENT_TOTAL_LIMIT": "遠端電腦保留的任務總數已達上限。請那台電腦的主人釋放暫時不用的任務，或在「遠端與分享」中提高上限。"
+      "REMOTE_AGENT_TOTAL_LIMIT": "遠端電腦保留的任務總數已達上限。請那台電腦的主人釋放暫時不用的任務，或在「遠端與分享」中提高上限。",
+      "REMOTE_AGENT_RESUME_LOST": "之前在那台電腦上的對話沒能接上，Agent 會在沒有之前上下文的情況下繼續。"
     },
     "generatedFiles": {
       "title": "本條訊息生成的檔案",

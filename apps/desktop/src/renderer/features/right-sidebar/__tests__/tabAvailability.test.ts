@@ -13,6 +13,27 @@ const affected = {
   retirement: { id: 'embedded-ios-simulator', eligible: true, unread: true },
 } as InstalledGhost;
 describe('sidebar availability', () => {
+  // 全局插件视图页签:插件卸载 / 停用 / 失去面板声明时隐藏(数据保留),与远程任务无关。
+  it('hides plugin-view tabs whose plugin is gone or disabled, only when the local plugin list is given', () => {
+    const pluginTabs = [
+      { id: 'view-a', kind: 'plugin-view', state: { instanceId: 'alpha' } },
+      { id: 'view-b', kind: 'plugin-view', state: { instanceId: 'beta' } },
+      { id: 'view-c', kind: 'plugin-view', state: { instanceId: 'gone' } },
+    ] as unknown as TabState[];
+    const alpha = { manifest: { id: 'alpha', panel: { html: 'p.html' } }, enabled: true } as InstalledGhost;
+    const beta = { manifest: { id: 'beta', mainView: { html: 'm.html' } }, enabled: false } as InstalledGhost;
+    const visible = projectAvailableTabs(pluginTabs, 'view-b', {
+      installedGhosts: [],
+      subagentsAvailable: true,
+      pluginViewGhosts: [alpha, beta],
+    });
+    expect(visible.tabs.map((tab) => tab.id)).toEqual(['view-a']);
+    expect(visible.activeTabId).toBe('view-a');
+    // 不提供本机插件清单(如纯投影场景)时不做过滤。
+    expect(
+      projectAvailableTabs(pluginTabs, null, { installedGhosts: [], subagentsAvailable: true }).tabs,
+    ).toHaveLength(3);
+  });
   it('filters persisted Cindy Make tabs when the product is disabled', () => {
     const cindyTabs = [
       { id: 'file', kind: 'file-browser', state: null },

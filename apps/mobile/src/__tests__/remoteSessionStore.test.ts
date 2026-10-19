@@ -45,8 +45,8 @@ function messageAt(id: string, sessionId: string, createdAt: string): RemoteMess
   return { ...message(id, sessionId), createdAt };
 }
 
-function pushMakerStatus(sessionId: string, data: Record<string, unknown>): void {
-  remoteSessionStore.applyRemotePush('dev-1', 'maker:event', {
+function pushMakerStatus(sessionId: string, data: Record<string, unknown>, deviceId = 'dev-1'): void {
+  remoteSessionStore.applyRemotePush(deviceId, 'maker:event', {
     sessionId,
     event: { type: 'status', data },
   });
@@ -3077,10 +3077,13 @@ describe('remoteSessionStore', () => {
     }
   });
 
-  it('clears a missed error and stale running state for a runtime absent from a complete snapshot', () => {
+  // Unit regression: after re-link, the physical shard can remain old while
+  // authoritative snapshots arrive from its canonical host. Preserve both paths.
+  it.each(['dev-1', 'new-dev-1'])('clears absent runtime state from complete snapshots on %s', (host) => {
     remoteSessionStore.setDeviceSessions('dev-1', 'Mac', [session('s1')]);
+    if (host !== 'dev-1') remoteSessionStore.setDeviceIdentity([{ deviceId: host, name: 'Mac' }]);
     remoteSessionStore.setDeviceSessions('dev-2', 'Mac mini', [session('s2')]);
-    remoteSessionStore.applySessionActivity('dev-1', {
+    remoteSessionStore.applySessionActivity(host, {
       sessionId: 's1', phase: 'error', attention: true,
     });
     remoteSessionStore.applySessionActivity('dev-2', {
@@ -3089,11 +3092,11 @@ describe('remoteSessionStore', () => {
     remoteSessionStore.setSessionRunning('s1', true);
 
     // A legacy host also returns an empty array, without claiming completeness.
-    remoteSessionStore.setActiveSessionSnapshots('dev-1', []);
+    remoteSessionStore.setActiveSessionSnapshots(host, []);
     expect(remoteSessionStore.getSessionLiveActivity('s1')).toMatchObject({ phase: 'error', attention: true });
     expect(remoteSessionStore.isSessionRunning('s1')).toBe(true);
 
-    remoteSessionStore.setActiveSessionSnapshots('dev-1', {
+    remoteSessionStore.setActiveSessionSnapshots(host, {
       format: 'active-sessions-v2', sessions: [],
     });
 
@@ -3102,14 +3105,15 @@ describe('remoteSessionStore', () => {
     expect(remoteSessionStore.getSessionLiveActivity('s2')).toMatchObject({ phase: 'error', attention: true });
   });
 
-  it('does not let a delayed complete snapshot clear a newer activity push', () => {
+  it.each(['dev-1', 'new-dev-1'])('preserves newer activity across delayed complete snapshots on %s', (host) => {
     remoteSessionStore.setDeviceSessions('dev-1', 'Mac', [session('s1')]);
+    if (host !== 'dev-1') remoteSessionStore.setDeviceIdentity([{ deviceId: host, name: 'Mac' }]);
     const epoch = remoteSessionStore.captureActiveSessionSnapshotEpoch();
-    remoteSessionStore.applySessionActivity('dev-1', {
+    remoteSessionStore.applySessionActivity(host, {
       sessionId: 's1', phase: 'error', attention: true,
     });
 
-    remoteSessionStore.setActiveSessionSnapshots('dev-1', {
+    remoteSessionStore.setActiveSessionSnapshots(host, {
       format: 'active-sessions-v2', sessions: [],
     }, epoch);
 
@@ -3393,7 +3397,8 @@ describe('remoteSessionStore', () => {
         generationDurationMs: 400,
         generationActive: true,
         generationReliable: true,
-      });
+      }, id);
+      expect(remoteSessionStore.isSessionMakerTurnRunning(`s-${id}`)).toBe(true);
     }
     const notify = vi.fn();
     const unsubscribe = remoteSessionStore.subscribe(notify);

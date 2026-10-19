@@ -4,6 +4,7 @@ import { useNewSessionDefaultSelection } from '@/session/useNewSessionDefaultSel
 import { parseGoalCommand } from '@cindy/maker-shared/goal-command';
 import { mergeMobileGoalCommand, parseMobileDesktopCommand } from '@/session/desktopSlashCommands';
 import { modelNeedsReselection } from '@/session/modelReselection';
+import { isCindyAutoModelId } from '@cindy/model-providers/provider-identity';
 import { completePrecreatedWorktreeRecovery } from '@/session/completePrecreatedWorktreeRecovery';
 import { outboxCreationRetryIdentity } from '@/session/cancelledCreationDraft';
 import { isRemoteTaskSuggestionId } from '@/session/remoteTaskSuggestionsModel';
@@ -226,6 +227,7 @@ import {
   resolveStartedDowngradeOrCommit,
   resolveSubmitGuardCatalog,
   validateNewSessionDraft,
+  type SubmitGuardCatalog,
   type NewSessionAgentKind,
   type NewSessionRuntime,
   type NewSessionDraft,
@@ -668,6 +670,7 @@ export default function NewRemoteSessionScreen() {
     executionDevicesEnabled: true,
     // 按区域限定的账号键:Global 与中国大陆版同号不同人,记忆(含完全访问)不能串。
     prefsScope: outboxOwner.accountKey || null,
+    taskHostDeviceId: selectedDeviceId,
     active: contextSheetOpen && contextSheetView === 'collab',
     setSheetOpen: setContextSheetOpen,
     connectionEpoch,
@@ -1379,12 +1382,13 @@ export default function NewRemoteSessionScreen() {
   useEffect(() => {
     if (!deviceProviders.ready) return;
     setDraft((current) => {
-      if (!current.providerId) return current;
+      if (!current.providerId && !(current.agentKind === 'pi' && isCindyAutoModelId(current.model))) return current;
       const resolved = resolveRecentModelAndProvider(
         modelRows,
         { model: current.model, providerId: current.providerId },
         current.agentKind,
         true,
+        deviceProviders.providers,
         deviceProviders.modelVisibilityOverrides,
       );
       const pairChanged = resolved.model !== current.model || resolved.providerId !== current.providerId;
@@ -1398,7 +1402,7 @@ export default function NewRemoteSessionScreen() {
         ...(current.fastMode ? { fastMode: false } : {}),
       };
     });
-  }, [deviceProviders.ready, deviceProviders.modelVisibilityOverrides, modelRows]);
+  }, [deviceProviders.ready, deviceProviders.providers, deviceProviders.modelVisibilityOverrides, modelRows]);
   const draftContent = useMemo(
     // pending(乐观上传中)也算数:拍完照立刻点创建是常见路径,create() 里会等它们落定。
     () => ({ attachmentCount: attachments.length + pendingUploads.length }),
@@ -4174,6 +4178,7 @@ export default function NewRemoteSessionScreen() {
           agentKind: nextKind,
           hostRuntime: hostRuntimeFor(nextKind),
           modelRows: rowsNow,
+          providers: deviceProvidersRef.current.providers,
           currentEffort: current.effort,
           catalogReady: catalogReadyRef.current,
           visibilityOverrides: deviceProvidersRef.current.modelVisibilityOverrides,
@@ -4926,7 +4931,7 @@ export default function NewRemoteSessionScreen() {
         });
         // Agent 在另一台电脑运行:模型属于那台的目录,不按被控电脑的目录校准(由那台在运行时核对)。
         const runGuard = () => effectiveDraft.agentDeviceId ? Promise.resolve({
-          rows: [] as readonly ProviderModelRow[], catalogKnown: false, genAt: getDeviceProvidersGen(guardDeviceId),
+          rows: [] as readonly ProviderModelRow[], providers: [], catalogKnown: false, genAt: getDeviceProvidersGen(guardDeviceId),
         }) : resolveSubmitGuardCatalog({
           deferRefreshToCreation: true,
           cached: () => getCachedDeviceProviders(guardDeviceId),
@@ -4943,7 +4948,7 @@ export default function NewRemoteSessionScreen() {
             selectedProviderId: effectiveDraft.providerId,
           }).sections),
         });
-        const applyGuard = (g: { rows: readonly ProviderModelRow[]; catalogKnown: boolean; visibilityOverrides?: Record<string, boolean> }): void => {
+        const applyGuard = (g: SubmitGuardCatalog): void => {
           if (g.catalogKnown && modelNeedsReselection(g.visibilityOverrides, effectiveDraft.agentKind, effectiveDraft.model, effectiveDraft.providerId)) {
             throw new Error(t('session.common.modelHiddenReselect', { model: effectiveDraft.model }));
           }
@@ -4952,6 +4957,8 @@ export default function NewRemoteSessionScreen() {
             guardSelected(),
             effectiveDraft.agentKind,
             g.catalogKnown,
+            g.providers,
+            g.visibilityOverrides,
           );
           assertSubmitModelResolved(resolved, effectiveDraft.model);
           const pairChanged = resolved.model !== effectiveDraft.model || resolved.providerId !== effectiveDraft.providerId;
@@ -4983,8 +4990,8 @@ export default function NewRemoteSessionScreen() {
         };
         // 有界稳定循环:每轮 await 返回后同步核对 genAt,稳定才退出(≤3)。
         // 哨兵初值必被首轮循环覆盖(for 循环体至少执行一次),消除 null 收窄。
-        let guardResult: { rows: readonly ProviderModelRow[]; catalogKnown: boolean; genAt: number; visibilityOverrides?: Record<string, boolean> } = {
-          rows: [], catalogKnown: false, genAt: getDeviceProvidersGen(guardDeviceId),
+        let guardResult: SubmitGuardCatalog = {
+          rows: [], providers: [], catalogKnown: false, genAt: getDeviceProvidersGen(guardDeviceId),
         };
         for (let pass = 0; pass < 3; pass += 1) {
           guardResult = await runGuard();
@@ -4994,7 +5001,7 @@ export default function NewRemoteSessionScreen() {
           // 耗尽仍不稳定(独立 review round-22 Spec P1):不得采信最后已知 rows——
           // 显式降为 unknown/fail-open(rows 空 + catalogKnown=false,信任既有绑定)。
           guardResult = {
-            rows: [], catalogKnown: false, genAt: getDeviceProvidersGen(guardDeviceId),
+            rows: [], providers: [], catalogKnown: false, genAt: getDeviceProvidersGen(guardDeviceId),
           };
         }
         // 循环后同步设备复核(不让出微任务):已切换则放弃,precreated ledger 保留交
@@ -5052,6 +5059,8 @@ export default function NewRemoteSessionScreen() {
             { model: effectiveDraft.model, providerId: effectiveDraft.providerId },
             effectiveDraft.agentKind,
             true,
+            fresh.providers,
+            fresh.modelVisibilityOverrides,
           );
           assertSubmitModelResolved(resolved, effectiveDraft.model);
           const pairChanged = resolved.model !== effectiveDraft.model
@@ -5477,7 +5486,7 @@ export default function NewRemoteSessionScreen() {
       });
       // Agent 在另一台电脑运行:不按被控电脑的目录校准,也不按它的来源判登录(同 create())。
       const runGuard = () => effectiveDraft.agentDeviceId ? Promise.resolve({
-        rows: [] as readonly ProviderModelRow[], catalogKnown: false, genAt: getDeviceProvidersGen(guardDeviceId),
+        rows: [] as readonly ProviderModelRow[], providers: [], catalogKnown: false, genAt: getDeviceProvidersGen(guardDeviceId),
       }) : resolveSubmitGuardCatalog({
         cached: () => getCachedDeviceProviders(guardDeviceId),
         gen: () => getDeviceProvidersGen(guardDeviceId),
@@ -5492,7 +5501,7 @@ export default function NewRemoteSessionScreen() {
           selectedProviderId: effectiveDraft.providerId,
         }).sections),
       });
-      const applyGuard = (g: { rows: readonly ProviderModelRow[]; catalogKnown: boolean; visibilityOverrides?: Record<string, boolean> }): void => {
+      const applyGuard = (g: SubmitGuardCatalog): void => {
         if (g.catalogKnown && modelNeedsReselection(g.visibilityOverrides, effectiveDraft.agentKind, effectiveDraft.model, effectiveDraft.providerId)) {
           throw new Error(t('session.common.modelHiddenReselect', { model: effectiveDraft.model }));
         }
@@ -5501,6 +5510,8 @@ export default function NewRemoteSessionScreen() {
           guardSelected(),
           effectiveDraft.agentKind,
           g.catalogKnown,
+          g.providers,
+          g.visibilityOverrides,
         );
         assertSubmitModelResolved(resolved, effectiveDraft.model);
         const pairChanged = resolved.model !== effectiveDraft.model || resolved.providerId !== effectiveDraft.providerId;
@@ -5542,8 +5553,8 @@ export default function NewRemoteSessionScreen() {
       // 有界稳定循环(独立 review round-21 Spec P1):每轮 await 返回后**同步**核对
       // genAt,稳定才退出(≤3)。
       // 哨兵初值必被首轮循环覆盖(for 循环体至少执行一次),消除 null 收窄。
-      let guardResult: { rows: readonly ProviderModelRow[]; catalogKnown: boolean; genAt: number; visibilityOverrides?: Record<string, boolean> } = {
-        rows: [], catalogKnown: false, genAt: getDeviceProvidersGen(guardDeviceId),
+      let guardResult: SubmitGuardCatalog = {
+        rows: [], providers: [], catalogKnown: false, genAt: getDeviceProvidersGen(guardDeviceId),
       };
       for (let pass = 0; pass < 3; pass += 1) {
         guardResult = await runGuard();
@@ -5553,7 +5564,7 @@ export default function NewRemoteSessionScreen() {
         // 耗尽仍不稳定(独立 review round-22 Spec P1):显式降为 unknown/fail-open,
         // 不采信最后已知 rows。
         guardResult = {
-          rows: [], catalogKnown: false, genAt: getDeviceProvidersGen(guardDeviceId),
+          rows: [], providers: [], catalogKnown: false, genAt: getDeviceProvidersGen(guardDeviceId),
         };
       }
       // 终检刷新(await 网络往返)期间设备可能已切换:进入 commit 段前复核
@@ -5627,7 +5638,7 @@ export default function NewRemoteSessionScreen() {
         }
         if (getDeviceProvidersGen(guardDeviceId) !== guardResult.genAt) {
           guardResult = {
-            rows: [], catalogKnown: false, genAt: getDeviceProvidersGen(guardDeviceId),
+            rows: [], providers: [], catalogKnown: false, genAt: getDeviceProvidersGen(guardDeviceId),
           };
         }
         // started 写盘后重跑 guard 拿到新目录 → 再次执行鉴权门禁(codex review P2:
@@ -5680,7 +5691,7 @@ export default function NewRemoteSessionScreen() {
             }
             if (getDeviceProvidersGen(guardDeviceId) !== guardResult.genAt) {
               guardResult = {
-                rows: [], catalogKnown: false, genAt: getDeviceProvidersGen(guardDeviceId),
+                rows: [], providers: [], catalogKnown: false, genAt: getDeviceProvidersGen(guardDeviceId),
               };
             }
           }
@@ -5719,7 +5730,7 @@ export default function NewRemoteSessionScreen() {
           }
           if (getDeviceProvidersGen(guardDeviceId) !== guardResult.genAt) {
             guardResult = {
-              rows: [], catalogKnown: false, genAt: getDeviceProvidersGen(guardDeviceId),
+              rows: [], providers: [], catalogKnown: false, genAt: getDeviceProvidersGen(guardDeviceId),
             };
           }
         }

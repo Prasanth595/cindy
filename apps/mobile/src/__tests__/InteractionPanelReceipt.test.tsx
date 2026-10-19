@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, useState, type ReactNode } from 'react';
+import { act, useLayoutEffect, useState, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { sharedTaskHostPeer } from '@cindy/device-link';
@@ -9,6 +9,17 @@ import { InteractionPanel, PluginSetupMessageContent } from '@/session/Interacti
 import { remoteSessionStore, useSessionPendingInteractions } from '@/session/remoteSessionStore';
 import { clearAllInteractionDrafts, readAskUserDraft, readPlanReviewDraft } from '@/session/interactionDraftStore';
 import { forwardNavigationLock } from '@/utils/navigationLock';
+import { ChatFilePathContext, type ChatFilePathContextValue } from '@/session/chatFilePathContext';
+import { QuestionReferenceText } from '@/session/QuestionReferenceText';
+import { _clearRemotePathVerdictCache } from '@/session/remotePathVerdict';
+
+const evidence = vi.hoisted(() => ({ openURL: vi.fn() }));
+// As in LegendList, setters are inert outside a list item. The composer card
+// needs ordinary React state to upgrade a reference after its remote stat.
+vi.mock('@legendapp/list/react-native', async () => {
+  const { useState } = await import('react');
+  return { useRecyclingState: (initial: unknown) => [useState(initial)[0], () => {}] };
+});
 
 const { resolveInteraction, invoke, push } = vi.hoisted(() => ({ resolveInteraction: vi.fn(), invoke: vi.fn(), push: vi.fn() }));
 const asyncReply = vi.hoisted(() => ({
@@ -36,11 +47,11 @@ vi.mock('react-native', async () => {
     children?: ReactNode; onPress?: () => void; disabled?: boolean; testID?: string;
   }) => createElement(tag, { onClick: onPress, disabled, 'data-testid': testID }, children);
   // Text keeps its onTextLayout so a test can report how many lines a label took.
-  const Text = ({ children, onTextLayout }: { children?: ReactNode; onTextLayout?: (event: { nativeEvent: { lines: unknown[] } }) => void }) => {
+  const Text = ({ children, onTextLayout, onPress, testID }: { children?: ReactNode; onTextLayout?: (event: { nativeEvent: { lines: unknown[] } }) => void; onPress?: () => void; testID?: string }) => {
     if (onTextLayout) textLayouts.set(String(children), onTextLayout);
-    return createElement('span', null, children);
+    return createElement('span', { onClick: onPress, 'data-testid': testID }, children);
   };
-  return { View: view('div'), Text, Pressable: view('button'),
+  return { View: view('div'), Text, Pressable: view('button'), Linking: { openURL: evidence.openURL },
     ScrollView: view('div'), Image: () => null,
     useWindowDimensions: () => ({ width: 390, height: 844 }),
     StyleSheet: { create: (s: unknown) => s, hairlineWidth: 1 } };
@@ -71,9 +82,9 @@ let root: Root;
 let host: HTMLDivElement;
 const requestId = 'codex:test:0';
 const onError = vi.fn();
-function Harness({ companion = false, deviceId = 'd1' }: { companion?: boolean; deviceId?: string }) {
+function Harness({ companion = false, deviceId = 'd1', fileContext }: { companion?: boolean; deviceId?: string; fileContext?: ChatFilePathContextValue }) {
   const interactions = useSessionPendingInteractions('s1');
-  return <InteractionPanel companion={companion} deviceId={deviceId} sessionId="s1" interactions={interactions} onError={onError} />;
+  return <InteractionPanel companion={companion} deviceId={deviceId} sessionId="s1" fileContext={fileContext} interactions={interactions} onError={onError} />;
 }
 function CollapsibleHarness() {
   const interactions = useSessionPendingInteractions('s1');
@@ -84,6 +95,8 @@ function CollapsibleHarness() {
 beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
   vi.resetAllMocks();
+  _clearRemotePathVerdictCache();
+  evidence.openURL.mockResolvedValue(undefined);
   routeParams.deviceId = 'd1'; routeParams.sessionId = 's1';
   forwardNavigationLock.reset();
   remoteSessionStore.clear();
@@ -105,6 +118,58 @@ async function type(id: string, value: string) {
     input.dispatchEvent(new Event('input', { bubbles: true }));
   });
 }
+
+// Unit regression: receipt tests never opened evidence in a question title.
+// Minimal input: a bare HTML filename + URL. Real card + remote stat must open
+// the controlled computer's file without resolving the question.
+it('opens question files on the controlled computer and URLs without resolving the question', async () => {
+  const onOpenPath = vi.fn();
+  const fileContext: ChatFilePathContextValue = {
+    deviceId: 'd1', sessionId: 's1', workdir: '/repo', onOpenPath,
+    statPath: vi.fn(async (absPath: string) => ({ kind: absPath.endsWith('missing.html') ? 'missing' as const : 'file' as const, resolvedPath: absPath })),
+  };
+  remoteSessionStore.setPendingInteractions('s1', [{ request: {
+    kind: 'ask_user_question', requestId,
+    questions: [{ question: '请查看 sidebar-layout-v1.html 和 https://example.com/view。 missing.html' }],
+  } }]);
+  await act(async () => root.render(<Harness fileContext={fileContext} />));
+  await click('message.markdownPathChip');
+  expect(onOpenPath).toHaveBeenCalledWith({ kind: 'file', absPath: '/repo/sidebar-layout-v1.html', relPath: 'sidebar-layout-v1.html' });
+  expect(host.querySelectorAll('[data-testid="message.markdownPathChip"]')).toHaveLength(1);
+  const url = Array.from(host.querySelectorAll('span')).find((element) => element.textContent === 'https://example.com/view')!;
+  await act(async () => url.click());
+  expect(evidence.openURL).toHaveBeenCalledWith('https://example.com/view');
+  expect(resolveInteraction).not.toHaveBeenCalled();
+  expect(host.querySelector('[data-testid="interaction.ask.card"]')).not.toBeNull();
+});
+
+// Unit: a new question must not borrow the last file's verified state. The
+// existing click test never changed the href at a retained span index. Inspect
+// the first committed frame before passive effects can clear the stale verdict.
+it('keeps a changed question reference unclickable until its own verification', async () => {
+  const onOpenPath = vi.fn();
+  const fileContext: ChatFilePathContextValue = {
+    deviceId: 'd1', sessionId: 's1', workdir: '/repo', onOpenPath,
+    statPath: vi.fn((absPath: string) => absPath.endsWith('present.html')
+      ? Promise.resolve({ kind: 'file' as const, resolvedPath: absPath })
+      : new Promise<never>(() => {})),
+  };
+  const changedFrame: boolean[] = [];
+  function ReferenceFrame({ text }: { text: string }) {
+    useLayoutEffect(() => {
+      if (text !== 'missing.html') return;
+      const chip = host.querySelector<HTMLElement>('[data-testid="message.markdownPathChip"]');
+      changedFrame.push(!!chip);
+      chip?.click();
+    }, [text]);
+    return <ChatFilePathContext.Provider value={fileContext}><QuestionReferenceText text={text} /></ChatFilePathContext.Provider>;
+  }
+  await act(async () => root.render(<ReferenceFrame text="present.html" />));
+  expect(host.querySelector('[data-testid="message.markdownPathChip"]')).not.toBeNull();
+  await act(async () => root.render(<ReferenceFrame text="missing.html" />));
+  expect(changedFrame).toEqual([false]);
+  expect(onOpenPath).not.toHaveBeenCalled();
+});
 
 it.each(['push-first', 'receipt-first', 'lost-receipt', 'other-client'] as const)(
   'finalizes retained answers without stale snapshot resurrection: %s',

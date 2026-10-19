@@ -2510,6 +2510,19 @@
       },
       "checkCase": false,
       "note": "云端伙伴运行的那台电脑（docs/product-rules/cloud-companions.md §3）：伙伴的 Agent、工作目录与连接只在这台电脑上，其他电脑与手机是查看和发消息的入口。手机与桌面同一叫法，伙伴设置行名、离线横幅与侧栏状态共用。英文行名用 Title Case（Main Computer），句中小写 main computer，故 checkCase 为 false。不要写成「主设备」「宿主机」或 home device（代码字段 homeDeviceId 不是界面用语）。先登记为 proposed，待桌面与手机实机走查后再定。"
+    },
+    {
+      "id": "left-navigation",
+      "status": "proposed",
+      "en": "Left navigation",
+      "translations": {
+        "zh-CN": "左侧导航",
+        "zh-TW": "左側導航",
+        "ja": "左側ナビゲーション",
+        "ko": "왼쪽 내비게이션"
+      },
+      "checkCase": false,
+      "note": "主窗口左侧放任务与「自动化」「插件」「伙伴」等一级入口的那一栏。插件主视图入口的开关称「导航入口」（Navigation Entry），用来与右侧放插件面板、浏览器、终端的「右侧栏」（right sidebar）区分，所以涉及这个入口的文案写左侧导航，不再写笼统的「侧边栏」。韩语依国立国语院标准外来语表记写 내비게이션，不写 네비게이션。英文句中小写 left navigation，故 checkCase 为 false。先登记为 proposed：其他位置仍有「侧边栏」泛指左栏的存量文案，待统一清理时再裁决。"
     }
   ]
 }

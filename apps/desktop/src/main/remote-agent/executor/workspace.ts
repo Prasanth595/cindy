@@ -545,6 +545,14 @@ export class ExecutorWorkspace {
   }
 
   /**
+   * 连回同一个会话时补进对方新给的映射。已有的保持原来的目标、排在同长度的新映射前面：对话里出现过的
+   * 虚拟路径(含运行中分配的 runtime-*)接回后仍指向同一个本机目录，不会被换成别的目录。
+   */
+  addAliases(aliases: readonly ExecutorPathAlias[]): void {
+    this.setAliases([...this.aliases, ...aliases]);
+  }
+
+  /**
    * 命令沿用 Desktop 的完整环境(与本机 Agent 一致)，虚拟化只作用于 Agent 看到的路径文本。
    * 用户目录与临时目录已有别名；PATH 里其余目录在这里登记，env / which 之类的输出也只露虚拟路径。
    */

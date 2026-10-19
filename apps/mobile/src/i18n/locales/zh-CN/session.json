@@ -581,6 +581,7 @@
     "REMOTE_AGENT_BUSY": "那台电脑上同时运行的任务太多。先结束一些任务后再试。",
     "REMOTE_AGENT_DEVICE_LIMIT": "这台设备保留的远程任务数已达上限。可归档暂时不用的任务，或请远程电脑的主人在“远程与分享”中提高上限。",
     "REMOTE_AGENT_TOTAL_LIMIT": "远程电脑保留的任务总数已达上限。请那台电脑的主人释放暂时不用的任务，或在“远程与分享”中提高上限。",
+    "REMOTE_AGENT_RESUME_LOST": "之前在那台电脑上的对话没能接上，Agent 会在没有之前上下文的情况下继续。",
     "REMOTE_AGENT_UNSUPPORTED": "那台电脑上这个 Agent 不可用。在那台电脑上安装或登录后再试，或换一个 Agent。",
     "REMOTE_AGENT_INVALID": "和运行 Agent 的电脑通信出错。请重试；如果一直出现，请把两台电脑上的 Cindy 都更新到最新版。",
     "REMOTE_AGENT_PROVIDER_NOT_ALLOWED": "那台电脑没有允许远程调用这个供应商。请在那台电脑的「设置 → 模型供应商」里打开「允许被远程调用」，或换一个模型。",

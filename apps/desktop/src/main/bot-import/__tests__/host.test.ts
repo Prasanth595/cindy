@@ -266,9 +266,13 @@ it('keeps an already installed teammate working after its package leaves the cat
   const first = await nativeFinished(await inviteNativeBotPackage(entry, 'renderer:1'));
   // The receipt of a package that is no longer bundled (a teammate retired from the catalog).
   const file = path.join(h.root, 'companion-imports', `${first.requestId}.json`);
-  const receipt = JSON.parse(await fs.readFile(file, 'utf8'));
-  receipt.nativePackage.packageId = 'retired-example';
-  await fs.writeFile(file, JSON.stringify(receipt));
+  // A complete result can precede checkpoint cleanup. Join its lifecycle lock so
+  // the trailing receipt save cannot overwrite this retired-package fixture.
+  await withBotProfileLocks([first.botId], async () => {
+    const receipt = JSON.parse(await fs.readFile(file, 'utf8'));
+    receipt.nativePackage.packageId = 'retired-example';
+    await fs.writeFile(file, JSON.stringify(receipt));
+  });
   const catalog = await listNativeBotPackages();
   expect(catalog.map(item => item.packageId)).not.toContain('retired-example');
   expect(catalog.every(item => item.installation === undefined)).toBe(true);

@@ -3887,7 +3887,7 @@ function SessionScreenContent() {
           throw error;
         }),
         commitRead('pending', fetchPendingInteractions, (pendingInteractions) => {
-          remoteSessionStore.setPendingInteractions(sessionId, Array.isArray(pendingInteractions) ? pendingInteractions : []);
+          remoteSessionStore.setPendingInteractions(sessionId, Array.isArray(pendingInteractions) ? pendingInteractions : [], { deviceId });
         }),
         commitRead('projection', fetchProjection, (projectionResult) => {
           remoteSessionStore.setInputProjectionIfCurrent(
@@ -10144,6 +10144,7 @@ function SessionScreenContent() {
                     queueFooter={(
                       <>
                         {companionInlineInteraction && !shareSelectionActive ? <InteractionPanel
+                          fileContext={chatFilePathContextValue}
                           embedded
                           companion={companionChat}
                           companionIdentity={companionInteractionIdentity}
@@ -10374,6 +10375,7 @@ function SessionScreenContent() {
                     不给收起入口:收起态的文案与 a11y 都是「先不答、稍后回答」,套在它身上是
                     错的语义。 */}
                 <InteractionPanel
+                  fileContext={chatFilePathContextValue}
                   companion={companionChat}
                   companionIdentity={companionInteractionIdentity}
                   deviceId={deviceId}
@@ -10410,6 +10412,7 @@ function SessionScreenContent() {
                   testID="interaction.bottomScroll"
                 >
                   <InteractionPanel
+                    fileContext={chatFilePathContextValue}
                   companion={companionChat}
                   companionIdentity={companionInteractionIdentity}
                     safeAreaBottomInset={insets.bottom}
@@ -10437,6 +10440,7 @@ function SessionScreenContent() {
                   testID="interaction.bottomScroll"
                 >
                 <InteractionPanel
+                  fileContext={chatFilePathContextValue}
                   companion={companionChat}
                   companionIdentity={companionInteractionIdentity}
                   safeAreaBottomInset={insets.bottom}

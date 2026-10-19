@@ -365,6 +365,8 @@ export interface PendingAgentSwitchIntent {
    * 落地时不给任务打「脱离跟随」标记。用户 picker 选择不带此标(PR #5155)。
    */
   configStaged?: boolean;
+  /** Auto 跟随登记时验证的两端身份；仅内存使用，目录移除来源后仍可撤销/改登记。 */
+  cindyAutoRelocation?: { fromProviderId: string; targetProviderId: string };
   /** SET_MODEL intent: apply the route without a cross-engine handoff. */
   sameAgentSelection?: boolean;
   targetAgentKind: AgentKind;

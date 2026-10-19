@@ -169,7 +169,6 @@ import {
   isUserInstallReservedGhostId,
   isValidGhostId,
   isValidNewGhostId,
-  layoutWithGhostPanel,
   type GhostHostNoticeKey,
   type GhostManifest,
   type GhostCindyPreferenceResult,
@@ -197,7 +196,6 @@ import {
   type ActiveAppSession,
   type AppSessionMode,
 } from '../appSessionState.js';
-import { getLayoutStore } from '../layout/index.js';
 import { relocateGhostUserDataResources } from './ghostUserDataRelocation.js';
 import {
   GhostManager,
@@ -1810,21 +1808,7 @@ async function reconcileBuiltinGhostsLocked(
   // 完成时,靠 ghosts:changed 热更新兜底,多窗口同一套通道)。
   // 对账跑完 = 一次完整扫描,清单权威(见 broadcastGhostsChanged 的说明)。
   broadcastGhostsChanged(manager.list(), true);
-  // 首装的意识停进布局树(与 installAndDock 同一套停靠逻辑;覆盖更新 id 未变,
-  // 布局位置天然保留,不动树;回收不动树 —— 与 uninstall 口径一致,位置记录
-  // 由布局引擎保留)。
-  const store = getLayoutStore();
   for (const manifest of outcome.installed) {
-    const docked = layoutWithGhostPanel(store.getLayout(), manifest);
-    if (docked) {
-      const applied = store.setLayout(docked);
-      if ('rejection' in applied) {
-        log.warn('builtin ghost panel dock rejected', {
-          id: manifest.id,
-          reason: applied.rejection,
-        });
-      }
-    }
     // 登录触发的对账装上常驻意识时,这里就是它的点火时机(启动那趟扫描早过了)。
     const ghost = manager.list().find((g) => g.manifest.id === manifest.id);
     if (ghost) spawnIfResident(ghost);
@@ -6935,21 +6919,6 @@ async function installAndDockLocked(
   // 内置墓碑清除已并入 GhostManager 的 durable install journal(marker.clearBuiltinTombstone
   // + 提交时清除 + 崩溃恢复补清),此处不再直接调用:瞬时状态写失败会保留 marker 交由
   // 启动恢复,而不是把已提交的安装误报成错误。
-  // 声明了面板的意识装入后立即停进布局树(树上已有 = 重装,原位复活不动树)。
-  // 顺序刻意:manager.install 内已广播 ghosts:changed(renderer 先注册面板),
-  // 这里再 setLayout 触发 layout:changed(pane 出现时面板组件必然已就位,规则 7)。
-  const store = getLayoutStore();
-  const docked = layoutWithGhostPanel(store.getLayout(), result.ghost.manifest, installedGhostStoragePart(result.ghost));
-  if (docked) {
-    const applied = store.setLayout(docked);
-    if ('rejection' in applied) {
-      // 停靠失败不阻断装入(意识本体已就绪);记日志供排查。
-      log.warn('ghost panel dock rejected', {
-        id: result.ghost.manifest.id,
-        reason: applied.rejection,
-      });
-    }
-  }
   // 常驻意识(launch: resident)且装入即开启:立刻拉起电子脑。
   spawnIfResident(result.ghost);
   if (!opts.deferUsageBinding) await bindPluginUsage(result.ghost);
@@ -7143,17 +7112,6 @@ async function updateLocalGhostPackageLocked(
   runtime.resetFuse(instanceId);
   await bindPluginUsage(result.ghost,
     !detachMarketRecord && previousGhost?.approval.state === 'approved' ? previousGhost.approval.revision : undefined);
-  const store = getLayoutStore();
-  const docked = layoutWithGhostPanel(store.getLayout(), result.ghost.manifest, installedGhostStoragePart(result.ghost));
-  if (docked) {
-    const applied = store.setLayout(docked);
-    if ('rejection' in applied) {
-      log.warn('ghost panel dock rejected', {
-        id: result.ghost.manifest.id,
-        reason: applied.rejection,
-      });
-    }
-  }
   spawnIfResident(result.ghost);
   return result.ghost;
 }
@@ -7611,17 +7569,6 @@ async function installOrUpdateMarketGhostPackageLocked(
       throwInstallError(result.rejection);
     }
     runtime.resetFuse(installedGhostStoragePart(result.ghost));
-    const store = getLayoutStore();
-    const docked = layoutWithGhostPanel(store.getLayout(), result.ghost.manifest, installedGhostStoragePart(result.ghost));
-    if (docked) {
-      const applied = store.setLayout(docked);
-      if ('rejection' in applied) {
-        log.warn('market ghost panel dock rejected', {
-          id: result.ghost.manifest.id,
-          reason: applied.rejection,
-        });
-      }
-    }
     spawnIfResident(result.ghost);
     await expected.afterCommitInLock?.(result.ghost, commitEvidence);
     await bindPluginUsage(result.ghost);

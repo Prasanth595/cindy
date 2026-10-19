@@ -1,3 +1,4 @@
+import type { ProviderShareUsageDetails } from '../../../shared/providerShareInsights';
 import { ErrorNotice } from '@/components/ui/error-notice';
 /**
  * 「远程与分享」页的「用量」块(供应商组 §7、§10)：与设置 → 用量同一套版式(2026-10-17 用户确认原型)——
@@ -42,6 +43,7 @@ import type {
   ProviderUsageHistoryView,
 } from '../../../shared/providerShare';
 import { DEFAULT_USAGE_CURRENCY, type RegionalMoney } from '../../../shared/regionalMoney';
+import { providerShareMemberName } from '../../../shared/providerShareMemberNote';
 import { formatShareMoney, formatShareTokens } from './providerShareFormat';
 import { providerShareComputerName, useProviderShareOwnerNameOf } from './providerShareNames';
 import { deviceIdOfMemberKey, shareAgentDeviceIdOfMemberKey } from './providerUsageBreakdown';
@@ -100,6 +102,7 @@ interface ComputerLabel {
 
 export function ProviderUsageSection({
   providerId,
+  sharedUsage,
   history,
   status,
   legacyOwn,
@@ -111,13 +114,14 @@ export function ProviderUsageSection({
   time,
 }: {
   providerId: string;
+  sharedUsage?: ProviderShareUsageDetails;
   /** 按天明细；还没读到、读失败或旧版本时为 null。 */
   history: ProviderUsageHistoryView | null;
   status: ProviderUsageStatus;
   /** 旧版本电脑：你自己所有时间的合计(own-usage)。 */
   legacyOwn: ProviderOwnUsageView | null;
   members: readonly ProviderShareMemberView[];
-  memberActions: ProviderShareMemberActions;
+  memberActions?: ProviderShareMemberActions;
   selfDeviceName: string | null;
   ownerDeviceId?: string;
   /** 远程管理时由页面传入建组电脑上的组；不传时读本机组设置。 */
@@ -152,9 +156,10 @@ export function ProviderUsageSection({
   const [stackChoice, setStack] = useState<StackBy>('party');
   const stack: StackBy = !group && stackChoice === 'computer' ? 'party' : stackChoice;
   const [heatmapWeeks, setHeatmapWeeks] = useState(20);
-  const todayKey = history?.todayKey ?? '';
+  const todayKey = sharedUsage?.todayKey ?? history?.todayKey ?? '';
 
   const rows = useMemo<ProviderUsageRow[]>(() => {
+    if (sharedUsage) return sharedUsage.parties.flatMap((party) => party.days.map((day) => ({ ...day, providerId: null, memberKey: null, computer: null, party: party.key })));
     if (history) {
       // owned 刷新比按日历史快；成员删除后先从旧快照排除，避免总量和页面上的成员行短暂不一致。
       const activeMemberIds = new Set(members.map((member) => member.memberId));
@@ -165,9 +170,16 @@ export function ProviderUsageSection({
     }
     if (legacy) return rowsFromLegacy(legacyOwn, members, aliases);
     return [];
-  }, [aliases, history, legacy, legacyOwn, members]);
+  }, [aliases, history, legacy, legacyOwn, members, sharedUsage]);
 
   const parties = useMemo<UsageParty[]>(() => {
+    if (sharedUsage) return sharedUsage.parties.map((party) => ({
+      key: party.key,
+      name: party.isRelay ? t('providerShare.insights.relay') : party.displayName,
+      tag: party.isYou ? t('providerShare.insights.you') : party.isOwner ? t('providerShare.insights.owner') : '',
+      person: party.isRelay ? undefined : { displayName: party.displayName, avatarUrl: party.avatarUrl },
+      lastUsedAt: party.lastUsedAt,
+    }));
     const selfName = user?.name?.trim() || t('settings.userProfile.local.name');
     const legacySelfLast = [legacyOwn?.local, ...(legacyOwn?.devices ?? [])]
       .reduce<number | null>((latest, part) => (part ? Math.max(latest ?? 0, part.lastUsedAt) : latest), null);
@@ -183,7 +195,7 @@ export function ProviderUsageSection({
       const usage = history?.members.find((item) => item.memberId === member.memberId);
       list.push({
         key: memberParty(member.memberId),
-        name: member.displayName,
+        name: providerShareMemberName(member),
         tag: t('providerGroup.usage.shareSource'),
         person: { displayName: member.displayName, avatarUrl: member.avatarUrl },
         member,
@@ -206,7 +218,7 @@ export function ProviderUsageSection({
       });
     }
     return list;
-  }, [devices, history, legacyOwn, members, t, user?.avatar, user?.name]);
+  }, [devices, history, legacyOwn, members, sharedUsage, t, user?.avatar, user?.name]);
 
   const computerLabel = useCallback(
     (key: string | null): ComputerLabel => {
@@ -280,7 +292,7 @@ export function ProviderUsageSection({
     ...parties.map((item) => ({
       value: item.key,
       label: item.name,
-      detail: item.key === SELF_PARTY
+      detail: sharedUsage ? item.tag : item.key === SELF_PARTY
         ? t('providerGroup.usage.filter.selfDetail')
         : item.member
           ? item.member.status === 'paused'
@@ -326,7 +338,7 @@ export function ProviderUsageSection({
   );
   const heatDays = useMemo(() => usageRowsByDay(chartRows).map((day) => ({ ...day, money: ZERO_MONEY })), [chartRows]);
 
-  const charts = Boolean(history) && rows.length > 0;
+  const charts = Boolean(history || sharedUsage) && rows.length > 0;
   const stackOptions = [
     { value: 'party' as const, label: t('providerGroup.usage.stack.party') },
     ...(group ? [{ value: 'computer' as const, label: t('providerGroup.usage.stack.computer') }] : []),
@@ -391,7 +403,7 @@ export function ProviderUsageSection({
         </div>
       </div>
 
-      {status === 'loading' && !history ? (
+      {status === 'loading' && !history && !sharedUsage ? (
         <p role="status" className="-mt-1 mb-3 inline-flex items-center gap-1.5 text-12 text-[var(--text-tertiary)]">
           <Spinner icon={RefreshCw} size={11} className="opacity-70" />
           {t('providerShare.manage.loading')}
@@ -402,9 +414,9 @@ export function ProviderUsageSection({
         <p role="status" className="-mt-1 mb-3 text-12 text-[var(--text-tertiary)]">
           {t('providerGroup.usage.legacyNote', { device: selfDeviceName ?? t('providerGroup.usage.unknownDevice') })}
         </p>
-      ) : history?.coverageStart ? (
+      ) : (sharedUsage ?? history)?.coverageStart ? (
         <p className="-mt-1 mb-3 text-12 text-[var(--text-tertiary)]">
-          {t('providerGroup.usage.coverage', { date: time.date(Date.parse(`${history.coverageStart}T12:00:00`)) })}
+          {t('providerGroup.usage.coverage', { date: time.date(Date.parse(`${(sharedUsage ?? history)!.coverageStart}T12:00:00`)) })}
         </p>
       ) : null}
 
@@ -500,7 +512,7 @@ export function ProviderUsageSection({
         </div>
       </UsageCard>
 
-      {history && rows.length === 0 && (
+      {(history || sharedUsage) && rows.length === 0 && (
         <p className="mb-3.5 text-center text-13 text-[var(--text-tertiary)]">{t('usageHistory.empty')}</p>
       )}
 
@@ -608,7 +620,7 @@ function PartyTable({
   colorOf: (key: string) => string;
   selected: string;
   onToggle: (key: string) => void;
-  memberActions: ProviderShareMemberActions;
+  memberActions?: ProviderShareMemberActions;
   time: ShareTimeFormat;
 }) {
   const { t } = useTranslation();
@@ -703,6 +715,11 @@ function PartyTable({
                             <span className="text-12 text-[var(--text-secondary)]">{party.tag}</span>
                             {member && <ShareMemberStatus member={member} />}
                           </div>
+                          {member?.note && (
+                            <span className="truncate text-12 leading-[1.5] text-[var(--text-secondary)]" title={member.displayName}>
+                              {t('providerShare.manage.memberNote.username', { name: member.displayName })}
+                            </span>
+                          )}
                           <span className="truncate text-12 text-[var(--text-secondary)]">
                             {member
                               ? `${t('providerShare.manage.members.joined', { date: time.date(Date.parse(member.joinedAt)) })} · ${lastUsed}`
@@ -725,18 +742,19 @@ function PartyTable({
                     {actionColumn && (
                       // 行尾菜单的点击(含 portal 里的菜单项)不当成「只看这个人」。
                       <td className={cn(tdClass, 'w-10 pl-1')} onClick={(event) => event.stopPropagation()}>
-                        {member && (
+                        {member && memberActions && (
                           <ShareMemberMenu
                             member={member}
                             disabled={memberActions.busy(member.memberId)}
                             onTogglePause={() => memberActions.onTogglePause(member)}
                             onRemove={() => memberActions.onRemove(member)}
+                            onEditNote={(trigger) => memberActions.onEditNote(member, trigger)}
                           />
                         )}
                       </td>
                     )}
                   </tr>
-                  {member && hasReshares && (
+                  {member && memberActions && hasReshares && (
                     <tr data-usage-party-extra={party.key}>
                       {/* 与昵称一列左对齐：色块 8 + gap 10 + 头像 28 + gap 10 = 56px。 */}
                       <td colSpan={columns} className="border-b border-[var(--border-default)] pb-3 pl-14 pr-3">

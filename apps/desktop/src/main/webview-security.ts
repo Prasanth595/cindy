@@ -664,9 +664,15 @@ function isRoutablePopupUrl(url: string): boolean {
  * hostContents 过时 —— 旧 renderer 的 Shell 已退订,fanOut 不缓冲,消息发过去
  * 就是丢弃。发送时刻动态解析当前 host 才能落到活着的订阅者。
  */
-let popupHostResolver: (() => WebContents | null) | null = null;
+let popupHostResolver: ((capturedHost: WebContents) => WebContents | null) | null = null;
 
-export function setRsbPopupHostResolver(resolver: (() => WebContents | null) | null): void {
+/**
+ * 解析函数收到捕获时的 hostContents:弹出到独立窗口的页签,其 guest 就挂在那扇窗口的 renderer
+ * 上,popup 必须回到同一个 renderer(原生 popup surface 的 owner 校验也认它),解析函数据此放行。
+ */
+export function setRsbPopupHostResolver(
+  resolver: ((capturedHost: WebContents) => WebContents | null) | null,
+): void {
   popupHostResolver = resolver;
 }
 
@@ -679,7 +685,7 @@ function sendBrowserPopup(
   let current: WebContents | null = null;
   if (popupHostResolver) {
     try {
-      current = popupHostResolver();
+      current = popupHostResolver(hostContents);
     } catch {
       current = null;
     }
@@ -821,7 +827,7 @@ export function installBrowserGuestHandlers(
     event.preventDefault();
     let target: WebContents | null = null;
     try {
-      target = popupHostResolver?.() ?? null;
+      target = popupHostResolver?.(hostContents) ?? null;
     } catch {
       target = null;
     }

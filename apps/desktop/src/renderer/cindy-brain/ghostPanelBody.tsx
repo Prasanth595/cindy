@@ -344,7 +344,7 @@ export function GhostChipPanelBody({
    * 面板体挂载 = 未读已读(badge 槽的 explicit 清零)。
    *
    * 清零收在这里而不是各宿主的"打开"动作里:面板体有三个宿主(插件页页签
-   * GhostPagePanelHost、布局停靠 ghostPanels、独立窗口 GhostPanelWindowLayout),
+   * GhostPagePanelHost、右侧栏插件视图页签 plugin-view 及其弹出窗口),
    * 挂载到本组件才是"内容确实在用户眼前"的唯一判据,三处天然对称。
    * unread 进依赖:面板**已经开着**时插件又点亮一次(后台拿到新内容),用户
    * 正看着它,不该留一颗清不掉的点。

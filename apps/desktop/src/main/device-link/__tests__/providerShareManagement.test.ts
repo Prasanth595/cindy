@@ -13,6 +13,11 @@ const listProviders = vi.hoisted(() => vi.fn());
 const identityCard = vi.hoisted(() => vi.fn());
 const remember = vi.hoisted(() => vi.fn());
 const usageStores = vi.hoisted(() => ({ ownHistory: vi.fn(), memberHistory: vi.fn(), pricing: vi.fn() }));
+const memberNotes = vi.hoisted(() => ({ read: vi.fn(), set: vi.fn() }));
+vi.mock('../providerShareQuota.js', () => ({ readProviderShareQuota: vi.fn(), readProviderShareQuotaAccount: vi.fn() }));
+const visibility = vi.hoisted(() => ({ read: vi.fn(), set: vi.fn() }));
+vi.mock('../providerShareVisibility.js', () => ({ providerShareVisibility: visibility }));
+vi.mock('../providerShareMemberNotes.js', () => ({ providerShareMemberNotes: memberNotes }));
 
 vi.mock('../../appSessionState.js', () => ({
   activeOwnerScopeKey: () => state.owner,
@@ -52,11 +57,12 @@ vi.mock('../providerShareHost.js', () => ({
   startProviderShareHost: vi.fn(), stopProviderShareHost: vi.fn(),
   refreshProviderShareHost: host.refresh, getProviderShareHostSnapshot: host.snapshot,
   clearProviderShareRequestQuiet: vi.fn(),
-  providerShareGuestAccess: vi.fn(), providerShareGuestDenial: vi.fn(), ensureProviderSharePeerKnown: vi.fn(),
+  providerShareAccessRevision: vi.fn(), providerShareGuestAccess: vi.fn(), providerShareGuestDenial: vi.fn(), ensureProviderSharePeerKnown: vi.fn(),
   quietProviderShareRequests: host.quiet, markProviderShareHostActive: host.active,
   applyLocalRequestDecision: host.decision, applyLocalMemberChange: host.member,
 }));
-vi.mock('../providerShareGuest.js', () => ({ startProviderShareGuest: vi.fn(), stopProviderShareGuest: vi.fn() }));
+const guest = vi.hoisted(() => ({ revision: 0, share: null as unknown }));
+vi.mock('../providerShareGuest.js', () => ({ startProviderShareGuest: vi.fn(), stopProviderShareGuest: vi.fn(), findReceivedShare: () => guest.share, providerShareReceivedRevision: () => guest.revision }));
 vi.mock('../providerShareGuestPrefs.js', () => ({ configureProviderShareGuestPrefs: vi.fn(), invalidateProviderShareGuestPrefsCache: vi.fn() }));
 vi.mock('../providerShareGuestPrefsIpc.js', () => ({ setProviderShareCredentialConsentFromIpc: vi.fn() }));
 
@@ -77,6 +83,19 @@ const mutations: ProviderShareManagementCommand[] = [
   { action: 'set-member', memberId: 'm1', status: 'remove' },
 ];
 
+function saveMemberNote(entry: 'local' | 'same-account'): Promise<unknown> {
+  const command = { action: 'set-member-note', memberId: 'm1', note: 'Alice' } as const;
+  if (entry === 'same-account') return executeProviderShareManagementCommand(command);
+  const handle = vi.spyOn(ipcMain, 'handle');
+  try {
+    registerProviderShareIpc();
+    const handler = handle.mock.calls.find(([channel]) => channel === 'provider-share:command')![1];
+    return handler({} as Electron.IpcMainInvokeEvent, command);
+  } finally {
+    handle.mockRestore();
+  }
+}
+
 beforeEach(() => {
   vi.resetAllMocks();
   state.owner = 'owner-a';
@@ -88,6 +107,8 @@ beforeEach(() => {
   api.reject.mockResolvedValue({ ok: true });
   api.setMember.mockResolvedValue({ status: 'removed' });
   host.refresh.mockResolvedValue(undefined);
+  memberNotes.read.mockReturnValue({});
+  memberNotes.set.mockResolvedValue(undefined);
   host.snapshot.mockReturnValue([{ requests: [{ requestId: 'r1' }], members: [{ memberId: 'm1' }] }]);
   usageStores.ownHistory.mockReturnValue({ self: { lastUsedAt: null, days: [] }, relays: [] });
   usageStores.memberHistory.mockReturnValue([]);
@@ -159,6 +180,65 @@ describe('remote task limit management payloads', () => {
   });
   it.each([{}, { unknown: 1 }, { perDevice: '16' }, { perDevice: 0 }, { total: 1001 }, { total: 1.5 }])('rejects malformed patches %j', limits => {
     expect(() => parseProviderShareCommand({ action: 'set-run-limits', limits })).toThrow('INVALID_PARAMS');
+  });
+});
+
+/* 测试价值：2026-10-19 用户备注；生产 parser/管理执行入口此前未覆盖备注。
+ * 最小输入：空备注、超长/非字符串备注、不属于本机的成员，以及刷新中切账号。tier: unit。
+ */
+describe('member note management', () => {
+  it('normalizes a single-line note and accepts clearing it', () => {
+    expect(parseProviderShareCommand({ action: 'set-member-note', memberId: 'm1', note: ' Alice\nTeam ' }))
+      .toEqual({ action: 'set-member-note', memberId: 'm1', note: 'Alice Team' });
+    expect(parseProviderShareCommand({ action: 'set-member-note', memberId: 'm1', note: '' }))
+      .toEqual({ action: 'set-member-note', memberId: 'm1', note: '' });
+  });
+  it.each([null, 123, 'x'.repeat(81)])('rejects an invalid note %j', (note) => {
+    expect(() => parseProviderShareCommand({ action: 'set-member-note', memberId: 'm1', note })).toThrow('INVALID_PARAMS');
+  });
+  it.each(['local', 'same-account'] as const)('saves an existing member note without changing sharing authorization (%s)', async (entry) => {
+    await expect(saveMemberNote(entry))
+      .resolves.toEqual({ ok: true });
+    expect(memberNotes.set).toHaveBeenCalledWith('m1', 'Alice', expect.any(Function));
+    expect(host.refresh).toHaveBeenCalledExactlyOnceWith('management');
+    expect(api.setMember).not.toHaveBeenCalled();
+  });
+  /* PR #6445 discussion_r4312429158：本机真实 IPC 之前绕过管理入口的刷新。
+   * 现有缺口：只测远程入口与已缺席成员，未测缓存仍有、刷新后退出的成员。
+   * 最小输入：m1 在刷新后消失；或刷新期间切账号。结果必须拒绝保存，不写备注。
+   * tier: unit；复用本文件内存 fixture 与生产 IPC / 管理入口，不新增网络或等待。
+   * 单文件实测：50 项通过，1.58 秒。
+   */
+  it.each(['local', 'same-account'] as const)('refuses a note when the cached member has left before saving (%s)', async (entry) => {
+    host.refresh.mockImplementationOnce(async () => { host.snapshot.mockReturnValue([]); });
+    await expect(saveMemberNote(entry)).rejects.toThrow('NOT_FOUND');
+    expect(memberNotes.set).not.toHaveBeenCalled();
+  });
+  it.each(['pending', 'switched'] as const)('refuses a local note when the account changes during refresh (%s)', async (boundary) => {
+    host.refresh.mockImplementationOnce(async () => {
+      if (boundary === 'pending') state.boundaryPending = true;
+      else state.owner = 'owner-b';
+    });
+    await expect(saveMemberNote('local')).rejects.toThrow('PRECONDITION_FAILED');
+    expect(memberNotes.set).not.toHaveBeenCalled();
+  });
+  it('refuses notes for absent members and a pending account transition', async () => {
+    await expect(executeProviderShareManagementCommand({ action: 'set-member-note', memberId: 'absent', note: 'Alice' }))
+      .rejects.toThrow('NOT_FOUND');
+    host.refresh.mockImplementationOnce(async () => { state.boundaryPending = true; });
+    await expect(executeProviderShareManagementCommand({ action: 'set-member-note', memberId: 'm1', note: 'Alice' }))
+      .rejects.toThrow('PRECONDITION_FAILED');
+    expect(memberNotes.set).not.toHaveBeenCalled();
+  });
+});
+
+describe('idle release setting payloads', () => {
+  it.each([0, 1, 10, 120])('accepts %i minutes', idleMinutes => {
+    expect(parseProviderShareCommand({ action: 'set-idle-release', value: { idleMinutes } }))
+      .toEqual({ action: 'set-idle-release', value: { idleMinutes } });
+  });
+  it.each([undefined, {}, { idleMinutes: -1 }, { idleMinutes: 121 }, { idleMinutes: 1.5 }, { idleMinutes: '10' }])('rejects %j', value => {
+    expect(() => parseProviderShareCommand({ action: 'set-idle-release', value })).toThrow('INVALID_PARAMS');
   });
 });
 
@@ -265,5 +345,35 @@ describe('same-account share management during account transitions', () => {
     host.quiet.mockRejectedValueOnce(new Error('ownership save failed'));
     await expect(executeProviderShareManagementCommand(createLink)).rejects.toThrow('ownership save failed');
     expect(remember).not.toHaveBeenCalled();
+  });
+});
+
+/* 分享可见性：生产管理/IPC入口补足远程设置与受邀者在途撤权、旧端返回差异。tier: unit。 */
+describe('share visibility management and guest query', () => {
+  it('saves only the requested switch via the same-account management entry', async () => {
+    visibility.set.mockImplementation(async (_id, patch, assertCurrent) => { assertCurrent(); return { quota: false, usage: true, ...patch }; });
+    const result = await executeProviderShareManagementCommand(parseProviderShareCommand({ action: 'set-visibility', providerId: 'anthropic', visibility: { quota: true } }) as ProviderShareManagementCommand);
+    expect(result).toMatchObject({ quota: true, usage: true });
+    expect(visibility.set).toHaveBeenCalledWith('anthropic', { quota: true }, expect.any(Function));
+    expect(() => parseProviderShareCommand({ action: 'set-visibility', providerId: 'anthropic', visibility: { quota: 'true' } })).toThrow('INVALID_PARAMS');
+  });
+  it.each(['revision', 'owner', 'removed', 'old-version', 'old-unscoped'])('rejects a stale or unsupported guest response: %s', async (change) => {
+    guest.share = { shareId: 's', memberId: 'm', status: 'active', hostOnline: true };
+    guest.revision = 0;
+    const invoke = vi.fn(async () => {
+      if (change === 'revision') guest.revision += 2; // pause then resume: same current share, different generation
+      if (change === 'owner') state.owner = 'owner-b';
+      if (change === 'removed') guest.share = null;
+      return { ok: true, result: change === 'old-unscoped' ? { version: 1, capabilities: { quota: false, usage: true }, status: { quota: 'disabled', usage: 'ready' }, quota: null, usage: { todayKey: '2026-10-19', coverageStart: null, parties: [] } } : {} } as const;
+    });
+    stopProviderShareRuntime(); startProviderShareRuntime(vi.fn(), { invoke });
+    const handle = vi.spyOn(ipcMain, 'handle');
+    registerProviderShareIpc();
+    const handler = handle.mock.calls.find(([channel]) => channel === 'provider-share:command')![1];
+    handle.mockRestore();
+    await expect(handler({} as Electron.IpcMainInvokeEvent, { action: 'insights', shareId: 's', includeUsage: false })).rejects.toThrow(
+      change.startsWith('old-') ? 'UNSUPPORTED_CAPABILITY' : change === 'owner' ? 'PRECONDITION_FAILED' : 'PERMISSION_DENIED');
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(invoke).toHaveBeenCalledWith('share:s', 'provider-share:insights:v1', [{ version: 1, includeUsage: false }], expect.any(Object));
   });
 });

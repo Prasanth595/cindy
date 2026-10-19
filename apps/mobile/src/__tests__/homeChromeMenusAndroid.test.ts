@@ -167,13 +167,12 @@ describe("Android home chrome menus follow the iOS pull-down", () => {
     expect(push).toHaveBeenCalledTimes(2);
   });
 
-  it("routes settings pickers and local-log options through the pull-down on Android", () => {
+  it("routes settings pickers through the pull-down on Android", () => {
     const settings = readSource("app/settings.tsx");
     // 只按 MenuView 是否可用分流,不按平台:Android 与 iOS 同走系统下拉,自绘 sheet / Alert 仅作回退。
     expect(settings).not.toMatch(/Platform\.OS\s*===\s*['"]ios['"]/);
     expect(settings).toContain("onPress={usesNativePullDownMenu() ? () => undefined : openAppearancePicker}");
     expect(settings).toContain("onPress={usesNativePullDownMenu() ? () => undefined : openLanguagePicker}");
-    expect(settings).toContain("onPress={usesNativePullDownMenu() ? undefined : () => Alert.alert(t('settings.localLogs.options')");
-    expect(settings.match(/<NativePullDownMenu/g)).toHaveLength(3);
+    expect(settings.match(/<NativePullDownMenu/g)).toHaveLength(2);
   });
 });

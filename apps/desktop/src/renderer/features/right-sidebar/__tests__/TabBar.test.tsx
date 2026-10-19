@@ -4,6 +4,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import Sortable, { type SortableEvent } from 'sortablejs';
 
 // react-i18next 走 key 透传(仓库同款,见 RightSidebarShell.test.ts):label 直接是 i18n key。
+// 「+」菜单的插件分组:声明面板 / mainView 的已启用插件。无桥环境下用桩供数据。
+const installedGhostsMock = vi.hoisted(() => ({ list: [] as unknown[] }));
+vi.mock('@/cindy-brain/useInstalledGhosts', () => ({
+  useInstalledGhosts: () => installedGhostsMock.list,
+  readInstalledGhostsSnapshot: () => installedGhostsMock.list,
+}));
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key }),
 }));
@@ -133,6 +139,110 @@ describe('TabStrip Cindy Make menu visibility', () => {
     });
     fireEvent.pointerDown(addButton, { button: 0, ctrlKey: false });
     expect(screen.queryByText('settings.cindyMake.title')).toBeNull();
+  });
+});
+
+// 测试价值
+// - 生产入口与可观察结果:TabStrip 的「+」菜单;可观察的是声明停靠面板的已启用插件出现在
+//   「插件」分组里,点选后成为右侧栏全局页签(globalTabs),再次打开菜单标「已打开」。
+// - Bug / 规则依据:停靠面板收束为右侧栏全局页签后,没有左侧栏入口的面板插件(如只声明
+//   panel 的 Mivo)关掉页签后必须仍有重开入口,否则用户视角等于插件不可用(插件兼容红线)。
+// - 现有覆盖缺口:其余「+」菜单用例只覆盖内置 kind。
+// - 最小失败输入:一个 enabled 且 panel.position 缺省的插件。
+// - tier:unit(jsdom)。
+describe('TabStrip add menu · plugins group', () => {
+  it('lists panel plugins and pins the chosen one as a global tab', async () => {
+    const { __resetGlobalTabsForTest, getGlobalTabs } = await import('../globalTabs');
+    __resetGlobalTabsForTest();
+    window.localStorage.clear();
+    installedGhostsMock.list = [
+      { manifest: { id: 'xd-mivo', name: 'XD Mivo', panel: { html: 'panel.html', title: 'Mivo 资产库' } }, enabled: true },
+      { manifest: { id: 'tool-only', name: 'Tool Only' }, enabled: true },
+    ];
+    renderStrip();
+    const addButton = screen.getByRole('button', { name: 'rightSidebar.tabs.addAria' });
+    vi.spyOn(addButton.parentElement as HTMLElement, 'getBoundingClientRect').mockReturnValue({
+      x: 20, y: 20, top: 20, right: 44, bottom: 44, left: 20, width: 24, height: 24, toJSON: () => ({}),
+    });
+    fireEvent.pointerDown(addButton, { button: 0, ctrlKey: false });
+    expect(screen.getByText('rightSidebar.tabs.menu.pluginsLabel')).toBeTruthy();
+    expect(screen.queryByText('Tool Only')).toBeNull();
+    fireEvent.click(screen.getByText('Mivo 资产库'));
+    expect(getGlobalTabs().map((tab) => (tab.state as { instanceId: string }).instanceId)).toEqual(['xd-mivo']);
+    installedGhostsMock.list = [];
+    __resetGlobalTabsForTest();
+    window.localStorage.clear();
+  });
+});
+
+// 测试价值
+// - 生产入口与可观察结果:页签右键菜单的「移到 …」项;可观察的是列出除本组外的三个
+//   目标组、点选回调带目标组 id、未提供 onMoveTab(弹出窗口)时不出现。
+// - Bug / 规则依据:页签组模型——页签可移到聊天区左 / 上 / 下边。
+// - 现有覆盖缺口:右键菜单此前无用例。
+// - 最小失败输入:groupId='right' + 一个页签,右键。
+// - tier:unit(jsdom)。
+describe('TabStrip context menu · move to group', () => {
+  it('lists the other three groups and reports the chosen target', () => {
+    const onMoveTab = vi.fn();
+    render(
+      <TabStrip
+        tabs={TABS}
+        activeTabId={null}
+        onActivate={vi.fn()}
+        onClose={vi.fn()}
+        onReorder={vi.fn()}
+        onAdd={vi.fn()}
+        groupId="right"
+        onMoveTab={onMoveTab}
+      />,
+    );
+    fireEvent.contextMenu(pillFor(LABEL_WEB));
+    expect(screen.queryByTestId('right-sidebar-tab-move-right')).toBeNull();
+    expect(screen.getByTestId('right-sidebar-tab-move-top')).toBeTruthy();
+    expect(screen.getByTestId('right-sidebar-tab-move-bottom')).toBeTruthy();
+    fireEvent.click(screen.getByTestId('right-sidebar-tab-move-left'));
+    expect(onMoveTab).toHaveBeenCalledWith('tab-web', 'left');
+  });
+
+  it('offers no move items when the host does not support moving (popped-out window)', () => {
+    renderStrip();
+    fireEvent.contextMenu(pillFor(LABEL_FILE));
+    expect(screen.getByText('rightSidebar.tabs.contextMenu.close')).toBeTruthy();
+    expect(screen.queryByTestId('right-sidebar-tab-move-left')).toBeNull();
+  });
+});
+
+// 测试价值
+// - 生产入口与可观察结果:页签右键菜单的「移到窗口 …」(主窗,按已弹出窗口列出)与
+//   「合并回侧边栏」(弹出窗口);可观察的是回调带被点页签与目标窗口 id。
+// - Bug / 规则依据:弹出窗口 = 多页签的页签组(本 PR),主窗能把页签搬进已有窗口。
+// - 现有覆盖缺口:右键菜单此前只有关闭 / 移组用例。
+// - 最小失败输入:一扇弹出窗口选项 + 右键一个页签。
+// - tier:unit(jsdom)。
+describe('TabStrip context menu · popped-out windows', () => {
+  it('offers existing popped-out windows as move targets and merge-back inside a window', () => {
+    const onDetachTab = vi.fn();
+    const onMergeBackTab = vi.fn();
+    render(
+      <TabStrip
+        tabs={TABS}
+        activeTabId={null}
+        onActivate={vi.fn()}
+        onClose={vi.fn()}
+        onReorder={vi.fn()}
+        onAdd={vi.fn()}
+        onDetachTab={onDetachTab}
+        popoutWindows={[{ windowId: 'w7', label: <span>Docs</span> }]}
+        onMergeBackTab={onMergeBackTab}
+      />,
+    );
+    fireEvent.contextMenu(pillFor(LABEL_FILE));
+    fireEvent.click(screen.getByTestId('right-sidebar-tab-move-window-w7'));
+    expect(onDetachTab).toHaveBeenCalledWith('tab-file', 'w7');
+    fireEvent.contextMenu(pillFor(LABEL_ORCA));
+    fireEvent.click(screen.getByTestId('right-sidebar-tab-merge-back'));
+    expect(onMergeBackTab).toHaveBeenCalledWith('tab-orca');
   });
 });
 

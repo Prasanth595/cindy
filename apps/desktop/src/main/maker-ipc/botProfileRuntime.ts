@@ -806,7 +806,9 @@ export async function hydrateBotProfileRuntime(
   // 主任务(主人私聊落点)与桌面共用, 不带专线的 chat 字段; 它靠「伙伴绑了哪些渠道」的标记
   // 挂渠道工具 —— 写进 vendorOptions, 让各 harness 的 MCP 门禁(mcp-providers isEnabled /
   // codexEnvironment buildSessionMcpConfig / piEnvironment capabilityGated)按同一份标记放行。
-  // 能动哪个 chat 仍由逐轮作用域租约决定, 桌面轮次没有租约, 工具一律 fail closed。
+  // 轮次内原生 API 的目标仍由逐轮租约决定, 无租约时 fail closed。飞书 send_*_to_user
+  // 可在桌面/后台轮次由 feishuTransportRouting.ts 查询 canonical 归属, 经伙伴可用连接
+  // 通知已绑定主人; 伙伴连接不可用则拒绝发送, 不回落个人 bot, 也不授予轮次内 API 权限。
   const boundImChannels: readonly BotImChannel[] =
     row.role === 'canonical' ? (deps.listBotImChannels?.({ botId: row.botId }) ?? []) : [];
   if (boundImChannels.length > 0) {

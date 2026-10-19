@@ -4,7 +4,7 @@ title: Plugins (extending what the agents can do)
 summary: What plugins are, how to browse / install / enable / disable them, per-working-directory control, the permission model, and invoking one with a $command.
 tab: ghosts
 ---
-Plugins (internally "意识" / Ghost) extend what the agents can do — they add AI-callable tools, dockable UI panels, and "ask Cindy to make it" media generation. Each plugin is a self-contained `.cindy` capability pack that runs in its own isolated sandbox.
+Plugins (internally "意识" / Ghost) extend what the agents can do — they add AI-callable tools, panels that live as pinned tabs in the right sidebar, full-page app views, and "ask Cindy to make it" media generation. Each plugin is a self-contained `.cindy` capability pack that runs in its own isolated sandbox.
 
 **The Plugins page:**
 
@@ -22,7 +22,7 @@ Plugins (internally "意识" / Ghost) extend what the agents can do — they add
 
 **Enabling and disabling:**
 
-- **Enable / disable (globally)** from the plugin's detail page. Disabling puts its tools and panel to sleep but keeps the plugin installed — its layout position is remembered and restored when you re-enable it.
+- **Enable / disable (globally)** from the plugin's detail page. Disabling puts its tools and panel to sleep but keeps the plugin installed — its right-sidebar tab is kept and comes back when you re-enable it. A plugin's panel shows up as a pinned tab in the right sidebar that stays across tasks; close it from the tab, and reopen it later by right-clicking the plugin's entry in the left sidebar and choosing "Open in the sidebar".
 - **Disable for one working directory only** — a plugin can be turned off just for a specific project. In that project's sessions it behaves as if it isn't installed (its tools and `$command` are unavailable there); everywhere else it stays on.
 
 **Installing:**

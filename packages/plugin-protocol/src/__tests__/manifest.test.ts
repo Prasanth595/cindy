@@ -1810,11 +1810,35 @@ describe('Ghost manifest contract', () => {
       if (!rejected.ok) expect(rejected.reason).toContain('仅停靠形态');
     }
 
-    // top/bottom 仍收词明确拒绝,野值仍拒。
-    const pending = validateGhostManifest(withPanel({ position: 'top' }));
-    expect(pending.ok).toBe(false);
-    if (!pending.ok) expect(pending.reason).toContain('暂未支持');
+    // 四条边都是真实的页签组位置(与 Desktop 校验一致),野值仍拒。
+    for (const side of ['left', 'right', 'top', 'bottom'] as const) {
+      const ok = validateGhostManifest(withPanel({ position: side }));
+      expect(ok.ok, side).toBe(true);
+      if (ok.ok) expect(ok.manifest.panel?.position).toBe(side);
+    }
     expect(validateGhostManifest(withPanel({ position: 'center' })).ok).toBe(false);
+  });
+
+  it('mainView.open / side / multiple 与 Desktop 校验一致:合法保留,野值与错配拒', () => {
+    const withView = (mainView: Record<string, unknown>) =>
+      validateGhostManifest({
+        schemaVersion: 3,
+        minCindyVersion: '0.1.61',
+        id: 'view-helper',
+        name: 'View Helper',
+        version: '1.0.0',
+        entry: 'main.js',
+        mainView: { html: 'main-view.html', ...mainView },
+      });
+    const ok = withView({ open: 'sidebar', side: 'bottom', multiple: true });
+    expect(ok.ok).toBe(true);
+    if (ok.ok) {
+      expect(ok.manifest.mainView).toMatchObject({ open: 'sidebar', side: 'bottom', multiple: true });
+    }
+    expect(withView({ open: 'popup' }).ok).toBe(false);
+    expect(withView({ open: 'page', side: 'left' }).ok).toBe(false);
+    expect(withView({ open: 'sidebar', side: 'middle' }).ok).toBe(false);
+    expect(withView({ multiple: false }).ok).toBe(false);
   });
 });
 

@@ -1,4 +1,5 @@
 import { presentationText, type PresentationLocalizer } from './presentationLocalization.js';
+export { splitQuestionReferences } from './questionReferences.js';
 
 export interface InteractionRequestLike {
   kind?: string;
