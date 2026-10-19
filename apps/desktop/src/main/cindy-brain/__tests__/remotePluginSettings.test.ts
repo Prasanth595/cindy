@@ -169,12 +169,15 @@ function fixture(namespace: string | null = null) {
     },
     localDeviceId: () => 'controller-a',
     trustIdentity: vi.fn(async () => {}),
-    identity: async () => ({
-      ...identity,
-      ...identity.key.descriptor,
-      observedAtMs: Date.now(),
-      expiresAtMs: Date.now() + 60_000,
-    }),
+    identity: async () => {
+      const observedAtMs = Date.now();
+      return {
+        ...identity,
+        ...identity.key.descriptor,
+        observedAtMs,
+        expiresAtMs: observedAtMs + 60_000,
+      };
+    },
     invoke: async (_device: string, channel: string, args: unknown[]) => {
       wire.push(args);
       const result =
@@ -251,7 +254,12 @@ describe('original remote plugin settings', () => {
       expect(ses.setPermissionCheckHandler).toHaveBeenCalled();
     },
   );
-  it('writes a new key only to B through the signed encrypted exchange, then reads B status', async () => {
+  it('writes a new key only to B through the signed encrypted exchange, then reads B status', async ({ onTestFinished }) => {
+    // Unit regression: the real handshake/write must work when each clock read advances 1 ms.
+    // The wall-clock fixture previously missed this boundary and intermittently failed in CI.
+    let now = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now++);
+    onTestFinished(() => clock.mockRestore());
     const f = fixture(),
       { fetch } = await f.open();
     const value = 'synthetic-new-key-only-for-fixture';
