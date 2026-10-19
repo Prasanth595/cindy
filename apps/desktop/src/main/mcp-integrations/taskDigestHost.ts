@@ -224,11 +224,11 @@ export function createDesktopTaskDigestDeps(host: DesktopTaskDigestHost): TaskDi
           visitedRoutes: getSessionRuntimeControlSnapshot(targetSessionId).visitedRoutes,
           sameHarnessOnly: !!target?.remoteHostId,
           // 库里的用量只在一轮正常收尾时落库,中断 / 崩溃后可能低报;只作运行时读数的下限参考,
-          // 不能单独用来证明缩窗安全。刚 attach、还没回流 usage 的 runtime 先报占位 0,
-          // 只有库里也是 0 才算真 0(与 contextOverflowRollover 同一口径);其余 → null,建议层不推荐更小窗口。
+          // 不能单独用来证明缩窗安全。运行时读数为 0 可能是 usage 回流前的占位(关闭时也会被固化进缓存),
+          // 一律当作未知 → null,建议层不推荐更小窗口;真正空的任务因此少一个缩窗候选,无害。
           contextTokens: liveTokens !== null
             ? Math.max(liveTokens, positive(target?.contextTokens) ?? 0)
-            : live && target?.contextTokens === 0 ? 0 : null,
+            : null,
           currentContextWindow: positive(live?.contextWindow)
             ?? verifiedRouteWindow(harness, current.model, current.provider_id),
           windowOf: (candidate) => verifiedRouteWindow(candidate.harness, candidate.model, candidate.providerId),
