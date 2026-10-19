@@ -427,12 +427,15 @@ const PRODUCED_IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp)$/i;
 
 /** 导出仅供单测(纯函数,不碰 electron)。 */
 export function extractToolResultMediaUrls(toolResultText: string, provider?: string): string[] {
-  if (!toolResultText.includes('xdt_image_url') && !toolResultText.includes('xdt_media_produced')) {
+  if (!toolResultText.includes('xdt_image_url') && !toolResultText.includes('xdt_media_produced')
+    && !(provider === 'x' && toolResultText.includes('xdt_video_url'))) {
     return [];
   }
   let parsed: {
     xdt_image_url?: unknown;
     xdt_image_urls?: unknown;
+    xdt_video_url?: unknown;
+    xdt_video_urls?: unknown;
     xdt_media_produced?: unknown;
     _xdt_render_image?: unknown;
   };
@@ -449,6 +452,12 @@ export function extractToolResultMediaUrls(toolResultText: string, provider?: st
   if (Array.isArray(parsed.xdt_image_urls)) {
     for (const u of parsed.xdt_image_urls) {
       if (typeof u === 'string' && isRenderableImageUrl(u)) urls.push(u);
+    }
+  }
+  if (provider === 'x') {
+    const videos = [parsed.xdt_video_url, ...(Array.isArray(parsed.xdt_video_urls) ? parsed.xdt_video_urls : [])];
+    for (const url of videos) {
+      if (typeof url === 'string' && isRenderableImageUrl(url)) urls.push(url);
     }
   }
   // 兜底账本(xdt_media_produced,ghost_call 层在意识未声明媒体字段时注入,

@@ -1285,10 +1285,11 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
     }
   }
 
-  function durableTurnEnd(turnEnd: TurnEndPayload): TurnEndPayload {
-    // Binary attachment bytes belong to the existing media/transport path,
-    // not a new JSON persistence store. The in-process offline queue keeps the
-    // original frame; cross-restart recovery retains the terminal text only.
+  function durableTurnEnd(turnEnd: TurnEndPayload, provider?: string): TurnEndPayload {
+    // X retries need the exact wire payload after restart, including media.
+    // Keep it in the existing bounded transport outbox; other channels retain
+    // their existing text-only cross-restart behavior.
+    if (provider === 'x') return turnEnd;
     const { attachments: _attachments, ...withoutAttachments } = turnEnd;
     return withoutAttachments;
   }
@@ -2004,7 +2005,7 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
         () => {
           persistedBeforePublish = persistTerminal({
             ...terminalRecord,
-            turnEnd: durableTurnEnd(turnEnd),
+            turnEnd: durableTurnEnd(turnEnd, task.run.source?.im),
             delivery: 'pending',
           });
           // 兜底写不进出箱就不走本端发布: 发布中途退出时服务端将收不到任何收口。没配
@@ -2032,7 +2033,7 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
     // stays buffered in memory until onConnected flushes the full payload.
     sendOrBuffer(task.connectionId, makeTurnEnd(turnEnd), {
       ...terminalRecord,
-      turnEnd: durableTurnEnd(turnEnd),
+      turnEnd: durableTurnEnd(turnEnd, task.run.source?.im),
     });
     // 屏障撤在正式帧进入发送 / 缓冲路径之后: 终稿发完到这里还隔着卡片 drain(最长数秒),
     // 这段时间重连仍不能拿出箱里的兜底帧抢先重放。

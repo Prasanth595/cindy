@@ -26,7 +26,7 @@ import { unified } from 'unified';
 import remarkParse from 'remark-parse';
 import remarkGfm from 'remark-gfm';
 import { visit } from 'unist-util-visit';
-import type { Definition } from 'mdast';
+import type { Definition, PhrasingContent } from 'mdast';
 import { promises as fsp } from 'node:fs';
 import { localTaskImagePath, taskImageReferences, rewriteTaskImageReferences } from '../cindy-media/taskImageMarkdown';
 
@@ -205,6 +205,13 @@ export function hasOutboundRefs(text: string): boolean {
 
 const mediaLinkParser = unified().use(remarkParse).use(remarkGfm);
 
+function visibleLabelText(node: PhrasingContent): string {
+  if (node.type === 'text' || node.type === 'inlineCode') return node.value;
+  if (node.type === 'image' || node.type === 'imageReference') return node.alt ?? '';
+  if (node.type === 'break') return '\n';
+  return 'children' in node ? node.children.map(visibleLabelText).join('') : '';
+}
+
 /** Managed media links, excluding code examples; never interpret them as file paths. */
 function managedMediaLinks(text: string): Array<{ url: string; start: number; end: number; label: string }> {
   if (!text.includes('cindy-media://')) return [];
@@ -220,7 +227,7 @@ function managedMediaLinks(text: string): Array<{ url: string; start: number; en
     const start = node.position?.start.offset;
     const end = node.position?.end.offset;
     if (!target?.url.startsWith('cindy-media://') || start === undefined || end === undefined) return;
-    const label = node.children.map((child) => child.type === 'text' ? child.value : '').join('');
+    const label = node.children.map(visibleLabelText).join('');
     refs.push({ url: target.url, start, end, label });
   });
   return refs;

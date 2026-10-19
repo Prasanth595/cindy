@@ -396,6 +396,20 @@ describe('辅助函数', () => {
 // X video regression: real collector input -> attachment bytes/MIME/caption.
 // Existing image and xdt-file cases did not cover managed video links (unit tier).
 describe('X managed video delivery', () => {
+  // #6447: plain-label coverage missed nested visible text (unit, collector output).
+  it.each([
+    ['**成片**', '成片'],
+    ['`clip.mp4`', 'clip.mp4'],
+    ['![封面](https://example.com/cover.png)', '封面'],
+  ])('preserves the visible caption in %s', async (label, expected) => {
+    const result = await collectOutboundAttachments(
+      `[${label}](cindy-media://blobs/clip.mp4)`, [],
+      { ...deps({ '/blobs/blobs/clip.mp4': Buffer.from('video') }), provider: 'x' },
+    );
+    expect(result.text.trim()).toBe(expected);
+    expect(result.attachments).toHaveLength(1);
+  });
+
   it('collects a video link and generated-media side channel once, with the file limit', async () => {
     const bytes = Buffer.alloc(6 * 1024 * 1024, 1);
     const io = deps({ '/blobs/blobs/clip.mp4': bytes });
