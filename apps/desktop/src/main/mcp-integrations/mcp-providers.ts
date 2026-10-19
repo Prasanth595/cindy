@@ -272,6 +272,11 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
     // git-context 牵连 Electron 窗口广播,按需加载,不让工具装配一引用就把它带进来。
     readSessionPrStatuses: async (sessionId) =>
       (await import('../git-context/ipc.js')).readSessionPrStatuses(sessionId),
+    readLiveContextUsage: async (sessionId) => {
+      const { getMakerIfReady } = await import('../maker-host/index.js');
+      const usage = getMakerIfReady()?.getSession(sessionId)?.getUsageSnapshot();
+      return usage ? { contextTokens: usage.contextTokens, contextWindow: usage.contextWindow } : null;
+    },
   }));
 
   const authorizeTaskToolCall = createTaskToolCallAuthorizer({

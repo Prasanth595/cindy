@@ -1,0 +1,69 @@
+/**
+ * 测试价值
+ * - 生产入口与可观察结果:suggestFollowUpRoute 给出的换模型建议(get_task_digest 的 suggested_route),
+ *   伙伴跟进时照它用 set_session_runtime 代主人换模型。
+ * - Bug／规则依据:2026-10-19 用户反馈「伙伴把会话的模型切了，上下文直接满了」——任务因工具循环中断,
+ *   伙伴照建议把主人用 1M 模型跑的任务换到自己链首的 272K 模型。换模型救不了工具循环;主人自己选的模型
+ *   不在伙伴链里时建议退回链首;换过去用量超过提醒线也照样建议。
+ * - 现有覆盖缺口:nextBotModelRoute 的测试只覆盖伙伴自己任务的候选链降级,不涉及跟进别人任务时的失败类型、
+ *   链外路线与上下文余量。
+ * - 最小失败输入:工具循环出错;链外的当前路线;220K 用量从 1M 换到 272K;用量上限下的正常降级。
+ * - tier:unit(纯函数,无数据库与 Electron)。
+ */
+import { describe, expect, it } from 'vitest';
+
+import { suggestFollowUpRoute, type FollowUpRouteInput } from '../followUpRoute.js';
+
+const OPUS = { harness: 'claude', model: 'claude-opus-5-5', providerId: 'anthropic' } as const;
+const SOL = { harness: 'codex', model: 'gpt-6.1-sol', providerId: 'openai' } as const;
+const GEMINI = { harness: 'pi', model: 'gemini-3-pro', providerId: 'google' } as const;
+const WINDOWS: Record<string, number> = { 'claude-opus-5-5': 1_000_000, 'gpt-6.1-sol': 272_000, 'gemini-3-pro': 1_000_000 };
+
+function input(overrides: Partial<FollowUpRouteInput> = {}): FollowUpRouteInput {
+  return {
+    chain: [OPUS, SOL, GEMINI],
+    current: OPUS,
+    failure: { phase: 'usage-limit', error: '已达用量上限', errorReason: null },
+    visitedRoutes: [],
+    sameHarnessOnly: false,
+    contextTokens: 40_000,
+    currentContextWindow: 1_000_000,
+    windowOf: (route) => WINDOWS[route.model] ?? null,
+    ...overrides,
+  };
+}
+
+describe('follow-up route suggestion', () => {
+  it('suggests the next companion route when the task hit a usage limit with room to spare', () => {
+    expect(suggestFollowUpRoute(input())).toMatchObject(SOL);
+  });
+
+  it('gives no suggestion for failures a different model cannot fix', () => {
+    const errored = (error: string, errorReason: string | null) =>
+      suggestFollowUpRoute(input({ failure: { phase: 'errored', error, errorReason } }));
+    expect(errored('任务因重复工具调用形成循环而中断', 'tool_use_loop_detected')).toBeNull();
+    expect(errored('prompt is too long', 'context-overflow')).toBeNull();
+    // 没有可判断的错误:不猜。
+    expect(errored('', null)).toBeNull();
+    // 那台账号的问题:换得过去。
+    expect(errored('authentication_failed: OAuth token has expired', null)).toMatchObject(SOL);
+  });
+
+  it('leaves a task whose model the owner chose alone instead of jumping to the companion primary route', () => {
+    const ownerChoice = { harness: 'claude', model: 'claude-fable-5-1', providerId: 'anthropic' } as const;
+    expect(suggestFollowUpRoute(input({ current: ownerChoice }))).toBeNull();
+  });
+
+  it('skips a smaller window the current context would crowd, and keeps a larger one', () => {
+    // 220K 进 272K 是 81%,过提醒线:跳过 Sol,落到同样 1M 的下一条。
+    expect(suggestFollowUpRoute(input({ contextTokens: 220_000 }))).toMatchObject(GEMINI);
+    expect(suggestFollowUpRoute(input({ contextTokens: 220_000, chain: [OPUS, SOL] }))).toBeNull();
+    // 窗口变大不受当前用量影响。
+    expect(suggestFollowUpRoute(input({
+      chain: [SOL, OPUS],
+      current: SOL,
+      currentContextWindow: 272_000,
+      contextTokens: 240_000,
+    }))).toMatchObject(OPUS);
+  });
+});

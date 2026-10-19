@@ -83,6 +83,35 @@ export function primaryBotModelRoute(
   return normalizeBotModelChain(value, legacy)[0] ?? null;
 }
 
+/**
+ * Where the current route sits in the companion's chain, or -1 when the chain
+ * does not contain it (for example a task whose model the user chose).
+ */
+export function botModelRouteIndex(
+  chain: readonly BotModelRoute[],
+  current: Pick<BotModelRoute, 'harness' | 'model' | 'providerId'>,
+): number {
+  const exact = chain.findIndex((route) =>
+    route.harness === current.harness
+    && route.model === current.model
+    && route.providerId === current.providerId);
+  if (exact >= 0) return exact;
+  // A null provider is a single explicit "let the harness resolve it" route,
+  // not a wildcard over every source serving the same model. Prefer a real
+  // provider match above; only use this legacy/default route when unique.
+  const implicitMatches = chain
+    .map((route, index) => ({ route, index }))
+    .filter(({ route }) =>
+      route.harness === current.harness
+      && route.model === current.model
+      && route.providerId === null);
+  if (implicitMatches.length === 1) return implicitMatches[0]!.index;
+  const legacyMatches = chain
+    .map((route, index) => ({ route, index }))
+    .filter(({ route }) => route.harness === current.harness && route.model === current.model);
+  return legacyMatches.length === 1 ? legacyMatches[0]!.index : -1;
+}
+
 /** Select the next explicit route; never invent one from the global catalog. */
 export function nextBotModelRoute(
   value: unknown,
@@ -91,28 +120,7 @@ export function nextBotModelRoute(
   isUsable: (route: BotModelRoute) => boolean = () => true,
 ): BotModelRoute | null {
   const chain = normalizeBotModelChain(value);
-  let currentIndex = chain.findIndex((route) =>
-    route.harness === current.harness
-    && route.model === current.model
-    && route.providerId === current.providerId);
-  if (currentIndex < 0) {
-    // A null provider is a single explicit "let the harness resolve it" route,
-    // not a wildcard over every source serving the same model. Prefer a real
-    // provider match above; only use this legacy/default route when unique.
-    const implicitMatches = chain
-      .map((route, index) => ({ route, index }))
-      .filter(({ route }) =>
-        route.harness === current.harness
-        && route.model === current.model
-        && route.providerId === null);
-    if (implicitMatches.length === 1) currentIndex = implicitMatches[0]!.index;
-  }
-  if (currentIndex < 0) {
-    const legacyMatches = chain
-      .map((route, index) => ({ route, index }))
-      .filter(({ route }) => route.harness === current.harness && route.model === current.model);
-    if (legacyMatches.length === 1) currentIndex = legacyMatches[0]!.index;
-  }
+  const currentIndex = botModelRouteIndex(chain, current);
   for (let index = currentIndex + 1; index < chain.length; index += 1) {
     const route = chain[index]!;
     if (!isUsable(route)) continue;
