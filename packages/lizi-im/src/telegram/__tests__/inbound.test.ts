@@ -18,6 +18,25 @@ function msg(overrides: Partial<TgMessage> = {}): TgMessage {
 }
 
 describe('detectGroupTrigger', () => {
+  it.each(['Cindy 赞助', 'Cindy 现在也有', 'cindy 帮我看看', 'Cindy', ' Cindy？', '我问过 Cindy 了'])(
+    '仅提到显示名不触发：%s',
+    (text) => {
+      expect(detectGroupTrigger(msg({ text }), BOT_ID, BOT_USERNAME, 'Cindy')).toBeNull();
+      expect(
+        detectGroupTrigger(msg({ text: undefined, caption: text }), BOT_ID, BOT_USERNAME, 'Cindy'),
+      ).toBeNull();
+    },
+  );
+
+  it.each(['@CindyOther', '@Cindy_bot', '@Cindy2'])('提及以显示名开头的其它账号不触发：%s', (text) => {
+    expect(detectGroupTrigger(msg({ text }), BOT_ID, BOT_USERNAME, 'Cindy')).toBeNull();
+  });
+
+  it('保留显式 @显示名的兼容入口', () => {
+    expect(detectGroupTrigger(msg({ text: '@Cindy 帮我看看' }), BOT_ID, BOT_USERNAME, 'Cindy'))
+      .toEqual({ text: '帮我看看' });
+  });
+
   it('@bot 提及触发并剥掉提及', () => {
     const m = msg({
       text: `@${BOT_USERNAME} 部署一下`,
@@ -67,6 +86,79 @@ describe('detectGroupTrigger', () => {
       caption_entities: [{ type: 'mention', offset: 5, length: BOT_USERNAME.length + 1 }],
     });
     expect(detectGroupTrigger(m, BOT_ID, BOT_USERNAME)).toEqual({ text: '看看这个' });
+  });
+
+  it('提及在句尾同样触发', () => {
+    const text = `你应该站在这个角度重新思考下。@${BOT_USERNAME}`;
+    const m = msg({
+      text,
+      entities: [{ type: 'mention', offset: text.indexOf('@'), length: BOT_USERNAME.length + 1 }],
+    });
+    expect(detectGroupTrigger(m, BOT_ID, BOT_USERNAME)).toEqual({
+      text: '你应该站在这个角度重新思考下。',
+    });
+  });
+
+  it('纯 @bot 保留触发结果，正文保持为空', () => {
+    // 2026-10-03 群内实测: 只发一句 "@bot" 让它看上文, 剥完为空后被业务层当空消息
+    // 静默丢弃, 表现为「@ 了没反应」。
+    const m = msg({
+      text: `@${BOT_USERNAME}`,
+      entities: [{ type: 'mention', offset: 0, length: BOT_USERNAME.length + 1 }],
+    });
+    expect(detectGroupTrigger(m, BOT_ID, BOT_USERNAME)).toEqual({ text: '' });
+
+    const caption = msg({
+      text: undefined,
+      caption: ` @${BOT_USERNAME} `,
+      caption_entities: [{ type: 'mention', offset: 1, length: BOT_USERNAME.length + 1 }],
+    });
+    expect(detectGroupTrigger(caption, BOT_ID, BOT_USERNAME)).toEqual({
+      text: '',
+    });
+  });
+
+  it('text_mention 按 user id 认本 bot, 不看字面文本', () => {
+    const m = msg({
+      text: 'Cindy 帮我看看',
+      entities: [
+        {
+          type: 'text_mention',
+          offset: 0,
+          length: 5,
+          user: { id: BOT_ID, is_bot: true, first_name: 'Cindy' },
+        },
+      ],
+    });
+    expect(detectGroupTrigger(m, BOT_ID, BOT_USERNAME)).toEqual({ text: '帮我看看' });
+
+    const other = msg({
+      text: 'Bob 帮我看看',
+      entities: [
+        {
+          type: 'text_mention',
+          offset: 0,
+          length: 3,
+          user: { id: 222, is_bot: false, first_name: 'Bob' },
+        },
+      ],
+    });
+    expect(detectGroupTrigger(other, BOT_ID, BOT_USERNAME)).toBeNull();
+  });
+
+  it('纯 text_mention 保留召唤结果，正文为空', () => {
+    const m = msg({
+      text: 'Cindy',
+      entities: [
+        {
+          type: 'text_mention',
+          offset: 0,
+          length: 5,
+          user: { id: BOT_ID, is_bot: true, first_name: 'Cindy' },
+        },
+      ],
+    });
+    expect(detectGroupTrigger(m, BOT_ID, BOT_USERNAME)).toEqual({ text: '' });
   });
 });
 

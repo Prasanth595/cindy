@@ -1,3 +1,5 @@
+import { presentationText, type PresentationLocalizer } from './presentationLocalization.js';
+
 export interface InteractionRequestLike {
   kind?: string;
   requestId?: string;
@@ -5,6 +7,8 @@ export interface InteractionRequestLike {
 }
 
 export interface PendingInteractionLike {
+  /** Local presentation only: an answer already being edited keeps focus. */
+  retainedDraft?: boolean;
   request: InteractionRequestLike;
   persistId?: string;
 }
@@ -14,6 +18,50 @@ export interface AskQuestion {
   header?: string;
   options?: Array<{ label: string; description?: string }>;
   multiSelect?: boolean;
+}
+
+/** A late answer is ordinary user input, with the original question attached. */
+export function formatAsyncQuestionSupplement(
+  questions: readonly AskQuestion[],
+  answers: Record<string, string>,
+): string {
+  const replies = questions.flatMap((q) => {
+    const answer = answers[q.question] ?? (q.header ? answers[q.header] : undefined);
+    return typeof answer === 'string' && answer.trim()
+      ? [{ question: q.question, answer: answer.trim() }] : [];
+  });
+  return replies.map(({ question, answer }) => `${question.split('\n').map((line) => `> ${line}`).join('\n')}\n\n${answer}`).join('\n\n');
+}
+
+/** Only a confirmed cancellation permits delivery as a new user message. A
+ * missing pending request alone cannot distinguish expiry from an accepted
+ * answer whose receipt was lost (including an answer on another device). */
+export async function asyncQuestionNeedsSupplement(
+  resolve: () => Promise<{ accepted: boolean } | void>,
+  readMessage: () => Promise<unknown>,
+  requestId: string,
+): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const receipt = await Promise.race([
+      resolve(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('Interaction receipt timeout')), 15_000);
+      }),
+    ]);
+    if (receipt && receipt.accepted === true) return false;
+  } catch {
+    // Read the original Host row before deciding whether another delivery is safe.
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+  const raw = await readMessage();
+  const content = typeof raw === 'string' ? JSON.parse(raw) : raw;
+  if (content && typeof content === 'object' && 'requestId' in content && content.requestId === requestId && 'status' in content) {
+    if (content.status === 'answered') return false;
+    if (content.status === 'cancelled') return true;
+  }
+  throw new Error('Interaction decision was not confirmed');
 }
 
 export interface IssueDraft {
@@ -27,6 +75,8 @@ export interface IssueEnv {
   platform: string;
   arch: string;
   osVersion?: string;
+  harness?: 'Claude Code' | 'Codex' | 'Pi';
+  modelId?: string;
 }
 
 export interface IssueConfirmPayload {
@@ -35,6 +85,8 @@ export interface IssueConfirmPayload {
 }
 
 export interface PermissionReviewPresentation {
+  sourceDescription?: string;
+  autoReviewUnavailable: boolean;
   canAlwaysAllow: boolean;
   code: string;
   description: string | null;
@@ -126,7 +178,7 @@ export function buildInteractionResolveActionPresentation(input: {
   label: string;
   readOnlyReason?: string | null;
   requestId?: string | null;
-}): InteractionResolveActionPresentation {
+}, localizer?: PresentationLocalizer): InteractionResolveActionPresentation {
   if (input.readOnlyReason) {
     return {
       disabled: true,
@@ -137,15 +189,16 @@ export function buildInteractionResolveActionPresentation(input: {
   if (!input.requestId) {
     return {
       disabled: true,
-      disabledReason: '这个远程交互缺少 requestId，无法回传决定。',
+      disabledReason: presentationText(localizer, 'interaction.panel.missingRequestId', '这个远程交互缺少 requestId，无法回传决定。'),
       label: input.label,
     };
   }
   if (input.busy) {
     return {
       disabled: true,
-      disabledReason: '正在把决定回传到电脑端，请不要重复提交。',
-      label: input.busyLabel ?? '提交中',
+      disabledReason: presentationText(localizer, 'interaction.panel.submittingHint', '正在把决定回传到电脑端，请不要重复提交。'),
+      label: input.busyLabel
+        ?? presentationText(localizer, 'interaction.presentation.action.submitting', '提交中'),
     };
   }
   if (input.invalidReason) {
@@ -173,40 +226,52 @@ export function buildPermissionDecisionSummary(input: {
   toolName: string;
   riskSummary: string | null;
   canAlwaysAllow: boolean;
-}): InteractionDecisionSummary {
+}, localizer?: PresentationLocalizer): InteractionDecisionSummary {
   if (input.riskSummary) {
     return {
-      title: '高风险授权需要二次确认',
-      detail: '先核对命令内容，再点一次确认允许；不确定就拒绝。',
+      title: presentationText(localizer, 'interaction.presentation.permission.highRiskTitle', '高风险授权需要二次确认'),
+      detail: presentationText(localizer, 'interaction.presentation.permission.highRiskDetail', '先核对命令内容，再点一次确认允许；不确定就拒绝。'),
     };
   }
   if (input.canAlwaysAllow) {
     return {
-      title: '可以只允许一次，也可以本任务总是允许',
-      detail: `工具: ${input.toolName}`,
+      title: presentationText(localizer, 'interaction.presentation.permission.sessionAllowTitle', '可以只允许一次，也可以本任务总是允许'),
+      detail: presentationText(localizer, 'interaction.presentation.permission.tool', `工具: ${input.toolName}`, { tool: input.toolName }),
     };
   }
   return {
-    title: '允许后电脑端会继续执行',
-    detail: `工具: ${input.toolName}`,
+    title: presentationText(localizer, 'interaction.presentation.permission.allowTitle', '允许后电脑端会继续执行'),
+    detail: presentationText(localizer, 'interaction.presentation.permission.tool', `工具: ${input.toolName}`, { tool: input.toolName }),
   };
 }
 
 export function buildPermissionReviewPresentation(
   request: InteractionRequestLike,
+  localizer?: PresentationLocalizer,
 ): PermissionReviewPresentation {
   const toolName = permissionToolName(request);
   const input = permissionInput(request);
-  const riskSummary = permissionRiskSummary(request);
+  const riskSummary = permissionRiskSummary(request, localizer);
   const canAlwaysAllow = sessionScopedPermissionSuggestions(request.suggestions).length > 0;
+  const sourceDescription = permissionSourceDescription(request);
+  let description = permissionDescription(request);
+  // IM retains its combined body; UI titles must describe the operation only.
+  if (sourceDescription && description?.startsWith(sourceDescription)) {
+    if (description === sourceDescription) description = null;
+    else if (description.startsWith(`${sourceDescription}\n\n`)) {
+      description = readString(description.slice(sourceDescription.length + 2));
+    }
+  }
 
   return {
+    autoReviewUnavailable: permissionAutoReviewUnavailable(request),
+    ...(sourceDescription ? { sourceDescription } : {}),
     canAlwaysAllow,
     code: formatPermissionInput(toolName, input),
-    description: permissionDescription(request),
+    description,
     riskSummary,
-    summary: buildPermissionDecisionSummary({ toolName, riskSummary, canAlwaysAllow }),
-    title: permissionTitle(request),
+    summary: buildPermissionDecisionSummary({ toolName, riskSummary, canAlwaysAllow }, localizer),
+    title: permissionTitle(request, localizer),
     toolName,
   };
 }
@@ -215,19 +280,24 @@ export function buildAskQuestionProgressSummary(input: {
   currentIndex: number;
   total: number;
   multiSelect: boolean;
-}): InteractionDecisionSummary {
+}, localizer?: PresentationLocalizer): InteractionDecisionSummary {
   const total = Math.max(1, input.total);
   const current = Math.min(Math.max(0, input.currentIndex), total - 1) + 1;
   return {
-    title: `第 ${current}/${total} 个问题`,
-    detail: input.multiSelect ? '可多选，也可以输入其他回答。' : '选择一个回答，或输入其他回答。',
+    title: presentationText(localizer, 'interaction.presentation.ask.progress', `第 ${current}/${total} 个问题`, {
+      current,
+      total,
+    }),
+    detail: input.multiSelect
+      ? presentationText(localizer, 'interaction.presentation.ask.multiSelect', '可多选，也可以输入其他回答。')
+      : presentationText(localizer, 'interaction.presentation.ask.singleSelect', '选择一个回答，或输入其他回答。'),
   };
 }
 
 export function buildAskQuestionReviewPresentation(input: {
   currentIndex: number;
   questions: readonly AskQuestion[];
-}): AskQuestionReviewPresentation {
+}, localizer?: PresentationLocalizer): AskQuestionReviewPresentation {
   const totalCount = input.questions.length;
   if (totalCount === 0) {
     return {
@@ -240,10 +310,10 @@ export function buildAskQuestionReviewPresentation(input: {
       optionCount: 0,
       pageLabel: '0/0',
       summary: {
-        title: '没有具体问题',
-        detail: '可以提交空回答让电脑端继续。',
+        title: presentationText(localizer, 'interaction.presentation.ask.emptyTitle', '没有具体问题'),
+        detail: presentationText(localizer, 'interaction.presentation.ask.emptyDetail', '可以提交空回答让电脑端继续。'),
       },
-      title: 'Agent 正在等待确认',
+      title: presentationText(localizer, 'interaction.presentation.ask.waiting', 'Agent 正在等待确认'),
       totalCount: 0,
     };
   }
@@ -267,8 +337,9 @@ export function buildAskQuestionReviewPresentation(input: {
       currentIndex,
       total: totalCount,
       multiSelect,
-    }),
-    title: current?.question || 'Agent 正在等待确认',
+    }, localizer),
+    title: current?.question
+      || presentationText(localizer, 'interaction.presentation.ask.waiting', 'Agent 正在等待确认'),
     totalCount,
   };
 }
@@ -277,11 +348,17 @@ export function buildPlanReviewDecisionSummary(input: {
   outlineCount: number;
   hasFilePath: boolean;
   edited: boolean;
-}): InteractionDecisionSummary {
-  const outline = input.outlineCount > 0 ? `${input.outlineCount} 个章节` : '无章节目录';
-  const file = input.hasFilePath ? '有计划文件' : '无计划文件路径';
+}, localizer?: PresentationLocalizer): InteractionDecisionSummary {
+  const outline = input.outlineCount > 0
+    ? presentationText(localizer, 'interaction.presentation.plan.outlineCount', `${input.outlineCount} 个章节`, { count: input.outlineCount })
+    : presentationText(localizer, 'interaction.presentation.plan.noOutline', '无章节目录');
+  const file = input.hasFilePath
+    ? presentationText(localizer, 'interaction.presentation.plan.hasFile', '有计划文件')
+    : presentationText(localizer, 'interaction.presentation.plan.noFile', '无计划文件路径');
   return {
-    title: input.edited ? '已编辑计划，批准后按当前版本执行' : '批准后电脑端会按计划继续执行',
+    title: input.edited
+      ? presentationText(localizer, 'interaction.presentation.plan.editedTitle', '已编辑计划，批准后按当前版本执行')
+      : presentationText(localizer, 'interaction.presentation.plan.approveTitle', '批准后电脑端会按计划继续执行'),
     detail: `${outline} · ${file}`,
   };
 }
@@ -291,7 +368,7 @@ export function buildPlanReviewEvidencePresentation(input: {
   filePath?: string | null;
   maxOutlineItems?: number;
   plan: string;
-}): PlanReviewEvidencePresentation {
+}, localizer?: PresentationLocalizer): PlanReviewEvidencePresentation {
   const outline = extractPlanOutline(input.plan);
   const maxOutlineItems = Math.max(0, Math.floor(input.maxOutlineItems ?? 3));
   const filePath = input.filePath?.trim() || null;
@@ -309,7 +386,7 @@ export function buildPlanReviewEvidencePresentation(input: {
       edited: input.edited,
       hasFilePath: !!filePath,
       outlineCount: outline.length,
-    }),
+    }, localizer),
   };
 }
 
@@ -336,6 +413,8 @@ export function buildIssueConfirmReviewPresentation(input: {
     input.env.platform,
     input.env.arch,
     input.env.osVersion,
+    input.env.harness,
+    input.env.modelId,
     input.uiLanguage,
   ].filter((part): part is string => typeof part === 'string' && part.trim().length > 0);
 
@@ -356,32 +435,54 @@ export function interactionKind(item: PendingInteractionLike): string {
   return typeof item.request.kind === 'string' ? item.request.kind : 'interaction';
 }
 
-export function interactionDisplayTitle(kind: string): string {
-  if (kind === 'plan_review') return '需要确认执行计划';
-  if (kind === 'permission') return '需要授权电脑端操作';
-  if (kind === 'ask_user_question') return '需要回答 Agent 问题';
-  if (kind === 'issue_confirm') return '需要确认 Issue 内容';
-  if (kind === 'plugin_setup') return '需要在电脑端配置插件';
-  return '需要处理远程请求';
+export function interactionDisplayTitle(kind: string, localizer?: PresentationLocalizer): string {
+  const known = ['plan_review', 'permission', 'ask_user_question', 'issue_confirm', 'plugin_setup', 'input_handoff'];
+  const key = known.includes(kind) ? kind : 'fallback';
+  const fallback: Record<string, string> = {
+    plan_review: '需要确认执行计划',
+    permission: '需要授权电脑端操作',
+    ask_user_question: '需要回答 Agent 问题',
+    issue_confirm: '需要确认 Issue 内容',
+    plugin_setup: '需要在电脑端配置插件',
+    input_handoff: '需要你代为输入',
+    fallback: '需要处理远程请求',
+  };
+  return presentationText(localizer, `interaction.kinds.${key}.title`, fallback[key]);
 }
 
-export function interactionDisplayHint(kind: string, readOnly = false): string {
-  if (readOnly) return '协作只读模式，仅展示电脑端请求。';
-  if (kind === 'plan_review') return '先看计划，必要时反馈修改，确认后电脑端才继续执行。';
-  if (kind === 'permission') return '只把本次决定回传给当前电脑端任务。';
-  if (kind === 'ask_user_question') return '回答会保存草稿,提交后电脑端继续。';
-  if (kind === 'issue_confirm') return '确认标题和正文后再提交。';
-  if (kind === 'plugin_setup') return '配置要在电脑端完成，这里可以取消这次请求。';
-  return '手机版会按桌面端的请求顺序处理。';
+export function interactionDisplayHint(
+  kind: string,
+  readOnly = false,
+  localizer?: PresentationLocalizer,
+): string {
+  if (readOnly) {
+    return presentationText(localizer, 'interaction.presentation.queue.readOnlyHint', '协同只读模式，仅展示电脑端请求。');
+  }
+  const fallback: Record<string, string> = {
+    plan_review: '先看计划，必要时反馈修改，确认后电脑端才继续执行。',
+    permission: '只把本次决定回传给当前电脑端任务。',
+    ask_user_question: '回答会保存草稿，提交后电脑端继续。',
+    issue_confirm: '确认标题和正文后再提交。',
+    plugin_setup: '配置要在电脑端完成，这里可以取消这次请求。',
+    fallback: '手机版会按桌面端的请求顺序处理。',
+  };
+  const key = Object.prototype.hasOwnProperty.call(fallback, kind) ? kind : 'fallback';
+  return presentationText(localizer, `interaction.presentation.queue.hint.${key}`, fallback[key]);
 }
 
-export function interactionKindLabel(kind: string): string {
-  if (kind === 'plan_review') return '计划';
-  if (kind === 'permission') return '授权';
-  if (kind === 'ask_user_question') return '问题';
-  if (kind === 'issue_confirm') return 'Issue';
-  if (kind === 'plugin_setup') return '插件';
-  return '请求';
+export function interactionKindLabel(kind: string, localizer?: PresentationLocalizer): string {
+  const known = ['plan_review', 'permission', 'ask_user_question', 'issue_confirm', 'plugin_setup', 'input_handoff'];
+  const key = known.includes(kind) ? kind : 'fallback';
+  const fallback: Record<string, string> = {
+    plan_review: '计划',
+    permission: '授权',
+    ask_user_question: '问题',
+    issue_confirm: 'Issue',
+    plugin_setup: '插件',
+    input_handoff: '代输入',
+    fallback: '请求',
+  };
+  return presentationText(localizer, `interaction.kinds.${key}.label`, fallback[key]);
 }
 
 /**
@@ -403,6 +504,9 @@ const REMOTE_RESOLVABLE_KINDS = new Set(['permission', 'ask_user_question', 'pla
 export function remoteInteractionHandling(item: PendingInteractionLike): RemoteInteractionHandling {
   const kind = interactionKind(item);
   if (REMOTE_RESOLVABLE_KINDS.has(kind)) return 'resolvable';
+  // 代输入: the controller fills each step through the signed per-step channel
+  // and sends value-less decisions (done / cancel / stay / refresh) through resolve.
+  if (kind === 'input_handoff') return item.request.terminal === true ? 'desktop-only' : 'resolvable';
   // `cancel-only` 必须与 buildPluginSetupCancelDecision 判定一致,否则调用方只看
   // handling 就以为「能取消」,而实际拿不到 decision(#530 review):
   // - terminal 快照是被控端收尾展示用的最后一帧,已经不 actionable;
@@ -422,6 +526,8 @@ export function remoteInteractionHandling(item: PendingInteractionLike): RemoteI
  * 死锁:任何被控端新增的 interaction kind 默认都落进「不阻塞」这一侧。
  */
 export function interactionBlocksRemoteComposer(item: PendingInteractionLike | null | undefined): boolean {
+  // 代输入 is a Host-owned wait that outlives the turn; the owner keeps the composer.
+  if (item && interactionKind(item) === 'input_handoff') return false;
   return !!item && remoteInteractionHandling(item) === 'resolvable';
 }
 
@@ -687,6 +793,7 @@ export function buildPendingInteractionQueuePresentation(
     maxVisible?: number;
     readOnly?: boolean;
   } = {},
+  localizer?: PresentationLocalizer,
 ): PendingInteractionQueuePresentation {
   const sorted = sortPendingInteractions(interactions);
   const totalCount = sorted.length;
@@ -697,10 +804,10 @@ export function buildPendingInteractionQueuePresentation(
     return {
       active: index === 0,
       kind,
-      label: interactionKindLabel(kind),
-      positionLabel: interactionPositionLabel(index),
+      label: interactionKindLabel(kind, localizer),
+      positionLabel: interactionPositionLabel(index, localizer),
       requestId: readRequestId(item),
-      title: interactionDisplayTitle(kind),
+      title: interactionDisplayTitle(kind, localizer),
     };
   });
   const active = items[0] ?? null;
@@ -708,12 +815,16 @@ export function buildPendingInteractionQueuePresentation(
 
   return {
     active,
-    countLabel: totalCount > 1 ? `${totalCount} 个` : '当前',
-    hint: interactionDisplayHint(activeKind, readOnly),
+    countLabel: totalCount > 1
+      ? presentationText(localizer, 'interaction.presentation.queue.count', `${totalCount} 个`, { count: totalCount })
+      : presentationText(localizer, 'interaction.panel.queuePositionCurrent', '当前'),
+    hint: interactionDisplayHint(activeKind, readOnly, localizer),
     items,
     overflowCount: Math.max(0, totalCount - items.length),
     readOnly,
-    title: active ? active.title : '没有待处理请求',
+    title: active
+      ? active.title
+      : presentationText(localizer, 'interaction.presentation.queue.empty', '没有待处理请求'),
     totalCount,
   };
 }
@@ -727,6 +838,8 @@ const INTERACTION_PRIORITY: Record<string, number> = {
   // 只能回电脑端处理的卡上(手机侧另有不阻塞输入框的兜底,见
   // interactionBlocksRemoteComposer)。
   plugin_setup: 4,
+  // Answerable on the controller, but never ahead of a question the turn is blocked on.
+  input_handoff: 3,
 };
 
 export function interactionPriority(item: PendingInteractionLike): number {
@@ -738,7 +851,8 @@ export function sortPendingInteractions(
 ): PendingInteractionLike[] {
   return interactions
     .map((item, index) => ({ item, index }))
-    .sort((a, b) => interactionPriority(a.item) - interactionPriority(b.item) || a.index - b.index)
+    .sort((a, b) => Number(b.item.retainedDraft === true) - Number(a.item.retainedDraft === true)
+      || interactionPriority(a.item) - interactionPriority(b.item) || a.index - b.index)
     .map(({ item }) => item);
 }
 
@@ -753,10 +867,12 @@ export function readRequestId(item: PendingInteractionLike): string | null {
   return typeof requestId === 'string' && requestId.length > 0 ? requestId : null;
 }
 
-function interactionPositionLabel(index: number): string {
-  if (index === 0) return '当前';
-  if (index === 1) return '接着';
-  return `第 ${index + 1}`;
+function interactionPositionLabel(index: number, localizer?: PresentationLocalizer): string {
+  if (index === 0) return presentationText(localizer, 'interaction.panel.queuePositionCurrent', '当前');
+  if (index === 1) return presentationText(localizer, 'interaction.panel.queuePositionNext', '接着');
+  return presentationText(localizer, 'interaction.panel.queuePositionNth', `第 ${index + 1}`, {
+    index: index + 1,
+  });
 }
 
 export function formatPermissionInput(toolName: string, input: Record<string, unknown>): string {
@@ -777,16 +893,31 @@ export function formatPermissionInput(toolName: string, input: Record<string, un
   }
 }
 
-export function permissionTitle(request: InteractionRequestLike): string {
+export function permissionTitle(
+  request: InteractionRequestLike,
+  localizer?: PresentationLocalizer,
+): string {
   const explicit = readString(request.title);
   if (explicit) return explicit;
   const displayName = readString(request.displayName);
   const toolName = readString(request.toolName) || 'tool';
-  return `允许使用 ${displayName || toolName}?`;
+  const tool = displayName || toolName;
+  return presentationText(localizer, 'interaction.presentation.permission.title', `允许使用 ${tool}?`, { tool });
+}
+
+export function permissionSourceDescription(request: InteractionRequestLike): string | null {
+  const metadata = request.metadata;
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return null;
+  const source = (metadata as Record<string, unknown>).imSourceDescription;
+  return typeof source === 'string' ? source : null;
 }
 
 export function permissionDescription(request: InteractionRequestLike): string | null {
   return readString(request.description);
+}
+
+export function permissionAutoReviewUnavailable(request: InteractionRequestLike): boolean {
+  return isRecord(request.metadata) && request.metadata.autoReviewUnavailable === true;
 }
 
 export function permissionToolName(request: InteractionRequestLike): string {
@@ -797,14 +928,17 @@ export function permissionInput(request: InteractionRequestLike): Record<string,
   return isRecord(request.input) ? request.input : {};
 }
 
-export function permissionRiskSummary(request: InteractionRequestLike): string | null {
+export function permissionRiskSummary(
+  request: InteractionRequestLike,
+  localizer?: PresentationLocalizer,
+): string | null {
   const toolName = permissionToolName(request);
   const input = permissionInput(request);
   if (toolName !== 'Bash') return null;
   const command = typeof input.command === 'string' ? input.command.trim() : '';
   if (!command) return null;
   if (!isHighRiskShellCommand(command)) return null;
-  return '这个命令可能修改系统、仓库或外部服务状态。允许前请确认你信任当前任务和命令内容。';
+  return presentationText(localizer, 'interaction.presentation.permission.risk', '这个命令可能修改系统、仓库或外部服务状态。允许前请确认你信任当前任务和命令内容。');
 }
 
 export function sessionScopedPermissionSuggestions(suggestions: unknown): unknown[] {
@@ -911,6 +1045,44 @@ export function selectionFromAnswer(question: AskQuestion, answer: string | unde
   return { selectedLabels: new Set([answer]), customInput: '', showCustomInput: false };
 }
 
+/**
+ * Option labels that are really the model's own "none of these fit" escape
+ * hatch. Claude Code's native AskUserQuestion prompt tells the model not to add
+ * an "Other" option (the host UI provides a free-text entry automatically), but
+ * harnesses whose tool schema carries no such note still produce labels like
+ * "其他（回复说明）" or "Other (please specify)".
+ *
+ * A host question card must replace such an option with its own free-text
+ * entry instead of rendering (and submitting) the literal label: the model wrote
+ * the option expecting the user's explanation, so receiving only the label back
+ * reads as an empty answer. See `visibleAskOptions`.
+ *
+ * Only a leading "other"-style token is recognized, so labels that merely
+ * mention an explanation inside a substantive choice (e.g. "sensor_height 要改
+ * （回复说明数值）" or "其他任务") are not escape hatches and stay selectable.
+ */
+export function isFreeTextAskOptionLabel(label: string): boolean {
+  const normalized = label.trim().toLowerCase();
+  if (!normalized) return false;
+  // "Other" / "Other (please specify)" / "其他（回复说明）" are escape hatches;
+  // "Other tasks" / "その他の質問" are substantive options. A bare space must not
+  // count as the boundary — only end-of-label or a separator/parenthesis does.
+  return /^(?:其他(?:答案|选项)?|其它(?:答案|选项)?|other|others|something else|その他|기타)(?=$|\s*[（(【[：:，,、.。\-—－…])/.test(normalized);
+}
+
+/**
+ * Options one host question card should render.
+ *
+ * Model-authored free-text entries are dropped: they mean the same thing as the
+ * host's own "type your own answer" row, so rendering both would show duplicate
+ * escape hatches and let a click submit the placeholder label as an answer. The
+ * host row is the single entry that remains (it also covers the case where the
+ * filtered list becomes empty — callers fall back to free-form input).
+ */
+export function visibleAskOptions<T extends { label: string }>(options: readonly T[] | undefined): T[] {
+  return (options ?? []).filter((option) => !isFreeTextAskOptionLabel(option.label));
+}
+
 export function buildAskUserQuestionDecision(answers: Record<string, string>): Record<string, unknown> {
   return { kind: 'ask_user_question', answers };
 }
@@ -1009,8 +1181,20 @@ export function normalizeIssueConfirm(request: InteractionRequestLike): IssueCon
       platform: readString(env.platform) ?? 'unknown',
       arch: readString(env.arch) ?? 'unknown',
       osVersion: readString(env.osVersion) ?? undefined,
+      harness: readIssueHarness(env.harness),
+      modelId: normalizeIssueModelId(env.modelId),
     },
   };
+}
+
+function readIssueHarness(value: unknown): IssueEnv['harness'] {
+  return value === 'Claude Code' || value === 'Codex' || value === 'Pi' ? value : undefined;
+}
+
+function normalizeIssueModelId(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.trim().replace(/\s+/g, ' ').slice(0, 200).trim();
+  return normalized || undefined;
 }
 
 export function buildIssueConfirmDecision(

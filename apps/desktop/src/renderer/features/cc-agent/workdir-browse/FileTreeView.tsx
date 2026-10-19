@@ -309,7 +309,13 @@ export const FileTreeView = forwardRef<FileTreeViewHandle, FileTreeViewProps>(fu
   const isFolderMenu = menu?.entry.type === 'directory';
 
   return (
-    <div ref={containerRef} className="flex h-full w-full flex-col gap-px overflow-y-auto py-2">
+    // 横向溢出契约:行宽由内容决定(行 min-w-max:深层缩进 + 完整文件名/输入框),
+    // 容器显式 overflow-auto 承接横向滚动;tree-hscroll 让横条常显(见 globals.css)——
+    // 横向溢出没有"被截断"的视觉线索,thumb 默认透明时会被当成"没有滚动条"。
+    <div
+      ref={containerRef}
+      className="tree-hscroll flex h-full w-full flex-col gap-px overflow-auto py-2"
+    >
       {rows.map((row) => {
         if (row.kind === 'pending') {
           return (
@@ -383,12 +389,6 @@ export const FileTreeView = forwardRef<FileTreeViewHandle, FileTreeViewProps>(fu
         <DropdownMenuContent
           align="start"
           sideOffset={2}
-          className={cn(
-            'rounded-xl p-0.5 overflow-hidden',
-            'bg-[var(--cmd-palette-bg)]',
-            'border border-[var(--cmd-palette-border)]',
-            'shadow-[var(--shadow-menu)]',
-          )}
         >
           {isFolderMenu && menu ? (
             <>
@@ -399,10 +399,9 @@ export const FileTreeView = forwardRef<FileTreeViewHandle, FileTreeViewProps>(fu
                     close();
                     onNewFile(parent);
                   }}
-                  className="h-7 px-2.5 rounded-md text-13 leading-none text-[var(--msg-assistant-text)] focus:bg-[var(--cmd-palette-item-hover)]"
                 >
                   <FilePlus className="mr-2 h-3.5 w-3.5 shrink-0" />
-                  <span className="relative top-px">{t('ccAgent.workdirBrowse.treeMenu.newFile')}</span>
+                  {t('ccAgent.workdirBrowse.treeMenu.newFile')}
                 </DropdownMenuItem>
               )}
               {onNewFolder && (
@@ -412,10 +411,9 @@ export const FileTreeView = forwardRef<FileTreeViewHandle, FileTreeViewProps>(fu
                     close();
                     onNewFolder(parent);
                   }}
-                  className="h-7 px-2.5 rounded-md text-13 leading-none text-[var(--msg-assistant-text)] focus:bg-[var(--cmd-palette-item-hover)]"
                 >
                   <FolderPlus className="mr-2 h-3.5 w-3.5 shrink-0" />
-                  <span className="relative top-px">{t('ccAgent.workdirBrowse.treeMenu.newFolder')}</span>
+                  {t('ccAgent.workdirBrowse.treeMenu.newFolder')}
                 </DropdownMenuItem>
               )}
               {onRename && (
@@ -425,10 +423,9 @@ export const FileTreeView = forwardRef<FileTreeViewHandle, FileTreeViewProps>(fu
                     close();
                     onRename(entry);
                   }}
-                  className="h-7 px-2.5 rounded-md text-13 leading-none text-[var(--msg-assistant-text)] focus:bg-[var(--cmd-palette-item-hover)]"
                 >
                   <Pencil className="mr-2 h-3.5 w-3.5 shrink-0" />
-                  <span className="relative top-px">{t('ccAgent.workdirBrowse.treeMenu.rename')}</span>
+                  {t('ccAgent.workdirBrowse.treeMenu.rename')}
                 </DropdownMenuItem>
               )}
               {/* remote 会话不传 onRevealInFolder(文件在远端,本机文件管理器
@@ -440,10 +437,9 @@ export const FileTreeView = forwardRef<FileTreeViewHandle, FileTreeViewProps>(fu
                     close();
                     onRevealInFolder(entry);
                   }}
-                  className="h-7 px-2.5 rounded-md text-13 leading-none text-[var(--msg-assistant-text)] focus:bg-[var(--cmd-palette-item-hover)]"
                 >
                   <FolderOpen className="mr-2 h-3.5 w-3.5 shrink-0" />
-                  <span className="relative top-px">{t('ccAgent.workdirBrowse.treeMenu.showInFolder')}</span>
+                  {t('ccAgent.workdirBrowse.treeMenu.showInFolder')}
                 </DropdownMenuItem>
               )}
             </>
@@ -456,10 +452,9 @@ export const FileTreeView = forwardRef<FileTreeViewHandle, FileTreeViewProps>(fu
                     close();
                     onOpenInFileBrowser(entry);
                   }}
-                  className="h-7 px-2.5 rounded-md text-13 leading-none text-[var(--msg-assistant-text)] focus:bg-[var(--cmd-palette-item-hover)]"
                 >
                   <FolderTree className="mr-2 h-3.5 w-3.5 shrink-0" />
-                  <span className="relative top-px">{t('ccAgent.workdirBrowse.treeMenu.openInFileBrowser')}</span>
+                  {t('ccAgent.workdirBrowse.treeMenu.openInFileBrowser')}
                 </DropdownMenuItem>
               )}
               {canOpenEntryInSidebarBrowser(menu.entry) && (
@@ -469,10 +464,9 @@ export const FileTreeView = forwardRef<FileTreeViewHandle, FileTreeViewProps>(fu
                     close();
                     onOpenInSidebarBrowser?.(entry);
                   }}
-                  className="h-7 px-2.5 rounded-md text-13 leading-none text-[var(--msg-assistant-text)] focus:bg-[var(--cmd-palette-item-hover)]"
                 >
                   <PanelRight className="mr-2 h-3.5 w-3.5 shrink-0" />
-                  <span className="relative top-px">{t('chat.markdownRenderer.openInSidebarBrowser')}</span>
+                  {t('chat.markdownRenderer.openInSidebarBrowser')}
                 </DropdownMenuItem>
               )}
               {onCopyFilePath && (
@@ -482,10 +476,9 @@ export const FileTreeView = forwardRef<FileTreeViewHandle, FileTreeViewProps>(fu
                     close();
                     onCopyFilePath(entry);
                   }}
-                  className="h-7 px-2.5 rounded-md text-13 leading-none text-[var(--msg-assistant-text)] focus:bg-[var(--cmd-palette-item-hover)]"
                 >
                   <Clipboard className="mr-2 h-3.5 w-3.5 shrink-0" />
-                  <span className="relative top-px">{t('ccAgent.workdirBrowse.treeMenu.copyFilePath')}</span>
+                  {t('ccAgent.workdirBrowse.treeMenu.copyFilePath')}
                 </DropdownMenuItem>
               )}
               {onRename && (
@@ -495,10 +488,9 @@ export const FileTreeView = forwardRef<FileTreeViewHandle, FileTreeViewProps>(fu
                     close();
                     onRename(entry);
                   }}
-                  className="h-7 px-2.5 rounded-md text-13 leading-none text-[var(--msg-assistant-text)] focus:bg-[var(--cmd-palette-item-hover)]"
                 >
                   <Pencil className="mr-2 h-3.5 w-3.5 shrink-0" />
-                  <span className="relative top-px">{t('ccAgent.workdirBrowse.treeMenu.rename')}</span>
+                  {t('ccAgent.workdirBrowse.treeMenu.rename')}
                 </DropdownMenuItem>
               )}
               {/* remote 会话不传 onRevealInFolder(文件在远端,本机文件管理器
@@ -510,10 +502,9 @@ export const FileTreeView = forwardRef<FileTreeViewHandle, FileTreeViewProps>(fu
                     close();
                     onRevealInFolder(entry);
                   }}
-                  className="h-7 px-2.5 rounded-md text-13 leading-none text-[var(--msg-assistant-text)] focus:bg-[var(--cmd-palette-item-hover)]"
                 >
                   <FolderOpen className="mr-2 h-3.5 w-3.5 shrink-0" />
-                  <span className="relative top-px">{t('ccAgent.workdirBrowse.treeMenu.showInFolder')}</span>
+                  {t('ccAgent.workdirBrowse.treeMenu.showInFolder')}
                 </DropdownMenuItem>
               )}
               {canOpenEntryInBrowser(menu.entry) && (
@@ -523,10 +514,9 @@ export const FileTreeView = forwardRef<FileTreeViewHandle, FileTreeViewProps>(fu
                     close();
                     onOpenInBrowser?.(entry);
                   }}
-                  className="h-7 px-2.5 rounded-md text-13 leading-none text-[var(--msg-assistant-text)] focus:bg-[var(--cmd-palette-item-hover)]"
                 >
                   <Globe className="mr-2 h-3.5 w-3.5 shrink-0" />
-                  <span className="relative top-px">{t('chat.markdownRenderer.openInBrowser')}</span>
+                  {t('chat.markdownRenderer.openInBrowser')}
                 </DropdownMenuItem>
               )}
               {onDeleteFile && (
@@ -536,10 +526,10 @@ export const FileTreeView = forwardRef<FileTreeViewHandle, FileTreeViewProps>(fu
                     close();
                     onDeleteFile(entry);
                   }}
-                  className="h-7 px-2.5 rounded-md text-13 leading-none text-red-500 dark:text-red-400 focus:bg-red-50 dark:focus:bg-red-500/10"
+                  variant="danger"
                 >
                   <Trash2 className="mr-2 h-3.5 w-3.5 shrink-0" />
-                  <span className="relative top-px">{t('ccAgent.workdirBrowse.treeMenu.deleteFile')}</span>
+                  {t('ccAgent.workdirBrowse.treeMenu.deleteFile')}
                 </DropdownMenuItem>
               )}
             </>
@@ -623,7 +613,9 @@ function FileTreeRow({
       // 未来要"展开到某个文件夹"也能直接复用。
       data-relpath={entry.relPath}
       className={cn(
-        'group/file-row flex h-7 w-full shrink-0 items-center rounded-md pr-2',
+        // min-w-max:行宽由内容决定(缩进 + 完整名字),深层级/长名字撑出横向滚动区,
+        // 而不是把名字 truncate 到 0 宽;内容比容器窄时 w-full 仍撑满整行。
+        'group/file-row flex h-7 w-full min-w-max shrink-0 items-center rounded-md pr-2',
         'cursor-pointer text-13 transition-colors',
         selected
           ? 'bg-sidebar-item-active font-medium text-sidebar-item-active-foreground'
@@ -786,7 +778,8 @@ function RenamingInputRow({ entry, depth, onSubmit, onCancel }: RenamingInputRow
     <div
       style={{ paddingLeft }}
       className={cn(
-        'flex h-7 w-full shrink-0 items-center gap-1.5 rounded-md pr-2',
+        // 同 FileTreeRow:深层重命名输入框不能被缩进挤没,行宽跟随输入框自身宽度。
+        'flex h-7 w-full min-w-max shrink-0 items-center gap-1.5 rounded-md pr-2',
         'bg-sidebar-item-active text-sidebar-item-active-foreground',
       )}
     >
@@ -856,7 +849,8 @@ function PendingInputRow({ pending, depth, onSubmit, onCancel }: PendingInputRow
     <div
       style={{ paddingLeft }}
       className={cn(
-        'flex h-7 w-full shrink-0 items-center gap-1.5 rounded-md pr-2',
+        // 同 FileTreeRow:深层的新建输入框不能被缩进挤没,行宽由输入框自身宽度决定。
+        'flex h-7 w-full min-w-max shrink-0 items-center gap-1.5 rounded-md pr-2',
         'bg-sidebar-item-active text-sidebar-item-active-foreground',
       )}
     >

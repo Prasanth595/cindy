@@ -1,6 +1,6 @@
 import os from 'node:os';
 import path from 'node:path';
-import { promises as fsp } from 'node:fs';
+import fs, { promises as fsp } from 'node:fs';
 
 type LinkStatus = 'linked' | 'kept' | 'conflict' | 'skipped' | 'error';
 
@@ -12,6 +12,7 @@ interface SkillEntry {
   path: string;
   realPath: string;
   isSymlink: boolean;
+  identity: string;
 }
 
 interface LinkAction {
@@ -30,10 +31,27 @@ export interface SharedGlobalSkillLinksResult {
   changed: boolean;
   actions: LinkAction[];
   warnings: string[];
+  /**
+   * Subset of `warnings` that describe stable user-owned state rather than a failed
+   * attempt: the cross-agent sync opt-out and user paths we deliberately never
+   * overwrite. Retrying cannot clear them, so callers may cache past them and report
+   * them once instead of on every run.
+   */
+  persistentWarnings: string[];
 }
+
+export const SHARED_GLOBAL_SKILL_SYNC_DISABLED_NOTICE =
+  'cross-agent global skill sync is disabled; set crossAgentSyncEnabled to opt in';
 
 interface PrepareOptions {
   homeDir?: string;
+  /** Optional owner-bound caller guard for Ghost-managed fanout. */
+  assertOwnerStable?: () => void;
+  /**
+   * 跨 Agent 链接的显式 opt-in 判定（#2930）。缺省时读
+   * shared-global-skills-settings（默认关）；注入用于单测确定性控制。
+   */
+  isCrossAgentSyncEnabled?: () => boolean;
 }
 
 export interface SharedProjectSkillLinksResult {
@@ -47,6 +65,28 @@ export interface SharedProjectSkillLinksResult {
 
 interface PrepareProjectOptions {
   workingDir: string;
+}
+
+// Keep read-only path helpers importable outside Electron. Actual mutations
+// resolve the Main-owned lease only when they execute.
+async function withLinkMutation<T>(names: string[], operation: () => Promise<T>): Promise<T | undefined> {
+  const { withSkillMutation } = await import('../skillhub/sharedMutationLease');
+  return withSkillMutation(names, operation);
+}
+
+function sourceIdentity(file: string): string | null {
+  try {
+    const stat = fs.statSync(file);
+    return JSON.stringify([normalizeForCompare(fs.realpathSync.native(file)), stat.dev, stat.ino, stat.birthtimeMs]);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+function linkIdentity(file: string): string {
+  const stat = fs.lstatSync(file);
+  return JSON.stringify([stat.dev, stat.ino, stat.birthtimeMs, fs.readlinkSync(file)]);
 }
 
 function normalizeForCompare(value: string): string {
@@ -144,8 +184,13 @@ async function listSkillEntries(
     const skillPath = path.join(rootPath, ent.name);
     if (!(await hasSkillFile(skillPath))) continue;
 
-    const realPath = await realPathOrNull(skillPath);
-    if (!realPath) continue;
+    let realPath: string;
+    let identity: string | null;
+    try {
+      realPath = normalizeForCompare(fs.realpathSync.native(skillPath));
+      identity = sourceIdentity(skillPath);
+    } catch { continue; }
+    if (!identity) continue;
 
     skills.push({
       name: ent.name,
@@ -153,6 +198,7 @@ async function listSkillEntries(
       path: skillPath,
       realPath,
       isSymlink: ent.isSymbolicLink(),
+      identity,
     });
   }
   return skills;
@@ -182,6 +228,7 @@ async function cleanupBrokenManagedLinks(
   rootPath: string,
   managedRoots: string[],
   staleManagedDiscoveryRoots: string[] = [],
+  assertMutationAllowed?: () => void,
 ): Promise<boolean> {
   let entries;
   try {
@@ -195,6 +242,8 @@ async function cleanupBrokenManagedLinks(
     if (!ent.isSymbolicLink()) continue;
 
     const linkPath = path.join(rootPath, ent.name);
+    let identity: string;
+    try { identity = linkIdentity(linkPath); } catch { continue; }
     if (await realPathOrNull(linkPath)) continue;
 
     let targetPath: string;
@@ -215,10 +264,15 @@ async function cleanupBrokenManagedLinks(
     if (!pointsIntoCurrentRoots && !matchesMovedProjectLink) continue;
 
     try {
-      await fsp.rm(linkPath, { recursive: true, force: true });
-      changed = true;
+      const removed = await withLinkMutation([ent.name, path.basename(targetPath)], async () => {
+        if (linkIdentity(linkPath) !== identity || sourceIdentity(linkPath) !== null) return false;
+        assertMutationAllowed?.();
+        fs.unlinkSync(linkPath);
+        return true;
+      });
+      changed = removed === true || changed;
     } catch {
-      // Broken symlink cleanup is best-effort; later link creation will report conflicts if needed.
+      // Replaced entries and inaccessible paths are not proof of a broken link.
     }
   }
   return changed;
@@ -228,6 +282,7 @@ async function ensureDirectoryLink(
   source: SkillEntry,
   targetPath: string,
   useRelativeTarget = false,
+  assertMutationAllowed?: () => void,
 ): Promise<{ status: LinkStatus; changed: boolean; reason?: string }> {
   const targetReal = await realPathOrNull(targetPath);
   if (targetReal && targetReal === source.realPath) {
@@ -249,8 +304,15 @@ async function ensureDirectoryLink(
     }
   }
 
+  assertMutationAllowed?.();
   try {
     await fsp.mkdir(path.dirname(targetPath), { recursive: true });
+  } catch (err) {
+    return { status: 'error', changed: false, reason: (err as Error).message };
+  }
+
+  assertMutationAllowed?.();
+  try {
     const linkTarget = useRelativeTarget && process.platform !== 'win32'
       ? path.relative(path.dirname(targetPath), source.path)
       : source.path;
@@ -265,9 +327,11 @@ async function linkEntriesIntoRoot(
   entries: SkillEntry[],
   targetRoot: string,
   useRelativeTarget = false,
-): Promise<{ actions: LinkAction[]; changed: boolean; warnings: string[] }> {
+  assertMutationAllowed?: () => void,
+): Promise<{ actions: LinkAction[]; changed: boolean; warnings: string[]; persistentWarnings: string[] }> {
   const actions: LinkAction[] = [];
   const warnings: string[] = [];
+  const persistentWarnings: string[] = [];
   let changed = false;
   const targetRootCompare = (await realPathOrNull(targetRoot)) ?? normalizeForCompare(targetRoot);
 
@@ -284,7 +348,13 @@ async function linkEntriesIntoRoot(
     }
 
     const targetPath = path.join(targetRoot, entry.name);
-    const result = await ensureDirectoryLink(entry, targetPath, useRelativeTarget);
+    const result = await withLinkMutation([entry.name, path.basename(entry.realPath)], async () => {
+      if (sourceIdentity(entry.path) !== entry.identity) return { status: 'skipped' as const, changed: false };
+      return ensureDirectoryLink(entry, targetPath, useRelativeTarget, () => {
+        assertMutationAllowed?.();
+        if (sourceIdentity(entry.path) !== entry.identity) throw new Error('Skill source changed during link projection');
+      });
+    }) ?? { status: 'skipped' as const, changed: false };
     changed = changed || result.changed;
     const action: LinkAction = {
       name: entry.name,
@@ -295,35 +365,49 @@ async function linkEntriesIntoRoot(
     };
     actions.push(action);
     if (result.status === 'conflict' || result.status === 'error') {
-      warnings.push(
-        `cannot link skill ${entry.name} from ${entry.path} to ${targetPath}: ${result.reason ?? result.status}`,
-      );
+      const warning = `cannot link skill ${entry.name} from ${entry.path} to ${targetPath}: ${result.reason ?? result.status}`;
+      warnings.push(warning);
+      // A conflict is a user-owned path we never overwrite; only I/O errors are retryable.
+      if (result.status === 'conflict') persistentWarnings.push(warning);
     }
   }
 
-  return { actions, changed, warnings };
+  return { actions, changed, warnings, persistentWarnings };
 }
 
 /**
- * Makes global skills usable from both Claude Code and Codex without moving user data.
+ * Makes global skills usable from Claude Code, Codex, and Pi without moving user data.
  *
  * Rules:
- * - ~/.agents/skills is the shared index that Cindy Codex already scans.
- * - Existing ~/.claude/skills entries are linked into ~/.agents/skills so Codex can see them.
- * - ~/.agents/skills and ~/.codex/skills entries are linked into ~/.claude/skills so Claude can see them.
+ * - ~/.agents/skills is the shared index that Cindy Codex and Pi scan.
+ * - Existing ~/.claude/skills and ~/.codex/skills entries are linked into ~/.agents/skills.
+ * - ~/.agents/skills and ~/.codex/skills entries are linked into ~/.claude/skills.
  * - Existing non-symlink paths are never overwritten.
  */
 export async function prepareSharedGlobalSkillLinks(
   opts: PrepareOptions = {},
 ): Promise<SharedGlobalSkillLinksResult> {
+  opts.assertOwnerStable?.();
   const paths = sharedGlobalSkillsPaths(opts.homeDir);
+  // #2930：跨 Agent 的「拉入」默认关闭，必须显式 opt-in（Claude→shared、
+  // Codex→Claude、Codex→shared）。Cindy 自有索引向 Claude 的投影（shared→Claude）
+  // 保留，避免破坏 Ghost skill 的 .claude 兼容链接（职责分界见 skillSlot.ts）。
+  const crossAgentSyncEnabled = opts.isCrossAgentSyncEnabled
+    ? opts.isCrossAgentSyncEnabled()
+    : // 延迟 import：本模块是纯 Node（无 electron 静态依赖），settings store 引
+      // electron 的 app.getPath，静态引入会拖坏单测环境。
+      (await import('./shared-global-skills-settings.js'))
+        .readSharedGlobalSkillsSettings().crossAgentSyncEnabled;
+  opts.assertOwnerStable?.();
   await fsp.mkdir(paths.sharedSkillsDir, { recursive: true });
+  opts.assertOwnerStable?.();
   await fsp.mkdir(paths.claudeSkillsDir, { recursive: true });
   const sharedRootCompare = (await realPathOrNull(paths.sharedSkillsDir)) ?? normalizeForCompare(paths.sharedSkillsDir);
   const claudeRootCompare = (await realPathOrNull(paths.claudeSkillsDir)) ?? normalizeForCompare(paths.claudeSkillsDir);
   const codexRootCompare = (await realPathOrNull(paths.codexSkillsDir)) ?? normalizeForCompare(paths.codexSkillsDir);
 
   const warnings: string[] = [];
+  const persistentWarnings: string[] = [];
   const actions: LinkAction[] = [];
   let changed = false;
   const managedRoots = Array.from(new Set([
@@ -335,35 +419,109 @@ export async function prepareSharedGlobalSkillLinks(
     normalizeForCompare(paths.codexSkillsDir),
   ]));
 
-  changed = (await cleanupBrokenManagedLinks(paths.sharedSkillsDir, managedRoots)) || changed;
-  changed = (await cleanupBrokenManagedLinks(paths.claudeSkillsDir, managedRoots)) || changed;
+  changed = (await cleanupBrokenManagedLinks(
+    paths.sharedSkillsDir,
+    managedRoots,
+    [],
+    opts.assertOwnerStable,
+  )) || changed;
+  changed = (await cleanupBrokenManagedLinks(
+    paths.claudeSkillsDir,
+    managedRoots,
+    [],
+    opts.assertOwnerStable,
+  )) || changed;
 
-  const initialClaudeEntries = (await listSkillEntries('claude', paths.claudeSkillsDir))
+  // 其它 Agent 根里、且不是「指向受管根」投影的用户技能，才是跨 Agent 拉入的对象。
+  const claudeEntries = (await listSkillEntries('claude', paths.claudeSkillsDir))
     .filter((entry) => !(entry.isSymlink && pointsInto(entry, [sharedRootCompare, codexRootCompare])));
-  const claudeToShared = await linkEntriesIntoRoot(initialClaudeEntries, paths.sharedSkillsDir);
-  actions.push(...claudeToShared.actions);
-  warnings.push(...claudeToShared.warnings);
-  changed = changed || claudeToShared.changed;
-
-  const sharedEntries = await listSkillEntries('shared', paths.sharedSkillsDir);
-  const sharedToClaude = await linkEntriesIntoRoot(sharedEntries, paths.claudeSkillsDir);
-  actions.push(...sharedToClaude.actions);
-  warnings.push(...sharedToClaude.warnings);
-  changed = changed || sharedToClaude.changed;
-
   const codexEntries = (await listSkillEntries('codex', paths.codexSkillsDir))
     .filter((entry) => !(entry.isSymlink && pointsInto(entry, [sharedRootCompare, claudeRootCompare])));
-  const codexToClaude = await linkEntriesIntoRoot(codexEntries, paths.claudeSkillsDir);
-  actions.push(...codexToClaude.actions);
-  warnings.push(...codexToClaude.warnings);
-  changed = changed || codexToClaude.changed;
 
+  if (crossAgentSyncEnabled) {
+    const claudeToShared = await linkEntriesIntoRoot(
+      claudeEntries,
+      paths.sharedSkillsDir,
+      false,
+      opts.assertOwnerStable,
+    );
+    actions.push(...claudeToShared.actions);
+    warnings.push(...claudeToShared.warnings);
+    persistentWarnings.push(...claudeToShared.persistentWarnings);
+    changed = changed || claudeToShared.changed;
+
+    const codexToClaude = await linkEntriesIntoRoot(
+      codexEntries,
+      paths.claudeSkillsDir,
+      false,
+      opts.assertOwnerStable,
+    );
+    actions.push(...codexToClaude.actions);
+    warnings.push(...codexToClaude.warnings);
+    persistentWarnings.push(...codexToClaude.persistentWarnings);
+    changed = changed || codexToClaude.changed;
+
+    const codexToShared = await linkEntriesIntoRoot(
+      codexEntries,
+      paths.sharedSkillsDir,
+      false,
+      opts.assertOwnerStable,
+    );
+    actions.push(...codexToShared.actions);
+    warnings.push(...codexToShared.warnings);
+    persistentWarnings.push(...codexToShared.persistentWarnings);
+    changed = changed || codexToShared.changed;
+  } else if (claudeEntries.length > 0 || codexEntries.length > 0) {
+    // 未 opt-in 且存在可同步的用户技能时才提示；纯 Ghost 对账不打扰。
+    warnings.push(SHARED_GLOBAL_SKILL_SYNC_DISABLED_NOTICE);
+    persistentWarnings.push(SHARED_GLOBAL_SKILL_SYNC_DISABLED_NOTICE);
+  }
+
+  const sharedEntries = await listSkillEntries('shared', paths.sharedSkillsDir);
+  const sharedToClaude = await linkEntriesIntoRoot(
+    sharedEntries,
+    paths.claudeSkillsDir,
+    false,
+    opts.assertOwnerStable,
+  );
+  actions.push(...sharedToClaude.actions);
+  warnings.push(...sharedToClaude.warnings);
+  persistentWarnings.push(...sharedToClaude.persistentWarnings);
+  changed = changed || sharedToClaude.changed;
+
+  opts.assertOwnerStable?.();
   return {
     ...paths,
     changed,
     actions,
     warnings,
+    persistentWarnings,
   };
+}
+
+/**
+ * Cheap inputs of `prepareSharedGlobalSkillLinks` for completion caches: the opt-in
+ * setting plus each global root's mtime (adding, removing or renaming a top-level skill
+ * entry bumps it). A cached run must not hide a settings toggle or a new/removed skill.
+ */
+export async function sharedGlobalSkillLinksFingerprint(
+  opts: Pick<PrepareOptions, 'homeDir' | 'isCrossAgentSyncEnabled'> = {},
+): Promise<string> {
+  const paths = sharedGlobalSkillsPaths(opts.homeDir);
+  let crossAgentSyncEnabled: boolean | null;
+  try {
+    crossAgentSyncEnabled = opts.isCrossAgentSyncEnabled
+      ? opts.isCrossAgentSyncEnabled()
+      : (await import('./shared-global-skills-settings.js')).readSharedGlobalSkillsSettings().crossAgentSyncEnabled;
+  } catch {
+    crossAgentSyncEnabled = null;
+  }
+  const mtimes = await Promise.all(
+    [paths.sharedSkillsDir, paths.claudeSkillsDir, paths.codexSkillsDir].map(async (dir) => {
+      try { return (await fsp.stat(dir)).mtimeMs; } catch { return null; }
+    }),
+  );
+  return JSON.stringify([crossAgentSyncEnabled, ...mtimes]);
 }
 
 /**

@@ -1,11 +1,12 @@
+import { Button } from '@/components/ui/button';
+import { useModelPickerAgents } from '@/hooks/useAvailableAgents';
 import * as React from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, ExternalLink, Folder, MessageCircle, Timer, SlidersHorizontal } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover';
+import { Select } from '@/components/ui/select';
 import { Tip } from '@/components/ui/tooltip';
-import { agentKindToVendor } from '@/components/sidebar/VendorIcon';
-import { AgentSelect } from '@/components/new-chat/AgentSelect';
 import {
   addRecentFolder,
   FolderPickerPopover,
@@ -17,10 +18,9 @@ import { useProviders } from '@/hooks/useProviders';
 import { ModelIconMark, ModelSelectorContent } from '@/components/new-chat/ModelSelector';
 import { useModelDiscoveryPending } from '@/components/new-chat/useModelDiscoveryPending';
 import {
-  connectedProvidersForAgent,
   effectiveSourceIdForModel,
   getModel,
-  nativeDefaultSourceId,
+  isCodexGatewayWireModel,
 } from '@cindy/model-providers';
 import * as sessionService from '@/lib/sessionService';
 import type { Session } from '@/lib/ccAgent.types';
@@ -39,9 +39,12 @@ import {
   switchScheduleTimingMode,
   WEEKDAY_LABELS,
   DEFAULT_CONFIG,
+  isSupportedIntervalMinutes,
+  resolveIntervalMinutesPresetValue,
+  SUPPORTED_INTERVAL_MINUTES,
   type CodexScheduleConfig,
 } from '../lib/cronCodexPreset';
-import { getScheduleDefaultModel, type EffortValue } from '../hooks/useScheduleForm';
+import { getScheduleDefaultRoute, type EffortValue } from '../hooks/useScheduleForm';
 import {
   isFollowingSessionSelection,
   PENDING_SESSION_ID,
@@ -163,28 +166,6 @@ export function ProjectChip({
         className="[&>span:nth-child(2)]:min-w-[94px] max-w-[220px] gap-[7px]"
       />
     </FolderPickerPopover>
-  );
-}
-
-/**
- * Scheduler compatibility adapter: keep the persisted scheduler kind shape,
- * while sharing the same AgentSelect dropdown used by IM settings and chat.
- */
-export function AgentTabs({ value, onChange, disabled }: { value: AgentKind; onChange: (v: AgentKind) => void; disabled?: boolean }) {
-  return (
-    <AgentSelect
-      value={agentKindToVendor(value)}
-      disabled={disabled}
-      side="top"
-      // ScheduleFormDialog 是 Radix modal。MorphPopover 的 custom portal 不在
-      // Dialog focus scope 内，动画结束聚焦选中项时会被拉回并立即自动收起；
-      // 此处使用 Radix Popover，让嵌套焦点与 outside-interaction 语义正确组合。
-      useMorphPopover={false}
-      overlayContentClassName="z-[10010]"
-      onChange={(vendor) => {
-        onChange(vendor === 'cc' ? 'claude-code' : vendor === 'pi' ? 'pi' : 'codex');
-      }}
-    />
   );
 }
 
@@ -378,7 +359,7 @@ export function ScheduleChip({
   const intervalIsPreset = timingPresentation.kind !== 'intervalExact';
   const scheduleUnset = intervalMs === undefined && cronExpr.trim() === '';
   const scheduleSummary = intervalMs === undefined
-    ? summarizeConfig(normalizeScheduleConfig(config))
+    ? summarizeConfig(normalizeScheduleConfig(config), t)
     : formatIntervalDuration(intervalMs, i18n.resolvedLanguage ?? i18n.language);
   const chipLabel = scheduleUnset
     ? t('scheduler.chips.chooseTime')
@@ -408,10 +389,15 @@ export function ScheduleChip({
   };
 
   const setMode = (mode: EditableScheduleMenuMode) => {
+    // Re-selecting the visible mode is not an instruction to replace a legacy value.
+    // An exact interval has its own activeMode and can still enter a supported preset.
+    if (mode === 'intervalMinutes' && mode === activeMode) return;
+    // Exact intervals have no preset config; their compatibility Cron is not authoritative.
+    const presetConfig = activeMode === 'exactInterval' ? DEFAULT_CONFIG : config;
     const patch: Partial<CodexScheduleConfig> = { mode };
-    if (mode === 'interval') patch.intervalHours = config.mode === 'interval' ? config.intervalHours : 1;
+    if (mode === 'interval') patch.intervalHours = presetConfig.mode === 'interval' ? presetConfig.intervalHours : 1;
     if (mode === 'intervalMinutes') {
-      patch.intervalMinutes = config.mode === 'intervalMinutes' ? config.intervalMinutes : 5;
+      patch.intervalMinutes = resolveIntervalMinutesPresetValue(presetConfig);
     }
     update(patch);
   };
@@ -545,11 +531,20 @@ function ScheduleConfigPanel({
             <div className="flex min-h-[34px] w-full items-center gap-1.5">
               <IntervalMinutesInput
                 value={panelConfig.intervalMinutes}
+                label={t('scheduler.chips.scheduleField.intervalMinutesAria')}
                 onFocus={commit}
                 onChange={(intervalMinutes) => onUpdate({ mode: 'intervalMinutes', intervalMinutes })}
               />
               <span className="text-13 text-[var(--cmd-palette-item-meta)] dark:text-[var(--settings-section-desc)]">{t('scheduler.chips.scheduleField.minutesSuffix')}</span>
             </div>
+            <p className="text-11 leading-4 text-[var(--cmd-palette-item-meta)] dark:text-[var(--settings-section-desc)]">
+              {t('scheduler.chips.scheduleField.minuteIntervalHint')}
+            </p>
+            {!isSupportedIntervalMinutes(panelConfig.intervalMinutes) && (
+              <p className="text-11 leading-4 text-[var(--cmd-palette-item-meta)] dark:text-[var(--settings-section-desc)]">
+                {t('scheduler.chips.scheduleField.unsupportedMinuteInterval', { count: panelConfig.intervalMinutes })}
+              </p>
+            )}
             <PreviewPill
               text={
                 panelConfig.intervalMinutes === 1
@@ -575,21 +570,21 @@ function ScheduleConfigPanel({
         {(mode === 'daily' || mode === 'weekdays') && (
           <>
             <TimeRow config={panelConfig} onFocus={commit} onUpdate={(patch) => onUpdate({ mode, ...patch })} />
-            <PreviewPill text={summarizeConfig(panelConfig)} />
+            <PreviewPill text={summarizeConfig(panelConfig, t)} />
           </>
         )}
         {mode === 'weekly' && (
           <>
             <WeekdayRow value={panelConfig.weekday} onFocus={commit} onChange={(weekday) => onUpdate({ mode: 'weekly', weekday })} />
             <TimeRow config={panelConfig} onFocus={commit} onUpdate={(patch) => onUpdate({ mode: 'weekly', ...patch })} />
-            <PreviewPill text={summarizeConfig(panelConfig)} />
+            <PreviewPill text={summarizeConfig(panelConfig, t)} />
           </>
         )}
         {mode === 'monthly' && (
           <>
             <MonthDayRow value={panelConfig.monthDay} onFocus={commit} onChange={(monthDay) => onUpdate({ mode: 'monthly', monthDay })} />
             <TimeRow config={panelConfig} onFocus={commit} onUpdate={(patch) => onUpdate({ mode: 'monthly', ...patch })} />
-            <PreviewPill text={summarizeConfig(panelConfig)} />
+            <PreviewPill text={summarizeConfig(panelConfig, t)} />
           </>
         )}
       </div>
@@ -634,35 +629,38 @@ function IntervalHoursInput({
 
 function IntervalMinutesInput({
   value,
+  label,
   onFocus,
   onChange,
 }: {
   value: number;
+  label: string;
   onFocus: () => void;
   onChange: (value: number) => void;
 }) {
-  const [draft, setDraft] = useState(String(value));
-
-  useEffect(() => {
-    setDraft(String(value));
-  }, [value]);
-
+  const valueString = String(value);
+  const isSupported = SUPPORTED_INTERVAL_MINUTES.includes(
+    value as (typeof SUPPORTED_INTERVAL_MINUTES)[number],
+  );
+  const options = [
+    ...(!isSupported
+      ? [{ value: valueString, label: String(value) + '*', disabled: true }]
+      : []),
+    ...SUPPORTED_INTERVAL_MINUTES.map((minutes) => ({
+      value: String(minutes),
+      label: String(minutes),
+    })),
+  ];
   return (
-    <input
-      type="text"
-      inputMode="numeric"
-      pattern="[0-9]*"
-      maxLength={2}
-      value={draft}
-      onFocus={onFocus}
-      onBlur={() => setDraft(String(value))}
-      onChange={(e) => {
-        const digits = e.target.value.replace(/\D/g, '').slice(0, 2);
-        setDraft(digits);
-        if (!digits) return;
-        onChange(clamp(Number(digits), 1, 59));
+    <Select
+      label={label}
+      value={valueString}
+      options={options}
+      onOpenChange={(open) => {
+        if (open) onFocus();
       }}
-      className={inputPillClass('w-[68px] text-center')}
+      onValueChange={(next) => onChange(Number(next))}
+      className="w-[88px] px-2 text-center text-13"
     />
   );
 }
@@ -931,6 +929,7 @@ function WeekdayRow({
   onFocus: () => void;
   multi?: boolean;
 }) {
+  const { t } = useTranslation();
   const selected = multi ? [1, 2, 3, 4, 5] : [value];
   return (
     <div className="flex min-h-[34px] w-full items-center">
@@ -949,9 +948,11 @@ function WeekdayRow({
                   ? 'border-transparent bg-[var(--chat-input-chip-bg)] font-medium text-[var(--msg-assistant-text)] dark:bg-[var(--chat-input-chip-bg)] dark:text-[var(--msg-assistant-text)]'
                   : 'border-[var(--cmd-palette-border)] bg-transparent text-[var(--cmd-palette-item-meta)] hover:bg-[var(--confirm-btn-secondary-hover)] dark:border-[var(--cmd-palette-border)] dark:hover:bg-[var(--settings-btn-secondary-hover-bg)]',
               )}
-              aria-label={WEEKDAY_LABELS[day]}
+              aria-label={t(`scheduler.presentation.weekday.full.${day}`)}
             >
-              {WEEKDAY_SHORT[day]}
+              {t(`scheduler.presentation.weekday.short.${day}`, {
+                defaultValue: WEEKDAY_SHORT[day],
+              })}
             </button>
           );
         })}
@@ -1044,6 +1045,8 @@ function previewConfigFor(mode: EditableScheduleMenuMode, current: CodexSchedule
 }
 
 export function ModelEffortChip({
+  onSelect,
+  onFollowSession,
   agentKind,
   modelValue,
   onChangeModel,
@@ -1057,6 +1060,8 @@ export function ModelEffortChip({
   fastMode,
   onChangeFast,
 }: {
+  onSelect: NonNullable<React.ComponentProps<typeof ModelSelectorContent>['onUnifiedSelect']>;
+  onFollowSession: () => void;
   agentKind: AgentKind;
   modelValue: string;
   onChangeModel: (v: string) => void;
@@ -1075,7 +1080,7 @@ export function ModelEffortChip({
   onChangeProviderId: (providerId: string) => void;
   /** 0 个 / 引导连接来源时跳设置→供应商页;不传则来源轨不显示「连接」入口。 */
   onNavigateToProviders?: () => void;
-  /** Fast 模式状态 + 回调(与聊天一致,收进模型选择器 Edit 配置列)。heartbeat 态不传 → Edit 无 Fast。 */
+  /** Fast 模式状态 + 回调(与聊天一致,收进模型选择器 Edit 配置列)。绑定任务同样保存，下一次触发时应用。 */
   fastMode?: boolean;
   onChangeFast?: (v: boolean) => void;
 }) {
@@ -1104,17 +1109,18 @@ export function ModelEffortChip({
     },
     [disabled, discovery],
   );
+  const pickerAgents = useModelPickerAgents(agentKind);
   const caps = useAgentCapabilities(agentKind);
-  // 触发器(trigger)展示用:仍按 codex/ 折扣模型的 XD 网关来源可见性过滤,算出当前
+  // 触发器(trigger)展示用:仍按 openai-codex/ 与 codex/ 折扣模型的 XD 网关来源可见性过滤,算出当前
   // 选中模型名。下拉内容本体改用聊天的 ModelSelectorContent(它内部按来源/api-key 自行
   // 过滤 + 分组),这里只为 trigger 文案保留最小化 model 解析。
-  const { providers } = useProviders();
+  const { providers, loading: providersLoading } = useProviders();
   const xdConnected = providers.some((p) => p.id === 'xd' && p.connected);
   const availableModels = caps.capabilities?.availableModels;
   const models = useMemo(
     () =>
       (availableModels ?? []).filter(
-        (m) => agentKind !== 'codex' || xdConnected || !m.id.startsWith('codex/'),
+        (m) => agentKind !== 'codex' || xdConnected || !isCodexGatewayWireModel(m.id),
       ),
     [availableModels, agentKind, xdConnected],
   );
@@ -1128,11 +1134,20 @@ export function ModelEffortChip({
     effort: effortValue,
   });
   const followsSessionModel = usesBoundSessionModel({ followSession, model: modelValue });
-  const effectiveId = followsSessionModel ? '' : modelValue || getScheduleDefaultModel(agentKind);
+  // 模型留空时显示与表单回填同源的默认路由(模型与来源成对)。
+  const defaultRoute =
+    followsSessionModel || modelValue
+      ? null
+      : getScheduleDefaultRoute(agentKind, providersLoading ? undefined : providers, providerId);
+  const effectiveId = followsSessionModel ? '' : modelValue || defaultRoute?.model || '';
+  const effectiveProviderId = providerId || defaultRoute?.providerId || null;
   const current = models.find((m) => m.id === effectiveId);
-  const allowedEfforts = (current?.efforts ?? []) as readonly EffortValue[];
-  const fallbackEffort = (current?.defaultEffort ?? 'high') as EffortValue;
-  const effectiveEffort: EffortValue = effortValue && allowedEfforts.includes(effortValue) ? effortValue : fallbackEffort;
+  const sourceId = effectiveSourceIdForModel(providers, effectiveProviderId, effectiveId, agentKind);
+  const source = providers.find((provider) => provider.id === sourceId);
+  const catalogModel = source ? getModel(source, effectiveId, agentKind) : undefined;
+  const effectiveEffort = effortValue || catalogModel?.defaultEffort || current?.defaultEffort || '';
+  const modelLabel = catalogModel?.name || current?.displayName || effectiveId;
+  const agentLabel = t(`newChat.modelSelector.trigger.agent.${agentKind === 'claude-code' ? 'claudeCode' : agentKind}`);
   const effortLabel = (e: EffortValue) => t(`effortLevels.${e}`);
   const display = followsSessionModel
     ? [
@@ -1142,22 +1157,10 @@ export function ModelEffortChip({
         : null,
       effortValue ? effortLabel(effortValue) : null,
     ].filter(Boolean).join(' · ')
-    : current
-      ? `${current.displayName} · ${allowedEfforts.length ? effortLabel(effectiveEffort) : t('scheduler.chips.model.effortDefault')}`
-      : t('scheduler.chips.model.default');
+    : [agentLabel, modelLabel, effectiveEffort ? effortLabel(effectiveEffort as EffortValue) : null,
+      fastMode ? '⚡' : null].filter(Boolean).join(' · ');
 
-  // railSources 仅用于 nativeDefault 归一化(下拉宽度由 ModelSelectorContent 内容自适应,见 w-auto)。
   const vendorKey = agentKind === 'claude-code' ? 'cc' : agentKind;
-  const railSources = useMemo(
-    () => connectedProvidersForAgent(providers, agentKind),
-    [providers, agentKind],
-  );
-  // 归一化:选中的来源 == 原生默认 → 存 ''(= 跟随默认,与老数据/未升级字节级一致),
-  // 否则存显式 id。这样只有「钉到非原生来源」才在 schedule 上落非空 providerId。
-  const nativeDefault = useMemo(
-    () => nativeDefaultSourceId(railSources, agentKind),
-    [railSources, agentKind],
-  );
   // 当前生效来源 —— 与聊天 trigger 同口径(effectiveSourceIdForModel):按「已连接且**确实
   // 提供当前模型**」收窄后再应用显式选择 / 原生默认。只查「已连接」会在显式来源不提供
   // effectiveId 时渲染错误来源的标识(如 providerId=openai 而默认模型只有 xd 提供);
@@ -1165,9 +1168,9 @@ export function ModelEffortChip({
   const activeSourceId = useMemo(
     () =>
       effectiveId
-        ? effectiveSourceIdForModel(providers, providerId || null, effectiveId, agentKind)
+        ? effectiveSourceIdForModel(providers, effectiveProviderId, effectiveId, agentKind)
         : null,
-    [providers, providerId, effectiveId, agentKind],
+    [providers, effectiveProviderId, effectiveId, agentKind],
   );
   const activeProvider = providers.find((p) => p.id === activeSourceId);
 
@@ -1212,6 +1215,9 @@ export function ModelEffortChip({
         {/* 直接复用聊天的下拉内容本体(唯一真源:聊天选择器改了这里跟着变)。
             来源轨 / 模型分组 / 搜索 / effort / 空态全套自带;followSession 行为 opt-in。 */}
         <ModelSelectorContent
+          fastModeConfigurable={['codex', 'pi']}
+          unifiedAgents={pickerAgents}
+          onUnifiedSelect={onSelect}
           vendorKey={vendorKey}
           modelId={effectiveId}
           effort={effectiveEffort}
@@ -1221,17 +1227,16 @@ export function ModelEffortChip({
           onFastModeChange={onChangeFast}
           onDismiss={() => setOpenWithoutAutoRefresh(false)}
           currentProviderId={providerId || null}
-          onProviderChange={(pid, reconciledModelId, reconciledEffort) => {
-            onChangeProviderId(pid && pid !== nativeDefault ? pid : '');
+          onProviderChange={(pid, reconciledModelId, reconciledEffort, reconciledFast) => {
+            onChangeProviderId(pid ?? '');
+            if (reconciledFast !== undefined) onChangeFast?.(reconciledFast);
             if (reconciledModelId) onChangeModel(reconciledModelId);
             if (reconciledEffort !== undefined) {
               onChangeEffort(reconciledEffort as EffortValue | '');
             }
           }}
           onNavigateToProviders={onNavigateToProviders}
-          // A stale explicit provider is rendered as the effective fallback row.
-          // Re-selecting that highlighted row must repair the stored provider
-          // before the effort configuration card opens.
+          // An explicit selection always pins the connection, including the native default.
           reselectEmitsChange
           selectedRowClickOpensConfiguration
           overlayContentClassName="z-[10020]"
@@ -1242,9 +1247,7 @@ export function ModelEffortChip({
                   active: isFollowingSession,
                   label: t('scheduler.chips.model.followSession'),
                   onFollow: () => {
-                    onChangeModel('');
-                    onChangeEffort('');
-                    onChangeProviderId('');
+                    onFollowSession();
                   },
                 }
               : undefined
@@ -1339,19 +1342,18 @@ export function ThreadPickerInline({ value, onSelect, onOpen, reference }: {
             ))}
           </select>
           {onOpen && hasRealValue && !referenceUnavailable && (
-            <button
+            <Button
+              variant="secondary"
+              size="md"
+              compact
+              tone="quiet"
               type="button"
               onClick={() => onOpen(value)}
               title={t('scheduler.editor.runSession.card.open')}
-              className={cn(
-                'inline-flex h-[34px] shrink-0 items-center gap-1 rounded-full px-2.5 text-xs font-medium',
-                'text-[var(--settings-btn-secondary-text)] hover:bg-[var(--surface-hover)]',
-                'transition-colors focus:outline-none',
-              )}
             >
               <ExternalLink size={12} strokeWidth={1.75} aria-hidden />
               {t('scheduler.editor.runSession.card.open')}
-            </button>
+            </Button>
           )}
         </>
       )}

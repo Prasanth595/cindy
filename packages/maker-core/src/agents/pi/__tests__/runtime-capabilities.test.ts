@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest';
+import path from 'node:path';
 
 import {
   capturePiRuntimeCapabilityManifest,
+  identifyManagedPiPackageCommandNames,
   parsePiRuntimeCommands,
+  preparePinnedPiSkillInvocation,
+  snapshotManagedPiPackageSkills,
 } from '../runtime-capabilities.js';
 
 describe('Pi runtime capability parsing', () => {
@@ -29,9 +33,209 @@ describe('Pi runtime capability parsing', () => {
     expect(parsePiRuntimeCommands({ commands: [] })).toEqual({ ok: true, commands: [] });
   });
 
+  it('accepts duplicate names because Pi can expose an Extension command and Prompt together', () => {
+    const extension = { ...command, name: 'hello', source: 'extension' };
+    const prompt = { ...command, name: 'hello', source: 'prompt' };
+    expect(parsePiRuntimeCommands({ commands: [extension, prompt] })).toEqual({
+      ok: true,
+      commands: [extension, prompt],
+    });
+  });
+
+  it.each(['/learn release flow', '/skill:learn release flow'])(
+    'pins %s to the sole same-path Pi runtime winner',
+    (input) => {
+      const skillFile = path.resolve('system-skills', 'v10', 'learn', 'SKILL.md');
+      const manifest = {
+        capturedAt: '2026-09-19T00:00:00.000Z',
+        generation: 1,
+        status: 'loaded' as const,
+        source: 'pi:get_commands' as const,
+        commands: [{
+          name: 'skill:learn',
+          source: 'skill',
+          sourceInfo: { path: skillFile, baseDir: path.dirname(skillFile) },
+        }],
+      };
+
+      expect(preparePinnedPiSkillInvocation(
+        input,
+        { name: 'learn', path: skillFile },
+        manifest,
+      )).toBe('/skill:learn release flow');
+    },
+  );
+
+  it('rejects a colliding or ambiguous Pi runtime winner', () => {
+    const pinnedPath = path.resolve('system-skills', 'v10', 'learn', 'SKILL.md');
+    const customPath = path.resolve('project', '.agents', 'skills', 'learn', 'SKILL.md');
+    const command = (skillFile: string) => ({
+      name: 'skill:learn',
+      source: 'skill',
+      sourceInfo: { path: skillFile, baseDir: path.dirname(skillFile) },
+    });
+    const manifest = {
+      capturedAt: '2026-09-19T00:00:00.000Z',
+      generation: 1,
+      status: 'loaded' as const,
+      source: 'pi:get_commands' as const,
+      commands: [command(pinnedPath), command(customPath)],
+    };
+
+    expect(() => preparePinnedPiSkillInvocation(
+      '/learn release flow',
+      { name: 'learn', path: pinnedPath },
+      manifest,
+    )).toThrow('does not match the Pi runtime winner');
+    expect(() => preparePinnedPiSkillInvocation(
+      '/learn release flow',
+      { name: 'learn', path: pinnedPath },
+      { ...manifest, commands: [command(customPath)] },
+    )).toThrow('does not match the Pi runtime winner');
+  });
+
+  it('marks commands only when Pi provenance is inside an enabled managed package root', () => {
+    const extensionCommand = {
+      ...command,
+      name: 'sample',
+      source: 'extension',
+      sourceInfo: {
+        source: 'extension',
+        baseDir: '/private/cindy/pi-packages/sample',
+        path: 'extensions/index.ts',
+      },
+    };
+    const unrelated = {
+      ...command,
+      name: 'other',
+      source: 'extension',
+      sourceInfo: {
+        source: 'extension',
+        path: '/private/user/.pi/extensions/other.ts',
+      },
+    };
+    expect(identifyManagedPiPackageCommandNames(
+      [extensionCommand, unrelated],
+      ['/private/cindy/pi-packages/sample'],
+    )).toEqual(['sample']);
+  });
+
+  it('does not authorize a colliding name when any runtime entry has unmanaged provenance', () => {
+    expect(identifyManagedPiPackageCommandNames([
+      {
+        ...command,
+        name: 'plan',
+        source: 'extension',
+        sourceInfo: { path: '/private/cindy/pi-packages/sample/index.ts' },
+      },
+      {
+        ...command,
+        name: 'plan',
+        source: 'extension',
+        sourceInfo: { path: '/private/cindy/internal/plan-mode.ts' },
+      },
+    ], ['/private/cindy/pi-packages/sample'])).toEqual([]);
+  });
+
+  it('authorizes project prompt and extension commands from explicit launch paths', () => {
+    const promptFile = '/repo/.pi/prompts/review.md';
+    const extensionFile = '/repo/.pi/extensions/hook.ts';
+    expect(identifyManagedPiPackageCommandNames([
+      {
+        ...command,
+        name: 'review',
+        source: 'prompt',
+        sourceInfo: { path: promptFile, source: 'prompt' },
+      },
+      {
+        ...command,
+        name: 'hook-cmd',
+        source: 'extension',
+        sourceInfo: { path: extensionFile, source: 'extension' },
+      },
+      {
+        ...command,
+        name: 'plan',
+        source: 'extension',
+        sourceInfo: { path: '/cindy/internal/plan-mode.ts', source: 'extension' },
+      },
+    ], [promptFile, extensionFile]).sort()).toEqual(['hook-cmd', 'review']);
+  });
+
+  it('authorizes a colliding name when every catalog entry is in package or project roots', () => {
+    expect(identifyManagedPiPackageCommandNames([
+      {
+        ...command,
+        name: 'foo',
+        source: 'extension',
+        sourceInfo: { path: '/private/cindy/pi-packages/sample/index.ts' },
+      },
+      {
+        ...command,
+        name: 'foo',
+        source: 'prompt',
+        sourceInfo: { path: '/repo/.pi/prompts/foo.md' },
+      },
+    ], ['/private/cindy/pi-packages/sample', '/repo/.pi/prompts/foo.md'])).toEqual(['foo']);
+  });
+
+  it('snapshots managed skills and marks only unambiguous runtime-proven commands loaded', () => {
+    const packageRoot = path.resolve('managed-package-fixture');
+    const loadedSkill = path.join(packageRoot, 'skills', 'loaded', 'SKILL.md');
+    const unprovenSkill = path.join(packageRoot, 'skills', 'unproven', 'SKILL.md');
+    const ambiguousSkill = path.join(packageRoot, 'skills', 'ambiguous', 'SKILL.md');
+    const commands = [
+      {
+        ...command,
+        name: 'skill:loaded-runtime-name',
+        sourceInfo: {
+          ...command.sourceInfo,
+          baseDir: path.dirname(loadedSkill),
+          path: loadedSkill,
+        },
+      },
+      {
+        ...command,
+        name: 'skill:not-managed',
+        sourceInfo: {
+          ...command.sourceInfo,
+          baseDir: path.dirname(unprovenSkill),
+          path: unprovenSkill,
+        },
+      },
+      ...['skill:ambiguous-a', 'skill:ambiguous-b'].map((name) => ({
+        ...command,
+        name,
+        sourceInfo: {
+          ...command.sourceInfo,
+          baseDir: path.dirname(ambiguousSkill),
+          path: ambiguousSkill,
+        },
+      })),
+    ];
+
+    expect(snapshotManagedPiPackageSkills(
+      [
+        { path: loadedSkill, name: 'loaded-label', description: 'Loaded skill' },
+        { path: unprovenSkill, name: 'unproven-label' },
+        { path: ambiguousSkill, name: 'ambiguous-label' },
+      ],
+      commands,
+      ['skill:loaded-runtime-name', 'skill:ambiguous-a', 'skill:ambiguous-b'],
+    )).toEqual([
+      {
+        sourcePath: loadedSkill,
+        name: 'loaded-label',
+        description: 'Loaded skill',
+        runtimeCommandName: 'skill:loaded-runtime-name',
+      },
+      { sourcePath: unprovenSkill, name: 'unproven-label' },
+      { sourcePath: ambiguousSkill, name: 'ambiguous-label' },
+    ]);
+  });
+
   it.each([
     ['missing commands', {}],
-    ['duplicate names', { commands: [command, command] }],
     ['missing sourceInfo', { commands: [{ ...command, sourceInfo: undefined }] }],
     ['invalid known sourceInfo field', { commands: [{ ...command, sourceInfo: { source: 'auto', scope: 1 } }] }],
     ['unknown command field', { commands: [{ ...command, extra: 'secret' }] }],

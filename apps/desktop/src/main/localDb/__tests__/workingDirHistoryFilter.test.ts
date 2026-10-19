@@ -58,6 +58,7 @@ function createLocalDb(): Database.Database {
       feishu_bot_app_id TEXT,
       im_bot_context_id TEXT,
       im_user_id TEXT,
+      im_default_route TEXT,
       used_project_context INTEGER NOT NULL DEFAULT 0,
       codex_history_has_product_prompt INTEGER,
       extra_dirs TEXT NOT NULL DEFAULT '[]',
@@ -65,6 +66,9 @@ function createLocalDb(): Database.Database {
       active_turn_started_at INTEGER,
       active_turn_pid INTEGER,
       last_turn_ended_at INTEGER,
+      list_preview TEXT,
+      list_preview_role TEXT,
+      list_message_count INTEGER,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     );
@@ -135,6 +139,13 @@ describe('normalizeHistoryWorkingDir', () => {
 });
 
 describe('resolveStoredWorkingDirCandidates', () => {
+  it('keeps whitespace-distinct project identities separate', async () => {
+    const db = useDb();
+    insertSession(db, 'plain', '/repo/project', 1_000);
+    insertSession(db, 'space', '/repo/project ', 2_000);
+    expect(await resolveStoredWorkingDirCandidates('/repo/project ')).toEqual(['/repo/project ']);
+    expect(await resolveStoredWorkingDirCandidates('/repo/project')).toEqual(['/repo/project']);
+  });
   it('returns every stored spelling of the same physical directory, including trailing slashes', async () => {
     const db = useDb();
     insertSession(db, 's1', 'D:/Project-001', 1_000);

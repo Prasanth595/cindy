@@ -8,7 +8,7 @@
 >
 > **⚠ wave4 改判（2026-07-20,PR0-docs 回写）**：登录流程全端从品牌红全屏底改为白底体系。本表内 `#DF0C27` 及同族红底背景 token 的语义**改判为 accent 专用**（Global pill、字标红元素等品牌点缀）,**禁止表达页面/画板背景**——token 命名与注释不得含 background/背景 语义（此判仍现行,落码 token 名为 `login-brand-accent`,原案名 `login-brand-bg` 已弃用）。
 >
-> 〔wave4 段历史部分作废（2026-07-24 目录整编标注）〕：本段原钉死的画布落码方案——页面底消费 `var(--surface)`、两层 `#F70121` 渐变代码复现、`--login-window-border-outer/-inner` token——已被后续实现与实机走查推翻。**现行结论**：画布底走 `--login-bg-base` 双态（亮 `#EDEDED` / 暗 `#1F1F1E`）,两模式**纯平**,`--login-bg-gradient-radial/-linear` 仅保留 override 锚、值恒 `none`,window-border token 已删除。现行权威 = `DESIGN.md §16.1 / §16.5` 与 `apps/desktop/src/renderer/themes/colors.ts`;本段与本表任何段落均**不再**对冲突拥有优先级,冲突一律以 `DESIGN.md §16` 为准。
+> 〔wave4 段历史部分作废（2026-07-24 目录整编标注）〕：本段原钉死的画布落码方案——页面底消费 `var(--surface)`、两层 `#F70121` 渐变代码复现、`--login-window-border-outer/-inner` token——已被后续实现与实机走查推翻。**现行结论**：画布底走 `--login-bg-base` 双态（亮 `#F2F2ED` / 暗 `#181818`，2026-10-01 起与 CINDY 皮肤页底同值；此前为 `#EDEDED` / `#1F1F1E`）,两模式**纯平**,`--login-bg-gradient-radial/-linear` 仅保留 override 锚、值恒 `none`,window-border token 已删除。现行权威 = `DESIGN.md §16.1 / §16.5` 与 `apps/desktop/src/renderer/themes/colors.ts`;本段与本表任何段落均**不再**对冲突拥有优先级,冲突一律以 `DESIGN.md §16` 为准。
 >
 > **⚠ wave5 增补（2026-07-24,组件库更新,权威 = `figma-component-spec §11`）**：(a) **hover 统一「叠白变亮」口径**——全按钮族 hover = normal 底叠 `rgba(255,255,255,0.08/0.1)`（深底 8% / 浅底 10%;唯一例外 `back` 亮色 hover 维持既有白 70%）,旧「白底钮 hover 叠黑」方向作废;pressed 叠黑分档含例外：深底强调钮 50%（`log_in_button`、`light_button_highlight`,不论尺寸）/ `Dark_button_Normal` 20% / 浅底钮 10% / 行类 8%——**落码逐组件对拍 `figma-component-spec §11.1`,不按类别名推断**;hover / pressed 叠层统一由 `--login-overlay-*` 二态 token 组承载（`DESIGN.md §16.5` 已采纳）,禁止新增字面 rgba 叠层;〔落码状态〕本口径当前仅文档层生效,as-built 组件仍消费改判前旧叠层值,同步随暗色实现 PR 的 overlay token 化落地（`DESIGN.md §16.5(1)`）。(b) 新组件 **radiobutton**（协议勾选）与**双色模式小按钮**（服务条款弹窗）带来的新色值决策已补入 §3 表尾;对应 token 建议随游客登录 / 协议 UI 实现 PR 注册,不提前占位。
 
@@ -70,7 +70,8 @@
 | `1819` | 桌面设计画布宽 | 新增 | `login-stage-width` / singleton constant | 仅设计坐标基准，不必直接等于窗口宽 |
 | `2098` | 桌面设计画布高 | 新增 | `login-stage-height` / singleton constant | 与 `login-stage-width` 成组，用于 scale / transform 计算 |
 | `934` | 桌面 Cindy 立绘尺寸 | 新增 | `login-desktop-hero-size` | `CINDY_Client` 正方形 |
-| `680` | 桌面登录组宽、WORD_MARK 宽、回调卡片尺寸 | 新增 | `login-panel-width`、`login-wordmark-frame-width`、`login-result-card-size` | 语义不同，不建议只留一个 magic number |
+| `680` | 桌面登录组宽、WORD_MARK 宽、失败 / Warning 回调卡片尺寸 | 新增 | `login-panel-width`、`login-wordmark-frame-width`、`login-result-card-size` | 语义不同，不建议只留一个 magic number；成功回调当前使用独立紧凑尺寸 |
+| `560 x 500` | Desktop 登录成功回调紧凑卡片 | 新增 | `login-result-success-card-size`（browser callback serialized layout constant） | 2026-09-02 产品 UX 覆盖旧成功态 680 x 680 + CTA；仅成功态使用，失败 / Warning 不变 |
 | `180` | 桌面 / 移动 WORD_MARK frame 高 | 新增 | `login-wordmark-frame-height` | 字标外框高度，不等于内部实际图片高度 |
 | `460 x 134` | SLOGAN frame | 新增 | `login-slogan-width`、`login-slogan-height` | 短屏移动端会缩放该 frame，但设计基准仍需保留 |
 | `620` | 登录整体高度含第三方入口 | 新增 | `login-flow-height` | 面板 `500` + gap `40` + social `80`。**2026-07-27 登录改版由 `560` 改 `620`**（面板增高 60 随之）；双端落码 = 桌面 `LOGIN_GROUP.height` / 手机 `loginSizes.flowHeight` + `LOGIN_GROUP.height` |
@@ -192,7 +193,7 @@ export const loginColors = {
 | **页底** | **`#F2F2ED`** | surface / titlebar / panel | 0 |
 | 柔和 hover | `#F0F0EB` | surface-hover-soft | −1.7% |
 | 通用 hover/chip | `#EEEEE9` | surface-hover / chip | −3.3% |
-| 侧栏 | `#EEEEE9` @ 90% 玻璃 | 独立面(玻璃遮盖度用户调参) | −3.3% |
+| 侧栏 | `#EEEEE9` @ 85% 玻璃 | 独立面(玻璃遮盖度用户调参) | −3.3% |
 | 下拉行 hover | `#EFEFEA` | model-item-hover(锚定弹层面板 −11.9%) | — |
 | 菜单 hover | `#E8E8E3` | settings-menu-bg-hover | −8.1% |
 | 边框 | `#E4E4DF` | border-default(冷 `#DCDFE3` 转暖) | −11.2% |
@@ -201,8 +202,10 @@ export const loginColors = {
 ### 9.3 Dark 面阶梯(中性近黑,自 2026-07 值整体平移)
 
 页底 `#181818` / 柔和 hover `#191919` / hover-chip `#1D1D1D` / 卡片 `#1F1F1F` /
-composer pill `#272727` / 菜单 hover `#282828` / 文件纸片 `#292929` / 下拉行 hover `#2B2B2B` /
+composer pill `#272727` / 菜单 hover / 卡片锚定选中 `#282828`(`settings-menu-bg-hover` 与 `settings-menu-bg-selected`) /
+文件纸片 `#292929` / 下拉行 hover `#2B2B2B` /
 禁用底 `#323232` / 边框 `#313131` / 弱档 `#3E3E3E` / 侧栏玻璃 `rgba(5,5,5,0.85)`(用户调参 2026-08-11)。
+`settings-menu-bg-selected` 暗色从页底锚定 `#1D1D1D` 抬到卡片之上(2026-08-13):近黑压缩后该 token 比卡片还暗,设置卡上的选中行会隐形;先与菜单 hover 同档,不改全局 `--surface-chip`。
 **已知债**: 近黑压缩使层次观感只保留 2026-07 版的 ~65%,修复方案(等亮度阶梯)与实测数据
 记录于 [issue #2559](https://github.com/makecindy/cindy/issues/2559),独立一轮处理。
 
@@ -224,7 +227,6 @@ composer pill `#272727` / 菜单 hover `#282828` / 文件纸片 `#292929` / 下�
 ### 9.5 预览与杂项
 
 `settings-theme-auto-light` = `#F2F2ED`、`settings-theme-auto-dark` = `#181818`(两模式文件同步);
-`md-table-bg` 随页底;`surface-translucent-overlay` light 暖化 / dark 平移。
+ `md-table-bg` 随页底;`surface-translucent-overlay` light 暖化 / dark 平移。
 移动端未随本轮同步(342 处命中 + 冷更确认),为已登记 follow-up;
 `text-secondary`/`text-tertiary` 命名倒置(改名方案)见 issue #2559。
-

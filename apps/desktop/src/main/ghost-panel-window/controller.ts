@@ -26,12 +26,11 @@ import {
   GHOST_PANEL_WINDOW_CLOSE_REQUESTED_CHANNEL,
   GHOST_PANEL_WINDOW_LOCALE_CHANGED_CHANNEL,
   GHOST_PANEL_WINDOW_MINIMIZE_REQUESTED_CHANNEL,
-  GHOST_PANEL_WINDOW_PRESENTATION_READY_CHANNEL,
-  GHOST_PANEL_WINDOW_RENDERER_READY_CHANNEL,
   GHOST_PANEL_WINDOW_VISIBILITY_CHANGED_CHANNEL,
 } from '../../shared/ghostPanelWindow.js';
 import type { SupportedLocale } from '../../shared/locale.js';
 import type { InstalledGhost } from '../../shared/ghost.js';
+import { installedGhostStoragePart } from '../../shared/pluginIdentity.js';
 import type { GhostPanelWindowsSettings } from './settings-store.js';
 
 interface ControllerLogger {
@@ -191,6 +190,7 @@ export class GhostPanelWindowsController {
     return this.getState();
   }
 
+
   // ── 双阶段就绪 ──────────────────────────────────────────────────────
 
   markRendererReady(sender: WebContents): void {
@@ -249,7 +249,7 @@ export class GhostPanelWindowsController {
   // ── reconcile ──────────────────────────────────────────────────────
 
   reconcile(ghosts: InstalledGhost[]): void {
-    const byId = new Map(ghosts.map((g) => [g.manifest.id, g]));
+    const byId = new Map(ghosts.map((g) => [installedGhostStoragePart(g), g]));
     const knownIds = new Set([
       ...Object.keys(this.deps.settings.read().windows),
       ...this.slots.keys(),
@@ -281,9 +281,22 @@ export class GhostPanelWindowsController {
 
   // ── 生命周期 ────────────────────────────────────────────────────────
 
+  /**
+   * data owner 真变化时同步销毁旧 owner 的所有独立窗口。
+   * 把既有面板收口回 docked/closed，避免新 owner 失去正常 UI 入口。
+   */
+  closeForOwnerChange(): void {
+    const { windows } = this.deps.settings.read();
+    this.destroyAllWindows();
+    for (const ghostId of Object.keys(windows)) {
+      this.deps.settings.patchEntry(ghostId, { detached: false, lastOpen: false });
+    }
+    this.broadcast();
+  }
+
   /** 主窗口销毁时回收所有隐藏窗口;controller 仍可随下一扇主窗重新预热。 */
   destroyAllWindows(): void {
-    for (const [id, slot] of this.slots) {
+    for (const [, slot] of this.slots) {
       this.clearTimeouts(slot);
       if (!slot.win.isDestroyed()) {
         slot.destroyingWindow = true;
@@ -339,7 +352,7 @@ export class GhostPanelWindowsController {
     });
     win.on('minimize', () => {
       if (slot.destroyingWindow || this.disposed) return;
-      // 原生标题栏（macOS 黄灯）与系统级最小化入口也必须复用 Ghost 气泡语义。
+      // 原生标题栏（macOS 黄灯）与系统级最小化入口也必须复用插件面板最小化语义。
       // 先恢复，避免在 renderer 完成 setDetached(false) 前短暂留在 Dock/任务栏。
       if (win.isMinimized()) win.restore();
       this.deps.sendToWindow(win, GHOST_PANEL_WINDOW_MINIMIZE_REQUESTED_CHANNEL, undefined);
@@ -433,6 +446,12 @@ export class GhostPanelWindowsController {
     slot.openTimeout = setTimeout(() => {
       slot.openTimeout = null;
       if (slot.win.isDestroyed() || !slot.pendingOpen) return;
+      // 窗口规则 §3.1:shell(rendererReady)未就绪时展示可能是空白窗口;按资源用量
+      // 窗口基线作废缓存并走有界恢复(重建重开),恢复额度耗尽才放弃。
+      if (!slot.rendererReady) {
+        this.invalidateSlot(ghostId, slot, 'renderer readiness timed out');
+        return;
+      }
       if (!slot.visible) this.showAndFocus(ghostId, slot);
     }, DEFAULT_OPEN_TIMEOUT_MS);
     slot.openTimeout.unref?.();

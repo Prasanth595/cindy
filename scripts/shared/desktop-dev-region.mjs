@@ -29,7 +29,9 @@ export const DESKTOP_USER_DATA_DIR_NAME_BY_REGION = Object.freeze({
 /** 共享 Desktop profile 的区域目录名；省略区域时遵循产品规则默认 Global。 */
 export function desktopUserDataDirNameForRegion(region = "global") {
   if (!DESKTOP_DEV_REGIONS.includes(region)) {
-    throw new Error(`invalid desktop dev region: ${region}; expected cn, global or dev`);
+    throw new Error(
+      `invalid desktop dev region: ${region}; expected cn, global or dev`,
+    );
   }
   return DESKTOP_USER_DATA_DIR_NAME_BY_REGION[region];
 }
@@ -79,7 +81,8 @@ export function resolveDesktopDevRegion(argv, env = process.env) {
       index += 1;
     } else if (arg.startsWith("--region=")) {
       value = arg.slice("--region=".length);
-      if (!value) throw new Error("--region requires a value: cn, global or dev");
+      if (!value)
+        throw new Error("--region requires a value: cn, global or dev");
     } else {
       continue;
     }
@@ -115,7 +118,8 @@ export function stripDesktopDevRegionArgs(argv) {
 }
 
 /**
- * 计算 desktop dev 启动配置。remote dev 默认读取同区域仓内清单；
+ * 计算 desktop dev 启动配置。remote dev 始终读取同区域仓内清单，
+ * 不把父进程继承的端点文件当成用户覆盖；local 模式保留本地服务文件。
  * --endpoints-cdn / XDT_ENDPOINTS_CDN=1 时不注入默认文件，让主进程走区域化 CDN。
  */
 export function resolveDesktopDevStartupConfig({
@@ -126,12 +130,12 @@ export function resolveDesktopDevStartupConfig({
   const region = resolveDesktopDevRegion(argv, env);
   const endpointsCdn =
     argv.includes("--endpoints-cdn") || env.XDT_ENDPOINTS_CDN === "1";
-  const configuredManifestFile = env.XDT_ENDPOINT_MANIFEST_FILE?.trim();
   const endpointManifestFile =
-    configuredManifestFile ||
-    (mode === "remote" && !endpointsCdn
-      ? `config/${{ cn: "endpoint.json", global: "endpoint.global.json", dev: "endpoint.dev.json" }[region]}`
-      : undefined);
+    mode === "remote"
+      ? endpointsCdn
+        ? undefined
+        : `config/${{ cn: "endpoint.json", global: "endpoint.global.json", dev: "endpoint.dev.json" }[region]}`
+      : env.XDT_ENDPOINT_MANIFEST_FILE?.trim() || undefined;
   return { region, endpointsCdn, endpointManifestFile };
 }
 
@@ -144,25 +148,49 @@ export function applyDesktopDevStartupConfig(options) {
   if (config.endpointsCdn) env.XDT_ENDPOINTS_CDN = "1";
   if (config.endpointManifestFile) {
     env.XDT_ENDPOINT_MANIFEST_FILE = config.endpointManifestFile;
+  } else if (options.mode !== "local") {
+    delete env.XDT_ENDPOINT_MANIFEST_FILE;
   }
   return config;
 }
 
 /**
- * 清除继承自宿主的 dev 启动覆写（返回清除后的新对象，不改入参）。
+ * 命中 worktree 自动隔离时，计算传给 Electron 的启动环境（返回新对象，不改入参）。
  *
- * 当宿主 Desktop 以 --isolated 模式运行、Agent 从它 spawn 时，XDT_USER_DATA_DIR /
- * XDT_USER_DATA_DIR_EPOCH / XDT_DEVICE_ID_OVERRIDE 会留在 process.env 并被 agent
- * 继承。worktree 自动隔离命中后若不清除，resolveDevCliFlags 会优先采用宿主 userData、
- * 且因已有 device override 不派生新身份——注入的沙箱语义被覆盖（review-pr P1,
- * PR #2640）。清除后沙箱目录与独立 deviceId 由注入的 XDT_ISOLATED / XDT_ISOLATED_NAME
- * 正常派生。
+ * 1) 清除**继承自宿主 dev 进程**的启动覆写。宿主 Desktop 会把解析后的 userData /
+ *    deviceId 同步回 process.env（apps/desktop/src/main/index.ts），Codex / Claude /
+ *    PI 等 agent 子进程会原样继承。若不清除，resolveDevCliFlags 会优先采用宿主
+ *    userData、且因已有 device override 不派生独立身份——注入的沙箱语义被覆盖
+ *    （review-pr P1, PR #2640）。识别「继承」只认宿主信号：
+ *    - `XDT_DESKTOP_DEV_MODE=remote|local`：dev wrapper 注入 Electron 的「本进程
+ *      来自 dev 实例」标记，agent 子进程继承；人肉 shell 不会带；
+ *    - `XDT_USER_DATA_DIR_EPOCH=1`：restart 脚本派生目录时设置的可信纪元信号。
+ *    两者都没有时，`XDT_USER_DATA_DIR` / `XDT_DEVICE_ID_OVERRIDE` 视为人工显式
+ *    配置，按 docs/dev-rules/desktop-development.md「已手动设 `XDT_USER_DATA_DIR`
+ *    时尊重用户值」保留（review-pr P1, PR #2640）。
+ * 2) 无论来源如何都清除 `XDT_SCHEDULER_PASSIVE`：passive 语义属于宿主的共享
+ *    profile；独立沙箱没有 primary，继承 passive 会不触发定时任务、跳过单实例锁
+ *    （review-pr P1, PR #2640）。
+ * 3) **先删除**继承的 `XDT_ISOLATED_NAME` 再按本次 worktree 名重写：宿主
+ *    `--isolated=<名>` 同样会把名字留给 agent 子进程；worktree 名不合法回落默认
+ *    沙箱时若沿用宿主名字，userData/deviceId 会落回宿主沙箱（review-pr P1,
+ *    PR #2640）。
  */
-export function clearInheritedIsolationOverrides(env) {
+export function applyWorktreeIsolationEnv(env, worktreeName) {
   const next = { ...env };
-  delete next.XDT_USER_DATA_DIR;
-  delete next.XDT_USER_DATA_DIR_EPOCH;
-  delete next.XDT_DEVICE_ID_OVERRIDE;
+  const inheritedFromDevHost =
+    next.XDT_DESKTOP_DEV_MODE === "remote" ||
+    next.XDT_DESKTOP_DEV_MODE === "local" ||
+    next.XDT_USER_DATA_DIR_EPOCH === "1";
+  if (inheritedFromDevHost) {
+    delete next.XDT_USER_DATA_DIR;
+    delete next.XDT_USER_DATA_DIR_EPOCH;
+    delete next.XDT_DEVICE_ID_OVERRIDE;
+  }
+  delete next.XDT_SCHEDULER_PASSIVE;
+  delete next.XDT_ISOLATED_NAME;
+  next.XDT_ISOLATED = "1";
+  if (worktreeName) next.XDT_ISOLATED_NAME = worktreeName;
   return next;
 }
 

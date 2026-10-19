@@ -4,14 +4,30 @@ export interface NewMakerDialogueTargetRequest {
   requestId: string;
   deviceId: string | null;
   deviceName: string | null;
+  /** 通用新建只继承电脑；同机时保留草稿项目及用户选择。 */
+  preserveWorkspaceIfSameDevice?: boolean;
+}
+
+export interface NewMakerFolderPickerRequest {
+  requestId: string;
 }
 
 export interface NewMakerRouteState {
   workspacePrompt: 'generic' | 'dialogue';
   dialogueTargetRequest?: NewMakerDialogueTargetRequest;
+  folderPickerRequest?: NewMakerFolderPickerRequest;
 }
 
 let dialogueTargetRequestSequence = 0;
+let folderPickerRequestSequence = 0;
+
+/** These requests select local/device-link execution, never an SSH workspace. */
+export function isSameNewMakerDevice(
+  deviceId: string | null,
+  draft: { deviceLinkDeviceId?: string | null; remoteHostId?: string | null },
+): boolean {
+  return !draft.remoteHostId && deviceId === (draft.deviceLinkDeviceId ?? null);
+}
 
 /**
  * “对话”分组每次点击都生成新 requestId。同路由重复 navigate 不会 remount 创建页，
@@ -19,7 +35,7 @@ let dialogueTargetRequestSequence = 0;
  */
 export function makeDialogueNewMakerRouteState(
   target: DialogueDeviceTarget | null,
-): NewMakerRouteState {
+): NewMakerRouteState & { dialogueTargetRequest: NewMakerDialogueTargetRequest } {
   dialogueTargetRequestSequence += 1;
   return {
     workspacePrompt: 'dialogue',
@@ -29,6 +45,34 @@ export function makeDialogueNewMakerRouteState(
       deviceName: target?.deviceName ?? null,
     },
   };
+}
+
+export function makeFolderPickerNewMakerRouteState(): NewMakerRouteState {
+  folderPickerRequestSequence += 1;
+  return {
+    workspacePrompt: 'generic',
+    folderPickerRequest: {
+      requestId: `${Date.now()}-${folderPickerRequestSequence}`,
+    },
+  };
+}
+
+export function readNewMakerFolderPickerRequest(
+  state: unknown,
+): NewMakerFolderPickerRequest | null {
+  if (!state || typeof state !== 'object') return null;
+  const request = (state as Record<string, unknown>).folderPickerRequest;
+  if (!request || typeof request !== 'object') return null;
+  const requestId = (request as Record<string, unknown>).requestId;
+  if (typeof requestId !== 'string' || requestId.length === 0) return null;
+  return { requestId };
+}
+
+export function consumeNewMakerFolderPickerRequest(state: unknown): unknown {
+  if (!state || typeof state !== 'object' || Array.isArray(state)) return state;
+  if (!Object.prototype.hasOwnProperty.call(state, 'folderPickerRequest')) return state;
+  const { folderPickerRequest: _consumed, ...remainingState } = state as Record<string, unknown>;
+  return remainingState;
 }
 
 export function readNewMakerDialogueTargetRequest(
@@ -44,7 +88,14 @@ export function readNewMakerDialogueTargetRequest(
   if (deviceId !== null && (typeof deviceId !== 'string' || deviceId.length === 0)) return null;
   if (deviceName !== null && typeof deviceName !== 'string') return null;
   if (deviceId === null && deviceName !== null) return null;
-  return { requestId: record.requestId, deviceId, deviceName };
+  return {
+    requestId: record.requestId,
+    deviceId,
+    deviceName,
+    ...(record.preserveWorkspaceIfSameDevice === true
+      ? { preserveWorkspaceIfSameDevice: true }
+      : {}),
+  };
 }
 
 /**

@@ -14,9 +14,11 @@ import { spawn } from 'node:child_process';
 
 import {
   applyDesktopDevStartupConfig,
+  applyWorktreeIsolationEnv,
   resolveWorktreeIsolationFromCwd,
   stripDesktopDevRegionArgs,
 } from '../../../scripts/shared/desktop-dev-region.mjs';
+import { withDesktopDevNodeOptions } from '../../../scripts/shared/desktop-dev-node-options.mjs';
 
 const [command, ...rawArgs] = process.argv.slice(2);
 if (!command) {
@@ -26,11 +28,6 @@ if (!command) {
 
 const startupConfig = applyDesktopDevStartupConfig({ argv: rawArgs, mode: 'remote' });
 const args = stripDesktopDevRegionArgs(rawArgs);
-const env = {
-  ...process.env,
-  XDT_DESKTOP_DEV_MODE: 'remote',
-  VITE_CINDY_AUTH_REGION: startupConfig.region,
-};
 
 // XDT_RESTART_MANAGED 是 restart 链路的一跳（one-hop）启动标记：只在判定「本进程
 // 是不是 restart 拉起的」时有意义。**判定必须用含标记的环境**——restart 链路靠它
@@ -42,35 +39,28 @@ const worktreeIsolation = resolveWorktreeIsolationFromCwd({
   argv: rawArgs,
   env: process.env,
 });
-delete env.XDT_RESTART_MANAGED;
 
 // 内置 worktree 会话里的裸 dev 启动默认按隔离沙箱处理（issue #2635）：worktree 内
 // 不带 --isolated 裸启动会沿用区域默认 profile + 物理机 deviceId，dev 登录会把同机
 // release 的服务端 refresh token 顶掉、把 release 挤下线。显式传了 --isolated /
-// --passive（或已设 XDT_ISOLATED=1 / XDT_USER_DATA_DIR）时不干预；baseRepo 直跑保持
-// 既有共库语义。restart 链路经 XDT_RESTART_MANAGED / XDT_SCHEDULER_PASSIVE 识别。
-// 注意 --preserve-running 不在豁免清单：裸路径上 Electron 侧不认这个参数（只有
-// restart 会翻译成 XDT_SCHEDULER_PASSIVE=1），豁免它会共享 userData 却正常调度 +
-// 正常单实例锁（review-pr P1, PR #2640）。
+// --passive 时不干预；baseRepo 直跑保持既有共库语义。restart 链路经
+// XDT_RESTART_MANAGED 识别。注意 --preserve-running 不在豁免清单：裸路径上 Electron
+// 侧不认这个参数（只有 restart 会翻译成 XDT_SCHEDULER_PASSIVE=1），豁免它会共享
+// userData 却正常调度 + 正常单实例锁（review-pr P1, PR #2640）。
+// 环境变量的清除/注入集中在 applyWorktreeIsolationEnv（含「继承自宿主 dev 进程」的
+// 识别），产品代码与测试共用同一实现（review-pr P1, PR #2640）。
+const baseEnv = worktreeIsolation
+  ? applyWorktreeIsolationEnv(process.env, worktreeIsolation.worktreeName)
+  : { ...process.env };
+const env = withDesktopDevNodeOptions({
+  ...baseEnv,
+  XDT_DESKTOP_DEV_MODE: 'remote',
+  VITE_CINDY_AUTH_REGION: startupConfig.region,
+});
+// 判定已完成：标记只在这一跳有效，不进入 Electron 环境（防 agent 子进程继承）。
+delete env.XDT_RESTART_MANAGED;
+
 if (worktreeIsolation) {
-  // 清除继承自宿主（--isolated Desktop → agent 子进程）的启动覆写：XDT_USER_DATA_DIR
-  // / XDT_USER_DATA_DIR_EPOCH / XDT_DEVICE_ID_OVERRIDE 残留会让 resolveDevCliFlags
-  // 优先采用宿主 userData、且因已有 device override 不派生新身份，覆盖掉这里注入的
-  // worktree 沙箱语义（review-pr P1, PR #2640）。清除后沙箱目录与独立 deviceId 由
-  // 注入的 XDT_ISOLATED / XDT_ISOLATED_NAME 正常派生。
-  // 同时清除继承的 XDT_SCHEDULER_PASSIVE：宿主 --passive / --preserve-running 的
-  // passive 语义属于宿主的共享 profile，独立沙箱里没有 primary，不该继承 passive
-  // （否则不触发定时任务、跳过单实例锁；review-pr P1, PR #2640）。
-  // 注意：必须真正 delete 这些键——Object.assign 只复制存在的属性，不会删除目标
-  // 上已存在的旧键（review-pr P1, PR #2640）。
-  delete env.XDT_USER_DATA_DIR;
-  delete env.XDT_USER_DATA_DIR_EPOCH;
-  delete env.XDT_DEVICE_ID_OVERRIDE;
-  delete env.XDT_SCHEDULER_PASSIVE;
-  env.XDT_ISOLATED = '1';
-  if (worktreeIsolation.worktreeName) {
-    env.XDT_ISOLATED_NAME = worktreeIsolation.worktreeName;
-  }
   console.log(
     `[dev-remote-env] managed worktree detected → isolated sandbox` +
       (worktreeIsolation.worktreeName

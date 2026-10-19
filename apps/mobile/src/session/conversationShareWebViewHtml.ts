@@ -1,4 +1,5 @@
 import { redactSensitiveText } from "@cindy/maker-shared/error-redaction";
+import { summarizeMessageBubblePresentation } from "@cindy/maker-shared/message-presentation";
 import { buildKatexLoaderJs } from "@/session/mathWebViewHtml";
 import { buildMermaidLoaderJs } from "@/session/mermaidWebViewHtml";
 import {
@@ -7,21 +8,34 @@ import {
   type SelectableMarkdownHtmlOptions,
 } from "@/session/selectableMarkdownHtml";
 import { buildMessageContentLayout } from "@/session/messageContentLayout";
-import { lineHeight, typeScale } from "@/theme/tokens";
+import { buildMobileReadableViewportLayout } from "@/session/responsiveViewportLayout";
+import { collectMobileMarkdownImages } from "@/session/messageMarkdown";
+import { lineHeight, radius, spacing, typeScale } from "@/theme/tokens";
 
+/** 分享图只含消息内容：不带任何消息来源（自动化 / 任务 / 设备 / 插件 / 作者）。 */
 export interface ConversationShareMessage {
-  automationOriginLabel?: string;
   attachments?: readonly ConversationShareAttachment[];
   clientId: string;
   kind: "user" | "assistant";
   body: string;
   bodyParts?: readonly ConversationShareBodyPart[];
   secondaryBody?: string;
+  /** 自己发的消息:聊天里按「我的消息气泡颜色」着色,分享图同样着色。 */
+  ownUserBubble?: boolean;
+  /** Export-only decoded images, keyed by attachment/Markdown source. */
+  images?: ReadonlyMap<string, ConversationShareImage>;
+}
+
+export interface ConversationShareImage {
+  uri: string;
+  width: number;
+  height: number;
 }
 
 export interface ConversationShareAttachment {
   kind: "image" | "file";
   name: string;
+  uri?: string;
 }
 
 export type ConversationShareBodyPart =
@@ -38,6 +52,8 @@ export interface ConversationShareWebViewColors {
   textPrimary: string;
   textSecondary: string;
   textTertiary: string;
+  /** 「我的消息气泡颜色」;默认外观为 null,沿用 surfaceElevated / border。 */
+  ownUserBubble?: { background: string; border: string } | null;
   dark?: boolean;
   syntax: NonNullable<SelectableMarkdownHtmlOptions["syntaxColors"]>;
 }
@@ -49,6 +65,20 @@ export interface BuildConversationShareHtmlOptions {
   contentWidth: number;
   logoSrc?: string;
   selectedMessages: readonly ConversationShareMessage[];
+}
+
+/** 左右边距与聊天消息流一致(spacing.lg),同一屏宽下换行位置相同;上下留白给分享卡片。 */
+export const CONVERSATION_SHARE_PADDING_X = spacing.lg;
+export const CONVERSATION_SHARE_PADDING_Y = spacing.xl;
+/** 气泡与 chip 描边对应聊天里的 StyleSheet.hairlineWidth。 */
+export const CONVERSATION_SHARE_HAIRLINE = 0.5;
+
+/** 使用聊天面板的视口（双栏时不是整个窗口），两种出图路径共用可读宽度。 */
+export function buildConversationShareContentWidth(viewport: { width: number; height: number }): number {
+  return Math.max(280, Math.round(buildMobileReadableViewportLayout({
+    screenWidth: viewport.width,
+    screenHeight: viewport.height,
+  }).contentWidth));
 }
 
 export function buildConversationShareHtml({
@@ -100,7 +130,7 @@ export function buildConversationShareHtml({
     '<meta charset="utf-8">',
     '<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">',
     "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; font-src data:; object-src 'none'; base-uri 'none'; form-action 'none';\">",
-    `<style id="share-style">${markdownCss}${buildConversationShareCss({ background, border: colors.border, surfaceChip: colors.surfaceChip, surfaceElevated: colors.surfaceElevated, textPrimary: colors.textPrimary, textSecondary: colors.textSecondary, textTertiary: colors.textTertiary, width })}</style>`,
+    `<style id="share-style">${markdownCss}${buildConversationShareCss({ background, border: colors.border, ownUserBubble: colors.ownUserBubble ?? null, surfaceChip: colors.surfaceChip, surfaceElevated: colors.surfaceElevated, textPrimary: colors.textPrimary, textSecondary: colors.textSecondary, textTertiary: colors.textTertiary, width })}</style>`,
     "</head>",
     "<body>",
     `<main id="xdt-content" class="share-stage" data-share-background="${escapeAttribute(background)}">`,
@@ -124,6 +154,25 @@ function buildMessageHtml(
   message: ConversationShareMessage,
   markdownOptions: SelectableMarkdownHtmlOptions,
 ): string {
+  markdownOptions = {
+    ...markdownOptions,
+    imageSources: message.images ?? new Map(),
+  };
+  const texts = message.bodyParts
+    ? message.bodyParts.flatMap((part) =>
+        part.kind === "text" ? [part.text] : [],
+      )
+    : [message.body];
+  if (message.secondaryBody) texts.push(message.secondaryBody);
+  // Redaction can consume image delimiters as well as URLs. Let the existing
+  // SVG path own all image-bearing text that needs redaction, even when image
+  // preparation failed; never parse damaged Markdown or expose its source URL.
+  if (
+    texts.some((text) => redactSensitiveText(text) !== text) &&
+    texts.some((text) => collectMobileMarkdownImages(text).length > 0)
+  ) {
+    throw new Error("conversation-share-image-requires-svg");
+  }
   const body = redactSensitiveText(message.body).trim();
   const secondaryBody = message.secondaryBody
     ? redactSensitiveText(message.secondaryBody).trim()
@@ -136,21 +185,32 @@ function buildMessageHtml(
   const secondaryHtml = secondaryBody
     ? buildSelectableMarkdownFragmentHtml(secondaryBody, markdownOptions)
     : "";
-  const attachmentsHtml = buildAttachmentsHtml(message.attachments ?? []);
-  const bubbleHtml = bodyHtml || secondaryHtml
-    ? [
-        `<div class="share-bubble share-bubble-${message.kind}">`,
-        bodyHtml,
-        secondaryHtml ? `<div class="share-secondary">${secondaryHtml}</div>` : "",
-        "</div>",
-      ].join("")
-    : "";
-  const automationOriginHtml = message.automationOriginLabel
-    ? `<div class="share-automation-origin">${escapeHtml(redactSensitiveText(message.automationOriginLabel).trim())}</div>`
-    : "";
+  const attachmentsHtml = buildAttachmentsHtml(
+    message.attachments ?? [],
+    message.images,
+  );
+  // 与聊天气泡同一套疏密档:短消息上下更紧凑,带附件 / 补充说明时间距更大。
+  const density = summarizeMessageBubblePresentation({
+    attachmentCount: message.attachments?.length ?? 0,
+    body: message.body,
+    kind: message.kind,
+    secondaryBody: message.secondaryBody,
+  }).density;
+  const ownBubbleClass =
+    message.kind === "user" && message.ownUserBubble ? " share-bubble-own" : "";
+  const bubbleHtml =
+    bodyHtml || secondaryHtml
+      ? [
+          `<div class="share-bubble share-bubble-${message.kind} share-bubble-${density}${ownBubbleClass}">`,
+          bodyHtml ? `<div class="share-bubble-body">${bodyHtml}</div>` : "",
+          secondaryHtml
+            ? `<div class="share-secondary">${secondaryHtml}</div>`
+            : "",
+          "</div>",
+        ].join("")
+      : "";
   return [
     `<article class="share-message share-message-${message.kind}" data-share-message-id="${escapeAttribute(message.clientId)}">`,
-    automationOriginHtml,
     attachmentsHtml,
     bubbleHtml,
     "</article>",
@@ -165,27 +225,42 @@ function buildBodyPartsHtml(
     if (part.kind === "text") {
       const text = redactSensitiveText(part.text).trim();
       return text
-        ? [`<div class="share-content-text">${buildSelectableMarkdownFragmentHtml(text, markdownOptions)}</div>`]
+        ? [
+            `<div class="share-content-text">${buildSelectableMarkdownFragmentHtml(text, markdownOptions)}</div>`,
+          ]
         : [];
     }
     const label = redactSensitiveText(part.label).trim();
-    const icon = part.kind === "quote" ? "❝" : part.kind === "pasted" ? "▤" : "";
+    const icon =
+      part.kind === "quote" ? "❝" : part.kind === "pasted" ? "▤" : "";
     const iconHtml = icon
       ? `<span class="share-inline-chip-icon" aria-hidden="true">${icon}</span>`
       : "";
     return label
-      ? [`<span class="share-inline-chip share-inline-chip-${part.kind}">${iconHtml}<span class="share-inline-chip-label">${escapeHtml(label)}</span></span>`]
+      ? [
+          `<span class="share-inline-chip share-inline-chip-${part.kind}">${iconHtml}<span class="share-inline-chip-label">${escapeHtml(label)}</span></span>`,
+        ]
       : [];
   });
-  return items.length > 0 ? `<div class="share-inline-body">${items.join("")}</div>` : "";
+  return items.length > 0
+    ? `<div class="share-inline-body">${items.join("")}</div>`
+    : "";
 }
 
 function buildAttachmentsHtml(
   attachments: readonly ConversationShareAttachment[],
+  images?: ConversationShareMessage["images"],
 ): string {
   if (attachments.length === 0) return "";
   const items = attachments.map((attachment) => {
     const name = redactSensitiveText(attachment.name).trim();
+    const image =
+      attachment.kind === "image" && attachment.uri
+        ? images?.get(attachment.uri)
+        : undefined;
+    if (image?.uri.startsWith("data:image/")) {
+      return `<img class="share-attachment-image" src="${escapeAttribute(image.uri)}" alt="${escapeAttribute(name)}">`;
+    }
     return `<div class="share-attachment-chip share-attachment-chip-${attachment.kind}"><span class="share-attachment-icon" aria-hidden="true"></span><span class="share-attachment-label">${escapeHtml(name)}</span></div>`;
   });
   return `<div class="share-attachments">${items.join("")}</div>`;
@@ -205,7 +280,6 @@ function buildConversationShareMarkdownOptions(
     lineHeight: lineHeight.bodyLarge,
     mutedColor: colors.textSecondary,
     syntaxColors: colors.syntax,
-    tableCellMinWidth: layout.markdownTableCellMinWidth,
     textColor: colors.textPrimary,
   };
 }
@@ -213,6 +287,7 @@ function buildConversationShareMarkdownOptions(
 function buildConversationShareCss({
   background,
   border,
+  ownUserBubble,
   surfaceChip,
   surfaceElevated,
   textPrimary,
@@ -222,6 +297,7 @@ function buildConversationShareCss({
 }: {
   background: string;
   border: string;
+  ownUserBubble: { background: string; border: string } | null;
   surfaceChip: string;
   surfaceElevated: string;
   textPrimary: string;
@@ -229,6 +305,9 @@ function buildConversationShareCss({
   textTertiary: string;
   width: number;
 }): string {
+  // 尺寸与间距照搬聊天消息流(MessageRenderer):同屏宽下换行、气泡与附件一致。
+  const layout = buildMessageContentLayout({ screenWidth: width });
+  const bodyGap = layout.markdownBodyGap;
   return `
     html, body {
       margin: 0;
@@ -243,52 +322,51 @@ function buildConversationShareCss({
       flex-direction: column;
       width: ${width}px;
       min-width: ${width}px;
-      padding: 28px;
+      padding: ${CONVERSATION_SHARE_PADDING_Y}px ${CONVERSATION_SHARE_PADDING_X}px;
       background: ${background};
       color: ${cssValue(textPrimary)};
-      gap: 16px;
+      gap: ${spacing.lg}px;
       overflow: visible;
     }
     .share-message {
       display: flex;
       flex-direction: column;
+      gap: 2px;
       width: 100%;
       min-width: 0;
     }
     .share-message-user { align-items: flex-end; }
     .share-message-assistant { align-items: flex-start; }
-    .share-automation-origin {
-      box-sizing: border-box;
-      align-self: flex-end;
-      max-width: 86%;
-      margin-bottom: 4px;
-      color: ${cssValue(textTertiary)};
-      font-size: 12px;
-      line-height: 18px;
-    }
     .share-attachments {
       display: flex;
       flex-direction: column;
-      gap: 8px;
-      max-width: 86%;
-      margin-bottom: 4px;
+      gap: ${layout.attachmentGap}px;
+      max-width: 100%;
+      margin-bottom: ${spacing.xs}px;
     }
     .share-message-user .share-attachments { align-items: flex-end; }
     .share-message-assistant .share-attachments { align-items: flex-start; }
+    .share-attachment-image {
+      display: block;
+      max-width: ${layout.attachmentImageMaxWidth}px;
+      max-height: ${layout.attachmentImageMaxHeight}px;
+      object-fit: contain;
+      border-radius: ${radius.container}px;
+    }
     .share-attachment-chip {
       box-sizing: border-box;
       display: flex;
       align-items: center;
-      gap: 8px;
-      min-height: 32px;
-      max-width: 228px;
-      padding: 5px 10px;
-      border: 1px solid ${cssValue(border)};
-      border-radius: 9999px;
+      gap: ${spacing.xs}px;
+      min-height: ${layout.fileChipMinHeight}px;
+      max-width: ${layout.fileChipMaxWidth}px;
+      padding: 0 ${spacing.sm}px;
+      border-radius: ${radius.pill}px;
       background: ${cssValue(surfaceChip)};
       color: ${cssValue(textPrimary)};
-      font-size: 12px;
-      line-height: 18px;
+      font-size: ${typeScale.caption}px;
+      font-weight: 500;
+      line-height: ${lineHeight.caption}px;
     }
     .share-attachment-icon {
       position: relative;
@@ -296,6 +374,7 @@ function buildConversationShareCss({
       width: 15px;
       height: 17px;
       flex: 0 0 15px;
+      margin: 0 ${(layout.fileChipIconWidth - 15) / 2}px;
       border: 1.5px solid ${cssValue(textSecondary)};
       border-radius: 3px;
     }
@@ -319,27 +398,53 @@ function buildConversationShareCss({
     .share-bubble {
       box-sizing: border-box;
       min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: ${spacing.xs}px;
     }
+    .share-bubble-compact { gap: 6px; }
+    .share-bubble-rich { gap: ${spacing.sm}px; }
     .share-bubble-user {
       max-width: 86%;
-      padding: 12px;
-      border: 1px solid ${cssValue(textSecondary)};
-      border-radius: 12px;
+      padding: ${spacing.md}px;
+      border: ${CONVERSATION_SHARE_HAIRLINE}px solid ${cssValue(border)};
+      border-radius: ${radius.container}px;
       background: ${cssValue(surfaceElevated)};
+    }
+    .share-bubble-user.share-bubble-compact {
+      padding: ${spacing.sm}px ${spacing.md}px;
+    }
+    ${
+      ownUserBubble
+        ? `.share-bubble-own {
+      border-color: ${cssValue(ownUserBubble.border)};
+      background: ${cssValue(ownUserBubble.background)};
+    }`
+        : ""
     }
     .share-bubble-assistant {
       width: 100%;
-      padding: 4px 0;
+      padding: ${spacing.xs}px 0;
     }
     .share-secondary {
-      margin-top: 8px;
       color: ${cssValue(textSecondary)};
+    }
+    /* 聊天正文按原文换行(RN Text 保留段内换行),HTML 默认会把它折叠成空格。 */
+    #xdt-content p, #xdt-content h1, #xdt-content h2, #xdt-content h3,
+    #xdt-content h4, #xdt-content h5, #xdt-content h6,
+    #xdt-content blockquote, #xdt-content .list-text {
+      white-space: pre-wrap;
+    }
+    .share-bubble-body, .share-secondary, .share-content-text {
+      display: flex;
+      flex-direction: column;
+      gap: ${bodyGap}px;
     }
     .share-inline-body {
       display: flex;
       align-items: center;
       flex-wrap: wrap;
-      gap: 4px;
+      gap: ${spacing.xs}px;
       max-width: 100%;
     }
     .share-content-text {
@@ -353,13 +458,13 @@ function buildConversationShareCss({
       align-items: center;
       gap: 6px;
       max-width: 240px;
-      padding: 2px 8px;
-      border: 1px solid ${cssValue(border)};
-      border-radius: 9999px;
+      padding: 2px ${spacing.sm}px;
+      border: ${CONVERSATION_SHARE_HAIRLINE}px solid ${cssValue(border)};
+      border-radius: ${radius.pill}px;
       background: ${cssValue(surfaceChip)};
       color: ${cssValue(textPrimary)};
-      font-size: 12px;
-      line-height: 18px;
+      font-size: ${typeScale.caption}px;
+      line-height: ${lineHeight.bodySmall}px;
     }
     .share-inline-chip-icon {
       flex: 0 0 auto;
@@ -375,16 +480,22 @@ function buildConversationShareCss({
     }
     #xdt-content table {
       display: table;
-      width: max-content;
-      max-width: none;
+      table-layout: fixed;
+      width: 100%;
+      max-width: 100%;
       overflow: visible;
     }
+    #xdt-content th, #xdt-content td {
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
     #xdt-content pre {
-      width: max-content;
-      min-width: 100%;
-      max-width: none;
+      width: 100%;
+      min-width: 0;
+      max-width: 100%;
       overflow: visible;
-      white-space: pre;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
     }
     .share-gap {
       width: 100%;
@@ -471,7 +582,7 @@ function buildConversationShareRichContentScript({
   const katexLoader = includeKatex
     ? buildKatexLoaderJs(
         renderKatexJs,
-        'clearTimeout(mathFallback); mathDone = true; maybeReady();',
+        "clearTimeout(mathFallback); mathDone = true; maybeReady();",
       )
     : "";
   const mermaidRenderer = includeMermaid
@@ -540,8 +651,8 @@ function buildConversationShareRichContentScript({
     ? `
   if (!mermaidDone) {
     ${buildMermaidLoaderJs(
-      'renderMermaidNodes();',
-      'mermaidDone = true; maybeReady();',
+      "renderMermaidNodes();",
+      "mermaidDone = true; maybeReady();",
     )}
   }
 `
@@ -559,7 +670,18 @@ function buildConversationShareRichContentScript({
   function maybeReady() {
     if (!ready && mathDone && mermaidDone) {
       ready = true;
-      window.__cindyConversationShareRichContentReady = true;
+      // A PNG cannot scroll. Fit unbreakable formulae after fonts settle, before
+      // the native snapshot measures the stage (which requires a fixed width).
+      Promise.resolve(document.fonts && document.fonts.ready).then(function () {
+        document.querySelectorAll('.katex').forEach(function (formula) {
+          var parent = formula.closest('[data-latex]');
+          if (!parent) return;
+          var available = parent.clientWidth || parent.parentElement.clientWidth;
+          var width = Math.max(formula.scrollWidth, formula.getBoundingClientRect().width);
+          if (available > 0 && width > available) formula.style.zoom = String(available / width);
+        });
+        window.__cindyConversationShareRichContentReady = true;
+      });
     }
   }
 

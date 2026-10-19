@@ -29,13 +29,12 @@ import { useTranslation } from 'react-i18next';
 import { PanelRight } from 'lucide-react';
 
 import { RightSidebarShell } from '@/features/right-sidebar/RightSidebarShell';
+import { ToastContainer } from '@/components/ui/toast';
 import { useDeviceLinkRemoteProjects } from '@/features/device-link/useDeviceLinkRemoteProjects';
 import { onRequestRightSidebarVisibility } from '@/features/right-sidebar/lib/sidebarCommands';
 import { executeSidebarCommand } from '@/features/right-sidebar/lib/executeSidebarCommand';
-import {
-  closeTab,
-  getBucket,
-} from '@/features/right-sidebar/store';
+import { mergeSidebarWindowBack } from '@/features/right-sidebar/lib/mergeSidebarWindowBack';
+import { closeTab, getBucket, importTabSnapshot } from '@/features/right-sidebar/store';
 import { WindowControls } from '@/components/title-bar/WindowControls';
 import { ChromeIconButton } from '@/components/title-bar/ChromeIconButton';
 import { useAppShortcut } from '@/hooks/useAppShortcut';
@@ -58,13 +57,13 @@ interface SidebarWindowContext {
   workdir: string | null;
   remoteHostId: string | null;
   deviceLinkDeviceId?: string | null;
+  subagentsAvailable?: boolean;
   available: boolean;
 }
 
 export function SidebarWindowLayout() {
   const { t } = useTranslation();
   const { effectiveLocale, setLocale } = useLocale();
-  useDeviceLinkRemoteProjects();
   // 意识面板注册:子窗口没有 LayoutRoot,必须自行初始化 ghost 面板注册表
   // 并订阅 ghosts:changed(停靠形态所需;历史持久化的 ghost 页签也靠它识别 kind)。
   ensureGhostPanelsRegistered();
@@ -72,12 +71,13 @@ export function SidebarWindowLayout() {
   useEffect(() => {
     // 子窗口需要实时事件来维护面板内容，但认证失败后的凭证读取、会话重启与消息重发
     // 必须只由主 renderer 执行，避免多个 renderer 对同一远程任务并发重试。
-    makerChatStore.initGlobalListeners({ ownsRemoteAuthRetry: false });
+    makerChatStore.initGlobalListeners({ ownsRemoteAuthRetry: false, ownsRemoteListCache: false });
   }, []);
   const isMac = window.electronAPI?.platform === 'darwin';
   const [ctx, setCtx] = useState<SidebarWindowContext | null>(null);
   // 预热窗口初始隐藏；由 main 的 visibility push 驱动 Shell 内各子面板暂停/恢复。
   const [windowVisible, setWindowVisible] = useState(false);
+  useDeviceLinkRemoteProjects(windowVisible, 'sidebar');
   const visibilityRevisionRef = useRef(0);
   const contextRevisionRef = useRef(0);
   const presentationReadySentRef = useRef(false);
@@ -98,6 +98,11 @@ export function SidebarWindowLayout() {
       contextRevisionRef.current += 1;
       setCtx(next);
     });
+    // 必须早于 presentationReady() 注册：冷分离窗的主窗快照由 main 在
+    // presentation-ready 回调中投递，晚注册会丢掉这条一次性 handoff。
+    const offTabHandoff = window.electronAPI.rightSidebarWindow.onTabHandoff((handoff) => {
+      for (const snapshot of handoff.snapshots) importTabSnapshot(snapshot);
+    });
     // renderer-ready:Shell 已挂载,controller 可知 React 组件树就绪。
     void window.electronAPI.rightSidebarWindow.rendererReady().catch((err) => {
       log.warn('renderer-ready handshake failed', err);
@@ -105,6 +110,7 @@ export function SidebarWindowLayout() {
     return () => {
       cancelled = true;
       offCtx();
+      offTabHandoff();
     };
   }, []);
 
@@ -280,11 +286,10 @@ export function SidebarWindowLayout() {
           {/* 合并回主窗口:关偏好 + 关本窗,主窗恢复内嵌展开 */}
           <ChromeIconButton
             onClick={() => {
-              void window.electronAPI.rightSidebarWindow.setDetached(false).catch((err) => {
+              void mergeSidebarWindowBack(interactiveSessionId).catch((err) => {
                 log.warn('merge back failed', err);
               });
             }}
-            title={t('rightSidebar.window.mergeBack')}
             aria-label={t('rightSidebar.window.mergeBack')}
           >
             <PanelRight size={14} />
@@ -316,6 +321,7 @@ export function SidebarWindowLayout() {
           workdir={ctx?.workdir ?? ''}
           remoteHostId={ctx?.remoteHostId ?? null}
           deviceLinkDeviceId={ctx?.deviceLinkDeviceId}
+          subagentsAvailable={ctx?.subagentsAvailable}
           shellVisible={windowVisible}
           isMac={isMac}
         />
@@ -327,6 +333,7 @@ export function SidebarWindowLayout() {
           </div>
         )}
       </div>
+      <ToastContainer />
       <GhostMediaLightboxHost
         key={interactiveSessionId ?? 'hidden'}
         sessionId={interactiveSessionId ?? undefined}

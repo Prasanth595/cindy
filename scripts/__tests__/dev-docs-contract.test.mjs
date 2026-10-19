@@ -192,6 +192,24 @@ test("login-all-hifi embeds generated truth as a script-safe static literal", ()
 	assert.deepEqual(JSON.parse(match[1]), readJson("docs/design-previews/login-all-hifi/truth.json"));
 });
 
+test("login QA preview countdowns match Desktop and Mobile product constants", () => {
+	const desktopMs = Number(readText("apps/desktop/src/renderer/components/login/loginDesignTokens.ts")
+		.match(/RESEND_COUNTDOWN_MS\s*=\s*([\d_]+)/)?.[1].replaceAll("_", ""));
+	const mobileSeconds = Number(readText("apps/mobile/src/auth/loginSkinLayout.ts")
+		.match(/RESEND_COUNTDOWN_SECONDS\s*=\s*([\d_]+)/)?.[1].replaceAll("_", ""));
+	assert.ok(desktopMs > 0 && mobileSeconds > 0);
+	assert.equal(desktopMs, mobileSeconds * 1000);
+	for (const demo of ["login-flow-hifi", "login-all-hifi"]) {
+		const dir = `docs/design-previews/${demo}`;
+		const truth = readJson(`${dir}/truth.json`);
+		const block = readText(`${dir}/index.html`).match(/<script id="qa-truth"[^>]*>([\s\S]*?)<\/script>/);
+		assert.ok(block, `${demo} must embed truth`);
+		assert.deepEqual(JSON.parse(block[1].replace(/^const RAW = /, "")), truth);
+		assert.equal((truth.desk ?? truth).constants.resendCountdownMs.value, desktopMs, demo);
+		if (truth.mobile) assert.equal(truth.mobile.constants.resendSeconds.value, mobileSeconds, demo);
+	}
+});
+
 test("current locale-aware QA artifacts cover every supported locale", () => {
 	const supportedLocales = readSupportedLocales("apps/desktop/src/shared/locale.ts");
 	assert.deepEqual(
@@ -284,24 +302,49 @@ test("runtime versions and the docs contract are code-owned", () => {
 	assert.match(rootPackage.scripts["test:runner"], /scripts\/__tests__\/dev-docs-contract\.test\.mjs/);
 });
 
-test("client CI keeps the complete two-shard unit gate on Windows", () => {
+// A shard matrix is complete only when it lists every index 1..N and the
+// runner splits by the same N; a missing index or mismatched count would
+// silently drop part of the unit tier from the gate.
+function assertCompleteShardMatrix(job) {
+	const matrix = /^        shard: \[([\d, ]+)\]$/m.exec(job);
+	assert.ok(matrix, "unit shard job must declare a numeric shard matrix");
+	const indexes = matrix[1].split(",").map((value) => Number(value.trim()));
+	const count = indexes.length;
+	assert.ok(count >= 2, "unit shard job must split the tier across parallel jobs");
+	assert.deepEqual(indexes, Array.from({ length: count }, (_, i) => i + 1));
+	assert.match(job, new RegExp(`^      XDT_UNIT_TEST_SHARD: \\$\\{\\{ matrix\\.shard \\}\\}/${count}$`, "m"));
+	assert.match(job, /^      fail-fast: false$/m);
+}
+
+test("client CI keeps the complete sharded unit gate on Windows", () => {
 	const workflow = readText(".github/workflows/ci.yml");
 	const shards = workflowJob(workflow, "windows-unit-shards");
 	assert.ok(shards, "client CI must define Windows unit shards");
 	assert.match(shards, /^    runs-on: windows-latest$/m);
-	assert.match(shards, /^      fail-fast: false$/m);
-	assert.match(shards, /^        shard: \[1, 2\]$/m);
-	assert.match(shards, /^      XDT_UNIT_TEST_SHARD: \$\{\{ matrix\.shard \}\}\/2$/m);
-	assert.match(shards, /^        run: pnpm test:unit$/m);
-	assert.doesNotMatch(shards, /pnpm test:unit\s+--/);
+	assertCompleteShardMatrix(shards);
+	assert.match(shards, /^        run: pnpm run test:workspaces --tier unit$/m);
+	assert.doesNotMatch(shards, /pnpm test:unit(?:\s|$)/);
+	assert.doesNotMatch(shards, /pnpm test:runner/);
+
+	// One-off Windows checks run once, in parallel, outside the shard critical path.
+	const runnerChecks = workflowJob(workflow, "windows-runner-checks");
+	assert.ok(runnerChecks, "client CI must run Windows runner self-tests once");
+	assert.match(runnerChecks, /^    runs-on: windows-latest$/m);
+	assert.doesNotMatch(runnerChecks, /^    needs:/m);
+	assert.doesNotMatch(runnerChecks, /^    strategy:/m);
+	assert.equal([...runnerChecks.matchAll(/^        run: pnpm test:runner$/gm)].length, 1);
+	assert.match(runnerChecks, /botCanonicalSession\.test\.ts/);
 
 	const gate = workflowJob(workflow, "windows-unit");
 	assert.ok(gate, "client CI must preserve the stable Windows unit check");
 	assert.match(gate, /^    name: Windows unit tests$/m);
 	assert.match(gate, /^    if: \$\{\{ always\(\) \}\}$/m);
-	assert.match(gate, /^    needs: windows-unit-shards$/m);
+	assert.match(gate, /^      - windows-unit-shards$/m);
+	assert.match(gate, /^      - windows-runner-checks$/m);
 	assert.match(gate, /^          WINDOWS_UNIT_SHARDS_RESULT: \$\{\{ needs\.windows-unit-shards\.result \}\}$/m);
-	assert.match(gate, /^        run: test "\$WINDOWS_UNIT_SHARDS_RESULT" = "success"$/m);
+	assert.match(gate, /^          WINDOWS_RUNNER_CHECKS_RESULT: \$\{\{ needs\.windows-runner-checks\.result \}\}$/m);
+	assert.match(gate, /^          test "\$WINDOWS_UNIT_SHARDS_RESULT" = "success"$/m);
+	assert.match(gate, /^          test "\$WINDOWS_RUNNER_CHECKS_RESULT" = "success"$/m);
 });
 
 test("client CI runs Linux checks and complete unit shards in parallel behind stable verify", () => {
@@ -310,17 +353,24 @@ test("client CI runs Linux checks and complete unit shards in parallel behind st
 	assert.ok(checks, "client CI must define independent Linux verification checks");
 	assert.doesNotMatch(checks, /^    needs:/m);
 	assert.match(checks, /^        run: pnpm test:runner$/m);
+	assert.match(
+		checks,
+		/^      - name: Run Desktop and Mobile source-contract guards\r?\n        run: pnpm test:guard$/m,
+	);
+	// engineering-conventions.md §3.2 performance budget is only binding while CI
+	// blocks on the hygiene ratchet; without this step the baseline stops mattering.
+	assert.match(checks, /^      - name: Check unit test hygiene\r?\n        run: pnpm check:test-hygiene$/m);
 	assert.doesNotMatch(checks, /node scripts\/test-workspaces\.mjs --tier unit/);
 
 	const shards = workflowJob(workflow, "linux-unit-shards");
 	assert.ok(shards, "client CI must define Linux unit shards");
 	assert.match(shards, /^    runs-on: ubuntu-latest$/m);
 	assert.doesNotMatch(shards, /^    needs:/m);
-	assert.match(shards, /^      fail-fast: false$/m);
-	assert.match(shards, /^        shard: \[1, 2\]$/m);
-	assert.match(shards, /^      XDT_UNIT_TEST_SHARD: \$\{\{ matrix\.shard \}\}\/2$/m);
-	assert.match(shards, /^        run: pnpm exec node scripts\/test-workspaces\.mjs --tier unit$/m);
+	assertCompleteShardMatrix(shards);
+	assert.match(shards, /^        run: pnpm run test:workspaces --tier unit$/m);
 	assert.doesNotMatch(shards, /pnpm test:(?:unit|runner)/);
+	assert.equal([...shards.matchAll(/--tier integration --workspace @cindy\/maker-pi-manager/g)].length, 1);
+	assert.match(shards, /^      - name: Run Pi manager integration tests\r?\n        if: matrix\.shard == 1\r?\n        run: pnpm run test:workspaces --tier integration --workspace @cindy\/maker-pi-manager$/m);
 
 	const gate = workflowJob(workflow, "verify");
 	assert.ok(gate, "client CI must preserve the stable verify check");

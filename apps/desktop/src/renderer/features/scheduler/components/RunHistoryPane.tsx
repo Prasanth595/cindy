@@ -1,3 +1,5 @@
+import { Button } from '@/components/ui/button';
+import { shouldShowOpenPathError } from '../../../../shared/openPathResult';
 /**
  * RunHistoryPane — 右侧执行历史面板
  * ---------------------------------------------------------------------------
@@ -208,9 +210,9 @@ export function RunHistoryPane({
   // manual schedule 不参与 cron，cron 字段是占位 → header 显示 "Manual trigger"。
   const cronText = s.manual
     ? t('scheduler.detail.manualTrigger')
-    : summarizeConfig(cronToConfig(s.cronExpr));
+    : summarizeConfig(cronToConfig(s.cronExpr), t);
   const agentText = humanizeAgentKind(s.agentKind);
-  const dest = describeDestination(s);
+  const dest = describeDestination(s, t);
   // title 兜底显示完整路径，悬浮即可看到 — basename 视觉简洁，hover/title 看全量
   const titleText = `${cronText} · ${agentText} · ${dest.prefix}${dest.workingDir ?? ''}`;
 
@@ -219,7 +221,7 @@ export function RunHistoryPane({
     if (!dest.workingDir) return;
     try {
       const result = await window.electronAPI.openPath(dest.workingDir);
-      if (!result.success) toast.error(result.error || t('scheduler.detail.openWorkdirFailed'));
+      if (shouldShowOpenPathError(result)) toast.error(result.error || t('scheduler.detail.openWorkdirFailed'));
     } catch {
       toast.error(t('scheduler.detail.openWorkdirFailed'));
     }
@@ -432,24 +434,19 @@ function PillButton({
   ...rest
 }: React.ButtonHTMLAttributes<HTMLButtonElement> & { icon: React.ReactNode; label: string }) {
   return (
-    <button
+    <Button
+      variant="primary"
+      size="md"
+      compact
       type="button"
       onClick={onClick}
       disabled={disabled}
       aria-label={label}
       title={label}
-      className={cn(
-        'inline-flex h-[30px] items-center gap-1.5 rounded-full px-3 text-xs font-medium',
-        'bg-[var(--chat-input-chip-bg)] text-[var(--msg-assistant-text)] hover:bg-[var(--settings-btn-secondary-hover-bg)]',
-        // hover 上浮 1px + 图标轻微放大；按下回弹；disabled 不参与位移
-        'transition-all hover:-translate-y-px active:translate-y-0',
-        '[&_svg]:transition-transform hover:[&_svg]:scale-110',
-        'disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0 disabled:hover:[&_svg]:scale-100',
-      )}
       {...rest}
     >
       {icon}
       {label}
-    </button>
+    </Button>
   );
 }

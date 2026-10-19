@@ -87,6 +87,16 @@ export interface SchedulerRuntimeSnapshot {
 }
 
 /**
+ * 一条 in-flight run 的展示 / 通知策略快照。给 renderer 在事件丢失或 hook 晚挂时
+ * 重建 silenced / schedulerOwned 标记。sessionId 在绑定之前可能为空。
+ */
+export interface SchedulerInflightRunPolicy {
+  runId: string;
+  sessionId?: string;
+  silenced: boolean;
+}
+
+/**
  * script 模式可授予的全量能力目录(单一来源):引擎校验白名单与 UI 能力选择器
  * 都从这里枚举——host 侧新增能力时只改这一处,选择器自动出现新项。
  */
@@ -107,6 +117,8 @@ export interface ScriptExecutionConfig {
   capabilities: ScriptCapability[];
 }
 /**
+ * 'aborted': 用户暂停/删除计划，或调度器 stop（切账号/退出）主动中断。
+ * 视为终态；落库时自带 readAt（不是用户要处理的失败，不产生未读红点）。
  * 'interrupted': app 关闭/崩溃时残留为 'running' 的 run，下次启动时由
  * Scheduler.start() 统一改写为本状态，区别于用户主动 abort。视为终态。
  * 'skipped': 前置检查脚本（preRunHook）exit 2 拦截，本轮未启动 agent。
@@ -154,6 +166,8 @@ export type PreRunHookDecision = 'run' | 'skip' | 'block';
  * 之前就失败，也可能通过后继续得到正常的 agent 结果。
  */
 export interface PreRunHookRunResult {
+  /** Explicit successful check, including a healthy no-work skip. Optional for old hooks. */
+  checkSucceeded?: true;
   status: PreRunHookRunStatus;
   decision: PreRunHookDecision;
   exitCode: number | null;
@@ -178,7 +192,7 @@ export interface Schedule {
   jobType?: JobType;
   /** Release-compat tombstone：老 issue-triage 的 JSON 配置；新代码不读不写。 */
   jobConfig?: string;
-  source?: 'user' | 'project';
+  source?: 'user' | 'project' | 'bot';
   projectConfigId?: string;
   kind: ScheduleKind;
   cronExpr: string;
@@ -201,6 +215,8 @@ export interface Schedule {
    */
   intervalMs?: number;
   agentKind: AgentKind;
+  /** Explicit model-picker Harness. Absent on legacy schedules: bound tasks keep their live Harness. */
+  modelAgentKind?: AgentKind;
   model?: string;
   /**
    * 显式选定的供应商(来源)id。undefined / 空 → 回落该 agent 原生默认来源
@@ -225,6 +241,7 @@ export interface Schedule {
   workspaceKind: ScheduleWorkspaceKind;
   workingDir?: string;
   useWorktree: boolean;
+  /** Script mode: lifecycle owner and sole dispatch target; no agent turn is started by the runner. */
   targetSessionId?: string;
   /**
    * 持续会话模式：true → runner 在第一次 fire 成功创建 session 后自动把 sessionId
@@ -241,7 +258,8 @@ export interface Schedule {
   /**
    * 静默运行:true → 成功 run 默认不发通知、不产生未读小红点;任务 prompt 可自行说明
    * 哪些业务条件值得提醒,agent 在满足时调用 schedule_notify_current_run 主动上报。
-   * 失败/异常仍然通知。默认 false(每轮成功都按通知渠道提醒,旧行为)。
+   * 失败/异常仍然通知。未明确分类的新任务默认 false；检查入口显式设 true。
+   * 存量已存选择保持不变。
    */
   silentWhenIdle?: boolean;
   /** Execution mode; omitted/legacy schedules run an agent. */
@@ -280,6 +298,8 @@ export interface ScheduleRun {
   costMoney?: ScheduleRunMoney;
   /** 新版区域订阅价值估算；不代表实际账单。 */
   estimatedValueMoney?: ScheduleRunMoney;
+  /** 本次 run 关联 assistant 消息的 Token 用量总和，供无法可靠计价时展示。 */
+  totalTokens?: number;
   /**
    * exact = 已确认费用（可能是实际账单，也可能是 estimate-only）；direct = 费用仅来自
    * 无法挂载消息的直接账本；mixed = 快照同时包含直接账本和消息账本；zero = 已确认零费用；
@@ -331,6 +351,8 @@ export interface CreateScheduleInput {
   /** Interval 语义间隔（毫秒）。详见 Schedule.intervalMs。 */
   intervalMs?: number;
   agentKind: AgentKind;
+  /** Explicit model-picker Harness. Absent on legacy schedules: bound tasks keep their live Harness. */
+  modelAgentKind?: AgentKind;
   model?: string;
   /**
    * 显式选定的供应商(来源)id。undefined / 空 → 回落该 agent 原生默认来源
@@ -348,7 +370,7 @@ export interface CreateScheduleInput {
   targetSessionId?: string;
   /** 默认 false。详见 Schedule.persistentSession。 */
   persistentSession?: boolean;
-  /** 默认 false。详见 Schedule.silentWhenIdle("静默运行")。 */
+  /** 仅明确判定为检查型的创建入口显式设 true；未分类 agent 与 script 缺省 false。存量与显式选择保持不变。 */
   silentWhenIdle?: boolean;
   /** Execution mode; defaults to agent for legacy schedules. */
   executionMode?: ScheduleExecutionMode;
@@ -374,7 +396,7 @@ export interface ListFilter {
 export type SchedulerEvent =
   | { type: 'fired'; scheduleId: string; runId: string; silent?: boolean }
   | { type: 'completed'; scheduleId: string; runId: string; sessionId: string; silenced?: boolean }
-  | { type: 'failed'; scheduleId: string; runId: string; error: string }
+  | { type: 'failed'; scheduleId: string; runId: string; error: string; sessionId?: string }
   /**
    * In-flight run 已被标记静默。该事件早于后续 agent done/completed 收口,
    * 消费方用它抑制普通 session completion attention；completed.silenced

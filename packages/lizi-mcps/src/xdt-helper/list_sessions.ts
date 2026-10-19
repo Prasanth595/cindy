@@ -15,11 +15,15 @@ import { z } from 'zod';
 
 import type { XdtHelperToolRegistry } from '../lizi_xdtHelperToolRegistry.js';
 import type { XdtHelperHistoryDeps } from './_history_types.js';
+import type { SessionQueueDeps } from './list_session_queue.js';
 import { okPayload, errorPayload } from './_payload.js';
 import { encodeCursor, decodeCursor } from './_history_cursor.js';
+import { resolveHistoryScope } from './_history_scope.js';
+import { historyDeviceShape, HISTORY_DEVICE_DESCRIPTION, queryHistoryDevices } from './_history_devices.js';
 
 const DESCRIPTION = [
-  '列出本地数据库里的 session 元数据(id / title / workingDir / agentKind / model /',
+  HISTORY_DEVICE_DESCRIPTION,
+  '列出所选电脑数据库里的 session 元数据(id / title / workingDir / agentKind / model /',
   '时间戳 / messageCount 等), 按多种过滤条件组合查。**不返回 messages 内容** —',
   '要拉具体聊天内容请用 get_chat_history。',
   '',
@@ -33,6 +37,7 @@ const DESCRIPTION = [
   '  - include_deleted: 默认 false (排除 status=deleted)',
   '',
   '【输出】messageCount 已过滤被 rewind 软删的消息, 是用户可见的真实条数。',
+  '本机结果的 queuedCount 是当前尚未消费的输入队列条数，可用 list_session_queue 查看本机明细；远程结果不含队列计数。',
   '时间戳均为 ISO 8601 字符串(对应 DB 里的 unix ms 转换)。',
   'orcaRole / parentSessionId / userSendAt 仅在非 null 时出现(默认场景几乎全为 null, 已 omit)。',
   '',
@@ -41,6 +46,8 @@ const DESCRIPTION = [
 
 export interface ListSessionsToolDeps {
   history: XdtHelperHistoryDeps;
+  getSessionContext?: () => import('../types.js').LiziMcpSessionContext | undefined;
+  sessionQueue?: SessionQueueDeps;
 }
 
 export function registerListSessionsTool(
@@ -52,6 +59,7 @@ export function registerListSessionsTool(
     category: 'history',
     description: DESCRIPTION,
     inputShape: {
+      ...historyDeviceShape,
       workdir: z
         .string()
         .optional()
@@ -79,7 +87,11 @@ export function registerListSessionsTool(
         .default('desc')
         .describe('按 sessions.createdAt 排序, desc = 最新在前(默认)。'),
     },
-    handler: async ({ workdir, from, to, agent_kind, include_deleted, limit, cursor, order }) => {
+    handler: async (args) => {
+      if (args.device !== 'local') return queryHistoryDevices(registry, deps, 'list_sessions', args);
+      const { workdir, from, to, agent_kind, include_deleted, limit, cursor, order } = args;
+      const scope = await resolveHistoryScope(deps.history, deps.getSessionContext, null);
+      if (!scope.ok) return errorPayload(scope.errorCode, scope.message);
       const fromMs = parseIsoMs(from);
       if (fromMs === 'invalid') {
         return errorPayload('INVALID_ARGS', `from 不是合法 ISO 8601 时间字符串: "${from}"`);
@@ -91,6 +103,7 @@ export function registerListSessionsTool(
       const cursorObj = decodeCursor(cursor);
 
       const result = await deps.history.listSessions({
+        sessionIds: scope.sessionIds,
         workdir: workdir ?? null,
         fromMs,
         toMs,
@@ -110,6 +123,22 @@ export function registerListSessionsTool(
         return errorPayload('INTERNAL', result.message);
       }
       const { page } = result;
+      let queuedCounts: Record<string, number> | null = null;
+      if (deps.sessionQueue && page.items.length > 0) {
+        const countsResult = await deps.sessionQueue.listSessionQueuedCounts(
+          page.items.map((session) => session.id),
+        );
+        if (!countsResult.ok) {
+          if (countsResult.errorCode === 'HOST_NOT_READY') {
+            return errorPayload(
+              'HOST_NOT_READY',
+              `${BRAND_NAME} 本机 session 队列服务尚未就绪，请稍后重试。`,
+            );
+          }
+          return errorPayload('INTERNAL', countsResult.message);
+        }
+        queuedCounts = countsResult.counts;
+      }
       // Token 优化: orcaRole / parentSessionId / userSendAt 这几个字段在绝大多数
       // session 上都是 null, 逐行带 null 会浪费 token。改成 omit-when-null。
       return okPayload({
@@ -127,6 +156,7 @@ export function registerListSessionsTool(
             updatedAt: new Date(s.updatedAt).toISOString(),
             messageCount: s.messageCount,
           };
+          if (queuedCounts !== null) out.queuedCount = queuedCounts[s.id] ?? 0;
           if (s.orcaRole !== null) out.orcaRole = s.orcaRole;
           if (s.parentSessionId !== null) out.parentSessionId = s.parentSessionId;
           if (s.userSendAt !== null) out.userSendAt = new Date(s.userSendAt).toISOString();

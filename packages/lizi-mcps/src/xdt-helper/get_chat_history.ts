@@ -18,7 +18,9 @@ import { z } from 'zod';
 import type { XdtHelperToolRegistry } from '../lizi_xdtHelperToolRegistry.js';
 import type { XdtHelperHistoryDeps, HistoryRole } from './_history_types.js';
 import { okPayload, errorPayload } from './_payload.js';
+import { stringArrayParam } from './_array-param.js';
 import { encodeCursor, decodeCursor } from './_history_cursor.js';
+import { resolveHistoryScope } from './_history_scope.js';
 
 const ROLE_VALUES = [
   'user',
@@ -85,6 +87,7 @@ const DESCRIPTION = [
 
 export interface GetChatHistoryToolDeps {
   history: XdtHelperHistoryDeps;
+  getSessionContext?: () => import('../types.js').LiziMcpSessionContext | undefined;
 }
 
 export function registerGetChatHistoryTool(
@@ -97,9 +100,7 @@ export function registerGetChatHistoryTool(
     description: DESCRIPTION,
     inputShape: {
       // device-link hosts may use one `deviceId::sessionId`; the host enforces the trusted route.
-      session_ids: z
-        .array(z.string().min(1))
-        .max(50)
+      session_ids: stringArrayParam(z.array(z.string().min(1)).max(50))
         .optional()
         .describe('一批 sessionId(最多 50 个)。与 workdir / 时间段可叠加(AND)。'),
       workdir: z
@@ -118,8 +119,7 @@ export function registerGetChatHistoryTool(
         .enum(['cc', 'codex', 'pi'])
         .optional()
         .describe('按 session.agentKind 过滤; 不传 = 全部返。'),
-      roles: z
-        .array(z.enum(ROLE_VALUES))
+      roles: stringArrayParam(z.array(z.enum(ROLE_VALUES)))
         .optional()
         .describe(
           '只返这些 role 的消息。不传 = 默认只返问答类(user/assistant/ask_user/plan_review),' +
@@ -157,6 +157,24 @@ export function registerGetChatHistoryTool(
       cursor,
       order,
     }) => {
+      const scope = await resolveHistoryScope(
+        deps.history,
+        deps.getSessionContext,
+        session_ids ?? null,
+      );
+      if (!scope.ok) return errorPayload(scope.errorCode, scope.message);
+      if (
+        session_ids !== undefined
+        && session_ids.length > 0
+        && scope.sessionIds?.length === 0
+        && scope.deniedSessionIds.length > 0
+      ) {
+        return errorPayload(
+          'HISTORY_SCOPE_DENIED',
+          '请求的任务不在当前伙伴可读取的历史范围内。不要把空结果解释成对方没有回复；请改用伙伴状态或可追踪委派结果。',
+          { denied_session_ids: scope.deniedSessionIds },
+        );
+      }
       // 至少一个主过滤
       const hasMainFilter =
         (session_ids !== undefined && session_ids.length > 0) ||
@@ -200,7 +218,7 @@ export function registerGetChatHistoryTool(
         : fromMs;
 
       const result = await deps.history.getMessages({
-        sessionIds: session_ids ?? null,
+        sessionIds: scope.sessionIds,
         workdir: workdir ?? null,
         fromMs: effectiveFromMs,
         toMs,
@@ -271,6 +289,9 @@ export function registerGetChatHistoryTool(
             : null,
           limit,
           order,
+          ...(scope.deniedSessionIds.length > 0
+            ? { scope_filtered_session_ids: scope.deniedSessionIds }
+            : {}),
         },
         ...(cursor && !cursorObj ? { warning: 'INVALID_CURSOR_FALLBACK_TO_FIRST_PAGE' } : {}),
       });

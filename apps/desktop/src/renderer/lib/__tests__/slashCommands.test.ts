@@ -1,17 +1,23 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { CINDY_LEARN_SOURCE_DESCRIPTION } from '../../../shared/cindyBuiltInSkills';
 
 import {
+  commandsForHelpCard,
   filterSlashCommands,
   firstAvailableSlashCommandIndex,
   hasAvailableSlashCommand,
   hasUnavailableProjectSkillPreview,
+  isCindyOfficialSlashCommand,
   isSlashCommandUnavailable,
+  loadAllCommands,
   mergeCommands,
   nextAvailableSlashCommandIndex,
   rebaseInlineRangesAfterSlashCommandRewrite,
   reconcilePiRuntimeCommandForDispatch,
   reconcilePiRuntimeCommandForDispatchWithRetry,
   rewriteAgentSkillInvocationForDispatch,
+  rewritePiSkillAliasFromCommand,
+  rewritePiSkillMessageForSend,
   slashCommandInvocationName,
   type UnifiedCommand,
 } from '@/lib/slashCommands';
@@ -21,6 +27,62 @@ const skill = (overrides: Partial<Extract<UnifiedCommand, { kind: 'agent-skill' 
   name: 'demo',
   source: 'skill' as const,
   ...overrides,
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+function stubCommandLists(skillResult: { success: boolean; skills?: UnifiedCommand[] }) {
+  vi.stubGlobal('window', {
+    electronAPI: {
+      maker: {
+        listDesktopCommands: vi.fn(async () => ({
+          success: true,
+          commands: [{ kind: 'desktop', name: 'learn', description: 'Learn' }],
+        })),
+        listAgentCommands: vi.fn(async () => ({ success: true, commands: [] })),
+        listAgentSkills: vi.fn(async () => skillResult),
+      },
+    },
+  });
+}
+
+describe('loadAllCommands Learn fallback', () => {
+  it.each([
+    ['the Skill query fails', { success: false }],
+    ['Learn is not discovered yet', { success: true, skills: [] }],
+  ])('keeps the Desktop Learn command when %s', async (_label, result) => {
+    stubCommandLists(result as { success: boolean; skills?: UnifiedCommand[] });
+
+    await expect(loadAllCommands('claude-code', null)).resolves.toEqual([
+      { kind: 'desktop', name: 'learn', description: 'Learn' },
+    ]);
+  });
+
+  it('uses an available Agent Skill instead of the Desktop Learn fallback', async () => {
+    const learnSkill = skill({ name: 'learn', builtIn: true });
+    stubCommandLists({ success: true, skills: [learnSkill] });
+
+    await expect(loadAllCommands('claude-code', null)).resolves.toEqual([learnSkill]);
+  });
+});
+
+describe('commandsForHelpCard', () => {
+  it('preserves only the Main-attested built-in marker needed for localized descriptions', () => {
+    expect(commandsForHelpCard([
+      skill({ name: 'learn', builtIn: true, description: CINDY_LEARN_SOURCE_DESCRIPTION }),
+      skill({ name: 'custom', description: 'Custom description' }),
+    ])).toEqual([
+      {
+        name: 'learn',
+        description: CINDY_LEARN_SOURCE_DESCRIPTION,
+        source: 'skill',
+        builtIn: true,
+      },
+      { name: 'custom', description: 'Custom description', source: 'skill' },
+    ]);
+  });
 });
 
 describe('rewriteAgentSkillInvocationForDispatch', () => {
@@ -34,6 +96,13 @@ describe('rewriteAgentSkillInvocationForDispatch', () => {
 
     expect(rewriteAgentSkillInvocationForDispatch('/demo   keep spacing', loaded)).toBe(
       '/skill:demo   keep spacing',
+    );
+    expect(rewriteAgentSkillInvocationForDispatch('  \n/demo keep', loaded)).toBe(
+      '  \n/skill:demo keep',
+    );
+    expect(rewriteAgentSkillInvocationForDispatch('please /demo', loaded)).toBe('please /demo');
+    expect(rewriteAgentSkillInvocationForDispatch('> quoted\n\n/demo', loaded)).toBe(
+      '> quoted\n\n/demo',
     );
   });
 
@@ -54,6 +123,18 @@ describe('rewriteAgentSkillInvocationForDispatch', () => {
       { start: 12, end: 17, kind: 'reference' },
       { start: 18, end: 24, kind: 'paste' },
     ]);
+
+    expect(rebaseInlineRangesAfterSlashCommandRewrite(
+      [
+        { start: 3, end: 8, kind: 'slash' },
+        { start: 9, end: 14, kind: 'reference' },
+      ],
+      '  \n/demo @task',
+      '  \n/skill:demo @task',
+    )).toEqual([
+      { start: 3, end: 14, kind: 'slash' },
+      { start: 15, end: 20, kind: 'reference' },
+    ]);
   });
 
   it('does not rewrite unavailable, mismatched, or non-skill commands', () => {
@@ -72,9 +153,101 @@ describe('rewriteAgentSkillInvocationForDispatch', () => {
     })).toBe('/other');
     expect(rewriteAgentSkillInvocationForDispatch('/demo', desktop)).toBe('/demo');
   });
+
+  it('leaves non-Pi first messages untouched without loading a roster', async () => {
+    await expect(rewritePiSkillMessageForSend({
+      agentKind: 'codex',
+      message: '/git please',
+    })).resolves.toBe('/git please');
+  });
+
+  it('rewrites a discovered Pi project skill that already has a runtime alias', () => {
+    const discovered = skill({
+      name: 'git',
+      scope: 'repo',
+      runtimeStatus: 'discovered',
+      runtimeCommandName: 'skill:git',
+    });
+    expect(rewriteAgentSkillInvocationForDispatch('/git please', discovered)).toBe('/git please');
+    expect(rewritePiSkillAliasFromCommand('/git please', discovered)).toBe('/skill:git please');
+    expect(rewritePiSkillAliasFromCommand(' \n/git please', discovered)).toBe(' \n/skill:git please');
+    expect(rewritePiSkillAliasFromCommand('note /git', discovered)).toBe('note /git');
+  });
 });
 
 describe('filterSlashCommands', () => {
+  it('ranks a plugin command by its display label so hidden qualifiers keep exact matches on top', () => {
+    const prefixed = Array.from({ length: 30 }, (_, i) => ({
+      kind: 'desktop' as const, name: `draw-${i}`, description: '',
+    }));
+    const shared = [
+      { kind: 'desktop' as const, name: 'draw/@root', description: '', label: 'draw' },
+      { kind: 'desktop' as const, name: 'draw/acme', description: '', label: 'draw', meta: '团队共享' },
+    ];
+    const commands = [...prefixed, ...shared];
+
+    expect(filterSlashCommands(commands, 'draw').slice(0, 2).map((command) => command.name))
+      .toEqual(['draw/@root', 'draw/acme']);
+    // The full qualified token still matches what will be inserted.
+    expect(filterSlashCommands(commands, 'draw/acme').map((command) => command.name)).toEqual(['draw/acme']);
+  });
+
+  it('places Cindy official entries before ordinary commands in the initial palette', () => {
+    const commands = [
+      { kind: 'desktop' as const, name: 'help', description: 'Help' },
+      {
+        kind: 'agent-skill' as const,
+        name: 'cindy-skill-creator',
+        description: 'Create or update a Cindy Skill',
+        builtIn: true,
+        source: 'skill' as const,
+      },
+      {
+        kind: 'agent-skill' as const,
+        name: 'learn',
+        description: CINDY_LEARN_SOURCE_DESCRIPTION,
+        builtIn: true,
+        source: 'skill' as const,
+      },
+      { kind: 'agent-skill' as const, name: 'release-notes', source: 'skill' as const },
+    ];
+
+    expect(filterSlashCommands(commands, '').map((command) => command.name)).toEqual([
+      'cindy-skill-creator',
+      'learn',
+      'help',
+      'release-notes',
+    ]);
+  });
+
+  it('recognizes the Cindy Learn Skill but not a same-name desktop command or user Skill', () => {
+    expect(isCindyOfficialSlashCommand({
+      kind: 'desktop',
+      name: 'learn',
+      description: 'Learn',
+    })).toBe(false);
+    expect(isCindyOfficialSlashCommand({
+      kind: 'agent-skill',
+      name: 'learn',
+      description: CINDY_LEARN_SOURCE_DESCRIPTION,
+      builtIn: true,
+      source: 'skill',
+    })).toBe(true);
+    expect(isCindyOfficialSlashCommand({
+      kind: 'agent-skill',
+      name: 'learn',
+      description: 'Distill a reusable Skill with Cindy',
+      builtIn: true,
+      source: 'skill',
+    })).toBe(true);
+    expect(isCindyOfficialSlashCommand({
+      kind: 'agent-skill',
+      name: 'learn',
+      description: CINDY_LEARN_SOURCE_DESCRIPTION,
+      source: 'skill',
+    })).toBe(false);
+  });
+
   it('matches command names by case-insensitive containment', () => {
     const commands = [
       { kind: 'desktop' as const, name: 'lark-drive', description: 'Drive' },
@@ -138,31 +311,37 @@ describe('Pi project skill availability', () => {
     expect(reload).not.toHaveBeenCalled();
   });
 
-  it('does not retry a Pi slash name absent from the refreshed filesystem catalog', async () => {
-    const sleeps: number[] = [];
-    const reload = vi.fn(async () => [] as UnifiedCommand[]);
+  it.each(['foo', 'path'])(
+    'forwards unknown Pi slash text /%s after one refresh without retry delays',
+    async (commandName) => {
+      const sleeps: number[] = [];
+      const reload = vi.fn(async () => [] as UnifiedCommand[]);
 
-    await expect(reconcilePiRuntimeCommandForDispatchWithRetry({
-      agentKind: 'pi',
-      sessionId: 'session-1',
-      commandName: 'missing',
-      commands: [],
-      retryDelaysMs: [10, 20],
-      sleep: async (delayMs) => { sleeps.push(delayMs); },
-      reload,
-    })).resolves.toEqual({ command: undefined, commands: [] });
-    expect(sleeps).toEqual([]);
-    expect(reload).toHaveBeenCalledTimes(1);
-  });
+      await expect(reconcilePiRuntimeCommandForDispatchWithRetry({
+        agentKind: 'pi',
+        sessionId: 'session-1',
+        commandName,
+        commands: [],
+        retryDelaysMs: [10, 20],
+        sleep: async (delayMs) => { sleeps.push(delayMs); },
+        reload,
+      })).resolves.toEqual({ command: undefined, commands: [] });
+      expect(sleeps).toEqual([]);
+      expect(reload).toHaveBeenCalledTimes(1);
+    },
+  );
 
-  it('disables only discovered project skills', () => {
+  it('disables unproven runtime skills while keeping approved new-task previews available', () => {
     expect(isSlashCommandUnavailable(skill({ scope: 'repo', runtimeStatus: 'discovered' }))).toBe(true);
     expect(isSlashCommandUnavailable(skill({ scope: 'repo', runtimeStatus: 'loaded' }))).toBe(false);
     expect(isSlashCommandUnavailable(skill({ scope: 'user', runtimeStatus: 'discovered' }))).toBe(false);
+    expect(isSlashCommandUnavailable(skill({ scope: 'user', runtimeStatus: 'unknown' }))).toBe(true);
+    expect(isSlashCommandUnavailable(skill({ scope: 'user', runtimeStatus: 'failed' }))).toBe(true);
+    expect(isSlashCommandUnavailable(skill({ scope: 'user', runtimeStatus: 'approved' }))).toBe(false);
     expect(isSlashCommandUnavailable(skill({ scope: 'repo' }))).toBe(false);
   });
 
-  it('keeps the palette label while invoking Pi skills by their runtime command name', () => {
+  it('keeps the palette / composer label while invoking Pi skills by their runtime command name', () => {
     const loaded = skill({
       name: 'demo',
       scope: 'repo',
@@ -359,6 +538,30 @@ describe('Pi project skill availability', () => {
     expect(events).toEqual(['runtime', 'catalog']);
   });
 
+  it('retries a missing command after explicitly starting its project runtime', async () => {
+    const loaded = skill({
+      name: 'demo',
+      scope: 'repo',
+      runtimeStatus: 'loaded',
+      runtimeCommandName: 'skill:demo',
+    });
+    const sleeps: number[] = [];
+    let reloads = 0;
+
+    await expect(reconcilePiRuntimeCommandForDispatchWithRetry({
+      agentKind: 'pi',
+      sessionId: 'session-1',
+      commandName: 'demo',
+      commands: [],
+      prepareRuntime: async () => undefined,
+      retryDelaysMs: [10, 20],
+      sleep: async (delayMs) => { sleeps.push(delayMs); },
+      reload: async () => (++reloads < 2 ? [] : [loaded]),
+    })).resolves.toEqual({ command: loaded, commands: [loaded] });
+    expect(sleeps).toEqual([10]);
+    expect(reloads).toBe(2);
+  });
+
   it('does not restart the runtime for an already loaded Pi skill', async () => {
     const loaded = skill({
       name: 'demo',
@@ -445,5 +648,13 @@ describe('Pi project skill availability', () => {
       },
     })).resolves.toEqual({ command: desktop, commands: [desktop] });
     expect(reloaded).toBe(false);
+  });
+});
+
+
+describe('Claude managed skill dispatch', () => {
+  it('rewrites the short Cindy command to its native plugin command, preserving arguments', () => {
+    const command = skill({ name: 'learn', runtimeCommandName: 'cindy:learn', builtIn: true });
+    expect(rewriteAgentSkillInvocationForDispatch('/learn keep this workflow', command)).toBe('/cindy:learn keep this workflow');
   });
 });

@@ -35,18 +35,21 @@ import { getGhostPanelWindowGhostId } from '@/lib/ghostPanelWindow';
 import { createLogger } from '@/lib/logger';
 import { toast } from '@/lib/toast';
 import { extractIpcError } from '@/utils/ipcError';
-import type { GhostManifest } from '../../../shared/ghost';
+import { ghostInstallApprovalToken, type InstalledGhost } from '../../../shared/ghost';
+import { installedGhostStoragePart } from '../../../shared/pluginIdentity';
 
 const log = createLogger('GhostPanelWindowLayout');
 
 /** 面板�?+ 崩溃接管(与停靠形�?GhostPanel 同一分支逻辑,不含标准�?�?*/
-function PanelBody({ manifest }: { manifest: GhostManifest }) {
-  const runtimeState = useGhostRuntimeState(manifest.id);
+function PanelBody({ ghost }: { ghost: InstalledGhost }) {
+  const { manifest } = ghost;
+  const instanceId = installedGhostStoragePart(ghost);
+  const runtimeState = useGhostRuntimeState(instanceId);
   const broken = runtimeState === 'crashed' || runtimeState === 'fused';
   return broken ? (
-    <GhostPanelError manifest={manifest} state={runtimeState} />
+    <GhostPanelError ghost={ghost} state={runtimeState} />
   ) : (
-    <GhostChipPanelBody manifest={manifest} />
+    <GhostChipPanelBody ghost={ghost} />
   );
 }
 
@@ -57,7 +60,7 @@ export function GhostPanelWindowLayout() {
   const isMac = window.electronAPI?.platform === 'darwin';
   const ghostId = getGhostPanelWindowGhostId();
   const ghosts = useInstalledGhosts();
-  const ghost = ghostId ? ghosts.find((g) => g.manifest.id === ghostId) : undefined;
+  const ghost = ghostId ? ghosts.find((g) => installedGhostStoragePart(g) === ghostId) : undefined;
   // 停用/卸载的瞬�?main �?reconcile 会收�?这里只兜住收窗前的一两帧�?
   const manifest = ghost && ghost.enabled !== false ? ghost.manifest : undefined;
   const title = manifest?.panel?.title ?? manifest?.name ?? '';
@@ -68,19 +71,20 @@ export function GhostPanelWindowLayout() {
   // 与资源用量窗口一致，隐藏时重挂载 chrome，确保再次显示从干净状态开始�?
   const [windowChromeRevision, setWindowChromeRevision] = useState(0);
 
-  const minimizeToBubble = async (): Promise<void> => {
+  const minimizePanel = async (): Promise<void> => {
     if (!ghostId || !minimizeEnabled) return;
     minimizeGhostPanel(ghostId);
     try {
       await window.electronAPI.ghostPanelWindow.setDetached(ghostId, false);
     } catch (err) {
       restoreGhostPanel(ghostId);
-      log.warn('minimize ghost panel to bubble failed', err);
+      log.warn('minimize ghost panel failed', err);
     }
   };
 
   const disableAndClose = async (): Promise<void> => {
-    if (!ghostId || !manifest) return;
+    if (!ghostId || !manifest || !ghost) return;
+    const approvalToken = ghostInstallApprovalToken(ghost.approval);
     const approved = await confirm({
       title: t('ghostPanel.disableConfirm.title', { name: manifest.name }),
       description: t('ghostPanel.disableConfirm.body'),
@@ -89,7 +93,7 @@ export function GhostPanelWindowLayout() {
     await window.electronAPI.ghostPanelWindow.resolveCloseRequest(approved);
     if (!approved) return;
     try {
-      await window.electronAPI.ghosts.setEnabled(ghostId, false);
+      await window.electronAPI.ghosts.setEnabled(ghostId, false, approvalToken);
     } catch (error) {
       toast.error(t(ghostInstallErrorKey(extractIpcError(error)?.code)));
     }
@@ -127,12 +131,12 @@ export function GhostPanelWindowLayout() {
     return window.electronAPI.ghostPanelWindow.onCloseRequested(() => {
       void disableAndClose();
     });
-  }, [ghostId, manifest, confirm, t, window.electronAPI.ghostPanelWindow]);
+  }, [ghostId, ghost, manifest, confirm, t, window.electronAPI.ghostPanelWindow]);
 
   useEffect(() => {
     if (!minimizeEnabled) return;
     return window.electronAPI.ghostPanelWindow.onMinimizeRequested(() => {
-      void minimizeToBubble();
+      void minimizePanel();
     });
   }, [ghostId, minimizeEnabled, window.electronAPI.ghostPanelWindow]);
 
@@ -176,7 +180,6 @@ export function GhostPanelWindowLayout() {
           {/* 合并回主窗口:关偏�?+ 关本�?面板原位回停�?*/}
           <ChromeIconButton
             onClick={mergeBack}
-            title={t('rightSidebar.window.mergeBack')}
             aria-label={t('rightSidebar.window.mergeBack')}
           >
             <PictureInPicture2 size={14} />
@@ -189,7 +192,7 @@ export function GhostPanelWindowLayout() {
           >
             <WindowControls
               key={windowChromeRevision}
-              onMinimize={minimizeToBubble}
+              onMinimize={minimizePanel}
               showMinimize={minimizeEnabled}
               onClose={disableAndClose}
             />
@@ -199,8 +202,8 @@ export function GhostPanelWindowLayout() {
 
       {/* 面板�?manifest 在场即挂 webview;不在�?收窗前瞬�?�?URL)给占位�?*/}
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-[var(--panel-bg)]">
-        {manifest ? (
-          <PanelBody manifest={manifest} />
+        {ghost && manifest ? (
+          <PanelBody ghost={ghost} />
         ) : (
           <div className="flex flex-1 items-center justify-center">
             <span className="text-13 text-[var(--text-tertiary)]">

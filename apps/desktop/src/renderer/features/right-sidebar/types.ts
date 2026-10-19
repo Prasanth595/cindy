@@ -24,13 +24,17 @@ import type { TabCloseInterceptor } from './store';
 export type BuiltinTabKindId =
   | 'file-browser'
   | 'web-browser'
-  | 'ios-simulator'
+  | 'mail-preview'
+  | 'retired-feature'
   | 'terminal'
   | 'review'
   | 'orca-workers'
   | 'subagents'
   | 'background-tasks'
-  | 'resource-usage';
+  | 'routines'
+  | 'bot-workbench'
+  | 'resource-usage'
+  | 'cindy-make';
 export type TabKindId = BuiltinTabKindId | `ghost:${string}`;
 
 /** 一个 tab 运行时实例。`state` 由各 plugin 自管理结构 + 序列化,壳子只搬运。 */

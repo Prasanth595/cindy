@@ -54,6 +54,25 @@ function at(seconds: number): string {
 }
 
 describe('message render shared model', () => {
+  it('keeps sealed work folded while subsequent work in the same turn remains active', () => {
+    const messages = [
+      message({ kind: 'user', source: source('u1', 'start', 1), body: 'start' }),
+      message({ kind: 'thinking', source: source('think1', 'Checking', 2), body: 'Checking' }),
+      message({ kind: 'assistant', source: source('progress1', 'Checking more', 3), body: 'Checking more' }),
+      message({ kind: 'tool', source: source('read1', { toolName: 'Read', input: {} }, 4), body: 'Read', label: 'Read' }),
+      message({ kind: 'assistant', source: source('final1', 'Done', 5), body: 'Done', turnCompleted: true }),
+    ];
+    const completed = buildMessageRenderItems(messages);
+    expect(completed.map((item) => item.key)).toEqual(['message-u1', 'work-summary-think1', 'message-final1']);
+    expect(buildMessageRenderItems(messages, { isSessionStreaming: true })).toEqual(completed);
+    const continued = buildMessageRenderItems([
+      ...messages,
+      message({ kind: 'thinking', source: source('next-think', 'Continuing', 6), body: 'Continuing', isStreaming: true }),
+    ], { isSessionStreaming: true });
+    expect(continued.slice(0, completed.length)).toEqual(completed);
+    expect(continued.at(-1)).toMatchObject({ key: 'work-next-think', isStreaming: true });
+  });
+
   it('groups consecutive normalized tools before the final answer', () => {
     const items = buildMessageRenderItems([
       message({
@@ -185,8 +204,8 @@ describe('message render shared model', () => {
     expect(todo.todos).toEqual([{ content: 'Implement', status: 'completed', activeForm: undefined }]);
   });
 
-  it('keeps every sealed SDK-turn summary visible across a background auto-continuation', () => {
-    const items = buildMessageRenderItems([
+  function backgroundContinuation(mainSummary: string): MessageRenderItem<FixtureMessage>[] {
+    return buildMessageRenderItems([
       message({ kind: 'user', source: source('user', 'start', 1), body: 'start', label: 'user' }),
       message({
         kind: 'thinking',
@@ -196,8 +215,8 @@ describe('message render shared model', () => {
       }),
       message({
         kind: 'assistant',
-        source: source('main-summary', 'formal summary', 4),
-        body: 'formal summary',
+        source: source('main-summary', mainSummary, 4),
+        body: mainSummary,
         label: 'assistant',
         turnCompleted: true,
       }),
@@ -215,6 +234,19 @@ describe('message render shared model', () => {
         turnCompleted: true,
       }),
     ]);
+  }
+
+  // 后台唤醒(异步子 Agent、后台 shell)会在同一个 user turn 里盖多次 seal;
+  // 只有最后一次是收尾正文,更早的短句按过程文字折叠。
+  it('folds earlier short sealed replies when background work auto-continues the turn', () => {
+    const items = backgroundContinuation('Agents are still running; waiting for them.');
+
+    expect(items.map((item) => item.type)).toEqual(['message', 'work_group', 'message']);
+    expect(expectType(items[2], 'message').message.key).toBe('gate-followup');
+  });
+
+  it('keeps an earlier sealed delivery-prose summary visible across a background auto-continuation', () => {
+    const items = backgroundContinuation('## Summary\n\n- implemented\n- tested\n- verified');
 
     expect(items.map((item) => item.type)).toEqual([
       'message',
@@ -744,6 +776,27 @@ describe('message render shared model', () => {
     expect(formatDuration(65_000)).toBe('1m 5s');
     expect(formatDuration(120_000)).toBe('2m');
   });
+
+  it.each([
+    [3_599_000, '59m 59s'],
+    [3_599_600, '1h 0m'],
+    [3_661_000, '1h 1m'],
+    [77_516_000, '21h 31m'],
+    [86_399_000, '23h 59m'],
+    [86_399_600, '1d 0h 0m'],
+    [86_700_000, '1d 0h 5m'],
+    [183_845_000, '2d 3h 4m'],
+  ])('keeps long work durations readable (%i ms)', (ms, expected) => {
+    expect(formatDuration(ms)).toBe(expected);
+  });
+
+  it('preserves zero and padded remainder for live counters', () => {
+    const options = { minimumSeconds: 0, alwaysShowRemainder: true, padRemainder: true };
+    expect(formatDuration(0, options)).toBe('0s');
+    expect(formatDuration(60_000, options)).toBe('1m 00s');
+    expect(formatDuration(7_509_000, options)).toBe('2h 05m');
+    expect(formatDuration(86_400_000, options)).toBe('1d 00h 00m');
+  });
 });
 
 function expectType<TType extends MessageRenderItem<FixtureMessage>['type']>(
@@ -1027,6 +1080,50 @@ describe('message render todo grouping', () => {
           { content: 'New work', status: 'in_progress' },
           { content: 'New follow-up', status: 'pending' },
         ],
+      });
+    });
+
+    it('does not let an old Task update carry later TaskCreate calls across a user boundary', () => {
+      const staleTask = tool(
+        'task-old',
+        'TaskCreate',
+        { subject: 'Old work' },
+        'create-old',
+      );
+      const newUserTurn: MessageRenderSourceMessageLike = {
+        role: 'user',
+        clientId: 'user-task-boundary',
+        content: '开始另一项工作',
+        createdAt: at(5),
+      };
+      const staleProgress = tool(
+        'task-old-progress',
+        'TaskUpdate',
+        { taskId: 'old', status: 'in_progress' },
+        'update-old',
+      );
+      const freshTask = tool(
+        'task-new',
+        'TaskCreate',
+        { subject: 'Current work' },
+        'create-new',
+      );
+
+      const latest = findLatestMessageTodoInsertion([
+        staleTask,
+        result('create-old', 'Task #old created successfully: Old work'),
+        newUserTurn,
+        // 指向旧 id 的更新可以合法穿过边界,但不能把 session 的所有权锚点
+        // 搬到新 turn,否则紧随其后的新 TaskCreate 会继续并入旧清单。
+        staleProgress,
+        freshTask,
+        result('create-new', 'Task #new created successfully: Current work'),
+      ]);
+
+      expect(latest).toMatchObject({
+        key: 'todo-task-new',
+        source: 'task',
+        todos: [{ content: 'Current work', status: 'pending' }],
       });
     });
 
@@ -1341,6 +1438,87 @@ describe('message render todo grouping', () => {
       insertion: {
         todos: [{ content: 'Fix renderer', status: 'in_progress' }],
       },
+    });
+  });
+
+  it('resolves a new Task session after a real user boundary despite an older orphan update', () => {
+    const orphanUpdate = tool(
+      'old-task-update',
+      'TaskUpdate',
+      { taskId: 'old', status: 'in_progress' },
+      'update-old',
+    );
+    const newUserTurn: MessageRenderSourceMessageLike = {
+      role: 'user',
+      clientId: 'user-2',
+      content: 'Start a new plan',
+    };
+    const first = tool('new-task-1', 'TaskCreate', { subject: 'Inspect renderer' }, 'create-new-1');
+    const second = tool('new-task-2', 'TaskCreate', { subject: 'Run tests' }, 'create-new-2');
+
+    expect(getLatestMessageTodoState([
+      orphanUpdate,
+      newUserTurn,
+      first,
+      result('create-new-1', 'Task #new-1 created successfully: Inspect renderer'),
+      second,
+      result('create-new-2', 'Task #new-2 created successfully: Run tests'),
+    ], { taskHistoryMayBeIncomplete: true })).toMatchObject({
+      isResolved: true,
+      insertion: {
+        key: 'todo-new-task-1',
+        todos: [
+          { content: 'Inspect renderer', status: 'pending' },
+          { content: 'Run tests', status: 'pending' },
+        ],
+      },
+    });
+  });
+
+  it('treats a visible real user row as the boundary of the first Task session in a paged window', () => {
+    const newUserTurn: MessageRenderSourceMessageLike = {
+      role: 'user',
+      clientId: 'user-1',
+      content: 'Start a plan',
+    };
+    const first = tool('task-1', 'TaskCreate', { subject: 'Inspect renderer' }, 'create-1');
+    const second = tool('task-2', 'TaskCreate', { subject: 'Run tests' }, 'create-2');
+
+    expect(getLatestMessageTodoState([
+      newUserTurn,
+      first,
+      result('create-1', 'Task #1 created successfully: Inspect renderer'),
+      second,
+      result('create-2', 'Task #2 created successfully: Run tests'),
+    ], { taskHistoryMayBeIncomplete: true })).toMatchObject({
+      isResolved: true,
+      insertion: {
+        key: 'todo-task-1',
+        todos: [
+          { content: 'Inspect renderer', status: 'pending' },
+          { content: 'Run tests', status: 'pending' },
+        ],
+      },
+    });
+  });
+
+  it('keeps a first TaskGet unresolved when a visible user row does not prove the old plan is complete', () => {
+    const newUserTurn: MessageRenderSourceMessageLike = {
+      role: 'user',
+      clientId: 'user-1',
+      content: 'Continue the existing task',
+    };
+    const getExisting = tool('task-get', 'TaskGet', { taskId: 'old' }, 'get-old');
+
+    expect(getLatestMessageTodoState([
+      newUserTurn,
+      getExisting,
+      result('get-old', JSON.stringify({
+        task: { id: 'old', subject: 'Inspect renderer', status: 'in_progress' },
+      })),
+    ], { taskHistoryMayBeIncomplete: true })).toMatchObject({
+      insertion: null,
+      isResolved: false,
     });
   });
 

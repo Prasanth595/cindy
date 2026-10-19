@@ -1,3 +1,4 @@
+export { parseModelDisplayPricing, type ModelDisplayPricing } from './modelDisplayPricing.js';
 /**
  * @cindy/model-providers — 模型供应商目录 + 路由抽象（纯逻辑，零 Electron / maker-core 运行时依赖）。
  *
@@ -6,6 +7,21 @@
  * - source：目录源解析与加载（公共 API / 旧 OSS / 本地 / bundled 兜底，IO 由 host 注入）
  * - registry：连接状态合成、按 agent 算可见性、resolveRoute 解析路由素材
  */
+
+export {
+  BYOK_CREDENTIALS_PATH,
+  BYOK_PROVIDERS_PATH,
+  isByokImageMode,
+  isByokProviderId,
+  parseByokCredentialsResponse,
+  parseByokProvidersResponse,
+} from './byok.js';
+export type {
+  ByokCredential,
+  ByokModel,
+  ByokProvider,
+  ByokProvidersResponse,
+} from './byok.js';
 
 export type {
   AgentKind,
@@ -19,33 +35,68 @@ export type {
   RoutingDescriptor,
   ModelCost,
   CatalogModel,
+  ProviderMediaModel,
   Provider,
   Catalog,
   CustomProviderConfig,
   CustomProviderRuntimeConfig,
+  ProviderModelDiscoverySource,
+  ProviderModelRouteConfig,
   ProviderRuntimeModelConfig,
   PiReasoningEffort,
+  PiModelApi,
+  NativeSubscriptionAuth,
   ProviderPreset,
   ProviderPresetRuntime,
   PresetSortRegion,
   OAuthAuthorizationCodeDescriptor,
   OAuthDeviceCodeDescriptor,
   OAuthProviderDescriptor,
-} from './types.js';
+} from "./types.js";
 
-export { PI_REASONING_EFFORTS } from './types.js';
+export { NATIVE_SUBSCRIPTION_AUTHS, NATIVE_SUBSCRIPTION_DEFAULT_PROVIDER_IDS, PI_MODEL_APIS, PI_REASONING_EFFORTS } from "./types.js";
+export { isLocalOnlyProviderForAgent, isOpenAiSubscriptionProvider, providerCatalogId, isCustomRoutedProvider, isOrganizationManagedProvider } from './provider-identity.js';
+export { sourceProviderForPreset } from './providerPresetIdentity.js';
+export { isMimoTokenPlanPreset } from './mimoPresentation.js';
 
-export { resolveCodexCompatibilityWireProtocol } from './codexCompatibility.js';
+export {
+  effectivePiWireProtocol,
+  preservesPiCatalogModels,
+  resolvePiModelRoute,
+  resolvePiModelWireProtocol,
+} from "./pi-catalog-marker.js";
+export type { ResolvedPiModelRoute } from "./pi-catalog-marker.js";
 
-export { BUNDLED_CATALOG, BUILTIN_PROVIDERS, parseCatalog, presetDisplayName, sanitizePresets, sortPresetsForRegion } from './catalog.js';
+export { resolveCodexCompatibilityWireProtocol } from "./codexCompatibility.js";
+export { modelProtocolComparison, nativeModelAgents } from "./modelProtocol.js";
 
-export { buildUserProvider, DEFAULT_CUSTOM_CONTEXT_WINDOW } from './user-provider.js';
+export {
+  BUNDLED_CATALOG,
+  BUILTIN_PROVIDERS,
+  claudeSubscriptionOnlyForClaudeCode,
+  parseCatalog,
+  presetDisplayName,
+  sanitizePresets,
+  sortPresetsForRegion,
+} from "./catalog.js";
+export { expandPresetModels } from "./presetModels.js";
+
+export {
+  buildUserProvider,
+  DEFAULT_CUSTOM_CONTEXT_WINDOW,
+  LEGACY_XAI_CUSTOM_PROVIDER_RUNTIME_ID,
+  projectXaiApiImageModels,
+  runtimeCustomProviderId,
+  storedCustomProviderId,
+  xaiApiOfficialRuntimeAgents,
+  XAI_API_CUSTOM_PROVIDER_ID,
+} from "./user-provider.js";
 export {
   appendProviderRequestPath,
   isLoopbackProviderUrl,
   isProviderRequestPath,
-} from './provider-url.js';
-export { findReservedOAuthExtraParam } from './provider-oauth.js';
+} from "./provider-url.js";
+export { findReservedOAuthExtraParam } from "./provider-oauth.js";
 
 export {
   CATALOG_API_PATH,
@@ -56,33 +107,40 @@ export {
   mergeWithBundled,
   loadCatalog,
   loadCatalogWithSource,
-} from './source.js';
+} from "./source.js";
 
 export {
   compareModelRegistryRevisions,
   decideModelRegistrySnapshot,
   findModelRegistryRoute,
+  resolveModelNativeApi,
+  resolveCatalogModelNativeApi,
   resolveModelReferencePrice,
-} from './modelRegistry.js';
-export { modelRegistryCanonicalJson } from './modelRegistryCanonical.js';
+  resolveBaseModelReferencePrice,
+} from "./modelRegistry.js";
+export { modelRegistryCanonicalJson } from "./modelRegistryCanonical.js";
 export {
   isModelCurrency,
   parseListModelsResponse,
   parseModelRegistry,
-} from './modelAccessValidator.js';
+} from "./modelAccessValidator.js";
 export type {
   ResolvedModelReferencePrice,
   ResolveModelReferencePriceOptions,
+  ResolveBaseModelReferencePriceOptions,
+  ModelReferencePriceSelection,
   ModelRegistryRevisionRelation,
   ModelRegistrySnapshotDecision,
-} from './modelRegistry.js';
-export * from './modelAccessBean.js';
+} from "./modelRegistry.js";
+export * from "./modelAccessBean.js";
 export type {
   CatalogSourceConfig,
   CatalogIO,
+  CatalogCapabilityEvidence,
+  CatalogXdMediaKind,
   CatalogLoadResult,
   CatalogLoadSource,
-} from './source.js';
+} from "./source.js";
 
 export {
   buildRegistry,
@@ -98,7 +156,7 @@ export {
   resolveRoute,
   modelSupportsFastMode,
   sessionModelSupportsFastMode,
-} from './registry.js';
+} from "./registry.js";
 export type {
   ConnectionState,
   ModelDiscoveryFailureState,
@@ -106,20 +164,35 @@ export type {
   ProviderModelDiscoveryFailureView,
   ProviderView,
   ResolvedRoute,
-} from './registry.js';
+} from "./registry.js";
 
 export {
   modelDisableKey,
   isModelDisabled,
+  isModelDisabledWithUniqueLegacyBasename,
   isProviderDisabled,
-} from './disableOverrides.js';
-export type { ModelDisableOverrides } from './disableOverrides.js';
-
-export { isModelVisible, buildProviderSections, visibleModelUnion, resolveModelIconKind } from './sections.js';
-export type { SectionModel, ProviderSection, ModelIconKind } from './sections.js';
+} from "./disableOverrides.js";
+export type { ModelDisableOverrides } from "./disableOverrides.js";
 
 export {
+  isModelVisible,
+  buildProviderSections,
+  visibleModelUnion,
+  resolveModelIconKind,
+} from "./sections.js";
+export type {
+  SectionModel,
+  ProviderSection,
+  ModelIconKind,
+} from "./sections.js";
+
+export {
+  modelDefaultEffort,
+  defaultEffortForCapabilities,
   resolveEffort,
+  resolveRequestedEffort,
+  composeAtomicModelSelection,
+  resolveIntentReselectEffort,
   resolveProviderSwitchEffort,
   clampEffortToSupported,
   EFFORT_VALUES,
@@ -127,25 +200,32 @@ export {
   lowestEffort,
   nearestSupportedEffort,
   reconcileInvocationEffort,
-} from './effortResolution.js';
+} from "./effortResolution.js";
+export { piSupportedEfforts } from "./piThinkingLevels.mjs";
 
 // ── 模型调用标准(2026-07 统一层)─────────────────────────────────────────────
 // 清单派生 / 分类徽章 / 调用合成的单点语义,desktop renderer+main 与 mobile 的全部
 // 模型消费面分期收口到这里(见 modelList.ts / classification.ts / invocation.ts 头注)。
-export { deriveModelList, deriveModelSections } from './modelList.js';
+export { deriveModelList, deriveModelSections } from "./modelList.js";
 export type {
   ModelSourceMeta,
   ModelListEntry,
   ModelListSection,
   DeriveModelListOptions,
   ProviderScope,
-} from './modelList.js';
+} from "./modelList.js";
 
 export {
   CHATGPT_MODEL_PREFIX,
   XAI_MODEL_PREFIX,
   SUBSCRIPTION_DIRECT_MODEL_PREFIXES,
+  CODEX_GATEWAY_WIRE_PREFIXES,
+  isCodexGatewayWireModel,
+  stripCodexGatewayWirePrefix,
   isSubscriptionDirectModel,
+  isExclusiveXaiModelId,
+  exclusiveXaiCatalogModelId,
+  isSubscriptionDirectRoute,
   CATEGORY_ORDER,
   CHAT_VENDOR_CATEGORY_ORDER,
   categorize,
@@ -158,13 +238,99 @@ export {
   isBudgetModel,
   modelBadges,
   formatContextWindow,
-} from './classification.js';
-export type { ModelCategory, DisplayModel, ModelBadges } from './classification.js';
+} from "./classification.js";
+export type {
+  ModelCategory,
+  DisplayModel,
+  ModelBadges,
+} from "./classification.js";
 
-export { resolveModelInvocation } from './invocation.js';
+// 统一模型选择器(模型优先)M1:推荐引擎推导 + 跨引擎联合列表(纯逻辑)。
+// 规格 docs/product-rules/model-selector-unified.md §2.1 / §2.2 / §4。
+export {
+  UNIFIED_AGENT_PRIORITY,
+  unifiedModelKeyId,
+  normalizeModelIdForClassification,
+  catalogModelIdCandidates,
+  findCatalogModel,
+  resolveWireModelId,
+  candidateAgentsForModel,
+  nativeAgentForProviderModel,
+  pickRecommendedAgent,
+  recommendedAgentForModel,
+  resolveAgentCapability,
+  unifiedModelEntries,
+  partitionEntriesByNativeAgent,
+  sortEntriesForAgent,
+} from "./unifiedSelection.js";
+export type {
+  SourceResolutionScope,
+  CandidateAgentsOptions,
+  UnifiedAgentCapability,
+  UnifiedModelEntry,
+  UnifiedModelEntriesOptions,
+} from "./unifiedSelection.js";
+
+export { resolveModelInvocation } from "./invocation.js";
 export type {
   InvocationPreferences,
   ScenarioDefaults,
   InvocationCatalogContext,
   ResolvedInvocation,
-} from './invocation.js';
+} from "./invocation.js";
+
+export {
+  classifyVisionCapability,
+  isKnownNoVisionModel,
+  isKnownVisionModel,
+  normalizeVisionModelId,
+} from "./visionCapability.js";
+export type { VisionCapability } from "./visionCapability.js";
+
+export {
+  parseLocalModelCatalog,
+  isLocalModelLibraryName,
+} from "./localModelCatalog.js";
+export type {
+  LocalModelCatalog,
+  LocalCatalogModel,
+  LocalModelVariant,
+  LocalGgufVariant,
+} from "./localModelCatalog.js";
+
+export {
+  resolveModelMetadata,
+  findBaseModel,
+  registryEntryDefaults,
+  expandedRegistryEntries,
+  pickModelMetadata,
+  MODEL_METADATA_FIELDS,
+  validModelMetadata,
+  mergeModelMetadata,
+} from "./modelMetadataLayers.js";
+export type { ModelMetadata, BaseModel } from "./modelMetadataLayers.js";
+
+export {
+  catalogModelMetadata,
+  applyModelMetadata,
+} from "./modelMetadataLayers.js";
+
+export { mergeDiscoveredRuntimeModels } from "./modelMetadataLayers.js";
+export type { DiscoveredModel } from "./modelMetadataLayers.js";
+
+export { runtimeUserModelMetadata } from "./modelMetadataLayers.js";
+
+export { PROVIDER_MEDIA_FIELDS, providerMediaField, projectProviderMediaModels } from "./providerMediaModels.js";
+
+export { PROVIDER_MODEL_CATALOG, providerModelRecord, providerModelGenerationRecord, providerModelAdapterId, providerPresetModelRecord, providerModelMetadata, providerCatalogForPi, providerModelsForRoute } from "./providerModelCatalog.js";
+
+export { parseModelsListResponse, isOpenRouterModelsUrl } from "./modelDiscovery.js";
+
+export type { ProviderModelRecord } from "./providerModelCatalog.js";
+
+export { providerEndpointBindings, bindProviderEndpoint, bindProviderPresetRuntime, canonicalProviderEndpoint } from "./providerEndpointTemplate.js";
+
+export { providerSetupLink } from './providerSetupLinks.js';
+export { providerPresetOAuth, providerPresetOAuthRuntimes, providerOAuthContract } from './providerPresetOAuth.js';
+
+export { alignModelApiRoute, providerWireProtocolForApi, providerBaseUrlForApi } from "./providerInterfaceRoutes.js";

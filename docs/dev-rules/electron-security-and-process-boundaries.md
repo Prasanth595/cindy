@@ -95,7 +95,10 @@ Renderer 可以负责组件渲染、交互状态、表单状态、展示数据�
    才显示冷窗口。超时只能展示已经挂载的 Loading 壳，不得展示空白窗口，也不得永久隐藏。
 3. **隐藏复用而非反复冷启动**：普通关闭转换为 `hide()`，再次打开复用同一 Renderer；
    主窗口真正销毁或应用退出时才 `destroy()`。隐藏／最小化必须暂停轮询、采样等后台重活，
-   再次显示时先展示保留快照并异步刷新。
+   再次显示时先展示保留快照并异步刷新。例外：承载实时会话的窗口（远程桌面查看器）
+   以 `pauseWhenHidden: false` 让会话跨越最小化、切换 Space 与原生全屏切换，只在用户
+   关闭窗口时结束——macOS 会把后两者及完全遮挡都报告成原生 hide；隐藏期间改由被控端
+   暂停视频（见 `protocol-compatibility.md`「远程桌面查看窗口隐藏时暂停视频」）。
 4. **隐藏时重置交互态**：必须清除焦点，并重置自绘窗口按钮、hover／pressed、确认框、
    选中项与待执行操作等瞬时状态，确保二次打开不会继承上次关闭时的视觉或交互状态。
 5. **使用真正的轻量入口**：独立窗口不得先进入完整 `App` 再在组件树内分流；使用独立的
@@ -127,6 +130,19 @@ webview）——所有例外都必须继续由 `webview-security.ts` 在 `will-a
 `setWindowOpenHandler` 拒绝真实弹窗并转成受控标签页。这是唯一允许的窄例外；Renderer
 不得自行添加 `allowpopups`。Ghost 面板更严格：专属 partition、无 Node、无通用 preload，
 身份由 Main 根据真实 `webContents` 反查。
+
+登录人机验证（captcha）webview 是 hardener 中与 ghost 同级的第三类受控分支
+（`LOGIN_CAPTCHA_PARTITION`，非 persist 内存分区）：`will-attach-webview` 阶段按
+`isAllowedLoginCaptchaUrl` 验明正身——协议（https，或 loopback http 兼容本地 dev
+auth-server）+ origin 命中 `setLoginCaptchaOriginResolver` 注入的 auth 端点集合 +
+路径精确等于托管挑战页（`@cindy/auth-client` 的 `CAPTCHA_CHALLENGE_PAGE_PATH`），
+验不过直接拒附加，绝不回落浏览器分区；attach 后零 preload、零弹窗，顶层导航仅放行
+同一白名单。挑战结果（Turnstile token）经托管页 `location.hash` 写入、宿主 renderer
+监听 `did-navigate-in-page` 读取——fragment 变更不产生网络请求，token 不进任何日志，
+也不需要新增 preload / IPC 注入面。主窗 CSP 保持不动：挑战页是独立 origin 的 guest
+文档，`installContentSecurityPolicy` 只注入 app 自有文档，`frame-src 'none'` 也不约束
+`<webview>`。回归用例钉在 `main/__tests__/webview-security.test.ts` 的 captcha 分区
+测试组。
 
 ## 4．preload 与 Context Bridge
 
@@ -169,6 +185,21 @@ webview）——所有例外都必须继续由 `webview-security.ts` 在 `will-a
 - 新增加载远程内容的 session 时，必须同时设置 `setPermissionRequestHandler` 与
   `setPermissionCheckHandler`，按最小权限默认拒绝；需要放行时必须校验真实来源与权限类型。
 
+### 正文视频网站播放器
+
+YouTube 视频组件复用内置浏览器的 `BROWSER_PARTITION` 持久会话、标准 WebView
+加固与原生弹窗路由。用户从播放器登录时，在 Cindy 浏览器完成授权，登录状态保留在同一
+会话中；不得另造无痕视频分区、阻断登录跳转或复制外部浏览器 Cookie。
+共享解析器从核验的视频 ID 生成 `https://www.youtube.com/embed/<video-id>`，
+不执行模型提供的任意 iframe/HTML。点击封面后装载，卸载时销毁 guest；切换焦点或打开
+登录页不会销毁播放器。主窗口 CSP、沙箱、上下文隔离和无 Node 的浏览器基线保持不变。
+
+播放器首次加载通过 WebView `httpreferrer` 提供当前 App ID。浏览器会话的单一请求头
+listener 仅匹配 YouTube `/embed/*`：来源缺失或登录返回变成 YouTube 自身时补上 App ID，
+已有网站嵌入来源原样保留。不注册第二个同会话 listener，也不触及 default session 的
+MCP 请求钩子。此身份要求来自 YouTube 官方文档，不伪装成第三方网站或改写 User-Agent。
+普通视频文件继续走原媒体播放器，原视频外链始终保留。
+
 ## 7．CSP、协议与 Electron Fuses
 
 - 应用 CSP 由 `main/security/csp.ts` 统一注入。不得另注册会覆盖它的
@@ -176,6 +207,11 @@ webview）——所有例外都必须继续由 `webview-security.ts` 在 `will-a
 - 正式包不得新增远程脚本或 `'unsafe-inline'`。现有 `'unsafe-eval'` 仅为 vendored drawio
   的已知例外；新增用途必须先做安全评估，不能顺手扩大 `script-src`、`connect-src` 或
   `frame-src`。
+- 所有插件 HTML 页面统一允许 HTTPS 图片：Host 生成的 CSP 只给 `img-src` 增加 `https:`，
+  owner × plugin session 的请求闸只额外放行
+  `protocol === "https:" && resourceType === "image"`。HTTP 图片、XHR／fetch、脚本、
+  样式表、字体、媒体、WebSocket 与其它协议保持拒绝，同 ghost 的 `cindy-ghost://` 资源照常
+  放行。不得把这项图片能力扩成通用网络口子；listener 继续按 partition 幂等注册。
 - 新的本地资源通道优先使用范围受控的自定义协议，不新增 `file://` 读取路径。主 Renderer
   仍使用 `file://` 是存量架构，迁移需要单独设计和验证，不能在普通功能 PR 中顺带改动。
 - 打包必须保留现有 Fuses：关闭 RunAsNode、Node options 和 CLI inspect，开启 cookie 加密、

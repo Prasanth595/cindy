@@ -28,9 +28,17 @@ import {
   type ScreenPoint,
 } from './windowBounds.js';
 import { readWindowBehaviorSettings } from './window-behavior-settings-store.js';
-import { resolveVibrancyConfig, type WindowsBackdropMaterial } from './vibrancyConfig.js';
+import { resolveVibrancyConfig } from './vibrancyConfig.js';
+import {
+  createWindowBackdropMaterialArgument,
+  WINDOW_BACKDROP_MATERIAL_CHANGED_CHANNEL,
+} from '../shared/windowBackdrop.js';
+import type { WindowsBackdropMaterial } from './vibrancyConfig.js';
 import { installSelectionContextMenu } from './selection-context-menu.js';
 import { applyAppearanceToWindow } from './appearance-settings-ipc.js';
+import { installWindowFullscreenStateBroadcast } from './mainWindowFullscreenStartup.js';
+import { resolveAppThemeIsDark } from './resolved-app-theme.js';
+import { readWindowThemeSnapshot } from './window-theme-mode-store.js';
 
 const log = createLogger('secondary-windows');
 
@@ -90,6 +98,7 @@ export function openSessionInNewWindow(
   mainWindow: BrowserWindow | null,
   deviceId?: string | null,
   anchorPoint?: ScreenPoint,
+  messageClientId?: string | null,
 ): void {
   const createdAt = performance.now();
   // frame 配置复刻主窗(bootstrap-electron.ts createWindow): Mac 隐藏标题栏留红绿灯,
@@ -98,7 +107,20 @@ export function openSessionInNewWindow(
     process.platform === 'darwin'
       ? { titleBarStyle: 'hidden' as const, trafficLightPosition: { x: 12, y: 16 } }
       : { frame: false };
-  const bgColor = nativeTheme.shouldUseDarkColors ? '#1f1f1e' : '#f8f8f6';
+  const persistedTheme = process.platform === 'win32' ? readWindowThemeSnapshot() : null;
+  const isDark = process.platform === 'win32'
+    ? resolveAppThemeIsDark(
+        nativeTheme.shouldUseDarkColors,
+        persistedTheme?.mode,
+        persistedTheme?.resolvedIsDark,
+      )
+    : nativeTheme.shouldUseDarkColors;
+  const bgColor = isDark ? '#1f1f1e' : '#f8f8f6';
+  const winBackdropConfig = resolveVibrancyConfig(
+    persistedTheme?.familyId ?? 'cindy',
+    isDark,
+    process.platform,
+  );
 
   const base = mainWindow && !mainWindow.isDestroyed() ? mainWindow.getBounds() : null;
   const requestedSize = base
@@ -130,10 +152,19 @@ export function openSessionInNewWindow(
     autoHideMenuBar: true,
     show: false,
     backgroundColor: bgColor,
+    ...(process.platform === 'win32' && winBackdropConfig.backgroundMaterial
+      ? {
+          backgroundMaterial: winBackdropConfig.backgroundMaterial,
+          backgroundColor: winBackdropConfig.backgroundColor,
+        }
+      : {}),
     acceptFirstMouse: !swallowActivationClick,
     ...platformOptions,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
+      additionalArguments: [
+        createWindowBackdropMaterialArgument(winBackdropConfig.backgroundMaterial ?? 'none'),
+      ],
       spellcheck: false,
       // A task drag that misses a renderer drop target must never navigate the
       // application window to the dragged plain-text fallback.
@@ -148,6 +179,9 @@ export function openSessionInNewWindow(
   });
   installNewMakerWindowShortcut(win);
   installSelectionContextMenu(win);
+  installWindowFullscreenStateBroadcast(win, {
+    getDisplayBounds: (bounds) => screen.getDisplayMatching(bounds).bounds,
+  });
   // E4D:副窗加入 set,供 vibrancy 动态开关;关闭时移除。
   secondaryWindows.add(win);
   win.once('closed', () => {
@@ -188,6 +222,7 @@ export function openSessionInNewWindow(
     url.searchParams.set('secondaryWindow', '1');
     url.searchParams.set('bootSession', sessionId);
     if (deviceId) url.searchParams.set('bootDevice', deviceId);
+    if (messageClientId) url.searchParams.set('bootMessage', messageClientId);
     url.hash = hash;
     void win.loadURL(url.toString());
   } else {
@@ -196,6 +231,7 @@ export function openSessionInNewWindow(
         secondaryWindow: '1',
         bootSession: sessionId,
         ...(deviceId ? { bootDevice: deviceId } : {}),
+        ...(messageClientId ? { bootMessage: messageClientId } : {}),
       },
       hash,
     });
@@ -252,7 +288,13 @@ export function applyVibrancyToSecondaryWindows(familyId: string, isDark: boolea
       const withMaterial = win as typeof win & {
         setBackgroundMaterial?: (material: WindowsBackdropMaterial) => void;
       };
-      withMaterial.setBackgroundMaterial?.(config.backgroundMaterial);
+      if (withMaterial.setBackgroundMaterial) {
+        withMaterial.setBackgroundMaterial(config.backgroundMaterial);
+        win.webContents.send(
+          WINDOW_BACKDROP_MATERIAL_CHANGED_CHANNEL,
+          config.backgroundMaterial,
+        );
+      }
     }
     win.setBackgroundColor(config.backgroundColor);
   }

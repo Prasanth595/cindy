@@ -1,20 +1,28 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   patchCardRaw: vi.fn(),
+  recallMessage: vi.fn(),
   sendCardRaw: vi.fn(),
   sendFile: vi.fn(),
   sendText: vi.fn(),
   uploadImage: vi.fn(),
+  claimPatchableOpener: vi.fn(() => null),
+  resolveMediaUrl: vi.fn((): string | null => null),
 }));
 
 vi.mock('../outbound.js', () => mocks);
-vi.mock('../moduleScope.js', () => ({
+vi.mock('../moduleScope.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../moduleScope.js')>()),
   getLog: () => ({ debug: vi.fn(), error: vi.fn(), warn: vi.fn() }),
+  getHost: () => ({
+    media: { resolveMediaUrl: mocks.resolveMediaUrl },
+    paths: { feishuMediaDir: '/tmp/feishu-media' },
+  }),
 }));
 
 import { messages } from '../messages.js';
-import { FEISHU_CARD_REQUEST_MAX_BYTES, start } from '../streamingText.js';
+import { FEISHU_CARD_REQUEST_MAX_BYTES, start, patchMarkdown } from '../streamingText.js';
 
 function markdownContent(card: unknown): string {
   return (card as { body: { elements: Array<{ content: string }> } }).body.elements[0].content;
@@ -29,7 +37,12 @@ describe('feishu streaming text', () => {
     vi.clearAllMocks();
     mocks.sendCardRaw.mockResolvedValue({ messageId: 'om_stream' });
     mocks.patchCardRaw.mockResolvedValue(undefined);
+    mocks.sendFile.mockResolvedValue({
+      ok: true,
+      messageId: 'om_primary_file',
+    });
     mocks.sendText.mockResolvedValue({ messageId: 'om_fallback' });
+    mocks.resolveMediaUrl.mockReturnValue(null);
   });
 
   it('keeps an in-limit final card unchanged', async () => {
@@ -37,6 +50,31 @@ describe('feishu streaming text', () => {
     await handle.finalize('正常正文');
 
     expect(markdownContent(mocks.patchCardRaw.mock.calls[0][1])).toBe('正常正文');
+  });
+
+  it.each(['', ' \n '])('recalls an empty final %j without a placeholder', async (text) => {
+    const handle = await start('ou_owner');
+    await handle.finalize(text);
+    await handle.finalize(text);
+    expect(mocks.recallMessage).toHaveBeenCalledExactlyOnceWith('om_stream');
+    expect(mocks.patchCardRaw).not.toHaveBeenCalled();
+    expect(mocks.sendText).not.toHaveBeenCalled();
+  });
+
+  it('recalls an existing interaction/opener card when its final is empty', async () => {
+    await patchMarkdown('om_opener', ' \n ');
+    expect(mocks.recallMessage).toHaveBeenCalledWith('om_opener');
+    expect(mocks.patchCardRaw).not.toHaveBeenCalled();
+  });
+
+  it('keeps attachment-only finals', async () => {
+    mocks.uploadImage.mockResolvedValue('image_key');
+    const handle = await start('ou_owner');
+    handle.addExtraImageAbsPath?.('/tmp/image.png');
+    await handle.finalize('');
+    expect(mocks.uploadImage).toHaveBeenCalledWith('/tmp/image.png');
+    expect(mocks.patchCardRaw).toHaveBeenCalled();
+    expect(mocks.recallMessage).not.toHaveBeenCalled();
   });
 
   it('truncates an oversized final card within Feishu request limits', async () => {
@@ -67,7 +105,7 @@ describe('feishu streaming text', () => {
     expect(markdownContent(card)).toBe(messages.streaming.deliveryFailed);
   });
 
-  it('patches a short user-visible notice when the final card shape is rejected', async () => {
+  it('patches a short notice when the primary final card is rejected', async () => {
     mocks.patchCardRaw.mockRejectedValueOnce(new Error('unsupported card shape'));
     const handle = await start('ou_owner');
     await handle.finalize('正文');
@@ -87,6 +125,22 @@ describe('feishu streaming text', () => {
     expect(mocks.sendText).toHaveBeenCalledWith(
       'ou_owner',
       messages.streaming.deliveryFailed,
+      undefined,
     );
+  });
+
+  it('still finalizes a streaming card when an inline image upload throws', async () => {
+    const absPath = '/cindy-media/missing.png';
+    mocks.resolveMediaUrl.mockReturnValue(absPath);
+    mocks.uploadImage.mockRejectedValue(new Error('file gone'));
+    const handle = await start('g/oc_group/omt_topic');
+
+    await expect(
+      handle.finalize('终态正文 ![坏](xdt-image://blob/missing.png)'),
+    ).resolves.toBeUndefined();
+
+    expect(mocks.uploadImage).toHaveBeenCalledTimes(1);
+    expect(mocks.patchCardRaw).toHaveBeenCalledTimes(1);
+    expect(markdownContent(mocks.patchCardRaw.mock.calls[0][1])).toContain('终态正文');
   });
 });

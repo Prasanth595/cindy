@@ -1,8 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   MOBILE_SUPPORTED_DESKTOP_COMMANDS,
   buildLearnCardData,
   buildLearnStartRequest,
+  executeMobileGoalCommand,
+  mergeMobileGoalCommand,
   filterMobileDesktopCommands,
   parseMobileDesktopCommand,
 } from '@/session/desktopSlashCommands';
@@ -53,8 +55,8 @@ describe('parseMobileDesktopCommand', () => {
     expect(parseMobileDesktopCommand('文本里提到 /learn 不算')).toBeNull();
   });
 
-  it('白名单集合当前只含 learn(新增命令需同步实现分流)', () => {
-    expect([...MOBILE_SUPPORTED_DESKTOP_COMMANDS]).toEqual(['learn']);
+  it('白名单集合包含已实现的 learn 和 goal', () => {
+    expect([...MOBILE_SUPPORTED_DESKTOP_COMMANDS]).toEqual(['learn', 'goal']);
   });
 });
 
@@ -80,6 +82,17 @@ describe('buildLearnStartRequest(语义对齐桌面 builtins.ts 的 /learn)', ()
       input: '按我们团队习惯改',
       sourceKind: 'hub',
       hubSlug: 'deploy-checklist',
+      hubCatalogScope: 'market',
+      originSessionId: 's-1',
+    });
+  });
+
+  it('hub:<scope>:<slug> 保留目录作用域', () => {
+    expect(buildLearnStartRequest('hub:team:deploy-checklist 精简', 's-1')).toEqual({
+      input: '精简',
+      sourceKind: 'hub',
+      hubSlug: 'deploy-checklist',
+      hubCatalogScope: 'team',
       originSessionId: 's-1',
     });
   });
@@ -102,5 +115,59 @@ describe('buildLearnCardData', () => {
   it('其它错误 → learn-failed 并保留原文', () => {
     expect(buildLearnCardData({ errorMessage: '[NOT_CONNECTED] not online' }))
       .toEqual({ error: 'learn-failed', detail: '[NOT_CONNECTED] not online' });
+  });
+});
+
+
+describe('mobile /goal business routing', () => {
+  const goalApi = () => ({ set: vi.fn().mockResolvedValue(undefined), clear: vi.fn().mockResolvedValue(undefined),
+    getStatus: vi.fn().mockResolvedValue({ objective: '目标', status: 'active' }),
+    pause: vi.fn(), resume: vi.fn(), update: vi.fn() });
+
+  it('shows Goal without loading the roster, and preserves a same-name Skill', () => {
+    expect(mergeMobileGoalCommand([], 'Goal Mode')).toEqual([{ kind: 'desktop', name: 'goal', description: 'Goal Mode' }]);
+    const skill = { kind: 'agent-skill', name: 'goal', description: 'skill' } as MobileSlashCommand;
+    expect(mergeMobileGoalCommand([skill], 'Goal Mode')).toEqual([skill]);
+    expect(parseMobileDesktopCommand('/goal target', [skill])).toBeNull();
+    expect(parseMobileDesktopCommand('/goal target')).toEqual({ name: 'goal', args: 'target' });
+    expect(filterMobileDesktopCommands([{ kind: 'desktop', name: 'goal', description: 'Goal Mode' }])).toHaveLength(1);
+  });
+
+  it('bare /goal opens the existing panel without setting a goal', async () => {
+    const api = goalApi();
+    expect(await executeMobileGoalCommand('', 's1', api)).toMatchObject({ command: { action: 'open-dialog' } });
+    expect(api.getStatus).toHaveBeenCalledExactlyOnceWith('s1');
+    expect(api.set).not.toHaveBeenCalled();
+    expect(api.clear).not.toHaveBeenCalled();
+  });
+
+  it('sets the actual task goal once and reads authoritative status', async () => {
+    const api = goalApi();
+    const result = await executeMobileGoalCommand('  目标  ', 'existing-task', api);
+    expect(api.set).toHaveBeenCalledExactlyOnceWith({ sessionId: 'existing-task', objective: '目标' });
+    expect(api.getStatus).toHaveBeenCalledWith('existing-task');
+    expect(result.status).toMatchObject({ objective: '目标', status: 'active' });
+  });
+
+  it.each(['clear', 'STOP', 'off', 'cancel', 'reset', 'none'])('clears for desktop alias %s', async args => {
+    const api = goalApi();
+    await executeMobileGoalCommand(args, 's1', api);
+    expect(api.clear).toHaveBeenCalledExactlyOnceWith('s1');
+    expect(api.set).not.toHaveBeenCalled();
+  });
+
+  it('propagates unsupported/connection errors, never falls through to a message', async () => {
+    const api = goalApi();
+    api.set.mockRejectedValue(new Error('[CHANNEL_NOT_ALLOWED] old host'));
+    await expect(executeMobileGoalCommand('目标', 's1', api)).rejects.toThrow('CHANNEL_NOT_ALLOWED');
+    expect(api.set).toHaveBeenCalledOnce();
+    expect(api.getStatus).not.toHaveBeenCalled();
+  });
+
+  it('does not replay goal.set when only status refresh fails', async () => {
+    const api = goalApi();
+    api.getStatus.mockRejectedValue(new Error('offline'));
+    expect((await executeMobileGoalCommand('目标', 's1', api)).status).toBeUndefined();
+    expect(api.set).toHaveBeenCalledOnce();
   });
 });

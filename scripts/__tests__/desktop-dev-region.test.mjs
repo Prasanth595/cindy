@@ -4,7 +4,7 @@ import test from "node:test";
 
 import {
   applyDesktopDevStartupConfig,
-  clearInheritedIsolationOverrides,
+  applyWorktreeIsolationEnv,
   desktopUserDataDirForRegion,
   desktopUserDataDirNameForRegion,
   resolveDesktopDevRegion,
@@ -19,7 +19,10 @@ test("desktop shared userData follows the region identity", () => {
   assert.equal(desktopUserDataDirNameForRegion("global"), "CindyGlobal");
   assert.equal(desktopUserDataDirNameForRegion("cn"), "Cindy");
   assert.equal(desktopUserDataDirNameForRegion("dev"), "CindyDev");
-  assert.throws(() => desktopUserDataDirNameForRegion("us"), /expected cn, global or dev/);
+  assert.throws(
+    () => desktopUserDataDirNameForRegion("us"),
+    /expected cn, global or dev/,
+  );
 });
 
 test("desktop userData path follows platform appData rules and selected region", () => {
@@ -28,7 +31,12 @@ test("desktop userData path follows platform appData rules and selected region",
     "/Users/tester/Library/Application Support/CindyGlobal",
   );
   assert.equal(
-    desktopUserDataDirForRegion("cn", "linux", { XDG_CONFIG_HOME: "/tmp/config" }, "/home/tester"),
+    desktopUserDataDirForRegion(
+      "cn",
+      "linux",
+      { XDG_CONFIG_HOME: "/tmp/config" },
+      "/home/tester",
+    ),
     "/tmp/config/Cindy",
   );
   assert.equal(
@@ -44,10 +52,7 @@ test("desktop userData path follows platform appData rules and selected region",
 
 test("desktop dev region defaults to global and keeps the legacy env fallback", () => {
   assert.equal(resolveDesktopDevRegion([], {}), "global");
-  assert.equal(
-    resolveDesktopDevRegion([], { CINDY_AUTH_REGION: "cn" }),
-    "cn",
-  );
+  assert.equal(resolveDesktopDevRegion([], { CINDY_AUTH_REGION: "cn" }), "cn");
 });
 
 test("desktop dev region accepts both CLI forms and overrides the legacy env", () => {
@@ -179,12 +184,12 @@ test("direct dev consumes the region flag before launching Electron Forge", () =
   ]);
 });
 
-test("an explicit endpoint manifest override remains higher priority than the region default", () => {
+test("local server debugging retains its endpoint manifest", () => {
   assert.deepEqual(
     resolveDesktopDevStartupConfig({
       argv: ["--region=global"],
       env: { XDT_ENDPOINT_MANIFEST_FILE: "config/custom-endpoint.json" },
-      mode: "remote",
+      mode: "local",
     }),
     {
       region: "global",
@@ -418,54 +423,144 @@ test("bare dev:remote with --preserve-running in a worktree is isolated (no sile
   );
 });
 
-test("clearInheritedIsolationOverrides drops host-inherited launch overrides", () => {
-  // 宿主 --isolated Desktop → agent 继承的启动覆写，会覆盖 worktree 自动隔离注入的
-  // 沙箱语义（review-pr P1，PR #2640）。命中隔离时必须清除，让沙箱目录/deviceId
-  // 由注入的 XDT_ISOLATED / XDT_ISOLATED_NAME 正常派生。
-  const base = {
-    XDT_USER_DATA_DIR: "C:\\host\\sandbox",
-    XDT_USER_DATA_DIR_EPOCH: "1",
-    XDT_DEVICE_ID_OVERRIDE: "dev-host-abc",
-    XDT_ISOLATED: "1",
-    XDT_ISOLATED_NAME: "host-sandbox",
-    XDT_SCHEDULER_PASSIVE: "1",
-  };
-  const cleared = clearInheritedIsolationOverrides(base);
-  assert.equal(cleared.XDT_USER_DATA_DIR, undefined);
-  assert.equal(cleared.XDT_USER_DATA_DIR_EPOCH, undefined);
-  assert.equal(cleared.XDT_DEVICE_ID_OVERRIDE, undefined);
-  // 其它字段保留（注入的隔离意图 + 无关变量不动）
-  assert.equal(cleared.XDT_ISOLATED, "1");
-  assert.equal(cleared.XDT_ISOLATED_NAME, "host-sandbox");
-  assert.equal(cleared.XDT_SCHEDULER_PASSIVE, "1");
-  // 纯函数：不改入参
-  assert.equal(base.XDT_USER_DATA_DIR, "C:\\host\\sandbox");
-  // 无覆写时原样返回
-  assert.deepEqual(clearInheritedIsolationOverrides({ A: "1" }), { A: "1" });
-});
+// ── 自动隔离的环境处理（review-pr P1，PR #2640）──────────────────────────────
 
-test("isolation injection must truly delete inherited keys (Object.assign would keep them)", () => {
-  // 回归钉住（review-pr P1, PR #2640）：Object.assign(env, cleared) 只复制存在的属性、
-  // 不删除目标上的旧键——继承的宿主覆写会残留并覆盖沙箱语义。注入块必须直接 delete。
-  const env = {
+test("applyWorktreeIsolationEnv clears host-inherited launch overrides and injects the sandbox", () => {
+  // 宿主 dev Desktop → agent 子进程：XDT_DESKTOP_DEV_MODE 是 wrapper 注入 Electron
+  // 的继承信号；userData / epoch / device override / passive / 旧隔离名都可能是宿主
+  // 残留，必须清除，否则 resolveDevCliFlags 会复用宿主 profile/deviceId。
+  const inherited = {
+    XDT_DESKTOP_DEV_MODE: "remote",
     XDT_USER_DATA_DIR: "C:\\host\\sandbox",
     XDT_USER_DATA_DIR_EPOCH: "1",
     XDT_DEVICE_ID_OVERRIDE: "dev-host-abc",
     XDT_SCHEDULER_PASSIVE: "1",
-    XDT_ISOLATED_NAME: "old",
+    XDT_ISOLATED_NAME: "host-sandbox",
+    UNRELATED: "keep",
   };
-  // 模拟 dev-remote-env 命中自动隔离的注入块
-  delete env.XDT_USER_DATA_DIR;
-  delete env.XDT_USER_DATA_DIR_EPOCH;
-  delete env.XDT_DEVICE_ID_OVERRIDE;
-  delete env.XDT_SCHEDULER_PASSIVE;
-  env.XDT_ISOLATED = "1";
-  env.XDT_ISOLATED_NAME = "epic-thompson";
+  const env = applyWorktreeIsolationEnv(inherited, "epic-thompson");
   assert.equal(env.XDT_USER_DATA_DIR, undefined);
   assert.equal(env.XDT_USER_DATA_DIR_EPOCH, undefined);
   assert.equal(env.XDT_DEVICE_ID_OVERRIDE, undefined);
-  // 继承的 passive 也清除：独立沙箱无 primary，不该被动模式（review-pr P1）
   assert.equal(env.XDT_SCHEDULER_PASSIVE, undefined);
   assert.equal(env.XDT_ISOLATED, "1");
   assert.equal(env.XDT_ISOLATED_NAME, "epic-thompson");
+  assert.equal(env.UNRELATED, "keep");
+  // 宿主信号本身保留（wrapper 会重新注入），便于下游诊断
+  assert.equal(env.XDT_DESKTOP_DEV_MODE, "remote");
+  // 纯函数：不改入参
+  assert.equal(inherited.XDT_USER_DATA_DIR, "C:\\host\\sandbox");
+  assert.equal(inherited.XDT_ISOLATED_NAME, "host-sandbox");
+});
+
+test("applyWorktreeIsolationEnv clears restart-derived userData even without the dev-host marker", () => {
+  // XDT_USER_DATA_DIR_EPOCH=1 是 restart 派生目录的可信纪元信号；裸 dev 路径上出现
+  // 它只可能是继承自宿主（restart 链路自身带 XDT_RESTART_MANAGED，不会进入自动隔离）。
+  const env = applyWorktreeIsolationEnv(
+    {
+      XDT_USER_DATA_DIR: "/host/sandbox",
+      XDT_USER_DATA_DIR_EPOCH: "1",
+      XDT_DEVICE_ID_OVERRIDE: "dev-host-abc",
+    },
+    "epic-thompson",
+  );
+  assert.equal(env.XDT_USER_DATA_DIR, undefined);
+  assert.equal(env.XDT_USER_DATA_DIR_EPOCH, undefined);
+  assert.equal(env.XDT_DEVICE_ID_OVERRIDE, undefined);
+  assert.equal(env.XDT_ISOLATED, "1");
+  assert.equal(env.XDT_ISOLATED_NAME, "epic-thompson");
+});
+
+test("applyWorktreeIsolationEnv respects a human-set userData override", () => {
+  // 人肉在 shell 里显式设 XDT_USER_DATA_DIR（无宿主信号）时按 docs「已手动设则尊重」
+  // 保留；自动隔离只补隔离意图与独立 deviceId，不静默改目录（review-pr P1, PR #2640）。
+  const env = applyWorktreeIsolationEnv(
+    { XDT_USER_DATA_DIR: "D:\\my\\custom-profile", XDT_DEVICE_ID_OVERRIDE: "my-device" },
+    "epic-thompson",
+  );
+  assert.equal(env.XDT_USER_DATA_DIR, "D:\\my\\custom-profile");
+  assert.equal(env.XDT_DEVICE_ID_OVERRIDE, "my-device");
+  assert.equal(env.XDT_ISOLATED, "1");
+  assert.equal(env.XDT_ISOLATED_NAME, "epic-thompson");
+});
+
+test("applyWorktreeIsolationEnv drops an inherited isolation name when the worktree name is invalid", () => {
+  // worktree 名不合法 → 回落默认沙箱；若沿用宿主 --isolated=<名> 留下的名字，
+  // userData/deviceId 会落回宿主沙箱（review-pr P1, PR #2640）。
+  const env = applyWorktreeIsolationEnv(
+    { XDT_ISOLATED_NAME: "host-sandbox", XDT_DESKTOP_DEV_MODE: "remote" },
+    null,
+  );
+  assert.equal(env.XDT_ISOLATED, "1");
+  assert.equal(env.XDT_ISOLATED_NAME, undefined);
+});
+
+test("applyWorktreeIsolationEnv leaves unrelated env untouched and never mutates its input", () => {
+  const original = { A: "1" };
+  assert.deepEqual(applyWorktreeIsolationEnv(original, null), {
+    A: "1",
+    XDT_ISOLATED: "1",
+  });
+  assert.deepEqual(original, { A: "1" });
+});
+
+test("remote dev replaces inherited manifests for every selected region", () => {
+  const manifests = {
+    cn: "config/endpoint.json",
+    global: "config/endpoint.global.json",
+    dev: "config/endpoint.dev.json",
+  };
+  for (const inherited of [
+    ...Object.values(manifests),
+    "config/custom-endpoint.json",
+  ]) {
+    for (const [region, manifest] of Object.entries(manifests)) {
+      const env = {
+        CINDY_AUTH_REGION: "cn",
+        VITE_CINDY_AUTH_REGION: "cn",
+        XDT_ENDPOINT_MANIFEST_FILE: inherited,
+      };
+      applyDesktopDevStartupConfig({ argv: [`--region=${region}`], env });
+      assert.equal(env.CINDY_AUTH_REGION, region);
+      assert.equal(env.VITE_CINDY_AUTH_REGION, region);
+      assert.equal(env.XDT_ENDPOINT_MANIFEST_FILE, manifest);
+      // The downstream dev wrapper parses the environment again without CLI flags.
+      applyDesktopDevStartupConfig({ argv: [], env });
+      assert.equal(env.XDT_ENDPOINT_MANIFEST_FILE, manifest);
+    }
+  }
+});
+
+test("switching regions in the same environment also switches the endpoint file", () => {
+  const env = {};
+  for (const region of ["cn", "global", "dev", "cn"]) {
+    const config = applyDesktopDevStartupConfig({
+      argv: [`--region=${region}`],
+      env,
+    });
+    assert.equal(config.region, region);
+    assert.equal(
+      env.XDT_ENDPOINT_MANIFEST_FILE,
+      `config/endpoint${region === "cn" ? "" : `.${region}`}.json`,
+    );
+  }
+});
+
+test("remote CDN startup removes inherited files and remains CDN through the child wrapper", () => {
+  for (const argv of [
+    ["--region=global", "--endpoints-cdn"],
+    ["--region=global"],
+  ]) {
+    const env = {
+      XDT_ENDPOINT_MANIFEST_FILE: "config/endpoint.json",
+      XDT_ENDPOINTS_CDN: "1",
+    };
+    applyDesktopDevStartupConfig({ argv, env });
+    assert.equal(env.XDT_ENDPOINT_MANIFEST_FILE, undefined);
+    assert.deepEqual(applyDesktopDevStartupConfig({ argv: [], env }), {
+      region: "global",
+      endpointsCdn: true,
+      endpointManifestFile: undefined,
+    });
+  }
 });

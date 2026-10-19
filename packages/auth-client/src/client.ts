@@ -5,10 +5,11 @@ import {
   accountDeletionChallengeSchema,
   accountDeletionStatusSchema,
   accountMembershipSchema,
+  accountTokenPairSchema,
   authRegionSchema,
   desktopAuthorizationPollSchema,
-  loginMethodSchema,
   loginOutcomeSchema,
+  recognizeLoginMethods,
   meResponseSchema,
   providerConfigSchema,
   ssoOrgDiscoverySchema,
@@ -18,6 +19,7 @@ import {
   type AccountDeletionChallenge,
   type AccountDeletionStatus,
   type AccountMembership,
+  type AccountTokenPair,
   type AuthMe,
   type AuthTokenPair,
   type AuthRegion,
@@ -33,6 +35,7 @@ import {
 export interface AuthFetchResponse {
   ok: boolean;
   status: number;
+  headers?: { get(name: string): string | null };
   json(): Promise<unknown>;
 }
 
@@ -62,10 +65,33 @@ export class AuthApiError extends Error {
     public readonly code: string,
     public readonly statusCode: number,
     message: string,
+    public readonly retryAt?: number,
   ) {
     super(message);
     this.name = "AuthApiError";
   }
+}
+
+/** Accept Retry-After seconds or HTTP-date; never invent a cooldown. */
+export function retryAfterDeadline(response: Pick<AuthFetchResponse, "headers">): number | undefined {
+  const value = response.headers?.get("retry-after")?.trim();
+  if (!value) return undefined;
+  const now = Date.now();
+  let deadline: number;
+  if (/^\d+$/.test(value)) {
+    deadline = now + Number(value) * 1000;
+  } else {
+    // Date.parse also accepts ambiguous numbers; HTTP dates must name a month.
+    if (!/[A-Za-z]{3}/.test(value)) return undefined;
+    const date = Date.parse(value);
+    const serverDate = Date.parse(response.headers?.get("date") ?? "");
+    deadline = Number.isFinite(serverDate)
+      ? now + Math.max(0, date - serverDate)
+      : date;
+  }
+  return Number.isSafeInteger(deadline) && deadline >= 0 && deadline <= 8.64e15
+    ? Math.max(now, deadline)
+    : undefined;
 }
 
 /**
@@ -114,10 +140,28 @@ export class CindyAuthClient {
   async discover(email: string): Promise<LoginMethod[]> {
     const result = await this.request(
       "/api/auth/discovery",
-      z.object({ methods: z.array(loginMethodSchema) }),
+      z.object({ methods: z.array(z.unknown()) }),
       { email },
     );
-    return result.methods;
+    let methods: LoginMethod[];
+    try {
+      methods = recognizeLoginMethods(result.methods);
+    } catch {
+      throw new AuthApiError(
+        "INVALID_RESPONSE",
+        200,
+        "Authentication server returned a malformed known login method",
+      );
+    }
+    // 列表非空却没有一项能识别：仍按契约漂移失败，避免空 method-choice 假成功。
+    if (result.methods.length > 0 && methods.length === 0) {
+      throw new AuthApiError(
+        "INVALID_RESPONSE",
+        200,
+        "Authentication server returned no recognized login methods",
+      );
+    }
+    return methods;
   }
 
   /** 企业 SSO 入口：组织 ID、slug 或已验证域名 → 已启用的 SSO 连接。 */
@@ -148,11 +192,17 @@ export class CindyAuthClient {
     return discovery;
   }
 
-  async requestCode(kind: VerificationKind, identifier: string): Promise<void> {
-    const body =
-      kind === "email"
-        ? { email: identifier, locale: this.options.locale }
-        : { phone: identifier, locale: this.options.locale };
+  async requestCode(
+    kind: VerificationKind,
+    identifier: string,
+    options: { captchaToken?: string } = {},
+  ): Promise<void> {
+    const body = {
+      ...(kind === "email" ? { email: identifier } : { phone: identifier }),
+      locale: this.options.locale,
+      // 仅有值时携带：旧 auth-server 的 zod 会忽略未知字段，但保持最小请求面。
+      ...(options.captchaToken ? { captchaToken: options.captchaToken } : {}),
+    };
     await this.request(
       `/api/auth/${kind}/request-code`,
       z.object({ status: z.literal("sent") }),
@@ -214,10 +264,12 @@ export class CindyAuthClient {
       "/api/auth/desktop/callback/poll",
       desktopAuthorizationPollSchema,
       { pollSecret, deviceId: this.options.deviceId },
-      { timeoutMs: DESKTOP_AUTHORIZATION_POLL_TIMEOUT_MS, signal: options.signal },
+      {
+        timeoutMs: DESKTOP_AUTHORIZATION_POLL_TIMEOUT_MS,
+        signal: options.signal,
+      },
     );
   }
-
 
   exchangeNativeSocial(
     provider: SocialProvider,
@@ -311,6 +363,24 @@ export class CindyAuthClient {
       "/api/auth/account/exchange",
       tokenPairSchema,
       { membershipId },
+      { token: accountToken },
+    );
+  }
+
+  refreshAccount(accountRefreshToken: string): Promise<AccountTokenPair> {
+    return this.request(
+      "/api/auth/account/refresh",
+      accountTokenPairSchema,
+      { accountRefreshToken, deviceId: this.options.deviceId },
+      { timeoutMs: 0 },
+    );
+  }
+
+  async logoutAccount(accountToken: string): Promise<void> {
+    await this.request(
+      "/api/auth/account/logout",
+      z.object({ status: z.literal("ok") }),
+      {},
       { token: accountToken },
     );
   }
@@ -467,6 +537,8 @@ export class CindyAuthClient {
         throw this.describeTransportFailure(error, external);
       }
 
+      const retryAt =
+        response.status === 429 ? retryAfterDeadline(response) : undefined;
       let data: unknown;
       try {
         data = await response.json();
@@ -474,6 +546,14 @@ export class CindyAuthClient {
         // body 读取同样可能因取消/超时中断,此时按传输失败归类而不是"响应非法 JSON"
         if (error instanceof Error && error.name === "AbortError") {
           throw this.describeTransportFailure(error, external);
+        }
+        if (response.status === 429) {
+          throw new AuthApiError(
+            "RATE_LIMITED",
+            429,
+            "Too many requests",
+            retryAt,
+          );
         }
         throw new AuthApiError(
           "INVALID_RESPONSE",
@@ -483,15 +563,20 @@ export class CindyAuthClient {
       }
       if (!response.ok) {
         const parsed = errorResponseSchema.safeParse(data);
-        const code = parsed.success
-          ? (parsed.data.error?.code ?? parsed.data.code ?? "AUTH_REQUEST_FAILED")
-          : "AUTH_REQUEST_FAILED";
+        const code =
+          response.status === 429
+            ? "RATE_LIMITED"
+            : parsed.success
+              ? (parsed.data.error?.code ??
+                parsed.data.code ??
+                "AUTH_REQUEST_FAILED")
+              : "AUTH_REQUEST_FAILED";
         const message = parsed.success
           ? (parsed.data.error?.message ??
             parsed.data.message ??
             "Authentication request failed")
           : "Authentication request failed";
-        throw new AuthApiError(code, response.status, message);
+        throw new AuthApiError(code, response.status, message, retryAt);
       }
       const parsed = schema.safeParse(data);
       if (!parsed.success) {

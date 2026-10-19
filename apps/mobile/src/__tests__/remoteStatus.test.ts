@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import { DeviceLinkError } from '@cindy/device-link';
 import {
   connectionRecoverySyncRetryDelayMs,
@@ -9,10 +9,15 @@ import {
   formatRemoteError,
   humanizeRemoteError,
   isAutoRecoveringRemoteError,
+  isSessionRunningRemoteError,
   relayStatusHint,
   relayStatusLabel,
 } from '@/device-link/remoteStatus';
 import { i18n } from '@/i18n';
+
+beforeAll(async () => {
+  await i18n.changeLanguage('zh-CN');
+});
 
 describe('remoteStatus', () => {
   it('backs repeated connection recovery syncs off and caps the delay', () => {
@@ -37,7 +42,9 @@ describe('remoteStatus', () => {
     expect(describeRemoteError("[CHANNEL_NOT_ALLOWED] channel 'x'")).toContain('版本不支持');
     expect(describeRemoteError('[ACCESS_REVOKED] revoked')).toContain('撤销手机访问权限');
     expect(describeRemoteError('[NOT_CONNECTED] offline')).toBe(i18n.t('session.screen.networkReconnecting'));
-    expect(describeRemoteError('unknown failure')).toBe('unknown failure');
+    expect(describeRemoteError('unknown failure')).toBe(i18n.t('deviceLink.remoteError.unclassified'));
+    expect(describeRemoteError('[NOT_FOUND] Session does not exist')).toBe(i18n.t('deviceLink.remoteError.notFound'));
+    expect(describeRemoteError('REMOTE_WORKDIR_NOT_FOUND missing folder')).not.toBe(i18n.t('deviceLink.remoteError.notFound'));
   });
 
   it('preserves structured remote error codes for banner classification', () => {
@@ -49,6 +56,20 @@ describe('remoteStatus', () => {
       '[REMOTE_DISABLED] remote disabled',
     );
     expect(formatRemoteError(new Error('[NOT_CONNECTED] offline'))).toBe('[NOT_CONNECTED] offline');
+  });
+
+  it('recognizes a host refusal because the task is still running', () => {
+    // 被控端 handler 抛 `[SESSION_RUNNING] ...`,经隧道到手机时外层 code 是 IPC_ERROR。
+    expect(isSessionRunningRemoteError(
+      new DeviceLinkError('IPC_ERROR' as never, '[SESSION_RUNNING] Session s1 is running a turn'),
+    )).toBe(true);
+    expect(isSessionRunningRemoteError(
+      Object.assign(new Error('Session s1 has background activity'), { code: 'SESSION_RUNNING' }),
+    )).toBe(true);
+    expect(isSessionRunningRemoteError(
+      new DeviceLinkError('IPC_ERROR' as never, '[NOT_FOUND] Message 不存在或不可删除'),
+    )).toBe(false);
+    expect(isSessionRunningRemoteError(new DeviceLinkError('NOT_CONNECTED', 'offline'))).toBe(false);
   });
 
   it('keeps the composer writable for automatic recovery, but blocks deterministic failures', () => {
@@ -76,6 +97,9 @@ describe('remoteStatus', () => {
     expect(describeRemoteComposerBlockingError("[CHANNEL_NOT_ALLOWED] channel 'x'"))
       .toContain('版本不支持');
     expect(describeRemoteComposerBlockingError(null)).toBeNull();
+    expect(describeRemoteComposerBlockingError('unknown failure')).toBeNull();
+    expect(describeRemoteComposerBlockingError('OUTBOX_STORAGE_INVALID')).toBeNull();
+    expect(describeRemoteComposerBlockingError('[BAD_REQUEST] nope')).toBeNull();
   });
 
   it('localizes Stop connection recovery errors without dropping their structured classification', async () => {
@@ -106,6 +130,8 @@ describe('remoteStatus', () => {
       expect(connectionIssueTitle('too-many-connections')).toBe('Too many connections');
       expect(connectionIssueHint('version-mismatch')).toContain('Update to the latest version');
       expect(connectionIssueTitle('unstable')).toBe('Connection keeps dropping');
+      expect(connectionIssueTitle('device-removed')).toBe('Device removed');
+      expect(connectionIssueHint('device-removed')).toContain('Sign out');
     } finally {
       await i18n.changeLanguage(previousLanguage);
     }

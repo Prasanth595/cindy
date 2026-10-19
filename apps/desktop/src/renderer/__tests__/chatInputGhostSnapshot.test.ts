@@ -14,42 +14,39 @@ describe('ChatInput Ghost snapshot contract', () => {
 
   it('derives the $ palette from the workdir-filtered installed snapshot', () => {
     expect(source).toContain(
-      'const ghostsForCommand = useMemo(\n    () => filterGhostsForWorkdir(installedGhosts, workingDir),',
+      'const ghostsForCommand = pluginsForMenu;',
     );
     expect(source).toContain(
       'const ghostCommandItems = useMemo(() => {\n    if (!isGhostSigil) return [];\n    return ghostsForCommand',
     );
-    expect(source).toContain('}, [ghostsForCommand, isGhostSigil, t]);');
+    expect(source).toContain('}, [ghostSourceLabels, ghostsForCommand, isGhostSigil, t]);');
   });
 
   it('uses the latest installed snapshot and workdir at send time', () => {
     expect(source).toContain('const installedGhostsRef = useRef(installedGhosts);');
     expect(source).toContain('installedGhostsRef.current = installedGhosts;');
     expect(source).toMatch(
-      /const eligibleGhosts\s*=\s*filterGhostsForWorkdir\(\s*installedGhostsRef\.current,\s*workingDirRef\.current,\s*\);[\s\S]*?expandGhostCommand\(text,\s*eligibleGhosts\)/,
+      /const eligibleGhosts: GhostCommandSource\[\]\s*=\s*sourceRemoteGhosts \?\? filterGhostsForWorkdir\(\s*installedGhostsRef\.current,\s*workingDirRef\.current,\s*\);[\s\S]*?expandGhostCommand\(text,\s*eligibleGhosts\)/,
     );
   });
 
   it('does not expose controller-local plugin rows in device-link sessions', () => {
-    expect(source).toContain('if (deviceLinkDeviceId) return [];');
+    expect(source).toContain('useInstalledGhosts(deviceLinkDeviceId === null)');
+    expect(source).toContain('? remoteComposerGhosts.ghosts');
     expect(source).toContain(
       '[deviceLinkDeviceId, pluginsForMenu, pluginAvailableIds, remoteHostId, t]',
     );
   });
 
-  it('revalidates Host capability chips as enabled and local at send time', () => {
-    expect(source).toContain(
-      'const canUseLocalHostCapability = !remoteHostId && !deviceLinkDeviceId;',
-    );
+  it('uses serialized text for the local plan-mode command', () => {
     expect(source).toMatch(
-      /serializedHostCapability && canUseLocalHostCapability[\s\S]*?candidate\.enabled &&[\s\S]*?candidate\.manifest\.id === serializedHostCapability\.ghostId/,
+      /isPlanModeComposerCommandText\(\s*editorText,?/,
     );
-    expect(source).toContain("toast.warning(t('newChat.pluginSetup.error.TARGET_UNAVAILABLE'));");
   });
 
-  it('does not consume Host capability text as a local plan-mode command', () => {
-    expect(source).toMatch(
-      /if \(\s*!serializedHostCapability &&\s*isPlanModeComposerCommandText\(/,
-    );
+  it('persists the explicit no-effort sentinel for Cindy Make creation', () => {
+    expect(source).toContain("const selectedEffort = composerSelection.display.effort ?? initialEffort ?? '';");
+    expect(source).toContain('effort: selectedEffort,');
+    expect(source).not.toContain('...(initialEffort === null ? {} : { effort: activeEffort })');
   });
 });

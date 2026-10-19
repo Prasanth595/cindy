@@ -1,13 +1,22 @@
 /**
- * pendingFirstMessage —— 跨路由把"NewMaker 草稿首条消息"递交给真实 SessionView。
+ * pendingFirstMessage —— 跨路由把「还不能在草稿页发出的首条」递交给真实 SessionView。
  *
- * 流程:
- *   NewMakerDraftRoute.handleSend
- *     → createSession() 拿到 newId
- *     → setPending(newId, { text, files })
- *     → navigate('/cc-agent/' + newId)
+ * 本机新建的普通文本不走这里:草稿路由 createSession 后直接 sendMessage,再 navigate。
+ * 切走只换画面,发送在 makerChatStore 里继续,不依赖 SessionView hydrate。
+ * SessionView 会当成斜杠命令的本机首条(列首 /cmd,以及 Pi 空白前缀)仍走 setPending:
+ * desktop / Pi 分派必须等 SessionView 挂上(SSH 跳过控制端 skill、远端 /review 拒绝、
+ * Pi runtime 重试),不能在草稿路由复制一套。
+ *
+ * device-link 远程草稿的普通首条同样不走这里:对端建会话之后,草稿路由直接交给
+ * makerChatStore 的远程发件队列,切走也会送达。仍走这套交接的远程首条只有开了协同
+ * (首轮要排在被控端起 Worker 之后,不能挡在 navigate 前面)与斜杠命令两类:
+ *
+ *   NewMakerDraftRoute.handleSend(远程,协同 / 斜杠命令)
+ *     → 对端 create-session 拿到 remoteSessionId
+ *     → setPending(remoteSessionId, { text, files, remoteCollab? })
+ *     → navigate('/cc-agent/' + remoteSessionId)
  *   CCAgentSessionView mount
- *     → consumePending(newId) → sendMessage(text, files)
+ *     → consumePending(id) → (可选开协同) → sendMessage(text, files)
  *
  * 仅内存(模块级 Map):app 重启意味着发送链路被打断,丢弃不持久化。
  * 一次性消费(consume 即删):防止重复发送。
@@ -19,6 +28,7 @@
 import type { AttachedFile, MentionedResource } from '@/lib/fileTypes';
 import type { PastedTextRange, SlashCommandRange } from '@/lib/imageRef';
 import type { AgentInputReference } from '@cindy/maker-shared/agent-input-projection';
+import type { DeferredUiAssignment } from '@/features/cc-agent/deferredUiAssignment';
 
 /**
  * device-link 草稿开了协同时,把「开协同」这件事一起交接给 SessionView(issue #1170)。
@@ -34,6 +44,8 @@ export interface PendingRemoteCollab {
   deviceId: string;
   /** enableOrca 入参,已按被控端的模型 / 供应商目录收窄。 */
   options: Record<string, unknown>;
+  /** 老被控端不支持延迟派单时，保留新建 Lead 的待发送输入作为兼容上下文。 */
+  pendingLeadInput?: string;
 }
 
 export interface PendingPayload {
@@ -47,6 +59,8 @@ export interface PendingPayload {
   slashCommandRanges?: SlashCommandRange[];
   /** 非空 = 发首轮之前先在被控端开协同(见 PendingRemoteCollab)。 */
   remoteCollab?: PendingRemoteCollab;
+  /** 本机 Worker 已创建但尚未派单；首条消息 accepted 后再派。 */
+  deferredUiAssignment?: DeferredUiAssignment;
   /** 调试用——createPending 时刻,过期清理时可参考(目前未做 GC,实际场景 navigate 立即消费)。 */
   createdAt: number;
 }
@@ -114,8 +128,9 @@ export function consumePendingGoal(sessionId: string): PendingGoalPayload | null
 // ─── 远程协同交接的可恢复副本 ──────────────────────────────────────────────────
 //
 // 为什么只有 remoteCollab 这条路径要落盘(greptile P1):
-// 其余创建路径的 setPending → navigate → mount → consume → sendMessage 是一串毫秒级
-// 步骤,内存 Map 与渲染进程同生共死不构成实际风险。而 **device-link 远程交接**这条不同 ——
+// 本机普通文本已在草稿路由直接 sendMessage。仍走 setPending 的是 device-link
+// 远程草稿,以及本机必须交给 SessionView 分派的斜杠命令首条(含 Pi 空白前缀)。
+// **device-link 远程交接**和本机不同 ——
 // consume 之后还要 await 隧道往返:开协同要等被控端起 Worker(正常一两秒,慢设备会一路走到
 // 30s 隧道超时再加 6×3s 回查),起目标之前还要先 await 一次 `deviceLink.subscribe`
 // (同样是 invoke,同样可能走到 30s)。这段时间用户输入只存在于渲染进程内存里,

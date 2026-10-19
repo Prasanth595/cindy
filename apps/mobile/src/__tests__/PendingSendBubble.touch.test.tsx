@@ -1,0 +1,202 @@
+// @vitest-environment jsdom
+import { act, type ReactNode } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import type { GestureResponderEvent } from 'react-native';
+import { PendingSendBubble, type PendingSendBubbleActions } from '@/session/PendingSendBubble';
+import { MessageBodyText } from '@/session/ShareMessageCheckbox';
+import type { MobilePendingSendItem } from '@/session/pendingSendItems';
+import { collectMobileMessageGalleryImages, lightboxImagesForPayload } from '@/session/messageGallery';
+
+const { handlers, frames, durableThumbs } = vi.hoisted(() => ({
+  handlers: new Map<string, Record<string, unknown>>(),
+  frames: new Map<number, FrameRequestCallback>(),
+  durableThumbs: new Map<string, string>(),
+}));
+vi.mock('react-native', async () => {
+  const { createElement } = await import('react');
+  const view = (tag: string) => (props: Record<string, unknown> & { children?: ReactNode }) => {
+    if (props.testID) handlers.set(String(props.testID), props);
+    return createElement(tag, { 'data-testid': props.testID, onClick: props.disabled ? undefined : props.onPress }, props.children);
+  };
+  return { View: view('div'), Text: view('span'), Pressable: view('button'), ActivityIndicator: () => null,
+    StyleSheet: { create: (styles: unknown) => styles, hairlineWidth: 1 } };
+});
+vi.mock('@/components/AppText', async () => ({ Text: (await import('react-native')).Text }));
+vi.mock('lucide-react-native', () => ({ Check: () => null, AlertCircle: () => null, ArrowUp: () => null,
+  ListEnd: () => null, Paperclip: () => null, Pencil: () => null, RotateCcw: () => null, Trash2: () => null,
+  Bot: () => null, Ghost: () => null, Send: () => null, Timer: () => null,
+  Monitor: () => null, Smartphone: () => null }));
+vi.mock('@/session/SentInlineAtomBody', () => ({ SentInlineAtomBody: () => null }));
+vi.mock('@/session/sentAttachmentThumbStore', () => ({ getSentAttachmentThumbUri: (ref: string) => durableThumbs.get(ref) ?? null,
+  useSentAttachmentThumbsVersion: () => 0 }));
+vi.mock('react-i18next', () => ({ initReactI18next: { type: '3rdParty', init: () => undefined },
+  useTranslation: () => ({ t: (key: string) => key }) }));
+vi.mock('@/theme', async () => {
+  const tokens = await import('@/theme/tokens');
+  return { ...tokens, useTheme: () => ({ colors: tokens.lightColors }),
+    useThemedStyles: (make: (colors: typeof tokens.lightColors) => unknown) => make(tokens.lightColors) };
+});
+
+let root: Root;
+let host: HTMLDivElement;
+let frameId = 0;
+const select = vi.fn();
+const openLink = vi.fn();
+const openImage = vi.fn();
+const removeOutbox = vi.fn();
+const item: MobilePendingSendItem = {
+  type: 'pending_send', key: 'message-a', clientId: 'a', phase: 'queued', text: 'hello',
+  queueIndex: 1, sentInlineTokens: [], thumbs: [], fileCount: 0, attachmentCount: 0, uploadedCount: 0,
+  errorText: null, hint: null, actions: {
+    remove: { disabled: false, disabledReason: null }, edit: { disabled: false, disabledReason: null },
+    steer: { disabled: false, disabledReason: null },
+  },
+};
+beforeEach(() => {
+  vi.useFakeTimers();
+  vi.clearAllMocks();
+  handlers.clear(); frames.clear();
+  durableThumbs.clear();
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+  vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => { frames.set(++frameId, cb); return frameId; });
+  vi.stubGlobal('cancelAnimationFrame', (id: number) => frames.delete(id));
+  host = document.createElement('div'); root = createRoot(host);
+});
+afterEach(() => { act(() => root.unmount()); vi.useRealTimers(); vi.unstubAllGlobals(); });
+function show(
+  overrides: Partial<MobilePendingSendItem> = {},
+  selectedClientId: string | null = null,
+  viewerDeviceId: string | null = null,
+) {
+  handlers.clear();
+  const actions: PendingSendBubbleActions = { selectedClientId, onSelect: select, onRemove: vi.fn(),
+    onBeginEdit: vi.fn(), onSteer: vi.fn(), onRetryOutbox: vi.fn(), onRemoveOutbox: removeOutbox };
+  act(() => root.render(<PendingSendBubble item={{ ...item, ...overrides }} actions={actions} viewerDeviceId={viewerDeviceId}
+    onOpenImage={openImage}
+    renderImage={() => null} renderFile={() => null}
+    renderText={() => <MessageBodyText testID="link" onPress={openLink}>link</MessageBodyText>} />));
+}
+function touch(type: 'Start' | 'Move' | 'End' | 'Cancel', x = 0, y = 0, count = type === 'End' ? 0 : 1) {
+  const handler = handlers.get('pendingSend.body.a')?.[`onTouch${type}`] as ((e: GestureResponderEvent) => void) | undefined;
+  act(() => handler?.({ nativeEvent: { pageX: x, pageY: y, touches: Array(count).fill({}) } } as GestureResponderEvent));
+}
+function flush() {
+  act(() => { for (const [id, callback] of [...frames]) { frames.delete(id); callback(0); } });
+}
+it.each([null, 'a'])('toggles the same message for selection %s, allowing finger jitter', (selected) => {
+  show({}, selected); touch('Start'); touch('Move', 3, 2); touch('End', 3, 2);
+  expect(select).not.toHaveBeenCalled(); flush(); flush();
+  expect(select.mock.calls).toEqual([[selected ? null : 'a']]);
+});
+it.each(['move', 'end', 'cancel', 'long', 'multi', 'disabled', 'unmount', 'recycle', 'deselect'])(
+  'does not commit a %s gesture', (kind) => {
+    show(); touch('Start');
+    if (kind === 'move') touch('Move', 30);
+    if (kind === 'cancel') touch('Cancel');
+    if (kind === 'long') vi.advanceTimersByTime(500);
+    if (kind === 'multi') touch('Start', 0, 0, 2);
+    if (kind === 'disabled') show({ actions: null, phase: 'sending' });
+    touch('End', kind === 'end' ? 30 : 0);
+    if (kind === 'unmount') act(() => root.render(null));
+    if (kind === 'recycle') show({ clientId: 'b' });
+    if (kind === 'deselect') show({}, 'a');
+    flush(); expect(select).not.toHaveBeenCalled();
+  },
+);
+it('lets an in-flight local outbox message open its cancel action', () => {
+  show({ actions: null, phase: 'sending', queueIndex: null });
+  touch('Start'); touch('End'); flush();
+  expect(select).toHaveBeenCalledWith('a');
+
+  show({ actions: null, phase: 'sending', queueIndex: null }, 'a');
+  act(() => host.querySelector<HTMLElement>('[data-testid="pendingSend.outboxRemove.a"]')!.click());
+  expect(removeOutbox).toHaveBeenCalledWith('a');
+});
+it('lets a real body link consume the pending tap before the frame commits', () => {
+  show(); touch('Start'); touch('End');
+  act(() => host.querySelector<HTMLElement>('[data-testid="link"]')!.click());
+  flush(); expect(openLink).toHaveBeenCalledOnce(); expect(select).not.toHaveBeenCalled();
+});
+it.each(['queued', 'uploading', 'sending', 'settling', 'editing', 'failed'] as const)(
+  'previews a %s image without changing queue selection or cancelling the send', (phase) => {
+    show({ phase, thumbs: [{ key: 'a-slot-0', uri: 'file:///photo.jpg', ossRef: null,
+      uploading: phase === 'uploading' }], attachmentCount: 1 });
+    act(() => host.querySelector<HTMLElement>('[data-testid="pendingSend.image.a-slot-0"]')!.click());
+    flush();
+    expect(openImage).toHaveBeenCalledOnce();
+    expect(openImage.mock.calls[0][0]).toMatchObject({ kind: 'media', media: {
+      kind: 'image', url: 'file:///photo.jpg', previewable: true,
+    } });
+    expect(select).not.toHaveBeenCalled();
+    expect(removeOutbox).not.toHaveBeenCalled();
+  },
+);
+it('opens the host original rather than its local thumbnail and preserves expanded queue actions', () => {
+  show({ thumbs: [{ key: 'a-slot-0', uri: 'file:///photo.jpg', ossRef: 'cindy-media://blobs/photo.jpg',
+    uploading: false }], attachmentCount: 1 }, 'a');
+  act(() => host.querySelector<HTMLElement>('[data-testid="pendingSend.image.a-slot-0"]')!.click());
+  expect(openImage.mock.calls[0][0].media).toMatchObject({
+    url: 'cindy-media://blobs/photo.jpg', previewable: false,
+  });
+  expect(select).not.toHaveBeenCalled();
+  expect(host.querySelector('[data-testid="pendingSend.actions.a"]')).not.toBeNull();
+});
+it('keeps an unavailable upload reference disabled until a local image becomes available', () => {
+  const thumb = { key: 'a-slot-0', uri: null, ossRef: 'cindy-oss-attach://photo', uploading: false };
+  show({ thumbs: [thumb] });
+  expect(handlers.get('pendingSend.image.a-slot-0')?.disabled).toBe(true);
+  act(() => host.querySelector<HTMLElement>('[data-testid="pendingSend.image.a-slot-0"]')!.click());
+  expect(openImage).not.toHaveBeenCalled();
+  show({ thumbs: [{ ...thumb, uri: 'file:///photo.jpg' }] });
+  expect(handlers.get('pendingSend.image.a-slot-0')?.disabled).toBe(false);
+  act(() => host.querySelector<HTMLElement>('[data-testid="pendingSend.image.a-slot-0"]')!.click());
+  expect(openImage).toHaveBeenCalledOnce();
+});
+it('opens the full gallery when a durable copy arrives after the thumbnail locks its temporary URI', () => {
+  const thumbs = [0, 1].map((index) => ({ key: `a-slot-${index}`, uri: `file:///temporary-${index}.jpg`,
+    ossRef: `cindy-oss-attach://photo-${index}`, uploading: false }));
+  show({ thumbs, attachmentCount: 2 });
+  durableThumbs.set(thumbs[1].ossRef, 'file:///durable-1.jpg');
+  show({ thumbs, attachmentCount: 2 });
+  act(() => host.querySelector<HTMLElement>('[data-testid="pendingSend.image.a-slot-1"]')!.click());
+  const payload = openImage.mock.calls[0][0];
+  const gallery = collectMobileMessageGalleryImages([{ ...item, thumbs, attachmentCount: 2 }]);
+  expect(lightboxImagesForPayload(gallery, payload, item.key)).toHaveLength(2);
+  expect(payload.galleryImageSlot).toBe(1);
+  expect(payload.media.url).toBe('file:///temporary-1.jpg');
+  expect(gallery[1].url).toBe('file:///durable-1.jpg');
+  expect(select).not.toHaveBeenCalled();
+});
+it('captures the clicked slot without skipping an earlier unreadable thumbnail', () => {
+  const thumbs = [
+    { key: 'a-slot-0', uri: null, ossRef: null, uploading: true },
+    { key: 'a-slot-1', uri: 'file:///clicked.jpg', ossRef: null, uploading: false },
+  ];
+  show({ thumbs, attachmentCount: 2 });
+  expect(handlers.get('pendingSend.image.a-slot-0')?.disabled).toBe(true);
+  act(() => host.querySelector<HTMLElement>('[data-testid="pendingSend.image.a-slot-1"]')!.click());
+  expect(openImage.mock.calls[0][0]).toMatchObject({ galleryImageKey: 'a-slot-1', galleryImageSlot: 1 });
+  expect(select).not.toHaveBeenCalled();
+});
+it('shows the source label above the bubble and announces it with the queued message', () => {
+  show({ source: { kind: 'automation', label: '由自动化「巡检」发送' } });
+  const label = host.querySelector('[data-testid="pendingSend.source.a"]');
+  expect(label?.textContent).toBe('由自动化「巡检」发送');
+  expect(handlers.get('pendingSend.source.a')?.accessibilityLabel).toBe('由自动化「巡检」发送');
+  expect(handlers.get('pendingSend.badge.queued')?.accessibilityLabel).toBe('message.queue.withSource');
+  show();
+  expect(host.querySelector('[data-testid="pendingSend.source.a"]')).toBeNull();
+  expect(handlers.get('pendingSend.badge.queued')?.accessibilityLabel).toBe('message.queue.queuedMessageLabel');
+});
+
+it('labels queued input from another device, hides it on the sending device, and keeps it editable', () => {
+  const sourceDevice = { deviceId: 'phone-a', name: 'iPhone', platform: 'mobile' as const };
+  show({ sourceDevice }, null, 'mac-1');
+  expect(host.querySelector('[data-testid="pendingSend.sourceDevice.a"]')?.textContent).toContain('iPhone');
+  // 测试里 t 原样返回 key:读屏提示是设备 ID 文案。
+  expect(handlers.get('pendingSend.sourceDevice.a')?.accessibilityHint).toBe('message.renderer.sourceDeviceId');
+  show({ sourceDevice }, null, 'phone-a');
+  expect(host.querySelector('[data-testid="pendingSend.sourceDevice.a"]')).toBeNull();
+});
+

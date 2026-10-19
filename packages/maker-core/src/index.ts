@@ -15,6 +15,7 @@ export * from './interfaces/index.js';
 
 // agents
 export * from './agents/index.js';
+export * from './agents/pi/managed-command.js';
 export { evaluatePiProjectTrust, piProjectKey } from './agents/pi/project-trust.js';
 export {
   assertReviewMessageContentPaths,
@@ -24,7 +25,7 @@ export {
   resolveReviewReadPath,
   type ReviewReadGrant,
 } from './agents/shared/review-read-scope.js';
-export { isReviewSensitiveCredentialPath } from './agents/shared/sensitive-credential-paths.js';
+export { isReviewSensitiveCredentialPath, isSensitiveCredentialPath } from './agents/shared/sensitive-credential-paths.js';
 
 // codex app-server transport interface — host 实现自定义 transport (e.g. SSH-bridged
 // for remote codex) 时需要这个接口形状。
@@ -40,6 +41,19 @@ export type {
   DynamicToolCallResponse,
 } from './agents/codex/app-server/protocol.js';
 
+// pi transport interface — host 实现自定义 transport (SSH-bridged remote pi) 时需要。
+export type {
+  PiTransport,
+  PiTransportCloseInfo,
+  PiLineHandler,
+  PiCloseHandler,
+  PiOversizedFrameHandler,
+} from './agents/pi/transport.js';
+// pi 远端 agentHome 文件操作原语(host 经 SSH 实现)。
+export type { PiRemoteFileOps } from './agents/base-agent.js';
+// 设备托管会话的链路往来快照(host 的任务隧道记录)。
+export type { DeviceHostedLinkActivity } from './agents/base-agent.js';
+
 // core
 export * from './session.js';
 export * from './session-send-outcome.js';
@@ -52,12 +66,21 @@ export {
   MemoryStorage,
   sanitizeWorkdir,
   buildMemoryScopeKey,
+  buildBotMemoryScopeKey,
+  parseBotMemoryScopeKey,
   memoryScopeDirName,
   buildFilename,
   parseFilename,
   validateSlug,
+  SSH_SCOPE_KEY_PREFIX,
   type MemoryStorageMeta,
 } from './memory/storage.js';
+export {
+  resolveMemoryScopeKey,
+  __clearMemoryScopeKeyCacheForTests,
+  type GitProbe,
+  type ResolveMemoryScopeKeyDeps,
+} from './memory/scope-resolver.js';
 export { MemoryFts } from './memory/fts.js';
 export {
   MakerMemoryStore,
@@ -72,6 +95,7 @@ export {
   type SetEnabledResult,
   type SqliteFactory,
 } from './memory/manager.js';
+export { isBotMcpServerAllowed } from './agents/shared/bot-runtime-policy.js';
 export {
   MemoryFlushController,
   DEFAULT_FLUSH_THRESHOLDS,
@@ -105,3 +129,5 @@ export {
   type MakerContactsManagerDeps,
   type ContactsSqliteFactory,
 } from './contacts/manager.js';
+
+export { LIBRARY_READ_ROOT, parseLibraryAssetRef, resolveLibraryAssetPath } from './agents/shared/library-native-read.js';

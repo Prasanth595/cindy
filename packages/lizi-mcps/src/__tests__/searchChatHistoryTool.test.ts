@@ -54,6 +54,14 @@ function parse(result: XdtHelperToolResult) {
 }
 
 describe('search_chat_history tool', () => {
+  it('超长 query → INVALID_ARGS (zod)', async () => {
+    const { registry, searchChatHistory } = setup(makeResult());
+    const res = await registry.call('search_chat_history', { query: '边'.repeat(257) });
+    expect(res.isError).toBe(true);
+    expect(parse(res)).toMatchObject({ ok: false, errorCode: 'INVALID_ARGS' });
+    expect(searchChatHistory).not.toHaveBeenCalled();
+  });
+
   it('缺 query → INVALID_ARGS (zod)', async () => {
     const { registry, searchChatHistory } = setup(makeResult());
     const res = await registry.call('search_chat_history', {});
@@ -74,6 +82,20 @@ describe('search_chat_history tool', () => {
     expect(args.offset).toBe(0);
     expect(args.sessionIds).toBeNull();
     expect(args.fromMs).toBeNull();
+  });
+
+  it('unwraps XML-style {item:[...]} folded session_ids and roles arrays', async () => {
+    // glm 兼容层把数组参数序列化成 <item> 重复标签(同 #6369/images 病),不得报 INVALID_ARGS。
+    const { registry, searchChatHistory } = setup(makeResult());
+    const res = await registry.call('search_chat_history', {
+      query: '登录报错',
+      session_ids: { item: ['s-1', 's-2'] },
+      roles: { item: ['user'] },
+    });
+    expect(res.isError).toBeFalsy();
+    const args = searchChatHistory.mock.calls[0][0];
+    expect(args.sessionIds).toEqual(['s-1', 's-2']);
+    expect(args.roles).toEqual(['user']);
   });
 
   it('非法 from ISO → INVALID_ARGS, 不调 host', async () => {

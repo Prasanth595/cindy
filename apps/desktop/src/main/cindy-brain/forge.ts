@@ -6,39 +6,156 @@
  *   喂给 agent——替代"人读的作者文档",同事对 AI 说"帮我做个 XX 意识"即可;
  * - packGhostDir:源码目录 → 校验(与装入同一套 validateGhostManifest)→
  *   打包 .cindy 到源码目录自身(id-version.cindy,同名覆盖;shouldSkip 跳过
- *   *.cindy 防套娃)。装入确认弹窗由调用方(mcp-integrations 接线)经双击
- *   转交通道触发,本文件不碰 UI。
+ *   *.cindy 防套娃),并同时返回内存里的 `buf`。作者副本给人拿走;安装链路
+ *   必须用 `buf` 直写 Host staging,不能从源码目录回读。打包与发布编排由
+ *   调用方(mcp-integrations 接线)处理,本文件不碰 UI。
  *
- * 安全边界:agent 能写意识源码(它本来就有文件工具),但打包必须过校验、
- * 装入必须过用户确认框(默认沉睡)——与手动拖 .cindy 完全同一条门。
+ * 安全边界:agent 能写意识源码(它本来就有文件工具),但打包与装入都必须过
+ * 同一套清单/真实包校验；首装与权限变多的更新还要用户在任务里确认(ghostInstallConsent.ts)。
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
+import { promisify } from 'node:util';
 
 import JSZip from 'jszip';
 
 import {
+  authorDeclaredNamespaceReason,
+  PLUGIN_MEMBER_UPLOAD_MAX_ARCHIVE_BYTES,
+  PLUGIN_MEMBER_UPLOAD_MAX_UNCOMPRESSED_BYTES,
+  PLUGIN_MEMBER_UPLOAD_MAX_ZIP_ENTRIES,
+} from '@cindy/plugin-protocol';
+
+import {
   GHOST_ICON_MAX_BYTES,
   GHOST_INSTALL_MANIFEST_MAX_BYTES,
+  GHOST_MANUAL_ENTRY_FILE,
+  GHOST_MANUAL_MD_MAX_BYTES,
   GHOST_MANIFEST_FILE,
   GHOST_MANIFEST_SUMMARY_MAX_CHARS,
   GHOST_SKILL_MD_MAX_BYTES,
+  isValidNewGhostId,
   validateGhostManifest,
   type GhostManifest,
 } from '../../shared/ghost.js';
-import { GHOST_MANIFEST_MAX_BYTES, readBoundedFileNoFollow } from '../utils/readBoundedFile.js';
+import {
+  GHOST_MANIFEST_MAX_BYTES,
+  readBoundedFileNoFollow,
+  readBoundedFileNoFollowWithStat,
+} from '../utils/readBoundedFile.js';
+import {
+  decodeGhostManualMarkdown,
+  ghostManualLogicalPathForEntry,
+} from './ghostManualValidation.js';
 import { validateGhostLocaleResourcesInDirectory } from './ghostLocaleFiles.js';
 import { GHOST_SIGNATURE_FILE } from './ghostSignature.js';
+import {
+  ARCHIVE_REGULAR_0644,
+  unixRegularFilePermissionsForArchive,
+} from './ghostZipPermissions.js';
+import { isPathInsideDir } from './dirDeposit.js';
+import { brokerRedirectPortDeclarationIssue } from './ghostBrokerRedirectPort.js';
 import { checkSkillMdConsistency } from './skillSlot.js';
 
-/** 与 GhostManager 装入侧同一量级的上限(打包侧提前拦,fail fast)。 */
+/**
+ * `fs.promises.realpath` 没有 native 变体,promisify 一次(scaffold/pack 的受管根
+ * 与 workdir 门都靠它拿到规范路径再比对)。
+ */
+const realpathNative = promisify(fs.realpath.native);
+
+/**
+ * 解析已存在祖先的真身、保留尚不存在的尾段,让受管根在首次落盘前就可比对。
+ */
+async function resolveThroughExistingAncestor(inputPath: string): Promise<string> {
+  let cursor = path.resolve(inputPath);
+  const tail: string[] = [];
+  while (true) {
+    try {
+      const real = await realpathNative(cursor);
+      return path.join(real, ...tail);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      const parent = path.dirname(cursor);
+      if (parent === cursor) return path.resolve(inputPath);
+      tail.unshift(path.basename(cursor));
+      cursor = parent;
+    }
+  }
+}
+
+/**
+ * 逐段确认一个已存在目录路径没有 symlink / junction 祖先。
+ *
+ * 不能用 `realpath(path) === path` 判断：Windows 的 8.3 短路径会被 realpath
+ * 展开成长路径，二者文本不同但每一段仍都是普通目录。逐段 lstat 才能既放行
+ * 这种合法别名，又继续拒绝真正的 reparse-point 祖先。
+ */
+async function pathHasLinkSegment(inputPath: string): Promise<boolean> {
+  const resolved = path.resolve(inputPath);
+  const root = path.parse(resolved).root;
+  let current = root;
+  const relative = path.relative(root, resolved);
+  for (const segment of relative.split(path.sep).filter(Boolean)) {
+    current = path.join(current, segment);
+    const stat = await fs.promises.lstat(current);
+    if (!stat.isSymbolicLink()) continue;
+    // macOS exposes os.tmpdir() under `/var` while realpath resolves it to
+    // `/private/var`. This system alias is safe; links created below the temp
+    // root remain rejected by the ordinary segment check.
+    const tempRoot = path.resolve(os.tmpdir());
+    const targetRel = path.relative(tempRoot, resolved);
+    if (targetRel.startsWith(`..${path.sep}`) || path.isAbsolute(targetRel)) return true;
+    try {
+      const realSegment = await realpathNative(current);
+      const realTempRoot = await realpathNative(tempRoot);
+      const tempRel = path.relative(realSegment, realTempRoot);
+      if (
+        tempRel === '' ||
+        tempRel.startsWith(`..${path.sep}`) ||
+        path.isAbsolute(tempRel) ||
+        !(await fs.promises.stat(current)).isDirectory()
+      ) {
+        return true;
+      }
+    } catch {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * 与 GhostManager 装入侧同一量级的上限(打包侧提前拦,fail fast)。
+ *
+ * node 档三个上限**直接引用协议常量**,不再手抄数字:同一份 `.cindy` 之后会被
+ * plugin-server 的成员发布链路按这三个值权威校验(`docs/plugin-server.md`
+ * 「企业成员上传」),打包侧放行、发布侧拒收是最难排查的一类不一致。basic 档
+ * 是 Forge 自己的产品判断(小包更快更稳),与发布上限无关,保持本地常量。
+ *
+ * ZIP 条目口径:协议与服务端数的是**所有 ZIP entry**,Forge 数的是**文件**。
+ * 两者相等的前提是包里不含自动补出的目录 entry —— 见下面 `createFolders: false`。
+ */
 const MAX_BASIC_FILES = 256;
-const MAX_NODE_FILES = 2_048;
+const MAX_NODE_FILES = PLUGIN_MEMBER_UPLOAD_MAX_ZIP_ENTRIES;
 const MAX_BASIC_TOTAL_BYTES = 32 * 1024 * 1024;
-const MAX_NODE_TOTAL_BYTES = 256 * 1024 * 1024;
+const MAX_NODE_TOTAL_BYTES = PLUGIN_MEMBER_UPLOAD_MAX_UNCOMPRESSED_BYTES;
 const MAX_BASIC_CINDY_BYTES = 8 * 1024 * 1024;
-const MAX_NODE_CINDY_BYTES = 128 * 1024 * 1024;
+const MAX_NODE_CINDY_BYTES = PLUGIN_MEMBER_UPLOAD_MAX_ARCHIVE_BYTES;
+
+/**
+ * JSZip 默认 `createFolders: true`,会为 `a/b/c.txt` 自动补出 `a/` 与 `a/b/`
+ * 两个目录 entry。Forge 只数文件,plugin-server 数所有 entry,于是「2 个文件」
+ * 在服务端是「4 个 entry」——带目录层级的包逼近上限时会被发布侧拒掉,而打包侧
+ * 看不出任何问题。
+ *
+ * 关掉它让两侧口径按构造相等,而不是让 Forge 去模仿 JSZip 的补目录算法。
+ * 装入侧不依赖目录 entry:`GhostManager` 解包时对 `entry.dir` 一律 `mkdir` 后
+ * `continue`,而写文件那条分支本来就会 `mkdir(path.dirname(dest))`,目录照样建得出来。
+ * 空目录两种设置下都不进包(Forge 只收集普通文件),所以也不存在丢空目录的问题。
+ */
+const ZIP_FILE_OPTIONS = { createFolders: false } as const;
 const FORGE_AI_ICON_PATH = 'assets/icon.png';
 
 /** 打包时跳过的目录/文件(源码目录里的开发残留,不属于意识本体)。 */
@@ -50,10 +167,19 @@ function shouldSkip(name: string): boolean {
 }
 
 export type ForgePackResult =
-  | { ok: true; cindyPath: string; manifest: GhostManifest }
+  | { ok: true; cindyPath: string; manifest: GhostManifest; buf: Buffer }
   | {
       ok: false;
-      errorCode: 'DIR_NOT_FOUND' | 'MANIFEST_INVALID' | 'ENTRY_MISSING' | 'TOO_LARGE' | 'INTERNAL';
+      errorCode:
+        | 'DIR_NOT_FOUND'
+        | 'MANIFEST_INVALID'
+        | 'ENTRY_MISSING'
+        | 'TOO_LARGE'
+        | 'INTERNAL'
+        // Forge 打包出口的会话 workdir 门 + 受管根禁区(C-4 + #7)。
+        | 'SOURCE_OUTSIDE_WORKDIR'
+        | 'SOURCE_IS_INSTALLED_PLUGIN'
+        | 'PERMISSION_DENIED';
       message: string;
     };
 
@@ -76,7 +202,7 @@ export type ForgeScaffoldResult =
     }
   | {
       ok: false;
-      errorCode: 'INVALID_INPUT' | 'TARGET_EXISTS' | 'INTERNAL';
+      errorCode: 'INVALID_INPUT' | 'TARGET_EXISTS' | 'PERMISSION_DENIED' | 'INTERNAL';
       message: string;
     };
 
@@ -86,12 +212,54 @@ interface ForgeScaffoldInput {
   id: string;
   name: string;
   description?: string;
+  minCindyVersion: string;
+}
+
+/**
+ * scaffold 落盘能力(C-4):实际写盘委托给隔离的稳定父目录写入器(main 侧
+ * forgeScaffoldCapability/worker),forge.ts 只做校验与内容生成,不直接碰盘。
+ */
+export interface ForgeScaffoldWriteRequest {
+  parentDir: string;
+  targetName: string;
+  expectedParent: {
+    realPath: string;
+    dev: bigint;
+    ino: bigint;
+  };
+  files: Array<{ path: string; base64: string }>;
+}
+
+export type ForgeScaffoldWriteResult =
+  { ok: true } | { ok: false; errorCode: 'TARGET_EXISTS' | 'INTERNAL' | 'PERMISSION_DENIED'; message: string };
+
+export type ForgeScaffoldWriter = (
+  request: ForgeScaffoldWriteRequest,
+) => Promise<ForgeScaffoldWriteResult>;
+
+const FORGE_OUTSIDE_GRANT_STALE_MESSAGE =
+  'Task or Plan permissions changed; retry with the current scope.';
+
+type ForgeOutsideGrantOptions = {
+  allowOutsideWorkdir?: boolean;
+  authorizedDir?: string;
+  isCurrent?: () => boolean;
+};
+
+function staleForgeGrant(
+  options?: ForgeOutsideGrantOptions,
+): { ok: false; errorCode: 'PERMISSION_DENIED'; message: string } | null {
+  // Live authority also guards in-workdir writes after async preparation.
+  if (!options?.isCurrent && (!options?.allowOutsideWorkdir || !options.authorizedDir)) return null;
+  if (options.isCurrent?.() === true) return null;
+  return { ok: false, errorCode: 'PERMISSION_DENIED', message: FORGE_OUTSIDE_GRANT_STALE_MESSAGE };
 }
 
 /** 生成插件清单；先走正式校验，再允许任何文件落盘。 */
 function scaffoldManifest(input: ForgeScaffoldInput): Record<string, unknown> {
   const common = {
-    schemaVersion: 2,
+    schemaVersion: 3,
+    minCindyVersion: input.minCindyVersion,
     id: input.id,
     name: input.name,
     description: input.description?.trim() || `${input.name} 插件`,
@@ -104,7 +272,8 @@ function scaffoldManifest(input: ForgeScaffoldInput): Record<string, unknown> {
   if (input.template === 'agent-action') {
     return {
       ...common,
-      slots: ['tool', 'card', 'agent'],
+      card: {},
+      agent: {},
       tools: [
         {
           name: 'show_agent_actions',
@@ -117,7 +286,6 @@ function scaffoldManifest(input: ForgeScaffoldInput): Record<string, unknown> {
   if (input.template === 'node-json-rpc') {
     return {
       ...common,
-      slots: ['tool', 'node'],
       tools: [
         {
           name: 'node_echo',
@@ -140,7 +308,6 @@ function scaffoldManifest(input: ForgeScaffoldInput): Record<string, unknown> {
   if (input.template === 'node-mcp') {
     return {
       ...common,
-      slots: ['tool', 'node'],
       tools: [
         {
           name: 'echo_via_mcp',
@@ -162,7 +329,6 @@ function scaffoldManifest(input: ForgeScaffoldInput): Record<string, unknown> {
   }
   return {
     ...common,
-    slots: ['tool'],
     tools: [
       {
         name: 'hello',
@@ -409,7 +575,14 @@ function hasFsErrorCode(err: unknown, code: string): boolean {
  */
 export async function scaffoldGhostDir(
   input: ForgeScaffoldInput,
-  options?: { sessionWorkdir?: string | null },
+  options?: {
+    sessionWorkdir?: string | null;
+    forbiddenRootDirs?: readonly string[];
+    writeScaffold?: ForgeScaffoldWriter;
+    allowOutsideWorkdir?: boolean;
+    authorizedDir?: string;
+    isCurrent?: () => boolean;
+  },
 ): Promise<ForgeScaffoldResult> {
   const template = input.template;
   if (!FORGE_SCAFFOLD_TEMPLATES.includes(template)) {
@@ -430,12 +603,12 @@ export async function scaffoldGhostDir(
       message: '没有会话工作目录,无法确定骨架输出位置',
     };
   }
-  // 字面 startsWith 不设防软链:工作目录里若有 out -> /tmp/out 之类的
-  // 软链祖先,字面在内、实际在外。两边都按 realpath 对账——目标还不存在,
-  // 就取「已存在的最深祖先」的真身再拼回剩余段。
+  // 字面 startsWith 不设防软链:工作目录里若有 out -> /tmp/out 之类的软链祖先,
+  // 字面在内、实际在外。两边都按 realpath 对账——目标还不存在,就取「已存在的最深
+  // 祖先」的真身再拼回剩余段(与打包侧受管根解析共用 resolveThroughExistingAncestor)。
   let realWorkdir: string;
   try {
-    realWorkdir = await fs.promises.realpath(path.resolve(workdir));
+    realWorkdir = await realpathNative(path.resolve(workdir));
   } catch {
     return {
       ok: false,
@@ -443,38 +616,84 @@ export async function scaffoldGhostDir(
       message: '会话工作目录不存在,无法确定骨架输出位置',
     };
   }
-  let realAncestor = resolved;
-  const pendingSegments: string[] = [];
-  for (;;) {
-    try {
-      realAncestor = await fs.promises.realpath(realAncestor);
-      break;
-    } catch (err) {
-      if (!hasFsErrorCode(err, 'ENOENT')) {
-        return {
-          ok: false,
-          errorCode: 'INTERNAL',
-          message: err instanceof Error ? err.message : String(err),
-        };
-      }
-      const parent = path.dirname(realAncestor);
-      if (parent === realAncestor) break; // 到根了,根一定存在,防御性兜底
-      pendingSegments.unshift(path.basename(realAncestor));
-      realAncestor = parent;
+  const staleGrant = staleForgeGrant(options);
+  if (staleGrant) return staleGrant;
+  let realTarget: string;
+  try {
+    realTarget = await resolveThroughExistingAncestor(resolved);
+  } catch (err) {
+    return {
+      ok: false,
+      errorCode: 'INTERNAL',
+      message: err instanceof Error ? err.message : String(err),
+    };
+  }
+  if (
+    !realTarget.startsWith(`${realWorkdir}${path.sep}`)
+    && realTarget !== realWorkdir
+  ) {
+    if (
+      !options?.allowOutsideWorkdir
+      || !options.authorizedDir
+      || !isPathInsideDir(options.authorizedDir, realTarget)
+      || !isPathInsideDir(realTarget, options.authorizedDir)
+    ) {
+      return { ok: false, errorCode: 'INVALID_INPUT', message: 'dir 必须在当前会话工作目录内' };
     }
   }
-  const realTarget = path.join(realAncestor, ...pendingSegments);
-  if (!realTarget.startsWith(`${realWorkdir}${path.sep}`) && realTarget !== realWorkdir) {
-    return { ok: false, errorCode: 'INVALID_INPUT', message: 'dir 必须在当前会话工作目录内' };
+  for (const forbiddenRoot of options?.forbiddenRootDirs ?? []) {
+    let resolvedForbiddenRoot: string;
+    try {
+      resolvedForbiddenRoot = await resolveThroughExistingAncestor(forbiddenRoot);
+    } catch (err) {
+      return {
+        ok: false,
+        errorCode: 'INTERNAL',
+        message: err instanceof Error ? err.message : String(err),
+      };
+    }
+    // 与打包侧同形的双向判定:骨架目标既不能落进受管根(已装插件 / 状态根 / seed 根),
+    // 也不能是它们的祖先。祖先方向此处是纵深防御(该目录必已存在,最终 rename 会
+    // TARGET_EXISTS 拒掉),但判定不散落、两半都覆盖,才不会靠读者去推断下游语义。
+    if (
+      isPathInsideDir(resolvedForbiddenRoot, realTarget) ||
+      isPathInsideDir(realTarget, resolvedForbiddenRoot)
+    ) {
+      return {
+        ok: false,
+        errorCode: 'INVALID_INPUT',
+        message:
+          'dir 不能落在已安装插件目录或 Host 管理的状态目录内,也不能是它们的上级目录;请在工作目录里换一个独立的作者目录',
+      };
+    }
   }
+  const targetDir = options?.allowOutsideWorkdir && options.authorizedDir
+    ? path.resolve(options.authorizedDir)
+    : path.resolve(input.dir);
   const files = scaffoldFiles(input);
-  // 显式收窄而非 as 断言:manifest 恒为 JSON 字符串,二进制项(占位图标)另存;
-  // 未来若误把 manifest 写成 Buffer,这里在编译/测试期就报,而不是运行期 parse 炸。
   const manifestRaw = files[GHOST_MANIFEST_FILE];
   if (typeof manifestRaw !== 'string') {
     return { ok: false, errorCode: 'INTERNAL', message: 'scaffold manifest 必须是 JSON 字符串' };
   }
-  const validation = validateGhostManifest(JSON.parse(manifestRaw));
+  let scaffoldManifest: unknown;
+  try {
+    scaffoldManifest = JSON.parse(manifestRaw);
+  } catch {
+    return {
+      ok: false,
+      errorCode: 'INVALID_INPUT',
+      message: '插件信息不合格:ghost.json 不是合法 JSON',
+    };
+  }
+  const reservedScaffoldNamespace = authorDeclaredNamespaceReason(scaffoldManifest);
+  if (reservedScaffoldNamespace) {
+    return {
+      ok: false,
+      errorCode: 'INVALID_INPUT',
+      message: `插件信息不合格:${reservedScaffoldNamespace}`,
+    };
+  }
+  const validation = validateGhostManifest(scaffoldManifest);
   if (!validation.ok) {
     return {
       ok: false,
@@ -482,8 +701,18 @@ export async function scaffoldGhostDir(
       message: `插件信息不合格:${validation.reason}`,
     };
   }
+  if (!isValidNewGhostId(validation.manifest.id)) {
+    return {
+      ok: false,
+      errorCode: 'INVALID_INPUT',
+      message: '新建插件 id 必须以小写字母开头，只能包含小写字母、数字和连字符，最长 32 个字符',
+    };
+  }
+  const brokerPortIssue = brokerRedirectPortDeclarationIssue(validation.manifest);
+  if (brokerPortIssue) {
+    return { ok: false, errorCode: 'INVALID_INPUT', message: `插件信息不合格:${brokerPortIssue}` };
+  }
 
-  const targetDir = path.resolve(input.dir);
   try {
     await fs.promises.lstat(targetDir);
     return {
@@ -502,52 +731,83 @@ export async function scaffoldGhostDir(
   }
 
   const parentDir = path.dirname(targetDir);
-  let stagingDir: string | null = null;
+  let parentStat: fs.BigIntStats;
+  let parentRealPath: string;
   try {
-    await fs.promises.mkdir(parentDir, { recursive: true });
-    stagingDir = await fs.promises.mkdtemp(
-      path.join(parentDir, `.${path.basename(targetDir)}-scaffold-`),
-    );
-    for (const [rel, content] of Object.entries(files)) {
-      const abs = path.join(stagingDir, rel);
-      await fs.promises.mkdir(path.dirname(abs), { recursive: true });
-      await fs.promises.writeFile(abs, content, { encoding: 'utf8', flag: 'wx' });
+    parentStat = await fs.promises.lstat(parentDir, { bigint: true });
+    if (!parentStat.isDirectory() || parentStat.isSymbolicLink()) {
+      return {
+        ok: false,
+        errorCode: 'INVALID_INPUT',
+        message: options?.allowOutsideWorkdir
+          ? 'dir 的父目录必须是已存在的普通目录'
+          : 'dir 的父目录必须是工作目录内已存在的普通目录',
+      };
     }
-    try {
-      await fs.promises.rename(stagingDir, targetDir);
-      stagingDir = null;
-    } catch (err) {
-      if (hasFsErrorCode(err, 'EEXIST') || hasFsErrorCode(err, 'ENOTEMPTY')) {
-        return {
-          ok: false,
-          errorCode: 'TARGET_EXISTS',
-          message: `目标已经存在，不会覆盖:${targetDir}`,
-        };
-      }
-      throw err;
+    parentRealPath = await realpathNative(parentDir);
+    const parentHasLinkAncestor = await pathHasLinkSegment(parentDir);
+    const parentOutsideWorkdir = !isPathInsideDir(realWorkdir, parentRealPath);
+    if (parentHasLinkAncestor || (parentOutsideWorkdir && !options?.allowOutsideWorkdir)) {
+      return {
+        ok: false,
+        errorCode: 'INVALID_INPUT',
+        message: parentHasLinkAncestor
+          ? 'dir 的父目录必须是没有链接祖先的普通目录'
+          : 'dir 的父目录必须是工作目录内已存在且没有链接祖先的普通目录',
+      };
     }
-    return {
-      ok: true,
-      dir: targetDir,
-      template,
-      files: Object.keys(files).sort(),
-      nextSteps: [
-        '按需要修改 ghost.json、main.js 和 worker 源码。',
-        '调用 ghost_forge_pack 打包并让用户确认安装。',
-        'Node 模板不允许在安装或首次运行时执行 npm install、npx 或 postinstall。',
-      ],
-    };
   } catch (err) {
+    if (hasFsErrorCode(err, 'ENOENT')) {
+      return {
+        ok: false,
+        errorCode: 'INVALID_INPUT',
+        message: options?.allowOutsideWorkdir
+          ? 'dir 的父目录必须先创建'
+          : 'dir 的父目录必须先创建，并且必须位于当前工作目录内',
+      };
+    }
     return {
       ok: false,
       errorCode: 'INTERNAL',
       message: err instanceof Error ? err.message : String(err),
     };
-  } finally {
-    if (stagingDir) {
-      await fs.promises.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
-    }
   }
+
+  // 实际落盘委托给隔离的稳定父目录写入器(C-4):forge.ts 只生成内容,不直接写盘。
+  if (!options?.writeScaffold) {
+    return {
+      ok: false,
+      errorCode: 'INTERNAL',
+      message: 'Forge scaffold stable-directory capability is unavailable',
+    };
+  }
+  const staleBeforeWrite = staleForgeGrant(options);
+  if (staleBeforeWrite) return staleBeforeWrite;
+  const writeResult = await options.writeScaffold({
+    parentDir,
+    targetName: path.basename(targetDir),
+    expectedParent: { realPath: parentRealPath, dev: parentStat.dev, ino: parentStat.ino },
+    files: Object.entries(files).map(([rel, content]) => ({
+      path: rel,
+      base64: (typeof content === 'string' ? Buffer.from(content, 'utf8') : content).toString(
+        'base64',
+      ),
+    })),
+  });
+  if (!writeResult.ok) {
+    return { ok: false, errorCode: writeResult.errorCode, message: writeResult.message };
+  }
+  return {
+    ok: true,
+    dir: targetDir,
+    template,
+    files: Object.keys(files).sort(),
+    nextSteps: [
+      '按需要修改 ghost.json、main.js 和 worker 源码。',
+      '调用 ghost_forge_pack 校验并生成 .cindy；打包本身不会安装插件。',
+      'Node 模板不允许在安装或首次运行时执行 npm install、npx 或 postinstall。',
+    ],
+  };
 }
 
 /**
@@ -600,27 +860,29 @@ async function buildGhostPackage(
     // 1) 清单先行:与装入侧同一套校验,错在打包期就报清楚。
     // 读到的**原始字节**要留作不可变快照:后面生成 zip 时逐文件重新读盘,若
     // ghost.json 在"这里校验"与"写入 zip"之间被并发改写(保 id/version、加权限
-    // 声明),返回的 manifest 与包里那份就会分叉——安装侧拿返回值做审阅比对,
+    // 声明),返回的 manifest 与包里那份就会分叉——安装侧校验的是旧清单，
     // 装进去的却是改过的包。快照写入让"校验的 = 返回的 = 包里的"三者恒等。
     // 与市场发现/安装层同一把闸(单句柄限量读,拒符号链接):打包输入目录是
     // 用户可写的活目录,按路径无界 readFile 会跟随链接读到目录外、或被超大
     // 文件耗尽内存。快照字节也必须出自这把闸,不能再按路径重读。
     let manifestRaw: unknown;
     let manifestBytes: Buffer;
+    let manifestUnixPermissions: number;
     try {
-      const bytes = await readBoundedFileNoFollow(
+      const read = await readBoundedFileNoFollowWithStat(
         path.join(realDir, GHOST_MANIFEST_FILE),
         GHOST_MANIFEST_MAX_BYTES,
         { containWithin: realDir },
       );
-      if (bytes === null) {
+      if (read === null) {
         return {
           ok: false,
           errorCode: 'MANIFEST_INVALID',
           message: `${GHOST_MANIFEST_FILE} 不是普通文件或超过 ${GHOST_MANIFEST_MAX_BYTES} 字节上限`,
         };
       }
-      manifestBytes = bytes;
+      manifestBytes = read.bytes;
+      manifestUnixPermissions = unixRegularFilePermissionsForArchive(read.stat.mode);
       manifestRaw = JSON.parse(manifestBytes.toString('utf-8'));
     } catch (err) {
       return {
@@ -648,9 +910,17 @@ async function buildGhostPackage(
         manifestBytes = Buffer.from(`${JSON.stringify(manifestRaw)}\n`, 'utf-8');
       }
     }
+    const reservedNamespace = authorDeclaredNamespaceReason(manifestRaw);
+    if (reservedNamespace) {
+      return { ok: false, errorCode: 'MANIFEST_INVALID', message: `清单不合格:${reservedNamespace}` };
+    }
     const v = validateGhostManifest(manifestRaw);
     if (!v.ok) {
       return { ok: false, errorCode: 'MANIFEST_INVALID', message: `清单不合格:${v.reason}` };
+    }
+    const brokerPortIssue = brokerRedirectPortDeclarationIssue(v.manifest);
+    if (brokerPortIssue) {
+      return { ok: false, errorCode: 'MANIFEST_INVALID', message: `清单不合格:${brokerPortIssue}` };
     }
     if (manifestBytes.byteLength > GHOST_INSTALL_MANIFEST_MAX_BYTES) {
       return {
@@ -675,10 +945,14 @@ async function buildGhostPackage(
     // 3) 清单声明的入口文件必须真实在场(打包期拦,别等装入后沙箱 404)。
     const mustExist: string[] = [];
     if (manifest.entry) mustExist.push(manifest.entry);
-    if (manifest.node?.entry) mustExist.push(manifest.node.entry);
+    if (manifest.node?.entry) {
+      mustExist.push(manifest.node.entry, ...(manifest.node.entries ?? []));
+    }
     if (manifest.panel?.html) mustExist.push(manifest.panel.html);
+    if (manifest.mainView?.html) mustExist.push(manifest.mainView.html);
     if (manifest.settingsHtml) mustExist.push(manifest.settingsHtml);
     for (const item of manifest.skill?.items ?? []) mustExist.push(`${item.dir}/SKILL.md`);
+    if (iconPng === undefined && manifest.icon) mustExist.push(manifest.icon);
     for (const rel of mustExist) {
       try {
         // lstat 与收集侧(walk 的 Dirent)同一语义:声明的入口若是符号链接,
@@ -690,7 +964,7 @@ async function buildGhostPackage(
       }
     }
 
-    // 3.5) skill 槽:SKILL.md frontmatter 与清单声明必须逐字一致。与装入侧
+    // 3.5) skill 能力:SKILL.md frontmatter 与清单声明必须逐字一致。与装入侧
     // (GhostManager.parse)共用同一裁判,避免"Forge 能打包、安装被拒"的漂移。
     for (const item of manifest.skill?.items ?? []) {
       const skillMdPath = path.join(dir, ...item.dir.split('/'), 'SKILL.md');
@@ -725,12 +999,136 @@ async function buildGhostPackage(
       }
     }
 
+    // 3.6) manual:每个声明单元必须以 MANUAL.md 为入口，目录内只允许普通
+    // Markdown 文件；逐文件限量、严格 UTF-8，并拒绝并发截短与二进制内容。
+    // 缓存本次校验过的字节，生成 zip 时直接使用同一份快照，避免“预检一份、
+    // 入包时又读到另一份”的竞态。嵌套单元共享缓存，同一物理文件只校验一次。
+    const manualFileSnapshots = new Map<string, { bytes: Buffer; unixPermissions: number }>();
+    for (const item of manifest.manual?.items ?? []) {
+      const unitRoot = path.join(dir, ...item.dir.split('/'));
+      const validateManualDir = async (
+        currentDir: string,
+        relativeDir: string,
+        preloadedEntries?: fs.Dirent[],
+      ): Promise<Exclude<ForgePackResult, { ok: true }> | null> => {
+        let entries: fs.Dirent[];
+        if (preloadedEntries) {
+          entries = preloadedEntries;
+        } else {
+          try {
+            entries = await fs.promises.readdir(currentDir, { withFileTypes: true });
+          } catch {
+            return {
+              ok: false,
+              errorCode: 'ENTRY_MISSING',
+              message: `读取手册目录失败:${item.dir}${relativeDir ? `/${relativeDir}` : ''}`,
+            };
+          }
+        }
+        for (const entry of entries) {
+          if (shouldSkip(entry.name)) continue;
+          const relativePath = relativeDir ? `${relativeDir}/${entry.name}` : entry.name;
+          const logicalPath = `${item.dir}/${relativePath}`;
+          const absolutePath = path.join(currentDir, entry.name);
+          if (entry.isSymbolicLink() || (!entry.isDirectory() && !entry.isFile())) {
+            return {
+              ok: false,
+              errorCode: 'MANIFEST_INVALID',
+              message: `manual 单元只允许普通 Markdown 文件:${logicalPath}`,
+            };
+          }
+          if (entry.isDirectory()) {
+            if (ghostManualLogicalPathForEntry(item.name, relativePath, 'directory') === null) {
+              return {
+                ok: false,
+                errorCode: 'MANIFEST_INVALID',
+                message: `manual 目录无法形成合法 ghost_manual 路径:${logicalPath}`,
+              };
+            }
+            const nestedError = await validateManualDir(absolutePath, relativePath);
+            if (nestedError) return nestedError;
+            continue;
+          }
+          if (ghostManualLogicalPathForEntry(item.name, relativePath, 'file') === null) {
+            return {
+              ok: false,
+              errorCode: 'MANIFEST_INVALID',
+              message: `manual 文件无法形成合法 ghost_manual Markdown 路径:${logicalPath}`,
+            };
+          }
+          if (manualFileSnapshots.has(logicalPath)) continue;
+          let read;
+          try {
+            read = await readBoundedFileNoFollowWithStat(absolutePath, GHOST_MANUAL_MD_MAX_BYTES, {
+              containWithin: realDir,
+              verifyContentStability: true,
+            });
+          } catch {
+            return {
+              ok: false,
+              errorCode: 'MANIFEST_INVALID',
+              message: `读取 manual 文件失败:${logicalPath}`,
+            };
+          }
+          if (read === null) {
+            return {
+              ok: false,
+              errorCode: 'MANIFEST_INVALID',
+              message: `${logicalPath} 不是普通文件或超过 ${GHOST_MANUAL_MD_MAX_BYTES} 字节上限`,
+            };
+          }
+          const decoded = decodeGhostManualMarkdown(read.bytes);
+          if (!decoded.ok) {
+            return {
+              ok: false,
+              errorCode: 'MANIFEST_INVALID',
+              message: `manual 文件不合格(${logicalPath}):${decoded.reason}`,
+            };
+          }
+          manualFileSnapshots.set(logicalPath, {
+            bytes: read.bytes,
+            unixPermissions: unixRegularFilePermissionsForArchive(read.stat.mode),
+          });
+        }
+        return null;
+      };
+      let rootEntries: fs.Dirent[];
+      try {
+        rootEntries = await fs.promises.readdir(unitRoot, { withFileTypes: true });
+      } catch {
+        return {
+          ok: false,
+          errorCode: 'ENTRY_MISSING',
+          message: `读取手册目录失败:${item.dir}`,
+        };
+      }
+      const manualEntry = rootEntries.find((entry) => entry.name === GHOST_MANUAL_ENTRY_FILE);
+      if (!manualEntry?.isFile() || manualEntry.isSymbolicLink()) {
+        return {
+          ok: false,
+          errorCode: 'ENTRY_MISSING',
+          message: `清单声明的文件不存在:${item.dir}/${GHOST_MANUAL_ENTRY_FILE}`,
+        };
+      }
+      const manualError = await validateManualDir(unitRoot, '', rootEntries);
+      if (manualError) return manualError;
+    }
+
     // 4) 收集文件(递归,跳过开发残留),数量/体积设限。
+    // 分类一律走 lstat(不信 readdir Dirent 的类型位——libuv 对 junction 的类型位
+    // 跨平台不稳),按我们分支的加固语义处理:
+    //  - 目录:进递归前按 realpath 复核仍在规范源码根内。目录可能在"分类"与
+    //    "递归"之间被换成指向根外/受管根的 junction(TOCTOU);realpath 越界即拒
+    //    (SOURCE_OUTSIDE_WORKDIR),避免把根外字节递归卷进 .cindy。
+    //  - 符号链接:清单声明的入口是链接 → ENTRY_MISSING(装入侧会缺入口 404,
+    //    打包期就拦);非声明的链接 → 跳过,不穿透、不把目标字节打进包。
+    //  - 普通文件:收集(字节读取仍在下面按 realDir containWithin 现读)。
     const files: Array<{ rel: string; abs: string }> = [];
     let totalBytes = 0;
     const maxFiles = manifest.node ? MAX_NODE_FILES : MAX_BASIC_FILES;
     const maxTotalBytes = manifest.node ? MAX_NODE_TOTAL_BYTES : MAX_BASIC_TOTAL_BYTES;
     const seenPackPaths = new Set<string>();
+    const requiredPackPaths = new Set(mustExist.map((entry) => entry.toLowerCase()));
     const walk = async (
       cur: string,
       relBase: string,
@@ -749,20 +1147,53 @@ async function buildGhostPackage(
           };
         }
         seenPackPaths.add(foldedRel);
-        if (e.isDirectory()) {
+        let st: fs.Stats;
+        try {
+          st = await fs.promises.lstat(abs);
+        } catch {
+          // 分类时条目已消失(并发删除):声明入口 → ENTRY_MISSING,其它跳过。
+          if (requiredPackPaths.has(foldedRel)) {
+            return {
+              ok: false,
+              errorCode: 'ENTRY_MISSING',
+              message: `清单声明的文件不存在:${rel}`,
+            };
+          }
+          continue;
+        }
+        if (st.isSymbolicLink()) {
+          if (requiredPackPaths.has(foldedRel)) {
+            return {
+              ok: false,
+              errorCode: 'ENTRY_MISSING',
+              message: `清单声明的文件是链接,不可打包:${rel}`,
+            };
+          }
+          continue;
+        }
+        if (st.isDirectory()) {
+          // 进递归前按 realpath 复核:分类与递归之间目录可能被换成指向根外的
+          // junction。realpath 越出规范源码根即拒,不把根外字节卷进包。
+          let realCur: string;
+          try {
+            realCur = await realpathNative(abs);
+          } catch {
+            continue;
+          }
+          if (!isPathInsideDir(realDir, realCur)) {
+            return {
+              ok: false,
+              errorCode: 'SOURCE_OUTSIDE_WORKDIR',
+              message: `源码子目录在打包期被替换为指向根外的链接:${rel}`,
+            };
+          }
           const bad = await walk(abs, rel);
           if (bad) return bad;
-        } else if (e.isSymbolicLink()) {
-          // 符号链接一律不穿透。此前是静默跳过——OneDrive 未水合占位文件、
-          // 仓库里提交的链接都会被悄悄丢出包外,校验说"在场"、包里却没有,
-          // 运行期才 404。改为结构化拒绝,错误可见。
-          return {
-            ok: false,
-            errorCode: 'MANIFEST_INVALID',
-            message: `源码目录含符号链接条目,不允许打包:${rel}`,
-          };
-        } else if (e.isFile()) {
+        } else if (st.isFile()) {
           files.push({ rel, abs });
+          // 体积预算用 stat(而非 lstat.size):这是"walk 期预估"值,真正的
+          // 权威边界在下面 zip 步按剩余预算 containWithin 现读时强制(文件可能在
+          // walk 与读取之间被并发撑大)。分类归 lstat,预算归 stat,各司其职。
           totalBytes += (await fs.promises.stat(abs)).size;
           if (files.length > maxFiles) {
             return { ok: false, errorCode: 'TOO_LARGE', message: `文件过多(上限 ${maxFiles} 个)` };
@@ -774,12 +1205,47 @@ async function buildGhostPackage(
               message: `总体积超上限(${maxTotalBytes} 字节)`,
             };
           }
+        } else if (requiredPackPaths.has(foldedRel)) {
+          // 声明入口是块/字符设备、FIFO 等非常规条目 → 视为缺失。
+          return {
+            ok: false,
+            errorCode: 'ENTRY_MISSING',
+            message: `清单声明的文件不是普通文件:${rel}`,
+          };
         }
       }
       return null;
     };
     const tooLarge = await walk(dir, '');
     if (tooLarge) return tooLarge;
+    const collectedPackPaths = new Set(files.map((file) => file.rel));
+    const omittedRequiredPath = mustExist.find(
+      (requiredPath) => !collectedPackPaths.has(requiredPath),
+    );
+    if (omittedRequiredPath) {
+      return {
+        ok: false,
+        errorCode: 'ENTRY_MISSING',
+        message: `清单声明的文件未进入打包内容:${omittedRequiredPath}`,
+      };
+    }
+    if (manifest.manual !== undefined) {
+      const isWithinManualUnit = (rel: string): boolean =>
+        manifest.manual!.items.some((item) => rel.startsWith(`${item.dir}/`));
+      const packedManualPaths = new Set(
+        files.filter((file) => isWithinManualUnit(file.rel)).map((file) => file.rel),
+      );
+      const changedManualPath =
+        [...packedManualPaths].find((rel) => !manualFileSnapshots.has(rel)) ??
+        [...manualFileSnapshots.keys()].find((rel) => !packedManualPaths.has(rel));
+      if (changedManualPath !== undefined) {
+        return {
+          ok: false,
+          errorCode: 'MANIFEST_INVALID',
+          message: `manual 目录在打包期间发生变化:${changedManualPath}`,
+        };
+      }
+    }
     // AI icon overlay changes both the manifest snapshot and the icon bytes. A
     // source tree carrying a publisher/reviewer signature cannot be modified
     // here without re-signing, so let the host fall back to the original icon
@@ -827,27 +1293,35 @@ async function buildGhostPackage(
     let packedBytes = 0;
     for (const f of files) {
       let content: Buffer;
+      let unixPermissions: number;
       if (f.rel === GHOST_MANIFEST_FILE) {
         content = manifestBytes;
+        unixPermissions = manifestUnixPermissions;
       } else if (iconPng !== undefined && f.rel === FORGE_AI_ICON_PATH) {
         content = iconPng;
+        unixPermissions = ARCHIVE_REGULAR_0644;
+      } else if (manualFileSnapshots.has(f.rel)) {
+        const snapshot = manualFileSnapshots.get(f.rel)!;
+        content = snapshot.bytes;
+        unixPermissions = snapshot.unixPermissions;
       } else {
-        let bytes: Buffer | null;
+        let read: Awaited<ReturnType<typeof readBoundedFileNoFollowWithStat>>;
         try {
-          bytes = await readBoundedFileNoFollow(f.abs, maxTotalBytes - packedBytes, {
+          read = await readBoundedFileNoFollowWithStat(f.abs, maxTotalBytes - packedBytes, {
             containWithin: realDir,
           });
         } catch {
-          bytes = null;
+          read = null;
         }
-        if (bytes === null) {
+        if (read === null) {
           return {
             ok: false,
             errorCode: 'TOO_LARGE',
             message: `文件在打包期间被并发改动或超出剩余体积预算:${f.rel}`,
           };
         }
-        content = bytes;
+        content = read.bytes;
+        unixPermissions = unixRegularFilePermissionsForArchive(read.stat.mode);
       }
       packedBytes += content.byteLength;
       if (packedBytes > maxTotalBytes) {
@@ -857,7 +1331,7 @@ async function buildGhostPackage(
           message: `总体积超上限(${maxTotalBytes} 字节)`,
         };
       }
-      zip.file(f.rel, content);
+      zip.file(f.rel, content, { ...ZIP_FILE_OPTIONS, unixPermissions });
     }
     if (iconPng !== undefined && !iconSourceEntry) {
       packedBytes += iconPng.byteLength;
@@ -868,9 +1342,16 @@ async function buildGhostPackage(
           message: `总体积超上限(${maxTotalBytes} 字节)`,
         };
       }
-      zip.file(FORGE_AI_ICON_PATH, iconPng);
+      zip.file(FORGE_AI_ICON_PATH, iconPng, {
+        ...ZIP_FILE_OPTIONS,
+        unixPermissions: ARCHIVE_REGULAR_0644,
+      });
     }
-    const buf = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+    const buf = await zip.generateAsync({
+      type: 'nodebuffer',
+      compression: 'DEFLATE',
+      platform: 'UNIX',
+    });
     const maxCindyBytes = manifest.node ? MAX_NODE_CINDY_BYTES : MAX_BASIC_CINDY_BYTES;
     if (buf.byteLength > maxCindyBytes) {
       return {
@@ -901,9 +1382,92 @@ async function buildGhostPackage(
  */
 export async function packGhostDir(
   dir: string,
-  options?: { iconPng?: Buffer },
+  options?: {
+    sessionWorkdir?: string | null;
+    forbiddenRootDirs?: readonly string[];
+    iconPng?: Buffer;
+    /**
+     * Host already authorized this source via the session permission path
+     * (Full Access / auto-review / user confirm). Forbidden managed roots
+     * still apply. `authorizedDir` is the granted canonical identity and is
+     * required whenever `allowOutsideWorkdir` is true.
+     */
+    allowOutsideWorkdir?: boolean;
+    authorizedDir?: string;
+    /**
+     * Host grant generation captured at authorize time. Required whenever
+     * `allowOutsideWorkdir` is used with `authorizedDir`; rechecked after the
+     * long pack and immediately before the `.cindy` write.
+     */
+    isCurrent?: () => boolean;
+  },
 ): Promise<ForgePackResult> {
-  const built = await buildGhostPackage(dir, undefined, options);
+  // Forge 打包出口专属安全门(C-4 + #7):source 默认必须在会话 workdir 内;Host 已按
+  // 当前会话权限放行后可带 allowOutsideWorkdir。受管根(已装插件 / 批准状态根 /
+  // seed 根)始终双向拒绝。算出的 realSourceDir 作为 buildGhostPackage 的
+  // expectedRealDir 上游锚点——正是它要求"由上游校验后传入"的那份。
+  const workdir = options?.sessionWorkdir;
+  if (!workdir) {
+    return {
+      ok: false,
+      errorCode: 'SOURCE_OUTSIDE_WORKDIR',
+      message: 'Forge pack requires an active session workdir',
+    };
+  }
+  let realWorkdir: string;
+  try {
+    realWorkdir = await realpathNative(path.resolve(workdir));
+  } catch {
+    return {
+      ok: false,
+      errorCode: 'SOURCE_OUTSIDE_WORKDIR',
+      message: 'The current session workdir does not exist',
+    };
+  }
+  const staleGrant = staleForgeGrant(options);
+  if (staleGrant) return staleGrant;
+  let realSourceDir: string;
+  try {
+    realSourceDir = await realpathNative(dir);
+  } catch {
+    return { ok: false, errorCode: 'DIR_NOT_FOUND', message: `目录不存在:${dir}` };
+  }
+  if (!isPathInsideDir(realWorkdir, realSourceDir)) {
+    if (
+      !options?.allowOutsideWorkdir
+      || !options.authorizedDir
+      || !isPathInsideDir(options.authorizedDir, realSourceDir)
+      || !isPathInsideDir(realSourceDir, options.authorizedDir)
+    ) {
+      return {
+        ok: false,
+        errorCode: 'SOURCE_OUTSIDE_WORKDIR',
+        message: 'Forge source must be inside the current session workdir',
+      };
+    }
+  }
+  for (const forbiddenRoot of options?.forbiddenRootDirs ?? []) {
+    const resolvedForbiddenRoot = await resolveThroughExistingAncestor(forbiddenRoot);
+    // 双向:源目录落在受管根内要拒(拿已安装插件当源码),源目录是受管根祖先也要拒
+    //(递归打包会走进 cindy-brain / ghost-install-state / seed 根,把已装字节、批准
+    // receipt、技能快照打进 .cindy)。
+    if (
+      isPathInsideDir(resolvedForbiddenRoot, realSourceDir) ||
+      isPathInsideDir(realSourceDir, resolvedForbiddenRoot)
+    ) {
+      return {
+        ok: false,
+        errorCode: 'SOURCE_IS_INSTALLED_PLUGIN',
+        message:
+          'Forge source must not be an installed Plugin or a Host-managed state directory; copy the source into the current session workdir first',
+      };
+    }
+  }
+  const built = await buildGhostPackage(
+    dir,
+    realSourceDir,
+    options ? { iconPng: options.iconPng } : undefined,
+  );
   if (!built.ok) return built;
   const authoringIssue = firstGhostAuthoringIssue(built.manifestRaw);
   if (authoringIssue) {
@@ -911,7 +1475,14 @@ export async function packGhostDir(
   }
   // 产物跟源码住一起(2026-07 Lizi 定案:拿取直观);文件收集在写盘之前完成
   // + shouldSkip 跳过 *.cindy,自身产物不会进包;同名覆盖。
-  const cindyPath = path.join(dir, `${built.manifest.id}-${built.manifest.version}.cindy`);
+  // 落地到**规范源码目录**(realpath 产物)而非可能是符号链接/别名的入参 `dir`:
+  // 产物必须写进真实目录,别名只是通往它的一条路径。
+  const cindyPath = path.join(
+    realSourceDir,
+    `${built.manifest.id}-${built.manifest.version}.cindy`,
+  );
+  const staleBeforeWrite = staleForgeGrant(options);
+  if (staleBeforeWrite) return staleBeforeWrite;
   try {
     await fs.promises.writeFile(cindyPath, built.buf);
   } catch (err) {
@@ -921,14 +1492,15 @@ export async function packGhostDir(
       message: `写入打包产物失败:${err instanceof Error ? err.message : String(err)}`,
     };
   }
-  return { ok: true, cindyPath, manifest: built.manifest };
+  // 作者目录里的副本只给人手动拿走。安装链路必须用内存里的 `buf` 直写
+  // staging，绝不能从 cindyPath 回读——agent 能在确认前替换那份文件。
+  return { ok: true, cindyPath, manifest: built.manifest, buf: built.buf };
 }
 
 /**
  * **作者期严格校验**(只在 packGhostDir 这条打包出口上跑,不进任何安装路径)。
  *
- * 未读角标现在由 `badge` **卡槽**声明。槽名走硬白名单,写错直接被
- * validateGhostManifest 拒掉,所以本身不需要额外把关。真正会静默失败的是另一种:
+ * 未读角标由顶层 `badge: true` 声明。真正会静默失败的是另一种:
  * 作者(或 agent)照着**早期示例**写成顶层 `notify: { badge: ... }` —— 那个字段
  * 从来没被登记过,校验器一律忽略,于是包打出来了、装进去了、运行期每次发 badge
  * 都被拒,作者却以为自己声明过(codex review)。
@@ -945,7 +1517,7 @@ function firstGhostAuthoringIssue(raw: Record<string, unknown>): string | null {
     !Array.isArray(notifyRaw) &&
     'badge' in (notifyRaw as Record<string, unknown>)
   ) {
-    return '未读角标已改为独立卡槽:请把 notify.badge 删掉,改成在 slots 里声明 "badge"(并同时声明 "panel")';
+    return '未读角标已改为独立能力:请把 notify.badge 删掉,改成顶层 "badge": true(并同时声明 panel)';
   }
   return null;
 }
@@ -975,7 +1547,7 @@ export async function packGhostDirToFile(
       message: `写入打包产物失败:${err instanceof Error ? err.message : String(err)}`,
     };
   }
-  return { ok: true, cindyPath: destPath, manifest: built.manifest };
+  return { ok: true, cindyPath: destPath, manifest: built.manifest, buf: built.buf };
 }
 
 /**
@@ -984,15 +1556,74 @@ export async function packGhostDirToFile(
  */
 export const FORGE_GUIDE = `# 意识(Ghost)编写手册
 
+## 本地例行任务事件
+
+插件通过 schemaVersion 3 的 routineEvents 声明事件来源：
+声明后，宿主在启动、启用和恢复时自动运行插件的浏览器逻辑页并保持监听，即使 launch 省略或为 on-demand；停用插件仍会停止监听。Node 常驻仍独立要求 node.lifecycle: resident。
+
+    "routineEvents": { "events": [{ "type": "message.received", "name": "新消息", "fields": ["chatId", "senderId"] }] }
+
+这只授予提交事件的能力，不授予创建、修改例行任务或指定伙伴的能力。用户在伙伴的例行任务界面选择来源、事件和条件后才能触发执行。插件自行选择 SDK 长连接、系统监听或本地 CLI 等接入方式，继续遵守原有 node/network 能力边界；来源与连接器不绑定。第一阶段没有公网 webhook 接收服务。
+
+插件确认监听连接已建立后，调用：
+
+    await cindy.send({ type: "routine-request", action: "status", status: "listening" });
+
+连接断开/故障时提交 disconnected/error。连接重建后重新报告 listening。发送事件：
+
+    await cindy.send({ type: "routine-request", action: "publish", event: {
+      id: "upstream-delivery-id", type: "message.received", occurredAt: Date.now(),
+      subject: "thread-id", data: { chatId: "chat-1", senderId: "user-1" }
+    } });
+
+也可使用 cindy.routines.request，参数省略 type。Host 从真实管子身份生成 plugin:<id> 来源，不接受自报 sourceId、botId 或 prompt。id 必须使用上游稳定投递 ID；重投同一个 ID 得到 duplicate:true，不重复执行。没有上游 ID 时由插件生成并持久化后重投，不得每次重试重造 ID。data 只允许字符串、有限数字和布尔值，总计至多 32000 字符；只提交处理所需的事件引用和筛选字段，不提交凭证。需要邮件/文档全文时由伙伴通过已配置工具读取。知道由哪条例行任务造成的回声时，填写 originRoutineId；接入端也应过滤自己发出的消息。
+
+返回 {ok:true,accepted,duplicate} 表示事件已持久接收（accepted 是匹配例行任务数），不代表模型已运行或业务已成功。ok:false 时保留投递 ID，按退避重试；不可假报已处理。多条件 OR 命中只入队一次；运行期间的新事件可合并进下一轮。重启不自动重放已经开始、结果未知的执行，以免重复外部副作用。时间与事件共用运行历史。去重针对投递身份，业务对象已完成与否仍由任务指令和工具记录判断。
+
+宿主硬上限：单插件每 60 秒最多 60 次发布，全账号最多 240 次；待处理发布请求分别最多 8 和 32。
+管子入口在等待引擎或数据库就绪前预留并发额度：状态与事件请求合计单插件最多 8 个、整个宿主最多 32 个，跨引擎重建保留计数，直到请求完成或失败才归还。无效操作、状态和超大事件在等待前拒绝；超额请求立即返回可重试错误，不进入等待队列。
+整个请求（含未知字段、字段名和数组附加属性）在等待前受 128 KiB UTF-8 保守预算、4096 个值和 16 层嵌套限制；循环引用、二进制对象等非普通 JSON 数据会被拒绝。小型未知字段仍忽略，data 的 32000 字符限制保持不变。超限返回固定文案 Routine request is too large or invalid，应精简请求后再投递。
+去重窗口为 24 小时，回执按 UTF-8 JSON 限制为单插件 256 KiB、账号 2 MiB；超限返回 ok:false，
+应保留原 event.id 稍后重试，不要改 ID 或紧密循环重试。容量满时不会驱逐窗口内回执；旧版过量
+回执在启动时保留最新的有界部分。事件运行历史不受回执清理影响。
+状态上报另有独立的每插件 60 次/分钟、全账号 240 次/分钟额度，重复状态同样计数；相同状态和声明不会触发界面刷新，也不会清空最近事件时间。请只在状态变化或重连后上报，超限时退避重试。
+失败回执只包含固定公开文案；未知宿主错误统一返回 Routine request failed; please retry later，底层路径和异常仅留在 Main 日志。保留原投递 ID，按退避重试。
+
 意识是 Cindy 的第三方能力包,文件形态是 \`.cindy\`(zip 包)。装入后可给
 主机叠加:AI 可调用的工具、常驻界面面板、模型代办能力。本手册教你(agent)替用户
 写一个意识。**流程:先取手册目录 → 按 §0 用提问卡片和用户对齐设计 → 按需用 section
 读透相关章(动手前至少读完"沙箱红线"与"打包与测试"两章) → 在工作目录写源码文件 →
-ghost_forge_pack 打包 → 用户在弹窗上确认装入。**
+ghost_forge_pack 校验并生成 .cindy 产物；需要发布时改用 publish intent 取得一次性票据。**
+
+**安装与更新契约**：用户导入本地 \`.cindy\`、点击市场安装、明确要求 Agent 安装，或插件命中
+服务端 \`defaultInstall\`，都是明确的安装依据。Cindy 校验真实包后，首次安装会先列出插件声明的
+全部权限请用户确认（Agent 发起的安装在任务里弹确认卡，不论任务权限档），确认后安装并启用；
+更新只在新版本比已装版本权限变多时请用户确认，权限没变多的更新直接完成。服务端
+\`defaultInstall\` 下发的插件不弹确认。另有一道窄确认：企业作者
+用 \`ghost_forge_install\` 安装声明了 \`oidc-token\` 的包时，需核对 id 与注入域名。市场安装会绑定所选来源，
+此后权限没变多的新版本由 Cindy 静默更新并保留当前启用状态；权限变多的新版本会暂停自动更新，
+等用户在插件页确认，在此之前旧版本照常可用。所以发布新版时不要顺手扩大权限，确需新增的在更新
+说明里讲清楚。本地 \`.cindy\` 不自动猜测更新来源，需要用户再次导入新版包。当前组织的默认插件可能在严格核对组织、前缀、批准、退订与来源后，
+接管同 id 的普通本地导入；明确通过 \`ghost_forge_install\` 安装或更新的作者自测包会被保护，
+不会被这条自动接管路径覆盖。插件自主 Host 能力仍必须完整声明，插件详情会如实展示，Host 运行时按声明
+强制守门；市场下载包若超出该版本市场清单声明的能力，会作为包内容不一致被拒绝。
+
+**先判断谁执行，再声明能力**：
+
+- 当前 Agent 调用你的 tool 时，是否执行由 Cindy 现有 Agent 授权系统决定。
+  普通 HTTPS 请求和当前 workdir 文件操作把主机下发的 \`msg.callId\` 原样带给
+  \`cindy.fetch\` 或 \`cindy.fs\`；CLI 继续使用既有随包 Node 工作进程，
+  不新增另一套 Host 执行协议。具体 CLI、域名或路径不需要先注册成客户端 Slot。
+- 只有 Panel、订阅、常驻进程、后台任务等**脱离当前 Agent tool-call**
+  仍要自主使用 Host 能力时，才声明 \`network\`、\`fs\`、\`node\` 等对应字段。
+  真正需要 Cindy 尚未实现的 Host 服务（例如新的内置设备面）时，才需要客户端
+  实现并提高 \`minCindyVersion\`。
 
 从零开始时优先调用 \`ghost_forge_scaffold\` 生成一份不会覆盖现有文件的骨架，再在
 骨架上修改。可选模板:\`plain\`(普通沙箱工具)、\`agent-action\`(卡片点击后让 Agent
-继续工作)、\`node-json-rpc\`(普通随包 Node 服务)、\`node-mcp\`(随包 stdio MCP)。
+继续工作)、\`node-json-rpc\`(普通随包 Node 服务)、\`node-mcp\`(随包 stdio MCP)。正式版
+Cindy 会默认把自身版本写进这份具体插件的 \`minCindyVersion\`；在开发版或预发布版中制作时，
+调用 scaffold 必须明确传入插件实际依赖的首个 Cindy 正式版本。
 
 ## 0. 设计对齐:动手前用提问卡片确认关键决策
 
@@ -1007,23 +1638,27 @@ ghost_forge_pack 打包 → 用户在弹窗上确认装入。**
 
 值得主动摆出来让用户选的"隐藏"设计选项(详见对应章节):
 
-- **界面形态**:无界面(纯工具)/ 聊天卡片(card 槽,§4.5)/ 停靠面板(panel.position
+- **界面形态**:无界面(纯工具)/ 聊天卡片(card 能力,§4.5)/ Cindy 一级主视图
+  (mainView 能力,§4.20)/ 停靠面板(panel.position
   left,§5)/ 插件页内独占面板(position "tab",从插件页「使用」打开、离开即关,§5)。
 - **唤起方式**:只靠 AI 按 whenToUse 自动想起,还是同时声明 \`command\` 点名词让用户
   显式点名(推荐,§2)。
 - **启动模式**:on-demand 按需拉起(缺省,推荐)/ resident 常驻(仅订阅型、要秒响应
   的场景,§2)。
-- **后台能力**:要不要旁听事件(subscribe 槽,§4.6)、发系统提示(notify 槽,§4.9)、留一条持久
-  未读绿点(badge 槽,§4.9.1)、
-  动手前弹确认框征求同意(confirm 槽,§4.18)。
-- **联网与凭证**:要不要 network 槽白名单联网(§4.7);要用户填 key 就需要 setup
+- **后台能力**:要不要旁听事件(subscribe,§4.6)、发系统提示(notify,§4.9)、留一条持久
+  未读绿点(badge,§4.9.1)、
+  动手前弹确认框征求同意(confirm,§4.18)。
+- **自主联网与凭证**:脱离当前 Agent 调用时要不要用 network 白名单联网(§4.7);
+  要用户填 key 就需要 setup
   就绪声明与 settingsHtml 设置区(§4.7、§4.8)。
-- **运行形态**:纯沙箱 main.js 够用,还是要随包 Node 进程装依赖跑重活(node 槽,§4.12)。
-- **媒体代办**:要不要让主机代生成/改图/视频(cindy 槽,§2、§4.0.1)。
+- **运行形态**:纯沙箱 main.js 够用,还是要随包 Node 进程装依赖跑重活(node,§4.12)。
+- **媒体能力**:要不要基于 Cindy Core 的图片/视频模型封装上层能力；插件负责场景、
+  配置和结果呈现，生成请求由当前 Agent 调用 Core media 工具(§2、§4.0.4)。
 
 问完后把选择复述成一份简短设计小结(要解决的问题/目标用户/交互流程/所选形态/
-权限边界/验收标准),并顺带说明源码会放在工作目录的哪个文件夹——位置不需要用户选
-(骨架只能建在会话工作目录内,装入后归主机统一管理),让用户知情即可。用户确认
+权限边界/验收标准),并顺带说明源码会放在工作目录的哪个文件夹——工作目录内直接建;
+工作目录外(例如相邻 worktree)走当前会话权限,不因目录边界悄悄失败。位置不需要用户选
+(装入后归主机统一管理),让用户知情即可。用户确认
 小结后再动手。**修改现有意识同样适用**:先读现有 ghost.json 与源码,列出改动会
 影响哪些已选形态,再让用户确认。
 
@@ -1041,21 +1676,33 @@ my-ghost/
 │   ├── ja.json
 │   └── ko.json
 ├── node/
-│   └── worker.cjs ← 可选:随包 Node/stdio MCP 入口(声明 node 槽时必须,见 §4.12)
+│   └── worker.cjs ← 可选:随包 Node/stdio MCP 入口(声明 node 时必须,见 §4.12)
 ├── panel.html    ← 面板界面(声明了 panel.html 时必须)
 ├── panel.css
 ├── panel.js
+├── main-view.html ← 一级主视图(声明了 mainView.html 时必须,见 §4.20)
 └── settings.html ← 自定义设置区(声明了 settingsHtml 时必须,见 §4.8)
 \`\`\`
+
+想看**真实完整范例**,浏览官方插件源码仓
+\`github.com/makecindy/cindy-official-plugins\`:仓库根下每个**含 ghost.json 的
+一级目录**(cindy-art、cindy-github、cindy-web-search……)都是一个已上架插件的
+全部源码,各类能力(聊天卡片/
+面板/网络/设置页)都有现成写法可对照;\`.tests\`、\`docs\` 等无 ghost.json 的
+目录是仓库自身的基础设施,不是插件。需要理解宿主侧能力实现(某项能力的代发
+细节、校验器行为)时可参考主仓 \`github.com/makecindy/cindy\`(插件基座在
+\`apps/desktop/src/main/cindy-brain/\`),但**API 契约一律以本手册为准**——
+线上 main 分支可能领先或落后用户当前安装的主机版本,照 main 写码可能装进
+旧版就不工作。
 
 ## 2. ghost.json 身份卡
 
 \`\`\`json
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "id": "my-ghost",            // 小写字母/数字/连字符,1–32 位,全局唯一
   "name": "我的意识",           // 展示名
-  "description": "一句话说清这段意识是干嘛的(给人看:装入确认框/详情页)",  // 1–${GHOST_MANIFEST_SUMMARY_MAX_CHARS} 字
+  "description": "一句话说清这段意识是干嘛的(给人看:插件详情页)",  // 1–${GHOST_MANIFEST_SUMMARY_MAX_CHARS} 字
   "whenToUse": "需要生成图片、插画、配图、修图、P 图、改图时找我",  // 1–${GHOST_MANIFEST_SUMMARY_MAX_CHARS} 字,给模型看:进 agent 会话的意识花名册,是"用户不点名时 AI 能不能想起你"的关键。写成场景枚举,可反复调优;花名册会折叠连续空白,异常数据会截断;缺省时花名册回落用 description
   "icon": "assets/icon.png",   // 建议:插件图标(包内相对路径;扩展名限 png/jpg/jpeg/webp/gif,不收 svg——svg 可携带脚本,虽经 <img> 渲染不执行,仍不给这个面)。不配则面板与消息身份头显示默认拼图占位符;官方插件仓惯例放 assets/icon.png
   "locales": {                 // 可选:插件只跟随宿主语言;不支持/缺失语言固定回退 en
@@ -1065,21 +1712,20 @@ my-ghost/
     "ko": "locales/ko.json"
   },
   "version": "1.0.0",
-  "minCindyVersion": "1.2.3", // 可选:安装所需最低 Cindy 正式版本(SemVer)。不写=兼容所有版本;只在确实使用了新版宿主能力时声明
+  "minCindyVersion": "1.2.3", // 示例；v3 必填:本插件实际依赖的首个 Cindy 正式版本(SemVer)
   "entry": "main.js",          // 电子脑入口(kind 字段已无需填写:意识只有芯片一种形态,缺省即 chip;写了也只认 "chip")
-  "launch": "on-demand",       // 可选:电子脑启动模式。on-demand(缺省)=被需要才拉起;resident=唤醒即常驻(确认框会如实标注"常驻运行",绝大多数意识不需要,仅订阅型/需秒响应的场景用)
-  "slots": ["tool", "cindy", "panel"],   // 能力白名单,没声明的槽运行时不存在
+  "launch": "on-demand",       // 可选:电子脑启动模式。on-demand(缺省)=被需要才拉起;resident=唤醒即常驻(详情页会如实标注"常驻运行",绝大多数意识不需要,仅订阅型/需秒响应的场景用)
   "command": "画图",            // 推荐:用户 $画图 显式点名(与已装意识查重,冲突拒装)。
   // 注意:不声明 command 时,插件页"使用"按钮将处于禁用状态——用户无法通过插件页
   // 一键启用/唤起插件,也不能用 $command 显式点名;但 AI 的工具发现与调用不受影响
   // (仅检查插件启用状态与 tools 声明)。除非你的插件完全靠 panel 或 subscribe 驱动,
   // 否则请始终声明一个 command。
   "tools": [ /* 见 §3 */ ],
-  "cindy": { "image": ["generate", "edit"] },   // 声明了 cindy 槽时必写:能力详单,见下
+  "cindy": { "image": ["generate", "edit"] },   // 直接声明能力及详单,见下
   // 类目按需申请:image / video 的动作是 "generate" | "edit";media 只有
   // "deposit"(把你手里的媒体字节寄存进总仓换指纹,见 §4.0.1);
   // text 只有 "oneshot";search 只有 "web"(Cindy 托管公网搜索)。每条都会
-  // 在装入确认框里单独列给用户看。
+  // 在插件详情的能力清单里单独列给用户看。
   "panel": { "title": "面板标题", "html": "panel.html", "position": "left",
              "minWidth": 240, "defaultFraction": 0.24,
              "systemButtons": { "maximize": false } },
@@ -1091,29 +1737,39 @@ my-ghost/
   // top/bottom 暂未支持(排期中)
   // panel.systemButtons(可选,仅停靠形态):标准头系统按钮开关,缺省全开、
   // 声明 false 逐个关闭。当前一批:maximize(撑满内容区)、detach(在独立
-  // 窗口中打开)、minimize(最小化为浮动气泡)。标题条本体恒由主机绘制、
-  // 关不掉;未知键拒装;position:"tab" 时声明本字段拒装
+  // 窗口中打开)、minimize(最小化面板;恢复入口由用户偏好决定为浮动气泡或
+  // 左侧栏)。标题条本体恒由主机绘制、
+  // 关不掉;未知键保留但不生效;position:"tab" 时声明本字段拒装
+  // 一级主视图是独立能力，见 §4.20。使用时直接声明：
+  // "mainView": { "title": "工作台", "icon": "puzzle", "html": "main-view.html" }
   "settingsHtml": "settings.html",  // 可选:设置页「自定义设置区」自绘界面(见 §4.8;声明了用户填的凭证时仍必填,用于长期管理/替换/清除;调用前缺失时主机也会在统一 Setup 卡内联收单,见 §4.7)
+  "showTaskPreferences": true,     // 可选:是否显示宿主「模型与任务」卡,缺省/true 显示,false 隐藏;见 §4.8
   "settingsHeight": 360             // 可选:固定高度 px(160–800);缺省 = 随内容自适应(矮内容真收矮,高至 800);内容会动态增减时才声明,避免抖动
 }
 \`\`\`
 
-不要为“当前开发环境版本”机械填写 \`minCindyVersion\`。旧插件和不依赖新版宿主能力的
-插件应省略它；只有确认更早版本无法解析或安装时，才填写能工作的最早正式版本。
+\`schemaVersion: 3\` 必须填写 \`minCindyVersion\`。它写本插件实际依赖的首个 Cindy
+正式版本；Manifest schema 本身没有统一的 Cindy 版本下限。不要为了使用某项既有能力随意抬高版本。
+官方市场会优先向旧客户端投影最近的兼容历史版本，没有兼容版本时不展示该插件。
+Desktop 信任来源已经完成的版本选择，不再按 \`minCindyVersion\` 追加筛选或确认弹窗；
+用户主动导入的本地包、以及用户添加的自定义市场也遵循同一安装策略。这个字段仍必须
+准确填写：它供发布服务选择兼容 release，也记录插件真实依赖的首个 Host 版本。
 
 ### whenToUse:只写发现线索,不写使用规则
 
 在作者契约里,\`whenToUse\` 是专门给模型做插件发现与判断的唯一字段;
-\`description\` 给人看(装入确认框/详情页),不要拿它兼任模型路由说明。
-\`whenToUse\` 最多 ${GHOST_MANIFEST_SUMMARY_MAX_CHARS} 字符,花名册会完整展示有效内容,折叠连续空白并对异常数据做防御性截断。模型从花名册命中目标后,
-正常发现链是**花名册 → \`ghost_info\` → \`ghost_call\`**;只有不知道用户装了什么时才查
-\`ghost_list\`。未声明 \`whenToUse\` 时宿主会用 \`description\` 兼容回落,但高质量插件
+\`description\` 给人看(插件详情页),不要拿它兼任模型路由说明。
+\`whenToUse\` 最多 ${GHOST_MANIFEST_SUMMARY_MAX_CHARS} 字符,花名册会完整展示有效内容,折叠连续空白并对异常数据做防御性截断。花名册命中已知 \`ghost_id\` 时用
+\`ghost_info\` 精准现查单条;未命中或需要全量实时回查时用 \`ghost_list\`。两者都返回完整
+\`CindyGhostInfo\`,取得信息后再按任务交叉读取 Manual 与插件工具目录,信息足够即可调用。
+未声明 \`whenToUse\` 时宿主会用 \`description\` 兼容回落,但高质量插件
 必须单独写好 \`whenToUse\`,不要依赖回落。
 
 只写用户意图、业务对象和常见说法的**场景枚举**,回答"什么情况下应该想到这个插件"。
 禁止塞入"必须/不得"式行为规则、工具调用顺序、参数协议、错误码与重试策略。
-跨工具或类目共用的规则放进 §3.5 的 **\`list_tools(category)\` RULES**;
-单个工具怎么调用放进工具及参数 \`description\`。
+单个工具怎么调用放进工具及参数 \`description\`;同一类别内、紧贴当前工具集合与参数的
+动态规则放进 §3.5 的 **\`list_tools(category)\` RULES**;多工具组合、跨类别完整流程、
+长期稳定的共同原则与深入用法放进 §3.6 的 Manual。不要在三处复制同一份规则。
 
 反例(错把使用规则塞进发现面):
 
@@ -1156,6 +1812,7 @@ tool name 对齐，协议键、工具名和参数名不翻译：
     }
   },
   "panel": { "title": "Plugin panel" },
+  "mainView": { "title": "Workspace" },
   "network": {
     "secrets": {
       "api_key": { "label": "API key", "hint": "Create one in account settings." }
@@ -1178,7 +1835,7 @@ tool name 对齐，协议键、工具名和参数名不翻译：
 \`\`\`
 
 可翻译字段：\`name\`、\`description\`、\`whenToUse\`、\`tools\`(工具 description 与参数
-文案)、\`panel.title\`、\`network.secrets / connections\`、\`node.secretBindings\`、
+文案)、\`panel.title\`、\`mainView.title\`、\`network.secrets / connections\`、\`node.secretBindings\`、
 \`setup\` 的 kv 标签；凭证、连接、Node 凭证和 kv 项按稳定 key 对齐(提供某个 key 的
 条目时 label 必填,hint 可选)。工具参数 schema 中已有的 \`title / description\` 用
 JSON Pointer 对齐（如 \`/properties/query\`；根节点用空字符串 \`""\`），参数名、类型、
@@ -1191,35 +1848,56 @@ key、未知字段、原清单没有的条目、类型或长度不合格、文�
 node secretBindings key、setup kv key——都不能使用 \`__proto__\`、\`constructor\` 或
 \`prototype\`；这些名称是宿主保留键，打包时会直接拒绝。
 
-十八个卡槽:\`tool\`(注册工具给 AI)、\`cindy\`(请 Cindy 本体代办:出图/改图/快问快答,
-见 §4 与 §4.0.2)、\`agent\`(让
-当前 Agent 开始一个普通用户回合,或派活取回结果,见 §4.11 / §4.11.1)、\`panel\`(常驻
-面板)、\`card\`(聊天卡片:自绘工具调用的过程与结果,见 §4.5)、\`subscribe\`(旁听会话
-事件 + 拦截用户消息,见 §4.6)、\`network\`(访问自带服务的域名白名单 HTTP,主机代发,
-见 §4.7)、\`notify\`(弹系统轻提示,主机画壳带你的身份头,见 §4.9)、\`badge\`
-(在插件入口留一颗持久的未读绿点,与 notify 并列、互不为前置,见 §4.9.1)、\`confirm\`(弹主机
-同款确认框征求用户同意并拿回真实点击,见 §4.18)、\`fs\`(请主机
-代写文件:私有数据目录/会话工作目录/过户目录三档,见 §4.10)、\`node\`(运行随包
-Node 工作进程或 stdio MCP,见 §4.12)、\`session-context\`(派活时主机把当前会话的
-可信 session_id / workdir / 只读状态注入 args,见 §4.13)、\`pick\`(请主机弹系统选文件夹窗口,
-用户亲选即授权,见 §4.14)、\`preview\`(请主机在右侧栏内置浏览器打开白名单网站的
-预览标签,见 §4.15)、\`skill\`(捆绑 Agent Skills:随包 SKILL.md 技能,启用后
-Claude Code 与 Codex 都能发现,见 §4.16)、\`workspace\`(请主机为项目目录在
-侧边栏创建/复用会话入口,见 §4.17)、\`ios-simulator\`(读取当前台前任务的
-公开 iOS 模拟器状态并打开 Host 内置控制面板,见 §4.19)。
+v3 直接用顶层字段声明插件贡献项与自主 Host 能力，不再有 \`slots\`。带详单的字段是 \`tools\`、\`cindy\`、
+\`agent\`、\`panel\`、\`mainView\`、\`card\`、\`subscribe\`、\`network\`、\`node\`、\`preview\`、
+\`skill\`；布尔能力写成字面量 \`true\`：\`notify\`、\`badge\`、\`confirm\`、\`fs\`、
+\`library\`、\`sessionContext\`、\`pick\`、\`workspace\`。不用的字段直接省略，
+邮件插件声明 \`mail: true\`，调用 Cindy 内置 \`cindyMail.register(adapter)\`
+（version 1），不生成卡片 HTML、不打包公共流程；纯邮件插件不需要 \`card\`。
+阅读邮件可声明 \`mailReader:{tool,hosts}\`，工具接收 \`{url}\` 并返回 MailMessage，默认只读。
+\`mail\` 只能省略或写字面量 \`true\`；声明 \`mailReader\` 时必须同时有 \`mail: true\`，
+且 \`tool\` 必须指向本清单 \`tools\` 中的工具。协议校验与桌面安装校验都会拒绝不完整组合。
+支持打开即已读时增加 \`mailReader.markRead:true\`，读取工具接受可选 \`markRead:true\`；
+声明中的 \`markRead\` 只能省略或为字面量 \`true\`，\`false\`、字符串等其它值不合法。
+仅用户主动打开时传入，AI 读取和邻近预加载不传。成功读取后只标记当前邮件，不标记整个会话或草稿。
+Host 派发器会移除普通工具参数中的此标记，仅可信阅读器打开请求可注入；其它明确授权的已读操作工具不受影响。
+标记失败仍返回正文和 \`markReadFailed:true\`，由 Cindy 显示提示；新增 OAuth scope 不阻断已有授权的操作。
+适配器提供 providerName、draftStorage（server/local）、selectAccount、readDraft、writeDraft。
+通过 present 展示读回草稿，beforeTool 统一 get/send/update/delete，resolveDraft 获取最新位置。
+Host 负责样式、编辑同步、发送和任务续接；同一任务同一封邮件只显示最新卡片，旧快照保留但不重复展示。插件保留凭据、MIME 和服务商请求。
+插件重启后，下一次卡片编辑或工具操作会自动读回原草稿，使用 Host 卡片中上次同步的内容、卡片编辑和邮箱最新内容做三方合并；单边变化、相同变化和不重叠的文字修改自动合并，只有无法合并的修改才保留两边内容并提示具体字段。版本标记或预览地址变化本身不算冲突。适配器返回 execution:not_executed 和 stale 读回快照时可合并后重试一次，未知操作结果不能重试。发送倒计时结束时若发现实际内容变化，展示合并稿并重新倒计时。
+图文适配器的 attachmentItems 可为已有图片 key 添加 contentId，表示将同一附件插入 HTML 正文；必须核验实际图片字节、保留 MIME 引用，不能重复上传或把预览 URL 写入邮件。
+工具说明应要求默认展示草稿卡等用户确认；只有用户已明确确认该邮件，或有效的用户/任务指令明确授权该范围内直接发送，才不再询问。写信/回复请求、编辑及自动审批本身不代表确认。
+UI 和 Agent 发送都先进入 10 秒倒计时，卡片可撤销或立即发送；beforeTool(send) 等待最终回执。
+撤销后保留草稿且不得自动重试。所有发送先创建并展示草稿，再走 beforeTool(send)，不得保留直发旁路。
+缺少 SDK 时只读可用，编辑/发送需更新 Cindy；不要绕开公共流程直接发送已展示草稿。
 
-**agent 能力详单**:在 \`slots\` 加 \`"agent"\`，默认只允许在用户真实点击你的
-聊天卡片后发起一次 Agent 回合；这一档不写配套字段。若确实需要没有当次点击也能
-自动发起，额外写 \`"agent": { "background": true }\`。后台档会在装入确认框单独
-显示为更高风险权限，而且仍只能使用用户曾通过点击卡片与你建立关联的会话。
+不能写 \`false\`。\`card: {}\` 与 \`agent: {}\` 分别表示基础聊天卡片能力和用户点击后
+发起 Agent 回合；其它对象型能力必须包含该能力真正需要的详单。
+
+v3 未识别的顶层字段会原样保留，但旧版 Cindy 不展示、不给这个未知 Host 能力、也不因此阻止安装。
+当未来 Cindy 识别该字段后，它才会进入正常的能力展示与运行时守门。插件若依赖新能力，
+应同时把 \`minCindyVersion\` 提高到首个支持版本；仅由插件包自己完成的逻辑不要发明
+Host 能力字段。v2 的 \`slots\` 只用于存量包兼容，新插件不得再写。
+当前 Agent tool-call 内，插件工具是否执行由外层 \`ghost_call\` 的 Agent 授权决定；
+普通网络和 workdir 文件操作按上文的 \`callId\` 绑定复用 Agent 授权。CLI 继续由
+已声明运行形态的 Node 工作进程执行，不新增未知 Host 能力或具体命令登记。
+
+**agent 能力详单**:写 \`"agent": {}\` 时，默认只允许在用户真实点击你的
+聊天卡片后发起一次 Agent 回合。若确实需要没有当次点击也能自动发起，写
+\`"agent": { "background": true }\`。后台档会在插件详情中单独显示为更高风险能力，
+而且仍只能使用用户曾通过点击卡片与你建立关联的会话。
 要把任务交给 Agent 干并**取回结果**(而不是发进用户的会话),另写
-\`"agent": { "errand": true }\`(可与 background 并存),见 §4.11.1;同样是装入
-确认框单列的高风险档。
+\`"agent": { "errand": true }\`(可与 background 并存),见 §4.11.1;同样是详情页
+单列的高风险档。
 要请用户新建一条**自动化**(让插件里的内容定期自己刷新),另写
 \`"agent": { "schedule": true }\`(可与前两项并存),见 §4.11.2。它只能打开预填好的
-创建面板,任务由用户选好模型后亲手保存才存在;装入确认框单列一档。
+创建面板,任务由用户选好模型后亲手保存才存在;详情页单列一档。
+用普通任务接口(§4.11.3)写 \`"agent": { "tasks": true }\`;需要把自己创建的任务放到后台
+(不进任务列表、搜索与通知)时再加 \`"hiddenTasks": true\`,它必须与 \`"tasks": true\` 同时
+出现,否则拒装;详情页单列一档。
 
-**node 工作进程详单**(声明 node 槽时必写,详见 §4.12):
+**node 工作进程详单**(声明 node 时必写,详见 §4.12):
 
 \`\`\`json
 "node": {
@@ -1228,10 +1906,10 @@ Claude Code 与 Codex 都能发现,见 §4.16)、\`workspace\`(请主机为项�
   "lifecycle": "on-demand",           // 可选:on-demand(缺省)/resident(常驻,单列高风险权限)
   "idleTimeoutSeconds": 120,           // 可选:按需档空闲关闭时间,30–3600;resident 禁写
   "entries": ["node/build.cjs"],       // 可选 ≤4 条:额外工作进程入口(每入口一个独立进程,调用时用 entry 指名,见 §4.12.1;不能与 entry / 浏览器沙箱 entry / 彼此重复)
-  "childSpawn": true,                  // 可选:worker 可请宿主代启申报入口的原样 stdio 子进程(见 §4.12.4;装入确认框单列一行)
+  "childSpawn": true,                  // 可选:worker 可请宿主代启申报入口的原样 stdio 子进程(见 §4.12.4;详情页单列一行)
   "secretBindings": [{                 // 可选 1–4 条:safeStorage 持久化凭证按方法临时注入 Worker
     "key": "mail_code",                // 插件内唯一,小写字母开头,1–32 位小写/数字/下划线;禁用宿主保留键(见 §2.1)
-    "label": "邮箱授权码",             // 安装确认与设置页展示名
+    "label": "邮箱授权码",             // 详情页与设置页展示名
     "methods": ["mail/action"],         // 只在这些 JSON-RPC 方法中注入,每条 1–128 位
     "entry": "node/worker.cjs",         // 可选:逐字命中 node.entry/entries;缺省仅主入口
     "hint": "请填写服务商授权码",       // 可选 ≤200 字
@@ -1246,46 +1924,59 @@ node 详单**不接受** \`command\` / \`args\` / \`shell\` / \`env\` 或其它�
 ——正式包关闭了 RunAsNode,那样生出来的不是 Node;要多进程就把入口申报进
 \`entries\`,由主机代开。
 
-**preview 详单**(声明 preview 槽时必写,详见 §4.15):
+**preview 详单**(声明 preview 时必写,详见 §4.15):
 
 \`\`\`json
 "preview": {
-  "hosts": ["*.example.dev", "localhost"]   // 1–4 条;语法同 network.hosts;能在右侧栏打开的预览网站白名单,装入确认框逐条展示
+  "hosts": ["*.example.dev", "localhost"]   // 1–4 条;语法同 network.hosts;能在右侧栏打开的预览网站白名单,详情页逐条展示
 }
 \`\`\`
 
-**skill 详单**(声明 skill 槽时必写,详见 §4.16):
+**skill 详单**(声明 skill 时必写,详见 §4.16):
 
 \`\`\`json
 "skill": {
   "items": [{                       // 1–4 条
     "dir": "skills/my-skill",       // 包内技能目录,内必须有 SKILL.md
     "name": "my-skill",             // 硬规则:与 SKILL.md frontmatter name 逐字一致;小写字母/数字加单连字符分段(禁首尾/连续连字符),≤64
-    "description": "……"             // 硬规则:与 SKILL.md frontmatter description 逐字一致(确认框展示的就是 Agent 读到的),1–1024 字
+    "description": "……"             // 硬规则:与 SKILL.md frontmatter description 逐字一致(详情页展示的就是 Agent 读到的),1–1024 字
   }]
 }
 \`\`\`
 
-**cindy 能力详单**:声明"这个意识被允许点主机代办菜单上的哪些菜"——只有类目和
-动作,**没有任何具体模型/供应商信息**(选型权在主机与用户,意识只表达意图)。
+**manual 随包手册**(独立顶层字段,不是 slot、不是权限项,详见 §3.6):
+
+\`\`\`json
+"manual": {
+  "items": [{                         // 1–8 条
+    "dir": "manual/getting-started", // 包内物理目录,必须有 MANUAL.md
+    "name": "getting-started",        // ghost_manual path 的逻辑首段,不暴露物理 dir
+    "description": "从安装到首次运行" // 一级轻量索引,1–300 字
+  }]
+}
+\`\`\`
+
+**cindy 能力详单**:声明插件要基于哪些 Cindy Core 能力提供上层能力--只有类目和
+动作,**没有任何具体模型/供应商信息**。image / video 声明同时决定该插件能否在
+自己的设置页或面板读取对应类型的模型目录；生成请求仍由当前 Agent 发起。
 类目与动作:\`image\`(\`generate\`=出图 / \`edit\`=改图)、\`video\`(\`generate\`=
 文生视频 / \`edit\`=图生视频,参考图怎么用由 \`refMode\` 决定:首尾帧 1–2 张,
 或多张参考图,详见 §4 的 cindy-request 视频段)、\`media\`(\`deposit\`=把手里的
 媒体字节存进媒体库,§4.0.1)、\`text\`(\`oneshot\`=快问快答,§4.0.2)、
 \`embed\`(\`text\`=文本转向量,§4.0.3)、\`search\`(\`web\`=Cindy 托管
 公网搜索,见 §4 的 \`search_web\` 段)。
-详单里没申请的动作,运行时点单直接被拒;声明了 cindy 槽却漏写详单 = 零能力,
-别漏。\`search.web\` 只能由真实 tool-call 触发,还必须同时声明 \`tool\` 槽和
-至少一个工具。(旧名 model 槽/字段仍兼容,但新意识一律用 cindy。)
+详单里没申请的动作,运行时点单直接被拒。\`search.web\` 只能由真实 tool-call
+触发,还必须同时声明至少一个 \`tools\` 条目。旧 v2 包的 model slot/字段仍兼容，
+但新意识一律使用 v3 的 \`cindy\` 字段。
 
-**network 详单**(声明了 network 槽时必写,详见 §4.7):
+**network 详单**(声明 network 时必写,详见 §4.7):
 
 \`\`\`json
 "network": {
-  "hosts": ["api.example.com", "*.weather.com"],   // 1–8 条;小写域名至少两段;通配只允许最左 "*.";装入确认框逐条展示给用户
+  "hosts": ["api.example.com", "*.weather.com"],   // 1–8 条;小写域名至少两段;通配只允许最左 "*.";详情页逐条展示给用户
   "secrets": [{                                     // 可选 0–4 条:需要用户填的凭证(你只声明名字和注入位置,值用户填、主机保管)
     "key": "api_token",                             // 小写字母开头,小写/数字/下划线,1–32;禁用宿主保留键(见 §2.1)
-    "label": "Example API Token",                   // 给用户看的名称(设置页/确认框)
+    "label": "Example API Token",                   // 给用户看的名称(设置页/详情页)
     "source": "user",                               // 可选:凭证值来源。"user"(缺省)=用户可在调用前的主机 Setup 卡内填写,也可在你的 settingsHtml 里长期管理/替换/清除(当前仍要求同时声明 settingsHtml,见 §4.7);"login-email"=主机登录邮箱自动派生(用户不填;声明它时不允许再写 url,见 §4.7);"oauth"=主机托管 OAuth 授权,值 = 授权换来的 access token(必须同时声明 oauth 详单,见 §4.7 与下方 oauth 字段);"gh-cli"=仅官方 cindy-github 可用,优先复用本机 gh 登录、不可用时回落同 key 的设置页 PAT;"oidc-token"=主机为当前企业 Membership 按需签发短时 Connection JWT(插件不可读取,必须显式限制 inject.hosts,固定 Authorization: Bearer {value},见 §4.7)
     "hint": "在控制台生成后粘贴",                     // 可选提示(主机 Setup 卡与 settingsHtml 都会用到)
     "url": "https://example.com/settings/keys",     // 可选:控制台/申请地址(仅 https)。调用前缺凭证时,主机 Setup 卡会在输入框旁展示本地化的「获取凭证」入口；settingsHtml 也可用 <a href> 逐字引用它,点击经主机转系统浏览器打开(见 §4.8「外链」)
@@ -1307,19 +1998,19 @@ node 详单**不接受** \`command\` / \`args\` / \`shell\` / \`env\` 或其它�
       "clientId": "xxx.apps.example.com",           // 可选:内置 OAuth 客户端 ID(用户零配置开箱即用;用户在设置页自填的覆盖内置,清除自填即回落)
       "clientIdAlternatives": ["xxx-global.apps.example.com"],  // 可选 ≤8 条:仅 tokenBroker 模式;意识按 app-context 选 App 时,connect 只接受默认值或这里声明的公开 ID
       "clientSecret": "xxx",                        // 可选(须与 clientId 成对):内置 client 的 secret;桌面应用的 client 凭证本非机密,纯 PKCE 服务商可省略
-      "scopes": ["read.a", "write.b"],              // 可选 ≤256 条:申请的权限范围(确认框逐条展示给用户)
+      "scopes": ["read.a", "write.b"],              // 可选 ≤256 条:申请的权限范围(详情页逐条展示给用户)
       "scopeDelimiter": ",",                        // 可选:authorize URL 的 scope 拼接分隔符;缺省空格(OAuth 标准),Slack 这类逗号分隔的服务商声明 ","(目前只认这一个值)
       "pkce": true,                                 // 可选:PKCE(S256)开关,缺省 true
       "extraAuthorizeParams": { "access_type": "offline", "prompt": "consent" },  // 可选 ≤8 条:服务商特有授权参数(协议保留参数禁写)
       "identity": { "url": "https://api.example.com/userinfo", "labelPath": "email", "displayTemplate": "{team} · {user}", "avatarPath": "data.avatar_thumb" },  // 可选:授权后拉一次身份端点给账号打标签(设置页"已连接为 xxx";url 域名须命中 hosts)。labelPath 应指向**唯一且稳定**字段(如邮箱 / user_id)——它是重复授权时的同身份合并判定键,选 name 这类可重名可改名字段会误合并。displayTemplate 可选:人类可读展示名模板,\`{点分路径}\` 占位符从同一份身份响应取值(至少一个占位符,≤200 字符),任一占位符取不到值整体降级为空、回落显示 labelPath 的值——labelPath 的稳定字段不可读(如 Slack 的 user_id)时声明它,设置页与账号工具展示的就是渲染后的名字(邮箱这类本身可读的服务商不需要)。avatarPath 可选:头像 URL 在身份响应里的点分路径(如飞书的 "data.avatar_thumb")——主机取 https 地址后**不带凭证**下载小图(仅 png/jpeg/webp/gif、≤256KB)转 data URL 存库,\`/oauth\` 回查里以 account.avatarDataUrl 给你的 settingsHtml 展示(<img> 直接用)。**下载仅对第一方官方意识生效**(头像地址不受 hosts 白名单约束,第三方声明合法但恒降级 null)——所以页面必须能没头像也好看(如回落姓名首字圆片)
-      "redirectPort": 53682,                        // 可选:loopback 回调固定端口(1024–65535)。服务商要求回调 URI 与注册值精确匹配(如 Atlassian)时声明,回调恒为 http://127.0.0.1:<端口>/callback;缺省 = 随机端口(Google 等允许任意 loopback 端口的服务商不用声明)
-      "tokenBroker": "jira",                        // 可选:仅第一方官方意识可用(第三方声明拒装)。声明后 code/refresh 交换经 Cindy 服务端 broker 完成(client secret 在服务端,不随包分发),与 clientSecret 互斥;设置页不再支持自填 client
+      "redirectPort": 53682,                        // 可选:loopback 回调固定端口(1024–65535);声明 tokenBroker 时必填。服务商要求回调 URI 与注册值精确匹配(如 Atlassian)时声明,回调恒为 http://127.0.0.1:<端口>/callback;非 broker 模式缺省 = 随机端口(Google 等允许任意 loopback 端口的服务商不用声明)
+      "tokenBroker": "jira",                        // 可选:三路资格:随包官方种子或受信任公开市场的官方插件(名称本身不构成资格);当前组织的服务端 organization market 包满足来源/组织/namespace/整包 sha256 绑定;或企业作者用 ghost_forge_install 明确安装到当前组织 namespace。后两路只给 Broker 与 oidc-token,不给宿主原语;手动导入与个人身份不放行。声明时必须同时声明 redirectPort;code/refresh 交换经 Cindy 服务端 broker 完成(client secret 在服务端,不随包分发),与 clientSecret 互斥;设置页不再支持自填 client
       "brokerBounce": { "path": "/example/bounce", "callbackPath": "/example/callback" }  // 可选:双地址弹跳回调(服务商后台只收 https redirect、不收 http loopback 时用)。必须与 tokenBroker、redirectPort 同时声明;报给服务商的 redirect_uri = broker 服务基地址 + path(主机运行时拼,清单不落域名),浏览器授权后由弹跳路由 302 回 http://127.0.0.1:<redirectPort><callbackPath>
     }
   }],
   "connections": [{                                 // 可选 0–2 条:多连接声明——"地址 + 凭证成对多条"(自建实例场景如 GitLab,详见 §4.7「多连接」)。声明了 connections 时 hosts 可缺省/为空(静态域名与动态连接至少有其一);声明 connections 必须同时声明 settingsHtml
     "key": "gitlab",                                // 小写字母开头,小写/数字/下划线,1–32;禁用宿主保留键;与 secrets[].key 共用命名空间,撞名拒装
-    "label": "GitLab 实例",                          // 给用户看的连接类型名(1–64 字;确认框与设置页展示)
+    "label": "GitLab 实例",                          // 给用户看的连接类型名(1–64 字;详情页与设置页展示)
     "hint": "填实例域名与 Personal Access Token",     // 可选 ≤200 字提示(建议写进你的 settingsHtml 文案)
     "inject": { "header": "Private-Token", "format": "{value}" },  // 凭证注入形态(规则同 secrets 的 inject);**不允许**声明 inject.hosts——凭证恒只注入对应连接自身的地址,写了拒装
     "maxConnections": 4                             // 可选:每种连接可添加的地址数上限(1–8 整数,缺省 8)
@@ -1330,7 +2021,9 @@ node 详单**不接受** \`command\` / \`args\` / \`shell\` / \`env\` 或其它�
 **setup 就绪声明**(可选,顶层字段):回答"这段意识**用之前必须配好什么**"。用户在
 插件页点「使用」或 Agent 调用你的工具时,主机按它做前置检查；没配齐就用统一设置卡
 引导用户完成配置：普通 user Secret 直接在卡内填写，OAuth 在卡内发起授权，KV 与连接等
-复杂配置再进入插件详情页。配齐后继续原调用。检查、字段绑定、保存状态和恢复都在主机
+复杂配置再进入插件详情页。普通任务配齐后继续原调用；伙伴会保留独立授权卡并结束当前轮，
+授权完成后由主机通知伙伴继续原工作。没有图标时不生成占位图标，插件已有配置面板与成果
+UI 保留。检查、字段绑定、保存状态和恢复都在主机
 代码里执行,你只声明需求,不用写卡片回调或检查逻辑,也不要在电子脑里自己重复检查。
 
 \`\`\`json
@@ -1375,8 +2068,9 @@ node 详单**不接受** \`command\` / \`args\` / \`shell\` / \`env\` 或其它�
 
 措辞套路(实测有效):description 写清"干什么 + 返回什么";参数 description 里直接
 写该工具自己的行为规则(如"用户原话透传,不要扩写"、"仅当用户显式说 X 才传 Y")——
-AI 会照做。直接声明工具时,工具/参数 description 是使用规则的落点;两段式目录的
-跨工具规则走 §3.5 的类目 RULES。两者都不要塞进 \`whenToUse\`。
+AI 会照做。直接声明工具时,工具/参数 description 是单工具局部契约的落点;两段式目录中,
+当前类别内、随实时工具集合与参数变化的规则走 §3.5 的类目 RULES。多工具或跨类别的完整
+工作流与长期稳定共同原则走 §3.6 的 Manual。都不要塞进 \`whenToUse\`,也不要重复维护。
 
 ### 3.1 @ 插件入口
 
@@ -1390,7 +2084,7 @@ Composer 的 \`@\` 面板只展示已安装且可用的插件入口；插件作�
 **直接声明(默认,绝大多数意识用这个)**:每个工具在 tools 里逐条声明(§3 的写法)。
 适用:工具是"意图级"的——一个工具对应用户会说的一句话(如"生成音乐"、"部署站点"),
 数量一只手到一打(主机硬上限 16 项,超了直接拒装)。收益全在明处:模型通过
-\`ghost_info\` 拿到插件详情后,靠各工具 description 选择具体能力;装入弹窗把每个工具
+\`ghost_info\` 拿到插件详情后,靠各工具 description 选择具体能力;详情页把每个工具
 如实列给用户;工具名不存在主机直接拦。
 
 **两段式目录(大工具面专用)**:要包的能力是"端点级"的几十上百个操作(典型:给一个
@@ -1430,25 +2124,84 @@ tools**——本插件的 \`ghost_info\` 单条详情会被撑大,不知道装�
   \`list_tools(category)\` 的提示;收到不合法的 args 时,失败结果必须附该工具正确的
   参数 schema **和本次自纠必需的规则**(规则正文或能在本结果中解析的引用)——AI 会照着
   自纠重试,比干巴巴报错省一轮追问;
-- 权限透明的代价自己补:装入弹窗只会逐条列出 list_tools / call_tool 两个元工具,用户
+- 能力透明的代价自己补:插件详情只会逐条列出 list_tools / call_tool 两个元工具,用户
   看不出背后有多少操作。把给人看的能力范围如实写进 ghost.json 的 description,
   再把模型应在什么场景发现你的场景枚举写进 whenToUse,别让人或模型装完才发现。
+
+\`list_tools\` 是插件声明的顶层工具,不是 Host 固定工具;实际通过
+\`ghost_call({ ghost_id: "my-ghost", tool: "list_tools", args: { category: "deploy" } })\`
+调用。类别 RULES 如果依赖跨工具/跨类别工作流或深入说明,不要复制正文,而应给出完整
+\`ghost_manual({ ghost_id: "my-ghost", path: "operations/references/deploy.md" })\` 调用。
+反过来,Manual 也可以用上面的完整 \`ghost_call(... list_tools ...)\` 调用指向实时工具目录。
+两条路径可以反复交叉,没有固定先后顺序;信息足够时,用 \`ghost_call\` 调顶层工具,
+或由两段式插件的 \`call_tool\` 执行具体操作。
 
 分界线的手感:一打以内、意图级 → 直接声明;几十以上、端点级 → 两段式。两段式首次
 使用多一跳(先翻目录),目录进上下文后,同一会话的后续调用与直接声明无异。
 
+## 3.6 manual:按需披露复杂工作流与分层资料
+
+Manual 的归属不按篇幅长短判断。它对标 Skill 正文与 references,承载多工具组合编排、
+跨类别完整工作流、复杂工具深入用法、前置检查、顺序与分支、失败恢复、交付标准、
+跨工具/跨类别长期稳定的共同原则,以及需要分层展开的参考资料。短但决定多个工具如何协作的
+关键原则应进入 Manual;很长但只是在枚举某一个工具的参数,仍应留在该工具 description 或
+所属类别的工具说明/RULES,不能只因内容长就搬进 Manual。
+
+使用顶层 \`manual.items\` 声明手册单元,不要把上述内容塞进 \`whenToUse\` 或 system 提示。
+每个单元目录必须有普通 Markdown \`MANUAL.md\` 入口;目录树可以任意深,但所有非目录条目
+都必须是普通 \`.md\` 文件,单文件不超过 64KB。Markdown 不写 frontmatter;二进制、非法
+UTF-8、符号链接和其它扩展名都会在打包与装入两侧拒绝。
+
+**Manual-only 插件**可以只声明非空 \`manual.items\`,不需要声明虚假工具。
+已启用、账号可用且当前工作目录未停用时,它同样进入花名册、\`ghost_list\` 和
+\`ghost_info\`;返回的 \`tools\` 可以为空。\`ghost_manual\` 读取手册不启动插件运行时,
+\`ghost_call\` 仍只能调用实际声明的工具。既无工具也无手册的插件不进入发现清单。
+
+四层信息各司其职:
+
+- \`whenToUse\`:只放系统提示词区插件花名册需要的召回场景;
+- 工具/参数 description:放单个工具的局部契约,包括用途、输入输出与调用前限制;
+- 插件 \`list_tools(category)\` 返回的工具说明与 \`result.rules\`:放当前 category 内、
+  紧贴实时工具集合的动态规则与参数;
+- \`manual\`:放多工具/跨类别编排、复杂工具深入用法、完整工作流、失败恢复、交付标准、
+  长期稳定的共同原则与分层资料。
+
+同一规则只选一个权威落点,不要在工具 description、类别 RULES 与 Manual 复制三份。
+需要另一层信息时给出完整调用互相指路:Manual 可指向
+\`ghost_call({ ghost_id: "my-ghost", tool: "list_tools", args: { category: "deploy" } })\`,
+工具说明或 RULES 可指向 \`ghost_manual\`。两者并行且可以反复交叉,不是固定读取顺序;
+信息够用时即可执行。
+
+导航尽量浅:默认让 \`MANUAL.md\` 一层直达完整任务;内容确需分层展开时再拆深层文件,入口
+直接列出下一步完整调用,例如
+\`ghost_manual({ ghost_id: "my-ghost", path: "getting-started/references/deploy.md" })\`。
+不要让多个索引文件互相指回形成循环。手册正文只作为 tool-result 按需进入上下文,不进入
+生产 system/developer prompt;它是插件作者数据,不是系统规则、用户意图或权限授权,作者不得
+用它伪造授权或绕过工具自身的运行期门禁。
+
+**发布硬门槛**:首个依赖 \`manual\` / \`ghost_manual\` 的插件版本，必须等包含该工具的
+Cindy 先发布，确认首个支持它的**正式版本号**后，再把 \`minCindyVersion\` 设为不低于
+该正式版本并发布插件。开发期版本号未定时只保留这条契约，不猜占位版本。移除
+\`skill.items\` 的迁移版本也必须设置上述 \`minCindyVersion\`，并遵守 Cindy 先发、插件
+后发的顺序；服务端还要保留上一份带 Skill 的历史 release，使旧客户端能通过历史版本回退
+继续取得兼容包。
+Manual-only 插件还必须等首个支持 Manual-only 发现与读取的 Cindy 正式版本发布,
+并将 \`minCindyVersion\` 设为不低于该版本;不能只以最早提供 \`ghost_manual\` 的版本为准。
+
 ## 4. main.js 电子脑(沙箱后台逻辑)
 
-跑在无网络、无文件、无 Node 的独立沙箱页里,只有一个全局 \`cindy\`:
+跑在无文件、无 Node、无通用网络直连的独立沙箱页里,只有一个全局 \`cindy\`。
+唯一外部直连例外是所有插件页面共有的 HTTPS 图片请求;\`fetch\` / XHR、脚本、样式、
+字体、音视频与 WebSocket 仍不能直连:
 
 \`\`\`js
 // 收活:AI 调你的工具时收到 tool-call
 cindy.onHostMessage(function (msg) {
   if (msg.type !== 'tool-call') return;
   // msg.tool = 工具名, msg.args = AI 填的参数, msg.callId = 卷号
-  // msg.args.attachments(可能出现):用户随消息发给你的图,已由主机过户
-  // 到你名下的**指纹数组**——与你自己生成的媒体同等待遇(可当改图源图、
-  // 可经 cindy-ghost://<id>/media/<指纹> 上墙)。工具要吃用户图就读它。
+  // msg.args.attachments(可能出现):用户交出的媒体,或当前 Agent / Core 工具
+  // 生成后显式交给你的媒体,已由主机过户到你名下的**指纹数组**——
+  // 可当源媒体,也可经 cindy-ghost://<id>/media/<指纹> 上墙。
 });
 
 // 交卷(默认 330 秒内,超时作废;够覆盖一单大文件上传/取件。长任务可续命,
@@ -1460,7 +2213,7 @@ cindy.send({ type: 'tool-result', callId: msg.callId, ok: true, result: {
   //   kind: 'music',            // 'music'(完整卡:封面/tags/歌词/进度条)| 'sound_effect'(精简卡)
   //   title: '歌名', cover_url: 'cindy-media://….jpg', tags: '风格描述',
   //   lyrics: '歌词', duration_seconds: 176, suno_id: '…' }]      // 除 url 外全可选
-  // → 聊天气泡渲染成音频播放器卡。声明了 card 槽的意识也可把播放器直接画进
+  // → 聊天气泡渲染成音频播放器卡。声明了 card 能力的意识也可把播放器直接画进
   // 自己的卡(§4.5 data-ghost-audio 插槽),那时结果多带 xdt_audio_in_card: true
   // + xdt_anchor_card_id(主机验证卡里真含插槽才压基座的重复播放器;
   // xdt_audio_tracks 仍要发——手机端靠它)。
@@ -1498,13 +2251,16 @@ cindy.send({
 // 长任务续命(超时窗口默认 330s,从派发起算绝对上限 30 分钟):
 // - 经 cindy-request 请主机代办且带 callId 的署名单(出图/视频)在途时,
 //   主机**自动**替这份卷续命,你不用做任何事;
-// - 自己经 network 槽轮询外部长任务时,期间定期(建议 ≤60s 一次)发心跳:
+// - 自己经 network 能力轮询外部长任务时,期间定期(建议 ≤60s 一次)发心跳:
 //   cindy.send({ type: 'tool-progress', callId: msg.callId });
 //   每次心跳把窗口重新续满一个 330s 档;callId 不是派给你的会被静默丢弃。
 // - 预计超过 30 分钟天花板的超长任务,不要吊着一次 tool-call 等:视频代办用
 //   mode:'submit' 异步提交(见下),自己的外部任务拆成"提交 + 查询"两个工具。
 
-// Cindy 代办(需声明 cindy 槽 + 能力详单;主机出图、落仓、记账,你只拿到指纹字符串):
+// 以下 gen_image / edit_image / gen_video / edit_video 是存量插件兼容接口。
+// 新插件不要从沙箱或面板直接发媒体生成请求；按 §4.0.4 让当前 Agent 使用
+// Cindy Core media 工具。非媒体的 cindy-request 能力继续按各自章节使用。
+// 存量 Cindy 代办(需声明 cindy 顶层字段 + 能力详单;主机出图、落仓、记账):
 // 由 tool-call 触发的代办**务必带上收到的 callId**(归因号:让用户在日志/账单里
 // 对上"哪次调用花的钱");面板交互等自发代办可不带。
 const r = await cindy.send({ type: 'cindy-request', kind: 'gen_image', prompt: '一只猫', callId: msg.callId });
@@ -1619,7 +2375,7 @@ const search = await cindy.send({
 寄存把这些字节存进总仓、记到你名下,换回指纹;从此它与你生成的图**同权**。
 
 \`\`\`js
-// 需声明:"slots": [..., "cindy"], "cindy": { "media": ["deposit"] }
+// 需声明:"cindy": { "media": ["deposit"] }
 const r = await cindy.send({
   type: 'cindy-request',
   kind: 'deposit_media',
@@ -1654,7 +2410,7 @@ await cindy.send({ type: 'cindy-request', kind: 'release_media', hash: r.hash })
   自己在面板里用 \`cindy-ghost://<id>/media/<指纹><后缀>\` 渲染,或做成卡片;
 - **生命周期**:寄存物跨会话持久(删会话不陪葬),用户卸载你的插件时一并清理。
 
-用户装你的插件时,确认框会单独出现一行「可将它手中的图片、视频或音频存入你的
+插件详情的能力清单会单独出现一行「可将它手中的图片、视频或音频存入你的
 媒体库」并写明上限——这是唯一一条"不花钱就能写用户媒体库"的能力,所以要用户
 单独点头。别为了省事把它当默认能力申请:不做面板素材加工的插件不要声明。
 
@@ -1664,7 +2420,7 @@ await cindy.send({ type: 'cindy-request', kind: 'release_media', hash: r.hash })
 任何工具时,不要发起 Agent 回合——用快问快答,几秒到几十秒出结果,便宜得多:
 
 \`\`\`js
-// 需声明:"slots": [..., "cindy"], "cindy": { "text": ["oneshot"] }
+// 需声明:"cindy": { "text": ["oneshot"] }
 // 可选偏好:"cindy": { "text": ["oneshot"], "oneshotModel": "codex/gpt-5.5" }
 const r = await cindy.send({
   type: 'cindy-request',
@@ -1685,11 +2441,13 @@ const r = await cindy.send({
   标题同一条),不拉起 Agent、没有工具、碰不到用户文件、不进任何会话——
   要"干活"(读文件、查资料、多步操作)请用派活(§4.11.1);
 - 选型仍不在你手里(没有 tier/model 参数),但有两级偏好:**用户可在插件
-  详情页把这项能力钉到他供应商列表里的任意文本模型**(钉死,失败不回落);
-  你也可以在身份卡 \`cindy\` 里声明 \`"oneshotModel": "<目录模型 id>"\` 表达
-  偏好——主机目录解析得到(且用户没停用)就用它,解析不到按未声明处理。
-  优先级:用户钉档 > 你的声明 > 系统默认链。声明只表达意图,别拿它当可用性
-  保证;**更老的宿主会整份拒装含此字段的身份卡**(cindy 详单未知类目硬拒),
+  详情页「模型与任务」里给这个插件选一个模型**(插件只有这一个模型字段,快问
+  快答与你新建的任务共用;选了就钉死,失败不回落);你也可以在身份卡
+  \`cindy\` 里声明 \`"oneshotModel": "<目录模型 id>"\` 表达偏好——主机目录解析
+  得到(且用户没停用)就用它,解析不到按未声明处理。优先级:用户选的模型 >
+  你的声明 > 系统辅助模型链。出图/视频/向量没有逐插件选模,按 tier 与系统默认走。
+  声明只表达意图,别拿它当可用性保证;**更老的宿主会整份拒装含此字段的身份卡**
+  (cindy 详单未知类目硬拒),
   声明前确认目标用户群的主机版本;
 - \`errorCode:'NO_CANDIDATE'\` = 用户当前没有可用的快速通道(未配置或凭证
   不可用)。**这是正常失败面**:如实提示用户,不要重试轰炸;
@@ -1697,7 +2455,7 @@ const r = await cindy.send({
   \`errorCode:'BAD_MODEL_OUTPUT'\`(message 带原始输出开头供排查)。字段结构
   在 prompt 里自己描述,主机不做逐字段 schema 校验;
 - prompt ≤32768 字符;同步返回,没有异步单;每插件在途上限与媒体代办共用
-  (用户可配);装入确认框会单列一行「可向 Cindy 的快速通道提问」。
+  (用户可配);详情页会单列一行「可向 Cindy 的快速通道提问」。
 
 ### 4.0.3 文本转向量:把文字算成向量做语义检索(embed_text)
 
@@ -1705,7 +2463,7 @@ const r = await cindy.send({
 Agent 做检索增强)时,用这个能力把文字算成向量:
 
 \`\`\`js
-// 需声明:"slots": [..., "cindy"], "cindy": { "embed": ["text"] }
+// 需声明:"cindy": { "embed": ["text"] }
 
 // 1) 入库:把你的内容算成向量,自己存起来
 const requestedDim = undefined; // 传 dimensions 时改成具体数字;不传就是 undefined
@@ -1804,10 +2562,138 @@ const r = await cindy.send({
   \`'INTERNAL'\` = 主机侧故障,重试与否你自己判断;
 - 单次请求有 60 秒时间预算(含主机侧重试),到点即中断并返回 \`'TIMEOUT'\` ——
   不会让你的 \`await\` 永久悬着;
-- 同步返回,没有异步单;每插件在途上限与媒体代办共用;装入确认框会单列一行
+- 同步返回,没有异步单;每插件在途上限与媒体代办共用;详情页会单列一行
   「可把文字送去算成向量」并写明单次条数上限。
 
-## 4.1 宿主公开上下文(request,无需卡槽)
+## 4.0.3a 只读 Agent 模型目录
+
+### 移动端页面与操作来源（可选扩展）
+
+在身份卡顶层声明 \`mobile: { channels: ["practice-ui"], panel: "mobile/panel.html" }\`。
+\`mainView\` 和 \`settings\` 同样可指定包内 HTML；省略路径时复用原入口。
+这些只是已有 \`panel\` / \`mainView\` / \`settingsHtml\` 的移动呈现，不能授予未声明的能力。
+没有 mobile、字段不合法或旧宿主不支持时，原桌面安装、批准与使用保持不变。
+
+页面经手机隔离 WebView 展示，业务逻辑仍在所选电脑原插件中执行：
+
+- 仅桥接声明的 BroadcastChannel（最多 16 个），每条 JSON 消息至多 48 KiB。
+  请求必须包含业务 requestId；保存、创建任务等写操作沿用同一个 requestId 查询/去重，
+  超时不等于未执行，Host 不替作者盲目重发。
+- 电脑逻辑页收到手机业务消息时，Host 附上不透明 \`mobilePageId\`（覆盖页面自报的值）。
+  异步链显式保留它；confirm、notify、tasks、pick、workspace、preview、schedule 请求均原样附带。
+  卡片动作消息也包含该字段。不要存为全局“最近手机”，也不能在后台复用过期来源。
+- 示例：\`const origin = msg.mobilePageId; const answer = await cindy.confirm({ body: "应用调整？", ...(origin ? { mobilePageId: origin } : {}) });\`
+  只有 \`answer.ok && answer.confirmed\` 才能继续；页面关闭、覆盖、超时或撤权均不能当成同意。
+  普通确认不授予目录、账号、任务或文件权限；任务授权仍由专用 Host 校验链决定。
+- notify 只交给来源页面；后台提醒用原 \`badge\` 能力。badge 是 boolean + summary，
+  没有计数字段。目录、详情及 mainView 不清 panel 未读。panel 用
+  \`window.cindyMobile.onUnread(version => { /* 读取并呈现对应内容后调用 contentRendered(version) */ })\`
+  接收未读版本；读取失败、只收到轮询或页面加载完成都不能确认已读。
+  \`window.cindyMobile.contentRendered(version)\` 在下一帧回报该版本，Host 复核可见性和版本。
+  异步读取必须捕获开始时的 version，不得用读取结束时的新版本代替；前台恢复后重新呈现再回报。
+- 包内静态资源按打开时的文件身份读取，整页资源最多 64 MiB。大媒体用归属明确的
+  \`/media/\` 或 \`/library/\`；不要把课程/用户媒体打进页面启动包。
+- 普通数据端点支持 \`/kv\`、\`/app-context\`、\`/agent-models\`、\`/media-models\`、\`/gallery\`。
+  凭证、OAuth、连接不走页面 fetch 或业务频道，必须使用 Host 原生配置流程。
+- 页面需自行完成触屏布局、Light/Dark 与草稿保存，不依赖桌面 localStorage 同步、Node、
+  悬停或 Electron 桥。当前页面供片要求自包含的脚本/样式资源；模块动态加载须实际验收，
+  不能只添加 mobile 字段就宣称已经完成移动适配。
+- 打开普通任务使用 \`cindy://sessions/<sessionId>\` 链接，由手机 Host 确认并导航；
+  此链接不赋予插件读取或控制该任务的权限。新建/继续/查询任务遵循 tasks 原有归属、版本与回执契约。
+
+设置页、panel、mainView 和电子脑均可 GET 同源 \`/agent-models\`（不接受参数）。
+返回 \`{ok:true,models:[{id,name,agent,providerId,providerName,efforts,defaultEffort,visible}]}\`。
+visible 跟随当前账号模型选择器；建议默认显示可见项，隐藏项由用户展开。旧 Host 缺此字段时兼容原列表。
+每项为独立的模型×框架×来源；空 efforts 与 null defaultEffort 表示未声明，不得猜测。
+只包含本机已连接且可用于新任务的模型，不代表远程 SSH 目录。读取不调用模型、
+不触发凭证认领或上游发现，不返回凭证、账号 identity 或 endpoint；不需要新增 manifest 权限。
+旧 Host 可能返回 404，插件应明确提示升级；503 时提供重试。运行前再次核验选定来源。
+
+## 4.0.4 媒体模型配置与调用边界
+
+媒体上层能力由插件定义，Cindy Core 只提供两项低级能力：
+
+1. 插件设置页 / panel 按类型读取当前可用模型，用来保存插件自己的模型选择；
+2. 当前 Agent 执行插件能力时，使用永久注册的 Cindy Core \`media\` 工具发起调用。
+
+设置页 / panel 没有 preload 桥，直接走同源只读端点。插件必须声明 \`cindy\` 顶层字段，
+并在 \`cindy.image\` 或 \`cindy.video\` 中声明至少一个动作：
+
+\`\`\`js
+const result = await (await fetch('/media-models?type=image')).json();
+// → {
+//   ok:true,
+//   type:'image',
+//   models:[{
+//     id,
+//     name,
+//     providerId,
+//     modalities:{ input:['text','image'], output:['image'] }
+//   }],
+//   defaultModelId:string|null,
+//   defaultProviderId:string|null
+// }
+\`\`\`
+
+\`type\` 只接受 \`image\` / \`video\`。Host 按模型 \`mode\` 切大类，并结合插件在
+\`cindy.image/video\` 声明的动作、模型 \`modalities\`、Guide operation 与当前客户端
+协议支持度，只返回当前真正可执行的模型。单个模型的 Guide 缺失、损坏或版本过新只隔离
+该模型，不拖垮整个目录。
+
+响应只把已归一化的 \`modalities.input/output\` 与来源 \`providerId\` 交给插件，
+不下发 Guide、endpoint、凭证或 Host 内部兼容判定。插件可把用户选择的模型 id 存进自己的
+\`/kv\`，但必须同时保存 \`providerId\`，并把这对精确选择交给当前 Agent；同一个模型 id
+可由多个 Provider 提供，不能按 id 去重或自行改换来源。付费请求前 Core 会再次校验。
+
+插件与 Agent 不需要新的媒体协议，继续使用现有工具调用链：
+
+1. Agent 用 \`ghost_call\` 调用插件的业务工具；
+2. 插件通过普通 \`tool-result\` JSON 返回业务参数、面板里保存的模型选择或其它上下文；
+3. 同一个 Agent 读取结果后，自行调用 Cindy Core \`media\` 工具；
+4. 如果插件需要最终媒体，Agent 再调用插件的普通接收工具，并通过顶层
+   \`ghost_call.attachments\` 显式交接；Host 复用通用 attachments 授权链，把授权后的
+   指纹注入 \`args.attachments\`，避免把本地绝对路径暴露给插件。插件自行保存业务状态
+   与更新 UI。
+
+第 2 步的字段完全由插件定义，Host 不识别 \`mediaIntent\`、\`nextTool\` 等保留字段，也不
+自动把插件结果转成媒体请求。下面只是普通结果示例，字段名不是平台契约：
+
+\`\`\`js
+const prefs = await (await fetch('/kv')).json();
+await cindy.send({
+  type: 'tool-result',
+  callId: msg.callId,
+  ok: true,
+  result: {
+    prompt: msg.args.prompt,
+    selectedModel: prefs.imageModelId,
+    sceneOptions: { aspectRatio: msg.args.aspectRatio }
+  }
+});
+\`\`\`
+
+媒体生成硬规则：插件沙箱和 panel 不直接提交生成请求，不持有 endpoint、凭证、
+轮询或下载逻辑。当前 Agent 自己决定如何把插件的普通结果转换为 \`media\` 调用，并根据
+Guide 组装请求；Core 负责鉴权、Guide、安全边界、任务状态与结果入库。插件可以提供
+业务参数、参数规范化、模型偏好和可选 UI，但不负责执行底层请求。
+
+插件获取结果不需要专用回调协议：
+
+\`\`\`js
+// Agent 侧：Core media 成功后通过通用附件参数交给插件
+ghost_call({
+  ghost_id: 'cindy-art',
+  tool: 'receive_media',
+  args: { caption: prompt },
+  attachments: [resultUrl]
+});
+
+// 插件侧：msg.args.attachments 是已授权指纹；插件自行写 /kv 并广播面板
+\`\`\`
+
+Host 不理解“画廊”或其它插件业务，也不会因为一次 \`media\` 成功自动唤醒、回调任意插件。
+
+## 4.1 宿主公开上下文(request,无需额外能力声明)
 
 电子脑需要按宿主构建身份或当前语言选择公开配置/界面文案时,走只读 request。当前只暴露
 \`region: 'cn' | 'global'\` 与 \`locale: 'zh-CN' | 'en' | 'ja' | 'ko'\`,
@@ -1839,9 +2725,30 @@ region 只适合选择**已在 manifest 声明过**的公开配置。例如 brok
 (当前为 \`zh-TW\`)会在插件边界固定映射为 \`en\`，保证按旧四语契约编写的存量插件
 无需改代码；插件自身不支持该 locale 时也必须选英文资源。
 
-## 4.5 聊天卡片(card 槽,海报模式)
+## 4.2 Agent 在途网络与 workdir 操作
 
-声明 \`"slots": [..., "card"]\` 即可,无配套清单字段。作用:你的工具调用在聊天流里
+当 \`onHostMessage\` 收到 \`tool-call\` 时，主机下发的 \`msg.callId\` 是本次
+Agent 调用的严格在途凭证。它已绑定真实插件和当前会话，外层
+\`ghost_call\` 由 Cindy 现有 Agent 授权系统处理。因此本次调用里的普通
+HTTPS 和 workdir 写入不需要再声明 \`network\` 或 \`fs\`。
+
+对应 tool 的 \`description\` 必须写清实际会执行的命令类别、联网目标／用途和
+文件副作用；这段描述就是 Agent 与用户决定是否调用该插件工具时看到的授权契约，
+不能用「处理数据」之类模糊文案隐藏真实操作。
+
+\`callId\` 必须在交卷前使用；不得持久化、不得交给 Panel，也不能用在订阅、
+后台或 scheduler 调用。主机会反查这些条件，不信任插件自报。
+
+普通 HTTPS 使用 \`cindy.fetch({ callId: msg.callId, ... })\`，workdir 写入使用
+\`cindy.fs({ root:'workdir', callId: msg.callId, ... })\`；具体参数见 §4.7 和 §4.10。
+
+CLI 执行机制不在本次协议中另开通道：需要随包代码或 CLI 时继续使用 §4.12
+的 Node 工作进程。顶层 \`node\` 字段描述插件的运行形态；具体命令不需要客户端
+预登记，当前工具是否运行仍由外层 \`ghost_call\` 的 Agent 授权决定。
+
+## 4.5 聊天卡片(card 能力,海报模式)
+
+声明 \`"card": {}\` 即可。作用:你的工具调用在聊天流里
 不再渲染成通用图卡,而是你自己排版的卡片(过程 + 结果都归你画)。不发供片 =
 聊天照旧渲染默认卡,卡片是**每次调用的可选项**。
 
@@ -1886,7 +2793,20 @@ cindy.onHostMessage(async function (msg) {
 - **需要用户输入文字的动作**(如"按提示词改写这张图"):按钮上再加
   \`data-ghost-prompt="占位文案"\`(≤128 字,可空串)。用户点击时主机弹标准输入框
   收集文字(textarea,回车发送/Esc 取消),card-action 事件多带 \`prompt\` 字段
-  (≤2000 字)——你不用也画不了卡内输入框,输入交互由主机代管;
+  (≤2000 字)——输入交互由主机代管;
+- **可编辑文本表单**:一张卡至多声明一个 div，其 \`data-ghost-form\` 属性为经 HTML 属性转义的
+  JSON 字段数组，每项 \`{name,label,value,multiline?,row?,collapsed?,kind?}\`；1–16 项、字段名唯一、label ≤128 字、value ≤16000 字。
+  div 内保留纯文本预览供旧客户端使用。宿主在卡片顶部用标准控件渲染；卡内仍零脚本，禁止用它收集凭证。
+  按钮加 \`data-ghost-submit="true"\`，真实点击后事件带 \`formValues: Record<string,string>\`；
+  不与 prompt 混用。插件必须校验字段和业务对象，缺少 formValues 不得执行提交（旧客户端不会发送）。
+  桌面和手机共用字段合同，手机继续校验卡片 revision；原卡收到更新后结束提交状态。
+  row 为同一行的分组名，collapsed 默认折叠字段。kind:"recipients" 将地址显示成姓名，
+  同一 row 按实际宽度折叠溢出人数，展开直接替换摘要；原字符串仍是编辑和提交的值。旧端忽略 kind。
+  div 可声明 \`data-ghost-change="change-action-id"\`：编辑即时回传 card-action + formChange:true + formValues；
+  此事件没有 userActionToken，不触发 Agent 或活动呼吸。动作 ID 标识当前编辑版本，自动保存回执保持同一 ID，
+  替换草稿/重置编辑时必须换 ID。插件合并频繁编辑，自行保存到业务系统；模型的读取和提交也必须先同步同一份编辑。
+  模型工具更新本任务旧卡时，card-update 可带 sourceCallId（当前尚未结束的工具调用 ID）；Host 核对同插件、同任务后重开旧卡。
+  表单动作活动归原 callId，完成后原地更新；不用额外画空的 spawnCallId 卡片。
 - **可放外部链接**(外链 v3,经宿主确认):写 \`<a href="https://…">官网</a>\`,或在
   任意可用标签上挂 \`data-ghost-link="https://…"\`(整块可点)。仅收**整串**
   http/https URL(≤2048 字,不合法只丢属性——文字保留、点不动)。用户点击时主机
@@ -1896,7 +2816,7 @@ cindy.onHostMessage(async function (msg) {
   一个元素只有一种点击行为;别拿链接文案冒充按钮语义,去向和文案不符只会让
   用户在确认框里看穿;
 - 不带 \`data-ghost-action\` 的图片仍是"点开看大图":用户点卡内图片主机自动弹 lightbox
-  (大图/标注/另存),零代码;复杂交互(多字段表单等)仍去你的面板做;
+  (大图/标注/另存),零代码;超出上述文本字段的复杂交互仍去你的面板做;
 - **3D 预览图**:img 再加 \`data-ghost-model="cindy-media://blobs/<指纹>.glb"\`(你名下
   已落库的 GLB 地址,整串精确匹配才生效),用户点击该图 = 应用内 3D 查看器直接加载
   这个模型(可旋转/缩放),不再是普通看大图。适合"3D 生成完成卡":预览 + 模型一次
@@ -1944,7 +2864,7 @@ cindy.onHostMessage(async function (msg) {
   **跨调用画卡**(如轮询流画回首轮卡位)还需同时回锚 \`xdt_anchor_card_id\`
   = 持卡调用的 callId,桌面凭锚取卡验证含图后才压基座,锚不上会双渲染。
 
-**交互卡的 card-action 处理**(声明了 card 槽即可收;点击触发你的动作、会花配额):
+**交互卡的 card-action 处理**(声明了 card 能力即可收;点击触发你的动作、会花配额):
 
 \`\`\`js
 cindy.onHostMessage(async function (msg) {
@@ -1954,11 +2874,11 @@ cindy.onHostMessage(async function (msg) {
     // msg.actionId = 你在 data-ghost-action 里写的动作 id;
     // msg.prompt = 用户输入的文字(仅 data-ghost-prompt 类按钮有,非空才带);
     // msg.spawnCallId = 主机铸的**衍生卡位**:画到它 = 原卡下方长出新卡。
-    // 声明 agent 槽后还会收到 msg.sessionId 与 msg.userActionToken；后者是
+    // 声明 agent 后还会收到 msg.sessionId 与 msg.userActionToken；后者是
     // 绑定本插件+本会话、两分钟有效且只能使用一次的 Agent 通行票(见 §4.11)。
     cindy.send({ type: 'card-update', callId: msg.spawnCallId, v: 2, state: 'working', // 过程态:会话侧栏保持运行呼吸
                  html: '<div style="padding:12px">⏳ 生成中…</div>', height: 110 });
-    const r = await doSomething(msg.actionId, msg.prompt);     // 干活(可调你自己的工具/network 槽)
+    const r = await doSomething(msg.actionId, msg.prompt);     // 干活(可调你自己的工具/network 能力)
     cindy.send({ type: 'card-update', callId: msg.spawnCallId, v: 2, state: 'done', // 终版:熄灭呼吸
                  html: renderCard(r), height: 340 });
     return;
@@ -2005,13 +2925,13 @@ cindy.onHostMessage(async function (msg) {
 校验);锚不上(卡已被清理等)自动回退到轮询位置渲染,不影响交卷。该字段是
 渲染层配对令牌,AI 会被统一提示忽略它,你不用在 guidance 里解释。
 
-## 4.6 订阅:旁听事件 + 钩子处理消息(subscribe 槽)
+## 4.6 订阅:旁听事件 + 钩子处理消息(subscribe 能力)
 
 一种事件模型,两个类型:
 - **监听(\`did-\`)** = 纯数据通知,事后告诉你发生了什么,你改变不了流程——适合做
   统计面板、成本记账、工作流水、"跟随用户正在看的会话"联动等纯观察型能力;
 - **钩子(\`will-\`)** = 主机在对话流的关键点**停下来把数据交给你,做完再继续**。
-  裁决窗口内你可以做**任何**你权限内的事(经 network 槽调自己的服务、经 cindy 槽
+  裁决窗口内你可以做**任何**你权限内的事(经 network 调自己的服务、经 cindy
   请主机代办、任意本地计算、跨会话攒状态),最后用一个收敛动作收尾。两个钩点,
   一进一出:
   - \`will-user-message\`(入口):用户消息发给 AI **之前**交到你手上,动作
@@ -2028,7 +2948,6 @@ cindy.onHostMessage(async function (msg) {
 声明:
 
 \`\`\`json
-"slots": [..., "subscribe"],
 "subscribe": {
   "topics": ["turn", "session", "activity"],           // did- 旁听(元数据,不含消息内容)
   "hooks": ["will-user-message", "will-assistant-message"]  // will- 拦截(声明任一必须 launch:"resident")
@@ -2042,8 +2961,9 @@ cindy.onHostMessage(function (msg) {
   // ── did- 旁听:收到就收到,主机不等你,你也改变不了任何事 ──
   if (msg.name === 'did-turn-end') {
     // msg.data = { sessionId, agent, model?, durationMs, endReason, usage? }
-    // usage 各字段可选(cc/codex 上报详尽度不同,别假设字段必在):
+    // usage 各字段可选(各引擎上报详尽度不同,别假设字段必在):
     //   { inputTokens?, outputTokens?, cacheReadTokens?, cacheCreationTokens? }
+    // error 终态也可带已消耗的 usage；Pi 输出上限会保留它，不要只统计 completed。
     // msg.seq 每意识单调递增;msg.dropped(可选)= 你熄灯期溢出丢弃的事件数。
     // 生命周期:会话被关掉或引擎被替换时,主机会给还在场的那一轮补发
     // endReason: 'interrupted',让 start/end 成对。但这不是投递保证——熄灯期
@@ -2080,7 +3000,7 @@ cindy.onHostMessage(function (msg) {
 
   // ── will-user-message 钩子:3 秒内必须回裁决,否则主机按放行处理 ──
   // 语义 = "主机停下来交给你做,做完继续":你可以在这窗口里做任何事(记账、
-  // 经 network 槽过合规接口…),然后用三种动作之一收尾:
+  // 经 network 过合规接口…),然后用三种动作之一收尾:
   if (msg.name === 'will-user-message') {
     // msg.data = { sessionId, text, model? };新 turn 时 model 是本轮已选模型 id,
     // 同轮插话(steer)时是当前运行中 turn 的模型 id。
@@ -2126,8 +3046,8 @@ cindy.onHostMessage(function (msg) {
   "在忙 / 在等审批"。收到 \`dropped\` 时把状态清空、以此后到达的事件为准;
 - **钩子超时 = 放行**:\`will-\` 裁决必须 3 秒内回,超时主机按 allow 放行(聊天绝不
   因你卡死);连续 3 次超时/崩溃,主机**熔断**你的钩子能力(降级为只旁听 + 提示
-  用户),旁听不受影响。要过外部合规接口就在窗口内 \`await cindy.fetch\`(network
-  槽),但整段必须 3 秒内出裁决;
+  用户),旁听不受影响。要过外部合规接口就在窗口内 \`await cindy.fetch\`(network),
+  但整段必须 3 秒内出裁决;
 - **三种动作**:\`allow\`(原样继续)/ \`block\`(打回,reason ≤200 字符,显示在被拦
   气泡)/ \`rewrite\`(改写正文再继续,\`text\` ≤16000 字符替换即将落库/显示/交给
   agent 的正文)。多个钩子意识按装入序串行,**链式变换**(前一个改写的输出是后
@@ -2147,7 +3067,7 @@ cindy.onHostMessage(function (msg) {
 - **没有绕过通道(v1)**:被拦消息用户只能编辑后重发,重发仍会经你再审。即便
   如此也别把拦截当硬性管控设计(意识是工具不是管理员):reason 要引导用户怎么
   改,而不是单纯说不;
-- **权限最重**:声明 hooks 在装入确认框里是最重的一条(「可读取、拦截或改写你
+- **权限最重**:声明 hooks 在插件详情里是最重的一条(「可读取、拦截或改写你
   发出的消息」),用户会看得很清楚,只在真需要时申请。
 
 ## 4.6.1 出口钩子 will-assistant-message(对 AI 回复做任意后处理)
@@ -2174,7 +3094,7 @@ cindy.onHostMessage(async function (msg) {
                                        body: JSON.stringify({ text: msg.data.text }) });
   // ① rewrite:用改写正文替换回复(静默换文本,≤16000 字符)。
   cindy.send({ type:'event-verdict', hookId: msg.hookId, action:'rewrite', text: polished.body });
-  // ② 或 render:自绘卡片替换气泡(html 规则同 §4.5 card 槽:纯 HTML+CSS、零脚本、
+  // ② 或 render:自绘卡片替换气泡(html 规则同 §4.5 card 能力:纯 HTML+CSS、零脚本、
   //    图片仅本意识 cindy-media 地址;height 初始估计;主机净化 + clamp)。
   // cindy.send({ type:'event-verdict', hookId: msg.hookId, action:'render',
   //              html: '<div style="padding:12px">…</div>', height: 200 });
@@ -2184,7 +3104,7 @@ cindy.onHostMessage(async function (msg) {
 \`\`\`
 
 硬规则:
-- **render 的 html 与 card 槽(§4.5)同一套净化**:纯 HTML+CSS、零脚本、图片只认你
+- **render 的 html 与 card 能力(§4.5)同一套净化**:纯 HTML+CSS、零脚本、图片只认你
   名下的 \`cindy-media://\` 地址、体积/height 同限、可用主机主题 \`var(--xxx)\`;不合规
   被净化器拒则回退原文;
 - **原文始终保留("查看原文")**:render 时 AI 原文仍落库,主机在卡片旁画一个
@@ -2192,25 +3112,32 @@ cindy.onHostMessage(async function (msg) {
 - **多个出口钩子意识**按装入序**串行链式**:rewrite 叠加(前一个改写的输出是后一个
   的输入),**render 最后一个胜出**;
 - **处理期间那条消息挂"意识处理中"轻指示**(主机画),完成/超时清掉;
-- **权限档**:声明 \`will-assistant-message\` 在装入确认框里单列一条(「可读取并重写
+- **权限档**:声明 \`will-assistant-message\` 在插件详情里单列一条(「可读取并重写
   AI 的回复」),比入口钩子更敏感(能看到 AI 完整输出),只在真需要时申请。
 
-## 4.7 网络代发(network 槽)
+## 4.7 网络代发(network 能力)
 
-声明 \`"slots": [..., "network"]\` + network 详单(§2)后,电子脑可用 \`cindy.fetch\`
-访问**白名单内的域名**——沙箱本身仍然零直连,请求由主机代发:主机校验域名、
-注入凭证、执行 HTTP、把响应给你。规则:
+\`cindy.fetch\` 有两个清晰的运行边界：
+
+- 当前 Agent tool-call 内：传 \`callId: msg.callId\`，可访问未预声明的普通
+  HTTPS 地址，无需 \`network\` 字段。主机仍强制 URL、SSRF、超时、体积与
+  重定向守门，但不会向未声明 host 注入任何 Host 托管凭证。
+- 脱离当前 Agent 调用的自主联网：声明 \`network\` 详单(§2)，只能访问
+  **白名单内的域名**。需要主机保险库凭证、OAuth 或动态连接时也必须
+  显式声明，只有命中声明 host 才会注入。
+
+沙箱本身两种情况都零直连，请求统一由主机代发。规则:
 
 \`\`\`js
 const r = await cindy.fetch({
-  url: 'https://api.example.com/v1/search?q=hello',  // 仅 https、默认端口;host 必须命中详单白名单
+  url: 'https://api.example.com/v1/search?q=hello',  // 仅 https、默认端口
   method: 'GET',            // 可选:GET(缺省)/ POST / PUT / PATCH / DELETE
   headers: { Accept: 'application/json' },  // 可选;Host/Cookie/Authorization 等由主机管,写了也不生效
   body: '{"q":"hello"}',    // 可选:仅 POST / PUT / PATCH / DELETE,≤256KB 文本
   timeoutMs: 30000,         // 可选:文本模式 1s–60s 缺省 30s;媒体模式 1s–300s 缺省 120s
   as: 'text',               // 可选:'text'(缺省)/ 'media'(响应是媒体,主机落仓,见下)
   label: '',                // 可选:仅媒体模式,入账备注/画廊 caption(≤200 字符)
-  callId: msg.callId        // tool-call 触发的请求务必带上(归因,同 cindy-request)
+  callId: msg.callId        // Agent tool-call 内务必带上，同时作为严格在途授权绑定
 });
 // 文本成功:{ ok:true, status: 200, headers: { 'content-type': … }, body: '<响应文本>', truncated? }
 //   注意 4xx/5xx 也是 ok:true(代发成功,对方说不行)——自己看 status 分支。
@@ -2236,7 +3163,7 @@ const r = await cindy.fetch({
 不要试图让用户把 key 发进聊天,更不要把 key 硬编码在源码里。
 这里说的是 \`network.secrets\` 的浏览器沙箱/HTTP 代发语义；确需本地协议时，
 \`node.secretBindings\` 是唯一允许把对应凭证交给 Node Worker 的显式例外，
-并会在安装权限清单单独披露(见 §4.12.1)。
+并会在插件详情的能力清单单独披露(见 §4.12.1)。
 
 **调用前缺失的普通 user Secret 由主机统一 Setup 卡收单**：主机只根据你声明的
 \`label\` / \`hint\` 生成密码输入，不把值交给 Agent 或你的代码；提交后直接写保险库并
@@ -2255,7 +3182,7 @@ BroadcastChannel、日志或任何自存路径(review 必查)。凭证只会注�
 \`inject.hosts\` 声明的域名请求,重定向出域也不会跟着走。用户没填时 cindy.fetch
 返回结构化错误,把 message 原样告诉用户即可(里面带了去哪填的指引)。
 无论走 Setup 卡还是 settingsHtml，入库成功时主机会自动弹一条「凭证已保存」的系统提示(带你的身份头,
-文案跟随用户语言;无需声明 notify 槽)——设置页里画个就地的轻反馈即可,
+文案跟随用户语言;无需声明 notify)——设置页里画个就地的轻反馈即可,
 不用自己想办法做全局提示。
 (历史字段 \`input\` 已退役:遗留 \`"input":"ghost"\` 可被接受并忽略,
 \`"input":"host"\` 直接拒——删掉该字段即可。)
@@ -2264,13 +3191,13 @@ BroadcastChannel、日志或任何自存路径(review 必查)。凭证只会注�
 鉴权"的第一方服务(如 pages_<邮箱> 形态的 token)。凭证声明 \`"source": "login-email"\`
 后,值不再由用户填——主机在每次请求时现读当前登录账号的邮箱,按 \`inject.format\`
 模板派生(如 \`"format": "pages_{value}"\` 得到 \`pages_<邮箱>\`)注入请求头;它没有
-任何输入动作,装入确认框如实告知"将使用你的登录邮箱"。
+任何输入动作,插件详情会如实告知"将使用你的登录邮箱"。
 未登录 / 登录态没有邮箱时 cindy.fetch 返回带重登指引的结构化错误,把 message 原样
 告诉用户即可。注意:声明了 login-email 就不要再写 \`url\`(没有"前往控制台"可去)
 也不要配 \`exchange\`(登录邮箱不外送交换端点),两者校验都会拒。你的 settingsHtml
 可经 \`fetch('/secrets')\` 查回该凭证的 \`{ key, saved, identity }\`(identity =
 当前登录邮箱,拿来只读展示"用的是哪个身份";未登录时 saved:false 无 identity,
-照"请重新登录"画)——确认框已如实披露,除展示外别拿它做别的;对该 key 的
+照"请重新登录"画)——详情页已如实披露,除展示外别拿它做别的;对该 key 的
 PUT/DELETE 一律 405(派生身份不可配置)。
 
 **GitHub CLI 优先凭证(source:"gh-cli",保留能力)**:仅官方 \`cindy-github\`
@@ -2279,19 +3206,29 @@ PUT/DELETE 一律 405(派生身份不可配置)。
 两种 token 都只在 Main 的 networkSlot 内存中进入请求头,插件沙箱、settings 页面、
 Renderer、Agent、KV 和日志都拿不到。设置页 GET \`/secrets\` 对这条 key 额外返回
 \`hostSource:"gh-cli"\` 与 \`hostAvailable:boolean\`,其中 \`saved/tail\` 仍只描述备用
-PAT；页面可据此展示“已检测到 gh，可直接使用”，但不能读取 gh 的账号或 token。
+PAT。支持宿主管理连接入口时还返回可选的 \`hostManagedSetup:true\`：此时宿主统一
+展示账号状态、安装与登录入口，settingsHtml 不再重复渲染这些内容，只保留备用 PAT
+配置（可折叠到“其他连接方式”）。字段缺失或为 false 时保留旧版设置页的连接提示，
+可根据 \`hostAvailable\` 展示“已检测到 gh，可直接使用”；不能读取 gh 的账号或 token。
 此来源的注入形态固定为 \`api.github.com\` 的
 \`Authorization: Bearer {value}\`,不允许 exchange,也不要放进 \`setup.requires\`。
 
 **Cindy 企业身份断言(source:"oidc-token",可选)**:适用于接入 Cindy Connection
-Auth 的企业服务。主机只在当前登录账号属于组织 Membership、且该插件拥有当前组织的
-Plugin Market organization 安装记录、安装 manifest digest 未被篡改并声明了目标服务域名时,
-按需向 auth-server 换取短时 Connection JWT;audience 与组织身份由主机推导,插件清单和
-运行时代码都不能选择、读取或保存 audience/token。该凭证必须固定声明
+Auth 的企业服务。主机只在当前登录账号属于组织 Membership，且满足以下任一安装基座时
+按需向 auth-server 换取短时 Connection JWT：①当前组织的 Plugin Market organization
+安装记录(source 必须是服务端 \`market\`)，且 namespace 属于当前组织、已批准整包 sha256 与记录一致；②企业作者
+显式调用 \`ghost_forge_install\` 安装到当前组织 namespace，且批准 receipt
+保有本次包的完整 sha256。两路都要求清单声明目标服务域名。
+audience 与组织身份由主机推导,插件清单和运行时代码都不能选择、读取或保存
+audience/token；audience 固定为 \`\${orgSlug}:\${ghostId}\`,总长不得超过 64 字符。
+个人身份与手动导入不签发。临时例外，只对 root 实例生效：\`ghostId\` 精确等于 \`mivo-canvas\`、namespace 为 null 或尚未确认的旧 root 安装，且已装清单声明的精确 oidc-token host 仅为 \`mivo-canvas.dsworks.cn\` 时可解析 audience；企业 namespace 下的同名插件、其它本地插件、其它精确 host 仍不签发。已有市场
+organization 记录（含 installed:false）时必须仍走 digest，不得借例外跳过。市场账本损坏、schema 不认或该 ghostId 记录校验失败时 fail-closed，不得当成无记录。企业身份的 Forge 安装前会展示插件名、id 与精确域名，并要求手输相同 id
+确认。市场与 Forge 两条组织基座都只给 Broker 与 oidc-token、不给宿主原语。
+该凭证必须固定声明
 \`"inject": { "header": "Authorization", "format": "Bearer {value}", "hosts": [...] }\`,
 且 \`hosts\` 必须是非空的显式子集,只允许把断言发给列出的企业服务域名。
 \`oidc-token\` 的 \`inject.hosts\` 只接受精确域名,不允许 \`*.example.com\` 通配；Host
-会从通过 digest 校验的市场 manifest 读取这些声明,目标请求必须精确命中声明域名才会签发并注入。
+会从已批准的安装事实读取这些声明,目标请求必须精确命中声明域名才会签发并注入。
 它没有用户输入、\`url\`、\`exchange\` 或 \`oauth\` 详单,也不要放进 \`setup.requires\`;没有企业
 身份时 cindy.fetch 会 fail-closed 并返回结构化错误。企业服务应使用 Connection JWT
 中的 \`sub\`、\`email\` 或 \`identities\` 等声明自行选择业务身份,不要要求 Cindy 客户端先把
@@ -2322,7 +3259,7 @@ settingsHtml 里自填**(用户用自己注册的 OAuth 应用,配额风控归�
 要如实提示。settingsHtml 里经 \`/oauth\` 协议通道完成收单与连接:
 
 \`\`\`js
-// 状态回查(哪些 oauth 凭证槽、client 配没配、连了哪些账号;零令牌字节):
+// 状态回查(哪些 oauth 凭证项、client 配没配、连了哪些账号;零令牌字节):
 const list = await (await fetch('/oauth')).json();
 // → [{ key:'acct', clientConfigured:true, clientCustom:false, accounts:[{ id, label, status:'connected'|'expired', isDefault, createdAt, avatarDataUrl, scopeStale }] }]
 // avatarDataUrl = 头像 data URL(声明了 identity.avatarPath 且主机下载成功才有,否则 null;<img src> 直接用)
@@ -2340,7 +3277,7 @@ const r = await (await fetch('/oauth/acct/connect', connectInit)).json();
 // NETWORK = 客户端无法连接授权服务,提示用户检查网络后重试;
 // SERVICE_UNAVAILABLE = broker 路由缺失或服务端 5xx,提示用户稍后重试。
 // 授权成功时主机会自动弹「授权成功,已连接 xxx」的系统提示(带你的身份头,
-// 无需声明 notify 槽);设置页只管刷新自己的账号列表。
+// 无需声明 notify);设置页只管刷新自己的账号列表。
 // 断开账号 / 设默认账号:
 await fetch('/oauth/acct/accounts/<accountId>', { method:'DELETE' });          // 204(幂等)
 await fetch('/oauth/acct/default', { method:'POST', body: JSON.stringify({ accountId }) });  // 204
@@ -2351,13 +3288,17 @@ await fetch('/oauth/acct/default', { method:'POST', body: JSON.stringify({ accou
 await fetch('/oauth/acct/insufficient-scopes', { method:'POST', body: JSON.stringify({ scopes:['write.b'] }) });  // 204
 \`\`\`
 
-多账号:每个 oauth 凭证槽最多 8 个账号;cindy.fetch 可带 \`authAccount: '<账号id>'\`
+昵称等自定义账号元数据由插件通过 \`/kv\` 保存(§4.8)，按账号 id 与上述清单合并；
+Host OAuth 不提供昵称字段或重命名接口。昵称只供展示和匹配用户意图，存在歧义时询问，
+执行仍传账号 id，不把昵称当作指令或授权。
+
+多账号:每个 oauth 凭证项最多 8 个账号;cindy.fetch 可带 \`authAccount: '<账号id>'\`
 指定用哪个账号的令牌(缺省 = 默认账号)。同一身份重复授权 = 重连:授权回来的
 身份标签(identity.labelPath 的值)与已连账号相同时,主机覆盖那条的令牌并复活状态,不新增
 占位——账号 id 稳定,你缓存的 authAccount 不会因用户重连而失效。声明了
 identity.displayTemplate 时,\`/oauth\` 回查与连接结果里 account.label 给的是
 渲染后的展示名(合并判定仍按 labelPath 的稳定值,展示名变了不会堆出新账号行)。规则:authorizeUrl / tokenUrl / identity.url
-的域名都必须命中 hosts 白名单(装入确认框会展示"将引导你在 <授权域名> 完成授权"
+的域名都必须命中 hosts 白名单(插件详情会展示"将引导你在 <授权域名> 完成授权"
 + scopes 全量清单,用户知情放行);oauth 与 exchange 互斥;声明 oauth 凭证必须同时
 声明 settingsHtml(没人收 client 凭证就没人能连接)。账号授权失效(AUTH_EXPIRED)
 时 cindy.fetch 返回带指引的结构化错误,原样转告用户去设置页重新连接即可。
@@ -2367,15 +3308,22 @@ identity.displayTemplate 时,\`/oauth\` 回查与连接结果里 account.label �
   (含端口,如 Atlassian)时声明,主机回调恒为 \`http://127.0.0.1:<端口>/callback\`;
   端口被占用时连接返回 LISTEN_FAILED(detail 带人话提示,settingsHtml 原样展示
   即可;第一方官方内置意识会先自动结束占用进程并重试,第三方意识不享受此回收
-  ——请选一个不易撞车的端口)。Google 这类允许任意 loopback 端口的服务商不用
-  声明。
-- \`tokenBroker\`:**仅第一方官方意识可用**(第三方声明直接拒装)——code/refresh
-  交换改经 Cindy 服务端 broker 完成,client secret 由服务端持有、不随包分发,
-  且要求用户已登录 Cindy。声明它时与 clientSecret 互斥;PKCE 缺省开(verifier
+  ——请选一个不易撞车的端口)。声明 \`tokenBroker\` 时必须提供；非 broker 模式下，
+  Google 这类允许任意 loopback 端口的服务商不用声明。
+- \`tokenBroker\`:资格有三路:①随包官方种子或受信任公开市场的官方插件,名称本身不构成资格；②当前组织的服务端
+  organization market 包已安装、source 为 \`market\`、organizationId 与当前组织一致,
+  namespace 与当前组织的可信身份一致，且 release sha256 与批准 receipt 的 packageSha256 相等。
+  ③企业作者通过 \`ghost_forge_install\` 明确安装，Host 绑定当前组织 namespace；只有真实
+  存量待迁移安装仍使用本组织已登记前缀核对。是否已有同 id 市场记录不影响这条自测路径。
+  后两路不接受个人身份或别的组织身份；Forge 只给 Broker 与 oidc-token，不给宿主原语，
+  可信 XD 企业市场安装的宿主能力另按可信组织身份核验，不依赖名称前缀。手动导入不属于 Forge 路径。
+  code/refresh 交换改经 Cindy 服务端 broker 完成,client secret 由服务端持有、不随包
+  分发,且要求用户已登录 Cindy。声明它时必须同时声明 redirectPort,并与 clientSecret
+  互斥;PKCE 缺省开(verifier
   经 broker exchange 透传服务端),不吃 PKCE 的服务商显式 \`"pkce": false\`;
   设置页的 \`/oauth/<key>/client\` 自填通道返回 405(settingsHtml 不要再画
   client 输入区)。
-- \`brokerBounce\`:双地址弹跳回调(随 tokenBroker,同样仅第一方)。部分
+- \`brokerBounce\`:双地址弹跳回调(随 tokenBroker,资格与 tokenBroker 相同)。部分
   服务商后台只收 https redirect、不收 http loopback——声明后报给服务商的
   redirect_uri 是「broker 服务的 https 弹跳路由」(主机用 broker 基地址 + \`path\`
   运行时拼出),浏览器授权后弹跳路由 302 回本机
@@ -2411,8 +3359,8 @@ const r = await cindy.fetch({
 **目录上传(uploadDir,目录过户票据)**:要把用户的一个本地目录整体传给你的
 服务(静态站点部署等),流程是"主 agent 过户 → 你凭票上传"——主 agent 调
 ghost_call 时把目录**绝对路径**放在顶层 \`dir\` 参数(会话工作目录内直接放行,
-工作目录外若主 agent 是本地 Full Access 会话则自动过户、不弹卡;其它权限档及
-远程会话仍由用户确认;自动排除 node_modules/.git/.env 等),主机收集文件后把一次性限时票据注入你的
+工作目录外若主 agent 是本地 Full Access 会话则自动过户、不弹卡;Auto 交当前会话统一审阅,
+Ask 及远程会话仍由用户确认;自动排除 node_modules/.git/.env 等),主机收集文件后把一次性限时票据注入你的
 \`args.dir_deposit\`(含 token / file_count / total_bytes / rel_paths 相对路径清单);
 你在工具描述里写清"目录经 ghost_call 顶层 dir 交付",然后:
 
@@ -2440,7 +3388,7 @@ preset 判定等纯逻辑);伪造/过期/别人的票据统一"票据无效"。�
 (邮件附件、云盘文档等任意类型)存到用户本地时,流程同样是"主 agent 过户 →
 你凭票下载"——主 agent 调 ghost_call 时把**目标目录绝对路径**放在顶层
 \`save_dir\` 参数(目录必须已存在;会话工作目录内直接放行,工作目录外主机会
-在本地 Full Access 下自动过户、不弹卡;其它权限档及远程会话仍弹确认卡),主机把限时
+在本地 Full Access 下自动过户、不弹卡;Auto 交当前会话统一审阅,Ask 及远程会话仍弹确认卡),主机把限时
 票据注入你的 \`args.save_deposit\`(含 token / dir_name 目录名);你在工具
 描述里写清"下载目录经 ghost_call 顶层 save_dir 交付",然后:
 
@@ -2506,7 +3454,7 @@ await fetch('/connections/gitlab/default', { method: 'POST', body: JSON.stringif
 
 上限:connections 声明 ≤2 条;每条声明下用户可添加 ≤8 条连接(作者可用
 maxConnections 收紧到 1–8);token ≤4096 字符。新连接添加成功时主机会自动
-弹「连接地址已添加」的系统提示(带你的身份头,无需声明 notify 槽)。
+弹「连接地址已添加」的系统提示(带你的身份头,无需声明 notify)。
 
 其它硬边界:每意识同时在途 4 个请求;媒体取件/上传共用全局串行闸,同时只
 处理一单(忙时返回结构化"正忙",稍后重试即可);重定向最多 3 跳且逐跳重验
@@ -2524,8 +3472,22 @@ tool-call 内轮询时记得定期发 tool-progress 心跳续命(见 §4"长任�
 "settingsHeight": 360              // 可选:固定高度 px(160–800);缺省 = 随内容自适应(矮内容真收矮),超 800 内部滚动
 \`\`\`
 
-**渲染环境**:与面板同款沙箱页(零桥、零网络直连、CSP 只认同源)。主题变量与
-面板同一套(§5「主题」条的 \`var(--xxx, 回退值)\` 写法照用),主机注入并随换肤
+**宿主默认配置卡（可选）**：顶层 \`showTaskPreferences\` 只接受布尔值。
+省略或设为 \`true\` 时，符合能力条件的插件继续显示宿主「模型与任务」卡。
+声明 \`"showTaskPreferences": false\` 可隐藏 Desktop 和手机上的该卡，供插件在自己的设置界面提供配置。
+这只是显示声明：任务 API、已有配置的读取和执行规则、权限检查均保持原样；也不会为没有相应能力的插件新增卡片。
+旧客户端不识别此字段时仍显示原卡片；依赖隐藏效果的插件应使用支持此字段的客户端版本。
+
+**渲染环境**:与面板同款沙箱页(零桥、无通用网络直连,与同插件面板/逻辑页共用浏览器存储和
+\`BroadcastChannel\`,脚本/样式/字体/媒体/数据请求仍只认同源)。所有插件 HTML 页面
+(settingsHtml、panel、mainView 与逻辑页)唯一的网络直连例外都是**HTTPS 图片资源**:
+\`<img src="https://…">\` 与 CSS \`background-image: url("https://…")\` 可以直接加载
+任意 HTTPS 地址。主机统一生成 CSP 并只放行 Electron 判定为 \`image\` 的 HTTPS 请求;
+它**不会放行** \`fetch()\` / XHR、外部脚本、外部样式表、字体、音视频、WebSocket、
+\`http:\` 图片或其它协议。加载远程图片会向第三方暴露网络地址及完整图片 URL,不要把密钥、
+token 或用户私密数据拼进 URL。CSP 仍阻止内联脚本和 \`onload\` / \`onerror\` 等内联事件;
+同包外挂 JS 的行为不变。主题变量与面板同一套(§5「主题」条的
+\`var(--xxx, 回退值)\` 写法照用),主机注入并随换肤
 自动重灌;设置区基线背景 = 宿主设置卡片色(与相邻卡片无缝),别再自己铺整页
 底色。高度缺省自适应:主机在页面就绪后量内容高度,内容动态增减(展开区、
 追加列表)时会自动跟随重量(内部 ResizeObserver 通知宿主再量,你无需做
@@ -2538,15 +3500,21 @@ tool-call 内轮询时记得定期发 tool-progress 心跳续命(见 §4"长任�
 settingsHeight(此时主机不注入上述响应式规则,超出部分由你的页面内部滚动)。
 意识沉睡时设置区不渲染(显示沉睡提示),唤醒后可用。
 
-**外链(前往控制台)**:设置区/面板里可以放 \`<a href="https://…">\` 链接,但
-只有 **href 与身份卡 \`network.secrets[].url\` 声明逐字一致**的地址会被主机放行
-——点击时主机拦下导航、转系统浏览器打开(沙箱页自身永远不离开自己协议)。
-声明之外的任何外链点了没反应(主机静默拦下),脚本自动跳转也无效(须用户
-真点击且页面持有焦点,同一意识 1s 内至多放行一次)。href 直接从身份卡声明里
-**原样复制**——浏览器会把导航地址归一化(域名转小写、根路径补尾斜杠),声明
-写成非规范形态会导致比对永远失配、链接点了没反应,所以声明本身也用规范形态
-(小写域名、根路径带 \`/\`)。典型用法:输入行下方放一条
-\`<a class="console-link" href="…">前往控制台获取 ↗</a>\`,方便用户一键去申请 key。
+**外链(前往控制台)**:设置区/面板里可以放普通同页
+\`<a href="https://…">\`。主机会拦下导航并交给系统默认浏览器,沙箱页自身永远
+不离开 \`cindy-ghost://\`。合法地址按以下顺序处理:
+
+1. href 与身份卡既有 \`network.secrets[].url\` 或 \`node.secretBindings[].url\`
+   **逐字一致**时直接打开(保持存量插件兼容);href 最好从声明原样复制;
+2. URL 解析后的主机是 \`xd.com\` / \`xd.cn\` 根域或任意层级子域,或精确
+   \`workers.xd.team\`,直接打开;
+3. 其它合法 HTTPS 地址会显示完整规范化 URL,由用户二次确认后才打开。
+
+非 HTTPS、畸形 URL、内嵌用户名/密码的地址一律拒绝。只支持普通同页链接:
+\`target="_blank"\` 与 \`window.open()\` 不支持。页面必须持有焦点,同一意识
+1s 内至多处理一次外链尝试,且同一意识同时最多一个确认框。典型用法:输入行
+下方放一条 \`<a class="console-link" href="…">前往控制台获取 ↗</a>\`,方便用户
+一键去申请 key。
 
 **自定义参数持久化(/kv)**:每段意识有一份主机代管的 JSON 参数(单意识一份,
 互相隔离),设置页 / 面板 / 电子脑同源共用,读写都走 \`fetch('/kv')\`:
@@ -2600,15 +3568,15 @@ $('#save').onclick = async () => {
 这个事件,也不需要你写任何完成回调；\`/oauth\`、\`/kv\`、\`/secrets\`、
 \`/connections\` 保存成功后,主机会重新读取真实状态并自动更新卡片、继续原工具调用。
 
-## 4.9 系统提示(notify 槽)
+## 4.9 系统提示(notify 能力)
 
-声明 \`"slots": [..., "notify"]\` 后,电子脑可以请主机在屏幕顶部弹一条轻提示(toast)
+声明 \`"notify": true\` 后,电子脑可以请主机在屏幕顶部弹一条轻提示(toast)
 ——适合"没有在途调用、面板也没开着,但有事想轻声告诉用户"的场景:分钟级长任务
 完成了、授权快过期了、旁听到值得提醒的事。
 
 \`\`\`js
 const r = await cindy.send({ type: 'notify', text: '视频已生成,点面板查看', tone: 'success' });
-// r = { ok: true } 或 { ok: false, message: '原因'(被限速/超长/未声明槽等) }
+// r = { ok: true } 或 { ok: false, message: '原因'(被限速/超长/未声明能力等) }
 \`\`\`
 
 规则(都由主机强制,写错拿到的是结构化拒绝):
@@ -2622,20 +3590,20 @@ const r = await cindy.send({ type: 'notify', text: '视频已生成,点面板查
 - **身份头主机画**:提示上自动带你的图标和名字,冒充不了主机通知、也冒充不了别的
   意识;正文里不用再自报家门;
 - 提示自动消失、无按钮、无回执——**不是确认框**。要用户点「同意/取消」并把答案交回
-  给你,用 §4.18 的 confirm 槽(主机同款确认框);要在聊天流里放按钮用交互卡
+  给你,用 §4.18 的 confirm 能力(主机同款确认框);要在聊天流里放按钮用交互卡
   (§4.5 的 data-ghost-action)。
 
-### 4.9.1 未读角标(badge 槽 —— 与 notify 槽并列的独立一档)
+### 4.9.1 未读角标(badge —— 与 notify 并列的独立一档)
 
 toast 是"说一句就走",错过就没了。要留下一条**持久**的"我这儿有新内容"——
 用户没去看就一直亮着——在身份卡里加一档:
 
 \`\`\`json
-{ "slots": ["panel", "badge"] }
+{ "panel": { "title": "最新内容", "html": "panel.html" }, "badge": true }
 \`\`\`
 
-\`badge\` 与 \`notify\` 是**并列的两档权限**,谁也不是谁的前置。只想安静点个绿点就
-别申请 \`notify\` 槽——多要一档"能弹全屏顶部提示"的权限,用户装的时候只会更犹豫。
+\`badge\` 与 \`notify\` 是**并列的两档能力**,谁也不是谁的前置。只想安静点个绿点就
+别申请 \`notify\`——不要让能力清单比实际需求更重。
 两个都要就两个都声明。
 
 \`\`\`js
@@ -2649,8 +3617,8 @@ await cindy.send({ type: 'badge', unread: false });
 
 - **必须同时声明 \`panel\`**,装入时校验,漏了整个包装不进去。这是本档唯一的门槛:
   未读点承诺"点开能看到内容",没有面板的意识点亮了也无处可点,给了就是骗点击;
-- 装入确认框里**单列一项**权限,已装插件加这一档会触发扩权重新确认——常驻的
-  注意力入口值这一次打断;
+- 插件详情里**单列一项**能力；市场更新新增这一档时会随新版清单展示，Host 只按
+  实际声明兑现;
 - \`summary\`(可选):**纯文本**,≤80 字符,换行会被坍缩成空格,超长直接拒
   (\`ok:false\`,不静默截断);净化后为空按"没给摘要"处理,点照亮;
 - **限速**只挡点亮方向:同一意识两次点亮最小间隔 500 毫秒;\`unread:false\` 的
@@ -2662,11 +3630,16 @@ await cindy.send({ type: 'badge', unread: false });
 - 角标**不出声、不震动、不进系统通知中心**——它只是屏幕内的一颗点;
 - 状态跨重启存活,按账号隔离(账号 A 的未读不会在账号 B 的界面上亮)。
 
-## 4.10 写文件(fs 槽)
+## 4.10 写文件(fs 能力)
 
-声明 \`"slots": [..., "fs"]\` 后,电子脑可以请主机代写文件(创建/覆盖)。沙箱本身
-仍然没有文件系统——字节永远由主机落盘,这个槽是"申请主机代写"的资格。装入
-确认框会如实展示"可写入文件",没声明就调用只会拿到结构化拒绝。
+沙箱本身没有文件系统，字节始终由主机落盘。三档目的地的声明边界不同：
+
+- \`root:'workdir'\`：当前 Agent tool-call 内传 \`callId: msg.callId\` 即可按会话
+  permission mode 写入，不需要 \`"fs": true\`。
+- \`root:'save'\`：授权是主 Agent 发放的限时、限次、绑定插件票据，不需要
+  \`"fs": true\`。
+- \`root:'data'\`：这是插件脱离当前 Agent 调用仍可持久读写的私有目录，
+  属于自主 Host 能力；使用它才声明 \`"fs": true\`，并在插件详情如实展示。
 
 \`\`\`js
 // 写自己的私有数据目录(免确认;适合缓存、大结果落盘、跨生命周期状态)
@@ -2719,9 +3692,141 @@ await cindy.fs({ op: 'write', root: 'data', path: 'a.txt', content: 'hi' });
   想拿二进制回传 \`encoding:'base64'\`);单次写入上限 16MB,超了拆多个文件;
 - 符号链接一律不穿透:目标是 symlink、或路径经 symlink 逃出根目录,直接拒。
 
-## 4.11 发起 Agent 新回合(agent 槽)
+### 4.10.1 持久作品库(library 能力)
 
-这个槽让你的 \`main.js\` 把一段文字作为**普通用户消息**交给 Cindy Agent，适合
+声明 \`"library": true\` 后,你获得一个**用户作品级**的持久存储区——
+和 fs 槽的私有储物柜(256MB 配额、卸载即回收)是两个语义:Library 不受配额
+约束(只受磁盘水位约束),**卸载插件不删数据**(用户必须在 Cindy 设置里单独
+确认才删除)。适合画布、素材库、项目文件这类"用户会心疼"的数据。
+
+位置由用户与宿主决定(装入时可选、随时可在设置里迁移),你**看不到也无需
+知道**绝对路径——所有 \`path\`/\`dbPath\` 都是库内相对路径,段数放宽到 32、
+总长 512(比 fs 槽宽,够 \`canvases/<id>/assets/objects/<shard>/<hash>\` 深度)。
+
+\`\`\`js
+// 语法糖:cindy.library({...}) ≡ cindy.send({ type:'library-request', ... })
+const open = await cindy.library({ op: 'open' });   // 建议启动即调(幂等)
+const st = await cindy.library({ op: 'status' });
+// st = { ok:true, state:'ready', usedBytes, fileCount, diskFreeBytes,
+//        softLimitBytes, softLimitExceeded, location:'default'|'custom' }
+
+// 只读能力查询:资格审与 op 合法性之后、会话创建之前返回;不打开库、不弹窗
+const caps = await cindy.library({ op: 'capabilities' });
+// caps = { ok:true, op:'capabilities',
+//          capabilities:{ version:1,
+//            operations:['clipboardWrite','saveAs','staging.begin',...],
+//            staging:{ version:1, maxTaskBytes, maxTotalBytes,
+//                      maxConcurrentWrites, maxChunkBytes, reserveBytes } } }
+// operations 只表示宿主实现了这些 op,不等于此刻有窗口 / 已授权 / 库可用
+
+// 文件操作(全 Family;写入原子化,大文件走分块流)
+await cindy.library({ op: 'write', path: 'canvases/c1/state.json', content: s });
+await cindy.library({ op: 'read', path: 'canvases/c1/state.json', encoding: 'base64' });
+await cindy.library({ op: 'list', recursive: true, cursor: st.nextCursor, limit: 500 });
+await cindy.library({ op: 'stat' }); / mkdir / delete({ recursive:true }) / rename({ overwrite:true })
+
+// 大文件分块流(>16MB 必须走这里;sha256 由宿主实算回传,做完整性对账)
+const b = await cindy.library({ op: 'writeBegin', path: 'assets/video.bin',
+  totalBytes: blob.size, sha256: expectedHash });
+for (const chunk of chunks) {
+  await cindy.library({ op: 'writeChunk', streamId: b.streamId, seq: n, content: chunkB64, encoding: 'base64' });
+}
+const done = await cindy.library({ op: 'writeCommit', streamId: b.streamId });
+// done = { ok:true, path, bytes, sha256 }; 中断/放弃用 writeAbort
+
+// 在文件夹中显示 / 系统另存为(不回用户所选绝对路径)
+await cindy.library({ op: 'reveal', path: 'exports/a.psd' });
+const saved = await cindy.library({ op: 'saveAs', path: 'exports/a.psd', name: 'layers.psd' });
+// saved = { ok:true, cancelled:true }
+//      或 { ok:true, cancelled:false, path:'exports/a.psd', bytes }
+// path 永远是库内相对键,不是用户另存到的绝对路径
+
+// 写系统剪贴板 PNG 位图(不是 Finder 文件列表,也不是 saveAs)
+const copied = await cindy.library({
+  op: 'clipboardWrite', content: pngBase64, encoding: 'base64',
+});
+// copied = { ok:true, bytes }  —— bytes 是写入的 PNG 字节数
+// 空字节 / 非 base64 / 非 PNG / 超限 → { ok:false, errorCode, message }
+// 外部应用能否粘上由操作系统剪贴板决定,插件侧不要自己承诺粘贴完成
+
+// SQLite:参数化语句 + 首词白名单(SELECT/WITH/INSERT/REPLACE/UPDATE/DELETE/
+// CREATE/DROP/ALTER/REINDEX/ANALYZE);ATTACH/PRAGMA/VACUUM/事务语句一律拒,
+// 事务由宿主管理(db.batch 整批原子),迁移按 user_version 幂等续跑
+await cindy.library({ op: 'db.open', dbPath: 'library.sqlite' });
+await cindy.library({ op: 'db.exec', dbPath: 'library.sqlite',
+  sql: 'CREATE TABLE canvases (id TEXT PRIMARY KEY, name TEXT)' });
+await cindy.library({ op: 'db.batch', dbPath: 'library.sqlite', statements: [
+  { sql: 'INSERT INTO canvases VALUES (?, ?)', params: ['c1', '我的画布'] },
+] });
+await cindy.library({ op: 'db.migrate', dbPath: 'canvas.sqlite', targetVersion: 2,
+  steps: [{ toVersion: 1, sql: ['CREATE TABLE v1 (a TEXT)'] },
+          { toVersion: 2, sql: ['CREATE TABLE v2 (a TEXT)'] }] });
+await cindy.library({ op: 'db.backup', dbPath: 'library.sqlite' });  // 宿主命名空间
+await cindy.library({ op: 'db.check',  dbPath: 'library.sqlite' });  // quick_check
+
+// 后台暂存(staging.*):独立于可迁移 Library 根,不是第二媒体库,不返回 imageRef。
+const up = await cindy.library({
+  op: 'staging.begin', taskId, sourceRevision, totalBytes, sha256, mime, recovery,
+});
+await cindy.library({ op: 'staging.chunk', stagingId: up.stagingId, seq: 1, content: b64, encoding: 'base64' });
+const receipt = await cindy.library({ op: 'staging.commit', stagingId: up.stagingId });
+// receipt.durable === true 才可当跨退出原件。release 带当前 Library ACK 的 bytes(不是 begin 的 totalBytes),且画布已保存后才调用。
+await cindy.library({
+  op: 'staging.release', stagingId: up.stagingId, path, sha256, bytes,
+  libraryIdentity, libraryGeneration,
+});
+\`\`\`
+
+关键语义(全部由宿主强制):
+
+- **失败是结构化的**:\`{ ok:false, errorCode, message, reason? }\`。旧
+  \`errorCode\` 保留;另加稳定 \`reason\` 供分类,不要解析人类 \`message\`。
+  常用码 \`LIBRARY_UNAVAILABLE\`(含 open/status 的 binding-moved/disk-missing/corrupt)、
+  \`LIBRARY_READONLY\`、\`DISK_FULL\`、\`PATH_INVALID\`、\`NOT_FOUND\`、
+  \`ALREADY_EXISTS\`、\`TOO_LARGE\`、\`STREAM_INVALID\`、\`DB_STATEMENT_REJECTED\`、
+  \`DB_ROW_LIMIT\`(结果集超 2000 行,自己加 LIMIT)、\`DB_MIGRATION_CONFLICT\`、
+  \`BUSY\`、\`RATE_LIMITED\`、\`UNSUPPORTED\`、\`NOT_DECLARED\`;
+  稳定 \`reason\`:无 handler=\`IMPLEMENTATION_UNSUPPORTED\`,无窗口=\`NO_VISIBLE_WINDOW\`,
+  权限=\`PERMISSION_DENIED\`,库不可用=\`LIBRARY_UNAVAILABLE\`(含 vault 透传的
+  open/status 失败),非法请求=\`INVALID_REQUEST\`(含非法/越界 dbPath 与未知 op),
+  取消=\`CANCELLED\`;成功 open/status 的 \`state:'unavailable'\` 仍用结果体 reason
+  (如 disk-missing),不是失败 reason 枚举;查询/传输层本地分类 \`TIMEOUT\` / \`TRANSPORT_ERROR\`;
+- **staging.***:后台暂存,不是媒体库、不弹新 UI。\`staging.read\` 未传 length 默认 16MiB 分片;负数/NaN offset/length 是 \`PATH_INVALID\`。release 必须带当前 Library ACK 的 \`bytes\`(不是 begin 的 \`totalBytes\`),且只在画布保存后调用。父目录 fsync 失败不得 \`durable:true\`。
+- **capabilities**:先查 \`{ op:'capabilities' }\`。仅 \`version===1\` 且
+  \`operations\` 为**全部字符串**的数组才有效;额外字段忽略,未知 operation 忽略,
+  已知项保留;有效 v1 清单缺少某项才是 unsupported。缺字段、错类型(含数组内混入
+  非字符串)、\`version\` 非 1、或旧宿主 unknown-op 一律 unknown,不得把其中碰巧
+  合法的项当成有效清单。查询本身不证明窗口/授权/库可用,也不要求旧插件重装;
+- **reveal / saveAs**:只收库内相对路径。成功不回用户另存目标的绝对路径;
+  取消是 \`{ cancelled:true }\`。reveal 打开系统文件夹、saveAs 弹系统对话框
+  (跨平台标题带已核验插件名;macOS 另有正文),同插件 3 秒内连发 \`RATE_LIMITED\`;
+  saveAs 已有对话框在场 \`BUSY\`(不排队)。
+  对话框期间账号切换则拒绝拷贝(\`LIBRARY_UNAVAILABLE\`);
+  拷贝完成替换前、reveal 打开文件夹前再核一次会话;
+  确认后先拷到目标旁临时文件再替换,失败不破坏已有文件;
+- **clipboardWrite**:只收 \`encoding:'base64'\` 的 PNG 字节,写系统剪贴板位图,
+  成功回 \`{ ok:true, bytes }\`。不是 saveAs,也不在文件夹中显示作品。
+  PNG 字节上限 20MB(20,000,000 字节,按解码后字节计),超限回 \`TOO_LARGE\`;
+  旧版宿主上限为 16MiB,同样回 \`TOO_LARGE\`,插件应提示用户更新或改用下载。
+  空字节 / 非法 encoding / 非 PNG / 超限一律结构化失败,永不 \`ok:true\`。
+  同插件 3 秒内连发 \`RATE_LIMITED\`;无主壳窗 / 宿主不能写剪贴板 \`UNSUPPORTED\`;
+  账号切换后旧会话不得继续写(\`LIBRARY_UNAVAILABLE\`)。
+  外部粘贴是否成功由操作系统与目标应用决定,插件侧不要单独承诺已粘上;
+- **不可用 ≠ 空**:\`state:'unavailable'\` 时**不要**当空库重建、不要触发
+  清理、不要把素材判成已删——如实向用户展示状态,等位置恢复;
+- **无跨库事务**:多个 .sqlite 之间没有 ATTACH;跨库一致性用幂等 + 墓碑
+  自行设计(每库独立,反而是独立同步/删除的好边界);
+- **推荐"先字节后记账"**:先写 asset 文件、再 batch 写元数据行——崩溃只会
+  留无账文件(内容寻址可自愈),绝不出现有账无文件;
+- **面板展示库内文件**:\`cindy-ghost://<你的id>/library/<相对路径>\`(只读,
+  支持视频 Range)——与 /media/ 的内容寻址缓存不同,这个地址内容可变。
+
+\`write\`/\`writeCommit\`/\`read\` 都回 \`sha256\`(宿主对实字节计算)——
+外自称的哈希只当对账参考,不是凭证。
+
+## 4.11 发起 Agent 新回合(agent 能力)
+
+这个能力让你的 \`main.js\` 把一段文字作为**普通用户消息**交给 Cindy Agent，适合
 “用户在插件卡片上点继续，然后 Agent 接着做”的流程。它不是系统提示词，也不会
 修改该会话里其它插件或 Agent 的长期规则。
 
@@ -2777,24 +3882,25 @@ await cindy.agent.run({
 一条 Agent 请求，后台请求之间至少间隔 10 秒。这个能力可能自动产生模型费用，只在
 产品确实需要时申请，不要把 \`sessionId\` 当作任意跨会话控制口。
 
-### 4.11.1 派活取件:让 Agent 替你干活并取回结果(errand)
+### 4.11.1 旧版任务接口:让 Agent 替你干活并取回结果(errand)
 
-\`agent.run\` 把回合发进**用户的会话**,结果是给用户看的;派活(errand)相反:
-任务在**你的专属 errand 会话**里跑,Agent 的最终回复文字交回**你**手里继续用。
-需声明 \`"slots": [..., "agent"]\` + \`"agent": { "errand": true }\`(装入确认高风险单列)。
+\`agent.run\` 用于用户已关联任务的交互；旧版 \`errand\` 接口提供结果查询适配：
+任务在宿主按 sessionKey 关联的普通任务里运行,Agent 的最终回复文字交回**你**手里继续用。
+需声明 \`"agent": { "errand": true }\`(插件详情高风险单列)。
 
 \`\`\`js
 // 提交(默认异步:先拿单号,再轮询取件——Agent 干活是分钟级的):
 const r = await cindy.agent.errand({
   task: '阅读工作目录下的 README 并总结要点(200 字以内)',
   // context: { anything: '结构化上下文,主机 JSON 化后附在任务消息尾部' },
-  // title: '我的插件 · 代办',   // 仅首次创建对应 errand 会话时用作标题
+  // title: '我的插件任务',   // 仅首次创建对应 errand 会话时用作标题
   // workingDir: repoDir,        // 可选:请求建在某目录(只认用户亲选过的,见下)
   // sessionKey: 'pr-123',       // 可选:分会话钥匙(1–64 位字母/数字/._-)。
   //                             // 不传 = 插件共用一间;同钥匙同间、异钥匙各间,
   //                             // 适合按业务对象各聊各的(如每条 PR 一间,标题
   //                             // 在该间首次创建时用 title 定,正好带上对象编号)
   // mode: 'wait',               // 同步等到完成(30 分钟顶);默认不传 = 异步
+  // userActionToken: msg.userActionToken, // 卡片点击票；校验后切到 errand 任务，一次性
   callId: msg.callId,
 });
 // 受理:{ ok:true, jobId, status:'running', sessionId }
@@ -2808,20 +3914,31 @@ const q = await cindy.agent.queryErrand({ jobId: r.jobId });
 主机强制的边界(都不是建议):
 
 - **任务只进普通 user 消息**,绝不进 system prompt;
-- errand 会话在**侧边栏可见**,用户可随时旁观、叫停——没有隐身会话;
-- 用哪个 agent/模型/思考强度、多大动手权限、在哪个目录干活,全部由**用户**在
-  你的插件详情页「AI 代办」卡里配置;缺省跟随用户新建草稿的选择,权限档缺省
-  **只读**(不能改任何文件),目录缺省是插件专属文件夹。别假设你能写文件——
-  只读档下让 Agent"分析/回答"没问题,"修改"类任务要在文案里引导用户先放开
-  权限档;
+- errand 会话在**侧边栏可见**,用户可随时旁观、叫停——errand 不支持隐藏;普通任务的
+  后台隐藏只能经 §4.11.3 的 \`hiddenTasks\` 声明,且用户始终能在插件详情页查看与接手;
+- 这是旧版任务接口，不是插件全部 AI 能力。普通任务管理用 §4.11.3，继续用户任务用 §4.11，
+  快问快答用 §4.0.2；不要把这些能力统一称为代办。
+- 新建任务共用插件详情「任务设置」中的模型组合（Agent、供应商、模型、推理强度、Fast）。
+  没有覆盖时，沿用宿主核实的同插件本机在途 \`callId\` 所属任务；面板直接创建使用当前新任务选择。
+  无显式覆盖的已有专属任务保留自身模型，用户在任务中改选后可继续复用。
+  显式配置发生冲突时，新任务创建成功才替换映射，旧任务与历史保留。
+- 保存、创建与派发前校验真实的模型／Agent／供应商组合；失效时引导用户到任务设置改选，
+  或修复供应商连接。不静默换模型、不从报错猜凭证失效，也不把目录可用当作远端推理一定成功。
+- 权限独立来自用户插件设置；旧接口缺省保留历史 plan 值及原 Agent 行为，不将它宣称为
+  跨 Agent 的只读保证。新插件应使用普通任务接口，其缺省为普通任务的 ask 权限。
+  用户可显式选择 ask / acceptEdits / auto；不继承调用任务的完全访问。工作目录由宿主分配。
 - 目录有一个受控例外:run 请求可带 \`workingDir\`(绝对路径)**转述**一个目录,
   让 errand 会话建在项目里(Agent 能看到代码)。这不是授权——主机只认用户
-  此前在 pick 槽(§4.14)系统选目录窗口里**亲手选过**的目录(主机自己记的
+  此前用 pick 能力(§4.14)在系统选目录窗口里**亲手选过**的目录(主机自己记的
   台账),别的路径一律 \`INVALID_REQUEST\`,此时应引导用户去你的设置页重新
-  选一次目录;用户在「AI 代办」卡里配置了目录时,以用户配置优先、本字段忽略;
+  选一次目录;用户在「任务设置」卡里配置了目录时,以用户配置优先、本字段忽略;
 - 每插件同时 1 单在途、相邻提交至少隔 10 秒;结果超过 64K 字符会截断(尾部带
   标记);完成结果保留 30 分钟,应用重启后查无此单(按可重新提交处理);
   \`sessionKey\` 只是分间,**不放大并发**——不同钥匙的两单同样要排队;
+- 可选 \`userActionToken\`:把 \`card-action\` 里主机签发的点击票原样带上。
+  主机校验通过才把这次派活当成用户发起并切到 errand 任务;票一次性消费,
+  不能再拿去 \`agent.run\` 或再派一次。面板上的真实点击由主机自己记账,
+  必须紧挨着这次派活,不能靠几分钟前点过输入框来顶替;
 - \`errorCode:'BUSY'\` = 你已有一单在途,或用户恰好正在 errand 会话里说话;
   \`'NO_CANDIDATE'\` 不存在于此——但会话创建/派发失败有 \`'SESSION_UNAVAILABLE'\`,
   超时有 \`'TIMEOUT'\`(任务可能仍在会话里继续,提示用户打开会话查看)。
@@ -2847,10 +3964,11 @@ const q = await cindy.agent.queryErrand({ jobId: r.jobId });
 7. 用户回来点开面板,看到刷新后的内容。
 
 所以你需要的是三样东西的组合:\`agent.schedule\` 加档(第 2 步)+ 一个 \`tool\`(第 5 步)
-+ \`badge\` 槽(第 6 步)。三者缺一,回路就断在那里。
++ \`badge\` 能力(第 6 步)。三者缺一,回路就断在那里。
 
-需声明 \`"slots": [..., "agent", "tool", "badge"]\` + \`"agent": { "schedule": true }\`
-(装入确认里单列一档,文案会告诉用户"任务由你亲手保存、跑起来会产生模型费用")。
+需声明至少一个 \`tools\` 条目、\`"agent": { "schedule": true }\`、\`"badge": true\`
+以及 badge 所需的 \`panel\`(插件详情里单列一档,文案会告诉用户
+"任务由你亲手保存、跑起来会产生模型费用")。
 
 \`\`\`js
 // 用户在面板上点了「提醒我」之后:
@@ -2897,12 +4015,122 @@ const r = await cindy.agent.requestSchedule({
   "将在此处打开",写"去自动化页确认"之类更准;
 - 一个都没有主窗口时(极端情况)→ \`HOST_NOT_READY\`。
 
-什么时候**不该**用它:一次性的、当场就要结果的事,用快问快答(§4.0.2)或派活取件
-(§4.11.1)。这个加档是给"长期定期刷新"用的,每条任务都会反复产生模型费用。
+什么时候**不该**用它:一次性的事，用快问快答(§4.0.2)或普通任务接口
+(§4.11.3)。这个加档是给"长期定期刷新"用的,每条任务都会反复产生模型费用。
 
-## 4.12 随包 Node 工作进程与 stdio MCP(node 槽)
+### 4.11.3 新建任务与继续任务（普通 Session）
 
-\`main.js\` 永远还是浏览器沙箱代码。声明 node 槽后，主机额外为**这一段意识**按需
+先按业务选择：
+- 当前 Agent 已在处理你的工具：返回数据让它继续，不新建任务。
+- 用户在稿件面板提交修改：\`cindy.agent.run({mode: 'continue', ...})\` 继续已关联原任务。OpenDesign 当前采用这一方式。
+- 独立完成一项工作：\`cindy.tasks.create\` 新建普通任务，再用 \`send\` 开始执行。保存 taskId 后可继续同一任务。
+- 需要更新插件页面：查询 \`getRun/listRuns\` 与 \`readMessages\`；没有默认回叫，不自动唤醒伙伴或 Agent。
+
+用户界面统一叫「新建任务」「打开任务」「继续任务」。任务能使用什么模型、工具和权限，由普通任务配置与用户授权决定。
+插件身份／业务关联在调用方保存，不把普通任务做成另一种产品对象。伙伴的完成回叫只属于伙伴自己的流程。
+
+声明 \`"agent": { "tasks": true }\` 后，逻辑页可使用 \`cindy.tasks\`。它是独立权限，
+旧 \`errand\` 声明不自动取得该权限。任务默认可见：出现在任务列表，用户可查看和接手。
+安装时已明确展示并确认的任务能力不重复询问；否则首次使用时通过现有宿主权限界面确认并记录独立批准。旧版保存的未知字段不会自动授权。
+用户拒绝或确认界面不可用时返回 \`PERMISSION_DENIED\`，不影响插件其它功能；不得自动循环重试确认。
+面板通过既有逻辑页通道调用，不获得新的 preload 或内部 IPC 权限。
+
+先调用 \`capabilities()\` 获取实际支持操作。当前仅支持本插件创建的本机普通任务：
+\`models\`、\`create\`、\`get\`、\`setModel\`、\`list\`、\`send\`、\`getRun\`、\`listRuns\`、\`readMessages\`、\`cancel\`、\`setHidden\`。
+可对自有任务调用 \`startTeam({taskId})\` 启用 Orca 主任务，并用 \`getTeam({taskId})\` 读取实际协同状态。协调主任务需经用户授权 Auto，Worker 自动沿用 Auto。
+这些任务及其 Worker 不提供 \`cindy_helper\` 的账号级历史或跨任务控制能力，\`cindy_memory.session_search\` 也拒绝历史检索；协调使用独立 Orca 工具，结果由插件通过 \`readMessages/getTeam\` 读取。旧 errand/workspace 不因来源标记受到限制；明确卸载撤销归属后，调用方已无正在执行的输入或已接受新真人输入时，保留的用户任务恢复普通 helper 与历史检索能力；仍执行旧插件输入时继续受限，自动回报和插件输入重试不构成真人接管。这不恢复插件控制权，也不保证停止已接受执行，不构成通用执行沙箱。
+在首次派发前调用 \`setTeamPlan({taskId,plan:{concurrency,task,items}})\`，每项包含
+\`label, workingDir, route, task\`。可选 \`task\` 是插件提供的工作范围（每段最多 8000 字符），
+不是用户原话。Host 核对已批准启用的插件、自有主任务、真实 Worker 归属、模型和目录后，
+将范围单独交给 Auto 审阅。进入 Host 审批的动作逐次核验用户限制、撤权和只读设置。
+首版保留 Codex 原生 Auto；其常规工作区动作可能直接执行，不保证每个动作都经过 Host 范围审批。
+卸载会撤销插件后续 API 控制，但不保证停止已派发的原生工作；需要停止时请使用任务停止入口。
+计划须在首次派发或创建 Worker 前登记，之后不可改写（包括补填 task）；需要不同范围时创建新任务。
+缺少该字段的存量计划继续可读，但 Host 不允许插件任务自动授权或普通 MCP 快捷放行，不会从 Agent 消息推导额外授权；进入 Host 的 Ask/acceptEdits 动作仍可沿原流程逐次确认。
+计划不授予目录权限。Worker 仅可使用宿主任务目录及解析后仍在其中的子目录、插件 AI 配置目录或用户亲选的确切目录；Library 绑定不自动变成 Agent 工作根。宿主在登记和创建时均复核。
+插件自有主任务不支持用 \`execution_device_id\` 新建跨设备 Worker；本机目录授权不代表已授权另一台电脑的同名目录，登记团队计划也不改变此限制。
+这描述准入检查，不是持续的 OS 目录隔离保证。首版用于可信本地工作区；同权限进程在检查后恶意置换目录对象仍可能改变实际 cwd，不提供此类对抗性沙箱。
+
+\`models()\` 返回统一目录可选项的完整 route、efforts 和 supportsFastMode。用户明确选择后将 route 原样传给 create，或用 \`setModel({taskId, expectedRevision, route})\` 修改已有自有任务。运行中按普通任务的安全边界切换，不修改应用默认。两方法使用前检查 capabilities.operations。
+当 \`capabilities().pluginDefaultModel === true\` 时，持续复用任务的插件可在每次新输入前调用
+\`setModel({taskId, expectedRevision, route:'plugin-default'})\`。Host 当次读取本插件的任务模型设置，
+复用 create 的模型解析规则（未指定时采用当前新任务选择），只同步模型、来源、引擎、强度和 Fast，
+不改权限、目录或其它任务。返回 \`{status,task}\`；配置相同返回 unchanged，不反复切换。
+后续 send 使用返回 task.revision。须先处理已接受/结果不确定的旧请求，再同步下一次输入，
+不得修改旧请求的回执或为模型变化重发。旧 Host 未声明此能力时保留原任务行为，不传入该 route。
+暂不支持接管任意现有任务、远程/伙伴任务、其它配置修改、归档、队列暂停或事件订阅。
+旧 \`agent.errand\` 接口不变。
+
+**后台任务（可选，需声明 \`hiddenTasks\`）**。任务默认可见。只有身份卡写了
+\`"agent": { "tasks": true, "hiddenTasks": true }\`（详情页与安装/更新确认中单列一项权限），
+插件才能把**自己创建的**任务放到后台：不进任务列表、会话搜索、未结束提示、新任务通知与灵动岛，
+手机任务列表同样不显示。它不改变任务权限、模型或执行方式，也不授予其它任务的访问权。
+未声明时 \`create({hidden:true})\` 与 \`setHidden\` 返回 \`PERMISSION_DENIED\`；
+\`capabilities().hiddenTasks\` 表示当前插件是否已声明。用户始终可以在插件详情页「后台任务」
+看到这些任务、打开查看，或「显示到任务列表」接手；插件被卸载时它们会自动恢复显示。
+请把后台任务用于用户不需要逐条关注的批量/辅助工作，并在插件界面说明它们在哪里能找到。
+
+\`\`\`js
+const caps = await cindy.tasks.capabilities();
+const bg = await cindy.tasks.create({ requestKey: 'grade-42-create', title: '批改第 42 份作答',
+  hidden: caps.hiddenTasks === true });   // 未声明时退回默认的可见任务
+// bg.hidden === true；get/list 快照都带 hidden 布尔值。hidden 参与 requestKey 的幂等摘要。
+await cindy.tasks.send({ taskId: bg.taskId, expectedRevision: bg.revision,
+  requestKey: 'grade-42-send', text: '按评分标准批改并给出分数。' });
+// 出现需要用户处理的问题时，把它显示到任务列表（与用户在详情页点击效果相同）：
+await cindy.tasks.setHidden({ taskId: bg.taskId, hidden: false });
+\`\`\`
+
+\`\`\`js
+// requestWriteAccess({taskId, mode: 'auto'}) 请求宿主原生确认，不能替用户确认。
+// 拒绝或失败后，同一账号代际/安装修订/任务在当前宿主进程不再自动弹窗（更换 mode 也不重置）。
+// 用户可从本机任务权限菜单“重新确认插件写权限”恢复原请求；插件不能清除拒绝记录。
+// 省略 mode 保留 acceptEdits；Auto 插件主任务的 Worker 使用 Auto，不改全局权限。
+
+const task = await cindy.tasks.create({ requestKey: 'experiment-1-create', title: 'My evaluation' });
+const run = await cindy.tasks.send({ taskId: task.taskId, expectedRevision: task.revision,
+  requestKey: 'experiment-1-send', text: 'Read the project and report your findings.' });
+const status = await cindy.tasks.getRun({ runId: run.runId });
+const page = await cindy.tasks.readMessages({ taskId: task.taskId, limit: 50 });
+// 保存 nextCursor；下一页传 after，不以最后一条 assistant 推断 run 已完成。
+\`\`\`
+
+SDK 成功返回 data，失败抛出带 code 的错误。原始管子响应为 \`{ok:true,data}\` 或
+\`{ok:false,error:{code,message,retryable}}\`。不要将请求键换掉来绕过不确定的派发结果。
+create/send 的 requestKey 持久去重；同键不同内容拒绝。删除后的记录不自动重建。
+请求键及 taskId/runId 需要由插件保存。取消仅作用于该输入，不能停止用户后来的执行。
+
+省略 route 时使用用户给本插件的任务模型覆盖；无覆盖则沿用发起任务，面板直接创建时
+沿用当前新任务选择。可显式传
+\`{agentKind:'codex',providerId:'...',model:'...',effort:'high',fastMode:false}\`；无推理档位模型用空 effort。
+先查 \`capabilities().sourceCallContext\`：支持时，Agent 在途调用可在 create 中转传 \`callId\`。
+宿主核对同插件本机调用后读取其模型；不能自报 sourceSessionId 或权限。面板直接创建省略 callId。
+新字段需该能力为 true 才发送，旧客户端不能假定支持；同 requestKey 的重放保留原创建结果。
+来源/模型/强度必须当前可用，派发前再次核对；失败引导改选或修复连接，不自动换模型或账号。
+已有普通任务保留自身配置，用户在任务内修复后继续使用原任务。
+工作目录由宿主分配，或沿用用户已在插件设置中选择的目录；不接受任意路径或权限覆盖。
+权限来自用户的插件任务设置，缺省使用普通任务的 ask 权限；工作区内行为及询问规则与所选
+Agent 的普通任务一致。允许用户显式选择 acceptEdits / auto，禁止 bypassPermissions，
+不继承发起任务的权限。既有任务与显式历史 plan 配置保留原行为，不自动提权；需要改变时由用户选择。
+create 可传 \`isolatedWorkspace:true\`，使用宿主为该任务生成的独立空目录，忽略插件的项目目录偏好。
+返回 workingDir 仅属于本插件创建的任务，可交给插件 Node 进程放入候选项目；不接受插件自报任意目录。
+任务视图同时返回 permissionMode；按实际权限展示，不将历史 plan 值视作跨 Agent 的只读保证，不能暗中升级权限。
+
+run 的 acceptedConfig 是接收配置，execution 是观测到的原生 instance/generation，
+不冒充完整实际用量/重试清单。outputMessageId 来自产品终态，不是文字猜测。
+没有足够证据的重启/恢复窗口返回 reconciling，不能当 completed、failed 或零分；
+不要自动重发可能已经产生副作用的输入。费用目前 unavailable，绝不以耗时推算。
+实验性接口尚未提供全部恢复路径的最终对账和事件补拉，因此暂不用于无人值守正式评测。
+
+
+## 4.12 随包 Node 工作进程与 stdio MCP(node 能力)
+
+插件需要随包代码、CLI、JS 依赖、可复用 worker 状态或 stdio MCP 时，使用顶层
+\`node\` 字段描述现有 Node 工作进程。这里不再有 \`node\` Slot，也不要求客户端
+预登记某个具体 CLI；Agent 发起插件工具调用时，是否运行由外层 \`ghost_call\`
+的既有授权系统决定。
+
+\`main.js\` 永远还是浏览器沙箱代码。声明 node 后，主机额外为**这一段意识**按需
 启动一个独立 Node 进程；同一插件的多个会话复用它，不同插件绝不共用进程。通信链固定为：
 
 \`\`\`
@@ -2911,7 +4139,8 @@ Node worker ↔ JSON-RPC stdio ↔ 你的 main.js ↔ Cindy 主机能力
 
 Node 不能直接拿到 \`cindy\`、Electron IPC 或 Agent 会话。它向主机发反向 JSON-RPC
 请求时，主机会固定返回 \`-32601\`；需要 Cindy 能力时，Node 先把数据回给 \`main.js\`，
-再由 \`main.js\` 调自己已声明的 cindy / agent / network / fs 等槽，主机照常逐项验权。
+再由 \`main.js\` 调 Cindy 通道。插件自主调用继续按 manifest 验权；当前
+Agent tool-call 内的网络与 workdir 操作按 §4.2 复用 Agent 授权。
 
 ### 4.12.1 自定义 Node 服务(JSON-RPC stdio)
 
@@ -2943,12 +4172,40 @@ readline.createInterface({ input: process.stdin }).on('line', async (line) => {
 \`\`\`js
 const response = await cindy.node.request({
   method: 'taptap/connect',
+  callId: msg.callId, // tool-call 内透传
+  cancelWithCall: true, // 显式启用授权卡和随调用结束的生命周期
   params: { projectId: 'demo' },
   timeoutMs: 30000 // 可选 1000–120000，缺省 30000
 });
 if (!response.ok) throw new Error(response.message);
 const result = response.result;
 \`\`\`
+
+当前工具触发的登录等前台请求应同时传入 \`cancelWithCall: true\` 和主机下发的
+\`callId\`。显式启用后，主机只接受当前插件的在途调用；取消、超时或交卷后，该
+Node 请求及其子进程一并结束，晚到的授权或子进程启动会被拒绝。只传旧 \`callId\`
+或不启用开关都保持既有独立 RPC 生命周期，不自动弹授权卡、不回收后台进程；
+设置页等无 tool-call 的入口不能伪造或复用调用编号。
+
+#### 下载公开大文件与进度
+
+声明 node 和 network.hosts 后可用 cindy.downloads.start({id,url,sha256,bytes})；
+只接受声明的 HTTPS 主机（每次重定向复核），不发送 Cookie、凭证或自定义请求头。
+SHA-256 和精确字节数必填，单文件最多 8 GiB。下载从获得队列槽位起最多 2 小时（含重试，不计排队），不改变 Node 调用期限。返回 {ok:true,token,bytes,sha256,fromCache}，
+没有宿主路径。取消用 cindy.downloads.cancel({id})。
+订阅 onHostMessage 的 download-progress 事件：data 含 id、phase、loaded、total、speedBps；
+phase 为 queued/downloading/verifying/retrying/completed/failed/cancelled，retrying 另含 attempt、delayMs。
+无 loaded/total 时显示不确定进度，下载成功不等于解包成功。
+
+将 token 放入 cindy.node.request 的 downloadTokens，例如 {archive: token}；params 必须是对象且
+不能自带 downloads。Host 校验同账号、同插件、批准身份与文件身份后，仅向 Node 注入
+params.downloads.archive。Node 在本次 RPC 结束前读取或复制文件，不得把宿主路径回传面板或写进日志。
+旧请求不带 downloadTokens 时保持原有 params 语义。旧宿主无 downloads 时提示升级。
+
+下载队列与宿主更新隔离，传输逐块写盘并支持校验、重试与续传。每账号所有插件的缓存
+合计最多 16 GiB（含在途预留及每项 64 KiB 管理空间）；不淘汰正在下载或被 Node RPC 借用的文件，满额且无可回收项时失败。
+缓存可被回收，重启后 token 失效，重新 start 可复用经校验的文件。卸载插件回收其下载缓存；
+停用、账号切换或批准身份改变会拒绝旧凭据，不增加用户授权步骤。
 
 #### Node Worker 的持久化凭证绑定
 
@@ -2985,11 +4242,20 @@ const authorizationCode = request.cindy.secrets.mail_code;
 
 - \`secretBindings\` 最多 4 条，每条 \`methods\` 1–16 个；省略 \`entry\`
   只绑定主入口，不能借同名方法把凭证送去其它入口；
-- 未保存凭证时宿主在请求进入 Worker 前返回 \`PERMISSION_DENIED\`，设置页可用
-  \`GET /secrets\` 的 saved 状态引导用户；
+- 在途工具调用显式携带 \`cancelWithCall: true\` 和 \`callId\` 时，缺少本次方法/入口声明的手动凭证会先显示既有保密输入卡，
+  远程任务复用签名加密输入桥；用户提交后才进入 Worker。显式登录或更换 Token 可带
+  \`promptSecrets: true\`（要求上述显式生命周期开关），即使已保存也重新显示卡片；取消不清除原凭证。
+  没有在途调用或旧 Host 不支持此接线时仍返回 \`PERMISSION_DENIED\`，不会回退到聊天收取
+  Token。设置页继续使用 \`/secrets\`，不要把输入放入业务 RPC 或 BroadcastChannel；
+  完成本次卡片提交后，Host 在 Worker 私有 \`request.cindy.secretInputCompleted\` 标记
+  \`true\`。要求本次人工填写的登录方法必须检查该标记；旧 Host 缺标记时拒绝执行，不能
+  因其忽略新请求字段而静默复用旧 Token；标记不能由插件 main.js 自报；
+- 若手动凭证只用于登录方法，可用 \`setup: { requires: [] }\` 保留既有 CLI 登录及其它工具，
+  由具体绑定方法触发卡片。此配置就绪仅表示凭证已保存；插件还需执行最小只读权限验证。
+  这个增量只涉及插件→本机 Host 的 Node 请求；远程卡片和输入协议不增加字段；
 - 宿主不会直接把明文交给 \`main.js\`、Agent 参数或写入宿主日志；但 Worker
   收到明文后可以主动回传、落盘或写日志，浏览器侧代码和 Agent 也可能因此间接
-  获得它。安装/更新权限清单会逐条披露此风险，只安装可信来源插件；
+  获得它。插件详情的能力清单会逐条披露此风险，只安装可信来源插件；
 - Worker 用完不要缓存、落盘、回传或写日志；每次请求都以
   \`request.cindy.secrets\` 的当次值为准；
 - \`node.secretBindings\` 与 \`network.secrets\` / \`network.connections\`
@@ -3045,6 +4311,15 @@ cindy.onHostMessage((msg) => {
 
 ### 4.12.2 stdio MCP
 
+Node 可通过既有 \`secretBindings\` 引用本插件 OAuth 账号，不必复制或重新授权：
+\`{ key: 'access_token', label: '账号', methods: ['service/run'], oauthSecret: '已有的 network.secrets OAuth key' }\`。
+引用必须指向同一插件的 \`source:'oauth'\` 声明；它不是新的可填写 Secret，设置页继续使用
+\`/oauth\` 管理多账号。\`cindy.node.request({ method:'service/run', authAccount: accountId, params })\`
+可选择账号，省略时使用该 OAuth 槽的默认账号。Host 刷新后仅把 access token 放入 Worker 的
+\`cindy.secrets.access_token\`，不交付 refresh token；未绑定的方法不注入。
+Worker 与它启动的 CLI 是受信任的原生代码，会接触短期令牌；不得回传、落盘或记录令牌，
+每次调用使用独立子进程环境，不修改全局 \`process.env\`。令牌失效后的写操作不能自动重放。
+
 把 \`protocol\` 改成 \`"mcp-stdio"\`，worker 实现标准的逐行 JSON-RPC MCP server。
 Cindy 会统一完成 \`initialize\` + \`notifications/initialized\`，你的 main.js 不要重复初始化，
 直接调用标准方法：
@@ -3058,7 +4333,7 @@ const called = await cindy.node.request({
 \`\`\`
 
 MCP server 的 sampling / elicitation / roots 等 server→client 反向请求第一版不开放；需要
-这类能力时仍按“结果回 main.js，再由 main.js 申请 Cindy 槽”的链路设计。
+这类能力时仍按“结果回 main.js，再由 main.js 申请 Cindy 能力”的链路设计。
 
 ### 4.12.3 打包和生命周期红线
 
@@ -3068,15 +4343,17 @@ MCP server 的 sampling / elicitation / roots 等 server→client 反向请求�
 - Forge 会跳过 \`node_modules\`，推荐用 esbuild/rollup 预打包成 \`worker.cjs\`。Node 包
   最多 2048 个文件、解压后 256MB、.cindy 128MB；超限直接拒绝；
 - \`on-demand\` 首次 \`cindy.node.request\` 才启动，缺省空闲 120 秒关闭；停用、更新、
-  卸载、退出 Cindy 都立即关闭。\`resident\` 会随插件启用一直运行，安装确认里单独显示；
+  卸载、退出 Cindy 都立即关闭。\`resident\` 会随插件启用一直运行，详情页单独显示；
 - 每个插件最多 32 条在途请求；单次 params 256KB、单行 stdout 1MB。单次请求缺省
   30 秒、上限 120 秒;长任务用 maxTotalMs 开启"有动静就续期",绝对上限 15 分钟
   (见 §4.12.1)。进程崩溃只影响
   自己，所有在途请求收到结构化失败，下次请求可重新启动；
 - **最重要的安全事实**：Node 进程不是浏览器沙箱，它拥有当前登录系统账号能拿到的
-  本机权限，能读写文件、联网、起别的进程。安装时先展示权限清单，真正写盘前还会
-  由 Cindy 主进程弹出一次系统级强风险确认；
-  不需要本机能力的插件不要申请 node 槽。
+  本机权限，能读写文件、联网、起别的进程。Cindy 会在插件详情中显著展示这项能力，
+  但安装不会追加确认弹窗；不需要本机能力的插件不要声明 node，用户也只应安装可信来源。
+- macOS 的 Node 工作进程及宿主代启的 Node 子进程保留 Cindy 的系统权限责任归属，
+  可在系统允许范围内使用 Cindy 已获得的系统授权。尚未取得的权限仍由系统决定是否需要
+  授权；原生子进程的签名与用途声明也会影响结果。这不额外开放 Cindy IPC 或托管凭证。
 
 ### 4.12.4 宿主代启子进程(childSpawn)
 
@@ -3121,10 +4398,63 @@ const maker = require('@taptap/maker'); // 之后它的自启动全部走了正�
   但**只适合文本/协议流**,别拿它传大文件;
 - 级联生死:worker 退出/被停/插件停用,子进程一并收掉,不留孤儿。
 
-## 4.13 会话上下文(session-context 槽)
+### 4.12.5 随包 CLI 的登录授权卡片
+
+优先调用通用 \`globalThis.__CINDY_NODE__.bindAuthorization()\`。在**当前 JSON-RPC 请求处理函数内**
+同步捕获返回的 authorize 函数，再交给 CLI 输出/浏览器启动回调。调用方必须以
+\`cancelWithCall: true\` 显式启用；它只绑定这一次仍在途的 \`callId\`，不允许后台启动或复用。可传入的请求为：
+
+\`\`\`ts
+type AuthorizationRequest =
+  | { kind: 'device'; url: string; userCode?: string; expiresAt?: number }
+  | { kind: 'browser'; url: string; expiresAt?: number }
+  | { kind: 'loopback'; url: string; callbackUrl: string; state: string };
+// device/browser 只表示页面已打开；之后原 CLI 继续轮询、保存、校验。
+// loopback 远程回 {kind:'callback', state, code} 或 {kind:'callback', state, error}；
+// 本机回 {kind:'opened'}，原 CLI 自有 localhost listener 接受浏览器回调。
+const authorize = globalThis.__CINDY_NODE__?.bindAuthorization();
+if (!authorize) throw new Error('Authorization cards unavailable');
+const result = await authorize({ kind: 'device', url: verificationUri,
+  userCode, expiresAt: Date.now() + expiresInSeconds * 1000 });
+// 由现有 provider SDK/CLI 完成后续操作；RPC 成功必须晚于实际领取/保存/校验。
+\`\`\`
+
+\`browser\` 用于上游提供 HTTPS 确认页的扫码或浏览器确认，不传二维码图片、Cookie、
+账号密码或任意 CLI 命令。\`device\` 的 userCode 原样保留（1–32 位字母/数字/空格/连字符），
+不把私有 device_code 当用户码。expiresAt 是绝对毫秒时间且不能延长宿主五分钟上限。
+目标必须命中已安装插件的 OAuth origin / network hosts；GitHub/TapTap 继续用已审查的精确规则。
+
+\`loopback\` 只支持原 CLI 的 Authorization Code + PKCE S256：url 内唯一 state、redirect_uri、
+response_type=code、client_id、code_challenge 与 code_challenge_method=S256 必须完整；
+callbackUrl 必须与 redirect_uri 精确相等，且为 localhost、127.0.0.1 或 [::1] 的显式非特权
+端口 HTTP URL。不能改写上游登记的 redirect、降低 PKCE 或抢占别人端口。verifier 留在源 CLI；
+远程 callback 只经 bootstrap 私有 Promise 交给这一次可信 Node 调用，用原 provider SDK
+交换，不经 stdout/main.js/Agent。既有 CLI 若仅有固定监听器，需要在其受审查适配器内消费
+此私有结果；Host 不代发任意 HTTP。不要把 callback code 放到 argv、日志或 RPC 结果。
+
+普通 API Key/PAT 不走这个 Node 接口：沿用 \`network.secrets\` / \`node.secretBindings\`
+声明，由 Host 原密码卡收集，远程端支持时经签名输入桥直接写对应 vault key。插件不读取输入，
+不要求用户把密钥发给模型。保存只证明配置已落地，上游权限由实际业务调用核验。
+
+兼容入口继续保留：
+
+当第三方 CLI 使用「浏览器授权、发起端轮询」时，Node worker 可在**当前请求处理函数内**
+捕获 \`globalThis.__CINDY_NODE__.bindDeviceAuthorization()\` 返回的函数，再在 CLI 输出回调
+里调用 \`await authorize(httpsUrl)\`。同一请求只接受一个链接。Node 请求必须带来自当前
+\`tool-call\` 的 \`callId\`，并显式设置 \`cancelWithCall: true\`；宿主反查插件、任务和 owner，插件不能自选任务。无绑定时返回
+undefined；不支持时明确报错，远程流程不能回退到在执行设备开浏览器或把链接交给模型。
+
+宿主创建含真实授权域名的卡片，用户点击后由当前设备的可信 Host 打开链接。远程链接只走既有
+加密授权事务；这个 Promise 只代表浏览器已打开，**不代表登录完成**。CLI 仍在原设备轮询，
+凭据由原 CLI 保存；Node RPC 只有在真实领取/保存和检查完成后才返回成功。取消卡片/任务、
+断开控制端或事务到期会取消该 Node RPC 及其绑定子进程。不要把 URL、轮询码或 token 放进
+stdout 的 RPC 结果、通知、模型回复或错误；业务状态返回固定摘要。此卡片不改变 Host 的
+network setup/readiness，不能拿 CLI 的登录结果冒充宿主凭据配置已完成。
+
+## 4.13 会话上下文(sessionContext 能力)
 
 围着用户项目干活的插件(构建/检查/同步类)需要知道"现在是哪个会话、项目在哪个
-文件夹"。声明 \`session-context\` 槽后,agent 派活(tool-call)时主机把**宿主铸造**
+文件夹"。声明 \`"sessionContext": true\` 后,agent 派活(tool-call)时主机把**宿主铸造**
 的上下文注入 \`args.session_context\`:
 
 \`\`\`js
@@ -3148,23 +4478,23 @@ cindy.onHostMessage(async (msg) => {
   目录可能存在,写下去就是事故;
 - \`workdir_is_read_only\` 来自宿主对会话 permission / plan 状态的统一裁决;
   为 \`true\` 时只允许检查、列举等只读操作,不得初始化、构建或以其它方式修改 workdir;
-- 这只是"位置信息",不是文件访问权:读写仍走 fs 槽 / node 槽各自的守门;
-- 未声明本槽的插件,args 里永远没有 \`session_context\` 字段。
+- 这只是"位置信息",不是文件访问权:读写仍走 fs / node 各自的守门;
+- 未声明本能力的插件,args 里永远没有 \`session_context\` 字段。
 
-## 4.14 目录选择(pick 槽)
+## 4.14 目录选择(pick 能力)
 
-需要用户交一个文件夹进来(导入/同步/部署源)时,声明 \`pick\` 槽,经管子请主机
+需要用户交一个文件夹进来(导入/同步/部署源)时,声明 \`"pick": true\`,经管子请主机
 弹**系统级**选文件夹窗口——用户亲手选中即授权,取消则你什么都拿不到:
 
 \`\`\`js
 const picked = await cindy.pick({
   mode: 'directory',
   title: '选择要同步的项目父目录',   // 净化后随插件名一起展示(≤80 字)
-  deposit: true                       // 需要过户票据(上传用)时带;声明了 node 槽可省
+  deposit: true                       // 需要过户票据(上传用)时带;声明了 node 可省
 });
 if (picked.ok) {
   // picked.name        —— 所选目录名(展示用)
-  // picked.path        —— 绝对路径,仅声明了 node 槽的插件有(交给 Node 侧干活)
+  // picked.path        —— 绝对路径,仅声明了 node 的插件有(交给 Node 侧干活)
   // picked.dir_deposit —— 过户票据(同 ghost_call dir 通道;deposit:true 才有)
 }
 \`\`\`
@@ -3174,18 +4504,18 @@ if (picked.ok) {
 - 对话框由主机拼装并带你的插件名,\`title\` 只是用途说明片段,伪装不了主机文案;
 - 同一插件两次请求最小间隔 3 秒、全局同时只有一个选择框(超了回 RATE_LIMITED /
   BUSY);用户取消回 CANCELLED——**尊重取消,不要循环重弹**,那是骚扰;
-- 未声明 node 槽的插件必须 \`deposit: true\`(没有票据你什么都拿不到,请求会被拒);
+- 未声明 node 的插件必须 \`deposit: true\`(没有票据你什么都拿不到,请求会被拒);
   票据收集有上限(500 文件/单文件 50MB/总 500MB),超限会签发失败;
-- \`path\` 只发给声明了 node 槽的插件:Node 侧本就有用户级本机权限,给路径不扩权,
+- \`path\` 只发给声明了 node 的插件:Node 侧本就有用户级本机权限,给路径不扩权,
   价值是把"用户选了哪个目录"这一事实可信地交过去;
 - 用户每次亲选成功,主机自己也会记一笔「亲选目录台账」(每插件最近 8 条)——
   派活(§4.11.1)的 \`workingDir\` 转述只对台账里的目录放行。台账建立在真实
   点选上,你存在 /kv 里的路径不算数。
 
-## 4.15 面板预览(preview 槽)
+## 4.15 面板预览(preview 能力)
 
-部署预览、本地 dev server、控制台面板这类"给用户看个网页"的需求,声明 \`preview\`
-槽 + \`preview.hosts\` 白名单(见 §2),运行期请主机在右侧栏内置浏览器开标签:
+部署预览、本地 dev server、控制台面板这类"给用户看个网页"的需求,声明
+\`preview.hosts\` 白名单(见 §2),运行期请主机在右侧栏内置浏览器开标签:
 
 \`\`\`js
 const opened = await cindy.preview({
@@ -3199,20 +4529,32 @@ if (!opened.ok) console.warn(opened.errorCode, opened.message);
 
 - URL 必须命中装入时钉死的 \`preview.hosts\` 白名单:只收 https(http 仅限
   localhost / 127.0.0.1 本地开发),不收 URL 内嵌凭证;范围外回 URL_NOT_ALLOWED,
-  **改白名单只能发新版本重新过装入确认**;
+  **改白名单只能发新版本；市场安装会自动更新，本地包需重新导入新版**;
 - 同一插件两次打开最小间隔 5 秒(RATE_LIMITED)——预览是"结果亮相",不是刷屏
   通道;
 - 每次打开,宿主都会弹带你身份头的提示("xxx 打开了一个预览页面"),用户永远
   知道页面是谁开的;
 - 标签开在用户自己的右侧栏浏览器里,关不关、看不看由用户决定。
 
-## 4.16 捆绑 Agent Skills(skill 槽)
+## 4.16 捆绑 Agent Skills(skill 能力)
 
-想让插件"自带一份教 Agent 怎么用好自己的说明书"(或任何领域技能),把技能目录
-随包携带并声明 \`skill\` 槽 + \`skill.items\` 详单(见 §2)。装入且启用后,主机把
-每个技能目录链接进共享技能根 \`~/.agents/skills/<插件id>--<技能name>\`(Windows 用
-junction),Claude Code 与 Codex 都能自动发现——不复制字节,插件更新技能跟着更新,
-停用/卸载即撤链。
+插件随包 Skill **当前已停止新增,未来计划全部废弃**。新插件不要声明 \`skill\` 字段
+或新增 \`skill.items\`。迁移时按职责映射,不是按篇幅搬运:
+
+- Skill frontmatter 的 \`name + description\` 所承担的身份/召回作用,对标系统提示词区
+  插件花名册的身份与 \`recall\`;插件侧用 \`name\` + \`whenToUse\` 提供这层信息;
+- \`manual.items\` 只是插件容器级一级目录,不对标 Skill frontmatter;
+- \`MANUAL.md\` 与深层 Markdown 承接 Skill 正文、references、复杂工作流与深入用法,
+  只经 \`ghost_manual\` tool-result 按需进入上下文,不进入生产 system/developer prompt;
+- 单工具局部契约下沉到工具/参数 description;当前类别内贴近实时工具集合的动态规则与参数
+  下沉到 \`list_tools(category)\` 的工具说明和 \`result.rules\`;跨工具/跨类别编排与长期
+  稳定原则进入 Manual。Manual 与 \`list_tools\` 用完整调用互相指路,不复制同一段规则。
+
+以下只解释存量包的兼容形态,用于维护与迁移,**不要照抄到新插件**。存量插件装入且
+启用后,主机把每个技能目录投影到 Cindy 的账号隔离目录,分别接入 Claude Code、
+Codex、Pi,不写入用户的全局技能目录;停用/卸载即撤销这些入口。
+已知企业 namespace 的实例用 \`_ns__<namespace>__<插件id>--<技能name>\`，
+root 和存量未标记 namespace 的实例继续沿用旧链接名。
 
 目录形态(每条 item 一个目录,内必须有 SKILL.md):
 
@@ -3229,43 +4571,27 @@ my-ghost/
 SKILL.md 硬规则(打包与装入双侧强制,任一不满足直接拒):
 
 - frontmatter 的 \`name\` / \`description\` 必须与 \`skill.items\` 声明**逐字一致**
-  ——装入确认框展示的是清单声明,Agent 读到的是 SKILL.md,两者必须是同一份事实;
+  ——插件详情展示的是清单声明,Agent 读到的是 SKILL.md,两者必须是同一份事实;
 - \`name\`:小写字母/数字加单连字符分段(禁首尾/连续连字符),≤64 字符;
 - SKILL.md 单文件 ≤64KB;items 最多 4 条。
 
-正文开头建议写一段**环境守卫**(非强制,但强烈建议):技能挂进的是**共享**技能根,
-用户在 Cindy 之外直接跑 Claude Code / Codex 时同样会看到你的技能,而那里没有插件
-通道。Agent 读完正文自然会发现调不动 \`ghost_call\`,但很容易转头用 shell 自己实现
-一个"看起来像"的替代品——这段守卫拦的就是这个。放在 H1 标题之后的第一段
-(Agent 从头读正文):
-
-\`\`\`markdown
-> **本技能属于 Cindy 插件 \`<插件 id>\`:动手前先看工具列表,没有名字含 \`ghost_call\`
-> 的工具就说明不在 Cindy 中,本技能不可用。** 此时不要执行任何步骤,也不要用 shell
-> 或别的工具自己实现一遍——能力在插件的运行时里,替代品做不出等价产出。直接告诉
-> 用户「这个技能需要在 Cindy 客户端里使用」,然后停下。
-\`\`\`
-
-- 判据只写"名字含 \`ghost_call\`",**不要写某个引擎的工具名全称**:Claude Code 与
-  Codex 的 MCP 工具名前缀不同,写死一边会让另一边误判成"不在 Cindy";
-- 写在正文里,**不要塞进 frontmatter \`description\`**:description 每个会话都常驻
-  上下文,正文只在技能被激活后才读,守卫写正文不花常驻预算;
-- 一个插件多条 item 时每份 SKILL.md 各写各的(技能之间互相看不见);
-- 技能正文是英文时照译一份,别中英混排。
+这些入口仅供 Cindy 管理的 Agent 会话使用,不会自动暴露给外部 CLI,无需为旧的
+全局目录发现方式添加环境守卫。技能如依赖插件工具,仍应说明实际依赖;调用时工具
+不可用就报告缺失,不得据此假定已获得其它能力或权限。
 
 信任与作用域(如实告知用户,也请作者自重):
 
 - 技能指令由**主 Agent 以用户全部权限执行**,对所有项目、所有会话生效,
-  **不受插件沙箱约束**——这是十八个卡槽里信任面最高的能力,装入确认框会把
+  **不受插件沙箱约束**——这是插件能力里信任面最高的一档,插件详情会把
   每个技能置顶逐条列出;
 - 技能跟随插件的**全局**启用状态:仅在某个工作目录停用插件**不会**隐藏技能,
   只有全局停用或卸载才撤链(本期只有全局作用域);
 - \`skill.items\` 的字段不参与 locales 本地化(必须与 SKILL.md 逐字一致,而
   SKILL.md 只有一份)。
-## 4.17 创建工作区会话(workspace 槽)
+## 4.17 创建工作区会话(workspace 能力)
 
 需要把某个项目目录变成侧边栏里的会话入口("打开项目"/仓库列表这类场景)时,
-声明 \`workspace\` 槽,经管子请主机**确保**该目录下存在一个会话:目录下已有
+声明 \`"workspace": true\`,经管子请主机**确保**该目录下存在一个会话:目录下已有
 active 会话直接复用(created:false),没有才创建一个空会话,创建/命中后显示在
 侧边栏对应工作区分组里。
 
@@ -3309,11 +4635,11 @@ const ensured = await cindy.workspace({
 - 同一插件两次请求最小间隔 3 秒、全局同时只有一个窗口/确认卡在场(RATE_LIMITED /
   BUSY);
 - 创建的是**空会话**:不拉起 agent、不发消息、不自动开始任何任务;要让 Agent
-  立即干活请配合 agent 槽(§4.11)。
+  立即干活请配合 agent 能力(§4.11)。
 
-## 4.18 确认弹窗(confirm 槽)
+## 4.18 确认弹窗(confirm 能力)
 
-动手之前要用户点头(切分支、覆盖文件、发不可撤回的东西)时,声明 \`confirm\` 槽,
+动手之前要用户点头(切分支、覆盖文件、发不可撤回的东西)时,声明 \`"confirm": true\`,
 经管子请主机弹一个**和 Cindy 自己一模一样**的确认框,并拿回用户的真实点击:
 
 \`\`\`js
@@ -3348,66 +4674,73 @@ if (r.ok && r.confirmed) {
   直接停用你;
 - 没有「下次不再提示」,也没有三选一和复选框:确认的价值就在于每次都是真点击,
   给了"永久免问"等于没确认;
-- **桌面独占**:本机弹窗不进远程/手机版通道(平台白名单里属永不放行类别)。手机端
-  或远程控制端跑到这里会拿到失败分档,你的逻辑要能接住(当"没同意"处理);
+- **按来源呈现**:未带移动来源时仍使用桌面确认；有效 \`mobilePageId\` 请求由手机 Host
+  原生确认。失效来源不得回退桌面弹窗，按“没同意”处理；不开放通用远程弹窗 IPC;
 - 真正的守门仍在你自己手里:确认只是问一句,**该校验的前置条件(文件在不在、
   工作区干不干净)确认前后都要自己再查一遍**——用户点确认和你真动手之间,
   世界可能已经变了。
 
-## 4.19 内置 iOS 模拟器(ios-simulator 槽)
+## 4.20 一级主视图(mainView 能力)
 
-要给插件提供内置 iOS 模拟器的状态入口或工作流面板时,声明 \`ios-simulator\` 槽。
-电子脑只能读取**当前台前任务**的公开状态,并请求主机打开 Cindy 自己的模拟器面板:
+插件需要一个从 Cindy 一级侧边栏进入的完整页面时，直接声明 \`mainView\`：
 
-标准产品形态只需 \`skill + ios-simulator\`:Host 会在任务右侧栏提供手动入口,
-Agent 通过 Skill 调 Host MCP。不要为了重复同一状态再声明 \`panel\`;插件停靠面板的关闭
-语义是停用整份插件,不适合作为模拟器 viewer 的替身。只有确实存在 Host viewer 没有的独立
-工作流 UI 时才额外声明 panel。
-
-声明 \`ios-simulator\` 时必须同时声明 \`minCindyVersion\`,取首次提供该 Host 能力的 Cindy
-正式版本。它用于让旧版 Host 把插件识别为“需要更新 Cindy”,而不是“插件非法”;不要填写
-当前开发环境版本,也不要用它替代下面的运行时 capability 检查。
-
-\`\`\`js
-const caps = await cindy.iosSimulator.request({ kind: 'capabilities' });
-if (caps.ok && caps.kind === 'capabilities') {
-  // caps.apiVersion === 1
-  // caps.capabilities.pluginVideo === false
-  // caps.capabilities.pluginInput === false
+\`\`\`json
+{
+  "schemaVersion": 3,
+  "minCindyVersion": "1.2.3",
+  "mainView": {
+    "title": "工作台",
+    "icon": "puzzle",
+    "html": "main-view.html"
+  }
 }
-
-const current = await cindy.iosSimulator.request({ kind: 'status' });
-if (current.ok) {
-  const instances = current.status.instances;
-  const routeStatuses = current.status.routeStatuses || [];
-}
-
-const opened = await cindy.iosSimulator.request({
-  kind: 'open-panel',
-  // 可选:只能填上面 status 返回、且仍属于当前任务的 instanceId
-  instanceId: current.ok ? current.status.instances[0]?.instanceId : undefined
-});
 \`\`\`
 
-规则与红线:
+- \`mainView.html\` 必须是包内安全相对路径且文件真实存在；\`title\` 可省略，省略时
+  回退插件 \`name\`。声明过基础 title 后，locale 文件可用
+  \`"mainView": { "title": "Workspace" }\` 翻译；没有基础 title 时不要声明该翻译；
+- \`mainView.icon\` 可省略，省略时使用 \`puzzle\`。它只控制主视图的侧边栏入口，不会
+  替代或修改根级 \`icon\` 品牌图片。可用值与 Cindy 系统图标名完全一致：
+  \`puzzle\`、\`globe\`、\`code\`、\`folder\`、\`database\`、\`chart-column\`、
+  \`image\`、\`message-circle\`、\`calendar-days\`；不接受别名、任意图标名或图片路径；
+- \`mainView\` 与 \`panel\` 是两种独立 UI 贡献项。可以让两者指向同一 HTML，但必须分别
+  声明；主视图不接受 position、宽度或 systemButtons；
+- 插件批准并启用后，入口默认显示。用户可以在插件详情关闭“显示在侧边栏”；这只隐藏
+  导航入口，不停用插件，也不关闭 tool、network、panel 或后台能力；
+- 主视图与 panel 共用同一 Ghost WebView 沙箱：零 Node、零通用 preload、每插件专属
+  partition、CSP 和导航守门不变。\`mainView\` 本身不附赠联网、文件、凭证或其它能力；
+- 页面需要电子脑逻辑时仍先 \`fetch('/wake')\`，通信和媒体协议与 §5 完全相同。插件停用、
+  卸载或失去批准后，Host 会卸载页面并退出该路由。
 
-- 请求里**没有 sessionId**。台前任务由 Host 现查;自造 \`sessionId\`、其它未知字段
-  或跨任务 instanceId 都会拒绝。切到非任务页、远程/SSH 任务或任务失效时 fail closed;
-- \`status\` 只返回环境是否就绪、可用设备数量、公开实例状态和当前 stream/input 路线。
-  它不续租、不启动 driver,也不返回 UDID、路径、授权、诊断或 ownership 信息;
-- 本槽不是模拟器运行时:WDA、Native Sidecar、H.264、Native HID、生命周期、恢复与
-  fallback 仍由 Cindy Host 独占。插件拿不到视频帧、viewer lease、触控入口、进程句柄、
-  artifact 路径或 Xcode 私有诊断;
-- \`open-panel\` 只打开/聚焦 Host 既有面板。没有绑定实例时可省略 instanceId,让用户
-  在 Host 面板里选择设备;连续请求会限速;
-- panel.html 保持零桥。面板要使用本槽时,按 §5 先 \`/wake\`,再用同源
-  BroadcastChannel 把请求交给 main.js,由 main.js 调 \`cindy.iosSimulator.request\`;
-- Agent 构建、安装、启动与 UI 操作继续调用 Host 注册的 \`cindy_ios_simulator\` MCP。
-  插件 Skill 可以编排这套工作流,但不要用 shell 打开外部 Simulator.app,也不要重复
-  打包一份 WDA/Sidecar;
-- 本能力仅存在于带该槽的 Cindy Desktop。当前 Host 遇到未来 schema 或未知 capability
-  slot 时会把包识别为“需要更新 Cindy”,而不是误报插件非法。已发布的旧 Host 无法追改;
-  Skill 在 MCP 不存在时仍必须引导用户升级 Cindy,不要降级成 shell 或 Node 替代实现。
+## 4.21 为插件添加推荐任务（可选内容）
+
+在 v3 ghost.json 顶层添加 \`recommendations\` 数组，每条包含稳定 \`id\`、短标题
+\`label\` 和完整 \`prompt\`。最多 24 条，id 为 1–64 位小写字母、数字或连字符，
+label 为 1–120 字符，prompt 为 1–8000 字符；整份列表 UTF-8 不超过 64 KiB。
+可选 \`locales\` 按 en / zh-CN / zh-TW / ja / ko 提供 \`{label,prompt}\`，
+缺当前语言时使用 en，再回退条目自身。不要放秘密或其它账号的内容。
+宿主在生成首页候选时校验此列表，不合格的列表不展示，但不影响插件安装、批准和运行。
+v2 清单继续忽略此扩展字段；运行时更新始终严格校验，不合格的更新不会替换原列表。
+
+\`\`\`json
+{"recommendations":[{"id":"daily-mail","label":"整理今天需要处理的邮件","prompt":"整理今天需要我处理的邮件，列出待办和原文中的截止时间。先给清单，不发送或删除邮件。"}]}
+\`\`\`
+
+运行中的电子脑可调用 \`await cindy.recommendations(items)\`，等价于
+\`cindy.send({type:'recommendations-update',items})\`。Host 从真实沙箱绑定取得身份，
+只替换调用插件自己的完整推荐任务列表；返回 \`{ok:true}\` 或 \`{ok:false,errorCode}\`。
+这不是能力 slot，不执行任务、不授予新权限。面板仍为零桥，需要更新时经同源通信
+交给电子脑。Node 子程序同样由自己的 main.js 代转管子。
+
+运行时列表按当前用户保存，重启保留；卸载清除，停用保留。空数组明确撤下全部推荐，
+不会退回初始推荐任务列表；不提供此字段的旧插件继续正常使用。首页打开或换批时读取最新列表，
+不为获取推荐任务启动所有插件；已显示的一批保持稳定，点击前重新核对是否撤回或改变。
+
+Cindy 统一归类、随机选择与排序，同批每个场景和每个插件最多一条。增加推荐任务数量不会增加
+插件的抽取机会。若只想提供某个场景的任务，替换为仅含该任务的列表即可，但不能指定
+首页位置或优先级。用户主动首装优先，更新包或替换推荐任务列表不算新安装，首次使用后回到普通排序。
+点击推荐后才将 prompt 作为普通用户消息发送，绝不进入系统提示词。未安装/未启用时
+进入已有插件详情，由用户安装或启用后继续；账号配置仍复用 Host Setup 的原调用接续。
 
 ## 5. 面板(panel.html/css/js)
 
@@ -3416,8 +4749,9 @@ const opened = await cindy.iosSimulator.request({
   用户想放右边可自己拖拽换位);\`"tab"\` = **插件页内的独占面板**——由插件页
   自己承载(不进右侧栏页签容器):用户在插件页点你这张卡的「使用」按钮打开,
   同一时刻至多一个,**用户离开插件页即关闭卸载**(面板收束,2026-08-02 定案:
-  插件面板不再常驻右侧栏干扰其它会话)。装入时勾选「立即开启并打开面板」会
-  在装完后进入插件页并打开你的面板;不勾选则由用户之后自己从插件页点「使用」。
+  插件面板不再常驻右侧栏干扰其它会话)。从插件页导入 tab 型插件后，宿主会
+  直接启用并打开它的面板；从拖入或双击等其它入口安装后，用户可再从
+  插件页点「使用」打开。
   停用/卸载插件同样立即关闭面板。页签形态没有拖缝宽度语义,声明 \`minWidth\` /
   \`defaultFraction\` 会被拒装。两种形态的面板代码完全一样(同一 panel.html,
   供片/主题/媒体规则不变),只是宿主容器不同;此形态请把界面做成自适应宽度,
@@ -3425,13 +4759,13 @@ const opened = await cindy.iosSimulator.request({
   自己持久化(见 §4.6 的偏好存储);
 - 停靠形态的**标题条(标准头)由主机绘制**:标题(\`panel.title\`)+ 一批系统
   按钮(当前:「撑满内容区」、「在独立窗口中打开」——用户可把你的面板抽进
-  自己的 OS 窗口,关窗/合并即回停靠原位——以及「最小化为浮动气泡」——用户
-  可把面板收成一枚可拖动的圆形气泡悬浮在主窗最上层,点击气泡即回停靠原位,
-  气泡位置与最小化状态重启保留;三者面板代码全程零感知;后续新增的系统按钮
+  自己的 OS 窗口,关窗/合并即回停靠原位——以及「最小化面板」——用户选择的
+  恢复入口可能是一枚悬浮在主窗最上层的可拖动圆形气泡,也可能是左侧栏入口;
+  最小化状态重启保留;三者面板代码全程零感知;后续新增的系统按钮
   也长在这里)。你的 panel.html 只画标题条以下的部分,**不要自己再画一条
   标题栏**。不想要某颗系统按钮时在身份卡声明
   \`"systemButtons": { "maximize": false, "detach": false, "minimize": false }\`
-  逐个关闭(缺省全开;标题条本体关不掉;未知键拒装;\`position:"tab"\` 由插件页
+  逐个关闭(缺省全开;标题条本体关不掉;未知键保留但不生效;\`position:"tab"\` 由插件页
   自绘头,没有这套标准头,声明本字段拒装);
 - 与电子脑同源,用 \`BroadcastChannel('<自定名>')\` 通信(电子脑发,面板收);
 - 取自己的媒体:\`cindy-ghost://<id>/media/<指纹><后缀>\`(主机查账验归属,别人的图 404);
@@ -3469,14 +4803,16 @@ const opened = await cindy.iosSimulator.request({
 
 ## 6. 沙箱红线(平台结构保证,写了也没用)
 
-- **本节说的是 main.js 浏览器电子脑**:它无文件系统、无 Node API、默认无网络——
-  即使另申请 node 槽，Node 也在独立进程里，只能经 §4.12 的 stdio 与 main.js 交换数据，
+- **本节说的是 main.js 浏览器电子脑**:它无文件系统、无 Node API、无通用网络直连
+  (所有插件页面共有的 HTTPS 图片请求是唯一例外)——
+  即使另声明 node，Node 也在独立进程里，只能经 §4.12 的 stdio 与 main.js 交换数据，
   不会把 require/process 等能力注入 main.js。想用 AI/出图走 cindy-request 求主机代办,
-  想访问自带服务走 network 槽经主机代发(仅限详单白名单域名,见 §4.7),想落盘
-  走 fs 槽请主机代写(仅限三档目的地,见 §4.10),沙箱内直连(fetch/XHR/
-  WebSocket)与直接读写磁盘永远不存在,声明了槽也一样——槽给的是"请主机
-  代办"的资格,不是能力本身;
-- 保险库里的凭证明文永不进沙箱:network 槽的 key 由主机保管注入,你的代码
+  随包代码与 CLI 走 §4.12 的 Node 工作进程，网络走 \`cindy.fetch\`，落盘走 \`cindy.fs\`；
+  是否需要 manifest 声明取决于是 Agent 在途调用还是插件自主调用，见 §4.2、
+  §4.7 和 §4.10。除 HTTPS 图片外,沙箱内直连(fetch/XHR/
+  WebSocket)与直接读写磁盘永远不存在,声明字段给的是"请主机代办"的资格,
+  不是能力本身;
+- 保险库里的凭证明文永不进沙箱:network 的 key 由主机保管注入,你的代码
   读不回(主机 Setup 卡直接交保险库；settingsHtml 收单时明文只在录入瞬间路过
   你的页面,经 /secrets 交给主机即焚,之后同样拿不到;状态回查最多附尾 4 位
   指纹,重建不出值);
@@ -3503,13 +4839,15 @@ const opened = await cindy.iosSimulator.request({
   Create a polished square app icon for a Cindy plugin named "{{name}}". Purpose: {{one-sentence purpose}}. Show one clear, original visual metaphor for that purpose. Use a clean geometric composition, a restrained natural color palette, high contrast, and a centered subject with generous safe padding so it remains readable at 32–48 px. Use one symbol only on a simple solid or transparent background. No text, letters, numbers, UI mockups, scenes, baked-in rounded corners, trademarks, copied brand shapes, watermarks, heavy gradients, inner shadows, or photorealism. Output a 1024×1024 PNG.
   \`\`\`
 
-  只尝试一次。图片能力不可用、超时或失败时不要重试，直接调用
-  \`ghost_forge_pack({ dir })\`，保留占位图/宿主默认图标继续打包，不让图标阻塞用户。
+  只尝试一次。图片能力不可用、超时或失败时不要重试，保留占位图/宿主默认图标继续。
+  缺省调用 \`ghost_forge_pack({ dir })\`；只有用户已明确要求当前 Agent 直接安装时，才改调
+  \`ghost_forge_install({ dir })\`，不要让图标阻塞用户。
   生成成功后，从图片工具结果的 \`xdt_image_url\` 取单张地址；如果结果只有
   \`xdt_image_urls\`，取数组第一项(例如 \`const selectedImageUrl = result.xdt_image_url ?? result.xdt_image_urls?.[0]\`)。
-  仅当它是 \`cindy-media://\` 地址时，才把它原样交给
-  \`ghost_forge_pack({ dir, icon_source: selectedImageUrl })\`；主机会转成 1024×1024 PNG 并
-  嵌入安装包。icon_source 处理失败时 pack 也会自动回退默认图标，不要再发起第二次生成。
+  仅当它是 \`cindy-media://\` 地址时，才把它原样交给本次要调用的终点工具：缺省为
+  \`ghost_forge_pack({ dir, icon_source: selectedImageUrl })\`；用户已明确要求直接安装时为
+  \`ghost_forge_install({ dir, icon_source: selectedImageUrl })\`。主机会转成 1024×1024 PNG
+  并嵌入安装包；处理失败时两种工具都会回退默认图标，不要再发起第二次生成。
   如果源码根目录已有 \`cindy-signatures.json\`，pack 会保留原图标和原签名，不做 AI
   图标覆盖；任何文件变更都必须交给发布流水线重新签名，不能静默降级信任等级。
 - **上传图片**：让用户提供图片，保存到 \`assets/icon.png\`，并同步把
@@ -3524,18 +4862,47 @@ const opened = await cindy.iosSimulator.request({
 
 ### 7.2 打包、安装与验证
 
-1. 新插件先调 \`ghost_forge_scaffold\` 生成骨架，或把已有源码放在用户工作目录下的
-   一个文件夹里(如 \`my-ghost/\`)；脚手架目标必须是新目录，绝不覆盖已有文件；
-2. 调 \`ghost_forge_pack({ dir: '<绝对路径>' })\`——校验 + 打包 + 弹装入确认框;
+1. 新插件先调 \`ghost_forge_scaffold\` 生成骨架，或指向已有源码目录(如 \`my-ghost/\`)；
+   脚手架目标必须是新目录，绝不覆盖已有文件，其父目录必须已存在且是普通目录；
+   也不能落在已安装插件目录或 Host 状态目录内(会被拒，理由同下一条)；
+   **Forge 源码必须是独立作者目录，不能是已安装插件或 Host 状态目录**。
+   会话工作目录内直接建/打包；工作目录外(例如相邻 worktree)走当前会话权限:
+   本地 Full Access 自动放行,Auto 交审阅,Ask 向用户确认,远程或无法核验的会话仍拒绝。
+   已安装插件目录以及 Host 管理的状态目录都不是源码区，禁止直接修改、打包或用路径别名绕过；
+   若要继续开发已有插件，先把源码复制/迁出到独立作者目录，再从该副本制作;
+2. 调 \`ghost_forge_pack({ dir: '<绝对路径>' })\`——只做校验和打包，不安装或更新插件；
    产物落在源码目录里(\`<id>-<version>.cindy\`,同版本覆盖,下次打包自动跳过);
-3. **告知用户去点弹窗**(装入默认沉睡,提醒用户勾"立即开启"或到主界面侧边栏「插件」中唤醒);
-4. 改代码后重新 pack:同 id 会弹"更新 vX → vY",唤醒状态与面板位置自动保留
-   (记得 bump ghost.json 的 version);
-5. 验证:让用户 \`$<command> <内容>\` 试一单,看聊天图卡/面板是否符合预期。
+   macOS / Linux 源文件的普通 Unix 权限会原样进入包(特殊位会剥除)，所以随包本机
+   可执行程序必须在打包前就设好执行位(例如 \`chmod 755 path/to/program\`)，不要靠
+   文件扩展名或 \`bin/\` 目录让宿主猜测;
+   若返回 \`SOURCE_IS_INSTALLED_PLUGIN\`,不要重试或换大小写、软链接、junction 绕过,
+   按上一步迁出源码后再打包;未获会话权限时也可能返回 \`SOURCE_OUTSIDE_WORKDIR\`;
+3. 用户明确要求当前 Agent 安装或更新这份源码时，调用
+   \`ghost_forge_install({ dir: '<绝对路径>' })\`。它会重新校验并打包当前源码，再安装这次
+   产生的确切包：首次安装、以及权限比已装版本变多的更新，会先在任务里弹确认卡列出权限，
+   用户允许后才落位；用户拒绝返回 \`MUTATION_CANCELLED\`，不要重试，除非用户再次要求。
+   首次安装会启用，同 id 已安装时原位更新并保留启用状态、配置、
+   数据与面板位置，同版本也可覆盖。同来源更新延续旧数据；从市场等不同来源切换到 Forge
+   时旧账号、密钥及数据隔离保留，新来源需要重新连接。不要因为 scaffold 或 pack 成功就自动调用本工具。
+   企业身份下若清单声明 \`source:"oidc-token"\`，提交安装前会展示插件名、id 与精确请求
+   域名，并要求用户手输相同 id；取消不会安装。个人与企业身份下的明确 Forge 安装都会标记为
+   作者本地自测并受组织默认插件自动接管保护；但 Connection JWT 资格仍只来自当前企业身份、
+   组织前缀与 OIDC 窄确认，个人身份下的 Forge 安装绝不会仅凭自测标记取得 Broker 或 Connection 权限，
+   普通手动导入也不取得这项资格。
+   本地安装另有一条临时例外，只对 root 实例生效，见 §4.7：仅 \`ghostId\` 精确等于 \`mivo-canvas\`、namespace 为 null 或尚未确认，且精确 oidc-token host 仅为 \`mivo-canvas.dsworks.cn\` 的组织成员本地安装可解析 audience；
+4. 安装后再让用户 \`$<command> <内容>\` 试一单，看聊天图卡/面板是否符合预期。
+
+企业组织成员需要发布时，调用 \`ghost_forge_pack({ dir: '<绝对路径>', intent: 'publish' })\`。
+该意图不会弹装入确认，也不会返回可供自行拼接的 Host 路径；它只返回绑定本次包 id 与
+完整字节的一次性 \`publishToken\`。随后把该票据传给
+\`ghost_forge_publish({ token: '<publishToken>' })\`，工具会立即返回 \`transferId\`，发布在
+后台继续；用 \`ghost_forge_publish_status\` 查询传输与审核状态。发布确认屏仍由用户明确
+确认。成员发布仅企业组织成员可用，个人账号不可用；票据过期、换账号或重复使用后须重新
+以 publish intent 打包，不能改传文件路径绕过。
 
 ## 8. 发布签名与审核
 
-\`ghost_forge_pack\` 默认只负责本地制作和试装，生成的是**未签名包**。未签名不等于
+\`ghost_forge_pack\` 默认只负责本地校验和打包，生成的是**未签名包**。未签名不等于
 一定有问题，用户仍可安装，但界面会明确显示“未验证”。正式对外发布时由商店或发布
 流水线在包根加入 \`cindy-signatures.json\`，不要让当前对话里的 Agent 代管正式私钥。
 
@@ -3563,7 +4930,8 @@ const opened = await cindy.iosSimulator.request({
 
 ### 8.1 发布到官方插件仓的额外门禁
 
-要提交到官方插件仓 \`makecindy/cindy-official-plugins\` 的插件,除本手册的打包/装入
+官方插件仓:\`github.com/makecindy/cindy-official-plugins\`(公开,合入即自动上架
+插件市场)。要提交到该仓的插件,除本手册的打包/装入
 校验外还有仓级 CI 硬门禁,过不了整次发布被拦:
 
 - **四语言 locale 缺一不可**:\`locales\` 必须**恰好**包含 \`zh-CN\` / \`en\` / \`ja\` /
@@ -3575,23 +4943,35 @@ const opened = await cindy.iosSimulator.request({
 - 其余要求(目录命名、审核流程等)以该仓根部的 \`CONTRIBUTING.md\` 为准,提交前
   在仓内跑一遍 \`node --test .tests/\` 自查。
 
-## 9. 常见拒装原因速查
+## 9. 兼容性与常见拒装原因
+
+插件开发不应受当前客户端能力注册进度限制。未知顶层能力、对象扩展字段、能力动作
+与订阅事件保留为声明，不因此阻断发布或安装，也不因此获得执行权限。
+插件必须检查所需接口是否存在并处理不支持响应：可选功能局部降级，必要能力缺失时
+提示升级，不影响其它可用功能；权限拒绝、账号失效和网络错误不能当作不支持绕过。
+\`minCindyVersion\` 是兼容声明与分发依据，不是运行时能力探测；手动安装、旧版
+或其它分发渠道仍可能让不适配客户端安装插件，不能省略上述兼容处理。
+旧客户端已有拒装逻辑无法追改；整体协议格式变化仍受 schemaVersion 校验。
 
 - \`id\` 不合法(大写/下划线/超长)· 声明了 command 但没有 tools · command 与已装意识撞名
   · **未声明 command**:不拒装,但插件页"使用"按钮禁用,用户无法通过插件页一键启用
     或用 $command 点名;AI 工具调用不受影响(见 §2 说明)
-- 声明了 tool 槽但缺 tools(或反之)· panel.html 声明了但 slots 没有 "panel"
+- \`tools\` 为空 · panel 详单缺少实际形态(既没有 html，也不是有效的 tab/停靠配置)
+- mainView.html 文件缺失/路径不安全、icon 不在系统图标白名单
 - settingsHtml 路径不合法/文件不在包里 · settingsHeight 越界(160–800)或没配 settingsHtml 单独声明
-- panel.systemButtons 格式错(不是对象、未知键、值非布尔,或 position:"tab" 时声明——插件页内面板没有标准头)
-- keywords(已废弃字段,旧包兼容保留,新意识别写)有单字词 · kind 写了但不是 "chip"(可省略) · schemaVersion 不是 2
-- cindy 详单格式错(未知类目/动作、空数组、有详单但 slots 没有 "cindy")
-- agent 详单格式错(有详单但 slots 没有 "agent"，或 background / errand / schedule 都不是 true；只需点击触发时应省略 agent 字段)
-- node 详单格式错(槽/详单不成对、entry 不是包内 CommonJS .js/.cjs、protocol 不在 json-rpc-stdio / mcp-stdio、
-  写了 command/args/shell/env、resident 又写 idleTimeoutSeconds)
-- id 用了 \`cindy-\` / \`filo-\` / \`xd-\` 前缀(官方保留,正式版用户通道拒装;给自己的意识换个前缀)
+- panel.systemButtons 格式错(不是对象、已知键的值非布尔,或 position:"tab" 时声明——插件页内面板没有标准头)
+- keywords(已废弃字段,旧包兼容保留,新意识别写)有单字词 · kind 写了但不是 "chip"(可省略) · schemaVersion 不是 3 · 缺 minCindyVersion
+- cindy 详单格式错(已知类目的动作不是合法标识、空数组或重复动作)
+- agent 详单格式错(background / errand / schedule 存在但不是 true；基础点击触发请写 \`agent: {}\`)
+  · \`hiddenTasks\` 不是布尔值,或写了 \`hiddenTasks: true\` 却没有 \`tasks: true\`
+- node 详单格式错(entry 不是包内 CommonJS .js/.cjs、protocol 不在 json-rpc-stdio / mcp-stdio、
+  resident 又写 idleTimeoutSeconds)；未知 command/args/shell/env 只保留，不传给进程启动器
+- id 用了 \`cindy-\` 前缀(平台保留,正式版用户通道拒装)。\`filo-\` / \`xd-\` 只是普通名称，不授予官方资格
+- ghost.json 声明了 namespace(包括 null)。namespace 由可信交付及 Host 安装事实决定，作者不能自报
+- 企业发布遵循当前服务端准入。S1 或 S2 尚未开启时仍保留旧认领和前缀命名流程，不能把收到 namespace 当作自由命名已开放
 - network 详单格式错(hosts 缺失/裸 TLD/IP/带端口/通配不在最左、secret 缺 inject、
   inject.format 没有 {value} 占位、inject.header 用了 Host/Cookie 等协议关键头、
-  inject.hosts 不是 hosts 声明条目的子集、有详单但 slots 没有 "network"、
+  inject.hosts 不是 hosts 声明条目的子集、
   secret.source 不是 "user"/"login-email"/"oauth"/"gh-cli"/"oidc-token"、
   source:"login-email" 或 source:"oidc-token" 声明了 url 或 exchange、
   source:"gh-cli" 不是官方 cindy-github、注入形态不是 api.github.com 的
@@ -3602,9 +4982,9 @@ const opened = await cindy.iosSimulator.request({
 - oauth 声明格式错(source:"oauth" 缺 oauth 详单或反之、与 exchange 同时声明(互斥)、
   authorizeUrl/tokenUrl 非 https 或域名不在 hosts 白名单、scopes 条目含空白/重复、
   extraAuthorizeParams 覆写保留参数(client_id/redirect_uri/state/code_challenge 等)、
-  redirectPort 不是 1024–65535 整数、tokenBroker 与 clientSecret 同时声明、
+  redirectPort 不是 1024–65535 整数、tokenBroker 没同时声明 redirectPort 或与 clientSecret 同时声明、
   clientIdAlternatives 没与 clientId + tokenBroker 成套或包含重复/非法 ID、
-  非官方前缀 id 声明了 tokenBroker(仅第一方可用)、brokerBounce 没和 tokenBroker +
+  当前安装来源或组织身份无权使用 tokenBroker、brokerBounce 没和 tokenBroker +
   redirectPort 成套声明或路径不是 / 开头的站内绝对路径)
 - connections 声明格式错(超 2 条、key 撞 secrets 的 key 或声明内重复、label 缺失/超 64 字、
   inject 缺失/format 没有 {value}/header 用了协议关键头、**声明了 inject.hosts**(连接

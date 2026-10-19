@@ -1,3 +1,7 @@
+import { hasRichAnswer, richAnswerText } from '@cindy/maker-shared/rich-answer';
+import { BotLearningFooter } from '@/features/bots/BotLearningFooter';
+import { BotSessionTaskResultCard } from '@/features/bots/BotSessionTaskResultCard';
+import { botTaskResultKey, type BotCollaborationMeta } from '@cindy/maker-shared/botCollaboration';
 /**
  * AssistantMessage
  * ---------------------------------------------------------------------------
@@ -36,12 +40,13 @@
  *   直到 finally — 那个体验更差, 没有借鉴。
  */
 
+import { CHAT_BODY_CLASS } from './chatChrome';
 import { memo, useCallback, useMemo, useState, useSyncExternalStore } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Loader2, TriangleAlert } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { formatModelShortLabel } from '@/lib/modelShortLabel';
-import { stripGoalVerdictBlock } from '@/lib/goalVerdict';
+import { stripGoalVerdictBlock } from '@cindy/maker-shared/goal-verdict';
 import { getGhostCardEntry, subscribeGhostCards } from '@/cindy-brain/ghostCardStore';
 import { GhostToolCard } from './GhostToolCard';
 import type { KnownLocalFileRef } from '@/lib/localPathResolver';
@@ -49,6 +54,7 @@ import type { AgentKind as RendererAgentKind } from '@/lib/ccAgent.types';
 import type { TurnUsageDetails } from '../../../shared/turnUsageDetails';
 import type { RegionalMoney } from '../../../shared/regionalMoney';
 import { useAgentCapabilities, type AgentKind as MakerAgentKind } from '@/hooks/useAgentCapabilities';
+import { useAgentOnOtherDevice } from './AgentOnOtherDeviceContext';
 import { useSessionFileOrigin } from './ChatSessionFileContext';
 import { originDeviceId } from '@/lib/sessionFileOrigin';
 import { buildSessionMessageDeepLink } from '@/lib/deepLink';
@@ -118,6 +124,7 @@ const StreamingBody = memo(function StreamingBody({
   currentSessionId,
   currentSessionTitle,
   streamFadeKey,
+  allowPrivilegedLinks,
 }: {
   workingDir: string;
   content: string;
@@ -125,6 +132,7 @@ const StreamingBody = memo(function StreamingBody({
   currentSessionId?: string;
   currentSessionTitle?: string | null;
   streamFadeKey?: string;
+  allowPrivilegedLinks: boolean;
 }) {
   const { committedText, pendingLine } = useMemo(
     () => splitAtLastNewline(content),
@@ -134,6 +142,7 @@ const StreamingBody = memo(function StreamingBody({
     <>
       {committedText && (
         <MarkdownRenderer
+            renderRichAnswers
           workingDir={workingDir}
           content={committedText}
           isStreaming
@@ -141,6 +150,7 @@ const StreamingBody = memo(function StreamingBody({
           localFileRefs={localFileRefs}
           currentSessionId={currentSessionId}
           currentSessionTitle={currentSessionTitle}
+          allowPrivilegedLinks={allowPrivilegedLinks}
         />
       )}
       {pendingLine && (
@@ -154,6 +164,14 @@ interface AssistantMessageProps {
   /** F1 transit: pass through to MarkdownRenderer for local-path resolution
    *  in markdown links. Stable per-session; doesn't trigger extra renders. */
   workingDir: string;
+  /**
+   * Whether this content may reach privileged link targets (`file:` and Cindy
+   * deep links) on *this* machine. False for anything whose author is another
+   * machine — a device-link or SSH task — where `workingDir` names a path the
+   * control side does not own. Default true keeps every existing caller,
+   * which renders local sessions, exactly as it was.
+   */
+  allowPrivilegedLinks?: boolean;
   localFileRefs?: readonly KnownLocalFileRef[];
   currentSessionId?: string;
   currentSessionTitle?: string | null;
@@ -179,6 +197,11 @@ interface AssistantMessageProps {
    *  的收尾 assistant 正文传 true —— 任务执行过程中的中间句不挂 bar(bar 即使
    *  opacity-0 也占 24px 布局高度,每句都挂会拉散消息流)。默认 false。 */
   showActionBar?: boolean;
+  /** 伙伴对话使用常显、无费用、无 Fork 的轻量消息操作栏。 */
+  simplifiedBotConversation?: boolean;
+  failedSamplingAttempt?: boolean;
+  botLearning?: unknown;
+  botTaskResults?: BotCollaborationMeta[];
   /** Per-turn 费用 (USD) — 仅该轮最后一条 assistant 有值, action bar 时间旁显示。 */
   turnMoney?: RegionalMoney;
   turnCostUsd?: number;
@@ -201,10 +224,12 @@ interface AssistantMessageProps {
 
 export const AssistantMessage = memo(function AssistantMessage({
   workingDir,
+  allowPrivilegedLinks = true,
   localFileRefs,
   currentSessionId,
   currentSessionTitle,
   content,
+  failedSamplingAttempt,
   isStreaming,
   createdAt,
   messageClientId,
@@ -213,6 +238,9 @@ export const AssistantMessage = memo(function AssistantMessage({
   forkBlocked,
   sessionRunning,
   showActionBar = false,
+  simplifiedBotConversation = false,
+  botTaskResults,
+  botLearning,
   turnMoney,
   turnCostUsd,
   turnCostIsEstimate,
@@ -247,7 +275,10 @@ export const AssistantMessage = memo(function AssistantMessage({
     currentSessionId ? originDeviceId(sessionFileOrigin) : undefined,
   );
   const isRemote = Boolean(remoteHostId);
-  const forkSupported = !isRemote && (!agentKind || (capabilities?.fork?.supported ?? true));
+  const sharedGuest = isSharedTaskPeer(originDeviceId(sessionFileOrigin) ?? '');
+  const agentOnOtherDevice = useAgentOnOtherDevice();
+  const forkSupported =
+    !isRemote && !agentOnOtherDevice && (!agentKind || (capabilities?.fork?.supported ?? true));
   const handleFork = useForkAtMessage({
     sessionId: currentSessionId,
     messageClientId,
@@ -305,10 +336,15 @@ export const AssistantMessage = memo(function AssistantMessage({
           // 导致代码块溢出消息流右边界。加上 min-w-0 让 w-full 真正生效，
           // <pre> 的 overflow-x-auto 才能正常接管横向滚动。
           'w-full min-w-0',
-          'text-15 font-normal leading-[1.6]',
+          CHAT_BODY_CLASS,
           'text-[var(--msg-assistant-text)]',
         )}
       >
+        {failedSamplingAttempt && (
+          <div className="mb-1 text-13 font-normal leading-[1.384615]" style={{ color: 'var(--text-secondary)' }}>
+            {t('chat.failedSamplingAttempt')}
+          </div>
+        )}
         {ghostRenderCard && messageClientId && !showOriginal ? (
           // 出口钩子自绘:意识卡片替换气泡(净化后的静态 HTML,沙箱 iframe)。
           // 复用 GhostToolCard(自带主机身份头 + 主题注入 + 沙箱),turn 级无
@@ -323,7 +359,7 @@ export const AssistantMessage = memo(function AssistantMessage({
             running={false}
             sessionId={currentSessionId}
           />
-        ) : isStreaming && USE_LINE_COMMIT_STREAMING ? (
+        ) : isStreaming && USE_LINE_COMMIT_STREAMING && !hasRichAnswer(content) ? (
           <StreamingBody
             workingDir={workingDir}
             content={displayContent}
@@ -331,12 +367,14 @@ export const AssistantMessage = memo(function AssistantMessage({
             currentSessionId={currentSessionId}
             currentSessionTitle={currentSessionTitle}
             streamFadeKey={streamFadeKey}
+            allowPrivilegedLinks={allowPrivilegedLinks}
           />
         ) : (
           // 默认分支 (USE_LINE_COMMIT_STREAMING=false) + 非 streaming 都走完整
           // MarkdownRenderer。isStreaming 透传 — true 时 MarkdownRenderer 内部启用
           // 100ms throttle, false 时无节流, 行为和该文件性能优化前完全一致。
           <MarkdownRenderer
+            renderRichAnswers
             workingDir={workingDir}
             content={displayContent}
             isStreaming={isStreaming}
@@ -344,6 +382,7 @@ export const AssistantMessage = memo(function AssistantMessage({
             localFileRefs={localFileRefs}
             currentSessionId={currentSessionId}
             currentSessionTitle={currentSessionTitle}
+            allowPrivilegedLinks={allowPrivilegedLinks}
           />
         )}
         {/* 自绘卡在场:提供原文 ↔ 意识卡片切换(信任边界,主机绘制,始终可切回原文)。 */}
@@ -381,19 +420,27 @@ export const AssistantMessage = memo(function AssistantMessage({
           </div>
         )}
       </div>
+      {simplifiedBotConversation && !isStreaming && content.trim() && <BotLearningFooter receipts={botLearning} />}
+      {simplifiedBotConversation && !isStreaming && botTaskResults?.length ? (
+        <div className="w-full max-w-[560px] min-w-0" data-bot-task-results>
+          {botTaskResults.map(card => <BotSessionTaskResultCard key={botTaskResultKey(card)}
+            data={{ ...card }} sessionId={currentSessionId} attached />)}
+        </div>
+      ) : null}
       {/* Streaming → bar not mounted at all (V1.2 验收 "流式期间不挂载");
           非 turn 收尾正文(showActionBar=false)同样不挂,消息流保持紧凑 */}
       {!isStreaming && showActionBar && (
         <MessageActionBar
           createdAt={createdAt}
-          copyText={content}
+          copyText={richAnswerText(content)}
           copyLinkText={messageDeepLink}
           align="left"
           hovered={hovered}
-          onFork={canFork ? handleFork : undefined}
+          simplifiedBotConversation={simplifiedBotConversation}
+          onFork={!sharedGuest && canFork ? handleFork : undefined}
           onAddToChat={messageDeepLink ? handleAddToChat : undefined}
           onShareAsImage={handleShareAsImage}
-          onDelete={currentSessionId && messageClientId ? handleDelete : undefined}
+          onDelete={!sharedGuest && currentSessionId && messageClientId ? handleDelete : undefined}
           turnMoney={turnMoney}
           turnCostUsd={turnCostUsd}
           turnCostIsEstimate={turnCostIsEstimate}
@@ -406,3 +453,4 @@ export const AssistantMessage = memo(function AssistantMessage({
     </div>
   );
 });
+import { isSharedTaskPeer } from '@cindy/device-link';

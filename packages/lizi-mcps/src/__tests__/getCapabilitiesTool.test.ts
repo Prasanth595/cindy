@@ -81,6 +81,29 @@ describe('capabilities data source', () => {
     expect(entry!.detail).toContain('https://cindy.app');
   });
 
+  it('issue-tracker 不套固定问卷,并说明自动附加环境含 Harness / 模型 ID', () => {
+    const entry = findCapability('issue-tracker');
+    expect(entry).toBeDefined();
+    expect(entry!.detail).toContain('不套固定问卷');
+    expect(entry!.detail).toContain('Harness / 模型 ID');
+    expect(entry!.detail).toContain('提交时的任务环境');
+    expect(entry!.detail).toContain('不要声称截图已附');
+    expect(entry!.detail).toContain('不写源码级方案');
+    expect(entry!.detail).toContain('不一定是出问题的那个');
+    expect(entry!.detail).toContain('实际故障环境按需写进正文');
+  });
+
+  it('session-handoff 写明 send_to_session 发给已有任务时 target_session_id 必传, 省略即静默新建 (#4884)', () => {
+    const entry = findCapability('session-handoff');
+    expect(entry).toBeDefined();
+    expect(entry!.detail).toContain('target_session_id 必传');
+    expect(entry!.detail).toContain('list_sessions');
+    expect(entry!.detail).toContain('wake_kind=created');
+    // jump 撞忙已改为入队,旧的「本工具不排队」说法会误导 skill 自己 retry/backoff。
+    expect(entry!.detail).not.toContain('本工具不排队');
+    expect(entry!.detail).toContain('wake_kind=queued');
+  });
+
   it('collab-mode 明确 Pi 可作本地 Lead 和 Worker，且不扩大到 SSH 远程 Pi', () => {
     const entry = findCapability('collab-mode');
 

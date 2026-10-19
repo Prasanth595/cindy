@@ -3,7 +3,7 @@
  *
  * 蓝本是 right-sidebar-window/window.ts,差异:
  *  - 按 ghostId 多实例:窗口位置记忆每插件一份
- *    (ghost-panel-window-state-<id>.json,id 字符集 [a-z0-9-] 文件名安全);
+ *    (ghost-panel-window-state-<id>.json,id 为 storage part,文件名安全);
  *  - webPreferences 按 electron-security-and-process-boundaries §3 显式带全量
  *    安全项(该规则晚于主窗/RSB 窗,新窗口必须逐项写明,不吃默认值);
  *  - `webviewTag: true`:面板体就是 <webview>(cindy-ghost:// 分区)。附加闸/
@@ -74,6 +74,14 @@ export function createGhostPanelWindow(ghostId: string, title: string): BrowserW
       plugins: false,
       navigateOnDragDrop: false,
     },
+  });
+  // Keep the detached plugin renderer in sync with its own native fullscreen
+  // state; the main window's listener cannot describe this BrowserWindow.
+  win.on('enter-full-screen', () => {
+    if (!win.isDestroyed()) win.webContents.send('fullscreen-change', true);
+  });
+  win.on('leave-full-screen', () => {
+    if (!win.isDestroyed()) win.webContents.send('fullscreen-change', false);
   });
   markGhostPanelWebContentsId(win.webContents.id);
   markAppContentWindow(win);

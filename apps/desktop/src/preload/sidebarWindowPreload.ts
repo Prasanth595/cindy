@@ -1,3 +1,6 @@
+import { createAccessibilitySupportBridge } from './accessibilitySupport';
+import { invokeOpenPath } from './openPath';
+import { COPY_PNG_TO_CLIPBOARD_CHANNEL, type CopyPngToClipboardParams } from '../shared/pngClipboard';
 /**
  * 鍙充晶鏍忓瓙绐楀彛涓撶敤 preload锛氬彧鏆撮湶 RSB 绐楀彛鎵€闇€鐨勬渶灏忚兘鍔涖€?
  *
@@ -15,7 +18,7 @@
 
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 
-import type { AppearanceSettings } from '../shared/appearanceSettings';
+import { createAppearanceSnapshotBridge } from './appearanceSnapshot';
 import { DEVICE_LINK_INVOKE, DEVICE_LINK_PUSH } from '../shared/deviceLinkIpc';
 import type { LocalThemesResult } from '../shared/local-themes';
 import { DEFAULT_LOCALE, SUPPORTED_LOCALES, type SupportedLocale } from '../shared/locale';
@@ -24,8 +27,10 @@ import {
   RSB_WINDOW_REFRESH_CONTEXT_CHANNEL,
   RSB_WINDOW_RENDERER_READY_CHANNEL,
   RSB_WINDOW_LOCALE_CHANGED_CHANNEL,
+  RSB_WINDOW_TAB_HANDOFF_CHANNEL,
   RSB_WINDOW_VISIBILITY_CHANGED_CHANNEL,
 } from '../shared/rightSidebarWindow';
+import type { RsbWindowTabHandoff } from '../shared/rightSidebarWindow';
 
 type ApplicationMenuLocale = SupportedLocale;
 
@@ -34,6 +39,13 @@ function onPayload<T>(channel: string, cb: (payload: T) => void): () => void {
   ipcRenderer.on(channel, listener);
   return () => ipcRenderer.removeListener(channel, listener);
 }
+
+// Match the resource window: hidden prewarm must not start decorative playback,
+// and late renderer/HMR subscribers must receive the latest native state.
+let windowHidden = true;
+onPayload<boolean>('window-hidden-change', (hidden) => {
+  windowHidden = hidden;
+});
 
 function onPayloadWithMetadata<T, M>(
   channel: string,
@@ -56,12 +68,19 @@ function readPreferredSystemLocale(): ApplicationMenuLocale {
   }
 }
 
-const appearanceSettings = ipcRenderer.sendSync(
-  'appearance-settings:get-sync',
-) as AppearanceSettings | null;
+const appearanceSnapshot = createAppearanceSnapshotBridge({ wallpaperAssets: true });
+
+const fanOutFullscreenChange = (cb: (isFullscreen: boolean) => void): (() => void) =>
+  onPayload('fullscreen-change', cb);
 
 contextBridge.exposeInMainWorld('electronAPI', {
   platform: process.platform,
+  accessibilitySupport: createAccessibilitySupportBridge(),
+  onWindowHiddenChange: (cb: (hidden: boolean) => void): (() => void) => {
+    const off = onPayload('window-hidden-change', cb);
+    cb(windowHidden);
+    return off;
+  },
   preferredSystemLocale: readPreferredSystemLocale(),
   windowMinimize: (): void => ipcRenderer.send('window-minimize'),
   windowMaximize: (): void => ipcRenderer.send('window-maximize'),
@@ -73,11 +92,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   ): void => ipcRenderer.send('renderer:log', level, scope, msg),
   onLocaleChanged: (cb: (locale: SupportedLocale) => void): (() => void) =>
     onPayload(RSB_WINDOW_LOCALE_CHANGED_CHANNEL, cb),
-  appearanceSettings: {
-    getSync: (): AppearanceSettings | null => appearanceSettings,
-    onChanged: (cb: (settings: AppearanceSettings) => void): (() => void) =>
-      onPayload('appearance-settings:changed', cb),
-  },
+  appearanceSettings: appearanceSnapshot,
   localThemes: {
     listSync: (): LocalThemesResult => {
       try {
@@ -98,6 +113,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.send('theme:apply-vibrancy', { familyId, isDark });
     },
   },
+  // PanelChrome uses this on macOS to keep the traffic-light area and actions
+  // aligned while the detached sidebar enters or leaves native fullscreen.
+  onFullscreenChange: fanOutFullscreenChange,
+  getFullscreenState: (): Promise<boolean> => ipcRenderer.invoke('get-fullscreen-state'),
 
   // AuthProvider 在分离侧栏中只负责初始化账号快照、监听账号边界变化，以及给
   // device-link 子面板投影当前身份。该窗口没有登录/登出/本地模式/账号删除 UI，
@@ -120,8 +139,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   deviceLink: {
     getState: (): Promise<unknown> => ipcRenderer.invoke(DEVICE_LINK_INVOKE.GET_STATE),
     listDevices: (): Promise<unknown> => ipcRenderer.invoke(DEVICE_LINK_INVOKE.LIST_DEVICES),
-    invoke: (deviceId: string, channel: string, args: unknown[]): Promise<unknown> =>
-      ipcRenderer.invoke(DEVICE_LINK_INVOKE.INVOKE, { deviceId, channel, args }),
+    invoke: (deviceId: string, channel: string, args: unknown[], scheduling?: { background?: boolean }): Promise<unknown> =>
+      ipcRenderer.invoke(DEVICE_LINK_INVOKE.INVOKE, { deviceId, channel, args, ...(scheduling ? { scheduling } : {}) }),
     subscribe: (deviceId: string, topics: string[]): Promise<{ ok: true }> =>
       ipcRenderer.invoke(DEVICE_LINK_INVOKE.SUBSCRIBE, { deviceId, topics }),
     unsubscribe: (deviceId: string, topics: string[]): Promise<{ ok: true }> =>
@@ -138,6 +157,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
       onPayload(DEVICE_LINK_PUSH.CONTROL_TARGET_CHANGED, cb),
     onResponsivenessChanged: (cb: (payload: unknown) => void): (() => void) =>
       onPayload(DEVICE_LINK_PUSH.RESPONSIVENESS_CHANGED, cb),
+    onPeerLinkReopened: (cb: (payload: unknown) => void): (() => void) =>
+      onPayload(DEVICE_LINK_PUSH.PEER_LINK_REOPENED, cb),
+    onPeerLinkReset: (cb: (payload: unknown) => void): (() => void) =>
+      onPayload(DEVICE_LINK_PUSH.PEER_LINK_RESET, cb),
     mirrorCache: {
       getMessages: (deviceId: string, sessionId: string): Promise<unknown> =>
         ipcRenderer.invoke(DEVICE_LINK_INVOKE.MIRROR_CACHE_GET_MESSAGES, { deviceId, sessionId }),
@@ -148,6 +171,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
         expectedInvalidation?: number,
         expectedOwnerToken?: string,
         expectedAccountCounter?: number,
+        historyView?: string,
+        mergeListMessage?: boolean,
       ): Promise<unknown> =>
         ipcRenderer.invoke(DEVICE_LINK_INVOKE.MIRROR_CACHE_PUT_MESSAGES, {
           deviceId,
@@ -156,6 +181,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
           expectedInvalidation,
           expectedOwnerToken,
           expectedAccountCounter,
+          historyView,
+          mergeListMessage,
         }),
       getSessionList: (): Promise<unknown> =>
         ipcRenderer.invoke(DEVICE_LINK_INVOKE.MIRROR_CACHE_GET_SESSION_LIST),
@@ -198,7 +225,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     readCached: (params: unknown): Promise<unknown> => ipcRenderer.invoke('maker:file-browser:read-cached', params),
     cachePut: (params: unknown): Promise<unknown> => ipcRenderer.invoke('maker:file-browser:cache-put', params),
     onTransferProgress: (cb: (event: unknown) => void): (() => void) => onPayload('maker:file-browser:transfer', cb),
+    previewHtml: (params: unknown): Promise<unknown> => ipcRenderer.invoke('maker:html-preview:open', params),
+    cancelHtmlPreview: (requestId: string): Promise<{ ok: true }> => ipcRenderer.invoke('maker:html-preview:cancel', requestId),
     chatFetch: (params: unknown): Promise<unknown> => ipcRenderer.invoke('maker:chat-file:fetch', params),
+    chatDownload: (params: unknown): Promise<unknown> => ipcRenderer.invoke('maker:chat-file:download', params),
+    chatCancel: (requestId: string): Promise<unknown> => ipcRenderer.invoke('maker:chat-file:cancel', requestId),
     chatStat: (params: unknown): Promise<unknown> => ipcRenderer.invoke('maker:chat-file:stat', params),
   },
   terminal: {
@@ -225,8 +256,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   openExternal: (url: string): Promise<unknown> => ipcRenderer.invoke('shell:open-external', url),
   openFileInBrowser: (pathOrUrl: string): Promise<unknown> => ipcRenderer.invoke('shell:open-file-in-browser', pathOrUrl),
-  openPath: (pathOrUrl: string): Promise<unknown> => ipcRenderer.invoke('shell:open-path', pathOrUrl),
+  openPath: (pathOrUrl: string) => invokeOpenPath(ipcRenderer.invoke.bind(ipcRenderer), pathOrUrl),
   showItemInFolder: (params: unknown): Promise<unknown> => ipcRenderer.invoke('shell:show-item-in-folder', params),
+  copyPngToClipboard: (params: CopyPngToClipboardParams): Promise<void> =>
+    ipcRenderer.invoke(COPY_PNG_TO_CLIPBOARD_CHANNEL, params),
   copyMediaToClipboard: (params: unknown): Promise<unknown> =>
     ipcRenderer.invoke('media:copy-to-clipboard', params),
   openMediaWithDefaultApp: (params: unknown): Promise<void> =>
@@ -257,17 +290,29 @@ contextBridge.exposeInMainWorld('electronAPI', {
   ghosts: {
     listSync: (): { ghosts: unknown[] } => ipcRenderer.sendSync('ghosts:list'),
     reload: (id: string): Promise<{ state: string }> => ipcRenderer.invoke('ghosts:reload', id),
-    setEnabled: (id: string, enabled: boolean): Promise<{ ok: true }> =>
-      ipcRenderer.invoke('ghosts:set-enabled', id, enabled),
+    openRetirement: (id: string): Promise<{ ok: true }> =>
+      ipcRenderer.invoke('ghosts:open-retirement', id),
+    acknowledgeRetirement: (id: string): Promise<{ ok: true }> =>
+      ipcRenderer.invoke('ghosts:acknowledge-retirement', id),
+    setEnabled: (id: string, enabled: boolean, expectedInstalledApproval?: string): Promise<{ ok: true }> =>
+      ipcRenderer.invoke('ghosts:set-enabled', id, enabled, expectedInstalledApproval),
     resolvePanelMedia: (
       uri: string,
       purpose?: 'attach' | 'menu',
-    ): Promise<unknown> => ipcRenderer.invoke('ghosts:resolve-panel-media', uri, purpose),
+      instanceId?: string,
+      sourceToken?: string,
+    ): Promise<unknown> => sourceToken !== undefined
+      ? ipcRenderer.invoke('ghosts:resolve-panel-media', uri, purpose, instanceId, sourceToken)
+      : instanceId === undefined
+        ? ipcRenderer.invoke('ghosts:resolve-panel-media', uri, purpose)
+        : ipcRenderer.invoke('ghosts:resolve-panel-media', uri, purpose, instanceId),
     runtimeStates: (): Promise<{ states: Record<string, string> }> =>
       ipcRenderer.invoke('ghosts:runtime-states'),
     onChanged: (cb: (payload: unknown) => void): (() => void) => onPayload('ghosts:changed', cb),
     onRuntimeChanged: (cb: (payload: unknown) => void): (() => void) =>
       onPayload('ghosts:runtime-changed', cb),
+    onLibraryReplaced: (cb: (payload: unknown) => void): (() => void) =>
+      onPayload('ghosts:library-replaced', cb),
     onPreviewMedia: (cb: (payload: unknown) => void): (() => void) =>
       onPayload('ghosts:preview-media', cb),
     unreadSync: (): { entries: unknown[] } => {
@@ -291,13 +336,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
     open: (payload?: unknown): Promise<void> =>
       ipcRenderer.invoke('maker:rsb-window:open', payload),
     close: (): Promise<void> => ipcRenderer.invoke('maker:rsb-window:close'),
-    setDetached: (detached: boolean): Promise<{ detached: boolean; lastOpen: boolean; open: boolean }> =>
-      ipcRenderer.invoke('maker:rsb-window:set-detached', detached),
+    setDetached: (
+      detached: boolean,
+      handoff?: RsbWindowTabHandoff,
+    ): Promise<{ detached: boolean; lastOpen: boolean; open: boolean }> =>
+      ipcRenderer.invoke('maker:rsb-window:set-detached', detached, handoff),
     getContext: (): Promise<{
       sessionId: string | null;
       workdir: string | null;
       remoteHostId: string | null;
       deviceLinkDeviceId?: string | null;
+      subagentsAvailable?: boolean;
       available: boolean;
     } | null> => ipcRenderer.invoke('maker:rsb-window:get-context'),
     /** 瀛橀噺灏辩华鎻℃墜 鈫?鏄犲皠鍒?renderer-ready(renderer shell 宸叉寕杞?銆?*/
@@ -317,12 +366,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
         workdir: string | null;
         remoteHostId: string | null;
         deviceLinkDeviceId?: string | null;
+        subagentsAvailable?: boolean;
         available: boolean;
       }) => void,
     ): (() => void) => onPayload('maker:push:rsb-window:context-changed', cb),
     onCommand: (
       cb: (cmd: unknown) => void,
     ): (() => void) => onPayload('maker:push:rsb-window:command', cb),
+    onTabHandoff: (cb: (handoff: RsbWindowTabHandoff) => void): (() => void) =>
+      onPayload(RSB_WINDOW_TAB_HANDOFF_CHANNEL, cb),
     sendCommand: (request: unknown): Promise<string> =>
       ipcRenderer.invoke('maker:rsb-window:send-command', request),
     /** 闅愯棌/鏄剧ず鏃堕€氱煡瀛愮獥鍙ｅ埛鏂?context + 閲嶇疆鐬椂浜や簰鎬併€?*/
@@ -397,8 +449,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // shared makerChatStore. Do not expose the primary window's full DB API.
     sessions: {
       get: (id: string): Promise<unknown> => ipcRenderer.invoke('local-db:sessions:get', id),
-      list: (limit?: number, status?: string): Promise<unknown> =>
-        ipcRenderer.invoke('local-db:sessions:list', limit, status),
+      getMany: (ids: string[]): Promise<unknown> => ipcRenderer.invoke('local-db:sessions:get-many', ids),
+      list: (limit?: number, status?: string, options?: unknown): Promise<unknown> =>
+        ipcRenderer.invoke('local-db:sessions:list', limit, status, options),
       resolveReferences: (sessionIds: string[]): Promise<unknown> =>
         ipcRenderer.invoke('local-db:sessions:resolve-references', sessionIds),
       ackInterrupted: (id: string): Promise<void> =>
@@ -440,6 +493,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     subagentRuns: {
       list: (input: unknown): Promise<unknown> => ipcRenderer.invoke('local-db:subagent-runs:list', input),
       detail: (input: unknown): Promise<unknown> => ipcRenderer.invoke('local-db:subagent-runs:detail', input),
+      transcript: (input: unknown): Promise<unknown> => ipcRenderer.invoke('local-db:subagent-runs:transcript', input),
       onChanged: (cb: (payload: unknown, ownerStamp?: unknown) => void): (() => void) => onPayloadWithMetadata('local-db:subagent-runs:changed', cb),
     },
     orcaWorkflows: {
@@ -474,6 +528,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
         ipcRenderer.invoke('maker:team:end', leadSessionId),
       getCollaborationSettings: (): Promise<unknown> =>
         ipcRenderer.invoke('maker:collaboration-settings:get'),
+      listExecutionDevices: (): Promise<unknown> =>
+        ipcRenderer.invoke('maker:orca:execution-devices'),
       onOrcaWorkerChanged: (cb: (payload: unknown) => void): (() => void) => onPayload('maker:orca:worker-changed', cb),
     },
   },
@@ -519,34 +575,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('maker:session-background-tasks:list', sessionId),
     stopAgentTask: (sessionId: string, taskId: string): Promise<unknown> =>
       ipcRenderer.invoke('maker:agent-task:stop', sessionId, taskId),
+    controlPiSubagent: (input: unknown): Promise<unknown> =>
+      ipcRenderer.invoke('maker:pi-subagent:control', input),
     getPendingInteractions: (sessionId: string): Promise<unknown> =>
       ipcRenderer.invoke('maker:get-pending-interactions', sessionId),
-    iosSimulator: {
-      requestAccess: (request: unknown): Promise<unknown> =>
-        ipcRenderer.invoke('maker:ios-simulator:request-access', request),
-      status: (request: unknown): Promise<unknown> =>
-        ipcRenderer.invoke('maker:ios-simulator:status', request),
-      call: (request: unknown): Promise<unknown> =>
-        ipcRenderer.invoke('maker:ios-simulator:call', request),
-      setAgentControl: (request: unknown): Promise<unknown> =>
-        ipcRenderer.invoke('maker:ios-simulator:set-agent-control', request),
-      setMutationControl: (request: unknown): Promise<unknown> =>
-        ipcRenderer.invoke('maker:ios-simulator:set-mutation-control', request),
-      setViewerVisibility: (request: unknown): Promise<unknown> =>
-        ipcRenderer.invoke('maker:ios-simulator:set-viewer-visibility', request),
-      latestFrame: (request: unknown): Promise<unknown> =>
-        ipcRenderer.invoke('maker:ios-simulator:latest-frame', request),
-      setStreamProfile: (request: unknown): Promise<unknown> =>
-        ipcRenderer.invoke('maker:ios-simulator:set-stream-profile', request),
-      liveTouch: (request: unknown): Promise<unknown> =>
-        ipcRenderer.invoke('maker:ios-simulator:live-touch', request),
-      onH264Frame: (cb: (payload: unknown) => void): (() => void) =>
-        onPayload('maker:ios-simulator:h264-frame', cb),
-      onRouteStatus: (cb: (payload: unknown) => void): (() => void) =>
-        onPayload('maker:ios-simulator:route-status', cb),
-      onFocusRequest: (cb: (payload: unknown) => void): (() => void) =>
-        onPayload('maker:ios-simulator:focus-request', cb),
-    },
   },
   /** 涓荤獥鎺ㄩ€?RSB 娴忚鍣ㄦ寜閿懡浠?鈱樷嚙鈫?绛?鍒板瓙绐楀彛銆?*/
   search: {

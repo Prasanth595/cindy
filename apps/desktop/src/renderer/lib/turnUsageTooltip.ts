@@ -30,20 +30,28 @@ function formatTokens(value: number): string {
   return formatCompactTokens(Math.max(0, Math.floor(value)));
 }
 
-export function formatOutputTokenRate(details: TurnUsageDetails): string | null {
-  const durationMs = details.durationMs;
+export function formatOutputTokenRateValue(
+  outputTokens: number,
+  durationMs: number,
+): string | null {
   if (
-    details.outputTokens <= 0 ||
+    outputTokens <= 0 ||
     typeof durationMs !== 'number' ||
     !Number.isFinite(durationMs) ||
     durationMs <= 0
   ) {
     return null;
   }
-  const rate = (details.outputTokens * 1000) / durationMs;
+  const rate = (outputTokens * 1000) / durationMs;
   if (!Number.isFinite(rate) || rate <= 0) return null;
   if (rate < 0.1) return '<0.1';
   return rate >= 100 ? rate.toFixed(0) : rate.toFixed(1).replace(/\.0$/, '');
+}
+
+export function formatOutputTokenRate(details: TurnUsageDetails): string | null {
+  return typeof details.durationMs === 'number'
+    ? formatOutputTokenRateValue(details.outputTokens, details.durationMs)
+    : null;
 }
 
 export function formatTurnDuration(durationMs: number, t?: TFunction): string | null {
@@ -59,6 +67,21 @@ export function formatTurnDuration(durationMs: number, t?: TFunction): string | 
     }
   }
   const roundedSeconds = Math.round(seconds);
+  if (roundedSeconds >= 86_400) {
+    const days = Math.floor(roundedSeconds / 86_400);
+    const hours = Math.floor((roundedSeconds % 86_400) / 3_600);
+    const minutes = Math.floor((roundedSeconds % 3_600) / 60);
+    return t
+      ? t('usageDetails.durationDaysHoursMinutes', { days, hours, minutes })
+      : `${days}d ${hours}h ${minutes}m`;
+  }
+  if (roundedSeconds >= 3_600) {
+    const hours = Math.floor(roundedSeconds / 3_600);
+    const minutes = Math.floor((roundedSeconds % 3_600) / 60);
+    return t
+      ? t('usageDetails.durationHoursMinutes', { hours, minutes })
+      : `${hours}h ${minutes}m`;
+  }
   const minutes = Math.floor(roundedSeconds / 60);
   const remainder = roundedSeconds % 60;
   const paddedSeconds = String(remainder).padStart(2, '0');

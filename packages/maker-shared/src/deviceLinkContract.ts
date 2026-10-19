@@ -10,6 +10,9 @@ export const DEVICE_LINK_VOICE_TRANSCRIBE_CHANNEL = 'device-link:voice:transcrib
 export const DEVICE_LINK_VOICE_CREDENTIAL_SYNC_CHANNEL = 'device-link:voice:credential-sync';
 export const DEVICE_LINK_VOICE_DICTIONARY_LEARNING_CHANNEL = 'device-link:voice:dictionary-learning';
 export const DEVICE_LINK_VOICE_DICTIONARY_GET_CHANNEL = 'device-link:voice:dictionary:get';
+/** 桌面主动推给手机的只读词典快照；push 不受 remoteControlEnabled 控制门禁。 */
+export const DEVICE_LINK_VOICE_DICTIONARY_SNAPSHOT_CHANNEL =
+  'device-link:voice:dictionary:snapshot';
 
 export type MobileVoiceCredentialSyncAsr = {
   provider: string;
@@ -88,6 +91,12 @@ export type MobileVoiceDictionarySnapshotResult =
        * 拿它当完整答案会漏词。老版本被控端不带这个字段,手机退回按到达时间比较。
        */
       stateVector?: Record<string, string>;
+      /**
+       * 桌面生成这份投影的本地时间(unix ms)。同一台电脑、同一代版本向量里,
+       * 用它而不是手机到达时间判断谁先发出 —— 晚到的旧拉取不能盖掉先发出的新推送。
+       * 老版本被控端不带这个字段。
+       */
+      emittedAt?: number;
     }
   | {
       ok: false;
@@ -196,6 +205,8 @@ export interface MobileCodexRateLimitAccount {
 
 /** Display-safe metadata for one banked reset credit; its opaque backend id stays on desktop. */
 export interface MobileCodexRateLimitResetCredit {
+  /** Optional per-credit offer; older hosts/clients keep using the account-level offer. */
+  resetOffer?: MobileCodexRateLimitResetOffer | null;
   status: 'available' | 'redeeming' | 'redeemed' | 'unknown';
   resetType: 'codexRateLimits' | 'unknown';
   grantedAt: number;
@@ -206,6 +217,8 @@ export interface MobileCodexRateLimitResetCredit {
 
 /** Desktop-issued, account-bound reset offer used as the idempotency key for one attempt. */
 export interface MobileCodexRateLimitResetOffer {
+  /** Only retry the existing attempt; do not consume another credit. */
+  retryOnly?: boolean;
   idempotencyKey: string;
   /** Unix epoch seconds for the selected banked credit, when details are available. */
   expiresAt: number | null;
@@ -215,6 +228,8 @@ export interface MobileCodexRateLimitResetOffer {
 
 /** Full read-only Codex quota view plus an optional manually redeemable reset offer. */
 export interface MobileCodexRateLimitsResult {
+  /** Echoed account scope; custom-account clients reject unscoped legacy responses. */
+  providerId?: string;
   account: MobileCodexRateLimitAccount;
   rateLimits: MobileCodexRateLimitSnapshot;
   rateLimitsByLimitId: Record<string, MobileCodexRateLimitSnapshot> | null;
@@ -227,6 +242,7 @@ export interface MobileCodexRateLimitsResult {
 
 /** Stable terminal result for one desktop-issued reset offer. */
 export interface MobileCodexRateLimitResetResult {
+  providerId?: string;
   outcome: 'reset' | 'nothingToReset' | 'noCredit' | 'alreadyRedeemed';
   /** Fresh snapshot when the post-consume read succeeded. */
   rateLimits: MobileCodexRateLimitsResult | null;
@@ -251,10 +267,14 @@ export interface MobileSessionAgentSwitchResult {
 }
 
 export const MOBILE_REMOTE_INVOKE_CHANNELS = [
+  'ghosts:composer-list',
   'maker:create-session',
   'maker:get-capabilities',
   'maker:provider:list',
   'local-db:sessions:get',
+  // 只读任务搜索(对齐桌面侧栏 / Composer @)。老被控端 CHANNEL_NOT_ALLOWED →
+  // 手机端降级为已缓存会话的本地匹配,不阻断搜索。
+  'local-db:conversations:search',
   'local-db:sessions:patch-meta',
   // error-tail / interrupted 收尾入口(对齐桌面 error-tail banner / InterruptedTurnBanner):
   // 「忽略」错误尾行 → 被控端持久化 merge dismissed:true;「忽略」中断提示 → 被控端写
@@ -264,7 +284,12 @@ export const MOBILE_REMOTE_INVOKE_CHANNELS = [
   // 会话菜单重命名的「自动起名」:被控端读该会话素材重新生成标题(与桌面 Magic 按钮
   // 同一 handler;老被控端 CHANNEL_NOT_ALLOWED → 手机端展示失败提示,不阻塞手动改名)。
   'maker:regenerate-title',
+  // 输入框推荐提示词：由被控端读取真实会话素材生成。
+  'maker:predict-prompt',
   'local-db:messages:list',
+  'local-db:messages:view',
+  'local-db:messages:work-details',
+  'local-db:messages:view-intent',
   'local-db:messages:around',
   'local-db:messages:around-client-id',
   'maker:send',
@@ -275,6 +300,7 @@ export const MOBILE_REMOTE_INVOKE_CHANNELS = [
   'maker:set-effort',
   'maker:set-permission-mode',
   'maker:set-fast-mode',
+  'maker:set-thinking-enabled',
   'maker:set-extra-dirs',
   // 模型列表「非选中行」effort/fast 写穿(会话镜像 + 草稿默认双写;老被控端
   // CHANNEL_NOT_ALLOWED → 手机端吞掉降级,见 sessionModelMirror)。
@@ -294,10 +320,16 @@ export const MOBILE_REMOTE_INVOKE_CHANNELS = [
   'maker:apply-new-maker-worktree-branch-pref',
   // 模型选择列表元信息:被控端视角的模型单价表(只读;拉不到 → 隐藏价格)。
   'maker:usage:model-pricing',
+  'local-db:messages:estimatedSessionValue',
   // Codex app-server 官方控制面:只读额度/reset 次数 + 人工确认后的单次 reset。
   // reset 使用 desktop 预签发、账号绑定的幂等 offer,手机不能自行指定 creditId。
   'maker:usage:codex-rate-limits',
   'maker:usage:codex-rate-limit-reset',
+  // 订阅账号余量快照(只读;Claude / SuperGrok)与 cc 默认路由会话的生效计费路由。
+  // 老被控端 CHANNEL_NOT_ALLOWED → 任务菜单保留「暂未获取账号配额」。
+  'maker:usage:claude-subscription',
+  'maker:usage:xai-subscription',
+  'maker:claude-session-route:get',
   // 网关 API key presence-only 探测(只回 boolean;拉不到 → unknown,折扣版不置灰)。
   'maker:api-key:present',
   'maker:list-agent-commands',
@@ -317,12 +349,29 @@ export const MOBILE_REMOTE_INVOKE_CHANNELS = [
   'maker:goal:resume',
   'maker:goal:update',
   'maker:fork',
+  'maker:fork-strip-encrypted',
   'maker:get-session-tree',
   'maker:navigate-session-tree',
   'maker:rewind:preview',
   'maker:rewind:commit',
   'maker:message:delete',
   'maker:close-session',
+  // —— Orca 协同(Lead / Worker 团队真身在被控端,手机只做编排入口)——
+  // 均已在被控端 REMOTE_INVOKE_ALLOWLIST 的 Orca 段;worker-changed 推送经
+  // `session:<leadId>` topic 转发。老被控端 CHANNEL_NOT_ALLOWED → 协同入口 fail-closed
+  // 提示设备版本过旧,不放行到 enable-orca 才撞错。
+  'maker:plugins:get-state',
+  'maker:session:enable-orca',
+  'maker:session:disable-orca',
+  'maker:worker:create',
+  // 只读 Lead 所在电脑视角下的运行设备；旧端拒绝时保留本机 Worker 创建。
+  'maker:orca:execution-devices',
+  'maker:worker:switch-focus',
+  'maker:worker:acknowledge-done',
+  'maker:worker:archive',
+  'maker:collaboration-settings:get',
+  'local-db:orca-workflows:list-workers-by-lead',
+  'local-db:orca-workflows:get-by-worker-session',
   'maker:schedule:list',
   'maker:schedule:get',
   'maker:schedule:list-templates',
@@ -353,6 +402,7 @@ export const MOBILE_REMOTE_INVOKE_CHANNELS = [
   'maker:input:resume',
   'maker:input:retry-last-error',
   'maker:input:clear-error',
+  'maker:input:cancel-usage-limit-wait',
   'maker:input:remove',
   'maker:input:update-text',
   'maker:input:update-content',
@@ -379,6 +429,7 @@ export const MOBILE_REMOTE_INVOKE_CHANNELS = [
   'worktree:suggest-name',
   'worktree:create',
   'worktree:discard-precreated',
+  'worktree:cancel-precreated',
   'text-file:read-preview',
   // 完整文件浏览(网格/预览/缩略图/大文件导出)走桌面同款聚合通道,
   // op 分发与响应形状见 apps/desktop/src/main/file-browser/device-op.ts。
@@ -403,6 +454,7 @@ const TRANSIENT_REMOTE_ERROR_MARKERS = [
   'NOT_CONNECTED',
   'LINK_NOT_OPEN',
   'BACKPRESSURE',
+  'DEVICE_LINK_BUSY',
   'DEVICE_OFFLINE',
   'DEVICE_LINK_TIMEOUT',
   'INVOKE_TIMEOUT',
@@ -448,10 +500,11 @@ export function relayStatusHint(status: DeviceLinkRelayStatus, lastSyncedAt: num
 /**
  * 镜像 @cindy/device-link 的 DeviceLinkConnectionIssueKind。
  * maker-shared 保持零运行时依赖(与 DeviceLinkRelayStatus 同款处理),两边字面量
- * 必须一致;drift 会被 desktop/mobile 消费处的 TS 赋值检查拦下。
+ * 必须一致;deviceLinkContract.test.ts 校验两处字面量，避免消费端迁移后静默漂移。
  */
 export type DeviceLinkConnectionIssueKind =
   | 'auth-failed'
+  | 'device-removed'
   | 'replaced'
   | 'too-many-connections'
   | 'version-mismatch'
@@ -462,6 +515,8 @@ export function connectionIssueTitle(kind: DeviceLinkConnectionIssueKind): strin
   switch (kind) {
     case 'auth-failed':
       return '登录已失效';
+    case 'device-removed':
+      return '设备已移除';
     case 'replaced':
       return '连接被顶替';
     case 'too-many-connections':
@@ -478,6 +533,8 @@ export function connectionIssueHint(kind: DeviceLinkConnectionIssueKind): string
   switch (kind) {
     case 'auth-failed':
       return '登录状态已过期，请退出后重新登录。';
+    case 'device-removed':
+      return '请退出后重新登录，以重新加入设备列表。';
     case 'replaced':
       return '本设备的连接被另一处相同设备顶替，正在重新连接。';
     case 'too-many-connections':
@@ -547,6 +604,9 @@ export function describeRemoteError(error: string | null): string | null {
     if (error.includes('ACCOUNT_CHANGED')) return 'Codex 账号或工作区已变化，请刷新额度后重新确认。';
     if (error.includes('OFFER_EXPIRED')) return 'Codex 重置凭证已失效，请刷新额度后重新确认。';
     return '操作条件已变化，请刷新后重新确认。';
+  }
+  if (error.includes('BACKPRESSURE') || error.includes('DEVICE_LINK_BUSY')) {
+    return '远端繁忙，请稍后重试。';
   }
   if (TRANSIENT_REMOTE_ERROR_MARKERS.some((marker) => error.includes(marker))) {
     return '网络或被控端暂时不可用，可以稍后重新同步。';

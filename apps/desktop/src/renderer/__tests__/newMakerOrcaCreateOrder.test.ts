@@ -138,7 +138,7 @@ describe('NewMakerDraftRoute Orca worker create order', () => {
     expect(sessionViewSource).toContain('if (sessionHandoffPreparing) return false;');
     expect(sessionViewSource).not.toContain('if (worktreePreparing) return false;');
     expect(sessionViewSource).toContain(
-      "disabled={remoteHandoffPreparing || session?.source === 'review'}",
+      "disabled={readOnly || remoteHandoffPreparing || session?.source === 'review'}",
     );
   });
 
@@ -201,7 +201,7 @@ describe('NewMakerDraftRoute Orca worker create order', () => {
 
     expect(
       slashDispatchBranch.match(/piRuntimeRetryDelaysMs: PI_RUNTIME_SKILL_RETRY_DELAYS_MS/g),
-    ).toHaveLength(2);
+    ).toHaveLength(3);
   });
 
   it('refreshes the remote mirror even when the remote enableOrca reports failure', () => {
@@ -211,7 +211,7 @@ describe('NewMakerDraftRoute Orca worker create order', () => {
     const body = remoteCollabHandoffSource.slice(
       remoteCollabHandoffSource.indexOf('export async function enableRemoteCollabForSession('),
     );
-    const returnAt = body.indexOf('return { focusWorkerSessionId:');
+    const returnAt = body.indexOf('return withDeferredAssignment(');
     const finallyAt = body.indexOf('} finally {');
     expect(returnAt).toBeGreaterThan(-1);
     expect(finallyAt).toBeGreaterThan(returnAt);
@@ -220,19 +220,30 @@ describe('NewMakerDraftRoute Orca worker create order', () => {
 
   it('narrows the device-link worker source against the controlled device catalog', () => {
     // 草稿里持久化的来源/模型按**目标设备**的目录收窄:device-link 分支必须用
-    // deviceProviders,拿控制端的 localProviders 收窄等于用错机器的目录。
+    // agentCatalogProviders（从 deviceProviders 过滤远程调用权限），拿控制端的
+    // localProviders 收窄等于用错机器的目录。
     const collapsed = source.replace(/\s+/g, ' ');
-    const remoteNarrowing =
-      collapsed.match(
-        /draftEnableOrcaOptions\( effectiveCollab, deviceProviders, !deviceProvidersLoading, \)/g,
-      ) ?? [];
-    expect(remoteNarrowing).toHaveLength(2);
-    // 本机 / SSH 的四条路径仍按控制端目录收窄,不能被一起改掉。
+    expect(collapsed).toContain(
+      'const agentCatalogProviders = useMemo( () => (effectiveAgentDeviceId ? remoteAgentProviders(deviceProviders) : deviceProviders), [effectiveAgentDeviceId, deviceProviders], );',
+    );
+    // 并告诉它这份目录属于哪一处：Worker 选的位置不是这一处时不拿它收窄。
     expect(
       collapsed.match(
-        /draftEnableOrcaOptions\(\s*effectiveCollab,\s*localProviders,\s*!localProvidersLoading,?\s*\)/g,
+        /draftEnableOrcaOptions\( effectiveCollab, agentCatalogProviders, !deviceProvidersLoading, true, \/\/ [^\n]*? effectiveAgentDeviceId \?\? null, \)/g,
       ) ?? [],
-    ).toHaveLength(4);
+    ).toHaveLength(2);
+    // 本机 / SSH 仍按控制端目录收窄。五条创建即发送/目标路径都要求 deferred handoff;
+    // 「添加远程项目」只迁移未发送的 composer 草稿,不能提前派 Worker 任务。
+    expect(
+      collapsed.match(
+        /draftEnableOrcaOptions\( effectiveCollab, localProviders, !localProvidersLoading, true, \)/g,
+      ) ?? [],
+    ).toHaveLength(3);
+    expect(
+      collapsed.match(
+        /draftEnableOrcaOptions\(\s*effectiveCollab, localProviders, !localProvidersLoading\)/g,
+      ) ?? [],
+    ).toHaveLength(1);
   });
 
   it('re-validates the worker agent against the target device catalog', () => {
@@ -241,7 +252,7 @@ describe('NewMakerDraftRoute Orca worker create order', () => {
     // 透传过去必撞被控端 NO_PROVIDER_FOR_AGENT,协同又静默降级成单会话。
     const fn = source.slice(
       source.indexOf('function draftEnableOrcaOptions('),
-      source.indexOf('const createAgentQuickStarts'),
+      source.indexOf('async function rehomeDraftAttachments('),
     );
     expect(fn).toContain('const preferredAgent');
     // 按目标设备目录判断:首选 agent 无已连接供应商时,从三种 agent 中找可用回退。
@@ -364,8 +375,10 @@ describe('NewMakerDraftRoute Orca worker create order', () => {
       expect(send).toBeLessThan(unlock);
       // sendMessage 失败时 resolve false 而不抛错 —— 必须 await 且经 deliver 判定,
       // 裸调 + 立刻丢副本会让正文从界面和磁盘上一起消失(codex P1 第五轮)。
-      expect(branch).toContain('await deliverRecoverableHandoff(sessionId, () =>');
+      expect(branch).toContain('const delivered = await deliverRecoverableHandoff(sessionId, () =>');
       expect(branch).toContain('sendMessage(');
+      expect(branch.indexOf('if (delivered) {')).toBeGreaterThan(send);
+      expect(branch).toContain('dispatchDeferredUiAssignment(sessionId, deferredUiAssignment)');
     });
 
     it('新建目标:锁从消费一路盖到 setGoal 结束,setGoal 成功后才清副本', () => {
@@ -388,6 +401,8 @@ describe('NewMakerDraftRoute Orca worker create order', () => {
       expect(awaitCollab).toBeLessThan(setGoal);
       // setGoal 抛错时副本必须留着 → 它必须包在 deliver 的回调里(抛错就到不了 forget)。
       expect(forget).toBeLessThan(setGoal);
+      expect(branch.indexOf('if (delivered) {')).toBeGreaterThan(setGoal);
+      expect(branch).toContain('dispatchDeferredUiAssignment(sessionId, deferredUiAssignment)');
       expect(setGoal).toBeLessThan(unlock);
     });
 

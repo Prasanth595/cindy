@@ -15,6 +15,10 @@ export function ghostInstallErrorKey(code: string | undefined): string {
       return 'settings.ghosts.errors.commandConflict';
     case 'GHOST_ID_RESERVED':
       return 'settings.ghosts.errors.idReserved';
+    case 'GHOST_BROKER_MANUAL_INSTALL_NOT_AUTHORIZED':
+      return 'settings.ghosts.errors.brokerManualInstallNotAuthorized';
+    case 'GHOST_BROKER_REDIRECT_PORT_REQUIRED':
+      return 'settings.ghosts.errors.brokerRedirectPortRequired';
     case 'NOT_FOUND':
       return 'settings.ghosts.errors.sourceMissing';
     default:

@@ -57,12 +57,6 @@ export interface ComposerDraft {
   /** Plugin-page handoff consumed by ChatInput after its editor hydration. */
   pendingGhostId?: string;
   /**
-   * Host-capability Plugin handoff. Kept separate from `pendingGhostId`
-   * because command Plugins expand through `ghost_call`, while capability
-   * Plugins are represented by a trusted composer atom and stay Host-owned.
-   */
-  pendingHostCapabilityGhostId?: string;
-  /**
    * One-shot routed-entry intent: hydrate this draft, then place the caret at
    * the final editable position. ChatInput consumes and clears the flag so a
    * later ordinary remount does not steal focus.
@@ -120,8 +114,10 @@ const ATTACHED_FILE_SNAPSHOT_KEYS = [
   'textContent',
   'truncated',
   'annotated',
+  'baseAnnotated',
   'annotationSourceUrl',
   'cacheUrlShared',
+  'stagedPathShared',
 ] as const;
 
 /**
@@ -220,6 +216,7 @@ const remoteOptimisticRecoveryBatchSnapshots = new WeakMap<
   Map<string, RemoteOptimisticDraftSnapshot>
 >();
 let remoteOptimisticAttachmentUrls: string[] = [];
+let botGroupOutboxAttachmentUrls: string[] = [];
 let activeDataOwnerId: string | null = null;
 
 /**
@@ -592,9 +589,6 @@ export function saveComposerTextAfterAsyncTransition(
       quotes: existing?.quotes ?? [],
       browserComments: existing?.browserComments ?? [],
       ...(existing?.pendingGhostId ? { pendingGhostId: existing.pendingGhostId } : {}),
-      ...(existing?.pendingHostCapabilityGhostId
-        ? { pendingHostCapabilityGhostId: existing.pendingHostCapabilityGhostId }
-        : {}),
       ...(existing?.focusAtEnd ? { focusAtEnd: true } : {}),
     },
     { silent: true, preserveRemoteOptimisticRecovery: true },
@@ -637,9 +631,6 @@ export function restoreRemoteOptimisticDraft(
     quotes: [],
     browserComments: currentComments,
     ...(existing?.pendingGhostId ? { pendingGhostId: existing.pendingGhostId } : {}),
-    ...(existing?.pendingHostCapabilityGhostId
-      ? { pendingHostCapabilityGhostId: existing.pendingHostCapabilityGhostId }
-      : {}),
     ...(existing?.focusAtEnd ? { focusAtEnd: true } : {}),
   };
   const rememberBatchSnapshot = (draft: ComposerDraft): void => {
@@ -733,7 +724,7 @@ export function restoreRemoteOptimisticDraft(
  * 没关系，main 侧只抽 cindy-media 指纹)。
  */
 export function getAllDraftAttachmentUrls(): string[] {
-  const urls = new Set<string>(remoteOptimisticAttachmentUrls);
+  const urls = new Set<string>([...remoteOptimisticAttachmentUrls, ...botGroupOutboxAttachmentUrls]);
   // Owner switches retain each owner's draft so switching back can restore it.
   // Protect every retained namespace as well; reporting only the active owner
   // would leave an old owner's still-restorable attachment eligible for sweep.
@@ -762,6 +753,23 @@ export function setRemoteOptimisticAttachmentUrls(urls: readonly string[]): void
     return;
   }
   remoteOptimisticAttachmentUrls = next;
+  syncDraftUrlsToMain();
+}
+
+/**
+ * Keep media held by group chat messages that left the composer but are still being
+ * sent or kept for 重试 live (botGroupOutbox.ts). A separate slot: the task outbox above
+ * replaces its own list wholesale.
+ */
+export function setBotGroupOutboxAttachmentUrls(urls: readonly string[]): void {
+  const next = [...new Set(urls)].sort();
+  if (
+    next.length === botGroupOutboxAttachmentUrls.length &&
+    next.every((url, index) => url === botGroupOutboxAttachmentUrls[index])
+  ) {
+    return;
+  }
+  botGroupOutboxAttachmentUrls = next;
   syncDraftUrlsToMain();
 }
 

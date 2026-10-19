@@ -7,6 +7,7 @@
  * continues to consume the existing Session/Message contracts.
  */
 
+import { projectNativeSessionMetadata, type NativeSessionScope } from './native-session-metadata.js';
 import fs from 'node:fs';
 import { promises as fsp } from 'node:fs';
 import { createReadStream } from 'node:fs';
@@ -18,6 +19,8 @@ import { getCurrentDbClientUserId, getDbClient } from '../localDb/client/current
 import { createLogger } from '../logger.js';
 import { normalizeWorkingDirForStorage } from '../../shared/workingDir.js';
 import { recordPrRefsForImportedMessages } from '../git-context/prRefsStore.js';
+import { commitMessageMediaRefs } from '../cindy-media/chatAttachments.js';
+import { capImportedToolResultContent } from '../../shared/toolResultPersistCap.js';
 import {
   cacheImportedBase64Image,
   importedUserContent,
@@ -103,7 +106,7 @@ export interface ClaudeCodeExternalImportResult {
   updated: number;
 }
 
-export interface ClaudeCodeExternalSessionCandidate {
+export interface ClaudeCodeExternalSessionCandidate extends NativeSessionScope {
   source: 'claude';
   id: string;
   title: string;
@@ -153,7 +156,7 @@ export async function scanExternalClaudeCodeSessions(
       });
     }
   }
-  return { roots, candidates, rejectedCount };
+  return { roots, candidates: await projectNativeSessionMetadata('cc', candidates), rejectedCount };
 }
 
 /** Import the selected external Claude Code sessions into xdt-maker's session table. */
@@ -246,19 +249,36 @@ export async function importExternalClaudeCodeMessagesForSession(sessionId: stri
     return;
   }
 
+  const rows = [];
+  for (const row of imported) {
+    if (row.role === 'tool_result' && typeof row.content === 'string') {
+      // 截断前对原文挂账:worker 里的 stringifyImportedContent 看不到 ledger。
+      await commitMessageMediaRefs({
+        sessionId,
+        role: 'tool_result',
+        content: row.content,
+      }).catch((err) => {
+        log.warn('imported tool_result media ref commit failed', {
+          sessionId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+    }
+    rows.push({
+      lineNo: row.lineNo,
+      partIndex: row.partIndex,
+      role: row.role,
+      content: capImportedToolResultContent(row.role, row.content),
+      toolUseId: row.toolUseId,
+      agentMeta: row.agentMeta,
+      createdAt: row.createdAt,
+    });
+  }
   const { changed } = await getDbClient().tx('claude.importMessages', {
     sessionId,
     importClientIdPrefix,
     sdkSessionId: session.sdkSessionId,
-    rows: imported.map((row) => ({
-      lineNo: row.lineNo,
-      partIndex: row.partIndex,
-      role: row.role,
-      content: row.content,
-      toolUseId: row.toolUseId,
-      agentMeta: row.agentMeta,
-      createdAt: row.createdAt,
-    })),
+    rows,
   });
   if (cacheScope) {
     claudeMessageImportFileCache.set(sessionId, { scope: cacheScope, path: sourceFile, ...sourceStat });
@@ -546,15 +566,20 @@ async function upsertLocalSession(summary: ClaudeCodeSessionSummary): Promise<'i
       0, '[]', 'project', ?, ?
     )
     ON CONFLICT(id) DO UPDATE SET
-      title = CASE WHEN sessions.updated_at <= excluded.updated_at THEN excluded.title ELSE sessions.title END,
-      working_dir = CASE WHEN sessions.updated_at <= excluded.updated_at THEN excluded.working_dir ELSE sessions.working_dir END,
-      workspace_kind = excluded.workspace_kind,
-      model = CASE WHEN sessions.updated_at <= excluded.updated_at THEN excluded.model ELSE sessions.model END,
-      permission_mode = CASE WHEN sessions.updated_at <= excluded.updated_at THEN excluded.permission_mode ELSE sessions.permission_mode END,
+      -- 复活语义(#3548):旧行已软删时按全新导入对待。删除动作把 updated_at
+      -- 推到删除时刻,若元数据仍按时间门保留旧值,复活行的标题/模型/权限模式/
+      -- 令牌统计会停留在首次导入的旧快照,与当前源会话不一致;updated_at 同时
+      -- 收敛回源值,后续同步不再被删除时刻挡住。非删除行为完全不变。
+      title = CASE WHEN sessions.status = 'deleted' OR sessions.updated_at <= excluded.updated_at THEN excluded.title ELSE sessions.title END,
+      working_dir = CASE WHEN sessions.status = 'archived' THEN sessions.working_dir WHEN sessions.status = 'deleted' OR sessions.updated_at <= excluded.updated_at THEN excluded.working_dir ELSE sessions.working_dir END,
+      workspace_kind = CASE WHEN sessions.status = 'archived' THEN sessions.workspace_kind ELSE excluded.workspace_kind END,
+      model = CASE WHEN sessions.status = 'deleted' OR sessions.updated_at <= excluded.updated_at THEN excluded.model ELSE sessions.model END,
+      permission_mode = CASE WHEN sessions.status = 'deleted' OR sessions.updated_at <= excluded.updated_at THEN excluded.permission_mode ELSE sessions.permission_mode END,
       sdk_session_id = excluded.sdk_session_id,
-      total_token_usage = CASE WHEN sessions.updated_at <= excluded.updated_at THEN excluded.total_token_usage ELSE sessions.total_token_usage END,
+      total_token_usage = CASE WHEN sessions.status = 'deleted' OR sessions.updated_at <= excluded.updated_at THEN excluded.total_token_usage ELSE sessions.total_token_usage END,
+      status = CASE WHEN sessions.status = 'deleted' THEN excluded.status ELSE sessions.status END,
       user_send_at = COALESCE(sessions.user_send_at, excluded.user_send_at),
-      updated_at = MAX(sessions.updated_at, excluded.updated_at)
+      updated_at = CASE WHEN sessions.status = 'deleted' THEN excluded.updated_at ELSE MAX(sessions.updated_at, excluded.updated_at) END
   `, [
     localId,
     summary.title,
@@ -1008,12 +1033,15 @@ function usageTokenCount(usage: unknown): number {
 function normalizeClaudeModel(raw: string): string {
   const model = raw.trim();
   if (!model) return '';
+  if (model.includes('opus-5-5')) return 'claude-opus-5-5';
   if (model.includes('opus-5')) return 'claude-opus-5';
   if (model.includes('opus-4-8')) return 'claude-opus-4-8';
   if (model.includes('opus-4-7')) return 'claude-opus-4-7';
   if (model.includes('opus-4-6')) return 'claude-opus-4-6';
   if (model.includes('fable-5')) return 'claude-fable-5';
+  if (model.includes('haiku-5-5')) return 'claude-haiku-5-5';
   if (model.includes('haiku-4-5')) return 'claude-haiku-4-5';
+  if (model.includes('sonnet-5-5')) return 'claude-sonnet-5-5';
   if (model.includes('sonnet-5')) return 'claude-sonnet-5';
   if (model.includes('sonnet-4-6')) return 'claude-sonnet-4-6';
   // 历史会话里的裸 'sonnet' 别名(修复前 toSdkModelString 的产物)实际命中的是 4.6。

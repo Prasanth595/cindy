@@ -110,6 +110,11 @@ export interface Capabilities {
    */
   extraDirs: CapabilityStatus;
   /**
+   * Session 附加可读写目录。与 extraDirs 的只读授权严格分离；旧会话只含
+   * extraDirs 时不得因此获得写权限。
+   */
+  writableDirs?: CapabilityStatus;
+  /**
    * 会话导出为 HTML —— pi 原生 export_html RPC(自带 export-html 渲染器,离线、无网关)。
    * 支持时 handle 实现 exportSessionHtml;UI 据此决定是否显示「导出 HTML」入口。
    * CC/Codex 无对应能力(缺省视为不支持)。
@@ -241,6 +246,11 @@ export interface ModelDescriptor {
   effortDisplayNames?: Partial<Record<Effort, string>>;
   /** 该模型默认 effort; null = 不支持 effort。 */
   defaultEffort: Effort | null;
+  /**
+   * true = 目录里没有任何来源声明过该模型的 effort 能力(自定义来源只填了 id/name 等)。
+   * 这时 `efforts: []` 只是占位,不等于「明确无档位」;准入校验不应据此拒绝显式档位(#5535)。
+   */
+  effortsUnknown?: boolean;
   /**
    * 该模型是否支持 Fast Mode (Claude 1M context 通道 / Codex priority service tier)。
    * UI 据此显示 / 隐藏 Fast Mode 开关, 不再自己 startsWith 解析 model id。

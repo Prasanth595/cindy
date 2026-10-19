@@ -8,7 +8,7 @@
  *  - 插件面板窗口状态(detach / attach)
  *  - 双阶段就绪握手 + visibility 刷新
  *  - 插件管理(list / reload / setEnabled / resolvePanelMedia / runtimeStates +
- *    事件订阅 onChanged / onRuntimeChanged / onPreviewMedia)
+ *    事件订阅 onChanged / onRuntimeChanged / onLibraryReplaced / onPreviewMedia)
  *  - 面板产物右键菜单媒体动作(copyMediaToClipboard / showItemInFolder)
  *  - 面板拖拽引渡落会话附件(cacheMediaForSession)
  *
@@ -17,10 +17,10 @@
 
 import { contextBridge, ipcRenderer } from 'electron';
 
-import type { AppearanceSettings } from '../shared/appearanceSettings';
+import { createAppearanceSnapshotBridge } from './appearanceSnapshot';
 import type { LocalThemesResult } from '../shared/local-themes';
 import type { GhostPanelWindowsState } from '../shared/ghostPanelWindow';
-import { isValidGhostId } from '../shared/ghost';
+import { isValidPluginStoragePart } from '../shared/pluginIdentity';
 import { DEFAULT_LOCALE, SUPPORTED_LOCALES, type SupportedLocale } from '../shared/locale';
 import {
   GHOST_PANEL_WINDOW_CLOSE_REQUESTED_CHANNEL,
@@ -54,7 +54,7 @@ function onPayload<T>(channel: string, cb: (payload: T) => void): Unsub {
 
 const currentGhostPanelId = (() => {
   const raw = new URLSearchParams(window.location.search).get('ghostPanelWindow');
-  return isValidGhostId(raw) ? raw : null;
+  return isValidPluginStoragePart(raw) ? raw : null;
 })();
 
 function mutationErrorForGhostPanel(id: string): Error | null {
@@ -75,6 +75,7 @@ function fanOut(channel: string): (cb: (payload: unknown) => void) => Unsub {
 
 const fanOutGhostsChanged = fanOut('ghosts:changed');
 const fanOutGhostRuntimeChanged = fanOut('ghosts:runtime-changed');
+const fanOutGhostLibraryReplaced = fanOut('ghosts:library-replaced');
 const fanOutGhostPreviewMedia = fanOut('ghosts:preview-media');
 
 function onCurrentGhostBadge(
@@ -114,9 +115,10 @@ function onCurrentGhostUnreadSnapshot(
   return () => ipcRenderer.removeListener('ghosts:unread-snapshot', listener);
 }
 
-const appearanceSettings = ipcRenderer.sendSync(
-  'appearance-settings:get-sync',
-) as AppearanceSettings | null;
+const appearanceSnapshot = createAppearanceSnapshotBridge({ wallpaperAssets: true });
+
+const fanOutFullscreenChange = (cb: (isFullscreen: boolean) => void): Unsub =>
+  onPayload('fullscreen-change', cb);
 
 contextBridge.exposeInMainWorld('electronAPI', {
   platform: process.platform,
@@ -131,11 +133,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   ): void => ipcRenderer.send('renderer:log', level, scope, msg),
   onLocaleChanged: (cb: (locale: SupportedLocale) => void): Unsub =>
     onPayload(GHOST_PANEL_WINDOW_LOCALE_CHANGED_CHANNEL, cb),
-  appearanceSettings: {
-    getSync: (): AppearanceSettings | null => appearanceSettings,
-    onChanged: (cb: (settings: AppearanceSettings) => void): Unsub =>
-      onPayload('appearance-settings:changed', cb),
-  },
+  appearanceSettings: appearanceSnapshot,
   localThemes: {
     listSync: (): LocalThemesResult => {
       try {
@@ -156,6 +154,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.send('theme:apply-vibrancy', { familyId, isDark });
     },
   },
+  // Shared panel chrome may need this when a detached plugin window is used
+  // on macOS, where the traffic-light area changes during native fullscreen.
+  onFullscreenChange: fanOutFullscreenChange,
+  getFullscreenState: (): Promise<boolean> => ipcRenderer.invoke('get-fullscreen-state'),
 
   // ── 媒体操作（面板产物右键菜单 / 拖拽引渡） ──────────────────────────
   // 与主 preload 同款 channel，main 侧 handler 对所有受信 renderer 生效。
@@ -239,19 +241,25 @@ contextBridge.exposeInMainWorld('electronAPI', {
       return ipcRenderer.invoke('ghosts:reload', id);
     },
     /** 启用/停用（面板错误态「关闭」按钮）。 */
-    setEnabled: (id: string, enabled: boolean): Promise<{ ok: true }> => {
+    setEnabled: (id: string, enabled: boolean, expectedInstalledApproval?: string): Promise<{ ok: true }> => {
       const error = mutationErrorForGhostPanel(id);
       if (error) return Promise.reject(error);
-      return ipcRenderer.invoke('ghosts:set-enabled', id, enabled);
+      return ipcRenderer.invoke('ghosts:set-enabled', id, enabled, expectedInstalledApproval);
     },
     /** 解析面板媒体 URI → cindy-media:// 地址（右键菜单 / 拖拽引渡）。 */
     resolvePanelMedia: (
       uri: string,
       purpose?: 'attach' | 'menu',
+      instanceId?: string,
+      sourceToken?: string,
     ): Promise<
       | { url: string; kind?: 'image' }
       | { url: string; kind: 'video'; absPath: string; size: number; name: string; ext: string; mimeType: string }
-    > => ipcRenderer.invoke('ghosts:resolve-panel-media', uri, purpose),
+    > => sourceToken !== undefined
+      ? ipcRenderer.invoke('ghosts:resolve-panel-media', uri, purpose, instanceId, sourceToken)
+      : instanceId === undefined
+        ? ipcRenderer.invoke('ghosts:resolve-panel-media', uri, purpose)
+        : ipcRenderer.invoke('ghosts:resolve-panel-media', uri, purpose, instanceId),
     /** 运行时状态快照（面板崩溃/熔断错误态接管）。 */
     runtimeStates: (): Promise<{ states: Record<string, string> }> =>
       ipcRenderer.invoke('ghosts:runtime-states'),
@@ -260,6 +268,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     onChanged: fanOutGhostsChanged,
     /** 插件运行时状态变化（crashed / fused / off 等）。 */
     onRuntimeChanged: fanOutGhostRuntimeChanged,
+    onLibraryReplaced: fanOutGhostLibraryReplaced,
     /** 面板点图/视频预览（宿主弹 lightbox）。 */
     onPreviewMedia: fanOutGhostPreviewMedia,
     /** 未读角标快照（ghostUnreadStore 首帧）。 */

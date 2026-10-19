@@ -1,3 +1,7 @@
+import { VideoSitePreview } from './VideoSitePreview';
+import { youtubeVideo } from '@cindy/maker-shared/rich-answer';
+import { splitRichAnswer, richMediaSource, richMarkdown, richString, type RichNode } from '@cindy/maker-shared/rich-answer';
+import { RichAnswer } from './RichAnswer';
 /**
  * MarkdownRenderer
  * ---------------------------------------------------------------------------
@@ -11,12 +15,17 @@
  *   into Markdown image nodes before HTML filtering.
  */
 
-import { createElement, memo, useCallback, useEffect, useRef, useState, useMemo, isValidElement, type AnimationEvent as ReactAnimationEvent, type HTMLAttributes, type ReactNode } from 'react';
+import { Tip } from '@/components/ui/tooltip';
+import { useImageLoadFailure } from './useImageLoadFailure';
+import { ChatLoadingImage } from './ChatLoadingImage';
+import { FileTypeIcon } from '@/components/ui/file-type-icon';
+import { CHAT_CODE_CLASS, CHAT_CODE_SURFACE_CLASS, CHAT_ICON_BUTTON_CLASS } from './chatChrome';
+import { createElement, memo, useId, useCallback, useEffect, useRef, useState, useMemo, isValidElement, type HTMLAttributes, type ReactNode } from 'react';
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkCjkFriendly from 'remark-cjk-friendly';
 import remarkMath from 'remark-math';
-import rehypeHighlight from 'rehype-highlight';
+import { rehypeHighlightShared } from './rehypeHighlightShared';
 import rehypeKatex from 'rehype-katex';
 import rehypeSlug from 'rehype-slug';
 import 'katex/dist/katex.min.css';
@@ -34,17 +43,21 @@ import { rehypeMathBlockMarker } from './rehypeMathBlockMarker';
 import { FENCED_CODE_PROP, rehypeFencedCodeMarker } from './rehypeFencedCodeMarker';
 import {
   getOrCreateWordFadeState,
-  markSettledFromAnimationEnd,
   releaseWordFadeState,
-  rehypeStreamWordFade,
 } from './rehypeStreamWordFade';
 import { repairStreamingMarkdown } from './repairStreamingMarkdown';
+import { StreamingMarkdownChunk } from './StreamingMarkdownChunk';
+import {
+  getStreamingMarkdownThrottleInterval,
+  splitStreamingMarkdownChunks,
+  STREAMING_MARKDOWN_THROTTLE_BASE_MS,
+} from './streamingMarkdownChunks';
 import { useReducedMotion } from '@/hooks/useReducedMotion';
 import { useStreamFadeEnabled } from '@/hooks/useStreamFadePreference';
 import { CopyAsImageBlock, mathBlockToLatex, tableToTsv } from './CopyAsImageBlock';
 import type { Components, UrlTransform } from 'react-markdown';
 import type { PluggableList } from 'unified';
-import { Check, Copy, FolderOpen } from 'lucide-react';
+import { Check, Copy, FolderOpen, ArrowUpRight } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { cn, basename } from '@/lib/utils';
@@ -85,7 +98,7 @@ import {
   peekRemotePathVerdict,
   peekRemotePathVerdictForRender,
   remotePathVerdictKey,
-  revealRemoteChatFile,
+  downloadRemoteChatEntry,
   subscribeRemotePathVerdictChange,
   verifyRemotePathCached,
 } from '@/lib/remoteFileOpen';
@@ -104,8 +117,11 @@ import { SessionHandoffCard } from './SessionHandoffCard';
 import { SessionLinkChip } from './SessionLinkChip';
 import { ProjectLinkChip } from './ProjectLinkChip';
 import { ImageLightbox } from './ImageLightbox';
+import { useImageClipboard } from './useImageClipboard';
 import { ImageHoverPreview } from './ImageHoverPreview';
 import { ImageMissingPlaceholder } from './ImageMissingPlaceholder';
+import { ChatVideoView } from './ChatVideoView';
+import { isManagedMarkdownVideoUrl, markdownMediaFilename } from './markdownMedia';
 import { MarkdownDiffBlock } from './MarkdownDiffBlock';
 import { MarkdownMermaidBlock } from './MarkdownMermaidBlock';
 import { TextLightbox } from './TextLightbox';
@@ -114,9 +130,11 @@ import { useFileChipContextMenu } from './useFileChipContextMenu';
 import {
   isHtmlFilePath,
   openHtmlFileByPreference,
-  openUrlByPreference,
+  activateMessageUrl,
   useOpenWithMenu,
 } from './useOpenWithMenu';
+import { activateInlineLinkFromKeyboard } from './linkInteraction';
+import { useLinkContextMenu } from './useLinkContextMenu';
 
 /**
  * Recursively flatten an arbitrary react-markdown children tree into a
@@ -201,7 +219,7 @@ function isMermaidCodeChild(child: ReactNode): boolean {
 // remarkHtmlImages(<img> HTML → mdast image)与 remarkLocalPathLinks(正文裸路径
 // → link)。remarkSessionLinks 产出的 cindy:// 深链带 scheme,被它的判据跳过,
 // 顺序无关。
-const REMARK_PLUGINS: PluggableList = [
+export const REMARK_PLUGINS: PluggableList = [
   [remarkGfm, { singleTilde: false }],
   remarkCjkFriendly,
   remarkMath,
@@ -211,7 +229,7 @@ const REMARK_PLUGINS: PluggableList = [
   remarkLocalPathLinks,
   remarkPreserveRawLocalDestinations,
 ];
-const REMARK_PLUGINS_PRIVILEGED: PluggableList = [
+export const REMARK_PLUGINS_PRIVILEGED: PluggableList = [
   [remarkGfm, { singleTilde: false }],
   remarkCjkFriendly,
   remarkMath,
@@ -228,7 +246,7 @@ const REMARK_PLUGINS_PRIVILEGED: PluggableList = [
 // rehypeKatex 必须排在 rehypeHighlight 之前:remark-math 产出的 hast 是
 // `<code class="language-math ...">`,先让 katex 消费掉,否则 highlight 会往
 // 里面塞 hljs span 破坏纯文本结构。strict:'ignore' 静默非致命 LaTeX 告警;
-// errorColor 走语义豁免 error token,解析失败的公式以错误色显示原文。
+// 解析失败的公式回落为正文色原文,避免模型格式错误把普通聊天染成错误红。
 // rehypeMathBlockMarker 紧随 rehypeKatex:把裸 `<span class="katex-display">`
 // 包进 `<div data-math-block>`,让下方 div 渲染器能挂「复制为图片」工具栏
 // (components 映射只认 tagName,认不了 class)。
@@ -237,11 +255,19 @@ const REMARK_PLUGINS_PRIVILEGED: PluggableList = [
 // 打 data-fenced-code 供下方 code 渲染器按结构(而非语言标注)分派。
 const REHYPE_PLUGINS: PluggableList = [
   rehypeSlug,
-  [rehypeKatex, { strict: 'ignore', errorColor: 'var(--error-fg)' }],
+  [rehypeKatex, { strict: 'ignore', errorColor: 'inherit' }],
   rehypeMathBlockMarker,
-  rehypeHighlight,
+  rehypeHighlightShared,
   rehypeFencedCodeMarker,
 ];
+
+/** MarkdownRenderer 与所有“实际是否渲染”判定共用的输入归一化。 */
+export function normalizeMarkdownRendererContent(
+  content: string,
+  preserveLineCount = false,
+): string {
+  return normalizeMathDelimiters(content, { preserveLineCount });
+}
 /**
  * 聊天正文里一切「可点」的行内元素共用这一套外观:**正文色 + 常显下划线**。
  *
@@ -279,14 +305,16 @@ const INLINE_CODE_CLASS = 'font-mono text-14 rounded-[6px] px-[0.4em] py-[0.2em]
 const WINDOWS_ABSOLUTE_HREF_RE = /^[A-Za-z]:[\\/]/;
 
 // react-markdown's defaultUrlTransform whitelists only http(s)/ircs/mailto/xmpp
-// and strips everything else to "" (broken <img>). We render local-cache images
-// via the privileged xdt-image:// and xdt-file:// schemes registered in main.
+// and strips everything else to "" (broken <img>). We render local-cache media
+// via the privileged xdt-image:// / xdt-video:// and xdt-file:// schemes
+// registered in main.
 // cindy:// (+ 历史 xdt-maker://) is our internal deep-link protocol (session /
 // project navigation), handled in-renderer by the <a> onClick below — must pass
 // through unsanitized so href reaches the click handler intact.
 const trustedUrlTransform: UrlTransform = (url, key) => {
   if (
     url.startsWith('xdt-image://') ||
+    url.startsWith('xdt-video://') ||
     url.startsWith('cindy-media://') ||
     url.startsWith('xdt-file://') ||
     url.startsWith('xdt-audio://') ||
@@ -308,12 +336,13 @@ const previewSafeUrlTransform: UrlTransform = (url, key) => {
 };
 
 interface MarkdownRendererProps {
+  renderRichAnswers?: boolean;
   /** F1: session cwd used to resolve relative paths in markdown links.
    *  Stable per-session — only changes on session switch (parent remount). */
   workingDir: string;
   content: string;
-  /** When true, react-markdown re-parse + rehype-highlight runs at most
-   *  ~10fps via useStreamingThrottle. The final value is always flushed
+  /** When true, react-markdown re-parse + rehype-highlight is rate-limited
+   *  (10fps for short content, slower for long documents). The final value is always flushed
    *  synchronously when this flag flips back to false, so the completed
    *  message never misses its last token. Default false (static content
    *  paths like TextLightbox bypass the throttle entirely). */
@@ -374,8 +403,8 @@ function parseSessionCardHref(href: string): {
 }
 
 /**
- * Throttle a rapidly-changing string to at most one render per
- * `intervalMs`. Caps react-markdown re-parse + rehype-highlight CPU
+ * Throttle a rapidly-changing string to at most one render per adaptive
+ * interval. Caps react-markdown re-parse + rehype-highlight CPU
  * during SDK streaming, where text deltas can land 30-60 times/s even
  * after the main-process IPC batcher.
  *
@@ -385,11 +414,22 @@ function parseSessionCardHref(href: string): {
  *   guaranteed (no-token-lost). Switching back to false flushes the
  *   latest value synchronously.
  */
-function useStreamingThrottle(value: string, enabled: boolean, intervalMs = 100): string {
+function useStreamingThrottle(value: string, enabled: boolean): string {
+  const intervalMs = enabled
+    ? getStreamingMarkdownThrottleInterval(value)
+    : STREAMING_MARKDOWN_THROTTLE_BASE_MS;
   const [throttled, setThrottled] = useState(value);
+  const throttledRef = useRef(value);
   const latestRef = useRef(value);
   const lastEmitRef = useRef(0);
   const timerRef = useRef<number | null>(null);
+
+  const emit = useCallback((nextValue: string, now: number) => {
+    lastEmitRef.current = now;
+    if (throttledRef.current === nextValue) return;
+    throttledRef.current = nextValue;
+    setThrottled(nextValue);
+  }, []);
 
   useEffect(() => {
     latestRef.current = value;
@@ -401,27 +441,39 @@ function useStreamingThrottle(value: string, enabled: boolean, intervalMs = 100)
       }
       // Stream just ended — flush whatever the most recent value is so
       // the final frame is never the last throttled snapshot.
-      if (throttled !== value) setThrottled(value);
+      if (throttledRef.current !== value) {
+        throttledRef.current = value;
+        setThrottled(value);
+      }
+      // A new stream should get a leading frame even if it starts shortly
+      // after the previous one ended.
+      lastEmitRef.current = 0;
       return;
     }
 
     const now = performance.now();
     const elapsed = now - lastEmitRef.current;
     if (elapsed >= intervalMs) {
-      lastEmitRef.current = now;
-      setThrottled(value);
+      if (timerRef.current != null) {
+        window.clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+      emit(value, now);
       return;
     }
-    if (timerRef.current == null) {
-      timerRef.current = window.setTimeout(() => {
+
+    // Re-arm on every update so an interval bucket change cannot leave a
+    // timer using the previous (shorter) delay. The latest ref keeps the
+    // trailing edge lossless even when several batches arrive in between.
+    if (timerRef.current != null) window.clearTimeout(timerRef.current);
+    timerRef.current = window.setTimeout(
+      () => {
         timerRef.current = null;
-        lastEmitRef.current = performance.now();
-        setThrottled(latestRef.current);
-      }, intervalMs - elapsed);
-    }
-    // No new timer needed — an in-flight one will pick up latestRef
-    // when it fires.
-  }, [value, enabled, intervalMs, throttled]);
+        emit(latestRef.current, performance.now());
+      },
+      Math.max(0, intervalMs - elapsed),
+    );
+  }, [emit, value, enabled, intervalMs]);
 
   useEffect(() => {
     return () => {
@@ -429,7 +481,9 @@ function useStreamingThrottle(value: string, enabled: boolean, intervalMs = 100)
     };
   }, []);
 
-  return throttled;
+  // useEffect 在 paint 后才执行。流式结束时本次 render 直接返回最新原文，
+  // effect 只负责同步内部 state，供未来可能的新流式周期使用。
+  return enabled ? throttled : value;
 }
 
 /**
@@ -471,11 +525,9 @@ function CodeBlockPre({ children, ...props }: HTMLAttributes<HTMLPreElement>) {
       <pre
         ref={preRef}
         className={cn(
-          'rounded-[12px]',
-          'border border-[var(--msg-code-block-border)]',
-          'bg-[var(--msg-code-block-bg)]',
-          'p-4 font-mono text-[length:var(--app-code-font-size)] leading-[1.5]',
-          'select-text',
+          CHAT_CODE_SURFACE_CLASS,
+          CHAT_CODE_CLASS,
+          'p-4',
           // 取消横向滚动:长行/长 token 自动折行,避免出现横滚条
           'whitespace-pre-wrap break-all',
         )}
@@ -483,22 +535,23 @@ function CodeBlockPre({ children, ...props }: HTMLAttributes<HTMLPreElement>) {
       >
         {children}
       </pre>
-      <button
-        type="button"
-        onClick={handleCopy}
-        aria-label={copied ? t('chat.markdownRenderer.codeCopied') : t('chat.markdownRenderer.copyCode')}
-        title={copied ? t('chat.markdownRenderer.codeCopied') : t('chat.markdownRenderer.copy')}
-        className={cn(
-          'absolute right-2 top-2 inline-flex h-7 w-7 items-center justify-center',
-          'rounded-md border border-[var(--msg-code-block-border)]',
-          'bg-[var(--msg-code-block-bg)] text-[var(--msg-tool-text)]',
-          'opacity-0 transition-opacity duration-150',
-          'group-hover:opacity-100 focus-visible:opacity-100',
-          'hover:bg-[var(--cmd-palette-item-hover)] hover:text-[var(--msg-assistant-text)]',
-        )}
-      >
-        {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-      </button>
+      <Tip text={copied ? t('chat.markdownRenderer.codeCopied') : t('chat.markdownRenderer.copyCode')}>
+        <button
+          type="button"
+          onClick={handleCopy}
+          aria-label={copied ? t('chat.markdownRenderer.codeCopied') : t('chat.markdownRenderer.copyCode')}
+          className={cn(
+            CHAT_ICON_BUTTON_CLASS,
+            'absolute right-2 top-2 h-7 w-7 border border-[var(--msg-code-block-border)]',
+            'bg-[var(--msg-code-block-bg)] text-[var(--msg-tool-text)]',
+            'opacity-0 transition-[color,background-color,opacity] duration-[var(--motion-fast)]',
+            'group-hover:opacity-100 focus-visible:opacity-100',
+            'enabled:hover:bg-[var(--cmd-palette-item-hover)] enabled:hover:text-[var(--msg-assistant-text)]',
+          )}
+        >
+          {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+        </button>
+      </Tip>
     </div>
   );
 }
@@ -661,10 +714,9 @@ const baseComponents: Components = {
     return <h6 className="text-[var(--md-h6-fg)]" {...props}>{children}</h6>;
   },
 
-  // 加粗:同上,只接颜色 token。font-weight 仍由 Tailwind preflight 的
-  // `b, strong { font-weight: bolder }` 提供,这里不覆盖。
+  // Content strong is absolute 700: nested emphasis must not accumulate to 900.
   strong({ children, ...props }) {
-    return <strong className="text-[var(--md-strong-fg)]" {...props}>{children}</strong>;
+    return <strong className="font-bold text-[var(--md-strong-fg)]" {...props}>{children}</strong>;
   },
 
   // Blockquote
@@ -799,53 +851,43 @@ function LightboxImage({
   src,
   alt,
   onZoom,
+  streaming = false,
   ...props
 }: {
   src?: string;
   alt?: string;
   onZoom: (src: string) => void;
+  streaming?: boolean;
   [key: string]: unknown;
 }) {
   const { t } = useTranslation();
-  const [hasError, setHasError] = useState(false);
+  const { status: imageStatus, onError } = useImageLoadFailure(src, streaming);
   // Right-click → custom popover menu. We track cursor pos so a 0×0 virtual
   // trigger can anchor the Radix DropdownMenu wherever the user clicked.
   const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
 
+  const { canCopy, canReveal: canRevealInFolder, copyImage, revealImage } = useImageClipboard(src ?? '');
+  const showMenu = canCopy || canRevealInFolder;
+
   // image-local-cache F4: when the underlying file is missing (cache cleared,
   // xdt-image:// 404, etc.), swap to the friendly placeholder card. The
   // filename is best-effort: derive it from the URL's last segment.
-  if (hasError) {
-    const fallbackName = src
-      ? decodeURIComponent(src.split(/[\\/]/).pop() ?? 'image')
-      : 'image';
-    return <ImageMissingPlaceholder filename={alt || fallbackName} />;
+  if (imageStatus) {
+    let fallbackName = src?.split(/[\\/]/).pop() ?? 'image';
+    try { fallbackName = decodeURIComponent(fallbackName); } catch { /* malformed link */ }
+    return <ImageMissingPlaceholder filename={alt || fallbackName} status={imageStatus} />;
   }
 
-  // Only locally-managed images (xdt-image:// / cindy-media://) have a
-  // meaningful "open folder" target. Remote https:// images skip the menu.
-  const canRevealInFolder =
-    !!src && (src.startsWith('xdt-image://') || src.startsWith('cindy-media://'));
   const zoomLabel = alt || t('chat.media.clickToZoom');
 
   async function handleRevealInFolder(): Promise<void> {
-    if (!src) return;
-    const res = await window.electronAPI.showItemInFolder({ url: src });
-    if (!res.success) {
-      toast.error(res.error ?? t('chat.media.openFolderFailed'));
-    }
     setMenuPos(null);
+    await revealImage();
   }
 
   async function handleCopyImage(): Promise<void> {
-    if (!src) return;
-    const res = await window.electronAPI.copyMediaToClipboard({ url: src });
-    if (res.success) {
-      toast.success(t('chat.media.imageCopied'));
-    } else {
-      toast.error(res.error ?? t('chat.media.copyFailed'));
-    }
     setMenuPos(null);
+    await copyImage();
   }
 
   return (
@@ -860,21 +902,21 @@ function LightboxImage({
           if (src) onZoom(src);
         }}
         onContextMenu={(e) => {
-          if (!canRevealInFolder) return;
+          if (!showMenu) return;
           e.preventDefault();
           e.stopPropagation();
           setMenuPos({ x: e.clientX, y: e.clientY });
         }}
       >
-        <img
+        <ChatLoadingImage
           src={src}
           alt={alt ?? ''}
           style={{ maxWidth: 'min(100%, 50vw, 480px)', maxHeight: 'min(40vh, 420px)', height: 'auto' }}
-          onError={() => setHasError(true)}
+          onError={onError}
           {...props}
         />
       </button>
-      {canRevealInFolder ? (
+      {showMenu ? (
         <DropdownMenu
           open={menuPos !== null}
           onOpenChange={(open) => {
@@ -896,14 +938,18 @@ function LightboxImage({
             />
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" sideOffset={2}>
-            <DropdownMenuItem onClick={handleCopyImage}>
-              <Copy className="mr-2 h-4 w-4" />
-              {t('chat.media.copyImage')}
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={handleRevealInFolder}>
-              <FolderOpen className="mr-2 h-4 w-4" />
-              {t('chat.media.revealImage')}
-            </DropdownMenuItem>
+            {canCopy && (
+              <DropdownMenuItem onClick={handleCopyImage}>
+                <Copy className="mr-2 h-4 w-4" />
+                {t('chat.media.copyImage')}
+              </DropdownMenuItem>
+            )}
+            {canRevealInFolder && (
+              <DropdownMenuItem onClick={handleRevealInFolder}>
+                <FolderOpen className="mr-2 h-4 w-4" />
+                {t('chat.media.revealImage')}
+              </DropdownMenuItem>
+            )}
           </DropdownMenuContent>
         </DropdownMenu>
       ) : null}
@@ -935,6 +981,8 @@ function localKindFromAbsPath(absPath: string, fallback: MarkdownLocalKind): Mar
 function FileTargetChip({
   resolvedAbsPath,
   localKind,
+  line,
+  column,
   onOpen,
   title,
   children,
@@ -942,6 +990,8 @@ function FileTargetChip({
 }: {
   resolvedAbsPath: string;
   localKind: MarkdownLocalKind;
+  line?: number;
+  column?: number;
   onOpen: () => void | Promise<void>;
   title?: string;
   children: ReactNode;
@@ -975,32 +1025,25 @@ function FileTargetChip({
     localKind !== 'directory' && isHtmlFilePath(resolvedAbsPath) && sessionId ? sessionId : undefined;
   const sidebarTargetSessionId = useSidebarTargetSessionId(htmlWithSession);
   const ctxMenu = useFileChipContextMenu({
+    fileName: resolvedAbsPath,
     getAbsPath: async () => resolvedAbsPath,
+    location: { absPath: resolvedAbsPath, line, column },
     canOpenInBrowser: localKind !== 'directory' && isBrowserOpenablePath(resolvedAbsPath),
     sidebarFileBrowserKind: localKind === 'directory' ? 'directory' : 'file',
     sidebarOpenSessionId: htmlWithSession,
     onViewSource: htmlWithSession ? onOpen : undefined,
   });
 
-  const activate = () => {
+  const activate = (event: React.MouseEvent<HTMLElement>) => {
     // 与输入附件一致：点击打开 lightbox 前先撤掉 hover 层，避免关闭大图后残留。
     setImagePreviewOpen(false);
-    if (htmlWithSession) {
-      if (chipRemoteOrigin) {
-        void (async () => {
-          const cachePath = await fetchChatFileWithToasts(chipRemoteOrigin, fileCtx.workingDir, resolvedAbsPath);
-          if (cachePath && sidebarTargetSessionId) {
-            await openHtmlFileByPreference(sidebarTargetSessionId, cachePath, t);
-          }
-        })();
-        return;
+    ctxMenu.onActivate(event, async () => {
+      if (htmlWithSession && sidebarTargetSessionId) {
+        await openHtmlFileByPreference(sidebarTargetSessionId, resolvedAbsPath, t, fileCtx);
+      } else {
+        await onOpen();
       }
-      if (sidebarTargetSessionId) {
-        void openHtmlFileByPreference(sidebarTargetSessionId, resolvedAbsPath, t);
-      }
-      return;
-    }
-    void onOpen();
+    });
   };
 
   return (
@@ -1011,17 +1054,13 @@ function FileTargetChip({
         tabIndex={0}
         title={title}
         onClick={activate}
+        onAuxClick={(event) => { if (event.button === 1) activate(event); }}
         onContextMenu={ctxMenu.onContextMenu}
         onPointerEnter={() => {
           if (imagePreviewSrc) setImagePreviewOpen(true);
         }}
         onPointerLeave={() => setImagePreviewOpen(false)}
-        onKeyDown={(e) => {
-          // 换掉原生按钮元素后,键盘激活要自己补回来。
-          if (e.key !== 'Enter' && e.key !== ' ') return;
-          e.preventDefault();
-          activate();
-        }}
+        onKeyDown={activateInlineLinkFromKeyboard}
         className={cn(
           'inline rounded-[6px] border-0 px-1 py-0.5',
           'font-mono text-14 align-baseline',
@@ -1033,7 +1072,7 @@ function FileTargetChip({
           'bg-[var(--msg-md-inline-code-bg)]',
           // 刻意**不**钉 text-,与 INLINE_CODE_CLASS 一样让文字色继承上下文
           // (对齐 GitHub:`.markdown-body code` 不定义 color)。这样可点 chip 与
-          // 不可点行内 code 在任何上下文里都同色,差别只剩那条下划线;原先钉
+          // 不可点行内 code 在任何上下文里都同色;文件类型由装饰图标表达。原先钉
           // --msg-assistant-text 在助手气泡里与继承值相同,但在引用块等压暗/变色
           // 上下文里会分叉。
           // 常显下划线 = 唯一的可点信号(不是 hover 才出现)。
@@ -1043,6 +1082,9 @@ function FileTargetChip({
           'cursor-pointer hover:bg-[var(--cmd-palette-item-hover)]',
         )}
       >
+        {localKind !== 'directory' && (
+          <FileTypeIcon name={resolvedAbsPath} size={14} className="mr-1 inline-block align-[-0.125em]" />
+        )}
         {children}
       </code>
       {imagePreviewSrc ? (
@@ -1070,6 +1112,8 @@ function FileTargetChip({
 function ResolvedLocalLink({
   resolvedAbsPath,
   localKind,
+  line,
+  column,
   href,
   onOpen,
   anchorProps,
@@ -1078,6 +1122,8 @@ function ResolvedLocalLink({
 }: {
   resolvedAbsPath: string;
   localKind: MarkdownLocalKind;
+  line?: number;
+  column?: number;
   href: string;
   onOpen: () => void | Promise<void>;
   anchorProps: Record<string, unknown>;
@@ -1089,16 +1135,25 @@ function ResolvedLocalLink({
   // 同 FileTargetChip:html + 有会话上下文时左键按偏好直开,「查看源文件」
   // 与「在侧边栏浏览器中打开」并入右键菜单;其余文件左键直开预览。
   const fileCtx = useChatSessionFile();
-  const linkRemoteOrigin = isRemoteFileOrigin(fileCtx.origin) ? fileCtx.origin : null;
   const htmlWithSession =
     localKind !== 'directory' && isHtmlFilePath(resolvedAbsPath) && sessionId ? sessionId : undefined;
   const sidebarTargetSessionId = useSidebarTargetSessionId(htmlWithSession);
   const ctxMenu = useFileChipContextMenu({
+    fileName: resolvedAbsPath,
     getAbsPath: () => resolvedAbsPath,
+    location: { absPath: resolvedAbsPath, line, column },
     canOpenInBrowser: localKind !== 'directory' && isBrowserOpenablePath(resolvedAbsPath),
     sidebarFileBrowserKind: localKind === 'directory' ? 'directory' : 'file',
     sidebarOpenSessionId: htmlWithSession,
     onViewSource: htmlWithSession ? onOpen : undefined,
+  });
+
+  const activate = (event: React.MouseEvent<HTMLElement>) => ctxMenu.onActivate(event, async () => {
+    if (htmlWithSession && sidebarTargetSessionId) {
+      await openHtmlFileByPreference(sidebarTargetSessionId, resolvedAbsPath, t, fileCtx);
+      return;
+    }
+    await onOpen();
   });
 
   return (
@@ -1106,26 +1161,15 @@ function ResolvedLocalLink({
       <a
         href={href}
         className={MARKDOWN_LINK_CLASS}
-        onClick={async (e) => {
-          e.preventDefault();
-          if (htmlWithSession) {
-            if (linkRemoteOrigin) {
-              const cachePath = await fetchChatFileWithToasts(linkRemoteOrigin, fileCtx.workingDir, resolvedAbsPath);
-              if (cachePath && sidebarTargetSessionId) {
-                await openHtmlFileByPreference(sidebarTargetSessionId, cachePath, t);
-              }
-              return;
-            }
-            if (sidebarTargetSessionId) {
-              await openHtmlFileByPreference(sidebarTargetSessionId, resolvedAbsPath, t);
-            }
-            return;
-          }
-          await onOpen();
-        }}
+        onClick={activate}
+        onKeyDown={activateInlineLinkFromKeyboard}
+        onAuxClick={(event) => { if (event.button === 1) void activate(event); }}
         onContextMenu={ctxMenu.onContextMenu}
         {...anchorProps}
       >
+        {localKind !== 'directory' && nodeToText(children).trim() && (
+          <FileTypeIcon name={resolvedAbsPath} size={14} className="mr-1 inline-block align-[-0.125em]" />
+        )}
         {children}
       </a>
       {ctxMenu.menu}
@@ -1370,9 +1414,9 @@ async function activateResolvedLocalTarget(
   // 会弹"文件已损坏"的误导弹窗,定位到文件让用户拖进 DCC 才是本意。
   if (target.localKind === 'model') {
     if (remoteOrigin) {
-      // 3D 远程本期不做(xdt-model:// 无远程管线):下载缓存副本并在文件管理
-      // 器定位,不误开本机同路径文件。
-      await revealRemoteChatFile(remoteOrigin, ctx.workingDir, target.absPath);
+      // 3D 远程本期不做(xdt-model:// 无远程管线):下载到本地并在文件管理器
+      // 定位,不误开本机同路径文件。
+      await downloadRemoteChatEntry(remoteOrigin, ctx.workingDir, target.absPath);
       return;
     }
     if (/\.fbx(\?.*)?$/i.test(target.absPath)) {
@@ -1437,6 +1481,21 @@ function MarkdownTargetLink({
     return allowPrivilegedLinks ? target : stripPrivilegedMarkdownTarget(target);
   }, [href, localFileRefs, allowPrivilegedLinks]);
   const target = useResolvedMarkdownTarget(initialTarget, workingDir, isStreaming);
+  const openInlineTarget = () => {
+    if (target.kind === 'anchor') {
+      if (!target.id) return;
+      const element = document.getElementById(target.id);
+      if (element) element.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      else toast.error(t('chat.markdownRenderer.anchorNotFound'));
+    } else if (target.kind === 'local-image-url') {
+      setLightboxSrc(rewriteToRemoteMediaOrigin(target.href, remoteMediaOrigin));
+    }
+  };
+  const inlineMenu = useLinkContextMenu(href ?? '', [{
+    label: t('chat.markdownRenderer.openLink'),
+    icon: <ArrowUpRight className="mr-2 h-4 w-4" />,
+    run: openInlineTarget,
+  }]);
 
   if (target.kind === 'audio') {
     return <InlineXdtAudioPlayer src={rewriteToRemoteMediaOrigin(target.href, remoteMediaOrigin)} />;
@@ -1473,6 +1532,8 @@ function MarkdownTargetLink({
         <ResolvedLocalLink
           resolvedAbsPath={target.absPath}
           localKind={target.localKind}
+          line={target.line}
+          column={target.column}
           href={target.href}
           onOpen={openResolvedTarget}
           anchorProps={anchorProps}
@@ -1486,6 +1547,8 @@ function MarkdownTargetLink({
       <FileTargetChip
         resolvedAbsPath={target.absPath}
         localKind={target.localKind}
+        line={target.line}
+        column={target.column}
         title={target.href}
         onOpen={openResolvedTarget}
         sessionId={sessionId}
@@ -1507,52 +1570,36 @@ function MarkdownTargetLink({
     <a
       href={target.href}
       className={MARKDOWN_LINK_CLASS}
+      onKeyDown={activateInlineLinkFromKeyboard}
       onClick={async (e) => {
         e.preventDefault();
-
-        if (target.kind === 'anchor') {
-          if (!target.id) return;
-          const el = document.getElementById(target.id);
-          if (el) {
-            el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-          } else {
-            toast.error(t('chat.markdownRenderer.anchorNotFound'));
-          }
-          return;
-        }
 
         if (target.kind === 'external') {
           // 有会话上下文:左键按用户偏好直开(内置侧边栏 / 系统浏览器,设置 →
           // 个性化 → 链接打开方式);右键弹"打开方式"菜单临时选另一种。
           // 修饰键点击(macOS ⌘ / Windows Ctrl)临时强制走系统浏览器,不改偏好。
           // 无会话上下文(Market 预览等)保持原有直开默认浏览器。
-          if (openWith.isEnabled && sidebarTargetSessionId && !(e.metaKey || e.ctrlKey)) {
-            await openUrlByPreference(sidebarTargetSessionId, target.href, t);
-            return;
-          }
-          const res = await window.electronAPI.openExternal(target.href);
-          if (!res.success) toast.error(t('chat.markdownRenderer.openLinkFailed'));
+          await activateMessageUrl(e, sidebarTargetSessionId, target.href, t);
           return;
         }
-
-        if (target.kind === 'local-image-url') {
-          // 远程会话:本机媒体 scheme 链接改写到 cindy-remote-media://(同内嵌图);本地原样。
-          setLightboxSrc(rewriteToRemoteMediaOrigin(target.href, remoteMediaOrigin));
-          return;
-        }
+        openInlineTarget();
+      }}
+      onAuxClick={(event) => {
+        if (event.button !== 1) return;
+        event.preventDefault();
+        if (target.kind === 'external') void activateMessageUrl(event, sidebarTargetSessionId, target.href, t);
+        else openInlineTarget();
       }}
       onContextMenu={(e) => {
-        // 仅外链有右键"打开方式"菜单;anchor / local-image-url 保持浏览器默认右键。
-        if (target.kind !== 'external' || !openWith.isEnabled) return;
-        e.preventDefault();
-        e.stopPropagation();
-        openWith.openAt(e.clientX, e.clientY, target.href);
+        if (target.kind === 'external') openWith.onContextMenu(e, target.href);
+        else inlineMenu.onContextMenu(e);
       }}
       {...anchorProps}
     >
       {children}
     </a>
     {openWith.menu}
+    {inlineMenu.menu}
     </>
   );
 }
@@ -1605,6 +1652,8 @@ function InlineCodeWithTarget({
     <FileTargetChip
       resolvedAbsPath={target.absPath}
       localKind={target.localKind}
+      line={target.line}
+      column={target.column}
       title={target.absPath}
       onOpen={() =>
         activateResolvedLocalTarget(
@@ -1622,7 +1671,7 @@ function InlineCodeWithTarget({
   );
 }
 
-export const MarkdownRenderer = memo(function MarkdownRenderer({
+const MarkdownRendererBase = memo(function MarkdownRendererBase({
   workingDir,
   content,
   isStreaming = false,
@@ -1637,35 +1686,21 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
   // Static callers (TextLightbox) leave isStreaming undefined → false,
   // so the throttle is fully bypassed — same behavior as before.
   const throttledContent = useStreamingThrottle(content, isStreaming);
-  // 流式逐词淡入(rehypeStreamWordFade,§14.4 第五个 sanctioned motion class):
-  // 仅 isStreaming + 非 reduced-motion 时把插件挂到 rehype 链尾。state 按渲染器
-  // 实例持有(useMemo 键 isStreaming):流式期间跨 parse tick 记住每个词的 delay
-  // 保证不重播;根节点监听冒泡的 animationend 把播完的词落袋(settled),下一次
-  // parse 直接还原纯文本 —— 结构性 remount 也无从重播(双保险,详见插件头注释)。
-  // isStreaming 翻 false 时整段回落到模块级常量 REHYPE_PLUGINS —— 终版渲染无
-  // 任何 span 包装,插件、state 与监听一起被回收,静态路径零开销。
-  // 用户开关(Settings → 个性化 → 流式动效,默认开)与 reduced-motion 取 AND:
+  // 流式逐词淡入（DESIGN.md §14.4）：消息级 state 跨 parse / remount 保留，
+  // 各稳定 Markdown 分片只维护自己的内容匹配状态，但共享同一条连续时间线。
+  // isStreaming 翻 false 时整段回落到普通 Markdown，终版没有流式 span 包装。
+  // 用户开关(Settings → 外观 → 回复动效,默认开)与 reduced-motion 取 AND:
   // 系统级减弱动效永远优先,开关只在 motion 允许的前提下再做个人选择。
   const reducedMotion = useReducedMotion();
   const streamFadeEnabled = useStreamFadeEnabled();
   const streamFade = isStreaming && !reducedMotion && streamFadeEnabled;
-  const wordFade = useMemo(() => {
+  const wordFadeState = useMemo(() => {
     if (!streamFade) return null;
-    const state = getOrCreateWordFadeState(streamFadeKey);
-    return {
-      state,
-      plugins: [...REHYPE_PLUGINS, [rehypeStreamWordFade, state]] as PluggableList,
-    };
+    return getOrCreateWordFadeState(streamFadeKey);
   }, [streamFade, streamFadeKey]);
   useEffect(() => {
     if (!isStreaming) releaseWordFadeState(streamFadeKey);
   }, [isStreaming, streamFadeKey]);
-  const rehypePlugins = wordFade?.plugins ?? REHYPE_PLUGINS;
-  const handleWordFadeAnimationEnd = useMemo(() => {
-    if (!wordFade) return undefined;
-    return (event: ReactAnimationEvent<HTMLDivElement>) =>
-      markSettledFromAnimationEnd(wordFade.state, event.nativeEvent);
-  }, [wordFade]);
   // LaTeX 定界符归一化(`\(...\)` / `\[...\]` → `$...$` / `$$...$$`)。
   // emitSourceLines(TextLightbox 行锚点 doc 模式,依赖 data-source-line 与
   // 源文件行号一致)时走保行数模式:单行 inline 照常转换(同行替换不改行
@@ -1680,8 +1715,15 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
     [throttledContent, streamFade],
   );
   const renderedContent = useMemo(
-    () => normalizeMathDelimiters(repairedContent, { preserveLineCount: emitSourceLines }),
+    () => normalizeMarkdownRendererContent(repairedContent, emitSourceLines),
     [repairedContent, emitSourceLines],
+  );
+  const streamingChunks = useMemo(
+    () =>
+      isStreaming && !emitSourceLines
+        ? splitStreamingMarkdownChunks(renderedContent)
+        : [{ start: 0, content: renderedContent }],
+    [emitSourceLines, isStreaming, renderedContent],
   );
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
   // 远程入方向:远程会话里 markdown 的图片/音频 URL 指向远端机器,按来源改写到
@@ -1709,7 +1751,6 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
   } | null>(null);
   // model-local chip/link click → in-app 3D preview (ModelLightbox, local mode).
   const [modelLightboxPath, setModelLightboxPath] = useState<string | null>(null);
-
   // workingDir and localFileRefs are stable within a session lifecycle — they
   // only change on session switch or when the message list gains a new user
   // attachment. So in steady-state streaming, the components object is still
@@ -1728,10 +1769,23 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
           workingDir,
           allowPrivilegedLinks,
         );
+        if (isManagedMarkdownVideoUrl(normalized)) {
+          // 远程会话里视频 URL 同样指向远端机器，先按来源改写到 cindy-remote-media://
+          // 再交给 ChatVideoView(与下面的图片分支同一条改写路径)。
+          return (
+            <ChatVideoView
+              src={rewriteToRemoteMediaOrigin(normalized, remoteMediaOrigin)}
+              filename={markdownMediaFilename(normalized, alt)}
+              variant="tool-output"
+              sessionId={currentSessionId}
+            />
+          );
+        }
         const imageProps = { ...props };
         delete (imageProps as Record<string, unknown>)[RAW_LOCAL_IMAGE_SRC_PROP];
         return (
           <LightboxImage
+            streaming={isStreaming}
             src={normalized ? rewriteToRemoteMediaOrigin(normalized, remoteMediaOrigin) : normalized}
             alt={alt}
             onZoom={setLightboxSrc}
@@ -1875,16 +1929,37 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
   );
 
   return (
-    <div className="msg-markdown select-text" onAnimationEnd={handleWordFadeAnimationEnd}>
-      <ReactMarkdown
-        remarkPlugins={allowPrivilegedLinks ? REMARK_PLUGINS_PRIVILEGED : REMARK_PLUGINS}
-        rehypePlugins={rehypePlugins}
-        components={components}
-        urlTransform={allowPrivilegedLinks ? trustedUrlTransform : previewSafeUrlTransform}
-        skipHtml
-      >
-        {renderedContent}
-      </ReactMarkdown>
+    <div className="msg-markdown select-text">
+      {isStreaming ? (
+        streamingChunks.map((chunk) => (
+          <StreamingMarkdownChunk
+            key={chunk.start}
+            sourceKey={String(chunk.start)}
+            content={chunk.content}
+            remarkPlugins={
+              allowPrivilegedLinks ? REMARK_PLUGINS_PRIVILEGED : REMARK_PLUGINS
+            }
+            rehypePlugins={REHYPE_PLUGINS}
+            components={components}
+            urlTransform={
+              allowPrivilegedLinks ? trustedUrlTransform : previewSafeUrlTransform
+            }
+            wordFadeState={wordFadeState}
+            emitSourceLines={emitSourceLines}
+            wholeDocument={streamingChunks.length === 1}
+          />
+        ))
+      ) : (
+        <ReactMarkdown
+          remarkPlugins={allowPrivilegedLinks ? REMARK_PLUGINS_PRIVILEGED : REMARK_PLUGINS}
+          rehypePlugins={REHYPE_PLUGINS}
+          components={components}
+          urlTransform={allowPrivilegedLinks ? trustedUrlTransform : previewSafeUrlTransform}
+          skipHtml
+        >
+          {renderedContent}
+        </ReactMarkdown>
+      )}
       {lightboxSrc && (
         <ImageLightbox src={lightboxSrc} onClose={() => setLightboxSrc(null)} />
       )}
@@ -1908,4 +1983,28 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
       )}
     </div>
   );
+});
+
+/** Assistant-only envelope decoding, before Markdown chunking or repairs. */
+export const MarkdownRenderer = memo(function MarkdownRenderer(props: MarkdownRendererProps) {
+  const instanceKey = useId();
+  const sessionFileCtx = useChatSessionFile();
+  const source = useStreamingThrottle(props.content, props.isStreaming ?? false);
+  const renderMedia = (node: RichNode) => {
+    if (node.kind === 'image') return <MarkdownRendererBase {...props} content={richMarkdown(node) ?? ''} isStreaming={false} />;
+    const raw = richMediaSource(node);
+    if (!raw) return null;
+    if (node.kind === 'video' && youtubeVideo(raw)) return <VideoSitePreview src={raw} title={richString(node, 'alt', 'YouTube')} />;
+    const normalized = raw.startsWith('xdt-audio://') && props.allowPrivilegedLinks !== false ? raw : normalizeMarkdownImageSrc(raw, props.workingDir, props.allowPrivilegedLinks !== false);
+    if (!normalized) return null;
+    const src = rewriteToRemoteMediaOrigin(normalized, props.currentSessionId ? toRemoteMediaOrigin(sessionFileCtx.origin, sessionFileCtx.workingDir) : undefined);
+    return node.kind === 'audio' ? <InlineXdtAudioPlayer src={src} /> : <ChatVideoView src={src} filename={richString(node, 'alt', 'video')} variant="tool-output" sessionId={props.currentSessionId} />;
+  };
+  const parts = useMemo(() => props.renderRichAnswers ? splitRichAnswer(source) : [], [source, props.renderRichAnswers]);
+  if (!parts.some(part => part.kind === 'rich')) return <MarkdownRendererBase {...props} />;
+  return <div className="rich-answer-body">{parts.map(part => part.kind === 'rich'
+    ? <RichAnswer renderMedia={renderMedia} key={part.key} source={part.source} complete={part.complete || !props.isStreaming}
+        stateKey={`${props.streamFadeKey ?? instanceKey}:${part.key}`}
+        renderMarkdown={(content, id) => <MarkdownRendererBase {...props} content={content} streamFadeKey={`${props.streamFadeKey}:${part.key}:${id}`} />} />
+    : <MarkdownRendererBase {...props} key={part.key} content={part.source} isStreaming={!part.complete && props.isStreaming} streamFadeKey={`${props.streamFadeKey}:${part.key}`} />)}</div>;
 });

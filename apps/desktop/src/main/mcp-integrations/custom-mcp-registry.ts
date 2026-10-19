@@ -16,9 +16,15 @@
 import { createLogger } from '../logger.js';
 import type { McpProvider } from '@cindy/maker-core';
 
-import { isUnsafeMcpServerId, listCustomMcpServers } from '../maker-host/custom-mcp-store.js';
+import {
+  isUnsafeMcpServerId,
+  listCustomMcpServers,
+  validateCustomMcpConfig,
+} from '../maker-host/custom-mcp-store.js';
 import { readCustomMcpToken } from '../secrets/providerSecretStore.js';
 import { CustomMcpProvider } from './custom-mcp-provider.js';
+import { createAppServerProxy } from '../mcp-apps/serverProxy.js';
+import { registerAppServer, resetAppServers, clearAppServerConfigs } from '../mcp-apps/runtime.js';
 
 const log = createLogger('custom-mcp-registry');
 
@@ -38,6 +44,7 @@ export function registerCustomMcpArrays(...arrays: McpProvider[][]): void {
 /** 清空注册表（切账号 / resetMaker 时调用，防止旧数组引用残留）。 */
 export function resetCustomMcpRegistry(): void {
   registeredArrays.length = 0;
+  resetAppServers();
 }
 
 /**
@@ -66,17 +73,36 @@ export const __resetCustomMcpRegistryForTest = resetCustomMcpRegistry;
  */
 export async function refreshCustomMcpProviders(): Promise<void> {
   let providers: CustomMcpProvider[] = [];
+  // 按名字去重统计：同一个撞名配置会在每个已注册数组各命中一次，累加会虚报。
+  const skippedNames = new Set<string>();
   try {
     const configs = await listCustomMcpServers();
-    providers = configs.map((c) => new CustomMcpProvider(c, readCustomMcpToken));
+    const reservedIds = getBuiltinMcpServerNames();
+    providers = configs.flatMap((config) => {
+      const validation = validateCustomMcpConfig(config, reservedIds);
+      if (!validation.ok) {
+        const serverName = typeof config.id === 'string' ? config.id : '<invalid>';
+        if (!skippedNames.has(serverName)) {
+          log.warn('skipping invalid persisted custom MCP config; edit and save it again', {
+            serverName,
+            reason: validation.message,
+          });
+        }
+        skippedNames.add(serverName);
+        return [];
+      }
+      const provider = new CustomMcpProvider(config, readCustomMcpToken, createAppServerProxy);
+      return [provider];
+    });
   } catch (err) {
     log.warn('list custom mcp servers failed; leaving providers unchanged', {
       error: err instanceof Error ? err.message : String(err),
     });
     return;
   }
-  // 按名字去重统计：同一个撞名配置会在每个已注册数组各命中一次，累加会虚报。
-  const skippedNames = new Set<string>();
+  // Saved endpoint changes revoke open Views, while existing Agent calls retain their snapshot.
+  clearAppServerConfigs();
+  for (const provider of providers) registerAppServer(provider.name, () => provider.appServerConfig());
   for (const arr of registeredArrays) {
     // 原地移除旧的 custom provider,再追加新的一批(不换数组引用)。
     for (let i = arr.length - 1; i >= 0; i--) {

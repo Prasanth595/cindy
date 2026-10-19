@@ -20,12 +20,12 @@ import { getManagedWorktreeBasePath } from './managedWorktreePaths';
  */
 export function normalizeWorkingDirForStorage(raw: string | null | undefined): string | null {
   if (raw == null) return null;
-  const trimmed = String(raw).trim();
-  if (trimmed === '') return null;
+  const path = String(raw);
+  if (path.trim() === '') return null;
 
-  const withoutLongPathPrefix = stripWindowsLongPathPrefix(trimmed);
+  const withoutLongPathPrefix = stripWindowsLongPathPrefix(path);
   const outNeedsWindowsSeparatorRewrite =
-    isWindowsPathLike(trimmed) || isWindowsPathLike(withoutLongPathPrefix);
+    isWindowsPathLike(path) || isWindowsPathLike(withoutLongPathPrefix);
   let out = outNeedsWindowsSeparatorRewrite
     ? withoutLongPathPrefix.replace(/\\/g, '/')
     : withoutLongPathPrefix;
@@ -63,12 +63,13 @@ export function normalizeWorkingDirForGrouping(raw: string | null | undefined): 
   return collapseWorktreeDirForGrouping(out);
 }
 
-function stripWindowsLongPathPrefix(p: string): string {
+export function stripWindowsLongPathPrefix(p: string): string {
   if (p.startsWith('\\\\?\\UNC\\')) return `\\\\${p.slice('\\\\?\\UNC\\'.length)}`;
   if (p.startsWith('\\\\?\\')) return p.slice('\\\\?\\'.length);
   return p;
 }
 
-function isWindowsPathLike(p: string): boolean {
+/** 盘符路径或 UNC(`\\server` / `//server`)——按 Windows 规则归一的判据。 */
+export function isWindowsPathLike(p: string): boolean {
   return /^[A-Za-z]:[\\/]/.test(p) || p.startsWith('\\\\') || p.startsWith('//');
 }

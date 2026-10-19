@@ -23,6 +23,7 @@ import { installExternalLinkGuards } from '../secondary-windows.js';
 import { installSelectionContextMenu } from '../selection-context-menu.js';
 import { applyAppearanceToWindow } from '../appearance-settings-ipc.js';
 import { markRsbWindowWebContentsId } from './registry.js';
+import { installWindowHiddenBroadcast } from '../windowHiddenBroadcast.js';
 
 const log = createLogger('right-sidebar-window');
 
@@ -39,6 +40,10 @@ export function createRightSidebarWindow(): BrowserWindow {
     defaultWidth: 520,
     defaultHeight: 860,
     file: 'right-sidebar-window-state.json',
+    // The window is prewarmed while hidden on every launch. Restoring either
+    // presentation mode can make Electron show it before the controller opens it.
+    maximize: false,
+    fullScreen: false,
   });
 
   const win = new BrowserWindow({
@@ -74,8 +79,18 @@ export function createRightSidebarWindow(): BrowserWindow {
       webviewTag: true,
     },
   });
+  // The detached sidebar has its own hidden title bar and renderer. Fullscreen
+  // state changes therefore need to be sent from this window, not only from
+  // the primary window's bootstrap listener.
+  win.on('enter-full-screen', () => {
+    if (!win.isDestroyed()) win.webContents.send('fullscreen-change', true);
+  });
+  win.on('leave-full-screen', () => {
+    if (!win.isDestroyed()) win.webContents.send('fullscreen-change', false);
+  });
   markRsbWindowWebContentsId(win.webContents.id);
   markAppContentWindow(win);
+  installWindowHiddenBroadcast(win);
   applyAppearanceToWindow(win);
   win.webContents.on('did-finish-load', () => {
     if (win.isDestroyed()) return;

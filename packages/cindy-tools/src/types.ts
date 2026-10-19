@@ -6,7 +6,8 @@
  * 包内不感知 Electron / 沙箱 / DB(设计规范规则 2:package 解耦)。
  *
  * 首个成员:ghost 总机(docs/dev-rules/plugin-security-and-authoring.md 的网关模式)——
- * agent 工具箱里的插件发现/调用入口固定为 ghost_list / ghost_info / ghost_call,
+ * agent 工具箱里的插件发现/调用入口固定为 ghost_list / ghost_info / ghost_manual /
+ * ghost_call,
  * 已装意识的增删即时反映在 ghost_info / ghost_list 的**返回内容**里。
  * 工具面(名称/schema/基线描述)版本内恒定;完整描述(含花名册快照)
  * 会话内恒定。
@@ -121,11 +122,16 @@ export interface CindyGhostSetupPlan {
 /** ghost_info / ghost_list 共用的单段意识条目。 */
 export interface CindyGhostInfo {
   id: string;
+  /** null is root; a string is the organization slug. Omitted only on legacy hosts. */
+  namespace?: string | null;
   name: string;
   /** 显式触发指令(用户敲 /<command> 点名调用);未声明则省略。 */
   command?: string;
   /** 插件作者提供的召回线索，仅作数据；Host 优先取 whenToUse，缺省回落 description。 */
   recall?: string;
+  /** 随包手册的轻量一级索引；正文必须另行调用 ghost_manual 按需读取。 */
+  manual?: CindyGhostManualIndexItem[];
+  /** Manual-only 插件为空数组；发现或读取手册不授予插件工具能力。 */
   tools: CindyGhostToolInfo[];
   /**
    * Host 现查的配置评估。支持 Setup Runtime 的 Host 应尽量返回，但评估
@@ -137,31 +143,55 @@ export interface CindyGhostInfo {
 /** ghost_call 的结构化失败分类(host 侧产生,总机原样透传给 agent)。 */
 export type CindyGhostCallErrorCode =
   | 'GHOST_NOT_FOUND' // 未装入或已抽离
+  | 'GHOST_AMBIGUOUS' // 同名多实例，需指定 namespace
   | 'GHOST_ASLEEP' // 沉睡中(用户可在主界面侧边栏「插件」中唤醒)
+  | 'GHOST_RETIRED' // 功能已下线，不可唤醒或重试
   | 'GHOST_DISABLED_IN_WORKDIR' // 用户在当前工作目录停用了该意识(不要重试)
   | 'TOOL_NOT_FOUND' // 该意识没有这个工具
   | 'GHOST_CRASHED' // 电子脑执行中崩溃
   | 'TIMEOUT' // 执行超时(host 掐掉)
   | 'SETUP_REQUIRED' // 配置仍未就绪（无交互面或恢复前又变化）；可带脱敏 assessment，未派发插件
   | 'SETUP_CANCELLED' // 用户取消插件配置；原调用未派发，不要自动重试
-  | 'ATTACHMENT_INVALID' // attachments 里的图片地址无法过户(格式/找不到/超数)
+  | 'ATTACHMENT_INVALID' // attachments 里的媒体地址无法过户(格式/找不到/超数)
   | 'DIR_INVALID' // dir 目录无法过户(不存在/不在会话 workdir 内/超限额)
   | 'INTERNAL'; // 其它 host 侧错误
 
 export type CindyGhostInfoErrorCode = Extract<
   CindyGhostCallErrorCode,
-  'GHOST_NOT_FOUND' | 'GHOST_ASLEEP' | 'GHOST_DISABLED_IN_WORKDIR'
+  'GHOST_NOT_FOUND' | 'GHOST_AMBIGUOUS' | 'GHOST_ASLEEP' | 'GHOST_DISABLED_IN_WORKDIR' | 'GHOST_RETIRED'
 >;
 
-/** host 可见性判序回调(getAwakeGhost)的返回:只产可见性三码,不产 INTERNAL。 */
+/** host 可见性判序回调(getAwakeGhost)的返回:只产可见性错误,不产 INTERNAL。 */
 export type CindyGhostInfoHostResult =
   | { ok: true; ghost: CindyGhostInfo }
-  | { ok: false; errorCode: CindyGhostInfoErrorCode; message: string };
+  | { ok: false; errorCode: CindyGhostInfoErrorCode; message: string; candidates?: Array<{ ghostId: string; namespace: string | null }> };
 
 /** ghost_info 给模型的 wire 结果:host 结果之上,handler 兜底 catch 可产 INTERNAL。 */
 export type CindyGhostInfoResult =
   | CindyGhostInfoHostResult
   | { ok: false; errorCode: 'INTERNAL'; message: string; errorType?: string };
+
+/** ghost_info 与 ghost_manual 共用的手册索引/候选条目。 */
+export interface CindyGhostManualIndexItem {
+  /** 根索引为逻辑单元 name；未命中候选为可直接回填 path 的完整逻辑路径。 */
+  name: string;
+  description: string;
+}
+
+export type CindyGhostManualErrorCode =
+  | CindyGhostInfoErrorCode
+  | "MANUAL_PATH_NOT_FOUND"
+  | "MANUAL_UNAVAILABLE"
+  | "INTERNAL";
+
+/** ghost_manual 固定信封；失败态额外携带稳定 errorCode/message。 */
+export interface CindyGhostManualResult {
+  ok: boolean;
+  manual: CindyGhostManualIndexItem[];
+  content: string;
+  errorCode?: CindyGhostManualErrorCode;
+  message?: string;
+}
 
 export type CindyGhostCallResult =
   | {
@@ -178,6 +208,14 @@ export type CindyGhostCallResult =
        * 收不到生成图)。
        */
       producedMedia?: string[];
+      /**
+       * 工具结果图片的文字描述(可选,host 视觉桥最佳努力附加)。纯文本模型
+       * 拿不到 cindy-media:// 图片内容只能看到 URL 文本——host 把图片经
+       * 外部多模态模型转成描述随结果带回,模型据此「看到」图而非幻觉编造。
+       * 仅 host 侧注入的视觉桥能力存在且命中时附加;渲染层/IM 出站只消费
+       * 固定媒体字段,不消费本字段(兼容性有回归测试锁定)。
+       */
+      xdt_media_descriptions?: Array<{ url: string; description: string }>;
     }
   | {
       ok: false;
@@ -190,6 +228,11 @@ export type CindyGhostCallResult =
 /** ghost_forge_pack 的结构化失败分类(host 侧产生,原样透传给 agent)。 */
 export type CindyForgePackErrorCode =
   | 'DIR_NOT_FOUND' // 目录不存在或不是目录
+  | 'SOURCE_OUTSIDE_WORKDIR' // 源目录在工作目录外且未获当前会话权限,或会话工作目录缺失
+  | 'PERMISSION_DENIED' // 工作目录外源码未获 Full Access / Auto 审阅 / 用户确认
+  | 'WORKDIR_NOT_LOCAL' // 当前会话工作目录在远端或无法证明为本地
+  | 'WORKDIR_READ_ONLY' // 当前会话禁止写入
+  | 'SOURCE_IS_INSTALLED_PLUGIN' // 源目录命中 Host 管理的已安装插件或批准状态根
   | 'MANIFEST_INVALID' // ghost.json 缺失 / 不合法(message 带具体原因)
   | 'ENTRY_MISSING' // 清单声明的 entry / panel.html 等文件不在目录里
   | 'TOO_LARGE' // 文件数或总体积超上限
@@ -198,15 +241,72 @@ export type CindyForgePackErrorCode =
 export type CindyForgePackResult =
   | {
       ok: true;
-      /** 打包产物(.cindy)的绝对路径(临时目录,装入后可弃)。 */
+      /**
+       * 作者副本的文件名提示（如 `demo-1.0.0.cindy`），不可用于访问。
+       * 不是绝对路径，也不是 Host staging 路径；不要拿这个字段去读盘或发布。
+       */
       cindyPath: string;
       id: string;
       name: string;
       version: string;
-      /** 已弹出装入/更新确认框,等用户决定;装不装永远由用户点头。 */
+      /** 仅 intent=publish 返回；一次性、不可解析的 Host 发布票据。 */
+      publishToken?: string;
+      /** 打包结果说明；成功仅表示产物已生成，不表示已经安装。 */
       note: string;
     }
   | { ok: false; errorCode: CindyForgePackErrorCode; message: string };
+
+/** ghost_forge_install 会先走 Forge 打包校验，再复用 Host 的本地安装/更新事务。 */
+export type CindyForgeInstallResult =
+  | {
+      ok: true;
+      action: 'installed' | 'updated';
+      id: string;
+      name: string;
+      version: string;
+      enabled: boolean;
+      note: string;
+    }
+  | {
+      ok: false;
+      errorCode: CindyForgePackErrorCode | (string & {});
+      message: string;
+    };
+
+/** ghost_forge_publish 立即返回时的失败分类。传输开始后的失败走 status.errorCode。 */
+export type CindyForgePublishErrorCode =
+  | 'NOT_ORG_MEMBER'
+  | 'SESSION_BOUNDARY_PENDING'
+  | 'PUBLISH_TOKEN_INVALID'
+  | 'PUBLISH_TOKEN_OWNER_MISMATCH'
+  | 'INTERNAL';
+
+export type CindyForgePublishResult =
+  | {
+      ok: true;
+      transferId: string;
+      uploadId: string | null;
+      note: string;
+    }
+  | { ok: false; errorCode: CindyForgePublishErrorCode; message: string };
+
+export type CindyForgePublishStatusResult =
+  | {
+      ok: true;
+      transferId: string;
+      uploadId: string | null;
+      stage: string;
+      status?: string | null;
+      reviewStatus?: string | null;
+      ghostId?: string | null;
+      version?: string | null;
+      bytesHashed?: number;
+      bytesSent?: number;
+      totalBytes?: number;
+      errorCode?: string | null;
+      message?: string | null;
+    }
+  | { ok: false; errorCode: 'NOT_FOUND' | 'INTERNAL'; message: string };
 
 /** ghost_forge_scaffold 可生成的四种起步模板。 */
 export type CindyForgeScaffoldTemplate =
@@ -226,12 +326,41 @@ export type CindyForgeScaffoldResult =
     }
   | {
       ok: false;
-      errorCode: 'INVALID_INPUT' | 'TARGET_EXISTS' | 'INTERNAL';
+      errorCode: 'INVALID_INPUT' | 'TARGET_EXISTS' | 'WORKDIR_NOT_LOCAL' | 'WORKDIR_READ_ONLY' | 'PERMISSION_DENIED' | 'INTERNAL';
       message: string;
     };
 
+/** Cindy Core 原生媒体能力；模型目录与调用说明均由 Model Access 动态下发。 */
+export type CindyMediaCapability =
+  | 'image.generate'
+  | 'image.edit'
+  | 'video.generate'
+  | 'video.image_to_video';
+
+/** 当前 Agent 专用的永久 media 工具与 Host 之间的稳定请求面。插件运行时代码不调用。 */
+export type CindyMediaToolRequest =
+  | { action: 'list_models'; capability?: CindyMediaCapability }
+  | { action: 'resolve_local_path'; url: string }
+  | { action: 'import_image'; path: string }
+  | {
+      action: 'prepare';
+      /** 精确执行来源；插件配置返回 providerId 时必须原样传入。 */
+      providerId?: string;
+      modelId: string;
+      capability: CindyMediaCapability;
+    }
+  | { action: 'request'; invocationId: string; body: Record<string, unknown> }
+  | { action: 'poll'; invocationId: string };
+
 /** host 注入的依赖:总机的全部真实能力都在这几个回调里。 */
 export interface CindyGhostsMcpDeps {
+  /** Cindy's own catalog, separate from installed plugins and provider app marketplaces. */
+  searchMarket?(query: string): Promise<Record<string, unknown>>;
+  installMarket?(request: { pluginId: string; releaseId: string }, signal?: AbortSignal): Promise<Record<string, unknown>>;
+  /** Host-owned connection card. No URLs or credentials may be supplied by the model. */
+  connectAccount?(target: { kind: 'plugin'; id: string; namespace?: string | null; reauthorize?: boolean } | { kind: 'host'; id: 'grok'; reauthorize?: boolean }, signal?: AbortSignal): Promise<Record<string, unknown>>;
+  /** Cindy Core 原生媒体调用器；能力本身不依赖任何插件。 */
+  callMedia?(request: CindyMediaToolRequest): Promise<Record<string, unknown>>;
   /**
    * 现查"已装且唤醒"的意识清单(总机不缓存——装/卸/唤醒/沉睡即时反映,
    * 这正是网关模式让老会话立即生效的机制)。
@@ -241,21 +370,33 @@ export interface CindyGhostsMcpDeps {
    * 按 id 现查单个当前可用插件；与 ghost_call 共享同一可见性判定。
    * 判序：不存在 → 未登录 → 当前工作目录停用 → 未启用。
    */
-  getAwakeGhost(ghostId: string): Promise<CindyGhostInfoHostResult>;
+  getAwakeGhost(ghostId: string, namespace?: string | null): Promise<CindyGhostInfoHostResult>;
+  /**
+   * 读取已声明的随包手册；Host 每次调用都重新执行插件可见性判定，且不启动沙箱。
+   */
+  readGhostManual(request: {
+    ghostId: string;
+    namespace?: string | null;
+    path?: string;
+  }): Promise<CindyGhostManualResult>;
   /**
    * 把工具调用派进目标意识的电子脑并等待结果(按需拉起沙箱、超时、
    * 崩溃分类全在 host 侧处理)。
    */
   callGhostTool(request: {
     ghostId: string;
+    namespace?: string | null;
     tool: string;
     args: Record<string, unknown>;
+    /** Host-only cancellation from the MCP request; never enters plugin args. */
+    signal?: AbortSignal;
     /**
-     * 用户图片过户(可选):会话里用户图片的地址(xdt-image:// /
-     * cindy-media://blobs/ / 本机绝对路径,主机归一化并验归属)。
+     * 媒体过户(可选):会话里用户媒体或当前 Agent / Core 工具生成结果的
+     * 地址(xdt-image:// / cindy-media://blobs/ / 本机绝对路径,主机归一化并验归属)。
      * host 把每张图落媒体总仓、给目标意识记可读引用(人工确认的引渡才形成
      * 按张永久授权；工作目录/Full Access 等 Host 代办交接不冒充用户授权),
-     * 再以指纹数组注入 args.attachments 交给意识——
+     * 再以指纹数组注入 args.attachments 交给意识。工具生成结果也必须由
+     * Agent 显式传入，不会由 Host 自动回调插件——
      * 意识拿到的仍只是字符串指纹,摸不到路径与字节。
      */
     attachments?: string[];
@@ -265,7 +406,7 @@ export interface CindyGhostsMcpDeps {
      * 每次用一个 workdir 外文件时,先把整批文件一次性过户——非 Full Access
      * 下用户只见一张列出全部文件的确认卡；Full Access 下自动交接、不弹卡，
      * 且不会形成降档后仍生效的人工永久授权。
-     * 普通调用 attachments 上限 4 张,grant_only 放宽(上限由 host 定)。
+     * 普通调用 attachments 上限 4 项,grant_only 放宽(上限由 host 定)。
      */
     grantOnly?: boolean;
     /**
@@ -309,7 +450,7 @@ export interface CindyGhostsMcpDeps {
    * 会话内工具定义恒定(prompt 缓存安全);装/卸/唤醒/沉睡在新会话生效,
    * 实时清单仍以 ghost_list 为准。缺省 = 不注入(描述与今日基线一致)。
    */
-  getRosterItems?(): Array<Pick<CindyGhostInfo, 'id' | 'name' | 'command' | 'recall'>>;
+  getRosterItems?(): Array<Pick<CindyGhostInfo, 'id' | 'name' | 'command' | 'recall' | 'namespace'>>;
   /** 意识编写手册(markdown,随主机版本走;agent 写意识前先读)。 */
   forgeGuide(): Promise<string>;
   /**
@@ -322,20 +463,34 @@ export interface CindyGhostsMcpDeps {
     id: string;
     name: string;
     description?: string;
+    /** 省略时由正式版 Host 使用自身版本；开发构建必须明确填写。 */
+    minCindyVersion?: string;
   }): Promise<CindyForgeScaffoldResult>;
   /**
-   * 把一个源码目录校验 + 打包成 .cindy,并弹出与拖入/双击完全相同的
-   * 装入(同 id 已装则更新)确认框——装不装永远由用户决定,agent 只能
-   * 递到用户面前。
+   * 把一个源码目录校验并打包成 .cindy。只生成产物，不安装或更新插件；
+   * publish 意图额外签发一次性发布票据。
    */
   forgePack(request: {
     dir: string;
+    intent?: 'publish';
     /**
      * 用户明确选择 AI 图标后，由图片工具返回的 cindy-media 地址。Host
      * best-effort 把它嵌入包内；失败保留源码里的默认图标，不阻塞打包。
      */
     iconSource?: string;
   }): Promise<CindyForgePackResult>;
+  /**
+   * 重新校验并打包源码目录，然后把这次产生的确切包安装或原位更新。
+   * 只有显式调用本工具才安装；forgePack 本身始终保持纯打包。
+   */
+  forgeInstall(request: { dir: string; iconSource?: string }): Promise<CindyForgeInstallResult>;
+  /**
+   * 消费 forgePack(intent=publish) 签发的一次性票据，把该次打包的确切字节
+   * 提交到当前组织发布。立即返回 transferId / uploadId,传输在后台跑。
+   */
+  forgePublish(request: { token: string }): Promise<CindyForgePublishResult>;
+  /** 查询一次后台发布传输的当前状态。 */
+  forgePublishStatus(request: { transferId: string }): Promise<CindyForgePublishStatusResult>;
   logger?: {
     info: (msg: string, meta?: Record<string, unknown>) => void;
     warn: (msg: string, meta?: Record<string, unknown>) => void;

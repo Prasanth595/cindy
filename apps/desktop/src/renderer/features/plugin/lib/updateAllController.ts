@@ -1,9 +1,8 @@
 /**
  * Window-level controller for the "update all plugins" batch flow.
  *
- * The controller owns only batch progress and serial execution. Permission
- * review belongs to the Main-owned real-package transaction; no catalog
- * manifest or parallel approval state is retained here.
+ * The controller owns only batch progress and serial execution. Main validates
+ * every downloaded package against its market manifest before atomic placement.
  * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
  */
 
@@ -16,7 +15,11 @@ import {
   type DataOwnerGeneration,
 } from '@/contexts/dataOwnerGeneration';
 import type { PluginMarketItem } from '../../../../shared/pluginMarket';
+import { ghostInstallApprovalToken } from '../../../../shared/ghost';
+import { extractIpcError } from '@/utils/ipcError';
+import { deliveryNamespaceFields } from '../../../../shared/pluginIdentity';
 import { pluginMarketErrorKey } from './pluginMarketErrorKey';
+import { findInstalledGhostForMarketItem } from './pluginMarketPresentation';
 import {
   batchSummary,
   buildUpdateAllRows,
@@ -113,17 +116,21 @@ function maybeFinishToast(): void {
 
 export function startUpdateAllBatch(marketUpdates: readonly PluginMarketItem[]): void {
   if (state.running) return;
-  const installedVersionById = new Map(
-    readInstalledGhostsSnapshot().map((ghost) => [ghost.manifest.id, ghost.manifest.version]),
+  const installed = readInstalledGhostsSnapshot();
+  const installedVersionByPluginId = new Map(
+    marketUpdates.map((item) => [
+      item.pluginId,
+      findInstalledGhostForMarketItem(installed, item)?.manifest.version ?? '',
+    ]),
   );
   finishToastShown = false;
   batchOwner = getDataOwnerGeneration();
   const generation = beginGeneration();
-  emit({ rows: buildUpdateAllRows(marketUpdates, installedVersionById), running: false });
+  emit({ rows: buildUpdateAllRows(marketUpdates, installedVersionByPluginId), running: false });
   void runQueue(generation);
 }
 
-/** 串行执行，每个 install() 自己在 Main 中下载、确认并提交同一真实包。 */
+/** 串行执行，每个 install() 自己在 Main 中下载、校验并提交同一真实包。 */
 async function runQueue(generation: number): Promise<void> {
   if (state.running || !isGenerationCurrent(generation)) return;
   emit({ ...state, running: true });
@@ -152,8 +159,9 @@ async function runQueue(generation: number): Promise<void> {
           patchRow(generation, next.pluginId, { status: 'skipped' });
           continue;
         }
-        const installed = readInstalledGhostsSnapshot().find(
-          (ghost) => ghost.manifest.id === next.ghostId,
+        const installed = findInstalledGhostForMarketItem(
+          readInstalledGhostsSnapshot(),
+          detail,
         );
         if (!installed) {
           patchRow(generation, next.pluginId, { status: 'skipped' });
@@ -163,8 +171,10 @@ async function runQueue(generation: number): Promise<void> {
           fromVersion: installed.manifest.version,
           toVersion: detail.version,
         });
-        const result = await window.electronAPI.pluginMarket.install(next.pluginId, {
+        await window.electronAPI.pluginMarket.install(next.pluginId, {
           expectedReleaseId: detail.releaseId,
+          expectedManifest: detail.manifest,
+          expectedInstalledApproval: ghostInstallApprovalToken(installed.approval),
           allowSourceReplacement: false,
         });
         if (generation !== batchGeneration) return;
@@ -172,14 +182,17 @@ async function runQueue(generation: number): Promise<void> {
           voidStaleBatch();
           return;
         }
-        patchRow(generation, next.pluginId, {
-          status: result.cancelled ? 'skipped' : 'done',
-        });
+        patchRow(generation, next.pluginId, { status: 'done' });
       } catch (error) {
         if (generation !== batchGeneration) return;
         if (!batchOwnerCurrent()) {
           voidStaleBatch();
           return;
+        }
+        // 新版本权限变多时 Main 会逐个弹确认；用户取消只跳过这一个插件。
+        if (extractIpcError(error)?.code === 'MUTATION_CANCELLED') {
+          patchRow(generation, next.pluginId, { status: 'skipped' });
+          continue;
         }
         patchRow(generation, next.pluginId, {
           status: 'failed',
@@ -214,14 +227,19 @@ export function reconcileUpdateAllBatch(marketItems: readonly PluginMarketItem[]
   const installStateByPluginId = new Map(
     marketItems.map((item) => [item.pluginId, item.installState]),
   );
-  const installedById = new Map(
-    readInstalledGhostsSnapshot().map((ghost) => [ghost.manifest.id, ghost.manifest]),
-  );
+  const marketByPluginId = new Map(marketItems.map((item) => [item.pluginId, item]));
+  const installedGhosts = readInstalledGhostsSnapshot();
   let rows = state.rows;
   let changed = false;
   for (const row of state.rows) {
     if (row.status !== 'pending') continue;
-    const installed = installedById.get(row.ghostId);
+    const installed = findInstalledGhostForMarketItem(
+      installedGhosts,
+      marketByPluginId.get(row.pluginId) ?? {
+        ghostId: row.ghostId,
+        ...deliveryNamespaceFields(row),
+      },
+    );
     if (!installed) {
       rows = updateRow(rows, row.pluginId, { status: 'skipped' });
       changed = true;
@@ -234,8 +252,8 @@ export function reconcileUpdateAllBatch(marketItems: readonly PluginMarketItem[]
     ) {
       rows = updateRow(rows, row.pluginId, { status: 'skipped' });
       changed = true;
-    } else if (installed.version !== row.fromVersion) {
-      rows = updateRow(rows, row.pluginId, { fromVersion: installed.version });
+    } else if (installed.manifest.version !== row.fromVersion) {
+      rows = updateRow(rows, row.pluginId, { fromVersion: installed.manifest.version });
       changed = true;
     }
   }

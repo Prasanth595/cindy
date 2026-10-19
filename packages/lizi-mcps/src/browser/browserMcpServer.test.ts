@@ -43,6 +43,66 @@ async function makeHarness(
 }
 
 describe('createBrowserMcpServer', () => {
+  it('switches modes in the same MCP instance and immediately updates backend capabilities', async () => {
+    let backend: 'external' | 'rsb-webview' = 'external';
+    const switched: string[] = [];
+    const h = await makeHarness({
+      setBackend: async (next) => { switched.push(next); backend = next; return backend; },
+      supportsSemanticQueries: () => backend === 'rsb-webview',
+      supportsResourceDownloads: () => backend === 'rsb-webview',
+    });
+    const call = (args: Record<string, unknown>) => h.client.callTool({ name: 'call_tool', arguments: { name: 'browser', args } });
+    try {
+      for (const next of ['rsb-webview', 'rsb-webview', 'external'] as const) {
+        const changed = await call({ action: 'setBackend', backend: next });
+        expect(JSON.parse((changed.content as Array<{ text: string }>)[0].text)).toMatchObject({
+          ok: true, action: 'setBackend', data: { backend: next, scope: 'global', persisted: true },
+        });
+        for (const request of [
+          { kind: 'click', query: { role: 'button', name: 'Submit' } },
+          { kind: 'saveResource', url: 'https://example.test/resource.png' },
+        ]) {
+          const result = await call({ action: 'act', targetId: 'fresh-tab', request });
+          expect(Boolean(result.isError)).toBe(next === 'external');
+        }
+      }
+      expect(switched).toEqual(['rsb-webview', 'rsb-webview', 'external']);
+      expect(h.calls).toHaveLength(4);
+      expect(h.calls.every((request) => (request as { action: string }).action === 'act')).toBe(true);
+    } finally { await h.cleanup(); }
+  });
+
+  it.each([
+    { action: 'setBackend' },
+    { action: 'setBackend', backend: 'chrome' },
+    { action: 'open', backend: 'rsb-webview', url: 'https://example.test/' },
+  ])('rejects invalid mode arguments without navigation or switching: %j', async (args) => {
+    let switches = 0;
+    const h = await makeHarness({ setBackend: async (next) => { switches++; return next; } });
+    try {
+      const result = await h.client.callTool({ name: 'call_tool', arguments: { name: 'browser', args } });
+      expect(result.isError).toBe(true);
+      expect(switches).toBe(0);
+      expect(h.calls).toEqual([]);
+    } finally { await h.cleanup(); }
+  });
+
+  it.each([
+    {},
+    { setBackend: async () => { throw new Error('switch failed'); } },
+    { setBackend: async () => 'external' as const },
+  ])('reports unsupported, failed or superseded switches without claiming success', async (deps) => {
+    const h = await makeHarness(deps);
+    try {
+      const result = await h.client.callTool({
+        name: 'call_tool', arguments: { name: 'browser', args: { action: 'setBackend', backend: 'rsb-webview' } },
+      });
+      expect(result.isError).toBe(true);
+      expect(JSON.parse((result.content as Array<{ text: string }>)[0].text).ok).toBe(false);
+      expect(h.calls).toEqual([]);
+    } finally { await h.cleanup(); }
+  });
+
   it('lists browser automation entry tools', async () => {
     const h = await makeHarness();
     const result = await h.client.listTools();
@@ -96,6 +156,52 @@ describe('createBrowserMcpServer', () => {
     ]);
     const first = (result.content as Array<{ type: string; text: string }>)[0];
     expect(JSON.parse(first.text)).toMatchObject({ ok: true, action: 'navigate' });
+    await h.cleanup();
+  });
+
+  it('accepts proxyServer for start and forwards it unchanged to the host', async () => {
+    const h = await makeHarness();
+    const result = await h.client.callTool({
+      name: 'call_tool',
+      arguments: {
+        name: 'browser',
+        args: {
+          action: 'start',
+          proxyServer: 'http://proxy.example:8080',
+          proxyAllowedHostnames: ['auth.example.com', '*.service.example.com'],
+        },
+      },
+    });
+
+    expect(h.calls).toEqual([{
+      action: 'start',
+      proxyServer: 'http://proxy.example:8080',
+      proxyAllowedHostnames: ['auth.example.com', '*.service.example.com'],
+    }]);
+    expect(result.isError).not.toBe(true);
+    await h.cleanup();
+  });
+
+  it('rejects proxyServer for non-start actions without echoing credentials', async () => {
+    const h = await makeHarness();
+    const result = await h.client.callTool({
+      name: 'call_tool',
+      arguments: {
+        name: 'browser',
+        args: {
+          action: 'status',
+          proxyServer: 'http://proxy.example:8080',
+        },
+      },
+    });
+
+    expect(h.calls).toEqual([]);
+    const text = (result.content as Array<{ text: string }>)[0].text;
+    expect(JSON.parse(text)).toMatchObject({
+      ok: false,
+      errorCode: 'BROWSER_RUNTIME_INVALID_REQUEST',
+    });
+    expect(text).not.toMatch(/p%40ss/);
     await h.cleanup();
   });
 
@@ -708,4 +814,55 @@ describe('createBrowserMcpServer', () => {
     expect(parsed.truncated).toBe(true);
     await h.cleanup();
   });
+
+  it.each([true, false])('points the agent at 代输入 when a snapshot shows a password field (%s)', async (password) => {
+    const h = await makeHarness({}, (request) => request.action === 'act'
+      ? { result: { password, code: false } }
+      : { targetId: 't9', snapshot: '- textbox "Password" [ref=e3]' });
+    const result = await h.client.callTool({
+      name: 'call_tool',
+      arguments: { name: 'browser', args: { action: 'snapshot' } },
+    });
+    const text = (result.content as Array<{ text: string }>)[0].text;
+    const parsed = JSON.parse(text) as { loginWall?: { fields: string[]; hint: string }; ok: boolean };
+    expect(parsed.ok).toBe(true);
+    if (password) {
+      expect(text.startsWith('{"loginWall"')).toBe(true);
+      expect(parsed.loginWall).toMatchObject({ fields: ['password'], hint: expect.stringContaining('request_input_handoff') });
+    } else {
+      expect(parsed.loginWall).toBeUndefined();
+    }
+    // The check runs on the tab the snapshot came from.
+    expect(h.calls[1]).toMatchObject({ action: 'act', targetId: 't9', request: { kind: 'evaluate' } });
+    await h.cleanup();
+  });
+
+  it('pauses page-state reads on a page where the owner just typed a secret', async () => {
+    let restricted = true;
+    const asked: unknown[] = [];
+    const h = await makeHarness({
+      pageReadsRestricted: async (target) => { asked.push(target); return restricted; },
+    });
+    const call = async (args: Record<string, unknown>) => JSON.parse(((await h.client.callTool({
+      name: 'call_tool', arguments: { name: 'browser', args },
+    })).content as Array<{ text: string }>)[0].text) as { ok: boolean; data?: { reason?: string } };
+    try {
+      for (const args of [
+        { action: 'act', targetId: 't1', request: { kind: 'evaluate', fn: '() => 1' } },
+        { action: 'requests', targetId: 't1' },
+        { action: 'console', targetId: 't1' },
+      ]) {
+        expect(await call(args)).toMatchObject({ ok: false, data: { reason: 'secret_entered' } });
+      }
+      expect(asked[0]).toEqual({ targetId: 't1' });
+      expect(h.calls).toEqual([]);
+      // Reading the page's structure and clicking stay available.
+      expect(await call({ action: 'act', targetId: 't1', request: { kind: 'click', ref: 'e1' } })).toMatchObject({ ok: true });
+      restricted = false;
+      expect(await call({ action: 'console', targetId: 't1' })).toMatchObject({ ok: true });
+    } finally {
+      await h.cleanup();
+    }
+  });
 });
+

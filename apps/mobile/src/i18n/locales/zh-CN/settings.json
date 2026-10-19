@@ -1,8 +1,65 @@
 {
+  "localLogs": {
+    "upload": "上传日志",
+    "uploadHint": "仅发送筛选后的运行记录及应用、系统版本。详细 Debug 日志请使用导出。",
+    "uploadResult": {
+      "unavailable": "当前版本未配置日志上传。",
+      "consentRequired": "上传日志前需同意隐私政策。",
+      "empty": "暂无近期日志，请先开启记录并复现问题。",
+      "failed": "上传失败，日志仍保留在手机上。"
+    },
+    "title": "Debug 日志",
+    "record": "记录 Debug 日志",
+    "hint": "记录手机上的连接、恢复、文件预览与播放、滚动、键盘与性能细节。默认关闭，最多保留 7 天、8 MB，不会自动上传。",
+    "export": "导出 Debug 日志",
+    "clear": "清空日志",
+    "busy": "处理中…",
+    "failed": "无法保存或分享日志，请重试。",
+    "clearHint": "删除已保存的诊断日志？",
+    "cancel": "取消",
+    "exportHint": "分享详细本地日志供排障使用；不包含对话正文或凭证。",
+    "options": "日志选项",
+    "uploadCopied": "日志已上传，编号 {{code}} 已复制",
+    "uploadSucceeded": "日志已上传，编号 {{code}}"
+  },
   "title": "设置",
+  "appearance": {
+    "title": "外观",
+    "modeLabel": "显示模式",
+    "options": {
+      "system": "跟随系统",
+      "light": "浅色",
+      "dark": "深色"
+    },
+    "saveFailed": "显示模式没有保存成功，重新打开后会恢复之前的设置",
+    "userBubble": {
+      "title": "我的消息气泡颜色",
+      "presets": "颜色",
+      "default": "默认",
+      "peach": "初稿",
+      "yellow": "晨光",
+      "sage": "灵感",
+      "blue": "梦境",
+      "lavender": "夜猫",
+      "red": "项圈",
+      "custom": "自定义颜色",
+      "hue": "色相",
+      "preview": "消息预览",
+      "sampleUser": "帮我整理一下今天的灵感。",
+      "sampleAssistant": "好的，我们一起把想法梳理清楚。",
+      "hint": "颜色会按浅色和深色模式自动调整明暗，保证文字清晰。仅保存在此设备。",
+      "customHint": "左右拖动色带选择颜色。颜色会按浅色和深色模式自动调整明暗，保证文字清晰。仅保存在此设备。",
+      "saveFailed": "颜色已在本次使用中生效，但未能保存。",
+      "retry": "重试",
+      "cancel": "取消",
+      "reset": "恢复默认",
+      "apply": "应用",
+      "hex": "颜色值"
+    }
+  },
   "language": {
     "title": "语言",
-    "hint": "仅影响应用界面。Agent 回复语言由 Agent 自身决定。",
+    "hint": "界面和 AI 错误说明使用此语言；普通回复按你的消息或语言要求",
     "options": {
       "system": "跟随系统",
       "zh-CN": "简体中文",
@@ -14,20 +71,22 @@
   },
   "version": {
     "sectionTitle": "版本",
-    "currentLabel": "当前版本",
-    "bundleVersion": "整包版本 {{version}}",
-    "otaVersion": "热更版本 {{version}}",
+    "appVersion": "版本 {{version}}",
+    "updateMethodInApp": "更新方式：在 App 内更新，重启后生效",
+    "updateMethodPackage": "更新方式：下载并安装新版本",
+    "updateMethodUnavailable": "开发版，不支持 App 内更新",
     "pairedDesktopVersion": "配套桌面版本 {{version}}",
-    "devNoOta": "开发版，热更不可用",
     "checkAction": "检查更新",
     "testFlightCheckAction": "检查内容更新",
     "checking": "检查中",
-    "updating": "更新中",
     "checkingAccessibility": "正在检查更新",
     "testFlightCheckingAccessibility": "正在检查内容更新",
     "testFlightUpdateManaged": "测试版安装更新由 TestFlight 管理",
     "testFlightNoContentUpdate": "当前没有可用的内容更新。新测试版本请在 TestFlight 中查看。",
     "testFlightContentUpdateUnavailable": "当前构建无法检查内容更新。新测试版本请在 TestFlight 中查看。",
+    "googlePlayUpdateManaged": "应用版本更新由 Google Play 管理",
+    "googlePlayNoContentUpdate": "当前没有可用的内容更新。新应用版本请在 Google Play 中查看。",
+    "googlePlayContentUpdateUnavailable": "当前构建无法检查内容更新。新应用版本请在 Google Play 中查看。",
     "bundleUpdateFound": "发现整包更新",
     "upToDate": "已是最新版本",
     "bundleUpToDateNoOta": "整包已是最新，当前版本不支持热更新",
@@ -36,6 +95,15 @@
     "bundleCheckFailed": "无法检查整包更新，请稍后重试",
     "checkFailedDetail": "检查更新失败：{{detail}}",
     "checkFailed": "检查更新失败，请稍后重试"
+  },
+  "betaChannel": {
+    "title": "Beta 测试渠道",
+    "badge": "Beta",
+    "description": "加入 Beta 测试渠道，提前接收即将发布的客户端更新。",
+    "restartHint": "Beta 测试渠道需要重启客户端后才能生效，请重启应用。",
+    "ok": "我知道了",
+    "saveFailed": "保存 Beta 测试渠道设置失败",
+    "unavailable": "Beta 测试渠道暂不可用，无法连接到 Beta 更新服务器。"
   },
   "notifications": {
     "sectionTitle": "通知",
@@ -47,11 +115,8 @@
   "about": {
     "sectionTitle": "关于这台手机",
     "deviceName": "设备名称",
-    "deviceNameDetail": "电脑端授权列表会显示这个名称。",
+    "deviceNameDetail": "显示在电脑的授权列表中",
     "platform": "平台",
-    "remoteControl": "被控权限",
-    "remoteControlValue": "电脑端管理",
-    "remoteControlDetail": "手机只作为控制端。允许被控、撤销和恢复权限仍在电脑端设置里完成。",
     "editAccessibility": "修改{{label}}"
   },
   "relay": {
@@ -76,6 +141,21 @@
     "authServer": "Auth Server",
     "authRegion": "登录区域"
   },
+  "devServerEnvironment": {
+    "title": "服务器环境",
+    "description": "仅影响 CindyDev 连接的业务服务器",
+    "accessibility": "切换服务器环境",
+    "options": {
+      "dev": "Dev",
+      "release": "Release"
+    },
+    "confirmTitle": "切换到 {{environment}}？",
+    "confirmBody": "切换会退出当前账号并重启 App。",
+    "cancel": "取消",
+    "switchAction": "切换",
+    "switching": "切换中",
+    "switchFailed": "切换服务器环境失败，请重试。"
+  },
   "updateInfo": {
     "embedded": "随整包",
     "embeddedFallback": "随整包（热更未生效）",
@@ -90,7 +170,8 @@
     "runtime": "Runtime",
     "otaMarker": "热更标记",
     "emergencyLaunch": "应急启动",
-    "emergencyLaunchYes": "是（本次运行内热更无法生效）"
+    "emergencyLaunchYes": "是（本次运行内热更无法生效）",
+    "otaVersion": "热更版本"
   },
   "legal": {
     "sectionTitle": "备案信息",
@@ -107,7 +188,9 @@
     "analyticsResetAction": "恢复"
   },
   "account": {
-    "logoutHint": "退出只会清除这台手机上的登录态和本地远程镜像，不会影响电脑端任务。",
+    "logoutConfirmTitle": "退出登录？",
+    "logoutConfirmRunning": "仍有任务正在运行。退出后任务会继续在电脑上运行，但这台手机将不再接收和控制这些任务；这台手机上保存的账号和本地远程镜像也会被清除。",
+    "logoutHint": "退出会清除这台手机上保存的全部账号和本地远程镜像，不会影响电脑端任务。",
     "logout": "退出登录",
     "loggingOut": "退出中",
     "loggingOutAccessibility": "正在退出登录"
@@ -129,9 +212,98 @@
     "refresh": "刷新",
     "refreshing": "刷新中…",
     "refreshAccessibility": "刷新词典",
-    "readOnlyHint": "手机只能查看，添加和删除请回电脑操作。",
-    "offlineHint": "电脑当前都不在线，显示的是上次同步到手机的内容。",
-    "noDesktops": "还没有可同步的电脑。在电脑上登录同一账号后，词典会自动出现在这里。"
+    "readOnlyHint": "手机仅供查看，增删词条请到电脑操作",
+    "offlineHint": "电脑不在线，正在显示上次同步的词典",
+    "noDesktops": "在电脑上登录同一账号，即可同步词典"
+  },
+  "voiceSpeakerFilter": {
+    "actionFailed": "操作未能保存，请重试。",
+    "title": "识别我的声音",
+    "sectionTitle": "声纹过滤",
+    "label": "识别我的声音",
+    "entryHint": "语音输入时把旁人的声音静音。声纹只保存在这台手机上。",
+    "openAccessibility": "打开识别我的声音设置",
+    "on": "已开启",
+    "off": "未开启",
+    "hint": "语音输入时把旁人的声音静音，只把你说的话送去识别。需要先录入声纹；别人和你同时说话时无法完全滤掉。",
+    "unsupported": "当前安装的版本不支持声纹识别，请更新到最新版本。",
+    "privacy": "声纹只保存在这台手机上并加密存储，不会上传，也不会同步到其他设备。",
+    "model": {
+      "title": "识别模型",
+      "needed": "首次使用需要下载约 {{size}} 的识别模型，建议连接 Wi-Fi。",
+      "download": "下载识别模型",
+      "downloading": "正在下载（{{done}} / {{total}}）",
+      "cancel": "取消下载",
+      "retry": "重新下载",
+      "failed": {
+        "network": "识别模型下载失败，请检查网络后重试。",
+        "disk": "识别模型无法保存，请检查手机存储空间后重试。",
+        "checksum": "下载的识别模型校验未通过，请重试。",
+        "unavailable": "暂时无法获取识别模型，请稍后重试。"
+      }
+    },
+    "profile": {
+      "title": "声纹",
+      "missing": "还没有录入声纹",
+      "missingHint": "录入声纹后才会生效。",
+      "enrolled": "已录入声纹",
+      "enrolledAt": "{{date}} 录入",
+      "enroll": "录入声纹",
+      "reenroll": "重新录入",
+      "delete": "删除声纹",
+      "deleteConfirm": {
+        "title": "删除声纹？",
+        "description": "删除后语音输入不再过滤旁人的声音，直到你重新录入。",
+        "confirm": "删除",
+        "cancel": "取消"
+      }
+    },
+    "strictness": {
+      "label": "灵敏度",
+      "hint": "越严格越不容易放进旁人的声音，但在嘈杂环境里也更容易剪掉你自己的话。",
+      "restoreDefault": "恢复默认",
+      "options": {
+        "relaxed": "宽松",
+        "standard": "标准",
+        "strict": "严格"
+      }
+    },
+    "enroll": {
+      "description": "请用平常的语气朗读下面 {{clips}} 段文字。每段最多录音 {{seconds}} 秒，读完点击结束录音。请在平时使用语音输入的地方录制，避免其他人同时说话。",
+      "step": "第 {{current}} / {{total}} 段",
+      "record": "开始朗读",
+      "stop": "结束录音",
+      "rerecord": "重录这段",
+      "recording": "正在录音…还剩 {{seconds}} 秒",
+      "saving": "正在生成声纹…",
+      "submit": "完成录入",
+      "cancel": "取消",
+      "passages": {
+        "p1": "今天上午我先整理一下这周的工作安排，下午再把需要讨论的问题列出来，发给大家提前看看。",
+        "p2": "如果明天的天气不错，我们可以早点出发，路上顺便买些水果和零食，中午就在公园里吃饭。",
+        "p3": "请帮我把这段内容改得更简洁一些，保留关键数字和结论，然后用三到五句话总结一下重点。"
+      },
+      "errors": {
+        "too_short": "第 {{index}} 段检测到的语音不足，请重新录制。",
+        "no_embedding": "第 {{index}} 段没能识别出声纹，请重录这段。",
+        "inconsistent": "第 {{index}} 段和其他几段不像同一个人，可能混进了别人的声音或噪音，请重录这段。",
+        "models_missing": "识别模型还没有下载完成，请稍后再试。",
+        "storage_unavailable": "系统钥匙串暂时不可用，声纹无法加密保存，请稍后重试。",
+        "failed": "生成声纹失败，请重试。",
+        "microphone": "无法使用麦克风，请检查麦克风权限后重试。",
+        "noAudio": "麦克风没有传来声音，请检查后重试。"
+      },
+      "stepChoice": "第 {{index}} 段，{{status}}",
+      "stepStatus": {
+        "pending": "待录音",
+        "recorded": "已录音",
+        "retry": "待重录",
+        "recording": "录音中"
+      },
+      "rerecordStep": "重录第 {{index}} 段",
+      "readHint": "准备好后开始朗读，读完点击结束录音。",
+      "otherClipsKept": "其他段录音已保留。"
+    }
   },
   "deviceNameEditor": {
     "screenTitle": "设备名称",
@@ -139,9 +311,12 @@
     "resetAccessibility": "恢复默认本机名称",
     "emptyError": "设备名称不能为空。",
     "deviceInitializing": "设备还在初始化，请稍后再试。",
-    "saving": "保存中…",
-    "saved": "已保存。",
-    "restoringDefault": "正在恢复默认名称…",
-    "restoredDefault": "已恢复默认名称。"
+    "restoredDefault": "已恢复默认名称。",
+    "resetAction": "恢复默认名称",
+    "clearAccessibility": "清空名称",
+    "discardTitle": "放弃修改？",
+    "discardBody": "设备名称的修改还没有保存。",
+    "discardConfirm": "放弃修改",
+    "keepEditing": "继续编辑"
   }
 }

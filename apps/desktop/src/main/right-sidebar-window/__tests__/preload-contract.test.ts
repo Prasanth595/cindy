@@ -114,7 +114,6 @@ const subagentRunsKeys = exposedNestedKeys(localDbBody, 'subagentRuns');
 const orcaWorkflowKeys = exposedNestedKeys(localDbBody, 'orcaWorkflows');
 const gitReviewKeys = exposedNestedKeys(source, 'gitReview');
 const makerKeys = exposedNestedKeys(source, 'maker');
-const iosSimulatorKeys = exposedNestedKeys(source, 'iosSimulator');
 const fileBrowserKeys = exposedNestedKeys(source, 'fileBrowser');
 const terminalKeys = exposedNestedKeys(source, 'terminal');
 const processMonitorKeys = exposedNestedKeys(source, 'processMonitor');
@@ -132,6 +131,8 @@ describe('sidebarWindowPreload 椤跺眰濂戠害', () => {
     expect(topLevel).toEqual(expect.arrayContaining(['localThemes']));
     expect(topLevel).toEqual(expect.arrayContaining(['appShortcuts']));
     expect(topLevel).toEqual(expect.arrayContaining(['theme']));
+    expect(topLevel).toEqual(expect.arrayContaining(['onFullscreenChange']));
+    expect(topLevel).toEqual(expect.arrayContaining(['getFullscreenState']));
     expect(topLevel).toEqual(expect.arrayContaining(['search']));
   });
 
@@ -186,7 +187,8 @@ describe('sidebarWindowPreload 椤跺眰濂戠害', () => {
     expect(fileBrowserKeys).toEqual(expect.arrayContaining([
       'listDir', 'listAllFiles', 'readFile', 'writeFile', 'createFile', 'createFolder',
       'deleteEntry', 'renameEntry', 'stat', 'startWatch', 'stopWatch', 'onEvent',
-      'fetchRemote', 'readCached', 'cachePut', 'onTransferProgress', 'chatFetch', 'chatStat',
+      'fetchRemote', 'readCached', 'cachePut', 'onTransferProgress', 'chatFetch', 'chatDownload',
+      'chatCancel', 'chatStat',
     ]));
     expect(terminalKeys).toEqual(expect.arrayContaining([
       'create', 'write', 'resize', 'dispose', 'restart', 'onData', 'onExit',
@@ -222,7 +224,7 @@ describe('sidebarWindowPreload 椤跺眰濂戠害', () => {
     }
     for (const key of [
       'install', 'uninstall', 'inspect', 'devRuntime', 'devCall',
-      'approve', 'revokeApproval', 'setCindyPref', 'listCardsBySession',
+      'approve', 'revokeApproval', 'setErrandConfig', 'listCardsBySession',
     ]) {
       expect(ghostKeys).not.toEqual(expect.arrayContaining([key]));
     }
@@ -274,6 +276,7 @@ describe('rightSidebarWindow 鍛藉悕绌洪棿', () => {
     expect(rswKeys).toEqual(expect.arrayContaining(['refreshContext']));
     expect(rswKeys).toEqual(expect.arrayContaining(['onStateChanged']));
     expect(rswKeys).toEqual(expect.arrayContaining(['onContextChanged']));
+    expect(rswKeys).toEqual(expect.arrayContaining(['onTabHandoff']));
     expect(rswKeys).toEqual(expect.arrayContaining(['onCommand']));
     expect(rswKeys).toEqual(expect.arrayContaining(['sendCommand']));
     expect(rswKeys).toEqual(expect.arrayContaining(['onVisibilityChanged']));
@@ -301,19 +304,14 @@ describe('sidebar nested namespace contract', () => {
     expect(orcaWorkflowKeys).toEqual(expect.arrayContaining([
       'getByLeadSession', 'getByWorkerSession', 'listWorkersByLead', 'listWorkersByLeads',
       'createWorker', 'switchFocus', 'idleWorker', 'archiveWorker', 'endTeam',
-      'getCollaborationSettings', 'onOrcaWorkerChanged',
+      'getCollaborationSettings', 'listExecutionDevices', 'onOrcaWorkerChanged',
     ]));
   });
   it('maker capability contract', () => {
     expect(makerKeys).toEqual(expect.arrayContaining([
       'getTurnChangeSets', 'getWorkflowProgress', 'listSessionBackgroundTasks', 'stopAgentTask',
       'getPendingInteractions',
-      'iosSimulator',
     ]));
-    expect(iosSimulatorKeys).toEqual(expect.arrayContaining([
-      'requestAccess', 'status', 'call', 'setAgentControl', 'setMutationControl',
-      'setViewerVisibility', 'latestFrame', 'setStreamProfile', 'liveTouch',
-      'onH264Frame', 'onRouteStatus', 'onFocusRequest',
-    ]));
+    expect(makerKeys).not.toContain('iosSimulator');
   });
 });

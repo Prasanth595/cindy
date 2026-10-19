@@ -1,10 +1,42 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  canOfferCodexHistoryRecovery,
   extractNonSecretErrorSignals,
+  GATEWAY_PROXY_TOKEN_INVALID_REASON,
+  isCindyGatewayProxyTokenInvalidError,
+  isGatewayProxyTokenInvalidError,
+  isResponsesLiteParallelToolCallsError,
   matchesDeterministicUsageExhaustionText,
   redactSensitiveText,
+  parseAgentErrorCode,
 } from './errorRedaction.js';
+
+describe('explicit Codex history recovery offer', () => {
+  const message = 'stream disconnected before completion: stream closed before response.completed';
+  it('offers recovery for the terminal close without classifying it as encryption failure', () => {
+    expect(canOfferCodexHistoryRecovery({ message, agentKind: 'codex' })).toBe(true);
+  });
+  it.each([
+    { running: true }, { remoteHostId: 'ssh' }, { agentDeviceId: 'worker' },
+    { agentKind: 'cc' }, { message: 'Connection reset' },
+    { message: 'stream disconnected before completion: timeout' },
+  ])('does not offer unsupported or unrelated recovery: %s', overrides => {
+    expect(canOfferCodexHistoryRecovery({ message, agentKind: 'codex', ...overrides })).toBe(false);
+  });
+});
+
+describe('Responses Lite request error classification', () => {
+  it('recognizes the upstream error inside a JSON envelope', () => {
+    expect(isResponsesLiteParallelToolCallsError(JSON.stringify({ error: {
+      message: 'X-OpenAI-Internal-Codex-Responses-Lite requires `parallel_tool_calls` to be false.',
+      type: 'invalid_request_error', param: 'parallel_tool_calls', code: 'unsupported_value',
+    } }))).toBe(true);
+  });
+  it.each(['Invalid API key', 'Unsupported effort value', 'parallel_tool_calls is unsupported', ''])('does not misclassify unrelated errors: %s', message => {
+    expect(isResponsesLiteParallelToolCallsError(message)).toBe(false);
+  });
+});
 
 describe('matchesDeterministicUsageExhaustionText', () => {
   it.each([
@@ -24,6 +56,7 @@ describe('matchesDeterministicUsageExhaustionText', () => {
     'exceeded_budget',
     '账户余额不足，请充值',
     '账户欠费',
+    'You hit your spend cap set by the owner of your workspace. Ask them to raise it.',
   ])('recognizes deterministic usage exhaustion: %s', (message) => {
     expect(matchesDeterministicUsageExhaustionText(message)).toBe(true);
   });
@@ -207,5 +240,53 @@ describe('redactSensitiveText', () => {
     expect(redactSensitiveText(redactSensitiveText('access_token=secret key=opaque-secret'))).toBe(
       'access_token=[REDACTED] key=[REDACTED]',
     );
+  });
+});
+
+describe('isGatewayProxyTokenInvalidError', () => {
+  it('matches LiteLLM invalid proxy-token 401 copy after redaction', () => {
+    expect(
+      isGatewayProxyTokenInvalidError(
+        'Failed to authenticate. API Error: 401 Authentication Error, Invalid proxy server token passed. Received API Key = [REDACTED], Key Hash (Token) =[REDACTED] Unable to find token in cache or `LiteLLM_VerificationTokenTable`',
+      ),
+    ).toBe(true);
+    expect(isGatewayProxyTokenInvalidError('Invalid proxy server token passed')).toBe(true);
+    expect(GATEWAY_PROXY_TOKEN_INVALID_REASON).toBe('gateway-proxy-token-invalid');
+  });
+
+  it('does not treat generic 401 or Claude.ai auth failures as gateway token loss', () => {
+    expect(isGatewayProxyTokenInvalidError('401 Unauthorized')).toBe(false);
+    expect(isGatewayProxyTokenInvalidError('authentication_failed')).toBe(false);
+    expect(isGatewayProxyTokenInvalidError('Missing bearer')).toBe(false);
+    expect(isGatewayProxyTokenInvalidError('')).toBe(false);
+  });
+
+  it('scopes Cindy gateway classification away from custom LiteLLM providers', () => {
+    const message = 'Invalid proxy server token; LiteLLM_VerificationTokenTable';
+    expect(
+      isCindyGatewayProxyTokenInvalidError({ reason: GATEWAY_PROXY_TOKEN_INVALID_REASON }),
+    ).toBe(true);
+    expect(isCindyGatewayProxyTokenInvalidError({ message, providerId: null })).toBe(true);
+    expect(isCindyGatewayProxyTokenInvalidError({ message, providerId: 'xd' })).toBe(true);
+    expect(isCindyGatewayProxyTokenInvalidError({ message, providerId: 'custom-litellm' })).toBe(
+      false,
+    );
+  });
+});
+
+
+describe('agent error envelopes shared by desktop and mobile', () => {
+  it.each(['REMOTE_LOCAL_ONLY_PROVIDER', 'DEVICE_LINK_MEDIA_TRANSFER_FAILED', 'DEVICE_LINK_BUSY', 'MCP_APPROVAL_CONFIRMATION_TIMEOUT', 'AUTO_REVIEW_UNAVAILABLE'])(
+    'parses %s directly and inside an IPC error', code => {
+      for (const prefix of ['', "Error invoking remote method 'maker:send': Error: "]) {
+        expect(parseAgentErrorCode(`${prefix}[${code}] first line\nsecond line`)).toEqual({ code, fallback: 'first line\nsecond line' });
+      }
+    },
+  );
+  it('preserves the legacy unknown-REMOTE fallback without treating arbitrary bracket text as a code', () => {
+    expect(parseAgentErrorCode('[REMOTE_FUTURE] diagnostic')).toEqual({ code: 'REMOTE_FUTURE', fallback: 'diagnostic' });
+    expect(parseAgentErrorCode('[REMOTE_FUTURE]')).toEqual({ code: 'REMOTE_FUTURE', fallback: '[REMOTE_FUTURE]' });
+    expect(parseAgentErrorCode('[CUSTOM_ERROR] diagnostic')).toBeNull();
+    expect(parseAgentErrorCode('prose containing [REMOTE_FUTURE] diagnostic')).toBeNull();
   });
 });

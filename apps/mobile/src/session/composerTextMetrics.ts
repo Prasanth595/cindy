@@ -17,8 +17,8 @@
  */
 import { lineHeight, spacing, typeScale } from '@/theme/tokens';
 
-/** 输入文本字号(排版阶梯 typeScale.code)。 */
-export const COMPOSER_TEXT_FONT_SIZE = typeScale.code;
+/** 输入文本字号(排版阶梯 typeScale.bodySmall)。 */
+export const COMPOSER_TEXT_FONT_SIZE = typeScale.bodySmall;
 /**
  * 单行文字的行高(排版阶梯 lineHeight.body),**不含内边距**;
  * 也是 COMPOSER_SINGLE_LINE_HEIGHT 的基数(见下)。
@@ -42,13 +42,21 @@ export interface ComposerTextPadding {
   top: number;
 }
 
-export function composerTextPaddingForPlatform(platform: ComposerTextPlatform): ComposerTextPadding {
-  const opticalOffset = platform === 'ios' ? COMPOSER_TEXT_OPTICAL_OFFSET_Y : 0;
+export function composerTextPaddingForPlatform(
+  platform: ComposerTextPlatform,
+  options: { optical?: boolean } = {},
+): ComposerTextPadding {
+  const opticalOffset = options.optical !== false && platform === 'ios'
+    ? COMPOSER_TEXT_OPTICAL_OFFSET_Y
+    : 0;
   return {
     bottom: COMPOSER_TEXT_VERTICAL_PADDING - opticalOffset,
     top: COMPOSER_TEXT_VERTICAL_PADDING + opticalOffset,
   };
 }
+
+/** 收起单行与 34pt + / 麦克风并排时用几何居中，不再做 iOS 光学下移。 */
+export const COMPOSER_TEXT_GEOMETRIC_PADDING = composerTextPaddingForPlatform('default');
 
 // Node-side consumers and the existing iOS WebView tests use iOS as the
 // canonical reference. React Native consumers import the platform adapter.

@@ -2,63 +2,68 @@
  * Plugin list/detail view models derived only from the installed Ghost contract.
  *
  * Inputs: shared Ghost manifests and install records.
- * Outputs: renderer-safe list/detail facts without marketplace or runtime invention.
+ * Outputs: renderer-safe list/detail facts, including the optional Host task settings card.
  * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
  */
 
 import {
   ghostContentKeys,
   ghostPermissionItems,
+  type GhostInstallApproval,
   type GhostPermissionItem,
   type GhostTrustInfo,
   type GhostToolDecl,
   type InstalledGhost,
 } from '../../../../shared/ghost';
+import { installedGhostStoragePart } from '../../../../shared/pluginIdentity';
 import type { PluginMarketItem } from '../../../../shared/pluginMarket';
-
-/**
- * cindy 详单里**可钉后端**的类目 —— 详情页给每个申请到的动作渲染一行模型选择。
- *
- * 新增 cindy 能力类目时必须回到这里登记,否则那个类目在详情页**完全没有选型
- * 入口**(不是少个下拉:`cindyCapabilities` 为空时整张卡片都不渲染),插件只能
- * 吃全局默认档。2026-08-04 加 `embed` 时就漏过一次。
- *
- * `media` 有意不在其中:寄存(deposit)不经模型,没有"用哪个型号"可选。
- */
-const PINNABLE_CINDY_CATEGORIES = ['image', 'video', 'text', 'embed'] as const;
+import { marketItemMatchesInstalledGhost } from './pluginMarketPresentation';
 
 export interface GhostPluginListItem {
+  /** Instance key (storage part). Use this for enable/uninstall/panel IPC. */
   id: string;
+  /** Logical plugin id from the manifest. */
+  ghostId: string;
   name: string;
   description: string;
   version: string;
   enabled: boolean;
   canUse: boolean;
+  /**
+   * Host 是否持有完整、可验证的安装记录。非 `approved` 的安装不可运行，列表与
+   * 详情都必须如实说明并给出恢复入口，而不是让它看起来只是“被关掉了”。
+   */
+  approvalState: GhostInstallApproval['state'];
+  /** 随包内置插件(main 按种子清单投影)。安装记录异常时文案与恢复入口都不同。 */
+  builtin: boolean;
   /** 声明了插件页内独占面板(panel.position:'tab'),主动作为「使用」(打开面板)。 */
   tabPanel: boolean;
+  /** 声明了应用级主视图；只用于侧边栏与详情配置，不参与插件主动作。 */
+  hasMainView: boolean;
+  /** 本地化后的主视图标题；未声明时为 null。 */
+  mainViewTitle: string | null;
   /** 声明了由 Host 承载、但可从插件 UI 主动进入的能力。 */
-  hostCapability: 'ios-simulator' | null;
+  retirement?: InstalledGhost['retirement'];
   oauthAuthorizationExpired?: boolean;
   trust?: GhostTrustInfo;
   iconDataUrl?: string;
 }
 
 /**
- * 卡片主动作的四分法:
+ * 卡片主动作(只驱动右下角胶囊;整卡点击一律进详情):
  * - `panel`:有页签面板 → 「使用」直接打开面板;
  * - `command`:只有 $指令 → 「对话」把指令插进输入框起话题;
  * - `capability`:Host 承载的能力 → 「对话」进入该能力的工作流;
- * - `manage`:纯工具型(Agent 对话中自动调用)→ 无主按钮,点卡片进管理页。
+ * - `manage`:纯工具型(Agent 对话中自动调用)→ 无主按钮。
  * 停靠形态(left/right)的面板由布局树承载,不算 panel 主动作。
  */
-export type GhostPrimaryAction = 'panel' | 'command' | 'capability' | 'manage';
+export type GhostPrimaryAction = 'panel' | 'command' | 'manage';
 
 export function ghostPrimaryAction(
-  item: Pick<GhostPluginListItem, 'tabPanel' | 'canUse' | 'hostCapability'>,
+  item: Pick<GhostPluginListItem, 'tabPanel' | 'canUse'>,
 ): GhostPrimaryAction {
   if (item.tabPanel) return 'panel';
   if (item.canUse) return 'command';
-  if (item.hostCapability) return 'capability';
   return 'manage';
 }
 export interface GhostPluginDetail extends GhostPluginListItem {
@@ -68,9 +73,14 @@ export interface GhostPluginDetail extends GhostPluginListItem {
   permissions: GhostPermissionItem[];
   tools: readonly GhostToolDecl[];
   hasSettingsUi: boolean;
-  cindyCapabilities: readonly string[];
-  /** 申请了派活取件(agent.errand)——详情页据此渲染宿主统一的「AI 代办」配置卡。 */
-  hasErrand: boolean;
+  /**
+   * 宿主「模型与任务」卡:插件的唯一模型字段(快问快答与新建任务共用)。声明了
+   * 快问快答(cindy.text 含 oneshot)或任何新建任务能力即展示;图像/视频/向量
+   * 没有逐插件选模,始终跟随系统默认。showTaskPreferences:false 仅隐藏该卡。
+   */
+  hasTaskPreferences: boolean;
+  /** 能新建任务(agent.tasks / 旧 agent.errand / workspace):卡片额外展示权限与工作目录。 */
+  hasPluginTasks: boolean;
   panelMinWidth: number | null;
   installDir: string | null;
 }
@@ -96,7 +106,7 @@ export interface GhostPluginMarketPresentation {
 export function marketPresentationForInstalledGhost(
   ghost: Pick<InstalledGhost, 'manifest' | 'iconDataUrl'>,
   marketItem:
-    | Pick<
+    | (Pick<
         PluginMarketItem,
         | 'ghostId'
         | 'installState'
@@ -106,13 +116,14 @@ export function marketPresentationForInstalledGhost(
         | 'author'
         | 'icon'
         | 'sourceType'
-      >
+      > &
+        Pick<PluginMarketItem, 'namespace'>)
     | null
     | undefined,
 ): GhostPluginMarketPresentation | null {
   if (
     !marketItem ||
-    marketItem.ghostId !== ghost.manifest.id ||
+    !marketItemMatchesInstalledGhost(marketItem, ghost) ||
     marketItem.installState !== 'installed' ||
     marketItem.version !== ghost.manifest.version
   ) {
@@ -157,7 +168,7 @@ export function filterGhostPluginItems<T extends GhostPluginListItem>(
 ): T[] {
   const normalizedQuery = query.trim().toLocaleLowerCase();
   return items.filter((item) =>
-    `${item.name} ${item.description} ${item.id}`.toLocaleLowerCase().includes(normalizedQuery),
+    `${item.name} ${item.description} ${item.ghostId} ${item.id}`.toLocaleLowerCase().includes(normalizedQuery),
   );
 }
 
@@ -165,7 +176,7 @@ export function filterGhostPluginItems<T extends GhostPluginListItem>(
  * Orders installed shortcuts by host-recorded recency while keeping never-used items stable.
  * Unknown/stale ids are ignored, so uninstall or migration residue cannot hide an item.
  */
-export function sortGhostPluginItemsByRecentUse<T extends Pick<GhostPluginListItem, 'id'>>(
+export function sortGhostPluginItemsByRecentUse<T extends Pick<GhostPluginListItem, 'id' | 'retirement'>>(
   items: readonly T[],
   recentIds: readonly string[],
 ): T[] {
@@ -195,7 +206,7 @@ export function sortGhostPluginItemsByRecentUse<T extends Pick<GhostPluginListIt
  * so letting them jump the row would only bury the unread signal.
  * Pure and reactive — recompute freely from current signals; there is no frozen snapshot to go stale.
  */
-export function sortInstalledForDisplay<T extends Pick<GhostPluginListItem, 'id'>>(
+export function sortInstalledForDisplay<T extends Pick<GhostPluginListItem, 'id' | 'retirement'>>(
   items: readonly T[],
   {
     recentIds,
@@ -207,8 +218,8 @@ export function sortInstalledForDisplay<T extends Pick<GhostPluginListItem, 'id'
     .map((item, stableIndex) => ({ item, stableIndex }))
     .sort((a, b) => {
       // Tier 1 — unread notifications, newest badge first.
-      const aAt = unreadAtById.get(a.item.id);
-      const bAt = unreadAtById.get(b.item.id);
+      const aAt = a.item.retirement?.unread ? Number.MAX_SAFE_INTEGER : unreadAtById.get(a.item.id);
+      const bAt = b.item.retirement?.unread ? Number.MAX_SAFE_INTEGER : unreadAtById.get(b.item.id);
       if ((aAt !== undefined) !== (bAt !== undefined)) return aAt !== undefined ? -1 : 1;
       if (aAt !== undefined && bAt !== undefined && aAt !== bAt) return bAt - aAt;
       // Tier 2 — recently used, newest first.
@@ -232,12 +243,12 @@ export function sortInstalledForDisplay<T extends Pick<GhostPluginListItem, 'id'
  * when the user has many plugins. Updatable-but-read plugins can still fold (the banner surfaces
  * updates).
  */
-export function installedVisibleCount<T extends Pick<GhostPluginListItem, 'id'>>(
+export function installedVisibleCount<T extends Pick<GhostPluginListItem, 'id' | 'retirement'>>(
   items: readonly T[],
   unreadAtById: ReadonlyMap<string, number>,
   cap: number,
 ): number {
-  const unreadCount = items.reduce((count, item) => count + (unreadAtById.has(item.id) ? 1 : 0), 0);
+  const unreadCount = items.reduce((count, item) => count + ((item.retirement?.unread || unreadAtById.has(item.id)) ? 1 : 0), 0);
   return Math.max(cap, unreadCount);
 }
 
@@ -258,14 +269,19 @@ export function toGhostPluginListItem(
     iconDataUrl: ghost.iconDataUrl,
   };
   return {
-    id: manifest.id,
+    id: installedGhostStoragePart(ghost),
+    ghostId: manifest.id,
     name: display.name,
     description: display.description,
     version: manifest.version,
     enabled: ghost.enabled,
     canUse: Boolean(manifest.command),
+    approvalState: ghost.approval.state,
+    builtin: ghost.builtin === true,
     tabPanel: manifest.panel?.position === 'tab',
-    hostCapability: manifest.slots.includes('ios-simulator') ? 'ios-simulator' : null,
+    hasMainView: manifest.mainView !== undefined,
+    mainViewTitle: manifest.mainView ? (manifest.mainView.title ?? manifest.name) : null,
+    retirement: ghost.retirement,
     oauthAuthorizationExpired: ghost.oauthAuthorizationExpired !== undefined,
     trust: ghost.trust ?? {
       level: 'unverified',
@@ -287,6 +303,8 @@ export function toGhostPluginDetail(
 ): GhostPluginDetail {
   const listItem = toGhostPluginListItem(ghost, presentation);
   const { manifest } = ghost;
+  const hasPluginTasks =
+    !!manifest.workspace || manifest.agent?.errand === true || manifest.agent?.tasks === true;
   return {
     ...listItem,
     trust: listItem.trust!,
@@ -295,24 +313,24 @@ export function toGhostPluginDetail(
     permissions: ghostPermissionItems(manifest),
     tools: manifest.tools ?? [],
     hasSettingsUi: Boolean(manifest.settingsHtml),
-    cindyCapabilities: PINNABLE_CINDY_CATEGORIES.flatMap((category) =>
-      (manifest.cindy?.[category] ?? []).map((action) => `${category}.${action}`),
-    ),
-    hasErrand: manifest.agent?.errand === true,
+    hasTaskPreferences:
+      manifest.showTaskPreferences !== false &&
+      (hasPluginTasks || (manifest.cindy?.text ?? []).includes('oneshot')),
+    hasPluginTasks,
     panelMinWidth: manifest.panel ? (manifest.panel.minWidth ?? 280) : null,
     installDir: ghost.dir,
   };
 }
 
 /**
- * 插件页内面板宿主的数据归属键。
+ * 插件可见 WebView 宿主的数据归属键（panel / main-view 共用）。
  *
  * 面板承载的是 webview,里面可能存着账号 A 的登录态、表单、已加载数据。
  * 两个账号装了**同 id、同版本、同入口**的插件时,只按 ghostId 做宿主 key
  * 会让 React 复用同一实例——切到账号 B 后 A 的 DOM 与内存态原样留着。
- * 所以 key 必须含 owner 代际:换身份即卸载重建。
+ * 所以 key 必须含 owner 身份:换身份即卸载重建。
  */
-export function ghostPanelOwnerKey(
+export function ghostWebviewOwnerKey(
   mode: 'signed-out' | 'local' | 'cloud',
   dataOwnerId: string | null,
 ): string {

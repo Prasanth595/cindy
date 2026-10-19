@@ -1,8 +1,67 @@
 # Mobile Simulator Debugging
 
-This guide is the fixed local loop for testing `apps/mobile` in an iOS
-Simulator. It exists because Expo Go, the iOS development client, and an installed
-distribution build look similar during manual testing but prove different things.
+This guide is the fixed local loop for testing `apps/mobile` in an iOS Simulator
+or Windows Android Emulator. It exists because Expo Go, a development client,
+and an installed distribution build look similar during manual testing but prove
+different things.
+
+On Windows, the explicit Mainland China one-command entry starts or reuses the
+`cindy-api36` AVD, waits for Android to finish booting, configures `adb reverse`,
+and then keeps the current worktree's Metro in the foreground:
+
+```bash
+pnpm mobile:sim:start:cn
+```
+
+`mobile:sim:start` keeps the repository-wide Global default. Use
+`-- --avd <name>` for another AVD or `-- --no-emulator` for Metro only. Android
+SDK tools are resolved from `ANDROID_SDK_ROOT`, `ANDROID_HOME`, or the standard
+Windows Android Studio SDK location; they do not need to be on `PATH`. The
+command does not rebuild the native app, so install the matching development
+package first when switching build identity.
+
+The three commands share Metro worktree, source, region and environment checks.
+`whoami` success proves identity consistency, not that the app has loaded a bundle
+or displayed a page (`pageVerified` remains false). `rebuild` reports installation
+separately from a launch request, and exits nonzero if launch is blocked, including
+when Metro is absent. `--build-only` does not require Metro. A successful launch
+request still requires fresh bundle logs and visible page verification.
+
+### Which iOS Simulator
+
+The repository does not pin a simulator; each developer chooses locally. By default
+(`CINDY_MOBILE_SIMULATOR=auto`) `whoami`, `rebuild` and `open` first use a booted device in
+Cindy's own simulator — the official Baguette plugin's private device set at
+`~/Library/Application Support/BaguetteCindy/devices`, shown in Cindy's sidebar — and fall
+back to the system (Xcode) simulator when Cindy's has no booted device, is not installed, or
+its plugin setting has paused running. `--udid` uses whichever of those sets holds that
+device. Keep a personal choice outside the repository, e.g. in your shell profile:
+
+| `CINDY_MOBILE_SIMULATOR` | Effect |
+|---|---|
+| `auto` (default) | Cindy first, then system |
+| `cindy` | Only Cindy's simulator; error when unavailable |
+| `system` | Only the system simulator |
+| absolute path | Only that CoreSimulator device set |
+
+Devices outside the system set have no external window: `mobile:sim:open` refuses them and
+`whoami --viewer` reports the viewer as unavailable; view Cindy's devices in its sidebar.
+`rebuild` builds those with the generic Simulator destination (xcodebuild only sees the system
+set) and installs with `simctl --set`. Cindy's simulator shuts devices down after its idle
+setting (15 minutes by default; plugin input renews it, scripts do not). Native E2E (Maestro)
+still uses the system simulator.
+
+For the macOS external viewer, use `pnpm mobile:sim:open -- --udid <booted-udid>`.
+It resolves the app inside the selected Xcode toolchain (including `DEVELOPER_DIR`),
+opens Device Hub or Simulator by its absolute path, and exits nonzero on failure.
+Do not use AppleScript app-name lookup or `open -a Simulator`: Xcode 27 has Device
+Hub instead, and probing a missing name can display an application chooser.
+The pinned Expo CLI patch shares discovery and opening with this entrypoint.
+
+Use `mobile:sim:whoami -- --viewer --json` when handing off an external window.
+`viewer.running` checks the selected app process; `viewer.windowVerified: false`
+explicitly leaves visible-window acceptance to a screenshot/manual check. Without
+`--viewer`, a missing external viewer does not fail embedded/headless identity checks.
 
 ## Current Source Verification Contract
 
@@ -33,6 +92,7 @@ apply". Treat the following as a contract, not optional steps:
 ```bash
 pnpm mobile:sim:start      # start THIS worktree's Global dev-client Metro; injects git
                            # branch/commit into the __DEV__ build label (EXPO_PUBLIC_*)
+pnpm mobile:sim:start:cn   # Mainland China; on Windows also starts cindy-api36
 pnpm mobile:sim:start -- --region=cn # 中国大陆版 JS region；先 rebuild 对应 native app
 pnpm mobile:sim:whoami     # doctor: booted install + which port = which worktree
 pnpm mobile:sim:whoami -- --region=cn # inspect the cn native app + Metro ownership
@@ -41,8 +101,9 @@ pnpm mobile:sim:rebuild    # rebuild + reinstall the Global native dev app (nati
 
 `mobile:sim:start` and `mobile:sim:rebuild` default to `global`; the China
 Mainland build requires explicit `--region=cn`. Before touching
-Expo, all `mobile:sim:*` commands initialize the protocol submodule and repair
-the workspace dependencies when needed. The start/rebuild scripts also
+Expo, all `mobile:sim:*` commands check dependencies without installing or deleting
+anything. If the check fails, preserve the environment and explicitly run
+`pnpm install --frozen-lockfile` in the current worktree after diagnosing the failure. The start/rebuild scripts also
 synchronize
 the selected build region and the matching `config/endpoint*.json` bootstrap
 base into `apps/mobile/.env`. Local Xcode / Simulator builds also read the selected
@@ -173,8 +234,8 @@ Before asking someone to retest, confirm which native app is installed:
 
 ```bash
 xcrun simctl list devices booted
-pnpm mobile:sim:whoami                    # cn(default)
-pnpm mobile:sim:whoami -- --region=global # global
+pnpm mobile:sim:whoami                    # Global(default)
+pnpm mobile:sim:whoami -- --region=cn     # China Mainland
 ```
 
 `mobile:sim:whoami` resolves the selected identity from `app.config.js` plus the
@@ -188,9 +249,28 @@ fingerprint mismatch makes it exit nonzero. Expected version values come from
 - `version`
 - `ios.buildNumber`
 
-The native build number only proves native installation. For JavaScript
-freshness, the Metro terminal must show a new bundle/reload after the source
-change.
+The native build number only proves native installation. `whoami` also compares
+the installed `EXUpdates.bundle/fingerprint` with the current worktree's Expo
+Updates fingerprint, using the same development environment and workflow as the
+native build. A missing/unreadable fingerprint (`native-unknown`) or difference
+(`native-mismatch`) fails the check even when Metro is correct. Run ordinary
+`mobile:sim:rebuild` without `--clean`; it rejects incompatible cached artifacts
+and checks the built and installed app before handing it off. For example,
+switching worktrees with different `@expo/ui` versions can otherwise silently
+break native gradient parameters while the app still opens.
+
+For JavaScript freshness, the Metro terminal must show a new bundle/reload after
+the source change. Matching native fingerprints does not prove page rendering.
+
+If a freshly built app exits before loading JavaScript with `UIScene life cycle
+is required`, check the SDK 57 scene backport: `expo >= 57.0.23` and
+`expo-build-properties` with `ios.enableSceneSupport: true`. The repository enables
+this official path for Xcode 27 / iOS 27. Prebuild should generate an
+`EXExpoAppSceneDelegate` manifest for the main app and make AppDelegate conform to
+`ExpoReactNativeFactoryProvider`; it must no longer create the legacy window.
+This native migration changes the runtime fingerprint and requires a new native
+build. Verify cold/warm links and background/foreground behavior as well as
+startup; do not mask it with a JavaScript workaround.
 
 ## Environment And Login
 
@@ -248,8 +328,50 @@ For device-link network symptoms, collect:
 
 ## Render Storm Forensics And Regression Measurement
 
-背景:2026-07 会话白屏/卡死排查确立的取证与回归测量体系(手机端无落盘日志,
-这套是唯一的量化通道)。触碰 `remoteSessionStore` 订阅链、首页/详情页列表派生
+Release 也可在设置 → 调试 / 开发者打开 Debug 日志，复现后导出。默认关闭；开启后记录
+手机连接恢复、网络变化、错误与堆栈、滚动与键盘几何、渲染计数/解析耗时、JS 停摆。
+不记录聊天正文、完整请求或凭证，不复制被控端任务日志，不捕捉任意 console 或原生日志。
+详细日志最多保留 7 天、8 MiB；每 2 秒及前后台切换时落盘，突然杀进程可能丢失最后一批。
+配置日志服务的构建还可手动上传筛选后的运行摘要（最近 7 天最多 500 条），成功自动复制编号。
+上传摘要不包含详细 Debug 文件，需要详细现场时用导出或开发设备容器读取。
+
+滚动几何在交互状态不变时最多每 250 ms 记录一次；拖动结束、拖动/惯性/读历史/贴底
+状态变化仍立即记录。键盘日志只记录实际几何或显隐变化，关闭且已退出的弹层、不需要
+键盘避让的弹层不注册键盘监听。日志条数不能直接当作原生事件次数或监听器数量。
+`content recovery state` 的 `elapsedMs` / `foregroundElapsedMs` 只累计该任务页聚焦且
+App 为 active 的等待时间，`wallElapsedMs` 单独保留包含后台与离开页面的总时长。
+旧版本仅有 `elapsedMs`，其中可能包含后台时间，不能直接解读成用户等待或界面卡死。
+实现与回归见 `src/debug/useContentRecoveryDiagnostics.ts`、`scrollDebugSampler.ts`
+及相邻测试，键盘回归见 `src/__tests__/composerKeyboard.test.tsx`、`sheetKeyboardSubscription.test.tsx`。
+
+### 从开发版 iPhone 读取历史 Debug 文件
+
+手机与 Mac 配对、开启 Developer Mode 后，可通过 Xcode 设备管理窗口
+（Devices and Simulators）选择对应开发版 App，使用 Download Container。
+在下载的 `.xcappdata` 中查看 `AppData/Documents/cindy-debug/mobile-debug-*.ndjson`。
+记录时不需要连着 Xcode；配对设备通过同网 Wi-Fi 可用时，也可以无线读取。
+这不是任意互联网远程访问，实际权限取决于设备连接、开发签名与系统授权。
+
+也可只拷出日志目录（bundle ID 必须取当前安装的开发版，不猜区域或包名）：
+
+```sh
+xcrun devicectl device copy from \
+  --device '<paired-device-id>' \
+  --domain-type appDataContainer \
+  --domain-identifier '<installed-development-bundle-id>' \
+  --source Documents/cindy-debug \
+  --destination /tmp/cindy-mobile-debug
+```
+
+历史文件不会自动出现在 Xcode 实时 Console；该文件日志不是 Apple Unified Logging。
+日志随 App 容器保存（可能进入系统备份），卸载会删除。尚未开启记录或尚未落盘时目录可能不存在。
+Apple 参考：[配对设备](https://developer.apple.com/documentation/xcode/pairing-your-devices-with-your-mac)、
+[下载容器](https://developer.apple.com/documentation/metal/creating-binary-archives-from-device-built-pipeline-state-objects)。
+
+### 进一步测量
+
+背景:2026-07 会话白屏/卡死排查确立的取证与回归测量体系。
+触碰 `remoteSessionStore` 订阅链、首页/详情页列表派生
 (索引 useMemo、sections、行 memo)、或做相关重构时,改动前后各测一轮对比。
 
 三层信号,从粗到细:
@@ -326,6 +448,31 @@ Keyboard covers the composer
 : Reproduce with the software keyboard enabled, then inspect `KeyboardAvoidingView`
 behavior, safe-area insets, and composer bottom spacing together. Do not validate
 keyboard layout with only the hardware keyboard.
+
+## Android Rendering Performance
+
+- Record the running AVD's actual RAM, GPU backend, CPU count, resolution,
+  installed build, source label, and uptime. `config.ini` can differ from the
+  running emulator's command-line overrides (`hardware-qemu.ini`).
+- First repeat a fixed scroll in Android Settings as an environment control.
+  If it also stalls, save `dumpsys gfxinfo`, memory/swap counters and a Perfetto
+  trace before investigating the app. Cold boot the same AVD without loading or
+  saving a snapshot, preserve user data, and repeat the control with the same
+  hardware settings. Do not attribute this recovery to an application patch.
+- For the app, verify the updated bundle was actually loaded after restarting
+  Metro through `mobile:sim:start`. A development client can continue running
+  cached code after Metro exits. Focus/page assertions must pass before each
+  scripted interaction; an aborted sequence is not a performance sample.
+- Warm each version, repeat the same interaction at least three times, and keep
+  builds, animation settings and simulator configuration identical. Do not run
+  builds, type checks or tests concurrently with sampling. Record frame count,
+  missed-deadline count and frame-time percentiles together: adding a native
+  exit animation changes the denominator of the jank percentage.
+- Use Perfetto to separate React/Fabric mount work, Compose recomposition,
+  RenderThread and graphics-buffer waits. `gfxinfo` for a removed popup can omit
+  that window's frames; retain snapshots while the popup is open as well as the
+  process totals. Debug/emulator results identify regressions, but do not prove
+  release-build performance on physical devices.
 
 ## Before Asking For Manual Retest
 

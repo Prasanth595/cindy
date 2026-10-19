@@ -1,5 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
-import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react';
+import type {
+  CSSProperties,
+  FocusEvent as ReactFocusEvent,
+  KeyboardEvent as ReactKeyboardEvent,
+  MouseEvent as ReactMouseEvent,
+  ReactNode,
+} from 'react';
 
 import { cn } from '@/lib/utils';
 
@@ -18,6 +24,7 @@ import {
   SKIP_ENTRY,
   SOCIAL,
   SPINNER,
+  SSO_ORG_HISTORY,
   SUBTITLE,
   TEXT_LINK,
   TITLE,
@@ -204,6 +211,14 @@ export function LoginInput({
   top = CONTROL.inputY,
   prefix,
   testId,
+  onFocus,
+  onBlur,
+  onClick,
+  onKeyDown,
+  role,
+  ariaControls,
+  ariaExpanded,
+  ariaActiveDescendant,
 }: {
   value: string;
   onChange: (next: string) => void;
@@ -222,6 +237,14 @@ export function LoginInput({
   /** 固定前缀块文本(仅左对齐形态;undefined = 无前缀,布局与旧版逐字节一致)。 */
   prefix?: string;
   testId?: string;
+  onFocus?: (event: ReactFocusEvent<HTMLInputElement>) => void;
+  onBlur?: (event: ReactFocusEvent<HTMLInputElement>) => void;
+  onClick?: (event: ReactMouseEvent<HTMLInputElement>) => void;
+  onKeyDown?: (event: ReactKeyboardEvent<HTMLInputElement>) => void;
+  role?: 'combobox';
+  ariaControls?: string;
+  ariaExpanded?: boolean;
+  ariaActiveDescendant?: string;
 }) {
   const filled = value.length > 0;
   const prefixNode = prefix != null && !center && (
@@ -256,7 +279,14 @@ export function LoginInput({
         pattern={pattern}
         value={value}
         onChange={(event) => onChange(event.target.value)}
+        onClick={onClick}
+        onKeyDown={onKeyDown}
         placeholder={placeholder}
+        role={role}
+        aria-autocomplete={role === 'combobox' ? 'list' : undefined}
+        aria-controls={ariaControls}
+        aria-expanded={ariaExpanded}
+        aria-activedescendant={ariaActiveDescendant}
         className={cn(
           'absolute box-border appearance-none overflow-hidden whitespace-nowrap outline-none',
           'login-skin-input transition-none',
@@ -275,7 +305,9 @@ export function LoginInput({
             width: CONTROL.width,
             height: CONTROL.height,
             borderRadius: CONTROL.radius,
-            background: LOGIN_COLORS.controlBg,
+            // backgroundColor 而非 background 简写:简写会把 background-image 重置为 none,
+            // 上面 hover:enabled 的 5% 叠层(background-image)因此从未生效。
+            backgroundColor: LOGIN_COLORS.controlBg,
             border: `1px solid ${
               error
                 ? LOGIN_COLORS.errorFg
@@ -299,6 +331,7 @@ export function LoginInput({
           if (!error) event.currentTarget.style.borderColor = LOGIN_COLORS.controlBorderActive;
           event.currentTarget.style.fontWeight = '700';
           event.currentTarget.style.color = LOGIN_COLORS.controlText;
+          onFocus?.(event);
         }}
         onBlur={(event) => {
           const nowFilled = event.currentTarget.value.length > 0;
@@ -311,9 +344,92 @@ export function LoginInput({
           event.currentTarget.style.color = nowFilled
             ? LOGIN_COLORS.controlText
             : LOGIN_COLORS.controlPlaceholder;
+          onBlur?.(event);
         }}
       />
     </>
+  );
+}
+
+export function ssoOrgHistoryOptionId(index: number): string {
+  return `login-sso-org-history-option-${index}`;
+}
+
+/** Visual-only listbox for recent successful organization identifiers. */
+export function LoginSsoOrgHistoryList({
+  entries,
+  value,
+  activeIndex,
+  onActiveIndexChange,
+  onSelect,
+  listId,
+}: {
+  entries: readonly string[];
+  value: string;
+  activeIndex: number;
+  onActiveIndexChange: (index: number) => void;
+  onSelect: (entry: string) => void;
+  listId: string;
+}) {
+  const selectedKey = value.trim().toLowerCase();
+  const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  useEffect(() => {
+    if (activeIndex < 0) return;
+    optionRefs.current[activeIndex]?.scrollIntoView({ block: 'nearest' });
+  }, [activeIndex]);
+  return (
+    <div
+      id={listId}
+      data-testid="login-sso-org-history-list"
+      role="listbox"
+      className="absolute z-[4] box-border overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+      style={{
+        left: SSO_ORG_HISTORY.x,
+        top: SSO_ORG_HISTORY.y,
+        width: SSO_ORG_HISTORY.width,
+        maxHeight: SSO_ORG_HISTORY.maxHeight,
+        borderRadius: SSO_ORG_HISTORY.radius,
+        background: LOGIN_COLORS.panelBg,
+        border: `1px solid ${LOGIN_COLORS.controlBorder}`,
+      }}
+    >
+      {entries.map((entry, index) => {
+        const highlighted = activeIndex === index || entry.toLowerCase() === selectedKey;
+        return (
+          <button
+            id={ssoOrgHistoryOptionId(index)}
+            key={entry.toLowerCase()}
+            ref={(node) => {
+              optionRefs.current[index] = node;
+            }}
+            type="button"
+            role="option"
+            aria-selected={entry.toLowerCase() === selectedKey}
+            data-testid={`login-sso-org-history-option-${index}`}
+            tabIndex={-1}
+            className="flex w-full items-center border-0 text-left hover:bg-[var(--login-action-control-bg)]"
+            style={{
+              minHeight: SSO_ORG_HISTORY.rowMinHeight,
+              paddingLeft: SSO_ORG_HISTORY.paddingX,
+              paddingRight: SSO_ORG_HISTORY.paddingX,
+              paddingTop: SSO_ORG_HISTORY.paddingY,
+              paddingBottom: SSO_ORG_HISTORY.paddingY,
+              borderRadius: SSO_ORG_HISTORY.rowRadius,
+              background: highlighted ? LOGIN_COLORS.actionControlBg : 'transparent',
+              color: LOGIN_COLORS.controlText,
+              fontSize: SSO_ORG_HISTORY.fontSize,
+              lineHeight: `${SSO_ORG_HISTORY.lineHeight}px`,
+              overflowWrap: 'anywhere',
+            }}
+            onMouseEnter={() => onActiveIndexChange(index)}
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => onSelect(entry)}
+          >
+            {entry}
+          </button>
+        );
+      })}
+    </div>
   );
 }
 
@@ -535,8 +651,9 @@ export function LoginBackButton({
         border: `1px solid ${LOGIN_COLORS.backBorder}`,
       }}
     >
-      {/* 24 box 内左向 chevron(247:1635 icon 语义;矢量重绘,静态) */}
-      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden>
+      {/* 24 box 内左向 chevron(247:1635 icon 语义;矢量重绘,静态)。z-[1]:hover/pressed
+          叠层(::after,亮色白 70%)只染底色,不盖住箭头——否则悬停时箭头仅 1.76:1。 */}
+      <svg className="relative z-[1]" width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden>
         <path
           d="M14.5 5.5 8 12l6.5 6.5"
           stroke={LOGIN_COLORS.controlText}
@@ -1137,7 +1254,7 @@ export function LoginMethodRow({
     >
       <span
         aria-hidden
-        className="absolute inline-flex"
+        className="absolute z-[1] inline-flex"
         style={
           !showLogo && icon === 'person'
             ? {
@@ -1169,7 +1286,7 @@ export function LoginMethodRow({
         )}
       </span>
       <span
-        className="absolute flex flex-col justify-center text-left"
+        className="absolute z-[1] flex flex-col justify-center text-left"
         style={{
           left: METHOD_ROW.textX,
           top: 0,
@@ -1192,7 +1309,7 @@ export function LoginMethodRow({
       </span>
       <span
         aria-hidden
-        className="absolute inline-flex"
+        className="absolute z-[1] inline-flex"
         style={{
           left: METHOD_ROW.rightIcon.x,
           top: METHOD_ROW.rightIcon.y,

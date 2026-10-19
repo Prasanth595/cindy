@@ -27,12 +27,64 @@ export const SUBSCRIPTION_DIRECT_MODEL_PREFIXES = [
 ] as const;
 
 /**
+ * XD 网关折扣 GPT 的 wire 前缀。`openai-codex/` 与历史 `codex/` 是同一类路由：
+ * Codex 远程压缩 v2、网关换 key 和预算分组都认它们。较长的前缀必须排在前面。
+ */
+export const CODEX_GATEWAY_WIRE_PREFIXES = ['openai-codex/', 'codex/'] as const;
+
+export function isCodexGatewayWireModel(model: string | null | undefined): boolean {
+  const id = model?.trim().toLowerCase() ?? '';
+  return CODEX_GATEWAY_WIRE_PREFIXES.some(
+    (prefix) => id.startsWith(prefix) && id.length > prefix.length,
+  );
+}
+
+export function stripCodexGatewayWirePrefix(model: string): string {
+  const id = model.trim();
+  const lower = id.toLowerCase();
+  const prefix = CODEX_GATEWAY_WIRE_PREFIXES.find(
+    (candidate) => lower.startsWith(candidate) && lower.length > candidate.length,
+  );
+  return prefix ? id.slice(prefix.length) : model;
+}
+
+/**
  * model id 是否为「订阅直连」(bridge)模型。传归一化后或原始 id 均可(只看前缀)。
  * 签名与 apps/desktop/src/shared/subscriptionModels.ts 的历史实现逐字一致(下沉收口)。
  */
 export function isSubscriptionDirectModel(model: string | null | undefined): boolean {
   if (!model) return false;
   return SUBSCRIPTION_DIRECT_MODEL_PREFIXES.some((prefix) => model.startsWith(prefix));
+}
+
+/**
+ * xAI / SuperGrok 的独占户口:只能走 SuperGrok,不能 fail-open 进 Cindy LiteLLM。
+ *
+ * - `xai/grok-*` 已是订阅前缀
+ * - 裸 `grok-*` 是官方 / Pi 目录 id
+ * - `x-ai/grok-*` 是网关/OpenRouter 命名空间,Cindy 网关可能认,不算独占
+ */
+export function isExclusiveXaiModelId(model: string | null | undefined): boolean {
+  if (!model) return false;
+  const id = model.trim().replace(/\[1m\]$/i, '');
+  if (!id) return false;
+  if (id.startsWith(XAI_MODEL_PREFIX)) {
+    return id.slice(XAI_MODEL_PREFIX.length).startsWith('grok');
+  }
+  if (id.includes('/')) return false;
+  return id.startsWith('grok');
+}
+
+/** 订阅前缀 ∪ xAI 独占裸 id。compat-proxy 与记账必须共用,避免路由当订阅、账单当网关。 */
+export function isSubscriptionDirectRoute(model: string | null | undefined): boolean {
+  return isSubscriptionDirectModel(model) || isExclusiveXaiModelId(model);
+}
+
+/** 独占 Grok 的目录/报价身份:裸 grok-4.6 → xai/grok-4.6。非独占返回 null。 */
+export function exclusiveXaiCatalogModelId(model: string | null | undefined): string | null {
+  if (!isExclusiveXaiModelId(model) || !model) return null;
+  const id = model.trim().replace(/\[1m\]$/i, '');
+  return id.startsWith(XAI_MODEL_PREFIX) ? id : `${XAI_MODEL_PREFIX}${id}`;
 }
 
 // 仅用于分组展示, 不参与持久化或 onModelChange 数据流。
@@ -62,6 +114,7 @@ export type ModelCategory =
   | 'ungrouped'
   | 'image'
   | 'video'
+  | 'audio'
   | 'tts'
   | 'stt'
   | 'realtime'
@@ -80,6 +133,7 @@ export const CATEGORY_ORDER: ModelCategory[] = [
   'ungrouped',
   'image',
   'video',
+  'audio',
   'tts',
   'stt',
   'realtime',
@@ -125,6 +179,7 @@ const MODE_TO_CATEGORY: Record<string, ModelCategory> = {
   image_generation: 'image',
   video_generation: 'video',
   audio_speech: 'tts',
+  audio_generation: 'audio',
   audio_transcription: 'stt',
   realtime: 'realtime',
 };
@@ -151,7 +206,8 @@ function stripNamespace(id: string): string {
   return idx === -1 ? id : id.slice(idx + 1);
 }
 
-// 按 model.id 前缀粗分类: claude-* → Anthropic, gpt-* → GPT, codex/* → 骨折GPT (gateway 低价路由),
+// 按 model.id 前缀粗分类: claude-* → Anthropic, gpt-* → GPT,
+// openai-codex/* 与 codex/* → 骨折GPT (gateway 低价路由),
 // gemini-* → Google, 认不出厂商的 → `ungrouped`(「未分组」)。
 // **`china` 不在这里**:「中国」只认目录显式下发的 `group:'china'`(见 groupOf)。这里不做
 // 国产厂商的 id 猜测 —— 产地是 id 猜不出来的属性,猜错就是把别家模型标成「中国」;宁可落
@@ -249,7 +305,7 @@ export function categorize(rawId: string): ModelCategory {
   // 折扣路由必须判在 gpt 之前:`codex/gpt-5.4` 去掉命名空间就是 `gpt-5.4`,下面那条
   // 认尾段的 gpt 规则会把它抢成 gpt 组,徽章与分组随之自相矛盾(2026-08 加尾段匹配时
   // 被 categorize 的既有用例当场抓到)。
-  if (id.startsWith('codex/')) return 'gpt-budget';
+  if (isCodexGatewayWireModel(id)) return 'gpt-budget';
   // `xd/codex-gpt-5.5` 这类 id 去命名空间后是 `codex-gpt-5.5`,不以 `gpt-` 开头,同样不会
   // 被这条抢走(它的折扣归属由目录 group 决定,见 isBudgetModel)。
   if (
@@ -335,7 +391,7 @@ export function isChatEligible(model: { id: string; group?: string; mode?: strin
  *
  * `opts.userProvider` = 该条目来自用户自定义供应商(Provider.source === 'user',由
  * 调用方注入 —— 本模块纯逻辑不持 provider 上下文):此时目录带的**未知 group**
- * (buildUserProvider 的 `custom:<providerId>`)= 用户显式配置的 agent 模型,直接放行,
+ * (buildUserProvider 的 `custom:<providerId>`)，且没有显式 mode 时视为用户配置的 agent 模型,放行,
  * 不让 groupOf 的未知组回退吃 id 启发式 —— 否则 `gpt-4o-audio-preview` 这类合法
  * 自定义对话模型会被误判成能力模型而从全部对话清单消失(PR #744 review)。
  *
@@ -348,6 +404,8 @@ export function isAgentSelectableModel(
   model: { id: string; group?: string; mode?: string },
   opts?: { userProvider?: boolean },
 ): boolean {
+  // Explicit endpoint type is authoritative, including for user-owned groups.
+  if (model.mode !== undefined) return isChatEligible(model);
   if (opts?.userProvider === true && model.group && !KNOWN_CATEGORIES.has(model.group)) {
     return true;
   }
@@ -366,12 +424,14 @@ export function isModelSelectableForNewRoute(
     mode?: string;
     disabled?: boolean;
     status?: string;
+    availability?: 'available' | 'requires_payment';
   },
   opts?: { userProvider?: boolean },
 ): boolean {
   return (
     model.disabled !== true &&
     model.status !== 'retired' &&
+    model.availability !== 'requires_payment' &&
     isAgentSelectableModel(model, opts)
   );
 }
@@ -412,11 +472,11 @@ export function groupModelsForDisplay<T extends DisplayModel>(
  * 骨折版(网关 85% off 低价路由)判定 —— 与 groupOf 同一「数据优先」契约:目录带**合法**
  * `group` 时徽章完全跟 group 走(显式非 budget 分组不再被 `codex/` 前缀 override,否则会
  * 出现「显示 budget 徽章却归入非 budget 分组」的自相矛盾,2026-07 Greptile review);
- * group 缺失/未知时才用前缀兜底(网关旧数据可能没标 group)。替代 4 处独立的前缀判断。
+ * group 缺失/未知时才用 `openai-codex/` / `codex/` 前缀兜底(网关旧数据可能没标 group)。
  */
 export function isBudgetModel(model: { id: string; group?: string }): boolean {
   if (model.group && KNOWN_CATEGORIES.has(model.group)) return model.group === 'gpt-budget';
-  return model.id.startsWith('codex/');
+  return isCodexGatewayWireModel(model.id);
 }
 
 /** 一行模型的来源徽章语义(渲染层只管画,不再自判)。 */

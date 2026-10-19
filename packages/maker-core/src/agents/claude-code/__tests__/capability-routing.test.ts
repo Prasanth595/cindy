@@ -2,12 +2,19 @@ import { describe, expect, it } from 'vitest';
 
 import type { CapabilityRoutingPolicy } from '../../../types/capability-routing.js';
 import {
+  buildClaudeAskUserQuestionCallerProvenanceHooks,
+  buildClaudeDeniedMcpServers,
+  buildClaudeDisallowedTools,
   buildClaudeOrcaCallerProvenanceHooks,
   buildClaudeRemoteOrcaCallerGuards,
+  buildClaudeRemoteRootOnlyToolGuards,
   buildClaudeLocalToolGuardHooks,
   buildClaudeRemoteToolGuards,
   buildClaudeSkillOverrides,
   mergeClaudeHookSets,
+  CLAUDE_ASK_USER_QUESTION_TOOL_NAME,
+  CINDY_ASYNC_QUESTION_TOOL_NAME,
+  CLAUDE_SUBAGENT_ASK_USER_QUESTION_DENIAL_REASON,
   ORCA_SEND_TO_LEAD_TOOL_NAME,
 } from '../capability-routing.js';
 
@@ -43,6 +50,46 @@ describe('Claude Orca caller provenance', () => {
       denialMessage: 'NESTED_AGENT_NOT_ALLOWED: nested agent cannot report directly to the lead',
     }]);
     expect(buildClaudeRemoteOrcaCallerGuards(false)).toEqual([]);
+  });
+
+  it.each([CLAUDE_ASK_USER_QUESTION_TOOL_NAME, CINDY_ASYNC_QUESTION_TOOL_NAME])('allows only the root to ask using %s', async (toolName) => {
+    const hook = buildClaudeAskUserQuestionCallerProvenanceHooks().PreToolUse?.find((entry) => entry.matcher === toolName)?.hooks[0];
+    if (!hook) throw new Error('expected AskUserQuestion caller provenance hook');
+    const input = {
+      hook_event_name: 'PreToolUse' as const,
+      session_id: 'session-ask-user-question',
+      transcript_path: '/tmp/transcript',
+      cwd: '/repo',
+      tool_name: toolName,
+      tool_input: { questions: [] },
+      tool_use_id: 'tool-ask-user-question',
+    };
+
+    await expect(hook(input, 'tool-ask-user-question', {
+      signal: new AbortController().signal,
+    })).resolves.toEqual({ continue: true });
+    await expect(hook({ ...input, agent_id: 'native-child-1' }, 'tool-ask-user-question', {
+      signal: new AbortController().signal,
+    })).resolves.toMatchObject({
+      hookSpecificOutput: {
+        permissionDecision: 'deny',
+        permissionDecisionReason: CLAUDE_SUBAGENT_ASK_USER_QUESTION_DENIAL_REASON,
+      },
+    });
+  });
+
+  it('serializes the native AskUserQuestion root-only guard for remote Claude', () => {
+    expect(buildClaudeRemoteRootOnlyToolGuards()).toEqual([{
+      toolNamePrefix: CLAUDE_ASK_USER_QUESTION_TOOL_NAME,
+      sourceServerId: 'claude-code',
+      invocation: 'root-only',
+      denialMessage: CLAUDE_SUBAGENT_ASK_USER_QUESTION_DENIAL_REASON,
+    }, {
+      toolNamePrefix: CINDY_ASYNC_QUESTION_TOOL_NAME,
+      sourceServerId: 'cindy_helper',
+      invocation: 'root-only',
+      denialMessage: CLAUDE_SUBAGENT_ASK_USER_QUESTION_DENIAL_REASON,
+    }]);
   });
 });
 
@@ -115,6 +162,45 @@ describe('buildClaudeSkillOverrides', () => {
     } as const satisfies CapabilityRoutingPolicy;
 
     expect(buildClaudeSkillOverrides(policy)).toEqual({});
+  });
+});
+
+describe('Claude disabled built-in surfaces', () => {
+  const policy = {
+    overrides: [
+      {
+        capabilityId: 'output-delivery',
+        source: { kind: 'harness-builtin', harness: 'claude-code', surface: 'tool', id: 'Artifact' },
+        invocation: 'disabled',
+      },
+      {
+        capabilityId: 'output-delivery',
+        source: { kind: 'harness-builtin', harness: 'claude-code', surface: 'mcp', id: 'claude.ai Claude Docs' },
+        invocation: 'disabled',
+      },
+      {
+        capabilityId: 'feishu',
+        source: { kind: 'harness-plugin', harness: 'claude-code', surface: 'mcp', id: 'plugin:feishu-delegate:feishu-delegate' },
+        invocation: 'explicit-only',
+      },
+      {
+        capabilityId: 'output-delivery',
+        source: { kind: 'harness-builtin', harness: 'codex', surface: 'tool', id: 'view_image' },
+        invocation: 'disabled',
+      },
+    ],
+  } as const satisfies CapabilityRoutingPolicy;
+
+  it('maps disabled tools to SDK disallowedTools', () => {
+    expect(buildClaudeDisallowedTools(policy)).toEqual(['Artifact']);
+    expect(buildClaudeDisallowedTools(undefined)).toEqual([]);
+  });
+
+  it('denies a disabled MCP server by name so its instructions leave the prompt too', () => {
+    expect(buildClaudeDeniedMcpServers(policy)).toEqual([
+      { serverName: 'claude.ai Claude Docs' },
+    ]);
+    expect(buildClaudeDeniedMcpServers(undefined)).toEqual([]);
   });
 });
 

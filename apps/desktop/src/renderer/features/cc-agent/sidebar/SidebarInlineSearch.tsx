@@ -1,9 +1,9 @@
 /**
- * SidebarInlineSearch —— SidebarTopNav 顶部导航列表的「搜索」行(排在技能之后,第 4 行)。
+ * SidebarInlineSearch —— SidebarTopNav 顶部导航中可排序的「搜索」行。
  * ---------------------------------------------------------------------------
  * 渲染为一条裸行(无外层 padding),融入 SidebarTopNav 的 gap-0.5 列表,与 新建/自动任务/
- * 技能 同款。两态一体、图标位置恒定:
- *   - 静息态(未 hover / 未聚焦 / 无查询):与 新建 / 自动化 / 技能 等导航行完全一致
+ * 插件等入口同款。两态一体、图标位置恒定:
+ *   - 静息态(未 hover / 未聚焦 / 无查询):与 新建 / 自动化 / 插件 等导航行完全一致
  *     的「🔍 搜索」行(透明底、无边框、foreground 文字)。
  *   - 展开态(hover / 聚焦 / 有查询 / 选项菜单打开):同一容器就地变成搜索框——
  *     补上 Board 边框 + elevated 底,文字行换成真实输入框,右侧浮现排序 / 筛选两颗
@@ -43,6 +43,8 @@ export interface SidebarInlineSearchProps {
    * 故一旦 query 非空就切回 cc-agent(同视图时宿主内部去重、为 no-op)。
    */
   onSearchActive?: () => void;
+  /** Let a search opened from More leave the sidebar again after focus moves away. */
+  onFocusLeave?: () => void;
 }
 
 export function SidebarInlineSearch({
@@ -50,6 +52,7 @@ export function SidebarInlineSearch({
   allKnownProjects,
   openSignal,
   onSearchActive,
+  onFocusLeave,
 }: SidebarInlineSearchProps) {
   const { t } = useTranslation();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -79,7 +82,7 @@ export function SidebarInlineSearch({
   useEffect(() => {
     if (!openSignal) return;
     setForceOpen(true);
-    const id = window.setTimeout(() => inputRef.current?.focus(), 0);
+    const id = window.setTimeout(() => inputRef.current?.focus({ preventScroll: true }), 0);
     return () => window.clearTimeout(id);
   }, [openSignal]);
 
@@ -104,8 +107,8 @@ export function SidebarInlineSearch({
   };
 
   return (
-    // 常驻外壳:作为 SidebarTopNav 列表的第 4 行(技能之后)。静息=导航行样式(透明、无边框,
-    // 与 新建/自动任务/技能 同款);展开=搜索框(elevated + Board 边框)。h-8 / pl-3 / gap-2.5 /
+    // 常驻外壳:作为 SidebarTopNav 列表末行。静息=导航行样式(透明、无边框,
+    // 与 新建/自动任务/插件等入口同款);展开=搜索框(elevated + Board 边框)。h-8 / pl-3 / gap-2.5 /
     // 图标 18px 两态一致;border 恒在、静息时透明 → 展开时搜索图标不位移。
     <div
       // 标记「搜索界面内部」:Provider 的 outside-pointerdown 监听据此判定——本行内点击不收起搜索,
@@ -121,6 +124,7 @@ export function SidebarInlineSearch({
         if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
         setFocusWithin(false);
         setForceOpen(false);
+        if (!menuOpen) onFocusLeave?.();
       }}
       className={cn(
         'flex h-8 w-full items-center gap-2.5 rounded-full border pl-3 transition-colors',

@@ -1392,7 +1392,7 @@ struct AgentIslandPillSnapshot: Codable {
   let priorityMicroTitle: String
   let priorityCompactTitle: String
   let sessionCount: Int
-  let activeSessionCount: Int
+  let runningSessionCount: Int
   let pendingInteractionCount: Int
   let unreadCompletedCount: Int
   let deferredRevealCount: Int
@@ -1404,7 +1404,7 @@ struct AgentIslandPillSnapshot: Codable {
     priorityMicroTitle: "",
     priorityCompactTitle: "",
     sessionCount: 0,
-    activeSessionCount: 0,
+    runningSessionCount: 0,
     pendingInteractionCount: 0,
     unreadCompletedCount: 0,
     deferredRevealCount: 0,
@@ -1622,9 +1622,9 @@ final class AgentIslandModel: ObservableObject {
 }
 
 private let expandedIslandMaxVisibleRows = 5
-private let expandedIslandMultiRowSlotHeight: CGFloat = 90
-private let expandedIslandMultiRowHeight: CGFloat = 84
+private let expandedIslandMultiRowHeight: CGFloat = 64
 private let expandedIslandMultiRowGap: CGFloat = 6
+private let expandedIslandMultiRowSlotHeight = expandedIslandMultiRowHeight + expandedIslandMultiRowGap
 private let expandedIslandMultiVerticalPadding: CGFloat = 60
 private let expandedIslandCardHorizontalPadding: CGFloat = 18
 private let expandedIslandTopBarHeight: CGFloat = 24
@@ -1633,6 +1633,8 @@ private let expandedIslandBodySpacing: CGFloat = 4
 private let expandedIslandBottomPadding: CGFloat = 16
 private let compactIslandBaseWidth: CGFloat = 210
 private let compactIslandMinContentWidth: CGFloat = 80
+private let compactCollapseLeadingReservedWidth: CGFloat = 80
+private let compactCollapseTrailingReservedWidth: CGFloat = 100
 private let compactIslandBadgeCollapseContentThreshold: CGFloat = 152
 private let compactIslandDetailCollapseContentThreshold: CGFloat = 190
 private let compactIslandCjkTitleMinimumWidth: CGFloat = 32
@@ -1702,6 +1704,15 @@ private let agentIslandCodexMarkSVG = """
 private let agentIslandClaudeMarkSVG = """
 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
   <path fill="black" fill-rule="evenodd" clip-rule="evenodd" d="M20.998 10.949H24v3.102h-3v3.028h-1.487V20H18v-2.921h-1.487V20H15v-2.921H9V20H7.488v-2.921H6V20H4.487v-2.921H3V14.05H0v-3.1h3V5h17.998zM6 10.949h1.488V8.102H6zm10.51 0H18V8.102h-1.49z"/>
+</svg>
+"""
+private let agentIslandPiMarkSVG = """
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+  <g fill="none" stroke="black" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M3.6 6.6h16.8"/>
+    <path d="M8.4 6.6v11.8"/>
+    <path d="M15.6 6.6v9.6c0 1.5.9 2.2 2.4 2.2"/>
+  </g>
 </svg>
 """
 
@@ -2271,7 +2282,7 @@ struct AgentIslandLayout: Equatable {
         )
       )
     }
-    return 190
+    return state.currentSession?.permissionAction == nil ? 128 : 164
   }
 
   private static func shapeForStatus(_ status: String) -> (topExtension: CGFloat, bottomRadius: CGFloat) {
@@ -2680,7 +2691,7 @@ struct CompactSessionView: View {
   }
 
   private func measuredCompactTitleWidth() -> CGFloat {
-    let font = NSFont.monospacedSystemFont(ofSize: 11, weight: .semibold)
+    let font = NSFont.systemFont(ofSize: 11, weight: .semibold)
     let width = (compactTitle as NSString).size(withAttributes: [.font: font]).width
     return max(1, ceil(width + 1))
   }
@@ -2706,7 +2717,7 @@ struct CompactSessionView: View {
     color: Color,
     baseOpacity: Double
   ) -> some View {
-    let font = Font.system(size: fontSize, weight: weight, design: .monospaced)
+    let font = Font.system(size: fontSize, weight: weight)
     if session.phase == "running" {
       AgentIslandWaveText(
         text: text,
@@ -2831,7 +2842,7 @@ struct IdleCreateConversationRow: View {
   @State private var isHovered = false
 
   var body: some View {
-    let shape = RoundedRectangle(cornerRadius: 13, style: .continuous)
+    let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
     Button(action: action) {
       HStack(alignment: .center, spacing: 10) {
         ZStack {
@@ -3040,7 +3051,7 @@ struct PillBadge: View {
   let pillSnapshot: AgentIslandPillSnapshot
   var compact: Bool = false
 
-  /// Text runs and minimum capsule width for the badge variant a snapshot renders.
+  /// Text runs and minimum width for the badge variant a snapshot renders.
   /// Shared by `body` and `intrinsicWidth` so reserved layout width can never
   /// drift away from what actually gets drawn.
   struct Metrics {
@@ -3050,23 +3061,48 @@ struct PillBadge: View {
     let fontSize: CGFloat
   }
 
+  /// One colored text run of the badge.
+  struct Run {
+    let text: String
+    let color: Color
+  }
+
+  /// Mirrors `getAgentIslandCompactBadgeSegments` in `shared/agentIsland.ts`:
+  /// running only → `running`; attention + running → `attention · running`;
+  /// attention only → `attention`; neither → session count.
+  static func runs(pillSnapshot: AgentIslandPillSnapshot) -> [Run] {
+    let attention = pillSnapshot.attentionCount
+    let running = pillSnapshot.runningSessionCount
+    // 等用户操作(提问 / 授权)优先于完成未读,与列表里的状态点同色。
+    let attentionColor = pillSnapshot.pendingInteractionCount > 0 ? agentIslandBlue : agentIslandUnreadGreen
+    if attention > 0 && running > 0 {
+      return [
+        Run(text: "\(attention)", color: attentionColor),
+        Run(text: "·", color: Color.white.opacity(0.42)),
+        Run(text: "\(running)", color: agentIslandOrange),
+      ]
+    }
+    if attention > 0 {
+      return [Run(text: "\(attention)", color: attentionColor)]
+    }
+    if running > 0 {
+      return [Run(text: "\(running)", color: agentIslandOrange)]
+    }
+    return [Run(text: "\(max(1, pillSnapshot.sessionCount))", color: Color.white.opacity(0.92))]
+  }
+
   static func metrics(pillSnapshot: AgentIslandPillSnapshot, compact: Bool) -> Metrics {
     let fontSize: CGFloat = compact ? 10 : 11
-    if pillSnapshot.activeSessionCount > 0 && pillSnapshot.sessionCount > 1 {
-      return Metrics(
-        segments: ["\(pillSnapshot.activeSessionCount)", "/", "\(pillSnapshot.sessionCount)"],
-        minWidth: compact ? 30 : 34,
-        fontSize: fontSize
-      )
-    }
+    let segments = runs(pillSnapshot: pillSnapshot).map(\.text)
+    let isPair = segments.count > 1
     return Metrics(
-      segments: ["\(max(1, pillSnapshot.sessionCount))"],
-      minWidth: compact ? 22 : 24,
+      segments: segments,
+      minWidth: isPair ? (compact ? 30 : 34) : (compact ? 22 : 24),
       fontSize: fontSize
     )
   }
 
-  /// Width the hardware-notch layout reserves for the capsule so a multi-digit count is
+  /// Width the hardware-notch layout reserves for the badge so a multi-digit count is
   /// never clipped.
   ///
   /// This is deliberately a *nominal* width computed from digit counts, not an `NSFont`
@@ -3081,11 +3117,11 @@ struct PillBadge: View {
     let segmentsWidth = metrics.segments.reduce(CGFloat(0)) { total, segment in
       total + CGFloat(segment.count) * nominalCharWidth + segmentRoundingSlack
     }
-    let spacing = activeTotalSpacing * CGFloat(max(0, metrics.segments.count - 1))
+    let spacing = runSpacing * CGFloat(max(0, metrics.segments.count - 1))
     return max(metrics.minWidth, segmentsWidth + spacing + contentInset * 2)
   }
 
-  private static let activeTotalSpacing: CGFloat = 1
+  private static let runSpacing: CGFloat = 1
   private static let contentInset: CGFloat = 2
   /// Upper bound for one monospaced 10pt digit (real advance is ~6pt). Mirrors
   /// `AGENT_ISLAND_COMPACT_BADGE_CHAR_WIDTH_BOUND` on the TS side.
@@ -3095,47 +3131,19 @@ struct PillBadge: View {
   private static let segmentRoundingSlack: CGFloat = 1
 
   var body: some View {
-    if pillSnapshot.activeSessionCount > 0 && pillSnapshot.sessionCount > 1 {
-      activeTotalBadge(
-        active: pillSnapshot.activeSessionCount,
-        total: pillSnapshot.sessionCount,
-        emphasized: isEmphasized
-      )
-    } else {
-      badge("\(max(1, pillSnapshot.sessionCount))", emphasized: isEmphasized)
-    }
-  }
-
-  private func badge(_ text: String, emphasized: Bool) -> some View {
-    Text(text)
-      .font(badgeFont)
-      .foregroundColor(Color.white.opacity(0.92))
-      // Multi-digit counts must widen the capsule instead of wrapping into two lines.
-      .lineLimit(1)
-      .fixedSize(horizontal: true, vertical: false)
-      .padding(.horizontal, Self.contentInset)
-      .frame(minWidth: metrics.minWidth, minHeight: compact ? 18 : 20)
-      .background(Color.white.opacity(emphasized ? 0.11 : 0.065))
-      .clipShape(Capsule())
-  }
-
-  private func activeTotalBadge(active: Int, total: Int, emphasized: Bool) -> some View {
-    HStack(spacing: Self.activeTotalSpacing) {
-      Text("\(active)")
-        .foregroundColor(emphasized ? agentIslandBlue : agentIslandOrange)
-      Text("/")
-        .foregroundColor(Color.white.opacity(0.42))
-      Text("\(total)")
-        .foregroundColor(Color.white.opacity(0.92))
+    HStack(spacing: Self.runSpacing) {
+      ForEach(Array(Self.runs(pillSnapshot: pillSnapshot).enumerated()), id: \.offset) { _, run in
+        Text(run.text)
+          .foregroundColor(run.color)
+      }
     }
     .font(badgeFont)
-    // Multi-digit counts must widen the capsule instead of wrapping into two lines.
     .lineLimit(1)
-    .fixedSize(horizontal: true, vertical: false)
     .padding(.horizontal, Self.contentInset)
     .frame(minWidth: metrics.minWidth, minHeight: compact ? 18 : 20)
-    .background(Color.white.opacity(emphasized ? 0.11 : 0.065))
-    .clipShape(Capsule())
+    // Keep the full reserved width (mirrored on the TS side) instead of letting a
+    // squeezed `minWidth` frame truncate multi-digit text.
+    .fixedSize(horizontal: true, vertical: false)
   }
 
   private var metrics: Metrics {
@@ -3144,10 +3152,6 @@ struct PillBadge: View {
 
   private var badgeFont: Font {
     .system(size: metrics.fontSize, weight: .semibold, design: .monospaced)
-  }
-
-  private var isEmphasized: Bool {
-    pillSnapshot.pendingInteractionCount > 0 || pillSnapshot.attentionCount > 0
   }
 }
 
@@ -3391,7 +3395,7 @@ struct ExpandedSessionRow: View, Equatable {
   }
 
   var body: some View {
-    let shape = RoundedRectangle(cornerRadius: 13, style: .continuous)
+    let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
     VStack(alignment: .leading, spacing: rowSpacing) {
       if session.permissionAction == nil {
         rowMainContent
@@ -3412,10 +3416,9 @@ struct ExpandedSessionRow: View, Equatable {
         .padding(.top, 4)
       }
     }
-    .frame(maxWidth: .infinity, minHeight: expandedIslandMultiRowHeight, alignment: .leading)
     .padding(.horizontal, 14)
-    .padding(.vertical, 10)
-    .frame(maxWidth: .infinity, alignment: .leading)
+    .padding(.vertical, 12)
+    .frame(maxWidth: .infinity, minHeight: expandedIslandMultiRowHeight, alignment: .leading)
     .background(
       shape
         .fill(Color.white.opacity(expandedCardFillOpacity(session: session, hovered: isHovered)))
@@ -3427,6 +3430,7 @@ struct ExpandedSessionRow: View, Equatable {
         )
     )
     .contentShape(Rectangle())
+    .help(expandedMetaText(for: session, updatedAt: updatedAt))
     .onHover { isHovered = $0 }
     .onTapGesture {
       if session.permissionAction == nil {
@@ -3437,7 +3441,7 @@ struct ExpandedSessionRow: View, Equatable {
   }
 
   private var rowSpacing: CGFloat {
-    session.permissionAction == nil ? 5 : 8
+    4
   }
 
   private var rowMainContent: some View {
@@ -3445,25 +3449,25 @@ struct ExpandedSessionRow: View, Equatable {
       ExpandedSessionHeaderLine(
         session: session,
         strings: strings,
-        titleFontSize: 12,
+        titleFontSize: 13,
         mascotSkin: mascotSkin,
         onFocus: onFocus
       )
       ExpandedRowSummaryLine(session: session, strings: strings)
-      ExpandedSessionMetaLine(session: session, updatedAt: updatedAt, fontSize: 9.5)
+        .padding(.leading, 28)
     }
     .frame(maxWidth: .infinity, alignment: .leading)
   }
 }
 
 func expandedCardFillOpacity(session: AgentIslandSession, hovered: Bool) -> Double {
-  let base = session.phase == "needs-interaction" ? 0.075 : 0.055
+  let base = session.phase == "needs-interaction" ? 0.065 : 0.035
   return hovered ? base + 0.035 : base
 }
 
 func expandedCardStrokeOpacity(session: AgentIslandSession, hovered: Bool) -> Double {
-  let base = session.phase == "needs-interaction" ? 0.18 : 0.045
-  return hovered ? max(base, 0.18) : base
+  let base = session.phase == "needs-interaction" ? 0.18 : 0
+  return hovered ? max(base, 0.10) : base
 }
 
 struct ExpandedSessionHeaderLine: View {
@@ -3492,94 +3496,61 @@ struct ExpandedSessionHeaderLine: View {
       )
 
       Text(expandedPrimaryTitle(for: session, strings: strings))
-        .font(.system(size: titleFontSize, weight: .bold, design: .monospaced))
-        .foregroundColor(sessionIdentityColor(for: session))
+        .font(.system(size: titleFontSize, weight: .medium))
+        .foregroundColor(Color.white.opacity(0.92))
         .lineLimit(1)
         .truncationMode(.tail)
         .layoutPriority(1)
+        .help(expandedPrimaryTitle(for: session, strings: strings))
 
       Spacer(minLength: 8)
 
       if session.phase == "needs-interaction", session.permissionAction == nil {
         InteractionInlineButton(label: strings.review, action: onFocus)
       } else {
-        SessionStatusCapsule(session: session, strings: strings)
+        SessionStatusLabel(session: session, strings: strings)
       }
     }
-  }
-}
-
-struct ExpandedSessionMetaLine: View {
-  let session: AgentIslandSession
-  let updatedAt: Double
-  let fontSize: CGFloat
-
-  var body: some View {
-    Text(expandedMetaText(for: session, updatedAt: updatedAt))
-      .font(.system(size: fontSize, weight: .regular, design: .monospaced))
-      .foregroundColor(Color.white.opacity(0.34))
-      .lineLimit(1)
-      .truncationMode(.tail)
   }
 }
 
 struct ExpandedRowSummaryLine: View {
   let session: AgentIslandSession
   let strings: AgentIslandStrings
-  var fontSize: CGFloat = 11
+  var fontSize: CGFloat = 12
 
   var body: some View {
     let summary = expandedRowSummary(for: session, strings: strings)
     HStack(alignment: .firstTextBaseline, spacing: 5) {
-      if !summary.prefix.isEmpty {
-        Text(summary.prefix)
-          .font(.system(size: fontSize, weight: .bold, design: .monospaced))
-          .foregroundColor(summary.accent)
+      if summary.isUser {
+        Image(systemName: "person.fill")
+          .font(.system(size: 9, weight: .regular))
+          .foregroundColor(agentIslandBlue)
+          .accessibilityHidden(true)
       }
-
-      summaryTextView(summary)
-    }
-  }
-
-  @ViewBuilder
-  private func summaryTextView(_ summary: ExpandedRowSummary) -> some View {
-    let font = Font.system(size: fontSize, weight: summary.isUser ? .medium : .regular, design: .monospaced)
-    if session.phase == "running" && !summary.isUser {
-      AgentIslandWaveText(
-        text: summary.text,
-        font: font,
-        color: .white,
-        baseOpacity: 0.62,
-        lineLimit: 2,
-        lineSpacing: 1,
-        bandWidth: 96
-      )
-    } else {
-      Text(summary.text)
-        .font(font)
-        .foregroundColor(Color.white.opacity(summary.isUser ? 0.88 : 0.76))
-        .lineLimit(2)
+      Text(compactText(summary.text))
+        .font(.system(size: fontSize, weight: .regular))
+        .foregroundColor(Color.white.opacity(summary.isUser ? 0.78 : 0.62))
+        .lineLimit(1)
         .truncationMode(.tail)
-        .lineSpacing(1)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
+    .help(summary.text)
   }
 }
 
-struct SessionStatusCapsule: View {
+struct SessionStatusLabel: View {
   let session: AgentIslandSession
   let strings: AgentIslandStrings
 
   var body: some View {
     let accent = statusAccentColor(for: session)
     Text(expandedStatusBadgeText(for: session, strings: strings))
-      .font(.system(size: 10, weight: .medium, design: .monospaced))
-      .foregroundColor(accent.opacity(session.attention ? 0.95 : 0.72))
+      .font(.system(size: 11, weight: .regular))
+      .foregroundColor(accent.opacity(session.attention ? 0.95 : 0.85))
       .lineLimit(1)
       .fixedSize(horizontal: true, vertical: false)
-      .padding(.horizontal, 8)
       .frame(height: 20)
-      .background(accent.opacity(session.attention ? 0.16 : 0.08))
-      .clipShape(Capsule())
       .layoutPriority(2)
   }
 }
@@ -3594,7 +3565,7 @@ struct InteractionInlineButton: View {
         Image(systemName: "arrowshape.turn.up.right.fill")
           .font(.system(size: 9, weight: .bold))
         Text(label)
-          .font(.system(size: 10, weight: .semibold, design: .monospaced))
+          .font(.system(size: 11, weight: .medium))
           .lineLimit(1)
       }
       .foregroundColor(agentIslandBlue.opacity(0.98))
@@ -3663,7 +3634,7 @@ struct PermissionActionButton: View {
         Image(systemName: systemImage)
           .font(.system(size: 9, weight: .bold))
         Text(label)
-          .font(.system(size: 10, weight: .semibold, design: .monospaced))
+          .font(.system(size: 11, weight: .medium))
           .lineLimit(1)
       }
       .foregroundColor(foregroundColor)
@@ -3697,16 +3668,11 @@ struct PermissionActionButton: View {
 }
 
 struct ExpandedRowSummary {
-  let prefix: String
   let text: String
-  let accent: Color
   let isUser: Bool
 }
 
 func expandedPrimaryTitle(for session: AgentIslandSession, strings: AgentIslandStrings) -> String {
-  if session.permissionAction != nil {
-    return strings.permissionPromptTitle
-  }
   let title = session.title.trimmingCharacters(in: .whitespacesAndNewlines)
   if isMeaningfulExpandedTitle(title) {
     return title
@@ -3714,6 +3680,9 @@ func expandedPrimaryTitle(for session: AgentIslandSession, strings: AgentIslandS
   let project = session.projectName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
   if !project.isEmpty {
     return project
+  }
+  if session.permissionAction != nil {
+    return strings.permissionPromptTitle
   }
   return "#\(String(session.sessionId.prefix(8)))"
 }
@@ -3759,9 +3728,7 @@ func expandedRowSummary(for session: AgentIslandSession, strings: AgentIslandStr
   switch session.phase {
   case "needs-interaction":
     return ExpandedRowSummary(
-      prefix: session.permissionAction == nil ? "!" : "?",
       text: bestInteractionSummary(for: session, strings: strings),
-      accent: agentIslandBlue,
       isUser: false
     )
   case "completed":
@@ -3769,16 +3736,12 @@ func expandedRowSummary(for session: AgentIslandSession, strings: AgentIslandStr
       return preview
     }
     return ExpandedRowSummary(
-      prefix: "",
       text: bestCompletedSummary(for: session, strings: strings),
-      accent: Color.white.opacity(0.72),
       isUser: false
     )
   case "error":
     return ExpandedRowSummary(
-      prefix: "!",
       text: bestErrorSummary(for: session, strings: strings),
-      accent: agentIslandErrorRed,
       isUser: false
     )
   default:
@@ -3794,40 +3757,30 @@ func bestRunningSummary(for session: AgentIslandSession, strings: AgentIslandStr
   let detail = stripLeadingPromptSymbol(session.detail)
   if !detail.isEmpty && !isGenericRunningStatusDetail(detail) {
     return ExpandedRowSummary(
-      prefix: "$",
       text: detail,
-      accent: statusAccentColor(for: session),
       isUser: false
     )
   }
   if let line = latestActivityLine(for: session, kinds: ["assistant", "status", "tool"]) {
     return ExpandedRowSummary(
-      prefix: line.kind == "assistant" ? "" : "$",
       text: stripLeadingPromptSymbol(compactText(line.text)),
-      accent: line.kind == "assistant" ? Color.white.opacity(0.72) : agentIslandOrange,
       isUser: false
     )
   }
   if let line = latestActivityLine(for: session, kinds: ["user"]) {
     return ExpandedRowSummary(
-      prefix: ">",
       text: stripLeadingPromptSymbol(compactText(line.text)),
-      accent: agentIslandBlue,
       isUser: true
     )
   }
   if !detail.isEmpty {
     return ExpandedRowSummary(
-      prefix: "$",
       text: detail,
-      accent: statusAccentColor(for: session),
       isUser: false
     )
   }
   return ExpandedRowSummary(
-    prefix: "$",
     text: expandedStatusText(for: session, strings: strings),
-    accent: statusAccentColor(for: session),
     isUser: false
   )
 }
@@ -3838,17 +3791,13 @@ func messagePreviewSummary(for session: AgentIslandSession) -> ExpandedRowSummar
   if text.isEmpty { return nil }
   if line.kind == "user" {
     return ExpandedRowSummary(
-      prefix: ">",
       text: text,
-      accent: agentIslandBlue,
       isUser: true
     )
   }
   if line.kind == "assistant" {
     return ExpandedRowSummary(
-      prefix: "",
       text: text,
-      accent: Color.white.opacity(0.72),
       isUser: false
     )
   }
@@ -3974,6 +3923,7 @@ func sourceLabel(for agentKind: String) -> String {
   let lower = agentKind.lowercased()
   if lower.contains("codex") { return "Codex" }
   if lower.contains("claude") { return "Claude" }
+  if lower == "pi" { return "Pi" }
   return agentKind.isEmpty ? "Agent" : agentKind
 }
 
@@ -4057,10 +4007,14 @@ struct StatusDot: View {
 enum AgentIslandSessionVendor {
   case cc
   case codex
+  case pi
 }
 
 func agentIslandSessionVendor(for session: AgentIslandSession) -> AgentIslandSessionVendor {
-  session.agentKind.lowercased().contains("codex") ? .codex : .cc
+  let kind = session.agentKind.lowercased()
+  if kind.contains("codex") { return .codex }
+  if kind == "pi" { return .pi }
+  return .cc
 }
 
 final class AgentIslandVendorMarkImageStore {
@@ -4070,7 +4024,15 @@ final class AgentIslandVendorMarkImageStore {
 
   func image(for vendor: AgentIslandSessionVendor) -> NSImage? {
     if let cached = cache[vendor] { return cached }
-    let svg = vendor == .codex ? agentIslandCodexMarkSVG : agentIslandClaudeMarkSVG
+    let svg: String
+    switch vendor {
+    case .cc:
+      svg = agentIslandClaudeMarkSVG
+    case .codex:
+      svg = agentIslandCodexMarkSVG
+    case .pi:
+      svg = agentIslandPiMarkSVG
+    }
     guard let data = svg.data(using: .utf8), let image = NSImage(data: data) else {
       return nil
     }
@@ -4092,7 +4054,7 @@ struct AgentIslandSessionVendorIcon: View {
   }
 
   private var markSize: CGFloat {
-    vendor == .codex ? 12 : 13
+    vendor == .cc ? 13 : 12
   }
 
   var body: some View {
@@ -4619,6 +4581,7 @@ final class AgentIslandController {
     notchBaselineHeight: 24,
     screenMetrics: .fallback
   )
+  private var lastCompactIslandWidth: CGFloat?
   private var globalClickMonitor: Any?
   private var localClickMonitor: Any?
   private var globalMoveMonitor: Any?
@@ -4758,7 +4721,7 @@ final class AgentIslandController {
       )
       return
     }
-    lastLayout = layout
+    rememberLayout(layout)
     if state.mode == "expanded" {
       cancelPendingCarrierFrame()
     }
@@ -5255,8 +5218,12 @@ final class AgentIslandController {
       return
     }
     pendingMoveInteraction = nil
+    // Collapse is owned here, not by SwiftUI top-bar taps, so the hit stays
+    // inside the original compact footprint instead of the whole spacer.
     if shouldTreatAsCompactClick(interaction: interaction, screenPoint: screenPoint) {
       eventSink(["type": "expand"])
+    } else if shouldTreatAsCompactCollapseClick(interaction: interaction, screenPoint: screenPoint) {
+      eventSink(["type": "collapse"])
     }
     handleMouseMoved(screenPoint: screenPoint, force: true)
     replayDeferredInteractionUpdateIfNeeded()
@@ -5424,8 +5391,64 @@ final class AgentIslandController {
     guard interaction.mode == .move, !interaction.startLayout.expanded else {
       return false
     }
-    return abs(screenPoint.x - interaction.startMouseX) <= agentIslandClickDragTolerance
+    return isClickWithoutDrag(interaction: interaction, screenPoint: screenPoint)
+  }
+
+  private func shouldTreatAsCompactCollapseClick(
+    interaction: PanelDragInteraction,
+    screenPoint: NSPoint
+  ) -> Bool {
+    guard interaction.mode == .move, interaction.startLayout.expanded else {
+      return false
+    }
+    guard isClickWithoutDrag(interaction: interaction, screenPoint: screenPoint) else {
+      return false
+    }
+    return isCompactFootprintClick(interaction: interaction)
+  }
+
+  private func isClickWithoutDrag(interaction: PanelDragInteraction, screenPoint: NSPoint) -> Bool {
+    abs(screenPoint.x - interaction.startMouseX) <= agentIslandClickDragTolerance
       && abs(screenPoint.y - interaction.startMouseY) <= agentIslandClickDragTolerance
+  }
+
+  /// The screen rectangle where the collapsed island sat. After expand, that
+  /// center strip is blank (hardware-notch Color.clear, or the top-bar spacer).
+  /// Clicking it should fold the island back; toolbar / title live outside it.
+  private func isCompactFootprintClick(interaction: PanelDragInteraction) -> Bool {
+    let layout = interaction.startLayout
+    let footprintWidth = compactCollapseFootprintWidth(layout: layout)
+    let centerX = interaction.startFrame.midX
+    let clickX = interaction.startMouseX
+    guard clickX >= centerX - footprintWidth / 2 && clickX <= centerX + footprintWidth / 2 else {
+      return false
+    }
+    let visualMinX = centerX - layout.width / 2
+    let visualMaxX = centerX + layout.width / 2
+    let sideChrome = layout.hasHardwareNotch
+      ? max(0, (layout.width - layout.notchWidth) / 2)
+      : 0
+    let leadingReserved = max(compactCollapseLeadingReservedWidth, sideChrome)
+    let trailingReserved = max(compactCollapseTrailingReservedWidth, sideChrome)
+    return clickX > visualMinX + leadingReserved
+      && clickX < visualMaxX - trailingReserved
+  }
+
+  private func compactCollapseFootprintWidth(layout: AgentIslandLayout) -> CGFloat {
+    if let remembered = lastCompactIslandWidth, remembered > 0 {
+      return remembered
+    }
+    if layout.hasHardwareNotch {
+      return max(1, layout.notchWidth)
+    }
+    return compactIslandBaseWidth
+  }
+
+  private func rememberLayout(_ layout: AgentIslandLayout) {
+    lastLayout = layout
+    if !layout.expanded, layout.width > 0 {
+      lastCompactIslandWidth = layout.width
+    }
   }
 
   private func shouldPromotePendingMove(interaction: PanelDragInteraction, screenPoint: NSPoint) -> Bool {
@@ -5478,7 +5501,7 @@ final class AgentIslandController {
       frame: frame,
       expanded: lastLayout.expanded
     )
-    lastLayout = AgentIslandLayout.compute(
+    rememberLayout(AgentIslandLayout.compute(
       state: model.state,
       availableFrameWidth: frame.width,
       locallyHovered: model.locallyHovered,
@@ -5486,7 +5509,7 @@ final class AgentIslandController {
       screenMetrics: model.screenMetrics,
       hardwareNotchLayoutEnabled: hardwareNotchLayoutEnabled,
       preferredContentWidth: currentContentWidth(frame: frame, layout: lastLayout)
-    )
+    ))
     let nextContentWidth = currentContentWidth(frame: frame, layout: lastLayout)
     if animatedSnap {
       beginCompactSnapLayoutAnimation()
@@ -6257,7 +6280,7 @@ enum AgentIslandDebugHarness {
     now: Double
   ) -> AgentIslandDisplayState {
     let current = sessions.first { $0.sessionId == currentSessionId } ?? sessions[0]
-    let activeCount = sessions.filter { $0.phase == "running" || $0.phase == "needs-interaction" }.count
+    let runningCount = sessions.filter { $0.phase == "running" }.count
     let pendingCount = sessions.filter { $0.phase == "needs-interaction" }.count
     let unreadDoneCount = sessions.filter { $0.phase == "completed" || $0.phase == "error" }.count
     return AgentIslandDisplayState(
@@ -6278,7 +6301,7 @@ enum AgentIslandDebugHarness {
         priorityMicroTitle: current.displayTitle,
         priorityCompactTitle: current.displayTitle,
         sessionCount: sessions.count,
-        activeSessionCount: activeCount,
+        runningSessionCount: runningCount,
         pendingInteractionCount: pendingCount,
         unreadCompletedCount: unreadDoneCount,
         deferredRevealCount: 1,

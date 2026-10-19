@@ -35,7 +35,9 @@ describe('history window backfill wiring', () => {
     // 取消判据对着 seq 比,不是"当前会话 id 是否仍等于启动时的"——后者会随切回来而摆回。
     expect(source).toContain('isCancelled: () => backfillLatestRunSeqRef.current !== runSeq');
     // 结论写入同样要求"我还是最新那一轮"。
-    expect(source).toContain('if (backfillLatestRunSeqRef.current !== runSeq) return;');
+    expect(source).toMatch(
+      /if \(\s*backfillLatestRunSeqRef\.current !== runSeq\s*\|\| !remoteSessionStore\.isSessionMessageAuthorityCurrent\(messageAuthority\)\s*\) return;/,
+    );
     // 收尾按 seq 精确清标记:按 sid 比会把切回同一会话后新起那一轮的标记误清。
     expect(source).toContain('setBackfillInFlightRun((current) => (current?.seq === runSeq ? null : current));');
     // 作废收敛成一个函数,三个入口共用(单向,不启动新轮):
@@ -62,6 +64,7 @@ describe('history window backfill wiring', () => {
   });
 
   it('不变量 3：同步门槛按 session + 连接代，不用屏幕级 lastSyncedAt', () => {
+    expect(source).toContain('const SESSION_READ_ACK_DWELL_MS = 200;');
     expect(source).toContain('if (readAckSyncedKey !== `${sessionId}:${connectionEpoch}`) return;');
     expect(source).not.toContain('|| lastSyncedAt === null) return;');
   });
@@ -75,7 +78,7 @@ describe('history window backfill wiring', () => {
     // 换会话时整体重置,否则上个会话的已考察集合会压住新会话的补齐。
     expect(source).toContain('existingState?.sid === sessionId');
     expect(source).toContain('state.sid !== sessionIdAtStart || state.epoch !== epochAtStart');
-    expect(source).toContain('findHistoryWindowGap(messages, consideredKeys)');
+    expect(source).toContain('findHistoryWindowGap(latestMessagesRef.current, consideredKeys)');
     expect(source).toContain('...gapState.contiguous,');
     expect(source).toContain('...gapState.backfilled,');
     expect(source).toContain('...gapState.failed,');
@@ -123,15 +126,42 @@ describe('live stream interruption wiring', () => {
     );
     // 传的是 markHeldRemoteTopicsSubscribed 的返回值(仍被持有的那些),不是原始 toSend ——
     // 中途被释放的 topic 不算订阅生效。
-    expect(sendSubscribe).toContain('noteSessionLiveStreamsAcked(\n      markHeldRemoteTopicsSubscribed(');
+    expect(sendSubscribe).toMatch(/const held = markHeldRemoteTopicsSubscribed\(remoteSubscribedTopicsRef\.current, registryRef\.current, deviceId, toSend\);\s*noteSessionLiveStreamsAcked\(held\);/);
+    expect(sendSubscribe).toContain("if (held.length > 0) record?.('subscription', 'applied', held.length)");
+    // scope 在 ensureOnline 等待期间变化时，已释放 topic 不能迟到发到主机；仍被其它 owner
+    // 持有的 topic 必须重新评估，不能和已释放 topic 一起饿死。
+    expect(sendSubscribe).toContain('.filter((topic) => registryRef.current.hasTopic(deviceId, topic))');
+    expect(sendSubscribe).toContain('toSend.every((topic) => registryRef.current.hasTopic(deviceId, topic))');
+    // The production loop is behavior-tested in subscriptionAcknowledgements.test.ts.
+    expect(sendSubscribe).toContain('await confirmTrackedSubscription({');
+    // 反向竞态同样要守住：快速释放后又切回时，旧 unsubscribe 在真正发帧前必须
+    // 剔除已经重新被 owner 持有的 topic，不能落在新 subscribe 后把实时流再关掉。
+    expect(source).toContain('(topic) => presenceAvailableByDeviceRef.current.get(deviceId) !== false && !registryRef.current.hasTopic(deviceId, topic)');
+    expect(source).toMatch(
+      /const toSend = shouldSendTopic \? topics\.filter\(shouldSendTopic\) : topics;[\s\S]*client\.invoke\(deviceId, \{\s*channel: DL_UNSUBSCRIBE_CHANNEL,\s*args: \[\{ topics: toSend \}\]/,
+    );
   });
 
   it('socket 掉线：整体失效（影响所有订阅）', () => {
-    const offlineBranch = source.slice(
-      source.indexOf("if (next !== 'online') {"),
-      source.indexOf('clearRehydrateRetry(true);', source.indexOf("if (next !== 'online') {")),
-    );
+    const offlineStart = source.indexOf("if (next !== 'online') {");
+    const offlineEnd = source.indexOf('// presence 是当前在线控制端收到的 delta', offlineStart);
+    expect(offlineStart).toBeGreaterThan(0);
+    expect(offlineEnd).toBeGreaterThan(offlineStart);
+    const offlineBranch = source.slice(offlineStart, offlineEnd);
     expect(offlineBranch).toContain('remoteSessionStore.noteLiveStreamInterrupted();');
+  });
+
+  it('peer ACK reset：无 durable owner 时仍保留独立 forced-open 恢复意图', () => {
+    expect(source).toContain('const forcedPeerRecoveryIntentRef = useRef(new PeerRecoveryOpenIntentRegistry());');
+    expect(source).toMatch(
+      /onPeerTransportReset[\s\S]*requestForcedPeerRecovery\(client, deviceId\)[\s\S]*rehydrate\(deviceId\)/,
+    );
+    expect(source).toMatch(/const rehydrate = \(deviceId\?: string\) => \{\s*catalogRefresh.wake\(deviceId\);\s*return rehydrateWithClient\(client, deviceId\);/);
+    expect(source).toContain('resolvePeerRecoveryPlan(');
+    expect(source).toContain('for (const deviceId of forcedPeerRecoveryIntentRef.current.deviceIds())');
+    expect(source).toContain('forcedPeerRecoveryIntentRef.current.complete(targetDeviceId, forcedGeneration)');
+    expect(source).toContain('client.hasPendingRequestsTo(deviceId)');
+    expect(source).toContain('!client.isOutboundExplicitlyClosed(deviceId)');
   });
 
   it('退后台释放 session 订阅：按被释放的会话失效', () => {
@@ -148,5 +178,65 @@ describe('live stream interruption wiring', () => {
       source.indexOf('const value = useMemo'),
     );
     expect(unsubscribe).toContain('noteSessionLiveStreamsInterrupted(toSend);');
+  });
+});
+
+// guard: Persistent data boundary: evicting a render cache must never delete the offline history.
+describe("mobileSessionMessageCache.test.ts call-site contracts", () => {
+it('does not treat an empty in-memory render snapshot as a cache deletion', () => {
+    const source = readFileSync(resolve(process.cwd(), 'src/session/remoteSessionStore.ts'), 'utf8');
+    expect(source).toContain('空内存可能只是 regular LRU 淘汰');
+    expect(source).toContain('if (messages.length === 0) return;');
+    expect(source).toContain("if (retentionForSession(sessionId) === 'schedule')");
+  });
+});
+
+// guard: remote-and-mobile-adaptation.md: stale session identity, loading cleanup, and retry generations cross the page/coordinator boundary.
+describe("remoteSyncTask.test.ts call-site contracts", () => {
+function readSessionScreenSource(): string {
+  return readFileSync(resolve(process.cwd(), 'app/sessions/[sessionId].tsx'), 'utf8').replace(/\r\n/g, '\n');
+}
+it('clears loading when a queued sync is blocked for a newly-created session', () => {
+    const source = readSessionScreenSource();
+    expect(source).toContain(
+      'if (shouldBlockSessionSync(sessionId)) {\n      if (!syncRun.isStale()) setLoading(false);\n      return;\n    }',
+    );
+  });
+
+it('resets loading when the reused screen switches sessions', () => {
+    const source = readSessionScreenSource();
+    expect(source).toContain(
+      'setRewindState({ kind: \'idle\' });\n    setMessageActionBusy(null);\n    setLoading(false);',
+    );
+  });
+
+it('uses the force-reopen callback for subscription and snapshot retries', () => {
+    const source = readSessionScreenSource();
+    expect(source).toContain(
+      'reopenLink: () => syncReopenCoordinator.reopenAfter(subscriptionAttemptVersion)',
+    );
+    expect(source).toContain(
+      'await syncReopenCoordinator.reopenAfter(failedAtVersion);',
+    );
+    expect(source).toContain(
+      'const syncReopenCoordinator = createRemoteSyncReopenCoordinator(',
+    );
+    expect(source).not.toContain(
+      'reopenLink: async () => {\n          await openLink(deviceId);\n        }',
+    );
+  });
+
+it('applies coordinator context and task changes after render commits', () => {
+    const source = readFileSync(
+      resolve(process.cwd(), 'src/device-link/remoteSyncTask.ts'),
+      'utf8',
+    ).replace(/\r\n/g, '\n');
+    expect(source).toContain(
+      'useLayoutEffect(() => {\n    taskRef.current = task;\n    coordinatorRef.current?.setContext(contextKey);\n  }, [contextKey, task]);',
+    );
+    expect(source).not.toContain(
+      '  taskRef.current = task;\n  const coordinatorRef =',
+    );
+    expect(source).not.toContain('coordinatorRef.current.setContext(contextKey);');
   });
 });

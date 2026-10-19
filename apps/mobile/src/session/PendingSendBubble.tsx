@@ -1,7 +1,7 @@
 /**
  * 待发送消息气泡(渲染在消息流里,不再是列表 footer)。
  *
- * 形态与已发送用户气泡同款(右对齐、surfaceElevated + borderStrong)但整体半透明——
+ * 形态与已发送用户气泡同款(右对齐、surfaceElevated + border)但整体半透明——
  * 「这就是你的消息,只是还没生效」;落定时提高不透明度,回流后同一个列表位置换成正式
  * 消息,原地变实。徽标语义:
  *  - 转圈 = 还没有「已被收下」这个事实(enqueue 在途 / 已出队待回流 / 附件上传中);
@@ -10,32 +10,54 @@
  *  - ⚠ = 失败,可重试 / 删除。
  * 「排入队尾」是个事实断言,未确认时画它就是谎报,所以未确认一律转圈。
  */
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ActivityIndicator, Pressable, StyleSheet, View } from 'react-native';
-import { Image } from 'expo-image';
+import { ActivityIndicator, Pressable, StyleSheet, View, type GestureResponderEvent, type LayoutChangeEvent } from 'react-native';
 import { Text } from '@/components/AppText';
+import { buildMessageContentLayout } from '@/session/messageContentLayout';
+import { summarizeMessageBubblePresentation } from '@/session/messagePresentation';
+import { LONG_USER_MESSAGE_COLLAPSED_LINES, LONG_USER_MESSAGE_VISUAL_LINE_THRESHOLD, mayExceedVisualLineThreshold, resolveUserMessageCollapse } from '@/session/userMessageCollapse';
+import { sentInlineTokensDisplayText } from '@/session/sentMessageAtoms';
 import { SentInlineAtomBody } from '@/session/SentInlineAtomBody';
+import { MessageBodyTapBoundary } from '@/session/ShareMessageCheckbox';
+import { shareSelectionTapMoved, shouldCommitShareSelectionTap, type ShareSelectionTapPoint } from '@/session/shareSelectionTap';
 import {
   AlertCircle,
   ArrowUp,
+  Bot,
+  Ghost,
   ListEnd,
+  Monitor,
   Paperclip,
   Pencil,
   RotateCcw,
+  Send,
+  Smartphone,
+  Timer,
   Trash2,
   type LucideIcon,
 } from 'lucide-react-native';
+import { shouldShowSourceDevice } from '@cindy/maker-shared/message-source';
+import { sourceDeviceLabel } from '@/session/messageSourceLabels';
+import { useRemoteDeviceIdentity } from '@/session/remoteSessionStore';
 import {
   getSentAttachmentThumbUri,
   useSentAttachmentThumbsVersion,
 } from '@/session/sentAttachmentThumbStore';
-import { pendingSendSpins, type MobilePendingSendItem } from '@/session/pendingSendItems';
+import {
+  isPendingSendItemInteractive,
+  isPendingSendItemSelected,
+  pendingSendSpins,
+  type MobilePendingSendItem,
+  type MobilePendingSendSourceKind,
+} from '@/session/pendingSendItems';
 import {
   isDesktopLocalMediaUrl,
   type ResolveRemoteMediaFn,
 } from '@/session/remoteMedia';
 import type { MobileOutboxThumb } from '@/session/sessionOutbox';
+import type { MessagePayload } from '@/session/messagePayload';
+import { pendingSendGalleryImage } from '@/session/pendingSendImages';
 import {
   fontWeight,
   iconSize,
@@ -46,6 +68,17 @@ import {
   type ThemeColors,
 } from '@/theme';
 import { radius, spacing, typeScale } from '@/theme/tokens';
+import { useUserBubbleAppearance } from '@/theme/userBubblePreference';
+
+/** 与已发送消息上的来源标签同一组图标(自动化 Timer / 任务 Send / Orca Bot / 插件 Ghost)。 */
+function sourceIcon(kind: MobilePendingSendSourceKind): LucideIcon {
+  switch (kind) {
+    case 'automation': return Timer;
+    case 'orca': return Bot;
+    case 'plugin': return Ghost;
+    default: return Send;
+  }
+}
 
 export interface PendingSendBubbleActions {
   /** 展开 / 收起操作行的条目;null = 全收起。 */
@@ -60,7 +93,7 @@ export interface PendingSendBubbleActions {
 }
 
 /**
- * 气泡内图片缩略条:乐观语义下图片从第一帧就以图的形态出现,不做「📎 附件行 → 正式消息
+ * 气泡上方图片附件条:乐观语义下图片从第一帧就以图的形态出现,不做「📎 附件行 → 正式消息
  * 图片」的形态跳变。uri 缺失时按 ossRef 查 sentAttachmentThumbStore(订阅版本号,
  * hydrate / 注册完成后自动补图);两者都拿不到时渲染 chip 底色占位格。
  */
@@ -75,15 +108,17 @@ export interface PendingSendBubbleActions {
 function useThumbCellUri(
   thumb: MobileOutboxThumb,
   resolveRemoteMedia?: ResolveRemoteMediaFn,
+  failedUris: readonly string[] = [],
 ): string | null {
   // 「这一格现在指的是哪张图」。排队消息被编辑、同一附件下标换成另一张图时,ThumbCell 的
   // key(clientId-file-index)不变、hook 实例被复用 —— 所有缓存都必须绑定这个身份,否则旧图
   // 会一直压住新图直到整行卸载,编辑后的气泡显示的是已被移除的附件(review P1)。
-  const identity = `${thumb.uri ?? ''}|${thumb.ossRef ?? ''}`;
-  const durableUri = thumb.ossRef ? getSentAttachmentThumbUri(thumb.ossRef) : null;
-  const localUri = durableUri ?? thumb.uri ?? null;
+  const identity = thumb.uri ?? thumb.ossRef ?? thumb.key;
+  const previewRef = thumb.previewRef ?? thumb.ossRef;
+  const durableUri = previewRef ? getSentAttachmentThumbUri(previewRef) : null;
+  const localUri = [durableUri, thumb.uri].find((uri) => uri && !failedUris.includes(uri)) ?? null;
   const [remoteState, setRemoteState] = useState<{ uri: string; identity: string } | null>(null);
-  const remoteUri = remoteState?.identity === identity ? remoteState.uri : null;
+  const remoteUri = remoteState?.identity === identity && !failedUris.includes(remoteState.uri) ? remoteState.uri : null;
   const remoteCandidate = localUri ? null : thumb.ossRef;
   useEffect(() => {
     if (!remoteCandidate || !resolveRemoteMedia || !isDesktopLocalMediaUrl(remoteCandidate)) {
@@ -112,63 +147,81 @@ function useThumbCellUri(
   // 等 store hydrate、远端取件更晚),换 uri 会让 Image 重新加载、中间露出底色(闪白)。
   // 锁同样绑身份:身份变了就解锁,重新按新图取。
   const shownRef = useRef<{ uri: string; identity: string } | null>(null);
-  const shown = shownRef.current?.identity === identity ? shownRef.current.uri : null;
+  const shown = shownRef.current?.identity === identity && !failedUris.includes(shownRef.current.uri) ? shownRef.current.uri : null;
   // 写 ref 放 layout effect(render 阶段不碰 ref:Concurrent 下被丢弃的 render 会污染它)。
   useLayoutEffect(() => {
-    if (candidate && shownRef.current?.identity !== identity) {
+    if (candidate && !shown) {
       shownRef.current = { uri: candidate, identity };
     }
-  }, [candidate, identity]);
+  }, [candidate, identity, shown]);
   return shown ?? candidate;
 }
 
 function ThumbCell({
   thumb,
+  slot,
   resolveRemoteMedia,
+  renderImage,
+  onOpenImage,
 }: {
+  renderImage: (uri: string | null, sourceUri: string | null, onError: () => void) => ReactNode;
   thumb: MobileOutboxThumb;
+  slot: number;
   resolveRemoteMedia?: ResolveRemoteMediaFn;
+  onOpenImage?: (payload: MessagePayload) => void;
 }) {
   const styles = useThemedStyles(makeStyles);
   const { colors } = useTheme();
-  const uri = useThumbCellUri(thumb, resolveRemoteMedia);
+  const [failedUris, setFailedUris] = useState<readonly string[]>([]);
+  const uri = useThumbCellUri(thumb, resolveRemoteMedia, failedUris);
+  const image = pendingSendGalleryImage(thumb, uri, slot);
+  const canOpen = !!image && !!onOpenImage;
   return (
-    <View style={styles.thumbCell}>
-      {uri ? (
-        <Image
-          // 缓存命中优先:同一张图在气泡与回流后的正式消息之间复用解码结果,交接时不重绘。
-          cachePolicy="memory-disk"
-          contentFit="cover"
-          // recyclingKey 绑到这一格:列表复用视图时不会短暂顶着上一条消息的图。
-          recyclingKey={thumb.key}
-          source={{ uri }}
-          style={styles.thumbCellImage}
-          transition={0}
-        />
-      ) : null}
+    <Pressable
+      accessibilityLabel={image?.title}
+      accessibilityRole="button"
+      accessibilityState={{ disabled: !canOpen }}
+      disabled={!canOpen}
+      onPress={(event) => {
+        event.stopPropagation();
+        if (image) onOpenImage?.(image.payload);
+      }}
+      style={styles.thumbCell}
+      testID={`pendingSend.image.${thumb.key}`}
+    >
+      {renderImage(uri, thumb.uri, () => {
+        if (uri) setFailedUris((failed) => failed.includes(uri) ? failed : [...failed, uri]);
+      })}
       {thumb.uploading ? (
-        <View style={styles.thumbUploadingOverlay}>
+        <View pointerEvents="none" style={styles.thumbUploadingOverlay}>
           <ActivityIndicator color={colors.ctaText} size="small" />
         </View>
       ) : null}
-    </View>
+    </Pressable>
   );
 }
 
 function AttachmentThumbStrip({
   thumbs,
   resolveRemoteMedia,
+  renderImage,
+  gap,
+  onOpenImage,
 }: {
+  renderImage: (uri: string | null, sourceUri: string | null, onError: () => void) => ReactNode;
+  gap: number;
   thumbs: readonly MobileOutboxThumb[];
   resolveRemoteMedia?: ResolveRemoteMediaFn;
+  onOpenImage?: (payload: MessagePayload) => void;
 }) {
   const styles = useThemedStyles(makeStyles);
   useSentAttachmentThumbsVersion();
   if (thumbs.length === 0) return null;
   return (
-    <View style={styles.thumbStrip} testID="pendingSend.thumbStrip">
-      {thumbs.map((thumb) => (
-        <ThumbCell key={thumb.key} resolveRemoteMedia={resolveRemoteMedia} thumb={thumb} />
+    <View style={[styles.thumbStrip, { gap }]} testID="pendingSend.thumbStrip">
+      {thumbs.map((thumb, slot) => (
+        <ThumbCell renderImage={renderImage} key={thumb.key} resolveRemoteMedia={resolveRemoteMedia}
+          thumb={thumb} slot={slot} onOpenImage={onOpenImage} />
       ))}
     </View>
   );
@@ -178,28 +231,184 @@ export function PendingSendBubble({
   item,
   actions,
   resolveRemoteMedia,
+  renderImage,
+  renderText,
+  renderFile,
+  screenWidth,
+  viewerDeviceId,
+  onOpenImage,
 }: {
+  /** 当前查看设备:排队消息就是本机发的时不显示设备标签(与已发送消息同一规则)。 */
+  viewerDeviceId?: string | null;
+  renderImage: (uri: string | null, sourceUri: string | null, onError: () => void) => ReactNode;
+  renderText: (text: string, index: number) => ReactNode;
+  renderFile: (name: string, index: number) => ReactNode;
+  screenWidth?: number;
   item: MobilePendingSendItem;
   actions: PendingSendBubbleActions;
   /** 远端媒体取件(粘贴时已上传到媒体总仓的图靠它取缩略图)。 */
   resolveRemoteMedia?: ResolveRemoteMediaFn;
+  onOpenImage?: (payload: MessagePayload) => void;
 }) {
   const styles = useThemedStyles(makeStyles);
   const { colors } = useTheme();
   const { t } = useTranslation();
+  // 待发送的一定是自己的消息;与落定后的正式气泡同色,避免发出瞬间换色。
+  const { colors: userBubbleColors } = useUserBubbleAppearance();
   const spinning = pendingSendSpins(item.phase);
   const editing = item.phase === 'editing';
   const failed = item.phase === 'failed';
-  const interactive = item.actions !== null || failed;
-  const selected = interactive && actions.selectedClientId === item.clientId;
+  // Local outbox rows have not reached the desktop queue yet, but users must
+  // still be able to cancel them while upload/enqueue is in flight. Settling
+  // rows deliberately remain non-interactive: they have already left the
+  // queue and use the existing recovery path instead.
+  const interactive = isPendingSendItemInteractive(item);
+  const outbox = interactive && item.actions === null;
+  const selected = isPendingSendItemSelected(item, actions.selectedClientId);
   const bubbleLabel = item.text || t('message.queue.attachmentMessage');
   const uploadsPending = item.phase === 'uploading';
+  const layout = buildMessageContentLayout({ screenWidth });
   const rendersSentInlineBody = item.sentInlineTokens.some((token) => token.kind !== 'text');
+  const displayBody = rendersSentInlineBody ? sentInlineTokensDisplayText(item.sentInlineTokens) : item.text;
+  const density = summarizeMessageBubblePresentation({ kind: 'user', body: displayBody, attachmentCount: item.attachmentCount }).density;
+  const [measuredBody, setMeasuredBody] = useState<{ body: string; lines: number } | null>(null);
+  const [expandedBody, setExpandedBody] = useState<string | null>(null);
+  const measureBody = mayExceedVisualLineThreshold(displayBody);
+  const collapseResolved = measureBody && resolveUserMessageCollapse(
+    displayBody, measuredBody?.body === displayBody ? measuredBody.lines : null,
+    LONG_USER_MESSAGE_VISUAL_LINE_THRESHOLD,
+  );
+  const [collapseLatchBody, setCollapseLatchBody] = useState<string | null>(null);
+  const collapseLatched = collapseLatchBody === displayBody;
+  useEffect(() => {
+    if (collapseResolved && !collapseLatched) setCollapseLatchBody(displayBody);
+  }, [collapseResolved, collapseLatched, displayBody]);
+  const shouldCollapse = (measureBody && collapseLatched) || collapseResolved;
+  const expanded = expandedBody === displayBody;
+  const collapsedLines = shouldCollapse && !expanded ? LONG_USER_MESSAGE_COLLAPSED_LINES : undefined;
+  const hasBody = !!displayBody;
+  const hasAttachments = item.thumbs.length > 0 || !!item.fileNames?.length;
+  const [badgeAnchor, setBadgeAnchor] = useState<{ clientId: string; left: number } | null>(null);
+  const bubbleTouchOriginRef = useRef<{ start: ShareSelectionTapPoint; startedAt: number } | null>(null);
+  const pendingCommitFrameRef = useRef<number | null>(null);
+  const cancelBubbleTouch = useCallback(() => {
+    bubbleTouchOriginRef.current = null;
+    if (pendingCommitFrameRef.current !== null) cancelAnimationFrame(pendingCommitFrameRef.current);
+    pendingCommitFrameRef.current = null;
+  }, []);
+  // Invalidate pending taps before a recycled row, disabled state or selection can take over.
+  useLayoutEffect(() => cancelBubbleTouch, [cancelBubbleTouch, item.clientId, interactive, selected]);
+  const handleBubbleTouchStart = (event: GestureResponderEvent) => {
+    cancelBubbleTouch();
+    if (event.nativeEvent.touches.length !== 1) return;
+    bubbleTouchOriginRef.current = { start: event.nativeEvent, startedAt: Date.now() };
+  };
+  const handleBubbleTouchMove = (event: GestureResponderEvent) => {
+    const origin = bubbleTouchOriginRef.current;
+    if (!origin) return;
+    if (shareSelectionTapMoved(origin.start, event.nativeEvent)) cancelBubbleTouch();
+  };
+  const handleBubbleTouchEnd = (event: GestureResponderEvent) => {
+    const origin = bubbleTouchOriginRef.current;
+    bubbleTouchOriginRef.current = null;
+    if (origin && event.nativeEvent.touches.length === 0 && shouldCommitShareSelectionTap({
+      durationMs: Date.now() - origin.startedAt,
+      moved: shareSelectionTapMoved(origin.start, event.nativeEvent),
+    })) {
+      // Match share rows: child link onPress gets a turn to consume the gesture.
+      pendingCommitFrameRef.current = requestAnimationFrame(() => {
+        pendingCommitFrameRef.current = null;
+        actions.onSelect(selected ? null : item.clientId);
+      });
+    }
+  };
+  const measureBadgeAnchor = (event: LayoutChangeEvent) => {
+    const left = Math.max(0, event.nativeEvent.layout.x - 28 - spacing.sm);
+    setBadgeAnchor((current) => current?.clientId === item.clientId && current.left === left
+      ? current : { clientId: item.clientId, left });
+  };
+  const badgePosition = badgeAnchor?.clientId === item.clientId
+    ? { left: badgeAnchor.left } : { right: 0 };
+  const statusLabel = failed
+    ? t('message.queue.sendFailedMessage', { text: bubbleLabel })
+    : spinning
+      ? t('message.queue.sendingMessage', { text: bubbleLabel })
+      : item.queueIndex !== null
+        ? t('message.queue.queuedMessageLabel', { index: item.queueIndex, text: bubbleLabel })
+        : t('message.queue.sendingMessage', { text: bubbleLabel });
+  const SourceIcon = item.source ? sourceIcon(item.source.kind) : null;
+  const [sourceIdVisible, setSourceIdVisible] = useState(false);
+  const [deviceIdVisible, setDeviceIdVisible] = useState(false);
+  const directory = useRemoteDeviceIdentity();
+  const showDevice = shouldShowSourceDevice(item.sourceDevice, viewerDeviceId);
+  const deviceLabel = showDevice && item.sourceDevice ? sourceDeviceLabel(item.sourceDevice, directory) : null;
+  const deviceIdText = showDevice && item.sourceDevice
+    ? t('message.renderer.sourceDeviceId', { id: item.sourceDevice.deviceId })
+    : null;
+  const DeviceIcon = item.sourceDevice?.platform === 'mobile' ? Smartphone : Monitor;
 
   return (
     <View style={styles.rowWrap} testID={`pendingSend.row.${item.clientId}`}>
+      {item.source && SourceIcon ? (
+        // 非本人输入的排队条目:气泡上方的来源标签(对齐桌面排队面板与已发送消息的来源标签)。
+        // 有来源 ID 时长按就地显示(可选中复制),读屏提示读出 ID;脱敏来源保持静态。
+        <View style={styles.sourceStack}>
+          <Pressable
+            accessibilityHint={item.source.idText}
+            accessibilityLabel={item.source.label}
+            accessibilityRole="text"
+            disabled={!item.source.idText}
+            hitSlop={8}
+            onLongPress={item.source.idText ? () => setSourceIdVisible((visible) => !visible) : undefined}
+            style={styles.sourceRow}
+            testID={`pendingSend.source.${item.clientId}`}
+          >
+            <SourceIcon color={colors.textTertiary} size={iconSize.xs} strokeWidth={iconStroke.thin} />
+            <Text numberOfLines={1} style={styles.sourceText}>{item.source.label}</Text>
+          </Pressable>
+          {sourceIdVisible && item.source.idText ? (
+            <Text selectable style={styles.sourceText} testID={`pendingSend.sourceId.${item.clientId}`}>
+              {item.source.idText}
+            </Text>
+          ) : null}
+        </View>
+      ) : null}
+      {deviceLabel && deviceIdText ? (
+        // 别的设备发来的本人排队消息:标出设备,长按显示设备 ID;仍可编辑 / 插话。
+        <View style={styles.sourceStack}>
+          <Pressable
+            accessibilityHint={deviceIdText}
+            accessibilityLabel={deviceLabel}
+            accessibilityRole="text"
+            hitSlop={8}
+            onLongPress={() => setDeviceIdVisible((visible) => !visible)}
+            style={styles.sourceRow}
+            testID={`pendingSend.sourceDevice.${item.clientId}`}
+          >
+            <DeviceIcon color={colors.textTertiary} size={iconSize.xs} strokeWidth={iconStroke.thin} />
+            <Text numberOfLines={1} style={styles.sourceText}>{deviceLabel}</Text>
+          </Pressable>
+          {deviceIdVisible ? (
+            <Text selectable style={styles.sourceText} testID={`pendingSend.sourceDeviceId.${item.clientId}`}>
+              {deviceIdText}
+            </Text>
+          ) : null}
+        </View>
+      ) : null}
       <View style={styles.bubbleRow}>
-        <View style={styles.badge} testID={`pendingSend.badge.${item.phase}`}>
+        <Pressable
+          accessibilityHint={item.hint ?? undefined}
+          accessibilityLabel={item.source
+            ? t('message.queue.withSource', { source: item.source.label, message: statusLabel })
+            : statusLabel}
+          accessibilityRole="button"
+          accessibilityState={{ expanded: selected, disabled: !interactive }}
+          disabled={!interactive}
+          hitSlop={spacing.sm}
+          onPress={() => actions.onSelect(selected ? null : item.clientId)}
+          style={({ pressed }) => [styles.badge, badgePosition, pressed && styles.pressed]}
+          testID={`pendingSend.badge.${item.phase}`}
+        >
           {failed ? (
             <AlertCircle color={colors.errorText} size={iconSize.sm} strokeWidth={iconStroke.regular} />
           ) : spinning ? (
@@ -210,45 +419,90 @@ export function PendingSendBubble({
             // 暂停态不换 ⏸:组顶横幅已表达暂停,逐条再换会重复;行内恒用排队 icon。
             <ListEnd color={colors.textTertiary} size={iconSize.sm} strokeWidth={iconStroke.regular} />
           )}
-        </View>
-        <Pressable
-          accessibilityHint={item.hint ?? undefined}
-          accessibilityLabel={failed
-            ? t('message.queue.sendFailedMessage', { text: bubbleLabel })
-            : spinning
-              ? t('message.queue.sendingMessage', { text: bubbleLabel })
-              : item.queueIndex !== null
-                ? t('message.queue.queuedMessageLabel', { index: item.queueIndex, text: bubbleLabel })
-                : t('message.queue.sendingMessage', { text: bubbleLabel })}
-          accessibilityRole="button"
-          accessibilityState={{ expanded: selected, disabled: !interactive }}
-          disabled={!interactive}
-          onPress={() => actions.onSelect(selected ? null : item.clientId)}
-          style={({ pressed }) => [
-            styles.bubble,
+        </Pressable>
+        <View
+          style={[
+            styles.content,
             item.phase === 'settling' && styles.bubbleSettling,
             selected && styles.bubbleSelected,
             editing && styles.bubbleEditing,
-            pressed && styles.pressed,
           ]}
           testID={`pendingSend.bubble.${item.clientId}`}
         >
-          {rendersSentInlineBody ? (
-            <SentInlineAtomBody
-              interactiveAtoms={false}
-              maxVisibleLines={selected ? undefined : 6}
-              numberOfLines={selected ? undefined : 6}
-              testID="pendingSend.sentInlineAtoms"
-              textStyle={styles.bubbleText}
-              tokens={item.sentInlineTokens}
-            />
-          ) : item.text ? (
-            <Text numberOfLines={selected ? undefined : 6} style={styles.bubbleText}>
-              {item.text}
-            </Text>
+          {hasAttachments ? (
+            <View key={`attachments:${item.clientId}`} onLayout={measureBadgeAnchor} style={[styles.attachmentStrip, { gap: layout.attachmentGap }]}>
+              <AttachmentThumbStrip
+                gap={layout.attachmentGap}
+                onOpenImage={onOpenImage}
+                renderImage={renderImage}
+                resolveRemoteMedia={resolveRemoteMedia}
+                thumbs={item.thumbs}
+              />
+              {item.fileNames?.length ? (
+                <View style={[styles.thumbStrip, { gap: layout.attachmentGap, maxWidth: layout.fileChipMaxWidth }]}>
+                  {item.fileNames.map(renderFile)}
+                </View>
+              ) : null}
+            </View>
           ) : null}
-          <AttachmentThumbStrip resolveRemoteMedia={resolveRemoteMedia} thumbs={item.thumbs} />
-          {item.fileCount > 0 || uploadsPending ? (
+          {hasBody ? (
+            <MessageBodyTapBoundary value={cancelBubbleTouch}>
+            <View
+              key={`body:${item.clientId}`}
+              onLayout={hasAttachments ? undefined : measureBadgeAnchor}
+              onTouchEnd={interactive ? handleBubbleTouchEnd : undefined}
+              onTouchMove={interactive ? handleBubbleTouchMove : undefined}
+              onTouchStart={interactive ? handleBubbleTouchStart : undefined}
+              onTouchCancel={cancelBubbleTouch}
+              style={[
+                styles.bubble,
+                density === 'compact' && styles.bubbleCompact,
+                density === 'rich' && styles.bubbleRich,
+                userBubbleColors && { backgroundColor: userBubbleColors.background, borderColor: userBubbleColors.border },
+              ]}
+              testID={`pendingSend.body.${item.clientId}`}
+            >
+              {rendersSentInlineBody ? (
+                <SentInlineAtomBody
+                  interactiveAtoms={false}
+                  maxVisibleLines={collapsedLines}
+                  numberOfLines={collapsedLines}
+                  renderText={collapsedLines ? undefined : (text, index) => (
+                    <View key={`text:${index}`} style={styles.textChunk}>{renderText(text, index)}</View>
+                  )}
+                  testID="pendingSend.sentInlineAtoms"
+                  textStyle={styles.bubbleText}
+                  tokens={item.sentInlineTokens}
+                />
+              ) : item.text && !collapsedLines ? renderText(item.text, 0) : item.text ? (
+                <Text numberOfLines={collapsedLines} style={styles.bubbleText}>
+                  {item.text}
+                </Text>
+              ) : null}
+            {measureBody ? (
+              <View accessibilityElementsHidden accessible={false} importantForAccessibility="no-hide-descendants"
+                pointerEvents="none" style={styles.collapseMeasureWrap}>
+                <Text numberOfLines={LONG_USER_MESSAGE_VISUAL_LINE_THRESHOLD + 1}
+                  onTextLayout={(event) => setMeasuredBody({ body: displayBody, lines: event.nativeEvent.lines.length })}
+                  style={styles.bubbleText}>{displayBody}</Text>
+              </View>
+            ) : null}
+            {shouldCollapse ? (
+              <Text accessibilityRole="button" suppressHighlighting
+                accessibilityLabel={expanded ? t('message.renderer.collapseMessage') : t('message.renderer.expandMessage')}
+                onPress={(event) => {
+                  event.stopPropagation();
+                  cancelBubbleTouch();
+                  setExpandedBody(expanded ? null : displayBody);
+                }}
+                style={styles.collapseToggleText}>
+                {expanded ? t('message.renderer.collapse') : t('message.renderer.expand')}
+              </Text>
+            ) : null}
+            </View>
+            </MessageBodyTapBoundary>
+          ) : null}
+          {(item.fileCount > 0 && !item.fileNames?.length) || uploadsPending ? (
             <View style={styles.attachmentLine}>
               <Paperclip color={colors.textTertiary} size={iconSize.xs} strokeWidth={iconStroke.regular} />
               <Text style={styles.attachmentLineText}>
@@ -271,7 +525,7 @@ export function PendingSendBubble({
               {item.errorText}
             </Text>
           ) : null}
-        </Pressable>
+        </View>
       </View>
       {selected && item.hint ? (
         <Text style={styles.rowHint} testID={`pendingSend.hint.${item.clientId}`}>{item.hint}</Text>
@@ -308,23 +562,23 @@ export function PendingSendBubble({
           />
         </View>
       ) : null}
-      {selected && failed ? (
+      {selected && outbox ? (
         <View style={styles.actionRow} testID={`pendingSend.outboxActions.${item.clientId}`}>
           <ActionPill
             busy={actions.busy}
             icon={Trash2}
-            label={t('message.queue.delete')}
+            label={t(failed ? 'message.queue.delete' : 'message.queue.cancel')}
             onPress={() => actions.onRemoveOutbox(item.clientId)}
             testID={`pendingSend.outboxRemove.${item.clientId}`}
           />
-          <ActionPill
+          {failed ? <ActionPill
             busy={actions.busy}
             cta
             icon={RotateCcw}
             label={t('message.queue.retry')}
             onPress={() => actions.onRetryOutbox(item.clientId)}
             testID={`pendingSend.outboxRetry.${item.clientId}`}
-          />
+          /> : null}
         </View>
       ) : null}
     </View>
@@ -377,6 +631,10 @@ function ActionPill({
 
 const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   rowWrap: { alignItems: 'flex-end', gap: spacing.sm, width: '100%' },
+  // 来源标签:与已发送消息上方的来源标签同款(12/18 三级色)。
+  sourceStack: { alignItems: 'flex-end', gap: 2, maxWidth: '86%' },
+  sourceRow: { alignItems: 'center', flexDirection: 'row', gap: spacing.xs },
+  sourceText: { color: colors.textTertiary, flexShrink: 1, fontSize: typeScale.caption, lineHeight: lineHeight.caption },
   bubbleRow: {
     alignItems: 'center',
     flexDirection: 'row',
@@ -384,19 +642,26 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     justifyContent: 'flex-end',
     width: '100%',
   },
-  badge: { alignItems: 'center', flexDirection: 'row' },
+  badge: { alignItems: 'center', justifyContent: 'center', width: 28, minHeight: 44, position: 'absolute', top: 0, zIndex: 1 },
   // 与已发送用户气泡同款,但整体半透明:「这就是你的消息,只是还没生效」。
+  textChunk: { flexBasis: '100%', flexShrink: 1, maxWidth: '100%' },
+  content: { alignItems: 'flex-end', gap: 2, width: '100%', opacity: 0.62 },
+  bubbleCompact: { gap: 6, paddingVertical: spacing.sm },
+  bubbleRich: { gap: spacing.sm },
   bubble: {
     backgroundColor: colors.surfaceElevated,
-    borderColor: colors.borderStrong,
+    borderColor: colors.border,
     borderRadius: radius.container,
     borderWidth: StyleSheet.hairlineWidth,
     gap: spacing.xs,
     maxWidth: '86%',
-    opacity: 0.62,
+    minWidth: 0,
+    overflow: 'hidden',
     padding: spacing.md,
   },
-  bubbleSelected: { borderColor: colors.textSecondary, opacity: 1 },
+  collapseMeasureWrap: { left: spacing.md, right: spacing.md, top: 0, opacity: 0, position: 'absolute' },
+  collapseToggleText: { alignSelf: 'flex-start', color: colors.textSecondary, fontSize: typeScale.caption, lineHeight: lineHeight.caption, paddingVertical: spacing.xs },
+  bubbleSelected: { opacity: 1 },
   bubbleEditing: { opacity: 0.38 },
   // 落定中:即将变实,透明度介于排队(0.62)与已发送(1)之间。
   bubbleSettling: { opacity: 0.85 },
@@ -406,18 +671,10 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     lineHeight: lineHeight.bodyLarge,
   },
   attachmentLine: { alignItems: 'center', flexDirection: 'row', gap: 4 },
-  attachmentLineText: { color: colors.textTertiary, fontSize: typeScale.footnote },
-  thumbStrip: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs, justifyContent: 'flex-end' },
-  thumbCell: {
-    backgroundColor: colors.surfaceChip,
-    borderColor: colors.border,
-    borderRadius: radius.container,
-    borderWidth: StyleSheet.hairlineWidth,
-    height: 72,
-    overflow: 'hidden',
-    width: 72,
-  },
-  thumbCellImage: { height: '100%', width: '100%' },
+  attachmentLineText: { color: colors.textTertiary, fontSize: typeScale.footnote, lineHeight: lineHeight.caption },
+  attachmentStrip: { alignItems: 'flex-end', marginBottom: spacing.xs, maxWidth: '100%' },
+  thumbStrip: { alignItems: 'flex-end', maxWidth: '100%' },
+  thumbCell: { borderRadius: radius.container, overflow: 'hidden' },
   thumbUploadingOverlay: {
     alignItems: 'center',
     backgroundColor: colors.overlay,
@@ -428,7 +685,7 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     right: 0,
     top: 0,
   },
-  editingHint: { color: colors.textTertiary, fontSize: typeScale.footnote },
+  editingHint: { color: colors.textTertiary, fontSize: typeScale.footnote, lineHeight: lineHeight.caption },
   errorText: { color: colors.errorText, fontSize: typeScale.footnote, lineHeight: lineHeight.caption },
   rowHint: {
     color: colors.textTertiary,
@@ -446,11 +703,11 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     flexDirection: 'row',
     gap: 6,
     justifyContent: 'center',
-    minHeight: 36,
+    minHeight: 44,
     paddingHorizontal: spacing.md,
   },
   actionPillCta: { backgroundColor: colors.cta, borderColor: colors.cta },
-  actionPillText: { color: colors.textPrimary, fontSize: typeScale.caption, fontWeight: fontWeight.medium },
+  actionPillText: { color: colors.textPrimary, fontSize: typeScale.caption, lineHeight: lineHeight.caption, fontWeight: fontWeight.medium },
   actionPillTextCta: { color: colors.ctaText },
   pressed: { opacity: 0.72 },
   disabled: { opacity: 0.42 },

@@ -6,9 +6,11 @@ import type {
   DesktopAccountDeletionConfirmInput,
   DesktopAccountDeletionConfirmResult,
   DesktopAccountDeletionStatusResult,
+  DesktopAccountSwitcherSnapshot,
   DesktopLoginAction,
   DesktopLoginActionResult,
 } from '../../shared/authIpc';
+export type { DesktopSavedAccount } from '../../shared/authIpc';
 import type { Effort } from '@/lib/userPreferences.types';
 
 /** Renderer-safe projection of the authenticated auth-server membership. */
@@ -37,6 +39,8 @@ export interface AuthState {
   mode: 'signed-out' | 'local' | 'cloud';
   dataOwnerId: string | null;
   ownerGeneration: number;
+  /** Main marks the transient signed-out projection while an owner boundary is pending. */
+  ownerBoundaryPending?: boolean;
   canEnterApp: boolean;
   isAuthenticated: boolean;
   isCanary: boolean;
@@ -52,6 +56,11 @@ export interface AuthService {
   getLoginState(): Promise<DesktopLoginActionResult>;
   dispatchLoginAction(action: DesktopLoginAction): Promise<DesktopLoginActionResult>;
   logout(): Promise<void>;
+  listAccounts(): Promise<DesktopAccountSwitcherSnapshot>;
+  syncAccounts(): Promise<DesktopAccountSwitcherSnapshot>;
+  switchAccount(accountKey: string): Promise<void>;
+  beginAddAccount(): Promise<DesktopLoginActionResult>;
+  cancelAddAccount(): Promise<void>;
   enterLocalMode(): Promise<AuthState>;
   exitLocalMode(): Promise<AuthState>;
   getAccountDeletionAvailability(): Promise<DesktopAccountDeletionAvailabilityResult>;
@@ -73,6 +82,7 @@ export function createAuthService(): AuthService {
       mode: rawState.mode,
       dataOwnerId: rawState.dataOwnerId,
       ownerGeneration: rawState.ownerGeneration,
+      ownerBoundaryPending: rawState.ownerBoundaryPending === true,
       canEnterApp: rawState.canEnterApp,
       isAuthenticated: rawState.isAuthenticated,
       isCanary: rawState.isCanary === true,
@@ -92,6 +102,7 @@ export function createAuthService(): AuthService {
         mode: raw.mode,
         dataOwnerId: raw.dataOwnerId,
         ownerGeneration: raw.ownerGeneration,
+        ownerBoundaryPending: raw.ownerBoundaryPending === true,
         canEnterApp: raw.canEnterApp,
         isAuthenticated: raw.isAuthenticated,
         isCanary: raw.isCanary === true,
@@ -112,6 +123,26 @@ export function createAuthService(): AuthService {
 
     async logout(): Promise<void> {
       await window.electronAPI.authLogout();
+    },
+
+    listAccounts() {
+      return window.electronAPI.authListAccounts();
+    },
+
+    syncAccounts() {
+      return window.electronAPI.authSyncAccounts();
+    },
+
+    switchAccount(accountKey) {
+      return window.electronAPI.authSwitchAccount(accountKey);
+    },
+
+    beginAddAccount() {
+      return window.electronAPI.authBeginAddAccount();
+    },
+
+    cancelAddAccount() {
+      return window.electronAPI.authCancelAddAccount();
     },
 
     async enterLocalMode(): Promise<AuthState> {
@@ -156,6 +187,7 @@ export function createAuthService(): AuthService {
 export type {
   AuthFlowState,
   DesktopAccountDeletionChallenge,
+  DesktopAccountSwitcherSnapshot,
   DesktopLoginAction,
   DesktopLoginActionResult,
 };

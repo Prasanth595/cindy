@@ -25,6 +25,9 @@ vi.mock('../logger.js', () => ({
   }),
 }));
 
+const mediaRefMock = vi.hoisted(() => ({ commitMessageMediaRefs: vi.fn(async () => null) }));
+vi.mock('../cindy-media/chatAttachments.js', () => mediaRefMock);
+
 import {
   importExternalClaudeCodeSessions,
   importExternalClaudeCodeMessagesForSession,
@@ -85,6 +88,11 @@ function createLocalDb(): Database.Database {
       feishu_bot_app_id TEXT,
       used_project_context INTEGER NOT NULL DEFAULT 0,
       extra_dirs TEXT NOT NULL DEFAULT '[]',
+      writable_dirs TEXT NOT NULL DEFAULT '[]',
+      remote_host_id TEXT,
+      list_preview TEXT,
+      list_preview_role TEXT,
+      list_message_count INTEGER,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     );
@@ -350,6 +358,32 @@ describe('parseClaudeCodeMessageLine', () => {
     expect(rows[0].agentMeta).not.toHaveProperty('parentUuid');
   });
 
+  it.each([
+    ['claude-haiku-5-5', 'claude-haiku-5-5'],
+    ['claude-haiku-5-5[1m]', 'claude-haiku-5-5'],
+    ['claude-sonnet-5-5', 'claude-sonnet-5-5'],
+    ['claude-sonnet-5-5[1m]', 'claude-sonnet-5-5'],
+  ])('keeps the 5.5 generation for %s instead of folding it into an older model', (model, expected) => {
+    const rows = parseClaudeCodeMessageLine(
+      line({
+        type: 'assistant',
+        uuid: `assistant-${model}`,
+        message: {
+          id: `msg-${model}`,
+          model,
+          stop_reason: 'end_turn',
+          usage: { input_tokens: 1, output_tokens: 1 },
+          content: [{ type: 'text', text: 'ok' }],
+        },
+      }),
+      10,
+      sdkSessionId,
+      'claude-sonnet-4-6',
+    );
+
+    expect(rows[0].agentMeta).toMatchObject({ model: expected });
+  });
+
   it('normalizes opus-4-8 full model id to short form', () => {
     const rows = parseClaudeCodeMessageLine(
       line({
@@ -370,6 +404,39 @@ describe('parseClaudeCodeMessageLine', () => {
 
     expect(rows).toHaveLength(1);
     expect(rows[0].agentMeta).toMatchObject({ model: 'claude-opus-4-8' });
+  });
+
+  it.each([
+    'claude-opus-5-5',
+    'claude-opus-5-5-20260922',
+    'claude-opus-5-5[1m]',
+    'claude-opus-5-5-20260922[1m]',
+  ])('preserves %s in imported session and message models', async (model) => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-opus55-import-'));
+    const projectDir = path.join(home, '.claude', 'projects', '-tmp-project');
+    fs.mkdirSync(projectDir, { recursive: true });
+    fs.writeFileSync(path.join(projectDir, `${sdkSessionId}.jsonl`), line({
+      type: 'assistant', uuid: 'assistant-opus55', cwd: '/tmp/project',
+      message: { role: 'assistant', model, content: [{ type: 'text', text: 'ok' }] },
+    }) + '\n');
+    const db = createLocalDb();
+    const homedir = vi.spyOn(os, 'homedir').mockReturnValue(home);
+    setLocalDb(db);
+    try {
+      expect(await importExternalClaudeCodeSessions([sdkSessionId])).toMatchObject({ inserted: 1 });
+      expect(db.prepare('SELECT model FROM sessions WHERE id = ?').get(`claude-${sdkSessionId}`))
+        .toEqual({ model: 'claude-opus-5-5' });
+      await importExternalClaudeCodeMessagesForSession(`claude-${sdkSessionId}`);
+      const rows = db.prepare('SELECT agent_meta AS agentMeta FROM messages WHERE session_id = ?')
+        .all(`claude-${sdkSessionId}`) as { agentMeta: string }[];
+      expect(rows).toHaveLength(1);
+      expect(JSON.parse(rows[0].agentMeta)).toMatchObject({ model: 'claude-opus-5-5' });
+    } finally {
+      homedir.mockRestore();
+      resetLocalDb();
+      db.close();
+      fs.rmSync(home, { recursive: true, force: true });
+    }
   });
 
   it('normalizes opus-5 [1m] wire model id to catalog id', () => {
@@ -607,6 +674,57 @@ describe('parseClaudeCodeMessageLine', () => {
       expect(tx).toHaveBeenCalledTimes(1);
       const count = db.prepare('SELECT COUNT(*) AS count FROM messages').get() as { count: number };
       expect(count.count).toBe(1);
+    } finally {
+      homedir.mockRestore();
+      resetLocalDb();
+      db.close();
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('scans original oversized tool_result media URLs before capping import rows', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-local-home-'));
+    const projectsDir = path.join(home, '.claude', 'projects', '-tmp-project');
+    fs.mkdirSync(projectsDir, { recursive: true });
+    const file = path.join(projectsDir, `${sdkSessionId}.jsonl`);
+    const url = 'cindy-media://blobs/0123456789abcdef.png';
+    const huge = `${'m'.repeat(9000)}${url}`;
+    fs.writeFileSync(
+      file,
+      `${line({
+        type: 'user',
+        uuid: 'user-tool',
+        cwd: '/tmp/project',
+        message: {
+          role: 'user',
+          content: [{ type: 'tool_result', tool_use_id: 'tu-1', content: huge }],
+        },
+      })}\n`,
+    );
+
+    const db = createLocalDb();
+    insertImportedClaudeSession(db, `claude-${sdkSessionId}`, sdkSessionId);
+    const homedir = vi.spyOn(os, 'homedir').mockReturnValue(home);
+    const tx = vi.fn(
+      async (name: string, args: unknown) => runInprocTx(db, { name, args }) as never,
+    );
+    vi.mocked(getRawDb).mockReturnValue(db);
+    setCurrentDbClient({ ...makeTestDbClient(db), tx }, 'test-user');
+    mediaRefMock.commitMessageMediaRefs.mockClear();
+
+    try {
+      await importExternalClaudeCodeMessagesForSession(`claude-${sdkSessionId}`);
+      expect(mediaRefMock.commitMessageMediaRefs).toHaveBeenCalledWith({
+        sessionId: `claude-${sdkSessionId}`,
+        role: 'tool_result',
+        content: huge,
+      });
+      const stored = db
+        .prepare("SELECT content FROM messages WHERE role = 'tool_result' LIMIT 1")
+        .get() as { content: string };
+      const parsed = JSON.parse(stored.content) as string;
+      expect(parsed.length).toBeLessThanOrEqual(8 * 1024);
+      expect(parsed).not.toContain(url);
     } finally {
       homedir.mockRestore();
       resetLocalDb();
@@ -923,6 +1041,64 @@ describe('parseClaudeCodeMessageLine', () => {
       expect(result).toMatchObject({ scanned: 1, inserted: 1, updated: 0 });
       const rows = db.prepare('SELECT id, title FROM sessions ORDER BY id').all();
       expect(rows).toEqual([{ id: `claude-${sdkSessionId}`, title: 'import me' }]);
+      db.prepare(`UPDATE sessions SET status='archived', working_dir='/moved-project',
+        extra_dirs='["/reference"]', writable_dirs='["/output"]', updated_at=1`).run();
+      expect((await scanExternalClaudeCodeSessions()).candidates.find(item => item.id === sdkSessionId))
+        .toMatchObject({ archived: true, cwd: '/moved-project', extraDirs: ['/reference'], writableDirs: ['/output'] });
+      await importExternalClaudeCodeSessions([sdkSessionId]);
+      expect(db.prepare('SELECT status, working_dir, extra_dirs, writable_dirs FROM sessions').get()).toEqual({
+        status: 'archived', working_dir: '/moved-project', extra_dirs: '["/reference"]', writable_dirs: '["/output"]',
+      });
+    } finally {
+      homedir.mockRestore();
+      resetLocalDb();
+      db.close();
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('revives a soft-deleted imported session on explicit re-import (#3548)', async () => {
+    // 删除是软删且源 JSONL 不随删,扫描会重新出候选;此前 ON CONFLICT 不更新
+    // status,重导入命中同主键后行仍是 deleted —— 导入计数更新、侧栏不可见。
+    // 删除动作把 updated_at 推到删除时刻(晚于源文件),复活不得受时间门约束。
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-local-home-'));
+    const projectsDir = path.join(home, '.claude', 'projects', '-tmp-project');
+    fs.mkdirSync(projectsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(projectsDir, `${sdkSessionId}.jsonl`),
+      `${line({
+        type: 'user',
+        uuid: 'user-1',
+        cwd: '/tmp/project',
+        message: { role: 'user', content: 'import me' },
+      })}\n`,
+    );
+
+    const db = createLocalDb();
+    const homedir = vi.spyOn(os, 'homedir').mockReturnValue(home);
+    setLocalDb(db);
+
+    try {
+      const first = await importExternalClaudeCodeSessions([sdkSessionId]);
+      expect(first).toMatchObject({ inserted: 1 });
+
+      const before = db
+        .prepare('SELECT title, updated_at AS updatedAt FROM sessions WHERE id = ?')
+        .get(`claude-${sdkSessionId}`) as { title: string; updatedAt: number };
+      db.prepare(
+        "UPDATE sessions SET status = 'deleted', title = 'stale-after-delete', updated_at = updated_at + 999999 WHERE id = ?",
+      ).run(`claude-${sdkSessionId}`);
+
+      const again = await importExternalClaudeCodeSessions([sdkSessionId]);
+      expect(again).toMatchObject({ scanned: 1, inserted: 0, updated: 1 });
+      const row = db
+        .prepare('SELECT status, title, updated_at AS updatedAt FROM sessions WHERE id = ?')
+        .get(`claude-${sdkSessionId}`) as { status: string; title: string; updatedAt: number };
+      expect(row.status).toBe('active');
+      // 复活即按新导入对待:元数据与 updated_at 收敛回源值,不残留删除时刻
+      // 的旧快照(review 反馈:仅复活 status 会让侧栏行与源会话不一致)。
+      expect(row.title).toBe(before.title);
+      expect(row.updatedAt).toBe(before.updatedAt);
     } finally {
       homedir.mockRestore();
       resetLocalDb();

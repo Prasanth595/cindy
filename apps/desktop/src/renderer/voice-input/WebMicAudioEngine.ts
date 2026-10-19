@@ -323,6 +323,11 @@ export function isMicrophoneDeviceUnavailableError(error: unknown): boolean {
   return isSelectedMicrophoneUnavailableError(error) || isDeviceConstraintError(error);
 }
 
+export function isMicrophonePermissionDeniedError(error: unknown): boolean {
+  const name = readErrorString(error, 'name');
+  return name === 'NotAllowedError' || name === 'SecurityError';
+}
+
 function isDeviceConstraintError(error: unknown): boolean {
   const name = readErrorString(error, 'name');
   const message = readErrorString(error, 'message')?.toLowerCase() ?? '';
@@ -723,6 +728,7 @@ class KeepAliveMicSession {
       activation?.onInterrupted?.('Microphone input stopped unexpectedly. Please try again.');
     }
     this.trackCleanup.splice(0).forEach((cleanup) => cleanup());
+    this.worklet?.port.postMessage({ type: 'dispose' });
     this.worklet?.port.close();
     this.worklet?.disconnect();
     this.sink?.disconnect();
@@ -1024,6 +1030,7 @@ export class WebMicAudioEngine {
   private sink?: GainNode;
   private pending: number[] = [];
   private carry = 0;
+  private previousSample = 0;
   private chunkIndex = 0;
   private trackCleanup: Array<() => void> = [];
   private watchdogId?: number;
@@ -1062,6 +1069,9 @@ export class WebMicAudioEngine {
         return;
       } catch (error) {
         if (isSelectedMicrophoneUnavailableError(error)) throw error;
+        // Permission is requested by this capture, not by a disposable probe.
+        // Retrying the cold path after denial would open/request it twice.
+        if (isMicrophonePermissionDeniedError(error)) throw error;
         // Only a *power* release ends the attempt. Falling through to the cold
         // getUserMedia() below after a suspend/lock would open a brand-new
         // stream once that one-shot event has passed, with nothing left to
@@ -1328,6 +1338,7 @@ export class WebMicAudioEngine {
     if (this.context) this.context.onstatechange = null;
     if (this.processor) this.processor.onaudioprocess = null;
     this.flushPendingFrame(Date.now());
+    this.worklet?.port.postMessage({ type: 'dispose' });
     this.worklet?.port.close();
     this.worklet?.disconnect();
     this.processor?.disconnect();
@@ -1351,6 +1362,7 @@ export class WebMicAudioEngine {
     this.context = undefined;
     this.pending = [];
     this.carry = 0;
+    this.previousSample = 0;
   }
 
   async drainBufferedAudio(): Promise<void> {
@@ -1622,8 +1634,10 @@ export class WebMicAudioEngine {
     this.onInterrupted?.(message);
   }
 
-  private resample(input: Float32Array, fromRate: number, toRate: number): number[] {
-    if (fromRate === toRate) return Array.from(input);
+  private resample(input: Float32Array, fromRate: number, toRate: number): number[] | Float32Array {
+    if (input.length === 0) return [];
+    // handleInputFrame consumes the values synchronously without retaining input.
+    if (fromRate === toRate) return input;
 
     const ratio = fromRate / toRate;
     const output: number[] = [];
@@ -1633,11 +1647,14 @@ export class WebMicAudioEngine {
       const left = Math.floor(sourceIndex);
       const right = Math.min(left + 1, input.length - 1);
       const fraction = sourceIndex - left;
-      output.push(input[left] + (input[right] - input[left]) * fraction);
+      // Match the worklet: negative carry refers to the previous block's tail.
+      const leftSample = left < 0 ? this.previousSample : input[left];
+      output.push(leftSample + (input[right] - leftSample) * fraction);
       sourceIndex += ratio;
     }
 
     this.carry = sourceIndex - input.length;
+    this.previousSample = input[input.length - 1];
     return output;
   }
 }

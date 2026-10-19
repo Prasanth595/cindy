@@ -90,12 +90,16 @@ export interface HistoryMessage {
 // ── Reader 调用参数 (host 端把 tool 解析后的参数透传给 reader) ───────────────
 
 export interface ListWorkdirsArgs {
+  /** Host-owned ownership scope. null = account history; [] = deny all. */
+  sessionIds: string[] | null;
   limit: number;
   cursor: HistoryCursor | null;
   order: HistoryOrder;
 }
 
 export interface ListSessionsArgs {
+  /** Host-owned ownership scope. null = account history; [] = deny all. */
+  sessionIds: string[] | null;
   workdir: string | null;
   fromMs: number | null;
   toMs: number | null;
@@ -205,6 +209,12 @@ export interface SearchChatHistoryResult {
 // ── Deps interface ─────────────────────────────────────────────────────────
 
 export interface XdtHelperHistoryDeps {
+  remote?: import('./_history_devices.js').HistoryRemoteDeps;
+  /** Resolve the maximum history scope for the current runtime Session. */
+  resolveSessionScope?: (args: {
+    callerSessionId?: string;
+    callerMemoryScopeKey?: string;
+  }) => Promise<ControlResult<{ sessionIds: string[] | null }>>;
   listWorkdirs: (args: ListWorkdirsArgs) => Promise<ControlResult<{ page: HistoryPage<HistoryWorkdir> }>>;
   listSessions: (args: ListSessionsArgs) => Promise<ControlResult<{ page: HistoryPage<HistorySession> }>>;
   getMessages: (
@@ -213,4 +223,14 @@ export interface XdtHelperHistoryDeps {
   searchChatHistory: (
     args: SearchChatHistoryArgs,
   ) => Promise<ControlResult<{ result: SearchChatHistoryResult }>>;
+  /** get_task_digest:一件任务的短摘要(本机 id 或 deviceId::sessionId)。不注入则不注册该工具。 */
+  taskDigest?: (args: {
+    sessionId: string;
+    callerSessionId?: string;
+  }) => Promise<
+    ControlResult<
+      { digest: import('./get_task_digest.js').TaskDigestWire },
+      'NOT_FOUND' | 'REMOTE_UNAVAILABLE' | 'INVALID_ARGS'
+    >
+  >;
 }

@@ -17,6 +17,7 @@ import {
   applyDesktopDevStartupConfig,
   stripDesktopDevRegionArgs,
 } from '../../../scripts/shared/desktop-dev-region.mjs';
+import { withDesktopDevNodeOptions } from '../../../scripts/shared/desktop-dev-node-options.mjs';
 import { generateEndpointLocalFile } from '../../../scripts/shared/endpoint-local-file.mjs';
 
 const [command, ...rawArgs] = process.argv.slice(2);
@@ -26,7 +27,7 @@ if (!command) {
 }
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
-const env = { ...process.env, XDT_DESKTOP_DEV_MODE: 'local' };
+const env = withDesktopDevNodeOptions({ ...process.env, XDT_DESKTOP_DEV_MODE: 'local' });
 // XDT_RESTART_MANAGED 是 restart 链路的一跳（one-hop）启动标记：restart 经白名单透传，
 // local 链（restart:desktop:local → 本 wrapper）同样会收到。这里消费它——删除后不进入
 // Electron 环境，避免被本地 Codex/Claude/PI agent 子进程继承，导致 agent 在 worktree

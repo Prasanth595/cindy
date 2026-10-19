@@ -1,3 +1,4 @@
+import { nativeToolMediaFields, type NativeToolMedia } from '@cindy/maker-shared/tool-process-media';
 /**
  * Codex app-server v2 Notification → maker-core 语义 AgentEvent 翻译器。
  *
@@ -28,10 +29,12 @@ import {
 } from '@cindy/maker-shared/error-redaction';
 import {
   stableInternalWebCitationBoundary,
+  stableStandaloneModelStopTokenBoundary,
   stripInternalWebCitations,
 } from '@cindy/maker-shared/internal-citation';
 
-import type { AgentEvent, AgentTaskStatus, AgentTaskUpdateEventData } from '../../types/events.js';
+import { UsageTokenSpeedMeter } from '../shared/token-speed.js';
+import type { AgentEvent, AgentTaskStatus, AgentTaskUpdateEventData, GeneratedImageEventData } from '../../types/events.js';
 import { normalizeAccountRateLimitSnapshot } from '../../types/account-rate-limits.js';
 import type { AsyncQueue } from '../shared/async-queue.js';
 import { stripTerminalControlSequences } from '../shared/terminal-output.js';
@@ -45,7 +48,9 @@ import {
   CONTEXT_OVERFLOW_REASON,
   isContextOverflowErrorMessage,
 } from '../shared/context-overflow-error.js';
+import { isRemoteCompactEncryptedContentError } from '../shared/remote-compact-encrypted-error.js';
 import { commandExecutionDisplayInput, type CommandExecutionDisplayInput } from './command-display.js';
+import { annotateSandboxInitFailure } from './sandbox-init-failure.js';
 import { codexErrorInfoTag } from './app-server/protocol.js';
 import {
   formatTerminalRateLimitRetryMessage,
@@ -70,18 +75,24 @@ import type {
 // 但因为 reasoning text 现在是数组 join 出来的, reasoningTextLen 跟踪 join 后总长。
 
 export interface CodexRuntimeState {
+  /** Text since the last completed tool belongs to the current sampling request. */
+  samplingSegments: Map<string, { threadId: string; turnId: string; attempt: number; itemIds: Set<string> }>;
   /** item.id → reasoning 第一次 emit 'start' 的时间 (Date.now ms)。 */
   reasoningStartedAt: Map<string, number>;
   /** item.id → reasoning 已 emit 文本字符长度 (上次 join 后总长)。 */
   reasoningTextLen: Map<string, number>;
   /** item.id → agentMessage 已 emit 文本字符长度(citation 归一化后的空间,见 handleAgentMessage)。 */
   itemTextLen: Map<string, number>;
+  /** Live tok/s from accepted usage and its paired generation time. */
+  tokenSpeed: UsageTokenSpeedMeter;
   /** Current model-active interval start; null while tools/approvals own the turn. */
   generationStartedAt: number | null;
   /** Tool/approval boundaries currently owning the turn. Generation resumes after all finish. */
   generationPendingToolIds: Set<string>;
   /** Sum of model-active intervals for the current turn, including TTFT and thinking. */
   generationDurationMs: number;
+  /** Model time sampled with the latest accepted output usage. */
+  generationOutputDurationMs: number;
   generationTurnId: string | null;
   /** False when a tool boundary is incomplete/out of order; unreliable TPS is omitted. */
   generationTimingReliable: boolean;
@@ -94,6 +105,7 @@ export interface CodexRuntimeState {
   itemDeltaText: Map<string, string>;
   /** item.id → item/started 或 item/updated 最新原始全文快照。 */
   itemSnapshotText: Map<string, string>;
+  itemMessagePhase: Map<string, 'commentary' | 'final_answer'>;
   /** 已经 emit 过 tool_use 的 item.id (避免 started + 第一次 updated 重复)。 */
   emittedToolUse: Set<string>;
   /** 尚未 emit 的 Web Search 候选输入，供跨 started/updated/completed 快照补全。 */
@@ -121,12 +133,15 @@ export interface CodexRuntimeState {
 
 export function newCodexRuntimeState(): CodexRuntimeState {
   return {
+    samplingSegments: new Map(),
     reasoningStartedAt: new Map(),
     reasoningTextLen: new Map(),
     itemTextLen: new Map(),
+    tokenSpeed: new UsageTokenSpeedMeter(),
     generationStartedAt: null,
     generationPendingToolIds: new Set(),
     generationDurationMs: 0,
+    generationOutputDurationMs: 0,
     generationTurnId: null,
     generationTimingReliable: true,
     generationHeartbeatAt: null,
@@ -134,6 +149,7 @@ export function newCodexRuntimeState(): CodexRuntimeState {
     itemRawText: new Map(),
     itemDeltaText: new Map(),
     itemSnapshotText: new Map(),
+    itemMessagePhase: new Map(),
     emittedToolUse: new Set(),
     pendingWebSearchInput: new Map(),
     emittedWebSearchInput: new Map(),
@@ -158,6 +174,7 @@ function sampleCodexGenerationHeartbeat(rt: CodexRuntimeState, now = Date.now())
     now - previous > CODEX_GENERATION_HEARTBEAT_MS + CODEX_GENERATION_SUSPEND_GAP_MS
   ) {
     rt.generationTimingReliable = false;
+    rt.tokenSpeed.invalidate();
   }
   rt.generationHeartbeatAt = now;
 }
@@ -175,9 +192,11 @@ function startCodexGenerationHeartbeat(rt: CodexRuntimeState): void {
 /** Reset per-turn model-generation timing; turn wall-clock is tracked separately by the host. */
 export function resetCodexGenerationTiming(rt: CodexRuntimeState): void {
   stopCodexGenerationHeartbeat(rt);
+  rt.tokenSpeed.reset();
   rt.generationStartedAt = null;
   rt.generationPendingToolIds.clear();
   rt.generationDurationMs = 0;
+  rt.generationOutputDurationMs = 0;
   rt.generationTurnId = null;
   rt.generationTimingReliable = true;
 }
@@ -190,6 +209,7 @@ function closeCodexGenerationInterval(rt: CodexRuntimeState, endedAt: number): v
   if (startedAt === null) return;
   if (endedAt < startedAt) {
     rt.generationTimingReliable = false;
+    rt.tokenSpeed.invalidate();
     return;
   }
   rt.generationDurationMs += endedAt - startedAt;
@@ -315,6 +335,7 @@ function noteCodexGenerationBoundary(
   }
   const pauseId = `item:${item.id}`;
   if (phase === 'started') {
+    // The model finished emitting this call; its execution is not generation time.
     pauseCodexGeneration(rt, turnId, pauseId, receivedAt);
     return;
   }
@@ -333,6 +354,8 @@ interface TranslatorLog {
 export interface CodexTranslateContext {
   rt: CodexRuntimeState;
   log: TranslatorLog;
+  /** A failed sample cannot remain the adapter's successful final-text fallback. */
+  onSamplingAttemptFailed?: () => void;
   /**
    * Maker Memory flush 观察器 — codex contextCompaction completed 时调,
    * controller 重置 fired 阈值 (compact 后 context 又有空间, 可重新触发)。
@@ -363,6 +386,51 @@ export interface CodexTranslateContext {
 // ── 主入口: 三个 item.* notification 的统一分发 ────────────────────────────────
 
 type ItemPhase = 'started' | 'updated' | 'completed';
+// Host-executed tool results prove the preceding response was accepted. Built-in
+// search/image items can complete inside the still-open SSE response and do not.
+const SAMPLING_ACCEPTED_TOOL_TYPES = new Set([
+  'commandExecution', 'mcpToolCall', 'dynamicToolCall', 'collabAgentToolCall', 'fileChange',
+]);
+
+function isSamplingStreamFailure(error: ClassifiedCodexError): boolean {
+  return error.errorInfoTag === 'responseStreamDisconnected' ||
+    error.errorInfoTag === 'responseTooManyFailedAttempts' ||
+    /stream disconnected|retrying sampling request|stream ended before.*response\.completed/i.test(error.message);
+}
+
+function samplingSegment(rt: CodexRuntimeState, threadId: string, turnId: string) {
+  const key = JSON.stringify([threadId, turnId]);
+  let segment = rt.samplingSegments.get(key);
+  if (!segment) {
+    segment = { threadId, turnId, attempt: 1, itemIds: new Set<string>() };
+    rt.samplingSegments.set(key, segment);
+  }
+  return segment;
+}
+
+/** Exact identities, never prose similarity or final_answer-only filtering (#6351). */
+function failSamplingSegment(rt: CodexRuntimeState, threadId: string, turnId: string) {
+  const segment = rt.samplingSegments.get(JSON.stringify([threadId, turnId]));
+  if (!segment) return undefined;
+  const agentMessageIds = [...segment.itemIds];
+  segment.itemIds.clear();
+  const attempt = segment.attempt++;
+  return agentMessageIds.length ? { threadId, turnId, attempt, agentMessageIds } : undefined;
+}
+
+/** A stopped retry remains auditable; a successful turn never marks its last reply failed. */
+export function finishCodexSamplingTurn(
+  rt: CodexRuntimeState, threadId: string, turnId: string, status: string,
+  error?: Parameters<typeof classifyCodexError>[0],
+) {
+  const key = JSON.stringify([threadId, turnId]);
+  const segment = rt.samplingSegments.get(key);
+  const failure = status !== 'completed' && segment &&
+    (segment.attempt > 1 || (error && isSamplingStreamFailure(classifyCodexError(error))))
+    ? failSamplingSegment(rt, threadId, turnId) : undefined;
+  rt.samplingSegments.delete(key);
+  return failure;
+}
 
 export function translateItemNotification(
   phase: ItemPhase,
@@ -382,6 +450,14 @@ export function translateItemNotification(
   if (typeof itemType !== 'string') {
     ctx.log.warn('item missing type field', { phase, itemKeys: Object.keys(item) });
     return;
+  }
+  if (itemType === 'agentMessage') {
+    samplingSegment(ctx.rt, notification.threadId, notification.turnId).itemIds.add(item.id);
+  } else if (phase === 'completed' &&
+    SAMPLING_ACCEPTED_TOOL_TYPES.has(itemType)) {
+    // Tool results prove earlier generation was accepted. Its commentary and
+    // side effects must not be invalidated by a later sampling request failing.
+    ctx.rt.samplingSegments.delete(JSON.stringify([notification.threadId, notification.turnId]));
   }
   noteCodexGenerationBoundary(
     ctx.rt,
@@ -422,7 +498,7 @@ export function translateItemNotification(
       handleImageView(phase, item as unknown as ImageViewItem, queue);
       return;
     case 'imageGeneration':
-      handleImageGeneration(phase, item as unknown as ImageGenerationItem, queue);
+      handleImageGeneration(phase, item as unknown as ImageGenerationItem, queue, notification);
       return;
     case 'contextCompaction':
       handleContextCompaction(phase, item as unknown as ContextCompactionItem, queue, ctx);
@@ -477,32 +553,86 @@ export function isAuthRelatedErrorMessage(message: string, errorStatus?: number)
     .test(message);
 }
 
+export interface ClassifiedCodexError {
+  message: string;
+  errorStatus?: number;
+  errorInfoTag?: string;
+  usageLimit: boolean;
+  isCapacityError: boolean;
+  reason?: string;
+  data: Record<string, unknown> & { message: string };
+}
+
+/**
+ * ErrorNotification 与 turn/completed.turn.error 共用的结构化分类。
+ * 默认只消费 Codex wire schema 的 message + codexErrorInfo；stderr 不参与判定。
+ * 唯一例外：远端 compact 密文 400 会把 `additionalDetails` 拼进 classify 文本，
+ * 因为用户形态经常是 message=`Error running remote compact task`、code 在 details 里。
+ */
+export function classifyCodexError(error: {
+  message?: string;
+  additionalDetails?: unknown;
+  codexErrorInfo?: import('./app-server/protocol.js').CodexErrorInfo | null;
+} | null | undefined): ClassifiedCodexError {
+  const rawMessage = error?.message ?? 'codex error';
+  const hasMissingBearer = /\bMissing bearer\b/i.test(rawMessage);
+  const hasAuthErrorMarker =
+    /\bauthentication_(?:error|failed)\b|\binvalid[\s_-]*api[\s_-]*key\b|\bapi key not valid\b/i.test(
+      rawMessage,
+    );
+  const message = redactSensitiveText(rawMessage);
+  const signals = extractNonSecretErrorSignals(rawMessage);
+  const errorStatus =
+    signals.errorStatus ?? (hasMissingBearer || hasAuthErrorMarker ? 401 : undefined);
+  const errorInfoTag = codexErrorInfoTag(error?.codexErrorInfo);
+  const isCapacityError =
+    parseOverloadError(message, signals.errorStatus, errorInfoTag)?.kind === 'capacity';
+  const additionalDetails =
+    typeof error?.additionalDetails === 'string' ? error.additionalDetails : '';
+  const compactClassifyText = additionalDetails ? `${message}\n${additionalDetails}` : message;
+  const reason = isCapacityError
+    ? UPSTREAM_OVERLOAD_REASON
+    : errorInfoTag === 'contextWindowExceeded' ||
+        isContextOverflowErrorMessage(message) ||
+        isRemoteCompactEncryptedContentError(compactClassifyText)
+      ? CONTEXT_OVERFLOW_REASON
+      : undefined;
+  return {
+    message,
+    ...(errorStatus !== undefined ? { errorStatus } : {}),
+    ...(errorInfoTag !== undefined ? { errorInfoTag } : {}),
+    usageLimit: signals.usageLimit,
+    isCapacityError,
+    ...(reason ? { reason } : {}),
+    data: {
+      message,
+      ...(errorStatus !== undefined ? { errorStatus } : {}),
+      ...(signals.usageLimit ? { usageLimit: true } : {}),
+      ...(errorInfoTag !== undefined ? { codexErrorInfo: errorInfoTag } : {}),
+      ...(reason ? { reason } : {}),
+    },
+  };
+}
+
 /** error notification (顶层非 item.*) → AgentEvent error。 */
 export function translateErrorNotification(
   params: ErrorNotification['params'],
   queue: AsyncQueue<AgentEvent>,
   ctx: CodexTranslateContext,
 ): void {
-  const message = params.error?.message ?? 'codex error';
-  const hasMissingBearer = /\bMissing bearer\b/i.test(message);
-  const hasAuthErrorMarker =
-    /\bauthentication_(?:error|failed)\b|\binvalid[\s_-]*api[\s_-]*key\b|\bapi key not valid\b/i.test(
-      message,
-    );
-  const safeMessage = redactSensitiveText(message);
-  const signals = extractNonSecretErrorSignals(message);
-  const errorStatus =
-    signals.errorStatus ?? (hasMissingBearer || hasAuthErrorMarker ? 401 : undefined);
-  // 结构化错误标识。过载判定优先吃它(见下方 capacity 分支), 同时透出到 error data
-  // 供诊断与下游归因。**不参与上面的 errorStatus 推断** —— 那条链路上挂着
-  // renderer 的 401 banner 与 auth 修复 UX, 改推断依据会连带改这些行为。
-  const errorInfoTag = codexErrorInfoTag(params.error?.codexErrorInfo);
-  const safeErrorData = {
-    message: safeMessage,
-    ...(errorStatus !== undefined ? { errorStatus } : {}),
-    ...(signals.usageLimit ? { usageLimit: true } : {}),
-    ...(errorInfoTag !== undefined ? { codexErrorInfo: errorInfoTag } : {}),
-  };
+  const classified = classifyCodexError(params.error);
+  const safeMessage = classified.message;
+  const errorStatus = classified.errorStatus;
+  const isCapacityError = classified.isCapacityError;
+  const safeErrorData = classified.data;
+  const segment = ctx.rt.samplingSegments.get(JSON.stringify([params.threadId, params.turnId]));
+  const streamFailed = isSamplingStreamFailure(classified) || (!params.willRetry && (segment?.attempt ?? 1) > 1);
+  const assistantAttemptFailure = streamFailed
+    ? failSamplingSegment(ctx.rt, params.threadId, params.turnId) : undefined;
+  if (assistantAttemptFailure) {
+    Object.assign(safeErrorData, { assistantAttemptFailure });
+    ctx.onSamplingAttemptFailed?.();
+  }
   // willRetry=true 的暂时错误 (transient API blip / 5xx blip), server 自己会重试 — 默认
   // 不 emit error event 给 UI,否则会把瞬时错误暴露成用户可见失败。**但** auth 缺失
   // (401/Unauthorized/Missing bearer) 是 daemon 怎么 retry 也不可能自愈的 —— 必须
@@ -516,7 +646,7 @@ export function translateErrorNotification(
     ctx.log.warn('codex error (will retry)', { message: safeMessage, threadId: params.threadId, turnId: params.turnId });
     // Codex 自带明确的有限重连进度时，每档都透出，让 UI 从 1/5 持续更新到 5/5。
     // 这是非终止状态：turn 仍由 app-server 继续，不结束也不另起一次不安全的请求重放。
-    if (parseReconnectAttemptMessage(safeMessage)) {
+    if (assistantAttemptFailure || parseReconnectAttemptMessage(safeMessage)) {
       queue.push({
         type: 'error',
         data: { ...safeErrorData, isTerminal: false, willRetry: true },
@@ -565,20 +695,14 @@ export function translateErrorNotification(
   // 由 agent 层接管退避重投。接管成功时透成非终止状态并带进度后缀, renderer
   // 显示"模型繁忙, 正在重试 (N/M)"; 预算耗尽或条件不满足 (本 turn 已有产出)
   // 时 tryTakeOverOverload 返回 null, 落回下面的终止错误路径。
-  const isCapacityError =
-    parseOverloadError(safeMessage, signals.errorStatus, errorInfoTag)?.kind === 'capacity';
-  // 过载错误一律带上稳定 reason key。renderer 隔着 IPC 投影拿不到 codexErrorInfo,
-  // 靠这个 key 判定"是否过载"(ErrorBanner 的本地化文案 + 重试进度 + hideRetry 都由它
-  // 驱动)。不带的话 renderer 只能回退到文案匹配 —— codex 改一次措辞, 用户就会在整段
-  // 重试窗口里看到英文原文, 也就是本次改动要消除的那个依赖在 UI 侧原样残留。
+  // 过载分类在函数入口已完成，避免同一判据在两处漂移。
   const overloadReason = isCapacityError ? { reason: UPSTREAM_OVERLOAD_REASON } : {};
   // 上下文超限同样带稳定 reason key(#1429): 原样重试必然再撞同一个 4xx, renderer 靠
   // 它隐藏 Retry 并给出压缩 / 新开会话入口。结构化 contextWindowExceeded 优先，
   // 文案匹配仅兼容旧版 app-server；与 capacity 互斥时 overload 优先 —— 它还驱动
   // 退避重投接管，语义更具体。
   const contextOverflowReason =
-    !isCapacityError &&
-    (errorInfoTag === 'contextWindowExceeded' || isContextOverflowErrorMessage(safeMessage))
+    !isCapacityError && classified.reason === CONTEXT_OVERFLOW_REASON
       ? { reason: CONTEXT_OVERFLOW_REASON }
       : {};
   if (!params.willRetry && isCapacityError) {
@@ -631,6 +755,9 @@ export function translateErrorNotification(
     },
     source: 'codex',
   });
+  if (!params.willRetry) {
+    ctx.rt.samplingSegments.delete(JSON.stringify([params.threadId, params.turnId]));
+  }
 }
 
 export function translatePlanUpdatedNotification(
@@ -642,6 +769,7 @@ export function translatePlanUpdatedNotification(
     data: {
       toolUseId: `plan:${params.turnId}`,
       toolName: 'update_plan',
+      runtimeActivity: 'snapshot',
       input: {
         ...(params.explanation ? { explanation: params.explanation } : {}),
         plan: params.plan,
@@ -715,6 +843,7 @@ export function extractRolloutUpdatePlanFunctionCallEvent(
       data: {
         toolUseId: turnId ? `plan:${turnId}` : `plan-call:${item.call_id ?? 'unknown'}`,
         toolName: 'update_plan',
+        runtimeActivity: 'snapshot',
         input,
       },
       source: 'codex',
@@ -730,6 +859,7 @@ interface AgentMessageItem {
   type: 'agentMessage';
   id: string;
   text: string;
+  phase?: 'commentary' | 'final_answer';
 }
 
 interface ReasoningItem {
@@ -876,7 +1006,7 @@ interface ImageViewItem {
   path: string;
 }
 
-// v2.rs ThreadItem::ImageGeneration — 模型生成图; result 是 url/data URL, savedPath 落盘后才有。
+// result may contain bare Base64 even when savedPath is also present (Codex 0.159.2).
 interface ImageGenerationItem {
   type: 'imageGeneration';
   id: string;
@@ -1017,17 +1147,18 @@ export function finalizeCodexCitationText(text: string): string {
 }
 
 export function stableCitationBoundary(text: string): number {
+  const stopTokenEnd = stableStandaloneModelStopTokenBoundary(text);
   const open = findUnfinishedCitationOpen(text);
   if (open !== -1) {
-    return Math.min(open, stableInternalWebCitationBoundary(text));
+    return Math.min(open, stableInternalWebCitationBoundary(text), stopTokenEnd);
   }
   const maxProbe = Math.min(text.length, CODEX_FILE_CITATION_OPEN.length - 1);
   for (let k = maxProbe; k > 0; k -= 1) {
     if (text.endsWith(CODEX_FILE_CITATION_OPEN.slice(0, k))) {
-      return Math.min(text.length - k, stableInternalWebCitationBoundary(text));
+      return Math.min(text.length - k, stableInternalWebCitationBoundary(text), stopTokenEnd);
     }
   }
-  return stableInternalWebCitationBoundary(text);
+  return Math.min(stableInternalWebCitationBoundary(text), stopTokenEnd);
 }
 
 function emitAgentMessageProgress(
@@ -1053,7 +1184,9 @@ function emitAgentMessageProgress(
   if (delta.length === 0) return;
   queue.push({
     type: 'text',
-    data: { text: delta, isFinal: false },
+    data: { text: delta, isFinal: false, agentMessageId: itemId,
+      ...(ctx.rt.itemMessagePhase.has(itemId) ? { phase: ctx.rt.itemMessagePhase.get(itemId) } : {}),
+    },
     source: 'codex',
   });
 }
@@ -1097,6 +1230,7 @@ export function translateAgentMessageDelta(
   ctx: CodexTranslateContext,
 ): void {
   if (!params.delta) return;
+  samplingSegment(ctx.rt, params.threadId, params.turnId).itemIds.add(params.itemId);
   const currentText = ctx.rt.itemRawText.get(params.itemId) ?? '';
   const previousDeltaText = ctx.rt.itemDeltaText.get(params.itemId) ?? '';
   let rawText: string;
@@ -1125,12 +1259,14 @@ function handleAgentMessage(
   ctx: CodexTranslateContext,
 ): void {
   const rawText = item.text ?? '';
+  if (item.phase) ctx.rt.itemMessagePhase.set(item.id, item.phase);
 
   if (phase === 'completed') {
     ctx.rt.itemTextLen.delete(item.id);
     ctx.rt.itemRawText.delete(item.id);
     ctx.rt.itemDeltaText.delete(item.id);
     ctx.rt.itemSnapshotText.delete(item.id);
+    ctx.rt.itemMessagePhase.delete(item.id);
     // 既有契约:completed 只出 final 全文、不补 delta(desktop codexTranslator.test
     // 钉死 3 事件形状)。boundary 按住的尾段与「completed 才首次出现的文本」同一待遇:
     // 不进 delta 流,由 final 全文兜底(main 落库层 onAssistantTextEvent 的 isFinal
@@ -1141,7 +1277,13 @@ function handleAgentMessage(
     // finalizeCodexCitationText 是与历史导入共用的统一口径。
     queue.push({
       type: 'text',
-      data: { text: finalizeCodexCitationText(rawText), isFinal: true, isFullText: true },
+      data: {
+        text: finalizeCodexCitationText(rawText),
+        isFinal: true,
+        isFullText: true,
+        agentMessageId: item.id,
+        ...(item.phase ? { phase: item.phase } : {}),
+      },
       source: 'codex',
     });
     return;
@@ -1360,7 +1502,13 @@ function handleCommandExecution(
     type: 'tool_result_full',
     data: {
       toolUseId: item.id,
-      fullText: stripTerminalControlSequences(item.aggregatedOutput ?? ''),
+      // #3793:bwrap 沙箱初始化失败(命令从未执行)时追加宿主归因标注,
+      // 模型不再盲目重试,用户在工具卡里能看到原因。健康与普通失败路径原样。
+      fullText: annotateSandboxInitFailure(
+        stripTerminalControlSequences(item.aggregatedOutput ?? ''),
+        isError,
+        item.command,
+      ),
       isError,
     },
     source: 'codex',
@@ -1421,7 +1569,7 @@ function handleMcpToolCall(
   }
   queue.push({
     type: 'tool_result_full',
-    data: { toolUseId: item.id, fullText, isError },
+    data: { toolUseId: item.id, fullText, isError, ...nativeToolMediaFields(item.result?.content) },
     source: 'codex',
   });
   queue.push({
@@ -1742,7 +1890,7 @@ function handleDynamicToolCall(
   const fullText = dynamicContentItemsToText(item.contentItems);
   queue.push({
     type: 'tool_result_full',
-    data: { toolUseId: item.id, fullText, isError },
+    data: { toolUseId: item.id, fullText, isError, ...nativeToolMediaFields(item.contentItems) },
     source: 'codex',
   });
   queue.push({
@@ -1796,6 +1944,8 @@ function handleCollabAgentToolCall(
   ctx: CodexTranslateContext,
 ): void {
   const toolName = `collab:${item.tool}`;
+  const isSpawn = item.tool.toLowerCase().startsWith('spawn');
+  const hasSpawnReceiver = !isSpawn || item.receiverThreadIds.length > 0;
   const input: Record<string, unknown> = {
     senderThreadId: item.senderThreadId,
     receiverThreadIds: item.receiverThreadIds,
@@ -1805,6 +1955,13 @@ function handleCollabAgentToolCall(
   if (item.reasoningEffort) input.reasoningEffort = item.reasoningEffort;
 
   if (phase === 'started') {
+    // Codex can emit a provisional spawn item before validation has created a
+    // child thread. If validation then fails (for example an unknown model),
+    // 0.145 emits no matching terminal collab item. Publishing this empty-
+    // receiver placeholder would therefore leave an inline card and durable
+    // Subagent run stuck on running forever. Wait for a receiver-bearing
+    // updated/completed snapshot, which is the first proof that a child exists.
+    if (!hasSpawnReceiver) return;
     if (ctx.rt.emittedToolUse.has(item.id)) return;
     ctx.rt.emittedToolUse.add(item.id);
     queue.push({
@@ -1821,6 +1978,7 @@ function handleCollabAgentToolCall(
   }
 
   if (phase === 'updated') {
+    if (!hasSpawnReceiver) return;
     if (!ctx.rt.emittedToolUse.has(item.id)) {
       ctx.rt.emittedToolUse.add(item.id);
       queue.push({
@@ -1897,6 +2055,7 @@ interface SubAgentActivityItem {
   agentPath?: string;
   /** Newer Codex builds may include the selected child model on the activity. */
   model?: string;
+  reasoningEffort?: string | null;
 }
 
 /**
@@ -1972,10 +2131,14 @@ function handleSubAgentActivity(
   if (phase === 'started') ctx.rt.emittedToolUse.add(item.id);
   const agentPath = typeof item.agentPath === 'string' ? item.agentPath : undefined;
   const model = typeof item.model === 'string' && item.model ? item.model : undefined;
+  const reasoningEffort = typeof item.reasoningEffort === 'string' && item.reasoningEffort
+    ? item.reasoningEffort
+    : undefined;
   const input: Record<string, unknown> = {};
   if (agentPath) input.name = agentPath;
   if (item.agentThreadId) input.agentThreadId = item.agentThreadId;
   if (model) input.model = model;
+  if (reasoningEffort) input.reasoningEffort = reasoningEffort;
   queue.push({
     type: 'tool_use',
     data: { toolUseId: item.id, toolName: 'collab:spawn', input },
@@ -2012,6 +2175,7 @@ function handleSubAgentActivity(
       ...(item.agentThreadId ? { receiverThreadIds: [item.agentThreadId] } : {}),
       ...(agentPath ? { title: agentPath } : {}),
       ...(model ? { model } : {}),
+      ...(reasoningEffort ? { reasoningEffort } : {}),
     },
     source: 'codex',
   });
@@ -2024,7 +2188,9 @@ function toCodexTaskUpdate(
   completedOnly = false,
 ): AgentTaskUpdateEventData {
   const isSpawn = item.tool.toLowerCase().startsWith('spawn');
-  const subagentObservation = isSpawn && (status !== 'completed' || completedOnly)
+  const subagentObservation = isSpawn
+    && item.receiverThreadIds.length > 0
+    && (status !== 'completed' || completedOnly)
     ? {
         kind: status === 'running' || completedOnly ? 'spawn' as const : 'terminal' as const,
         logicalSubagentId: item.id,
@@ -2050,27 +2216,27 @@ function toCodexTaskUpdate(
   };
 }
 
-// ── imageView → image event (kind='view') ────────────────────────────────────
-// 模型读了一张本地图。codex 一般只发 completed (path 必有), started/updated 防御性同样发 — 同一
-// blockId, renderer 自己判重。
+// Native image reads are tool steps, with their preview inside the work group.
+// Only completed items have usable media; emit the step once.
 
 function handleImageView(
   phase: ItemPhase,
   item: ImageViewItem,
   queue: AsyncQueue<AgentEvent>,
 ): void {
-  if (phase === 'updated') return;
-  queue.push({
-    type: 'image',
-    data: { kind: 'view', blockId: item.id, path: item.path },
-    source: 'codex',
-  });
+  if (phase !== 'completed') return;
+  queue.push({ type: 'tool_use', source: 'codex',
+    data: { toolUseId: item.id, toolName: 'view_image', input: { path: item.path } } });
+  queue.push({ type: 'tool_result_full', source: 'codex',
+    data: { toolUseId: item.id, fullText: item.path,
+      processMedia: [{ kind: 'image', path: item.path } satisfies NativeToolMedia] } });
+  queue.push({ type: 'tool_result', source: 'codex',
+    data: { toolUseIds: [item.id], summary: 'done' } });
 }
 
 // ── imageGeneration → image event (kind='generation') ────────────────────────
-// 模型生成图。result 优先识别为 url (http/data 协议头) — 否则当 path 兜底 (codex 偶尔直接给本地路径
-// 不走 savedPath 字段)。savedPath 优先 path; 同时给 revisedPrompt / status 让 UI 显示生成参数。
-// started 阶段 result/savedPath 通常没填, 只发 completed。
+// Preserve bytes independently of savedPath: that path may belong to another computer.
+// Decode/validate/store in the Host, outside the synchronous translator hot path.
 
 function isUrlLike(s: string): boolean {
   return /^(https?:|data:)/i.test(s);
@@ -2080,26 +2246,24 @@ function handleImageGeneration(
   phase: ItemPhase,
   item: ImageGenerationItem,
   queue: AsyncQueue<AgentEvent>,
+  identity: { threadId: string; turnId: string },
 ): void {
   if (phase !== 'completed') return;
-  const data: {
-    kind: 'generation';
-    blockId: string;
-    path?: string;
-    url?: string;
-    revisedPrompt?: string;
-    status?: string;
-  } = {
+  const data: GeneratedImageEventData = {
     kind: 'generation',
     blockId: item.id,
+    threadId: identity.threadId,
+    turnId: identity.turnId,
     status: item.status,
   };
   if (item.revisedPrompt) data.revisedPrompt = item.revisedPrompt;
-  if (item.savedPath) {
-    data.path = item.savedPath;
-  } else if (item.result) {
+  if (item.savedPath) data.path = item.savedPath;
+  if (item.result) {
     if (isUrlLike(item.result)) data.url = item.result;
-    else data.path = item.result;
+    // Keep the historical path-only result shape, but never interpret Base64 as a path.
+    else if (/^(?:[A-Za-z]:[\\/]|\.\.?[\\/])/.test(item.result)
+      || /\.(?:png|jpe?g|gif|webp)$/i.test(item.result)) data.path ??= item.result;
+    else data.data = item.result;
   }
   queue.push({ type: 'image', data, source: 'codex' });
 }

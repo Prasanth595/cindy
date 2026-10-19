@@ -10,8 +10,16 @@ function activity(
   return {
     sessionId,
     phase: 'running',
+    recordStatus: 'active',
     compactDetail,
+    startedAtMs: 1,
+    lastActivityAtMs: 1,
+    currentActionSummary: compactDetail,
     attention: false,
+    workflow: null,
+    turnGeneration: null,
+    gracefulStopState: 'none',
+    source: 'live',
     ...patch,
   };
 }
@@ -24,6 +32,72 @@ describe('SessionActivityRelay', () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it('keeps a silent completion through replay and ignores a superseded ownership check', async () => {
+    let resolve!: (handled: boolean) => void;
+    const check = vi.fn(() => new Promise<boolean>(r => { resolve = r; }));
+    const emit = vi.fn();
+    const relay = new SessionActivityRelay(emit, { isCompletionHandledByTeammate: check });
+    const done = activity('s1', 'Final result', { phase: 'completed', attention: true });
+    const silent = { ...done, completionNotification: 'silent' as const };
+    relay.publish([done]);
+    await Promise.resolve();
+    const decision = relay.waitForCompletionNotification('s1');
+    const replay = vi.fn();
+    relay.replay([silent], replay);
+    expect(replay).toHaveBeenLastCalledWith(expect.objectContaining({ completionNotification: 'silent' }));
+    relay.publish([silent]);
+    expect(await decision).toBe(true);
+    resolve(false);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(check).toHaveBeenCalledOnce();
+    expect(emit).toHaveBeenLastCalledWith(expect.objectContaining({ attention: true, completionNotification: 'silent' }));
+    relay.replay([silent], replay);
+    expect(replay).toHaveBeenLastCalledWith(emit.mock.calls.at(-1)?.[0]);
+    relay.dispose();
+  });
+
+  it.each([true, false])('publishes completion and unread immediately, then only resolves notification ownership (%s)', async handled => {
+    let resolve!: (handled: boolean) => void;
+    const check = vi.fn(() => new Promise<boolean>(r => { resolve = r; }));
+    const emit = vi.fn();
+    const relay = new SessionActivityRelay(emit, { isCompletionHandledByTeammate: check });
+    const done = activity('s1', 'Final result', { phase: 'completed', attention: true });
+    relay.publish([done]);
+    expect(emit).toHaveBeenLastCalledWith(expect.objectContaining({ phase: 'completed', attention: true, compactDetail: 'Final result', completionNotification: 'pending' }));
+    relay.publish([done]);
+    await Promise.resolve();
+    expect(check).toHaveBeenCalledOnce();
+    const replay = vi.fn();
+    relay.replay([done], replay);
+    expect(replay).toHaveBeenLastCalledWith(emit.mock.calls[0][0]);
+    resolve(handled);
+    await check.mock.results[0].value;
+    await vi.advanceTimersByTimeAsync(0);
+    expect(emit).toHaveBeenLastCalledWith(expect.objectContaining({ phase: 'completed', attention: true, completionNotification: handled ? 'teammate' : undefined }));
+    relay.publish([done]);
+    expect(emit).toHaveBeenCalledTimes(2);
+    relay.replay([done], replay);
+    expect(replay).toHaveBeenLastCalledWith(emit.mock.calls[1][0]);
+  });
+
+  it.each(['running', 'read', 'reset', 'dispose'])('discards an old completion decision after %s', async boundary => {
+    let resolve!: (handled: boolean) => void;
+    const emit = vi.fn();
+    const relay = new SessionActivityRelay(emit, { isCompletionHandledByTeammate: () => new Promise<boolean>(r => { resolve = r; }) });
+    relay.publish([activity('s1', 'Done', { phase: 'completed', attention: true })]);
+    await Promise.resolve();
+    const decision = relay.waitForCompletionNotification('s1');
+    if (boundary === 'running') relay.publish([activity('s1', 'New turn', { startedAtMs: 2 })]);
+    if (boundary === 'read') relay.publish([]);
+    if (boundary === 'reset') relay.reset();
+    if (boundary === 'dispose') relay.dispose();
+    await expect(decision).resolves.toBe(true);
+    const count = emit.mock.calls.length;
+    resolve(true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(emit).toHaveBeenCalledTimes(count);
   });
 
   it('bypasses throttling for unread terminal states arriving inside the window', () => {
@@ -230,8 +304,7 @@ describe('SessionActivityRelay', () => {
     const relay = new SessionActivityRelay(emit, { minIntervalMs: 1_500 });
 
     // entry 存在(此处是 live running 帧)说明与远端有活跃同步流:ensure 不得
-    // 插手 —— 发收尾包会把远端的 running / needs-interaction 指示误清成"已完成"
-    // (needs-interaction 是稳定态,没有后续事件能补回)。
+    // 插手 —— 发收尾包会把远端的 running / needs-interaction 指示误清成"已完成"。
     relay.publish([activity('s1', 'Thinking')]);
     emit.mockClear();
 
@@ -247,6 +320,47 @@ describe('SessionActivityRelay', () => {
       phase: 'completed',
       attention: false,
     }));
+  });
+
+  it('does not clear a leftover unread completed entry either — publish/ledger owns that', () => {
+    const emit = vi.fn();
+    const relay = new SessionActivityRelay(emit, { minIntervalMs: 1_500 });
+
+    // 异步 not-found 回执可能在查询窗口内碰上新一轮 completed。ensure 若因
+    // 「entries 是终态」就 clear,会把新绿点误清。未读由独立账本 + publish 收敛。
+    relay.publish([activity('s1', 'run tests', { phase: 'completed', attention: true })]);
+    emit.mockClear();
+
+    relay.ensureSessionTerminalClear('s1');
+
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it('does not clear a leftover unread error entry either', () => {
+    const emit = vi.fn();
+    const relay = new SessionActivityRelay(emit, { minIntervalMs: 1_500 });
+
+    relay.publish([activity('s1', 'boom', { phase: 'error', attention: true })]);
+    emit.mockClear();
+
+    relay.ensureSessionTerminalClear('s1');
+
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it('leaves a live needs-interaction entry intact', () => {
+    const emit = vi.fn();
+    const relay = new SessionActivityRelay(emit, { minIntervalMs: 1_500 });
+
+    relay.publish([activity('s1', '等待权限确认', {
+      phase: 'needs-interaction',
+      interactionKind: 'permission',
+    })]);
+    emit.mockClear();
+
+    relay.ensureSessionTerminalClear('s1');
+
+    expect(emit).not.toHaveBeenCalled();
   });
 
   it('drops pending throttled activity when the latest snapshot returns to the last sent state', () => {

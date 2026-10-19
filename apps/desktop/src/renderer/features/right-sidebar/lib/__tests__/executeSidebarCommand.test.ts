@@ -1,8 +1,15 @@
+// @vitest-environment jsdom
+
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../store', () => ({
   ensureHydrated: vi.fn(async () => undefined),
   addOrFocusSingletonTab: vi.fn(async () => undefined),
+  closeTab: vi.fn(async () => undefined),
+  getBucket: vi.fn(() => ({
+    tabs: [{ id: 'review-1', kind: 'review' }],
+    activeTabId: 'review-1',
+  })),
 }));
 vi.mock('../openInSidebarBrowser', () => ({
   openUrlInSidebarBrowser: vi.fn(async () => undefined),
@@ -15,12 +22,16 @@ vi.mock('../openInSidebarFileBrowser', () => ({
 vi.mock('../openSubagentsTab', () => ({
   openSubagentsTab: vi.fn(async () => undefined),
 }));
+vi.mock('../openBotWorkbenchTab', () => ({
+  ensureBotWorkbenchTab: vi.fn(async () => undefined),
+  openBotWorkbenchTab: vi.fn(async () => undefined),
+}));
 vi.mock('../../plugins/orca-workers/actions', () => ({
   ensureOrcaWorkersTab: vi.fn(async () => undefined),
   closeOrcaWorkersTabAfterTeamEnd: vi.fn(async () => undefined),
 }));
 
-import { addOrFocusSingletonTab, ensureHydrated } from '../../store';
+import { addOrFocusSingletonTab, closeTab, ensureHydrated, getBucket } from '../../store';
 import {
   closeOrcaWorkersTabAfterTeamEnd,
   ensureOrcaWorkersTab,
@@ -33,9 +44,19 @@ import {
 } from '../openInSidebarFileBrowser';
 import { openUrlInSidebarBrowser } from '../openInSidebarBrowser';
 import { openSubagentsTab } from '../openSubagentsTab';
+import { ensureBotWorkbenchTab, openBotWorkbenchTab } from '../openBotWorkbenchTab';
 
 describe('executeSidebarCommand', () => {
   beforeEach(() => vi.clearAllMocks());
+
+  it('distinguishes a detached passive restore from an explicit workbench click', async () => {
+    await executeSidebarCommand({ type: 'open-bot-workbench-tab', sessionId: 's1', botId: 'bot-1' });
+    expect(ensureBotWorkbenchTab).toHaveBeenCalledWith('s1', 'bot-1');
+    expect(openBotWorkbenchTab).not.toHaveBeenCalled();
+    await executeSidebarCommand({ type: 'open-bot-workbench-tab', sessionId: 's1', botId: 'bot-1', focusTab: true });
+    expect(openBotWorkbenchTab).toHaveBeenCalledWith('s1', 'bot-1');
+    expect(ensureBotWorkbenchTab).toHaveBeenCalledOnce();
+  });
 
   it('dispatches every command kind to the current renderer host implementation', async () => {
     const searchJump = {
@@ -104,5 +125,20 @@ describe('executeSidebarCommand', () => {
       revealSidebar: true,
       userInitiated: false,
     });
+  });
+
+  it('keeps Review when the detached host is still hidden', async () => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
+    await executeSidebarCommand({ type: 'toggle-review-tab', sessionId: 's1' });
+    expect(getBucket).toHaveBeenCalledWith('s1');
+    expect(closeTab).not.toHaveBeenCalled();
+    expect(addOrFocusSingletonTab).toHaveBeenCalledWith('s1', 'review', null);
+  });
+
+  it('hides Review only after the detached host is already visible', async () => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+    await executeSidebarCommand({ type: 'toggle-review-tab', sessionId: 's1' });
+    expect(closeTab).toHaveBeenCalledWith('s1', 'review-1');
+    expect(addOrFocusSingletonTab).not.toHaveBeenCalled();
   });
 });

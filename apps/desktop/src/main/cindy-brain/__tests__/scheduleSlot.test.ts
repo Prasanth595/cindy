@@ -18,13 +18,14 @@ import { GhostScheduleSlot, isMainShellWindowUrl, type ScheduleSlotDeps } from '
 
 function scheduleGhost(
   options: {
-    slots?: string[];
+    agent?: boolean;
     schedule?: boolean;
     enabled?: boolean;
     background?: boolean;
+    namespace?: string | null;
+    namespaceState?: 'confirmed' | 'unconfirmed' | 'pending';
   } = {},
 ): InstalledGhost {
-  const slots = options.slots ?? ['agent', 'tool'];
   const agentNeeds = {
     ...(options.background === true ? { background: true } : {}),
     ...(options.schedule !== false ? { schedule: true } : {}),
@@ -37,12 +38,13 @@ function scheduleGhost(
       version: '1.0.0',
       kind: 'chip',
       entry: 'main.js',
-      slots,
-      ...(Object.keys(agentNeeds).length > 0 ? { agent: agentNeeds } : {}),
+      ...(options.agent === false ? {} : { agent: agentNeeds }),
     },
     dir: '/fake/sched-ghost',
     enabled: options.enabled ?? true,
     iconDataUrl: 'data:image/png;base64,AAAA',
+    ...(options.namespaceState !== undefined ? { namespaceState: options.namespaceState } : {}),
+    ...(options.namespace !== undefined ? { namespace: options.namespace } : {}),
   } as InstalledGhost;
 }
 
@@ -70,7 +72,7 @@ const validReq = {
 };
 
 describe('GhostScheduleSlot 资格审', () => {
-  it('声明了 agent 槽 + schedule:true 才放行', () => {
+  it('声明了 agent.schedule:true 才放行', () => {
     const { slot, pushes } = makeSlot();
     expect(slot.handleRequest('sched-ghost', validReq)).toEqual({ ok: true });
     expect(pushes).toHaveLength(1);
@@ -92,7 +94,7 @@ describe('GhostScheduleSlot 资格审', () => {
     });
   });
 
-  it('有 agent 槽但没有 schedule 加档 → PERMISSION_DENIED(仅 background 不够)', () => {
+  it('有 agent 能力但没有 schedule 加档 → PERMISSION_DENIED(仅 background 不够)', () => {
     const { slot } = makeSlot({
       getGhost: () => scheduleGhost({ schedule: false, background: true }),
     });
@@ -102,8 +104,8 @@ describe('GhostScheduleSlot 资格审', () => {
     });
   });
 
-  it('写了 schedule 但 slots 没有 agent → PERMISSION_DENIED', () => {
-    const { slot } = makeSlot({ getGhost: () => scheduleGhost({ slots: ['tool'] }) });
+  it('未声明 agent 能力 → PERMISSION_DENIED', () => {
+    const { slot } = makeSlot({ getGhost: () => scheduleGhost({ agent: false }) });
     expect(slot.handleRequest('sched-ghost', validReq)).toMatchObject({
       ok: false,
       errorCode: 'PERMISSION_DENIED',
@@ -149,7 +151,9 @@ describe('GhostScheduleSlot 载荷校验', () => {
     });
     expect(res).toEqual({ ok: true });
     expect(pushes[0].name).toHaveLength(GHOST_SCHEDULE_DRAFT_NAME_MAX_CHARS);
-    expect(pushes[0].prompt).toHaveLength(GHOST_SCHEDULE_DRAFT_PROMPT_MAX_CHARS);
+    // 用户原文截到上限；寻址说明接在后面，不能被截掉。
+    const address = '\n\n调用这个插件时只传 ghost_id「sched-ghost」，不要传 namespace。';
+    expect(pushes[0].prompt).toBe('p'.repeat(GHOST_SCHEDULE_DRAFT_PROMPT_MAX_CHARS) + address);
   });
 });
 
@@ -203,6 +207,36 @@ describe('GhostScheduleSlot 骚扰钳制', () => {
 });
 
 describe('GhostScheduleSlot 推送内容', () => {
+  it('企业实例的预填提示带上 namespace', () => {
+    const { slot, pushes } = makeSlot({
+      getGhost: () => scheduleGhost({ namespace: 'acme', namespaceState: 'confirmed' }),
+    });
+    expect(slot.handleRequest('sched-ghost', validReq)).toEqual({ ok: true });
+    expect(pushes[0]).toMatchObject({
+      ghostId: 'sched-ghost',
+      namespace: 'acme',
+    });
+    expect(pushes[0].prompt).toContain('namespace 传「acme」');
+  });
+
+  it('待迁移实例不在草稿上写 namespace', () => {
+    const { slot, pushes } = makeSlot({
+      getGhost: () => scheduleGhost({ namespaceState: 'pending' }),
+    });
+    expect(slot.handleRequest('sched-ghost', validReq)).toEqual({ ok: true });
+    expect(pushes[0].namespace).toBeUndefined();
+    expect(pushes[0].prompt).toContain('不要传 namespace');
+  });
+
+  it('已确认 root 显式带上 namespace null', () => {
+    const { slot, pushes } = makeSlot({
+      getGhost: () => scheduleGhost({ namespace: null, namespaceState: 'confirmed' }),
+    });
+    expect(slot.handleRequest('sched-ghost', validReq)).toEqual({ ok: true });
+    expect(pushes[0].namespace).toBeNull();
+    expect(pushes[0].prompt).toContain('namespace 传 null');
+  });
+
   it('身份由主机按已装清单填,沙箱伪装不了', () => {
     const { slot, pushes } = makeSlot();
     slot.handleRequest('sched-ghost', {

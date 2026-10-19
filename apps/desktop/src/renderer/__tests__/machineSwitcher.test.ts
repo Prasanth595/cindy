@@ -1,3 +1,4 @@
+import { sharedTaskHostPeer } from '@cindy/device-link';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import type { Session } from '@/lib/ccAgent.types';
@@ -9,6 +10,7 @@ import {
   normalizeSelectedMachineId,
   parseMachineSelection,
   selectVisibleSessions,
+  type MachineSelection,
   serializeMachineSelection,
   toggleMachineSelection,
 } from '@/features/device-link/selectedMachineStore';
@@ -24,6 +26,7 @@ import {
 import { buildSwitcherDevices, selectableDeviceIds } from '@/features/device-link/switcherDevices';
 import { compareDevicesByName } from '@/features/device-link/deviceSort';
 import { applyDeviceRename } from '@/features/device-link/useDeviceLinkDeviceList';
+import { buildSidebarDeviceIndex } from '@/features/cc-agent/lib/sidebarDeviceGrouping';
 
 /** 构造最小设备视图(只填 buildSwitcherDevices 关心的字段)。 */
 function mkDevice(
@@ -50,9 +53,56 @@ function mkSession(id: string, deviceLinkDeviceId?: string): Session {
   return { id, status: 'active', deviceLinkDeviceId } as unknown as Session;
 }
 
+it('never lists shared-task peers as devices, including disconnected and rejected peers', () => {
+  const peer = sharedTaskHostPeer('share-1', 'desktop');
+  expect(buildSwitcherDevices({
+    fullList: [mkDevice('real-pc'), mkDevice(peer)],
+    syncedDevices: [{ deviceId: peer, deviceName: 'Shared task', sessionCount: 1, connected: false }],
+    revoked: new Set([peer]),
+  }).map(device => device.deviceId)).toEqual(['real-pc']);
+});
+
 describe('selectVisibleSessions', () => {
+  afterEach(() => remoteProjectsStore.clear());
   const local = [mkSession('l1'), mkSession('l2')];
   const remote = [mkSession('r1', 'dev-a'), mkSession('r2', 'dev-a'), mkSession('r3', 'dev-b')];
+
+  it.each<{ selection: MachineSelection; expected: string[] }>([
+    { selection: MACHINE_ALL, expected: ['l1', 'l2', 'r1', 'r2', 'r3'] },
+    { selection: [MACHINE_LOCAL], expected: ['l1', 'l2'] },
+    { selection: ['dev-a'], expected: ['r1', 'r2'] },
+    { selection: [MACHINE_LOCAL, 'dev-a'], expected: ['l1', 'l2', 'r1', 'r2'] },
+  ])(
+    'excludes companion tasks from ordinary sidebar selection $selection',
+    ({ selection, expected }) => {
+      const bots = ['active', 'archived'].map((status) => ({
+        ...mkSession(`bot-${status}`, 'dev-a'),
+        source: 'bot' as const,
+        status: status as Session['status'],
+        model: 'gpt-6-astra',
+      }));
+      remoteProjectsStore.mergeDeviceSessions('dev-a', 'MacBook', [
+        ...remote.slice(0, 2),
+        bots[0]!,
+      ]);
+      remoteProjectsStore.mergeDeviceSessions('dev-a', 'MacBook', [bots[1]!], 'archived');
+      remoteProjectsStore.mergeDeviceSessions('dev-b', 'Other Mac', remote.slice(2));
+      const mirrored = remoteProjectsStore.getMergedRemoteSessions();
+      const locals = [...local, { ...mkSession('local-bot'), source: 'bot' as const }];
+      expect(selectVisibleSessions(locals, mirrored, selection).map((row) => row.id)).toEqual(
+        expected,
+      );
+      expect(
+        remoteProjectsStore.getDeviceSessions('dev-a').filter((row) => row.source === 'bot'),
+      ).toEqual(
+        expect.arrayContaining(
+          bots.map((bot) =>
+            expect.objectContaining({ id: bot.id, status: bot.status, model: 'gpt-6-astra' }),
+          ),
+        ),
+      );
+    },
+  );
 
   it('所有(默认)→ 本机 + 全部远程合并(顺序:本地在前)', () => {
     expect(selectVisibleSessions(local, remote, MACHINE_ALL).map((s) => s.id)).toEqual([
@@ -133,7 +183,9 @@ describe('断网后远端选择的逃生路径', () => {
     expect(normalizeSelectedMachineId(raw, stoppedSelectable)).toBe(MACHINE_ALL);
   });
 
-  it('目录不可用但仍记着远端选择时保留切换入口，用户可显式切回本机', () => {
+  it('目录不可用但仍记着远端选择时,旧逃生 helper 仍为真;菜单是否画设备列表另看 devices.length', () => {
+    // shouldShowMachineSwitcher 仍给其它调用方用。范围标题恒在后,MachineSwitcherMenu
+    // 不再拿它决定要不要画「所有 / 本机」——目录空了只留两项设置。
     expect(shouldShowMachineSwitcher(['dev-a'], [])).toBe(true);
     expect(shouldShowMachineSwitcher([MACHINE_LOCAL], [])).toBe(false);
     expect(shouldShowMachineSwitcher(MACHINE_ALL, [])).toBe(false);
@@ -361,6 +413,53 @@ describe('buildSwitcherDevices', () => {
       revoked: new Set(),
     });
     expect(result).toEqual([{ deviceId: 'dev-a', name: 'Mac A', status: 'connected' }]);
+  });
+});
+
+describe('sidebar device grouping across disconnection', () => {
+  it('retains both cached devices and their order when every remote disconnects, then reconnects', () => {
+    const snapshots = [true, false, true].map((connected) =>
+      buildSidebarDeviceIndex(
+        buildSwitcherDevices({
+          fullList: null,
+          syncedDevices: [
+            { deviceId: 'b', deviceName: 'Mac B', sessionCount: 2, connected },
+            { deviceId: 'a', deviceName: 'Mac A', sessionCount: 1, connected },
+          ],
+          revoked: new Set(),
+        }),
+      ),
+    );
+    for (const index of snapshots) {
+      expect([...index.keys()]).toEqual(['a', 'b']);
+      expect([...index.values()].map((device) => device.name)).toEqual(['Mac A', 'Mac B']);
+    }
+    expect(snapshots.map((index) => [...index.values()].map((device) => device.online))).toEqual([
+      [true, true],
+      [false, false],
+      [true, true],
+    ]);
+  });
+
+  it('keeps connecting devices but excludes rejected devices even when cached', () => {
+    const index = buildSidebarDeviceIndex(
+      buildSwitcherDevices({
+        fullList: [mkDevice('connecting'), mkDevice('rejected')],
+        syncedDevices: [
+          { deviceId: 'rejected', deviceName: 'Rejected', sessionCount: 2, connected: false },
+        ],
+        revoked: new Set(['rejected']),
+      }),
+    );
+    expect([...index]).toEqual([['connecting', { name: 'CONNECTING', online: false }]]);
+  });
+
+  it('removes grouping availability when the retained device is removed', () => {
+    expect(buildSidebarDeviceIndex([]).size).toBe(0);
+    expect(
+      buildSidebarDeviceIndex([{ deviceId: 'rejected', name: 'Rejected', status: 'rejected' }])
+        .size,
+    ).toBe(0);
   });
 });
 
