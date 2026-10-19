@@ -59,6 +59,22 @@ interface OwnerBoundSnapshot {
 
 let lastSnapshot: OwnerBoundSnapshot | null = null;
 
+// All panes for one account share a read. A null push emitted by that read must
+// not make an idle pane start another forced read and wake the other panes again.
+const reads = new Map<string, Promise<unknown>>();
+function readQuota(ownerKey: string): Promise<unknown> {
+  const pending = reads.get(ownerKey);
+  if (pending) return pending;
+  const request = Promise.resolve().then(() =>
+    window.electronAPI.maker.usage.getAccount('claude-code', CLAUDE_QUOTA_STATE_READ),
+  );
+  reads.set(ownerKey, request);
+  const clear = () => { if (reads.get(ownerKey) === request) reads.delete(ownerKey); };
+  void request.then(clear, clear);
+  return request;
+}
+
+
 function isSnapshot(v: unknown): v is ClaudeAccountUsageSnapshot {
   if (!v || typeof v !== 'object') return false;
   const r = v as Partial<ClaudeAccountUsageSnapshot>;
@@ -97,8 +113,7 @@ export function useClaudeAccountUsageResult(enabled: boolean) {
     let cancelled = false;
     setRequest({ ownerKey, loading: true });
     reading.current = true;
-    void window.electronAPI.maker.usage
-      .getAccount('claude-code', CLAUDE_QUOTA_STATE_READ)
+    void readQuota(ownerKey)
       .then((res) => {
         if (cancelled) return;
         if (isClaudeQuotaClear(res)) {

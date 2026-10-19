@@ -102,12 +102,12 @@ for (const kind of ['quota', 'credit'] as const) {
     await waitFor(() => expect(statusBar.result.current.usage).not.toBeNull());
     settings.rerender({ enabled: true });
     expect(settings.result.current.usage).toEqual(statusBar.result.current.usage);
-    expect(request).toHaveBeenCalledTimes(kind === 'quota' ? 2 : 1);
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(kind === 'quota' ? 2 : 1));
     statusBar.unmount();
     settings.unmount();
     const reopened = renderHook(() => useUsage(true));
     expect(reopened.result.current.usage).not.toBeNull();
-    expect(request).toHaveBeenCalledTimes(kind === 'quota' ? 3 : 1);
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(kind === 'quota' ? 3 : 1));
     act(() => reopened.result.current.refresh());
     await waitFor(() => expect(request).toHaveBeenCalledTimes(kind === 'quota' ? 4 : 2));
   });
@@ -147,7 +147,7 @@ it('preserves owner-bound warm quota when a refresh has no main snapshot', async
   state.quota.mockResolvedValue(null);
   const reopened = renderHook(() => useClaudeAccountUsageResult(true));
   act(() => reopened.result.current.refresh());
-  await waitFor(() => expect(state.quota).toHaveBeenCalledTimes(3));
+  await waitFor(() => expect(state.quota).toHaveBeenCalledTimes(2));
   await waitFor(() => expect(reopened.result.current.loading).toBe(false));
   expect(reopened.result.current.usage?.spend).toBe(12);
   reopened.unmount();
@@ -225,4 +225,32 @@ it('does not loop when the quota read itself broadcasts an unlimited clear', asy
   act(() => changed?.(null));
   await waitFor(() => expect(view.result.current.unlimited).toBe(true));
   expect(state.quota).toHaveBeenCalledTimes(2);
+});
+
+
+it('coalesces unlimited reads across two mounted panes without ping-pong refreshes', async () => {
+  state.owner = 'two-unlimited-panes';
+  state.membership = 'org';
+  const listeners = new Set<Parameters<typeof window.electronAPI.maker.usage.onClaudeAccountChanged>[0]>();
+  window.electronAPI.maker.usage.onClaudeAccountChanged = listener => {
+    listeners.add(listener);
+    return () => { listeners.delete(listener); };
+  };
+  let resolveRead!: (value: unknown) => void;
+  state.quota.mockImplementation(() => new Promise(resolve => { resolveRead = resolve; }));
+  const first = renderHook(() => useClaudeAccountUsageResult(true));
+  await waitFor(() => expect(state.quota).toHaveBeenCalledTimes(1));
+  await act(async () => { resolveRead({ quotaState: 'unlimited' }); });
+  const second = renderHook(() => useClaudeAccountUsageResult(true));
+  await waitFor(() => expect(state.quota).toHaveBeenCalledTimes(2));
+  act(() => { for (const listener of listeners) listener(null); });
+  await act(async () => { resolveRead({ quotaState: 'unlimited' }); });
+  await waitFor(() => expect(first.result.current.unlimited && second.result.current.unlimited).toBe(true));
+  expect(state.quota).toHaveBeenCalledTimes(2);
+  act(() => { for (const listener of listeners) listener(null); });
+  await waitFor(() => expect(state.quota).toHaveBeenCalledTimes(3));
+  act(() => { for (const listener of listeners) listener(null); });
+  await act(async () => { resolveRead({ quotaState: 'unlimited' }); });
+  expect(first.result.current.unlimited && second.result.current.unlimited).toBe(true);
+  expect(state.quota).toHaveBeenCalledTimes(3);
 });
