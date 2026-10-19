@@ -90,9 +90,20 @@ saved selection keeps its still and motion; while one is in use it appears selec
 after None with its Static / Dynamic choice, and it disappears once the user switches away.
 Removing a catalog choice never rewrites appearance preferences or deletes CDN objects.
 All official images share the existing on-demand downloader, verified cache reuse,
-and preview fallback; only manifest entries with video metadata offer motion. Download progress and retry appear
-below the grid when needed while the thumbnails remain available for selection.
-Reuse the settings DownloadMeter. Browsing the grid or hiding the wallpaper does not
+and preview fallback; only manifest entries with video metadata offer motion. Download progress appears
+as a 3px bottom track inside the selected thumbnail (user choice, 2026-10-19), with no visible
+percentage or separate row. Its transform interpolates the precise byte ratio over
+the base motion tier, linearly for this transfer indicator to avoid restarting an
+ease-in/out on every progress sample; reduced motion updates immediately.
+It follows real transfer progress and disappears once ready;
+cache hits show the original directly. A failed tile shows a retry icon and supports click,
+Enter and Space to retry, preserving the grid's single Tab stop and selected border.
+Expose progress and failure descriptions to assistive technology outside the radio descendants.
+Keep the displayed background while the next official original is loading or decoding;
+reuse already decoded original URLs directly when revisiting a selection. Once ready,
+crossfade the static canvas and its composer copies using opacity and the fast motion
+token, respecting reduced motion. Initial load may use the bundled preview.
+Reuse the settings download percentage normalization. Browsing the grid or hiding the wallpaper does not
 download originals; only a selected, visible image is requested. Reuse valid cached
 images offline and after upgrades. Do not request CDN assets for IDs absent from the manifest.
 Earlier unreleased artwork (including Blue Gaze, Amber Light and the 2026-10-16 batch
