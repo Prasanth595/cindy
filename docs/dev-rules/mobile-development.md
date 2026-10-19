@@ -14,6 +14,11 @@ pnpm mobile:sim:start
 pnpm mobile:sim:whoami
 ```
 
+iOS 模拟器不在仓库里固定：`whoami`、`rebuild`、`open` 默认先用 Cindy 模拟器（官方 Baguette
+插件的独立设备目录）中已启动的设备，没有或插件关闭运行时用系统（Xcode）模拟器；个人选择用
+仓库外的 `CINDY_MOBILE_SIMULATOR=auto|cindy|system|<设备目录绝对路径>`，细节见
+[`simulator-debugging.md`](../../apps/mobile/docs/simulator-debugging.md#which-ios-simulator)。
+
 macOS 外部模拟器窗口统一使用 `pnpm mobile:sim:open -- --udid <booted-udid>`。
 入口按当前 Xcode 工具链解析真实应用路径，兼容 Device Hub（Xcode 27）与旧版
 Simulator，不用 `open -a Simulator` 或 AppleScript 按名称查询应用。它只打开已启动

@@ -1,4 +1,10 @@
 {
+  "leaveWhileUploading": {
+    "title": "放棄傳送？",
+    "body": "附件還沒上傳完，現在離開這則訊息就不會傳送。",
+    "stay": "繼續等待",
+    "discard": "放棄傳送"
+  },
   "entry": {
     "title": "開啟任務",
     "loading": "正在讀取任務…",

@@ -70,6 +70,15 @@ beforeEach(() => {
 });
 
 describe('right-sidebar-window IPC', () => {
+  // The mail card gesture must survive detached-window routing without mail content.
+  it('routes a mail card by ID and rejects malformed card references', async () => {
+    const controller = makeController();
+    const { handler, mainWebContents } = registerController(controller);
+    const command = { type: 'open-mail-card', sessionId: 's1', callId: 'card-1' };
+    await handler({ sender: mainWebContents }, { command, allowOpen: true });
+    expect(controller.routeCommand).toHaveBeenCalledWith({ command, allowOpen: true });
+    await expect(handler({ sender: mainWebContents }, { command: { ...command, callId: '' }, allowOpen: true })).rejects.toThrow(/callId/);
+  });
   it('preserves workbench click intent, keeps legacy commands passive, and rejects invalid intent', async () => {
     const controller = makeController();
     const { handler, mainWebContents } = registerController(controller);

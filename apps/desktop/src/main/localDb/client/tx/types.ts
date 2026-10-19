@@ -2,6 +2,7 @@ import type { PluginUsageTransaction, PluginUsageHandle } from '../../../../shar
 import type { TaskTagRequest, TaskTagResult } from '@cindy/maker-shared';
 
 export type DbTxName =
+  | 'usage.recordMediaSpend'
   | 'authorization.readProjection'
   | 'pluginUsage.execute'
   | 'taskTags.execute'
@@ -1343,7 +1344,18 @@ export type SkillUsageApplyMutationArgs =
   | { kind: 'deleteBefore'; analyzerVersion: string; recentSince: number }
   | { kind: 'promote'; analyzerVersion: string };
 
+export interface MediaSpendArgs {
+  day: string;
+  model: string;
+  amount: number;
+  currency: 'USD' | 'CNY';
+  sessionId?: string;
+  userClientId?: string;
+  now: number;
+}
+
 export type DbTxArgsByName = {
+  'usage.recordMediaSpend': MediaSpendArgs;
   'authorization.readProjection': { sessionId: string; leadId: string };
   'codex.importMessages': CodexImportMessagesArgs;
   'claude.importMessages': ClaudeImportMessagesArgs;
@@ -1432,6 +1444,12 @@ export type DbTxArgsByName = {
 };
 
 export type DbTxResultByName = {
+  'usage.recordMediaSpend': {
+    legacyUsd: number;
+    amount: number;
+    currency: 'USD' | 'CNY';
+    approximate: number;
+  } | null;
   'authorization.readProjection': import('../../autoReviewProjection.js').StoredAutoReviewProjection;
   'codex.importMessages': { changed: number };
   'claude.importMessages': { changed: number };

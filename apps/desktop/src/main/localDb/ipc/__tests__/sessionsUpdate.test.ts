@@ -764,15 +764,46 @@ describe('local-db:sessions:update handler wiring', () => {
     expect(h.routeLock).toHaveBeenCalledWith('codex-local', expect.any(Function));
   });
 
-  it('restores an archived task for send through the normal locked status writer and broadcast', async () => {
+  it.each([false, true])('restores and broadcasts without reacquiring a held direct-send lease (held: %s)', async routeLockHeld => {
     h.sqlite!.prepare("UPDATE sessions SET status = 'archived' WHERE id = ?").run('codex-local');
-    await restoreArchivedSessionForSend('codex-local');
+    // A lease is already held outside ALS by direct send. Any re-entry would
+    // deadlock; the ordinary composer still acquires this route lock once.
+    h.routeLock.mockClear();
+    await restoreArchivedSessionForSend('codex-local', { routeLockHeld });
     expect(h.sqlite!.prepare('SELECT status FROM sessions WHERE id = ?').get('codex-local')).toEqual({ status: 'active' });
-    expect(h.routeLock).toHaveBeenCalledWith('codex-local', expect.any(Function));
+    expect(h.routeLock).toHaveBeenCalledTimes(routeLockHeld ? 0 : 1);
     expect(h.tapWindowBroadcast).toHaveBeenCalledWith('local-db:sessions:patched', expect.objectContaining({
       sessionId: 'codex-local', patch: { status: 'active' },
     }));
   });
+
+  // PR #6403 P1: entry-time abort tests missed cancellation during DB awaits.
+  // Run the production restore/writer against SQLite, interrupting its read
+  // continuations or the issued write. DB tier; no timers or copied handler.
+  it.each(['initial-read', 'lifecycle-read', 'issued-write'] as const)(
+    'honors the restore commit boundary when cancelled at %s', async stage => {
+      h.sqlite!.prepare("UPDATE sessions SET status = 'archived' WHERE id = ?").run('codex-local');
+      const controller = new AbortController();
+      const prepare = h.sqlite!.prepare.bind(h.sqlite!);
+      const interrupted = vi.spyOn(h.sqlite!, 'prepare').mockImplementation(sql => {
+        const selected = stage === 'initial-read' ? sql.startsWith('select "status", "source"')
+          : stage === 'lifecycle-read' ? sql.startsWith('select "source" from "sessions"')
+          : sql.startsWith('update "sessions"');
+        if (selected) queueMicrotask(() => controller.abort());
+        return prepare(sql);
+      });
+      try {
+        const restoring = restoreArchivedSessionForSend('codex-local', { routeLockHeld: true, signal: controller.signal });
+        if (stage === 'issued-write') await restoring;
+        else await expect(restoring).rejects.toThrow('Session send aborted');
+        expect(controller.signal.aborted).toBe(true);
+        expect(h.sqlite!.prepare('SELECT status FROM sessions WHERE id = ?').get('codex-local'))
+          .toEqual({ status: stage === 'issued-write' ? 'active' : 'archived' });
+        if (stage === 'issued-write') expect(h.tapWindowBroadcast).toHaveBeenCalled();
+        else expect(h.tapWindowBroadcast).not.toHaveBeenCalled();
+      } finally { interrupted.mockRestore(); }
+    },
+  );
 
   it.each(['deleted', 'bot', 'worker', 'remote-worker'] as const)('does not restore %s tasks through ordinary send', async kind => {
     h.sqlite!.prepare('UPDATE sessions SET status = ?, source = ?, orca_role = ?, orca_remote_lead = ? WHERE id = ?')

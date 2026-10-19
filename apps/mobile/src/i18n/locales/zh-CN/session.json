@@ -1,4 +1,10 @@
 {
+  "leaveWhileUploading": {
+    "title": "放弃发送？",
+    "body": "附件还没上传完，现在离开这条消息就不会发送。",
+    "stay": "继续等待",
+    "discard": "放弃发送"
+  },
   "entry": {
     "title": "打开任务",
     "loading": "正在读取任务…",

@@ -421,7 +421,11 @@ export function createRemoteAgentHandle(deps: RemoteHandleDeps): RemoteAgentHand
     handle,
     onEvent(event) {
       if (!event || typeof event !== 'object' || typeof (event as AgentEvent).type !== 'string') return;
-      const typed = event as AgentEvent;
+      let typed = event as AgentEvent;
+      if (typed.type === 'image' && typed.source === 'codex'
+        && (typed.data as { kind?: unknown } | null)?.kind === 'generation') {
+        typed = { ...typed, data: { ...(typed.data as object), pathOrigin: 'remote-agent' } };
+      }
       for (const projected of projection.project(deps.mapEvent ? deps.mapEvent(typed) : typed)) queue.push(projected);
     },
     onState(next) {

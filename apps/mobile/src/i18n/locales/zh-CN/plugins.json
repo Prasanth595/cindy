@@ -1,4 +1,5 @@
 {
+  "mailReader": {"markReadFailed":"未能同步已读状态，请检查邮箱授权后重新打开。","title":"邮件","openMailbox":"在邮箱中打开","loading":"正在读取邮件…","failed":"未能读取这封邮件。请检查连接的邮箱账号后重试，或在邮箱中打开。","retry":"重试","to":"收件人","cc":"抄送","bcc":"密送","subject":"主题"},
   "title": "插件",
   "all": "全部",
   "unread": "未读",
@@ -33,6 +34,9 @@
   "chooseTask": "已有任务",
   "taskHint": "在任务中说明你的需求，Cindy 会调用适合的插件。已有任务继续使用原来的模型和权限。",
   "noMobilePage": "此插件尚未提供手机页面，可在任务中使用其工具。",
+  "expandFields": "展开",
+  "collapseFields": "收起",
+  "formSyncFailed": "卡片修改尚未同步，请检查连接后继续编辑；消息尚未发送。",
   "pageUnconfirmed": "连接或页面状态尚未确认。已发出的操作不会自动重发，请先检查原任务或内容是否已保存。",
   "reopen": "重新打开页面",
   "loadingPage": "正在打开插件…",
@@ -124,5 +128,15 @@
   },
   "demo": {
     "hint": "演示数据 · 不会修改真实配置"
-  }
+  },
+  "mailPreview": "邮件预览",
+  "mailEnlarge": "放大查看",
+  "mailInsertImage": "插入正文",
+  "mailAttach": "添加附件",
+  "mailUpdated": "草稿已更新（只读）",
+  "mailLegacy": "历史草稿（只读）",
+  "mailAttaching": "正在添加附件…",
+  "mailAttachFailed": "附件未能添加，请检查连接后重试。",
+  "mailAttachTooLarge": "单个邮件附件不能超过 16 MB。",
+  "mailRemoveAttachment": "移除 {{name}}"
 }

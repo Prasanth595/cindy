@@ -1416,6 +1416,7 @@ export function mobileCatalogSurfaces() {
     ['device-management', '设备管理', ['devices/manage.tsx', 'devices/manage/[deviceId].tsx']],
     ['remote-desktop', '远程桌面', ['devices/desktop/[deviceId].tsx']],
     ['resources', '远程资源列表与详情', ['resources/[collectionId].tsx', 'resources/[collectionId]/[resourceId].tsx']],
+    ['mail', '邮件阅读与附件预览', ['mail-preview.tsx']],
     ['plugins', '插件目录、页面与原生交互', ['plugins.tsx']],
     ['companions.direct', '伙伴私聊回看', ['companions/direct/[threadId].tsx']],
     ['companions.groups', '伙伴群聊与分工', ['companions/groups/[groupId].tsx']],

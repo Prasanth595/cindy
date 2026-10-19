@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createGhostProductionCallbacks } from './ghostProductionCallbacksFixture.js';
 import { GhostCardActionDispatcher } from '../cardActionDispatch.js';
 import { GhostPreviewGate } from '../previewGate.js';
+import { prepareMailAttachmentUpload } from '../mailAttachmentUpload.js';
 import { ghostInstallApprovalToken, ghostWebviewEntryPaths, type InstalledGhost } from '../../../shared/ghost.js';
 import { findInstalledGhostByInstanceId, installedGhostLogicalIdentity, installedGhostPhysicalKeys, installedGhostStoragePart,
   parsePluginStoragePart, pluginStoragePart, resolveInstalledGhost } from '../../../shared/pluginIdentity.js';
@@ -53,7 +54,7 @@ function harness() {
     sendToGhostLogic: send, getGhostAgentSlot: () => ({ issueUserActionToken: () => null, clearGhost: vi.fn() }),
     getGhostSessionActivityTracker: () => ({ begin: vi.fn() }), ghostOwnerScope: undefined,
     ghostInstallApprovalToken, log: { info: vi.fn(), warn: vi.fn() },
-    getGhostPreviewGate: () => preview,
+    getGhostPreviewGate: () => preview, prepareMailAttachmentUpload,
   });
   return { ...api, root, organization, ghosts, send, setEnabled, stop, ghostCanRead, setStoredId: (id: string) => { storedId = id; } };
 }

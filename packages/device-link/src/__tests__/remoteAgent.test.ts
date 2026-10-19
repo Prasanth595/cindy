@@ -210,3 +210,20 @@ describe('remote agent channel', () => {
     expect(remoteAgentErrorCode('[REMOTE_AGENT_SOMETHING] x')).toBeNull();
   });
 });
+
+// #6412: additive native-image recovery must accept old caps and never accept caller paths.
+it('negotiates native image recovery and validates scoped chunk requests', () => {
+  const caps = { version: 1, agents: [], maxRuns: 1, uploadChunkBytes: 1024, maxPayloadBytes: 2048 };
+  expect(parseRemoteAgentCaps(caps).imageRecovery).toBeUndefined();
+  expect(parseRemoteAgentCaps(caps).imageRecoveryRelay).toBeUndefined();
+  expect(parseRemoteAgentCaps({ ...caps, imageRecoveryRelay: true }).imageRecoveryRelay).toBe(true);
+  expect(parseRemoteAgentRequest({ op: 'images', sessionId: 'task', relay: 'r'.repeat(16), action: 'release', imageId: 'a'.repeat(64) }))
+    .toMatchObject({ relay: 'r'.repeat(16), sessionId: 'task' });
+  expect(parseRemoteAgentRequest({ op: 'images', sessionId: 'internal-task', action: 'list' })).toEqual({ op: 'images', sessionId: 'internal-task', action: 'list', offset: 0 });
+  expect(parseRemoteAgentCaps({ ...caps, imageRecovery: true }).imageRecovery).toBe(true);
+  expect(parseRemoteAgentRequest({ op: 'images', sessionId: runId, action: 'read', imageId: 'a'.repeat(64), offset: 512, path: '/private/image.png' }))
+    .toEqual({ op: 'images', sessionId: runId, action: 'read', imageId: 'a'.repeat(64), offset: 512 });
+  for (const patch of [{ offset: -1 }, { offset: 0.5 }, { imageId: '../image.png' }, { sessionId: '' }, { relay: '../unsafe' }]) {
+    expect(() => parseRemoteAgentRequest({ op: 'images', sessionId: runId, action: 'read', imageId: 'a'.repeat(64), offset: 0, ...patch })).toThrow('REMOTE_AGENT_INVALID');
+  }
+});

@@ -258,6 +258,17 @@ describe('useMobileLocalAttachments abandonment on scope change', () => {
     expect(runtime.uploads).toHaveLength(0);
   });
 
+  // Leaving the new-task page mid-upload used to send the message without its image:
+  // unmount discards the upload, which does not count as a failure.
+  it('tells a send waiting on uploads that the composer left', async () => {
+    const harness = mount('session-a');
+    act(() => harness.first.enqueueUploads([imageCandidate('a.png', vi.fn())], { token: 'token' }));
+    await act(async () => { await flush(); });
+    const waiting = harness.latest().waitForPendingUploads();
+    act(() => root.render(null));
+    await expect(waiting).resolves.toEqual({ failedCount: 0, abandoned: true });
+  });
+
   it('abandons exactly once when an upload finishes after the composer scope moved on', async () => {
     const harness = mount('session-a');
     const abandoned = vi.fn();

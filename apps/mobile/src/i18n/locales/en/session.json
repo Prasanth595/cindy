@@ -1,4 +1,10 @@
 {
+  "leaveWhileUploading": {
+    "title": "Discard this message?",
+    "body": "Attachments are still uploading. If you leave now, this message won't be sent.",
+    "stay": "Keep Waiting",
+    "discard": "Discard"
+  },
   "entry": {
     "title": "Open Task",
     "loading": "Loading task…",

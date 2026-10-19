@@ -1,4 +1,5 @@
 {
+  "mailReader": {"markReadFailed":"읽음 상태를 동기화하지 못했습니다. 메일함 인증을 확인하고 다시 여세요.","title":"메일","openMailbox":"메일함에서 열기","loading":"메일 읽는 중…","failed":"메일을 읽지 못했습니다. 연결된 계정을 확인하고 다시 시도하거나 메일함에서 여세요.","retry":"다시 시도","to":"받는 사람","cc":"참조","bcc":"숨은 참조","subject":"제목","currentMessage":"현재 메일","messageCount_other":"메일 {{count}}개","messageCount_one":"메일 {{count}}개","showMessages_other":"메일 {{count}}개 펼치기","showMessages_one":"메일 {{count}}개 펼치기","expandMessage":"{{from}}의 메일 펼치기","collapseMessage":"{{from}}의 메일 접기","conversationFailed":"앞뒤 메일을 불러오지 못했습니다.","messageCount":"메일 {{count}}개","showMessages":"메일 {{count}}개 펼치기"},
   "logSupport": {
     "title": "로그 및 피드백",
     "localFiles": "문제가 발생한 날짜의 로그를 선택하세요. 민감 정보가 가려지지 않았으므로 공유 전에 확인하세요.",
@@ -6538,6 +6539,11 @@
         "unknownReviewerDetail": "검토 정보가 있지만 현재 Cindy가 검토 키를 알지 못하므로 검토 완료로 표시하지 않습니다."
       },
       "perm": {
+        "mail": "메일 초안 및 전송 카드 사용",
+        "mailDetail": "카드에서 초안을 편집하고 동기화하며, 전송 전에 확인 및 실행 취소 카운트다운을 표시합니다.",
+        "mailReader": "앱에서 메일 보기",
+        "mailReaderHost": "{{host}}의 메일 링크를 앱에서 열기",
+        "mailMarkRead": "메일을 열면 읽음으로 표시",
         "grantsTitle": "설치 후 갖게 되는 권한:",
         "toolsGroup": "등록 도구",
         "toolsDiffGroup": "등록 도구 변경",
@@ -10963,6 +10969,13 @@
     "verificationFailed": "ChatGPT 로그인이 복구되었는지 확인할 수 없습니다. 다시 확인해 주세요."
   },
   "chat": {
+    "imageDelivery": {
+      "stored": "이미지 전달 완료",
+      "failed": "이미지 전달에 실패했습니다. 기존 이미지 전송을 다시 시도할 수 있습니다.",
+      "retry": "전달 다시 시도",
+      "retrying": "전달 중…",
+      "retryFailed": "전달할 수 없습니다. 이미지를 생성한 컴퓨터가 온라인인지 확인해 주세요."
+    },
     "failedSamplingAttempt": "완료되지 않은 답변입니다. 내용은 참고용으로만 확인해 주세요.",
     "jumpToBottom": "맨 아래로 이동",
     "prevMessageJump": "이전 질문으로 이동: {{preview}}",
@@ -11991,7 +12004,17 @@
       "linkConfirmHint": "이 링크는 플러그인이 제공한 것으로, 브라우저에서 열립니다:",
       "linkConfirmOpen": "열기",
       "linkConfirmCancel": "취소",
-      "linkOpenFailed": "링크를 열지 못했습니다"
+      "expandFields": "펼치기",
+      "collapseFields": "접기",
+      "formSyncFailed": "카드 변경 사항이 동기화되지 않았습니다. 연결을 확인한 후 편집을 계속하세요. 메시지는 전송되지 않았습니다.",
+      "linkOpenFailed": "링크를 열지 못했습니다",
+      "mailPreview": "메일 미리보기",
+      "mailEnlarge": "확대 보기",
+      "mailInsertImage": "본문에 삽입",
+      "mailAttach": "첨부 파일 추가",
+      "mailRemoveAttachment": "{{name}} 삭제",
+      "mailUpdated": "업데이트된 초안 (읽기 전용)",
+      "mailLegacy": "초안 기록 (읽기 전용)"
     },
     "ghostHook": {
       "blockedFallback": "메시지가 플러그인에 의해 차단되어 전송되지 않았습니다",

@@ -1,11 +1,13 @@
 import { runPluginUsageTransaction } from '../worker/opHandlers/pluginUsageTx.js';
 import { runTaskTagsTransaction } from '../worker/opHandlers/taskTagsTx.js';
+import { recordMediaSpend } from '../worker/opHandlers/mediaSpendTx.js';
 import { createAutoReviewIntentProjection } from '@cindy/maker-shared/auto-review-intent';
 import { batchAutoReviewProjection, readAutoReviewProjection } from '../autoReviewProjection.js';
 import { CLOSE_SHARED_TASKS_FOR_SESSION_SQL } from '../sharedTaskClosureSql.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { Worker } from 'node:worker_threads';
+import { capToolResultTextForPersist, compactToolCardResult, TOOL_RESULT_PERSIST_CONTENT_LIMIT, TOOL_RESULT_PERSIST_TRUNCATION_SUFFIX } from '../../../shared/toolResultPersistCap.js';
 
 import {
   createDbTransportError,
@@ -21,12 +23,17 @@ import {
 import { isBackgroundDbRpc } from './rpcAdmission.js';
 
 const WORKER_CODE = `
+const TOOL_RESULT_PERSIST_CONTENT_LIMIT = ${TOOL_RESULT_PERSIST_CONTENT_LIMIT};
+const TOOL_RESULT_PERSIST_TRUNCATION_SUFFIX = ${JSON.stringify(TOOL_RESULT_PERSIST_TRUNCATION_SUFFIX)};
+const compactToolCardResult = ${compactToolCardResult.toString()};
+const capToolResultTextForPersist = ${capToolResultTextForPersist.toString()};
 const createAutoReviewIntentProjection = ${createAutoReviewIntentProjection.toString()};
 const readAutoReviewProjection = ${readAutoReviewProjection.toString()};
 const batchAutoReviewProjection = ${batchAutoReviewProjection.toString()};
 const CLOSE_SHARED_TASKS_FOR_SESSION_SQL = ${JSON.stringify(CLOSE_SHARED_TASKS_FOR_SESSION_SQL)};
 const runPluginUsageTransaction = ${runPluginUsageTransaction.toString()};
 const runTaskTagsTransaction = ${runTaskTagsTransaction.toString()};
+const recordMediaSpend = ${recordMediaSpend.toString()};
 // 旧版 inline worker fallback。默认运行时走 .vite/build/dbWorker.js；
 // 这段只作为打包路径回滚口保留，后续验证 macOS / Windows packaged 后删除。
 const { parentPort, workerData } = require('node:worker_threads');
@@ -424,6 +431,8 @@ function dispatchTransaction(readyDb, payload) {
   const request = asRecord(payload, 'tx args');
   const name = expectString(request.name, 'name');
   switch (name) {
+    case 'usage.recordMediaSpend':
+      return recordMediaSpend(readyDb, request.args);
     case 'authorization.readProjection':
       return readAutoReviewProjection(readyDb, request.args, createAutoReviewIntentProjection);
     case 'codex.importMessages':
@@ -2457,16 +2466,6 @@ function truncate(value, max) {
 function stringifyContent(value) {
   const json = JSON.stringify(value);
   return json === undefined ? 'null' : json;
-}
-
-function capToolResultTextForPersist(text) {
-  var limit = 8 * 1024;
-  var suffix = '\\n\\n[tool result truncated: stored first 8KB]';
-  if (text.length <= limit) return text;
-  var cut = Math.max(0, limit - suffix.length);
-  var lastKept = text.charCodeAt(cut - 1);
-  if (cut > 0 && lastKept >= 0xd800 && lastKept <= 0xdbff) cut -= 1;
-  return text.slice(0, cut) + suffix;
 }
 
 function stringifyImportedContent(role, content) {

@@ -1,4 +1,5 @@
 {
+  "mailReader": {"markReadFailed":"未能同步已读状态，请检查邮箱授权后重新打开。","title":"邮件","openMailbox":"在邮箱中打开","loading":"正在读取邮件…","failed":"未能读取这封邮件。请检查连接的邮箱账号后重试，或在邮箱中打开。","retry":"重试","to":"收件人","cc":"抄送","bcc":"密送","subject":"主题","currentMessage":"当前邮件","messageCount_other":"共 {{count}} 封邮件","messageCount_one":"共 {{count}} 封邮件","showMessages_other":"展开 {{count}} 封邮件","showMessages_one":"展开 {{count}} 封邮件","expandMessage":"展开来自 {{from}} 的邮件","collapseMessage":"收起来自 {{from}} 的邮件","conversationFailed":"暂时无法读取前后邮件。","messageCount":"共 {{count}} 封邮件","showMessages":"展开 {{count}} 封邮件"},
   "logSupport": {
     "title": "日志与反馈",
     "localFiles": "选择问题当天的日志。文件未脱敏，请先检查。",
@@ -6538,6 +6539,11 @@
         "unknownReviewerDetail": "包里带有审核声明，但当前 Cindy 不认识这把审核公钥，因此不会显示为已审核。"
       },
       "perm": {
+        "mail": "使用邮件草稿与发送卡片",
+        "mailDetail": "可在卡片中编辑和同步草稿，并在发送前提供确认和撤销倒计时。",
+        "mailReader": "在应用内查看邮件",
+        "mailReaderHost": "在应用内打开 {{host}} 的邮件链接",
+        "mailMarkRead": "打开邮件时可将其标记为已读",
         "grantsTitle": "安装后它将拥有：",
         "toolsGroup": "注册工具",
         "toolsDiffGroup": "注册工具变化",
@@ -10963,6 +10969,13 @@
     "verificationFailed": "暂时无法确认 ChatGPT 登录是否已恢复，请重新检测。"
   },
   "chat": {
+    "imageDelivery": {
+      "stored": "图片已交付",
+      "failed": "图片交付失败，可重试传输已有图片。",
+      "retry": "重试交付",
+      "retrying": "正在交付…",
+      "retryFailed": "暂时无法交付，请确认生成图片的电脑在线。"
+    },
     "failedSamplingAttempt": "此回复未完成，内容仅供参考。",
     "jumpToBottom": "跳到底部",
     "prevMessageJump": "跳到上一条提问：{{preview}}",
@@ -11991,7 +12004,17 @@
       "linkConfirmHint": "该链接由插件提供，将在系统浏览器中打开：",
       "linkConfirmOpen": "打开",
       "linkConfirmCancel": "取消",
-      "linkOpenFailed": "链接打开失败"
+      "expandFields": "展开",
+      "collapseFields": "收起",
+      "formSyncFailed": "卡片修改尚未同步，请检查连接后继续编辑；消息尚未发送。",
+      "linkOpenFailed": "链接打开失败",
+      "mailPreview": "邮件预览",
+      "mailEnlarge": "放大查看",
+      "mailInsertImage": "插入正文",
+      "mailAttach": "添加附件",
+      "mailRemoveAttachment": "移除 {{name}}",
+      "mailUpdated": "草稿已更新（只读）",
+      "mailLegacy": "历史草稿（只读）"
     },
     "ghostHook": {
       "blockedFallback": "消息被插件拦下，未发送",

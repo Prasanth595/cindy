@@ -1253,6 +1253,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 意识仓库 (shared/ghost.ts)。listSync 走 sendSync:意识面板要与内置
   // 面板同帧注册进布局引擎(规则 7 无跳变);目录扫描极小,同步读不卡启动。
   ghosts: {
+    mailPreview: (sessionId: string, url: string, read: boolean, opened = false) => ipcRenderer.invoke('ghosts:mail-preview', sessionId, url, read, opened),
     openRemoteSettings: (target: import('../shared/remotePluginSettings').RemotePluginSettingsTarget): Promise<import('../shared/remotePluginSettings').RemotePluginSettingsView> =>
       ipcRenderer.invoke('device-link:plugin-settings:open', target),
     closeRemoteSettings: (id: string): Promise<void> => ipcRenderer.invoke('device-link:plugin-settings:close', id),
@@ -1465,8 +1466,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
       callId: string,
       actionId: string,
       prompt?: string,
+      formValues?: Record<string, string>,
+      formChange?: boolean,
     ): Promise<{ ok: boolean }> =>
-      ipcRenderer.invoke('ghosts:card:action', callId, actionId, prompt),
+      ipcRenderer.invoke('ghosts:card:action', callId, actionId, prompt, formValues, formChange),
     resolvePanelMedia: (
       uri: string,
       purpose?: 'attach' | 'menu',
@@ -7677,6 +7680,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
         opts?: { expectedClearBoundaryMs?: number | null },
       ): Promise<import('../shared/agentInputQueue').AgentInputProjection> =>
         ipcRenderer.invoke('maker:input:resume', sessionId, opts),
+      retryImageDelivery: (sessionId: string, imageId: string): Promise<void> =>
+        ipcRenderer.invoke('maker:images:retry', sessionId, imageId),
       retryLastError: (
         sessionId: string,
         opts?: { expectedClearBoundaryMs?: number | null },

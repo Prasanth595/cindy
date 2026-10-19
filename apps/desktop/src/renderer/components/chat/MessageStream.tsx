@@ -1,4 +1,5 @@
 import { scrollRangeIntoView } from '@/lib/scrollRangeIntoView';
+import { readMailCard } from '@cindy/maker-shared/ghost-card-form';
 import { animateFocusScroll } from './animateFocusScroll';
 import { simplifyBotRenderItems } from '@/features/bots/botConversationPresentation';
 import { MessageViewport, type MessageViewportApi } from './MessageViewport';
@@ -1520,6 +1521,8 @@ export function buildRenderItems(
   taskUpdates?: ReadonlyMap<string, AgentTaskUpdate>,
   ghostCards?: GhostCardSnapshot,
   opts?: {
+    /** Live cards must belong to this task; explicit result IDs support history/forks. */
+    sessionId?: string;
     /**
      * 还有更老的历史页没加载(= `messages` 只是窗口、不是全量)。为真时,凡靠
      * 「父调用在不在 messages 里」做的归属判定都不可信,必须放宽而不是丢弃。
@@ -1796,6 +1799,18 @@ export function buildRenderItems(
   let pendingSegmentGhostCards: Extract<RenderItem, { type: 'ghost_card' }>[] = [];
   // 本次 build 内已被认领的活卡(claude 精确锚 / codex 启发式各认领一次)。
   const claimedLiveCallIds = new Set<string>();
+  const sessionLiveCards = opts?.sessionId
+    ? ghostCards?.liveCards.filter(lc => lc.sessionId === opts.sessionId) ?? []
+    : [];
+  // Mail is a finished document, not plugin progress. Without an exact tool ID,
+  // wait for its result rather than attach it to a schema/read call by guesswork.
+  const guessableLiveCards = sessionLiveCards.filter(lc => {
+    const entry = ghostCards?.byCallId.get(lc.callId);
+    return !(entry?.status === 'ready' && readMailCard(entry.html));
+  });
+  // Old partial history may omit a tool result. It cannot claim a new card just
+  // because the same plugin was used there. Exact IDs still work across turns.
+  const latestTurnStart = messages.findLastIndex(isRenderTurnBoundary);
   // 媒体回锚:本次 build 已上屏的 ghost_card item 按 callId 索引。后续调用的
   // tool_result 带 xdt_anchor_card_id 时按此把媒体挂回对应卡下方(item 是引用,
   // flush 进 items 后追加 media 仍然生效)。
@@ -2116,6 +2131,7 @@ export function buildRenderItems(
           suppressMediaForCard = true;
           hideRowForCard = true;
           if (entry?.status === 'ready') {
+            if (readMailCard(entry.html)?.supersededBy) return;
             const cardItem: Extract<RenderItem, { type: 'ghost_card' }> = {
               type: 'ghost_card',
               key: `ghostcard-${msg.clientId}`,
@@ -2136,7 +2152,7 @@ export function buildRenderItems(
         }
         // in-flight:只认已 ready 的活卡(推送带 html 全量到,ready 是常态)。
         const live =
-          ghostCards.liveCards.find(
+          sessionLiveCards.find(
             (lc) =>
               !claimedLiveCallIds.has(lc.callId) &&
               !settledCardIds.has(lc.callId) &&
@@ -2144,8 +2160,8 @@ export function buildRenderItems(
               typeof msg.toolUseId === 'string' &&
               lc.toolUseId === msg.toolUseId,
           ) ??
-          (candidateGhostId
-            ? ghostCards.liveCards.find(
+          (candidateGhostId && i >= latestTurnStart
+            ? guessableLiveCards.find(
                 (lc) =>
                   !claimedLiveCallIds.has(lc.callId) &&
                   !settledCardIds.has(lc.callId) &&
@@ -2156,9 +2172,11 @@ export function buildRenderItems(
               )
             : undefined);
         if (!live) return;
-        if (ghostCards.byCallId.get(live.callId)?.status !== 'ready') return;
+        const liveEntry = ghostCards.byCallId.get(live.callId);
+        if (liveEntry?.status !== 'ready') return;
         claimedLiveCallIds.add(live.callId);
         hideRowForCard = true;
+        if (readMailCard(liveEntry.html)?.supersededBy) { suppressMediaForCard = true; return; }
         const liveCardItem: Extract<RenderItem, { type: 'ghost_card' }> = {
           type: 'ghost_card',
           key: `ghostcard-${msg.clientId}`,
@@ -2428,6 +2446,7 @@ export function buildCachedRenderItems(
     taskUpdates,
     ghostCards,
     ghostCards?.version,
+    opts?.sessionId,
     opts?.historyWindowIncomplete,
     opts?.turnChangeSets,
     opts?.workingDir,
@@ -3198,7 +3217,7 @@ export function MessageStream({
     taskUpdates, ghostCardSnapshot,
     generatedFilesItemCache: generatedFilesItemCacheRef.current,
     renderOptions: {
-      turnChangeSets, workingDir,
+      sessionId, turnChangeSets, workingDir,
       botSessionId: simplifiedBotConversation ? sessionId : undefined,
       markdownImageTargetCache: markdownImageTargetCacheRef.current,
       cindyMakeSessionId, cindyMakeCompletionInComposer, subagentRunStatuses,
@@ -3224,6 +3243,7 @@ export function MessageStream({
       ],
       () =>
         buildCachedRenderItems(displayMessages, taskUpdates, ghostCardSnapshot, {
+          sessionId,
           historyWindowIncomplete:
             !historyLoaded || Boolean(hasMoreMessages) || historyWindowHasIsland,
           turnChangeSets,
@@ -6540,6 +6560,7 @@ export function MessageStream({
                       // 下一次 store 变更自愈。
                       const entry = ghostCardSnapshot.byCallId.get(item.callId);
                       if (!entry || entry.status !== 'ready') return null;
+                      if (readMailCard(entry.html)?.supersededBy) return null;
                       // 常态包一层 div(结构稳定,回锚媒体到达时卡片 iframe 不重挂);
                       // 回锚媒体(如 mivo 视频)挂卡正下方,与 tool_media 同款间距。
                       return (

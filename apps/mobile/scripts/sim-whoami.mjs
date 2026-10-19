@@ -13,8 +13,11 @@
 //   pnpm mobile:sim:whoami                     # Global(默认)
 //   pnpm mobile:sim:whoami -- --region=cn      # 中国大陆版
 //   pnpm mobile:sim:whoami -- --json           # Skill 可消费的结构化状态
+//
+// 模拟器默认先找 Cindy 模拟器(Baguette 插件的独立设备目录)，没有再找系统模拟器；
+// CINDY_MOBILE_SIMULATOR=cindy|system|<设备目录绝对路径> 可固定其一。
 
-import { execFileSync, execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { inspectSimulatorViewer } from "./lib/simulator-viewer.mjs";
@@ -29,11 +32,13 @@ import {
 import {
   classifySimMetroListener,
   validateSimMetroIdentity,
-  bootedSimulatorLinesForTarget,
   extractSimMetroPortArgs,
   extractSimWhoamiUdidArgs,
   getSimulatorAppContainer,
   resolveMobileSimulatorBundleId,
+  resolveSimulatorDeviceSets,
+  selectBootedSimulator,
+  simctlArgs,
 } from "./lib/sim-whoami.mjs";
 import {
   gitSourceIdentity,
@@ -63,6 +68,7 @@ function resolveTarget() {
     port: portArgs.port,
     simulatorUdid: udidArgs.simulatorUdid,
     bundleId: resolveMobileSimulatorBundleId(region),
+    deviceSets: resolveSimulatorDeviceSets(),
   };
 }
 
@@ -82,21 +88,10 @@ try {
   console.error(jsonOutput ? JSON.stringify({ healthy: false, error: message }) : `✗ ${message}`);
   process.exit(1);
 }
-const { region, port: expectedPort, simulatorUdid, bundleId } = target;
+const { region, port: expectedPort, simulatorUdid, bundleId, deviceSets } = target;
 const ports = [...new Set([...PORTS, expectedPort])].sort((a, b) => a - b);
 const expectedSource = gitSourceIdentity(worktreeRoot);
 let healthy = true;
-
-function sh(cmd) {
-  try {
-    return execSync(cmd, {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-  } catch {
-    return "";
-  }
-}
 
 function shFile(command, args) {
   try {
@@ -111,11 +106,13 @@ function shFile(command, args) {
 
 if (!jsonOutput) {
   console.log(`==> Mobile dev region: ${region}`);
-  console.log("==== booted 模拟器 ====");
 }
-const allBooted = sh("xcrun simctl list devices booted").split("\n");
-const booted = bootedSimulatorLinesForTarget(allBooted, null);
-const targetBooted = bootedSimulatorLinesForTarget(allBooted, simulatorUdid);
+const { deviceSet, booted, targetBooted } = selectBootedSimulator(
+  deviceSets,
+  (set) => shFile("xcrun", simctlArgs(set, ["list", "devices", "booted"])),
+  simulatorUdid,
+);
+if (!jsonOutput) console.log(`==== booted 模拟器(${deviceSet.name})====`);
 if (booted.length === 0) {
   if (!jsonOutput) console.log("  (没有 booted 模拟器)");
   healthy = false;
@@ -126,7 +123,7 @@ if (targetBooted.length !== 1) {
 }
 
 if (!jsonOutput) console.log(`\n==== 模拟器里装的 ${bundleId}(native 安装包版本)====`);
-const container = targetBooted.length === 1 ? getSimulatorAppContainer(shFile, simulatorUdid, bundleId) : "";
+const container = targetBooted.length === 1 ? getSimulatorAppContainer(shFile, simulatorUdid, bundleId, deviceSet) : "";
 let installed = null;
 if (!container) {
   if (!jsonOutput) {
@@ -194,7 +191,11 @@ if (!anyMetro && !jsonOutput)
   );
 if (!currentSourceOnExpectedPort) healthy = false;
 
-const viewer = await inspectSimulatorViewer();
+// Devices outside the system set are not shown by Device Hub; Cindy's appear in its sidebar.
+const viewer = deviceSet.path
+  ? { available: false, running: false, status: `${deviceSet.name}-managed`, windowVerified: false,
+      error: "该设备不在系统模拟器中，没有外部窗口；Cindy 模拟器请在 Cindy 侧边栏查看" }
+  : await inspectSimulatorViewer();
 if (requireViewer && !viewer.running) healthy = false;
 if (!jsonOutput) {
   console.log(`\nSimulator viewer: ${viewer.status} (${viewer.appPath ?? viewer.error ?? 'not available'})`);
@@ -230,6 +231,7 @@ if (!jsonOutput) {
       expectedPort,
       currentSourceOnExpectedPort,
       anyMetro,
+      simulator: deviceSet.name,
       booted: booted.map((line) => line.trim()),
       installed,
       native,

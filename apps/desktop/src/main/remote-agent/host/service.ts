@@ -35,6 +35,7 @@ import { isRemoteProviderInvocationAllowed } from '../../maker-host/remote-provi
 import { guestProviderModelIds, resolveGuestProviderId, resolveSharedProviderId } from './providerAccess';
 import { createRemoteAgentHost, type HostedStartInput, type RemoteAgentHost, type RunUsageRecord } from './runHost';
 import { purgeClaudeHostedSessionArtifacts, purgeClaudeHostedTranscripts, purgePiHostedSubagentRuns } from './transcripts';
+import { captureGeneratedImageStorage, generatedImageErrorCode, handleGeneratedImageArtifacts, prepareGeneratedImageTransport } from '../../cindy-media/generatedImageStorage';
 
 const log = createLogger('remote-agent:host');
 
@@ -119,6 +120,11 @@ export function installRemoteAgentHost(options: { getMaker: () => Maker; userDat
     log,
   });
   host = createRemoteAgentHost({
+    prepareImageEvent: (sessionId, event, upstream, retainForRecovery) => prepareGeneratedImageTransport(`remote:${sessionId}`, event, { upstream, retainForRecovery, invoke: remoteBackgroundInvoke }),
+    imageArtifacts: async (sessionId, request) => {
+      try { return await handleGeneratedImageArtifacts(sessionId, request, remoteBackgroundInvoke); }
+      catch (error) { throw new Error(generatedImageErrorCode(error)); }
+    },
     readLimits: () => readRemoteAgentLimitsState().value,
     isAgentAvailable: (kind) => {
       try {
@@ -168,6 +174,10 @@ export function installRemoteAgentHost(options: { getMaker: () => Maker; userDat
     },
     // Codex 与 Pi 的会话历史在受邀者目录里，随它整体删除；这里清 Claude Code 的项目记录与 Pi 子代理运行目录。
     purgeHostedTranscripts: async (hostSessionIds, nativeIds) => {
+      const images = captureGeneratedImageStorage();
+      for (const id of hostSessionIds) {
+        for (const record of await images.journal.list(`remote:${id}`)) await images.release(record.scope, record.id);
+      }
       await purgeClaudeHostedTranscripts(hostSessionIds);
       await purgeClaudeHostedSessionArtifacts(nativeIds);
       await purgePiHostedSubagentRuns(hostSessionIds, path.join(options.userDataDir, 'pi-agent-home'));

@@ -394,6 +394,13 @@ export interface PendingAgentSwitchIntent {
   };
 }
 
+/** 用户 picker 意图的统一来源判据；引擎与执行电脑是否改变不影响归属。 */
+export function isUserPendingAgentSwitchIntent(
+  intent: PendingAgentSwitchIntent | undefined,
+): intent is PendingAgentSwitchIntent {
+  return !!intent && intent.configStaged !== true && intent.runtimeSource !== 'agent';
+}
+
 /** 控制端可见的 pending intent 投影；刻意排除 main 内部恢复载荷。 */
 export interface PublicAgentSwitchIntent {
   targetAgentKind: AgentKind;
@@ -1166,7 +1173,7 @@ async function noteLandedUserRouteSelection(
   sessionId: string,
   intent: PendingAgentSwitchIntent,
 ): Promise<void> {
-  if (intent.configStaged === true || intent.runtimeSource === 'agent') return;
+  if (!isUserPendingAgentSwitchIntent(intent)) return;
   try {
     await deps.onUserRouteSelectionLanded?.(sessionId);
   } catch (err) {

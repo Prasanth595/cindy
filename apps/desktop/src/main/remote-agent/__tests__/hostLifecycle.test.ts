@@ -181,3 +181,57 @@ describe('duplicate op payloads', () => {
     host.dispose();
   });
 });
+
+// #6412: asynchronous source reads used to lose the final image when the native stream ended.
+it.each([false, true])('drains image preparation and forwards the controller receipt capability (%s)', async (receipts) => {
+  let release!: () => void;
+  const waiting = new Promise<void>((resolve) => { release = resolve; });
+  const entered = whenStarted();
+  const host = createRemoteAgentHost({
+    isAgentAvailable: () => true, isControllerAuthorized: () => true,
+    captureOwner: () => 'owner', isOwnerCurrent: () => true, runsRoot,
+    startHosted: async (input) => ({ ...idleHandle(input), events: () => ({
+      async *[Symbol.asyncIterator]() {
+        yield { type: 'image', source: 'codex', data: { kind: 'generation', blockId: 'native', path: '/linux/image.png' } } as AgentEvent;
+        yield { type: 'done', source: 'codex', data: {} } as AgentEvent;
+      },
+    }) }),
+    prepareImageEvent: async (_id, event, _upstream, retainForRecovery) => { expect(retainForRecovery).toBe(receipts); expect(event.data).toMatchObject({ deliveryEpoch: 321 }); entered.resolve(); await waiting; return { ...event, data: { kind: 'generation', blockId: 'native', url: 'data:image/png;base64,bytes' } }; },
+  });
+  try {
+    await host.handle('controller', { op: 'open', runId: RUN_1, agentKind: 'codex', payload: { json: { ...openPayload('task-1'), imageDeliveryEpoch: 321, ...(receipts ? { acceptsImageDeliveryReceipts: true } : {}) } } });
+    await entered.promise;
+    await settle();
+    let closeFinished = false;
+    const closing = host.handle('controller', { op: 'close', runId: RUN_1, mode: 'close', reason: 'navigation' }).then(() => { closeFinished = true; });
+    await settle();
+    expect(closeFinished).toBe(false);
+    release();
+    await closing;
+    await settle();
+    const result = await host.handle('controller', { op: 'poll', runs: [{ runId: RUN_1, cursor: 0 }], waitMs: 0 }) as { runs: Array<{ data?: string; done?: boolean }> };
+    const rows = Buffer.from(result.runs[0].data!, 'base64').toString().trim().split('\n').map((line) => JSON.parse(line));
+    expect(rows.filter((row) => row.t === 'event').map((row) => row.event.type)).toEqual(['image', 'done']);
+    expect(rows.find((row) => row.t === 'event').event.data).not.toHaveProperty('path');
+    expect(rows.at(-1)).toMatchObject({ t: 'closed' });
+    expect(result.runs[0].done).toBe(true);
+  } finally { release(); host.dispose(); }
+});
+
+it.each(['authorization', 'owner'])('scopes image recovery to the caller and rejects %s changes during a read', async (boundary) => {
+  let allowed = true;
+  let ownerCurrent = true;
+  const imageArtifacts = vi.fn(async () => { if (boundary === 'owner') ownerCurrent = false; else allowed = false; return { images: [] }; });
+  const host = createRemoteAgentHost({
+    isAgentAvailable: () => true, startHosted: async (input) => idleHandle(input),
+    isControllerAuthorized: () => allowed, captureOwner: () => 'owner', isOwnerCurrent: () => ownerCurrent,
+    runsRoot, imageArtifacts,
+  });
+  try {
+    await expect(host.handle('caller', { op: 'images', sessionId: RUN_1, action: 'list' })).rejects.toThrow('REMOTE_AGENT_UNAVAILABLE');
+    expect(imageArtifacts.mock.calls[0]).toEqual([hostSessionIdFor('caller', RUN_1), { op: 'images', sessionId: RUN_1, action: 'list', offset: 0 }]);
+    allowed = false;
+    await expect(host.handle('other', { op: 'images', sessionId: RUN_1, action: 'list' })).rejects.toThrow('REMOTE_AGENT_UNAVAILABLE');
+    expect(imageArtifacts).toHaveBeenCalledTimes(1);
+  } finally { host.dispose(); }
+});

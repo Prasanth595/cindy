@@ -2292,8 +2292,9 @@ function isStackableTransientSession(session: AgentIslandSessionState, now: numb
     || Boolean(session.errorUntil && session.errorUntil > now);
 }
 
-function isCompactActiveSession(session: AgentIslandSessionState): boolean {
-  return session.phase === 'running' || session.phase === 'needs-interaction' || session.pendingInteractionIds.size > 0;
+// 徽标里「运行中」与「需要关注」互斥:等用户回答的任务只算需要关注,不重复计入运行中。
+function isBadgeRunningSession(session: AgentIslandSessionState): boolean {
+  return session.phase === 'running' && !isBlockingSession(session);
 }
 
 function isBlockingSession(session: AgentIslandSessionState): boolean {
@@ -2397,14 +2398,14 @@ function buildPillSnapshot(
   sessions: AgentIslandSessionState[],
   current: AgentIslandSessionState | null,
 ): AgentIslandPillSnapshot {
-  let activeSessionCount = 0;
+  let runningSessionCount = 0;
   let pendingInteractionCount = 0;
   let unreadCompletedCount = 0;
   let deferredRevealCount = 0;
   let attentionCount = 0;
   for (const session of sessions) {
-    if (isCompactActiveSession(session)) activeSessionCount += 1;
-    if (session.pendingInteractionIds.size > 0) pendingInteractionCount += 1;
+    if (isBadgeRunningSession(session)) runningSessionCount += 1;
+    if (isBlockingSession(session)) pendingInteractionCount += 1;
     if (session.unread && (session.phase === 'completed' || session.phase === 'error')) {
       unreadCompletedCount += 1;
     }
@@ -2417,7 +2418,7 @@ function buildPillSnapshot(
     priorityMicroTitle: current ? pillTitle(current, 'micro') : '',
     priorityCompactTitle: current ? pillTitle(current, 'compact') : '',
     sessionCount: sessions.length,
-    activeSessionCount,
+    runningSessionCount,
     pendingInteractionCount,
     unreadCompletedCount,
     deferredRevealCount,

@@ -1,5 +1,6 @@
 import type { AutoReviewUserIntent } from '@cindy/maker-core';
 import {
+  PI_CACHE_RECOVERY_EXPECTATION,
   CodexResumePreparationBlockedError,
   AUTO_REVIEW_SOURCE_CONTENT,
   AUTO_REVIEW_USER_INTENT,
@@ -248,6 +249,7 @@ export function revokeTrustedDesktopQueuedOrigin(item: AgentInputQueuedMessage):
 }
 
 type MakerSendOptions = {
+  readonly [PI_CACHE_RECOVERY_EXPECTATION]?: import('@cindy/maker-core').SendOptions[typeof PI_CACHE_RECOVERY_EXPECTATION];
   /** Main-only live card guard, never serialized to queue history or provider options. */
   readonly [MCP_APP_MESSAGE_GUARD]?: McpAppMessageGuard;
   readonly [AUTO_REVIEW_DELEGATED_CONTINUATION]?: true;
@@ -1605,6 +1607,10 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
         const retryTranscriptUserEntryId = sess.agentKind === 'pi' && so.retryUserClientId
           ? await deps.readPiUserEntry?.(sessionId, so.retryUserClientId)
           : undefined;
+        // Automatic cache replay replaces the native user entry without adding
+        // another Cindy row. Keep later manual Retry attached to the active entry.
+        const transcriptUserClientId = persistUserMessage?.clientId
+          ?? (so[PI_CACHE_RECOVERY_EXPECTATION] ? so.retryUserClientId : undefined);
         // Other-task mail is the only non-scheduler turn whose reply IM relays (channelTurnSignal).
         const sendResult = await withChannelTurnSource(sess.id, channelTurnSourceFor(
           persistUserMessage?.origin,
@@ -1650,6 +1656,7 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
           ...(so.toolsDisabled === true ? { toolsDisabled: true } : {}),
           turnAttemptToken: so.turnAttemptToken,
           signal: so.signal,
+          [PI_CACHE_RECOVERY_EXPECTATION]: so[PI_CACHE_RECOVERY_EXPECTATION],
           ...(so.onVendorTurnReserved ? { onTurnReserved: so.onVendorTurnReserved } : {}),
           // scheduler 排队消息:origin 打到本轮 turnOrigin(IM 转播识别自动 turn),
           // 与 runner 直发路径的 session.send({ origin }) 语义对齐。
@@ -1664,20 +1671,20 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
             ? { planMode: (createOpts as { planMode: boolean }).planMode }
             : {}),
           ...(sess.agentKind === 'pi' &&
-          persistUserMessage &&
+          transcriptUserClientId &&
           deps.linkPiUserEntry
             ? {
                 onTranscriptUserEntry: async (piEntryId: string) => {
                   try {
                     const linked = await deps.linkPiUserEntry?.(
                       sessionId,
-                      persistUserMessage.clientId,
+                      transcriptUserClientId,
                       piEntryId,
                     );
                     if (linked === false) {
                       deps.log.warn('send: Pi transcript entry target row missing', {
                         sessionId,
-                        clientId: persistUserMessage.clientId,
+                        clientId: transcriptUserClientId,
                         piEntryId,
                       });
                     }
@@ -1686,7 +1693,7 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
                     // 把发送结果翻成 rejected，避免 UI 重发同一条消息。
                     deps.log.warn('send: Pi transcript entry link failed (non-fatal)', {
                       sessionId,
-                      clientId: persistUserMessage.clientId,
+                      clientId: transcriptUserClientId,
                       piEntryId,
                       err: err instanceof Error ? err.message : String(err),
                     });

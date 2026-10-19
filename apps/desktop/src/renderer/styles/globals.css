@@ -2391,7 +2391,7 @@ html[data-wallpaper-active='true'] body::before {
   content: '';
   position: fixed;
   inset: 0;
-  z-index: -1;
+  z-index: -3;
   pointer-events: none;
   background-color: var(--surface);
   background-image: linear-gradient(
@@ -2417,6 +2417,8 @@ html[data-wallpaper-active='true'] aside.bg-sidebar:not([data-sidebar-peek-drawe
 /* Fixed attachment uses the same viewport coordinates as the canvas. The
    footer masks scrolled messages without introducing a differently tinted slab. */
 html[data-wallpaper-active='true'] :is(.wallpaper-composer-zone, .wallpaper-composer-fade) {
+  position: relative;
+  isolation: isolate;
   background-color: var(--surface);
   background-image: linear-gradient(
     color-mix(in srgb, var(--surface) var(--app-wallpaper-veil), transparent),
@@ -2429,6 +2431,44 @@ html[data-wallpaper-active='true'] :is(.wallpaper-composer-zone, .wallpaper-comp
 }
 html[data-wallpaper-active='true'] .wallpaper-composer-fade {
   mask-image: linear-gradient(transparent, currentColor);
+}
+
+/* Keep the decoded old canvas above the new one and fade only its opacity.
+   Fixed composer copies follow the same transition, preserving the crop and
+   theme veil across the entire window without fading text or controls.
+   Zero-specificity mode guards let local positioning and reduced motion win. */
+html[data-wallpaper-transition='true'] body::after,
+html[data-wallpaper-transition='true']:where(:not([data-wallpaper-motion='dynamic']):not([data-wallpaper-blur='true'])) :is(.wallpaper-composer-zone, .wallpaper-composer-fade)::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -2;
+  pointer-events: none;
+  background-color: var(--surface);
+  background-image: linear-gradient(
+    color-mix(in srgb, var(--surface) var(--app-wallpaper-veil), transparent),
+    color-mix(in srgb, var(--surface) var(--app-wallpaper-veil), transparent)
+  ), var(--app-wallpaper-previous-image);
+  background-size: auto, cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  animation: app-wallpaper-image-out var(--motion-fast) var(--motion-ease-move) both;
+}
+html[data-wallpaper-transition='true'] :is(.wallpaper-composer-zone, .wallpaper-composer-fade)::before {
+  position: absolute;
+  z-index: -1;
+  background-attachment: fixed;
+}
+@keyframes app-wallpaper-image-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  html[data-wallpaper-transition='true'] body::after,
+  html[data-wallpaper-transition='true'] :is(.wallpaper-composer-zone, .wallpaper-composer-fade)::before {
+    animation: none;
+    opacity: 0;
+  }
 }
 
 /* Blend video into an opaque theme surface before composing with the UI.
@@ -2461,7 +2501,8 @@ html:is([data-wallpaper-motion='dynamic'], [data-wallpaper-blur='true']) :is(.wa
 /* Opt-in media-only blur. Overscan by three radii before clipping to avoid
    sampling transparent edges. Static and moving canvases share the same crop;
    zero blur leaves the original compositor path entirely unchanged. */
-html[data-wallpaper-blur='true'] body::before {
+html[data-wallpaper-blur='true'] body::before,
+html[data-wallpaper-blur='true'] body::after {
   inset: calc(-3 * var(--app-wallpaper-blur));
   filter: blur(var(--app-wallpaper-blur));
 }

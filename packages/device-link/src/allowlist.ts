@@ -208,6 +208,7 @@ const CORE_INVOKE_CHANNELS: readonly string[] = [
   'maker:input:steer',
   'maker:input:stop',
   'maker:input:resume',
+  'maker:images:retry',
   'maker:input:retry-last-error',
   'maker:input:clear-error',
   'maker:input:cancel-usage-limit-wait',

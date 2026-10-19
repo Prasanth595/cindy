@@ -1331,3 +1331,9 @@ describe("mobile maker transport", () => {
     expect(invokeMock).not.toHaveBeenCalled();
   });
 });
+
+it('retries an existing image artifact on the task Host without sending a new prompt', async () => {
+  const { calls, maker } = harness();
+  await maker.input.retryImageDelivery('task', 'a'.repeat(64));
+  expect(calls).toEqual([{ deviceId: 'dev-1', channel: 'maker:images:retry', args: ['task', 'a'.repeat(64)] }]);
+});

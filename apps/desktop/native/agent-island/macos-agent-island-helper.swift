@@ -1392,7 +1392,7 @@ struct AgentIslandPillSnapshot: Codable {
   let priorityMicroTitle: String
   let priorityCompactTitle: String
   let sessionCount: Int
-  let activeSessionCount: Int
+  let runningSessionCount: Int
   let pendingInteractionCount: Int
   let unreadCompletedCount: Int
   let deferredRevealCount: Int
@@ -1404,7 +1404,7 @@ struct AgentIslandPillSnapshot: Codable {
     priorityMicroTitle: "",
     priorityCompactTitle: "",
     sessionCount: 0,
-    activeSessionCount: 0,
+    runningSessionCount: 0,
     pendingInteractionCount: 0,
     unreadCompletedCount: 0,
     deferredRevealCount: 0,
@@ -3051,7 +3051,7 @@ struct PillBadge: View {
   let pillSnapshot: AgentIslandPillSnapshot
   var compact: Bool = false
 
-  /// Text runs and minimum capsule width for the badge variant a snapshot renders.
+  /// Text runs and minimum width for the badge variant a snapshot renders.
   /// Shared by `body` and `intrinsicWidth` so reserved layout width can never
   /// drift away from what actually gets drawn.
   struct Metrics {
@@ -3061,23 +3061,48 @@ struct PillBadge: View {
     let fontSize: CGFloat
   }
 
+  /// One colored text run of the badge.
+  struct Run {
+    let text: String
+    let color: Color
+  }
+
+  /// Mirrors `getAgentIslandCompactBadgeSegments` in `shared/agentIsland.ts`:
+  /// running only → `running`; attention + running → `attention · running`;
+  /// attention only → `attention`; neither → session count.
+  static func runs(pillSnapshot: AgentIslandPillSnapshot) -> [Run] {
+    let attention = pillSnapshot.attentionCount
+    let running = pillSnapshot.runningSessionCount
+    // 等用户操作(提问 / 授权)优先于完成未读,与列表里的状态点同色。
+    let attentionColor = pillSnapshot.pendingInteractionCount > 0 ? agentIslandBlue : agentIslandUnreadGreen
+    if attention > 0 && running > 0 {
+      return [
+        Run(text: "\(attention)", color: attentionColor),
+        Run(text: "·", color: Color.white.opacity(0.42)),
+        Run(text: "\(running)", color: agentIslandOrange),
+      ]
+    }
+    if attention > 0 {
+      return [Run(text: "\(attention)", color: attentionColor)]
+    }
+    if running > 0 {
+      return [Run(text: "\(running)", color: agentIslandOrange)]
+    }
+    return [Run(text: "\(max(1, pillSnapshot.sessionCount))", color: Color.white.opacity(0.92))]
+  }
+
   static func metrics(pillSnapshot: AgentIslandPillSnapshot, compact: Bool) -> Metrics {
     let fontSize: CGFloat = compact ? 10 : 11
-    if pillSnapshot.activeSessionCount > 0 && pillSnapshot.sessionCount > 1 {
-      return Metrics(
-        segments: ["\(pillSnapshot.activeSessionCount)", "/", "\(pillSnapshot.sessionCount)"],
-        minWidth: compact ? 30 : 34,
-        fontSize: fontSize
-      )
-    }
+    let segments = runs(pillSnapshot: pillSnapshot).map(\.text)
+    let isPair = segments.count > 1
     return Metrics(
-      segments: ["\(max(1, pillSnapshot.sessionCount))"],
-      minWidth: compact ? 22 : 24,
+      segments: segments,
+      minWidth: isPair ? (compact ? 30 : 34) : (compact ? 22 : 24),
       fontSize: fontSize
     )
   }
 
-  /// Width the hardware-notch layout reserves for the capsule so a multi-digit count is
+  /// Width the hardware-notch layout reserves for the badge so a multi-digit count is
   /// never clipped.
   ///
   /// This is deliberately a *nominal* width computed from digit counts, not an `NSFont`
@@ -3092,11 +3117,11 @@ struct PillBadge: View {
     let segmentsWidth = metrics.segments.reduce(CGFloat(0)) { total, segment in
       total + CGFloat(segment.count) * nominalCharWidth + segmentRoundingSlack
     }
-    let spacing = activeTotalSpacing * CGFloat(max(0, metrics.segments.count - 1))
+    let spacing = runSpacing * CGFloat(max(0, metrics.segments.count - 1))
     return max(metrics.minWidth, segmentsWidth + spacing + contentInset * 2)
   }
 
-  private static let activeTotalSpacing: CGFloat = 1
+  private static let runSpacing: CGFloat = 1
   private static let contentInset: CGFloat = 2
   /// Upper bound for one monospaced 10pt digit (real advance is ~6pt). Mirrors
   /// `AGENT_ISLAND_COMPACT_BADGE_CHAR_WIDTH_BOUND` on the TS side.
@@ -3106,48 +3131,18 @@ struct PillBadge: View {
   private static let segmentRoundingSlack: CGFloat = 1
 
   var body: some View {
-    if pillSnapshot.activeSessionCount > 0 && pillSnapshot.sessionCount > 1 {
-      activeTotalBadge(
-        active: pillSnapshot.activeSessionCount,
-        total: pillSnapshot.sessionCount,
-        emphasized: isEmphasized
-      )
-    } else {
-      badge("\(max(1, pillSnapshot.sessionCount))", emphasized: isEmphasized)
-    }
-  }
-
-  private func badge(_ text: String, emphasized: Bool) -> some View {
-    Text(text)
-      .font(badgeFont)
-      .foregroundColor(Color.white.opacity(0.92))
-      .lineLimit(1)
-      .padding(.horizontal, Self.contentInset)
-      .frame(minWidth: metrics.minWidth, minHeight: compact ? 18 : 20)
-      .background(Color.white.opacity(emphasized ? 0.11 : 0.065))
-      .clipShape(Capsule())
-      // Fix the whole capsule, not just the text: a squeezed `minWidth` frame would
-      // otherwise shrink the background while multi-digit text overflows it.
-      .fixedSize(horizontal: true, vertical: false)
-  }
-
-  private func activeTotalBadge(active: Int, total: Int, emphasized: Bool) -> some View {
-    HStack(spacing: Self.activeTotalSpacing) {
-      Text("\(active)")
-        .foregroundColor(emphasized ? agentIslandBlue : agentIslandOrange)
-      Text("/")
-        .foregroundColor(Color.white.opacity(0.42))
-      Text("\(total)")
-        .foregroundColor(Color.white.opacity(0.92))
+    HStack(spacing: Self.runSpacing) {
+      ForEach(Array(Self.runs(pillSnapshot: pillSnapshot).enumerated()), id: \.offset) { _, run in
+        Text(run.text)
+          .foregroundColor(run.color)
+      }
     }
     .font(badgeFont)
     .lineLimit(1)
     .padding(.horizontal, Self.contentInset)
     .frame(minWidth: metrics.minWidth, minHeight: compact ? 18 : 20)
-    .background(Color.white.opacity(emphasized ? 0.11 : 0.065))
-    .clipShape(Capsule())
-    // Fix the whole capsule, not just the text: a squeezed `minWidth` frame would
-    // otherwise shrink the background while multi-digit text overflows it.
+    // Keep the full reserved width (mirrored on the TS side) instead of letting a
+    // squeezed `minWidth` frame truncate multi-digit text.
     .fixedSize(horizontal: true, vertical: false)
   }
 
@@ -3157,10 +3152,6 @@ struct PillBadge: View {
 
   private var badgeFont: Font {
     .system(size: metrics.fontSize, weight: .semibold, design: .monospaced)
-  }
-
-  private var isEmphasized: Bool {
-    pillSnapshot.pendingInteractionCount > 0 || pillSnapshot.attentionCount > 0
   }
 }
 
@@ -6289,7 +6280,7 @@ enum AgentIslandDebugHarness {
     now: Double
   ) -> AgentIslandDisplayState {
     let current = sessions.first { $0.sessionId == currentSessionId } ?? sessions[0]
-    let activeCount = sessions.filter { $0.phase == "running" || $0.phase == "needs-interaction" }.count
+    let runningCount = sessions.filter { $0.phase == "running" }.count
     let pendingCount = sessions.filter { $0.phase == "needs-interaction" }.count
     let unreadDoneCount = sessions.filter { $0.phase == "completed" || $0.phase == "error" }.count
     return AgentIslandDisplayState(
@@ -6310,7 +6301,7 @@ enum AgentIslandDebugHarness {
         priorityMicroTitle: current.displayTitle,
         priorityCompactTitle: current.displayTitle,
         sessionCount: sessions.count,
-        activeSessionCount: activeCount,
+        runningSessionCount: runningCount,
         pendingInteractionCount: pendingCount,
         unreadCompletedCount: unreadDoneCount,
         deferredRevealCount: 1,

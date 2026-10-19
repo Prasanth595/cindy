@@ -1,3 +1,4 @@
+import { readGeneratedImageEpoch } from '../cindy-media/generatedImageStorage';
 import { readAgentCapabilityCatalog, RUNTIME_MCP_NAMES_KEY, type AgentCapabilityQuery } from './agentCapabilityCatalog.js';
 import { listCindyManagedSkills, prepareCindyCodexSkills } from './managed-skills.js';
 import { scanLocalCustomizations } from '../skillhub/customizationScanHost';
@@ -2801,6 +2802,7 @@ export function getMaker(): Maker {
       logger: desktopMakerLogger,
       // Agent 在同账号另一台电脑上运行、任务与文件留在本机(见 remote-agent/)。
       startDeviceAgentSession: createDeviceAgentStarter({
+        readImageDeliveryEpoch: readGeneratedImageEpoch,
         remoteInvoke: remoteBackgroundInvoke,
         rgPath: getRipgrepBinaryPath,
         // 对方的 Codex 把本机当 exec-server 执行环境：用本机随包的同一个 codex。

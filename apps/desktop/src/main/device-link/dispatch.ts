@@ -25,6 +25,7 @@ import {
 import { requestFilePeer, stopFilePeers } from './filePeer';
 import { requestTaskMigration } from '../task-migration/service';
 import { normalizeProviderOrder } from "../../shared/providerOrder.js";
+import { compactToolCardResult } from '../../shared/toolResultPersistCap.js';
 /**
  * dispatch —— device-link 被控端隧道层。
  *
@@ -3859,7 +3860,10 @@ function compactRemoteMessageForDeviceLink(message: unknown): unknown {
   const contentLimit = record.role === 'tool_result'
     ? REMOTE_TOOL_RESULT_CONTENT_LIMIT
     : REMOTE_MESSAGE_CONTENT_LIMIT;
-  const compactContent = compactRemoteMessageContent(record.content, contentLimit);
+  const compactContent = record.role === 'tool_result' && typeof record.content === 'string'
+    && encodedByteLength(record.content) > contentLimit
+    ? compactToolCardResult(record.content, contentLimit) ?? compactRemoteMessageContent(record.content, contentLimit)
+    : compactRemoteMessageContent(record.content, contentLimit);
   if (compactContent === record.content) {
     return sanitizeRemoteMessage(record);
   }

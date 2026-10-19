@@ -131,6 +131,12 @@ export interface NewSessionStoredPreferences {
    * 按设备归属,避免把一台电脑的路径套到另一台;没有记忆的设备沿用最近项目默认逻辑。
    */
   workingDirByDevice: Record<string, string>;
+  /**
+   * 每台被控电脑上、每个 agent 上次在新建页显式选的另一台电脑或分享来的模型
+   * (被控电脑 deviceId → agent → 选择)。选回被控电脑自己的模型即清掉;打开新建页时恢复,
+   * 那台电脑 / 那个分享此刻用不了时回到被控电脑的默认。与 workingDirByDevice 同样按账号存。
+   */
+  remoteAgentByDevice: Record<string, Partial<Record<NewSessionAgentKind, NewSessionRemoteAgentPick>>>;
 }
 
 export interface NewSessionDraftSummary {

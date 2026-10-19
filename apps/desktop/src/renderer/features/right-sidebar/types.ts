@@ -24,6 +24,7 @@ import type { TabCloseInterceptor } from './store';
 export type BuiltinTabKindId =
   | 'file-browser'
   | 'web-browser'
+  | 'mail-preview'
   | 'retired-feature'
   | 'terminal'
   | 'review'

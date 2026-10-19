@@ -5097,6 +5097,8 @@ function SessionScreenContent() {
     }
   }, [remoteHistoryAvailable, historyView.snapshot.ready, historyView.view, requestSync, abandonInFlightBackfill, deviceId, hasOlderMessages, isScheduleDetail, loadingEarlier, maker, oldestLoadedMessageCursor, sessionId]);
 
+  const retryImageDelivery = useCallback((imageId: string) => maker.input.retryImageDelivery(sessionId, imageId), [maker, sessionId]);
+
   const loadToolInput = useCallback(async (
     ref: MobileToolInputProjection,
   ): Promise<MobileToolInputDetail> => {
@@ -10119,6 +10121,7 @@ function SessionScreenContent() {
                     onForkMessage={isSharedTaskPeer(deviceId) ? undefined : forkAtMessage}
                     onLoadEarlier={loadEarlierMessages}
                     onLoadToolInput={loadToolInput}
+                    onRetryImageDelivery={isSharedTaskPeer(deviceId) ? undefined : retryImageDelivery}
                     onOpenForkOrigin={forkOrigin ? openForkOrigin : undefined}
                     onOpenOriginSession={openOriginSession}
                     // 设备来源标签只标别的设备发来的消息:本机发出的不标。

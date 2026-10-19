@@ -183,7 +183,7 @@ describe('Agent Island display state', () => {
       priorityMicroTitle: '',
       priorityCompactTitle: '',
       sessionCount: 0,
-      activeSessionCount: 0,
+      runningSessionCount: 0,
       pendingInteractionCount: 0,
       unreadCompletedCount: 0,
       deferredRevealCount: 0,
@@ -213,7 +213,7 @@ describe('Agent Island display state', () => {
     expect(display.currentSessionId).toBe('b');
     expect(display.pillSnapshot.priorityId).toBe('b');
     expect(display.pillSnapshot.priorityCompactTitle).toBe('B');
-    expect(display.pillSnapshot.activeSessionCount).toBe(2);
+    expect(display.pillSnapshot.runningSessionCount).toBe(2);
     expect(display.sessions.map((session) => session.sessionId)).toEqual(['b', 'a']);
     expect(display.totalCount).toBe(2);
     expect(display.shadowVisible).toBe(false);
@@ -230,7 +230,7 @@ describe('Agent Island display state', () => {
     expect(firstDisplay.currentSessionId).toBe('b');
     expect(firstDisplay.pillSnapshot).toMatchObject({
       priorityId: 'b',
-      activeSessionCount: 2,
+      runningSessionCount: 2,
       sessionCount: 2,
     });
     expect(getNextAgentIslandTimerAt(state, 1_200)).toBeNull();
@@ -967,7 +967,8 @@ describe('Agent Island display state', () => {
     expect(display.pillSnapshot).toMatchObject({
       priorityId: 'ask',
       priorityStatus: 'needs-interaction',
-      activeSessionCount: 2,
+      // 等回答的 ask 只算需要关注,不再重复计入运行中。
+      runningSessionCount: 1,
       pendingInteractionCount: 1,
       unreadCompletedCount: 2,
       sessionCount: 4,
@@ -1869,7 +1870,7 @@ describe('Agent Island display state', () => {
     expect(stillCompletion.displaySurface).toBe('completionCard');
     expect(stillCompletion.currentSessionId).toBe('done');
     expect(stillCompletion.sessions.map((session) => session.sessionId)).toEqual(['done']);
-    expect(stillCompletion.pillSnapshot.activeSessionCount).toBe(1);
+    expect(stillCompletion.pillSnapshot.runningSessionCount).toBe(1);
 
     const display = buildAgentIslandDisplayState(state, 14_200);
 
@@ -1891,7 +1892,7 @@ describe('Agent Island display state', () => {
     expect(stillCompletion.displaySurface).toBe('completionCard');
     expect(stillCompletion.currentSessionId).toBe('done');
     expect(stillCompletion.sessions.map((session) => session.sessionId)).toEqual(['done']);
-    expect(stillCompletion.pillSnapshot.activeSessionCount).toBe(1);
+    expect(stillCompletion.pillSnapshot.runningSessionCount).toBe(1);
   });
 
   it('shows running sessions only for manual hover expansion, not completion auto expansion', () => {
@@ -1904,7 +1905,7 @@ describe('Agent Island display state', () => {
     expect(autoExpanded.displayPolicy).toBe('transient');
     expect(autoExpanded.displaySurface).toBe('completionCard');
     expect(autoExpanded.sessions.map((session) => session.sessionId)).toEqual(['done']);
-    expect(autoExpanded.pillSnapshot.activeSessionCount).toBe(1);
+    expect(autoExpanded.pillSnapshot.runningSessionCount).toBe(1);
 
     setAgentIslandHovered(state, true, 14_100);
     const manualExpanded = buildAgentIslandDisplayState(state, 14_700);

@@ -18,7 +18,8 @@ import {
 import { getActiveAppSession, type ActiveAppSession } from '../../appSessionState.js';
 import { ownerScopedGhostPartition, ownerScopedGhostPartitionForInstalledGhost } from '../ghostWebviewPartition.js';
 import { installedGhostStoragePart } from '../../../shared/pluginIdentity.js';
-import { GHOST_BOOT_PATH, ghostBootHtml, ghostFileMime, resolveGhostFilePath } from './ghostFiles.js';
+import { GHOST_BOOT_PATH, GHOST_MAIL_SDK_PATH, ghostBootHtml, ghostFileMime, resolveGhostFilePath } from './ghostFiles.js';
+import mailComposeRuntimeSource from './mailComposeRuntime.js?raw';
 import { handleGhostKvRequest, readBoundedBodyText } from './ghostKvEndpoint.js';
 import { resolveHashRef as resolveBlobHashRef } from '../../cindy-media/blobStore.js';
 import { buildRangedMediaResponse } from '../../cindy-media/rangeResponse.js';
@@ -662,6 +663,11 @@ function registerGhostProtocol(
             'Cache-Control': 'no-cache',
           },
         });
+      }
+      if (url.pathname === GHOST_MAIL_SDK_PATH) {
+        return new Response(mailComposeRuntimeSource, { status: 200, headers: {
+          'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'no-cache',
+        } });
       }
       if (url.pathname === GHOST_BOOT_PATH || url.pathname === '/') {
         const entry = binding.entry;

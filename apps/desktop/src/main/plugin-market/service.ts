@@ -21,7 +21,7 @@ import {
   isSafeGhostRelativePath,
   isOfficialGhostId,
   isValidGhostId,
-  validateGhostManifest,
+  validateNormalizedGhostManifest,
   type InstalledGhost,
 } from '../../shared/ghost.js';
 import { isIpcError } from '../../shared/ipc-errors.js';
@@ -1235,7 +1235,8 @@ export class PluginMarketService {
     if (plugin.scope !== 'public') {
       throwIpcError('NOT_FOUND', 'Plugin is unavailable to the active account');
     }
-    const compatible = validateGhostManifest(plugin.currentRelease.manifest);
+    // The API parser already normalizes setup references to { kind, key }.
+    const compatible = validateNormalizedGhostManifest(plugin.currentRelease.manifest);
     if (!compatible.ok) {
       throwIpcError('GHOST_FILE_INVALID', 'This Plugin manifest is not supported');
     }
@@ -1290,7 +1291,7 @@ export class PluginMarketService {
       requireSameMarketOwner(owner);
       assertDetailMatchesSummary(summary, plugin);
       requirePluginVisibleForOwner(owner, plugin);
-      const compatible = validateGhostManifest(plugin.currentRelease.manifest);
+      const compatible = validateNormalizedGhostManifest(plugin.currentRelease.manifest);
       if (!compatible.ok) {
         throwIpcError('GHOST_FILE_INVALID', 'This Plugin manifest is not supported');
       }
@@ -2264,7 +2265,7 @@ export class PluginMarketService {
     if (owner.mode === 'local' && plugin.scope !== 'public') {
       throwIpcError('PERMISSION_DENIED', 'Local mode can only access public Plugins');
     }
-    const admissionManifest = validateGhostManifest(plugin.currentRelease.manifest);
+    const admissionManifest = validateNormalizedGhostManifest(plugin.currentRelease.manifest);
     if (!admissionManifest.ok) {
       throwIpcError('GHOST_FILE_INVALID', 'This Plugin manifest is not supported');
     }

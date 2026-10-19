@@ -1,4 +1,5 @@
 {
+  "mailReader": {"markReadFailed":"Could not sync read status. Check mailbox authorization and reopen this email.","title":"Mail","openMailbox":"Open in mailbox","loading":"Loading email…","failed":"Could not load this email. Check the connected mailbox account, retry, or open it in your mailbox.","retry":"Retry","to":"To","cc":"Cc","bcc":"Bcc","subject":"Subject","currentMessage":"Current email","messageCount_other":"{{count}} emails","messageCount_one":"{{count}} email","showMessages_other":"Show {{count}} emails","showMessages_one":"Show {{count}} email","expandMessage":"Expand email from {{from}}","collapseMessage":"Collapse email from {{from}}","conversationFailed":"Other emails in this conversation could not be loaded.","messageCount":"{{count}} emails","showMessages":"Show {{count}} emails"},
   "logSupport": {
     "title": "Logs and Feedback",
     "localFiles": "Choose logs from the day of the problem. Review unredacted files before sharing.",
@@ -6569,6 +6570,11 @@
         "unknownReviewerDetail": "The package claims a review, but this Cindy version does not recognize the reviewer key, so it is not shown as reviewed."
       },
       "perm": {
+        "mail": "Use mail drafts and send cards",
+        "mailDetail": "Edit and sync drafts in a card, with confirmation and an undo countdown before sending.",
+        "mailReader": "View mail in the app",
+        "mailReaderHost": "Open mail links from {{host}} in the app",
+        "mailMarkRead": "Mark messages as read when opened",
         "grantsTitle": "After installing it will have:",
         "toolsGroup": "Registered Tools",
         "toolsDiffGroup": "Registered Tool Changes",
@@ -11003,6 +11009,13 @@
     "verificationFailed": "Cindy couldn’t confirm whether the ChatGPT sign-in has recovered. Check again."
   },
   "chat": {
+    "imageDelivery": {
+      "stored": "Image delivered",
+      "failed": "Image delivery failed. Retry transferring the existing image.",
+      "retry": "Retry delivery",
+      "retrying": "Delivering…",
+      "retryFailed": "Delivery is still unavailable. Check that the source computer is online."
+    },
     "failedSamplingAttempt": "This reply did not complete. Its content is for reference only.",
     "jumpToBottom": "Jump to bottom",
     "prevMessageJump": "Jump to previous prompt: {{preview}}",
@@ -12044,7 +12057,17 @@
       "linkConfirmHint": "This link is provided by a plugin and will open in your browser:",
       "linkConfirmOpen": "Open",
       "linkConfirmCancel": "Cancel",
-      "linkOpenFailed": "Failed to open link"
+      "expandFields": "Expand",
+      "collapseFields": "Collapse",
+      "formSyncFailed": "Card edits have not synced. Check the connection and continue editing; the message has not been sent.",
+      "linkOpenFailed": "Failed to open link",
+      "mailPreview": "Email preview",
+      "mailEnlarge": "Enlarge preview",
+      "mailInsertImage": "Insert into message",
+      "mailAttach": "Add attachment",
+      "mailRemoveAttachment": "Remove {{name}}",
+      "mailUpdated": "Draft updated (read-only)",
+      "mailLegacy": "Draft history (read-only)"
     },
     "ghostHook": {
       "blockedFallback": "Message blocked by a plugin; not sent",

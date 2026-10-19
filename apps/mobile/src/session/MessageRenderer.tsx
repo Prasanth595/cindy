@@ -2,7 +2,7 @@ import { VideoSitePreview } from './VideoSitePreview';
 import { youtubeVideo } from '@cindy/maker-shared/rich-answer';
 import { richVisualStyle, splitRichAnswer, richAnswerText, richMediaSource, richMarkdown, richString, type RichNode } from '@cindy/maker-shared/rich-answer';
 import { RichAnswer } from './RichAnswer';
-import { readToolProcessMedia, readToolProcessText } from '@cindy/maker-shared/tool-process-media';
+import { readFailedImageDelivery, readToolProcessMedia, readToolProcessText } from '@cindy/maker-shared/tool-process-media';
 import { PluginCardActions } from '@/plugins/PluginCardActions';
 import { McpAppCard } from './McpAppCard';
 import { RichContentContext } from './richContentContext';
@@ -253,6 +253,7 @@ import {
   type ChatPathCandidate,
 } from '@/session/chatPathCandidate';
 import { ChatFilePathContext, type ChatFilePathTarget } from '@/session/chatFilePathContext';
+import { MailLinkSpan } from '@/session/MailLinkSpan';
 import {
   peekRemotePathVerdict,
   peekRemotePathVerdictForRender,
@@ -654,6 +655,7 @@ export const COMPANION_AVATAR_SIZE = 28;
 const COMPANION_AVATAR_GAP = 10;
 
 interface MessageActions {
+  onRetryImageDelivery?: (imageId: string) => Promise<void>;
   companion?: boolean;
   onCompanionReadThrough?: (at: number) => void;
   onOpenCompanionSettings?: (page: 'memory' | 'capabilities') => void;
@@ -747,6 +749,7 @@ export function MessageRenderer({
   onDeleteMessage,
   onLoadEarlier,
   onLoadToolInput,
+  onRetryImageDelivery,
   onOpenForkOrigin,
   onOpenOriginSession,
   viewerDeviceId,
@@ -1774,6 +1777,7 @@ export function MessageRenderer({
     onOpenPayload: openPayload,
     onOpenPayloadFromItem: openPayloadFromItem,
     onLoadToolInput,
+    onRetryImageDelivery,
     onResolveRemoteMedia,
     // 待发送气泡(pending_send 项)的展开态与队列操作:漏了这一项 actions.pendingSend 就是
     // undefined,渲染分支直接 null —— 气泡整个不画,乐观显示消失。
@@ -1816,6 +1820,7 @@ export function MessageRenderer({
     viewerDeviceId,
     onOpenSourceDevice,
     onLoadToolInput,
+    onRetryImageDelivery,
     onOpenSessionLink,
     onPreviewRewind,
     onEnterShareSelection,
@@ -4262,7 +4267,7 @@ function ToolGroupCard({
  * 媒体条 / 结果预览,再点收起。展开态走共享进程内记忆(blockId 前缀 `toolrow-`,
  * 与组级 `tools-` key 空间天然隔离)。无详情可展的行不显示 chevron、不可点击。
  */
-type ToolDetailActions = Pick<MessageActions, 'onLoadToolInput' | 'onOpenPayload' | 'onResolveRemoteMedia'>;
+type ToolDetailActions = Pick<MessageActions, 'onRetryImageDelivery' | 'onLoadToolInput' | 'onOpenPayload' | 'onResolveRemoteMedia'>;
 
 function ToolActionRow({
   actions,
@@ -4330,7 +4335,7 @@ function ToolActionRow({
             />
           ) : null}
           {tool.diff ? <DiffPreview diff={tool.diff} layout={contentLayout} onOpen={actions.onOpenPayload} /> : null}
-          {tool.secondaryBody ? <ToolResultPreview layout={contentLayout} tool={tool} onOpen={actions.onOpenPayload} /> : null}
+          {tool.secondaryBody ? <ToolResultPreview layout={contentLayout} tool={tool} onOpen={actions.onOpenPayload} onRetryImageDelivery={actions.onRetryImageDelivery} /> : null}
         </View>
       ) : null}
     </View>
@@ -4733,9 +4738,10 @@ function WorkGroupCard({
   // Keep their callbacks and streaming flag stable across those unrelated updates.
   const toolActions = useMemo(() => ({
     onLoadToolInput: actions.onLoadToolInput,
+    onRetryImageDelivery: actions.onRetryImageDelivery,
     onOpenPayload: actions.onOpenPayload,
     isSessionStreaming: actions.isSessionStreaming,
-  }), [actions.onLoadToolInput, actions.onOpenPayload, actions.isSessionStreaming]);
+  }), [actions.onRetryImageDelivery, actions.onLoadToolInput, actions.onOpenPayload, actions.isSessionStreaming]);
   const startedAtIso = isStreaming && item.startedAtMs !== undefined
     ? new Date(item.startedAtMs).toISOString()
     : undefined;
@@ -6438,13 +6444,14 @@ function renderInline(
         void Linking.openURL(inline.url).catch(() => undefined);
       };
       return (
-        <SpanText
+        <MailLinkSpan
           key={spanKey(`link:${index}:${inline.url}`)}
-          onPress={openExternalUrl}
+          url={inline.url}
+          SpanText={SpanText}
           style={clickableInlineStyle(styles, openExternalUrl, ctx.baseStyle)}
         >
           {inline.text}
-        </SpanText>
+        </MailLinkSpan>
       );
     }
     case 'strong':
@@ -6709,13 +6716,15 @@ function ToolMediaBlock({
 function PluginResultCard({ callId, sessionId, excludedUrls, actions }: {
   callId: string; sessionId: string; excludedUrls: string[]; actions: MessageActions;
 }) {
-  const { blocks, error, retry } = usePluginResultCard(actions.remoteDeviceId, sessionId, callId);
+  const { blocks, error, retry, hidden } = usePluginResultCard(actions.remoteDeviceId, sessionId, callId);
   const layout = buildMessageContentLayout({ screenWidth: actions.screenWidth });
   const styles = useThemedStyles(makeStyles);
   const { t } = useTranslation();
+  if (hidden) return null;
   return <View style={styles.toolMediaBlock} testID="message.pluginResultCard">
     {blocks?.map((block) => {
-      if (block.primitive === 'plugin-card-actions') return <PluginCardActions key={block.id} data={block.data} deviceId={actions.remoteDeviceId} sessionId={sessionId} callId={callId} />;
+      if (block.primitive === 'plugin-card-actions') return <PluginCardActions key={block.id} data={block.data} deviceId={actions.remoteDeviceId} sessionId={sessionId} callId={callId}
+        onOpenAttachment={actions.onOpenPayload ? (url, name) => actions.onOpenPayload!(buildMediaPayload({ kind: 'image', url, previewable: true }, name)) : undefined} />;
       const url = (block.data as { url?: unknown } | undefined)?.url;
       const kind = managedToolMediaKind(url);
       if (typeof url === 'string' && excludedUrls.includes(url)) return null;
@@ -7145,12 +7154,16 @@ function ToolResultPreview({
   layout,
   tool,
   onOpen,
+  onRetryImageDelivery,
 }: {
   layout: MessageContentLayout;
   tool: NormalizedRemoteMessage;
   onOpen?: (payload: MessagePayload) => void;
+  onRetryImageDelivery?: (imageId: string) => Promise<void>;
 }) {
   const styles = useThemedStyles(makeStyles);
+  const imageId = readFailedImageDelivery(tool.secondaryBody);
+  if (imageId) return <GeneratedImageRetry imageId={imageId} onRetry={onRetryImageDelivery} />;
   const payload = buildToolResultPayload({ ...tool, secondaryBody: readToolProcessText(tool.secondaryBody) });
   if (!payload) return null;
   const preview = summarizeMessagePayloadPreview(payload, { maxPreviewChars: TOOL_RESULT_PREVIEW_MAX_CHARS });
@@ -9519,6 +9532,15 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     fontSize: typeScale.footnote,
     lineHeight: lineHeight.caption,
   },
+  imageDeliveryHint: {
+    color: colors.textSecondary, fontSize: typeScale.footnote,
+    lineHeight: lineHeight.caption, fontWeight: fontWeight.regular,
+  },
+  imageDeliveryRetry: { minHeight: 44, justifyContent: 'center', alignSelf: 'flex-start', paddingHorizontal: spacing.sm },
+  imageDeliveryRetryText: {
+    color: colors.textPrimary, fontSize: typeScale.body,
+    lineHeight: lineHeight.body, fontWeight: fontWeight.medium,
+  },
   toolInputPreview: {
     backgroundColor: colors.chatCodeSurface,
     borderColor: colors.chatCodeBorder,
@@ -9904,5 +9926,19 @@ function RichAnswerMedia({ node, body }: { node: RichNode; body: Parameters<type
     {width > 0 ? <MediaPreview key={previewKey} layout={layout} media={media} label={label} onResolveRemoteMedia={resolver}
       usePreviewState={useState}
       onOpen={body.onOpenPayload ? () => body.onOpenPayload!(buildMediaPayload(media, label)) : undefined} /> : null}
+  </View>;
+}
+
+function GeneratedImageRetry({ imageId, onRetry }: { imageId: string; onRetry?: (id: string) => Promise<void> }) {
+  const { t } = useTranslation();
+  const styles = useThemedStyles(makeStyles);
+  const [pending, setPending] = useState(false);
+  const [failed, setFailed] = useState(false);
+  return <View>
+    <Text style={styles.imageDeliveryHint}>{t(failed ? 'chat:imageDelivery.retryFailed' : 'chat:imageDelivery.failed')}</Text>
+    {onRetry && <Pressable accessibilityRole="button" disabled={pending} style={styles.imageDeliveryRetry} onPress={async () => {
+      setPending(true); setFailed(false);
+      try { await onRetry(imageId); } catch { setFailed(true); } finally { setPending(false); }
+    }}><Text style={styles.imageDeliveryRetryText}>{t(pending ? 'chat:imageDelivery.retrying' : 'chat:imageDelivery.retry')}</Text></Pressable>}
   </View>;
 }

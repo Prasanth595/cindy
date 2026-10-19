@@ -568,6 +568,27 @@ describe('remote agent round trip', () => {
     host.dispose();
   });
 
+  // #6420: a new remote run carries the task Host clear epoch, independent of source clocks.
+  it('sends the persisted image clear generation when opening a remote run', async () => {
+    const host = createHost();
+    const base = makeDeps(host);
+    const opened: Array<Record<string, unknown>> = [];
+    const invoke: StartRemoteAgentDeps['invoke'] = async (args) => {
+      const request = args[0] as { op?: string; payload?: { json?: Record<string, unknown> } };
+      if (request.op === 'open' && request.payload?.json) opened.push(request.payload.json);
+      return base.invoke(args);
+    };
+    try {
+      for (const epoch of [0, 456]) {
+        const handle = await startRemoteAgentSession('codex', { sessionId: 'image-task', workingDir: project, model: 'm' }, {
+          ...base, invoke, readImageDeliveryEpoch: async (sessionId) => { expect(sessionId).toBe('image-task'); return epoch; },
+        });
+        expect(opened.at(-1)).toMatchObject({ imageDeliveryEpoch: epoch, acceptsImageDeliveryReceipts: true });
+        await handle.close({ reason: 'navigation' });
+      }
+    } finally { host.dispose(); }
+  });
+
   it('declares provider group switch support and brings back the token after a handoff', async () => {
     const host = createHost();
     const base = makeDeps(host);

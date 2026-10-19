@@ -136,6 +136,11 @@ Library 请求同时绑定迁移代次和安装批准，根解析、排队及开
   但当前 Host 不展示、不授权、也不因此阻止安装或发布。
   未来 Host 识别该字段后，才按正常的能力展示和运行时守门链路启用。不能把
   未知字段猜成现有权限，也不能让它意外获得能力。
+- 顶层 `showTaskPreferences?: boolean` 仅控制宿主「模型与任务」默认配置卡的显示。
+  省略或 `true` 沿用原有能力条件；`false` 隐藏 Desktop 和手机上的该卡，由插件提供自己的配置界面。
+  任务 API、已有配置的读取和执行规则、权限检查及安装确认均不改变。此字段不是能力授权，
+  无相应能力时设为 `true` 也不会新增卡片。旧客户端不识别时仍显示原卡片。
+  实现见 `ghostPluginViewModel.ts`、`mobilePageService.ts`；作者用法见 `FORGE_GUIDE` §4.8。
 - `agent.tasks` 另需 Host receipt 的显式任务能力批准事实；旧 receipt 没有该事实时，
   只在首次任务能力调用通过既有宿主权限界面确认，原插件的启用态、其它能力、凭证和
   设置保持不变。拒绝、窗口不可用、账号或安装版本变化均不授予任务权限；同能力更新
@@ -223,6 +228,9 @@ Library 请求同时绑定迁移代次和安装批准，根解析、排队及开
     全部条目。首次安装展示全部权限并确认；更新相对当前已装版本按 `diffInstalledGhostPermissionItems`
     比较，新增条目、同 key 条目内容变化或内置 OAuth 客户端变化才算权限变多，只删除不算；
     已装版本没有有效批准基线时按全部权限新增处理。
+    邮件的 `mail`、`mailReader.tool`、逐个 reader host 和 `markRead: true` 分别进入权限投影；
+    复用既有工具也不能隐藏新增邮件能力。域名重排／去重不算扩权，只移除邮件能力不要求确认。
+    同一投影用于插件详情、首装与更新确认；不新增批准记录或要求存量插件重新配置。
   - 入口与确认界面：插件页、拖入、双击 `.cindy` 与设置页导入由发起窗口弹确认框
     （`GhostInstallConsentWindowBridge` → `GhostInstallConsentHost`，只投给、也只接受发起安装
     的那个 webContents）；Agent 调用 `ghost_market_install`／`ghost_forge_install` 不论任务权限档

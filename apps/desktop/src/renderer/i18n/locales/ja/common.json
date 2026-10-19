@@ -1,4 +1,5 @@
 {
+  "mailReader": {"markReadFailed":"既読状態を同期できませんでした。メールボックスの認証を確認して開き直してください。","title":"メール","openMailbox":"メールボックスで開く","loading":"メールを読み込み中…","failed":"メールを読み込めませんでした。接続したアカウントを確認して再試行するか、メールボックスで開いてください。","retry":"再試行","to":"宛先","cc":"Cc","bcc":"Bcc","subject":"件名","currentMessage":"現在のメール","messageCount_other":"{{count}} 件のメール","messageCount_one":"{{count}} 件のメール","showMessages_other":"{{count}} 件のメールを表示","showMessages_one":"{{count}} 件のメールを表示","expandMessage":"{{from}} からのメールを展開","collapseMessage":"{{from}} からのメールを折りたたむ","conversationFailed":"前後のメールを読み込めませんでした。","messageCount":"{{count}} 件のメール","showMessages":"{{count}} 件のメールを表示"},
   "logSupport": {
     "title": "ログとフィードバック",
     "localFiles": "問題が発生した日のログを選択してください。未マスキングのため、共有前に内容を確認してください。",
@@ -6538,6 +6539,11 @@
         "unknownReviewerDetail": "審査情報はありますが、現在の Cindy は審査キーを認識していないため、審査済みとは表示しません。"
       },
       "perm": {
+        "mail": "メールの下書き・送信カードを使用",
+        "mailDetail": "カードで下書きを編集・同期し、送信前に確認と取り消しカウントダウンを表示します。",
+        "mailReader": "アプリ内でメールを表示",
+        "mailReaderHost": "{{host}} のメールリンクをアプリ内で開く",
+        "mailMarkRead": "開いたメールを既読にする",
         "grantsTitle": "インストール後に持つ権限:",
         "toolsGroup": "登録ツール",
         "toolsDiffGroup": "登録ツールの変更",
@@ -10963,6 +10969,13 @@
     "verificationFailed": "ChatGPT ログインが復旧したか確認できませんでした。再確認してください。"
   },
   "chat": {
+    "imageDelivery": {
+      "stored": "画像を受け取りました",
+      "failed": "画像の転送に失敗しました。既存の画像の転送を再試行できます。",
+      "retry": "転送を再試行",
+      "retrying": "転送中…",
+      "retryFailed": "転送できません。画像を生成したパソコンがオンラインか確認してください。"
+    },
     "failedSamplingAttempt": "この返信は完了しませんでした。内容は参考情報としてご覧ください。",
     "jumpToBottom": "一番下へ移動",
     "prevMessageJump": "前の質問へ移動：{{preview}}",
@@ -11991,7 +12004,17 @@
       "linkConfirmHint": "このリンクはプラグインが提供したもので、ブラウザで開きます:",
       "linkConfirmOpen": "開く",
       "linkConfirmCancel": "キャンセル",
-      "linkOpenFailed": "リンクを開けませんでした"
+      "expandFields": "展開",
+      "collapseFields": "折りたたむ",
+      "formSyncFailed": "カードの変更を同期できませんでした。接続を確認して編集を続けてください。メッセージは未送信です。",
+      "linkOpenFailed": "リンクを開けませんでした",
+      "mailPreview": "メールプレビュー",
+      "mailEnlarge": "拡大表示",
+      "mailInsertImage": "本文に挿入",
+      "mailAttach": "添付ファイルを追加",
+      "mailRemoveAttachment": "{{name}}を削除",
+      "mailUpdated": "更新済みの下書き（読み取り専用）",
+      "mailLegacy": "下書きの履歴（読み取り専用）"
     },
     "ghostHook": {
       "blockedFallback": "メッセージはプラグインによりブロックされました(未送信)",

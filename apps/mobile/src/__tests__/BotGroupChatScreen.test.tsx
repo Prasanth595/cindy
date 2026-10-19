@@ -8,6 +8,8 @@ const h = vi.hoisted(() => ({
   chat: null as any,
   management: null as any,
   alert: vi.fn(),
+  leaveGuard: [] as boolean[],
+  leaveDecision: (async () => false) as () => Promise<boolean>,
   confirm: vi.fn(),
   leave: vi.fn(),
   focused: true,
@@ -105,6 +107,7 @@ vi.mock('@/components/AppText', () => ({
   TextInput: ({ testID, ...props }: any) => { h.inputs[testID] = props; return el('input', { 'data-testid': testID, value: props.value ?? '', readOnly: true }); },
 }));
 vi.mock('@/components/PaperPlaneIcon', () => ({ PaperPlaneIcon: () => null }));
+vi.mock('@/session/useConfirmLeaveWhileUploading', () => ({ useConfirmLeaveWhileUploading: (active: boolean) => { h.leaveGuard.push(active); return () => h.leaveDecision(); } }));
 vi.mock('@/components/MobilePrimitives', () => ({
   MainWindowActionButton: ({ action }: any) => el('button', {
     'data-testid': action.testID, 'aria-label': action.accessibilityLabel, 'aria-busy': action.busy ? 'true' : undefined,
@@ -278,7 +281,7 @@ beforeEach(() => {
   h.uuid = 0; h.inputs = {}; h.teammateQuery = ''; h.teammates = { rows: [], loading: false, failed: false };
   h.platform.OS = 'ios'; h.focused = true; h.keyboardAvoidingView = null; h.headerBlur = []; h.headerFade = [];
   h.chat = { reload: vi.fn(), act: vi.fn(async () => ({ effects: [] })), online: true };
-  h.discarded = []; h.deleted = [];
+  h.discarded = []; h.deleted = []; h.leaveGuard = []; h.leaveDecision = async () => false;
   h.local = {
     options: null, setPending: null,
     addImages: vi.fn(), addDocument: vi.fn(), addPastedImages: vi.fn(), enqueueUploads: vi.fn(),
@@ -872,6 +875,39 @@ describe('group attachments', () => {
     await click('tray.attachment.att-3');
     expect(h.discarded).toEqual([photo]);
     expect(byId('botGroup.attachmentTray')).toBeNull();
+  });
+
+  // Leaving mid-upload drops the photo: ask first, and never send the text alone.
+  it('asks before leaving while a send waits on an upload, and sends nothing once left', async () => {
+    await render(group({ openPlan: null, supportsAttachments: true }));
+    await focusComposer();
+    await act(async () => { h.row.onChangeText('配图'); });
+    let settle!: (result: { failedCount: number; abandoned: boolean }) => void;
+    h.local.wait.mockImplementationOnce(() => new Promise((resolve) => { settle = resolve; }));
+    await click('botGroup.composer.send');
+    expect(h.leaveGuard.at(-1)).toBe(true);
+    await act(async () => settle({ failedCount: 0, abandoned: true }));
+    expect(h.chat.act).not.toHaveBeenCalled();
+    expect(h.leaveGuard.at(-1)).toBe(false);
+  });
+
+  // The leave dialog stays open after the upload settles: nothing may be sent before the answer.
+  it('holds the send for an open leave dialog, then sends or drops it by the answer', async () => {
+    await render(group({ openPlan: null, supportsAttachments: true }));
+    await focusComposer();
+    await act(async () => { h.row.onChangeText('配图'); });
+    let answer!: (discard: boolean) => void;
+    h.leaveDecision = () => new Promise((resolve) => { answer = resolve; });
+    await click('botGroup.composer.send');
+    expect(h.chat.act).not.toHaveBeenCalled();
+    await act(async () => answer(false));
+    expect(h.chat.act).toHaveBeenCalledTimes(1);
+
+    h.chat.act.mockClear();
+    await act(async () => { h.row.onChangeText('再来一条'); });
+    await click('botGroup.composer.send');
+    await act(async () => answer(true));
+    expect(h.chat.act).not.toHaveBeenCalled();
   });
 
   it('reclaims unsent uploads when the chat closes', async () => {
