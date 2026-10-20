@@ -241,6 +241,13 @@ describe('nextRun', () => {
     }
   });
 
+  it('Lord Howe 亚小时跳时：不存在的整点直接前进到下一合法小时', () => {
+    const from = Date.UTC(2026, 9, 3, 15, 29, 0); // local 2026-10-04 01:59, next is 02:30
+    const next = nextRun('0 * * * *', from, 'Australia/Lord_Howe');
+    expect(next).toBe(Date.UTC(2026, 9, 3, 16, 0, 0)); // local 03:00 after the 30m gap
+    expect(next).toBeGreaterThan(from);
+  });
+
   it('DST fall-back overlap: ambiguous wall time resolves to the later occurrence', () => {
     // 01:00 on 2026-11-01 in NY exists twice (05:00Z EDT and 06:00Z EST).
     expect(fromWallClock(2026, 11, 1, 1, 0, 'America/New_York'))

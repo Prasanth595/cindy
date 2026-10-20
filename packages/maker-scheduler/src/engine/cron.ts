@@ -282,23 +282,29 @@ export function nextRun(expr: string, fromMs: number, tz: string): number {
 
     if (!cron.minute.includes(w.mi)) {
       const next = nextOrWrap(cron.minute, w.mi);
-
-      // A sub-hour fall-back can leave us in the same wall-clock hour after
-      // the UTC +1h hop below.  Try every cron minute in the current wall
-      // hour first: fromWallClock resolves an overlap to its later occurrence,
-      // so a minute that wrapped numerically (for example 01:45 after 01:50)
-      // can still be a future instant in the repeated segment.
-      const sameHourCandidates = cron.minute
-        .map((minute) => fromWallClock(w.y, w.mo, w.d, w.h, minute, tz))
-        .filter((candidate) => candidate > fromMs);
-      if (sameHourCandidates.length > 0) {
-        cur = Math.min(...sameHourCandidates);
-        continue;
-      }
-
       if (next > w.mi) {
         cur = fromWallClock(w.y, w.mo, w.d, w.h, next, tz);
       } else {
+        // A sub-hour fall-back can leave us in the same wall-clock hour after
+        // the UTC +1h hop below. Try every cron minute in the current wall
+        // hour only for this wrap case: fromWallClock resolves an overlap to
+        // its later occurrence, so a minute that wrapped numerically (for
+        // example 01:45 after 01:50) can still be future in the repeated
+        // segment. Gap conversion is accepted only when it round-trips to the
+        // requested wall minute; otherwise the same clamped instant would be
+        // selected on every iteration.
+        const sameHourCandidates = cron.minute
+          .map((minute) => fromWallClock(w.y, w.mo, w.d, w.h, minute, tz))
+          .filter(
+            (candidate, index) =>
+              candidate > fromMs &&
+              wallClockEquals(candidate, w.y, w.mo, w.d, w.h, cron.minute[index], tz),
+          );
+        if (sameHourCandidates.length > 0) {
+          cur = Math.min(...sameHourCandidates);
+          continue;
+        }
+
         // Wrap into the next distinct wall-clock hour. A plain +1h UTC hop
         // can remain inside a repeated hour after a 30-minute fall-back, so
         // advance by at most four hourly probes until the wall hour changes.
