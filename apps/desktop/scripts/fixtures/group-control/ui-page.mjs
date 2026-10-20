@@ -76,8 +76,10 @@ export default {
       assert.equal(await preview.locator(':scope > span[aria-hidden="true"] > *').count(), 3);
       const description = await preview.getAttribute('aria-describedby');
       const summary = await page.locator(`[id="${description}"]`).textContent();
-      assert.ok(summary.includes('Nova:') && summary.includes('You:'));
-      assert.ok(!summary.includes('Aster:') && !summary.includes('我先补上截图'));
+      assert.equal(summary.match(/You:/g)?.length, 2);
+      assert.ok(!summary.includes('Aster:') && !summary.includes('Nova:'));
+      // Older hosts omit responders: the existing replies-only preview still works.
+      assert.equal(await page.locator('[data-thread-preview="q4"] > span[aria-hidden="true"] > *').count(), 3);
       const row = '[data-bot-group-message-id="a1"]';
       const toolbar = page.locator(`${row} [data-bot-group-message-actions]`);
       await answer.hover();

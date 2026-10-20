@@ -2248,6 +2248,14 @@ canonical 主任务时，宿主额外追加 `resourceCollectionId=teammates&reso
 不识别它们的旧控制端仍按普通任务打开。拼接后超过 `NOTIFY_DEEP_LINK_MAX_LENGTH` 时回退为原深链。
 委派的独立 Session 任务和普通任务不带这组参数。不修改 notify 帧结构、relay 或协议版本。
 
+## 群聊话题预览回复者
+
+`BotGroupThreadPreview` 可选增加 `responders`（回复 ID、作者类别、成员 ID、名字），
+与最近两条 `replies` 摘要分开。Desktop 从已读取的窗口按服务端作者 ID 去重后取最多三位，
+不增加网络读取预算。新查看端遇到旧宿主没有此字段时沿用 replies 去重回退；旧查看端忽略
+新字段，继续读取原有两条摘要。Mobile 现有消费路径不渲染该预览字段；无新 channel、
+服务端接口、权限、数据库或原生配置变更。
+
 ## 伙伴群聊手机端（Remote Resource 与群推送深链）
 
 群聊以新的 Remote Resource collection `bot-groups`（`resourceKind: bot-group`，无 placement）接入控制端，

@@ -1070,7 +1070,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     shownShares: Array<{ id: string; messageId: string; threadRootId: string; sharerId?: string }> = []) {
     // Taken before reading, so a change while this read is in progress marks it stale.
     const version = threads.version(roomId);
-    const previews = withPreviews ? threads.previews(roomId, page, snapshot) : new Map<string, Message[]>();
+    const previews = withPreviews ? threads.previews(roomId, page, snapshot) : new Map<string, { replies: Message[]; responders: Message[] }>();
     const sources = threads.sources(roomId, [...page.flatMap(m => readBotGroupThreadShareCard(m)?.messageId ?? []),
       ...shownShares.map(share => share.messageId)], [...snapshot, ...page]);
     const shareable = [...sources.values()].filter((m): m is Message => !!m && isShareableThreadReply(m));
@@ -1089,13 +1089,18 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     for (const view of views) {
       const message = byId.get(view.id);
       if (!message) continue;
-      const replies = previews.get(message.id)?.flatMap(reply => {
+      const preview = previews.get(message.id);
+      const replies = preview?.replies.flatMap(reply => {
         const replyView = messageView(reply, members);
         return replyView.kind === 'message' ? [{ id: reply.id, authorKind: replyView.authorKind, authorBotId: replyView.authorBotId,
           authorName: replyView.authorName, isSelf: replyView.isSelf, text: threadPreviewText(reply),
           attachments: threadPreviewAttachments(reply, attachmentName), createdAt: replyView.createdAt }] : [];
       });
-      if (replies?.length) view.threadPreview = { replies };
+      if (replies?.length) view.threadPreview = { replies, responders: preview!.responders.flatMap(reply => {
+        const author = messageView(reply, members);
+        return author.kind === 'message' ? [{ id: reply.id, authorKind: author.authorKind,
+          authorBotId: author.authorBotId, authorName: author.authorName }] : [];
+      }) };
       const card = readBotGroupThreadShareCard(message);
       if (card) view.threadShare = shareView(card, message.authorId);
     }

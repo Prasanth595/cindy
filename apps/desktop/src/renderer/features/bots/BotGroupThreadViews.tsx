@@ -67,7 +67,7 @@ export function BotGroupThreadPreview({ message, members, onOpen }: {
   const latestAt = latest ? new Date(latest.createdAt).toISOString() : undefined;
   const relative = useRelativeTime(latestAt, { hovered });
   if (count <= 0) return null;
-  const repliers = replies.filter((reply, index) =>
+  const repliers = message.threadPreview?.responders ?? replies.filter((reply, index) =>
     replies.findIndex(other => (other.authorBotId ?? other.authorName) === (reply.authorBotId ?? reply.authorName)) === index).slice(-3);
   return (
     <button type="button" data-thread-preview={message.id} {...{ [SHARE_EXCLUDE_ATTR]: '' }}

@@ -9,7 +9,7 @@
  * Shares: a share card only names a reply. Its author, text and files always come from
  * the server's copy of that reply, which the server checks against this reader's access.
  */
-import { BOT_GROUP_THREAD_PREVIEW_REPLIES, readBotGroupThreadShareCard } from '../../shared/botGroupChat.js';
+import { BOT_GROUP_THREAD_PREVIEW_REPLIES, BOT_GROUP_THREAD_PREVIEW_RESPONDERS, readBotGroupThreadShareCard } from '../../shared/botGroupChat.js';
 
 export interface ThreadMessage {
   id: string; seq: string; authorId: string; deleted: boolean; threadRootId: string | null;
@@ -135,7 +135,7 @@ export function createThreadProjection<M extends ThreadMessage>(io: {
      * Newest replies of every root in `page` that are known now, chronological. `snapshot`
      * is the server's newest-first window across the main chat and all threads.
      */
-    previews(roomId: string, page: readonly M[], snapshot: readonly M[]): Map<string, M[]> {
+    previews(roomId: string, page: readonly M[], snapshot: readonly M[]): Map<string, { replies: M[]; responders: M[] }> {
       const complete = snapshot.length < SNAPSHOT_WINDOW;
       const inWindow = new Map<string, M[]>();
       for (const message of snapshot) {
@@ -153,7 +153,7 @@ export function createThreadProjection<M extends ThreadMessage>(io: {
         const cacheKey = key(roomId, root.id);
         const cached = previews.get(cacheKey);
         // The window is a suffix of the room's sequence, so what it holds is the newest.
-        if (complete || found.length >= Math.min(count, BOT_GROUP_THREAD_PREVIEW_REPLIES)) result.set(root.id, found);
+        if (complete || found.length >= Math.min(count, BOT_GROUP_THREAD_PREVIEW_RESPONDERS)) result.set(root.id, found);
         // A same count can hide a new reply beside a deleted old one: what the window holds
         // comes first, and the cached page only fills in below it.
         else if (cached?.replyCount === count) result.set(root.id, [...found,
@@ -161,7 +161,7 @@ export function createThreadProjection<M extends ThreadMessage>(io: {
         else if (!waiting(cacheKey)) missing.push({ cacheKey, item: root });
       }
       fill(roomId, missing, async root => {
-        const wanted = Math.min(root.replyCount ?? 0, BOT_GROUP_THREAD_PREVIEW_REPLIES);
+        const wanted = Math.min(root.replyCount ?? 0, BOT_GROUP_THREAD_PREVIEW_RESPONDERS);
         const replies: M[] = [];
         let before: string | undefined;
         for (let pages = 0; pages < FALLBACK_PAGES && replies.length < wanted; pages += 1) {
@@ -172,9 +172,17 @@ export function createThreadProjection<M extends ThreadMessage>(io: {
         }
         return () => previews.set(key(roomId, root.id), { replyCount: root.replyCount ?? 0, replies });
       });
-      for (const [rootId, replies] of result)
-        result.set(rootId, replies.slice(0, BOT_GROUP_THREAD_PREVIEW_REPLIES).reverse());
-      return result;
+      // Keep the existing read budget: choose distinct authors from all rows already
+      // fetched, without reading older pages just to fill the avatar slots.
+      return new Map([...result].map(([rootId, replies]) => {
+        const seen = new Set<string>();
+        const responders = replies.filter(reply => {
+          if (seen.has(reply.authorId)) return false;
+          seen.add(reply.authorId);
+          return true;
+        }).slice(0, BOT_GROUP_THREAD_PREVIEW_RESPONDERS).reverse();
+        return [rootId, { replies: replies.slice(0, BOT_GROUP_THREAD_PREVIEW_REPLIES).reverse(), responders }];
+      }));
     },
     /**
      * The replies named by share cards in `page`: a message, `null` when this reader may
