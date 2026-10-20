@@ -77,33 +77,15 @@ describe('Worker project HEAD probe', () => {
   });
 });
 
-// Unit: import the same IPC adapter used by register.ts and use real device-link identity.
+// Unit: import the project extension parser used by both register.ts creation entries,
+// plus the actual project read handlers; use real device-link identity.
 // PR1 requires local project options to stay local; service tests bypass this boundary.
-// One new local field is enough to reject a remote request before any lifecycle mutation.
+// One new local field must fail parsing before a caller can reach lifecycle creation.
+// The existing makerSendToSessionOrdering guard protects lifecycle delegation in register.ts.
 const projectChannels = ['maker:worker:project-context', 'maker:worker:project-label'];
 const creationChannels = [MAKER_INVOKE.WORKER_CREATE, MAKER_INVOKE.SESSION_ENABLE_ORCA];
 type Handler = (event: unknown, ...args: unknown[]) => Promise<unknown>;
 function ipcHarness(ssh = false) {
-  const createWorker = vi.fn(async (_params: unknown) => ({
-    ok: true as const,
-    teamId: 'team',
-    resolved: {
-      agent: 'codex' as const,
-      model: 'model',
-      effort: null,
-      fastMode: false,
-      providerId: null,
-      role: 'developer',
-      label: 'developer',
-    },
-    workerId: 'worker',
-    workerSessionId: 'worker-session',
-  }));
-  const enableTeam = vi.fn(async (_params: unknown) => ({
-    teamId: 'team',
-    workerId: 'worker',
-    workerSessionId: 'worker-session',
-  }));
   const lead = {
     id: 'lead',
     remoteHostId: ssh ? 'ssh-host' : null,
@@ -141,14 +123,9 @@ function ipcHarness(ssh = false) {
     probe,
     remember,
     getTeamByWorkerSession: async () => ({ leadSessionId: 'lead' }),
-    assertLeadCollabProjectEnabled: vi.fn(async () => {}),
-    createWorker,
-    enableTeam,
     log: { warn: vi.fn() },
   });
   const handlers = new Map<string, Handler>([
-    [MAKER_INVOKE.WORKER_CREATE, (event, body) => adapters.create(event, body)],
-    [MAKER_INVOKE.SESSION_ENABLE_ORCA, (event, id, opts) => adapters.enable(event, id, opts)],
     [projectChannels[0]!, (event, id, directory) => adapters.context(event, id, directory)],
     [projectChannels[1]!, (event, id) => adapters.label(event, id)],
   ]);
@@ -159,10 +136,19 @@ function ipcHarness(ssh = false) {
       ? runDeviceLinkInvokeContext({ controllerDeviceId: 'controller', channel }, call)
       : call();
   };
+  const options = (
+    fields: Record<string, unknown>,
+    remote = true,
+    channel: string = MAKER_INVOKE.WORKER_CREATE,
+  ) => {
+    const call = () => adapters.options({}, 'lead', fields);
+    return remote
+      ? runDeviceLinkInvokeContext({ controllerDeviceId: 'controller', channel }, call)
+      : call();
+  };
   return {
     invoke,
-    createWorker,
-    enableTeam,
+    options,
     getSession,
     readContext,
     probe,
@@ -190,12 +176,6 @@ const legacyWireFields = {
   },
   'desktop-execution-dir': { executionDeviceId: ' execution-pc ', workingDir: ' /remote/project ' },
 };
-const createBody = { leadSessionId: 'lead', role: 'developer', label: 'developer', agent: 'codex' };
-const argsFor = (channel: string, fields: Record<string, unknown>) =>
-  channel === MAKER_INVOKE.WORKER_CREATE
-    ? [{ ...createBody, ...fields }]
-    : ['lead', { workerAgent: 'codex', role: 'developer', label: 'developer', ...fields }];
-
 describe('Worker project IPC cross-device boundary', () => {
   it.each(
     creationChannels.flatMap((channel) =>
@@ -213,58 +193,46 @@ describe('Worker project IPC cross-device boundary', () => {
       const h = ipcHarness();
       const value = field === 'worktree' ? { sourceBranch: 'main' } : path.resolve('local-project');
       await expect(
-        h.invoke(
+        h.options(
+          { [field]: value, ...(execution ? { executionDeviceId: 'execution-pc' } : {}) },
+          true,
           channel,
-          argsFor(channel, {
-            [field]: value,
-            ...(execution ? { executionDeviceId: 'execution-pc' } : {}),
-          }),
         ),
       ).rejects.toMatchObject({ code: 'PERMISSION_DENIED' });
-      expect(h.createWorker).not.toHaveBeenCalled();
-      expect(h.enableTeam).not.toHaveBeenCalled();
+      expect(h.getSession).not.toHaveBeenCalled();
       expect(h.readContext).not.toHaveBeenCalled();
       expect(h.probe).not.toHaveBeenCalled();
       expect(h.remember).not.toHaveBeenCalled();
     },
   );
   it.each(creationChannels)(
-    'rejects SSH project creation through %s before lifecycle',
+    'rejects local project options for an SSH Lead through %s',
     async (channel) => {
       const h = ipcHarness(true);
       await expect(
-        h.invoke(channel, argsFor(channel, { worktree: { sourceBranch: 'main' } }), false),
+        h.options({ worktree: { sourceBranch: 'main' } }, false, channel),
       ).rejects.toMatchObject({ code: 'INVALID_PARAMS' });
-      expect(h.createWorker).not.toHaveBeenCalled();
-      expect(h.enableTeam).not.toHaveBeenCalled();
       expect(h.remember).not.toHaveBeenCalled();
     },
   );
-  // PR1's new local fields must reach creation, while project history is success-only.
-  // Legacy wire cases cannot catch accidentally dropping the new local placement fields.
-  it.each(
-    creationChannels.flatMap((channel) => [false, true].map((fails) => ({ channel, fails }))),
-  )(
-    'forwards local project fields and records only successful creation: $channel fails=$fails',
-    async ({ channel, fails }) => {
+
+  // Parsing exposes only the extension fields and a deferred success callback. It must
+  // not write history while validation/creation can still fail; register owns dispatch.
+  it.each(creationChannels)(
+    'returns local fields and defers history until success through %s',
+    async (channel) => {
       const h = ipcHarness();
-      const downstream = channel === MAKER_INVOKE.WORKER_CREATE ? h.createWorker : h.enableTeam;
-      if (fails) downstream.mockRejectedValueOnce(new Error('creation failed'));
       const directory = path.resolve('selected-project');
       const worktree = { sourceBranch: 'feature' };
-      const pending = h.invoke(
-        channel,
-        argsFor(channel, { workingDir: directory, worktree, projectPath: directory }),
+      const project = await h.options(
+        { workingDir: directory, worktree, projectPath: directory },
         false,
+        channel,
       );
-      if (fails) await expect(pending).rejects.toThrow('creation failed');
-      else await expect(pending).resolves.toMatchObject({ workerSessionId: 'worker-session' });
-      expect(downstream).toHaveBeenCalledWith(
-        expect.objectContaining({ workingDir: directory, worktree }),
-      );
-      expect(downstream.mock.calls[0]![0]).not.toHaveProperty('projectPath');
-      if (fails) expect(h.remember).not.toHaveBeenCalled();
-      else expect(h.remember).toHaveBeenCalledExactlyOnceWith(directory, 'owner');
+      expect(project.fields).toEqual({ workingDir: directory, worktree });
+      expect(h.remember).not.toHaveBeenCalled();
+      await project.remember();
+      expect(h.remember).toHaveBeenCalledExactlyOnceWith(directory, 'owner');
     },
   );
   it.each(projectChannels.flatMap((channel) => [false, true].map((ssh) => ({ channel, ssh }))))(
@@ -293,33 +261,19 @@ describe('Worker project IPC cross-device boundary', () => {
         client,
       })),
     ),
-  )('preserves legacy fields for $client through $channel', async ({ channel, client }) => {
-    const h = ipcHarness();
-    const execution = client !== 'mobile-default';
-    const fields = legacyWireFields[client as keyof typeof legacyWireFields];
-    await expect(h.invoke(channel, argsFor(channel, fields))).resolves.toMatchObject({
-      workerSessionId: 'worker-session',
-    });
-    const expected = {
-      leadSessionId: 'lead',
-      role: 'developer',
-      label: 'developer',
-      model: client === 'mobile-execution-dir' ? 'chosen-model' : undefined,
-      effort: client === 'mobile-execution-dir' ? 'high' : undefined,
-      fast: client === 'mobile-execution-dir' ? false : undefined,
-      providerId: client === 'mobile-execution-dir' ? 'provider' : undefined,
-      workerPermissionMode: client.startsWith('mobile') ? 'auto' : undefined,
-      ...(execution ? { executionDeviceId: 'execution-pc', workingDir: '/remote/project' } : {}),
-      ...(channel === MAKER_INVOKE.WORKER_CREATE
-        ? { agent: 'codex', initialTask: undefined }
-        : { workerAgent: 'codex', delegateTask: undefined, deferDelegateTask: undefined }),
-    };
-    const downstream = channel === MAKER_INVOKE.WORKER_CREATE ? h.createWorker : h.enableTeam;
-    expect(downstream).toHaveBeenCalledExactlyOnceWith(expected);
-    expect(h.trustedRenderer).not.toHaveBeenCalled();
-    expect(h.getSession).not.toHaveBeenCalled();
-    expect(h.remember).not.toHaveBeenCalled();
-  });
+  )(
+    'adds no project fields or history for released $client through $channel',
+    async ({ channel, client }) => {
+      const h = ipcHarness();
+      const fields = legacyWireFields[client as keyof typeof legacyWireFields];
+      const project = await h.options(fields, true, channel);
+      expect(project.fields).toEqual({});
+      await project.remember();
+      expect(h.trustedRenderer).not.toHaveBeenCalled();
+      expect(h.getSession).not.toHaveBeenCalled();
+      expect(h.remember).not.toHaveBeenCalled();
+    },
+  );
 });
 
 // Performance regression, unit: recent lists can contain hundreds of projects. Existing
