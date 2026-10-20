@@ -58,6 +58,35 @@ describe('mobile voice credential sync desktop bootstrap path', () => {
     expect(deviceLinkHost).toContain('isPermanentSubscriptionReplayError(error, presenceAvailableByDevice.get(deviceId))');
   });
 
+  it('出站 link 被(重)接受时重放该设备订阅：被控端 relay 闪断清注册对本机不可见也能收敛', () => {
+    // 失效后果(2026-10-20 线上事故):被控端 relay 探活超时 3s 重连,deactivateAllControllers
+    // 清掉它那边本机的活跃订阅注册;本机 relay/presence/熔断全程无感知,传输层 link 经
+    // replay 透明恢复,既有的 ws-online/presence/熔断恢复触发器一个都不 firing——push 驱动的
+    // 列表 running 转圈与完成未读绿点永久冻结在旧值,新运行的远程任务不显示状态,
+    // 而 invoke 与 session 事件流完全正常。onPeerStreamAccepted 是「已验证握手完成、
+    // 对端恢复业务帧投递之前」的唯一本地时点,订阅重放必须挂在这里;provider-share
+    // guest 只轮询不订阅(协议契约),是唯一被排除的 peer 类型。该接线在 Electron
+    // bootstrap 内构造的 client 回调上,无法脱离 Electron 单测隔离,按 guard 锁定
+    // (同本文件既有触发器断言)。
+    const deviceLinkHost = readFileSync(resolve(mainRoot, 'device-link/index.ts'), 'utf8');
+
+    const handlerStart = deviceLinkHost.indexOf('client.onPeerStreamAccepted((peer, streamId) => {');
+    expect(handlerStart).toBeGreaterThanOrEqual(0);
+    // provider-share guest 只轮询不订阅(协议契约),不得触发重放;普通设备与
+    // shared task peer(guest 对共享宿主持的是普通 session 订阅)都必须覆盖。
+    const guard = deviceLinkHost.indexOf('if (!isProviderSharePeer(peer)) {', handlerStart);
+    expect(guard).toBeGreaterThan(handlerStart);
+    const replay = deviceLinkHost.indexOf(
+      'replayActiveSubscriptions(`link-accepted:${peer.slice(0, 8)}`, peer);',
+      guard,
+    );
+    expect(replay).toBeGreaterThan(guard);
+    // 重放必须位于 shared-host 早退分支之前:普通设备不能被 return 跳过;
+    // shared task peer 同样先经重放,再进入既有 host 流追踪逻辑。
+    const sharedHostReturn = deviceLinkHost.indexOf("parseSharedTaskPeer(peer)?.role !== 'host'", replay);
+    expect(sharedHostReturn).toBeGreaterThan(replay);
+  });
+
   it('每个 relay 连接代上线时从设备目录补齐展示名与已在线桌面', () => {
     const deviceLinkHost = readFileSync(resolve(mainRoot, 'device-link/index.ts'), 'utf8');
 

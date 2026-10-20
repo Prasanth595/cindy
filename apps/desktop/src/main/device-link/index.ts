@@ -22,6 +22,7 @@ import WebSocket from 'ws';
 import {
   DeviceLinkClient,
   FILE_PEER_CHANNEL,
+  isProviderSharePeer,
   isScopedPeer,
   parseSharedTaskPeer,
   probeSharedTaskHost,
@@ -1012,6 +1013,17 @@ export function initDeviceLinkService(options: DeviceLinkServiceOptions = {}): v
   startBusyReporting();
 
   client.onPeerStreamAccepted((peer, streamId) => {
+    // 出站 link 被(重)接受 = 已验证握手完成、对端恢复业务帧投递之前的唯一时点。
+    // 对端 relay 闪断重连会清掉它那边本机的活跃订阅注册(deactivateAllControllers),
+    // 而本机 relay/presence/熔断可能全程无感知(传输层 link 经 replay 透明恢复),
+    // 若只等 ws-online / presence / 熔断恢复这些既有事件才重订,push 驱动的
+    // 列表与活动镜像会永久静默缺流(2026-10-20 线上:被控端 relay 探活超时 3s 重连后,
+    // 控制端列表 running/未读状态永久冻结,invoke 与 session 事件流却正常)。
+    // 订阅按既有契约幂等,重放经调度器按 peer 串行去重;无订阅快照的 peer 是 no-op;
+    // provider-share guest 只轮询不订阅,排除在外。
+    if (!isProviderSharePeer(peer)) {
+      replayActiveSubscriptions(`link-accepted:${peer.slice(0, 8)}`, peer);
+    }
     if (parseSharedTaskPeer(peer)?.role !== 'host' || sharedHostStreams.get(peer)?.streamId === streamId) return;
     sharedHostStreams.set(peer, { streamId, epoch: ++sharedHostSourceEpoch });
   });
