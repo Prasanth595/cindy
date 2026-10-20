@@ -33,6 +33,7 @@ import {
   parseTransportAck,
   parseTransportPayload,
 } from '../transport.js';
+import { PLUGIN_SYNC_CHANNEL } from '../pluginSyncProtocol.js';
 import { DL_CONTACTS_SYNC_CHANNEL } from '../contactsSyncProtocol.js';
 import { resolveRemoteInvokeTimeoutMs } from '../invokePolicy.js';
 import { SESSION_ACTIVITY_CHANNEL } from '../topics.js';
@@ -3455,7 +3456,8 @@ describe('DeviceLinkClient', () => {
     h.client.stop();
   });
 
-  it('显式 close 后词典只读快照 push 仍走 unlinked legacy,不报 LINK_NOT_OPEN', async () => {
+  // PR #6569: plugin data sync remains independent from the control link (unit wire fixture).
+  it.each(['device-link:voice:dictionary:snapshot', PLUGIN_SYNC_CHANNEL])('显式 close 后 %s push 仍走 unlinked legacy,不报 LINK_NOT_OPEN', async (channel) => {
     const h = makeHarness({ timing: { pingIntervalMs: 1_000 } });
     h.client.start();
     await tick();
@@ -3488,7 +3490,7 @@ describe('DeviceLinkClient', () => {
     const sentBefore = h.current().sent.length;
     expect(() => h.client.sendPush(
       'dev-b',
-      'device-link:voice:dictionary:snapshot',
+      channel,
       { ok: true, entries: [] },
     )).not.toThrow();
     const sent = h.current().sent.at(-1)!;
@@ -3496,7 +3498,7 @@ describe('DeviceLinkClient', () => {
     expect(sent).toMatchObject({
       kind: 'push',
       dst: 'dev-b',
-      payload: { channel: 'device-link:voice:dictionary:snapshot' },
+      payload: { channel },
     });
     expect(parseTransportPayload(sent.payload)).toBeNull();
     h.client.stop();
