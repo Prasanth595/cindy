@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import ts from 'typescript';
 import { createSessionExecutionResolver } from '../sessionExecutionSelection.js';
 import { Session } from '@cindy/maker-core';
+import { fastModeToStorage } from '@cindy/maker-shared';
 import {
   createPluginTaskService,
   isPluginTaskPermissionAllowed,
@@ -39,7 +40,7 @@ it.each([false,true])('production Auto context checks uninstall after its projec
     const epoch={client:{drizzle:{select:()=>query},queryOne:async()=>({unchanged:1}),tx:async()=>{if(revoked)await f.service.withUninstall('p',async()=>{});return {};}}};
     let load!:(id:string)=>Promise<unknown>;
     const deps={setAutoReviewContextResolver:(callback:typeof load)=>{load=callback;},createPluginTaskReviewResolver:(callback:typeof load)=>callback,
-      getCurrentDbClientSnapshot:()=>epoch,sessions:{},orcaWorkers:{},orcaTeams:{},eq:()=>true,
+      getCurrentDbClientSnapshot:()=>epoch,sessions:{},orcaWorkers:{},orcaTeams:{},eq:()=>true,fastModeToStorage,
       createPluginTaskStore:()=>f.deps.store,drainPersistQueue:async()=>{},
       pluginTaskServiceForCurrentOwner:()=>f.service,readPluginTaskConfig:()=>({permissionMode:'auto'}),
       readPluginTaskPlanReceipt,pluginTaskAuthorizationRevision:()=> 'new-install',isPluginTaskAuthorized:()=>true};
