@@ -12,7 +12,7 @@ import { RecentMessageHistories, MessageHistoryOverlay } from '@/session/RecentM
 import { rememberRecentTask } from '@/session/recentTasks';
 import { SystemNavigationBack, useSystemNavigationBack } from '@/platform/chrome/SystemNavigationBack';
 import { keyboardControlRegion, type LayoutRect } from '@/platform/windowGeometry';
-import { useAdaptiveWindow, usePaneViewport, PaneViewportProvider } from '@/platform/AdaptiveWindowContext';
+import { useAdaptiveWindow, PaneViewportProvider } from '@/platform/AdaptiveWindowContext';
 import { useSessionHeaderHeight } from '@/session/useSessionHeaderHeight';
 import { useDoubleTap } from '@/session/useDoubleTap';
 import { sessionPaneLayout } from '@/session/sessionPaneLayout';
@@ -162,7 +162,7 @@ import { findRemoteHistoryView, useRemoteHistoryView } from '@/session/remoteHis
 import { HistoryViewHandoff, historyAfter, isHistoryViewUnavailable } from '@cindy/maker-shared/message-window';
 import { SideChatsSheet } from '@/session/SideChatsSheet';
 import { useSideChatCount } from '@/session/useSideChatCount';
-import { SideChatPresentation, useSideChatDismiss } from '@/session/SideChatPresentation';
+import { SideChatTaskBoundary } from '@/session/SideChatTaskBoundary';
 import { buildMobileSessionRenderWindow } from '@/session/mobileHistoryRender';
 import { createMobileMakerTransport } from '@/device-link/mobileMakerTransport';
 import { startFocusedTopicSubscription } from '@/device-link/focusedTopicSubscription';
@@ -979,16 +979,19 @@ function composerDraftScopeKey(sessionId: string, routeDraft: string | null): st
 }
 
 export default function SessionScreen() {
-  const { sessionId, deviceId, sideChat } = useLocalSearchParams<{ sessionId: string; deviceId?: string; sideChat?: string }>();
-  const content = (
-    <CindyMakeSessionGate sessionId={readRouteParam(sessionId) ?? ''} deviceId={readRouteParam(deviceId) ?? undefined} ownsSessionSubscription>
-      <SessionScreenContent />
-    </CindyMakeSessionGate>
+  const params = useLocalSearchParams<{ sessionId: string; deviceId?: string }>();
+  const sessionId = readRouteParam(params.sessionId) ?? '';
+  const deviceId = readRouteParam(params.deviceId)
+    ?? remoteSessionStore.getSessionDeviceId(sessionId) ?? '';
+  const session = useRemoteSessionDetail(deviceId, sessionId);
+  return (
+    <SideChatTaskBoundary key={`${deviceId}:${sessionId}`} deviceId={deviceId}
+      sessionId={sessionId} enabled={session?.source === 'side-chat'}>
+      <CindyMakeSessionGate sessionId={sessionId} deviceId={deviceId || undefined} ownsSessionSubscription>
+        <SessionScreenContent />
+      </CindyMakeSessionGate>
+    </SideChatTaskBoundary>
   );
-  const sideChatDeviceId = readRouteParam(deviceId)
-    ?? remoteSessionStore.getSessionDeviceId(readRouteParam(sessionId) ?? '') ?? '';
-  return Platform.OS === 'android' && sideChat === '1' ? <SideChatPresentation key={`${sideChatDeviceId}:${sessionId}`}
-    deviceId={sideChatDeviceId} sessionId={readRouteParam(sessionId) ?? ''}>{content}</SideChatPresentation> : content;
 }
 
 function SessionScreenContent() {
@@ -1020,9 +1023,7 @@ function SessionScreenContent() {
     openSearchRequest?: string;
     visualOpenSearch?: string;
     visualSearchQuery?: string;
-    sideChat?: string;
   }>();
-  const isSideChatSheet = Platform.OS === 'android' && readRouteParam(params.sideChat) === '1';
   const sessionId = readRouteParam(params.sessionId) ?? '';
   const notificationResponse = readRouteParam(params.notificationResponse);
   const syncedNotificationResponseRef = useRef<string | null>(null);
@@ -1058,7 +1059,6 @@ function SessionScreenContent() {
     Alert.alert(t(outcome.kind === 'applied' ? 'models.switchOutcome.applied' : 'models.switchOutcome.failed'));
   }), [deviceId, navigation, sessionId, t]);
   const router = useRouter();
-  const dismissSideChat = useSideChatDismiss();
   // 完整消息读取权限按「会话 + 单调代际」登记。focus 与 AppState 正交：后台时
   // 导航仍可能保持 focused，必须立即撤权；重新聚焦/回前台会生成新代际，使旧
   // listMessages 响应永久失效。
@@ -1114,9 +1114,7 @@ function SessionScreenContent() {
   }, [deviceId, sessionId]);
   const auth = useAuth();
   const outboxOwner = useSyncExternalStore(subscribeMobileAuthOwner, getMobileAuthOwner, getMobileAuthOwner);
-  const fullWindowDimensions = useWindowDimensions();
-  const paneViewport = usePaneViewport();
-  const windowDimensions = isSideChatSheet ? paneViewport : fullWindowDimensions;
+  const windowDimensions = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const keyboardState = useMobileKeyboardState();
   const {
@@ -2954,7 +2952,7 @@ function SessionScreenContent() {
   );
   const adaptiveWindow = useAdaptiveWindow();
   const paneLayout = sessionPaneLayout(adaptiveWindow);
-  const horizontalSystemHeader = !isSideChatSheet && Platform.OS === 'ios' && adaptiveWindow.barEdge === 'none'
+  const horizontalSystemHeader = Platform.OS === 'ios' && adaptiveWindow.barEdge === 'none'
     && !paneLayout.persistent && !shareSelectionActive && !companionChat;
   const composerRegion = keyboardControlRegion(adaptiveWindow, keyboardState.height);
   const detailViewport = useMemo(() => ({ x: paneLayout.detail.x, y: paneLayout.detail.y, width: paneLayout.detail.width, height: windowDimensions.height }),
@@ -5312,16 +5310,9 @@ function SessionScreenContent() {
   });
   const openSideChat = useCallback((row: RemoteSession) => {
     remoteSessionStore.upsertDeviceSession(deviceId, deviceName, row);
-    // iOS follows the same full task page and stack navigation as Worker tasks.
-    if (Platform.OS !== 'android' || row.source !== 'side-chat') { openCollabSession(row.id); return; }
-    if (row.id === sessionId) return;
     Keyboard.dismiss();
-    const target = { pathname: '/sessions/[sessionId]' as const,
-      params: { sessionId: row.id, deviceId, deviceName, sideChat: '1', sideChatParentId: row.parentSessionId } };
-    // A sibling replaces the sheet, leaving the main task directly underneath.
-    if (isSideChatSheet) router.replace(target);
-    else guardedPush(target);
-  }, [deviceId, deviceName, guardedPush, isSideChatSheet, openCollabSession, router, sessionId]);
+    openCollabSession(row.id);
+  }, [deviceId, deviceName, openCollabSession]);
   const createSideChat = useCallback(async (quoteText?: string, draft?: ComposerDocument): Promise<RemoteSession | null> => {
     if (!canUseSideChats || !currentSession || sideChatCreatingRef.current) return null;
     const parentId = currentSession.source === 'side-chat' ? currentSession.parentSessionId : sessionId;
@@ -9577,29 +9568,7 @@ function SessionScreenContent() {
   const headerNode = (
     <>
     <Stack.Screen options={{ gestureEnabled: !sessionListDrawerOverlayMounted }} />
-    {isSideChatSheet ? <>
-      <Stack.Screen options={{ headerShown: false }} />
-      <View style={styles.sideChatHeader} testID="session.sideChat.header">
-        <View style={{ flex: 1, minWidth: 0 }}>
-          <Text style={styles.sideChatTitle}>{t('session.sideChat.title')}</Text>
-          <Text style={styles.sideChatParent} numberOfLines={1}>
-            {t('session.sideChat.fromMain', { title: sideChatParent?.title || t('session.sideChat.mainTask') })}
-          </Text>
-        </View>
-        <RouteActionButton accessibilityLabel={t('session.sideChat.list')} onPress={() => setSideChatsOpen(true)}
-          style={styles.sideChatIconButton} testID="session.sideChat.list">
-          <List size={iconSize.md} color={colors.textSecondary} strokeWidth={iconStroke.regular} />
-        </RouteActionButton>
-        <RouteActionButton accessibilityLabel={t('session.sideChat.collapse')} onPress={() => {
-          Keyboard.dismiss();
-          if (dismissSideChat) dismissSideChat();
-          else if (currentSession?.parentSessionId) openCollabSession(currentSession.parentSessionId);
-          else goBackToHome();
-        }} style={styles.sideChatIconButton} testID="session.sideChat.collapse">
-          <ChevronDown size={iconSize.md} color={colors.textPrimary} strokeWidth={iconStroke.regular} />
-        </RouteActionButton>
-      </View>
-    </> : companionHeaderShown ? <>
+    {companionHeaderShown ? <>
       <Stack.Screen options={COMPANION_NATIVE_HEADER_OPTIONS} />
       <CompanionHeader key={`${auth.accountGeneration}:${deviceId}:${companionResource.ref.id}`}
         resource={companionResource} deviceId={deviceId} deviceName={deviceName} online={!remoteUnavailableReason} controlsReady={companionEntry.ready}
@@ -9675,7 +9644,7 @@ function SessionScreenContent() {
       <ComposerKeyboardAvoidingView
         keyboard={keyboardState}
         // iOS composer dock: the spacer / lift below follow the keyboard per frame instead.
-        enabled={!dockKeyboardFollow && !(isSideChatSheet && Platform.OS === 'android')}
+        enabled={!dockKeyboardFollow}
         // 抽屉开着时把背后内容从读屏树里摘掉:iOS 用 accessibilityElementsHidden
         // (与抽屉侧 accessibilityViewIsModal 配对),Android 用 importantForAccessibility
         // ——后者才对 TalkBack 生效(与 ComposerRichInput 的双平台配对惯例一致)。
@@ -10655,7 +10624,7 @@ function SessionScreenContent() {
                   />
                 </View>
               ) : null}
-              {!isSideChatSheet && !shareSelectionActive && currentSession?.source === 'side-chat'
+              {!shareSelectionActive && currentSession?.source === 'side-chat'
                 && currentSession.parentSessionId ? (
                 <Pressable accessibilityRole="button"
                   onPress={() => openCollabSession(currentSession.parentSessionId!)}
@@ -12838,10 +12807,6 @@ function ComposerPaletteFrame({
 }
 
 const makeStyles = (colors: ThemeColors) => StyleSheet.create({
-  sideChatHeader: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs, paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
-  sideChatTitle: { fontSize: typeScale.body, lineHeight: lineHeight.body, fontWeight: fontWeight.semibold, color: colors.textPrimary },
-  sideChatParent: { fontSize: typeScale.caption, lineHeight: lineHeight.caption, fontWeight: fontWeight.regular, color: colors.textTertiary },
-  sideChatIconButton: { width: 44, height: 44, borderRadius: radius.pill, alignItems: 'center', justifyContent: 'center' },
   safeArea: { flex: 1, backgroundColor: colors.surface },
   keyboard: { flex: 1 },
   sessionChrome: {
