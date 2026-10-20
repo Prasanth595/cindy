@@ -764,7 +764,7 @@ export function translateSdkMessage(
   if (raw.type === 'stream_event' && raw.event?.type === 'message_start') projection.begin(queue);
   if (raw.type === 'assistant') {
     if (!projection.active) projection.begin(queue);
-    projection.setCalls(structuredCallsOf(raw.message?.content));
+    projection.setCalls(structuredCallsOf(raw.message?.content), Boolean(raw.error));
   }
   const textBefore = ctx.turn.text;
   translateSdkMessageInternal(rawMsg, projection.queue(queue), ctx);

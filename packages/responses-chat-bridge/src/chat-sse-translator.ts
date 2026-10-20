@@ -451,7 +451,7 @@ export class ChatSseTranslator {
       input: this.toolContext?.lookupChatName(state.name)?.kind === 'custom'
         ? customInput(state.arguments) : undefined,
     }));
-    const preserve = this.annotations.length > 0 || this.pendingFinishReason === 'length'
+    const preserve = this.pendingFinishReason === 'length'
       || this.pendingFinishReason === 'content_filter';
     let unexecuted = false;
     for (const state of this.reasoningItems) {
@@ -461,7 +461,7 @@ export class ChatSseTranslator {
       unexecuted ||= result.unexecuted;
       this.closeReasoning(state, out);
     }
-    const result = preserve ? { text: this.serializedEcho.drain(), unexecuted: false }
+    const result = preserve || this.annotations.length > 0 ? { text: this.serializedEcho.drain(), unexecuted: false }
       : this.serializedEcho.resolveReport(structured, true);
     if (result.text) this.emitText(result.text, out);
     return unexecuted || result.unexecuted;

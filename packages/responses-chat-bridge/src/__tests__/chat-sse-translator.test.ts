@@ -928,6 +928,18 @@ describe('ChatSseTranslator serialized tool-call echo', () => {
 
 // #6531: both native reasoning_content and ordinary content must agree with tool_calls.
 describe('cross-grammar reasoning and terminal reconciliation', () => {
+  // #6545 review unit: answer citations do not exempt independent reasoning.
+  it('preserves cited answer offsets but fails unexecuted reasoning markup', () => {
+    const t = new ChatSseTranslator('any-model');
+    const events = [
+      ...t.push({ choices: [{ delta: { reasoning_content: echo(), content: 'cited answer', annotations: [{ type: 'url_citation',
+        url_citation: { url: 'https://example.com', start_index: 0, end_index: 5 } }] }, finish_reason: 'stop' }] }),
+      ...t.finish(),
+    ];
+    expect(events).toContainEqual(expect.objectContaining({ type: 'response.output_text.delta', delta: 'cited answer' }));
+    expect(JSON.stringify(events)).not.toContain('<tool_call>');
+    expect(events.at(-1)).toMatchObject({ type: 'response.failed' });
+  });
   it.each(['content', 'reasoning_content'])(
     'projects DSML in %s, retaining one structured function call', channel => {
       const markup = '<｜DSML｜tool_calls><｜DSML｜invoke name="read"><｜DSML｜parameter name="path" string="true">file.txt</｜DSML｜parameter></｜DSML｜invoke></｜DSML｜tool_calls>';

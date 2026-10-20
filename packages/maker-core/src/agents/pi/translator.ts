@@ -685,9 +685,11 @@ export function translatePiEvent(
   const projection = toolMarkupProjection(ctx);
   const message = event.message as PiAssistantMessage | undefined;
   if (event.type === 'agent_start' || (event.type === 'message_start' && (!message || message.role === 'assistant'))) projection.begin(queue);
-  if (event.type === 'message_end' && message?.role === 'assistant') projection.setCalls(structuredCallsOf(message.content));
+  const preserveText = message?.stopReason === 'error' || message?.stopReason === 'aborted'
+    || message?.stopReason === 'length' || isCurrentTurnHostAbortRequested(ctx);
+  if (event.type === 'message_end' && message?.role === 'assistant') projection.setCalls(structuredCallsOf(message.content), preserveText);
   translatePiEventInternal(event, projection.queue(queue), ctx);
-  if (event.type === 'message_end' && message?.role === 'assistant') projection.finish(queue, message.stopReason === 'error' || message.stopReason === 'aborted');
+  if (event.type === 'message_end' && message?.role === 'assistant') projection.finish(queue, preserveText);
 }
 
 function translatePiEventInternal(

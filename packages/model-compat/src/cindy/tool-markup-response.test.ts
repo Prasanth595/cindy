@@ -66,3 +66,32 @@ it('keeps citation offsets and the original upstream error authoritative', async
   expect(failed.map(e => e.type)).toEqual(['response.output_text.delta', 'error']);
   expect(failed.at(-1)).toMatchObject({ code: 'upstream_failure', message: 'original error' });
 });
+
+// #6545 review unit: citation offsets belong to one content part, not an
+// entire response. Exercise streaming, part.done, item.done and final snapshots.
+it.each(['reasoning', 'same-item-part', 'other-item'])('isolates citation preservation from %s markup', async location => {
+  const markup = '<tool_call>{"name":"read","arguments":{}}</tool_call>';
+  const citedPart = { type: 'output_text', text: markup, annotations: [{ type: 'url_citation', start_index: 0, end_index: 5, url: 'https://example.invalid' }] };
+  const cited = { type: 'message', id: 'm', content: [citedPart, ...(location === 'same-item-part' ? [{ type: 'output_text', text: markup }] : [])] };
+  const reasoning = location === 'reasoning';
+  const id = location === 'same-item-part' ? 'm' : 'other';
+  const index = location === 'same-item-part' ? 1 : 0;
+  const item = reasoning ? { type: 'reasoning', id, summary: [{ type: 'summary_text', text: markup }] }
+    : { type: 'message', id, content: [{ type: 'output_text', text: markup }] };
+  const suffix = reasoning ? 'reasoning_summary_text' : 'output_text';
+  const indices = reasoning ? { summary_index: index } : { content_index: index };
+  const output = location === 'same-item-part' ? [cited] : [cited, item];
+  const events = await transform([
+    { type: 'response.output_text.delta', item_id: 'm', content_index: 0, delta: markup },
+    { type: 'response.' + suffix + '.delta', item_id: id, ...indices, delta: markup },
+    { type: 'response.' + suffix + '.done', item_id: id, ...indices, text: markup },
+    { type: reasoning ? 'response.reasoning_summary_part.done' : 'response.content_part.done', item_id: id, ...indices, part: { type: reasoning ? 'summary_text' : 'output_text', text: markup } },
+    { type: 'response.output_item.done', item: cited },
+    ...(location === 'same-item-part' ? [] : [{ type: 'response.output_item.done', item }]),
+    { type: 'response.completed', response: { output } },
+  ]);
+  expect(events.filter(e => e.type === 'response.output_text.delta' && e.item_id === 'm' && e.content_index === 0).map(e => e.delta).join('')).toBe(markup);
+  expect(events.filter(e => e.type === 'response.' + suffix + '.delta' && e.item_id === id && (e.content_index ?? e.summary_index) === index)).toEqual([]);
+  expect(events.find(e => e.type === 'response.' + suffix + '.done')).toMatchObject({ text: '' });
+  expect(events.at(-1)).toMatchObject({ type: 'response.failed', response: { error: { code: 'unexecuted-tool-markup' }, output: [expect.objectContaining({ content: [citedPart, ...(location === 'same-item-part' ? [{ type: 'output_text', text: '' }] : [])] }), ...(location === 'same-item-part' ? [] : [expect.objectContaining(reasoning ? { summary: [{ type: 'summary_text', text: '' }] } : { content: [{ type: 'output_text', text: '' }] })])] } });
+});

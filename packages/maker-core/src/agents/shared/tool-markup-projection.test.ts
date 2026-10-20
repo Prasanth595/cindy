@@ -1,10 +1,29 @@
 import { describe, expect, it } from 'vitest';
 import type { AgentEvent } from '../../types/events.js';
 import { ToolMarkupProjection } from './tool-markup-projection.js';
+import { extractRolloutUpdatePlanFunctionCallEvent, translatePlanUpdatedNotification } from '../codex/translator.js';
 
 // #6531 unit: common native output projection, including code-mode asynchronous order.
 // Protects cross-response isolation, terminal failure and Stop without executing parsed text.
 describe('native projection boundaries', () => {
+  // #6545 review: plan snapshots have no tool result and cannot prove that a
+  // later sample executed anything. Both production plan entrances are unit-tested.
+  it.each(['notification', 'rollout'])('does not use a %s plan snapshot as execution evidence', source => {
+    const events: AgentEvent[] = [];
+    const sink = { push: (event: AgentEvent) => { events.push(event); return true; } };
+    const p = new ToolMarkupProjection();
+    p.begin(sink);
+    const plan = [{ step: 'Inspect', status: 'pending' as const }];
+    if (source === 'notification') {
+      translatePlanUpdatedNotification({ threadId: 't', turnId: 'turn', plan }, p.queue(sink) as never);
+    } else {
+      p.push(extractRolloutUpdatePlanFunctionCallEvent({ type: 'function_call', name: 'update_plan', arguments: JSON.stringify({ plan }) }, 'turn')!.event, sink);
+    }
+    p.push({ type: 'text', data: { text: '<tool_call>' + JSON.stringify({ name: 'update_plan', arguments: { plan } }) + '</tool_call>', isFinal: true } }, sink);
+    p.push({ type: 'done', data: { status: 'completed' } }, sink);
+    expect(events.filter(e => e.type === 'tool_use')).toHaveLength(1);
+    expect(events.at(-1)?.data).toMatchObject({ status: 'failed', reason: 'unexecuted-tool-markup' });
+  });
   it('does not use a previous sampling response to validate the next one', () => {
     const events: AgentEvent[] = [];
     const sink = { push: (event: AgentEvent) => { events.push(event); return true; } };

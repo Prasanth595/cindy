@@ -17,15 +17,19 @@ export class ToolMarkupProjection {
   active = false;
   private afterTools = false;
   private callsComplete = false;
+  private preserveText = false;
   private startedId?: string;
   begin(sink: Sink, startedId?: string): void {
     if (startedId !== undefined && startedId === this.startedId) return;
     if (startedId !== undefined) this.startedId = startedId;
     this.finish(sink);
-    this.streams.clear(); this.calls = []; this.unexecuted = false; this.active = true; this.afterTools = false; this.callsComplete = false;
+    this.streams.clear(); this.calls = []; this.unexecuted = false; this.active = true; this.afterTools = false; this.callsComplete = false; this.preserveText = false;
   }
-  setCalls(calls: StructuredToolCall[]): void { this.calls = calls.slice(0, 128); this.callsComplete = true; }
+  setCalls(calls: StructuredToolCall[], preserveText = false): void {
+    this.calls = calls.slice(0, 128); this.callsComplete = true; this.preserveText = preserveText;
+  }
   projectText(text: string): string {
+    if (this.preserveText) return text;
     const result = reconcileToolCallMarkup(text, this.calls, true);
     this.unexecuted ||= result.unexecuted;
     return result.text;
@@ -34,12 +38,14 @@ export class ToolMarkupProjection {
     return { ...sink, push: (event: AgentEvent) => this.push(event, sink) };
   }
   finish(sink: Sink, failed = false): void {
+    failed ||= this.preserveText;
     for (const stream of this.streams.values()) {
       const data = record(stream.template.data);
       if (stream.final) {
         const held = failed ? { text: stream.buffer.drain(), unexecuted: false }
           : stream.buffer.resolveReport(this.calls, true);
         this.unexecuted ||= held.unexecuted;
+        if (held.text) sink.push({ ...stream.template, data: { ...data, text: held.text } });
         const finalData = record(stream.final.data);
         const result = failed ? { text: String(finalData.text ?? ''), unexecuted: false }
           : reconcileToolCallMarkup(String(finalData.text ?? ''), this.calls, true);
@@ -58,6 +64,9 @@ export class ToolMarkupProjection {
     const data = record(event.data);
     if (event.turnScope === 'background' || event.agentMeta?.parentUuid) return sink.push(event);
     if (event.type === 'tool_use') {
+      // Plan notifications/rollout snapshots have no execution-result boundary.
+      // They may arrive late and cannot prove a call in the current sample.
+      if (data.runtimeActivity === 'snapshot') return sink.push(event);
       if (this.calls.length < 128 && typeof data.toolName === 'string') {
         const input = record(data.input);
         this.calls.push({ name: data.toolName, arguments: data.input,
@@ -79,7 +88,7 @@ export class ToolMarkupProjection {
     if (event.type === 'done') {
       const failed = data.status === 'cancelled' || data.status === 'failed' || data.is_error === true;
       this.finish(sink, failed);
-      const result = typeof data.result === 'string' && !failed
+      const result = typeof data.result === 'string' && !failed && !this.preserveText
         ? reconcileToolCallMarkup(data.result, this.calls, true) : undefined;
       if (!failed && (this.unexecuted || result?.unexecuted)) {
         sink.push({ type: 'error', source: event.source, data: { reason: UNEXECUTED_TOOL_MARKUP_REASON,
@@ -106,6 +115,10 @@ export class ToolMarkupProjection {
       // Claude/Pi supply all calls with the full message. Preserve the order of
       // separate final text blocks rather than replacing one deferred final.
       if (this.callsComplete) {
+        const held = this.preserveText ? { text: stream.buffer.drain(), unexecuted: false }
+          : stream.buffer.resolveReport(this.calls, true);
+        this.unexecuted ||= held.unexecuted;
+        if (held.text) sink.push({ ...stream.template, data: { ...record(stream.template.data), text: held.text } });
         this.streams.delete(key);
         return sink.push({ ...event, data: { ...data, text: this.projectText(data.text) } });
       }

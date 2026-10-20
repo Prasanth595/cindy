@@ -2463,6 +2463,22 @@ it('retains tool image bytes and a video resource alongside text', () => {
 
 // #6531 unit: native Pi bypasses the Chat bridge; streamed text/thinking must still reconcile.
 describe('native Pi serialized calls', () => {
+  // #6545 review unit: message_end used to delete diagnostics before finish
+  // learned that the provider failed/truncated or the host requested Stop.
+  it.each(['error', 'aborted', 'length', 'host-stop'])('preserves markup diagnostics on %s', reason => {
+    const ctx = createPiTranslateContext(noopLogger);
+    const { queue, events } = makeQueue();
+    const markup = '<tool_call>{"name":"read","arguments":{}}</tool_call>';
+    translatePiEvent(ev({ type: 'agent_start' }), queue, ctx);
+    translatePiEvent(ev({ type: 'message_start', message: { role: 'assistant' } }), queue, ctx);
+    translatePiEvent(ev({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: markup } }), queue, ctx);
+    if (reason === 'host-stop') markPiHostAbortRequested(ctx);
+    translatePiEvent(ev({ type: 'message_end', message: { role: 'assistant', stopReason: reason === 'host-stop' ? 'stop' : reason, content: [{ type: 'text', text: markup }] } }), queue, ctx);
+    translatePiEvent(ev({ type: 'agent_settled' }), queue, ctx);
+    expect(events.filter(e => e.type === 'text').some(e => (e.data as { text: string }).text === markup)).toBe(true);
+    expect(events.some(e => (e.data as { reason?: string }).reason === 'unexecuted-tool-markup')).toBe(false);
+    disposePiTranslateContext(ctx);
+  });
   it.each(['text', 'thinking'])('reconciles %s and does not silently complete text-only calls', channel => {
     for (const structured of [true, false]) {
       const ctx = createPiTranslateContext(noopLogger);
