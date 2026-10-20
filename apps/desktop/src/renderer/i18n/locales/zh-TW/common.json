@@ -15606,6 +15606,7 @@
     }
   },
   "modelDescriptions": {
+    "automaticRouting": "由供應商選擇模型。",
     "longContext": "可選的長上下文版本，長輸入可能產生更高費用。",
     "security": "用於安全分析與程式碼審查。",
     "research": "用於資料研究、複雜問題、程式開發與文件創作。",

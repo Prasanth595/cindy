@@ -15661,6 +15661,7 @@
     }
   },
   "modelDescriptions": {
+    "automaticRouting": "Model selection is handled by the provider.",
     "longContext": "Optional long-context version; longer inputs may cost more.",
     "security": "For security analysis and code review.",
     "research": "For research, complex questions, coding and document creation.",

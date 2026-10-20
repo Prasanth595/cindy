@@ -15606,6 +15606,7 @@
     }
   },
   "modelDescriptions": {
+    "automaticRouting": "由供应商选择模型。",
     "longContext": "可选的长上下文版本，长输入可能产生更高费用。",
     "security": "用于安全分析与代码审查。",
     "research": "用于资料研究、复杂问题、编程与文档创作。",
