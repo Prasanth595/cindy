@@ -8,6 +8,7 @@ import {
   isPeerResetRetryableInvoke,
   isRemoteAgentReadInvoke,
   parseRemoteAgentCaps,
+  parseRemoteAgentForkResult,
   parseRemoteAgentPollResult,
   parseRemoteAgentReadResult,
   parseRemoteAgentReply,
@@ -21,6 +22,24 @@ const runId = '0f9c4a2e-6d1b-4c3a-9e8f-1a2b3c4d5e6f';
 const otherId = '1a2b3c4d-5e6f-4a1b-8c2d-3e4f5a6b7c8d';
 
 describe('remote agent channel', () => {
+  // Shared-model fork wire: old peers must not gain write support by default; task IDs
+  // include group-relay IDs, while filesystem roots are never accepted from callers.
+  it('validates native fork boundaries and never retries a fork as a read', () => {
+    const request = { op: 'fork', sourceSessionId: 'g123', newSessionId: otherId,
+      agentKind: 'pi', sourceSdkSessionId: '/guest/pi-sessions/source.jsonl', model: 'model' };
+    expect(parseRemoteAgentRequest({ ...request, hostedGuestHome: '/owner', workingDir: '/owner' })).toEqual(request);
+    expect(() => parseRemoteAgentRequest({ ...request, sourceSessionId: '../owner' })).toThrow();
+    expect(() => parseRemoteAgentRequest({ ...request, tailTurnsToDrop: -1 })).toThrow();
+    expect(isRemoteAgentReadInvoke(REMOTE_AGENT_CHANNEL, [request])).toBe(false);
+    expect(isPeerResetRetryableInvoke(REMOTE_AGENT_CHANNEL, [request])).toBe(false);
+    expect(parseRemoteAgentForkResult({ newSdkSessionId: 'child', uuidMap: [['a', 'b']] })).toEqual({
+      newSdkSessionId: 'child', uuidMap: [['a', 'b']],
+    });
+    expect(() => parseRemoteAgentForkResult({ newSdkSessionId: 'child', uuidMap: [['a', 1]] })).toThrow();
+    const caps = { version: 1, agents: [], maxRuns: 16, uploadChunkBytes: 1024, maxPayloadBytes: 2048 };
+    expect(parseRemoteAgentCaps(caps).nativeFork).toBeUndefined();
+    expect(parseRemoteAgentCaps({ ...caps, nativeFork: true }).nativeFork).toBe(true);
+  });
   // Shared-task guests are refused by the desktop shared-task gate (not in its channel list).
   it('is registered on the same-account allowlist', () => {
     expect(REMOTE_INVOKE_ALLOWLIST.has(REMOTE_AGENT_CHANNEL)).toBe(true);
@@ -207,6 +226,7 @@ describe('remote agent channel', () => {
     expect(parseRemoteAgentCaps({ version: 1, agents: [{ kind: 'pi', available: true }, { kind: 'x' }], maxRuns: 16, uploadChunkBytes: 1024, maxPayloadBytes: 10 }))
       .toEqual({ version: 1, agents: [{ kind: 'pi', available: true }], maxRuns: 16, uploadChunkBytes: 1024, maxPayloadBytes: 10 });
     expect(remoteAgentErrorCode('[REMOTE_AGENT_BUSY] x')).toBe('REMOTE_AGENT_BUSY');
+    expect(remoteAgentErrorCode('[REMOTE_AGENT_PEER_TOO_OLD] update')).toBe('REMOTE_AGENT_PEER_TOO_OLD');
     expect(remoteAgentErrorCode('[REMOTE_AGENT_SOMETHING] x')).toBeNull();
   });
 });

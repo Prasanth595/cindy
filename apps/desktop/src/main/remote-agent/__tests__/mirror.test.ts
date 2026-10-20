@@ -70,6 +70,26 @@ describe('shadowAliases', () => {
     ]);
   });
 
+  it.each(['/runs', 'C:\\runs'])('reads inherited fork paths from %s in the original project without granting parent access', (runs) => {
+    const native = runs.startsWith('C:') ? path.win32 : path.posix;
+    const project = path.join(root, 'project');
+    write(path.join(project, 'src', 'index.ts'), 'original file');
+    const mirrorRoot = native.join(runs, 'child', 'fs');
+    const previousMirrorRoots = ['source', 'parent'].map((id) => native.join(runs, id, 'fs'));
+    const suffix = native.join('workspace', ...Array.from({ length: MAX_ANCESTOR_LEVELS }, () => 'p'));
+    const shadowDir = native.join(mirrorRoot, suffix);
+    const workspace = new ExecutorWorkspace({ workingDir: project });
+    workspace.setAliases(shadowAliases({ shadowDir, mirrorRoot, virtualWorkspace: true, previousMirrorRoots }, project, []));
+    workspace.setVirtualRoot(mirrorRoot);
+    for (const previous of previousMirrorRoots) {
+      const resolved = workspace.resolve(native.join(previous, suffix, 'src', 'index.ts'));
+      expect(workspace.contains(resolved)).toBe(true);
+      expect(fs.readFileSync(resolved, 'utf8')).toBe('original file');
+      expect(workspace.contains(workspace.resolve(native.join(previous, suffix, '..', 'outside.txt')))).toBe(false);
+    }
+    expect(workspace.resolve(workspace.toAgentPath(path.join(project, 'src', 'index.ts')))).toBe(path.join(project, 'src', 'index.ts'));
+  });
+
   it('only maps the shadow itself when the other computer did not mirror the path', () => {
     expect(shadowAliases({ shadowDir: '/runs/shadow' }, '/Users/me/proj', [])).toEqual([
       { from: '/runs/shadow', to: '/Users/me/proj' },

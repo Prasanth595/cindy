@@ -3169,9 +3169,11 @@ function CCAgentSessionContent({
           ...(form.executionDeviceId
             ? {
                 executionDeviceId: form.executionDeviceId,
-                ...(form.workingDir ? { workingDir: form.workingDir } : {}),
               }
             : {}),
+          ...(form.workingDir !== undefined ? {workingDir: form.workingDir} : {}),
+          ...(form.worktree ? {worktree: form.worktree} : {}),
+          ...(form.projectPath ? {projectPath: form.projectPath} : {}),
           // 首个 Worker 的 Agent 所在电脑(远程供应商)；面板只在任务所在电脑支持时才带。
           ...(form.agentDeviceId !== undefined ? { agentDeviceId: form.agentDeviceId } : {}),
         };
@@ -5018,7 +5020,6 @@ function CCAgentSessionContent({
       // 消息下方 Fork / Rewind icon 的显示 (Codex rewind=false → 隐藏)。
       agentKind={session?.agentKind}
       remoteHostId={session?.remoteHostId ?? null}
-      agentOnOtherDevice={Boolean(agentDeviceId)}
       sessionSource={session?.source}
       // text-lightbox-trigger-extension F1/F2: cwd flows from session
       // owner down through MessageStream → AssistantMessage / UserMessage.
@@ -6139,6 +6140,7 @@ function CCAgentSessionContent({
         </ChatDisplaySnapshotProvider>
       </SessionNavigationModeProvider>
       <CreateWorkerPopover
+        leadSessionId={collabSessionId ?? undefined}
         open={createWorkerOpen}
         onClose={() => setCreateWorkerOpen(false)}
         onCreate={requestEnableCollab}

@@ -3719,3 +3719,59 @@ it('rejects a plan changed during preparation without reserving or bootstrapping
   const result=await service.createWorker({leadSessionId:'lead-1',role:'eval',agent:'codex',label:'sample'});
   expect(result.ok).toBe(false);expect(deps.reserveWorkerCreation).not.toHaveBeenCalled();expect(deps.bootstrapSession).not.toHaveBeenCalled();
 });
+
+// Test value: the UI's optional worktree creates new filesystem ownership before bootstrap.
+// The former tests only cover binding an existing path. Failures at each persistence boundary
+// must release that new ownership, never an inherited checkout. Unit tier, injected I/O.
+describe('local Worker worktree ownership', () => {
+  const request = {leadSessionId: 'lead-1', role: 'developer', label: 'worker', agent: 'codex' as const,
+    worktree: {sourceBranch: 'feature'}};
+  it('binds the newly created checkout to the Worker session and leaves success asynchronous', async () => {
+    const {deps, service} = createDeps({
+      createWorkerWorktree: vi.fn(async () => '/repo/.cindy-worktrees/worker'),
+      discardWorkerWorktree: vi.fn(async () => {}),
+    });
+    await expect(service.createWorker(request)).resolves.toMatchObject({ok: true, workerSessionId: WORKER_SESSION_ID});
+    expect(deps.createWorkerWorktree).toHaveBeenCalledWith(WORKER_SESSION_ID, 'C:\\repo', 'feature');
+    expect(deps.bootstrapSession).toHaveBeenCalledWith(expect.objectContaining({id: WORKER_SESSION_ID, workingDir: '/repo/.cindy-worktrees/worker'}));
+    expect(deps.discardWorkerWorktree).not.toHaveBeenCalled();
+  });
+  it.each(['create', 'bootstrap', 'renewal', 'persist', 'postcheck'])('compensates a %s failure before releasing the reservation', async phase => {
+    let finishCheckout!: () => void;
+    const checkout = new Promise<void>(resolve => {finishCheckout = resolve;});
+    let compensationStarted!: () => void;
+    const entered = new Promise<void>(resolve => {compensationStarted = resolve;});
+    const removed: string[] = [];
+    const {deps, service} = createDeps({
+      createWorkerWorktree: vi.fn(async () => {if (phase === 'create') throw new Error('Git failed'); return '/repo/.cindy-worktrees/worker';}),
+      discardWorkerWorktree: vi.fn(async id => {compensationStarted(); await checkout; removed.push(id);}),
+      ...(phase === 'bootstrap' ? {bootstrapSession: vi.fn(async () => {throw new Error('start failed');})} : {}),
+      ...(phase === 'renewal' ? {renewWorkerCreationReservation: vi.fn(async () => false)} : {}),
+      ...(phase === 'persist' ? {addOrUpdateWorker: vi.fn(async () => {throw new Error('write failed');})} : {}),
+      ...(phase === 'postcheck' ? {markOrcaRoleIfNeeded: vi.fn(async () => {throw new Error('mark failed');})} : {}),
+    });
+    const result = service.createWorker(request);
+    await entered;
+    expect(removed).toEqual([]);
+    expect(deps.releaseWorkerCreationReservation).not.toHaveBeenCalled();
+    finishCheckout();
+    await expect(result).resolves.toMatchObject({ok: false});
+    expect(removed).toEqual([WORKER_SESSION_ID]);
+    expect(deps.releaseWorkerCreationReservation).toHaveBeenCalledWith('worker-1');
+    if (phase === 'create') expect(deps.bootstrapSession).not.toHaveBeenCalled();
+  });
+  it('never claims or discards an inherited checkout, even when bootstrap fails', async () => {
+    const {deps, service} = createDeps({
+      createWorkerWorktree: vi.fn(), discardWorkerWorktree: vi.fn(),
+      bootstrapSession: vi.fn(async () => {throw new Error('start failed');}),
+    });
+    await expect(service.createWorker({...request, worktree: undefined})).resolves.toMatchObject({ok: false});
+    expect(deps.createWorkerWorktree).not.toHaveBeenCalled();
+    expect(deps.discardWorkerWorktree).not.toHaveBeenCalled();
+  });
+  it('rejects a new worktree on an execution device before reservation', async () => {
+    const {deps, service} = createDeps({createWorkerWorktree: vi.fn(), discardWorkerWorktree: vi.fn()});
+    await expect(service.createWorker({...request, executionDeviceId: 'other'})).resolves.toMatchObject({ok: false, errorCode: 'INVALID_PARAMS'});
+    expect(deps.reserveWorkerCreation).not.toHaveBeenCalled();
+  });
+});

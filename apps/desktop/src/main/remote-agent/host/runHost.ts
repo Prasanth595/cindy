@@ -34,6 +34,8 @@ import {
   REMOTE_AGENT_VERSION,
   parseRemoteAgentReply,
   parseRemoteAgentRequest,
+  parseRemoteAgentForkResult,
+  type RemoteAgentForkResult,
   type RemoteAgentCaps,
   type RemoteAgentErrorInfo,
   type RemoteAgentKind,
@@ -48,7 +50,7 @@ import {
   type RemoteAgentReverseRequest,
   type RemoteAgentTeardownReason,
 } from '@cindy/device-link';
-import type { AgentEvent, AgentSessionHandle, DeviceHostedLinkActivity, InteractionRequest } from '@cindy/maker-core';
+import type { AgentEvent, AgentSessionHandle, DeviceHostedLinkActivity, InteractionRequest, ForkSdkSessionOptions, ForkSdkSessionResult } from '@cindy/maker-core';
 
 import { RemoteAgentRunClient, type RemoteAgentInvoke, type RemoteAgentPoller } from '../controller/runClient';
 import { EventLog, waitForAny } from '../eventLog';
@@ -169,6 +171,7 @@ export interface RemoteAgentHostDeps {
   readLimits?(): RemoteAgentLimits;
   isAgentAvailable(kind: RemoteAgentKind): boolean;
   startHosted(input: HostedStartInput): Promise<AgentSessionHandle>;
+  forkHosted?(kind: RemoteAgentKind, options: ForkSdkSessionOptions): Promise<ForkSdkSessionResult>;
   /** 本机仍允许该控制端远程控制(总开关打开且未撤销)。 */
   isControllerAuthorized(controller: string): boolean;
   /**
@@ -345,6 +348,8 @@ interface Run {
   trust: RemoteAgentControllerTrust;
   /** 本机侧任务 id：影子目录按它存放，同一任务多次打开共用。 */
   hostSessionId?: string;
+  /** 分叉历史中仍可能出现的祖先任务影子目录。 */
+  forkWorkspaceIds?: string[];
   imageDeliveryEpoch?: number;
   acceptsImageDeliveryReceipts?: boolean;
   owner: unknown;
@@ -502,7 +507,7 @@ export function snapshotHandleState(handle: AgentSessionHandle): Record<string, 
 }
 
 /** 启动结果里给控制端的会话描述(静态部分 + 支持哪些可选方法)。 */
-function describeHandle(handle: AgentSessionHandle, shadowDir: string, mirrorRoot: string, extraDirs: readonly string[], writableDirs: readonly string[], virtualWorkspace: boolean): Record<string, unknown> {
+function describeHandle(handle: AgentSessionHandle, shadowDir: string, mirrorRoot: string, extraDirs: readonly string[], writableDirs: readonly string[], virtualWorkspace: boolean, previousMirrorRoots: readonly string[] = []): Record<string, unknown> {
   const methods = REMOTE_AGENT_METHODS.filter((method) => typeof (handle as unknown as Record<string, unknown>)[method] === 'function');
   return {
     id: handle.id,
@@ -513,6 +518,7 @@ function describeHandle(handle: AgentSessionHandle, shadowDir: string, mirrorRoo
     extraDirs,
     writableDirs,
     virtualWorkspace,
+    ...(previousMirrorRoots.length ? { previousMirrorRoots } : {}),
     methods,
     ...(handle.requestSessionId ? { requestSessionId: handle.requestSessionId } : {}),
     ...(handle.codexProxyActive !== undefined ? { codexProxyActive: handle.codexProxyActive } : {}),
@@ -584,6 +590,8 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
     relay?: string;
     hostSessionIds: string[];
     nativeIds: string[];
+    /** 原生分叉会话 → 历史涉及的祖先任务目录；同账号远程任务也使用此索引。 */
+    forkWorkspaces?: Record<string, string[]>;
     /**
      * 本机是组所在电脑、把这个受邀者的任务转给了组内电脑：原生会话 id → 在哪台。续接只能回到那台
      * (会话记录在那里)；那台被移出组后也照样回到那台。
@@ -623,6 +631,8 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
         for (const [digest, record] of Object.entries(parsed)) {
           const list = (value: unknown) => (Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []);
           if (typeof record?.controller !== 'string') continue;
+          const forkWorkspaces = Object.fromEntries(Object.entries(record.forkWorkspaces ?? {})
+            .map(([nativeId, ids]) => [nativeId, list(ids).filter((id) => /^[0-9a-f-]{36}$/.test(id))]));
           const members = readRelayMembers(record.members);
           const relayDevices = list(record.relayDevices);
           const forgetPending = list(record.forgetPending);
@@ -631,6 +641,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
             ...(typeof record.relay === 'string' ? { relay: record.relay } : {}),
             hostSessionIds: list(record?.hostSessionIds),
             nativeIds: list(record?.nativeIds),
+            ...(Object.keys(forkWorkspaces).length ? { forkWorkspaces } : {}),
             ...(members ? { members } : {}),
             ...(relayDevices.length ? { relayDevices } : {}),
             ...(forgetPending.length ? { forgetPending } : {}),
@@ -660,6 +671,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
     hostSessionId: string,
     nativeIds: ReadonlyArray<string | undefined>,
     member?: GroupRelayMember,
+    forkWorkspaceIds?: readonly string[],
   ): Promise<void> {
     const map = await loadGuestIndex();
     const digest = guestDigest(guestScopeOf(controller, relay));
@@ -674,6 +686,13 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
         record.nativeIds.push(id);
         changed = true;
       }
+      if (id && forkWorkspaceIds?.length) {
+        const ancestors = [...new Set([...(record.forkWorkspaces?.[id] ?? []), ...forkWorkspaceIds])];
+        if (ancestors.length !== record.forkWorkspaces?.[id]?.length) {
+          record.forkWorkspaces = { ...record.forkWorkspaces, [id]: ancestors };
+          changed = true;
+        }
+      }
       if (id && member && record.members?.[id]?.memberKey !== member.memberKey) {
         record.members = { ...record.members, [id]: { ...member } };
         changed = true;
@@ -682,6 +701,11 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
     if (!changed) return;
     map.set(digest, record);
     await persistGuestIndex(map);
+  }
+
+  async function forkWorkspacesFor(scope: string, nativeId: string | undefined): Promise<string[]> {
+    if (!nativeId) return [];
+    return (await loadGuestIndex()).get(guestDigest(scope))?.forkWorkspaces?.[nativeId] ?? [];
   }
 
   /**
@@ -856,11 +880,11 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
     run.lastState = serialized;
     append(run, { t: 'state', state });
     // 会话 id 可能在任务中途换新(清空上下文等)，受邀者能恢复的会话随之登记。
-    if (run.trust === 'guest' && run.hostSessionId) {
+    if ((run.trust === 'guest' || run.forkWorkspaceIds?.length) && run.hostSessionId) {
       void recordGuestSession(run.controller, run.relayKey, run.hostSessionId, [
         typeof state.id === 'string' ? state.id : undefined,
         typeof state.requestSessionId === 'string' ? state.requestSessionId : undefined,
-      ]);
+      ], undefined, run.forkWorkspaceIds);
     }
   }
 
@@ -1057,6 +1081,8 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
       // 中转过来的任务按(控制端, relay)派生：不同受邀者即使任务 id 相同也不会共用本机侧任务。
       const hostSessionId = hostSessionIdFor(guestScopeOf(run.controller, run.relayKey), payload.sessionId);
       run.hostSessionId = hostSessionId;
+      run.forkWorkspaceIds = await forkWorkspacesFor(guestScopeOf(run.controller, run.relayKey), payload.options.resumeSessionId);
+      const previousMirrorRoots = run.forkWorkspaceIds.map((id) => path.join(shadowSessionRoot(run.controller, id), 'fs'));
       let guestHome: string | undefined;
       if (run.trust === 'guest') {
         // 先登记再启动：启动中途失败时，受邀者目录与会话记录也能在分享删除时被找到并清理。
@@ -1092,7 +1118,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
       if (run.closing) return;
       // 必须先发布映射，再启动 Agent。Codex startSession 会在 started 之前读取 exec-server 环境。
       if (payload.virtualWorkspace) append(run, { t: 'state', state: {
-        workspaceProjection: { shadowDir, mirrorRoot, extraDirs, writableDirs, virtualWorkspace: true },
+        workspaceProjection: { shadowDir, mirrorRoot, extraDirs, writableDirs, virtualWorkspace: true, ...(previousMirrorRoots.length ? { previousMirrorRoots } : {}) },
       } });
       // 受邀者：先登记出站边界(本机 proxy 只让这条任务经分享的供应商出站)，再启动 Agent。
       let guestProvider: HostedStartInput['guestProvider'];
@@ -1149,13 +1175,15 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
         return;
       }
       run.handle = handle;
-      if (run.trust === 'guest') await recordGuestSession(run.controller, run.relayKey, hostSessionId, [handle.id, handle.requestSessionId]);
+      if (run.trust === 'guest' || run.forkWorkspaceIds.length) {
+        await recordGuestSession(run.controller, run.relayKey, hostSessionId, [handle.id, handle.requestSessionId], undefined, run.forkWorkspaceIds);
+      }
       handle.setInteractionResolver(async (request: InteractionRequest) => {
         const reply = await reverse(run, { type: 'interaction', request });
         if (reply.type === 'interaction') return reply.result as Awaited<ReturnType<Parameters<AgentSessionHandle['setInteractionResolver']>[0]>>;
         throw new Error(reply.type === 'error' ? reply.error.message : 'interaction failed');
       });
-      append(run, { t: 'started', handle: describeHandle(handle, shadowDir, mirrorRoot, extraDirs, writableDirs, payload.virtualWorkspace === true) });
+      append(run, { t: 'started', handle: describeHandle(handle, shadowDir, mirrorRoot, extraDirs, writableDirs, payload.virtualWorkspace === true, previousMirrorRoots) });
       run.lastState = JSON.stringify(snapshotHandleState(handle));
       run.stateTimer = setInterval(() => emitState(run), STATE_INTERVAL_MS);
       (run.stateTimer as { unref?: () => void }).unref?.();
@@ -2095,6 +2123,92 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
     const request = parseRemoteAgentRequest(raw);
     if (!deps.isControllerAuthorized(controller)) fail('REMOTE_AGENT_UNAVAILABLE', 'remote control is not allowed');
     switch (request.op) {
+      case 'fork': {
+        const owner = deps.captureOwner();
+        const controllerTrust = trustOf(controller);
+        const guest = controllerTrust === 'guest' || !!request.relay;
+        const scope = guestScopeOf(controller, request.relay);
+        const assertAccess = () => {
+          if (!deps.isOwnerCurrent(owner) || !deps.isControllerAuthorized(controller)) {
+            fail('REMOTE_AGENT_UNAVAILABLE', 'remote control is not allowed');
+          }
+          if (controllerTrust === 'guest' && request.relay && deps.reshare
+            && !deps.reshare.allows(controller, request.reshareKey)) failProviderNotAllowed();
+        };
+        assertAccess();
+        if (guest && (!GUEST_SUPPORTED_AGENTS.has(request.agentKind) || !deps.providerAccess || !deps.bindGuestProviderRoute)) {
+          fail('REMOTE_AGENT_PEER_TOO_OLD', 'update Cindy on the computer running this task to fork it');
+        }
+        if (guest && !(await guestOwnsSession(controller, request.relay, request.sourceSdkSessionId))) {
+          fail('REMOTE_AGENT_INVALID', 'this conversation cannot be forked on this computer');
+        }
+        const providerId = await deps.providerAccess?.resolve(
+          request.agentKind, request.model, request.providerId, controller,
+        );
+        if (deps.providerAccess && !providerId) failProviderNotAllowed();
+        const assertProvider = () => {
+          assertAccess();
+          if (providerId && !deps.providerAccess?.isAllowed(providerId, controller)) failProviderNotAllowed();
+        };
+        assertProvider();
+        const member = guest && !request.relay ? await relayMemberOf(controller, request.sourceSdkSessionId) : null;
+        const hostSessionId = hostSessionIdFor(scope, request.sourceSessionId);
+        const forkWorkspaceIds = [...new Set([...(await forkWorkspacesFor(scope, request.sourceSdkSessionId)), hostSessionId])];
+        let result: RemoteAgentForkResult;
+        if (member) {
+          if (!deps.groupRelay) fail('REMOTE_AGENT_UNAVAILABLE', 'the computer running this task is unavailable');
+          try {
+            const { invoke } = deps.groupRelay.connect(member.agentDeviceId);
+            const caps = await RemoteAgentRunClient.caps(invoke);
+            if (!caps.nativeFork) fail('REMOTE_AGENT_PEER_TOO_OLD', 'update Cindy on the computer running this task to fork it');
+            assertProvider();
+            result = parseRemoteAgentForkResult(await invoke([{
+              ...request,
+              sourceSessionId: relaySessionIdFor(controller, request.sourceSessionId),
+              newSessionId: relaySessionIdFor(controller, request.newSessionId),
+              providerId: member.providerId,
+              relay: relayKeyFor(controller),
+              reshareKey: reshareKeyForGuest(controller),
+            }]));
+          } catch (error) {
+            const safe = relayErrorForGuest(relayErrorInfoFrom(error)) ?? RELAY_UNAVAILABLE_ERROR;
+            fail(safe.code, safe.message);
+          }
+        } else {
+          if (!deps.forkHosted || !deps.isAgentAvailable(request.agentKind)) {
+            fail('REMOTE_AGENT_PEER_TOO_OLD', 'update Cindy on the computer running this task to fork it');
+          }
+          const workingDir = path.join(shadowSessionRoot(controller, hostSessionId), 'fs', 'workspace', ...Array.from({ length: MAX_ANCESTOR_LEVELS }, () => 'p'));
+          // Idle runs may have released their shadow workspace; native history is retained.
+          const native = await withShadowLock(hostSessionId, async () => {
+            await fsp.mkdir(workingDir, { recursive: true });
+            assertProvider();
+            return deps.forkHosted!(request.agentKind, {
+              sourceSdkSessionId: request.sourceSdkSessionId,
+              model: request.model,
+              providerId: providerId ?? request.providerId,
+              upToMessageId: request.upToMessageId,
+              lastTurnId: request.lastTurnId,
+              tailTurnsToDrop: request.tailTurnsToDrop,
+              forkAtTimestampMs: request.forkAtTimestampMs,
+              workingDir,
+              ...(guest ? { hostedGuestHome: guestHomeFor(scope) } : {}),
+            });
+          });
+          result = {
+            newSdkSessionId: native.newSdkSessionId,
+            uuidMap: [...native.uuidMap],
+            ...(native.initialContextTokens ? { initialContextTokens: native.initialContextTokens } : {}),
+            ...(native.usedNativeForkAnchor ? { usedNativeForkAnchor: true } : {}),
+          };
+        }
+        // Register children before returning so a second fork/resume and share deletion use the same ownership boundary.
+        assertProvider();
+        await recordGuestSession(controller, request.relay, hostSessionId, [result.newSdkSessionId], member ?? undefined,
+          member ? undefined : forkWorkspaceIds);
+        assertProvider();
+        return result;
+      }
       case 'images': {
         if (!deps.imageArtifacts) fail('REMOTE_AGENT_INVALID', 'image recovery is unavailable');
         const owner = deps.captureOwner();
@@ -2114,6 +2228,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
           uploadChunkBytes: REMOTE_AGENT_UPLOAD_CHUNK_BYTES,
           maxPayloadBytes: REMOTE_AGENT_MAX_PAYLOAD_BYTES,
           virtualWorkspace: true,
+          ...(deps.forkHosted ? { nativeFork: true } : {}),
           ...(deps.imageArtifacts ? { imageRecovery: true, imageRecoveryRelay: true } : {}),
           // 能按受邀者隔离运行(供应商级授权与出站边界都已接上)，才接受组所在电脑中转过来的受邀者任务。
           ...(deps.providerAccess && deps.bindGuestProviderRoute ? { guestRelay: true } : {}),

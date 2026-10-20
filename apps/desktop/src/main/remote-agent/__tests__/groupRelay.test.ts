@@ -53,6 +53,7 @@ function fakeAgentHost(name: string, started: Started[], options: {
   guestRelayCapable?: boolean;
   purge?: (hostSessionIds: readonly string[], nativeIds: readonly string[]) => Promise<void>;
   groupRelay?: RemoteAgentGroupRelayDeps;
+  isAgentAvailable?: Parameters<typeof createRemoteAgentHost>[0]['isAgentAvailable'];
   prepareImageEvent?: Parameters<typeof createRemoteAgentHost>[0]['prepareImageEvent'];
   imageArtifacts?: Parameters<typeof createRemoteAgentHost>[0]['imageArtifacts'];
   /** 这台的 Agent 启动失败(启动前受邀者目录已经建好)。 */
@@ -64,9 +65,10 @@ function fakeAgentHost(name: string, started: Started[], options: {
   resolveProvider?: NonNullable<Parameters<typeof createRemoteAgentHost>[0]['providerAccess']>['resolve'];
 }) {
   return createRemoteAgentHost({
+    forkHosted: async (_kind, opts) => ({ newSdkSessionId: `${opts.sourceSdkSessionId}-fork`, uuidMap: new Map([['old', 'new']]) }),
     prepareImageEvent: options.prepareImageEvent,
     imageArtifacts: options.imageArtifacts,
-    isAgentAvailable: () => true,
+    isAgentAvailable: options.isAgentAvailable ?? (() => true),
     startHosted: async (input) => {
       if (options.failStart) throw new Error('the agent could not start');
       const queue: AgentEvent[] = [];
@@ -200,7 +202,8 @@ function setup(options: {
   /** mini 这台的 Agent 表现。 */
   mini?: { failStart?: boolean; endImmediately?: boolean };
   /** 组所在电脑本机的 Agent 表现(组选中本机这一台时)。 */
-  owner?: { failStart?: boolean; prepareImageEvent?: Parameters<typeof createRemoteAgentHost>[0]['prepareImageEvent'] };
+  owner?: { failStart?: boolean; prepareImageEvent?: Parameters<typeof createRemoteAgentHost>[0]['prepareImageEvent'];
+    isAgentAvailable?: Parameters<typeof createRemoteAgentHost>[0]['isAgentAvailable'] };
   /** 截住组所在电脑发给组内电脑的请求(模拟回包丢失、应答慢)。 */
   intercept?: (agentDeviceId: string, request: Record<string, unknown>, forward: () => Promise<unknown>) => Promise<unknown>;
 } = {}) {
@@ -301,6 +304,26 @@ function switchTokenIn(stream: Awaited<ReturnType<typeof openAsGuest>>['stream']
 }
 
 describe('provider group relay for shared users', () => {
+  // Public G -> O -> M handlers, with JSON serialization: a fork must remain pinned
+  // to its original member and preserve the guest ownership needed for another fork.
+  it('forks and resumes on the original member without allocating another group member', async () => {
+    // The group owner need not have the member's harness installed.
+    const env = setup({ owner: { isAgentAvailable: () => false } });
+    const first = await openAsGuest(env, GUEST_A, openPayload(SESSION));
+    const request = { op: 'fork', sourceSessionId: SESSION, newSessionId: 'child-task',
+      agentKind: 'claude-code', sourceSdkSessionId: first.started.id, model: 'claude-opus', upToMessageId: 'old' };
+    await first.client.close('close', 'navigation');
+    const child = await env.owner.handle(GUEST_A, request) as { newSdkSessionId: string; uuidMap: unknown };
+    expect(child).toEqual({ newSdkSessionId: `${first.started.id}-fork`, uuidMap: [['old', 'new']] });
+    await expect(env.owner.handle(GUEST_B, request)).rejects.toThrow('REMOTE_AGENT_INVALID');
+    await expect(env.owner.handle(GUEST_A, { ...request, sourceSessionId: 'child-task',
+      newSessionId: 'grandchild-task', sourceSdkSessionId: child.newSdkSessionId }))
+      .resolves.toMatchObject({ newSdkSessionId: `${child.newSdkSessionId}-fork` });
+    const resumed = await openAsGuest(env, GUEST_A, openPayload('child-task', { options: { resumeSessionId: child.newSdkSessionId } }));
+    expect(env.memberStarted.mini[1].input.options.resumeSessionId).toBe(child.newSdkSessionId);
+    expect(env.relay.plan).toHaveBeenCalledTimes(1);
+    await resumed.client.close('close', 'navigation');
+  });
   it('hands a shared user’s new task to the chosen computer, which runs it isolated as a shared user', async () => {
     const env = setup();
     const { client, started } = await openAsGuest(env, GUEST_A, openPayload(SESSION));

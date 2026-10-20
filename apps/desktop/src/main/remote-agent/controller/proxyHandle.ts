@@ -45,6 +45,7 @@ export interface RemoteStartedInfo {
   shadowDir: string;
   /** Agent 主机上的虚拟镜像根。 */
   mirrorRoot?: string;
+  previousMirrorRoots?: string[];
   extraDirs?: string[];
   writableDirs?: string[];
   virtualWorkspace?: boolean;
@@ -69,6 +70,7 @@ export function parseStartedInfo(value: Record<string, unknown>, kind: AgentKind
     shadowDir: str(value.shadowDir) ?? '',
     virtualWorkspace: value.virtualWorkspace === true,
     ...(str(value.mirrorRoot) ? { mirrorRoot: str(value.mirrorRoot) } : {}),
+    previousMirrorRoots: Array.isArray(value.previousMirrorRoots) ? value.previousMirrorRoots.filter((item): item is string => typeof item === 'string') : [],
     extraDirs: Array.isArray(value.extraDirs) ? value.extraDirs.filter((item): item is string => typeof item === 'string') : [],
     writableDirs: Array.isArray(value.writableDirs) ? value.writableDirs.filter((item): item is string => typeof item === 'string') : [],
     methods: Array.isArray(value.methods) ? value.methods.filter((m): m is string => typeof m === 'string') : [],

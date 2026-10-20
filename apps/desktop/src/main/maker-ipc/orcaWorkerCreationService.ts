@@ -1,3 +1,4 @@
+import type { WorkerWorktreeRequest } from '../../shared/orca-worker-project';
 import type { AgentKind } from '@cindy/maker-core';
 import { isCodexGatewayWireModel, type AuthStrategy } from '@cindy/model-providers';
 import path from 'node:path';
@@ -236,6 +237,8 @@ export interface OrcaWorkerCreateParams {
    * 指定运行设备时是那台电脑上的目录，缺省由那台按自身设置分配任务目录。
    */
   workingDir?: string;
+  /** Local UI only. Omission preserves existing MCP and remote behavior. */
+  worktree?: WorkerWorktreeRequest;
   /** 显式值用于本次创建；缺省读取全局 Worker 创建偏好。 */
   workerPermissionMode?: OrcaWorkerPermissionMode;
   /**
@@ -297,6 +300,8 @@ export interface OrcaWorkerCreationDeps {
   getWorkerPermissionMode(): OrcaWorkerPermissionMode;
   /** Validate existence and target project policy before reserving or bootstrapping. */
   resolveWorkerWorkingDir(dir: string, lead: OrcaLeadSessionSnapshot): Promise<string>;
+  createWorkerWorktree?(sessionId: string, directory: string, sourceBranch: string): Promise<string>;
+  discardWorkerWorktree?(sessionId: string): Promise<void>;
   getAvailableModels(agent: AgentKind): OrcaWorkerModelCapabilities[];
   /**
    * 从同一次 provider registry 读取构造 Worker 路由上下文。
@@ -1065,6 +1070,11 @@ export function createOrcaWorkerCreationService(deps: OrcaWorkerCreationDeps): O
     if (!lead) {
       return { ok: false, errorCode: 'NOT_FOUND', message: `lead session ${params.leadSessionId} not found` };
     }
+    if (params.worktree && (lead.remoteHostId || params.executionDeviceId !== undefined
+      || (lead.workspaceKind === 'dialogue' && params.workingDir === undefined)
+      || !deps.createWorkerWorktree || !deps.discardWorkerWorktree)) {
+      return {ok: false, errorCode: 'INVALID_PARAMS', message: 'Worker worktree requires a local project'};
+    }
     const workerLocation = resolveWorkerAgentDeviceId(params, lead, deps.isSelfDeviceId);
     if (!workerLocation.ok) {
       return { ok: false, errorCode: 'INVALID_PARAMS', message: workerLocation.message };
@@ -1527,6 +1537,8 @@ export function createOrcaWorkerCreationService(deps: OrcaWorkerCreationDeps): O
     }, Math.floor(ORCA_WORKER_CREATION_RESERVATION_LEASE_MS / 3));
     renewalTimer.unref?.();
 
+    let createdWorktreeSessionId: string | undefined;
+    let creationSucceeded = false;
     try {
       // Registration may race the preflight. Once a reservation exists, a new
       // plan cannot be registered; reread any plan that won before reservation.
@@ -1535,6 +1547,11 @@ export function createOrcaWorkerCreationService(deps: OrcaWorkerCreationDeps): O
         return { ok: false, errorCode: 'WORKER_LIMIT_HARD_EXCEEDED', message: 'Registered plan concurrency reached' };
       }
       const workerSessionId = deps.createSessionId();
+      if (params.worktree) {
+        createdWorktreeSessionId = workerSessionId;
+        workingDir = await deps.createWorkerWorktree!(workerSessionId, workingDir, params.worktree.sourceBranch);
+        await assertCurrent?.();
+      }
       const workerVendorOptions = {
         orcaRole: 'worker' as const,
         orcaWorkflowId: params.teamId,
@@ -1577,6 +1594,7 @@ export function createOrcaWorkerCreationService(deps: OrcaWorkerCreationDeps): O
         const bootstrapped = await deps.bootstrapSession(workerOpts);
         workerSession = bootstrapped.session;
       } catch (err) {
+        if (createdWorktreeSessionId) await cleanupBootstrappedWorkerSession(createdWorktreeSessionId);
         return toInternalFailure(err);
       }
 
@@ -1625,6 +1643,7 @@ export function createOrcaWorkerCreationService(deps: OrcaWorkerCreationDeps): O
       // Carry the resolved spawn facts through lifecycle/accepted callbacks only;
       // neither the function nor its closure is part of the public result.
       onCreated?.(async () => { await validatePlan(workingDir, resolved); });
+      creationSucceeded = true;
       return {
         ok: true,
         teamId: params.teamId,
@@ -1643,9 +1662,19 @@ export function createOrcaWorkerCreationService(deps: OrcaWorkerCreationDeps): O
           agentDeviceId: workerAgentDeviceId,
         },
       };
+    } catch (err) {
+      if (!params.worktree) throw err;
+      return toInternalFailure(err);
     } finally {
-      clearInterval(renewalTimer);
-      await deps.releaseWorkerCreationReservation(workerId).catch(() => undefined);
+      // Keep the reservation alive until checkout and safe compensation have settled.
+      try {
+        if (createdWorktreeSessionId && !creationSucceeded) {
+          await deps.discardWorkerWorktree!(createdWorktreeSessionId);
+        }
+      } finally {
+        clearInterval(renewalTimer);
+        await deps.releaseWorkerCreationReservation(workerId).catch(() => undefined);
+      }
     }
   }
 

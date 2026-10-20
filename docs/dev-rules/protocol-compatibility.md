@@ -1148,6 +1148,31 @@ handler 无 sender 依赖；不加入共享任务访客白名单，不进入自�
 
 ## 远程 Agent：Agent 在另一台电脑运行
 
+共享模型分叉追加 `caps.nativeFork: true` 与 `op: fork`，仍使用
+`maker:remote-agent:v1`，不改变 relay、版本号或服务端。控制端先协商能力；旧运行端
+缺少能力时明确提示更新，不把历史复制成没有原生上下文的本地任务。旧控制端忽略新增能力。
+任务和消息仍在任务所属电脑落库，新任务保留历史片段的 `agentDeviceId`、供应商、模型和原工作目录。
+曾经换过运行电脑时，按 `agent_switch.fromAgentDeviceId` 向保存该片段的电脑分叉，
+子任务也继承这一运行位置（显式 `null` 表示本机）；旧边界缺少该字段时沿用任务的运行位置。
+历史片段的原生会话因 `context_rebuild` 失效时，既有交接分叉仍沿用这一设备判据；
+重建只决定原生会话能否复用，不把子任务改送到当前设备。
+Desktop 与 Mobile 沿用 `maker:fork`；共享任务访客与 SSH 工作区的现有边界不变。
+
+运行端按已认证调用方复核供应商权限；受邀者及转分享还必须拥有来源原生会话。
+存储目录由运行端派生，不接受调用方传入路径。Claude 返回消息 UUID 映射，
+Codex/Pi 在受邀者原有隔离目录分叉；新原生会话登记到既有归属索引，支持继续分叉和恢复。
+供应商组按来源会话已有的成员绑定逐层转发，不重新选电脑，也不把成员身份暴露给受邀者；
+仅本机执行分叉时检查本机 Agent 是否已安装。Codex 受邀者的一次性分叉进程沿用独立代理作用域，
+不修改分享者本机任务共用的代理配置，关闭进程时沿现有回收路径释放。
+分叉祖先的影子目录 ID 保存在既有归属索引；启动的 `workspaceProjection` / `started`
+追加可选 `previousMirrorRoots`，使历史文件路径仍映射到控制端原项目，权限检查沿用真实路径。
+同账号远程任务也保留此映射，连续分叉和运行端重启后仍有效。
+执行前后检查账号、分享与转分享权限。分叉是一次写操作，超时或断线不自动重发；
+失败不创建 Cindy 子任务，不回退本机，不重建共享连接或影响其它 peer。
+
+回归：`remoteAgent.test.ts`、Desktop `fork.test.ts`、`guestHost.test.ts`、
+`groupRelay.test.ts` 与数据库 `client/__tests__/tx.test.ts`；三引擎沿用原生分叉入口。
+
 Codex 原生图片恢复（#6412）在既有 `maker:remote-agent:v1` 上追加可选
 `caps.imageRecovery: true` 与 `op: images`，不改变已有事件行格式与协议版本：
 
@@ -1362,7 +1387,8 @@ Codex 原生图片恢复（#6412）在既有 `maker:remote-agent:v1` 上追加�
   分享者电脑、受邀者电脑与手机各过一遍。手机经同账号新 channel `maker:provider-share:received-catalogs`(进同账号 allowlist)
   读取被控电脑收到的分享及其目录；旧版电脑回 `CHANNEL_NOT_ALLOWED`，手机按没有分享处理。跨区域(P3)经服务端开关开放，
   受邀者用第二条 relay 连接(`ProviderShareGuest` 认证)，见契约 §6。
-- **暂不支持**：分叉、审查、复制到其他电脑、导出 `.cshare`(Agent 会话记录在 B)，入口隐藏、
+- **分叉**：通过 `nativeFork` 能力协商在原运行端执行，见本节开头的分叉协议；旧运行端提示升级。
+- **暂不支持**：审查、复制到其他电脑、导出 `.cshare`(Agent 会话记录在 B)，入口隐藏、
   主进程拒绝。
 - **移动项目可用**：B 上的影子目录只按「控制端 + 任务 id」定址(虚拟工作区为必需能力)，与 A 的工作目录
   无关；A 换目录后关闭空闲 handle，下次发送按新目录重建，B 上的会话记录原样续用。
