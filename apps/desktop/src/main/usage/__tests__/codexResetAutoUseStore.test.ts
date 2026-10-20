@@ -46,6 +46,7 @@ describe('reset preferences persistence', () => {
       authorized: () => store.read('openai', account).settings.enabled,
       consume: (_provider, key, authorized) => service.consume(key, authorized),
       record: (_provider, _snapshot, at) => store.record('openai', account, at),
+      refreshWeb: async () => {},
       restored: async () => { await waiter.resumeRestored(async () => redeemed); }, warn: vi.fn(),
     });
     await Promise.all([engine.check('openai'), engine.check('openai')]);

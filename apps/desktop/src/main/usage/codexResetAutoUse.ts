@@ -1,6 +1,7 @@
 import type {
   CodexResetAutoUseSettings, MobileCodexRateLimitsResult, MobileCodexRateLimitResetResult,
 } from '@cindy/maker-shared/device-link-contract';
+import { matchCodexBucketForModel } from '@cindy/maker-shared/codex-usage-buckets';
 
 export const DEFAULT_CODEX_RESET_AUTO_USE: Readonly<CodexResetAutoUseSettings> = {
   enabled: false, lowQuota: true, minimumDays: 3, expiring: true, expiryMinutes: 60,
@@ -30,7 +31,10 @@ export function shouldAutoUseCodexReset(snapshot: MobileCodexRateLimitsResult, n
   const expiry = snapshot.resetOffer.expiresAt;
   if (settings.expiring && typeof expiry === 'number' && expiry * 1000 > now
     && expiry * 1000 - now <= settings.expiryMinutes * 60_000) return true;
-  return settings.lowQuota && !snapshot.rateLimits.rateLimitReachedType?.includes('credits_depleted') && [snapshot.rateLimits.primary, snapshot.rateLimits.secondary].some(w =>
+  const buckets = snapshot.rateLimitsByLimitId;
+  const generic = buckets && Object.keys(buckets).length
+    ? matchCodexBucketForModel(buckets, null, now) : snapshot.rateLimits;
+  return settings.lowQuota && !!generic && !generic.rateLimitReachedType?.includes('credits_depleted') && [generic.primary, generic.secondary].some(w =>
     w && Number.isFinite(w.usedPercent) && w.usedPercent > 99
     && (w.windowMinutes ?? 0) >= 7 * 24 * 60 && typeof w.resetsAt === 'number'
     && w.resetsAt * 1000 > now && w.resetsAt * 1000 - now >= settings.minimumDays * 86_400_000);
@@ -43,6 +47,8 @@ export interface CodexResetAutoUseDeps {
   authorized(providerId: string, snapshot: MobileCodexRateLimitsResult): boolean;
   consume(providerId: string, key: string, authorized: () => boolean): Promise<MobileCodexRateLimitResetResult>;
   record(providerId: string, snapshot: MobileCodexRateLimitsResult, at: number): Promise<void>;
+  /** Wait for the web quota used by Pi/Claude Code before checking existing waits. */
+  refreshWeb(providerId: string): Promise<void>;
   restored(providerId: string, snapshot: MobileCodexRateLimitsResult): Promise<void>;
   now(): number;
   warn(): void;
@@ -79,12 +85,14 @@ export class CodexResetAutoUse {
           try { await this.deps.record(providerId, snapshot, this.deps.now()); } catch { this.deps.warn(); }
           const refreshed = await this.deps.read(providerId);
           if (authorized() && refreshed.autoUse?.accountKey === snapshot.autoUse?.accountKey) {
-            await this.deps.restored(providerId, refreshed);
+            await this.deps.refreshWeb(providerId);
+            if (authorized()) await this.deps.restored(providerId, refreshed);
           }
         }
       } else {
         // Another device/manual action may have restored quota. Resume only existing eligible waits.
-        await this.deps.restored(providerId, snapshot);
+        await this.deps.refreshWeb(providerId);
+        if (authorized()) await this.deps.restored(providerId, snapshot);
       }
     }).catch(() => this.deps.warn()).finally(() => this.pending.delete(key));
     this.pending.set(key, run);

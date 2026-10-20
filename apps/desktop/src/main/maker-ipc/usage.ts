@@ -217,13 +217,13 @@ function normalizeCodexUsageProvider(providerId?: string): string | undefined {
 }
 let codexReadersOwner = '';
 const codexUsageReaders = new Map<string, ReturnType<typeof createCodexAccountUsageSnapshotReader>>();
-function readCodexAccountUsageSnapshotWithWebRefresh(requestedProviderId?: string) {
+function readCodexAccountUsageSnapshotWithWebRefresh(requestedProviderId?: string, options?: { fresh?: boolean }) {
   const providerId = normalizeCodexUsageProvider(requestedProviderId);
   const scope = activeOwnerScopeKey();
   if (scope !== codexReadersOwner) { codexUsageReaders.clear(); codexReadersOwner = scope; }
   const key = providerId ?? 'openai';
   const existing = codexUsageReaders.get(key);
-  if (existing) return existing();
+  if (existing) return existing(options);
 const reader = createCodexAccountUsageSnapshotReader({
   readAccessToken: () => scope === activeOwnerScopeKey() ? desktopCodexAuthAdapter.getAccessToken(providerId) : Promise.reject(new Error('Account scope changed')),
   readAccountId: () => desktopCodexAuthAdapter.getAccountId(providerId),
@@ -239,7 +239,7 @@ const reader = createCodexAccountUsageSnapshotReader({
 });
 
   codexUsageReaders.set(key, reader);
-  return reader();
+  return reader(options);
 }
 
 /**
@@ -341,6 +341,7 @@ export function registerMakerUsageIpc(maker: Maker): void {
     },
     consume: (providerId, key, authorized) => getResetService(providerId).consume(key, authorized),
     record: (providerId, snapshot, at) => codexResetAutoUseStore.record(providerId, snapshot.autoUse!.accountKey, at),
+    refreshWeb: async (providerId) => { await readCodexAccountUsageSnapshotWithWebRefresh(providerId, { fresh: true }); },
     restored: async (providerId) => {
       for (const listener of resetRestoredListeners) await listener(providerId);
     },

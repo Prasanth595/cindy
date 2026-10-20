@@ -20,7 +20,7 @@ function harness(value = snapshot()) {
     scope: () => scope, now: () => now,
     read: vi.fn(async () => value), authorized: vi.fn(() => true),
     consume: vi.fn(async () => ({ outcome: 'reset' as const, rateLimits: null })),
-    record: vi.fn(async () => {}), restored: vi.fn(async () => {}), warn: vi.fn(),
+    record: vi.fn(async () => {}), refreshWeb: vi.fn(async () => {}), restored: vi.fn(async () => {}), warn: vi.fn(),
   };
   const engine = new CodexResetAutoUse(deps);
   return { value, deps, engine, advance: () => { now += 60_000; }, switchOwner: () => { scope = 'another'; } };
@@ -42,6 +42,17 @@ describe('automatic Codex reset', () => {
     h.value.resetOffer!.expiresAt = (NOW + 48 * 60_000) / 1000;
     await h.engine.check('openai');
     expect(h.deps.consume).toHaveBeenCalledTimes(minutes === 60 ? 1 : 0);
+  });
+  // Regression: the top-level snapshot may be the last model-specific bucket received.
+  it.each([[100, 20, false], [20, 100, true]])('uses generic quota when model quota is %i and generic is %i', async (model, generic, expected) => {
+    const h = harness();
+    h.value.rateLimits.secondary!.usedPercent = model;
+    h.value.rateLimitsByLimitId = {
+      spark: { ...h.value.rateLimits, limitId: 'spark', limitName: 'GPT-5.3-Codex-Spark' },
+      codex: { secondary: { ...h.value.rateLimits.secondary!, usedPercent: generic } },
+    };
+    await h.engine.check('openai');
+    expect(h.deps.consume).toHaveBeenCalledTimes(expected ? 1 : 0);
   });
   it('skips full quotas, unknown windows and a separate model bucket', async () => {
     for (const used of [0, NaN]) {
