@@ -15,6 +15,8 @@ import {
   type InstalledGhost,
 } from '../../../shared/ghost.js';
 const runtime = vi.hoisted(() => ({
+  listScans: 0,
+  onList: undefined as (() => void) | undefined,
   confirmLegacyLibraryReattach: vi.fn<(plugin: unknown) => Promise<boolean>>(async () => false),
   ghosts: [] as Array<{
     manifest: Record<string, unknown>;
@@ -109,8 +111,10 @@ vi.mock('../../cindy-brain/index.js', () => ({
   getGhostManager: () => ({
     resumePendingResidentsOffline: runtime.resumeOfflineResidents,
     reconcilePendingRootNamespaces: runtime.reconcilePendingRootNamespaces,
-    list: () =>
-      runtime.ghosts.map((ghost) => {
+    list: () => {
+      runtime.listScans++;
+      runtime.onList?.();
+      return runtime.ghosts.map((ghost) => {
         // Historical service tests used a production-looking placeholder path.
         // Materialize only that fixture shape so raw-byte identity is exercised;
         // explicit missing/unreadable temp-path cases remain untouched.
@@ -139,7 +143,8 @@ vi.mock('../../cindy-brain/index.js', () => ({
             reviewed: false,
           },
         };
-      }),
+      });
+    },
     approvedInstallEvidence: runtime.approvedInstallEvidence,
     inspect: runtime.inspect,
     readApprovedInstallOriginStrict: (ghostId: string) => {
@@ -253,6 +258,8 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 }
 
 afterEach(() => {
+  runtime.listScans = 0;
+  runtime.onList = undefined;
   runtime.ghosts = [];
   runtime.confirmLegacyLibraryReattach.mockReset();
   runtime.confirmLegacyLibraryReattach.mockImplementation(async () => false);
@@ -995,6 +1002,47 @@ describe('PluginMarketService migration and defaultInstall', () => {
 
     expect(snapshot.items[0]?.installState).toBe('conflict');
     expect(h.ledger.installationForGhost(item.ghostId)?.rawManifestSha256).toBeUndefined();
+  });
+
+  // Regression: ineligible legacy records caused one full scan per record on
+  // every market refresh. Unit budget uses scan count, not machine-dependent time.
+  it('uses a constant number of scans for unchanged records that cannot be backfilled', async () => {
+    const first = summary();
+    const items = [first];
+    const h = harness(items);
+    runtime.ghosts = [ghostEntry(first.ghostId)];
+    h.ledger.upsertInstallation(recordForTest(first));
+    const one = await h.service.snapshot();
+    expect(one.items[0]?.installState).toBe('installed');
+    const singleScans = runtime.listScans;
+    runtime.listScans = 0;
+    const second = summary({ id: `c${'b'.repeat(24)}`, ghostId: 'cindy-other' });
+    items.push(second);
+    runtime.ghosts.push(ghostEntry(second.ghostId));
+    h.ledger.upsertInstallation(recordForTest(second));
+    const two = await h.service.snapshot();
+    expect(two.items.map(item => item.installState)).toEqual(['installed', 'installed']);
+    expect(h.ledger.installationForGhost(second.ghostId)?.rawManifestSha256).toBeUndefined();
+    expect(runtime.listScans).toBe(singleScans);
+  });
+
+  // A microtask-only refresh starved main's native message pump. This unit
+  // checks an event-loop turn between scans without timing assertions or sleep.
+  it('lets a queued event run between market reconciliation scans', async () => {
+    const h = harness([]);
+    let eventRan = false;
+    let eventBeforeNextScan = false;
+    let queued: ReturnType<typeof setImmediate> | undefined;
+    runtime.onList = () => {
+      if (runtime.listScans === 1) queued = setImmediate(() => { eventRan = true; });
+      if (runtime.listScans === 2) eventBeforeNextScan = eventRan;
+    };
+    try {
+      expect((await h.service.snapshot()).items).toEqual([]);
+      expect(eventBeforeNextScan).toBe(true);
+    } finally {
+      if (queued) clearImmediate(queued);
+    }
   });
 
   it('backfills a pre-digest server record only from matching modern receipt evidence', async () => {
@@ -4971,6 +5019,36 @@ function installRuntimeGhost(
 }
 
 describe('organization default Plugin takeover', () => {
+  // Regression: an unresolved namespace repeatedly failed default installation
+  // and restarted the full startup sync every minute. Existing migration tests
+  // cover successful stamps, not this persistent wait (unit).
+  it('waits for namespace migration without downloading or reporting a startup failure', async () => {
+    setCurrentOrganization();
+    const item = organizationDefaultSummary({ namespace: 'acme' });
+    const dir = installRuntimeGhost(manifest(item.ghostId));
+    runtime.ghosts[0]!.namespaceState = 'pending';
+    const h = harness([item]);
+    const onDefaultReconciliationOutcome = vi.fn();
+    runtime.install.mockRejectedValue(new Error('[PRECONDITION_FAILED] namespace migration is pending'));
+    for (let i = 0; i < 2; i++) {
+      await h.service.snapshot({ onDefaultReconciliationOutcome });
+    }
+    expect(onDefaultReconciliationOutcome.mock.calls).toEqual([['completed'], ['completed']]);
+    expect(h.api.download).not.toHaveBeenCalled();
+    expect(h.api.detail).not.toHaveBeenCalled();
+    expect(runtime.ghosts[0]?.enabled).toBe(true);
+
+    // No persistent suppression: a later successful migration is visible.
+    delete runtime.ghosts[0]!.namespaceState;
+    runtime.ghosts[0]!.namespace = 'acme';
+    h.ledger.upsertInstallation(recordForTest(item, {
+      namespace: 'acme',
+      rawManifestSha256: crypto.createHash('sha256').update(fs.readFileSync(path.join(dir, 'ghost.json'))).digest('hex'),
+    }));
+    expect((await h.service.snapshot()).items[0]?.installState).toBe('installed');
+    expect(runtime.reconcilePendingRootNamespaces).toHaveBeenCalledTimes(3);
+  });
+
   it.each([
     ['S1 verified namespace without token slug', 'acme', 'acme', undefined, 'old-prefix', 'helper', true],
     ['S2-off pending legacy prefix', undefined, undefined, undefined, 'acme', 'acme-tool', true],

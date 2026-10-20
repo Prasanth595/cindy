@@ -35,6 +35,8 @@ import {
   type ViewStyle,
 } from 'react-native';
 import { Text, TextInput } from '@/components/AppText';
+import { ChatFilePathContext, type ChatFilePathContextValue } from '@/session/chatFilePathContext';
+import { QuestionReferenceText } from '@/session/QuestionReferenceText';
 import { formatRemoteError } from '@/device-link/remoteStatus';
 import { useMobileMakerTransport } from '@/device-link/useMobileMakerTransport';
 import { asyncQuestionNeedsSupplement, formatAsyncQuestionSupplement } from '@cindy/maker-shared/interaction';
@@ -129,7 +131,8 @@ const CompanionInteractionContext = createContext(false);
 export interface CompanionInteractionIdentity { name: string; avatar?: ReactNode }
 const CompanionIdentityContext = createContext<CompanionInteractionIdentity | null>(null);
 
-export function InteractionPanel({ companionIdentity, hangFromAvatar = false, ...props }: Parameters<typeof InteractionPanelContent>[0] & {
+export function InteractionPanel({ companionIdentity, hangFromAvatar = false, fileContext, ...props }: Parameters<typeof InteractionPanelContent>[0] & {
+  fileContext?: ChatFilePathContextValue | null;
   companion?: boolean;
   companionIdentity?: CompanionInteractionIdentity | null;
   /**
@@ -139,7 +142,9 @@ export function InteractionPanel({ companionIdentity, hangFromAvatar = false, ..
   hangFromAvatar?: boolean;
 }) {
   const identity = props.companion === true && companionIdentity?.name ? companionIdentity : null;
-  const content = <InteractionPanelContent {...props} />;
+  const panel = <InteractionPanelContent {...props} />;
+  const content = fileContext === undefined ? panel
+    : <ChatFilePathContext.Provider value={fileContext}>{panel}</ChatFilePathContext.Provider>;
   return <CompanionInteractionContext.Provider value={props.companion === true}>
     <CompanionIdentityContext.Provider value={identity}>
       <CompanionHungContext.Provider value={hangFromAvatar && !!identity?.avatar}>
@@ -1051,7 +1056,7 @@ function AskUserQuestionForm({
     return (
       <View style={cardStyle(styles, touchLayout, companion)} testID="interaction.ask.card">
         <Text style={styles.kind}>{t('interaction.panel.awaitingAnswer')}</Text>
-        <Text style={styles.askQuestion} testID="interaction.ask.question">{presentation.title}</Text>
+        <Text style={styles.askQuestion} testID="interaction.ask.question"><QuestionReferenceText text={presentation.title} /></Text>
         <Text style={styles.askMetaCaption}>{presentation.summary.detail}</Text>
         <InteractionActions touchLayout={touchLayout}>
           <ResolveButton
@@ -1158,7 +1163,7 @@ function AskUserQuestionForm({
           <Text style={styles.pageText}>{presentation.pageLabel}</Text>
         </View>
       </View>
-      <Text style={styles.askQuestion} testID="interaction.ask.question">{presentation.title}</Text>
+      <Text style={styles.askQuestion} testID="interaction.ask.question"><QuestionReferenceText text={presentation.title} /></Text>
       <Text style={styles.askMetaCaption}>{metaCaption}</Text>
 
       {options.length > 0 ? (

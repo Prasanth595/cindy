@@ -26,7 +26,6 @@ Settings > Appearance controls how the app looks. It starts with the theme and a
 
   The example filenames describe the final display areas; source images may be exported at 2x/3x while keeping the same aspect ratios. Paths must be absolute JSON strings; spaces do not need shell quotes. PNG, JPEG, and WebP are supported. Transparent padding is trimmed at render time without changing the source file. Only `brand.icon` and `brand.logo` are recognized; the previous single-image fields are not compatible with the redesigned two-asset layout.
 
-- **Plugin panel restore entry**: choose whether minimized plugin panels come back from a floating bubble or from the sidebar.
 - **Panel layout**: panel positions and widths are saved automatically; **Restore default layout** puts them back.
 - **Reply Animation**: new reply text fades in while it streams. Turn it off to show text immediately. It stays off when your system reduces motion.
 

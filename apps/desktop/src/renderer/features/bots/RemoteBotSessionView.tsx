@@ -11,6 +11,7 @@ import { Spinner } from '@/components/ui/spinner';
 import { BotAvatar } from './BotAvatar';
 import { parseRemoteBots, type RemoteBot } from './remoteBotRoster';
 import { markRemoteBotRead, useRemoteBots } from './useRemoteBots';
+import { useBotIslandVisibleSession } from './useBotIslandVisibleSession';
 import { useCompanionCloud } from './companionCloudStore';
 import { cloudCompanionAt } from './companionCloudPresentation';
 import { useDelayedFlag } from '@/features/cc-agent/workdir-browse/hooks/useDelayedFlag';
@@ -99,6 +100,8 @@ export function RemoteBotSessionView() {
   }, [bot, failed, ready, validatedSessionId]);
 
   const liveChat = !!bot && !failed && !!ready?.sessionId && ready.id === botId && ready.deviceId === deviceId;
+  // Like a local companion chat: once the chat is shown, the island card for this Session is read.
+  useBotIslandVisibleSession(liveChat ? ready!.sessionId : null);
   const homeAway = !!cloudActor && !!deviceId && !!botId && cloudActor.homeDeviceId !== cloud.selfDeviceId
     && (!bot || (!bot.online && bot.connectionKnown !== false));
   // Like IM, a brief drop keeps the open chat in place (cloud-companions.md §3.1).

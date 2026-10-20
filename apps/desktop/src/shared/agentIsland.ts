@@ -1,5 +1,7 @@
 import { BRAND_NAME } from '@cindy/maker-shared/branding';
 import type { SessionActivitySnapshot } from '@cindy/maker-shared/session-activity';
+import type { BotAvatarHue } from './botAvatarHue.js';
+import { isSupportedBotAvatarValue } from './botAvatarValue.js';
 
 export type AgentIslandSessionPhase = 'running' | 'needs-interaction' | 'completed' | 'error';
 
@@ -21,6 +23,23 @@ export interface AgentIslandActivityLine {
 }
 
 /**
+ * The companion a Bot Session speaks for. The island draws this identity instead
+ * of the task's title, working directory and agent mark.
+ */
+export interface AgentIslandCompanionSnapshot {
+  name: string;
+  /** Group the member speaks in; absent for the companion's own chat. */
+  groupName?: string;
+  /** BotAvatar hue family member; the island resolves it to its dark tint. */
+  hue: BotAvatarHue;
+  /** Bounded JPEG thumbnail (base64) when the companion has artwork. */
+  imageJpeg?: string;
+  /** Emoji, or the name's initial, painted when there is no artwork. */
+  glyph: string;
+  glyphIsInitial: boolean;
+}
+
+/**
  * Renderer-facing session snapshot for the macOS Agent Island overlay.
  */
 export interface AgentIslandSessionSnapshot {
@@ -28,6 +47,7 @@ export interface AgentIslandSessionSnapshot {
   completionNotification?: 'silent';
   sessionId: string;
   title: string;
+  companion?: AgentIslandCompanionSnapshot;
   projectName: string | null;
   detail: string;
   compactDetail: string;
@@ -795,11 +815,23 @@ export interface AgentIslandRemoteSessionInput {
   detail: string;
   workingPhase?: string;
   interactionKind?: AgentIslandInteractionKind;
+  /** The companion this chat speaks for, when its main computer is the other device. */
+  companion?: AgentIslandRemoteCompanionInput;
 }
 
-const AGENT_ISLAND_REMOTE_SESSIONS_MAX = 500;
+export interface AgentIslandRemoteCompanionInput {
+  name: string;
+  /** Stored avatar value as the other computer reports it (grapheme, preset, its blob or a cloud image). */
+  avatar: string;
+  avatarColor: string;
+}
+
+/** Upper bound the IPC parser accepts; builders trim to it so one extra entry never voids the payload. */
+export const AGENT_ISLAND_REMOTE_SESSIONS_MAX = 500;
 const AGENT_ISLAND_REMOTE_ID_MAX_LENGTH = 256;
 const AGENT_ISLAND_REMOTE_TEXT_MAX_LENGTH = 1024;
+/** Longest stored companion avatar value (a cloud image address); anything longer is dropped. */
+const AGENT_ISLAND_REMOTE_AVATAR_MAX_LENGTH = 2048;
 const AGENT_ISLAND_SESSION_PHASES: readonly AgentIslandSessionPhase[] = [
   'running',
   'needs-interaction',
@@ -832,6 +864,7 @@ export function parseAgentIslandRemoteSessions(raw: unknown): AgentIslandRemoteS
       ? record.interactionKind as AgentIslandInteractionKind
       : undefined;
     const workingPhase = readBoundedString(record.workingPhase, 64);
+    const companion = readRemoteCompanion(record.companion);
     out.push({
       sessionId,
       deviceId,
@@ -846,9 +879,30 @@ export function parseAgentIslandRemoteSessions(raw: unknown): AgentIslandRemoteS
       detail: readBoundedString(record.detail, AGENT_ISLAND_REMOTE_TEXT_MAX_LENGTH) ?? '',
       ...(workingPhase ? { workingPhase } : {}),
       ...(interactionKind ? { interactionKind } : {}),
+      ...(companion ? { companion } : {}),
     });
   }
   return out;
+}
+
+function readRemoteCompanion(value: unknown): AgentIslandRemoteCompanionInput | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const record = value as Record<string, unknown>;
+  const name = readBoundedString(record.name, AGENT_ISLAND_REMOTE_TEXT_MAX_LENGTH);
+  if (!name) return null;
+  // Bound the raw value before trimming or grapheme parsing: an oversized one is never an avatar.
+  const rawAvatar = typeof record.avatar === 'string' && record.avatar.length <= AGENT_ISLAND_REMOTE_AVATAR_MAX_LENGTH
+    ? record.avatar
+    : '';
+  const avatar = rawAvatar.trim();
+  // Only values a companion avatar can hold: never an arbitrary local path or data URI.
+  const supportedAvatar = (avatar.startsWith('https://') && avatar.length <= AGENT_ISLAND_REMOTE_AVATAR_MAX_LENGTH)
+    || isSupportedBotAvatarValue(avatar);
+  return {
+    name,
+    avatar: supportedAvatar ? avatar : '',
+    avatarColor: readBoundedString(record.avatarColor, 64) ?? '',
+  };
 }
 
 function readBoundedString(value: unknown, maxLength: number): string | null {

@@ -59,6 +59,17 @@ import {
 } from '../../../shared/ghost';
 import { type GhostPluginDetail } from './lib/ghostPluginViewModel';
 import { GhostPluginIcon } from './GhostPluginIcon';
+import {
+  hasPluginPlacementMemory,
+  useGlobalTabs,
+} from '@/features/right-sidebar/globalTabs';
+import {
+  openPluginInSidebar,
+  resetPluginPlacementAndReturn,
+} from '@/features/right-sidebar/pluginPlacement';
+import { useTabGroupAssignments } from '@/features/right-sidebar/tabGroups';
+import { useInstalledGhosts } from '@/cindy-brain/useInstalledGhosts';
+import { installedGhostStoragePart } from '../../../shared/pluginIdentity';
 import { ghostPluginSummary } from './lib/ghostPluginDetailModel';
 import { ghostPrimaryAction } from './lib/ghostPluginViewModel';
 import { permissionItemIcon } from './lib/permissionItemIcon';
@@ -899,6 +910,18 @@ export function DetailsSection({
 }) {
   const { t } = useTranslation();
   const trustLabelKey = ghostTrustLabelKey(detail.trust);
+  const globalTabs = useGlobalTabs();
+  useTabGroupAssignments();
+  const installedGhost = useInstalledGhosts().find(
+    (ghost) => installedGhostStoragePart(ghost) === detail.id,
+  );
+  const inSidebar = globalTabs.some(
+    (tab) => (tab.state as { instanceId?: string } | null)?.instanceId === detail.id,
+  );
+  // 用户拖过 / 弹过 / 已套过默认边:给「恢复默认位置」。
+  const canResetPlacement = hasPluginPlacementMemory(detail.id);
+  const placementActionClass =
+    'shrink-0 rounded-md px-2 py-1 text-12 text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-hover-soft)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]';
   const facts: Array<{
     key: string;
     label: string;
@@ -951,7 +974,40 @@ export function DetailsSection({
       value:
         detail.panelMinWidth === null
           ? t('settings.ghosts.detail.panelNone')
-          : panelStatus || t('settings.ghosts.detail.panelNotDocked'),
+          : panelStatus || t('settings.ghosts.detail.panelDismissed'),
+      // 停靠形态面板关掉页签后,这里是除右侧栏「+」菜单外的另一个重开入口
+      // (这类插件没有左侧栏入口)。已在侧栏、停用、tab 形态或无面板时不渲染。
+      // 「恢复默认位置」:清掉用户的放置记忆(拖到的边 / 弹过窗口),回到插件声明的默认边。
+      ...(detail.panelMinWidth !== null && !detail.tabPanel
+        ? {
+            action: (
+              <span className="flex shrink-0 items-center gap-1">
+                {detail.enabled && !inSidebar && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (installedGhost) void openPluginInSidebar(installedGhost, 'panel');
+                    }}
+                    className={placementActionClass}
+                  >
+                    {t('settings.ghosts.detail.openInSidebar')}
+                  </button>
+                )}
+                {canResetPlacement && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (installedGhost) void resetPluginPlacementAndReturn(installedGhost);
+                    }}
+                    className={placementActionClass}
+                  >
+                    {t('settings.ghosts.detail.resetPlacement')}
+                  </button>
+                )}
+              </span>
+            ),
+          }
+        : {}),
     },
     ...(detail.installDir
       ? [

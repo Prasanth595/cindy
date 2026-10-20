@@ -705,9 +705,6 @@
     "apps/desktop/src/renderer/__tests__/newMakerWorktreeSend.test.ts": {
       "sourceReads": 2
     },
-    "apps/desktop/src/renderer/__tests__/pendingHandoffRecovery.test.ts": {
-      "resetModules": 2
-    },
     "apps/desktop/src/renderer/__tests__/permissionSessionApproval.test.ts": {
       "sourceReads": 1
     },

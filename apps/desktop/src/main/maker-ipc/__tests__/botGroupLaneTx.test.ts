@@ -61,7 +61,7 @@ describe('Bot group lane transactions', () => {
         context_window INTEGER, fast_mode INTEGER, plan_mode_enabled INTEGER, cleared_at INTEGER,
         pinned_at INTEGER, user_send_at INTEGER, agent_kind TEXT, orca_role TEXT,
         parent_session_id TEXT, forked_at_message_id TEXT, worktree_path TEXT, extra_dirs TEXT,
-        remote_host_id TEXT, provider_id TEXT, source TEXT NOT NULL, created_at INTEGER,
+        remote_host_id TEXT, agent_device_id TEXT, provider_id TEXT, source TEXT NOT NULL, created_at INTEGER,
         updated_at INTEGER NOT NULL
       );
       CREATE TABLE bot_session_links (

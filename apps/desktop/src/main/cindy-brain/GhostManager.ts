@@ -833,9 +833,11 @@ export class GhostManager {
     return listed;
   }
 
-  private receiptFact(relId: string): PluginInstanceReceiptFact | null | undefined {
-    const recovery = this.receiptStore.readForRecovery(relId);
-    if (recovery.state === 'invalid' || recovery.state === 'unreadable') return undefined;
+  private receiptFact(
+    relId: string,
+    recovery = this.receiptStore.read(relId),
+  ): PluginInstanceReceiptFact | null | undefined {
+    if (recovery.state === 'invalid') return undefined;
     if (recovery.state !== 'approved') return null;
     const receipt = recovery.receipt;
     return {
@@ -1926,14 +1928,17 @@ export class GhostManager {
    * 调 receiptStore.read() 会让隔离在某条路径上失效,那类"同一判定散落多处"的分叉
    * 正是本 PR 前几轮反复出问题的原因。
    */
-  private readApproval(id: string): GhostInstallReceiptReadResult {
+  private readApproval(
+    id: string,
+    readReceipt = (relId: string) => this.receiptStore.read(relId),
+  ): GhostInstallReceiptReadResult {
     if (this.recoveryBlockedApprovalNamespaces.has(this.approvalNamespaceKey())) {
       return { state: 'invalid', reason: 'ghost mutation journal namespace is unreadable' };
     }
     if (this.untrustedApprovals.has(this.isolationKey(id))) {
       return { state: 'invalid', reason: '批准状态已被判定不可信(撤销失败)' };
     }
-    return this.receiptStore.read(id);
+    return readReceipt(id);
   }
 
   /**
@@ -2573,11 +2578,26 @@ export class GhostManager {
     return true;
   }
 
-  /** 扫描已装意识(同步 —— renderer 首帧 sendSync 拉取,目录极小不卡启动)。 */
+  /** Synchronous first-frame projection; share disk reads only within this call. */
   list(): InstalledGhost[] {
     this.ensureCurrentOwnerContextSync();
-    this.syncInstanceRegistry();
-    const result = this.projectListedEntries(this.listContentEntries());
+    const entries = this.listContentEntries();
+    const receipts = new Map<string, GhostInstallReceiptReadResult>();
+    const readReceipt = (relId: string): GhostInstallReceiptReadResult => {
+      let receipt = receipts.get(relId);
+      if (!receipt) {
+        receipt = this.receiptStore.read(relId);
+        receipts.set(relId, receipt);
+      }
+      return receipt;
+    };
+    // Registry facts and the list projection consume the same validated bytes.
+    // No cache survives this synchronous scan; isolation checks still run below.
+    this.instanceRegistryService.sync({
+      listContentEntries: () => entries,
+      receiptFact: (relId) => this.receiptFact(relId, readReceipt(relId)),
+    });
+    const result = this.projectListedEntries(entries, readReceipt);
     result.sort((a, b) => a.manifest.id.localeCompare(b.manifest.id));
     return result;
   }
@@ -2603,13 +2623,16 @@ export class GhostManager {
     return ghost && installedGhostStoragePart(ghost) === instanceKey ? ghost : undefined;
   }
 
-  private projectListedEntries(listedDirs: Array<{ relId: string; dir: string }>): InstalledGhost[] {
+  private projectListedEntries(
+    listedDirs: Array<{ relId: string; dir: string }>,
+    readReceipt?: (relId: string) => GhostInstallReceiptReadResult,
+  ): InstalledGhost[] {
     const result: InstalledGhost[] = [];
     for (const listed of listedDirs) {
       const { relId, dir } = listed;
       const identity = parsePluginInstallRelId(relId);
       if (!identity) continue;
-      const approvalResult = this.readApproval(relId);
+      const approvalResult = this.readApproval(relId, readReceipt);
       if (approvalResult.state === 'approved') {
         const receipt = approvalResult.receipt;
         const localizedManifest = this.localizeApprovedManifest(receipt);

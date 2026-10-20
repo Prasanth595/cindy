@@ -1126,7 +1126,11 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
         writableDirs,
         virtualWorkspace: payload.virtualWorkspace === true,
         ...(payload.personal.instructions ? { personalInstructions: projectText(payload.personal.instructions) } : {}),
-        options: Object.fromEntries(Object.entries(payload.options).map(([key, value]) => [key, typeof value === 'string' ? projectText(value) : value])) as unknown as RemoteAgentWireStartOptions,
+        // 恢复标识属于提供方；Pi 的标识即使是文件路径，也不能按控制端路径投影。
+        options: Object.fromEntries(Object.entries(payload.options).map(([key, value]) => [
+          key,
+          typeof value === 'string' && key !== 'resumeSessionId' ? projectText(value) : value,
+        ])) as unknown as RemoteAgentWireStartOptions,
         workspace: payload.workspace,
         tunnel: { url: tunnel.url, token: tunnel.token, linkActivity: () => tunnel.linkActivity() },
         mcpServers: payload.mcpServers,

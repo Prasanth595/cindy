@@ -10,7 +10,7 @@
  *   被当成做完；同一条挂起交互在重启后得到新的事件 id；远程 list-active 连续失败；远程任务两次轮询之间从权限请求
  *   A 换到 B，仍显示 A；本机任务在同一相位里从请求 A 换到 B（权限或回答），沿用 A 的等待时刻；读任务元数据失败一次后，
  *   这批任务被丢掉，之后再无活动就永远不进表；启动兜底读失败一次后再不重试；启动时归属读失败，上一轮被打断的任务按空归属判给总调度、工作台把空表当成「没事」；伙伴刚开的任务在上次归属读取
- *   几秒内出现，被当成「没人开」落到总调度。
+ *   几秒内出现，被当成「没人开」落到总调度；出错只留横幅文案、丢了工具循环等稳定原因。
  * - tier：unit（全部 IO 经注入的内存 fake，时间由 now() 推进，无真实等待）。
  */
 import type { SessionActivitySnapshot } from '@cindy/maker-shared/session-activity';
@@ -164,6 +164,20 @@ describe('TaskWatch local observation', () => {
     await h.watch.settled();
     expect(h.watch.get('user')).toMatchObject({ phase: 'finished', phaseSince: 9_000 });
     expect(h.watch.finished().map((f) => f.sessionId)).toEqual(['user']);
+  });
+
+  // 依据:伙伴跟进要分清工具循环(换模型没用)与供应商失败;只有横幅文案时分不清,会把循环的任务也换模型。
+  // 最小失败输入:带 errorReason 的出错投影;旧被控端只给 toolLoop 详情、不给 errorReason。
+  it('keeps the stable reason behind an error so follow-up can tell a tool loop apart', async () => {
+    const h = harness({ metas: [meta('looped'), meta('legacy-loop'), meta('plain')] });
+    await h.watch.start();
+    h.watch.applyInputProjection({ sessionId: 'looped', error: '重复工具调用', errorReason: 'tool_use_loop_detected' });
+    h.watch.applyInputProjection({ sessionId: 'legacy-loop', error: '重复工具调用', toolLoop: { toolName: 'Bash', count: 5 } });
+    h.watch.applyInputProjection({ sessionId: 'plain', error: 'server error' });
+    await h.watch.settled();
+    expect(h.watch.get('looped')).toMatchObject({ phase: 'errored', errorReason: 'tool_use_loop_detected' });
+    expect(h.watch.get('legacy-loop')).toMatchObject({ phase: 'errored', errorReason: 'tool_use_loop_detected' });
+    expect(h.watch.get('plain')).toMatchObject({ phase: 'errored', errorReason: null });
   });
 
   it('gives the same pending interaction the same event id after a restart', async () => {

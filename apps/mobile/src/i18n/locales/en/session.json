@@ -585,6 +585,7 @@
     "REMOTE_AGENT_BUSY": "Too many sessions are running on the other computer. End some of them and try again.",
     "REMOTE_AGENT_DEVICE_LIMIT": "This device has reached its remote session limit. Archive unused sessions or ask the provider owner to raise the limit in Remote & sharing.",
     "REMOTE_AGENT_TOTAL_LIMIT": "The provider computer has reached its total remote session limit. Ask the owner to release unused sessions or raise the limit in Remote & sharing.",
+    "REMOTE_AGENT_RESUME_LOST": "The earlier conversation on the other computer could not be reconnected, so the agent continues without that context.",
     "REMOTE_AGENT_UNSUPPORTED": "This Agent isn't available on the other computer. Install or sign in to it there, or pick another Agent.",
     "REMOTE_AGENT_INVALID": "Something went wrong talking to the computer running the Agent. Try again; if it keeps happening, update Cindy on both computers.",
     "REMOTE_AGENT_PROVIDER_NOT_ALLOWED": "That computer hasn’t allowed remote use of this provider. On that computer, turn on “Allow remote use” in Settings → Providers, or pick another model.",
@@ -684,5 +685,24 @@
       "ORCA_CREATE_UNCONFIRMED": "Creating the Worker timed out and couldn't be confirmed. Check the Worker list first, and retry only if no new Worker appears.",
       "ORCA_ACTION_UNCONFIRMED": "The request timed out, so the result isn't confirmed yet. The list has been refreshed; go by what it shows now."
     }
+  },
+  "resetAutoUse": {
+    "label": "Auto use",
+    "rules": "Auto-use rules",
+    "lowQuota": "Use when weekly quota falls below 1%",
+    "resetDistance": "Time until quota resets",
+    "days": "At least {{count}} days",
+    "unlimited": "Any time",
+    "custom": "Custom…",
+    "customDays": "Custom days",
+    "dayUnit": "days or more",
+    "apply": "Apply",
+    "expiring": "Use before a card expires",
+    "leadTime": "Use how early",
+    "minutes": "{{count}} minutes before expiry",
+    "hours": "{{count}} hours before expiry",
+    "hint": "Either rule uses the earliest-expiring card. Skip when all quotas are full. Runs on this computer while Cindy is running.",
+    "failed": "Could not save. Try again.",
+    "restore": "Restore defaults"
   }
 }

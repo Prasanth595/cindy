@@ -188,7 +188,7 @@ export function registerSendToSessionTool(
         .string()
         .min(1)
         .describe(
-          "要 handoff 给目标 session 的消息正文(create 模式下作为新 session 的首条消息)。",
+          "Agent 补充内容。宿主自动从当前已接收输入保留用户原话，并生成用户原话 / agent补充两栏；本字段全部归入 agent补充。",
         ),
       message_purpose: z.enum(["coordination", "user-visible"]).optional().describe(
         "委派子任务发给发起伙伴默认 coordination：送达模型但内部文字不进正文或通知。user-visible 用于用户要求的结果、需要用户介入的消息。其他普通任务默认保持可见；coordination 仅限宿主核实的委派关系。正常完成自动回传，无需重发。",

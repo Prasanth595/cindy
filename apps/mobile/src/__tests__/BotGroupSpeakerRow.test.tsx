@@ -62,7 +62,7 @@ it('follows the speaking lane while focused and seeds its pending prompts', asyn
   await render({});
   expect(h.subscribe).toHaveBeenCalledWith(expect.stringMatching(/^bot-group-speaker:s1:focus:/), 'mac', ['session:s1']);
   expect(h.invoke).toHaveBeenCalledWith('mac', 'maker:get-pending-interactions', ['s1']);
-  expect(h.setPending).toHaveBeenCalledWith('s1', [{ request: { requestId: 'r1' } }]);
+  expect(h.setPending).toHaveBeenCalledWith('s1', [{ request: { requestId: 'r1' } }], { deviceId: 'mac' });
   // No live phase yet: a reply reads 「正在思考…」.
   expect(node.textContent).toContain('copy:thinking');
   await act(async () => root.unmount());

@@ -226,6 +226,7 @@ import {
   getRipgrepBinaryPath,
 } from './runtime-configs.js';
 import { createDeviceAgentStarter } from '../remote-agent/controller/service.js';
+import { readRemoteAgentIdleReleaseMinutes } from '../remote-agent/controller/idleReleaseStore.js';
 import { extractReviewPdfTextInChild } from '../reviewer/reviewPdfProcess.js';
 import { disposeRemoteAgentHost, installRemoteAgentHost } from '../remote-agent/host/service.js';
 import {
@@ -2832,6 +2833,8 @@ export function getMaker(): Maker {
           const shareId = parseProviderShareAgentDeviceId(deviceId);
           return shareId !== null && isProviderShareCredentialConsentSkipped(shareId);
         },
+        // 名额紧张时闲置满这么多分钟的任务让出那台电脑上的 Agent 进程(「远程与分享」里的设置，0 = 不让)。
+        idleReleaseMinutes: readRemoteAgentIdleReleaseMinutes,
         logger: desktopMakerLogger,
       }),
       makerMemory: makerMemoryManager,

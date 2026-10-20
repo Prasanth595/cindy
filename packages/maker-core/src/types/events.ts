@@ -398,7 +398,8 @@ export type InteractionDecision =
       dismissed?: boolean;
     };
 
-export type InteractionResolver = (req: InteractionRequest) => Promise<InteractionDecision>;
+/** signal 仅在本进程传递，不进入请求载荷或跨端协议。 */
+export type InteractionResolver = (req: InteractionRequest, signal?: AbortSignal) => Promise<InteractionDecision>;
 
 /**
  * pending interaction 被自动 resolve 时, agent emit 此事件让 UI 关闭对话框。

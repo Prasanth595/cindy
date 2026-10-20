@@ -343,6 +343,7 @@ export interface BuiltinDesktopCommandDeps {
   getLearnController: () => LearnController | null;
   /** Learn Skill 的设备/profile 开关；SSH 兼容入口与 Skill 使用同一开关。 */
   isLearnEnabled: () => boolean;
+  isLearnEnabledForListing?: () => boolean;
   /**
    * device-link 隧道 invoke(控制端 → 被控端)。ctx.deviceId 存在(远程会话)时,
    * /goal /learn /cmd 的业务体经它路由到被控端执行 —— 与 renderer 的
@@ -703,6 +704,8 @@ export function registerBuiltinDesktopCommands(
     // preference. Keep the compatibility route and let remote learn:start
     // enforce the controlled host's effective setting.
     isVisible: (ctx) => Boolean(ctx?.deviceId) || deps.isLearnEnabled(),
+    isVisibleForListing: (ctx) => Boolean(ctx?.deviceId)
+      || (deps.isLearnEnabledForListing ?? deps.isLearnEnabled)(),
     execute: async (ctx) => {
       const arg = (ctx.args ?? '').trim();
       if (!arg && !ctx.sessionId) {

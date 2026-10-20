@@ -124,12 +124,10 @@ export const GHOST_LAUNCH_MODES = ['on-demand', 'resident'] as const;
 export type GhostLaunchMode = (typeof GHOST_LAUNCH_MODES)[number];
 
 /**
- * 面板显示形态(相对主聊天窗)。left / right = 顶层布局树停靠 pane;
- * 'tab' = 不进布局树,作为右侧栏(right-tabs)里的每会话单例页签
- * (2026-07-24 定案)。top / bottom 需要嵌套上下分割(树操作/拖缝/卸载
- * 查找全链路),排期中——校验层先收词并明确拒绝,不静默降级(规则 9)。
+ * 面板显示形态:left / right / top / bottom = 右侧栏页签系统里聊天区对应边的页签组
+ * (不跟对话的全局页签,用户放置过后以用户为准);'tab' = 不进页签组,由插件页独占承载。
  */
-export const GHOST_PANEL_POSITIONS = ['left', 'right', 'tab'] as const;
+export const GHOST_PANEL_POSITIONS = ['left', 'right', 'top', 'bottom', 'tab'] as const;
 export type GhostPanelPosition = (typeof GHOST_PANEL_POSITIONS)[number];
 
 /** 面板声明(卡槽之一,一段意识至多一块)。 */
@@ -164,6 +162,13 @@ export type GhostMainViewIcon = (typeof GHOST_MAIN_VIEW_ICONS)[number];
  * 插件一级主视图声明。它是应用级导航能力，与会话内 panel 独立授权；
  * Host 只会挂载这里声明且经过批准的包内 HTML 入口。
  */
+/** 左侧导航入口点击后主视图在哪里打开(插件给的默认偏好;用户放置过后以用户的为准)。 */
+export const GHOST_MAIN_VIEW_OPEN_MODES = ['page', 'sidebar', 'window'] as const;
+export type GhostMainViewOpenMode = (typeof GHOST_MAIN_VIEW_OPEN_MODES)[number];
+/** 主视图以页签形态打开时默认停在聊天区的哪一边。 */
+export const GHOST_TAB_SIDES = ['left', 'right', 'top', 'bottom'] as const;
+export type GhostTabSide = (typeof GHOST_TAB_SIDES)[number];
+
 export interface GhostMainViewDecl {
   /** 侧边栏与主视图标题；缺省回退插件 name。 */
   title?: string;
@@ -171,6 +176,12 @@ export interface GhostMainViewDecl {
   icon?: GhostMainViewIcon;
   /** 主视图界面入口（安装目录内安全相对路径）。 */
   html: string;
+  /** 左侧导航入口点击后的默认打开方式;缺省 page。 */
+  open?: GhostMainViewOpenMode;
+  /** open:'sidebar' 时的默认边;其它 open 值下声明拒装。 */
+  side?: GhostTabSide;
+  /** 允许同一视图同时开在多处;缺省单实例。只接受字面量 true。 */
+  multiple?: true;
 }
 
 /**
@@ -1575,13 +1586,6 @@ export function validateGhostManifest(value: unknown): ManifestValidation {
       };
     }
     if (p.position !== undefined) {
-      if (p.position === 'top' || p.position === 'bottom') {
-        // 收词但明确拒绝(规则 9 不静默降级):上下停靠等布局引擎嵌套分割就绪后开放。
-        return {
-          ok: false,
-          reason: 'panel.position 的 top / bottom 暂未支持(排期中),当前可用:left / right / tab',
-        };
-      }
       if (!(GHOST_PANEL_POSITIONS as readonly string[]).includes(p.position as string)) {
         return {
           ok: false,
@@ -1593,7 +1597,7 @@ export function validateGhostManifest(value: unknown): ManifestValidation {
         return {
           ok: false,
           reason:
-            "panel.minWidth / panel.defaultFraction 仅停靠形态(left / right)有效,position:'tab' 时请移除",
+            "panel.minWidth / panel.defaultFraction 仅停靠形态(left / right / top / bottom)有效,position:'tab' 时请移除",
         };
       }
     }
@@ -1638,10 +1642,35 @@ export function validateGhostManifest(value: unknown): ManifestValidation {
         reason: 'mainView.html 必填，且必须是安装目录内的安全相对路径',
       };
     }
+    if (
+      raw.mainView.open !== undefined &&
+      !(GHOST_MAIN_VIEW_OPEN_MODES as readonly unknown[]).includes(raw.mainView.open)
+    ) {
+      return {
+        ok: false,
+        reason: `mainView.open 必须是 ${GHOST_MAIN_VIEW_OPEN_MODES.join(' / ')}`,
+      };
+    }
+    if (raw.mainView.multiple !== undefined && raw.mainView.multiple !== true) {
+      return { ok: false, reason: 'mainView.multiple 只接受字面量 true(不需要时省略)' };
+    }
+    if (raw.mainView.side !== undefined) {
+      if (raw.mainView.open !== 'sidebar') {
+        return { ok: false, reason: "mainView.side 只在 open:'sidebar' 时有效,其它打开方式请移除" };
+      }
+      if (!(GHOST_TAB_SIDES as readonly unknown[]).includes(raw.mainView.side)) {
+        return { ok: false, reason: `mainView.side 必须是 ${GHOST_TAB_SIDES.join(' / ')}` };
+      }
+    }
     mainView = {
-      ...unknownDeclarationFields(raw.mainView, ['html', 'title', 'icon']),
+      ...unknownDeclarationFields(raw.mainView, ['html', 'title', 'icon', 'open', 'side', 'multiple']),
       ...(raw.mainView.title !== undefined ? { title: raw.mainView.title } : {}),
       ...(raw.mainView.icon !== undefined ? { icon: raw.mainView.icon as GhostMainViewIcon } : {}),
+      ...(raw.mainView.open !== undefined
+        ? { open: raw.mainView.open as GhostMainViewOpenMode }
+        : {}),
+      ...(raw.mainView.side !== undefined ? { side: raw.mainView.side as GhostTabSide } : {}),
+      ...(raw.mainView.multiple === true ? { multiple: true as const } : {}),
       html: raw.mainView.html,
     };
   }

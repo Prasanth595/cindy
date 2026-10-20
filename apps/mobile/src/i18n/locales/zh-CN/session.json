@@ -581,6 +581,7 @@
     "REMOTE_AGENT_BUSY": "那台电脑上同时运行的任务太多。先结束一些任务后再试。",
     "REMOTE_AGENT_DEVICE_LIMIT": "这台设备保留的远程任务数已达上限。可归档暂时不用的任务，或请远程电脑的主人在“远程与分享”中提高上限。",
     "REMOTE_AGENT_TOTAL_LIMIT": "远程电脑保留的任务总数已达上限。请那台电脑的主人释放暂时不用的任务，或在“远程与分享”中提高上限。",
+    "REMOTE_AGENT_RESUME_LOST": "之前在那台电脑上的对话没能接上，Agent 会在没有之前上下文的情况下继续。",
     "REMOTE_AGENT_UNSUPPORTED": "那台电脑上这个 Agent 不可用。在那台电脑上安装或登录后再试，或换一个 Agent。",
     "REMOTE_AGENT_INVALID": "和运行 Agent 的电脑通信出错。请重试；如果一直出现，请把两台电脑上的 Cindy 都更新到最新版。",
     "REMOTE_AGENT_PROVIDER_NOT_ALLOWED": "那台电脑没有允许远程调用这个供应商。请在那台电脑的「设置 → 模型供应商」里打开「允许被远程调用」，或换一个模型。",
@@ -680,5 +681,24 @@
       "ORCA_CREATE_UNCONFIRMED": "创建 Worker 超时，暂时无法确认是否成功。请先查看 Worker 列表，确认没有新建的 Worker 后再重试。",
       "ORCA_ACTION_UNCONFIRMED": "操作超时，暂时无法确认结果。已刷新列表，请以当前显示的状态为准。"
     }
+  },
+  "resetAutoUse": {
+    "label": "自动使用",
+    "rules": "自动使用规则",
+    "lowQuota": "每周剩余低于 1% 时自动用",
+    "resetDistance": "距离配额重置还剩",
+    "days": "{{count}} 天以上",
+    "unlimited": "不限",
+    "custom": "自定义…",
+    "customDays": "自定义天数",
+    "dayUnit": "天以上",
+    "apply": "应用",
+    "expiring": "临近卡到期时自动用",
+    "leadTime": "提前多久使用",
+    "minutes": "到期前 {{count}} 分钟",
+    "hours": "到期前 {{count}} 小时",
+    "hint": "任一条件满足时，优先用最早到期的卡。配额全满时跳过。由这台电脑执行，需保持 Cindy 运行。",
+    "failed": "保存失败，请重试。",
+    "restore": "恢复默认"
   }
 }

@@ -119,6 +119,64 @@ describe('GhostInstallReceiptStore cleanup', () => {
     });
   }
 
+  // Unit regression: repeated store.read() must reuse only icon format validation.
+  // Existing receipt tests do not cover unchanged revision/path with replaced icon
+  // bytes. A same-length invalid replacement must fail, and enabled stays fresh.
+  it('reuses unchanged icon validation while checking changed bytes and approval state', () => {
+    const receipt = createSetupReceipt();
+    const icon = 'data:image/png;base64,' + Buffer.from(workDir).toString('base64');
+    const receiptPath = path.join(stateRoot, 'hello.json');
+    const persist = (iconDataUrl: string, enabled = true) => {
+      fs.writeFileSync(receiptPath, JSON.stringify({ ...receipt, iconDataUrl, enabled }));
+    };
+    const regexTest = vi.spyOn(RegExp.prototype, 'test');
+    const iconChecks = (value: string) => regexTest.mock.calls.filter(([input]) => input === value).length;
+
+    persist(icon);
+    expect(store.read('hello')).toMatchObject({ state: 'approved', receipt: { iconDataUrl: icon } });
+    expect(store.read('hello')).toMatchObject({ state: 'approved', receipt: { iconDataUrl: icon } });
+    expect(iconChecks(icon)).toBe(1);
+
+    const originalStat = fs.statSync(receiptPath);
+    const invalidIcon = icon.slice(0, -1) + '!';
+    persist(invalidIcon);
+    fs.utimesSync(receiptPath, originalStat.atime, originalStat.mtime);
+    expect(store.read('hello')).toMatchObject({ state: 'invalid' });
+    expect(iconChecks(invalidIcon)).toBe(1);
+
+    const replacement = icon.replace('image/png', 'image/gif');
+    persist(replacement);
+    expect(store.read('hello')).toMatchObject({ state: 'approved', receipt: { iconDataUrl: replacement } });
+    persist(replacement, false);
+    expect(store.read('hello')).toMatchObject({ state: 'approved', receipt: { enabled: false } });
+    expect(iconChecks(replacement)).toBe(1);
+
+    fs.writeFileSync(receiptPath, JSON.stringify({ ...receipt, iconDataUrl: replacement, trust: null }));
+    expect(store.read('hello')).toMatchObject({ state: 'invalid' });
+  });
+
+  // Unit resource regression: read() must evict validated strings at both cache
+  // budgets; eviction only causes revalidation, never changes approval results.
+  it.each([
+    { budget: 'entry count', count: 70, payloadSize: 32 },
+    { budget: 'retained bytes', count: 7, payloadSize: 700 * 1024 },
+  ])('revalidates evicted icons after exceeding the $budget budget', ({ count, payloadSize }) => {
+    const receipt = createSetupReceipt();
+    const receiptPath = path.join(stateRoot, 'hello.json');
+    const prefix = 'data:image/png;base64,' + Buffer.from(workDir).toString('base64').replace(/=+$/, '');
+    const firstIcon = prefix + 'A'.repeat(payloadSize) + '0';
+    const regexTest = vi.spyOn(RegExp.prototype, 'test');
+    for (let index = 0; index < count; index++) {
+      fs.writeFileSync(receiptPath, JSON.stringify({
+        ...receipt, iconDataUrl: prefix + 'A'.repeat(payloadSize) + index,
+      }));
+      expect(store.read('hello').state).toBe('approved');
+    }
+    fs.writeFileSync(receiptPath, JSON.stringify({ ...receipt, iconDataUrl: firstIcon }));
+    expect(store.read('hello')).toMatchObject({ state: 'approved', receipt: { iconDataUrl: firstIcon } });
+    expect(regexTest.mock.calls.filter(([input]) => input === firstIcon)).toHaveLength(2);
+  });
+
   it('removes a regular receipt and managed snapshot tree', async () => {
     const receipt = path.join(stateRoot, 'hello.json');
     const snapshot = path.join(stateRoot, 'skill-snapshots', 'hello', 'revision');

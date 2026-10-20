@@ -7,6 +7,8 @@ export function defaultBotModelChain(
   args: Parameters<typeof resolveNewMakerDefaultTuples>[0] & { preferredRoute?: BotModelRoute | null },
 ): BotModelRoute[] {
   const preferred = args.preferredRoute;
+  // Remote selections are validated against their own authorized catalog in Main.
+  if (preferred?.agentDeviceId) return [];
   if (preferred && !args.providersLoading && args.availableAgentsLoaded) {
     const agent = preferred.harness === 'claude' ? 'claude-code' : preferred.harness;
     const vendor = agent === 'claude-code' ? 'cc' : agent;

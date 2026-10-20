@@ -75,6 +75,7 @@ export interface MakerUsageHandlerDeps {
   readClaudeAccountQuotaClear?(): { quotaState: 'unlimited' | 'invalidated' } | null;
   readAgentTodayUsage(agentKind: AgentKind): Promise<AgentTodayUsage>;
   readCodexAccountUsageSnapshot(providerId?: string): Promise<RateLimitSnapshot | null>;
+  setCodexResetAutoUse?(patch: Record<string, unknown> | null, accountKey: string, providerId?: string): Promise<MobileCodexRateLimitsResult>;
   readCodexRateLimits(providerId?: string): Promise<MobileCodexRateLimitsResult>;
   consumeCodexRateLimitReset(idempotencyKey: string, providerId?: string): Promise<MobileCodexRateLimitResetResult>;
   readClaudeSubscriptionUsageSnapshot(providerId?: string): Promise<ClaudeSubscriptionUsageSnapshot | null>;
@@ -148,6 +149,16 @@ export function registerMakerUsageHandlers(
       }
     },
   );
+
+  registry.handle(MAKER_INVOKE.USAGE_CODEX_RESET_AUTO_USE, async (_event, patch: unknown, accountKey: unknown, providerId?: unknown) => {
+    if (patch !== null && (!patch || typeof patch !== 'object' || Array.isArray(patch)
+      || Object.keys(patch).some(key => !['enabled', 'lowQuota', 'minimumDays', 'expiring', 'expiryMinutes'].includes(key)))) {
+      throwIpcError('INVALID_PARAMS', 'Invalid reset settings');
+    }
+    if (!deps.setCodexResetAutoUse) throwIpcError('UNSUPPORTED_CAPABILITY', 'Automatic reset settings unavailable');
+    return deps.setCodexResetAutoUse(patch as Record<string, unknown> | null,
+      requireString(accountKey, 'accountKey'), providerId === undefined ? undefined : requireString(providerId, 'providerId'));
+  });
 
   // Claude 订阅账号余量 (5h/周/分模型窗口) — cached-first, 内部按需后台刷新。
   registry.handle(MAKER_INVOKE.USAGE_CLAUDE_SUBSCRIPTION, async (event, providerId) => {

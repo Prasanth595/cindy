@@ -17,8 +17,8 @@ import type {
   SendOptions,
   UserMessage,
 } from '@cindy/maker-core';
-import { MAIN_OWNED_SEND_CONTEXT } from '@cindy/maker-core';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { MAIN_OWNED_SEND_CONTEXT, Session } from '@cindy/maker-core';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { RemoteAgentPoller } from '../controller/poller';
 import { credentialGrantFor, forgetCredentialGrants } from '../executor/credentialGrants';
@@ -26,6 +26,7 @@ import { startRemoteAgentSession, type StartRemoteAgentDeps } from '../controlle
 import { createRemoteAgentHost, type HostedStartInput } from '../host/runHost';
 import { PROVIDER_SHARE_CREDENTIAL_SESSION_APPROVAL } from '../../../shared/providerShareCredentialConsent';
 import { DEFAULT_REMOTE_AGENT_LIMITS, type RemoteAgentLimits } from '../../../shared/remoteAgentLimits';
+import { installDesktopInteractionHandler } from '../../maker-ipc/interactionRouter';
 
 const RG = path.resolve(__dirname, '../../../../../ripgrep-bin', `${process.platform}-${process.arch}`, process.platform === 'win32' ? 'rg.exe' : 'rg');
 const CONTROLLER = 'controller-device-1';
@@ -200,6 +201,52 @@ function createHost(readLimits: () => RemoteAgentLimits = () => DEFAULT_REMOTE_A
 }
 
 describe('remote agent round trip', () => {
+  // provider-sharing §9：走 HTTP → 执行器 → Session → 真实交互路由，检查取消卡片及迟到授权。
+  // 现有往返用例没有挂起确认后取消；最小输入是一次 .env 读取，tier: unit(仅 loopback)。
+  it.each(['request', 'stop', 'permission', 'close'])('dismisses a shared-provider credential card on %s cancellation', async (end) => {
+    fs.writeFileSync(path.join(project, '.env'), 'INVALID_FIXTURE=one');
+    const host = createHost();
+    const grant = credentialGrantFor(`cancel-${end}`, 'share:fixture');
+    const handle = await startRemoteAgentSession('claude-code', {
+      sessionId: `cancel-${end}`, workingDir: project, model: 'm', permissionMode: 'bypassPermissions',
+    }, { ...makeDeps(host), credentialConsent: { description: 'fixture', grant } });
+    const noop = () => {};
+    const logger = { trace: noop, debug: noop, info: noop, warn: noop, error: noop, fatal: noop, child: () => logger };
+    const session = new Session({ id: `cancel-${end}`, agentKind: 'claude-code', workDir: project, handle, capabilities: {} as never, logger, turnStallMs: 0 });
+    let answer!: (value: InteractionDecision) => void;
+    let requestId = '';
+    const cancel = vi.fn();
+    installDesktopInteractionHandler(session, (request) => {
+      requestId = request.requestId;
+      return new Promise((resolve) => { answer = resolve; });
+    }, cancel);
+    const abort = new AbortController();
+    const tunnel = hostInputs[0].tunnel;
+    const response = fetch(`${tunnel.url}/exec/fs.read`, {
+      method: 'POST', signal: abort.signal,
+      headers: { authorization: `Bearer ${tunnel.token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ path: '.env' }),
+    });
+    void response.catch(() => {});
+    try {
+      await vi.waitFor(() => expect(requestId).not.toBe(''));
+      if (end === 'request') abort.abort();
+      else if (end === 'stop') await handle.abort();
+      else if (end === 'permission') await handle.setPermissionMode!('ask');
+      else await handle.close({ reason: 'navigation' });
+      await vi.waitFor(() => expect(cancel).toHaveBeenCalledWith(requestId, expect.objectContaining({ behavior: 'deny' })), { timeout: 1000 });
+      answer({ kind: 'permission', behavior: 'allow', permissionUpdates: [PROVIDER_SHARE_CREDENTIAL_SESSION_APPROVAL] });
+      await response.then((value) => value.arrayBuffer(), () => undefined);
+      expect(grant.restore(JSON.stringify(['bypassPermissions', false]))).toBe(false);
+    } finally {
+      abort.abort();
+      answer?.({ kind: 'permission', behavior: 'deny' });
+      await session.close();
+      host.dispose();
+      forgetCredentialGrants(`cancel-${end}`);
+    }
+  });
+
   it('enforces limits through the controller and releases capacity after close', async () => {
     let limits = { perDevice: 1, total: 2 };
     const host = createHost(() => limits);

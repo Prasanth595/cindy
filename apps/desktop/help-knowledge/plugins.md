@@ -4,7 +4,7 @@ title: Plugins (extending what the agents can do)
 summary: What plugins are, how to browse / install / enable / disable them, per-working-directory control, the permission model, and invoking one with a $command.
 tab: ghosts
 ---
-Plugins (internally "意识" / Ghost) extend what the agents can do — they add AI-callable tools, dockable UI panels, and "ask Cindy to make it" media generation. Each plugin is a self-contained `.cindy` capability pack that runs in its own isolated sandbox.
+Plugins (internally "意识" / Ghost) extend what the agents can do — they add AI-callable tools, panels that live as pinned tabs in the right sidebar, full-page app views, and "ask Cindy to make it" media generation. Each plugin is a self-contained `.cindy` capability pack that runs in its own isolated sandbox.
 
 **The Plugins page:**
 
@@ -22,7 +22,7 @@ Plugins (internally "意识" / Ghost) extend what the agents can do — they add
 
 **Enabling and disabling:**
 
-- **Enable / disable (globally)** from the plugin's detail page. Disabling puts its tools and panel to sleep but keeps the plugin installed — its layout position is remembered and restored when you re-enable it.
+- **Enable / disable (globally)** from the plugin's detail page. Disabling puts its tools and panel to sleep but keeps the plugin installed — its right-sidebar tab is kept and comes back when you re-enable it. A plugin's panel shows up as a pinned tab in the right sidebar that stays across tasks; close it from the tab, and reopen it later by right-clicking the plugin's entry in the left sidebar and choosing "Open in the sidebar".
 - **Disable for one working directory only** — a plugin can be turned off just for a specific project. In that project's sessions it behaves as if it isn't installed (its tools and `$command` are unavailable there); everywhere else it stays on.
 
 **Installing:**
@@ -33,6 +33,12 @@ Plugins (internally "意识" / Ghost) extend what the agents can do — they add
 - Plugins pushed by your organization (server default installs) are installed and updated silently without a confirmation.
 - The server selects the release appropriate for this Cindy version before marketplace delivery. Desktop does not apply a second `minCindyVersion` gate; custom marketplaces and local `.cindy` packages follow the same install policy.
 - Updates from stable marketplace sources are applied automatically when the plugin is idle — **as long as the new version doesn't need more permissions**. If it does, the automatic update pauses, the old version keeps working, and the plugin card shows "New permissions need confirmation"; clicking Update shows the added permissions for you to confirm. Failed attempts retry later; you can still click Update to retry immediately.
+
+**Creating or updating your own plugin:**
+
+- Choose **Create with Cindy** from the Plugins page's add menu. Cindy opens a new-task draft with the built-in Plugin Creator's actual command, selecting the built-in version even if a user Skill has the same name. Describe what you want and send it using your chosen Agent and model.
+- The built-in `cindy-plugin-creator` Skill supports creating, editing, debugging, packaging, and publishing plugins. Its bundled references contain the authoring documentation for the current Cindy version. If it is unavailable, the page reports that and keeps your existing draft.
+- Creating and packaging a plugin produces a `.cindy` file. Installation and publication are separate actions that you can request when ready.
 
 **Using a plugin with `$command`:**
 

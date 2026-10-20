@@ -17,6 +17,7 @@ import type { OpenDialogOptions } from 'electron';
 import { and, desc, eq, gt, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 
 import { getDbClient, tryGetDbClient } from '../client/current';
+import { notifyAgentIslandCompanionChanged } from '../agentIslandSessionPatch.js';
 import type {
   BotsReparentDelegationsResult,
   BotsReplaceCanonicalSessionResult,
@@ -102,6 +103,7 @@ import { BOT_DELEGATION_CLIENT_ID } from '../../../shared/botCollaboration.js';
 
 import { generateBotCreationDraft, readBotCreationDraft, generateBotCreationAvatar } from '../../maker-ipc/botCreationDraft.js';
 import { botInvitationProgress, type BotInvitationProgress } from '../../../shared/botInvitation.js';
+import type { BotPackageOpening } from '../../../shared/botMarket.js';
 import { botGroupLaneRouteKey, botGroupPlanRouteKey, chatGroupLaneRouteKey, parseBotGroupIdFromRouteKey, type ChatLaneAccess } from '../../../shared/botGroupChat.js';
 import { queueBotInvitation as enqueueBotInvitation } from '../../maker-ipc/botInvitation.js';
 import { getMakerIfReady, validateBotCapabilityAdditions } from '../../maker-host/index.js';
@@ -398,6 +400,7 @@ export async function ensureBotGroupLaneSession(input: {
       agentKind: row.agentKind,
       remoteHostId: null,
       providerId: row.providerId ?? null,
+      agentDeviceId: row.agentDeviceId ?? null,
       extraDirs: row.extraDirs,
       source: row.source,
       createdAt: row.createdAt,
@@ -509,6 +512,7 @@ export async function ensureBotChannelLaneSession(input: {
         agentKind: row.agentKind,
         remoteHostId: null,
         providerId: row.providerId ?? null,
+        agentDeviceId: row.agentDeviceId ?? null,
         extraDirs: row.extraDirs,
         source: row.source,
         createdAt: row.createdAt,
@@ -676,6 +680,7 @@ function botSessionRouteFields(config: Record<string, unknown>, primaryRoute: Bo
           ? NEW_BOT_DEFAULT_PI_EFFORT
           : undefined),
     fastMode: primaryRoute?.fastMode ?? config.fastMode === true,
+    agentDeviceId: primaryRoute?.agentDeviceId ?? null,
     agentKind: botSessionAgentKind(primaryRoute ?? config),
     permissionMode: botSessionPermissionMode(config),
   };
@@ -1355,6 +1360,7 @@ export function broadcastBotProfileChanged(payload: {
   broadcastBotRemoteResourceChanged(payload.botId);
   // 伙伴自主跟进：新建伙伴、改「它开的任务也交给总调度跟」立即生效。
   signalBotAutonomyBotsChanged();
+  if (payload.change === 'updated') notifyAgentIslandCompanionChanged(payload.botId);
   for (const win of BrowserWindow.getAllWindows()) {
     if (win.isDestroyed()) continue;
     try {
@@ -1578,6 +1584,35 @@ export async function createBotProfile(raw: unknown) {
   assertCreationOwnerStillCurrent();
   broadcastBotProfileChanged({ botId: id, change: 'created' });
   return profile;
+}
+
+/** Caller holds the original lifecycle lock; only fully saved native imports reach here. */
+export async function prepareImportedBotInvitation(botId: string, requestId: string, locale?: string,
+  opening?: BotPackageOpening): Promise<void> {
+  const owner = captureBotOperationOwner();
+  const client = getDbClient();
+  const [profile] = await client.drizzle.select().from(botProfiles).where(eq(botProfiles.id, botId)).limit(1);
+  owner.assertCurrent();
+  if (!profile || profile.status === 'deleting' || profile.status === 'archived') throwIpcError('NOT_FOUND', 'Bot 不存在');
+  const [version] = await client.drizzle.select().from(botProfileVersions).where(and(
+    eq(botProfileVersions.botId, botId), eq(botProfileVersions.version, profile.currentVersion),
+  )).limit(1);
+  owner.assertCurrent();
+  if (!version) throwIpcError('NOT_FOUND', 'Bot 不存在');
+  const config = parseJson(version.capabilitiesJson);
+  // The original invitation is the only welcome receipt, including failures and ready.
+  if (config.invitation) return;
+  await client.tx('bots.updateProfile', { id: botId, expectedCurrentVersion: profile.currentVersion,
+    identitySource: version.identitySource,
+    capabilitiesJson: JSON.stringify({ ...config, invitation: { id: `import-welcome:${requestId}`,
+      stage: 'welcome', locale: readBotInvitationLocale(locale), avatarRequested: false,
+      // The package opening shapes the greeting and its one onboarding turn.
+      ...(opening ? { opening } : {}) } }),
+    profileContentChanged: true, now: Date.now(),
+  });
+  owner.assertCurrent();
+  broadcastBotProfileChanged({ botId, change: 'updated' });
+  queueBotInvitation(botId);
 }
 
 /** Shared profile mutation for trusted settings and owner-bound capability selection. */
@@ -2135,6 +2170,7 @@ export function registerBotIpc(): void {
           agentKind: insertRow.agentKind,
           remoteHostId: insertRow.remoteHostId ?? null,
           providerId: insertRow.providerId ?? null,
+          agentDeviceId: insertRow.agentDeviceId ?? null,
           extraDirs: insertRow.extraDirs,
           source: insertRow.source,
           createdAt: insertRow.createdAt,

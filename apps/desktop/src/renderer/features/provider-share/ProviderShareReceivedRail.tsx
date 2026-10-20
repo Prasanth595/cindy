@@ -1,3 +1,4 @@
+import { ProviderShareInsightsSection } from './ProviderShareInsightsSection';
 /**
  * 设置 → 模型供应商里「分享给我的」(受邀者)。别人分享给我的供应商与自己的供应商同在左栏，
  * 单独成组(没有分享时整组不显示)、用分享者头像标明来自谁；点开后右栏显示状态、「凭证操作不再
@@ -341,6 +342,8 @@ export function ProviderShareReceivedDetail({ share }: { share: ProviderShareRec
       {status === 'active' && groupSize !== null && (
         <SharedProviderGroupStatus key={catalogDeviceId} deviceId={catalogDeviceId} providerId={share.providerId} initialSize={groupSize} />
       )}
+
+      <ProviderShareInsightsSection key={share.shareId} share={share} />
 
       <div className="flex min-h-40 flex-1 flex-col">
         <ReadOnlyProviderModelSection

@@ -28,6 +28,7 @@ import { credentialGrantFor } from '../executor/credentialGrants';
 import type { ExecutorCaptureHooks } from '../executor/executor';
 import type { PdfTextExtractor } from '../executor/files';
 import type { GuardedFetch } from '../executor/webFetch';
+import { RemoteConnectionPool } from './connectionPool';
 import { remoteAgentEventMapper } from './eventMap';
 import {
   collectAncestorInstructionFiles,
@@ -79,6 +80,11 @@ export interface DeviceAgentServiceDeps {
   webFetch?: GuardedFetch;
   /** 受邀者任务里凭证类操作确认卡上的说明(按界面语言)。 */
   sharedProviderCredentialNotice?(): string;
+  /**
+   * 名额紧张时，闲置满多少分钟的任务可以让出那台电脑上的 Agent 进程(0 = 不让)。缺省时不让，
+   * 与没有连接池时一样。每次判断时读取，设置改了立即生效。
+   */
+  idleReleaseMinutes?(): number;
   logger: Logger;
 }
 
@@ -153,6 +159,16 @@ export function remoteAgentPollerFor(
 export function createDeviceAgentStarter(deps: DeviceAgentServiceDeps) {
   const log = deps.logger.child('remote-agent');
   const pollerFor = (deviceId: string): RemoteAgentPoller => remoteAgentPollerFor(deviceId, deps.remoteInvoke, log);
+  // 每台运行 Agent 的电脑一个连接池：对方按这台设备计名额，池里算的是本机在那台上开着的连接。
+  const pools = new Map<string, RemoteConnectionPool>();
+  const poolFor = (deviceId: string): RemoteConnectionPool => {
+    let pool = pools.get(deviceId);
+    if (!pool) {
+      pool = new RemoteConnectionPool({ idleMinutes: () => deps.idleReleaseMinutes?.() ?? 0, log });
+      pools.set(deviceId, pool);
+    }
+    return pool;
+  };
   return async (input: { agentKind: AgentKind; deviceId: string; options: StartSessionOptions }): Promise<AgentSessionHandle> => {
     const opts: StartSessionOptions = { ...input.options };
     const poller = pollerFor(input.deviceId);
@@ -183,6 +199,7 @@ export function createDeviceAgentStarter(deps: DeviceAgentServiceDeps) {
       readImageDeliveryEpoch: deps.readImageDeliveryEpoch,
       invoke: poller.invoke,
       poller,
+      pool: poolFor(input.deviceId),
       rgPath: deps.rgPath(),
       codexPath: () => deps.codexPath?.(),
       ...(sessionId && deps.isGroupAssigned?.(sessionId) ? { groupAssigned: true } : {}),

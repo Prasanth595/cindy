@@ -1,3 +1,5 @@
+import type { CapturedAgentRequest } from '../maker-ipc/forwardedRequest.js';
+import type { ForwardedRequestSource } from '../../shared/forwardedRequest.js';
 import {
   DeviceLinkError,
   DL_SESSION_HANDOFF_CHANNEL,
@@ -18,6 +20,7 @@ export interface RemoteSessionHandoffRequest {
   sessionId: string;
   message: string;
   sender: { sessionId: string; title?: string };
+  requestSource?: ForwardedRequestSource;
 }
 
 export type RemoteSessionHandoffResult =
@@ -115,6 +118,7 @@ function transportFailure(
 }
 
 export function createRemoteSessionHandoff(deps: {
+  captureRequest?: (sessionId: string, supplement: string) => Promise<CapturedAgentRequest>;
   captureAccess(): () => void;
   invoke(
     deviceId: string,
@@ -139,9 +143,11 @@ export function createRemoteSessionHandoff(deps: {
     // 同一份账号记录覆盖整次调用：读来源之前记录，发送前与收到回执后各核对一次。
     let assertCurrent: () => void;
     let sender: RemoteSessionHandoffRequest['sender'];
+    let captured: CapturedAgentRequest | undefined;
     try {
       assertCurrent = deps.captureAccess();
       sender = await request.sender();
+      captured = await deps.captureRequest?.(sender.sessionId, request.message);
       assertCurrent();
     } catch {
       return notSent();
@@ -150,7 +156,8 @@ export function createRemoteSessionHandoff(deps: {
     try {
       const wire: RemoteSessionHandoffRequest = {
         sessionId: target.sessionId,
-        message: request.message,
+        message: captured?.message ?? request.message,
+        ...(captured ? { requestSource: captured.autoReviewUserText.request } : {}),
         sender,
       };
       response = await deps.invoke(target.deviceId, DL_SESSION_HANDOFF_CHANNEL, [wire], {

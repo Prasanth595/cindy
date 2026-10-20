@@ -1,5 +1,26 @@
 {
-  "mailReader": {"markReadFailed":"既読状態を同期できませんでした。メールボックスの認証を確認して開き直してください。","title":"メール","openMailbox":"メールボックスで開く","loading":"メールを読み込み中…","failed":"メールを読み込めませんでした。接続したアカウントを確認して再試行するか、メールボックスで開いてください。","retry":"再試行","to":"宛先","cc":"Cc","bcc":"Bcc","subject":"件名","currentMessage":"現在のメール","messageCount_other":"{{count}} 件のメール","messageCount_one":"{{count}} 件のメール","showMessages_other":"{{count}} 件のメールを表示","showMessages_one":"{{count}} 件のメールを表示","expandMessage":"{{from}} からのメールを展開","collapseMessage":"{{from}} からのメールを折りたたむ","conversationFailed":"前後のメールを読み込めませんでした。","messageCount":"{{count}} 件のメール","showMessages":"{{count}} 件のメールを表示"},
+  "mailReader": {
+    "markReadFailed": "既読状態を同期できませんでした。メールボックスの認証を確認して開き直してください。",
+    "title": "メール",
+    "openMailbox": "メールボックスで開く",
+    "loading": "メールを読み込み中…",
+    "failed": "メールを読み込めませんでした。接続したアカウントを確認して再試行するか、メールボックスで開いてください。",
+    "retry": "再試行",
+    "to": "宛先",
+    "cc": "Cc",
+    "bcc": "Bcc",
+    "subject": "件名",
+    "currentMessage": "現在のメール",
+    "messageCount_other": "{{count}} 件のメール",
+    "messageCount_one": "{{count}} 件のメール",
+    "showMessages_other": "{{count}} 件のメールを表示",
+    "showMessages_one": "{{count}} 件のメールを表示",
+    "expandMessage": "{{from}} からのメールを展開",
+    "collapseMessage": "{{from}} からのメールを折りたたむ",
+    "conversationFailed": "前後のメールを読み込めませんでした。",
+    "messageCount": "{{count}} 件のメール",
+    "showMessages": "{{count}} 件のメールを表示"
+  },
   "logSupport": {
     "title": "ログとフィードバック",
     "localFiles": "問題が発生した日のログを選択してください。未マスキングのため、共有前に内容を確認してください。",
@@ -277,6 +298,17 @@
         "toastRejected": "{{name}} のリクエストを拒否しました",
         "toastRevoked": "{{name}} への同意を取り消しました。実行中のセッションは停止しました",
         "listTitle": "{{owner}} のプロバイダーグループ経由で利用"
+      },
+      "memberNote": {
+        "add": "メモを設定",
+        "edit": "メモを編集",
+        "title": "ユーザーのメモを設定",
+        "label": "メモ",
+        "username": "ユーザー名：{{name}}",
+        "hint": "{{count}}文字まで。空欄で消去できます。自分にのみ表示されます。",
+        "save": "メモを保存",
+        "saving": "メモを保存中…",
+        "saveFailed": "メモを保存できませんでした"
       }
     },
     "toast": {
@@ -462,6 +494,52 @@
       "save": "保存",
       "reset": "既定値に戻す",
       "saved": "リモートセッション数を保存しました",
+      "retry": "再読み込み",
+      "loading": "読み込み中…"
+    },
+    "insights": {
+      "visibilityTitle": "共有する情報",
+      "visibilityNote": "この共有プロバイダーのすべての利用者に適用されます。閲覧をオフにしてもモデルの利用には影響しません。",
+      "allowQuota": "残りの利用枠の閲覧を許可",
+      "allowUsage": "使用量の詳細の閲覧を許可",
+      "saveFailed": "共有情報の閲覧権限を保存できませんでした",
+      "quotaTitle": "残りの利用枠",
+      "quotaNote": "アカウント全体で共有する利用枠です。あなた専用の枠ではありません。",
+      "groupNote": "アカウント別に表示し、割合は合算しません。一部のアカウントのみ表示される場合があります。他の人から共有されたアカウントは対象外です。同じアカウントを複数のコンピューターで使っている場合、別々に表示されることがあります。",
+      "account": "アカウント {{number}}",
+      "noOwnAccounts": "このグループには利用枠を公開できる所有アカウントがありません",
+      "usageNote": "共有者と現在の利用者の過去の使用量を表示します。金額は推定値です。",
+      "relayNote": "中継された使用量は最終利用者を特定できないため、共有者本人の使用量とは分けて集計します。",
+      "relay": "中継された使用量",
+      "you": "あなた",
+      "owner": "共有者",
+      "notShared": "共有者は残りの利用枠を公開していません",
+      "usageNotShared": "共有者は使用量の詳細を公開していません",
+      "usageUnavailable": "使用量の詳細を一時的に取得できません",
+      "denied": "現在この共有情報を閲覧できません",
+      "unsupported": "このプロバイダーの利用枠の取得には対応していません",
+      "unavailable": "利用枠または使用量を一時的に取得できません",
+      "offline": "共有者のコンピューターがオフラインか接続が切れています",
+      "needs-update": "閲覧するには共有者が Cindy を更新する必要があります",
+      "unlimited": "個人の上限は設定されていません",
+      "session": "現在の期間",
+      "week": "毎週",
+      "scoped": "個別の期間",
+      "remaining": "残り {{percent}}%",
+      "resets": "リセット：{{time}}",
+      "updated": "更新：{{time}}",
+      "usageTitle": "使用量の詳細",
+      "allowUsageDescription": "オンにすると、この共有のすべての利用者が、共有元と他のすべての利用者の表示名および過去の使用量の詳細を閲覧できます。"
+    },
+    "idleRelease": {
+      "title": "このパソコンで他のパソコンのモデルを使うとき",
+      "description": "このパソコンのセッションが他のパソコンのモデルを使うとき、そのパソコンで同時に実行できる数には上限があります。上限に近づいたとき、下の時間より長くアイドル状態のセッションを一時的に切断し、新しいセッションに枠を譲るように設定できます。そのセッションにメッセージを送ると自動で再接続され、それまでの会話はそのまま残ります。実行中のセッションは切断しません。切断中も、このパソコン上のバックグラウンドコマンドは実行を続けます。",
+      "minutes": "アイドル解放（分）",
+      "hint": "既定値は 0 で、切断しません。上限に達したときは上限のメッセージが表示されます。1～120 にすると、その分数だけアイドル状態が続いた場合にのみ切断します。",
+      "invalid": "0～{{max}} の整数を入力してください。",
+      "save": "保存",
+      "reset": "既定値に戻す",
+      "saved": "アイドル解放の設定を保存しました",
       "retry": "再読み込み",
       "loading": "読み込み中…"
     }
@@ -1686,13 +1764,6 @@
         "label": "リストの表示",
         "hint": "ピン留め以外のセッションは、テキストなら1行、リストならプレビュー付きで表示します。",
         "aria": "セッションリストの表示を切り替える"
-      },
-      "ghostPanelRestore": {
-        "label": "プラグインパネルの復元場所",
-        "hint": "最小化したプラグインパネルを復元する場所を選択します。",
-        "aria": "プラグインパネルの復元場所を選択",
-        "bubble": "フローティングバブル",
-        "sidebar": "サイドバー"
       },
       "wallpaper": {
         "title": "壁紙",
@@ -3920,6 +3991,15 @@
         "workingDirSaved": "WeChat の新しい会話の作業ディレクトリを更新しました",
         "workingDirReset": "WeChat の新しい会話はデフォルトディレクトリを使用します",
         "workingDirFailed": "作業ディレクトリを更新できませんでした。もう一度選択してください。"
+      },
+      "companion": {
+        "assigned": "連携したチームメイトが返信します",
+        "description": "WeChat で {{name}} と話し、記憶とメインタスクを共有します。このパソコンの WeChat 接続を連携できるチームメイトは一度に 1 人です。",
+        "other": "WeChat は別のチームメイトと連携しています。そのチームメイトの接続設定、または個人 WeChat の設定で先に連携を解除してください。",
+        "permissionNote": "WeChat では操作ごとの権限確認を維持します。チームメイトに Claude Code または Codex を選び、権限を自動審査または確認に設定してください。",
+        "remove": "チームメイトとの連携を解除",
+        "useExisting": "接続済みの WeChat で {{name}} と話す",
+        "updateFailed": "連携を更新できませんでした。WeChat のタスクが終わってから再試行し、チームメイトが利用可能か確認してください。"
       }
     },
     "discordBot": {
@@ -6266,7 +6346,8 @@
         "updateTo": "v{{version}} に更新",
         "updateAria": "{{name}} を v{{version}} に更新",
         "createWithCindy": "Cindy で作成",
-        "createPrompt": "Cindy プラグインを作成したいです。まず ghost_forge_guide を呼び出してハンドブックの目次を取得し、最初に第 0 章「設計のすり合わせ」を読み、その後 section パラメータで関連する章（少なくともサンドボックスの禁止事項とパッケージ化の章）を読み込んでから着手してください。すぐに実装を始めないでください。質問から始めてください：選択肢付きの質問カードを優先し、1 枚のカードでは 1 つの重要な判断に絞り、あなたのおすすめを明示した上で、私が気づきにくい設計オプション（UI 形態：ドッキングパネル / プラグインページ内のパネル / チャットカード / UI なし、$ 呼び出しコマンド、起動モード、ネットワーク接続の要否、設定ページの要否など）を積極的に提示して選ばせてください。解決する課題、対象ユーザー、操作フロー、必要なツールと接続、権限の境界、受け入れ条件を段階的に確認してください。設計を確認した後、仕様に沿って実装と検証を行い、最後に ghost_forge_pack を呼び出して .cindy パッケージを検証・生成し、インストール済みとは説明しないでください。",
+        "createPrompt": "Cindy のプラグインを作成してください。",
+        "creatorUnavailable": "内蔵のプラグイン作成スキルを利用できません。",
         "filterAll": "すべて",
         "filtersAria": "提供元でプラグインを絞り込む",
         "origin": {
@@ -6584,9 +6665,9 @@
         "nodeResidentDetail": "プラグインが有効な間は実行を続け、無効化、更新、アンインストール、または Cindy 終了時に停止します。",
         "tool": "ツール「{{name}}」",
         "command": "チャット指令 ${{command}}",
-        "panelLeft": "パネル「{{title}}」· チャットの左側にドッキング",
+        "panelLeft": "パネル「{{title}}」· サイドバーに表示",
         "panelTab": "パネル「{{title}}」· プラグインページ内で開く",
-        "mainView": "Cindy のサイドバーに「{{title}}」への入口を追加できます",
+        "mainView": "Cindy の左側ナビゲーションに「{{title}}」への入口を追加できます",
         "mainViewDetail": "クリックするとプラグインのサンドボックス内でメインビューが開き、ファイル、ネットワーク、認証情報へのアクセスが追加で付与されることはありません。",
         "code": "実行コード",
         "codeDetail": "独立したサンドボックスで実行され、ファイルやネットワークにはアクセスできません。",
@@ -6605,7 +6686,7 @@
         "notify": "システム通知を表示可能(画面上部のライトな通知)",
         "notifyDetail": "通知の内容はこのプラグインが提供し、通知にはその名前が表示されます。自動的に消え、操作を妨げることはありません。",
         "badge": "プラグイン入口に未読マークを点灯できます",
-        "badgeDetail": "新しい内容があるとき、サイドバーのプラグイン入口と自身のカードに緑の点を点灯し、一行の要約を添えられます。パネルを開くと消えます。音は鳴らず、振動もせず、システムの通知センターにも入らず、システム通知とは別個の権限です。",
+        "badgeDetail": "新しい内容があるとき、左側ナビゲーションのプラグイン入口と自身のカードに緑の点を点灯し、一行の要約を添えられます。パネルを開くと消えます。音は鳴らず、振動もせず、システムの通知センターにも入らず、システム通知とは別個の権限です。",
         "confirm": "確認ダイアログで同意を求められます",
         "confirmDetail": "実行前に Cindy 自身と同じ確認ダイアログを開いて尋ねることができます。文面はプラグインが提供し、ダイアログにはその名前が表示されます。確認するかキャンセルするかはあなたがクリックして決め、プラグイン自身はクリックできません。同時に開けるのは 1 つまでで、頻繁な要求はブロックされます。",
         "fsWrite": "ファイルを書き込めます(作成/変更)",
@@ -6681,8 +6762,9 @@
         "locationCopied": "インストール場所をコピーしました",
         "locationCopyFailed": "インストール場所をコピーできませんでした。手動でコピーしてください",
         "openLocation": "インストール場所を開く",
-        "panelDocked": "ドッキング済み · 最小幅 {{min}}px",
-        "panelNotDocked": "未ドッキング(レイアウトに位置記録なし)",
+        "panelInSidebar": "右サイドバーに表示（すべてのタスクで保持）",
+        "panelDismissed": "右サイドバーから閉じました · ここまたはサイドバーの「+」メニューから再度開けます",
+        "openInSidebar": "サイドバーで開く",
         "panelPageHosted": "プラグインページから開く · 離れると自動的に閉じます",
         "panelNone": "このプラグインにパネルはありません",
         "customSlotTitle": "プラグインのカスタム設定エリア",
@@ -6728,16 +6810,17 @@
         "settingsUnavailableUntilRestore": "この設定を再び使用するには、プラグインを復元してください。",
         "oauthScopeStale": "現在の認証には新しく追加された権限が含まれていません。再接続して権限を取得してください。",
         "configurationTitle": "設定",
-        "sidebarEntryTitle": "サイドバー項目",
-        "showInSidebar": "サイドバーに表示",
-        "sidebarEntryDescription": "オンにすると、「{{title}}」がサイドバーに表示されます。最上部に置くか「その他」にまとめるかは「その他 → カスタマイズ」で変更できます。非表示にしてもプラグインは無効になりません。",
+        "sidebarEntryTitle": "ナビゲーション項目",
+        "showInSidebar": "左側ナビゲーションに表示",
+        "sidebarEntryDescription": "オンにすると、「{{title}}」が左側ナビゲーションに「自動化」「プラグイン」と並んで表示されます。最上部に置くか「その他」にまとめるかは「その他 → カスタマイズ」で変更できます。非表示にしてもプラグインは無効になりません。",
         "openTool": "Tool {{name}} の詳細を表示",
         "noToolDescription": "この Tool には説明がありません。",
         "viewAllTools": "さらに表示",
         "collapseTools": "Tool を折りたたむ",
         "viewAllPermissions": "さらに表示",
         "permissionsDialogDescription": "この Plugin が要求する全 {{count}} 項目の権限",
-        "closeDialog": "ダイアログを閉じる"
+        "closeDialog": "ダイアログを閉じる",
+        "resetPlacement": "既定の位置に戻す"
       },
       "contents": {
         "mainView": "メインビュー",
@@ -8009,19 +8092,7 @@
     "collapsePanel": "折りたたみ",
     "expandPanel": "展開"
   },
-  "panelChrome": {
-    "maximizeAria": "パネルを最大化",
-    "restoreAria": "パネルのサイズを元に戻す",
-    "detachAria": "新しいウィンドウで開く",
-    "minimizeAria": "パネルを最小化",
-    "closeAria": "パネルを閉じてプラグインを無効化"
-  },
   "ghostPanel": {
-    "disableConfirm": {
-      "title": "「{{name}}」を無効にしますか？",
-      "body": "このパネルを閉じるとプラグインが無効になり、機能が停止します。サイドバーの「プラグイン」からいつでも再度有効にできます。",
-      "confirm": "無効にする"
-    },
     "externalLinkConfirm": {
       "title": "Cindy で外部ウェブサイトを開きますか？",
       "message": "Cindy で外部ウェブサイトを開きますか？",
@@ -8029,19 +8100,11 @@
       "cancel": "キャンセル"
     }
   },
-  "ghostPanelWindow": {
-    "mergeBack": "メインウィンドウに戻る",
-    "unavailable": "このプラグインパネルは現在利用できません"
-  },
-  "ghostPanelBubble": {
-    "restoreAria": "{{name}} パネルを元に戻す",
-    "stackExpandAria": "{{count}} 個のプラグインパネルを最小化中。クリックで展開",
-    "stackCollapseAria": "プラグインパネルの一覧を畳む"
-  },
-  "ghostPanelRestore": {
-    "single": "{{name}}を復元",
-    "multiple": "最小化したプラグインパネル",
-    "multipleAria": "{{count}}個のプラグインパネルが最小化されています。復元するパネルを選択"
+  "ghostMainView": {
+    "openInSidebar": "サイドバーで開く",
+    "openInPage": "ページで開く",
+    "openInWindow": "別ウィンドウで開く",
+    "resetPlacement": "既定の位置に戻す"
   },
   "rightSidebar": {
     "ariaLabel": "右サイドバー",
@@ -8055,16 +8118,24 @@
       "mergeBack": "メインウィンドウに戻す",
       "followPlaceholder": "サイドバーはメインウィンドウの現在のセッションに追従します"
     },
+    "tabWindow": {
+      "title": "サイドバーのタブ",
+      "mergeBack": "サイドバーに戻す",
+      "loading": "読み込み中…",
+      "closed": "このタブは閉じられました"
+    },
     "emptyTitle": "準備中の領域",
     "emptyDesc": "右サイドバーのコンテンツは今後のアップデートで追加されます。",
     "tabs": {
       "addAria": "タブを追加",
       "addFailed": "タブを追加できませんでした",
       "tabCloseAria": "タブを閉じる",
+      "pinnedAria": "グローバルタブ。タスクを切り替えても保持されます",
       "menu": {
         "addLabel": "タブを追加",
         "comingSoon": "近日対応",
-        "alreadyOpen": "開いています"
+        "alreadyOpen": "開いています",
+        "pluginsLabel": "プラグイン"
       },
       "kinds": {
         "fileBrowser": "ファイルブラウザ",
@@ -8076,19 +8147,23 @@
         "resourceUsage": "アクティビティモニタ",
         "collaboration": "コラボ",
         "unknown": "不明なタブ",
-        "ghostPanel": "プラグインパネル"
+        "ghostPanel": "プラグインパネル",
+        "pluginView": "プラグインビュー"
       },
       "controls": {
         "showAria": "サイドバーを表示",
         "maximizeAria": "サイドバーを最大化",
         "restoreAria": "最大化を解除",
         "closeAria": "サイドバーを閉じる",
-        "detachAria": "サイドバーを新しいウィンドウで開く"
+        "detachAria": "現在のタブを新しいウィンドウで開く"
       },
       "contextMenu": {
         "close": "閉じる",
         "closeOthers": "他のタブを閉じる",
-        "closeAll": "すべて閉じる"
+        "closeAll": "すべて閉じる",
+        "openInWindow": "新しいウィンドウで開く",
+        "moveTo": "{{target}}に移動",
+        "moveToWindow": "ウィンドウに移動："
       },
       "empty": {
         "eyebrow": "右サイドバー",
@@ -8110,6 +8185,12 @@
         "addMoreHint": "上部の + ボタンからほかのパネルタイプを選択できます"
       },
       "placeholderHint": "{{kind}} — コンテンツは後続フェーズで追加されます"
+    },
+    "tabGroups": {
+      "left": "左側",
+      "right": "右サイドバー",
+      "top": "上部",
+      "bottom": "下部"
     },
     "fileBrowser": {
       "noWorkdir": "このセッションにローカル作業ディレクトリが関連付けられていないため、ファイルブラウザは利用できません",
@@ -8974,6 +9055,7 @@
       "duplicate": "仲間を複製",
       "moreActions": "{{name}} のその他の操作",
       "sectionExpand": "仲間を展開",
+      "showLess": "折りたたむ",
       "sectionCollapse": "仲間を折りたたむ",
       "noResults": "一致するパートナーやグループはありません"
     },
@@ -9844,6 +9926,42 @@
       "transferOffline": "サーバーに接続できません。{{name}} は引き続きこのパソコンで動作します",
       "transferFailed": "{{name}} を「{{device}}」に移せませんでした"
     },
+    "market": {
+      "heading": "仲間を探す",
+      "description": "仕事を一緒に進めるための手法とスキルを備えた仲間。",
+      "invite": "招待する",
+      "open": "仲間を開く",
+      "remove": "仲間を削除",
+      "back": "一覧に戻る",
+      "loading": "仲間を読み込み中…",
+      "empty": "仲間が見つかりません",
+      "loadFailed": "仲間を読み込めませんでした。後でもう一度開いてください。",
+      "installFailed": "追加は未完了です。保存済みの内容は保持されます。もう一度お試しください。",
+      "nameExists": "同じ名前の仲間がいます。仲間の設定で名前を変更してから招待してください。",
+      "installing": "仲間のプロフィールとスキルを保存中…",
+      "memoryDisabled": "メモリがオフのため参考知識はインポートされていません。メモリはオフのままです。",
+      "knowledge": "知識とメモリ",
+      "skills": "スキル",
+      "routines": "ルーティン",
+      "capabilities": "主な能力",
+      "workTogether": "私の構成",
+      "tools": "作業ツール",
+      "remembersLead": "覚えておくこと",
+      "pluginInstalled": "インストール済み",
+      "pluginNotInstalled": "未インストール",
+      "routineOff": "デフォルトでオフ",
+      "itemFailed": {
+        "routine": "ルーティン「{{name}}」を保存できませんでした。",
+        "skill": "スキル「{{name}}」を保存できませんでした。",
+        "knowledge": "知識「{{name}}」を保存できませんでした。",
+        "other": "「{{name}}」を保存できませんでした。",
+        "unknown": "保存できなかった項目があります。"
+      },
+      "partialReady": "ほかの内容は準備できているので、すぐに使い始められます。",
+      "partialUnsaved": "仲間はまだ保存されていません。もう一度保存してください。",
+      "retry": "もう一度保存"
+    },
+    "starterOptions": "スタートの選択肢",
     "channels": {
       "title": "メッセージプラットフォーム",
       "platform": {
@@ -9864,7 +9982,7 @@
       },
       "remove": "削除",
       "removeAria": "{{platform}} を削除",
-      "empty": "{{name}} にはまだメッセージプラットフォームがありません。Telegram、飛書、WeCom、DingTalk、Discord で作成したボットを追加すると、{{name}} がそこで返信します。",
+      "empty": "既存のボットを追加するか、下で個人用 WeChat を接続すると、{{name}} がそこで返信します。",
       "externalNote": "このボットにメッセージを送る人は全員 {{name}} と話すことになります。あなた自身のメッセージは {{name}} の権限で実行され、それ以外の人には権限を制限した非表示のタスクが個別に用意されます。",
       "sharedMemoryNote": "{{name}} はここでの情報と他の会話の情報をまとめて使います。記憶を分けたい場合は別の仲間を使ってください。",
       "groups": {
@@ -9979,6 +10097,19 @@
         "cancel": "キャンセル",
         "failed": "削除できませんでした。しばらくしてからもう一度お試しください",
         "ok": "OK"
+      },
+      "officialX": {
+        "bind": "このパートナーに割り当てる",
+        "remove": "パートナーの割り当てを解除",
+        "bindTitle": "X の質問を {{name}} に任せますか？",
+        "bindBody": "公式 @askmycindy への公開の質問を、{{name}} の個性、ツール、共有メモリ、作業フォルダーを使って処理します。返信は公開されます。X の履歴はプライベートチャットとは別です。既存のパートナーの割り当ては置き換わります。",
+        "removeTitle": "X の割り当てを解除しますか？",
+        "removeBody": "X アカウントの連携は維持され、以降の質問は通常のタスクになります。進行中の返信は完了まで続きます。",
+        "bound": "X の質問は {{name}} が担当します。X を有効にしてアカウントを認証すると利用できます。",
+        "boundElsewhere": "X は別のパートナーに割り当てられています。ここに割り当てると置き換わります。",
+        "unbound": "公式 @askmycindy への質問を {{name}} に任せられます。",
+        "managed": "X の質問はパートナーが担当しています。そのパートナーのメッセージプラットフォーム設定で変更できます。",
+        "riskBody": "X の質問にはパートナーの共有メモリ、ツール、作業フォルダーを使用し、返信は公開されます。個人情報を扱う用途には使用しないでください。プライベートチャットの履歴は直接使用しません。"
       }
     }
   },
@@ -11905,7 +12036,8 @@
       "REMOTE_AGENT_SHARE_UNAVAILABLE": "共有されたプロバイダーは一時的に利用できません。共有した人のパソコンがオフラインか、共有が一時的にオフになっている可能性があります。後でもう一度試すか、別のモデルに切り替えて続けられます。",
       "REMOTE_AGENT_GROUP_UNAVAILABLE": "プロバイダーグループ内のパソコンは現在このセッションを実行できません。オフライン、割り当て停止中、クールダウン中、またはこのモデルがない可能性があります。このプロバイダーの「リモートと共有」ページでグループを確認してください。",
       "REMOTE_AGENT_DEVICE_LIMIT": "このデバイスのリモートセッション数が上限に達しました。不要なセッションをアーカイブするか、提供者に「リモートと共有」で上限の変更を依頼してください。",
-      "REMOTE_AGENT_TOTAL_LIMIT": "提供者のパソコンのリモートセッション総数が上限に達しました。提供者に不要なセッションの解放、または「リモートと共有」での上限変更を依頼してください。"
+      "REMOTE_AGENT_TOTAL_LIMIT": "提供者のパソコンのリモートセッション総数が上限に達しました。提供者に不要なセッションの解放、または「リモートと共有」での上限変更を依頼してください。",
+      "REMOTE_AGENT_RESUME_LOST": "相手のパソコンでのこれまでの会話に再接続できなかったため、Agent はその文脈なしで続行します。"
     },
     "generatedFiles": {
       "title": "このメッセージで作成されたファイル",
@@ -12079,7 +12211,8 @@
       "degraded": "被制御デバイスとの接続が不安定です。自動的に再試行中…",
       "actionsUnavailable": "被制御デバイスを利用できません。再接続してからこのセッションを変更してください。",
       "resync": "再同期",
-      "loading": "リモートデバイスからセッションを読み込み中…",
+      "loading": "タスクを読み込み中…",
+      "syncing": "タスクを同期中…",
       "suspectStall": "このターンはしばらく更新がありません。ストリームが切断された可能性があります",
       "finalizeStuck": "ターンを終了",
       "issue": {
@@ -14005,6 +14138,9 @@
       },
       "learn": {
         "description": "現在のタスク、説明されたワークフロー、または SkillHub のスキルから再利用可能なスキルを抽出し、Cindy のレビューフローを経て保存します。"
+      },
+      "pluginCreator": {
+        "description": "Cindy のプラグインを作成・編集・デバッグ・パッケージ化し、必要に応じて公開します。"
       }
     },
     "common": {
@@ -16615,7 +16751,26 @@
     "nothingToReset": "リセットが必要な利用上限はありません",
     "offerExpired": "アカウントまたはリセットの状態が変わりました。使用量を更新してからリセットを使用してください。",
     "resetFailed": "リセットの結果を確認できませんでした。使用量を更新して、利用枠が回復したか確認してください。",
-    "limitAction": "リセットを使用 · 残り {{count}} 回"
+    "limitAction": "リセットを使用 · 残り {{count}} 回",
+    "autoUse": {
+      "label": "自動使用",
+      "rules": "自動使用ルール",
+      "lowQuota": "週間配分の残りが 1% 未満で使用",
+      "resetDistance": "配分リセットまでの残り時間",
+      "days": "{{count}} 日以上",
+      "unlimited": "制限なし",
+      "custom": "カスタム…",
+      "customDays": "日数を指定",
+      "dayUnit": "日以上",
+      "apply": "適用",
+      "expiring": "カードの有効期限前に使用",
+      "leadTime": "使用するタイミング",
+      "minutes": "有効期限の {{count}} 分前",
+      "hours": "有効期限の {{count}} 時間前",
+      "hint": "いずれかの条件で、期限が近いカードから使用します。全配分が満量の場合は使用しません。このパソコンで Cindy の起動中に実行します。",
+      "failed": "保存できませんでした。再試行してください。",
+      "restore": "既定に戻す"
+    }
   },
   "mcpApps": {
     "sharedTaskReadOnly": "このカードを操作できるのはセッションのオーナーだけです。",
@@ -16633,5 +16788,14 @@
     "openVideoSource": "元の動画を開く",
     "calculationUnavailable": "この値を計算できません。",
     "incomplete": "一部の内容を表示できませんでした。"
+  },
+  "forwardedRequest": {
+    "sourcePresent": "[出典] ホストがユーザーの原文を依頼の背景としてそのまま保持しています。現在の依頼は Agent の補足にあります。",
+    "sourceMissing": "[出典] 確認可能なユーザーの原文が見つかりません。",
+    "userPrefix": "ユーザーの原文：",
+    "agentPrefix": "Agent の補足：",
+    "taskSource": "[タスクの出典] このタスクはパートナーが開始しました。",
+    "taskId": "タスク ID：",
+    "contextReferences": "参考資料："
   }
 }

@@ -369,7 +369,7 @@ describe('session runtime control wiring', () => {
       'setAppSessionCommitBoundaryHook(() => {',
       '// ── Custom protocol registration',
     );
-    expect(body).toContain('ghostPanelWindowsController.closeForOwnerChange();');
+    expect(body).toContain('sidebarTabWindowsController.destroyAllWindows();');
     expect(body.indexOf('clearAllSessionAttention();')).toBeGreaterThan(-1);
     expect(body.indexOf('clearAllSessionAttention();')).toBeLessThan(
       body.indexOf('authManager.setStableOwnerPostCommitTask('),

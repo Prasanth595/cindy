@@ -103,6 +103,7 @@ export function useNewSessionDefaultSelection({
         agentKind: storedAgentKind,
         hostRuntime: hostRuntimeFor(storedAgentKind),
         modelRows: rowsNow,
+        providers: deviceProvidersRef.current.providers,
         currentEffort,
         catalogReady: catalogReadyRef.current,
         visibilityOverrides: deviceProvidersRef.current.modelVisibilityOverrides,
@@ -229,6 +230,7 @@ export function useNewSessionDefaultSelection({
       hostDefaultsSettled,
       hostRuntime: hostRuntimeFor(draft.agentKind),
       modelRows,
+      providers: deviceProviders.providers,
       rowsAgentKind: draft.agentKind,
       catalogReady: deviceProviders.ready,
       visibilityOverrides: deviceProviders.modelVisibilityOverrides,
@@ -293,6 +295,6 @@ export function useNewSessionDefaultSelection({
         autoDefaultSnapshotRef.current = previousAutoDefaultSnapshot;
       }
     };
-  }, [capabilities?.availableModels, deviceProviders.loading, draft.effort, draft.permissionMode, draft.agentKind, modelRows, deviceProviders.ready, deviceProviders.modelVisibilityOverrides, deviceProviders.unsupported, modelSections.connected.length, newSessionPreferences, newSessionPreferencesLoaded, selectedDeviceId, hostDefaultsSettled, hostDraftDefaults, hostRuntimeFor]);
+  }, [capabilities?.availableModels, deviceProviders.providers, deviceProviders.loading, draft.effort, draft.permissionMode, draft.agentKind, modelRows, deviceProviders.ready, deviceProviders.modelVisibilityOverrides, deviceProviders.unsupported, modelSections.connected.length, newSessionPreferences, newSessionPreferencesLoaded, selectedDeviceId, hostDefaultsSettled, hostDraftDefaults, hostRuntimeFor]);
 
 }

@@ -26,6 +26,8 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createRemoteAgentHost, hostSessionIdFor, type HostedStartInput } from '../host/runHost';
+import { TunnelLinkActivity } from '../host/linkActivity';
+import * as runTunnel from '../host/tunnel';
 
 const RUN_1 = '11111111-1111-4111-8111-111111111111';
 const RUN_2 = '22222222-2222-4222-8222-222222222222';
@@ -47,6 +49,7 @@ interface Started {
 function makeHost(
   started: Started[],
   options: {
+    nativeId?: string;
     purge?: (ids: readonly string[], nativeIds: readonly string[]) => Promise<void>;
     events?: AgentEvent[];
     recordGuestUsage?: Parameters<typeof createRemoteAgentHost>[0]['recordGuestUsage'];
@@ -69,7 +72,7 @@ function makeHost(
       const record: Started = { input, sends: [], calls: [] };
       started.push(record);
       const handle: AgentSessionHandle = {
-        id: `sdk-${input.hostSessionId}`,
+        id: options.nativeId ?? `sdk-${input.hostSessionId}`,
         agentKind: input.kind,
         model: input.options.model,
         async send(message, opts) {
@@ -634,4 +637,73 @@ describe('purgeController', () => {
     })).rejects.toThrow(/REMOTE_AGENT_INVALID/);
     host.dispose();
   });
+});
+
+/**
+ * #6479：经真实 host.handle(open/close) 检查 startHosted 收到的恢复标识。
+ * 既有恢复用例只有非路径 SDK ID；这里让 Pi 路径型 ID 命中控制端祖先别名，
+ * 同时保留提示投影与 guest 归属拒绝断言。路径字面量是跨端载荷，不用于本机文件访问。
+ * tier：unit；仅这四行替换隧道、注入假 Agent，不启动 Pi 或连接 socket。
+ * Windows 行是路径输入覆盖，不代表 Windows 实机或原生历史恢复。
+ */
+describe('#6479 bounded resume projection', () => {
+  const cases = [
+    { name: 'macOS', platform: 'darwin', workingDir: '/Users/controller/project', homeDir: '/Users/controller',
+      nativeId: '/Users/provider/.pi/agent/sessions/fixture/2026-10-20_fixture.jsonl' },
+    { name: 'Windows', platform: 'win32', workingDir: String.raw`C:\Users\controller\project`, homeDir: String.raw`C:\Users\controller`,
+      nativeId: String.raw`C:\Users\provider\.pi\agent\sessions\fixture\2026-10-20_fixture.jsonl` },
+  ];
+  for (const controller of [OWNER, GUEST]) {
+    it.each(cases)('$name preserves the native Pi ID for ' + controller, async ({ platform, workingDir, homeDir, nativeId }) => {
+      const started: Started[] = [];
+      const host = makeHost(started, { nativeId });
+      const tunnelSpy = vi.spyOn(runTunnel, 'createRunTunnel').mockImplementation(async () => {
+        const activity = new TunnelLinkActivity();
+        return {
+          url: 'http://127.0.0.1:1', token: '6479-invalid-fixture-token',
+          sendWs() { throw new Error('Unexpected network path in #6479 regression'); },
+          closeWs() {}, linkActivity: () => activity.snapshot(), async close() {},
+        };
+      });
+      const source = (platform === 'win32' ? path.win32 : path.posix).join(workingDir, 'note.md');
+      const payload = (resumeSessionId?: string) => openPayload('task-6479', {
+        workspace: { workingDir, homeDir, platform, shell: platform === 'win32' ? 'powershell' : 'zsh' },
+        options: { model: 'claude-opus', userPrompt: `Read ${source}`, ...(resumeSessionId ? { resumeSessionId } : {}) },
+        personal: { files: [], instructions: `Read ${source}` },
+      });
+      try {
+        await host.handle(controller, { op: 'open', runId: RUN_1, agentKind: 'pi', payload: { json: payload() } });
+        await vi.waitFor(() => expect(started).toHaveLength(1));
+        if (controller === GUEST) {
+          await vi.waitFor(() => expect(fs.readFileSync(path.join(runsRoot, 'guest-sessions.json'), 'utf8')).toContain(JSON.stringify(nativeId)));
+        }
+        await host.handle(controller, { op: 'close', runId: RUN_1, mode: 'close', reason: 'navigation' });
+        if (controller === GUEST) {
+          await expect(host.handle(controller, {
+            op: 'open', runId: CALL_1, agentKind: 'pi', payload: { json: payload(nativeId + '.unowned') },
+          })).rejects.toThrow(/REMOTE_AGENT_INVALID/);
+          expect(started).toHaveLength(1);
+        }
+        await host.handle(controller, { op: 'open', runId: RUN_2, agentKind: 'pi', payload: { json: payload(nativeId) } });
+        await vi.waitFor(() => expect(started).toHaveLength(2));
+        const resumed = started[1].input;
+        expect.soft(resumed.options.userPrompt).toBe(`Read ${path.join(resumed.shadowDir, 'note.md')}`);
+        expect.soft(resumed.personalInstructions).toBe(`Read ${path.join(resumed.shadowDir, 'note.md')}`);
+        expect.soft(resumed.options.resumeSessionId).toBe(nativeId);
+        if (controller === GUEST) {
+          expect(resumed.guest).toBe(true);
+          expect(resumed.guestHome).toBe(guestHome(GUEST));
+          expect(resumed.guestProvider?.providerId).toBe('shared-provider');
+        }
+      } finally {
+        try {
+          await host.handle(controller, { op: 'close', runId: RUN_1, mode: 'close', reason: 'navigation' });
+          await host.handle(controller, { op: 'close', runId: RUN_2, mode: 'close', reason: 'navigation' });
+        } finally {
+          host.dispose();
+          tunnelSpy.mockRestore();
+        }
+      }
+    });
+  }
 });

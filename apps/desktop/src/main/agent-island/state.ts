@@ -32,6 +32,7 @@ import {
   DEFAULT_AGENT_ISLAND_STRINGS,
   type AgentIslandActivityLine,
   type AgentIslandActivityLineKind,
+  type AgentIslandCompanionSnapshot,
   type AgentIslandDisplayPolicy,
   type AgentIslandDisplaySurface,
   type AgentIslandDisplayState,
@@ -109,6 +110,8 @@ interface AgentIslandSessionMeta {
   workingDir?: string | null;
   title?: string | null;
   workspaceKind?: string | null;
+  /** undefined = not resolved yet; null = not a companion's Session. */
+  companion?: AgentIslandCompanionSnapshot | null;
 }
 
 interface ApplyAgentIslandEventOptions {
@@ -123,6 +126,7 @@ interface AgentIslandSessionState {
   pendingDeviceCompletionNotification?: boolean;
   sessionId: string;
   title: string | null;
+  companion: AgentIslandCompanionSnapshot | null;
   projectName: string | null;
   detail: string;
   detailSource: 'tool' | 'status' | 'interaction' | null;
@@ -504,10 +508,12 @@ export function patchAgentIslandMetadata(
   const session = state.sessions.get(meta.sessionId);
   if (!session) return false;
   const previousTitle = session.title;
+  const previousCompanion = session.companion;
   const previousProjectName = session.projectName;
   const previousAgentKind = session.agentKind;
   applyMeta(session, meta);
   return previousTitle !== session.title
+    || previousCompanion !== session.companion
     || previousProjectName !== session.projectName
     || previousAgentKind !== session.agentKind;
 }
@@ -1147,6 +1153,8 @@ export function syncAgentIslandDeviceSessions(
   state: AgentIslandState,
   inputs: readonly AgentIslandRemoteSessionInput[],
   now: number,
+  /** Display identity of a remote companion chat; must return a stable object per identity. */
+  resolveCompanion: (input: AgentIslandRemoteSessionInput) => AgentIslandCompanionSnapshot | null = () => null,
 ): AgentIslandDeviceSessionSyncResult {
   const result: AgentIslandDeviceSessionSyncResult = { changed: false, baselineSessionIds: [], events: [] };
   const incoming = new Map(inputs.map((input) => [input.sessionId, input]));
@@ -1167,7 +1175,7 @@ export function syncAgentIslandDeviceSessions(
       result.baselineSessionIds.push(input.sessionId);
       result.changed = true;
     }
-    if (applyDeviceSessionMeta(session, input)) result.changed = true;
+    if (applyDeviceSessionMeta(session, input, resolveCompanion(input))) result.changed = true;
     const waitingForCompletionNotification = session.pendingDeviceCompletionNotification === true;
     const transition = applyDeviceSessionPhase(state, session, input, previous, now);
     if (input.phase === 'completed') {
@@ -1194,14 +1202,20 @@ export function syncAgentIslandDeviceSessions(
 function applyDeviceSessionMeta(
   session: AgentIslandSessionState,
   input: AgentIslandRemoteSessionInput,
+  companion: AgentIslandCompanionSnapshot | null,
 ): boolean {
-  const project = projectNameFromWorkingDir(input.workingDir, input.workspaceKind);
+  // A companion's home folder on that computer is not a project; its group is the context.
+  const project = companion
+    ? companion.groupName ?? null
+    : projectNameFromWorkingDir(input.workingDir, input.workspaceKind);
   const projectName = [project, input.deviceName].filter(Boolean).join(' · ') || null;
   const agentKind = dbToMakerAgentKind(input.agentKind);
   const changed = session.title !== input.title
+    || session.companion !== companion
     || session.projectName !== projectName
     || session.agentKind !== agentKind;
   session.title = input.title;
+  session.companion = companion;
   session.projectName = projectName;
   session.agentKind = agentKind;
   return changed;
@@ -1388,7 +1402,11 @@ export function requestAgentIslandSessionFocus(
   let completionDismissed = false;
   const isCompletion = state.sessions.get(nextSessionId)?.phase === 'completed';
   if (isCompletion) {
-    completionDismissed = dismissTransientReveals(state);
+    // The manual list exposes the whole queue; a single card only disposes itself.
+    completionDismissed = dismissTransientReveals(
+      state,
+      state.lastDisplayPolicy === 'manualExpanded' ? undefined : nextSessionId,
+    );
     completionDismissed = collapseAgentIslandToCompact(state, now) || completionDismissed;
   }
   if (state.visibleSessionIds.has(nextSessionId)) {
@@ -1511,7 +1529,7 @@ export function buildAgentIslandDisplayState(
   const activeTransient = getActiveTransientSession(state, now);
   const orderedSessions = orderSessionsForCurrentSurface(
     state,
-    orderSessionsForAutomaticTransientStack(sortedSessions, activeTransient, manualExpanded),
+    orderSessionsForAutomaticReveal(sortedSessions, activeTransient, manualExpanded),
     manualExpanded,
     now,
   );
@@ -1521,8 +1539,8 @@ export function buildAgentIslandDisplayState(
   const notchStatus = getNotchStatus(current, mode);
   const displayPolicy = decision.displayPolicy;
   const surfaceOrderedSessions = orderSessionsForDecisionSurface(decision, orderedSessions);
-  const displaySessions = getDisplaySessionsForSurface(decision, surfaceOrderedSessions, now);
-  const displaySurface = getDisplaySurface(decision, displaySessions, now);
+  const displaySessions = getDisplaySessionsForSurface(decision, surfaceOrderedSessions);
+  const displaySurface = getDisplaySurface(decision);
   updateExpandedProtection(state, mode, displayPolicy, displaySurface, current?.sessionId ?? null, now);
   const layoutMode = getLayoutMode(notchStatus);
   const pointerInside = isPointerInsideIsland(state);
@@ -1555,7 +1573,7 @@ export function buildAgentIslandDisplayState(
  * 展示面(getDisplaySessionsForSurface)过滤。
  *
  * 为什么不用 buildAgentIslandDisplayState 的 displaySessions:展示面在岛显示
- * transient 完成/错误卡时只保留可堆叠的 transient 会话,会过滤掉其它运行中/等待中的
+ * transient 完成/错误卡时只保留本次提醒的会话,会过滤掉其它未读/运行中/等待中的
  * 会话;而 renderer 的 agentIslandActivity store 把每次 payload 当**整体替换**,用过滤
  * 后的子集会把这些会话从活动 map 里丢掉、卡片回退陈旧 summary,直到岛面切换
  * (PR #246 review)。侧栏卡片按 sessionId 各取所需,故这里取 state.sessions 全集。
@@ -1921,19 +1939,23 @@ function deferActiveTransientReveal(
 
 function dismissPublishedTransientReveal(state: AgentIslandState): boolean {
   if (state.lastDisplayMode !== 'expanded' || state.lastDisplayPolicy !== 'transient') return false;
-  return dismissTransientReveals(state);
+  if (!state.lastDisplaySessionId) return false;
+  return dismissTransientReveals(state, state.lastDisplaySessionId);
 }
 
-function dismissTransientReveals(state: AgentIslandState): boolean {
+function dismissTransientReveals(state: AgentIslandState, onlySessionId?: string): boolean {
   const transientSessionIds = [
     state.activeTransientSessionId,
     ...state.transientRevealQueue,
-  ].filter((sessionId): sessionId is string => Boolean(sessionId));
+  ].filter((sessionId): sessionId is string => Boolean(sessionId)
+    && (onlySessionId === undefined || sessionId === onlySessionId));
 
   if (transientSessionIds.length === 0) return false;
 
-  state.activeTransientSessionId = null;
-  state.transientRevealQueue = [];
+  if (state.activeTransientSessionId && transientSessionIds.includes(state.activeTransientSessionId)) {
+    state.activeTransientSessionId = null;
+  }
+  state.transientRevealQueue = state.transientRevealQueue.filter((sessionId) => !transientSessionIds.includes(sessionId));
 
   let changed = false;
   for (const sessionId of transientSessionIds) {
@@ -2116,7 +2138,7 @@ function orderSessionsForCurrentSurface(
   return ordered;
 }
 
-function orderSessionsForAutomaticTransientStack(
+function orderSessionsForAutomaticReveal(
   sortedSessions: AgentIslandSessionState[],
   activeTransient: AgentIslandSessionState | null,
   manualExpanded: boolean,
@@ -2247,8 +2269,6 @@ function orderSessionsForDecisionSurface(
 
 function getDisplaySurface(
   decision: AgentIslandDisplayDecision,
-  displaySessions: AgentIslandSessionState[],
-  now: number,
 ): AgentIslandDisplaySurface {
   if (decision.mode !== 'expanded') return 'collapsed';
   switch (decision.surface.kind) {
@@ -2257,9 +2277,6 @@ function getDisplaySurface(
     case 'blocking':
       return 'interactionCard';
     case 'transient':
-      if (countStackedTransientSessions(displaySessions, now) > 1) {
-        return 'sessionList';
-      }
       return 'completionCard';
     default:
       return 'collapsed';
@@ -2269,27 +2286,11 @@ function getDisplaySurface(
 function getDisplaySessionsForSurface(
   decision: AgentIslandDisplayDecision,
   orderedSessions: AgentIslandSessionState[],
-  now: number,
 ): AgentIslandSessionState[] {
   if (decision.surface.kind !== 'transient') return orderedSessions;
-  const transientSessions = orderedSessions.filter((session) => isStackableTransientSession(session, now));
-  return transientSessions.length > 0 ? transientSessions : orderedSessions;
-}
-
-function countStackedTransientSessions(sessions: AgentIslandSessionState[], now: number): number {
-  let count = 0;
-  for (const session of sessions) {
-    if (isStackableTransientSession(session, now)) count += 1;
-  }
-  return count;
-}
-
-function isStackableTransientSession(session: AgentIslandSessionState, now: number): boolean {
-  if (session.phase !== 'completed' && session.phase !== 'error') return false;
-  return session.unread
-    || Boolean(session.revealUntil && session.revealUntil > now)
-    || Boolean(session.completedUntil && session.completedUntil > now)
-    || Boolean(session.errorUntil && session.errorUntil > now);
+  // Automatic notifications show only the active reveal; unread history stays
+  // available in the manual list and queued notifications get their own turn.
+  return [decision.surface.current];
 }
 
 // 徽标里「运行中」与「需要关注」互斥:等用户回答的任务只算需要关注,不重复计入运行中。
@@ -2427,7 +2428,9 @@ function buildPillSnapshot(
 }
 
 function pillTitle(session: AgentIslandSessionState, mode: 'micro' | 'compact'): string {
-  const title = meaningfulSessionTitle(session)
+  // A companion is named by its owner; never filter it like a generic agent title.
+  const title = normalizeInlineText(session.companion?.name ?? '')
+    || meaningfulSessionTitle(session)
     || session.projectName
     || latestUserActivityTitle(session)
     || session.sessionId.slice(0, 8);
@@ -2529,6 +2532,7 @@ function getOrCreateSession(
   session = {
     sessionId: meta.sessionId,
     title: meta.title?.trim() || null,
+    companion: null,
     projectName: projectNameFromWorkingDir(meta.workingDir, meta.workspaceKind),
     detail: '',
     detailSource: null,
@@ -2632,7 +2636,11 @@ function applyMeta(session: AgentIslandSessionState, meta: AgentIslandSessionMet
   if (meta.agentKind) session.agentKind = meta.agentKind;
   const title = meta.title?.trim();
   if (title) session.title = title;
-  if (meta.workingDir !== undefined || meta.workspaceKind !== undefined) {
+  if (meta.companion !== undefined) session.companion = meta.companion;
+  if (session.companion) {
+    // A companion's working directory is its private home, not a project the user chose.
+    session.projectName = session.companion.groupName ?? null;
+  } else if (meta.workingDir !== undefined || meta.workspaceKind !== undefined) {
     session.projectName = projectNameFromWorkingDir(meta.workingDir, meta.workspaceKind);
   }
 }
@@ -2642,7 +2650,8 @@ function toSnapshot(session: AgentIslandSessionState): AgentIslandSessionSnapsho
   return {
     ...(session.phase === 'completed' && session.completionNotification ? { completionNotification: session.completionNotification } : {}),
     sessionId: session.sessionId,
-    title: session.title || session.projectName || session.sessionId.slice(0, 8),
+    title: session.companion?.name || session.title || session.projectName || session.sessionId.slice(0, 8),
+    ...(session.companion ? { companion: session.companion } : {}),
     projectName: session.projectName,
     detail: reconnectStatus ?? session.detail,
     compactDetail: compactDetailForSession(session),

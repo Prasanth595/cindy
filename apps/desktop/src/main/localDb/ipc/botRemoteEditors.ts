@@ -1,3 +1,4 @@
+import { serializeModelRoutes } from '@cindy/maker-shared/model-route';
 import { normalizeBotModelChain, type BotModelRoute } from '../../../shared/botModelChain.js';
 import { createHash } from 'node:crypto';
 import { resolveRemoteText, type RemoteActionDescriptor, type RemoteActionInvokeResponse, type RemoteLocalizedText, type RemoteResource } from '@cindy/device-link';
@@ -69,7 +70,7 @@ export function createBotRemoteEditors(deps: BotRemoteEditorDeps, bind: ReturnTy
         { id: 'avatarImageBase64', label: editorCopy.avatar, kind: 'text', required: true },
       ], { name: '', avatarImageBase64: '' });
       // Metadata keeps older generic form renderers from displaying raw model JSON.
-      const block = { ...panel.block, data: { ...panel.block.data, creationModelChain: JSON.stringify(modelChain.slice(0, 1)) } };
+      const block = { ...panel.block, data: { ...panel.block.data, creationModelChain: serializeModelRoutes(modelChain.slice(0, 1)) } };
       return bind(context, { ref: ref(id), revision: '1', display: { title: editorCopy.create }, links: [], blocks: [block], actions: [panel.action] }, async () => '1', async request => {
         const input = request.input ?? {}; keys(input, ['name', 'avatarImageBase64', 'requestId', 'modelChain']);
         const requestId = string(input.requestId, 80);

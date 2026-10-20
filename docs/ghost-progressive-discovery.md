@@ -221,7 +221,8 @@ frontmatter `name + description` 的召回作用；`manual.items` 只是插件�
 
 ## 7. 明确不做的事
 
-- 不新增全局路由 Skill；不把插件手册铺成全局 Skill。新插件使用按需读取的
+- 不新增使用插件的全局路由 Skill；不把插件业务手册铺成全局 Skill。内置
+  `cindy-plugin-creator` 仅负责编写插件，不替代插件业务的渐进发现。新插件使用按需读取的
   `manual`；存量 Skill 槽处于停止新增、未来整体废弃的兼容期。
 - 不维护排他的 active plugin / active context；插件切换不做上下文替换，规则
   适用范围由 `ghost_id + category` 边界保证。
@@ -235,7 +236,8 @@ frontmatter `name + description` 的召回作用；`manual.items` 只是插件�
 - 花名册取数与过滤（`visibleChipGhosts` / `getRosterItems`）：
   `apps/desktop/src/main/mcp-integrations/ghost.ts`
 - 可见性唯一真源：`apps/desktop/src/main/cindy-brain/ghostVisibility.ts`
-- 作者契约（FORGE_GUIDE）：`apps/desktop/src/main/cindy-brain/forge.ts`
+- 作者契约：`apps/desktop/resources/system-skills/cindy-plugin-creator/references/`；
+  `apps/desktop/src/main/cindy-brain/forgeGuide.ts` 组合为兼容的 `FORGE_GUIDE`
 - 摘要与 manual 契约：本仓 `packages/plugin-protocol/src/manifest.ts`，desktop
   在 `apps/desktop/src/shared/ghost.ts` 维护完整镜像
 - 三 harness 注入落点：`packages/maker-core/src/agents/claude-code/index.ts`

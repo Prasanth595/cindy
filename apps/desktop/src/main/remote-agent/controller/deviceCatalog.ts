@@ -8,7 +8,7 @@
  * 换模型、协同 Worker、定时任务的默认来源都只能落在这些供应商上。
  */
 import { CONTROLLER_CAPABILITY_PROVIDER_LOGO_KINDS_V2 } from '@cindy/device-link';
-import type { ProviderView } from '@cindy/model-providers';
+import { effectiveSourceIdForModel, getModel, isModelSelectableForNewRoute, type ProviderView, type AgentKind } from '@cindy/model-providers';
 
 type RemoteInvoke = (
   deviceId: string,
@@ -57,4 +57,24 @@ export async function readDeviceProviderViews(invoke: RemoteInvoke, deviceId: st
     throw Object.assign(new Error(result.error?.message ?? 'provider list unavailable'), { code: result.error?.code });
   }
   return parseDeviceProviderViews(result.result).filter((view) => view.remoteInvocationEnabled === true);
+}
+
+/** 与普通任务共用授权目录；失败不回落到本机的同名供应商。 */
+export async function readRemoteProviderRoute(route: {
+  agentDeviceId: string;
+  agentKind: AgentKind;
+  providerId: string | null;
+  model: string;
+}) {
+  const { remoteBackgroundInvoke } = await import('../../device-link');
+  const providers = await readDeviceProviderViews(remoteBackgroundInvoke, route.agentDeviceId);
+  // 已有远程任务可以未指定来源；只在执行端授权目录内按原生默认规则解析。
+  // 显式来源失效仍拒绝，不换到另一个同名模型账号。
+  const providerId = route.providerId ?? effectiveSourceIdForModel(providers, null, route.model, route.agentKind);
+  const provider = providers.find((p) => p.id === providerId && p.connected && !p.suspended && p.agents.includes(route.agentKind));
+  const model = provider && getModel(provider, route.model, route.agentKind);
+  if (!provider || !model || !isModelSelectableForNewRoute(model, { userProvider: provider.source === 'user' })) {
+    throw new Error('[REMOTE_AGENT_UNAVAILABLE] Selected remote provider or model is unavailable.');
+  }
+  return { provider, model };
 }

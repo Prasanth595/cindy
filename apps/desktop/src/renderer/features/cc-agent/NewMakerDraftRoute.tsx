@@ -159,6 +159,7 @@ import {
   leadingSlashInvocation,
   rebaseInlineRangesAfterSlashCommandRewrite,
   rewritePiSkillMessageForSend,
+  rewriteBuiltInSkillDraftForSend,
 } from '@/lib/slashCommands';
 import { worktreeCreationStore } from '@/lib/worktreeCreationStore';
 import { useRefreshWorktreeForSession } from '@/contexts/WorktreeContext';
@@ -3522,6 +3523,7 @@ export function NewMakerDraftRoute() {
         }
       }
       const dataOwnerAtSend = getDataOwnerGeneration();
+      const builtInSkillIntent = getComposerDraft(NEW_MAKER_DRAFT_KEY)?.builtInSkillIntent;
       const isCurrentDataOwner = () =>
         dataOwnerAtSend.dataOwnerId === dataOwnerId &&
         isDataOwnerGenerationCurrent(dataOwnerAtSend);
@@ -3549,6 +3551,48 @@ export function NewMakerDraftRoute() {
           });
           if (isDeviceLinkDraft && !isCurrentDataOwner()) return;
           if (!proceed) return;
+
+          // Keep the original invocation so a second lookup after checkout is
+          // still tied to its built-in identity, even if preflight changed its alias.
+          const builtInSkillDraftMessage = message;
+          const resolveBuiltInSkillForDirectory = async (workingDir: string | undefined) => {
+            if (!builtInSkillIntent) return true;
+            if (!isCurrentDataOwner()) return false;
+            // Skills belong to the task's computer, including when its Agent
+            // runs through a remote provider. Match the normal command catalog.
+            const rewritten = await rewriteBuiltInSkillDraftForSend({
+              message: builtInSkillDraftMessage,
+              intent: builtInSkillIntent,
+              agentKind: capabilityAgentKind,
+              workingDir,
+              deviceId: effectiveDeviceLinkDeviceId,
+              remoteHostId: effectiveRemoteHostId,
+            });
+            if (!isCurrentDataOwner()) return false;
+            if (rewritten === null) {
+              toast.error(t('settings.ghosts.page.creatorUnavailable'));
+              return false;
+            }
+            if (rewritten !== message) {
+              const rebase = <T extends { start: number; end: number }>(ranges: readonly T[] | undefined) =>
+                ranges ? rebaseInlineRangesAfterSlashCommandRewrite(ranges, message, rewritten) : undefined;
+              opts = {
+                ...opts,
+                agentReferences: rebase(opts?.agentReferences),
+                pastedTextRanges: rebase(opts?.pastedTextRanges),
+                slashCommandRanges: rebase(opts?.slashCommandRanges),
+              };
+              message = rewritten;
+            }
+            return true;
+          };
+          const currentBuiltInSkillIntent = () => builtInSkillIntent
+            ? {
+                ...builtInSkillIntent,
+                commandName: leadingSlashInvocation(message)?.name ?? builtInSkillIntent.commandName,
+              }
+            : undefined;
+          if (!(await resolveBuiltInSkillForDirectory(selectedWorkingDir))) return;
 
           // device-link 远程项目:在被控端走校验过的 maker:create-session 建会话(写被控 DB,
           // allowlist 内、非裸写),首条消息经 setPending 交给 SessionView 发送(与本地
@@ -3711,6 +3755,19 @@ export function NewMakerDraftRoute() {
                 setWtCreating(false);
               }
             }
+            if (precreatedWorktree && !(await resolveBuiltInSkillForDirectory(remoteWorkingDir))) {
+              // No session has claimed this worktree. Reuse its owner-scoped
+              // recovery ledger; an unavailable peer retains the cleanup record.
+              if (isCurrentDataOwner()) {
+                await recoverPendingRemotePrecreatedWorktrees({
+                  deviceId,
+                  dataOwnerId: ownerAtSend ?? undefined,
+                  invoke: invokeRemote,
+                  isCurrent: isCurrentDataOwner,
+                });
+              }
+              return;
+            }
             // 提出来存一份:交接收尾要按**实际提交的** model / effort / permission / workspaceKind
             // 组装临时会话行(见 commitRemoteSessionHandoff),不能再各自推一遍。
             const createArgs = resolveDeviceLinkSubmission({
@@ -3831,8 +3888,8 @@ export function NewMakerDraftRoute() {
             // 可恢复副本紧贴提交点落下,**排在下面的附件迁移 await 之前**(codex P2 第五轮)。
             // 提交点之后每多一次 await,「对端会话已建好、正文却还没有第二份」的窗口就长一分;
             // rehomeDraftAttachments 是本机 IPC,但含 base64 / 草稿缓存图片时并不快,期间
-            // 应用退出或崩溃,正文就没了。副本只存正文、不依赖附件迁移结果,所以可以先落。
-            rememberRecoverableHandoff(remoteSessionId, 'message', message);
+            // 应用退出或崩溃,正文就没了。副本存正文及内置 Skill 调用意图、不依赖附件迁移结果,所以可以先落。
+            rememberRecoverableHandoff(remoteSessionId, 'message', message, currentBuiltInSkillIntent());
             // F-COLLAB / device-link:草稿开了协同 → **不在这里 await**,把「开协同」连同
             // 首条消息一起交接给 SessionView(见 pendingFirstMessage.PendingRemoteCollab)。
             //
@@ -3938,6 +3995,7 @@ export function NewMakerDraftRoute() {
             }
             setPending(remoteSessionId, {
               text: message,
+              builtInSkillIntent: currentBuiltInSkillIntent(),
               files: rehydratedFiles,
               mentions,
               ...(shouldEnableCollab
@@ -4100,7 +4158,8 @@ export function NewMakerDraftRoute() {
               let rehomedComments = preNavBrowserComments;
               const restoreFirstMessageDraft = () => {
                 saveComposerDraft(newSession.id, {
-                  text: preNavDraftDoc ?? plainTextToTiptapDoc(message),
+                  text: preNavDraftDoc ?? plainTextToTiptapDoc(builtInSkillIntent ? builtInSkillDraftMessage : message),
+                  ...(builtInSkillIntent ? { builtInSkillIntent } : {}),
                   attachments: excludeCommentScreenshots(rehomedFiles, rehomedComments),
                   browserComments: rehomedComments,
                 });
@@ -4213,7 +4272,20 @@ export function NewMakerDraftRoute() {
                   }
                 }
 
-                const dispatchedMessage = await rewritePiSkillMessageForSend({
+                // The selected source branch can have a different project skill
+                // collision from baseRepo. Resolve after checkout and collaboration preparation, immediately before dispatch.
+                if (!(await resolveBuiltInSkillForDirectory(newDir))) {
+                  if (!isCurrentDataOwner()) return;
+                  worktreeCreationStore.set(newSession.id, {
+                    status: 'failed',
+                    name: branchName,
+                    error: t('settings.ghosts.page.creatorUnavailable'),
+                  });
+                  restoreFirstMessageDraft();
+                  return;
+                }
+
+                const dispatchedMessage = builtInSkillIntent ? message : await rewritePiSkillMessageForSend({
                   agentKind: persistedAgentKind === 'cc' ? 'claude-code' : persistedAgentKind,
                   message,
                   workingDir: newDir,
@@ -4380,7 +4452,8 @@ export function NewMakerDraftRoute() {
             // FIFO 插回失败的首条,不覆盖用户在等待期间已经写进新任务输入框的内容。
             restoreRemoteOptimisticDraft(newSession.id, {
               clientId: `local-first:${newSession.id}`,
-              text: preNavDraftDoc ?? plainTextToTiptapDoc(message),
+              text: preNavDraftDoc ?? plainTextToTiptapDoc(builtInSkillIntent ? builtInSkillDraftMessage : message),
+              ...(builtInSkillIntent ? { builtInSkillIntent } : {}),
               attachments: excludeCommentScreenshots(rehydratedFiles, preNavBrowserComments),
               browserComments: preNavBrowserComments,
             });
@@ -4428,6 +4501,7 @@ export function NewMakerDraftRoute() {
             if (slashMatch || leading) {
               setPending(newSession.id, {
                 text: message,
+                builtInSkillIntent: currentBuiltInSkillIntent(),
                 files: rehydratedFiles,
                 mentions,
                 ...(opts?.quotesEncoded ? { quotesEncoded: true } : {}),

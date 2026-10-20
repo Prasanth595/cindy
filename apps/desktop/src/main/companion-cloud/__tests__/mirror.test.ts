@@ -53,6 +53,8 @@ describe('owner-typed input', () => {
   it('keeps visible input from other sources, labelled as the chat labels it', () => {
     const labelled = (meta: unknown, text = 'hi') => mirrorMessageText(user(text, { agentMeta: JSON.stringify(meta) }));
     expect(labelled({ origin: { kind: 'session', senderSessionId: 's', senderSessionTitle: '整理' } })).toBe('〔来自任务「整理」〕\nhi');
+    expect(labelled({ origin: { kind: 'session', senderSessionId: 's', senderSessionTitle: '整理' },
+      autoReviewUserText: { kind: 'agent-request', request: { userText: null } } })).toBe('〔来自任务「整理」〕\nhi');
     expect(labelled({ origin: { kind: 'session', senderSessionId: 's', senderBotId: 'b', senderBotName: 'Mia' } })).toBe('〔来自伙伴「Mia」〕\nhi');
     expect(labelled({ origin: { kind: 'scheduler', scheduleId: 'r' } })).toBe('〔来自定时任务〕\nhi');
     expect(labelled({ sourcePlugin: { pluginId: 'p', name: 'Art' } })).toBe('〔来自插件「Art」〕\nhi');

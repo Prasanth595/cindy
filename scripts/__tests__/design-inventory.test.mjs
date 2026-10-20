@@ -58,7 +58,7 @@ test('DS-8: every desktop globals.css surface includes its generated token style
   const { surfaces } = buildGeneratedSurfaces(ROOT);
   const consumers = surfaces.filter(surface => surface.platform === 'desktop'
     && surface.styleSources.includes('apps/desktop/src/renderer/styles/globals.css'));
-  assert.equal(consumers.length, 6);
+  assert.equal(consumers.length, 5);
   for (const surface of consumers) {
     assert.ok(surface.styleSources.includes('apps/desktop/src/renderer/styles/generated/tokens.css'), surface.id);
   }
@@ -119,6 +119,7 @@ test('extractRouterFacts: 真实 router.tsx 的三类去向逐条钉死', () => 
     '/bots/:botId/session/:sessionId BotSessionView',
     '/bots/groups/:groupId BotGroupChatView',
     '/bots/list BotsListView',
+    '/bots/market/:packageId? BotMarketRoute',
     '/bots/remote/:deviceId/:botId RemoteBotSessionView',
     '/bots/roster BotRosterView',
     '/cc-agent/:sessionId CCAgentSessionView',
@@ -127,7 +128,6 @@ test('extractRouterFacts: 真实 router.tsx 的三类去向逐条钉死', () => 
     '/cc-agent/new NewMakerDraftRoute',
     '/cc-agent/orca/:sessionId OrcaWorkflowRoute',
     '/cc-agent/scheduled SchedulerPage',
-    '/ghost-panel-window GhostPanelWindowLayout',
     '/issues IssueTrackerFeatureLayout',
     '/login LoginPage',
     '/maker-experimental MakerExperimentalView',
@@ -931,15 +931,13 @@ test('设置页纳入 sortable.css（providers tab 拖拽行样式）', () => {
 });
 
 test('独立窗口 surface 纳入各自 entry 导入的 globals.css', () => {
-  // resource-usage-entry.tsx:9 / sidebar-window-entry.tsx:19 /
-  // ghost-panel-window-entry.tsx:21 都直接导入 globals.css,body/#root 基础
+  // resource-usage-entry.tsx / sidebar-window-entry.tsx 都直接导入 globals.css,body/#root 基础
   // 样式与窗口专用规则在这些窗口实际生效。
   const globalsPath = 'apps/desktop/src/renderer/styles/globals.css';
   const catalog = catalogSurfaces();
   for (const surfaceId of [
     'desktop.window.resource-usage',
     'desktop.window.sidebar',
-    'desktop.window.ghost-panel',
   ]) {
     const surface = catalog.find((entry) => entry.id === surfaceId);
     assert.ok(surface, surfaceId);
@@ -952,7 +950,6 @@ test('独立窗口 surface 纳入各自 entry 导入的 globals.css', () => {
   for (const surfaceId of [
     'desktop.window.resource-usage',
     'desktop.window.sidebar',
-    'desktop.window.ghost-panel',
   ]) {
     const generated = surfaces.find((entry) => entry.id === surfaceId);
     assert.ok(
@@ -1017,7 +1014,6 @@ test('renderer 模块图入口双向核对: index.tsx 的参数→入口模块�
     remoteDesktopViewer: './remote-desktop-viewer-entry',
     resourceUsageWindow: './resource-usage-entry',
     sidebarWindow: './sidebar-window-entry',
-    ghostPanelWindow: './ghost-panel-window-entry',
   });
   const covered = new Map(
     catalogSurfaces().flatMap((surface) =>
