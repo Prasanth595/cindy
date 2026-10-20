@@ -95,6 +95,21 @@ export default {
         assert.ok(c.left >= -12 && c.right <= 12, `${c.id} reactions stay over the bubble (${c.left}, ${c.right})`);
       }
       await ui.capture('hover');
+      // A mention reads in the link color and, rested on, shows who it names.
+      const mention = await page.evaluate(() => {
+        const text = [...document.querySelectorAll('[data-bot-group-message-id="q2"] [data-testid="bot-group-self-bubble"] p')]
+          .map((p) => [...p.childNodes].find((n) => n.nodeType === 3 && n.data.includes('@Nova'))).find(Boolean);
+        const range = document.createRange();
+        const at = text.data.indexOf('@Nova');
+        range.setStart(text, at); range.setEnd(text, at + 5);
+        const box = range.getBoundingClientRect();
+        return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+      });
+      await page.mouse.move(mention.x, mention.y);
+      const card = page.locator('[data-bot-group-mention-card]');
+      await card.waitFor();
+      assert.ok((await card.textContent()).includes('Nova'), 'the mention card names Nova');
+      await ui.capture('mention');
       return;
     }
 

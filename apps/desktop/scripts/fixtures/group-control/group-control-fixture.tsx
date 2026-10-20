@@ -51,7 +51,7 @@ function bubbleMessages() {
       task: { state: 'started', title: '处理 #6458 剩余 review', meta: { v: 1, role: 'delegation-request', delegationId: 'd1' } },
     }),
     message({
-      id: 'q2', sequence: 5, isSelf: true, createdAt: T0 + 9 * MINUTE, content: '旧版那两条也记一下，发版说明里提一句',
+      id: 'q2', sequence: 5, isSelf: true, createdAt: T0 + 9 * MINUTE, content: '@Nova 旧版那两条也记一下，发版说明里提一句',
       quote: { messageId: 'b1', authorName: 'Nova', authorKind: 'bot', excerpt: crash, attachmentCount: 0, attachmentName: null, sequence: 3 },
     }),
     // Short messages with more reactions than the text is wide: the bubble widens to carry them.

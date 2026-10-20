@@ -15,7 +15,7 @@
  * 行用 `memo` 包住：父组件只在这条消息（或它的引用、安排快照、高亮状态）真的变了时才会
  * 让它重绘；回调一律是父组件的稳定引用，按消息 id 调用。
  */
-import { memo, useEffect, useState, useLayoutEffect, useRef, type ReactNode } from 'react';
+import { memo, useEffect, useState, useLayoutEffect, useRef, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { CircleAlert, CornerDownRight, RefreshCcw } from 'lucide-react';
 import { BotGroupThreadPreview, BotGroupThreadShareQuote, botGroupThreadShareLabel } from './BotGroupThreadViews';
@@ -38,6 +38,7 @@ import type {
 } from '../../../shared/botGroupChat';
 import { isBotGroupRuntimeFailureCode } from '../../../shared/botGroupChat';
 import { BotAvatar } from './BotAvatar';
+import { BotGroupMentionCard, botGroupMentionMember } from './BotGroupMentionCard';
 import { splitBotGroupMentionSegments } from './botGroupMentions';
 import { botGroupNoticeKey } from './botGroupPresentation';
 import {
@@ -74,11 +75,14 @@ function highlightApi(): { registry: HighlightRegistry; Highlight: new (...range
 function installHighlightStyle(): void {
   if (highlightStyleInstalled || typeof document === 'undefined') return;
   highlightStyleInstalled = true;
-  const style = document.createElement('style');
+  // One rule, rewritten in place: an earlier copy (a reload of this module) must not keep painting.
+  const [existing, ...stale] = document.head.querySelectorAll<HTMLStyleElement>('style[data-bot-group-mention]');
+  stale.forEach((copy) => copy.remove());
+  const style = existing ?? document.createElement('style');
   style.dataset.botGroupMention = '';
-  // Same chip colors as the composer's mention chip; both modes follow the tokens.
-  style.textContent = `::highlight(${MENTION_HIGHLIGHT}) { background-color: var(--surface-chip); color: var(--text-primary); }`;
-  document.head.append(style);
+  // Mentions read as the theme's link color with no fill; hovering one shows who it names.
+  style.textContent = `::highlight(${MENTION_HIGHLIGHT}) { color: var(--msg-link); background-color: transparent; }`;
+  if (!style.isConnected) document.head.append(style);
 }
 
 function syncMentionHighlight(): void {
@@ -113,17 +117,32 @@ function collectMentionRanges(root: HTMLElement, labels: readonly string[]): Ran
   return ranges;
 }
 
-/** Message text as Markdown, with `@名字` of known members highlighted like a chip. */
-function BotGroupMessageText({ content, mentionLabels }: { content: string; mentionLabels: readonly string[] }) {
+const MENTION_CARD_OPEN_MS = 250;
+const MENTION_CARD_CLOSE_MS = 150;
+
+/**
+ * Message text as Markdown, with `@名字` of known members in the link color. Resting the pointer on a
+ * mention shows that member's card; mentions are text ranges, so the hit test reads their boxes.
+ */
+function BotGroupMessageText({ content, mentionLabels, members }: {
+  content: string; mentionLabels: readonly string[]; members: readonly BotGroupMemberView[];
+}) {
   const ref = useRef<HTMLDivElement>(null);
+  const rangesRef = useRef<Range[]>([]);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingRef = useRef<Range | null>(null);
+  const [card, setCard] = useState<{ member: BotGroupMemberView; anchor: { left: number; top: number; width: number; height: number } } | null>(null);
   const labelsKey = mentionLabels.join('\u0000');
   useLayoutEffect(() => {
     const root = ref.current;
-    if (!root || !content.includes('@') || !highlightApi()) return;
-    installHighlightStyle();
+    if (!root || !content.includes('@')) { rangesRef.current = []; return; }
+    const api = highlightApi();
+    if (api) installHighlightStyle();
     const owner = {};
     const refresh = () => {
-      mentionRanges.set(owner, collectMentionRanges(root, mentionLabels));
+      rangesRef.current = collectMentionRanges(root, mentionLabels);
+      if (!api) return;
+      mentionRanges.set(owner, rangesRef.current);
       syncMentionHighlight();
     };
     refresh();
@@ -132,14 +151,44 @@ function BotGroupMessageText({ content, mentionLabels }: { content: string; ment
     observer?.observe(root, { childList: true, subtree: true, characterData: true });
     return () => {
       observer?.disconnect();
+      rangesRef.current = [];
+      if (!api) return;
       mentionRanges.delete(owner);
       syncMentionHighlight();
     };
     // labelsKey stands in for the label array.
   }, [content, labelsKey]);
+  useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current); }, []);
+
+  const schedule = (next: () => void, ms: number) => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => { timerRef.current = null; next(); }, ms);
+  };
+  const keepOpen = () => { if (timerRef.current) clearTimeout(timerRef.current); timerRef.current = null; };
+  const scheduleClose = () => { pendingRef.current = null; schedule(() => setCard(null), MENTION_CARD_CLOSE_MS); };
+  const onPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const root = ref.current;
+    if (!root || rangesRef.current.length === 0) return;
+    const { clientX: x, clientY: y } = event;
+    const hit = rangesRef.current.find((range) => typeof range.getClientRects === 'function' && [...range.getClientRects()].some((box) =>
+      x >= box.left && x <= box.right && y >= box.top && y <= box.bottom));
+    const member = hit ? botGroupMentionMember(hit.toString(), members) : undefined;
+    root.style.cursor = member ? 'pointer' : '';
+    if (!hit || !member) { if (pendingRef.current || card) scheduleClose(); return; }
+    if (pendingRef.current === hit) return;
+    pendingRef.current = hit;
+    schedule(() => {
+      const box = hit.getBoundingClientRect();
+      const origin = root.getBoundingClientRect();
+      setCard({ member, anchor: { left: box.left - origin.left, top: box.top - origin.top, width: box.width, height: box.height } });
+    }, card ? 0 : MENTION_CARD_OPEN_MS);
+  };
   return (
-    <div ref={ref} className="min-w-0 break-words">
+    <div ref={ref} className="relative min-w-0 break-words" onPointerMove={onPointerMove}
+      onPointerLeave={() => { if (ref.current) ref.current.style.cursor = ''; scheduleClose(); }}>
       <MarkdownRenderer workingDir="" content={content} allowPrivilegedLinks={false} />
+      <BotGroupMentionCard member={card?.member ?? null} anchor={card?.anchor ?? null}
+        onPointerEnter={keepOpen} onPointerLeave={scheduleClose} />
     </div>
   );
 }
@@ -303,6 +352,7 @@ function BotGroupTimelineItemImpl(props: BotGroupTimelineItemProps) {
   const shareable = message.kind === 'message' && !message.pending;
   const shareAttrs = shareable ? { [SHARE_SESSION_ATTR]: shareScope, [SHARE_MESSAGE_ATTR]: message.id } : {};
   const hasText = message.content.trim().length > 0;
+  const hasAttachments = (message.attachments?.length ?? 0) > 0;
   const self = message.authorKind === 'user' && message.isSelf !== false;
   const hasReactions = !message.pending && (message.reactions?.length ?? 0) > 0;
   // Your own message's reactions hang over the left corner of its bubble, or of its first block without text.
@@ -312,7 +362,7 @@ function BotGroupTimelineItemImpl(props: BotGroupTimelineItemProps) {
       display={props.quoteDisplay}
       onLocate={props.onLocateQuote && message.quote ? () => props.onLocateQuote!(message.quote!) : undefined}
       // In a bubble the quote leads the text; without one it lines up with the message's side.
-      align={self && !hasText ? 'right' : 'left'}
+      align={self && (message.threadShare || (!hasText && !hasAttachments)) ? 'right' : 'left'}
     />
   ) : null;
   const share = message.threadShare;
@@ -358,21 +408,22 @@ function BotGroupTimelineItemImpl(props: BotGroupTimelineItemProps) {
           <div className={cn('flex min-w-0 flex-col items-end gap-1.5 transition-opacity', BUBBLE_COLUMN_CLASS, message.pending && message.outbox?.status !== 'failed' && 'opacity-60')}>
             {/* The toolbar and the reaction corner hang off the message's own content. */}
             <div className="relative flex min-w-0 max-w-full flex-col items-end gap-1.5">
-              {!hasText || share ? <>{reactions}{quote}</> : null}
-              {shareBody}
-              {!share && <BotGroupMessageAttachments attachments={message.attachments ?? []} align="end" />}
-              {!share && hasText ? (
+              {share ? <>{reactions}{quote}{shareBody}</> : null}
+              {/* Text and attachments share one bubble, like a teammate's. */}
+              {!share && (hasText || hasAttachments) ? (
                 <div className="flex w-fit min-w-0 max-w-full flex-col">
                   {reactions}
                   <div
                     data-testid="bot-group-self-bubble"
-                    className={`flex max-w-full flex-col gap-1.5 rounded-xl border border-[var(--msg-user-border)] bg-[var(--msg-user-bg)] px-3.5 py-2 text-[var(--msg-user-text)] ${CHAT_BODY_CLASS}`}
+                    className={`flex max-w-full flex-col gap-2 rounded-xl border border-[var(--msg-user-border)] bg-[var(--msg-user-bg)] px-3.5 py-2 text-[var(--msg-user-text)] ${CHAT_BODY_CLASS}`}
                   >
                     {quote}
-                    <BotGroupMessageText content={message.content} mentionLabels={mentionLabels} />
+                    {hasText ? <BotGroupMessageText content={message.content} mentionLabels={mentionLabels} members={members} /> : null}
+                    <BotGroupMessageAttachments attachments={message.attachments ?? []} align="start" />
                   </div>
                 </div>
               ) : null}
+              {!share && !hasText && !hasAttachments ? <>{reactions}{quote}</> : null}
               {actions}
             </div>
             {threadPreview}
@@ -449,7 +500,7 @@ function BotGroupTimelineItemImpl(props: BotGroupTimelineItemProps) {
                   {shareBody}
                   {!share && hasText ? (
                     <div className="min-w-0">
-                      <BotGroupMessageText content={message.content} mentionLabels={mentionLabels} />
+                      <BotGroupMessageText content={message.content} mentionLabels={mentionLabels} members={members} />
                     </div>
                   ) : null}
                   {/* A task this teammate started from the group, under what it said about it; mine is live

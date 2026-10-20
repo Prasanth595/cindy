@@ -2614,7 +2614,7 @@ describe('BotGroupChatView', () => {
       expect(mocks.toastWarning).toHaveBeenCalledWith('bots.groupChat.composer.folderNotSupported');
     });
 
-    it('shows a sent message’s image and file like a task’s user message, without an empty bubble', async () => {
+    it('keeps a sent message’s text, image and file in one bubble', async () => {
       mocks.getBotGroup.mockResolvedValue({
         ok: true,
         group: detail({
@@ -2665,16 +2665,18 @@ describe('BotGroupChatView', () => {
       renderView();
       const image = await screen.findByAltText('截图.png');
       expect(image.getAttribute('src')).toBe('cindy-media://blobs/abc.png');
-      const article = image.closest('article')!;
-      expect(article.querySelector('[data-testid="bot-group-self-bubble"]')).toBeNull();
+      const bubble = image.closest('[data-testid="bot-group-self-bubble"]')!;
       const chip = screen.getByRole('button', { name: '报告.pdf' });
-      expect(article.contains(chip)).toBe(true);
+      expect(bubble.contains(chip)).toBe(true);
       // A PDF is not text: it opens in the system app, as from a task's chip.
       fireEvent.click(chip);
       await waitFor(() => expect(mocks.openPath).toHaveBeenCalledWith('/Users/me/报告.pdf'));
 
       const withText = screen.getByAltText('草图.png').closest('article')!;
-      expect(withText.querySelector('[data-testid="bot-group-self-bubble"]')?.textContent).toBe('再看这张');
+      const textBubbles = withText.querySelectorAll('[data-testid="bot-group-self-bubble"]');
+      expect(textBubbles).toHaveLength(1);
+      expect(textBubbles[0].textContent).toContain('再看这张');
+      expect(textBubbles[0].contains(screen.getByAltText('草图.png'))).toBe(true);
     });
 
     it('keeps a server attachment in place while it loads or fails, beside the sender’s own text and someone else’s', async () => {
@@ -2711,7 +2713,7 @@ describe('BotGroupChatView', () => {
       expect(within(own).getByText('chat.imageMissing.loading')).toBeTruthy();
       expect(within(own).getByText('clipboard-1791878467493.png')).toBeTruthy();
       expect(within(own).getByRole('status', { name: 'spec.pdf, bots.groupChat.files.unavailable' })).toBeTruthy();
-      expect(within(own).getByTestId('bot-group-message-attachments').className).toContain('items-end');
+      expect(within(own).getByTestId('bot-group-self-bubble').contains(within(own).getByTestId('bot-group-message-attachments'))).toBe(true);
       const other = screen.getByAltText('photo.png').closest('article')!;
       expect(within(other).getByTestId('bot-group-message-attachments').className).toContain('items-start');
       // A media reference without a caption still says something was attached.
