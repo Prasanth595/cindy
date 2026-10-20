@@ -447,6 +447,8 @@ describe('Worker worktree subproject directory', () => {
   beforeAll(() => {
     mkdirSync(path.join(repo, 'apps', 'web'), { recursive: true });
     writeFileSync(path.join(repo, 'apps', 'web', 'AGENTS.md'), 'Subproject rules');
+    mkdirSync(path.join(repo, '..web'));
+    writeFileSync(path.join(repo, '..web', 'AGENTS.md'), 'Dot-prefixed subproject rules');
     symlinkSync(repo, alias, process.platform === 'win32' ? 'junction' : 'dir');
     const git = (...args: string[]) => execFileSync('git', args, { cwd: repo, encoding: 'utf8' });
     git('init', '--initial-branch=main');
@@ -465,7 +467,7 @@ describe('Worker worktree subproject directory', () => {
   });
   afterAll(() => rmSync(fixture, { recursive: true, force: true }));
 
-  it.each(['subproject', 'root', 'missing', 'external-symlink'] as const)(
+  it.each(['subproject', 'dot-prefixed', 'root', 'missing', 'external-symlink'] as const)(
     'keeps the correct startup directory for %s',
     async (scenario) => {
       const sessionId = `worker-${scenario}`;
@@ -483,13 +485,15 @@ describe('Worker worktree subproject directory', () => {
           createdAt: new Date(0).toISOString(),
         },
       });
-      const subproject = path.join(target, 'apps', 'web');
+      const relative = scenario === 'dot-prefixed' ? '..web' : path.join('apps', 'web');
+      const subproject = path.join(target, relative);
+      const present = scenario === 'subproject' || scenario === 'dot-prefixed';
       let finishCheckout!: () => void;
       const checkout = new Promise<void>((resolve) => {
         finishCheckout = resolve;
       });
       vi.mocked(awaitBackgroundCheckout).mockReset().mockReturnValue(checkout);
-      const source = scenario === 'root' ? alias : path.join(alias, 'apps', 'web');
+      const source = scenario === 'root' ? alias : path.join(alias, relative);
       let settled = false;
       const result = createWorkerWorktree(sessionId, source, 'main').then((value) => {
         settled = true;
@@ -503,7 +507,7 @@ describe('Worker worktree subproject directory', () => {
       }
       await vi.waitFor(() => expect(awaitBackgroundCheckout).toHaveBeenCalledWith(sessionId));
       expect(settled).toBe(false);
-      if (scenario === 'subproject') {
+      if (present) {
         mkdirSync(subproject, { recursive: true });
         writeFileSync(path.join(subproject, 'AGENTS.md'), 'Checked out rules');
       }
@@ -514,7 +518,7 @@ describe('Worker worktree subproject directory', () => {
         symlinkSync(external, subproject, process.platform === 'win32' ? 'junction' : 'dir');
       }
       finishCheckout();
-      expect(await result).toBe(scenario === 'subproject' ? subproject : target);
+      expect(await result).toBe(present ? subproject : target);
       if (scenario === 'missing' || scenario === 'external-symlink')
         expect(createLogger('test').warn).toHaveBeenCalledWith(
           'Worker subproject is unavailable within the new worktree; using its root',

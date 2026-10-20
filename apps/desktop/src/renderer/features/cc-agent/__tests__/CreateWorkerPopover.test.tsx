@@ -1658,6 +1658,7 @@ describe('CreateWorkerPopover execution device', () => {
   );
 
   beforeEach(() => {
+    mocks.sidebarWindow = false;
     // Radix Select scrolls the focused option; jsdom does not implement scrolling.
     Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
       configurable: true,
@@ -1688,6 +1689,7 @@ describe('CreateWorkerPopover execution device', () => {
   });
 
   afterEach(() => {
+    mocks.sidebarWindow = false;
     cleanup();
     delete (window as unknown as { electronAPI?: unknown }).electronAPI;
     if (originalScrollIntoView) {
@@ -1710,6 +1712,27 @@ describe('CreateWorkerPopover execution device', () => {
         expect(onCreate.mock.calls[0]![0]).not.toHaveProperty(field);
     },
   );
+
+  // Detached sidebar preload intentionally lacks native folder and branch tools.
+  // Unit/jsdom: its creation form must retain the legacy submission and never read projects.
+  it('keeps detached sidebar creation identical to the legacy form without project reads', async () => {
+    const legacyCreate = vi.fn();
+    const baseline = render(<CreateWorkerPopover open onClose={vi.fn()} onCreate={legacyCreate} />);
+    fireEvent.click(screen.getByRole('button', {name: 'orca.createWorker.submit'}));
+    await waitFor(() => expect(legacyCreate).toHaveBeenCalledOnce());
+    baseline.unmount();
+
+    mocks.sidebarWindow = true;
+    const onCreate = vi.fn();
+    render(<CreateWorkerPopover open leadSessionId="lead" onClose={vi.fn()} onCreate={onCreate} />);
+    expect(screen.queryByText('orca.workerProject.label')).toBeNull();
+    fireEvent.click(screen.getByRole('button', {name: 'orca.createWorker.submit'}));
+    await waitFor(() => expect(onCreate).toHaveBeenCalledOnce());
+    expect(projectContext).not.toHaveBeenCalled();
+    expect(onCreate.mock.calls[0]![0]).toEqual(legacyCreate.mock.calls[0]![0]);
+    for (const field of ['workingDir', 'worktree', 'projectPath'])
+      expect(onCreate.mock.calls[0]![0]).not.toHaveProperty(field);
+  });
 
   it('offers other computers only when enabled and the list is not empty', async () => {
     const { unmount } = render(<CreateWorkerPopover open onClose={vi.fn()} onCreate={vi.fn()} />);

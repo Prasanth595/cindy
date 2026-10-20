@@ -558,7 +558,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
       onChanged: (cb: (payload: unknown, ownerStamp?: unknown) => void): (() => void) => onPayloadWithMetadata('local-db:subagent-runs:changed', cb),
     },
     orcaWorkflows: {
-      projectContext: (leadSessionId: string, directory?: string) => ipcRenderer.invoke('maker:worker:project-context', leadSessionId, directory),
       projectLabel: (workerSessionId: string) => ipcRenderer.invoke('maker:worker:project-label', workerSessionId),
       getByLeadSession: (id: string): Promise<unknown> => ipcRenderer.invoke('local-db:orca-workflows:get-by-lead', id),
       getByWorkerSession: (id: string): Promise<unknown> => ipcRenderer.invoke('local-db:orca-workflows:get-by-worker-session', id),

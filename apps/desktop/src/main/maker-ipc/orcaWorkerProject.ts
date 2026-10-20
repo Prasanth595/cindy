@@ -275,7 +275,8 @@ export async function createWorkerWorktree(
     const withinRoot = path.relative(identity(realRoot), identity(realSubproject));
     if (
       withinRoot &&
-      !withinRoot.startsWith('..') &&
+      withinRoot !== '..' &&
+      !withinRoot.startsWith(`..${path.sep}`) &&
       !path.isAbsolute(withinRoot) &&
       (await fs.stat(realSubproject)).isDirectory()
     )

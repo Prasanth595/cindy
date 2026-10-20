@@ -214,7 +214,8 @@ export function CreateWorkerPopover({
   // 远程控制的 Lead 读它所在的电脑，选了运行设备则读运行设备。权限档始终跟 Lead 所在电脑走。
   const deviceId = agentDeviceId ?? leadDeviceId ?? executionDeviceId ?? undefined;
   const executionDevice = executionDevices.find((d) => d.deviceId === executionDeviceId) ?? null;
-  const localProjectEnabled = !!leadSessionId && !leadDeviceId && !sshRemote && !executionDeviceId;
+  const localProjectEnabled =
+    !!leadSessionId && !leadDeviceId && !sshRemote && !executionDeviceId && !isSidebarWindow();
   const project = useWorkerProjectSelection(open, leadSessionId, localProjectEnabled);
   const trimmedRemoteDir = remoteDir.trim();
   const remoteDirInvalid =
