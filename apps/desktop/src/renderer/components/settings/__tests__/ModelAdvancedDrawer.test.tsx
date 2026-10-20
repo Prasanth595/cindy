@@ -156,7 +156,9 @@ describe('model advanced editor', () => {
     Object.defineProperty(window, 'electronAPI', { configurable: true, value: { maker: { updateCustomProvider: update } } });
     try {
       const close = vi.fn();
-      render(<ModelAdvancedDrawer provider={source} row={buildUnionRows(source)[0]} open onOpenChange={close} pricePresentationOf={() => null} onDisable={vi.fn()} disabled={false} paymentRequired={false} />);
+      const disable = vi.fn();
+      const disabled = failure === 'thrown';
+      render(<ModelAdvancedDrawer provider={source} row={buildUnionRows(source)[0]} open onOpenChange={close} pricePresentationOf={() => null} onDisable={disable} disabled={disabled} paymentRequired={false} />);
       const input = screen.getByRole('textbox', { name: 'settings.providers.models.advanced.displayName' }) as HTMLInputElement;
       const save = screen.getByRole('button', { name: 'settings.providers.models.advanced.saveName' }) as HTMLButtonElement;
       fireEvent.change(input, { target: { value: '   ' } });
@@ -166,17 +168,52 @@ describe('model advanced editor', () => {
       fireEvent.click(save);
       fireEvent.click(save);
       fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
+      const toggle = screen.getByRole('button', { name: `settings.providers.models.${disabled ? 'enableModel' : 'disableModel'}` }) as HTMLButtonElement;
+      fireEvent.click(toggle);
+      expect(toggle.disabled).toBe(true);
+      expect(disable).not.toHaveBeenCalled();
       expect(input.disabled).toBe(true);
       expect((screen.getByRole('button', { name: 'settings.providers.models.advanced.close' }) as HTMLButtonElement).disabled).toBe(true);
       expect(update).toHaveBeenCalledOnce();
       expect(close).not.toHaveBeenCalled();
       failFirst();
       await waitFor(() => expect(save.disabled).toBe(false));
+      expect(toggle.disabled).toBe(false);
       expect(input.value).toBe('Private Alias');
       expect(close).not.toHaveBeenCalled();
       fireEvent.click(save);
       await waitFor(() => expect(update).toHaveBeenCalledTimes(2));
       expect(update.mock.calls[1]![0]).toMatchObject({ runtimes: { codex: { models: [{ id: 'private', name: 'Private Alias', nameExplicit: true }] } } });
+    } finally { Object.defineProperty(window, 'electronAPI', { configurable: true, value: previous }); }
+  });
+
+  // #6601 review: unlike the close-button test, the parent can change the active
+  // model while IPC is pending. Unit, two models + one deferred save; the old
+  // response must not overwrite the new model's input; its next save targets it.
+  it('keeps another model draft when an earlier model save completes', async () => {
+    const source = { ...buildUserProvider({ id: 'manual', name: 'Manual', runtimes: { codex: { baseUrl: 'https://manual.example.invalid/v1', models: [{ id: 'first', name: 'First' }, { id: 'second', name: 'Second' }] } } }), connected: true } as ProviderView;
+    let finish!: () => void;
+    const update = vi.fn(async (..._args: unknown[]) => ({ ok: true }));
+    update.mockImplementationOnce(() => new Promise(resolve => { finish = () => resolve({ ok: true }); }));
+    const previous = window.electronAPI;
+    Object.defineProperty(window, 'electronAPI', { configurable: true, value: { maker: { updateCustomProvider: update } } });
+    const rows = buildUnionRows(source);
+    const renderDrawer = (id: string) => <ModelAdvancedDrawer provider={source} row={rows.find(row => row.id === id)!} open
+      onOpenChange={vi.fn()} pricePresentationOf={() => null} onDisable={vi.fn()} disabled={false} paymentRequired={false} />;
+    try {
+      const view = render(renderDrawer('first'));
+      fireEvent.change(screen.getByRole('textbox', { name: 'settings.providers.models.advanced.displayName' }), { target: { value: 'First Alias' } });
+      fireEvent.click(screen.getByRole('button', { name: 'settings.providers.models.advanced.saveName' }));
+      view.rerender(renderDrawer('second'));
+      const input = screen.getByRole('textbox', { name: 'settings.providers.models.advanced.displayName' }) as HTMLInputElement;
+      expect(input.value).toBe('Second');
+      finish();
+      await waitFor(() => expect(input.disabled).toBe(false));
+      expect(input.value).toBe('Second');
+      fireEvent.change(input, { target: { value: 'Second Alias' } });
+      fireEvent.click(screen.getByRole('button', { name: 'settings.providers.models.advanced.saveName' }));
+      await waitFor(() => expect(update).toHaveBeenCalledTimes(2));
+      expect(update.mock.calls[1]![0]).toMatchObject({ runtimes: { codex: { models: [{ id: 'first', name: 'First' }, { id: 'second', name: 'Second Alias', nameExplicit: true }] } } });
     } finally { Object.defineProperty(window, 'electronAPI', { configurable: true, value: previous }); }
   });
 

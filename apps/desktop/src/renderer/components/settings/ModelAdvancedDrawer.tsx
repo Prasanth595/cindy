@@ -223,6 +223,7 @@ export function ModelAdvancedDrawer({
   const [nameSaving, setNameSaving] = useState(false);
   const nameSavingRef = useRef(false);
   const nameDirtyRef = useRef(false);
+  const nameEditorVersionRef = useRef(0);
   const titleRef = useRef<HTMLHeadingElement>(null);
   // 开关/档位写的是 renderer 本地存储，订阅 version 才能在写后重渲染。
   useModelVisibilityVersion();
@@ -293,9 +294,11 @@ export function ModelAdvancedDrawer({
     !!row?.avail.length && row.avail.every(agent =>
       provider.models[agent]?.some(model => model.id === row.byAgent[agent]?.id));
   useEffect(() => {
+    nameEditorVersionRef.current += 1;
     nameDirtyRef.current = false;
     setNameDraft(primaryModel?.name ?? '');
-  }, [open, provider.id, primaryModel?.id]);
+    return () => { nameEditorVersionRef.current += 1; };
+  }, [open, provider.id, primaryAgent, primaryModel?.id]);
   useEffect(() => {
     if (!nameDirtyRef.current) setNameDraft(primaryModel?.name ?? '');
   }, [primaryModel?.name]);
@@ -316,15 +319,22 @@ export function ModelAdvancedDrawer({
     }
     nameSavingRef.current = true;
     setNameSaving(true);
+    const editorVersion = nameEditorVersionRef.current;
     try {
       const result = await updateCustomProvider(config, {}, { source: 'manual-settings' });
+      // The parent can replace/close the drawer while persistence is pending.
+      if (editorVersion !== nameEditorVersionRef.current) return;
       if (result.ok) {
         nameDirtyRef.current = false;
         setNameDraft(name);
       } else {
         toast.error(t('settings.providers.models.advanced.nameSaveFailed'));
       }
-    } catch { toast.error(t('settings.providers.models.advanced.nameSaveFailed')); }
+    } catch {
+      if (editorVersion === nameEditorVersionRef.current) {
+        toast.error(t('settings.providers.models.advanced.nameSaveFailed'));
+      }
+    }
     finally { nameSavingRef.current = false; setNameSaving(false); }
   };
   const imageAgents = canEditProtocol
@@ -1118,8 +1128,8 @@ export function ModelAdvancedDrawer({
                   size="md"
                   compact
                   type="button"
-                  disabled={disabled && !selectionAvailable}
-                  onClick={() => onDisable(row)}
+                  disabled={nameSaving || (disabled && !selectionAvailable)}
+                  onClick={() => { if (!nameSavingRef.current) onDisable(row); }}
                 >
                   {disabled
                     ? t('settings.providers.models.enableModel')
