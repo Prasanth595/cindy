@@ -82,6 +82,18 @@ export default {
       assert.ok(geometry.gap >= 0 && geometry.gap <= 32, `toolbar sits beside the bubble (gap ${geometry.gap}px)`);
       assert.ok(geometry.inside, 'toolbar stays inside the timeline');
       assert.ok(await toolbar.isVisible());
+      // Reactions wider than a short message's text stay over its own bubble and inside the timeline.
+      const corners = await page.evaluate(() => ['a2', 'q3'].map((id) => {
+        const row = `[data-bot-group-message-id="${id}"]`;
+        const corner = document.querySelector(`${row} [data-reaction-corner]`).getBoundingClientRect();
+        const bubble = document.querySelector(`${row} [data-testid="bot-group-bubble"], ${row} [data-testid="bot-group-self-bubble"]`).getBoundingClientRect();
+        const timeline = document.querySelector('[data-testid="bot-group-timeline"]').getBoundingClientRect();
+        return { id, left: corner.left - bubble.left, right: corner.right - bubble.right, inside: corner.left >= timeline.left && corner.right <= timeline.right };
+      }));
+      for (const c of corners) {
+        assert.ok(c.inside, `${c.id} reactions stay inside the timeline`);
+        assert.ok(c.left >= -12 && c.right <= 12, `${c.id} reactions stay over the bubble (${c.left}, ${c.right})`);
+      }
       await ui.capture('hover');
       return;
     }

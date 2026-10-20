@@ -54,6 +54,15 @@ function bubbleMessages() {
       id: 'q2', sequence: 5, isSelf: true, createdAt: T0 + 9 * MINUTE, content: '旧版那两条也记一下，发版说明里提一句',
       quote: { messageId: 'b1', authorName: 'Nova', authorKind: 'bot', excerpt: crash, attachmentCount: 0, attachmentName: null, sequence: 3 },
     }),
+    // Short messages with more reactions than the text is wide: the bubble widens to carry them.
+    message({
+      id: 'a2', sequence: 6, authorKind: 'bot', authorBotId: 'a', authorName: 'Aster', createdAt: T0 + 10 * MINUTE, content: '好',
+      reactions: ['👍', '🎉', '👀', '🙏'].map((emoji, i) => ({ emoji, count: i + 1, me: i === 0 })),
+    }),
+    message({
+      id: 'q3', sequence: 7, isSelf: true, createdAt: T0 + 11 * MINUTE, content: '收到',
+      reactions: ['❤️', '✅', '🚀'].map((emoji, i) => ({ emoji, count: i + 1, me: false })),
+    }),
   ];
 }
 

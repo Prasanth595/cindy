@@ -60,8 +60,9 @@ interface ChatMessageActionProps {
 }
 
 /**
- * The reactions on a message; each badge toggles the current actor's reaction. `corner` pins them to
- * the bubble's outer top corner (right for others, left for your own) so they never take a row.
+ * The reactions on a message; each badge toggles the current actor's reaction. `corner` hangs them over
+ * the bubble's outer top corner (right for others, left for your own) so they never take a row. They stay
+ * in flow so the bubble widens to fit them, and wrap when even the widest bubble cannot.
  */
 export function ChatMessageReactions({ groupId, message, members, reactionRevision, align = 'left', corner = false, onChanged }: Pick<ChatMessageActionProps, 'groupId' | 'message' | 'members' | 'reactionRevision' | 'align' | 'onChanged'> & { corner?: boolean }) {
   const { busy, react } = useChatReaction(groupId, message.id, onChanged);
@@ -69,7 +70,7 @@ export function ChatMessageReactions({ groupId, message, members, reactionRevisi
   return (
     <div {...{ [SHARE_EXCLUDE_ATTR]: '' }} data-reaction-corner={corner ? align : undefined}
       className={cn('flex items-center gap-1',
-        corner ? cn('absolute -top-3.5 z-[5]', align === 'right' ? '-left-2.5 flex-row-reverse' : '-right-2.5')
+        corner ? cn('relative z-[5] -mb-2 max-w-[calc(100%+10px)] flex-wrap', align === 'right' ? 'self-start -ml-2.5 flex-row-reverse' : 'self-end -mr-2.5 justify-end')
           : cn('mt-1 flex-wrap', align === 'right' && 'justify-end'))}>
       {message.reactions.map(reaction => (
         <ChatReactionButton key={reaction.emoji} groupId={groupId} messageId={message.id} reaction={reaction} revision={reactionRevision} members={members}
@@ -112,8 +113,8 @@ export function ChatMessageHoverActions({ besideReactions = false, ...props }: C
   const right = props.align === 'right';
   return (
     <div {...{ [SHARE_EXCLUDE_ATTR]: '' }} data-bot-group-message-actions="" data-open={picker ? '' : undefined}
-      className={cn('pointer-events-none absolute top-0 z-10 w-max rounded-full border border-[var(--border-default)] bg-[var(--surface-elevated)] p-0.5 opacity-0 transition-opacity duration-[var(--motion-fast)] ease-[var(--motion-ease-out)] focus-within:pointer-events-auto focus-within:opacity-100 group-hover/message:pointer-events-auto group-hover/message:opacity-100 data-[open]:pointer-events-auto data-[open]:opacity-100 motion-reduce:transition-none [@media(hover:none)]:pointer-events-auto [@media(hover:none)]:opacity-100',
-        right ? 'right-full' : 'left-full', besideReactions ? (right ? 'mr-6' : 'ml-6') : (right ? 'mr-1.5' : 'ml-1.5'))}>
+      className={cn('pointer-events-none absolute z-10 w-max rounded-full border border-[var(--border-default)] bg-[var(--surface-elevated)] p-0.5 opacity-0 transition-opacity duration-[var(--motion-fast)] ease-[var(--motion-ease-out)] focus-within:pointer-events-auto focus-within:opacity-100 group-hover/message:pointer-events-auto group-hover/message:opacity-100 data-[open]:pointer-events-auto data-[open]:opacity-100 motion-reduce:transition-none [@media(hover:none)]:pointer-events-auto [@media(hover:none)]:opacity-100',
+        right ? 'right-full' : 'left-full', besideReactions ? cn('top-5', right ? 'mr-6' : 'ml-6') : (right ? 'mr-1.5' : 'ml-1.5'))}>
       <ChatMessageToolbar {...props} compact picker={picker} onPickerChange={setPicker} />
     </div>
   );

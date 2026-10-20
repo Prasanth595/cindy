@@ -305,6 +305,8 @@ function BotGroupTimelineItemImpl(props: BotGroupTimelineItemProps) {
   const hasText = message.content.trim().length > 0;
   const self = message.authorKind === 'user' && message.isSelf !== false;
   const hasReactions = !message.pending && (message.reactions?.length ?? 0) > 0;
+  // Your own message's reactions hang over the left corner of its bubble, or of its first block without text.
+  const reactions = hasReactions ? <ChatMessageReactions corner groupId={props.reactionGroupId} message={message} members={members} reactionRevision={props.reactionRevision} align="right" onChanged={props.onChanged} /> : null;
   const quote = props.quoteDisplay ? (
     <BotGroupQuoteBlock
       display={props.quoteDisplay}
@@ -355,20 +357,22 @@ function BotGroupTimelineItemImpl(props: BotGroupTimelineItemProps) {
           {sharing && shareable ? <ShareMessageCheckbox clientId={message.id} /> : null}
           <div className={cn('flex min-w-0 flex-col items-end gap-1.5 transition-opacity', BUBBLE_COLUMN_CLASS, message.pending && message.outbox?.status !== 'failed' && 'opacity-60')}>
             {/* The toolbar and the reaction corner hang off the message's own content. */}
-            <div className={cn('relative flex min-w-0 max-w-full flex-col items-end gap-1.5', hasReactions && 'mt-3')}>
-              {!hasText || share ? quote : null}
+            <div className="relative flex min-w-0 max-w-full flex-col items-end gap-1.5">
+              {!hasText || share ? <>{reactions}{quote}</> : null}
               {shareBody}
               {!share && <BotGroupMessageAttachments attachments={message.attachments ?? []} align="end" />}
               {!share && hasText ? (
-                <div
-                  data-testid="bot-group-self-bubble"
-                  className={`flex max-w-full flex-col gap-1.5 rounded-xl border border-[var(--msg-user-border)] bg-[var(--msg-user-bg)] px-3.5 py-2 text-[var(--msg-user-text)] ${CHAT_BODY_CLASS}`}
-                >
-                  {quote}
-                  <BotGroupMessageText content={message.content} mentionLabels={mentionLabels} />
+                <div className="flex w-fit min-w-0 max-w-full flex-col">
+                  {reactions}
+                  <div
+                    data-testid="bot-group-self-bubble"
+                    className={`flex max-w-full flex-col gap-1.5 rounded-xl border border-[var(--msg-user-border)] bg-[var(--msg-user-bg)] px-3.5 py-2 text-[var(--msg-user-text)] ${CHAT_BODY_CLASS}`}
+                  >
+                    {quote}
+                    <BotGroupMessageText content={message.content} mentionLabels={mentionLabels} />
+                  </div>
                 </div>
               ) : null}
-              {!message.pending ? <ChatMessageReactions corner groupId={props.reactionGroupId} message={message} members={members} reactionRevision={props.reactionRevision} align="right" onChanged={props.onChanged} /> : null}
               {actions}
             </div>
             {threadPreview}
@@ -419,7 +423,8 @@ function BotGroupTimelineItemImpl(props: BotGroupTimelineItemProps) {
               ) : null}
             </span>
           ) : null}
-          <div className={cn('relative flex min-w-0 flex-col items-start', BUBBLE_COLUMN_CLASS, hasReactions && 'mt-3')}>
+          <div className={cn('relative flex min-w-0 flex-col', BUBBLE_COLUMN_CLASS)}>
+            <ChatMessageReactions corner groupId={props.reactionGroupId} message={message} members={members} reactionRevision={props.reactionRevision} onChanged={props.onChanged} />
             <div data-testid="bot-group-bubble"
               className={cn('flex min-w-0 max-w-full flex-col gap-2 rounded-xl border border-[var(--border-default)] bg-[var(--surface-elevated)] px-3.5 py-2.5 text-[var(--msg-assistant-text)]', CHAT_BODY_CLASS)}>
               {isPlanCard ? (
@@ -459,7 +464,6 @@ function BotGroupTimelineItemImpl(props: BotGroupTimelineItemProps) {
                 </>
               )}
             </div>
-            <ChatMessageReactions corner groupId={props.reactionGroupId} message={message} members={members} reactionRevision={props.reactionRevision} onChanged={props.onChanged} />
             {actions}
           </div>
           {threadPreview}
