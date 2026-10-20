@@ -182,6 +182,9 @@
     "turnTokens": "{{tokens}} tokens"
   },
   "lightbox": {
+    "originalUnavailable": "原图暂不可用",
+    "retryOriginal": "重试原图",
+    "loadingOriginal": "正在加载原图…",
     "sourceMissing": "源图片已不在这台电脑上，请重新导入原文件。",
     "deviceOffline": "电脑尚未连接，请恢复连接后重试。",
     "cancelAnnotation": "取消标注",

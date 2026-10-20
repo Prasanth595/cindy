@@ -245,7 +245,12 @@ import type {
   RsbWindowCommandRouteResult,
   RsbWindowTabHandoff,
 } from '../shared/rightSidebarWindow';
-import { RSB_WINDOW_TAB_HANDOFF_CHANNEL } from '../shared/rightSidebarWindow';
+import {
+  RSB_WINDOW_COMMAND_CHANNEL,
+  RSB_WINDOW_CONTEXT_CHANGED_CHANNEL,
+  RSB_WINDOW_STATE_CHANGED_CHANNEL,
+  RSB_WINDOW_TAB_HANDOFF_CHANNEL,
+} from '../shared/rightSidebarWindow';
 import type {
   SidebarTabReturnedPayload,
   SidebarTabWindowOpenRequest,
@@ -549,9 +554,9 @@ const fanOutWindowBackdropMaterialChanged = createIpcFanOut(
 );
 const fanOutOrcaWorkerChanged = createIpcFanOut('maker:orca:worker-changed');
 // 右侧栏独立子窗口(RSB window)状态 / 上下文 / 命令推送
-const fanOutRsbWindowStateChanged = createIpcFanOut('maker:rsb-window:state-changed');
-const fanOutRsbWindowContextChanged = createIpcFanOut('maker:rsb-window:context-changed');
-const fanOutRsbWindowCommand = createIpcFanOut('maker:rsb-window:command');
+const fanOutRsbWindowStateChanged = createIpcFanOut(RSB_WINDOW_STATE_CHANGED_CHANNEL);
+const fanOutRsbWindowContextChanged = createIpcFanOut(RSB_WINDOW_CONTEXT_CHANGED_CHANNEL);
+const fanOutRsbWindowCommand = createIpcFanOut(RSB_WINDOW_COMMAND_CHANNEL);
 const fanOutRsbWindowTabHandoff = createIpcFanOut(RSB_WINDOW_TAB_HANDOFF_CHANNEL);
 // 右侧栏单页签独立窗口(sidebar tab window)状态 / 页签交回 / 页签持久化变更推送
 const fanOutSidebarTabWindowStateChanged = createIpcFanOut(

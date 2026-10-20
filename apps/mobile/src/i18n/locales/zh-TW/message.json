@@ -182,6 +182,9 @@
     "turnTokens": "{{tokens}} tokens"
   },
   "lightbox": {
+    "originalUnavailable": "原圖暫時無法載入",
+    "retryOriginal": "重試原圖",
+    "loadingOriginal": "正在載入原圖…",
     "sourceMissing": "原始圖片已不在這台電腦上，請重新匯入原始檔案。",
     "deviceOffline": "電腦尚未連線，請恢復連線後重試。",
     "cancelAnnotation": "取消標註",

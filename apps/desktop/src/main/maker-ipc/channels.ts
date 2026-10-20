@@ -7,6 +7,12 @@
  * Push channel（main → renderer）以 'maker:event:' 前缀。
  */
 
+import {
+  RSB_WINDOW_COMMAND_CHANNEL,
+  RSB_WINDOW_CONTEXT_CHANGED_CHANNEL,
+  RSB_WINDOW_STATE_CHANGED_CHANNEL,
+} from '../../shared/rightSidebarWindow.js';
+
 export const MAKER_INVOKE = {
   CREATE_SESSION: 'maker:create-session',
   START_REVIEW: 'maker:review:start',
@@ -1051,11 +1057,11 @@ export const MAKER_PUSH = {
   /**
    * 右侧栏子窗口状态广播 { detached, open }——发所有窗口(主窗按钮态 + 子窗口自身都消费)。
    */
-  RSB_WINDOW_STATE_CHANGED: 'maker:rsb-window:state-changed',
+  RSB_WINDOW_STATE_CHANGED: RSB_WINDOW_STATE_CHANGED_CHANNEL,
   /** 侧边栏渲染上下文变化(主窗切会话),只发子窗口。payload = RsbWindowContext。 */
-  RSB_WINDOW_CONTEXT_CHANGED: 'maker:rsb-window:context-changed',
+  RSB_WINDOW_CONTEXT_CHANGED: RSB_WINDOW_CONTEXT_CHANGED_CHANNEL,
   /** main → 子窗口命令(如 open-terminal),只发子窗口。payload = RsbWindowCommand。 */
-  RSB_WINDOW_COMMAND: 'maker:rsb-window:command',
+  RSB_WINDOW_COMMAND: RSB_WINDOW_COMMAND_CHANNEL,
   /** 子窗口合并回主窗口前交接不可持久化 session 的 tab 快照，只发主窗口。 */
   RSB_WINDOW_TAB_HANDOFF: 'maker:rsb-window:tab-handoff',
   /**

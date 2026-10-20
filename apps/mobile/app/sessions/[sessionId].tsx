@@ -424,6 +424,8 @@ import { findErrorTailClientId, isContinuationQueueItem, resolveSessionTailBanne
 import { SessionTailBanner } from '@/session/SessionTailBanner';
 import { buildErrorDiagnosisPrompt, type ErrorDiagnosisSource } from '@/session/errorDiagnosisPrompt';
 import { useHistoryRecoveryNavigation } from '@/session/useHistoryRecoveryNavigation';
+import { useSessionActivityInvalidation } from '@/session/useSessionActivityInvalidation';
+import { useSessionMessageHistoryRead } from '@/session/useSessionMessageHistoryRead';
 import { canOfferCodexHistoryRecovery } from '@cindy/maker-shared/error-redaction';
 import {
   CONTINUE_AFTER_APP_EXIT_PROMPT,
@@ -584,7 +586,10 @@ import {
   commitMobileStreamingPrefixItems,
   type MobileStreamingRenderPrefixCache,
 } from '@/session/messageRenderStreamingCache';
-import { shouldSuppressEmptyMessageState } from '@/session/sessionEmptyState';
+import {
+  resolveSessionMessageEmptyState,
+  shouldShowCachedHistoryNotice,
+} from '@/session/sessionEmptyState';
 import { deferScheduleIndexHydration } from '@/session/scheduleIndexDefer';
 import { sessionMayHaveScheduleRuns } from '@/session/scheduleIndex';
 import { markSessionScheduleRunsRead, unreadRunIdFromProjection } from '@/session/scheduleRunRead';
@@ -1123,8 +1128,7 @@ function SessionScreenContent() {
   // blocking both history and sync until a presence change happens to arrive.
   const remoteHistoryAvailable = status === 'online' && getPresenceAvailability(deviceId) !== false;
   // Unknown presence while connecting is loading, not evidence of a lost computer.
-  const showCachedHistoryNotice = status !== 'connecting'
-    && (status !== 'online' || getPresenceAvailability(deviceId) === false);
+  const showCachedHistoryNotice = shouldShowCachedHistoryNotice(status, getPresenceAvailability(deviceId));
   const historyView = useRemoteHistoryView(deviceId, sessionId, maker,
     () => messageScreenFocusedRef.current && messageAppActiveRef.current, remoteHistoryAvailable);
   useEffect(() => {
@@ -1792,6 +1796,9 @@ function SessionScreenContent() {
   // 后台订阅重试不能越过任务/设备/连接代切换，也不能在页面卸载后把已清理的 owner
   // 重新登记回来。render 阶段先发布最新 identity；旧 effect 的 cleanup 只清自己。
   const sessionSubscriptionIdentity = JSON.stringify([deviceId, sessionId, connectionEpoch]);
+  const [messageHistoryRead, setMessageHistoryRead] = useSessionMessageHistoryRead({
+    deviceId, sessionId, notificationResponse, subscriptionIdentity: sessionSubscriptionIdentity,
+  });
   const sessionSubscriptionIdentityRef = useRef<string | null>(sessionSubscriptionIdentity);
   sessionSubscriptionIdentityRef.current = sessionSubscriptionIdentity;
   useEffect(() => () => {
@@ -2539,19 +2546,21 @@ function SessionScreenContent() {
   // 立即渲染真壳(标题乐观显示、消息区骨架、输入框可编辑、发送禁用),而不是阻塞式占位。
   const showSyncingShell = sessionOperationLayout.composerSlot === 'missing-session'
     && !remoteUnavailableReason;
-  // 同步/加载期消息区不显示「暂无消息」(会话其实在加载、不是空),改为渲染「正在同步」
-  // loading 占位(MessageRenderer 的 SyncingMessages);看过的会话
-  // 此时已被本地缓存(②)填充正常渲染,不进 empty 分支。还包含冷开首帧:currentSession 立即
-  // 就有但消息未到、loading 尚未翻 true 的窗口(本次打开未同步过)。只有同步完成过
-  // (lastSyncedAt 有值)且确实 0 条时才显示「暂无消息」;离线/被撤销(remoteUnavailableReason)
-  // 不进此分支,保留原占位。判定见 shouldSuppressEmptyMessageState。
-  const syncingWhileEmpty = shouldSuppressEmptyMessageState({
+  // 无内容且读取结果未知时显示同步占位；已知远端不可用时解释历史未缓存。
+  // 成功读取的历史（含恢复的空缓存）可以确认空态，新活动后的旧结果必须等待重读。
+  const messageEmptyState = resolveSessionMessageEmptyState({
     loading,
     showSyncingShell,
-    messageCount: historyView.snapshot.ready ? historyView.snapshot.items.length : messages.length,
-    hasSyncedThisOpen: lastSyncedAt !== null,
-    remoteUnavailable: !!remoteUnavailableReason || status !== 'online' || targetAvailableForDispatch === false,
+    subscriptionIdentity: sessionSubscriptionIdentity,
+    historyRead: messageHistoryRead,
+    historySnapshot: historyView.snapshot,
+    messageCount: messages.length,
+    status,
+    targetAvailable: targetAvailableForDispatch,
+    remoteUnavailableReason,
+    historyNotCachedMessage: t('message.renderer.historyNotCached'),
   });
+  const { syncingWhileEmpty } = messageEmptyState;
   const voiceIsProcessing = voiceState === 'submitting' || voiceState === 'refining';
   const composerSendUnavailableReason = canUseComposer ? null : composerDisabledReason;
   // 手机语音只保留官方托管路径,错误引导仅剩系统麦克风权限一条。
@@ -3802,6 +3811,12 @@ function SessionScreenContent() {
         && syncedNotificationResponseRef.current !== notificationResponse;
       let usedHistoryView = false;
       const messageRead = syncSessionMessageWindow({
+        historyConfirmation: {
+          key: subscriptionIdentityAtStart,
+          generation: readAckGateGenAtStart,
+          generationRef: readAckGateGenRef,
+          commit: setMessageHistoryRead,
+        },
         readMetadata: () => retryRead(fetchSessionMetadata),
         isReopen,
         storedSession: storedSessionAtStart,
@@ -3839,7 +3854,10 @@ function SessionScreenContent() {
         },
         isCurrent,
         commitMessages: (history) => {
-          if (usedHistoryView) { messageWindowReconciledRef.current = true; return; }
+          if (usedHistoryView) {
+            messageWindowReconciledRef.current = true;
+            return;
+          }
           const historyPage: RemoteMessage[] = Array.isArray(history.messages) ? history.messages : [];
           const moreBeyondWindow = shouldKeepOlderMessagesAffordance(history);
           if (options.replaceMessages) {
@@ -4194,19 +4212,16 @@ function SessionScreenContent() {
     if (!activity) return 'none';
     return `${activity.phase}|${activity.attention === true ? 1 : 0}|${activity.compactDetail}`;
   });
-  const prevLiveActivitySigRef = useRef<string | null>(null);
-  useEffect(() => {
-    const prevSig = prevLiveActivitySigRef.current ?? liveActivitySig;
-    if (liveAttention && liveActivitySig !== prevSig) {
-      setReadAckSyncedKey(null);
-      setSessionMetadataSyncedKey(null);
-      // 代号递增:变化点之前启动的 in-flight load / 在飞重试(数据不含本 turn 终帧)
-      // 不得重新落 key / 不得继续发送。
-      readAckGateGenRef.current += 1;
-      void load();
-    }
-    prevLiveActivitySigRef.current = liveActivitySig;
-  }, [liveActivitySig, liveAttention, load]);
+  useSessionActivityInvalidation({
+    liveActivitySig,
+    liveAttention,
+    sessionSubscriptionIdentity,
+    readAckGateGenRef,
+    setReadAckSyncedKey,
+    setSessionMetadataSyncedKey,
+    setMessageHistoryRead,
+    load,
+  });
 
   // 领取其它路由(文件浏览器「发送到会话」等)投递的 composer 附件:会话页在
   // 栈下层保持挂载,返回不会重新 mount,靠 focus 时机领取信箱。
@@ -10104,9 +10119,7 @@ function SessionScreenContent() {
                     busyClientId={messageActionBusy?.clientId ?? null}
                     canLoadEarlier={canLoadEarlierHistory}
                     emptyTestID="session.messageList.empty"
-                    emptyMessage={companionChat && lastSyncedAt === null
-                      && (status !== 'online' || targetAvailableForDispatch === false)
-                      ? t('message.renderer.historyNotCached') : undefined}
+                    emptyMessage={messageEmptyState.emptyMessage}
                     focusedItemKey={focusedMessageItemKey ?? null}
                     focusedRequestKey={focusedMessageRequestKey}
                     followLatestRequestKey={messageListFollowLatestRequestKey}
