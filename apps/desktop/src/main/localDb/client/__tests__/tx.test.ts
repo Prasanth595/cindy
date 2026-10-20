@@ -2181,12 +2181,25 @@ describe('db worker tx handlers', () => {
     await withClient(async client => {
       await seedSession(client, 'src');
       await client.exec('UPDATE sessions SET extra_dirs = ?, writable_dirs = ? WHERE id = ?', ['["/reference"]', '["/output"]', 'src']);
-      const args = { sourceSessionId: 'src', sourceClearedAt: null, targetCreatedAt: 200,
+      // DB tier, #6529: copied future history must remain hidden while a live
+      // message is visible immediately. Identity-only coverage had an empty prefix.
+      await client.exec(`INSERT INTO messages (id, client_id, session_id, role, content, created_at)
+        VALUES ('old-user', 'old-user', 'src', 'user', 'question', 1000),
+          ('old-reply', 'old-reply', 'src', 'assistant', 'answer', 1100)`);
+      const args = { sourceSessionId: 'src', sourceClearedAt: null, targetCreatedAt: 1200,
         newSession: sessionRow('side', { source: 'side-chat', parentSessionId: 'src', createdAt: 200 }),
-        uuidMap: [], newMessageIds: [] };
+        uuidMap: [], newMessageIds: [{ id: 'copied-user', clientId: 'copied-user' }, { id: 'copied-reply', clientId: 'copied-reply' }] };
       await client.tx('fork.session', args);
       expect(await client.queryOne('SELECT source, parent_session_id, extra_dirs, writable_dirs FROM sessions WHERE id = ?', ['side']))
         .toEqual({ source: 'side-chat', parent_session_id: 'src', extra_dirs: '["/reference"]', writable_dirs: '["/output"]' });
+      await client.exec(`INSERT INTO messages (id, client_id, session_id, role, content, created_at)
+        VALUES ('live-user', 'live-user', 'side', 'user', 'follow up', 200)`);
+      expect(await client.query('SELECT id FROM messages WHERE session_id = ? AND created_at >= ? ORDER BY created_at', ['side', 200]))
+        .toEqual([{ id: 'live-user' }]);
+      expect(await client.query('SELECT created_at FROM messages WHERE session_id = ? ORDER BY created_at', ['side']))
+        .toEqual([{ created_at: 99 }, { created_at: 199 }, { created_at: 200 }]);
+      expect(await client.query('SELECT created_at FROM messages WHERE session_id = ? ORDER BY created_at', ['src']))
+        .toEqual([{ created_at: 1000 }, { created_at: 1100 }]);
       for (const status of ['archived', 'deleted']) {
         await client.exec('UPDATE sessions SET status = ? WHERE id = ?', [status, 'src']);
         await expect(client.tx('fork.session', { ...args, newSession: { ...args.newSession, id: 'orphan' } }))
@@ -2196,13 +2209,17 @@ describe('db worker tx handlers', () => {
     }, { useInlineWorker });
   });
 
-  it.each([false, true])('fork.session recovery marker is atomic with the child (inline=%s)', async (useInlineWorker) => {
+  // DB tier, #6529: recovery must stay after inherited future history and before
+  // live messages, while ordinary forks retain their original timestamps.
+  it.each([[false, false], [true, false], [false, true], [true, true]])(
+    'fork.session recovery marker is atomic with the child (inline=%s, sideChat=%s)', async (useInlineWorker, sideChat) => {
     await withClient(async (client) => {
       await seedSession(client, 'src');
       await client.exec('INSERT INTO messages (id, client_id, session_id, role, content, created_at) VALUES (?, ?, ?, ?, ?, ?)', ['m1', 'c1', 'src', 'user', 'keep my history', 100]);
       const args = {
         sourceSessionId: 'src', targetCreatedAt: 200,
-        newSession: sessionRow('forked', { sdkSessionId: null, parentSessionId: 'src' }),
+        newSession: sessionRow('forked', { sdkSessionId: null, parentSessionId: 'src',
+          ...(sideChat ? { source: 'side-chat', createdAt: 50 } : {}) }),
         uuidMap: [], newMessageIds: [{ id: 'copy1', clientId: 'copy-client1' }],
         recoveryMarker: { id: 'm1', clientId: 'handoff', createdAt: 300,
           sourceMessagesDigest: computeForkSourceMessagesDigest([{ client_id: 'c1', role: 'user', content: 'keep my history', tool_use_id: null, agent_meta: null, agent_kind: null, created_at: 100 }]),
@@ -2214,10 +2231,14 @@ describe('db worker tx handlers', () => {
       args.recoveryMarker.id = 'recovery';
       await client.tx('fork.session', args);
       expect(await client.queryOne('SELECT sdk_session_id FROM sessions WHERE id = ?', ['forked'])).toEqual({ sdk_session_id: null });
-      expect(await client.queryOne('SELECT role, rewind_at FROM messages WHERE id = ?', ['recovery'])).toEqual({ role: 'context_rebuild', rewind_at: 300 });
-      expect(await client.queryOne('SELECT content FROM messages WHERE id = ?', ['copy1'])).toEqual({ content: 'keep my history' });
+      expect(await client.queryOne('SELECT role, created_at, rewind_at FROM messages WHERE id = ?', ['recovery']))
+        .toEqual({ role: 'context_rebuild', created_at: sideChat ? 50 : 300, rewind_at: sideChat ? 50 : 300 });
+      expect(await client.queryOne('SELECT content, created_at FROM messages WHERE id = ?', ['copy1']))
+        .toEqual({ content: 'keep my history', created_at: sideChat ? 49 : 100 });
       const card = await client.queryOne<{ agent_meta: string }>('SELECT agent_meta FROM messages WHERE id = ?', ['recovery:card']);
       expect(JSON.parse(card!.agent_meta)).toEqual({ contextRebuild: { reason: 'native-session-recovery', handoff: 'keep my history' } });
+      expect(await client.queryOne('SELECT created_at FROM messages WHERE id = ?', ['recovery:card']))
+        .toEqual({ created_at: sideChat ? 50 : 300 });
       expect(await client.queryOne('SELECT content FROM messages WHERE id = ?', ['m1'])).toEqual({ content: 'keep my history' });
     }, { useInlineWorker });
   });

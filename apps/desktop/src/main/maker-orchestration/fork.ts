@@ -1022,9 +1022,7 @@ export async function forkSessionAtMessage(
     forkSource.model === source.model && forkSource.providerId === source.providerId;
 
   // 5. SQLite 事务：insert 新 session + bulk copy messages
-  const now = options.sideChat
-    ? sourceMessages.reduce((boundary, message) => Math.max(boundary, message.createdAt + 1), Date.now())
-    : Date.now();
+  const now = Date.now();
   const newSessionId = createBusinessSessionId();
 
   const newMessageIds = sourceMessages.map(() => ({ id: createId(), clientId: createId() }));

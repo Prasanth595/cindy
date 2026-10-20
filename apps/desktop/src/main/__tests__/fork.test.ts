@@ -342,6 +342,21 @@ describe('forkSessionAtMessage', () => {
     expect(txCalls).toHaveLength(1);
   });
 
+  // Unit, #6529: future-dated inherited rows must not move the child's visible
+  // boundary beyond its first live message. Existing creation cases use old dates.
+  it('keeps a side chat creation boundary at wall-clock time with future history', async () => {
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(10_000);
+    try {
+      const source = makeSourceRow({ source: 'desktop' });
+      const reply = makeMessageRow({ role: 'assistant', createdAt: 70_000, agentMeta: JSON.stringify({ uuid: 'future-reply' }) });
+      selectQueue.push([source], [{ clientId: reply.clientId }], [source], [reply], [], [reply], [makeSourceRow({ id: 'child', source: 'side-chat' })]);
+      await createSideChat('src-session');
+      expect(txCalls.find(call => call.name === 'fork.session')?.args).toMatchObject({
+        newSession: { createdAt: 10_000, updatedAt: 10_000, userSendAt: 10_000 },
+      });
+    } finally { clock.mockRestore(); }
+  });
+
   // Unit, #6529: an archived parent was accepted although it cannot own new work.
   // Existing cases covered deletion/nesting only; no SDK call or child may result.
   it.each([{ status: 'deleted' }, { status: 'archived' }, { source: 'side-chat' }, { source: 'review' }])('rejects unavailable or nested side-chat sources: %j', async overrides => {

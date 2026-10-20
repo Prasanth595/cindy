@@ -2083,6 +2083,11 @@ function forkSession(readyDb, args) {
     if (newMessageIds.length !== sourceMessages.length) {
       throw invalidArgs('newMessageIds length mismatch: expected ' + sourceMessages.length + ', got ' + newMessageIds.length);
     }
+    const childCreatedAt = expectNumber(newSession.createdAt, 'newSession.createdAt');
+    // Keep inherited history before the side-chat boundary, preserving relative order.
+    const historyTimeOffset = newSession.source === 'side-chat'
+      ? sourceMessages.reduce((offset, message) => Math.max(offset, message.created_at - childCreatedAt + 1), 0)
+      : 0;
     readyDb.prepare(
       'INSERT INTO sessions (id, title, working_dir, model, provider_id, effort, permission_mode, status, sdk_session_id, total_token_usage, total_cost_usd, context_tokens, context_window, context_window_runtime, fast_mode, cleared_at, pinned_at, user_send_at, agent_kind, workspace_kind, codex_history_has_product_prompt, parent_session_id, forked_at_message_id, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
     ).run(
@@ -2119,10 +2124,13 @@ function forkSession(readyDb, args) {
     for (let i = 0; i < sourceMessages.length; i += 1) {
       const message = sourceMessages[i];
       const ids = newMessageIds[i];
-      insertMessage.run(ids.id, ids.clientId, expectString(newSession.id, 'newSession.id'), message.role, sanitizeForkedMessageContent(message, { detachAgentSwitchSessions, resetHandoffBoundaryClientId }), message.tool_use_id, remapForkedAgentMeta(message.agent_meta, uuidMap, legacyTranscriptParentUuids, toolParentUuids, nativeForkAnchorSessionMap), message.agent_kind, message.created_at);
+      insertMessage.run(ids.id, ids.clientId, expectString(newSession.id, 'newSession.id'), message.role, sanitizeForkedMessageContent(message, { detachAgentSwitchSessions, resetHandoffBoundaryClientId }), message.tool_use_id, remapForkedAgentMeta(message.agent_meta, uuidMap, legacyTranscriptParentUuids, toolParentUuids, nativeForkAnchorSessionMap), message.agent_kind, message.created_at - historyTimeOffset);
     }
     if (payload.recoveryMarker != null) {
       const marker = asRecord(payload.recoveryMarker, 'recoveryMarker');
+      const markerCreatedAt = newSession.source === 'side-chat'
+        ? childCreatedAt
+        : expectNumber(marker.createdAt, 'recoveryMarker.createdAt');
       readyDb.prepare(
         "INSERT INTO messages (id, client_id, session_id, role, content, agent_kind, created_at, rewind_at) VALUES (?, ?, ?, 'context_rebuild', ?, ?, ?, ?)",
       ).run(
@@ -2131,8 +2139,8 @@ function forkSession(readyDb, args) {
         expectString(newSession.id, 'newSession.id'),
         expectString(marker.content, 'recoveryMarker.content'),
         expectString(newSession.agentKind, 'newSession.agentKind'),
-        expectNumber(marker.createdAt, 'recoveryMarker.createdAt'),
-        expectNumber(marker.createdAt, 'recoveryMarker.createdAt'),
+        markerCreatedAt,
+        markerCreatedAt,
       );
       const content = asRecord(JSON.parse(expectString(marker.content, 'recoveryMarker.content')), 'recoveryMarker content');
       insertMessage.run(
@@ -2142,7 +2150,7 @@ function forkSession(readyDb, args) {
         'assistant', '', null,
         JSON.stringify({ contextRebuild: { reason: content.reason, handoff: content.handoff } }),
         expectString(newSession.agentKind, 'newSession.agentKind'),
-        expectNumber(marker.createdAt, 'recoveryMarker.createdAt'),
+        markerCreatedAt,
       );
     }
     return { messageCount: sourceMessages.length };

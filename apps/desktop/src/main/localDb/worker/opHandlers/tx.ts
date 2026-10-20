@@ -2942,6 +2942,12 @@ function forkSession(db: Database.Database, args: unknown): { messageCount: numb
         `newMessageIds length mismatch: expected ${sourceMessages.length}, got ${newMessageIds.length}`,
       );
     }
+    const childCreatedAt = expectNumber(newSession.createdAt, 'newSession.createdAt');
+    // Keep inherited history strictly before the side-chat visibility boundary,
+    // without moving the child into the future or changing source timestamps.
+    const historyTimeOffset = newSession.source === 'side-chat'
+      ? sourceMessages.reduce((offset, message) => Math.max(offset, message.created_at - childCreatedAt + 1), 0)
+      : 0;
     db.prepare(
       `INSERT INTO sessions (
         id, title, working_dir, model, provider_id, effort, permission_mode, status,
@@ -3007,11 +3013,14 @@ function forkSession(db: Database.Database, args: unknown): { messageCount: numb
           nativeForkAnchorSessionMap,
         ),
         message.agent_kind,
-        message.created_at,
+        message.created_at - historyTimeOffset,
       );
     }
     if (payload.recoveryMarker != null) {
       const marker = asRecord(payload.recoveryMarker, 'recoveryMarker');
+      const markerCreatedAt = newSession.source === 'side-chat'
+        ? childCreatedAt
+        : expectNumber(marker.createdAt, 'recoveryMarker.createdAt');
       db.prepare(
         "INSERT INTO messages (id, client_id, session_id, role, content, agent_kind, created_at, rewind_at) VALUES (?, ?, ?, 'context_rebuild', ?, ?, ?, ?)",
       ).run(
@@ -3020,8 +3029,8 @@ function forkSession(db: Database.Database, args: unknown): { messageCount: numb
         expectString(newSession.id, 'newSession.id'),
         expectString(marker.content, 'recoveryMarker.content'),
         expectString(newSession.agentKind, 'newSession.agentKind'),
-        expectNumber(marker.createdAt, 'recoveryMarker.createdAt'),
-        expectNumber(marker.createdAt, 'recoveryMarker.createdAt'),
+        markerCreatedAt,
+        markerCreatedAt,
       );
       const content = asRecord(JSON.parse(expectString(marker.content, 'recoveryMarker.content')), 'recoveryMarker content');
       insertMessage.run(
@@ -3031,7 +3040,7 @@ function forkSession(db: Database.Database, args: unknown): { messageCount: numb
         'assistant', '', null,
         JSON.stringify({ contextRebuild: { reason: content.reason, handoff: content.handoff } }),
         expectString(newSession.agentKind, 'newSession.agentKind'),
-        expectNumber(marker.createdAt, 'recoveryMarker.createdAt'),
+        markerCreatedAt,
       );
     }
     return { messageCount: sourceMessages.length };
