@@ -2463,6 +2463,23 @@ it('retains tool image bytes and a video resource alongside text', () => {
 
 // #6531 unit: native Pi bypasses the Chat bridge; streamed text/thinking must still reconcile.
 describe('native Pi serialized calls', () => {
+  // #6545 follow-up unit: input-wrapper evidence must be available when the
+  // message_end final text precedes Pi's separate tool_execution_start event.
+  it('reconciles freeform input before Pi starts executing the tool', () => {
+    const ctx = createPiTranslateContext(noopLogger);
+    const { queue, events } = makeQueue();
+    const input = 'text("ok")';
+    translatePiEvent(ev({ type: 'agent_start' }), queue, ctx);
+    translatePiEvent(ev({ type: 'message_end', message: { role: 'assistant', stopReason: 'toolUse', content: [
+      { type: 'text', text: 'before.<tool_call><function=exec>' + input + '</tool_call>after.' },
+      { type: 'toolCall', id: 'exec-1', name: 'exec', arguments: { input } },
+    ] } }), queue, ctx);
+    translatePiEvent(ev({ type: 'tool_execution_start', toolCallId: 'exec-1', toolName: 'exec', args: { input } }), queue, ctx);
+    expect(events.find(e => e.type === 'text')?.data).toMatchObject({ text: 'before.after.' });
+    expect(events.filter(e => e.type === 'tool_use')).toHaveLength(1);
+    expect(events.find(e => e.type === 'tool_use')?.data).toMatchObject({ input: { input } });
+    disposePiTranslateContext(ctx);
+  });
   // #6545 review unit: message_end used to delete diagnostics before finish
   // learned that the provider failed/truncated or the host requested Stop.
   it.each(['error', 'aborted', 'length', 'host-stop'])('preserves markup diagnostics on %s', reason => {

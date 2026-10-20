@@ -400,6 +400,23 @@ describe('Claude Code translator silent-stop observation (log only)', () => {
 });
 
 // #6531 unit: Anthropic native SDK output must not bypass reconciliation/terminal handling.
+// #6545 follow-up: final text is translated before tool_use; its pre-scanned
+// input-wrapper call must already match the native freeform markup.
+it('reconciles freeform input before Claude emits its tool_use', async () => {
+  const ctx = createCtx(new UsageTracker());
+  const queue = createAsyncQueue<AgentEvent>();
+  const input = 'text("ok")';
+  translateSdkMessage({ type: 'assistant', message: { content: [
+    { type: 'text', text: 'before.<tool_call><function=exec>' + input + '</tool_call>after.' },
+    { type: 'tool_use', id: 'exec-1', name: 'exec', input: { input } },
+  ] } }, queue, ctx);
+  const events = await drain(queue);
+  expect(events.find(e => e.type === 'text')?.data).toMatchObject({ text: 'before.after.' });
+  expect(events.filter(e => e.type === 'tool_use')).toHaveLength(1);
+  expect(events.find(e => e.type === 'tool_use')?.data).toMatchObject({ input: { input } });
+  expect(ctx.turn.text).toBe('before.after.');
+});
+
 it.each(['text', 'thinking'])('handles serialized calls in native Claude %s', async channel => {
   for (const structured of [true, false]) {
     const ctx = createCtx(new UsageTracker());

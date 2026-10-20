@@ -143,7 +143,9 @@ export function structuredCallsOf(content: unknown): StructuredToolCall[] {
   if (!Array.isArray(content)) return [];
   return content.flatMap(value => {
     const block = record(value);
+    const args = block.input ?? block.arguments;
+    const input = record(args).input;
     return (block.type === 'tool_use' || block.type === 'toolCall') && typeof block.name === 'string'
-      ? [{ name: block.name, arguments: block.input ?? block.arguments }] : [];
+      ? [{ name: block.name, arguments: args, ...(typeof input === 'string' ? { input } : {}) }] : [];
   });
 }
