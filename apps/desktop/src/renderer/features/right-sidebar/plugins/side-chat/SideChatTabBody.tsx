@@ -17,7 +17,7 @@ import { mergeSidebarWindowBack } from '../../lib/mergeSidebarWindowBack';
 import { closeTab } from '../../store';
 import { requestRightSidebarVisibility } from '../../lib/sidebarCommands';
 import type { TabKindBodyProps } from '../../types';
-import type { SideChatState } from './state';
+import { sideChatTaskRoute, type SideChatState } from './state';
 
 export function SideChatTabBody({ state, ctx, active, shellVisible = true }: TabKindBodyProps<SideChatState>) {
   const { t } = useTranslation();
@@ -140,7 +140,7 @@ function AttachedSideChat({ state, ctx, active }: TabKindBodyProps<SideChatState
                 remoteProjectsStore.getDeviceName(state.deviceId) ?? '', [remoteSession]);
             }
             requestRightSidebarVisibility('close', { sessionId: childId, animate: false });
-            navigate(`/cc-agent/${childId}`);
+            navigate(sideChatTaskRoute(childId, state.deviceId));
           }}>
             {t('chat.sideChat.openPage')}
           </Button>

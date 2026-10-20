@@ -132,7 +132,7 @@ export function watchSideChatTabs(sessionId: string): () => void {
 /** Open an independent follow-up on the parent's execution host. */
 export async function openSideChatTab(
   sessionId: string,
-  options: { prompt?: string; attachments?: AttachedFile[]; quote?: string; placement?: SideChatTabPlacement; onOpen?: (sessionId: string) => void } = {},
+  options: { prompt?: string; attachments?: AttachedFile[]; quote?: string; placement?: SideChatTabPlacement; onOpen?: (sessionId: string, deviceId: string | null) => void } = {},
 ): Promise<boolean> {
   try {
     if ((await window.electronAPI.rightSidebarWindow?.getState())?.detached) {
@@ -172,7 +172,7 @@ export async function openSideChatTab(
     // Keep the parent's tabs as resumable entries; the child uses the full task route.
     if (options.onOpen) {
       requestRightSidebarVisibility('close', { sessionId: child.id, animate: false });
-      options.onOpen(child.id);
+      options.onOpen(child.id, deviceId);
       return true;
     }
     // Menus in other groups or popout windows already own their visible host.

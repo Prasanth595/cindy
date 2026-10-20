@@ -30,6 +30,8 @@ import type { CSSProperties, ReactNode } from 'react';
 import { Navigate, useLocation, useNavigate, useOutletContext, useParams } from 'react-router-dom';
 import { CINDY_MAKE_ENABLED, isCindyMakeSource } from '@cindy/maker-shared/cindy-make-feature';
 import { CindyMakeSessionGate } from './CindyMakeSessionGate';
+import { SessionRouteOriginGate } from './SessionRouteOriginGate';
+import { sideChatTaskRoute } from '@/features/right-sidebar/plugins/side-chat/state';
 import { dbToMakerAgentKind, normalizeDbAgentKind } from '../../../shared/agentKindConversion';
 import { useTranslation } from 'react-i18next';
 import { buildSessionDeepLink } from '@/lib/deepLink';
@@ -785,9 +787,12 @@ export function createWritableDirRemovalQueue() {
 export function CCAgentSessionView(props: CCAgentSessionViewProps) {
   const { sessionId } = useParams<{ sessionId: string }>();
   return (
-    <CindyMakeSessionGate sessionId={props.sessionIdProp ?? sessionId}>
-      <CCAgentSessionContent {...props} />
-    </CindyMakeSessionGate>
+    <SessionRouteOriginGate sessionId={props.sessionIdProp ?? sessionId}
+      ownsWindowRoute={!props.navigationMode || props.navigationMode === 'route-owner'}>
+      <CindyMakeSessionGate sessionId={props.sessionIdProp ?? sessionId}>
+        <CCAgentSessionContent {...props} />
+      </CindyMakeSessionGate>
+    </SessionRouteOriginGate>
   );
 }
 
@@ -2810,7 +2815,7 @@ function CCAgentSessionContent({
           toast.info(t('chat.sideChat.mainTaskOnly'));
           return;
         }
-        void openSideChatTab(sessionId, { prompt: payload.args, onOpen: (id) => navigate(`/cc-agent/${id}`) });
+        void openSideChatTab(sessionId, { prompt: payload.args, onOpen: (id, deviceId) => navigate(sideChatTaskRoute(id, deviceId)) });
         return;
       }
       if (payload.command === 'cmd') {
@@ -3500,7 +3505,7 @@ function CCAgentSessionContent({
         const accepted = await openSideChatTab(sessionId, {
           prompt: args,
           attachments: files,
-          onOpen: id => navigate(`/cc-agent/${id}`),
+          onOpen: (id, deviceId) => navigate(sideChatTaskRoute(id, deviceId)),
         });
         return { handled: true, accepted, message };
       }
@@ -5028,7 +5033,7 @@ function CCAgentSessionContent({
       messages={sideChatMessages}
       historyVisibleAfter={session?.source === 'side-chat' ? new Date(session.createdAt).getTime() : undefined}
       onAskInSideChat={!readOnly && canNavigateSession && sessionId && session?.source !== 'side-chat' && session?.source !== 'bot'
-        ? (quote) => openSideChatTab(sessionId, { quote, onOpen: (id) => navigate(`/cc-agent/${id}`) }) : undefined}
+        ? (quote) => openSideChatTab(sessionId, { quote, onOpen: (id, deviceId) => navigate(sideChatTaskRoute(id, deviceId)) }) : undefined}
       cindyMakeSessionId={session?.source === 'cindy-make' ? sessionId : undefined}
       cindyMakeCompletionInComposer={session?.source === 'cindy-make' && (remoteMakeCards.supported || (!remoteDeviceId && !readOnly && typeof window.electronAPI.cindyMakeTest === 'function'))}
       historyLoaded={historyLoaded}

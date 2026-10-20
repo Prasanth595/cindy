@@ -47,7 +47,9 @@ describe('side chat panel lifecycle', () => {
     });
     expect(screen.queryByTestId('editor')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'chat.sideChat.openPage' }));
-    expect(mocks.navigate).toHaveBeenCalledWith('/cc-agent/child');
+    // Unit #6529: reopening a hidden branch must preserve its host in the URL,
+    // even if the renderer restarts before the asynchronous mirror cache writes.
+    expect(mocks.navigate).toHaveBeenCalledWith('/cc-agent/child?device=host');
     expect(mocks.cache).toHaveBeenCalledWith('host', 'Host', [expect.objectContaining({ id: 'child', model: 'new-model' })]);
     expect(mocks.cache.mock.invocationCallOrder[0]).toBeLessThan(mocks.navigate.mock.invocationCallOrder[0]);
     expect(mocks.pin).toHaveBeenCalledWith('host', 'child');

@@ -73,7 +73,7 @@ describe('side chat task entry', () => {
   it('opens the full task page after preserving the branch entry and draft', async () => {
     const open = vi.fn();
     expect(await openSideChatTab('parent', { prompt: 'follow-up', onOpen: open })).toBe(true);
-    expect(open).toHaveBeenCalledExactlyOnceWith('child');
+    expect(open).toHaveBeenCalledExactlyOnceWith('child', null);
     expect(mocks.save.mock.invocationCallOrder[0]).toBeLessThan(open.mock.invocationCallOrder[0]);
     expect(mocks.tabs).toContainEqual(expect.objectContaining({ state: { sessionId: 'child', deviceId: null } }));
     expect(mocks.reveal).toHaveBeenCalledExactlyOnceWith('close', { sessionId: 'child', animate: false });
@@ -91,12 +91,15 @@ describe('side chat task entry', () => {
 
   // Unit, #6529: full-page navigation cannot rely on a hidden child's list push.
   // A create result must supply the complete remote metadata before navigation.
+  // The owning host must also cross the navigation boundary: an in-memory pin
+  // and asynchronous disk cache both disappear in the cold-renderer case.
   it('caches remote metadata before navigating to the full task page', async () => {
     mocks.device = 'execution-host';
     const child = { id: 'child', source: 'side-chat', model: 'test-model', workingDir: '/work' };
     mocks.create.mockResolvedValue(child);
     const open = vi.fn();
     expect(await openSideChatTab('parent', { onOpen: open })).toBe(true);
+    expect(open).toHaveBeenCalledExactlyOnceWith('child', 'execution-host');
     expect(mocks.cache).toHaveBeenCalledWith('execution-host', 'Host', [child]);
     expect(mocks.cache.mock.invocationCallOrder[0]).toBeLessThan(open.mock.invocationCallOrder[0]);
   });
