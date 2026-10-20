@@ -48,15 +48,16 @@ describe('native projection boundaries', () => {
     expect(events.some(e => e.type === 'error')).toBe(false);
     expect(JSON.stringify(events)).not.toContain('<tool_call>');
   });
-  it('keeps cancellation semantics even after a serialized text delta', () => {
+  it.each([{ status: 'cancelled' }, { cancelled: true }])('keeps cancellation semantics after a serialized delta: %j', terminal => {
     const events: AgentEvent[] = [];
     const sink = { push: (event: AgentEvent) => { events.push(event); return true; } };
     const p = new ToolMarkupProjection();
     p.begin(sink);
     p.push({ type: 'text', data: { text: '<tool_call>{"name":"read","arguments":{}}</tool_call>', isFinal: false } }, sink);
-    p.push({ type: 'done', data: { status: 'cancelled' } }, sink);
+    p.push({ type: 'done', data: terminal }, sink);
     expect(events.some(e => e.type === 'error')).toBe(false);
-    expect(events.at(-1)?.data).toMatchObject({ status: 'cancelled' });
+    expect(events.at(-1)?.data).toEqual(terminal);
+    expect(events.find(e => e.type === 'text')?.data).toMatchObject({ text: '<tool_call>{"name":"read","arguments":{}}</tool_call>' });
   });
 });
 

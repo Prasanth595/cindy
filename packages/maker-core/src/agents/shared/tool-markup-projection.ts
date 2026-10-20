@@ -86,7 +86,7 @@ export class ToolMarkupProjection {
       return sink.push(known ? { ...event, data: { ...data, reason: UNEXECUTED_TOOL_MARKUP_REASON, message: UNEXECUTED_TOOL_MARKUP_MESSAGE } } : event);
     }
     if (event.type === 'done') {
-      const failed = data.status === 'cancelled' || data.status === 'failed' || data.is_error === true;
+      const failed = data.cancelled === true || data.status === 'cancelled' || data.status === 'failed' || data.is_error === true;
       this.finish(sink, failed);
       const result = typeof data.result === 'string' && !failed && !this.preserveText
         ? reconcileToolCallMarkup(data.result, this.calls, true) : undefined;

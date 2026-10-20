@@ -27747,7 +27747,9 @@ describe('CodexAgent turn lifecycle', () => {
     expect(await nextEvent(iterator)).toMatchObject({ type: 'done' });
     await handle.close();
   });
-  it('does NOT emit a fallback error for an interrupted turn without error message', async () => {
+  // #6545 unit: exercise the actual interrupted done producer with a held
+  // complete markup delta, not only the projection's generic status shape.
+  it.each([false, true])('does NOT emit a fallback error for interrupted turn (pending markup=%s)', async pendingMarkup => {
     // interrupted = 用户主动停止, 不算失败, 不该弹"执行失败"。
     const agent = new CodexAgent(createDeps());
     const host = installFakeHost(agent);
@@ -27765,6 +27767,10 @@ describe('CodexAgent turn lifecycle', () => {
       threadId: 'start-thread-id',
       turn: { id: 'turn-1' },
     });
+    const markup = '<tool_call>{"name":"read","arguments":{}}</tool_call>';
+    if (pendingMarkup) handlers.agentMessageDelta?.({
+      threadId: 'start-thread-id', turnId: 'turn-1', itemId: 'msg-stop', delta: markup,
+    });
     handlers.turnCompleted?.({
       threadId: 'start-thread-id',
       turn: {
@@ -27773,6 +27779,7 @@ describe('CodexAgent turn lifecycle', () => {
       },
     });
 
+    if (pendingMarkup) expect(await nextEvent(iterator)).toMatchObject({ type: 'text', data: { text: markup } });
     expect(await nextEvent(iterator)).toMatchObject({
       type: 'done',
       data: { cancelled: true },
