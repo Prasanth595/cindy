@@ -156,6 +156,8 @@ export interface RunOptions {
   signal?: AbortSignal;
   env?: NodeJS.ProcessEnv;
   onData?: (chunk: Buffer) => void;
+  /** Pi command rules validate the actual selected shell immediately before spawn. */
+  beforeSpawn?: (shell: ExecutorShell) => Promise<void>;
 }
 
 interface ScriptFile {
@@ -206,6 +208,7 @@ export function runOnce(script: string, opts: RunOptions): Promise<RunResult> {
       }
       let child: ChildProcess;
       try {
+        if (opts.beforeSpawn) await opts.beforeSpawn(shell);
         child = spawn(shell.file, shell.args, {
           cwd: file.dir,
           env: opts.env ?? process.env,

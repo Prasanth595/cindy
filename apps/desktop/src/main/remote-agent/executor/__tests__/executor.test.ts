@@ -1344,3 +1344,66 @@ describe('shared provider credentials', () => {
     expect(direct.text).toContain('secret');
   });
 });
+
+// Permission tier: the execution computer must reject obsolete rule approvals
+// before the real shell writes anything. Existing exec tests had no rule lease.
+describe('Pi Auto execution-side native rule lease', () => {
+  it.skipIf(!posix).each(['forbidden', 'error', 'stale', 'updated', 'allow'])(
+    'checks %s immediately before spawning the actual shell', async (scenario) => {
+      const workspace = new ExecutorWorkspace({ workingDir: project });
+      const marker = path.join(project, 'rule-marker');
+      const evaluate = vi.fn(async (_request: unknown) => ({
+        decision: (scenario === 'forbidden' ? 'forbidden' : scenario === 'error' ? 'error' : 'allow') as 'allow' | 'forbidden' | 'error',
+        revision: scenario === 'updated' ? 'new-revision' : 'approved-revision',
+        isCurrent: async () => scenario !== 'stale',
+      }));
+      const executor = new RemoteExecutor({ workspace, gate: new ExecutorGate(workspace, 'normal'),
+        rgPath: RG, tempDir: path.join(root, 'native-rule-temp'), evaluatePiCommandRules: evaluate, piAutoMode: () => true });
+      try {
+        const pending = executor.handle('exec.run', { command: 'printf executed > rule-marker', cwd: project, commandRulesRevision: 'approved-revision' });
+        if (scenario === 'allow') {
+          await expect(pending).resolves.toMatchObject({ exitCode: 0 });
+          expect(fs.readFileSync(marker, 'utf8')).toBe('executed');
+        } else {
+          await expect(pending).rejects.toMatchObject({ code: 'EACCES' });
+          expect(fs.existsSync(marker)).toBe(false);
+        }
+        expect(evaluate).toHaveBeenCalledOnce();
+        expect(evaluate.mock.calls[0]?.[0]).toMatchObject({ command: 'printf executed > rule-marker', evidence: { cwd: project, script: 'printf executed > rule-marker' } });
+      } finally { await executor.close(); }
+    },
+  );
+});
+
+// A public revision is not human consent: only the existing controller-recorded
+// approval may satisfy prompt, once. No new approval token/state is introduced.
+it.skipIf(!posix)('requires and consumes the existing human approval for a native prompt', async () => {
+  const workspace = new ExecutorWorkspace({ workingDir: project });
+  const command = 'printf executed >> rule-marker';
+  const executor = new RemoteExecutor({ workspace, gate: new ExecutorGate(workspace, 'normal'), rgPath: RG,
+    tempDir: path.join(root, 'rule-prompt'), piAutoMode: () => true,
+    evaluatePiCommandRules: async () => ({ decision: 'prompt', revision: 'known-revision', isCurrent: async () => true }) });
+  const body = { command, cwd: project, commandRulesRevision: 'known-revision' };
+  try {
+    await expect(executor.handle('exec.run', body)).rejects.toMatchObject({ code: 'EACCES' });
+    expect(fs.existsSync(path.join(project, 'rule-marker'))).toBe(false);
+    executor.recordApproval({ kind: 'exec', command, cwd: project });
+    await expect(executor.handle('exec.run', body)).resolves.toMatchObject({ exitCode: 0 });
+    await expect(executor.handle('exec.run', body)).rejects.toMatchObject({ code: 'EACCES' });
+    expect(fs.readFileSync(path.join(project, 'rule-marker'), 'utf8')).toBe('executed');
+  } finally { await executor.close(); }
+});
+
+it.skipIf(!posix)('lets native allow pass the ordinary command gate without a second approval', async () => {
+  const bin = path.join(root, 'fake-bin'); fs.mkdirSync(bin);
+  fs.writeFileSync(path.join(bin, 'git'), '#!' + '/bin/' + 'sh\nprintf executed > rule-marker\n', { mode: 0o700 });
+  vi.stubEnv('PATH', bin + path.delimiter + process.env.PATH);
+  const workspace = new ExecutorWorkspace({ workingDir: project });
+  const executor = new RemoteExecutor({ workspace, gate: new ExecutorGate(workspace, 'normal'), rgPath: RG,
+    tempDir: path.join(root, 'rule-allow'), piAutoMode: () => true,
+    evaluatePiCommandRules: async () => ({ decision: 'allow', revision: 'allow-revision', isCurrent: async () => true }) });
+  try {
+    await expect(executor.handle('exec.run', { command: 'git push', cwd: project, commandRulesRevision: 'allow-revision' })).resolves.toMatchObject({ exitCode: 0 });
+    expect(fs.readFileSync(path.join(project, 'rule-marker'), 'utf8')).toBe('executed');
+  } finally { await executor.close(); }
+});

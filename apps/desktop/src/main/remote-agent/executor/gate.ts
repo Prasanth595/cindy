@@ -203,14 +203,15 @@ export class ExecutorGate {
     });
   }
 
-  authorize(action: ExecutorAction): ExecutorGateDecision {
+  authorize(action: ExecutorAction, nativeRule?: 'allow' | 'prompt'): ExecutorGateDecision {
     let credential = this.needsCredentialConsent(action);
     if (credential && this.consumeCredentialExemption(action) && this.credentialGitReads(action) !== null) credential = false;
     if (this.mode === 'full' && !credential) return { ok: true, elevated: true };
     // 抓取网页：本机用户批准过这个地址就放开内网。公网样式的域名也可能解析到内网(公司内网域名)，
     // 只看地址文本判定为不必问，但抓取时会按 DNS 结果被拦下。
     if (action.kind === 'fetch' && this.consume(action)) return { ok: true, elevated: true };
-    if (!credential && !this.requiresApproval(action)) return { ok: true };
+    if (!credential && nativeRule === 'allow' && this.mode !== 'plan') return { ok: true };
+    if (!credential && nativeRule !== 'prompt' && !this.requiresApproval(action)) return { ok: true };
     if (this.consume(action, credential)) return { ok: true, elevated: true };
     return { ok: false, reason: this.deniedReason(action) };
   }

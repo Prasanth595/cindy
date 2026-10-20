@@ -6,6 +6,7 @@ import { readCachedGenericOAuthAccessToken } from './generic-oauth.js';
 import { providerPresetModelRecord, providerModelAdapterId } from '@cindy/model-providers';
 import { mergeByokNativeConfigs } from '../model-access/byokProvider.js';
 import { readDisabledSkillPaths } from '../skillhub/activationPreferences';
+import { desktopCommandRulesEvaluator } from './command-rules-runtime.js';
 import { subscriptionAccountKind, subscriptionAccountState, isXaiSubscriptionProviderId } from './subscription-account-auth.js';
 /**
  * pi agent 的 desktop host 装配 —— auth / runtimeConfig / 二进制解析 / 构造,
@@ -908,6 +909,7 @@ function buildDesktopPiRuntimeConfig(): AgentRuntimeConfig {
 // ── 构造入口 ─────────────────────────────────────────────────────────────────
 
 export interface BuildPiAgentOpts {
+  evaluatePiCommandRules?: AgentDeps['evaluatePiCommandRules'];
   logger: AgentDeps['logger'];
   turnChangeCapture?: AgentDeps['turnChangeCapture'];
   registerLocalAgentProcess?: AgentDeps['registerLocalAgentProcess'];
@@ -1917,6 +1919,7 @@ export function buildPiAgent(opts: BuildPiAgentOpts): PiAgent | null {
         ?? resolveModelDefaultContextWindow(catalog, 'pi', source, modelId) : null;
     },
     auth: desktopPiAuthAdapter,
+    evaluatePiCommandRules: opts.evaluatePiCommandRules ?? desktopCommandRulesEvaluator(),
     runtimeConfig: buildDesktopPiRuntimeConfig(),
     get binaryPath() { return resolvePiBinaryPath() ?? binaryPath; },
     logger: opts.logger,

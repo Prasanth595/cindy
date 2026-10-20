@@ -10,6 +10,7 @@
  * 带原来的会话 id 连回来，接回同一套本机部分。
  */
 import os from 'node:os';
+import { desktopCommandRulesEvaluator } from '../../maker-host/command-rules-runtime.js';
 import path from 'node:path';
 
 import {
@@ -295,6 +296,8 @@ export async function startRemoteAgentSession(
   if (grant?.restore(grantPermission())) gate.restoreCredentialsForSession();
   let controller: RemoteAgentHandleController | null = null;
   const executor = new RemoteExecutor({
+    ...(kind === 'pi' ? { evaluatePiCommandRules: desktopCommandRulesEvaluator(),
+      piAutoMode: () => permissionMode === 'auto' && !planMode } : {}),
     workspace,
     gate,
     rgPath: deps.rgPath,

@@ -471,6 +471,53 @@ describe('pi auto-review dispatch & spawn config (mocked pi process)', () => {
     }) as Promise<PiTestSessionHandle>;
   }
 
+  // PR1: a native rule result must reach the real permission dispatcher before
+  // any reviewer call (permission tier; the previous suite had no rule source).
+  it.each(['allow', 'prompt', 'forbidden', 'unmatched', 'error'] as const)(
+    'dispatches native command rule %s through the existing permission response', async (decision) => {
+      const reviewer = vi.fn(async () => ({ verdict: 'allow' as const, reason: 'fixture' }));
+      const deps = buildDeps(reviewer);
+      const current = vi.fn(async () => true);
+      const evaluate = vi.fn(async () => ({ decision, revision: 'one', isCurrent: current, reason: 'rules fixture' }));
+      deps.evaluatePiCommandRules = evaluate;
+      const handle = await new PiAgent(deps).startSession({ sessionId: 'rules', workingDir: cwd, model: 'm', permissionMode: 'auto' });
+      const resolver = vi.fn(async () => ({ kind: 'permission' as const, behavior: 'allow' as const }));
+      handle.setInteractionResolver(resolver);
+      try {
+        firePermissionRequest('rules', 'bash', { command: 'probe one' });
+        const response = await waitForResponse('rules');
+        expect(response.confirmed).toBe(!['forbidden', 'error'].includes(decision));
+        expect(evaluate).toHaveBeenCalledOnce();
+        expect(reviewer).toHaveBeenCalledTimes(decision === 'unmatched' ? 1 : 0);
+        expect(resolver).toHaveBeenCalledTimes(decision === 'prompt' ? 1 : 0);
+        expect(current).toHaveBeenCalledTimes(['allow', 'prompt', 'unmatched'].includes(decision) ? 1 : 0);
+      } finally { await handle.close(); }
+    },
+  );
+
+  it.each(['allow', 'prompt', 'unmatched'] as const)('invalidates a stale %s before execution', async (decision) => {
+    const deps = buildDeps(async () => ({ verdict: 'allow', reason: 'fixture' }));
+    deps.evaluatePiCommandRules = async () => ({ decision, revision: 'old', isCurrent: async () => false });
+    const handle = await new PiAgent(deps).startSession({ sessionId: 'stale', workingDir: cwd, model: 'm', permissionMode: 'auto' });
+    handle.setInteractionResolver(async () => ({ kind: 'permission', behavior: 'allow' }));
+    try {
+      firePermissionInputRequest('stale', 'bash', { command: 'probe one' });
+      expect((await waitForResponse('stale')).value).toMatch(/^system-deny/);
+    } finally { await handle.close(); }
+  });
+
+  it.each(['ask', 'bypassPermissions'] as const)('preserves %s without evaluating migrated rules', async (permissionMode) => {
+    const deps = buildDeps();
+    const evaluate = vi.fn(); deps.evaluatePiCommandRules = evaluate;
+    const handle = await new PiAgent(deps).startSession({ sessionId: 'other-mode', workingDir: cwd, model: 'm', permissionMode });
+    handle.setInteractionResolver(async () => ({ kind: 'permission', behavior: 'allow' }));
+    try {
+      firePermissionRequest('other-mode', 'bash', { command: 'probe one' });
+      expect((await waitForResponse('other-mode')).confirmed).toBe(true);
+      expect(evaluate).not.toHaveBeenCalled();
+    } finally { await handle.close(); }
+  });
+
   it.each(['settled', 'replaced', 'aborted'] as const)('does not enqueue an async answer after its Pi execution is %s', async (action) => {
     const handle = await start('bypassPermissions');
     const controller = new AbortController();

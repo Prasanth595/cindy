@@ -520,7 +520,7 @@ function cargoExecutable() {
 }
 
 /** 收集单个 Windows Rust 二进制的运行时依赖闭包,跳过根包的 build/dev dependency。 */
-function collectCargoClosure(manifest) {
+function collectCargoClosure(manifest, target = "x86_64-pc-windows-msvc", inheritWorkspaceLicense = false) {
   const raw = execFileSync(
     cargoExecutable(),
     [
@@ -529,7 +529,7 @@ function collectCargoClosure(manifest) {
       "--format-version",
       "1",
       "--filter-platform",
-      "x86_64-pc-windows-msvc",
+      target,
       "--manifest-path",
       manifest,
     ],
@@ -558,7 +558,18 @@ function collectCargoClosure(manifest) {
     const pkg = packageById.get(id);
     if (!pkg) continue;
     const pkgDir = path.dirname(pkg.manifest_path);
-    const texts = findLicenseFiles(pkgDir);
+    let texts = findLicenseFiles(pkgDir);
+    // Git workspace crates inherit the workspace license; include its actual
+    // LICENSE/NOTICE rather than inventing license text from the SPDX label.
+    if (inheritWorkspaceLicense && !texts.licenseText && pkg.source?.startsWith("git+")) {
+      let parent = path.dirname(pkgDir);
+      while (parent !== path.dirname(parent)) {
+        const inherited = findLicenseFiles(parent);
+        if (inherited.licenseText) { texts = inherited; break; }
+        if (fs.existsSync(path.join(parent, ".git"))) break;
+        parent = path.dirname(parent);
+      }
+    }
     let licenseText = texts.licenseText;
     if (!licenseText && pkg.license_file) {
       const licensePath = path.resolve(pkgDir, pkg.license_file);
@@ -1549,6 +1560,20 @@ function assertTrackedBinariesRegistered() {
 // ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
+
+// Native helper assets carry their own target-specific notice alongside the
+// binary. This mode reuses the existing closure/audit/output implementation.
+const nativeNotice = process.argv.indexOf("--command-rules-notice");
+if (nativeNotice >= 0) {
+  const target = process.argv[nativeNotice + 1];
+  const output = process.argv[nativeNotice + 2];
+  if (!target || !output) throw new Error("command rules notice requires target and output");
+  const closure = collectCargoClosure(path.join(DESKTOP_DIR, "native", "command-rules", "Cargo.toml"), target, true);
+  auditArtifact("command-rules", closure, []);
+  fs.writeFileSync(output, buildOutput({ packages: closure.packages, manualEntries: [],
+    productName: "Cindy native command rules helper", description: [target] }));
+  process.exit(0);
+}
 
 assertNativeDeclarations();
 assertProjectPodspecLicenses();

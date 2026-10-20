@@ -1,0 +1,28 @@
+[package]
+name = "cindy-command-rules"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+codex-config = { git = "https://github.com/openai/codex", rev = "25af12f7e61572b0bc18ddb1008be543b91519b0" }
+codex-execpolicy = { git = "https://github.com/openai/codex", rev = "25af12f7e61572b0bc18ddb1008be543b91519b0" }
+codex-file-system = { git = "https://github.com/openai/codex", rev = "25af12f7e61572b0bc18ddb1008be543b91519b0" }
+codex-shell-command = { git = "https://github.com/openai/codex", rev = "25af12f7e61572b0bc18ddb1008be543b91519b0" }
+codex-utils-path-uri = { git = "https://github.com/openai/codex", rev = "25af12f7e61572b0bc18ddb1008be543b91519b0" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["fs", "rt", "macros"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+# These are the patches used by the pinned Codex workspace. Its config crate
+# reaches codex-otel, which uses the fork's proxy transport feature.
+[patch.crates-io]
+tokio-tungstenite = { git = "https://github.com/openai-oss-forks/tokio-tungstenite", rev = "0e5b2d73aa18dd9f0a50ee9ff199d5aef7594186" }
+tungstenite = { git = "https://github.com/openai-oss-forks/tungstenite-rs", rev = "4fffad30fe373adbdcffab9545e9e9bf4f2fc19f" }
+
+[profile.release]
+strip = true

@@ -10,6 +10,7 @@
  * 供应商分享的受邀者任务里，凭证类操作没有本机批准时由这里直接在本机弹确认卡(confirm)。
  */
 import path from 'node:path';
+import type { AgentDeps } from '@cindy/maker-core';
 
 import {
   ccEdit,
@@ -36,7 +37,7 @@ import {
 import type { ExecutorAction, ExecutorGate, ExecutorGateDecision, ExecutorGateMode } from './gate';
 import type { GitCredentialHistory } from './gitCredentials';
 import { piGrep, type PiGrepInput } from './search';
-import { resolveExecutorShell, runOnce, ShellSession } from './shell';
+import { resolveExecutorShell, runOnce, ShellSession, type ExecutorShell } from './shell';
 import { fetchWebPage, WEB_FETCH_PAGE_CHARS, type GuardedFetch } from './webFetch';
 import { ExecutorPathError, type ExecutorWorkspace } from './workspace';
 
@@ -52,6 +53,8 @@ export interface ExecutorCaptureHooks {
 export type ExecutorConfirmation = boolean | 'session';
 
 export interface RemoteExecutorOptions {
+  evaluatePiCommandRules?: AgentDeps['evaluatePiCommandRules'];
+  piAutoMode?: () => boolean;
   workspace: ExecutorWorkspace;
   gate: ExecutorGate;
   rgPath: string;
@@ -257,10 +260,10 @@ export class RemoteExecutor {
   }
 
   /** 检查上限；凭证类操作没有批准时先在本机问一次。 */
-  private async decide(action: ExecutorAction, signal?: AbortSignal): Promise<ExecutorGateDecision> {
-    const decision = this.gate.authorize(action);
+  private async decide(action: ExecutorAction, signal?: AbortSignal, nativeRule?: 'allow' | 'prompt'): Promise<ExecutorGateDecision> {
+    const decision = this.gate.authorize(action, nativeRule);
     if (decision.ok || !(await this.confirm(action, signal))) return decision;
-    return this.gate.authorize(action);
+    return this.gate.authorize(action, nativeRule);
   }
 
   async close(): Promise<void> {
@@ -289,9 +292,25 @@ export class RemoteExecutor {
     }
   }
 
-  private async authorize(action: ExecutorAction, signal?: AbortSignal): Promise<void> {
-    const decision = await this.decide(action, signal);
+  private async authorize(action: ExecutorAction, signal?: AbortSignal, nativeRule?: 'allow' | 'prompt'): Promise<void> {
+    const decision = await this.decide(action, signal, nativeRule);
     if (!decision.ok) throw new ExecutorRequestError('EACCES', decision.reason ?? 'Not allowed.');
+  }
+
+  private async checkPiCommandRules(rawCommand: string, cwd: string, shell: ExecutorShell, signal?: AbortSignal) {
+    if (!this.opts.evaluatePiCommandRules) throw new ExecutorRequestError('UNSUPPORTED', 'Command rules unavailable on execution computer.');
+    const command = this.workspace.mapCommand(rawCommand, shell.dialect);
+    const result = await this.opts.evaluatePiCommandRules({ toolName: 'bash', command, workingDir: cwd,
+      evidence: { cwd, argv: [shell.file, ...shell.args], script: command,
+        // runOnce transports a file with an inert cd preamble. The body
+        // uses the native POSIX parser, while physical argv stays intact.
+        ...(shell.dialect === 'bash' ? { analysisArgv: [shell.file, '-c', command] } : {}) } });
+    this.ensureOpen();
+    if (result.decision === 'error') return { decision: 'error', revision: '', reason: result.reason };
+    const current = await result.isCurrent();
+    this.ensureOpen();
+    if (signal?.aborted || !current) return { decision: 'error', revision: '', reason: '命令规则已变化，请重试。' };
+    return { decision: result.decision, revision: result.revision, reason: result.reason, isCurrent: result.isCurrent };
   }
 
   // ─── 原始操作 ──────────────────────────────────────────────────
@@ -301,6 +320,10 @@ export class RemoteExecutor {
     const body = record(rawBody);
     try {
       switch (op) {
+        case 'pi.commandrules': {
+          const { decision, revision, reason } = await this.checkPiCommandRules(str(body, 'command'), this.resolvePath(str(body, 'cwd')), resolveExecutorShell(), signal);
+          return { decision, revision, reason };
+        }
         case 'fs.read': {
           const target = this.resolvePath(str(body, 'path'));
           await this.authorize({ kind: 'read', path: target }, signal);
@@ -366,13 +389,42 @@ export class RemoteExecutor {
           this.workspace.virtualizeDirs([this.shell.getTempDir()]);
           const command = this.workspace.mapCommand(str(body, 'command'), resolveExecutorShell().dialect);
           const cwd = this.resolvePath(optionalString(body, 'cwd') ?? this.workspace.workingDir);
-          await this.authorize({ kind: 'exec', command, cwd }, signal);
+          const action = { kind: 'exec' as const, command, cwd };
+          const deferRuleApproval = Boolean(this.opts.piAutoMode?.() && this.opts.evaluatePiCommandRules);
+          if (!deferRuleApproval) await this.authorize(action, signal);
           const timeoutSeconds = optionalNumber(body, 'timeout');
           const timeoutMs = timeoutSeconds && timeoutSeconds > 0
             ? Math.min(timeoutSeconds, PI_BASH_MAX_TIMEOUT_SECONDS) * 1000
             : undefined;
           try {
-            const result = await runOnce(command, { cwd, timeoutMs, signal });
+            const result = await runOnce(command, { cwd, timeoutMs, signal, beforeSpawn: this.opts.evaluatePiCommandRules ? async (shell) => {
+              if (this.opts.piAutoMode?.() && this.opts.evaluatePiCommandRules) {
+                const checked = await this.checkPiCommandRules(str(body, 'command'), cwd, shell, signal);
+                if (!this.opts.piAutoMode?.() && this.gate.getMode() !== 'full') {
+                  throw new ExecutorRequestError('EACCES', '权限模式已变化，请重试此次命令。');
+                }
+                if (this.opts.piAutoMode?.() && (checked.decision === 'error' || checked.decision === 'forbidden'
+                  || (checked.decision !== 'unmatched' && body.commandRulesRevision !== checked.revision))) {
+                  throw new ExecutorRequestError('EACCES', checked.reason ?? '命令规则或批准版本已变化，请重试。');
+                }
+                if (deferRuleApproval || checked.decision === 'prompt') {
+                  await this.authorize(action, signal, this.opts.piAutoMode?.()
+                    && (checked.decision === 'allow' || checked.decision === 'prompt') ? checked.decision : undefined);
+                }
+                this.ensureOpen();
+                if (signal?.aborted || (this.opts.piAutoMode?.() && !await checked.isCurrent?.())) {
+                  throw new ExecutorRequestError('EACCES', '命令规则或执行上下文已变化，请重试。');
+                }
+                this.ensureOpen();
+                if (signal?.aborted) throw new ExecutorRequestError('EACCES', '命令已取消。');
+                if (!this.opts.piAutoMode?.() && this.gate.getMode() !== 'full') {
+                  throw new ExecutorRequestError('EACCES', '权限模式已变化，请重试此次命令。');
+                }
+              } else if (deferRuleApproval) {
+                if (this.gate.getMode() !== 'full') throw new ExecutorRequestError('EACCES', '权限模式已变化，请重试此次命令。');
+                await this.authorize(action, signal);
+              }
+            } : undefined });
             return {
               output: this.workspace.mapOutputForAgent(result.output).toString('base64'),
               exitCode: result.exitCode,

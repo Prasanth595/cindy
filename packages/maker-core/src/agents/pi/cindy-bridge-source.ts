@@ -3873,13 +3873,13 @@ function cindyHostedFindOps() {
   };
 }
 
-function cindyHostedBashOps() {
+function cindyHostedBashOps(commandRulesRevision?: string) {
   return {
     exec: async (command: string, cwd: string, options: { onData: (data: Buffer) => void; signal?: AbortSignal; timeout?: number }) => {
       if (options.signal && options.signal.aborted) throw new Error('aborted');
       let result: any;
       try {
-        result = await cindyHostedCall('exec.run', { command, cwd, timeout: options.timeout }, options.signal);
+        result = await cindyHostedCall('exec.run', { command, cwd, timeout: options.timeout, commandRulesRevision }, options.signal);
       } catch (error) {
         if (options.signal && options.signal.aborted) throw new Error('aborted');
         throw error;
@@ -3932,8 +3932,12 @@ function registerCindyHostedTools(
     ...bashTool,
     parameters: localBash && localBash.parameters ? localBash.parameters : bashTool.parameters,
     description: localBash && typeof localBash.description === 'string' ? localBash.description : bashTool.description,
-    execute: async (id: string, params: unknown, signal: AbortSignal, onUpdate: unknown) =>
-      bashTool.execute(id, applyBashTimeout(params) as any, signal, onUpdate as any),
+    execute: async (id: string, params: unknown, signal: AbortSignal, onUpdate: unknown) => {
+      const next = applyBashTimeout(params);
+      const approved = assertApprovedShellCommand(id, next);
+      const executionTool = createBashTool(cwd, { operations: cindyHostedBashOps(approved?.commandRulesRevision) } as any);
+      return executionTool.execute(id, next as any, signal, onUpdate as any);
+    },
   });
   pi.on('before_agent_start', async (event: any) => {
     const hosted = CINDY_HOSTED!;
@@ -3946,6 +3950,29 @@ function registerCindyHostedTools(
     ].join('\n');
     return { systemPrompt: replaced + '\n' + note };
   });
+}
+
+// Execution consistency only; this does not remember or grant approvals.
+let commandRulesCwd = '';
+const approvedShellCommands = new Map<string, { command: string; evidence?: string; commandRulesRevision?: string }>();
+function assertApprovedShellCommand(id: string, params: Record<string, unknown>, toolName = 'bash'): { command: string; evidence?: string; commandRulesRevision?: string } | undefined {
+  const expected = approvedShellCommands.get(id);
+  approvedShellCommands.delete(id);
+  if (expected !== undefined && (expected.command !== params.command
+    || (expected.evidence !== undefined && expected.evidence !== JSON.stringify(nativeCommandEvidence(toolName, params))))) {
+    throw new Error('Command changed after approval. Retry the tool call.');
+  }
+  return expected;
+}
+function nativeCommandEvidence(toolName: string, input: any): { cwd: string; argv: string[] } | null {
+  if ((toolName !== 'bash' && toolName !== 'powershell') || typeof input?.command !== 'string') return null;
+  if (CINDY_HOSTED) return { cwd: CINDY_HOSTED.cwd, argv: [] };
+  try {
+    const api: any = piCodingAgent;
+    const config = toolName === 'powershell' ? api.getPowerShellConfig() : api.getShellConfig();
+    if (!config || typeof config.shell !== 'string' || !Array.isArray(config.args) || config.commandTransport === 'stdin') return null;
+    return { cwd: commandRulesCwd, argv: [config.shell, ...config.args, input.command] };
+  } catch { return null; }
 }
 
 export default async function cindyBridge(piApi: any) {
@@ -4125,7 +4152,8 @@ export default async function cindyBridge(piApi: any) {
       '. Values above the maximum are rejected as invalid.'
     );
   }
-  const bashTool = createBashTool(process.cwd(), {
+  commandRulesCwd = process.cwd();
+  const bashTool = createBashTool(commandRulesCwd, {
     // PI_SESSION_FILE 会暴露 agentHome，继而让一次获批的 shell 定位并篡改
     // permission file；其余 PI_SESSION_* 元数据对完成编码任务也不是必需能力。
     exposeSessionEnvironment: false,
@@ -4159,6 +4187,7 @@ export default async function cindyBridge(piApi: any) {
     ...bashTool,
     execute: async (id: string, params: unknown, signal: AbortSignal, onUpdate: unknown) => {
       const nextParams = applyCindyBashTimeoutParams(params);
+      assertApprovedShellCommand(id, nextParams);
       if (bashCommandMutatesPiPackages(nextParams)) {
         throw new Error(
           'Direct Pi management changes are routed through the host. Use cindy_pi_command to run the Pi command through Cindy.',
@@ -4173,7 +4202,7 @@ export default async function cindyBridge(piApi: any) {
   // 受邀者会话不注册：它在本机执行，设备托管没有对应的执行器；Pi 自带的 powershell 由工具门拦下。
   const createPowerShellTool = (piCodingAgent as { createPowerShellTool?: typeof createBashTool }).createPowerShellTool;
   if (process.platform === 'win32' && typeof createPowerShellTool === 'function' && !guestToolGate) {
-    const powershellTool = createPowerShellTool(process.cwd(), {
+    const powershellTool = createPowerShellTool(commandRulesCwd, {
       exposeSessionEnvironment: false,
       spawnHook: ({ command, cwd, env }) => ({
         command,
@@ -4205,6 +4234,7 @@ export default async function cindyBridge(piApi: any) {
       ...powershellTool,
       execute: async (id: string, params: unknown, signal: AbortSignal, onUpdate: unknown) => {
         const nextParams = applyCindyBashTimeoutParams(params);
+        assertApprovedShellCommand(id, nextParams, 'powershell');
         if (bashCommandMutatesPiPackages(nextParams)) {
           throw new Error(
             'Direct Pi management changes are routed through the host. Use cindy_pi_command to run the Pi command through Cindy.',
@@ -4510,6 +4540,15 @@ export default async function cindyBridge(piApi: any) {
     ) return;
     const permissionToolName = gatewayCall?.qualifiedName ?? event.toolName;
     const permissionInput = gatewayCall?.args ?? event.input ?? {};
+    const approvalCommand = typeof permissionInput.command === 'string' ? permissionInput.command : undefined;
+    const commandEvidence = nativeCommandEvidence(event.toolName, permissionInput);
+    let commandRulesRevision: string | undefined;
+    if (CINDY_HOSTED && event.toolName === 'bash' && permission.mode === 'auto') {
+      try {
+        const checked = await cindyHostedCall('pi.commandrules', { command: approvalCommand, cwd: CINDY_HOSTED.cwd });
+        if (typeof checked.revision === 'string') commandRulesRevision = checked.revision;
+      } catch { /* Host reports the unavailable execution-side rules through the existing response. */ }
+    }
     let decision: string | undefined;
     try {
       // input() is used as a private request/response envelope rather than a
@@ -4519,7 +4558,9 @@ export default async function cindyBridge(piApi: any) {
         PERMISSION_TITLE,
         JSON.stringify({
           toolName: permissionToolName,
-          input: permissionInput,
+          input: commandEvidence ? { ...permissionInput, cwd: commandEvidence.cwd } : permissionInput,
+          ...((event.toolName === 'bash' || event.toolName === 'powershell')
+            ? { commandEvidence } : {}),
           resolvedCredentialPaths: credentialEvidenceForHost,
           ...(FILE_WRITE_BUILTINS.has(event.toolName)
             ? {
@@ -4540,6 +4581,10 @@ export default async function cindyBridge(piApi: any) {
         block: true,
         reason: permissionDenialReason(decision),
       };
+    }
+    if ((event.toolName === 'bash' || event.toolName === 'powershell') && approvalCommand !== undefined) {
+      if (approvedShellCommands.size >= 1024) approvedShellCommands.delete(approvedShellCommands.keys().next().value!);
+      approvedShellCommands.set(event.toolCallId, { command: approvalCommand, evidence: CINDY_HOSTED ? undefined : JSON.stringify(commandEvidence), commandRulesRevision });
     }
     if (
       FILE_WRITE_BUILTINS.has(event.toolName)

@@ -2242,6 +2242,37 @@ describe('PiAgent.startSession failure cleanup (mocked pi process)', () => {
     }
   });
 
+  // PR1 permissions tier: exercise the durable production supervisor, including
+  // recovered ownership, with the child's execution cwd instead of the parent.
+  it.each([
+    ['allow', true, false], ['prompt', true, false], ['forbidden', true, false],
+    ['unmatched', true, false], ['error', true, false], ['allow', false, false], ['allow', true, true],
+  ] as const)('applies native %s (current=%s, adopted=%s) to durable child commands', async (decision, current, adopted) => {
+    const childCwd = path.join(cwd, 'child-project');
+    const run = pendingSubagentRun({ toolName: 'bash', input: { command: 'probe child' },
+      commandEvidence: { cwd: childCwd, argv: ['bash', '-c', 'probe child'] } },
+      adopted ? { runtimeOwnerId: ownerId('previous-instance') } : {}, 'input');
+    const discovery = deferSubagentDiscovery(run);
+    const control = vi.spyOn(piSubagentRuns, 'controlPiSubagentRuns').mockResolvedValue(1);
+    const reviewer = vi.fn(async () => ({ verdict: 'allow' as const }));
+    const evaluate = vi.fn(async () => ({ decision, revision: 'child-rule', isCurrent: async () => current }));
+    const handle = await new PiAgent(buildDeps({ reviewAutoPermissionAction: reviewer,
+      evaluatePiCommandRules: evaluate })).startSession({ ...opts(), permissionMode: 'auto' });
+    const resolver = vi.fn(async () => ({ kind: 'permission', behavior: 'allow' }) as const);
+    handle.setInteractionResolver(resolver); discovery.publish();
+    try {
+      await vi.waitFor(() => expect(control).toHaveBeenCalledWith(expect.any(String), run.taskId, 'approval',
+        expect.objectContaining({ value: expect.any(String) })), { timeout: 3000 });
+      const value = (control.mock.calls.find((c) => c[2] === 'approval')![3] as { value: string }).value;
+      expect(value === 'allow').toBe(current && !['forbidden', 'error'].includes(decision));
+      expect(evaluate).toHaveBeenCalledWith(expect.objectContaining({
+        evidence: { cwd: childCwd, argv: ['bash', '-c', 'probe child'] },
+      }));
+      expect(reviewer).toHaveBeenCalledTimes(decision === 'unmatched' ? 1 : 0);
+      expect(resolver).toHaveBeenCalledTimes(decision === 'prompt' ? 1 : 0);
+    } finally { discovery.clear(); await handle.close(); }
+  });
+
   it('keeps risky durable Subagent Auto actions behind the real Cindy prompt', async () => {
     const run = pendingSubagentRun({
       toolName: 'bash',
@@ -2293,30 +2324,38 @@ describe('PiAgent.startSession failure cleanup (mocked pi process)', () => {
     }
   });
 
-  it('retries durable Subagent approval delivery without asking the user twice', async () => {
-    const run = pendingSubagentRun({ toolName: 'write', input: { path: 'a.txt' } });
+  it.each([
+    { toolName: 'write', mode: 'ask' as const, staleOnRetry: false },
+    { toolName: 'bash', mode: 'ask' as const, staleOnRetry: false },
+    { toolName: 'bash', mode: 'auto' as const, staleOnRetry: false },
+    { toolName: 'bash', mode: 'auto' as const, staleOnRetry: true },
+  ])('retries durable Subagent $mode $toolName approval once (stale: $staleOnRetry)', async ({ toolName, mode, staleOnRetry }) => {
+    const run = pendingSubagentRun({ toolName, input: toolName === 'bash' ? { command: 'echo fixture' } : { path: 'a.txt' } });
     // Detached supervisors from earlier cases may still poll their own roots.
     // Offer this request only to this handle, after its resolver is attached.
     const discovery = deferSubagentDiscovery(run);
     const ownRunRoot = path.join(agentHome, 'runtime', 'pi-subagent-runs', 's1');
+    let current = true;
     const control = vi.spyOn(piSubagentRuns, 'controlPiSubagentRuns')
-      .mockRejectedValueOnce(new Error('mailbox unavailable'))
+      .mockImplementationOnce(async () => { if (staleOnRetry) current = false; throw new Error('mailbox unavailable'); })
       .mockResolvedValue(1);
     const resolver = vi.fn(async () => ({ kind: 'permission', behavior: 'allow' }) as const);
-    const handle = await new PiAgent(buildDeps()).startSession(opts());
+    const evaluate = vi.fn(async () => ({ decision: 'prompt' as const, revision: 'rules-delivery', isCurrent: async () => current }));
+    const handle = await new PiAgent(buildDeps({ evaluatePiCommandRules: evaluate })).startSession({ ...opts(), permissionMode: mode });
     handle.setInteractionResolver(resolver);
     discovery.publish();
 
     try {
       await vi.waitFor(() => expect(control).toHaveBeenCalledTimes(2), { timeout: 2_500 });
       expect(resolver).toHaveBeenCalledOnce();
+      expect(evaluate).toHaveBeenCalledTimes(mode === 'auto' ? 1 : 0);
       for (const attempt of [1, 2]) {
         expect(control).toHaveBeenNthCalledWith(
           attempt,
           ownRunRoot,
           run.taskId,
           'approval',
-          expect.objectContaining({ confirmed: true }),
+          expect.objectContaining({ confirmed: !(staleOnRetry && attempt === 2) }),
         );
       }
     } finally {

@@ -1955,6 +1955,14 @@ const config: ForgeConfig = {
       const targetPlatform = requestedTargetPlatform();
       const targetArch = requestedTargetArch();
       stageCindySourceMetadata();
+      const commandRulesBuild = spawnSync(process.execPath, [
+        path.join(__dirname, 'scripts', 'build-command-rules.mjs'), `${targetPlatform}-${targetArch}`,
+      ], { stdio: 'inherit' });
+      if (commandRulesBuild.status !== 0) throw new Error('Native command rules helper build failed');
+      const commandRulesStage = spawnSync(process.execPath, [
+        path.join(__dirname, 'scripts', 'build-command-rules.mjs'), '--stage', `${targetPlatform}-${targetArch}`,
+      ], { stdio: 'inherit' });
+      if (commandRulesStage.status !== 0) throw new Error('Native command rules execution-platform assets missing or invalid');
       if (targetPlatform === 'win32') {
         if (targetArch !== 'x64') {
           throw new Error(

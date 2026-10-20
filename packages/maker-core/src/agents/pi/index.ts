@@ -1,3 +1,5 @@
+import { parsePiCommandRuleEvidence, type PiCommandRuleEvaluation } from './command-rules.js';
+import { hostedCommandRulesEvaluator } from './hosted-command-rules.js';
 import { getPiExtensionUiCapability } from './extension-ui-capabilities.js';
 import { parsePiManagementArgs, parsePiManagementText } from './managed-command.js';
 import { canonicalSkillPath, snapshotDisabledSkillLaunch, currentDisabledSkillLaunchPaths, extendDisabledSkillLaunchPaths, type DisabledSkillLaunchSnapshot } from '../shared/skill-activation.js';
@@ -2660,6 +2662,7 @@ export class PiAgent extends BaseAgent {
     // 设备托管：Pi 在本机运行，文件与命令在任务所在电脑。权限判断、提示里的路径都按那台
     // 电脑的真实工作目录；opts.workingDir 只是本机影子目录(进程 cwd 与项目说明)。
     const hosted = opts.deviceHosted && !remote ? opts.deviceHosted : undefined;
+    const evaluateCommandRules = hosted ? hostedCommandRulesEvaluator(hosted) : this.deps.evaluatePiCommandRules;
     const logicalWorkingDir = hosted?.workingDir ?? opts.workingDir;
     // 受邀者(另一个账号)：本机用户的 Pi 包、扩展、托管技能、全局说明与技能偏好都不进入会话，
     // 受邀者带来的项目扩展也不在本机执行；说明文件只取会话目录内的(见 device-hosted-guest.ts)。
@@ -4322,7 +4325,7 @@ export class PiAgent extends BaseAgent {
     const piSubagentFingerprints = new Map<string, string>();
     const piSubagentApprovalRequests = new Set<string>();
     const piSubagentApprovalDeliveries = new Set<string>();
-    const piSubagentApprovalDecisions = new Map<string, PiPermissionResolution>();
+    const piSubagentApprovalDecisions = new Map<string, { resolution: PiPermissionResolution; commandRuleCheck?: PiCommandRuleEvaluation; commandSignature: string }>();
     /**
      * Approval offers that have been started but have not settled yet.
      *
@@ -4657,6 +4660,9 @@ export class PiAgent extends BaseAgent {
       let resolvedWritePath: string | null | undefined;
       let resolvedWritableRoots: string[] | null | undefined;
       let controlPlaneWrite = false;
+      let commandEvidence: unknown;
+      let commandRuleCheck: PiCommandRuleEvaluation | undefined;
+      let explicitRuleAnswer = false;
       const approvalPayload = approval.method === 'input'
         ? approval.placeholder
         : approval.message;
@@ -4668,6 +4674,7 @@ export class PiAgent extends BaseAgent {
             resolvedWritePath?: unknown;
             resolvedWritableRoots?: unknown;
             controlPlaneWrite?: unknown;
+            commandEvidence?: unknown;
           };
           if (typeof payload.toolName === 'string' && payload.toolName) toolName = payload.toolName;
           if (payload.input && typeof payload.input === 'object' && !Array.isArray(payload.input)) {
@@ -4689,6 +4696,7 @@ export class PiAgent extends BaseAgent {
               : null;
           }
           controlPlaneWrite = payload.controlPlaneWrite === true;
+          commandEvidence = payload.commandEvidence;
         } catch {
           /* malformed permission payload remains a generic, deny-by-default prompt */
         }
@@ -4790,6 +4798,7 @@ export class PiAgent extends BaseAgent {
             ) {
               autoReviewConfirmUndeliveredNotice.notify();
             }
+            explicitRuleAnswer = !isSystemPermissionDenialReason(decision.reason);
             finalize(
               decision.behavior === 'allow'
                 ? 'allow'
@@ -4845,6 +4854,24 @@ export class PiAgent extends BaseAgent {
         }
         checkingAutomaticPermission = true;
         try {
+          if (reviewPermissionMode === 'auto' && (toolName === 'bash' || toolName === 'powershell')
+            && evaluateCommandRules) {
+            cacheResolution = false;
+            commandRuleCheck = await evaluateCommandRules!({
+              toolName, command: typeof input.command === 'string' ? input.command : '',
+              evidence: parsePiCommandRuleEvidence(commandEvidence),
+              workingDir: logicalWorkingDir, remoteHostId: opts.remoteHostId,
+            });
+            if (autoReviewOfferExpired()) return null;
+            if (permissionMode !== reviewPermissionMode) return requestUserDecision({ forcePrompt: true });
+            if (commandRuleCheck.decision !== 'unmatched') {
+              if (commandRuleCheck.decision === 'allow' && !turnPolicyForcePrompt) return 'allow';
+              if (commandRuleCheck.decision === 'prompt' || (commandRuleCheck.decision === 'allow' && turnPolicyForcePrompt)) {
+                return requestUserDecision({ forcePrompt: true });
+              }
+              return piPermissionDenial('system-deny', commandRuleCheck.reason ?? 'Codex .rules: forbidden');
+            }
+          }
           const action = mcpTarget
             ? toolAutoReviewAction(toolName, input)
             : constrainPiDestructivePathResolution(
@@ -4890,7 +4917,16 @@ export class PiAgent extends BaseAgent {
           return 'system-deny';
         }
       };
-      let resolution = piSubagentApprovalDecisions.get(key);
+      const ruleCommand = permissionMode === 'auto' && (toolName === 'bash' || toolName === 'powershell') && Boolean(evaluateCommandRules);
+      if (ruleCommand) cacheResolution = false;
+      const commandSignature = createHash('sha256').update(JSON.stringify([toolName, input.command, commandEvidence, logicalWorkingDir])).digest('hex');
+      const cached = piSubagentApprovalDecisions.get(key);
+      const reusable = !ruleCommand || (cached?.commandRuleCheck && cached.commandSignature === commandSignature);
+      let resolution = reusable ? cached?.resolution : undefined;
+      if (ruleCommand && reusable && cached?.commandRuleCheck) {
+        commandRuleCheck = cached.commandRuleCheck;
+        cacheResolution = true;
+      }
       try {
         if (
           resolution === undefined
@@ -4918,9 +4954,22 @@ export class PiAgent extends BaseAgent {
           message: error instanceof Error ? error.message : String(error),
         });
       }
+      const modeBeforeRuleLease = permissionMode;
+      if (resolution === 'allow' && commandRuleCheck && modeBeforeRuleLease === 'auto'
+        && !await commandRuleCheck.isCurrent()) {
+        resolution = piPermissionDenial('system-deny', '命令规则或执行上下文已变化，请重试此次命令。');
+      }
+      if (commandRuleCheck && autoReviewOfferExpired()) {
+        piSubagentApprovalRequests.delete(key);
+        return;
+      }
+      if (resolution === 'allow' && commandRuleCheck && modeBeforeRuleLease === 'auto' && permissionMode === 'ask') {
+        resolution = piPermissionDenial('system-deny', '权限模式已变化，请重试此次命令。');
+      }
       if (resolution === undefined) resolution = 'system-deny';
       // Explicit human answers retain their existing delivery-only retry.
-      if (cacheResolution) piSubagentApprovalDecisions.set(key, resolution);
+      if (explicitRuleAnswer && commandRuleCheck) cacheResolution = true;
+      if (cacheResolution) piSubagentApprovalDecisions.set(key, { resolution, commandRuleCheck, commandSignature });
       // Re-read the fence at the write, not only at dispatch: everything above
       // can await a human. An answer decided under the outgoing account must
       // not reach the child's mailbox after that account stopped being the
@@ -5702,6 +5751,8 @@ export class PiAgent extends BaseAgent {
               workingDir: opts.workingDir ?? '',
               remote: Boolean(opts.remoteHostId),
               deviceHosted: Boolean(hosted),
+              commandRulesRemoteHostId: opts.remoteHostId,
+              evaluateCommandRules,
               allowPiPackageManagement,
               piPackageManagementToken,
               resumeSubagent,
@@ -8639,6 +8690,8 @@ export class PiAgent extends BaseAgent {
       remote: boolean;
       /** 设备托管会话：文件改动由任务所在电脑的执行器抓取。 */
       deviceHosted?: boolean;
+      commandRulesRemoteHostId?: string | null;
+      evaluateCommandRules?: AgentDeps['evaluatePiCommandRules'];
       allowPiPackageManagement: boolean;
       piPackageManagementToken?: string;
       controlSubagentRunner: (
@@ -9051,7 +9104,17 @@ export class PiAgent extends BaseAgent {
     }
 
     if ((method === 'input' || method === 'confirm') && event.title === 'cindy:permission') {
-      const sendPermissionResolution = (resolution: PiPermissionResolution): void => {
+      let commandRuleCheck: PiCommandRuleEvaluation | undefined;
+      const sendPermissionResolution = async (resolution: PiPermissionResolution): Promise<void> => {
+        const modeBeforeRuleLease = getPermissionCtx().permissionMode;
+        if (resolution === 'allow' && commandRuleCheck && modeBeforeRuleLease === 'auto'
+          && !await commandRuleCheck.isCurrent()) {
+          resolution = piPermissionDenial('system-deny', '命令规则或执行上下文已变化，请重试此次命令。');
+        }
+        if (resolution === 'allow' && commandRuleCheck && modeBeforeRuleLease === 'auto' && getPermissionCtx().permissionMode === 'ask') {
+          resolution = piPermissionDenial('system-deny', '权限模式已变化，请重试此次命令。');
+        }
+        if (getPermissionCtx().isPermissionContextClosed()) return;
         // Same fence as the capture branch, at the one place every exit below
         // funnels through. Waiting for a human is the longest await this bridge
         // has, so an answer decided under the outgoing account can easily be
@@ -9076,6 +9139,7 @@ export class PiAgent extends BaseAgent {
       let resolvedWritePath: string | null | undefined;
       let resolvedWritableRoots: string[] | null | undefined;
       let controlPlaneWrite = false;
+      let commandEvidence: unknown;
       try {
         const rawPayload = method === 'input' ? event.placeholder : event.message;
         const payload = JSON.parse(typeof rawPayload === 'string' ? rawPayload : '{}') as {
@@ -9085,6 +9149,7 @@ export class PiAgent extends BaseAgent {
           resolvedWritePath?: unknown;
           resolvedWritableRoots?: unknown;
           controlPlaneWrite?: unknown;
+          commandEvidence?: unknown;
         };
         if (typeof payload.toolName === 'string' && payload.toolName.length > 0) toolName = payload.toolName;
         if (payload.input && typeof payload.input === 'object') input = payload.input as Record<string, unknown>;
@@ -9111,6 +9176,7 @@ export class PiAgent extends BaseAgent {
             : null;
         }
         controlPlaneWrite = payload.controlPlaneWrite === true;
+        commandEvidence = payload.commandEvidence;
       } catch {
         /* keep defaults */
       }
@@ -9290,14 +9356,14 @@ export class PiAgent extends BaseAgent {
         // 拒绝、且 policy turn 持 host lease 堵死热切到 bypass,故此处 turnPolicyForcePrompt
         // 为真本不可达;仍显式 fail-closed,避免任一上游闸门被绕过就静默放行破坏性调用。
         if (controlPlaneWrite) {
-          sendPermissionResolution(await requestUserConfirmation({
+          await sendPermissionResolution(await requestUserConfirmation({
             forcePrompt: true,
             requireExplicitDecision: true,
           }));
           return;
         }
         if (isFullAccessNow() && !turnPolicyForcePrompt) {
-          sendPermissionResolution('allow');
+          await sendPermissionResolution('allow');
           return;
         }
         // Trusted MCP shortcuts remain local. Other Auto actions are reviewed
@@ -9329,12 +9395,34 @@ export class PiAgent extends BaseAgent {
         })();
         const hostAutoApprove = mcpPolicy === 'auto-approve' && !turnPolicyForcePrompt;
         if (permissionMode !== 'auto' && !hostAutoApprove) {
-          sendPermissionResolution(
+          await sendPermissionResolution(
             await requestUserConfirmation({ forcePrompt: turnPolicyForcePrompt || mcpPolicy === 'prompt-each-time' }),
           );
           return;
         }
         try {
+          if (permissionMode === 'auto' && (toolName === 'bash' || toolName === 'powershell')
+            && getPermissionCtx().evaluateCommandRules) {
+            commandRuleCheck = await getPermissionCtx().evaluateCommandRules!({
+              toolName, command: typeof input.command === 'string' ? input.command : '',
+              evidence: parsePiCommandRuleEvidence(commandEvidence),
+              workingDir: getPermissionCtx().workingDir,
+              remoteHostId: getPermissionCtx().commandRulesRemoteHostId,
+            });
+            if (getPermissionCtx().permissionMode !== 'auto') {
+              await sendPermissionResolution(await requestUserConfirmation());
+              return;
+            }
+            if (commandRuleCheck.decision !== 'unmatched') {
+              const resolution = commandRuleCheck.decision === 'allow' && !turnPolicyForcePrompt
+                ? 'allow'
+                : commandRuleCheck.decision === 'prompt' || (commandRuleCheck.decision === 'allow' && turnPolicyForcePrompt)
+                  ? await requestUserConfirmation({ forcePrompt: true })
+                  : piPermissionDenial('system-deny', commandRuleCheck.reason ?? 'Codex .rules: forbidden');
+              await sendPermissionResolution(resolution);
+              return;
+            }
+          }
           const action = mcpTarget || toolName === 'cindy_pi_extension' || toolName === 'cindy_pi_command'
             ? toolAutoReviewAction(toolName, input)
             : constrainPiDestructivePathResolution(
@@ -9363,20 +9451,20 @@ export class PiAgent extends BaseAgent {
           //   - 仍是 auto → 按本次审查 verdict 收口(下方原逻辑)。
           const modeAfterReview = getPermissionCtx().permissionMode;
           if (modeAfterReview === 'bypassPermissions') {
-            sendPermissionResolution(turnPolicyForcePrompt ? 'system-deny' : 'allow');
+            await sendPermissionResolution(turnPolicyForcePrompt ? 'system-deny' : 'allow');
             return;
           }
           if (modeAfterReview !== permissionMode) {
             // 审查期间用户主动收紧了档位 → 这一次必须拿到明确确认,等卡期间再放宽也不追认
             // (forcePrompt,与 CC 对 AI ask / 确定性红线的处理同口径)。
-            sendPermissionResolution(await requestUserConfirmation({ forcePrompt: true }));
+            await sendPermissionResolution(await requestUserConfirmation({ forcePrompt: true }));
             return;
           }
           if (decision.verdict === 'ask' || (permissionMode !== 'auto' && decision.verdict !== 'allow')) {
             // 审阅器故障降级来的 ask 提示一次:用户需要知道自己为何突然开始被问,
             // 否则 Auto 档看起来像坏了。模型判定的 ask 不提示(那是正常工作)。
             if (decision.unavailable) notifyAutoReviewUnavailable();
-            sendPermissionResolution(await requestUserConfirmation({
+            await sendPermissionResolution(await requestUserConfirmation({
               forcePrompt: true,
               unavailableHandoff: decision.unavailable === true,
             }));
@@ -9390,7 +9478,7 @@ export class PiAgent extends BaseAgent {
               reason: decision.reason,
             });
           }
-          sendPermissionResolution(
+          await sendPermissionResolution(
             decision.verdict === 'allow'
               ? 'allow'
               : decision.verdict === 'block'
@@ -9402,7 +9490,7 @@ export class PiAgent extends BaseAgent {
             toolName,
             message: err instanceof Error ? err.message : String(err),
           });
-          sendPermissionResolution('system-deny');
+          await sendPermissionResolution('system-deny');
         }
       })();
       return;

@@ -664,6 +664,8 @@ export interface PiSubagentRunnerLaunchRequest {
 }
 
 export interface AgentDeps {
+  /** Pi Auto only. The host runs the pinned native engine on the execution device. */
+  evaluatePiCommandRules?: import('./pi/command-rules.js').EvaluatePiCommandRules;
   /** Opaque companion credential identity, freshly resolved at startup. No values enter the harness. */
   resolveSessionEnvironment?: (sessionId: string) => Promise<{ identity: string; assertCurrent?(): void } | undefined>;
   /** Cindy-only local Skill overrides. Freeze at native runtime startup; never apply to SSH. */
