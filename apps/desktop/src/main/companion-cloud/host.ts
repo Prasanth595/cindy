@@ -131,10 +131,13 @@ async function fetchAvatarBase64(url: string, signal?: AbortSignal): Promise<str
  * default a new profile gets. A downloadable image that cannot be read throws: the take-over
  * must not finish with a stale avatar that the new home would publish.
  */
-async function cloudAvatar(avatar: string | null, signal?: AbortSignal): Promise<{ portable: string } | { imageBase64: string }> {
+async function cloudAvatar(avatar: string | null, signal?: AbortSignal, fallback = false): Promise<{ portable: string } | { imageBase64: string } | { keep: true }> {
   if (!avatar?.startsWith('https://')) return { portable: portableBotAvatarOrFallback(avatar) };
   const imageBase64 = await fetchAvatarBase64(avatar, signal);
-  if (!imageBase64) throw new Error('AVATAR_UNAVAILABLE');
+  if (!imageBase64) {
+    if (fallback) return { keep: true };
+    throw new Error('AVATAR_UNAVAILABLE');
+  }
   return { imageBase64 };
 }
 
@@ -173,14 +176,14 @@ function createMaterializer(input: {
       return row ?? null;
     },
     // Normal creation path: no invitation, no generated persona, the new home's default model.
-    createProfile: async ({ id, name, description, identitySource, userContextSource, avatar }, fence) => {
-      const restored = await cloudAvatar(avatar, fence.signal);
+    createProfile: async ({ id, name, description, identitySource, userContextSource, avatar, avatarFallback }, fence) => {
+      const restored = await cloudAvatar(avatar, fence.signal, avatarFallback);
       fence.assertCurrent();
       await createBotProfile({ id, name: name.slice(0, 200), description, identitySource, userContextSource,
-        ...('portable' in restored ? { avatar: restored.portable } : { avatarImageBase64: restored.imageBase64 }) });
+        ...('imageBase64' in restored ? { avatarImageBase64: restored.imageBase64 } : 'portable' in restored ? { avatar: restored.portable } : {}) });
     },
-    updateProfile: async ({ id, name, description, identitySource, userContextSource, avatar }, fence) => {
-      const restored = await cloudAvatar(avatar, fence.signal);
+    updateProfile: async ({ id, name, description, identitySource, userContextSource, avatar, avatarFallback }, fence) => {
+      const restored = await cloudAvatar(avatar, fence.signal, avatarFallback);
       fence.assertCurrent();
       await updateBotProfile({ id, name: name.slice(0, 200), enabled: true,
         ...(description !== undefined ? { description } : {}),

@@ -107,6 +107,8 @@ export interface CompanionCloudRuntime {
   retire: (botId: string) => Promise<void>;
   /** Demoted here, or homed on this device but owned by another Cindy installation. */
   isShadowed: (botId: string) => boolean;
+  /** The take-over finished without the cloud avatar: the local avatar must not be published over it. */
+  isAvatarPending: (botId: string) => boolean;
   /** This installation is confirmed to run the companion (always true without an install guard). */
   installConfirmed: (botId: string) => boolean;
   /** Every shadowed local companion id (persisted by the caller). */
@@ -816,6 +818,7 @@ export function startCompanionCloud(input: {
     },
 
     isShadowed: botId => state.isDemoted(botId) || installOwner(botId) === 'other',
+    isAvatarPending: botId => state.isAvatarPending(botId),
     installConfirmed: botId => installOwner(botId) === 'mine',
     shadowIds: () => [...new Set([...state.demotedBotIds(),
       ...[...installs].flatMap(([botId, value]) => value.owner === 'other' ? [botId] : [])])].sort(),
