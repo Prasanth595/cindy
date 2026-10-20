@@ -68,6 +68,7 @@ CREATE TABLE sessions (
   title TEXT NOT NULL DEFAULT 'New Maker',
   working_dir TEXT,
   model TEXT NOT NULL DEFAULT 'claude-sonnet-4-6',
+  scheduled_model_baseline TEXT,
   provider_id TEXT,
   agent_device_id TEXT,
   effort TEXT NOT NULL DEFAULT 'high',

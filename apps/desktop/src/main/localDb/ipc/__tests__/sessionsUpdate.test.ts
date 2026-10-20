@@ -175,6 +175,7 @@ vi.mock('../../../cindy-brain/index.js', () => ({
 }));
 
 import {
+  applyAgentSwitchToSessionRow,
   broadcastSessionPatched,
   deleteBotProfileAndDetachSessionsInDb,
   patchSessionMetaInDb,
@@ -197,6 +198,7 @@ import { setSessionRouteLockImplementation } from '../../sessionRouteLock';
 import { assertTrustedAppRendererEvent } from '../../../security/trustedAppRenderer.js';
 import { createRemoteSessionsStatusSetter } from '../../../mcp-integrations/sessionStatusRemote.js';
 import * as sessionQueries from '../../sessionQueries';
+import { setSessionRuntimeProjector } from '../../mapper';
 
 function createDb(): void {
   const sqlite = new Database(':memory:');
@@ -221,6 +223,7 @@ function createDb(): void {
       title TEXT NOT NULL DEFAULT 'New CCS',
       working_dir TEXT,
       model TEXT NOT NULL DEFAULT 'claude-sonnet-4-6',
+      scheduled_model_baseline TEXT,
       effort TEXT NOT NULL DEFAULT 'high',
       permission_mode TEXT NOT NULL DEFAULT 'ask',
       status TEXT NOT NULL DEFAULT 'active',
@@ -876,6 +879,32 @@ describe('local-db:sessions:update handler wiring', () => {
       effort: 'high',
       fast_mode: 0,
     });
+  });
+
+  it.each(['model', 'harness'])('projects the saved owner choice during an automatic %s switch', async (kind) => {
+    const baseline = JSON.stringify({ scopeId: 'run', agentKind: 'pi', model: 'owner-model',
+      providerId: 'owner-provider', effort: 'high', fastMode: true });
+    h.sqlite!.prepare('UPDATE sessions SET scheduled_model_baseline = ? WHERE id = ?').run(baseline, 'pi-local');
+    const project = vi.fn((row: { scheduledModelBaseline?: string | null }) =>
+      row.scheduledModelBaseline ? { model: 'owner-model' } : {});
+    setSessionRuntimeProjector(project);
+    try {
+      if (kind === 'harness') {
+        await applyAgentSwitchToSessionRow('pi-local', {
+          agentKind: 'codex', model: 'automatic-model', providerId: null,
+        });
+      } else {
+        await persistSessionFields('pi-local', { model: 'automatic-model' });
+      }
+      expect(project).toHaveBeenCalledWith(expect.objectContaining({
+        model: 'automatic-model', scheduledModelBaseline: baseline,
+      }));
+      expect(h.tapWindowBroadcast).toHaveBeenCalledWith('local-db:sessions:patched', expect.objectContaining({
+        sessionId: 'pi-local', patch: expect.objectContaining({ model: 'owner-model' }),
+      }));
+    } finally {
+      setSessionRuntimeProjector(null);
+    }
   });
 
   it('rejects setting drift for retained Review tasks while preserving metadata edits', async () => {

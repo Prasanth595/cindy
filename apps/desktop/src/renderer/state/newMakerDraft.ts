@@ -1174,6 +1174,44 @@ export function patchVendorPrefsPreservingModelChoice(
   patchVendorPrefsInternal(vendor, patch, { markModelChoice: false });
 }
 
+/**
+ * 已有任务里只换模型(来源沿用任务自己的)时写回新建默认。
+ *
+ * 任务的来源不是这次选择的一部分：新建默认落在另一个来源上时整次不写，否则以后的新建
+ * 任务会被悄悄搬到这个任务的来源(例：在 Cindy AI 任务里换个模型，新建默认就从 Anthropic
+ * 变成 Cindy AI)。只有确认来源一致才照常写回并打标；来源无法确定时不写。换来源、跨引擎等
+ * 显式选择仍走 patchVendorPrefs。
+ *
+ * `taskProviderId` 是任务实际生效的来源(null = 任务来源未知，照常写回)，只用于比较；`resolveDraftProviderId` 给跟随默认
+ * 路由(providerId=null)的新建默认解析生效来源。返回是否写入。
+ */
+export function patchVendorPrefsFromTaskModelSwitch(
+  vendor: MakerVendor,
+  patch: Pick<VendorPrefs, 'model' | 'providerId'> & { effort?: Effort },
+  taskProviderId: string | null,
+  resolveDraftProviderId?: (prefs: VendorPrefs) => string | null,
+): boolean {
+  // 先吸收另一窗口刚保存的默认，再比较来源，避免用过期的内存值放行后覆盖它。
+  rebaseStoredDefaultTuplePreference();
+  const saved = currentDraft.lastByVendor[vendor];
+  if (taskProviderId) {
+    // 存着的来源可能已被服务端搬走(例如企业号池 Auto 搬到 XD)，先按实际路由解析，
+    // 解析不出再用存的值。
+    const draftProviderId = resolveDraftProviderId?.(saved) ?? saved.providerId ?? null;
+    // 只有确认新建默认就在任务的来源上才写回；来源不明(目录未就绪、账号切换中、没有来源提供该
+    // 模型)按保守处理，宁可这次不写，也不把默认搬到任务的来源。
+    if (draftProviderId !== taskProviderId) return false;
+  }
+  // 走到这里说明新建默认的实际来源已确认等于任务来源(或任务来源未知的旧行为)。草稿本来跟随默认
+  // 路由(providerId=null)就保持跟随，不因为任务显式用了某来源就把它固化成 override；草稿显式存着
+  // 来源时写入已确认的任务来源(不信任 patch 里可能过期的值)——存着的旧来源可能已被搬走，不能复活。
+  patchVendorPrefs(vendor, {
+    ...patch,
+    providerId: saved.providerId ? (taskProviderId ?? patch.providerId ?? saved.providerId) : null,
+  });
+  return true;
+}
+
 /** 单字段写入当前 vendor 的某个 pref(用户在 ChatInput 改 model 等时同步落地)。 */
 export function patchCurrentVendorPrefs(patch: Partial<VendorPrefs>): void {
   patchVendorPrefs(currentDraft.vendor, patch);

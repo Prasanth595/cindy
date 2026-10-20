@@ -404,6 +404,27 @@ describe('MCP App message authorization', () => {
 });
 
 describe('maker SEND transaction', () => {
+  it.each([false, true])('records the actual model only at dispatch (scheduled=%s)', async (scheduled) => {
+    const applyPendingAgentSwitch = vi.fn(async () => {});
+    const onModelDispatched = vi.fn();
+    const { deps, session } = createDeps({ applyPendingAgentSwitch, onModelDispatched });
+    vi.mocked(session.send).mockImplementation(async (_message, opts) => {
+      await opts?.onAccepted?.();
+      expect(onModelDispatched).not.toHaveBeenCalled();
+      opts?.onDispatching?.();
+      return { accepted: true };
+    });
+    await createMakerSendTransaction(deps).sendToAgentAccepted('session-1', 'continue', undefined, {
+      persistUserMessage: {
+        clientId: 'model-input', content: 'continue',
+        ...(scheduled ? { origin: { kind: 'scheduler' as const, scheduleId: 'schedule', runId: 'run' } } : {}),
+      },
+    });
+    expect(applyPendingAgentSwitch).toHaveBeenCalledWith('session-1',
+      scheduled ? { scheduled: true } : undefined);
+    expect(onModelDispatched).toHaveBeenCalledExactlyOnceWith('session-1', 'model-input');
+  });
+
   it.each([false, true])(
     'captures product state before preparation and resumes only at dispatch (persist=%s)',
     async (persist) => {
@@ -3784,6 +3805,7 @@ describe('session-agent-switch handoff injection', () => {
       const pending = new Map([['session-1', { targetAgentKind }]]);
       const beforeSend = vi.fn(async () => undefined);
       const bindings = {
+        scheduledModelScope: { restore: vi.fn(async () => undefined) },
         // UI-origin cross-engine preparation can return without clearing the intent.
         applyPendingAgentSwitchIfIdle: vi.fn(async () => undefined),
         agentSwitchDeps: {}, agentSwitchPending: pending,

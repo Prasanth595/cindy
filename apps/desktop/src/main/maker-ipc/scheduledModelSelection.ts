@@ -1,6 +1,7 @@
 import type { AgentKind, Effort } from '@cindy/maker-core';
 import { effectiveSourceIdForModel, findCatalogModel, type ProviderView } from '@cindy/model-providers';
 import { resolveCompatibleSessionRuntimeEffort } from './sessionRuntimeControl';
+import { parseScheduledModelBaseline, type ScheduledModelBaseline } from '../../shared/scheduledModelBaseline';
 
 /** A saved automation choice, applied only while its target's send lock is held. */
 export interface ScheduledModelSelection {
@@ -14,6 +15,51 @@ export interface ScheduledModelSelection {
 export interface ScheduledModelSelectionLease {
   release: () => void;
   selection: ScheduledModelSelection;
+  restore?: () => Promise<void>;
+}
+
+/** All calls run under the existing session send lock. The saved preference survives restart. */
+export function createScheduledModelScope(deps: {
+  read: (sessionId: string) => Promise<{
+    profile: Omit<ScheduledModelSelection, 'effort'> & {
+      effort: ScheduledModelSelection['effort'] | '';
+    };
+    baseline: string | null;
+  } | null>;
+  write: (sessionId: string, baseline: ScheduledModelBaseline | null) => Promise<void>;
+  isBusy: (sessionId: string) => boolean;
+  apply: (sessionId: string, profile: ScheduledModelSelection) => Promise<void>;
+  createId: () => string;
+  ownerEpoch?: () => string;
+}) {
+  const assertOwner = (owner: string | undefined) => {
+    if (owner !== deps.ownerEpoch?.()) throw new Error('Account changed during scheduled model selection');
+  };
+  return {
+    async begin(sessionId: string): Promise<string | undefined> {
+      const owner = deps.ownerEpoch?.();
+      const row = await deps.read(sessionId);
+      assertOwner(owner);
+      if (!row) return undefined;
+      const existing = parseScheduledModelBaseline(row.baseline);
+      if (existing) return existing.scopeId;
+      const scopeId = deps.createId();
+      await deps.write(sessionId, { ...row.profile, effort: row.profile.effort || null, scopeId });
+      return scopeId;
+    },
+    async restore(sessionId: string, expectedScopeId?: string): Promise<void> {
+      if (deps.isBusy(sessionId)) return;
+      const owner = deps.ownerEpoch?.();
+      const row = await deps.read(sessionId);
+      assertOwner(owner);
+      const baseline = parseScheduledModelBaseline(row?.baseline);
+      if (!baseline || (expectedScopeId && baseline.scopeId !== expectedScopeId)) return;
+      // Keep the saved choice on failure so the next input retries before dispatch.
+      await deps.apply(sessionId, baseline);
+      assertOwner(owner);
+      await deps.write(sessionId, null);
+    },
+  };
 }
 
 export class ScheduledModelSelectionBusyError extends Error {}

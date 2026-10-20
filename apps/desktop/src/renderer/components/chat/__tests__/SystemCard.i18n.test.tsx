@@ -18,6 +18,15 @@ afterEach(async () => {
   await i18n.changeLanguage('en');
 });
 
+it('shows a model-only boundary without inventing a Harness change', () => {
+  render(<SystemCard cardType="agent-switch" data={{
+    fromModel: 'owner-model', toModel: 'automation-model', modelOnly: true,
+  }} />);
+  expect(screen.getByRole('separator').getAttribute('aria-label')).toBe('owner-model → automation-model');
+  expect(screen.getAllByText('owner-model → automation-model')).toHaveLength(1);
+  expect(screen.queryByText(/Claude Code/)).toBeNull();
+});
+
 describe('command card localization boundaries', () => {
   it.each(SUPPORTED_LOCALES)('localizes card labels while preserving command data: %s', async (locale) => {
     await i18n.changeLanguage(locale);

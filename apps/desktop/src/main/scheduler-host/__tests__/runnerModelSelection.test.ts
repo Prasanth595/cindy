@@ -112,6 +112,7 @@ function createSessionHarness(): FakeSessionHarness {
   const listeners: Array<(event: AgentEvent) => void> = [];
   const send = vi.fn<SendImpl>(async (_message, opts) => {
     await opts?.onAccepted?.();
+    opts?.onDispatching?.();
     return { accepted: true };
   });
   // setModel 声明 string 入参(签名与真实 Session.setModel 一致),下面 mockImplementation 才能
@@ -124,6 +125,8 @@ function createSessionHarness(): FakeSessionHarness {
     id: 'scheduler-session',
     agentKind: 'claude-code',
     model: 'claude-sonnet-4-6',
+    stablePermissionModeState: { mode: 'ask' },
+    stablePlanModeState: { enabled: false },
     remoteHostId: null,
     send,
     setModel,
@@ -246,6 +249,8 @@ function createRunnerHarness(
   opts: {
     sessionAlive?: boolean;
     acquirePendingAgentSwitch?: ConstructorParameters<typeof MakerScheduleRunner>[0]['acquirePendingAgentSwitch'];
+    preserveModelPreferences?: ConstructorParameters<typeof MakerScheduleRunner>[0]['preserveModelPreferences'];
+    onModelDispatched?: ConstructorParameters<typeof MakerScheduleRunner>[0]['onModelDispatched'];
     applyPiModelSelectionUnderLock?: ConstructorParameters<typeof MakerScheduleRunner>[0]['applyPiModelSelectionUnderLock'];
     resolveModelSelection?: ConstructorParameters<typeof MakerScheduleRunner>[0]['resolveModelSelection'];
     activeSessions?: Session[];
@@ -288,6 +293,8 @@ function createRunnerHarness(
     checkModelRoute: opts.checkModelRoute,
     ...(opts.isAgentOnOtherDevice ? { isAgentOnOtherDevice: opts.isAgentOnOtherDevice } : {}),
     acquirePendingAgentSwitch: opts.acquirePendingAgentSwitch,
+    preserveModelPreferences: opts.preserveModelPreferences,
+    onModelDispatched: opts.onModelDispatched,
     applyPiModelSelectionUnderLock: opts.applyPiModelSelectionUnderLock ?? (async (_id, targetModel, providerId) => {
       await h.session.setModel(targetModel, { providerId });
       return { status: 'applied' as const };
@@ -323,6 +330,52 @@ describe('MakerScheduleRunner model selection', () => {
     mocks.setSessionFastMode.mockReset();
     mocks.isSessionInTurn.mockReturnValue(false);
     mocks.getSessionRowSnapshot.mockResolvedValue({ status: 'active' });
+  });
+
+  // Integration: follow the production runner from model override through completion/failure.
+  // The previous route tests asserted the automation model only, never the next user's choice.
+  it.each([
+    ['legacy', 'success'], ['explicit', 'success'],
+    ['legacy', 'failure'], ['explicit', 'failure'],
+  ] as const)('restores the owner model after %s dispatch %s', async (route, outcome) => {
+    const h = createSessionHarness();
+    const original = h.session.model;
+    const release = vi.fn();
+    const restore = vi.fn(async () => {
+      expect(release).toHaveBeenCalledTimes(1);
+      await h.session.setModel(original);
+    });
+    const preserve = vi.fn(async () => restore);
+    const onModelDispatched = vi.fn(() => {
+      expect(h.session.model).toBe('claude-opus-4-8');
+    });
+    const harness = createRunnerHarness(h, {
+      agentKind: 'claude-code', model: original, effort: 'high', workDir: '/work',
+    }, {
+      sessionAlive: true,
+      preserveModelPreferences: preserve,
+      onModelDispatched,
+      acquirePendingAgentSwitch: async (_id, _signal, selection) => {
+        if (!selection) return release;
+        await h.session.setModel(selection.model);
+        return { release, selection, restore };
+      },
+    });
+    const schedule = baseSchedule({
+      targetSessionId: h.session.id, model: 'claude-opus-4-8',
+      ...(route === 'explicit' ? { modelAgentKind: 'claude-code' as const } : {}),
+    });
+    if (outcome === 'failure') {
+      h.send.mockRejectedValueOnce(new Error('dispatch failed'));
+      await expect(harness.runner.fire(schedule, createFireContext())).rejects.toThrow('Session send failed before dispatch');
+      expect(onModelDispatched).not.toHaveBeenCalled();
+    } else {
+      await fireToCompletion(harness, h, schedule);
+      expect(onModelDispatched).toHaveBeenCalledWith(h.session.id, expect.any(String));
+    }
+    expect(restore).toHaveBeenCalledTimes(1);
+    expect(h.session.model).toBe(original);
+    expect(preserve).toHaveBeenCalledTimes(route === 'legacy' ? 1 : 0);
   });
 
   describe('resolved automation selection survives the full fire', () => {

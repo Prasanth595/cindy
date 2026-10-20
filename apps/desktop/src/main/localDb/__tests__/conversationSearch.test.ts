@@ -78,6 +78,7 @@ function createSearchDb(): Database.Database {
       working_dir TEXT,
       workspace_kind TEXT NOT NULL DEFAULT 'project',
       model TEXT NOT NULL DEFAULT 'claude-sonnet-4-6',
+      scheduled_model_baseline TEXT,
       effort TEXT NOT NULL DEFAULT 'high',
       permission_mode TEXT NOT NULL DEFAULT 'ask',
       status TEXT NOT NULL DEFAULT 'active',

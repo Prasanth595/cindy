@@ -414,6 +414,15 @@ export function normalizeRemoteMessages(
       continue;
     }
 
+    if (message.role === 'assistant' && readRecord(message.agentMeta?.modelChange)) {
+      result.push({
+        key: messageNormalizeKey(message), source: message, kind: 'system',
+        role: message.role, label: 'system:agent-switch', body: '',
+        systemCardType: 'agent-switch', systemCardData: readRecord(message.agentMeta?.modelChange)!,
+        align: 'agent', createdAt: message.createdAt,
+      });
+      continue;
+    }
     // Desktop persists context rebuilds as empty assistant rows with metadata.
     if (message.role === 'assistant') {
       const rebuild = readRecord(message.agentMeta?.contextRebuild);

@@ -68,6 +68,23 @@ const createRestorer = new Function('resolveFastSupported', 'env', `
   return resolveFast;
 `);
 
+// Agent-switch uses a separate restoration path. Execute its production speed
+// decision too: the earlier callback regression did not cover this request.
+const switchFastSource = composerSource.slice(
+  composerSource.indexOf('        const requestedFast = overrides?.fastMode ?? ('),
+  composerSource.indexOf('        // 会话级操作按来源路由:'),
+);
+const switchFastJs = ts.transpileModule(switchFastSource, {
+  compilerOptions: { target: ts.ScriptTarget.ES2022 },
+}).outputText;
+const resolveSwitchFast = new Function('resolveFastSupported', 'env', `
+  const {deviceLinkDeviceId, remoteProviders, providers, targetAgentKind,
+    ccCaps, codexCaps, piCaps, providerId, newModelId, modelMemory,
+    overrides, fromOtherCatalog} = env;
+  ${switchFastJs}
+  return targetFast;
+`);
+
 /** 最小 AgentCapabilities 工厂(helper 只读 hasFastMode + availableModels)。 */
 function caps(hasFastMode: boolean, flatFast: boolean | undefined): AgentCapabilities {
   return {
@@ -197,4 +214,52 @@ it.each([undefined, 'remote-host'])('composer restores speed by the target accou
   expect(selection('standard').fastMode).toBe(true);
   remembered = false;
   expect(selection('eligible').fastMode).toBe(false);
+});
+
+// PR #6559 P1: actual performAgentSwitch request speed, unit tier. Existing
+// resolveFast coverage misses both its memory and override branches. Minimal
+// failure: remembered ultrafast + same model on a Fast-only target account.
+it.each([undefined, 'remote-host'])('agent switch constrains restored and override speed by the target account (%s)', deviceId => {
+  const account = (id: string, supportsUltrafastMode: boolean): ProviderView => ({
+    ...localViews[0], id, agents: ['codex'],
+    routing: { codex: localViews[0].routing['claude-code'] },
+    models: { codex: [{ ...localViews[0].models['claude-code']![0],
+      supportsFastMode: true, supportsUltrafastMode }] },
+  });
+  const eligible = account('eligible', true);
+  const executionProviders = [eligible, account('standard', false)];
+  let remembered: boolean | 'ultrafast' = 'ultrafast';
+  const capability = { capabilities: caps(true, true) };
+  const env = {
+    deviceLinkDeviceId: deviceId,
+    remoteProviders: { providers: deviceId ? executionProviders : [] as ProviderView[] },
+    providers: deviceId ? [account('eligible', true), account('standard', true)] : executionProviders,
+    targetAgentKind: 'codex',
+    ccCaps: { capabilities: caps(false, false) }, codexCaps: capability, piCaps: capability,
+    newModelId: 'opus', modelMemory: { getFast: () => remembered },
+    fromOtherCatalog: false,
+  };
+  const speed = (providerId: string, overrides?: { fastMode: boolean | 'ultrafast' }) =>
+    resolveSwitchFast(resolveFastSupported, { ...env, providerId, overrides });
+  for (const overrides of [undefined, { fastMode: 'ultrafast' as const }]) {
+    expect(speed('eligible', overrides)).toBe('ultrafast');
+    expect(speed('standard', overrides)).toBe(false);
+    expect(speed('eligible', overrides)).toBe('ultrafast');
+    eligible.models.codex![0].supportsUltrafastMode = false;
+    expect(speed('eligible', overrides)).toBe(false);
+    eligible.models.codex![0].supportsUltrafastMode = true;
+  }
+  if (deviceId) {
+    env.remoteProviders.providers = [];
+    expect(speed('eligible')).toBe(false);
+    expect(speed('eligible', { fastMode: 'ultrafast' })).toBe(false);
+  }
+  remembered = true;
+  expect(speed('standard')).toBe(true);
+  expect(speed('standard', { fastMode: false })).toBe(false);
+  // Picks from another computer's catalog have already been reconciled there.
+  expect(resolveSwitchFast(resolveFastSupported, {
+    ...env, providerId: 'standard', fromOtherCatalog: true,
+    overrides: { fastMode: 'ultrafast' },
+  })).toBe('ultrafast');
 });

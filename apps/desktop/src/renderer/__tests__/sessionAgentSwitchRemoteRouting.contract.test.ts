@@ -387,8 +387,7 @@ describe('ChatInput 的入口门控与调用路由', () => {
       'return await performAgentSwitch(intent.target, newModelId, null, {',
     );
     expect(source).toContain('intent.effort ? { effort: intent.effort as Effort }');
-    // 意图期改选带来的 Fast override 必须过目标能力门,不能把旧 Fast 写进不支持的模型。
-    expect(source).toContain('fastCapable ? overrides.fastMode : false');
+    // 速度恢复与 override 的目标能力门由 resolveFastSupported.test.ts 执行生产分支验证。
   });
 
   /**

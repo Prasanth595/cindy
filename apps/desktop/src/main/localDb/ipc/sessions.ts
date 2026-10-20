@@ -726,6 +726,7 @@ export async function applyAgentSwitchToSessionRow(
     .returning({
       id: sessions.id, agentKind: sessions.agentKind, model: sessions.model,
       providerId: sessions.providerId, effort: sessions.effort, fastMode: sessions.fastMode,
+      scheduledModelBaseline: sessions.scheduledModelBaseline,
     });
   if (!committed || !isOwnerScopeCurrent(ownerScope)) return;
   broadcastSessionPatched(
@@ -826,7 +827,18 @@ export async function persistSessionFields(
   });
   if (Object.keys(setObj).length === 0) return;
   await db.update(sessions).set(setObj).where(eq(sessions.id, sessionId));
-  if (isOwnerScopeCurrent(ownerScope)) broadcastSessionPatched(sessionId, clean, ownerScope);
+  let runtimeProjection = {};
+  if (['model', 'providerId', 'effort', 'fastMode'].some((key) => key in clean)) {
+    const [row] = await db.select({
+      id: sessions.id, agentKind: sessions.agentKind, model: sessions.model,
+      providerId: sessions.providerId, effort: sessions.effort, fastMode: sessions.fastMode,
+      scheduledModelBaseline: sessions.scheduledModelBaseline,
+    }).from(sessions).where(eq(sessions.id, sessionId)).limit(1);
+    if (row?.scheduledModelBaseline) {
+      runtimeProjection = projectSessionRuntimeFields({ ...row, agentKind: normalizeDbAgentKind(row.agentKind) });
+    }
+  }
+  if (isOwnerScopeCurrent(ownerScope)) broadcastSessionPatched(sessionId, { ...clean, ...runtimeProjection }, ownerScope);
 }
 
 const MAX_LIMIT = 1000;

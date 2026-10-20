@@ -100,6 +100,9 @@ describe.each([
       sessionId: 'archived-task', effort: 'high', enabled: true,
       sessions: {}, eq: vi.fn(), getDbClient: () => ({ drizzle: { select: () => query } }),
       remoteResponse: response, persistSessionFields: persist, agentSwitchPending: pending,
+      // These archived fixtures have no saved automation model scope.
+      updateSavedScheduledAxis: vi.fn(async () => false),
+      updateScheduledPreference: vi.fn(async () => {}),
       assertOwnerCurrent: vi.fn(), assertSharedTaskCurrent: { admit: vi.fn() },
       markRemoteSettingPersistedInsideHandler: vi.fn(), maker: { getSession },
       isUserPendingAgentSwitchIntent, projectPendingAgentSwitchIntent: (intent: unknown) => intent,

@@ -19181,6 +19181,12 @@ function mapServerMessages(serverMsgs: Message[]): ChatMessage[] {
         ...(c.dismissed === true ? { errorDismissed: true } : {}),
       };
     }
+    if (m.role === 'assistant' && m.agentMeta?.modelChange) {
+      return {
+        clientId: m.clientId, role: 'assistant' as const, content: '', isStreaming: false,
+        systemCardType: 'agent-switch' as const, systemCardData: { ...m.agentMeta.modelChange },
+      };
+    }
     // 同一引擎换干净原生会话：可见交接记录，展开看发给新窗口的摘要。
     const contextRebuild =
       m.role === 'assistant' && m.agentMeta && typeof m.agentMeta === 'object'

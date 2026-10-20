@@ -66,6 +66,7 @@ function setup(agent: 'cc' | 'codex' | 'pi' = 'codex', role: string | null = 'wo
     resolveVerifiedContextWindow, contextOverflowRolloverHolder: rollover,
     agentSwitchDeps: { onPendingSwitchChanged: vi.fn() }, projectPendingAgentSwitchIntent,
     wakeSessionInputAfterCredentialSwitch: vi.fn(), persistSessionFields: persist,
+    updateScheduledPreference: vi.fn(async () => {}),
     isDeviceLinkInvoke: () => false, markRemoteSettingPersistedInsideHandler: vi.fn(),
     setSessionProvider: vi.fn(), setSessionEffort: vi.fn(), setSessionFastMode: vi.fn(), getSessionEffort: () => 'high',
     recordUserSessionRuntimeMutation: () => 1, broadcastSessionRuntimeProjection: async () => {},

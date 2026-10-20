@@ -190,6 +190,11 @@ export const QUEUED_DISPATCH_SUSPEND_GAP_MS = 30_000;
 /** terminal error 后紧随的同轮 done 配对窗口；自动续跑的最短退避远大于它。 */
 const INTERRUPTED_ERROR_DONE_FALLBACK_MS = 250;
 
+function hasScheduledModelOverride(schedule: Schedule): boolean {
+  return !!(schedule.model?.trim() || schedule.providerId?.trim() || schedule.effort ||
+    schedule.fastMode !== undefined);
+}
+
 /**
  * 调度场景的 model / permissionMode 兜底默认 —— schedule 表单允许"留空走默认"，
  * runner 必须把空值翻成具体合法值，否则落库就是空字符串 / 'ask'，主区右下角
@@ -276,6 +281,8 @@ export interface MakerScheduleRunnerDeps {
     signal?: AbortSignal,
     selection?: ScheduledModelSelection,
   ) => Promise<(() => void) | ScheduledModelSelectionLease>;
+  preserveModelPreferences?: (sessionId: string) => Promise<() => Promise<void>>;
+  onModelDispatched?: (sessionId: string, clientId: string) => void;
   /** Resolve the same provider-specific snapshot for fresh explicit choices. */
   resolveModelSelection?: (selection: ScheduledModelSelection) => Promise<ScheduledModelSelection>;
   /** Apply Pi's route and context-window transaction while the send lock is held. */
@@ -737,6 +744,12 @@ export class MakerScheduleRunner implements ScheduleRunner {
       closeQuietOutput?.();
       holder.releaseAgentSwitchLock?.();
       holder.releaseAgentSwitchLock = undefined;
+      try {
+        await holder.restoreModelPreferences?.();
+      } catch (error) {
+        // The durable baseline remains authoritative; the next input retries before sending.
+        this.deps.logger.warn?.('[runner] scheduled model restoration deferred', error);
+      }
       await this.clearSchedulerRunContext(holder);
       holder.headlessGhostSetupTurn?.close();
       if (
@@ -940,6 +953,7 @@ export class MakerScheduleRunner implements ScheduleRunner {
           ? this.deps.acquirePendingAgentSwitch?.(sessionId, ctx.signal, selection)
           : this.deps.acquirePendingAgentSwitch?.(sessionId, ctx.signal));
         holder.releaseAgentSwitchLock = typeof lease === 'function' ? lease : lease?.release;
+        if (typeof lease !== 'function') holder.restoreModelPreferences = lease?.restore;
         if (selection) {
           if (!lease || typeof lease === 'function')
             throw new Error('Scheduled model selection was not resolved');
@@ -1063,6 +1077,9 @@ export class MakerScheduleRunner implements ScheduleRunner {
             fastMode: meta?.fastMode,
             providerId: row?.providerId ?? null,
           });
+        }
+        if (!holder.restoreModelPreferences && hasScheduledModelOverride(schedule)) {
+          holder.restoreModelPreferences = await this.deps.preserveModelPreferences?.(sessionId);
         }
         resumeSessionId = meta?.sdkSessionId;
         heartbeatWorkingDir = meta?.workDir;
@@ -1964,6 +1981,9 @@ export class MakerScheduleRunner implements ScheduleRunner {
           ) {
             throw new RoutineDispatchDeferredError('Heartbeat modes changed before dispatch');
           }
+          if (acceptedMessageClientId) {
+            this.deps.onModelDispatched?.(session.id, acceptedMessageClientId);
+          }
         },
         planMode: routinePermissions?.planMode ?? heartbeatPermissions?.planMode ?? false,
         onAccepted: async () => {
@@ -2428,6 +2448,9 @@ export class MakerScheduleRunner implements ScheduleRunner {
           : schedule.prompt,
       origin,
       onPreparing: async () => {
+        if (schedule.targetSessionId && hasScheduledModelOverride(schedule) && this.deps.preserveModelPreferences) {
+          holder.restoreModelPreferences = await this.deps.preserveModelPreferences?.(sessionId);
+        }
         const preparingLive = this.deps.maker.getSession(sessionId);
         if ((preparingLive?.agentKind ?? routingBaseline.agentKind ?? schedule.agentKind) !== 'pi') return;
         preparedPiRoute = await this.prepareQueuedPiRouting(
@@ -3776,6 +3799,7 @@ interface EphemeralSessionHolder {
   keepAlive?: boolean;
   /** heartbeat direct-send route lock; released immediately after Session.send settles. */
   releaseAgentSwitchLock?: () => void;
+  restoreModelPreferences?: () => Promise<void>;
   /** unique ownership generation for the session-level scheduler run context. */
   schedulerRunContextOwner?: SchedulerRunContextOwner;
 }

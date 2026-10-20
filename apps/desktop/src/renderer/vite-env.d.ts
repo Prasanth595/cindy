@@ -2549,6 +2549,8 @@ interface ElectronAPI {
       modelId: string;
       active: boolean;
       markModelChoice?: boolean;
+      /** 已有任务里只换模型时,任务沿用的来源(见 patchVendorPrefsFromTaskModelSwitch)。 */
+      taskProviderId?: string;
       effort?: string;
       fast?: boolean | 'ultrafast';
       thinking?: boolean;

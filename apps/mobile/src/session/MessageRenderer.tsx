@@ -5317,7 +5317,8 @@ function MobileAgentSwitchCard({ data }: { data?: Record<string, unknown> }) {
   const handoff = typeof data?.handoff === 'string' ? data.handoff : '';
   const resumed = data?.resumed === true;
   // 远程 Agent 换了电脑:药丸说位置(「Agent 改到 X 运行」),否则仍是「已从 X 切换到 Y」。
-  const label = formatAgentSwitchLocationLabel(data, (key, options) => t(key, options))
+  const modelOnly = data?.modelOnly === true;
+  const label = modelOnly ? `${data?.fromModel ?? ''} → ${toModel}` : formatAgentSwitchLocationLabel(data, (key, options) => t(key, options))
     ?? t('message.renderer.agentSwitchLabel', { from, to });
 
   return (
@@ -5333,7 +5334,7 @@ function MobileAgentSwitchCard({ data }: { data?: Record<string, unknown> }) {
         >
           <ArrowLeftRight color={colors.textTertiary} size={iconSize.xs} strokeWidth={iconStroke.regular} />
           <Text style={styles.agentSwitchPillText} numberOfLines={1}>{label}</Text>
-          {toModel ? (
+          {toModel && !modelOnly ? (
             <>
               <Text style={styles.agentSwitchDot}>·</Text>
               <Text style={styles.agentSwitchModel} numberOfLines={1}>{toModel}</Text>

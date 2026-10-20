@@ -502,7 +502,8 @@ export interface MakerSendTransactionDeps {
    * 保留意图本次不动。undefined = 不启用(测试最小 harness)。`signal` 是这次发送的取消信号：
    * 供应商组在这里等原电脑恢复时，发送被停止就不再等、不再换电脑。
    */
-  applyPendingAgentSwitch?(sessionId: string, options?: { signal?: AbortSignal }): Promise<void>;
+  applyPendingAgentSwitch?(sessionId: string, options?: { signal?: AbortSignal; scheduled?: boolean }): Promise<void>;
+  onModelDispatched?(sessionId: string, clientId: string): void;
   /**
    * 发送前换窗:必须在 getSession 之前。prepare 会关掉不健康的 live handle,
    * 随后本事务按空 session 走 lazy-create,避免 peek 之后对已关闭对象 send。
@@ -1023,9 +1024,15 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
       // session-agent-switch:pending 切换在发送时刻生效(用户语义:「消息真正发出
       // 去时才切」)。必须在 getSession 之前——apply 会 close 旧引擎的 live session,
       // 让下方走 lazy-create 按 DB 新值 spawn 新引擎。
+      const sendOrigin = requestedSendOpts.persistUserMessage?.origin ?? requestedSendOpts.origin;
+      const scheduled = !!sendOrigin && typeof sendOrigin === 'object' &&
+        (sendOrigin as { kind?: unknown }).kind === 'scheduler';
       await deps.applyPendingAgentSwitch?.(
         sessionId,
-        requestedSendOpts.signal ? { signal: requestedSendOpts.signal } : undefined,
+        requestedSendOpts.signal || scheduled ? {
+          ...(requestedSendOpts.signal ? { signal: requestedSendOpts.signal } : {}),
+          ...(scheduled ? { scheduled: true } : {}),
+        } : undefined,
       );
       // 发送前的准备期间就被停止(如供应商组正在等原电脑恢复)：不再打开会话、不再派发，与 Session 在派发前
       // 收到取消是同一个结果，由调用方按「派发前取消」收尾。
@@ -1804,6 +1811,9 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
               );
             }
             deps.assertBeforeVendorDispatch?.(sessionId, finalFenceSendOpts);
+            if (persistUserMessage?.clientId) {
+              deps.onModelDispatched?.(sessionId, persistUserMessage.clientId);
+            }
             dispatchProductTurn?.();
             if (userPromptPreviewSessionId) {
               deps.dispatchUserPromptPreview?.(
