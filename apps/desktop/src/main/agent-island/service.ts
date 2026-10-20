@@ -1964,10 +1964,18 @@ export class AgentIslandService {
     this.clearPublishTimer();
     const nextAt = getNextAgentIslandTimerAt(this.state, now);
     if (!nextAt) return;
+    const delay = nextAt - now + 20;
+    // A suspended host or fake clock can pass the deadline before this callback
+    // runs. Keeping the original delay would wake once per timer tick until it
+    // caught up, so publish from the new clock immediately instead.
     this.publishTimer = setTimeout(() => {
       this.publishTimer = null;
-      this.publish();
-    }, Math.max(0, nextAt - now + 20));
+      if (Date.now() >= nextAt) {
+        this.publish();
+        return;
+      }
+      this.scheduleNextPublish(Date.now());
+    }, Math.max(0, Math.min(delay, 2_147_483_647)));
   }
 
   private clearPublishTimer(): void {
