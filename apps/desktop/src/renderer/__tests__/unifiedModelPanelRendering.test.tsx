@@ -16,6 +16,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { FastMode } from '@cindy/maker-shared';
 
 /** 统一面板发起的深度写入带上「面板已串行」标记(见 ModelSelector 的 onEffortChangeLive)。 */
 const FROM_PANEL = { serializedByPanel: true };
@@ -2660,11 +2661,11 @@ describe('统一面板 · 编辑选中的收藏同步到 live', () => {
  */
 describe('统一面板 · 恢复推荐删记忆键', () => {
   /** 带删除入口的最小记忆实现(本地 providerModelMemory 的形状)。 */
-  function makeMemory(seed?: { effort?: Record<string, string>; fast?: Record<string, boolean> }) {
+  function makeMemory(seed?: { effort?: Record<string, string>; fast?: Record<string, FastMode> }) {
     const keyOf = (agent: string, providerId: string, modelId: string) =>
       `${agent}|${providerId}|${modelId}`;
     const effort = new Map<string, string>(Object.entries(seed?.effort ?? {}));
-    const fast = new Map<string, boolean>(Object.entries(seed?.fast ?? {}));
+    const fast = new Map<string, FastMode>(Object.entries(seed?.fast ?? {}));
     return {
       effort,
       fast,
@@ -2675,7 +2676,7 @@ describe('统一面板 · 恢复推荐删记忆键', () => {
           effort.set(keyOf(a, p, m), e);
         },
         getFast: (a: string, p: string, m: string) => fast.get(keyOf(a, p, m)),
-        setFast: (a: string, p: string, m: string, v: boolean) => {
+        setFast: (a: string, p: string, m: string, v: FastMode) => {
           fast.set(keyOf(a, p, m), v);
         },
         clearEffort: (a: string, p: string, m: string) => {
