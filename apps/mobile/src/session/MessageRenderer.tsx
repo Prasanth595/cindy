@@ -3026,10 +3026,9 @@ const RenderItemView = memo(function RenderItemView({
   }
   const groupTimestamp = actions.companion && item.type === 'message'
     ? actions.companionTimeGroups?.get(item.key) : undefined;
-  // K1: every companion card (task, result, teammate-message pill) hangs on the replies' column,
-  // left-aligned with the reply text behind an invisible avatar.
-  const alignWithReplies = !!actions.companionAvatar && actions.companion && item.type === 'message'
-    && !!item.message.companion;
+  // Cards and work groups share the reply text column, leaving the avatar slot empty.
+  const alignWithReplies = !!actions.companionAvatar && actions.companion
+    && (item.type === 'work_group' || (item.type === 'message' && !!item.message.companion));
   const aligned = alignWithReplies ? <View style={styles.companionAvatarInset}>{node}</View> : node;
   // Companion chats: a new message or finished reply eases in once (M4 / M5); everything else stays still.
   const entering = actions.companion && item.type === 'message' && !item.message.systemCardType
@@ -4720,6 +4719,10 @@ function WorkGroupCard({
   const contentLayout = useMemo(() => buildMessageContentLayout({ screenWidth: actions.screenWidth }), [actions.screenWidth]);
   const liveActivities = useMemo(() => isStreaming && !lineMode
     ? projectRecentMobileWorkActivities(item.children, true, 5) : [], [item.children, isStreaming, lineMode]);
+  // The outer group already occupies the reply column. Keep companion actions,
+  // but neither repeat its portrait nor indent nested work groups a second time.
+  const childActions = useMemo(() => actions.companion && actions.companionAvatar
+    ? { ...actions, companionAvatar: undefined } : actions, [actions]);
   const activityProjection = useMemo(
     () => (expanded
       ? projectMobileWorkActivities(item.children, isStreaming)
@@ -4828,7 +4831,7 @@ function WorkGroupCard({
                   </View>
                 );
               }
-              return <RenderItemView key={child.key} item={child} actions={actions} />;
+              return <RenderItemView key={child.key} item={child} actions={childActions} />;
             })}
           </View>
         </Rail>

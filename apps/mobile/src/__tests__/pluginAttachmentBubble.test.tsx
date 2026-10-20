@@ -252,6 +252,27 @@ describe('partner conversation presentation', () => {
     for (const element of cases) expect(renderClient(element)).not.toContain('companion.taskResult');
   });
 
+  // Regression: expanding process prose must not duplicate the final reply's portrait.
+  // Exercise the production projection and renderer, including nested work groups.
+  it('keeps expanded companion work readable without repeating the reply portrait', () => {
+    const items = companionConversationItems(buildMobileMessageRenderItems([
+      msg('u', 'user', 'Check it'),
+      msg('p', 'assistant', 'Checking the details', { agentMeta: { assistantPhase: 'commentary' } }),
+      msg('t', 'tool_use', { toolName: 'Bash', toolUseId: 't', input: { command: 'pwd' } }, { toolUseId: 't' }),
+      msg('f', 'assistant', 'Here is the result', { agentMeta: { assistantPhase: 'final_answer' } }),
+    ], { isSessionStreaming: false }));
+    viewportHarness.expanded = true;
+    try {
+      const html = renderClient(<MessageRenderer items={items} companion companionAvatar={<i data-testid="partner-portrait" />} />);
+      expect(html.match(/message\.agentBubble/g)).toHaveLength(2);
+      expect(html).toContain('message.toolRow');
+      expect(html.match(/companion\.replyRow/g)).toHaveLength(1);
+      expect(html.match(/partner-portrait/g)).toHaveLength(1);
+    } finally {
+      viewportHarness.expanded = false;
+    }
+  });
+
   it('hangs replies from the partner portrait and stamps five-minute groups like Desktop', () => {
     const messages = [
       msg('u1', 'user', 'Hi', { createdAt: '2026-01-01T09:00:00Z' }),
