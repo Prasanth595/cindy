@@ -66,6 +66,7 @@ import type {
 import { conversationSearchTitle } from '../../../../shared/conversationSearch';
 import { highlightSegments } from '../lib/highlightSegments';
 import { keywordRanges } from './keywordRanges';
+import { FilterReminderDot } from './FilterReminderDot';
 import { resolveSessionRoute } from '@/lib/orcaSessionIdentity';
 import { remoteProjectsStore } from '@/features/device-link/remoteProjectsStore';
 import { conversationSearchResultKey } from '@/lib/conversationSearchFanout';
@@ -985,12 +986,7 @@ export function SearchFilterMenu({
         >
           <SlidersHorizontal size={compact ? 14 : 13} className="shrink-0" />
           {compact ? (
-            activeCount > 0 && (
-              <span
-                aria-hidden
-                className="absolute -right-0.5 -top-0.5 size-1.5 rounded-full bg-[var(--status-bar-accent)]"
-              />
-            )
+            activeCount > 0 && <FilterReminderDot />
           ) : (
             <>
               <span className="truncate">
