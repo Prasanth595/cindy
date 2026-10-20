@@ -10660,7 +10660,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     apply: async (sessionId, profile) => { await applyScheduledProfile(sessionId, profile); },
   });
   const updateScheduledPreference = async (
-    sessionId: string, patch: { effort?: ScheduledModelSelection['effort']; fastMode?: boolean } | null,
+    sessionId: string, patch: { effort?: ScheduledModelSelection['effort']; fastMode?: ScheduledModelSelection['fastMode'] } | null,
   ) => {
     const db = getDbClient().drizzle;
     const [row] = await db.select({ baseline: sessions.scheduledModelBaseline }).from(sessions)
@@ -10674,7 +10674,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   };
   const updateSavedScheduledAxis = async (
     sessionId: string,
-    patch: { effort?: ScheduledModelSelection['effort']; fastMode?: boolean },
+    patch: { effort?: ScheduledModelSelection['effort']; fastMode?: ScheduledModelSelection['fastMode'] },
     assertCurrent: () => void,
   ): Promise<boolean> => {
     const [row] = await getDbClient().drizzle.select({ baseline: sessions.scheduledModelBaseline })

@@ -7,7 +7,7 @@ export interface ScheduledModelBaseline {
   model: string;
   providerId: string | null;
   effort: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra' | null;
-  fastMode: boolean;
+  fastMode: boolean | 'ultrafast';
 }
 
 export function parseScheduledModelBaseline(value: unknown): ScheduledModelBaseline | null {
@@ -23,7 +23,7 @@ export function parseScheduledModelBaseline(value: unknown): ScheduledModelBasel
       typeof parsed.model !== 'string' || !parsed.model ||
       (parsed.providerId !== null && typeof parsed.providerId !== 'string') ||
       (effort !== null && !['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(effort)) ||
-      typeof parsed.fastMode !== 'boolean') return null;
+      (typeof parsed.fastMode !== 'boolean' && parsed.fastMode !== 'ultrafast')) return null;
     return { ...parsed, effort };
   } catch {
     return null;
