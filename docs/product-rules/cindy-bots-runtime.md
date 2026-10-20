@@ -189,6 +189,12 @@ tool 副作用时自动重放。原生后台工作尚未结束时不自动关闭
 
 **伙伴聊天显示工作过程（2026-10-15，Chris：「你这么做不如改回当年 session 的思考了」→ 直接用 session 同一套）**：伙伴的回复列与普通任务共用同一个工作过程折叠块（`WorkGroupBlock`）——运行中露出最近几步（工具名／文件／命令／思考首句）与计时，完成后折叠成「已工作 Xs」，点开可见思考与工具行；不再在渲染前删掉 thinking、tool 与 work_group。伙伴明确说给用户听的回复（provider 标为 final、群投递、显式投递或已收尾的回复）永远不藏进折叠里：工作过程在这类回复前后分段。输入框上方不再有只会说大类词的「正在处理…」状态行；运行状态走普通任务同一条 `RunningStatusBar`。工作过程与回复正文同列（头像列留空），不重复画脸。实现见 `botConversationPresentation.ts` 与 `MessageStream.tsx`。
 
+手机端遵守同一展示规则：`companionConversationPresentation.ts` 保留工作组及其历史详情加载入口，
+`MessageRenderer.tsx` 在运行中展示最近五条活动；旧电脑未下发活动行时读取已有预览范围。
+provider 的 `final_answer` 从首段正文起可见，历史视图接管、后续工具调用和完成收口均不得把它过滤掉。
+本链路验收同时覆盖普通任务与伙伴入口、实时消息转历史、折叠展开及重开；不能用桌面验收代替手机验收。
+回归见 Mobile `companionConversationPresentation.test.ts`、`mobileHistoryRender.test.ts` 与 `pluginAttachmentBubble.test.tsx`。
+
 普通设置不显示“永久 Session”“手动压缩”“自动换 Session”或运行时 fallback 开关。健康、
 归档和故障信息可以在需要时呈现，但维护动作默认由系统完成。用户只管理伙伴，不管理容器。
 

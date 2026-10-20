@@ -22,7 +22,7 @@ vi.mock('react-native', async () => {
     Platform: { OS: 'ios', select: (s: any) => s.ios ?? s.default },
     StyleSheet: { create: (s: any) => s, flatten: (s: any) => s, hairlineWidth: 1 },
     Easing: { linear: (n: number) => n, bezier: () => (n: number) => n },
-    AccessibilityInfo: {}, Alert: {}, Linking: {}, StatusBar: {},
+    AccessibilityInfo: { isReduceMotionEnabled: () => Promise.resolve(true), addEventListener: () => ({ remove() {} }) }, Alert: {}, Linking: {}, StatusBar: {},
     useWindowDimensions: () => ({ width: 402, height: 874, scale: 3, fontScale: 1 }),
   };
 });
@@ -150,6 +150,30 @@ describe('partner work feedback', () => {
 });
 
 describe('running work group expansion', () => {
+  // Missing preview regression: actual MessageRenderer must expose raw/old-Host
+  // activity while folded, not just Host-projected lines. Native views are adapters.
+  it('shows the latest thinking without Host lines in ordinary and companion tasks', () => {
+    const messages = [msg('u', 'user', 'Check this'), ...Array.from({ length: 6 }, (_, n) =>
+      msg(`thought-${n}`, 'thinking', { text: `Thinking step ${n}`, durationMs: 1 }))];
+    const items = buildMobileMessageRenderItems(messages, { isSessionStreaming: true }).filter(item => item.type === 'work_group');
+    for (const companion of [false, true]) {
+      const html = renderToStaticMarkup(<MessageRenderer
+        items={companion ? companionConversationItems(items) : items} companion={companion} isSessionStreaming />);
+      expect(html).toContain('Thinking step 5');
+      expect(html).not.toContain('Thinking step 0');
+    }
+  });
+  it.each([undefined, []])('requests an old-Host preview only when running lines are absent: %j', (lines) => {
+    const setVisible = vi.fn();
+    const items = buildMobileMessageRenderItems([
+      msg('thought', 'thinking', { text: 'Cached thinking', durationMs: 1 }),
+    ], { isSessionStreaming: true }).filter(item => item.type === 'work_group')
+      .map(item => ({ ...item, deferred: { owner: {}, key: item.key, expanded: false,
+        loading: false, failed: false, lines, setVisible, toggle() {}, retry() {} } }));
+    const html = renderClient(<MessageRenderer items={companionConversationItems(items)} companion isSessionStreaming />);
+    expect(setVisible).toHaveBeenCalledWith(false, lines === undefined);
+    expect(html.includes('Cached thinking')).toBe(lines === undefined);
+  });
   const render = (awaitingDetails: boolean) => {
     const messages = [msg('u', 'user', 'Fix it'), msg('c', 'tool_use', {
       toolName: 'Bash', toolUseId: 'c', input: { command: 'pnpm test' },

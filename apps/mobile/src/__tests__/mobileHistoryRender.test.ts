@@ -6,6 +6,7 @@ import type { RemoteMessage } from '../session/types';
 import { reconcileMobileMessageRenderItems } from '../session/messageRenderReconcile';
 import { buildMobileStreamingRenderWindow } from '../session/messageRenderStreamingCache';
 import { CONTINUE_AFTER_ERROR_PROMPT } from '@cindy/maker-shared/synthetic-trigger';
+import { companionConversationItems } from '../session/companionConversationPresentation';
 
 function row(index: number, role: RemoteMessage['role'], content: unknown, toolUseId: string | null = null): RemoteMessage {
   return { id: `id-${index}`, clientId: `client-${index}`, sessionId: 'session', role, content, toolUseId,
@@ -34,6 +35,28 @@ function harness(rows: RemoteMessage[], streaming = false, lazyDetails = false) 
 }
 
 describe('remote history preserves original folding', () => {
+  // Regression: mobile's companion projection used to flatten away deferred
+  // work after history takeover. Verify the production controller's expansion
+  // still reads the original thinking/tool rows and never hides a provider final.
+  it('preserves companion replies and lazy work through history takeover and expansion', async () => {
+    const rows = [row(0, 'user', 'Work'),
+      { ...row(1, 'assistant', 'First reply'), agentMeta: { assistantPhase: 'final_answer' } },
+      thought(2), call(3), row(4, 'tool_result', 'Read result', 'tool-3')];
+    const { view, render, details } = harness(rows, true, true);
+    const raw = companionConversationItems(buildMobileMessageRenderItems(rows, { isSessionStreaming: true }));
+    await view.refresh();
+    const loaded = companionConversationItems(render());
+    expect(loaded.map(item => item.key)).toEqual(raw.map(item => item.key));
+    const work = loaded.find(item => item.type === 'work_group');
+    if (work?.type !== 'work_group') throw new Error('Missing companion work');
+    expect(details).not.toHaveBeenCalled();
+    work.deferred!.setVisible!(true, false);
+    await vi.waitFor(() => expect([...view.getSnapshot().details.values()].some(state => state.complete)).toBe(true));
+    expect(JSON.stringify(companionConversationItems(render()))).toContain('reasoning');
+    expect(companionConversationItems(render()).filter(item => item.type === 'message').map(item => item.message.body))
+      .toEqual(['Work', 'First reply']);
+    view.setActive(false);
+  });
   it.each([false, true])('keeps the earlier answer when recovery follows an unloaded gap (streaming=%s)', async (streaming) => {
     const rows = [row(0, 'user', 'Work'), thought(1), row(2, 'assistant', 'Earlier answer'),
       row(4000, 'user', JSON.stringify({ text: CONTINUE_AFTER_ERROR_PROMPT })),
