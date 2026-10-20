@@ -1,5 +1,6 @@
 import { DisplayPricingDetails } from '@/components/DisplayPricingDetails';
 import { Button } from '@/components/ui/button';
+import { FormField } from '@/components/ui/form-field';
 import { localizedModelDescription } from '@/lib/modelDescriptions';
 import { localizedModelName, localizedBrandName } from '@/lib/modelDisplayNames';
 /**
@@ -77,6 +78,7 @@ import { isLocalRuntimeBetaProviderId, isManagedSidecarProviderId, MANAGED_OLLAM
 import { MANAGED_LLAMACPP_PROVIDER_ID, supportsLlamaCppMillionContext, llamaCppMaxContextSize } from '../../../shared/llamaCpp';
 import { modelBrand } from './modelManagementPresentation';
 import { ModelPriceOverrideDialog } from './ModelPriceOverrideDialog';
+import { SettingsTextInput } from './SettingsTextInput';
 import type { UnionModelRow } from './UnifiedModelList';
 
 const AGENT_LABEL: Record<AgentKind, string> = {
@@ -217,6 +219,10 @@ export function ModelAdvancedDrawer({
   const [priceDialogOpen, setPriceDialogOpen] = useState(false);
   const [protocolSaving, setProtocolSaving] = useState(false);
   const [imageCapabilitySaving, setImageCapabilitySaving] = useState(false);
+  const [nameDraft, setNameDraft] = useState('');
+  const [nameSaving, setNameSaving] = useState(false);
+  const nameSavingRef = useRef(false);
+  const nameDirtyRef = useRef(false);
   const titleRef = useRef<HTMLHeadingElement>(null);
   // 开关/档位写的是 renderer 本地存储，订阅 version 才能在写后重渲染。
   useModelVisibilityVersion();
@@ -283,6 +289,44 @@ export function ModelAdvancedDrawer({
   );
   const ctx = useModelContextLimit(open ? contextTarget : null);
   const canEditProtocol = provider.source === 'user' && !provider.auth?.native && !isManagedSidecarProviderId(provider.id);
+  const canEditName = canEditProtocol && !isOrganizationManagedProvider(provider) &&
+    !!row?.avail.length && row.avail.every(agent =>
+      provider.models[agent]?.some(model => model.id === row.byAgent[agent]?.id));
+  useEffect(() => {
+    nameDirtyRef.current = false;
+    setNameDraft(primaryModel?.name ?? '');
+  }, [open, provider.id, primaryModel?.id]);
+  useEffect(() => {
+    if (!nameDirtyRef.current) setNameDraft(primaryModel?.name ?? '');
+  }, [primaryModel?.name]);
+  const saveModelName = async () => {
+    const name = nameDraft.trim();
+    if (!canEditName || !row || !name || !nameDirtyRef.current ||
+        nameSavingRef.current || protocolSaving || imageCapabilitySaving) return;
+    const config = providerViewToCustomProviderConfig(provider);
+    // A union row can contain different IDs on each engine. Never match by its
+    // canonical ID or display name, and preserve the original per-model config.
+    const targets = row.avail.map(agent => config.runtimes[agent]?.models.find(
+      model => model.id === row.byAgent[agent]?.id,
+    ));
+    if (targets.some(model => !model)) return;
+    for (const model of targets) {
+      model!.name = name;
+      model!.nameExplicit = true;
+    }
+    nameSavingRef.current = true;
+    setNameSaving(true);
+    try {
+      const result = await updateCustomProvider(config, {}, { source: 'manual-settings' });
+      if (result.ok) {
+        nameDirtyRef.current = false;
+        setNameDraft(name);
+      } else {
+        toast.error(t('settings.providers.models.advanced.nameSaveFailed'));
+      }
+    } catch { toast.error(t('settings.providers.models.advanced.nameSaveFailed')); }
+    finally { nameSavingRef.current = false; setNameSaving(false); }
+  };
   const imageAgents = canEditProtocol
     ? provider.agents.filter(agent => provider.routing?.[agent]?.imageApi === 'openai-images')
     : [];
@@ -300,7 +344,7 @@ export function ModelAdvancedDrawer({
   const setImageCapability = async (value: string, kind: 'image' | 'video' = 'image') => {
     const agent = kind === 'image' ? imageAgent : videoAgent;
     const sourceModel = kind === 'image' ? imageModel : videoModel;
-    if (imageCapabilitySaving || !agent || !sourceModel || !['default', 'generate', 'edit'].includes(value)) return;
+    if (nameSavingRef.current || imageCapabilitySaving || !agent || !sourceModel || !['default', 'generate', 'edit'].includes(value)) return;
     const config = providerViewToCustomProviderConfig(provider);
     const model = config.runtimes[agent]?.models.find(item => item.id === sourceModel.id);
     if (!model) return;
@@ -319,7 +363,7 @@ export function ModelAdvancedDrawer({
     finally { setImageCapabilitySaving(false); }
   };
   const setModelApi = async (agent: AgentKind, api: PiModelApi) => {
-    if (protocolSaving || !canEditProtocol || !row?.byAgent[agent]) return;
+    if (nameSavingRef.current || protocolSaving || !canEditProtocol || !row?.byAgent[agent]) return;
     const config = providerViewToCustomProviderConfig(provider);
     const runtime = config.runtimes[agent];
     const model = runtime?.models.find(m => m.id === row.byAgent[agent]!.id);
@@ -491,7 +535,7 @@ export function ModelAdvancedDrawer({
 
   return (
     <>
-      <Dialog.Root open={open} onOpenChange={onOpenChange}>
+      <Dialog.Root open={open} onOpenChange={(next) => { if (!nameSavingRef.current) onOpenChange(next); }}>
         <Dialog.Portal>
           <Dialog.Overlay
             className={cn(
@@ -524,6 +568,7 @@ export function ModelAdvancedDrawer({
                 </p>
               </div>
               <Dialog.Close
+                disabled={nameSaving}
                 className="-mr-1 -mt-1 shrink-0 rounded-full p-1.5 text-[var(--text-secondary)] transition-colors hover:bg-[var(--settings-menu-bg-hover)] hover:text-[var(--text-primary)]"
                 aria-label={t('settings.providers.models.advanced.close')}
               >
@@ -610,7 +655,7 @@ export function ModelAdvancedDrawer({
                                   {canEditProtocol && !model?.catalogPresetId && supported ? (
                                     <DropdownMenu>
                                       <DropdownMenuTrigger asChild>
-                                        <button type="button" disabled={protocolSaving}
+                                        <button type="button" disabled={protocolSaving || nameSaving}
                                           aria-label={`${AGENT_LABEL[agent]} · ${t('settings.providers.custom.fields.wireProtocol')}`}
                                           className="rounded-full px-2 py-1 text-[var(--text-secondary)] hover:bg-[var(--surface-hover)]">
                                           {protocolLabel(protocol.outbound)} <ChevronDown size={12} className="inline" aria-hidden />
@@ -879,7 +924,7 @@ export function ModelAdvancedDrawer({
                         <Row label={t('settings.providers.models.advanced.imageCapability.label')}>
                           <DropdownMenu>
                             <DropdownMenuTrigger asChild>
-                              <button type="button" disabled={imageCapabilitySaving || !selectionAvailable || paymentRequired}
+                              <button type="button" disabled={nameSaving || imageCapabilitySaving || !selectionAvailable || paymentRequired}
                                 aria-label={t('settings.providers.models.advanced.imageCapability.label')}
                                 className="rounded-full px-2 py-1 text-[var(--text-secondary)] hover:bg-[var(--surface-hover)]">
                                 {t(`settings.providers.models.advanced.imageCapability.${imageCapability}`)} <ChevronDown size={12} className="inline" aria-hidden />
@@ -904,7 +949,7 @@ export function ModelAdvancedDrawer({
                         <Row label={t('settings.providers.models.advanced.videoCapability.label')}>
                           <DropdownMenu>
                             <DropdownMenuTrigger asChild>
-                              <button type="button" disabled={imageCapabilitySaving || !selectionAvailable || paymentRequired}
+                              <button type="button" disabled={nameSaving || imageCapabilitySaving || !selectionAvailable || paymentRequired}
                                 aria-label={t('settings.providers.models.advanced.videoCapability.label')}
                                 className="rounded-full px-2 py-1 text-[var(--text-secondary)] hover:bg-[var(--surface-hover)]">
                                 {t(`settings.providers.models.advanced.videoCapability.${videoCapability}`)} <ChevronDown size={12} className="inline" aria-hidden />
@@ -1026,6 +1071,22 @@ export function ModelAdvancedDrawer({
                     )}
                   </Section>
                   <Section title={t('settings.providers.models.advanced.identity')}>
+                    {canEditName && (
+                      <FormField id="model-display-name" label={t('settings.providers.models.advanced.displayName')} className="mb-3">
+                        {(control) => (
+                          <div className="flex flex-wrap items-center gap-2">
+                            <SettingsTextInput {...control} size="sm" className="min-w-[120px] flex-1"
+                              value={nameDraft} disabled={nameSaving}
+                              onChange={(value) => { nameDirtyRef.current = true; setNameDraft(value); }} />
+                            <Button type="button" variant="secondary" size="md" compact loading={nameSaving}
+                              disabled={!nameDraft.trim() || !nameDirtyRef.current || protocolSaving || imageCapabilitySaving}
+                              onClick={() => void saveModelName()}>
+                              {t('settings.providers.models.advanced.saveName')}
+                            </Button>
+                          </div>
+                        )}
+                      </FormField>
+                    )}
                     {description && (
                       <p className="mb-2 text-12 leading-relaxed text-[var(--text-secondary)]">{description}</p>
                     )}
