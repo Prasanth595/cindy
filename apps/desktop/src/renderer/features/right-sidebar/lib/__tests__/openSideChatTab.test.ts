@@ -300,23 +300,3 @@ describe('side chat task entry', () => {
     expect(mocks.bucketListeners.size).toBe(0);
   });
 });
-
-
-describe('canOpenSideChat gate consistency (selection pill + /side)', () => {
-  it('the session view gates both side-chat entries with the authoritative check', async () => {
-    // 回归:选区"侧聊"入口与 /side 命令曾用比 canOpenSideChat 更松的本地条件
-    // (漏掉 review 来源与共享任务访客),入口在 review 会话上出现、点击后 host
-    // 拒绝(PRECONDITION_FAILED)却落进通用 failed toast。契约:两处门槛一律走
-    // canOpenSideChat。
-    const fs = await import('node:fs');
-    const path = await import('node:path');
-    const { fileURLToPath } = await import('node:url');
-    const source = fs.readFileSync(
-      path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../cc-agent/CCAgentSessionView.tsx'),
-      'utf8',
-    );
-    expect(source).toContain('onAskInSideChat={!readOnly && canNavigateSession && sessionId && canOpenSideChat(session)');
-    expect(source).toMatch(/payload\.command === 'side'[\s\S]{0,200}!canOpenSideChat\(session\)/);
-    expect(source).not.toContain("session?.source !== 'side-chat' && session?.source !== 'bot'");
-  });
-});

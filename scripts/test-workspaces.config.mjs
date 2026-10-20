@@ -149,6 +149,9 @@ const mobileGuardInclude = [
 // in the explicit guard tier. Keeping an exact allowlist makes it impossible
 // for a new source scan to silently become part of the ordinary unit gate.
 const desktopGuardInclude = [
+  // 侧聊入口门槛契约:选区气泡与 /side 必须走 canOpenSideChat(读源码文本,
+  // 按 sourceReads 规则放 guard tier)。
+  'src/renderer/__tests__/sideChatEntryGate.contract.test.ts',
   'src/renderer/__tests__/sessionAgentSwitchRemoteRouting.contract.test.ts',
   'src/main/__tests__/deviceLinkVoiceCredentialBootstrap.test.ts',
   'src/main/__tests__/discordExternalization.test.ts',
