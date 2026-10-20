@@ -5208,7 +5208,7 @@ function CCAgentSessionContent({
               } catch {
                 /* ignore */
               }
-              if (folderPath) attachmentState.addFolderPath(folderPath);
+              if (folderPath) attachmentState.addFolderPath(folderPath, directory);
             }
             if (items.files.length > 0) attachmentState.addFiles(items.files);
           };
