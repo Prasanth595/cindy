@@ -54,6 +54,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
@@ -82,6 +83,12 @@ interface MessageActionBarProps {
   hovered: boolean;
   /** 伙伴对话专属精简态：操作栏常显，隐藏费用和 Fork，并把引用入口外显为“回复”。 */
   simplifiedBotConversation?: boolean;
+  /**
+   * 贴在气泡旁的紧凑栏（群聊）：外露引用回复、话题、表情和更多；复制、分享为图片与准确
+   * 时间收进更多菜单，让整栏窄到能放在气泡外侧。话题保持外露：关闭话题面板后焦点要回到
+   * 打开它的按钮上，菜单项做不到。
+   */
+  compact?: boolean;
   /** When provided, render a Fork button (user messages fork *before* the
    *  question; assistant messages fork *through* the reply's turn — the
    *  parent decides whether to wire it). Returning a promise keeps the
@@ -150,6 +157,7 @@ export function MessageActionBar({
   align,
   hovered,
   simplifiedBotConversation = false,
+  compact = false,
   onFork,
   onAddToChat,
   onShareAsImage,
@@ -272,6 +280,15 @@ export function MessageActionBar({
     },
     [copyLinkText, t],
   );
+
+  const handleCopyFromMenu = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(copyText);
+      toast.success(t('chat.messageActionBar.copied'));
+    } catch {
+      // Same silent fallback as the visible copy button.
+    }
+  }, [copyText, t]);
 
   const handleDelete = useCallback(async () => {
     if (!onDelete || deleting) return;
@@ -573,7 +590,7 @@ export function MessageActionBar({
   // 面板/行几何遵守 12px container + 8px inner-control 两档圆角。
   const canRewind = Boolean(onRewind);
   const addToChatInMenu = simplifiedBotConversation ? undefined : onAddToChat;
-  const moreMenu = (addToChatInMenu || menuActions?.length || copyLinkText || canRewind || onDelete) && (
+  const moreMenu = (compact || addToChatInMenu || menuActions?.length || copyLinkText || canRewind || onDelete) && (
     <DropdownMenu key="more" open={menuOpen} onOpenChange={setMenuOpen}>
       <DropdownMenuTrigger asChild>
         <Tip text={t('chat.messageActionBar.moreActions')}>
@@ -619,6 +636,30 @@ export function MessageActionBar({
         }}
         className="min-w-[184px]"
       >
+        {compact && (
+          <DropdownMenuItem
+            onSelect={(event) => {
+              event.stopPropagation();
+              void handleCopyFromMenu();
+            }}
+            className={MENU_ITEM_CLASS}
+          >
+            <Copy size={14} strokeWidth={2} className="shrink-0" />
+            {t('chat.messageActionBar.copy')}
+          </DropdownMenuItem>
+        )}
+        {compact && onShareAsImage && (
+          <DropdownMenuItem
+            onSelect={(event) => {
+              event.stopPropagation();
+              onShareAsImage();
+            }}
+            className={MENU_ITEM_CLASS}
+          >
+            <Share size={14} strokeWidth={2} className="shrink-0" />
+            {t('chat.shareImage.entry')}
+          </DropdownMenuItem>
+        )}
         {addToChatInMenu && (
           <DropdownMenuItem
             onSelect={(event) => {
@@ -689,6 +730,14 @@ export function MessageActionBar({
             </DropdownMenuItem>
           </>
         )}
+        {compact && absText && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuLabel className="whitespace-pre-line text-12 font-normal text-[var(--settings-section-desc)]">
+              {absText}
+            </DropdownMenuLabel>
+          </>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -697,9 +746,10 @@ export function MessageActionBar({
   // align='left'  → [copy][share][fork][edit][more][time][cost]
   // align='right' → [time][copy][share][fork][edit][more]   (user)
   // 伙伴对话:[copy][share][reply][more][time] / [time][copy][share][reply][edit][more]
-  // 群聊:[copy][share][引用回复][话题][表情][time]
-  const items =
-    align === 'left'
+  // 群聊（compact，贴在气泡旁）:[引用回复][话题][表情][more]，复制、分享与时间收进 more
+  const items = compact
+    ? align === 'left' ? [quoteBtn, replyBtn, reactionBtn, moreMenu] : [moreMenu, reactionBtn, replyBtn, quoteBtn]
+    : align === 'left'
       ? [
           copyBtn,
           shareBtn,

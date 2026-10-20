@@ -635,7 +635,7 @@
       "round": "轮询",
       "order": "按顺序",
       "weight": "按权重",
-      "quotaFirst": "能读取 Claude 订阅用量时，先用配额快重置的电脑，再选用量低的，相近时按组策略",
+      "quotaFirst": "能读取订阅用量时，先用配额快重置的电脑，再选用量低的，相近时按组策略",
       "description": {
         "least": "给最闲的那台",
         "round": "依次轮流",
@@ -3461,7 +3461,7 @@
           "aria": "按模型类型筛选",
           "chat": "对话"
         },
-        "hiddenGroup": "未启用",
+        "hiddenGroup": "未显示",
         "management": {
           "brand": "厂商"
         },
@@ -11230,6 +11230,7 @@
     },
     "messageActionBar": {
       "copy": "复制消息",
+      "copied": "已复制",
       "reply": "回复",
       "linkCopied": "链接已复制",
       "moreActions": "更多消息操作",
@@ -15641,6 +15642,7 @@
     }
   },
   "modelDescriptions": {
+    "automaticRouting": "由供应商选择模型。",
     "longContext": "可选的长上下文版本，长输入可能产生更高费用。",
     "security": "用于安全分析与代码审查。",
     "research": "用于资料研究、复杂问题、编程与文档创作。",

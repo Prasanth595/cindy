@@ -5196,6 +5196,16 @@ function hydratePersistedMessage(
     ...(existing.retryFiles ? { retryFiles: existing.retryFiles } : {}),
     ...(existing.retryMentions ? { retryMentions: existing.retryMentions } : {}),
   };
+  // Sender metadata is an authoritative snapshot, not an additive patch.
+  // Absence means ordinary user input (or no source on an assistant row).
+  // Keeping a cached field here can falsely label a user message as a teammate,
+  // even after the host has delivered a source-free row.
+  for (const field of [
+    'automationOrigin', 'sourceDevice', 'sourcePlugin', 'sourceGroup',
+    'hookSource', 'sharedAuthorName', 'sharedAuthorMemberId',
+  ] as const) {
+    if (persisted[field] === undefined) delete hydrated[field];
+  }
   if (
     options.preserveExistingCodexPlanContent === true &&
     existing.role === 'tool_use' &&

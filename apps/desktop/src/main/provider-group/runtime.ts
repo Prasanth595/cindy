@@ -28,7 +28,7 @@ import { createProviderGroupRemoteClient, type ProviderGroupRemoteClient } from 
 import { createProviderGroupRouter, type ProviderGroupRouter } from './router.js';
 import type { ProviderGroupRemoteGroups } from './service.js';
 import { readProviderGroup } from './store.js';
-import { createProviderGroupUsageReader } from './usage.js';
+import { createProviderGroupUsageReader, providerGroupUsageSnapshot, providerGroupCodexUsageSnapshot, providerGroupCodexUsageFromReads, type ProviderGroupCodexUsageSnapshot } from './usage.js';
 
 interface OwnerRuntime {
   owner: string;
@@ -42,11 +42,14 @@ let isTurnRunning: (sessionId: string) => boolean = () => false;
 let localLoad: (() => Promise<ReadonlyMap<string, number>>) | null = null;
 let sessionGroupReader: ((sessionId: string) => Promise<ProviderGroupSessionGroup>) | null = null;
 let claudeUsageReader: ((providerId: string) => Promise<ClaudeSubscriptionUsageSnapshot | null>) | null = null;
+let codexUsageReader: ((providerId: string) => Promise<unknown>) | null = null;
+let codexRateLimitsReader: ((providerId: string) => Promise<unknown>) | null = null;
 
 function runtimeForActiveOwner(): OwnerRuntime {
   const owner = activeOwnerScopeKey();
   if (current?.owner === owner) return current;
   const usage = createProviderGroupUsageReader({
+    parseSnapshot: providerGroupUsageSnapshot,
     readLocal: (providerId) => claudeUsageReader?.(providerId) ?? Promise.resolve(null),
     readRemote: async (deviceId, providerId) => {
       const result = await remoteBackgroundInvoke(deviceId, 'maker:usage:claude-subscription', [providerId], {
@@ -65,6 +68,44 @@ function runtimeForActiveOwner(): OwnerRuntime {
     isCurrent: () => activeOwnerScopeKey() === owner,
     now: () => Date.now(),
   });
+  const readRemoteCodexUsage = async (deviceId: string, providerId: string, channel: string, args: unknown[]) => {
+    const result = await remoteBackgroundInvoke(deviceId, channel, args, {
+      preSend: () => {
+        if (activeOwnerScopeKey() !== owner) throw new Error('provider group account changed');
+      },
+    });
+    if (!result.ok) return null;
+    const raw = result.result;
+    if (!raw || typeof raw !== 'object') return null;
+    const echoedProvider = (raw as { providerId?: unknown }).providerId;
+    if (echoedProvider !== undefined ? echoedProvider !== providerId : providerId !== 'openai') return null;
+    return raw;
+  };
+  // Bound/cache each source separately so a slow native RPC cannot discard ready WHAM data (or vice versa).
+  const codexUsage = createProviderGroupUsageReader({
+    parseSnapshot: providerGroupCodexUsageSnapshot,
+    cacheLocal: true,
+    readLocal: (providerId) => codexUsageReader?.(providerId) ?? Promise.resolve(null),
+    readRemote: (deviceId, providerId) => readRemoteCodexUsage(deviceId, providerId, 'maker:usage:account', ['codex', providerId]),
+    isCurrent: () => activeOwnerScopeKey() === owner,
+    now: () => Date.now(),
+  });
+  const codexLimits = createProviderGroupUsageReader({
+    parseSnapshot: providerGroupCodexUsageSnapshot,
+    cacheLocal: true,
+    readLocal: async (providerId) => providerGroupCodexUsageFromReads(null, await codexRateLimitsReader?.(providerId), Date.now()),
+    readRemote: async (deviceId, providerId) => providerGroupCodexUsageFromReads(null,
+      await readRemoteCodexUsage(deviceId, providerId, 'maker:usage:codex-rate-limits', [providerId]), Date.now()),
+    isCurrent: () => activeOwnerScopeKey() === owner,
+    now: () => Date.now(),
+  });
+  const mergeCodexUsage = (account: ProviderGroupCodexUsageSnapshot | null, limits: ProviderGroupCodexUsageSnapshot | null) => {
+    if (activeOwnerScopeKey() !== owner) return null;
+    return providerGroupCodexUsageSnapshot({
+      appServerBuckets: limits?.appServerBuckets ?? account?.appServerBuckets,
+      webSnapshot: account?.webSnapshot,
+    });
+  };
   const directory = createProviderGroupDirectory({
     listLocalProviders: () => getDesktopProviderService().listProviders({ allowSideEffects: false }),
     localDeviceName: () => deviceName(),
@@ -75,7 +116,12 @@ function runtimeForActiveOwner(): OwnerRuntime {
     isMobilePlatform: (platform) => isMobilePlatform(platform),
     localRunning: async (providerId) => (await readProviderRunningTurnsByProvider())?.get(providerId) ?? null,
     readClaudeUsage: (member) => usage.read(member),
-    invalidateUsage: () => usage.invalidate(),
+    readCodexUsage: async (member) => {
+      const [account, limits] = await Promise.all([codexUsage.read(member), codexLimits.read(member)]);
+      return mergeCodexUsage(account, limits);
+    },
+    peekCodexUsage: (member) => mergeCodexUsage(codexUsage.peek(member), codexLimits.peek(member)),
+    invalidateUsage: () => { usage.invalidate(); codexUsage.invalidate(); codexLimits.invalidate(); },
     now: () => Date.now(),
   });
   const externalLoad = createProviderGroupExternalLoad({ now: () => Date.now() });
@@ -186,7 +232,7 @@ export function getProviderGroupRemoteGroups(): ProviderGroupRemoteGroups {
     },
     pick: (ownerDeviceId, input) => client.pick(ownerDeviceId, input),
     cool: (ownerDeviceId, input) => client.cool(ownerDeviceId, input),
-    view: (ownerDeviceId, providerId, model) => client.view(ownerDeviceId, providerId, model),
+    view: (ownerDeviceId, providerId, model, agentKind) => client.view(ownerDeviceId, providerId, agentKind ? { model, agentKind } : model),
     invalidate: (ownerDeviceId) => directoryFacade.invalidate(ownerDeviceId),
   };
 }
@@ -219,6 +265,11 @@ export function setProviderGroupLocalLoad(probe: (() => Promise<ReadonlyMap<stri
 /** Reuse the CLI-backed subscription reader without importing the IPC adapter into routing. */
 export function setProviderGroupClaudeUsageReader(reader: typeof claudeUsageReader): void {
   claudeUsageReader = reader;
+}
+
+export function setProviderGroupCodexUsageReader(reader: typeof codexUsageReader, rateLimits: typeof codexRateLimitsReader = null): void {
+  codexUsageReader = reader;
+  codexRateLimitsReader = rateLimits;
 }
 
 /** 这台电脑上每个供应商正在运行一轮的任务数；还没装配或读不到时返回 null(调用方照旧只算经组的)。 */

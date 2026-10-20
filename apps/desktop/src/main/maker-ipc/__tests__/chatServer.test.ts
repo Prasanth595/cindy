@@ -2420,6 +2420,21 @@ describe('Chat Server result delivery and refresh', () => {
       expect(Object.values(result.group.threadShareUpdates!).every(share => share.status === 'available')).toBe(true);
     });
 
+    // r4325201240: the public group projection must carry earlier distinct authors
+    // separately from the newest two spoken summaries, which may share one author.
+    it('projects distinct responders independently of repeated-author summaries', async () => {
+      const rows = [botId, botId, botId, aliceId, selfId].map((author, i) =>
+        msg(`70000000-0000-4000-8000-00000000000${i + 1}`, 6 - i, author, { threadRootId: rootId }));
+      fixture.handle.mockImplementation((route, method, body) => route.endsWith('/snapshot')
+        ? { body: { room: room(roomId), members, messages: [...rows, { ...root, replyCount: 5 }], cursor: '6' } }
+        : threadResponse(route, method, body));
+      const result = await service.getGroup(roomId);
+      if (!result.ok) throw new Error('Expected group');
+      const preview = result.group.messages.find(message => message.id === rootId)!.threadPreview!;
+      expect(preview.replies.map(reply => reply.id)).toEqual([rows[1]!.id, rows[0]!.id]);
+      expect(preview.responders?.map(author => author.authorName)).toEqual(['Me', 'Alice', 'Bot (Me)']);
+    });
+
     it('previews the newest replies and resolves each share from the server copy, not the card', async () => {
       const result = await service.getGroup(roomId);
       if (!result.ok) throw new Error('Expected group');

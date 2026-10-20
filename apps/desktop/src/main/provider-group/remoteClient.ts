@@ -47,7 +47,7 @@ export interface ProviderGroupRemoteClient {
     model?: string;
   }): Promise<void>;
   leases(ownerDeviceId: string, seq: number, entries: readonly ProviderGroupRemoteLease[]): Promise<void>;
-  view(ownerDeviceId: string, providerId: string, modelOrOptions?: string | { model?: string; includeGuestSupport?: boolean }): Promise<ProviderGroupView>;
+  view(ownerDeviceId: string, providerId: string, modelOrOptions?: string | { model?: string; agentKind?: 'claude-code' | 'codex' | 'pi'; includeGuestSupport?: boolean }): Promise<ProviderGroupView>;
   /** 报告经组、在组里别的电脑上运行的用量；组所在电脑是旧版本时抛 ProviderGroupRemoteUnsupportedError。 */
   usage(ownerDeviceId: string, report: { seq: number; sinceDay: string | null; rows: readonly ProviderGroupRemoteUsageRow[] }, beforeSend?: () => void): Promise<void>;
 }
@@ -117,11 +117,13 @@ export function createProviderGroupRemoteClient(invoke: ProviderGroupRemoteInvok
 
     async view(ownerDeviceId, providerId, modelOrOptions) {
       const model = typeof modelOrOptions === 'string' ? modelOrOptions : modelOrOptions?.model;
+      const agentKind = typeof modelOrOptions === 'object' ? modelOrOptions?.agentKind : undefined;
       const includeGuestSupport = typeof modelOrOptions === 'object' && modelOrOptions?.includeGuestSupport === true;
       return parseProviderGroupRemoteView(await call(ownerDeviceId, {
         action: 'view',
         providerId,
         ...(model ? { model } : {}),
+        ...(agentKind ? { agentKind } : {}),
         ...(includeGuestSupport ? { includeGuestSupport: true } : {}),
       }), providerId);
     },

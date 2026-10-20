@@ -1567,10 +1567,10 @@ B 上的 Worker 是一条普通任务，`sessions.orca_remote_lead`(migration 01
   回归见 `shared/__tests__/providerGroup.test.ts`、`provider-group/__tests__/` 下 `ipc`、`directory`、`removedShares`、
   `sharedStatus`、`remoteHandler` 测试与界面、手机同名测试。
 
-## 供应商组：Claude 订阅额度筛选与用量均衡（2026-10-12）
+## 供应商组：订阅配额筛选与用量均衡（2026-10-12，OpenAI 于 2026-10-20 接入）
 
 产品规则见 [`provider-groups.md`](../product-rules/provider-groups.md) §5。选电脑仍由组所在电脑完成：先排除额度耗尽的成员，
-再按所选策略分配；新策略 `usage` 只用于 Claude Code 订阅组。
+再按所选策略分配；Claude Code 与 OpenAI 订阅均可参与配额排序，旧策略 `usage` 沿用 `least`。
 
 - **可选策略枚举扩展**：本地组配置与同账号组摘要的 `strategy` 增加 `usage`，原默认 `least` 不变。
   旧版桌面读取未知策略时归一化为 `least`，旧版手机不依赖这个字段；远程 `pick` 仍由组所在电脑执行，因此
@@ -1580,6 +1580,12 @@ B 上的 Worker 是一条普通任务，`sessions.orca_remote_lead`(migration 01
 - **复用已有同账号通道**：向成员电脑调用 `maker:usage:claude-subscription`，参数 `[member.providerId]`；本机走同一
   订阅 reader。只信与请求一致的 `providerId` 回显；旧端未回显时仅允许默认 `anthropic`，具名账号按未知用量处理，
   避免旧端忽略参数后拿默认账号的额度代替。通道不可用、失败、超时或快照过期时按未知处理，分配照常进行。
+  OpenAI 并行复用 `maker:usage:account` 的 `['codex', member.providerId]` 和 `maker:usage:codex-rate-limits`
+  的 `[member.providerId]`；两个回包分别校验 `providerId`，无回显的旧端仅允许默认 `openai`。原生限额 RPC 的
+  窗口按本次读取时刻记录新鲜度，账号用量回包保留各模型桶与 web 槽自己的时间戳；单路失败仍使用另一路的可信数据。
+  不调用兑换重置卡接口，不把重置卡、账号标识或凭证放进内部目录的配额快照。本机和远端读取合并在途，短缓存 15 秒。
+- **可选框架信息**：同账号 `view` 请求增加可选 `agentKind: 'codex' | 'pi' | 'claude-code'`，供 OpenAI 发送前检查
+  选择原生模型桶或 web 槽；缺省仍按原生模型桶处理，旧组所在电脑忽略该字段。原有仅带模型的查询和回包形状不变。
 - **隐私与状态**：额度快照只留在组所在电脑的内部目录中，不加入 `ProviderGroupView` 的额度字段或供应商目录，不传给受邀者；
   分享来的成员不调用此通道。同账号不带 `model` 的 `view` 仅复用已有 `cooling` / `coolingUntil` 表达总窗口耗尽，带 `model`
   的发送前查询只在回显模型一致时临时表达该模型的额度状态，不能改变其他模型的可用性。账号切换时丢弃旧读取，不扩大 allowlist
@@ -2270,6 +2276,14 @@ canonical 主任务时，宿主额外追加 `resourceCollectionId=teammates&reso
 会话来源与主机校验；这些参数不授予任何权限。已发布的手机版本本来就识别这组参数，不需要升级；
 不识别它们的旧控制端仍按普通任务打开。拼接后超过 `NOTIFY_DEEP_LINK_MAX_LENGTH` 时回退为原深链。
 委派的独立 Session 任务和普通任务不带这组参数。不修改 notify 帧结构、relay 或协议版本。
+
+## 群聊话题预览回复者
+
+`BotGroupThreadPreview` 可选增加 `responders`（回复 ID、作者类别、成员 ID、名字），
+与最近两条 `replies` 摘要分开。Desktop 从已读取的窗口按服务端作者 ID 去重后取最多三位，
+不增加网络读取预算。新查看端遇到旧宿主没有此字段时沿用 replies 去重回退；旧查看端忽略
+新字段，继续读取原有两条摘要。Mobile 现有消费路径不渲染该预览字段；无新 channel、
+服务端接口、权限、数据库或原生配置变更。
 
 ## 伙伴群聊手机端（Remote Resource 与群推送深链）
 

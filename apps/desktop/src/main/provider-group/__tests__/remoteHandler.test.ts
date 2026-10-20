@@ -103,6 +103,19 @@ describe('provider-group:remote', () => {
     expect(d.router.view).toHaveBeenLastCalledWith('anthropic', { includeGuestSupport: false });
   });
 
+  // Unit/protocol: a bridge/Pi pre-send read must reach the owner with its harness to select WHAM.
+  // Legacy model-only reads remain valid; invalid harness values cannot become quota selectors.
+  it('carries the optional quota harness through the real client/parser/host path', async () => {
+    const d = deps();
+    const client = createProviderGroupRemoteClient(async (_device, _channel, args) => ({
+      ok: true, result: await handleProviderGroupRemote(d, 'laptop', args[0]),
+    }));
+    await client.view('mini', 'anthropic', { model: 'gpt-5.3-codex', agentKind: 'pi' });
+    expect(d.router.view).toHaveBeenLastCalledWith('anthropic', { model: 'gpt-5.3-codex', agentKind: 'pi', includeGuestSupport: false });
+    expect(() => parseProviderGroupRemoteRequest({ action: 'view', providerId: 'openai', agentKind: 'unknown' }))
+      .toThrow();
+  });
+
   it('only requests compatibility diagnostics when asked and discards a late reply after switching accounts', async () => {
     const d = deps();
     await handleProviderGroupRemote(d, 'laptop', { action: 'view', providerId: 'anthropic' });

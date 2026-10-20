@@ -640,7 +640,7 @@
       "round": "Round Robin",
       "order": "In Order",
       "weight": "By Weight",
-      "quotaFirst": "When Claude subscription usage is available, prefer computers whose quota resets soon, then those with lower usage; apply the group strategy among similar ones",
+      "quotaFirst": "When subscription usage is available, prefer computers whose quota resets soon, then those with lower usage; apply the group strategy among similar ones",
       "description": {
         "least": "Goes to the least busy one",
         "round": "Rotates across computers",
@@ -11270,6 +11270,7 @@
     },
     "messageActionBar": {
       "copy": "Copy message",
+      "copied": "Copied",
       "reply": "Reply",
       "linkCopied": "Link copied",
       "moreActions": "More message actions",
@@ -15696,6 +15697,7 @@
     }
   },
   "modelDescriptions": {
+    "automaticRouting": "Model selection is handled by the provider.",
     "longContext": "Optional long-context version; longer inputs may cost more.",
     "security": "For security analysis and code review.",
     "research": "For research, complex questions, coding and document creation.",

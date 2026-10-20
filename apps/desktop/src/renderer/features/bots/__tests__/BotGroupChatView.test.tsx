@@ -624,7 +624,8 @@ describe('BotGroupChatView', () => {
     await user.click(trigger);
     const panel = screen.getByRole('complementary');
     await user.type(within(panel).getByRole('textbox'), 'Thread draft');
-    await user.click((await within(panel).findAllByRole('button', { name: 'chat.shareImage.entry' }))[0]!);
+    await user.click((await within(panel).findAllByRole('button', { name: 'chat.messageActionBar.moreActions' }))[0]!);
+    await user.click(await screen.findByRole('menuitem', { name: 'chat.shareImage.entry' }));
     expect(within(panel).queryByRole('textbox')).toBeNull();
     const composer = within(main).getByRole('textbox');
     await user.type(composer, 'Main draft');
@@ -645,7 +646,8 @@ describe('BotGroupChatView', () => {
     const panel = screen.getByRole('complementary');
     await user.type(within(panel).getByRole('textbox'), 'Thread draft');
     const owner = scope === 'main' ? screen.getByRole('main') : panel;
-    await user.click(within(owner).getAllByRole('button', { name: 'chat.shareImage.entry' })[0]!);
+    await user.click(within(owner).getAllByRole('button', { name: 'chat.messageActionBar.moreActions' })[0]!);
+    await user.click(await screen.findByRole('menuitem', { name: 'chat.shareImage.entry' }));
     expect(shareSelectionStore.getActiveSessionId()).not.toBeNull();
     await user.keyboard('{Escape}');
     expect(shareSelectionStore.getActiveSessionId()).toBeNull();
@@ -2612,7 +2614,7 @@ describe('BotGroupChatView', () => {
       expect(mocks.toastWarning).toHaveBeenCalledWith('bots.groupChat.composer.folderNotSupported');
     });
 
-    it('shows a sent message’s image and file like a task’s user message, without an empty bubble', async () => {
+    it('keeps a sent message’s text, image and file in one bubble', async () => {
       mocks.getBotGroup.mockResolvedValue({
         ok: true,
         group: detail({
@@ -2663,16 +2665,18 @@ describe('BotGroupChatView', () => {
       renderView();
       const image = await screen.findByAltText('截图.png');
       expect(image.getAttribute('src')).toBe('cindy-media://blobs/abc.png');
-      const article = image.closest('article')!;
-      expect(article.querySelector('[data-testid="bot-group-self-bubble"]')).toBeNull();
+      const bubble = image.closest('[data-testid="bot-group-self-bubble"]')!;
       const chip = screen.getByRole('button', { name: '报告.pdf' });
-      expect(article.contains(chip)).toBe(true);
+      expect(bubble.contains(chip)).toBe(true);
       // A PDF is not text: it opens in the system app, as from a task's chip.
       fireEvent.click(chip);
       await waitFor(() => expect(mocks.openPath).toHaveBeenCalledWith('/Users/me/报告.pdf'));
 
       const withText = screen.getByAltText('草图.png').closest('article')!;
-      expect(withText.querySelector('[data-testid="bot-group-self-bubble"]')?.textContent).toBe('再看这张');
+      const textBubbles = withText.querySelectorAll('[data-testid="bot-group-self-bubble"]');
+      expect(textBubbles).toHaveLength(1);
+      expect(textBubbles[0].textContent).toContain('再看这张');
+      expect(textBubbles[0].contains(screen.getByAltText('草图.png'))).toBe(true);
     });
 
     it('keeps a server attachment in place while it loads or fails, beside the sender’s own text and someone else’s', async () => {
@@ -2709,7 +2713,7 @@ describe('BotGroupChatView', () => {
       expect(within(own).getByText('chat.imageMissing.loading')).toBeTruthy();
       expect(within(own).getByText('clipboard-1791878467493.png')).toBeTruthy();
       expect(within(own).getByRole('status', { name: 'spec.pdf, bots.groupChat.files.unavailable' })).toBeTruthy();
-      expect(within(own).getByTestId('bot-group-message-attachments').className).toContain('items-end');
+      expect(within(own).getByTestId('bot-group-self-bubble').contains(within(own).getByTestId('bot-group-message-attachments'))).toBe(true);
       const other = screen.getByAltText('photo.png').closest('article')!;
       expect(within(other).getByTestId('bot-group-message-attachments').className).toContain('items-start');
       // A media reference without a caption still says something was attached.
@@ -2719,7 +2723,7 @@ describe('BotGroupChatView', () => {
   });
 });
 
-it('keeps copy/share in each author row and shares only message content through the standard selection flow', async () => {
+it('keeps copy/share in each author row\'s more menu and shares only message content through the standard selection flow', async () => {
   vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
   mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ messages: [
     msg({ id: 'bot-share', authorKind: 'bot', authorName: '咪咪', content: 'Share this answer' }),
@@ -2729,8 +2733,9 @@ it('keeps copy/share in each author row and shares only message content through 
   const view = renderView();
   try {
     const article = (await screen.findByText('Share this answer')).closest('article')!;
-    expect(within(article).getByRole('button', { name: 'chat.messageActionBar.copy' })).toBeTruthy();
-    fireEvent.click(within(article).getByRole('button', { name: 'chat.shareImage.entry' }));
+    fireEvent.pointerDown(within(article).getByRole('button', { name: 'chat.messageActionBar.moreActions' }), { button: 0, ctrlKey: false });
+    expect(await screen.findByRole('menuitem', { name: 'chat.messageActionBar.copy' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('menuitem', { name: 'chat.shareImage.entry' }));
     expect(shareSelectionStore.getSelectedIds()).toEqual(['bot-share']);
     expect(queryShareableMessageIds('bot-group:g1')).toEqual(['bot-share', 'mine-share']);
     expect(within(article).getByRole('checkbox').getAttribute('aria-checked')).toBe('true');
@@ -2808,7 +2813,7 @@ describe('Telegram / Slack-grade timeline', () => {
     expect(row.dataset.botGroupMessageId).toMatch(/^pending:/);
     expect(row.querySelector('article')?.getAttribute('aria-busy')).toBe('true');
     // The pending copy has no toolbar: it cannot be quoted, shared or answered yet.
-    expect(within(row).queryByRole('button', { name: 'chat.messageActionBar.copy' })).toBeNull();
+    expect(within(row).queryByRole('button', { name: 'chat.messageActionBar.moreActions' })).toBeNull();
     const base = detail();
     mocks.getBotGroup.mockResolvedValue({ ok: true, group: { ...base, messages: [...base.messages, own('u9', 5, '在吗')] } });
     await act(async () => sent.resolve({ ok: true, messageId: 'u9' }));
@@ -3042,7 +3047,7 @@ describe('thread previews and posting to the main chat', () => {
   }
   beforeEach(() => { vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} }); });
 
-  it('shows the newest replies under the root and opens the thread from the preview', async () => {
+  it('describes the newest replies on the thread entry under the root and opens the thread from it', async () => {
     mocks.getBotGroup.mockResolvedValue({ ok: true, group: group([
       msg({ id: 'u1', content: '去哪玩', replyCount: 3, threadPreview: { replies: [
         preview('r2', '小满', '爬山吧，带上相机'),
@@ -3052,10 +3057,13 @@ describe('thread previews and posting to the main chat', () => {
     const user = userEvent.setup();
     renderView();
     const card = await screen.findByRole('button', { name: t('open') });
-    expect(card.textContent).toContain('小满');
-    expect(card.textContent).toContain('爬山吧，带上相机');
+    // The entry shows the count; the newest replies are read out as its description, not shown.
+    const description = document.getElementById(card.getAttribute('aria-describedby')!)!;
+    expect(description.className).toContain('sr-only');
+    expect(description.textContent).toContain('小满');
+    expect(description.textContent).toContain('爬山吧，带上相机');
     // An attachment-only reply still says what it carried.
-    expect(card.textContent).toContain(t('attachmentsSummary'));
+    expect(description.textContent).toContain(t('attachmentsSummary'));
     expect(card.textContent).toContain('bots.groupChat.server.replyCount');
     // Export the selected root, without its independently selectable thread replies.
     const exported = prepareShareMessageClone(card.closest('article')!)!;
