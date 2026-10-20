@@ -1,10 +1,11 @@
 import { expect, it } from 'vitest';
 import { ToolMarkupResponseTransform } from './tool-markup-response.js';
+import { createCodexResponsesCompatibilityAdapter } from '../codex.js';
 
 // #6531 unit: native Responses bypasses Chat translation. Real Transform input/output
 // must keep tool IDs/input and strip serialized text in both streaming/final payloads.
-async function transform(events: unknown[]): Promise<Array<Record<string, unknown>>> {
-  const t = new ToolMarkupResponseTransform();
+async function transform(events: unknown[], aliases?: ConstructorParameters<typeof ToolMarkupResponseTransform>[0]): Promise<Array<Record<string, unknown>>> {
+  const t = new ToolMarkupResponseTransform(aliases);
   let wire = '';
   t.on('data', chunk => { wire += chunk.toString(); });
   const ended = new Promise<void>((resolve, reject) => { t.on('end', resolve); t.on('error', reject); });
@@ -28,6 +29,37 @@ it.each(['response.output_text.delta', 'response.reasoning_summary_text.delta'])
     expect(events.at(-1)).toMatchObject({ type: 'response.completed' });
   },
 );
+// #6545 unit: a request-owned alias only supplements an actual matching call.
+// Same leaf names, another request, and a wrong tool kind must not validate it.
+it.each(['match', 'other-namespace', 'other-request', 'wrong-kind', 'no-call'])(
+  'keeps namespace alias evidence scoped to %s', async scenario => {
+    const adapter = createCodexResponsesCompatibilityAdapter();
+    const request = (namespace: string) => ({ tools: [{ type: 'namespace', name: namespace,
+      tools: [{ type: 'function', name: 'read', parameters: { type: 'object' } }] }] });
+    adapter.adaptRequest(request('server'), 1, undefined, true);
+    adapter.adaptRequest(request('other'), 2, undefined, true);
+    const aliases = adapter.getResponseToolAliases(scenario === 'other-request' ? 2 : 1);
+    adapter.releaseResponse(1); adapter.releaseResponse(2);
+    expect(adapter.getResponseToolAliases(1)).toBeUndefined();
+    expect(adapter.getResponseToolAliases(2)).toBeUndefined();
+    const markup = scenario === 'wrong-kind' ? '<tool_call><function=server__read>body</tool_call>'
+      : '<tool_call>{"name":"server__read","arguments":{}}</tool_call>';
+    const item = { type: 'message', id: 'msg', content: [{ type: 'output_text', text: markup }] };
+    const call = scenario === 'wrong-kind'
+      ? { type: 'custom_tool_call', id: 'ctc_a', name: 'read', namespace: 'server', call_id: 'a', input: 'body' }
+      : { type: 'function_call', id: 'fc_a', name: 'read', namespace: scenario === 'other-namespace' ? 'other' : 'server', call_id: 'a', arguments: '{}' };
+    const output = [item, ...(scenario === 'no-call' ? [] : [call])];
+    const events = await transform([
+      { type: 'response.output_text.delta', item_id: 'msg', content_index: 0, delta: markup },
+      { type: 'response.completed', response: { output } },
+    ], aliases);
+    const removed = scenario === 'match' || scenario === 'no-call';
+    expect(events.filter(e => e.type === 'response.output_text.delta').map(e => e.delta).join('')).toBe(removed ? '' : markup);
+    expect(events.at(-1)).toMatchObject({ type: scenario === 'no-call' ? 'response.failed' : 'response.completed' });
+    if (scenario !== 'no-call') expect(events.at(-1)).toMatchObject({ response: { output: [expect.anything(), call] } });
+  },
+);
+
 it('fails final-only native markup instead of showing it or silently succeeding', async () => {
   const item = { type: 'message', id: 'msg', content: [{ type: 'output_text', text: '<invoke name="Read"><parameter name="path" string="true">a</parameter></invoke>' }] };
   const events = await transform([

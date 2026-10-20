@@ -51,7 +51,7 @@ function literalMask(text: string): Uint8Array {
 
 
 /** No execution is authorized by this parser. It only projects model output. */
-export interface StructuredToolCall { name: string; input?: string; arguments?: unknown }
+export interface StructuredToolCall { name: string; input?: string; arguments?: unknown; aliases?: readonly string[] }
 export interface ToolMarkupBlock { start: number; end: number; calls: StructuredToolCall[]; grammar: string }
 const OPENERS = ['<tool_call>', '<｜DSML｜', '<｜｜DSML｜｜', '<invoke ', '<tool_calls>'];
 const MAX_CONTEXT = 64 * 1024;
@@ -156,7 +156,7 @@ function canonical(value: unknown): string | undefined {
   return JSON.stringify(value);
 }
 function matches(block: StructuredToolCall, actual: StructuredToolCall): boolean {
-  if (block.name !== actual.name) return false;
+  if (block.name !== actual.name && !actual.aliases?.includes(block.name)) return false;
   if (block.input !== undefined) return actual.input !== undefined && block.input.trim() === actual.input.trim();
   const args = typeof actual.arguments === 'string' ? json(actual.arguments) : actual.arguments;
   try { return block.arguments !== undefined && args !== undefined && canonical(block.arguments) === canonical(args); }

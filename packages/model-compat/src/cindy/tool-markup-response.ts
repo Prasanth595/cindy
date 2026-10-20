@@ -1,4 +1,5 @@
 import { Transform, type TransformCallback } from 'node:stream';
+import type { RoutedNamespaceToolAliases } from '../upstream/responses/namespace-tool-compat.js';
 import { SerializedToolCallEcho, reconcileToolCallMarkup, scanToolCallMarkup,
   UNEXECUTED_TOOL_MARKUP_MESSAGE, UNEXECUTED_TOOL_MARKUP_REASON,
   type StructuredToolCall } from './tool-call-markup.js';
@@ -6,6 +7,7 @@ type Obj = Record<string, unknown>;
 function obj(value: unknown): value is Obj { return !!value && typeof value === 'object' && !Array.isArray(value); }
 /** Request-scoped Responses SSE projection. IDs, tools, usage and opaque reasoning stay intact. */
 export class ToolMarkupResponseTransform extends Transform {
+  constructor(private readonly toolAliases?: RoutedNamespaceToolAliases) { super(); }
   private decoder = new TextDecoder();
   private pending = '';
   private streams = new Map<string, { buffer: SerializedToolCallEcho; event: Obj }>();
@@ -43,10 +45,17 @@ export class ToolMarkupResponseTransform extends Transform {
   }
   private collect(item: unknown): void {
     if (!obj(item) || this.calls.size >= 128 || typeof item.name !== 'string') return;
+    // Only request-authorized aliases for this exact restored identity/kind may
+    // validate text. A declared alias alone is never execution evidence.
+    const aliases: string[] = [];
+    for (const [alias, identity] of this.toolAliases ?? []) {
+      if (identity.name === item.name && identity.namespace === item.namespace
+        && identity.kind === (item.type === 'custom_tool_call' ? 'custom' : 'function')) aliases.push(alias);
+    }
     if (item.type === 'custom_tool_call' && typeof item.input === 'string') {
-      this.calls.set(String(item.call_id ?? item.id), { name: item.name, input: item.input });
+      this.calls.set(String(item.call_id ?? item.id), { name: item.name, input: item.input, aliases });
     } else if (item.type === 'function_call' && typeof item.arguments === 'string') {
-      this.calls.set(String(item.call_id ?? item.id), { name: item.name, arguments: item.arguments });
+      this.calls.set(String(item.call_id ?? item.id), { name: item.name, arguments: item.arguments, aliases });
     }
   }
   private cleanText(text: unknown, key: string): unknown {
@@ -162,7 +171,7 @@ export class ToolMarkupResponseTransform extends Transform {
     callback();
   }
 }
-export function createToolMarkupResponseTransform(response: { contentType: string; contentEncoding: string }): Transform | null {
+export function createToolMarkupResponseTransform(response: { contentType: string; contentEncoding: string }, toolAliases?: RoutedNamespaceToolAliases): Transform | null {
   return response.contentType.toLowerCase().startsWith('text/event-stream') && (!response.contentEncoding || response.contentEncoding === 'identity')
-    ? new ToolMarkupResponseTransform() : null;
+    ? new ToolMarkupResponseTransform(toolAliases) : null;
 }

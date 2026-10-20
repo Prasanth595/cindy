@@ -96,6 +96,8 @@ Claude Code 的 `upstream-idle-watchdog.test.ts` 与 desktop 的 `tool-loop-revi
 Chat bridge 在响应内对账；Codex 原生 Responses 在反向工具转换后、SDK 读取前对账；
 Claude Code、Codex、Pi 的主任务事件投影共同处理正文、思考和终态。子代理/后台事件
 不得混入主任务的调用证据。真实工具事件与参数保持原样，投影不把文本解析结果执行成工具。
+工具名经过命名空间或别名转换时，只用本请求正向转换得到、且与还原后的命名空间、名称及
+工具类型一致的别名对账；不能跨请求复用或通过拼接字符串猜测身份。
 
 完整标记与同一响应的结构化调用名、参数一致时，仅删除重复可见文本；没有结构化调用时，
 删除该可见标记并以 `unexecuted-tool-markup` 明确失败、`silentStop: false` 收口。
