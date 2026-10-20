@@ -15,7 +15,7 @@
 import { ipcMain } from 'electron';
 
 import { createLogger } from '../logger.js';
-import { forkSessionAtMessage, forkSessionStripEncrypted } from '../maker-orchestration/fork.js';
+import { createSideChat, listSideChats, forkSessionAtMessage, forkSessionStripEncrypted } from '../maker-orchestration/fork.js';
 import { requireString, throwIpcError } from '../utils/ipcValidate.js';
 import { emitSessionCreated } from '../localDb/ipc/sessionCreatedBroadcast.js';
 
@@ -32,6 +32,25 @@ function broadcastSessionCreated(sessionId: string): void {
 }
 
 export function registerMakerForkIpc(): void {
+  ipcMain.handle(MAKER_INVOKE.SIDE_CHAT_LIST, (_event, sourceSessionId: unknown) =>
+    listSideChats(requireString(sourceSessionId, 'sourceSessionId')));
+  ipcMain.handle(MAKER_INVOKE.SIDE_CHAT, async (_event, sourceSessionId: unknown) => {
+    const sid = requireString(sourceSessionId, 'sourceSessionId');
+    try {
+      const session = await createSideChat(sid);
+      broadcastSessionCreated(session.id);
+      return session;
+    } catch (error) {
+      const code = (error as { code?: string }).code;
+      log.warn('side chat creation failed', { sourceSessionId: sid, code });
+      if (code === 'SOURCE_NOT_FOUND') throwIpcError('NOT_FOUND', 'Source task is unavailable');
+      if (code === 'REMOTE_NOT_SUPPORTED') throwIpcError('UNSUPPORTED_CAPABILITY', 'Native history is on another execution host');
+      if (code === 'NO_PRIOR_ASSISTANT' || code === 'SOURCE_NEVER_RAN') {
+        throwIpcError('NO_PRIOR_ASSISTANT', 'Wait for the first completed reply');
+      }
+      throwIpcError('PRECONDITION_FAILED', 'Could not create a side chat from this history');
+    }
+  });
   ipcMain.handle(
     MAKER_INVOKE.FORK,
     async (

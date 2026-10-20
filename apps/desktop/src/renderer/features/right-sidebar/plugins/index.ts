@@ -16,6 +16,7 @@ import './terminal';
 import './review';
 import './orca-workers';
 import './subagents';
+import './side-chat';
 import './background-tasks';
 import './resource-usage';
 import './routines';

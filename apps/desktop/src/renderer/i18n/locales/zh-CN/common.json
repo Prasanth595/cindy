@@ -8011,6 +8011,16 @@
         "comingSoon": "即将支持",
         "alreadyOpen": "已打开"
       },
+      "descriptions": {
+        "fileBrowser": "浏览工作目录中的文件",
+        "review": "查看代码改动与审查结果",
+        "subagents": "查看子任务的进度与结果",
+        "backgroundTasks": "跟踪后台运行的进度与输出",
+        "sideChat": "基于主任务上下文独立提问",
+        "browser": "在面板中浏览网页",
+        "terminal": "运行命令，查看输出",
+        "workbench": "查看伙伴的工作进展"
+      },
       "kinds": {
         "fileBrowser": "文件浏览器",
         "browser": "浏览器",
@@ -8038,21 +8048,9 @@
       "empty": {
         "eyebrow": "右侧栏",
         "title": "开始一个面板",
-        "desc": "在右侧打开文件、审查、资源监视器、内置浏览器或终端，与左侧对话并行工作。",
-        "openFile": "打开文件",
-        "fileSub": "文件",
-        "openReview": "打开审查",
-        "reviewSub": "审查",
-        "openSubagents": "打开 Subagent",
-        "subagentsSub": "可持续回看的子任务",
-        "openBackgroundTasks": "打开后台任务",
-        "backgroundTasksSub": "后台任务",
+        "desc": "在右侧追问、查看文件或使用工具，与主任务并行工作。",
         "openResourceUsage": "打开资源监视器",
-        "openBrowser": "打开浏览器",
-        "browserSub": "浏览器",
-        "openTerminal": "打开终端",
-        "terminalSub": "终端",
-        "addMoreHint": "可通过顶部 + 按钮选择更多面板类型"
+        "addMoreHint": "也可通过顶部 + 按钮选择面板"
       },
       "placeholderHint": "{{kind}} — 内容将在后续阶段加入"
     },
@@ -11963,6 +11961,24 @@
     },
     "ghostPreview": {
       "opened": "打开了一个预览页面"
+    },
+    "sideChat": {
+      "new": "新建侧边追问",
+      "mainWindowDescription": "侧边追问目前在主窗口中使用。追问记录仍然保留。",
+      "returnToMain": "回到主窗口继续追问",
+      "commandDescription": "基于主任务打开侧边追问。可在命令后附上问题，作为追问草稿。",
+      "title": "侧边追问",
+      "context": "基于主任务已有上下文独立追问，回答不会自动写回主任务。",
+      "opening": "正在打开…",
+      "notReady": "请先等待主任务完成一次回答。",
+      "unsupported": "此 Agent 的远程任务暂不支持侧边追问。",
+      "updateHost": "请先更新执行任务的电脑，再打开侧边追问。",
+      "failed": "打开侧边追问失败，请稍后重试。",
+      "mainTaskOnly": "请从主任务打开侧边追问。",
+      "closeTitle": "关闭侧边追问？",
+      "closeDescription": "将停止并删除本次追问，主任务不受影响。",
+      "closeConfirm": "关闭并删除",
+      "closeFailed": "删除追问失败，请稍后重试。"
     }
   },
   "ccAgent": {

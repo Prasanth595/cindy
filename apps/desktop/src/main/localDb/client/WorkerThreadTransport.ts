@@ -2043,6 +2043,11 @@ function forkSession(readyDb, args) {
     'INSERT INTO messages (id, client_id, session_id, role, content, tool_use_id, agent_meta, agent_kind, created_at, rewind_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)',
   );
   return readyDb.transaction(() => {
+    if (newSession.source === 'side-chat' && !readyDb.prepare(
+      "SELECT 1 FROM sessions WHERE id = ? AND status != 'deleted' AND cleared_at IS ?",
+    ).get(sourceSessionId, sourceClearedAt)) {
+      throw invalidArgs('Source task changed while opening side chat');
+    }
     if (payload.recoveryMarker != null && !readyDb.prepare(
       'SELECT 1 FROM sessions WHERE id = ? AND cleared_at IS ?',
     ).get(sourceSessionId, sourceClearedAt)) {
@@ -2089,6 +2094,10 @@ function forkSession(readyDb, args) {
       expectNumber(newSession.createdAt, 'newSession.createdAt'),
       expectNumber(newSession.updatedAt, 'newSession.updatedAt'),
     );
+    if (newSession.source === 'side-chat') {
+      readyDb.prepare("UPDATE sessions SET source = 'side-chat', extra_dirs = (SELECT extra_dirs FROM sessions WHERE id = ?), writable_dirs = (SELECT writable_dirs FROM sessions WHERE id = ?) WHERE id = ?")
+        .run(sourceSessionId, sourceSessionId, expectString(newSession.id, 'newSession.id'));
+    }
     for (let i = 0; i < sourceMessages.length; i += 1) {
       const message = sourceMessages[i];
       const ids = newMessageIds[i];

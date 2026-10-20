@@ -346,6 +346,16 @@ async function setTerminalSessionStatus(
   }
 }
 
+/** Side chats belong to the parent view; deleting it must not strand invisible running tasks. */
+async function deleteDependentSideChats(parentId: string, dbClient: DbClient, ownerScope: OwnerScope): Promise<void> {
+  const children = await dbClient.drizzle.select({ id: sessions.id }).from(sessions)
+    .where(and(eq(sessions.parentSessionId, parentId), eq(sessions.source, 'side-chat'), ne(sessions.status, 'deleted')));
+  for (const child of children) {
+    if (!isOwnerScopeCurrent(ownerScope) || getDbClient() !== dbClient) return;
+    await patchSessionMetaInDb(child.id, { status: 'deleted' });
+  }
+}
+
 export function captureSessionRecycleScope(
   dbClient: DbClient = getDbClient(),
 ): SessionRecycleScope {
@@ -2150,6 +2160,7 @@ export async function updateSessionInDb(
     notifyGhostSessionStatusChange(sid, p.status, updated.workingDir);
     cleanupSessionTerminalArtifacts(sid, p.status);
     compactTerminalSessionToolResults(dbClient, sid, p.status);
+    if (p.status === 'deleted' && updated.source !== 'side-chat') await deleteDependentSideChats(sid, dbClient, ownerScope);
     return updated;
   };
   if (p.workingDir === undefined && !moveGuard) return update();
@@ -2289,6 +2300,7 @@ export async function patchSessionMetaInDb(
     );
   }
   compactTerminalSessionToolResults(dbClient, sessionId, patch.status);
+  if (patch.status === 'deleted' && updated.source !== 'side-chat') await deleteDependentSideChats(sessionId, dbClient, ownerScope);
   return updated;
 }
 

@@ -89,6 +89,8 @@ CREATE TABLE sessions (
   agent_kind TEXT NOT NULL DEFAULT 'cc',
   orca_role TEXT,
   source TEXT NOT NULL DEFAULT 'desktop',
+  extra_dirs TEXT NOT NULL DEFAULT '[]',
+  writable_dirs TEXT NOT NULL DEFAULT '[]',
   im_bot_context_id TEXT,
   im_user_id TEXT,
   im_default_route TEXT,
@@ -2123,6 +2125,25 @@ describe('db worker tx handlers', () => {
         parentUuid: 'new-parent-tool',
         transcriptParentUuid: 'new-parent',
       });
+    }, { useInlineWorker });
+  });
+
+  // Real worker persistence: a source marker in orchestration alone would silently become desktop.
+  // Cover both shipped transports and a parent deletion during native fork preparation (DB tier).
+  it.each([false, true])('persists side-chat identity and directory grants atomically (inline=%s)', async useInlineWorker => {
+    await withClient(async client => {
+      await seedSession(client, 'src');
+      await client.exec('UPDATE sessions SET extra_dirs = ?, writable_dirs = ? WHERE id = ?', ['["/reference"]', '["/output"]', 'src']);
+      const args = { sourceSessionId: 'src', sourceClearedAt: null, targetCreatedAt: 200,
+        newSession: sessionRow('side', { source: 'side-chat', parentSessionId: 'src', createdAt: 200 }),
+        uuidMap: [], newMessageIds: [] };
+      await client.tx('fork.session', args);
+      expect(await client.queryOne('SELECT source, parent_session_id, extra_dirs, writable_dirs FROM sessions WHERE id = ?', ['side']))
+        .toEqual({ source: 'side-chat', parent_session_id: 'src', extra_dirs: '["/reference"]', writable_dirs: '["/output"]' });
+      await client.exec("UPDATE sessions SET status = 'deleted' WHERE id = 'src'");
+      await expect(client.tx('fork.session', { ...args, newSession: { ...args.newSession, id: 'orphan' } }))
+        .rejects.toThrow('Source task changed');
+      expect(await client.queryOne('SELECT id FROM sessions WHERE id = ?', ['orphan'])).toBeUndefined();
     }, { useInlineWorker });
   });
 

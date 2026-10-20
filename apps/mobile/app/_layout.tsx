@@ -191,13 +191,21 @@ function NavigationGate() {
             gestureResponseDistance: { end: 44 },
           }}
         >
-          <Stack.Screen name="sessions/[sessionId]" getId={({ params }) => recentTaskKey(params ?? {})} options={{
-            headerShown: sessionHeaderShown,
+          <Stack.Screen name="sessions/[sessionId]" getId={({ params }) => recentTaskKey(params ?? {})} options={({ route }) => ({
+            ...((route.params as { sideChat?: string } | undefined)?.sideChat === '1' ? {
+              presentation: Platform.OS === 'android' ? 'transparentModal' as const : 'formSheet' as const,
+              ...(Platform.OS === 'android' ? { animation: 'none', contentStyle: { backgroundColor: 'transparent' } } as const : {}),
+              sheetAllowedDetents: [0.85],
+              sheetGrabberVisible: true,
+              sheetExpandsWhenScrolledToEdge: false,
+              sheetElevation: 0,
+            } : {}),
+            headerShown: (route.params as { sideChat?: string } | undefined)?.sideChat === '1' ? false : sessionHeaderShown,
             headerTransparent: true,
             headerShadowVisible: false,
             headerBackVisible: false,
             headerStyle: { backgroundColor: 'transparent' },
-          }} />
+          })} />
           {/* 新建页只在圆钮形变仍可交接时关掉推入动画（形变本身就是入场）；
               交接记录已过期就照常推入，页面进入后再恢复普通返回动画。 */}
           <Stack.Screen name="sessions/new" options={({ route }) => ({

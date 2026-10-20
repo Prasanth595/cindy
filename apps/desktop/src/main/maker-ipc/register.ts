@@ -1321,6 +1321,7 @@ import {
   type MainOwnedInputBoundaryStamp,
 } from './mobileClientPromptNote.js';
 import { buildWireMessageSourceNote, readWireSourceDevice } from './messageSourceNote.js';
+import { SIDE_CHAT_CONTEXT } from './sideChatContext.js';
 import { getResolvedMainLocale } from '../i18n.js';
 import {
   buildUiLanguageErrorNote,
@@ -16515,8 +16516,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     readHostDeviceIdentity: () => getHostSourceDevice(),
     // 个人版制作任务说明:按持久化的 sessions.source 判定,每次 send 现读,不信任
     // 调用方自报;与手机说明同层(只进 wire 消息)。
-    isCindyMakeSession: async (sessionId) =>
-      (await readSessionSource(sessionId)) === CINDY_MAKE_SESSION_SOURCE,
+    readTaskSource: readSessionSource,
     // 原生压缩后的账本刷新:只对伙伴主对话且有账本的会话真正注入;读不到按无账本,
     // 标记仍由事务在 accepted 后按代次消费。
     peekWorkingMemoryRefresh: async (sessionId) => {
@@ -17046,7 +17046,11 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       : null;
     // 环境说明与 send 事务共用同一份去重记忆:插话进的是同一个原生上下文。
     const steerNotePlan = steerAllowsEnvironmentNotes
-      ? wireNoteMemory.plan(sessionId, { 'client-environment': steerNote, 'ui-language': steerLanguageNote }, { force: false })
+      ? wireNoteMemory.plan(sessionId, {
+          'client-environment': steerNote,
+          'ui-language': steerLanguageNote,
+          'side-chat': meta?.parentSessionId && (await readSessionSource(sessionId)) === 'side-chat' ? SIDE_CHAT_CONTEXT : null,
+        }, { force: false })
       : null;
     const steerPlannedNotes = steerNotePlan?.notes ?? {};
     const withSteerNote = steerPlannedNotes['client-environment']
@@ -17055,6 +17059,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     let steerPayload = steerPlannedNotes['ui-language']
       ? prependNoteToWireUserMessage(withSteerNote as HandoffWireMessage, steerPlannedNotes['ui-language'])
       : withSteerNote;
+    if (steerPlannedNotes['side-chat']) {
+      steerPayload = prependNoteToWireUserMessage(steerPayload as HandoffWireMessage, steerPlannedNotes['side-chat']);
+    }
     const appContext = shouldPrependMobileClientPromptNote(normalized, sess.agentKind)
       ? await mcpAppModelContext(sessionId)
       : undefined;

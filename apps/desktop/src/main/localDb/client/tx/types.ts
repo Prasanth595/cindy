@@ -169,6 +169,7 @@ export interface ForkSessionArgs {
   /** 与 targetCreatedAt 同毫秒时按 SQLite 插入顺序截断；null/缺省表示整毫秒前缀。 */
   targetRowid?: number | null;
   newSession: {
+    source?: string;
     id: string;
     title: string;
     workingDir: string | null;

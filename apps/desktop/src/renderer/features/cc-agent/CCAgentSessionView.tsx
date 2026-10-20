@@ -84,6 +84,7 @@ import { CindyMakeEditingActions } from '@/components/cindy-make/CindyMakeEditin
 import { useCindyMakeEditing } from '@/components/cindy-make/useCindyMakeEditing';
 import { useCindyMakeState } from '@/lib/cindyMakeState';
 import { resolveLearnDesktopCommandFeedback } from '@/features/learn/desktopCommandFeedback';
+import { openSideChatTab, watchSideChatTabs } from '@/features/right-sidebar/lib/openSideChatTab';
 import { GoalIndicator } from '@/components/new-chat/GoalIndicator';
 import { PinnedPlanPanel } from '@/components/new-chat/PinnedPlanPanel';
 import { sessionsStore } from '@/lib/sessionsStore';
@@ -480,6 +481,8 @@ function parseOrcaWorkersRevealState(state: unknown): OrcaWorkersRevealState | n
 
 interface CCAgentSessionViewProps {
   sessionIdProp?: string;
+  /** Host-read metadata for an embedded remote task intentionally absent from task lists. */
+  sessionSnapshotProp?: Session | null;
   /**
    * 显式声明内嵌实例是否接管当前窗口路由的 header / 右栏主权。默认不传时沿用
    * 历史判据：只有无 sessionIdProp 的全屏路由实例拥有主权。SplitGroup 用它在
@@ -783,6 +786,7 @@ export function CCAgentSessionView(props: CCAgentSessionViewProps) {
 
 function CCAgentSessionContent({
   sessionIdProp,
+  sessionSnapshotProp,
   routeOwner,
   compact,
   orcaMode,
@@ -999,12 +1003,18 @@ function CCAgentSessionContent({
   // Prefer server-fetched data; fall back to cached list for instant first paint。初始 GET
   // 尚未到达时，暂存 patch 也覆盖到 list snapshot 上，但不把不完整 list 提升为 serverSession。
   // 远程会话 currentServerSession 恒为 null(下方 effect 跳过本地 get),故走 sessionFromList。
-  const sessionBase = currentServerSession ?? sessionFromList ?? null;
+  const sessionBase = currentServerSession ?? sessionFromList
+    ?? (sessionSnapshotProp?.id === sessionId ? sessionSnapshotProp : null);
   const session =
     sessionId && sessionBase
       ? sessionSnapshotPatchBufferRef.current.merge(sessionId, sessionBase)
       : null;
   const isOrcaLeadSessionView = session?.orcaRole === 'lead';
+  useEffect(() => {
+    if (!sessionId || !session || !canNavigateSession || readOnly
+      || ['side-chat', 'bot', 'review'].includes(session.source ?? '')) return;
+    return watchSideChatTabs(sessionId);
+  }, [sessionId, session?.id, session?.source, session?.deviceLinkDeviceId, session?.deviceLinkConnectionStatus, canNavigateSession, readOnly]);
 
   // Bot route gates have already checked durable ownership. The async runtime
   // snapshot may be absent during load/reconnect; it must never change the skin.
@@ -2779,6 +2789,14 @@ function CCAgentSessionContent({
         clearSession();
         return;
       }
+      if (payload.command === 'side') {
+        if (!sessionId || !canNavigateSession || session?.source === 'side-chat' || session?.source === 'bot') {
+          toast.info(t('chat.sideChat.mainTaskOnly'));
+          return;
+        }
+        void openSideChatTab(sessionId, { prompt: payload.args });
+        return;
+      }
       if (payload.command === 'cmd') {
         // /cmd 的执行结果由 main 端在 payload.result 里送来; renderer 透传给 CmdCard
         // 渲染。result 缺失只可能是 main 端代码出 bug, 这里防御性 fallback。
@@ -2827,7 +2845,7 @@ function CCAgentSessionContent({
       // 'issue' 命令由下方独立 effect 处理(需要 handleSend,其声明在本 effect 之后)。
     });
     return unsub;
-  }, [clearSession, insertHelpCard, insertSystemCard, readOnly, sessionId, t]);
+  }, [clearSession, insertHelpCard, insertSystemCard, readOnly, sessionId, session?.source, canNavigateSession, t]);
 
   // F-COLLAB: 协同模式真实状态。enabled 来自 session.orcaRole === 'lead';
   // worker(显示用)从 active workflow 的 Worker session 列表查到 agentKind。
@@ -4883,6 +4901,9 @@ function CCAgentSessionContent({
 
   // MessageStream 提成变量:perf/session-switch 的 <Profiler> 是纯诊断,只在 DEV
   // 包裹(见下方渲染处),生产直接渲染此 el,不引入多余 Profiler fiber。
+  const sideChatMessages = useMemo(() => session?.source === 'side-chat'
+    ? messages.filter(message => new Date(message.createdAt ?? session.createdAt).getTime() >= new Date(session.createdAt).getTime())
+    : messages, [messages, session?.source, session?.createdAt]);
   const messageStreamEl = (
     <MessageStream
       key={sessionId}
@@ -4904,7 +4925,10 @@ function CCAgentSessionContent({
       simplifiedBotConversation={Boolean(botChatIdentity)}
       botUnreadBoundaryAt={botChatIdentity ? botUnreadBoundaryAt : null}
       onBotReadThrough={viewVisible ? onBotReadThrough : undefined}
-      messages={messages}
+      messages={sideChatMessages}
+      historyVisibleAfter={session?.source === 'side-chat' ? new Date(session.createdAt).getTime() : undefined}
+      onAskInSideChat={!readOnly && canNavigateSession && sessionId && session?.source !== 'side-chat' && session?.source !== 'bot'
+        ? (quote) => openSideChatTab(sessionId, { quote }) : undefined}
       cindyMakeSessionId={session?.source === 'cindy-make' ? sessionId : undefined}
       cindyMakeCompletionInComposer={session?.source === 'cindy-make' && (remoteMakeCards.supported || (!remoteDeviceId && !readOnly && typeof window.electronAPI.cindyMakeTest === 'function'))}
       historyLoaded={historyLoaded}
@@ -4924,7 +4948,7 @@ function CCAgentSessionContent({
       getContentWidth={getMessageWidth}
       focusMessageClientId={focusedMessageTarget?.clientId ?? null}
       focusMessageRequestId={focusedMessageTarget?.requestId ?? 0}
-      forkOrigin={forkOrigin}
+      forkOrigin={session?.source === 'side-chat' ? undefined : forkOrigin}
       onOpenForkOrigin={handleOpenForkOrigin}
       isLocalUserSend={isLocalUserSend}
       ownsHardwareScrollActions={ownsHardwareTaskActions}
@@ -5246,7 +5270,7 @@ function CCAgentSessionContent({
               >
                 <PinnedPlanPanel
                   sessionId={sessionId ?? null}
-                  messages={messages}
+                  messages={sideChatMessages}
                   animated={isStreaming}
                   streaming={isStreaming}
                   width={inputWidth}
@@ -5691,7 +5715,7 @@ function CCAgentSessionContent({
                   onQueueInteractionLock={setQueueInteractionLock}
                   onQueueEditLock={setQueueEditLock}
                   steeringQueueClientIds={steeringQueueClientIds}
-                  messages={messages}
+                  messages={sideChatMessages}
                   placeholder={
                     botChatIdentity
                       ? t(botChatIdentity.deviceId ? 'bots.devicePicker.remotePlaceholder' : botComposerPlaceholderKey(botChatIdentity.name), {

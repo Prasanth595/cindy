@@ -225,7 +225,7 @@ return { BubbleHarness, MarkdownHarness };
     SelectionQuoteContext: React.createContext(null), useWindowDimensions: () => ({ fontScale: 1 }),
     Platform: { OS: 'ios' }, StyleSheet: { flatten: (style: unknown) => style },
     selectableTextVerticalOffset, MAX_FONT_SIZE_MULTIPLIER: 2, i18n,
-    View: NativeView, Text, UITextView, ScrollView,
+    View: NativeView, Text, SelectionMenuText: Text, UITextView, ScrollView,
     buildMessageContentLayout, nextSettledContentWidth,
     MarkdownBlockContent: ({ block, renderBlock }: { block: unknown; renderBlock: (block: unknown) => React.ReactNode }) => renderBlock(block),
     HighlightedCodeText: ({ text }: { text: string }) => React.createElement('code', null, text),

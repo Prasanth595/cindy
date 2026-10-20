@@ -5,6 +5,7 @@
   "sourceLocale": "en",
   "punctuationExempt": ["desktop:settings.help.qnaFeedbackBodyTemplate"],
   "terms": [
+    {"id":"side-chat","status":"proposed","en":"Side chat","translations":{"zh-CN":"侧边追问","zh-TW":"側邊追問","ja":"サイドチャット","ko":"사이드 채팅"},"checkCase":false,"note":"在右侧独立提问，继承主任务已完成的上下文；追问不自动写回主任务。"},
     {"id": "mivo-library", "status": "proposed", "en": "Mivo Library", "translations": {"zh-CN": "Mivo 作品库", "zh-TW": "Mivo 作品庫", "ja": "Mivo ライブラリ", "ko": "Mivo 라이브러리"}, "note": "#5929：引用目录系统项沿用 Mivo 品牌，仅本地化展示；通用 library 能力的品牌命名仍待维护者裁决。"},
     {"id": "mcp-app", "status": "proposed", "en": "MCP App", "translations": {"zh-CN": "MCP App", "zh-TW": "MCP App", "ja": "MCP App", "ko": "MCP App"}, "note": "标准 MCP Apps 协议提供的交互应用；卡片标题与消息来源沿用协议名称，各语言保留 MCP App，待术语评审后固化。"},
     {"id": "dissolve-group", "status": "proposed", "en": "Dissolve group", "translations": {"zh-CN": "解散群聊", "zh-TW": "解散群聊", "ja": "グループを解散", "ko": "그룹 해산"}, "checkCase": false, "note": "Irreversible group termination, distinct from archive, leave and personal list removal."},

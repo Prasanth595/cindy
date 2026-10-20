@@ -108,6 +108,7 @@ vi.mock('../localDb/client/current', () => ({
 }));
 
 let forkSessionAtMessage: typeof import('../maker-orchestration/fork').forkSessionAtMessage;
+let createSideChat: typeof import('../maker-orchestration/fork').createSideChat;
 let forkSessionStripEncrypted: typeof import('../maker-orchestration/fork').forkSessionStripEncrypted;
 const originalClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
 const originalXdtUserDataDir = process.env.XDT_USER_DATA_DIR;
@@ -140,6 +141,7 @@ beforeEach(async () => {
   if (!forkSessionAtMessage) {
     const mod = await import('../maker-orchestration/fork');
     forkSessionAtMessage = mod.forkSessionAtMessage;
+    createSideChat = mod.createSideChat;
     forkSessionStripEncrypted = mod.forkSessionStripEncrypted;
   }
 });
@@ -270,6 +272,35 @@ describe('disabled Cindy Make fork boundaries', () => {
 });
 
 describe('forkSessionAtMessage', () => {
+  // Side-chat creation must preserve the parent runtime and route while making an independent child.
+  // Existing message-level forks lack the automatic busy-parent boundary and source marker (unit).
+  it('opens a separate side task before the busy parent question', async () => {
+    const source = makeSourceRow({ source: 'desktop', activeTurnStartedAt: 3001, lastTurnEndedAt: 2501 });
+    const question = makeMessageRow({ clientId: 'busy-question', createdAt: 3000 });
+    const reply = makeMessageRow({ role: 'assistant', createdAt: 2500, agentMeta: JSON.stringify({ uuid: 'prior-uuid' }) });
+    selectQueue.push([source], [{ clientId: 'busy-question' }], [source], [question], [reply], [makeSourceRow({ id: 'child', source: 'side-chat' })]);
+    const child = await createSideChat('src-session');
+    expect(child.id).toBe('child');
+    const transaction = txCalls.find(call => call.name === 'fork.session')?.args as { newSession: Record<string, unknown>; targetCreatedAt: number };
+    expect(transaction.targetCreatedAt).toBe(3000);
+    expect(transaction.newSession).toMatchObject({ source: 'side-chat', parentSessionId: 'src-session', permissionMode: 'ask', providerId: 'xd', workingDir: '/work' });
+    expect(forkSdkSessionMock).toHaveBeenCalledWith('claude-code', expect.objectContaining({ sourceSdkSessionId: 'sdk-uuid-source', upToMessageId: 'prior-uuid' }));
+    expect(txCalls).toHaveLength(1);
+  });
+
+  it.each([{ status: 'deleted' }, { source: 'side-chat' }, { source: 'review' }])('rejects unavailable or nested side-chat sources: %j', async overrides => {
+    selectQueue.push([makeSourceRow(overrides)]);
+    await expect(createSideChat('src-session')).rejects.toThrow();
+    expect(forkSdkSessionMock).not.toHaveBeenCalled();
+    expect(txCalls).toHaveLength(0);
+  });
+
+  it('leaves an empty parent untouched when there is no completed reply', async () => {
+    selectQueue.push([makeSourceRow()], []);
+    await expect(createSideChat('src-session')).rejects.toMatchObject({ code: 'NO_PRIOR_ASSISTANT' });
+    expect(forkSdkSessionMock).not.toHaveBeenCalled();
+    expect(txCalls).toHaveLength(0);
+  });
   it.each([
     { marker: 200000, projectedWindow: 200000 },
     { marker: null, projectedWindow: 272000 },

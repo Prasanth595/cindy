@@ -39,6 +39,20 @@ function harness() {
 }
 
 describe("mobile maker transport", () => {
+  // Unit: validate the real transport's versioned Host protocol, including an
+  // older Host rejection. Creating a side chat is never retried as a new task.
+  it('uses versioned side-chat channels and surfaces unsupported hosts without fallback', async () => {
+    const calls: string[] = [];
+    const maker = createMobileMakerTransport({ deviceId: 'side-host', invoke: (async (_device, channel, args) => {
+      calls.push(channel);
+      expect(args).toEqual(['main']);
+      if (channel === 'maker:side-chat:list:v1') return [{ id: 'child' }];
+      throw new Error('CHANNEL_NOT_ALLOWED');
+    }) as RemoteInvoke });
+    expect(await maker.listSideChats('main')).toEqual([{ id: 'child' }]);
+    await expect(maker.createSideChat('main')).rejects.toThrow('CHANNEL_NOT_ALLOWED');
+    expect(calls).toEqual(['maker:side-chat:list:v1', 'maker:side-chat:v1']);
+  });
   // Unit: a visible text snapshot is already cached by the reader. Its refresh
   // must await the Host, while retaining the existing confirmed-version cache.
   it('revalidates text without returning stale bytes or invalidating a confirmed version', async () => {
@@ -463,6 +477,8 @@ describe("mobile maker transport", () => {
       "maker:goal:resume",
       "maker:goal:update",
       "maker:fork",
+      "maker:side-chat:v1",
+      "maker:side-chat:list:v1",
       "maker:fork-strip-encrypted",
       "maker:get-session-tree",
       "maker:navigate-session-tree",

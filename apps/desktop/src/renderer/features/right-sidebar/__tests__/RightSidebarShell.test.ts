@@ -19,6 +19,12 @@ vi.mock('react-i18next', () => ({
 
 vi.mock('@/features/device-link/remoteProjectsStore', () => ({
   getSessionDeviceId: () => undefined,
+  useRemoteProjectSessions: () => [],
+}));
+
+vi.mock('../lib/openSideChatTab', () => ({
+  canOpenSideChat: () => false,
+  openSideChatTab: vi.fn(async () => true),
 }));
 
 vi.mock('@/lib/toast', () => ({

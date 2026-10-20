@@ -2922,6 +2922,11 @@ function forkSession(db: Database.Database, args: unknown): { messageCount: numb
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
   );
   const transaction = db.transaction(() => {
+    if (newSession.source === 'side-chat' && !db.prepare(
+      "SELECT 1 FROM sessions WHERE id = ? AND status != 'deleted' AND cleared_at IS ?",
+    ).get(sourceSessionId, sourceClearedAt)) {
+      throw invalidArgs('Source task changed while opening side chat');
+    }
     if (payload.recoveryMarker != null && !db.prepare(
       'SELECT 1 FROM sessions WHERE id = ? AND cleared_at IS ?',
     ).get(sourceSessionId, sourceClearedAt)) {
@@ -2989,6 +2994,10 @@ function forkSession(db: Database.Database, args: unknown): { messageCount: numb
       expectNumber(newSession.createdAt, 'newSession.createdAt'),
       expectNumber(newSession.updatedAt, 'newSession.updatedAt'),
     );
+    if (newSession.source === 'side-chat') {
+      db.prepare("UPDATE sessions SET source = 'side-chat', extra_dirs = (SELECT extra_dirs FROM sessions WHERE id = ?), writable_dirs = (SELECT writable_dirs FROM sessions WHERE id = ?) WHERE id = ?")
+        .run(sourceSessionId, sourceSessionId, expectString(newSession.id, 'newSession.id'));
+    }
     for (let i = 0; i < sourceMessages.length; i += 1) {
       const message = sourceMessages[i];
       const ids = newMessageIds[i];

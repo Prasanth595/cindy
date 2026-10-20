@@ -385,6 +385,17 @@ afterEach(async () => {
 });
 
 describe('local-db:sessions:update handler wiring', () => {
+  // Terminal lifecycle through both real public handlers: an ordinary fork survives,
+  // but a hidden side chat must not remain running after its parent becomes unreachable (unit).
+  it.each([invokeUpdate, invokePatchMeta])('deletes dependent side chats without deleting ordinary forks (%#)', async update => {
+    h.sqlite!.prepare("UPDATE sessions SET parent_session_id = 'cc-local', source = 'side-chat' WHERE id = 'codex-local'").run();
+    h.sqlite!.prepare("UPDATE sessions SET parent_session_id = 'cc-local' WHERE id = 'pi-local'").run();
+    await update('cc-local', { status: 'deleted' });
+    expect(h.sqlite!.prepare('SELECT status FROM sessions WHERE id = ?').get('codex-local')).toEqual({ status: 'deleted' });
+    expect(h.sqlite!.prepare('SELECT status FROM sessions WHERE id = ?').get('pi-local')).toEqual({ status: 'active' });
+    expect(h.runtimeCleanup).toHaveBeenCalledWith('codex-local');
+    expect(h.runtimeCleanup).not.toHaveBeenCalledWith('pi-local');
+  });
   it.each([invokeUpdate, invokePatchMeta])(
     'clears only the deleted task from event-backed app attention (%#)',
     async (update) => {

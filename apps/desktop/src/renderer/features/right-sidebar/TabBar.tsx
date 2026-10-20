@@ -19,7 +19,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Activity, Bot, FolderTree, Globe, Terminal, GitPullRequestArrow, UsersRound, LayoutGrid, ListTodo, Plus, Puzzle, X, Maximize2, Minimize2, PanelRightClose, PictureInPicture2, Wrench } from 'lucide-react';
+import { Activity, MessagesSquare, Bot, FolderTree, Globe, Terminal, GitPullRequestArrow, UsersRound, LayoutGrid, ListTodo, Plus, Puzzle, X, Maximize2, Minimize2, PanelRightClose, PictureInPicture2, Wrench } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
@@ -36,6 +36,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { AddTabDropdown } from './AddTabDropdown';
+import type { TabCreationMenu } from './lib/useTabCreationMenu';
 import { getTabKind, hydrateTabState } from './registry';
 import type { BuiltinTabKindId, TabKindId, TabState } from './types';
 
@@ -46,7 +47,7 @@ interface TabBarProps {
   onActivate: (id: string) => void;
   onClose: (id: string) => void;
   onReorder: (orderedIds: string[]) => void;
-  onAdd: (kind: TabKindId) => void;
+  creationMenu: TabCreationMenu;
   /**
    * 是否在 TabBar 右端渲染 maximize + 折叠按钮。
    * - Mac false:控件走 MainLayout 浮层
@@ -77,8 +78,6 @@ interface TabBarProps {
    *  "拖面板"手势面(窗口拖拽区收不到鼠标事件,二者物理互斥;拖窗走左栏顶行);
    *  detached 子窗口等其它宿主不传,默认 true 维持经典拖窗行为。 */
   chromeWindowDrag?: boolean;
-  /** Whether the installed product plugin currently exposes the Host viewer. */
-  subagentsAvailable?: boolean;
 }
 
 interface TabStripProps {
@@ -88,7 +87,7 @@ interface TabStripProps {
   onActivate: (id: string) => void;
   onClose: (id: string) => void;
   onReorder: (orderedIds: string[]) => void;
-  onAdd: (kind: TabKindId) => void;
+  creationMenu: TabCreationMenu;
   onCloseOthers?: (keepTabId: string) => void;
   onCloseAll?: () => void;
   className?: string;
@@ -108,8 +107,6 @@ interface TabStripProps {
    */
   addButtonWrapperClassName?: string;
   addButtonClassName?: string;
-  /** Whether the installed product plugin currently exposes the Host viewer. */
-  subagentsAvailable?: boolean;
 }
 
 const KIND_ICON: Record<BuiltinTabKindId, LucideIcon> = {
@@ -120,6 +117,7 @@ const KIND_ICON: Record<BuiltinTabKindId, LucideIcon> = {
   review: GitPullRequestArrow,
   'orca-workers': UsersRound,
   subagents: Bot,
+  'side-chat': MessagesSquare,
   'background-tasks': ListTodo,
   routines: ListTodo,
   'bot-workbench': LayoutGrid,
@@ -135,6 +133,7 @@ const KIND_LABEL_KEY: Record<BuiltinTabKindId, string> = {
   review: 'rightSidebar.tabs.kinds.review',
   'orca-workers': 'rightSidebar.tabs.kinds.collaboration',
   subagents: 'rightSidebar.tabs.kinds.subagents',
+  'side-chat': 'chat.sideChat.title',
   'background-tasks': 'rightSidebar.tabs.kinds.backgroundTasks',
   routines: 'routines.title',
   'bot-workbench': 'bots.workbench.title',
@@ -191,7 +190,7 @@ export function TabBar({
   onActivate,
   onClose,
   onReorder,
-  onAdd,
+  creationMenu,
   showWindowControls,
   onMaximize,
   onCloseSidebar,
@@ -202,7 +201,6 @@ export function TabBar({
   onCloseAll,
   onDetach,
   chromeWindowDrag = true,
-  subagentsAvailable = false,
 }: TabBarProps) {
   const { t } = useTranslation();
 
@@ -222,12 +220,11 @@ export function TabBar({
         onActivate={onActivate}
         onClose={onClose}
         onReorder={onReorder}
-        onAdd={onAdd}
+        creationMenu={creationMenu}
         onCloseOthers={onCloseOthers}
         onCloseAll={onCloseAll}
         addButtonWrapperClassName="h-[36px]"
         addButtonClassName="mt-[3px]"
-        subagentsAvailable={subagentsAvailable}
       />
 
       {/* Right: window controls. 仅 showWindowControls=true(Win 端)时渲染;
@@ -287,14 +284,13 @@ export function TabStrip({
   onActivate,
   onClose,
   onReorder,
-  onAdd,
+  creationMenu,
   onCloseOthers,
   onCloseAll,
   className,
   pillVariant = 'flush',
   addButtonWrapperClassName,
   addButtonClassName,
-  subagentsAvailable = false,
 }: TabStripProps) {
   const { t } = useTranslation();
   const reducedMotion = useReducedMotion();
@@ -447,11 +443,9 @@ export function TabStrip({
           <AddTabDropdown
             open={dropdownOpen}
             anchorRef={addButtonWrapperRef}
-            sessionId={sessionId}
+            menu={creationMenu}
             onClose={closeDropdown}
-            onSelect={onAdd}
             existingKinds={existingKinds}
-            subagentsAvailable={subagentsAvailable}
           />
         </DropdownMenu>
       </div>

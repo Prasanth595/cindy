@@ -13,6 +13,7 @@ export const SESSION_SOURCES = [
   'scheduler',
   'learn',
   'review',
+  'side-chat',
   'shared',
   'plugin',
   'bot',
@@ -72,6 +73,7 @@ export function isReviewSessionSource(source: unknown): source is 'review' {
 // cindy-make: /cindy-make 弹窗选择制作个人版后创建的代码任务，工作目录是 Cindy 受管
 //      源码。Main 据此注入 cindy_make 工具与任务说明；按 workingDir 归到源码项目分组。
 export const DESKTOP_VISIBLE_SESSION_SOURCES: SessionSource[] = [
+  'side-chat',
   'desktop',
   'feishu',
   'slack',
@@ -95,10 +97,11 @@ export const DESKTOP_VISIBLE_SESSION_SOURCES: SessionSource[] = [
  * 不作为用户自己建的任务出现;用量统计等全量口径仍用 DESKTOP_VISIBLE_SESSION_SOURCES。
  */
 export const DESKTOP_TASK_LIST_SESSION_SOURCES: SessionSource[] =
-  DESKTOP_VISIBLE_SESSION_SOURCES.filter((source) => !isReviewSessionSource(source));
+  DESKTOP_VISIBLE_SESSION_SOURCES.filter((source) => !isReviewSessionSource(source) && source !== 'side-chat');
 
 export function normalizeSessionSource(source: unknown): SessionSource {
   return source === 'feishu' ||
+    source === 'side-chat' ||
     source === 'slack' ||
     source === 'telegram' ||
     source === 'x' ||
