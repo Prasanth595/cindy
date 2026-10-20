@@ -713,6 +713,20 @@ function completedItem(
 }
 
 describe('ChatSseTranslator serialized tool-call echo', () => {
+  it('fails an under-counted batch without inventing a second structured call', () => {
+    const translator = new ChatSseTranslator('m');
+    const invoke = '<invoke name="read"><parameter name="path" string="true">a</parameter></invoke>';
+    const events = [
+      ...translator.push({ choices: [{ delta: { content: '<tool_calls>' + invoke + invoke + '</tool_calls>' } }] }),
+      ...translator.push({ choices: [{ delta: { tool_calls: [
+        { index: 0, id: 'only-call', function: { name: 'read', arguments: '{"path":"a"}' } },
+      ] }, finish_reason: 'tool_calls' }] }),
+      ...translator.finish(),
+    ] as Array<Record<string, unknown>>;
+    expect(events.at(-1)).toMatchObject({ type: 'response.failed' });
+    expect(events.filter(e => e.type === 'response.output_item.done' && (e.item as { type: string }).type === 'function_call')).toHaveLength(1);
+    expect(JSON.stringify(events)).not.toContain('<tool_calls>');
+  });
   // #6545: holding the first text delta cannot give a later tool its output index.
   it('reserves message order before holding a leading tool echo', () => {
     const translator = new ChatSseTranslator('m');

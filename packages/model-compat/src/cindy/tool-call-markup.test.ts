@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  reconcileToolCallMarkup,
   reconcileSerializedToolCalls,
   SerializedToolCallEcho,
   type StructuredToolCall,
@@ -15,6 +16,14 @@ function echo(body = BODY, close = '</function>'): string {
 }
 
 describe('reconcileSerializedToolCalls', () => {
+  it('requires distinct actual calls within one batch but can reconcile independent echoes', () => {
+    const invoke = '<invoke name="read"><parameter name="path" string="true">a</parameter></invoke>';
+    const batch = '<tool_calls>' + invoke + invoke + '</tool_calls>';
+    const calls = [{ name: 'read', arguments: { path: 'a' } }];
+    expect(reconcileToolCallMarkup(batch, calls)).toEqual({ text: batch, unexecuted: true });
+    expect(reconcileToolCallMarkup(batch, [...calls, ...calls])).toEqual({ text: '', unexecuted: false });
+    expect(reconcileToolCallMarkup(invoke + invoke, calls)).toEqual({ text: '', unexecuted: false });
+  });
   it('removes a block whose name and freeform body match a structured call', () => {
     expect(reconcileSerializedToolCalls(echo(), EXEC())).toBe('');
   });

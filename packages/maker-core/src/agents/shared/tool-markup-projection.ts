@@ -11,6 +11,7 @@ function record(value: unknown): Record<string, unknown> {
 }
 /** Output projection only. It never turns model text into an executable tool. */
 export class ToolMarkupProjection {
+  constructor(private readonly options: { requireResponseOwnedCalls?: boolean } = {}) {}
   private streams = new Map<string, Stream>();
   private calls: StructuredToolCall[] = [];
   private unexecuted = false;
@@ -28,6 +29,7 @@ export class ToolMarkupProjection {
     queue.push = event => {
       if ((event.type !== 'error' && event.type !== 'done') || this.projectedTerminals.has(event)
         || event.turnScope === 'background' || event.agentMeta?.parentUuid) return push(event);
+      if (event.type === 'error' && record(event.data).isTerminal === false) return this.push(event, sink);
       // A host-only terminal has no successful SDK message to reconcile. Keep
       // its partial output and original Stop/transport-failure diagnosis.
       this.finish(sink, true);
@@ -89,7 +91,7 @@ export class ToolMarkupProjection {
       // Plan notifications/rollout snapshots have no execution-result boundary.
       // They may arrive late and cannot prove a call in the current sample.
       if (data.runtimeActivity === 'snapshot') return sink.push(event);
-      if (this.calls.length < 128 && typeof data.toolName === 'string') {
+      if (!this.options.requireResponseOwnedCalls && this.calls.length < 128 && typeof data.toolName === 'string') {
         const input = record(data.input);
         this.calls.push({ name: data.toolName, arguments: data.input,
           ...(typeof input.input === 'string' ? { input: input.input } : {}) });
@@ -97,6 +99,10 @@ export class ToolMarkupProjection {
       return sink.push(event);
     }
     if (event.type === 'tool_result_full') {
+      // Codex code-mode results overlap later model output and carry no sampling
+      // ownership. Only a response-owned setCalls snapshot can prove a match;
+      // unowned root tool events neither settle text nor supply evidence.
+      if (this.options.requireResponseOwnedCalls) return sink.push(event);
       this.finish(sink);
       this.afterTools = true;
       // Tool results are an execution boundary, never model text to scan.
@@ -104,7 +110,12 @@ export class ToolMarkupProjection {
     }
     if (event.type === 'error') {
       this.finish(sink, true);
-      const known = typeof data.message === 'string' && (data.message.includes(UNEXECUTED_TOOL_MARKUP_MESSAGE) || data.message.includes(UNEXECUTED_TOOL_MARKUP_REASON));
+      // A failed sampling attempt is not the terminal state of its whole turn.
+      // Preserve that attempt, then reconcile recovered output independently.
+      if (data.isTerminal === false) this.begin(sink);
+      const known = typeof data.message === 'string' && (data.message.includes(UNEXECUTED_TOOL_MARKUP_MESSAGE)
+        || data.message.includes('模型把工具调用写成了文本，工具未执行，本轮未完成。')
+        || data.message.includes(UNEXECUTED_TOOL_MARKUP_REASON));
       return sink.push(known ? { ...event, data: { ...data, reason: UNEXECUTED_TOOL_MARKUP_REASON, message: UNEXECUTED_TOOL_MARKUP_MESSAGE } } : event);
     }
     if (event.type === 'done') {

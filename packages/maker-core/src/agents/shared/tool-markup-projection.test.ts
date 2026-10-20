@@ -7,6 +7,42 @@ import { extractRolloutUpdatePlanFunctionCallEvent, translatePlanUpdatedNotifica
 // #6531 unit: common native output projection, including code-mode asynchronous order.
 // Protects cross-response isolation, terminal failure and Stop without executing parsed text.
 describe('native projection boundaries', () => {
+  it.each([false, true])('never borrows unowned code-mode calls or results (matching=%s)', matching => {
+    const events: AgentEvent[] = [];
+    const sink = { push: (event: AgentEvent) => { events.push(event); return true; } };
+    const p = new ToolMarkupProjection({ requireResponseOwnedCalls: true });
+    p.begin(sink);
+    p.push({ type: 'tool_use', data: { toolUseId: 'old', toolName: 'read', input: {} } }, sink);
+    const markup = '<tool_call>' + JSON.stringify({ name: matching ? 'read' : 'write', arguments: {} }) + '</tool_call>';
+    p.push({ type: 'text', data: { text: markup, isFinal: false, agentMessageId: 'new' } }, sink);
+    p.push({ type: 'tool_result_full', data: { toolUseId: 'old', fullText: 'old result' } }, sink);
+    expect(events.filter(e => e.type === 'text')).toHaveLength(0);
+    p.push({ type: 'tool_use', data: { toolUseId: 'old-script-next-call', toolName: 'read', input: {} } }, sink);
+    p.push({ type: 'done', data: { status: 'completed' } }, sink);
+    expect(events.at(-1)?.data).toMatchObject({ status: 'failed', reason: 'unexecuted-tool-markup' });
+    expect(JSON.stringify(events)).not.toContain('<tool_call>');
+  });
+
+  it('accepts explicit response-owned evidence while rejecting unowned calls', () => {
+    const events: AgentEvent[] = [];
+    const sink = { push: (event: AgentEvent) => { events.push(event); return true; } };
+    const p = new ToolMarkupProjection({ requireResponseOwnedCalls: true });
+    p.begin(sink);
+    p.setCalls([{ name: 'read', arguments: {} }]);
+    p.push({ type: 'text', data: { text: '<tool_call>{"name":"read","arguments":{}}</tool_call>', isFinal: true } }, sink);
+    p.push({ type: 'done', data: { status: 'completed' } }, sink);
+    expect(events.at(-1)?.data).toMatchObject({ status: 'completed' });
+    expect(events.some(e => e.type === 'error')).toBe(false);
+  });
+  it('reconciles a recovered sample after a non-terminal retry notice', () => {
+    const events: AgentEvent[] = [];
+    const sink = { push: (event: AgentEvent) => { events.push(event); return true; } };
+    const p = new ToolMarkupProjection(); p.begin(sink);
+    p.push({ type: 'error', data: { isTerminal: false, willRetry: true, message: 'reconnecting' } }, sink);
+    p.push({ type: 'text', data: { text: '<tool_call>{"name":"read","arguments":{}}</tool_call>', isFinal: true } }, sink);
+    p.push({ type: 'done', data: { status: 'completed' } }, sink);
+    expect(events.at(-1)?.data).toMatchObject({ status: 'failed', reason: 'unexecuted-tool-markup' });
+  });
   // #6545: host-only terminals and translated terminals share the real session
   // queue. Forwarding must not cause a second projection or change event identity.
   it('projects a forwarded SDK terminal only once through the installed queue', async () => {
@@ -106,7 +142,7 @@ it('restores the stable markup reason after an SDK error wrapper', () => {
   const p = new ToolMarkupProjection();
   p.push({ type: 'error', data: { message: 'stream disconnected before completion: 模型把工具调用写成了文本，工具未执行，本轮未完成。', isTerminal: true } },
     { push: event => { events.push(event); return true; } });
-  expect(events[0].data).toMatchObject({ reason: 'unexecuted-tool-markup', message: '模型把工具调用写成了文本，工具未执行，本轮未完成。', isTerminal: true });
+  expect(events[0].data).toMatchObject({ reason: 'unexecuted-tool-markup', message: '模型把工具调用写成了文本，无法确认执行结果，本轮未完成。', isTerminal: true });
 });
 
 it('does not flush or reset a pending candidate on duplicate turn/started', () => {

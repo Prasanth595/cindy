@@ -1674,5 +1674,5 @@ it('explains unexecuted tool markup in remote message history', () => {
     message: 'SDK wrapped tool markup error', reason: 'unexecuted-tool-markup',
   }) })]);
   expect(items[0]).toMatchObject({ kind: 'system', label: 'error', body: i18n.t('session.tail.unexecutedToolMarkup') });
-  expect(items[0].body).toContain('工具未执行');
+  expect(items[0].body).toContain('无法确认执行结果');
 });

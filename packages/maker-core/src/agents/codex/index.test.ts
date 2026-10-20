@@ -21250,6 +21250,26 @@ describe('CodexAgent MCP thread context hooks', () => {
 });
 
 describe('CodexAgent final assistant result', () => {
+  it.each(['retry', 'overlap'])('does not accept unowned tool evidence after %s', async mode => {
+    const agent = new CodexAgent(createDeps());
+    const host = installFakeHost(agent, method => method === Method.TurnStart ? { turn: { id: 'markup-overlap' } } : undefined);
+    const handle = await agent.startSession({ sessionId: 'markup-overlap', model: 'gpt-5.4', workingDir: '/repo' });
+    const handlers = host.getThreadHandlers()!;
+    const events: AgentEvent[] = [];
+    const collected = (async () => { for await (const event of handle.events()) events.push(event); })();
+    try {
+      await handle.send({ type: 'user', content: 'read' });
+      const base = { threadId: 'start-thread-id', turnId: 'markup-overlap' };
+      if (mode === 'retry') {
+        handlers.error!({ ...base, willRetry: true, error: { message: 'Missing bearer token' } });
+      } else handlers.itemStarted!({ ...base, item: { id: 'old-call', type: 'mcpToolCall', server: 'fixture', tool: 'read', arguments: {}, pluginId: null } });
+      handlers.agentMessageDelta!({ ...base, itemId: 'new-answer', delta: '<tool_call>{"name":"mcp:fixture:read","arguments":{}}</tool_call>' });
+      if (mode === 'overlap') handlers.itemCompleted!({ ...base, item: { id: 'old-call', type: 'mcpToolCall', server: 'fixture', tool: 'read', arguments: {}, pluginId: null, status: 'completed', result: { content: [{ type: 'text', text: 'old result' }] } } });
+      handlers.turnCompleted!({ ...base, turn: { id: 'markup-overlap', status: 'completed' } });
+      await waitForExpectation(() => expect(events.find(e => e.type === 'done')?.data).toMatchObject({ status: 'failed', reason: 'unexecuted-tool-markup' }));
+      expect(JSON.stringify(events)).not.toContain('<tool_call>');
+    } finally { await handle.close(); await collected; }
+  });
   // #6545: real response-first adoption must initialize reconciliation before
   // item deltas, so a delayed started notification cannot erase the failure.
   it('fails text-only markup received before a delayed turnStarted', async () => {

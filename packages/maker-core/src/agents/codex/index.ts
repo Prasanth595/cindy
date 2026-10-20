@@ -3768,7 +3768,7 @@ assertRouteCurrent();
     const eventQueue: AsyncQueue<AgentEvent> = createAsyncQueue<AgentEvent>();
     const usageTracker = new UsageTracker();
     const translatorRt: CodexRuntimeState = newCodexRuntimeState();
-    const toolMarkup = new ToolMarkupProjection();
+    const toolMarkup = new ToolMarkupProjection({ requireResponseOwnedCalls: true });
     const liveUsageSnapshot = () => attachLiveGeneration(usageTracker.snapshot(), {
       tokenSpeed: translatorRt.generationTimingReliable ? translatorRt.tokenSpeed.snapshot() : undefined,
       outputTokens: usageTracker.getTurnUsage().output,
@@ -13003,7 +13003,11 @@ assertRouteCurrent();
         translateErrorNotification(effectiveParams, eventQueue, {
           rt: translatorRt,
           log,
-          onSamplingAttemptFailed: () => assistantReplyByTurn.delete(effectiveParams.turnId),
+          onSamplingAttemptFailed: () => {
+            assistantReplyByTurn.delete(effectiveParams.turnId);
+            toolMarkup.finish({ push: rawEventQueuePush }, true);
+            if (effectiveParams.willRetry) toolMarkup.begin({ push: rawEventQueuePush });
+          },
           tryTakeOverOverload: () => {
             // 只接管 app-server 本来就不重试的容量拒绝(原始 willRetry !== true)。
             // TurnRetryTracker 把持续 retry 升级成终态的那条路径不接管：那说明

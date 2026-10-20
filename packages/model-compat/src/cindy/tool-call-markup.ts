@@ -167,9 +167,29 @@ export function reconcileToolCallMarkup(text: string, calls: readonly Structured
   let out = '', offset = 0, unexecuted = false;
   for (const block of blocks) {
     out += text.slice(offset, block.start);
-    const duplicate = block.calls.every(call => calls.some(actual => matches(call, actual)));
+    // One real invocation cannot prove two invocations inside the same batch.
+    // Matching is local to the block: separate content/reasoning echoes may
+    // still describe the same response-owned call. Augmenting paths also handle
+    // overlapping authorized aliases without depending on their order.
+    const owners = new Map<number, number>();
+    const assign = (index: number, visited: Set<number>): boolean => {
+      for (let actual = 0; actual < calls.length; actual++) {
+        if (visited.has(actual) || !matches(block.calls[index], calls[actual])) continue;
+        visited.add(actual);
+        const owner = owners.get(actual);
+        if (owner === undefined || assign(owner, visited)) { owners.set(actual, index); return true; }
+      }
+      return false;
+    };
+    let duplicate = true, shortfall = false;
+    for (let index = 0; index < block.calls.length; index++) {
+      if (!assign(index, new Set())) {
+        duplicate = false;
+        shortfall ||= calls.some(actual => matches(block.calls[index], actual));
+      }
+    }
     // A different real call is not proof this unmatched block was intended to run.
-    const missing = calls.length === 0;
+    const missing = calls.length === 0 || shortfall;
     unexecuted ||= missing;
     if (!duplicate && !(missing && suppressUnexecuted)) out += text.slice(block.start, block.end);
     offset = block.end;
@@ -248,4 +268,4 @@ export class SerializedToolCallEcho {
   }
 }
 export const UNEXECUTED_TOOL_MARKUP_REASON = 'unexecuted-tool-markup';
-export const UNEXECUTED_TOOL_MARKUP_MESSAGE = '模型把工具调用写成了文本，工具未执行，本轮未完成。';
+export const UNEXECUTED_TOOL_MARKUP_MESSAGE = '模型把工具调用写成了文本，无法确认执行结果，本轮未完成。';

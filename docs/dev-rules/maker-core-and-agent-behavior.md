@@ -110,6 +110,10 @@ Claude/Pi 的宿主侧断连、进程退出、关闭队列也必须排空同一�
 Chat 首段正文即使全被暂存也须保留原来的输出位置，不能让后来工具调用抢到前面。
 Claude Stop 在发出 SDK interrupt 前排空暂存；后来的部分 assistant 保留原文。仅明确带 isFullText 的权威快照
 已含暂存后缀时才能省略 delta；局部 isFinal 确认仍须补发普通尾部，保证实时气泡和持久化一致。
+非终止重试只保留失败采样的部分文字，恢复采样须重置对账状态。Codex app-server 不提供并发工具的可靠
+采样归属，原生兜底不得借 root tool_use/tool_result 推定同响应证据或全局采样边界；同响应正向去重
+在 Chat/Responses wire 层完成，原生未能核实的文本调用明确未完成，不声称整轮没有任何工具执行。
+批量标记内须按调用次数一一匹配实际调用；正文/思考各自的独立回声仍可描述同一次实际调用。
 新增失败 reason 的实时与历史展示须同时接入 Desktop/Mobile 的本地化映射，避免退回泛化错误。
 
 回归见 model-compat 的 `tool-call-markup.test.ts`、`tool-markup-response.test.ts`，
