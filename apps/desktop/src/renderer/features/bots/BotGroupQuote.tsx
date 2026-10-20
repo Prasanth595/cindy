@@ -69,7 +69,7 @@ export function BotGroupQuoteBlock({
     </>
   );
   const frame = cn(
-    'flex w-fit min-w-0 max-w-full select-none gap-2 rounded-md py-0.5 text-left',
+    'flex w-fit min-w-0 max-w-full select-none gap-2 rounded-lg py-0.5 text-left',
     align === 'right' && 'self-end',
   );
   if (!onLocate || display.state === 'deleted') {
