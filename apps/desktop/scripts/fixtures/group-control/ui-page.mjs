@@ -107,6 +107,18 @@ export default {
       await ui.capture('hover');
       // A mention reads in the link color and, rested on, shows who it names.
       await page.locator('[data-bot-group-message-id="q2"]').scrollIntoViewIfNeeded();
+      // PR #6549 r4323960180: a self-authored long root keeps its thread entry
+      // at the bubble's left edge, while the message itself stays right-aligned.
+      const thread = await page.evaluate(() => {
+        const row = document.querySelector('[data-bot-group-message-id="q2"]');
+        const bubble = row.querySelector('[data-testid="bot-group-self-bubble"]').getBoundingClientRect();
+        const preview = row.querySelector('[data-thread-preview]').getBoundingClientRect();
+        const article = row.querySelector('article').getBoundingClientRect();
+        return { offset: preview.left - bubble.left, right: article.right - bubble.right, room: bubble.width - preview.width };
+      });
+      assert.ok(thread.room > 10, 'self bubble is wider than its thread entry');
+      assert.ok(Math.abs(thread.offset) <= 1, `self thread entry aligns with bubble left (${thread.offset}px)`);
+      assert.ok(Math.abs(thread.right) <= 1, `self message stays right-aligned (${thread.right}px)`);
       const mention = await page.evaluate(() => {
         const text = [...document.querySelectorAll('[data-bot-group-message-id="q2"] [data-testid="bot-group-self-bubble"] p')]
           .map((p) => [...p.childNodes].find((n) => n.nodeType === 3 && n.data.includes('@Nova'))).find(Boolean);

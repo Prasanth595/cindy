@@ -55,8 +55,8 @@ function ReplySummary({ reply }: { reply: BotGroupThreadPreviewReply }) {
  * One line under a root message, flush with its bubble: who replied, how many replies and when
  * the last one came. The newest replies stay readable as the button's description.
  */
-export function BotGroupThreadPreview({ message, members, align, onOpen }: {
-  message: BotGroupMessageView; members: readonly BotGroupMemberView[]; align: 'left' | 'right'; onOpen: () => void;
+export function BotGroupThreadPreview({ message, members, onOpen }: {
+  message: BotGroupMessageView; members: readonly BotGroupMemberView[]; onOpen: () => void;
 }) {
   const { t } = useTranslation();
   const [hovered, setHovered] = useState(false);
@@ -73,7 +73,7 @@ export function BotGroupThreadPreview({ message, members, align, onOpen }: {
     <button type="button" data-thread-preview={message.id} {...{ [SHARE_EXCLUDE_ATTR]: '' }}
       aria-label={t(key('open'), { count })} aria-describedby={replies.length ? linesId : undefined}
       onClick={onOpen} onPointerEnter={() => setHovered(true)} onPointerLeave={() => setHovered(false)}
-      className={cn('group/thread flex min-h-6 min-w-0 max-w-full select-none items-center gap-2 rounded-full text-left text-13 leading-5', FOCUS, align === 'right' && 'self-end')}>
+      className={cn('group/thread flex min-h-6 min-w-0 max-w-full self-start select-none items-center gap-2 rounded-full text-left text-13 leading-5', FOCUS)}>
       {repliers.length ? (
         <span aria-hidden className="flex shrink-0 items-center -space-x-1.5">
           {repliers.map(reply => {

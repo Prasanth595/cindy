@@ -374,7 +374,6 @@ function BotGroupTimelineItemImpl(props: BotGroupTimelineItemProps) {
   const share = message.threadShare;
   const threadPreview = props.onOpenThread && (message.replyCount ?? 0) > 0 ? (
     <BotGroupThreadPreview message={message} members={members}
-      align={self ? 'right' : 'left'}
       onOpen={() => props.onOpenThread!(message.id)} />
   ) : null;
   const shareBody = share ? <>

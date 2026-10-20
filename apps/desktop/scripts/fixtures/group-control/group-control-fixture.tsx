@@ -57,6 +57,10 @@ function bubbleMessages(wrappedReactions = false) {
       id: 'q2', sequence: 5, isSelf: true, createdAt: T0 + 9 * MINUTE, content: '@Nova 旧版那两条也记一下，发版说明里提一句',
       mentions: { all: false, botIds: wrappedReactions ? [] : ['b'] },
       quote: { messageId: 'b1', authorName: 'Nova', authorKind: 'bot', excerpt: crash, attachmentCount: 0, attachmentName: null, sequence: 3 },
+      replyCount: 1,
+      threadPreview: { replies: [
+        { id: 'r3', authorKind: 'bot', authorBotId: 'b', authorName: 'Nova', text: '已经记下了', attachments: [], createdAt: T0 + 10 * MINUTE },
+      ] },
     }),
     // Short messages with more reactions than the text is wide: the bubble widens to carry them.
     message({
