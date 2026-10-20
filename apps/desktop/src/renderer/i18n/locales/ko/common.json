@@ -14911,7 +14911,7 @@
       "codexBinaryMissingTitle": "Codex 구성 요소가 준비되지 않음",
       "codexBinaryMissingDescription": "Codex 구성 요소가 아직 준비되지 않아 이 기능을 사용할 수 없습니다. 잠시 후 다시 시도하거나 설정 → 제공자에서 Codex 연결 상태를 확인하세요.",
       "piBinaryMissingTitle": "Pi 구성 요소가 준비되지 않음",
-      "piBinaryMissingDescription": "Pi 구성 요소가 아직 준비되지 않아 이 기능을 사용할 수 없습니다. 잠시 후 다시 시도하거나 설정 → 제공자에서 Pi 연결 상태를 확인하세요.",
+      "piBinaryMissingDescription": "Pi 구성 요소가 아직 준비되지 않아 이 기능을 사용할 수 없습니다. 잠시 후 다시 시도하거나 설정 → 정보에서 Pi를 관리하거나 복원하세요.",
       "goToSettings": "설정 열기",
       "remoteCodexBinaryMissingTitle": "원격 기기의 Codex 구성 요소가 준비되지 않음",
       "remotePiBinaryMissingTitle": "원격 기기의 Pi 구성 요소가 준비되지 않음",

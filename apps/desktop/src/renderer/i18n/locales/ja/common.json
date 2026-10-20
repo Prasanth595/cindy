@@ -14911,7 +14911,7 @@
       "codexBinaryMissingTitle": "Codex コンポーネントの準備ができていません",
       "codexBinaryMissingDescription": "Codex コンポーネントの準備がまだできていないため、この機能は使用できません。しばらくしてから再試行するか、「設定 → プロバイダー」で Codex の接続状態を確認してください。",
       "piBinaryMissingTitle": "Pi コンポーネントの準備ができていません",
-      "piBinaryMissingDescription": "Pi コンポーネントの準備がまだできていないため、この機能は使用できません。しばらくしてから再試行するか、「設定 → プロバイダー」で Pi の接続状態を確認してください。",
+      "piBinaryMissingDescription": "Pi コンポーネントの準備がまだできていないため、この機能は使用できません。しばらくしてから再試行するか、「設定 → 情報」で Pi を管理または復元してください。",
       "goToSettings": "設定を開く",
       "remoteCodexBinaryMissingTitle": "リモートデバイスの Codex コンポーネントが未準備です",
       "remotePiBinaryMissingTitle": "リモートデバイスの Pi コンポーネントが未準備です",

@@ -14911,7 +14911,7 @@
       "codexBinaryMissingTitle": "Codex 组件未就绪",
       "codexBinaryMissingDescription": "Codex 组件尚未准备好，暂时无法使用这个功能。请稍后重试，或前往「模型供应商」检查 Codex 连接状态。",
       "piBinaryMissingTitle": "Pi 组件未就绪",
-      "piBinaryMissingDescription": "Pi 组件尚未准备好，暂时无法使用这个功能。请稍后重试，或前往「模型供应商」检查 Pi 连接状态。",
+      "piBinaryMissingDescription": "Pi 组件尚未准备好，暂时无法使用这个功能。请稍后重试，或前往「设置 → 关于」管理或恢复 Pi。",
       "goToSettings": "前往设置",
       "remoteCodexBinaryMissingTitle": "远程电脑 Codex 组件未就绪",
       "remotePiBinaryMissingTitle": "远程电脑 Pi 组件未就绪",

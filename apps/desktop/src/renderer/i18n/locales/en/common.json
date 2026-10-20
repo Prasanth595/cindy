@@ -14965,7 +14965,7 @@
       "codexBinaryMissingTitle": "Codex component not ready",
       "codexBinaryMissingDescription": "The Codex component is not ready yet, so this feature cannot be used. Try again later or check the Codex connection in Settings → Providers.",
       "piBinaryMissingTitle": "Pi component not ready",
-      "piBinaryMissingDescription": "The Pi component is not ready yet, so this feature cannot be used. Try again later or check the Pi connection in Settings → Providers.",
+      "piBinaryMissingDescription": "The Pi component is not ready yet, so this feature cannot be used. Try again later, or open Settings → About to manage or restore Pi.",
       "goToSettings": "Open Settings",
       "remoteCodexBinaryMissingTitle": "Codex component not ready on the remote device",
       "remotePiBinaryMissingTitle": "Pi component not ready on the remote device",
