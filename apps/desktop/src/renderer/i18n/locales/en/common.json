@@ -10159,6 +10159,14 @@
   "commonUi": {
     "retry": "Try again",
     "crossAgentConvert": {
+      "suppressAgentsMd": "Stop Asking in This Workspace",
+      "suppressAgentsMdHint": "Only hides the AGENTS.md → CLAUDE.md prompt. Restore it in Settings → General. Other conversions are unaffected.",
+      "preferenceFailed": "Could not save conversion prompt settings",
+      "preferenceLoadFailed": "Could not load conversion prompt settings",
+      "preferencesTitle": "AGENTS.md Conversion Prompts",
+      "preferencesHint": "These workspaces have hidden the AGENTS.md → CLAUDE.md prompt. Restore a prompt to see it the next time conversion is needed.",
+      "restorePrompt": "Restore Prompt",
+      "restoreWorkspace": "Restore the conversion prompt for {{workingDir}}",
       "asking": {
         "title": "Convertible workspace config detected",
         "description": "This workspace contains project-level config for {{sourceAgent}}. Generate matching config for {{targetAgent}}? Changes are written only inside this workspace.",

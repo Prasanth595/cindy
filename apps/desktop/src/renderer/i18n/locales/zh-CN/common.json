@@ -10119,6 +10119,14 @@
   "commonUi": {
     "retry": "重试",
     "crossAgentConvert": {
+      "suppressAgentsMd": "此工作区不再提示",
+      "suppressAgentsMdHint": "仅关闭 AGENTS.md → CLAUDE.md 提示。可在设置 → 通用中恢复；其他转换不受影响。",
+      "preferenceFailed": "未能保存转换提示设置",
+      "preferenceLoadFailed": "未能读取转换提示设置",
+      "preferencesTitle": "AGENTS.md 转换提示",
+      "preferencesHint": "以下工作区已关闭 AGENTS.md → CLAUDE.md 提示。恢复后，下次检测到需要转换时再提示。",
+      "restorePrompt": "恢复提示",
+      "restoreWorkspace": "恢复 {{workingDir}} 的转换提示",
       "asking": {
         "title": "检测到工作区配置可转换",
         "description": "当前工作区包含 {{sourceAgent}} 的项目级配置。是否为 {{targetAgent}} 生成对应配置？这些更改只会写入当前工作区目录。",

@@ -4043,7 +4043,7 @@ export function NewMakerDraftRoute() {
               );
               if (r.items.length > 0) {
                 // 阻塞等弹窗关闭（用户点不要 / 完成转换 / 失败）—— 都视为流程结束
-                await crossAgentDialog.runMigrationFlow(r.items);
+                await crossAgentDialog.runMigrationFlow(r.items, wd);
               }
             }
           } catch (err) {

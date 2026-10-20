@@ -5,7 +5,7 @@
  *
  * 使用方式：
  *   const dialog = useCrossAgentMigrationDialog();
- *   await dialog.runMigrationFlow(items); // resolve 时弹窗已关闭（用户取消 / 完成 / 全失败）
+ *   await dialog.runMigrationFlow(items, workingDir); // resolve 时弹窗已关闭（用户取消 / 完成 / 全失败）
  *   <CrossAgentConvertDialog {...dialog} />
  *
  * 状态机：
@@ -35,6 +35,8 @@ export interface CrossAgentMigrationDialogState {
   onOpenChange: (open: boolean) => void;
   onConfirm: () => void;
   onCancel: () => void;
+  onSuppressAgentsMd: () => void;
+  savingPreference: boolean;
 }
 
 export interface UseCrossAgentMigrationDialogResult extends CrossAgentMigrationDialogState {
@@ -42,7 +44,7 @@ export interface UseCrossAgentMigrationDialogResult extends CrossAgentMigrationD
    * 启动一次"询问 + 转换"流程。返回 Promise，弹窗关闭（用户决定 + 可能完成转换）后 resolve。
    * 若 items 为空 → 立即 resolve，不弹窗。
    */
-  runMigrationFlow: (items: CrossAgentMigrationItem[]) => Promise<void>;
+  runMigrationFlow: (items: CrossAgentMigrationItem[], workingDir: string) => Promise<void>;
 }
 
 export function useCrossAgentMigrationDialog(): UseCrossAgentMigrationDialogResult {
@@ -51,6 +53,9 @@ export function useCrossAgentMigrationDialog(): UseCrossAgentMigrationDialogResu
   const [phase, setPhase] = useState<DialogPhase>('closed');
   const [items, setItems] = useState<CrossAgentMigrationItem[]>([]);
   const [stepMap, setStepMap] = useState<Record<string, { status: CrossAgentStepStatus; detail?: string }>>({});
+  const workingDirRef = useRef('');
+  const preferencePending = useRef(false);
+  const [savingPreference, setSavingPreference] = useState(false);
 
   // resolver 给 runMigrationFlow 的 Promise 用 —— 在弹窗最终关闭时调用
   const resolverRef = useRef<(() => void) | null>(null);
@@ -71,10 +76,11 @@ export function useCrossAgentMigrationDialog(): UseCrossAgentMigrationDialogResu
     return unsub;
   }, []);
 
-  const runMigrationFlow = useCallback((nextItems: CrossAgentMigrationItem[]): Promise<void> => {
+  const runMigrationFlow = useCallback((nextItems: CrossAgentMigrationItem[], workingDir: string): Promise<void> => {
     if (!nextItems || nextItems.length === 0) return Promise.resolve();
     return new Promise<void>((resolve) => {
       resolverRef.current = resolve;
+      workingDirRef.current = workingDir;
       const initial: Record<string, { status: CrossAgentStepStatus }> = {};
       for (const it of nextItems) initial[it.id] = { status: 'pending' };
       setItems(nextItems);
@@ -85,7 +91,7 @@ export function useCrossAgentMigrationDialog(): UseCrossAgentMigrationDialogResu
   }, []);
 
   const handleConfirm = useCallback(() => {
-    if (phase !== 'asking' || items.length === 0) return;
+    if (phase !== 'asking' || preferencePending.current || items.length === 0) return;
     setPhase('running');
     crossAgentConvertService
       .convert(items)
@@ -124,13 +130,31 @@ export function useCrossAgentMigrationDialog(): UseCrossAgentMigrationDialogResu
   }, [phase, items, finishFlow, t]);
 
   const handleCancel = useCallback(() => {
-    if (phase !== 'asking') return;
+    if (phase !== 'asking' || preferencePending.current) return;
     finishFlow();
   }, [phase, finishFlow]);
 
+  const handleSuppressAgentsMd = useCallback(() => {
+    if (phase !== 'asking' || preferencePending.current || !workingDirRef.current) return;
+    if (!items.some((item) => item.kind === 'agents-md' && item.direction === 'to-claude')) return;
+    preferencePending.current = true;
+    setSavingPreference(true);
+    void crossAgentConvertService.suppressAgentsMdPrompt(workingDirRef.current)
+      .then(() => {
+        const remaining = items.filter((item) => item.kind !== 'agents-md' || item.direction !== 'to-claude');
+        setItems(remaining);
+        if (remaining.length === 0) finishFlow();
+      })
+      .catch(() => toast.error(t('commonUi.crossAgentConvert.preferenceFailed')))
+      .finally(() => {
+        preferencePending.current = false;
+        setSavingPreference(false);
+      });
+  }, [phase, items, finishFlow, t]);
+
   const onOpenChange = useCallback(
     (next: boolean) => {
-      if (phase === 'running') return; // 锁死
+      if (phase === 'running' || preferencePending.current) return; // 锁死
       if (!next) finishFlow();
       else setOpen(next);
     },
@@ -145,6 +169,8 @@ export function useCrossAgentMigrationDialog(): UseCrossAgentMigrationDialogResu
     onOpenChange,
     onConfirm: handleConfirm,
     onCancel: handleCancel,
+    onSuppressAgentsMd: handleSuppressAgentsMd,
+    savingPreference,
     runMigrationFlow,
   };
 }
