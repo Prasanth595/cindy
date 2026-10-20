@@ -472,8 +472,12 @@ it('restores group summaries and member avatars before HTTP, retains them offlin
     if (path.endsWith('/snapshot')) throw new Error('timeout');
     return original(path, options);
   });
+  const links = roster.items[0].item.links;
+  expect(links).not.toEqual([]);
   await act(async () => roster.refresh());
   expect(roster.items[0].item.display.preview).toBe('Last discussion');
+  expect(roster.items[0].item.links).toEqual(links);
+  expect((await readCachedChatRoster('owner', 'global'))?.items[0].item.links).toEqual(links);
   h.auth.apiFetch.mockImplementation(async (path, options) => path.startsWith('/v1/conversations?') ? [] : original(path, options));
   await act(async () => roster.refresh());
   expect(roster.items).toEqual([]);

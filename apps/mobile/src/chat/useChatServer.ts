@@ -102,7 +102,8 @@ export function useChatServerRoster(enabled: boolean) {
               partial = true;
               const previous = cached.items.find(row => row.item.ref.id === room.id);
               const row = chatRoomRow(room);
-              rows.push(previous ? { ...previous, item: { ...row.item, display: { ...previous.item.display, title: row.item.display.title } } } : row);
+              // Member links back the composite avatar and member search until a snapshot replaces them.
+              rows.push(previous ? { ...previous, item: { ...row.item, display: { ...previous.item.display, title: row.item.display.title }, links: previous.item.links } } : row);
             }
           }
         }));
