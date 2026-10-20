@@ -395,6 +395,20 @@ afterEach(async () => {
 // #6545 unit: exercise the actual remote stream-end/close producers, which
 // bypass translator calls. No SDK final assistant/result is available to drain text.
 describe('out-of-band terminal text preservation', () => {
+  it('drains held text at Stop before a partial assistant can confirm the block', async () => {
+    const { handle, stream, events, collected } = await startSessionWithStream(undefined, undefined, undefined, undefined, true);
+    const text = 'before.<tool_call>{"name":"read","arguments":{}}</tool_call>after.';
+    vi.useFakeTimers();
+    try {
+      await handle.send({ type: 'user', content: 'read' });
+      stream.emit({ type: 'stream_event', event: { type: 'message_start', message: { id: 'held' } } });
+      stream.emit({ type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } } });
+      await pumpUntil(() => events.some(event => event.type === 'text'), 'prefix delivered');
+      await handle.abort();
+      await pumpUntil(() => events.filter(event => event.type === 'text').map(event => (event.data as { text: string }).text).join('') === text, 'held suffix drained before SDK final');
+      expect(events.some(event => event.type === 'error')).toBe(false);
+    } finally { stream.end(); await handle.close(); await collected; }
+  });
   it.each([false, true])('drains held text when the remote stream ends (closed=%s)', async closed => {
     const { handle, stream, events, collected } = await startSessionWithStream(undefined, undefined, undefined, undefined, true);
     const text = 'before <tool_call>{"name":"read","arguments":{}}</tool_call>';

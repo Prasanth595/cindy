@@ -108,7 +108,8 @@ Claude Code、Codex、Pi 的主任务事件投影共同处理正文、思考和�
 Claude/Pi 的宿主侧断连、进程退出、关闭队列也必须排空同一暂存，保留原始部分文字与终态；
 已投影的 SDK 终态不得二次对账，后台终态不得排空主任务暂存。释放说明性伪起始标记后须继续扫描后缀，
 Chat 首段正文即使全被暂存也须保留原来的输出位置，不能让后来工具调用抢到前面。
-Claude 中断后的部分 assistant 须保留原文；完整快照已含暂存后缀时不得再补发相同 delta，避免停止后重复落行。
+Claude Stop 在发出 SDK interrupt 前排空暂存；后来的部分 assistant 保留原文。仅明确带 isFullText 的权威快照
+已含暂存后缀时才能省略 delta；局部 isFinal 确认仍须补发普通尾部，保证实时气泡和持久化一致。
 新增失败 reason 的实时与历史展示须同时接入 Desktop/Mobile 的本地化映射，避免退回泛化错误。
 
 回归见 model-compat 的 `tool-call-markup.test.ts`、`tool-markup-response.test.ts`，

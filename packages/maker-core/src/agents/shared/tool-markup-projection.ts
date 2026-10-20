@@ -142,7 +142,7 @@ export class ToolMarkupProjection {
         this.unexecuted ||= held.unexecuted;
         // A preserved full SDK snapshot already includes the held suffix. Do
         // not enqueue it again as a late delta across the Stop boundary.
-        if (held.text && !(this.preserveText && data.text.endsWith(held.text))) {
+        if (held.text && !(this.preserveText && data.isFullText === true && data.text.endsWith(held.text))) {
           sink.push({ ...stream.template, data: { ...record(stream.template.data), text: held.text } });
         }
         this.streams.delete(key);

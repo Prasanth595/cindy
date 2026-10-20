@@ -2045,6 +2045,24 @@ describe('makerChatStore text delta batching', () => {
     expect(makerChatStore.getSnapshot(SESSION_ID).messages.filter(m => m.role === 'assistant').map(m => m.content)).toEqual(['before.after.']);
   });
 
+  it('keeps a stopped Claude suffix when the final event is only a block confirmation', () => {
+    const projection = new ToolMarkupProjection();
+    const sink = { push: (event: Parameters<typeof projection.push>[0]) => {
+      onEvent?.({ sessionId: SESSION_ID, event: { ...event, source: 'claude-code' }, persistId: 'assistant-1' });
+      return true;
+    } };
+    projection.begin(sink);
+    const text = 'before.<tool_call>{"name":"Read","arguments":{}}</tool_call>after.';
+    projection.push({ type: 'text', data: { text, isFinal: false } }, sink);
+    vi.advanceTimersByTime(32);
+    expect(makerChatStore.getSnapshot(SESSION_ID).messages[0].content).toBe('before.');
+    projection.setCalls([], true);
+    projection.push({ type: 'text', data: { text, isFinal: true } }, sink);
+    projection.push({ type: 'done', data: { status: 'cancelled' } }, sink);
+    vi.advanceTimersByTime(32);
+    expect(makerChatStore.getSnapshot(SESSION_ID).messages.filter(m => m.role === 'assistant').map(m => m.content)).toEqual([text]);
+  });
+
   it('does not append a second bubble when a DB snapshot arrives before the first batched delta', () => {
     emitTextDelta('draft');
     onDbMessageCreated?.({

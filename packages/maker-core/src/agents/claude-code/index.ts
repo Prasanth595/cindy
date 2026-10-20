@@ -6888,6 +6888,7 @@ export class ClaudeCodeAgent extends BaseAgent {
         const generation = turnState.generation;
         turnState.interruptRequested = true;
         turnState.interruptGeneration = generation;
+        toolMarkupProjection(runtimeState).finish(eventQueue, true);
         autoReviewDecisionCache.clear();
         cancelIdleHostAutoCompact('host_auto_compact_graceful_stop');
         dismissAllPending('graceful_stop', 'deny');
@@ -7001,6 +7002,9 @@ export class ClaudeCodeAgent extends BaseAgent {
         if (turnInFlight || awaitingContinuationAtUserStop?.state === 'awaiting') {
           turnState.interruptRequested = true;
           turnState.interruptGeneration = turnState.generation;
+          // Drain before interrupt can close the visible stream. A later partial
+          // assistant is only a block confirmation, not an authoritative snapshot.
+          toolMarkupProjection(runtimeState).finish(eventQueue, true);
         }
         // 保持 turnInFlight 为 true 直到 interrupt 返回(或超时关 query)：
         // 提前清掉会让 Session.isTurnRunning() 报 idle，并发 send 通过守卫后

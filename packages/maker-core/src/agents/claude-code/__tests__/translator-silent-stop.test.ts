@@ -433,7 +433,9 @@ it.each(['text', 'thinking'])('preserves interrupted SDK partial %s before the f
   translateSdkMessage({ type: 'result', is_error: true, subtype: 'error_during_execution', terminal_reason: 'aborted_streaming' }, queue, ctx);
   const events = await drain(queue);
   expect(events.filter(e => e.type === channel).some(e => (e.data as { text: string }).text === markup)).toBe(true);
-  if (channel === 'text') expect(events.filter(e => e.type === 'text')).toHaveLength(1);
+  if (channel === 'text') expect(events.filter(e => e.type === 'text').map(e => e.data)).toEqual([
+    { text: markup, isFinal: false }, { text: markup, isFinal: true },
+  ]);
   expect(events.some(e => e.type === 'error')).toBe(false);
 });
 
