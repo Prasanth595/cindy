@@ -1,3 +1,4 @@
+import type { WorkerWorktreeRequest } from '../../shared/orca-worker-project';
 import type { AgentKind } from '@cindy/maker-core';
 import { isCodexGatewayWireModel, type AuthStrategy } from '@cindy/model-providers';
 import path from 'node:path';
@@ -27,7 +28,7 @@ export interface OrcaLeadSessionSnapshot {
   model: string;
   effort: string | null;
   permissionMode: string;
-  fastMode: boolean;
+  fastMode: boolean | 'ultrafast';
   providerId: string | null;
   /**
    * lead 的 SSH 远端 host id;非空时 worker 必须继承 (在同一个远端跑),
@@ -63,7 +64,7 @@ export interface OrcaWorkerListSnapshot {
 export interface OrcaWorkerDefaultsSnapshot {
   model?: string | null;
   effort?: string | null;
-  fastMode?: boolean | null;
+  fastMode?: boolean | 'ultrafast' | null;
   providerId?: string | null;
 }
 
@@ -83,6 +84,7 @@ export interface OrcaWorkerProviderSnapshot {
    * 回落拍平清单解析(兼容旧组装方,不整体压灭 Fast)。
    */
   fastModels?: readonly string[];
+  ultrafastModels?: readonly string[];
   /**
    * 该来源下各模型的 effort 元数据。effort 档位同样是 per-(provider, model) 的:
    * 自定义来源追加同 id 模型时不经过基础目录的跨来源一致性校验,efforts /
@@ -198,7 +200,7 @@ export type OrcaWorkerCreationResult =
         agent: AgentKind;
         model: string;
         effort: string | null;
-        fastMode: boolean;
+        fastMode: boolean | 'ultrafast';
         providerId: string | null;
         role: string;
         label: string;
@@ -221,7 +223,7 @@ export interface OrcaWorkerCreateParams {
   label: string;
   model?: string;
   effort?: OrcaWorkerEffort;
-  fast?: boolean;
+  fast?: boolean | 'ultrafast';
   /**
    * 显式选定的模型来源(标准模型选择面板的 per-worker 选择)。string = 显式来源,
    * 走下方精确 preflight 校验「已连接且提供该模型」,不满足即失败,不静默换路由;
@@ -235,6 +237,8 @@ export interface OrcaWorkerCreateParams {
    * 指定运行设备时是那台电脑上的目录，缺省由那台按自身设置分配任务目录。
    */
   workingDir?: string;
+  /** Local UI only. Omission preserves existing MCP and remote behavior. */
+  worktree?: WorkerWorktreeRequest;
   /** 显式值用于本次创建；缺省读取全局 Worker 创建偏好。 */
   workerPermissionMode?: OrcaWorkerPermissionMode;
   /**
@@ -279,7 +283,7 @@ export interface OrcaWorkerCreateInTeamParams extends OrcaWorkerCreateParams {
 export type OrcaWorkerCreationPlanValidator = (
   params: OrcaWorkerCreateInTeamParams,
   resolvedWorkingDir?: string,
-  resolvedRoute?: { model: string; providerId: string | null; effort: string | null; fastMode: boolean },
+  resolvedRoute?: { model: string; providerId: string | null; effort: string | null; fastMode: boolean | 'ultrafast' },
   assertCurrent?: () => Promise<void>,
 ) => Promise<number | null | undefined>;
 
@@ -296,6 +300,8 @@ export interface OrcaWorkerCreationDeps {
   getWorkerPermissionMode(): OrcaWorkerPermissionMode;
   /** Validate existence and target project policy before reserving or bootstrapping. */
   resolveWorkerWorkingDir(dir: string, lead: OrcaLeadSessionSnapshot): Promise<string>;
+  createWorkerWorktree?(sessionId: string, directory: string, sourceBranch: string): Promise<string>;
+  discardWorkerWorktree?(sessionId: string): Promise<void>;
   getAvailableModels(agent: AgentKind): OrcaWorkerModelCapabilities[];
   /**
    * 从同一次 provider registry 读取构造 Worker 路由上下文。
@@ -374,7 +380,7 @@ export interface OrcaWorkerCreationDeps {
     model?: string;
     providerId?: string;
     effort?: string;
-    fast?: boolean;
+    fast?: boolean | 'ultrafast';
     permissionMode: OrcaWorkerPermissionMode;
     workingDir?: string;
     title: string;
@@ -460,7 +466,7 @@ type ResolveWorkerConfigResult =
       ok: true;
       model: string;
       effort: string | null;
-      fastMode: boolean;
+      fastMode: boolean | 'ultrafast';
       providerId: string | null;
       /**
        * 显式 effort 被拍平首见条目拒绝的**暂存**错误:拍平清单(首来源 wins,不含
@@ -659,7 +665,7 @@ function resolveWorkerConfig(params: {
       ? false
       : ((agentConsumesExplicitFast(input.agent) && input.fast !== undefined)
           ? input.fast
-          : (defaults.fastMode ?? !!lead.fastMode)),
+          : (defaults.fastMode ?? (lead.fastMode ?? false))),
   };
 }
 
@@ -1064,6 +1070,11 @@ export function createOrcaWorkerCreationService(deps: OrcaWorkerCreationDeps): O
     if (!lead) {
       return { ok: false, errorCode: 'NOT_FOUND', message: `lead session ${params.leadSessionId} not found` };
     }
+    if (params.worktree && (lead.remoteHostId || params.executionDeviceId !== undefined
+      || (lead.workspaceKind === 'dialogue' && params.workingDir === undefined)
+      || !deps.createWorkerWorktree || !deps.discardWorkerWorktree)) {
+      return {ok: false, errorCode: 'INVALID_PARAMS', message: 'Worker worktree requires a local project'};
+    }
     const workerLocation = resolveWorkerAgentDeviceId(params, lead, deps.isSelfDeviceId);
     if (!workerLocation.ok) {
       return { ok: false, errorCode: 'INVALID_PARAMS', message: workerLocation.message };
@@ -1331,8 +1342,16 @@ export function createOrcaWorkerCreationService(deps: OrcaWorkerCreationDeps): O
       const providerSupportsFast = routeProvider.fastModels.includes(resolved.model);
       const requestedFast = agentConsumesExplicitFast(params.agent) && params.fast !== undefined
         ? params.fast
-        : (defaults.fastMode ?? !!lead.fastMode);
-      resolved.fastMode = providerSupportsFast && requestedFast === true;
+        : (defaults.fastMode ?? (lead.fastMode ?? false));
+      resolved.fastMode = providerSupportsFast && requestedFast;
+    }
+    if ((resolved.fastMode === 'ultrafast' || params.fast === 'ultrafast') &&
+        (params.agent !== 'codex' || !routeProvider?.ultrafastModels?.includes(resolved.model))) {
+      if (params.fast === 'ultrafast') {
+        return { ok: false, errorCode: 'INVALID_PARAMS',
+          message: `Ultrafast is unavailable for model "${resolved.model}" on the selected account` };
+      }
+      resolved.fastMode = false;
     }
     // effort 按路由来源自己的条目**重归一定论**:resolveWorkerConfig 按拍平首见
     // 条目归一只是初值(该条目不含连接态、同 id 模型档位表跨来源可分叉),显式
@@ -1518,6 +1537,8 @@ export function createOrcaWorkerCreationService(deps: OrcaWorkerCreationDeps): O
     }, Math.floor(ORCA_WORKER_CREATION_RESERVATION_LEASE_MS / 3));
     renewalTimer.unref?.();
 
+    let createdWorktreeSessionId: string | undefined;
+    let creationSucceeded = false;
     try {
       // Registration may race the preflight. Once a reservation exists, a new
       // plan cannot be registered; reread any plan that won before reservation.
@@ -1526,6 +1547,11 @@ export function createOrcaWorkerCreationService(deps: OrcaWorkerCreationDeps): O
         return { ok: false, errorCode: 'WORKER_LIMIT_HARD_EXCEEDED', message: 'Registered plan concurrency reached' };
       }
       const workerSessionId = deps.createSessionId();
+      if (params.worktree) {
+        createdWorktreeSessionId = workerSessionId;
+        workingDir = await deps.createWorkerWorktree!(workerSessionId, workingDir, params.worktree.sourceBranch);
+        await assertCurrent?.();
+      }
       const workerVendorOptions = {
         orcaRole: 'worker' as const,
         orcaWorkflowId: params.teamId,
@@ -1568,6 +1594,7 @@ export function createOrcaWorkerCreationService(deps: OrcaWorkerCreationDeps): O
         const bootstrapped = await deps.bootstrapSession(workerOpts);
         workerSession = bootstrapped.session;
       } catch (err) {
+        if (createdWorktreeSessionId) await cleanupBootstrappedWorkerSession(createdWorktreeSessionId);
         return toInternalFailure(err);
       }
 
@@ -1616,6 +1643,7 @@ export function createOrcaWorkerCreationService(deps: OrcaWorkerCreationDeps): O
       // Carry the resolved spawn facts through lifecycle/accepted callbacks only;
       // neither the function nor its closure is part of the public result.
       onCreated?.(async () => { await validatePlan(workingDir, resolved); });
+      creationSucceeded = true;
       return {
         ok: true,
         teamId: params.teamId,
@@ -1634,9 +1662,19 @@ export function createOrcaWorkerCreationService(deps: OrcaWorkerCreationDeps): O
           agentDeviceId: workerAgentDeviceId,
         },
       };
+    } catch (err) {
+      if (!params.worktree) throw err;
+      return toInternalFailure(err);
     } finally {
-      clearInterval(renewalTimer);
-      await deps.releaseWorkerCreationReservation(workerId).catch(() => undefined);
+      // Keep the reservation alive until checkout and safe compensation have settled.
+      try {
+        if (createdWorktreeSessionId && !creationSucceeded) {
+          await deps.discardWorkerWorktree!(createdWorktreeSessionId);
+        }
+      } finally {
+        clearInterval(renewalTimer);
+        await deps.releaseWorkerCreationReservation(workerId).catch(() => undefined);
+      }
     }
   }
 

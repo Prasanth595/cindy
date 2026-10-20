@@ -261,7 +261,7 @@ export function sessionToCamel(row: SessionRowWithCount): Session {
     totalMoney,
     contextTokens: row.contextTokens,
     contextWindow: row.contextWindow,
-    fastMode: !!row.fastMode,
+    fastMode: (row.fastMode ?? false),
     planModeEnabled: !!row.planModeEnabled,
     clearedAt: msToIso(row.clearedAt),
     pinnedAt: msToIso(row.pinnedAt),
@@ -374,7 +374,7 @@ export function sessionCreateToRow(
         model?: string;
         effort?: string;
         permissionMode?: string;
-        fastMode?: boolean;
+        fastMode?: boolean | 'ultrafast';
         planModeEnabled?: boolean;
         agentKind?: AgentKind;
         orcaRole?: OrcaRole | null;
@@ -418,7 +418,7 @@ export function sessionCreateToRow(
     contextTokens: 0,
     contextWindow: 0,
     // 新建 session 默认 Fast Mode OFF；调用方显式传 true 时才打开。
-    fastMode: !!body?.fastMode,
+    fastMode: (body?.fastMode ?? false),
     // 计划模式默认 OFF；草稿里开了计划模式的会话显式传 true。
     planModeEnabled: !!body?.planModeEnabled,
     clearedAt: null,
@@ -462,7 +462,7 @@ export function sessionPatchToRow(
     effort?: string | null;
     permissionMode?: string;
     providerId?: string | null;
-    fastMode?: boolean;
+    fastMode?: boolean | 'ultrafast';
     planModeEnabled?: boolean;
     sdkSessionId?: string | null;
     totalTokenUsage?: number;
@@ -489,7 +489,7 @@ export function sessionPatchToRow(
   if (patch.permissionMode !== undefined)
     out.permissionMode = patch.permissionMode as SessionInsert['permissionMode'];
   if (patch.providerId !== undefined) out.providerId = patch.providerId;
-  if (patch.fastMode !== undefined) out.fastMode = !!patch.fastMode;
+  if (patch.fastMode !== undefined) out.fastMode = (patch.fastMode ?? false);
   if (patch.planModeEnabled !== undefined) out.planModeEnabled = !!patch.planModeEnabled;
   if (patch.sdkSessionId !== undefined) out.sdkSessionId = patch.sdkSessionId;
   if (patch.totalTokenUsage !== undefined) out.totalTokenUsage = patch.totalTokenUsage;
@@ -702,7 +702,7 @@ export function scheduleToCamel(row: ScheduleRow): Schedule {
     model: row.model ?? undefined,
     providerId: row.providerId ?? undefined,
     effort: row.effort ?? undefined,
-    fastMode: !!row.fastMode,
+    fastMode: (row.fastMode ?? false),
     workspaceKind: normalizeWorkspaceKind(row.workspaceKind),
     workingDir: row.workingDir ?? undefined,
     useWorktree: !!row.useWorktree,
@@ -754,7 +754,7 @@ export function scheduleCreateToRow(s: Schedule): ScheduleInsert {
     model: s.model ?? null,
     providerId: s.providerId ?? null,
     effort: (s.effort as ScheduleInsert['effort']) ?? null,
-    fastMode: !!s.fastMode,
+    fastMode: (s.fastMode ?? false),
     workspaceKind: s.workspaceKind ?? 'project',
     workingDir: s.workingDir ?? null,
     useWorktree: s.useWorktree,
@@ -809,7 +809,7 @@ export function schedulePatchToRow(patch: Partial<Schedule>): Partial<ScheduleIn
   if (hasKey(patch, 'model')) out.model = patch.model ?? null;
   if (hasKey(patch, 'providerId')) out.providerId = patch.providerId ?? null;
   if (hasKey(patch, 'effort')) out.effort = (patch.effort as ScheduleInsert['effort']) ?? null;
-  if (hasKey(patch, 'fastMode')) out.fastMode = !!patch.fastMode;
+  if (hasKey(patch, 'fastMode')) out.fastMode = (patch.fastMode ?? false);
   if (hasKey(patch, 'workspaceKind')) out.workspaceKind = patch.workspaceKind ?? 'project';
   if (hasKey(patch, 'workingDir')) out.workingDir = patch.workingDir ?? null;
   if (hasKey(patch, 'useWorktree')) out.useWorktree = patch.useWorktree as boolean;

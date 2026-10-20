@@ -10,6 +10,8 @@ import {
   TASK_MIGRATION_CHANNEL,
   encodeSessionTagCatalog,
   decodeSessionTagCatalog,
+  decodeModelSpeedPayload,
+  encodeModelSpeedPayload,
   scrubSharedProvider,
   PROVIDER_SHARE_GROUP_SIZE_FIELD,
   PROVIDER_SHARE_GROUP_STATUS_FIELD,
@@ -738,6 +740,7 @@ function projectInvokeResultForTunnel(
   supportsFullLogoKinds = false,
   args: readonly unknown[] = [],
 ): unknown {
+  result = encodeModelSpeedPayload(channel, result);
   // Opt-in only: legacy/desktop controllers still receive complete runtime capabilities.
   // Home only needs run state; repeating the model catalog per runtime blocks slow links.
   const options = args[0];
@@ -750,7 +753,7 @@ function projectInvokeResultForTunnel(
       && 'sessions' in result && Array.isArray(result.sessions)
     ))) {
     const complete = !Array.isArray(result);
-    const rows = complete ? (result as { sessions: unknown[] }).sessions : result;
+    const rows = Array.isArray(result) ? result : (result as { sessions: unknown[] }).sessions;
     const projected = rows.map((item: unknown) => {
       if (!item || typeof item !== 'object' || Array.isArray(item)) return item;
       const row = item as Record<string, unknown>;
@@ -3387,7 +3390,7 @@ async function authorizeRemoteBotResult(
         ok: true,
         result: await projectRemoteSessionResult(
           channel ?? '',
-          decodeSessionTagCatalog(channel, result.result),
+          decodeModelSpeedPayload(channel, decodeSessionTagCatalog(channel, result.result)),
         ),
       };
     } catch (err) {
@@ -3439,16 +3442,19 @@ function sendInvokeResultSafe(
     channel,
     isSharedTaskPeer(src),
   );
-  const normalized = sanitized.ok && channel === 'local-db:sessions:list'
+  const speedResult = sanitized.ok ? encodeModelSpeedPayload(channel, sanitized.result) : undefined;
+  const speedCompatible = sanitized.ok && speedResult !== sanitized.result
+    ? { ...sanitized, result: speedResult } : sanitized;
+  const normalized = speedCompatible.ok && channel === 'local-db:sessions:list'
     ? {
-        ...sanitized,
+        ...speedCompatible,
         result: encodeSessionTagCatalog(
           channel,
           args,
-          decodeSessionTagCatalog(channel, sanitized.result),
+          decodeSessionTagCatalog(channel, speedCompatible.result),
         ),
       }
-    : sanitized;
+    : speedCompatible;
   const proactive =
     subscriptions.controllerSupports(src, DEVICE_LINK_CAPABILITY_COMPACT_MESSAGE_HISTORY_V1) &&
     channel === 'local-db:messages:list' && normalized.ok && Array.isArray(normalized.result)

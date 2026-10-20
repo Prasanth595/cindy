@@ -1478,7 +1478,7 @@ export function NewMakerDraftRoute() {
   // 多供应商同名模型不串);该三元组无记录时回退 per-model 旧库 getFastModeForModel —— 仅兜底,
   // 不再是权威读源(retire 计划单列)。device-link 草稿不调本函数(以被控端镜像为准)。
   const resolveDraftFast = useCallback(
-    (modelId: string): boolean => {
+    (modelId: string): boolean | 'ultrafast' => {
       if (effectiveSourceId) {
         const v = getProviderModelFast(capabilityAgentKind, effectiveSourceId, modelId);
         if (v !== undefined) return v;
@@ -1861,7 +1861,7 @@ export function NewMakerDraftRoute() {
   // 是「A 模型被改了档」。所以选中路径必须把本次 selection 的目标值显式传进来。
   const pushActiveDraftPref = useCallback(
     (
-      patch: { effort?: Effort; fast?: boolean },
+      patch: { effort?: Effort; fast?: boolean | 'ultrafast' },
       /**
        * 本次写穿的显式目标(选中一行时 = 这次 selection 的目标配置);不传 = 沿用当前状态,
        * 既有调用点(handleEffortDidChange / handleFastModeChange)行为不变。
@@ -2584,7 +2584,7 @@ export function NewMakerDraftRoute() {
     ],
   );
   const handleFastModeChange = useCallback(
-    (enabled: boolean) => {
+    (enabled: boolean | 'ultrafast') => {
       if (usesDeviceCatalog) {
         dlRuntimeTouchedRef.current = true;
         setDlSel((prev) => (prev ? { ...prev, fastMode: enabled } : prev));
@@ -2702,7 +2702,7 @@ export function NewMakerDraftRoute() {
       /** 选中引擎的 **wire model id**(不是行的归一化 id)。 */
       modelId: string;
       effort?: Effort;
-      fast: boolean;
+      fast: boolean | 'ultrafast';
       favoriteUid: string | null;
       resetToRecommended?: true;
       /** 远程 Agent:这一行属于哪台电脑(null = 本机);未带 = 面板没有远程 Agent 入口。 */

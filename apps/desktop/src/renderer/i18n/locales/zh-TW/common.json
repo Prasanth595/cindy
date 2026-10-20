@@ -10617,7 +10617,13 @@
         "providerGroupRunningHere": "目前在這台電腦上執行",
         "providerGroupUnassigned": "開始後由供應商組選一台電腦，用量依那台顯示"
       },
-      "modelListAria": "模型清單"
+      "modelListAria": "模型清單",
+      "speed": {
+        "label": "速度",
+        "standard": "標準",
+        "fast": "快速",
+        "ultrafast": "超快"
+      }
     },
     "permissionSelector": {
       "triggerAria": "選擇權限模式：{{label}}",
@@ -10713,6 +10719,7 @@
       "recent": "最近",
       "browseFolder": "選擇其他資料夾",
       "browseProjectFolder": "選擇其他專案資料夾",
+      "browseFailed": "無法開啟資料夾選擇視窗，請重試。",
       "dialogue": "對話",
       "dialogueOrSelectProject": "對話或選擇專案",
       "searchProjects": "搜尋專案",
@@ -12038,7 +12045,7 @@
       "REMOTE_WORKDIR_UNAVAILABLE": "遠端工作目錄現在無法使用。請確認那台電腦上的目錄還在，然後重試。",
       "REMOTE_OPTIMISTIC_SESSION_STATE_UNAVAILABLE": "電腦端暫時無法確認這則訊息是否已經送出。請稍後再試，不要重複傳送同一則。",
       "REMOTE_AGENT_UNAVAILABLE": "暫時連不上執行 Agent 的電腦。確認那臺電腦在線並允許遠端控制後重試。",
-      "REMOTE_AGENT_PEER_TOO_OLD": "那臺電腦上的 Cindy 版本過舊，還不能替這臺電腦執行 Agent。請先在那臺電腦上更新 Cindy。",
+      "REMOTE_AGENT_PEER_TOO_OLD": "那臺電腦上的 Cindy 版本過舊，暫不支援此操作。請先在那臺電腦上更新 Cindy。",
       "REMOTE_AGENT_EXPIRED": "這個任務在執行 Agent 的電腦上已經結束。請重新傳送。",
       "REMOTE_AGENT_NOT_FOUND": "這個任務在執行 Agent 的電腦上已經結束。請重新傳送。",
       "REMOTE_AGENT_BUSY": "那臺電腦上同時執行的任務太多。先結束一些任務後再試。",
@@ -14917,7 +14924,7 @@
       "codexBinaryMissingTitle": "Codex 元件未就緒",
       "codexBinaryMissingDescription": "Codex 元件尚未準備好，暫時無法使用這個功能。請稍後重試，或前往「模型供應商」檢查 Codex 連線狀態。",
       "piBinaryMissingTitle": "Pi 元件未就緒",
-      "piBinaryMissingDescription": "Pi 元件尚未準備好，暫時無法使用這個功能。請稍後重試，或前往「模型供應商」檢查 Pi 連線狀態。",
+      "piBinaryMissingDescription": "Pi 元件尚未準備好，暫時無法使用這個功能。請稍後重試，或前往「設定 → 關於」管理或恢復 Pi。",
       "goToSettings": "前往設定",
       "remoteCodexBinaryMissingTitle": "遠端電腦 Codex 元件未就緒",
       "remotePiBinaryMissingTitle": "遠端電腦 Pi 元件未就緒",
@@ -15032,6 +15039,25 @@
       "remoteWorkerLoading": "正在讀取 {{device}} 上的任務…",
       "remoteWorkerUnreachable": "{{device}} 目前無法連線，恢復後會自動顯示這個 Worker 的任務。",
       "closeAria": "關閉"
+    },
+    "workerProject": {
+      "missingDirectory": "目錄已不存在，請重新選擇。",
+      "label": "專案",
+      "current": "目前專案",
+      "shared": "與 Lead 共用：{{project}} · {{branch}}",
+      "direct": "將直接在 {{project}} 的 {{branch}} 分支上修改",
+      "inferred": "根據 Lead 最近的操作辨識",
+      "dirty": "這個目錄有尚未提交的變更，Worker 會在這些變更上繼續工作。",
+      "newWorktree": "為 Worker 新建 worktree",
+      "from": "從",
+      "fromSuffix": "建立（可更換）",
+      "splitWarning": "會從 {{branch}} 的最新提交建立新分支。Lead 尚未提交的變更不會帶過去，之後雙方的變更互不可見，需要再合併。",
+      "dialogue": "目前任務未指定專案，無法新建 worktree。Worker 將在 {{directory}} 工作。",
+      "notGit": "這個目錄不是 Git 儲存庫，無法新建 worktree。Worker 將在 {{directory}} 工作。",
+      "emptyRepo": "儲存庫還沒有任何提交，無法新建 worktree。Worker 將在 {{directory}} 工作。",
+      "detachedHead": "分離 HEAD · {{sha}}",
+      "directDetached": "將直接在 {{project}} 的 {{branch}} 上修改",
+      "loadFailed": "無法讀取專案目錄。"
     }
   },
   "splitGroup": {

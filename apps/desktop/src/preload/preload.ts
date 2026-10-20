@@ -2616,7 +2616,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     model: string;
     effort: string;
     permissionMode: string;
-    fastMode: boolean;
+    fastMode: boolean | 'ultrafast';
     providerId: string | null;
   }): void => ipcRenderer.send('desktop:cc-prefs-changed', prefs),
 
@@ -2638,13 +2638,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     >;
     /** 每个 vendor 是否由用户在 New Maker 中明确选过模型；device-link 默认校准据此保护显式选择。 */
     modelChosenByVendor: Partial<Record<'cc' | 'codex' | 'pi', boolean>>;
-    fastModeByModel: Record<string, boolean>;
+    fastModeByModel: Record<string, boolean | 'ultrafast'>;
     effortByModel: Record<string, string>;
     providerModelMemory?: Record<
       string,
       {
         effortByModel: Record<string, string>;
-        fastByModel: Record<string, boolean>;
+        fastByModel: Record<string, boolean | 'ultrafast'>;
       }
     >;
     /** 「新建会话默认启用 worktree」勾选记忆(vendor 无关根字段,远程草稿播种用)。 */
@@ -2663,7 +2663,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   syncProviderModelMemory: (
     snapshot: Record<
       string,
-      { effortByModel: Record<string, string>; fastByModel: Record<string, boolean> }
+      { effortByModel: Record<string, string>; fastByModel: Record<string, boolean | 'ultrafast'> }
     >,
   ): void => ipcRenderer.send('maker:sync-provider-model-memory', snapshot),
 
@@ -2677,7 +2677,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     providerId: string;
     model: string;
     effort?: string;
-    fast?: boolean;
+    fast?: boolean | 'ultrafast';
   }): void => ipcRenderer.send('maker:sync-session-model-pref', pref),
 
   /**
@@ -5879,7 +5879,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
           effort?: string;
           permissionMode?: string;
           planMode?: boolean;
-          fastMode?: boolean;
+          fastMode?: boolean | 'ultrafast';
           providerId?: string | null;
         };
         overwrite?: boolean;
@@ -5892,6 +5892,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
         ipcRenderer.invoke('local-db:session-share:classify-path', request),
     },
     orcaWorkflows: {
+      projectContext: (leadSessionId: string, directory?: string) => ipcRenderer.invoke('maker:worker:project-context', leadSessionId, directory),
+      projectLabel: (workerSessionId: string) => ipcRenderer.invoke('maker:worker:project-label', workerSessionId),
       getByLeadSession: (leadSessionId: string): Promise<unknown> =>
         ipcRenderer.invoke('local-db:orca-workflows:get-by-lead', leadSessionId),
       getByWorkerSession: (workerSessionId: string): Promise<unknown> =>
@@ -6887,7 +6889,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       orcaRole?: 'lead' | 'worker' | null;
       // 与 @cindy/maker-core types/common.ts Effort union 一致
       effort?: string;
-      fastMode?: boolean;
+      fastMode?: boolean | 'ultrafast';
       permissionMode?: string;
       /** 计划模式一级开关(与 permissionMode 正交)。 */
       planMode?: boolean;
@@ -6938,7 +6940,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
         label?: string;
         model?: string;
         effort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
-        fast?: boolean;
+        fast?: boolean | 'ultrafast';
         /** 显式选定的模型来源(标准面板 per-worker 选择);缺省 = 跟随默认路由解析。 */
         providerId?: string | null;
         /** Worker 创建默认权限；缺省沿用当前偏好，显式值会更新偏好。 */
@@ -6949,6 +6951,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
         executionDeviceId?: string;
         /** 运行设备上的工作目录；缺省由那台分配。 */
         workingDir?: string;
+        worktree?: import('../shared/orca-worker-project').WorkerWorktreeRequest;
+        projectPath?: string;
         /** 首个 Worker 的 Agent 所在电脑(远程供应商)；null = 任务所在电脑，缺省 = 跟 Lead。 */
         agentDeviceId?: string | null;
       },
@@ -7000,7 +7004,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
         model: string;
         orcaRole?: 'lead' | 'worker' | null;
         effort?: string;
-        fastMode?: boolean;
+        fastMode?: boolean | 'ultrafast';
         permissionMode?: string;
         /** 计划模式一级开关(与 permissionMode 正交)。 */
         planMode?: boolean;
@@ -7045,7 +7049,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
         model: string;
         orcaRole?: 'lead' | 'worker' | null;
         effort?: string;
-        fastMode?: boolean;
+        fastMode?: boolean | 'ultrafast';
         permissionMode?: string;
         /** 计划模式一级开关(与 permissionMode 正交)。 */
         planMode?: boolean;
@@ -7169,7 +7173,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       model: string,
       providerId?: string | null,
       expectedAgentSwitchRevision?: number,
-      selection?: { effort: string | null; fastMode: boolean },
+      selection?: { effort: string | null; fastMode: boolean | 'ultrafast' },
     ): Promise<{ deferred: boolean; superseded?: boolean } | undefined> =>
       ipcRenderer.invoke(
         'maker:set-model',
@@ -7191,7 +7195,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       model: string,
       providerId?: string | null,
       effort?: string,
-      fastMode?: boolean,
+      fastMode?: boolean | 'ultrafast',
       // 远程 Agent:同时换 Agent 所在电脑(null = 任务所在电脑)。不传 = 位置不变。
       options?: { agentDeviceId?: string | null; confirmedContextWindow?: number },
     ): Promise<{
@@ -7232,7 +7236,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       model: string;
       providerId: string | null;
       effort?: string;
-      fastMode?: boolean;
+      fastMode?: boolean | 'ultrafast';
     } | null> => ipcRenderer.invoke('maker:get-session-agent-switch-intent', sessionId),
     // effort/mode 透传 string —— 合法值由 maker capabilities 在运行时校验,
     // preload 不重复枚举 (避免 capabilities 加新值时这里也要改)。
@@ -7244,7 +7248,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('maker:get-plugin-write-access-recovery', sessionId),
     retryPluginWriteAccess: (sessionId: string): Promise<{granted: boolean; mode?: 'acceptEdits' | 'auto'}> =>
       ipcRenderer.invoke('maker:retry-plugin-write-access', sessionId),
-    setFastMode: (sessionId: string, enabled: boolean): Promise<void> =>
+    setFastMode: (sessionId: string, enabled: boolean | 'ultrafast'): Promise<void> =>
       ipcRenderer.invoke('maker:set-fast-mode', sessionId, enabled),
     setThinkingEnabled: (sessionId: string, enabled: boolean): Promise<void> =>
       ipcRenderer.invoke('maker:set-thinking-enabled', sessionId, enabled),

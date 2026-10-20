@@ -55,7 +55,7 @@ export interface ProjectScheduleConfig {
   providerId?: string;
   effort?: string;
   /** Codex Fast 模式开关，仅 Codex 有意义。详见 Schedule.fastMode。 */
-  fastMode?: boolean;
+  fastMode?: boolean | 'ultrafast';
   useWorktree?: boolean;
   persistentSession?: boolean;
   silentWhenIdle?: boolean;
@@ -501,7 +501,7 @@ export function schedulesDiffer(
     schedule.model !== expected.model ||
     (schedule.providerId ?? undefined) !== (expected.providerId ?? undefined) ||
     schedule.effort !== expected.effort ||
-    !!schedule.fastMode !== !!expected.fastMode ||
+    (schedule.fastMode ?? false) !== (expected.fastMode ?? false) ||
     schedule.workspaceKind !== expected.workspaceKind ||
     !sameWorkingDir(schedule.workingDir, workingDir) ||
     schedule.useWorktree !== expected.useWorktree ||
@@ -571,7 +571,7 @@ function isProjectScheduleConfig(value: unknown): value is ProjectScheduleConfig
     optionalString(config.model) &&
     optionalString(config.providerId) &&
     optionalString(config.effort) &&
-    optionalBoolean(config.fastMode) &&
+    (optionalBoolean(config.fastMode) || config.fastMode === 'ultrafast') &&
     optionalBoolean(config.useWorktree) &&
     optionalBoolean(config.persistentSession) &&
     optionalBoolean(config.silentWhenIdle) &&

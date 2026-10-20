@@ -334,6 +334,7 @@ export interface MakerScheduleRunnerDeps {
     efforts: readonly string[];
     defaultEffort: string | null;
     supportsFastMode: boolean;
+    supportsUltrafastMode?: boolean;
   } | null>;
   /**
    * Headless 默认路由的实时快照。Pi 空模型用它成对解析 model/providerId；
@@ -915,7 +916,7 @@ export class MakerScheduleRunner implements ScheduleRunner {
     let heartbeatEffort: string | undefined;
     let heartbeatAgentKind: AgentKind | undefined;
     // 持续会话沿用 session 自己存的 fast 态（与 model 同源取 meta）。
-    let heartbeatFastMode: boolean | undefined;
+    let heartbeatFastMode: boolean | 'ultrafast' | undefined;
     let heartbeatPermissions: { permissionMode: PermissionMode; planMode: boolean } | undefined;
     // 持续会话当前选定的来源(供应商)id —— schedule.providerId 留空时沿用它
     // （与 model 留空沿用 meta.model 对称）。取自 sessions.provider_id 快照,null=未选。
@@ -938,7 +939,7 @@ export class MakerScheduleRunner implements ScheduleRunner {
               model: schedule.model,
               providerId: schedule.providerId?.trim() || null,
               effort: (schedule.effort as Effort | undefined) ?? null,
-              fastMode: schedule.fastMode === true,
+              fastMode: (schedule.fastMode === 'ultrafast' ? 'ultrafast' : schedule.fastMode === true),
             }
           : undefined;
       if (selection && this.deps.schedulerQueue?.isSessionBusy(sessionId)) {
@@ -1250,7 +1251,7 @@ export class MakerScheduleRunner implements ScheduleRunner {
         model,
         providerId: createProviderId,
         effort: (schedule.effort as Effort | undefined) ?? null,
-        fastMode: fastMode === true,
+        fastMode: fastMode ?? false,
       });
       createProviderId = resolvedSelection.providerId;
       fastMode = resolvedSelection.fastMode;
@@ -1299,7 +1300,7 @@ export class MakerScheduleRunner implements ScheduleRunner {
                 ? (copy.defaultEffort as Effort)
                 : (copy.efforts[copy.efforts.length - 1] as Effort);
           }
-          if (fastMode === true && !copy.supportsFastMode) fastMode = false;
+          if (fastMode && (!copy.supportsFastMode || (fastMode === 'ultrafast' && !copy.supportsUltrafastMode))) fastMode = false;
         }
       } catch (err) {
         this.deps.logger.warn?.('[runner] rerouted copy capability lookup failed (non-fatal)', err);
@@ -1660,7 +1661,7 @@ export class MakerScheduleRunner implements ScheduleRunner {
     // 不消费 createSession.fastMode。每次派发前都写 true/false：fresh session 才能
     // 首轮命中 Fast，复用 session 也不会残留上一次的值。
     if (effectiveAgentKind === 'pi') {
-      setSessionFastMode(session.id, fastMode === true);
+      setSessionFastMode(session.id, fastMode ?? false);
     }
 
     // 4.5 wire 到 IPC 转发链路 —— 让 session 的事件 / 状态 / interaction 请求广播到
@@ -2267,7 +2268,7 @@ export class MakerScheduleRunner implements ScheduleRunner {
       model?: string;
       agentKind?: AgentKind;
       effort?: string;
-      fastMode?: boolean;
+      fastMode?: boolean | 'ultrafast';
       resolvedSelection?: ScheduledModelSelection;
       providerId: string | null;
     },
@@ -2309,7 +2310,7 @@ export class MakerScheduleRunner implements ScheduleRunner {
       model?: string;
       agentKind?: AgentKind;
       effort?: string;
-      fastMode?: boolean;
+      fastMode?: boolean | 'ultrafast';
       resolvedSelection?: ScheduledModelSelection;
       providerId: string | null;
     },
@@ -2938,7 +2939,7 @@ export class MakerScheduleRunner implements ScheduleRunner {
     baseline: {
       model?: string;
       effort?: string;
-      fastMode?: boolean;
+      fastMode?: boolean | 'ultrafast';
       resolvedSelection?: ScheduledModelSelection;
       providerId: string | null;
     },
@@ -3197,7 +3198,7 @@ export class MakerScheduleRunner implements ScheduleRunner {
       setSessionProvider(live.id, applyProviderId);
     }
     if (live.agentKind === 'pi') {
-      setSessionFastMode(live.id, baseline.fastMode === true);
+      setSessionFastMode(live.id, baseline.fastMode ?? false);
     }
     if (
       resolvedSelection ||

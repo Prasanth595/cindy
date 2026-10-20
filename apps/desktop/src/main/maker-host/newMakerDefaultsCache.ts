@@ -40,7 +40,7 @@ export interface NewMakerDraftSnapshot {
   lastByVendor: Partial<Record<VendorKey, VendorPrefsSnapshot>>;
   /** 每个 vendor 是否由用户在 New Maker picker 明确选过模型；旧 renderer 缺省不提供。 */
   modelChosenByVendor?: Partial<Record<VendorKey, boolean>>;
-  fastModeByModel: Record<string, boolean>;
+  fastModeByModel: Record<string, boolean | 'ultrafast'>;
   effortByModel: Record<string, string>;
   /**
    * 「新建会话默认启用 worktree」勾选记忆(vendor 无关的草稿根字段)。
@@ -74,7 +74,7 @@ export type ProviderModelMemorySnapshot = Record<
   string,
   {
     effortByModel: Record<string, string>;
-    fastByModel: Record<string, boolean>;
+    fastByModel: Record<string, boolean | 'ultrafast'>;
     thinkingByModel?: Record<string, boolean>;
   }
 >;
@@ -134,7 +134,7 @@ export function setProviderModelMemoryCache(snapshot: ProviderModelMemorySnapsho
 export interface WorkerDefaultsFromNewMaker {
   model?: string;
   effort?: string;
-  fastMode?: boolean;
+  fastMode?: boolean | 'ultrafast';
   providerId?: string | null;
 }
 
@@ -170,7 +170,7 @@ export function getWorkerDefaultsFromNewMaker(
   // effortByModel 是跨 vendor 的"按模型记忆", 优先用; 没有就退回 vendor prefs 上次记录的 effort。
   const effort = cache.effortByModel[model] ?? prefs.effort;
   // fastModeByModel 缺省按 false 兜底 (用户没显式开过就是关)。
-  const fastMode = cache.fastModeByModel[model] === true;
+  const fastMode = (cache.fastModeByModel[model] ?? false);
   return { model, effort, fastMode, providerId: prefs.providerId };
 }
 
@@ -212,12 +212,12 @@ export interface RemoteNewMakerDefaults {
   /** false = 明确未选过，可应用目录新任务默认；undefined = 旧端未知，保守保留原模型。 */
   modelChosenByUser?: boolean;
   effort?: string;
-  fastMode?: boolean;
+  fastMode?: boolean | 'ultrafast';
   permissionMode?: string;
   providerId?: string | null;
   /** 每个模型各自记忆的 effort / fast(切模型还原用)。旧版被控端不回 → 控制端拿到 undefined。 */
   effortByModel?: Record<string, string>;
-  fastModeByModel?: Record<string, boolean>;
+  fastModeByModel?: Record<string, boolean | 'ultrafast'>;
   /**
    * providerModelMemory 全量快照;`${agent}:*` 是模型级全局预设,来源槽保留旧 v2 兼容副本。
    * device-link 草稿列表行(非选中模型)的真实权威读源:控制端据此镜像被控端每个模型的
@@ -255,7 +255,7 @@ export function getRemoteNewMakerDefaults(
   return {
     model,
     effort: prefs.effort ?? cache.effortByModel[model],
-    fastMode: cache.fastModeByModel[model] === true,
+    fastMode: (cache.fastModeByModel[model] ?? false),
     permissionMode: prefs.permissionMode,
     providerId: prefs.providerId ?? null,
     effortByModel: cache.effortByModel,
@@ -284,7 +284,7 @@ export function getSelectedNewMakerRoute(ownerScope: string): BotModelRoute | un
 
 /** Same snapshot as the selected route; never consume the unfenced legacy preference cache. */
 export function getNewMakerModelTuning(ownerScope: string, agent: 'claude-code' | 'codex' | 'pi',
-  providerId: string, model: string): { effort?: string; fastMode?: boolean } {
+  providerId: string, model: string): { effort?: string; fastMode?: boolean | 'ultrafast' } {
   if (selectedRouteOwner !== ownerScope || !cache) return {};
   const memory = cache.providerModelMemory;
   // 权威 `${agent}:*` 槽优先,来源副本只兜底旧客户端(同 getThinkingEnabledFromMemory 与
@@ -295,5 +295,5 @@ export function getNewMakerModelTuning(ownerScope: string, agent: 'claude-code' 
   const effort = preset?.effortByModel?.[model] ?? provider?.effortByModel?.[model] ?? cache.effortByModel[model];
   const fastMode = preset?.fastByModel?.[model] ?? provider?.fastByModel?.[model] ?? cache.fastModeByModel[model];
   return { ...(typeof effort === 'string' ? { effort } : {}),
-    ...(typeof fastMode === 'boolean' ? { fastMode } : {}) };
+    ...((typeof fastMode === 'boolean' || fastMode === 'ultrafast') ? { fastMode } : {}) };
 }

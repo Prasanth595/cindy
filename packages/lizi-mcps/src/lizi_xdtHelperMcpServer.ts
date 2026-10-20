@@ -159,7 +159,7 @@ export const HELPER_CATEGORY_DESCRIPTIONS: Record<(typeof CATEGORY_ENUM)[number]
 
 interface SessionTaskCallbacks {
   startSessionTask(params: {
-    modelSelection?: { id: string; effort?: string; fastMode?: boolean };
+    modelSelection?: { id: string; effort?: string; fastMode?: boolean | 'ultrafast' };
     callerSessionId: string;
     objective: string;
     contextRefs?: string[];
@@ -392,7 +392,7 @@ function registerStartSessionTaskEntry(
       model_selection: z.object({
         id: z.string().min(1).max(2048).describe('Available route id from get_app_default_model; includes provider and Harness.'),
         effort: z.string().max(64).optional(),
-        fast_mode: z.boolean().optional(),
+        fast_mode: z.union([z.boolean(), z.literal('ultrafast')]).optional(),
       }).strict().optional(),
       instruction: z.string().min(1).max(12_000).describe('Agent supplement. The host preserves the accepted user message separately and formats both fields; this text is never certified as the user’s words.'),
       title: z.string().min(1).max(120).optional(),

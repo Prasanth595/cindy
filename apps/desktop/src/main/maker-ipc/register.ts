@@ -1,3 +1,7 @@
+import { createOrcaWorkerProjectHandlers } from './orcaWorkerProjectHandlers';
+import { getTeamByWorkerSession } from '../localDb/orcaTeamStore';
+import { readWorkerProjectContext, createWorkerWorktree, rememberWorkerProject, probeWorkerProject } from './orcaWorkerProject';
+import type { WorkerWorktreeRequest } from '../../shared/orca-worker-project';
 import { captureAgentRequest as captureRequest, type CapturedAgentRequest } from './forwardedRequest.js';
 import type { AgentRequestReceipt } from '../../shared/forwardedRequest.js';
 import { configureBotTodoDispatch, settleBotTodoForSession } from './botTodoAccess.js';
@@ -171,6 +175,7 @@ import {
   type ProviderView,
 } from '@cindy/model-providers';
 import { createId } from '@paralleldrive/cuid2';
+import { fastModeToStorage } from '@cindy/maker-shared';
 import { redactSensitiveText } from '@cindy/maker-shared/error-redaction';
 import { permissionModeOrAsk } from '@cindy/maker-shared/permission-mode';
 import {
@@ -2242,7 +2247,7 @@ type SendToSessionCreateDefaults = {
   model: string;
   providerId?: string | null;
   effort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
-  fastMode?: boolean;
+  fastMode?: boolean | 'ultrafast';
   workingDir: string;
   workspaceKind?: 'project' | 'dialogue';
   permissionMode?: 'ask' | 'default' | 'acceptEdits' | 'plan' | 'auto' | 'bypassPermissions';
@@ -2264,7 +2269,7 @@ type SendToSessionInternalResult =
       worktreePath?: string | null;
       model?: string;
       effort?: SendToSessionCreateDefaults['effort'] | null;
-      fastMode?: boolean;
+      fastMode?: boolean | 'ultrafast';
       providerId?: string | null;
     }
   | {
@@ -2402,7 +2407,7 @@ interface OrcaCollabService {
       model?: string;
       providerId?: string | null;
       effort?: import('@cindy/maker-core').Effort;
-      fastMode?: boolean;
+      fastMode?: boolean | 'ultrafast';
     };
   }) => Promise<
     | {
@@ -2473,7 +2478,7 @@ interface OrcaCollabService {
     model?: string;
     providerId?: string;
     effort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
-    fast?: boolean;
+    fast?: boolean | 'ultrafast';
     workerPermissionMode?: OrcaWorkerPermissionMode;
     label: string;
     workingDir?: string;
@@ -2697,7 +2702,7 @@ interface EnableOrcaOptions {
   label?: string;
   model?: string;
   effort?: OrcaWorkerEffort;
-  fast?: boolean;
+  fast?: boolean | 'ultrafast';
   /** 显式选定的模型来源;语义见 OrcaWorkerCreateParams.providerId。 */
   providerId?: string | null;
   /** Worker 创建默认权限；缺省沿用当前偏好，显式值会更新偏好。 */
@@ -2710,6 +2715,7 @@ interface EnableOrcaOptions {
   workingDir?: string;
   /** 首个 Worker 的 Agent 所在位置(远程供应商)；语义见 OrcaWorkerCreateParams.agentDeviceId。 */
   agentDeviceId?: string | null;
+  worktree?: WorkerWorktreeRequest;
 }
 
 let orcaCollabServiceHolder: OrcaCollabService | null = null;
@@ -4233,7 +4239,7 @@ export interface SessionRouteSelection {
   model: string;
   providerId: string | null;
   effort: string | null;
-  fastMode: boolean;
+  fastMode: boolean | 'ultrafast';
 }
 let readPendingAgentSwitchRouteHolder:
   ((sessionId: string) => PendingAgentSwitchRouteRead | undefined) | null = null;
@@ -4610,7 +4616,7 @@ export async function registerPendingCredentialSwitchForSession(
   let prevRow: {
     model: string | null;
     effort: string | null;
-    fastMode: boolean | null;
+    fastMode: boolean | 'ultrafast' | null;
     providerId: string | null;
   } | null = null;
   try {
@@ -6012,7 +6018,7 @@ export function applyNewMakerDraftRoute(route: BotModelRoute): void {
     modelId: route.model,
     active: true,
     ...(route.effort ? { effort: route.effort } : {}),
-    ...(route.fastMode ? { fast: true } : {}),
+    ...(route.fastMode ? { fast: route.fastMode } : {}),
   });
 }
 
@@ -6148,7 +6154,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         model: row.model,
         providerId: row.providerId?.trim() || null,
         effort: row.effort,
-        fastMode: row.fastMode === true,
+        fastMode: (row.fastMode === 'ultrafast' ? 'ultrafast' : row.fastMode === true),
       };
     }
     broadcastSessionPatched(
@@ -6699,6 +6705,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       thinking?: unknown;
       active?: unknown;
       markModelChoice?: unknown;
+      taskProviderId?: unknown;
     };
     if (p.agent !== 'claude-code' && p.agent !== 'codex' && p.agent !== 'pi') {
       throwIpcError('INVALID_PARAMS', 'agent must be claude-code|codex|pi');
@@ -6715,8 +6722,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     if (p.effort !== undefined && typeof p.effort !== 'string') {
       throwIpcError('INVALID_PARAMS', 'effort must be string');
     }
-    if (p.fast !== undefined && typeof p.fast !== 'boolean') {
-      throwIpcError('INVALID_PARAMS', 'fast must be boolean');
+    if (p.fast !== undefined && (typeof p.fast !== 'boolean' && p.fast !== 'ultrafast')) {
+      throwIpcError('INVALID_PARAMS', 'fast must be boolean or ultrafast');
     }
     if (p.thinking !== undefined && typeof p.thinking !== 'boolean') {
       throwIpcError('INVALID_PARAMS', 'thinking must be boolean');
@@ -6724,12 +6731,20 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     if (p.markModelChoice !== undefined && typeof p.markModelChoice !== 'boolean') {
       throwIpcError('INVALID_PARAMS', 'markModelChoice must be boolean');
     }
+    if (
+      p.taskProviderId !== undefined &&
+      (typeof p.taskProviderId !== 'string' || p.taskProviderId.length > 256)
+    ) {
+      throwIpcError('INVALID_PARAMS', 'taskProviderId must be a string of at most 256 chars');
+    }
     broadcastToAllWindows(MAKER_PUSH.DRAFT_PREF_APPLY, {
       agent: p.agent,
       providerId: p.providerId ?? '',
       modelId: p.modelId,
       active: p.active === true,
       ...(p.markModelChoice === false ? { markModelChoice: false } : {}),
+      // 已有任务里只换模型:来源沿用任务的,被控端据此判断是否改写自己的新建默认。
+      ...(p.taskProviderId ? { taskProviderId: p.taskProviderId } : {}),
       ...(p.effort !== undefined ? { effort: p.effort } : {}),
       ...(p.fast !== undefined ? { fast: p.fast } : {}),
       ...(p.thinking !== undefined ? { thinking: p.thinking } : {}),
@@ -6787,8 +6802,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     if (p.effort !== undefined && typeof p.effort !== 'string') {
       throwIpcError('INVALID_PARAMS', 'effort must be string');
     }
-    if (p.fast !== undefined && typeof p.fast !== 'boolean') {
-      throwIpcError('INVALID_PARAMS', 'fast must be boolean');
+    if (p.fast !== undefined && (typeof p.fast !== 'boolean' && p.fast !== 'ultrafast')) {
+      throwIpcError('INVALID_PARAMS', 'fast must be boolean or ultrafast');
     }
     broadcastToAllWindows(MAKER_PUSH.SESSION_PREF_APPLY, {
       sessionId: p.sessionId,
@@ -6828,7 +6843,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       providerId: p.providerId,
       model: p.model,
       ...(typeof p.effort === 'string' ? { effort: p.effort } : {}),
-      ...(typeof p.fast === 'boolean' ? { fast: p.fast } : {}),
+      ...((typeof p.fast === 'boolean' || p.fast === 'ultrafast') ? { fast: p.fast } : {}),
     });
   });
 
@@ -8489,7 +8504,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
             ? resolveCompatibleSessionRuntimeEffort(hydrateModel, efRow?.effort ?? null)
             : efRow?.effort,
         );
-        setSessionFastMode(session.id, !!efRow?.fastMode);
+        setSessionFastMode(session.id, (efRow?.fastMode ?? false));
       }
     } catch (err) {
       // 来源没能落库 → 所选来源在下次冷启动后消失(本次路由已在启动边界冻结)。
@@ -8642,7 +8657,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         model: row.model ?? undefined,
         providerId: row.providerId,
         effort: (row.effort ?? undefined) as CreateOpts['effort'],
-        fastMode: !!row.fastMode,
+        fastMode: (row.fastMode ?? false),
         permissionMode: permissionModeOrAsk(row.permissionMode),
         planMode: !!row.planModeEnabled,
         title: row.title ?? undefined,
@@ -8771,7 +8786,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           model: row.model ?? undefined,
           providerId: row.providerId,
           effort: (row.effort ?? undefined) as CreateOpts['effort'],
-          fastMode: !!row.fastMode,
+          fastMode: (row.fastMode ?? false),
           permissionMode: permissionModeOrAsk(row.permissionMode),
           planMode: !!row.planModeEnabled,
           title: row.title ?? undefined,
@@ -8842,7 +8857,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       workingDir: row.workingDir ?? '',
       model: row.model,
       effort: row.effort as CreateOpts['effort'],
-      fastMode: !!row.fastMode,
+      fastMode: (row.fastMode ?? false),
       permissionMode: permissionModeOrAsk(row.permissionMode),
       title: row.title,
       resumeSessionId: row.sdkSessionId ?? undefined,
@@ -9859,7 +9874,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
               workspaceKind: source.workspaceKind,
               model: source.model,
               effort: source.effort as CreateOpts['effort'],
-              fastMode: !!source.fastMode,
+              fastMode: (source.fastMode ?? false),
               providerId: source.providerId,
               title: buildReviewSessionTitle(source.title),
               permissionMode: 'ask',
@@ -10189,7 +10204,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       }
       co.providerId = row.providerId;
       co.effort = (row.effort ?? undefined) as CreateOpts['effort'];
-      co.fastMode = !!row.fastMode;
+      co.fastMode = (row.fastMode ?? false);
       co.permissionMode = permissionModeOrAsk(row.permissionMode);
       // 新建会话的计划模式按落库状态起档：排队项的 createOpts.planMode 是那一条消息的
       // 计划意图（伙伴委派等 Host 输入恒为 false），本轮意图仍由发送事务按原快照传给
@@ -10227,7 +10242,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         model: row.model,
         providerId: row.providerId,
         effort: (row.effort ?? undefined) as CreateOpts['effort'],
-        fastMode: !!row.fastMode,
+        fastMode: (row.fastMode ?? false),
         permissionMode: (row.permissionMode ?? 'ask') as CreateOpts['permissionMode'],
         planMode: !!row.planModeEnabled,
         title: row.title ?? undefined,
@@ -10339,7 +10354,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         model: row.model ?? undefined,
         providerId: row.providerId,
         effort: (row.effort ?? undefined) as CreateOpts['effort'],
-        fastMode: !!row.fastMode,
+        fastMode: (row.fastMode ?? false),
         permissionMode: (row.permissionMode ?? 'ask') as CreateOpts['permissionMode'],
         planMode: false,
         title: row.title ?? undefined,
@@ -10650,7 +10665,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     apply: async (sessionId, profile) => { await applyScheduledProfile(sessionId, profile); },
   });
   const updateScheduledPreference = async (
-    sessionId: string, patch: { effort?: ScheduledModelSelection['effort']; fastMode?: boolean } | null,
+    sessionId: string, patch: { effort?: ScheduledModelSelection['effort']; fastMode?: ScheduledModelSelection['fastMode'] } | null,
   ) => {
     const db = getDbClient().drizzle;
     const [row] = await db.select({ baseline: sessions.scheduledModelBaseline }).from(sessions)
@@ -10664,7 +10679,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   };
   const updateSavedScheduledAxis = async (
     sessionId: string,
-    patch: { effort?: ScheduledModelSelection['effort']; fastMode?: boolean },
+    patch: { effort?: ScheduledModelSelection['effort']; fastMode?: ScheduledModelSelection['fastMode'] },
     assertCurrent: () => void,
   ): Promise<boolean> => {
     const [row] = await getDbClient().drizzle.select({ baseline: sessions.scheduledModelBaseline })
@@ -10798,9 +10813,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       ...(opts.executionDeviceId
         ? {
             executionDeviceId: opts.executionDeviceId,
-            ...(opts.workingDir ? { workingDir: opts.workingDir } : {}),
           }
         : {}),
+      ...(opts.workingDir !== undefined ? { workingDir: opts.workingDir } : {}),
+      ...(opts.worktree ? { worktree: opts.worktree } : {}),
       ...(opts.agentDeviceId !== undefined ? { agentDeviceId: opts.agentDeviceId } : {}),
     });
     if (!result.ok) throwOrcaServiceFailure(result);
@@ -11214,7 +11230,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
             ...(workingDirOverride !== undefined ? { workspaceKind: 'project' as const } : {}),
             model: meta.model,
             effort: (row?.effort ?? undefined) as SendToSessionCreateDefaults['effort'],
-            fastMode: !!row?.fastMode,
+            fastMode: (row?.fastMode ?? false),
             providerId: row?.providerId,
             // working_dir 覆盖时强制继承来源会话的权限档(review 反馈):把新目录
             // 以 Full access 打开是相对 dispatcher 的权限升级,跨项目 handoff
@@ -11243,7 +11259,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
                 agentKind: inheritedBase.agentKind,
                 model: inheritedBase.model,
                 effort: inheritedBase.effort,
-                fastMode: !!inheritedBase.fastMode,
+                fastMode: (inheritedBase.fastMode ?? false),
                 providerId: inheritedBase.providerId,
               },
               overrides: executionOverrides,
@@ -11313,7 +11329,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           workingDir: handoffWorktree ? handoffWorktree.meta.path : inherited.workingDir,
           model: inherited.model,
           effort: inherited.effort as CreateOpts['effort'],
-          fastMode: !!inherited.fastMode,
+          fastMode: (inherited.fastMode ?? false),
           providerId: inherited.providerId,
           title: newTitle,
           permissionMode: inherited.permissionMode ?? 'bypassPermissions',
@@ -11324,7 +11340,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           id: createOpts.id, body: { title: newTitle,
             agentKind: inherited.agentKind === 'claude-code' ? 'cc' : inherited.agentKind,
             model: inherited.model, providerId: inherited.providerId, effort: inherited.effort,
-            fastMode: !!inherited.fastMode, permissionMode: createOpts.permissionMode,
+            fastMode: (inherited.fastMode ?? false), permissionMode: createOpts.permissionMode,
             workspaceKind: inherited.workspaceKind, workingDir: createOpts.workingDir,
             ...(inheritedAgentDeviceId ? { agentDeviceId: inheritedAgentDeviceId } : {}) },
         }, async (row, assertCurrent) => {
@@ -13696,7 +13712,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       providerId: row.providerId,
       resumeSessionId: meta.sdkSessionId,
       effort: (row.effort ?? undefined) as CreateOpts['effort'],
-      fastMode: !!row.fastMode,
+      fastMode: (row.fastMode ?? false),
       permissionMode: permissionModeOrAsk(row.permissionMode),
       planMode: inheritTargetPlanMode ? !!row.planModeEnabled : false,
       title: row.title ?? undefined,
@@ -13958,6 +13974,25 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     getCoordinator: () => inputCoordinator,
   });
 
+  const workerProjectHandlers = createOrcaWorkerProjectHandlers({
+    isDeviceLinkInvoke,
+    assertTrustedAppRendererEvent,
+    getOwner: getCurrentDbClientSnapshot,
+    getSession: async (owner, id) => {
+      const [session] = await owner.client.drizzle
+        .select()
+        .from(sessions)
+        .where(eq(sessions.id, id))
+        .limit(1);
+      return session;
+    },
+    getTeamByWorkerSession,
+    readContext: readWorkerProjectContext,
+    probe: probeWorkerProject,
+    remember: rememberWorkerProject,
+    log,
+  });
+
   ipcMain.handle(
     MAKER_INVOKE.SESSION_ENABLE_ORCA,
     async (_e, leadSessionId: unknown, opts: unknown) => {
@@ -13976,6 +14011,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         deferDelegateTask?: unknown;
         executionDeviceId?: unknown;
         workingDir?: unknown;
+        worktree?: unknown;
+        projectPath?: unknown;
         agentDeviceId?: unknown;
       };
       const workerAgent: AgentKind =
@@ -13990,14 +14027,16 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       if (body.deferDelegateTask !== undefined && typeof body.deferDelegateTask !== 'boolean') {
         throwIpcError('INVALID_PARAMS', 'deferDelegateTask must be a boolean');
       }
-      return enableOrcaInternal(leadSessionId, {
+      const project = await workerProjectHandlers.options(_e, leadSessionId, body);
+      const result = await enableOrcaInternal(leadSessionId, {
+        ...project.fields,
         workerAgent,
         delegateTask,
         role: typeof body.role === 'string' ? body.role : undefined,
         label: typeof body.label === 'string' ? body.label : undefined,
         model: typeof body.model === 'string' ? body.model : undefined,
         effort: typeof body.effort === 'string' ? (body.effort as OrcaWorkerEffort) : undefined,
-        fast: typeof body.fast === 'boolean' ? body.fast : undefined,
+        fast: (typeof body.fast === 'boolean' || body.fast === 'ultrafast') ? body.fast : undefined,
         // 只认非空(trim 后)string 为显式来源;其余(null/空白/缺省/异型)一律按「未显式」处理。
         providerId:
           typeof body.providerId === 'string' && body.providerId.trim().length > 0
@@ -14017,6 +14056,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         // 首个 Worker 的 Agent 所在位置(远程供应商)；旧控制端不带 = 跟 Lead。
         ...pickWorkerAgentDeviceId(body.agentDeviceId),
       });
+      await project.remember();
+      return result;
     },
   );
 
@@ -14235,6 +14276,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     return disableOrcaInternal(leadSessionId);
   });
 
+  // Local-only reads: intentionally absent from the device-link allowlist.
+  ipcMain.handle('maker:worker:project-context', workerProjectHandlers.context);
+  ipcMain.handle('maker:worker:project-label', workerProjectHandlers.label);
+
   // ─── Orca worker IPC handlers ────────────────────────────────────────────
 
   ipcMain.handle(MAKER_INVOKE.WORKER_CREATE, async (_e, body: unknown) => {
@@ -14259,14 +14304,16 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     ) {
       throwIpcError('INVALID_PARAMS', 'workerPermissionMode must be auto or bypassPermissions');
     }
+    const project = await workerProjectHandlers.options(_e, b.leadSessionId, b);
     await assertLeadCollabProjectEnabled(b.leadSessionId);
     const result = await orcaLifecycleService.createWorker({
+      ...project.fields,
       leadSessionId: b.leadSessionId,
       role: b.role,
       agent,
       model,
       effort: typeof b.effort === 'string' ? (b.effort as OrcaWorkerEffort) : undefined,
-      fast: typeof b.fast === 'boolean' ? b.fast : undefined,
+      fast: (typeof b.fast === 'boolean' || b.fast === 'ultrafast') ? b.fast : undefined,
       // 只认非空(trim 后)string 为显式来源;其余(null/空白/缺省/异型)一律按「未显式」处理。
       providerId:
         typeof b.providerId === 'string' && b.providerId.trim().length > 0
@@ -14289,6 +14336,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       ...pickWorkerAgentDeviceId(b.agentDeviceId),
     });
     if (!result.ok) throwOrcaServiceFailure(result);
+    await project.remember();
     return {
       ok: true,
       workerId: result.workerId,
@@ -14734,6 +14782,31 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     return { permissionMode: pluginId === null ? undefined : 'auto' as const, assertCurrent };
   };
 
+  async function discardWorkerWorktree(sessionId: string): Promise<void> {
+    await withSendToSessionLock(sessionId, async () => {
+      await worktreeManager.awaitBackgroundCheckout(sessionId);
+      const meta = worktreeManager.getForSession(sessionId);
+      const result = await worktreeManager.cancelPrecreatedWorktree(
+        sessionId,
+        { path: meta?.path },
+        {
+          canRemove: async () => {
+            if (maker.getSession(sessionId)) return false;
+            const [row] = await getDbClient()
+              .drizzle.select({ status: sessions.status })
+              .from(sessions)
+              .where(eq(sessions.id, sessionId))
+              .limit(1);
+            return !row || row.status === 'archived';
+          },
+        },
+      );
+      if (result.status === 'preserved' || result.status === 'path-mismatch') {
+        log.warn('Failed Worker worktree was preserved', { sessionId, status: result.status });
+      }
+    });
+  }
+
   const orcaWorkerCreationService = createOrcaWorkerCreationService({
     withLeadSendLock: withSendToSessionLock,
     getActiveTeamByLead,
@@ -14821,7 +14894,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         model: leadRow.model,
         effort: leadRow.effort,
         permissionMode: leadRow.permissionMode,
-        fastMode: !!leadRow.fastMode,
+        fastMode: (leadRow.fastMode ?? false),
         providerId: leadRow.providerId ?? null,
         remoteHostId: leadRow.remoteHostId ?? null,
         ...(leadRow.agentDeviceId && !leadRow.remoteHostId ? { agentDeviceId: leadRow.agentDeviceId } : {}),
@@ -14844,6 +14917,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       );
       return resolved;
     },
+    createWorkerWorktree,
+    discardWorkerWorktree,
     getAvailableModels: (agent) => maker.getCapabilities(agent).availableModels,
     getProviderRoutingContext: async (agent, remoteHostId, agentDeviceId) => agentDeviceId && !remoteHostId
       // Worker 的 Agent 在另一台电脑(或分享)运行：模型与来源按那台的目录。
@@ -14982,7 +15057,11 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       }
       forgetKnownOrcaWorkerSession(workerSessionId);
       await archiveSingleWorkerSession(workerSessionId).catch(() => undefined);
-      await removeWorker(workerId);
+      try {
+        await removeWorker(workerId);
+      } finally {
+        if (worktreeManager.getForSession(workerSessionId)) await discardWorkerWorktree(workerSessionId);
+      }
     },
     broadcastSessionCreated,
     broadcastOrcaWorkerChanged: (leadSessionId) => {
@@ -15116,7 +15195,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     providerId: string | null | undefined,
     selection: {
       effort: SessionRuntimeProfile['effort'];
-      fastMode: boolean;
+      fastMode: boolean | 'ultrafast';
       confirmedContextWindow?: number;
     },
     options: InternalRuntimeSelectionOptions,
@@ -15244,7 +15323,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       model: meta.model,
       providerId: null,
       effort: meta.effort ?? null,
-      fastMode: meta.fastMode === true,
+      fastMode: (meta.fastMode === 'ultrafast' ? 'ultrafast' : meta.fastMode === true),
     };
     try {
       const [row] = await getDbClient()
@@ -15266,7 +15345,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           model: row.model,
           providerId: row.providerId?.trim() || null,
           effort: row.effort,
-          fastMode: row.fastMode === true,
+          fastMode: (row.fastMode === 'ultrafast' ? 'ultrafast' : row.fastMode === true),
         };
       }
     } catch (error) {
@@ -15286,7 +15365,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         : baseline.providerId,
       effort:
         (getSessionEffort(sessionId) as SessionRuntimeProfile['effort']) ?? meta.effort ?? null,
-      fastMode: live ? getSessionFastMode(sessionId) : meta.fastMode === true,
+      fastMode: live ? getSessionFastMode(sessionId) : (meta.fastMode ?? false),
     };
     const pendingMutation = pendingHarnessRuntimeMutation(agentSwitchPending.get(sessionId), control.generation)
       ?? control.pending;
@@ -15352,7 +15431,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           model: row.model,
           providerId: row.providerId?.trim() || null,
           effort: row.effort ?? null,
-          fastMode: row.fastMode === true,
+          fastMode: (row.fastMode === 'ultrafast' ? 'ultrafast' : row.fastMode === true),
         })),
       listProviders: () =>
         getDesktopProviderService().listProviders({
@@ -15452,7 +15531,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           providerId: live && hasSessionProvider(sessionId)
             ? getSessionProvider(sessionId) ?? null : row.providerId,
           effort: (live ? getSessionEffort(sessionId) : row.effort) ?? null,
-          fastMode: live ? getSessionFastMode(sessionId) : !!row.fastMode,
+          fastMode: live ? getSessionFastMode(sessionId) : (row.fastMode ?? false),
         },
         hasRuntimeOverride: control.effectiveOverride !== null || control.pending !== null || !!intent,
         next: intent ? { agentDeviceId: intent.targetAgentDeviceId === undefined ? row.agentDeviceId : intent.targetAgentDeviceId, agentKind: intent.targetAgentKind, model: intent.model,
@@ -16641,7 +16720,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         AND p.revision = ? AND p.projected_revision = p.revision AND p.version = 3
       LIMIT 1`, [leadId, sessionId,
       JSON.stringify([session.source,session.orcaRole,session.workingDir,session.permissionMode,Number(!!session.planModeEnabled),session.status,
-        session.agentKind,session.providerId,session.model,session.effort,Number(!!session.fastMode)]),
+        session.agentKind,session.providerId,session.model,session.effort,fastModeToStorage(session.fastMode)]),
       JSON.stringify([lead.source,lead.permissionMode,Number(!!lead.planModeEnabled),lead.status]),
       JSON.stringify([link?.label,link?.leadId,link?.teamId,link?.teamStatus]),
       JSON.stringify([receipt.id,receipt.targetId,receipt.pluginId,receipt.operation,receipt.payload,receipt.revision]),
@@ -16658,7 +16737,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       registeredRoute: data.route,
       session: { workingDir: session.workingDir, permissionMode: session.permissionMode, planModeEnabled: !!session.planModeEnabled, status: session.status,
         route: { agentKind, providerId: session.providerId ?? '', model: session.model,
-          effort: session.effort, fastMode: !!session.fastMode } },
+          effort: session.effort, fastMode: (session.fastMode ?? false) } },
       lead: { permissionMode: lead.permissionMode, planModeEnabled: !!lead.planModeEnabled, status: lead.status },
       ...(link ? { worker: { label: link.label ?? '', activeTeam: link.teamStatus === 'active', directoryMatches } } : {}),
       projection,
@@ -16705,7 +16784,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         model: row.model ?? undefined,
         providerId: row.providerId,
         effort: (row.effort ?? undefined) as CreateOpts['effort'],
-        fastMode: !!row.fastMode,
+        fastMode: (row.fastMode ?? false),
         permissionMode: permissionModeOrAsk(row.permissionMode),
         planMode: !!row.planModeEnabled,
         title: row.title ?? undefined,
@@ -17262,7 +17341,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         model: row.model ?? undefined,
         providerId: row.providerId,
         effort: (row.effort ?? undefined) as CreateOpts['effort'],
-        fastMode: !!row.fastMode,
+        fastMode: (row.fastMode ?? false),
         permissionMode: (row.permissionMode ?? 'ask') as CreateOpts['permissionMode'],
         planMode: !!row.planModeEnabled,
         title: row.title ?? undefined,
@@ -19077,8 +19156,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       let finalFastMode = restoringPreviousRoute && route.fastMode !== undefined
         ? route.fastMode
         : desiredRow
-          ? desiredRow.fastMode === true
-          : route.fastMode === true;
+          ? desiredRow.fastMode ?? false
+          : route.fastMode ?? false;
       if (agentKind && finalModel) {
         const runtimeAgentKind = dbToMakerAgentKind(agentKind);
         const providers = await getDesktopProviderService().listProviders({
@@ -20838,7 +20917,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     sessionId: string;
     model: string;
     providerId: unknown;
-    atomicSelection: { effort: SessionRuntimeProfile['effort']; fastMode: boolean } | undefined;
+    atomicSelection: { effort: SessionRuntimeProfile['effort']; fastMode: boolean | 'ultrafast' } | undefined;
     /** 渲染端按那台的目录确认过的目标上下文窗口(换到更小窗口的模型时)。 */
     confirmedContextWindow?: number;
     internalOptions: InternalRuntimeSelectionOptions;
@@ -20847,7 +20926,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       agentKind: string;
       providerId: string | null;
       effort: string | null;
-      fastMode: boolean;
+      fastMode: boolean | 'ultrafast';
       agentDeviceId: string | null;
     };
     assertRuntimeOwnerCurrent(): void;
@@ -21071,7 +21150,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         Array.isArray(selection) ||
         (!isSupportedRuntimeEffort(selectionEffort) &&
           selectionEffort !== null) ||
-        typeof (selection as { fastMode?: unknown }).fastMode !== 'boolean')
+        (typeof (selection as { fastMode?: unknown }).fastMode !== 'boolean' &&
+          (selection as { fastMode?: unknown }).fastMode !== 'ultrafast'))
     ) {
       throwIpcError('INVALID_PARAMS', 'selection must contain effort + fastMode');
     }
@@ -21090,7 +21170,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       );
     }
     let atomicSelection = selection as
-      { effort: SessionRuntimeProfile['effort']; fastMode: boolean } | undefined;
+      { effort: SessionRuntimeProfile['effort']; fastMode: boolean | 'ultrafast' } | undefined;
     const runtimeOwnerEpoch = captureSessionRuntimeControlOwnerEpoch();
     const assertSharedTaskCurrent = captureSharedTaskSettingGuard(sessionId);
     const assertRuntimeOwnerCurrent = (): void => {
@@ -23049,7 +23129,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       providerId: row.providerId,
       resumeSessionId: meta.sdkSessionId,
       effort: row.effort as CreateOpts['effort'],
-      fastMode: !!row.fastMode,
+      fastMode: (row.fastMode ?? false),
       permissionMode: permissionModeOrAsk(row.permissionMode),
       title: meta.title,
       remoteHostId: row.remoteHostId ?? undefined,
@@ -23186,14 +23266,15 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
 
   ipcMain.handle(
     MAKER_INVOKE.SET_FAST_MODE,
-    async (event, sessionId: unknown, enabled: unknown) => {
+    async (event, sessionId: unknown, requestedSpeed: unknown) => {
       // 轮 24-I3 HIGH:会话变更型 IPC 统一 sender 校验(对齐 SET_PERMISSION_MODE)。
       if (!isDeviceLinkInvoke()) {
         assertTrustedAppRendererEvent(event as Parameters<typeof assertTrustedAppRendererEvent>[0]);
       }
-      if (typeof sessionId !== 'string' || typeof enabled !== 'boolean') {
+      if (typeof sessionId !== 'string' || (typeof requestedSpeed !== 'boolean' && requestedSpeed !== 'ultrafast')) {
         throwIpcError('INVALID_PARAMS', 'sessionId + enabled required');
       }
+      const enabled: boolean | 'ultrafast' = requestedSpeed;
       const runtimeOwnerEpoch = captureSessionRuntimeControlOwnerEpoch();
       const assertSharedTaskCurrent = captureSharedTaskSettingGuard(sessionId);
       const assertOwnerCurrent = () => {
@@ -23231,6 +23312,27 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           );
         }
         const userIntent = agentSwitchPending.get(sessionId);
+        if (enabled === 'ultrafast') {
+          const profiles = await readSessionRuntimeProfiles(sessionId);
+          const profile = isUserPendingAgentSwitchIntent(userIntent)
+            ? { ...userIntent, agentKind: userIntent.targetAgentKind,
+                agentDeviceId: userIntent.targetAgentDeviceId === undefined
+                  ? profiles?.baseline.agentDeviceId : userIntent.targetAgentDeviceId }
+            : profiles?.pendingMutation?.profile ?? profiles?.effective;
+          const providers = profile?.agentDeviceId
+            ? await readUsableAgentDeviceProviders(profile.agentDeviceId, profile.agentKind, profile.model, profile.providerId ?? null)
+            : await getDesktopProviderService().listProviders({
+                allowSideEffects: false, catalog: getActiveCatalog(),
+              });
+          const providerId = profile?.providerId ?? (profile
+            ? effectiveSourceIdForModel(providers, null, profile.model, profile.agentKind) : null);
+          const model = profile ? findCatalogModel(providers.find(p => p.id === providerId),
+            profile.model, profile.agentKind, { exact: true }) : null;
+          if (profile?.agentKind !== 'codex' || model?.supportsUltrafastMode !== true) {
+            throwIpcError('PRECONDITION_FAILED', 'Ultrafast is unavailable for the selected account and model');
+          }
+          assertOwnerCurrent();
+        }
         if (isUserPendingAgentSwitchIntent(userIntent)) {
           assertOwnerCurrent();
           assertSharedTaskCurrent.admit();

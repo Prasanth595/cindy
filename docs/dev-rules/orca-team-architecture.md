@@ -211,7 +211,38 @@ Worker 不出现在普通 sidebar。renderer 用 `isOrcaWorkerSession(session) =
 
 Worker 虽不进侧栏，它的出错与等待确认会汇总到所属 Lead 行（2026-10 用户裁决，只覆盖本机 Lead）：Lead 行的状态点、项目折叠灯、rail 瓷砖、排序钉住与 Dock 角标都按「Worker 出错（红）> Worker 等待确认（蓝）> Lead 自己的状态」取一档，红 / 蓝同样盖过运行中；Worker 的完成不汇总。汇总只是读侧派生：来源是 Worker 自己在 `sessionAttentionStore` 里的 attention 与 Worker 投影（`workerProjectionStore` 中仍被持有的 Lead；已归档 Worker、已结束协同的团队不在投影里，自然不计），生命周期完全跟随 Worker 的 attention（重试 / 关横幅、Lead 重新派活、确认被回答即消失），点开 Lead 不会清掉，正在看该 Lead 时也照常显示。汇总结果**不得写回** `sessionAttentionStore`：那份会同步到 Main（Dock / 灵动岛 / 远端），并被「导航即已读」的被动清除抹掉，会破坏 Lead 自身的 attention 生命周期与完成保持判定。Dock 角标一个 Lead 只算 1，口径与侧栏行一致。逐行组件（`SessionItem` / `SessionCard` / `SessionStatusIcon`）只能用按 id 的 primitive 订阅 `useOrcaLeadWorkerAttentionKind`，聚合视图用 `useSessionAttentionKindsWithOrcaLeads` / `useOrcaLeadWorkerAttention` 与 `mergeOrcaLeadNotifications`。实现指针：`apps/desktop/src/renderer/features/cc-agent/lib/orcaLeadWorkerAttention.ts`、`workerProjectionStore.ts` 的 `listRetainedWorkerProjections`、`lib/appAttentionCount.ts` 的 `orcaLeadWorkerAttention` 入参。
 
-Worktree 现状：Orca 与普通 session 对齐，worktree 是可选项，不强制；toggle off 时 Lead/Worker 使用用户选的 workingDir，toggle on 时 Lead/Worker 共用同一个 worktree。
+Worktree 是可选项。旧调用方与 MCP 不传新字段时，Worker 仍继承 Lead 记录的目录。
+本机 Desktop 手动创建 Worker（包括开启协同的首个 Worker）可选择项目，并可为 Worker 单独新建 worktree。
+项目每次打开默认当前项目、不记忆选择；列表依次为当前项目、当前 data owner 主动选择且成功创建 Worker 的其他项目
+（本机独立记录，最多 10 项；默认当前项目不写入）、全局最近项目。当前项目按 Git 主仓去重，不额外提供 Lead 主目录选项；
+Worker 项目历史写入时按规范化路径字符串去重，保留最近 10 条；
+列表读取时按 realpath 身份去重，失败时退回规范化路径，显示和提交保留原路径；
+列表以最多 4 路并发执行 realpath / stat，不逐项探测 Git；打开面板时读取 Lead 继承目录，
+本次打开内保留列表，切换项目只探测选中目录，关闭后重新打开再现取 Lead 信息。
+保留浏览文件夹，隐藏对话和从全局最近列表移除的入口。Worker 仍不写入 recent_workdirs。
+
+新面板打开时由 Main 调用 resolveWorkerInheritedDirectory：在现有 resolveSessionGitDir 推断之上，
+只采纳仍存在、真实 Git common dir 与 Lead 记录目录相同的遥测目录；跨 clone、嵌套独立仓库、
+已删除或无遥测都回退记录目录。候选先按 realpath 后的 checkout 根目录比较：同一 checkout
+始终保留记录目录；另一个 worktree 使用其根目录，若记录目录是 monorepo 子项目且同样的相对
+路径仍存在，则保留该子项目位置。文件编辑产生的子目录不会改变 Worker 默认目录。
+这个新封装不改变顶栏分支徽标，也尚未改 MCP 默认继承。
+推断等于记录目录时不传 workingDir，否则显式传入面板展示的目录，再经现有目录与项目策略校验。
+
+新 worktree 勾选及源分支均不记忆；换项目重置勾选、分支和 dirty 状态。资格取决于当前目标：
+当前项目为 dialogue 或非 Git 时不提供；其他项目仅判断该目录。默认源分支取所选实际目录的 HEAD，
+建树 baseRepo 则解析为主仓，允许从 linked worktree 再分出一个独立 worktree。
+创建流程预留名额后用 Worker 自己的 sessionId 登记 worktree，再 bootstrap。选中 checkout 根目录时
+与普通任务一致，只等待启动必读文件检出，全量 checkout 在后台继续；选中子项目时保留其相对路径，
+等待全量 checkout 后进入对应子目录，若源分支没有该目录则回退新 worktree 根并记录警告。
+失败补偿先等待本次后台 checkout 收口，
+再在会话锁内走 cancelPrecreatedWorktree 的封存、preserveDirty 与所有权检查；保留结果写日志，绝不强删。
+正常归档继续走已有快照与回收规则；仅继承 Lead（包括模型自建）的目录时不登记所有权，不回收它。
+
+这套项目界面仅用于本机 Lead、本机运行设备；Agent 使用另一台电脑的供应商不改变任务目录归属。
+SSH、device-link 控制端、手机端与其他运行设备维持原界面和行为；新增本机项目参数在这些入口被拒绝。
+项目读取与标签读取使用仅本机 preload 方法，不进入 device-link allowlist；原创建协议只增加可选字段。
+Worker 与 Lead 不同项目时在模型副行显示文件夹图标和项目名，同项目不额外标注。
 
 `create_worker` / `create_workers` 的每个 Worker 可显式指定 `working_dir`（Worker
 所在主机上已存在的绝对目录）。省略时仍继承 Lead；显式指定时，在 reservation、session
@@ -228,7 +259,7 @@ SSH 行协议不接受含 CR/LF 的输入或物理路径（含 symlink 目标）
 Git worktree，不改变供应商、模型与 Worker 创建权限偏好。
 显式 `working_dir` 的单个或批量 MCP 调用走现有会话审批：Full Access 直接执行，Auto
 审阅用户授权，Ask 使用现有确认；不得被可信 server 或缓存的 server 授权直接放行。
-省略时保持原有静默继承；审批缺少工具名或参数证据时不静默放行。无需新增 UI。
+省略时保持原有静默继承；审批缺少工具名或参数证据时不静默放行。MCP 新建 worktree 参数与默认继承调整不在本次本机 UI 改动范围内。
 
 ### 协同运行时行为契约
 

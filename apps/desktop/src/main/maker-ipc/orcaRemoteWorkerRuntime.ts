@@ -194,7 +194,7 @@ function createOptsFromRow(row: RemoteSessionRow): AgentInputCreateOpts {
     model: str(row.model) ?? '',
     ...(str(row.providerId) ? { providerId: str(row.providerId) } : {}),
     ...(str(row.effort) ? { effort: str(row.effort) } : {}),
-    ...(typeof row.fastMode === 'boolean' ? { fastMode: row.fastMode } : {}),
+    ...((typeof row.fastMode === 'boolean' || row.fastMode === 'ultrafast') ? { fastMode: row.fastMode } : {}),
     ...(str(row.permissionMode) ? { permissionMode: str(row.permissionMode) } : {}),
     ...(typeof row.planModeEnabled === 'boolean' ? { planMode: row.planModeEnabled } : {}),
     ...(str(row.sdkSessionId) ? { resumeSessionId: str(row.sdkSessionId) } : {}),

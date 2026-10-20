@@ -346,6 +346,9 @@ import { useProviders } from '@/hooks/useProviders';
 import { useSshCodexProviders } from '@/hooks/useSshCodexProviders';
 import { useDeviceProviders } from '@/hooks/useDeviceProviders';
 import { chatEligibleSourcesForModel, effectiveSourceIdForModel } from '@cindy/model-providers';
+import { resolveDraftEffectiveProviderId } from '@/lib/draftModelCalibration';
+import { resolveTaskModelSwitchDraftWrite } from '@/lib/taskModelSwitchDraft';
+import { isModelEnabled } from '@/state/modelVisibilityPrefs';
 import {
   deriveModelsFromProviders,
   filterChatBridgedCodexProviders,
@@ -379,6 +382,7 @@ import {
 import {
   getDraft,
   patchVendorPrefs,
+  patchVendorPrefsFromTaskModelSwitch,
   patchVendorPrefsPreservingModelChoice,
   setEffortForModel,
   setFastModeForModel,
@@ -599,9 +603,9 @@ interface ChatInputProps {
    */
   onPlanModeChange?: (enabled: boolean) => void | Promise<void>;
   /** Current Fast Mode state from the session store. */
-  fastMode?: boolean;
+  fastMode?: boolean | 'ultrafast';
   /** Called when the Fast Mode toggle changes. Captured device ID pins remote routing. */
-  onFastModeChange?: (enabled: boolean, sourceRemoteDeviceId?: string) => void | Promise<void>;
+  onFastModeChange?: (enabled: boolean | 'ultrafast', sourceRemoteDeviceId?: string) => void | Promise<void>;
   /** Callback when workingDir changes (for parent state sync). */
   onWorkingDirChange?: (dir: string | null) => void;
   /** When true, the input is disabled (e.g. during streaming). */
@@ -883,7 +887,7 @@ interface ChatInputProps {
     /** 选中引擎的 **wire model id**。 */
     modelId: string;
     effort?: Effort;
-    fast: boolean;
+    fast: boolean | 'ultrafast';
     favoriteUid: string | null;
     /** 来自配置浮层「恢复推荐」，不得把推荐档重新写成用户 override。 */
     resetToRecommended?: true;
@@ -925,7 +929,7 @@ function rememberCatalogModelPrefs(
   agent: AgentKind,
   providerId: string | null | undefined,
   modelId: string,
-  patch: { effort?: Effort; fast?: boolean },
+  patch: { effort?: Effort; fast?: boolean | 'ultrafast' },
   taskComputerMemory: ModelMemoryAccessors | undefined,
 ): void {
   if (!providerId || !modelId) return;
@@ -1732,7 +1736,7 @@ export function ChatInput({
     model: string;
     effort: Effort;
     providerId: string | null;
-    fastMode: boolean;
+    fastMode: boolean | 'ultrafast';
   } | null>(null);
   // device-link 远程切换的「禁用」只绑定隧道 await 进行中(被控端 ack 即解除),**不**等完整 mirror 回流。
   // 原因:providerId 等字段在控制端 mirror 上回流不可靠(远程会话 serverSession 恒空、mirrorSessionFields
@@ -1777,7 +1781,7 @@ export function ChatInput({
       model: initialModel ?? (sessionId ? '' : localVendorDefaults.model),
       providerId: initialProviderId ?? null,
       effort: initialEffort === null || initialEffort === '' ? null : initialEffort ?? localVendorDefaults.effort,
-      fastMode: fastMode === true,
+      fastMode: fastMode ?? false,
     },
     effective: sessionId ? runtimeEffective : undefined,
     pending: sessionId ? runtimePending : undefined,
@@ -1854,7 +1858,7 @@ export function ChatInput({
       initialModel === pendingRemoteSwitch.model &&
       initialEffort === pendingRemoteSwitch.effort &&
       (initialProviderId ?? null) === pendingRemoteSwitch.providerId &&
-      (fastMode === true) === pendingRemoteSwitch.fastMode;
+      (fastMode ?? false) === pendingRemoteSwitch.fastMode;
     if (settled) {
       setPendingRemoteSwitch(null);
       return;
@@ -6398,7 +6402,7 @@ export function ChatInput({
   // device-link 用被控端隧道 providers 现查 per-provider,旧被控端回退拍平 caps;控制端不另写远程判断)。
   // capabilities 按当前模型所属 agent 选(两 hook 已按 deviceLinkDeviceId 作用域)。
   const modelFastSupported = useCallback(
-    (targetModelId: string, providerId: string | null): boolean =>
+    (targetModelId: string, providerId: string | null, fastMode?: boolean | 'ultrafast'): boolean =>
       resolveFastSupported({
         deviceId: catalogDeviceId,
         deviceProviders: remoteProviders.providers,
@@ -6412,6 +6416,7 @@ export function ChatInput({
         providerId,
         modelId: targetModelId,
         agentKind: currentModelAgentKind,
+        fastMode,
       }),
     [
       catalogDeviceId,
@@ -6425,12 +6430,12 @@ export function ChatInput({
   );
 
   const resolveFast = useCallback(
-    (targetModelId: string, providerId: string | null): boolean => {
-      if (!modelFastSupported(targetModelId, providerId)) return false;
+    (targetModelId: string, providerId: string | null): boolean | 'ultrafast' => {
       // providerId 只用于来源 capability 与旧 v2 兼容回退;新预设按 (agent, model) 跨来源共享。
       // 无 providerId / device-link(modelMemory 为 undefined)→ false,且不掺控制端本机记忆。
       if (!currentModelAgentKind || !providerId || !modelMemory) return false;
-      return modelMemory.getFast(currentModelAgentKind, providerId, targetModelId) ?? false;
+      const rememberedFast = modelMemory.getFast(currentModelAgentKind, providerId, targetModelId) ?? false;
+      return modelFastSupported(targetModelId, providerId, rememberedFast) ? rememberedFast : false;
     },
     [currentModelAgentKind, modelMemory, modelFastSupported],
   );
@@ -6438,7 +6443,7 @@ export function ChatInput({
   const syncSessionDraftModelPrefs = useCallback(
     (
       modelId: string,
-      patch: { effort?: Effort; fast?: boolean },
+      patch: { effort?: Effort; fast?: boolean | 'ultrafast' },
       opts: {
         activeProviderId?: string | null;
         memoryProviderId?: string | null;
@@ -6471,18 +6476,52 @@ export function ChatInput({
       }
       const remoteDeviceId =
         opts.remoteDeviceId ?? getSessionDeviceId(sessionId) ?? deviceLinkDeviceId;
-      const markModelChoice = opts.markModelChoice === true;
+      const { markModelChoice, modelOnly, sourceUnknown, taskProviderId, draftProviderId } =
+        resolveTaskModelSwitchDraftWrite({
+          requestedMarkModelChoice: opts.markModelChoice === true,
+          agentKind,
+          currentAgentKind: currentModelAgentKind,
+          activeProviderId,
+          memoryProviderId,
+          effectiveSourceId,
+          initialProviderId,
+        });
       if (!remoteDeviceId) {
         const vendor = agentKind === 'codex' ? 'codex' : agentKind === 'pi' ? 'pi' : 'cc';
-        const persistPrefs = markModelChoice
-          ? patchVendorPrefs
-          : patchVendorPrefsPreservingModelChoice;
-        persistPrefs(vendor, {
-          // 换模才带配对并打标记。本机只改思考档 / Fast 不写回活动模型,
-          // 避免未打标用户把区域默认改成当前任务模型。
-          ...(markModelChoice ? { model: modelId, providerId: activeProviderId ?? null } : {}),
-          ...(patch.effort !== undefined ? { effort: patch.effort } : {}),
-        });
+        if (modelOnly) {
+          // 只保护新建默认的模型 / 来源 / 其思考档；按 (引擎, 模型) 跨来源共享的档位与 Fast 预设
+          // 是独立的既有行为，下面照常记录。
+          patchVendorPrefsFromTaskModelSwitch(
+            vendor,
+            {
+              model: modelId,
+              providerId: draftProviderId,
+              ...(patch.effort !== undefined ? { effort: patch.effort } : {}),
+            },
+            taskProviderId,
+            (prefs) =>
+              resolveDraftEffectiveProviderId({
+                providers: localProviders.providers,
+                agent: agentKind,
+                model: prefs.model,
+                providerId: prefs.providerId,
+                chosenByUser: getDraft().modelChosenByVendor[vendor] === true,
+                isModelEnabled,
+              }),
+          );
+        } else if (!sourceUnknown) {
+          // 来源不明时与远程分支一致：整次不写新建默认(连思考档也不写，payload 没有 model 时它会被
+          // 当成草稿已存模型的档位)。
+          const persistPrefs = markModelChoice
+            ? patchVendorPrefs
+            : patchVendorPrefsPreservingModelChoice;
+          persistPrefs(vendor, {
+            // 换模才带配对并打标记。本机只改思考档 / Fast 不写回活动模型,
+            // 避免未打标用户把区域默认改成当前任务模型。
+            ...(markModelChoice ? { model: modelId, providerId: activeProviderId ?? null } : {}),
+            ...(patch.effort !== undefined ? { effort: patch.effort } : {}),
+          });
+        }
         if (memoryProviderId) {
           if (patch.effort !== undefined) {
             setProviderModelChoice(agentKind, memoryProviderId, modelId, patch.effort);
@@ -6495,14 +6534,20 @@ export function ChatInput({
         if (patch.fast !== undefined) setFastModeForModel(modelId, patch.fast);
         return;
       }
+      // 任务来源确认不了：被控端无从判断新建默认是否在同一来源，且迁移前的旧草稿没有选择标记可保护，
+      // 这次活动写穿整个不下发。
+      if (sourceUnknown) return;
       window.electronAPI.deviceLink
         .invoke(remoteDeviceId, 'maker:apply-new-maker-draft-pref', [
           {
             agent: agentKind,
+            // 保持原来的隐式值：旧被控端按它直接写草稿，新被控端用 taskProviderId 自己决定写哪个来源。
             providerId: activeProviderId ?? '',
             modelId,
             active: true,
             markModelChoice,
+            // 被控端按自己的新建默认判断是否写回;旧被控端忽略该字段,行为不变。
+            ...(modelOnly && taskProviderId ? { taskProviderId } : {}),
             ...(patch.effort !== undefined ? { effort: patch.effort } : {}),
             ...(patch.fast !== undefined ? { fast: patch.fast } : {}),
           },
@@ -6511,12 +6556,12 @@ export function ChatInput({
           log.warn('session draft model preference sync failed:', err);
         });
     },
-    [sessionId, deviceLinkDeviceId, agentDeviceId, taskComputerModelMemory, currentModelAgentKind, selectedProviderId, effectiveSourceId, sshCodexHostId],
+    [sessionId, deviceLinkDeviceId, agentDeviceId, taskComputerModelMemory, currentModelAgentKind, selectedProviderId, effectiveSourceId, initialProviderId, sshCodexHostId, localProviders.providers],
   );
 
   const persistFastModeChange = useCallback(
     async (
-      enabled: boolean,
+      enabled: boolean | 'ultrafast',
       options?: { silent?: boolean; remoteDeviceId?: string },
     ): Promise<boolean> => {
       try {
@@ -6542,7 +6587,7 @@ export function ChatInput({
    */
   const handleFastModeChange = useCallback(
     async (
-      enabled: boolean,
+      enabled: boolean | 'ultrafast',
       modelId = activeModel,
       effort = activeEffort,
       syncDraft = true,
@@ -6820,7 +6865,7 @@ export function ChatInput({
       modelId: string,
       expectedRevision?: number,
       effort?: Effort,
-      fastMode?: boolean,
+      fastMode?: boolean | 'ultrafast',
     ) => void | boolean | Promise<void | boolean>;
     byModel: (
       modelId: string,
@@ -6858,7 +6903,7 @@ export function ChatInput({
       // 意图期内的档位/Fast 改动经此显式覆盖(用户手选优先于记忆/默认解析)。
       overrides?: {
         effort?: Effort;
-        fastMode?: boolean;
+        fastMode?: boolean | 'ultrafast';
         /** Editing only axes keeps the existing route's window acknowledgement. */
         axesOnly?: boolean;
         /**
@@ -6955,6 +7000,11 @@ export function ChatInput({
         // 旧引擎的 fastMode 不能原样带进新引擎。
         // 显式 override 也必须过目标能力门:意图期改选到不支持 Fast 的模型/来源时,
         // 旧 intent.fastMode=true 不能绕过 resolveFastSupported 写进新意图。
+        const requestedFast = overrides?.fastMode ?? (
+          providerId && modelMemory
+            ? modelMemory.getFast(targetAgentKind, providerId, newModelId) ?? false
+            : false
+        );
         const fastCapable = resolveFastSupported({
           deviceId: deviceLinkDeviceId ?? undefined,
           deviceProviders: remoteProviders.providers,
@@ -6968,15 +7018,11 @@ export function ChatInput({
           providerId,
           modelId: newModelId,
           agentKind: targetAgentKind,
+          fastMode: requestedFast,
         });
         const targetFast = fromOtherCatalog
-          ? overrides?.fastMode === true
-          : overrides?.fastMode !== undefined
-            ? overrides.fastMode && fastCapable
-            : fastCapable &&
-              !!providerId &&
-              !!modelMemory &&
-              (modelMemory.getFast(targetAgentKind, providerId, newModelId) ?? false);
+          ? overrides?.fastMode ?? false
+          : fastCapable ? requestedFast : false;
 
         // 会话级操作按来源路由:device-link 远程会话隧道到被控端(意图注册表与引擎
         // 交接都在那边),本机会话零变化直连本机 maker。
@@ -7288,7 +7334,7 @@ export function ChatInput({
         modelId: string;
         targetAgent: AgentKind;
         effort: Effort | '';
-        fast?: boolean;
+        fast?: boolean | 'ultrafast';
         favoriteUid?: string | null;
       }): Promise<boolean> => {
         // 取消 = 什么都不改;返回 false 让选择器留在原地(用户还能挑别的行)。
@@ -7501,7 +7547,7 @@ export function ChatInput({
       modelId: string;
       effort?: Effort;
       engine: 'cc' | 'codex' | 'pi';
-      fast: boolean;
+      fast: boolean | 'ultrafast';
       favoriteUid: string | null;
       /** 行的归一化 id(面板行身份)。草稿层不消费,更不作为发送 id。 */
       rowModelId?: string;
@@ -7681,7 +7727,7 @@ export function ChatInput({
                   ? ({
                       effort: atomicEffort,
                       fastMode: atomicFast,
-                    } as { effort: string | null; fastMode: boolean })
+                    } as { effort: string | null; fastMode: boolean | 'ultrafast' })
                   : undefined,
               );
               if (remoteSetModelResult?.superseded) {
@@ -7743,7 +7789,7 @@ export function ChatInput({
                       effort: atomicEffort,
                       fastMode: atomicFast,
                       ...(confirmedContextWindow ? { confirmedContextWindow } : {}),
-                    } as { effort: string | null; fastMode: boolean },
+                    } as { effort: string | null; fastMode: boolean | 'ultrafast' },
                   );
                 },
               );
@@ -7914,7 +7960,7 @@ export function ChatInput({
               model: activeModel,
               effort: newEffort,
               providerId: selectedProviderId,
-              fastMode: fastMode === true,
+              fastMode: fastMode ?? false,
             };
             setPendingRemoteSwitch(optimisticSwitch);
             if (lockSelector) setRemoteSwitchInFlight(true);
@@ -8141,7 +8187,7 @@ export function ChatInput({
       reconciledModelId?: string,
       reconciledEffort?: Effort,
       expectedAgentSwitchRevision?: number,
-      reconciledFast?: boolean,
+      reconciledFast?: boolean | 'ultrafast',
     ) => {
       if (settingsLocked) return false;
       if (sessionId && sessionAgentSwitchSupported && !remoteHostId && runtimeAgentKind &&
@@ -8263,7 +8309,7 @@ export function ChatInput({
               ? ({
                   effort: remoteAtomicEffort,
                   fastMode: restoredFast,
-                } as { effort: string | null; fastMode: boolean })
+                } as { effort: string | null; fastMode: boolean | 'ultrafast' })
               : undefined,
           );
           if (remoteSetModelResult?.superseded) {
@@ -8361,7 +8407,7 @@ export function ChatInput({
                     effort: atomicEffort,
                     fastMode: restoredFast,
                     ...(confirmedContextWindow ? { confirmedContextWindow } : {}),
-                  } as { effort: string | null; fastMode: boolean },
+                  } as { effort: string | null; fastMode: boolean | 'ultrafast' },
                 );
               },
             );
@@ -8506,7 +8552,7 @@ export function ChatInput({
       reconciledModelId?: string,
       reconciledEffort?: Effort,
       expectedAgentSwitchRevision?: number,
-      reconciledFast?: boolean,
+      reconciledFast?: boolean | 'ultrafast',
     ): Promise<void | boolean> => {
       const remoteDeviceId = sessionId
         ? (deviceLinkDeviceId ?? getSessionDeviceId(sessionId))

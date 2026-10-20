@@ -1,6 +1,6 @@
 import { modelNeedsReselection } from '../session/modelReselection';
 import { isCindyAutoModelId } from '@cindy/model-providers/provider-identity';
-import { buildMobileModelSections, flattenProviderSections } from '../session/providerModelSections';
+import { buildMobileModelSections, flattenProviderSections, isFastRestorable } from '../session/providerModelSections';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import ts from 'typescript';
@@ -2879,20 +2879,65 @@ describe('fast memory restore wiring (source locks)', () => {
   const newSource = newSessionSources;
 
   it('both restore sites gate on target-agent cached capabilities, never the closure state', () => {
-    const gated = newSource.match(/isFastRestorable\(next\.agentKind, next\.providerId, next\.model, rowsNow, targetAgentHasFast\(selectedDeviceId, next\.agentKind\)\)/g) ?? [];
+    const gated = newSource.match(/isFastRestorable\(next\.agentKind, next\.providerId, next\.model, rowsNow, targetAgentHasFast\(selectedDeviceId, next\.agentKind\), rememberedFast\)/g) ?? [];
     expect(gated.length).toBe(2);
     // 恢复点不再直接消费 capabilities state 做门控
     const stale = newSource.match(/isFastRestorable\(next\.agentKind[^)]*capabilities\?\.hasFastMode/g) ?? [];
     expect(stale.length).toBe(0);
   });
 
-  it('defers the remembered-fast restore until target-agent capabilities arrive', () => {
-    expect(newSource).toContain('function targetAgentHasFast(deviceId: string, agentKind: NewSessionAgentKind): boolean');
-    // 延迟恢复 effect:记忆为 true 才评 + 门控用目标 agent 缓存能力表 + 写回前再核一次当前草稿
-    // (来源 id 与 changeSelectedFastMode 同口径:显式 providerId 优先,默认路由用推断来源)
-    expect(newSource).toContain('draftMemory.getFast(draft.agentKind, pid, draft.model) !== true');
-    expect(newSource).toContain('targetAgentHasFast(selectedDeviceId, draft.agentKind)');
-    expect(newSource).toContain('current.providerId === draft.providerId');
+  // PR #6559 P1: replace the boolean-only source assertion with the production
+  // effect's draft output. Unit tier; no React Native mount or real waiting.
+  const effectStart = newSource.indexOf('  useEffect(() => {', newSource.indexOf('  // Fast 记忆延迟恢复'));
+  const effectJs = ts.transpileModule(newSource.slice(effectStart, newSource.indexOf('  // 拉被控端 runtime', effectStart)), {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  const runRestoreEffect = new Function('env', `
+    const {selectedDeviceId, draft, draftMemory, modelRowsRef, activeSourceIdRef,
+      catalogReadyRef, targetAgentHasFast, getCachedAgentCapabilities,
+      buildAgentCapabilitiesCacheKey, setDraft, capabilities, modelRows,
+      deviceProviders, isFastRestorable} = env;
+    const useEffect = fn => fn();
+    ${effectJs}
+  `);
+
+  it('defers speed restoration until capabilities arrive and clears a revoked Ultrafast tier', () => {
+    const rows = flattenProviderSections(buildMobileModelSections({
+      agentKind: 'codex', providers: [{
+        id: 'openai', name: 'OpenAI', connected: true, agents: ['codex'],
+        source: 'builtin', auth: { method: 'oauth' },
+        routing: { codex: { upstream: 'https://example.test', authStrategy: 'oauth-passthrough' } },
+        models: { codex: [{ id: 'gpt', name: 'GPT', contextWindow: 1000,
+          efforts: [], defaultEffort: null, supportsFastMode: true, supportsUltrafastMode: true }] },
+      }],
+    }).sections);
+    let draft = { agentKind: 'codex' as const, model: 'gpt', providerId: 'openai', fastMode: false as boolean | 'ultrafast' };
+    let capsKnown = false;
+    let remembered: boolean | 'ultrafast' = 'ultrafast';
+    const restore = () => runRestoreEffect({
+      selectedDeviceId: 'host', draft, draftMemory: { getFast: () => remembered },
+      modelRowsRef: { current: rows }, activeSourceIdRef: { current: 'openai' },
+      catalogReadyRef: { current: true }, targetAgentHasFast: () => capsKnown,
+      getCachedAgentCapabilities: () => capsKnown ? {} : undefined,
+      buildAgentCapabilitiesCacheKey: () => 'host:codex',
+      setDraft: (update: (current: typeof draft) => typeof draft) => { draft = update(draft); },
+      capabilities: null, modelRows: rows, deviceProviders: { ready: true }, isFastRestorable,
+    });
+    restore();
+    expect(draft.fastMode).toBe(false);
+    capsKnown = true;
+    restore();
+    expect(draft.fastMode).toBe('ultrafast');
+    rows[0].model.supportsUltrafastMode = false;
+    restore();
+    expect(draft.fastMode).toBe(false);
+    rows[0].model.supportsUltrafastMode = true;
+    restore();
+    expect(draft.fastMode).toBe('ultrafast');
+    remembered = false;
+    draft.fastMode = false;
+    restore();
+    expect(draft.fastMode).toBe(false);
   });
 });
 

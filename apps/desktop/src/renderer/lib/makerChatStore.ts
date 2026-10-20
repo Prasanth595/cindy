@@ -2512,7 +2512,7 @@ export interface AgentSwitchIntentRecord {
   model: string;
   providerId: string | null;
   effort?: string;
-  fastMode?: boolean;
+  fastMode?: boolean | 'ultrafast';
   /**
    * 远程 Agent:这次选择同时换 Agent 所在电脑(null = 任务所在电脑)。缺省 = 位置不变。
    * 意图期内模型目录、选中态与 trigger 都按这台电脑显示。
@@ -2815,7 +2815,7 @@ export interface SessionChatState {
    */
   queueExpanded: boolean;
   /** Fast Mode toggle state — session-level, OFF by default, only meaningful for supported models. */
-  fastMode: boolean;
+  fastMode: boolean | 'ultrafast';
   /**
    * 计划模式一级开关(与 permissionMode 正交)。开关入口在 composer「+」菜单;
    * 计划批准后 agent 自动退出, 经 plan_mode_changed → sessions:patched →
@@ -9353,7 +9353,7 @@ function initGlobalListeners(options: GlobalListenerOptions = {}): void {
             providerId?: string;
             model?: string;
             effort?: string;
-            fast?: boolean;
+            fast?: boolean | 'ultrafast';
           } | null;
           if (p?.sessionId && p.agent && p.providerId && p.model) {
             const scopeKey = `session:${p.sessionId}`;
@@ -17438,7 +17438,7 @@ function updatePendingPlanReviewContent(
  */
 async function setFastMode(
   sessionId: string,
-  enabled: boolean,
+  enabled: boolean | 'ultrafast',
   sourceRemoteDeviceId?: string,
 ): Promise<void> {
   if (!sessionId) return;
@@ -17847,7 +17847,7 @@ function noteAgentSwitchIntent(
     model: string;
     providerId: string | null;
     effort?: string;
-    fastMode?: boolean;
+    fastMode?: boolean | 'ultrafast';
     agentDeviceId?: string | null;
   },
 ): void {
@@ -17908,7 +17908,7 @@ function normalizeAgentSwitchIntent(value: unknown): AgentSwitchIntentRecord | n
   // 只有出现非 string / 非空值的脏值才判非法,避免协议演进时静默丢掉合法意图。
   if (item.providerId != null && typeof item.providerId !== 'string') return null;
   if (item.effort !== undefined && typeof item.effort !== 'string') return null;
-  if (item.fastMode !== undefined && typeof item.fastMode !== 'boolean') return null;
+  if (item.fastMode !== undefined && (typeof item.fastMode !== 'boolean' && item.fastMode !== 'ultrafast')) return null;
   // 位置字段只在换 Agent 所在电脑时出现;脏值按「位置不变」处理,不丢掉整份意图。
   const agentDeviceId =
     item.agentDeviceId === null || (typeof item.agentDeviceId === 'string' && item.agentDeviceId.length > 0)
@@ -17919,7 +17919,7 @@ function normalizeAgentSwitchIntent(value: unknown): AgentSwitchIntentRecord | n
     model: item.model,
     providerId: typeof item.providerId === 'string' ? item.providerId : null,
     ...(typeof item.effort === 'string' && item.effort.length > 0 ? { effort: item.effort } : {}),
-    ...(typeof item.fastMode === 'boolean' ? { fastMode: item.fastMode } : {}),
+    ...((typeof item.fastMode === 'boolean' || item.fastMode === 'ultrafast') ? { fastMode: item.fastMode } : {}),
     ...(agentDeviceId !== undefined ? { agentDeviceId } : {}),
   };
 }
@@ -17967,7 +17967,7 @@ function setSessionRuntime(
   sessionId: string,
   opts: {
     agentKind?: 'claude-code' | 'codex' | 'pi';
-    fastMode?: boolean;
+    fastMode?: boolean | 'ultrafast';
     planModeEnabled?: boolean;
     /** Seed before SessionView hydrates the DB row; sendMessage reads this for SSH routing. */
     remoteHostId?: string | null;
@@ -18109,7 +18109,7 @@ function mirrorSessionFields(
       );
     }
   }
-  if (typeof patch.fastMode === 'boolean') {
+  if ((typeof patch.fastMode === 'boolean' || patch.fastMode === 'ultrafast')) {
     const next = patch.fastMode;
     setState(sessionId, (s) => (s.fastMode === next ? s : { ...s, fastMode: next }));
   }

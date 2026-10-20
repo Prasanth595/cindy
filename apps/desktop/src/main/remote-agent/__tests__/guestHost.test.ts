@@ -50,6 +50,7 @@ function makeHost(
   started: Started[],
   options: {
     nativeId?: string;
+    forkHosted?: Parameters<typeof createRemoteAgentHost>[0]['forkHosted'];
     purge?: (ids: readonly string[], nativeIds: readonly string[]) => Promise<void>;
     events?: AgentEvent[];
     recordGuestUsage?: Parameters<typeof createRemoteAgentHost>[0]['recordGuestUsage'];
@@ -57,6 +58,7 @@ function makeHost(
     /** 任务开始时的账号是否仍是当前账号(缺省一直是)。 */
     ownerCurrent?: () => boolean;
     providerAccess?: boolean;
+    providerAllowed?: () => boolean;
     /** false = 不接受受邀者出站登记(旧接线)；缺省给一个记录调用的实现。 */
     bindGuestProviderRoute?: false | Parameters<typeof createRemoteAgentHost>[0]['bindGuestProviderRoute'];
     /** 会话是否正在运行一轮(缺省不提供，同旧 Agent)。 */
@@ -67,6 +69,7 @@ function makeHost(
     ? undefined
     : options.bindGuestProviderRoute ?? (async () => ({ routeToken: 'route-token', modelIds: ['claude-opus'], release: () => {} }));
   return createRemoteAgentHost({
+    forkHosted: options.forkHosted,
     isAgentAvailable: () => true,
     startHosted: async (input) => {
       const record: Started = { input, sends: [], calls: [] };
@@ -112,7 +115,7 @@ function makeHost(
     ...(options.providerAccess === false ? {} : {
       providerAccess: {
         resolve: async (_kind, _model, providerId) => providerId ?? 'shared-provider',
-        isAllowed: () => true,
+        isAllowed: () => options.providerAllowed?.() ?? true,
       },
     }),
     ...(options.purge ? { purgeHostedTranscripts: options.purge } : {}),
@@ -411,6 +414,70 @@ describe('guest resume', () => {
     });
     await vi.waitFor(() => expect(started).toHaveLength(1));
     host.dispose();
+  });
+});
+
+// Unit regression: shared-model forks previously had no host operation. Exercise the public
+// handler, persistent ownership, chained forks, and account revocation without model calls.
+describe('shared-model native fork', () => {
+  it.each([['claude-code', GUEST], ['codex', GUEST], ['pi', GUEST], ['claude-code', OWNER]] as const)('keeps %s children for %s across restart and rejects foreign history', async (agentKind, controller) => {
+    const started: Started[] = [];
+    let children = 0;
+    const forkHosted = vi.fn(async () => ({ newSdkSessionId: `native-child-${++children}`, uuidMap: new Map([['a', 'b']]) }));
+    const host = makeHost(started, { nativeId: 'native-source', forkHosted });
+    const request = { op: 'fork', sourceSessionId: 'task-1', newSessionId: 'task-2',
+      agentKind, sourceSdkSessionId: 'native-source', model: 'claude-opus', upToMessageId: 'a' };
+    if (controller === GUEST) await expect(host.handle(controller, request)).rejects.toThrow('REMOTE_AGENT_INVALID');
+    expect(forkHosted).not.toHaveBeenCalled();
+    await host.handle(controller, { op: 'open', runId: RUN_1, agentKind, payload: { json: openPayload('task-1') } });
+    await vi.waitFor(async () => {
+      const poll = await host.handle(controller, { op: 'poll', runs: [{ runId: RUN_1, cursor: 0 }], waitMs: 0 });
+      expect(JSON.stringify(poll)).not.toContain('"runs":[]');
+      expect(started).toHaveLength(1);
+      if (controller === GUEST) {
+        const index = JSON.parse(fs.readFileSync(path.join(runsRoot, 'guest-sessions.json'), 'utf8'));
+        expect(JSON.stringify(index)).toContain('native-source');
+      }
+    });
+    await expect(host.handle(controller, request)).resolves.toEqual({ newSdkSessionId: 'native-child-1', uuidMap: [['a', 'b']] });
+    expect(forkHosted).toHaveBeenCalledWith(agentKind, expect.objectContaining({
+      providerId: 'shared-provider', sourceSdkSessionId: 'native-source',
+      ...(controller === GUEST ? { hostedGuestHome: guestHome(GUEST) } : {}),
+    }));
+    await host.handle(controller, { op: 'close', runId: RUN_1, mode: 'close', reason: 'navigation' });
+    host.dispose();
+    const restarted = makeHost([], { forkHosted });
+    try {
+      await expect(restarted.handle(controller, { ...request, sourceSessionId: 'task-2', sourceSdkSessionId: 'native-child-1', newSessionId: 'task-3' }))
+        .resolves.toMatchObject({ newSdkSessionId: 'native-child-2' });
+      await restarted.handle(controller, { op: 'open', runId: RUN_2, agentKind, payload: { json: openPayload('task-3', {
+        options: { model: 'claude-opus', resumeSessionId: 'native-child-2' },
+      }) } });
+      await vi.waitFor(async () => {
+        const poll = await restarted.handle(controller, { op: 'poll', runs: [{ runId: RUN_2, cursor: 0 }], waitMs: 0 }) as { runs: Array<{ data?: string }> };
+        expect(Buffer.from(poll.runs[0]?.data ?? '', 'base64').toString('utf8')).toContain('"previousMirrorRoots":' + JSON.stringify([
+          path.join(sessionRoot(controller, 'task-1'), 'fs'), path.join(sessionRoot(controller, 'task-2'), 'fs'),
+        ]));
+      });
+      await restarted.handle(controller, { op: 'close', runId: RUN_2, mode: 'close', reason: 'navigation' });
+      await expect(restarted.handle(controller, { ...request, relay: 'a'.repeat(32) })).rejects.toThrow('REMOTE_AGENT_INVALID');
+    } finally { restarted.dispose(); }
+  });
+
+  it.each(['account', 'provider'])('does not disclose a completed fork after %s access changes', async (revoked) => {
+    let current = true;
+    const host = makeHost([], {
+      ownerCurrent: () => revoked !== 'account' || current,
+      providerAllowed: () => revoked !== 'provider' || current,
+      forkHosted: async () => {
+        current = false;
+        return { newSdkSessionId: 'private-child', uuidMap: new Map() };
+      },
+    });
+    try {
+      await expect(host.handle(OWNER, { op: 'fork', sourceSessionId: 'task-1', newSessionId: 'task-2',
+        agentKind: 'claude-code', sourceSdkSessionId: 'source', model: 'claude-opus' })).rejects.toThrow(revoked === 'account' ? 'REMOTE_AGENT_UNAVAILABLE' : 'REMOTE_AGENT_PROVIDER_NOT_ALLOWED');
+    } finally { host.dispose(); }
   });
 });
 

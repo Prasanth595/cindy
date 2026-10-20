@@ -131,7 +131,7 @@ export interface NativeSessionRecoveryTarget {
   model: string;
   providerId: string | null;
   effort: string | null;
-  fastMode: boolean;
+  fastMode: boolean | 'ultrafast';
 }
 
 function isPiRequestBodyRecoveryExhausted(data: unknown): boolean {

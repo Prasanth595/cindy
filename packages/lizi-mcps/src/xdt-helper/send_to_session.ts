@@ -35,7 +35,7 @@ export type SendToSessionCallback = (params: {
   /** create 模式可选:显式推理强度；缺省继承 dispatcher。jump 忽略。 */
   effort?: "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
   /** create 模式可选:显式 Fast 开关；缺省继承 dispatcher。jump 忽略。 */
-  fast?: boolean;
+  fast?: boolean | 'ultrafast';
 }) => Promise<
   ControlResult<
     {
@@ -51,7 +51,7 @@ export type SendToSessionCallback = (params: {
       worktreePath?: string | null;
       model?: string;
       effort?: "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra" | null;
-      fastMode?: boolean;
+      fastMode?: boolean | 'ultrafast';
       providerId?: string | null;
     },
     | "NOT_FOUND"
@@ -231,7 +231,7 @@ export function registerSendToSessionTool(
           "仅 create 模式可选:目标模型推理强度。按实际 provider+model 支持档位校验；jump 模式忽略。",
         ),
       fast: z
-        .boolean()
+        .union([z.boolean(), z.literal('ultrafast')])
         .optional()
         .describe(
           "仅 create 模式可选:Fast 模式开关。目标 Agent/provider/model 不支持时创建前失败；jump 模式忽略。",

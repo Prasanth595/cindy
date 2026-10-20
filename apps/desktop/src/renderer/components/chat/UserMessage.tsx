@@ -65,7 +65,6 @@ import {
   useAgentCapabilities,
   type AgentKind as MakerAgentKind,
 } from '@/hooks/useAgentCapabilities';
-import { useAgentOnOtherDevice } from './AgentOnOtherDeviceContext';
 import { useChatSessionFile } from './ChatSessionFileContext';
 import { isRemoteFileOrigin, originDeviceId, toRemoteMediaOrigin } from '@/lib/sessionFileOrigin';
 import { rewriteToRemoteMediaOrigin } from '../../../shared/remoteMediaUrl';
@@ -869,10 +868,8 @@ export function UserMessage({
   // 远端 cc daemon 会话暂不支持 Fork/Rewind 依赖的 query rebuild (MVP),
   // remoteHostId 非空时直接关掉这两个能力, 避免点了落到后端错误。
   const isRemote = Boolean(remoteHostId);
-  // Agent 在另一台电脑运行：会话记录在那台，分叉入口先隐藏(回退照常可用)。
-  const agentOnOtherDevice = useAgentOnOtherDevice();
   const forkSupported =
-    !isRemote && !agentOnOtherDevice && (!agentKind || (capabilities?.fork?.supported ?? true));
+    !isRemote && (!agentKind || (capabilities?.fork?.supported ?? true));
   const rewindSupported =
     !isRemote &&
     (!agentKind || (capabilities?.rewind?.supported ?? true));

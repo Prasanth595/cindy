@@ -10617,6 +10617,12 @@
         "providerGroupRunningOn": "現在 {{device}} で実行中",
         "providerGroupRunningHere": "現在このパソコンで実行中",
         "providerGroupUnassigned": "開始時にプロバイダーグループがパソコンを選び、使用量はそのパソコンの分を表示します"
+      },
+      "speed": {
+        "label": "速度",
+        "standard": "標準",
+        "fast": "高速",
+        "ultrafast": "超高速"
       }
     },
     "permissionSelector": {
@@ -10713,6 +10719,7 @@
       "recent": "最近",
       "browseFolder": "別のフォルダを選択",
       "browseProjectFolder": "別のプロジェクトフォルダを選択",
+      "browseFailed": "フォルダー選択画面を開けませんでした。もう一度お試しください。",
       "dialogue": "対話",
       "dialogueOrSelectProject": "対話またはプロジェクトを選択",
       "searchProjects": "プロジェクトを検索",
@@ -12039,7 +12046,7 @@
       "REMOTE_WORKDIR_UNAVAILABLE": "リモートの作業ディレクトリを今は使えません。そのパソコンにフォルダがまだあるか確認してから、再試行してください。",
       "REMOTE_OPTIMISTIC_SESSION_STATE_UNAVAILABLE": "パソコン側で、このメッセージが送信済みかまだ確認できません。少し待ってから再試行し、同じメッセージを重ねて送らないでください。",
       "REMOTE_AGENT_UNAVAILABLE": "Agent を実行しているパソコンに接続できません。そのパソコンがオンラインでリモート操作を許可していることを確認して、もう一度お試しください。",
-      "REMOTE_AGENT_PEER_TOO_OLD": "相手のパソコンの Cindy が古いため、このパソコンの Agent を実行できません。先にそのパソコンで Cindy を更新してください。",
+      "REMOTE_AGENT_PEER_TOO_OLD": "相手のパソコンの Cindy が古いため、この操作は利用できません。先にそのパソコンで Cindy を更新してください。",
       "REMOTE_AGENT_EXPIRED": "このセッションは Agent を実行しているパソコンですでに終了しています。もう一度送信してください。",
       "REMOTE_AGENT_NOT_FOUND": "このセッションは Agent を実行しているパソコンですでに終了しています。もう一度送信してください。",
       "REMOTE_AGENT_BUSY": "相手のパソコンで実行中のセッションが多すぎます。いくつか終了してからもう一度お試しください。",
@@ -14917,7 +14924,7 @@
       "codexBinaryMissingTitle": "Codex コンポーネントの準備ができていません",
       "codexBinaryMissingDescription": "Codex コンポーネントの準備がまだできていないため、この機能は使用できません。しばらくしてから再試行するか、「設定 → プロバイダー」で Codex の接続状態を確認してください。",
       "piBinaryMissingTitle": "Pi コンポーネントの準備ができていません",
-      "piBinaryMissingDescription": "Pi コンポーネントの準備がまだできていないため、この機能は使用できません。しばらくしてから再試行するか、「設定 → プロバイダー」で Pi の接続状態を確認してください。",
+      "piBinaryMissingDescription": "Pi コンポーネントの準備がまだできていないため、この機能は使用できません。しばらくしてから再試行するか、「設定 → 情報」で Pi を管理または復元してください。",
       "goToSettings": "設定を開く",
       "remoteCodexBinaryMissingTitle": "リモートデバイスの Codex コンポーネントが未準備です",
       "remotePiBinaryMissingTitle": "リモートデバイスの Pi コンポーネントが未準備です",
@@ -15032,6 +15039,25 @@
       "remoteWorkerLoading": "{{device}} 上のタスクを読み込み中…",
       "remoteWorkerUnreachable": "{{device}} に現在接続できません。再接続すると、この Worker のタスクが再び表示されます。",
       "closeAria": "閉じる"
+    },
+    "workerProject": {
+      "missingDirectory": "このディレクトリは存在しません。別のディレクトリを選択してください。",
+      "label": "プロジェクト",
+      "current": "現在のプロジェクト",
+      "shared": "Lead と共有：{{project}} · {{branch}}",
+      "direct": "{{project}} の {{branch}} ブランチで直接変更します",
+      "inferred": "Lead の最近の操作から特定しました",
+      "dirty": "このディレクトリには未コミットの変更があります。Worker はその状態から作業を続けます。",
+      "newWorktree": "Worker 用の worktree を作成",
+      "from": "分岐元",
+      "fromSuffix": "（変更可能）",
+      "splitWarning": "{{branch}} の最新コミットから新しいブランチを作成します。Lead の未コミットの変更は引き継がれません。その後の変更は互いに反映されず、マージが必要です。",
+      "dialogue": "現在のセッションにプロジェクトがないため、worktree は作成できません。Worker は {{directory}} で作業します。",
+      "notGit": "このディレクトリは Git リポジトリではないため、worktree は作成できません。Worker は {{directory}} で作業します。",
+      "emptyRepo": "このリポジトリにはまだコミットがないため、worktree を作成できません。Worker は {{directory}} で作業します。",
+      "detachedHead": "Detached HEAD · {{sha}}",
+      "directDetached": "{{project}} の {{branch}} で直接変更します",
+      "loadFailed": "プロジェクトのディレクトリを読み取れませんでした。"
     }
   },
   "splitGroup": {

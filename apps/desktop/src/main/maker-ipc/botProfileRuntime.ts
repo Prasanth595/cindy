@@ -1019,7 +1019,7 @@ export async function hydrateBotProfileRuntime(
     model: opts.model,
     providerId: typeof opts.providerId === 'string' ? opts.providerId : null,
     effort: typeof opts.effort === 'string' ? opts.effort : null,
-    fastMode: opts.fastMode === true,
+    fastMode: (opts.fastMode === 'ultrafast' ? 'ultrafast' : opts.fastMode === true),
     permissionMode: opts.permissionMode,
     workspaceKind: opts.workspaceKind,
     remote: Boolean(opts.remoteHostId),

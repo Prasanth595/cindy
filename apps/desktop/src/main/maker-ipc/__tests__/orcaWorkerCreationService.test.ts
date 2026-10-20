@@ -2973,6 +2973,26 @@ describe('buildNoProviderMessage', () => {
     });
   });
 
+  // Protocol/admission regression: Fast access alone must not grant the distinct Ultrafast tier.
+  it.each([true, false])('admits explicit Ultrafast only with selected account access (%s)', async (allowed) => {
+    const { service, deps } = createDeps({
+      getProviderRoutingContext: vi.fn(async () => providerRoutingContext({
+        'claude-code': [],
+        codex: [{ id: 'openai', name: 'OpenAI', models: ['gpt-5.5'],
+          fastModels: ['gpt-5.5'], ultrafastModels: allowed ? ['gpt-5.5'] : [] }],
+      })),
+    });
+    const result = await service.createWorker({
+      leadSessionId: 'lead-1', role: 'reviewer', agent: 'codex', label: 'reviewer',
+      model: 'gpt-5.5', providerId: 'openai', fast: 'ultrafast',
+    });
+    expect(result).toMatchObject(allowed
+      ? { ok: true, resolved: { fastMode: 'ultrafast' } }
+      : { ok: false, errorCode: 'INVALID_PARAMS' });
+    if (allowed) expect(deps.buildCreateOptsWithStderr).toHaveBeenCalledWith(expect.objectContaining({ fastMode: 'ultrafast' }));
+    else expect(deps.buildCreateOptsWithStderr).not.toHaveBeenCalled();
+  });
+
   it('resolves Fast from the explicit provider catalog entry, not the flattened union', async () => {
     // gpt-5.5 在 xd(拍平清单首来源,不支持 Fast)与 openai(支持)都有:显式选 openai
     // 时 Fast 必须按 openai 自己的条目放行,不被拍平首来源误杀;反向显式选 xd 时压掉。
@@ -3698,4 +3718,60 @@ it('rejects a plan changed during preparation without reserving or bootstrapping
   const {deps,service}=createDeps({validateCreationPlan:validate,withLeadSendLock:async (_id, operation)=>operation()});
   const result=await service.createWorker({leadSessionId:'lead-1',role:'eval',agent:'codex',label:'sample'});
   expect(result.ok).toBe(false);expect(deps.reserveWorkerCreation).not.toHaveBeenCalled();expect(deps.bootstrapSession).not.toHaveBeenCalled();
+});
+
+// Test value: the UI's optional worktree creates new filesystem ownership before bootstrap.
+// The former tests only cover binding an existing path. Failures at each persistence boundary
+// must release that new ownership, never an inherited checkout. Unit tier, injected I/O.
+describe('local Worker worktree ownership', () => {
+  const request = {leadSessionId: 'lead-1', role: 'developer', label: 'worker', agent: 'codex' as const,
+    worktree: {sourceBranch: 'feature'}};
+  it('binds the newly created checkout to the Worker session and leaves success asynchronous', async () => {
+    const {deps, service} = createDeps({
+      createWorkerWorktree: vi.fn(async () => '/repo/.cindy-worktrees/worker'),
+      discardWorkerWorktree: vi.fn(async () => {}),
+    });
+    await expect(service.createWorker(request)).resolves.toMatchObject({ok: true, workerSessionId: WORKER_SESSION_ID});
+    expect(deps.createWorkerWorktree).toHaveBeenCalledWith(WORKER_SESSION_ID, 'C:\\repo', 'feature');
+    expect(deps.bootstrapSession).toHaveBeenCalledWith(expect.objectContaining({id: WORKER_SESSION_ID, workingDir: '/repo/.cindy-worktrees/worker'}));
+    expect(deps.discardWorkerWorktree).not.toHaveBeenCalled();
+  });
+  it.each(['create', 'bootstrap', 'renewal', 'persist', 'postcheck'])('compensates a %s failure before releasing the reservation', async phase => {
+    let finishCheckout!: () => void;
+    const checkout = new Promise<void>(resolve => {finishCheckout = resolve;});
+    let compensationStarted!: () => void;
+    const entered = new Promise<void>(resolve => {compensationStarted = resolve;});
+    const removed: string[] = [];
+    const {deps, service} = createDeps({
+      createWorkerWorktree: vi.fn(async () => {if (phase === 'create') throw new Error('Git failed'); return '/repo/.cindy-worktrees/worker';}),
+      discardWorkerWorktree: vi.fn(async id => {compensationStarted(); await checkout; removed.push(id);}),
+      ...(phase === 'bootstrap' ? {bootstrapSession: vi.fn(async () => {throw new Error('start failed');})} : {}),
+      ...(phase === 'renewal' ? {renewWorkerCreationReservation: vi.fn(async () => false)} : {}),
+      ...(phase === 'persist' ? {addOrUpdateWorker: vi.fn(async () => {throw new Error('write failed');})} : {}),
+      ...(phase === 'postcheck' ? {markOrcaRoleIfNeeded: vi.fn(async () => {throw new Error('mark failed');})} : {}),
+    });
+    const result = service.createWorker(request);
+    await entered;
+    expect(removed).toEqual([]);
+    expect(deps.releaseWorkerCreationReservation).not.toHaveBeenCalled();
+    finishCheckout();
+    await expect(result).resolves.toMatchObject({ok: false});
+    expect(removed).toEqual([WORKER_SESSION_ID]);
+    expect(deps.releaseWorkerCreationReservation).toHaveBeenCalledWith('worker-1');
+    if (phase === 'create') expect(deps.bootstrapSession).not.toHaveBeenCalled();
+  });
+  it('never claims or discards an inherited checkout, even when bootstrap fails', async () => {
+    const {deps, service} = createDeps({
+      createWorkerWorktree: vi.fn(), discardWorkerWorktree: vi.fn(),
+      bootstrapSession: vi.fn(async () => {throw new Error('start failed');}),
+    });
+    await expect(service.createWorker({...request, worktree: undefined})).resolves.toMatchObject({ok: false});
+    expect(deps.createWorkerWorktree).not.toHaveBeenCalled();
+    expect(deps.discardWorkerWorktree).not.toHaveBeenCalled();
+  });
+  it('rejects a new worktree on an execution device before reservation', async () => {
+    const {deps, service} = createDeps({createWorkerWorktree: vi.fn(), discardWorkerWorktree: vi.fn()});
+    await expect(service.createWorker({...request, executionDeviceId: 'other'})).resolves.toMatchObject({ok: false, errorCode: 'INVALID_PARAMS'});
+    expect(deps.reserveWorkerCreation).not.toHaveBeenCalled();
+  });
 });

@@ -151,7 +151,7 @@ export interface ScheduleFormState {
   providerId: string;
   effort: EffortValue | '';
   /** Codex Fast 模式开关。仅 Codex 有意义;切到 Claude / 不支持 fast 的模型时自动清为 false。 */
-  fastMode: boolean;
+  fastMode: boolean | 'ultrafast';
   workspaceKind: ScheduleWorkspaceKind;
   workingDir: string;
   useWorktree: boolean;
@@ -295,7 +295,7 @@ export interface RememberedBinding {
   model: string;
   providerId: string;
   effort: EffortValue | '';
-  fastMode: boolean;
+  fastMode: boolean | 'ultrafast';
   agentKind: ScheduleFormState['agentKind'];
   modelAgentKind?: ScheduleFormState['modelAgentKind'];
   boundAgent?: ScheduleFormState['boundAgent'];

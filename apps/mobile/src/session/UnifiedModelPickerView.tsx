@@ -1,3 +1,4 @@
+import { ModelSpeedIcon } from './ModelSpeedIcon';
 import { ErrorNotice } from '@/components/ErrorNotice';
 /**
  * 统一模型选择器的 Android / 兼容呈现(iOS 见 UnifiedModelPickerView.ios.tsx)。
@@ -534,7 +535,20 @@ export function UnifiedModelPickerView(p: UnifiedMobilePickerViewProps) {
             value={mobileAgentLabel(config.agent)}
           />
           {effortRow}
-          {options.fastCapable ? (
+          {options.fastCapable && options.row.entry.capabilities[config.agent]?.supportsUltrafastMode ? (
+            <>
+              {(['standard', 'fast', 'ultrafast'] as const).map(speed => {
+                const value = speed === 'ultrafast' ? 'ultrafast' : speed === 'fast';
+                return <Row
+                  key={speed}
+                  disabled={p.busy}
+                  title={t(`models.options.speed.${speed}`)}
+                  onPress={() => options.onChange({ ...config, fast: value })}
+                  trailing={config.fast === value ? <Check size={iconSize.action} color={colors.textPrimary} /> : null}
+                />;
+              })}
+            </>
+          ) : options.fastCapable ? (
             <View style={styles.row}>
               <View style={styles.leading}>{icon(Zap, true)}</View>
               <Text numberOfLines={1} style={[styles.rowTitle, styles.rowMain]}>
@@ -546,7 +560,7 @@ export function UnifiedModelPickerView(p: UnifiedMobilePickerViewProps) {
                 onValueChange={(fast) => options.onChange({ ...config, fast })}
                 seedColor={colors.cta}
                 testID={`${p.testID}.fast`}
-                value={config.fast}
+                value={!!config.fast}
               />
             </View>
           ) : null}
@@ -691,11 +705,10 @@ export function UnifiedModelPickerView(p: UnifiedMobilePickerViewProps) {
                 </Text>
               ) : null}
               {row.config.fast ? (
-                <Zap
+                <ModelSpeedIcon
+                  mode={row.config.fast}
                   color={colors.textSecondary}
-                  fill={colors.textSecondary}
                   size={iconSize.sm}
-                  strokeWidth={iconStroke.regular}
                 />
               ) : null}
             </View>

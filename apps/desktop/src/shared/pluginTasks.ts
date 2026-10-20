@@ -4,7 +4,7 @@ export interface PluginTaskRoute {
   providerId: string;
   model: string;
   effort: string;
-  fastMode: boolean;
+  fastMode: boolean | 'ultrafast';
 }
 export type PluginTaskRunStatus =
   | 'queued'

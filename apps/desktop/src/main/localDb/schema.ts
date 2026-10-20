@@ -7,6 +7,7 @@
  */
 
 import { sql } from 'drizzle-orm';
+import { fastModeFromStorage, fastModeToStorage, type FastMode } from '@cindy/maker-shared';
 import type { AnySQLiteColumn } from 'drizzle-orm/sqlite-core';
 import {
   index,
@@ -16,9 +17,16 @@ import {
   sqliteTable,
   text,
   uniqueIndex,
+  customType,
 } from 'drizzle-orm/sqlite-core';
 
 import type { SessionSource } from '../../shared/sessionSource.js';
+
+const speedSetting = customType<{ data: FastMode; driverData: number }>({
+  dataType: () => 'integer',
+  toDriver: fastModeToStorage,
+  fromDriver: fastModeFromStorage,
+});
 
 /** Historical source identity survives uninstall; revision is only a continuity witness. */
 export const pluginUsageSubjects = sqliteTable('plugin_usage_subjects', {
@@ -142,7 +150,7 @@ export const sessions = sqliteTable(
     /** Last window written by the runtime snapshot writer. Equality with contextWindow
      * proves provenance; a later legacy/import writer changing the value invalidates it. */
     contextWindowRuntime: integer('context_window_runtime'),
-    fastMode: integer('fast_mode', { mode: 'boolean' }).notNull().default(false),
+    fastMode: speedSetting('fast_mode').notNull().default(false),
     /**
      * 计划模式一级开关(与 permissionMode 正交):开启时 agent 先产出计划、经用户
      * 审批后再执行(Claude 走 SDK plan mode, Codex 走 collaborationMode plan)。
@@ -1433,10 +1441,9 @@ export const schedules = sqliteTable(
       enum: ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
     }),
     /**
-     * Codex Fast 模式开关。true → runner fire 时透传给 codex agent，落到
-     * app-server ServiceTier.Fast。仅 Codex 有意义，Claude 忽略。默认 false。
+     * 速度档位沿用整数列：0 标准、1 快速、2 超快。超快仅用于获授权的 Codex 模型。
      */
-    fastMode: integer('fast_mode', { mode: 'boolean' }).notNull().default(false),
+    fastMode: speedSetting('fast_mode').notNull().default(false),
     workingDir: text('working_dir'),
     workspaceKind: text('workspace_kind', { enum: ['project', 'dialogue'] })
       .notNull()

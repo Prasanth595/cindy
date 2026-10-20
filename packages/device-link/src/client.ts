@@ -14,6 +14,8 @@ import { PROVIDER_SHARE_RELAY_CAPABILITY, ROUTED_KINDS, SHARED_TASK_RELAY_CAPABI
 import {
   requestSessionTagCatalog,
   decodeSessionTagCatalog,
+  decodeModelSpeedPayload,
+  encodeModelSpeedPayload,
 } from './sessionListTransport.js';
 import { CongestionSendBudget } from './congestionSendBudget.js';
 import { PUSH_FORWARD_ALLOWLIST, REMOTE_INVOKE_ALLOWLIST } from './allowlist.js';
@@ -1470,7 +1472,7 @@ export class DeviceLinkClient {
       return result.ok
         ? {
             ...result,
-            result: reuse.decode(decodeSessionTagCatalog(payload.channel, result.result)),
+            result: reuse.decode(decodeModelSpeedPayload(payload.channel, decodeSessionTagCatalog(payload.channel, result.result))),
           }
         : result;
     };
@@ -1608,6 +1610,7 @@ export class DeviceLinkClient {
     payload: unknown,
     ownerStamp?: import('./protocol.js').PushOwnerStamp,
   ): void {
+    payload = encodeModelSpeedPayload(channel, payload);
     if (this.status !== 'online') return;
     const pushPayload = {
       channel,
@@ -2989,7 +2992,9 @@ export class DeviceLinkClient {
     }
     if (env.kind === 'push' && env.src) {
       const push = env.payload as { channel: string; payload: unknown };
-      this.messageReuse.receive(env.src, push.channel, push.payload);
+      const decoded = decodeModelSpeedPayload(push.channel, push.payload);
+      if (decoded !== push.payload) env = { ...env, payload: { ...push, payload: decoded } };
+      this.messageReuse.receive(env.src!, push.channel, decoded);
     }
     let ok = true;
     let chain: Promise<void> | null = null;

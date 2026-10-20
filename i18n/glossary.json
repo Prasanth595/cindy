@@ -6,6 +6,7 @@
   "punctuationExempt": ["desktop:settings.help.qnaFeedbackBodyTemplate"],
   "terms": [
     {"id":"side-chat","status":"proposed","en":"Side chat","translations":{"zh-CN":"侧边追问","zh-TW":"側邊追問","ja":"サイドチャット","ko":"사이드 채팅"},"checkCase":false,"note":"在右侧独立提问，继承主任务已完成的上下文；追问不自动写回主任务。"},
+    {"id": "detached-head", "status": "proposed", "en": "Detached HEAD", "translations": {"zh-CN": "分离 HEAD", "zh-TW": "分離 HEAD", "ja": "Detached HEAD", "ko": "Detached HEAD"}, "checkCase": false, "note": "沿用会话顶栏分支徽标现有译法"},
     {"id": "mivo-library", "status": "proposed", "en": "Mivo Library", "translations": {"zh-CN": "Mivo 作品库", "zh-TW": "Mivo 作品庫", "ja": "Mivo ライブラリ", "ko": "Mivo 라이브러리"}, "note": "#5929：引用目录系统项沿用 Mivo 品牌，仅本地化展示；通用 library 能力的品牌命名仍待维护者裁决。"},
     {"id": "mcp-app", "status": "proposed", "en": "MCP App", "translations": {"zh-CN": "MCP App", "zh-TW": "MCP App", "ja": "MCP App", "ko": "MCP App"}, "note": "标准 MCP Apps 协议提供的交互应用；卡片标题与消息来源沿用协议名称，各语言保留 MCP App，待术语评审后固化。"},
     {"id": "dissolve-group", "status": "proposed", "en": "Dissolve group", "translations": {"zh-CN": "解散群聊", "zh-TW": "解散群聊", "ja": "グループを解散", "ko": "그룹 해산"}, "checkCase": false, "note": "Irreversible group termination, distinct from archive, leave and personal list removal."},
@@ -2524,6 +2525,19 @@
       },
       "checkCase": false,
       "note": "主窗口左侧放任务与「自动化」「插件」「伙伴」等一级入口的那一栏。插件主视图入口的开关称「导航入口」（Navigation Entry），用来与右侧放插件面板、浏览器、终端的「右侧栏」（right sidebar）区分，所以涉及这个入口的文案写左侧导航，不再写笼统的「侧边栏」。韩语依国立国语院标准外来语表记写 내비게이션，不写 네비게이션。英文句中小写 left navigation，故 checkCase 为 false。先登记为 proposed：其他位置仍有「侧边栏」泛指左栏的存量文案，待统一清理时再裁决。"
+    },
+    {
+      "id": "ultrafast",
+      "status": "proposed",
+      "en": "Ultrafast",
+      "translations": {
+        "zh-CN": "超快",
+        "zh-TW": "超快",
+        "ja": "超高速",
+        "ko": "초고속"
+      },
+      "checkCase": false,
+      "note": "Codex 模型的第三档速度；与推理深度 Ultra 独立。标准、快速、超快分别对应默认、Fast、Ultrafast。"
     }
   ]
 }

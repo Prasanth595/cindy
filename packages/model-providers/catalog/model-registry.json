@@ -68,7 +68,8 @@
       "modelRef": "openai/gpt-6-sol",
       "perAgent": {
         "codex": {
-          "contextWindow": 272000
+          "contextWindow": 272000,
+          "efforts": ["low", "medium", "high", "xhigh", "max", "ultra"]
         },
         "claude-code": {
           "contextWindow": 272000

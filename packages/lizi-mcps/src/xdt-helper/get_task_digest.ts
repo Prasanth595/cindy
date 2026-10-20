@@ -28,7 +28,7 @@ export interface TaskDigestRoute {
   provider_id: string | null;
   model: string;
   effort: string | null;
-  fast: boolean;
+  fast: boolean | 'ultrafast';
 }
 
 export interface TaskDigestWire {

@@ -357,7 +357,7 @@ export interface Session {
   totalMoney?: RegionalMoney;
   contextTokens: number;
   contextWindow: number;
-  fastMode: boolean;
+  fastMode: boolean | 'ultrafast';
   /** Host-only temporary route; absent on older Desktop/device-link peers. */
   runtimeGeneration?: number;
   runtimeBaseline?: SessionRuntimeProfileProjection;
@@ -493,7 +493,7 @@ export interface SessionRuntimeProfileProjection {
   model: string;
   providerId: string | null;
   effort: Effort | null;
-  fastMode: boolean;
+  fastMode: boolean | 'ultrafast';
 }
 
 export interface SessionRuntimePendingProjection {

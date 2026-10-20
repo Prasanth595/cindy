@@ -160,7 +160,7 @@ export function takeGroupSwitchState(
  * 仍按真实路径逐级镜像；同步过去的个人 Skill 等映射回你这台的个人配置目录。越具体的放越前面。
  */
 export function shadowAliases(
-  started: { shadowDir: string; mirrorRoot?: string; extraDirs?: string[]; writableDirs?: string[]; virtualWorkspace?: boolean },
+  started: { shadowDir: string; mirrorRoot?: string; previousMirrorRoots?: string[]; extraDirs?: string[]; writableDirs?: string[]; virtualWorkspace?: boolean },
   workingDir: string,
   personalRoots: ReadonlyArray<{ relative: string; local: string }>,
   directories?: { extraDirs: readonly string[]; writableDirs: readonly string[] },
@@ -196,6 +196,18 @@ export function shadowAliases(
     shadow = nextShadow;
     real = nextReal;
     aliases.push({ from: shadow, to: real });
+  }
+  if (started.virtualWorkspace && Array.isArray(started.previousMirrorRoots)) {
+    const current = [...aliases];
+    for (const previous of started.previousMirrorRoots) {
+      if (typeof previous !== 'string') continue;
+      const root = previous.replace(/\\/g, '/').replace(/\/+$/, '');
+      if (!root || root === mirrorRoot) continue;
+      for (const alias of current) {
+        const from = alias.from.replace(/\\/g, '/');
+        if (from.startsWith(`${mirrorRoot}/`)) aliases.push({ from: root + from.slice(mirrorRoot.length), to: alias.to });
+      }
+    }
   }
   return aliases;
 }
@@ -604,7 +616,7 @@ export async function startRemoteAgentSession(
       model,
       providerId,
       effort: typeof state.effort === 'string' ? state.effort as Effort : effort,
-      fastMode: typeof state.fastMode === 'boolean' ? state.fastMode : fastMode,
+      fastMode: (typeof state.fastMode === 'boolean' || state.fastMode === 'ultrafast') ? state.fastMode : fastMode,
       thinkingEnabled,
       permissionMode,
       planMode: typeof state.planMode === 'boolean' ? state.planMode : planMode,

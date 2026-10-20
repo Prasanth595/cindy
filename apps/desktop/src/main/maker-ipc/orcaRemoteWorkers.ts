@@ -491,7 +491,7 @@ export function createOrcaRemoteWorkers(deps: OrcaRemoteWorkersDeps) {
           ? opened.effort
           : input.effort && EFFORTS.has(input.effort) ? input.effort : null,
         permissionMode: input.permissionMode,
-        fastMode: opened.fastMode ?? (input.fast === true),
+        fastMode: opened.fastMode ?? (input.fast ?? false),
       };
       creationOwners.set(proxySessionId, owner);
       return {

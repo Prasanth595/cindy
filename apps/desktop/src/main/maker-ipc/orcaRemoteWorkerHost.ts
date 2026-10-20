@@ -70,7 +70,7 @@ export interface OrcaRemoteWorkerExistingSession {
   model: string;
   agentKind: OrcaRemoteWorkerOpenResult['agentKind'];
   effort?: string;
-  fastMode?: boolean;
+  fastMode?: boolean | 'ultrafast';
 }
 
 export interface OrcaRemoteWorkerHostDeps {
@@ -88,7 +88,7 @@ export interface OrcaRemoteWorkerHostDeps {
     model: string;
     agentKind: OrcaRemoteWorkerOpenResult['agentKind'];
     effort?: string;
-    fastMode?: boolean;
+    fastMode?: boolean | 'ultrafast';
   }>;
   writeRemoteLead(sessionId: string, lead: OrcaRemoteLead): Promise<void>;
   /** 同一任务 id 的 open / release 串行。 */

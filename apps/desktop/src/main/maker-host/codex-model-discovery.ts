@@ -42,7 +42,7 @@ interface CodexModelRaw {
 function hasPriorityTier(tiers: unknown): boolean {
   return (
     Array.isArray(tiers) &&
-    tiers.some((t) => t && typeof t === 'object' && (t as { id?: unknown }).id === 'priority')
+    tiers.some((t) => t && typeof t === 'object' && ['priority', 'fast'].includes((t as { id?: string }).id ?? ''))
   );
 }
 
@@ -149,6 +149,8 @@ export function mapCodexModelsToCatalog(raw: unknown): CatalogModel[] {
     };
     if (efforts.includes('xhigh')) model.effortDisplayNames = { xhigh: 'Extra High' };
     if (Array.isArray(m.service_tiers)) model.supportsFastMode = hasPriorityTier(m.service_tiers);
+    model.supportsUltrafastMode = Array.isArray(m.service_tiers) &&
+      m.service_tiers.some(t => t && typeof t === 'object' && t.id === 'ultrafast');
     out.push(model);
   }
   return out;
@@ -223,6 +225,7 @@ export function mapCodexAppServerModelsToCatalog(
       ...(Array.isArray(raw.serviceTiers) || Array.isArray(raw.additionalSpeedTiers)
         ? { supportsFastMode }
         : {}),
+      supportsUltrafastMode: tiers.includes('ultrafast'),
     };
     if (efforts.includes('xhigh')) model.effortDisplayNames = { xhigh: 'Extra High' };
     out.push(model);
