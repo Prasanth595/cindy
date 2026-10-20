@@ -1,3 +1,4 @@
+import { modelRouteLocationKey } from '@cindy/maker-shared/model-route';
 import type { AgentKind, Effort } from '@cindy/maker-core';
 import type { Session as RendererSession } from '../../renderer/lib/ccAgent.types';
 import {
@@ -11,6 +12,7 @@ import {
 export type SessionRuntimeMutationSource = 'agent' | 'fallback';
 
 export interface SessionRuntimeProfile {
+  agentDeviceId?: string | null;
   agentKind: AgentKind;
   model: string;
   providerId: string | null;
@@ -87,9 +89,9 @@ const states = new Map<string, SessionRuntimeControlState>();
 let ownerEpoch = 0;
 
 function routeKey(
-  profile: Pick<SessionRuntimeProfile, 'agentKind' | 'providerId' | 'model'>,
+  profile: Pick<SessionRuntimeProfile, 'agentKind' | 'providerId' | 'model' | 'agentDeviceId'>,
 ): string {
-  return `${profile.agentKind}\u0000${profile.providerId ?? ''}\u0000${profile.model}`;
+  return `${profile.agentKind}\u0000${profile.providerId ?? ''}\u0000${profile.model}${modelRouteLocationKey(profile.agentDeviceId)}`;
 }
 
 function stateFor(sessionId: string): SessionRuntimeControlState {

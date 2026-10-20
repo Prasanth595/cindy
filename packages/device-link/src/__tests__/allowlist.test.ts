@@ -193,6 +193,7 @@ describe('REMOTE_INVOKE_ALLOWLIST', () => {
   it('放行 Codex 官方额度读取与 desktop 绑定的人工 reset offer', () => {
     expect(REMOTE_INVOKE_ALLOWLIST.has('maker:usage:codex-rate-limits')).toBe(true);
     expect(REMOTE_INVOKE_ALLOWLIST.has('maker:usage:codex-rate-limit-reset')).toBe(true);
+    expect(REMOTE_INVOKE_ALLOWLIST.has('maker:usage:codex-reset-auto-use')).toBe(true);
   });
 
   it('放行 Claude 订阅余量快照只读(远程订阅会话 chip 镜像被控端窗口剩余)', () => {

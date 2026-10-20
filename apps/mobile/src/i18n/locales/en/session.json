@@ -1,4 +1,27 @@
 {
+  "sideChat": {
+    "collapse": "Collapse side chat",
+    "resume": "Continue side chat",
+    "list": "Side chat list",
+    "summary": "Side chats · {{count}}",
+    "fromMain": "From “{{title}}”",
+    "mainTask": "Main task",
+    "commandDescription": "Open a side chat; add a question after /side",
+    "commandAttachments": "Finish handling the current attachments before using /side.",
+    "unavailable": "Side chats are unavailable for this task.",
+    "title": "Side chats",
+    "ask": "Ask in a side chat",
+    "create": "New side chat",
+    "returnMain": "Return to main task",
+    "item": "Side chat {{index}}",
+    "current": "Current",
+    "description": "Ask independently with the main task’s existing context. Replies are not automatically added to the main task.",
+    "empty": "No side chats yet",
+    "loadFailed": "Could not load side chats. Check the computer connection; older desktop versions need an update.",
+    "createFailed": "Could not create a side chat. The main task is unchanged.",
+    "unsupported": "This computer does not support side chats yet. Update the desktop app.",
+    "waitForReply": "Wait for the main task’s first completed reply before creating a side chat."
+  },
   "leaveWhileUploading": {
     "title": "Discard this message?",
     "body": "Attachments are still uploading. If you leave now, this message won't be sent.",
@@ -685,5 +708,24 @@
       "ORCA_CREATE_UNCONFIRMED": "Creating the Worker timed out and couldn't be confirmed. Check the Worker list first, and retry only if no new Worker appears.",
       "ORCA_ACTION_UNCONFIRMED": "The request timed out, so the result isn't confirmed yet. The list has been refreshed; go by what it shows now."
     }
+  },
+  "resetAutoUse": {
+    "label": "Auto use",
+    "rules": "Auto-use rules",
+    "lowQuota": "Use when weekly quota falls below 1%",
+    "resetDistance": "Time until quota resets",
+    "days": "At least {{count}} days",
+    "unlimited": "Any time",
+    "custom": "Custom…",
+    "customDays": "Custom days",
+    "dayUnit": "days or more",
+    "apply": "Apply",
+    "expiring": "Use before a card expires",
+    "leadTime": "Use how early",
+    "minutes": "{{count}} minutes before expiry",
+    "hours": "{{count}} hours before expiry",
+    "hint": "Either rule uses the earliest-expiring card. Skip when all quotas are full. Runs on this computer while Cindy is running.",
+    "failed": "Could not save. Try again.",
+    "restore": "Restore defaults"
   }
 }

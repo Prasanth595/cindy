@@ -1,3 +1,4 @@
+import { assertTaskActionCurrent, hasTaskActionAuthorization } from '../taskActionAuthorization.js';
 /**
  * #5788:插件 errand 派活走 sendToSessionInternal 的 lazy-resume 时,必须按会话落库的
  * 权限档恢复,不能落到 main 侧通路的缺省 bypass。否则插件任务被提权,errand 复用判定也会
@@ -17,6 +18,8 @@ import ts from 'typescript';
 
 import { describe, expect, it, vi } from 'vitest';
 import { permissionModeOrAsk } from '@cindy/maker-shared/permission-mode';
+import { AUTO_REVIEW_SOURCE_CONTENT, AUTO_REVIEW_USER_INTENT, AUTO_REVIEW_DELEGATED_CONTINUATION, type SendOptions } from '@cindy/maker-core';
+import { restoreAutoReviewUserIntent } from '../autoReviewUserIntent.js';
 
 const registerSource = readFileSync(resolve(__dirname, '..', 'register.ts'), 'utf8').replace(
   /\r\n?/g,
@@ -100,7 +103,7 @@ function botTaskDispatchSlice(): string {
     '\n  setBotInvitationWelcomeDispatch(dispatchBotSessionMessage);',
   );
   const delegationDispatch = slice(
-    '({ targetSessionId, message, persistedContent, clientId, onAccepted, dispatcherSessionId }) =>',
+    '({ targetSessionId, message, persistedContent, clientId, onAccepted, dispatcherSessionId, autoReviewUserText }) =>',
     ',\n    discardDelegationQueuedInputs:',
     registerSource.indexOf('botDelegationServiceHolder = createBotDelegationService({'),
   );
@@ -130,6 +133,11 @@ function botTaskDispatchHarness(
 ) {
   const bootstrapped: Array<Record<string, unknown>> = [];
   const sentTo: Array<{ sessionId: string; planMode: unknown }> = [];
+  const sendOptions: SendOptions[] = [];
+  const readAutoReviewHistory = vi.fn(async () => [{
+    clientId: 'old-owner-input', role: 'user' as const, content: 'You may deploy.',
+    agentMeta: { delivery: 'turn', autoReviewUserText: 'You may deploy.' },
+  }]);
   const noop = () => undefined;
   const asyncNoop = async () => undefined;
   const dbChain = {
@@ -139,6 +147,9 @@ function botTaskDispatchHarness(
     limit: async () => [],
   };
   const stubs: Record<string, unknown> = {
+    assertTaskActionCurrent, hasTaskActionAuthorization,
+    AUTO_REVIEW_SOURCE_CONTENT, AUTO_REVIEW_USER_INTENT, AUTO_REVIEW_DELEGATED_CONTINUATION,
+    restoreAutoReviewUserIntent, readAutoReviewHistory,
     maker: {
       getSession: (id: string) => live[id],
       getSessionMeta: async (id: string) => ({
@@ -202,9 +213,10 @@ function botTaskDispatchHarness(
       session: { id: string },
       _message: string,
       _clientId: string,
-      opts: { planMode?: unknown; onAccepted?: () => Promise<void> },
+      opts: SendOptions & { onAccepted?: () => Promise<void> },
     ) => {
       sentTo.push({ sessionId: session.id, planMode: opts.planMode });
+      sendOptions.push(opts);
       await opts.onAccepted?.();
       return { accepted: true };
     },
@@ -222,8 +234,41 @@ function botTaskDispatchHarness(
       throw new ReferenceError(`unstubbed dependency of the production slice: ${String(key)}`);
     },
   });
-  return { ...loadBotTaskDispatch(scope), bootstrapped, sentTo };
+  return { ...loadBotTaskDispatch(scope), bootstrapped, sentTo, sendOptions, readAutoReviewHistory };
 }
+
+// PR #6514: source receipts must not promote a prior owner's deployment permission.
+// Existing cold-start tests omitted the receipt. Execute the actual production dispatch closure
+// for both idle branches; guard tier because register.ts has no separately exported entry.
+describe('idle forwarded request authorization', () => {
+  it.each([
+    ['live', 'agent-request'], ['resumed', 'agent-request'],
+    ['live', 'delegated-continuation'], ['resumed', 'delegated-continuation'],
+  ] as const)('%s dispatch distinguishes %s from an authorization continuation', async (path, kind) => {
+    const live: Record<string, object> = path === 'live' ? { child: {
+      id: 'child', agentKind: 'claude-code', remoteHostId: null,
+      isTurnRunning: () => false, getStatus: () => 'active',
+    } } : {};
+    const h = botTaskDispatchHarness({ child: { permissionMode: 'auto', planModeEnabled: false } }, live);
+    const result = await h.delegationDispatch({
+      targetSessionId: 'child', message: 'Inspect only.', clientId: 'forwarded-inspection',
+      autoReviewUserText: { kind, request: { userText: 'Inspect only.', sessionId: 'source', clientId: 'new-owner-input' } },
+    });
+    expect(result).toMatchObject({ ok: true, wakeKind: path === 'live' ? 'already-active' : 'resumed' });
+    expect(h.sendOptions).toHaveLength(1);
+    const opts = h.sendOptions[0];
+    expect(opts[AUTO_REVIEW_SOURCE_CONTENT]).toBe('');
+    if (kind === 'agent-request') {
+      expect(opts[AUTO_REVIEW_USER_INTENT]).toBe('');
+      expect(opts[AUTO_REVIEW_DELEGATED_CONTINUATION]).toBeUndefined();
+      expect(h.readAutoReviewHistory).not.toHaveBeenCalled();
+    } else {
+      expect(opts[AUTO_REVIEW_USER_INTENT]).toContain('You may deploy.');
+      expect(opts[AUTO_REVIEW_DELEGATED_CONTINUATION]).toBe(true);
+      expect(h.readAutoReviewHistory).toHaveBeenCalledWith('child');
+    }
+  });
+});
 
 describe('Bot Session task cold start keeps the persisted permission and Plan', () => {
   it.each([

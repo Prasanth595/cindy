@@ -74,6 +74,7 @@ import { useConversationSearchFilterMenu } from '@/session/useConversationSearch
 import { HomeSearchBar } from '@/session/HomeSearchBar';
 import {
   conversationSearchAllowsLocalWrites,
+  conversationSearchCompanionParams,
   listConversationSearchProjects,
   shouldReplaceListWithSearchResults,
 } from '@/session/conversationSearch';
@@ -523,7 +524,7 @@ function DeviceDetailScreenContent() {
     setBulkNotice(null);
   }, []);
 
-  const openSession = useCallback((targetSessionId: string, focusClientId?: string) => {
+  const openSession = useCallback((targetSessionId: string, focusClientId?: string, companionParams?: Record<string, string>) => {
     if (swipeRegistry.closeOpenRow()) return;
     // 打开会话是远端交互,用当前(可达)设备 endpoint = 页面级 deviceId(对被认领会话即 canonical 当前设备,
     // 其物理机就是当前设备、可达)。不用会话物理旧 shard id:re-link 后旧设备不可达会导致会话根本打不开。
@@ -536,6 +537,7 @@ function DeviceDetailScreenContent() {
         deviceId,
         deviceName,
         ...(focusClientId ? { focusClientId } : {}),
+        ...companionParams,
       },
     });
   }, [deviceId, deviceName, guardedPush, swipeRegistry]);
@@ -756,6 +758,7 @@ function DeviceDetailScreenContent() {
               onOpenSession={(it) => openSession(
                 it.session.id,
                 'searchFocusClientId' in it ? (it as { searchFocusClientId?: string }).searchFocusClientId : undefined,
+                conversationSearchCompanionParams(it),
               )}
               swipe={sessionSwipeControls}
               testID={`deviceDetail.automationRunRow.${item.session.id}`}
@@ -892,6 +895,7 @@ function DeviceDetailScreenContent() {
                 onOpenSession={(it) => openSession(
                   it.session.id,
                   'searchFocusClientId' in it ? (it as { searchFocusClientId?: string }).searchFocusClientId : undefined,
+                  conversationSearchCompanionParams(it),
                 )}
                 onToggleAutomationGroup={toggleAutomationGroup}
                 suppressBlockTopBorder={!!section.data[index - 1]?.automationGroup}
@@ -1258,6 +1262,7 @@ function DeviceDetailScreenContent() {
               onOpenSession={(it) => openSession(
                   it.session.id,
                   'searchFocusClientId' in it ? (it as { searchFocusClientId?: string }).searchFocusClientId : undefined,
+                  conversationSearchCompanionParams(it),
                 )}
               onPressSelection={conversationSearchAllowsLocalWrites(item)
                 ? () => toggleSelection(sessionIdsForListItem(item))

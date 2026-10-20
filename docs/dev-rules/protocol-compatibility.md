@@ -1,5 +1,17 @@
 # 跨端协议兼容
 
+## 伙伴个人聊天全文搜索
+
+既有 `local-db:conversations:search` 的结果 `session` 增加可选
+`companion: { id, name, role: 'canonical' | 'history', readOnly }`。
+归属由 Host 的 `bot_session_links` 关联确认；群聊与渠道专线不下发。
+`local-db:bots:get` 的远程精简资料增加个人 `sessions: [{ id, role, status }]`，
+供控制端复核历史归属，不传提示词、工作目录或渠道配置。
+搜索前按远程伙伴可见性筛选，缓存／排队回复投递时再次核查，保持原账号与隐藏边界。
+新控制端连接旧 Host 时缺少 `companion` 就沿用普通搜索结果；旧控制端忽略新增字段。
+历史定位需要更新查看端，旧端可能按普通任务打开；不更改既有请求参数、
+IPC allowlist、relay、数据库 schema 或 Mobile 原生指纹。
+
 ## 邮件阅读会话
 
 只读 MailMessage 可选增加 conversation（threadId 和按时间排列的 messages 摘要）。
@@ -678,6 +690,29 @@ Mobile 未新增卡片入口。服务端无需改动。
 SSH 远程不经 file-service，直接在 SSH exec 通道上流式传回远端 `tar` 输出。未新增 channel、
 relay 类型、allowlist 或持久化 schema，服务端无需改动；Mobile 未接入。实现见
 `apps/desktop/src/main/file-browser/chat-download.ts`、`dir-export.ts` 与 `dir-archive.ts`。
+
+## 远程聊天发送本机文件夹
+
+桌面拖入／粘贴本机文件夹时，控制端通过本地 `maker:chat-folder:upload` 自动打包，
+作为普通文件附件放入现有草稿暂存区；发送时复用附件传输（直连优先、OSS 回退），
+大小限制和重试行为与普通文件一致。preload 桥只接受原生 `File`，
+由隔离世界的 Electron `webUtils.getPathForFile` 取路径；拒绝内存构造的 File，
+不接受 Renderer 自选的源路径。`file-browser:remote-op` 的 `caps` 新增可选
+`folderAttachment`；缺少能力时明确提示更新，不把控制端路径当作远程目录发送。
+归档携带 `application/x-cindy-folder-tar` MIME；接收端通过普通附件物化入口下载到对应
+任务，再安全解包到归档旁的 `.contents` 目录，Agent 和消息历史引用解包后的路径。
+聊天附件的符号链接必须为相对路径且最终指向解包树内已有条目；绝对路径、越界、
+悬空或循环链接导致解包失败并回滚。目录内有效链接链保留，普通目录下载策略不变。
+归档与目录共用附件的发送失败回滚、排队移除和任务删除清理，不新增文件夹归属记录、
+导入任务或回收定时器。发送前对端只有普通附件传输暂存，复用直传／OSS 原有过期回收。
+本机草稿归档复用 `chat-attachment-cache` 的账号隔离与显式丢弃清理；不会因短 TTL
+删除仍在使用的草稿。新建任务草稿无需工作目录。打包／解包不完整时整次失败。
+发送等待打包完成，失败保留草稿；切换任务／取消后清理迟到暂存结果。
+等待发送期间从聊天区外层拖入的后续文件夹也必须完成，任意一项失败均保留原草稿。
+当前任务文件栏的目录拖拽携带来源标记，继续直接引用。SSH 入口目前明确提示不支持，
+不传本机路径；手机没有本机目录拖拽入口。本次不改 relay、服务端或持久化 schema。
+实现与回归见 `file-browser/chat-folder-transfer.ts`、`chatFolderTransfer.test.ts` 和
+`chatInputAnnotationAbort.test.tsx`。
 
 ## 任务列表标签目录
 
@@ -1532,10 +1567,10 @@ B 上的 Worker 是一条普通任务，`sessions.orca_remote_lead`(migration 01
   回归见 `shared/__tests__/providerGroup.test.ts`、`provider-group/__tests__/` 下 `ipc`、`directory`、`removedShares`、
   `sharedStatus`、`remoteHandler` 测试与界面、手机同名测试。
 
-## 供应商组：Claude 订阅额度筛选与用量均衡（2026-10-12）
+## 供应商组：订阅配额筛选与用量均衡（2026-10-12，OpenAI 于 2026-10-20 接入）
 
 产品规则见 [`provider-groups.md`](../product-rules/provider-groups.md) §5。选电脑仍由组所在电脑完成：先排除额度耗尽的成员，
-再按所选策略分配；新策略 `usage` 只用于 Claude Code 订阅组。
+再按所选策略分配；Claude Code 与 OpenAI 订阅均可参与配额排序，旧策略 `usage` 沿用 `least`。
 
 - **可选策略枚举扩展**：本地组配置与同账号组摘要的 `strategy` 增加 `usage`，原默认 `least` 不变。
   旧版桌面读取未知策略时归一化为 `least`，旧版手机不依赖这个字段；远程 `pick` 仍由组所在电脑执行，因此
@@ -1545,6 +1580,12 @@ B 上的 Worker 是一条普通任务，`sessions.orca_remote_lead`(migration 01
 - **复用已有同账号通道**：向成员电脑调用 `maker:usage:claude-subscription`，参数 `[member.providerId]`；本机走同一
   订阅 reader。只信与请求一致的 `providerId` 回显；旧端未回显时仅允许默认 `anthropic`，具名账号按未知用量处理，
   避免旧端忽略参数后拿默认账号的额度代替。通道不可用、失败、超时或快照过期时按未知处理，分配照常进行。
+  OpenAI 并行复用 `maker:usage:account` 的 `['codex', member.providerId]` 和 `maker:usage:codex-rate-limits`
+  的 `[member.providerId]`；两个回包分别校验 `providerId`，无回显的旧端仅允许默认 `openai`。原生限额 RPC 的
+  窗口按本次读取时刻记录新鲜度，账号用量回包保留各模型桶与 web 槽自己的时间戳；单路失败仍使用另一路的可信数据。
+  不调用兑换重置卡接口，不把重置卡、账号标识或凭证放进内部目录的配额快照。本机和远端读取合并在途，短缓存 15 秒。
+- **可选框架信息**：同账号 `view` 请求增加可选 `agentKind: 'codex' | 'pi' | 'claude-code'`，供 OpenAI 发送前检查
+  选择原生模型桶或 web 槽；缺省仍按原生模型桶处理，旧组所在电脑忽略该字段。原有仅带模型的查询和回包形状不变。
 - **隐私与状态**：额度快照只留在组所在电脑的内部目录中，不加入 `ProviderGroupView` 的额度字段或供应商目录，不传给受邀者；
   分享来的成员不调用此通道。同账号不带 `model` 的 `view` 仅复用已有 `cooling` / `coolingUntil` 表达总窗口耗尽，带 `model`
   的发送前查询只在回显模型一致时临时表达该模型的额度状态，不能改变其他模型的可用性。账号切换时丢弃旧读取，不扩大 allowlist
@@ -2236,6 +2277,14 @@ canonical 主任务时，宿主额外追加 `resourceCollectionId=teammates&reso
 不识别它们的旧控制端仍按普通任务打开。拼接后超过 `NOTIFY_DEEP_LINK_MAX_LENGTH` 时回退为原深链。
 委派的独立 Session 任务和普通任务不带这组参数。不修改 notify 帧结构、relay 或协议版本。
 
+## 群聊话题预览回复者
+
+`BotGroupThreadPreview` 可选增加 `responders`（回复 ID、作者类别、成员 ID、名字），
+与最近两条 `replies` 摘要分开。Desktop 从已读取的窗口按服务端作者 ID 去重后取最多三位，
+不增加网络读取预算。新查看端遇到旧宿主没有此字段时沿用 replies 去重回退；旧查看端忽略
+新字段，继续读取原有两条摘要。Mobile 现有消费路径不渲染该预览字段；无新 channel、
+服务端接口、权限、数据库或原生配置变更。
+
 ## 伙伴群聊手机端（Remote Resource 与群推送深链）
 
 群聊以新的 Remote Resource collection `bot-groups`（`resourceKind: bot-group`，无 placement）接入控制端，
@@ -2731,3 +2780,41 @@ still use the same host-owned mail workflow as the chat card.
 都按当时的分类执行。不改 relay 帧、服务端 schema 或 Mobile 原生指纹。
 
 Cindy AI 设置卡片保留可选读取返回的 `unlimited` 状态，显示“未设置个人限额”；它不代表部门或企业没有限制。`invalidated` 清除该状态，有限额快照覆盖该状态，切换账号不复用上一账号结果。旧 `null` push 无法区分失效与不限额，本地卡片收到后通过既有可选读取核对；同一账号的多个组件共享在途读取，收到读取自身的广播时复用该请求，避免多窗口之间反复触发刷新。主进程跨窗口共享在途读取，已知不限额参与既有节流，重复不限额结果不重复广播。IPC payload 与远程消费者保持兼容。
+
+## 插件资料设备同步
+
+`device-link:plugin-sync:v1` 只在 Desktop Main 消费，wire 定义在
+`packages/device-link/src/pluginSyncProtocol.ts`。同账号、未撤权的在线电脑交换已确认
+namespace + id 下同一插件的有界 JSON 请求；`deviceSync: true` 是独立能力，权限区同步展示。
+手机继续操作执行电脑上的插件，不建立独立副本；共享任务和供应商分享不准入。
+旧客户端忽略新通道，插件探测 API 后保留本地功能；超时不代表未执行，不自动重试非幂等动作。
+复用现有设备密钥库，AES-GCM AAD 使用 `plugin-sync:` transfer 标记与源/目标设备绑定。
+每请求 64 KiB、每插件 2 个/全机 32 个在途、30 秒超时；应用持久化后才回复。
+接收按 peer 顺序排队，全机最多 64 帧；等待不会拦住其他 peer，账号重置后旧队列失效。
+投递等待同一插件沙箱入口加载完成，并在实际发送前重查撤权与请求有效期。
+排队、密钥准备和沙箱启动共享从帧入站起计算的 30 秒截止时间；超时释放该 peer 队列，迟到的启动不能再投递。
+入站等待前捕获各候选插件安装状态；更新后的插件不接收旧帧。撤权翻转 peer 授权代次并清理双向在途请求，重新授权只放行新请求。
+显式断开远程控制后此通道可走 unlinked legacy；不重新打开控制链路，仍执行同账号与撤权检查。
+同步可用设备查询会向被对端撤权的在线电脑发出有界 `authorize` nonce 探测；对端仅在本机仍允许该设备时通过同账号认证 relay 回复 `authorized`。匹配本连接代、peer 与未过期 nonce 后只恢复同步准入，不清除远控撤权标记，也不打开控制链。撤权和连接重置清除旧探测及同步授权；旧客户端忽略这两类增量帧。
+撤权写盘前立即关闭同步准入，成功后由持久黑名单接替，失败后释放临时拒绝但不恢复旧在途请求。插件本地/Forge/市场更新、卸载和启停从停止前到提交或回滚结束全程阻断该实例同步；嵌套变更须全部结束才恢复准入。
+账号/owner、安装 revision、插件启停和撤权每次重新核验，旧请求失效只影响其调用，
+不重连共享 relay。恢复由插件持久状态对账，不恢复失效请求。
+实现与 unit 回归：`cindy-brain/deviceSyncSlot.ts` / `__tests__/deviceSyncSlot.test.ts`。
+完整体验需要两台电脑都更新 Host 和插件；本地回归不能代替双机稳定版/Beta 实测。
+
+## 跨电脑任务行动回执
+
+`maker:session:handoff` 增量支持 `task-action-capability` 与 `validate-task-action`。
+新发送端先查询 `taskActionVersion: 1`，再发送带 Host 生成 `taskActionReceipt` 的消息；
+缺能力时明确拒绝，不回退到旧发送方式。新接收端拒绝缺回执的旧请求，要求发送端更新。
+完整任务互发需要两台电脑均升级；同账号鉴权、隐藏任务和共享访客限制不扩大。
+
+回执只存在发送 Host 内存，绑定接收设备、发送任务、目标任务与正文，最长一小时；
+接收端一次认领，强制经队列，在消费前回调发送 Host 复核。
+确定未发送的本机失败或目标明确未接受时，发送端立即释放回执，避免离线尝试耗尽容量；
+在途断连、超时、远端写后回执查询失败和无法识别的结果保留原有效期，不自动重发。
+队列派发或丢弃后通过同一 `validate-task-action` 请求的可选 `release` 标志释放回执；
+发送端删除回执后返回 `released: true`，重放无法通过验证，接收端才清除认领。
+旧端没有该确认或未收到释放回执时保留原过期清理，不把旧端的普通验证成功当作释放成功。断线、撤销、账号切换或重启后
+无法复核时不投递，不自动重放；已送达历史保留。未知投递结果仍要求先读取目标核实。
+没有新 relay channel、服务端变更、数据库 migration 或 Mobile 原生指纹变化。

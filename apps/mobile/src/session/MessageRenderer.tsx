@@ -143,6 +143,7 @@ import {
   SelectionQuoteContext,
   handleSelectionQuoteMenuAction,
 } from '@/session/selectionQuote';
+import { SelectionMenuText } from '@/session/SelectionMenuText';
 import {
   MOBILE_COMPOSER_CONTROL_SIZE,
   MOBILE_COMPOSER_VOICE_ANCHOR_RIGHT,
@@ -355,6 +356,7 @@ import {
 import type { ContinuationInFlightProjectionCapability } from '@/session/types';
 import {
   projectMobileWorkActivities,
+  projectRecentMobileWorkActivities,
   type MobileProjectedToolActivity,
   sameMobileWorkToolActivity,
 } from '@/session/workActivityProjection';
@@ -593,14 +595,18 @@ function MarkdownSelectableText({
         // RN Text props 里,组件内部私有附加(经 {...rest} 透传到原生组件)。
         {...{
           menuActionLabel: selectionQuoteMenuLabel(),
+          sideChatMenuActionLabel: quoteCtx.askInSideChat ? i18n.t('session.sideChat.title') : '',
           onMenuAction: (event: { nativeEvent: { target: number; start: number; end: number } }) => {
             handleSelectionQuoteMenuAction(event, renderedLinesRef.current, quoteCtx);
+          },
+          onSideChatMenuAction: (event: { nativeEvent: { target: number; start: number; end: number } }) => {
+            handleSelectionQuoteMenuAction(event, renderedLinesRef.current, quoteCtx, 'side-chat');
           },
         }}
       />
     );
   }
-  return <Text selectable={selectable} {...rest} />;
+  return <SelectionMenuText selectable={selectable} {...rest} />;
 }
 
 /**
@@ -662,6 +668,7 @@ interface MessageActions {
   onCopyMessageLink?: (clientId: string) => void;
   /** Insert this message's anchored link as an atom in the active composer. */
   onAddMessageToComposer?: (clientId: string) => void;
+  onSideChatMessage?: (text: string) => void;
   /**
    * chat-text-quote:选中消息文字 → 系统选择菜单「添加到对话」项的采集回调
    * (会话页写入 chatQuoteStore)。未传时选区采集整体关闭(context 为 null,
@@ -734,6 +741,7 @@ export function MessageRenderer({
   itemsStructureKey,
   onCopyMessageLink,
   onAddMessageToComposer,
+  onSideChatMessage,
   onForkMessage,
   onDeleteMessage,
   onLoadEarlier,
@@ -1752,6 +1760,7 @@ export function MessageRenderer({
     showPluginInvocations,
     remoteDeviceId,
     onAddMessageToComposer,
+    onSideChatMessage,
     onCopyMessageLink,
     onForkMessage,
     onDeleteMessage,
@@ -1802,6 +1811,7 @@ export function MessageRenderer({
     makerTurnRunning,
     onCopyMessageLink,
     onAddMessageToComposer,
+    onSideChatMessage,
     onDeleteMessage,
     onForkMessage,
     onOpenForkOrigin,
@@ -1823,16 +1833,15 @@ export function MessageRenderer({
     shareSelectionBusy,
     viewportLayout.contentWidth,
   ]);
-  // chat-text-quote:选区采集 context。仅「会话页传了采集回调 + iOS」时启用
-  // (Android RN Text 无系统菜单扩展点,v1 降级只读系统复制;只读宿主不传回调,
-  // context 为 null,MarkdownSelectableText 零开销)。菜单点按 → 直接提交,
-  // 无浮层状态。
-  const selectionQuoteEnabled = !!onQuoteSelection && Platform.OS === 'ios';
+  // Native selection menus share the host's action availability. Read-only hosts
+  // keep the system menu; side-chat tasks do not recursively offer side chats.
+  const selectionQuoteEnabled = !!onQuoteSelection;
+  const commitSelectionQuote = useCallback((text: string) => onQuoteSelection?.({ text }), [onQuoteSelection]);
   const selectionQuoteContextValue = useMemo(
-    () => (selectionQuoteEnabled && onQuoteSelection
-      ? { commitQuote: (text: string) => onQuoteSelection({ text }) }
+    () => (selectionQuoteEnabled
+      ? { commitQuote: commitSelectionQuote, askInSideChat: onSideChatMessage }
       : null),
-    [onQuoteSelection, selectionQuoteEnabled],
+    [onSideChatMessage, selectionQuoteEnabled, commitSelectionQuote],
   );
   const showJumpToLatest = isAwayFromBottom && !hasNewMessages;
   const focusRunKey = focusedItemKey
@@ -3025,10 +3034,9 @@ const RenderItemView = memo(function RenderItemView({
   }
   const groupTimestamp = actions.companion && item.type === 'message'
     ? actions.companionTimeGroups?.get(item.key) : undefined;
-  // K1: every companion card (task, result, teammate-message pill) hangs on the replies' column,
-  // left-aligned with the reply text behind an invisible avatar.
-  const alignWithReplies = !!actions.companionAvatar && actions.companion && item.type === 'message'
-    && !!item.message.companion;
+  // Cards and work groups share the reply text column, leaving the avatar slot empty.
+  const alignWithReplies = !!actions.companionAvatar && actions.companion
+    && (item.type === 'work_group' || (item.type === 'message' && !!item.message.companion));
   const aligned = alignWithReplies ? <View style={styles.companionAvatarInset}>{node}</View> : node;
   // Companion chats: a new message or finished reply eases in once (M4 / M5); everything else stays still.
   const entering = actions.companion && item.type === 'message' && !item.message.systemCardType
@@ -3489,6 +3497,7 @@ function MessageBubble({
   );
   const canCopyLink = !!(showCompletedActionBar && clientId && actions.onCopyMessageLink);
   const canAddToChat = !!(showCompletedActionBar && clientId && actions.onAddMessageToComposer);
+  const canSideChat = !!(showCompletedActionBar && copyText.trim() && actions.onSideChatMessage);
   const canShare = !!(
     showCompletedActionBar
     && clientId
@@ -3553,11 +3562,12 @@ function MessageBubble({
   // label 走 i18n.t,所以语言必须进依赖:否则用户在任务页挂载期间切语言,菜单会一直
   // 停在切换前的语言,直到 capability 变化或组件重挂。
   const messageMenu = useMemo(() => buildMobileMessageMenu({
+    canSideChat,
     canAddToChat,
     canCopyLink,
     canDelete,
     canRewind,
-  }), [canAddToChat, canCopyLink, canDelete, canRewind, i18nInstance.language]);
+  }), [canSideChat, canAddToChat, canCopyLink, canDelete, canRewind, i18nInstance.language]);
   const actionBar = useMemo(() => buildMessageActionBarPresentation({
     align: isUser ? 'user' : 'agent',
     canCopy,
@@ -3636,8 +3646,9 @@ function MessageBubble({
     if (id === 'rewind') return selectControlAction('rewind');
     if (id === 'delete') return selectControlAction('delete');
     if (id === 'add-to-chat') return actions.onAddMessageToComposer?.(clientId);
+    if (id === 'side-chat') return actions.onSideChatMessage?.(copyText);
     actions.onCopyMessageLink?.(clientId);
-  }, [actions, clientId, selectControlAction]);
+  }, [actions, clientId, copyText, selectControlAction]);
   const openMessageActionMenu = useCallback(() => {
     if (usesSystemActionMenu()) {
       const disabled = actionBusy
@@ -4703,20 +4714,26 @@ function WorkGroupCard({
   const isStreaming = item.isStreaming === true;
   const [rememberedExpanded, toggleExpanded] = useFoldableExpandedState(item.key, false);
   const expanded = item.deferred?.setVisible ? rememberedExpanded : item.deferred?.expanded ?? rememberedExpanded;
+  const lines = isStreaming ? item.deferred?.lines : undefined;
+  const lineMode = lines !== undefined;
   const deferredRef = useRef(item.deferred);
   deferredRef.current = item.deferred;
-  useEffect(() => {
+  useLayoutEffect(() => {
     const current = deferredRef.current;
-    current?.setVisible?.(expanded, false);
+    current?.setVisible?.(expanded, isStreaming && !lineMode);
     return () => current?.setVisible?.(false, false);
-  }, [item.deferred?.owner, item.deferred?.key, expanded]);
+  }, [item.deferred?.owner, item.deferred?.key, expanded, isStreaming, lineMode]);
   const layout = useMemo(() => buildMessageHierarchyLayout({
     screenWidth: actions.screenWidth,
     summaryCount: header.summaryCount,
   }), [actions.screenWidth, header.summaryCount]);
-  const contentLayout = useMemo(() => (expanded
-    ? buildMessageContentLayout({ screenWidth: actions.screenWidth })
-    : null), [actions.screenWidth, expanded]);
+  const contentLayout = useMemo(() => buildMessageContentLayout({ screenWidth: actions.screenWidth }), [actions.screenWidth]);
+  const liveActivities = useMemo(() => isStreaming && !lineMode
+    ? projectRecentMobileWorkActivities(item.children, true, 5) : [], [item.children, isStreaming, lineMode]);
+  // The outer group already occupies the reply column. Keep companion actions,
+  // but neither repeat its portrait nor indent nested work groups a second time.
+  const childActions = useMemo(() => actions.companion && actions.companionAvatar
+    ? { ...actions, companionAvatar: undefined } : actions, [actions]);
   const activityProjection = useMemo(
     () => (expanded
       ? projectMobileWorkActivities(item.children, isStreaming)
@@ -4755,12 +4772,17 @@ function WorkGroupCard({
   const pluginWork = actions.companionPluginWork?.get(item.key);
   // The Host projects running lines for this view; folded groups render them as they are,
   // without building the hidden activity tree or reading any work details.
-  const lines = isStreaming ? item.deferred?.lines : undefined;
   // Expanding keeps these lines on screen until the detail read has rows to replace them.
   const holdLines = expanded && item.deferred?.awaitingDetails === true && !!lines?.length;
   const lineRows = lines?.length ? (
     <View style={styles.workActivityStack}>
       {lines.map((line) => <WorkLineRow key={line.key} line={line} onPress={onToggle} />)}
+    </View>
+  ) : !lineMode && liveActivities.length ? (
+    <View style={styles.workActivityStack}>
+      {liveActivities.map((activity) => activity.kind === 'tool'
+        ? <WorkToolActivityRow key={activity.key} activity={activity} actions={toolActions} contentLayout={contentLayout} />
+        : <WorkLineRow key={activity.key} line={{ kind: 'thinking', key: activity.key, text: activity.content }} onPress={onToggle} />)}
     </View>
   ) : null;
   return (
@@ -4820,7 +4842,7 @@ function WorkGroupCard({
                   </View>
                 );
               }
-              return <RenderItemView key={child.key} item={child} actions={actions} />;
+              return <RenderItemView key={child.key} item={child} actions={childActions} />;
             })}
           </View>
         </Rail>
@@ -5295,7 +5317,8 @@ function MobileAgentSwitchCard({ data }: { data?: Record<string, unknown> }) {
   const handoff = typeof data?.handoff === 'string' ? data.handoff : '';
   const resumed = data?.resumed === true;
   // 远程 Agent 换了电脑:药丸说位置(「Agent 改到 X 运行」),否则仍是「已从 X 切换到 Y」。
-  const label = formatAgentSwitchLocationLabel(data, (key, options) => t(key, options))
+  const modelOnly = data?.modelOnly === true;
+  const label = modelOnly ? `${data?.fromModel ?? ''} → ${toModel}` : formatAgentSwitchLocationLabel(data, (key, options) => t(key, options))
     ?? t('message.renderer.agentSwitchLabel', { from, to });
 
   return (
@@ -5311,7 +5334,7 @@ function MobileAgentSwitchCard({ data }: { data?: Record<string, unknown> }) {
         >
           <ArrowLeftRight color={colors.textTertiary} size={iconSize.xs} strokeWidth={iconStroke.regular} />
           <Text style={styles.agentSwitchPillText} numberOfLines={1}>{label}</Text>
-          {toModel ? (
+          {toModel && !modelOnly ? (
             <>
               <Text style={styles.agentSwitchDot}>·</Text>
               <Text style={styles.agentSwitchModel} numberOfLines={1}>{toModel}</Text>

@@ -39,6 +39,8 @@ import { getDesktopNotificationsEnabled } from '../notificationService.js';
 import {
   applyPiImModelSelectionUnderLock,
   acquirePendingAgentSwitchForDirectSend,
+  preserveScheduledModelPreferencesUnderLock,
+  recordDispatchedModel,
   broadcastSessionCreated,
   cancelSchedulerAutoResume,
   enqueueSchedulerPrompt,
@@ -127,6 +129,8 @@ async function startSchedulerInternal(deps: StartSchedulerDeps): Promise<Schedul
     },
     onUndispatchedUserTurn: deps.onUndispatchedUserTurn,
     acquirePendingAgentSwitch: acquirePendingAgentSwitchForDirectSend,
+    preserveModelPreferences: preserveScheduledModelPreferencesUnderLock,
+    onModelDispatched: recordDispatchedModel,
     applyPiModelSelectionUnderLock: applyPiImModelSelectionUnderLock,
     resolveModelSelection: resolveScheduledModelSelectionLive,
     onSessionCreated: broadcastSessionCreated,

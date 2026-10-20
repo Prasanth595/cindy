@@ -3,6 +3,7 @@ import type { AgentKind } from '@cindy/maker-core';
 import { normalizeBotModelChain, type BotModelRoute } from '../../shared/botModelChain.js';
 
 interface RuntimeRoute {
+  agentDeviceId?: string | null;
   agentKind: AgentKind;
   model: string;
   providerId: string | null;
@@ -31,6 +32,7 @@ function configuredRoute(
   return {
     agentKind: primary.harness === 'claude' ? 'claude-code' : primary.harness,
     model: primary.model,
+    ...(primary.agentDeviceId ? { agentDeviceId: primary.agentDeviceId } : {}),
     providerId: primary.providerId,
     effort: primary.effort || null,
     fastMode: primary.fastMode,
@@ -39,7 +41,7 @@ function configuredRoute(
 
 function sameRoute(a: RuntimeRoute, b: RuntimeRoute): boolean {
   return a.agentKind === b.agentKind && a.model === b.model && a.providerId === b.providerId
-    && a.effort === b.effort && a.fastMode === b.fastMode;
+    && a.effort === b.effort && a.fastMode === b.fastMode && (a.agentDeviceId ?? null) === (b.agentDeviceId ?? null);
 }
 
 /** Apply the permanent profile through ordinary Session model/switch controls.

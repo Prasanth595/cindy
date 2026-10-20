@@ -60,6 +60,7 @@ import type {
   MobileGoalStatusPayload,
   MobileCodexRateLimitResetResult,
   MobileCodexRateLimitsResult,
+  CodexResetAutoUseSettings,
   MobileSessionAgentSwitchIntent,
   MobileSessionAgentSwitchResult,
   MobileVoiceDictionaryLearningRequest,
@@ -519,6 +520,8 @@ export interface MobileMakerTransport {
     modelVisibilityOverrides?: Record<string, boolean>;
   }>;
   getSession(sessionId: string): Promise<RemoteSession>;
+  createSideChat(sessionId: string): Promise<RemoteSession>;
+  listSideChats(sessionId: string): Promise<Array<{ id: string }>>;
   searchConversations(
     request: ConversationSearchRequest,
   ): Promise<ConversationSearchResponse>;
@@ -627,6 +630,7 @@ export interface MobileMakerTransport {
   ): Promise<{ totalValueMoney?: unknown; totalValueUsd?: number }>;
   /** Codex app-server authoritative windows plus banked reset credits and a bound reset offer. */
   getCodexRateLimits(providerId?: string): Promise<MobileCodexRateLimitsResult>;
+  setCodexResetAutoUse(patch: Partial<CodexResetAutoUseSettings> | null, accountKey: string, providerId?: string): Promise<MobileCodexRateLimitsResult>;
   /**
    * 被控端订阅账号余量快照(只读,cached-first;Claude 5h/周/分模型窗口、SuperGrok 周用量)。
    * 默认账号不传 providerId;独立账号的回包必须回显同一 providerId,否则按旧被控端处理。
@@ -1227,6 +1231,8 @@ export function createMobileMakerTransport({
         },
       ]),
     getSession: (sessionId) => call("local-db:sessions:get", [sessionId]),
+    createSideChat: (sessionId) => call("maker:side-chat:v1", [sessionId]),
+    listSideChats: (sessionId) => call("maker:side-chat:list:v1", [sessionId]),
     searchConversations: (request) =>
       call("local-db:conversations:search", [request]),
     patchSessionMeta: (sessionId, patch) =>
@@ -1356,6 +1362,12 @@ export function createMobileMakerTransport({
         result.providerId !== providerId
       )
         throw new Error("PRECONDITION_FAILED: Account scope unsupported");
+      return result;
+    },
+    setCodexResetAutoUse: async (patch, accountKey, providerId) => {
+      const result = await call<MobileCodexRateLimitsResult>('maker:usage:codex-reset-auto-use', [patch, accountKey, providerId ?? 'openai']);
+      if (result.providerId !== (providerId ?? 'openai') || result.autoUse?.accountKey !== accountKey)
+        throw new Error('PRECONDITION_FAILED: Account scope changed');
       return result;
     },
     getSubscriptionUsage: async (kind, providerId) => {

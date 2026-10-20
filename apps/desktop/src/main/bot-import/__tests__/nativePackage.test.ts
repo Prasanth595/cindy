@@ -84,8 +84,13 @@ it('rejects unbound extra files, even in a skill subtree', async () => {
 });
 it('refuses symlinks rather than following package paths outside the trusted directory', async () => {
   const dir = await fixture();
-  const file = path.join(dir, 'engineer-bot', version, 'knowledge/method.md');
-  await fs.unlink(file); await fs.symlink(path.join(root, 'engineer-bot', version, 'knowledge/method.md'), file);
+  // Unit: exercise the same lstat rejection with an unprivileged Windows junction,
+  // as in files.test.ts, rather than failing to create the fixture before validation.
+  const relative = process.platform === 'win32' ? 'knowledge' : path.join('knowledge', 'method.md');
+  const link = path.join(dir, 'engineer-bot', version, relative);
+  await fs.rm(link, { recursive: true });
+  await fs.symlink(path.join(root, 'engineer-bot', version, relative), link,
+    process.platform === 'win32' ? 'junction' : 'file');
   await expect(readNativeBotPackage(dir, 'engineer-bot')).rejects.toThrow('INVALID_PACKAGE');
 });
 it('rejects capability icons outside the shared whitelist', async () => {

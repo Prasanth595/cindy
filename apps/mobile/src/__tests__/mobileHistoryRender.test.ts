@@ -1,11 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
-import { HistoryViewController, projectHistoryView, type HistoryWorkSummary } from '@cindy/maker-shared/message-window';
+import { HistoryViewController, historyAfter, projectHistoryView, type HistoryWorkSummary } from '@cindy/maker-shared/message-window';
 import { buildMobileHistoryRenderItems, buildMobileSessionRenderWindow } from '../session/mobileHistoryRender';
 import { buildMobileMessageRenderItems, type MobileMessageRenderItem } from '../session/messageRenderModel';
 import type { RemoteMessage } from '../session/types';
 import { reconcileMobileMessageRenderItems } from '../session/messageRenderReconcile';
 import { buildMobileStreamingRenderWindow } from '../session/messageRenderStreamingCache';
 import { CONTINUE_AFTER_ERROR_PROMPT } from '@cindy/maker-shared/synthetic-trigger';
+import { companionConversationItems } from '../session/companionConversationPresentation';
 
 function row(index: number, role: RemoteMessage['role'], content: unknown, toolUseId: string | null = null): RemoteMessage {
   return { id: `id-${index}`, clientId: `client-${index}`, sessionId: 'session', role, content, toolUseId,
@@ -34,6 +35,42 @@ function harness(rows: RemoteMessage[], streaming = false, lazyDetails = false) 
 }
 
 describe('remote history preserves original folding', () => {
+  // Unit: a child inherits the transcript for the model but only its new turns
+  // belong on screen. Exercise real rendering with both eager and lazy work.
+  it.each([false, true])('hides inherited work and messages in a side chat (lazy=%s)', async (lazy) => {
+    const rows = [row(0, 'user', 'parent prompt'), thought(1), row(2, 'assistant', 'parent answer'),
+      row(3, 'user', 'child question'), thought(4), row(5, 'assistant', 'child answer')];
+    const { view } = harness(rows, false, lazy);
+    await view.refresh();
+    const result = buildMobileHistoryRenderItems({ view,
+      snapshot: historyAfter(view.getSnapshot(), Date.parse(rows[3].createdAt))!,
+      messages: [], streaming: false, sessionId: 'session', sessionSource: 'side-chat' });
+    expect(result.map(item => item.key)).toEqual(['message-client-3', 'work-client-4', 'message-client-5']);
+    expect(view.getSnapshot().items.length).toBeGreaterThan(3);
+    view.setActive(false);
+  });
+  // Regression: mobile's companion projection used to flatten away deferred
+  // work after history takeover. Verify the production controller's expansion
+  // still reads the original thinking/tool rows and never hides a provider final.
+  it('preserves companion replies and lazy work through history takeover and expansion', async () => {
+    const rows = [row(0, 'user', 'Work'),
+      { ...row(1, 'assistant', 'First reply'), agentMeta: { assistantPhase: 'final_answer' } },
+      thought(2), call(3), row(4, 'tool_result', 'Read result', 'tool-3')];
+    const { view, render, details } = harness(rows, true, true);
+    const raw = companionConversationItems(buildMobileMessageRenderItems(rows, { isSessionStreaming: true }));
+    await view.refresh();
+    const loaded = companionConversationItems(render());
+    expect(loaded.map(item => item.key)).toEqual(raw.map(item => item.key));
+    const work = loaded.find(item => item.type === 'work_group');
+    if (work?.type !== 'work_group') throw new Error('Missing companion work');
+    expect(details).not.toHaveBeenCalled();
+    work.deferred!.setVisible!(true, false);
+    await vi.waitFor(() => expect([...view.getSnapshot().details.values()].some(state => state.complete)).toBe(true));
+    expect(JSON.stringify(companionConversationItems(render()))).toContain('reasoning');
+    expect(companionConversationItems(render()).filter(item => item.type === 'message').map(item => item.message.body))
+      .toEqual(['Work', 'First reply']);
+    view.setActive(false);
+  });
   it.each([false, true])('keeps the earlier answer when recovery follows an unloaded gap (streaming=%s)', async (streaming) => {
     const rows = [row(0, 'user', 'Work'), thought(1), row(2, 'assistant', 'Earlier answer'),
       row(4000, 'user', JSON.stringify({ text: CONTINUE_AFTER_ERROR_PROMPT })),

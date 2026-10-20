@@ -309,6 +309,10 @@ Library 请求同时绑定迁移代次和安装批准，根解析、排队及开
   网络失败与安装包异常；服务端负责包体大小发布准入，客户端保留防御校验而不另设体积提示。
   实现与回归见 `apps/desktop/src/main/plugin-market/download.ts` 及同目录的
   `__tests__/download.test.ts`。
+- 同一安装流程的同步预检可以复用一次已装清单扫描；跨下载、用户确认或异步等待后，
+  目标安装、批准状态与锁内提交仍须重新核对，不能缓存批准结果。`inspect` 与安装可在
+  60 秒内复用一份不超过 8 MiB 的包解析结果，但每次必须稳定重读完整源文件并核对
+  SHA-256、宿主语言与信任表；返回的清单与缓存隔离，不能只凭路径或修改时间复用。
 - Host receipt 是安装事务和运行完整性的状态记录，不是一次交互式“能力授权”。合法的安装／更新
   事务（已按上文求得确认）写入 receipt，钉住 canonical manifest、trust、启停态与随机 `revision`；
   `ghostInstallApprovalToken()` 只是 Renderer 与 Main 之间防止并发漂移的前置条件，不是权限凭证。
@@ -833,3 +837,13 @@ visible 复用当前账号模型选择器的用户开关与目录默认值；隐
 不暴露 ProviderView、auth、账号 identity 或 endpoint；响应 no-store、仅 GET、无参数，
 检查插件在装启用与 owner 归属，异步返回前复核。旧 Host 404 时插件应明确提示升级。
 此端点不覆盖远程 SSH 模型，执行前仍需核验真实路由。
+
+
+### 同账号插件资料同步
+
+`deviceSync: true` 是独立自主能力；旧版插件的权限不变。Host 只允许 namespace 已确认、
+已装启用且批准有效的同一插件在同账号未撤权电脑之间交换有界密文，业务合并与持久化
+留在插件。每次请求和回执重新核验 owner、安装 revision、namespace 与 peer。
+不向插件提供设备私钥、账号 token 或其他插件数据，不为通道增加远程 Renderer IPC。
+接口和失败语义见 `FORGE_GUIDE` §4.10.2，协议与兼容边界见
+[协议兼容](protocol-compatibility.md#插件资料设备同步)。

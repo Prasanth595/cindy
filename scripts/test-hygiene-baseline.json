@@ -46,9 +46,6 @@
     "apps/desktop/src/main/__tests__/computerUsePluginIpc.test.ts": {
       "sourceReads": 11
     },
-    "apps/desktop/src/main/__tests__/controlProjects.test.ts": {
-      "sourceReads": 1
-    },
     "apps/desktop/src/main/__tests__/deviceLinkSettingsStore.test.ts": {
       "resetModules": 1
     },
@@ -847,7 +844,7 @@
       "resetModules": 1
     },
     "apps/desktop/src/renderer/features/bots/__tests__/botNavigation.test.ts": {
-      "sourceReads": 6
+      "sourceReads": 5
     },
     "apps/desktop/src/renderer/features/bots/__tests__/botStore.lifecycle.test.ts": {
       "resetModules": 2
@@ -1072,7 +1069,7 @@
       "realWaits": 2
     },
     "packages/maker-core/src/agents/pi/__tests__/cindySubagentRunner.test.ts": {
-      "realWaits": 2
+      "realWaits": 1
     },
     "packages/maker-core/src/agents/pi/__tests__/cindySubagentSource.test.ts": {
       "sourceReads": 3

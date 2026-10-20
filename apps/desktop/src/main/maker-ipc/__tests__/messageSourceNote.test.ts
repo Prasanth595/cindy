@@ -1,3 +1,4 @@
+import { bindTaskActionInput } from '../taskActionAuthorization.js';
 /**
  * `[消息来源]` 说明:只在最终派发处加一次(send 事务 / steer / 空闲直发),
  * 不进队列正文、落库内容与 getAgentFacingText。
@@ -178,9 +179,9 @@ describe('delivery-path wiring (source contract)', () => {
     const js = ts.transpileModule(`${builder}\nreturn buildSessionControlInputItem;`, {
       compilerOptions: { target: ts.ScriptTarget.ES2022 },
     }).outputText;
-    const build = new Function('buildCreateOptsForQueuedSession', 'permissionModeOrAsk', 'UI_ACTION_TRIGGER_PREFIX', 'HOST_ONLY_AGENT_PREFIX', js)(
+    const build = new Function('buildCreateOptsForQueuedSession', 'permissionModeOrAsk', 'UI_ACTION_TRIGGER_PREFIX', 'HOST_ONLY_AGENT_PREFIX', 'bindTaskActionInput', js)(
       async () => ({ model: 'fixture', workingDir: '/fixture', permissionMode: 'ask' }),
-      (mode: string) => mode, UI_ACTION_TRIGGER_PREFIX, HOST_ONLY_AGENT_PREFIX);
+      (mode: string) => mode, UI_ACTION_TRIGGER_PREFIX, HOST_ONLY_AGENT_PREFIX, bindTaskActionInput);
     const body = 'Delivery body';
     const message = kind === 'group-peer' ? '[Group source: Design (group-1); lane: lane-1]\n\n' + body : body;
     const persistedContent = kind === 'user' ? body : UI_ACTION_TRIGGER_PREFIX + body;

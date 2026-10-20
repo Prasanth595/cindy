@@ -400,6 +400,7 @@ export async function ensureBotGroupLaneSession(input: {
       agentKind: row.agentKind,
       remoteHostId: null,
       providerId: row.providerId ?? null,
+      agentDeviceId: row.agentDeviceId ?? null,
       extraDirs: row.extraDirs,
       source: row.source,
       createdAt: row.createdAt,
@@ -511,6 +512,7 @@ export async function ensureBotChannelLaneSession(input: {
         agentKind: row.agentKind,
         remoteHostId: null,
         providerId: row.providerId ?? null,
+        agentDeviceId: row.agentDeviceId ?? null,
         extraDirs: row.extraDirs,
         source: row.source,
         createdAt: row.createdAt,
@@ -678,6 +680,7 @@ function botSessionRouteFields(config: Record<string, unknown>, primaryRoute: Bo
           ? NEW_BOT_DEFAULT_PI_EFFORT
           : undefined),
     fastMode: primaryRoute?.fastMode ?? config.fastMode === true,
+    agentDeviceId: primaryRoute?.agentDeviceId ?? null,
     agentKind: botSessionAgentKind(primaryRoute ?? config),
     permissionMode: botSessionPermissionMode(config),
   };
@@ -1125,10 +1128,25 @@ async function readRemoteBotProfile(client: ReturnType<typeof getDbClient>, botI
   if (!isBotVisibleRemotely(profile)) return null;
   const canonicalResolution = await reconcileCanonicalLink(botId, client);
   owner.assertCurrent();
+  // Personal transcript links let search entries open the exact historical task.
+  // No group/channel lanes, prompts, credentials or runtime configuration.
+  const personalSessions = await db.select({
+    id: sessions.id,
+    role: botSessionLinks.role,
+    status: sessions.status,
+  }).from(botSessionLinks)
+    .innerJoin(sessions, eq(sessions.id, botSessionLinks.sessionId))
+    .where(and(
+      eq(botSessionLinks.botId, botId),
+      inArray(botSessionLinks.role, ['canonical', 'history']),
+      ne(sessions.status, 'deleted'),
+    ));
+  owner.assertCurrent();
   const { hiddenAt: _hiddenAt, ...visibleProfile } = profile;
   return {
     ...visibleProfile,
     canonicalSessionId: canonicalResolution.canonicalSessionId ?? undefined,
+    sessions: personalSessions,
   };
 }
 
@@ -2167,6 +2185,7 @@ export function registerBotIpc(): void {
           agentKind: insertRow.agentKind,
           remoteHostId: insertRow.remoteHostId ?? null,
           providerId: insertRow.providerId ?? null,
+          agentDeviceId: insertRow.agentDeviceId ?? null,
           extraDirs: insertRow.extraDirs,
           source: insertRow.source,
           createdAt: insertRow.createdAt,

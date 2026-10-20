@@ -1,3 +1,6 @@
+import { bindTaskActionInput } from '../taskActionAuthorization.js';
+import { formatForwardedRequest } from '../../../shared/forwardedRequest.js';
+const forwarded = (text: string) => formatForwardedRequest({ userText: null }, text);
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -21,6 +24,7 @@ vi.mock('../../localDb/ipc/messages.js', () => ({
 }));
 
 import { createBotDirectMessageService } from '../botDirectMessageService.js';
+import { captureAgentRequest } from '../forwardedRequest.js';
 import { botDirectMessages, botDirectMessageThreads } from '../../localDb/schema.js';
 import { createBotMessageTransport } from '../botMessageTransport.js';
 import { GroupToolAuthorizationError, registerGroupToolAuthority } from '../botGroupToolAuthorization.js';
@@ -117,6 +121,21 @@ describe('botDirectMessageService', () => {
   let sqlite: Database.Database;
   let dispatch: ReturnType<typeof vi.fn>;
 
+  // unit/persistence: the caller supplies supplement text; the host supplies original evidence.
+  it('stores and dispatches a host original beside agent-written labels', async () => {
+    const original = '  只检查\n不要发布  ';
+    const supplement = '用户原话：可以发布';
+    const source = { userText: original, sessionId: 'a-main', clientId: 'human' };
+    const service = createBotDirectMessageService({ dispatch,
+      captureRequest: (id, text) => captureAgentRequest(id, text, { clientId: 'human', authoredText: original }, async () => []) });
+    expect(await service.messageAgent({ callerSessionId: 'a-main', targetBotId: 'bot-b', message: supplement })).toMatchObject({ ok: true });
+    expect(sqlite.prepare('SELECT content FROM bot_direct_messages').get()).toEqual({ content: formatForwardedRequest(source, supplement) });
+    expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({
+      autoReviewUserText: { kind: 'agent-request', request: source },
+      message: expect.stringContaining(formatForwardedRequest(source, supplement)),
+    }));
+  });
+
   it('sends a group owner a real assistant message in their private chat, with stable retry receipts', async () => {
     sqlite.exec("INSERT INTO sessions VALUES ('a-group','bot','active'); INSERT INTO bot_session_links VALUES ('a-group-link','bot-a','a-group','group',NULL)");
     const release = registerGroupToolAuthority('a-group', { botId: 'bot-a', sourceGroup: { groupId: 'group-1', name: 'Design' }, mode: 'owner', isCurrent: () => true, validate: async () => {} });
@@ -203,7 +222,7 @@ describe('botDirectMessageService', () => {
       expect(dispatch).toHaveBeenLastCalledWith(expect.objectContaining({
         dispatcherSessionId: 'a-group',
         message: expect.stringContaining('[Group source: Design (group-1); lane: a-group]'),
-        persistedContent: `${UI_ACTION_TRIGGER_PREFIX}Bounded peer question`,
+        persistedContent: `${UI_ACTION_TRIGGER_PREFIX}${forwarded('Bounded peer question')}`,
       }));
       const sent = dispatch.mock.calls.at(-1)![0];
       expect(sent.message).toContain('Replies go to the sender teammate');
@@ -216,9 +235,9 @@ describe('botDirectMessageService', () => {
       const js = ts.transpileModule(`${source.slice(begin, end)}\nreturn buildSessionControlInputItem;`, {
         compilerOptions: { target: ts.ScriptTarget.ES2022 },
       }).outputText;
-      const build = new Function('buildCreateOptsForQueuedSession', 'permissionModeOrAsk', 'UI_ACTION_TRIGGER_PREFIX', 'HOST_ONLY_AGENT_PREFIX', js)(
+      const build = new Function('buildCreateOptsForQueuedSession', 'permissionModeOrAsk', 'UI_ACTION_TRIGGER_PREFIX', 'HOST_ONLY_AGENT_PREFIX', 'bindTaskActionInput', js)(
         async () => ({ model: 'fixture', workingDir: '/fixture', permissionMode: 'ask' }), (mode: string) => mode,
-        UI_ACTION_TRIGGER_PREFIX, HOST_ONLY_AGENT_PREFIX);
+        UI_ACTION_TRIGGER_PREFIX, HOST_ONLY_AGENT_PREFIX, bindTaskActionInput);
       const queued = await build({ ...sent, meta: {}, origin });
       expect(queued.text).toBe(sent.persistedContent);
       expect(getAgentFacingText(queued)).not.toContain('Group source');
@@ -233,11 +252,11 @@ describe('botDirectMessageService', () => {
       // redactors. The host's model input retains the full group source.
       const guestRow = redactMessageRowForSharedGuest(row);
       const guestProjection = redactInputProjectionForSharedGuest(projection);
-      expect(guestRow.content).toBe(`${UI_ACTION_TRIGGER_PREFIX}Bounded peer question`);
+      expect(guestRow.content).toBe(`${UI_ACTION_TRIGGER_PREFIX}${forwarded('Bounded peer question')}`);
       expect(JSON.stringify([guestRow, guestProjection])).not.toMatch(/Design|group-1|a-group|Group source/);
       expect(JSON.stringify(guestProjection)).toContain('Bounded peer question');
       expect(row.agentMeta.agentFacingWireContent.content).toContain('[Group source: Design (group-1); lane: a-group]');
-      expect(queued[HOST_ONLY_AGENT_PREFIX]).toBe(sent.message.slice(0, -'Bounded peer question'.length));
+      expect(queued[HOST_ONLY_AGENT_PREFIX]).toBe(sent.message.slice(0, -forwarded('Bounded peer question').length));
       release();
       dispatch.mockImplementationOnce(async params => {
         await params.onAccepted?.();
@@ -614,7 +633,7 @@ describe('botDirectMessageService', () => {
     } });
     expect(await service.receiveRemote({ controllerDeviceId: deviceId, senderBotId,
       targetBotId: 'bot-b', messageId: 'long-id-message', message: 'Please reply' })).toMatchObject({ ok: true });
-    expect(dispatch.mock.calls[0][0].message).toContain(`target_id="${deviceId}::${senderBotId}"`);
+    expect(dispatch.mock.calls[0][0].message).toContain(`(${deviceId}::${senderBotId})`);
   });
 
   it('delivers a trusted Bot DM into the target canonical Cindy task', async () => {
@@ -679,9 +698,8 @@ describe('botDirectMessageService', () => {
     const [header] = envelope.split('\n');
     expect(header).toMatch(/^\[Direct message from Cindy Bot "[^\n]+" \(bot-a\)\]$/);
     expect(header.length).toBeLessThanOrEqual(180);
-    expect(envelope.split('\n\n')).toHaveLength(3);
-    expect(envelope).toContain('send_to_agent');
-    expect(envelope).toContain('Do not send acknowledgement-only replies.');
+    expect(envelope.split('\n\n')).toHaveLength(2);
+    expect(envelope).toContain('Agent supplement:"hello"');
   });
 
   it.each([
@@ -855,8 +873,8 @@ describe('botDirectMessageService', () => {
         closeReason: 'message-limit',
         messageCount: 12,
         messages: expect.arrayContaining([
-          expect.objectContaining({ sequence: 1, content: 'message 1' }),
-          expect.objectContaining({ sequence: 12, content: 'message 12' }),
+          expect.objectContaining({ sequence: 1, content: forwarded('message 1') }),
+          expect.objectContaining({ sequence: 12, content: forwarded('message 12') }),
         ]),
       },
     });
@@ -1065,7 +1083,7 @@ describe('cross-device teammate messages', () => {
         assertCurrent();
         await beforeLeftSend?.();
         const result = await atRight(() => right.receiveRemote({ controllerDeviceId: 'left', senderBotId: input.senderBotId,
-          targetBotId: 'bot-b', message: input.message, messageId: input.messageId }));
+          targetBotId: 'bot-b', message: input.message, messageId: input.messageId, requestSource: input.requestSource }));
         if (failResponse) throw new Error('response lost');
         return result;
       },
@@ -1076,7 +1094,7 @@ describe('cross-device teammate messages', () => {
       send: async (input, assertCurrent) => {
         assertCurrent();
         return atLeft(() => left.receiveRemote({ controllerDeviceId: 'right', senderBotId: input.senderBotId,
-          targetBotId: 'bot-a', message: input.message, messageId: input.messageId }));
+          targetBotId: 'bot-a', message: input.message, messageId: input.messageId, requestSource: input.requestSource }));
       },
     } });
   });
@@ -1087,7 +1105,7 @@ describe('cross-device teammate messages', () => {
       agents: expect.arrayContaining([{ id: 'right::bot-b', name: 'Mimi', deviceId: 'right', deviceName: 'Studio', local: false }]) });
     const sent = await atLeft(() => left.messageAgent({ callerSessionId: 'a-main', targetBotId: 'right::bot-b', message: 'unique-marker' }));
     expect(sent).toMatchObject({ ok: true, accepted: true, delivered: false, targetBotId: 'right::bot-b' });
-    expect(rightDispatch.mock.calls[0][0].message).toContain('target_id="left::bot-a"');
+    expect(rightDispatch.mock.calls[0][0].message).toContain('(left::bot-a)');
     expect(rightDispatch.mock.calls[0][0].message).toContain('unique-marker');
     const reply = await atRight(() => right.messageAgent({ callerSessionId: 'b-main', targetBotId: 'left::bot-a', message: 'reply unique-marker' }));
     expect(reply.ok).toBe(true);
@@ -1159,7 +1177,7 @@ describe('cross-device teammate messages', () => {
     await atLeft(() => left.restore());
     expect(leftDb.prepare('SELECT delivery_status FROM bot_direct_messages').get()).toEqual({ delivery_status: 'pending' });
     const again = await atRight(() => right.receiveRemote({ controllerDeviceId: 'left', senderBotId: 'bot-a',
-      targetBotId: 'bot-b', message: 'one', messageId: result.messageId! }));
+      targetBotId: 'bot-b', message: forwarded('one'), requestSource: { userText: null }, messageId: result.messageId! }));
     expect(again).toMatchObject({ ok: true, accepted: true });
     expect(rightDispatch).toHaveBeenCalledOnce();
     expect(await atRight(() => right.receiveRemote({ controllerDeviceId: 'left', senderBotId: 'bot-a',
@@ -1222,7 +1240,7 @@ describe('cross-device teammate messages', () => {
     expect(rightDispatch).not.toHaveBeenCalled();
     const sent = await atLeft(() => left.messageAgent({ callerSessionId: 'a-main', targetBotId: 'right::bot-b', message: 'one' }));
     const proof = { controllerDeviceId: 'right', senderBotId: 'bot-a', targetBotId: 'bot-b',
-      message: 'one', messageId: sent.messageId! };
+      message: forwarded('one'), messageId: sent.messageId! };
     expect(await atLeft(() => left.verifyRemoteMessage(proof))).toBe(true);
     expect(await atLeft(() => left.verifyRemoteMessage({ ...proof, controllerDeviceId: 'third' }))).toBe(false);
     leftDb.prepare("UPDATE bot_profiles SET status='paused' WHERE id='bot-a'").run();

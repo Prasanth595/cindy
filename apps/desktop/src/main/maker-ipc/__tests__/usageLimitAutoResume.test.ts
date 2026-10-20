@@ -73,6 +73,18 @@ describe('isAccountUsageLimitError', () => {
 });
 
 describe('UsageLimitAutoResume', () => {
+  it('resumes only matching armed waits after a reset and respects user cancellation', async () => {
+    const h = harness();
+    h.guard.onTurnError('matching', LIMIT); h.guard.onTurnError('other', LIMIT);
+    await h.flush();
+    await h.guard.resumeRestored(async id => id === 'matching');
+    expect(h.deps.continueSession).toHaveBeenCalledOnce();
+    expect(vi.mocked(h.deps.continueSession).mock.calls[0][0]).toBe('matching');
+    h.current.clear();
+    await h.guard.resumeRestored(async () => true);
+    expect(h.deps.continueSession).toHaveBeenCalledOnce();
+  });
+
   it('arms a wait after the reset plus buffer and continues the session when it fires', async () => {
     const h = harness();
     h.guard.onTurnError('s1', LIMIT);

@@ -18,6 +18,7 @@ const plugin: TabKindPlugin<BotWorkbenchTabState> = {
   menu: {
     kind: 'bot-workbench',
     labelKey: 'bots.workbench.title',
+    descriptionKey: 'rightSidebar.tabs.descriptions.workbench',
     icon: LayoutGrid,
     order: 0,
     enabled: true,

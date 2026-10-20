@@ -37,7 +37,7 @@ import {
 } from './outbound.js';
 import { buildMarkdownCardV2, buildMixedMarkdownCardV2 } from './cards.js';
 import { resolveFeishuMediaUrl } from './mediaCache.js';
-import { getHost, getLog } from './moduleScope.js';
+import { bindScope, getHost, getLog, getScope } from './moduleScope.js';
 import { messages as transportMessages } from './messages.js';
 import type { StreamingTextHandle } from '../types.js';
 // xdt-* 引用解析抽到渠道无关模块(slack streamingText 共用同一套语义)
@@ -129,6 +129,13 @@ class FeishuStreamingTextHandle implements StreamingTextHandle {
     // to it (otherwise the placeholder permanently prefixes the message).
     this.buffer = '';
     this.flushed = initial;
+    // The handle outlives FeishuIM.startStreamingText's ALS call. Agent events
+    // may arrive from outside that scope (or another bot's), so bind both I/O
+    // paths to the connection that created the card, including timer callbacks,
+    // media uploads, empty-reply recalls and delivery-failure fallbacks.
+    const scope = getScope();
+    this.flushIntermediate = bindScope(scope, this.flushIntermediate.bind(this));
+    this.doFinalize = bindScope(scope, this.doFinalize.bind(this));
   }
 
   append(delta: string): void {

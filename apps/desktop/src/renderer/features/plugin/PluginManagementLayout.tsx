@@ -118,6 +118,8 @@ export function PluginManagementHeader({
   const navigate = useNavigate();
   const frameRef = useRef<HTMLDivElement | null>(null);
   const [stacked, setStacked] = useState(false);
+  const composingRef = useRef(false);
+  const [compositionQuery, setCompositionQuery] = useState<string | null>(null);
   const searchable = query !== undefined && onQueryChange !== undefined;
   const searchInputId = `plugin-management-${activeTab}-search`;
   const resolvedSearchPlaceholder =
@@ -194,11 +196,31 @@ export function PluginManagementHeader({
               id={searchInputId}
               type="text"
               inputMode="search"
-              value={query}
-              onChange={(event) => onQueryChange(event.target.value)}
+              value={compositionQuery ?? query}
+              onCompositionStart={(event) => {
+                composingRef.current = true;
+                setCompositionQuery(event.currentTarget.value);
+              }}
+              onCompositionEnd={(event) => {
+                composingRef.current = false;
+                setCompositionQuery(null);
+                onQueryChange(event.currentTarget.value);
+              }}
+              onChange={(event) => {
+                // Skill search updates router state; keep IME drafts local until committed.
+                if (composingRef.current) {
+                  setCompositionQuery(event.target.value);
+                } else {
+                  onQueryChange(event.target.value);
+                }
+              }}
               onKeyDown={(event) => {
-                if (event.nativeEvent.isComposing) return;
                 if (event.key !== 'Escape') return;
+                if (composingRef.current || event.nativeEvent.isComposing) {
+                  // Keep Settings from blurring the field; IME still handles Escape.
+                  event.stopPropagation();
+                  return;
+                }
                 // 认领这一下 Esc：外层（设置页）不再接着失焦或退出。
                 event.preventDefault();
                 // 按住不放的自动连发不算新的一下：清空后不能接着失焦。

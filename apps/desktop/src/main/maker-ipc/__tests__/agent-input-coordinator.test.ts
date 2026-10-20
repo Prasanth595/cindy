@@ -1,3 +1,4 @@
+import { FORWARDED_REQUEST_RECEIPT, formatForwardedRequest } from '../../../shared/forwardedRequest.js';
 import { BOT_GROUP_CLIENT_ID } from '../../../shared/botGroupChat.js';
 import { authorizeGroupTool, registerGroupToolAuthority } from '../botGroupToolAuthorization.js';
 import { readFileSync } from 'node:fs';
@@ -7,6 +8,7 @@ import { AUTO_REVIEW_SOURCE_CONTENT, AUTO_REVIEW_USER_INTENT, appendAutoReviewUs
 import { AUTO_REVIEW_DELEGATED_CONTINUATION, restoreAutoReviewUserIntent, type AutoReviewHistoryMessage } from '../autoReviewUserIntent.js';
 import { createPluginTaskReviewResolver, type PluginReviewSnapshot } from '../pluginTaskReviewContext.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { admitTaskAction, bindTaskActionInput, taskActionInputGuard } from '../taskActionAuthorization.js';
 import { AgentInputCoordinator } from '../agent-input-coordinator.js';
 import { MCP_APP_MESSAGE_CLIENT_PREFIX, MCP_APP_MESSAGE_GUARD } from '../../mcp-apps/message.js';
 import { hasAcceptedUserTaskInput } from '../pluginTaskInput.js';
@@ -71,6 +73,87 @@ const mocks = vi.hoisted(() => {
     touchUserSendInDb: vi.fn(async () => {}),
     logger,
   };
+});
+
+describe('task action dispatch authorization', () => {
+  // Unit regression through the production coordinator: revocation/restore cannot
+  // deliver an automatic message, while the following owner input still runs.
+  it.each(['revoked', 'restored'] as const)('discards %s automatic input without blocking owner input', async mode => {
+    const h = createHarness(), sid = 'task-action-target';
+    let current = true;
+    const dispatched = vi.fn();
+    h.sendToAgent.mockImplementation(async (_id, _message, _opts, sendOpts) => {
+      await sendOpts[MCP_APP_MESSAGE_GUARD]?.();
+      dispatched();
+      return sendSuccess();
+    });
+    await h.coordinator.ensureQueueRestored(sid);
+    h.setRunning(true);
+    const queued = makeItem('automatic', 'Continue');
+    bindTaskActionInput(sid, queued, async () => { if (!current) throw new Error('revoked'); });
+    h.coordinator.enqueue(sid, mode === 'restored' ? JSON.parse(JSON.stringify(queued)) : queued);
+    h.coordinator.enqueue(sid, makeItem('owner', 'Owner message'));
+    await flush();
+    expect(dispatched).not.toHaveBeenCalled();
+    current = false;
+    h.setRunning(false);
+    h.coordinator.wakeSession(sid, 'idle');
+    await vi.waitFor(() => expect(dispatched).toHaveBeenCalledOnce());
+    await flush();
+    expect(h.sendToAgent.mock.calls[1]![3].persistUserMessage?.clientId).toBe('owner');
+    expect(h.onDiscardedQueuedMessage).toHaveBeenCalledWith(sid, expect.objectContaining({ clientId: 'automatic' }));
+    expect(h.coordinator.getProjection(sid).pendingQueue).toEqual([]);
+  });
+});
+
+// #6399 queue-edit regression: run the actual trusted IPC finalizer plus the
+// coordinator edit/dispatch path. The old immutable body discarded owner edits.
+// Guard tier wiring is exercised here alongside the existing coordinator cases.
+describe('trusted owner queue edits', () => {
+  const registerSource = readFileSync(resolve(__dirname, '..', 'register.ts'), 'utf8');
+  const start = registerSource.indexOf('  function stampQueuedEditProvenance(');
+  const end = registerSource.indexOf('  ipcMain.handle(', start);
+  const loadFinalizer = new Function('inputCoordinator', 'getDeviceLinkInvokeContext',
+    'captureDataOwnerBroadcastScope', 'isDataOwnerBroadcastScopeCurrent',
+    'bindTaskActionInput', 'taskActionInputGuard', 'stampTrustedDeviceLinkQueuedOrigin',
+    'stampTrustedDesktopQueuedOrigin', 'stampMobileClientOrigin',
+    transpileModule(registerSource.slice(start, end) + '\nreturn stampQueuedEditProvenance;',
+      { compilerOptions: { target: ScriptTarget.ES2022 } }).outputText);
+
+  it.each(['text', 'content', 'guest'] as const)('handles a %s edit without inheriting stale body authorization', async mode => {
+    const h = createHarness(), sid = 'edited-target';
+    const finalized = loadFinalizer(h.coordinator, () => mode === 'guest' ? { sharedTask: {} } : null,
+      () => 'account', () => true, bindTaskActionInput, taskActionInputGuard,
+      stampTrustedDeviceLinkQueuedOrigin, stampTrustedDesktopQueuedOrigin, stampMobileClientOrigin);
+    const dispatched = vi.fn();
+    h.sendToAgent.mockImplementation(async (_id, message, _opts, sendOpts) => {
+      await sendOpts[MCP_APP_MESSAGE_GUARD]?.();
+      dispatched(message);
+      return sendSuccess();
+    });
+    await h.coordinator.ensureQueueRestored(sid);
+    h.setRunning(true);
+    const queued = { ...makeItem('edited', 'Original body'), origin: {
+      kind: 'session' as const, senderSessionId: 'sender', senderBotId: 'bot', displayText: 'Original body',
+    } };
+    bindTaskActionInput(sid, queued, async () => {});
+    h.coordinator.enqueue(sid, queued);
+    await flush();
+    const finalize = (item: AgentInputQueuedMessage) => finalized(sid, item, mode === 'guest', { isMobile: false });
+    if (mode === 'content') h.coordinator.updateContentWithResult(sid, 'edited', makeItem('edited', 'Edited body'), finalize);
+    else h.coordinator.updateText(sid, 'edited', 'Edited body', undefined, undefined, false, finalize);
+    expect(h.coordinator.getProjection(sid).pendingQueue[0]?.origin).toMatchObject({ kind: 'session', senderSessionId: 'sender' });
+    h.setRunning(false);
+    h.coordinator.wakeSession(sid, 'idle');
+    if (mode === 'guest') {
+      await vi.waitFor(() => expect(h.onDiscardedQueuedMessage).toHaveBeenCalled());
+      expect(dispatched).not.toHaveBeenCalled();
+    } else {
+      await vi.waitFor(() => expect(dispatched).toHaveBeenCalledOnce());
+      expect(JSON.stringify(dispatched.mock.calls)).toContain('Edited body');
+      expect(h.onDiscardedQueuedMessage).not.toHaveBeenCalled();
+    }
+  });
 });
 
 describe('MCP App queued message grants', () => {
@@ -1558,6 +1641,50 @@ describe('agent-chosen control steering', () => {
   function expected(h: ReturnType<typeof createHarness>) {
     return { session: h.getTurnSessionIdentity(), turnGeneration: 0 };
   }
+  // #6399, unit: real coordinator + action admission. Existing tests covered turn
+  // changes, not a current tool's revoked authority over an otherwise valid row.
+  it.each([
+    ['new', 'screening'], ['queued', 'screening'],
+    ['new', 'provider'], ['queued', 'provider'],
+  ] as const)(
+    'preserves input and never accepts a %s control steer revoked during %s',
+    async (source, boundary) => {
+      const h = createHarness();
+      h.setRunning(true);
+      await h.coordinator.ensureQueueRestored(sid);
+      const item = makeItem('report', 'worker result');
+      if (source === 'queued') h.coordinator.enqueue(sid, item);
+      let current = true;
+      const decision = await admitTaskAction(
+        { server: 'cindy_helper', sessionId: 'caller', tool: 'steer_session', args: {} },
+        {
+          key: 'input', ownerInput: true, delegated: false,
+          assertCurrent: async () => {
+            if (!current) throw new Error('TASK_ACTION_AUTHORIZATION_EXPIRED');
+          },
+        },
+      );
+      if (!decision.ok || !decision.run) throw new Error('missing action scope');
+      const accepted = vi.fn();
+      h.setScreenUserMessage(async () => {
+        if (boundary === 'screening') current = false;
+        return { action: 'allow' };
+      });
+      h.steerToAgent.mockImplementationOnce(async (_id, _message, sendOpts) => {
+        current = false;
+        await sendOpts?.[MCP_APP_MESSAGE_GUARD]?.();
+        accepted();
+      });
+      await expect(decision.run(() => h.coordinator.steerControlInput(
+        sid, source === 'queued' ? { queuedClientId: item.clientId } : { item }, expected(h),
+      ))).rejects.toThrow('TASK_ACTION_AUTHORIZATION_EXPIRED');
+      if (boundary === 'screening') expect(h.steerToAgent).not.toHaveBeenCalled();
+      expect(accepted).not.toHaveBeenCalled();
+      expect(h.sendToAgent).not.toHaveBeenCalled();
+      expect(h.onSteerAccepted).not.toHaveBeenCalled();
+      expect(h.coordinator.hasPendingQueueItem(sid, item.clientId)).toBe(source === 'queued');
+    },
+  );
   it('joins a running turn even though ordinary new turns must queue', async () => {
     const h = createHarness();
     h.setRunning(true);
@@ -2035,6 +2162,7 @@ describe('AgentInputCoordinator send transaction', () => {
 
   it.each([
     { source: {kind: 'delegated-continuation'} as const, authoredText: undefined },
+    { source: {kind: 'agent-request', request: {userText: '只检查', sessionId: 'owner', clientId: 'original'}} as const, authoredText: undefined },
     { source: 'My next task', authoredText: 'My next task' },
   ])('exposes only human text as input takeover evidence: $source', async ({source, authoredText}) => {
     const h = createHarness(), sid = 'typed-input-provenance';
@@ -2045,7 +2173,11 @@ describe('AgentInputCoordinator send transaction', () => {
     const db = { get drizzle(): never { throw new Error('Current Host source must not borrow older transcript'); } };
     await expect(hasAcceptedUserTaskInput(db, sid, h.coordinator.getAcceptedInputProvenance(sid)))
       .resolves.toBe(typeof source === 'string');
-    expect(h.sendToAgent.mock.calls[0]?.[3][AUTO_REVIEW_DELEGATED_CONTINUATION]).toBe(typeof source === 'object' ? true : undefined);
+    expect(h.sendToAgent.mock.calls[0]?.[3][AUTO_REVIEW_DELEGATED_CONTINUATION]).toBe(typeof source === 'object' && source.kind === 'delegated-continuation' ? true : undefined);
+    if (typeof source === 'object' && source.kind === 'agent-request') {
+      expect(h.coordinator.getAcceptedInputProvenance(sid)?.delegatedRequest).toEqual(source.request);
+      expect(h.sendToAgent.mock.calls[0]?.[3].persistUserMessage?.[FORWARDED_REQUEST_RECEIPT]).toEqual(source);
+    }
   });
 
   it('keeps a Worker Lead directive distinct from accepted human input', async () => {
@@ -12203,7 +12335,7 @@ describe('AgentInputCoordinator replaceQueuedMessage(Orca lead 排队消息修�
 
       expect(h.sendToAgent.mock.calls[1]?.[1]).toEqual({
         type: 'user',
-        content: replacement,
+        content: formatForwardedRequest({ userText: null }, replacement),
       });
       expect(
         mocks.createMessage.mock.calls.find(
@@ -12212,7 +12344,7 @@ describe('AgentInputCoordinator replaceQueuedMessage(Orca lead 排队消息修�
       ).toMatchObject({
         clientId: queued.clientId,
         role: 'user',
-        content: replacement,
+        content: formatForwardedRequest({ userText: null }, replacement),
       });
     },
   );

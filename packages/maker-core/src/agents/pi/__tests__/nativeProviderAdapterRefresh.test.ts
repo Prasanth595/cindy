@@ -4,6 +4,8 @@ import { describe, expect, it } from 'vitest';
 import { CINDY_BRIDGE_EXTENSION_SOURCE } from '../cindy-bridge-source.js';
 import { PI_NATIVE_PROVIDER_ADAPTER_SOURCE } from '../native-provider-adapter-source.js';
 
+type RegisteredProvider = { id: string; auth: { apiKey?: unknown; oauth?: unknown }; getModels: () => unknown[] };
+
 type Alias = { id: string; name: string; provider: string; keyEnv?: string };
 
 function loadAdapter(initialAliases: Alias[] = []) {
@@ -13,11 +15,17 @@ function loadAdapter(initialAliases: Alias[] = []) {
     CINDY_PI_OPENAI_PROXY_KEY: 'old-proxy-secret',
   };
   const handlers = new Map<string, (event: unknown, ctx: unknown) => void>();
-  const providers = new Map<string, unknown>();
+  const providers = new Map<string, RegisteredProvider>();
   const actions: string[] = [];
   const pi = {
     on(name: string, handler: (event: unknown, ctx: unknown) => void) { handlers.set(name, handler); },
-    registerProvider(provider: { id: string }) { actions.push(`register:${provider.id}`); providers.set(provider.id, provider); },
+    registerProvider(provider: RegisteredProvider) {
+      // Pi's native object registration dereferences auth even for host-authenticated proxies.
+      void provider.auth.oauth;
+      void provider.auth.apiKey;
+      actions.push(`register:${provider.id}`);
+      providers.set(provider.id, provider);
+    },
     unregisterProvider(id: string) { actions.push(`unregister:${id}`); providers.delete(id); },
   };
   let models: Array<{ provider: string; id: string }> = initialAliases.map((alias) => ({ provider: alias.id, id: 'old' }));
@@ -41,7 +49,7 @@ function loadAdapter(initialAliases: Alias[] = []) {
     process: { env },
     __loadPiAi: async (name: string) => name.endsWith('/compat')
       ? { getApiProvider: () => undefined }
-      : { lazyStream: () => undefined, envApiKeyAuth: () => undefined },
+      : { lazyStream: () => undefined, envApiKeyAuth: (label: string, envVars: string[]) => ({ label, envVars }) },
   };
   runInNewContext(compiled, sandbox);
   const adapter = sandbox.adapter as {
@@ -79,7 +87,7 @@ describe('Cindy native provider refresh bridge', () => {
     const h = loadAdapter([old]);
     const controller = await h.adapter.registerCindyNativeProviderAdapters(h.pi);
     h.handlers.get('session_start')?.({}, h.ctx);
-    h.providers.set('package-owned', { id: 'package-owned' });
+    h.providers.set('package-owned', { id: 'package-owned', auth: {}, getModels: () => [] });
     h.setModels([{ provider: 'next', id: 'new-model' }]);
     const secrets = new Set(['CINDY_PI_KEY_OLD']);
     await controller.refresh({ nonce: 'abcdefghijklmnop', env: { CINDY_PI_KEY_NEXT: 'next-secret' }, aliases: [next] }, h.ctx, secrets);
@@ -89,6 +97,33 @@ describe('Cindy native provider refresh bridge', () => {
     expect(h.env.CINDY_PI_KEY_NEXT).toBe('next-secret');
     expect([...secrets]).toEqual(['CINDY_PI_KEY_NEXT']);
     expect(h.handlers.size).toBe(1);
+  });
+
+  // #6454: existing refresh coverage only used API-key aliases. Execute the generated
+  // production extension (unit tier) with the minimal missing-keyEnv input, then
+  // transition both ways without losing the refreshed model or key resolver.
+  it('registers proxy-authenticated providers at startup and after changing auth routes', async () => {
+    const proxy = { id: 'minimax-oauth', name: 'MiniMax', provider: 'minimax-cn' };
+    const keyed = { id: 'minimax-key', name: 'MiniMax key', provider: 'minimax-cn', keyEnv: 'CINDY_PI_KEY_NEXT' };
+    const h = loadAdapter([proxy]);
+    const controller = await h.adapter.registerCindyNativeProviderAdapters(h.pi);
+    h.handlers.get('session_start')!({}, h.ctx);
+    expect(h.providers.get(proxy.id)?.auth).toEqual({});
+    expect(h.providers.get(proxy.id)?.getModels()).toEqual([{ provider: proxy.id, id: 'old' }]);
+
+    const secrets = new Set<string>();
+    h.setModels([{ provider: keyed.id, id: 'keyed-model' }]);
+    await controller.refresh({ nonce: 'abcdefghijklmnop', env: { CINDY_PI_KEY_NEXT: 'fixture-key' }, aliases: [keyed] }, h.ctx, secrets);
+    expect(h.providers.has(proxy.id)).toBe(false);
+    expect(h.providers.get(keyed.id)?.auth.apiKey).toEqual({ label: 'API key', envVars: ['CINDY_PI_KEY_NEXT'] });
+
+    h.setModels([{ provider: proxy.id, id: 'MiniMax-M3' }]);
+    await controller.refresh({ nonce: 'qrstuvwxyzabcdef', env: {}, aliases: [proxy] }, h.ctx, secrets);
+    expect([...h.providers.keys()]).toEqual([proxy.id]);
+    expect(h.providers.get(proxy.id)?.auth).toEqual({});
+    expect(h.providers.get(proxy.id)?.getModels()).toEqual([{ provider: proxy.id, id: 'MiniMax-M3' }]);
+    expect(h.env.CINDY_PI_KEY_NEXT).toBeUndefined();
+    expect(secrets.size).toBe(0);
   });
 
   it.each([

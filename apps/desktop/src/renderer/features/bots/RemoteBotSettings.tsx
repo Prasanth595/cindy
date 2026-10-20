@@ -1,3 +1,4 @@
+import { serializeModelRoutes } from '@cindy/maker-shared/model-route';
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react';
 import { ArrowLeft, ChevronRight } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -550,7 +551,7 @@ function RemoteBotSettingsContent({ bot, beforeCloseRef, onDeleted, initialPage 
             if (!disabled && !revisionPendingRef.current)
               setDraft((previous) => ({
                 ...previous,
-                modelChain: JSON.stringify(chain),
+                modelChain: serializeModelRoutes(chain),
                 followsDefault: false,
               }));
           }}
@@ -562,7 +563,7 @@ function RemoteBotSettingsContent({ bot, beforeCloseRef, onDeleted, initialPage 
             onChange={route => {
               if (!disabled && !revisionPendingRef.current) setDraft(previous => ({ ...previous,
                 taskFollowsPrimary: route === null,
-                taskModel: JSON.stringify(route ? [route] : readRemoteBotModelChain(previous.modelChain).slice(0, 1)),
+                taskModel: serializeModelRoutes(route ? [route] : readRemoteBotModelChain(previous.modelChain).slice(0, 1)),
               }));
             }} />}
         </>

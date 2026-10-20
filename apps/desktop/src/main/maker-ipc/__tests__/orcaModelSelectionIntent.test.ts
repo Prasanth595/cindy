@@ -6,6 +6,7 @@ import { parseOrcaRemoteLead } from '../../../shared/orcaRemoteWorker';
 import { acquireSendToSessionLock, withSendToSessionLock } from '../sendToSessionLock';
 import { effectiveSourceIdForModel, findCatalogModel, type ProviderView } from '@cindy/model-providers';
 import { resolveSessionRuntimeAxes } from '../sessionRuntimeControl';
+import { parseScheduledModelBaseline } from '../../../shared/scheduledModelBaseline';
 
 // Execute the actual picker admission branches (local and agent-device), with
 // everything after admission represented by applyLive. No Electron bootstrap.
@@ -19,7 +20,11 @@ let directSendAdapter = '';
 let archivedAdmission = '';
 let terminalGuard = '';
 let stageAxisAdapter = '';
+let scheduledAxisAdapter = '';
 function visit(node: ts.Node) {
+  if (ts.isVariableDeclaration(node) && node.name.getText(source) === 'updateSavedScheduledAxis') {
+    scheduledAxisAdapter = node.initializer!.getText(source);
+  }
   if (ts.isVariableDeclaration(node) && node.name.getText(source) === 'stagePendingUserRuntimeAxis') {
     stageAxisAdapter = node.initializer!.getText(source);
   }
@@ -73,6 +78,24 @@ function axisCatalogBindings(row: object = {}) {
     throwIpcError: (code: string, message: string) => { throw new Error(`[${code}] ${message}`); },
   };
 }
+
+describe('owner settings during an automatic turn', () => {
+  it.each([{ effort: 'high' as const }, { fastMode: true }])('saves %j against the owner model', async (patch) => {
+    const baseline = { scopeId: 'run', agentKind: 'codex', model: 'target', providerId: 'provider',
+      effort: 'low', fastMode: false };
+    const updateScheduledPreference = vi.fn(async () => {});
+    const assertCurrent = vi.fn();
+    const query = { from: () => query, where: () => query, limit: async () => [{ baseline: JSON.stringify(baseline) }] };
+    const update = compile(scheduledAxisAdapter, {
+      ...axisCatalogBindings(), parseScheduledModelBaseline,
+      getDbClient: () => ({ drizzle: { select: () => query } }),
+      sessions: {}, eq: vi.fn(), updateScheduledPreference,
+    });
+    expect(await update('s1', patch, assertCurrent)).toBe(true);
+    expect(assertCurrent).toHaveBeenCalledOnce();
+    expect(updateScheduledPreference).toHaveBeenCalledExactlyOnceWith('s1', patch);
+  });
+});
 
 // Unit: stale UI axes must be admitted against the pending execution route,
 // before publishing or persisting a recovery tail. Previous send tests only
@@ -159,6 +182,7 @@ describe('complete selection commit boundaries', () => {
     const deps = { pendingSwitches: pending, getLiveSession: () => null, selectSameAgentModel: selected,
       bootstrapSwitchedSession: vi.fn(), log: { warn: vi.fn() } } as unknown as MakerSessionAgentSwitchHandlerDeps;
     const directSend = compile(directSendAdapter, { agentSwitchPending: pending, acquireSendToSessionLock,
+      scheduledModelScope: { restore: vi.fn(async () => {}) },
       restoreArchivedSessionForSend: async () => { status = 'active'; },
       reconcileBotModelRoute: vi.fn(), applyPendingAgentSwitchIfIdle, isUserPendingAgentSwitchIntent,
       agentSwitchDeps: deps, contextOverflowRolloverHolder: null });
@@ -255,6 +279,7 @@ describe('Orca model-only picker intent admission', () => {
       bootstrapSwitchedSession: vi.fn(), withCloseSuppressed: (_id: string, fn: () => Promise<unknown>) => fn(),
       log: { info: vi.fn(), warn: vi.fn() } } as unknown as MakerSessionAgentSwitchHandlerDeps;
     const directSend = compile(directSendAdapter, {
+      scheduledModelScope: { restore: vi.fn(async () => {}) },
       agentSwitchPending: pending, restoreArchivedSessionForSend: restore,
       acquireSendToSessionLock: acquire, reconcileBotModelRoute: vi.fn(),
       applyPendingAgentSwitchIfIdle, isUserPendingAgentSwitchIntent, agentSwitchDeps: deps, contextOverflowRolloverHolder: null,

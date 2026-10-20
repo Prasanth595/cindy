@@ -1532,8 +1532,9 @@ export class PluginMarketService {
     if (plugin.currentRelease.id !== options.expectedReleaseId) {
       throwIpcError('PRECONDITION_FAILED', 'Plugin release changed after selection');
     }
-    const target = organizationDeliveryTarget(plugin, this.localInstallSnapshot(ledger), owner);
-    const existing = installedGhostMatchingMarketPlugin(target);
+    const local = this.localInstallSnapshot(ledger, undefined, plugin.ghostId);
+    const target = organizationDeliveryTarget(plugin, local, owner);
+    const existing = snapshotGhost(local, target);
     return this.installDetail(
       plugin,
       {
@@ -1557,6 +1558,7 @@ export class PluginMarketService {
       },
       owner,
       ledger,
+      local,
     );
   }
 
@@ -2265,10 +2267,13 @@ export class PluginMarketService {
     },
     owner = captureMarketOwner(),
     ledger = this.ledgerForOwner(owner),
+    // Only reuse the caller's uninterrupted preflight. After download/consent,
+    // the live target and locked commit continue to read fresh installation facts.
+    preflight?: LocalInstallSnapshot,
   ): Promise<PluginMarketInstallResult> {
     requireSameMarketOwner(owner);
     const serverPlugin = plugin;
-    const local = this.localInstallSnapshot(ledger);
+    const local = preflight ?? this.localInstallSnapshot(ledger, undefined, plugin.ghostId);
     const legacyTarget = legacyOrganizationDeliveryTarget(plugin, local);
     plugin = organizationDeliveryTarget(plugin, local, owner);
     const namespaceFromLogin = !hasDeliveryNamespace(legacyTarget) && hasDeliveryNamespace(plugin);
@@ -2298,7 +2303,7 @@ export class PluginMarketService {
     if (brokerPortError) {
       throwIpcError(brokerPortError.code, brokerPortError.reason);
     }
-    const existing = installedGhostMatchingMarketPlugin(plugin);
+    const existing = snapshotGhost(local, plugin);
     const currentRecord = ledger.installationForPlugin(plugin);
     const sourceReplacementMode = options.sourceReplacementMode ?? 'preserve-existing-source';
     if (
@@ -2312,7 +2317,7 @@ export class PluginMarketService {
     if (
       existing &&
       sourceReplacementMode === 'preserve-existing-source' &&
-      !serverRecordMatchesInstalledGhost(plugin.id, existing, currentRecord)
+      !serverRecordMatchesInstalledGhost(plugin.id, existing, currentRecord, snapshotManifestIdentity(local, existing))
     ) {
       throwIpcError('ALREADY_EXISTS', 'A local Plugin already uses this Plugin ID');
     }
@@ -3546,6 +3551,7 @@ export class PluginMarketService {
   private localInstallSnapshot(
     ledger = this.ledger,
     installations = ledger.read().installations,
+    ghostId?: string,
   ): LocalInstallSnapshot {
     const ghosts = getGhostManager().list();
     const records = Object.values(installations).filter((record) => record.installed);
@@ -3555,7 +3561,7 @@ export class PluginMarketService {
       installations,
       installedRecordsByGhostId: indexByGhostId(records, (record) => record.ghostId),
       manifestIdentityByStoragePart: new Map(
-        ghosts.map((ghost) => [
+        ghosts.filter((ghost) => ghostId === undefined || ghost.manifest.id === ghostId).map((ghost) => [
           installedGhostStoragePart(ghost),
           readInstalledMarketManifestIdentity(ghost.dir),
         ]),

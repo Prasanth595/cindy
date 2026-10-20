@@ -494,7 +494,7 @@ describe('switching computers within a group on another computer', () => {
   it('asks the group computer for the bound model when checking before send', async () => {
     const h = bound();
     await h.service.beforeSend('s1');
-    expect(h.remote.view).toHaveBeenCalledWith(OWNER, 'anthropic', MODEL);
+    expect(h.remote.view).toHaveBeenCalledWith(OWNER, 'anthropic', MODEL, 'claude-code');
   });
 });
 

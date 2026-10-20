@@ -7,6 +7,12 @@
  * Push channel（main → renderer）以 'maker:event:' 前缀。
  */
 
+import {
+  RSB_WINDOW_COMMAND_CHANNEL,
+  RSB_WINDOW_CONTEXT_CHANGED_CHANNEL,
+  RSB_WINDOW_STATE_CHANGED_CHANNEL,
+} from '../../shared/rightSidebarWindow.js';
+
 export const MAKER_INVOKE = {
   CREATE_SESSION: 'maker:create-session',
   START_REVIEW: 'maker:review:start',
@@ -322,6 +328,8 @@ export const MAKER_INVOKE = {
   REWIND_PREVIEW: 'maker:rewind:preview',
   REWIND_COMMIT: 'maker:rewind:commit',
   FORK: 'maker:fork',
+  SIDE_CHAT: 'maker:side-chat:v1',
+  SIDE_CHAT_LIST: 'maker:side-chat:list:v1',
   FORK_STRIP_ENCRYPTED: 'maker:fork-strip-encrypted',
   // Agent 鉴权 (取代老 codex:auth:*) —— 走 Maker.{getAgentAuthState/triggerAgentLogin/...}
   AUTH_GET_STATE: 'maker:auth:get-state',
@@ -343,6 +351,7 @@ export const MAKER_INVOKE = {
   USAGE_ACCOUNT: 'maker:usage:account',
   // Codex app-server 官方控制面:完整额度/reset 次数读取 + desktop 预签发幂等 offer 消耗。
   USAGE_CODEX_RATE_LIMITS: 'maker:usage:codex-rate-limits',
+  USAGE_CODEX_RESET_AUTO_USE: 'maker:usage:codex-reset-auto-use',
   USAGE_CODEX_RATE_LIMIT_RESET: 'maker:usage:codex-rate-limit-reset',
   // Claude 订阅账号余量 (oauth/usage 端点 + unified headers 双源, cached-first) — 状态栏 chip 用
   USAGE_CLAUDE_SUBSCRIPTION: 'maker:usage:claude-subscription',
@@ -1050,11 +1059,11 @@ export const MAKER_PUSH = {
   /**
    * 右侧栏子窗口状态广播 { detached, open }——发所有窗口(主窗按钮态 + 子窗口自身都消费)。
    */
-  RSB_WINDOW_STATE_CHANGED: 'maker:rsb-window:state-changed',
+  RSB_WINDOW_STATE_CHANGED: RSB_WINDOW_STATE_CHANGED_CHANNEL,
   /** 侧边栏渲染上下文变化(主窗切会话),只发子窗口。payload = RsbWindowContext。 */
-  RSB_WINDOW_CONTEXT_CHANGED: 'maker:rsb-window:context-changed',
+  RSB_WINDOW_CONTEXT_CHANGED: RSB_WINDOW_CONTEXT_CHANGED_CHANNEL,
   /** main → 子窗口命令(如 open-terminal),只发子窗口。payload = RsbWindowCommand。 */
-  RSB_WINDOW_COMMAND: 'maker:rsb-window:command',
+  RSB_WINDOW_COMMAND: RSB_WINDOW_COMMAND_CHANNEL,
   /** 子窗口合并回主窗口前交接不可持久化 session 的 tab 快照，只发主窗口。 */
   RSB_WINDOW_TAB_HANDOFF: 'maker:rsb-window:tab-handoff',
   /**

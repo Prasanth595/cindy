@@ -1624,9 +1624,7 @@ describe('remote desktop authority and lifecycle', () => {
       await h.controller.request('phone', { op: 'hostMute', lease, enabled: true });
       await h.controller.request('phone', { op: 'clipboardSync', lease, enabled: true });
       if (failed)
-        vi.mocked(h.deps.startInput).mockRejectedValueOnce(
-          new Error('DESKTOP_INPUT_UNAVAILABLE'),
-        );
+        vi.mocked(h.deps.startInput).mockRejectedValueOnce(new Error('DESKTOP_INPUT_UNAVAILABLE'));
       await h.controller.releaseControl(true);
       expect(h.deps.stopPrivacyScreen).toHaveBeenCalledTimes(failed ? 1 : 0);
       expect(h.deps.stopHostMute).toHaveBeenCalledTimes(failed ? 1 : 0);
@@ -1635,7 +1633,7 @@ describe('remote desktop authority and lifecycle', () => {
     },
   );
 });
-it.each(['control', 'presentation', 'failure', 'stop'] as const)(
+it.each(['control', 'failure', 'stop'] as const)(
   'releases input before failing safety restoration on %s, without stopping replacement input',
   async (kind) => {
     const h = harness(),
@@ -1652,8 +1650,7 @@ it.each(['control', 'presentation', 'failure', 'stop'] as const)(
     let result: Promise<unknown> | undefined;
     if (kind === 'failure') h.controller.releaseControl();
     else if (kind === 'stop') h.controller.stop();
-    else
-      result = h.controller.request('phone', { op: kind, lease, enabled: kind === 'presentation' });
+    else result = h.controller.request('phone', { op: kind, lease, enabled: false });
     // Critical cleanup cannot wait for slow/failing operating-system restoration.
     expect(h.deps.stopInput).toHaveBeenCalledOnce();
     expect(h.deps.stopPrivacyScreen).toHaveBeenCalledOnce();
@@ -1668,7 +1665,7 @@ it.each(['control', 'presentation', 'failure', 'stop'] as const)(
     expect(h.controller.state?.controlling).toBe(true);
   },
 );
-it.each(['control', 'presentation', 'failure'] as const)(
+it.each(['control', 'failure'] as const)(
   'revokes safety effects on %s control loss',
   async (kind) => {
     const h = harness(),
@@ -1687,12 +1684,71 @@ it.each(['control', 'presentation', 'failure'] as const)(
     await h.controller.request('phone', { op: 'privacyScreen', lease, enabled: true });
     await h.controller.request('phone', { op: 'hostMute', lease, enabled: true });
     if (kind === 'failure') h.controller.releaseControl();
-    else await h.controller.request('phone', { op: kind, lease, enabled: kind === 'presentation' });
+    else await h.controller.request('phone', { op: kind, lease, enabled: false });
     expect(h.deps.stopPrivacyScreen).toHaveBeenCalledOnce();
     expect(h.deps.stopHostMute).toHaveBeenCalledOnce();
     expect(h.deps.stopVideo).not.toHaveBeenCalled();
   },
 );
+it('keeps privacy and host mute through phone picture-in-picture, stopping only clipboard sync', async () => {
+  const h = harness(),
+    { lease } = await h.start();
+  let privacyCurrent!: () => boolean;
+  h.deps.privacyScreen = vi.fn(async (_enabled, current) => {
+    privacyCurrent = current;
+  });
+  h.deps.hostMute = vi.fn(async () => {});
+  h.deps.stopPrivacyScreen = vi.fn();
+  h.deps.stopHostMute = vi.fn(async () => {});
+  h.deps.clipboardVersion = vi.fn(async () => '1');
+  h.deps.stopClipboardVersion = vi.fn();
+  await h.controller.request('phone', { op: 'control', lease, enabled: true });
+  await h.controller.request('phone', { op: 'privacyScreen', lease, enabled: true });
+  await h.controller.request('phone', { op: 'hostMute', lease, enabled: true });
+  await h.controller.request('phone', { op: 'clipboardSync', lease, enabled: true });
+  await h.controller.request('phone', { op: 'presentation', lease, enabled: true });
+  expect(h.controller.state?.controlling).toBe(false);
+  expect(h.controller.viewOnlyBackground).toBe(true);
+  // Long-lived mask owners (Linux) poll this while the phone shows PiP.
+  expect(privacyCurrent()).toBe(true);
+  expect(h.deps.stopPrivacyScreen).not.toHaveBeenCalled();
+  expect(h.deps.stopHostMute).not.toHaveBeenCalled();
+  expect(h.deps.stopClipboardVersion).toHaveBeenCalledOnce();
+  await expect(h.controller.request('phone', { op: 'clipboardVersion', lease })).rejects.toThrow(
+    'DESKTOP_CLIPBOARD_UNAVAILABLE',
+  );
+  // Returning from PiP re-sends the unchanged preference and joins the live mask.
+  await h.controller.request('phone', { op: 'presentation', lease, enabled: false });
+  await h.controller.request('phone', { op: 'control', lease, enabled: true });
+  await expect(
+    h.controller.request('phone', { op: 'privacyScreen', lease, enabled: true }),
+  ).resolves.toEqual({ enabled: true });
+  expect(h.deps.privacyScreen).toHaveBeenCalledOnce();
+  await h.controller.request('phone', { op: 'stop', lease });
+  expect(h.deps.stopPrivacyScreen).toHaveBeenCalledOnce();
+  expect(privacyCurrent()).toBe(false);
+});
+it('clears masks kept for picture-in-picture when control cannot be reacquired', async () => {
+  const h = harness(),
+    { lease } = await h.start();
+  h.deps.privacyScreen = vi.fn(async () => {});
+  h.deps.hostMute = vi.fn(async () => {});
+  h.deps.stopPrivacyScreen = vi.fn();
+  h.deps.stopHostMute = vi.fn(async () => {});
+  await h.controller.request('phone', { op: 'control', lease, enabled: true });
+  await h.controller.request('phone', { op: 'privacyScreen', lease, enabled: true });
+  await h.controller.request('phone', { op: 'hostMute', lease, enabled: true });
+  await h.controller.request('phone', { op: 'presentation', lease, enabled: true });
+  vi.mocked(h.deps.startInput).mockRejectedValueOnce(new Error('DESKTOP_INPUT_UNAVAILABLE'));
+  await expect(
+    h.controller.request('phone', { op: 'presentation', lease, enabled: false }),
+  ).resolves.toEqual({ controlling: false });
+  await expect(
+    h.controller.request('phone', { op: 'control', lease, enabled: true }),
+  ).rejects.toThrow('DESKTOP_INPUT_UNAVAILABLE');
+  expect(h.deps.stopPrivacyScreen).toHaveBeenCalledOnce();
+  expect(h.deps.stopHostMute).toHaveBeenCalledOnce();
+});
 it('joins duplicate privacy initialization and invalidates it on control loss', async () => {
   const h = harness(),
     { lease } = await h.start();
