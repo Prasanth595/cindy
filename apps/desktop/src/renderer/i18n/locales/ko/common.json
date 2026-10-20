@@ -11221,6 +11221,7 @@
     },
     "messageActionBar": {
       "copy": "메시지 복사",
+      "copied": "복사했습니다",
       "reply": "답장",
       "linkCopied": "링크가 복사되었습니다",
       "moreActions": "메시지 추가 작업",

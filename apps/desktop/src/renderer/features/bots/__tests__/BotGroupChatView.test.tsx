@@ -624,7 +624,8 @@ describe('BotGroupChatView', () => {
     await user.click(trigger);
     const panel = screen.getByRole('complementary');
     await user.type(within(panel).getByRole('textbox'), 'Thread draft');
-    await user.click((await within(panel).findAllByRole('button', { name: 'chat.shareImage.entry' }))[0]!);
+    await user.click((await within(panel).findAllByRole('button', { name: 'chat.messageActionBar.moreActions' }))[0]!);
+    await user.click(await screen.findByRole('menuitem', { name: 'chat.shareImage.entry' }));
     expect(within(panel).queryByRole('textbox')).toBeNull();
     const composer = within(main).getByRole('textbox');
     await user.type(composer, 'Main draft');
@@ -645,7 +646,8 @@ describe('BotGroupChatView', () => {
     const panel = screen.getByRole('complementary');
     await user.type(within(panel).getByRole('textbox'), 'Thread draft');
     const owner = scope === 'main' ? screen.getByRole('main') : panel;
-    await user.click(within(owner).getAllByRole('button', { name: 'chat.shareImage.entry' })[0]!);
+    await user.click(within(owner).getAllByRole('button', { name: 'chat.messageActionBar.moreActions' })[0]!);
+    await user.click(await screen.findByRole('menuitem', { name: 'chat.shareImage.entry' }));
     expect(shareSelectionStore.getActiveSessionId()).not.toBeNull();
     await user.keyboard('{Escape}');
     expect(shareSelectionStore.getActiveSessionId()).toBeNull();
@@ -2719,7 +2721,7 @@ describe('BotGroupChatView', () => {
   });
 });
 
-it('keeps copy/share in each author row and shares only message content through the standard selection flow', async () => {
+it('keeps copy/share in each author row\'s more menu and shares only message content through the standard selection flow', async () => {
   vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
   mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ messages: [
     msg({ id: 'bot-share', authorKind: 'bot', authorName: '咪咪', content: 'Share this answer' }),
@@ -2729,8 +2731,9 @@ it('keeps copy/share in each author row and shares only message content through 
   const view = renderView();
   try {
     const article = (await screen.findByText('Share this answer')).closest('article')!;
-    expect(within(article).getByRole('button', { name: 'chat.messageActionBar.copy' })).toBeTruthy();
-    fireEvent.click(within(article).getByRole('button', { name: 'chat.shareImage.entry' }));
+    fireEvent.pointerDown(within(article).getByRole('button', { name: 'chat.messageActionBar.moreActions' }), { button: 0, ctrlKey: false });
+    expect(await screen.findByRole('menuitem', { name: 'chat.messageActionBar.copy' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('menuitem', { name: 'chat.shareImage.entry' }));
     expect(shareSelectionStore.getSelectedIds()).toEqual(['bot-share']);
     expect(queryShareableMessageIds('bot-group:g1')).toEqual(['bot-share', 'mine-share']);
     expect(within(article).getByRole('checkbox').getAttribute('aria-checked')).toBe('true');
@@ -2808,7 +2811,7 @@ describe('Telegram / Slack-grade timeline', () => {
     expect(row.dataset.botGroupMessageId).toMatch(/^pending:/);
     expect(row.querySelector('article')?.getAttribute('aria-busy')).toBe('true');
     // The pending copy has no toolbar: it cannot be quoted, shared or answered yet.
-    expect(within(row).queryByRole('button', { name: 'chat.messageActionBar.copy' })).toBeNull();
+    expect(within(row).queryByRole('button', { name: 'chat.messageActionBar.moreActions' })).toBeNull();
     const base = detail();
     mocks.getBotGroup.mockResolvedValue({ ok: true, group: { ...base, messages: [...base.messages, own('u9', 5, '在吗')] } });
     await act(async () => sent.resolve({ ok: true, messageId: 'u9' }));

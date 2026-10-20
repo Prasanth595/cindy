@@ -14,7 +14,7 @@ export default {
   viewport: { width: 1280, height: 800 },
   real: 'BotGroupChatView (timeline, composer, send button, header registration), ControlledBanner, ContentHeader shell, Markdown, theme, fonts and translations',
   notCovered:
-    'Sending, round control, real device-link control and revocation, pending interactions, plans and attachments; the sidebar is an empty frame',
+    'Sending, round control, real device-link control and revocation, pending interactions, plans and attachments; the bubbles case shows a task snapshot, not a live task; the sidebar is an empty frame',
   cases: {
     default: { about: 'Empty group, short controller name, expanded sidebar', data: base },
     'long-thread': {
@@ -29,6 +29,10 @@ export default {
     },
     multiline: { about: 'Eight-line draft pushes the composer up', data: base, lines: 8 },
     'no-sidebar': { about: 'Collapsed sidebar layout', data: { ...base, sidebar: false } },
+    bubbles: {
+      about: 'Teammate bubbles: quote, corner reaction, thread entry, task card, long text at the width cap; hover shows the toolbar beside the bubble',
+      data: { ...base, bubbles: true },
+    },
   },
   async ready(page) {
     await page.locator('textarea').waitFor();
@@ -58,6 +62,29 @@ export default {
       await collapsedDot.click();
       await chip.waitFor();
     };
+
+    if (ui.case === 'bubbles') {
+      const answer = page.getByText('Android 更新卡那个 PR', { exact: false });
+      await answer.waitFor();
+      const row = '[data-bot-group-message-id="a1"]';
+      const toolbar = page.locator(`${row} [data-bot-group-message-actions]`);
+      await answer.hover();
+      await page.waitForFunction(
+        (row) => getComputedStyle(document.querySelector(`${row} [data-bot-group-message-actions]`)).opacity === '1',
+        row,
+      );
+      const geometry = await page.evaluate((row) => {
+        const bar = document.querySelector(`${row} [data-bot-group-message-actions]`).getBoundingClientRect();
+        const bubble = document.querySelector(`${row} [data-testid="bot-group-bubble"]`).getBoundingClientRect();
+        const timeline = document.querySelector('[data-testid="bot-group-timeline"]').getBoundingClientRect();
+        return { gap: bar.left - bubble.right, inside: bar.right <= timeline.right };
+      }, row);
+      assert.ok(geometry.gap >= 0 && geometry.gap <= 32, `toolbar sits beside the bubble (gap ${geometry.gap}px)`);
+      assert.ok(geometry.inside, 'toolbar stays inside the timeline');
+      assert.ok(await toolbar.isVisible());
+      await ui.capture('hover');
+      return;
+    }
 
     if (ui.case === 'long-thread') {
       const bottomGap = () =>
