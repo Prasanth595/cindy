@@ -18,6 +18,8 @@ import { createLogger } from '../logger.js';
 import { createSideChat, listSideChats, forkSessionAtMessage, forkSessionStripEncrypted } from '../maker-orchestration/fork.js';
 import { requireString, throwIpcError } from '../utils/ipcValidate.js';
 import { emitSessionCreated } from '../localDb/ipc/sessionCreatedBroadcast.js';
+import { assertTrustedAppRendererEvent } from '../security/trustedAppRenderer.js';
+import { getDeviceLinkInvokeContext } from '../device-link/invoke-context.js';
 
 import { MAKER_INVOKE } from './channels.js';
 
@@ -31,10 +33,26 @@ function broadcastSessionCreated(sessionId: string): void {
   emitSessionCreated(sessionId);
 }
 
+function assertSideChatCaller(event: Electron.IpcMainInvokeEvent, channel: string): void {
+  const context = getDeviceLinkInvokeContext();
+  if (context) {
+    // Main creates this context only after device-link authorization. A remote
+    // invoke has no Electron frame; never accept a caller-supplied substitute.
+    if (context.channel !== channel || !context.controllerDeviceId || context.sharedTask) {
+      throwIpcError('PERMISSION_DENIED', 'Side chats require the task owner');
+    }
+  } else {
+    assertTrustedAppRendererEvent(event);
+  }
+}
+
 export function registerMakerForkIpc(): void {
-  ipcMain.handle(MAKER_INVOKE.SIDE_CHAT_LIST, (_event, sourceSessionId: unknown) =>
-    listSideChats(requireString(sourceSessionId, 'sourceSessionId')));
-  ipcMain.handle(MAKER_INVOKE.SIDE_CHAT, async (_event, sourceSessionId: unknown) => {
+  ipcMain.handle(MAKER_INVOKE.SIDE_CHAT_LIST, (event, sourceSessionId: unknown) => {
+    assertSideChatCaller(event, MAKER_INVOKE.SIDE_CHAT_LIST);
+    return listSideChats(requireString(sourceSessionId, 'sourceSessionId'));
+  });
+  ipcMain.handle(MAKER_INVOKE.SIDE_CHAT, async (event, sourceSessionId: unknown) => {
+    assertSideChatCaller(event, MAKER_INVOKE.SIDE_CHAT);
     const sid = requireString(sourceSessionId, 'sourceSessionId');
     try {
       const session = await createSideChat(sid);
