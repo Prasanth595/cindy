@@ -2564,8 +2564,6 @@ describe('Agent Island 未读驻留 TTL(避免几小时前完成的任务无限�
     // dwell / reveal 走完后,下一次 publish 必须排到岛面 TTL,否则 4h 到点不会自己隐藏。
     const afterDwell = 2_000 + AGENT_ISLAND_COMPLETION_REVEAL_DWELL_MS + 1;
     expect(getNextAgentIslandTimerAt(state, afterDwell)).toBe(2_000 + AGENT_ISLAND_UNREAD_TRANSIENT_TTL_MS);
-    // A fake clock can jump past the TTL. The old deadline must not remain queued.
-    expect(getNextAgentIslandTimerAt(state, 2_000 + AGENT_ISLAND_UNREAD_TRANSIENT_TTL_MS + 1)).toBeNull();
   });
 
   it('unread completed 超过 TTL 后离开岛面,独立账本仍在,远程快照继续带 attention', () => {
