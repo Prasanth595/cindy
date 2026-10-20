@@ -4,6 +4,27 @@ import { handlePluginTaskRequest, validPluginTaskRequest } from '../taskSlot.js'
 import type { InstalledGhost } from '../../../shared/ghost.js';
 
 describe('plugin task pipe', () => {
+  // Regression: a standalone voice task cannot register Auto scope because the
+  // pipe required a Worker. Exercise the real request/dispatch boundary (unit).
+  // Existing plan tests only cover nonempty Worker lists.
+  it('registers a scoped standalone plan without inventing Workers or changing permissions', async () => {
+    const payload = { type: 'tasks-request', kind: 'setTeamPlan', taskId: 'voice',
+      plan: { concurrency: null, task: 'Answer voice questions using read-only public web sources.', items: [] } };
+    const handler = vi.fn(async () => ({ ok: true }));
+    const result = await handlePluginTaskRequest('p', payload, {
+      getGhost: () => ghost, handler, isCurrent: () => true,
+    });
+    expect(result).toEqual({ ok: true, data: { ok: true } });
+    expect(handler).toHaveBeenCalledWith('p', payload);
+    const caps = await handlePluginTaskRequest('p', { type: 'tasks-request', kind: 'capabilities' }, {
+      getGhost: () => ghost, handler, isCurrent: () => true,
+    });
+    expect(caps).toMatchObject({ ok: true, data: { standaloneTaskScope: true } });
+  });
+  it.each([undefined, '', ' ', 'x'.repeat(8001)])('rejects a standalone plan without valid scope', task => {
+    expect(validPluginTaskRequest({ type: 'tasks-request', kind: 'setTeamPlan', taskId: 'voice',
+      plan: { concurrency: null, task, items: [] } })).toBe(false);
+  });
   it('bounds the complete JSON plan without truncating scope or breaking representative 200-item batches', () => {
     const item = {label:'sample',workingDir:'/answer',route:{agentKind:'pi',providerId:'p',model:'m',effort:'high',fastMode:false},task:'测'.repeat(2600)};
     const plan = {concurrency:4,task:'c'.repeat(8000),items:Array.from({length:200},(_,i)=>({...item,label:'w'+i}))};

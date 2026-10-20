@@ -62,6 +62,7 @@ export interface PluginTeamPlan {
   concurrency: number | null;
   /** Plugin-authored scope, authenticated by Host registration; never user-authored intent. */
   task?: string;
+  /** Empty only for a standalone task with a valid top-level task scope. */
   items: Array<{label: string; workingDir: string; route: PluginTaskRoute; task?: string}>;
 }
 /** UTF-16 JSON characters, including escaping; reject rather than truncate scope. */
