@@ -326,3 +326,17 @@ describe('resident five-task message lists outside route lifetimes', () => {
     expect(unmounts).toEqual(['a','b']);
   });
 });
+
+describe('side-chat covered guard wiring', () => {
+  it('the session screen sets the sideChat route params the guard consumes', async () => {
+    // 回归:covered/coveredTaskKey 守卫此前读 sideChat/sideChatParentId,但生产
+    // 打开路径从未设置这两个参数——守卫是死线,Android 上侧聊子页压住父页时父页
+    // 常驻历史仍会掉到 opacity 0。契约:openSideChat 必须把父会话 id 传进
+    // openCollabSession 并写进 push 参数。
+    const fs = await import('node:fs');
+    const source = fs.readFileSync('app/sessions/[sessionId].tsx', 'utf8');
+    expect(source).toContain("sideChat: '1'");
+    expect(source).toContain('sideChatParentId: sideChatOf.parentSessionId');
+    expect(source).toMatch(/openCollabSession\(row\.id, undefined, \{ parentSessionId: parentId \}\)/);
+  });
+});

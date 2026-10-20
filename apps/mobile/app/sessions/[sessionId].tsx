@@ -2078,6 +2078,7 @@ function SessionScreenContent() {
   const openCollabSession = useCallback((
     targetSessionId: string,
     target?: { deviceId: string; deviceName?: string | null },
+    sideChatOf?: { parentSessionId: string },
   ) => {
     if (!deviceId || !targetSessionId) return;
     // 在另一台电脑运行的 Worker 打开那台上的真实任务；其余沿用当前电脑。
@@ -2094,6 +2095,13 @@ function SessionScreenContent() {
             sessionId: target.sessionId,
             deviceId: target.deviceId,
             deviceName: target.deviceName,
+            // Android 模态回归:side-chat 子页压在父任务页上时,常驻历史靠
+            // 这两个参数识别"我是被覆盖的父页"保持可见(RecentMessageHistories
+            // 的 covered/coveredTaskKey 守卫)。仅 side-chat 打开路径设置。
+            ...(sideChatOf ? {
+              sideChat: '1',
+              sideChatParentId: sideChatOf.parentSessionId,
+            } : {}),
           },
         }),
         dismissTo: (target) => router.dismissTo({
@@ -5329,8 +5337,14 @@ function SessionScreenContent() {
   const openSideChat = useCallback((row: RemoteSession) => {
     remoteSessionStore.upsertDeviceSession(deviceId, deviceName, row);
     Keyboard.dismiss();
-    openCollabSession(row.id);
-  }, [deviceId, deviceName, openCollabSession]);
+    // 侧聊可能从父任务页打开,也可能从另一条侧聊里"再侧聊"——父页始终是
+    // 当前会话的 parentSessionId 归一结果(createSideChat 同一口径)。
+    const parentId = currentSession?.source === 'side-chat'
+      ? currentSession.parentSessionId
+      : sessionId;
+    if (parentId) openCollabSession(row.id, undefined, { parentSessionId: parentId });
+    else openCollabSession(row.id);
+  }, [deviceId, deviceName, openCollabSession, currentSession, sessionId]);
   const createSideChat = useCallback(async (quoteText?: string, draft?: ComposerDocument): Promise<RemoteSession | null> => {
     if (!canUseSideChats || !currentSession || sideChatCreatingRef.current) return null;
     const parentId = currentSession.source === 'side-chat' ? currentSession.parentSessionId : sessionId;
