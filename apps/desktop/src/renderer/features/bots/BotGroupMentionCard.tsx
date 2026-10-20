@@ -1,16 +1,23 @@
 import { useTranslation } from 'react-i18next';
 import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover';
-import type { BotGroupMemberView } from '../../../shared/botGroupChat';
+import type { BotGroupMemberView, BotGroupMention } from '../../../shared/botGroupChat';
 import { BotAvatar } from './BotAvatar';
 import { botGroupMemberDisplayName } from './BotGroupTimelineModel';
 
 const key = (name: string) => `bots.groupChat.server.settings.${name}`;
 
-/** The member a `@名字` in message text names, by any label the composer offers for them. */
-export function botGroupMentionMember(label: string, members: readonly BotGroupMemberView[]): BotGroupMemberView | undefined {
+/**
+ * The member a `@名字` in message text names. Only members the message actually mentioned
+ * (`mentions.botIds`) qualify, so a same-named member never answers; the broadcast label
+ * names nobody when the message mentioned everyone.
+ */
+export function botGroupMentionMember(label: string, members: readonly BotGroupMemberView[],
+  mentions: BotGroupMention, allLabel: string): BotGroupMemberView | undefined {
   const name = label.replace(/^@/, '').trim();
-  return members.find((member) =>
-    [member.name, botGroupMemberDisplayName(member), member.nickname || member.displayName || member.name]
+  if (mentions.all && name === allLabel) return undefined;
+  const mentioned = new Set(mentions.botIds);
+  return members.find((member) => mentioned.has(member.botId)
+    && [member.name, botGroupMemberDisplayName(member), member.nickname || member.displayName || member.name]
       .some((candidate) => candidate?.trim() === name));
 }
 

@@ -89,8 +89,9 @@ export function ChatReactionButton({ groupId, messageId, reaction, revision = 0,
   return (
     <Button ref={badgeRef} variant={reaction.me && !corner ? 'primary' : 'secondary'} size="sm" compact
       disabled={disabled} aria-pressed={reaction.me} aria-label={label}
-      className={cn(showAvatars && 'pr-1', corner && cn('h-7 gap-1 border bg-[var(--surface-elevated)] px-1.5 text-13',
-        reaction.me ? 'border-[var(--text-tertiary)]' : 'border-[var(--border-default)]'))}
+      // Corner badges paint through the shared face variables; your own reaction gets a stronger outline.
+      className={cn(showAvatars && 'pr-1', corner && cn('h-7 gap-1 px-1.5 text-13 [--button-face-bg:var(--surface-elevated)]',
+        reaction.me ? '[--button-face-border:var(--text-tertiary)]' : '[--button-face-border:var(--border-default)]'))}
       onClick={onToggle}>
       <span>{reaction.emoji}</span>
       {showAvatars ? (

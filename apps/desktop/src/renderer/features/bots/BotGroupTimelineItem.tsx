@@ -30,6 +30,7 @@ import { Button } from '@/components/ui/button';
 import { SHARE_MESSAGE_ATTR, SHARE_SESSION_ATTR } from '@/lib/shareConversationImage';
 import { cn } from '@/lib/utils';
 import type {
+  BotGroupMention,
   BotGroupMemberView,
   BotGroupPlanStepView,
   BotGroupPlanView,
@@ -118,14 +119,17 @@ function collectMentionRanges(root: HTMLElement, labels: readonly string[]): Ran
 }
 
 const MENTION_CARD_OPEN_MS = 250;
+const NO_MENTIONS: BotGroupMention = { all: false, botIds: [] };
 const MENTION_CARD_CLOSE_MS = 150;
 
 /**
  * Message text as Markdown, with `@名字` of known members in the link color. Resting the pointer on a
  * mention shows that member's card; mentions are text ranges, so the hit test reads their boxes.
  */
-function BotGroupMessageText({ content, mentionLabels, members }: {
+function BotGroupMessageText({ content, mentionLabels, members, mentions }: {
   content: string; mentionLabels: readonly string[]; members: readonly BotGroupMemberView[];
+  /** Who the message mentioned; decides whose card a highlighted name opens. */
+  mentions: BotGroupMention;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const rangesRef = useRef<Range[]>([]);
@@ -172,7 +176,8 @@ function BotGroupMessageText({ content, mentionLabels, members }: {
     const { clientX: x, clientY: y } = event;
     const hit = rangesRef.current.find((range) => typeof range.getClientRects === 'function' && [...range.getClientRects()].some((box) =>
       x >= box.left && x <= box.right && y >= box.top && y <= box.bottom));
-    const member = hit ? botGroupMentionMember(hit.toString(), members) : undefined;
+    // mentionLabels[0] is the broadcast label (BotGroupChatView).
+    const member = hit ? botGroupMentionMember(hit.toString(), members, mentions, mentionLabels[0] ?? '') : undefined;
     root.style.cursor = member ? 'pointer' : '';
     if (!hit || !member) { if (pendingRef.current || card) scheduleClose(); return; }
     if (pendingRef.current === hit) return;
@@ -418,7 +423,7 @@ function BotGroupTimelineItemImpl(props: BotGroupTimelineItemProps) {
                     className={`flex max-w-full flex-col gap-2 rounded-xl border border-[var(--msg-user-border)] bg-[var(--msg-user-bg)] px-3.5 py-2 text-[var(--msg-user-text)] ${CHAT_BODY_CLASS}`}
                   >
                     {quote}
-                    {hasText ? <BotGroupMessageText content={message.content} mentionLabels={mentionLabels} members={members} /> : null}
+                    {hasText ? <BotGroupMessageText content={message.content} mentionLabels={mentionLabels} members={members} mentions={message.mentions ?? NO_MENTIONS} /> : null}
                     <BotGroupMessageAttachments attachments={message.attachments ?? []} align="start" />
                   </div>
                 </div>
@@ -500,7 +505,7 @@ function BotGroupTimelineItemImpl(props: BotGroupTimelineItemProps) {
                   {shareBody}
                   {!share && hasText ? (
                     <div className="min-w-0">
-                      <BotGroupMessageText content={message.content} mentionLabels={mentionLabels} members={members} />
+                      <BotGroupMessageText content={message.content} mentionLabels={mentionLabels} members={members} mentions={message.mentions ?? NO_MENTIONS} />
                     </div>
                   ) : null}
                   {/* A task this teammate started from the group, under what it said about it; mine is live
