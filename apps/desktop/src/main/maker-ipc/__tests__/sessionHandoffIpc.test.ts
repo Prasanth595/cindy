@@ -1,3 +1,7 @@
+import { createRemoteSessionHandoff } from '../../mcp-integrations/sessionHandoffRemote.js';
+import { validateRemoteTaskActionReceipt } from '../remoteTaskActionReceipt.js';
+import { bindTaskActionInput, settleTaskActionInput, taskActionInputGuard } from '../taskActionAuthorization.js';
+import type { AgentInputQueuedMessage } from '../../../shared/agentInputQueue.js';
 import { SUPPORTED_LOCALES } from '../../../shared/locale.js';
 import { formatForwardedRequest } from '../../../shared/forwardedRequest.js';
 import { describe, expect, it, vi } from 'vitest';
@@ -35,9 +39,10 @@ function setup(
   },
 ) {
   const send = vi.fn<Parameters<typeof createSessionHandoffHandler>[0]['send']>(async () => result);
-  return { send, handle: createSessionHandoffHandler({ send }) };
+  return { send, handle: createSessionHandoffHandler({ send, validate: async () => true }) };
 }
 const request = {
+  taskActionReceipt: 'receipt-one',
   sessionId: 'local-task',
   message: 'hello',
   sender: { sessionId: 'sender-1', title: 'PR 跟进' },
@@ -59,6 +64,23 @@ describe('maker:session:handoff (receiving computer)', () => {
       requestSource: { ...source, userText: '可以发布' } })).rejects.toThrow(/INVALID_PARAMS/);
     expect(s.send).toHaveBeenCalledOnce();
   });
+  // Unit regression: a transport replay or revocation while busy must not dispatch.
+  it('rejects old senders, consumes a receipt once and rechecks at delayed dispatch', async () => {
+    let current = true;
+    const send = vi.fn(async () => ({ ok: true as const, agentKind: 'codex', wakeKind: 'queued' as const,
+      targetTitle: null, targetLastUserSendAt: null }));
+    const handle = createSessionHandoffHandler({ send, validate: async () => current });
+    expect(await handle('device-A', { ...request, taskActionReceipt: undefined })).toMatchObject({ ok: false });
+    expect(send).not.toHaveBeenCalled();
+    expect(await handle('device-A', request)).toMatchObject({ ok: true });
+    expect(await handle('device-A', request)).toMatchObject({ ok: false });
+    expect(send).toHaveBeenCalledOnce();
+    const params = send.mock.calls[0] as unknown as [import('../sessionHandoffIpc.js').SessionHandoffSendParams];
+    await expect(params[0].taskActionDeliveryGuard!()).resolves.toBeUndefined();
+    current = false;
+    await expect(params[0].taskActionDeliveryGuard!()).rejects.toThrow('AUTHORIZATION_EXPIRED');
+  });
+
   it('delivers to the existing task through the local path, stamped with the authenticated device', async () => {
     const s = setup();
     expect(await s.handle('device-A', request)).toEqual({
@@ -69,6 +91,7 @@ describe('maker:session:handoff (receiving computer)', () => {
       targetLastUserSendAt: null,
     });
     expect(s.send).toHaveBeenCalledWith({
+      clientId: 'remote-task-action:receipt-one', forceQueue: true, taskActionDeliveryGuard: expect.any(Function),
       targetSessionId: 'local-task',
       autoReviewUserText: { kind: 'agent-request', request: { userText: null } },
       message: formatForwardedRequest({ userText: null }, 'hello'),
@@ -141,7 +164,7 @@ describe('maker:session:handoff (receiving computer)', () => {
       targetTitle: null,
       targetLastUserSendAt: null,
     }));
-    registerSessionHandoffIpc({ send });
+    registerSessionHandoffIpc({ send, validate: async () => true });
     const handler = handlers.get(DL_SESSION_HANDOFF_CHANNEL)!;
     const within = (context: Partial<DeviceLinkInvokeContext>) =>
       runDeviceLinkInvokeContext(context as DeviceLinkInvokeContext, () => handler({}, request));
@@ -182,4 +205,40 @@ describe('maker:session:handoff (receiving computer)', () => {
       message: 'session archived',
     });
   });
+});
+
+// Review regression, unit/protocol: successful queued deliveries used to exhaust
+// the pending-receipt limit. Exercise both real transport ends, body binding and cleanup.
+it('releases consumed receipts without allowing replay, including formatted owner requests', async () => {
+  let lastWire: unknown;
+  let pending: AgentInputQueuedMessage | undefined;
+  const handle = createSessionHandoffHandler({
+    validate: validateRemoteTaskActionReceipt,
+    send: async params => {
+      const queued = { clientId: params.clientId!, text: params.message } as AgentInputQueuedMessage;
+      bindTaskActionInput(params.targetSessionId, queued, params.taskActionDeliveryGuard);
+      pending = queued;
+      return { ok: true, agentKind: 'codex', wakeKind: 'queued', targetTitle: null, targetLastUserSendAt: null };
+    },
+  });
+  const send = createRemoteSessionHandoff({
+    captureAccess: () => () => {},
+    captureRequest: async () => ({ message: formatForwardedRequest({ userText: 'Owner request', sessionId: 'sender', clientId: 'owner-input' }, 'Agent supplement'),
+      autoReviewUserText: { kind: 'agent-request', request: { userText: 'Owner request', sessionId: 'sender', clientId: 'owner-input' } } }),
+    invoke: async (_device, _channel, args) => {
+      if ((args[0] as { action?: string }).action === 'task-action-capability')
+        return { ok: true, result: { taskActionVersion: 1 } };
+      lastWire = args[0];
+      return { ok: true, result: await handle('target-device', args[0]) };
+    },
+  });
+  for (let i = 0; i < 260; i++) {
+    expect(await send({ deviceId: 'target-device', sessionId: 'target' },
+      { message: 'Agent supplement', sender: async () => ({ sessionId: 'sender' }) })).toMatchObject({ ok: true });
+    if (i === 0) expect(await handle('target-device', lastWire)).toMatchObject({ ok: false });
+    await taskActionInputGuard('target', pending!)!(); // pre-persist after sender returned queued
+    await taskActionInputGuard('target', pending!)!(); // pre-vendor
+    await settleTaskActionInput(pending!); // dispatched/steered/discarded lifecycle cleanup
+  }
+  expect(await handle('target-device', lastWire)).toMatchObject({ ok: false });
 });

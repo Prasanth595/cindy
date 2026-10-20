@@ -217,7 +217,7 @@ function normalizeCodexUsageProvider(providerId?: string): string | undefined {
 }
 let codexReadersOwner = '';
 const codexUsageReaders = new Map<string, ReturnType<typeof createCodexAccountUsageSnapshotReader>>();
-function readCodexAccountUsageSnapshotWithWebRefresh(requestedProviderId?: string, options?: { fresh?: boolean }) {
+export function readCodexAccountUsageSnapshotWithWebRefresh(requestedProviderId?: string, options?: { fresh?: boolean }) {
   const providerId = normalizeCodexUsageProvider(requestedProviderId);
   const scope = activeOwnerScopeKey();
   if (scope !== codexReadersOwner) { codexUsageReaders.clear(); codexReadersOwner = scope; }

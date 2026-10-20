@@ -1,4 +1,27 @@
 {
+  "sideChat": {
+    "collapse": "收起追问",
+    "resume": "继续追问",
+    "list": "追问列表",
+    "summary": "侧边追问 · {{count}} 个",
+    "fromMain": "来自「{{title}}」",
+    "mainTask": "主任务",
+    "commandDescription": "打开侧边追问，可在 /side 后写问题",
+    "commandAttachments": "请先处理当前附件，再用 /side 发起追问。",
+    "unavailable": "当前任务暂不支持侧边追问。",
+    "title": "侧边追问",
+    "ask": "在追问中询问",
+    "create": "新建追问",
+    "returnMain": "返回主任务",
+    "item": "追问 {{index}}",
+    "current": "当前",
+    "description": "继承主任务已有上下文，独立追问。回复不会自动写回主任务。",
+    "empty": "还没有追问",
+    "loadFailed": "未能读取追问。请检查电脑连接；旧版电脑端需要更新后才能使用。",
+    "createFailed": "未能创建追问，主任务保持不变。",
+    "unsupported": "这台电脑暂不支持追问，请更新电脑端。",
+    "waitForReply": "请等主任务完成第一条回复后再创建追问。"
+  },
   "leaveWhileUploading": {
     "title": "放弃发送？",
     "body": "附件还没上传完，现在离开这条消息就不会发送。",

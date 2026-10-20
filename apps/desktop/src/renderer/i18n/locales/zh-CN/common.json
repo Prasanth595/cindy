@@ -21,6 +21,11 @@
     "messageCount": "共 {{count}} 封邮件",
     "showMessages": "展开 {{count}} 封邮件"
   },
+  "taskActionConfirmation": {
+    "title": "确认任务操作",
+    "once": "请核对下面的目标、动作和完整内容。允许仅对本次操作生效。",
+    "delegation": "请核对独立任务的目标和设置。允许后将启动任务，并可在本次委托结束前发送范围内的消息或停止任务。代答、恢复暂停和切换模型仍需单独确认。"
+  },
   "logSupport": {
     "title": "日志与反馈",
     "localFiles": "选择问题当天的日志。文件未脱敏，请先检查。",
@@ -630,7 +635,7 @@
       "round": "轮询",
       "order": "按顺序",
       "weight": "按权重",
-      "quotaFirst": "能读取 Claude 订阅用量时，先用配额快重置的电脑，再选用量低的，相近时按组策略",
+      "quotaFirst": "能读取订阅用量时，先用配额快重置的电脑，再选用量低的，相近时按组策略",
       "description": {
         "least": "给最闲的那台",
         "round": "依次轮流",
@@ -3456,7 +3461,7 @@
           "aria": "按模型类型筛选",
           "chat": "对话"
         },
-        "hiddenGroup": "未启用",
+        "hiddenGroup": "未显示",
         "management": {
           "brand": "厂商"
         },
@@ -6691,6 +6696,8 @@
         "confirmDetail": "它动手前可以弹一个和 Cindy 同款的确认框来问你，问句由它提供、框上会标注它的名字；同意还是取消都由你亲手点，它自己点不了。同时最多一个确认框，弹得太频会被拦下。",
         "fsWrite": "可写入文件(创建/修改)",
         "fsWriteDetail": "它自己的专属数据目录随时可写；当前任务的工作目录跟随任务的权限模式(免批模式直接写，逐条确认模式先征求你同意)；其它目录每次都需要你确认。文件始终由主机代写，插件本身无法直接访问你的文件系统。",
+        "deviceSync": "在你的电脑间同步插件资料",
+        "deviceSyncDetail": "与登录同一 Cindy 账号的其他在线电脑上的同一插件加密交换资料。合并和删除由插件处理，不共享凭证或其他插件的资料。",
         "libraryPersist": "可使用持久作品库(大量文件与数据库)",
         "libraryPersistDetail": "它会获得一个由 Cindy 管理的独立存储区，用来保存你的作品数据(如画布、图片、数据库)，不受普通插件数据配额限制。文件与数据库操作全部由主机代执行，插件只能使用库内相对路径，无法触碰你的其它文件。它还可以让 Cindy 在系统文件夹中显示库内文件，或弹出系统另存为窗口由你选择拷贝位置；取消则不会拷出任何文件。它还可以把 PNG 位图写入系统剪贴板；没有确认框，会覆盖当前剪贴板内容。卸载插件不会删除这些数据；删除必须在 Cindy 设置中单独确认。",
         "networkHost": "访问网络域名 {{host}}",
@@ -8137,6 +8144,16 @@
         "alreadyOpen": "已打开",
         "pluginsLabel": "插件"
       },
+      "descriptions": {
+        "fileBrowser": "浏览工作目录中的文件",
+        "review": "查看代码改动与审查结果",
+        "subagents": "查看子任务的进度与结果",
+        "backgroundTasks": "跟踪后台运行的进度与输出",
+        "sideChat": "基于主任务上下文独立提问",
+        "browser": "在面板中浏览网页",
+        "terminal": "运行命令，查看输出",
+        "workbench": "查看伙伴的工作进展"
+      },
       "kinds": {
         "fileBrowser": "文件浏览器",
         "browser": "浏览器",
@@ -8168,21 +8185,9 @@
       "empty": {
         "eyebrow": "右侧栏",
         "title": "开始一个面板",
-        "desc": "在右侧打开文件、审查、资源监视器、内置浏览器或终端，与左侧对话并行工作。",
-        "openFile": "打开文件",
-        "fileSub": "文件",
-        "openReview": "打开审查",
-        "reviewSub": "审查",
-        "openSubagents": "打开 Subagent",
-        "subagentsSub": "可持续回看的子任务",
-        "openBackgroundTasks": "打开后台任务",
-        "backgroundTasksSub": "后台任务",
+        "desc": "在右侧追问、查看文件或使用工具，与主任务并行工作。",
         "openResourceUsage": "打开资源监视器",
-        "openBrowser": "打开浏览器",
-        "browserSub": "浏览器",
-        "openTerminal": "打开终端",
-        "terminalSub": "终端",
-        "addMoreHint": "可通过顶部 + 按钮选择更多面板类型"
+        "addMoreHint": "也可通过顶部 + 按钮选择面板"
       },
       "placeholderHint": "{{kind}} — 内容将在后续阶段加入"
     },
@@ -11221,6 +11226,7 @@
     },
     "messageActionBar": {
       "copy": "复制消息",
+      "copied": "已复制",
       "reply": "回复",
       "linkCopied": "链接已复制",
       "moreActions": "更多消息操作",
@@ -11537,6 +11543,12 @@
       "staleBadge": "历史副本",
       "downloadToLocal": "下载到本地",
       "downloadPacking": "远程电脑正在打包…已打包 {{size}}",
+      "folderPreparing": "正在准备文件夹…",
+      "cancelFolderPreparation": "取消准备文件夹",
+      "folderPacking": "正在打包…{{size}}",
+      "folderFailed": "文件夹准备失败，请检查连接和磁盘空间后重新拖入",
+      "folderUnsupported": "此连接暂不支持传输文件夹，请更新远程电脑上的 Cindy 后重试",
+      "folderConnectionUnsupported": "此连接暂不支持传输文件夹，请先将文件夹放到目标电脑，再引用其目录",
       "downloadProgress": "正在下载…{{percent}}% · {{speed}}",
       "downloadProgressUnknown": "正在下载…{{received}} · {{speed}}",
       "uploadProgress": "远端正在上传…{{percent}}% · {{speed}}",
@@ -12167,6 +12179,26 @@
     },
     "ghostPreview": {
       "opened": "打开了一个预览页面"
+    },
+    "sideChat": {
+      "openPage": "打开完整任务页",
+      "returnMain": "返回主任务",
+      "new": "新建侧边追问",
+      "mainWindowDescription": "侧边追问目前在主窗口中使用。追问记录仍然保留。",
+      "returnToMain": "回到主窗口继续追问",
+      "commandDescription": "基于主任务打开侧边追问。可在命令后附上问题，作为追问草稿。",
+      "title": "侧边追问",
+      "context": "基于主任务已有上下文独立追问，回答不会自动写回主任务。",
+      "opening": "正在打开…",
+      "notReady": "请先等待主任务完成一次回答。",
+      "unsupported": "此 Agent 的远程任务暂不支持侧边追问。",
+      "updateHost": "请先更新执行任务的电脑，再打开侧边追问。",
+      "failed": "打开侧边追问失败，请稍后重试。",
+      "mainTaskOnly": "请从主任务打开侧边追问。",
+      "closeTitle": "关闭侧边追问？",
+      "closeDescription": "将停止并删除本次追问，主任务不受影响。",
+      "closeConfirm": "关闭并删除",
+      "closeFailed": "删除追问失败，请稍后重试。"
     }
   },
   "ccAgent": {
@@ -15606,6 +15638,7 @@
     }
   },
   "modelDescriptions": {
+    "automaticRouting": "由供应商选择模型。",
     "longContext": "可选的长上下文版本，长输入可能产生更高费用。",
     "security": "用于安全分析与代码审查。",
     "research": "用于资料研究、复杂问题、编程与文档创作。",

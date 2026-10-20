@@ -56,6 +56,7 @@ describe('Bot group lane transactions', () => {
       );
       CREATE TABLE sessions (
         id TEXT PRIMARY KEY, title TEXT, working_dir TEXT, workspace_kind TEXT, model TEXT,
+        scheduled_model_baseline TEXT,
         effort TEXT, permission_mode TEXT, status TEXT NOT NULL, sdk_session_id TEXT,
         total_token_usage INTEGER, total_cost_usd REAL, context_tokens INTEGER,
         context_window INTEGER, fast_mode INTEGER, plan_mode_enabled INTEGER, cleared_at INTEGER,

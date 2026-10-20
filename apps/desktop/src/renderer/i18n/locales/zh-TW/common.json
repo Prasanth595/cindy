@@ -21,6 +21,11 @@
     "messageCount": "共 {{count}} 封郵件",
     "showMessages": "展開 {{count}} 封郵件"
   },
+  "taskActionConfirmation": {
+    "title": "確認任務操作",
+    "once": "請核對下方的目標、動作與完整內容。允許僅對本次操作生效。",
+    "delegation": "請核對獨立任務的目標與設定。允許後將啟動任務，並可在本次委託結束前傳送範圍內的訊息或停止任務。代答、恢復暫停與切換模型仍需另行確認。"
+  },
   "logSupport": {
     "title": "日誌與回饋",
     "localFiles": "選擇問題當天的日誌。檔案未經去識別化處理，請先檢查。",
@@ -630,7 +635,7 @@
       "round": "輪詢",
       "order": "依順序",
       "weight": "依權重",
-      "quotaFirst": "能讀取 Claude 訂閱用量時，先用配額快重置的電腦，再選用量低的，相近時依組策略",
+      "quotaFirst": "能讀取訂閱用量時，先用配額快重置的電腦，再選用量低的，相近時依組策略",
       "description": {
         "least": "給最閒的那臺",
         "round": "依序輪流",
@@ -3456,7 +3461,7 @@
           "aria": "依模型類型篩選",
           "chat": "對話"
         },
-        "hiddenGroup": "未啟用",
+        "hiddenGroup": "未顯示",
         "management": {
           "brand": "廠商"
         },
@@ -6691,6 +6696,8 @@
         "confirmDetail": "它動手前可以彈一個和 Cindy 同款的確認框來問你，問句由它提供、框上會標註它的名字；同意還是取消都由你親手點，它自己點不了。同時最多一個確認框，彈得太頻會被攔下。",
         "fsWrite": "可寫入檔案(建立/修改)",
         "fsWriteDetail": "它自己的專屬資料目錄隨時可寫；當前任務的工作目錄跟隨任務的權限模式(免批模式直接寫，逐條確認模式先徵求你同意)；其它目錄每次都需要你確認。檔案始終由主機代寫，插件本身無法直接訪問你的檔案系統。",
+        "deviceSync": "在你的電腦間同步插件資料",
+        "deviceSyncDetail": "與登入同一 Cindy 帳號的其他線上電腦上的同一插件加密交換資料。合併和刪除由插件處理，不共用憑證或其他插件的資料。",
         "libraryPersist": "可使用持久作品庫(大量檔案與資料庫)",
         "libraryPersistDetail": "它會取得一個由 Cindy 管理的獨立儲存區，用來保存你的作品資料(如畫布、圖片、資料庫)，不受一般插件資料配額限制。檔案與資料庫操作全部由主機代執行，插件只能使用庫內相對路徑，無法觸碰你的其它檔案。它還可以讓 Cindy 在系統資料夾中顯示庫內檔案，或彈出系統另存為視窗由你選擇拷貝位置；取消則不會拷出任何檔案。它還可以把 PNG 點陣圖寫入系統剪貼簿；沒有確認框，會覆蓋目前剪貼簿內容。解除安裝插件不會刪除這些資料；刪除必須在 Cindy 設定中單獨確認。",
         "networkHost": "訪問網路域名 {{host}}",
@@ -8137,6 +8144,16 @@
         "alreadyOpen": "已開啟",
         "pluginsLabel": "插件"
       },
+      "descriptions": {
+        "fileBrowser": "瀏覽工作目錄中的檔案",
+        "review": "查看程式碼變更與審查結果",
+        "subagents": "查看子任務的進度與結果",
+        "backgroundTasks": "追蹤背景執行的進度與輸出",
+        "sideChat": "根據主任務的上下文獨立提問",
+        "browser": "在面板中瀏覽網頁",
+        "terminal": "執行命令，查看輸出",
+        "workbench": "查看夥伴的工作進展"
+      },
       "kinds": {
         "fileBrowser": "檔案瀏覽器",
         "browser": "瀏覽器",
@@ -8168,21 +8185,9 @@
       "empty": {
         "eyebrow": "右側欄",
         "title": "開始一個面板",
-        "desc": "在右側開啟檔案、審查、資源監視器、內建瀏覽器或終端，與左側對話並行工作。",
-        "openFile": "開啟檔案",
-        "fileSub": "檔案",
-        "openReview": "開啟審查",
-        "reviewSub": "審查",
-        "openSubagents": "開啟 Subagent",
-        "subagentsSub": "可持續回看的子任務",
-        "openBackgroundTasks": "開啟後臺任務",
-        "backgroundTasksSub": "後臺任務",
+        "desc": "在右側追問、查看檔案或使用工具，與主任務並行工作。",
         "openResourceUsage": "開啟資源監視器",
-        "openBrowser": "開啟瀏覽器",
-        "browserSub": "瀏覽器",
-        "openTerminal": "開啟終端",
-        "terminalSub": "終端",
-        "addMoreHint": "可透過頂部 + 按鈕選擇更多面板型別"
+        "addMoreHint": "也可透過頂部 + 按鈕選擇面板"
       },
       "placeholderHint": "{{kind}} — 內容將在後續階段加入"
     },
@@ -11220,6 +11225,7 @@
     },
     "messageActionBar": {
       "copy": "複製訊息",
+      "copied": "已複製",
       "reply": "回覆",
       "linkCopied": "連結已複製",
       "moreActions": "更多訊息操作",
@@ -11536,6 +11542,12 @@
       "staleBadge": "歷史副本",
       "downloadToLocal": "下載到本機",
       "downloadPacking": "遠端電腦正在打包…已打包 {{size}}",
+      "folderPreparing": "正在準備資料夾…",
+      "cancelFolderPreparation": "取消準備資料夾",
+      "folderPacking": "正在打包…{{size}}",
+      "folderFailed": "資料夾準備失敗，請檢查連線和磁碟空間後重新拖入",
+      "folderUnsupported": "此連線暫不支援傳輸資料夾，請更新遠端電腦上的 Cindy 後重試",
+      "folderConnectionUnsupported": "此連線暫不支援傳輸資料夾，請先將資料夾放到目標電腦，再引用其目錄",
       "downloadProgress": "正在下載…{{percent}}% · {{speed}}",
       "downloadProgressUnknown": "正在下載…{{received}} · {{speed}}",
       "uploadProgress": "遠端正在上傳…{{percent}}% · {{speed}}",
@@ -12167,7 +12179,27 @@
     "ghostPreview": {
       "opened": "打開了一個預覽頁面"
     },
-    "sessionLoading": "載入任務中"
+    "sessionLoading": "載入任務中",
+    "sideChat": {
+      "openPage": "開啟完整任務頁",
+      "returnMain": "返回主任務",
+      "new": "新增側邊追問",
+      "mainWindowDescription": "側邊追問目前在主視窗中使用。追問記錄仍然保留。",
+      "returnToMain": "回到主視窗繼續追問",
+      "commandDescription": "基於主任務開啟側邊追問。可在命令後附上問題，作為追問草稿。",
+      "title": "側邊追問",
+      "context": "基於主任務已有上下文獨立追問，回答不會自動寫回主任務。",
+      "opening": "正在開啟…",
+      "notReady": "請先等待主任務完成一次回答。",
+      "unsupported": "此 Agent 的遠端任務暫不支援側邊追問。",
+      "updateHost": "請先更新執行任務的電腦，再開啟側邊追問。",
+      "failed": "開啟側邊追問失敗，請稍後重試。",
+      "mainTaskOnly": "請從主任務開啟側邊追問。",
+      "closeTitle": "關閉側邊追問？",
+      "closeDescription": "將停止並刪除本次追問，主任務不受影響。",
+      "closeConfirm": "關閉並刪除",
+      "closeFailed": "刪除追問失敗，請稍後重試。"
+    }
   },
   "ccAgent": {
     "agentStatus": {
@@ -15606,6 +15638,7 @@
     }
   },
   "modelDescriptions": {
+    "automaticRouting": "由供應商選擇模型。",
     "longContext": "可選的長上下文版本，長輸入可能產生更高費用。",
     "security": "用於安全分析與程式碼審查。",
     "research": "用於資料研究、複雜問題、程式開發與文件創作。",

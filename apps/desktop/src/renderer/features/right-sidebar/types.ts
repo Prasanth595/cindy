@@ -30,6 +30,7 @@ export type BuiltinTabKindId =
   | 'review'
   | 'orca-workers'
   | 'subagents'
+  | 'side-chat'
   | 'background-tasks'
   | 'routines'
   | 'bot-workbench'
@@ -47,13 +48,14 @@ export interface TabState<TKindState = unknown> {
 }
 
 /**
- * 「+」dropdown 里一个菜单项的元数据。Phase 1 在 `AddTabDropdown.tsx` 硬编码;
- * Phase 2 之后由 `registerTabKind(plugin)` 自动汇总。
+ * 「+」菜单与空面板共用的入口元数据，由 `registerTabKind(plugin)` 自动汇总。
  */
 export interface TabKindMenuMeta {
   kind: TabKindId;
   /** i18n key, e.g. 'rightSidebar.tabs.kinds.fileBrowser' */
   labelKey: string;
+  /** Optional purpose text for the expanded welcome-panel entry. */
+  descriptionKey?: string;
   /**
    * 用户内容原文标签(如插件名),优先于 `t(labelKey)` 渲染 —— 插件名不是
    * i18n 资源,进不了 labelKey 体系。内置 plugin 不填。

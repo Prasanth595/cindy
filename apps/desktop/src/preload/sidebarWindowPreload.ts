@@ -27,6 +27,9 @@ import {
   RSB_WINDOW_REFRESH_CONTEXT_CHANNEL,
   RSB_WINDOW_RENDERER_READY_CHANNEL,
   RSB_WINDOW_LOCALE_CHANGED_CHANNEL,
+  RSB_WINDOW_COMMAND_CHANNEL,
+  RSB_WINDOW_CONTEXT_CHANGED_CHANNEL,
+  RSB_WINDOW_STATE_CHANGED_CHANNEL,
   RSB_WINDOW_TAB_HANDOFF_CHANNEL,
   RSB_WINDOW_VISIBILITY_CHANGED_CHANNEL,
 } from '../shared/rightSidebarWindow';
@@ -376,7 +379,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     refreshContext: (): Promise<void> => ipcRenderer.invoke(RSB_WINDOW_REFRESH_CONTEXT_CHANNEL),
     onStateChanged: (
       cb: (state: { detached: boolean; open: boolean }) => void,
-    ): (() => void) => onPayload('maker:push:rsb-window:state-changed', cb),
+    ): (() => void) => onPayload(RSB_WINDOW_STATE_CHANGED_CHANNEL, cb),
     onContextChanged: (
       cb: (ctx: {
         sessionId: string | null;
@@ -386,10 +389,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
         subagentsAvailable?: boolean;
         available: boolean;
       }) => void,
-    ): (() => void) => onPayload('maker:push:rsb-window:context-changed', cb),
+    ): (() => void) => onPayload(RSB_WINDOW_CONTEXT_CHANGED_CHANNEL, cb),
+    /** main → 子窗口的命令推送；channel 必须与 main 端 MAKER_PUSH.RSB_WINDOW_COMMAND 同源。 */
     onCommand: (
       cb: (cmd: unknown) => void,
-    ): (() => void) => onPayload('maker:push:rsb-window:command', cb),
+    ): (() => void) => onPayload(RSB_WINDOW_COMMAND_CHANNEL, cb),
     onTabHandoff: (cb: (handoff: RsbWindowTabHandoff) => void): (() => void) =>
       onPayload(RSB_WINDOW_TAB_HANDOFF_CHANNEL, cb),
     sendCommand: (request: unknown): Promise<string> =>
@@ -643,7 +647,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     cancel: (params: unknown): Promise<unknown> => ipcRenderer.invoke('maker:search:cancel', params),
     onEvent: (cb: (event: unknown) => void): (() => void) => onPayload('maker:search:event', cb),
   },
+  /** 主窗推送 RSB 浏览器按键命令（⌘L / ⌘W 等）—— main 端常量见 webview-security RSB_BROWSER_COMMAND_CHANNEL。 */
   onRsbBrowserCommand: (
     cb: (payload: { command: string }) => void,
-  ): (() => void) => onPayload('maker:push:rsb-browser-command', cb),
+  ): (() => void) => onPayload('rsb:browser-command', cb),
 });

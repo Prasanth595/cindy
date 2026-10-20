@@ -114,7 +114,7 @@ const DESCRIPTION = [
   '被程序叫醒跟进任务时先读这一份再决定;要看原文再用 get_chat_history。',
   '作用范围:本机任务直接传 id;另一台电脑上的任务传 deviceId::sessionId(只读,对方须在线)。',
   'phase:running 运行中 / waiting-permission 等权限 / waiting-answer 等回答 / errored 出错 / usage-limit 撞用量上限 / finished 刚做完 / idle 空闲。',
-  '换模型用 set_session_runtime(expected_generation 填 runtime_generation;只支持本机任务)。',
+  'suggested_route 只供判断，不是换模型授权。获得目标和变更的明确授权后才用 set_session_runtime(expected_generation 填 runtime_generation;只支持本机任务)。',
 ].join('\n');
 
 export interface GetTaskDigestToolDeps {

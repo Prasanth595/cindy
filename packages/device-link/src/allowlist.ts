@@ -466,6 +466,9 @@ const EXTENDED_INVOKE_CHANNELS: readonly string[] = [
   // Shared action via dispatch injection; local IPC retains its trusted-renderer guard.
   'maker:turn-change-set:apply',
   'maker:fork',
+  // Independent history branch on the task's host; same authority as fork.
+  'maker:side-chat:v1',
+  'maker:side-chat:list:v1',
   'maker:fork-strip-encrypted',
   'maker:generate-title',
   // 重命名输入框 Magic 按钮:被控端读自己 DB 里的最新对话素材、用自己的 provider 凭证

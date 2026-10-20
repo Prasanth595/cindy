@@ -43,6 +43,7 @@ import {
 } from './mobileClientPromptNote.js';
 import { buildWireMessageSourceNote, readWireSourceDevice, readWireSourcePlugin } from './messageSourceNote.js';
 import { buildCindyMakeTaskNote } from '../cindy-make/taskNote.js';
+import { SIDE_CHAT_CONTEXT } from './sideChatContext.js';
 import { getResolvedMainLocale } from '../i18n.js';
 import { buildUiLanguageErrorNote, turnUiLanguageFromSendOpts } from './uiLanguageErrorNote.js';
 import type { RepeatableWireNotes, WireNotePlan } from './wireNoteMemory.js';
@@ -501,7 +502,8 @@ export interface MakerSendTransactionDeps {
    * 保留意图本次不动。undefined = 不启用(测试最小 harness)。`signal` 是这次发送的取消信号：
    * 供应商组在这里等原电脑恢复时，发送被停止就不再等、不再换电脑。
    */
-  applyPendingAgentSwitch?(sessionId: string, options?: { signal?: AbortSignal }): Promise<void>;
+  applyPendingAgentSwitch?(sessionId: string, options?: { signal?: AbortSignal; scheduled?: boolean }): Promise<void>;
+  onModelDispatched?(sessionId: string, clientId: string): void;
   /**
    * 发送前换窗:必须在 getSession 之前。prepare 会关掉不健康的 live handle,
    * 随后本事务按空 session 走 lazy-create,避免 peek 之后对已关闭对象 send。
@@ -559,10 +561,10 @@ export interface MakerSendTransactionDeps {
    */
   readHostDeviceIdentity?(): MessageSourceHostDevice;
   /**
-   * 个人版制作任务(sessions.source='cindy-make')判定,由 host 按持久化来源现读。
-   * 命中时每轮把任务说明追加到 wire 用户消息(不落库、不显示),见 cindy-make/taskNote.ts。
+   * Host-owned task source, read from persistence. Scoped task instructions go only
+   * into the wire message; the composer and saved user text remain unchanged.
    */
-  isCindyMakeSession?(sessionId: string): Promise<boolean>;
+  readTaskSource?(sessionId: string): Promise<string | null>;
   /**
    * 逐轮环境说明去重(见 wireNoteMemory.ts):返回本轮真正要前置的段;与上一次已被
    * 引擎接受的内容相同的段不再重复。`force` 在交接首条(原生上下文刚重建)时整体重发。
@@ -1022,9 +1024,15 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
       // session-agent-switch:pending 切换在发送时刻生效(用户语义:「消息真正发出
       // 去时才切」)。必须在 getSession 之前——apply 会 close 旧引擎的 live session,
       // 让下方走 lazy-create 按 DB 新值 spawn 新引擎。
+      const sendOrigin = requestedSendOpts.persistUserMessage?.origin ?? requestedSendOpts.origin;
+      const scheduled = !!sendOrigin && typeof sendOrigin === 'object' &&
+        (sendOrigin as { kind?: unknown }).kind === 'scheduler';
       await deps.applyPendingAgentSwitch?.(
         sessionId,
-        requestedSendOpts.signal ? { signal: requestedSendOpts.signal } : undefined,
+        requestedSendOpts.signal || scheduled ? {
+          ...(requestedSendOpts.signal ? { signal: requestedSendOpts.signal } : {}),
+          ...(scheduled ? { scheduled: true } : {}),
+        } : undefined,
       );
       // 发送前的准备期间就被停止(如供应商组正在等原电脑恢复)：不再打开会话、不再派发，与 Session 在派发前
       // 收到取消是同一个结果，由调用方按「派发前取消」收尾。
@@ -1381,8 +1389,9 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
           })
         : null;
       // 个人版制作任务说明:与手机说明同层、同占位规则(原生命令必须留在消息开头)。
+      const taskSource = await deps.readTaskSource?.(sessionId);
       const cindyMakeNote =
-        (await deps.isCindyMakeSession?.(sessionId).catch(() => false)) === true &&
+        taskSource === 'cindy-make' &&
         allowsEnvironmentNotes
           ? buildCindyMakeTaskNote()
           : null;
@@ -1393,6 +1402,8 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
       // (原生上下文刚重建)整体重发;只有引擎接受后才记为已发送。斜杠命令轮次本来就不带
       // 说明,也不改写记忆——它不代表模型已经看过新的环境。
       const repeatableNotes: RepeatableWireNotes = {
+        'side-chat': allowsEnvironmentNotes && taskSource === 'side-chat'
+          ? SIDE_CHAT_CONTEXT : null,
         'client-environment': mobileClientNote,
         'cindy-make': cindyMakeNote,
         'ui-language': uiLanguageNote,
@@ -1410,6 +1421,9 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
       let outgoing = plannedNotes['ui-language']
         ? prependNoteToWireUserMessage(withCindyMakeNote as HandoffWireMessage, plannedNotes['ui-language'])
         : withCindyMakeNote;
+      if (plannedNotes['side-chat']) {
+        outgoing = prependNoteToWireUserMessage(outgoing as HandoffWireMessage, plannedNotes['side-chat']);
+      }
       const appContext = shouldPrependMobileClientPromptNote(normalized, sess.agentKind)
         ? await mcpAppModelContext(sessionId)
         : undefined;
@@ -1797,6 +1811,9 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
               );
             }
             deps.assertBeforeVendorDispatch?.(sessionId, finalFenceSendOpts);
+            if (persistUserMessage?.clientId) {
+              deps.onModelDispatched?.(sessionId, persistUserMessage.clientId);
+            }
             dispatchProductTurn?.();
             if (userPromptPreviewSessionId) {
               deps.dispatchUserPromptPreview?.(

@@ -182,6 +182,9 @@
     "turnTokens": "{{tokens}} tokens"
   },
   "lightbox": {
+    "originalUnavailable": "Original image unavailable",
+    "retryOriginal": "Retry Original Image",
+    "loadingOriginal": "Loading original image…",
     "sourceMissing": "The source image is missing on this computer. Import the original file again.",
     "deviceOffline": "The computer is disconnected. Reconnect and try again.",
     "cancelAnnotation": "Cancel annotation",

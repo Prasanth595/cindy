@@ -1,6 +1,6 @@
 {
   "schemaVersion": 5,
-  "updatedAt": "2026-10-14T00:00:00.000Z",
+  "updatedAt": "2026-10-20T09:39:02.203Z",
   "models": [
     {
       "id": "openai/gpt-6.1-sol",
@@ -16,7 +16,8 @@
             "codex"
           ],
           "defaults": {
-            "supportsFastMode": true
+            "supportsFastMode": true,
+            "contextWindow": 500000
           },
           "referencePriceGroup": "global"
         }
@@ -25,7 +26,7 @@
       "modelRef": "openai/gpt-6.1-sol",
       "perAgent": {
         "codex": {
-          "contextWindow": 272000,
+          "contextWindow": 500000,
           "efforts": [
             "low",
             "medium",
@@ -36,7 +37,7 @@
           ]
         },
         "claude-code": {
-          "contextWindow": 272000,
+          "contextWindow": 500000,
           "efforts": [
             "low",
             "medium",
@@ -1035,7 +1036,12 @@
           "providerId": "xai",
           "modelId": "xai/grok-4.7",
           "agents": ["claude-code", "codex"],
-          "referencePriceGroup": "global"
+          "referencePriceGroup": "global",
+          "forceOverrides": {
+            "contextWindow": 500000
+          },
+          "overrideReason": "SuperGrok subscription /v1/models reports context_window 256000 (the Grok CLI working window), but the subscription responses endpoint accepts prompts up to 500000 tokens and rejects larger ones with 'context window (N tokens > 500000 tokens)'.",
+          "overrideVerifiedAt": "2026-10-20"
         }
       ],
       "nativeApi": "openai-responses",
@@ -1056,7 +1062,12 @@
           "providerId": "xai",
           "modelId": "xai/grok-4.7-build-fast",
           "agents": ["claude-code", "codex"],
-          "referencePriceGroup": "global"
+          "referencePriceGroup": "global",
+          "forceOverrides": {
+            "contextWindow": 500000
+          },
+          "overrideReason": "SuperGrok subscription /v1/models reports context_window 256000 (the Grok CLI working window), but the subscription responses endpoint accepts prompts up to 500000 tokens and rejects larger ones with 'context window (N tokens > 500000 tokens)'.",
+          "overrideVerifiedAt": "2026-10-20"
         }
       ],
       "nativeApi": "openai-responses",
@@ -1072,7 +1083,12 @@
           "providerId": "xai",
           "modelId": "xai/grok-4.6",
           "agents": ["claude-code", "codex"],
-          "referencePriceGroup": "global"
+          "referencePriceGroup": "global",
+          "forceOverrides": {
+            "contextWindow": 500000
+          },
+          "overrideReason": "SuperGrok subscription /v1/models reports context_window 256000 (the Grok CLI working window), but the subscription responses endpoint accepts prompts up to 500000 tokens and rejects larger ones with 'context window (N tokens > 500000 tokens)'.",
+          "overrideVerifiedAt": "2026-10-20"
         }
       ],
       "nativeApi": "openai-responses",
@@ -1088,7 +1104,12 @@
           "providerId": "xai",
           "modelId": "xai/grok-4.5",
           "agents": ["claude-code", "codex"],
-          "referencePriceGroup": "global"
+          "referencePriceGroup": "global",
+          "forceOverrides": {
+            "contextWindow": 500000
+          },
+          "overrideReason": "SuperGrok subscription /v1/models reports context_window 256000 (the Grok CLI working window), but the subscription responses endpoint accepts prompts up to 500000 tokens and rejects larger ones with 'context window (N tokens > 500000 tokens)'.",
+          "overrideVerifiedAt": "2026-10-20"
         }
       ],
       "nativeApi": "openai-responses",
@@ -2490,9 +2511,34 @@
       ],
       "nativeApi": "openai-completions",
       "modelRef": "xiaomi/mimo-v2.6-pro-ultraspeed"
+    },
+    {
+      "id": "xd/auto",
+      "name": "Auto",
+      "status": "active",
+      "sortOrder": -1,
+      "routes": [
+        {
+          "providerId": "xd",
+          "modelId": "auto",
+          "agents": ["claude-code", "codex"]
+        }
+      ],
+      "nativeApi": "openai-responses",
+      "modelRef": "xd/auto"
     }
   ],
   "nativeApiRules": [
+    {
+      "providerId": "xd",
+      "modelIdPrefix": "google/gemini-4-argon",
+      "nativeApi": "openai-responses"
+    },
+    {
+      "providerId": "xd",
+      "modelIdPrefix": "gemini-4-argon",
+      "nativeApi": "openai-responses"
+    },
     {
       "providerId": "xd",
       "modelIdPrefix": "google/gemini-",
@@ -7380,6 +7426,13 @@
           "output": ["audio"]
         },
         "officialDocs": "https://www.alibabacloud.com/help/en/model-studio/tts-model"
+      }
+    },
+    {
+      "id": "xd/auto",
+      "aliases": [],
+      "defaults": {
+        "name": "Auto"
       }
     }
   ]

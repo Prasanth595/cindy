@@ -176,8 +176,9 @@ export interface BotGroupMessageView {
   threadShare?: BotGroupThreadShareView;
 }
 
-/** A root message previews at most this many of its newest replies. */
+/** Spoken summaries and distinct responders have independent limits. */
 export const BOT_GROUP_THREAD_PREVIEW_REPLIES = 2;
+export const BOT_GROUP_THREAD_PREVIEW_RESPONDERS = 3;
 
 /**
  * Main-chat share of a thread reply. The card stores only the two IDs; clients resolve the
@@ -239,6 +240,8 @@ export interface BotGroupThreadPreviewReply {
 export interface BotGroupThreadPreview {
   /** Chronological, newest last. */
   replies: BotGroupThreadPreviewReply[];
+  /** Distinct server authors from the fetched window, oldest last-reply first. Older hosts omit this. */
+  responders?: Array<Pick<BotGroupThreadPreviewReply, 'id' | 'authorKind' | 'authorBotId' | 'authorName'>>;
 }
 
 /**

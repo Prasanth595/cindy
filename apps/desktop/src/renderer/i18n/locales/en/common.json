@@ -21,6 +21,11 @@
     "messageCount": "{{count}} emails",
     "showMessages": "Show {{count}} emails"
   },
+  "taskActionConfirmation": {
+    "title": "Confirm session action",
+    "once": "Review the target, action and full content below. Allow applies to this action once.",
+    "delegation": "Review this independent session’s objective and settings. Allow starts it and permits messages and stopping within this delegation until it ends. Answering questions, resuming a pause or changing models still requires a separate confirmation."
+  },
   "logSupport": {
     "title": "Logs and Feedback",
     "localFiles": "Choose logs from the day of the problem. Review unredacted files before sharing.",
@@ -635,7 +640,7 @@
       "round": "Round Robin",
       "order": "In Order",
       "weight": "By Weight",
-      "quotaFirst": "When Claude subscription usage is available, prefer computers whose quota resets soon, then those with lower usage; apply the group strategy among similar ones",
+      "quotaFirst": "When subscription usage is available, prefer computers whose quota resets soon, then those with lower usage; apply the group strategy among similar ones",
       "description": {
         "least": "Goes to the least busy one",
         "round": "Rotates across computers",
@@ -6722,6 +6727,8 @@
         "confirmDetail": "Before acting it can open a dialog that looks like Cindy's own to ask you. The question comes from the plugin and the dialog is labeled with its name; only you can click confirm or cancel — the plugin cannot. At most one dialog at a time, and asking too often is blocked.",
         "fsWrite": "Can write files (create / modify)",
         "fsWriteDetail": "Its own private data folder is always writable. Writes into the current session's working directory follow the session's permission mode (auto-approve modes write directly; per-action modes ask you first). Any other folder always requires your confirmation. Files are always written by the host — the plugin itself never touches your file system.",
+        "deviceSync": "Sync plugin data between your computers",
+        "deviceSyncDetail": "Exchanges this plugin’s data with the same plugin on your other online computers signed in to the same Cindy account. Transfers are encrypted. The plugin controls merging and deletions; no credentials or other plugins’ data are shared.",
         "libraryPersist": "Can use a durable library (large files and databases)",
         "libraryPersistDetail": "It gets a Cindy-managed storage area for your work (canvases, images, databases) with no normal plugin data quota. All file and database operations are executed by the host; the plugin only uses relative paths inside its own library and cannot touch your other files. It can also ask Cindy to show a library file in Finder or Explorer, or open the system Save As dialog so you choose where a copy goes; cancelling Save As copies nothing. It can also write a PNG bitmap to the system clipboard with no confirmation dialog; this overwrites the current clipboard. Uninstalling the plugin does not delete this data; deletion requires separate confirmation in Cindy settings.",
         "networkHost": "Accesses the network domain {{host}}",
@@ -8169,6 +8176,16 @@
         "alreadyOpen": "Open",
         "pluginsLabel": "Plugins"
       },
+      "descriptions": {
+        "fileBrowser": "Browse files in the working folder",
+        "review": "Inspect code changes and review results",
+        "subagents": "Check subtask progress and results",
+        "backgroundTasks": "Track background progress and output",
+        "sideChat": "Ask separately with context from the main task",
+        "browser": "Browse web pages in the panel",
+        "terminal": "Run commands and view output",
+        "workbench": "See what your teammate is working on"
+      },
       "kinds": {
         "fileBrowser": "File browser",
         "browser": "Browser",
@@ -8200,21 +8217,9 @@
       "empty": {
         "eyebrow": "Right Sidebar",
         "title": "Add a panel",
-        "desc": "Open files, review, Activity Monitor, a built-in browser, or a terminal here to work alongside the chat on the left.",
-        "openFile": "Open files",
-        "fileSub": "Files",
-        "openReview": "Open review",
-        "reviewSub": "Review",
-        "openSubagents": "Open Subagent",
-        "subagentsSub": "Durable child work",
-        "openBackgroundTasks": "Open background tasks",
-        "backgroundTasksSub": "Background tasks",
+        "desc": "Ask follow-up questions, view files, or use tools alongside the main task.",
         "openResourceUsage": "Open Activity Monitor",
-        "openBrowser": "Open browser",
-        "browserSub": "Browser",
-        "openTerminal": "Open terminal",
-        "terminalSub": "Terminal",
-        "addMoreHint": "Use the + button at the top to choose more panel types"
+        "addMoreHint": "You can also choose a panel using the + button above"
       },
       "placeholderHint": "{{kind}} — content coming in a later phase"
     },
@@ -11261,6 +11266,7 @@
     },
     "messageActionBar": {
       "copy": "Copy message",
+      "copied": "Copied",
       "reply": "Reply",
       "linkCopied": "Link copied",
       "moreActions": "More message actions",
@@ -11581,6 +11587,12 @@
       "staleBadge": "Cached copy",
       "downloadToLocal": "Download to this computer",
       "downloadPacking": "Remote computer is packing… {{size}} packed",
+      "folderPreparing": "Preparing folder…",
+      "cancelFolderPreparation": "Cancel folder preparation",
+      "folderPacking": "Packing… {{size}}",
+      "folderFailed": "Folder preparation failed. Check the connection and disk space, then drag it in again",
+      "folderUnsupported": "This connection cannot transfer folders yet. Update Cindy on the remote computer and try again",
+      "folderConnectionUnsupported": "This connection cannot transfer folders yet. Copy the folder to the target computer first, then reference its directory",
       "downloadProgress": "Downloading… {{percent}}% · {{speed}}",
       "downloadProgressUnknown": "Downloading… {{received}} · {{speed}}",
       "uploadProgress": "Remote computer is uploading… {{percent}}% · {{speed}}",
@@ -12220,6 +12232,26 @@
     },
     "ghostPreview": {
       "opened": "Opened a preview page"
+    },
+    "sideChat": {
+      "openPage": "Open full task page",
+      "returnMain": "Back to main task",
+      "new": "New side chat",
+      "mainWindowDescription": "Side chats currently run in the main window. Your conversation is saved.",
+      "returnToMain": "Continue in main window",
+      "commandDescription": "Open a side chat with this task's context. Optional text becomes a draft question.",
+      "title": "Side chat",
+      "context": "Uses completed context from when you opened it. The main task keeps running. History stays until you close this tab.",
+      "opening": "Opening…",
+      "notReady": "Wait for the main task to complete its first reply.",
+      "unsupported": "This task's agent runs in another execution environment. Side chat is not available here yet.",
+      "updateHost": "Update the computer running this task to open a side chat.",
+      "failed": "Could not open the side chat. Please try again.",
+      "mainTaskOnly": "Open a side chat from the main task.",
+      "closeTitle": "Close side chat?",
+      "closeDescription": "This follow-up will stop and its history will be deleted. The main task keeps running.",
+      "closeConfirm": "Close and delete",
+      "closeFailed": "Could not close the side chat. Please try again."
     }
   },
   "ccAgent": {
@@ -15661,6 +15693,7 @@
     }
   },
   "modelDescriptions": {
+    "automaticRouting": "Model selection is handled by the provider.",
     "longContext": "Optional long-context version; longer inputs may cost more.",
     "security": "For security analysis and code review.",
     "research": "For research, complex questions, coding and document creation.",

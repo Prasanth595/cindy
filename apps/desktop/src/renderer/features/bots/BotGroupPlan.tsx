@@ -292,10 +292,10 @@ export function BotGroupPlanCard({
   const underWay = plan.status === 'running' || plan.status === 'waiting';
   return (
     <div data-testid="bot-group-plan" data-plan-status={plan.status} className="flex min-w-0 flex-col">
-      <p className="min-w-0 text-14 font-normal leading-relaxed text-[var(--msg-assistant-text)]">
+      <p className="min-w-0 text-15 font-normal leading-[1.6] text-[var(--msg-assistant-text)]">
         {t('bots.groupChat.plan.intro', { count: plan.steps.length })}
       </p>
-      <div className="mt-1.5 w-full max-w-[520px] overflow-hidden rounded-xl border border-[var(--border-default)] bg-[var(--surface-elevated)]">
+      <div className="mt-2 w-fit min-w-0 max-w-full overflow-hidden rounded-lg bg-[var(--surface)]">
         <ol className="flex flex-col py-1.5">
           {plan.steps.map((step, index) => {
             const identity = stepIdentity(step, members);

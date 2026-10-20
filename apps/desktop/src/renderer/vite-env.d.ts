@@ -2829,6 +2829,14 @@ interface ElectronAPI {
     >;
     /** 取消进行中的 chatFetch / chatDownload(按发起时的 requestId);已结束时无操作。 */
     chatCancel: (requestId: string) => Promise<void>;
+    uploadChatFolder: (params: {
+      deviceId: string;
+      file: File;
+      requestId: string;
+    }) => Promise<
+      | { ok: true; path: string; size: number }
+      | { ok: false; code: 'REMOTE_UNSUPPORTED' | 'TRANSFER_FAILED' }
+    >;
     /** 聊天流文件 chip 点亮预检:远端精确 stat。file=点亮;nonfile=保持纯文本;unknown=乐观点亮。 */
     chatStat: (params: {
       origin: { kind: 'device'; deviceId: string } | { kind: 'ssh'; remoteHostId: string };
@@ -6923,6 +6931,8 @@ interface ElectronAPI {
      * SQLite 镜像 + agentMeta uuid remap。错误码:
      *   NOT_FOUND / INVALID_PARAMS / SOURCE_NEVER_RAN / NO_PRIOR_ASSISTANT
      */
+    createSideChat: (sourceSessionId: string) => Promise<import('./lib/ccAgent.types').Session>;
+    listSideChats: (sourceSessionId: string) => Promise<Array<{ id: string }>>;
     fork: (
       sourceSessionId: string,
       messageClientId: string,

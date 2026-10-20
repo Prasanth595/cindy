@@ -143,6 +143,7 @@ import {
   SelectionQuoteContext,
   handleSelectionQuoteMenuAction,
 } from '@/session/selectionQuote';
+import { SelectionMenuText } from '@/session/SelectionMenuText';
 import {
   MOBILE_COMPOSER_CONTROL_SIZE,
   MOBILE_COMPOSER_VOICE_ANCHOR_RIGHT,
@@ -594,14 +595,18 @@ function MarkdownSelectableText({
         // RN Text props 里,组件内部私有附加(经 {...rest} 透传到原生组件)。
         {...{
           menuActionLabel: selectionQuoteMenuLabel(),
+          sideChatMenuActionLabel: quoteCtx.askInSideChat ? i18n.t('session.sideChat.title') : '',
           onMenuAction: (event: { nativeEvent: { target: number; start: number; end: number } }) => {
             handleSelectionQuoteMenuAction(event, renderedLinesRef.current, quoteCtx);
+          },
+          onSideChatMenuAction: (event: { nativeEvent: { target: number; start: number; end: number } }) => {
+            handleSelectionQuoteMenuAction(event, renderedLinesRef.current, quoteCtx, 'side-chat');
           },
         }}
       />
     );
   }
-  return <Text selectable={selectable} {...rest} />;
+  return <SelectionMenuText selectable={selectable} {...rest} />;
 }
 
 /**
@@ -663,6 +668,7 @@ interface MessageActions {
   onCopyMessageLink?: (clientId: string) => void;
   /** Insert this message's anchored link as an atom in the active composer. */
   onAddMessageToComposer?: (clientId: string) => void;
+  onSideChatMessage?: (text: string) => void;
   /**
    * chat-text-quote:选中消息文字 → 系统选择菜单「添加到对话」项的采集回调
    * (会话页写入 chatQuoteStore)。未传时选区采集整体关闭(context 为 null,
@@ -735,6 +741,7 @@ export function MessageRenderer({
   itemsStructureKey,
   onCopyMessageLink,
   onAddMessageToComposer,
+  onSideChatMessage,
   onForkMessage,
   onDeleteMessage,
   onLoadEarlier,
@@ -1753,6 +1760,7 @@ export function MessageRenderer({
     showPluginInvocations,
     remoteDeviceId,
     onAddMessageToComposer,
+    onSideChatMessage,
     onCopyMessageLink,
     onForkMessage,
     onDeleteMessage,
@@ -1803,6 +1811,7 @@ export function MessageRenderer({
     makerTurnRunning,
     onCopyMessageLink,
     onAddMessageToComposer,
+    onSideChatMessage,
     onDeleteMessage,
     onForkMessage,
     onOpenForkOrigin,
@@ -1824,16 +1833,15 @@ export function MessageRenderer({
     shareSelectionBusy,
     viewportLayout.contentWidth,
   ]);
-  // chat-text-quote:选区采集 context。仅「会话页传了采集回调 + iOS」时启用
-  // (Android RN Text 无系统菜单扩展点,v1 降级只读系统复制;只读宿主不传回调,
-  // context 为 null,MarkdownSelectableText 零开销)。菜单点按 → 直接提交,
-  // 无浮层状态。
-  const selectionQuoteEnabled = !!onQuoteSelection && Platform.OS === 'ios';
+  // Native selection menus share the host's action availability. Read-only hosts
+  // keep the system menu; side-chat tasks do not recursively offer side chats.
+  const selectionQuoteEnabled = !!onQuoteSelection;
+  const commitSelectionQuote = useCallback((text: string) => onQuoteSelection?.({ text }), [onQuoteSelection]);
   const selectionQuoteContextValue = useMemo(
-    () => (selectionQuoteEnabled && onQuoteSelection
-      ? { commitQuote: (text: string) => onQuoteSelection({ text }) }
+    () => (selectionQuoteEnabled
+      ? { commitQuote: commitSelectionQuote, askInSideChat: onSideChatMessage }
       : null),
-    [onQuoteSelection, selectionQuoteEnabled],
+    [onSideChatMessage, selectionQuoteEnabled, commitSelectionQuote],
   );
   const showJumpToLatest = isAwayFromBottom && !hasNewMessages;
   const focusRunKey = focusedItemKey
@@ -3489,6 +3497,7 @@ function MessageBubble({
   );
   const canCopyLink = !!(showCompletedActionBar && clientId && actions.onCopyMessageLink);
   const canAddToChat = !!(showCompletedActionBar && clientId && actions.onAddMessageToComposer);
+  const canSideChat = !!(showCompletedActionBar && copyText.trim() && actions.onSideChatMessage);
   const canShare = !!(
     showCompletedActionBar
     && clientId
@@ -3553,11 +3562,12 @@ function MessageBubble({
   // label 走 i18n.t,所以语言必须进依赖:否则用户在任务页挂载期间切语言,菜单会一直
   // 停在切换前的语言,直到 capability 变化或组件重挂。
   const messageMenu = useMemo(() => buildMobileMessageMenu({
+    canSideChat,
     canAddToChat,
     canCopyLink,
     canDelete,
     canRewind,
-  }), [canAddToChat, canCopyLink, canDelete, canRewind, i18nInstance.language]);
+  }), [canSideChat, canAddToChat, canCopyLink, canDelete, canRewind, i18nInstance.language]);
   const actionBar = useMemo(() => buildMessageActionBarPresentation({
     align: isUser ? 'user' : 'agent',
     canCopy,
@@ -3636,8 +3646,9 @@ function MessageBubble({
     if (id === 'rewind') return selectControlAction('rewind');
     if (id === 'delete') return selectControlAction('delete');
     if (id === 'add-to-chat') return actions.onAddMessageToComposer?.(clientId);
+    if (id === 'side-chat') return actions.onSideChatMessage?.(copyText);
     actions.onCopyMessageLink?.(clientId);
-  }, [actions, clientId, selectControlAction]);
+  }, [actions, clientId, copyText, selectControlAction]);
   const openMessageActionMenu = useCallback(() => {
     if (usesSystemActionMenu()) {
       const disabled = actionBusy
@@ -5306,7 +5317,8 @@ function MobileAgentSwitchCard({ data }: { data?: Record<string, unknown> }) {
   const handoff = typeof data?.handoff === 'string' ? data.handoff : '';
   const resumed = data?.resumed === true;
   // 远程 Agent 换了电脑:药丸说位置(「Agent 改到 X 运行」),否则仍是「已从 X 切换到 Y」。
-  const label = formatAgentSwitchLocationLabel(data, (key, options) => t(key, options))
+  const modelOnly = data?.modelOnly === true;
+  const label = modelOnly ? `${data?.fromModel ?? ''} → ${toModel}` : formatAgentSwitchLocationLabel(data, (key, options) => t(key, options))
     ?? t('message.renderer.agentSwitchLabel', { from, to });
 
   return (
@@ -5322,7 +5334,7 @@ function MobileAgentSwitchCard({ data }: { data?: Record<string, unknown> }) {
         >
           <ArrowLeftRight color={colors.textTertiary} size={iconSize.xs} strokeWidth={iconStroke.regular} />
           <Text style={styles.agentSwitchPillText} numberOfLines={1}>{label}</Text>
-          {toModel ? (
+          {toModel && !modelOnly ? (
             <>
               <Text style={styles.agentSwitchDot}>·</Text>
               <Text style={styles.agentSwitchModel} numberOfLines={1}>{toModel}</Text>

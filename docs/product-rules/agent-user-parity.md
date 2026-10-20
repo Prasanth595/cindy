@@ -74,10 +74,23 @@
   `apps/desktop/src/main/mcp-integrations/taskDigest.ts` 与 `taskDigestHost.ts`（跨电脑只读，复用
   `local-db:sessions:get`、`maker:list-active`、历史消息与 PR 状态通道）。
 - 伙伴跟进任务：`apps/desktop/src/main/maker-ipc/botWorkbenchAccess.ts`（授权：自动跟进所有任务的伙伴
-  可读取与继续全部任务，含在线电脑；其它伙伴只碰自己开的或接手的任务）。
+  可读取既有范围内的任务，含在线电脑；继续或接手还需行动授权，其它伙伴只读自己开的或已接手的任务）。
 - 协议与兼容见 [`../dev-rules/protocol-compatibility.md`](../dev-rules/protocol-compatibility.md)
   「Agent 跨电脑管理定时任务与发消息」。
 
 跨任务发送、插话、排队编辑及伙伴请求的正文由宿主保留用户原话，工具参数仅承载 Agent 补充；
 本机和同账号跨电脑沿用相同格式。来源回执不提供执行授权，旧端缺失来源时不猜测原话。
 详见 [消息来源](message-source.md#跨任务请求与伙伴通话的原话2026-10-20)。
+
+### 自主跟进行动授权（2026-10-19）
+
+任务读取与提醒保持原发现入口及可见范围。`cindy_helper` 的工作台、通用任务控制与
+Session 委托写操作，以及 `cindy_orca` 的协作写操作，共用 Host 行动授权入口；
+直接调用、渐进式调用与 CC / Codex / Pi 路由相同。工具描述明确角色不授予行动权限。
+2026-10-20 修订：主人私聊输入及经 Chat Server 实时核验的群内主人请求，沿用普通任务原有权限流程，
+不再额外弹行动确认卡；helper 与 Orca、直接与渐进调用保持一致。群专线必须通过
+`authorizeGroupTool(sessionId, botId, 'owner-action')`，仅有 role 或持久来源不算主人输入；
+访客、其他伙伴/任务转入、定时跟进仍受自动行动门约束，核验暂不可用不得放行。
+自动轮次没有有效委托只准备建议；已有委托的执行权不依赖自动观察规则的开关。
+普通 Orca Lead 的当前 team 回报只延续原 team 范围，不能据此控制其它任务。跨电脑任务互发要求双方支持
+行动回执，旧端明确提示不支持；未增加观察数据权限。实机多端验收仍待完成。

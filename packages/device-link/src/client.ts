@@ -67,6 +67,7 @@ import {
   byteLength,
   type RetransmitEstimate,
 } from './transport.js';
+import { PLUGIN_SYNC_CHANNEL } from './pluginSyncProtocol.js';
 import { MAKER_EVENT_BATCH_CHANNEL } from './topics.js';
 
 /** Budget measurement: physical wire envelope size regardless of relay announcement. */
@@ -5227,6 +5228,9 @@ const UNLINKED_LEGACY_INVOKE_CHANNELS = new Set([
   'maker:git-safety:get',
 ]);
 const UNLINKED_LEGACY_PUSH_CHANNELS = new Set([
+  // Same-account encrypted sync does not require an open remote-control link.
+  // The Desktop plugin-sync receiver still checks owner, revocation and capability.
+  PLUGIN_SYNC_CHANNEL,
   'device-link:voice:dictionary:snapshot',
 ]);
 

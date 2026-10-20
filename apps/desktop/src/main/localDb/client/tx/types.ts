@@ -170,6 +170,7 @@ export interface ForkSessionArgs {
   /** 与 targetCreatedAt 同毫秒时按 SQLite 插入顺序截断；null/缺省表示整毫秒前缀。 */
   targetRowid?: number | null;
   newSession: {
+    source?: string;
     id: string;
     title: string;
     workingDir: string | null;
@@ -386,6 +387,11 @@ export interface SessionsSetStatusArgs {
 export interface SessionsSetTerminalStatusArgs {
   sessionId: string;
   status: 'archived' | 'deleted';
+}
+
+export interface SessionsSetTerminalStatusResult extends Omit<SessionsSetStatusResultItem, 'status'> {
+  status: 'archived' | 'deleted';
+  deletedSideChats: Array<Omit<SessionsSetStatusResultItem, 'status'>>;
 }
 
 /** resume 停泊失败后的原子回落:清失效绑定并把边界改成全量交接。 */
@@ -1477,7 +1483,7 @@ export type DbTxResultByName = {
   'orca.reconcileInactiveTeamWorkersForLead': string[];
   'sessions.renameTitles': SessionsRenameTitleResult[];
   'sessions.setStatus': SessionsSetStatusResultItem[];
-  'sessions.setTerminalStatus': SessionsSetStatusResultItem;
+  'sessions.setTerminalStatus': SessionsSetTerminalStatusResult;
   'recentWorkdirs.mergeWindowsIdentity': undefined;
   'recentWorkdirs.removeWindowsIdentity': { changes: number };
   'pluginUsage.execute': PluginUsageHandle | null;

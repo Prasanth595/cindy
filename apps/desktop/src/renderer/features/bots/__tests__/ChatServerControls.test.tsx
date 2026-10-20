@@ -379,7 +379,9 @@ describe('chat interaction controls', () => {
   it('shares thread messages separately from the main timeline and excludes controls from the image', async () => {
     const view = render(<ChatThreadPanel group={group} rootId="root" onClose={vi.fn()} />);
     const article = (await screen.findByText('Root message')).closest('article')!;
-    fireEvent.click(within(article).getByRole('button', { name: 'chat.shareImage.entry' }));
+    // Share lives in the bubble toolbar's more menu.
+    fireEvent.pointerDown(within(article).getByRole('button', { name: 'chat.messageActionBar.moreActions' }), { button: 0, ctrlKey: false });
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'chat.shareImage.entry' }));
     const scope = 'bot-group:room:thread:root';
     expect(shareSelectionStore.isActive(scope)).toBe(true);
     expect(queryShareableMessageIds(scope)).toEqual(['root']);

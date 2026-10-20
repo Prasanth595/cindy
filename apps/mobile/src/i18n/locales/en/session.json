@@ -1,4 +1,27 @@
 {
+  "sideChat": {
+    "collapse": "Collapse side chat",
+    "resume": "Continue side chat",
+    "list": "Side chat list",
+    "summary": "Side chats · {{count}}",
+    "fromMain": "From “{{title}}”",
+    "mainTask": "Main task",
+    "commandDescription": "Open a side chat; add a question after /side",
+    "commandAttachments": "Finish handling the current attachments before using /side.",
+    "unavailable": "Side chats are unavailable for this task.",
+    "title": "Side chats",
+    "ask": "Ask in a side chat",
+    "create": "New side chat",
+    "returnMain": "Return to main task",
+    "item": "Side chat {{index}}",
+    "current": "Current",
+    "description": "Ask independently with the main task’s existing context. Replies are not automatically added to the main task.",
+    "empty": "No side chats yet",
+    "loadFailed": "Could not load side chats. Check the computer connection; older desktop versions need an update.",
+    "createFailed": "Could not create a side chat. The main task is unchanged.",
+    "unsupported": "This computer does not support side chats yet. Update the desktop app.",
+    "waitForReply": "Wait for the main task’s first completed reply before creating a side chat."
+  },
   "leaveWhileUploading": {
     "title": "Discard this message?",
     "body": "Attachments are still uploading. If you leave now, this message won't be sent.",

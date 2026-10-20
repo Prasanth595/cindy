@@ -89,7 +89,7 @@ export function pickProviderGroupMember(
 /**
  * 配额先比(2026-10-15 用户裁决：目的是尽快把快重置的配额用掉)，对所有组策略生效：
  * 先留快到期的那一批，再留已用百分比最低的(相差 5 个百分点以内都算)。读不到用量的电脑(别人分享的、
- * 非 Claude 订阅的)排在读得到的后面；全部读不到时不筛，原样交给组策略。保持组里的顺序。
+ * 尚未接入用量的订阅或 API 连接)排在读得到的后面；全部读不到时不筛，原样交给组策略。保持组里的顺序。
  */
 function byQuota(open: readonly SchedulableMember[], now: number | undefined): readonly SchedulableMember[] {
   const known = open.filter((member) => typeof member.usagePercent === 'number' && Number.isFinite(member.usagePercent));

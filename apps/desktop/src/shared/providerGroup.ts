@@ -412,7 +412,7 @@ export type ProviderGroupRemoteRequest =
   /** 这台电脑经组运行、正在跑的任务(整体替换上一份；seq 只增，乱序到达的旧份丢弃)。 */
   | { action: 'leases'; seq: number; entries: ProviderGroupRemoteLease[] }
   /** 组内电脑的状态(发送前检查、设置页展示)。 */
-  | { action: 'view'; providerId: string; model?: string; includeGuestSupport?: true }
+  | { action: 'view'; providerId: string; model?: string; agentKind?: 'claude-code' | 'codex' | 'pi'; includeGuestSupport?: true }
   /**
    * 这台电脑经组、在组里别的电脑上运行的用量(组所在电脑经手不到)：整体替换这台从 sinceDay 起(含；null = 全部)
    * 报过的行。seq 只增，乱序到达的旧份丢弃。
@@ -546,6 +546,9 @@ export function parseProviderGroupRemoteRequest(raw: unknown): ProviderGroupRemo
       };
     }
     case 'view': {
+      if (value.agentKind !== undefined && (typeof value.agentKind !== 'string' || !REMOTE_AGENT_KINDS.has(value.agentKind))) {
+        invalidRemote('invalid agent');
+      }
       if (value.model !== undefined && (typeof value.model !== 'string' || !value.model || value.model.length > 512)) {
         invalidRemote('invalid model');
       }
@@ -553,6 +556,7 @@ export function parseProviderGroupRemoteRequest(raw: unknown): ProviderGroupRemo
         action: 'view',
         providerId: remoteProviderId(value.providerId),
         ...(value.model !== undefined ? { model: value.model } : {}),
+        ...(value.agentKind !== undefined ? { agentKind: value.agentKind as 'claude-code' | 'codex' | 'pi' } : {}),
         ...(value.includeGuestSupport === true ? { includeGuestSupport: true } : {}),
       };
     }

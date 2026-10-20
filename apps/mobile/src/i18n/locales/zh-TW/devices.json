@@ -317,6 +317,7 @@
       "openMenu": "打開選單",
       "closeMenu": "關閉選單",
       "openDisplaySettings": "打開顯示設定",
+      "openDisplaySettingsWithStatus": "打開顯示設定（目前：{{status}}）",
       "openSearch": "搜尋",
       "openSettings": "開啟設定",
       "syncing": "正在重新同步",

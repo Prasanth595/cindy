@@ -156,3 +156,14 @@ export const RSB_WINDOW_REFRESH_CONTEXT_CHANNEL = 'rsb-window:refresh-context';
 export const RSB_WINDOW_LOCALE_CHANGED_CHANNEL = 'rsb-window:locale-changed';
 /** main → 主 renderer：合并前交接不可持久化 session 的 tab 快照。 */
 export const RSB_WINDOW_TAB_HANDOFF_CHANNEL = 'maker:rsb-window:tab-handoff';
+// 以下三条是 main → renderer(send) 的主动推送。channel 名必须与 main 端
+// MAKER_PUSH.* 完全一致：子窗口 preload 曾按不存在的 `maker:push:*` 订阅，导致
+// 主窗转发过来的 open-web-browser 命令（链接触发 / 插件预览 / 文件审查）
+// 全部静默丢失，分离侧栏表现为“点了没反应、页签不出现”。(#3390 / #4403)
+// 统一收口到这里，main 与两个 preload 都只引用常量，不再各写一份字符串。
+/** main → 全部窗口：子窗口状态广播(detached / open)。 */
+export const RSB_WINDOW_STATE_CHANGED_CHANNEL = 'maker:rsb-window:state-changed';
+/** main → 子窗口：侧边栏渲染上下文变化(主窗切会话)。 */
+export const RSB_WINDOW_CONTEXT_CHANGED_CHANNEL = 'maker:rsb-window:context-changed';
+/** main → 子窗口：命令推送(open-web-browser / open-terminal / tab 定位等)。 */
+export const RSB_WINDOW_COMMAND_CHANNEL = 'maker:rsb-window:command';

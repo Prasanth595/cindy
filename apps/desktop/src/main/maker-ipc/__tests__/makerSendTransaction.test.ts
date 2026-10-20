@@ -404,6 +404,27 @@ describe('MCP App message authorization', () => {
 });
 
 describe('maker SEND transaction', () => {
+  it.each([false, true])('records the actual model only at dispatch (scheduled=%s)', async (scheduled) => {
+    const applyPendingAgentSwitch = vi.fn(async () => {});
+    const onModelDispatched = vi.fn();
+    const { deps, session } = createDeps({ applyPendingAgentSwitch, onModelDispatched });
+    vi.mocked(session.send).mockImplementation(async (_message, opts) => {
+      await opts?.onAccepted?.();
+      expect(onModelDispatched).not.toHaveBeenCalled();
+      opts?.onDispatching?.();
+      return { accepted: true };
+    });
+    await createMakerSendTransaction(deps).sendToAgentAccepted('session-1', 'continue', undefined, {
+      persistUserMessage: {
+        clientId: 'model-input', content: 'continue',
+        ...(scheduled ? { origin: { kind: 'scheduler' as const, scheduleId: 'schedule', runId: 'run' } } : {}),
+      },
+    });
+    expect(applyPendingAgentSwitch).toHaveBeenCalledWith('session-1',
+      scheduled ? { scheduled: true } : undefined);
+    expect(onModelDispatched).toHaveBeenCalledExactlyOnceWith('session-1', 'model-input');
+  });
+
   it.each([false, true])(
     'captures product state before preparation and resumes only at dispatch (persist=%s)',
     async (persist) => {
@@ -2980,11 +3001,43 @@ describe('message source notes', () => {
 });
 
 describe('Cindy Make task note', () => {
+  // Production dispatch contract: the side-chat boundary is wire-only and is resent after context reset.
+  // Existing task-note tests do not cover fork isolation or the accepted-note cache (unit).
+  it('isolates side-chat context without changing the visible question or adding a note every turn', async () => {
+    const memory = createWireNoteMemory();
+    const { deps, session } = createDeps({
+      readTaskSource: async () => 'side-chat',
+      planRepeatableWireNotes: (id, notes, opts) => memory.plan(id, notes, opts),
+    });
+    const transaction = createMakerSendTransaction(deps);
+    await transaction.sendToAgentAccepted('session-1', 'Explain this choice', undefined, {
+      persistUserMessage: { clientId: 'side-1', content: 'Explain this choice' },
+    });
+    expect(vi.mocked(session.send).mock.calls[0][0]).toContain('[Side chat context]');
+    expect(vi.mocked(deps.createDbMessage).mock.calls[0][1].content).toBe('Explain this choice');
+    await transaction.sendToAgentAccepted('session-1', 'And the alternative?');
+    expect(vi.mocked(session.send).mock.calls[1][0]).toBe('And the alternative?');
+    memory.reset('session-1');
+    await transaction.sendToAgentAccepted('session-1', 'Continue explaining');
+    expect(vi.mocked(session.send).mock.calls[2][0]).toContain('[Side chat context]');
+  });
+
+  it('does not decorate native commands or ordinary fork messages with side-chat instructions', async () => {
+    const session = createSession({ agentKind: 'claude-code' });
+    const readTaskSource = vi.fn(async () => 'side-chat');
+    const { deps } = createDeps({ getSession: () => session, readTaskSource });
+    const transaction = createMakerSendTransaction(deps);
+    await transaction.sendToAgentAccepted('session-1', '/compact');
+    expect(session.send).toHaveBeenLastCalledWith('/compact', expect.anything());
+    readTaskSource.mockResolvedValue('desktop');
+    await transaction.sendToAgentAccepted('session-1', 'Continue');
+    expect(vi.mocked(session.send).mock.calls[1][0]).not.toContain('[Side chat context]');
+  });
   it('annotates the wire message of a cindy-make task but persists the original text', async () => {
     const session = createSession({ agentKind: 'claude-code' });
     const { deps } = createDeps({
       getSession: vi.fn(() => session),
-      isCindyMakeSession: vi.fn(async () => true),
+      readTaskSource: vi.fn(async () => 'cindy-make'),
     });
     const transaction = createMakerSendTransaction(deps);
 
@@ -2999,14 +3052,14 @@ describe('Cindy Make task note', () => {
 
   it('leaves ordinary tasks and native commands untouched', async () => {
     const session = createSession({ agentKind: 'claude-code' });
-    const isCindyMakeSession = vi.fn(async (sessionId: string) => sessionId === 'session-1');
-    const { deps } = createDeps({ getSession: vi.fn(() => session), isCindyMakeSession });
+    const readTaskSource = vi.fn(async (sessionId: string) => sessionId === 'session-1' ? 'cindy-make' : 'desktop');
+    const { deps } = createDeps({ getSession: vi.fn(() => session), readTaskSource });
     const transaction = createMakerSendTransaction(deps);
 
     await transaction.sendToAgentAccepted('session-1', '/compact');
     expect(session.send).toHaveBeenCalledWith('/compact', expect.anything());
 
-    isCindyMakeSession.mockResolvedValue(false);
+    readTaskSource.mockResolvedValue('desktop');
     await transaction.sendToAgentAccepted('session-1', 'hello');
     expect(session.send).toHaveBeenLastCalledWith(withUiLanguageNote('hello'), expect.anything());
     expect(String(vi.mocked(session.send).mock.calls.at(-1)?.[0])).not.toContain('[任务说明]');
@@ -3752,6 +3805,7 @@ describe('session-agent-switch handoff injection', () => {
       const pending = new Map([['session-1', { targetAgentKind }]]);
       const beforeSend = vi.fn(async () => undefined);
       const bindings = {
+        scheduledModelScope: { restore: vi.fn(async () => undefined) },
         // UI-origin cross-engine preparation can return without clearing the intent.
         applyPendingAgentSwitchIfIdle: vi.fn(async () => undefined),
         agentSwitchDeps: {}, agentSwitchPending: pending,

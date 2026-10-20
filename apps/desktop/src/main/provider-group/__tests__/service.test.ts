@@ -13,6 +13,7 @@ import type { ProviderGroupBinding, ProviderGroupRef } from '../bindings';
 import type { ProviderGroupDirectory, ResolvedMemberState, ResolvedProviderGroupMember } from '../directory';
 import { createProviderGroupGuestSwitch, PROVIDER_GROUP_SWITCH_OFFER_TTL_MS } from '../guestSwitch';
 import { createProviderGroupRouter, PROVIDER_GROUP_DEFAULT_COOLDOWN_MS } from '../router';
+import { providerGroupCodexUsageSnapshot, type ProviderGroupCodexUsageSnapshot } from '../usage';
 import {
   createProviderGroupService,
   PROVIDER_GROUP_PRE_SEND_FAILED_TTL_MS,
@@ -55,6 +56,7 @@ function harness(options: {
   /** 这些组内电脑上的同名模型不能用于新会话(停用、退役、需要付费)。 */
   unusableModel?: Record<string, Record<string, unknown>>;
   usage?: Record<string, ClaudeSubscriptionUsageSnapshot>;
+  codexUsage?: Record<string, ProviderGroupCodexUsageSnapshot>;
 } = {}) {
   let now = 1_000_000;
   const config: ProviderGroupConfig = {
@@ -75,7 +77,8 @@ function harness(options: {
     async resolveMembers(_providerId, current) {
       return current.members.map((m): ResolvedProviderGroupMember => offline.has(m.key)
         ? { member: m, label: m.key, state: 'offline' }
-        : { member: m, label: `${m.key}-name`, state: 'ok', view: view(m.providerId, options.unusableModel?.[m.key]), claudeUsage: options.usage?.[m.key] });
+        : { member: m, label: `${m.key}-name`, state: 'ok', view: view(m.providerId, options.unusableModel?.[m.key]),
+          claudeUsage: options.usage?.[m.key], codexUsage: options.codexUsage?.[m.key] });
     },
     async listCandidates() {
       return [];
@@ -1158,6 +1161,18 @@ describe('beforeSend', () => {
     await h.service.beforeSend('s1');
     expect(h.row.agentDeviceId).toBe('mini');
     expect(h.router.coolingUntil('anthropic', 'local')).toBeNull();
+  });
+
+  // Unit: beforeSend must use the task's bridge quota, not the unrelated native Codex bucket.
+  // Router-only coverage cannot detect dropping agentKind between the session and this check.
+  it.each([[100, 20, 'mini'], [20, 100, null]])('checks the OpenAI bridge quota before sending (web=%s, native=%s)', async (web, native, device) => {
+    const bucket = (usedPercent: number) => ({ updatedAt: 1_000_000, primary: { usedPercent, resetsAt: 3_000 } });
+    const h = harness({ members: [LOCAL, MINI], codexUsage: { local: providerGroupCodexUsageSnapshot({
+      appServerBuckets: { codex: bucket(native) }, webSnapshot: bucket(web),
+    })! } });
+    h.bindings.set('s1', { providerId: 'anthropic', memberKey: 'local', at: 1_000_000 });
+    await h.service.beforeSend('s1');
+    expect(h.row.agentDeviceId).toBe(device);
   });
 
   it('only moves before sending when the cooldown covers this task’s model', async () => {

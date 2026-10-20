@@ -133,9 +133,12 @@ export function BotGroupProgressStrip({
     <div className="shrink-0 px-5 pt-2">
       <div
         data-testid="bot-group-progress"
-        className="mx-auto flex w-full max-w-[760px] flex-col rounded-xl border border-[var(--border-default)] bg-[var(--surface-elevated)]"
+        data-expanded={expanded && canView ? '' : undefined}
+        // A content-width capsule above the composer; opening the process turns it into a panel.
+        className={cn('mx-auto flex min-w-0 flex-col border border-[var(--border-default)] bg-[var(--surface-elevated)]',
+          expanded && canView ? 'w-full max-w-[760px] rounded-xl' : 'w-fit max-w-[min(760px,100%)] rounded-full')}
       >
-        <div className="flex min-h-9 min-w-0 items-center gap-2 px-3 py-1.5">
+        <div className={cn('flex min-h-9 min-w-0 items-center gap-2 py-1', expanded && canView ? 'px-3' : 'pl-2 pr-1')}>
           {member ? <BotAvatar bot={member} size="xs" /> : null}
           <p role="status" aria-live="polite" className="flex min-w-0 flex-1 items-center gap-1 truncate text-12 leading-5 text-[var(--text-secondary)]">
             {step ? (
