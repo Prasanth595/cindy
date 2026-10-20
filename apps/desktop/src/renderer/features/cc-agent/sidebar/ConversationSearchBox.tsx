@@ -520,7 +520,17 @@ export function useConversationSearch({
         if (remoteDeviceId) {
           remoteProjectsStore.pinSessionOrigin(remoteDeviceId, item.session.id);
         }
-        const baseRoute = await resolveSessionRoute(item.session.id, item.session);
+        const companion = item.session.companion;
+        const companionRoute = companion
+          ? remoteDeviceId
+            ? `/bots/remote/${encodeURIComponent(remoteDeviceId)}/${encodeURIComponent(companion.id)}`
+            : `/bots/${encodeURIComponent(companion.id)}`
+          : null;
+        const baseRoute = companionRoute
+          ? companion?.readOnly
+            ? `${companionRoute}/history/${encodeURIComponent(item.session.id)}`
+            : remoteDeviceId ? companionRoute : `${companionRoute}/session/${encodeURIComponent(item.session.id)}`
+          : await resolveSessionRoute(item.session.id, item.session);
         const hit = hitOverride ?? item.contentHit;
         // popover 形态:onResultChosen 关闭面板并通知托盘(SidebarActionBar 减 openChildCount),
         // 其 reset() 会清空 query。内联展开态不传 onResultChosen——选中结果后**刻意保留 query**,
@@ -1219,10 +1229,11 @@ function SearchResultRow({
   const sourceText = primaryHit ? searchSourceLabel(primaryHit, t) : t('ccAgent.search.source.titleOnly');
   const deviceLabel = item.session.deviceLinkDeviceName?.trim() || null;
   const meta = [
+    item.session.companion?.name,
     sourceText,
     activityText,
     deviceLabel,
-    item.session.workingDir,
+    item.session.companion ? null : item.session.workingDir,
   ].filter(Boolean).join(' · ');
   const tooltip = (
     <div className="space-y-2">

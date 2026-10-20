@@ -4,8 +4,8 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { resolveBotChatIdentity, type BotChatBinding } from '../botChatPresentation';
 
 const h = vi.hoisted(() => ({
-  params: { botId: 'bot', sessionId: 'chat' },
-  get: vi.fn(), list: vi.fn(), history: vi.fn(),
+  params: { botId: 'bot', sessionId: 'chat', deviceId: undefined as string | undefined },
+  get: vi.fn(), list: vi.fn(), history: vi.fn(), invoke: vi.fn(), pin: vi.fn(),
   profiles: [] as Array<{ id: string; name: string; avatar: string; avatarColor: string; invitation?: { stage: string } }>,
   profileListeners: new Set<() => void>(),
 }));
@@ -28,20 +28,24 @@ vi.mock('react-router-dom', () => ({
 }));
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock('../useBotIslandVisibleSession', () => ({ useBotIslandVisibleSession: () => {} }));
+vi.mock('@/features/device-link/remoteProjectsStore', () => ({
+  remoteProjectsStore: { pinSessionOrigin: h.pin },
+}));
 vi.mock('@/features/cc-agent/CCAgentSessionView', () => ({
-  CCAgentSessionView: ({ botIdentity, botInvitationStage }: { botIdentity?: BotChatBinding; botInvitationStage?: string }) => {
+  CCAgentSessionView: ({ botIdentity, botInvitationStage, readOnly }: { botIdentity?: BotChatBinding; botInvitationStage?: string; readOnly?: boolean }) => {
     const identity = resolveBotChatIdentity(botIdentity, h.params.sessionId);
-    return <div data-name={identity?.name} data-invitation-stage={botInvitationStage ?? ''}>{identity ? `companion:${identity.id}` : 'task controls'}</div>;
+    return <div data-name={identity?.name} data-read-only={readOnly} data-invitation-stage={botInvitationStage ?? ''}>{identity ? `companion:${identity.id}` : 'task controls'}</div>;
   },
 }));
 import { BotSessionView } from '../BotSessionView';
 import { BotHistorySessionView } from '../BotHistorySessionView';
 
 beforeEach(() => {
-  h.params = { botId: 'bot', sessionId: 'chat' };
+  h.params = { botId: 'bot', sessionId: 'chat', deviceId: undefined };
   h.get.mockReset(); h.list.mockReset().mockResolvedValue([]); h.history.mockReset();
+  h.invoke.mockReset(); h.pin.mockReset();
   h.profiles = []; h.profileListeners.clear();
-  window.electronAPI = { localDb: { bots: { get: h.get, list: h.list, history: h.history } } } as unknown as Window['electronAPI'];
+  window.electronAPI = { localDb: { bots: { get: h.get, list: h.list, history: h.history } }, deviceLink: { invoke: h.invoke } } as unknown as Window['electronAPI'];
 });
 afterEach(cleanup);
 it('mounts the simplified chat only after verifying the durable link, without another session GET', async () => {
@@ -78,7 +82,7 @@ it('drops the previous binding synchronously when navigating to a different Bot 
   const view = render(<BotSessionView />);
   await screen.findByText('companion:bot');
   h.get.mockReturnValue(new Promise(() => {}));
-  h.params = { botId: 'other', sessionId: 'other-chat' };
+  h.params = { botId: 'other', sessionId: 'other-chat', deviceId: undefined };
   view.rerender(<BotSessionView />);
   expect(screen.queryByText('companion:bot')).toBeNull();
   expect(screen.queryByText('task controls')).toBeNull();
@@ -116,4 +120,31 @@ it('never shows the first-hello wait in a channel-routed (non-canonical) task of
   h.profiles = [{ id: 'bot', name: 'Melody', avatar: '🎵', avatarColor: 'violet', invitation: { stage: 'welcome' } }];
   render(<BotSessionView />);
   expect((await screen.findByText('companion:bot')).getAttribute('data-invitation-stage')).toBe('');
+});
+
+// Search can open archived canonical transcripts outside the history menu.
+it('opens an archived canonical link read-only when absent from the history list', async () => {
+  h.history.mockResolvedValue([]);
+  h.get.mockResolvedValue({ id: 'bot', name: 'Melody', sessions: [
+    { id: 'chat', role: 'canonical', status: 'archived' },
+  ] });
+  await act(async () => { render(<BotHistorySessionView />); });
+  expect(screen.getByText('companion:bot').getAttribute('data-read-only')).toBe('true');
+});
+
+it.each(['history', 'channel'])('checks remote %s links before displaying a searched transcript', async role => {
+  h.params.deviceId = 'remote';
+  h.invoke.mockResolvedValue({ id: 'bot', name: 'Melody', sessions: [
+    { id: 'chat', role, status: 'archived' },
+  ] });
+  await act(async () => { render(<BotHistorySessionView />); });
+  expect(h.invoke).toHaveBeenCalledWith('remote', 'local-db:bots:get', ['bot']);
+  expect(h.history).not.toHaveBeenCalled();
+  if (role === 'history') {
+    expect(screen.getByText('companion:bot').getAttribute('data-read-only')).toBe('true');
+    expect(h.pin).toHaveBeenCalledWith('remote', 'chat');
+  } else {
+    expect(screen.getByText('unavailable')).toBeTruthy();
+    expect(h.pin).not.toHaveBeenCalled();
+  }
 });
