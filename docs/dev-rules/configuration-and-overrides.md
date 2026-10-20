@@ -82,14 +82,7 @@ Windows 按不区分大小写匹配，每个物理 worktree 单独记录，不�
 原子写入，损坏文件保留且拒绝覆盖；空列表删除 override 文件。此处是本机提示偏好，不同步
 设备、不开放远控写入；SSH、托管远程任务与 Mobile 沿用不弹此迁移提示的现状。
 
-自动跳过同一转换项使用实际选定 Claude Code 可执行文件的版本探测，最低保守基线为
-2.1.281（2.1.277 首次支持，2.1.281 扩展到网关和关闭遥测的运行方式），并检查用户设置、
-环境禁用、内建插件的两个 ID、旧版选项和真实目录的祖先指令文件；Windows 环境变量名
-不区分大小写。遇到版本未知、配置不可读、
-排除规则或未解析的托管策略时保留提示；不按模型名判断，也不修改引擎配置。
-上游依据：[版本记录](https://github.com/anthropics/claude-code/blob/v2.1.296/CHANGELOG.md)、
-[内建 AGENTS.md 选项](https://github.com/anthropics/claude-code/blob/v2.1.296/mods/agents-md/README.md)。
-实现和回归见 `main/cross-agent-convert/` 与 `useCrossAgentConvertPrompt.test.tsx`。
+检测沿用原有文件条件；此偏好只记住用户的显式选择，不推断或修改引擎的指令读取能力。
 
 ## Review 清单
 

@@ -16,11 +16,8 @@ import { createLogger } from '../logger.js';
 import { detect, type DetectInput } from './detector.js';
 import { convertAll } from './converter.js';
 import type { AgentKind, DetectResult, MigrationItem, MigrationStepEvent } from './types.js';
-import { getReadyBinaryPath } from '../agent-binaries/index.js';
-import { probeBinaryVersion } from '../agent-binaries/binary-version-probe.js';
 import { assertTrustedAppRendererEvent } from '../security/trustedAppRenderer.js';
 import { throwIpcError } from '../utils/ipcValidate.js';
-import { claudeReadsAgentsMd, hasClaudeManagedPolicy } from './native-instructions.js';
 import { createMigrationPromptPreferences } from './prompt-preferences.js';
 
 const log = createLogger('cross-agent-convert:ipc');
@@ -56,23 +53,9 @@ export function registerCrossAgentConvertIpc(): void {
       assertTrustedAppRendererEvent(event);
       if (typeof workingDir !== 'string' || !workingDir) return { items: [] };
       if (agentKind !== 'claude-code' && agentKind !== 'codex') return { items: [] };
-      const readsAgentsMd = async () => {
-        const binary = getReadyBinaryPath('claude-code');
-        const homeDir = app.getPath('home');
-        return binary
-          ? await claudeReadsAgentsMd({
-              version: await probeBinaryVersion(binary),
-              workingDir,
-              userSettingsPath: path.join(homeDir, '.claude', 'settings.json'),
-              env: process.env,
-              managedPolicyPresent: await hasClaudeManagedPolicy(homeDir),
-            })
-          : false;
-      };
       const result = await detect({
         workingDir,
         agentKind: agentKind as AgentKind,
-        readsAgentsMd,
       } satisfies DetectInput);
       if (agentKind === 'claude-code' && (await promptPreferences.isSuppressed(workingDir))) {
         result.items = result.items.filter((item) => item.kind !== 'agents-md');

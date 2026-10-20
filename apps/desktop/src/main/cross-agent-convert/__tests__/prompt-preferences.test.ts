@@ -6,8 +6,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const ipc = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => Promise<unknown>>(),
   root: '',
-  native: vi.fn(),
-  probe: vi.fn(),
 }));
 vi.mock('electron', () => ({
   app: { getPath: () => ipc.root },
@@ -16,12 +14,6 @@ vi.mock('electron', () => ({
       ipc.handlers.set(name, handler),
   },
   BrowserWindow: { getAllWindows: () => [] },
-}));
-vi.mock('../../agent-binaries/index.js', () => ({ getReadyBinaryPath: () => 'fixture-claude' }));
-vi.mock('../../agent-binaries/binary-version-probe.js', () => ({ probeBinaryVersion: ipc.probe }));
-vi.mock('../native-instructions.js', () => ({
-  claudeReadsAgentsMd: ipc.native,
-  hasClaudeManagedPolicy: async () => false,
 }));
 vi.mock('../../security/trustedAppRenderer.js', () => ({
   assertTrustedAppRendererEvent: (event: { trusted?: boolean }) => {
@@ -42,8 +34,6 @@ beforeEach(async () => {
   root = await fs.mkdtemp(path.join(os.tmpdir(), 'migration-prefs-'));
   settingsPath = path.join(root, 'profile', 'preferences.json');
   ipc.root = path.join(root, 'ipc-profile');
-  ipc.native.mockReset().mockResolvedValue(false);
-  ipc.probe.mockReset().mockResolvedValue('2.1.296');
   registerCrossAgentConvertIpc();
 });
 
@@ -57,26 +47,25 @@ describe('migration prompt IPC', () => {
     const wd = path.join(root, 'project');
     await fs.mkdir(path.join(wd, '.codex', 'hooks'), { recursive: true });
     await fs.writeFile(path.join(wd, 'AGENTS.md'), '# instructions');
+    expect(await call(CROSS_AGENT_CHANNELS.DETECT, wd, 'claude-code')).toMatchObject({
+      items: [{ kind: 'agents-md' }, { kind: 'hooks' }],
+    });
     await call(CROSS_AGENT_CHANNELS.PREFERENCES, 'suppress', wd);
     const hidden = await call(CROSS_AGENT_CHANNELS.DETECT, wd, 'claude-code');
     expect(hidden).toMatchObject({ items: [{ kind: 'hooks' }] });
+    // A forward choice must not hide the reverse conversion in the same directory.
+    await fs.rename(path.join(wd, 'AGENTS.md'), path.join(wd, 'AGENTS.fixture-backup'));
+    await fs.writeFile(path.join(wd, 'CLAUDE.md'), '# reverse instructions');
+    expect(await call(CROSS_AGENT_CHANNELS.DETECT, wd, 'codex')).toMatchObject({
+      items: [{ kind: 'agents-md', direction: 'to-codex' }],
+    });
+    await fs.unlink(path.join(wd, 'CLAUDE.md'));
+    await fs.rename(path.join(wd, 'AGENTS.fixture-backup'), path.join(wd, 'AGENTS.md'));
     await call(CROSS_AGENT_CHANNELS.PREFERENCES, 'restore', wd);
     const restored = (await call(CROSS_AGENT_CHANNELS.DETECT, wd, 'claude-code')) as {
       items: unknown[];
     };
     expect(restored.items).toHaveLength(2);
-  });
-
-  it('probes only a native-reading candidate and keeps unknown capability conservative', async () => {
-    await call(CROSS_AGENT_CHANNELS.DETECT, root, 'claude-code');
-    expect(ipc.probe).not.toHaveBeenCalled();
-    await fs.writeFile(path.join(root, 'AGENTS.md'), '# instructions');
-    ipc.native.mockResolvedValueOnce(true);
-    expect(await call(CROSS_AGENT_CHANNELS.DETECT, root, 'claude-code')).toEqual({ items: [] });
-    ipc.native.mockRejectedValueOnce(new Error('unavailable'));
-    expect(await call(CROSS_AGENT_CHANNELS.DETECT, root, 'claude-code')).toMatchObject({
-      items: [{ kind: 'agents-md' }],
-    });
   });
 
   it('rejects untrusted or invalid preference writes and leaves the list unchanged', async () => {

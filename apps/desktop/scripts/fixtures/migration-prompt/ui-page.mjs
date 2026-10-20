@@ -5,7 +5,7 @@ export default {
   entry: './migration-prompt-fixture.tsx',
   viewport: { width: 800, height: 600 },
   real: 'CrossAgentConvertDialog, useCrossAgentMigrationDialog, MigrationPromptSection and theme tokens',
-  notCovered: 'Native CLI detection, filesystem persistence, real IPC, task creation and full Settings navigation; host APIs use isolated fixture data',
+  notCovered: 'Filesystem persistence, real IPC, task creation and full Settings navigation; host APIs use isolated fixture data',
   cases: {
     default: { about: 'Instruction conversion with persistent workspace choice', data: {} },
     mixed: { about: 'Hiding instructions leaves hooks conversion available', data: { mixed: true } },

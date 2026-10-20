@@ -24,8 +24,6 @@ import type {
 export interface DetectInput {
   workingDir: string;
   agentKind: AgentKind;
-  /** Runtime evidence, supplied by main; absence/unknown preserves detection. */
-  readsAgentsMd?: boolean | (() => Promise<boolean>);
 }
 
 /** 文件不存在 OR 存在但 trim 后为空 → true。目录或非文件 → false。 */
@@ -102,12 +100,6 @@ export async function detect(input: DetectInput): Promise<DetectResult> {
 
   // ── 第 1 项：CLAUDE.md ↔ AGENTS.md ────────────────────────────────────
   await detectAgentsMd(wd, direction, items);
-  if (direction === 'to-claude' && items.length > 0) {
-    const native = typeof input.readsAgentsMd === 'function'
-      ? await input.readsAgentsMd().catch(() => false)
-      : input.readsAgentsMd;
-    if (native === true) items.length = 0;
-  }
 
   // ── 第 2 项：agents/ ─────────────────────────────────────────────────
   await detectAgents(wd, direction, items);
