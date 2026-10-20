@@ -343,6 +343,7 @@ export const MAKER_INVOKE = {
   USAGE_ACCOUNT: 'maker:usage:account',
   // Codex app-server 官方控制面:完整额度/reset 次数读取 + desktop 预签发幂等 offer 消耗。
   USAGE_CODEX_RATE_LIMITS: 'maker:usage:codex-rate-limits',
+  USAGE_CODEX_RESET_AUTO_USE: 'maker:usage:codex-reset-auto-use',
   USAGE_CODEX_RATE_LIMIT_RESET: 'maker:usage:codex-rate-limit-reset',
   // Claude 订阅账号余量 (oauth/usage 端点 + unified headers 双源, cached-first) — 状态栏 chip 用
   USAGE_CLAUDE_SUBSCRIPTION: 'maker:usage:claude-subscription',

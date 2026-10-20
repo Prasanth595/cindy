@@ -16810,7 +16810,26 @@
     "nothingToReset": "No usage limit needs a reset",
     "offerExpired": "The account or reset offer changed. Refresh usage before resetting.",
     "resetFailed": "Could not confirm the reset result. Refresh usage to check whether limits were restored.",
-    "limitAction": "Use Reset · {{count}} Available"
+    "limitAction": "Use Reset · {{count}} Available",
+    "autoUse": {
+      "label": "Auto use",
+      "rules": "Auto-use rules",
+      "lowQuota": "Use when weekly quota falls below 1%",
+      "resetDistance": "Time until quota resets",
+      "days": "At least {{count}} days",
+      "unlimited": "Any time",
+      "custom": "Custom…",
+      "customDays": "Custom days",
+      "dayUnit": "days or more",
+      "apply": "Apply",
+      "expiring": "Use before a card expires",
+      "leadTime": "Use how early",
+      "minutes": "{{count}} minutes before expiry",
+      "hours": "{{count}} hours before expiry",
+      "hint": "Either rule uses the earliest-expiring card. Skip when all quotas are full. Runs on this computer while Cindy is running.",
+      "failed": "Could not save. Try again.",
+      "restore": "Restore defaults"
+    }
   },
   "mcpApps": {
     "sharedTaskReadOnly": "Only the session owner can interact with this card.",

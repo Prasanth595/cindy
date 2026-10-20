@@ -9651,6 +9651,14 @@ function SessionScreenContent() {
             onLoadExtraDirPath={(path) => void loadExtraDirBrowsePath(path)}
             onRefreshAccountUsage={() => void refreshAccountUsage()}
             onResetCodexRateLimits={() => void resetCodexRateLimits()}
+            onSaveCodexResetAutoUse={async patch => {
+              const key = codexRateLimits?.autoUse?.accountKey;
+              if (!key || !maker || !localCodexRateLimitControl) throw new Error('Account unavailable');
+              const result = await maker.setCodexResetAutoUse(patch, key, accountProviderId);
+              if (accountControlScopeRef.current !== accountControlScope) return;
+              setCodexRateLimits(result);
+              setAccountUsage(result.rateLimits);
+            }}
             onOpenWorkspace={() => {
               if (!currentSession.workingDir) return;
               setSettingsOpen(false);

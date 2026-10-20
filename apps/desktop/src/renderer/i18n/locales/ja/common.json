@@ -16751,7 +16751,26 @@
     "nothingToReset": "リセットが必要な利用上限はありません",
     "offerExpired": "アカウントまたはリセットの状態が変わりました。使用量を更新してからリセットを使用してください。",
     "resetFailed": "リセットの結果を確認できませんでした。使用量を更新して、利用枠が回復したか確認してください。",
-    "limitAction": "リセットを使用 · 残り {{count}} 回"
+    "limitAction": "リセットを使用 · 残り {{count}} 回",
+    "autoUse": {
+      "label": "自動使用",
+      "rules": "自動使用ルール",
+      "lowQuota": "週間配分の残りが 1% 未満で使用",
+      "resetDistance": "配分リセットまでの残り時間",
+      "days": "{{count}} 日以上",
+      "unlimited": "制限なし",
+      "custom": "カスタム…",
+      "customDays": "日数を指定",
+      "dayUnit": "日以上",
+      "apply": "適用",
+      "expiring": "カードの有効期限前に使用",
+      "leadTime": "使用するタイミング",
+      "minutes": "有効期限の {{count}} 分前",
+      "hours": "有効期限の {{count}} 時間前",
+      "hint": "いずれかの条件で、期限が近いカードから使用します。全配分が満量の場合は使用しません。このパソコンで Cindy の起動中に実行します。",
+      "failed": "保存できませんでした。再試行してください。",
+      "restore": "既定に戻す"
+    }
   },
   "mcpApps": {
     "sharedTaskReadOnly": "このカードを操作できるのはセッションのオーナーだけです。",

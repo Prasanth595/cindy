@@ -795,7 +795,7 @@ import {
   issuePiPackageMutationGrant,
   piPackageMutationNeedsGrant,
 } from '../maker-host/pi-package-mutation-grant.js';
-import { readXaiSubscriptionUsageSnapshotForDeviceLink, readClaudeSubscriptionUsageSnapshotForDeviceLink } from './usage.js';
+import { onCodexAutoResetRestored, readXaiSubscriptionUsageSnapshotForDeviceLink, readClaudeSubscriptionUsageSnapshotForDeviceLink } from './usage.js';
 import { requireEnum, requireObject, throwIpcError } from '../utils/ipcValidate.js';
 import { applyPersistedCindyMakeMarker } from './cindyMakeSessionStart.js';
 import { assertCindyMakeEnabled, assertCindyMakeSessionAvailable } from '../cindy-make/featureGate.js';
@@ -1597,6 +1597,20 @@ const usageLimitAutoResume = new UsageLimitAutoResume({
       : 'superseded',
   log: (message, fields) => log.info(message, fields),
 });
+
+/** Used by ordinary and goal waits; never substitutes this computer's quota for an SSH/remote agent. */
+export async function hasRestoredCodexQuota(sessionId: string, expectedProvider: string): Promise<boolean> {
+  const row = await getSessionRowSnapshot(sessionId);
+  if (!row || sessionUsesOtherMachineAccount(row)) return false;
+  const kind = row.agentKind ? dbToMakerAgentKind(row.agentKind) : null;
+  if (!kind) return false;
+  const route = resolveSessionRuntimeRoute(sessionId, kind, row);
+  const providerId = route.providerId ?? (kind === 'codex' ? 'openai' : null);
+  if (providerId !== expectedProvider) return false;
+  const limit = await readAccountUsageLimit(kind, route.providerId, route.modelId);
+  return limit != null && !limit.limited;
+}
+onCodexAutoResetRestored(providerId => usageLimitAutoResume.resumeRestored(id => hasRestoredCodexQuota(id, providerId)));
 
 // Schedule 不另建重试状态机：真正的恢复仍由 AgentInputCoordinator +
 // AutoResumeBookkeeping 独占。这里仅把「这一轮 scheduler run 已被普通自动续跑接管」

@@ -158,6 +158,15 @@ export class UsageLimitAutoResume {
     this.deps.log('usage-limit auto-resume fired', { sessionId, outcome, attempt });
   }
 
+  /** A verified quota refresh may satisfy existing waits before their natural reset time. */
+  async resumeRestored(matches: (sessionId: string) => Promise<boolean>): Promise<void> {
+    for (const [sessionId, pending] of this.timers) {
+      if (!await matches(sessionId) || this.timers.get(sessionId) !== pending) continue;
+      this.deps.clearTimer(pending.handle);
+      await this.fire(sessionId, pending.token);
+    }
+  }
+
   /** 任务有了实质产出：重新计算连续自动继续次数。 */
   noteProgress(sessionId: string): void {
     this.consecutive.delete(sessionId);

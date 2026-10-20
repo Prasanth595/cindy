@@ -521,6 +521,7 @@ const EXTENDED_INVOKE_CHANNELS: readonly string[] = [
   // 人工 reset。mutation 不接收 creditId,不能泛化成任意账号/凭证控制入口。
   'maker:usage:codex-rate-limits',
   'maker:usage:codex-rate-limit-reset',
+  'maker:usage:codex-reset-auto-use',
   // Claude 订阅账号余量快照(只读,cached-first):控制端远程会话状态栏 chip 显示
   // 被控端订阅的 5h/周/分模型窗口剩余(数据真相在被控端 —— turn 在被控端消耗其
   // 订阅额度)。快照只含利用率百分比、reset 时间与账号归属指纹(单向 scrypt 哈希,

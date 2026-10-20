@@ -16751,7 +16751,26 @@
     "nothingToReset": "目前沒有需要重置的用量上限",
     "offerExpired": "帳號或重置狀態已變更，請重新整理用量後再使用重置",
     "resetFailed": "無法確認重置結果，請重新整理用量查看額度是否已恢復",
-    "limitAction": "使用重置 · 剩餘 {{count}} 次"
+    "limitAction": "使用重置 · 剩餘 {{count}} 次",
+    "autoUse": {
+      "label": "自動使用",
+      "rules": "自動使用規則",
+      "lowQuota": "每週剩餘低於 1% 時自動用",
+      "resetDistance": "距離配額重設還剩",
+      "days": "{{count}} 天以上",
+      "unlimited": "不限",
+      "custom": "自訂…",
+      "customDays": "自訂天數",
+      "dayUnit": "天以上",
+      "apply": "套用",
+      "expiring": "臨近卡到期時自動用",
+      "leadTime": "提前多久使用",
+      "minutes": "到期前 {{count}} 分鐘",
+      "hours": "到期前 {{count}} 小時",
+      "hint": "任一條件滿足時，優先用最早到期的卡。配額全滿時略過。由這台電腦執行，需保持 Cindy 執行。",
+      "failed": "儲存失敗，請重試。",
+      "restore": "恢復預設"
+    }
   },
   "mcpApps": {
     "sharedTaskReadOnly": "此卡片僅任務擁有者可操作。",

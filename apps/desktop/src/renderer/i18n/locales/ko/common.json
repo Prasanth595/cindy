@@ -16751,7 +16751,26 @@
     "nothingToReset": "초기화가 필요한 사용 한도가 없습니다",
     "offerExpired": "계정 또는 초기화 상태가 변경되었습니다. 사용량을 새로고침한 후 초기화를 사용하세요.",
     "resetFailed": "초기화 결과를 확인할 수 없습니다. 사용량을 새로고침하여 한도가 복구되었는지 확인하세요.",
-    "limitAction": "초기화 사용 · {{count}}회 남음"
+    "limitAction": "초기화 사용 · {{count}}회 남음",
+    "autoUse": {
+      "label": "자동 사용",
+      "rules": "자동 사용 규칙",
+      "lowQuota": "주간 잔여량이 1% 미만일 때 사용",
+      "resetDistance": "할당량 초기화까지 남은 시간",
+      "days": "{{count}}일 이상",
+      "unlimited": "제한 없음",
+      "custom": "직접 입력…",
+      "customDays": "일수 입력",
+      "dayUnit": "일 이상",
+      "apply": "적용",
+      "expiring": "카드 만료 전에 사용",
+      "leadTime": "사용 시점",
+      "minutes": "만료 {{count}}분 전",
+      "hours": "만료 {{count}}시간 전",
+      "hint": "어느 조건이든 충족하면 만료가 가장 가까운 카드를 사용합니다. 모든 할당량이 가득 차면 건너뜁니다. 이 컴퓨터에서 Cindy가 실행 중이어야 합니다.",
+      "failed": "저장하지 못했습니다. 다시 시도하세요.",
+      "restore": "기본값 복원"
+    }
   },
   "mcpApps": {
     "sharedTaskReadOnly": "이 카드는 세션 소유자만 조작할 수 있습니다.",

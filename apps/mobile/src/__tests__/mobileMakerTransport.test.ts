@@ -39,6 +39,15 @@ function harness() {
 }
 
 describe("mobile maker transport", () => {
+  it('writes reset preferences to the execution device and rejects a different account response', async () => {
+    const invoke = vi.fn(async () => ({ providerId: 'openai-b', autoUse: { accountKey: 'bound-account' } }));
+    const maker = createMobileMakerTransport({ deviceId: 'execution-device', invoke: invoke as RemoteInvoke });
+    await maker.setCodexResetAutoUse({ minimumDays: 7 }, 'bound-account', 'openai-b');
+    expect(invoke).toHaveBeenCalledWith('execution-device', 'maker:usage:codex-reset-auto-use', [{ minimumDays: 7 }, 'bound-account', 'openai-b']);
+    invoke.mockResolvedValueOnce({ providerId: 'openai-b', autoUse: { accountKey: 'changed-account' } });
+    await expect(maker.setCodexResetAutoUse({ enabled: true }, 'bound-account', 'openai-b')).rejects.toThrow('Account scope changed');
+  });
+
   // Unit: a visible text snapshot is already cached by the reader. Its refresh
   // must await the Host, while retaining the existing confirmed-version cache.
   it('revalidates text without returning stale bytes or invalidating a confirmed version', async () => {
@@ -442,6 +451,7 @@ describe("mobile maker transport", () => {
       "local-db:messages:estimatedSessionValue",
       "maker:usage:codex-rate-limits",
       "maker:usage:codex-rate-limit-reset",
+      "maker:usage:codex-reset-auto-use",
       "maker:usage:claude-subscription",
       "maker:usage:xai-subscription",
       "maker:claude-session-route:get",

@@ -7012,6 +7012,7 @@ interface ElectronAPI {
       getCodexRateLimits: (
         providerId?: string,
       ) => Promise<import('@cindy/maker-shared/device-link-contract').MobileCodexRateLimitsResult>;
+      setCodexResetAutoUse: (patch: Partial<import('@cindy/maker-shared/device-link-contract').CodexResetAutoUseSettings> | null, accountKey: string, providerId?: string) => Promise<import('@cindy/maker-shared/device-link-contract').MobileCodexRateLimitsResult>;
       consumeCodexRateLimitReset: (
         idempotencyKey: string,
         providerId?: string,
