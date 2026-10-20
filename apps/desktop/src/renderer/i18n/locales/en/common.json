@@ -8969,6 +8969,14 @@
     }
   },
   "bots": {
+    "runtimeUsage": {
+      "open": "View model and usage for {{model}}",
+      "usage": "Usage",
+      "currentSelection": "Current task selection",
+      "modelSettings": "Model settings",
+      "modelPending": "Waiting for model information",
+      "defaultSource": "Default source"
+    },
     "workbench": {
       "title": "Workbench",
       "open": "Open workbench",

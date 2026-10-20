@@ -377,7 +377,8 @@ import {
   clearScope,
   type RemoteModelMemorySnapshot,
 } from '@/state/deviceLinkModelMirror';
-import type { ModelMemoryAccessors } from '@/components/new-chat/ModelSelector';
+import { modelEffortLabel, type ModelMemoryAccessors } from '@/components/new-chat/ModelSelector';
+import { localizedModelName } from '@/lib/modelDisplayNames';
 // 完整对等:context-usage / extra-dirs / orca 等会话级操作按 sessionId 来源路由
 // (本机走本地 maker,远程 device-link 会话走隧道)。
 import {
@@ -2222,6 +2223,19 @@ function CCAgentSessionContent({
   const catalogDeviceId = controlledAgentDeviceId ?? remoteDeviceId ?? agentDeviceId;
   const { providers: deviceProviders } = useDeviceProviders(catalogDeviceId);
   const providers = catalogDeviceId ? deviceProviders : localProviders;
+  // Teammate information follows the persisted selection as one route snapshot. Pending
+  // ordinary-task overrides must not mix a new account with the teammate's current model.
+  const botUsageVendor = normalizeDbAgentKind(session?.agentKind);
+  const botUsageProvider = providers.find(provider => provider.id === session?.providerId);
+  const botUsageModel = botUsageProvider?.models[dbToMakerAgentKind(session?.agentKind)]?.find(model => model.id === session?.model);
+  const botUsageAccount = session?.model && session?.agentKind ? resolveUsageAccountLocation({
+    taskDeviceId: remoteDeviceId,
+    agentDeviceId: session?.agentDeviceId,
+    providerId: session?.providerId,
+    selfDeviceId,
+    sharedTaskGuest: !!remoteDeviceId && isSharedTaskPeer(remoteDeviceId),
+    remoteHostId: session?.remoteHostId,
+  }) : { kind: 'unreadable' as const };
   const canSwitchToClaudeSubscription = useMemo(() => {
     if (
       remoteDeviceId ||
@@ -5889,6 +5903,32 @@ function CCAgentSessionContent({
                   }
                   botMentions={botMentions}
                   hideRuntimeControls={Boolean(botChatIdentity)}
+                  runtimeStatusSlot={botChatIdentity ? (
+                    <TodaySpendChip
+                      vendorKey={botUsageVendor}
+                      modelId={session?.model ?? null}
+                      providerId={session?.providerId ?? null}
+                      sessionId={sessionId}
+                      sessionInitialMoney={session?.totalMoney ?? null}
+                      sessionInitialCostUsd={session?.totalCostUsd ?? null}
+                      sessionInitialTokens={session?.totalTokenUsage ?? null}
+                      remoteHostId={session?.remoteHostId ?? null}
+                      deviceLinkDeviceId={remoteDeviceId ?? null}
+                      usageAccount={botUsageAccount}
+                      composer={{
+                        readOnly,
+                        modelLabel: session?.model ? localizedModelName(botUsageModel?.name ?? session.model, t) : t('bots.runtimeUsage.modelPending'),
+                        effortLabel: session?.effort ? modelEffortLabel(t, botUsageModel, session.effort as Effort) : undefined,
+                        sourceLabel: [botUsageVendor === 'cc' ? 'Claude Code' : botUsageVendor === 'codex' ? 'Codex' : 'Pi', botUsageProvider?.name ?? session?.providerId ?? t('bots.runtimeUsage.defaultSource')].join(' · '),
+                        onOpenSettings: () => {
+                          const search = new URLSearchParams(location.search);
+                          search.set('settings', '1');
+                          search.set('settingsPage', 'model');
+                          navigate(location.pathname + '?' + search.toString());
+                        },
+                      }}
+                    />
+                  ) : undefined}
                 />
               )}
 

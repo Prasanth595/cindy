@@ -831,6 +831,8 @@ interface ChatInputProps {
    * 权限仍使用标准 chip，允许用户随时调整当前任务的执行权限。
    */
   hideRuntimeControls?: boolean;
+  /** Read-only runtime information, beside voice/send when model editing is hidden. */
+  runtimeStatusSlot?: ReactNode;
   /**
    * 工具行采用更紧凑的视觉密度 (字号 -1px)。
    * 用于 doc rail 这种宽度受限的容器,与 compactToolbar (wrap 兜底) 正交:
@@ -1262,6 +1264,7 @@ export function ChatInput({
   compactToolbar = false,
   narrowToolbar = false,
   hideRuntimeControls = false,
+  runtimeStatusSlot,
   denseToolbar = false,
   visualVariant = 'default',
   middleToolbarSlot,
@@ -9257,6 +9260,7 @@ export function ChatInput({
                       ? 'min-w-0 flex-nowrap justify-between gap-2 overflow-hidden'
                       : 'min-w-0 flex-nowrap justify-between gap-1 overflow-hidden'
                     : 'justify-between',
+                hideRuntimeControls && runtimeStatusSlot && 'flex-wrap gap-y-1 overflow-visible',
               )}
             >
               <div
@@ -9365,6 +9369,7 @@ export function ChatInput({
                         ? 'flex min-w-0 shrink items-center justify-end gap-2'
                         : 'flex min-w-0 shrink items-center justify-end gap-1'
                       : 'flex items-center gap-2',
+                  hideRuntimeControls && runtimeStatusSlot && 'ml-auto min-w-0 max-w-full',
                   // compact 模式下所有输入框工具行保持单行;权限 / 模型 pill 内部截断承压,
                   // vendor tab 与圆形操作按钮保持固定宽,避免控件重叠或掉到第二行。
                 )}
@@ -9377,6 +9382,7 @@ export function ChatInput({
                   ))}
                 {/* 伙伴的模型链在设置中统一管理，并由宿主自动 fallback。对话输入框不再
                     暴露单次任务的模型切换，避免会话态覆盖伙伴长期配置。 */}
+                {hideRuntimeControls ? runtimeStatusSlot : null}
                 {!hideRuntimeControls ? (
                 <div
                   data-session-model-slot={sessionId ? '' : undefined}

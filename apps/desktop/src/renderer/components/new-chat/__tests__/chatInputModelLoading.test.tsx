@@ -524,3 +524,31 @@ it.each([320, 480, 800])('preserves the model slot across hydration (width=%s)',
   await act(async () => {});
   expect(onSend).not.toHaveBeenCalled();
 });
+
+
+// #6360: exercise the real composer; a read-only slot must preserve model editing and send dispatch rules.
+it.each([false, true])('keeps teammate usage beside send without exposing model editing (narrow=%s)', async (narrowToolbar) => {
+  const onSend = vi.fn().mockResolvedValue(true);
+  const onUsage = vi.fn();
+  const inputProps = { ...props, sessionId: 'bot-usage', initialProviderId: 'openai', initialModel: 'gpt-6-astra', initialEffort: 'medium', narrowToolbar, onSend };
+  const slot = <button type="button" onClick={onUsage}>Model and usage</button>;
+  const view = render(<ChatInput {...inputProps} runtimeStatusSlot={slot} />);
+  const usage = screen.getByRole('button', { name: 'Model and usage' });
+  const send = screen.getByRole('button', { name: 'newChat.sendButton.send' });
+  expect(usage.parentElement?.contains(send)).toBe(true);
+  expect(usage.parentElement?.contains(screen.getByTestId('permission-selector'))).toBe(false);
+  expect(screen.queryByTestId('model-selector')).toBeNull();
+  fireEvent.click(usage);
+  expect(onUsage).toHaveBeenCalledOnce();
+  expect(onSend).not.toHaveBeenCalled();
+  await waitFor(() => expect(h.editor).not.toBeNull());
+  await act(async () => { h.editor!.commands.setContent('<p>Continue</p>'); });
+  await waitFor(() => expect((screen.getByRole('button', { name: 'newChat.sendButton.send' }) as HTMLButtonElement).disabled).toBe(false));
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'newChat.sendButton.send' })); });
+  await waitFor(() => expect(onSend).toHaveBeenCalledOnce());
+  expect(onSend.mock.calls[0][0]).toBe('Continue');
+  expect(onSend.mock.calls[0][1]).toBe('gpt-6-astra');
+  view.rerender(<ChatInput {...inputProps} hideRuntimeControls={false} runtimeStatusSlot={slot} />);
+  expect(screen.queryByRole('button', { name: 'Model and usage' })).toBeNull();
+  expect(screen.getByTestId('model-selector')).toBeTruthy();
+});

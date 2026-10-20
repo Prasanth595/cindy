@@ -8937,6 +8937,14 @@
     }
   },
   "bots": {
+    "runtimeUsage": {
+      "open": "{{model}} のモデルと使用量を表示",
+      "usage": "使用量",
+      "currentSelection": "現在のタスクの選択",
+      "modelSettings": "モデル設定",
+      "modelPending": "モデル情報を待っています",
+      "defaultSource": "デフォルトのソース"
+    },
     "workbench": {
       "title": "ワークベンチ",
       "open": "ワークベンチを開く",

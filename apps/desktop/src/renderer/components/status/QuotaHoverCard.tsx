@@ -45,12 +45,14 @@ export interface QuotaHoverCardSessionUsage {
 }
 
 export interface QuotaHoverCardProps {
+  /** Optional current selection; distinct from measured last-turn usage below. */
+  header?: React.ReactNode;
   /** One compact provider action beside the last quota window’s reset countdown. */
   windowAction?: React.ReactNode;
   /** Provider-specific manual actions, inside the existing scrollable card. */
   children?: React.ReactNode;
-  /** Embedded settings surface shares content without a second card frame. */
-  variant?: 'popover' | 'embedded';
+  /** Settings and morph hosts own the frame; morph retains the full popover content. */
+  variant?: 'popover' | 'embedded' | 'morph';
   /** The settings identity row already names this subscription and plan. */
   hideIdentity?: boolean;
   account: UsageCardAccount;
@@ -444,6 +446,7 @@ function SessionUsageSection({
 
 /** 套餐、配额、任务合计与本轮明细按同一信息层级渲染；供应商差异只来自 account。 */
 export function QuotaHoverCard({
+  header,
   windowAction,
   children,
   variant = 'popover',
@@ -494,10 +497,10 @@ export function QuotaHoverCard({
       data-testid="quota-hover-card"
       className={cn(
         'flex select-none flex-col pb-2 text-13 leading-5 text-[var(--text-primary)]',
-        variant === 'embedded'
+        variant !== 'popover'
           ? 'w-full min-w-0'
           : 'max-h-[min(calc(100vh-16px),var(--radix-popover-content-available-height,100vh))] max-w-[calc(100vw-16px)] overflow-hidden rounded-xl border border-[var(--border-default)] bg-[var(--surface-elevated)]',
-        !embedded &&
+        variant === 'popover' &&
           (identity ? 'w-max min-w-[min(340px,calc(100vw-16px))]' : 'w-[340px]'),
       )}
       style={variant === 'popover' ? { boxShadow: 'var(--shadow-menu)' } : undefined}
@@ -512,6 +515,7 @@ export function QuotaHoverCard({
           !embedded && 'overflow-y-auto pt-[6px]',
         )}
       >
+        {header}
         {title && (!embedded || !hideIdentity) ? (
           <>
             <div className="flex items-center gap-2 px-4 pb-2 pt-3 text-12 text-[var(--text-secondary)]">

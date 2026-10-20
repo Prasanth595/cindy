@@ -18,7 +18,9 @@ import { useProviders } from '@/hooks/useProviders';
 
 import React from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
-import { X } from 'lucide-react';
+import { Brain, ChevronDown, X } from 'lucide-react';
+import { ProviderLogoMark } from '@/components/icons/ProviderLogoMark';
+import { modelBrand } from '@/lib/modelDisplayNames';
 import { Tip } from '@/components/ui/tooltip';
 import { Button } from '@/components/ui/button';
 import { useTranslation } from 'react-i18next';
@@ -36,6 +38,7 @@ import {
   formatTurnCostUsd,
 } from '@/lib/usageFormat';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { MorphPopover } from '@/components/ui/morph-popover';
 import { useApiKey } from '@/hooks/useApiKey';
 import { useClaudeOAuthConnected } from '@/hooks/useClaudeOAuthConnected';
 import { useClaudeSessionRoute } from '@/hooks/useClaudeSessionRoute';
@@ -729,6 +732,15 @@ function renderSegmentedLabel(segments: React.ReactNode[]): React.ReactNode {
 }
 
 interface TodaySpendChipProps {
+  /** Teammate composer: read-only selection and usage, never a model override. */
+  composer?: {
+    modelLabel: string;
+    effortLabel?: string;
+    sourceLabel: string;
+    /** Archived/demoted task views can inspect usage but cannot edit this local companion. */
+    readOnly?: boolean;
+    onOpenSettings: () => void;
+  };
   vendorKey?: 'cc' | 'codex' | 'pi';
   /** 当前会话模型;codex/ 折扣 GPT 恒走 gateway API, 即使 oauth-bearer spawn 也按 API 形态显示。 */
   modelId?: string | null;
@@ -763,6 +775,7 @@ interface TodaySpendChipProps {
 }
 
 export function TodaySpendChip({
+  composer,
   vendorKey = 'cc',
   modelId,
   providerId,
@@ -1334,7 +1347,8 @@ export function TodaySpendChip({
     anchor: HTMLElement;
   } | null>(null);
   React.useEffect(() => {
-    if (!chipRef.current) return;
+    // Composer reads must not consume the status-bar celebration history.
+    if (composer || !chipRef.current) return;
     const key = quotaFullCelebrations.observe(
       celebrationProvider,
       chipWindows,
@@ -1604,128 +1618,193 @@ export function TodaySpendChip({
   // 与 ContextCapacityRing 视觉对齐 (h-5 = 20px) + reset button UA 默认 padding/border。
   // tabular-nums 让 "$306 / $1.2k" 这类数字段的字符宽度等宽, 段间数字落点对齐。
   const buttonClass = cn(
-    'inline-flex h-5 shrink-0 items-center',
-    'text-12 font-medium leading-none tabular-nums',
+    composer
+      ? 'inline-flex h-[30px] min-w-0 max-w-[340px] items-center gap-2 px-2 hover:bg-[var(--model-trigger-hover)]'
+      : 'inline-flex h-5 shrink-0 items-center',
+    composer ? 'text-13 font-normal leading-none' : 'text-12 font-medium leading-none tabular-nums',
     chipAlertingFallback
       ? 'text-[var(--error-fg)] hover:text-[var(--error-fg-strong)]'
       : 'text-[var(--msg-tool-card-chevron)] hover:text-foreground',
-    'border-0 bg-transparent p-0 m-0',
+    'border-0 bg-transparent m-0',
+    !composer && 'p-0',
     'transition-colors',
     'focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] rounded-full',
+  );
+
+  const quotaTrigger = (
+    <button
+      ref={setQuotaPopoverFocusTarget}
+      type="button"
+      aria-expanded={composer ? quotaPopoverOpen && !resetListOpen : undefined}
+      onClick={(event) => {
+        // Footer keeps its dashboard action; the read-only composer opens details.
+        event.preventDefault();
+        if (isDashboardClickable && !composer) handleClick();
+        else if (composer) setQuotaPopoverOpen((open) => !open);
+        else openQuotaPopoverImmediately();
+      }}
+      onMouseEnter={composer ? undefined : handleQuotaPopoverTriggerMouseEnter}
+      onMouseLeave={composer ? undefined : handleQuotaPopoverMouseLeave}
+      onFocus={() => {
+        if (composer || quotaPopoverRestoringFocusRef.current) return;
+        quotaPopoverFocusInsideRef.current = true;
+        openQuotaPopoverImmediately();
+      }}
+      onBlur={() => {
+        if (composer) return;
+        quotaPopoverFocusInsideRef.current = false;
+        scheduleQuotaPopoverClose();
+      }}
+      onKeyDown={(event) => {
+        if (composer || event.key !== 'Escape') return;
+        event.preventDefault();
+        closeQuotaPopoverImmediately();
+      }}
+      className={buttonClass}
+      aria-label={composer ? t('bots.runtimeUsage.open', { model: composer.modelLabel }) : usageDashboardLabel ?? t('quotaCard.usageTitle')}
+    >
+      {composer ? (
+        <>
+          <ProviderLogoMark
+            providerId={providerId ?? ''}
+            logoKind={modelId ? modelBrand({ id: modelId })?.logoKind : undefined}
+            size={14}
+            className="shrink-0"
+          />
+          <span className="min-w-0 truncate text-13 text-[var(--text-primary)]">{composer.modelLabel}</span>
+          {composer.effortLabel ? (
+            <span className="inline-flex shrink-0 items-center gap-1 text-12 text-[var(--text-tertiary)]">
+              <Brain size={12} />{composer.effortLabel}
+            </span>
+          ) : null}
+          <span className="shrink-0 border-l border-[var(--border-default)] pl-2 text-12 text-[var(--text-secondary)]">{t('bots.runtimeUsage.usage')}</span>
+          {chipWindows.some(window => !window.resetPending && window.remainingPercent <= 0.05) ? (
+            <span className="shrink-0 text-12 text-[var(--error-fg)]">{t('quotaCard.remainingPercent', { percent: 0 })}</span>
+          ) : null}
+          <ChevronDown size={12} className="shrink-0 text-[var(--text-tertiary)]" />
+        </>
+      ) : labelNode}
+    </button>
+  );
+  const quotaCard = (
+    <QuotaHoverCard
+      variant={composer ? 'morph' : 'popover'}
+      header={composer ? (
+        <div className="border-b border-[var(--border-default)] px-4 py-3">
+          <div className="text-12 text-[var(--text-secondary)]">{t('bots.runtimeUsage.currentSelection')}</div>
+          <div className="mt-1 break-words text-13 font-medium">{composer.modelLabel}</div>
+          <div className="mt-1 break-words text-12 text-[var(--text-tertiary)]">{[composer.sourceLabel, composer.effortLabel].filter(Boolean).join(' · ')}</div>
+          {!composer.readOnly ? (
+            <Button size="xs" compact tone="quiet" className="mt-2" onClick={() => {
+              closeQuotaPopoverImmediately();
+              composer.onOpenSettings();
+            }}>{t('bots.runtimeUsage.modelSettings')}</Button>
+          ) : null}
+        </div>
+      ) : undefined}
+      account={composer ? { ...account, windows: account.windows.map(window => ({ ...window, showRemaining: true })) } : account}
+      nowMs={windowLabelNowMs}
+      sessionUsage={quotaCardSessionUsage}
+      turnUsage={quotaCardTurnUsage}
+      dashboardLabel={usageDashboardLabel}
+      onOpenDashboard={handleClick}
+      dashboardButtonRef={quotaPopoverDashboardButtonRef}
+      windowAction={usesCodexQuotaForm && !isAnyRemoteSession && (codexRateLimits?.rateLimitResetCredits || manualReset.canRetry) ? (
+        <Button size="xs" compact tone="quiet" aria-label={t('codexResets.title')} title={t('codexResets.title')}
+          onClick={() => {
+            quotaPopoverFocusTakenRef.current = false;
+            closeQuotaPopoverImmediately();
+            setResetListOpen(true);
+          }}>
+          {manualReset.canRetry ? t('codexResets.retryReset') : t('codexResets.available', { count: codexRateLimits?.rateLimitResetCredits?.availableCount ?? 0 })}
+        </Button>
+      ) : null}
+    />
   );
 
   return (
     <div
       ref={chipRef}
-      className="inline-flex h-5 shrink-0 items-center gap-3"
+      className={composer ? 'inline-flex min-w-0 shrink items-center' : 'inline-flex h-5 shrink-0 items-center gap-3'}
       onMouseEnter={refreshCodexRateLimits}
       onFocusCapture={refreshCodexRateLimits}
     >
-      <Popover
-        open={quotaPopoverOpen && !resetListOpen}
-        onOpenChange={(open) => {
-          // 打开只由 hover / focus 驱动；Radix 的 outside / Escape 仍可请求关闭。
-          if (!open) closeQuotaPopoverImmediately();
-        }}
-        modal={false}
-      >
-        <PopoverTrigger asChild>
-          <button
-            ref={setQuotaPopoverFocusTarget}
-            type="button"
-            onClick={(event) => {
-              // 阻止 Radix 把 dashboard 点击解释成开关，chip 原动作保持不变。
-              event.preventDefault();
-              if (isDashboardClickable) handleClick();
-              else openQuotaPopoverImmediately();
-            }}
-            onMouseEnter={handleQuotaPopoverTriggerMouseEnter}
-            onMouseLeave={handleQuotaPopoverMouseLeave}
-            onFocus={() => {
-              if (quotaPopoverRestoringFocusRef.current) return;
-              quotaPopoverFocusInsideRef.current = true;
-              openQuotaPopoverImmediately();
-            }}
-            onBlur={() => {
-              quotaPopoverFocusInsideRef.current = false;
-              scheduleQuotaPopoverClose();
-            }}
-            onKeyDown={(event) => {
-              if (event.key !== 'Escape') return;
-              event.preventDefault();
-              closeQuotaPopoverImmediately();
-            }}
-            className={buttonClass}
-            aria-label={usageDashboardLabel ?? t('quotaCard.usageTitle')}
-          >
-            {labelNode}
-          </button>
-        </PopoverTrigger>
-        <PopoverContent
-          ref={quotaPopoverContentRef}
+      {composer ? (
+        <MorphPopover
+          open={quotaPopoverOpen && !resetListOpen}
+          onOpenChange={setQuotaPopoverOpen}
           side="top"
           align="end"
-          sideOffset={8}
-          collisionPadding={8}
-          onOpenAutoFocus={(event) => {
-            event.preventDefault();
-            if (quotaPopoverOpenSourceRef.current !== 'focus') return;
-            const dashboardButton = quotaPopoverDashboardButtonRef.current;
-            const focusTarget =
-              dashboardButton ??
-              quotaPopoverContentRef.current?.querySelector<HTMLElement>('[role=region]');
-            focusTarget?.focus({ preventScroll: true });
-            quotaPopoverFocusTakenRef.current = Boolean(
-              focusTarget && document.activeElement === focusTarget,
-            );
-          }}
-          onCloseAutoFocus={(event) => {
-            event.preventDefault();
-            restoreQuotaPopoverFocus();
-          }}
-          onEscapeKeyDown={closeQuotaPopoverImmediately}
-          onMouseEnter={handleQuotaPopoverMouseEnter}
-          onMouseLeave={handleQuotaPopoverMouseLeave}
-          onFocusCapture={() => {
-            quotaPopoverFocusInsideRef.current = true;
-            // 内容无论因键盘还是鼠标获得焦点，都算卡片已接管焦点；关闭时统一归还 trigger。
-            quotaPopoverFocusTakenRef.current = true;
-            keepQuotaPopoverOpen();
-          }}
-          onBlurCapture={(event) => {
-            const nextTarget = event.relatedTarget;
-            if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) return;
-            if (quotaPopoverRestoringFocusRef.current) return;
-            // Tab 已将焦点交给卡片外的控件；自然离开只关闭卡片，
-            // 不让延时器或 close-autofocus 再把焦点抢回 trigger。
-            quotaPopoverFocusInsideRef.current = false;
-            quotaPopoverFocusTakenRef.current = false;
-            quotaPopoverOpenSourceRef.current = null;
-            scheduleQuotaPopoverClose();
-          }}
-          className="w-auto max-w-[calc(100vw-16px)] border-0 bg-transparent p-0 shadow-none"
+          panelWidth={340}
+          panelClassName="p-0"
+          wrapperClassName="min-w-0 max-w-full shrink"
+          endBg="var(--surface-elevated)"
+          endBorderColor="var(--border-default)"
+          panelAriaLabel={t('quotaCard.usageTitle')}
+          trigger={quotaTrigger}
         >
-          <QuotaHoverCard
-            account={account}
-            nowMs={windowLabelNowMs}
-            sessionUsage={quotaCardSessionUsage}
-            turnUsage={quotaCardTurnUsage}
-            dashboardLabel={usageDashboardLabel}
-            onOpenDashboard={handleClick}
-            dashboardButtonRef={quotaPopoverDashboardButtonRef}
-            windowAction={usesCodexQuotaForm && !isAnyRemoteSession && (codexRateLimits?.rateLimitResetCredits || manualReset.canRetry) ? (
-              <Button size="xs" compact tone="quiet" aria-label={t('codexResets.title')} title={t('codexResets.title')}
-                onClick={() => {
-                  quotaPopoverFocusTakenRef.current = false;
-                  closeQuotaPopoverImmediately();
-                  setResetListOpen(true);
-                }}>
-                {manualReset.canRetry ? t('codexResets.retryReset') : t('codexResets.available', { count: codexRateLimits?.rateLimitResetCredits?.availableCount ?? 0 })}
-              </Button>
-            ) : null}
-          />
-        </PopoverContent>
-      </Popover>
+          {quotaCard}
+        </MorphPopover>
+      ) : (
+        <Popover
+          open={quotaPopoverOpen && !resetListOpen}
+          onOpenChange={(open) => {
+            // 打开只由 hover / focus 驱动；Radix 的 outside / Escape 仍可请求关闭。
+            if (!open) closeQuotaPopoverImmediately();
+          }}
+          modal={false}
+        >
+          <PopoverTrigger asChild>
+            {quotaTrigger}
+          </PopoverTrigger>
+          <PopoverContent
+            ref={quotaPopoverContentRef}
+            side="top"
+            align="end"
+            sideOffset={8}
+            collisionPadding={8}
+            onOpenAutoFocus={(event) => {
+              event.preventDefault();
+              if (quotaPopoverOpenSourceRef.current !== 'focus') return;
+              const dashboardButton = quotaPopoverDashboardButtonRef.current;
+              const focusTarget =
+                dashboardButton ??
+                quotaPopoverContentRef.current?.querySelector<HTMLElement>('[role=region]');
+              focusTarget?.focus({ preventScroll: true });
+              quotaPopoverFocusTakenRef.current = Boolean(
+                focusTarget && document.activeElement === focusTarget,
+              );
+            }}
+            onCloseAutoFocus={(event) => {
+              event.preventDefault();
+              restoreQuotaPopoverFocus();
+            }}
+            onEscapeKeyDown={closeQuotaPopoverImmediately}
+            onMouseEnter={handleQuotaPopoverMouseEnter}
+            onMouseLeave={handleQuotaPopoverMouseLeave}
+            onFocusCapture={() => {
+              quotaPopoverFocusInsideRef.current = true;
+              // 内容无论因键盘还是鼠标获得焦点，都算卡片已接管焦点；关闭时统一归还 trigger。
+              quotaPopoverFocusTakenRef.current = true;
+              keepQuotaPopoverOpen();
+            }}
+            onBlurCapture={(event) => {
+              const nextTarget = event.relatedTarget;
+              if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) return;
+              if (quotaPopoverRestoringFocusRef.current) return;
+              // Tab 已将焦点交给卡片外的控件；自然离开只关闭卡片，
+              // 不让延时器或 close-autofocus 再把焦点抢回 trigger。
+              quotaPopoverFocusInsideRef.current = false;
+              quotaPopoverFocusTakenRef.current = false;
+              quotaPopoverOpenSourceRef.current = null;
+              scheduleQuotaPopoverClose();
+            }}
+            className="w-auto max-w-[calc(100vw-16px)] border-0 bg-transparent p-0 shadow-none"
+          >
+            {quotaCard}
+          </PopoverContent>
+        </Popover>
+      )}
       <Dialog.Root open={resetListOpen && usesCodexQuotaForm && !isAnyRemoteSession} onOpenChange={setResetListOpen}>
         <Dialog.Portal>
           <Dialog.Overlay className="modal-scrim fixed inset-0 z-[10000]" />
@@ -1766,7 +1845,7 @@ export function TodaySpendChip({
           </Dialog.Content>
         </Dialog.Portal>
       </Dialog.Root>
-      {confettiBurst && (
+      {!composer && confettiBurst && (
         <QuotaResetConfetti
           key={confettiBurst.nonce}
           anchor={confettiBurst.anchor}

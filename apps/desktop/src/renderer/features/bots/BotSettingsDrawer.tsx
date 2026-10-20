@@ -38,8 +38,8 @@ export function BotSettingsDrawer() {
   const open = searchParams.get('settings') === '1' && (bot !== null || !!remoteBot);
 
   const requestedPage = searchParams.get('settingsPage');
-  const initialPage = requestedPage === 'memory' || requestedPage === 'capabilities' ? requestedPage : 'home';
-  // 「模型」「消息平台」只有本机伙伴有; 远端伙伴仍只认上面两页。
+  const initialPage = requestedPage === 'memory' || requestedPage === 'capabilities' || requestedPage === 'model' ? requestedPage : 'home';
+  // 消息平台内页只在本机提供；模型内页复用远端现有 models 表单。
   const localInitialPage =
     requestedPage === 'model' || requestedPage === 'channels' ? requestedPage : initialPage;
   const allowNavigation = useRef(false);

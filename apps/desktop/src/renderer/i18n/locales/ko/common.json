@@ -8937,6 +8937,14 @@
     }
   },
   "bots": {
+    "runtimeUsage": {
+      "open": "{{model}} 모델 및 사용량 보기",
+      "usage": "사용량",
+      "currentSelection": "현재 작업 선택",
+      "modelSettings": "모델 설정",
+      "modelPending": "모델 정보 대기 중",
+      "defaultSource": "기본 소스"
+    },
     "workbench": {
       "title": "작업대",
       "open": "워크벤치 열기",

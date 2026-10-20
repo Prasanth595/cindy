@@ -43,7 +43,7 @@ import {
 } from './remoteBotSettingsData';
 
 interface Props {
-  initialPage?: 'home' | 'memory' | 'capabilities';
+  initialPage?: 'home' | 'memory' | 'capabilities' | 'model';
   bot: RemoteBot;
   beforeCloseRef: MutableRefObject<(() => Promise<boolean>) | null>;
   onDeleted(): void;
@@ -65,7 +65,7 @@ function RemoteBotSettingsContent({ bot, beforeCloseRef, onDeleted, initialPage 
   const { confirm } = useConfirmDialog();
   const [data, setData] = useState<RemoteBotSettingsData | null>(null);
   const [resourceId, setResourceId] = useState(initialPage === 'memory' ? `settings:${bot.id}/memory` : initialPage === 'capabilities' ? `settings:${bot.id}/connections` : bot.id);
-  const [page, setPage] = useState<string | null>(null);
+  const [page, setPage] = useState<string | null>(initialPage === 'model' ? 'models' : null);
   const [draft, setDraft] = useState<SettingsValues>({});
   const [busy, setBusy] = useState(false);
   const [convertingPortrait, setConvertingPortrait] = useState(false);
@@ -110,8 +110,8 @@ function RemoteBotSettingsContent({ bot, beforeCloseRef, onDeleted, initialPage 
   const panel = data?.panels.find((item) => item.id === page);
   const changes = panel ? settingsChanges(panel, draft) : {};
   const dirty = Object.keys(changes).length > 0;
-  const latest = useRef({ data, panel, dirty });
-  latest.current = { data, panel, dirty };
+  const latest = useRef({ data, panel, page, dirty });
+  latest.current = { data, panel, page, dirty };
   const read = useCallback(
     (id: string) => readRemoteBotSettings(bot.deviceId, id, i18n.language),
     [bot.deviceId, i18n.language],
@@ -150,8 +150,13 @@ function RemoteBotSettingsContent({ bot, beforeCloseRef, onDeleted, initialPage 
         setData(next);
         setRevisionPending(false);
         setError(null);
-        if (!latest.current.dirty)
-          setDraft(next.panels.find((item) => item.id === latest.current.panel?.id)?.values ?? {});
+        if (!latest.current.dirty) {
+          const nextPanel = next.panels.find((item) => item.id === latest.current.page);
+          // Older hosts may not advertise the requested inner page. Keep their existing
+          // unsupported/settings overview reachable instead of leaving the drawer blank.
+          if (latest.current.page && !nextPanel) setPage(null);
+          setDraft(nextPanel?.values ?? {});
+        }
       } catch {
         if (current() && token === sequence.current) setError('loadFailed');
       } finally {
@@ -275,6 +280,7 @@ function RemoteBotSettingsContent({ bot, beforeCloseRef, onDeleted, initialPage 
       latest.current = {
         data: updated,
         panel: updated.panels.find((item) => item.id === page),
+        page,
         dirty: false,
       };
       const toast = response.effects?.find((effect) => effect.kind === 'toast');

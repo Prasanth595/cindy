@@ -8937,6 +8937,14 @@
     }
   },
   "bots": {
+    "runtimeUsage": {
+      "open": "查看 {{model}} 的模型與用量",
+      "usage": "用量",
+      "currentSelection": "目前任務選擇",
+      "modelSettings": "模型設定",
+      "modelPending": "等待模型資訊",
+      "defaultSource": "預設來源"
+    },
     "workbench": {
       "title": "工作台",
       "open": "打開工作台",

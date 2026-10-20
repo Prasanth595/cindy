@@ -48,6 +48,10 @@ vi.mock('react-i18next', () => ({
     t: (key: string, options: Record<string, string | number> = {}) => {
       const templates: Record<string, string> = {
         'quotaCard.usageTitle': '用量明细',
+        'bots.runtimeUsage.open': '查看 {{model}} 的模型与用量',
+        'bots.runtimeUsage.currentSelection': '当前任务选择',
+        'bots.runtimeUsage.modelSettings': '模型设置',
+        'bots.runtimeUsage.usage': '用量',
         'todaySpend.openXaiUsage': '打开 Grok 用量页面',
         'todaySpend.codex.sessionTokensLine': '本任务 Token {{tokens}}',
         'quotaCard.speedLabel': '速度',
@@ -277,6 +281,7 @@ afterEach(() => {
   vi.clearAllTimers();
   vi.useRealTimers();
   vi.clearAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe('TodaySpendChip Claude subscription popover', () => {
@@ -1256,5 +1261,156 @@ describe('TodaySpendChip Claude subscription popover', () => {
     expect(
       screen.getAllByRole('progressbar').map((bar) => bar.getAttribute('aria-valuenow')),
     ).toEqual(['80', '60']);
+  });
+});
+
+
+describe('Teammate composer model and usage', () => {
+  const settings = vi.fn();
+  const composer = { modelLabel: 'GPT-6-Astra', effortLabel: '中', sourceLabel: 'Codex · OpenAI', onOpenSettings: settings };
+  const chip = () => <TodaySpendChip vendorKey="codex" providerId="openai" modelId="gpt-6-astra" sessionId="bot" composer={composer} />;
+  const trigger = () => screen.getByRole('button', { name: '查看 GPT-6-Astra 的模型与用量' });
+
+  beforeEach(() => {
+    settings.mockReset();
+    mocks.codexAuthInjection = 'oauth-bearer';
+  });
+
+  it('opens a morph panel and reverses it on trigger toggle', () => {
+    render(chip());
+    fireEvent.click(trigger());
+    const panel = screen.getByRole('group', { name: '用量明细' });
+    expect(panel.dataset.morphSide).toBe('top');
+    expect(trigger().getAttribute('aria-expanded')).toBe('true');
+    act(() => vi.advanceTimersByTime(400));
+    expect(panel.dataset.state).toBe('open');
+    fireEvent.click(trigger());
+    expect(trigger().getAttribute('aria-expanded')).toBe('false');
+    act(() => vi.advanceTimersByTime(400));
+    expect(screen.queryByTestId('quota-hover-card')).toBeNull();
+  });
+
+  it.each([false, true])('closes on outside interaction without stealing focus (reduced motion=%s)', (reduced) => {
+    vi.stubGlobal('matchMedia', () => ({ matches: reduced }));
+    render(<>{chip()}<button>Outside</button></>);
+    fireEvent.click(trigger());
+    act(() => vi.advanceTimersByTime(400));
+    expect(screen.getByTestId('quota-hover-card')).toBeTruthy();
+    const outside = screen.getByRole('button', { name: 'Outside' });
+    fireEvent.pointerDown(outside);
+    act(() => outside.focus());
+    act(() => vi.advanceTimersByTime(400));
+    expect(screen.queryByTestId('quota-hover-card')).toBeNull();
+    expect(document.activeElement).toBe(outside);
+  });
+
+  it('does not celebrate or consume the status-bar full-quota observation', () => {
+    mocks.codexSnapshot = { primary: { usedPercent: 0 } };
+    const view = render(chip());
+    expect(screen.queryByTestId('quota-reset-confetti')).toBeNull();
+    expect(quotaFullCelebrations.observe).not.toHaveBeenCalled();
+    view.rerender(<TodaySpendChip vendorKey="codex" providerId="openai" modelId="gpt-6-astra" sessionId="bot" />);
+    expect(screen.queryByTestId('quota-reset-confetti')).not.toBeNull();
+    view.rerender(chip());
+    expect(screen.queryByTestId('quota-reset-confetti')).toBeNull();
+  });
+
+  it('opens details on click instead of the subscription dashboard, keeps selection distinct from reply evidence', () => {
+    render(chip());
+    fireEvent.click(trigger());
+    const card = screen.getByTestId('quota-hover-card');
+    expect(within(card).getByText('当前任务选择')).toBeTruthy();
+    expect(within(card).getByText('GPT-6-Astra')).toBeTruthy();
+    expect(within(card).getByText(TURN_USAGE_DETAILS.model)).toBeTruthy();
+    expect(mocks.openExternal).not.toHaveBeenCalled();
+    fireEvent.click(within(card).getByRole('button', { name: '模型设置' }));
+    expect(settings).toHaveBeenCalledOnce();
+    act(() => vi.advanceTimersByTime(400));
+    expect(screen.queryByTestId('quota-hover-card')).toBeNull();
+  });
+
+  it('keeps a missing first snapshot unknown, including when a read is requested', () => {
+    mocks.displaySnapshot.messages = [];
+    render(chip());
+    fireEvent.click(trigger());
+    expect(screen.getByText('等待额度数据')).toBeTruthy();
+    expect(screen.queryByText('剩余 0%')).toBeNull();
+    expect(screen.queryByRole('progressbar')).toBeNull();
+    fireEvent.mouseEnter(trigger());
+    expect(screen.getByText('等待额度数据')).toBeTruthy();
+  });
+
+  it('shows exhausted quota without inventing a reset deadline and preserves it during refresh', () => {
+    mocks.codexSnapshot = { primary: { usedPercent: 100 }, rateLimitReachedType: 'rate_limit_reached' };
+    const view = render(chip());
+    expect(trigger().textContent).toContain('剩余 0%');
+    fireEvent.click(trigger());
+    const card = screen.getByTestId('quota-hover-card');
+    expect(within(card).getByText('剩余 0%')).toBeTruthy();
+    expect(card.textContent).not.toContain('后重置');
+    fireEvent.mouseEnter(trigger());
+    view.rerender(chip());
+    expect(trigger().textContent).toContain('剩余 0%');
+    // The hook owns pending-read caching. A completed empty snapshot must clear the old account data.
+    mocks.codexSnapshot = null;
+    view.rerender(chip());
+    expect(trigger().textContent).not.toContain('剩余 0%');
+    expect(screen.getByText('等待额度数据')).toBeTruthy();
+  });
+
+  it('hides model settings for a read-only companion while retaining usage details', () => {
+    render(<TodaySpendChip vendorKey="codex" providerId="openai" modelId="gpt-6-astra" sessionId="bot"
+      composer={{ ...composer, readOnly: true }} />);
+    fireEvent.click(trigger());
+    const card = screen.getByTestId('quota-hover-card');
+    expect(within(card).getByText('当前任务选择')).toBeTruthy();
+    expect(within(card).queryByRole('button', { name: '模型设置' })).toBeNull();
+    expect(settings).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])('does not call an expired window exhausted during reset suspense (another exhausted window=%s)', (anotherExhausted) => {
+    mocks.codexSnapshot = {
+      primary: { usedPercent: 100, resetsAt: Date.now() / 1000 + 1 },
+      ...(anotherExhausted ? { secondary: { usedPercent: 100 } } : {}),
+    };
+    const view = render(chip());
+    expect(trigger().textContent).toContain('剩余 0%');
+    act(() => vi.advanceTimersByTime(1500));
+    expect(trigger().textContent?.includes('剩余 0%')).toBe(anotherExhausted);
+    mocks.codexSnapshot = { primary: { usedPercent: 20, resetsAt: Date.now() / 1000 + 18000 } };
+    view.rerender(chip());
+    expect(trigger().textContent).not.toContain('剩余 0%');
+  });
+
+  it.each(['Opus', 'Fable'])('uses only the current Claude model quota for the exhausted badge (%s)', (modelFamily) => {
+    mocks.claudeSnapshot = {
+      source: 'oauth-endpoint', fiveHour: { utilization: 20 }, sevenDay: { utilization: 40 },
+      scoped: [{ modelDisplayName: 'Fable', utilization: 100 }],
+    };
+    render(<TodaySpendChip vendorKey="cc" providerId="anthropic" modelId={modelFamily === 'Opus' ? 'claude-opus-5[1m]' : 'claude-fable-5'}
+      sessionId="bot" composer={{ ...composer, modelLabel: modelFamily }} />);
+    const button = screen.getByRole('button', { name: '查看 ' + modelFamily + ' 的模型与用量' });
+    expect(button.textContent?.includes('剩余 0%')).toBe(modelFamily === 'Fable');
+  });
+
+  it('does not turn the gateway daily soft budget into an exhausted badge', () => {
+    mocks.gatewaySnapshot = { spend: 40, maxBudget: 100, currency: 'CNY', todaySpend: 20, fetchedAt: Date.now() };
+    render(<TodaySpendChip vendorKey="cc" providerId="xd" sessionId="bot" composer={composer} />);
+    expect(trigger().textContent).not.toContain('剩余 0%');
+  });
+
+  it('supports keyboard entry and Escape without opening an external page', () => {
+    render(chip());
+    act(() => trigger().focus());
+    expect(screen.queryByTestId('quota-hover-card')).toBeNull();
+    // Native buttons emit a detail=0 click for keyboard activation.
+    fireEvent.click(trigger(), { detail: 0 });
+    act(() => vi.advanceTimersByTime(400));
+    expect(screen.getByTestId('quota-hover-card')).toBeTruthy();
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
+    act(() => vi.advanceTimersByTime(400));
+    expect(screen.queryByTestId('quota-hover-card')).toBeNull();
+    expect(document.activeElement).toBe(trigger());
+    expect(mocks.openExternal).not.toHaveBeenCalled();
   });
 });
