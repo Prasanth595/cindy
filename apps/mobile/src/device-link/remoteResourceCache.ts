@@ -79,6 +79,40 @@ export async function readRemoteResourceSnapshot(userId: string): Promise<Snapsh
   return snapshots.get(userId)!;
 }
 
+/** Trim only the disposable disk mirror; live rows and read positions stay intact. */
+function diskSnapshot(raw: string): string {
+  if (raw.length <= MAX_CHARS) return raw;
+  const copy: Snapshot = JSON.parse(raw);
+  // The group list paints at most five avatars; full membership comes from opening it.
+  for (const roster of Object.values(copy.chatRosters ?? {})) {
+    for (const row of roster.items) if (row.groupMembers) row.groupMembers = row.groupMembers.slice(0, 5);
+  }
+  let remaining = JSON.stringify(copy).length - MAX_CHARS;
+  const lists = [...Object.values(copy.items), ...Object.values(copy.chatRosters ?? {}).map(roster => roster.items)];
+  const candidates = lists.flat().sort((a, b) => (a.item.display.lastReplyAt ?? 0) - (b.item.display.lastReplyAt ?? 0));
+  const removed = new Set<HostedRemoteCollectionItem>();
+  for (const row of candidates) {
+    if (remaining <= 0) break;
+    removed.add(row); remaining -= JSON.stringify(row).length;
+  }
+  for (const list of lists) {
+    const kept = list.filter(row => !removed.has(row));
+    list.splice(0, list.length, ...kept);
+  }
+  // Pathological metadata alone can exhaust the budget too. Retain newer markers
+  // before older ones, rather than silently leaving a stale whole snapshot on disk.
+  for (const map of [copy.read, copy.readSequences ?? {}]) for (const key of Object.keys(map)) {
+    if (remaining <= 0) break;
+    remaining -= JSON.stringify(key).length + JSON.stringify(map[key]).length + 1;
+    delete map[key];
+  }
+  for (const roster of Object.values(copy.chatRosters ?? {})) while (remaining > 0 && roster.ids.length) {
+    remaining -= JSON.stringify(roster.ids.shift()).length;
+  }
+  while (remaining > 0 && copy.home.length) remaining -= JSON.stringify(copy.home.shift()).length;
+  return JSON.stringify(copy);
+}
+
 async function update(userId: string, change: (snapshot: Snapshot) => void): Promise<void> {
   if (!userId) return;
   const expected = epoch;
@@ -95,8 +129,7 @@ async function update(userId: string, change: (snapshot: Snapshot) => void): Pro
     // open companion chat re-acknowledges its read position on render (a JS render loop).
     if (raw === before && !unsaved.has(userId)) return;
     if (raw !== before) emit();
-    if (raw.length > MAX_CHARS) return;
-    const saved = await AsyncStorage.setItem(PREFIX + userId, raw).then(() => true, () => false);
+    const saved = await AsyncStorage.setItem(PREFIX + userId, diskSnapshot(raw)).then(() => true, () => false);
     if (expected !== epoch) { await AsyncStorage.removeItem(PREFIX + userId).catch(() => undefined); return; }
     if (saved) unsaved.delete(userId); else unsaved.add(userId);
   });
@@ -104,8 +137,8 @@ async function update(userId: string, change: (snapshot: Snapshot) => void): Pro
   await next.finally(() => { if (writes.get(userId) === next) writes.delete(userId); });
 }
 export const cacheRemoteResourceHome = (userId: string, home: RemoteHomeCollection[]) => update(userId, (s) => { s.home = home; });
-export const readCachedChatRoster = async (userId: string, realm: string): Promise<ChatRoster> =>
-  (await readRemoteResourceSnapshot(userId)).chatRosters?.[realm] ?? { items: [], ids: [] };
+export const readCachedChatRoster = async (userId: string, realm: string): Promise<ChatRoster | null> =>
+  (await readRemoteResourceSnapshot(userId)).chatRosters?.[realm] ?? null;
 export const cacheChatRoster = (userId: string, realm: string, items: HostedRemoteCollectionItem[], ids: Iterable<string>) => update(userId, s => {
   (s.chatRosters ??= {})[realm] = { items, ids: [...ids] };
 });

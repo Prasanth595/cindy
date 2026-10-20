@@ -71,10 +71,11 @@ export function useChatServerRoster(enabled: boolean) {
   const read = useRemoteSyncCoordinator(async run => {
     if (!api.enabled || !enabled) return;
     setState(old => ({ ...old, refreshing: run.reasons.includes('visible') }));
-    const cached = await readCachedChatRoster(api.userId, api.realm);
+    const saved = await readCachedChatRoster(api.userId, api.realm);
+    const cached = saved ?? { items: [], ids: [] };
     if (run.isStale() || !api.current()) return;
     for (const id of cached.ids) known.current.ids.add(id);
-    setState(old => old.owner === api.owner && !old.loading ? old : { owner: api.owner,
+    if (saved) setState(old => old.owner === api.owner && !old.loading ? old : { owner: api.owner,
       rooms: cached.items.filter(row => !api.client.personalList.hidden(row.item.ref.id)), loading: false, refreshing: false, error: null });
     try {
       await api.client.syncListState(run.reasons.some(reason => ['focus', 'visible', 'connected'].includes(reason)));

@@ -1,4 +1,5 @@
 import { Directory, File, Paths } from "expo-file-system";
+import { sniffImageMimeFromBase64 } from "@/session/imageAnnotationModel";
 import {
   CryptoDigestAlgorithm,
   digestStringAsync,
@@ -52,8 +53,12 @@ async function openPeerFileCache(owner: string) {
         return active() && file.exists && file.size > 0 && file.size <= 5 * 1024 * 1024
           ? cache.store(`companion-avatar:${identity}`, uri, mime, file.size) : false;
       }
-      return withDownloadedRemoteMediaFile(uri, mime, 5 * 1024 * 1024, async file =>
-        active() ? cache.store(`companion-avatar:${identity}`, file.uri, mime, file.size) : false,
+      return withDownloadedRemoteMediaFile(uri, mime, 5 * 1024 * 1024, async file => {
+        const { readAsStringAsync, EncodingType } = await import('expo-file-system/legacy');
+        const head = await readAsStringAsync(file.uri, { encoding: EncodingType.Base64, position: 0, length: 16 });
+        const actualMime = sniffImageMimeFromBase64(head);
+        return active() && actualMime ? cache.store(`companion-avatar:${identity}`, file.uri, actualMime, file.size) : false;
+      },
       new AbortController().signal);
     },
     async readLatest(device: string, url: string, active: () => boolean): Promise<DeviceFileResult | null> {

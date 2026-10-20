@@ -481,8 +481,8 @@ it('restores group summaries and member avatars before HTTP, retains them offlin
 });
 it('does not project a cached server group into another account or realm', async () => {
   await render();
-  expect((await readCachedChatRoster('owner', 'global')).items).toHaveLength(1);
-  expect((await readCachedChatRoster('owner', 'cn')).items).toEqual([]);
+  expect((await readCachedChatRoster('owner', 'global'))?.items).toHaveLength(1);
+  expect(await readCachedChatRoster('owner', 'cn')).toBeNull();
   h.auth.user.id = 'other'; h.auth.accountGeneration++;
   h.auth.apiFetch.mockRejectedValue(new Error('offline'));
   await render();
@@ -491,13 +491,32 @@ it('does not project a cached server group into another account or realm', async
 
 it('removes a saved roster row when opening the group confirms revoked membership', async () => {
   await render();
-  expect((await readCachedChatRoster('owner', 'global')).items).toHaveLength(1);
+  expect((await readCachedChatRoster('owner', 'global'))?.items).toHaveLength(1);
   h.auth.apiFetch.mockRejectedValue(Object.assign(new Error('NOT_MEMBER'), { status: 403 }));
   showChat = true; await render();
   expect(chat.state.kind).toBe('missing');
-  expect((await readCachedChatRoster('owner', 'global')).items).toEqual([]);
+  expect((await readCachedChatRoster('owner', 'global'))?.items).toEqual([]);
   act(() => root!.unmount()); root = undefined; showChat = false;
   h.auth.apiFetch.mockRejectedValue(new Error('offline'));
   await render();
   expect(roster.items).toEqual([]);
+});
+
+// Review regression (unit): an absent cache must not settle the first empty screen
+// while HTTP is pending; an authoritative saved empty list may render immediately.
+it.each(['missing', 'empty', 'read-error'] as const)('keeps initial loading correct with %s cache', async mode => {
+  if (mode === 'empty') h.disk.set('cindy.remoteResources.v1.owner', JSON.stringify({ chatRosters: { global: { items: [], ids: [] } } }));
+  if (mode === 'read-error') {
+    const { default: storage } = await import('@react-native-async-storage/async-storage');
+    vi.mocked(storage.getItem).mockRejectedValueOnce(new Error('read failed'));
+  }
+  const original = h.auth.apiFetch.getMockImplementation()!;
+  let finish!: (rooms: typeof room[]) => void;
+  h.auth.apiFetch.mockImplementation((path, options) => path.startsWith('/v1/conversations?')
+    ? new Promise(resolve => { finish = resolve; }) : original(path, options));
+  await render();
+  expect(roster.items).toEqual([]);
+  expect(roster.loading).toBe(mode !== 'empty');
+  await act(async () => finish([]));
+  expect(roster.loading).toBe(false);
 });
