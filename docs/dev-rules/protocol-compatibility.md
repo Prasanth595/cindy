@@ -2744,6 +2744,11 @@ SQLite 的原有 `fast_mode` 列保留 0/1，新增值 2；Drizzle 与原始 SQL
 模型及执行引擎校验。新版连接旧 Host 时没有 `supportsUltrafastMode`，不显示超快选项。
 新建超快收藏在旧端可读，但旧端无法精确编辑该档位；冲突检查保留 Host 原配置。
 
+新建任务默认值读取与草稿变更推送沿用同一投影；按模型保存的 `fastModeByModel` /
+`fastByModel` 保留布尔字典，用 `fastModeByModelTiers` / `fastByModelTiers` 附加档位。
+伙伴 `capabilities` 中的 `modelChain`、`modelChainOverride`、`modelOverride` 同样保留
+旧布尔字段。仅遍历这些明确的设置结构，不扩展到任意内容对象。
+
 `supportsUltrafastMode` 只来自账号的 Codex `model/list` 或缓存的 `service_tiers`，
 不能按模型 ID 或全局 registry 推断资格。完整的超快配置需要执行端与查看端都支持本功能。
 没有服务端、原生 Mobile 配置或模型内核版本变更。

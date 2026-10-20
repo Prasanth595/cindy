@@ -229,7 +229,9 @@ export function resolveSendToSessionExecutionConfig(params: {
   const supportsFast = route.provider.fastModels
     ? route.provider.fastModels.includes(model)
     : modelCapabilities.supportsFastMode === true;
-  if (overrides.fastMode && (!supportsFast || (overrides.fastMode === 'ultrafast' && (agentKind !== 'codex' || !modelCapabilities.supportsUltrafastMode)))) {
+  const supportsUltrafast = agentKind === 'codex'
+    && route.provider.ultrafastModels?.includes(model) === true;
+  if (overrides.fastMode && (!supportsFast || (overrides.fastMode === 'ultrafast' && !supportsUltrafast))) {
     return {
       ok: false,
       errorCode: 'INVALID_ARGS',
@@ -237,7 +239,9 @@ export function resolveSendToSessionExecutionConfig(params: {
     };
   }
   const fastMode = overrides.fastMode
-    ?? (routeChanged ? (supportsFast && (source.fastMode !== 'ultrafast' || (agentKind === 'codex' && modelCapabilities.supportsUltrafastMode)) ? source.fastMode : false) : source.fastMode);
+    ?? (source.fastMode === 'ultrafast'
+      ? (supportsFast && supportsUltrafast ? source.fastMode : false)
+      : routeChanged ? (supportsFast ? source.fastMode : false) : source.fastMode);
   const effort = overrides.effort !== undefined || routeChanged
     ? normalizedEffort.effort
     : source.effort;

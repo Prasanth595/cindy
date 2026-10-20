@@ -2897,13 +2897,12 @@ function SessionScreenContent() {
     : composerPillSourceProvider?.id ?? null;
   const composerPillFastOn = agentSwitchIntent
     ? (agentSwitchIntent.fastMode ?? false)
-    : !composerSelectedSourceDisconnected && (currentSession?.fastMode ?? false)
-      && rowFastEditable({
+    : !composerSelectedSourceDisconnected && rowFastEditable({
         provider: composerActiveSourceProvider ?? undefined,
         modelId: currentSession?.model ?? '',
         agentKind: sessionAgentKind,
         hasFastModeCap: capabilities?.hasFastMode === true,
-      });
+      }) && (currentSession?.fastMode ?? false);
   const composerRuntimeLabel = composerRuntimeSummary
     ? agentSwitchIntent && composerSwitchesAgent
       ? `${mobileAgentLabel(agentSwitchIntent.targetAgentKind)} · ${composerRuntimeSummary.modelSummary}`
