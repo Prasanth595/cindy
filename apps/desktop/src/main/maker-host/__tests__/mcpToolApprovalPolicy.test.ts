@@ -372,7 +372,6 @@ describe('helper task workspace and SkillHub publication authorization', () => {
       'create_project',
       'rename_project',
       'remove_project',
-      'send_to_session',
       'search_skills',
       'list_my_published_skills',
       'get_skill_publish_status',
@@ -498,9 +497,9 @@ describe('cross-device actions use the task permission mode', () => {
       }
     }
     expect(getDesktopMcpToolApprovalPolicy({ serverName: 'cindy_helper', toolName: 'call_tool',
-      toolParams: { name, args: { session_ids: ['s1'] } } })).toBe('auto-approve');
+      toolParams: { name, args: { session_ids: ['s1'] } } })).toBe('prompt-each-time');
     expect(getDesktopMcpToolApprovalPolicy({ serverName: 'cindy_helper', toolName: 'call_tool',
-      toolParams: { name, args: { session_ids: ['local::s1'] } } })).toBe('auto-approve');
+      toolParams: { name, args: { session_ids: ['local::s1'] } } })).toBe('prompt-each-time');
   });
 
   const scheduler = (name: string, args: Record<string, unknown>, toolName: string | undefined = 'call_tool') =>
@@ -538,7 +537,7 @@ describe('cross-device actions use the task permission mode', () => {
     expect(scheduler('schedule_create', { name: 'n' })).toBe('auto-approve');
   });
 
-  it('reviews a message to a task on another computer, not a local one', () => {
+  it('requires action review for local and remote task messages', () => {
     const helper = (target: unknown, toolName: string | undefined = 'call_tool') =>
       getDesktopMcpToolApprovalPolicy({
         serverName: 'cindy_helper',
@@ -547,9 +546,9 @@ describe('cross-device actions use the task permission mode', () => {
       });
     expect(helper('mbp::sess-9')).toBe('prompt-each-time');
     expect(helper('mbp::sess-9', undefined)).toBe('prompt-each-time');
-    expect(helper('sess-9')).toBe('auto-approve');
-    expect(helper('local::sess-9')).toBe('auto-approve');
-    expect(helper(undefined)).toBe('auto-approve');
+    expect(helper('sess-9')).toBe('prompt-each-time');
+    expect(helper('local::sess-9')).toBe('prompt-each-time');
+    expect(helper(undefined)).toBe('prompt-each-time');
     // A follow-up continue into another computer's task is the same cross-computer write.
     const follow = (taskId: string, toolName: string) => getDesktopMcpToolApprovalPolicy({
       serverName: 'cindy_helper',
@@ -560,6 +559,6 @@ describe('cross-device actions use the task permission mode', () => {
     });
     expect(follow('mbp::sess-9', 'call_tool')).toBe('prompt-each-time');
     expect(follow('mbp::sess-9', 'continue_workbench_task')).toBe('prompt-each-time');
-    expect(follow('sess-9', 'continue_workbench_task')).toBe('auto-approve');
+    expect(follow('sess-9', 'continue_workbench_task')).toBe('prompt-each-time');
   });
 });

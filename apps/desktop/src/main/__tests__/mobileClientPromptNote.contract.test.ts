@@ -80,7 +80,7 @@ describe('排队 / 插入两条路径的接线(源码级守卫)', () => {
     // 第三处是排队编辑(两个编辑入口共用 stampQueuedEditProvenance)。
     const stamps = register.match(/stampMobileClientOrigin\(/g) ?? [];
     expect(stamps.length).toBe(3);
-    expect(register.match(/stampQueuedEditProvenance\(updated, remote, editor\)/g)?.length).toBe(2);
+    expect(register.match(/stampQueuedEditProvenance\(sid, updated, remote, editor\)/g)?.length).toBe(2);
     expect(register).toContain('isMobileControllerInvoke(),');
   });
 

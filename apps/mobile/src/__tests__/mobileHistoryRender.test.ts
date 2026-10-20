@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { HistoryViewController, projectHistoryView, type HistoryWorkSummary } from '@cindy/maker-shared/message-window';
+import { HistoryViewController, historyAfter, projectHistoryView, type HistoryWorkSummary } from '@cindy/maker-shared/message-window';
 import { buildMobileHistoryRenderItems, buildMobileSessionRenderWindow } from '../session/mobileHistoryRender';
 import { buildMobileMessageRenderItems, type MobileMessageRenderItem } from '../session/messageRenderModel';
 import type { RemoteMessage } from '../session/types';
@@ -35,6 +35,20 @@ function harness(rows: RemoteMessage[], streaming = false, lazyDetails = false) 
 }
 
 describe('remote history preserves original folding', () => {
+  // Unit: a child inherits the transcript for the model but only its new turns
+  // belong on screen. Exercise real rendering with both eager and lazy work.
+  it.each([false, true])('hides inherited work and messages in a side chat (lazy=%s)', async (lazy) => {
+    const rows = [row(0, 'user', 'parent prompt'), thought(1), row(2, 'assistant', 'parent answer'),
+      row(3, 'user', 'child question'), thought(4), row(5, 'assistant', 'child answer')];
+    const { view } = harness(rows, false, lazy);
+    await view.refresh();
+    const result = buildMobileHistoryRenderItems({ view,
+      snapshot: historyAfter(view.getSnapshot(), Date.parse(rows[3].createdAt))!,
+      messages: [], streaming: false, sessionId: 'session', sessionSource: 'side-chat' });
+    expect(result.map(item => item.key)).toEqual(['message-client-3', 'work-client-4', 'message-client-5']);
+    expect(view.getSnapshot().items.length).toBeGreaterThan(3);
+    view.setActive(false);
+  });
   // Regression: mobile's companion projection used to flatten away deferred
   // work after history takeover. Verify the production controller's expansion
   // still reads the original thinking/tool rows and never hides a provider final.

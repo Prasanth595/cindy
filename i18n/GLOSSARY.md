@@ -605,6 +605,10 @@ macOS TCC 的 kTCCServiceListenEvent(系统设置里叫「输入监控」)在 Ci
 
 已确定禁用：`输入监控（仅当英文含 shortcut listener permission）`（zh-CN）、`入力監視（仅当英文含 shortcut listener permission）`（ja）、`입력 모니터링（仅当英文含 shortcut listener permission）`（ko）
 
+### Side chat
+
+在右侧独立提问，继承主任务已完成的上下文；追问不自动写回主任务。
+
 ### Skip Sign-In
 
 登录页免账号入口的动作名（面板内文字按钮 + 登录服务不可用时的 error 步逃生按钮，#697 起取代原游客圆钮）。与 not-signed-in 成对：动作叫「跳过登录」，进入后的状态叫「未登录」。历史说法「本地模式」「游客登录」已废弃——前者暗示另一种服务端连接方式，后者在本产品里没有对应的 guest 账号概念（代码里 GuestRoute 等内部标识不受本条约束）。先登记 proposed：en 的 Title Case 形态（Skip Sign-In）与本仓其它按钮的句首大写风格不一致，待随登录页文案统一时裁决。

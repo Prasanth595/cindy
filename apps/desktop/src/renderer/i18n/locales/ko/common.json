@@ -21,6 +21,11 @@
     "messageCount": "메일 {{count}}개",
     "showMessages": "메일 {{count}}개 펼치기"
   },
+  "taskActionConfirmation": {
+    "title": "세션 작업 확인",
+    "once": "아래 대상, 작업과 전체 내용을 확인하세요. 허용은 이번 작업에 한 번만 적용됩니다.",
+    "delegation": "독립 세션의 목표와 설정을 확인하세요. 허용하면 세션을 시작하고 위임이 끝날 때까지 범위 내 메시지 전송과 중지가 가능합니다. 대신 답변하기, 일시 정지 해제와 모델 변경은 별도 확인이 필요합니다."
+  },
   "logSupport": {
     "title": "로그 및 피드백",
     "localFiles": "문제가 발생한 날짜의 로그를 선택하세요. 민감 정보가 가려지지 않았으므로 공유 전에 확인하세요.",
@@ -8137,6 +8142,16 @@
         "alreadyOpen": "열림",
         "pluginsLabel": "플러그인"
       },
+      "descriptions": {
+        "fileBrowser": "작업 폴더의 파일 탐색",
+        "review": "코드 변경 사항과 리뷰 결과 확인",
+        "subagents": "하위 작업의 진행 상황과 결과 확인",
+        "backgroundTasks": "백그라운드 실행의 진행 상황과 출력 확인",
+        "sideChat": "주 작업의 맥락을 이어 별도로 질문",
+        "browser": "패널에서 웹페이지 탐색",
+        "terminal": "명령 실행 및 출력 확인",
+        "workbench": "파트너의 작업 진행 상황 확인"
+      },
       "kinds": {
         "fileBrowser": "파일 브라우저",
         "browser": "브라우저",
@@ -8168,21 +8183,9 @@
       "empty": {
         "eyebrow": "오른쪽 사이드바",
         "title": "패널 시작하기",
-        "desc": "왼쪽 채팅과 나란히 작업할 수 있도록 파일, 리뷰, 활성 상태 보기, 내장 브라우저, 터미널을 여기에 여세요.",
-        "openFile": "파일 열기",
-        "fileSub": "파일",
-        "openReview": "리뷰 열기",
-        "reviewSub": "리뷰",
-        "openSubagents": "하위 에이전트 열기",
-        "subagentsSub": "나중에도 볼 수 있는 하위 작업",
-        "openBackgroundTasks": "백그라운드 작업 열기",
-        "backgroundTasksSub": "백그라운드 작업",
+        "desc": "메인 작업과 나란히 추가 질문을 하거나 파일을 보고 도구를 사용하세요.",
         "openResourceUsage": "활성 상태 보기 열기",
-        "openBrowser": "브라우저 열기",
-        "browserSub": "브라우저",
-        "openTerminal": "터미널 열기",
-        "terminalSub": "터미널",
-        "addMoreHint": "위쪽 + 버튼에서 다른 패널 유형을 선택할 수 있어요"
+        "addMoreHint": "상단 + 버튼으로도 패널을 선택할 수 있습니다"
       },
       "placeholderHint": "{{kind}} — 콘텐츠는 이후 단계에서 추가됩니다"
     },
@@ -12168,6 +12171,26 @@
     },
     "ghostPreview": {
       "opened": "미리보기 페이지를 열었습니다"
+    },
+    "sideChat": {
+      "openPage": "전체 작업 페이지 열기",
+      "returnMain": "기본 작업으로 돌아가기",
+      "new": "새 사이드 채팅",
+      "mainWindowDescription": "사이드 채팅은 현재 메인 창에서 사용할 수 있습니다. 대화 내용은 저장되어 있습니다.",
+      "returnToMain": "메인 창에서 계속하기",
+      "commandDescription": "메인 작업의 맥락으로 사이드 채팅을 엽니다. 명령 뒤의 질문은 초안으로 입력됩니다.",
+      "title": "사이드 채팅",
+      "context": "메인 작업의 기존 맥락으로 별도로 질문합니다. 답변은 메인 작업에 자동으로 반영되지 않습니다.",
+      "opening": "여는 중…",
+      "notReady": "메인 작업의 첫 답변이 완료될 때까지 기다려 주세요.",
+      "unsupported": "이 Agent의 원격 작업은 아직 사이드 채팅을 지원하지 않습니다.",
+      "updateHost": "작업을 실행하는 컴퓨터를 업데이트한 후 다시 시도해 주세요.",
+      "failed": "사이드 채팅을 열지 못했습니다. 다시 시도해 주세요.",
+      "mainTaskOnly": "메인 작업에서 사이드 채팅을 열어 주세요.",
+      "closeTitle": "사이드 채팅을 닫을까요?",
+      "closeDescription": "이 채팅을 중지하고 삭제합니다. 메인 작업에는 영향을 주지 않습니다.",
+      "closeConfirm": "닫고 삭제",
+      "closeFailed": "삭제하지 못했습니다. 다시 시도해 주세요."
     }
   },
   "ccAgent": {

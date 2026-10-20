@@ -66,6 +66,7 @@ import { initPopupRouter, setPopupFallbackSession } from './lib/popupRouter';
 import { TabBodyErrorBoundary } from './TabBodyErrorBoundary';
 import { useRetainedBrowserTabHosts } from './hooks/useRetainedBrowserTabHosts';
 import { useInstalledGhosts } from '@/cindy-brain/useInstalledGhosts';
+import { useTabCreationMenu } from './lib/useTabCreationMenu';
 import {
   isTabPoppedOut,
   summarizeSidebarTabWindows,
@@ -629,6 +630,13 @@ export function RightSidebarShell({
     [onTabCreated, tabs],
   );
 
+  const creationMenu = useTabCreationMenu({
+    sessionId, subagentsAvailable: subagentsEnabled, onSelect: handleAdd,
+    sideChatPlacement: soloMode
+      ? { onOptimisticAdd: (tabId) => { setHostedActiveTabId(tabId); onTabCreated?.(tabId); } }
+      : isPrimaryGroup ? undefined : { groupId },
+  });
+
   const handleClose = useCallback(
     (tabId: string) => {
       // 全局页签的关闭是全局动作(所有任务里一起消失),不进任务桶。
@@ -881,7 +889,7 @@ export function RightSidebarShell({
             onActivate={handleActivate}
             onClose={handleClose}
             onReorder={handleReorder}
-            onAdd={handleAdd}
+            creationMenu={creationMenu}
             onCloseOthers={handleCloseOthers}
             onCloseAll={handleCloseAll}
             onDetachTab={soloMode ? undefined : onDetachTab}
@@ -892,7 +900,6 @@ export function RightSidebarShell({
             onGlobalTabSelected={soloMode ? handleGlobalTabSelected : undefined}
             pillVariant="chip"
             addButtonWrapperClassName="h-[30px]"
-            subagentsAvailable={subagentsEnabled}
           />
           {/* 面板自属控件始终跟随面板：detach → maximize → 收起。固定唤起入口只在
               面板收起或分离时存在；展开态不渲染无效的 show 按钮，也不预留空位。 */}
@@ -939,7 +946,7 @@ export function RightSidebarShell({
           onActivate={handleActivate}
           onClose={handleClose}
           onReorder={handleReorder}
-          onAdd={handleAdd}
+          creationMenu={creationMenu}
           showWindowControls={!isMac}
           onMaximize={onMaximize}
           onCloseSidebar={onCloseSidebar}
@@ -956,7 +963,6 @@ export function RightSidebarShell({
           onCloseOthers={handleCloseOthers}
           onCloseAll={handleCloseAll}
           chromeWindowDrag={chromeWindowDrag}
-          subagentsAvailable={subagentsEnabled}
         />
       )}
       <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden bg-[var(--panel-bg)]">
@@ -965,16 +971,10 @@ export function RightSidebarShell({
             sessionId 为 null 也走这条:Shell 不显示任何内容(无激活会话)。 */}
         {!contentReady || soloMode || !sessionId || !isPrimaryGroup ? null : tabs.length === 0 ? (
           // tab 列表为空时永远渲染 EmptyState。审查页签只通过「+」dropdown 或
-          // EmptyState 的"打开审查"入口由用户主动创建。
-          <EmptyState
-            onAddFileTab={() => handleAdd('file-browser')}
-            onAddReviewTab={() => handleAdd('review')}
-            onAddSubagentsTab={() => handleAdd('subagents')}
-            onAddBackgroundTasksTab={() => handleAdd('background-tasks')}
-            subagentsAvailable={subagentsEnabled}
-            onAddBrowserTab={() => handleAdd('web-browser')}
-            onAddTerminalTab={() => handleAdd('terminal')}
-          />
+          // EmptyState 的"审查"入口由用户主动创建。
+          <EmptyState menu={creationMenu} selectionOptions={{
+            groupId, onGlobalTabSelected: soloMode ? handleGlobalTabSelected : undefined,
+          }} />
         ) : null}
         {/* Keep one keyed list even when the foreground task is empty or still
             hydrating. Pool-backed background browsers keep their original slot

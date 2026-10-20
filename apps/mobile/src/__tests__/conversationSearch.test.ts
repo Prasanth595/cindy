@@ -3,6 +3,7 @@ import {
   cachedSessionForSearchResult,
   conversationSearchActiveFilterCount,
   conversationSearchAllowsLocalWrites,
+  conversationSearchCompanionParams,
   conversationSearchOriginsFromDeviceModels,
   conversationSearchSessionCacheKey,
   isConversationSearchChannelNotAllowed,
@@ -444,5 +445,16 @@ describe('helpers', () => {
     expect((item.session as RemoteSession).deviceLinkDeviceId).toBe('dev-a');
     expect(conversationSearchAllowsLocalWrites(item)).toBe(false);
     expect(conversationSearchAllowsLocalWrites({ session: { id: 'plain' } })).toBe(true);
+  });
+});
+
+// Search projection + routing: old coverage had only ordinary tasks. Unit tier.
+it('preserves companion identity and the selected archived transcript', () => {
+  const hit = searchCachedDeviceSessions(studio, { query: 'planning' }, [session({ id: 'old', title: 'Remote planning' })]).results[0];
+  hit.session.companion = { id: 'bot', name: 'Melody', role: 'history', readOnly: true };
+  const item = toSearchListItem(hit, Date.now());
+  expect(item.title).toBe('Melody · Remote planning');
+  expect(conversationSearchCompanionParams(item)).toEqual({
+    resourceCollectionId: 'teammates', resourceKind: 'bot', resourceId: 'bot', resourceHistorySessionId: 'old',
   });
 });

@@ -47,6 +47,40 @@ export type ForkErrorCode =
 
 const STRIP_FORK_TITLE_PREFIX = '[Fork·已剥离]';
 
+export async function listSideChats(sourceSessionId: string): Promise<Array<{ id: string }>> {
+  return getDbClient().drizzle.select({ id: sessions.id }).from(sessions).where(and(
+    eq(sessions.parentSessionId, sourceSessionId), eq(sessions.source, 'side-chat'),
+    or(eq(sessions.status, 'active'), eq(sessions.status, 'archived')),
+  )).orderBy(asc(sessions.createdAt));
+}
+
+/** Snapshot completed history without waiting for or stopping the parent turn. */
+export async function createSideChat(sourceSessionId: string): Promise<Session> {
+  const db = getDbClient().drizzle;
+  const [source] = await db.select().from(sessions).where(eq(sessions.id, sourceSessionId)).limit(1);
+  if (!source || source.status !== 'active') {
+    throw forkError('SOURCE_NOT_FOUND', 'Source task is unavailable');
+  }
+  if (source.source === 'side-chat' || source.source === 'review' || source.source === 'bot') {
+    throw forkError('UNSUPPORTED_HISTORY', 'Open a side chat from the main task');
+  }
+  const inFlight = (source.activeTurnStartedAt ?? 0) > (source.lastTurnEndedAt ?? 0);
+  const completedBefore = source.lastTurnEndedAt
+    ? source.lastTurnEndedAt + 1
+    : inFlight ? source.activeTurnStartedAt : undefined;
+  // Fork the last completed reply through the next user boundary. Later user
+  // rows may be steers; a queued turn's question may also predate its start.
+  const [anchor] = await db.select({ clientId: messages.clientId }).from(messages).where(and(
+    eq(messages.sessionId, sourceSessionId),
+    eq(messages.role, 'assistant'),
+    isNull(messages.rewindAt),
+    source.clearedAt === null ? undefined : gt(messages.createdAt, source.clearedAt),
+    completedBefore ? lt(messages.createdAt, completedBefore) : undefined,
+  )).orderBy(desc(messages.createdAt), desc(messageRowid)).limit(1);
+  if (!anchor?.clientId) throw forkError('NO_PRIOR_ASSISTANT', 'Wait for the first completed reply');
+  return forkSessionAtMessage(sourceSessionId, anchor.clientId, { sideChat: true });
+}
+
 function forkError(code: ForkErrorCode, message: string): Error {
   const err = new Error(message);
   (err as { code?: string }).code = code;
@@ -774,6 +808,7 @@ function collectClaudeToolParentUuids(
 export async function forkSessionAtMessage(
   sourceSessionId: string,
   messageClientId: string,
+  options: { sideChat?: boolean } = {},
 ): Promise<Session> {
   const db = getDbClient().drizzle;
 
@@ -1013,6 +1048,7 @@ export async function forkSessionAtMessage(
       targetRowid: copyBoundary.rowid,
       newSession: {
         id: newSessionId,
+        ...(options.sideChat ? { source: 'side-chat' as const } : {}),
         title: newTitle,
         workingDir: source.workingDir,
         model: forkSource.model,

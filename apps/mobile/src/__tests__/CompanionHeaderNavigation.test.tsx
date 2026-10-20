@@ -121,6 +121,7 @@ const compiled = ts.transpileModule(`${moduleConstant('COMPANION_NATIVE_HEADER_O
 function PageHost({ bindings }) {
   const { auth, deviceId, sessionId, companionResource, companionEntry, shareSelectionActive, setSearchOpen, goBackToHome, companionWorkingLabel } = bindings;
   const currentSession = null;
+  const isSideChatSheet = false;
   const companionSettingsRequest = bindings.companionSettingsRequest;
   const deviceName = 'PC', remoteUnavailableReason = null, sessionListDrawerOverlayMounted = false;
   ${statements.slice(stateStart, stateEnd).map(n => n.getText(source)).join('\n')}

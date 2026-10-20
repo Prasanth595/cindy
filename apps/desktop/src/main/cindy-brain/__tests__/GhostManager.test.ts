@@ -5258,6 +5258,33 @@ describe('GhostManager · setEnabled(启用/停用)', () => {
 });
 
 describe('GhostManager · inspect(只验不装)', () => {
+  // Unit: first-install inspects twice before install parses the same archive.
+  // Reuse must still isolate returned manifests and reread source bytes; existing
+  // replacement tests did not cover repeated decompression of unchanged input.
+  it('reuses verified package parsing without trusting mutated inspection results or changed bytes', async () => {
+    const cindy = await makeCindy('reused.cindy', goodManifest());
+    const parseZip = vi.spyOn(JSZip, 'loadAsync');
+    try {
+      const inspected = await manager.inspect(cindy);
+      if ('rejection' in inspected) throw new Error(inspected.rejection.reason);
+      inspected.manifest.name = 'Changed by inspection caller';
+      inspected.canonicalManifest.name = 'Changed canonical manifest';
+
+      expect(await manager.inspect(cindy)).toMatchObject({
+        manifest: { name: 'Hello 意识' }, canonicalManifest: { name: 'Hello 意识' },
+      });
+      expect(await manager.install(cindy, { expectedPackageSha256: inspected.packageSha256 }))
+        .toMatchObject({ ghost: { manifest: { name: 'Hello 意识' }, enabled: true } });
+      expect(parseZip).toHaveBeenCalledTimes(1);
+
+      await makeCindy('reused.cindy', { ...goodManifest(), name: 'Replaced package' });
+      expect(await manager.inspect(cindy)).toMatchObject({ manifest: { name: 'Replaced package' } });
+      expect(parseZip).toHaveBeenCalledTimes(2);
+    } finally {
+      parseZip.mockRestore();
+    }
+  });
+
   it('opens a top-level .cindy source in non-blocking mode', async () => {
     const cindy = await makeCindy('nonblocking.cindy', goodManifest());
     const realOpen = fs.promises.open;
@@ -5409,6 +5436,10 @@ describe('GhostManager · inspect(只验不装)', () => {
         name: 'Base name',
         tools: [{ name: 'do_thing', description: '做点事' }],
       },
+    });
+    hostLocale = 'en';
+    expect(await manager.inspect(cindy)).toMatchObject({
+      manifest: { name: 'English name' }, canonicalManifest: { name: 'Base name' },
     });
   });
 

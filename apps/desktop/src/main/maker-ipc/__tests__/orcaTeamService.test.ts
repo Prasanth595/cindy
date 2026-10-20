@@ -1,3 +1,4 @@
+import { admitTaskAction, captureTaskActionGuard } from '../taskActionAuthorization.js';
 import { hasAcceptedUserTaskInput } from '../pluginTaskInput.js';
 import { describe, expect, it, vi } from 'vitest';
 import {readFileSync} from 'node:fs';
@@ -432,21 +433,26 @@ describe('OrcaTeamService', () => {
     })).resolves.toMatchObject({ dispatched: true, agentKind: 'pi' });
   });
 
-  it.each(['send', 'interrupt'].flatMap(action => ['initial', 'lookup', 'restore', 'accept', 'queued', 'healthy'].map(phase => ({action,phase}))))(
-    'preserves plugin authority for public $action across $phase', async ({action,phase}) => {
+  // #6399: plugin-only coverage missed an ordinary owner input revoked after
+  // admission. Real host capture + public service; delayed acceptance escapes ALS.
+  it.each(['send', 'interrupt'].flatMap(action => [
+    ...['initial', 'lookup', 'restore', 'accept', 'queued', 'healthy'].map(phase => ({action,phase,source:'plugin'})),
+    ...['lookup', 'queued', 'healthy'].map(phase => ({action,phase,source:'action'})),
+  ]))(
+    'preserves $source authority for public $action across $phase', async ({action,phase,source:authoritySource}) => {
       let revoked = phase === 'initial', nativeCalls = 0;
       let delayed: (() => Promise<void>) | undefined;
       const source = readFileSync(new URL('../register.ts',import.meta.url),'utf8');
       const helper = source.slice(source.indexOf('  const assertPluginWorkerAutoAuthorized ='),source.indexOf('  const orcaWorkerCreationService ='));
       const epoch = {client:{}};
       const bindings = {PluginTaskError,getCurrentDbClientSnapshot:()=>epoch,
-        maker:{getSession:()=>null},inputCoordinator:{getAcceptedInputProvenance:()=>({clientId:'plugin-task:run'})},
-        createPluginTaskStore:()=>({get:async (id:string)=>id==='run'
+        maker:{getSession:()=>null},inputCoordinator:{getAcceptedInputProvenance:()=>authoritySource==='plugin'?{clientId:'plugin-task:run'}:null},
+        createPluginTaskStore:()=>({get:async (id:string)=>authoritySource==='action'?undefined:id==='run'
           ? {operation:'send',targetId:'lead-1',pluginId:'plugin',payload:'{"inputMessageId":"plugin-task:run"}'}
           : {operation:'create',pluginId:'plugin',payload:JSON.stringify({ownershipRevoked:revoked})}}),
         pluginTaskServiceForCurrentOwner:()=>({get:async()=>({status:'active',permissionMode:'auto'})}),
         isPluginTaskAuthorized:()=>!revoked,readPluginTaskConfig:()=>({permissionMode:'auto'})};
-      const capture = new Function('hasAcceptedUserTaskInput', ...Object.keys(bindings),ts.transpileModule(`${helper}\nreturn captureOrcaPluginAuthority;`,{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText)(hasAcceptedUserTaskInput, ...Object.values(bindings));
+      const capture = new Function('captureTaskActionGuard', 'hasAcceptedUserTaskInput', ...Object.keys(bindings),ts.transpileModule(`${helper}\nreturn captureOrcaPluginAuthority;`,{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText)(captureTaskActionGuard, hasAcceptedUserTaskInput, ...Object.values(bindings));
       const {deps,service,getWorker}=createDeps({captureControlAuthority:async id=>(await capture(id)).assertCurrent});
       const list=deps.listWorkersByLead;
       deps.listWorkersByLead=vi.fn(async id=>{const r=await list(id);if(phase==='lookup')revoked=true;return r;});
@@ -461,7 +467,14 @@ describe('OrcaTeamService', () => {
         return {ok:true,mode:phase==='queued'?'queued':'dispatched',clientId:'input',dispatchOutcome:{kind:'session-dispatch',source:'test',dispatched:true},targetTitle:'Worker',targetLastUserSendAt:null};
       };
       deps.dispatchWorkerMessage=vi.fn(dispatch);deps.reserveWorkerMessage=vi.fn(dispatch);
-      const run=()=>service[action==='send'?'sendToWorker':'interruptWorker']({callerLeadSessionId:'lead-1',targetSessionId:'worker-session-1',message:'Evaluate'});
+      const invoke=async()=>service[action==='send'?'sendToWorker':'interruptWorker']({callerLeadSessionId:'lead-1',targetSessionId:'worker-session-1',message:'Evaluate'});
+      const run=async()=>{
+        if(authoritySource==='plugin')return invoke();
+        const admitted=await admitTaskAction({sessionId:'lead-1',server:'cindy_orca',tool:action==='send'?'send_to_worker':'interrupt_worker',args:{}},
+          {key:'owner',ownerInput:true,delegated:false,assertCurrent:async()=>{if(revoked)throw new Error('Revoked');}});
+        if(!admitted.ok||!admitted.run)throw new Error('missing admission');
+        return admitted.run(invoke);
+      };
       if(phase==='initial')await expect(run()).rejects.toThrow();
       else {
         const result=await run();

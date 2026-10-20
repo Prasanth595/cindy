@@ -265,28 +265,51 @@ describe('plugin page return navigation', () => {
         description: 'Refreshed market details after installation',
       };
       window.electronAPI.ghosts.listSync = () => ({ ghosts: [installed] });
+      const changed = new Set<Parameters<typeof window.electronAPI.ghosts.onChanged>[0]>();
+      window.electronAPI.ghosts.onChanged = (listener) => {
+        changed.add(listener);
+        return () => { changed.delete(listener); };
+      };
+      const snapshot = vi.fn(window.electronAPI.pluginMarket.snapshot);
+      window.electronAPI.pluginMarket.snapshot = snapshot;
       let installationComplete = false;
       loadDetail.mockImplementation(async () =>
         installationComplete ? refreshedDetail : marketDetail,
       );
+      let finishInstall!: () => void;
+      const committed = new Promise<void>((resolve) => { finishInstall = resolve; });
       const install = vi.fn(async () => {
+        const ghost = { ...installed, manifest: { ...installed.manifest, version: detail.version } };
+        changed.forEach((listener) => listener({ ghosts: [ghost] }));
+        await committed;
         installationComplete = true;
         return {
-          ghost: { ...installed, manifest: { ...installed.manifest, version: detail.version } },
+          ghost,
         };
       });
       Object.assign(window.electronAPI.pluginMarket, { install });
       render(page(`/plugins?market=${detail.pluginId}`));
       await screen.findByRole('heading', { level: 1, name: detail.name });
       const marketPage = screen.getByRole('main');
+      const snapshotsBeforeInstall = snapshot.mock.calls.length;
 
-      fireEvent.click(screen.getByRole('button', {
-        name: installState === 'conflict'
-          ? 'settings.ghosts.market.replace'
-          : 'settings.ghosts.market.update',
-      }));
+      try {
+        await act(async () => {
+          fireEvent.click(screen.getByRole('button', {
+            name: installState === 'conflict'
+              ? 'settings.ghosts.market.replace'
+              : 'settings.ghosts.market.update',
+          }));
+        });
+        // The roster arrives before market provenance commits. Reading it here
+        // caused an extra full scan and could expose a transient source conflict.
+        expect(snapshot).toHaveBeenCalledTimes(snapshotsBeforeInstall);
+      } finally {
+        await act(async () => { finishInstall(); });
+      }
 
       await screen.findByText(refreshedDetail.description!);
+      expect(snapshot).toHaveBeenCalledTimes(snapshotsBeforeInstall + 1);
       expect(install).toHaveBeenCalledWith(detail.pluginId, expect.objectContaining({
         expectedReleaseId: detail.releaseId,
         expectedManifest: detail.manifest,

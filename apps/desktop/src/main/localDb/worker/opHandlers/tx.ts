@@ -10,7 +10,7 @@ import { inferBotTemplatePresetId } from '../../../../shared/botTemplatePreset.j
 
 import type Database from 'better-sqlite3';
 
-import type { DbTxName } from '../../client/tx/types.js';
+import type { DbTxName, SessionsSetTerminalStatusResult } from '../../client/tx/types.js';
 import { computeForkSourceMessagesDigest, type ForkSourceMessage } from '../../forkRecoverySnapshot.js';
 import { normalizeWorkingDirForStorage } from '../../../../shared/workingDir.js';
 import { capImportedToolResultContent } from '../../../../shared/toolResultPersistCap.js';
@@ -2150,20 +2150,12 @@ function sessionsSetStatus(db: Database.Database, args: unknown): Array<{
 }
 
 /** Atomically persist a terminal task status and its local-close fence. */
-function sessionsSetTerminalStatus(db: Database.Database, args: unknown): {
-  sessionId: string;
-  title: string | null;
-  workingDir: string | null;
-  workspaceKind: string | null;
-  remoteHostId: string | null;
-  source: string | null;
-  status: 'archived' | 'deleted';
-} {
+function sessionsSetTerminalStatus(db: Database.Database, args: unknown): SessionsSetTerminalStatusResult {
   const payload = asRecord(args, 'sessions.setTerminalStatus args');
   const sessionId = expectString(payload.sessionId, 'sessionId');
   const status = expectString(payload.status, 'status');
   if (status !== 'archived' && status !== 'deleted') throw invalidArgs('invalid terminal status: ' + status);
-  const transaction = db.transaction(() => {
+  const transaction = db.transaction((): SessionsSetTerminalStatusResult => {
     const existing = db.prepare('SELECT id, status, source FROM sessions WHERE id = ? LIMIT 1').get(sessionId) as
       | { id: string; status: string; source: string } | undefined;
     if (!existing) throw Object.assign(new Error('Session not found: ' + sessionId), { code: 'NOT_FOUND' });
@@ -2177,11 +2169,20 @@ function sessionsSetTerminalStatus(db: Database.Database, args: unknown): {
       id: string; title: string | null; workingDir: string | null; workspaceKind: string | null; remoteHostId: string | null; source: string | null;
     } | undefined;
     if (!updated) throw Object.assign(new Error('Session not found: ' + sessionId), { code: 'NOT_FOUND' });
-    return { ...updated, sessionId: updated.id, status };
+    // Hidden children must become unreachable in the same commit as the parent.
+    // A failure in either the status write or its closure fence rolls back all rows.
+    const deletedSideChats = status === 'deleted' && existing.source !== 'side-chat'
+      ? db.prepare(`UPDATE sessions SET status = 'deleted', updated_at = ?
+          WHERE parent_session_id = ? AND source = 'side-chat' AND status <> 'deleted'
+          RETURNING id AS sessionId, title, working_dir AS workingDir, workspace_kind AS workspaceKind,
+            remote_host_id AS remoteHostId, source`).all(now, sessionId) as SessionsSetTerminalStatusResult['deletedSideChats']
+      : [];
+    for (const child of deletedSideChats) {
+      db.prepare(CLOSE_SHARED_TASKS_FOR_SESSION_SQL).run(now, child.sessionId);
+    }
+    return { ...updated, sessionId: updated.id, status, deletedSideChats };
   });
-  return transaction() as {
-    sessionId: string; title: string | null; workingDir: string | null; workspaceKind: string | null; remoteHostId: string | null; source: string | null; status: 'archived' | 'deleted';
-  };
+  return transaction();
 }
 
 function invalidateSessionListProjection(db: Database.Database, sessionId: string): void {
@@ -2909,6 +2910,11 @@ function forkSession(db: Database.Database, args: unknown): { messageCount: numb
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
   );
   const transaction = db.transaction(() => {
+    if (newSession.source === 'side-chat' && !db.prepare(
+      "SELECT 1 FROM sessions WHERE id = ? AND status = 'active' AND cleared_at IS ?",
+    ).get(sourceSessionId, sourceClearedAt)) {
+      throw invalidArgs('Source task changed while opening side chat');
+    }
     if (payload.recoveryMarker != null && !db.prepare(
       'SELECT 1 FROM sessions WHERE id = ? AND cleared_at IS ?',
     ).get(sourceSessionId, sourceClearedAt)) {
@@ -2936,6 +2942,12 @@ function forkSession(db: Database.Database, args: unknown): { messageCount: numb
         `newMessageIds length mismatch: expected ${sourceMessages.length}, got ${newMessageIds.length}`,
       );
     }
+    const childCreatedAt = expectNumber(newSession.createdAt, 'newSession.createdAt');
+    // Keep inherited history strictly before the side-chat visibility boundary,
+    // without moving the child into the future or changing source timestamps.
+    const historyTimeOffset = newSession.source === 'side-chat'
+      ? sourceMessages.reduce((offset, message) => Math.max(offset, message.created_at - childCreatedAt + 1), 0)
+      : 0;
     db.prepare(
       `INSERT INTO sessions (
         id, title, working_dir, model, provider_id, effort, permission_mode, status,
@@ -2976,6 +2988,10 @@ function forkSession(db: Database.Database, args: unknown): { messageCount: numb
       expectNumber(newSession.createdAt, 'newSession.createdAt'),
       expectNumber(newSession.updatedAt, 'newSession.updatedAt'),
     );
+    if (newSession.source === 'side-chat') {
+      db.prepare("UPDATE sessions SET source = 'side-chat', extra_dirs = (SELECT extra_dirs FROM sessions WHERE id = ?), writable_dirs = (SELECT writable_dirs FROM sessions WHERE id = ?) WHERE id = ?")
+        .run(sourceSessionId, sourceSessionId, expectString(newSession.id, 'newSession.id'));
+    }
     for (let i = 0; i < sourceMessages.length; i += 1) {
       const message = sourceMessages[i];
       const ids = newMessageIds[i];
@@ -2997,11 +3013,14 @@ function forkSession(db: Database.Database, args: unknown): { messageCount: numb
           nativeForkAnchorSessionMap,
         ),
         message.agent_kind,
-        message.created_at,
+        message.created_at - historyTimeOffset,
       );
     }
     if (payload.recoveryMarker != null) {
       const marker = asRecord(payload.recoveryMarker, 'recoveryMarker');
+      const markerCreatedAt = newSession.source === 'side-chat'
+        ? childCreatedAt
+        : expectNumber(marker.createdAt, 'recoveryMarker.createdAt');
       db.prepare(
         "INSERT INTO messages (id, client_id, session_id, role, content, agent_kind, created_at, rewind_at) VALUES (?, ?, ?, 'context_rebuild', ?, ?, ?, ?)",
       ).run(
@@ -3010,8 +3029,8 @@ function forkSession(db: Database.Database, args: unknown): { messageCount: numb
         expectString(newSession.id, 'newSession.id'),
         expectString(marker.content, 'recoveryMarker.content'),
         expectString(newSession.agentKind, 'newSession.agentKind'),
-        expectNumber(marker.createdAt, 'recoveryMarker.createdAt'),
-        expectNumber(marker.createdAt, 'recoveryMarker.createdAt'),
+        markerCreatedAt,
+        markerCreatedAt,
       );
       const content = asRecord(JSON.parse(expectString(marker.content, 'recoveryMarker.content')), 'recoveryMarker content');
       insertMessage.run(
@@ -3021,7 +3040,7 @@ function forkSession(db: Database.Database, args: unknown): { messageCount: numb
         'assistant', '', null,
         JSON.stringify({ contextRebuild: { reason: content.reason, handoff: content.handoff } }),
         expectString(newSession.agentKind, 'newSession.agentKind'),
-        expectNumber(marker.createdAt, 'recoveryMarker.createdAt'),
+        markerCreatedAt,
       );
     }
     return { messageCount: sourceMessages.length };

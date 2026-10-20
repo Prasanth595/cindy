@@ -2,6 +2,7 @@ import { FORWARDED_REQUEST_RECEIPT, type ForwardedRequestSource } from '../../sh
 import { AUTO_REVIEW_SOURCE_CONTENT, AUTO_REVIEW_USER_INTENT } from '@cindy/maker-core';
 import { getDeviceLinkInvokeContext } from '../device-link/invoke-context.js';
 import { assertSharedTaskQueueMutation } from './sharedTaskInput.js';
+import { assertTaskActionCurrent, combineInputGuards, hasTaskActionAuthorization, taskActionInputGuard, TASK_ACTION_INPUT_GUARD } from './taskActionAuthorization.js';
 import { isBotGroupClientId } from '../../shared/botGroupChat.js';
 import { SchedulerQueuedPreparationError } from './schedulerQueuedPreparation.js';
 import { MCP_APP_MESSAGE_GUARD, isUnrestorableMcpAppMessage, queuedAppMessageGuard, type McpAppMessageGuard } from '../mcp-apps/message.js';
@@ -1292,7 +1293,7 @@ export class AgentInputCoordinator {
 
   /** Authority follows the active input, never pending steering or cumulative reply attribution. */
   getAcceptedInputProvenance(sessionId: string): {
-    clientId: string; autoResume?: boolean; retrySourceClientId?: string; authoredText?: string; originKind?: string; delegatedRequest?: ForwardedRequestSource;
+    clientId: string; autoResume?: boolean; retrySourceClientId?: string; authoredText?: string; originKind?: string; orcaSenderSessionId?: string; delegatedRequest?: ForwardedRequestSource;
   } | null {
     const active = this.states.get(sessionId)?.activeTurn;
     const item = active?.item;
@@ -1302,6 +1303,7 @@ export class AgentInputCoordinator {
       authoredText: typeof item.autoReviewUserText === 'string' ? item.autoReviewUserText : undefined,
       delegatedRequest: typeof item.autoReviewUserText === 'object' ? item.autoReviewUserText.request : undefined,
       originKind: item.origin?.kind,
+      orcaSenderSessionId: item.origin?.kind === 'orca' ? item.origin.senderSessionId : undefined,
       retrySourceClientId: item.retrySourceClientId ?? item.supersedesUserClientId };
   }
 
@@ -2519,14 +2521,23 @@ export class AgentInputCoordinator {
     }
 
     let authorizationFailed = false;
-    try {
-      const referenceContexts = await this.resolveReferenceContexts(item);
+    // A tool promoting an existing row needs its own current authority as well
+    // as the row's original delivery guard. UI-only calls have no action scope.
+    const beforeMutation = combineInputGuards(
+      opts?.beforeMutation,
+      hasTaskActionAuthorization() ? assertTaskActionCurrent : undefined,
+    );
+    const assertSteerAuthority = async () => {
       try {
-        await opts?.beforeMutation?.();
+        await beforeMutation?.();
       } catch (error) {
         authorizationFailed = true;
         throw error;
       }
+    };
+    try {
+      const referenceContexts = await this.resolveReferenceContexts(item);
+      await assertSteerAuthority();
       // A pause/Stop can arrive while references are being prepared. Recheck
       // before crossing the provider boundary, including direct UI/IM callers.
       const current = this.getState(sessionId);
@@ -2553,7 +2564,11 @@ export class AgentInputCoordinator {
         item.persistedContent,
         referenceContexts,
       );
-      const appMessageGuard = queuedAppMessageGuard(item);
+      const appMessageGuard = combineInputGuards(
+        queuedAppMessageGuard(item),
+        taskActionInputGuard(sessionId, item),
+        beforeMutation ? assertSteerAuthority : undefined,
+      );
       await this.deps.steerToAgent(sessionId, buildMakerUserMessage(item, referenceContexts), {
         ...(appMessageGuard ? { [MCP_APP_MESSAGE_GUARD]: appMessageGuard } : {}),
         ...(item.sharedTaskAuthor ? { sharedTaskAuthor: item.sharedTaskAuthor } : {}),
@@ -4428,6 +4443,7 @@ export class AgentInputCoordinator {
   private toProjectedItem(item: AgentInputQueuedMessage): AgentInputQueuedMessage {
     const projected = { ...item };
     Reflect.deleteProperty(projected, MCP_APP_MESSAGE_GUARD);
+    Reflect.deleteProperty(projected, TASK_ACTION_INPUT_GUARD);
     delete projected[HOST_ONLY_AGENT_PREFIX];
     delete projected.hostAcceptedAtMs;
     delete projected.autoReviewUserText;
@@ -4992,7 +5008,7 @@ export class AgentInputCoordinator {
       // may synchronously emit the new turn's started marker before it returns;
       // post-dispatch acknowledgements must remain older than that marker.
       const preVendorDispatchAt = Math.max(0, Date.now() - 1);
-      const appMessageGuard = queuedAppMessageGuard(head);
+      const appMessageGuard = combineInputGuards(queuedAppMessageGuard(head), taskActionInputGuard(sessionId, head));
       const result = await this.deps.sendToAgent(sessionId, makerUserMessage, head.createOpts, {
         ...(appMessageGuard ? { [MCP_APP_MESSAGE_GUARD]: async () => {
           try {

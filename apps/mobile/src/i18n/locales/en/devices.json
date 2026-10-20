@@ -317,6 +317,7 @@
       "openMenu": "Open menu",
       "closeMenu": "Close menu",
       "openDisplaySettings": "Open display settings",
+      "openDisplaySettingsWithStatus": "Open display settings (showing: {{status}})",
       "openSearch": "Search",
       "openSettings": "Open settings",
       "syncing": "Syncing",

@@ -328,6 +328,8 @@ export const MAKER_INVOKE = {
   REWIND_PREVIEW: 'maker:rewind:preview',
   REWIND_COMMIT: 'maker:rewind:commit',
   FORK: 'maker:fork',
+  SIDE_CHAT: 'maker:side-chat:v1',
+  SIDE_CHAT_LIST: 'maker:side-chat:list:v1',
   FORK_STRIP_ENCRYPTED: 'maker:fork-strip-encrypted',
   // Agent 鉴权 (取代老 codex:auth:*) —— 走 Maker.{getAgentAuthState/triggerAgentLogin/...}
   AUTH_GET_STATE: 'maker:auth:get-state',

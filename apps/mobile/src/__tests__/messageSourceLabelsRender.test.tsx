@@ -6,6 +6,7 @@
 import { act, createElement, useImperativeHandle, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { beforeAll, describe, expect, it, vi } from "vitest";
+vi.mock('expo-modules-core', () => ({ requireOptionalNativeModule: () => null }));
 
 const viewportHarness = vi.hoisted(() => ({
   list: null as any,

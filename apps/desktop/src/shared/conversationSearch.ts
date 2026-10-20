@@ -62,6 +62,13 @@ export interface ConversationSearchSessionSummary {
   source?: SessionSource;
   orcaRole?: ConversationSearchOrcaRole | null;
   parentSessionId?: string | null;
+  /** Host-verified personal companion chat; absent for ordinary/background tasks. */
+  companion?: {
+    id: string;
+    name: string;
+    role: 'canonical' | 'history';
+    readOnly: boolean;
+  };
   userSendAt: string | null;
   updatedAt: string;
   createdAt: string;

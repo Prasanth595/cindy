@@ -7888,6 +7888,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       clientId: string,
       opts?: { requireLatestUser?: boolean; stopIfRunning?: boolean; allowFileRestore?: boolean },
     ): Promise<unknown> => ipcRenderer.invoke('maker:rewind:commit', sessionId, clientId, opts),
+    createSideChat: (sourceSessionId: string) => ipcRenderer.invoke('maker:side-chat:v1', sourceSessionId),
+    listSideChats: (sourceSessionId: string) => ipcRenderer.invoke('maker:side-chat:list:v1', sourceSessionId),
     fork: (sourceSessionId: string, messageClientId: string): Promise<unknown> =>
       ipcRenderer.invoke('maker:fork', sourceSessionId, messageClientId),
     forkStripEncrypted: (sourceSessionId: string): Promise<unknown> =>

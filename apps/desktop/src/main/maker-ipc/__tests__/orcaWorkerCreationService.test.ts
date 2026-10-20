@@ -1,4 +1,5 @@
 import { hasAcceptedUserTaskInput } from '../pluginTaskInput.js';
+import { captureTaskActionGuard } from '../taskActionAuthorization.js';
 import { assertPluginWorkerDirectoryScope } from '../pluginWorkerDirectory.js';
 import { runAcceptedCallback } from '../acceptedCallbackRunner.js';
 import path from 'node:path';
@@ -35,7 +36,7 @@ describe('Host provenance across Orca creation waits', () => {
     expect(from).toBeGreaterThan(0);
     expect(to).toBeGreaterThan(from);
     const js = ts.transpileModule(`${helper}\nreturn ({${source.slice(from, to)}});`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
-    return new Function('hasAcceptedUserTaskInput', 'assertPluginWorkerDirectoryScope', ...Object.keys(bindings), js)(hasAcceptedUserTaskInput, assertPluginWorkerDirectoryScope, ...Object.values(bindings));
+    return new Function('captureTaskActionGuard', 'hasAcceptedUserTaskInput', 'assertPluginWorkerDirectoryScope', ...Object.keys(bindings), js)(captureTaskActionGuard, hasAcceptedUserTaskInput, assertPluginWorkerDirectoryScope, ...Object.values(bindings));
   }
   type Action = 'createWorker' | 'enableTeam' | 'startNew' | 'startExisting';
   const phases: Record<Action, string[]> = {
@@ -3493,6 +3494,7 @@ describe('production plugin Auto admission after reservation', () => {
         route: { agentKind: 'codex', model: 'gpt-5.5', providerId: 'xd', effort: 'medium', fastMode: false } }] },
     } : {}) };
     const callbackDeps = {
+      captureTaskActionGuard,
       maker: {getSession:()=>null}, inputCoordinator: { getAcceptedInputProvenance: () => null },
       readPluginTaskPlanReceipt: JSON.parse, assertPluginWorkerDirectoryScope, getCurrentDbClientSnapshot: () => epoch,
       createPluginTaskStore: () => ({ get: async () => {
