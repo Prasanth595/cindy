@@ -70,6 +70,12 @@ function bubbleMessages(wrappedReactions = false) {
     }),
     message({
       id: 'q3', sequence: 7, isSelf: true, createdAt: T0 + 11 * MINUTE, content: '收到',
+      replyCount: 3,
+      threadPreview: { replies: [
+        { id: 'r4', authorKind: 'bot', authorBotId: 'a', authorName: 'Aster', text: '好', attachments: [], createdAt: T0 + 12 * MINUTE },
+        { id: 'r5', authorKind: 'bot', authorBotId: 'b', authorName: 'Nova', text: '已更新', attachments: [], createdAt: T0 + 13 * MINUTE },
+        { id: 'r6', authorKind: 'user', authorBotId: null, authorName: 'You', isSelf: true, text: '谢谢', attachments: [], createdAt: T0 + 14 * MINUTE },
+      ] },
       reactions: wrappedReactions ? manyReactions : ['❤️', '✅', '🚀'].map((emoji, i) => ({ emoji, count: i + 1, me: false })),
     }),
   ];

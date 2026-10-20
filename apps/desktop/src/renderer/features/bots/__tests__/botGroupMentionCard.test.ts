@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { BotGroupMemberView } from '../../../../shared/botGroupChat';
 import { botGroupMentionMember } from '../BotGroupMentionCard';
+import en from '../../../i18n/locales/en/common.json';
+import zhCN from '../../../i18n/locales/zh-CN/common.json';
+import zhTW from '../../../i18n/locales/zh-TW/common.json';
+import ja from '../../../i18n/locales/ja/common.json';
+import ko from '../../../i18n/locales/ko/common.json';
 
 const member = (botId: string, name: string): BotGroupMemberView =>
   ({ botId, name, avatar: '', avatarColor: 'gray', status: 'active' });
@@ -36,8 +41,13 @@ describe('botGroupMentionMember', () => {
     const empty = { all: false, botIds: [] };
     expect(botGroupMentionMember('@Nova', members, empty, '所有人', true)).toBeUndefined();
     expect(botGroupMentionMember('@Nova', members, { all: false, botIds: ['a', 'b'] }, '所有人', true)).toBeUndefined();
-    for (const label of ['所有人', 'all', 'everyone']) {
-      expect(botGroupMentionMember(`@${label}`, [member('a', label)], empty, '所有人', true)).toBeUndefined();
+    // Cross-language server snapshots have no ids: an English reader must not
+    // open a namesake's card for another sender locale's broadcast (r4324819630).
+    for (const label of [en, zhCN, zhTW, ja, ko].map(locale => locale.bots.groupChat.mention.all).concat('all', 'everyone')) {
+      const roster = [member('a', label)];
+      expect(botGroupMentionMember(`@${label}`, roster, empty, 'Everyone', true)).toBeUndefined();
+      expect(botGroupMentionMember(`@${label}`, roster, { all: true, botIds: [] }, 'Everyone', true)).toBeUndefined();
+      expect(botGroupMentionMember(`@${label}`, roster, { all: false, botIds: ['a'] }, 'Everyone', true)?.botId).toBe('a');
     }
   });
 });

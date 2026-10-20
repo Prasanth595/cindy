@@ -412,11 +412,11 @@ function BotGroupTimelineItemImpl(props: BotGroupTimelineItemProps) {
           {sharing && shareable ? <ShareMessageCheckbox clientId={message.id} /> : null}
           <div className={cn('flex min-w-0 flex-col items-end gap-1.5 transition-opacity', BUBBLE_COLUMN_CLASS, message.pending && message.outbox?.status !== 'failed' && 'opacity-60')}>
             {/* The toolbar and the reaction corner hang off the message's own content. */}
-            <div className="relative flex min-w-0 max-w-full flex-col items-end gap-1.5">
+            <div className={cn("relative flex min-w-0 max-w-full flex-col items-end gap-1.5", threadPreview && "self-stretch")}>
               {share ? <>{reactions}<div className="relative flex min-w-0 max-w-full flex-col items-end gap-1.5">{quote}{shareBody}{actions}</div></> : null}
-              {/* Text and attachments share one bubble, like a teammate's. */}
+              {/* A short root and its wider thread entry share the column width and both edges. */}
               {!share && (hasText || hasAttachments) ? (
-                <div className="flex w-fit min-w-0 max-w-full flex-col">
+                <div className={cn("flex min-w-0 max-w-full flex-col", threadPreview ? "w-full" : "w-fit")}>
                   {reactions}
                   <div
                     data-testid="bot-group-self-bubble"

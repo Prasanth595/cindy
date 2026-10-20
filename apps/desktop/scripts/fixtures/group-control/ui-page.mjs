@@ -111,6 +111,21 @@ export default {
         assert.ok(Math.abs(c.toolbarTop) <= 1, `${c.id} toolbar aligns with bubble top (${c.toolbarTop}px)`);
         if (ui.case === 'bubbles-wrapped') assert.ok(c.wrapped, `${c.id} exercises multiple reaction rows`);
       }
+      // r4324819612: the opposite of the long-root case — the entry is wider
+      // than this short message's text, and must still share the bubble's left edge.
+      const shortThread = await page.evaluate(() => {
+        const row = document.querySelector('[data-bot-group-message-id="q3"]');
+        const bubble = row.querySelector('[data-testid="bot-group-self-bubble"]').getBoundingClientRect();
+        const preview = row.querySelector('[data-thread-preview]').getBoundingClientRect();
+        const article = row.querySelector('article').getBoundingClientRect();
+        const text = document.createRange();
+        text.selectNodeContents(row.querySelector('[data-testid="bot-group-self-bubble"] p'));
+        return { offset: preview.left - bubble.left, right: article.right - bubble.right,
+          entryWiderThanText: preview.width > text.getBoundingClientRect().width };
+      });
+      assert.ok(shortThread.entryWiderThanText, 'short root exercises an entry wider than its text');
+      assert.ok(Math.abs(shortThread.offset) <= 1, `short self thread entry aligns with bubble left (${shortThread.offset}px)`);
+      assert.ok(Math.abs(shortThread.right) <= 1, `short self bubble stays right-aligned (${shortThread.right}px)`);
       await ui.capture('hover');
       // A mention reads in the link color and, rested on, shows who it names.
       await page.locator('[data-bot-group-message-id="q2"]').scrollIntoViewIfNeeded();

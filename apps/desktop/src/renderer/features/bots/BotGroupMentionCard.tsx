@@ -14,7 +14,8 @@ export function botGroupMentionMember(label: string, members: readonly BotGroupM
   mentions: BotGroupMention, allLabel: string, serverBacked = false): BotGroupMemberView | undefined {
   const name = label.replace(/^@/, '').trim();
   const fallback = serverBacked && !mentions.all && mentions.botIds.length === 0;
-  const broadcast = [allLabel, 'all', 'everyone'].some((label) => label.toLowerCase() === name.toLowerCase());
+  // The sender's locale can differ from the reader's; cover every shipped broadcast label.
+  const broadcast = [allLabel, '所有人', '全員', '모두', 'all', 'everyone'].some((label) => label.toLowerCase() === name.toLowerCase());
   if ((mentions.all || fallback) && broadcast) return undefined;
   const mentioned = new Set(mentions.botIds);
   const matches = members.filter((member) => (fallback || mentioned.has(member.botId))
