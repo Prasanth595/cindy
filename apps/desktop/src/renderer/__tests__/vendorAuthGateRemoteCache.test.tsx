@@ -43,17 +43,19 @@ const provider = (over: Partial<ProviderView>): ProviderView =>
     ...over,
   }) as ProviderView;
 
-const invoke = vi.fn(async (_deviceId: string, channel: string) => {
+const defaultInvoke = async (_deviceId: string, channel: string) => {
   if (channel === 'maker:agent:status') return { binaryReady: true, authReady: true };
   if (channel === 'maker:provider:list') return { providers: [provider({})] };
-  throw new Error(`unexpected channel ${channel}`);
-});
+  throw new Error('unexpected channel ' + channel);
+};
+const invoke = vi.fn(defaultInvoke);
 
 function channels(): string[] {
   return invoke.mock.calls.map((call) => call[1]);
 }
 
 beforeEach(() => {
+  invoke.mockImplementation(defaultInvoke);
   vi.stubGlobal('electronAPI', { deviceLink: { invoke } });
 });
 
