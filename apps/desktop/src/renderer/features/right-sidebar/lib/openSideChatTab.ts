@@ -16,6 +16,12 @@ import type { Session } from '@/lib/ccAgent.types';
 import { addTab, closeTab, ensureHydrated, getBucket, setActiveTab, subscribe } from '../store';
 import { mergeSidebarWindowBack } from './mergeSidebarWindowBack';
 import { requestRightSidebarVisibility } from './sidebarCommands';
+import { setTabGroup, type TabGroupId } from '../tabGroups';
+
+export interface SideChatTabPlacement {
+  groupId?: TabGroupId;
+  onOptimisticAdd?: (tabId: string) => void;
+}
 
 const log = createLogger('side-chat');
 const restoring = new Map<string, { revision: number; schedule: ReturnType<typeof createCoalescedRefresh<void>> }>();
@@ -125,7 +131,7 @@ export function watchSideChatTabs(sessionId: string): () => void {
 /** Open an independent follow-up on the parent's execution host. */
 export async function openSideChatTab(
   sessionId: string,
-  options: { prompt?: string; quote?: string } = {},
+  options: { prompt?: string; quote?: string; placement?: SideChatTabPlacement } = {},
 ): Promise<boolean> {
   try {
     if ((await window.electronAPI.rightSidebarWindow?.getState())?.detached) {
@@ -141,15 +147,23 @@ export async function openSideChatTab(
       // The creation broadcast may already have restored this tab.
       const existing = getBucket(sessionId).tabs.find(tab => tab.kind === 'side-chat'
         && (tab.state as { sessionId?: string } | null)?.sessionId === child.id);
-      if (existing) await setActiveTab(sessionId, existing.id);
-      else await addTab(sessionId, 'side-chat', { sessionId: child.id, deviceId });
+      if (existing) {
+        if (options.placement?.groupId) setTabGroup(existing.id, options.placement.groupId);
+        options.placement?.onOptimisticAdd?.(existing.id);
+        await setActiveTab(sessionId, existing.id);
+      } else {
+        await addTab(sessionId, 'side-chat', { sessionId: child.id, deviceId }, options.placement);
+      }
     } catch (error) {
       // A failed tab write must not leave an unreachable branch running or listed.
       await setStatus(child.id, 'deleted', deviceId ? { kind: 'device-link', deviceId } : { kind: 'local' });
       discardDraft(child.id);
       throw error;
     }
-    requestRightSidebarVisibility('open', { sessionId, userInitiated: true });
+    // Menus in other groups or popout windows already own their visible host.
+    if (!options.placement?.onOptimisticAdd && (!options.placement?.groupId || options.placement.groupId === 'right')) {
+      requestRightSidebarVisibility('open', { sessionId, userInitiated: true });
+    }
     return true;
   } catch (error) {
     const code = extractIpcError(error)?.code;

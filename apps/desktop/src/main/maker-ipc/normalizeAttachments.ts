@@ -257,7 +257,7 @@ async function ensureTempPath(sessionId: string, mimeType: string | undefined): 
   return path.join(dir, `${randomUUID()}${ext}`);
 }
 
-async function writeTempFile(
+export async function writeTempFile(
   sessionId: string,
   bytes: Buffer,
   mimeType: string | undefined,

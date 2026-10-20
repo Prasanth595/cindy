@@ -5,9 +5,9 @@
 import { ChevronRight, LoaderCircle } from 'lucide-react';
 import { useId } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { TabCreationMenu } from './lib/useTabCreationMenu';
+import type { TabCreationMenu, TabCreationSelectionOptions } from './lib/useTabCreationMenu';
 
-export function EmptyState({ menu }: { menu: TabCreationMenu }) {
+export function EmptyState({ menu, selectionOptions }: { menu: TabCreationMenu; selectionOptions?: TabCreationSelectionOptions }) {
   const { t } = useTranslation();
   const descriptionId = useId();
   return (
@@ -31,7 +31,7 @@ export function EmptyState({ menu }: { menu: TabCreationMenu }) {
             <button
               key={item.kind}
               type="button"
-              onClick={() => menu.select(item.kind)}
+              onClick={() => selectionOptions ? menu.select(item.kind, selectionOptions) : menu.select(item.kind)}
               disabled={item.disabled}
               aria-label={label}
               aria-describedby={item.descriptionKey ? `${descriptionId}-${item.kind}` : undefined}

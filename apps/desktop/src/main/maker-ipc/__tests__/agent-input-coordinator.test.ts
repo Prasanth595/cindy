@@ -1,3 +1,4 @@
+import { FORWARDED_REQUEST_RECEIPT, formatForwardedRequest } from '../../../shared/forwardedRequest.js';
 import { BOT_GROUP_CLIENT_ID } from '../../../shared/botGroupChat.js';
 import { authorizeGroupTool, registerGroupToolAuthority } from '../botGroupToolAuthorization.js';
 import { readFileSync } from 'node:fs';
@@ -2035,6 +2036,7 @@ describe('AgentInputCoordinator send transaction', () => {
 
   it.each([
     { source: {kind: 'delegated-continuation'} as const, authoredText: undefined },
+    { source: {kind: 'agent-request', request: {userText: '只检查', sessionId: 'owner', clientId: 'original'}} as const, authoredText: undefined },
     { source: 'My next task', authoredText: 'My next task' },
   ])('exposes only human text as input takeover evidence: $source', async ({source, authoredText}) => {
     const h = createHarness(), sid = 'typed-input-provenance';
@@ -2045,7 +2047,11 @@ describe('AgentInputCoordinator send transaction', () => {
     const db = { get drizzle(): never { throw new Error('Current Host source must not borrow older transcript'); } };
     await expect(hasAcceptedUserTaskInput(db, sid, h.coordinator.getAcceptedInputProvenance(sid)))
       .resolves.toBe(typeof source === 'string');
-    expect(h.sendToAgent.mock.calls[0]?.[3][AUTO_REVIEW_DELEGATED_CONTINUATION]).toBe(typeof source === 'object' ? true : undefined);
+    expect(h.sendToAgent.mock.calls[0]?.[3][AUTO_REVIEW_DELEGATED_CONTINUATION]).toBe(typeof source === 'object' && source.kind === 'delegated-continuation' ? true : undefined);
+    if (typeof source === 'object' && source.kind === 'agent-request') {
+      expect(h.coordinator.getAcceptedInputProvenance(sid)?.delegatedRequest).toEqual(source.request);
+      expect(h.sendToAgent.mock.calls[0]?.[3].persistUserMessage?.[FORWARDED_REQUEST_RECEIPT]).toEqual(source);
+    }
   });
 
   it('keeps a Worker Lead directive distinct from accepted human input', async () => {
@@ -12203,7 +12209,7 @@ describe('AgentInputCoordinator replaceQueuedMessage(Orca lead 排队消息修�
 
       expect(h.sendToAgent.mock.calls[1]?.[1]).toEqual({
         type: 'user',
-        content: replacement,
+        content: formatForwardedRequest({ userText: null }, replacement),
       });
       expect(
         mocks.createMessage.mock.calls.find(
@@ -12212,7 +12218,7 @@ describe('AgentInputCoordinator replaceQueuedMessage(Orca lead 排队消息修�
       ).toMatchObject({
         clientId: queued.clientId,
         role: 'user',
-        content: replacement,
+        content: formatForwardedRequest({ userText: null }, replacement),
       });
     },
   );

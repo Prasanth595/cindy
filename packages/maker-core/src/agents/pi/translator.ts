@@ -48,6 +48,10 @@ import {
   UPSTREAM_STREAM_INTERRUPTED_REASON,
   isStreamInterruptedErrorMessage,
 } from '../shared/stream-interrupt-error.js';
+import {
+  UNSUPPORTED_REQUEST_OPTION_REASON,
+  isUnsupportedRequestOptionErrorMessage,
+} from '../shared/unsupported-request-option-error.js';
 import { isNetworkishErrorMessage, PI_GATEWAY_DROP_REASON } from '../shared/network-error.js';
 import { isContextModeDoctorToolName } from './context-mode-doctor-path.js';
 import type { PiRpcEvent } from './rpc-client.js';
@@ -83,9 +87,10 @@ interface PiAssistantMessage {
 interface PiPendingAssistantError {
   message: string;
   sdkError: string;
+  piCacheCompatibility?: import('./cache-compatibility.js').PiCacheCompatibility;
   errorStatus?: 401 | 429 | 529;
   usageLimit?: true;
-  reason?: typeof CONTEXT_OVERFLOW_REASON | typeof UPSTREAM_STREAM_INTERRUPTED_REASON | typeof PI_GATEWAY_DROP_REASON;
+  reason?: typeof CONTEXT_OVERFLOW_REASON | typeof UPSTREAM_STREAM_INTERRUPTED_REASON | typeof PI_GATEWAY_DROP_REASON | typeof UNSUPPORTED_REQUEST_OPTION_REASON;
 }
 
 interface PiThinkingBlock {
@@ -95,6 +100,8 @@ interface PiThinkingBlock {
 }
 
 export interface PiTranslateContext {
+  getCacheCompatibility?: () => import('./cache-compatibility.js').PiCacheCompatibility | undefined;
+  cacheRecoveryHasOutput?: boolean;
   logger: Logger;
   /** Host-owned live tariff selector fallback when the provider response has no accepted tier. */
   getPriceVariant?: () => 'standard' | 'priority';
@@ -582,9 +589,11 @@ function piAssistantErrorOf(rawError: string): PiPendingAssistantError {
     ...(signals.usageLimit ? { usageLimit: true } : {}),
     ...(isContextOverflowErrorMessage(redactedError)
       ? { reason: CONTEXT_OVERFLOW_REASON }
-      : isStreamInterruptedErrorMessage(redactedError) || isPiAbortedRequest(redactedError)
-        ? { reason: UPSTREAM_STREAM_INTERRUPTED_REASON }
-        : {}),
+      : isUnsupportedRequestOptionErrorMessage(redactedError)
+        ? { reason: UNSUPPORTED_REQUEST_OPTION_REASON }
+        : isStreamInterruptedErrorMessage(redactedError) || isPiAbortedRequest(redactedError)
+          ? { reason: UPSTREAM_STREAM_INTERRUPTED_REASON }
+          : {}),
   };
 }
 
@@ -675,6 +684,7 @@ export function translatePiEvent(
   switch (event.type) {
     case 'agent_start': {
       ctx.turnGeneration += 1;
+      ctx.cacheRecoveryHasOutput = false;
       ctx.pendingHostTurnStartToken = null;
       if (ctx.hostAbortRequestGeneration !== ctx.turnGeneration) {
         clearPiHostAbortRequests(ctx);
@@ -733,6 +743,7 @@ export function translatePiEvent(
     case 'message_update': {
       const delta = event.assistantMessageEvent as Record<string, unknown> | undefined;
       if (!delta || typeof delta.type !== 'string') return;
+      if (['text_delta', 'thinking_delta', 'toolcall_start', 'toolcall_delta'].includes(delta.type)) ctx.cacheRecoveryHasOutput = true;
       observePiTokenSpeed(delta, queue, ctx);
       handleAssistantDelta(delta, queue, ctx);
       return;
@@ -774,6 +785,7 @@ export function translatePiEvent(
         ctx.generationTimingReliable = false;
       }
       const fullText = assistantTextOf(message);
+      if (fullText.length > 0 || message.content?.some((block) => block.type === 'thinking' || block.type === 'toolCall')) ctx.cacheRecoveryHasOutput = true;
       ctx.finalAssistantStopReason = typeof message.stopReason === 'string'
         ? message.stopReason
         : null;
@@ -784,6 +796,10 @@ export function translatePiEvent(
       if (transientAssistantFailure) {
         const rawError = message.errorMessage?.trim() || fullText.trim() || 'Pi agent request failed';
         ctx.pendingAssistantError = piAssistantErrorOf(rawError);
+        if (ctx.pendingAssistantError.reason === UNSUPPORTED_REQUEST_OPTION_REASON) {
+          const receipt = ctx.getCacheCompatibility?.();
+          if (receipt) ctx.pendingAssistantError.piCacheCompatibility = { ...receipt };
+        }
       } else {
         // A normal assistant message proves an earlier provider failure recovered.
         ctx.pendingAssistantError = null;
@@ -812,6 +828,7 @@ export function translatePiEvent(
     }
 
     case 'tool_execution_start': {
+      ctx.cacheRecoveryHasOutput = true;
       const toolUseId = String(event.toolCallId ?? '');
       const toolName = String(event.toolName ?? 'tool');
       const toolArgs = (event.args as Record<string, unknown>) ?? {};
@@ -1019,6 +1036,7 @@ export function translatePiEvent(
           type: 'error',
           data: {
             ...terminalError,
+            piCacheRecoverySafe: ctx.cacheRecoveryHasOutput === false,
             isTerminal: true,
           },
           source: 'pi',
@@ -1145,6 +1163,10 @@ export function translatePiEvent(
         type: 'error',
         data: {
           ...finalError,
+          ...(finalError.reason === UNSUPPORTED_REQUEST_OPTION_REASON ? {
+            piCacheCompatibility: ctx.getCacheCompatibility?.(),
+            piCacheRecoverySafe: ctx.cacheRecoveryHasOutput === false,
+          } : {}),
           isTerminal: true,
           ...(exhaustedReason ? { reason: exhaustedReason } : {}),
         },

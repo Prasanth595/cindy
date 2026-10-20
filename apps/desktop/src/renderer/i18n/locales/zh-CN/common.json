@@ -1,4 +1,26 @@
 {
+  "mailReader": {
+    "markReadFailed": "未能同步已读状态，请检查邮箱授权后重新打开。",
+    "title": "邮件",
+    "openMailbox": "在邮箱中打开",
+    "loading": "正在读取邮件…",
+    "failed": "未能读取这封邮件。请检查连接的邮箱账号后重试，或在邮箱中打开。",
+    "retry": "重试",
+    "to": "收件人",
+    "cc": "抄送",
+    "bcc": "密送",
+    "subject": "主题",
+    "currentMessage": "当前邮件",
+    "messageCount_other": "共 {{count}} 封邮件",
+    "messageCount_one": "共 {{count}} 封邮件",
+    "showMessages_other": "展开 {{count}} 封邮件",
+    "showMessages_one": "展开 {{count}} 封邮件",
+    "expandMessage": "展开来自 {{from}} 的邮件",
+    "collapseMessage": "收起来自 {{from}} 的邮件",
+    "conversationFailed": "暂时无法读取前后邮件。",
+    "messageCount": "共 {{count}} 封邮件",
+    "showMessages": "展开 {{count}} 封邮件"
+  },
   "logSupport": {
     "title": "日志与反馈",
     "localFiles": "选择问题当天的日志。文件未脱敏，请先检查。",
@@ -276,6 +298,17 @@
         "toastRejected": "已拒绝 {{name}} 的请求",
         "toastRevoked": "已撤回对 {{name}} 的同意，正在运行的任务已停止",
         "listTitle": "经 {{owner}} 的供应商组使用"
+      },
+      "memberNote": {
+        "add": "设置备注",
+        "edit": "修改备注",
+        "title": "设置用户备注",
+        "label": "备注",
+        "username": "用户名：{{name}}",
+        "hint": "最多 {{count}} 字，留空可清除。仅你可见",
+        "save": "保存备注",
+        "saving": "正在保存备注…",
+        "saveFailed": "未能保存备注"
       }
     },
     "toast": {
@@ -461,6 +494,52 @@
       "save": "保存",
       "reset": "恢复默认",
       "saved": "远程任务数量设置已保存",
+      "retry": "重新加载",
+      "loading": "正在加载…"
+    },
+    "insights": {
+      "visibilityTitle": "分享可见内容",
+      "visibilityNote": "对当前供应商的所有受邀者生效。关闭查看权限不影响模型使用。",
+      "allowQuota": "允许查看剩余额度",
+      "allowUsage": "允许查看用量明细",
+      "saveFailed": "未能保存分享查看权限",
+      "quotaTitle": "剩余额度",
+      "quotaNote": "这是账号共用额度，不是分配给你的专属额度。",
+      "groupNote": "按账号分别显示，不合计百分比。可能只显示部分账号，不包含从他人分享借来的账号；同一账号在多台电脑登录时也可能分列。",
+      "account": "账号 {{number}}",
+      "noOwnAccounts": "此组没有可公开额度的自有账号",
+      "usageNote": "可查看分享者与当前使用者的历史用量，金额为估算值。",
+      "relayNote": "转来的用量无法识别最终使用者，单独汇总，不计入分享者本人。",
+      "relay": "转来的用量",
+      "you": "你",
+      "owner": "分享者",
+      "notShared": "分享者尚未开放剩余额度",
+      "usageNotShared": "分享者尚未开放用量明细",
+      "usageUnavailable": "暂时无法读取用量明细",
+      "denied": "此分享暂不可查看",
+      "unsupported": "此供应商暂不支持读取额度",
+      "unavailable": "暂时无法读取额度或用量",
+      "offline": "分享者电脑离线或连接已断开",
+      "needs-update": "分享者的 Cindy 更新后才能查看",
+      "unlimited": "未设置个人限额",
+      "session": "当前周期",
+      "week": "每周",
+      "scoped": "独立周期",
+      "remaining": "剩余 {{percent}}%",
+      "resets": "重置时间：{{time}}",
+      "updated": "更新于 {{time}}",
+      "usageTitle": "用量明细",
+      "allowUsageDescription": "开启后，此分享的所有使用者都能查看分享者及其他所有使用者的昵称和历史用量明细。"
+    },
+    "idleRelease": {
+      "title": "这台电脑使用其他电脑的模型",
+      "description": "这台电脑上的任务使用其他电脑上的模型时，那台电脑能同时运行的任务数量有上限。快到上限时，可以让闲置超过下面时长的任务先暂时断开，把位置让给新任务；再给它发消息时会自动接上，之前的对话都还在。正在运行的任务不会断开；断开期间，这台电脑上的后台命令会继续运行。",
+      "minutes": "闲置释放（分钟）",
+      "hint": "默认为 0，即从不断开，满了就直接提示已达上限；设为 1～120 时，闲置超过该时长的任务才可能断开。",
+      "invalid": "请填写 0～{{max}} 的整数。",
+      "save": "保存",
+      "reset": "恢复默认",
+      "saved": "闲置释放设置已保存",
       "retry": "重新加载",
       "loading": "正在加载…"
     }
@@ -1685,13 +1764,6 @@
         "label": "列表样式",
         "hint": "未置顶任务：文字单行，列表带预览",
         "aria": "切换任务列表显示方式"
-      },
-      "ghostPanelRestore": {
-        "label": "插件面板恢复入口",
-        "hint": "选择最小化插件面板后从哪里恢复。",
-        "aria": "选择插件面板恢复入口",
-        "bubble": "浮动气泡",
-        "sidebar": "侧边栏"
       },
       "wallpaper": {
         "title": "壁纸",
@@ -2994,6 +3066,7 @@
           "quotaTitle": "本期剩余额度",
           "quotaUsed": "已用 {{used}} / 本期额度 {{total}}",
           "loading": "正在获取…",
+          "noPersonalLimit": "未设置个人限额",
           "unavailable": "暂时无法获取，请刷新重试。",
           "refresh": "刷新额度"
         },
@@ -3918,6 +3991,15 @@
         "workingDirSaved": "微信新对话工作目录已更新",
         "workingDirReset": "微信新对话已恢复使用默认目录",
         "workingDirFailed": "更新工作目录失败，请重新选择"
+      },
+      "companion": {
+        "assigned": "由绑定的伙伴回复",
+        "description": "在微信中与 {{name}} 对话，共用记忆和主任务。此电脑上的微信连接一次只能交给一位伙伴。",
+        "other": "微信已交给另一位伙伴。请先在该伙伴的连接设置或个人微信设置中移除绑定。",
+        "permissionNote": "微信继续使用逐次权限确认。请为伙伴选择 Claude Code 或 Codex，并使用自动审查或询问模式。",
+        "remove": "移除伙伴绑定",
+        "useExisting": "使用已连接的微信与 {{name}} 对话",
+        "updateFailed": "未能更新绑定。请等待微信中的任务结束后重试，并确认伙伴仍可用。"
       }
     },
     "discordBot": {
@@ -6264,7 +6346,8 @@
         "updateTo": "更新到 v{{version}}",
         "updateAria": "将 {{name}} 更新到 v{{version}}",
         "createWithCindy": "使用 Cindy 创建",
-        "createPrompt": "我要创建一个 Cindy 插件。请先调用 ghost_forge_guide 获取手册目录，先读第 0 章「设计对齐」，再用 section 参数读透相关章节（动手前至少读完能力总览、沙箱红线与打包流程），不要直接开始实现。先从提问开始：优先用带选项的提问卡片，每张卡片聚焦一个关键决策并标注你的推荐项，把我可能不知道的设计选项主动摆出来让我选——比如界面形态（停靠面板、插件页内面板、对话卡片还是无界面）、$ 点名词、启动模式、后台能力（旁听事件、应用内轻提示、未读角标、确认弹窗）、是否联网、是否需要设置页、要不要随包 Node 进程跑重活、要不要图片视频等媒体能力；并逐步确认插件要解决的问题、目标用户、交互流程、所需工具与连接、权限边界和验收标准。设计确认后，再按规范实现并自检；最后调用 ghost_forge_pack 校验并生成 .cindy 产物，不要声称已经安装。",
+        "createPrompt": "帮我创建一个 Cindy 插件。",
+        "creatorUnavailable": "内置插件创建技能暂不可用",
         "filterAll": "全部",
         "filtersAria": "按来源筛选插件",
         "origin": {
@@ -6410,7 +6493,7 @@
         "bodyInvalid": "这个插件的安装验证记录已损坏，因此已暂停运行。请重新安装原市场版本，或重新选择对应的 .cindy 包。",
         "bodyBuiltinRestart": "这个内置插件的安装验证记录出了问题。重启 Cindy 即可自动恢复，无需其他操作。"
       },
-      "install": "安装插件…",
+      "install": "从文件安装…",
       "empty": "还没有安装任何插件",
       "emptyHint": "可从插件市场安装，或点击右上角导入 .cindy 文件",
       "legacyRecovery": {
@@ -6434,14 +6517,19 @@
       "projectDisabledTag": "本项目已停用",
       "projectSwitchLockedTip": "该插件已在全局停用；请先切回「全局」视图启用",
       "projectBanner": {
-        "title": "正在配置项目「{{name}}」",
-        "desc": "开关只影响此项目：关闭的插件在该项目中不可用",
+        "title": "当前项目：{{name}}",
+        "desc": "开关仅影响此项目；安装、更新、卸载和配置作用于{{device}}。",
         "backToGlobal": "返回全局"
       },
       "scopePicker": {
         "global": "全局(默认)",
         "ariaLabel": "选择插件启用范围",
-        "browse": "选择其它目录…"
+        "browse": "选择其它目录…",
+        "management": "管理范围",
+        "globalScope": "全局",
+        "computers": "电脑",
+        "projectScope": "项目范围",
+        "projectsForComputer": "{{device}}上的项目"
       },
       "enableAria": "启用 {{name}}",
       "uninstall": "卸载",
@@ -6533,6 +6621,11 @@
         "unknownReviewerDetail": "包里带有审核声明，但当前 Cindy 不认识这把审核公钥，因此不会显示为已审核。"
       },
       "perm": {
+        "mail": "使用邮件草稿与发送卡片",
+        "mailDetail": "可在卡片中编辑和同步草稿，并在发送前提供确认和撤销倒计时。",
+        "mailReader": "在应用内查看邮件",
+        "mailReaderHost": "在应用内打开 {{host}} 的邮件链接",
+        "mailMarkRead": "打开邮件时可将其标记为已读",
         "grantsTitle": "安装后它将拥有：",
         "toolsGroup": "注册工具",
         "toolsDiffGroup": "注册工具变化",
@@ -6572,9 +6665,9 @@
         "nodeResidentDetail": "插件启用期间会一直运行；停用、更新、卸载或退出 Cindy 时关闭。",
         "tool": "工具「{{name}}」",
         "command": "对话指令 ${{command}}",
-        "panelLeft": "面板「{{title}}」· 停靠主对话区左侧",
+        "panelLeft": "面板「{{title}}」· 显示在侧边栏",
         "panelTab": "面板「{{title}}」· 插件页内打开",
-        "mainView": "可在 Cindy 侧边栏添加“{{title}}”入口",
+        "mainView": "可在 Cindy 左侧导航添加“{{title}}”入口",
         "mainViewDetail": "点击后将在插件沙箱中打开主视图，不会因此获得文件、网络或凭证访问权限。",
         "code": "可执行代码",
         "codeDetail": "在独立沙箱中运行，无法访问你的文件与网络。",
@@ -6593,7 +6686,7 @@
         "notify": "可弹出系统提示(屏幕顶部的轻提示)",
         "notifyDetail": "提示内容由这个插件提供，提示上会标注它的名字；自动消失，不会打断你的操作。",
         "badge": "可在插件入口点亮未读提醒",
-        "badgeDetail": "有新内容时，它可以在侧栏插件入口和自己的卡片上点亮一个绿点，并附一句话摘要；你打开它的面板即清零。绿点不出声、不震动，也不会进入系统通知中心，和上面的系统提示是两项独立权限。",
+        "badgeDetail": "有新内容时，它可以在左侧导航的插件入口和自己的卡片上点亮一个绿点，并附一句话摘要；你打开它的面板即清零。绿点不出声、不震动，也不会进入系统通知中心，和上面的系统提示是两项独立权限。",
         "confirm": "可弹出确认框征求你同意",
         "confirmDetail": "它动手前可以弹一个和 Cindy 同款的确认框来问你，问句由它提供、框上会标注它的名字；同意还是取消都由你亲手点，它自己点不了。同时最多一个确认框，弹得太频会被拦下。",
         "fsWrite": "可写入文件(创建/修改)",
@@ -6669,8 +6762,9 @@
         "locationCopied": "安装位置已复制",
         "locationCopyFailed": "复制安装位置失败，请手动复制",
         "openLocation": "打开安装位置",
-        "panelDocked": "已停靠 · 最小宽 {{min}}px",
-        "panelNotDocked": "未停靠(布局中暂无位置记录)",
+        "panelInSidebar": "显示在右侧栏（所有任务中保留）",
+        "panelDismissed": "已从右侧栏关闭 · 可在此处或右侧栏「+」菜单重新打开",
+        "openInSidebar": "在侧边栏中打开",
         "panelPageHosted": "从插件页打开 · 离开插件页自动关闭",
         "panelNone": "这个插件不含面板",
         "customSlotTitle": "插件自定义设置区",
@@ -6716,16 +6810,17 @@
         "settingsUnavailableUntilRestore": "恢复插件后可继续使用这项配置。",
         "oauthScopeStale": "当前授权未包含插件新增权限，请重新连接补齐授权。",
         "configurationTitle": "配置",
-        "sidebarEntryTitle": "侧边栏入口",
-        "showInSidebar": "显示在侧边栏",
-        "sidebarEntryDescription": "开启后，“{{title}}”会出现在侧边栏，显示在最外层还是收进“更多”，可在“更多 → 自定义”里调整。隐藏入口不会停用插件。",
+        "sidebarEntryTitle": "导航入口",
+        "showInSidebar": "显示在左侧导航",
+        "sidebarEntryDescription": "开启后，“{{title}}”会出现在左侧导航，和“自动化”“插件”并列。放在最外层还是收进“更多”，可在“更多 → 自定义”里调整。隐藏入口不会停用插件。",
         "openTool": "查看 Tool {{name}} 的详情",
         "noToolDescription": "该 Tool 暂无描述。",
         "viewAllTools": "查看更多",
         "collapseTools": "收起 Tool",
         "viewAllPermissions": "查看更多",
         "permissionsDialogDescription": "该插件申请的全部 {{count}} 项权限",
-        "closeDialog": "关闭弹窗"
+        "closeDialog": "关闭弹窗",
+        "resetPlacement": "恢复默认位置"
       },
       "contents": {
         "mainView": "主视图",
@@ -6939,6 +7034,49 @@
           "requirements": "需要 Apple Silicon Mac、macOS 15 或更高版本及完整 Xcode。",
           "dataNotice": "原模拟器的设备和应用数据不会被删除。安装 Baguette 不会自动迁移设备、App 或登录状态。"
         }
+      },
+      "remote": {
+        "device": "管理电脑",
+        "thisComputer": "当前电脑",
+        "offline": "离线",
+        "confirmOn": "在 {{device}} 上操作 {{name}}",
+        "targetOnly": "配置保存在 {{device}}。",
+        "hostPreferencesUnavailable": "这台电脑暂不支持远程编辑模型、任务和侧栏偏好，请在{{device}}上配置。",
+        "taskWorkdirBoundary": "工作目录沿用目标电脑的设置，请在目标电脑修改。",
+        "configurationLoading": "正在读取设置…",
+        "configurationReadFailed": "未能读取设置。",
+        "refreshConfiguration": "刷新设置",
+        "enableBeforeConfigure": "插件已停用，请先打开上方开关，再进行配置。",
+        "settingsPageUnavailable": "请在 {{device}} 的 Cindy 中打开此插件的设置页，目标电脑当前版本暂不支持远程显示。",
+        "offlineNotice": "「{{device}}」已离线，暂时无法管理。连接恢复后可继续。",
+        "managingTarget": "正在管理「{{device}}」",
+        "managingDescription": "更改将保存在这台电脑上。",
+        "viewingTarget": "「{{device}}」的已装插件",
+        "unsupported": "「{{device}}」的 Cindy 版本尚不支持远程管理。当前可查看它的已装插件；如需安装、升级、卸载、启停、配置或项目管理，请先在该电脑更新 Cindy。",
+        "refresh": "刷新插件",
+        "instanceId": "插件实例",
+        "detailLoading": "正在读取插件详情…",
+        "detailReadFailed": "未能读取插件详情",
+        "refreshDetail": "刷新详情",
+        "detailUnavailable": "该电脑未提供完整的插件详情，此处仅展示已返回的信息。",
+        "retry": "重试",
+        "readFailed": "无法读取插件，请重试。",
+        "unknown": "操作结果尚未确认，可查询原操作结果。",
+        "success": "目标电脑已完成操作。",
+        "cancelled": "已取消。",
+        "actionFailed": "操作失败，请刷新列表后重试。",
+        "changed": "插件已发生变化，请刷新后重试。",
+        "uninstallOn": "从 {{device}} 卸载 {{name}}？",
+        "uninstall": "卸载",
+        "empty": "这台电脑尚未安装插件。",
+        "marketUnavailable": "目标电脑的插件市场暂时不可用。",
+        "personalInstall": "个人安装",
+        "loading": "正在读取插件…",
+        "installDestination": "安装到：{{device}}",
+        "projectsUnsupported": "目标电脑暂不支持项目管理，请更新该电脑上的 Cindy。",
+        "noProjects": "这台电脑还没有可选项目。",
+        "projectLoading": "正在读取项目开关…",
+        "projectReadFailed": "项目开关读取失败，请重试。"
       },
       "usage": {
         "title": "个人调用",
@@ -7954,19 +8092,7 @@
     "collapsePanel": "收起",
     "expandPanel": "展开"
   },
-  "panelChrome": {
-    "maximizeAria": "撑满内容区",
-    "restoreAria": "还原面板大小",
-    "detachAria": "在独立窗口中打开",
-    "minimizeAria": "最小化面板",
-    "closeAria": "关闭面板并停用插件"
-  },
   "ghostPanel": {
-    "disableConfirm": {
-      "title": "停用「{{name}}」？",
-      "body": "关闭这个面板会停用插件并暂停其能力。你可以随时在侧边栏「插件」中重新启用。",
-      "confirm": "停用"
-    },
     "externalLinkConfirm": {
       "title": "是否要 Cindy 打开外部网站",
       "message": "是否要 Cindy 打开外部网站",
@@ -7974,19 +8100,11 @@
       "cancel": "取消"
     }
   },
-  "ghostPanelWindow": {
-    "mergeBack": "返回主窗口",
-    "unavailable": "该插件面板当前不可用"
-  },
-  "ghostPanelBubble": {
-    "restoreAria": "恢复 {{name}} 面板",
-    "stackExpandAria": "已收起 {{count}} 个插件面板，点击展开",
-    "stackCollapseAria": "收拢插件面板列表"
-  },
-  "ghostPanelRestore": {
-    "single": "恢复 {{name}}",
-    "multiple": "已收起的插件面板",
-    "multipleAria": "已收起 {{count}} 个插件面板，点击选择要恢复的面板"
+  "ghostMainView": {
+    "openInSidebar": "在侧边栏中打开",
+    "openInPage": "在页面中打开",
+    "openInWindow": "在独立窗口中打开",
+    "resetPlacement": "恢复默认位置"
   },
   "rightSidebar": {
     "ariaLabel": "右侧边栏",
@@ -8000,16 +8118,24 @@
       "mergeBack": "合并回主窗口",
       "followPlaceholder": "侧边栏跟随主窗口的当前任务"
     },
+    "tabWindow": {
+      "title": "侧边栏标签",
+      "mergeBack": "合并回侧边栏",
+      "loading": "正在加载…",
+      "closed": "该标签已关闭"
+    },
     "emptyTitle": "预留区域",
     "emptyDesc": "右侧边栏内容将在后续迭代加入",
     "tabs": {
       "addAria": "添加标签",
       "addFailed": "添加标签失败",
       "tabCloseAria": "关闭标签",
+      "pinnedAria": "全局页签，切换任务时保留",
       "menu": {
         "addLabel": "添加标签",
         "comingSoon": "即将支持",
-        "alreadyOpen": "已打开"
+        "alreadyOpen": "已打开",
+        "pluginsLabel": "插件"
       },
       "descriptions": {
         "fileBrowser": "浏览工作目录中的文件",
@@ -8031,19 +8157,23 @@
         "resourceUsage": "资源监视器",
         "collaboration": "协同",
         "unknown": "未知标签页",
-        "ghostPanel": "插件面板"
+        "ghostPanel": "插件面板",
+        "pluginView": "插件视图"
       },
       "controls": {
         "showAria": "显示侧栏",
         "maximizeAria": "最大化侧栏",
         "restoreAria": "退出最大化",
         "closeAria": "关闭侧栏",
-        "detachAria": "在新窗口中打开侧边栏"
+        "detachAria": "在独立窗口中打开当前标签"
       },
       "contextMenu": {
         "close": "关闭",
         "closeOthers": "关闭其他",
-        "closeAll": "关闭所有"
+        "closeAll": "关闭所有",
+        "openInWindow": "在独立窗口中打开",
+        "moveTo": "移到{{target}}",
+        "moveToWindow": "移到窗口："
       },
       "empty": {
         "eyebrow": "右侧栏",
@@ -8053,6 +8183,12 @@
         "addMoreHint": "也可通过顶部 + 按钮选择面板"
       },
       "placeholderHint": "{{kind}} — 内容将在后续阶段加入"
+    },
+    "tabGroups": {
+      "left": "左侧",
+      "right": "右侧栏",
+      "top": "上方",
+      "bottom": "下方"
     },
     "fileBrowser": {
       "noWorkdir": "当前任务未关联本地工作目录，文件浏览器不可用",
@@ -8917,6 +9053,7 @@
       "duplicate": "复制伙伴",
       "moreActions": "{{name}} 的更多操作",
       "sectionExpand": "展开伙伴",
+      "showLess": "收起",
       "sectionCollapse": "收起伙伴",
       "noResults": "没有匹配的伙伴或群聊"
     },
@@ -9787,6 +9924,42 @@
       "transferOffline": "连不上服务器，{{name}} 仍在这台电脑运行",
       "transferFailed": "未能把 {{name}} 交给「{{device}}」"
     },
+    "market": {
+      "heading": "发现伙伴",
+      "description": "带着方法和技能加入，与你一起把工作往前推进。",
+      "invite": "邀请加入",
+      "open": "打开伙伴",
+      "remove": "移除伙伴",
+      "back": "返回列表",
+      "loading": "正在加载伙伴…",
+      "empty": "没有找到伙伴",
+      "loadFailed": "暂时无法加载伙伴列表，请稍后重新打开。",
+      "installFailed": "尚未完成添加。已保存的内容会保留，可以再试一次。",
+      "nameExists": "已有同名伙伴。请先在伙伴设置中改名，再邀请加入。",
+      "installing": "正在保存伙伴资料和技能…",
+      "memoryDisabled": "记忆已关闭，方法知识尚未导入；不会自动开启记忆。",
+      "knowledge": "知识与记忆",
+      "skills": "技能",
+      "routines": "例行任务",
+      "capabilities": "关键能力",
+      "workTogether": "我的配置",
+      "tools": "工作工具",
+      "remembersLead": "会记住你的",
+      "pluginInstalled": "已安装",
+      "pluginNotInstalled": "未安装",
+      "routineOff": "默认关闭",
+      "itemFailed": {
+        "routine": "例行任务「{{name}}」没能保存。",
+        "skill": "技能「{{name}}」没能保存。",
+        "knowledge": "知识「{{name}}」没能保存。",
+        "other": "「{{name}}」没能保存。",
+        "unknown": "有一项内容没能保存。"
+      },
+      "partialReady": "其他内容已就绪，可以先开始使用。",
+      "partialUnsaved": "伙伴还没有保存，请重新保存。",
+      "retry": "重新保存"
+    },
+    "starterOptions": "起步选项",
     "channels": {
       "title": "消息平台",
       "platform": {
@@ -9807,7 +9980,7 @@
       },
       "remove": "移除",
       "removeAria": "移除 {{platform}}",
-      "empty": "{{name}} 还没有消息平台。把你在 Telegram、飞书、企业微信、钉钉或 Discord 申请的机器人加进来，{{name}} 就会在那里回复。",
+      "empty": "把你已有的机器人添加到平台，或在下方连接个人微信，{{name}} 就会在那里回复。",
       "externalNote": "给这个机器人发消息的人都是在和 {{name}} 对话。你自己的消息按 {{name}} 的权限执行；其他人各有一条隐藏任务，权限受限。",
       "sharedMemoryNote": "{{name}} 会把这里和其它对话里的信息放在一起用。想隔开记忆，请换一位伙伴。",
       "groups": {
@@ -9922,6 +10095,19 @@
         "cancel": "取消",
         "failed": "没能移除，请稍后再试",
         "ok": "知道了"
+      },
+      "officialX": {
+        "bind": "绑定给这位伙伴",
+        "remove": "取消伙伴绑定",
+        "bindTitle": "让 {{name}} 处理 X 提问？",
+        "bindBody": "你对官方 @askmycindy 的公开提问将交给 {{name}}，使用伙伴的身份、能力、共享记忆和工作目录；回答会公开回帖。X 专线与私聊记录分开。若已绑定其他伙伴，本次将替换原绑定。",
+        "removeTitle": "取消伙伴的 X 绑定？",
+        "removeBody": "保留 X 账号授权，后续提问恢复为普通任务。已开始的回复继续完成。",
+        "bound": "X 提问已交给 {{name}}。启用 X 并完成账号授权后即可使用。",
+        "boundElsewhere": "X 已交给另一位伙伴。绑定到这里会替换原伙伴。",
+        "unbound": "可将官方 @askmycindy 收到的你的提问交给 {{name}}。",
+        "managed": "X 提问由伙伴处理。可在该伙伴的消息平台设置中更改绑定。",
+        "riskBody": "X 提问会使用伙伴的共享记忆、能力和工作目录，回答会公开。请勿通过 X 处理私人信息。专线不会直接使用伙伴的私聊记录。"
       }
     }
   },
@@ -10913,6 +11099,13 @@
     "verificationFailed": "暂时无法确认 ChatGPT 登录是否已恢复，请重新检测。"
   },
   "chat": {
+    "imageDelivery": {
+      "stored": "图片已交付",
+      "failed": "图片交付失败，可重试传输已有图片。",
+      "retry": "重试交付",
+      "retrying": "正在交付…",
+      "retryFailed": "暂时无法交付，请确认生成图片的电脑在线。"
+    },
     "failedSamplingAttempt": "此回复未完成，内容仅供参考。",
     "jumpToBottom": "跳到底部",
     "prevMessageJump": "跳到上一条提问：{{preview}}",
@@ -11841,7 +12034,8 @@
       "REMOTE_AGENT_SHARE_UNAVAILABLE": "分享的供应商暂时不可用：对方电脑可能不在线，或对方暂时关闭了分享。可以稍后再试，或换成其他模型继续。",
       "REMOTE_AGENT_GROUP_UNAVAILABLE": "供应商组里的电脑现在都不能运行这个任务：可能都不在线、已暂停分配、正在冷却，或没有这个模型。可以到这个供应商的「远程与分享」页查看组内电脑。",
       "REMOTE_AGENT_DEVICE_LIMIT": "这台设备保留的远程任务数已达上限。可归档暂时不用的任务，或请远程电脑的主人在“远程与分享”中提高上限。",
-      "REMOTE_AGENT_TOTAL_LIMIT": "远程电脑保留的任务总数已达上限。请那台电脑的主人释放暂时不用的任务，或在“远程与分享”中提高上限。"
+      "REMOTE_AGENT_TOTAL_LIMIT": "远程电脑保留的任务总数已达上限。请那台电脑的主人释放暂时不用的任务，或在“远程与分享”中提高上限。",
+      "REMOTE_AGENT_RESUME_LOST": "之前在那台电脑上的对话没能接上，Agent 会在没有之前上下文的情况下继续。"
     },
     "generatedFiles": {
       "title": "本条消息生成的文件",
@@ -11941,7 +12135,17 @@
       "linkConfirmHint": "该链接由插件提供，将在系统浏览器中打开：",
       "linkConfirmOpen": "打开",
       "linkConfirmCancel": "取消",
-      "linkOpenFailed": "链接打开失败"
+      "expandFields": "展开",
+      "collapseFields": "收起",
+      "formSyncFailed": "卡片修改尚未同步，请检查连接后继续编辑；消息尚未发送。",
+      "linkOpenFailed": "链接打开失败",
+      "mailPreview": "邮件预览",
+      "mailEnlarge": "放大查看",
+      "mailInsertImage": "插入正文",
+      "mailAttach": "添加附件",
+      "mailRemoveAttachment": "移除 {{name}}",
+      "mailUpdated": "草稿已更新（只读）",
+      "mailLegacy": "历史草稿（只读）"
     },
     "ghostHook": {
       "blockedFallback": "消息被插件拦下，未发送",
@@ -12023,7 +12227,8 @@
       "degraded": "与远程设备的连接不稳定，正在自动重试…",
       "actionsUnavailable": "远程设备暂不可用，恢复连接后才能修改该任务",
       "resync": "重新同步",
-      "loading": "正在从远程设备加载任务…",
+      "loading": "正在读取任务…",
+      "syncing": "正在同步任务…",
       "suspectStall": "本轮长时间无更新，可能已断流",
       "finalizeStuck": "结束本轮",
       "issue": {
@@ -13883,6 +14088,17 @@
     "projectSkillNotLoaded": "当前 Pi 任务尚未加载此项目 Skill，新任务会自动尝试加载"
   },
   "skillhub": {
+    "remote": {
+      "loading": "正在读取技能…",
+      "readFailed": "无法读取技能，请重试。",
+      "unsupported": "目标电脑暂不支持远程技能管理，请更新其 Cindy。",
+      "confirm": {
+        "install": "在“{{device}}”安装“{{name}}”？",
+        "update": "将“{{device}}”的“{{name}}”更新至 v{{version}}？",
+        "uninstall": "从“{{device}}”卸载“{{name}}”？",
+        "installDescription": "技能将写入所选电脑，更新前保留原文件备份。"
+      }
+    },
     "unifiedDetail": {
       "contentSource": "内容来源",
       "local": "本地",
@@ -13900,17 +14116,13 @@
     },
     "home": {
       "title": "技能",
-      "description": "管理本地技能，或从 Skill Hub 发现并安装更多技能。",
+      "description": "管理已安装的技能，或从 SkillHub 发现更多技能。",
       "descriptionLocalOnly": "管理本机安装的本地技能。",
       "search": "搜索技能",
       "clearSearch": "清除技能搜索",
       "noSearchResults": "没有找到匹配的技能",
       "catalogFiltersAria": "SkillHub 分类",
       "categoryFiltersAria": "按分类筛选技能",
-      "scrollCategoriesLeft": "向左查看更多分类",
-      "scrollCategoriesRight": "向右查看更多分类",
-      "categoryScrollAtStart": "已经是第一个分类",
-      "categoryScrollAtEnd": "已经是最后一个分类",
       "catalogFilter": {
         "public": "公开",
         "organization": "组织",
@@ -13942,6 +14154,9 @@
       },
       "learn": {
         "description": "从当前任务、描述的工作流或 SkillHub 技能中提炼可复用技能，并通过 Cindy 的审查流程保存。"
+      },
+      "pluginCreator": {
+        "description": "创建、修改、调试和打包 Cindy 插件，也可按需发布。"
       }
     },
     "common": {
@@ -16552,7 +16767,26 @@
     "nothingToReset": "当前没有需要重置的用量上限",
     "offerExpired": "账号或重置状态已变化，请刷新用量后再使用重置",
     "resetFailed": "无法确认重置结果，请刷新用量查看额度是否已恢复",
-    "limitAction": "使用重置 · 剩余 {{count}} 次"
+    "limitAction": "使用重置 · 剩余 {{count}} 次",
+    "autoUse": {
+      "label": "自动使用",
+      "rules": "自动使用规则",
+      "lowQuota": "每周剩余低于 1% 时自动用",
+      "resetDistance": "距离配额重置还剩",
+      "days": "{{count}} 天以上",
+      "unlimited": "不限",
+      "custom": "自定义…",
+      "customDays": "自定义天数",
+      "dayUnit": "天以上",
+      "apply": "应用",
+      "expiring": "临近卡到期时自动用",
+      "leadTime": "提前多久使用",
+      "minutes": "到期前 {{count}} 分钟",
+      "hours": "到期前 {{count}} 小时",
+      "hint": "任一条件满足时，优先用最早到期的卡。配额全满时跳过。由这台电脑执行，需保持 Cindy 运行。",
+      "failed": "保存失败，请重试。",
+      "restore": "恢复默认"
+    }
   },
   "mcpApps": {
     "sharedTaskReadOnly": "此卡片仅任务主人可操作。",
@@ -16570,5 +16804,14 @@
     "openVideoSource": "打开原视频",
     "calculationUnavailable": "此项暂时无法计算。",
     "incomplete": "部分内容未能显示。"
+  },
+  "forwardedRequest": {
+    "sourcePresent": "[来源] 用户原话由宿主原样保留，作为请求背景；当前请求在 Agent补充。",
+    "sourceMissing": "[来源] 未找到可核验的用户原话。",
+    "userPrefix": "用户原话：",
+    "agentPrefix": "Agent补充：",
+    "taskSource": "[任务来源] 本任务由伙伴发起。",
+    "taskId": "任务 ID：",
+    "contextReferences": "参考资料："
   }
 }

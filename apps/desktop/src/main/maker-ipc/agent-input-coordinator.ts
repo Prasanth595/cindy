@@ -1,3 +1,4 @@
+import { FORWARDED_REQUEST_RECEIPT, type ForwardedRequestSource } from '../../shared/forwardedRequest.js';
 import { AUTO_REVIEW_SOURCE_CONTENT, AUTO_REVIEW_USER_INTENT } from '@cindy/maker-core';
 import { getDeviceLinkInvokeContext } from '../device-link/invoke-context.js';
 import { assertSharedTaskQueueMutation } from './sharedTaskInput.js';
@@ -261,6 +262,7 @@ export interface AgentInputSendOpts {
   /** Session reservation 时回调本轮 vendor generation；必须在 send 返回前绑定 leftover。 */
   onVendorTurnReserved?: (generation: number) => void;
   persistUserMessage?: {
+    [FORWARDED_REQUEST_RECEIPT]?: AgentInputQueuedMessage['autoReviewUserText'];
     botTaskCoordination?: AgentInputQueuedMessage['botTaskCoordination'];
     sharedTaskAuthor?: AgentInputQueuedMessage['sharedTaskAuthor'];
     /** 插件来源:写入 agentMeta.sourcePlugin 并生成 `[消息来源]`(不传给 maker-core)。 */
@@ -1290,7 +1292,7 @@ export class AgentInputCoordinator {
 
   /** Authority follows the active input, never pending steering or cumulative reply attribution. */
   getAcceptedInputProvenance(sessionId: string): {
-    clientId: string; autoResume?: boolean; retrySourceClientId?: string; authoredText?: string; originKind?: string;
+    clientId: string; autoResume?: boolean; retrySourceClientId?: string; authoredText?: string; originKind?: string; delegatedRequest?: ForwardedRequestSource;
   } | null {
     const active = this.states.get(sessionId)?.activeTurn;
     const item = active?.item;
@@ -1298,6 +1300,7 @@ export class AgentInputCoordinator {
     if (!item) return null;
     return { clientId: item.clientId, autoResume: item.autoResume,
       authoredText: typeof item.autoReviewUserText === 'string' ? item.autoReviewUserText : undefined,
+      delegatedRequest: typeof item.autoReviewUserText === 'object' ? item.autoReviewUserText.request : undefined,
       originKind: item.origin?.kind,
       retrySourceClientId: item.retrySourceClientId ?? item.supersedesUserClientId };
   }
@@ -5022,6 +5025,7 @@ export class AgentInputCoordinator {
         ...(head.fromDeviceLinkClient ? { fromDeviceLinkClient: true } : {}),
         ...(head.sourceDevice ? { sourceDevice: head.sourceDevice } : {}),
         persistUserMessage: {
+          ...(typeof head.autoReviewUserText === 'object' ? { [FORWARDED_REQUEST_RECEIPT]: head.autoReviewUserText } : {}),
           ...(head.botTaskCoordination ? { botTaskCoordination: head.botTaskCoordination } : {}),
           ...(head.sharedTaskAuthor ? { sharedTaskAuthor: head.sharedTaskAuthor } : {}),
           ...(head.sourcePlugin ? { sourcePlugin: head.sourcePlugin } : {}),

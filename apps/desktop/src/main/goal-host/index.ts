@@ -12,6 +12,7 @@ import type { Maker } from '@cindy/maker-core';
 
 import { createLogger } from '../logger.js';
 import {
+  hasRestoredCodexQuota,
   acquirePendingAgentSwitchForDirectSend,
   isSessionInTurn,
   ensureGoalInputReady,
@@ -29,6 +30,7 @@ import {
   subscriptionFamilyOf,
 } from '../usage/accountUsageLimit.js';
 import { readClaudeAccountUsageSnapshot } from '../usage/claudeAccountUsage.js';
+import { onCodexAutoResetRestored } from '../maker-ipc/usage.js';
 import { GoalController } from './controller';
 import { readTurnUsageResetAt } from './usageLimit.js';
 import { restoreSessionForGoal } from './sessionRestore.js';
@@ -45,6 +47,9 @@ export interface StartGoalControllerDeps {
 }
 
 let _controller: GoalController | null = null;
+onCodexAutoResetRestored(async providerId => {
+  await _controller?.resumeRestoredQuota(id => hasRestoredCodexQuota(id, providerId));
+});
 
 /** Incremented on every resetGoalController call. attemptStartScheduler uses
  * this to bail out if a teardown raced its await. */

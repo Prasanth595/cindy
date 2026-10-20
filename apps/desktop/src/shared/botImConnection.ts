@@ -18,8 +18,10 @@ export type BotImFeishuService = 'feishu' | 'lark';
  *
  * 群 / 话题 / 外部用户专线带 `telegramChatId` / `feishuChatId`, 渠道原生 API 工具
  * (`cindy_telegram_bot` / `cindy_feishu_bot`)据此挂载; 主任务与桌面共用, 不能带专线那套
- * 字段(会让桌面上的交互变成无头), 所以只带「绑了哪些渠道」。目标 chat 与触发者身份仍只来自
- * 逐轮作用域租约(main/im/shared/channelToolScope.ts), 这个标记只决定工具挂不挂。
+ * 字段(会让桌面上的交互变成无头), 所以只带「绑了哪些渠道」。轮次内原生 API 的目标 chat 与
+ * 触发者身份仍只来自逐轮作用域租约(main/im/shared/channelToolScope.ts)。飞书 send_*_to_user
+ * 无租约时另由 feishuTransportRouting.ts 查询 canonical 归属, 经伙伴可用连接通知已绑定主人;
+ * 不赋予轮次内 API 权限。这个标记只决定工具挂不挂, 不作为归属或授权依据。
  */
 export const BOT_IM_CHANNELS_VENDOR_KEY = 'cindyBotImChannels';
 

@@ -6,7 +6,7 @@ import { resolveBotChatIdentity, type BotChatBinding } from '../botChatPresentat
 const h = vi.hoisted(() => ({
   params: { botId: 'bot', sessionId: 'chat' },
   get: vi.fn(), list: vi.fn(), history: vi.fn(),
-  profiles: [] as Array<{ id: string; name: string; avatar: string; avatarColor: string }>,
+  profiles: [] as Array<{ id: string; name: string; avatar: string; avatarColor: string; invitation?: { stage: string } }>,
   profileListeners: new Set<() => void>(),
 }));
 // 工作台在右侧栏里有自己的数据订阅，这里只验证伙伴对话的挂载与读位。
@@ -29,9 +29,9 @@ vi.mock('react-router-dom', () => ({
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock('../useBotIslandVisibleSession', () => ({ useBotIslandVisibleSession: () => {} }));
 vi.mock('@/features/cc-agent/CCAgentSessionView', () => ({
-  CCAgentSessionView: ({ botIdentity }: { botIdentity?: BotChatBinding }) => {
+  CCAgentSessionView: ({ botIdentity, botInvitationStage }: { botIdentity?: BotChatBinding; botInvitationStage?: string }) => {
     const identity = resolveBotChatIdentity(botIdentity, h.params.sessionId);
-    return <div data-name={identity?.name}>{identity ? `companion:${identity.id}` : 'task controls'}</div>;
+    return <div data-name={identity?.name} data-invitation-stage={botInvitationStage ?? ''}>{identity ? `companion:${identity.id}` : 'task controls'}</div>;
   },
 }));
 import { BotSessionView } from '../BotSessionView';
@@ -95,4 +95,25 @@ it('follows a rename saved from settings while the chat stays open', async () =>
     for (const listener of h.profileListeners) listener();
   });
   expect(screen.getByText('companion:bot').getAttribute('data-name')).toBe('Melody Two');
+});
+it('hands the live invitation stage to the canonical chat only, and follows it until the opening is stored', async () => {
+  h.get.mockResolvedValue({ id: 'bot', name: 'Melody', status: 'active', sessions: [
+    { id: 'chat', kind: 'chat', status: 'active', role: 'canonical' },
+  ] });
+  h.profiles = [{ id: 'bot', name: 'Melody', avatar: '🎵', avatarColor: 'violet', invitation: { stage: 'welcome' } }];
+  render(<BotSessionView />);
+  expect((await screen.findByText('companion:bot')).getAttribute('data-invitation-stage')).toBe('welcome');
+  await act(async () => {
+    h.profiles = [{ ...h.profiles[0]!, invitation: { stage: 'ready' } }];
+    for (const listener of h.profileListeners) listener();
+  });
+  expect(screen.getByText('companion:bot').getAttribute('data-invitation-stage')).toBe('ready');
+});
+it('never shows the first-hello wait in a channel-routed (non-canonical) task of the same teammate', async () => {
+  h.get.mockResolvedValue({ id: 'bot', name: 'Melody', status: 'active', sessions: [
+    { id: 'chat', kind: 'chat', status: 'active', role: 'channel' },
+  ] });
+  h.profiles = [{ id: 'bot', name: 'Melody', avatar: '🎵', avatarColor: 'violet', invitation: { stage: 'welcome' } }];
+  render(<BotSessionView />);
+  expect((await screen.findByText('companion:bot')).getAttribute('data-invitation-stage')).toBe('');
 });

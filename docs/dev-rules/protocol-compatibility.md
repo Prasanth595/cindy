@@ -1,5 +1,53 @@
 # 跨端协议兼容
 
+## 邮件阅读会话
+
+只读 MailMessage 可选增加 conversation（threadId 和按时间排列的 messages 摘要）。
+摘要包含 messageId、url、from、date、subject、snippet，不附带所有正文；当前 messageId 必须在摘要中。
+Host 验证摘要唯一性、数量/长度及链接属于同一插件声明域名；展开时复用现有 mailReader，客户端核对返回的账号和邮件 ID。
+conversationUnavailable 表示当前邮件可读但周边邮件未能读取，界面提供重试。
+桌面右侧阅读器定位当前邮件，长会话折叠中间摘要。旧查看端（含现有手机）忽略新增字段，保留单封阅读；旧插件照常返回单封。
+沿用现有 IPC 和 mail-messages 远程资源，无新 channel、数据库迁移、权限或原生变更。
+
+## 插件卡片文本表单
+
+交互卡沿用 v2，在净化后的 div 上可选增加 `data-ghost-form` 字段数组，动作可选增加
+`data-ghost-submit="true"`。桌面与手机共用 maker-shared 校验和标准文本控件；
+不开放插件脚本、HTML input、文件输入或凭据输入。字段名唯一，最多 16 项，每项值最多 16000 字。
+桌面既有 dispatchCardAction IPC 可选追加 formValues；远程 `plugin-card-actions` 投影可选追加
+form 和 items[].submit，既有 invoke 的 input 可选追加 formValues。手机声明 `plugin-card-forms`
+能力后，Host 才投影表单并省略重复的静态预览；旧手机保留预览、禁用提交按钮。Host 继续校验会话、
+设备、页面与 revision，并检查提交字段与当前声明一致；真实点击票和 Agent 续接规则不变。
+表单提交活动归原 callId，插件完成后原地更新卡片，不产生新的空操作卡。
+
+新查看端连接旧 Host 时没有 form，维持原卡片行为。旧查看端忽略新字段；旧桌面保留
+插件提供的静态预览，新 Host 拒绝缺少字段的表单提交。插件也必须拒绝缺少 formValues
+的写入，并说明需更新客户端或通过原工具继续处理。发布时先升级 Host 和查看端，再发布
+依赖表单的插件；插件须保留原工具入口，不把卡片不可用误报为业务写入失败。
+字段可选 row（同排分组）和 collapsed（默认折叠）。kind:"recipients" 为可选展示提示：
+桌面和手机按实测姓名宽度与卡片宽度折叠剩余人数，展开直接替换摘要；完整地址字符串照常编辑与提交。
+旧端忽略 kind 并保留原文本编辑框，未知 kind 也退回文本框，不影响已安装插件。div 可选 data-ghost-change 动作 ID，
+桌面 IPC 与手机 input 可选 formChange:true，Host 投递无点击票的 card-action 编辑事件；不唤起 Agent。
+手机编辑事件校验当前 changeAction、字段和会话归属；同一编辑版本的自动保存回执允许 revision 变化，
+发送校验完整 revision，或同一 formKey（即当前 changeAction）与声明动作。插件必须在自动保存期间保持 changeAction，在重新读取/替换草稿时换 ID。
+自动保存回执不重建输入框，不覆盖正在输入的文字。插件负责保存、冲突处理及模型读写与卡片提交的一致性。
+发送聊天消息前等待该任务已发起的编辑事件送达，避免远程输入被模型工具超越。
+card-update 可选 sourceCallId：只接受当前在途、同插件同任务的工具调用，用于更新较早的卡片；
+旧调用、跨任务、跨插件和脚本调用不能重开。旧 Host 忽略此字段，可能不更新超出宽限窗的旧卡，业务工具仍返回回执。
+没有新 channel、服务端 schema、数据库迁移或 Mobile 原生 fingerprint 变化。
+
+`ghosts:card-updated` 可选携带 Host 注册调用时确定的 `sessionId`，桌面实时卡匹配只使用
+当前对话的推送，避免同插件在多个对话同时运行时串卡。旧 Host 缺此字段时不猜测归属，
+等待工具结果里的明确卡片 ID；历史与 fork 的明确 ID 引用仍可显示。旧查看端忽略新增字段。
+手机沿用按设备、对话和卡片 ID 获取资源的路径；没有新 channel 或插件作者契约。
+
+公共邮件发送沿用 sending 状态，可选 pendingSend（deadline、label、cancelLabel、sendNowLabel）。
+Host 仅在此等待阶段接受 mail:cancel / mail:now；动作不提交表单，草稿编辑锁定。
+两端只显示倒计时，真正的 10 秒等待和发送由公共邮件 SDK 执行；同草稿重复请求共用一次等待。
+撤销、重新读取或修改草稿取消等待，重启不会恢复自动发送。重启后点击旧倒计时的撤销或立即发送，
+SDK 重新读取并恢复草稿；再次发送必须重新经过完整倒计时。旧端忽略 pendingSend，仍按 sending
+锁定编辑；旧手机可能无法操作新增按钮，完整撤销交互需升级查看端。没有新 channel 或原生配置。
+
 ## MCP Apps
 
 标准 MCP Apps 使用 `io.modelcontextprotocol/ui` 扩展及官方 `2026-01-26` 协议。
@@ -64,6 +112,35 @@ fingerprint，须遵守 [冷更边界](mobile-development.md#原生配置与-run
 Gateway 边界对整块报价校验，非法或无有效币种即整体省略，保留模型。币种和折扣随同次
 模型快照投影，成功刷新缺字段会移除旧展示；没有新权限、数据库迁移或独立价格缓存。
 两端可独立升级，完整展示需两端支持。字段只用于报价展示，不参与账单或调用授权。
+
+## Gateway 媒体请求计费
+
+此契约仅适用于 Cindy AI provider（内部 `providerId='xd'`），按实际供应商身份判断，
+与模型名称无关；自定义及第三方 provider 不走此计费头读取和落账链路。
+个人版与企业账号的返回结构一致，共用同一解析器，不按账号类型分支。
+
+成功创建媒体请求的 `X-Nova-AIGateway-Billing` 是 Base64URL 编码的 JSON，`cost` 为有限的
+非负数，`model` 可选；其它供应商字段忽略。费用直接采用此头，不从 token 或展示价目推算。
+头本身没有币种，客户端在提交前捕获同账号 Gateway 的结算币种与数据库归属；币种未知、
+头缺失或非法时不猜测金额。旧网关没有头时继续提供媒体结果，不补算历史费用。
+仅原始创建响应记账，视频轮询、下载、已保存结果恢复不重复记账；响应正文或下载失败不撤回
+已经收到的有效计费。每日总额、模型费用和 Host 可关联的任务费用原子更新。
+正文读取与记账并行，读取完成即结束网络超时计时；本地记账等待不占用正文读取时间。
+账号数据库关闭前等待已发出媒体请求的记账结束，成功、拒绝、网络失败及提交前退出均释放
+对应等待。旧插件代办通过 Host 的同插件在途调用恢复任务上下文；没有此上下文的后台生成
+只记日账与模型费用，不借用当前聚焦任务。
+
+目录暂缺币种时复用同账号已确认的结算币种；从未确认或目录币种冲突时仍不猜测。
+旧版 v9 缓存未保存冲突标记且账号币种为空时，不能区分缺省与混合币种；在新的目录声明前
+不复用历史币种给媒体计费头标注币种。
+任务内媒体费在提交前绑定真实用户消息，`agent_meta.mediaCosts` 按币种保存实际费用，
+与日账及任务总额同一事务落库。响应下方沿用 `userTurnMoney` 累计，晚到费用刷新原轮，
+不修改聊天分段 `turnCost` 或订阅估值。定时运行与累计费用同时读取用户消息媒体账本，
+保留纯工具运行的费用，避免与助手消息费用重复累计。
+
+用量模型行的 `agentKind` 追加 `media`，token 数为 0，不虚构聊天引擎或 token 用量。
+同账号设备同步沿用 `usage-device-rows-v1`；新版保留此行，旧版可能忽略新类别的模型明细，
+每日费用仍通过既有日账同步，无新增 channel、权限或数据库 migration。
 
 ## 群聊邀请公开链接
 
@@ -1036,6 +1113,31 @@ handler 无 sender 依赖；不加入共享任务访客白名单，不进入自�
 
 ## 远程 Agent：Agent 在另一台电脑运行
 
+Codex 原生图片恢复（#6412）在既有 `maker:remote-agent:v1` 上追加可选
+`caps.imageRecovery: true` 与 `op: images`，不改变已有事件行格式与协议版本：
+
+- `list(sessionId, offset)` 每页最多 64 条，`read(sessionId, imageId, offset)` 每片最多
+  512 KiB，返回总长度和 SHA-256；接收方复核完整字节指纹与真实 MIME。
+  `release(sessionId, imageId)` 是持久交付回执，可重复调用。入参不接受任意文件路径；
+  Host 从已认证 caller 与任务 ID 派生私有 scope，返回前再次检查撤权。
+- 新控制端在 `open` 声明 `acceptsImageDeliveryReceipts: true`，源 Host 才建立持久恢复副本；
+  供应商组逐层透传该声明。旧控制端缺少声明时，源 Host 仍验证/读取图片并以 data URL
+  交付，但不建立无法确认释放的恢复引用。旧源端忽略可选声明，新控制端仍按其 caps 决定恢复能力。
+- 协商回执后源 Host 先入仓再发事件。两种路径均以 data URL 单独携带字节，
+  兼容仍优先读取 path 的旧控制端。
+  新控制端接受旧事件；旧源 Host 已丢失字节的 path-only 事件只能呈现交付失败，升级源端
+  后新产物才具备恢复能力。旧端未声明 capability 时不自动请求 `images`。
+- `images` 可选携带 `relay`，与 `open` 相同，scope 始终由已认证 caller、relay、任务 ID
+  派生；只有明确声明 `caps.imageRecoveryRelay` 的源端才发中转释放，避免旧端忽略 relay
+  后误确认。旧端未升级时保留中转回执，正常图片事件继续交付。
+- `open.imageDeliveryEpoch` / 图片 `deliveryEpoch` 是任务 Host 的清空代次（初始 0），
+  经供应商组透传，源端不使用自己的时钟换算。旧端忽略可选字段；缺少代次的旧产物在清空时
+  保守保留，删除任务仍可全部释放。新代次产物不能被此前离线清理回执删除。无需服务端升级。
+- Desktop / Mobile 手动重试走同账号 `maker:images:retry(sessionId, imageId)`，不进入
+  共享任务访客清单，不进入自动重放。旧任务 Host 不认识通道时保留失败状态。
+- 失败半径是一个产物：恢复不重启 relay、不关闭其它任务、不重新调用生成模型。
+  源文件、接收端消息、任务引用和释放回执分别验证，不把传输成功视为最终保存成功。
+
 同账号的 A(任务、项目文件与命令所在)可以让 B(打开了「允许远程控制」)用 B 自己的 Agent 程序、
 登录(含 Claude 订阅)、供应商与网络运行 Agent。新增 invoke channel `maker:remote-agent:v1`
 (`packages/device-link/src/remoteAgent.ts`)，只进同账号 allowlist，不进共享任务清单；被控端
@@ -1229,6 +1331,70 @@ handler 无 sender 依赖；不加入共享任务访客白名单，不进入自�
   主进程拒绝。
 - **移动项目可用**：B 上的影子目录只按「控制端 + 任务 id」定址(虚拟工作区为必需能力)，与 A 的工作目录
   无关；A 换目录后关闭空闲 handle，下次发送按新目录重建，B 上的会话记录原样续用。
+- **控制端连接池：名额紧张时让出闲置任务的 Agent 进程**(2026-10-17)：B 按发起设备限制同时开着的 run(`caps.maxRuns`)，
+  A 上开着的任务即使闲着也占名额。A 对每台 B 一个连接池(`controller/connectionPool.ts`，计数口径与 B 的 `limitDeviceOf`
+  一致：这台设备)，**只在名额紧张时**让出「不忙且闲置满 N 分钟」的连接；N 是 A 本机设置(「远程与分享」页「这台电脑使用
+  其他电脑的模型」，只在管理本机时显示，0～120，**默认 0 = 从不让出**，与没有连接池时一样满了直接报错；升级后行为不变，用户自己打开才生效)。三条路径都只让有资格的：
+  A 在这台 B 上开着的连接数到了水位线 `ceil(maxRuns×80%)`(只在水位线低于上限、即 maxRuns ≥ 5 时；每次 open 前与每分钟查一次)
+  按最久没活动的顺序让，直到降到水位线以下；open 前已满先同步让一个；open 被拒且是名额类 `REMOTE_AGENT_BUSY`
+  (`[DEVICE_LIMIT]` / `[TOTAL_LIMIT]`，旧 B 是 `too many tasks are running from this computer`；`too much staged data` 不算)
+  让一个再**只重试一次**。没有有资格的就照常 open / 照原样报错，B 才是最终裁判；不排队等名额。
+  - **不改 wire**：让出用已有的 `close`(mode `close`、reason `navigation`；不用 `detach`，它不结束 B 上的进程)，连回用已有的
+    `open` + `options.resumeSessionId`(远程 Agent 第一版就有)；maxRuns 每次 open 前从 `caps` 读最新值(旧 B 固定回 16，正是它的
+    硬上限)。四种版本组合：A 新 × B 新 / B 旧都只用这两个 op；A 旧行为不变(不让出)；B 侧代码未改，没有新的会话状态字段，
+    手机端无感知。
+  - **本机部分跟句柄走**：执行器(含 `ShellSession` 后台命令，让出后仍可按原 ID 读取)、本机 MCP 身份、Codex exec-server 中继
+    都不随让出关闭；中继只关掉为 B 上 Codex 起的 exec-server(B 的 Codex 已退出)，连回来的 Codex 重新连。句柄对 Maker 一直是活的，
+    状态镜像(用量、模型、计划模式等)照常读；连回后新进程还没报有内容的用量前保留上一次的读数。
+  - **「不忙」**：A 侧没有进行中的方法调用、回包与推帧；状态镜像里没有在跑 / 在准备的回合、没有后台任务(`backgroundTasks`：
+    Claude Code 后台子代理与后台任务、Pi 子代理)与待唤醒续跑(`pendingWake`)；Codex 中继里没有仍在运行的 `process/start` 进程
+    (后台终端；按 exec-server 的 `process/closed` / `process/exited` 与启动失败判断，固定 Codex 0.159.2 实测)，也没有在等本机确认的消息；
+    回到某条消息后、下一轮跑完前也算忙(Claude Code 要到下一次发送才在 B 上截断)。A 本机执行器里的后台命令不算忙。「闲置满 N 分钟」从最后一次活动算起：由忙转闲(后台任务、待唤醒续跑清空，
+    Codex 中继里各连接上的工作——在跑的进程、启动中请求、待确认消息——由有变无：进程结束、启动失败、确认处理完，
+    或带着工作的 exec-server 连接被整条关掉)本身算一次活动，后台工作再久，结束后也要再闲置满 N 分钟才让。
+    会话 id 在旧 B 上可能被改写的仍不让：旧 B 打开时把启动选项里的字符串按 A 的工作目录及各级上级目录、用户目录与附加目录投影到虚拟
+    工作区，`resumeSessionId` 也不例外；Pi 的会话 id 是 B 上的会话文件路径，两台同为 Mac(`/Users`)或同为 Windows 时
+    常落在这些前缀下，带过去会变成不存在的文件。A 按同一规则预判(`hostRewritesResumeId`)，这样的 Pi 任务不让出。
+    修正 #6479 后的 B 仅将 `resumeSessionId` 逐字传给 Agent 启动入口，其它字段与提示仍按原规则投影；
+    受邀者的会话归属、Pi 会话目录和供应商授权检查保持不变。这是既有字段在 Host 内的处理修正，未新增能力位或改变解析协议。
+    A 尚不能由能力声明区分新旧 B 或确认组内实际执行端，因此继续按 `hostRewritesResumeId` 保守预判，不随此修正放开让出。
+  - **连回**：只有要 B 上的 Agent 干活的调用触发(`send` / `steer` / `resumeBackgroundTask` / `compactSession` / 回退，以及要 B 回答的
+    `previewModelSwitch` / `getContextUsage` / `getCodexContextWindowInfo`)；`requiresModelSwitchRebuild` 已让出时回 false(下一次连回
+    本来就是带新模型的冷启动接回)；只改设置的
+    (`setModel` / `setEffort` / `setFastMode` / `setPlanMode` / `setThinkingEnabled` / `setPermissionMode` / 目录 / `setVendorOptions`)
+    已让出时只记在 A，`abort` / `requestGracefulStop` / `stopBackgroundTask` 已让出时什么也不做。会话里还没有对话(不是接回的旧会话、
+    也没跑完过一轮)时连回直接开新会话，不带 id。连回带当前原生会话 id 与最新的
+    模型、来源、推理强度、快速模式、思考开关、权限档、计划模式；回退 / 分叉用的一次性 `resumeSessionAt` /
+    `forkSession` 只在第一轮跑完前带(之后再带会再截断一次)；`setVendorOptions` 改过的内容、`libraryRoot`、`useCindyAutoReviewFallback` 连回后再告诉 B 一次；
+    补发的任一步失败就当这次连回失败(fail closed)：关掉刚开的 run 还回名额、回到已让出，待补发的内容保留，调用以
+    `[REMOTE_AGENT_UNAVAILABLE]` 报错，下次调用重新连回再补发，不会在缺设置的 Agent 上执行消息。
+    **目录映射保证**：对话里出现过的每个虚拟路径，连回后仍指向同一个本机目录，绝不会指向另一个目录。B 按 open 里
+    附加 / 可写目录的顺序起名(`additional/dir-<序号>`)，所以连回时原样给第一次打开时的列表与顺序；A 已有的映射
+    (含运行中新增目录分配的 `additional/runtime-<n>`)只补不换。打开之后的增减(连着时或让出期间)在连回后按运行中
+    改目录的 `setExtraDirs` / `setWritableDirs` 补发，与一直连着时一致；已撤掉的目录 A 的执行器不再当作可访问的根。
+    消息里的路径在连回完成后才转换。连回期间(含补发设置)其它调用都等这次连回，不会抢在设置恢复前发给 B。受邀者归属校验、
+    供应商组 `relayMemberOf` 回到原组内电脑与 App 重启后接回同一条路径。B 接不回原会话时(会话失效回调里正是这次带的 id，或 B
+    返回了别的会话 id)沿用 `onInvalidResumeSession` 语义，同时在任务里插一条非终止的 `[REMOTE_AGENT_RESUME_LOST]` 提示，
+    不悄悄丢上下文；手机端同步补了 `session.remoteError.REMOTE_AGENT_RESUME_LOST`，旧手机没有这条文案，显示通用的「回复失败」。
+  - **并发**：让出进行中来的调用等它让完再连回；同时几个调用只连一次；调用开始后让出放弃；已让出时的关闭、归档、删除、换账号、
+    退出 App(`detach`)只收本机部分，不再联系 B。
+  - **让出时 close 没送到**(链路抖动等)：B 的进程可能还占着名额。A 的连接池继续把它算作占位，约 2 秒后原样再发一次
+    `close`(B 不认识这个 run 时直接回空，等同已关闭)；再发送到、或过了 B 自行回收的最坏时间后不再占位(`REMOTE_AGENT_POOL_CLOSE_HOLD_MS`，3 分 30 秒：
+    B 的 `REMOTE_AGENT_HOST_IDLE_MS` 3 分钟，加上每 5 秒一次的回收检查、停止拉取前在途 poll 最长 10 秒的挂起，再留余量，
+    不比 B 更早认为名额已空)；占位独立于任务存在，任务在这期间关闭或归档也不会让它消失。占位期间水位线与打开前的判断都算上它，会先让别的有资格的连接，而不是直接打开撞上限。
+    close 没送到时本机也不再等 B 的收尾事件(B 不会收尾)。这个任务自己要连回时，打开前与被拒后都先立刻对旧 run 再发
+    一次 close，关掉了才不再占位；计数时只排除它正要开的那个位置，旧 run 照样算(B 打开时的名额检查会算上旧 run，
+    同一任务的旧实例要到新进程启动时才被替换)。还是关不掉就照常让别的连接或按 B 的上限报错。
+  - **已知限制**：B 的整机合计上限(`TOTAL_LIMIT`)A 看不到别的设备的占用，只能靠被拒后处理；A 在自己额度内不让出，可能挡住别的
+    设备，第一期接受。A 作为供应商组所在电脑替受邀者中转的 run 不进连接池(由发起方决定让出，发起方让出后按原有逻辑关掉中转)；
+    同一台 B 的多个分享入口(`share:<id>`)各算一个池，计数可能偏低，靠被拒后处理兜住。
+  - **已知限制：连回被拒时本机后台命令会结束**。触发条件：任务已让出，下一次发送(或其他要 B 干活的调用)连回时被 B 拒绝
+    (仍满的名额类 `REMOTE_AGENT_BUSY`，或 B 离线等任何在发出消息之前就失败的情况)。后果：错误照常报给用户，但 Maker 对发送失败
+    的通用处理会在约 250ms 后关闭这个会话句柄、等下次重建，本机执行器随之关闭，这个任务里还在跑的本机后台命令(`ShellSession`)
+    会结束，按原 ID 也读不到了。对话不丢：下一次从界面发送会重建句柄，并照常带原生会话 id 在 B 上接回原来的对话。第一期只记录不改；
+    第二期加上「等名额」的排队后，连回不再因为名额被直接拒绝，这种情况会少很多。
+    回归见 `remote-agent/__tests__/connectionPool.test.ts`、`execServerProjection.e2e.test.ts`(中继忙闲)，以及真实 Claude Code / Codex / Pi 的
+    `claudeHosted` / `codexHosted` / `piHosted.e2e.test.ts`(共用 `poolHarness.ts`)。
 
 ## 协同远端 Worker：Worker 在另一台电脑运行
 
@@ -1516,6 +1682,30 @@ G 与 O 之间不变。受邀者能调用的 channel 不变(仍是 `maker:remote
   `device-link/__tests__/providerShareDispatch.test.ts`、`provider-group/__tests__/remoteHandler.test.ts`、`directory.test.ts`、
   `packages/device-link/src/__tests__/providerShare.test.ts`。
 
+## 供应商分享：按授权查看额度与用量（2026-10-19）
+
+- 新只读通道 `provider-share:insights:v1` 仅接受分享身份，参数严格为 `{ version: 1, includeUsage: boolean }`，供应商由已验证身份决定。
+  返回 `{ version, capabilities, status, quota, usage }`，结构和接收端白名单解析在 `shared/providerShareInsights.ts`；
+  两项能力默认关闭，未开放无数据，读取失败分别标 unavailable。无版本/能力/状态或未知版本提示更新，不降为管理通道。
+  `includeUsage: false` 仍返回独立能力位；获准用量标 `not-requested`、usage 为 null，不读账本、不投影或返回缓存历史。
+  仅主动展开时传 true，收起后恢复 false，离开/隐藏详情不再发请求，未请求与未开放/失败/零用量明确区分。
+  新通道 v1 首次发布即要求 includeUsage；缺少或非布尔值拒绝，不回退为全量读取。
+  已发布旧端不支持此新通道；新端提示更新。接收端同时拒绝折叠请求却附带历史的响应，不降为全量查询。
+- 同账号 `manage-share` 追加 `get-visibility`、`set-visibility`（按供应商，仅 quota/usage 布尔补丁）、`quota-account`。
+  写入仍只在供应商所在电脑执行；旧端的 Unknown command 映射为 UNSUPPORTED_CAPABILITY，不改存控制端、不重放写入。
+  受邀者不能调用这些管理动作，也不能指定另一个 providerId 或借通道读取全量账本。
+- 最终发送、重复请求与 outbox 重发核对读取时的账号、成员和可见性代次；开关关闭再开启使旧投影失效。
+  新通道不进入通用 completed 结果缓存；受邀端白名单重建响应并丢弃未授权字段，账号/分享变动拒绝在途回包。
+  只读请求不调用远程 Agent，不占任务名额。历史和额度分别合并短期在途读取，缓存不跨账号。
+- 普通额度为一项，组额度仅返回自有账号匿名数组及 partial 标记，不含设备、上游身份、凭证或第三方分享账号额度。
+  用量按天/模型/公开昵称头像投影，合并设备维度，转来用量匿名汇总；历史裁剪口径沿用 usage-history。
+  最终投影还按 UTF-8 JSON 总字节限制在 `MAX_FRAME_BYTES - 1024`，预留 invoke 信封空间；预算包括昵称/头像、额度和历史行。
+  继续裁剪时优先保留较新的历史并更新 `coverageStart`；人员资料本身超限或连一行历史也无法容纳时，将 usage 标 unavailable，
+  不静默删除人员、不伪造零用量，也不让它拖掉可用 quota。quota 本身超限时独立标 unavailable。没有新增 wire 字段。
+- 旧受邀端不发新请求，模型使用不变；新受邀端收到 CHANNEL_NOT_ALLOWED 或不完整能力时显示需要更新。
+  relay 信封、服务端、数据库与 Mobile 均不变；完整查看需要双方 Desktop 更新。
+  实现与回归：`device-link/providerShareInsights.ts`、`dispatch.ts`、同目录 `__tests__/providerShareInsights.test.ts`、`providerShareDispatch.test.ts`。
+
 ## 供应商分享：按需查看匿名组状态(2026-10-12)
 
 产品规则见 [`provider-groups.md`](../product-rules/provider-groups.md) §8、§9.7、§10。
@@ -1646,7 +1836,7 @@ G 与 O 之间不变。受邀者能调用的 channel 不变(仍是 `maker:remote
 - **`provider-group:remote` 新增 `action: 'manage-group'` / `'manage-share'`**(同一 channel、同一同账号 allowlist，
   受邀者与共享任务访客照旧 `CHANNEL_NOT_ALLOWED`)：请求 `{ action, command }`，`command` 与本机命令同构，结构与校验在
   `apps/desktop/src/shared/providerManagement.ts`。`manage-group` 只收 `get` / `candidates` / `save-if-current` / `delete-if-current`；
-  `manage-share` 只收 `owned` / `own-usage` / `usage-history` / `create-link` / `approve` / `reject` / `set-member` / `reshare-decide`，其余回
+  `manage-share` 只收 `owned` / `own-usage` / `usage-history` / `create-link` / `approve` / `reject` / `set-member` / `set-member-note` / `reshare-decide` / `get-run-limits` / `set-run-limits` / `reset-run-limits`，其余回
   `[PERMISSION_DENIED]`。回包 `{ result, respondedAt }`，`respondedAt` 只用于把链接有效期换算到 C 的时钟。
   - `usage-history`(2026-10-17，供应商组 §7)：只读，`{ action, providerId }`，回这个供应商用量的按天明细
     `{ providerId, todayKey, coverageStart, self, relays, members }`(结构在 `apps/desktop/src/shared/providerShare.ts`)，
@@ -1656,6 +1846,9 @@ G 与 O 之间不变。受邀者能调用的 channel 不变(仍是 `maker:remote
     `[INVALID_PARAMS] Unknown command`，C 的 Main 把 `manage-share` 的这个回包统一成 `[UNSUPPORTED_CAPABILITY]`(与
     `unknown provider group action` 同一处)，管理页退回 `own-usage` 与 `owned`(range=all)的所有时间合计并提示更新 O，不重试。
     旧 C 不发这个动作，照旧读 `own-usage` / `owned`，O 对两者的回包不变。
+  - `set-member-note`（2026-10-19）：`{ action, memberId, note }`，只允许已有成员，空字符串清除备注，最多 80 个 UTF-16 单元、保存前规范为单行。
+    O 按账号保存私人备注，`owned` 的成员投影新增可选 `note: string | null`，不改服务端成员合同或受邀者目录。
+    旧 C 忽略新增字段；旧 O 不认识命令时沿用 `INVALID_PARAMS → UNSUPPORTED_CAPABILITY` 映射，C 保留草稿、提示更新，不重放或改存本机。
   - O 在执行前后核对账号未切换；`approve` / `reject` / `set-member` 先刷新快照，申请或成员不在 O 的分享里回 `[NOT_FOUND]`；
     `owned` 的回包只含 `{ ready, shares }`，不带 O 自己的弹窗安排。不再转发给第三台电脑。
   - `reshare-decide` 只修改 O 当前账号的本机转分享记录，写锁内和返回前继续核对账号边界；撤回由 O 停止对应中转任务。
@@ -2208,6 +2401,86 @@ PC 同源 ghostPermissionItems 声明摘要投影并排除 tool，以请求 loca
 服务端、relay、协议版本及原生 fingerprint 均不变。
 
 
+## 同账号远程插件管理
+
+现有 `plugins` 远程资源以可选 action `management:snapshot` 声明 version 1 管理能力。
+新增 `management:market-detail/begin/operation/answer/cancel`，沿既有 resource invoke、
+同账号设备授权和 owner 边界执行，不新增通用 IPC allowlist 或服务端协议。
+`management:snapshot` 的可选 `projects` 字段投影目标 Host 的最近项目 ID、显示名及可选只读
+`path`，用于复用本机 Project Scope 的目录展示（含暂时不存在的最近目录，不按任务归档过滤）；
+控制端以 Host 生成的项目 ID 请求 `management:project-state`，返回该项目的禁用实例和
+由目标 Host 计算的 revision。项目启停沿原 `ghost-workdir-prefs` 例外语义，写入同时绑定
+控制设备、物理插件实例、安装批准 token、项目 ID 与 revision。旧 Host 缺少 `projects`
+时只保留全局插件管理；空数组表示该 Host 支持项目管理但暂无项目。切电脑先重读项目目录，
+不能把控制端本机路径或上一台电脑的项目交给目标 Host。
+快照可选追加 `projectBrowse: true`，声明支持 `management:project-select`。控制端复用现有
+远程目录选择器并固定目标电脑，Host 重新校验选中的绝对目录，生成项目 ID。浏览选择仅作为
+该控制设备、owner 与连接代次内的临时 scope，不创建任务或写入最近项目。读取与启停仍只接收
+Host 项目 ID，浏览目录在使用前再次校验；不能以展示路径直接执行项目写入。旧控制端忽略
+新增字段，旧 Host 缺少浏览能力时保留原项目列表与启停，不回落本机目录选择器。
+旧控制端继续使用原 list/get/enable/disable；新控制端遇到旧 Host 仅展示旧 list/get
+和升级提示，不能回退本机写入。
+
+写操作绑定控制设备、物理插件实例、安装批准 token，以及市场 release/manifest。
+目标 Host 原安装器处理实际包摘要与权限确认；等待确认不占安装锁。异步操作用
+控制端生成的 operationId 查询回执，未知结果只查原操作、不自动重装；回执仅存内存
+15 分钟，Host 重启后不能保证恢复。断链使后续写入失效，但同 owner 重连仍可查询已提交
+结果；撤权和账号切换作废旧回执。取消请求不能撤销已经提交的安装。
+
+手动 `.cindy` 导入先由控制端 Main 的受信原生选择器授权单个文件，再沿既有 filePeer
+传输，目标在自有临时目录检查、确认并安装。控制端路径不作为目标路径。
+配置源由 Host 绑定打开页面的控制设备，不传回已存凭证，不以任务卡代替插件设置页。
+管理快照可选声明 settingsPage: true：Desktop 通过 settings:open 获取目标插件原
+settingsHtml 的包资源声明与页面租约，不要求存量插件补发 mobile 声明。A Main 的
+专属非持久 partition 展示原页面，复用同样的 CSP/沙箱/主题/布局；主窗 CSP 不变。
+KV、secret、OAuth、connection 与原 BroadcastChannel 请求通过已有 v3 签名握手与
+密封 exchange 中的可选 op: settings 传输，只接受绑定该页面的签名会话；普通 OAuth
+卡片会话与通用 Remote Resource fetch 不能访问它。controller、owner、物理实例、批准
+版本和连接代次在真实执行前复核。新增命令有严格白名单及大小限制；密封 callback 上限
+追加到 144KB，以容纳原设置页 64KiB 请求及 JSON 转义，原 OAuth 各内层契约的限制不变。
+旧端未声明能力时不发送新 op，不回退到未加密请求。
+设置页续签只替换同一控制设备、同一页面与同一插件的旧握手，不等待在途请求，
+使轮询和确认回复可经新连接完成。旧连接不再接受新请求；已受理请求仍用原密钥返回，
+返回前复核原有效期、owner、控制设备代次和页面租约，不关闭页面或重放写请求。
+v3 消息格式和每 Host 16／每 peer 4 个连接、每连接 1024 条消息
+的上限不变；旧控制端兼容新版 Host，完整续签交接需要控制端与目标 Host 均更新。
+
+原 /oauth/<key>/connect 先生成绑定页面的一次性 ticket，沿现有 v3 浏览器授权桥执行
+目标原端点；原 HTTP 结果送回 settings.js。已有账户只读脱敏原端点投影，令牌保存在 B。
+关闭页面取消其待授权 ticket；超时或失败不重放保存/授权。切目标、账号、安装批准或
+撤权使旧页面失效；单页故障不重启共享 relay。包资源使用原目录与文件身份检查分块读取，
+A 不直接读取目标安装目录。原目录选择请求通过 Main 的固定 IPC 进入既有远程
+目录选择器，固定目标 B；选择经密封 answer-directory 返回 B，并由 B 原路径校验
+和授权逻辑执行。目录请求不进入作者页面；原普通 Remote Resource fetch 仍拒绝凭证
+接口。Mobile 原页面契约保持原行为。
+
+管理快照可选追加 hostPreferences: true，声明 management:preferences/preferences-set。
+它只投影本机本就由 Host 管理的模型、任务与侧栏偏好；不包含已有凭证、目标工作目录或
+供应商执行路由。写入要求物理实例、安装批准 token 与配置 revision，复用本机校验与
+存储，任务 patch 保留目标工作目录。旧控制端忽略新增字段，旧 Host 的缺失能力如实展示。
+无需服务端、通用 IPC allowlist、数据库或 Mobile 原生改动。
+
+### 同账号远程技能管理（2026-10-14）
+
+插件与技能页共用电脑选择。目标 Host 通过追加 `skills` Remote Resource collection 和
+`management:snapshot` capability 提供技能投影与 opaque 操作；不开放既有本机 SkillHub IPC。
+旧 Host 缺少该能力时保留页签和目标电脑，显示升级提示，不回退本机数据。资源 id/revision
+由 Host 扫描中的实体、物理目录、授权入口、启停代次与注册记录派生，不接收控制端路径。
+响应仅携带名称、描述、范围、引擎、版本、状态、正文及市场身份，不暴露目录、凭证或内部 registry。
+Claude 原生 `user` 范围投影为 `global`；控制端读取早期 Host 的 `user` 返回值时也按全局展示，避免丢弃整份快照。
+
+控制端新增受信任原生 IPC `device-link:confirm-skill-mutation`，从目标查询具体操作回执，
+原生确认后仅回答这一个 Host requestId。普通 Renderer 的 Remote Resource invoke 禁止直接
+发送技能 `management:answer`。确认不占用目标安装锁；批准后重读实体版本，安装器在原锁和
+跨进程租约内、下载解包后复核目标及授权目录，继续复用备份和回滚。卸载在租约内再次复核后
+复用系统回收站。启停、已提交结果与取消分别表达；离线只查原回执，不重放写操作。
+运行中取消通过原 mutation guard 进入安装器的提交前检查；操作结束后记录取消结果，
+已经提交的成功结果仍保留，不将取消回执误当作事务回滚。
+
+现有本机接口、路径授权及原生卸载确认保持原行为。仅新增可选 Main 内部 mutation guard；
+不改变协议版本、manifest、运行期 fingerprint 或持久数据格式。手机可通过标准 list/get 读取
+技能资源，但未新增安装/升级/卸载 UI 或原生确认桥；手动技能目录导入、编辑和发布仍属于本机。
+
 ### Cindy AI 企业周期配额
 
 云端组织账号优先通过 Model Access `GET /api/model-access/quota` 查询本人周期配额，
@@ -2259,6 +2532,196 @@ PC 同源 ghostPermissionItems 声明摘要投影并排除 tool，以请求 loca
 伙伴资料快照 `companion.profile.v1` 新增可选的 `templateId`；新增偏好键 `companion.todo.v1:<id>`、`companion.routine.v1:<id>`、`companion.workbench.v1`，
 旧客户端不认识这些键，接管时忽略。镜像上传的房间消息可带 `media` 块；旧客户端按文件名显示。手机端同样不改原生指纹。
 
+## Host-owned mail cards
+
+Manifest v3 adds optional `mail: true`. Cindy serves the versioned `cindyMail` SDK
+inside the provider sandbox before its entry point. Providers register mailbox
+adapters; they do not need `card` or generate HTML. The local pipe accepts validated
+`mail-draft-update` only from enabled mail providers with a live task-owned call.
+Cindy renders and persists the existing `ghost_cards` row; no database migration
+or relay version change. Old hosts lack the SDK: providers retain read-only tools
+and require a Cindy update before draft editing/sending, without a direct-send fallback.
+
+The host-only `data-cindy-mail` marker records account/draft identity, state and
+`supersededBy`. Ordinary plugin HTML cannot retain it. Autosave replaces one view;
+subsequent tool reads supersede matching provider/account/draft views in that task.
+Obsolete or legacy mail actions are rejected on the Host. Historical snapshots remain stored.
+The `plugin-card-actions` resource carries optional `mail` / `legacyMail` metadata;
+desktop and mobile clients hide superseded mail cards and their plugin labels, leaving
+only the latest card per provider/account/draft in that task, including sent/deleted
+states. Legacy cards without this metadata retain their read-only fallback.
+Old clients keep static fallback text
+and receive no obsolete actions. Existing form capability negotiation and task/owner
+checks still apply. Sent cards expose only optional task continuation, never send.
+Mail receipt continuations use the existing `[UI_ACTION_TRIGGER]` prefix: the
+Agent receives the complete receipt, while both clients hide the internal prompt
+from chat and session previews. The original mail card remains the visible result.
+
+Optional adapter `deleteDraft` adds a `deleteLabel` and `mail:delete:<key>` action
+to active drafts only. It requires no form values because pending edits are
+discarded. Deletion shares the per-draft save/send lock and cancels queued saves
+and send countdowns. It discards the logical draft even if its content/revision
+has changed, verifies the draft identity and refreshes the provider locator;
+save/send conflict checks do not apply to explicit discard. Progress is shown
+before provider read-back. Failed preparation remains retryable; a deletion
+with an unknown provider outcome is never replayed.
+Both clients treat `deleting` and terminal `deleted` as
+read-only; the Host rejects late edits/sends and cannot restore a deleted card.
+Unknown deletes stay locked until the mailbox is checked. Older adapters omit
+the button; older clients fall back to inert text for the new states. Existing
+remote action ownership/revision checks and the same card row carry this change.
+
+Oversized tool results retain validated top-level `xdt_card_id` and
+`xdt_anchor_card_id` in bounded valid JSON during persistence/import and remote
+history compaction. The card content remains in the existing card store; no new
+wire fields or schema are required. Uncorrelated live cards may only match calls
+in the latest visible user turn, so incomplete older history cannot steal them.
+
+Rich mail adapters opt in with `richText: true`; old adapters keep the existing
+plain-text contract. Host fields add `mail-html`, `mail-attachments` and `hidden`
+kinds, with `bodyHtml` / `quoteHtml` (64k characters) and `attachmentItems` (bounded
+JSON metadata). Ordinary text remains 16k. Only Host mail gets the 1 MiB card
+budget; arbitrary plugin HTML remains limited to 32 KiB. HTML previews are inert,
+sandboxed documents, not markup mounted in Cindy's privileged renderer DOM.
+Both clients block remote image sources and CSS fetches in mail previews; CSP
+permits only data and managed CID substitutions. Original outgoing HTML remains
+unchanged by this preview policy; remote images can be viewed in the mailbox.
+HTML supports typing directly into rendered text in both clients and the enlarged
+view, without an edit-mode button, formatting toolbar or source editor. Edits patch source text
+only, preserving styles, links and CID image references, and synchronize the
+plain-text alternative through the existing form autosave path. Sent/history
+cards stay read-only. `editor.format: 'text'` retains
+the existing compact plain-text input.
+
+The Host mail SDK owns outgoing formatting for all rich adapters. Before preview,
+autosave and send it extracts document wrappers into fragments, retains body
+attributes on a content container, derives absent text alternatives, supplies
+missing filename extensions from known MIME types, and reconnects managed preview
+URLs to their attachment CIDs. Missing/duplicate inline references stop sending.
+The same URL policy covers `src`, `background`, every `srcset` candidate, inline
+CSS and stylesheet `url(...)` in both the body and the quoted content.
+Normalized content is saved and read back before the existing countdown; adapter
+read-back must retain the normalized structure. Adapters honor supplied filenames,
+preserve MIME bytes/reply headers and verify the provider result. No new wire fields
+or SDK version are required; plain-text-only adapters retain their existing path.
+This is structural protection, not a guarantee of identical CSS rendering across
+email clients. Ordinary fragments and explicitly authored plain text are retained.
+
+Desktop attachment actions `mail:attach` / `mail:image` are native Host gestures,
+not plugin HTML controls. The dispatcher verifies current view, owner, mail
+capability and draft state before and after the native picker, and passes one
+transient hash/size-bound file descriptor to the provider event. No arbitrary
+path comes from form text. Selected desktop bytes are copied into the existing
+session-owned temporary attachment store; only the staged descriptor crosses
+the plugin boundary, never the user's original path. Source replacement after
+selection cannot change the staged bytes. Failed/stale delivery discards the
+copy; accepted files retain normal session/orphan cleanup. Pending or sent mail cannot open the picker. Mobile
+resource metadata adds optional `mailUpload`; old hosts omit it and new phones
+hide the upload button. Supporting hosts accept `mail:attach:<key>` with optional
+`input.mailAttachment: {url,name}` and the complete form. Only existing OSS/peer
+upload references with size and SHA-256 are accepted (16 MiB/file), never local
+paths. The existing task materializer owns downloads and session cleanup; owner,
+interaction lease and current draft state are checked before delivery. No new
+relay channel, native dependency, database or runtime fingerprint is introduced.
+Ordinary attachment removal retains the existing remote form delivery gate.
+Optional `mail.images` contains validated managed preview URLs keyed by CID;
+these URLs never replace CID references in the saved/sent message. The existing
+media-deposit ledger owns these image bytes; no new file store or database exists.
+Mobile resolves CID previews with the existing remote-media queue into data URLs
+inside a sanitized mail WebView whose CSP blocks all page scripts. Host-injected
+editing listeners send only a document revision, known text-run index and plain
+text; the native side validates those before applying source patches. Desktop
+uses parent-owned listeners in an iframe without script permission. Autosave
+echoes do not reload either editing surface. CID substitutions never enter form
+edits; missing images leave the rest of the email readable.
+Attachment items optionally carry `mimeType` and `previewUrl` (validated managed
+image URLs only). Both clients show file identity and size; image clicks use
+their existing viewers. Removing a CID image removes its part and image nodes,
+preserving the rest of the authored document. "Insert into message" assigns an
+available `image-N@cindy.local` CID to an existing image key and inserts an HTML
+image before the closing body tag. Adapters validate the actual bytes and write
+that existing part as inline without uploading a duplicate. Compare part keys
+and normalized Content-IDs, ignoring preview-only metadata when detecting edits.
+After sandbox restart, the next card edit/send (including model send) restores
+volatile state using the persisted account/draft/locator. It retains incoming
+form edits and the same card key. Optional `baseValues` in the existing host card
+retains the last synchronized values (not in plugin KV). The SDK's internal
+`mail-draft-read` uses the same plugin/call/session ownership as publication.
+It compares base, card edits and provider values: identical/one-sided changes and
+independent text ranges merge automatically, ignoring preview-only metadata.
+Unmergeable overlapping edits retain both versions and name the conflicting fields.
+Legacy clean cards supply their own base; legacy errors without a base converge
+only when contents agree. Pending/unknown/sent records never become drafts.
+Adapters may return `execution:not_executed` with `stale` read-back; the SDK can
+merge and retry once. Unknown writes never retry. Changed content discovered at
+send time is shown before a fresh countdown; metadata-only drift needs no prompt.
+Old clients ignore optional baseline values; existing remote form actions carry
+no new required fields. The host SDK, not mailbox plugins, owns recovery/merging.
+Recovery never resumes a previous countdown; a new send gets the full grace period.
+Reading an unchanged draft in the same task reuses its existing card without
+publishing another snapshot. The host verifies task ownership through
+`mail-draft-read`; a different task still receives its own card. Fresh provider
+fingerprints/locators are adopted even if visible content is unchanged. Desktop
+mail cards require an exact tool ID or settled result to anchor them; the generic
+same-plugin in-flight heuristic must not show old mail beneath a schema/read call.
+Desktop HTML previews retain head styles, class selectors and body presentation
+inside their inert sandbox. External CSS resources, scripts and navigation remain
+blocked; preview sanitization never mutates the saved HTML.
+
+### Read-only mail preview
+
+Mail providers may declare `mailReader: { tool, hosts }` alongside `mail: true`.
+`mail` accepts only omission or literal `true` in both v2 and v3; both validators
+reject a reader without `mail: true` or without its matching tool in `tools`.
+Desktop and plugin-protocol validate this known declaration and retain future
+extension data; malformed declarations cannot survive as unknown top-level fields.
+Install/detail permission projection includes `mail`, the reader tool, individual
+reader hosts and optional read-state writes; adding any of them requires the existing
+update consent even when the tool was already registered. Reordering/deduplicating
+hosts or removing capabilities does not expand permissions.
+The tool must be declared and read-only by default. Cindy matches exact HTTPS hosts
+and calls it with `{ url }`; the provider resolves the account and message without
+marking read or mutating drafts. Providers may opt in with `mailReader.markRead: true`
+and accept optional `markRead:true` on that same tool. The declaration permits only
+omission or literal `true`; `false`, strings, null and other values are invalid in
+both manifest validators. Runtime dispatch also requires literal `true`, including
+for declarations retained by older validators. Future unknown metadata remains
+preserved by manifest normalization and never grants permission. Only an explicit user opening
+passes it; AI reads, probes and neighboring preloads remain read-only.
+The dispatcher strips `markRead` from ordinary tool arguments for the declared
+reader; only the trusted native-reader request may inject it after literal opt-in.
+Other explicitly authorized read-state tools retain their normal Agent path.
+Restored inactive tabs and a hidden sidebar must not mark mail read merely by mounting.
+Mark only the successfully resolved, visibly opened message, never the whole thread or drafts. A failed
+mark must retain the body and return `markReadFailed:true` for a non-blocking notice.
+It returns `MailMessage` (maker-shared/mail-message).
+Credentials and MIME parsing remain with the provider. Cindy validates the data
+and reuses its inert HTML/CID/recipient renderers, never compose actions. Multiple
+matching providers/accounts cannot silently select the first. Unknown providers or
+older hosts keep normal browser opening. Attachments use managed image previews;
+other file types retain their metadata and the mailbox opening fallback.
+
+Desktop uses a session-scoped sidebar tab. Mobile/same-account remote clients use
+the existing `mail-messages/message` remote resource, ID `[sessionId,url,read]`,
+primitive `mail-message`.
+Explicit opening adds optional `query:"open"` to resource get, or optional fourth
+`opened:true` to `ghosts:mail-preview`; resource IDs and default read behavior stay
+unchanged. Old hosts ignore the new optional values; old providers still receive
+only `{url}`. No new channel, storage or native changes. Plugins adding an OAuth
+scope must keep existing granted operations usable; missing new scopes may fail
+marking read, not prevent viewing or composing.
+Existing 256-character resource ID bounds still apply; overlong remote links fall back to browser opening. Shared-task access does not
+grant mailbox access. Scope checks run before and after reads; clients bind display
+to account/device/session/URL and ignore stale responses. No mail content is stored
+in sidebar state or added to the chat by opening a link.
+
+Desktop native mail cards also open this tab through `open-mail-card` with
+`sessionId` and `callId`. The tab stores only the card ID and uses the existing
+card editor/actions; session-scoped lookup and supersession select the current
+view. This is a local desktop trial, not a new plugin or device-link capability.
+Older URL-based reader tabs remain valid. Draft edits, deletion and delayed send
+still use the same host-owned mail workflow as the chat card.
+
 ## 伙伴导入的消息机器人分类
 
 `companion-import` Remote Resource 的 client primitives 可追加 `companion-import-bots-v1`。只有声明它的控制端
@@ -2266,3 +2729,5 @@ PC 同源 ghostPermissionItems 声明摘要投影并排除 tool，以请求 loca
 会先在来源 Agent 里停用这些机器人再由伙伴连接；旧控制端的预览校验不认识新分类，所以照旧把 Telegram / Discord
 放在 `connections`、不停来源，也不出现飞书 / 企业微信 / 钉钉条目。分类随预览快照与加密检查点保存，开始导入和恢复
 都按当时的分类执行。不改 relay 帧、服务端 schema 或 Mobile 原生指纹。
+
+Cindy AI 设置卡片保留可选读取返回的 `unlimited` 状态，显示“未设置个人限额”；它不代表部门或企业没有限制。`invalidated` 清除该状态，有限额快照覆盖该状态，切换账号不复用上一账号结果。旧 `null` push 无法区分失效与不限额，本地卡片收到后通过既有可选读取核对；同一账号的多个组件共享在途读取，收到读取自身的广播时复用该请求，避免多窗口之间反复触发刷新。主进程跨窗口共享在途读取，已知不限额参与既有节流，重复不限额结果不重复广播。IPC payload 与远程消费者保持兼容。

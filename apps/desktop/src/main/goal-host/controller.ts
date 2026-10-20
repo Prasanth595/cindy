@@ -2242,6 +2242,17 @@ export class GoalController {
     this.deferredManualResumeTimers.set(sessionId, timer);
   }
 
+  /** A confirmed quota refresh can satisfy an existing wait; overload backoff stays unchanged. */
+  async resumeRestoredQuota(matches: (sessionId: string) => Promise<boolean>): Promise<void> {
+    for (const [sessionId, timer] of this.usageResumeTimers) {
+      const state = await this.deps.storage.get(sessionId).catch(() => null);
+      if (state?.status !== 'usageLimited' || state.lastReason === OVERLOAD_LAST_REASON) continue;
+      if (!await matches(sessionId) || this.usageResumeTimers.get(sessionId) !== timer) continue;
+      clearTimeout(timer);
+      await this.autoResumeFromUsageLimit(sessionId);
+    }
+  }
+
   /**
    * usageLimited 到点自动续跑:resetAtMs 已知则排 timer(已过点 → delay 0 下一 tick 触发);
    * null = 不知道何时恢复,不排 timer,留待用户手动 resume。幂等(清旧 timer)。

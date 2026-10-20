@@ -149,6 +149,16 @@ describe.each(SUPPORTED_LOCALES)('known mobile remote errors in %s', locale => {
     expect(unclassifiedAgentErrorI18nKey('[REMOTE_AGENT_BUSY] too many tasks')).toBe('session.remoteError.REMOTE_AGENT_BUSY');
   });
 
+  it('explains a remote conversation that could not be resumed instead of a generic reply failure', async () => {
+    await i18n.changeLanguage(locale);
+    const message = '[REMOTE_AGENT_RESUME_LOST] The earlier conversation on the other computer could not be resumed, so the agent continues without it.';
+    const key = 'session.remoteError.REMOTE_AGENT_RESUME_LOST';
+    expect(unclassifiedAgentErrorI18nKey(message)).toBe(key);
+    expect(i18n.t(key)).not.toBe(i18n.t('session.tail.replyFailed'));
+    const [normalized] = normalizeRemoteMessages([row(message)]);
+    expect(normalized.body).toBe(i18n.t(key));
+  });
+
   it('has every desktop bracket-code translation without relying on fallback languages', async () => {
     await i18n.changeLanguage(locale);
     const desktop = JSON.parse(readFileSync(`../desktop/src/renderer/i18n/locales/${locale}/common.json`, 'utf8'));

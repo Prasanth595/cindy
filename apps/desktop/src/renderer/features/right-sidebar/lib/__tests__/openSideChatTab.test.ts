@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { setDataOwnerGeneration } from '@/contexts/dataOwnerGeneration';
+import { __resetTabGroupsForTest, getTabGroup } from '../../tabGroups';
 
 const mocks = vi.hoisted(() => ({
   create: vi.fn(), list: vi.fn(), pin: vi.fn(), merge: vi.fn(), add: vi.fn(), getWindow: vi.fn(),
@@ -39,6 +40,8 @@ import { openSideChatTab, restoreSideChatTabs, watchSideChatTabs } from '../open
 describe('side chat task entry', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    __resetTabGroupsForTest();
+    window.localStorage.clear();
     setDataOwnerGeneration('owner', 1);
     mocks.created.clear(); mocks.patched.clear(); mocks.remote.clear();
     mocks.bucketListeners.clear(); mocks.hydrated = true;
@@ -71,7 +74,7 @@ describe('side chat task entry', () => {
     expect(mocks.create).toHaveBeenCalledWith('parent');
     expect(mocks.pin).toHaveBeenCalledWith('execution-host', 'child');
     expect(mocks.quote).toHaveBeenCalledWith('child', { text: 'selected answer' });
-    expect(mocks.add).toHaveBeenCalledWith('parent', 'side-chat', { sessionId: 'child', deviceId: 'execution-host' });
+    expect(mocks.add).toHaveBeenCalledWith('parent', 'side-chat', { sessionId: 'child', deviceId: 'execution-host' }, undefined);
     expect(mocks.pin.mock.invocationCallOrder[0]).toBeLessThan(mocks.add.mock.invocationCallOrder[0]);
   });
 
@@ -81,6 +84,25 @@ describe('side chat task entry', () => {
     expect(await openSideChatTab('parent', { prompt: 'question' })).toBe(false);
     expect(mocks.status).toHaveBeenCalledExactlyOnceWith('child', 'deleted', { kind: 'device-link', deviceId: 'execution-host' });
     expect(mocks.discard).toHaveBeenCalledWith('child');
+    expect(mocks.reveal).not.toHaveBeenCalled();
+  });
+
+  // Unit merge regression: a creation push can restore the child before the menu
+  // finishes. Its tab must still enter the clicked group / popout host, without
+  // revealing the main right sidebar. Existing tests only opened the default host.
+  it.each([false, true])('keeps menu placement when the creation push wins=%s', async restored => {
+    if (restored) mocks.tabs = [{ id: 'restored', kind: 'side-chat', state: { sessionId: 'child' } }];
+    const adopt = vi.fn();
+    const placement = { groupId: 'left' as const, onOptimisticAdd: adopt };
+    expect(await openSideChatTab('parent', { placement })).toBe(true);
+    if (restored) {
+      expect(getTabGroup('restored')).toBe('left');
+      expect(adopt).toHaveBeenCalledWith('restored');
+      expect(mocks.activate).toHaveBeenCalledWith('parent', 'restored');
+      expect(mocks.add).not.toHaveBeenCalled();
+    } else {
+      expect(mocks.add).toHaveBeenCalledWith('parent', 'side-chat', { sessionId: 'child', deviceId: null }, placement);
+    }
     expect(mocks.reveal).not.toHaveBeenCalled();
   });
 

@@ -1,5 +1,7 @@
 import { BRAND_NAME } from '@cindy/maker-shared/branding';
 import type { SessionActivitySnapshot } from '@cindy/maker-shared/session-activity';
+import type { BotAvatarHue } from './botAvatarHue.js';
+import { isSupportedBotAvatarValue } from './botAvatarValue.js';
 
 export type AgentIslandSessionPhase = 'running' | 'needs-interaction' | 'completed' | 'error';
 
@@ -21,6 +23,23 @@ export interface AgentIslandActivityLine {
 }
 
 /**
+ * The companion a Bot Session speaks for. The island draws this identity instead
+ * of the task's title, working directory and agent mark.
+ */
+export interface AgentIslandCompanionSnapshot {
+  name: string;
+  /** Group the member speaks in; absent for the companion's own chat. */
+  groupName?: string;
+  /** BotAvatar hue family member; the island resolves it to its dark tint. */
+  hue: BotAvatarHue;
+  /** Bounded JPEG thumbnail (base64) when the companion has artwork. */
+  imageJpeg?: string;
+  /** Emoji, or the name's initial, painted when there is no artwork. */
+  glyph: string;
+  glyphIsInitial: boolean;
+}
+
+/**
  * Renderer-facing session snapshot for the macOS Agent Island overlay.
  */
 export interface AgentIslandSessionSnapshot {
@@ -28,6 +47,7 @@ export interface AgentIslandSessionSnapshot {
   completionNotification?: 'silent';
   sessionId: string;
   title: string;
+  companion?: AgentIslandCompanionSnapshot;
   projectName: string | null;
   detail: string;
   compactDetail: string;
@@ -374,7 +394,9 @@ export interface AgentIslandPillSnapshot {
   priorityMicroTitle: string;
   priorityCompactTitle: string;
   sessionCount: number;
-  activeSessionCount: number;
+  /** Running and not waiting on the user; disjoint from `attentionCount`. */
+  runningSessionCount: number;
+  /** Sessions blocked on the user (question / permission). */
   pendingInteractionCount: number;
   unreadCompletedCount: number;
   deferredRevealCount: number;
@@ -388,7 +410,7 @@ export function createEmptyAgentIslandPillSnapshot(): AgentIslandPillSnapshot {
     priorityMicroTitle: '',
     priorityCompactTitle: '',
     sessionCount: 0,
-    activeSessionCount: 0,
+    runningSessionCount: 0,
     pendingInteractionCount: 0,
     unreadCompletedCount: 0,
     deferredRevealCount: 0,
@@ -479,7 +501,7 @@ export const AGENT_ISLAND_COMPACT_HARDWARE_HIDDEN_PULL_DISTANCE = 48;
 // drawn by SwiftUI with the real font. The nominal value is an upper bound of what
 // gets drawn, so reserved space is never short.
 export const AGENT_ISLAND_COMPACT_BADGE_MIN_WIDTH = 22;
-export const AGENT_ISLAND_COMPACT_BADGE_ACTIVE_TOTAL_MIN_WIDTH = 30;
+export const AGENT_ISLAND_COMPACT_BADGE_PAIR_MIN_WIDTH = 30;
 export const AGENT_ISLAND_COMPACT_BADGE_CONTENT_INSET = 2;
 export const AGENT_ISLAND_COMPACT_BADGE_TEXT_SPACING = 1;
 /** Generous upper bound for one monospaced 10pt digit (real advance is ~6pt). */
@@ -522,6 +544,29 @@ export function computeAgentIslandSimulatedNotchWidth(displayWidth: number): num
   );
 }
 
+export type AgentIslandCompactBadgeCounts = Pick<
+  AgentIslandPillSnapshot,
+  'attentionCount' | 'runningSessionCount' | 'sessionCount'
+>;
+
+/**
+ * Text segments of the compact count badge, mirroring `PillBadge.segments` in
+ * `macos-agent-island-helper.swift`:
+ *
+ * - only running tasks → `running`
+ * - something needs attention and tasks are running → `attention · running`
+ * - only attention → `attention`
+ * - neither (e.g. read completions still on the island) → session count
+ */
+export function getAgentIslandCompactBadgeSegments(input: AgentIslandCompactBadgeCounts): string[] {
+  if (input.attentionCount > 0 && input.runningSessionCount > 0) {
+    return [`${input.attentionCount}`, '·', `${input.runningSessionCount}`];
+  }
+  if (input.attentionCount > 0) return [`${input.attentionCount}`];
+  if (input.runningSessionCount > 0) return [`${input.runningSessionCount}`];
+  return [`${Math.max(1, input.sessionCount)}`];
+}
+
 /**
  * Upper-bound width of the compact count badge the native helper draws, mirroring
  * `PillBadge.intrinsicWidth` in `macos-agent-island-helper.swift`.
@@ -532,14 +577,8 @@ export function computeAgentIslandSimulatedNotchWidth(displayWidth: number): num
  * monospaced 10pt advance is ~6pt, and overestimating only leaves invisible slack
  * inside the carrier's transparent inset.
  */
-export function getAgentIslandCompactBadgeWidth(input: {
-  activeSessionCount: number;
-  sessionCount: number;
-}): number {
-  const isActiveTotal = input.activeSessionCount > 0 && input.sessionCount > 1;
-  const segments = isActiveTotal
-    ? [`${input.activeSessionCount}`, '/', `${input.sessionCount}`]
-    : [`${Math.max(1, input.sessionCount)}`];
+export function getAgentIslandCompactBadgeWidth(input: AgentIslandCompactBadgeCounts): number {
+  const segments = getAgentIslandCompactBadgeSegments(input);
   const segmentsWidth = segments.reduce(
     (total, segment) => total
       + segment.length * AGENT_ISLAND_COMPACT_BADGE_CHAR_WIDTH_BOUND
@@ -547,8 +586,8 @@ export function getAgentIslandCompactBadgeWidth(input: {
     0,
   );
   const spacing = AGENT_ISLAND_COMPACT_BADGE_TEXT_SPACING * Math.max(0, segments.length - 1);
-  const minWidth = isActiveTotal
-    ? AGENT_ISLAND_COMPACT_BADGE_ACTIVE_TOTAL_MIN_WIDTH
+  const minWidth = segments.length > 1
+    ? AGENT_ISLAND_COMPACT_BADGE_PAIR_MIN_WIDTH
     : AGENT_ISLAND_COMPACT_BADGE_MIN_WIDTH;
   return Math.max(
     minWidth,
@@ -561,7 +600,7 @@ export function getAgentIslandDefaultContentWidth(input: {
   hasSession: boolean;
   displayWidth?: number;
   screenMetrics?: AgentIslandScreenLayoutMetrics | null;
-  pillSnapshot?: Pick<AgentIslandPillSnapshot, 'activeSessionCount' | 'sessionCount'> | null;
+  pillSnapshot?: AgentIslandCompactBadgeCounts | null;
 }): number {
   if (input.expanded) {
     return input.hasSession ? AGENT_ISLAND_MAX_EXPANDED_WIDTH : AGENT_ISLAND_IDLE_EXPANDED_WIDTH;
@@ -621,7 +660,7 @@ export function snapAgentIslandCompactHardwareContentWidth(input: {
   maxWidth: number;
   hasSession: boolean;
   screenMetrics?: AgentIslandScreenLayoutMetrics | null;
-  pillSnapshot?: Pick<AgentIslandPillSnapshot, 'activeSessionCount' | 'sessionCount'> | null;
+  pillSnapshot?: AgentIslandCompactBadgeCounts | null;
 }): number {
   if (!input.screenMetrics?.hasNotch) {
     return input.clampedWidth;
@@ -776,11 +815,23 @@ export interface AgentIslandRemoteSessionInput {
   detail: string;
   workingPhase?: string;
   interactionKind?: AgentIslandInteractionKind;
+  /** The companion this chat speaks for, when its main computer is the other device. */
+  companion?: AgentIslandRemoteCompanionInput;
 }
 
-const AGENT_ISLAND_REMOTE_SESSIONS_MAX = 500;
+export interface AgentIslandRemoteCompanionInput {
+  name: string;
+  /** Stored avatar value as the other computer reports it (grapheme, preset, its blob or a cloud image). */
+  avatar: string;
+  avatarColor: string;
+}
+
+/** Upper bound the IPC parser accepts; builders trim to it so one extra entry never voids the payload. */
+export const AGENT_ISLAND_REMOTE_SESSIONS_MAX = 500;
 const AGENT_ISLAND_REMOTE_ID_MAX_LENGTH = 256;
 const AGENT_ISLAND_REMOTE_TEXT_MAX_LENGTH = 1024;
+/** Longest stored companion avatar value (a cloud image address); anything longer is dropped. */
+const AGENT_ISLAND_REMOTE_AVATAR_MAX_LENGTH = 2048;
 const AGENT_ISLAND_SESSION_PHASES: readonly AgentIslandSessionPhase[] = [
   'running',
   'needs-interaction',
@@ -813,6 +864,7 @@ export function parseAgentIslandRemoteSessions(raw: unknown): AgentIslandRemoteS
       ? record.interactionKind as AgentIslandInteractionKind
       : undefined;
     const workingPhase = readBoundedString(record.workingPhase, 64);
+    const companion = readRemoteCompanion(record.companion);
     out.push({
       sessionId,
       deviceId,
@@ -827,9 +879,30 @@ export function parseAgentIslandRemoteSessions(raw: unknown): AgentIslandRemoteS
       detail: readBoundedString(record.detail, AGENT_ISLAND_REMOTE_TEXT_MAX_LENGTH) ?? '',
       ...(workingPhase ? { workingPhase } : {}),
       ...(interactionKind ? { interactionKind } : {}),
+      ...(companion ? { companion } : {}),
     });
   }
   return out;
+}
+
+function readRemoteCompanion(value: unknown): AgentIslandRemoteCompanionInput | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const record = value as Record<string, unknown>;
+  const name = readBoundedString(record.name, AGENT_ISLAND_REMOTE_TEXT_MAX_LENGTH);
+  if (!name) return null;
+  // Bound the raw value before trimming or grapheme parsing: an oversized one is never an avatar.
+  const rawAvatar = typeof record.avatar === 'string' && record.avatar.length <= AGENT_ISLAND_REMOTE_AVATAR_MAX_LENGTH
+    ? record.avatar
+    : '';
+  const avatar = rawAvatar.trim();
+  // Only values a companion avatar can hold: never an arbitrary local path or data URI.
+  const supportedAvatar = (avatar.startsWith('https://') && avatar.length <= AGENT_ISLAND_REMOTE_AVATAR_MAX_LENGTH)
+    || isSupportedBotAvatarValue(avatar);
+  return {
+    name,
+    avatar: supportedAvatar ? avatar : '',
+    avatarColor: readBoundedString(record.avatarColor, 64) ?? '',
+  };
 }
 
 function readBoundedString(value: unknown, maxLength: number): string | null {

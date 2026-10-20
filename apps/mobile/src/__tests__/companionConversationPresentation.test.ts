@@ -35,19 +35,32 @@ it.each(['retrying', 'completed', 'exhausted'] as const)(
     expect(source[1].content).toContain('# Failed opening');
     expect(source[1].agentMeta?.failedSamplingAttempt).toBeDefined();
   });
-it('has no process entry or commentary during generation, and retains the completed answer', () => {
+// Regression: the mobile companion filter discarded the work groups restored on
+// Desktop. Unit entry is the real normalize → group → companion projection;
+// a user row, progress and one tool suffice to lose the only process entry.
+it('keeps live work and completed process details reachable like Desktop', () => {
   const active = bodies(base, true);
-  expect(active.map(item => item.type)).toEqual(['message']);
-  expect(JSON.stringify(active)).not.toMatch(/Public progress|technical details/);
+  expect(active.map(item => item.type)).toEqual(['message', 'work_group']);
+  expect(JSON.stringify(active)).toContain('technical details');
   const complete = bodies([...base, row('a4', 'assistant', 'Answer', { turnCompleted: true })], false);
   expect(complete.filter(item => item.type === 'message').map(item => item.message.body)).toEqual(['Help', 'Answer']);
+  expect(JSON.stringify(complete)).toContain('Public progress');
   expect(base[1].content).toBe('Public progress');
+});
+it('keeps a provider final reply visible while streaming and after tool/history updates', () => {
+  const answer = row('a1', 'assistant', 'Visible first reply', { assistantPhase: 'final_answer', isStreaming: true });
+  for (const source of [[base[0], answer], [base[0], answer, ...base.slice(2)],
+    [base[0], { ...answer, agentMeta: { assistantPhase: 'final_answer' } }, ...base.slice(2),
+      row('a4', 'assistant', 'Done', { turnCompleted: true })]]) {
+    expect(bodies(source, true).filter(item => item.type === 'message').map(item => item.message.body))
+      .toContain('Visible first reply');
+  }
 });
 it('retains an interrupted/no-final reply and the actual error', () => {
   const items = bodies([...base, row('a4', 'assistant', 'Useful partial answer'), row('e5', 'error', 'Model failed')], false);
   expect(JSON.stringify(items)).toContain('Useful partial answer');
   expect(JSON.stringify(items)).toContain('Model failed');
-  expect(items.some(item => item.type === 'work_group')).toBe(false);
+  expect(items.some(item => item.type === 'work_group')).toBe(true);
 });
 it('keeps all contiguous blocks of a sealed final answer', () => {
   const items = bodies([...base, row('a4', 'assistant', 'Part one'), row('a5', 'assistant', 'Part two', { turnCompleted: true })], false);
@@ -67,7 +80,8 @@ it('keeps every sealed reply block after a continuation even when the main timel
 it('keeps delivered attachments without their preamble', () => {
   const items = bodies([...base, row('a4', 'assistant', '![Picture](https://example.com/picture.png)')], false);
   expect(JSON.stringify(items)).toContain('picture.png');
-  expect(JSON.stringify(items)).not.toContain('Public progress');
+  expect(items.filter(item => item.type === 'message').map(item => item.message.body)).not.toContain('Public progress');
+  expect(JSON.stringify(items)).toContain('Public progress');
 });
 it('retains required questions and plan decisions in the actual message projection', () => {
   const items = bodies([...base,
@@ -123,7 +137,7 @@ it.each([{ turnCompleted: true }, { turnUsageDetails: { totalTokens: 12 } }])('k
   for (const running of [true, false]) {
     const items = bodies(complete, running);
     expect(items.filter(item => item.type === 'message').map(item => item.message.body)).toEqual(['Help', 'Delivered answer']);
-    expect(items.some(item => item.type === 'work_group' || item.type === 'tool_group')).toBe(false);
+    expect(items.some(item => item.type === 'work_group')).toBe(true);
   }
 });
 
@@ -135,8 +149,9 @@ it('drops persisted auto-resume separators like Desktop, keeping only the live r
   expect(buildMobileMessageRenderItems(resumed, { isSessionStreaming: false }).some(isResumeCard)).toBe(true);
   const items = bodies(resumed, false);
   expect(items.some(isResumeCard)).toBe(false);
-  // The hidden separator still ends the interrupted turn, whose useful partial prose stays readable.
-  expect(items.filter(item => item.type === 'message').map(item => item.message.body)).toEqual(['Help', 'Public progress', 'Answer']);
+  // The interrupted process remains readable inside its original work group.
+  expect(items.filter(item => item.type === 'message').map(item => item.message.body)).toEqual(['Help', 'Answer']);
+  expect(JSON.stringify(items)).toContain('Public progress');
   const live = companionConversationItems(buildMobileMessageRenderItems(base, {
     isSessionStreaming: true, autoResumePending: { attempt: 2, maxAttempts: 3 },
   }));

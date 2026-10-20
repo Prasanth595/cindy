@@ -11,6 +11,7 @@
 
 import './file-browser';
 import './web-browser';
+import './mail-preview';
 import './retired-feature';
 import './terminal';
 import './review';
@@ -21,3 +22,4 @@ import './background-tasks';
 import './resource-usage';
 import './routines';
 import './bot-workbench';
+import './plugin-view';

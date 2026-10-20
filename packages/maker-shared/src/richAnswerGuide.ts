@@ -7,7 +7,7 @@ Every answer must work across devices and modes. The same stored answer is shown
 - Layout: keep the answer readable at 320 px without horizontal scrolling. Prefer unset or percentage widths; use fixed pixel sizes only for small elements. Below 600 px, rows and grids become one column unless mobileColumns sets more; decide what should stay side by side on a phone. Cindy keeps nodes within the available width, so oversized fixed widths shrink rather than overflow.
 - Color: answers have no backgrounds or custom color values; Cindy draws every color from its theme, so both modes follow automatically. Where color carries meaning, name a role: "primary", "secondary" or "tertiary" for text emphasis, and "success", "warning" or "danger" only for results, cautions and problems. Other color values are ignored. When asked for a colorful or themed look, build it from layout, typography, icons and spacing instead of colors.
 
-To use components, place newline-delimited JSON operations inside a cindy-ui fenced block. Each complete line is rendered immediately; do not wait for a whole document. A code example must be nested inside a longer outer Markdown fence so it stays an example.
+To use components, place newline-delimited JSON operations inside a cindy-ui fenced block. The opening fence must be a line containing \`\`\`cindy-ui, and the closing fence must be a line containing \`\`\`. Bare JSON or a generic json code block will display as text, not components. Each complete JSON line is rendered immediately; do not wait for a whole document. Only when showing the protocol as source code, nest the block inside a longer outer Markdown fence; omit that outer fence when delivering rendered components.
 
 Each block starts seq=1 and increments by one. Its first operation has version:1. Node id: 1–80 letters/digits/underscore/hyphen, stable across edits. Operations:
 - create: {seq,version:1,op:"create",id,kind,parent?,index?,props?}. Omit parent for root. Create containers before children.
@@ -35,10 +35,12 @@ Every node accepts props.style (style beside props is also accepted) with option
 bind defaults to node id. User values persist locally per account/device/message and take precedence over later model defaults. They are not automatically sent to the model or synchronized across viewing devices. Do not ask for credentials in these controls.
 value and chart data may use a scalar, {ref:"stateKeyOrComputedNodeId"}, or {op,args:[...]}. Supported op: add,sub,mul,div,min,max,lt,gt,eq,if,concat. References can target input bindings or computed stat/text node ids, including nodes declared later. Never create circular references. Missing or invalid references are unavailable, not zero. No JavaScript evaluation.
 
-Operation syntax example, not a prescribed answer layout (each object is one line within the cindy-ui block):
+Complete rendered-answer example, not a prescribed answer layout. Include BOTH fence lines shown below in your output, with one JSON object per line; do not copy only the JSON:
+\`\`\`cindy-ui
 {"version":1,"seq":1,"op":"create","id":"months","kind":"range","props":{"label":"Months","min":1,"max":24,"default":6}}
 {"seq":2,"op":"create","id":"cost","kind":"stat","props":{"label":"Total","prefix":"¥","value":{"op":"mul","args":[{"ref":"months"},20]}}}
 {"seq":3,"op":"patch","id":"cost","props":{"value":{"op":"mul","args":[{"ref":"months"},18]}}}
+\`\`\`
 
 Keep blocks under 128 KB, with no more than 2048 nodes and depth 32. Finish each line before starting the next. Media loads via the existing host path. Interrupted output keeps committed nodes; incomplete lines wait for completion. Unknown or malformed operations show a local readable fallback, never execute code. New Cindy clients render components; older clients may show the fenced source. Use Markdown when the receiving channel does not support components.`;
 

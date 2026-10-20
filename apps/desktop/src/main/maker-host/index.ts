@@ -1,3 +1,4 @@
+import { readGeneratedImageEpoch } from '../cindy-media/generatedImageStorage';
 import { readAgentCapabilityCatalog, RUNTIME_MCP_NAMES_KEY, type AgentCapabilityQuery } from './agentCapabilityCatalog.js';
 import { listCindyManagedSkills, prepareCindyCodexSkills } from './managed-skills.js';
 import { scanLocalCustomizations } from '../skillhub/customizationScanHost';
@@ -225,6 +226,7 @@ import {
   getRipgrepBinaryPath,
 } from './runtime-configs.js';
 import { createDeviceAgentStarter } from '../remote-agent/controller/service.js';
+import { readRemoteAgentIdleReleaseMinutes } from '../remote-agent/controller/idleReleaseStore.js';
 import { extractReviewPdfTextInChild } from '../reviewer/reviewPdfProcess.js';
 import { disposeRemoteAgentHost, installRemoteAgentHost } from '../remote-agent/host/service.js';
 import {
@@ -2801,6 +2803,7 @@ export function getMaker(): Maker {
       logger: desktopMakerLogger,
       // Agent 在同账号另一台电脑上运行、任务与文件留在本机(见 remote-agent/)。
       startDeviceAgentSession: createDeviceAgentStarter({
+        readImageDeliveryEpoch: readGeneratedImageEpoch,
         remoteInvoke: remoteBackgroundInvoke,
         rgPath: getRipgrepBinaryPath,
         // 对方的 Codex 把本机当 exec-server 执行环境：用本机随包的同一个 codex。
@@ -2830,6 +2833,8 @@ export function getMaker(): Maker {
           const shareId = parseProviderShareAgentDeviceId(deviceId);
           return shareId !== null && isProviderShareCredentialConsentSkipped(shareId);
         },
+        // 名额紧张时闲置满这么多分钟的任务让出那台电脑上的 Agent 进程(「远程与分享」里的设置，0 = 不让)。
+        idleReleaseMinutes: readRemoteAgentIdleReleaseMinutes,
         logger: desktopMakerLogger,
       }),
       makerMemory: makerMemoryManager,

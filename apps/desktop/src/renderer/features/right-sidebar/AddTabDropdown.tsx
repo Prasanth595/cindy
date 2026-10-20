@@ -17,10 +17,10 @@ import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu';
-import type { TabCreationMenu } from './lib/useTabCreationMenu';
+import type { TabCreationMenu, TabCreationSelectionOptions } from './lib/useTabCreationMenu';
 import type { TabKindId } from './types';
 
-interface AddTabDropdownProps {
+interface AddTabDropdownProps extends TabCreationSelectionOptions {
   /** 菜单是否打开:只在打开期间跟随锚点。 */
   open: boolean;
   /** 「+」按钮 wrapper:它从布局中消失或宿主面板收起时关闭菜单。 */
@@ -39,6 +39,8 @@ export function AddTabDropdown({
   open,
   anchorRef,
   menu,
+  groupId,
+  onGlobalTabSelected,
   onClose,
   existingKinds,
 }: AddTabDropdownProps) {
@@ -70,8 +72,24 @@ export function AddTabDropdown({
     return () => cancelAnimationFrame(raf);
   }, [open, anchorRef, onClose]);
 
-  const enabled = menu.items.filter(item => item.enabled);
+  const enabled = menu.items.filter(item => item.enabled && item.group !== 'plugins');
+  const plugins = menu.items.filter(item => item.group === 'plugins');
   const coming = menu.items.filter(item => !item.enabled);
+  const renderItem = (item: TabCreationMenu['items'][number]) => (
+    <AddTabItem
+      key={item.kind}
+      icon={item.icon}
+      label={item.labelText ?? t(item.labelKey)}
+      trailing={item.alreadyOpen || (item.singleton && existingKinds?.has(item.kind))
+        ? t('rightSidebar.tabs.menu.alreadyOpen') : undefined}
+      disabled={item.disabled}
+      onSelect={() => {
+        onClose();
+        if (item.group === 'plugins') menu.select(item.kind, { groupId, onGlobalTabSelected });
+        else menu.select(item.kind);
+      }}
+    />
+  );
 
   return (
     <DropdownMenuContent
@@ -87,22 +105,12 @@ export function AddTabDropdown({
       }}
     >
       <DropdownMenuLabel>{t('rightSidebar.tabs.menu.addLabel')}</DropdownMenuLabel>
-      {enabled.map((m) => {
-        const alreadyOpen = m.singleton && existingKinds?.has(m.kind);
-        return (
-          <AddTabItem
-            key={m.kind}
-            icon={m.icon}
-            label={m.labelText ?? t(m.labelKey)}
-            trailing={alreadyOpen ? t('rightSidebar.tabs.menu.alreadyOpen') : undefined}
-            disabled={m.disabled}
-            onSelect={() => {
-              onClose();
-              menu.select(m.kind);
-            }}
-          />
-        );
-      })}
+      {enabled.map(renderItem)}
+      {plugins.length > 0 && <>
+        <DropdownMenuSeparator />
+        <DropdownMenuLabel>{t('rightSidebar.tabs.menu.pluginsLabel')}</DropdownMenuLabel>
+        {plugins.map(renderItem)}
+      </>}
       {coming.length > 0 && (
         <>
           <DropdownMenuSeparator />

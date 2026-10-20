@@ -1744,7 +1744,7 @@ export function TodaySpendChip({
           >
             <Dialog.Title className="sr-only">{t('codexResets.title')}</Dialog.Title>
             <div className="max-h-[60vh] overflow-y-auto">
-              <CodexResetCredits variant="dialog" snapshot={codexRateLimits} busy={manualReset.busy}
+              <CodexResetCredits providerId={providerId ?? 'openai'} onChanged={refreshCodexRateLimits} variant="dialog" snapshot={codexRateLimits} busy={manualReset.busy}
                 canReset={manualReset.canReset} canRetry={manualReset.canRetry} onReset={(credit) => {
                   setResetListOpen(false);
                   const context = quotaPopoverContextRef.current.identity;

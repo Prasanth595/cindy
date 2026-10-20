@@ -1,4 +1,5 @@
 {
+  "mailReader": {"markReadFailed":"Could not sync read status. Check mailbox authorization and reopen this email.","title":"Mail","openMailbox":"Open in mailbox","loading":"Loading email…","failed":"Could not load this email. Check the connected mailbox account, retry, or open it in your mailbox.","retry":"Retry","to":"To","cc":"Cc","bcc":"Bcc","subject":"Subject"},
   "title": "Plugins",
   "all": "All",
   "unread": "Unread",
@@ -33,6 +34,9 @@
   "chooseTask": "Existing task",
   "taskHint": "Describe what you need in a task. Cindy will use the appropriate plugin. Existing tasks keep their model and permissions.",
   "noMobilePage": "This plugin has no mobile page yet. Its tools can be used in a task.",
+  "expandFields": "Expand",
+  "collapseFields": "Collapse",
+  "formSyncFailed": "Card edits have not synced. Check the connection and continue editing; the message has not been sent.",
   "pageUnconfirmed": "The connection or page state is unconfirmed. Sent actions will not be replayed. Check the original task or saved content first.",
   "reopen": "Reopen page",
   "loadingPage": "Opening plugin…",
@@ -124,5 +128,15 @@
   },
   "demo": {
     "hint": "Demo data · No real configuration is changed"
-  }
+  },
+  "mailPreview": "Email preview",
+  "mailEnlarge": "Enlarge preview",
+  "mailInsertImage": "Insert into message",
+  "mailAttach": "Add attachment",
+  "mailUpdated": "Draft updated (read-only)",
+  "mailLegacy": "Draft history (read-only)",
+  "mailAttaching": "Adding attachment…",
+  "mailAttachFailed": "Could not add the attachment. Check your connection and try again.",
+  "mailAttachTooLarge": "Each email attachment must be 16 MB or smaller.",
+  "mailRemoveAttachment": "Remove {{name}}"
 }

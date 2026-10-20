@@ -145,6 +145,10 @@ export const REMOTE_AGENT_MAX_PUSH_CHARS = 3 * 1024 * 1024;
 
 export type RemoteAgentRequest =
   | { op: 'caps' }
+  /** Native image recovery is scoped to the caller's task; never accepts file paths. */
+  | { op: 'images'; sessionId: string; relay?: string; action: 'list'; offset: number }
+  | { op: 'images'; sessionId: string; relay?: string; action: 'read'; imageId: string; offset: number }
+  | { op: 'images'; sessionId: string; relay?: string; action: 'release'; imageId: string }
   | { op: 'upload'; uploadId: string; index: number; data: string }
   | { op: 'open'; runId: string; agentKind: RemoteAgentKind; payload: RemoteAgentPayload }
   | { op: 'call'; runId: string; callId: string; method: RemoteAgentMethod; payload: RemoteAgentPayload }
@@ -219,6 +223,8 @@ export const REMOTE_AGENT_TEARDOWN_REASONS = ['navigation', 'account-boundary', 
 export type RemoteAgentTeardownReason = (typeof REMOTE_AGENT_TEARDOWN_REASONS)[number];
 
 export interface RemoteAgentCaps {
+  imageRecovery?: boolean;
+  imageRecoveryRelay?: boolean;
   version: number;
   agents: Array<{ kind: RemoteAgentKind; available: boolean }>;
   maxRuns: number;
@@ -375,6 +381,18 @@ export function parseRemoteAgentRequest(value: unknown): RemoteAgentRequest {
   switch (v.op) {
     case 'caps':
       return { op: 'caps' };
+    case 'images': {
+      // Same task-id contract as the open payload, including non-UUID internal tasks.
+      const sessionId = v.sessionId;
+      if (typeof sessionId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(sessionId)) invalid();
+      if (v.relay !== undefined && (typeof v.relay !== 'string' || !REMOTE_AGENT_RELAY_KEY_PATTERN.test(v.relay))) invalid();
+      const relay = typeof v.relay === 'string' ? { relay: v.relay } : {};
+      const action = oneOf(v.action, ['list', 'read', 'release'] as const);
+      if (action === 'list') return { op: 'images', sessionId, ...relay, action, offset: count(v.offset ?? 0, Number.MAX_SAFE_INTEGER) };
+      if (typeof v.imageId !== 'string' || !/^[a-f0-9]{64}$/.test(v.imageId)) invalid();
+      if (action === 'release') return { op: 'images', sessionId, ...relay, action, imageId: v.imageId as string };
+      return { op: 'images', sessionId, ...relay, action, imageId: v.imageId as string, offset: count(v.offset, Number.MAX_SAFE_INTEGER) };
+    }
     case 'upload':
       return {
         op: 'upload',
@@ -508,6 +526,8 @@ export function parseRemoteAgentCaps(value: unknown): RemoteAgentCaps {
     uploadChunkBytes: count(v.uploadChunkBytes, REMOTE_AGENT_UPLOAD_CHUNK_BYTES),
     maxPayloadBytes: count(v.maxPayloadBytes, Number.MAX_SAFE_INTEGER),
     ...(v.virtualWorkspace === true ? { virtualWorkspace: true } : {}),
+    ...(v.imageRecovery === true ? { imageRecovery: true } : {}),
+    ...(v.imageRecoveryRelay === true ? { imageRecoveryRelay: true } : {}),
     ...(v.guestRelay === true ? { guestRelay: true } : {}),
     ...(v.reshareConsent === true ? { reshareConsent: true } : {}),
     ...(v.reshareBatch === true ? { reshareBatch: true } : {}),

@@ -20,6 +20,7 @@ import { Alert, Platform, Pressable, ScrollView, StyleSheet, View, type TextInpu
 import { randomUUID } from 'expo-crypto';
 import { Camera, Folder, Image as ImageIcon, Plus, Square, Users, X } from 'lucide-react-native';
 import { useTranslation } from 'react-i18next';
+import { useConfirmLeaveWhileUploading } from '@/session/useConfirmLeaveWhileUploading';
 import { BOT_GROUP_MESSAGE_MAX_CHARS, type BotGroupMemberView, type BotGroupMention } from '@cindy/maker-shared/botGroupChat';
 import {
   filterBotGroupMentionCandidates,
@@ -99,6 +100,8 @@ export function BotGroupComposer({
   const [tracked, setTracked] = useState<BotGroupTrackedMention[]>([]);
   const [division, setDivision] = useState(false);
   const [sending, setSending] = useState(false);
+  const [waitingUploads, setWaitingUploads] = useState(false);
+  const waitForLeaveDecision = useConfirmLeaveWhileUploading(waitingUploads);
   const [stopping, setStopping] = useState(false);
   const inputRef = useRef<NativeTextInput>(null);
   const textRef = useRef(text); textRef.current = text;
@@ -189,8 +192,13 @@ export function BotGroupComposer({
     let release: (() => void) | null = null;
     try {
       // A photo picked a moment ago may still be uploading; it goes with this message. A failed
-      // upload stays in the tray with 重试 and nothing is sent.
-      const { failedCount } = await tray.waitForPendingUploads();
+      // upload stays in the tray with 重试 and nothing is sent. Leaving meanwhile asks first;
+      // once the chat is gone the upload is dropped, so nothing is sent either.
+      setWaitingUploads(true);
+      const { failedCount, abandoned } = await tray.waitForPendingUploads();
+      const discarded = abandoned || await waitForLeaveDecision();
+      setWaitingUploads(false);
+      if (discarded) return;
       const attachments = attachmentsSupported ? [...tray.attachmentsRef.current] : [];
       if (failedCount > 0 || (!draftText && attachments.length === 0)) {
         restoreDraft();

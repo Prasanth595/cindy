@@ -1,3 +1,4 @@
+import { CodexResetAutoUseControl } from './CodexResetAutoUseControl';
 import { TaskTagLabels, TaskTagsPanel } from './TaskTags';
 import { TaskTagsSheet, useTaskTagsSheet } from './TaskTagsSheet';
 import type { OpenAiAccountProvider } from './sessionControls';
@@ -51,7 +52,7 @@ import { mobilePresentationLocalizer } from '@/i18n/presentationLocalizer';
 import { Text, TextInput } from '@/components/AppText';
 import { MainWindowActionButton, MainWindowActionGroup } from '@/components/MobilePrimitives';
 import type { MobileMakerTransport, RemoteDirectoryEntry } from '@/device-link/mobileMakerTransport';
-import type { MobileCodexRateLimitsResult } from '@cindy/maker-shared/device-link-contract';
+import type { CodexResetAutoUseSettings, MobileCodexRateLimitsResult } from '@cindy/maker-shared/device-link-contract';
 import { projectDraftSessionTitle } from '@cindy/maker-shared/session-title';
 import { isSharedTaskPeer } from '@cindy/device-link';
 import { computeContextSheetSnapHeights, type ContextSheetSnap } from '@/session/contextSheetModel';
@@ -147,6 +148,7 @@ export interface SessionMenuSheetProps {
   codexRateLimits: MobileCodexRateLimitsResult | null;
   codexResetBusy: boolean;
   onResetCodexRateLimits(): void;
+  onSaveCodexResetAutoUse?: (patch: Partial<CodexResetAutoUseSettings> | null) => Promise<void>;
   onRefreshAccountUsage(): void;
   extraDirBrowser?: SessionExtraDirBrowserState | null;
   onLoadExtraDirPath(path: string): void;
@@ -193,6 +195,7 @@ export function SessionMenuSheet({
   codexRateLimits,
   codexResetBusy,
   onResetCodexRateLimits,
+  onSaveCodexResetAutoUse,
   onRefreshAccountUsage,
   extraDirBrowser,
   onLoadExtraDirPath,
@@ -840,11 +843,12 @@ export function SessionMenuSheet({
           {resetSummary?.rows.map((row, index) => (
             <InfoRow key={`reset:${row.label}:${index}`} label={row.label} value={row.value} />
           ))}
+          {codexRateLimits?.autoUse && onSaveCodexResetAutoUse && <CodexResetAutoUseControl key={codexRateLimits.autoUse.accountKey} state={codexRateLimits.autoUse} onSave={onSaveCodexResetAutoUse} />}
           {resetSummary?.canReset ? (
             <>
-              <Text style={styles.infoCaption}>
+              {resetSummary.shouldPrompt && <Text style={styles.infoCaption}>
                 {t('session.menu.quotaExhaustedResettable')}
-              </Text>
+              </Text>}
               <View style={styles.infoActionRow}>
                 <MenuPillButton
                   busy={codexResetBusy}

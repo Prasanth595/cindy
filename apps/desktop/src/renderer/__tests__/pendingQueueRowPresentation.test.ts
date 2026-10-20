@@ -7,6 +7,7 @@ import {
 import {
   getPendingQueueRowPresentation,
   resolvePendingQueueEditSubmission,
+  resolveSoleSteerableQueuedMessage,
 } from '@/components/new-chat/pendingQueueRowPresentation';
 import type { QueuedMessage } from '@/lib/makerChatStore';
 
@@ -290,5 +291,43 @@ describe('getPendingQueueRowPresentation', () => {
         canSteer: false,
       });
     }
+  });
+});
+
+describe('resolveSoleSteerableQueuedMessage', () => {
+  const idle = { editingClientId: null, steeringClientIds: [] as string[] };
+
+  it('targets the only queued row so the composer shortcut can steer it', () => {
+    expect(resolveSoleSteerableQueuedMessage([queuedMessage()], idle)).toBe('client-1');
+  });
+
+  it('declines when the target is ambiguous or the row cannot steer right now', () => {
+    expect(
+      resolveSoleSteerableQueuedMessage(
+        [queuedMessage(), queuedMessage({ clientId: 'client-2' })],
+        idle,
+      ),
+    ).toBeNull();
+    expect(
+      resolveSoleSteerableQueuedMessage([queuedMessage({ isPendingEnqueue: true })], idle),
+    ).toBeNull();
+    expect(
+      resolveSoleSteerableQueuedMessage(
+        [queuedMessage({ sourcePlugin: { pluginId: 'ghost-github' } })],
+        idle,
+      ),
+    ).toBeNull();
+    expect(
+      resolveSoleSteerableQueuedMessage([queuedMessage()], {
+        editingClientId: 'client-1',
+        steeringClientIds: [],
+      }),
+    ).toBeNull();
+    expect(
+      resolveSoleSteerableQueuedMessage([queuedMessage()], {
+        editingClientId: null,
+        steeringClientIds: ['client-1'],
+      }),
+    ).toBeNull();
   });
 });

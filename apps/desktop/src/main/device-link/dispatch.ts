@@ -1,3 +1,4 @@
+import { PROVIDER_SHARE_INSIGHTS_CHANNEL } from '../../shared/providerShareInsights.js';
 import { hasRichAnswer, compactRichAnswer, richAnswerText } from '@cindy/maker-shared/rich-answer';
 import type { RemoteAgentLimitUsage } from '../../shared/remoteAgentLimits.js';
 import { executeTaskTags, TASK_TAG_CHANNEL } from '../localDb/ipc/taskTags.js';
@@ -25,6 +26,7 @@ import {
 import { requestFilePeer, stopFilePeers } from './filePeer';
 import { requestTaskMigration } from '../task-migration/service';
 import { normalizeProviderOrder } from "../../shared/providerOrder.js";
+import { compactToolCardResult } from '../../shared/toolResultPersistCap.js';
 /**
  * dispatch —— device-link 被控端隧道层。
  *
@@ -382,6 +384,8 @@ export function setRemoteReviewInputGuard(guard: RemoteReviewInputGuard | null):
  * 都被拒绝(fail-closed)，也让本模块不必静态依赖账号与分享运行时。
  */
 export interface ProviderShareAccessPort {
+  insights?(controller: string, request: unknown): Promise<unknown>;
+  insightsCurrent?(controller: string, result: unknown): boolean;
   guestAccess(controller: string): { shareId: string; memberId: string; providerId: string } | null;
   /** 不认识的受邀者连进来时按需刷新一次分享快照。 */
   ensureKnown(controller: string): Promise<void>;
@@ -3459,7 +3463,7 @@ function sendInvokeResultSafe(
   // 不能把缓存留在原始大对象上，否则缓存可能自淘汰且重复 requestId 会再次执行。
   // 远程 Agent 的每个 op 自带幂等(poll 按游标、其余按各自 id 去重)，高频的事件流结果不进
   // 全局去重缓存，免得冲掉其它控制端非幂等调用的去重记录。
-  if (fingerprint !== undefined && channel !== REMOTE_AGENT_CHANNEL) {
+  if (fingerprint !== undefined && channel !== REMOTE_AGENT_CHANNEL && channel !== PROVIDER_SHARE_INSIGHTS_CHANNEL) {
     rememberRemoteInvokeResult(key, fingerprint, attempt.result);
   }
   if (attempt.sent) {
@@ -3498,6 +3502,9 @@ function trySendInvokeResult(
   }
   // 撤权后迟到的结果(含 outbox 重发)不再带出数据。
   if (isProviderSharePeer(src) && !providerShareGuestAccess(src)) result = PROVIDER_SHARE_ACCESS_FAILURE;
+  // 开关撤销和关后重开都使旧投影失效；关系仍有效不代表可继续发送旧额度。
+  if (isProviderSharePeer(src) && channel === PROVIDER_SHARE_INSIGHTS_CHANNEL && result.ok
+    && !providerShareAccess?.insightsCurrent?.(src, result.result)) result = PROVIDER_SHARE_ACCESS_FAILURE;
   let candidate = result;
   try {
     client.sendInvokeResult(src, requestId, candidate);
@@ -3859,7 +3866,10 @@ function compactRemoteMessageForDeviceLink(message: unknown): unknown {
   const contentLimit = record.role === 'tool_result'
     ? REMOTE_TOOL_RESULT_CONTENT_LIMIT
     : REMOTE_MESSAGE_CONTENT_LIMIT;
-  const compactContent = compactRemoteMessageContent(record.content, contentLimit);
+  const compactContent = record.role === 'tool_result' && typeof record.content === 'string'
+    && encodedByteLength(record.content) > contentLimit
+    ? compactToolCardResult(record.content, contentLimit) ?? compactRemoteMessageContent(record.content, contentLimit)
+    : compactRemoteMessageContent(record.content, contentLimit);
   if (compactContent === record.content) {
     return sanitizeRemoteMessage(record);
   }
@@ -4206,6 +4216,7 @@ const PROVIDER_SHARE_ACCESS_FAILURE: InvokeResultPayload = {
  * available agents, agent readiness), each narrowed to the shared provider below.
  */
 const PROVIDER_SHARE_CHANNELS: ReadonlySet<string> = new Set([
+  PROVIDER_SHARE_INSIGHTS_CHANNEL,
   REMOTE_AGENT_CHANNEL,
   'maker:provider:list',
   'maker:get-capabilities',
@@ -4364,6 +4375,17 @@ async function runProviderShareInvoke(
     return { ok: false, error: { code: 'CHANNEL_NOT_ALLOWED', message: `channel '${payload.channel}' not allowed for shared providers` } };
   }
   const args = Array.isArray(payload.args) ? payload.args : [];
+  if (payload.channel === PROVIDER_SHARE_INSIGHTS_CHANNEL) {
+    if (!providerShareAccess?.insights) return { ok: false, error: { code: 'CHANNEL_NOT_ALLOWED', message: 'Provider share insights are not supported' } };
+    try {
+      if (args.length !== 1) throw new Error('[INVALID_PARAMS] Expected one insights request');
+      const result = await providerShareAccess.insights(src, args[0]);
+      if (!providerShareGuestAccess(src)) return PROVIDER_SHARE_ACCESS_FAILURE;
+      return { ok: true, result };
+    } catch {
+      return { ok: false, error: { code: 'IPC_ERROR', message: '[PERMISSION_DENIED] Provider share insights are unavailable or access changed' } };
+    }
+  }
   if (PROVIDER_SHARE_AGENT_ARG_CHANNELS.has(payload.channel) && !PROVIDER_SHARE_AGENT_KINDS.has(String(args[0]))) {
     return { ok: false, error: { code: 'IPC_ERROR', message: '[INVALID_PARAMS] unknown agent' } };
   }
@@ -4913,6 +4935,7 @@ export const __testing = {
   sessionActivityStageMaxKeys: SESSION_ACTIVITY_STAGE_MAX_KEYS,
   sessionActivityDrainRetryMs: SESSION_ACTIVITY_DRAIN_RETRY_MS,
   handleLinkOpen,
+  handleInvoke,
   handleSubscriptionFrame,
   purgeRevokedController,
   setActiveClient(c: DeviceLinkClient | null): void {

@@ -10,6 +10,9 @@
  * 即连即断。没有密钥概念, 旧 safeStorage secret 文件由 store 迁移时清理。
  */
 
+import { requireXCompanion, resolveXCompanionTarget } from './xCompanion.js';
+import { captureChannelAccount } from '../im/shared/openChannelSession.js';
+
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -96,6 +99,7 @@ import { createHookTransport } from './transport.js';
 import { registerSlackToolBridge, unregisterSlackToolBridge } from './slackToolBridge.js';
 import { createHookBindingStore } from './bindings.js';
 import { createHookRequestLedger } from './requestLedger.js';
+import { createHookMediaStore } from '../cindy-media/hookOutbox.js';
 import {
   buildGroupContextPrefix,
   listTelegramKnownGroupsForStableBinding,
@@ -485,6 +489,7 @@ function ensureInstances(): { store: SlackHookStore; manager: HookControlManager
     });
   }
   if (!manager) {
+    const mediaStore = createHookMediaStore();
     const dispatcher = createHookDispatcher({
       // 两个 provider 复用 dispatcher，但连接身份和服务地址彼此隔离。
       getConnection: (connectionId) => {
@@ -522,6 +527,7 @@ function ensureInstances(): { store: SlackHookStore; manager: HookControlManager
           name: meta.name,
           url: meta.url,
           enabled: meta.enabled,
+          ...(provider === 'x' ? { companionBotId: config.xCompanionBotId ?? null } : {}),
           workspaces: config.workspaces,
           createdAt: 0,
         };
@@ -532,9 +538,12 @@ function ensureInstances(): { store: SlackHookStore; manager: HookControlManager
       }),
       terminalLedger: createHookRequestLedger({
         filePath: ownerScopedUserDataPath('hook-request-ledger.json'),
+        releaseMedia: mediaStore.release,
         log,
       }),
+      mediaStore,
       runner: createMakerHookSessionRunner({ log }),
+      resolveCompanionTarget: resolveXCompanionTarget,
       buildContextPrefix: buildGroupContextPrefix,
       // 新建 hook 会话默认预建独立 worktree(并发隔离); deps 组装与
       // maker-ipc/register.ts 的 use_worktree 分支同款。失败由 dispatcher
@@ -924,6 +933,24 @@ export function registerHookControlIpc(): void {
       return { hook: m.snapshot() };
     },
   );
+
+  registerTrustedHookControlHandler(HOOK_CONTROL_INVOKE.SET_X_COMPANION, async (_e, payload) => {
+    requireHookControl();
+    const assertAccount = captureChannelAccount();
+    const { store: s, manager: m } = ensureInstances();
+    const p = requireObject(payload);
+    const botId = requireNullableString(p.botId, 'botId');
+    const expectedBotId = requireNullableString(p.expectedBotId, 'expectedBotId');
+    if (botId !== null) await requireXCompanion(botId);
+    assertAccount();
+    if ((s.get().xCompanionBotId ?? null) !== expectedBotId) {
+      throwIpcError('PRECONDITION_FAILED', 'X companion assignment changed');
+    }
+    translateValidation(() => s.setXCompanionBotId(botId));
+    const hook = m.snapshot();
+    broadcastStatus(hook);
+    return { hook };
+  });
 
   // 发起 Slack 账号绑定(SIWS OIDC): 经已连接的 WS 发 bind.start(无参); server
   // 回 bind.update(pending, authorizeUrl), main 打开系统浏览器并广播状态。

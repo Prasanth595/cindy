@@ -1,3 +1,5 @@
+import { formatForwardedRequest, captureAgentRequest, type CapturedAgentRequest } from './forwardedRequest.js';
+import { readForwardedRequestSource, type AgentRequestReceipt, type ForwardedRequestSource } from '../../shared/forwardedRequest.js';
 import { openSession } from '../localDb/sessionOpening.js';
 import { authorizeGroupTool, GroupToolAuthorizationError } from './botGroupToolAuthorization.js';
 import { controlOwnedSessionExecution, isSameSessionExecution, withdrawOwnedSessionInputs } from './sessionExecutionOwnership.js';
@@ -118,7 +120,9 @@ export interface BotDelegationServiceDeps {
   readSessionExecution?: (sessionId: string) => DelegationExecutionReceipt | null;
   /** Non-expiring native-close fence shared with the Session send boundary. */
   withSessionLock?: (sessionId: string, operation: () => Promise<void>) => Promise<void>;
+  captureRequest?: (sessionId: string, supplement: string) => Promise<CapturedAgentRequest>;
   dispatch: (params: {
+    autoReviewUserText?: AgentRequestReceipt;
     targetSessionId: string;
     message: string;
     persistedContent?: string;
@@ -380,6 +384,7 @@ interface SessionTaskInputSnapshot {
   runSequence: number;
   originalObjective: string | null;
   followUp: string | null;
+  requestSource?: ForwardedRequestSource;
 }
 
 function readSessionTaskInput(row: Pick<DelegationRow, 'permissionSnapshotJson' | 'runSequence'>): SessionTaskInputSnapshot | null {
@@ -459,6 +464,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
   }>();
   const now = deps.now ?? Date.now;
   const createId = deps.createId ?? randomUUID;
+  const captureRequest = deps.captureRequest ?? ((id: string, text: string) => captureAgentRequest(id, text, null, async () => []));
   const maxActiveChildren = Math.max(1, deps.maxActiveChildren ?? DEFAULT_MAX_ACTIVE_CHILDREN);
   const persistTimelineMessage = deps.persistTimelineMessage ?? (async (params) => {
     await createMessage(params.sessionId, {
@@ -563,11 +569,15 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
   // own receipt; another turn's receipt cannot prove it was delivered.
   const dispatchTrackedInput = async (
     row: DelegationRow,
-    input: { clientId: string; message: string; persistedContent?: string; dispatcherSessionId?: string },
+    input: { clientId: string; message: string; persistedContent?: string; dispatcherSessionId?: string; autoReviewUserText?: AgentRequestReceipt },
     retryAttempt = false,
     groupAuthority?: Awaited<ReturnType<typeof authorizeGroupTool>> | null,
   ): Promise<{ result: DispatchResult; row: DelegationRow; clientId: string }> => {
     const db = getDbClient().drizzle;
+    if (input.dispatcherSessionId && !input.autoReviewUserText) {
+      const request = await captureRequest(input.dispatcherSessionId, input.message);
+      input = { ...input, ...request, persistedContent: request.message };
+    }
     const retry = parseRecord(row.permissionSnapshotJson).taskRecoveryRetry as
       { runSequence: number; originalClientId: string; clientId: string } | undefined;
     const clientId = retry?.runSequence === row.runSequence && retry.originalClientId === input.clientId
@@ -1038,14 +1048,20 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
     // 发给模型的回执正文不带 [UI_ACTION_TRIGGER] 前缀;前缀只留在落库 / 排队可见内容上,
     // 让这条主机内部消息在时间线与排队区保持隐藏(同 botDirectMessageService 的私信)。
     // 正文有界(结果摘要 / 文件清单截断):完整结果在下面持久化的回执行里,模型按需读取。
-    const completionMessage = buildDelegationCompletionMessage({
+    const completionSnapshot = (await getDbClient().drizzle
+      .select({ snapshot: botDelegations.permissionSnapshotJson }).from(botDelegations)
+      .where(eq(botDelegations.id, params.id)).get())?.snapshot ?? '{}';
+    const requestSource = readForwardedRequestSource(readSessionTaskInput({
+      runSequence: params.runSequence, permissionSnapshotJson: completionSnapshot,
+    })?.requestSource) ?? { userText: null };
+    const completionMessage = formatForwardedRequest(requestSource, buildDelegationCompletionMessage({
       id: params.id,
       objective: params.objective,
       status: params.status,
       resultSummary: params.resultSummary,
       artifacts,
       lastError: params.lastError,
-    });
+    }));
     try {
       if (!(await completionStillPending())) {
         clearCompletionRetryTimer(params.id);
@@ -1118,9 +1134,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
       }
       // A group task reports back in its group as the teammate's own message; the lane that
       // started it is never woken. Only a definite refusal falls back to the owner's main chat.
-      const home = groupHomeOf((await getDbClient().drizzle
-        .select({ snapshot: botDelegations.permissionSnapshotJson }).from(botDelegations)
-        .where(eq(botDelegations.id, params.id)).get())?.snapshot);
+      const home = groupHomeOf(completionSnapshot);
       if (home) {
         await afterGroupTaskStart(params);
         const posted = await postGroupTaskEvent(home, params, {
@@ -1185,6 +1199,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
       const dispatched = await deps.dispatch({
         targetSessionId,
         message: completionMessage,
+        autoReviewUserText: { kind: 'agent-request', request: requestSource },
         persistedContent: `${UI_ACTION_TRIGGER_PREFIX}${completionMessage}`,
         clientId: BOT_DELEGATION_CLIENT_ID.completionRun(params.id, params.runSequence),
       });
@@ -1628,13 +1643,14 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
     if (!stillPending()
       || (row.childSessionId && heldSessionIds.has(row.childSessionId))) return;
     // 同任务回执:模型正文不带隐藏前缀,落库 / 排队可见内容保留它。
-    const message = [
+    const requestSource = readForwardedRequestSource(readSessionTaskInput(row)?.requestSource) ?? { userText: null };
+    const message = formatForwardedRequest(requestSource, [
       `[任务需要你处理] task_id: ${row.id}`,
       `类型: ${pending.request.kind}`,
       pending.summary,
       pending.request.kind === 'permission' ? `请求工具: ${pending.request.toolName}` : '',
       '你是用户的代理。能按用户已表达的意图安全决定，就用 `message_session_task` 直接回答；拿不准才用一句人话问用户。不要让用户去子任务窗口处理，也不要复述内部编号。',
-    ].filter(Boolean).join('\n\n');
+    ].filter(Boolean).join('\n\n'));
     // A group task asks in its group: the owner opens the task from the card to answer.
     // Tool names and arguments stay on this computer; only a question's words are shared.
     const home = groupHomeOf(row.permissionSnapshotJson);
@@ -1676,6 +1692,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
         ? await deps.dispatch({
             targetSessionId: requesterSessionId,
             message,
+            autoReviewUserText: { kind: 'agent-request', request: requestSource },
             persistedContent: `${UI_ACTION_TRIGGER_PREFIX}${message}`,
             clientId: `bot-delegation-interaction:${row.id}:${pending.requestId}`,
           })
@@ -1829,20 +1846,14 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
     permissionSnapshotJson: string;
     runSequence: number;
   }): string => [
-    'You are running an independent Cindy Session task started from the user\'s Bot task.',
-    `Task ID: ${row.id}`,
-    taskObjectiveContext(row),
-    parseStringArray(row.contextRefsJson).length
-      ? `Context references:\n${parseStringArray(row.contextRefsJson).join('\n')}`
-      : '',
-    readSessionTaskInput(row)?.followUp ? 'Continue from the existing task history. Apply the new follow-up without repeating completed actions.' : '',
-    'Work independently in this task\'s own workspace.',
-    'The parent Bot is acting for the user: permission prompts, questions and plan reviews you raise are answered there (or by the user directly). Ask through the normal tools when you genuinely need a decision; otherwise keep going.',
-    'Use descriptive filenames instead of generic names such as index, final, or output. If HTML is only a preview or SVG is only a source file, also export a directly viewable PNG or PDF. In the final response, list only user-ready files under a Deliverables heading; list source, preview, and intermediate files separately, and say how the result was verified.',
-    'Return a concise conclusion when done. Files you create or change in this workspace are handed back automatically; do not write into the parent task\'s directory and do not ask anyone to copy a local path.',
-  ]
-    .filter(Boolean)
-    .join('\n\n');
+    t('forwardedRequest.taskSource'),
+    `${t('forwardedRequest.taskId')} ${row.id}`,
+    formatForwardedRequest(readForwardedRequestSource(readSessionTaskInput(row)?.requestSource) ?? { userText: null }, [
+      taskObjectiveContext(row),
+      parseStringArray(row.contextRefsJson).length
+        ? `${t('forwardedRequest.contextReferences')}\n${parseStringArray(row.contextRefsJson).join('\n')}` : '',
+    ].filter(Boolean).join('\n\n')),
+  ].join('\n\n');
 
   const reconcileTaskWorktree = async (sessionId: string, authority?: Awaited<ReturnType<typeof authorizeGroupTool>> | null) => {
     await authority?.refresh();
@@ -1981,7 +1992,8 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
     const dispatched = await deps.dispatch({
       targetSessionId: row.childSessionId,
       message: buildDelegationPrompt(row),
-      persistedContent: readSessionTaskInput(row)?.followUp ?? row.objective,
+      persistedContent: formatForwardedRequest(readForwardedRequestSource(readSessionTaskInput(row)?.requestSource) ?? { userText: null }, readSessionTaskInput(row)?.followUp ?? row.objective),
+      autoReviewUserText: { kind: 'agent-request', request: readForwardedRequestSource(readSessionTaskInput(row)?.requestSource) ?? { userText: null } },
       clientId,
       // 子任务首条消息标出发起委派的父任务，接收方据此渲染可跳转的来源标签。
       ...(row.parentSessionId ? { dispatcherSessionId: typeof groupOriginSessionId === 'string' ? groupOriginSessionId : row.parentSessionId } : {}),
@@ -2388,6 +2400,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
     // The execution caller remains the parent, including a group lane: work started from a
     // group stays in that group (bot-group-chat.md §10). Its card, confirmations and result
     // are posted there as the teammate's messages; the lane itself is never woken for them.
+    const request = await captureRequest(input.callerSessionId, input.objective);
     const parentSessionId = input.callerSessionId;
     const delegationId = createId();
     let childSessionId = resolveBusinessSessionId(undefined);
@@ -2443,7 +2456,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
           permissionSnapshotJson = JSON.stringify({ ...plan,
             ...(input.caller.role === 'group' ? { groupOriginRoute: input.caller.routeKey, groupOriginSessionId: input.callerSessionId } : {}),
             ...(input.taskModelOverride ? { taskModelOverride: input.taskModelOverride } : {}),
-            taskInput: { runSequence: 1, originalObjective: input.objective, followUp: null } satisfies SessionTaskInputSnapshot,
+            taskInput: { runSequence: 1, originalObjective: input.objective, followUp: null, requestSource: request.autoReviewUserText.request } satisfies SessionTaskInputSnapshot,
           });
 
           return { permissionMode, parentSessionId };
@@ -3282,7 +3295,8 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
         .limit(1);
       originalObjective = initial?.content && initial.content.length <= MAX_OBJECTIVE_CHARS ? initial.content : null;
     }
-    const taskInput: SessionTaskInputSnapshot = { runSequence: row.runSequence + 1, originalObjective, followUp: trimmed };
+    const request = await captureRequest(callerSessionId, trimmed);
+    const taskInput: SessionTaskInputSnapshot = { runSequence: row.runSequence + 1, originalObjective, followUp: trimmed, requestSource: request.autoReviewUserText.request };
     // Preserve unrecoverable legacy data, but never send its wrappers as a new goal.
     const continuationObjective = originalObjective ?? row.objective;
     const nextState: Record<string, unknown> = { ...nextPlan, taskInput, taskAcceptedInputIds: [] };
@@ -3762,7 +3776,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
       control: { state: 'active', queue_held: false } };
   };
 
-  const resumeTask = async (row: DelegationRow, text?: string, groupAuthority?: Awaited<ReturnType<typeof authorizeGroupTool>> | null) => {
+  const resumeTask = async (callerSessionId: string, row: DelegationRow, text?: string, groupAuthority?: Awaited<ReturnType<typeof authorizeGroupTool>> | null) => {
     await groupAuthority?.refresh();
     const pause = readTaskPause(row);
     const control = deps.taskControl;
@@ -3818,6 +3832,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
         const recovered = await dispatchTrackedInput(row, {
           message: text?.trim() || 'Continue from the existing task history after the requested pause. Check what has already completed; do not replay the original request or repeat completed actions.',
           clientId: `bot-delegation-unpause:${row.id}:${pause.token}`,
+          ...(text ? { dispatcherSessionId: callerSessionId } : {}),
         }, false, groupAuthority);
         if (!recovered.result.ok) throw new Error(recovered.result.message);
         row = recovered.row;
@@ -3916,7 +3931,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
       try { if (row.childSessionId) await reconcileTaskWorktree(row.childSessionId, found.groupAuthority); }
       catch (error) { if (error instanceof GroupToolAuthorizationError) throw error; return { ok: false as const, errorCode: 'WORKTREE_TRANSFER_PENDING', message: 'Task worktree ownership is awaiting reconciliation' }; }
       await found.groupAuthority?.refresh();
-      if (input.kind === 'resume') return resumeTask(row, input.text, found.groupAuthority);
+      if (input.kind === 'resume') return resumeTask(callerSessionId, row, input.text, found.groupAuthority);
       if (readTaskPause(row) && isActiveDelegation(row.status as DelegationStatus)) {
         return { ok: false as const, errorCode: 'TASK_PAUSED', message: 'Resume the task explicitly before sending input or answering an interaction' };
       }

@@ -2,7 +2,7 @@ import { VideoSitePreview } from './VideoSitePreview';
 import { youtubeVideo } from '@cindy/maker-shared/rich-answer';
 import { richVisualStyle, splitRichAnswer, richAnswerText, richMediaSource, richMarkdown, richString, type RichNode } from '@cindy/maker-shared/rich-answer';
 import { RichAnswer } from './RichAnswer';
-import { readToolProcessMedia, readToolProcessText } from '@cindy/maker-shared/tool-process-media';
+import { readFailedImageDelivery, readToolProcessMedia, readToolProcessText } from '@cindy/maker-shared/tool-process-media';
 import { PluginCardActions } from '@/plugins/PluginCardActions';
 import { McpAppCard } from './McpAppCard';
 import { RichContentContext } from './richContentContext';
@@ -245,23 +245,13 @@ import {
   type SessionDeepLinkTarget,
 } from '@/session/sessionLinks';
 import {
-  canOpenChatPathChip,
   chatPathLabelReadsAsFileReference,
   classifyChatPathLinkTarget,
   classifyInlineCodePathCandidate,
-  resolveChatAbsPath,
-  toWorkdirRel,
-  type ChatPathCandidate,
 } from '@/session/chatPathCandidate';
-import { ChatFilePathContext, type ChatFilePathTarget } from '@/session/chatFilePathContext';
-import {
-  peekRemotePathVerdict,
-  peekRemotePathVerdictForRender,
-  remotePathVerdictKey,
-  subscribeRemotePathVerdictChange,
-  verifyRemotePathCached,
-  type RemotePathVerdict,
-} from '@/session/remotePathVerdict';
+import { ChatFilePathContext } from '@/session/chatFilePathContext';
+import { MailLinkSpan } from '@/session/MailLinkSpan';
+import { ChatPathChipSpan } from '@/session/ChatPathChipSpan';
 import {
   useRemoteDeviceIdentity,
   useRemoteSessionMessages,
@@ -366,6 +356,7 @@ import {
 import type { ContinuationInFlightProjectionCapability } from '@/session/types';
 import {
   projectMobileWorkActivities,
+  projectRecentMobileWorkActivities,
   type MobileProjectedToolActivity,
   sameMobileWorkToolActivity,
 } from '@/session/workActivityProjection';
@@ -659,6 +650,7 @@ export const COMPANION_AVATAR_SIZE = 28;
 const COMPANION_AVATAR_GAP = 10;
 
 interface MessageActions {
+  onRetryImageDelivery?: (imageId: string) => Promise<void>;
   companion?: boolean;
   onCompanionReadThrough?: (at: number) => void;
   onOpenCompanionSettings?: (page: 'memory' | 'capabilities') => void;
@@ -754,6 +746,7 @@ export function MessageRenderer({
   onDeleteMessage,
   onLoadEarlier,
   onLoadToolInput,
+  onRetryImageDelivery,
   onOpenForkOrigin,
   onOpenOriginSession,
   viewerDeviceId,
@@ -1782,6 +1775,7 @@ export function MessageRenderer({
     onOpenPayload: openPayload,
     onOpenPayloadFromItem: openPayloadFromItem,
     onLoadToolInput,
+    onRetryImageDelivery,
     onResolveRemoteMedia,
     // 待发送气泡(pending_send 项)的展开态与队列操作:漏了这一项 actions.pendingSend 就是
     // undefined,渲染分支直接 null —— 气泡整个不画,乐观显示消失。
@@ -1825,6 +1819,7 @@ export function MessageRenderer({
     viewerDeviceId,
     onOpenSourceDevice,
     onLoadToolInput,
+    onRetryImageDelivery,
     onOpenSessionLink,
     onPreviewRewind,
     onEnterShareSelection,
@@ -2942,7 +2937,7 @@ const RenderItemView = memo(function RenderItemView({
       node = item.message.authorization
         ? <AuthorizationMessageCard message={item.message} />
         : item.message.companion
-        ? <CompanionMessageCard message={item.message}
+        ? <CompanionMessageCard message={item.message} deviceId={actions.remoteDeviceId ?? ''}
             renderMarkdown={(text) => <CompanionCardMarkdown messageKey={item.key} text={text} actions={actions} />} />
         : item.message.orcaCard
         ? (
@@ -3039,10 +3034,9 @@ const RenderItemView = memo(function RenderItemView({
   }
   const groupTimestamp = actions.companion && item.type === 'message'
     ? actions.companionTimeGroups?.get(item.key) : undefined;
-  // K1: every companion card (task, result, teammate-message pill) hangs on the replies' column,
-  // left-aligned with the reply text behind an invisible avatar.
-  const alignWithReplies = !!actions.companionAvatar && actions.companion && item.type === 'message'
-    && !!item.message.companion;
+  // Cards and work groups share the reply text column, leaving the avatar slot empty.
+  const alignWithReplies = !!actions.companionAvatar && actions.companion
+    && (item.type === 'work_group' || (item.type === 'message' && !!item.message.companion));
   const aligned = alignWithReplies ? <View style={styles.companionAvatarInset}>{node}</View> : node;
   // Companion chats: a new message or finished reply eases in once (M4 / M5); everything else stays still.
   const entering = actions.companion && item.type === 'message' && !item.message.systemCardType
@@ -4273,7 +4267,7 @@ function ToolGroupCard({
  * 媒体条 / 结果预览,再点收起。展开态走共享进程内记忆(blockId 前缀 `toolrow-`,
  * 与组级 `tools-` key 空间天然隔离)。无详情可展的行不显示 chevron、不可点击。
  */
-type ToolDetailActions = Pick<MessageActions, 'onLoadToolInput' | 'onOpenPayload' | 'onResolveRemoteMedia'>;
+type ToolDetailActions = Pick<MessageActions, 'onRetryImageDelivery' | 'onLoadToolInput' | 'onOpenPayload' | 'onResolveRemoteMedia'>;
 
 function ToolActionRow({
   actions,
@@ -4341,7 +4335,7 @@ function ToolActionRow({
             />
           ) : null}
           {tool.diff ? <DiffPreview diff={tool.diff} layout={contentLayout} onOpen={actions.onOpenPayload} /> : null}
-          {tool.secondaryBody ? <ToolResultPreview layout={contentLayout} tool={tool} onOpen={actions.onOpenPayload} /> : null}
+          {tool.secondaryBody ? <ToolResultPreview layout={contentLayout} tool={tool} onOpen={actions.onOpenPayload} onRetryImageDelivery={actions.onRetryImageDelivery} /> : null}
         </View>
       ) : null}
     </View>
@@ -4720,20 +4714,26 @@ function WorkGroupCard({
   const isStreaming = item.isStreaming === true;
   const [rememberedExpanded, toggleExpanded] = useFoldableExpandedState(item.key, false);
   const expanded = item.deferred?.setVisible ? rememberedExpanded : item.deferred?.expanded ?? rememberedExpanded;
+  const lines = isStreaming ? item.deferred?.lines : undefined;
+  const lineMode = lines !== undefined;
   const deferredRef = useRef(item.deferred);
   deferredRef.current = item.deferred;
-  useEffect(() => {
+  useLayoutEffect(() => {
     const current = deferredRef.current;
-    current?.setVisible?.(expanded, false);
+    current?.setVisible?.(expanded, isStreaming && !lineMode);
     return () => current?.setVisible?.(false, false);
-  }, [item.deferred?.owner, item.deferred?.key, expanded]);
+  }, [item.deferred?.owner, item.deferred?.key, expanded, isStreaming, lineMode]);
   const layout = useMemo(() => buildMessageHierarchyLayout({
     screenWidth: actions.screenWidth,
     summaryCount: header.summaryCount,
   }), [actions.screenWidth, header.summaryCount]);
-  const contentLayout = useMemo(() => (expanded
-    ? buildMessageContentLayout({ screenWidth: actions.screenWidth })
-    : null), [actions.screenWidth, expanded]);
+  const contentLayout = useMemo(() => buildMessageContentLayout({ screenWidth: actions.screenWidth }), [actions.screenWidth]);
+  const liveActivities = useMemo(() => isStreaming && !lineMode
+    ? projectRecentMobileWorkActivities(item.children, true, 5) : [], [item.children, isStreaming, lineMode]);
+  // The outer group already occupies the reply column. Keep companion actions,
+  // but neither repeat its portrait nor indent nested work groups a second time.
+  const childActions = useMemo(() => actions.companion && actions.companionAvatar
+    ? { ...actions, companionAvatar: undefined } : actions, [actions]);
   const activityProjection = useMemo(
     () => (expanded
       ? projectMobileWorkActivities(item.children, isStreaming)
@@ -4744,9 +4744,10 @@ function WorkGroupCard({
   // Keep their callbacks and streaming flag stable across those unrelated updates.
   const toolActions = useMemo(() => ({
     onLoadToolInput: actions.onLoadToolInput,
+    onRetryImageDelivery: actions.onRetryImageDelivery,
     onOpenPayload: actions.onOpenPayload,
     isSessionStreaming: actions.isSessionStreaming,
-  }), [actions.onLoadToolInput, actions.onOpenPayload, actions.isSessionStreaming]);
+  }), [actions.onRetryImageDelivery, actions.onLoadToolInput, actions.onOpenPayload, actions.isSessionStreaming]);
   const startedAtIso = isStreaming && item.startedAtMs !== undefined
     ? new Date(item.startedAtMs).toISOString()
     : undefined;
@@ -4771,12 +4772,17 @@ function WorkGroupCard({
   const pluginWork = actions.companionPluginWork?.get(item.key);
   // The Host projects running lines for this view; folded groups render them as they are,
   // without building the hidden activity tree or reading any work details.
-  const lines = isStreaming ? item.deferred?.lines : undefined;
   // Expanding keeps these lines on screen until the detail read has rows to replace them.
   const holdLines = expanded && item.deferred?.awaitingDetails === true && !!lines?.length;
   const lineRows = lines?.length ? (
     <View style={styles.workActivityStack}>
       {lines.map((line) => <WorkLineRow key={line.key} line={line} onPress={onToggle} />)}
+    </View>
+  ) : !lineMode && liveActivities.length ? (
+    <View style={styles.workActivityStack}>
+      {liveActivities.map((activity) => activity.kind === 'tool'
+        ? <WorkToolActivityRow key={activity.key} activity={activity} actions={toolActions} contentLayout={contentLayout} />
+        : <WorkLineRow key={activity.key} line={{ kind: 'thinking', key: activity.key, text: activity.content }} onPress={onToggle} />)}
     </View>
   ) : null;
   return (
@@ -4836,7 +4842,7 @@ function WorkGroupCard({
                   </View>
                 );
               }
-              return <RenderItemView key={child.key} item={child} actions={actions} />;
+              return <RenderItemView key={child.key} item={child} actions={childActions} />;
             })}
           </View>
         </Rail>
@@ -6091,126 +6097,6 @@ function MarkdownBodyBase({
 }
 
 /**
- * 文件/目录路径 chip 的共享执行体(远程会话文件交互,对齐桌面 #631 的 chip 点亮
- * 语义)。inline code 与本地路径链接两种形态共用:候选先经被控端精确 stat 验证——
- * 文件/目录点亮可点(文件 → Quick Look 预览页;目录 → 文件浏览器定位),明确
- * 不存在保持纯文本,链路断等无法判定时乐观点亮(点击后预览页自己的错误 UX 兜底)。
- * workdir 外的绝对路径同样候选(对齐桌面):文件走被控端 absPath 取件通道预览,
- * 目录因文件浏览器只认 workdir 内而保持纯文本(canOpenChatPathChip)。
- * 无会话上下文(context null)/ 流式中 → plainStyle 纯文本渲染。
- */
-function ChatPathChipSpan({
-  candidate,
-  chipStyle,
-  display,
-  plainStyle,
-  SpanText,
-  streaming,
-}: {
-  candidate: ChatPathCandidate | null;
-  chipStyle: StyleProp<TextStyle>;
-  /** span 显示文本(code 形态 = 原文;链接形态 = 链接 label)。 */
-  display: string;
-  plainStyle: StyleProp<TextStyle>;
-  SpanText: typeof Text;
-  streaming?: boolean;
-}) {
-  const ctx = useContext(ChatFilePathContext);
-  // workdir 外候选不再一票否决:relPath 为 null 表示 workdir 外,文件仍可经
-  // absPath 通道打开,可开性由 canOpenChatPathChip 在 verdict 定 kind 后裁决。
-  const target = useMemo(() => {
-    if (!ctx || !candidate) return null;
-    const absPath = resolveChatAbsPath(candidate.href, ctx.workdir);
-    return { absPath, relPath: toWorkdirRel(ctx.workdir, absPath) };
-  }, [candidate, ctx]);
-  // verdict 是**缓存的纯派生**,chip 不自己存结论:ForRender 版会把 TTL 未过期的负缓存
-  // 回成 'unknown',于是断链期间的乐观点亮也来自缓存。自存一份的话收不到缓存变化 ——
-  // 同一路径出现在多个 chip 上时,A 按 unknown 点亮、B 拿到确定的 nonfile,A 会一直
-  // 带着下划线可点(PR #1144 review 实捉,桌面同款)。
-  const readVerdict = useCallback(
-    () =>
-      ctx && target
-        ? peekRemotePathVerdictForRender(ctx.deviceId, ctx.workdir, target.absPath)
-        : undefined,
-    [ctx, target],
-  );
-  const [verdict, setVerdict] = useRecyclingState<RemotePathVerdict | undefined>(readVerdict);
-
-  // 本 key 的缓存变化(确定态落库 / 负缓存到期)→ 递增,**驱动下面的验证副作用重跑**。
-  // 按 key 过滤:一屏几十个 chip 各自订阅,全量广播会让首屏 N 次 stat 引发 N×N 次重渲染。
-  //
-  // ⚠️ 这里必须递增一个计数、不能只 setVerdict(readVerdict()):`readVerdict` 是
-  // `[ctx, target]` 的稳定 useCallback,通知**不改变验证副作用的任何依赖**,那个副作用
-  // 就不会重跑 → 再也不发 verifyRemotePathCached。TTL 到期时负缓存已被删、又没有确定态,
-  // ForRender 回 undefined,于是 chip 只完成「降级成纯文本」、没完成「重验」,挂载期间
-  // 永不自愈 —— 比重构前(一直乐观点亮)更糟。桌面同一处把 cacheGen 放进了验证副作用的
-  // 依赖,手机漏了这一环(PR #1144 review 实捉:第 10 轮重构只做对了桌面那一半)。
-  const [cacheGen, setCacheGen] = useRecyclingState(0);
-  useEffect(() => {
-    if (!ctx || !target) return;
-    const mine = remotePathVerdictKey(ctx.deviceId, ctx.workdir, target.absPath);
-    return subscribeRemotePathVerdictChange((key) => {
-      if (key === mine) setCacheGen((n) => n + 1);
-    });
-  }, [ctx, target]);
-
-  useEffect(() => {
-    // 无条件按当前缓存重新派生(升级 / 降级同一条路)。
-    setVerdict(readVerdict());
-    if (!ctx || !target) return;
-    // 有确定结论就不必重验;unknown 的限流由 verifyRemotePathCached 的负缓存承担。
-    if (peekRemotePathVerdict(ctx.deviceId, ctx.workdir, target.absPath)) return;
-    // 流式中不发验证:半截路径会产生大量无意义 stat(与桌面 isStreaming gate 同理)。
-    if (streaming) return;
-    let cancelled = false;
-    void verifyRemotePathCached(ctx.deviceId, ctx.workdir, target.absPath, ctx.statPath).then(() => {
-      // 不看返回值:结论已落缓存,统一重新派生。
-      if (!cancelled) setVerdict(readVerdict());
-    });
-    return () => {
-      cancelled = true;
-    };
-    // cacheGen:本 key 的缓存状态变化(TTL 到期 / 别处写入确定态)→ 重新派生 + 必要时重验。
-  }, [ctx, streaming, target, readVerdict, cacheGen]);
-
-  // 点亮门槛分两档(见 ChatPathCandidate.ambiguousShape 的说明):
-  //   - 形状明确是路径(绝对路径 / 尾斜杠目录 / 分隔符+扩展名):unknown(链路断 /
-  //     stat 异常)照旧乐观点亮,绝不因断链把整条消息的 chip 全灭掉;
-  //   - 歧义形状(裸名 `array.map`、分隔符无扩展 `and/or`——与 `package.json`、
-  //     `src/components` 词法同形,分不开):必须等远端明确回 file / directory 才点亮。
-  //     否则链路一抖,满屏普通行内 code 都变成可点的假链接——「可点」的视觉信号一旦
-  //     不可信,加强它只会让误判更醒目(DESIGN.md §14.5 规则 5)。
-  const verdictAllowsLit = candidate?.ambiguousShape
-    ? verdict === 'file' || verdict === 'directory'
-    : verdict !== undefined && verdict !== 'nonfile';
-  const lit = !!ctx && !!candidate && !!target && verdictAllowsLit;
-  if (!lit) {
-    return <SpanText style={plainStyle}>{display}</SpanText>;
-  }
-  const kind: 'file' | 'directory' =
-    verdict === 'directory' || (verdict === 'unknown' && candidate.directoryShape) ? 'directory' : 'file';
-  if (!canOpenChatPathChip(kind, target.relPath)) {
-    return <SpanText style={plainStyle}>{display}</SpanText>;
-  }
-  const chipTarget: ChatFilePathTarget = {
-    kind,
-    relPath: target.relPath,
-    absPath: target.absPath,
-    ...(kind === 'file' && candidate.line !== undefined ? { line: candidate.line } : {}),
-  };
-  return (
-    <SpanText
-      onLongPress={ctx.onLongPressPath ? () => ctx.onLongPressPath?.(chipTarget) : undefined}
-      onPress={() => ctx.onOpenPath(chipTarget)}
-      style={chipStyle}
-      testID="message.markdownPathChip"
-    >
-      {display}
-    </SpanText>
-  );
-}
-
-/**
  * 「下划线 ⇔ 可点」的**唯一判据**(DESIGN.md §14.5 规则①要求双向成立:可点的一定有
  * 下划线,有下划线的一定可点)。onPress 缺席时不给 `markdownLink`,所以在结构上
  * 无法造出「有下划线却点不动」的元素。
@@ -6449,13 +6335,14 @@ function renderInline(
         void Linking.openURL(inline.url).catch(() => undefined);
       };
       return (
-        <SpanText
+        <MailLinkSpan
           key={spanKey(`link:${index}:${inline.url}`)}
-          onPress={openExternalUrl}
+          url={inline.url}
+          SpanText={SpanText}
           style={clickableInlineStyle(styles, openExternalUrl, ctx.baseStyle)}
         >
           {inline.text}
-        </SpanText>
+        </MailLinkSpan>
       );
     }
     case 'strong':
@@ -6720,13 +6607,15 @@ function ToolMediaBlock({
 function PluginResultCard({ callId, sessionId, excludedUrls, actions }: {
   callId: string; sessionId: string; excludedUrls: string[]; actions: MessageActions;
 }) {
-  const { blocks, error, retry } = usePluginResultCard(actions.remoteDeviceId, sessionId, callId);
+  const { blocks, error, retry, hidden } = usePluginResultCard(actions.remoteDeviceId, sessionId, callId);
   const layout = buildMessageContentLayout({ screenWidth: actions.screenWidth });
   const styles = useThemedStyles(makeStyles);
   const { t } = useTranslation();
+  if (hidden) return null;
   return <View style={styles.toolMediaBlock} testID="message.pluginResultCard">
     {blocks?.map((block) => {
-      if (block.primitive === 'plugin-card-actions') return <PluginCardActions key={block.id} data={block.data} deviceId={actions.remoteDeviceId} sessionId={sessionId} callId={callId} />;
+      if (block.primitive === 'plugin-card-actions') return <PluginCardActions key={block.id} data={block.data} deviceId={actions.remoteDeviceId} sessionId={sessionId} callId={callId}
+        onOpenAttachment={actions.onOpenPayload ? (url, name) => actions.onOpenPayload!(buildMediaPayload({ kind: 'image', url, previewable: true }, name)) : undefined} />;
       const url = (block.data as { url?: unknown } | undefined)?.url;
       const kind = managedToolMediaKind(url);
       if (typeof url === 'string' && excludedUrls.includes(url)) return null;
@@ -7156,12 +7045,16 @@ function ToolResultPreview({
   layout,
   tool,
   onOpen,
+  onRetryImageDelivery,
 }: {
   layout: MessageContentLayout;
   tool: NormalizedRemoteMessage;
   onOpen?: (payload: MessagePayload) => void;
+  onRetryImageDelivery?: (imageId: string) => Promise<void>;
 }) {
   const styles = useThemedStyles(makeStyles);
+  const imageId = readFailedImageDelivery(tool.secondaryBody);
+  if (imageId) return <GeneratedImageRetry imageId={imageId} onRetry={onRetryImageDelivery} />;
   const payload = buildToolResultPayload({ ...tool, secondaryBody: readToolProcessText(tool.secondaryBody) });
   if (!payload) return null;
   const preview = summarizeMessagePayloadPreview(payload, { maxPreviewChars: TOOL_RESULT_PREVIEW_MAX_CHARS });
@@ -9530,6 +9423,15 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     fontSize: typeScale.footnote,
     lineHeight: lineHeight.caption,
   },
+  imageDeliveryHint: {
+    color: colors.textSecondary, fontSize: typeScale.footnote,
+    lineHeight: lineHeight.caption, fontWeight: fontWeight.regular,
+  },
+  imageDeliveryRetry: { minHeight: 44, justifyContent: 'center', alignSelf: 'flex-start', paddingHorizontal: spacing.sm },
+  imageDeliveryRetryText: {
+    color: colors.textPrimary, fontSize: typeScale.body,
+    lineHeight: lineHeight.body, fontWeight: fontWeight.medium,
+  },
   toolInputPreview: {
     backgroundColor: colors.chatCodeSurface,
     borderColor: colors.chatCodeBorder,
@@ -9915,5 +9817,19 @@ function RichAnswerMedia({ node, body }: { node: RichNode; body: Parameters<type
     {width > 0 ? <MediaPreview key={previewKey} layout={layout} media={media} label={label} onResolveRemoteMedia={resolver}
       usePreviewState={useState}
       onOpen={body.onOpenPayload ? () => body.onOpenPayload!(buildMediaPayload(media, label)) : undefined} /> : null}
+  </View>;
+}
+
+function GeneratedImageRetry({ imageId, onRetry }: { imageId: string; onRetry?: (id: string) => Promise<void> }) {
+  const { t } = useTranslation();
+  const styles = useThemedStyles(makeStyles);
+  const [pending, setPending] = useState(false);
+  const [failed, setFailed] = useState(false);
+  return <View>
+    <Text style={styles.imageDeliveryHint}>{t(failed ? 'chat:imageDelivery.retryFailed' : 'chat:imageDelivery.failed')}</Text>
+    {onRetry && <Pressable accessibilityRole="button" disabled={pending} style={styles.imageDeliveryRetry} onPress={async () => {
+      setPending(true); setFailed(false);
+      try { await onRetry(imageId); } catch { setFailed(true); } finally { setPending(false); }
+    }}><Text style={styles.imageDeliveryRetryText}>{t(pending ? 'chat:imageDelivery.retrying' : 'chat:imageDelivery.retry')}</Text></Pressable>}
   </View>;
 }

@@ -365,6 +365,8 @@ export interface PendingAgentSwitchIntent {
    * 落地时不给任务打「脱离跟随」标记。用户 picker 选择不带此标(PR #5155)。
    */
   configStaged?: boolean;
+  /** Auto 跟随登记时验证的两端身份；仅内存使用，目录移除来源后仍可撤销/改登记。 */
+  cindyAutoRelocation?: { fromProviderId: string; targetProviderId: string };
   /** SET_MODEL intent: apply the route without a cross-engine handoff. */
   sameAgentSelection?: boolean;
   targetAgentKind: AgentKind;
@@ -392,6 +394,13 @@ export interface PendingAgentSwitchIntent {
      */
     handoffClearEpoch?: number;
   };
+}
+
+/** 用户 picker 意图的统一来源判据；引擎与执行电脑是否改变不影响归属。 */
+export function isUserPendingAgentSwitchIntent(
+  intent: PendingAgentSwitchIntent | undefined,
+): intent is PendingAgentSwitchIntent {
+  return !!intent && intent.configStaged !== true && intent.runtimeSource !== 'agent';
 }
 
 /** 控制端可见的 pending intent 投影；刻意排除 main 内部恢复载荷。 */
@@ -1166,7 +1175,7 @@ async function noteLandedUserRouteSelection(
   sessionId: string,
   intent: PendingAgentSwitchIntent,
 ): Promise<void> {
-  if (intent.configStaged === true || intent.runtimeSource === 'agent') return;
+  if (!isUserPendingAgentSwitchIntent(intent)) return;
   try {
     await deps.onUserRouteSelectionLanded?.(sessionId);
   } catch (err) {

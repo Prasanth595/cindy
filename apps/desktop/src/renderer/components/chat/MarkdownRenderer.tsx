@@ -117,6 +117,7 @@ import { SessionHandoffCard } from './SessionHandoffCard';
 import { SessionLinkChip } from './SessionLinkChip';
 import { ProjectLinkChip } from './ProjectLinkChip';
 import { ImageLightbox } from './ImageLightbox';
+import { splitQuestionReferences } from '@cindy/maker-shared/interaction';
 import { useImageClipboard } from './useImageClipboard';
 import { ImageHoverPreview } from './ImageHoverPreview';
 import { ImageMissingPlaceholder } from './ImageMissingPlaceholder';
@@ -1119,6 +1120,7 @@ function ResolvedLocalLink({
   anchorProps,
   children,
   sessionId,
+  showFileIcon = true,
 }: {
   resolvedAbsPath: string;
   localKind: MarkdownLocalKind;
@@ -1130,6 +1132,7 @@ function ResolvedLocalLink({
   children: ReactNode;
   /** 当前会话 id;就位时 html 文件左键弹"打开方式"菜单(同 FileTargetChip)。 */
   sessionId?: string;
+  showFileIcon?: boolean;
 }) {
   const { t } = useTranslation();
   // 同 FileTargetChip:html + 有会话上下文时左键按偏好直开,「查看源文件」
@@ -1167,7 +1170,7 @@ function ResolvedLocalLink({
         onContextMenu={ctxMenu.onContextMenu}
         {...anchorProps}
       >
-        {localKind !== 'directory' && nodeToText(children).trim() && (
+        {showFileIcon && localKind !== 'directory' && nodeToText(children).trim() && (
           <FileTypeIcon name={resolvedAbsPath} size={14} className="mr-1 inline-block align-[-0.125em]" />
         )}
         {children}
@@ -1434,6 +1437,41 @@ async function activateResolvedLocalTarget(
   });
 }
 
+/** Evidence in a question uses the same verified targets and previews as messages. */
+export function QuestionReferenceText({ text, onPreviewOpenChange }: { text: string; onPreviewOpenChange?: (open: boolean) => void }) {
+  const ctx = useChatSessionFile();
+  const [image, setImage] = useState<string | null>(null);
+  const [file, setFile] = useState<{ path: string; name: string; line?: number } | null>(null);
+  const [model, setModel] = useState<string | null>(null);
+  const previewOpen = !!(image || file || model);
+  useEffect(() => {
+    onPreviewOpenChange?.(previewOpen);
+    return () => onPreviewOpenChange?.(false);
+  }, [previewOpen, onPreviewOpenChange]);
+  return <>
+    {splitQuestionReferences(text).map((part, index) => part.href ? (
+      <MarkdownTargetLink
+        key={index}
+        href={part.href}
+        workingDir={ctx.workingDir}
+        sessionId={ctx.sessionId}
+        remoteMediaOrigin={toRemoteMediaOrigin(ctx.origin, ctx.workingDir)}
+        isStreaming={false}
+        allowPrivilegedLinks
+        fromBarePath
+        showFileIcon={false}
+        anchorProps={{}}
+        setLightboxSrc={setImage}
+        setTextLightboxFile={setFile}
+        setModelLightboxPath={setModel}
+      >{part.text}</MarkdownTargetLink>
+    ) : part.text)}
+    {image && <ImageLightbox src={image} onClose={() => setImage(null)} />}
+    {file && <TextLightbox filePath={file.path} fileName={file.name} initialLine={file.line} onClose={() => setFile(null)} />}
+    {model && <ModelLightbox source={{ kind: 'local', absPath: model }} onClose={() => setModel(null)} />}
+  </>;
+}
+
 function MarkdownTargetLink({
   href,
   children,
@@ -1448,6 +1486,7 @@ function MarkdownTargetLink({
   fromBarePath,
   remoteMediaOrigin,
   sessionId,
+  showFileIcon,
 }: {
   href?: string;
   children: ReactNode;
@@ -1465,6 +1504,8 @@ function MarkdownTargetLink({
    * shouldRenderCodeReferenceLabel 的调用点与 DESIGN.md §14.5。
    */
   fromBarePath?: boolean;
+  /** Plain question text preserves its layout when a file becomes clickable. */
+  showFileIcon?: boolean;
   /** 远程会话媒体来源:把 xdt-audio:// 等链接改写到 cindy-remote-media://;本地 undefined。 */
   remoteMediaOrigin?: RemoteMediaOrigin;
   /** 当前会话 id;就位时外链 / html 文件左键弹"打开方式"菜单。 */
@@ -1538,6 +1579,7 @@ function MarkdownTargetLink({
           onOpen={openResolvedTarget}
           anchorProps={anchorProps}
           sessionId={sessionId}
+          showFileIcon={showFileIcon}
         >
           {children}
         </ResolvedLocalLink>

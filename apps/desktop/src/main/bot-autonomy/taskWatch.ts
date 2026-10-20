@@ -119,9 +119,26 @@ export interface TaskWatchDeps {
   onChange(): void;
 }
 
+/** 输入协调器投影里跟进需要的字段(其余字段不读)。 */
+export interface BotAutonomyInputProjection {
+  sessionId: string;
+  error?: string | null;
+  errorReason?: string | null;
+  toolLoop?: unknown;
+  usageLimitWait?: unknown;
+}
+
+/** 工具循环的投影带 toolLoop 详情；旧被控端可能只给 toolLoop、不给 errorReason。 */
+function inputProjectionErrorReason(projection: BotAutonomyInputProjection): string | null {
+  if (typeof projection.errorReason === 'string' && projection.errorReason) return projection.errorReason;
+  return projection.toolLoop ? 'tool_use_loop_detected' : null;
+}
+
 interface LocalFacts {
   activity: SessionActivitySnapshot | null;
   inputError: string | null;
+  /** 出错横幅背后的稳定原因(输入协调器投影的 errorReason / 工具循环),没有就是 null。 */
+  inputErrorReason: string | null;
   usageLimitWait: boolean;
 }
 
@@ -241,15 +258,20 @@ export class TaskWatch {
     this.queue(sessionId);
   }
 
-  applyInputProjection(projection: { sessionId: string; error?: string | null; usageLimitWait?: unknown }): void {
+  applyInputProjection(projection: BotAutonomyInputProjection): void {
     if (this.stopped || typeof projection?.sessionId !== 'string') return;
     const facts = this.factsFor(projection.sessionId);
     const inputError = typeof projection.error === 'string' && projection.error ? projection.error : null;
+    const inputErrorReason = inputError ? inputProjectionErrorReason(projection) : null;
     const usageLimitWait = !!projection.usageLimitWait;
-    if (facts.inputError === inputError && facts.usageLimitWait === usageLimitWait) return;
+    if (
+      facts.inputError === inputError
+      && facts.inputErrorReason === inputErrorReason
+      && facts.usageLimitWait === usageLimitWait
+    ) return;
     // 没有任何活动、也没有出错 / 等待的会话不进表（投影会为每个会话广播）。
     if (!this.local.has(projection.sessionId) && !inputError && !usageLimitWait) return;
-    this.local.set(projection.sessionId, { ...facts, inputError, usageLimitWait });
+    this.local.set(projection.sessionId, { ...facts, inputError, inputErrorReason, usageLimitWait });
     this.queue(projection.sessionId);
   }
 
@@ -265,7 +287,7 @@ export class TaskWatch {
   }
 
   private factsFor(sessionId: string): LocalFacts {
-    return this.local.get(sessionId) ?? { activity: null, inputError: null, usageLimitWait: false };
+    return this.local.get(sessionId) ?? { activity: null, inputError: null, inputErrorReason: null, usageLimitWait: false };
   }
 
   private queue(sessionId: string): void {
@@ -408,6 +430,7 @@ export class TaskWatch {
       pendingInteractionId,
       toolInFlight: phase === 'running' && this.deps.isToolCallInFlight(sessionId),
       error: phase === 'errored' && facts.inputError ? truncateSummary(facts.inputError) : null,
+      errorReason: phase === 'errored' ? facts.inputErrorReason : null,
       creatorBotId,
       canonicalOfBotId,
       followerBotId: null,
@@ -830,6 +853,7 @@ function sameRow(a: WatchedSession | null, b: WatchedSession): boolean {
     && (a.pendingRequestId ?? null) === (b.pendingRequestId ?? null)
     && (a.pendingInteractionId ?? null) === (b.pendingInteractionId ?? null)
     && a.error === b.error
+    && (a.errorReason ?? null) === (b.errorReason ?? null)
     && a.followerBotId === b.followerBotId
     && a.online === b.online;
 }

@@ -553,8 +553,11 @@ describe('provider management receiver account boundary', () => {
     expect(reply.result).toEqual({ providerId: 'anthropic', config, members: [] });
   });
 
-  it('accepts reshare decisions as owner operations and keeps forwarding operations outside the management scope', async () => {
-    const command = { action: 'reshare-decide', id: 'rs-pending', decision: 'approve' } as const;
+  // 同账号管理：新增备注与转分享决定共用主人操作入口，受邀者读取仍不在此范围。
+  it.each([
+    { action: 'reshare-decide', id: 'rs-pending', decision: 'approve' },
+    { action: 'set-member-note', memberId: 'm1', note: 'Alice' },
+  ] as const)('accepts $action as an owner operation and keeps forwarding operations outside the management scope', async (command) => {
     vi.mocked(parseProviderShareCommand).mockReturnValue(command);
     expect(parseProviderManagementRequest({ action: 'manage-share', command })).toEqual({ action: 'manage-share', command });
     vi.mocked(executeProviderShareManagementCommand).mockResolvedValueOnce({ ok: true });
@@ -563,6 +566,16 @@ describe('provider management receiver account boundary', () => {
     vi.mocked(parseProviderShareCommand).mockReturnValueOnce({ action: 'received' });
     expect(() => parseProviderManagementRequest({ action: 'manage-share', command: { action: 'received' } }))
       .toThrow(/PERMISSION_DENIED/);
+  });
+
+  // 本机作为使用方的闲置释放设置只在本机窗口可改，不经同账号管理通道。
+  it.each([
+    { action: 'get-idle-release' },
+    { action: 'set-idle-release', value: { idleMinutes: 5 } },
+    { action: 'reset-idle-release' },
+  ] as const)('keeps $action out of the management scope', (command) => {
+    vi.mocked(parseProviderShareCommand).mockReturnValueOnce(command);
+    expect(() => parseProviderManagementRequest({ action: 'manage-share', command })).toThrow(/PERMISSION_DENIED/);
   });
 
   // 「用量」块的按天明细(provider-groups.md §7)：只读的分享者查询，和 own-usage 一样经管理通道转交。

@@ -164,7 +164,6 @@ const desktopGuardInclude = [
   'src/main/__tests__/authLegacyTokenMirror.test.ts',
   'src/main/__tests__/authPassiveSharedInstance.test.ts',
   'src/main/__tests__/authSessionExpiredDetection.test.ts',
-  'src/main/ghost-panel-window/__tests__/preload-contract.test.ts',
   'src/main/right-sidebar-window/__tests__/preload-contract.test.ts',
   'src/main/maker-ipc/__tests__/piPackageEnableConfirmationIpc.test.ts',
   'src/main/plugin-market/__tests__/ipcErrorBoundary.test.ts',

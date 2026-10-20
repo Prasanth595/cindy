@@ -1,4 +1,5 @@
 {
+  "mailReader": {"markReadFailed":"既読状態を同期できませんでした。メールボックスの認証を確認して開き直してください。","title":"メール","openMailbox":"メールボックスで開く","loading":"メールを読み込み中…","failed":"メールを読み込めませんでした。接続したアカウントを確認して再試行するか、メールボックスで開いてください。","retry":"再試行","to":"宛先","cc":"Cc","bcc":"Bcc","subject":"件名"},
   "title": "プラグイン",
   "all": "すべて",
   "unread": "未読",
@@ -33,6 +34,9 @@
   "chooseTask": "既存のタスク",
   "taskHint": "タスクで要望を伝えると、Cindy が適切なプラグインを使用します。既存のタスクのモデルと権限は保持されます。",
   "noMobilePage": "モバイルページはまだありません。ツールはタスクで使用できます。",
+  "expandFields": "展開",
+  "collapseFields": "折りたたむ",
+  "formSyncFailed": "カードの変更を同期できませんでした。接続を確認して編集を続けてください。メッセージは未送信です。",
   "pageUnconfirmed": "接続またはページの状態を確認できません。送信した操作は自動再送されません。元のタスクや保存内容を確認してください。",
   "reopen": "ページを開き直す",
   "loadingPage": "プラグインを開いています…",
@@ -124,5 +128,15 @@
   },
   "demo": {
     "hint": "デモデータ · 実際の設定は変更されません"
-  }
+  },
+  "mailPreview": "メールプレビュー",
+  "mailEnlarge": "拡大表示",
+  "mailInsertImage": "本文に挿入",
+  "mailAttach": "添付ファイルを追加",
+  "mailUpdated": "更新済みの下書き（読み取り専用）",
+  "mailLegacy": "下書きの履歴（読み取り専用）",
+  "mailAttaching": "添付ファイルを追加中…",
+  "mailAttachFailed": "添付ファイルを追加できませんでした。接続を確認して再試行してください。",
+  "mailAttachTooLarge": "添付ファイルは1件につき16 MB以下にしてください。",
+  "mailRemoveAttachment": "{{name}} を削除"
 }

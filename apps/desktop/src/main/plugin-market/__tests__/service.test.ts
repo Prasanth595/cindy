@@ -15,7 +15,9 @@ import {
   type InstalledGhost,
 } from '../../../shared/ghost.js';
 const runtime = vi.hoisted(() => ({
-  confirmLegacyLibraryReattach: vi.fn(async (_plugin: unknown) => false),
+  listScans: 0,
+  onList: undefined as (() => void) | undefined,
+  confirmLegacyLibraryReattach: vi.fn<(plugin: unknown) => Promise<boolean>>(async () => false),
   ghosts: [] as Array<{
     manifest: Record<string, unknown>;
     dir: string;
@@ -109,8 +111,10 @@ vi.mock('../../cindy-brain/index.js', () => ({
   getGhostManager: () => ({
     resumePendingResidentsOffline: runtime.resumeOfflineResidents,
     reconcilePendingRootNamespaces: runtime.reconcilePendingRootNamespaces,
-    list: () =>
-      runtime.ghosts.map((ghost) => {
+    list: () => {
+      runtime.listScans++;
+      runtime.onList?.();
+      return runtime.ghosts.map((ghost) => {
         // Historical service tests used a production-looking placeholder path.
         // Materialize only that fixture shape so raw-byte identity is exercised;
         // explicit missing/unreadable temp-path cases remain untouched.
@@ -139,7 +143,8 @@ vi.mock('../../cindy-brain/index.js', () => ({
             reviewed: false,
           },
         };
-      }),
+      });
+    },
     approvedInstallEvidence: runtime.approvedInstallEvidence,
     inspect: runtime.inspect,
     readApprovedInstallOriginStrict: (ghostId: string) => {
@@ -209,11 +214,12 @@ vi.mock('../download.js', () => ({
   downloadVerifiedPlugin: vi.fn(async () => undefined),
 }));
 
-import type {
-  PluginDownloadResponse,
-  PluginRemovalNotice,
-  VisiblePluginDetail,
-  VisiblePluginSummary,
+import {
+  parseGetPluginResponse,
+  type PluginDownloadResponse,
+  type PluginRemovalNotice,
+  type VisiblePluginDetail,
+  type VisiblePluginSummary,
 } from '@cindy/plugin-protocol';
 
 import { withGhostInstallLock } from '../../cindy-brain/ghostInstallLock';
@@ -252,6 +258,8 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 }
 
 afterEach(() => {
+  runtime.listScans = 0;
+  runtime.onList = undefined;
   runtime.ghosts = [];
   runtime.confirmLegacyLibraryReattach.mockReset();
   runtime.confirmLegacyLibraryReattach.mockImplementation(async () => false);
@@ -399,6 +407,17 @@ function detail(
       manifest: manifest(item.ghostId, item.currentRelease.version, slots),
     },
   };
+}
+
+/** Exercise the wire parser so service fixtures contain the API's normalized setup. */
+function parsedDetail(item: VisiblePluginSummary, rawManifest: unknown): VisiblePluginDetail {
+  return parseGetPluginResponse({
+    schemaVersion: 2,
+    plugin: {
+      ...item,
+      currentRelease: { ...item.currentRelease, manifest: rawManifest },
+    },
+  }).plugin;
 }
 
 function reviewedInstallOptions(item: VisiblePluginSummary, allowSourceReplacement = false) {
@@ -985,6 +1004,47 @@ describe('PluginMarketService migration and defaultInstall', () => {
     expect(h.ledger.installationForGhost(item.ghostId)?.rawManifestSha256).toBeUndefined();
   });
 
+  // Regression: ineligible legacy records caused one full scan per record on
+  // every market refresh. Unit budget uses scan count, not machine-dependent time.
+  it('uses a constant number of scans for unchanged records that cannot be backfilled', async () => {
+    const first = summary();
+    const items = [first];
+    const h = harness(items);
+    runtime.ghosts = [ghostEntry(first.ghostId)];
+    h.ledger.upsertInstallation(recordForTest(first));
+    const one = await h.service.snapshot();
+    expect(one.items[0]?.installState).toBe('installed');
+    const singleScans = runtime.listScans;
+    runtime.listScans = 0;
+    const second = summary({ id: `c${'b'.repeat(24)}`, ghostId: 'cindy-other' });
+    items.push(second);
+    runtime.ghosts.push(ghostEntry(second.ghostId));
+    h.ledger.upsertInstallation(recordForTest(second));
+    const two = await h.service.snapshot();
+    expect(two.items.map(item => item.installState)).toEqual(['installed', 'installed']);
+    expect(h.ledger.installationForGhost(second.ghostId)?.rawManifestSha256).toBeUndefined();
+    expect(runtime.listScans).toBe(singleScans);
+  });
+
+  // A microtask-only refresh starved main's native message pump. This unit
+  // checks an event-loop turn between scans without timing assertions or sleep.
+  it('lets a queued event run between market reconciliation scans', async () => {
+    const h = harness([]);
+    let eventRan = false;
+    let eventBeforeNextScan = false;
+    let queued: ReturnType<typeof setImmediate> | undefined;
+    runtime.onList = () => {
+      if (runtime.listScans === 1) queued = setImmediate(() => { eventRan = true; });
+      if (runtime.listScans === 2) eventBeforeNextScan = eventRan;
+    };
+    try {
+      expect((await h.service.snapshot()).items).toEqual([]);
+      expect(eventBeforeNextScan).toBe(true);
+    } finally {
+      if (queued) clearImmediate(queued);
+    }
+  });
+
   it('backfills a pre-digest server record only from matching modern receipt evidence', async () => {
     const rawManifest = manifest();
     const bytes = Buffer.from(`${JSON.stringify(rawManifest, null, 2)}\n`);
@@ -1374,6 +1434,44 @@ describe('PluginMarketService migration and defaultInstall', () => {
     await expect(
       h.service.install(publicPlugin.id, reviewedInstallOptions(publicPlugin), TEST_INSTALL_CONTEXT),
     ).rejects.toThrow('[PRECONDITION_FAILED]');
+    expect(runtime.install).not.toHaveBeenCalled();
+  });
+
+  it.each(['cloud', 'local', 'signed-out'] as const)(
+    'shows detail with API-normalized setup in %s mode',
+    async (mode) => {
+      runtime.session = {
+        mode,
+        dataOwnerId: mode === 'signed-out' ? null : mode === 'local' ? 'local-v1' : 'user-1',
+        generation: 2,
+      };
+      const item = summary();
+      const h = harness([item]);
+      h.api.detail.mockResolvedValueOnce(parsedDetail(item, setupSecretManifest()));
+
+      await expect(h.service.detail(item.id)).resolves.toMatchObject({
+        pluginId: item.id,
+        manifest: {
+          setup: { requires: [{ anyOf: [{ kind: 'secret', key: 'api_key' }] }] },
+        },
+      });
+    },
+  );
+
+  it('rejects invalid normalized setup references before downloading or installing', async () => {
+    const item = summary();
+    const h = harness([item]);
+    const invalid = parsedDetail(item, setupSecretManifest());
+    invalid.currentRelease.manifest.setup = {
+      requires: [{ anyOf: [{ kind: 'secret', key: 'undeclared_key' }] }],
+    };
+    h.api.detail.mockResolvedValue(invalid);
+
+    await expect(h.service.detail(item.id)).rejects.toThrow('[GHOST_FILE_INVALID]');
+    await expect(
+      h.service.install(item.id, reviewedInstallOptions(item), TEST_INSTALL_CONTEXT),
+    ).rejects.toThrow('[GHOST_FILE_INVALID]');
+    expect(h.api.download).not.toHaveBeenCalled();
     expect(runtime.install).not.toHaveBeenCalled();
   });
 
@@ -1989,10 +2087,7 @@ describe('PluginMarketService migration and defaultInstall', () => {
     const approvedManifest = normalizedManifest(rawManifest);
     const h = harness([item]);
     runtime.inspectedManifest = approvedManifest;
-    h.api.detail.mockResolvedValueOnce({
-      ...item,
-      currentRelease: { ...item.currentRelease, manifest: rawManifest },
-    } as unknown as VisiblePluginDetail);
+    h.api.detail.mockResolvedValueOnce(parsedDetail(item, rawManifest));
     runtime.install.mockImplementation(async () => {
       const ghost = {
         manifest: { ...approvedManifest },
@@ -2336,10 +2431,7 @@ describe('PluginMarketService migration and defaultInstall', () => {
     const rawManifest = setupSecretManifest();
     const reviewedManifest = normalizedManifest(rawManifest);
     const h = harness([item]);
-    h.api.detail.mockResolvedValueOnce({
-      ...item,
-      currentRelease: { ...item.currentRelease, manifest: rawManifest },
-    } as unknown as VisiblePluginDetail);
+    h.api.detail.mockResolvedValueOnce(parsedDetail(item, rawManifest));
     runtime.inspectedManifest = reviewedManifest;
     runtime.install.mockResolvedValue({
       manifest: reviewedManifest,
@@ -3155,47 +3247,54 @@ describe('PluginMarketService migration and defaultInstall', () => {
     expect(snapshot.items[0]).toMatchObject({ installState: 'installed', enabled: false });
   });
 
-  it('silently upgrades a default package whose detail manifest contains normalized setup', async () => {
-    const item = summary({
-      scope: 'organization',
-      organizationId: 'org-1',
-      defaultInstall: true,
-      currentRelease: {
-        ...summary().currentRelease,
-        id: 'release-2',
-        version: '2.0.0',
-      },
-    });
-    const oldManifest = manifest(item.ghostId, '1.0.0');
-    const rawManifest = setupSecretManifest(item.ghostId, '2.0.0');
-    const upgradedManifest = normalizedManifest(rawManifest);
-    const installDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cindy-market-setup-upgrade-'));
-    roots.push(installDir);
-    fs.writeFileSync(path.join(installDir, 'ghost.json'), JSON.stringify(oldManifest));
-    runtime.ghosts = [{ manifest: oldManifest, dir: installDir, enabled: true }];
-    const h = harness([item]);
-    h.ledger.upsertInstallation({
-      ...recordForTest(item),
-      releaseId: 'release-1',
-      version: '1.0.0',
-      manifestDigest: ghostManifestDigest(oldManifest),
-    });
-    h.api.detail.mockResolvedValueOnce({
-      ...item,
-      currentRelease: { ...item.currentRelease, manifest: rawManifest },
-    } as unknown as VisiblePluginDetail);
-    runtime.inspectedManifest = upgradedManifest;
-    runtime.install.mockImplementationOnce(async () => {
-      const ghost = { manifest: { ...upgradedManifest }, dir: installDir, enabled: true };
-      runtime.ghosts = [ghost];
-      return ghost;
-    });
+  it.each([false, true])(
+    'silently upgrades v2 setup through the API parser (defaultInstall=%s)',
+    async (defaultInstall) => {
+      const item = summary({
+        scope: defaultInstall ? 'organization' : 'public',
+        organizationId: defaultInstall ? 'org-1' : null,
+        defaultInstall,
+        currentRelease: {
+          ...summary().currentRelease,
+          id: 'release-2',
+          version: '2.0.0',
+        },
+      });
+      const oldManifest = normalizedManifest({
+        ...setupSecretManifest(item.ghostId, '1.0.0'),
+        schemaVersion: 2,
+        slots: ['notify', 'network'],
+      });
+      const rawManifest = setupSecretManifest(item.ghostId, '2.0.0');
+      const upgradedManifest = normalizedManifest(rawManifest);
+      const installDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cindy-market-setup-upgrade-'));
+      roots.push(installDir);
+      fs.writeFileSync(
+        path.join(installDir, 'ghost.json'),
+        JSON.stringify(ghostManifestToAuthorFormat(oldManifest)),
+      );
+      runtime.ghosts = [{ manifest: oldManifest, dir: installDir, enabled: true }];
+      const h = harness([item]);
+      h.ledger.upsertInstallation({
+        ...recordForTest(item),
+        releaseId: 'release-1',
+        version: '1.0.0',
+        manifestDigest: ghostManifestDigest(oldManifest),
+      });
+      h.api.detail.mockResolvedValueOnce(parsedDetail(item, rawManifest));
+      runtime.inspectedManifest = upgradedManifest;
+      runtime.install.mockImplementationOnce(async () => {
+        const ghost = { manifest: { ...upgradedManifest }, dir: installDir, enabled: true };
+        runtime.ghosts = [ghost];
+        return ghost;
+      });
 
-    await expect(h.service.snapshot()).resolves.toMatchObject({
-      items: [{ installState: 'installed', version: '2.0.0' }],
-    });
-    expect(runtime.install.mock.calls[0]?.[1]).not.toHaveProperty('manifestCap');
-  });
+      await expect(h.service.snapshot()).resolves.toMatchObject({
+        items: [{ installState: 'installed', version: '2.0.0' }],
+      });
+      expect(runtime.install.mock.calls[0]?.[1]).not.toHaveProperty('manifestCap');
+    },
+  );
 
   it('integration: snapshot upgrades an organization defaultInstall release', async () => {
     const item = summary({
@@ -4920,6 +5019,36 @@ function installRuntimeGhost(
 }
 
 describe('organization default Plugin takeover', () => {
+  // Regression: an unresolved namespace repeatedly failed default installation
+  // and restarted the full startup sync every minute. Existing migration tests
+  // cover successful stamps, not this persistent wait (unit).
+  it('waits for namespace migration without downloading or reporting a startup failure', async () => {
+    setCurrentOrganization();
+    const item = organizationDefaultSummary({ namespace: 'acme' });
+    const dir = installRuntimeGhost(manifest(item.ghostId));
+    runtime.ghosts[0]!.namespaceState = 'pending';
+    const h = harness([item]);
+    const onDefaultReconciliationOutcome = vi.fn();
+    runtime.install.mockRejectedValue(new Error('[PRECONDITION_FAILED] namespace migration is pending'));
+    for (let i = 0; i < 2; i++) {
+      await h.service.snapshot({ onDefaultReconciliationOutcome });
+    }
+    expect(onDefaultReconciliationOutcome.mock.calls).toEqual([['completed'], ['completed']]);
+    expect(h.api.download).not.toHaveBeenCalled();
+    expect(h.api.detail).not.toHaveBeenCalled();
+    expect(runtime.ghosts[0]?.enabled).toBe(true);
+
+    // No persistent suppression: a later successful migration is visible.
+    delete runtime.ghosts[0]!.namespaceState;
+    runtime.ghosts[0]!.namespace = 'acme';
+    h.ledger.upsertInstallation(recordForTest(item, {
+      namespace: 'acme',
+      rawManifestSha256: crypto.createHash('sha256').update(fs.readFileSync(path.join(dir, 'ghost.json'))).digest('hex'),
+    }));
+    expect((await h.service.snapshot()).items[0]?.installState).toBe('installed');
+    expect(runtime.reconcilePendingRootNamespaces).toHaveBeenCalledTimes(3);
+  });
+
   it.each([
     ['S1 verified namespace without token slug', 'acme', 'acme', undefined, 'old-prefix', 'helper', true],
     ['S2-off pending legacy prefix', undefined, undefined, undefined, 'acme', 'acme-tool', true],
@@ -5932,6 +6061,27 @@ describe('Agent catalog discovery and install boundary', () => {
       if (!current) throw new Error('authority expired');
     } })).rejects.toThrow('authority expired');
     expect(h.api.download).toHaveBeenCalledOnce();
+    expect(place).not.toHaveBeenCalled();
+    expect(h.ledger.installationForGhost(item.ghostId)).toBeNull();
+  });
+  it('keeps caller authority available after the early market commit check', async () => {
+    const item = summary();
+    const h = harness([item]);
+    let current = true;
+    const place = vi.fn();
+    runtime.install.mockImplementation(async (_file, options) => {
+      options.beforeCommitInLock?.();
+      await Promise.resolve();
+      current = false;
+      options.assertCurrent?.();
+      place();
+      throw new Error('unreachable');
+    });
+    await expect(h.service.install(item.id, reviewedInstallOptions(item), {
+      ...TEST_INSTALL_CONTEXT,
+      assertCurrent: vi.fn(),
+      assertScope: () => { if (!current) throw new Error('authority expired'); },
+    })).rejects.toThrow('authority expired');
     expect(place).not.toHaveBeenCalled();
     expect(h.ledger.installationForGhost(item.ghostId)).toBeNull();
   });

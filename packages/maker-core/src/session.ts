@@ -86,7 +86,7 @@ export interface PermissionModeState {
 
 export type SessionEventListener = (event: AgentEvent) => void;
 export type SessionStatusListener = (status: SessionStatus) => void;
-export type InteractionRequestListener = (req: InteractionRequest) => Promise<InteractionDecision>;
+export type InteractionRequestListener = (req: InteractionRequest, signal?: AbortSignal) => Promise<InteractionDecision>;
 
 /**
  * turn 零事件看门狗阈值(ms)。turn 在跑、却连续这么久**没有产品进展**,视为整条
@@ -517,6 +517,8 @@ export class Session {
     sdkError?: string;
     errorStatus?: number;
     toolLoop?: import('./types/events.js').ToolLoopErrorDetails;
+    /** Codex app-server 的结构化错误 tag(如 badRequest / cyberPolicy)。 */
+    codexErrorInfo?: string;
   } | null = null;
   /** Survives N+1 reservation clearing the current snapshot; leftover done must not adopt. */
   private lastObservedTerminalGeneration: number | null = null;
@@ -635,7 +637,7 @@ export class Session {
 
     // 注入 InteractionResolver 到底层 handle, 转发到 host 维护的 listener。
     // 没接 listener 时按 kind 给出安全默认: 都视作 deny(host 必须接 listener 才能交互)。
-    this.handle.setInteractionResolver((req) => this.runHostInteraction(req, async () => {
+    this.handle.setInteractionResolver((req, signal) => this.runHostInteraction(req, async () => {
       if (!this.interactionListener) {
         this.logger.warn('interaction request received but no listener attached, denying', { kind: req.kind, requestId: req.requestId });
         if (req.kind === 'ask_user_question') {
@@ -646,7 +648,7 @@ export class Session {
         }
         return { kind: req.kind, behavior: 'deny', reason: 'no_listener_attached' } as InteractionDecision;
       }
-      return await this.interactionListener(req);
+      return await (signal ? this.interactionListener(req, signal) : this.interactionListener(req));
     }));
   }
 
@@ -671,6 +673,7 @@ export class Session {
     sdkError?: string;
     errorStatus?: number;
     toolLoop?: import('./types/events.js').ToolLoopErrorDetails;
+    codexErrorInfo?: string;
   } {
     if (
       this.turnGeneration <= 0 ||
@@ -698,6 +701,9 @@ export class Session {
         ...(this.terminalEventObservedErrorSignals?.toolLoop
           ? { toolLoop: this.terminalEventObservedErrorSignals.toolLoop }
           : {}),
+        ...(this.terminalEventObservedErrorSignals?.codexErrorInfo
+          ? { codexErrorInfo: this.terminalEventObservedErrorSignals.codexErrorInfo }
+          : {}),
       };
     }
     return { kind: 'done', generation: this.turnGeneration };
@@ -710,6 +716,7 @@ export class Session {
       sdkError?: string;
       errorStatus?: number;
       toolLoop?: import('./types/events.js').ToolLoopErrorDetails;
+      codexErrorInfo?: string;
     } | null;
   } {
     const errorData = (listenerEvent.data ?? null) as {
@@ -718,6 +725,7 @@ export class Session {
       sdkError?: unknown;
       errorStatus?: unknown;
       toolLoop?: unknown;
+      codexErrorInfo?: unknown;
     } | null;
     const errorMessage = errorData?.message;
     const signals: {
@@ -725,6 +733,7 @@ export class Session {
       sdkError?: string;
       errorStatus?: number;
       toolLoop?: import('./types/events.js').ToolLoopErrorDetails;
+      codexErrorInfo?: string;
     } = {};
     if (typeof errorData?.reason === 'string' && errorData.reason.length > 0) {
       signals.reason = errorData.reason;
@@ -737,13 +746,18 @@ export class Session {
     }
     const toolLoop = parseToolLoopErrorDetails(errorData?.toolLoop);
     if (toolLoop) signals.toolLoop = toolLoop;
+    // Codex 的结构化 tag 是有界枚举名(translator 只取 tag,不带原文),不需要脱敏。
+    if (typeof errorData?.codexErrorInfo === 'string' && /^[A-Za-z][A-Za-z0-9_]{0,63}$/u.test(errorData.codexErrorInfo)) {
+      signals.codexErrorInfo = errorData.codexErrorInfo;
+    }
     return {
       message: typeof errorMessage === 'string' && errorMessage.length > 0 ? errorMessage : null,
       signals:
         signals.reason ||
         signals.sdkError ||
         signals.errorStatus !== undefined ||
-        signals.toolLoop
+        signals.toolLoop ||
+        signals.codexErrorInfo
           ? signals
           : null,
     };

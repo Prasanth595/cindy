@@ -126,6 +126,7 @@ describe('newSessionPreferenceStore', () => {
       workspaceKind: null,
       permissionModeByAgent: {},
       workingDirByDevice: {},
+      remoteAgentByDevice: {},
     });
     expect(JSON.parse(store.get(__testing.storageKey) ?? '{}')).toEqual({
       agentKind: 'codex',
@@ -153,6 +154,7 @@ describe('newSessionPreferenceStore', () => {
       workspaceKind: null,
       permissionModeByAgent: {},
       workingDirByDevice: {},
+      remoteAgentByDevice: {},
     });
 
     store.set(__testing.storageKey, '{broken');
@@ -162,6 +164,7 @@ describe('newSessionPreferenceStore', () => {
       workspaceKind: null,
       permissionModeByAgent: {},
       workingDirByDevice: {},
+      remoteAgentByDevice: {},
     });
 
     await saveNewSessionPreferences({
@@ -173,6 +176,7 @@ describe('newSessionPreferenceStore', () => {
       workspaceKind: null,
       permissionModeByAgent: {},
       workingDirByDevice: {},
+      remoteAgentByDevice: {},
     });
   });
 
@@ -200,6 +204,7 @@ describe('newSessionPreferenceStore', () => {
       workspaceKind: null,
       permissionModeByAgent: { 'claude-code': 'bypassPermissions', codex: 'ask' },
       workingDirByDevice: {},
+      remoteAgentByDevice: {},
     });
 
     // 落盘的 plan / 非法 agent 键在读取时被清洗。
@@ -212,6 +217,7 @@ describe('newSessionPreferenceStore', () => {
       workspaceKind: null,
       permissionModeByAgent: { codex: 'auto' },
       workingDirByDevice: {},
+      remoteAgentByDevice: {},
     });
   });
 
@@ -237,6 +243,7 @@ describe('newSessionPreferenceStore', () => {
       workspaceKind: 'dialogue',
       permissionModeByAgent: {},
       workingDirByDevice: { devA: '/repo/fourth', devB: ' /other/app ' },
+      remoteAgentByDevice: {},
     });
     expect(JSON.parse(store.get(__testing.storageKey) ?? '{}')).toEqual({
       workspaceKind: 'dialogue',
@@ -247,9 +254,29 @@ describe('newSessionPreferenceStore', () => {
     store.set(__testing.workingDirStorageKey(accountVaultKey('global', 'account-a')), JSON.stringify({ devA: '/repo/ok', devB: 42, ' ': '/x', devC: '', devD: ' /keep me ' }));
     await expect(readNewSessionPreferences()).resolves.toMatchObject({
       workingDirByDevice: { devA: '/repo/ok', devD: ' /keep me ' },
+      remoteAgentByDevice: {},
     });
     store.set(__testing.workingDirStorageKey(accountVaultKey('global', 'account-a')), JSON.stringify('bad'));
     await expect(readNewSessionPreferences()).resolves.toMatchObject({ workingDirByDevice: {} });
+  });
+
+  // 回归:新建页选了其他电脑 / 分享来的模型，下次打开就回到被控电脑默认。按(账号, 被控电脑, agent)记,
+  // 选回被控电脑自己的模型即清掉。
+  it('remembers the remote or shared model per controlled device and agent, per account', async () => {
+    const { readNewSessionPreferences, saveNewSessionPreferences } =
+      await import('@/session/newSessionPreferenceStore');
+    const pick = { deviceId: 'share:s1', agentKind: 'codex' as const, model: 'gpt-x', providerId: 'openai', effort: 'high', fastMode: true };
+    await saveNewSessionPreferences({ remoteAgentForDevice: { deviceId: 'mac', agentKind: 'codex', pick } });
+    await saveNewSessionPreferences({ remoteAgentForDevice: { deviceId: 'mac', agentKind: 'pi', pick: { ...pick, agentKind: 'pi', deviceId: 'studio' } } });
+    expect((await readNewSessionPreferences()).remoteAgentByDevice).toEqual({
+      mac: { codex: pick, pi: { ...pick, agentKind: 'pi', deviceId: 'studio' } },
+    });
+    setMobileAuthOwner('account-b');
+    expect((await readNewSessionPreferences()).remoteAgentByDevice).toEqual({});
+    setMobileAuthOwner('account-a');
+    await saveNewSessionPreferences({ remoteAgentForDevice: { deviceId: 'mac', agentKind: 'codex', pick: null } });
+    await saveNewSessionPreferences({ remoteAgentForDevice: { deviceId: 'mac', agentKind: 'pi', pick: null } });
+    expect((await readNewSessionPreferences()).remoteAgentByDevice).toEqual({});
   });
 
   it('remembers either workspace mode across reloads without losing other preferences', async () => {

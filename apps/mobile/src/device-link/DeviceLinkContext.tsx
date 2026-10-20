@@ -1859,7 +1859,7 @@ async function rebuildSessionSnapshot(
   const applyPending = (value: PendingInteraction[]) => {
     if (!isCurrent()) return false;
     if (Array.isArray(value)) {
-      remoteSessionStore.setPendingInteractions(sessionId, value, { finalizeStreaming: true });
+      remoteSessionStore.setPendingInteractions(sessionId, value, { finalizeStreaming: true, deviceId });
       return true;
     }
     return false;

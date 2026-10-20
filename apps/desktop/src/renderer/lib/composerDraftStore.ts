@@ -39,6 +39,7 @@ import {
   COMPOSER_QUOTE_NODE_TYPE,
 } from '@/lib/composerQuoteDocument';
 import type { JSONContent } from '@tiptap/core';
+import { leadingSlashInvocation } from '@cindy/maker-shared';
 import { createLogger } from '@/lib/logger';
 import { cleanupStagedChatAttachmentFiles } from './chatAttachmentStageCleanup';
 import {
@@ -49,6 +50,11 @@ import {
 
 const log = createLogger('ComposerDraftStore');
 
+export interface BuiltInSkillDraftIntent {
+  name: string;
+  commandName: string;
+}
+
 export interface ComposerDraft {
   /** Tiptap JSON document. `null` means "no text draft saved" (treat as empty). */
   text: JSONContent | null;
@@ -56,6 +62,8 @@ export interface ComposerDraft {
   attachments: AttachedFile[];
   /** Plugin-page handoff consumed by ChatInput after its editor hydration. */
   pendingGhostId?: string;
+  /** Routed built-in identity; re-resolve in the final task environment before sending. */
+  builtInSkillIntent?: BuiltInSkillDraftIntent;
   /**
    * One-shot routed-entry intent: hydrate this draft, then place the caret at
    * the final editable position. ChatInput consumes and clears the flag so a
@@ -76,6 +84,7 @@ export interface ComposerDraft {
 }
 
 export interface RemoteOptimisticDraftFragment {
+  builtInSkillIntent?: BuiltInSkillDraftIntent;
   clientId: string;
   text: JSONContent | null;
   attachments: readonly AttachedFile[];
@@ -83,6 +92,7 @@ export interface RemoteOptimisticDraftFragment {
 }
 
 export interface RemoteOptimisticDraftSnapshot {
+  builtInSkillIntent?: BuiltInSkillDraftIntent;
   text: JSONContent | null;
   attachments: readonly AttachedFile[];
   browserComments: readonly BrowserCommentDraftItem[];
@@ -415,7 +425,19 @@ export function saveDraft(
           quotes: [],
         }
       : draft;
-  drafts.set(key, withQuotes);
+  // Typing, attachments and editor remounts save partial snapshots. Retain the
+  // routed identity only while its original leading command is still present;
+  // an explicit replacement draft or an edited command drops that intent.
+  const intent = withQuotes.builtInSkillIntent
+    ?? (opts?.silent ? drafts.get(key)?.builtInSkillIntent : undefined);
+  const firstBlock = withQuotes.text?.content?.[0];
+  const leadingText = firstBlock?.type === 'paragraph'
+    ? (firstBlock.content ?? []).map((node) => node.type === 'text' ? node.text ?? '' : '\uFFFC').join('')
+    : '';
+  const { builtInSkillIntent: _previousIntent, ...withoutIntent } = withQuotes;
+  drafts.set(key, intent && leadingSlashInvocation(leadingText)?.name === intent.commandName
+    ? { ...withoutIntent, builtInSkillIntent: intent }
+    : withoutIntent);
   if (!opts?.silent) {
     const set = listeners.get(key);
     if (set)
@@ -626,6 +648,7 @@ export function restoreRemoteOptimisticDraft(
     ...(effectiveOverride?.browserComments ?? existing?.browserComments ?? []),
   ];
   const baseDraft: ComposerDraft = {
+    builtInSkillIntent: effectiveOverride?.builtInSkillIntent ?? existing?.builtInSkillIntent,
     text: currentText,
     attachments: currentAttachments,
     quotes: [],
@@ -635,6 +658,7 @@ export function restoreRemoteOptimisticDraft(
   };
   const rememberBatchSnapshot = (draft: ComposerDraft): void => {
     batchSnapshots?.set(key, {
+      builtInSkillIntent: draft.builtInSkillIntent,
       text: draft.text,
       attachments: draft.attachments,
       browserComments: draft.browserComments ?? [],
@@ -667,7 +691,10 @@ export function restoreRemoteOptimisticDraft(
   if (!startsWithIds(commentIds, recovery.commentPrefixIds)) recovery.commentPrefixIds = [];
 
   let restoredText = currentText;
+  let restoredIntent = baseDraft.builtInSkillIntent;
   if (tiptapDocHasContent(fragment.text)) {
+    // Identity belongs to the leading restored message, not a later FIFO fragment.
+    if (recovery.textPrefix.length === 0) restoredIntent = fragment.builtInSkillIntent;
     const insertion = insertComposerDocumentForRestore(
       fragment.text!,
       currentText ?? { type: 'doc', content: [] },
@@ -701,11 +728,11 @@ export function restoreRemoteOptimisticDraft(
 
   const restored: ComposerDraft = {
     ...baseDraft,
+    builtInSkillIntent: restoredIntent,
     text: restoredText,
     attachments: restoredAttachments,
     browserComments: restoredComments,
   };
-  rememberBatchSnapshot(restored);
   saveDraft(sessionId, restored, {
     // A live caller applies the returned snapshot itself to preserve its focus
     // and selection. A background recovery must notify any mounted view that
@@ -713,7 +740,9 @@ export function restoreRemoteOptimisticDraft(
     silent: effectiveOverride !== undefined,
     preserveRemoteOptimisticRecovery: true,
   });
-  return restored;
+  const saved = drafts.get(key) ?? restored;
+  rememberBatchSnapshot(saved);
+  return saved;
 }
 
 /**

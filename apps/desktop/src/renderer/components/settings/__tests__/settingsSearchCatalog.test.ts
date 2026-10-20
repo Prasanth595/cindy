@@ -187,6 +187,9 @@ describe('settings search catalog', () => {
       SETTINGS_SEARCH_ENTRIES.flatMap((entry) => [entry.targetId, entry.fallbackTargetId]),
     );
     for (const target of targets) {
+      // The shared WeChat component selects its anchor at runtime. Its catalog target
+      // and companion isolation are checked against real DOM in WechatBotSection.test.tsx.
+      if (target === 'personal-im-wechat') continue;
       if (target) {
         const dynamicProviderAnchor =
           /^cindy-im-(slack|telegram|x)$/.test(target) &&

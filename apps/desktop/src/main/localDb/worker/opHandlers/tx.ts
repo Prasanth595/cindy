@@ -1,5 +1,6 @@
 import { runPluginUsageTransaction } from './pluginUsageTx.js';
 import { runTaskTagsTransaction } from './taskTagsTx.js';
+import { recordMediaSpend } from './mediaSpendTx.js';
 import { batchAutoReviewProjection, readAutoReviewProjectionTransaction } from '../../autoReviewProjection.js';
 import { CLOSE_SHARED_TASKS_FOR_SESSION_SQL } from '../../sharedTaskClosureSql.js';
 import { normalizeBotName } from '../../../../shared/botCreation.js';
@@ -64,6 +65,8 @@ function dispatchTransaction(db: Database.Database, args: unknown): unknown {
   const txArgs = payload.args;
 
   switch (name) {
+    case 'usage.recordMediaSpend':
+      return recordMediaSpend(db, txArgs as import('../../client/tx/types.js').MediaSpendArgs);
     case 'authorization.readProjection':
       return readAutoReviewProjectionTransaction(db, txArgs);
     case 'codex.importMessages':
@@ -1629,6 +1632,15 @@ function messageInsert(db: Database.Database, args: unknown): { changes: number 
       : expectNumber(payload.expectedClearBoundaryMs, 'expectedClearBoundaryMs');
   const transaction = db.transaction(() => {
     let changes = 0;
+    // The preflight read in Main can race with a user send. Keep the opening
+    // admission in this transaction, including a script fallback's next insert.
+    if (payload.requireNoUserMessage === true
+      && (!payload.publication || payload.publication === 'publish')
+      && db.prepare("SELECT 1 FROM messages WHERE session_id = ? AND role = 'user' LIMIT 1").get(sessionId)) {
+      throw Object.assign(new Error('User already spoke before the opening was stored'), {
+        code: 'MESSAGE_USER_ALREADY_SPOKE',
+      });
+    }
     // Connection-local stages never enter history, counts or persistent FTS.
     // SQLite discards them automatically when this worker exits.
     if (payload.publication) {
