@@ -41,6 +41,57 @@ function message(id: string, sessionId: string): RemoteMessage {
   };
 }
 
+// Unit: side-chat details are omitted by the Host list. A list refresh must
+// retain opened details without leaking them into Home, and deletion must still
+// remove them. Existing tests only cover ordinary listed task reconciliation.
+it.each(['deleted', 'archived'] as const)('retains hidden side-chat details across refresh, then reports %s after removal', status => {
+  remoteSessionStore.clear();
+  const parent = session('main');
+  const child = session('side', { source: 'side-chat', parentSessionId: 'main' });
+  remoteSessionStore.setDeviceSessions('dev-1', 'Computer', [parent]);
+  remoteSessionStore.upsertDeviceSession('dev-1', 'Computer', child);
+  // Black-box regression (2026-10-20): removing the row did not close its sheet.
+  // This lifecycle signal must follow removal, and must not fire on reconnect.
+  const removed = vi.fn(() => remoteSessionStore.getSessions().map(row => row.id));
+  const off = remoteSessionStore.onSessionRemoved(removed);
+  try {
+    remoteSessionStore.setDeviceSessions('dev-1', 'Computer', [parent]);
+    remoteSessionStore.markDeviceOffline('dev-1');
+    expect(removed).not.toHaveBeenCalled();
+    expect(remoteSessionStore.getSessions().map(row => row.id)).toContain('side');
+    expect(remoteSessionStore.getVisibleSessions().map(row => row.id)).toEqual(['main']);
+    expect(remoteSessionStore.getHomeSessions().map(row => row.id)).toEqual(['main']);
+    remoteSessionStore.applyRemotePush('dev-1', 'local-db:sessions:patched', {
+      sessionId: 'side', patch: { status },
+    });
+    expect(removed).toHaveBeenCalledExactlyOnceWith('dev-1', 'side');
+    expect(removed.mock.results[0].value).toEqual(['main']);
+    remoteSessionStore.setDeviceSessions('dev-1', 'Computer', [parent]);
+    expect(remoteSessionStore.getSessions().map(row => row.id)).toEqual(['main']);
+  } finally { off(); remoteSessionStore.clear(); }
+});
+
+// Unit, #6529: reopening an archived side chat restores a detail omitted by
+// sessions:list. Active-only refresh coverage missed this archive → reopen path.
+it('keeps reopened archived side-chat details through list refresh until deletion', () => {
+  remoteSessionStore.clear();
+  const parent = session('main');
+  const archived = session('side', { source: 'side-chat', parentSessionId: 'main', status: 'archived' });
+  try {
+    remoteSessionStore.setDeviceSessions('dev-1', 'Computer', [parent]);
+    remoteSessionStore.upsertDeviceSession('dev-1', 'Computer', archived);
+    remoteSessionStore.setDeviceSessions('dev-1', 'Computer', [parent]);
+    expect(remoteSessionStore.getSessions()).toContainEqual(expect.objectContaining({ id: 'side', status: 'archived' }));
+    expect(remoteSessionStore.getVisibleSessions().map(row => row.id)).toEqual(['main']);
+    expect(remoteSessionStore.getHomeSessions().map(row => row.id)).toEqual(['main']);
+    remoteSessionStore.applyRemotePush('dev-1', 'local-db:sessions:patched', {
+      sessionId: 'side', patch: { status: 'deleted' },
+    });
+    remoteSessionStore.setDeviceSessions('dev-1', 'Computer', [parent]);
+    expect(remoteSessionStore.getSessions().map(row => row.id)).toEqual(['main']);
+  } finally { remoteSessionStore.clear(); }
+});
+
 function messageAt(id: string, sessionId: string, createdAt: string): RemoteMessage {
   return { ...message(id, sessionId), createdAt };
 }
@@ -3897,6 +3948,29 @@ describe('remoteSessionStore', () => {
 
     expect(remoteSessionStore.getSessions()[0].pinnedAt).toBeNull();
     expect(reseed).toHaveBeenCalledTimes(1);
+  });
+
+  // Unit regression: unopened side chats are absent from the ordinary mirror.
+  // Existing reseed coverage handled creation only, leaving their count stale.
+  it.each(['deleted', 'archived'] as const)('invalidates device lists on an unseen child becoming %s', status => {
+    for (const withShard of [false, true]) {
+      remoteSessionStore.clear();
+      if (withShard) remoteSessionStore.setDeviceSessions('dev-1', 'Mac', [session('parent')]);
+      const refresh = vi.fn();
+      const otherDevice = vi.fn();
+      const off = remoteSessionStore.registerReseedHandler('dev-1', refresh);
+      const offOther = remoteSessionStore.registerReseedHandler('dev-2', otherDevice);
+      const removed = vi.fn();
+      const offRemoved = remoteSessionStore.onSessionRemoved(removed);
+      remoteSessionStore.applyRemotePush('dev-1', 'local-db:sessions:patched', {
+        sessionId: 'unopened-child', patch: { status },
+      });
+      expect(refresh).toHaveBeenCalledOnce();
+      expect(otherDevice).not.toHaveBeenCalled();
+      expect(removed).toHaveBeenCalledExactlyOnceWith('dev-1', 'unopened-child');
+      expect(remoteSessionStore.getSessions().some(row => row.id === 'unopened-child')).toBe(false);
+      off(); offOther(); offRemoved();
+    }
   });
 
   it('fans reseed out to every subscriber and only unregisters the one that left', () => {

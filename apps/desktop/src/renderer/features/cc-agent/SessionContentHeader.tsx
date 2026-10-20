@@ -23,8 +23,10 @@ import { TaskMigrationStatus } from './TaskMigrationStatus';
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Ellipsis, Pin } from 'lucide-react';
+import { ArrowLeft, Ellipsis, Pin } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { useNavigate } from 'react-router-dom';
+import { Button } from '@/components/ui/button';
 
 import { cn } from '@/lib/utils';
 import { toast } from '@/lib/toast';
@@ -175,6 +177,7 @@ export function SessionContentHeader({
   readOnly = false,
 }: SessionContentHeaderProps) {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const { sessions, patchLocal } = useCCSessions();
   const remoteProjectSessions = useRemoteProjectSessions();
   const routeSessionById = useMemo(
@@ -568,6 +571,16 @@ export function SessionContentHeader({
 
   return (
     <div className="flex min-w-0 items-center gap-0.5 pl-1">
+      {session.source === 'side-chat' && session.parentSessionId && (
+        <Tip text={t('chat.sideChat.returnMain')}>
+          <Button variant="secondary" tone="quiet" size="sm" className="w-7 p-0" style={WINDOW_NO_DRAG_STYLE}
+            aria-label={t('chat.sideChat.returnMain')}
+            onClick={() => void resolveSessionRoute(session.parentSessionId!).then(route => navigate(route))
+              .catch(() => toast.error(t('chat.sideChat.failed')))}>
+            <ArrowLeft size={16} />
+          </Button>
+        </Tip>
+      )}
       {isPinned && (
         <Pin
           size={13}

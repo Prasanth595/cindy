@@ -2596,7 +2596,7 @@ export async function listMessagesForAgentHandoff(
 > {
   const db = getDbClient().drizzle;
   const [sessRow] = await db
-    .select({ clearedAt: sessions.clearedAt })
+    .select({ clearedAt: sessions.clearedAt, source: sessions.source, createdAt: sessions.createdAt })
     .from(sessions)
     .where(eq(sessions.id, sessionId))
     .limit(1);
@@ -2637,6 +2637,8 @@ export async function listMessagesForAgentHandoff(
     .from(messages)
     .where(
       and(eq(messages.sessionId, sessionId), isNull(messages.rewindAt), afterClear, afterWatermark,
+        // A copied parent instruction is context, never authorization for a side task.
+        role === 'authorization' && sessRow?.source === 'side-chat' ? gte(messages.createdAt, sessRow.createdAt) : undefined,
         role === 'authorization' ? and(inArray(messages.role, ['user', 'ask_user', 'plan_review']), notScheduledExecution)
           : role ? eq(messages.role, role) : undefined),
     )

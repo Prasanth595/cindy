@@ -944,31 +944,38 @@ describe('Cindy durable PI Subagent runner', () => {
       const claimPath = path.join(fixture.root, first.runId, 'resume.claim');
       await writeFile(claimPath, '', { mode: 0o600 });
 
-      const attempt = Promise.allSettled([
-        resumePiSubagentRun(
-          fixture.root,
-          first.runId,
-          "continue",
-          resumeLaunch(fixture),
-        ),
-      ]);
-      // The racer completes its write inside the re-read budget. Late enough
-      // that a single-read implementation has certainly already given up on it,
-      // early enough to land before the budget expires.
-      await new Promise((resolve) => setTimeout(resolve, 250));
-      await writeFile(
-        claimPath,
-        // process.ppid is certainly alive and is not us.
-        `${JSON.stringify({ version: 1, hostPid: process.ppid, claimedAt: Date.now() })}\n`,
-        { mode: 0o600 },
-      );
+      // Freeze only the retry timers after the real runner fixture has exited.
+      // A wall-clock delay races slow Windows file I/O against the read budget.
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      try {
+        const attempt = Promise.allSettled([
+          resumePiSubagentRun(
+            fixture.root,
+            first.runId,
+            'continue',
+            resumeLaunch(fixture),
+          ),
+        ]);
+        // Observe the failed first read before publishing the holder. A
+        // single-read implementation never schedules this retry and fails here.
+        await vi.waitFor(() => expect(vi.getTimerCount()).toBeGreaterThan(0), { interval: 10, timeout: 30_000 });
+        await writeFile(
+          claimPath,
+          // process.ppid is certainly alive and is not us.
+          `${JSON.stringify({ version: 1, hostPid: process.ppid, claimedAt: Date.now() })}\n`,
+          { mode: 0o600 },
+        );
+        await vi.runOnlyPendingTimersAsync();
 
-      const [outcome] = await attempt;
-      expect(outcome.status).toBe("rejected");
-      if (outcome.status === "rejected") {
-        expect(() => {
-          throw outcome.reason;
-        }).toThrow(/already resuming this Subagent generation/i);
+        const [outcome] = await attempt;
+        expect(outcome.status).toBe('rejected');
+        if (outcome.status === 'rejected') {
+          expect(() => {
+            throw outcome.reason;
+          }).toThrow(/already resuming this Subagent generation/i);
+        }
+      } finally {
+        vi.useRealTimers();
       }
       // The decisive part: no second generation was launched over that session.
       const runs = await listPiSubagentRuns(fixture.root);

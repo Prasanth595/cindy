@@ -1,4 +1,5 @@
 import { scrollRangeIntoView } from '@/lib/scrollRangeIntoView';
+import { historyAfter } from './historyAfter';
 import { readMailCard } from '@cindy/maker-shared/ghost-card-form';
 import { animateFocusScroll } from './animateFocusScroll';
 import { simplifyBotRenderItems } from '@/features/bots/botConversationPresentation';
@@ -438,6 +439,8 @@ import type { TurnUsageDetails } from '../../../shared/turnUsageDetails';
 import { hasReviewableTurnChanges, type TurnChangeSetSummary } from '../../../shared/turnChangeSet';
 
 interface MessageStreamProps {
+  historyVisibleAfter?: number;
+  onAskInSideChat?: (quote: string) => Promise<boolean>;
   /** Active session id — used to reset scroll state on session switch. */
   sessionId?: string;
   /** Active session title, forwarded to handoff cards for return navigation. */
@@ -2931,6 +2934,8 @@ export const WorkGroupRenderItemView = memo(function WorkGroupRenderItemView({
 });
 
 export function MessageStream({
+  onAskInSideChat,
+  historyVisibleAfter,
   sessionId,
   sessionTitle,
   agentKind,
@@ -2954,7 +2959,7 @@ export function MessageStream({
   continuationInFlightProjectionCapability = 'unknown',
   onLoadMore,
   isLoadingMore,
-  hasMoreMessages,
+  hasMoreMessages: fullHasMoreMessages,
   historyWindowHasIsland = false,
   bottomPadding,
   bottomCenterClearanceOffset,
@@ -2970,11 +2975,14 @@ export function MessageStream({
 }: MessageStreamProps) {
   const { i18n, t } = useTranslation();
   const historyView = sessionId ? getRemoteHistoryView(sessionId) : undefined;
-  const historySnapshot = useSyncExternalStore(
+  const fullHistorySnapshot = useSyncExternalStore(
     historyView?.subscribe ?? (() => () => undefined),
     historyView?.getSnapshot ?? (() => null),
     historyView?.getSnapshot ?? (() => null),
   );
+  const historySnapshot = useMemo(() => historyAfter(fullHistorySnapshot, historyVisibleAfter), [fullHistorySnapshot, historyVisibleAfter]);
+  const hasMoreMessages = historyVisibleAfter !== undefined && historySnapshot
+    ? historySnapshot.hasMore : fullHasMoreMessages;
   const displayMessages = useMemo(() => {
     if (!historySnapshot) return messages;
     const historyIds = new Set(
@@ -6372,7 +6380,7 @@ export function MessageStream({
             {/* chat-text-quote:选中消息文字 → 浮出"添加到对话"按钮(portal 到 body)。
           绑定本流的滚动容器:协同模式多流并存时,选区归属按各自容器判定。 */}
             {sessionId ? (
-              <SelectionQuoteButton sessionId={sessionId} containerRef={scrollRef} />
+              <SelectionQuoteButton sessionId={sessionId} containerRef={scrollRef} onAskInSideChat={onAskInSideChat} />
             ) : null}
             {/*
         原生滚动容器:overflow-y-auto + overflow-x-hidden。

@@ -1,4 +1,27 @@
 {
+  "sideChat": {
+    "collapse": "收起追問",
+    "resume": "繼續追問",
+    "list": "追問列表",
+    "summary": "側邊追問 · {{count}} 個",
+    "fromMain": "來自「{{title}}」",
+    "mainTask": "主任務",
+    "commandDescription": "開啟側邊追問，可在 /side 後寫問題",
+    "commandAttachments": "請先處理目前附件，再用 /side 發起追問。",
+    "unavailable": "目前任務暫不支援側邊追問。",
+    "title": "側邊追問",
+    "ask": "在追問中詢問",
+    "create": "新增追問",
+    "returnMain": "返回主任務",
+    "item": "追問 {{index}}",
+    "current": "目前",
+    "description": "繼承主任務已有脈絡，獨立追問。回覆不會自動寫回主任務。",
+    "empty": "還沒有追問",
+    "loadFailed": "未能讀取追問。請檢查電腦連線；舊版電腦端需要更新後才能使用。",
+    "createFailed": "未能建立追問，主任務保持不變。",
+    "unsupported": "這台電腦暫不支援追問，請更新電腦端。",
+    "waitForReply": "請等主任務完成第一則回覆後再建立追問。"
+  },
   "leaveWhileUploading": {
     "title": "放棄傳送？",
     "body": "附件還沒上傳完，現在離開這則訊息就不會傳送。",

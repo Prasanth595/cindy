@@ -8142,6 +8142,16 @@
         "alreadyOpen": "已開啟",
         "pluginsLabel": "插件"
       },
+      "descriptions": {
+        "fileBrowser": "瀏覽工作目錄中的檔案",
+        "review": "查看程式碼變更與審查結果",
+        "subagents": "查看子任務的進度與結果",
+        "backgroundTasks": "追蹤背景執行的進度與輸出",
+        "sideChat": "根據主任務的上下文獨立提問",
+        "browser": "在面板中瀏覽網頁",
+        "terminal": "執行命令，查看輸出",
+        "workbench": "查看夥伴的工作進展"
+      },
       "kinds": {
         "fileBrowser": "檔案瀏覽器",
         "browser": "瀏覽器",
@@ -8173,21 +8183,9 @@
       "empty": {
         "eyebrow": "右側欄",
         "title": "開始一個面板",
-        "desc": "在右側開啟檔案、審查、資源監視器、內建瀏覽器或終端，與左側對話並行工作。",
-        "openFile": "開啟檔案",
-        "fileSub": "檔案",
-        "openReview": "開啟審查",
-        "reviewSub": "審查",
-        "openSubagents": "開啟 Subagent",
-        "subagentsSub": "可持續回看的子任務",
-        "openBackgroundTasks": "開啟後臺任務",
-        "backgroundTasksSub": "後臺任務",
+        "desc": "在右側追問、查看檔案或使用工具，與主任務並行工作。",
         "openResourceUsage": "開啟資源監視器",
-        "openBrowser": "開啟瀏覽器",
-        "browserSub": "瀏覽器",
-        "openTerminal": "開啟終端",
-        "terminalSub": "終端",
-        "addMoreHint": "可透過頂部 + 按鈕選擇更多面板型別"
+        "addMoreHint": "也可透過頂部 + 按鈕選擇面板"
       },
       "placeholderHint": "{{kind}} — 內容將在後續階段加入"
     },
@@ -12178,7 +12176,27 @@
     "ghostPreview": {
       "opened": "打開了一個預覽頁面"
     },
-    "sessionLoading": "載入任務中"
+    "sessionLoading": "載入任務中",
+    "sideChat": {
+      "openPage": "開啟完整任務頁",
+      "returnMain": "返回主任務",
+      "new": "新增側邊追問",
+      "mainWindowDescription": "側邊追問目前在主視窗中使用。追問記錄仍然保留。",
+      "returnToMain": "回到主視窗繼續追問",
+      "commandDescription": "基於主任務開啟側邊追問。可在命令後附上問題，作為追問草稿。",
+      "title": "側邊追問",
+      "context": "基於主任務已有上下文獨立追問，回答不會自動寫回主任務。",
+      "opening": "正在開啟…",
+      "notReady": "請先等待主任務完成一次回答。",
+      "unsupported": "此 Agent 的遠端任務暫不支援側邊追問。",
+      "updateHost": "請先更新執行任務的電腦，再開啟側邊追問。",
+      "failed": "開啟側邊追問失敗，請稍後重試。",
+      "mainTaskOnly": "請從主任務開啟側邊追問。",
+      "closeTitle": "關閉側邊追問？",
+      "closeDescription": "將停止並刪除本次追問，主任務不受影響。",
+      "closeConfirm": "關閉並刪除",
+      "closeFailed": "刪除追問失敗，請稍後重試。"
+    }
   },
   "ccAgent": {
     "agentStatus": {

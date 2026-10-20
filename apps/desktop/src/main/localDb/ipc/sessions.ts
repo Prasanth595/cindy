@@ -27,6 +27,7 @@ import { DEFAULT_DRAFT_SESSION_TITLE, normalizeAutoTitle } from '@cindy/maker-sh
 import { getDbClient } from '../client/current';
 import * as currentDb from '../client/current';
 import type { DbClient } from '../client/DbClient';
+import type { SessionsSetTerminalStatusResult } from '../client/tx/types';
 import { sessions, messages } from '../schema';
 import { clearSessionAttention } from '../../appBadgeService';
 import {
@@ -334,9 +335,10 @@ async function setTerminalSessionStatus(
   dbClient: DbClient,
   sessionId: string,
   status: 'archived' | 'deleted',
-): Promise<void> {
+): Promise<SessionsSetTerminalStatusResult['deletedSideChats']> {
   try {
-    await dbClient.tx('sessions.setTerminalStatus', { sessionId, status });
+    const result = await dbClient.tx('sessions.setTerminalStatus', { sessionId, status });
+    return result.deletedSideChats;
   } catch (error) {
     const code = (error as { code?: string }).code;
     const message = error instanceof Error ? error.message : String(error);
@@ -344,6 +346,47 @@ async function setTerminalSessionStatus(
       throwIpcError(code, message);
     }
     throw error;
+  }
+}
+
+/** Side chats belong to the parent view; deleting it must not strand invisible running tasks. */
+async function deleteDependentSideChats(
+  parentId: string,
+  dbClient: DbClient,
+  ownerScope: OwnerScope,
+  committed?: SessionsSetTerminalStatusResult['deletedSideChats'],
+): Promise<void> {
+  if (committed) {
+    for (const child of committed) {
+      if (!isOwnerScopeCurrent(ownerScope) || getDbClient() !== dbClient) return;
+      // The transaction already committed every status. Cleanup can be fenced
+      // by owner/route without stranding active children when it is interrupted.
+      await withStatusWriteLock(dbClient.drizzle, child.sessionId, 'deleted', async () => {
+        if (!isOwnerScopeCurrent(ownerScope) || getDbClient() !== dbClient) return;
+        cleanupSessionRuntimeForTerminalStatus(child.sessionId, 'deleted');
+        const { closeSharedTaskForTask } = await import('../../device-link/sharedTaskRuntime.js');
+        await closeSharedTaskForTask(child.sessionId, dbClient);
+      });
+      if (!isOwnerScopeCurrent(ownerScope) || getDbClient() !== dbClient) return;
+      clearSessionAttention(child.sessionId, 'explicit');
+      broadcastSessionPatched(child.sessionId, { status: 'deleted' }, ownerScope);
+      notifyAgentIslandSessionPatch(child.sessionId, { ...child, status: 'deleted' });
+      void imageCacheStore.removeSession(child.sessionId).catch((err) => {
+        log.warn('side chat image cleanup failed', { sessionId: child.sessionId, err: String(err) });
+      });
+      scheduleWorktreeRecycleForStatusChange(child.sessionId, 'deleted', { ownerScope, mediaDb: dbClient.drizzle });
+      notifyGhostSessionStatusChange(child.sessionId, 'deleted', child.workingDir);
+      cleanupSessionTerminalArtifacts(child.sessionId, 'deleted');
+      compactTerminalSessionToolResults(dbClient, child.sessionId, 'deleted');
+    }
+    return;
+  }
+  // Compatibility for callers without the transaction API (legacy adapters).
+  const children = await dbClient.drizzle.select({ id: sessions.id }).from(sessions)
+    .where(and(eq(sessions.parentSessionId, parentId), eq(sessions.source, 'side-chat'), ne(sessions.status, 'deleted')));
+  for (const child of children) {
+    if (!isOwnerScopeCurrent(ownerScope) || getDbClient() !== dbClient) return;
+    await patchSessionMetaInDb(child.id, { status: 'deleted' });
   }
 }
 
@@ -2010,6 +2053,7 @@ export async function updateSessionInDb(
     // 先记号后写库,代价只是写库失败时该会话本进程内不再自动起名 —— 用户毕竟确实
     // 按下过保存,这个方向的偏差是安全的。
     if (typeof p.title === 'string') noteUserTitleWritten(sid);
+    let deletedSideChats: SessionsSetTerminalStatusResult['deletedSideChats'] | undefined;
     await withStatusWriteLock(
       db,
       sid,
@@ -2024,7 +2068,7 @@ export async function updateSessionInDb(
           if (typeof dbClient.tx === 'function') {
             const { status: _status, ...nonTerminalPatch } = setObj;
             await writeSessionPatch(db, sid, nonTerminalPatch, undefined);
-            await setTerminalSessionStatus(dbClient, sid, p.status as 'archived' | 'deleted');
+            deletedSideChats = await setTerminalSessionStatus(dbClient, sid, p.status as 'archived' | 'deleted');
           } else {
             const prepared = await prepareSharedTaskClosure(sid, dbClient);
             try {
@@ -2153,6 +2197,7 @@ export async function updateSessionInDb(
     notifyGhostSessionStatusChange(sid, p.status, updated.workingDir);
     cleanupSessionTerminalArtifacts(sid, p.status);
     compactTerminalSessionToolResults(dbClient, sid, p.status);
+    if (p.status === 'deleted' && updated.source !== 'side-chat') await deleteDependentSideChats(sid, dbClient, ownerScope, deletedSideChats);
     return updated;
   };
   if (p.workingDir === undefined && !moveGuard) return update();
@@ -2229,6 +2274,7 @@ export async function patchSessionMetaInDb(
   const setObj = sessionPatchToRow(patch, { bumpUpdatedAt: false });
   // 控制端远程改名走这条,与本机改名同口径(同样先记号后写库)。
   if (patch.title !== undefined) noteUserTitleWritten(sessionId);
+  let deletedSideChats: SessionsSetTerminalStatusResult['deletedSideChats'] | undefined;
   const updated = await withStatusWriteLock(db, sessionId, patch.status, async () => {
     if (patch.status !== undefined) await assertGenericSessionLifecycleAllowed(db, sessionId);
     const terminal = patch.status === 'archived' || patch.status === 'deleted';
@@ -2236,7 +2282,7 @@ export async function patchSessionMetaInDb(
       if (typeof dbClient.tx === 'function') {
         const { status: _status, ...nonTerminalPatch } = setObj;
         await writeSessionPatch(db, sessionId, nonTerminalPatch, undefined);
-        await setTerminalSessionStatus(dbClient, sessionId, patch.status as 'archived' | 'deleted');
+        deletedSideChats = await setTerminalSessionStatus(dbClient, sessionId, patch.status as 'archived' | 'deleted');
       } else {
         const prepared = await prepareSharedTaskClosure(sessionId, dbClient);
         try {
@@ -2301,6 +2347,7 @@ export async function patchSessionMetaInDb(
     );
   }
   compactTerminalSessionToolResults(dbClient, sessionId, patch.status);
+  if (patch.status === 'deleted' && updated.source !== 'side-chat') await deleteDependentSideChats(sessionId, dbClient, ownerScope, deletedSideChats);
   return updated;
 }
 

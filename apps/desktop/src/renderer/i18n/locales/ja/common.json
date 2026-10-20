@@ -8142,6 +8142,16 @@
         "alreadyOpen": "開いています",
         "pluginsLabel": "プラグイン"
       },
+      "descriptions": {
+        "fileBrowser": "作業フォルダー内のファイルを参照",
+        "review": "コードの変更とレビュー結果を確認",
+        "subagents": "サブタスクの進捗と結果を確認",
+        "backgroundTasks": "バックグラウンド実行の進捗と出力を確認",
+        "sideChat": "メインタスクの文脈を引き継いで別途質問",
+        "browser": "パネル内でウェブページを閲覧",
+        "terminal": "コマンドを実行して出力を確認",
+        "workbench": "パートナーの作業状況を確認"
+      },
       "kinds": {
         "fileBrowser": "ファイルブラウザ",
         "browser": "ブラウザ",
@@ -8173,21 +8183,9 @@
       "empty": {
         "eyebrow": "右サイドバー",
         "title": "パネルを開く",
-        "desc": "ファイル、レビュー、アクティビティモニタ、内蔵ブラウザ、ターミナルを開いて、左側のチャットと並行して作業できます。",
-        "openFile": "ファイルを開く",
-        "fileSub": "ファイル",
-        "openReview": "レビューを開く",
-        "reviewSub": "レビュー",
-        "openSubagents": "サブエージェントを開く",
-        "subagentsSub": "後から確認できる子タスク",
-        "openBackgroundTasks": "バックグラウンドタスクを開く",
-        "backgroundTasksSub": "バックグラウンドタスク",
+        "desc": "メインタスクと並行して、追加の質問、ファイルの確認、ツールの使用ができます。",
         "openResourceUsage": "アクティビティモニタを開く",
-        "openBrowser": "ブラウザを開く",
-        "browserSub": "ブラウザ",
-        "openTerminal": "ターミナルを開く",
-        "terminalSub": "ターミナル",
-        "addMoreHint": "上部の + ボタンからほかのパネルタイプを選択できます"
+        "addMoreHint": "上部の＋ボタンからもパネルを選べます"
       },
       "placeholderHint": "{{kind}} — コンテンツは後続フェーズで追加されます"
     },
@@ -12178,6 +12176,26 @@
     },
     "ghostPreview": {
       "opened": "プレビューページを開きました"
+    },
+    "sideChat": {
+      "openPage": "タスクページを開く",
+      "returnMain": "メインタスクに戻る",
+      "new": "新しいサイドチャット",
+      "mainWindowDescription": "サイドチャットは現在メインウィンドウで利用できます。内容は保存されています。",
+      "returnToMain": "メインウィンドウで続ける",
+      "commandDescription": "メインタスクをもとにサイドチャットを開きます。コマンドの後の質問は下書きになります。",
+      "title": "サイドチャット",
+      "context": "メインタスクの既存の文脈を使って個別に質問します。回答はメインタスクに自動で反映されません。",
+      "opening": "開いています…",
+      "notReady": "メインタスクの最初の回答が完了するまでお待ちください。",
+      "unsupported": "この Agent のリモートタスクはサイドチャットに未対応です。",
+      "updateHost": "タスクを実行するパソコンを更新してから再度お試しください。",
+      "failed": "サイドチャットを開けませんでした。もう一度お試しください。",
+      "mainTaskOnly": "メインタスクからサイドチャットを開いてください。",
+      "closeTitle": "サイドチャットを閉じますか？",
+      "closeDescription": "このサイドチャットを停止して削除します。メインタスクには影響しません。",
+      "closeConfirm": "閉じて削除",
+      "closeFailed": "削除できませんでした。もう一度お試しください。"
     }
   },
   "ccAgent": {

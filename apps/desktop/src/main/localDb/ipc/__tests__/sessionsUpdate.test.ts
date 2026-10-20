@@ -20,6 +20,7 @@ import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } fr
 import type { InvokeResultPayload } from '@cindy/device-link';
 
 import { messages, recentWorkdirs, sessions } from '../../schema';
+import { tx as runDbTransaction } from '../../worker/opHandlers/tx';
 import type { SessionRouteLock } from '../../sessionRouteLock';
 import { normalizeWorkingDirForStorage } from '../../../../shared/workingDir';
 
@@ -385,6 +386,26 @@ afterEach(async () => {
 });
 
 describe('local-db:sessions:update handler wiring', () => {
+  // Terminal lifecycle through both real public handlers: an ordinary fork survives,
+  // but a hidden side chat must not remain running after its parent becomes unreachable (unit).
+  it.each([invokeUpdate, invokePatchMeta])('deletes dependent side chats without deleting ordinary forks (%#)', async update => {
+    // Unit, #6529: use the real terminal transaction so post-commit cleanup and
+    // broadcasts cannot depend on writing a deleted child a second time.
+    h.sqlite!.exec(`CREATE TABLE shared_task_events (shared_task_id TEXT, session_id TEXT,
+      revision INTEGER, kind TEXT, terminal INTEGER, snapshot TEXT, recorded_at INTEGER,
+      PRIMARY KEY (shared_task_id, kind, revision))`);
+    Object.assign(h.client!, { tx: async (name: string, args: unknown) => runDbTransaction(h.sqlite!, { name, args }) });
+    h.sqlite!.prepare("UPDATE sessions SET parent_session_id = 'cc-local', source = 'side-chat' WHERE id = 'codex-local'").run();
+    h.sqlite!.prepare("UPDATE sessions SET parent_session_id = 'cc-local' WHERE id = 'pi-local'").run();
+    await update('cc-local', { status: 'deleted' });
+    expect(h.sqlite!.prepare('SELECT status FROM sessions WHERE id = ?').get('codex-local')).toEqual({ status: 'deleted' });
+    expect(h.sqlite!.prepare('SELECT status FROM sessions WHERE id = ?').get('pi-local')).toEqual({ status: 'active' });
+    expect(h.runtimeCleanup).toHaveBeenCalledWith('codex-local');
+    expect(h.runtimeCleanup).not.toHaveBeenCalledWith('pi-local');
+    expect(h.tapWindowBroadcast).toHaveBeenCalledWith('local-db:sessions:patched', {
+      sessionId: 'codex-local', patch: { status: 'deleted' },
+    });
+  });
   it.each([invokeUpdate, invokePatchMeta])(
     'clears only the deleted task from event-backed app attention (%#)',
     async (update) => {

@@ -20,7 +20,7 @@ import { and, desc, eq, inArray, isNotNull, isNull, ne, or } from 'drizzle-orm';
 
 import { getDbClient } from '../../localDb/client/current';
 import { sessions } from '../../localDb/schema';
-import { DESKTOP_VISIBLE_SESSION_SOURCES } from '../../../shared/sessionSource.js';
+import { DESKTOP_TASK_LIST_SESSION_SOURCES } from '../../../shared/sessionSource.js';
 import { normalizeWorkingDirForGrouping } from '../../../shared/workingDir.js';
 
 function attachableSessionPredicate() {
@@ -79,7 +79,7 @@ export async function listProjectsForControl(): Promise<ControlProject[]> {
     .from(sessions)
     .where(
       and(
-        inArray(sessions.source, DESKTOP_VISIBLE_SESSION_SOURCES),
+        inArray(sessions.source, DESKTOP_TASK_LIST_SESSION_SOURCES),
         eq(sessions.status, 'active'),
         isNotNull(sessions.workingDir),
         attachableSessionPredicate(),
@@ -183,7 +183,7 @@ export async function listRecentSessionsForPicker(
     .from(sessions)
     .where(
       and(
-        inArray(sessions.source, DESKTOP_VISIBLE_SESSION_SOURCES),
+        inArray(sessions.source, DESKTOP_TASK_LIST_SESSION_SOURCES),
         eq(sessions.status, 'active'),
         isNotNull(sessions.workingDir),
         attachableSessionPredicate(),
@@ -226,7 +226,7 @@ export async function listSessionsForWorkspace(
     .from(sessions)
     .where(
       and(
-        inArray(sessions.source, DESKTOP_VISIBLE_SESSION_SOURCES),
+        inArray(sessions.source, DESKTOP_TASK_LIST_SESSION_SOURCES),
         eq(sessions.status, 'active'),
         isNotNull(sessions.workingDir),
         attachableSessionPredicate(),

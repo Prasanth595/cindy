@@ -96,6 +96,7 @@ const SESSION_SOURCES = [
   'scheduler',
   'learn',
   'review',
+  'side-chat',
   'shared',
   'plugin',
   'bot',

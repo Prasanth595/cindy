@@ -520,6 +520,8 @@ export interface MobileMakerTransport {
     modelVisibilityOverrides?: Record<string, boolean>;
   }>;
   getSession(sessionId: string): Promise<RemoteSession>;
+  createSideChat(sessionId: string): Promise<RemoteSession>;
+  listSideChats(sessionId: string): Promise<Array<{ id: string }>>;
   searchConversations(
     request: ConversationSearchRequest,
   ): Promise<ConversationSearchResponse>;
@@ -1229,6 +1231,8 @@ export function createMobileMakerTransport({
         },
       ]),
     getSession: (sessionId) => call("local-db:sessions:get", [sessionId]),
+    createSideChat: (sessionId) => call("maker:side-chat:v1", [sessionId]),
+    listSideChats: (sessionId) => call("maker:side-chat:list:v1", [sessionId]),
     searchConversations: (request) =>
       call("local-db:conversations:search", [request]),
     patchSessionMeta: (sessionId, patch) =>

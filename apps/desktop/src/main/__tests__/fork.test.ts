@@ -14,6 +14,8 @@
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import Database from 'better-sqlite3';
+import { drizzle } from 'drizzle-orm/better-sqlite3';
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { CodexResumePreparationBlockedError } from '@cindy/maker-core';
@@ -63,6 +65,7 @@ vi.mock('../maker-host/provider-route.js', () => ({
 // 每个 select() 调用按入栈顺序消费 selectQueue 的下一个返回值。
 type SelectStep = unknown[];
 const selectQueue: SelectStep[] = [];
+let messageDb: ReturnType<typeof drizzle> | null = null;
 const txCalls: Array<{ name: string; args: unknown }> = [];
 
 type SelectChain = Record<string, unknown> & {
@@ -78,7 +81,8 @@ function makeChain(rows: unknown[]) {
 }
 
 const fakeDb = {
-  select: vi.fn(() => {
+  select: vi.fn((projection?: Record<string, unknown>) => {
+    if (messageDb && projection && Object.keys(projection).length <= 5) return messageDb.select(projection as never);
     const next = selectQueue.shift() ?? [];
     return makeChain(next);
   }),
@@ -108,6 +112,8 @@ vi.mock('../localDb/client/current', () => ({
 }));
 
 let forkSessionAtMessage: typeof import('../maker-orchestration/fork').forkSessionAtMessage;
+let createSideChat: typeof import('../maker-orchestration/fork').createSideChat;
+let listSideChats: typeof import('../maker-orchestration/fork').listSideChats;
 let forkSessionStripEncrypted: typeof import('../maker-orchestration/fork').forkSessionStripEncrypted;
 const originalClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
 const originalXdtUserDataDir = process.env.XDT_USER_DATA_DIR;
@@ -140,6 +146,8 @@ beforeEach(async () => {
   if (!forkSessionAtMessage) {
     const mod = await import('../maker-orchestration/fork');
     forkSessionAtMessage = mod.forkSessionAtMessage;
+    createSideChat = mod.createSideChat;
+    listSideChats = mod.listSideChats;
     forkSessionStripEncrypted = mod.forkSessionStripEncrypted;
   }
 });
@@ -270,6 +278,102 @@ describe('disabled Cindy Make fork boundaries', () => {
 });
 
 describe('forkSessionAtMessage', () => {
+  // Unit, PR #6529 archived-discovery regression: evaluate the real list WHERE
+  // against SQLite. The old queue fake cannot detect status filtering. Minimal
+  // input: active/archived/deleted children plus a different parent and source.
+  it('lists archived side chats with active siblings, excluding deleted and unrelated tasks', async () => {
+    const sqlite = new Database(':memory:');
+    try {
+      sqlite.exec('CREATE TABLE sessions (id TEXT, parent_session_id TEXT, source TEXT, status TEXT, created_at INTEGER)');
+      const insert = sqlite.prepare('INSERT INTO sessions VALUES (?, ?, ?, ?, ?)');
+      for (const row of [
+        ['active', 'main', 'side-chat', 'active', 20],
+        ['archived', 'main', 'side-chat', 'archived', 10],
+        ['deleted', 'main', 'side-chat', 'deleted', 30],
+        ['other-parent', 'other', 'side-chat', 'archived', 5],
+        ['ordinary', 'main', 'desktop', 'archived', 6],
+      ]) insert.run(...row);
+      messageDb = drizzle(sqlite);
+      expect(await listSideChats('main')).toEqual([{ id: 'archived' }, { id: 'active' }]);
+    } finally {
+      messageDb = null;
+      sqlite.close();
+    }
+  });
+
+  // Unit, #6529: the old queue fake never evaluated anchor ordering/WHERE.
+  // A running turn with two steers must copy only the preceding completed turn.
+  // Execute both production message lookups against SQLite; keep SDK/writes fake.
+  it.each([3000, 2501])('excludes the entire running turn even after steers (question at %i)', async questionAt => {
+    const sqlite = new Database(':memory:');
+    try {
+      sqlite.exec(`CREATE TABLE messages (id TEXT, client_id TEXT, session_id TEXT,
+        role TEXT, created_at INTEGER, rewind_at INTEGER)`);
+      const insert = sqlite.prepare('INSERT INTO messages VALUES (?, ?, ?, ?, ?, NULL)');
+      for (const [id, role, at] of [
+        ['old-question', 'user', 2000], ['reply', 'assistant', 2500],
+        ['busy-question', 'user', questionAt], ['partial', 'assistant', 3100],
+        ['steer-one', 'user', 3200], ['steer-two', 'user', 3300],
+      ] as const) insert.run(id, id, 'src-session', role, at);
+      const source = makeSourceRow({ source: 'desktop', activeTurnStartedAt: 3001, lastTurnEndedAt: 2600 });
+      selectQueue.push([source], [source], [makeMessageRow({ role: 'assistant', createdAt: 2500, agentMeta: JSON.stringify({ uuid: 'prior-uuid' }) })], [makeSourceRow({ id: 'child' })]);
+      messageDb = drizzle(sqlite);
+      await createSideChat('src-session');
+      expect(txCalls.find(call => call.name === 'fork.session')?.args).toMatchObject({ targetCreatedAt: questionAt });
+      expect(forkSdkSessionMock).toHaveBeenCalledWith('claude-code', expect.objectContaining({ upToMessageId: 'prior-uuid' }));
+    } finally {
+      messageDb = null;
+      sqlite.close();
+    }
+  });
+  // Side-chat creation must preserve the parent runtime and route while making an independent child.
+  // Existing message-level forks lack the automatic busy-parent boundary and source marker (unit).
+  it('opens a separate side task before the busy parent question', async () => {
+    const source = makeSourceRow({ source: 'desktop', activeTurnStartedAt: 3001, lastTurnEndedAt: 2501 });
+    const question = makeMessageRow({ clientId: 'busy-question', createdAt: 3000 });
+    const reply = makeMessageRow({ role: 'assistant', createdAt: 2500, agentMeta: JSON.stringify({ uuid: 'prior-uuid' }) });
+    selectQueue.push([source], [{ clientId: reply.clientId }], [source], [reply], [question], [reply], [makeSourceRow({ id: 'child', source: 'side-chat' })]);
+    const child = await createSideChat('src-session');
+    expect(child.id).toBe('child');
+    const transaction = txCalls.find(call => call.name === 'fork.session')?.args as { newSession: Record<string, unknown>; targetCreatedAt: number };
+    expect(transaction.targetCreatedAt).toBe(3000);
+    expect(transaction.newSession).toMatchObject({ source: 'side-chat', parentSessionId: 'src-session', permissionMode: 'ask', providerId: 'xd', workingDir: '/work' });
+    expect(forkSdkSessionMock).toHaveBeenCalledWith('claude-code', expect.objectContaining({ sourceSdkSessionId: 'sdk-uuid-source', upToMessageId: 'prior-uuid' }));
+    expect(txCalls).toHaveLength(1);
+  });
+
+  // Unit, #6529: future-dated inherited rows must not move the child's visible
+  // boundary beyond its first live message. Existing creation cases use old dates.
+  it('keeps a side chat creation boundary at wall-clock time with future history', async () => {
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(10_000);
+    try {
+      const source = makeSourceRow({ source: 'desktop' });
+      const reply = makeMessageRow({ role: 'assistant', createdAt: 70_000, agentMeta: JSON.stringify({ uuid: 'future-reply' }) });
+      selectQueue.push([source], [{ clientId: reply.clientId }], [source], [reply], [], [reply], [makeSourceRow({ id: 'child', source: 'side-chat' })]);
+      await createSideChat('src-session');
+      expect(txCalls.find(call => call.name === 'fork.session')?.args).toMatchObject({
+        newSession: { createdAt: 10_000, updatedAt: 10_000, userSendAt: 10_000 },
+      });
+    } finally { clock.mockRestore(); }
+  });
+
+  // Unit, #6529: an archived parent was accepted although it cannot own new work.
+  // Existing cases covered deletion/nesting only; no SDK call or child may result.
+  it.each([{ status: 'deleted' }, { status: 'archived' }, { source: 'side-chat' }, { source: 'review' }])('rejects unavailable or nested side-chat sources: %j', async overrides => {
+    selectQueue.push([makeSourceRow(overrides)]);
+    await expect(createSideChat('src-session')).rejects.toMatchObject({
+      code: 'status' in overrides ? 'SOURCE_NOT_FOUND' : 'UNSUPPORTED_HISTORY',
+    });
+    expect(forkSdkSessionMock).not.toHaveBeenCalled();
+    expect(txCalls).toHaveLength(0);
+  });
+
+  it('leaves an empty parent untouched when there is no completed reply', async () => {
+    selectQueue.push([makeSourceRow()], []);
+    await expect(createSideChat('src-session')).rejects.toMatchObject({ code: 'NO_PRIOR_ASSISTANT' });
+    expect(forkSdkSessionMock).not.toHaveBeenCalled();
+    expect(txCalls).toHaveLength(0);
+  });
   it.each([
     { marker: 200000, projectedWindow: 200000 },
     { marker: null, projectedWindow: 272000 },

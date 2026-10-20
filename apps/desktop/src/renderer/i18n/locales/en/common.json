@@ -8174,6 +8174,16 @@
         "alreadyOpen": "Open",
         "pluginsLabel": "Plugins"
       },
+      "descriptions": {
+        "fileBrowser": "Browse files in the working folder",
+        "review": "Inspect code changes and review results",
+        "subagents": "Check subtask progress and results",
+        "backgroundTasks": "Track background progress and output",
+        "sideChat": "Ask separately with context from the main task",
+        "browser": "Browse web pages in the panel",
+        "terminal": "Run commands and view output",
+        "workbench": "See what your teammate is working on"
+      },
       "kinds": {
         "fileBrowser": "File browser",
         "browser": "Browser",
@@ -8205,21 +8215,9 @@
       "empty": {
         "eyebrow": "Right Sidebar",
         "title": "Add a panel",
-        "desc": "Open files, review, Activity Monitor, a built-in browser, or a terminal here to work alongside the chat on the left.",
-        "openFile": "Open files",
-        "fileSub": "Files",
-        "openReview": "Open review",
-        "reviewSub": "Review",
-        "openSubagents": "Open Subagent",
-        "subagentsSub": "Durable child work",
-        "openBackgroundTasks": "Open background tasks",
-        "backgroundTasksSub": "Background tasks",
+        "desc": "Ask follow-up questions, view files, or use tools alongside the main task.",
         "openResourceUsage": "Open Activity Monitor",
-        "openBrowser": "Open browser",
-        "browserSub": "Browser",
-        "openTerminal": "Open terminal",
-        "terminalSub": "Terminal",
-        "addMoreHint": "Use the + button at the top to choose more panel types"
+        "addMoreHint": "You can also choose a panel using the + button above"
       },
       "placeholderHint": "{{kind}} — content coming in a later phase"
     },
@@ -12231,6 +12229,26 @@
     },
     "ghostPreview": {
       "opened": "Opened a preview page"
+    },
+    "sideChat": {
+      "openPage": "Open full task page",
+      "returnMain": "Back to main task",
+      "new": "New side chat",
+      "mainWindowDescription": "Side chats currently run in the main window. Your conversation is saved.",
+      "returnToMain": "Continue in main window",
+      "commandDescription": "Open a side chat with this task's context. Optional text becomes a draft question.",
+      "title": "Side chat",
+      "context": "Uses completed context from when you opened it. The main task keeps running. History stays until you close this tab.",
+      "opening": "Opening…",
+      "notReady": "Wait for the main task to complete its first reply.",
+      "unsupported": "This task's agent runs in another execution environment. Side chat is not available here yet.",
+      "updateHost": "Update the computer running this task to open a side chat.",
+      "failed": "Could not open the side chat. Please try again.",
+      "mainTaskOnly": "Open a side chat from the main task.",
+      "closeTitle": "Close side chat?",
+      "closeDescription": "This follow-up will stop and its history will be deleted. The main task keeps running.",
+      "closeConfirm": "Close and delete",
+      "closeFailed": "Could not close the side chat. Please try again."
     }
   },
   "ccAgent": {
