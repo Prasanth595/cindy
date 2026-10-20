@@ -439,6 +439,7 @@ describe('Worker project filesystem aliases', () => {
 // Review P1: a subproject Worker must start beside its own rules, after checkout.
 // Unit orchestration with real filesystem/Git probe: a deferred checkout is the
 // smallest input exposing the race; root selections must keep asynchronous startup.
+// A source-branch symlink outside the checkout must not redirect the validated cwd.
 describe('Worker worktree subproject directory', () => {
   const fixture = mkdtempSync(path.join(os.tmpdir(), 'cindy-worker-subproject-'));
   const repo = path.join(fixture, 'repo');
@@ -464,7 +465,7 @@ describe('Worker worktree subproject directory', () => {
   });
   afterAll(() => rmSync(fixture, { recursive: true, force: true }));
 
-  it.each(['subproject', 'root', 'missing'] as const)(
+  it.each(['subproject', 'root', 'missing', 'external-symlink'] as const)(
     'keeps the correct startup directory for %s',
     async (scenario) => {
       const sessionId = `worker-${scenario}`;
@@ -506,11 +507,17 @@ describe('Worker worktree subproject directory', () => {
         mkdirSync(subproject, { recursive: true });
         writeFileSync(path.join(subproject, 'AGENTS.md'), 'Checked out rules');
       }
+      if (scenario === 'external-symlink') {
+        const external = path.join(fixture, 'outside-checkout');
+        mkdirSync(external);
+        mkdirSync(path.dirname(subproject), { recursive: true });
+        symlinkSync(external, subproject, process.platform === 'win32' ? 'junction' : 'dir');
+      }
       finishCheckout();
       expect(await result).toBe(scenario === 'subproject' ? subproject : target);
-      if (scenario === 'missing')
+      if (scenario === 'missing' || scenario === 'external-symlink')
         expect(createLogger('test').warn).toHaveBeenCalledWith(
-          'Worker subproject is absent in the new worktree; using its root',
+          'Worker subproject is unavailable within the new worktree; using its root',
           { sessionId },
         );
     },

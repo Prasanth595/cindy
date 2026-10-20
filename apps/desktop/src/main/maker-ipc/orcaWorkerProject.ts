@@ -268,10 +268,23 @@ export async function createWorkerWorktree(
   await WorktreeManager.awaitBackgroundCheckout(sessionId);
   const subproject = path.join(created.meta.path, relative);
   try {
-    if ((await fs.stat(subproject)).isDirectory()) return subproject;
+    const [realRoot, realSubproject] = await Promise.all([
+      fs.realpath(created.meta.path),
+      fs.realpath(subproject),
+    ]);
+    const withinRoot = path.relative(identity(realRoot), identity(realSubproject));
+    if (
+      withinRoot &&
+      !withinRoot.startsWith('..') &&
+      !path.isAbsolute(withinRoot) &&
+      (await fs.stat(realSubproject)).isDirectory()
+    )
+      return subproject;
   } catch {
     // The selected source branch may not contain this subproject.
   }
-  log.warn('Worker subproject is absent in the new worktree; using its root', { sessionId });
+  log.warn('Worker subproject is unavailable within the new worktree; using its root', {
+    sessionId,
+  });
   return created.meta.path;
 }
