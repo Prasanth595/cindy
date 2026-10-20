@@ -3045,7 +3045,7 @@ describe('thread previews and posting to the main chat', () => {
   }
   beforeEach(() => { vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} }); });
 
-  it('shows the newest replies under the root and opens the thread from the preview', async () => {
+  it('describes the newest replies on the thread entry under the root and opens the thread from it', async () => {
     mocks.getBotGroup.mockResolvedValue({ ok: true, group: group([
       msg({ id: 'u1', content: '去哪玩', replyCount: 3, threadPreview: { replies: [
         preview('r2', '小满', '爬山吧，带上相机'),
@@ -3055,10 +3055,13 @@ describe('thread previews and posting to the main chat', () => {
     const user = userEvent.setup();
     renderView();
     const card = await screen.findByRole('button', { name: t('open') });
-    expect(card.textContent).toContain('小满');
-    expect(card.textContent).toContain('爬山吧，带上相机');
+    // The entry shows the count; the newest replies are read out as its description, not shown.
+    const description = document.getElementById(card.getAttribute('aria-describedby')!)!;
+    expect(description.className).toContain('sr-only');
+    expect(description.textContent).toContain('小满');
+    expect(description.textContent).toContain('爬山吧，带上相机');
     // An attachment-only reply still says what it carried.
-    expect(card.textContent).toContain(t('attachmentsSummary'));
+    expect(description.textContent).toContain(t('attachmentsSummary'));
     expect(card.textContent).toContain('bots.groupChat.server.replyCount');
     // Export the selected root, without its independently selectable thread replies.
     const exported = prepareShareMessageClone(card.closest('article')!)!;
