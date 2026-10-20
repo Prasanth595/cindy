@@ -7,10 +7,11 @@
  *  - maxConcurrentCommands: 0 (不限制 agent Bash 命令的全局并发)
  *  - processPriority: 'normal' (不降 agent 进程优先级)
  *  - capToolchainThreads: false (不注入工具链限核 env)
+ *  - disableToolLoopGuard: false (保留工具循环检测)
  *
- * 配置层级:当前为隐藏配置(无 Settings UI,直接改 JSON 文件或由 agent 代改)。
+ * 配置层级:Settings 的「Agent 资源占用」;也支持直接改 JSON 文件或由 agent 代改。
  * 读取入口调 invalidateIfChanged(),文件被进程外修改后下次读取即生效,不需要重启;
- * 后续 Settings UI 接入(IPC 写路径)复用同一 store。
+ * Settings UI 的 IPC 写路径复用同一 store。
  */
 
 import { app } from 'electron';
@@ -51,12 +52,15 @@ export interface AgentResourceSettings {
    * 用户 env 里已有的同名变量不覆盖。
    */
   capToolchainThreads: boolean;
+  /** 全部跳过 Cindy 工具循环检测(含最终上限);默认 false,读取时热生效。 */
+  disableToolLoopGuard: boolean;
 }
 
 const DEFAULTS: AgentResourceSettings = {
   maxConcurrentCommands: 0,
   processPriority: 'normal',
   capToolchainThreads: false,
+  disableToolLoopGuard: false,
 };
 
 /** 上限的上限:超过这个值的并发治理已无意义,防手滑写进天文数字。IPC 写路径复用同一常量。 */
@@ -79,6 +83,7 @@ function normalize(raw: unknown): AgentResourceSettings {
         ? r.processPriority
         : DEFAULTS.processPriority,
     capToolchainThreads: r.capToolchainThreads === true,
+    disableToolLoopGuard: r.disableToolLoopGuard === true,
   };
 }
 

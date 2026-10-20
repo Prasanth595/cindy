@@ -1359,6 +1359,7 @@ export function getMaker(): Maker {
       registerLocalAgentProcess: ({ pid, kind, role }) => registerAgentProcess(pid, kind, role),
       reviewAutoPermissionAction,
       toolLoopReviewer: reviewToolLoop,
+      isToolLoopGuardDisabled: () => readAgentResourceSettings().disableToolLoopGuard,
       // 每个 session 的 cc 子进程 debug 写到 sessions/<id>/cc-debug.raw.log (logger 拼路径
       // + mkdir), tailer 再归一化汇入该 session 的 <date>.ndjson。
       resolveCcDebugFile: resolveSessionCcDebugFile,
@@ -2840,6 +2841,7 @@ export function getMaker(): Maker {
       makerMemory: makerMemoryManager,
       visionBridge: _visionBridgeInstance.hook,
       toolLoopReviewer: reviewToolLoop,
+      isToolLoopGuardDisabled: () => readAgentResourceSettings().disableToolLoopGuard,
       // Desktop-specific session 生命周期副作用钩子。maker-core 不知道文件系统细节，
       // 启动前的 Skill 共享与关闭后的清理都由 desktop host 注入。
       lifecycleHooks: {

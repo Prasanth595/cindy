@@ -1150,6 +1150,8 @@ export interface AgentDeps {
    * 同一实现)。缺省 = 疑似即中断。
    */
   toolLoopReviewer?: import('./shared/tool-loop-review.js').ToolLoopReviewer;
+  /** Host preference: true bypasses all Cindy tool loop detection. Default false. */
+  isToolLoopGuardDisabled?: () => boolean;
 
   /** Scope tools/list during native startup, before a real thread id exists. Never authorizes tools/call. */
   withCodexMcpDiscoveryContext?: <T>(

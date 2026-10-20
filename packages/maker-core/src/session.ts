@@ -213,6 +213,8 @@ export interface SessionOptions {
    * 与未接入复核前一致。
    */
   toolLoopReviewer?: ToolLoopReviewer;
+  /** Host preference: true bypasses all Cindy tool loop detection. Default false. */
+  isToolLoopGuardDisabled?: () => boolean;
 }
 
 function redactEventForListeners(event: AgentEvent): AgentEvent {
@@ -465,6 +467,7 @@ export class Session {
   /** 视觉桥钩子（层 B）。缺省 = 未启用，send 完全跳过。 */
   private readonly visionBridge: VisionBridgeHook | undefined;
   private readonly toolLoopReviewer: ToolLoopReviewer | undefined;
+  private readonly isToolLoopGuardDisabled: (() => boolean) | undefined;
   private permissionModeStateValue: PermissionModeState;
   private permissionModeChangeChain: Promise<void> = Promise.resolve();
   private permissionModeChangesInFlight = 0;
@@ -623,6 +626,7 @@ export class Session {
       opts.turnStallMs ?? parseTurnStallMs(process.env.XDT_SESSION_TURN_STALL_MS);
     this.visionBridge = opts.visionBridge;
     this.toolLoopReviewer = opts.toolLoopReviewer;
+    this.isToolLoopGuardDisabled = opts.isToolLoopGuardDisabled;
     this.asyncUserQuestions = new AsyncUserQuestions({
       isActive: (generation) => this.status === 'active' && !this.terminationStarted
         && generation === this.turnGeneration && this.handle.isTurnRunning?.() === true,
@@ -2355,6 +2359,7 @@ export class Session {
         ...(this.agentKind === 'codex' ? { burstRepeatGapMs: CODEX_BURST_REPEAT_GAP_MS } : {}),
       }), {
         reviewer: this.toolLoopReviewer,
+        isDisabled: this.isToolLoopGuardDisabled,
         context: () => ({ sessionId: this.id, agentKind: this.agentKind, model: this.handle.model }),
         onReviewedStop: (verdict) => this.interruptReviewedToolLoop(verdict, generation),
         logger: this.logger,
@@ -3067,6 +3072,11 @@ export class Session {
   }
 
   private interruptToolLoop(verdict: HardToolLoopVerdict, generation: number): void {
+    // A verdict may be waiting for its result summary while the preference changes.
+    if (this.isToolLoopGuardDisabled?.()) {
+      this.turnControlState?.toolLoopMonitor?.resetTurn();
+      return;
+    }
     this.fanOutEvent({
       type: 'error',
       data: {

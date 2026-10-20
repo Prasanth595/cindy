@@ -3077,6 +3077,7 @@ export class ClaudeCodeAgent extends BaseAgent {
         // 供应商分享受邀者同样复核：与本机自己的任务一样走本机(分享者)的辅助模型链
         // (2026-10-13 用户裁决)。
         reviewer: this.deps.toolLoopReviewer,
+        isDisabled: this.deps.isToolLoopGuardDisabled,
         reviewBudget: toolLoopReviewBudget,
         context: () => ({
           sessionId: sid,

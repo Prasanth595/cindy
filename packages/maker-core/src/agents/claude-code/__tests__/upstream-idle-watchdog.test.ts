@@ -149,6 +149,7 @@ async function startSessionWithStream(
   hosted?: { providerId: string; deviceHosted: (workingDir: string) => DeviceHostedSession },
   resumeSessionId?: string,
   remote = false,
+  isToolLoopGuardDisabled?: () => boolean,
 ) {
   const configDir = await makeTempDir();
   process.env.CLAUDE_CONFIG_DIR = configDir;
@@ -170,6 +171,7 @@ async function startSessionWithStream(
   });
 
   const deps = createDeps(toolLoopReviewer);
+  deps.isToolLoopGuardDisabled = isToolLoopGuardDisabled;
   let onApprovalRequest: ((params: unknown) => Promise<unknown>) | undefined;
   if (remote) {
     deps.remoteCcQueryFactory = async (options) => {
@@ -690,6 +692,55 @@ describe('upstream-response-idle watchdog suspend awareness', () => {
 });
 
 describe('Claude Code tool-loop guard runtime integration', () => {
+  // #6516, unit: real adapter + controlled SDK stream; no existing test covers a
+  // live bypass. Forty identical Bash results must survive, including sidechains
+  // and SSH queries; toggling back must restore the four-result interruption.
+  it.each([
+    { remote: false, parentToolUseId: null },
+    { remote: false, parentToolUseId: 'toolu_agent' },
+    { remote: true, parentToolUseId: null },
+  ])('hot-applies loop bypass: remote=$remote parent=$parentToolUseId', async ({ remote, parentToolUseId }) => {
+    let disabled = false;
+    const { handle, stream, events, fakeQuery, collected } = await startSessionWithStream(
+      'claude-opus-4-6', undefined, undefined, undefined, remote, () => disabled,
+    );
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    const call = async (i: number) => {
+      const id = 'echo-' + i;
+      stream.emit({
+        type: 'assistant', parent_tool_use_id: parentToolUseId,
+        message: { role: 'assistant', content: [{
+          type: 'tool_use', id, name: 'Bash', input: { command: 'echo loop-guard-test-ok' },
+        }] },
+      });
+      stream.emit({
+        type: 'user', parent_tool_use_id: parentToolUseId,
+        message: { role: 'user', content: [{
+          type: 'tool_result', tool_use_id: id, content: 'loop-guard-test-ok',
+        }] },
+      });
+      await pumpUntil(() => events.filter(e => e.type === 'tool_result_full').length === i + 1, 'echo delivered');
+    };
+    try {
+      await handle.send({ type: 'user', content: 'repeat forty times' });
+      for (let i = 0; i < 3; i++) await call(i);
+      disabled = true;
+      for (let i = 3; i < 40; i++) await call(i);
+      expect(toolLoopError(events)).toBeUndefined();
+      expect(fakeQuery.interrupt).not.toHaveBeenCalled();
+      expect(handle.isTurnRunning?.()).toBe(true);
+      disabled = false;
+      for (let i = 40; i < 44; i++) await call(i);
+      await pumpUntil(() => fakeQuery.interrupt.mock.calls.length === 1, 'loop interrupted');
+      expect(toolLoopError(events)).toMatchObject({ data: { loopKind: 'consecutive', loopCount: 4 } });
+    } finally {
+      vi.useRealTimers();
+      stream.end();
+      await handle.close().catch(() => undefined);
+      await collected;
+    }
+  });
+
   const editErrors = [
     'The required parameter `file_path` is missing',
     'String to replace not found in file.',

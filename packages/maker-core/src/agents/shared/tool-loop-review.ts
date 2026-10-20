@@ -37,6 +37,8 @@ export interface ToolLoopReviewBudget {
 }
 
 export interface ToolLoopMonitorOptions {
+  /** Host preference, read at each observation and before applying a review. */
+  isDisabled?: () => boolean;
   reviewer?: ToolLoopReviewer;
   /** 缺省为本 monitor 独占;传入同一对象即共享每 turn 的复核上限。 */
   reviewBudget?: ToolLoopReviewBudget;
@@ -69,6 +71,7 @@ export class ToolLoopMonitor {
   }
 
   onToolUse(toolUseId: string, toolName: unknown, input: unknown): void {
+    if (this.skipDetection()) return;
     this.guard.onToolUse(toolUseId, toolName, input);
   }
 
@@ -78,6 +81,7 @@ export class ToolLoopMonitor {
     isError = false,
     toolResultBatchId?: string,
   ): ToolLoopGuardVerdict {
+    if (this.skipDetection()) return { kind: 'ok' };
     const verdict = this.guard.onToolResult(toolUseId, output, isError, toolResultBatchId);
     // 被复核的模式已打破(新结果不再疑似)或被替换(新调用不属于被复核的调用集合):
     // 迟到的结论不适用于后续调用。等待/轮询工具与未配对结果不算。
@@ -104,6 +108,14 @@ export class ToolLoopMonitor {
 
   dispose(): void {
     this.cancelReview();
+  }
+
+  private skipDetection(): boolean {
+    if (!this.opts.isDisabled?.()) return false;
+    this.cancelReview();
+    // Re-enabling starts with fresh observations, including final limits.
+    this.guard.resetTurn();
+    return true;
   }
 
   private cancelReview(): void {
@@ -134,7 +146,7 @@ export class ToolLoopMonitor {
       timeout,
     ]).then((outcome) => {
       clearTimeout(timer);
-      if (this.review !== controller) return;
+      if (this.skipDetection() || this.review !== controller) return;
       const pattern = this.reviewedPattern;
       this.review = null;
       this.reviewedPattern = null;
