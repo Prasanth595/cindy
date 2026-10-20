@@ -1,5 +1,6 @@
+import { formatForwardedRequest } from './forwardedRequest.js';
 import { ipcMain } from 'electron';
-import { formatForwardedRequest, matchesForwardedRequest, readForwardedRequestSource, type AgentRequestReceipt } from '../../shared/forwardedRequest.js';
+import { matchesForwardedRequest, readForwardedRequestSource, type AgentRequestReceipt } from '../../shared/forwardedRequest.js';
 import { DL_SESSION_HANDOFF_CHANNEL } from '@cindy/device-link';
 import { sanitizeSourceName } from '@cindy/maker-shared/message-source';
 import type { AgentInputQueuedMessage } from '../../shared/agentInputQueue.js';

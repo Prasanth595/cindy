@@ -1,5 +1,6 @@
+import { getResolvedMainLocale } from '../i18n.js';
 import type { AutoReviewHistoryMessage } from './autoReviewUserIntent.js';
-import { formatForwardedRequest, readForwardedRequestSource, type AgentRequestReceipt, type ForwardedRequestSource } from '../../shared/forwardedRequest.js';
+import { formatForwardedRequest as formatLocalizedForwardedRequest, readForwardedRequestSource, type AgentRequestReceipt, type ForwardedRequestSource } from '../../shared/forwardedRequest.js';
 
 export interface RequestInputEvidence {
   clientId: string;
@@ -49,4 +50,9 @@ export async function captureAgentRequest(
   }
   return { message: formatForwardedRequest(source, supplement),
     autoReviewUserText: { kind: 'agent-request', request: source } };
+}
+
+/** New envelopes follow this host's resolved UI language; authored contents are never translated. */
+export function formatForwardedRequest(source: ForwardedRequestSource, supplement: string): string {
+  return formatLocalizedForwardedRequest(source, supplement, getResolvedMainLocale());
 }

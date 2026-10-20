@@ -16769,5 +16769,14 @@
     "openVideoSource": "開啟原影片",
     "calculationUnavailable": "此項暫時無法計算。",
     "incomplete": "部分內容未能顯示。"
+  },
+  "forwardedRequest": {
+    "sourcePresent": "[來源] 使用者原話由宿主原樣保留，作為請求背景；目前的請求在 Agent補充。",
+    "sourceMissing": "[來源] 未找到可核驗的使用者原話。",
+    "userPrefix": "使用者原話：",
+    "agentPrefix": "Agent補充：",
+    "taskSource": "[任務來源] 本任務由夥伴發起。",
+    "taskId": "任務 ID：",
+    "contextReferences": "參考資料："
   }
 }

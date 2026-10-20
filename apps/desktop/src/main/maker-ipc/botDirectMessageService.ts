@@ -1,5 +1,5 @@
-import { captureAgentRequest, type CapturedAgentRequest } from './forwardedRequest.js';
-import { formatForwardedRequest, matchesForwardedRequest, readForwardedRequestSource, type AgentRequestReceipt, type ForwardedRequestSource } from '../../shared/forwardedRequest.js';
+import { formatForwardedRequest, captureAgentRequest, type CapturedAgentRequest } from './forwardedRequest.js';
+import { matchesForwardedRequest, readForwardedRequestSource, type AgentRequestReceipt, type ForwardedRequestSource } from '../../shared/forwardedRequest.js';
 import { parseBotPeerAddress, botPeerAddress, MAX_BOT_PEER_ADDRESS_CHARS } from '../../shared/botPeerAddress.js';
 import { isCompanionShadowed } from '../companion-cloud/homes.js';
 import { createHash, randomUUID } from 'node:crypto';

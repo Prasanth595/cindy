@@ -1,7 +1,7 @@
 import { captureAgentRequest } from '../../../maker-ipc/forwardedRequest';
 import { formatForwardedRequest } from '../../../../shared/forwardedRequest';
 const forwarded = (text: string) => formatForwardedRequest({ userText: null }, text);
-const supplement = (text: string): string => JSON.parse(text.split('\n').find(line => line.startsWith('agent补充：'))!.slice('agent补充：'.length));
+const supplement = (text: string): string => JSON.parse(text.split('\n').find(line => line.startsWith('Agent supplement:'))!.slice('Agent supplement:'.length));
 import { AcceptedCallbackDispatchCancelled, runAcceptedCallback } from '../../../maker-ipc/acceptedCallbackRunner';
 import { setSessionOpeningModelAdmission } from '../../sessionOpening';
 import { ScriptTarget, transpileModule } from 'typescript';

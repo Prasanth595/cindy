@@ -16828,5 +16828,14 @@
     "openVideoSource": "Open original video",
     "calculationUnavailable": "Unable to calculate this value.",
     "incomplete": "Some content could not be displayed."
+  },
+  "forwardedRequest": {
+    "sourcePresent": "[Source] The host preserved the user’s original words as request background, without changes. The current request is in the Agent supplement.",
+    "sourceMissing": "[Source] No verifiable original user text was found.",
+    "userPrefix": "User’s original words:",
+    "agentPrefix": "Agent supplement:",
+    "taskSource": "[Task source] A companion started this task.",
+    "taskId": "Task ID:",
+    "contextReferences": "Context references:"
   }
 }

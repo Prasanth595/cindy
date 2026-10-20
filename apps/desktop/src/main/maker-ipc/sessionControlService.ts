@@ -1,4 +1,4 @@
-import { formatForwardedRequest } from '../../shared/forwardedRequest.js';
+import { formatForwardedRequest } from './forwardedRequest.js';
 import type {
   AgentKind,
   Effort,

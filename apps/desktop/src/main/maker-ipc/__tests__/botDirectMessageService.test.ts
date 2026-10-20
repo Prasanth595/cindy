@@ -698,7 +698,7 @@ describe('botDirectMessageService', () => {
     expect(header).toMatch(/^\[Direct message from Cindy Bot "[^\n]+" \(bot-a\)\]$/);
     expect(header.length).toBeLessThanOrEqual(180);
     expect(envelope.split('\n\n')).toHaveLength(2);
-    expect(envelope).toContain('agent补充："hello"');
+    expect(envelope).toContain('Agent supplement:"hello"');
   });
 
   it.each([

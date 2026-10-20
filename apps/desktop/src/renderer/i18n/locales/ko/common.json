@@ -16769,5 +16769,14 @@
     "openVideoSource": "원본 동영상 열기",
     "calculationUnavailable": "이 값을 계산할 수 없습니다.",
     "incomplete": "일부 내용을 표시하지 못했습니다."
+  },
+  "forwardedRequest": {
+    "sourcePresent": "[출처] 호스트가 사용자 원문을 요청의 배경으로 그대로 보존했습니다. 현재 요청은 Agent 보충에 있습니다.",
+    "sourceMissing": "[출처] 확인 가능한 사용자 원문을 찾지 못했습니다.",
+    "userPrefix": "사용자 원문:",
+    "agentPrefix": "Agent 보충:",
+    "taskSource": "[작업 출처] 파트너가 시작한 작업입니다.",
+    "taskId": "작업 ID:",
+    "contextReferences": "참고 자료:"
   }
 }

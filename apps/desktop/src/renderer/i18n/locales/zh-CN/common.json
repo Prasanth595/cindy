@@ -16769,5 +16769,14 @@
     "openVideoSource": "打开原视频",
     "calculationUnavailable": "此项暂时无法计算。",
     "incomplete": "部分内容未能显示。"
+  },
+  "forwardedRequest": {
+    "sourcePresent": "[来源] 用户原话由宿主原样保留，作为请求背景；当前请求在 Agent补充。",
+    "sourceMissing": "[来源] 未找到可核验的用户原话。",
+    "userPrefix": "用户原话：",
+    "agentPrefix": "Agent补充：",
+    "taskSource": "[任务来源] 本任务由伙伴发起。",
+    "taskId": "任务 ID：",
+    "contextReferences": "参考资料："
   }
 }

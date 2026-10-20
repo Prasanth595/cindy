@@ -1,5 +1,5 @@
-import { captureAgentRequest, type CapturedAgentRequest } from './forwardedRequest.js';
-import { formatForwardedRequest, readForwardedRequestSource, type AgentRequestReceipt, type ForwardedRequestSource } from '../../shared/forwardedRequest.js';
+import { formatForwardedRequest, captureAgentRequest, type CapturedAgentRequest } from './forwardedRequest.js';
+import { readForwardedRequestSource, type AgentRequestReceipt, type ForwardedRequestSource } from '../../shared/forwardedRequest.js';
 import { openSession } from '../localDb/sessionOpening.js';
 import { authorizeGroupTool, GroupToolAuthorizationError } from './botGroupToolAuthorization.js';
 import { controlOwnedSessionExecution, isSameSessionExecution, withdrawOwnedSessionInputs } from './sessionExecutionOwnership.js';
@@ -1846,12 +1846,12 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
     permissionSnapshotJson: string;
     runSequence: number;
   }): string => [
-    '[任务来源] 本任务由伙伴发起，执行内容在 agent补充；用户原话作为请求背景原样保留。',
-    `Task ID: ${row.id}`,
+    t('forwardedRequest.taskSource'),
+    `${t('forwardedRequest.taskId')} ${row.id}`,
     formatForwardedRequest(readForwardedRequestSource(readSessionTaskInput(row)?.requestSource) ?? { userText: null }, [
       taskObjectiveContext(row),
       parseStringArray(row.contextRefsJson).length
-        ? `Context references:\n${parseStringArray(row.contextRefsJson).join('\n')}` : '',
+        ? `${t('forwardedRequest.contextReferences')}\n${parseStringArray(row.contextRefsJson).join('\n')}` : '',
     ].filter(Boolean).join('\n\n')),
   ].join('\n\n');
 

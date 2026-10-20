@@ -16769,5 +16769,14 @@
     "openVideoSource": "元の動画を開く",
     "calculationUnavailable": "この値を計算できません。",
     "incomplete": "一部の内容を表示できませんでした。"
+  },
+  "forwardedRequest": {
+    "sourcePresent": "[出典] ホストがユーザーの原文を依頼の背景としてそのまま保持しています。現在の依頼は Agent の補足にあります。",
+    "sourceMissing": "[出典] 確認可能なユーザーの原文が見つかりません。",
+    "userPrefix": "ユーザーの原文：",
+    "agentPrefix": "Agent の補足：",
+    "taskSource": "[タスクの出典] このタスクはパートナーが開始しました。",
+    "taskId": "タスク ID：",
+    "contextReferences": "参考資料："
   }
 }
