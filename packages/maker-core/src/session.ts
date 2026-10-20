@@ -215,6 +215,8 @@ export interface SessionOptions {
   toolLoopReviewer?: ToolLoopReviewer;
   /** Host preference: true bypasses all Cindy tool loop detection. Default false. */
   isToolLoopGuardDisabled?: () => boolean;
+  /** Subscribe to persisted preference changes; returns an unsubscribe function. */
+  onToolLoopGuardChanged?: (listener: () => void) => () => void;
 }
 
 function redactEventForListeners(event: AgentEvent): AgentEvent {
@@ -468,6 +470,7 @@ export class Session {
   private readonly visionBridge: VisionBridgeHook | undefined;
   private readonly toolLoopReviewer: ToolLoopReviewer | undefined;
   private readonly isToolLoopGuardDisabled: (() => boolean) | undefined;
+  private readonly onToolLoopGuardChanged: ((listener: () => void) => () => void) | undefined;
   private permissionModeStateValue: PermissionModeState;
   private permissionModeChangeChain: Promise<void> = Promise.resolve();
   private permissionModeChangesInFlight = 0;
@@ -627,6 +630,7 @@ export class Session {
     this.visionBridge = opts.visionBridge;
     this.toolLoopReviewer = opts.toolLoopReviewer;
     this.isToolLoopGuardDisabled = opts.isToolLoopGuardDisabled;
+    this.onToolLoopGuardChanged = opts.onToolLoopGuardChanged;
     this.asyncUserQuestions = new AsyncUserQuestions({
       isActive: (generation) => this.status === 'active' && !this.terminationStarted
         && generation === this.turnGeneration && this.handle.isTurnRunning?.() === true,
@@ -2360,6 +2364,12 @@ export class Session {
       }), {
         reviewer: this.toolLoopReviewer,
         isDisabled: this.isToolLoopGuardDisabled,
+        onPreferenceChanged: this.onToolLoopGuardChanged,
+        onPreferenceReset: () => {
+          if (this.turnControlState?.generation === generation) {
+            this.turnControlState.pendingToolLoop = null;
+          }
+        },
         context: () => ({ sessionId: this.id, agentKind: this.agentKind, model: this.handle.model }),
         onReviewedStop: (verdict) => this.interruptReviewedToolLoop(verdict, generation),
         logger: this.logger,

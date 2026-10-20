@@ -159,6 +159,8 @@ export interface MakerDeps {
   toolLoopReviewer?: import('./agents/shared/tool-loop-review.js').ToolLoopReviewer;
   /** Host preference: true bypasses all Cindy tool loop detection. Default false. */
   isToolLoopGuardDisabled?: () => boolean;
+  /** Subscribe to persisted preference changes; returns an unsubscribe function. */
+  onToolLoopGuardChanged?: (listener: () => void) => () => void;
 }
 
 export interface CreateSessionOptions extends StartSessionOptions {
@@ -523,6 +525,7 @@ export class Maker {
   protected readonly visionBridge: import('./types/vision-bridge.js').VisionBridgeHook | undefined;
   private readonly toolLoopReviewer: import('./agents/shared/tool-loop-review.js').ToolLoopReviewer | undefined;
   private readonly isToolLoopGuardDisabled: (() => boolean) | undefined;
+  private readonly onToolLoopGuardChanged: ((listener: () => void) => () => void) | undefined;
   private readonly startDeviceAgentSession: MakerDeps['startDeviceAgentSession'];
 
   constructor(deps: MakerDeps) {
@@ -532,6 +535,7 @@ export class Maker {
     this.visionBridge = deps.visionBridge;
     this.toolLoopReviewer = deps.toolLoopReviewer;
     this.isToolLoopGuardDisabled = deps.isToolLoopGuardDisabled;
+    this.onToolLoopGuardChanged = deps.onToolLoopGuardChanged;
     // 不 child 自己名字 — host 传进来的 logger 通常已经命名(如 'maker'),
     // 再 child 'maker' 会变成 'maker/maker'。host 自己决定 root scope 名字。
     this.logger = deps.logger;
@@ -1110,6 +1114,7 @@ export class Maker {
       visionBridge: startOpts.visionBridge ?? this.visionBridge,
       toolLoopReviewer: this.toolLoopReviewer,
       isToolLoopGuardDisabled: this.isToolLoopGuardDisabled,
+      onToolLoopGuardChanged: this.onToolLoopGuardChanged,
     });
 
     // 另一台电脑上的 Claude Code：新编号等这一轮成功结束才落库。失联的回合里，对方可能还没写出

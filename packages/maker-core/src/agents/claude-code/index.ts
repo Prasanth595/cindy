@@ -3078,6 +3078,7 @@ export class ClaudeCodeAgent extends BaseAgent {
         // (2026-10-13 用户裁决)。
         reviewer: this.deps.toolLoopReviewer,
         isDisabled: this.deps.isToolLoopGuardDisabled,
+        onPreferenceChanged: this.deps.onToolLoopGuardChanged,
         reviewBudget: toolLoopReviewBudget,
         context: () => ({
           sessionId: sid,

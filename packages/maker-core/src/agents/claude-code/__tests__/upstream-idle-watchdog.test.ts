@@ -150,6 +150,7 @@ async function startSessionWithStream(
   resumeSessionId?: string,
   remote = false,
   isToolLoopGuardDisabled?: () => boolean,
+  onToolLoopGuardChanged?: (listener: () => void) => () => void,
 ) {
   const configDir = await makeTempDir();
   process.env.CLAUDE_CONFIG_DIR = configDir;
@@ -172,6 +173,7 @@ async function startSessionWithStream(
 
   const deps = createDeps(toolLoopReviewer);
   deps.isToolLoopGuardDisabled = isToolLoopGuardDisabled;
+  deps.onToolLoopGuardChanged = onToolLoopGuardChanged;
   let onApprovalRequest: ((params: unknown) => Promise<unknown>) | undefined;
   if (remote) {
     deps.remoteCcQueryFactory = async (options) => {
@@ -701,9 +703,15 @@ describe('Claude Code tool-loop guard runtime integration', () => {
     { remote: true, parentToolUseId: null },
   ])('hot-applies loop bypass: remote=$remote parent=$parentToolUseId', async ({ remote, parentToolUseId }) => {
     let disabled = false;
+    const listeners = new Set<() => void>();
     const { handle, stream, events, fakeQuery, collected } = await startSessionWithStream(
       'claude-opus-4-6', undefined, undefined, undefined, remote, () => disabled,
+      listener => { listeners.add(listener); return () => { listeners.delete(listener); }; },
     );
+    const setDisabled = (next: boolean) => {
+      disabled = next;
+      for (const listener of listeners) listener();
+    };
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
     const call = async (i: number) => {
       const id = 'echo-' + i;
@@ -724,12 +732,17 @@ describe('Claude Code tool-loop guard runtime integration', () => {
     try {
       await handle.send({ type: 'user', content: 'repeat forty times' });
       for (let i = 0; i < 3; i++) await call(i);
-      disabled = true;
-      for (let i = 3; i < 40; i++) await call(i);
+      // No tool event between switches: the old three-call streak must be gone.
+      setDisabled(true);
+      setDisabled(false);
+      await call(3);
+      expect(toolLoopError(events)).toBeUndefined();
+      setDisabled(true);
+      for (let i = 4; i < 40; i++) await call(i);
       expect(toolLoopError(events)).toBeUndefined();
       expect(fakeQuery.interrupt).not.toHaveBeenCalled();
       expect(handle.isTurnRunning?.()).toBe(true);
-      disabled = false;
+      setDisabled(false);
       for (let i = 40; i < 44; i++) await call(i);
       await pumpUntil(() => fakeQuery.interrupt.mock.calls.length === 1, 'loop interrupted');
       expect(toolLoopError(events)).toMatchObject({ data: { loopKind: 'consecutive', loopCount: 4 } });

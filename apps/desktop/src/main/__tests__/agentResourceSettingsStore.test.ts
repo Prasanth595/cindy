@@ -28,6 +28,7 @@ import {
   readAgentResourceSettings,
   writeAgentResourceSetting,
   resetAgentResourceSettings,
+  onToolLoopGuardChanged,
 } from '../maker-host/agent-resource-settings-store';
 
 describe('agent resource settings store', () => {
@@ -75,6 +76,9 @@ describe('agent resource settings store', () => {
   it('defaults detection on, persists bypass, and removes its override on reset', () => {
     electronMock.userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-loop-setting-'));
     const file = path.join(electronMock.userDataDir, 'agent-resource-settings.json');
+    // #6516: notify only after persistence, including reset and rapid switches.
+    const observed: boolean[] = [];
+    const unsubscribe = onToolLoopGuardChanged(() => observed.push(readAgentResourceSettings().disableToolLoopGuard));
     try {
       expect(readAgentResourceSettings().disableToolLoopGuard).toBe(false);
       writeAgentResourceSetting('disableToolLoopGuard', true);
@@ -83,7 +87,17 @@ describe('agent resource settings store', () => {
       expect(resetAgentResourceSettings().disableToolLoopGuard).toBe(false);
       expect(fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')).disableToolLoopGuard : undefined).toBeUndefined();
       expect(__testing.normalize({ disableToolLoopGuard: 'true' }).disableToolLoopGuard).toBe(false);
+      expect(observed).toEqual([true, false]);
+      writeAgentResourceSetting('disableToolLoopGuard', true);
+      writeAgentResourceSetting('disableToolLoopGuard', false);
+      writeAgentResourceSetting('disableToolLoopGuard', false);
+      writeAgentResourceSetting('maxConcurrentCommands', 2);
+      expect(observed).toEqual([true, false, true, false]);
+      unsubscribe();
+      writeAgentResourceSetting('disableToolLoopGuard', true);
+      expect(observed).toHaveLength(4);
     } finally {
+      unsubscribe();
       fs.rmSync(electronMock.userDataDir, { recursive: true, force: true });
       electronMock.userDataDir = '';
     }

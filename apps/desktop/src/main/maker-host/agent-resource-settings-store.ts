@@ -99,6 +99,18 @@ const store = createOverrideSettingsFile<AgentResourceSettings>({
   label: 'agent-resource',
 });
 
+const toolLoopGuardListeners = new Set<() => void>();
+
+/** UI writes notify active monitors synchronously, including rapid on/off switches. */
+export function onToolLoopGuardChanged(listener: () => void): () => void {
+  toolLoopGuardListeners.add(listener);
+  return () => { toolLoopGuardListeners.delete(listener); };
+}
+
+function notifyToolLoopGuardChanged(): void {
+  for (const listener of toolLoopGuardListeners) listener();
+}
+
 export function readAgentResourceSettings(): AgentResourceSettings {
   // 隐藏配置约定:直接改文件也是正式入口,读取前按 mtime 失效缓存。
   store.invalidateIfChanged();
@@ -118,12 +130,17 @@ export function writeAgentResourceSetting<K extends keyof AgentResourceSettings>
   // writePatch 会基于旧缓存的 overrides 计算,把进程外修改的其它 key 静默
   // 覆盖回去(bot review P1)。
   store.invalidateIfChanged();
+  const previous = store.read().disableToolLoopGuard;
   store.writePatch({ [key]: value } as Partial<AgentResourceSettings>);
+  if (store.read().disableToolLoopGuard !== previous) notifyToolLoopGuardChanged();
   log.info('agent resource setting written', { key, value });
 }
 
 export function resetAgentResourceSettings(): AgentResourceSettings {
-  return store.reset();
+  const previous = readAgentResourceSettings().disableToolLoopGuard;
+  const settings = store.reset();
+  if (settings.disableToolLoopGuard !== previous) notifyToolLoopGuardChanged();
+  return settings;
 }
 
 export const __testing = { normalize };

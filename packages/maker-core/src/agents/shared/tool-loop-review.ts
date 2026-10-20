@@ -39,6 +39,10 @@ export interface ToolLoopReviewBudget {
 export interface ToolLoopMonitorOptions {
   /** Host preference, read at each observation and before applying a review. */
   isDisabled?: () => boolean;
+  /** Observe switches even when no tool events arrive between two changes. */
+  onPreferenceChanged?: (listener: () => void) => () => void;
+  /** Clear any verdict already queued by the caller for delayed delivery. */
+  onPreferenceReset?: () => void;
   reviewer?: ToolLoopReviewer;
   /** 缺省为本 monitor 独占;传入同一对象即共享每 turn 的复核上限。 */
   reviewBudget?: ToolLoopReviewBudget;
@@ -62,12 +66,17 @@ export class ToolLoopMonitor {
   /** 进行中复核所针对的调用集合;新结果的调用不在其中即视为模式已被替换。 */
   private reviewedPattern: ReadonlySet<string> | null = null;
   private readonly budget: ToolLoopReviewBudget;
+  private unsubscribePreference: (() => void) | undefined;
 
   constructor(
     private readonly guard: ToolLoopGuard,
     private readonly opts: ToolLoopMonitorOptions,
   ) {
     this.budget = opts.reviewBudget ?? { used: 0 };
+    this.unsubscribePreference = opts.onPreferenceChanged?.(() => {
+      this.resetTurn();
+      opts.onPreferenceReset?.();
+    });
   }
 
   onToolUse(toolUseId: string, toolName: unknown, input: unknown): void {
@@ -107,6 +116,8 @@ export class ToolLoopMonitor {
   }
 
   dispose(): void {
+    this.unsubscribePreference?.();
+    this.unsubscribePreference = undefined;
     this.cancelReview();
   }
 

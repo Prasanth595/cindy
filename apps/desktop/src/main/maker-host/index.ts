@@ -185,7 +185,7 @@ import {
   mergeClaudeHooks,
 } from './claude-hooks/bash-concurrency-hook.js';
 import { createReadImageHook } from './claude-hooks/read-image-hook.js';
-import { readAgentResourceSettings } from './agent-resource-settings-store.js';
+import { onToolLoopGuardChanged, readAgentResourceSettings } from './agent-resource-settings-store.js';
 import { createCommandConcurrencyGate } from './command-concurrency-gate.js';
 import {
   deriveAvailableModels,
@@ -1358,6 +1358,7 @@ export function getMaker(): Maker {
       },
       registerLocalAgentProcess: ({ pid, kind, role }) => registerAgentProcess(pid, kind, role),
       reviewAutoPermissionAction,
+      onToolLoopGuardChanged,
       toolLoopReviewer: reviewToolLoop,
       isToolLoopGuardDisabled: () => readAgentResourceSettings().disableToolLoopGuard,
       // 每个 session 的 cc 子进程 debug 写到 sessions/<id>/cc-debug.raw.log (logger 拼路径
@@ -2840,6 +2841,7 @@ export function getMaker(): Maker {
       }),
       makerMemory: makerMemoryManager,
       visionBridge: _visionBridgeInstance.hook,
+      onToolLoopGuardChanged,
       toolLoopReviewer: reviewToolLoop,
       isToolLoopGuardDisabled: () => readAgentResourceSettings().disableToolLoopGuard,
       // Desktop-specific session 生命周期副作用钩子。maker-core 不知道文件系统细节，
