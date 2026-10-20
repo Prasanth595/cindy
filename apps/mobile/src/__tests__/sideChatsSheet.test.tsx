@@ -8,6 +8,9 @@ import ts from 'typescript';
 import { describe, expect, it, vi } from 'vitest';
 import { getMobileAuthOwner } from '../auth/authOwnerGeneration';
 import { useSideChatCount } from '../session/useSideChatCount';
+import { summarizeSessionOverview } from '../session/sessionOverview';
+import { projectMobileSessionActions } from '../session/sessionActionProjection';
+import type { RemoteSession } from '../session/types';
 
 const summaryStore = vi.hoisted(() => ({
   rows: [] as any[], listeners: new Set<() => void>(),
@@ -55,6 +58,80 @@ const compiled = ts.transpileModule(component.getText(source).replace('export fu
 const Picker = new Function(...Object.keys(bindings), compiled)(...Object.values(bindings));
 const main = { id: 'main', status: 'active' };
 const child = { id: 'child', source: 'side-chat', parentSessionId: main.id, status: 'active' };
+
+// PR #6529 CI regression: the old guard required an exact Worker-only predicate,
+// so adding side chats failed CI even though the header behaved correctly.
+// Existing picker tests do not render the header. Unit tier: execute the real
+// action projection, header and buttons; substitute platform/title rendering. The minimal
+// matrix is an ordinary task, a Worker and a side chat with a working directory.
+// Both native-title branches must receive detailsOnly; Android must hide the
+// desktop/files buttons while keeping the details action usable.
+const headerSource = ts.createSourceFile('session.tsx', readFileSync(resolve(process.cwd(), 'app/sessions/[sessionId].tsx'), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+const headerFunctions = ['SessionHeaderBar', 'SessionHeaderIconButton', 'sessionHeaderActionIcon'];
+const headerCode = headerFunctions.map(name => {
+  const node = headerSource.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === name);
+  if (!node) throw new Error(`Missing production component: ${name}`);
+  return node.getText(headerSource);
+}).join('\n');
+const actionIds = headerSource.statements.find(node => ts.isVariableStatement(node)
+  && node.declarationList.declarations.some(declaration => declaration.name.getText(headerSource) === 'SESSION_ACTION_TEST_IDS'));
+if (!actionIds) throw new Error('Missing header action IDs');
+const headerPlatform = { OS: 'android' };
+const icon = () => null;
+const nativeActions = vi.fn((_props: unknown) => null);
+const toolbar = Object.assign(native, { View: native });
+const headerBindings = {
+  ...bindings, summarizeSessionOverview, projectMobileSessionActions, Platform: headerPlatform,
+  Pressable: native,
+  useWindowDimensions: () => ({ width: 400, height: 800 }),
+  useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
+  Stack: { Screen: () => null, Toolbar: toolbar },
+  compactSessionHeaderNotice: () => null, useDoubleTap: () => undefined,
+  useSystemNavigationBack: () => false, ScreenBackButton: () => null,
+  SystemNavigationBack: () => null, SessionHeaderNativeBack: () => null,
+  SessionHeaderNativeTitle: () => null, SessionHeaderNativeActions: nativeActions,
+  TaskTagDots: () => null, QuietSyncIndicator: () => null,
+  Monitor: icon, Folder: icon, List: icon, Search: icon, Ellipsis: icon,
+  spacing: { lg: 16, sm: 8, xs: 4 }, navigationChrome: { target: 44 }, iconSize: {}, iconStroke: {},
+  RouteActionButton: ({ children, testID, onPress, disabled }: any) =>
+    <button data-testid={testID} onClick={onPress} disabled={disabled}>{children}</button>,
+};
+const compiledHeader = ts.transpileModule(`${actionIds.getText(headerSource)}\n${headerCode}\nreturn SessionHeaderBar;`, {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.React },
+}).outputText;
+const Header = new Function(...Object.keys(headerBindings), compiledHeader)(...Object.values(headerBindings));
+
+describe('Worker and side-chat task headers', () => {
+  it.each([
+    ['android', false], ['ios', false], ['ios', true],
+  ] as const)('keeps details available and hides unrelated task tools on %s (system header: %s)', (platform, horizontalSystemHeader) => {
+    Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+    headerPlatform.OS = platform;
+    const host = document.createElement('div'), root = createRoot(host);
+    const onOpenSettings = vi.fn();
+    const props = { horizontalSystemHeader, onOpenSettings, title: 'Task', noticeOverride: '',
+      onOpenFiles: vi.fn(), onOpenRemoteDesktop: vi.fn(), messageCount: 1, pendingCount: 0, queueCount: 0 };
+    try {
+      for (const kind of ['task', 'worker', 'side-chat'] as const) {
+        const currentSession = { id: kind, status: 'active', workingDir: '/repo',
+          orcaRole: kind === 'worker' ? 'worker' : undefined,
+          source: kind === 'side-chat' ? 'side-chat' : 'desktop' } as RemoteSession;
+        act(() => root.render(<Header {...props} currentSession={currentSession} />));
+        if (platform === 'ios') {
+          const nativeProps = nativeActions.mock.lastCall![0] as any;
+          expect(nativeProps.detailsOnly).toBe(kind !== 'task');
+          nativeProps.onDetails();
+        } else {
+          for (const id of ['session.remoteDesktop', 'session.filesButton']) {
+            expect(!!host.querySelector(`[data-testid="${id}"]`)).toBe(kind === 'task');
+          }
+          act(() => host.querySelector<HTMLButtonElement>('[data-testid="session.controlsToggle"]')!.click());
+        }
+      }
+      expect(onOpenSettings).toHaveBeenCalledTimes(3);
+    } finally { act(() => root.unmount()); }
+  });
+});
 
 describe('side chat picker', () => {
   it('navigates once after native dismissal; reopening cancels an old selection', async () => {
