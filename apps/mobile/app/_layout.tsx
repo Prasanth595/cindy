@@ -86,11 +86,13 @@ import { usePendingSharedTaskInvitationIntent } from '@/device-link/sharedTaskIn
 import { removeLegacyClipboardInvitationHistory } from '@/device-link/legacyClipboardInvitationHistory';
 import { HomeEntryProvider, useHomeEntrySplashRelease } from '@/session/HomeEntryProvider';
 import { RemoteDesktopHost } from '@/remote-desktop/RemoteDesktopHost';
+import { usePendingVoiceConversationIntent, voiceConversationIntentHref } from '@/session/voiceConversationIntent';
 
 const holdSplash = () => undefined;
 
 function NavigationGate() {
   const pendingSharedTaskInvitation = usePendingSharedTaskInvitationIntent();
+  const pendingVoiceConversation = usePendingVoiceConversationIntent();
   const windowGeometry = useAdaptiveWindow();
   // Establish chrome before push starts, rather than revealing a hidden bar after mount.
   const sessionHeaderShown = Platform.OS === 'ios'
@@ -142,11 +144,12 @@ function NavigationGate() {
     }
     if (auth.isAuthenticated && inAuthGroup) {
       if (pendingSharedTaskInvitation) router.replace('/shared-session');
+      else if (pendingVoiceConversation) router.replace(voiceConversationIntentHref(pendingVoiceConversation) as never);
       else router.replace('/');
     } else if (auth.isAuthenticated && pendingSharedTaskInvitation && segments.join('/') !== 'shared-session') {
       router.replace('/shared-session');
     }
-  }, [auth.initialized, auth.isAuthenticated, pendingSharedTaskInvitation, router, segments]);
+  }, [auth.initialized, auth.isAuthenticated, pendingSharedTaskInvitation, pendingVoiceConversation, router, segments]);
 
   useEffect(() => {
     if (!auth.isAuthenticated || !auth.accountDeletionRestored) return;

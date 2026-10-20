@@ -1,3 +1,8 @@
+import { VoiceConversationBar } from '@/session/VoiceConversationBar';
+import { useVoiceConversation } from '@/session/useVoiceConversation';
+import { transferVoiceConversationToSession } from '@/session/voiceConversationIntent';
+import { toDeviceListItems } from '@/device-link/devices';
+import { revokedDevicesStore } from '@/device-link/revokedDevicesStore';
 import { useNewSessionHostDefaults } from '@/session/useNewSessionHostDefaults';
 import { ErrorNotice } from '@/components/ErrorNotice';
 import { useNewSessionDefaultSelection } from '@/session/useNewSessionDefaultSelection';
@@ -501,6 +506,7 @@ export default function NewRemoteSessionScreen() {
     deviceId?: string;
     deviceName?: string;
     deviceOptions?: string;
+    voiceConversation?: string;
     workingDir?: string;
     deviceExplicit?: string;
     visualFocusComposer?: string;
@@ -512,6 +518,7 @@ export default function NewRemoteSessionScreen() {
     editSessionId?: string;
     creationError?: string;
   }>();
+  const voiceConversationRequestId = Platform.OS === 'ios' ? readRouteString(params.voiceConversation) : null;
   const routeDeviceId = String(params.deviceId ?? '');
   const routeDeviceName = String(params.deviceName ?? routeDeviceId);
   const initialWorkingDir = readRouteString(params.workingDir);
@@ -537,6 +544,7 @@ export default function NewRemoteSessionScreen() {
   const outboxOwner = useSyncExternalStore(subscribeMobileAuthOwner, getMobileAuthOwner, getMobileAuthOwner);
   const {
     getPresenceAvailability,
+    readDeviceList,
     invoke,
     openLink,
     subscribe,
@@ -552,10 +560,23 @@ export default function NewRemoteSessionScreen() {
     () => routeDeviceId ? { deviceId: routeDeviceId, name: routeDeviceName || routeDeviceId } : null,
     [routeDeviceId, routeDeviceName],
   );
+  const [voiceDevices, setVoiceDevices] = useState<NewSessionDeviceOption[]>([]);
   const deviceOptions = useMemo(
-    () => parseNewSessionDeviceOptions(params.deviceOptions, routeDeviceFallback),
-    [params.deviceOptions, routeDeviceFallback],
+    () => voiceConversationRequestId && !params.deviceOptions
+      ? voiceDevices : parseNewSessionDeviceOptions(params.deviceOptions, routeDeviceFallback),
+    [voiceConversationRequestId, params.deviceOptions, routeDeviceFallback, voiceDevices],
   );
+  useEffect(() => {
+    if (!voiceConversationRequestId || !auth.isAuthenticated) return;
+    let current = true;
+    void readDeviceList().then(({ devices }) => {
+      if (!current) return;
+      setVoiceDevices(toDeviceListItems(devices, Date.now(), revokedDevicesStore.getSnapshot())
+        .filter(item => item.canOpen)
+        .map(item => ({ deviceId: item.device.deviceId, name: item.device.name || item.device.deviceId })));
+    }).catch(() => { if (current) setVoiceDevices([]); });
+    return () => { current = false; };
+  }, [voiceConversationRequestId, auth.isAuthenticated, auth.accountGeneration, readDeviceList, connectionEpoch]);
   // 路由设备何时算"显式指定"(盖过上次选择的记忆):项目入口(带 workingDir)、只有一台
   // 可选电脑,或入口明确带 deviceExplicit 标记(首页列表正筛选某台电脑时新建跟随它)。
   const routeDeviceExplicit = !!routeDeviceId
@@ -967,7 +988,7 @@ export default function NewRemoteSessionScreen() {
   if (incomingShareBatch) incomingShareReceivedRef.current = true;
   const isShareTargetFocused = useIsFocused();
   useAutoResumeNewSessionDraft({
-    enabled: !(params.recoverySessionId || params.editSessionId || params.draft || params.suggestion
+    enabled: !(voiceConversationRequestId || params.recoverySessionId || params.editSessionId || params.draft || params.suggestion
       || visualInitialDraft || !newSessionPreferencesLoaded),
     deviceId: selectedDeviceId, workingDir: initialWorkingDir, owner: outboxOwner,
     hasInput: hasRecoveryInput,
@@ -2001,7 +2022,7 @@ export default function NewRemoteSessionScreen() {
     setVoiceState('idle');
     setVoiceError(null);
     discardPendingPrewarm();
-    if (controller) void controller.cancel().catch(() => undefined);
+    return controller?.cancel().catch(() => undefined);
   }, [setVoiceState]);
 
   useEffect(() => {
@@ -3525,7 +3546,7 @@ export default function NewRemoteSessionScreen() {
     };
   }, [maker]);
 
-  const startVoiceRecording = useCallback(async () => {
+  const startVoiceRecording = useCallback(async (forConversation = false) => {
     if (
       voicePermissionRequestInFlightRef.current
       || voiceStartupInFlightRef.current
@@ -3705,7 +3726,7 @@ export default function NewRemoteSessionScreen() {
         // re-activates the AVAudioSession and stalls the record tap (see
         // mobileVoiceCue.ts). Only the end cue, which plays after capture stops,
         // is wired.
-        onReadyForEndCue: credential.settings?.playInteractionSound ? playMobileVoiceInputEndCue : undefined,
+        onReadyForEndCue: !forConversation && credential.settings?.playInteractionSound ? playMobileVoiceInputEndCue : undefined,
         recordHistory: (text) => recordMobileVoiceInputHistoryForHost(selectedDeviceId, text),
         updateHistoryEntry: (entryId, text) => updateMobileVoiceInputHistoryEntryForHost(selectedDeviceId, entryId, text),
         onRefinementApplied: (input) => {
@@ -3933,7 +3954,7 @@ export default function NewRemoteSessionScreen() {
       }}
       disabled={!canCreate}
       hitSlop={10}
-      onPress={() => void create()}
+      onPress={() => voiceConversation.active ? voiceConversation.submit() : void create()}
       style={({ pressed }) => [
         styles.sendButton,
         !canCreate && styles.sendButtonDisabled,
@@ -4098,8 +4119,8 @@ export default function NewRemoteSessionScreen() {
       <Pressable
         accessibilityLabel={voiceIsListening ? t('session.common.voiceStopRecording') : t('session.new.voiceInput')}
         accessibilityRole="button"
-        accessibilityState={{ busy: voiceIsProcessing || undefined, disabled: creating || undefined }}
-        disabled={creating || voiceIsProcessing}
+        accessibilityState={{ busy: voiceIsProcessing || undefined, disabled: voiceConversation.active || creating || voiceIsProcessing || undefined }}
+        disabled={voiceConversation.active || creating || voiceIsProcessing}
         hitSlop={10}
         onPress={() => {
           if (voiceStartedOnPressInRef.current) {
@@ -4491,14 +4512,14 @@ export default function NewRemoteSessionScreen() {
     patchDraft({ permissionMode: remembered && remembered !== 'plan' ? remembered : fallback });
   }, [draft.permissionMode, patchDraft, planModeCapability, runtimeOptions.permissionOptions]);
 
-  const createMessageSession = useCallback(async () => {
+  const createMessageSession = useCallback(async (voiceTranscript?: string) => {
     if (leaveForeignOutboxRecovery()) return;
     if (
       creatingRef.current
       || voicePermissionRequestInFlightRef.current
       || voiceStartupInFlightRef.current
       || voiceStopInFlightRef.current
-      || voiceIsProcessing
+      || (voiceIsProcessing && voiceTranscript === undefined)
     ) return;
     if (!selectedDeviceId) {
       setError(t('session.new.selectDeviceError'));
@@ -4555,6 +4576,7 @@ export default function NewRemoteSessionScreen() {
       if (!isCurrentOwner()) return;
       // 选了另一台电脑的模型:模型 / 来源 / 档位与 Agent 所在电脑一起落进要创建的草稿。
       let effectiveDraft = applyRemoteAgentPick(draft, remoteAgentPick);
+      if (voiceTranscript !== undefined) effectiveDraft = { ...effectiveDraft, firstMessage: voiceTranscript };
       // ㉙ 设备守卫全程化(独立 review P1-1/P1-2):设备快照必须取自**闭包**
       // selectedDeviceId(真正会创建会话的目标设备)——selectedDeviceRef 是渲染后
       // 的最新值,若用户在渲染与点击之间切了设备,ref 已属新设备而闭包 maker/目录
@@ -4566,7 +4588,7 @@ export default function NewRemoteSessionScreen() {
       // incremental write failure must not permanently block another attempt.
       await flushRecoveredDraft().catch(() => undefined);
       if (!isCurrentOwner() || !ensureDeviceAlive()) return;
-      if (voiceRecordingActiveRef.current || voiceState === 'listening') {
+      if (voiceTranscript === undefined && (voiceRecordingActiveRef.current || voiceState === 'listening')) {
         const latestDraftText = await finishVoiceRecording();
         if (!isCurrentOwner()) return;
         if (!ensureDeviceAlive()) return;
@@ -5117,10 +5139,15 @@ export default function NewRemoteSessionScreen() {
       // 缓存文件永久留在本地)。
       composerAnnotationsRef.current?.forgetAllAttachments();
       handedOff = true;
+      const voiceRequestId = voiceConversationRequestId;
+      const voiceHandoff = voiceTranscript !== undefined && voiceRequestId
+        && transferVoiceConversationToSession(voiceRequestId, { sessionId, deviceId: deviceIdSnapshot, clientId: firstMessageClientId });
       router.replace({
         pathname: '/sessions/[sessionId]',
-        params: { sessionId, deviceId: deviceIdSnapshot, deviceName: selectedDeviceName },
+        params: { sessionId, deviceId: deviceIdSnapshot, deviceName: selectedDeviceName,
+          ...(voiceHandoff ? { voiceConversation: voiceRequestId } : {}) },
       });
+      return firstMessageClientId;
     } catch (err) {
       if (!isCurrentOwner()) return;
       // agent 未鉴权(电脑端没配 key / 没登录)是新任务失败的高频原因。
@@ -5137,6 +5164,7 @@ export default function NewRemoteSessionScreen() {
       }
     }
   }, [
+    voiceConversationRequestId,
     agentAuthVerdict,
     auth.user?.id,
     collabDraft,
@@ -5177,6 +5205,24 @@ export default function NewRemoteSessionScreen() {
     isWorktreeCreateIntentCurrent,
     resolveWorktreeCreateErrorKey,
   ]);
+
+  const voiceConversation = useVoiceConversation({
+    requestId: voiceConversationRequestId,
+    scope: `${auth.accountGeneration}:new:${selectedDeviceId}`,
+    deviceId: selectedDeviceId,
+    ready: !!selectedDeviceId && newSessionPreferencesLoaded && !runtimePendingRef.current && !creating,
+    focused: isShareTargetFocused,
+    draft: draft.firstMessage,
+    getDraft: () => firstMessageRef.current,
+    voiceError,
+    startListening: async () => {
+      await startVoiceRecording(true);
+      if (!voiceRecordingActiveRef.current) throw new Error('VOICE_START_CANCELLED');
+    },
+    finishListening: finishVoiceRecording,
+    cancelListening: cancelVoiceForDeviceSwitch,
+    send: text => createMessageSession(text),
+  });
 
   // 目标模式建会话(对齐桌面 handleCreateGoal):createSession → goal.set(被控端落
   // 目标消息 + 自动开跑第一轮)→ 跳转会话页。不走普通首条消息发送,目标文案即对话起点;
@@ -6036,6 +6082,7 @@ export default function NewRemoteSessionScreen() {
             {creating ? <ActivityIndicator color={colors.textSecondary} /> : null}
           </View> : null}
 
+          <VoiceConversationBar conversation={voiceConversation} notice={voiceConversationRequestId && !selectedDeviceId ? t('session.voiceConversation.selectDevice') : undefined} />
           <View ref={workspacePickerHostRef} collapsable={false} onLayout={measureWorkspacePicker} style={{ flex: 1 }}>
           <ScrollView style={{ flex: 1 }} contentContainerStyle={[styles.bottomCluster, composerDock.enabled && { paddingBottom: 0 }]}
             onScrollBeginDrag={() => setWorkspacePickerOpen(false)}
@@ -6506,6 +6553,7 @@ export default function NewRemoteSessionScreen() {
                   caretHidden={voiceIsListening}
                   cursorColor={colors.inputCaret}
                   inputRef={firstMessageInputRef}
+                  editable={!voiceConversation.active}
                   leading={renderComposerCompactLeading()}
                   inputFrameAnimatedStyle={composerResize.frameStyle}
                     collapseProgress={composerResize.collapseProgress}
@@ -6567,6 +6615,7 @@ export default function NewRemoteSessionScreen() {
                   onPasteImagesLoading={beginPastePlaceholders}
                   onPasteImagesLoadFailed={failPastePlaceholders}
                   onPressIn={() => {
+                    if (voiceConversation.active) { voiceConversation.stop(); return; }
                     if (voiceIsListening) {
                       voiceStopGestureSelectionGuardRef.current = true;
                       setTimeout(() => {
