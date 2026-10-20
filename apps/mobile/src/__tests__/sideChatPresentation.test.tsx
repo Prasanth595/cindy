@@ -9,6 +9,8 @@ const state = vi.hoisted(() => ({
   platform: 'android',
   focused: true,
   back: vi.fn(),
+  canGoBack: true,
+  replace: vi.fn(),
   dismissKeyboard: vi.fn(),
   sheet: null as any,
   listeners: new Set<(deviceId: string, sessionId: string) => void>(),
@@ -20,7 +22,9 @@ vi.mock('react-native', () => ({
   View: ({ children }: any) => <div>{children}</div>,
   useWindowDimensions: () => ({ width: 400, height: 800 }),
 }));
-vi.mock('expo-router', () => ({ useRouter: () => ({ back: state.back }) }));
+vi.mock('expo-router', () => ({ useRouter: () => ({
+  back: state.back, canGoBack: () => state.canGoBack, replace: state.replace,
+}) }));
 vi.mock('expo-router/react-navigation', () => ({ useIsFocused: () => state.focused }));
 vi.mock('react-native-safe-area-context', async () => {
   const { createContext } = await import('react');
@@ -81,6 +85,8 @@ describe('side chat presentation lifecycle', () => {
     state.focused = true;
     state.sheet = null;
     state.back.mockClear();
+    state.canGoBack = true;
+    state.replace.mockClear();
     state.dismissKeyboard.mockClear();
     host = document.createElement('div');
     root = createRoot(host);
@@ -136,5 +142,14 @@ describe('side chat presentation lifecycle', () => {
     expect(state.back).toHaveBeenCalledTimes(1);
     remove();
     expect(state.back).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns to Home when the closed sheet has no navigation history', () => {
+    state.canGoBack = false;
+    render();
+    remove();
+    act(() => state.sheet.onClosed());
+    expect(state.back).not.toHaveBeenCalled();
+    expect(state.replace).toHaveBeenCalledExactlyOnceWith('/');
   });
 });

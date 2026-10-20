@@ -7,6 +7,7 @@ const viewportHarness = vi.hoisted(() => ({ list: null as any, finishReveal: nul
 
 // Keep site-video's native surface out of this Node message-rendering test.
 vi.mock('react-native-webview', () => ({ WebView: () => null }));
+vi.mock('expo-modules-core', () => ({ requireOptionalNativeModule: () => null }));
 
 // Keep the production list, bubble gate, invocation header, and message model.
 // Only native surfaces and unrelated heavy viewers are replaced for Node rendering.

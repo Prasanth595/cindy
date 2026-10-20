@@ -7,6 +7,7 @@ import { openBrowserAsync } from 'expo-web-browser';
 
 // The shared renderer imports site-video; replace only its native surface.
 vi.mock('react-native-webview', () => ({ WebView: () => null }));
+vi.mock('expo-modules-core', () => ({ requireOptionalNativeModule: () => null }));
 
 // Keep the real group attachment, AttachmentStrip, MediaPreview and LegendList hooks.
 // Only native surfaces and unrelated viewers are replaced for Node rendering.

@@ -8,6 +8,7 @@ import { RecentMessageHistoriesProvider } from './RecentMessageHistories';
 import { NativeBottomSheet } from './NativeBottomSheet';
 import { useMobileKeyboardState } from './useMobileKeyboardState';
 import { remoteSessionStore } from './remoteSessionStore';
+import { goBackGuarded } from '@/utils/backGuard';
 
 const DismissContext = createContext<(() => void) | null>(null);
 export const useSideChatDismiss = () => useContext(DismissContext);
@@ -37,7 +38,7 @@ export function SideChatPresentation({ children, deviceId, sessionId }: {
     // route waits until focus returns, so deletion cannot pop a different screen.
     if (Platform.OS === 'android' && !closed) return;
     returned.current = true;
-    router.back();
+    goBackGuarded(router);
   }, [closed, focused, removed, router, visible]);
   // Android resident histories live above the navigation stack. Its existing
   // native dialog sheet owns a higher window, so the main task can stay visible.
