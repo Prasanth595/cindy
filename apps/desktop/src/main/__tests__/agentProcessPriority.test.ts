@@ -1,4 +1,18 @@
+import path from 'node:path';
+
 import { describe, expect, it, vi } from 'vitest';
+
+// Keep process scanning and taskpolicy in memory; no real process effects.
+const execMock = vi.hoisted(() =>
+  vi.fn<(...args: unknown[]) => Promise<{ stdout: string; stderr: string }>>(async () => ({
+    stdout: '',
+    stderr: '',
+  })),
+);
+vi.mock('node:child_process', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('node:child_process')>()),
+  execFile: Object.assign(vi.fn(), { [Symbol.for('nodejs.util.promisify.custom')]: execMock }),
+}));
 
 vi.mock('electron', () => ({
   app: {
@@ -29,7 +43,9 @@ const osMock = vi.hoisted(() => ({
   setPriority: vi.fn(),
 }));
 vi.mock('node:os', () => {
-  const constants = { priority: { PRIORITY_BELOW_NORMAL: 10, PRIORITY_LOW: 19, PRIORITY_NORMAL: 0 } };
+  const constants = {
+    priority: { PRIORITY_BELOW_NORMAL: 10, PRIORITY_LOW: 19, PRIORITY_NORMAL: 0 },
+  };
   return {
     default: { setPriority: osMock.setPriority, constants },
     setPriority: osMock.setPriority,
@@ -59,13 +75,13 @@ function makeWatcher(opts: {
   applyResult?: (pid: number) => ApplyPriorityResult;
 }) {
   const scan = vi.fn(async () => opts.rows());
-  const apply = vi.fn(
-    async (
+  const apply = vi.fn<
+    (
       pid: number,
-      _tier: AgentProcessPriority,
-      _prev: AgentProcessPriority | undefined,
-    ): Promise<ApplyPriorityResult> => (opts.applyResult ? opts.applyResult(pid) : 'applied'),
-  );
+      tier: AgentProcessPriority,
+      prev: AgentProcessPriority | undefined,
+    ) => Promise<ApplyPriorityResult>
+  >(async (pid) => (opts.applyResult ? opts.applyResult(pid) : 'applied'));
   const watcher = createAgentProcessPriorityWatcher({
     readPriority: opts.priority,
     scanAgentProcesses: scan,
@@ -218,6 +234,168 @@ describe('agent process priority watcher', () => {
   });
 });
 
+// #5830: unit regression through production discovery -> watcher -> mock apply.
+// Existing coverage exercised Claude/Codex only; one owned Pi row was omitted.
+describe('managed Pi priority discovery', () => {
+  const brand = allUserDataDirNames(CURRENT_CINDY_REGION)[0];
+
+  it.each([
+    ['macOS', '/Users/me/Library/Application Support/' + brand + '/pi/1.0.2/pi --mode rpc'],
+    ['Linux', '/home/me/.config/' + brand + '/pi/1.0.2/pi --mode rpc'],
+    ['dev', '/repo/apps/pi-bin/darwin-arm64/pi --mode rpc'],
+    ['redirected userData', '/mnt/custom/CindySandbox/pi/1.0.2/pi --mode rpc'],
+  ])(
+    'applies tiers once to owned Pi from %s and restores only touched processes',
+    async (_layout, command) => {
+      registerUserDataMarkers('/mnt/custom/CindySandbox');
+      const selfPid = 4242;
+      let table = [
+        '101 4242 ' + command,
+        '102 9999 ' + command, // another Cindy instance
+        '103 4242 /usr/local/bin/pi --mode rpc',
+        '104 4242 /usr/bin/node server.js',
+        '105 4242 /repo/apps/claude-code-bin/darwin-arm64/claude',
+        '106 4242 /repo/apps/codex-package-bin/darwin-arm64/bin/codex app-server',
+      ].join('\n');
+      let tier: AgentProcessPriority = 'normal';
+      const { watcher, scan, apply } = makeWatcher({
+        priority: () => tier,
+        rows: () => parsePosixAgentProcesses(table, selfPid),
+      });
+      try {
+        await watcher.tickOnce();
+        expect(scan).not.toHaveBeenCalled();
+        expect(apply).not.toHaveBeenCalled();
+        expect(parsePosixAgentProcesses(table, selfPid)).toEqual([
+          { pid: 101, kind: 'pi' },
+          { pid: 105, kind: 'claude' },
+          { pid: 106, kind: 'codex' },
+        ]);
+        for (const desired of ['low', 'lowest'] as const) {
+          tier = desired;
+          await watcher.tickOnce();
+          const count = apply.mock.calls.length;
+          expect(apply).toHaveBeenCalledWith(101, desired, desired === 'low' ? undefined : 'low');
+          await watcher.tickOnce();
+          expect(apply).toHaveBeenCalledTimes(count);
+        }
+        table += '\n' + '107 4242 ' + command; // untouched Pi must not be restored
+        tier = 'normal';
+        await watcher.tickOnce();
+        expect(apply.mock.calls.map(([pid]) => pid)).toEqual([
+          101, 105, 106, 101, 105, 106, 101, 105, 106,
+        ]);
+        expect(apply).toHaveBeenCalledWith(101, 'normal', 'lowest');
+        const scans = scan.mock.calls.length;
+        await watcher.tickOnce();
+        expect(scan).toHaveBeenCalledTimes(scans);
+      } finally {
+        registerUserDataMarkers('/unused-priority-test');
+      }
+    },
+  );
+
+  it('scans Windows CIM candidates through the platform scanner before applying Pi priority', async () => {
+    // Target-platform command lines. Fake CIM applies the requested Name filter:
+    // omitting pi.exe from production's query must lose these candidates.
+    const managed = path.win32.join('C:/Users/me/AppData/Roaming', brand, 'pi/1.0.2/pi.exe');
+    const redirected = path.win32.join('D:/custom', 'CindySandbox');
+    const candidates = [
+      { name: 'pi.exe', pid: 201, ppid: process.pid, cmd: '"' + managed + '" --mode rpc' },
+      {
+        name: 'pi.exe',
+        pid: 202,
+        ppid: process.pid,
+        cmd: path.win32.join(redirected, 'pi/1.0.2/pi.exe') + ' --mode rpc',
+      },
+      {
+        name: 'pi.exe',
+        pid: 203,
+        ppid: process.pid + 1,
+        cmd: path.win32.join('D:/repo/apps/pi-bin/win32-x64/pi.exe'),
+      },
+      { name: 'pi.exe', pid: 204, ppid: process.pid, cmd: path.win32.join('C:/external/pi.exe') },
+      {
+        name: 'node.exe',
+        pid: 205,
+        ppid: process.pid,
+        cmd: path.win32.join('C:/nodejs/node.exe') + ' server.js',
+      },
+      {
+        name: 'pi.exe',
+        pid: 206,
+        ppid: process.pid,
+        cmd: 'D:/repo/apps/pi-bin/win32-x64/pi.exe --mode rpc',
+      },
+    ];
+    const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    registerUserDataMarkers(redirected);
+    execMock.mockImplementation(async (file, args) => {
+      if (file !== 'powershell.exe') throw new Error('Unexpected scan command');
+      const script = (args as string[])[3];
+      const names = [...script.matchAll(/Name='([^']+)'/g)].map((match) => match[1]);
+      return {
+        stdout: candidates
+          .filter((row) => names.includes(row.name))
+          .map((row) => [row.pid, row.ppid, row.cmd].join('|'))
+          .join('\r\n'),
+        stderr: '',
+      };
+    });
+    const apply = vi.fn<
+      (
+        pid: number,
+        tier: AgentProcessPriority,
+        prev: AgentProcessPriority | undefined,
+      ) => Promise<ApplyPriorityResult>
+    >(async () => 'applied');
+    const scan = vi.fn(__testing.defaultScanAgentProcesses);
+    let tier: AgentProcessPriority = 'normal';
+    const watcher = createAgentProcessPriorityWatcher({
+      readPriority: () => tier,
+      scanAgentProcesses: scan,
+      applyPriority: apply,
+      log: fakeLog,
+    });
+    try {
+      await watcher.tickOnce();
+      expect(scan).not.toHaveBeenCalled();
+      tier = 'low';
+      await watcher.tickOnce();
+      expect(apply.mock.calls).toEqual([
+        [201, 'low', undefined],
+        [202, 'low', undefined],
+        [206, 'low', undefined],
+      ]);
+      await watcher.tickOnce();
+      expect(apply).toHaveBeenCalledTimes(3);
+      tier = 'lowest';
+      await watcher.tickOnce();
+      expect(apply.mock.calls.slice(3)).toEqual([
+        [201, 'lowest', 'low'],
+        [202, 'lowest', 'low'],
+        [206, 'lowest', 'low'],
+      ]);
+      tier = 'normal';
+      await watcher.tickOnce();
+      expect(apply.mock.calls.slice(6)).toEqual([
+        [201, 'normal', 'lowest'],
+        [202, 'normal', 'lowest'],
+        [206, 'normal', 'lowest'],
+      ]);
+      const scans = scan.mock.calls.length;
+      await watcher.tickOnce();
+      expect(scan).toHaveBeenCalledTimes(scans);
+    } finally {
+      Object.defineProperty(process, 'platform', originalPlatform);
+      registerUserDataMarkers('/unused-priority-test');
+      execMock.mockReset();
+      execMock.mockResolvedValue({ stdout: '', stderr: '' });
+    }
+  });
+});
+
 describe('agent process discovery', () => {
   // userData 目录名按当前构建区域取(测试环境默认 global → CindyGlobal),不写死区域
   const userDataDir = allUserDataDirNames(CURRENT_CINDY_REGION)[0].toLowerCase();
@@ -242,7 +420,9 @@ describe('agent process discovery', () => {
     // Linux userData 在 ~/.config/<dir>/;linux-runtime-fallback 的 privateBinaryPath
     // 布局是 <userData>/agent-runtime/<kind>/bin/<cmd>
     expect(
-      classifyAgentCommandLine(`/home/u/.config/${userDataDir}/agent-runtime/claude-code/bin/claude`),
+      classifyAgentCommandLine(
+        `/home/u/.config/${userDataDir}/agent-runtime/claude-code/bin/claude`,
+      ),
     ).toBe('claude');
     expect(
       classifyAgentCommandLine(`/home/u/.config/${userDataDir}/agent-runtime/codex/bin/codex`),
@@ -254,7 +434,9 @@ describe('agent process discovery', () => {
       classifyAgentCommandLine(`/home/u/.config/${userDataDir}/codex/0.145.0/codex app-server`),
     ).toBe('codex');
     expect(
-      classifyAgentCommandLine(`/home/u/.config/${userDataDir}/codex-package/0.153.0/bin/codex app-server`),
+      classifyAgentCommandLine(
+        `/home/u/.config/${userDataDir}/codex-package/0.153.0/bin/codex app-server`,
+      ),
     ).toBe('codex');
     // 外部安装(不带 userData 目录)仍不认领
     expect(classifyAgentCommandLine('/home/u/.local/bin/claude')).toBeNull();
@@ -276,9 +458,9 @@ describe('agent process discovery', () => {
     expect(
       classifyAgentCommandLine(`${redirected.toLowerCase()}/codex-package/0.153.0/bin/codex`),
     ).toBe('codex');
-    expect(
-      classifyAgentCommandLine(`${redirected.toLowerCase()}/claude-code/2.1.219/claude`),
-    ).toBe('claude');
+    expect(classifyAgentCommandLine(`${redirected.toLowerCase()}/claude-code/2.1.219/claude`)).toBe(
+      'claude',
+    );
     // 重复注册整组替换(幂等):旧路径不残留
     registerUserDataMarkers('/somewhere/else/Cindy2');
     expect(
