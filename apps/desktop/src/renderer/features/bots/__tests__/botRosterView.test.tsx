@@ -6,6 +6,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const translate = (key: string, opts?: Record<string, unknown>) =>
   opts ? `${key}:${JSON.stringify(opts)}` : key;
 vi.mock('@/contexts/AuthContext', () => ({ useAuth: () => ({ dataOwnerId: 'fixture-owner' }) }));
+// Creation tests supply a local-only location catalog; device presence is covered by the route hook tests.
+vi.mock('@/hooks/useModelRouteDevices', () => ({
+  useModelRouteDevices: () => ({ devices: [], leadAgentDeviceId: null }),
+}));
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: translate }) }));
 
 const mocks = vi.hoisted(() => ({

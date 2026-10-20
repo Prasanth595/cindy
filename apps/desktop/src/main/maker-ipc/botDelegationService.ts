@@ -188,7 +188,7 @@ export interface BotDelegationServiceDeps {
   readCallerRuntime?: (sessionId: string) => (Pick<
     typeof sessions.$inferSelect,
     'model' | 'agentKind' | 'providerId' | 'fastMode'
-  > & { effort?: (typeof sessions.$inferSelect)['effort'] }) | null;
+  > & { effort?: (typeof sessions.$inferSelect)['effort']; agentDeviceId?: string | null }) | null;
   validateTaskModel?: typeof validateTaskModel;
   resolveTaskModelSelection?: typeof resolveTaskModelSelection;
   /** null means the live permission is changing or the caller is closing. */
@@ -2386,6 +2386,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
       effort?: string;
       fastMode?: boolean;
       providerId?: string | null;
+      agentDeviceId?: string | null;
       agentKind: 'cc' | 'codex' | 'pi';
       title: string;
       workspaceKind?: 'project' | 'dialogue';
@@ -2474,6 +2475,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
             fastMode: childRow.fastMode,
             permissionMode: childRow.permissionMode,
             agentKind: childRow.agentKind,
+            agentDeviceId: childRow.agentDeviceId ?? null,
             remoteHostId: null,
             providerId: childRow.providerId ?? null,
             parentSessionId,
@@ -2633,6 +2635,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
         model: sessions.model,
         agentKind: sessions.agentKind,
         providerId: sessions.providerId,
+        agentDeviceId: sessions.agentDeviceId,
         effort: sessions.effort,
         fastMode: sessions.fastMode,
       })
@@ -2671,6 +2674,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
       agentKind: taskModel.harness === 'claude' ? 'cc' : taskModel.harness,
       model: taskModel.model,
       providerId: taskModel.providerId,
+      agentDeviceId: taskModel.agentDeviceId ?? null,
       effort: taskModel.effort as typeof callerRuntime.effort,
       fastMode: taskModel.fastMode,
     } : callerRuntime;
@@ -2718,6 +2722,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
         workingDir,
         workspaceKind: input.workingDir?.trim() ? 'project' : 'dialogue',
         model: taskRuntime.model,
+        agentDeviceId: taskRuntime.agentDeviceId ?? null,
         ...(taskRuntime.effort ? { effort: taskRuntime.effort } : {}),
         ...(taskRuntime.fastMode !== null && taskRuntime.fastMode !== undefined
           ? { fastMode: taskRuntime.fastMode }
@@ -2742,6 +2747,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
       modelRoute: {
         harness: taskRuntime.agentKind === 'codex' ? 'codex' : taskRuntime.agentKind === 'pi' ? 'pi' : 'claude',
         model: taskRuntime.model,
+        ...(taskRuntime.agentDeviceId ? { agentDeviceId: taskRuntime.agentDeviceId } : {}),
         providerId: taskRuntime.providerId ?? null,
         effort: taskRuntime.effort ?? '',
         fastMode: Boolean(taskRuntime.fastMode),

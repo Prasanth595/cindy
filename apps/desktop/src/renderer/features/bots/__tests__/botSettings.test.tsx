@@ -104,6 +104,9 @@ vi.mock('../BotChannelsPage', () => ({
     <div data-testid="bot-channels-page">{bot.id}</div>
   ),
 }));
+vi.mock('@/hooks/useModelRouteDevices', () => ({
+  useModelRouteDevices: () => ({ devices: [], leadAgentDeviceId: null }),
+}));
 vi.mock('@/components/new-chat/ModelSelector', () => ({
   ModelSelector: ({ unifiedAgents, onUnifiedSelect, modelId, onEffortChange, onNavigateToProviders }: {
     onNavigateToProviders?: () => void;

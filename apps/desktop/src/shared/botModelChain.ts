@@ -1,43 +1,24 @@
+import { normalizeModelRoute, modelRouteLocationKey, type ModelRoute } from '@cindy/maker-shared/model-route';
+
 export const BOT_MODEL_CHAIN_MAX = 5;
 
 export type BotHarness = 'claude' | 'codex' | 'pi';
 
-/** One complete, ordered Bot runtime route. */
-export interface BotModelRoute {
-  harness: BotHarness;
-  model: string;
-  providerId: string | null;
-  effort: string;
-  fastMode: boolean;
-}
+export type BotModelRoute = ModelRoute;
 
 /** Runtime-control uses the same full route identity as the Bot editor. */
 export function botModelRouteRuntimeKey(
-  route: Pick<BotModelRoute, 'harness' | 'providerId' | 'model'>,
+  route: Pick<BotModelRoute, 'harness' | 'providerId' | 'model' | 'agentDeviceId'>,
 ): string {
   const agentKind = route.harness === 'claude' ? 'claude-code' : route.harness;
-  return `${agentKind}\u0000${route.providerId ?? ''}\u0000${route.model}`;
+  return `${agentKind}\u0000${route.providerId ?? ''}\u0000${route.model}${modelRouteLocationKey(route.agentDeviceId)}`;
 }
 
 export function normalizeBotHarness(value: unknown): BotHarness {
   return value === 'codex' || value === 'pi' || value === 'claude' ? value : 'claude';
 }
 
-export function normalizeBotModelRoute(value: unknown): BotModelRoute | null {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  const record = value as Record<string, unknown>;
-  if (typeof record.model !== 'string' || !record.model.trim()) return null;
-  return {
-    harness: normalizeBotHarness(record.harness),
-    model: record.model.trim(),
-    providerId:
-      typeof record.providerId === 'string' && record.providerId.trim()
-        ? record.providerId.trim()
-        : null,
-    effort: typeof record.effort === 'string' ? record.effort : '',
-    fastMode: record.fastMode === true,
-  };
-}
+export const normalizeBotModelRoute = normalizeModelRoute;
 
 /** Optional task-specific route. Absence inherits the live primary route, never a stored copy. */
 export function readBotTaskModelOverride(value: unknown): BotModelRoute | null {
@@ -69,7 +50,7 @@ export function normalizeBotModelChain(
   }
   const seen = new Set<string>();
   return candidates.filter((item) => {
-    const key = `${item.harness}\u0000${item.providerId ?? ''}\u0000${item.model}`;
+    const key = `${item.harness}\u0000${item.providerId ?? ''}\u0000${item.model}${modelRouteLocationKey(item.agentDeviceId)}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -89,12 +70,13 @@ export function primaryBotModelRoute(
  */
 export function botModelRouteIndex(
   chain: readonly BotModelRoute[],
-  current: Pick<BotModelRoute, 'harness' | 'model' | 'providerId'>,
+  current: Pick<BotModelRoute, 'harness' | 'model' | 'providerId' | 'agentDeviceId'>,
 ): number {
   const exact = chain.findIndex((route) =>
     route.harness === current.harness
     && route.model === current.model
-    && route.providerId === current.providerId);
+    && route.providerId === current.providerId
+    && (route.agentDeviceId ?? null) === (current.agentDeviceId ?? null));
   if (exact >= 0) return exact;
   // A null provider is a single explicit "let the harness resolve it" route,
   // not a wildcard over every source serving the same model. Prefer a real
@@ -104,18 +86,20 @@ export function botModelRouteIndex(
     .filter(({ route }) =>
       route.harness === current.harness
       && route.model === current.model
-      && route.providerId === null);
+      && route.providerId === null
+      && (route.agentDeviceId ?? null) === (current.agentDeviceId ?? null));
   if (implicitMatches.length === 1) return implicitMatches[0]!.index;
   const legacyMatches = chain
     .map((route, index) => ({ route, index }))
-    .filter(({ route }) => route.harness === current.harness && route.model === current.model);
+    .filter(({ route }) => route.harness === current.harness && route.model === current.model
+      && (route.agentDeviceId ?? null) === (current.agentDeviceId ?? null));
   return legacyMatches.length === 1 ? legacyMatches[0]!.index : -1;
 }
 
 /** Select the next explicit route; never invent one from the global catalog. */
 export function nextBotModelRoute(
   value: unknown,
-  current: Pick<BotModelRoute, 'harness' | 'model' | 'providerId'>,
+  current: Pick<BotModelRoute, 'harness' | 'model' | 'providerId' | 'agentDeviceId'>,
   visitedRoutes: readonly string[] = [],
   isUsable: (route: BotModelRoute) => boolean = () => true,
 ): BotModelRoute | null {
