@@ -754,6 +754,41 @@ describe('Claude Code tool-loop guard runtime integration', () => {
     }
   });
 
+  // #6516 review: a Claude Code handle registers a global preference listener per
+  // monitor. Every exit path must release it, including late tool events after exit.
+  it.each([
+    { exit: 'close', remote: false },
+    { exit: 'close', remote: true },
+    { exit: 'detach', remote: true },
+  ] as const)('releases the loop preference listener on $exit: remote=$remote', async ({ exit, remote }) => {
+    const listeners = new Set<() => void>();
+    const { handle, stream, events, collected } = await startSessionWithStream(
+      'claude-opus-4-6', undefined, undefined, undefined, remote, () => false,
+      listener => { listeners.add(listener); return () => { listeners.delete(listener); }; },
+    );
+    const emitTool = (id: string) => stream.emit({
+      type: 'assistant', parent_tool_use_id: null,
+      message: { role: 'assistant', content: [{ type: 'tool_use', id, name: 'Bash', input: { command: 'echo ' + id } }] },
+    });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      await handle.send({ type: 'user', content: 'run one tool' });
+      emitTool('exit-1');
+      await pumpUntil(() => listeners.size === 1, 'monitor subscribed');
+      await (exit === 'detach' ? handle.detach!() : handle.close());
+      expect(listeners.size).toBe(0);
+      emitTool('late-after-exit');
+      await vi.advanceTimersByTimeAsync(5);
+      expect(listeners.size).toBe(0);
+    } finally {
+      vi.useRealTimers();
+      stream.end();
+      await handle.close().catch(() => undefined);
+      await collected;
+    }
+    expect(events.some(e => e.type === 'tool_use' && (e.data as { toolUseId?: string }).toolUseId === 'late-after-exit')).toBe(false);
+  });
+
   const editErrors = [
     'The required parameter `file_path` is missing',
     'String to replace not found in file.',
