@@ -6,7 +6,7 @@ import { __resetTabGroupsForTest, getTabGroup } from '../../tabGroups';
 const mocks = vi.hoisted(() => ({
   create: vi.fn(), list: vi.fn(), pin: vi.fn(), merge: vi.fn(), add: vi.fn(), getWindow: vi.fn(),
   status: vi.fn(), save: vi.fn(), quote: vi.fn(), discard: vi.fn(), reveal: vi.fn(),
-  close: vi.fn(), activate: vi.fn(),
+  close: vi.fn(), activate: vi.fn(), cache: vi.fn(), clear: vi.fn(), patch: vi.fn(),
   device: null as string | null, tabs: [] as Array<{ id: string; kind: string; state: unknown }>,
   created: new Set<(payload: any, stamp?: any) => void>(),
   patched: new Set<(payload: any, stamp?: any) => void>(),
@@ -16,8 +16,8 @@ const mocks = vi.hoisted(() => ({
 }));
 vi.mock('@/lib/makerTransport', () => ({ makerApiForSticky: () => ({ createSideChat: mocks.create, listSideChats: mocks.list }) }));
 vi.mock('@/features/device-link/stickySessionOrigin', () => ({ getStickySessionDeviceId: () => mocks.device }));
-vi.mock('@/features/device-link/remoteProjectsStore', () => ({ remoteProjectsStore: { pinSessionOrigin: mocks.pin } }));
-vi.mock('@/lib/composerDraftStore', () => ({ saveDraft: mocks.save, appendQuoteToDraft: mocks.quote, discardDraft: mocks.discard }));
+vi.mock('@/features/device-link/remoteProjectsStore', () => ({ remoteProjectsStore: { pinSessionOrigin: mocks.pin, mergeDeviceSessions: mocks.cache, applyPatch: mocks.patch, getDeviceName: () => 'Host' } }));
+vi.mock('@/lib/composerDraftStore', () => ({ saveDraft: mocks.save, appendQuoteToDraft: mocks.quote, discardDraft: mocks.discard, clearDraft: mocks.clear }));
 vi.mock('@/components/chat/useForkAtMessage', () => ({ textToTiptapDoc: (text: string) => ({ type: 'doc', text }) }));
 vi.mock('@/lib/sessionService', () => ({ setStatus: mocks.status }));
 vi.mock('@/lib/toast', () => ({ toast: { error: vi.fn() } }));
@@ -89,12 +89,41 @@ describe('side chat task entry', () => {
     expect(mocks.pin.mock.invocationCallOrder[0]).toBeLessThan(mocks.add.mock.invocationCallOrder[0]);
   });
 
+  // Unit, #6529: full-page navigation cannot rely on a hidden child's list push.
+  // A create result must supply the complete remote metadata before navigation.
+  it('caches remote metadata before navigating to the full task page', async () => {
+    mocks.device = 'execution-host';
+    const child = { id: 'child', source: 'side-chat', model: 'test-model', workingDir: '/work' };
+    mocks.create.mockResolvedValue(child);
+    const open = vi.fn();
+    expect(await openSideChatTab('parent', { onOpen: open })).toBe(true);
+    expect(mocks.cache).toHaveBeenCalledWith('execution-host', 'Host', [child]);
+    expect(mocks.cache.mock.invocationCallOrder[0]).toBeLessThan(open.mock.invocationCallOrder[0]);
+  });
+
+  // Unit, #6529: /side used to clear the composer while dropping its files.
+  // Preserve image/file metadata and return rejection without recycling the
+  // shared original attachment when child creation or tab persistence fails.
+  it('transfers attachments and reports failures without consuming the original files', async () => {
+    const attachments = [{ id: 'img', path: '/staged/image.png', category: 'image', annotated: true }] as any;
+    expect(await openSideChatTab('parent', { prompt: 'question', attachments })).toBe(true);
+    expect(mocks.save).toHaveBeenCalledWith('child', { text: { type: 'doc', text: 'question' }, attachments });
+    mocks.tabs = [];
+    mocks.add.mockRejectedValueOnce(new Error('disk full'));
+    expect(await openSideChatTab('parent', { prompt: 'question', attachments })).toBe(false);
+    expect(mocks.clear).toHaveBeenCalledWith('child');
+    expect(mocks.discard).not.toHaveBeenCalled();
+    mocks.create.mockRejectedValueOnce(new Error('NO_PRIOR_ASSISTANT'));
+    expect(await openSideChatTab('parent', { prompt: 'question', attachments })).toBe(false);
+  });
+
   it('deletes only the new remote branch if its tab cannot be opened', async () => {
     mocks.device = 'execution-host';
     mocks.add.mockRejectedValueOnce(new Error('disk full'));
     expect(await openSideChatTab('parent', { prompt: 'question' })).toBe(false);
     expect(mocks.status).toHaveBeenCalledExactlyOnceWith('child', 'deleted', { kind: 'device-link', deviceId: 'execution-host' });
-    expect(mocks.discard).toHaveBeenCalledWith('child');
+    expect(mocks.patch).toHaveBeenCalledWith('execution-host', 'child', { status: 'deleted' });
+    expect(mocks.clear).toHaveBeenCalledWith('child');
     expect(mocks.reveal).not.toHaveBeenCalled();
   });
 

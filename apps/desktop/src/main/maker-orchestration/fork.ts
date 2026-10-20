@@ -65,12 +65,17 @@ export async function createSideChat(sourceSessionId: string): Promise<Session> 
     throw forkError('UNSUPPORTED_HISTORY', 'Open a side chat from the main task');
   }
   const inFlight = (source.activeTurnStartedAt ?? 0) > (source.lastTurnEndedAt ?? 0);
+  const completedBefore = source.lastTurnEndedAt
+    ? source.lastTurnEndedAt + 1
+    : inFlight ? source.activeTurnStartedAt : undefined;
+  // Fork the last completed reply through the next user boundary. Later user
+  // rows may be steers; a queued turn's question may also predate its start.
   const [anchor] = await db.select({ clientId: messages.clientId }).from(messages).where(and(
     eq(messages.sessionId, sourceSessionId),
-    eq(messages.role, inFlight ? 'user' : 'assistant'),
+    eq(messages.role, 'assistant'),
     isNull(messages.rewindAt),
     source.clearedAt === null ? undefined : gt(messages.createdAt, source.clearedAt),
-    !inFlight && source.lastTurnEndedAt ? lt(messages.createdAt, source.lastTurnEndedAt + 1) : undefined,
+    completedBefore ? lt(messages.createdAt, completedBefore) : undefined,
   )).orderBy(desc(messages.createdAt), desc(messageRowid)).limit(1);
   if (!anchor?.clientId) throw forkError('NO_PRIOR_ASSISTANT', 'Wait for the first completed reply');
   return forkSessionAtMessage(sourceSessionId, anchor.clientId, { sideChat: true });

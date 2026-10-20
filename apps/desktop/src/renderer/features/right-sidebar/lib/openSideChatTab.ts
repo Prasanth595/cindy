@@ -1,7 +1,8 @@
 import { makerApiForSticky } from '@/lib/makerTransport';
 import { getStickySessionDeviceId } from '@/features/device-link/stickySessionOrigin';
 import { remoteProjectsStore } from '@/features/device-link/remoteProjectsStore';
-import { appendQuoteToDraft, saveDraft, discardDraft } from '@/lib/composerDraftStore';
+import { appendQuoteToDraft, saveDraft, clearDraft } from '@/lib/composerDraftStore';
+import type { AttachedFile } from '@/lib/fileTypes';
 import { textToTiptapDoc } from '@/components/chat/useForkAtMessage';
 import { setStatus } from '@/lib/sessionService';
 import { toast } from '@/lib/toast';
@@ -131,7 +132,7 @@ export function watchSideChatTabs(sessionId: string): () => void {
 /** Open an independent follow-up on the parent's execution host. */
 export async function openSideChatTab(
   sessionId: string,
-  options: { prompt?: string; quote?: string; placement?: SideChatTabPlacement; onOpen?: (sessionId: string) => void } = {},
+  options: { prompt?: string; attachments?: AttachedFile[]; quote?: string; placement?: SideChatTabPlacement; onOpen?: (sessionId: string) => void } = {},
 ): Promise<boolean> {
   try {
     if ((await window.electronAPI.rightSidebarWindow?.getState())?.detached) {
@@ -140,9 +141,15 @@ export async function openSideChatTab(
     await ensureHydrated(sessionId);
     const deviceId = getStickySessionDeviceId(sessionId) ?? null;
     const child = await makerApiForSticky(sessionId).createSideChat(sessionId);
-    if (deviceId) remoteProjectsStore.pinSessionOrigin(deviceId, child.id);
+    if (deviceId) {
+      remoteProjectsStore.pinSessionOrigin(deviceId, child.id);
+      remoteProjectsStore.mergeDeviceSessions(deviceId, remoteProjectsStore.getDeviceName(deviceId) ?? '', [child]);
+    }
     try {
-      if (options.prompt) saveDraft(child.id, { text: textToTiptapDoc(options.prompt), attachments: [] });
+      if (options.prompt || options.attachments?.length) saveDraft(child.id, {
+        text: options.prompt ? textToTiptapDoc(options.prompt) : null,
+        attachments: options.attachments ?? [],
+      });
       if (options.quote) appendQuoteToDraft(child.id, { text: options.quote });
       // The creation broadcast may already have restored this tab.
       const existing = getBucket(sessionId).tabs.find(tab => tab.kind === 'side-chat'
@@ -157,7 +164,9 @@ export async function openSideChatTab(
     } catch (error) {
       // A failed tab write must not leave an unreachable branch running or listed.
       await setStatus(child.id, 'deleted', deviceId ? { kind: 'device-link', deviceId } : { kind: 'local' });
-      discardDraft(child.id);
+      if (deviceId) remoteProjectsStore.applyPatch(deviceId, child.id, { status: 'deleted' });
+      // These files still belong to the parent's rejected send; do not recycle them.
+      clearDraft(child.id);
       throw error;
     }
     // Keep the parent's tabs as resumable entries; the child uses the full task route.

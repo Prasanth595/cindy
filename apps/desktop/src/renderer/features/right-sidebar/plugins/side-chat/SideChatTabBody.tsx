@@ -135,6 +135,10 @@ function AttachedSideChat({ state, ctx, active }: TabKindBodyProps<SideChatState
           {loadFailed && <Button onClick={() => setRetry(value => value + 1)}>{t('commonUi.retry')}</Button>}
         </div> : childId && (!state.deviceId || registeredChild === childId) && <div className="flex h-full items-center justify-center px-6">
           <Button variant="secondary" onClick={() => {
+            if (state.deviceId && remoteSession?.id === childId) {
+              remoteProjectsStore.mergeDeviceSessions(state.deviceId,
+                remoteProjectsStore.getDeviceName(state.deviceId) ?? '', [remoteSession]);
+            }
             requestRightSidebarVisibility('close', { sessionId: childId, animate: false });
             navigate(`/cc-agent/${childId}`);
           }}>

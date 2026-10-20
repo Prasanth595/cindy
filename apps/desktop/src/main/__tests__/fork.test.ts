@@ -14,6 +14,8 @@
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import Database from 'better-sqlite3';
+import { drizzle } from 'drizzle-orm/better-sqlite3';
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { CodexResumePreparationBlockedError } from '@cindy/maker-core';
@@ -63,6 +65,7 @@ vi.mock('../maker-host/provider-route.js', () => ({
 // 每个 select() 调用按入栈顺序消费 selectQueue 的下一个返回值。
 type SelectStep = unknown[];
 const selectQueue: SelectStep[] = [];
+let messageDb: ReturnType<typeof drizzle> | null = null;
 const txCalls: Array<{ name: string; args: unknown }> = [];
 
 type SelectChain = Record<string, unknown> & {
@@ -78,7 +81,8 @@ function makeChain(rows: unknown[]) {
 }
 
 const fakeDb = {
-  select: vi.fn(() => {
+  select: vi.fn((projection?: Record<string, unknown>) => {
+    if (messageDb && projection && Object.keys(projection).length <= 5) return messageDb.select(projection as never);
     const next = selectQueue.shift() ?? [];
     return makeChain(next);
   }),
@@ -272,13 +276,38 @@ describe('disabled Cindy Make fork boundaries', () => {
 });
 
 describe('forkSessionAtMessage', () => {
+  // Unit, #6529: the old queue fake never evaluated anchor ordering/WHERE.
+  // A running turn with two steers must copy only the preceding completed turn.
+  // Execute both production message lookups against SQLite; keep SDK/writes fake.
+  it.each([3000, 2501])('excludes the entire running turn even after steers (question at %i)', async questionAt => {
+    const sqlite = new Database(':memory:');
+    try {
+      sqlite.exec(`CREATE TABLE messages (id TEXT, client_id TEXT, session_id TEXT,
+        role TEXT, created_at INTEGER, rewind_at INTEGER)`);
+      const insert = sqlite.prepare('INSERT INTO messages VALUES (?, ?, ?, ?, ?, NULL)');
+      for (const [id, role, at] of [
+        ['old-question', 'user', 2000], ['reply', 'assistant', 2500],
+        ['busy-question', 'user', questionAt], ['partial', 'assistant', 3100],
+        ['steer-one', 'user', 3200], ['steer-two', 'user', 3300],
+      ] as const) insert.run(id, id, 'src-session', role, at);
+      const source = makeSourceRow({ source: 'desktop', activeTurnStartedAt: 3001, lastTurnEndedAt: 2600 });
+      selectQueue.push([source], [source], [makeMessageRow({ role: 'assistant', createdAt: 2500, agentMeta: JSON.stringify({ uuid: 'prior-uuid' }) })], [makeSourceRow({ id: 'child' })]);
+      messageDb = drizzle(sqlite);
+      await createSideChat('src-session');
+      expect(txCalls.find(call => call.name === 'fork.session')?.args).toMatchObject({ targetCreatedAt: questionAt });
+      expect(forkSdkSessionMock).toHaveBeenCalledWith('claude-code', expect.objectContaining({ upToMessageId: 'prior-uuid' }));
+    } finally {
+      messageDb = null;
+      sqlite.close();
+    }
+  });
   // Side-chat creation must preserve the parent runtime and route while making an independent child.
   // Existing message-level forks lack the automatic busy-parent boundary and source marker (unit).
   it('opens a separate side task before the busy parent question', async () => {
     const source = makeSourceRow({ source: 'desktop', activeTurnStartedAt: 3001, lastTurnEndedAt: 2501 });
     const question = makeMessageRow({ clientId: 'busy-question', createdAt: 3000 });
     const reply = makeMessageRow({ role: 'assistant', createdAt: 2500, agentMeta: JSON.stringify({ uuid: 'prior-uuid' }) });
-    selectQueue.push([source], [{ clientId: 'busy-question' }], [source], [question], [reply], [makeSourceRow({ id: 'child', source: 'side-chat' })]);
+    selectQueue.push([source], [{ clientId: reply.clientId }], [source], [reply], [question], [reply], [makeSourceRow({ id: 'child', source: 'side-chat' })]);
     const child = await createSideChat('src-session');
     expect(child.id).toBe('child');
     const transaction = txCalls.find(call => call.name === 'fork.session')?.args as { newSession: Record<string, unknown>; targetCreatedAt: number };

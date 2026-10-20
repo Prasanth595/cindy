@@ -3490,6 +3490,20 @@ function CCAgentSessionContent({
       // Desktop commands stay `^/` only. A whitespace-prefixed `/help` is not a dispatch.
       if (!slashMatch) return { handled: false, accepted: false, message };
       if (!allowDesktopDispatch) return { handled: false, accepted: false, message };
+      // Await child creation in the composer's send transaction. The UI push
+      // cannot acknowledge success or carry this invocation's attachments.
+      if (hit.name === 'side') {
+        if (!sessionId || !canNavigateSession || ['side-chat', 'bot', 'review'].includes(session?.source ?? '')) {
+          toast.info(t('chat.sideChat.mainTaskOnly'));
+          return { handled: true, accepted: false, message };
+        }
+        const accepted = await openSideChatTab(sessionId, {
+          prompt: args,
+          attachments: files,
+          onOpen: id => navigate(`/cc-agent/${id}`),
+        });
+        return { handled: true, accepted, message };
+      }
       // Review is handed to Main immediately with this invocation's serialized
       // attachments. It must not depend on this React view remaining mounted,
       // nor share a mutable attachment ref with a later command.
@@ -3557,6 +3571,9 @@ function CCAgentSessionContent({
       sessionId,
       remoteDeviceId,
       rightSidebarDeviceLinkDeviceId,
+      canNavigateSession,
+      session?.source,
+      navigate,
       t,
     ],
   );

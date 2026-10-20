@@ -3,12 +3,12 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TabKindHostContext } from '../../types';
 
-const mocks = vi.hoisted(() => ({ navigate: vi.fn(), invoke: vi.fn(), subscribe: vi.fn(), pin: vi.fn(), confirm: vi.fn(), status: vi.fn(), merge: vi.fn(), detached: false, t: (key: string) => key }));
+const mocks = vi.hoisted(() => ({ navigate: vi.fn(), invoke: vi.fn(), subscribe: vi.fn(), pin: vi.fn(), confirm: vi.fn(), status: vi.fn(), merge: vi.fn(), cache: vi.fn(), detached: false, t: (key: string) => key }));
 vi.mock('react-router-dom', () => ({ useNavigate: () => mocks.navigate }));
 // Match the stable translation callback; changing it on every render restarts the metadata read.
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: mocks.t }) }));
 vi.mock('@/features/cc-agent/CCAgentSessionView', () => ({ CCAgentSessionView: (props: { sessionIdProp: string; sessionSnapshotProp: unknown }) => <div data-testid="editor">{JSON.stringify(props)}</div> }));
-vi.mock('@/features/device-link/remoteProjectsStore', () => ({ remoteProjectsStore: { pinSessionOrigin: mocks.pin } }));
+vi.mock('@/features/device-link/remoteProjectsStore', () => ({ remoteProjectsStore: { pinSessionOrigin: mocks.pin, mergeDeviceSessions: mocks.cache, getDeviceName: () => 'Host' } }));
 vi.mock('@/components/ui/confirm-dialog-provider', () => ({ useConfirmDialog: () => ({ confirm: mocks.confirm }) }));
 vi.mock('@/hooks/useWindowVisible', () => ({ useWindowVisible: () => true, useDocumentVisible: () => true }));
 vi.mock('@/lib/makerChatStore', () => ({ makerChatStore: { closeSessionQuery: vi.fn(), purgeSession: vi.fn() } }));
@@ -48,6 +48,8 @@ describe('side chat panel lifecycle', () => {
     expect(screen.queryByTestId('editor')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'chat.sideChat.openPage' }));
     expect(mocks.navigate).toHaveBeenCalledWith('/cc-agent/child');
+    expect(mocks.cache).toHaveBeenCalledWith('host', 'Host', [expect.objectContaining({ id: 'child', model: 'new-model' })]);
+    expect(mocks.cache.mock.invocationCallOrder[0]).toBeLessThan(mocks.navigate.mock.invocationCallOrder[0]);
     expect(mocks.pin).toHaveBeenCalledWith('host', 'child');
   });
 
