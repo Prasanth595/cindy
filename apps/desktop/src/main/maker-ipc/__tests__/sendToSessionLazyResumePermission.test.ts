@@ -1,3 +1,4 @@
+import { assertTaskActionCurrent, hasTaskActionAuthorization } from '../taskActionAuthorization.js';
 /**
  * #5788:插件 errand 派活走 sendToSessionInternal 的 lazy-resume 时,必须按会话落库的
  * 权限档恢复,不能落到 main 侧通路的缺省 bypass。否则插件任务被提权,errand 复用判定也会
@@ -146,6 +147,7 @@ function botTaskDispatchHarness(
     limit: async () => [],
   };
   const stubs: Record<string, unknown> = {
+    assertTaskActionCurrent, hasTaskActionAuthorization,
     AUTO_REVIEW_SOURCE_CONTENT, AUTO_REVIEW_USER_INTENT, AUTO_REVIEW_DELEGATED_CONTINUATION,
     restoreAutoReviewUserIntent, readAutoReviewHistory,
     maker: {

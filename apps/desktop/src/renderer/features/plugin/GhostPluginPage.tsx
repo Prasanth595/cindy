@@ -41,7 +41,7 @@ import { useConfirmDialog } from '@/components/ui/confirm-dialog-provider';
 import { toast } from '@/lib/toast';
 import { extractIpcError } from '@/utils/ipcError';
 import { useAuth } from '@/contexts/AuthContext';
-import { useInstalledGhosts } from '@/cindy-brain/useInstalledGhosts';
+import { readInstalledGhostsSnapshot, useInstalledGhosts } from '@/cindy-brain/useInstalledGhosts';
 import {
   cancelPendingPluginSuggestion,
   getPendingPluginSuggestion,
@@ -399,6 +399,13 @@ export function shouldOpenInstalledDetailAfterMarketSuccess(isUpdate: boolean): 
   return !isUpdate;
 }
 
+function installedGhostMarketKeyFor(ghosts: readonly InstalledGhost[]): string {
+  return ghosts
+    .map((ghost) => `${ghost.manifest.id}\0${ghost.manifest.version}`)
+    .sort()
+    .join('\0');
+}
+
 /** 读「忽略本轮更新」的持久值(键按数据归属分桶,见 ignoredRoundStorageKey)。 */
 function readIgnoredRound(storageKey: string): string {
   try {
@@ -508,11 +515,7 @@ function LocalGhostPluginPage({
   const ghosts = useInstalledGhosts();
   useMainViewVisibilityRevision();
   const installedGhostMarketKey = useMemo(
-    () =>
-      ghosts
-        .map((ghost) => `${ghost.manifest.id}\0${ghost.manifest.version}`)
-        .sort()
-        .join('\0'),
+    () => installedGhostMarketKeyFor(ghosts),
     [ghosts],
   );
   const installedGhostLocationsKey = ghosts
@@ -575,6 +578,7 @@ function LocalGhostPluginPage({
     useState<LegacyGhostRecoveryStatus | null>(null);
   const [legacyRecoveryRetrying, setLegacyRecoveryRetrying] = useState(false);
   const refreshMarket = useCallback(async (preserveOnError = false) => {
+    installedGhostMarketKeyRef.current = installedGhostMarketKeyFor(readInstalledGhostsSnapshot());
     const requestId = ++marketRefreshRequestRef.current;
     try {
       const snapshot = await window.electronAPI.pluginMarket.snapshot();
@@ -621,11 +625,16 @@ function LocalGhostPluginPage({
     });
   }, [refreshMarket]);
   useEffect(() => {
-    if (installedGhostMarketKeyRef.current === installedGhostMarketKey) return;
-    installedGhostMarketKeyRef.current = installedGhostMarketKey;
+    if (
+      installedGhostMarketKeyRef.current === installedGhostMarketKey ||
+      marketBusyLockRef.current !== null
+    ) {
+      return;
+    }
     // 已装集合或版本变化(装/卸/后台更新)时刷新市场;排序是反应式的。
+    // 安装广播早于市场账本提交；等待事务收尾，由成功刷新消费，失败/取消后补刷。
     void refreshMarket(true).catch(() => undefined);
-  }, [installedGhostMarketKey, refreshMarket]);
+  }, [installedGhostMarketKey, marketBusyId, refreshMarket]);
   const activeSessionWorkingDir = useSyncExternalStore(
     subscribeToLastWorkingDir,
     getLastWorkingDir,

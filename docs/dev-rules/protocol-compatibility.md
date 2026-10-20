@@ -1,5 +1,17 @@
 # 跨端协议兼容
 
+## 伙伴个人聊天全文搜索
+
+既有 `local-db:conversations:search` 的结果 `session` 增加可选
+`companion: { id, name, role: 'canonical' | 'history', readOnly }`。
+归属由 Host 的 `bot_session_links` 关联确认；群聊与渠道专线不下发。
+`local-db:bots:get` 的远程精简资料增加个人 `sessions: [{ id, role, status }]`，
+供控制端复核历史归属，不传提示词、工作目录或渠道配置。
+搜索前按远程伙伴可见性筛选，缓存／排队回复投递时再次核查，保持原账号与隐藏边界。
+新控制端连接旧 Host 时缺少 `companion` 就沿用普通搜索结果；旧控制端忽略新增字段。
+历史定位需要更新查看端，旧端可能按普通任务打开；不更改既有请求参数、
+IPC allowlist、relay、数据库 schema 或 Mobile 原生指纹。
+
 ## 邮件阅读会话
 
 只读 MailMessage 可选增加 conversation（threadId 和按时间排列的 messages 摘要）。
@@ -2731,3 +2743,20 @@ still use the same host-owned mail workflow as the chat card.
 都按当时的分类执行。不改 relay 帧、服务端 schema 或 Mobile 原生指纹。
 
 Cindy AI 设置卡片保留可选读取返回的 `unlimited` 状态，显示“未设置个人限额”；它不代表部门或企业没有限制。`invalidated` 清除该状态，有限额快照覆盖该状态，切换账号不复用上一账号结果。旧 `null` push 无法区分失效与不限额，本地卡片收到后通过既有可选读取核对；同一账号的多个组件共享在途读取，收到读取自身的广播时复用该请求，避免多窗口之间反复触发刷新。主进程跨窗口共享在途读取，已知不限额参与既有节流，重复不限额结果不重复广播。IPC payload 与远程消费者保持兼容。
+
+## 跨电脑任务行动回执
+
+`maker:session:handoff` 增量支持 `task-action-capability` 与 `validate-task-action`。
+新发送端先查询 `taskActionVersion: 1`，再发送带 Host 生成 `taskActionReceipt` 的消息；
+缺能力时明确拒绝，不回退到旧发送方式。新接收端拒绝缺回执的旧请求，要求发送端更新。
+完整任务互发需要两台电脑均升级；同账号鉴权、隐藏任务和共享访客限制不扩大。
+
+回执只存在发送 Host 内存，绑定接收设备、发送任务、目标任务与正文，最长一小时；
+接收端一次认领，强制经队列，在消费前回调发送 Host 复核。
+确定未发送的本机失败或目标明确未接受时，发送端立即释放回执，避免离线尝试耗尽容量；
+在途断连、超时、远端写后回执查询失败和无法识别的结果保留原有效期，不自动重发。
+队列派发或丢弃后通过同一 `validate-task-action` 请求的可选 `release` 标志释放回执；
+发送端删除回执后返回 `released: true`，重放无法通过验证，接收端才清除认领。
+旧端没有该确认或未收到释放回执时保留原过期清理，不把旧端的普通验证成功当作释放成功。断线、撤销、账号切换或重启后
+无法复核时不投递，不自动重放；已送达历史保留。未知投递结果仍要求先读取目标核实。
+没有新 relay channel、服务端变更、数据库 migration 或 Mobile 原生指纹变化。

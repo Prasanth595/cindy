@@ -21,6 +21,11 @@
     "messageCount": "共 {{count}} 封郵件",
     "showMessages": "展開 {{count}} 封郵件"
   },
+  "taskActionConfirmation": {
+    "title": "確認任務操作",
+    "once": "請核對下方的目標、動作與完整內容。允許僅對本次操作生效。",
+    "delegation": "請核對獨立任務的目標與設定。允許後將啟動任務，並可在本次委託結束前傳送範圍內的訊息或停止任務。代答、恢復暫停與切換模型仍需另行確認。"
+  },
   "logSupport": {
     "title": "日誌與回饋",
     "localFiles": "選擇問題當天的日誌。檔案未經去識別化處理，請先檢查。",

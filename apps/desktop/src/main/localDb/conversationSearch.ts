@@ -1,4 +1,4 @@
-import { and, count, desc, eq, gte, inArray, isNull, ne, or } from 'drizzle-orm';
+import { and, count, desc, eq, getTableColumns, gte, inArray, isNull, ne, or } from 'drizzle-orm';
 
 import type {
   ConversationSearchAgentFilter,
@@ -17,7 +17,7 @@ import { DESKTOP_TASK_LIST_SESSION_SOURCES } from '../../shared/sessionSource.js
 import type { SessionSource } from '../../shared/sessionSource.js';
 import { normalizeWorkingDirForGrouping } from '../../shared/workingDir.js';
 import { getDbClient } from './client/current.js';
-import { messages, sessions } from './schema.js';
+import { botProfiles, botSessionLinks, messages, sessions } from './schema.js';
 import { searchChatHistoryHybrid } from './chatHistorySearch.js';
 import { normalizeDbAgentKind } from '../../shared/agentKindConversion.js';
 import { visibleTextMatchesMessagesFtsQuery } from './chatHistorySearch.pure.js';
@@ -48,15 +48,21 @@ const LAST_ACTIVITY_DAY_COUNTS: Record<
 };
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-type SessionRow = typeof sessions.$inferSelect;
+type SessionRow = typeof sessions.$inferSelect & {
+  companionId: string | null;
+  companionName: string | null;
+  companionStatus: string | null;
+  companionRole: typeof botSessionLinks.$inferSelect.role | null;
+};
 
 export interface ConversationSearchHostScope {
   /**
-   * Main-owned source scope. Undefined preserves the normal desktop task
-   * search boundary; null permits every source only when another authoritative
+   * Main-owned source scope. Undefined includes normal tasks and linked personal
+   * companion chats; null permits every source only when another authoritative
    * filter (for example Bot-owned Session ids) already constrains the query.
    */
   sessionSources?: readonly SessionSource[] | null;
+  remoteVisibleOnly?: boolean;
 }
 
 export async function searchConversations(
@@ -76,9 +82,9 @@ export async function searchConversations(
 
   const limit = clampLimit(request.limit);
   const filters = normalizeFilters(request);
-  const sessionSources = hostScope.sessionSources === undefined
-    ? DESKTOP_TASK_LIST_SESSION_SOURCES
-    : hostScope.sessionSources;
+  // Linked personal history may retain an imported IM source. Candidate selection
+  // below owns the boundary; content retrieval uses those exact ids.
+  const sessionSources = hostScope.sessionSources ?? null;
   const sortBy = normalizeSortBy(request.sortBy);
   const skipVector = request.semanticMode === 'keyword';
   if (filters.sessionIds && filters.sessionIds.length === 0) {
@@ -91,7 +97,7 @@ export async function searchConversations(
     };
   }
   const sessionRows = applyWorkingDirFilter(
-    await listSearchableSessions(filters, sessionSources),
+    await listSearchableSessions(filters, hostScope.sessionSources, hostScope.remoteVisibleOnly),
     filters.workingDirs,
   );
   if (sessionRows.length === 0) {
@@ -323,9 +329,10 @@ function normalizeSortBy(value: ConversationSearchSortBy | undefined): Conversat
 
 async function listSearchableSessions(
   filters: NormalizedConversationSearchFilters,
-  sessionSources: readonly SessionSource[] | null,
+  sessionSources: readonly SessionSource[] | null | undefined,
+  remoteVisibleOnly = false,
 ): Promise<SessionRow[]> {
-  if (sessionSources !== null && sessionSources.length === 0) return [];
+  if (sessionSources != null && sessionSources.length === 0) return [];
   const db = getDbClient().drizzle;
   const statusCond = statusCondition(filters.status);
   const agentCond = filters.agentKind === 'all' ? undefined : eq(sessions.agentKind, filters.agentKind);
@@ -339,11 +346,35 @@ async function listSearchableSessions(
   const activityCond = activityCutoff === null
     ? undefined
     : or(gte(sessions.updatedAt, activityCutoff), gte(sessions.userSendAt, activityCutoff));
+  const personalChat = and(
+    inArray(botSessionLinks.role, ['canonical', 'history']),
+    ne(botProfiles.status, 'deleting'),
+  );
   return db
-    .select()
+    .select({
+      ...getTableColumns(sessions),
+      companionId: botProfiles.id,
+      companionName: botProfiles.displayName,
+      companionStatus: botProfiles.status,
+      companionRole: botSessionLinks.role,
+    })
     .from(sessions)
+    .leftJoin(botSessionLinks, eq(botSessionLinks.sessionId, sessions.id))
+    .leftJoin(botProfiles, eq(botProfiles.id, botSessionLinks.botId))
     .where(and(
-      sessionSources === null ? undefined : inArray(sessions.source, sessionSources),
+      sessionSources === undefined
+        ? or(inArray(sessions.source, DESKTOP_TASK_LIST_SESSION_SOURCES), personalChat)
+        : sessionSources === null ? undefined : inArray(sessions.source, sessionSources),
+      // Migrated channel/group lanes may have an ordinary task source.
+      or(isNull(botSessionLinks.role), and(
+        ne(botSessionLinks.role, 'group'),
+        ne(botSessionLinks.role, 'channel'),
+      )),
+      remoteVisibleOnly ? or(isNull(botProfiles.id), eq(botSessionLinks.role, 'delegation'), and(
+        or(isNull(botProfiles.hiddenAt), eq(botProfiles.hiddenAt, 0)),
+        ne(botProfiles.status, 'archived'),
+        ne(botProfiles.status, 'deleting'),
+      )) : undefined,
       statusCond,
       agentCond,
       sessionIdsCond,
@@ -409,6 +440,15 @@ function sessionSummaryFromRow(
     source: row.source,
     orcaRole: row.orcaRole,
     parentSessionId: row.parentSessionId,
+    ...(row.companionId && row.companionName != null
+      && (row.companionRole === 'canonical' || row.companionRole === 'history')
+      ? { companion: {
+          id: row.companionId,
+          name: row.companionName,
+          role: row.companionRole,
+          readOnly: row.companionRole === 'history' || row.status !== 'active' || row.companionStatus !== 'active',
+        } }
+      : {}),
     userSendAt: row.userSendAt === null ? null : new Date(row.userSendAt).toISOString(),
     updatedAt: new Date(row.updatedAt).toISOString(),
     createdAt: new Date(row.createdAt).toISOString(),
