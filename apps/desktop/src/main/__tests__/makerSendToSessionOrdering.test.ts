@@ -627,7 +627,7 @@ describe('sendToSession ordering', () => {
       'restoreControlStores();',
       'throw persistenceError;',
     );
-    expect(preloadSource).toContain('selection?: { effort: string | null; fastMode: boolean },');
+    expect(preloadSource).toContain("selection?: { effort: string | null; fastMode: boolean | 'ultrafast' },");
     expectOrder(
       preloadSource,
       'expectedAgentSwitchRevision,',
