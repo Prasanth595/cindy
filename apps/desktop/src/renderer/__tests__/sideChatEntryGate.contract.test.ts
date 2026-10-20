@@ -28,6 +28,10 @@ describe('side-chat entry gate consistency (selection pill + /side)', () => {
     expect(source).toMatch(
       /payload\.command === 'side'[\s\S]{0,200}!canOpenSideChat\(session\)/,
     );
+    // 输入框发送 /side 的分支(handleSend)也必须走同一门槛。
+    expect(source).toMatch(
+      /hit\.name === 'side'[\s\S]{0,200}!canOpenSideChat\(session\)/,
+    );
     // 旧的松散条件（漏 review 来源与共享任务访客）不得再出现。
     expect(source).not.toContain("session?.source !== 'side-chat' && session?.source !== 'bot'");
   });

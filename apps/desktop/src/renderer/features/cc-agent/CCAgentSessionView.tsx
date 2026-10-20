@@ -3498,7 +3498,9 @@ function CCAgentSessionContent({
       // Await child creation in the composer's send transaction. The UI push
       // cannot acknowledge success or carry this invocation's attachments.
       if (hit.name === 'side') {
-        if (!sessionId || !canNavigateSession || ['side-chat', 'bot', 'review'].includes(session?.source ?? '')) {
+        // 与广播分支/选区入口同口径:走权威门槛,漏掉共享任务访客会让入口
+        // 出现、host 拒绝后落进通用 failed toast(Greptile review P1)。
+        if (!sessionId || !canNavigateSession || !canOpenSideChat(session)) {
           toast.info(t('chat.sideChat.mainTaskOnly'));
           return { handled: true, accepted: false, message };
         }
