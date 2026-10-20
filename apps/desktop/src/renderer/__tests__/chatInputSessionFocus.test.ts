@@ -251,7 +251,7 @@ describe('ChatInput session switch focus contract', () => {
     );
     expect(unlockAfterClear).not.toContain('setSendDispatchInFlight(false);');
     expect(chatInputSource).toContain(
-      'disabled || (sendDispatchInFlight && !allowTypeDuringSend)',
+      'disabled || waitingForFolders || (sendDispatchInFlight && !allowTypeDuringSend)',
     );
     expect(chatInputSource).toContain('sendDispatchInFlight ||');
     expect(chatInputSource).toContain('setSendDispatchInFlight(nextSendInFlight);');

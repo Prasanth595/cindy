@@ -175,6 +175,8 @@ interface RemoteOpArgs {
   transferId?: string;
   /** Optional export budget; omitted by older controllers. */
   maxBytes?: number;
+  name?: unknown;
+  file?: unknown;
 }
 
 /** 该 workdir 在被控端的执行位置:本地 fs、二跳到 SSH remote host,或歧义拒绝。 */
@@ -427,6 +429,7 @@ async function handleRemoteOp(args: RemoteOpArgs): Promise<unknown> {
       completeDirectoryListing: true as const,
       fileRead: true as const,
       dirExport: true as const,
+      folderAttachment: !sharedTask,
     };
   }
   const guardResult = await checkRemoteWorkingDir(args.workdir);
