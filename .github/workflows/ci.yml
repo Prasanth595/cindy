@@ -178,6 +178,21 @@ jobs:
         # package script 会传递 npm_execpath，让子进程复用当前 pnpm 入口。
         run: pnpm run test:workspaces --tier unit
 
+      # Run the native cache recovery regression once per OS, outside unit sharding.
+      - name: Install native Pi for cache recovery tests
+        if: matrix.shard == 1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: pnpm install:pi
+
+      - name: Verify native Pi is executable
+        if: matrix.shard == 1
+        run: node -e "const {execFileSync}=require('node:child_process'); const p=require('node:path'); process.stdout.write(execFileSync(p.resolve('apps/pi-bin',process.platform+'-'+process.arch,process.platform==='win32'?'pi.exe':'pi'),['--version'],{encoding:'utf8'}))"
+
+      - name: Run native Pi cache recovery regressions
+        if: matrix.shard == 1
+        run: pnpm --filter @cindy/maker-core exec vitest run src/agents/pi/__tests__/cache-compatibility.integration.test.ts
+
       # 真实进程与 Unix socket 覆盖独立执行一次，不混入日常 unit 或其他分片。
       - name: Run Pi manager integration tests
         if: matrix.shard == 1
@@ -285,6 +300,18 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: pnpm install:ripgrep
+
+      # Run the native cache recovery regression once per OS, outside unit sharding.
+      - name: Install native Pi for cache recovery tests
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: pnpm install:pi
+
+      - name: Verify native Pi is executable
+        run: node -e "const {execFileSync}=require('node:child_process'); const p=require('node:path'); process.stdout.write(execFileSync(p.resolve('apps/pi-bin',process.platform+'-'+process.arch,process.platform==='win32'?'pi.exe':'pi'),['--version'],{encoding:'utf8'}))"
+
+      - name: Run native Pi cache recovery regressions
+        run: pnpm --filter @cindy/maker-core exec vitest run src/agents/pi/__tests__/cache-compatibility.integration.test.ts
 
       # 保留 Windows 路径、进程与锁的自测覆盖。
       - name: Run Windows test runner self-tests
