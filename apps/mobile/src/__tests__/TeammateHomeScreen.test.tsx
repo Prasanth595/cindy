@@ -97,15 +97,22 @@ beforeEach(() => {
 });
 afterEach(() => { act(() => root?.unmount()); root = undefined; });
 describe('teammate home entry', () => {
-  it('hides an unverified cached roster while keeping cloud-only rows available', async () => {
+  it('keeps a known conversation while discovery is pending instead of replacing it with a read-only cloud row', async () => {
+    const known: HostedRemoteCollectionItem = { ...teammate, item: { ...teammate.item,
+      display: { title: 'Writer', preview: 'Latest reply', timestamp: 123 },
+      links: [{ rel: 'conversation', target: { kind: 'session', sessionId: 'existing-chat' } }] } };
+    h.roster.items = [known];
     h.roster.loading = true; h.roster.error = null;
     await render();
-    expect(h.list.items).toEqual([]);
+    expect(h.list.items).toEqual([known]);
     h.cloud.supported = true;
     h.cloud.actors = [{ id: 'actor', kind: 'bot', externalId: 'writer', name: 'Writer', avatar: null, homeDeviceId: 'mac' }];
     await render();
     expect(h.list.items).toHaveLength(1);
-    expect(h.list.items[0].item.revision).toBe('cloud');
+    expect(h.list.items[0]).toBe(known);
+    await act(async () => h.list.onSelect(h.list.items[0]));
+    expect(h.nav.openTeammate).toHaveBeenCalledWith(known);
+    expect(h.push).not.toHaveBeenCalled();
   });
   it('lands on the roster and never opens the remembered teammate on its own', async () => {
     // A remembered, online teammate on a settled roster used to be reopened at launch (#4912); the

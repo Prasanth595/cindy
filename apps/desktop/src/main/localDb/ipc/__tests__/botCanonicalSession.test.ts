@@ -1,3 +1,7 @@
+import { captureAgentRequest } from '../../../maker-ipc/forwardedRequest';
+import { formatForwardedRequest } from '../../../../shared/forwardedRequest';
+const forwarded = (text: string) => formatForwardedRequest({ userText: null }, text);
+const supplement = (text: string): string => JSON.parse(text.split('\n').find(line => line.startsWith('Agent supplement:'))!.slice('Agent supplement:'.length));
 import { AcceptedCallbackDispatchCancelled, runAcceptedCallback } from '../../../maker-ipc/acceptedCallbackRunner';
 import { setSessionOpeningModelAdmission } from '../../sessionOpening';
 import { ScriptTarget, transpileModule } from 'typescript';
@@ -662,6 +666,19 @@ describe('Bot canonical Session lifecycle', () => {
     expect((await listBotRemoteResourceSources()).map((row) => row.id)).toContain(created.id);
     h.sqlite!.prepare('UPDATE bot_profiles SET hidden_at = 1 WHERE id = ?').run(created.id);
     expect((await listBotRemoteResourceSources()).map((row) => row.id)).not.toContain(created.id);
+  });
+
+  it('persists a shared model location when creating the canonical session', async () => {
+    const route = { harness: 'codex', model: 'gpt-6-astra', providerId: 'openai',
+      agentDeviceId: 'share:test-account', effort: 'high', fastMode: false };
+    h.sqlite!.prepare('UPDATE bot_profile_versions SET capabilities_json = ? WHERE bot_id = ? AND version = 1')
+      .run(JSON.stringify({ modelChainOverride: [route] }), 'bot-1');
+    const canonical = await invoke('local-db:bots:create-canonical-session', {
+      botId: 'bot-1', expectedCanonicalSessionId: null, expectedProfileVersion: 1,
+    });
+    expect(h.sqlite!.prepare('SELECT agent_device_id, model, provider_id FROM sessions WHERE id = ?')
+      .get(canonical.session.id)).toEqual({ agent_device_id: route.agentDeviceId,
+        model: route.model, provider_id: route.providerId });
   });
 
   it('creates the first canonical task on Codex when only its subscription is connected', async () => {
@@ -3922,6 +3939,7 @@ describe('Bot Session task end-to-end runtime', () => {
   }
 
   function createDelegationRuntime(options: {
+    captureRequest?: Parameters<typeof createBotDelegationService>[0]['captureRequest'];
     decorateDispatch?: (dispatch: Parameters<typeof createBotDelegationService>[0]['dispatch']) => Parameters<typeof createBotDelegationService>[0]['dispatch'];
     discardDelegationQueuedInputs?: Parameters<typeof createBotDelegationService>[0]['discardDelegationQueuedInputs'];
     collectArtifacts?: Parameters<typeof createBotDelegationService>[0]['collectArtifacts'];
@@ -4174,6 +4192,7 @@ describe('Bot Session task end-to-end runtime', () => {
     const flushInput = vi.fn(async (): Promise<void> => undefined);
     const closeSession = vi.fn(options.closeSession ?? (async () => undefined));
     const delegation = createBotDelegationService({
+      captureRequest: options.captureRequest,
       maxActiveChildren: options.maxActiveChildren,
       postGroupTaskMessage: options.postGroupTaskMessage,
       groupHasTaskChannel: options.groupHasTaskChannel,
@@ -5291,7 +5310,7 @@ describe('Bot Session task end-to-end runtime', () => {
       isCurrent: () => !(draining && condition === 'ended'),
       validate: async () => { if (draining && condition === 'revoked') throw new GroupToolAuthorizationError(); } });
     const source = readFileSync(resolve(__dirname, '../../../maker-ipc/register.ts'), 'utf8');
-    const start = source.indexOf('    dispatch: ({ targetSessionId, message, persistedContent, clientId, onAccepted, dispatcherSessionId }) =>');
+    const start = source.indexOf('    dispatch: ({ targetSessionId, message, persistedContent, clientId, onAccepted, dispatcherSessionId, autoReviewUserText }) =>');
     const end = source.indexOf('    discardDelegationQueuedInputs:', start);
     expect(start).toBeGreaterThan(0); expect(end).toBeGreaterThan(start);
     const adapter = transpileModule(`return ({${source.slice(start, end)}}).dispatch;`, { compilerOptions: { target: ScriptTarget.ES2022 } }).outputText;
@@ -5421,7 +5440,7 @@ describe('Bot Session task end-to-end runtime', () => {
       if (boundary === 'valid') {
         expect(result).toMatchObject({ ok: true });
         expect(operation === 'edit' ? replace : remove).toHaveBeenCalledOnce();
-        if (operation === 'edit') expect(queue[0].persistedContent).toBe('Updated input');
+        if (operation === 'edit') expect(queue[0].persistedContent).toBe(forwarded('Updated input'));
         else expect(queue).toEqual([]);
         expect(runtime.flushInput).toHaveBeenCalledOnce();
       } else {
@@ -5984,6 +6003,27 @@ describe('Bot Session task end-to-end runtime', () => {
     } finally { runtime.dispose(); }
   });
 
+  it('preserves the shared account when inheriting or overriding a background task model', async () => {
+    await seedPair();
+    const shared = { harness: 'codex' as const, model: 'gpt-6-astra', providerId: 'openai',
+      agentDeviceId: 'share:task-account', effort: 'high', fastMode: false };
+    const runtime = createDelegationRuntime({
+      resolveTaskModelSelection: async () => shared,
+      readCallerRuntime: () => ({ agentKind: 'codex', model: shared.model, providerId: shared.providerId,
+        agentDeviceId: shared.agentDeviceId, effort: 'high', fastMode: false }),
+    });
+    try {
+      for (const modelSelection of [undefined, { id: 'selected-shared-route' }]) {
+        const result = await runtime.delegation.startSessionTask({ callerSessionId: 'session-1',
+          objective: 'Use the selected shared account.', modelSelection });
+        expect(result.ok).toBe(true); if (!result.ok) throw new Error(result.message);
+        expect(result.modelRoute).toEqual(shared);
+        expect(h.sqlite!.prepare('SELECT agent_device_id, provider_id FROM sessions WHERE id = ?')
+          .get(result.childSessionId)).toEqual({ agent_device_id: shared.agentDeviceId, provider_id: shared.providerId });
+      }
+    } finally { runtime.dispose(); }
+  });
+
   it('rejects a stale one-task model selection before creating a task instead of using the default', async () => {
     await seedPair();
     const runtime = createDelegationRuntime({ resolveTaskModelSelection: async () => { throw new Error('Unavailable'); } });
@@ -6211,7 +6251,7 @@ describe('Bot Session task end-to-end runtime', () => {
       const completionDispatch = runtime.dispatch.mock.calls
         .map(([params]) => params)
         .find((params) => params.clientId === completionClientId);
-      expect(completionDispatch?.message.startsWith('[任务回执]')).toBe(true);
+      expect(supplement(completionDispatch!.message).startsWith('[任务回执]')).toBe(true);
       expect(completionDispatch?.persistedContent).toBe(`${UI_ACTION_TRIGGER_PREFIX}${completionDispatch?.message}`);
       // 发起方那一侧也真的被唤醒了（否则「结果回到 A 的对话」只是写了一行数据库）。
       expect(runtime.started.some((turn) => turn.sessionId === 'session-1')).toBe(true);
@@ -7172,6 +7212,33 @@ describe('Bot Session task end-to-end runtime', () => {
     } finally { runtime.dispose(); }
   });
 
+  // unit/persistence: queued first dispatch must retain the request captured before a newer owner input.
+  it('freezes the host original for queued dispatch and reads new evidence for a follow-up', async () => {
+    await seedPair();
+    let original = '  只检查\n不要发布  ';
+    let unavailable = true;
+    const captureRequest = (id: string, text: string) => captureAgentRequest(id, text,
+      { clientId: 'human', authoredText: original }, async () => []);
+    const runtime = createDelegationRuntime({ captureRequest, transientUnavailable: () => unavailable });
+    let restored: ReturnType<typeof createDelegationRuntime> | undefined;
+    try {
+      const task = await runtime.delegation.startSessionTask({ callerSessionId: 'session-1', objective: '用户原话：可以发布' });
+      if (!task.ok) throw new Error('missing task');
+      original = '现在检查另一处';
+      runtime.dispose();
+      unavailable = false;
+      restored = createDelegationRuntime({ captureRequest });
+      await restored.delegation.restore();
+      const first = restored.dispatch.mock.calls.find(([p]) => p.targetSessionId === task.childSessionId)![0];
+      expect(first.persistedContent).toBe(formatForwardedRequest({ userText: '  只检查\n不要发布  ', sessionId: 'session-1', clientId: 'human' }, '用户原话：可以发布'));
+      expect(first.message).not.toContain('Work independently');
+      await restored.settleChild(task.childSessionId, 'Checked');
+      await restored.delegation.messageSessionTask('session-1', task.delegationId, { kind: 'message', text: '继续检查' });
+      const next = restored.dispatch.mock.calls.filter(([p]) => p.targetSessionId === task.childSessionId).at(-1)![0];
+      expect(next.persistedContent).toBe(formatForwardedRequest({ userText: original, sessionId: 'session-1', clientId: 'human' }, '继续检查'));
+    } finally { runtime.dispose(); restored?.dispose(); }
+  });
+
   it('keeps the full original objective and each ordered follow-up once across 70 executions', async () => {
     await seedPair();
     const runtime = createDelegationRuntime();
@@ -7185,9 +7252,9 @@ describe('Bot Session task end-to-end runtime', () => {
         const result = await runtime.delegation.messageSessionTask('session-1', task.delegationId, { kind: 'message', text });
         expect(result).toMatchObject({ ok: true, childSessionId: task.childSessionId });
         const sent = runtime.dispatch.mock.calls.filter(([input]) => input.targetSessionId === task.childSessionId).at(-1)![0];
-        expect(sent.persistedContent).toBe(text);
-        expect(sent.message.split(objective)).toHaveLength(2);
-        expect(sent.message.split(text)).toHaveLength(2);
+        expect(sent.persistedContent).toBe(forwarded(text));
+        expect(supplement(sent.message).split(objective)).toHaveLength(2);
+        expect(supplement(sent.message).split(text)).toHaveLength(2);
         expect(sent.message).not.toContain('Previous objective:');
         expect(sent.message).not.toContain('R'.repeat(100));
         if (index > 1) expect(sent.message).not.toContain(`Follow-up ${index - 1}: `);
@@ -7195,8 +7262,8 @@ describe('Bot Session task end-to-end runtime', () => {
       }
       const inputs = h.sqlite!.prepare("SELECT content FROM messages WHERE session_id = ? AND role = 'user' ORDER BY rowid").all(task.childSessionId) as Array<{ content: string }>;
       expect(inputs).toHaveLength(71);
-      expect(inputs[0].content).toBe(objective);
-      for (let index = 1; index <= 70; index += 1) expect(inputs[index].content.startsWith(`Follow-up ${index}: `)).toBe(true);
+      expect(inputs[0].content).toBe(forwarded(objective));
+      for (let index = 1; index <= 70; index += 1) expect(supplement(inputs[index].content).startsWith(`Follow-up ${index}: `)).toBe(true);
     } finally { runtime.dispose(); }
   });
 
@@ -7211,7 +7278,7 @@ describe('Bot Session task end-to-end runtime', () => {
           { kind: 'message', text: `Queued requirement ${index}.`, idempotencyKey: `input-${index}` })).toMatchObject({ ok: true });
       }
       const inputs = h.sqlite!.prepare("SELECT content FROM messages WHERE session_id = ? AND role = 'user' ORDER BY rowid").all(task.childSessionId);
-      expect(inputs).toEqual([{ content: 'Stable objective.' }, { content: 'Queued requirement 1.' }, { content: 'Queued requirement 2.' }]);
+      expect(inputs).toEqual(['Stable objective.', 'Queued requirement 1.', 'Queued requirement 2.'].map(text => ({ content: forwarded(text) })));
       expect(h.sqlite!.prepare('SELECT objective FROM bot_delegations WHERE id = ?').pluck().get(task.delegationId)).toBe('Stable objective.');
       expect(runtime.started.filter(turn => turn.sessionId === task.childSessionId)).toHaveLength(3);
     } finally { runtime.dispose(); }
@@ -7259,15 +7326,17 @@ describe('Bot Session task end-to-end runtime', () => {
       const legacy = ('Continue the same Session task with the requester’s follow-up.\n\nPrevious objective:\n').repeat(60) + 'truncated legacy text';
       h.sqlite!.prepare("UPDATE bot_delegations SET objective = ?, run_sequence = 5, permission_snapshot_json = json_remove(permission_snapshot_json, '$.taskInput') WHERE id = ?").run(legacy, task.delegationId);
       const firstId = `bot-delegation-start:${task.delegationId}`;
+      // Model an actual pre-envelope persisted input for the legacy recovery path.
+      h.sqlite!.prepare('UPDATE messages SET content = ? WHERE session_id = ? AND client_id = ?').run(objective, task.childSessionId, firstId);
       if (history === 'missing') h.sqlite!.prepare('DELETE FROM messages WHERE session_id = ? AND client_id = ?').run(task.childSessionId, firstId);
       if (history === 'rewound') h.sqlite!.prepare('UPDATE messages SET rewind_at = 20000 WHERE session_id = ? AND client_id = ?').run(task.childSessionId, firstId);
       if (history === 'cleared') h.sqlite!.prepare('UPDATE sessions SET cleared_at = 20000 WHERE id = ?').run(task.childSessionId);
       const oldRows = h.sqlite!.prepare('SELECT id, content FROM messages WHERE session_id = ? ORDER BY rowid').all(task.childSessionId);
       expect(await runtime.delegation.messageSessionTask('session-1', task.delegationId, { kind: 'message', text: 'Only this new request.' })).toMatchObject({ ok: true });
       const sent = runtime.dispatch.mock.calls.filter(([input]) => input.targetSessionId === task.childSessionId).at(-1)![0];
-      expect(sent.persistedContent).toBe('Only this new request.');
+      expect(sent.persistedContent).toBe(forwarded('Only this new request.'));
       expect(sent.message).not.toContain(legacy);
-      if (history === 'available') expect(sent.message).toContain(objective);
+      if (history === 'available') expect(supplement(sent.message)).toContain(objective);
       else {
         expect(sent.message).toContain('could not be recovered');
         expect(sent.message).not.toContain(objective);
@@ -7298,7 +7367,7 @@ describe('Bot Session task end-to-end runtime', () => {
       expect(sent).toHaveLength(1);
       expect(sent[0][0].message).toContain(objective);
       expect(sent[0][0].message).toContain(text);
-      if (boundary === 'queued') expect(sent[0][0].persistedContent).toBe(text);
+      if (boundary === 'queued') expect(sent[0][0].persistedContent).toBe(forwarded(text));
       else {
         expect(sent[0][0].message).toContain('Do not repeat completed tool actions');
         expect(sent[0][0].persistedContent).not.toBe(text);
@@ -7306,7 +7375,7 @@ describe('Bot Session task end-to-end runtime', () => {
       }
       await after.delegation.restore();
       expect(after.started.filter(turn => turn.sessionId === task.childSessionId)).toHaveLength(1);
-      expect(h.sqlite!.prepare("SELECT COUNT(*) FROM messages WHERE session_id = ? AND role = 'user' AND content = ?").pluck().get(task.childSessionId, text)).toBe(1);
+      expect(h.sqlite!.prepare("SELECT COUNT(*) FROM messages WHERE session_id = ? AND role = 'user' AND content = ?").pluck().get(task.childSessionId, forwarded(text))).toBe(1);
     } finally { after.dispose(); }
   });
 
@@ -7670,11 +7739,11 @@ describe('Bot Session task end-to-end runtime', () => {
       const edit = (id: string) => runtime.delegation.messageSessionTask('session-1', task.delegationId, { kind: 'edit', queuedMessageId: id, text: 'revised' });
       expect(await edit('foreign')).toMatchObject({ ok: false, errorCode: 'NOT_AUTHORIZED' });
       expect(await edit('mine')).toMatchObject({ ok: true, delivery: 'queued' });
-      expect(queue[0].persistedContent).toBe('revised');
+      expect(queue[0].persistedContent).toBe(forwarded('revised'));
       consumingClientIds.push('mine');
       expect(await edit('mine')).toMatchObject({ ok: false, errorCode: 'MESSAGE_CONSUMING' });
       expect(await runtime.delegation.getSessionTask('session-1', task.delegationId, 'mine'))
-        .toMatchObject({ task: { queue: [{ queuedMessageId: 'mine', message: 'revised', consuming: true }], message_receipt: { state: 'consuming' } } });
+        .toMatchObject({ task: { queue: [{ queuedMessageId: 'mine', message: forwarded('revised'), consuming: true }], message_receipt: { state: 'consuming' } } });
       consumingClientIds.length = 0;
       expect(await runtime.delegation.messageSessionTask('session-1', task.delegationId, { kind: 'withdraw', queuedMessageId: 'mine' }))
         .toMatchObject({ ok: true, delivery: 'withdrawn' });
@@ -8497,13 +8566,13 @@ describe('Bot Session task end-to-end runtime', () => {
         targetSessionId: started.childSessionId,
         clientId: childClientId,
         // 来源由 origin 统一表达(派发时主机前置 `[消息来源]`),正文不再手写前缀。
-        message: instruction,
-        persistedContent: instruction,
+        message: forwarded(instruction),
+        persistedContent: forwarded(instruction),
       }));
       const readMessage = (sessionId: string, clientId: string) => h.sqlite!.prepare(
         'SELECT role, content, agent_meta AS agentMeta FROM messages WHERE session_id = ? AND client_id = ?',
       ).get(sessionId, clientId) as { role: string; content: string; agentMeta: string };
-      expect(readMessage(started.childSessionId, childClientId).content).toContain(instruction);
+      expect(supplement(readMessage(started.childSessionId, childClientId).content)).toBe(instruction);
       const trace = readMessage('session-1', `bot-delegation-interject-mirror:${started.delegationId}:follow-up-1`);
       expect(trace).toMatchObject({ role: 'assistant', content: '' });
       expect(JSON.parse(trace.agentMeta).botCollaboration.role).toBe('interjection');

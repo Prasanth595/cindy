@@ -559,32 +559,7 @@ function botsReplaceCanonicalSession(
         return { created: false, canonicalSessionId, archivedCanonicalSessionId: null };
       }
     }
-    db.prepare(
-      `INSERT INTO sessions
-      (id, title, working_dir, workspace_kind, model, effort, permission_mode, status,
-       sdk_session_id, total_token_usage, total_cost_usd, context_tokens, context_window,
-       fast_mode, plan_mode_enabled, cleared_at, pinned_at, user_send_at, agent_kind,
-       orca_role, parent_session_id, forked_at_message_id, worktree_path, extra_dirs,
-       remote_host_id, provider_id, source, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 'active', NULL, 0, 0, 0, 0, ?, 0, NULL, NULL, NULL,
-       ?, NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?)`,
-    ).run(
-      sessionId,
-      expectString(s.title, 'session.title'),
-      nullableString(s.workingDir),
-      expectString(s.workspaceKind, 'session.workspaceKind'),
-      expectString(s.model, 'session.model'),
-      expectString(s.effort, 'session.effort'),
-      expectString(s.permissionMode, 'session.permissionMode'),
-      s.fastMode === true ? 1 : 0,
-      expectString(s.agentKind, 'session.agentKind'),
-      expectString(s.extraDirs, 'session.extraDirs'),
-      nullableString(s.remoteHostId),
-      nullableString(s.providerId),
-      expectString(s.source, 'session.source'),
-      expectNumber(s.createdAt, 'session.createdAt'),
-      expectNumber(s.updatedAt, 'session.updatedAt'),
-    );
+    insertBotSession(db, { ...s, id: sessionId, parentSessionId: null });
     let archived: string | null = null;
     let missingCanonicalSessionId: string | null = compatibilityMissingCanonicalSessionId;
     if (canonicalSessionId) {
@@ -784,9 +759,9 @@ function insertBotSession(db: Database.Database, s: Record<string, unknown>): vo
      sdk_session_id, total_token_usage, total_cost_usd, context_tokens, context_window,
      fast_mode, plan_mode_enabled, cleared_at, pinned_at, user_send_at, agent_kind,
      orca_role, parent_session_id, forked_at_message_id, worktree_path, extra_dirs,
-     remote_host_id, provider_id, source, created_at, updated_at)
+     remote_host_id, provider_id, source, created_at, updated_at, agent_device_id)
     VALUES (?, ?, ?, ?, ?, ?, ?, 'active', NULL, 0, 0, 0, 0, ?, 0, NULL, NULL, NULL,
-     ?, NULL, ?, NULL, NULL, ?, ?, ?, ?, ?, ?)`)
+     ?, NULL, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?)`)
     .run(expectString(s.id, 'session.id'), expectString(s.title, 'session.title'),
       nullableString(s.workingDir), expectString(s.workspaceKind, 'session.workspaceKind'),
       expectString(s.model, 'session.model'), expectString(s.effort, 'session.effort'),
@@ -795,7 +770,7 @@ function insertBotSession(db: Database.Database, s: Record<string, unknown>): vo
       nullableString(s.parentSessionId),
       expectString(s.extraDirs, 'session.extraDirs'), nullableString(s.remoteHostId), nullableString(s.providerId),
       expectString(s.source, 'session.source'), expectNumber(s.createdAt, 'session.createdAt'),
-      expectNumber(s.updatedAt, 'session.updatedAt'));
+      expectNumber(s.updatedAt, 'session.updatedAt'), nullableString(s.agentDeviceId));
 }
 
 /** One hidden lane per (group, Bot); reuses an active lane instead of creating a second. */

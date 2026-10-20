@@ -1272,10 +1272,12 @@ function forward(
             strippedBytes: retryBody.length,
           });
           const threadId = selectedHeaderValue(headers, rule.threadIdHeaders ?? DEFAULT_THREAD_ID_HEADERS);
-          const model = clientModel || extractBodyModel(body);
-          if (threadId && model) {
+          if (threadId) {
             for (const appliedRule of appliedRules) {
-              appliedRule.onRetry?.(threadId, model);
+              const model = appliedRule.useUpstreamModel
+                ? extractBodyModel(body)
+                : clientModel || extractBodyModel(body);
+              if (model) appliedRule.onRetry?.(threadId, model);
             }
           }
           const retry = (): void => {

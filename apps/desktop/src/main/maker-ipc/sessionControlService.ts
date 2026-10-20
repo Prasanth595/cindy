@@ -1,3 +1,4 @@
+import { formatForwardedRequest } from './forwardedRequest.js';
 import type {
   AgentKind,
   Effort,
@@ -390,8 +391,14 @@ export function rebuildSessionQueueItem(
   item: AgentInputQueuedMessage,
   message: string,
 ): AgentInputQueuedMessage {
+  const request = typeof item.autoReviewUserText === 'object' ? item.autoReviewUserText.request : undefined;
+  if (item.origin?.kind === 'session') message = formatForwardedRequest(request ?? { userText: null }, message);
   const updated = updateQueuedMessageText(item, message);
   if (updated.origin?.kind === 'session') {
+    updated.autoReviewUserText = {
+      kind: typeof item.autoReviewUserText === 'object' ? item.autoReviewUserText.kind : 'agent-request',
+      request: request ?? { userText: null },
+    };
     // send_to_session owns raw user text, not a renderer composer envelope.
     // A valid JSON object/array is still literal message content, so editing it
     // must replace the persisted history row wholesale instead of merging a

@@ -707,6 +707,7 @@ export interface BotsReplaceCanonicalSessionArgs {
     agentKind: string;
     remoteHostId: string | null;
     providerId: string | null;
+    agentDeviceId?: string | null;
     parentSessionId?: string | null;
     extraDirs: string;
     fastMode?: boolean;

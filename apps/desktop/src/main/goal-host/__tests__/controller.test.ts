@@ -4426,6 +4426,27 @@ describe('GoalController', () => {
   });
 
   // ── usageLimited(账号用量受限)──
+  it('a confirmed reset resumes an existing quota wait once before the natural reset time', async () => {
+    h.setAccountLimit({ limited: true, resetAtMs: 3_601_000 });
+    await startGoal(h);
+    h.session.emitErrorTurn({ sdkError: 'rate_limit', message: 'rate limit reached' });
+    await tick();
+    h.setAccountLimit({ limited: false, resetAtMs: null });
+    await h.controller.resumeRestoredQuota(async () => true);
+    await tick();
+    expect(h.session.sends).toHaveLength(2);
+    await h.controller.resumeRestoredQuota(async () => true);
+    expect(h.session.sends).toHaveLength(2);
+  });
+
+  it('a quota refresh does not shorten an overload wait', async () => {
+    await startGoal(h);
+    h.session.emitErrorTurn({ errorStatus: 529, message: 'overloaded_error' });
+    await tick();
+    await h.controller.resumeRestoredQuota(async () => true);
+    expect(h.session.sends).toHaveLength(1);
+  });
+
   it('reactive: a usage-limit turn error → usageLimited with resetAt, no continuation', async () => {
     h.setAccountLimit({ limited: true, resetAtMs: 3_601_000 }); // 远未来 → 不在测试窗口自动续
     await startGoal(h);

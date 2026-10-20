@@ -400,6 +400,7 @@ export async function ensureBotGroupLaneSession(input: {
       agentKind: row.agentKind,
       remoteHostId: null,
       providerId: row.providerId ?? null,
+      agentDeviceId: row.agentDeviceId ?? null,
       extraDirs: row.extraDirs,
       source: row.source,
       createdAt: row.createdAt,
@@ -511,6 +512,7 @@ export async function ensureBotChannelLaneSession(input: {
         agentKind: row.agentKind,
         remoteHostId: null,
         providerId: row.providerId ?? null,
+        agentDeviceId: row.agentDeviceId ?? null,
         extraDirs: row.extraDirs,
         source: row.source,
         createdAt: row.createdAt,
@@ -678,6 +680,7 @@ function botSessionRouteFields(config: Record<string, unknown>, primaryRoute: Bo
           ? NEW_BOT_DEFAULT_PI_EFFORT
           : undefined),
     fastMode: primaryRoute?.fastMode ?? config.fastMode === true,
+    agentDeviceId: primaryRoute?.agentDeviceId ?? null,
     agentKind: botSessionAgentKind(primaryRoute ?? config),
     permissionMode: botSessionPermissionMode(config),
   };
@@ -2167,6 +2170,7 @@ export function registerBotIpc(): void {
           agentKind: insertRow.agentKind,
           remoteHostId: insertRow.remoteHostId ?? null,
           providerId: insertRow.providerId ?? null,
+          agentDeviceId: insertRow.agentDeviceId ?? null,
           extraDirs: insertRow.extraDirs,
           source: insertRow.source,
           createdAt: insertRow.createdAt,

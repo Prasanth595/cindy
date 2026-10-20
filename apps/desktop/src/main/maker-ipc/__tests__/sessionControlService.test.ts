@@ -1,3 +1,5 @@
+import { formatForwardedRequest } from '../../../shared/forwardedRequest.js';
+const forwarded = (text: string) => formatForwardedRequest({ userText: null }, text);
 import { describe, expect, it, vi } from 'vitest';
 import type { SessionActivitySnapshot } from '@cindy/maker-shared/session-activity';
 
@@ -218,8 +220,8 @@ describe('session control domain service', () => {
       'queued-1',
       expect.objectContaining({
         clientId: 'queued-1',
-        text: 'after',
-        origin: expect.objectContaining({ displayText: 'after' }),
+        text: forwarded('after'),
+        origin: expect.objectContaining({ displayText: forwarded('after') }),
       }),
       expect.objectContaining({clientId:'queued-1',text:'before'}),
     );
@@ -293,10 +295,10 @@ describe('session control domain service', () => {
         'target',
         'queued-1',
         expect.objectContaining({
-          text: replacement,
-          persistedContent: replacement,
-          chatMessage: expect.objectContaining({ content: replacement }),
-          origin: expect.objectContaining({ displayText: replacement }),
+          text: forwarded(replacement),
+          persistedContent: forwarded(replacement),
+          chatMessage: expect.objectContaining({ content: forwarded(replacement) }),
+          origin: expect.objectContaining({ displayText: forwarded(replacement) }),
         }),
         queued,
       );
@@ -315,10 +317,19 @@ describe('session control domain service', () => {
     const updated = rebuildSessionQueueItem(queued, 'replacement');
 
     expect(JSON.parse(updated.persistedContent)).toMatchObject({
-      text: 'replacement',
+      text: forwarded('replacement'),
       files: [{ name: 'notes.txt', path: '/repo/notes.txt' }],
     });
-    expect(updated.origin).toMatchObject({ kind: 'session', displayText: 'replacement' });
+    expect(updated.origin).toMatchObject({ kind: 'session', displayText: forwarded('replacement') });
+  });
+
+  it('edits only the supplement and preserves an existing delegated continuation receipt', () => {
+    const queued = item({ kind: 'session', senderSessionId: 'caller', displayText: 'before' });
+    const request = { userText: '  只检查\n不要发布  ', sessionId: 'owner', clientId: 'human' };
+    queued.autoReviewUserText = { kind: 'delegated-continuation', request };
+    const updated = rebuildSessionQueueItem(queued, '用户原话：可以发布');
+    expect(updated.persistedContent).toBe(formatForwardedRequest(request, '用户原话：可以发布'));
+    expect(updated.autoReviewUserText).toEqual(queued.autoReviewUserText);
   });
 
   it('keeps renderer composer envelopes intact when rebuilding a non-session queue item', () => {

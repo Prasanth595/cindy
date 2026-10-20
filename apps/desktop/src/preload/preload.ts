@@ -7948,6 +7948,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       getCodexRateLimits: (providerId?: string): Promise<MobileCodexRateLimitsResult> =>
         ipcRenderer.invoke('maker:usage:codex-rate-limits', providerId),
       /** Consume one desktop-issued reset offer; Main validates its account and expiry. */
+      setCodexResetAutoUse: (patch: Partial<import('@cindy/maker-shared/device-link-contract').CodexResetAutoUseSettings> | null, accountKey: string, providerId?: string): Promise<MobileCodexRateLimitsResult> =>
+        ipcRenderer.invoke('maker:usage:codex-reset-auto-use', patch, accountKey, providerId),
       consumeCodexRateLimitReset: (idempotencyKey: string, providerId?: string): Promise<MobileCodexRateLimitResetResult> =>
         ipcRenderer.invoke('maker:usage:codex-rate-limit-reset', idempotencyKey, providerId),
       /** Claude 订阅账号余量 (5h/周/分模型窗口, cached-first, main 侧按需后台刷新)。 */

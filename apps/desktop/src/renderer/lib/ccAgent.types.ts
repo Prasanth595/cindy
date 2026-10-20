@@ -1,3 +1,4 @@
+import type { AgentRequestReceipt } from '../../shared/forwardedRequest.js';
 import type { ImMessageSource } from '../../shared/imMessageSource';
 import type { Effort, PermissionMode } from '@/lib/userPreferences.types';
 import type { SessionSource } from '../../shared/sessionSource';
@@ -148,7 +149,8 @@ export interface CcMeta {
   /** Host-owned authorization evidence; IPC callers cannot mint or replace it. */
   autoReviewUserText?: string
     | { text: string; acceptedAt: number }
-    | { kind: 'scheduled-continuation' };
+    | { kind: 'scheduled-continuation' }
+    | AgentRequestReceipt;
 
   /**
    * Host-side origin marker（与 delivery 同类，非 SDK 字段）。

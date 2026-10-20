@@ -24,7 +24,7 @@ const leaf = () => null;
 const child = vi.fn(({ item }: any) => React.createElement('span', null, item.key));
 const source = ['ToolActionRow', 'WorkGroupCard'].map(name => rendererFunction(name).getText(rendererSource)).join(String.fromCharCode(10));
 const components = executeRenderer<Record<string, React.ComponentType<any>>>(source + '; return { ToolActionRow, WorkGroupCard };', {
-  useState: React.useState, useRef: React.useRef, useEffect: React.useEffect, useMemo: React.useMemo,
+  useState: React.useState, useRef: React.useRef, useEffect: React.useEffect, useLayoutEffect: React.useLayoutEffect, useMemo: React.useMemo,
   useTranslation, useFoldableExpandedState, summarizeWorkGroupPresentation,
   mobilePresentationLocalizer, buildMessageHierarchyLayout, buildMessageContentLayout, readToolProcessMedia,
   View, Text: View, Pressable: View, useTheme: () => ({ colors: lightColors }),

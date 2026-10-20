@@ -1,3 +1,4 @@
+import { readForwardedRequestSource } from '../../../shared/forwardedRequest.js';
 import { createHash } from 'node:crypto';
 import { botTodoRemoteProjection } from './botTodoRemoteProjection.js';
 import { todoAccess } from '../../maker-ipc/botTodoAccess.js';
@@ -171,10 +172,14 @@ export function registerBotRemoteResourceProvider(management?: typeof botRemoteM
         throw new RemoteResourceRegistryError('UNSUPPORTED_CAPABILITY', 'Unknown teammate action');
       }
       const input = request.input;
+      const requestSource = readForwardedRequestSource(input?.requestSource);
+      if (input?.requestSource !== undefined && !requestSource) {
+        throw new RemoteResourceRegistryError('NOT_FOUND', 'Invalid teammate request source');
+      }
       const validBotId = (value: unknown): value is string => typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value);
       const validMessageId = (value: unknown): value is string => typeof value === 'string' && /^[A-Za-z0-9_-]{1,80}$/.test(value);
       if (!validBotId(request.resourceRef?.id) || !validBotId(request.actionId === 'verify-message' ? input?.targetBotId : input?.senderBotId) || !validMessageId(input?.messageId)
-        || (request.actionId !== 'message-receipt' && (typeof input?.message !== 'string' || !input.message.trim() || input.message.length > 12_000))) {
+        || (request.actionId !== 'message-receipt' && (typeof input?.message !== 'string' || !input.message.trim() || input.message.length > (input.requestSource ? 200_000 : 12_000)))) {
         throw new RemoteResourceRegistryError('NOT_FOUND', 'Invalid teammate message');
       }
       const [source] = visibleBotRemoteResourceSources([await getBotRemoteResourceSource(request.resourceRef.id)]);
@@ -191,12 +196,14 @@ export function registerBotRemoteResourceProvider(management?: typeof botRemoteM
       if (request.actionId === 'verify-message') {
         const verified = await service.verifyRemoteMessage({ controllerDeviceId: context.controllerDeviceId,
           senderBotId: request.resourceRef.id, targetBotId: input.targetBotId as string,
+          ...(requestSource ? { requestSource } : {}),
           messageId: input.messageId, message: input.message as string });
         return { effects: [], verified };
       }
       const teammateMessage = await service.receiveRemote({
         controllerDeviceId: context.controllerDeviceId,
         senderBotId: input.senderBotId as string, targetBotId: request.resourceRef.id,
+        ...(requestSource ? { requestSource } : {}),
         messageId: input.messageId, message: input.message as string,
       });
       return { effects: [], teammateMessage };

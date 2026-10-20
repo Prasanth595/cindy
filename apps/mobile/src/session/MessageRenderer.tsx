@@ -355,6 +355,7 @@ import {
 import type { ContinuationInFlightProjectionCapability } from '@/session/types';
 import {
   projectMobileWorkActivities,
+  projectRecentMobileWorkActivities,
   type MobileProjectedToolActivity,
   sameMobileWorkToolActivity,
 } from '@/session/workActivityProjection';
@@ -3025,10 +3026,9 @@ const RenderItemView = memo(function RenderItemView({
   }
   const groupTimestamp = actions.companion && item.type === 'message'
     ? actions.companionTimeGroups?.get(item.key) : undefined;
-  // K1: every companion card (task, result, teammate-message pill) hangs on the replies' column,
-  // left-aligned with the reply text behind an invisible avatar.
-  const alignWithReplies = !!actions.companionAvatar && actions.companion && item.type === 'message'
-    && !!item.message.companion;
+  // Cards and work groups share the reply text column, leaving the avatar slot empty.
+  const alignWithReplies = !!actions.companionAvatar && actions.companion
+    && (item.type === 'work_group' || (item.type === 'message' && !!item.message.companion));
   const aligned = alignWithReplies ? <View style={styles.companionAvatarInset}>{node}</View> : node;
   // Companion chats: a new message or finished reply eases in once (M4 / M5); everything else stays still.
   const entering = actions.companion && item.type === 'message' && !item.message.systemCardType
@@ -4703,20 +4703,26 @@ function WorkGroupCard({
   const isStreaming = item.isStreaming === true;
   const [rememberedExpanded, toggleExpanded] = useFoldableExpandedState(item.key, false);
   const expanded = item.deferred?.setVisible ? rememberedExpanded : item.deferred?.expanded ?? rememberedExpanded;
+  const lines = isStreaming ? item.deferred?.lines : undefined;
+  const lineMode = lines !== undefined;
   const deferredRef = useRef(item.deferred);
   deferredRef.current = item.deferred;
-  useEffect(() => {
+  useLayoutEffect(() => {
     const current = deferredRef.current;
-    current?.setVisible?.(expanded, false);
+    current?.setVisible?.(expanded, isStreaming && !lineMode);
     return () => current?.setVisible?.(false, false);
-  }, [item.deferred?.owner, item.deferred?.key, expanded]);
+  }, [item.deferred?.owner, item.deferred?.key, expanded, isStreaming, lineMode]);
   const layout = useMemo(() => buildMessageHierarchyLayout({
     screenWidth: actions.screenWidth,
     summaryCount: header.summaryCount,
   }), [actions.screenWidth, header.summaryCount]);
-  const contentLayout = useMemo(() => (expanded
-    ? buildMessageContentLayout({ screenWidth: actions.screenWidth })
-    : null), [actions.screenWidth, expanded]);
+  const contentLayout = useMemo(() => buildMessageContentLayout({ screenWidth: actions.screenWidth }), [actions.screenWidth]);
+  const liveActivities = useMemo(() => isStreaming && !lineMode
+    ? projectRecentMobileWorkActivities(item.children, true, 5) : [], [item.children, isStreaming, lineMode]);
+  // The outer group already occupies the reply column. Keep companion actions,
+  // but neither repeat its portrait nor indent nested work groups a second time.
+  const childActions = useMemo(() => actions.companion && actions.companionAvatar
+    ? { ...actions, companionAvatar: undefined } : actions, [actions]);
   const activityProjection = useMemo(
     () => (expanded
       ? projectMobileWorkActivities(item.children, isStreaming)
@@ -4755,12 +4761,17 @@ function WorkGroupCard({
   const pluginWork = actions.companionPluginWork?.get(item.key);
   // The Host projects running lines for this view; folded groups render them as they are,
   // without building the hidden activity tree or reading any work details.
-  const lines = isStreaming ? item.deferred?.lines : undefined;
   // Expanding keeps these lines on screen until the detail read has rows to replace them.
   const holdLines = expanded && item.deferred?.awaitingDetails === true && !!lines?.length;
   const lineRows = lines?.length ? (
     <View style={styles.workActivityStack}>
       {lines.map((line) => <WorkLineRow key={line.key} line={line} onPress={onToggle} />)}
+    </View>
+  ) : !lineMode && liveActivities.length ? (
+    <View style={styles.workActivityStack}>
+      {liveActivities.map((activity) => activity.kind === 'tool'
+        ? <WorkToolActivityRow key={activity.key} activity={activity} actions={toolActions} contentLayout={contentLayout} />
+        : <WorkLineRow key={activity.key} line={{ kind: 'thinking', key: activity.key, text: activity.content }} onPress={onToggle} />)}
     </View>
   ) : null;
   return (
@@ -4820,7 +4831,7 @@ function WorkGroupCard({
                   </View>
                 );
               }
-              return <RenderItemView key={child.key} item={child} actions={actions} />;
+              return <RenderItemView key={child.key} item={child} actions={childActions} />;
             })}
           </View>
         </Rail>

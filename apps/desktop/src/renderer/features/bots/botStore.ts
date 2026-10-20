@@ -254,7 +254,7 @@ function getDefaultModelInputs() {
   const draft = getDraftForPreferenceSync();
   return {
     visibilityVersion: getModelVisibilityVersion(),
-    preference: JSON.stringify([draft.vendor, draft.lastByVendor[draft.vendor], draft.fastModeByModel]),
+    preference: JSON.stringify([draft.vendor, draft.lastByVendor[draft.vendor], draft.fastModeByModel, draft.agentDeviceId]),
     providers: getCachedProvidersSnapshot(),
     availableAgents: getCachedAvailableVendors(),
   };
@@ -379,6 +379,7 @@ export function getEffectiveBotModelChain(
   return defaultBotModelChain({ providers: providers?.providers ?? [],
     isModelEnabled,
     preferredRoute: {
+      ...(draft.agentDeviceId ? { agentDeviceId: draft.agentDeviceId } : {}),
       harness: draft.vendor === 'cc' || draft.vendor === 'orca' ? 'claude' : draft.vendor,
       providerId: selected.providerId ?? null, model: selected.model,
       effort: selected.effort ?? '', fastMode: draft.fastModeByModel[selected.model] === true,

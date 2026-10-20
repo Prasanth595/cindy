@@ -16,7 +16,7 @@ const fallback = source.slice(
 function harness() {
   const pending = createPendingAgentSwitchRegistry();
   let generation = 0;
-  const current = { agentKind: 'codex', model: 'current', providerId: 'openai', effort: 'high', fastMode: false };
+  const current = { agentDeviceId: null as string | null, agentKind: 'codex', model: 'current', providerId: 'openai', effort: 'high', fastMode: false };
   const candidate = { ...current, agentKind: 'claude-code', model: 'fallback' };
   const readCandidate = vi.fn(async (): Promise<{ isBot: boolean; candidate: typeof candidate | null }> => ({ isBot: true, candidate }));
   const switchAgent = vi.fn(async () => ({ switched: true, engineReady: true }));
@@ -68,12 +68,13 @@ function harness() {
 }
 
 describe('automatic runtime selection respects the user send boundary', () => {
-  it('never replaces the route of a task whose agent runs on another computer with a local candidate', async () => {
+  it('never replaces the route of an ordinary task whose agent runs on another computer with a local candidate', async () => {
     const h = harness();
     h.readSessionAgentDeviceId.mockResolvedValue('device-b');
+    h.readCandidate.mockResolvedValue({ isBot: false, candidate: null });
     expect(await h.run('session', 1, 1, true)).toMatchObject({ session: null, outcome: 'exhausted' });
     expect(await h.run('session', 1, 1, false)).toMatchObject({ session: null, outcome: 'unchanged' });
-    expect(h.readCandidate).not.toHaveBeenCalled();
+    expect(h.readCandidate).toHaveBeenCalledTimes(2);
     expect(h.switchAgent).not.toHaveBeenCalled();
     expect(h.apply).not.toHaveBeenCalled();
   });
@@ -216,4 +217,16 @@ describe('automatic runtime selection respects the user send boundary', () => {
     expect(body).toMatch(/internalOptions.source !== 'user' &&\s*!canApplyAutomaticRuntimeSelection\(sessionId, internalOptions.expectedGeneration\)/);
     expect(body).toContain('return { deferred: false, superseded: true };');
   });
+});
+
+it.each(['device-b', 'share:one'])('applies a same-engine fallback at %s without a no-op agent switch', async agentDeviceId => {
+  const h = harness();
+  h.current.agentDeviceId = agentDeviceId;
+  h.readSessionAgentDeviceId.mockResolvedValue(agentDeviceId);
+  h.readCandidate.mockResolvedValue({ isBot: true, candidate: { ...h.current, model: 'next', providerId: 'other' } });
+  expect(await h.run('session', 1, 1, true)).toMatchObject({ outcome: 'switched' });
+  expect(h.switchAgent).not.toHaveBeenCalled();
+  expect(h.apply).toHaveBeenCalledWith('session', 'next', 'other', expect.anything(),
+    expect.objectContaining({ source: 'fallback', sessionLockHeld: true }));
+  expect(h.failed).not.toHaveBeenCalled();
 });

@@ -98,6 +98,17 @@ export async function readBotModelChainSettingsState(
   // Capture the owner before reading live connections; never persist derived defaults.
   const owner = activeOwnerScopeKey();
   await waitForModelVisibilityMirror();
+  const preferredRoute = getSelectedNewMakerRoute(owner);
+  if (preferredRoute?.agentDeviceId) {
+    const { resolveAvailableTaskModels } = await import('../maker-ipc/appDefaultModelControl.js');
+    const [route] = await resolveAvailableTaskModels([preferredRoute]).catch(() => [null]);
+    if (activeOwnerScopeKey() !== owner) throw new Error('Bot model defaults owner changed');
+    store.invalidateIfChanged();
+    const confirmed = store.readState();
+    if (confirmed.isCustomized) return confirmed;
+    const value = { modelChain: route ? [route] : [] };
+    return { ...confirmed, value, defaults: value };
+  }
   const providers = options?.providers ?? await readConnectedProviders(owner);
   if (activeOwnerScopeKey() !== owner) throw new Error('Bot model defaults owner changed');
   store.invalidateIfChanged();
@@ -162,7 +173,7 @@ async function followMovedCindyAuto(
   providers: readonly ProviderView[] | undefined,
 ): Promise<BotModelRoute[]> {
   // 预设 auto 只在 Cindy AI 上、不会被挪动；只有模型组 Auto 才值得为此读一次目录。
-  if (!chain.some((route) => route.model !== 'auto' && isCindyAutoModelId(route.model)))
+  if (!chain.some((route) => !route.agentDeviceId && route.model !== 'auto' && isCindyAutoModelId(route.model)))
     return chain;
   let views = providers;
   if (!views) {
@@ -180,6 +191,7 @@ async function followMovedCindyAuto(
   }
   const catalog = views;
   return chain.map((route) => {
+    if (route.agentDeviceId) return route;
     const providerId = movedCindyAutoSourceId(catalog, {
       agent: route.harness === 'claude' ? 'claude-code' : route.harness,
       model: route.model,

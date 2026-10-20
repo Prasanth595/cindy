@@ -55,8 +55,12 @@ vi.mock('react-i18next', async (importOriginal) => ({
 }));
 
 vi.mock('@/lib/scrollbarAutoHide', () => ({ flashScrollbar: vi.fn() }));
+vi.mock('@/hooks/useModelRouteDevices', () => ({
+  useModelRouteDevices: () => ({ devices: [], leadAgentDeviceId: null }),
+}));
 
 vi.mock('@/hooks/useAgentCapabilities', () => ({
+  getCachedCapabilities: vi.fn(() => null),
   evictDeviceCapabilities: vi.fn(),
   prefetchDeviceCapabilities: vi.fn(async () => {}),
   useAgentCapabilities: () => ({

@@ -115,7 +115,8 @@ async function registerCindyNativeProviderAdapters(pi: any) {
         })();
       });
       pi.registerProvider({ id: alias.id, name: alias.name,
-        ...(alias.keyEnv ? { auth: { apiKey: envApiKeyAuth('API key', [alias.keyEnv]) } } : {}),
+        // Pi's native Provider contract requires auth even when Cindy's proxy handles OAuth.
+        auth: alias.keyEnv ? { apiKey: envApiKeyAuth('API key', [alias.keyEnv]) } : {},
         getModels: () => providerModels,
         stream: (model: any, context: any, options: any) => stream(model, context, options, false),
         streamSimple: (model: any, context: any, options: any) => stream(model, context, options, true),

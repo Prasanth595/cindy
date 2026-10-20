@@ -1,3 +1,5 @@
+import { captureAgentRequest as captureRequest, type CapturedAgentRequest } from './forwardedRequest.js';
+import type { AgentRequestReceipt } from '../../shared/forwardedRequest.js';
 import { configureBotTodoDispatch, settleBotTodoForSession } from './botTodoAccess.js';
 import { createBotTodoDispatch } from './botTodoDispatch.js';
 import { assertBotTaskCoordination, classifySessionMessagePurpose, coordinationInput } from './botTaskCoordination.js';
@@ -795,7 +797,7 @@ import {
   issuePiPackageMutationGrant,
   piPackageMutationNeedsGrant,
 } from '../maker-host/pi-package-mutation-grant.js';
-import { readXaiSubscriptionUsageSnapshotForDeviceLink, readClaudeSubscriptionUsageSnapshotForDeviceLink } from './usage.js';
+import { onCodexAutoResetRestored, readXaiSubscriptionUsageSnapshotForDeviceLink, readClaudeSubscriptionUsageSnapshotForDeviceLink } from './usage.js';
 import { requireEnum, requireObject, throwIpcError } from '../utils/ipcValidate.js';
 import { applyPersistedCindyMakeMarker } from './cindyMakeSessionStart.js';
 import { assertCindyMakeEnabled, assertCindyMakeSessionAvailable } from '../cindy-make/featureGate.js';
@@ -1597,6 +1599,20 @@ const usageLimitAutoResume = new UsageLimitAutoResume({
       : 'superseded',
   log: (message, fields) => log.info(message, fields),
 });
+
+/** Used by ordinary and goal waits; never substitutes this computer's quota for an SSH/remote agent. */
+export async function hasRestoredCodexQuota(sessionId: string, expectedProvider: string): Promise<boolean> {
+  const row = await getSessionRowSnapshot(sessionId);
+  if (!row || sessionUsesOtherMachineAccount(row)) return false;
+  const kind = row.agentKind ? dbToMakerAgentKind(row.agentKind) : null;
+  if (!kind) return false;
+  const route = resolveSessionRuntimeRoute(sessionId, kind, row);
+  const providerId = route.providerId ?? (kind === 'codex' ? 'openai' : null);
+  if (providerId !== expectedProvider) return false;
+  const limit = await readAccountUsageLimit(kind, route.providerId, route.modelId);
+  return limit != null && !limit.limited;
+}
+onCodexAutoResetRestored(providerId => usageLimitAutoResume.resumeRestored(id => hasRestoredCodexQuota(id, providerId)));
 
 // Schedule 不另建重试状态机：真正的恢复仍由 AgentInputCoordinator +
 // AutoResumeBookkeeping 独占。这里仅把「这一轮 scheduler run 已被普通自动续跑接管」
@@ -4375,6 +4391,16 @@ export function isSessionInTurn(sessionId: string): boolean {
 export function getSessionInputProvenance(sessionId: string) {
   const input = agentInputCoordinatorHolder?.getAcceptedInputProvenance(sessionId) ?? null;
   return { input, executing: !!input || !!getMakerIfReady()?.getSession(sessionId)?.isTurnRunning() };
+}
+
+/** Capture from the caller's accepted input before any asynchronous target work. */
+export async function captureSessionAgentRequest(sessionId: string, supplement: string): Promise<CapturedAgentRequest> {
+  const scope = captureDataOwnerBroadcastScope();
+  const active = agentInputCoordinatorHolder?.getAcceptedInputProvenance(sessionId) ?? null;
+  const request = await captureRequest(sessionId, supplement, active,
+    () => listMessagesForAgentHandoff(sessionId, 1, undefined, 'user'));
+  if (!isDataOwnerBroadcastScopeCurrent(scope)) throw new Error('Data owner changed before request capture');
+  return request;
 }
 
 /** Owner-authored active input (see AgentInputCoordinator.isActiveInputOwnerAuthored). */
@@ -10856,7 +10882,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     onAcceptedCommit?: () => void | Promise<void>;
     origin?: AgentInputQueuedMessage['origin'];
     /** Host-only receipt: plugin-authored input is not user-authored permission. */
-    autoReviewUserText?: { kind: 'delegated-continuation' };
+    autoReviewUserText?: AgentRequestReceipt;
     authorizationGuard?: BotAuthorizationInputGuard;
     createDefaults?: SendToSessionCreateDefaults;
     /** 安全调用方可要求新会话不比来源会话拥有更高的权限。 */
@@ -11440,8 +11466,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           const sendResult = await sendUserMessageWithAwaitedGitBaseline(live, message, clientId, {
             ...(params.autoReviewUserText ? {
               [AUTO_REVIEW_SOURCE_CONTENT]: '',
-              [AUTO_REVIEW_USER_INTENT]: restoreAutoReviewUserIntent(await readAutoReviewHistory(targetSessionId)),
-            [AUTO_REVIEW_DELEGATED_CONTINUATION]: true as const,
+              ...(params.autoReviewUserText.kind === 'delegated-continuation' ? {
+                [AUTO_REVIEW_USER_INTENT]: restoreAutoReviewUserIntent(await readAutoReviewHistory(targetSessionId)),
+                [AUTO_REVIEW_DELEGATED_CONTINUATION]: true as const,
+              } : { [AUTO_REVIEW_USER_INTENT]: '' }),
             } : {}),
             planMode: false,
             onAccepted: persistUserMessage,
@@ -11568,8 +11596,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         const sendResult = await sendUserMessageWithAwaitedGitBaseline(session, message, clientId, {
           ...(params.autoReviewUserText ? {
             [AUTO_REVIEW_SOURCE_CONTENT]: '',
-            [AUTO_REVIEW_USER_INTENT]: restoreAutoReviewUserIntent(await readAutoReviewHistory(targetSessionId)),
-            [AUTO_REVIEW_DELEGATED_CONTINUATION]: true as const,
+            ...(params.autoReviewUserText.kind === 'delegated-continuation' ? {
+              [AUTO_REVIEW_USER_INTENT]: restoreAutoReviewUserIntent(await readAutoReviewHistory(targetSessionId)),
+              [AUTO_REVIEW_DELEGATED_CONTINUATION]: true as const,
+            } : { [AUTO_REVIEW_USER_INTENT]: '' }),
           } : {}),
           planMode: false,
           onAccepted: persistUserMessage,
@@ -11654,6 +11684,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
 
   const welcomeDispatchReceipts = createQueuedDispatchReceipts();
   const dispatchBotSessionMessage = async (params: {
+    autoReviewUserText?: AgentRequestReceipt;
     targetSessionId: string;
     dispatcherSessionId?: string;
     authorizationGuard?: BotAuthorizationInputGuard;
@@ -11752,6 +11783,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         clientId,
         meta,
         files: params.files,
+        autoReviewUserText: params.autoReviewUserText,
         ...(params.toolsDisabled === true ? { toolsDisabled: true } : {}),
         origin: sessionQueueOriginForDispatcher({
           dispatcherSessionId: params.dispatcherSessionId,
@@ -11825,6 +11857,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   });
 
   botDirectMessageServiceHolder = createBotDirectMessageService({
+    captureRequest: captureSessionAgentRequest,
     transport: createBotMessageTransport({ selfDeviceId: getSelfDeviceId,
       listDevices: () => handleListDevices(deviceDirectoryDeps()), invoke: invokeBotPeer }),
     discardQueuedDelivery: async (sessionId, clientId, assertOwner) => {
@@ -11837,6 +11870,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       return inputCoordinator.hasKnownClientId(sessionId, clientId);
     },
     dispatch: ({
+      autoReviewUserText,
       targetSessionId,
       dispatcherSessionId,
       message,
@@ -11846,6 +11880,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       onAcceptedRollback,
     }) =>
       dispatchBotSessionMessage({
+        autoReviewUserText,
         targetSessionId,
         dispatcherSessionId,
         message,
@@ -12116,6 +12151,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   registerBotGroupRemoteResourceProvider(() => botGroupChatServiceHolder);
   botDelegationServiceHolder?.dispose();
   botDelegationServiceHolder = createBotDelegationService({
+    captureRequest: captureSessionAgentRequest,
     readSessionExecution: id => {
       const session = maker.getSession(id);
       return session ? { instanceId: session.instanceId, generation: session.getTurnGeneration() } : null;
@@ -12181,6 +12217,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       const session = maker.getSession(sessionId);
       return session ? {
         agentKind: makerToDbAgentKind(session.agentKind),
+        agentDeviceId: session.agentDeviceId ?? null,
         model: session.model,
         providerId: getSessionProvider(sessionId) ?? null,
         effort: (getSessionEffort(sessionId) ?? undefined) as CreateOpts['effort'],
@@ -12193,8 +12230,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       readConfiguredCandidate: (callerSessionId, current, childSessionId) =>
         readBotFallbackCandidate(callerSessionId, current, childSessionId),
     }),
-    dispatch: ({ targetSessionId, message, persistedContent, clientId, onAccepted, dispatcherSessionId }) =>
+    dispatch: ({ targetSessionId, message, persistedContent, clientId, onAccepted, dispatcherSessionId, autoReviewUserText }) =>
       dispatchBotSessionMessage({
+        autoReviewUserText,
         targetSessionId,
         message,
         persistedContent,
@@ -13516,7 +13554,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     origin?: AgentInputQueuedMessage['origin'];
     sourcePlugin?: AgentInputQueuedMessage['sourcePlugin'];
     /** Host-only receipt: plugin-authored input is not user-authored permission. */
-    autoReviewUserText?: { kind: 'delegated-continuation' };
+    autoReviewUserText?: AgentRequestReceipt;
     authorizationGuard?: BotAuthorizationInputGuard;
   }): Promise<void> {
     const queued = await buildSessionControlInputItem(params);
@@ -13559,7 +13597,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     origin?: AgentInputQueuedMessage['origin'];
     sourcePlugin?: AgentInputQueuedMessage['sourcePlugin'];
     /** Host-only receipt: plugin-authored input is not user-authored permission. */
-    autoReviewUserText?: { kind: 'delegated-continuation' };
+    autoReviewUserText?: AgentRequestReceipt;
     toolsDisabled?: boolean;
   }): Promise<AgentInputQueuedMessage> {
     const createOpts = await buildCreateOptsForQueuedSession(params.targetSessionId, params.meta, params.inheritTargetPlanMode);
@@ -15005,6 +15043,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       const [row] = await getDbClient()
         .drizzle.select({
           agentKind: sessions.agentKind,
+          agentDeviceId: sessions.agentDeviceId,
           model: sessions.model,
           providerId: sessions.providerId,
           effort: sessions.effort,
@@ -15016,6 +15055,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       if (row) {
         baseline = {
           agentKind: dbToMakerAgentKind(row.agentKind),
+          agentDeviceId: row.agentDeviceId,
           model: row.model,
           providerId: row.providerId?.trim() || null,
           effort: row.effort,
@@ -15031,6 +15071,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     const control = getSessionRuntimeControlSnapshot(sessionId);
     const live = maker.getSession(sessionId);
     const effective: SessionRuntimeProfile = control.effectiveOverride ?? {
+      agentDeviceId: baseline.agentDeviceId,
       agentKind: live?.agentKind ?? meta.agentKind,
       model: live?.model ?? meta.model,
       providerId: hasSessionProvider(sessionId)
@@ -15055,10 +15096,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     route: SessionRouteSelection,
     currentAgentKind: AgentKind,
   ): Promise<void> => {
-    // 未指定位置的调用方(伙伴模型)仍只管本机；IM 默认携带明确位置，允许跨电脑跟随。
+    // Legacy callers without a location must not move a remote session implicitly.
     const currentDeviceId = await readSessionAgentDeviceId(sessionId);
     if (route.agentDeviceId === undefined && currentDeviceId) return;
-    if (route.agentKind !== currentAgentKind || currentDeviceId !== (route.agentDeviceId ?? null)) {
+    if (route.agentKind !== currentAgentKind || currentDeviceId !== (route.agentDeviceId ?? null) || currentDeviceId) {
       await performSessionAgentSwitch(agentSwitchDeps, {
         sessionId, targetAgentKind: route.agentKind, model: route.model,
         providerId: route.providerId, effort: route.effort, fastMode: route.fastMode,
@@ -15165,6 +15206,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       const [row] = await getDbClient().drizzle.select({
         capabilitiesJson: botProfileVersions.capabilitiesJson,
         agentKind: sessions.agentKind,
+        agentDeviceId: sessions.agentDeviceId,
         model: sessions.model,
         providerId: sessions.providerId,
         effort: sessions.effort,
@@ -15197,6 +15239,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         chain: selection.chain,
         followsCindyDefault: selection.followsCindyDefault,
         current: {
+          agentDeviceId: row.agentDeviceId,
           agentKind: live?.agentKind ?? dbToMakerAgentKind(row.agentKind),
           model: live?.model ?? row.model ?? '',
           providerId: live && hasSessionProvider(sessionId)
@@ -15205,13 +15248,13 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           fastMode: live ? getSessionFastMode(sessionId) : !!row.fastMode,
         },
         hasRuntimeOverride: control.effectiveOverride !== null || control.pending !== null || !!intent,
-        next: intent ? { agentKind: intent.targetAgentKind, model: intent.model,
+        next: intent ? { agentDeviceId: intent.targetAgentDeviceId === undefined ? row.agentDeviceId : intent.targetAgentDeviceId, agentKind: intent.targetAgentKind, model: intent.model,
           providerId: intent.providerId ?? null, effort: intent.effort ?? null, fastMode: intent.fastMode ?? false }
           : control.pending?.profile ?? control.effectiveOverride ?? undefined,
       };
     },
     apply: async (sessionId, route, current) => {
-      await stageSessionRouteSelection(sessionId, route, current.agentKind);
+      await stageSessionRouteSelection(sessionId, { ...route, agentDeviceId: route.agentDeviceId ?? null }, current.agentKind);
       // Consume the same model/Harness intent as the normal send path. Its
       // verified window protection and history handoff also apply here; a Bot
       // settings save need not wait for a second user message. Busy runtimes
@@ -15355,7 +15398,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         .from(sessions).where(eq(sessions.id, controlSessionId)).limit(1);
     const route = nextBotModelRoute(
       chain,
-      { harness: currentHarness, model: current.model, providerId: current.providerId },
+      { harness: currentHarness, model: current.model, providerId: current.providerId, agentDeviceId: current.agentDeviceId },
       control.visitedRoutes,
       (candidate) => !controlSession?.remoteHostId || candidate.harness === currentHarness,
     );
@@ -15364,6 +15407,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       candidate: route
         ? {
             agentKind: toAgentKind(route.harness),
+            agentDeviceId: route.agentDeviceId ?? null,
             model: route.model,
             providerId: route.providerId,
             effort: (route.effort || null) as SessionRuntimeProfile['effort'],
@@ -15426,10 +15470,6 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     try {
       const profiles = await readSessionRuntimeProfiles(sessionId);
       if (!profiles || !isCurrent()) return { session: null, outcome: 'superseded' };
-      // 自动换模型的候选来自本机目录；Agent 在另一台电脑运行的任务不在本机换，照常重试原路由。
-      if (await readSessionAgentDeviceId(sessionId)) {
-        return { session: null, outcome: requireRouteChange ? 'exhausted' : 'unchanged' };
-      }
       // A previously accepted Agent/fallback mutation owns the next boundary.
       // Do not let a later infrastructure retry replace that pending intent.
       if (profiles.control.pending ||
@@ -15447,6 +15487,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       let currentForFallback = profiles.effective;
       let candidate = botFallback.candidate;
       if (!botFallback.isBot) {
+        if (await readSessionAgentDeviceId(sessionId)) return { session: null, outcome: requireRouteChange ? 'exhausted' : 'unchanged' };
         if (requireRouteChange) return { session: null, outcome: 'exhausted' };
         if (episodeAttempt < 2 || !readSessionRuntimeFallbackSettings().enabled) return { session: null, outcome: 'unchanged' };
         const providers = await getDesktopProviderService().listProviders({
@@ -15554,7 +15595,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           }
           return result;
         });
-        if (selected.agentKind !== currentForFallback.agentKind) {
+        if (selected.agentKind !== currentForFallback.agentKind
+          || (selected.agentDeviceId ?? null) !== (currentForFallback.agentDeviceId ?? null)) {
           try {
             const result = await withSendToSessionLock(sessionId, async () => {
               if (!isCurrent() || !sessionRuntimeControlOwnerEpochMatches(runtimeOwnerEpoch) ||
@@ -15562,6 +15604,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
               const switched = await performSessionAgentSwitch(agentSwitchDeps, {
                 sessionId,
                 targetAgentKind: selected.agentKind,
+                agentDeviceId: selected.agentDeviceId ?? null,
                 model: selected.model,
                 providerId: selected.providerId,
                 effort: selected.effort,
@@ -15812,6 +15855,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     },
     assertExternalInputAllowed: assertReviewExternalInputAllowed,
     createQueuedMessage: async ({ targetSessionId, callerSessionId, queuedMessageId, message }) => {
+      const request = await captureSessionAgentRequest(callerSessionId, message);
+      message = request.message;
       const meta = await maker.getSessionMeta(targetSessionId);
       if (!meta) throw new Error(`session ${targetSessionId} not found`);
       return buildSessionControlInputItem({
@@ -15819,6 +15864,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         message,
         persistedContent: message,
         clientId: queuedMessageId,
+        autoReviewUserText: request.autoReviewUserText,
         meta,
         origin: sessionQueueOriginForDispatcher({
           dispatcherSessionId: callerSessionId,
@@ -15919,6 +15965,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     getSessionRuntime: (params) => sessionControlService.getSessionRuntime(params),
     setSessionRuntime: (params) => sessionControlService.setSessionRuntime(params),
     sendToSession: async (params) => {
+      const request = await captureSessionAgentRequest(params.dispatcherSessionId ?? '', params.message);
+      params = { ...params, message: request.message };
       const ownerScope = captureDataOwnerBroadcastScope();
       let classification: Awaited<ReturnType<typeof classifySessionMessagePurpose>>;
       try {
@@ -15935,8 +15983,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       }
       return sendToSessionInternal({
         ...params,
+        autoReviewUserText: request.autoReviewUserText,
         ...(classification.delegatedContinuation || (params.targetSessionId && params[AUTO_REVIEW_DELEGATED_CONTINUATION])
-          ? { autoReviewUserText: { kind: 'delegated-continuation' as const } } : {}),
+          ? { autoReviewUserText: { ...request.autoReviewUserText, kind: 'delegated-continuation' as const } } : {}),
         ...(params.targetSessionId && params[AUTO_REVIEW_DELEGATED_CONTINUATION] ? {
           // Use the durable path for idle and busy targets alike. It restores the
           // target's user intent and current permission mode at dispatch time.
@@ -20671,6 +20720,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     }
     const profile: SessionRuntimeProfile = {
       agentKind,
+      agentDeviceId: runtimeStatus.agentDeviceId,
       model,
       providerId: targetProviderId,
       effort: targetEffort ?? (getSessionEffort(sessionId) as SessionRuntimeProfile['effort']) ?? null,
