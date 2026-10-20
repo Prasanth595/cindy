@@ -11,6 +11,10 @@ export default {
       about:
         'Inherited Lead worktree, new-worktree branch chooser, project search and dirty other project',
     },
+    'same-repo': {
+      about:
+        'Browsing the main checkout preserves that selection; current-project row restores inherited worktree',
+    },
     'browse-error': { about: 'Native folder dialog failure leaves the current project usable' },
     missing: { about: 'Missing directory explains why creation cannot continue' },
     empty: { about: 'Empty repository explains why worktree creation is unavailable' },
@@ -32,6 +36,21 @@ export default {
     }
     const current = await ui.t('orca.workerProject.current');
     const checkbox = page.getByRole('checkbox');
+    if (ui.case === 'same-repo') {
+      await page.getByRole('button', { name: current, exact: true }).click();
+      await page
+        .getByRole('button', { name: await ui.t('newChat.folderPicker.browseProjectFolder') })
+        .click();
+      await page
+        .getByText(await ui.t('orca.workerProject.direct', { project: 'cindy', branch: 'main' }))
+        .waitFor();
+      await ui.capture('explicit-main-checkout');
+      await page.getByRole('button', { name: 'cindy', exact: true }).click();
+      await page.getByRole('button', { name: 'cindy /projects/cindy', exact: true }).click();
+      await page.getByRole('button', { name: current, exact: true }).waitFor();
+      await ui.capture('restored-inherited-worktree');
+      return;
+    }
     if (ui.case === 'browse-error') {
       await page.getByRole('button', { name: current, exact: true }).click();
       await page

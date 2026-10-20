@@ -256,5 +256,22 @@ export async function createWorkerWorktree(
     { trackBackgroundCheckout: true },
   );
   if (!created.ok) throw new Error(`Worker worktree creation failed: ${created.error.message}`);
+  // Probe paths are realpaths, so a symlink spelling cannot change the subproject offset.
+  const relative =
+    info.checkoutRoot && info.realDirectory
+      ? path.relative(info.checkoutRoot, info.realDirectory)
+      : '';
+  if (!relative) return created.meta.path;
+
+  // Stage checkout only includes root startup files. A subproject and its rules need
+  // the full checkout; root-directory Workers keep the normal asynchronous startup.
+  await WorktreeManager.awaitBackgroundCheckout(sessionId);
+  const subproject = path.join(created.meta.path, relative);
+  try {
+    if ((await fs.stat(subproject)).isDirectory()) return subproject;
+  } catch {
+    // The selected source branch may not contain this subproject.
+  }
+  log.warn('Worker subproject is absent in the new worktree; using its root', { sessionId });
   return created.meta.path;
 }

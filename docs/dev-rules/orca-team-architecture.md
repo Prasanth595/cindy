@@ -232,8 +232,10 @@ Worker 项目历史写入时按规范化路径字符串去重，保留最近 10 
 新 worktree 勾选及源分支均不记忆；换项目重置勾选、分支和 dirty 状态。资格取决于当前目标：
 当前项目为 dialogue 或非 Git 时不提供；其他项目仅判断该目录。默认源分支取所选实际目录的 HEAD，
 建树 baseRepo 则解析为主仓，允许从 linked worktree 再分出一个独立 worktree。
-创建流程预留名额后用 Worker 自己的 sessionId 登记 worktree，再 bootstrap；成功路径与普通任务一致，
-只等待启动必读文件检出，全量 checkout 在后台继续。失败补偿先等待本次后台 checkout 收口，
+创建流程预留名额后用 Worker 自己的 sessionId 登记 worktree，再 bootstrap。选中 checkout 根目录时
+与普通任务一致，只等待启动必读文件检出，全量 checkout 在后台继续；选中子项目时保留其相对路径，
+等待全量 checkout 后进入对应子目录，若源分支没有该目录则回退新 worktree 根并记录警告。
+失败补偿先等待本次后台 checkout 收口，
 再在会话锁内走 cancelPrecreatedWorktree 的封存、preserveDirty 与所有权检查；保留结果写日志，绝不强删。
 正常归档继续走已有快照与回收规则；仅继承 Lead（包括模型自建）的目录时不登记所有权，不回收它。
 

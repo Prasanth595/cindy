@@ -5,9 +5,15 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { gitExec } from '../../worktree/gitExec';
+import { createWorktree, awaitBackgroundCheckout } from '../../worktree/WorktreeManager';
+import { createLogger } from '../../logger';
 import { MAKER_INVOKE } from '../channels';
 import { isDeviceLinkInvoke, runDeviceLinkInvokeContext } from '../../device-link/invoke-context';
-import { probeWorkerProject, readWorkerProjectContext } from '../orcaWorkerProject';
+import {
+  createWorkerWorktree,
+  probeWorkerProject,
+  readWorkerProjectContext,
+} from '../orcaWorkerProject';
 import { createOrcaWorkerProjectHandlers } from '../orcaWorkerProjectHandlers';
 
 vi.mock('../../maker-host/codex-credential-switch', () => ({
@@ -16,14 +22,20 @@ vi.mock('../../maker-host/codex-credential-switch', () => ({
 vi.mock('../../device-link/subscriptions', () => ({}));
 
 vi.mock('electron', () => ({ app: {} }));
-vi.mock('../../logger', () => ({ createLogger: () => ({}) }));
+vi.mock('../../logger', () => {
+  const log = { warn: vi.fn() };
+  return { createLogger: () => log };
+});
 vi.mock('../../maker-host/override-settings-file', () => ({
   createOverrideSettingsFile: () => ({}),
 }));
 vi.mock('../../localDb/client/current', () => ({}));
 vi.mock('../../localDb/ipc/recentWorkdirs', () => ({}));
 vi.mock('../../git-context/sessionDirResolver', () => ({}));
-vi.mock('../../worktree/WorktreeManager', () => ({}));
+vi.mock('../../worktree/WorktreeManager', () => ({
+  createWorktree: vi.fn(),
+  awaitBackgroundCheckout: vi.fn(),
+}));
 // Keep the production probe and Git output real; isolate unrelated process/runtime services.
 vi.mock('../../worktree/gitExec', () => ({
   gitExec: vi.fn(async (args: string[], cwd: string) => ({
@@ -422,4 +434,85 @@ describe('Worker project filesystem aliases', () => {
     expect(result.projects[3]).toMatchObject({ missing: false });
     expect(gitExec).not.toHaveBeenCalled();
   });
+});
+
+// Review P1: a subproject Worker must start beside its own rules, after checkout.
+// Unit orchestration with real filesystem/Git probe: a deferred checkout is the
+// smallest input exposing the race; root selections must keep asynchronous startup.
+describe('Worker worktree subproject directory', () => {
+  const fixture = mkdtempSync(path.join(os.tmpdir(), 'cindy-worker-subproject-'));
+  const repo = path.join(fixture, 'repo');
+  const alias = path.join(fixture, 'repo-alias');
+  beforeAll(() => {
+    mkdirSync(path.join(repo, 'apps', 'web'), { recursive: true });
+    writeFileSync(path.join(repo, 'apps', 'web', 'AGENTS.md'), 'Subproject rules');
+    symlinkSync(repo, alias, process.platform === 'win32' ? 'junction' : 'dir');
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: repo, encoding: 'utf8' });
+    git('init', '--initial-branch=main');
+    git('add', '.');
+    git(
+      '-c',
+      'user.name=Fixture',
+      '-c',
+      'user.email=fixture@example.invalid',
+      '-c',
+      'commit.gpgsign=false',
+      'commit',
+      '-m',
+      'fixture',
+    );
+  });
+  afterAll(() => rmSync(fixture, { recursive: true, force: true }));
+
+  it.each(['subproject', 'root', 'missing'] as const)(
+    'keeps the correct startup directory for %s',
+    async (scenario) => {
+      const sessionId = `worker-${scenario}`;
+      const target = path.join(fixture, sessionId);
+      mkdirSync(target);
+      vi.mocked(createWorktree).mockResolvedValueOnce({
+        ok: true,
+        meta: {
+          sessionId,
+          path: target,
+          baseRepo: repo,
+          name: sessionId,
+          branch: `cindy/${sessionId}`,
+          sourceBranch: 'main',
+          createdAt: new Date(0).toISOString(),
+        },
+      });
+      const subproject = path.join(target, 'apps', 'web');
+      let finishCheckout!: () => void;
+      const checkout = new Promise<void>((resolve) => {
+        finishCheckout = resolve;
+      });
+      vi.mocked(awaitBackgroundCheckout).mockReset().mockReturnValue(checkout);
+      const source = scenario === 'root' ? alias : path.join(alias, 'apps', 'web');
+      let settled = false;
+      const result = createWorkerWorktree(sessionId, source, 'main').then((value) => {
+        settled = true;
+        return value;
+      });
+      if (scenario === 'root') {
+        expect(await result).toBe(target);
+        expect(awaitBackgroundCheckout).not.toHaveBeenCalled();
+        finishCheckout();
+        return;
+      }
+      await vi.waitFor(() => expect(awaitBackgroundCheckout).toHaveBeenCalledWith(sessionId));
+      expect(settled).toBe(false);
+      if (scenario === 'subproject') {
+        mkdirSync(subproject, { recursive: true });
+        writeFileSync(path.join(subproject, 'AGENTS.md'), 'Checked out rules');
+      }
+      finishCheckout();
+      expect(await result).toBe(scenario === 'subproject' ? subproject : target);
+      if (scenario === 'missing')
+        expect(createLogger('test').warn).toHaveBeenCalledWith(
+          'Worker subproject is absent in the new worktree; using its root',
+          { sessionId },
+        );
+    },
+  );
 });

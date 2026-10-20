@@ -71,6 +71,7 @@ function WorkersFixture() {
 void mountPage({
   host: (ctx) => ({
     showOpenDirectoryDialog: async () => {
+      if (ctx.case === 'same-repo') return { canceled: false, path: '/projects/cindy' };
       throw new Error('fixture dialog unavailable');
     },
     localDb: {

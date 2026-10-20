@@ -2299,20 +2299,40 @@ describe('local Worker project selection', () => {
     act(() => result.current.select('/repo'));
     await waitFor(() => expect(result.current.context?.selected.directory).toBe('/repo'));
     expect(result.current.fields).not.toHaveProperty('projectPath');
+    expect(result.current.fields).not.toHaveProperty('workingDir');
     expect(projectContext.mock.calls.filter((call) => call.length === 1)).toHaveLength(1);
-    expect(projectContext.mock.calls.map((call) => call[1])).toEqual([undefined, '/old', '/new', '/repo']);
+    expect(projectContext.mock.calls.map((call) => call[1])).toEqual([undefined, '/old', '/new']);
   });
   // A browsed directory reaches the same select callback without needing a recent-list row.
-  it('records a browsed other project but excludes an explicitly browsed current-project alias', async () => {
+  it('retains explicitly browsed directories even when their repository matches the Lead', async () => {
     projectContext.mockImplementation(async (_id, dir) => dir === '/browsed' ? {...project, directory: '/browsed', baseRepo: '/browsed'} : dir ? {...project, directory: dir} : context);
     const {result} = renderHook(() => useWorkerProjectSelection(true, 'lead', true));
     await waitFor(() => expect(result.current.ready).toBe(true));
     act(() => result.current.select('/browsed'));
     await waitFor(() => expect(result.current.fields.projectPath).toBe('/browsed'));
-    act(() => result.current.select('/repo-alias'));
-    await waitFor(() => expect(result.current.context?.selected.directory).toBe('/repo'));
-    expect(result.current.fields).not.toHaveProperty('projectPath');
+    act(() => result.current.select('/repo-alias', 'browse'));
+    await waitFor(() => expect(result.current.fields.workingDir).toBe('/repo-alias'));
+    expect(result.current.fields.projectPath).toBe('/repo');
   });
+  // Review P1: explicit same-repository choices were silently replaced by inheritance.
+  // Unit/jsdom: exercise the actual native-picker callback and submitted form fields.
+  it.each(['/repo/apps/api', '/repo/.cindy-worktrees/other', '/repo'])(
+    'submits the explicitly browsed same-repository directory %s', async (directory) => {
+      const inherited = {...project, directory: '/repo/apps/web'};
+      const opening = {...context, recordedDirectory: inherited.directory, inherited, selected: inherited};
+      projectContext.mockImplementation(async (_id, dir) => dir
+        ? {...project, directory: dir, branch: 'selected-branch'} : opening);
+      window.electronAPI.showOpenDirectoryDialog = vi.fn().mockResolvedValue({canceled: false, path: directory});
+      const onCreate = vi.fn();
+      render(<ProjectForm onCreate={onCreate} />);
+      fireEvent.click(await screen.findByRole('button', {name: 'orca.workerProject.current'}));
+      fireEvent.click(screen.getByRole('button', {name: 'newChat.folderPicker.browseProjectFolder'}));
+      await waitFor(() => expect(projectContext).toHaveBeenLastCalledWith('lead', directory));
+      await waitFor(() => expect((screen.getByRole('button', {name: 'Create'}) as HTMLButtonElement).disabled).toBe(false));
+      fireEvent.click(screen.getByRole('button', {name: 'Create'}));
+      expect(onCreate).toHaveBeenCalledWith({workingDir: directory, projectPath: '/repo'});
+    },
+  );
   it('allows a Git project selected from a dialogue Lead and never probes a disabled remote form', async () => {
     projectContext.mockResolvedValue({...context, dialogue: true, selected: {...project, directory: '/other', baseRepo: '/other'}});
     const {result} = renderHook(() => useWorkerProjectSelection(true, 'lead', true));

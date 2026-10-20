@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { Folder, ChevronDown, Check } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { FolderPickerPopover } from '@/components/new-chat/FolderPickerPopover';
+import {
+  FolderPickerPopover,
+  type FolderPickerSelectSource,
+} from '@/components/new-chat/FolderPickerPopover';
 import { BranchWorktreeChip } from '@/components/new-chat/WorktreeChipsRow';
 import { getDataOwnerGeneration } from '@/contexts/dataOwnerGeneration';
 import { Button } from '@/components/ui/button';
@@ -23,7 +26,7 @@ export function useWorkerProjectSelection(
 ) {
   const owner = getDataOwnerGeneration();
   const scope = JSON.stringify([open, enabled, leadSessionId, owner]);
-  const [target, setTarget] = useState<{ scope: string; directory: string }>();
+  const [target, setTarget] = useState<{ scope: string; directory?: string }>();
   const directory = target?.scope === scope ? target.directory : undefined;
   const [checked, setChecked] = useState(false);
   const [sourceBranch, setSourceBranch] = useState('');
@@ -51,6 +54,7 @@ export function useWorkerProjectSelection(
     const base = baseSnapshot.current?.scope === scope ? baseSnapshot.current.context : undefined;
     const read = async (): Promise<WorkerProjectContext> => {
       if (!base || directory === undefined) {
+        if (base) return base;
         const context =
           await window.electronAPI.localDb.orcaWorkflows.projectContext(leadSessionId);
         if (!cancelled) baseSnapshot.current = { scope, context };
@@ -60,19 +64,7 @@ export function useWorkerProjectSelection(
         leadSessionId,
         directory,
       );
-      const identity = (value: string) =>
-        window.electronAPI.platform === 'win32' ? value.toLowerCase() : value;
-      const sameRepository =
-        selected.baseRepo &&
-        base.inherited.baseRepo &&
-        identity(selected.baseRepo) === identity(base.inherited.baseRepo);
-      return {
-        ...base,
-        selected:
-          sameRepository && selected.directory !== base.inherited.directory
-            ? base.inherited
-            : selected,
-      };
+      return { ...base, selected };
     };
     void read().then(
       (context) => {
@@ -111,9 +103,9 @@ export function useWorkerProjectSelection(
     failed: snapshot?.key === key && snapshot.failed,
     reload: () => setRetry((value) => value + 1),
     ready: !!context?.selected.exists && (!checked || (canWorktree && !!branch)),
-    select: (value: string) => {
+    select: (value: string, source: FolderPickerSelectSource = 'project') => {
       const current = context?.inherited.baseRepo ?? context?.recordedDirectory;
-      setTarget({ scope, directory: value === current ? context!.inherited.directory : value });
+      setTarget({ scope, directory: source !== 'browse' && value === current ? undefined : value });
       setChecked(false);
       setSourceBranch('');
     },
