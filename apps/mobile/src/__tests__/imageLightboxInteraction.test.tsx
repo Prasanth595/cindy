@@ -1994,7 +1994,15 @@ describe("chrome toggle, loading and video pages", () => {
 
     await act(async () => { fail(new Error("gone")); });
     expect(runtime.nodes.has("message.imageLightboxRetryButton")).toBe(true);
+    // 原图离线失败也不能用整页错误态盖掉已经显示的本地缩略图。
+    expect(runtime.nodes.get("message.imageLightboxPreviewLayer").source.uri).toBe("file:///thumb.png");
+    expect(Array.isArray(runtime.nodes.get("message.imageLightboxRetryButton").style)).toBe(true);
     expect(runtime.nodes.get("FlatList").scrollEnabled).toBe(true);
+    await act(async () => press("message.imageLightboxRetryButton"));
+    expect(resolver).toHaveBeenLastCalledWith(
+      { kind: "image", url, previewable: false },
+      { front: true, forceRefresh: true },
+    );
   });
 
   it("plays video pages with the native player, falls back to the web player and releases on close", async () => {

@@ -1222,9 +1222,20 @@ const LightboxPage = memo(function LightboxPage({
   // status==='error' 会永远停在 spinner —— 一并视为失败,给到重试按钮。
   const resolvedUnsupported = resolveState?.status === 'ready' && !resolveState.media.previewable;
   // 没有原图地址、也不会再有(取件失败 / 不支持 / 无取件途径):给失败文案与重试。
-  const pageFailed = layers.showFailure || (!uri && (
+  const originalFailed = layers.showFailure || (!uri && (
     resolveState?.status === 'error' || resolvedUnsupported || (!retryable && !media.previewable)
   ));
+  // A cached thumbnail is still useful content when the full-size fetch fails offline.
+  // Keep its gesture layer mounted; only the original's actions remain unavailable.
+  const pageFailed = originalFailed && !layers.showPreview;
+
+  const retryOriginal = () => {
+    if (retryable) onRetry(image);
+    else {
+      setFailedFullUri(null);
+      setLoadedUri(null);
+    }
+  };
 
   const reportZoomed = useCallback((value: boolean) => {
     onZoomChange(value);
@@ -1334,10 +1345,9 @@ const LightboxPage = memo(function LightboxPage({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [layoutSize?.width, layoutSize?.height, width, height]);
 
-  // 翻走 / 换图时复位缩放与位移,避免回到本页时残留上次的缩放态。失败态同样
-  // 复位:加载中放大了垫底图、随后取件失败时手势层被卸掉,不复位就停在「已放大」,
-  // 父层锁着翻页、失败页又没有双击可缩回,只能关掉重开。
-  const transformReset = !active || pageFailed;
+  // 翻走 / 换图时复位缩放与位移。原图失败时即使缩略图仍可见也要复位:
+  // 否则加载中放大的垫底图会继续锁住父层翻页。
+  const transformReset = !active || originalFailed;
   useEffect(() => {
     if (!transformReset) return;
     scale.value = 1;
@@ -1877,6 +1887,17 @@ const LightboxPage = memo(function LightboxPage({
                 <ActivityIndicator color="#ffffff" testID="message.imageLightboxLoading" />
               </View>
             ) : null}
+            {originalFailed && layers.showPreview ? (
+              <Pressable
+                accessibilityLabel={t('message.lightbox.retryLoadImage')}
+                accessibilityRole="button"
+                onPress={retryOriginal}
+                style={[styles.retryButton, styles.previewRetryButton]}
+                testID="message.imageLightboxRetryButton"
+              >
+                <Text style={styles.retryText}>{t('message.lightbox.retry')}</Text>
+              </Pressable>
+            ) : null}
             {overlayVisible ? (
               // 两遍绘制(先全部白描边、再全部红线):交叉处不会出现白边压
               // 红线的断裂感,与桌面 / 烧录一致。
@@ -1944,12 +1965,7 @@ const LightboxPage = memo(function LightboxPage({
               accessibilityRole="button"
               onPress={(event) => {
                 event.stopPropagation();
-                if (retryable) onRetry(image);
-                else {
-                  // 清掉失败态后重新挂载 Image,原 URI 原地重试,不改签名 URL。
-                  setFailedFullUri(null);
-                  setLoadedUri(null);
-                }
+                retryOriginal();
               }}
               style={styles.retryButton}
               testID="message.imageLightboxRetryButton"
@@ -2172,6 +2188,12 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     paddingHorizontal: 20,
     paddingVertical: 8,
+  },
+  previewRetryButton: {
+    alignSelf: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    bottom: 80,
+    position: 'absolute',
   },
   retryText: { color: '#ffffff', fontSize: typeScale.bodySmall, lineHeight: lineHeight.bodySmall },
 });
