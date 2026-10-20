@@ -3,7 +3,8 @@ import { isMobileRemoteCollectionSupported, normalizeRemoteCollectionItems, pars
 
 const PREFIX = 'cindy.remoteResources.v1.';
 const MAX_CHARS = 256 * 1024;
-type Snapshot = { home: RemoteHomeCollection[]; items: Record<string, HostedRemoteCollectionItem[]>; read: Record<string, number>; readSequences?: Record<string, string> };
+type ChatRoster = { items: HostedRemoteCollectionItem[]; ids: string[] };
+type Snapshot = { home: RemoteHomeCollection[]; items: Record<string, HostedRemoteCollectionItem[]>; read: Record<string, number>; readSequences?: Record<string, string>; chatRosters?: Record<string, ChatRoster> };
 const empty = (): Snapshot => ({ home: [], items: {}, read: {}, readSequences: {} });
 const validSequence = (value: unknown): value is string => typeof value === 'string' && /^\d{1,30}$/.test(value);
 let epoch = 0;
@@ -41,6 +42,26 @@ function normalize(raw: unknown): Snapshot {
   }
   if (value.readSequences && typeof value.readSequences === 'object') for (const [key, sequence] of Object.entries(value.readSequences).slice(-2000)) {
     if (key.length <= 600 && validSequence(sequence)) out.readSequences![key] = sequence;
+  }
+  // Direct server rows have no device host. Keep their display mirror separate from
+  // legacy computer rows; neither cached membership nor presence grants access.
+  if (value.chatRosters && typeof value.chatRosters === 'object') for (const realm of ['cn', 'global']) {
+    const roster = value.chatRosters[realm];
+    if (!roster || !Array.isArray(roster.items) || !Array.isArray(roster.ids)) continue;
+    const items = roster.items.slice(0, 200).flatMap(row => {
+      const [item] = normalizeRemoteCollectionItems({ items: [row?.item] }, 'bot-groups');
+      if (!item || item.ref.kind !== 'bot-group') return [];
+      const groupMembers = Array.isArray(row.groupMembers) ? row.groupMembers.slice(0, 200).flatMap(member => {
+        if (!member || typeof member.botId !== 'string' || typeof member.name !== 'string') return [];
+        return [{ botId: member.botId.slice(0, 160), name: member.name.slice(0, 512),
+          avatar: typeof member.avatar === 'string' ? member.avatar.slice(0, 8192) : '',
+          ...(typeof member.avatarUrl === 'string' && member.avatarUrl.startsWith('https://') ? { avatarUrl: member.avatarUrl.slice(0, 8192) } : {}),
+          avatarColor: typeof member.avatarColor === 'string' ? member.avatarColor.slice(0, 64) : '' }];
+      }) : undefined;
+      return [{ key: `chat:${item.ref.id}`, host: { deviceId: '', deviceName: '' }, item, groupMembers,
+        ...(validSequence(row.lastReplySequence) ? { lastReplySequence: row.lastReplySequence } : {}) }];
+    });
+    (out.chatRosters ??= {})[realm] = { items, ids: [...new Set(roster.ids.filter(id => typeof id === 'string' && id.length <= 160))].slice(-2000) };
   }
   return out;
 }
@@ -83,6 +104,15 @@ async function update(userId: string, change: (snapshot: Snapshot) => void): Pro
   await next.finally(() => { if (writes.get(userId) === next) writes.delete(userId); });
 }
 export const cacheRemoteResourceHome = (userId: string, home: RemoteHomeCollection[]) => update(userId, (s) => { s.home = home; });
+export const readCachedChatRoster = async (userId: string, realm: string): Promise<ChatRoster> =>
+  (await readRemoteResourceSnapshot(userId)).chatRosters?.[realm] ?? { items: [], ids: [] };
+export const cacheChatRoster = (userId: string, realm: string, items: HostedRemoteCollectionItem[], ids: Iterable<string>) => update(userId, s => {
+  (s.chatRosters ??= {})[realm] = { items, ids: [...ids] };
+});
+export const hideCachedChatRooms = (userId: string, realm: string, ids: string[]) => update(userId, s => {
+  const roster = s.chatRosters?.[realm];
+  if (roster) { roster.items = roster.items.filter(row => !ids.includes(row.item.ref.id)); roster.ids = [...new Set([...roster.ids, ...ids])]; }
+});
 export const remoteResourceReadKey = (deviceId: string, resourceId: string) => JSON.stringify([deviceId, resourceId]);
 export const cacheRemoteResourceItems = (userId: string, collectionId: string, items: HostedRemoteCollectionItem[]) => update(userId, (s) => {
   s.items[collectionId] = items;
@@ -128,6 +158,7 @@ export async function clearRemoteResourceCache(): Promise<void> {
 /** Drop only this account's display/unread mirror after a confirmed personal removal. */
 export const forgetRemoteResource = (userId: string, resourceId: string) => update(userId, s => {
   for (const id of Object.keys(s.items)) s.items[id] = s.items[id].filter(row => row.item.ref.id !== resourceId);
+  for (const roster of Object.values(s.chatRosters ?? {})) roster.items = roster.items.filter(row => row.item.ref.id !== resourceId);
   for (const map of [s.read, s.readSequences ?? {}]) for (const key of Object.keys(map)) {
     try { if (JSON.parse(key)[1] === resourceId) delete map[key]; } catch { /* legacy cache key */ }
   }

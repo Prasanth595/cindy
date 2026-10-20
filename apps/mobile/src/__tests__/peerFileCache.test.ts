@@ -279,3 +279,26 @@ it.each(['download', 'store', 'direct'] as const)('keeps the old version when %s
   expect(new Set(disk.files.keys())).toEqual(before);
   expect(await cache.readLatest('device', 'url', () => true)).toMatchObject(metadata);
 });
+
+// Companion icons used to bypass the disk cache entirely. Verify real bytes survive
+// opening a new index reader, and account/device/content identities remain separate (unit).
+it('persists avatar bytes in the existing account cache and reads them without a download', async () => {
+  const owner = JSON.stringify(['global', 'avatar-owner']);
+  const identity = JSON.stringify(['mac', 'cindy-media://blobs/avatar.png']);
+  const source = 'file:///fixture-avatar.png';
+  disk.files.set(source, new Uint8Array([1, 2, 3, 4]));
+  const cache = await createPeerFileCache(owner);
+  expect(await cache.storeAvatar(identity, source, 'image/png', () => true)).toBe(true);
+  disk.files.delete(source);
+  const namespace = `files-${createHash('sha256').update(owner).digest('hex')}`;
+  const reopened = createRemoteMediaDiskCache(createExpoRemoteMediaDiskCacheIO(namespace));
+  const hit = await reopened.lookup(`companion-avatar:${identity}`);
+  expect(hit?.size).toBe(4);
+  expect(await new File(hit!.uri).base64()).toBe('AQIDBA==');
+  expect((await cache.lookupAvatar(identity))?.uri).toBe(hit!.uri);
+  expect(await cache.lookupAvatar(JSON.stringify(['other-mac', 'cindy-media://blobs/avatar.png']))).toBeNull();
+  expect(await (await createPeerFileCache('different-avatar-owner')).lookupAvatar(identity)).toBeNull();
+  disk.files.set(source, new Uint8Array([5]));
+  expect(await cache.storeAvatar('cancelled', source, 'image/png', () => false)).toBe(false);
+  expect(await cache.lookupAvatar('cancelled')).toBeNull();
+});
