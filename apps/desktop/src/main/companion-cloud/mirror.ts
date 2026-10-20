@@ -129,7 +129,8 @@ export function mirrorMessageText(row: CompanionMirrorRow, options: { placeholde
     || (typeof meta.parentUuid === 'string' && !!meta.parentUuid && isSubagentParentToolUseId(meta.parentUuid)))) return null;
   if (row.role === 'user' && HIDDEN_INPUT_KEYS.some(key => meta[key] !== undefined && meta[key] !== null && meta[key] !== false)) return null;
   // A delegated continuation (not something said in this chat) carries this marker as an object.
-  if (row.role === 'user' && meta.autoReviewUserText && typeof meta.autoReviewUserText === 'object') return null;
+  if (row.role === 'user' && meta.autoReviewUserText && typeof meta.autoReviewUserText === 'object'
+    && (meta.autoReviewUserText as { kind?: string }).kind !== 'agent-request') return null;
   // IM input keeps the person's own words apart from the context the host put around them.
   const im = row.role === 'user' && meta.imSource && typeof meta.imSource === 'object' ? meta.imSource as Record<string, unknown> : null;
   const typed = typeof im?.userText === 'string' && im.userText.trim() ? im.userText.trim() : visibleMessageText(row.role, row.content);

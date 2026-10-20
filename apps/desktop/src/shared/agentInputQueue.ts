@@ -1,3 +1,4 @@
+import type { AgentRequestReceipt } from './forwardedRequest.js';
 import { coordinationModelPrefix, type BotTaskCoordination } from './botTaskCoordination.js';
 /**
  * Agent input queue wire contract.
@@ -300,7 +301,7 @@ export interface AgentInputQueuedMessage {
   /** Host-stamped attribution, retained in durable queue snapshots and messages. */
   sharedTaskAuthor?: SharedTaskAuthor;
   /** Host-captured authored text before plugin/reference decoration; omitted from wire projections. */
-  autoReviewUserText?: string | { kind: 'delegated-continuation' };
+  autoReviewUserText?: string | AgentRequestReceipt;
   /** Host-owned text-only input; retained by queue persistence and retry. */
   toolsDisabled?: boolean;
   clientId: string;

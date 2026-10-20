@@ -1,3 +1,5 @@
+import { captureAgentRequest as captureRequest, type CapturedAgentRequest } from './forwardedRequest.js';
+import type { AgentRequestReceipt } from '../../shared/forwardedRequest.js';
 import { configureBotTodoDispatch, settleBotTodoForSession } from './botTodoAccess.js';
 import { createBotTodoDispatch } from './botTodoDispatch.js';
 import { assertBotTaskCoordination, classifySessionMessagePurpose, coordinationInput } from './botTaskCoordination.js';
@@ -4375,6 +4377,16 @@ export function isSessionInTurn(sessionId: string): boolean {
 export function getSessionInputProvenance(sessionId: string) {
   const input = agentInputCoordinatorHolder?.getAcceptedInputProvenance(sessionId) ?? null;
   return { input, executing: !!input || !!getMakerIfReady()?.getSession(sessionId)?.isTurnRunning() };
+}
+
+/** Capture from the caller's accepted input before any asynchronous target work. */
+export async function captureSessionAgentRequest(sessionId: string, supplement: string): Promise<CapturedAgentRequest> {
+  const scope = captureDataOwnerBroadcastScope();
+  const active = agentInputCoordinatorHolder?.getAcceptedInputProvenance(sessionId) ?? null;
+  const request = await captureRequest(sessionId, supplement, active,
+    () => listMessagesForAgentHandoff(sessionId, 1, undefined, 'user'));
+  if (!isDataOwnerBroadcastScopeCurrent(scope)) throw new Error('Data owner changed before request capture');
+  return request;
 }
 
 /** Owner-authored active input (see AgentInputCoordinator.isActiveInputOwnerAuthored). */
@@ -10856,7 +10868,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     onAcceptedCommit?: () => void | Promise<void>;
     origin?: AgentInputQueuedMessage['origin'];
     /** Host-only receipt: plugin-authored input is not user-authored permission. */
-    autoReviewUserText?: { kind: 'delegated-continuation' };
+    autoReviewUserText?: AgentRequestReceipt;
     authorizationGuard?: BotAuthorizationInputGuard;
     createDefaults?: SendToSessionCreateDefaults;
     /** 安全调用方可要求新会话不比来源会话拥有更高的权限。 */
@@ -11654,6 +11666,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
 
   const welcomeDispatchReceipts = createQueuedDispatchReceipts();
   const dispatchBotSessionMessage = async (params: {
+    autoReviewUserText?: AgentRequestReceipt;
     targetSessionId: string;
     dispatcherSessionId?: string;
     authorizationGuard?: BotAuthorizationInputGuard;
@@ -11752,6 +11765,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         clientId,
         meta,
         files: params.files,
+        autoReviewUserText: params.autoReviewUserText,
         ...(params.toolsDisabled === true ? { toolsDisabled: true } : {}),
         origin: sessionQueueOriginForDispatcher({
           dispatcherSessionId: params.dispatcherSessionId,
@@ -11825,6 +11839,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   });
 
   botDirectMessageServiceHolder = createBotDirectMessageService({
+    captureRequest: captureSessionAgentRequest,
     transport: createBotMessageTransport({ selfDeviceId: getSelfDeviceId,
       listDevices: () => handleListDevices(deviceDirectoryDeps()), invoke: invokeBotPeer }),
     discardQueuedDelivery: async (sessionId, clientId, assertOwner) => {
@@ -11837,6 +11852,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       return inputCoordinator.hasKnownClientId(sessionId, clientId);
     },
     dispatch: ({
+      autoReviewUserText,
       targetSessionId,
       dispatcherSessionId,
       message,
@@ -11846,6 +11862,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       onAcceptedRollback,
     }) =>
       dispatchBotSessionMessage({
+        autoReviewUserText,
         targetSessionId,
         dispatcherSessionId,
         message,
@@ -12116,6 +12133,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   registerBotGroupRemoteResourceProvider(() => botGroupChatServiceHolder);
   botDelegationServiceHolder?.dispose();
   botDelegationServiceHolder = createBotDelegationService({
+    captureRequest: captureSessionAgentRequest,
     readSessionExecution: id => {
       const session = maker.getSession(id);
       return session ? { instanceId: session.instanceId, generation: session.getTurnGeneration() } : null;
@@ -12193,8 +12211,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       readConfiguredCandidate: (callerSessionId, current, childSessionId) =>
         readBotFallbackCandidate(callerSessionId, current, childSessionId),
     }),
-    dispatch: ({ targetSessionId, message, persistedContent, clientId, onAccepted, dispatcherSessionId }) =>
+    dispatch: ({ targetSessionId, message, persistedContent, clientId, onAccepted, dispatcherSessionId, autoReviewUserText }) =>
       dispatchBotSessionMessage({
+        autoReviewUserText,
         targetSessionId,
         message,
         persistedContent,
@@ -13516,7 +13535,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     origin?: AgentInputQueuedMessage['origin'];
     sourcePlugin?: AgentInputQueuedMessage['sourcePlugin'];
     /** Host-only receipt: plugin-authored input is not user-authored permission. */
-    autoReviewUserText?: { kind: 'delegated-continuation' };
+    autoReviewUserText?: AgentRequestReceipt;
     authorizationGuard?: BotAuthorizationInputGuard;
   }): Promise<void> {
     const queued = await buildSessionControlInputItem(params);
@@ -13559,7 +13578,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     origin?: AgentInputQueuedMessage['origin'];
     sourcePlugin?: AgentInputQueuedMessage['sourcePlugin'];
     /** Host-only receipt: plugin-authored input is not user-authored permission. */
-    autoReviewUserText?: { kind: 'delegated-continuation' };
+    autoReviewUserText?: AgentRequestReceipt;
     toolsDisabled?: boolean;
   }): Promise<AgentInputQueuedMessage> {
     const createOpts = await buildCreateOptsForQueuedSession(params.targetSessionId, params.meta, params.inheritTargetPlanMode);
@@ -15812,6 +15831,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     },
     assertExternalInputAllowed: assertReviewExternalInputAllowed,
     createQueuedMessage: async ({ targetSessionId, callerSessionId, queuedMessageId, message }) => {
+      const request = await captureSessionAgentRequest(callerSessionId, message);
+      message = request.message;
       const meta = await maker.getSessionMeta(targetSessionId);
       if (!meta) throw new Error(`session ${targetSessionId} not found`);
       return buildSessionControlInputItem({
@@ -15819,6 +15840,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         message,
         persistedContent: message,
         clientId: queuedMessageId,
+        autoReviewUserText: request.autoReviewUserText,
         meta,
         origin: sessionQueueOriginForDispatcher({
           dispatcherSessionId: callerSessionId,
@@ -15919,6 +15941,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     getSessionRuntime: (params) => sessionControlService.getSessionRuntime(params),
     setSessionRuntime: (params) => sessionControlService.setSessionRuntime(params),
     sendToSession: async (params) => {
+      const request = await captureSessionAgentRequest(params.dispatcherSessionId ?? '', params.message);
+      params = { ...params, message: request.message };
       const ownerScope = captureDataOwnerBroadcastScope();
       let classification: Awaited<ReturnType<typeof classifySessionMessagePurpose>>;
       try {
@@ -15935,8 +15959,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       }
       return sendToSessionInternal({
         ...params,
+        autoReviewUserText: request.autoReviewUserText,
         ...(classification.delegatedContinuation || (params.targetSessionId && params[AUTO_REVIEW_DELEGATED_CONTINUATION])
-          ? { autoReviewUserText: { kind: 'delegated-continuation' as const } } : {}),
+          ? { autoReviewUserText: { ...request.autoReviewUserText, kind: 'delegated-continuation' as const } } : {}),
         ...(params.targetSessionId && params[AUTO_REVIEW_DELEGATED_CONTINUATION] ? {
           // Use the durable path for idle and busy targets alike. It restores the
           // target's user intent and current permission mode at dispatch time.

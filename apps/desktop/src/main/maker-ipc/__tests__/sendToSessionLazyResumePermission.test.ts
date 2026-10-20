@@ -100,7 +100,7 @@ function botTaskDispatchSlice(): string {
     '\n  setBotInvitationWelcomeDispatch(dispatchBotSessionMessage);',
   );
   const delegationDispatch = slice(
-    '({ targetSessionId, message, persistedContent, clientId, onAccepted, dispatcherSessionId }) =>',
+    '({ targetSessionId, message, persistedContent, clientId, onAccepted, dispatcherSessionId, autoReviewUserText }) =>',
     ',\n    discardDelegationQueuedInputs:',
     registerSource.indexOf('botDelegationServiceHolder = createBotDelegationService({'),
   );
