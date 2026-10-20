@@ -32,6 +32,11 @@ const message = (fields: Record<string, unknown>) => ({
 function bubbleMessages(wrappedReactions = false) {
   const manyReactions = ['👍', '❤️', '😂', '🎉', '👀', '🙏', '✅', '🤔', '🔥', '👏', '🚀', '💯']
     .map((emoji) => ({ emoji, count: 1, me: false }));
+  const sharedReply = {
+    messageId: 'source-reply', threadRootId: 'source-root', status: 'available',
+    authorKind: 'user', authorBotId: null, authorName: 'You', sharedByAuthor: true,
+    content: '好', attachments: [], createdAt: T0 + 12 * MINUTE, edited: false, version: 1,
+  };
   const ask = '周四发版前，把 Android 更新卡和伙伴群聊两个 PR 收口';
   const crash = '昨晚的崩溃上报一共 2 条，都来自旧版 0.1.60，新版没有复现。两份堆栈都停在图片解码那一步，我对比了两个版本的差异，0.1.61 已经限制了解码尺寸。';
   return [
@@ -77,6 +82,19 @@ function bubbleMessages(wrappedReactions = false) {
         { id: 'r6', authorKind: 'user', authorBotId: null, authorName: 'You', isSelf: true, text: '谢谢', attachments: [], createdAt: T0 + 14 * MINUTE },
       ] },
       reactions: wrappedReactions ? manyReactions : ['❤️', '✅', '🚀'].map((emoji, i) => ({ emoji, count: i + 1, me: false })),
+    }),
+    message({
+      id: 'q4', sequence: 8, isSelf: true, createdAt: T0 + 15 * MINUTE, content: '',
+      threadShare: sharedReply, replyCount: 3,
+      threadPreview: { replies: [
+        { id: 'r7', authorKind: 'bot', authorBotId: 'a', authorName: 'Aster', text: '已记录', attachments: [], createdAt: T0 + 16 * MINUTE },
+        { id: 'r8', authorKind: 'bot', authorBotId: 'b', authorName: 'Nova', text: '收到', attachments: [], createdAt: T0 + 17 * MINUTE },
+        { id: 'r9', authorKind: 'user', authorBotId: null, authorName: 'You', isSelf: true, text: '谢谢', attachments: [], createdAt: T0 + 18 * MINUTE },
+      ] },
+    }),
+    message({
+      id: 'q5', sequence: 9, isSelf: true, createdAt: T0 + 19 * MINUTE, content: '',
+      threadShare: sharedReply, reactions: manyReactions,
     }),
   ];
 }

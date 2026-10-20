@@ -126,6 +126,31 @@ export default {
       assert.ok(shortThread.entryWiderThanText, 'short root exercises an entry wider than its text');
       assert.ok(Math.abs(shortThread.offset) <= 1, `short self thread entry aligns with bubble left (${shortThread.offset}px)`);
       assert.ok(Math.abs(shortThread.right) <= 1, `short self bubble stays right-aligned (${shortThread.right}px)`);
+      // r4325061150: self-authored shares must also follow their wider siblings,
+      // both when a share becomes a root and when only its reactions make it wider.
+      for (const id of ['q4', 'q5']) {
+        const shared = page.locator(`[data-bot-group-message-id="${id}"]`);
+        await shared.scrollIntoViewIfNeeded();
+        const geometry = await shared.evaluate(row => {
+          const card = row.querySelector('figure').getBoundingClientRect();
+          const entry = row.querySelector('[data-thread-preview]')?.getBoundingClientRect();
+          const reactions = row.querySelector('[data-reaction-corner]')?.getBoundingClientRect();
+          const article = row.querySelector('article').getBoundingClientRect();
+          return { width: card.width, right: article.right - card.right,
+            entryLeft: entry ? entry.left - card.left : null,
+            reactionLeft: reactions ? reactions.left - card.left : null,
+            reactionRight: reactions ? reactions.right - card.right : null };
+        });
+        assert.ok(geometry.width <= 560, 'shared reply keeps its existing width cap');
+        assert.ok(Math.abs(geometry.right) <= 1, 'shared reply stays right-aligned');
+        if (geometry.entryLeft !== null) assert.ok(Math.abs(geometry.entryLeft) <= 1, `shared root entry aligns with card (${geometry.entryLeft}px)`);
+        if (geometry.reactionLeft !== null) {
+          assert.ok(Math.abs(geometry.reactionLeft + 10) <= 1, `shared reply reactions stay on the left corner (${geometry.reactionLeft}px)`);
+          assert.ok(geometry.reactionRight <= 1, 'shared reply reactions stay inside the card width');
+        }
+      }
+      await ui.capture('shared-reply');
+      await answer.hover();
       await ui.capture('hover');
       // A mention reads in the link color and, rested on, shows who it names.
       await page.locator('[data-bot-group-message-id="q2"]').scrollIntoViewIfNeeded();
