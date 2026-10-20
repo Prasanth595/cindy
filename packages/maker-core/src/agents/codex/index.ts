@@ -8613,6 +8613,7 @@ assertRouteCurrent();
      */
     function activateRootTurn(turnId: string): void {
       const isNewTurn = currentTurnId !== turnId;
+      if (isNewTurn) toolMarkup.begin({ push: rawEventQueuePush }, turnId);
       currentTurnId = turnId;
       isTurnInFlight = true;
       bindYieldContinuationTurn(turnId);
@@ -12294,7 +12295,6 @@ assertRouteCurrent();
         // Generation starts at the local receipt of turn/started, never at the
         // earlier RPC response. The helper is idempotent for duplicate started
         // notifications, including when the response already adopted this id.
-        toolMarkup.begin({ push: rawEventQueuePush }, params.turn.id);
         beginCodexGenerationTurn(translatorRt, params.turn.id);
         // 产出记账**不在这里清**: 它按 turn id 存(producedOutputTurnIds), 新 turn 天然
         // 从"零产出"起算, 同一 turn 的重复 / 迟到 started 也不会抹掉已记的账 —— 这两条

@@ -19,6 +19,23 @@ export class ToolMarkupProjection {
   private callsComplete = false;
   private preserveText = false;
   private startedId?: string;
+  private projectedTerminals = new WeakSet<AgentEvent>();
+  /** Translators project normal events; host-only exits must drain the same hold.
+   * Mark translator terminals so a forwarded/filtered sink cannot project twice. */
+  attachTerminalQueue(queue: AsyncQueue<AgentEvent>): void {
+    const push = queue.push.bind(queue);
+    const sink = { push };
+    queue.push = event => {
+      if ((event.type !== 'error' && event.type !== 'done') || this.projectedTerminals.has(event)
+        || event.turnScope === 'background' || event.agentMeta?.parentUuid) return push(event);
+      // A host-only terminal has no successful SDK message to reconcile. Keep
+      // its partial output and original Stop/transport-failure diagnosis.
+      this.finish(sink, true);
+      return this.push(event, sink);
+    };
+    const end = queue.end.bind(queue);
+    queue.end = () => { this.finish(sink, true); end(); };
+  }
   begin(sink: Sink, startedId?: string): void {
     if (startedId !== undefined && startedId === this.startedId) return;
     if (startedId !== undefined) this.startedId = startedId;
@@ -26,7 +43,7 @@ export class ToolMarkupProjection {
     this.streams.clear(); this.calls = []; this.unexecuted = false; this.active = true; this.afterTools = false; this.callsComplete = false; this.preserveText = false;
   }
   setCalls(calls: StructuredToolCall[], preserveText = false): void {
-    this.calls = calls.slice(0, 128); this.callsComplete = true; this.preserveText = preserveText;
+    this.calls = calls.slice(0, 128); this.callsComplete = true; this.preserveText ||= preserveText;
   }
   projectText(text: string): string {
     if (this.preserveText) return text;
@@ -35,10 +52,15 @@ export class ToolMarkupProjection {
     return result.text;
   }
   queue<T extends Sink>(sink: T): T {
-    return { ...sink, push: (event: AgentEvent) => this.push(event, sink) };
+    const projectedSink = { push: (event: AgentEvent) => {
+      if (event.type === 'error' || event.type === 'done') this.projectedTerminals.add(event);
+      return sink.push(event);
+    } };
+    return { ...sink, push: (event: AgentEvent) => this.push(event, projectedSink) };
   }
   finish(sink: Sink, failed = false): void {
-    failed ||= this.preserveText;
+    this.preserveText ||= failed;
+    failed = this.preserveText;
     for (const stream of this.streams.values()) {
       const data = record(stream.template.data);
       if (stream.final) {
@@ -86,7 +108,7 @@ export class ToolMarkupProjection {
       return sink.push(known ? { ...event, data: { ...data, reason: UNEXECUTED_TOOL_MARKUP_REASON, message: UNEXECUTED_TOOL_MARKUP_MESSAGE } } : event);
     }
     if (event.type === 'done') {
-      const failed = data.cancelled === true || data.status === 'cancelled' || data.status === 'failed' || data.is_error === true;
+      const failed = this.preserveText || data.cancelled === true || data.status === 'cancelled' || data.status === 'failed' || data.is_error === true;
       this.finish(sink, failed);
       const result = typeof data.result === 'string' && !failed && !this.preserveText
         ? reconcileToolCallMarkup(data.result, this.calls, true) : undefined;
@@ -118,7 +140,11 @@ export class ToolMarkupProjection {
         const held = this.preserveText ? { text: stream.buffer.drain(), unexecuted: false }
           : stream.buffer.resolveReport(this.calls, true);
         this.unexecuted ||= held.unexecuted;
-        if (held.text) sink.push({ ...stream.template, data: { ...record(stream.template.data), text: held.text } });
+        // A preserved full SDK snapshot already includes the held suffix. Do
+        // not enqueue it again as a late delta across the Stop boundary.
+        if (held.text && !(this.preserveText && data.text.endsWith(held.text))) {
+          sink.push({ ...stream.template, data: { ...record(stream.template.data), text: held.text } });
+        }
         this.streams.delete(key);
         return sink.push({ ...event, data: { ...data, text: this.projectText(data.text) } });
       }

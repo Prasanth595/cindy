@@ -713,6 +713,20 @@ function completedItem(
 }
 
 describe('ChatSseTranslator serialized tool-call echo', () => {
+  // #6545: holding the first text delta cannot give a later tool its output index.
+  it('reserves message order before holding a leading tool echo', () => {
+    const translator = new ChatSseTranslator('m');
+    const markup = '<tool_call>{"name":"read","arguments":{}}</tool_call>';
+    const first = translator.push({ choices: [{ delta: { content: markup + 'after' } }] });
+    expect(JSON.stringify(first)).not.toContain('<tool_call>');
+    const events = [...first, ...translator.push({ choices: [{ delta: { tool_calls: [
+      { index: 0, id: 'c', function: { name: 'read', arguments: '{}' } },
+    ] }, finish_reason: 'tool_calls' }] }), ...translator.finish()] as Array<Record<string, unknown>>;
+    const completed = events.at(-1) as { response: { output: Array<{ type: string; content?: Array<{ text: string }> }> } };
+    expect(completed.response.output.map(item => item.type)).toEqual(['message', 'function_call']);
+    expect(completed.response.output[0].content?.[0].text).toBe('after');
+    expect(events.filter(event => event.type === 'response.output_item.added').map(event => event.output_index)).toEqual([0, 1]);
+  });
   it.each(['length', 'content_filter', 'citation'])(
     'keeps original text for %s so truncation and citation offsets stay intact', (reason) => {
       const translator = new ChatSseTranslator('fixture', { toolContext: customExecContext() });

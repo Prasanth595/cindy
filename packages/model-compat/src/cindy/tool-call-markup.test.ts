@@ -54,6 +54,27 @@ describe('reconcileSerializedToolCalls', () => {
 });
 
 describe('SerializedToolCallEcho', () => {
+  // #6545: a prose mention must not release a later real call in the same delta.
+  it.each([false, true])('rescans after a pseudo-opener (executed=%s)', executed => {
+    const prose = 'Use <tool_call> to call tools. ';
+    const input = prose + echo() + 'after';
+    for (const chunks of [[input], [...input], [prose + '<tool_', input.slice(prose.length + 6)]]) {
+      const guard = new SerializedToolCallEcho();
+      const visible = chunks.map(chunk => guard.push(chunk)).join('');
+      expect(visible).toBe(prose);
+      const result = guard.resolveReport(executed ? EXEC() : [], true);
+      expect(visible + result.text).toBe(prose + 'after');
+      expect(result.unexecuted).toBe(!executed);
+    }
+  });
+
+  it('releases repeated pseudo-openers verbatim when the bounded rescan is exhausted', () => {
+    const input = 'Use <tool_call> to call tools. '.repeat(129) + echo();
+    const guard = new SerializedToolCallEcho();
+    expect(guard.push(input)).toBe(input);
+    expect(guard.hasPending).toBe(false);
+    expect(guard.resolveReport(EXEC(), true)).toEqual({ text: '', unexecuted: false });
+  });
   it.each([
     ['inline', TICK + echo() + TICK],
     ['fence', TICK.repeat(3) + 'xml\n' + echo() + '\n' + TICK.repeat(3)],

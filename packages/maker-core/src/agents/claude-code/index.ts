@@ -182,6 +182,7 @@ import { findClaudeSessionJsonl } from './claude-projects-fs.js';
 import { normalizeClaudeSessionJsonlToolIds } from './jsonl-tool-id-normalize.js';
 import { isClaudeResumeSessionNotFound } from './invalid-resume.js';
 import { translateSdkMessage, newRuntimeState, type TurnState, type RuntimeState } from './translator.js';
+import { toolMarkupProjection } from '../shared/tool-markup-projection.js';
 import { resetClaudeGenerationTiming } from './generation-timing.js';
 import type { Effort, PermissionMode } from '../../types/common.js';
 import { clampEffortToSupported } from '@cindy/model-providers/effort-resolution';
@@ -3229,6 +3230,7 @@ export class ClaudeCodeAgent extends BaseAgent {
       nextRequestPriceVariant: 'standard',
     };
     const runtimeState: RuntimeState = newRuntimeState();
+    toolMarkupProjection(runtimeState).attachTerminalQueue(eventQueue);
     const beginNewTurn = (priceVariant: 'standard' | 'priority' = mutableFastMode ? 'priority' : 'standard'): void => {
       // usageTracker.beginTurn() 只清 usage 桶；translator 的 turnState 也要在新 turn
       // 开始时清掉，避免上一轮 abnormal/abort 没走 result 时污染下一轮状态。

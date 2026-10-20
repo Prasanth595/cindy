@@ -193,24 +193,34 @@ export class SerializedToolCallEcho {
   get hasPending(): boolean { return !!(this.held || this.carry); }
   push(text: string): string {
     if (this.resolved) return text;
-    const pending = this.carry + text;
+    let pending = this.carry + text;
     this.carry = '';
     let visible = '';
-    if (!this.holding) {
-      const starts = OPENERS.map(s => pending.indexOf(s)).filter(n => n >= 0);
-      const at = starts.length ? Math.min(...starts) : -1;
-      if (at >= 0) { visible = pending.slice(0, at); this.held = pending.slice(at); this.holding = true; }
-      else {
-        let keep = 0;
-        for (const opener of OPENERS) for (let k = 1; k < opener.length; k++) {
-          if (pending.endsWith(opener.slice(0, k))) keep = Math.max(keep, k);
+    let rescans = 0;
+    while (true) {
+      if (!this.holding) {
+        const starts = OPENERS.map(s => pending.indexOf(s)).filter(n => n >= 0);
+        const at = starts.length ? Math.min(...starts) : -1;
+        if (at >= 0) { visible += pending.slice(0, at); this.held = pending.slice(at); this.holding = true; }
+        else {
+          let keep = 0;
+          for (const opener of OPENERS) for (let k = 1; k < opener.length; k++) {
+            if (pending.endsWith(opener.slice(0, k))) keep = Math.max(keep, k);
+          }
+          visible += pending.slice(0, pending.length - keep);
+          this.carry = pending.slice(pending.length - keep);
         }
-        visible = pending.slice(0, pending.length - keep);
-        this.carry = pending.slice(pending.length - keep);
+      } else this.held += pending;
+      if (this.held.startsWith('<tool_call>') && /^[A-Za-z0-9_.:-]+\s+[^<\s]/.test(this.held.slice(11).trimStart())) {
+        // Only the explanatory opener is known to be prose. A later real block
+        // (or split opener) must still enter the normal bounded hold.
+        if (++rescans > MAX_CALLS) { this.prefix += visible; return visible + this.drain(); }
+        visible += this.held.slice(0, 11);
+        pending = this.held.slice(11);
+        this.held = ''; this.holding = false; this.closedAt = -1; this.closeScan = 0;
+        continue;
       }
-    } else this.held += pending;
-    if (this.held.startsWith('<tool_call>') && /^[A-Za-z0-9_.:-]+\s+[^<\s]/.test(this.held.slice(11).trimStart())) {
-      visible += this.held; this.held = ''; this.holding = false;
+      break;
     }
     this.prefix += visible;
     if (this.closedAt < 0) {

@@ -21250,6 +21250,28 @@ describe('CodexAgent MCP thread context hooks', () => {
 });
 
 describe('CodexAgent final assistant result', () => {
+  // #6545: real response-first adoption must initialize reconciliation before
+  // item deltas, so a delayed started notification cannot erase the failure.
+  it('fails text-only markup received before a delayed turnStarted', async () => {
+    const agent = new CodexAgent(createDeps());
+    const host = installFakeHost(agent, method => method === Method.TurnStart
+      ? { turn: { id: 'markup-late-start' } } : undefined);
+    const handle = await agent.startSession({ sessionId: 'markup-late-start', model: 'gpt-5.4', workingDir: '/repo' });
+    const handlers = host.getThreadHandlers()!;
+    const events: AgentEvent[] = [];
+    const collected = (async () => { for await (const event of handle.events()) events.push(event); })();
+    try {
+      await handle.send({ type: 'user', content: 'read' });
+      handlers.agentMessageDelta!({ threadId: 'start-thread-id', turnId: 'markup-late-start', itemId: 'answer',
+        delta: '<tool_call>{"name":"read","arguments":{}}</tool_call>' });
+      handlers.turnStarted!({ threadId: 'start-thread-id', turn: { id: 'markup-late-start' } });
+      handlers.turnCompleted!({ threadId: 'start-thread-id', turn: { id: 'markup-late-start', status: 'completed' } });
+      await waitForExpectation(() => expect(events.find(event => event.type === 'done')?.data)
+        .toMatchObject({ status: 'failed', reason: 'unexecuted-tool-markup', silentStop: false }));
+      expect(events.filter(event => event.type === 'error')).toHaveLength(1);
+      expect(JSON.stringify(events)).not.toContain('<tool_call>');
+    } finally { await handle.close(); await collected; }
+  });
   it('uses final_answer for done.result and falls back to the last unphased message', async () => {
     const agent = new CodexAgent(createDeps());
     let turnSeq = 0;

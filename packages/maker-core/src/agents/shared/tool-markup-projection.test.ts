@@ -1,11 +1,49 @@
 import { describe, expect, it } from 'vitest';
 import type { AgentEvent } from '../../types/events.js';
 import { ToolMarkupProjection } from './tool-markup-projection.js';
+import { createAsyncQueue } from './async-queue.js';
 import { extractRolloutUpdatePlanFunctionCallEvent, translatePlanUpdatedNotification } from '../codex/translator.js';
 
 // #6531 unit: common native output projection, including code-mode asynchronous order.
 // Protects cross-response isolation, terminal failure and Stop without executing parsed text.
 describe('native projection boundaries', () => {
+  // #6545: host-only terminals and translated terminals share the real session
+  // queue. Forwarding must not cause a second projection or change event identity.
+  it('projects a forwarded SDK terminal only once through the installed queue', async () => {
+    const queue = createAsyncQueue<AgentEvent>();
+    const p = new ToolMarkupProjection();
+    p.attachTerminalQueue(queue);
+    p.begin(queue);
+    p.setCalls([]);
+    const forwarded = p.queue({ push: (event: AgentEvent) => queue.push(event) });
+    forwarded.push({ type: 'text', data: { text: '<tool_call>{"name":"read","arguments":{}}</tool_call>', isFinal: true } });
+    forwarded.push({ type: 'done', data: { status: 'completed' } });
+    queue.end();
+    const events: AgentEvent[] = [];
+    for await (const event of queue) events.push(event);
+    expect(events.filter(event => event.type === 'error')).toHaveLength(1);
+    expect(events.filter(event => event.type === 'done')).toHaveLength(1);
+    expect(events.at(-1)?.data).toMatchObject({ status: 'failed', reason: 'unexecuted-tool-markup' });
+  });
+
+  it('ignores background terminals and preserves the host terminal identity and held text', async () => {
+    const queue = createAsyncQueue<AgentEvent>();
+    const p = new ToolMarkupProjection();
+    p.attachTerminalQueue(queue);
+    p.begin(queue);
+    const text = '<tool_call>{"name":"read","arguments":{}}</tool_call>';
+    p.queue(queue).push({ type: 'text', data: { text, isFinal: false } });
+    const child: AgentEvent = { type: 'done', turnScope: 'background', data: { status: 'completed' } };
+    queue.push(child);
+    expect(queue.pending).toBe(1);
+    const terminal: AgentEvent = { type: 'done', data: { reason: 'stream_end' } };
+    queue.push(terminal);
+    queue.end();
+    const events: AgentEvent[] = [];
+    for await (const event of queue) events.push(event);
+    expect(events).toEqual([child, expect.objectContaining({ type: 'text', data: expect.objectContaining({ text }) }), terminal]);
+    expect(events.at(-1)).toBe(terminal);
+  });
   // #6545 review: plan snapshots have no tool result and cannot prove that a
   // later sample executed anything. Both production plan entrances are unit-tested.
   it.each(['notification', 'rollout'])('does not use a %s plan snapshot as execution evidence', source => {

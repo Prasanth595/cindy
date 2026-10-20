@@ -764,7 +764,9 @@ export function translateSdkMessage(
   if (raw.type === 'stream_event' && raw.event?.type === 'message_start') projection.begin(queue);
   if (raw.type === 'assistant') {
     if (!projection.active) projection.begin(queue);
-    projection.setCalls(structuredCallsOf(raw.message?.content), Boolean(raw.error));
+    // Interrupt may produce a partial assistant before its aborted result. Keep
+    // that partial text now; the later result cannot restore discarded bytes.
+    projection.setCalls(structuredCallsOf(raw.message?.content), Boolean(raw.error) || ctx.turn.interruptRequested);
   }
   const textBefore = ctx.turn.text;
   translateSdkMessageInternal(rawMsg, projection.queue(queue), ctx);

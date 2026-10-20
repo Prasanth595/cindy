@@ -417,6 +417,26 @@ it('reconciles freeform input before Claude emits its tool_use', async () => {
   expect(ctx.turn.text).toBe('before.after.');
 });
 
+it.each(['text', 'thinking'])('preserves interrupted SDK partial %s before the final result', async channel => {
+  const ctx = createCtx(new UsageTracker());
+  const queue = createAsyncQueue<AgentEvent>();
+  const markup = '<tool_call>{"name":"read","arguments":{}}</tool_call>';
+  translateSdkMessage({ type: 'stream_event', event: { type: 'message_start', message: { id: 'partial' } } }, queue, ctx);
+  translateSdkMessage({ type: 'stream_event', event: { type: 'content_block_delta', index: 0,
+    delta: channel === 'text' ? { type: 'text_delta', text: markup } : { type: 'thinking_delta', thinking: markup },
+  } }, queue, ctx);
+  ctx.turn.interruptRequested = true;
+  translateSdkMessage({ type: 'assistant', message: { content: [
+    channel === 'text' ? { type: 'text', text: markup } : { type: 'thinking', thinking: markup },
+  ] } }, queue, ctx);
+  if (channel === 'text') expect(ctx.turn.text).toContain(markup);
+  translateSdkMessage({ type: 'result', is_error: true, subtype: 'error_during_execution', terminal_reason: 'aborted_streaming' }, queue, ctx);
+  const events = await drain(queue);
+  expect(events.filter(e => e.type === channel).some(e => (e.data as { text: string }).text === markup)).toBe(true);
+  if (channel === 'text') expect(events.filter(e => e.type === 'text')).toHaveLength(1);
+  expect(events.some(e => e.type === 'error')).toBe(false);
+});
+
 it.each(['text', 'thinking'])('handles serialized calls in native Claude %s', async channel => {
   for (const structured of [true, false]) {
     const ctx = createCtx(new UsageTracker());

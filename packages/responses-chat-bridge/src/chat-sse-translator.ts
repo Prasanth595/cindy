@@ -425,6 +425,9 @@ export class ChatSseTranslator {
 
   private pushText(content: string, out: unknown[]): void {
     this.closeActiveReasoning(out);
+    // Reserve the original Chat position even while every text byte is held.
+    // A later tool delta must not move surviving prose behind its tool card.
+    this.ensureMessage(out);
     const visible = this.serializedEcho.push(content);
     if (!visible) return;
     this.emitText(visible, out);
