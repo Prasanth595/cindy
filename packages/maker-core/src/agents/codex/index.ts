@@ -1,3 +1,4 @@
+import { ToolMarkupProjection } from '../shared/tool-markup-projection.js';
 /**
  * CodexAgent — 路线 A 完整版 (Phase 1+2+3+4 全打通)。
  *
@@ -3767,6 +3768,7 @@ assertRouteCurrent();
     const eventQueue: AsyncQueue<AgentEvent> = createAsyncQueue<AgentEvent>();
     const usageTracker = new UsageTracker();
     const translatorRt: CodexRuntimeState = newCodexRuntimeState();
+    const toolMarkup = new ToolMarkupProjection();
     const liveUsageSnapshot = () => attachLiveGeneration(usageTracker.snapshot(), {
       tokenSpeed: translatorRt.generationTimingReliable ? translatorRt.tokenSpeed.snapshot() : undefined,
       outputTokens: usageTracker.getTurnUsage().output,
@@ -9200,7 +9202,7 @@ assertRouteCurrent();
           armUpstreamIdle();
         }
       }
-      const accepted = rawEventQueuePush(ev);
+      const accepted = toolMarkup.push(ev, { push: rawEventQueuePush });
       if (!accepted) releaseYieldContinuationEvent(ev);
       return accepted;
     };
@@ -12292,6 +12294,7 @@ assertRouteCurrent();
         // Generation starts at the local receipt of turn/started, never at the
         // earlier RPC response. The helper is idempotent for duplicate started
         // notifications, including when the response already adopted this id.
+        toolMarkup.begin({ push: rawEventQueuePush }, params.turn.id);
         beginCodexGenerationTurn(translatorRt, params.turn.id);
         // 产出记账**不在这里清**: 它按 turn id 存(producedOutputTurnIds), 新 turn 天然
         // 从"零产出"起算, 同一 turn 的重复 / 迟到 started 也不会抹掉已记的账 —— 这两条

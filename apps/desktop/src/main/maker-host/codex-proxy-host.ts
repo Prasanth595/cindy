@@ -1,3 +1,4 @@
+import { createToolMarkupResponseTransform } from '@cindy/model-compat';
 import { captureUsagePricing, createUsagePricingObserver } from './model-usage-pricing.js';
 import { rewriteFastModel } from './model-fast-mode.js';
 import { createAttachmentRecovery } from './oversized-attachment-recovery.js';
@@ -3426,6 +3427,7 @@ async function createCodexProxyHandle(
       return chainResponseTransforms(
         createResponsesNullArrayRepairTransform(response),
         execAdapter.createResponseTransform(ctx.reqId, response),
+        createToolMarkupResponseTransform(response),
       );
     },
     // 常规 session proxy 继续读取当前全局 spawn 形态；control-plane proxy 在创建时

@@ -2460,3 +2460,30 @@ it('retains tool image bytes and a video resource alongside text', () => {
   });
   disposePiTranslateContext(ctx);
 });
+
+// #6531 unit: native Pi bypasses the Chat bridge; streamed text/thinking must still reconcile.
+describe('native Pi serialized calls', () => {
+  it.each(['text', 'thinking'])('reconciles %s and does not silently complete text-only calls', channel => {
+    for (const structured of [true, false]) {
+      const ctx = createPiTranslateContext(noopLogger);
+      const { queue, events } = makeQueue();
+      const markup = '<tool_call>{"name":"read","arguments":{"path":"a"}}</tool_call>';
+      translatePiEvent(ev({ type: 'agent_start' }), queue, ctx);
+      translatePiEvent(ev({ type: 'message_start', message: { role: 'assistant' } }), queue, ctx);
+      translatePiEvent(ev({ type: 'message_update', assistantMessageEvent: { type: channel + '_delta', contentIndex: 0, delta: markup } }), queue, ctx);
+      if (channel === 'thinking') translatePiEvent(ev({ type: 'message_update', assistantMessageEvent: { type: 'thinking_end', contentIndex: 0, content: markup } }), queue, ctx);
+      translatePiEvent(ev({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop', content: [
+        channel === 'text' ? { type: 'text', text: markup } : { type: 'thinking', thinking: markup },
+        ...(structured ? [{ type: 'toolCall', id: 'r', name: 'read', arguments: { path: 'a' } }] : []),
+      ] } }), queue, ctx);
+      translatePiEvent(ev({ type: 'agent_settled' }), queue, ctx);
+      expect(JSON.stringify(events)).not.toContain('<tool_call>');
+      if (structured) expect(events.some(e => e.type === 'error')).toBe(false);
+      else {
+        expect(events).toContainEqual(expect.objectContaining({ type: 'error', data: expect.objectContaining({ reason: 'unexecuted-tool-markup', isTerminal: true }) }));
+        expect(events.find(e => e.type === 'done')?.data).toMatchObject({ status: 'failed', silentStop: false });
+      }
+      disposePiTranslateContext(ctx);
+    }
+  });
+});

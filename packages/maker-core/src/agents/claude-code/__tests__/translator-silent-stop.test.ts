@@ -398,3 +398,46 @@ describe('Claude Code translator silent-stop observation (log only)', () => {
     expect(silentStopWarned(ctx)).toBe(false);
   });
 });
+
+// #6531 unit: Anthropic native SDK output must not bypass reconciliation/terminal handling.
+it.each(['text', 'thinking'])('handles serialized calls in native Claude %s', async channel => {
+  for (const structured of [true, false]) {
+    const ctx = createCtx(new UsageTracker());
+    const queue = createAsyncQueue<AgentEvent>();
+    const markup = '<invoke name="Read"><parameter name="path" string="true">a</parameter></invoke>';
+    translateSdkMessage({ type: 'stream_event', event: { type: 'message_start', message: { id: 'msg1' } } }, queue, ctx);
+    translateSdkMessage({ type: 'stream_event', event: { type: 'content_block_delta', index: 0,
+      delta: channel === 'text' ? { type: 'text_delta', text: markup } : { type: 'thinking_delta', thinking: markup },
+    } }, queue, ctx);
+    translateSdkMessage({ type: 'assistant', message: { content: [
+      channel === 'text' ? { type: 'text', text: markup } : { type: 'thinking', thinking: markup },
+      ...(structured ? [{ type: 'tool_use', id: 'r', name: 'Read', input: { path: 'a' } }] : []),
+    ] } }, queue, ctx);
+    translateSdkMessage({ type: 'result', result: channel === 'text' ? markup : 'done', subtype: 'success' }, queue, ctx);
+    const events = await drain(queue);
+    expect(JSON.stringify(events)).not.toContain('<invoke');
+    if (structured) expect(events.some(e => e.type === 'error')).toBe(false);
+    else expect(events).toContainEqual(expect.objectContaining({ type: 'error', data: expect.objectContaining({ reason: 'unexecuted-tool-markup' }) }));
+  }
+});
+
+// #6531 unit: multiple final blocks and result-less SDK responses must keep their
+// visible order and must not reintroduce an already executed call via turn.text.
+it('keeps multiple final blocks ordered and the multi-response fallback clean', async () => {
+  const ctx = createCtx(new UsageTracker());
+  const queue = createAsyncQueue<AgentEvent>();
+  const markup = '<invoke name="Read"><parameter name="path" string="true">a</parameter></invoke>';
+  translateSdkMessage({ type: 'assistant', message: { content: [
+    { type: 'text', text: 'before.' + markup }, { type: 'text', text: 'after.' },
+    { type: 'tool_use', id: 'r', name: 'Read', input: { path: 'a' } },
+  ] } }, queue, ctx);
+  translateSdkMessage({ type: 'assistant', message: { content: [{ type: 'text', text: 'finished' }] } }, queue, ctx);
+  expect(ctx.turn.text).toBe('before.after.finished');
+  translateSdkMessage({ type: 'result', subtype: 'success' }, queue, ctx);
+  const events = await drain(queue);
+  expect(events.filter(e => e.type === 'text').slice(0, 3).map(e => (e.data as { text: string }).text))
+    .toEqual(['before.', 'after.', 'finished']);
+  expect(JSON.stringify(events)).not.toContain('<invoke');
+  expect(events.some(e => e.type === 'error')).toBe(false);
+  expect(events.find(e => e.type === 'done')?.data).toMatchObject({ subtype: 'success' });
+});
