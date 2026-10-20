@@ -668,6 +668,19 @@ describe('Bot canonical Session lifecycle', () => {
     expect((await listBotRemoteResourceSources()).map((row) => row.id)).not.toContain(created.id);
   });
 
+  it('persists a shared model location when creating the canonical session', async () => {
+    const route = { harness: 'codex', model: 'gpt-6-astra', providerId: 'openai',
+      agentDeviceId: 'share:test-account', effort: 'high', fastMode: false };
+    h.sqlite!.prepare('UPDATE bot_profile_versions SET capabilities_json = ? WHERE bot_id = ? AND version = 1')
+      .run(JSON.stringify({ modelChainOverride: [route] }), 'bot-1');
+    const canonical = await invoke('local-db:bots:create-canonical-session', {
+      botId: 'bot-1', expectedCanonicalSessionId: null, expectedProfileVersion: 1,
+    });
+    expect(h.sqlite!.prepare('SELECT agent_device_id, model, provider_id FROM sessions WHERE id = ?')
+      .get(canonical.session.id)).toEqual({ agent_device_id: route.agentDeviceId,
+        model: route.model, provider_id: route.providerId });
+  });
+
   it('creates the first canonical task on Codex when only its subscription is connected', async () => {
     h.providers = [{
       id: 'openai', source: 'builtin', connected: true, agents: ['codex'],
@@ -5987,6 +6000,27 @@ describe('Bot Session task end-to-end runtime', () => {
       expect(next.ok).toBe(true); if (!next.ok) throw new Error(next.message);
       expect(next.modelRoute).toEqual(configured);
       expect(resolveTaskModelSelection).toHaveBeenCalledTimes(1);
+    } finally { runtime.dispose(); }
+  });
+
+  it('preserves the shared account when inheriting or overriding a background task model', async () => {
+    await seedPair();
+    const shared = { harness: 'codex' as const, model: 'gpt-6-astra', providerId: 'openai',
+      agentDeviceId: 'share:task-account', effort: 'high', fastMode: false };
+    const runtime = createDelegationRuntime({
+      resolveTaskModelSelection: async () => shared,
+      readCallerRuntime: () => ({ agentKind: 'codex', model: shared.model, providerId: shared.providerId,
+        agentDeviceId: shared.agentDeviceId, effort: 'high', fastMode: false }),
+    });
+    try {
+      for (const modelSelection of [undefined, { id: 'selected-shared-route' }]) {
+        const result = await runtime.delegation.startSessionTask({ callerSessionId: 'session-1',
+          objective: 'Use the selected shared account.', modelSelection });
+        expect(result.ok).toBe(true); if (!result.ok) throw new Error(result.message);
+        expect(result.modelRoute).toEqual(shared);
+        expect(h.sqlite!.prepare('SELECT agent_device_id, provider_id FROM sessions WHERE id = ?')
+          .get(result.childSessionId)).toEqual({ agent_device_id: shared.agentDeviceId, provider_id: shared.providerId });
+      }
     } finally { runtime.dispose(); }
   });
 
