@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import Sortable, { type SortableEvent } from 'sortablejs';
-import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, cleanup, createEvent, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getStartingSessionIds, markSessionStarting, resetSessionStartingStoreForTests, useStartingSessionIds } from '@/lib/sessionStartingStore';
 import { remoteProjectsStore } from '@/features/device-link/remoteProjectsStore';
@@ -11,7 +11,7 @@ import {
   applyRemoteSessionActivity,
   clearRemoteSessionActivity,
 } from '@/features/device-link/remoteSessionActivityStore';
-import { ProjectsSection, type ProjectsSectionProps } from '../features/cc-agent/sidebar/sections/ProjectsSection';
+import { ProjectsSection, SessionGroupNode, type ProjectsSectionProps } from '../features/cc-agent/sidebar/sections/ProjectsSection';
 
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock('@/components/ui/tooltip', () => ({ Tip: ({ children }: { children: ReactNode }) => children }));
@@ -31,7 +31,7 @@ vi.mock('../features/cc-agent/sidebar/DeviceSectionHeader', () => ({
 }));
 vi.mock('../features/cc-agent/sidebar/sections/UnclassifiedSection', () => ({ UnclassifiedSection: () => null }));
 vi.mock('@/features/bots/BotAvatar', () => ({ BotAvatar: () => <span>Bot avatar</span> }));
-// Keep ProjectsSection, its private SessionGroupNode, SessionEntryList, collapse model,
+// Keep ProjectsSection, SessionGroupNode, SessionEntryList, collapse model,
 // lamp aggregation and remote store real. Only unrelated services/leaf rows are stubbed.
 vi.mock('../features/cc-agent/sidebar/SessionItem', () => ({
   SessionItem: ({ session, onClick }: { session: Session; onClick: (id: string) => void }) => <button data-testid={`row-${session.id}`} onClick={() => onClick(session.id)}>{session.title}</button>,
@@ -123,6 +123,72 @@ describe('Manual project sorting', () => {
     expect(p.filter.setManualProjectOrder).toHaveBeenCalledWith(
       ['local:/Second', 'local:/First'], p.allProjectKeysForOrder,
     );
+  });
+});
+
+// #6575: reuse this jsdom harness and its real SessionGroupNode. Existing lamp
+// cases do not exercise contextmenu bubbling. The minimal regression input is a
+// right-click on an empty group's title: the ancestor must not open global sorting.
+// Unit tier; also preserve keyboard/click folding and independent creation.
+function ContextMenuSidebarPreview() {
+  const [collapsed, setCollapsed] = useState(true);
+  const [created, setCreated] = useState(0);
+  const [globalMenu, setGlobalMenu] = useState(false);
+  return (
+    <div onContextMenu={() => setGlobalMenu(true)}>
+      <SessionGroupNode
+        sessions={[]}
+        collapsed={collapsed}
+        onToggle={() => setCollapsed((value) => !value)}
+        onCreateDialogue={() => setCreated((value) => value + 1)}
+        isCreateDisabled={false}
+        parentSectionCollapsed={false}
+        disableSessionCollapse={false}
+        runningSessionIds={new Set()}
+        attachedSessionIds={new Set()}
+        notifications={new Set()}
+        scheduleSessionIndex={new Map()}
+        onSessionClick={vi.fn()}
+        onAction={vi.fn()}
+        onRename={vi.fn()}
+        onTogglePin={vi.fn()}
+        onScheduleAction={vi.fn()}
+        sessionVariant="text"
+      />
+      <output aria-label="created">{created}</output>
+      {globalMenu && <div role="menu">Global sorting</div>}
+    </div>
+  );
+}
+
+describe('SessionGroupNode context menu boundary (#6575)', () => {
+  it('consumes title and nested create-button right-clicks without opening global sorting', () => {
+    render(<ContextMenuSidebarPreview />);
+    for (const target of [
+      screen.getByText('ccAgent.sidebar.dialogues'),
+      screen.getByRole('button', { name: 'ccAgent.sidebar.newDialogue' }),
+    ]) {
+      const event = createEvent.contextMenu(target, { bubbles: true, cancelable: true });
+      fireEvent(target, event);
+      expect(screen.queryByRole('menu')).toBeNull();
+      expect(event.defaultPrevented).toBe(true);
+    }
+    expect(screen.getByRole('button', { expanded: false })).not.toBeNull();
+    expect(screen.getByLabelText('created').textContent).toBe('0');
+  });
+
+  it('preserves click, Enter and Space toggling and isolates creation from the header', () => {
+    render(<ContextMenuSidebarPreview />);
+    const header = screen.getByRole('button', { expanded: false });
+    fireEvent.click(header);
+    expect(header.getAttribute('aria-expanded')).toBe('true');
+    fireEvent.keyDown(header, { key: 'Enter' });
+    expect(header.getAttribute('aria-expanded')).toBe('false');
+    fireEvent.keyDown(header, { key: ' ' });
+    expect(header.getAttribute('aria-expanded')).toBe('true');
+    fireEvent.click(screen.getByRole('button', { name: 'ccAgent.sidebar.newDialogue' }));
+    expect(screen.getByLabelText('created').textContent).toBe('1');
+    expect(header.getAttribute('aria-expanded')).toBe('true');
   });
 });
 
