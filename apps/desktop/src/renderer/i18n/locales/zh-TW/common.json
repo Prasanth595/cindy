@@ -10609,7 +10609,13 @@
         "providerGroupRunningHere": "目前在這台電腦上執行",
         "providerGroupUnassigned": "開始後由供應商組選一台電腦，用量依那台顯示"
       },
-      "modelListAria": "模型清單"
+      "modelListAria": "模型清單",
+      "speed": {
+        "label": "速度",
+        "standard": "標準",
+        "fast": "快速",
+        "ultrafast": "超快"
+      }
     },
     "permissionSelector": {
       "triggerAria": "選擇權限模式：{{label}}",

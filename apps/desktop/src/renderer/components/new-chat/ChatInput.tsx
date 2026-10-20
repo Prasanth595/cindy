@@ -597,9 +597,9 @@ interface ChatInputProps {
    */
   onPlanModeChange?: (enabled: boolean) => void | Promise<void>;
   /** Current Fast Mode state from the session store. */
-  fastMode?: boolean;
+  fastMode?: boolean | 'ultrafast';
   /** Called when the Fast Mode toggle changes. Captured device ID pins remote routing. */
-  onFastModeChange?: (enabled: boolean, sourceRemoteDeviceId?: string) => void | Promise<void>;
+  onFastModeChange?: (enabled: boolean | 'ultrafast', sourceRemoteDeviceId?: string) => void | Promise<void>;
   /** Callback when workingDir changes (for parent state sync). */
   onWorkingDirChange?: (dir: string | null) => void;
   /** When true, the input is disabled (e.g. during streaming). */
@@ -881,7 +881,7 @@ interface ChatInputProps {
     /** 选中引擎的 **wire model id**。 */
     modelId: string;
     effort?: Effort;
-    fast: boolean;
+    fast: boolean | 'ultrafast';
     favoriteUid: string | null;
     /** 来自配置浮层「恢复推荐」，不得把推荐档重新写成用户 override。 */
     resetToRecommended?: true;
@@ -923,7 +923,7 @@ function rememberCatalogModelPrefs(
   agent: AgentKind,
   providerId: string | null | undefined,
   modelId: string,
-  patch: { effort?: Effort; fast?: boolean },
+  patch: { effort?: Effort; fast?: boolean | 'ultrafast' },
   taskComputerMemory: ModelMemoryAccessors | undefined,
 ): void {
   if (!providerId || !modelId) return;
@@ -1730,7 +1730,7 @@ export function ChatInput({
     model: string;
     effort: Effort;
     providerId: string | null;
-    fastMode: boolean;
+    fastMode: boolean | 'ultrafast';
   } | null>(null);
   // device-link 远程切换的「禁用」只绑定隧道 await 进行中(被控端 ack 即解除),**不**等完整 mirror 回流。
   // 原因:providerId 等字段在控制端 mirror 上回流不可靠(远程会话 serverSession 恒空、mirrorSessionFields
@@ -1775,7 +1775,7 @@ export function ChatInput({
       model: initialModel ?? (sessionId ? '' : localVendorDefaults.model),
       providerId: initialProviderId ?? null,
       effort: initialEffort === null || initialEffort === '' ? null : initialEffort ?? localVendorDefaults.effort,
-      fastMode: fastMode === true,
+      fastMode: fastMode ?? false,
     },
     effective: sessionId ? runtimeEffective : undefined,
     pending: sessionId ? runtimePending : undefined,
@@ -1852,7 +1852,7 @@ export function ChatInput({
       initialModel === pendingRemoteSwitch.model &&
       initialEffort === pendingRemoteSwitch.effort &&
       (initialProviderId ?? null) === pendingRemoteSwitch.providerId &&
-      (fastMode === true) === pendingRemoteSwitch.fastMode;
+      (fastMode ?? false) === pendingRemoteSwitch.fastMode;
     if (settled) {
       setPendingRemoteSwitch(null);
       return;
@@ -6395,7 +6395,7 @@ export function ChatInput({
   );
 
   const resolveFast = useCallback(
-    (targetModelId: string, providerId: string | null): boolean => {
+    (targetModelId: string, providerId: string | null): boolean | 'ultrafast' => {
       if (!modelFastSupported(targetModelId, providerId)) return false;
       // providerId 只用于来源 capability 与旧 v2 兼容回退;新预设按 (agent, model) 跨来源共享。
       // 无 providerId / device-link(modelMemory 为 undefined)→ false,且不掺控制端本机记忆。
@@ -6408,7 +6408,7 @@ export function ChatInput({
   const syncSessionDraftModelPrefs = useCallback(
     (
       modelId: string,
-      patch: { effort?: Effort; fast?: boolean },
+      patch: { effort?: Effort; fast?: boolean | 'ultrafast' },
       opts: {
         activeProviderId?: string | null;
         memoryProviderId?: string | null;
@@ -6486,7 +6486,7 @@ export function ChatInput({
 
   const persistFastModeChange = useCallback(
     async (
-      enabled: boolean,
+      enabled: boolean | 'ultrafast',
       options?: { silent?: boolean; remoteDeviceId?: string },
     ): Promise<boolean> => {
       try {
@@ -6512,7 +6512,7 @@ export function ChatInput({
    */
   const handleFastModeChange = useCallback(
     async (
-      enabled: boolean,
+      enabled: boolean | 'ultrafast',
       modelId = activeModel,
       effort = activeEffort,
       syncDraft = true,
@@ -6790,7 +6790,7 @@ export function ChatInput({
       modelId: string,
       expectedRevision?: number,
       effort?: Effort,
-      fastMode?: boolean,
+      fastMode?: boolean | 'ultrafast',
     ) => void | boolean | Promise<void | boolean>;
     byModel: (
       modelId: string,
@@ -6828,7 +6828,7 @@ export function ChatInput({
       // 意图期内的档位/Fast 改动经此显式覆盖(用户手选优先于记忆/默认解析)。
       overrides?: {
         effort?: Effort;
-        fastMode?: boolean;
+        fastMode?: boolean | 'ultrafast';
         /** Editing only axes keeps the existing route's window acknowledgement. */
         axesOnly?: boolean;
         /**
@@ -6940,9 +6940,9 @@ export function ChatInput({
           agentKind: targetAgentKind,
         });
         const targetFast = fromOtherCatalog
-          ? overrides?.fastMode === true
+          ? overrides?.fastMode ?? false
           : overrides?.fastMode !== undefined
-            ? overrides.fastMode && fastCapable
+            ? fastCapable ? overrides.fastMode : false
             : fastCapable &&
               !!providerId &&
               !!modelMemory &&
@@ -7258,7 +7258,7 @@ export function ChatInput({
         modelId: string;
         targetAgent: AgentKind;
         effort: Effort | '';
-        fast?: boolean;
+        fast?: boolean | 'ultrafast';
         favoriteUid?: string | null;
       }): Promise<boolean> => {
         // 取消 = 什么都不改;返回 false 让选择器留在原地(用户还能挑别的行)。
@@ -7471,7 +7471,7 @@ export function ChatInput({
       modelId: string;
       effort?: Effort;
       engine: 'cc' | 'codex' | 'pi';
-      fast: boolean;
+      fast: boolean | 'ultrafast';
       favoriteUid: string | null;
       /** 行的归一化 id(面板行身份)。草稿层不消费,更不作为发送 id。 */
       rowModelId?: string;
@@ -7651,7 +7651,7 @@ export function ChatInput({
                   ? ({
                       effort: atomicEffort,
                       fastMode: atomicFast,
-                    } as { effort: string | null; fastMode: boolean })
+                    } as { effort: string | null; fastMode: boolean | 'ultrafast' })
                   : undefined,
               );
               if (remoteSetModelResult?.superseded) {
@@ -7713,7 +7713,7 @@ export function ChatInput({
                       effort: atomicEffort,
                       fastMode: atomicFast,
                       ...(confirmedContextWindow ? { confirmedContextWindow } : {}),
-                    } as { effort: string | null; fastMode: boolean },
+                    } as { effort: string | null; fastMode: boolean | 'ultrafast' },
                   );
                 },
               );
@@ -7884,7 +7884,7 @@ export function ChatInput({
               model: activeModel,
               effort: newEffort,
               providerId: selectedProviderId,
-              fastMode: fastMode === true,
+              fastMode: fastMode ?? false,
             };
             setPendingRemoteSwitch(optimisticSwitch);
             if (lockSelector) setRemoteSwitchInFlight(true);
@@ -8111,7 +8111,7 @@ export function ChatInput({
       reconciledModelId?: string,
       reconciledEffort?: Effort,
       expectedAgentSwitchRevision?: number,
-      reconciledFast?: boolean,
+      reconciledFast?: boolean | 'ultrafast',
     ) => {
       if (settingsLocked) return false;
       if (sessionId && sessionAgentSwitchSupported && !remoteHostId && runtimeAgentKind &&
@@ -8233,7 +8233,7 @@ export function ChatInput({
               ? ({
                   effort: remoteAtomicEffort,
                   fastMode: restoredFast,
-                } as { effort: string | null; fastMode: boolean })
+                } as { effort: string | null; fastMode: boolean | 'ultrafast' })
               : undefined,
           );
           if (remoteSetModelResult?.superseded) {
@@ -8331,7 +8331,7 @@ export function ChatInput({
                     effort: atomicEffort,
                     fastMode: restoredFast,
                     ...(confirmedContextWindow ? { confirmedContextWindow } : {}),
-                  } as { effort: string | null; fastMode: boolean },
+                  } as { effort: string | null; fastMode: boolean | 'ultrafast' },
                 );
               },
             );
@@ -8476,7 +8476,7 @@ export function ChatInput({
       reconciledModelId?: string,
       reconciledEffort?: Effort,
       expectedAgentSwitchRevision?: number,
-      reconciledFast?: boolean,
+      reconciledFast?: boolean | 'ultrafast',
     ): Promise<void | boolean> => {
       const remoteDeviceId = sessionId
         ? (deviceLinkDeviceId ?? getSessionDeviceId(sessionId))

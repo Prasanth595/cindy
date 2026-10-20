@@ -230,7 +230,7 @@ export interface Schedule {
    * true → runner fire 时透传给 codex agent，落到 app-server 的 ServiceTier.Fast，
    * 输出更快。Claude agent 忽略此字段。undefined/false → 标准 tier。
    */
-  fastMode?: boolean;
+  fastMode?: boolean | 'ultrafast';
   /**
    * New-session workspace semantics.
    * - project: workingDir is a user-selected project directory.
@@ -362,7 +362,7 @@ export interface CreateScheduleInput {
   providerId?: string;
   effort?: string;
   /** Codex Fast 模式开关，仅 Codex 有意义。详见 Schedule.fastMode。 */
-  fastMode?: boolean;
+  fastMode?: boolean | 'ultrafast';
   /** Defaults to 'project' for backwards compatibility. */
   workspaceKind?: ScheduleWorkspaceKind;
   workingDir?: string;
@@ -495,7 +495,7 @@ export interface ScheduleTemplate {
   providerId?: string;
   effort?: string;
   /** Codex Fast 模式开关，仅 Codex 有意义。详见 Schedule.fastMode。 */
-  fastMode?: boolean;
+  fastMode?: boolean | 'ultrafast';
   useWorktree?: boolean;
   persistentSession?: boolean;
   silentWhenIdle?: boolean;

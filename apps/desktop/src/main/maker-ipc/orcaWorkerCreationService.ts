@@ -27,7 +27,7 @@ export interface OrcaLeadSessionSnapshot {
   model: string;
   effort: string | null;
   permissionMode: string;
-  fastMode: boolean;
+  fastMode: boolean | 'ultrafast';
   providerId: string | null;
   /**
    * lead 的 SSH 远端 host id;非空时 worker 必须继承 (在同一个远端跑),
@@ -63,7 +63,7 @@ export interface OrcaWorkerListSnapshot {
 export interface OrcaWorkerDefaultsSnapshot {
   model?: string | null;
   effort?: string | null;
-  fastMode?: boolean | null;
+  fastMode?: boolean | 'ultrafast' | null;
   providerId?: string | null;
 }
 
@@ -83,6 +83,7 @@ export interface OrcaWorkerProviderSnapshot {
    * 回落拍平清单解析(兼容旧组装方,不整体压灭 Fast)。
    */
   fastModels?: readonly string[];
+  ultrafastModels?: readonly string[];
   /**
    * 该来源下各模型的 effort 元数据。effort 档位同样是 per-(provider, model) 的:
    * 自定义来源追加同 id 模型时不经过基础目录的跨来源一致性校验,efforts /
@@ -198,7 +199,7 @@ export type OrcaWorkerCreationResult =
         agent: AgentKind;
         model: string;
         effort: string | null;
-        fastMode: boolean;
+        fastMode: boolean | 'ultrafast';
         providerId: string | null;
         role: string;
         label: string;
@@ -221,7 +222,7 @@ export interface OrcaWorkerCreateParams {
   label: string;
   model?: string;
   effort?: OrcaWorkerEffort;
-  fast?: boolean;
+  fast?: boolean | 'ultrafast';
   /**
    * 显式选定的模型来源(标准模型选择面板的 per-worker 选择)。string = 显式来源,
    * 走下方精确 preflight 校验「已连接且提供该模型」,不满足即失败,不静默换路由;
@@ -279,7 +280,7 @@ export interface OrcaWorkerCreateInTeamParams extends OrcaWorkerCreateParams {
 export type OrcaWorkerCreationPlanValidator = (
   params: OrcaWorkerCreateInTeamParams,
   resolvedWorkingDir?: string,
-  resolvedRoute?: { model: string; providerId: string | null; effort: string | null; fastMode: boolean },
+  resolvedRoute?: { model: string; providerId: string | null; effort: string | null; fastMode: boolean | 'ultrafast' },
   assertCurrent?: () => Promise<void>,
 ) => Promise<number | null | undefined>;
 
@@ -374,7 +375,7 @@ export interface OrcaWorkerCreationDeps {
     model?: string;
     providerId?: string;
     effort?: string;
-    fast?: boolean;
+    fast?: boolean | 'ultrafast';
     permissionMode: OrcaWorkerPermissionMode;
     workingDir?: string;
     title: string;
@@ -460,7 +461,7 @@ type ResolveWorkerConfigResult =
       ok: true;
       model: string;
       effort: string | null;
-      fastMode: boolean;
+      fastMode: boolean | 'ultrafast';
       providerId: string | null;
       /**
        * 显式 effort 被拍平首见条目拒绝的**暂存**错误:拍平清单(首来源 wins,不含
@@ -659,7 +660,7 @@ function resolveWorkerConfig(params: {
       ? false
       : ((agentConsumesExplicitFast(input.agent) && input.fast !== undefined)
           ? input.fast
-          : (defaults.fastMode ?? !!lead.fastMode)),
+          : (defaults.fastMode ?? (lead.fastMode ?? false))),
   };
 }
 
@@ -1331,8 +1332,16 @@ export function createOrcaWorkerCreationService(deps: OrcaWorkerCreationDeps): O
       const providerSupportsFast = routeProvider.fastModels.includes(resolved.model);
       const requestedFast = agentConsumesExplicitFast(params.agent) && params.fast !== undefined
         ? params.fast
-        : (defaults.fastMode ?? !!lead.fastMode);
-      resolved.fastMode = providerSupportsFast && requestedFast === true;
+        : (defaults.fastMode ?? (lead.fastMode ?? false));
+      resolved.fastMode = providerSupportsFast && requestedFast;
+    }
+    if ((resolved.fastMode === 'ultrafast' || params.fast === 'ultrafast') &&
+        (params.agent !== 'codex' || !routeProvider?.ultrafastModels?.includes(resolved.model))) {
+      if (params.fast === 'ultrafast') {
+        return { ok: false, errorCode: 'INVALID_PARAMS',
+          message: `Ultrafast is unavailable for model "${resolved.model}" on the selected account` };
+      }
+      resolved.fastMode = false;
     }
     // effort 按路由来源自己的条目**重归一定论**:resolveWorkerConfig 按拍平首见
     // 条目归一只是初值(该条目不含连接态、同 id 模型档位表跨来源可分叉),显式

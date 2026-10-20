@@ -10609,6 +10609,12 @@
         "providerGroupRunningOn": "当前在 {{device}} 上运行",
         "providerGroupRunningHere": "当前在这台电脑上运行",
         "providerGroupUnassigned": "开始后由供应商组选一台电脑，用量按那台显示"
+      },
+      "speed": {
+        "label": "速度",
+        "standard": "标准",
+        "fast": "快速",
+        "ultrafast": "超快"
       }
     },
     "permissionSelector": {

@@ -90,3 +90,46 @@ export function decodeSessionTagCatalog(
     return { ...rest, tags: resolved };
   });
 }
+
+// These payloads contain host-owned settings. Never walk messages, tool results or content.
+const speedChannels = /^(?:local-db:(?:sessions|bots):|maker:(?:list-active$|model-favorites:|schedule:|session-model-pref:|session-sync$))/;
+const speedContainers = new Set([
+  'sessions', 'session', 'items', 'value', 'patch', 'state', 'runtime',
+  'runtimeBaseline', 'runtimeEffective', 'pendingMutation', 'profile',
+  'effectiveProfile', 'baseline', 'modelChain', 'modelOverride', 'favorites',
+]);
+
+/** Additive wire projection: old clients keep a boolean, new clients restore the exact tier. */
+export function encodeModelSpeedPayload(channel: string | undefined, value: unknown): unknown {
+  return channel && speedChannels.test(channel) ? mapModelSpeed(value, false) : value;
+}
+export function decodeModelSpeedPayload(channel: string | undefined, value: unknown): unknown {
+  return channel && speedChannels.test(channel) ? mapModelSpeed(value, true) : value;
+}
+function mapModelSpeed(value: unknown, decode: boolean, depth = 0): unknown {
+  if (depth > 16) return value;
+  if (Array.isArray(value)) {
+    const next = value.map(item => mapModelSpeed(item, decode, depth + 1));
+    return next.some((item, i) => item !== value[i]) ? next : value;
+  }
+  if (!record(value)) return value;
+  let next = value;
+  const write = (key: string, field: unknown) => {
+    if (next === value) next = { ...value };
+    next[key] = field;
+  };
+  for (const key of ['fastMode', 'fast'] as const) {
+    const tier = `${key}Tier`;
+    if (decode ? value[key] === true && value[tier] === 'ultrafast' : value[key] === 'ultrafast') {
+      write(key, decode ? 'ultrafast' : true);
+      if (decode) delete next[tier];
+      else write(tier, 'ultrafast');
+    }
+  }
+  for (const key of speedContainers) {
+    if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
+    const child = mapModelSpeed(value[key], decode, depth + 1);
+    if (child !== value[key]) write(key, child);
+  }
+  return next;
+}

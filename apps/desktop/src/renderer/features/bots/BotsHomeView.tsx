@@ -317,7 +317,7 @@ export function BotSettings({
       ...current,
       [key]: value,
       ...(key === 'fastMode' && current.modelOverride
-        ? { modelOverride: { ...current.modelOverride, fastMode: value === true } }
+        ? { modelOverride: { ...current.modelOverride, fastMode: value === 'ultrafast' ? 'ultrafast' : value === true } }
         : {}),
     }));
     autosave.onEdit('instant');

@@ -68,7 +68,7 @@ export interface UnifiedRowActionsOptions {
    * 收藏 live 判定必须拿它和副本比:composer / 另一窗口只改了 Fast 时,uid 还在,
    * 但副本已经不是正在跑的配置。缺省按关(与行配置合成一致)。
    */
-  liveFast?: boolean | undefined;
+  liveFast?: boolean | 'ultrafast' | undefined;
   modelMemory?: ModelMemoryAccessors | undefined;
   /**
    * live 选中行改深度。返回值 = **这次写入真的落下去了没有**(`false` / 抛错 = 没落;
@@ -78,7 +78,7 @@ export interface UnifiedRowActionsOptions {
   onEffortChangeLive?: ((effort: Effort) => void | boolean | Promise<void | boolean>) | undefined;
   /** live 选中行改 Fast。返回值语义同 `onEffortChangeLive`。 */
   onFastModeChangeLive?:
-    ((enabled: boolean) => void | boolean | Promise<void | boolean>) | undefined;
+    ((enabled: boolean | 'ultrafast') => void | boolean | Promise<void | boolean>) | undefined;
   onSelect: (
     providerId: string,
     modelId: string,
@@ -124,7 +124,7 @@ export interface UnifiedRowActionsOptions {
            * 时事务必须原样应用 —— 收藏副本的 Fast 与目标引擎记忆值不同、或恢复推荐要
            * 明确关 Fast 时,重解析会让界面配置与运行态分离。
            */
-          fast?: boolean;
+          fast?: boolean | 'ultrafast';
           /** 这次选中的收藏锚点(选普通模型行 / 非「选中一行」的动作为 null)。 */
           favoriteUid?: string | null;
         }) => void | boolean | Promise<void | boolean>;
@@ -168,7 +168,7 @@ export interface UnifiedRowActionsOptions {
 export interface UnifiedOptimisticConfig {
   anchorKey: string;
   effort?: Effort;
-  fast?: boolean;
+  fast?: boolean | 'ultrafast';
 }
 
 /**
@@ -194,7 +194,7 @@ export function withOptimisticConfig(
     fast,
     customized:
       config.customized ||
-      fast ||
+      !!fast ||
       (effort !== null && defaultEffort != null && effort !== defaultEffort),
   };
 }
@@ -221,7 +221,7 @@ export interface UnifiedRowActions {
     anchor: UnifiedAnchor,
     entry: UnifiedModelEntry,
     config: UnifiedRowConfig,
-    enabled: boolean,
+    enabled: boolean | 'ultrafast',
   ) => ActionResult;
   resetToRecommended: (
     anchor: UnifiedAnchor,
@@ -537,7 +537,7 @@ export function useUnifiedRowActions(options: UnifiedRowActionsOptions): Unified
      * 收藏 Fast 与记忆值不同、或恢复推荐要明确关 Fast 时,存储清了 / 收藏落了,任务却
      * 还带着记忆里的旧 Fast 在跑 —— 界面配置与运行态分离。
      */
-    fast: boolean;
+    fast: boolean | 'ultrafast';
     /**
      * 事务成功后会话该把哪条收藏记成「当前选中」。**必填、不给默认值**(2026-08-17 review
      * 第四轮 K3):三个调用点的语义正好相反 —— 编辑选中收藏的引擎要**保住**这条锚点
@@ -734,7 +734,7 @@ export function useUnifiedRowActions(options: UnifiedRowActionsOptions): Unified
               modelId: anchor.modelId,
               agent: engine,
               ...(config.effort ? { effort: config.effort } : {}),
-              ...(config.fast ? { fast: true as const } : {}),
+              ...(config.fast ? { fast: config.fast } : {}),
             })
           : undefined;
       // 改的不是当前选中的那条收藏(或引擎没变 / 没注入解析器)→ 它只描述「下次选它用什么」,
@@ -1042,7 +1042,7 @@ export function useUnifiedRowActions(options: UnifiedRowActionsOptions): Unified
       modelId: anchor.modelId,
       agent: config.engine,
       ...(config.effort ? { effort: config.effort } : {}),
-      ...(config.fast ? { fast: true as const } : {}),
+      ...(config.fast ? { fast: config.fast } : {}),
     });
     if (result) return result.then(() => { onFavoriteFlash(anchorKey(anchor)); });
     onFavoriteFlash(anchorKey(anchor));

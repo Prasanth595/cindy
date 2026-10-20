@@ -4375,7 +4375,7 @@ function CCAgentSessionContent({
                 effort: retryEffort,
                 fastMode,
                 confirmedContextWindow,
-              } as { effort: string; fastMode: boolean })
+              } as { effort: string; fastMode: boolean | 'ultrafast' })
             : undefined,
         ),
       confirm: ({ contextWindow, contextTokens }) =>

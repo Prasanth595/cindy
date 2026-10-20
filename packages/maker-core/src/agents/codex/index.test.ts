@@ -7131,6 +7131,20 @@ describe('CodexAgent.startSession developerInstructions', () => {
 });
 
 describe('CodexAgent fast mode service tier', () => {
+  it('sends saved Ultrafast on both thread creation and the first turn', async () => {
+    const agent = new CodexAgent(createDeps());
+    const host = installFakeHost(agent);
+    const handle = await agent.startSession({ sessionId: 'ultrafast-saved', model: 'gpt-6-astra',
+      workingDir: '/repo', fastMode: 'ultrafast' });
+    expect(host.request.mock.calls.find(([method]) => method === Method.ThreadStart)?.[1])
+      .toMatchObject({ serviceTier: 'ultrafast' });
+    await handle.send({ type: 'user', content: 'hello' });
+    expect(host.request.mock.calls.find(([method]) => method === Method.TurnStart)?.[1])
+      .toMatchObject({ serviceTier: 'ultrafast' });
+    expect(handle.getFastMode?.()).toBe('ultrafast');
+    await handle.close();
+  });
+
   it.each(['standard', 'priority'] as const)('prices the actual proxy execution (%s) without clearing Fast', async priceVariant => {
     const agent = new CodexAgent(createDeps());
     const host = installFakeHost(agent, method => method === Method.TurnStart ? { turn: { id: 'turn-1' } } : undefined);
@@ -7158,7 +7172,7 @@ describe('CodexAgent fast mode service tier', () => {
   });
 
 
-  it('normalizes app-server priority service tier from thread/start as fast mode', async () => {
+  it.each(['priority', 'ultrafast'] as const)('preserves app-server %s service tier from thread/start through turn/start', async (tier) => {
     const agent = new CodexAgent(createDeps());
     const host = installFakeHost(agent, (method) => {
       if (method === Method.ThreadStart) {
@@ -7167,7 +7181,7 @@ describe('CodexAgent fast mode service tier', () => {
           model: 'gpt-5.4',
           modelProvider: 'openai',
           cwd: '/repo',
-          serviceTier: 'priority',
+          serviceTier: tier,
         };
       }
       return undefined;
@@ -7178,14 +7192,14 @@ describe('CodexAgent fast mode service tier', () => {
       workingDir: '/repo',
     });
 
-    expect(handle.getFastMode?.()).toBe(true);
+    expect(handle.getFastMode?.()).toBe(tier === 'ultrafast' ? 'ultrafast' : true);
 
     await handle.send({ type: 'user', content: 'hello' });
 
     const turnStartParams = host.request.mock.calls.find(([method]) => method === Method.TurnStart)?.[1] as
       | { serviceTier?: unknown }
       | undefined;
-    expect(turnStartParams?.serviceTier).toBe('fast');
+    expect(turnStartParams?.serviceTier).toBe(tier === 'ultrafast' ? 'ultrafast' : 'fast');
     await handle.close();
   });
 
@@ -7358,10 +7372,14 @@ describe('CodexAgent thread/settings/update channel', () => {
     expect(settingsCalls(host)).toHaveLength(0);
 
     await handle.setFastMode?.(true);
+    // Ultrafast must remain a distinct tier through live settings and getters.
+    await handle.setFastMode?.('ultrafast');
+    expect(handle.getFastMode?.()).toBe('ultrafast');
     await handle.setFastMode?.(false);
 
     expect(settingsCalls(host)).toEqual([
       { threadId: 'start-thread-id', serviceTier: 'fast' },
+      { threadId: 'start-thread-id', serviceTier: 'ultrafast' },
       { threadId: 'start-thread-id', serviceTier: null },
     ]);
     await handle.close();

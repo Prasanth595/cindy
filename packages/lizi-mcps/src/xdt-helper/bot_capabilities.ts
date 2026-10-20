@@ -19,7 +19,7 @@ export interface BotCapabilityCallbacks {
     name?: string;
     description?: string;
     identitySource?: string;
-    modelChain?: { id: string; effort?: string; fastMode?: boolean }[] | null;
+    modelChain?: { id: string; effort?: string; fastMode?: boolean | 'ultrafast' }[] | null;
   }): Promise<ControlResult<{ effective: "next-turn" }, string>>;
   list(params: {
     callerSessionId: string;
@@ -51,7 +51,7 @@ export interface BotCapabilityCallbacks {
 
 export interface AppDefaultModelRoute {
   harness: 'claude' | 'codex' | 'pi'; providerId: string | null;
-  model: string; effort: string; fastMode: boolean;
+  model: string; effort: string; fastMode: boolean | 'ultrafast';
 }
 
 export interface BotControlState {
@@ -160,7 +160,7 @@ export function registerBotCapabilityTools(
       modelChain: z.array(z.strictObject({
         id: z.string().min(1).max(2048).describe('Enabled route id from get_app_default_model.'),
         effort: z.string().max(64).optional(),
-        fastMode: z.boolean().optional(),
+        fastMode: z.union([z.boolean(), z.literal('ultrafast')]).optional(),
       })).min(1).max(5).nullable().optional().describe('Complete model chain for this teammate; null removes its override and follows the application default.'),
     },
     handler: async (input) => {

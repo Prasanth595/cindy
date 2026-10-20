@@ -1,3 +1,4 @@
+import { ModelSpeedIcon } from '@/session/ModelSpeedIcon';
 import { useNewSessionHostDefaults } from '@/session/useNewSessionHostDefaults';
 import { ErrorNotice } from '@/components/ErrorNotice';
 import { useNewSessionDefaultSelection } from '@/session/useNewSessionDefaultSelection';
@@ -4042,7 +4043,7 @@ export default function NewRemoteSessionScreen() {
           ) : null}
           <Text style={styles.modelPillText} numberOfLines={1}>{pillModelSummary}</Text>
           {(remoteAgentPick ? remoteAgentPick.fastMode : triggerFastOn)
-            ? <Zap color={colors.textTertiary} size={iconSize.sm} strokeWidth={iconStroke.regular} />
+            ? <ModelSpeedIcon mode={(remoteAgentPick ? remoteAgentPick.fastMode : draft.fastMode) ?? false} color={colors.textTertiary} size={iconSize.sm} />
             : null}
           <ChevronDown color={colors.textTertiary} size={iconSize.sm} strokeWidth={iconStroke.regular} />
         </Pressable>
@@ -7022,7 +7023,7 @@ export default function NewRemoteSessionScreen() {
           providersReady={collabDeviceProviders.ready}
           providersUnsupported={collabDeviceProviders.unsupported}
           selectedEffort={collabForm.form.model?.effort ?? ''}
-          selectedFastMode={!!collabForm.form.model?.fast}
+          selectedFastMode={collabForm.form.model?.fast ?? false}
           selectedProviderId={collabForm.form.model?.providerId ?? null}
           testID="newSession.collabModelSheet"
           visible={collabForm.modelPicker.open}

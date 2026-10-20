@@ -110,7 +110,7 @@ export function validPluginTaskRequest(value: unknown): value is PluginTaskReque
       !text(r.providerId, 128) ||
       !text(r.model, 256) ||
       (typeof r.effort !== 'string' || r.effort.length > 32) ||
-      typeof r.fastMode !== 'boolean'
+      (typeof r.fastMode !== 'boolean' && r.fastMode !== 'ultrafast')
     )
       return false;
   }

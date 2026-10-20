@@ -76,7 +76,7 @@ export interface CollabWorkerConfig {
   role: string;
   model: string;
   effort?: Effort;
-  fast?: boolean;
+  fast?: boolean | 'ultrafast';
   /** 显式选定的模型来源;null/缺省 = 未显式(main 侧按默认路由解析)。 */
   providerId?: string | null;
   /** 首条派工任务。一次性,故意不跨重启持久化(sanitize 加载时丢弃,见下方解析)。 */
@@ -149,7 +149,7 @@ export interface NewMakerDraft {
    * New Maker 的 Fast Mode 记忆,按模型分开。
    * 缺省 false;实际是否可用还要由 UI 结合 capabilities 判定。
    */
-  fastModeByModel: Record<string, boolean>;
+  fastModeByModel: Record<string, boolean | 'ultrafast'>;
   /**
    * 每个 modelId 上一次显式选过的 effort,跨 ChatInput 实例 / 跨 New Maker
    * 创建持久化。场景:在 Opus 4.7 选了 high → 切到 Haiku (强制落到 low) →
@@ -307,7 +307,7 @@ function sanitize(raw: unknown): NewMakerDraft {
   const fastModeByModel = Object.fromEntries(
     Object.entries(fastModeByModelRaw)
       .filter(([modelId]) => modelId.length > 0)
-      .map(([modelId, enabled]) => [modelId, enabled === true]),
+      .map(([modelId, enabled]) => [modelId, enabled === 'ultrafast' ? 'ultrafast' as const : enabled === true]),
   );
   // effortByModel: 接受任何 string 值 (Effort 枚举校验交给消费方按当前模型 capabilities 过滤)。
   // 老版本 localStorage 没有这个字段 → 空对象兜底。
@@ -350,7 +350,7 @@ function sanitize(raw: unknown): NewMakerDraft {
       role,
       model,
       effort: typeof wc.effort === 'string' ? (wc.effort as Effort) : undefined,
-      fast: typeof wc.fast === 'boolean' ? wc.fast : undefined,
+      fast: (typeof wc.fast === 'boolean' || wc.fast === 'ultrafast') ? wc.fast : undefined,
       // 来源与模型是同一次选择的两个维度,随 model 一起耐久保留;与 role 同样 trim,
       // 空白串回落未显式 —— IPC 侧把非空 string 当显式来源,漏 trim 会把无效 id
       // 一路带到 PROVIDER_ROUTE_UNAVAILABLE(copilot review)。
@@ -964,7 +964,7 @@ export function applyAppDefaultModelSelection(selection: AppDefaultModelSelectio
   const current: BotModelRoute | null = prefs.model ? {
     harness: base.vendor === 'cc' || base.vendor === 'orca' ? 'claude' : base.vendor,
     model: prefs.model, providerId: prefs.providerId ?? null, effort: prefs.effort ?? '',
-    fastMode: base.fastModeByModel[prefs.model] === true,
+    fastMode: (base.fastModeByModel[prefs.model] ?? false),
   } : null;
   if (!sameModelRoute(current, selection.expectedRoute) && !sameModelRoute(current, selection.route)) return false;
   const route = selection.route;
@@ -1200,12 +1200,12 @@ export function setEffortForModel(modelId: string, effort: Effort): void {
   emit();
 }
 
-export function getFastModeForModel(modelId: string | null | undefined): boolean {
+export function getFastModeForModel(modelId: string | null | undefined): boolean | 'ultrafast' {
   if (!modelId) return false;
-  return currentDraft.fastModeByModel[modelId] === true;
+  return (currentDraft.fastModeByModel[modelId] ?? false);
 }
 
-export function setFastModeForModel(modelId: string, enabled: boolean): void {
+export function setFastModeForModel(modelId: string, enabled: boolean | 'ultrafast'): void {
   if (!modelId) return;
   rebaseStoredDefaultTuplePreference();
   currentDraft = {

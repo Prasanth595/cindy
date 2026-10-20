@@ -69,7 +69,7 @@ export interface CreateWorkerDeps {
     model?: string;
     providerId?: string;
     effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
-    fast?: boolean;
+    fast?: boolean | 'ultrafast';
     label: string;
     workingDir?: string;
     executionDeviceId?: string;
@@ -105,7 +105,7 @@ export const createWorkerSpecSchema = z.object({
     .optional()
     .describe('可选, reasoning/thinking 强度。Codex GPT worker 支持 low/medium/high/xhigh，部分模型(如 GPT-5.6 Sol)还支持 max/ultra；Claude 支持到 max。显式传入时必须匹配所选 model 能力；当前 worker 模型都不把 minimal 作为可选档。'),
   fast: z
-    .boolean()
+    .union([z.boolean(), z.literal('ultrafast')])
     .optional()
     .describe('可选, 是否给 worker 开启 Fast 模式。对 codex 与 pi worker 生效(且需所选模型支持 Fast); claude-code 忽略。不传则继承默认。'),
   label: z
@@ -152,7 +152,7 @@ const DESCRIPTION = [
   '- model: 可选, worker 使用的模型 id; 不传走 host 端默认 fallback',
   '- provider_id: 可选, 模型来源 provider id。优先使用 list_available_models 对应模型返回的 provider_id；显式传入后 host 会严格校验该来源已连接且提供所选模型。',
   '- effort: 可选, reasoning/thinking 强度 (low / medium / high / xhigh / max / ultra)。Codex: 映射 OpenAI reasoning effort(max/ultra 仅部分模型如 GPT-5.6 Sol 支持); Claude Code: 映射 extended thinking token 预算(无 ultra,自动降级为 max)。显式传入时必须匹配所选 model 能力；当前 worker 模型都不把 minimal 作为可选思考档。',
-  '- fast: 可选 boolean, 是否给 worker 开启 Fast 模式 (更快输出)。用户明确说「fast / 快速 / 开/关 fast」时显式传。对 codex 与 pi worker 生效 (且需所选模型声明 supportsFastMode; 否则自动降级为关); claude-code worker 忽略此参数 (其 fast mode 在 agent 层为 no-op)。不传则继承默认 (New Maker 面板默认或 lead session 的 fastMode)。',
+  '- fast: 可选 boolean 或 "ultrafast"（仅支持该档位的 Codex 模型）, 是否给 worker 开启 Fast 模式 (更快输出)。用户明确说「fast / 快速 / 开/关 fast」时显式传。对 codex 与 pi worker 生效 (且需所选模型声明 supportsFastMode; 否则自动降级为关); claude-code worker 忽略此参数 (其 fast mode 在 agent 层为 no-op)。不传则继承默认 (New Maker 面板默认或 lead session 的 fastMode)。',
   '- label: worker 短标识, 1-32 chars, 只能含字母、数字、-、_, 同 workflow 内唯一, 用于 switch_focus 定位',
   '- working_dir: 可选，Worker 所在主机上已存在的绝对目录；创建前校验并绑定，省略继承 Lead，失败不回退。不创建目录或 Git worktree。指定 execution_device_id 时是那台电脑上的目录，省略由那台分配。',
   '- execution_device_id: 可选，运行设备(同账号另一台电脑)的 device_id，只能取 get_workspace_info 的 execution_devices 里 supported=true 的值；指定后 Worker 的任务、目录、命令与文件都在那台电脑，结果仍自动回报给你。用户没有要求放到别的电脑时不要传。',

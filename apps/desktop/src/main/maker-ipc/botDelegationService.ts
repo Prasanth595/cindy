@@ -2384,7 +2384,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
       workingDir: string;
       model: string;
       effort?: string;
-      fastMode?: boolean;
+      fastMode?: boolean | 'ultrafast';
       providerId?: string | null;
       agentDeviceId?: string | null;
       agentKind: 'cc' | 'codex' | 'pi';
@@ -2750,7 +2750,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
         ...(taskRuntime.agentDeviceId ? { agentDeviceId: taskRuntime.agentDeviceId } : {}),
         providerId: taskRuntime.providerId ?? null,
         effort: taskRuntime.effort ?? '',
-        fastMode: Boolean(taskRuntime.fastMode),
+        fastMode: taskRuntime.fastMode ?? false,
       },
     };
   };

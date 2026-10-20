@@ -2972,6 +2972,26 @@ describe('buildNoProviderMessage', () => {
     });
   });
 
+  // Protocol/admission regression: Fast access alone must not grant the distinct Ultrafast tier.
+  it.each([true, false])('admits explicit Ultrafast only with selected account access (%s)', async (allowed) => {
+    const { service, deps } = createDeps({
+      getProviderRoutingContext: vi.fn(async () => providerRoutingContext({
+        'claude-code': [],
+        codex: [{ id: 'openai', name: 'OpenAI', models: ['gpt-5.5'],
+          fastModels: ['gpt-5.5'], ultrafastModels: allowed ? ['gpt-5.5'] : [] }],
+      })),
+    });
+    const result = await service.createWorker({
+      leadSessionId: 'lead-1', role: 'reviewer', agent: 'codex', label: 'reviewer',
+      model: 'gpt-5.5', providerId: 'openai', fast: 'ultrafast',
+    });
+    expect(result).toMatchObject(allowed
+      ? { ok: true, resolved: { fastMode: 'ultrafast' } }
+      : { ok: false, errorCode: 'INVALID_PARAMS' });
+    if (allowed) expect(deps.buildCreateOptsWithStderr).toHaveBeenCalledWith(expect.objectContaining({ fastMode: 'ultrafast' }));
+    else expect(deps.buildCreateOptsWithStderr).not.toHaveBeenCalled();
+  });
+
   it('resolves Fast from the explicit provider catalog entry, not the flattened union', async () => {
     // gpt-5.5 在 xd(拍平清单首来源,不支持 Fast)与 openai(支持)都有:显式选 openai
     // 时 Fast 必须按 openai 自己的条目放行,不被拍平首来源误杀;反向显式选 xd 时压掉。

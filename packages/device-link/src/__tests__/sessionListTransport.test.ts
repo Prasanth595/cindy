@@ -1,6 +1,8 @@
 import { expect, it } from "vitest";
 import {
   requestSessionTagCatalog,
+  encodeModelSpeedPayload,
+  decodeModelSpeedPayload,
   encodeSessionTagCatalog,
   decodeSessionTagCatalog,
 } from "../sessionListTransport.js";
@@ -69,4 +71,24 @@ it("rejects broken references instead of silently losing labels", () => {
   expect(() =>
     decodeSessionTagCatalog(channel, { format: "unknown" }),
   ).toThrow();
+});
+
+// Compatibility tier: legacy clients validate fastMode as a boolean. Content is never rewritten.
+it("projects Ultrafast as an additive setting and restores it for new clients", () => {
+  const rows = [{ id: 's1', fastMode: 'ultrafast', runtimeEffective: { fastMode: 'ultrafast' },
+    messages: [{ content: { fastMode: 'ultrafast' } }] }, { id: 's2', fastMode: false }];
+  const wire = encodeModelSpeedPayload(channel, rows);
+  expect(wire).toEqual([{ ...rows[0], fastMode: true, fastModeTier: 'ultrafast',
+    runtimeEffective: { fastMode: true, fastModeTier: 'ultrafast' } }, rows[1]]);
+  expect(decodeModelSpeedPayload(channel, wire)).toEqual(rows);
+  expect(rows[0].fastMode).toBe('ultrafast');
+  expect(encodeModelSpeedPayload('local-db:messages:list', rows)).toBe(rows);
+  expect(decodeModelSpeedPayload(channel, [{ fastMode: false, fastModeTier: 'ultrafast' }]))
+    .toEqual([{ fastMode: false, fastModeTier: 'ultrafast' }]);
+  const push = { sessionId: 's1', patch: { fastMode: 'ultrafast' } };
+  expect(decodeModelSpeedPayload('local-db:sessions:patched', encodeModelSpeedPayload('local-db:sessions:patched', push)))
+    .toEqual(push);
+  const favorite = [{ uid: 'f', fast: 'ultrafast' }];
+  expect(decodeModelSpeedPayload('maker:model-favorites:get', encodeModelSpeedPayload('maker:model-favorites:get', favorite)))
+    .toEqual(favorite);
 });

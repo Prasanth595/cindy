@@ -621,7 +621,7 @@ export function useOrcaWorkerForm(params: {
         id: config.modelId,
         providerId: config.providerId || null,
         effort: config.effort || null,
-        fast: !!config.fast,
+        fast: config.fast ?? false,
       },
       // 选择器列出远程供应商时，行带着它所属的电脑(null = 任务所在电脑)：Worker 的 Agent 跟着换过去。
       ...(source !== undefined && agentLocationSelectableRef.current

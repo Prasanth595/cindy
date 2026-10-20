@@ -99,7 +99,7 @@ export interface SessionControlServiceDeps {
       model?: string;
       providerId?: string | null;
       effort?: Effort | null;
-      fastMode?: boolean;
+      fastMode?: boolean | 'ultrafast';
     };
   }): Promise<SessionRuntimeSetResult>;
   assertExternalInputAllowed(sessionId: string): Promise<void>;
@@ -343,7 +343,7 @@ export function createSessionControlService(deps: SessionControlServiceDeps) {
         model?: string;
         providerId?: string | null;
         effort?: Effort | null;
-        fastMode?: boolean;
+        fastMode?: boolean | 'ultrafast';
       };
     }): Promise<SessionRuntimeSetResult> {
       const missing = await ensureTarget(params.targetSessionId);

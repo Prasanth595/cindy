@@ -1081,8 +1081,8 @@ export function ModelEffortChip({
   /** 0 个 / 引导连接来源时跳设置→供应商页;不传则来源轨不显示「连接」入口。 */
   onNavigateToProviders?: () => void;
   /** Fast 模式状态 + 回调(与聊天一致,收进模型选择器 Edit 配置列)。绑定任务同样保存，下一次触发时应用。 */
-  fastMode?: boolean;
-  onChangeFast?: (v: boolean) => void;
+  fastMode?: boolean | 'ultrafast';
+  onChangeFast?: (v: boolean | 'ultrafast') => void;
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);

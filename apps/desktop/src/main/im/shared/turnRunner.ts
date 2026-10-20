@@ -1963,7 +1963,7 @@ export function createTurnRunner(
       const agentKind = toCoreAgentKind(row.agentKind);
       hydrateSessionProvider(sessionId, row.providerId ?? null);
       if (row.effort) setSessionEffort(sessionId, row.effort);
-      setSessionFastMode(sessionId, !!row.fastMode);
+      setSessionFastMode(sessionId, (row.fastMode ?? false));
       current = await maker.createSession({
         id: sessionId,
         agentKind,
@@ -2216,7 +2216,7 @@ export function createTurnRunner(
     // bridge 会话态(effort / fast)同点 hydrate —— chatgpt/ / xai/ 模型经 IM 触发 turn 时,
     // compat-proxy 路由决策从这两个 store 读出闭包进订阅 handler(与 register.ts bootstrapSession 对齐)。
     if (row.effort) setSessionEffort(row.id, row.effort);
-    setSessionFastMode(row.id, !!row.fastMode);
+    setSessionFastMode(row.id, (row.fastMode ?? false));
     // 接管路径: 必须传 resumeSessionId 让 Claude SDK 用 desktop 留下的 sdkSessionId
     // resume, 否则 maker.activeSessions 没该 row.id 时会 spawn 全新空会话——oneshot
     // "总结当前状态" 就变成总结空会话, agent 输出短促/无内容; 用户看到渠道卡片

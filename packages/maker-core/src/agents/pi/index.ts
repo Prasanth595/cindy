@@ -7981,8 +7981,9 @@ export class PiAgent extends BaseAgent {
         return run;
       },
 
-      async setFastMode(enabled: boolean): Promise<void> {
+      async setFastMode(enabled: boolean | 'ultrafast'): Promise<void> {
         if (reviewMode) return;
+        if (enabled === 'ultrafast') throw new Error('Ultrafast requires the Codex runtime');
         updateRequestPrefs(enabled);
       },
 

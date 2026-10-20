@@ -26,7 +26,7 @@ export interface OrcaEnableTeamParams {
   label?: string;
   model?: string;
   effort?: OrcaWorkerEffort;
-  fast?: boolean;
+  fast?: boolean | 'ultrafast';
   /** 显式选定的模型来源;语义见 OrcaWorkerCreateParams.providerId。 */
   providerId?: string | null;
   delegateTask?: string;

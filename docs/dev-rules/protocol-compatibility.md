@@ -2731,3 +2731,19 @@ still use the same host-owned mail workflow as the chat card.
 都按当时的分类执行。不改 relay 帧、服务端 schema 或 Mobile 原生指纹。
 
 Cindy AI 设置卡片保留可选读取返回的 `unlimited` 状态，显示“未设置个人限额”；它不代表部门或企业没有限制。`invalidated` 清除该状态，有限额快照覆盖该状态，切换账号不复用上一账号结果。旧 `null` push 无法区分失效与不限额，本地卡片收到后通过既有可选读取核对；同一账号的多个组件共享在途读取，收到读取自身的广播时复用该请求，避免多窗口之间反复触发刷新。主进程跨窗口共享在途读取，已知不限额参与既有节流，重复不限额结果不重复广播。IPC payload 与远程消费者保持兼容。
+
+## Codex 超快速度
+
+客户端内部沿用 `fastMode`：`false` 为标准、`true` 为快速、`"ultrafast"` 为超快。
+SQLite 的原有 `fast_mode` 列保留 0/1，新增值 2；Drizzle 与原始 SQL 写入共用映射，
+不修改历史 migration。旧客户端读到 2 时回落标准，不破坏已有 0/1 数据。
+
+远程任务／自动化／收藏读模型与设置推送保持旧布尔字段，超快另外携带
+`fastModeTier: "ultrafast"`（收藏为 `fastTier`）。新客户端在传输入口恢复内部速度值，
+旧客户端继续读取快速开关；消息正文与工具输出不做转换。写操作仍由 Host 按当前账号、
+模型及执行引擎校验。新版连接旧 Host 时没有 `supportsUltrafastMode`，不显示超快选项。
+新建超快收藏在旧端可读，但旧端无法精确编辑该档位；冲突检查保留 Host 原配置。
+
+`supportsUltrafastMode` 只来自账号的 Codex `model/list` 或缓存的 `service_tiers`，
+不能按模型 ID 或全局 registry 推断资格。完整的超快配置需要执行端与查看端都支持本功能。
+没有服务端、原生 Mobile 配置或模型内核版本变更。

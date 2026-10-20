@@ -18,7 +18,7 @@ export function configureAppDefaultModelSelection(dispatch: typeof dispatchSelec
 export function availableAppDefaultModels(input: {
   providers: readonly ProviderView[];
   currentRoute?: BotModelRoute | null;
-  tuning?: (agent: 'claude-code' | 'codex' | 'pi', providerId: string, model: string) => { effort?: string; fastMode?: boolean };
+  tuning?: (agent: 'claude-code' | 'codex' | 'pi', providerId: string, model: string) => { effort?: string; fastMode?: boolean | 'ultrafast' };
   availableAgents: ReadonlySet<'cc' | 'codex' | 'pi'>;
   enabled: NonNullable<Parameters<typeof defaultBotModelChain>[0]['isModelEnabled']>;
 }) {
@@ -45,7 +45,8 @@ export function availableAppDefaultModels(input: {
         availableAgents: input.availableAgents, availableAgentsLoaded: true,
         preferredRoute: route, isModelEnabled: input.enabled });
       return valid.length ? [{ id: JSON.stringify([route.harness, route.providerId, route.model]),
-        route, efforts: model.efforts, supportsFastMode: model.supportsFastMode === true }] : [];
+        route, efforts: model.efforts, supportsFastMode: model.supportsFastMode === true,
+        supportsUltrafastMode: agent === 'codex' && model.supportsUltrafastMode === true }] : [];
     }),
   ));
 }
@@ -77,7 +78,7 @@ export async function inspectAppDefaultModel() {
 export interface TaskModelSelection {
   id: string;
   effort?: string;
-  fastMode?: boolean;
+  fastMode?: boolean | 'ultrafast';
 }
 
 /** Resolve one per-task selection from the live catalog; never mutate picker/default preferences. */
@@ -88,7 +89,7 @@ export async function resolveTaskModelSelection(selection: TaskModelSelection): 
   if (selection.effort !== undefined && !option.efforts.some(effort => effort === selection.effort)) {
     throw new Error('任务模型不支持所选思考深度，请重新选择');
   }
-  if (selection.fastMode === true && !option.supportsFastMode) {
+  if (selection.fastMode && (!option.supportsFastMode || (selection.fastMode === 'ultrafast' && !option.supportsUltrafastMode))) {
     throw new Error('任务模型不支持 Fast，请重新选择');
   }
   return { ...option.route,

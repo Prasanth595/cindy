@@ -17,7 +17,7 @@ export interface SessionRuntimeProfile {
   model: string;
   providerId: string | null;
   effort: Effort | null;
-  fastMode: boolean;
+  fastMode: boolean | 'ultrafast';
 }
 
 export interface PendingSessionRuntimeMutation {
@@ -421,12 +421,12 @@ export function resolveCompatibleSessionRuntimeEffort(
 export function resolveSessionRuntimeAxes(params: {
   model: CatalogModel;
   effort: Effort | null;
-  fastMode: boolean;
+  fastMode: boolean | 'ultrafast';
   effortExplicit: boolean;
   fastExplicit: boolean;
   allowFixedEffortPlaceholder?: boolean;
 }):
-  | { ok: true; effort: Effort | null; fastMode: boolean }
+  | { ok: true; effort: Effort | null; fastMode: boolean | 'ultrafast' }
   | { ok: false; reason: 'effort-unavailable' | 'fast-unavailable' } {
   if (
     params.effortExplicit &&
@@ -439,13 +439,13 @@ export function resolveSessionRuntimeAxes(params: {
   ) {
     return { ok: false, reason: 'effort-unavailable' };
   }
-  if (params.fastExplicit && params.fastMode && params.model.supportsFastMode !== true) {
+  if (params.fastExplicit && params.fastMode && (params.model.supportsFastMode !== true || (params.fastMode === 'ultrafast' && params.model.supportsUltrafastMode !== true))) {
     return { ok: false, reason: 'fast-unavailable' };
   }
   return {
     ok: true,
     effort: resolveCompatibleSessionRuntimeEffort(params.model, params.effort),
-    fastMode: params.fastMode && params.model.supportsFastMode === true,
+    fastMode: params.model.supportsFastMode === true && (params.fastMode !== 'ultrafast' || params.model.supportsUltrafastMode === true) ? params.fastMode : false,
   };
 }
 

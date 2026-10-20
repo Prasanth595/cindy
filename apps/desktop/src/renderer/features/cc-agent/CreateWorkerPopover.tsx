@@ -78,7 +78,7 @@ export interface CreateWorkerForm {
   agent: 'claude-code' | 'codex' | 'pi';
   model: string;
   effort?: Effort;
-  fast?: boolean;
+  fast?: boolean | 'ultrafast';
   /** 显式选定的模型来源;null = 未显式,由 main 侧按默认路由解析。 */
   providerId: string | null;
   initialTask: string;
@@ -576,7 +576,7 @@ export function CreateWorkerPopover({
   // 主动从模型级全局预设恢复(codex review:否则用户在非选中行 hover 配置的
   // effort/Fast 在选中该行后被丢弃);Fast 还要叠加该来源条目的 per-provider 能力。
   const handleProviderChange = useCallback(
-    (providerId: string | null, modelId?: string, reconciledEffort?: Effort, reconciledFast?: boolean) => {
+    (providerId: string | null, modelId?: string, reconciledEffort?: Effort, reconciledFast?: boolean | 'ultrafast') => {
       modelSelectionChosenRef.current = true;
       restoredModelSelectionRef.current = false;
       const nextModel = modelId ?? model;
@@ -699,7 +699,7 @@ export function CreateWorkerPopover({
     [activeMemorySourceId, agent, model, modelMemory],
   );
   const updateFast = useCallback(
-    (enabled: boolean) => {
+    (enabled: boolean | 'ultrafast') => {
       setFast(enabled);
       if (modelMemory && activeMemorySourceId && model) {
         modelMemory.setFast(agent, activeMemorySourceId, model, enabled);
@@ -1010,7 +1010,7 @@ export function CreateWorkerPopover({
                 外置 FastModeToggle,不能删。 */}
             <div className="flex min-w-0 items-center gap-2">
               {deviceId && remoteProviders.unsupported && currentModelSupportsFast && (
-                <FastModeToggle enabled={fast} onToggle={() => setFast((v) => !v)} />
+                <FastModeToggle enabled={!!fast} onToggle={() => setFast((v) => !v)} />
               )}
               <ModelSelector
                 fastModeConfigurable={['codex', 'pi']}

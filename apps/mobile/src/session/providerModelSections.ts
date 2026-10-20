@@ -191,7 +191,7 @@ export interface RowSelectionResult {
   model: string;
   providerId: string;
   effort: string;
-  fastMode: boolean;
+  fastMode: boolean | 'ultrafast';
 }
 
 /**

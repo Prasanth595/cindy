@@ -10609,6 +10609,12 @@
         "providerGroupRunningOn": "현재 {{device}}에서 실행 중",
         "providerGroupRunningHere": "현재 이 컴퓨터에서 실행 중",
         "providerGroupUnassigned": "시작하면 제공자 그룹이 컴퓨터를 고르고, 사용량은 그 컴퓨터 기준으로 표시됩니다"
+      },
+      "speed": {
+        "label": "속도",
+        "standard": "표준",
+        "fast": "빠름",
+        "ultrafast": "초고속"
       }
     },
     "permissionSelector": {

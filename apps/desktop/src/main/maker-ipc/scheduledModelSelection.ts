@@ -8,7 +8,7 @@ export interface ScheduledModelSelection {
   model: string;
   providerId: string | null;
   effort: Effort | null;
-  fastMode: boolean;
+  fastMode: boolean | 'ultrafast';
 }
 
 export interface ScheduledModelSelectionLease {
@@ -52,7 +52,7 @@ export function resolveScheduledModelSelection(
     ...selection,
     providerId,
     effort: resolveCompatibleSessionRuntimeEffort(model, selection.effort),
-    fastMode: selection.fastMode && model.supportsFastMode === true,
+    fastMode: model.supportsFastMode === true && (selection.fastMode !== 'ultrafast' || (selection.agentKind === 'codex' && model.supportsUltrafastMode === true)) ? selection.fastMode : false,
   };
 }
 

@@ -10649,6 +10649,12 @@
         "providerGroupRunningOn": "Running on {{device}}",
         "providerGroupRunningHere": "Running on this computer",
         "providerGroupUnassigned": "The Provider Group picks a computer when the task starts; usage then shows for that computer"
+      },
+      "speed": {
+        "label": "Speed",
+        "standard": "Standard",
+        "fast": "Fast",
+        "ultrafast": "Ultrafast"
       }
     },
     "permissionSelector": {

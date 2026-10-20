@@ -305,9 +305,9 @@ interface UseCCAgentChatReturn {
   /** True when no message has ever been sent in this session (pre-clear sessions are false) */
   isFirstMessage: boolean;
   /** Fast Mode toggle state — session-level, OFF by default. */
-  fastMode: boolean;
+  fastMode: boolean | 'ultrafast';
   /** Toggle Fast Mode ON/OFF; captured device ID pins remote routing across relay reconnects. */
-  setFastMode: (enabled: boolean, sourceRemoteDeviceId?: string) => Promise<void>;
+  setFastMode: (enabled: boolean | 'ultrafast', sourceRemoteDeviceId?: string) => Promise<void>;
   /** Reset Fast Mode to OFF (server-first, used on model switch away from Opus 4.6). */
   resetFastMode: () => Promise<void>;
   /** 计划模式一级开关状态(与 permissionMode 正交); 计划批准后经 plan_mode_changed 回流自动变 false。 */
@@ -754,7 +754,7 @@ export function useCCAgentChat(
   );
 
   const setFastMode = useCallback(
-    async (enabled: boolean, sourceRemoteDeviceId?: string) => {
+    async (enabled: boolean | 'ultrafast', sourceRemoteDeviceId?: string) => {
       if (!sessionId) return;
       await makerChatStore.setFastMode(sessionId, enabled, sourceRemoteDeviceId);
     },

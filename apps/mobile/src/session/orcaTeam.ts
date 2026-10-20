@@ -48,7 +48,7 @@ export interface OrcaWorkerFormValue {
   modelSelectionExplicit?: boolean;
   agent: OrcaWorkerAgentKind;
   /** null = 跟随被控端默认(该 Agent 上次新建任务的选择,回落 Lead 模型)。 */
-  model: { id: string; providerId: string | null; effort: string | null; fast: boolean } | null;
+  model: { id: string; providerId: string | null; effort: string | null; fast: boolean | 'ultrafast' } | null;
   permissionMode: OrcaWorkerPermissionMode;
   initialTask: string;
   /** 缺省为 Lead 所在电脑；指定后模型与目录都属于该运行设备。 */
@@ -128,7 +128,7 @@ export function convergeOrcaWorkerModel(
   return {
     ...model,
     effort,
-    fast: model.fast && option.supportsFastMode && capabilities.hasFastMode,
+    fast: option.supportsFastMode && capabilities.hasFastMode && (model.fast !== 'ultrafast' || option.supportsUltrafastMode) ? model.fast : false,
   };
 }
 
@@ -171,7 +171,7 @@ export function narrowOrcaWorkerProvider(
       : model.effort && efforts.includes(model.effort)
       ? model.effort
       : entry.defaultEffort ?? efforts[0] ?? null;
-  const fast = model.fast && entry.supportsFastMode === true;
+  const fast = entry.supportsFastMode === true && (model.fast !== 'ultrafast' || entry.supportsUltrafastMode) ? model.fast : false;
   return effort === model.effort && fast === model.fast
     ? narrowed
     : { ...narrowed, model: { ...model, providerId, effort, fast } };

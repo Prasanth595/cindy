@@ -93,7 +93,7 @@ export interface UnifiedRowConfig {
   /** 生效档位;不可调时为 null。 */
   effort: Effort | null;
   /** 生效的 Fast 开关(不具备能力时恒 false —— 不做假按钮)。 */
-  fast: boolean;
+  fast: boolean | 'ultrafast';
   /** 该 (模型, 引擎) 是否真的支持 Fast(目录能力 × agent 运行时能力)。 */
   fastCapable: boolean;
   /** 用户是否在这一行上留下过与推荐不同的配置(行内三元组提亮 / 浮层底栏三态)。 */
@@ -122,7 +122,7 @@ export interface ResolveRowConfigArgs {
   /** 该 (agent, 来源, 模型) 的深度记忆(providerModelMemory 既有槽)。 */
   memoryEffort?: (agent: AgentKind) => Effort | undefined;
   /** 该 (agent, 来源, 模型) 的 Fast 记忆(providerModelMemory 既有槽)。 */
-  memoryFast?: (agent: AgentKind) => boolean | undefined;
+  memoryFast?: (agent: AgentKind) => boolean | 'ultrafast' | undefined;
   /** agent 运行时是否具备 Fast 能力(useAgentCapabilities.hasFastMode);缺省视为具备。 */
   agentFastModeCapable?: (agent: AgentKind) => boolean;
   /**
@@ -200,7 +200,8 @@ export function resolveUnifiedRowConfig(args: ResolveRowConfigArgs): UnifiedRowC
   const effort = pickEffort(capability, memoryEffort?.(agent));
   const fastCapable =
     capability?.supportsFastMode === true && (agentFastModeCapable?.(agent) ?? true);
-  const fast = fastCapable ? (memoryFast?.(agent) ?? false) : false;
+  const requestedFast = memoryFast?.(agent) ?? false;
+  const fast = fastCapable && (requestedFast !== 'ultrafast' || capability?.supportsUltrafastMode) ? requestedFast : false;
   const customized =
     // 「已自定义」是相对**该行此刻的缺省**说的:会话内 pinned 生效时,落在当前引擎上
     // 是缺省而不是自定义(否则会话里几乎每一行都被标成已自定义,提亮就失去信息量)。
@@ -208,7 +209,7 @@ export function resolveUnifiedRowConfig(args: ResolveRowConfigArgs): UnifiedRowC
     // 用户留过的引擎选择仍应提亮。
     (overrideUsable && engineOverride !== baseline) ||
     (effort !== null && capability?.defaultEffort != null && effort !== capability.defaultEffort) ||
-    fast;
+    !!fast;
   return {
     engine,
     agent,
@@ -243,7 +244,7 @@ export function resolveFavoriteRowConfig(args: {
   const effort = pickEffort(capability, item.effort);
   const fastCapable =
     capability?.supportsFastMode === true && (agentFastModeCapable?.(agent) ?? true);
-  const fast = fastCapable && item.fast === true;
+  const fast = fastCapable ? (item.fast === 'ultrafast' && capability?.supportsUltrafastMode ? 'ultrafast' : item.fast === true) : false;
   return {
     engine,
     agent,
@@ -269,7 +270,7 @@ export function favoriteMatchesSelection(args: {
   selected: { providerId: string | null; modelId: string };
   agent: AgentKind | null | undefined;
   effort: Effort | undefined;
-  fast: boolean;
+  fast: boolean | 'ultrafast';
   agentFastModeCapable?: (agent: AgentKind) => boolean;
 }): boolean {
   const { entry, item, selected, agent } = args;

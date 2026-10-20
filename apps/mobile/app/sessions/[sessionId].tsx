@@ -1,3 +1,4 @@
+import { ModelSpeedIcon } from '@/session/ModelSpeedIcon';
 import { useSessionHistorySearch } from '@/session/useSessionHistorySearch';
 import { useContentRecoveryDiagnostics } from '@/debug/useContentRecoveryDiagnostics';
 import { modelNeedsReselection } from '@/session/modelReselection';
@@ -2895,8 +2896,8 @@ function SessionScreenContent() {
     ? composerDisplaySession?.providerId ?? null
     : composerPillSourceProvider?.id ?? null;
   const composerPillFastOn = agentSwitchIntent
-    ? agentSwitchIntent.fastMode === true
-    : !composerSelectedSourceDisconnected && !!currentSession?.fastMode
+    ? (agentSwitchIntent.fastMode ?? false)
+    : !composerSelectedSourceDisconnected && (currentSession?.fastMode ?? false)
       && rowFastEditable({
         provider: composerActiveSourceProvider ?? undefined,
         modelId: currentSession?.model ?? '',
@@ -8365,7 +8366,7 @@ function SessionScreenContent() {
     model: string;
     providerId?: string;
     targetContextWindow?: number;
-    selection?: { effort: string | null; fastMode: boolean };
+    selection?: { effort: string | null; fastMode: boolean | 'ultrafast' };
   }): Promise<boolean> => {
     if (!canConfigureSessionModel) return false;
     if (shouldBlockLegacyRemoteModelWindowSwitch({
@@ -8555,7 +8556,7 @@ function SessionScreenContent() {
         targetContextWindow:capability.contextWindow,selection});
       if (!applied) return false;
       if (!selection && config.effort && config.effort !== currentSession.effort) await maker.setEffort(sessionId,config.effort);
-      if (!selection && config.fast !== !!currentSession.fastMode) await maker.setFastMode(sessionId,config.fast);
+      if (!selection && config.fast !== (currentSession.fastMode ?? false)) await maker.setFastMode(sessionId,config.fast);
       return true;
     }, {model:config.modelId,providerId:config.providerId,effort:config.effort,fastMode:config.fast,
       ...(agentSwitchIntent ? {agentSwitchIntent:null} : {})}, {recover:'refetch'});
@@ -9901,7 +9902,7 @@ function SessionScreenContent() {
           currentSession && canConfigureSessionModel && runtimeOptions && modelSheetSelection && modelSheetRuntimeOptions ? (
           <ModelPickerSheet
             unified={{
-              currentSelection: { agentKind: sessionAgentKind, activeModelId: currentSession.model, selectedProviderId: currentSession.providerId ?? null, selectedEffort: currentSession.effort ?? '', selectedFastMode: !!currentSession.fastMode },
+              currentSelection: { agentKind: sessionAgentKind, activeModelId: currentSession.model, selectedProviderId: currentSession.providerId ?? null, selectedEffort: currentSession.effort ?? '', selectedFastMode: (currentSession.fastMode ?? false) },
               scope: JSON.stringify([auth.user?.id, deviceId, orcaRemoteAgentDeviceId]),
               agents: sessionAgentSwitchSupported ? ['claude-code','codex','pi'] : [sessionAgentKind],
               loadCapabilities: async agent => {
@@ -10026,7 +10027,7 @@ function SessionScreenContent() {
             providersReady={collabDeviceProviders.ready}
             providersUnsupported={collabDeviceProviders.unsupported}
             selectedEffort={collab.workerForm.form.model?.effort ?? ''}
-            selectedFastMode={!!collab.workerForm.form.model?.fast}
+            selectedFastMode={collab.workerForm.form.model?.fast ?? false}
             selectedProviderId={collab.workerForm.form.model?.providerId ?? null}
             testID="session.collabModelSheet"
             visible={collab.workerForm.modelPicker.open}
@@ -12379,7 +12380,7 @@ function ComposerRuntimePill({
   disabled?: boolean;
   icon?: typeof Hand;
   /** Fast 已生效 → label 后缀 Zap 闪电(对齐桌面 trigger)。 */
-  fastOn?: boolean;
+  fastOn?: boolean | 'ultrafast';
   label: string;
   /** 前缀节点(模型药丸传来源官方 mark);与 icon 二选一。 */
   leading?: ReactNode;
@@ -12410,7 +12411,7 @@ function ComposerRuntimePill({
       >
         {label}
       </Text>
-      {fastOn ? <Zap color={colors.textTertiary} size={iconSize.sm} strokeWidth={iconStroke.regular} /> : null}
+      {fastOn ? <ModelSpeedIcon mode={fastOn} color={colors.textTertiary} size={iconSize.sm} /> : null}
       <ChevronDown color={color} size={iconSize.sm} strokeWidth={iconStroke.regular} />
     </RouteActionButton>
   );

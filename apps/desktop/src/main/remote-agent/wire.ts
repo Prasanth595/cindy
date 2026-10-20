@@ -101,7 +101,7 @@ export interface RemoteAgentWireStartOptions {
   model: string;
   providerId?: string | null;
   effort?: string;
-  fastMode?: boolean;
+  fastMode?: boolean | 'ultrafast';
   thinkingEnabled?: boolean;
   userPrompt?: string;
   botProfilePrompt?: string;

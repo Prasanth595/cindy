@@ -55,7 +55,7 @@ export interface NewSessionDraft {
   providerId: string | null;
   effort: string;
   permissionMode: string;
-  fastMode: boolean;
+  fastMode: boolean | 'ultrafast';
   firstMessage: string;
   extraDirs?: string[];
   /**
@@ -76,7 +76,7 @@ export interface NewSessionRemoteAgentPick {
   model: string;
   providerId: string | null;
   effort: string;
-  fastMode: boolean;
+  fastMode: boolean | 'ultrafast';
 }
 
 /** 把选中的远程模型落进要创建的草稿;没选时原样返回。 */
@@ -274,7 +274,7 @@ export function summarizeNewSessionDraft(
   return {
     agentLabel,
     canCreate: validationMessage === null,
-    runtimeLabel: [agentLabel, model, effort || null, draft.fastMode ? 'Fast' : null].filter(Boolean).join(' · '),
+    runtimeLabel: [agentLabel, model, effort || null, draft.fastMode === 'ultrafast' ? i18n.t('models.options.speed.ultrafast') : draft.fastMode ? 'Fast' : null].filter(Boolean).join(' · '),
     scopeLabel: draft.workspaceKind === 'dialogue'
       ? i18n.t('session.new.assignedDialogueDir')
       : trimmedWorkingDir

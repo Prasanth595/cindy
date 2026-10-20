@@ -226,7 +226,7 @@ export interface RemoteHandleDeps {
   /** 模型 / 推理强度 / 快速模式 / 思考开关变化(连回对方时按最新值打开)。 */
   onModel?: (model: string, opts?: { providerId?: string | null; effort?: Effort }) => void;
   onEffort?: (effort: Effort) => void;
-  onFastMode?: (enabled: boolean) => void;
+  onFastMode?: (enabled: boolean | 'ultrafast') => void;
   onThinkingEnabled?: (enabled: boolean) => void;
   /** 改用 Cindy 自动审查兜底(对方进程里的状态，连回来时要再告诉一次)。 */
   onAutoReviewFallback?: () => void;
@@ -418,7 +418,7 @@ export function createRemoteAgentHandle(deps: RemoteHandleDeps): RemoteAgentHand
     getCurrentTurnId: () => (typeof state.currentTurnId === 'string' ? state.currentTurnId : null),
     getPlanMode: () => (typeof state.planMode === 'boolean' ? state.planMode : null),
     getExecutionPlanMode: () => (typeof state.executionPlanMode === 'boolean' ? state.executionPlanMode : null),
-    getFastMode: () => state.fastMode === true,
+    getFastMode: () => state.fastMode === 'ultrafast' ? 'ultrafast' : state.fastMode === true,
     getEffort: () => (typeof state.effort === 'string' ? state.effort as Effort : null),
     listBackgroundTasks: () => (Array.isArray(state.backgroundTasks) ? state.backgroundTasks as BackgroundTaskSnapshot[] : []),
     countPendingWakeContinuations: () => (typeof state.pendingWake === 'number' ? state.pendingWake : 0),
@@ -451,7 +451,7 @@ export function createRemoteAgentHandle(deps: RemoteHandleDeps): RemoteAgentHand
       if (!await callIfLive('setEffort', effort)) state = { ...state, effort };
       deps.onEffort?.(effort);
     }),
-    ...optional('setFastMode', async (enabled: boolean) => {
+    ...optional('setFastMode', async (enabled: boolean | 'ultrafast') => {
       if (!await callIfLive('setFastMode', enabled)) state = { ...state, fastMode: enabled };
       deps.onFastMode?.(enabled);
     }),

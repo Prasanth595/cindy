@@ -115,7 +115,7 @@ function syncNewMakerPrefs(appDefaultModelRequestId?: string) {
     model: cc.model,
     effort: cc.effort,
     permissionMode: cc.permissionMode,
-    fastMode: draft.fastModeByModel[cc.model] === true,
+    fastMode: (draft.fastModeByModel[cc.model] ?? false),
     // /ctr 新建会话需要与模型配套的供应商路由；缺省会走隐式路由落到官方网关，
     // 用户供应商专有的模型（如 deepseek-v4-pro）会被网关 400 拒绝。
     providerId: cc.providerId ?? null,
@@ -134,7 +134,7 @@ function syncNewMakerPrefs(appDefaultModelRequestId?: string) {
       providerId: selected.providerId ?? null,
       model: selected.model,
       effort: selected.effort ?? '',
-      fastMode: draft.fastModeByModel[selected.model] === true,
+      fastMode: (draft.fastModeByModel[selected.model] ?? false),
     },
     lastByVendor: {
       cc: {
