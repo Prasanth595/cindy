@@ -2,10 +2,11 @@
 import { act, cleanup, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { resolveBotChatIdentity, type BotChatBinding } from '../botChatPresentation';
+import { remoteProjectsStore, useRemoteProjectSessions } from '@/features/device-link/remoteProjectsStore';
 
 const h = vi.hoisted(() => ({
   params: { botId: 'bot', sessionId: 'chat', deviceId: undefined as string | undefined },
-  get: vi.fn(), list: vi.fn(), history: vi.fn(), invoke: vi.fn(), pin: vi.fn(),
+  get: vi.fn(), list: vi.fn(), history: vi.fn(), invoke: vi.fn(),
   profiles: [] as Array<{ id: string; name: string; avatar: string; avatarColor: string; invitation?: { stage: string } }>,
   profileListeners: new Set<() => void>(),
 }));
@@ -28,12 +29,13 @@ vi.mock('react-router-dom', () => ({
 }));
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock('../useBotIslandVisibleSession', () => ({ useBotIslandVisibleSession: () => {} }));
-vi.mock('@/features/device-link/remoteProjectsStore', () => ({
-  remoteProjectsStore: { pinSessionOrigin: h.pin },
-}));
 vi.mock('@/features/cc-agent/CCAgentSessionView', () => ({
   CCAgentSessionView: ({ botIdentity, botInvitationStage, readOnly }: { botIdentity?: BotChatBinding; botInvitationStage?: string; readOnly?: boolean }) => {
+    const sessions = useRemoteProjectSessions();
     const identity = resolveBotChatIdentity(botIdentity, h.params.sessionId);
+    // The real chat header requires session metadata from this mirror. Keep the
+    // production gate/store path; omit the unrelated editor and transcript tree.
+    if (h.params.deviceId && !sessions.some(row => row.id === h.params.sessionId)) return <div>metadata-loading</div>;
     return <div data-name={identity?.name} data-read-only={readOnly} data-invitation-stage={botInvitationStage ?? ''}>{identity ? `companion:${identity.id}` : 'task controls'}</div>;
   },
 }));
@@ -43,11 +45,11 @@ import { BotHistorySessionView } from '../BotHistorySessionView';
 beforeEach(() => {
   h.params = { botId: 'bot', sessionId: 'chat', deviceId: undefined };
   h.get.mockReset(); h.list.mockReset().mockResolvedValue([]); h.history.mockReset();
-  h.invoke.mockReset(); h.pin.mockReset();
+  h.invoke.mockReset(); remoteProjectsStore.clear(); remoteProjectsStore.__resetPinnedOriginsForTest();
   h.profiles = []; h.profileListeners.clear();
   window.electronAPI = { localDb: { bots: { get: h.get, list: h.list, history: h.history } }, deviceLink: { invoke: h.invoke } } as unknown as Window['electronAPI'];
 });
-afterEach(cleanup);
+afterEach(() => { cleanup(); remoteProjectsStore.clear(); remoteProjectsStore.__resetPinnedOriginsForTest(); });
 it('mounts the simplified chat only after verifying the durable link, without another session GET', async () => {
   let resolve!: (value: unknown) => void;
   h.get.mockReturnValue(new Promise((done) => { resolve = done; }));
@@ -134,17 +136,22 @@ it('opens an archived canonical link read-only when absent from the history list
 
 it.each(['history', 'channel'])('checks remote %s links before displaying a searched transcript', async role => {
   h.params.deviceId = 'remote';
-  h.invoke.mockResolvedValue({ id: 'bot', name: 'Melody', sessions: [
+  h.invoke.mockResolvedValueOnce({ id: 'bot', name: 'Melody', sessions: [
     { id: 'chat', role, status: 'archived' },
-  ] });
+  ] }).mockResolvedValue({ id: 'chat', source: 'bot', title: 'Old conversation', status: 'archived' });
   await act(async () => { render(<BotHistorySessionView />); });
   expect(h.invoke).toHaveBeenCalledWith('remote', 'local-db:bots:get', ['bot']);
   expect(h.history).not.toHaveBeenCalled();
   if (role === 'history') {
     expect(screen.getByText('companion:bot').getAttribute('data-read-only')).toBe('true');
-    expect(h.pin).toHaveBeenCalledWith('remote', 'chat');
+    expect(h.invoke).toHaveBeenCalledWith('remote', 'local-db:sessions:get', ['chat']);
+    expect(remoteProjectsStore.getSessionDeviceId('chat')).toBe('remote');
+    expect(remoteProjectsStore.getDeviceSessions('remote', 'archived')).toEqual([
+      expect.objectContaining({ id: 'chat', status: 'archived', title: 'Old conversation' }),
+    ]);
   } else {
     expect(screen.getByText('unavailable')).toBeTruthy();
-    expect(h.pin).not.toHaveBeenCalled();
+    expect(remoteProjectsStore.getSessionDeviceId('chat')).toBeUndefined();
+    expect(h.invoke).toHaveBeenCalledTimes(1);
   }
 });

@@ -8,6 +8,7 @@ import { readIslandEntryRouteState, requestIslandEntryAlertDisposal } from './is
 import { useBotIslandVisibleSession } from './useBotIslandVisibleSession';
 import { remoteProjectsStore } from '@/features/device-link/remoteProjectsStore';
 import { getDataOwnerGeneration, isDataOwnerGenerationCurrent } from '@/contexts/dataOwnerGeneration';
+import type { Session } from '@/lib/ccAgent.types';
 
 function readBotChatIdentity(bot: unknown, botId: string): BotChatIdentity | null {
   if (!bot || typeof bot !== 'object') return null;
@@ -68,7 +69,7 @@ function BotHistorySessionGateView() {
             ? rows
             : personalLink(await profile) ? [{ id: sessionId }] : []);
     void history
-      .then((rows) => {
+      .then(async (rows) => {
         if (!current()) return;
         const found = rows.some(
           (row) =>
@@ -78,7 +79,28 @@ function BotHistorySessionGateView() {
             typeof (row as { id?: unknown }).id === 'string' &&
             (row as { id: string }).id === sessionId,
         );
-        if (found && deviceId) remoteProjectsStore.pinSessionOrigin(deviceId, sessionId);
+        if (found && deviceId) {
+          const origin = remoteProjectsStore.getSessionDeviceId(sessionId);
+          if (origin && origin !== deviceId) throw new Error('Conflicting remote session owner');
+          remoteProjectsStore.pinSessionOrigin(deviceId, sessionId);
+          const isReadCurrent = remoteProjectsStore.captureSessionRead(deviceId, sessionId);
+          const value = await window.electronAPI.deviceLink.invoke(deviceId, 'local-db:sessions:get', [sessionId]);
+          if (!current()) return;
+          const readIsCurrent = isReadCurrent();
+          const mirror = remoteProjectsStore.getDeviceSessions(deviceId).find(row => row.id === sessionId);
+          const session = readIsCurrent ? value as Session | null : mirror;
+          if (!session || session.id !== sessionId
+            || (session.status !== 'active' && session.status !== 'archived')
+            || (!readIsCurrent && session.deviceLinkConnectionStatus !== 'connected')) {
+            throw new Error('Invalid remote companion history');
+          }
+          // The shared chat reads remote metadata only from this mirror, including
+          // the header. Preserve the status bucket and any newer push/activity.
+          if (readIsCurrent) remoteProjectsStore.mergeDeviceSessions(
+            deviceId, remoteProjectsStore.getDeviceName(deviceId) ?? deviceId,
+            [isReadCurrent.mergeActivity(session)], session.status,
+          );
+        }
         setAllowed(found);
       })
       .catch(() => {
