@@ -36,7 +36,7 @@ vi.mock('@/features/cc-agent/CCAgentSessionView', () => ({
     // The real chat header requires session metadata from this mirror. Keep the
     // production gate/store path; omit the unrelated editor and transcript tree.
     if (h.params.deviceId && !sessions.some(row => row.id === h.params.sessionId)) return <div>metadata-loading</div>;
-    return <div data-name={identity?.name} data-read-only={readOnly} data-invitation-stage={botInvitationStage ?? ''}>{identity ? `companion:${identity.id}` : 'task controls'}</div>;
+    return <div data-name={identity?.name} data-avatar={identity?.avatar} data-device-id={identity?.deviceId} data-read-only={readOnly} data-invitation-stage={botInvitationStage ?? ''}>{identity ? `companion:${identity.id}` : 'task controls'}</div>;
   },
 }));
 import { BotSessionView } from '../BotSessionView';
@@ -127,23 +127,32 @@ it('never shows the first-hello wait in a channel-routed (non-canonical) task of
 // Search can open archived canonical transcripts outside the history menu.
 it('opens an archived canonical link read-only when absent from the history list', async () => {
   h.history.mockResolvedValue([]);
-  h.get.mockResolvedValue({ id: 'bot', name: 'Melody', sessions: [
+  h.get.mockResolvedValue({ id: 'bot', name: 'Melody', avatar: '🎵', sessions: [
     { id: 'chat', role: 'canonical', status: 'archived' },
   ] });
   await act(async () => { render(<BotHistorySessionView />); });
-  expect(screen.getByText('companion:bot').getAttribute('data-read-only')).toBe('true');
+  const chat = screen.getByText('companion:bot');
+  expect(h.get).toHaveBeenCalledWith('bot');
+  expect(chat.getAttribute('data-name')).toBe('Melody');
+  expect(chat.getAttribute('data-avatar')).toBe('🎵');
+  expect(chat.getAttribute('data-device-id')).toBeNull();
+  expect(chat.getAttribute('data-read-only')).toBe('true');
 });
 
 it.each(['history', 'channel'])('checks remote %s links before displaying a searched transcript', async role => {
   h.params.deviceId = 'remote';
-  h.invoke.mockResolvedValueOnce({ id: 'bot', name: 'Melody', sessions: [
+  h.invoke.mockResolvedValueOnce({ id: 'bot', name: 'Melody', avatar: '🎵', sessions: [
     { id: 'chat', role, status: 'archived' },
   ] }).mockResolvedValue({ id: 'chat', source: 'bot', title: 'Old conversation', status: 'archived' });
   await act(async () => { render(<BotHistorySessionView />); });
   expect(h.invoke).toHaveBeenCalledWith('remote', 'local-db:bots:get', ['bot']);
   expect(h.history).not.toHaveBeenCalled();
   if (role === 'history') {
-    expect(screen.getByText('companion:bot').getAttribute('data-read-only')).toBe('true');
+    const chat = screen.getByText('companion:bot');
+    expect(chat.getAttribute('data-name')).toBe('Melody');
+    expect(chat.getAttribute('data-avatar')).toBe('🎵');
+    expect(chat.getAttribute('data-device-id')).toBe('remote');
+    expect(chat.getAttribute('data-read-only')).toBe('true');
     expect(h.invoke).toHaveBeenCalledWith('remote', 'local-db:sessions:get', ['chat']);
     expect(remoteProjectsStore.getSessionDeviceId('chat')).toBe('remote');
     expect(remoteProjectsStore.getDeviceSessions('remote', 'archived')).toEqual([
