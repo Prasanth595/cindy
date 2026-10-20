@@ -282,14 +282,35 @@ export function nextRun(expr: string, fromMs: number, tz: string): number {
 
     if (!cron.minute.includes(w.mi)) {
       const next = nextOrWrap(cron.minute, w.mi);
+
+      // A sub-hour fall-back can leave us in the same wall-clock hour after
+      // the UTC +1h hop below.  Try every cron minute in the current wall
+      // hour first: fromWallClock resolves an overlap to its later occurrence,
+      // so a minute that wrapped numerically (for example 01:45 after 01:50)
+      // can still be a future instant in the repeated segment.
+      const sameHourCandidates = cron.minute
+        .map((minute) => fromWallClock(w.y, w.mo, w.d, w.h, minute, tz))
+        .filter((candidate) => candidate > fromMs);
+      if (sameHourCandidates.length > 0) {
+        cur = Math.min(...sameHourCandidates);
+        continue;
+      }
+
       if (next > w.mi) {
         cur = fromWallClock(w.y, w.mo, w.d, w.h, next, tz);
       } else {
-        // wrap into next hour. +1h on UTC then re-derive wall components handles DST jumps:
-        // spring-forward jumps the wall hour past the missing slot; fall-back may land us
-        // back in the same wall hour, which the outer loop will then advance again.
-        const soh = fromWallClock(w.y, w.mo, w.d, w.h, 0, tz) + 3600_000;
-        const w2 = wallClock(soh, tz);
+        // Wrap into the next distinct wall-clock hour. A plain +1h UTC hop
+        // can remain inside a repeated hour after a 30-minute fall-back, so
+        // advance by at most four hourly probes until the wall hour changes.
+        // The bound covers the DST transitions supported by this walker while
+        // preventing an unbounded search inside a malformed schedule.
+        const nextHourStart = fromWallClock(w.y, w.mo, w.d, w.h, 0, tz) + 3600_000;
+        let probe = nextHourStart;
+        let w2 = wallClock(probe, tz);
+        for (let step = 0; step < 4 && sameWallHour(w2, w); step++) {
+          probe += 3600_000;
+          w2 = wallClock(probe, tz);
+        }
         cur = fromWallClock(w2.y, w2.mo, w2.d, w2.h, next, tz);
       }
       continue;
@@ -312,6 +333,10 @@ function matchesDay(cron: ParsedCron, w: WallClock): boolean {
 function nextOrWrap(list: CronField, current: number): number {
   for (const x of list) if (x > current) return x;
   return list[0];
+}
+
+function sameWallHour(a: WallClock, b: WallClock): boolean {
+  return a.y === b.y && a.mo === b.mo && a.d === b.d && a.h === b.h;
 }
 
 // ---------- cronToHuman ----------
