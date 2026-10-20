@@ -2810,7 +2810,7 @@ function CCAgentSessionContent({
           toast.info(t('chat.sideChat.mainTaskOnly'));
           return;
         }
-        void openSideChatTab(sessionId, { prompt: payload.args });
+        void openSideChatTab(sessionId, { prompt: payload.args, onOpen: (id) => navigate(`/cc-agent/${id}`) });
         return;
       }
       if (payload.command === 'cmd') {
@@ -2861,7 +2861,7 @@ function CCAgentSessionContent({
       // 'issue' 命令由下方独立 effect 处理(需要 handleSend,其声明在本 effect 之后)。
     });
     return unsub;
-  }, [clearSession, insertHelpCard, insertSystemCard, readOnly, sessionId, session?.source, canNavigateSession, t]);
+  }, [clearSession, insertHelpCard, insertSystemCard, readOnly, sessionId, session?.source, canNavigateSession, navigate, t]);
 
   // F-COLLAB: 协同模式真实状态。enabled 来自 session.orcaRole === 'lead';
   // worker(显示用)从 active workflow 的 Worker session 列表查到 agentKind。
@@ -5011,7 +5011,7 @@ function CCAgentSessionContent({
       messages={sideChatMessages}
       historyVisibleAfter={session?.source === 'side-chat' ? new Date(session.createdAt).getTime() : undefined}
       onAskInSideChat={!readOnly && canNavigateSession && sessionId && session?.source !== 'side-chat' && session?.source !== 'bot'
-        ? (quote) => openSideChatTab(sessionId, { quote }) : undefined}
+        ? (quote) => openSideChatTab(sessionId, { quote, onOpen: (id) => navigate(`/cc-agent/${id}`) }) : undefined}
       cindyMakeSessionId={session?.source === 'cindy-make' ? sessionId : undefined}
       cindyMakeCompletionInComposer={session?.source === 'cindy-make' && (remoteMakeCards.supported || (!remoteDeviceId && !readOnly && typeof window.electronAPI.cindyMakeTest === 'function'))}
       historyLoaded={historyLoaded}

@@ -192,7 +192,7 @@ function NavigationGate() {
           }}
         >
           <Stack.Screen name="sessions/[sessionId]" getId={({ params }) => recentTaskKey(params ?? {})} options={({ route }) => ({
-            ...((route.params as { sideChat?: string } | undefined)?.sideChat === '1' ? {
+            ...(Platform.OS === 'android' && (route.params as { sideChat?: string } | undefined)?.sideChat === '1' ? {
               presentation: Platform.OS === 'android' ? 'transparentModal' as const : 'formSheet' as const,
               ...(Platform.OS === 'android' ? { animation: 'none', contentStyle: { backgroundColor: 'transparent' } } as const : {}),
               sheetAllowedDetents: [0.85],
@@ -200,7 +200,7 @@ function NavigationGate() {
               sheetExpandsWhenScrolledToEdge: false,
               sheetElevation: 0,
             } : {}),
-            headerShown: (route.params as { sideChat?: string } | undefined)?.sideChat === '1' ? false : sessionHeaderShown,
+            headerShown: Platform.OS === 'android' && (route.params as { sideChat?: string } | undefined)?.sideChat === '1' ? false : sessionHeaderShown,
             headerTransparent: true,
             headerShadowVisible: false,
             headerBackVisible: false,

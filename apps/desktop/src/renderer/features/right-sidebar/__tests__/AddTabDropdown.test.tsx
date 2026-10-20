@@ -1,6 +1,9 @@
 // @vitest-environment jsdom
+import { MemoryRouter } from 'react-router-dom';
+import type { ReactElement } from 'react';
+import type { RenderOptions } from '@testing-library/react';
 import { createRef, type ReactNode } from 'react';
-import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render as testingRender, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { AddTabDropdown } from '../AddTabDropdown';
 import { EmptyState } from '../EmptyState';
@@ -13,6 +16,9 @@ import { __resetGlobalTabsForTest } from '../globalTabs';
 import { __resetTabGroupsForTest, getTabGroup } from '../tabGroups';
 import { _resetTabKindRegistry, registerTabKind, unregisterTabKind } from '../registry';
 import type { TabKindId, TabKindMenuMeta } from '../types';
+
+const render = (ui: ReactElement, options?: RenderOptions) =>
+  testingRender(ui, { wrapper: MemoryRouter, ...options });
 
 const m = vi.hoisted(() => ({
   open: vi.fn(async () => undefined),
@@ -180,8 +186,7 @@ it.each([undefined, { groupId: 'left' as const }, { onOptimisticAdd: vi.fn() }])
   const onSelect = vi.fn();
   render(<Entries sessionId="task-1" onSelect={onSelect} sideChatPlacement={placement} />);
   await act(async () => fireEvent.click(screen.getByText('chat.sideChat.new')));
-  if (placement) expect(m.openSideChat).toHaveBeenCalledExactlyOnceWith('task-1', { placement });
-  else expect(m.openSideChat).toHaveBeenCalledExactlyOnceWith('task-1');
+  expect(m.openSideChat).toHaveBeenCalledExactlyOnceWith('task-1', { placement, onOpen: expect.any(Function) });
   expect(onSelect).not.toHaveBeenCalled();
 });
 

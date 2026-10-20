@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
-import { act, cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TabKindHostContext } from '../../types';
 
-const mocks = vi.hoisted(() => ({ invoke: vi.fn(), subscribe: vi.fn(), pin: vi.fn(), confirm: vi.fn(), status: vi.fn(), merge: vi.fn(), detached: false, t: (key: string) => key }));
+const mocks = vi.hoisted(() => ({ navigate: vi.fn(), invoke: vi.fn(), subscribe: vi.fn(), pin: vi.fn(), confirm: vi.fn(), status: vi.fn(), merge: vi.fn(), detached: false, t: (key: string) => key }));
+vi.mock('react-router-dom', () => ({ useNavigate: () => mocks.navigate }));
 // Match the stable translation callback; changing it on every render restarts the metadata read.
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: mocks.t }) }));
 vi.mock('@/features/cc-agent/CCAgentSessionView', () => ({ CCAgentSessionView: (props: { sessionIdProp: string; sessionSnapshotProp: unknown }) => <div data-testid="editor">{JSON.stringify(props)}</div> }));
@@ -21,7 +22,7 @@ vi.mock('../../lib/mergeSidebarWindowBack', () => ({ mergeSidebarWindowBack: moc
 import { SideChatTabBody } from './SideChatTabBody';
 
 // Unit: a hidden remote child has no list row. Its host metadata must be read before the
-// editor mounts; a patch arriving during that read must win. Closing must honor cancellation.
+// full-page entry is enabled. Closing must honor cancellation; the panel has no second editor.
 describe('side chat panel lifecycle', () => {
   let close: (() => Promise<boolean>) | null;
   const ctx = { sessionId: 'parent', tabId: 'tab', setCloseInterceptor: (fn: () => Promise<boolean>) => { close = fn; return () => { close = null; }; } } as unknown as TabKindHostContext;
@@ -34,7 +35,7 @@ describe('side chat panel lifecycle', () => {
   });
   afterEach(cleanup);
 
-  it('opens hidden remote metadata on its owning host and preserves a newer push during the read', async () => {
+  it('opens a full task page only after its remote branch metadata is available', async () => {
     let resolve!: (value: unknown) => void;
     mocks.invoke.mockReturnValueOnce(new Promise(done => { resolve = done; }));
     render(<SideChatTabBody state={{ sessionId: 'child', deviceId: 'host' }} ctx={ctx} active />);
@@ -44,8 +45,9 @@ describe('side chat panel lifecycle', () => {
       mocks.subscribe.mock.calls[0][0]({ deviceId: 'host', channel: 'local-db:sessions:patched', payload: { sessionId: 'child', patch: { model: 'new-model' } } });
       resolve({ id: 'child', parentSessionId: 'parent', source: 'side-chat', model: 'old-model' });
     });
-    const props = JSON.parse(screen.getByTestId('editor').textContent!);
-    expect(props.sessionSnapshotProp).toMatchObject({ id: 'child', model: 'new-model', deviceLinkDeviceId: 'host' });
+    expect(screen.queryByTestId('editor')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'chat.sideChat.openPage' }));
+    expect(mocks.navigate).toHaveBeenCalledWith('/cc-agent/child');
     expect(mocks.pin).toHaveBeenCalledWith('host', 'child');
   });
 

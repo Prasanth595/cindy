@@ -12220,6 +12220,8 @@
       "opened": "Opened a preview page"
     },
     "sideChat": {
+      "openPage": "Open full task page",
+      "returnMain": "Back to main task",
       "new": "New side chat",
       "mainWindowDescription": "Side chats currently run in the main window. Your conversation is saved.",
       "returnToMain": "Continue in main window",

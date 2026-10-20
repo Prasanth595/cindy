@@ -987,7 +987,7 @@ export default function SessionScreen() {
   );
   const sideChatDeviceId = readRouteParam(deviceId)
     ?? remoteSessionStore.getSessionDeviceId(readRouteParam(sessionId) ?? '') ?? '';
-  return sideChat === '1' ? <SideChatPresentation key={`${sideChatDeviceId}:${sessionId}`}
+  return Platform.OS === 'android' && sideChat === '1' ? <SideChatPresentation key={`${sideChatDeviceId}:${sessionId}`}
     deviceId={sideChatDeviceId} sessionId={readRouteParam(sessionId) ?? ''}>{content}</SideChatPresentation> : content;
 }
 
@@ -1022,7 +1022,7 @@ function SessionScreenContent() {
     visualSearchQuery?: string;
     sideChat?: string;
   }>();
-  const isSideChatSheet = readRouteParam(params.sideChat) === '1';
+  const isSideChatSheet = Platform.OS === 'android' && readRouteParam(params.sideChat) === '1';
   const sessionId = readRouteParam(params.sessionId) ?? '';
   const notificationResponse = readRouteParam(params.notificationResponse);
   const syncedNotificationResponseRef = useRef<string | null>(null);
@@ -5312,7 +5312,8 @@ function SessionScreenContent() {
   });
   const openSideChat = useCallback((row: RemoteSession) => {
     remoteSessionStore.upsertDeviceSession(deviceId, deviceName, row);
-    if (row.source !== 'side-chat') { openCollabSession(row.id); return; }
+    // iOS follows the same full task page and stack navigation as Worker tasks.
+    if (Platform.OS !== 'android' || row.source !== 'side-chat') { openCollabSession(row.id); return; }
     if (row.id === sessionId) return;
     Keyboard.dismiss();
     const target = { pathname: '/sessions/[sessionId]' as const,
@@ -9624,6 +9625,8 @@ function SessionScreenContent() {
               messageCount={Math.max(messages.length, currentSession?._count?.messages ?? 0)}
               messageOnly={sessionManagedByHost}
               onBack={sessionListDrawerOverlayMounted ? closeSessionListDrawer : goBackToHome}
+              noticeOverride={currentSession?.source === 'side-chat'
+                ? t('session.sideChat.fromMain', { title: sideChatParent?.title || t('session.sideChat.mainTask') }) : undefined}
               onOpenSessionList={!paneLayout.persistent && wideSessionNav.enabled ? openSessionListDrawer : undefined}
               onNewSession={paneLayout.persistent ? handleDrawerNewSession : undefined}
               onOpenFiles={() => {
@@ -10652,6 +10655,19 @@ function SessionScreenContent() {
                   />
                 </View>
               ) : null}
+              {!isSideChatSheet && !shareSelectionActive && currentSession?.source === 'side-chat'
+                && currentSession.parentSessionId ? (
+                <Pressable accessibilityRole="button"
+                  onPress={() => openCollabSession(currentSession.parentSessionId!)}
+                  style={({ pressed }) => [styles.queueEditBar,
+                    { marginHorizontal: composerTouchLayout.composerPaddingHorizontal },
+                    pressed && styles.collabBarPressed]}
+                  testID="session.sideChat.returnMain">
+                  <MessagesSquare color={colors.textTertiary} size={iconSize.sm} strokeWidth={iconStroke.regular} />
+                  <Text numberOfLines={1} style={styles.queueEditBarText}>{t('session.sideChat.returnMain')}</Text>
+                  <ChevronRight color={colors.textTertiary} size={iconSize.sm} strokeWidth={iconStroke.regular} />
+                </Pressable>
+              ) : null}
               {/* 协同状态条:Lead 显示 Worker 概况并打开协同面板;Worker 回到所属 Lead。 */}
               {!companionChat && !shareSelectionActive
                 && (collab.isLead || (collab.isWorker && collab.workerLeadSessionId)) ? (
@@ -10887,6 +10903,7 @@ type SessionHeaderIcon = typeof Folder;
 function SessionHeaderBar({
   horizontalSystemHeader,
   systemBarHidden = false,
+  noticeOverride,
   currentSession,
   diffCount,
   isDeviceAccessRevoked,
@@ -10916,6 +10933,7 @@ function SessionHeaderBar({
   horizontalSystemHeader: boolean;
   /** 临时任务列表抽屉存续期间收起系统栏,让抽屉顶部控件可见可点。 */
   systemBarHidden?: boolean;
+  noticeOverride?: string;
   currentSession: RemoteSession | null;
   diffCount: number;
   isDeviceAccessRevoked: boolean;
@@ -10965,7 +10983,7 @@ function SessionHeaderBar({
   // queue 入口已退役:排队消息 inline 到消息流(InlineQueueSection),不再有独立面板。
   // 两端顶栏右侧同为「远程桌面、文件、更多」;搜索从「更多 → 任务详情」进入(ios-native-design §2、§4)。
   // 协同 Worker 任务在 Lead 的工作区里跑,不单独提供远程桌面 / 文件入口,只留「更多」。
-  const workerHeader = currentSession?.orcaRole === 'worker';
+  const workerHeader = currentSession?.orcaRole === 'worker' || currentSession?.source === 'side-chat';
   const headerActions = (actionProjection?.primaryActions ?? [])
     .filter((action) => action.id === 'files');
   const visibleHeaderActions = workerHeader ? [] : headerActions;
@@ -10976,7 +10994,7 @@ function SessionHeaderBar({
     settings: onOpenSettings,
     usage: onOpenUsage,
   } satisfies Record<SessionActionStripActionId, () => void>;
-  const notice = sharedTaskEnded ? null : compactSessionHeaderNotice({
+  const notice = sharedTaskEnded ? null : noticeOverride ?? compactSessionHeaderNotice({
     isDeviceAccessRevoked,
     pendingCount,
     queuePaused,

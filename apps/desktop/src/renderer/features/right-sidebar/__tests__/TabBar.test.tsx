@@ -1,8 +1,14 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
+import type { ReactElement } from 'react';
+import type { RenderOptions } from '@testing-library/react';
+import { act, cleanup, fireEvent, render as testingRender, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import Sortable, { type SortableEvent } from 'sortablejs';
 import type { ComponentProps } from 'react';
+
+const render = (ui: ReactElement, options?: RenderOptions) =>
+  testingRender(ui, { wrapper: MemoryRouter, ...options });
 
 // react-i18next 走 key 透传(仓库同款,见 RightSidebarShell.test.ts):label 直接是 i18n key。
 // 「+」菜单的插件分组:声明面板 / mainView 的已启用插件。无桥环境下用桩供数据。

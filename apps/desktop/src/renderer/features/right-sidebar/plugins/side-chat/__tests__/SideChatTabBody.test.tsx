@@ -12,6 +12,7 @@ const m = vi.hoisted(() => ({
   local: new Set<(payload: any, stamp?: any) => void>(),
   remote: new Set<(push: any, stamp?: any) => void>(),
 }));
+vi.mock('react-router-dom', () => ({ useNavigate: () => vi.fn() }));
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: m.t }) }));
 vi.mock('@/components/ui/button', () => ({ Button: ({ children, onClick }: any) => <button onClick={onClick}>{children}</button> }));
 vi.mock('@/components/ui/confirm-dialog-provider', () => ({ useConfirmDialog: () => ({ confirm: m.confirm }) }));
@@ -53,25 +54,25 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); m.local.clear(); m.remote.clear(); });
 
-// Unit regression: deleting on another controller left an editable dead tab.
+// Unit regression: deleting on another controller must remove the dead full-page entry.
 // Existing opener tests exercise tab creation only, not the mounted editor.
 // Minimal inputs: a deleted host snapshot or a deletion push while GET is in flight.
 it.each([null, 'host'])('removes a deleted branch without another confirmation (%s)', async deviceId => {
   mount(deviceId);
   await act(async () => {});
-  expect(screen.queryByRole('textbox')).not.toBeNull();
+  expect(screen.queryByRole('button', { name: 'chat.sideChat.openPage' })).not.toBeNull();
   await act(async () => deleted(deviceId));
-  expect(screen.queryByRole('textbox')).toBeNull();
+  expect(screen.queryByRole('button', { name: 'chat.sideChat.openPage' })).toBeNull();
   expect(m.close).toHaveBeenCalledWith('parent', 'tab', { skipBeforeClose: true });
   expect(m.confirm).not.toHaveBeenCalled();
   expect(m.setStatus).not.toHaveBeenCalled();
 });
 
-it.each([null, { ...child, status: 'deleted' }])('does not mount a composer for an unavailable remote snapshot', async value => {
+it.each([null, { ...child, status: 'deleted' }])('does not offer a full-page entry for an unavailable remote snapshot', async value => {
   m.get.mockResolvedValue(value);
   mount('host');
   await act(async () => {});
-  expect(screen.queryByRole('textbox')).toBeNull();
+  expect(screen.queryByRole('button', { name: 'chat.sideChat.openPage' })).toBeNull();
   expect(m.close).toHaveBeenCalledWith('parent', 'tab', { skipBeforeClose: true });
 });
 
@@ -81,7 +82,7 @@ it('does not revive a deleted branch when an older active snapshot completes', a
   mount('host');
   await act(async () => deleted('host'));
   await act(async () => finish(child));
-  expect(screen.queryByRole('textbox')).toBeNull();
+  expect(screen.queryByRole('button', { name: 'chat.sideChat.openPage' })).toBeNull();
   expect(m.close).toHaveBeenCalledTimes(1);
 });
 

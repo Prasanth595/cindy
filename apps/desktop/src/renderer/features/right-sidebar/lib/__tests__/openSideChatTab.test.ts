@@ -68,6 +68,17 @@ describe('side chat task entry', () => {
     mocks.status.mockResolvedValue(undefined);
   });
 
+  // Full-page navigation must happen after the branch entry and draft exist, so
+  // returning to the parent can resume the same task instead of creating another.
+  it('opens the full task page after preserving the branch entry and draft', async () => {
+    const open = vi.fn();
+    expect(await openSideChatTab('parent', { prompt: 'follow-up', onOpen: open })).toBe(true);
+    expect(open).toHaveBeenCalledExactlyOnceWith('child');
+    expect(mocks.save.mock.invocationCallOrder[0]).toBeLessThan(open.mock.invocationCallOrder[0]);
+    expect(mocks.tabs).toContainEqual(expect.objectContaining({ state: { sessionId: 'child', deviceId: null } }));
+    expect(mocks.reveal).toHaveBeenCalledExactlyOnceWith('close', { sessionId: 'child', animate: false });
+  });
+
   it('pins the remote child before exposing its quote and editor', async () => {
     mocks.device = 'execution-host';
     expect(await openSideChatTab('parent', { quote: 'selected answer' })).toBe(true);

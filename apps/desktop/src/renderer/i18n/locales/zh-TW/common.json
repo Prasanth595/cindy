@@ -12167,6 +12167,8 @@
     },
     "sessionLoading": "載入任務中",
     "sideChat": {
+      "openPage": "開啟完整任務頁",
+      "returnMain": "返回主任務",
       "new": "新增側邊追問",
       "mainWindowDescription": "側邊追問目前在主視窗中使用。追問記錄仍然保留。",
       "returnToMain": "回到主視窗繼續追問",

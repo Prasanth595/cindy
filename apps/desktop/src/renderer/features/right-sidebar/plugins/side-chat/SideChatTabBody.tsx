@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { useTranslation } from 'react-i18next';
-import { CCAgentSessionView } from '@/features/cc-agent/CCAgentSessionView';
+import { useNavigate } from 'react-router-dom';
 import { remoteProjectsStore } from '@/features/device-link/remoteProjectsStore';
 import { useConfirmDialog } from '@/components/ui/confirm-dialog-provider';
-import { useDocumentVisible, useWindowVisible } from '@/hooks/useWindowVisible';
 import { makerChatStore } from '@/lib/makerChatStore';
 import { discardDraft } from '@/lib/composerDraftStore';
 import { setStatus } from '@/lib/sessionService';
@@ -16,6 +15,7 @@ import { isDeviceLinkRemotePushCurrent } from '@/lib/remoteDataOwnerPushFence';
 import { SidebarHostSessionProvider } from '../../lib/sidebarHostSession';
 import { mergeSidebarWindowBack } from '../../lib/mergeSidebarWindowBack';
 import { closeTab } from '../../store';
+import { requestRightSidebarVisibility } from '../../lib/sidebarCommands';
 import type { TabKindBodyProps } from '../../types';
 import type { SideChatState } from './state';
 
@@ -39,11 +39,10 @@ export function SideChatTabBody({ state, ctx, active, shellVisible = true }: Tab
   return <AttachedSideChat state={state} ctx={ctx} active={active} shellVisible={shellVisible} />;
 }
 
-function AttachedSideChat({ state, ctx, active, shellVisible = true }: TabKindBodyProps<SideChatState>) {
+function AttachedSideChat({ state, ctx, active }: TabKindBodyProps<SideChatState>) {
   const { t } = useTranslation();
   const { confirm } = useConfirmDialog();
-  const visible = useWindowVisible(Boolean(active && shellVisible));
-  const realtime = useDocumentVisible(Boolean(active && shellVisible));
+  const navigate = useNavigate();
   const childId = state.sessionId;
   const [remoteSession, setRemoteSession] = useState<Session | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
@@ -134,10 +133,14 @@ function AttachedSideChat({ state, ctx, active, shellVisible = true }: TabKindBo
         {state.deviceId && (loadFailed || remoteSession?.id !== childId) ? <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center">
           <p className="text-sm leading-5 text-muted-foreground">{t(loadFailed ? 'chat.sideChat.failed' : 'chat.sideChat.opening')}</p>
           {loadFailed && <Button onClick={() => setRetry(value => value + 1)}>{t('commonUi.retry')}</Button>}
-        </div> : childId && (!state.deviceId || registeredChild === childId) && <CCAgentSessionView key={childId} sessionIdProp={childId} sessionSnapshotProp={remoteSession} compact compactToolbar
-          navigationMode="sidebar-embedded" sidebarTargetSessionId={ctx.sessionId}
-          viewVisible={Boolean(active && shellVisible && visible)}
-          chatRealtime={Boolean(active && shellVisible && realtime)} />}
+        </div> : childId && (!state.deviceId || registeredChild === childId) && <div className="flex h-full items-center justify-center px-6">
+          <Button variant="secondary" onClick={() => {
+            requestRightSidebarVisibility('close', { sessionId: childId, animate: false });
+            navigate(`/cc-agent/${childId}`);
+          }}>
+            {t('chat.sideChat.openPage')}
+          </Button>
+        </div>}
       </div>
     </div>
   </SidebarHostSessionProvider>;
