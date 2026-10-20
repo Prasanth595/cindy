@@ -3456,7 +3456,7 @@
           "aria": "按模型类型筛选",
           "chat": "对话"
         },
-        "hiddenGroup": "未启用",
+        "hiddenGroup": "未显示",
         "management": {
           "brand": "厂商"
         },
