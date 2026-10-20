@@ -3442,8 +3442,9 @@ function sendInvokeResultSafe(
     channel,
     isSharedTaskPeer(src),
   );
-  const speedCompatible = sanitized.ok
-    ? { ...sanitized, result: encodeModelSpeedPayload(channel, sanitized.result) } : sanitized;
+  const speedResult = sanitized.ok ? encodeModelSpeedPayload(channel, sanitized.result) : undefined;
+  const speedCompatible = sanitized.ok && speedResult !== sanitized.result
+    ? { ...sanitized, result: speedResult } : sanitized;
   const normalized = speedCompatible.ok && channel === 'local-db:sessions:list'
     ? {
         ...speedCompatible,

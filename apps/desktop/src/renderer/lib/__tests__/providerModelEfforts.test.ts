@@ -199,7 +199,7 @@ describe('resolveProviderModelEfforts', () => {
     );
     expect(source.slice(agentSwitchStart, agentSwitchEnd)).toContain('resolveRequestedEffort({');
     expect(source.slice(agentSwitchStart, agentSwitchEnd)).toContain(
-      'overrides.fastMode && fastCapable',
+      'fastCapable ? overrides.fastMode : false',
     );
     expect(source.slice(modelChangeStart, modelChangeEnd)).toContain(
       'intent.effort ? { effort: intent.effort as Effort }',
