@@ -1,3 +1,4 @@
+import { bindTaskActionInput } from '../taskActionAuthorization.js';
 import { formatForwardedRequest } from '../../../shared/forwardedRequest.js';
 const forwarded = (text: string) => formatForwardedRequest({ userText: null }, text);
 import { AsyncLocalStorage } from 'node:async_hooks';
@@ -234,9 +235,9 @@ describe('botDirectMessageService', () => {
       const js = ts.transpileModule(`${source.slice(begin, end)}\nreturn buildSessionControlInputItem;`, {
         compilerOptions: { target: ts.ScriptTarget.ES2022 },
       }).outputText;
-      const build = new Function('buildCreateOptsForQueuedSession', 'permissionModeOrAsk', 'UI_ACTION_TRIGGER_PREFIX', 'HOST_ONLY_AGENT_PREFIX', js)(
+      const build = new Function('buildCreateOptsForQueuedSession', 'permissionModeOrAsk', 'UI_ACTION_TRIGGER_PREFIX', 'HOST_ONLY_AGENT_PREFIX', 'bindTaskActionInput', js)(
         async () => ({ model: 'fixture', workingDir: '/fixture', permissionMode: 'ask' }), (mode: string) => mode,
-        UI_ACTION_TRIGGER_PREFIX, HOST_ONLY_AGENT_PREFIX);
+        UI_ACTION_TRIGGER_PREFIX, HOST_ONLY_AGENT_PREFIX, bindTaskActionInput);
       const queued = await build({ ...sent, meta: {}, origin });
       expect(queued.text).toBe(sent.persistedContent);
       expect(getAgentFacingText(queued)).not.toContain('Group source');

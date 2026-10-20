@@ -698,6 +698,28 @@ describe('same-release legacy organization source recovery', () => {
 });
 
 describe('PluginMarketService migration and defaultInstall', () => {
+  // Unit: market install used four full synchronous scans before download.
+  // Existing download-race cases protect the later fresh approval checks;
+  // this first-install case protects the uninterrupted preflight work budget.
+  it('uses one installed scan before downloading a market install', async () => {
+    const item = summary();
+    const h = harness([item]);
+    const download = h.api.download.getMockImplementation()!;
+    let scansBeforeDownload = 0;
+    h.api.download.mockImplementation(async (...args) => {
+      scansBeforeDownload = runtime.listScans;
+      return download(...args);
+    });
+    runtime.install.mockResolvedValue({
+      manifest: manifest(), dir: path.join(os.tmpdir(), 'market-install'), enabled: true,
+    });
+
+    await h.service.install(item.id, reviewedInstallOptions(item), TEST_INSTALL_CONTEXT);
+
+    expect(scansBeforeDownload).toBe(1);
+    expect(h.ledger.installationForGhost(item.ghostId)).toMatchObject({ installed: true });
+  });
+
   it.each([
     { namespace: undefined, evidence: 'matching' },
     { namespace: 'acme', evidence: 'matching' },

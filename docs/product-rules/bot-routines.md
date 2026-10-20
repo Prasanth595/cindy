@@ -130,6 +130,9 @@ const receipt = await cindy.routines.request({
   旧版带的 2 小时间隔条件在下一次 ensure 时被对齐掉。`silentWhenIdle` 开启，
   这一轮的回复不自动发给主人，要主人知道的事显式通知。
 - 指令由宿主模板生成（`apps/desktop/src/main/bot-autonomy/followUpPrompt.ts`），伙伴与主人都不能编辑。
+  v5 正文为「看看这些任务做得怎么样，有什么需要我回复或决策的，给我你的判断和建议。没有新情况就不用提醒；未经我允许，不要给任务发消息或改变任务状态。」
+  升级仍由 `ensureBuiltin` 对齐模板并保留 `enabled=false`；不创建行动授权，也不迁移 follower 为执行委托。
+  无授权的自动事件可观察和提醒，不能发消息、代答、停止或切换路线；授权规则见 `cindy-bots-runtime.md` §6.3.5。
 - 宿主在例行任务引擎每次启动、伙伴新建（资料广播后立即重读归属）与恢复时幂等 ensure，事件发布前也先确认跟进者的规则已落地
   （否则首次安装时的早期事件会被记下回执却没人接收）：不存在就建；指令、触发条件或模板版本（`builtinVersion`，随
   `FOLLOW_UP_PROMPT_VERSION` 递增）与模板不同就重写；保留主人的暂停选择。暂停中的伙伴不建。

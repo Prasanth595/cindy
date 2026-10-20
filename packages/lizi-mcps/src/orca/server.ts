@@ -29,6 +29,7 @@
  * 契约锚点：全局可见 + handler 拒绝语义见 docs/dev-rules/orca-team-architecture.md「MCP 与 IPC 控制面」。
  */
 
+import { withToolCallAuthority, type ToolCallAuthorizer } from '../tool-call-authority.js';
 import { BRAND_NAME } from '@cindy/maker-shared/branding';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z, type ZodRawShape } from 'zod';
@@ -82,6 +83,7 @@ import { errorPayload, okPayload } from '../xdt-helper/_payload.js';
  * (从原 lizi_xdtHelperMcpServer.ts 拆出, 随 team 工具一起独立成 cindy_orca server。)
  */
 export interface OrcaMcpDeps {
+  authorizeCall?: ToolCallAuthorizer;
   logger?: import('../types.js').LiziMcpLogger;
   /** 启动 multi-worker workflow (只建 team, 不含 worker / initial_task)。 */
   startTeam: (params: {
@@ -354,7 +356,7 @@ export interface OrcaMcpSessionCtx {
  * call() 等继承方法不会被用到(cindy_orca 不暴露 list_tools/call_tool 入口)。
  */
 class DirectToolSink extends XdtHelperToolRegistry {
-  constructor(private readonly mcp: McpServer) {
+  constructor(private readonly mcp: McpServer, private readonly authorize: ToolCallAuthorizer | undefined, private readonly sessionId: () => string | undefined) {
     super();
   }
 
@@ -379,7 +381,9 @@ class DirectToolSink extends XdtHelperToolRegistry {
       def.name,
       def.description,
       def.inputShape,
-      def.handler as unknown as XdtHelperToolHandler,
+      ((args: Record<string, unknown>) => withToolCallAuthority(this.authorize,
+        { sessionId: this.sessionId(), server: 'cindy_orca', tool: def.name, args },
+        () => (def.handler as unknown as XdtHelperToolHandler)(args))) as XdtHelperToolHandler,
     );
   }
 }
@@ -485,7 +489,7 @@ export function createOrcaMcpServer(
 
   // 17 个 team 工具经 DirectToolSink 直接注册到顶层。handler 闭包绑定 ctx
   // (sessionId / vendorOptions), 调用时把请求路由回 host。
-  const sink = new DirectToolSink(server);
+  const sink = new DirectToolSink(server, deps.authorizeCall, () => resolveLiziMcpSessionContext(ctx).sessionId);
   const getSessionContext = () => resolveLiziMcpSessionContext(ctx);
   registerStartTeamTool(sink, {
     sessionId: ctx.sessionId,

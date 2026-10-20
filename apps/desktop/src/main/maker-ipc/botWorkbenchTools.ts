@@ -9,6 +9,7 @@
  * 2026-10-17 放弃「项目」:不再按目录发现候选、不再现算项目素材、不再导入本机外部会话。
  */
 import { and, desc, eq, isNotNull } from 'drizzle-orm';
+import { hasTaskActionAuthorization, assertTaskActionCurrent } from './taskActionAuthorization.js';
 
 import { getDbClient } from '../localDb/client/current.js';
 import { botDelegations, botProfiles, botSessionLinks, sessions } from '../localDb/schema.js';
@@ -175,6 +176,7 @@ function createDesktopBotWorkbenchAccess(host: BotWorkbenchHostDeps): BotWorkben
   const scopeKey = activeOwnerScopeKey();
   const userDataDir = ownerScopedUserDataPath();
   return createBotWorkbenchAccess({
+    hasActionAuthorization: hasTaskActionAuthorization,
     resolveCaller: resolveWorkbenchCaller,
     schedulerBotId: readSchedulerBotId,
     readWatched: readWatchedSession,
@@ -193,8 +195,8 @@ function createDesktopBotWorkbenchAccess(host: BotWorkbenchHostDeps): BotWorkben
         if (isAppSessionBoundaryPending() || activeOwnerScopeKey() !== scopeKey) throw new Error('OWNER_SCOPE_CHANGED');
       },
     ),
-    sendToSession: host.sendToSession,
-    sendToRemoteSession: host.sendToRemoteSession,
+    sendToSession: async params => { await assertTaskActionCurrent(); return host.sendToSession(params); },
+    sendToRemoteSession: async params => { await assertTaskActionCurrent(); return host.sendToRemoteSession(params); },
     isOwnerScopeCurrent: () => !isAppSessionBoundaryPending() && activeOwnerScopeKey() === scopeKey,
   });
 }

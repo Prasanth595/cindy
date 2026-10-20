@@ -21,6 +21,11 @@
     "messageCount": "共 {{count}} 封邮件",
     "showMessages": "展开 {{count}} 封邮件"
   },
+  "taskActionConfirmation": {
+    "title": "确认任务操作",
+    "once": "请核对下面的目标、动作和完整内容。允许仅对本次操作生效。",
+    "delegation": "请核对独立任务的目标和设置。允许后将启动任务，并可在本次委托结束前发送范围内的消息或停止任务。代答、恢复暂停和切换模型仍需单独确认。"
+  },
   "logSupport": {
     "title": "日志与反馈",
     "localFiles": "选择问题当天的日志。文件未脱敏，请先检查。",

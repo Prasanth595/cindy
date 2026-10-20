@@ -239,6 +239,28 @@ export interface ApprovedGhostInstallEvidence {
   legacyMigrated: boolean;
 }
 
+interface ParsedGhostPackage {
+  manifest: GhostManifest;
+  approvedManifest: GhostManifest;
+  canonicalManifest: GhostManifest;
+  localeResources: Record<string, GhostManifestLocaleResource>;
+  unsupportedLegacySlots: string[];
+  trust: GhostTrustInfo;
+  packageSha256: string;
+  rawManifestSha256: string;
+  releasedLegacyDigestFormat: unknown;
+  iconDataUrl?: string;
+  allEntries: JSZip.JSZipObject[];
+  prefix: string;
+}
+
+function cloneParsedGhostPackage(parsed: ParsedGhostPackage): ParsedGhostPackage {
+  const { allEntries, ...metadata } = parsed;
+  // ZIP objects stay private to the manager. Callers must never mutate the
+  // validated metadata retained for another inspect/install of these bytes.
+  return { ...structuredClone(metadata), allEntries };
+}
+
 export interface GhostManagerOptions {
   /** 意识仓库根目录(生产:userData/cindy-brain;测试:os.tmpdir 下临时目录)。 */
   getRootDir: () => string;
@@ -639,6 +661,14 @@ export class GhostManager {
   private readonly retirements = new FeatureRetirementStore(() => this.receiptStore.rootDir());
   private ownerContextKey: string;
   private mutationTail: Promise<void> = Promise.resolve();
+  /** One small archive, for the inspect → consent → install path only. */
+  private parsedPackageCache: {
+    packageSha256: string;
+    locale: string | undefined;
+    trustRegistry: string;
+    expiresAt: number;
+    parsed: ParsedGhostPackage;
+  } | null = null;
   private activeMutationContext: {
     ownerContextKey: string;
     contentRoot: string;
@@ -883,6 +913,7 @@ export class GhostManager {
   }
 
   private planInstancePlacement(
+    registry: PluginInstanceRegistry,
     ghostId: string,
     namespace: string | null,
     source?: PluginInstanceSource,
@@ -891,7 +922,6 @@ export class GhostManager {
   ):
     | { kind: 'blocked'; reason: string }
     | { kind: 'ok'; instanceKey: string; relId: string } {
-    const registry = this.syncInstanceRegistry();
     const relId = pluginNewInstallRelId(createPluginLogicalIdentity(namespace, ghostId));
     const instanceKey = pluginInstallStoragePart(relId);
     if (!this.instanceRegistryService.isBlocked()) {
@@ -2580,6 +2610,10 @@ export class GhostManager {
 
   /** Synchronous first-frame projection; share disk reads only within this call. */
   list(): InstalledGhost[] {
+    return this.scanInstalled().ghosts;
+  }
+
+  private scanInstalled(): { ghosts: InstalledGhost[]; registry: PluginInstanceRegistry } {
     this.ensureCurrentOwnerContextSync();
     const entries = this.listContentEntries();
     const receipts = new Map<string, GhostInstallReceiptReadResult>();
@@ -2593,13 +2627,13 @@ export class GhostManager {
     };
     // Registry facts and the list projection consume the same validated bytes.
     // No cache survives this synchronous scan; isolation checks still run below.
-    this.instanceRegistryService.sync({
+    const registry = this.instanceRegistryService.sync({
       listContentEntries: () => entries,
       receiptFact: (relId) => this.receiptFact(relId, readReceipt(relId)),
     });
     const result = this.projectListedEntries(entries, readReceipt);
     result.sort((a, b) => a.manifest.id.localeCompare(b.manifest.id));
-    return result;
+    return { ghosts: result, registry };
   }
 
   /**
@@ -3109,25 +3143,7 @@ export class GhostManager {
   }
 
   /** 装入的前半程(读文件 / 解包 / 校验清单),inspect 与 install 共用。 */
-  private async parse(lizFilePath: string): Promise<
-    | {
-        manifest: GhostManifest;
-        // 同一份包内清单的两个名字:approvedManifest 供 receipt 写入(我们),
-        // canonicalManifest 供 inspect/可恢复复核比对(main)。parse 里都置为 v.manifest。
-        approvedManifest: GhostManifest;
-        canonicalManifest: GhostManifest;
-        localeResources: Record<string, GhostManifestLocaleResource>;
-        unsupportedLegacySlots: string[];
-        trust: GhostTrustInfo;
-        packageSha256: string;
-        rawManifestSha256: string;
-        releasedLegacyDigestFormat: unknown;
-        iconDataUrl?: string;
-        allEntries: JSZip.JSZipObject[];
-        prefix: string;
-      }
-    | { rejection: InstallRejection }
-  > {
+  private async parse(lizFilePath: string): Promise<ParsedGhostPackage | { rejection: InstallRejection }> {
     // 1) 读源文件(带体积上限)。stat 后再 readFile 是两次独立打开,期间文件
     // 可被换成超大文件绕过上限——单句柄限量读。允许跟随链接:用户拖入的
     // .cindy 本身可以是链接,防篡改由 expectedPackageSha256 对账负责。
@@ -3150,6 +3166,22 @@ export class GhostManager {
         rejection: { code: 'io', reason: err instanceof Error ? err.message : String(err) },
       };
     }
+
+    // Always reread the complete, stable source before reuse: a pathname or mtime
+    // is not evidence that the package approved before consent is still present.
+    const packageSha256 = crypto.createHash('sha256').update(buf).digest('hex');
+    const locale = this.options.getLocale?.();
+    const trustRegistry = structuredClone(this.options.trustRegistry ?? {});
+    const trustRegistryKey = JSON.stringify(trustRegistry);
+    const cached = this.parsedPackageCache;
+    if (
+      cached && cached.expiresAt > Date.now() &&
+      cached.packageSha256 === packageSha256 && cached.locale === locale &&
+      cached.trustRegistry === trustRegistryKey
+    ) {
+      return cloneParsedGhostPackage(cached.parsed);
+    }
+    this.parsedPackageCache = null;
 
     // 2) 解析 zip + 找 ghost.json(容忍"压缩时多包了一层文件夹"的常见做法)
     let zip: JSZip;
@@ -3292,7 +3324,7 @@ export class GhostManager {
         },
       };
     }
-    let localizedManifest = withGhostResolvedLocale(v.manifest, this.options.getLocale?.());
+    let localizedManifest = withGhostResolvedLocale(v.manifest, locale);
     const localeResources: Record<string, GhostManifestLocaleResource> = {};
     if (v.manifest.locales !== undefined) {
       const resources = new Map<string, GhostManifestLocaleResource>();
@@ -3338,7 +3370,7 @@ export class GhostManager {
         resources.set(localePath, validated.resource);
         localeResources[localePath] = validated.resource;
       }
-      const localePath = ghostLocalePathFor(v.manifest, this.options.getLocale?.());
+      const localePath = ghostLocalePathFor(v.manifest, locale);
       const resource = localePath ? resources.get(localePath) : undefined;
       if (resource) localizedManifest = resolveGhostManifestLocale(localizedManifest, resource);
     }
@@ -3364,7 +3396,7 @@ export class GhostManager {
       zip,
       prefix,
       v.manifest,
-      this.options.trustRegistry,
+      trustRegistry,
     );
     if (!signature.ok) {
       return { rejection: { code: 'file-invalid', reason: `签名验证失败:${signature.reason}` } };
@@ -3509,14 +3541,14 @@ export class GhostManager {
       }
     }
 
-    return {
+    const parsed: ParsedGhostPackage = {
       manifest: localizedManifest,
       approvedManifest: v.manifest,
       canonicalManifest: v.manifest,
       localeResources,
       unsupportedLegacySlots: v.unsupportedLegacySlots,
       trust: signature.trust,
-      packageSha256: crypto.createHash('sha256').update(buf).digest('hex'),
+      packageSha256,
       rawManifestSha256: crypto.createHash('sha256').update(manifestBytes).digest('hex'),
       releasedLegacyDigestFormat: ghostManifestToLegacyV2DigestFormat(
         v.manifest,
@@ -3526,6 +3558,17 @@ export class GhostManager {
       allEntries,
       prefix,
     };
+    // Large bundled CLI archives must not become a long-lived memory cache.
+    if (buf.byteLength <= MAX_BASIC_CINDY_FILE_BYTES) {
+      this.parsedPackageCache = {
+        packageSha256,
+        locale,
+        trustRegistry: trustRegistryKey,
+        expiresAt: Date.now() + 60_000,
+        parsed,
+      };
+    }
+    return cloneParsedGhostPackage(parsed);
   }
 
   async install(
@@ -3606,7 +3649,9 @@ export class GhostManager {
     const identity = createPluginLogicalIdentity(opts?.namespace ?? null, manifest.id);
     const registrySource = opts?.registrySource ??
       (opts?.installOrigin === 'agent-forge' ? 'agent-forge' : 'manual');
+    const preflight = this.scanInstalled();
     const placement = this.planInstancePlacement(
+      preflight.registry,
       manifest.id, identity.namespace, registrySource, opts?.pluginId, opts?.reclaimLegacyBareInstance === true,
     );
     if (placement.kind === 'blocked') {
@@ -3617,7 +3662,7 @@ export class GhostManager {
     if (this.hasPendingMutationJournal(relId)) {
       return { rejection: { code: 'io', reason: '意识正在恢复，请稍后重试' } };
     }
-    if (findInstalledGhostByIdentity(this.list(), identity)) {
+    if (findInstalledGhostByIdentity(preflight.ghosts, identity)) {
       return { rejection: { code: 'already-installed', reason: `意识 ${manifest.id} 已装入` } };
     }
     const physicalRel = this.resolvePhysicalRelId(relId) ?? relId;

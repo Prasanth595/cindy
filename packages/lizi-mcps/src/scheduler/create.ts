@@ -36,7 +36,7 @@ export function registerScheduleCreateTool(
       '约束：(1) cronExpr 是 5 字段 cron（minute hour day-of-month month day-of-week）；' +
       '(2) timezone 必须是 IANA id（如 "Asia/Shanghai"）；' +
       '(3) 一次性任务用 recurring=false（触发后 status 会自动置 expired）；' +
-      '(4) heartbeat 模式（注入到已存 session）：**要跟进当前这条对话就传 bindToCurrentSession=true**（代码自动绑定本会话,无需也不要自己去查 / 传 session id）；只有要绑到另一条已知 session 时才显式传 targetSessionId。heartbeat 模式不传 workingDir / model / effort（runner 会从 session 取）；' +
+      '(4) heartbeat 模式（注入到已存 session）：**要跟进当前这条对话就传 bindToCurrentSession=true**（代码自动绑定本会话,无需也不要自己去查 / 传 session id）；只有要绑到另一条已知 session 时才显式传 targetSessionId。heartbeat 模式不传 workingDir；model / providerId / effort 留空沿用绑定会话，传入则改用；' +
       '(5) 默认 useWorktree=false / notify={desktop:true, feishu:false}；' +
       '(6) 删除已有调度前先用 schedule_get / schedule_list 核对目标和授权；本次自动跟进达到既定停止条件时，可自行停止和清理自身调度，不影响其他调度；' +
       '(7) 确定是检查时显式设 silentWhenIdle=true（无变化不播报）；提醒/定时发送设 false，保留用户选择。省略此字段会按 false 处理，避免旧调用方的提醒被吞。如果用户定义了提醒条件，把条件保留在 prompt 里（如 CI 失败/新评论时提醒），有结果时用 schedule_notify_current_run 主动上报；' +
@@ -97,7 +97,7 @@ export function registerScheduleCreateTool(
       model: z
         .string()
         .optional()
-        .describe('agent model，例 "claude-sonnet-4-6" / "gpt-5"。heartbeat 模式忽略此字段'),
+        .describe('agent model，例 "claude-sonnet-4-6" / "gpt-5"。heartbeat 模式留空沿用绑定会话'),
       providerId: z
         .string()
         .optional()
@@ -109,7 +109,7 @@ export function registerScheduleCreateTool(
       effort: z
         .enum(EFFORT)
         .optional()
-        .describe('codex effort 档位；非白名单值会被 INVALID_ARGS 拦下。heartbeat 模式忽略'),
+        .describe('codex effort 档位；非白名单值会被 INVALID_ARGS 拦下。heartbeat 模式留空沿用绑定会话'),
       workingDir: z
         .string()
         .optional()

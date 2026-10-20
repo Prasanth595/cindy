@@ -847,7 +847,7 @@
       "resetModules": 1
     },
     "apps/desktop/src/renderer/features/bots/__tests__/botNavigation.test.ts": {
-      "sourceReads": 6
+      "sourceReads": 5
     },
     "apps/desktop/src/renderer/features/bots/__tests__/botStore.lifecycle.test.ts": {
       "resetModules": 2

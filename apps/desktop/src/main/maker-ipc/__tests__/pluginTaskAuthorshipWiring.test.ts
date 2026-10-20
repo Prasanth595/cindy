@@ -1,3 +1,4 @@
+import { bindTaskActionInput } from '../taskActionAuthorization.js';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import ts from 'typescript';
@@ -122,9 +123,9 @@ it('builds a durable queued plugin input without promoting plugin text to user i
   const end = source.indexOf('  const orcaInterAgentDispatcher:', start);
   expect(start).toBeGreaterThan(0);
   const createOpts = { model: 'm', effort: 'high', permissionMode: 'auto', workingDir: '/answer' };
-  const build = new Function('buildCreateOptsForQueuedSession', 'permissionModeOrAsk', 'UI_ACTION_TRIGGER_PREFIX', 'HOST_ONLY_AGENT_PREFIX',
+  const build = new Function('buildCreateOptsForQueuedSession', 'permissionModeOrAsk', 'UI_ACTION_TRIGGER_PREFIX', 'HOST_ONLY_AGENT_PREFIX', 'bindTaskActionInput',
     compile(source.slice(start, end) + '\nreturn buildSessionControlInputItem;'))(
-      vi.fn(async () => createOpts), (mode: string) => mode, '[UI_ACTION_TRIGGER]', HOST_ONLY_AGENT_PREFIX,
+      vi.fn(async () => createOpts), (mode: string) => mode, '[UI_ACTION_TRIGGER]', HOST_ONLY_AGENT_PREFIX, bindTaskActionInput,
     );
   const base = { targetSessionId: 'lead', clientId: 'plugin-input', message: 'Plugin instructions', persistedContent: 'Plugin instructions', meta: {} };
   const queued = JSON.parse(JSON.stringify(await build({ ...base, autoReviewUserText: { kind: 'delegated-continuation' } })));
@@ -141,9 +142,9 @@ it('keeps host receipts hidden in the queue while the model text omits the trigg
   const start = source.indexOf('  async function buildSessionControlInputItem(params: {');
   const end = source.indexOf('  const orcaInterAgentDispatcher:', start);
   const createOpts = { model: 'm', effort: 'high', permissionMode: 'auto', workingDir: '/answer' };
-  const build = new Function('buildCreateOptsForQueuedSession', 'permissionModeOrAsk', 'UI_ACTION_TRIGGER_PREFIX', 'HOST_ONLY_AGENT_PREFIX',
+  const build = new Function('buildCreateOptsForQueuedSession', 'permissionModeOrAsk', 'UI_ACTION_TRIGGER_PREFIX', 'HOST_ONLY_AGENT_PREFIX', 'bindTaskActionInput',
     compile(source.slice(start, end) + '\nreturn buildSessionControlInputItem;'))(
-      vi.fn(async () => createOpts), (mode: string) => mode, '[UI_ACTION_TRIGGER]', HOST_ONLY_AGENT_PREFIX,
+      vi.fn(async () => createOpts), (mode: string) => mode, '[UI_ACTION_TRIGGER]', HOST_ONLY_AGENT_PREFIX, bindTaskActionInput,
     );
   const receipt = '[任务回执] 后台任务已完成。task_id: d-1';
   const queued = await build({
