@@ -1069,7 +1069,7 @@
       "realWaits": 2
     },
     "packages/maker-core/src/agents/pi/__tests__/cindySubagentRunner.test.ts": {
-      "realWaits": 2
+      "realWaits": 1
     },
     "packages/maker-core/src/agents/pi/__tests__/cindySubagentSource.test.ts": {
       "sourceReads": 3
