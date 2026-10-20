@@ -26,8 +26,8 @@ export interface CrossAgentConvertDialogProps {
   onOpenChange: (open: boolean) => void;
   onConfirm: () => void;
   onCancel: () => void;
-  onSuppressAgentsMd?: () => void;
-  savingPreference?: boolean;
+  onSuppressAgentsMd: () => void;
+  savingPreference: boolean;
 }
 
 export function CrossAgentConvertDialog({
@@ -39,7 +39,7 @@ export function CrossAgentConvertDialog({
   onConfirm,
   onCancel,
   onSuppressAgentsMd,
-  savingPreference = false,
+  savingPreference,
 }: CrossAgentConvertDialogProps) {
   const { t } = useTranslation();
   const isRunning = phase === 'running';

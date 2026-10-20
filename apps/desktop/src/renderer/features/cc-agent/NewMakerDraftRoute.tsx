@@ -5947,15 +5947,7 @@ export function NewMakerDraftRoute() {
         </div>
 
         {/* 跨 Agent 工作区互转 (5 项独立判断 + 步骤式进度) —— send 流程会 await 等它关闭 */}
-        <CrossAgentConvertDialog
-          open={crossAgentDialog.open}
-          phase={crossAgentDialog.phase}
-          items={crossAgentDialog.items}
-          stepMap={crossAgentDialog.stepMap}
-          onOpenChange={crossAgentDialog.onOpenChange}
-          onConfirm={crossAgentDialog.onConfirm}
-          onCancel={crossAgentDialog.onCancel}
-        />
+        <CrossAgentConvertDialog {...crossAgentDialog} />
 
         {/* 「开启协同」富弹窗:与会话内 CCAgentSessionView 同一组件/标题。草稿态没有 sessionId,
             不立刻 enableOrca —— onCreate 把 Worker 富配置写进 draft.collab,createSession 后由
