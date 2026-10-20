@@ -183,6 +183,7 @@ export function registerMakerUsageHandlers(
       modelDays?: unknown;
       device?: unknown;
       includeTasks?: unknown;
+      includeHourly?: unknown;
       forceRefresh?: unknown;
     };
     const days =
@@ -209,6 +210,7 @@ export function registerMakerUsageHandlers(
       ...(modelDays === undefined ? {} : { modelDays }),
       ...(device === undefined ? {} : { device }),
       ...(raw.includeTasks === true ? { includeTasks: true } : {}),
+      ...(raw.includeHourly === true ? { includeHourly: true } : {}),
       ...(forceRefresh ? { forceRefresh: true } : {}),
     };
     try {
