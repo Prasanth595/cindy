@@ -1450,6 +1450,11 @@ export function SessionGroupNode({
         tabIndex={0}
         aria-expanded={!collapsed}
         onClick={onToggle}
+        onContextMenu={(e) => {
+          // 固定分组没有局部菜单,也不应冒泡触发侧栏空白处的全局整理菜单。
+          e.preventDefault();
+          e.stopPropagation();
+        }}
         onKeyDown={(e) => {
           if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault();

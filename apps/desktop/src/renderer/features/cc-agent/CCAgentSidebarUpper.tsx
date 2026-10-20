@@ -3809,8 +3809,8 @@ function ExpandedView({
           ref={sidebarScrollRef}
           className="flex flex-col gap-2 pt-0 pb-4 overflow-y-auto flex-1"
           // 空白处右键 = 打开整理菜单(2026-08-12 用户裁决)。命中会话行 / 项目行 /
-          // 对话组头时不接管——那些行有各自的右键菜单,由它们 stopPropagation 后
-          // 自行处理;这里只兜「没有任何行响应」的空白区域。
+          // 对话组头时不接管——会话行 / 项目行处理自己的菜单,对话组头只拦截冒泡;
+          // 这里只兜「没有任何行响应」的空白区域。
           onContextMenu={handleSidebarBlankContextMenu}
           style={
             {
