@@ -12,7 +12,7 @@ import React from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { ProviderView } from '@cindy/model-providers';
+import type { CustomProviderConfig, ProviderView } from '@cindy/model-providers';
 import { createIpcError } from '../../shared/ipc-errors';
 import { toast } from '@/lib/toast';
 
@@ -182,6 +182,7 @@ vi.mock('@/lib/providerSubtitle', () => ({
 
 vi.mock('@/state/modelVisibilityPrefs', () => ({
   isModelEnabled: () => true,
+  isModelVisibilityCustomized: () => false,
   setModelVisibilities: vi.fn(),
   setModelVisibility: vi.fn(),
   useModelVisibilityVersion: () => 0,
@@ -235,6 +236,55 @@ afterEach(() => {
 });
 
 describe('ProvidersSection — 双栏管理', () => {
+  // #6601 review / #5090, unit: real ProvidersSection → list → drawer. Existing
+  // discovery tests only cover completed refreshes. One pending fetch/readback
+  // must block alias writes, keep the draft, then save against the refreshed config.
+  it('keeps a name draft without writing over an in-flight model refresh', async () => {
+    const initial = { id: 'refresh-rename', name: 'Relay', runtimes: { codex: { baseUrl: 'https://relay.example.invalid/v1', models: [{ id: 'private', name: 'Private', extra: { keep: true } }] } } };
+    let stored: CustomProviderConfig = initial;
+    providerSnapshotState.customOverride = { ...buildUserProvider(stored), connected: true };
+    providerSnapshotState.order = [stored.id];
+    let finishFetch!: () => void;
+    const fetchModels = vi.fn(() => new Promise(resolve => { finishFetch = () => resolve({ ok: true, models: [{ id: 'private', name: 'Discovered' }, { id: 'new', name: 'New' }] }); }));
+    let finishReadback!: () => void;
+    const readback = new Promise<void>(resolve => { finishReadback = resolve; });
+    const persist = vi.fn(async (config: CustomProviderConfig) => { stored = structuredClone(config); return { ok: true as const }; });
+    Object.assign(window.electronAPI.maker, { fetchProviderModels: fetchModels, updateCustomProvider: persist, getModelContextLimit: async () => ({ limit: null, isCustomized: false }) });
+    const actual = await vi.importActual<typeof import('@/lib/customProviders')>('@/lib/customProviders');
+    vi.mocked(updateCustomProvider).mockImplementation(actual.updateCustomProvider);
+    const page = () => <MemoryRouter><ProvidersSection /></MemoryRouter>;
+    const view = render(page());
+    refetchProvidersSpy.mockImplementation(async () => {
+      await readback;
+      providerSnapshotState.customOverride = { ...buildUserProvider(stored), connected: true };
+      view.rerender(page());
+      return true;
+    });
+    try {
+      fireEvent.click(await screen.findByRole('button', { name: 'settings.providers.models.refreshAria' }));
+      await waitFor(() => expect(fetchModels).toHaveBeenCalledOnce());
+      fireEvent.click(screen.getByRole('button', { name: 'settings.providers.models.advanced.openAria' }));
+      const input = screen.getByRole('textbox', { name: 'settings.providers.models.advanced.displayName' }) as HTMLInputElement;
+      fireEvent.change(input, { target: { value: 'Work Alias' } });
+      const save = screen.getByRole('button', { name: 'settings.providers.models.advanced.saveName' }) as HTMLButtonElement;
+      expect(save.disabled).toBe(true);
+      fireEvent.click(save);
+      expect(persist).not.toHaveBeenCalled();
+      await act(async () => { finishFetch(); });
+      await waitFor(() => expect(refetchProvidersSpy).toHaveBeenCalledOnce());
+      expect(save.disabled).toBe(true);
+      expect(persist).toHaveBeenCalledOnce();
+      const refreshed = structuredClone(stored);
+      await act(async () => { finishReadback(); });
+      await waitFor(() => expect(save.disabled).toBe(false));
+      expect(input.value).toBe('Work Alias');
+      fireEvent.click(save);
+      await waitFor(() => expect(persist).toHaveBeenCalledTimes(2));
+      expect(stored).toEqual({ ...refreshed, runtimes: { ...refreshed.runtimes, codex: { ...refreshed.runtimes.codex, models: refreshed.runtimes.codex!.models.map(model => model.id === 'private' ? { ...model, name: 'Work Alias', nameExplicit: true } : model) } } });
+      expect(stored.runtimes.codex!.models.map(model => model.id).sort()).toEqual(['new', 'private']);
+    } finally { finishReadback(); vi.mocked(updateCustomProvider).mockReset(); refetchProvidersSpy.mockReset(); }
+  });
+
   it('keeps a recovery action accessible when the first complete catalog could not be published', async () => {
     providerSnapshotState.loading = true;
     providerSnapshotState.error = { reason: 'storage-quota' };

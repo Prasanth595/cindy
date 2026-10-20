@@ -200,6 +200,8 @@ interface Props {
   disabled: boolean;
   /** 付费锁定行不给写入入口（与列表行同一判定）。 */
   paymentRequired: boolean;
+  /** Parent discovery owns a full-config snapshot until its readback finishes. */
+  refreshing?: boolean;
 }
 
 export function ModelAdvancedDrawer({
@@ -212,6 +214,7 @@ export function ModelAdvancedDrawer({
   onDeleteLocal,
   disabled,
   paymentRequired,
+  refreshing = false,
 }: Props) {
   const { t, i18n } = useTranslation();
   const selectionAvailable = provider.connected && !provider.suspended;
@@ -305,7 +308,7 @@ export function ModelAdvancedDrawer({
   const saveModelName = async () => {
     const name = nameDraft.trim();
     if (!canEditName || !row || !name || !nameDirtyRef.current ||
-        nameSavingRef.current || protocolSaving || imageCapabilitySaving) return;
+        refreshing || nameSavingRef.current || protocolSaving || imageCapabilitySaving) return;
     const config = providerViewToCustomProviderConfig(provider);
     // A union row can contain different IDs on each engine. Never match by its
     // canonical ID or display name, and preserve the original per-model config.
@@ -1089,7 +1092,7 @@ export function ModelAdvancedDrawer({
                               value={nameDraft} disabled={nameSaving}
                               onChange={(value) => { nameDirtyRef.current = true; setNameDraft(value); }} />
                             <Button type="button" variant="secondary" size="md" compact loading={nameSaving}
-                              disabled={!nameDraft.trim() || !nameDirtyRef.current || protocolSaving || imageCapabilitySaving}
+                              disabled={refreshing || !nameDraft.trim() || !nameDirtyRef.current || protocolSaving || imageCapabilitySaving}
                               onClick={() => void saveModelName()}>
                               {t('settings.providers.models.advanced.saveName')}
                             </Button>
