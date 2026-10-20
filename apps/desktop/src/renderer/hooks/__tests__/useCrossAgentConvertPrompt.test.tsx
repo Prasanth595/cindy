@@ -51,6 +51,20 @@ const open = (items = [instruction]) => {
 };
 
 describe('migration prompt decisions', () => {
+  // P1 #6522: before a generated worktree exists, there is no physical directory
+  // to persist. Unit: actual hook/dialog, null target + one item; old UI offered
+  // a save anyway. Existing tests only covered concrete workspace paths.
+  it('keeps conversion and cancel available without a persistent choice before worktree creation', async () => {
+    let finished!: Promise<void>;
+    act(() => { finished = dialog.runMigrationFlow([instruction], null); });
+    expect(screen.queryByRole('button', { name: 'commonUi.crossAgentConvert.suppressAgentsMd' })).toBeNull();
+    expect(screen.getByText(instruction.label)).toBeTruthy();
+    api.convert.mockResolvedValueOnce({ total: 1, successCount: 1, skippedCount: 0, failedCount: 0 });
+    await act(async () => { dialog.onConfirm(); await finished; });
+    expect(api.convert).toHaveBeenCalledWith([instruction]);
+    expect(api.suppressAgentsMdPrompt).not.toHaveBeenCalled();
+  });
+
   it('ordinary cancel closes without persisting or converting', async () => {
     const finished = open();
     act(() => dialog.onCancel());
@@ -70,7 +84,7 @@ describe('migration prompt decisions', () => {
     );
     const finished = open();
     act(() => {
-      dialog.onSuppressAgentsMd();
+      dialog.onSuppressAgentsMd!();
       dialog.onConfirm();
       dialog.onCancel();
     });
@@ -87,7 +101,7 @@ describe('migration prompt decisions', () => {
   it('keeps unrelated items available after hiding AGENTS.md conversion', async () => {
     const finished = open([instruction, hooks]);
     await act(async () => {
-      dialog.onSuppressAgentsMd();
+      dialog.onSuppressAgentsMd!();
     });
     expect(screen.queryByText(instruction.label)).toBeNull();
     expect(screen.getByText('Hooks')).toBeTruthy();
@@ -100,7 +114,7 @@ describe('migration prompt decisions', () => {
     api.suppressAgentsMdPrompt.mockRejectedValueOnce(new Error('disk full'));
     const finished = open();
     await act(async () => {
-      dialog.onSuppressAgentsMd();
+      dialog.onSuppressAgentsMd!();
     });
     await waitFor(() =>
       expect(toast.error).toHaveBeenCalledWith('commonUi.crossAgentConvert.preferenceFailed'),

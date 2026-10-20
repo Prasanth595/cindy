@@ -7124,6 +7124,7 @@ interface ElectronAPI {
       detect: (
         workingDir: string,
         agentKind: 'claude-code' | 'codex' | 'pi',
+        respectPromptPreference?: boolean,
       ) => Promise<{ items: CrossAgentMigrationItem[] }>;
       convert: (items: CrossAgentMigrationItem[]) => Promise<{
         total: number;

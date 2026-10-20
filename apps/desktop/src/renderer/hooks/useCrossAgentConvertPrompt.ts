@@ -35,16 +35,17 @@ export interface CrossAgentMigrationDialogState {
   onOpenChange: (open: boolean) => void;
   onConfirm: () => void;
   onCancel: () => void;
-  onSuppressAgentsMd: () => void;
+  onSuppressAgentsMd: (() => void) | null;
   savingPreference: boolean;
 }
 
 export interface UseCrossAgentMigrationDialogResult extends CrossAgentMigrationDialogState {
   /**
    * 启动一次"询问 + 转换"流程。返回 Promise，弹窗关闭（用户决定 + 可能完成转换）后 resolve。
+   * workingDir 为 null 时仅询问转换，不提供持久选择（新 worktree 尚未创建）。
    * 若 items 为空 → 立即 resolve，不弹窗。
    */
-  runMigrationFlow: (items: CrossAgentMigrationItem[], workingDir: string) => Promise<void>;
+  runMigrationFlow: (items: CrossAgentMigrationItem[], workingDir: string | null) => Promise<void>;
 }
 
 export function useCrossAgentMigrationDialog(): UseCrossAgentMigrationDialogResult {
@@ -53,7 +54,7 @@ export function useCrossAgentMigrationDialog(): UseCrossAgentMigrationDialogResu
   const [phase, setPhase] = useState<DialogPhase>('closed');
   const [items, setItems] = useState<CrossAgentMigrationItem[]>([]);
   const [stepMap, setStepMap] = useState<Record<string, { status: CrossAgentStepStatus; detail?: string }>>({});
-  const workingDirRef = useRef('');
+  const workingDirRef = useRef<string | null>(null);
   const preferencePending = useRef(false);
   const [savingPreference, setSavingPreference] = useState(false);
 
@@ -76,7 +77,7 @@ export function useCrossAgentMigrationDialog(): UseCrossAgentMigrationDialogResu
     return unsub;
   }, []);
 
-  const runMigrationFlow = useCallback((nextItems: CrossAgentMigrationItem[], workingDir: string): Promise<void> => {
+  const runMigrationFlow = useCallback((nextItems: CrossAgentMigrationItem[], workingDir: string | null): Promise<void> => {
     if (!nextItems || nextItems.length === 0) return Promise.resolve();
     return new Promise<void>((resolve) => {
       resolverRef.current = resolve;
@@ -169,7 +170,7 @@ export function useCrossAgentMigrationDialog(): UseCrossAgentMigrationDialogResu
     onOpenChange,
     onConfirm: handleConfirm,
     onCancel: handleCancel,
-    onSuppressAgentsMd: handleSuppressAgentsMd,
+    onSuppressAgentsMd: workingDirRef.current ? handleSuppressAgentsMd : null,
     savingPreference,
     runMigrationFlow,
   };

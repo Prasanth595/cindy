@@ -9,10 +9,10 @@ const instruction: CrossAgentMigrationItem = {
   source: 'C:\\Workspace\\project\\AGENTS.md', target: 'C:\\Workspace\\project\\CLAUDE.md',
 };
 const hooks: CrossAgentMigrationItem = { ...instruction, id: 'hooks:0', kind: 'hooks', label: 'Codex hooks → Claude hooks' };
-function Prompt({ mixed }: { mixed: boolean }) {
+function Prompt({ mixed, precreate }: { mixed: boolean; precreate: boolean }) {
   const dialog = useCrossAgentMigrationDialog();
   const run = dialog.runMigrationFlow;
-  useEffect(() => { void run(mixed ? [instruction, hooks] : [instruction], 'C:\\Workspace\\project'); }, [mixed, run]);
+  useEffect(() => { void run(mixed ? [instruction, hooks] : [instruction], precreate ? null : 'C:\\Workspace\\project'); }, [mixed, precreate, run]);
   return <CrossAgentConvertDialog {...dialog} />;
 }
 void mountPage({
@@ -31,5 +31,5 @@ void mountPage({
   },
   render: (ctx) => ctx.data.recovery
     ? <main className="mx-auto max-w-[720px] p-4"><MigrationPromptSection /></main>
-    : <Prompt mixed={Boolean(ctx.data.mixed)} />,
+    : <Prompt mixed={Boolean(ctx.data.mixed)} precreate={Boolean(ctx.data.precreate)} />,
 });

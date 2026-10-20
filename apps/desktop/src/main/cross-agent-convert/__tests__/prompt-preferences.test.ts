@@ -53,6 +53,11 @@ describe('migration prompt IPC', () => {
     await call(CROSS_AGENT_CHANNELS.PREFERENCES, 'suppress', wd);
     const hidden = await call(CROSS_AGENT_CHANNELS.DETECT, wd, 'claude-code');
     expect(hidden).toMatchObject({ items: [{ kind: 'hooks' }] });
+    // P1 #6522: pre-create worktree detection inspects the base repository, but
+    // that repository's saved choice must not hide a future worktree's prompt.
+    expect(await call(CROSS_AGENT_CHANNELS.DETECT, wd, 'claude-code', false)).toMatchObject({
+      items: [{ kind: 'agents-md' }, { kind: 'hooks' }],
+    });
     // A forward choice must not hide the reverse conversion in the same directory.
     await fs.rename(path.join(wd, 'AGENTS.md'), path.join(wd, 'AGENTS.fixture-backup'));
     await fs.writeFile(path.join(wd, 'CLAUDE.md'), '# reverse instructions');

@@ -8176,8 +8176,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
       detect: (
         workingDir: string,
         agentKind: 'claude-code' | 'codex',
+        respectPromptPreference = true,
       ): Promise<{ items: CrossAgentMigrationItem[] }> =>
-        ipcRenderer.invoke('maker:cross-agent:detect', workingDir, agentKind),
+        ipcRenderer.invoke('maker:cross-agent:detect', workingDir, agentKind, respectPromptPreference),
       convert: (
         items: CrossAgentMigrationItem[],
       ): Promise<{

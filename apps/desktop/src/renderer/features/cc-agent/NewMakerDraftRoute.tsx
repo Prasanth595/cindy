@@ -4035,15 +4035,19 @@ export function NewMakerDraftRoute() {
           // 跨 Agent 工作区检测 + 迁移：必须在 createSession 之前完成，
           // agent 启动时看到的工作区已是迁移后的状态。fail-soft：检测错误只 warn，不阻塞 send。
           try {
-            const wd = effectiveWorkingDir;
+            const wd = selectedWorkingDir;
+            // This pre-create prompt inspects the base repo, not the future worktree.
+            // Keep its existing conversion flow without reading/writing the base preference.
+            const canRememberWorkspace = !(selectedWorktree.enabled && selectedWorktree.baseRepo);
             if (wd && !isRemoteProjectDraft && persistedAgentKind !== 'pi') {
               const r = await crossAgentConvertService.detect(
                 wd,
                 persistedAgentKind === 'cc' ? 'claude-code' : persistedAgentKind,
+                canRememberWorkspace,
               );
               if (r.items.length > 0) {
                 // 阻塞等弹窗关闭（用户点不要 / 完成转换 / 失败）—— 都视为流程结束
-                await crossAgentDialog.runMigrationFlow(r.items, wd);
+                await crossAgentDialog.runMigrationFlow(r.items, canRememberWorkspace ? wd : null);
               }
             }
           } catch (err) {

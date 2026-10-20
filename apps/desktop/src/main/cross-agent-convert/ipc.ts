@@ -49,7 +49,7 @@ export function registerCrossAgentConvertIpc(): void {
 
   ipcMain.handle(
     CROSS_AGENT_CHANNELS.DETECT,
-    async (event, workingDir: unknown, agentKind: unknown): Promise<DetectResult> => {
+    async (event, workingDir: unknown, agentKind: unknown, respectPromptPreference: unknown = true): Promise<DetectResult> => {
       assertTrustedAppRendererEvent(event);
       if (typeof workingDir !== 'string' || !workingDir) return { items: [] };
       if (agentKind !== 'claude-code' && agentKind !== 'codex') return { items: [] };
@@ -57,7 +57,7 @@ export function registerCrossAgentConvertIpc(): void {
         workingDir,
         agentKind: agentKind as AgentKind,
       } satisfies DetectInput);
-      if (agentKind === 'claude-code' && (await promptPreferences.isSuppressed(workingDir))) {
+      if (respectPromptPreference !== false && agentKind === 'claude-code' && (await promptPreferences.isSuppressed(workingDir))) {
         result.items = result.items.filter((item) => item.kind !== 'agents-md');
       }
       return result;

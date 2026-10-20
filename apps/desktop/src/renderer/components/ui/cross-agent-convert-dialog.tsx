@@ -26,7 +26,7 @@ export interface CrossAgentConvertDialogProps {
   onOpenChange: (open: boolean) => void;
   onConfirm: () => void;
   onCancel: () => void;
-  onSuppressAgentsMd: () => void;
+  onSuppressAgentsMd: (() => void) | null;
   savingPreference: boolean;
 }
 

@@ -14,8 +14,8 @@ export const crossAgentConvertService = {
   restoreAgentsMdPrompt(workingDir: string): Promise<string[]> {
     return window.electronAPI.maker.crossAgent.restoreAgentsMdPrompt(workingDir);
   },
-  detect(workingDir: string, agentKind: 'claude-code' | 'codex'): Promise<{ items: CrossAgentMigrationItem[] }> {
-    return window.electronAPI.maker.crossAgent.detect(workingDir, agentKind);
+  detect(workingDir: string, agentKind: 'claude-code' | 'codex', respectPromptPreference = true): Promise<{ items: CrossAgentMigrationItem[] }> {
+    return window.electronAPI.maker.crossAgent.detect(workingDir, agentKind, respectPromptPreference);
   },
   convert(items: CrossAgentMigrationItem[]): Promise<{
     total: number;

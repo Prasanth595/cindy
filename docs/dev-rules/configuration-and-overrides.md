@@ -75,6 +75,8 @@ token）与 [`engineering-conventions.md`](engineering-conventions.md)（i18n）
 `AGENTS.md → CLAUDE.md` 这一项。其他目录、反向转换及 agents/hooks/MCP 转换照常检测；
 普通取消、Esc 与转换失败不写入该选择。设置 → 通用仅在存在此类选择时显示恢复列表，
 逐目录恢复会删除对应 override，下次确实需要转换时再提示。
+自动创建 worktree 前的弹窗仍检测基础仓库，但不读取该仓库的提示偏好，也不提供持久关闭
+选项，避免把尚未创建的工作区选择写到基础仓库；直接选择已存在的 worktree 时按其目录记录。
 
 偏好在当前 Desktop profile 的 `userData/cross-agent-prompt-preferences.json`：
 `{ "suppressedWorkspaces": ["绝对目录路径"] }`。仅存显式关闭的目录；目录经 realpath 归一，

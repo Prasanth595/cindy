@@ -66,6 +66,7 @@ async function submit(options: {
   backendProviders?: ProviderView[];
   providerId?: string;
   agentKind?: 'pi' | 'codex' | 'claude-code';
+  workingDir?: string;
   remoteHostId?: string;
   agentDeviceId?: string;
   message?: string;
@@ -149,8 +150,11 @@ async function submit(options: {
   const noop = () => {};
   const setPending = vi.fn();
   const toastError = vi.fn();
+  const migrationItems = [{ kind: 'agents-md', direction: 'to-claude' }];
+  const crossAgentConvertService = { detect: vi.fn(async () => ({ items: migrationItems })) };
+  const crossAgentDialog = { runMigrationFlow: vi.fn(async () => {}) };
   const environment = {
-    ...draftEffort, getModel, window,
+    ...draftEffort, getModel, window, crossAgentConvertService, crossAgentDialog,
     localProviders: providers, localProvidersLoading: false, providers,
     capabilityAgentKind: agentKind, persistedAgentKind: agentKind,
     calibratedDraftModel: selectedModel, chatPrefs, getProviderModelEffort: () => undefined,
@@ -162,7 +166,7 @@ async function submit(options: {
     isDeviceLinkDraft: !!options.deviceId, isRemoteProjectDraft: !!options.remoteHostId,
     isAgentDeviceDraft: !!options.agentDeviceId, remoteModelListStatus: 'ready', remoteDraftState: { status: 'ready' },
     effectiveRemoteHostId: options.remoteHostId, effectiveAgentDeviceId: options.agentDeviceId,
-    effectiveWorkingDir: hasWorktree ? baseRepo : options.remoteHostId ? '/remote/project' : null,
+    effectiveWorkingDir: hasWorktree ? baseRepo : options.remoteHostId ? '/remote/project' : options.workingDir ?? null,
     effectiveExtraDirs: [], effectiveWritableDirs: [], effectiveFastMode: false, effectivePlanMode: false,
     effectiveDeviceLinkDeviceId: options.deviceId, effectiveDeviceLinkDeviceName: options.deviceId, catalogDeviceId: options.deviceId,
     agentCatalogProviders: providers, deviceProvidersLoading: false,
@@ -197,7 +201,6 @@ async function submit(options: {
     commitRemoteSessionHandoff: () => {}, rememberRecoverableHandoff: () => {},
     getBranchName: (name: string) => `cindy/${name}`,
     sessionService: { touchUserSend: async () => {}, get: async () => ({ status: 'active' }), update: async () => {} },
-    crossAgentConvertService: { detect: async () => ({ items: [] }) },
     refreshWorktreeForSession: async () => {},
     worktreeCreationStore: { clear: finishWorktree, set: (_id: string, state: { status: string }) => {
       if (state.status === 'failed') finishWorktree();
@@ -235,6 +238,27 @@ async function submit(options: {
 }
 
 describe('homepage submission to Main admission and first-message handoff', () => {
+  // P1 #6522: execute the production submit callback with an existing directory
+  // versus an enabled future worktree. Its migration protocol must not read/write
+  // the base repository's preference for a not-yet-created workspace. Earlier
+  // cases used Pi (no migration flow). Unit, simulated IPC; no real Git/processes.
+  it.each([false, true])('keeps migration preferences scoped when creating a worktree is %s', async generated => {
+    const p = provider();
+    p.models['claude-code'] = [{ ...p.models.pi![0], efforts: ['medium'], defaultEffort: 'medium' }];
+    const result = await submit({ agentKind: 'claude-code', providers: [p],
+      workingDir: '/fixture/repo', ...(generated ? { worktreeSkills: [] } : {}) });
+    expect(result.errors).toEqual([]);
+    expect(result.environment.crossAgentConvertService.detect).toHaveBeenCalledWith(
+      '/fixture/repo', 'claude-code', !generated,
+    );
+    expect(result.environment.crossAgentDialog.runMigrationFlow).toHaveBeenCalledWith(
+      [{ kind: 'agents-md', direction: 'to-claude' }], generated ? null : '/fixture/repo',
+    );
+    expect(result.sendMessage).toHaveBeenCalledWith('created', 'hello', modelId, 'medium',
+      'default', generated ? '/fixture/repo/.cindy-worktrees/creator' : '/fixture/repo',
+      [], [], expect.any(Object));
+  });
+
   // Unit: a Claude-prefilled creator draft must be resolved again after switching
   // to Pi, including when Pi uses another computer as its provider. Exercise the
   // actual home submit callback before any session creation/handoff.
