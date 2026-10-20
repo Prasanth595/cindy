@@ -126,10 +126,11 @@ const MENTION_CARD_CLOSE_MS = 150;
  * Message text as Markdown, with `@名字` of known members in the link color. Resting the pointer on a
  * mention shows that member's card; mentions are text ranges, so the hit test reads their boxes.
  */
-function BotGroupMessageText({ content, mentionLabels, members, mentions }: {
+function BotGroupMessageText({ content, mentionLabels, members, mentions, serverBacked }: {
   content: string; mentionLabels: readonly string[]; members: readonly BotGroupMemberView[];
   /** Who the message mentioned; decides whose card a highlighted name opens. */
   mentions: BotGroupMention;
+  serverBacked: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const rangesRef = useRef<Range[]>([]);
@@ -177,7 +178,7 @@ function BotGroupMessageText({ content, mentionLabels, members, mentions }: {
     const hit = rangesRef.current.find((range) => typeof range.getClientRects === 'function' && [...range.getClientRects()].some((box) =>
       x >= box.left && x <= box.right && y >= box.top && y <= box.bottom));
     // mentionLabels[0] is the broadcast label (BotGroupChatView).
-    const member = hit ? botGroupMentionMember(hit.toString(), members, mentions, mentionLabels[0] ?? '') : undefined;
+    const member = hit ? botGroupMentionMember(hit.toString(), members, mentions, mentionLabels[0] ?? '', serverBacked) : undefined;
     root.style.cursor = member ? 'pointer' : '';
     if (!hit || !member) { if (pendingRef.current || card) scheduleClose(); return; }
     if (pendingRef.current === hit) return;
@@ -413,23 +414,23 @@ function BotGroupTimelineItemImpl(props: BotGroupTimelineItemProps) {
           <div className={cn('flex min-w-0 flex-col items-end gap-1.5 transition-opacity', BUBBLE_COLUMN_CLASS, message.pending && message.outbox?.status !== 'failed' && 'opacity-60')}>
             {/* The toolbar and the reaction corner hang off the message's own content. */}
             <div className="relative flex min-w-0 max-w-full flex-col items-end gap-1.5">
-              {share ? <>{reactions}{quote}{shareBody}</> : null}
+              {share ? <>{reactions}<div className="relative flex min-w-0 max-w-full flex-col items-end gap-1.5">{quote}{shareBody}{actions}</div></> : null}
               {/* Text and attachments share one bubble, like a teammate's. */}
               {!share && (hasText || hasAttachments) ? (
                 <div className="flex w-fit min-w-0 max-w-full flex-col">
                   {reactions}
                   <div
                     data-testid="bot-group-self-bubble"
-                    className={`flex max-w-full flex-col gap-2 rounded-xl border border-[var(--msg-user-border)] bg-[var(--msg-user-bg)] px-3.5 py-2 text-[var(--msg-user-text)] ${CHAT_BODY_CLASS}`}
+                    className={`relative flex max-w-full flex-col gap-2 rounded-xl border border-[var(--msg-user-border)] bg-[var(--msg-user-bg)] px-3.5 py-2 text-[var(--msg-user-text)] ${CHAT_BODY_CLASS}`}
                   >
                     {quote}
-                    {hasText ? <BotGroupMessageText content={message.content} mentionLabels={mentionLabels} members={members} mentions={message.mentions ?? NO_MENTIONS} /> : null}
+                    {hasText ? <BotGroupMessageText content={message.content} mentionLabels={mentionLabels} members={members} mentions={message.mentions ?? NO_MENTIONS} serverBacked={Boolean(props.reactionGroupId)} /> : null}
                     <BotGroupMessageAttachments attachments={message.attachments ?? []} align="start" />
+                    {actions}
                   </div>
                 </div>
               ) : null}
-              {!share && !hasText && !hasAttachments ? <>{reactions}{quote}</> : null}
-              {actions}
+              {!share && !hasText && !hasAttachments ? <>{reactions}<div className="relative">{quote}{actions}</div></> : null}
             </div>
             {threadPreview}
             {props.footer}
@@ -482,7 +483,7 @@ function BotGroupTimelineItemImpl(props: BotGroupTimelineItemProps) {
           <div className={cn('relative flex min-w-0 flex-col', BUBBLE_COLUMN_CLASS)}>
             <ChatMessageReactions corner groupId={props.reactionGroupId} message={message} members={members} reactionRevision={props.reactionRevision} onChanged={props.onChanged} />
             <div data-testid="bot-group-bubble"
-              className={cn('flex min-w-0 max-w-full flex-col gap-2 rounded-xl border border-[var(--border-default)] bg-[var(--surface-elevated)] px-3.5 py-2.5 text-[var(--msg-assistant-text)]', CHAT_BODY_CLASS)}>
+              className={cn('relative flex min-w-0 max-w-full flex-col gap-2 rounded-xl border border-[var(--border-default)] bg-[var(--surface-elevated)] px-3.5 py-2.5 text-[var(--msg-assistant-text)]', CHAT_BODY_CLASS)}>
               {isPlanCard ? (
                 <div>
                   <BotGroupPlanCard
@@ -505,7 +506,7 @@ function BotGroupTimelineItemImpl(props: BotGroupTimelineItemProps) {
                   {shareBody}
                   {!share && hasText ? (
                     <div className="min-w-0">
-                      <BotGroupMessageText content={message.content} mentionLabels={mentionLabels} members={members} mentions={message.mentions ?? NO_MENTIONS} />
+                      <BotGroupMessageText content={message.content} mentionLabels={mentionLabels} members={members} mentions={message.mentions ?? NO_MENTIONS} serverBacked={Boolean(props.reactionGroupId)} />
                     </div>
                   ) : null}
                   {/* A task this teammate started from the group, under what it said about it; mine is live
@@ -519,8 +520,8 @@ function BotGroupTimelineItemImpl(props: BotGroupTimelineItemProps) {
                   <BotGroupHandoffFiles files={message.files ?? []} workDir={props.plan?.workDir ?? null} />
                 </>
               )}
+              {actions}
             </div>
-            {actions}
           </div>
           {threadPreview}
           {props.footer}

@@ -7,18 +7,20 @@ import { botGroupMemberDisplayName } from './BotGroupTimelineModel';
 const key = (name: string) => `bots.groupChat.server.settings.${name}`;
 
 /**
- * The member a `@名字` in message text names. Only members the message actually mentioned
- * (`mentions.botIds`) qualify, so a same-named member never answers; the broadcast label
- * names nobody when the message mentioned everyone.
+ * Prefer explicit mention ids. Server snapshots currently omit those ids, so they may
+ * fall back to a unique roster name; ambiguous names and broadcast labels never guess.
  */
 export function botGroupMentionMember(label: string, members: readonly BotGroupMemberView[],
-  mentions: BotGroupMention, allLabel: string): BotGroupMemberView | undefined {
+  mentions: BotGroupMention, allLabel: string, serverBacked = false): BotGroupMemberView | undefined {
   const name = label.replace(/^@/, '').trim();
-  if (mentions.all && name === allLabel) return undefined;
+  const fallback = serverBacked && !mentions.all && mentions.botIds.length === 0;
+  const broadcast = [allLabel, 'all', 'everyone'].some((label) => label.toLowerCase() === name.toLowerCase());
+  if ((mentions.all || fallback) && broadcast) return undefined;
   const mentioned = new Set(mentions.botIds);
-  return members.find((member) => mentioned.has(member.botId)
+  const matches = members.filter((member) => (fallback || mentioned.has(member.botId))
     && [member.name, botGroupMemberDisplayName(member), member.nickname || member.displayName || member.name]
       .some((candidate) => candidate?.trim() === name));
+  return matches.length === 1 ? matches[0] : undefined;
 }
 
 /**

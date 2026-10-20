@@ -21,4 +21,23 @@ describe('botGroupMentionMember', () => {
   it('opens no card for a name the message did not mention', () => {
     expect(botGroupMentionMember('@Nova', members, { all: false, botIds: [] }, '所有人')).toBeUndefined();
   });
+
+  // PR #6549 r4323705154: messageView emits empty mention ids for server snapshots.
+  // Unit: the production card resolver must still return a unique member, but never
+  // guess for duplicate names/broadcasts. Existing tests only exercised explicit ids.
+  it('keeps unique server mentions usable after replacing the optimistic message', () => {
+    const roster = [member('a', 'Aster'), member('b', 'Nova')];
+    expect(botGroupMentionMember('@Nova', roster, { all: false, botIds: ['b'] }, '所有人', true)?.botId).toBe('b');
+    expect(botGroupMentionMember('@Nova', roster, { all: false, botIds: [] }, '所有人', true)?.botId).toBe('b');
+    expect(botGroupMentionMember('@Nova', roster, { all: false, botIds: ['a'] }, '所有人', true)).toBeUndefined();
+  });
+
+  it('does not guess an ambiguous server mention or a broadcast', () => {
+    const empty = { all: false, botIds: [] };
+    expect(botGroupMentionMember('@Nova', members, empty, '所有人', true)).toBeUndefined();
+    expect(botGroupMentionMember('@Nova', members, { all: false, botIds: ['a', 'b'] }, '所有人', true)).toBeUndefined();
+    for (const label of ['所有人', 'all', 'everyone']) {
+      expect(botGroupMentionMember(`@${label}`, [member('a', label)], empty, '所有人', true)).toBeUndefined();
+    }
+  });
 });

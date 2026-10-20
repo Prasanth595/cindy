@@ -113,8 +113,8 @@ export function ChatMessageHoverActions({ besideReactions = false, ...props }: C
   const right = props.align === 'right';
   return (
     <div {...{ [SHARE_EXCLUDE_ATTR]: '' }} data-bot-group-message-actions="" data-open={picker ? '' : undefined}
-      className={cn('pointer-events-none absolute z-10 w-max rounded-xl border border-[var(--border-default)] bg-[var(--surface-elevated)] p-0.5 opacity-0 transition-opacity duration-[var(--motion-fast)] ease-[var(--motion-ease-out)] focus-within:pointer-events-auto focus-within:opacity-100 group-hover/message:pointer-events-auto group-hover/message:opacity-100 data-[open]:pointer-events-auto data-[open]:opacity-100 motion-reduce:transition-none [@media(hover:none)]:pointer-events-auto [@media(hover:none)]:opacity-100',
-        right ? 'right-full' : 'left-full', besideReactions ? cn('top-5', right ? 'mr-6' : 'ml-6') : (right ? 'mr-1.5' : 'ml-1.5'))}>
+      className={cn('pointer-events-none absolute top-0 z-10 w-max rounded-xl border border-[var(--border-default)] bg-[var(--surface-elevated)] p-0.5 opacity-0 transition-opacity duration-[var(--motion-fast)] ease-[var(--motion-ease-out)] focus-within:pointer-events-auto focus-within:opacity-100 group-hover/message:pointer-events-auto group-hover/message:opacity-100 data-[open]:pointer-events-auto data-[open]:opacity-100 motion-reduce:transition-none [@media(hover:none)]:pointer-events-auto [@media(hover:none)]:opacity-100',
+        right ? 'right-full' : 'left-full', besideReactions ? (right ? 'mr-6' : 'ml-6') : (right ? 'mr-1.5' : 'ml-1.5'))}>
       <ChatMessageToolbar {...props} compact picker={picker} onPickerChange={setPicker} />
     </div>
   );

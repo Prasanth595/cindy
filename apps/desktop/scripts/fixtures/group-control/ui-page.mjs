@@ -33,6 +33,11 @@ export default {
       about: 'Teammate bubbles: quote, corner reaction, thread entry, task card, long text at the width cap; hover shows the toolbar beside the bubble',
       data: { ...base, bubbles: true },
     },
+    'bubbles-wrapped': {
+      about: 'PR #6549: wrapped reactions keep both toolbars level with their bubbles; server messages with empty mention ids still open unique member cards',
+      viewport: { width: 800, height: 800 },
+      data: { ...base, bubbles: true, wrappedReactions: true },
+    },
   },
   async ready(page) {
     await page.locator('textarea').waitFor();
@@ -63,7 +68,7 @@ export default {
       await chip.waitFor();
     };
 
-    if (ui.case === 'bubbles') {
+    if (ui.case.startsWith('bubbles')) {
       const answer = page.getByText('Android 更新卡那个 PR', { exact: false });
       await answer.waitFor();
       const row = '[data-bot-group-message-id="a1"]';
@@ -85,17 +90,23 @@ export default {
       // Reactions wider than a short message's text stay over its own bubble and inside the timeline.
       const corners = await page.evaluate(() => ['a2', 'q3'].map((id) => {
         const row = `[data-bot-group-message-id="${id}"]`;
-        const corner = document.querySelector(`${row} [data-reaction-corner]`).getBoundingClientRect();
+        const reactions = document.querySelector(`${row} [data-reaction-corner]`);
+        const corner = reactions.getBoundingClientRect();
         const bubble = document.querySelector(`${row} [data-testid="bot-group-bubble"], ${row} [data-testid="bot-group-self-bubble"]`).getBoundingClientRect();
+        const bar = document.querySelector(`${row} [data-bot-group-message-actions]`).getBoundingClientRect();
         const timeline = document.querySelector('[data-testid="bot-group-timeline"]').getBoundingClientRect();
-        return { id, left: corner.left - bubble.left, right: corner.right - bubble.right, inside: corner.left >= timeline.left && corner.right <= timeline.right };
+        return { id, left: corner.left - bubble.left, right: corner.right - bubble.right, inside: corner.left >= timeline.left && corner.right <= timeline.right,
+          toolbarTop: bar.top - bubble.top, wrapped: corner.height > reactions.firstElementChild.getBoundingClientRect().height };
       }));
       for (const c of corners) {
         assert.ok(c.inside, `${c.id} reactions stay inside the timeline`);
         assert.ok(c.left >= -12 && c.right <= 12, `${c.id} reactions stay over the bubble (${c.left}, ${c.right})`);
+        assert.ok(Math.abs(c.toolbarTop) <= 1, `${c.id} toolbar aligns with bubble top (${c.toolbarTop}px)`);
+        if (ui.case === 'bubbles-wrapped') assert.ok(c.wrapped, `${c.id} exercises multiple reaction rows`);
       }
       await ui.capture('hover');
       // A mention reads in the link color and, rested on, shows who it names.
+      await page.locator('[data-bot-group-message-id="q2"]').scrollIntoViewIfNeeded();
       const mention = await page.evaluate(() => {
         const text = [...document.querySelectorAll('[data-bot-group-message-id="q2"] [data-testid="bot-group-self-bubble"] p')]
           .map((p) => [...p.childNodes].find((n) => n.nodeType === 3 && n.data.includes('@Nova'))).find(Boolean);

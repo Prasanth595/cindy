@@ -10,6 +10,7 @@ interface GroupData {
   sidebar: boolean;
   /** A server group with teammates' bubbles: quote, reactions, thread entry and a task card. */
   bubbles?: boolean;
+  wrappedReactions?: boolean;
 }
 
 const T0 = 1700000000000;
@@ -28,7 +29,9 @@ const message = (fields: Record<string, unknown>) => ({
 });
 
 /** One of each piece a teammate's bubble carries, in a conversation order. */
-function bubbleMessages() {
+function bubbleMessages(wrappedReactions = false) {
+  const manyReactions = ['👍', '❤️', '😂', '🎉', '👀', '🙏', '✅', '🤔', '🔥', '👏', '🚀', '💯']
+    .map((emoji) => ({ emoji, count: 1, me: false }));
   const ask = '周四发版前，把 Android 更新卡和伙伴群聊两个 PR 收口';
   const crash = '昨晚的崩溃上报一共 2 条，都来自旧版 0.1.60，新版没有复现。两份堆栈都停在图片解码那一步，我对比了两个版本的差异，0.1.61 已经限制了解码尺寸。';
   return [
@@ -52,17 +55,17 @@ function bubbleMessages() {
     }),
     message({
       id: 'q2', sequence: 5, isSelf: true, createdAt: T0 + 9 * MINUTE, content: '@Nova 旧版那两条也记一下，发版说明里提一句',
-      mentions: { all: false, botIds: ['b'] },
+      mentions: { all: false, botIds: wrappedReactions ? [] : ['b'] },
       quote: { messageId: 'b1', authorName: 'Nova', authorKind: 'bot', excerpt: crash, attachmentCount: 0, attachmentName: null, sequence: 3 },
     }),
     // Short messages with more reactions than the text is wide: the bubble widens to carry them.
     message({
       id: 'a2', sequence: 6, authorKind: 'bot', authorBotId: 'a', authorName: 'Aster', createdAt: T0 + 10 * MINUTE, content: '好',
-      reactions: ['👍', '🎉', '👀', '🙏'].map((emoji, i) => ({ emoji, count: i + 1, me: i === 0 })),
+      reactions: wrappedReactions ? manyReactions : ['👍', '🎉', '👀', '🙏'].map((emoji, i) => ({ emoji, count: i + 1, me: i === 0 })),
     }),
     message({
       id: 'q3', sequence: 7, isSelf: true, createdAt: T0 + 11 * MINUTE, content: '收到',
-      reactions: ['❤️', '✅', '🚀'].map((emoji, i) => ({ emoji, count: i + 1, me: false })),
+      reactions: wrappedReactions ? manyReactions : ['❤️', '✅', '🚀'].map((emoji, i) => ({ emoji, count: i + 1, me: false })),
     }),
   ];
 }
@@ -89,7 +92,7 @@ function groupFrom(data: GroupData) {
     updatedAt: 1,
     plans: [],
     ...(data.bubbles ? { serverBacked: true } : {}),
-    messages: data.bubbles ? bubbleMessages() : Array.from({ length: data.messages }, (_, i) => ({
+    messages: data.bubbles ? bubbleMessages(data.wrappedReactions) : Array.from({ length: data.messages }, (_, i) => ({
       id: `m${i}`,
       sequence: i + 1,
       kind: 'message',
