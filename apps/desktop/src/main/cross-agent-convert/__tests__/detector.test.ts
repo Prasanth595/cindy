@@ -119,6 +119,27 @@ describe('native instruction capability', () => {
     expect(await check({ version: '2.1.281' })).toBe(true);
   });
 
+  it('checks physical ancestors when the workspace is reached through a symlink', async () => {
+    const repository = path.join(tmpDir, 'repository');
+    const nested = path.join(repository, 'nested');
+    const alias = path.join(tmpDir, 'workspace-link');
+    await fs.mkdir(nested, { recursive: true });
+    await fs.writeFile(path.join(repository, 'CLAUDE.md'), '# Physical ancestor instructions');
+    await fs.symlink(nested, alias, process.platform === 'win32' ? 'junction' : 'dir');
+    expect(await check({ workingDir: alias })).toBe(false);
+  });
+
+  it.each([
+    { envPlatform: 'win32' as const, expected: false },
+    { envPlatform: 'linux' as const, expected: true },
+  ])('matches settings environment names using $envPlatform semantics', async ({ envPlatform, expected }) => {
+    // Only environment-name semantics vary; filesystem paths remain native to the test host.
+    await fs.writeFile(path.join(tmpDir, 'user-settings.json'), JSON.stringify({
+      env: { claude_code_disable_claude_mds: '1' },
+    }));
+    expect(await check({ envPlatform })).toBe(expected);
+  });
+
   it.each([
     { enabledPlugins: { 'cc-plugin-agents-md@builtin': false } },
     { enabledPlugins: { 'agents-md@builtin': false } },

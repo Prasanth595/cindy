@@ -97,6 +97,16 @@ function enabled(value: unknown): boolean {
   );
 }
 
+function envBlocksNativeLoading(env: Settings | undefined, platform: NodeJS.Platform): boolean {
+  return Object.entries(env ?? {}).some(([name, value]) => {
+    const key = platform === 'win32' ? name.toUpperCase() : name;
+    return (
+      (DISABLE_ENV.includes(key) && enabled(value)) ||
+      (EXTERNAL_SETTINGS_ENV.includes(key) && Boolean(value))
+    );
+  });
+}
+
 /**
  * Only positive evidence removes a migration suggestion. 2.1.277 introduced the
  * built-in, but 2.1.281 is the first release supporting gateways/telemetry-off too.
@@ -108,6 +118,8 @@ export async function claudeReadsAgentsMd(input: {
   workingDir: string;
   userSettingsPath: string;
   env: NodeJS.ProcessEnv;
+  /** Only environment-name matching varies; filesystem paths use the host's native semantics. */
+  envPlatform?: NodeJS.Platform;
   /** Managed policy is not resolved by this detector. Its presence stays unknown. */
   managedPolicyPresent: boolean;
   /** Known instruction root, when provided by the caller (also isolates unit fixtures). */
@@ -116,10 +128,8 @@ export async function claudeReadsAgentsMd(input: {
   const version = input.version && normalizeBinaryVersion(input.version);
   if (!version || version.includes('-') || !isBinaryVersionNotOlder(version, '2.1.281'))
     return false;
-  if (input.managedPolicyPresent || DISABLE_ENV.some((key) => enabled(input.env[key])))
-    return false;
-  // These launch settings can change configuration roots or supply parent policy.
-  if (EXTERNAL_SETTINGS_ENV.some((key) => Boolean(input.env[key]))) return false;
+  const envPlatform = input.envPlatform ?? process.platform;
+  if (input.managedPolicyPresent || envBlocksNativeLoading(input.env, envPlatform)) return false;
   try {
     const readSettings = async (file: string): Promise<Settings> => {
       let raw: string;
@@ -136,19 +146,24 @@ export async function claudeReadsAgentsMd(input: {
     const user = await readSettings(input.userSettingsPath);
     const settings = [user];
     const directories: string[] = [];
+    // The subprocess resolves cwd to its physical directory. Walk that same tree,
+    // including ancestors hidden by a symlink/junction. Failure stays unknown.
+    const workingDir = await fs.realpath(input.workingDir);
+    const instructionRoot = input.instructionRoot
+      ? await fs.realpath(input.instructionRoot)
+      : undefined;
     // An ancestor CLAUDE.md can claim the project. Looking above the project root
     // is deliberately conservative when the engine's root cannot be proven here.
-    for (let dir = path.resolve(input.workingDir); ; dir = path.dirname(dir)) {
+    for (let dir = workingDir; ; dir = path.dirname(dir)) {
       directories.push(dir);
       settings.push(await readSettings(path.join(dir, '.claude', 'settings.json')));
       settings.push(await readSettings(path.join(dir, '.claude', 'settings.local.json')));
-      if (dir === input.instructionRoot || path.dirname(dir) === dir) break;
+      if (dir === instructionRoot || path.dirname(dir) === dir) break;
     }
     for (const layer of settings) {
       if (layer.env !== undefined && !object(layer.env)) return false;
       if (layer.enabledPlugins !== undefined && !object(layer.enabledPlugins)) return false;
-      if (DISABLE_ENV.some((key) => enabled(object(layer.env)?.[key]))) return false;
-      if (EXTERNAL_SETTINGS_ENV.some((key) => Boolean(object(layer.env)?.[key]))) return false;
+      if (envBlocksNativeLoading(object(layer.env), envPlatform)) return false;
       if (
         layer.claudeMdExcludes !== undefined &&
         (!Array.isArray(layer.claudeMdExcludes) || layer.claudeMdExcludes.length > 0)
