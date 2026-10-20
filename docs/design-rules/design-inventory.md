@@ -86,6 +86,7 @@
 | `/bots/list` | BotsListView | `desktop.bots` |
 | `/bots/market/:packageId?` | BotMarketRoute | `desktop.bots` |
 | `/bots/remote/:deviceId/:botId` | RemoteBotSessionView | `desktop.bots` |
+| `/bots/remote/:deviceId/:botId/history/:sessionId` | BotHistorySessionView | `desktop.bots` |
 | `/bots/roster` | BotRosterView | `desktop.bots` |
 | `/cc-agent/:sessionId` | CCAgentSessionView | `desktop.chat.session` |
 | `/cc-agent/boot` | SecondaryWindowBootGate | `desktop.chat.session` |
