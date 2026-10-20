@@ -27,7 +27,7 @@ const READ_CONCURRENCY = 6;
 const RETRY_MS = 30_000;
 const RETRY_ATTEMPTS = 5;
 /** Deleted replies still occupy a page, so read a little more than the preview needs. */
-const FALLBACK_PAGE = BOT_GROUP_THREAD_PREVIEW_REPLIES + 4;
+const FALLBACK_PAGE = 6;
 /** A thread whose newest replies are mostly deleted reads back at most this far. */
 const FALLBACK_PAGES = 4;
 const SNAPSHOT_WINDOW = 100;

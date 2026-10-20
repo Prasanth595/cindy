@@ -71,6 +71,13 @@ export default {
     if (ui.case.startsWith('bubbles')) {
       const answer = page.getByText('Android 更新卡那个 PR', { exact: false });
       await answer.waitFor();
+      // Three recent responders stay visible; only the newest two summaries are spoken.
+      const preview = page.locator('[data-thread-preview="a1"]');
+      assert.equal(await preview.locator(':scope > span[aria-hidden="true"] > *').count(), 3);
+      const description = await preview.getAttribute('aria-describedby');
+      const summary = await page.locator(`[id="${description}"]`).textContent();
+      assert.ok(summary.includes('Nova:') && summary.includes('You:'));
+      assert.ok(!summary.includes('Aster:') && !summary.includes('我先补上截图'));
       const row = '[data-bot-group-message-id="a1"]';
       const toolbar = page.locator(`${row} [data-bot-group-message-actions]`);
       await answer.hover();

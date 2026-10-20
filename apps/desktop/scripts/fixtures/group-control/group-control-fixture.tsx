@@ -41,8 +41,9 @@ function bubbleMessages(wrappedReactions = false) {
       content: 'Android 更新卡那个 PR 的 review 已经处理完，现在等人审。',
       quote: { messageId: 'q1', authorName: 'You', authorKind: 'user', excerpt: ask, attachmentCount: 0, attachmentName: null, sequence: 1 },
       reactions: [{ emoji: '👍', count: 1, me: true }],
-      replyCount: 2,
+      replyCount: 3,
       threadPreview: { replies: [
+        { id: 'r0', authorKind: 'bot', authorBotId: 'a', authorName: 'Aster', text: '我先补上截图', attachments: [], createdAt: T0 + 2 * MINUTE },
         { id: 'r1', authorKind: 'bot', authorBotId: 'b', authorName: 'Nova', text: '截图我看过了，没问题', attachments: [], createdAt: T0 + 3 * MINUTE },
         { id: 'r2', authorKind: 'user', authorBotId: null, authorName: 'You', isSelf: true, text: '辛苦', attachments: [], createdAt: T0 + 4 * MINUTE },
       ] },

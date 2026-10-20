@@ -176,8 +176,8 @@ export interface BotGroupMessageView {
   threadShare?: BotGroupThreadShareView;
 }
 
-/** A root message previews at most this many of its newest replies. */
-export const BOT_GROUP_THREAD_PREVIEW_REPLIES = 2;
+/** Recent replies retained for up to three responder avatars; spoken summaries use the latest two. */
+export const BOT_GROUP_THREAD_PREVIEW_REPLIES = 3;
 
 /**
  * Main-chat share of a thread reply. The card stores only the two IDs; clients resolve the

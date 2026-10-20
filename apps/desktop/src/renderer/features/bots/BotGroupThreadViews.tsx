@@ -90,7 +90,7 @@ export function BotGroupThreadPreview({ message, members, onOpen }: {
       <ChevronRight size={12} aria-hidden className="shrink-0 text-[var(--text-tertiary)] opacity-0 transition-opacity duration-[var(--motion-fast)] group-hover/thread:opacity-100 group-focus-visible/thread:opacity-100" />
       {replies.length ? (
         <span id={linesId} className="sr-only">
-          {replies.map(reply => <span key={reply.id}>{reply.authorName}: <ReplySummary reply={reply} />. </span>)}
+          {replies.slice(-2).map(reply => <span key={reply.id}>{reply.authorName}: <ReplySummary reply={reply} />. </span>)}
         </span>
       ) : null}
     </button>
