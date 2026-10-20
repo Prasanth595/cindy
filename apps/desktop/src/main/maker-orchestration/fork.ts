@@ -58,7 +58,7 @@ export async function listSideChats(sourceSessionId: string): Promise<Array<{ id
 export async function createSideChat(sourceSessionId: string): Promise<Session> {
   const db = getDbClient().drizzle;
   const [source] = await db.select().from(sessions).where(eq(sessions.id, sourceSessionId)).limit(1);
-  if (!source || source.status === 'deleted') {
+  if (!source || source.status !== 'active') {
     throw forkError('SOURCE_NOT_FOUND', 'Source task is unavailable');
   }
   if (source.source === 'side-chat' || source.source === 'review' || source.source === 'bot') {

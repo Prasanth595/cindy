@@ -342,9 +342,13 @@ describe('forkSessionAtMessage', () => {
     expect(txCalls).toHaveLength(1);
   });
 
-  it.each([{ status: 'deleted' }, { source: 'side-chat' }, { source: 'review' }])('rejects unavailable or nested side-chat sources: %j', async overrides => {
+  // Unit, #6529: an archived parent was accepted although it cannot own new work.
+  // Existing cases covered deletion/nesting only; no SDK call or child may result.
+  it.each([{ status: 'deleted' }, { status: 'archived' }, { source: 'side-chat' }, { source: 'review' }])('rejects unavailable or nested side-chat sources: %j', async overrides => {
     selectQueue.push([makeSourceRow(overrides)]);
-    await expect(createSideChat('src-session')).rejects.toThrow();
+    await expect(createSideChat('src-session')).rejects.toMatchObject({
+      code: 'status' in overrides ? 'SOURCE_NOT_FOUND' : 'UNSUPPORTED_HISTORY',
+    });
     expect(forkSdkSessionMock).not.toHaveBeenCalled();
     expect(txCalls).toHaveLength(0);
   });

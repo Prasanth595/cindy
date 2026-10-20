@@ -389,6 +389,11 @@ export interface SessionsSetTerminalStatusArgs {
   status: 'archived' | 'deleted';
 }
 
+export interface SessionsSetTerminalStatusResult extends Omit<SessionsSetStatusResultItem, 'status'> {
+  status: 'archived' | 'deleted';
+  deletedSideChats: Array<Omit<SessionsSetStatusResultItem, 'status'>>;
+}
+
 /** resume 停泊失败后的原子回落:清失效绑定并把边界改成全量交接。 */
 export interface SessionAgentSwitchFallbackArgs {
   sessionId: string;
@@ -1478,7 +1483,7 @@ export type DbTxResultByName = {
   'orca.reconcileInactiveTeamWorkersForLead': string[];
   'sessions.renameTitles': SessionsRenameTitleResult[];
   'sessions.setStatus': SessionsSetStatusResultItem[];
-  'sessions.setTerminalStatus': SessionsSetStatusResultItem;
+  'sessions.setTerminalStatus': SessionsSetTerminalStatusResult;
   'recentWorkdirs.mergeWindowsIdentity': undefined;
   'recentWorkdirs.removeWindowsIdentity': { changes: number };
   'pluginUsage.execute': PluginUsageHandle | null;

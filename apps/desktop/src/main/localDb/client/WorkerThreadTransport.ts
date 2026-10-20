@@ -1186,7 +1186,16 @@ function sessionsSetTerminalStatus(readyDb, args) {
       'UPDATE sessions SET status = ?, updated_at = ? WHERE id = ? RETURNING id, title, working_dir AS workingDir, workspace_kind AS workspaceKind, remote_host_id AS remoteHostId, source',
     ).get(status, now, sessionId);
     if (!updated) throw Object.assign(new Error('Session not found: ' + sessionId), { code: 'NOT_FOUND' });
-    return { ...updated, sessionId: updated.id, status };
+    const deletedSideChats = status === 'deleted' && existing.source !== 'side-chat'
+      ? readyDb.prepare("UPDATE sessions SET status = 'deleted', updated_at = ? " +
+          "WHERE parent_session_id = ? AND source = 'side-chat' AND status <> 'deleted' " +
+          'RETURNING id AS sessionId, title, working_dir AS workingDir, workspace_kind AS workspaceKind, ' +
+          'remote_host_id AS remoteHostId, source').all(now, sessionId)
+      : [];
+    for (const child of deletedSideChats) {
+      readyDb.prepare(CLOSE_SHARED_TASKS_FOR_SESSION_SQL).run(now, child.sessionId);
+    }
+    return { ...updated, sessionId: updated.id, status, deletedSideChats };
   })();
 }
 
@@ -2053,7 +2062,7 @@ function forkSession(readyDb, args) {
   );
   return readyDb.transaction(() => {
     if (newSession.source === 'side-chat' && !readyDb.prepare(
-      "SELECT 1 FROM sessions WHERE id = ? AND status != 'deleted' AND cleared_at IS ?",
+      "SELECT 1 FROM sessions WHERE id = ? AND status = 'active' AND cleared_at IS ?",
     ).get(sourceSessionId, sourceClearedAt)) {
       throw invalidArgs('Source task changed while opening side chat');
     }
