@@ -153,7 +153,7 @@ export function createThreadProjection<M extends ThreadMessage>(io: {
         const cacheKey = key(roomId, root.id);
         const cached = previews.get(cacheKey);
         // The window is a suffix of the room's sequence, so what it holds is the newest.
-        if (complete || found.length >= Math.min(count, BOT_GROUP_THREAD_PREVIEW_RESPONDERS)) result.set(root.id, found);
+        if (complete || found.length >= Math.min(count, BOT_GROUP_THREAD_PREVIEW_REPLIES)) result.set(root.id, found);
         // A same count can hide a new reply beside a deleted old one: what the window holds
         // comes first, and the cached page only fills in below it.
         else if (cached?.replyCount === count) result.set(root.id, [...found,
@@ -161,7 +161,7 @@ export function createThreadProjection<M extends ThreadMessage>(io: {
         else if (!waiting(cacheKey)) missing.push({ cacheKey, item: root });
       }
       fill(roomId, missing, async root => {
-        const wanted = Math.min(root.replyCount ?? 0, BOT_GROUP_THREAD_PREVIEW_RESPONDERS);
+        const wanted = Math.min(root.replyCount ?? 0, BOT_GROUP_THREAD_PREVIEW_REPLIES);
         const replies: M[] = [];
         let before: string | undefined;
         for (let pages = 0; pages < FALLBACK_PAGES && replies.length < wanted; pages += 1) {

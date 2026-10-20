@@ -47,6 +47,23 @@ describe('thread previews', () => {
     expect(io.threadPage).toHaveBeenCalledTimes(source === 'snapshot' ? 0 : 1);
   });
 
+  // r4325372865: having two spoken summaries is sufficient even when the root
+  // has more replies. Existing tests always supplied three live rows or a short page.
+  // Unit: observe the real projection's output and network reads, for both read gates.
+  it.each(['snapshot', 'page'] as const)('does not fetch a third avatar when %s already supplies two summaries', async source => {
+    const root = message({ id: rootA, replyCount: 5 });
+    const live = [reply('r5', rootA, { authorId: 'A' }), reply('r4', rootA, { authorId: 'B' })];
+    const rows = [...live, ...Array.from({ length: 4 }, (_, i) => reply(`deleted-${i}`, rootA, { deleted: true }))];
+    const snapshot = source === 'snapshot' ? fullWindow(rows) : fullWindow([]);
+    io.threadPage.mockResolvedValueOnce(rows).mockResolvedValue([]);
+    projection.previews(room, [root], snapshot);
+    await projection.settled();
+    expect(io.threadPage).toHaveBeenCalledTimes(source === 'snapshot' ? 0 : 1);
+    const preview = projection.previews(room, [root], snapshot).get(rootA)!;
+    expect(preview.replies.map(row => row.id)).toEqual(['r4', 'r5']);
+    expect(preview.responders.map(row => row.authorId)).toEqual(['B', 'A']);
+  });
+
   it('treats a short snapshot as the whole history', () => {
     const root = message({ id: rootA, replyCount: 1 });
     expect(projection.previews(room, [root], [reply('only', rootA)]).get(rootA)!.replies.map(m => m.id)).toEqual(['only']);
