@@ -11452,8 +11452,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           const sendResult = await sendUserMessageWithAwaitedGitBaseline(live, message, clientId, {
             ...(params.autoReviewUserText ? {
               [AUTO_REVIEW_SOURCE_CONTENT]: '',
-              [AUTO_REVIEW_USER_INTENT]: restoreAutoReviewUserIntent(await readAutoReviewHistory(targetSessionId)),
-            [AUTO_REVIEW_DELEGATED_CONTINUATION]: true as const,
+              ...(params.autoReviewUserText.kind === 'delegated-continuation' ? {
+                [AUTO_REVIEW_USER_INTENT]: restoreAutoReviewUserIntent(await readAutoReviewHistory(targetSessionId)),
+                [AUTO_REVIEW_DELEGATED_CONTINUATION]: true as const,
+              } : { [AUTO_REVIEW_USER_INTENT]: '' }),
             } : {}),
             planMode: false,
             onAccepted: persistUserMessage,
@@ -11580,8 +11582,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         const sendResult = await sendUserMessageWithAwaitedGitBaseline(session, message, clientId, {
           ...(params.autoReviewUserText ? {
             [AUTO_REVIEW_SOURCE_CONTENT]: '',
-            [AUTO_REVIEW_USER_INTENT]: restoreAutoReviewUserIntent(await readAutoReviewHistory(targetSessionId)),
-            [AUTO_REVIEW_DELEGATED_CONTINUATION]: true as const,
+            ...(params.autoReviewUserText.kind === 'delegated-continuation' ? {
+              [AUTO_REVIEW_USER_INTENT]: restoreAutoReviewUserIntent(await readAutoReviewHistory(targetSessionId)),
+              [AUTO_REVIEW_DELEGATED_CONTINUATION]: true as const,
+            } : { [AUTO_REVIEW_USER_INTENT]: '' }),
           } : {}),
           planMode: false,
           onAccepted: persistUserMessage,
