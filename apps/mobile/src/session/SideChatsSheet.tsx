@@ -55,7 +55,8 @@ export function SideChatsSheet({ visible, session, maker, onClose, onCreate, onS
     ]).then(([main, children]) => {
       if (generation.current !== epoch) return;
       setParent(main?.status === 'active' ? main : null);
-      setRows(children.filter(row => row?.status === 'active' && row.source === 'side-chat' && row.parentSessionId === parentId));
+      setRows(children.filter(row => (row?.status === 'active' || row?.status === 'archived')
+        && row.source === 'side-chat' && row.parentSessionId === parentId));
     }).catch(() => {
       if (generation.current === epoch) setError(t('session.sideChat.loadFailed'));
     }).finally(() => { if (generation.current === epoch) setLoading(false); });
@@ -89,7 +90,7 @@ export function SideChatsSheet({ visible, session, maker, onClose, onCreate, onS
     { label: t('session.sideChat.create'), testID: 'session.sideChat.create',
       disabled: loading || creating || !parent, onPress: () => void create() },
     ...rows.map((row, index) => ({
-      label: `${t('session.sideChat.item', { index: index + 1 })}${row.id === session.id ? ` · ${t('session.sideChat.current')}` : ''}`,
+      label: `${t('session.sideChat.item', { index: index + 1 })}${row.status === 'archived' ? ` · ${t('session.menu.chipArchived')}` : ''}${row.id === session.id ? ` · ${t('session.sideChat.current')}` : ''}`,
       testID: `session.sideChat.open.${row.id}`, disabled: row.id === session.id || creating,
       onPress: () => choose(row),
     })),

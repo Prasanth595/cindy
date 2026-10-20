@@ -50,7 +50,7 @@ const STRIP_FORK_TITLE_PREFIX = '[Fork·已剥离]';
 export async function listSideChats(sourceSessionId: string): Promise<Array<{ id: string }>> {
   return getDbClient().drizzle.select({ id: sessions.id }).from(sessions).where(and(
     eq(sessions.parentSessionId, sourceSessionId), eq(sessions.source, 'side-chat'),
-    eq(sessions.status, 'active'),
+    or(eq(sessions.status, 'active'), eq(sessions.status, 'archived')),
   )).orderBy(asc(sessions.createdAt));
 }
 

@@ -113,6 +113,7 @@ vi.mock('../localDb/client/current', () => ({
 
 let forkSessionAtMessage: typeof import('../maker-orchestration/fork').forkSessionAtMessage;
 let createSideChat: typeof import('../maker-orchestration/fork').createSideChat;
+let listSideChats: typeof import('../maker-orchestration/fork').listSideChats;
 let forkSessionStripEncrypted: typeof import('../maker-orchestration/fork').forkSessionStripEncrypted;
 const originalClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
 const originalXdtUserDataDir = process.env.XDT_USER_DATA_DIR;
@@ -146,6 +147,7 @@ beforeEach(async () => {
     const mod = await import('../maker-orchestration/fork');
     forkSessionAtMessage = mod.forkSessionAtMessage;
     createSideChat = mod.createSideChat;
+    listSideChats = mod.listSideChats;
     forkSessionStripEncrypted = mod.forkSessionStripEncrypted;
   }
 });
@@ -276,6 +278,29 @@ describe('disabled Cindy Make fork boundaries', () => {
 });
 
 describe('forkSessionAtMessage', () => {
+  // Unit, PR #6529 archived-discovery regression: evaluate the real list WHERE
+  // against SQLite. The old queue fake cannot detect status filtering. Minimal
+  // input: active/archived/deleted children plus a different parent and source.
+  it('lists archived side chats with active siblings, excluding deleted and unrelated tasks', async () => {
+    const sqlite = new Database(':memory:');
+    try {
+      sqlite.exec('CREATE TABLE sessions (id TEXT, parent_session_id TEXT, source TEXT, status TEXT, created_at INTEGER)');
+      const insert = sqlite.prepare('INSERT INTO sessions VALUES (?, ?, ?, ?, ?)');
+      for (const row of [
+        ['active', 'main', 'side-chat', 'active', 20],
+        ['archived', 'main', 'side-chat', 'archived', 10],
+        ['deleted', 'main', 'side-chat', 'deleted', 30],
+        ['other-parent', 'other', 'side-chat', 'archived', 5],
+        ['ordinary', 'main', 'desktop', 'archived', 6],
+      ]) insert.run(...row);
+      messageDb = drizzle(sqlite);
+      expect(await listSideChats('main')).toEqual([{ id: 'archived' }, { id: 'active' }]);
+    } finally {
+      messageDb = null;
+      sqlite.close();
+    }
+  });
+
   // Unit, #6529: the old queue fake never evaluated anchor ordering/WHERE.
   // A running turn with two steers must copy only the preceding completed turn.
   // Execute both production message lookups against SQLite; keep SDK/writes fake.

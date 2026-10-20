@@ -134,6 +134,34 @@ describe('Worker and side-chat task headers', () => {
 });
 
 describe('side chat picker', () => {
+  // Unit, PR #6529: generic task menus can archive a side chat. Previous picker
+  // cases only had active rows; an archived child must remain selectable while
+  // deleted/foreign children remain absent, including after the native close.
+  it('keeps archived children selectable and labels their status', async () => {
+    Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+    const archived = { ...child, id: 'archived', status: 'archived' };
+    const rows = [child, archived, { ...child, id: 'deleted', status: 'deleted' },
+      { ...archived, id: 'other-parent', parentSessionId: 'other' }];
+    const maker = { listSideChats: vi.fn(async () => rows),
+      getSession: vi.fn(async (id: string) => id === main.id ? main : rows.find(row => row.id === id)) };
+    const host = document.createElement('div'), root = createRoot(host);
+    const onSelect = vi.fn(), onClose = vi.fn();
+    const render = async (visible: boolean) => act(async () => root.render(
+      <Picker visible={visible} session={main} maker={maker} onSelect={onSelect} onClose={onClose} onCreate={async () => null} />));
+    try {
+      await render(true);
+      const entry = host.querySelector<HTMLButtonElement>('[data-testid="session.sideChat.open.archived"]');
+      expect(entry).not.toBeNull();
+      expect(entry?.textContent).toContain('session.menu.chipArchived');
+      expect(host.querySelector('[data-testid="session.sideChat.open.deleted"]')).toBeNull();
+      expect(host.querySelector('[data-testid="session.sideChat.open.other-parent"]')).toBeNull();
+      act(() => entry!.click());
+      await render(false);
+      act(() => sheet.props.onClosed());
+      expect(onSelect).toHaveBeenCalledExactlyOnceWith(archived);
+    } finally { act(() => root.unmount()); }
+  });
+
   it('navigates once after native dismissal; reopening cancels an old selection', async () => {
     Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
     const host = document.createElement('div'), root = createRoot(host);
@@ -218,8 +246,13 @@ describe('side chat summary count', () => {
       listSideChats.mockResolvedValue([child]);
       await notify([{ ...child, deviceLinkDeviceId: 'device' }]);
       expect(ui.count()).toBe(1);
+      // Archiving keeps the child discoverable; deleting that archived child
+      // must still refresh membership without requiring a screen refocus.
+      await notify([{ ...child, status: 'archived', deviceLinkDeviceId: 'device' }]);
+      expect(ui.count()).toBe(1);
       listSideChats.mockResolvedValue([]);
-      await notify([]); expect(ui.count()).toBe(0);
+      await notify([{ ...child, status: 'deleted', deviceLinkDeviceId: 'device' }]);
+      expect(ui.count()).toBe(0);
     } finally { ui.close(); }
     expect(summaryStore.listeners.size).toBe(0);
   });

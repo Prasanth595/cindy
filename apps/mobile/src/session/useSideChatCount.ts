@@ -34,7 +34,7 @@ export function useSideChatCount({ deviceId, sessionId, maker, owner, enabled, r
         cachedSessions = sessions;
         cachedMembership = JSON.stringify(sessions
           .filter(row => row.deviceLinkDeviceId === deviceId && row.parentSessionId === sessionId
-            && row.source === 'side-chat' && row.status === 'active')
+            && row.source === 'side-chat' && (row.status === 'active' || row.status === 'archived'))
           .map(row => row.id).sort());
       }
       return cachedMembership;
