@@ -24,6 +24,7 @@ import type {
   McpToolApprovalPolicy,
 } from '@cindy/maker-core';
 import { canAutoApproveContactsMcpTool } from '@cindy/mcps';
+import { TASK_ACTION_TOOLS } from '../maker-ipc/taskActionAuthorization.js';
 
 
 /**
@@ -235,6 +236,9 @@ export function getDesktopMcpToolApprovalPolicy(
       return 'prompt-each-time';
     }
     const action = progressive ? innerName : toolName;
+    // Runtime approval is not owner consent. The Host action gate remains mandatory
+    // even when Full Access bypasses this per-call risk policy.
+    if (action && TASK_ACTION_TOOLS.has(action)) return 'prompt-each-time';
     if (toolName === 'call_tool' && (!innerName || !args)) return 'prompt-each-time';
     // Installing or saving a host command uses the session's existing approval flow.
     if (action === 'schedule_set_pre_run_hook' || (action === 'routine_save' && args?.preRunHook != null)) {

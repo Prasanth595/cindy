@@ -1938,6 +1938,7 @@ export async function updateSessionInDb(
     // before persisting the new directory so the next send lazily recreates the
     // runtime with the moved session's cwd instead of continuing in the old one.
     if (movingLocalNonClaudeSession) {
+      await moveGuard?.beforeWrite?.();
       moveGuard?.assertCurrent();
       if (!opts.closeIdleSessionForMove) {
         throwIpcError('INTERNAL', '会话移动 runtime 操作未配置');
@@ -2343,6 +2344,7 @@ export interface RenameSessionMetaItem {
 export async function renameSessionTitlesInDb(
   changes: RenameSessionMetaChange[],
   dryRun: boolean,
+  beforeMutation?: () => Promise<void>,
 ): Promise<RenameSessionMetaItem[]> {
   if (changes.length === 0) return [];
   const ownerScope = captureOwnerScope();
@@ -2386,6 +2388,7 @@ export async function renameSessionTitlesInDb(
 
   if (dryRun) return preview;
 
+  await beforeMutation?.();
   // 批量改名(MCP 工具)同样是"人给的名字",自动起名不得再覆盖;与上面两条出口
   // 一样先记号后写库,不给并发的智能标题留窗口。
   for (const change of changes) noteUserTitleWritten(change.sessionId);
@@ -2431,6 +2434,7 @@ export interface SessionStatusChangeRow {
 export async function setSessionsStatusInDb(
   sessionIds: string[],
   status: 'active' | 'archived',
+  beforeMutation?: () => Promise<void>,
 ): Promise<SessionStatusChangeRow[]> {
   if (sessionIds.length === 0) return [];
   const ownerScope = captureOwnerScope();
@@ -2446,8 +2450,12 @@ export async function setSessionsStatusInDb(
     const physicalResources = await Promise.all([...new Set(resources)].map(physicalWorktreeKey));
     return withWorktreeMutation(resources, async () => {
       if (status === 'archived') {
-        for (const id of sessionIds) await requestWorktreeRecycle(id, perSession.get(id));
+        for (const id of sessionIds) {
+          await beforeMutation?.();
+          await requestWorktreeRecycle(id, perSession.get(id));
+        }
       }
+      await beforeMutation?.();
       const rows = await dbClient.tx('sessions.setStatus', status === 'archived'
         ? { sessionIds, status, closeSharedTasks: true }
         : { sessionIds, status }).catch((err) => {

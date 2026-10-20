@@ -896,6 +896,7 @@ import {
   type OrcaInterAgentMessageSource,
 } from './orcaInterAgentDispatcher.js';
 import { OrcaWorkerPermissionConfirmBridge } from './orcaWorkerPermissionConfirmBridge.js';
+import { assertTaskActionCurrent, captureTaskActionGuard, bindTaskActionInput, hasTaskActionAuthorization, taskActionInputGuard, settleTaskActionInput, TaskActionAuthorizationError, type TaskActionDeliveryGuard } from './taskActionAuthorization.js';
 import {
   getOrcaWorkspaceInfoReadOnly,
   getOrcaWorkerDiagnosticStatusReadOnly,
@@ -3010,6 +3011,21 @@ const orcaWorkerPermissionConfirmBridge = new OrcaWorkerPermissionConfirmBridge(
   logger: log,
 });
 
+const taskActionConfirmBridge = new OrcaWorkerPermissionConfirmBridge({
+  broadcast: (channel, payload) => broadcastToAllWindows(channel, payload),
+  logger: log,
+});
+
+export async function confirmTaskAction(sessionId: string, tool: string, args: unknown): Promise<boolean> {
+  const result = await taskActionConfirmBridge.request(sessionId, {
+    title: t('taskActionConfirmation.title'),
+    description: t(tool === 'start_session_task' ? 'taskActionConfirmation.delegation' : 'taskActionConfirmation.once'),
+    action: { toolName: `mcp__cindy_helper__${tool}`,
+      input: args as Record<string, unknown>, confirmation: 'task_action' },
+  });
+  return result.confirmed;
+}
+
 /**
  * ghost_call 过户 workdir 外文件的确认桥(kind='ghost_grant_confirm')。
  * 单例挂在 cindy-brain 模块里(ghost.ts 经 getGhostGrantConfirmBridge 消费),
@@ -3324,6 +3340,7 @@ function getPendingInteractionsForSession(sessionId: string): PendingInteraction
   out.push(
     ...issueConfirmBridge.pendingSnapshots(sessionId).map(({ request }) => ({ request })),
     ...renameSessionsConfirmBridge.pendingSnapshots(sessionId).map(({ request }) => ({ request })),
+    ...taskActionConfirmBridge.pendingSnapshots(sessionId).map(({ request }) => ({ request })),
     ...orcaWorkerPermissionConfirmBridge
       .pendingSnapshots(sessionId)
       .map(({ request }) => ({ request })),
@@ -3599,6 +3616,7 @@ function cleanupPendingAgentInteractionsForSession(sessionId: string, reason: st
 
 function cleanupPendingInteractionsForSession(sessionId: string, reason: string): void {
   cleanupPendingAgentInteractionsForSession(sessionId, reason);
+  taskActionConfirmBridge.cleanupForSession(sessionId, reason === 'session_closed' ? 'session_closed' : 'session_aborted');
   // Desktop-only 确认只跟随真实会话终止/中止清理。权威 NO_ACTIVE_TURN 的
   // turn-idle reconcile 只处理 Agent-owned 僵尸，不能取消仍有效的 Host 工具等待。
   issueConfirmBridge.cleanupForSession(
@@ -4401,6 +4419,17 @@ export async function captureSessionAgentRequest(sessionId: string, supplement: 
     () => listMessagesForAgentHandoff(sessionId, 1, undefined, 'user'));
   if (!isDataOwnerBroadcastScopeCurrent(scope)) throw new Error('Data owner changed before request capture');
   return request;
+}
+
+export function getTaskActionInputState(sessionId: string) {
+  const input = getSessionInputProvenance(sessionId);
+  return {
+    key: JSON.stringify(input),
+    ownerInput: isActiveInputOwnerAuthored(sessionId),
+    automatic: !!input.input && !isActiveInputOwnerAuthored(sessionId),
+    orcaSenderSessionId: input.input?.orcaSenderSessionId,
+    boundary: `${getMakerIfReady()?.getSession(sessionId)?.instanceId ?? ''}:${agentInputCoordinatorHolder?.getGeneration(sessionId) ?? -1}`,
+  };
 }
 
 /** Owner-authored active input (see AgentInputCoordinator.isActiveInputOwnerAuthored). */
@@ -10865,6 +10894,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     });
 
   async function sendToSessionInternal(params: {
+    taskActionDeliveryGuard?: TaskActionDeliveryGuard;
     botTaskCoordination?: BotTaskCoordination;
     targetSessionId?: string;
     message: string;
@@ -10900,6 +10930,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
      */
     resumeWithStoredPermissionMode?: boolean;
   }): Promise<SendToSessionInternalResult> {
+    await assertTaskActionCurrent();
+    if (hasTaskActionAuthorization()) params = { ...params, forceQueue: true };
     const {
       targetSessionId,
       message,
@@ -11134,6 +11166,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           permissionMode: inherited.permissionMode ?? 'bypassPermissions',
           ...(inheritedAgentDeviceId ? { agentDeviceId: inheritedAgentDeviceId } : {}),
         });
+        await assertTaskActionCurrent();
         const { row: openedRow, value: { session } } = await openSession({
           id: createOpts.id, body: { title: newTitle,
             agentKind: inherited.agentKind === 'claude-code' ? 'cc' : inherited.agentKind,
@@ -11170,7 +11203,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         createdPreviewClientId = clientId;
         const sendResult = await sendUserMessageWithAwaitedGitBaseline(session, message, clientId, {
           planMode: false,
+          beforeProviderStart: assertTaskActionCurrent,
           onAccepted: async () => {
+            await assertTaskActionCurrent();
             notifyAgentIslandUserPrompt(session, persistedContent ?? message, {
               source: 'send_to_session:create:onPersisting',
               clientId,
@@ -11259,6 +11294,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     // await 上,日志即可直接定位挂点(PR #2829 QA:回执 deliver 挂死 64 分钟零线索)。
     let lockStage = 'resolve-session-meta+row';
     const run = waitPrev.then(async () => {
+      await assertTaskActionCurrent();
       await reconcileBotModelRoute(targetSessionId, true);
       const [meta, dbRow] = await Promise.all([
         maker.getSessionMeta(targetSessionId).catch(() => null),
@@ -11321,6 +11357,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           autoReviewUserText: params.autoReviewUserText,
           botTaskCoordination: params.botTaskCoordination,
           authorizationGuard: params.authorizationGuard,
+          taskActionDeliveryGuard: params.taskActionDeliveryGuard,
         });
         return {
           ok: true as const,
@@ -11828,7 +11865,14 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   };
 
   // 同账号另一台电脑上的任务发来的消息（Agent 的 send_to_session 传 deviceId::sessionId）。
-  registerSessionHandoffIpc({ send: (params) => sendToSessionInternal(params) });
+  registerSessionHandoffIpc({
+    send: (params) => sendToSessionInternal(params),
+    validate: async (deviceId, input) => {
+      const response = await invokeBotPeer(deviceId, 'maker:session:handoff', [{ action: 'validate-task-action', ...input }]);
+      const result = response.ok ? response.result as { valid?: unknown; released?: unknown } | null : null;
+      return result?.valid === true && (!input.release || result.released === true);
+    },
+  });
 
   initializeBotAuthorizationHost(async (card, validate, assertAuthorizationCurrent) => {
     await inputCoordinator.ensureQueueRestored(card.sessionId);
@@ -12241,7 +12285,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           try {
             await onAccepted(replayed);
           } catch (error) {
-            if (error instanceof GroupToolAuthorizationError) {
+            if (error instanceof GroupToolAuthorizationError || error instanceof TaskActionAuthorizationError) {
               throw new AcceptedCallbackDispatchCancelled(error.message);
             }
             throw error;
@@ -13540,6 +13584,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   }
 
   async function enqueueSendToSessionMessage(params: {
+    taskActionDeliveryGuard?: TaskActionDeliveryGuard;
     botTaskCoordination?: BotTaskCoordination;
     targetSessionId: string;
     inheritTargetPlanMode?: boolean;
@@ -13572,6 +13617,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     // 崩溃恢复排序:确保先读回持久化队列再追加本条(见 ensureQueueRestored)。
     // 失败时 enqueue 照常入队(shouldQueueNewTurn 已守住不会直发)。
     await inputCoordinator.ensureQueueRestored(params.targetSessionId).catch(() => undefined);
+    await assertTaskActionCurrent();
     if (params.authorizationGuard) {
       await commitBotAuthorizationInput(params.authorizationGuard, () => {
         inputCoordinator.enqueue(params.targetSessionId, queued);
@@ -13586,6 +13632,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   }
 
   async function buildSessionControlInputItem(params: {
+    taskActionDeliveryGuard?: TaskActionDeliveryGuard;
     botTaskCoordination?: BotTaskCoordination;
     targetSessionId: string;
     inheritTargetPlanMode?: boolean;
@@ -13638,7 +13685,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     // safe authored body in queue text/history; the symbol never crosses JSON.
     const modelOnlyEnvelope = params.clientId.startsWith('bot-dm:') && hiddenTriggerForAgent
       && params.persistedContent !== `${UI_ACTION_TRIGGER_PREFIX}${params.message}`;
-    return {
+    const queued: AgentInputQueuedMessage = {
       clientId: params.clientId,
       text: modelOnlyEnvelope ? params.persistedContent
         : hiddenTriggerForAgent ? `${UI_ACTION_TRIGGER_PREFIX}${params.message}` : params.message,
@@ -13667,6 +13714,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         ? { ...params.origin, displayText: params.persistedContent } : params.origin } : {}),
       ...(params.sourcePlugin ? { sourcePlugin: params.sourcePlugin } : {}),
     };
+    bindTaskActionInput(params.targetSessionId, queued, params.taskActionDeliveryGuard);
+    return queued;
   }
 
   const orcaInterAgentDispatcher: OrcaInterAgentDispatcher = createOrcaInterAgentDispatcher({
@@ -14490,6 +14539,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   };
 
   const captureOrcaPluginAuthority = async (leadSessionId: string) => {
+    // All Orca lifecycle/control paths already retain this guard through lookup,
+    // preparation and acceptance. Bind the originating call even outside its ALS.
+    const assertActionCurrent = captureTaskActionGuard();
     const epoch = getCurrentDbClientSnapshot();
     if (!epoch) throw new PluginTaskError('HOST_NOT_READY', 'Task storage unavailable', true);
     const input = inputCoordinator.getAcceptedInputProvenance(leadSessionId);
@@ -14518,10 +14570,12 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       const current = await store.get(leadSessionId);
       const currentPluginId = current?.operation === 'create' && !hasRevokedPluginTaskOwnership(current) ? current.pluginId : null;
       if (epoch !== getCurrentDbClientSnapshot() || currentPluginId !== pluginId) throw new PluginTaskError('PERMISSION_DENIED', 'Orca task ownership changed');
+      if (assertActionCurrent) await assertActionCurrent();
       if (pluginId === null) return;
       const task = await pluginTaskServiceForCurrentOwner!().get(pluginId, leadSessionId);
       if (epoch !== getCurrentDbClientSnapshot()) throw new PluginTaskError('PERMISSION_DENIED', 'Account changed');
       assertPluginWorkerAutoAuthorized(pluginId, task);
+      if (assertActionCurrent) await assertActionCurrent();
     };
     await assertCurrent();
     return { permissionMode: pluginId === null ? undefined : 'auto' as const, assertCurrent };
@@ -18311,6 +18365,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     // 插话并入正在运行的 turn,不开启新 turn:排队时登记的「新 turn 接管」回调不再适用,
     // 只释放登记(不运行),否则会给已在跑的 worker 另建一份 running/auto-bridge 身份。
     onSteerAccepted: async (sessionId, item) => {
+      void settleTaskActionInput(item).catch(() => undefined);
       await settleTodoDispatch(sessionId, item.clientId, true);
       orcaInterAgentDispatcher.discardQueuedOrcaInterAgentAcceptedCallback(item.clientId);
     },
@@ -18348,6 +18403,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       settleQueuedAttachmentPersistenceFailure(sessionId, item.clientId, opts.retainForRetry);
     },
     onDispatchedUserTurn: async (sessionId, item, preVendorDispatchAt): Promise<void> => {
+      void settleTaskActionInput(item).catch(() => undefined);
       // 供应商组换电脑后的续跑派发出去了：协同 Worker 暂存的那次终态不再回报(续跑那一轮结束时照常回报结果)。
       if (item.autoResume === true && item.autoResumeInfo?.reason === USAGE_LIMIT_RESET_AUTO_RESUME_REASON) {
         settleProviderGroupContinuation(sessionId, true);
@@ -18497,6 +18553,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     },
     // 队列项未派发即被丢弃(stop/remove/clearSession) → 释放暂存的 accepted 副作用, 防回调表泄漏。
     onDiscardedQueuedMessage: (sessionId, item) => {
+      void settleTaskActionInput(item).catch(() => undefined);
       void settleTodoDispatch(sessionId, item.clientId, false);
       notePluginTaskLifecycle(service => service.discard(sessionId, item, 'cancelled'));
       if (item.durableDelivery === true) {
@@ -20058,10 +20115,22 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     return { sourceDevice: readDeviceLinkInvokeSourceDevice(), isMobile: isMobileControllerInvoke() };
   }
   function stampQueuedEditProvenance(
+    sessionId: string,
     updated: AgentInputQueuedMessage,
     remote: boolean,
     editor: ReturnType<typeof readQueuedEditorProvenance>,
   ): AgentInputQueuedMessage {
+    // Only the authenticated owner's edit renews authorization. Guest edits and
+    // tool edits retain the original grant; neither can turn attribution into consent.
+    if (!getDeviceLinkInvokeContext()?.sharedTask && taskActionInputGuard(sessionId, updated)) {
+      const owner = captureDataOwnerBroadcastScope();
+      const generation = inputCoordinator.getGeneration(sessionId);
+      bindTaskActionInput(sessionId, updated, async () => {
+        if (!isDataOwnerBroadcastScopeCurrent(owner)
+          || !inputCoordinator.isGenerationCurrent(sessionId, generation))
+          throw new Error('TASK_ACTION_AUTHORIZATION_EXPIRED');
+      });
+    }
     return stampTrustedDeviceLinkQueuedOrigin(
       stampTrustedDesktopQueuedOrigin(stampMobileClientOrigin(updated, editor.isMobile), remote, true),
       remote,
@@ -20102,7 +20171,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         refs,
         contexts,
         remote,
-        (updated) => stampQueuedEditProvenance(updated, remote, editor),
+        (updated) => stampQueuedEditProvenance(sid, updated, remote, editor),
       );
     },
   );
@@ -20188,7 +20257,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           sid,
           cid,
           update,
-          (updated) => stampQueuedEditProvenance(updated, remote, editor),
+          (updated) => stampQueuedEditProvenance(sid, updated, remote, editor),
         );
         acceptedByCoordinator = result.updated;
         if (result.updated) {
@@ -20486,6 +20555,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       // 三边都 miss 才告警。
       if (issueConfirmBridge.resolve(requestId, decision)) return { accepted: true };
       if (renameSessionsConfirmBridge.resolve(requestId, decision)) return { accepted: true };
+      if (!sharedTask && taskActionConfirmBridge.resolveFromIpc(requestId, decision, {
+        isDeviceLink: isDeviceLinkInvoke(),
+        assertTrustedSender: () => assertTrustedAppRendererEvent(event),
+      })) return { accepted: true };
       if (
         orcaWorkerPermissionConfirmBridge.resolveFromIpc(requestId, decision, {
           isDeviceLink: isDeviceLinkInvoke(),

@@ -1342,6 +1342,19 @@ describe('local-db:sessions:update handler wiring', () => {
     expect(h.tapWindowBroadcast).not.toHaveBeenCalled();
   });
 
+  // #6399, unit: a mutable authorization check must precede runtime close, not
+  // just the final DB write; previous coverage only revoked after that close.
+  it.each(['codex-local', 'pi-local'])('does not close %s when the pre-mutation check rejects', async (id) => {
+    await expect(updateSessionInDb(id, { workingDir: '/new/dir' }, undefined, {
+      assertCurrent: () => undefined,
+      beforeUpdate: async () => undefined,
+      beforeWrite: async () => { throw new Error('TASK_ACTION_AUTHORIZATION_EXPIRED'); },
+    })).rejects.toThrow('PRECONDITION_FAILED');
+    expect(h.closeIdleSessionForMove).not.toHaveBeenCalled();
+    expect(h.sqlite!.prepare('SELECT working_dir FROM sessions WHERE id = ?').get(id))
+      .toEqual({ working_dir: '/old/dir' });
+  });
+
   it('retains transcript relocation and returned resume identity for a guarded MCP move', async () => {
     const updated = await updateSessionInDb(
       'cc-local',

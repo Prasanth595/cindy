@@ -21,6 +21,11 @@
     "messageCount": "{{count}} emails",
     "showMessages": "Show {{count}} emails"
   },
+  "taskActionConfirmation": {
+    "title": "Confirm session action",
+    "once": "Review the target, action and full content below. Allow applies to this action once.",
+    "delegation": "Review this independent session’s objective and settings. Allow starts it and permits messages and stopping within this delegation until it ends. Answering questions, resuming a pause or changing models still requires a separate confirmation."
+  },
   "logSupport": {
     "title": "Logs and Feedback",
     "localFiles": "Choose logs from the day of the problem. Review unredacted files before sharing.",

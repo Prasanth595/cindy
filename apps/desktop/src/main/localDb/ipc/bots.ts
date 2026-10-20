@@ -1128,10 +1128,25 @@ async function readRemoteBotProfile(client: ReturnType<typeof getDbClient>, botI
   if (!isBotVisibleRemotely(profile)) return null;
   const canonicalResolution = await reconcileCanonicalLink(botId, client);
   owner.assertCurrent();
+  // Personal transcript links let search entries open the exact historical task.
+  // No group/channel lanes, prompts, credentials or runtime configuration.
+  const personalSessions = await db.select({
+    id: sessions.id,
+    role: botSessionLinks.role,
+    status: sessions.status,
+  }).from(botSessionLinks)
+    .innerJoin(sessions, eq(sessions.id, botSessionLinks.sessionId))
+    .where(and(
+      eq(botSessionLinks.botId, botId),
+      inArray(botSessionLinks.role, ['canonical', 'history']),
+      ne(sessions.status, 'deleted'),
+    ));
+  owner.assertCurrent();
   const { hiddenAt: _hiddenAt, ...visibleProfile } = profile;
   return {
     ...visibleProfile,
     canonicalSessionId: canonicalResolution.canonicalSessionId ?? undefined,
+    sessions: personalSessions,
   };
 }
 

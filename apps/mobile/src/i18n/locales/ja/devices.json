@@ -317,6 +317,7 @@
       "openMenu": "メニューを開く",
       "closeMenu": "メニューを閉じる",
       "openDisplaySettings": "表示設定を開く",
+      "openDisplaySettingsWithStatus": "表示設定を開く（表示中：{{status}}）",
       "openSearch": "検索",
       "openSettings": "設定を開く",
       "syncing": "再同期中",
