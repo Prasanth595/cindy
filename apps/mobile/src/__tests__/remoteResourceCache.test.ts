@@ -14,6 +14,12 @@ const rows = (deviceId: string, lastReplyAt: number) => [{
   item: { ref: { collectionId: 'teammates', kind: 'bot', id: 'writer' }, display: { title: 'Writer', lastReplyAt }, revision: '1', links: [] },
 }];
 beforeEach(async () => { await clearRemoteResourceCache(); disk.clear(); });
+it('restores the same collection-qualified row identity used by live lists', async () => {
+  const live = rows('home', 100)[0];
+  live.key = JSON.stringify(['home', 'teammates', 'bot', 'writer']);
+  disk.set('cindy.remoteResources.v1.alice', JSON.stringify({ items: { teammates: [live] } }));
+  expect((await readRemoteResourceSnapshot('alice')).items.teammates[0].key).toBe(live.key);
+});
 it('does not restore routines from an old offline snapshot while retaining companions', async () => {
   const home = [
     { id: 'routines', title: '例行任务', resourceKind: 'routine', targets: [{ deviceId: 'home', deviceName: 'Home' }] },

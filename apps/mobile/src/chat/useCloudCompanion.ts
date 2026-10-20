@@ -26,10 +26,13 @@ export function useCloudCompanionHome(enabled: boolean) {
       const { companionHome } = await api.client.capabilities();
       const actors = companionHome ? await api.client.actors() : NO_ACTORS;
       const deviceNames = companionHome && actors.length
-        ? await readDeviceList().then(({ devices }) => new Map(devices.map(device => [device.deviceId, device.name] as const)), () => NO_NAMES)
+        ? await readDeviceList().then(({ devices }) => new Map(devices.map(device => [device.deviceId, device.name] as const)), () => null)
         : NO_NAMES;
       if (run !== generation.current || !api.current()) return;
-      setState({ owner: api.owner, supported: companionHome, actors, deviceNames });
+      // A failed optional directory read is not a rename. Retain only this
+      // account's last labels; the successful actor response still owns homes.
+      setState(previous => ({ owner: api.owner, supported: companionHome, actors,
+        deviceNames: deviceNames ?? (previous.owner === api.owner ? previous.deviceNames : NO_NAMES) }));
     } catch {
       // Keep the previous answer: rows simply behave as before when the server cannot be read.
     }

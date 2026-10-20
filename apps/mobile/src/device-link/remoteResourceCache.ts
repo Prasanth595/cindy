@@ -33,7 +33,7 @@ function normalize(raw: unknown): Snapshot {
       if (!row) return [];
       const [host] = parseRemoteResourceTargets(JSON.stringify([row.host]));
       const [item] = normalizeRemoteCollectionItems({ items: [row.item] }, id);
-      return host && item ? [{ host, item, key: JSON.stringify([host.deviceId, item.ref.kind, item.ref.id]) }] : [];
+      return host && item ? [{ host, item, key: JSON.stringify([host.deviceId, item.ref.collectionId, item.ref.kind, item.ref.id]) }] : [];
     });
   }
   if (value.read && typeof value.read === 'object') for (const [key, at] of Object.entries(value.read).slice(-2000)) {
