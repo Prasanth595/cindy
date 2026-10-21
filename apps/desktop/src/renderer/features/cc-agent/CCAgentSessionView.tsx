@@ -5659,6 +5659,7 @@ function CCAgentSessionContent({
                       onCancel={() => cancelPlanReview(pendingPlanReview.requestId)}
                     />
                     <PlanActionCard
+                      keyboardShortcutsEnabled={ownsHardwareTaskActions}
                       requestId={pendingPlanReview.requestId}
                       onRespond={respondToPlanReview}
                       onCancel={cancelPlanReview}
@@ -5667,11 +5668,13 @@ function CCAgentSessionContent({
                 ) : pendingPermission ? (
                   <PermissionPrompt
                     permission={pendingPermission}
+                    keyboardShortcutsEnabled={ownsHardwareTaskActions}
                     companion={botChatIdentity}
                     onRespond={respondToPermission}
                   />
                 ) : pendingAskUser ? (
                   <AskUserQuestionPrompt
+                    keyboardShortcutsEnabled={ownsHardwareTaskActions}
                     sessionId={sessionId}
                     workingDir={session?.workingDir ?? ''}
                     remoteHostId={session?.remoteHostId}
@@ -5695,6 +5698,7 @@ function CCAgentSessionContent({
                   />
                 ) : pendingIssueConfirm && sessionId ? (
                   <IssueConfirmCard
+                    keyboardShortcutsEnabled={ownsHardwareTaskActions}
                     key={`${sessionId}:${pendingIssueConfirm.requestId}`}
                     sessionId={sessionId}
                     pending={pendingIssueConfirm}
@@ -5702,11 +5706,13 @@ function CCAgentSessionContent({
                   />
                 ) : pendingRenameSessionsConfirm ? (
                   <RenameSessionsConfirmCard
+                    keyboardShortcutsEnabled={ownsHardwareTaskActions}
                     pending={pendingRenameSessionsConfirm}
                     onRespond={respondToRenameSessionsConfirm}
                   />
                 ) : pendingGhostGrantConfirm ? (
                   <GhostGrantConfirmCard
+                    keyboardShortcutsEnabled={ownsHardwareTaskActions}
                     key={pendingGhostGrantConfirm.requestId}
                     pending={pendingGhostGrantConfirm}
                     onRespond={respondToGhostGrantConfirm}
