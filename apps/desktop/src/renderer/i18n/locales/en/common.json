@@ -10655,6 +10655,13 @@
         "providerGroupRunningHere": "Running on this computer",
         "providerGroupUnassigned": "The Provider Group picks a computer when the task starts; usage then shows for that computer"
       },
+      "claudeFastWarning": {
+        "title": "Enable Claude Fast Mode?",
+        "description": "On Claude subscription plans, Fast mode is billed separately through extra usage (Usage credits). It does not use your included allowance, even if you have usage remaining.",
+        "confirm": "Enable Fast Mode",
+        "dontShowAgain": "Don’t Show Again",
+        "tip": "Fast · billed separately from your subscription"
+      },
       "speed": {
         "label": "Speed",
         "standard": "Standard",

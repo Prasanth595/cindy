@@ -1,3 +1,5 @@
+import { ClaudeFastModeWarning } from './ClaudeFastModeWarning';
+import { useClaudeFastModeConfirmation } from './useClaudeFastModeConfirmation';
 import { NativeErrorNotice } from '@/components/NativeErrorNotice.ios';
 import { ModelSpeedIcon } from './ModelSpeedIcon';
 import {
@@ -107,6 +109,13 @@ export function UnifiedModelPickerView(p: UnifiedMobilePickerViewProps) {
   const options = p.options;
   const isFavorite = options?.isFavorite ?? !!options?.row.favorite;
   const config = options?.row.config;
+  const fastConfirmation = useClaudeFastModeConfirmation(
+    p.visible && !p.busy && options && config ? JSON.stringify([options.row.key, config]) : null,
+  );
+  const setFast = (fast: boolean | 'ultrafast') => {
+    if (!config || !options || p.busy) return;
+    fastConfirmation.request(config.agent, config.fast, fast, () => options.onChange({ ...config, fast }));
+  };
   const level = (id: string) =>
     t(`models.options.effortLevels.${id}`, { defaultValue: id });
   const listHeader = (
@@ -334,7 +343,7 @@ export function UnifiedModelPickerView(p: UnifiedMobilePickerViewProps) {
       visible={p.visible}
       onClosed={p.onClosed}
       onClose={p.onClose}
-      onBack={page ? () => setPage(null) : p.onBack}
+      onBack={fastConfirmation.warning?.onCancel ?? (page ? () => setPage(null) : p.onBack)}
       backLabel={t("models.picker.backToModels")}
       title={
         page === "sources"
@@ -355,7 +364,9 @@ export function UnifiedModelPickerView(p: UnifiedMobilePickerViewProps) {
           <NativeErrorNotice message={p.error} />
         </Section>
       ) : null}
-      {page === "sources" ? (
+      {fastConfirmation.warning ? (
+        <ClaudeFastModeWarning {...fastConfirmation.warning} />
+      ) : page === "sources" ? (
         <>
           <Section>{sourceGroups.local.map(sourceRow)}</Section>
           {/* 其他电脑的供应商:每台电脑单独一块,块标题是电脑名。 */}
@@ -470,10 +481,8 @@ export function UnifiedModelPickerView(p: UnifiedMobilePickerViewProps) {
               <Picker
                 label={t("models.options.speed.label")}
                 selection={config.fast === 'ultrafast' ? 'ultrafast' : config.fast ? 'fast' : 'standard'}
-                onSelectionChange={(value: string) => options.onChange({
-                  ...config, fast: value === 'ultrafast' ? 'ultrafast' : value === 'fast',
-                })}
-                modifiers={[pickerStyle("menu"), disabled(p.busy)]}
+                onSelectionChange={(value: string) => setFast(value === 'ultrafast' ? 'ultrafast' : value === 'fast')}
+                modifiers={[pickerStyle("menu"), disabled(p.busy || fastConfirmation.reading)]}
                 testID={`${p.testID}.speed`}
               >
                 {(['standard', 'fast', 'ultrafast'] as const).map(value => (
@@ -486,8 +495,8 @@ export function UnifiedModelPickerView(p: UnifiedMobilePickerViewProps) {
                 <Toggle
                   label={t("models.options.fastMode")}
                   isOn={!!config.fast}
-                  onIsOnChange={(fast) => options.onChange({ ...config, fast })}
-                  modifiers={[disabled(p.busy), tint(colors.inputCaret)]}
+                  onIsOnChange={setFast}
+                  modifiers={[disabled(p.busy || fastConfirmation.reading), tint(colors.inputCaret)]}
                   testID={`${p.testID}.fast`}
                 />
               </HStack>

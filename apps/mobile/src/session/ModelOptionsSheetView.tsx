@@ -1,3 +1,5 @@
+import { ClaudeFastModeWarning } from './ClaudeFastModeWarning';
+import { useClaudeFastModeConfirmation } from './useClaudeFastModeConfirmation';
 /**
  * ModelOptionsSheetView —— 模型浮窗二级「模型选项」视图的内容(SheetSurface 的 children)。
  *
@@ -206,17 +208,23 @@ export function ModelOptionsSheetView({
     if (providerId)
       modelMemory?.setEffort(agentKind, providerId, model.id, effort);
   };
+  const fastConfirmation = useClaudeFastModeConfirmation(
+    !disabled && fastEditable ? JSON.stringify([providerId, model.id, agentKind, fastOn, selected]) : null,
+  );
   const setFast = (enabled: boolean | 'ultrafast'): void => {
-    if (selected) {
-      void onChangeSelectedFastMode?.(enabled);
-      return;
-    }
-    if (providerId)
-      modelMemory?.setFast(agentKind, providerId, model.id, enabled);
+    fastConfirmation.request(agentKind, fastOn, enabled, () => {
+      if (selected) {
+        void onChangeSelectedFastMode?.(enabled);
+        return;
+      }
+      if (providerId)
+        modelMemory?.setFast(agentKind, providerId, model.id, enabled);
+    });
   };
 
   const hasEfforts = model.efforts.length > 0;
 
+  if (fastConfirmation.warning) return <ClaudeFastModeWarning {...fastConfirmation.warning} />;
   return (
     <View testID={testID}>
       {metaLine || price ? (
@@ -273,7 +281,7 @@ export function ModelOptionsSheetView({
           </Text>
           <NativeSwitch
             accessibilityLabel={t("models.options.fastMode")}
-            disabled={disabled}
+            disabled={disabled || fastConfirmation.reading}
             onValueChange={setFast}
             seedColor={colors.inputCaret}
             testID={`${testID}.fastToggle`}

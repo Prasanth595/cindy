@@ -67,6 +67,7 @@ import { hasProviderLogo, ProviderLogoMark } from '@/components/icons/ProviderLo
 import { agentOptionOf } from './agentOptions';
 import type { SelectableVendor } from '@/lib/agentVendors';
 import { FastModeToggle } from './FastModeToggle';
+import { useClaudeFastModeWarning } from './useClaudeFastModeWarning';
 import {
   UnifiedModelPanel,
   type UnifiedModelPanelProps,
@@ -911,6 +912,7 @@ interface ModelSelectorProps {
 }
 
 interface ModelSelectorContentProps {
+  onFastModeConfirmationPendingChange?: (pending: boolean) => void;
   providersOverride?: ProviderView[];
   providersOverrideState?: ModelSelectorProps['providersOverrideState'];
   modelId: string;
@@ -1174,6 +1176,7 @@ export function ModelSelectorContent(props: ModelSelectorContentProps) {
 }
 
 function ModelSelectorContentView({
+  onFastModeConfirmationPendingChange,
   providersOverride,
   providersOverrideState,
   modelId,
@@ -2594,8 +2597,13 @@ function ModelSelectorContentView({
       handleRowSelect(editing.providerId, editingModel.id, false, e);
     }
   };
-  const handleEditFast = (enabled: boolean) => {
+  const confirmClaudeFast = useClaudeFastModeWarning(
+    `${deviceId ?? ''}:${currentAgentKind ?? ''}:${currentProviderId ?? ''}:${modelId}:${interactionDisabled}`,
+    onFastModeConfirmationPendingChange,
+  );
+  const handleEditFast = async (enabled: boolean) => {
     if (interactionDisabled || !editing || !editingModel) return;
+    if (enabled && !editFastValue && currentAgentKind === 'claude-code' && !(await confirmClaudeFast())) return;
     if (editingIsActive) {
       // 当前选中模型的 Fast 是会话实时状态,必须等 onFastModeChange 持久化成功后再由
       // ChatInput 同步草稿默认;这里不能预写 modelMemory,否则 device-link 远程失败会污染被控端草稿。
@@ -3742,6 +3750,7 @@ function ModelSelectorContentView({
                 }
               : {})}
             {...(onFastModeChange ? { onFastModeChangeLive: onFastModeChange } : {})}
+            confirmClaudeFastMode={confirmClaudeFast}
             panelElement={paneElement}
             {...(overlayContentClassName !== undefined
               ? { overlayClassName: overlayContentClassName }
@@ -4093,6 +4102,11 @@ export function ModelSelector({
   // AlertDialog 打开时会被 Popover 视作外部交互并请求关闭。Agent 分段确认期间
   // 强制保留已展开的模型面板；确认结束后把底层 open 恢复为 true，避免弹窗关闭
   // 时的焦点回落再次把面板收掉。模型行确认及其它消费者不经过这层包装。
+  const handleFastModeConfirmationPendingChange = useCallback((pending: boolean) => {
+    if (!pending) setOpenWithoutAutoRefresh(true);
+    setKeepOpenForAgentConfirmation(pending);
+  }, [setOpenWithoutAutoRefresh]);
+
   const contentAgentSwitch = useMemo(() => {
     const confirmBrowseSwitch = agentSwitch?.confirmBrowseSwitch;
     if (!confirmBrowseSwitch) return agentSwitch;
@@ -4792,6 +4806,7 @@ export function ModelSelector({
         </div>
       )}
     <ModelSelectorContentView
+      onFastModeConfirmationPendingChange={handleFastModeConfirmationPendingChange}
       modelId={modelId}
       effort={effort}
       onModelChange={onModelChange}

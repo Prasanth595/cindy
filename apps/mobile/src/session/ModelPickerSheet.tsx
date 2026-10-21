@@ -481,7 +481,7 @@ function LegacyModelPickerSheet({
                 agentKind={agentKind}
                 capabilities={capabilities}
                 contextWindow={optionsTarget.contextWindow}
-                disabled={disabled}
+                disabled={disabled || !visible}
                 displayName={optionsTarget.displayName}
                 fastEditable={optionsTarget.provider
                   // provider-aware 行:agent gate × 该 (来源, 模型) 目录条目的 supportsFastMode。

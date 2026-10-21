@@ -10615,6 +10615,13 @@
         "providerGroupRunningHere": "현재 이 컴퓨터에서 실행 중",
         "providerGroupUnassigned": "시작하면 제공자 그룹이 컴퓨터를 고르고, 사용량은 그 컴퓨터 기준으로 표시됩니다"
       },
+      "claudeFastWarning": {
+        "title": "Claude Fast 모드를 켤까요?",
+        "description": "Claude 구독에서 Fast 모드는 extra usage(Usage credits)로 별도 과금됩니다. 구독에 포함된 사용량이 남아 있어도 사용할 수 없습니다.",
+        "confirm": "Fast 모드 켜기",
+        "dontShowAgain": "다시 표시하지 않기",
+        "tip": "Fast · 구독과 별도 과금"
+      },
       "speed": {
         "label": "속도",
         "standard": "표준",

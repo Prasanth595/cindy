@@ -45,6 +45,12 @@
       "ultra": "极致"
     }
   },
+  "claudeFastWarning": {
+    "title": "开启 Claude Fast 模式？",
+    "description": "使用 Claude 订阅时，Fast 模式通过 extra usage（Usage credits）单独计费，无法使用订阅内额度，即使还有剩余额度。",
+    "confirm": "开启 Fast 模式",
+    "dontShowAgain": "不再提示"
+  },
   "contextWindowSwitch": {
     "title": "这个模型装不下当前对话",
     "remoteTitle": "当前远程任务无法安全切换模型",

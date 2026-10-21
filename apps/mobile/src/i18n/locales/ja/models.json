@@ -45,6 +45,12 @@
       "ultra": "究極"
     }
   },
+  "claudeFastWarning": {
+    "title": "Claude Fast モードを有効にしますか？",
+    "description": "Claude のサブスクリプションでは、Fast モードは extra usage（Usage credits）で別途課金されます。サブスクリプションの利用枠が残っていても、その枠は使用されません。",
+    "confirm": "Fast モードを有効にする",
+    "dontShowAgain": "今後表示しない"
+  },
   "contextWindowSwitch": {
     "title": "このモデルには現在の会話が収まりません",
     "remoteTitle": "このリモートタスクではモデルを安全に切り替えられません",

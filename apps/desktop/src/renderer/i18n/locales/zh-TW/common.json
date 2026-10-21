@@ -10615,6 +10615,13 @@
         "providerGroupUnassigned": "開始後由供應商組選一台電腦，用量依那台顯示"
       },
       "modelListAria": "模型清單",
+      "claudeFastWarning": {
+        "title": "開啟 Claude Fast 模式？",
+        "description": "使用 Claude 訂閱時，Fast 模式透過 extra usage（Usage credits）另行計費，無法使用訂閱內額度，即使仍有剩餘額度。",
+        "confirm": "開啟 Fast 模式",
+        "dontShowAgain": "不再提示",
+        "tip": "Fast · 不使用訂閱額度，另行計費"
+      },
       "speed": {
         "label": "速度",
         "standard": "標準",

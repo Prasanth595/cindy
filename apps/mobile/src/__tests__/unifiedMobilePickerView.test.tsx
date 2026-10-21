@@ -1,9 +1,12 @@
 // @vitest-environment jsdom
+vi.mock('@/components/QuietSyncIndicator', () => ({ QuietSyncIndicator: () => null }));
 import { act, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { UnifiedModelPickerView } from '@/session/UnifiedModelPickerView';
 import { UnifiedModelPickerView as IosModelPickerView } from '@/session/UnifiedModelPickerView.ios';
+vi.mock('@react-native-async-storage/async-storage', () => ({ default: { getItem: vi.fn(async () => null), setItem: vi.fn(async () => undefined) } }));
+vi.mock('@/hooks/useReduceMotion', () => ({ useReduceMotionEnabled: () => false }));
 const virtualList = vi.hoisted(() => ({ scrollToOffset: vi.fn() }));
 const theme = vi.hoisted(() => ({ mode: 'light' as 'light' | 'dark' }));
 vi.mock('react-native', async () => {

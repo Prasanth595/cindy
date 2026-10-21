@@ -1,3 +1,5 @@
+import { ClaudeFastModeWarning } from './ClaudeFastModeWarning';
+import { useClaudeFastModeConfirmation } from './useClaudeFastModeConfirmation';
 import { ComposerNativeSection as Section } from './ComposerNativeSection';
 import { Text, Toggle, Picker } from '@expo/ui/swift-ui';
 import { disabled, tint, pickerStyle, tag } from "@expo/ui/swift-ui/modifiers";
@@ -50,10 +52,16 @@ export function ModelOptionsSheetView(p: ModelOptionsSheetViewProps) {
     fastEditable: p.fastEditable,
     memory: p.modelMemory,
   });
+  const fastConfirmation = useClaudeFastModeConfirmation(
+    !p.disabled && p.fastEditable ? JSON.stringify([p.providerId, p.model.id, p.agentKind, fast, p.selected]) : null,
+  );
   const setFast = (value: boolean | 'ultrafast') => {
-    if (p.selected) void p.onChangeSelectedFastMode?.(value);
-    else if (p.providerId) p.modelMemory?.setFast(p.agentKind, p.providerId, p.model.id, value);
+    fastConfirmation.request(p.agentKind, fast, value, () => {
+      if (p.selected) void p.onChangeSelectedFastMode?.(value);
+      else if (p.providerId) p.modelMemory?.setFast(p.agentKind, p.providerId, p.model.id, value);
+    });
   };
+  if (fastConfirmation.warning) return <ClaudeFastModeWarning {...fastConfirmation.warning} />;
   return (
     <>
       {meta || price ? (
@@ -87,18 +95,9 @@ export function ModelOptionsSheetView(p: ModelOptionsSheetViewProps) {
           <Toggle
             label={t("models.options.fastMode")}
             isOn={!!fast}
-            onIsOnChange={(value) => {
-              if (p.selected) void p.onChangeSelectedFastMode?.(value);
-              else if (p.providerId)
-                p.modelMemory?.setFast(
-                  p.agentKind,
-                  p.providerId,
-                  p.model.id,
-                  value,
-                );
-            }}
+            onIsOnChange={setFast}
             // 表单 Toggle 显式用统一开关蓝,不继承 Host 的 textPrimary 黑白 seed。
-            modifiers={[disabled(!!p.disabled), tint(colors.inputCaret)]}
+            modifiers={[disabled(!!p.disabled || fastConfirmation.reading), tint(colors.inputCaret)]}
             testID={`${p.testID}.fastToggle`}
           />
         </Section>

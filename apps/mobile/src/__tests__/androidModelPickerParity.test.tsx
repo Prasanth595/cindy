@@ -1,11 +1,17 @@
 // @vitest-environment jsdom
+vi.mock('@/components/QuietSyncIndicator', () => ({ QuietSyncIndicator: () => null }));
 /**
  * Android 模型 / 权限 / 目标面板与 iOS 的交互对齐(外观仍是 SheetModal + RN 自绘行)。
  * react-native 用 DOM 桩替身渲染,按 testID / aria 属性断言信息结构与交互时机。
  */
 import { act, createElement, type ReactNode } from "react";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("@react-native-async-storage/async-storage", () => ({
+  default: { getItem: vi.fn(async () => null), setItem: vi.fn(async () => undefined) },
+}));
 
 const native = vi.hoisted(() => ({
   budgetDisabled: false,
@@ -577,6 +583,94 @@ describe("Android unified model picker follows the iOS structure", () => {
     click("modelSheet.reset");
     expect(props.options.onReset).toHaveBeenCalledTimes(1);
     expect(byId("modelSheet.price")!.textContent).toContain("Input $1");
+  });
+
+  // Test value: the real picker must defer chargeable Claude Fast changes until
+  // confirmation. Existing Codex toggle coverage cannot detect billing consent
+  // or suppression persistence. Minimal input: Claude, Fast off, first toggle.
+  // Tier: unit (DOM-backed RN controls); cancellation, acceptance and panel close
+  // have distinct observable persistence / mutation outcomes.
+  it("keeps Claude Fast off on cancel and remembers suppression only after confirmation", async () => {
+    vi.mocked(AsyncStorage.getItem).mockResolvedValue(null);
+    vi.mocked(AsyncStorage.setItem).mockClear();
+    const row = unifiedRow();
+    row.config.agent = 'claude-code';
+    const props = optionsProps({ row });
+    render(createElement(UnifiedModelPickerView, props as never));
+    await act(async () => click('modelSheet.fast'));
+    expect(props.options.onChange).not.toHaveBeenCalled();
+    expect(host.textContent).toContain('models.claudeFastWarning.description');
+    click('claudeFastWarning.dontShowAgain');
+    click('claudeFastWarning.cancel');
+    expect(props.options.onChange).not.toHaveBeenCalled();
+    expect(AsyncStorage.setItem).not.toHaveBeenCalled();
+    expect(byId('modelSheet.fast')!.getAttribute('aria-checked')).toBe('false');
+
+    await act(async () => click('modelSheet.fast'));
+    expect(byId('claudeFastWarning.dontShowAgain')!.getAttribute('aria-checked')).toBe('false');
+    click('claudeFastWarning.dontShowAgain');
+    await act(async () => click('claudeFastWarning.confirm'));
+    expect(props.options.onChange).toHaveBeenCalledWith(expect.objectContaining({ fast: true }));
+    expect(AsyncStorage.setItem).toHaveBeenCalledTimes(1);
+    const [key, value] = vi.mocked(AsyncStorage.setItem).mock.calls[0];
+    vi.mocked(AsyncStorage.getItem).mockImplementation(async requested => requested === key ? value : null);
+    props.options.onChange.mockClear();
+    render(null);
+    render(createElement(UnifiedModelPickerView, props as never));
+    await act(async () => click('modelSheet.fast'));
+    expect(byId('claudeFastWarning')).toBeNull();
+    expect(props.options.onChange).toHaveBeenCalledWith(expect.objectContaining({ fast: true }));
+    vi.mocked(AsyncStorage.getItem).mockResolvedValue(null);
+  });
+
+  it("confirms without suppressing future warnings and allows turning Claude Fast off directly", async () => {
+    vi.mocked(AsyncStorage.getItem).mockResolvedValue(null);
+    vi.mocked(AsyncStorage.setItem).mockClear();
+    const row = unifiedRow();
+    row.config.agent = 'claude-code';
+    const props = optionsProps({ row });
+    render(createElement(UnifiedModelPickerView, props as never));
+    await act(async () => click('modelSheet.fast'));
+    await act(async () => click('claudeFastWarning.confirm'));
+    expect(props.options.onChange).toHaveBeenCalledTimes(1);
+    expect(AsyncStorage.setItem).not.toHaveBeenCalled();
+    row.config.fast = true;
+    render(createElement(UnifiedModelPickerView, props as never));
+    click('modelSheet.fast');
+    expect(props.options.onChange).toHaveBeenLastCalledWith(expect.objectContaining({ fast: false }));
+    expect(byId('claudeFastWarning')).toBeNull();
+  });
+
+  it("still warns after storage failures while honoring an explicit confirmation", async () => {
+    vi.mocked(AsyncStorage.getItem).mockRejectedValueOnce(new Error('read failed'));
+    vi.mocked(AsyncStorage.setItem).mockRejectedValueOnce(new Error('write failed'));
+    const row = unifiedRow();
+    row.config.agent = 'claude-code';
+    const props = optionsProps({ row });
+    render(createElement(UnifiedModelPickerView, props as never));
+    await act(async () => click('modelSheet.fast'));
+    expect(props.options.onChange).not.toHaveBeenCalled();
+    click('claudeFastWarning.dontShowAgain');
+    await act(async () => click('claudeFastWarning.confirm'));
+    expect(props.options.onChange).toHaveBeenCalledTimes(1);
+    await act(async () => click('modelSheet.fast'));
+    expect(byId('claudeFastWarning')).not.toBeNull();
+    expect(props.options.onChange).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['closed', 'busy'])("ignores a late saved preference after the picker becomes %s", async (state) => {
+    let finish!: (value: string | null) => void;
+    vi.mocked(AsyncStorage.getItem).mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const row = unifiedRow();
+    row.config.agent = 'claude-code';
+    const props = optionsProps({ row });
+    render(createElement(UnifiedModelPickerView, props as never));
+    click('modelSheet.fast');
+    render(createElement(UnifiedModelPickerView, { ...props, ...(state === 'closed' ? { visible: false } : { busy: true }) } as never));
+    await act(async () => finish('1'));
+    expect(props.options.onChange).not.toHaveBeenCalled();
+    render(createElement(UnifiedModelPickerView, props as never));
+    expect(byId('claudeFastWarning')).toBeNull();
   });
 
   it("falls back to inline effort rows when the build has no native menu", () => {

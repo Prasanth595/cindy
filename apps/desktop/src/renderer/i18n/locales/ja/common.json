@@ -10615,6 +10615,13 @@
         "providerGroupRunningHere": "現在このパソコンで実行中",
         "providerGroupUnassigned": "開始時にプロバイダーグループがパソコンを選び、使用量はそのパソコンの分を表示します"
       },
+      "claudeFastWarning": {
+        "title": "Claude Fast モードを有効にしますか？",
+        "description": "Claude のサブスクリプションでは、Fast モードは extra usage（Usage credits）として別途課金されます。契約に含まれる利用枠は、残っていても使用できません。",
+        "confirm": "Fast モードを有効にする",
+        "dontShowAgain": "今後表示しない",
+        "tip": "Fast · サブスクリプションとは別途課金"
+      },
       "speed": {
         "label": "速度",
         "standard": "標準",

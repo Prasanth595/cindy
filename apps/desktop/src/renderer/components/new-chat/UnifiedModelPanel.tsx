@@ -279,6 +279,8 @@ export interface UnifiedModelPanelProps {
    * 被控端草稿)。返回值语义同 `onEffortChangeLive`。
    */
   onFastModeChangeLive?: (enabled: boolean | 'ultrafast') => void | boolean | Promise<void | boolean>;
+  /** Confirm the separate Claude Fast charge before any live or saved setting changes. */
+  confirmClaudeFastMode?: () => Promise<boolean>;
   /** 面板容器元素(浮层按它的左 / 右外侧定位)。 */
   panelElement: HTMLElement | null;
   overlayClassName?: string;
@@ -399,6 +401,7 @@ export function UnifiedModelPanel({
   onSelectedFavoriteAnchorClear,
   onEffortChangeLive,
   onFastModeChangeLive,
+  confirmClaudeFastMode,
   panelElement,
   overlayClassName,
   panelWidthFluid = false,
@@ -1597,7 +1600,12 @@ export function UnifiedModelPanel({
                 onEffortChange={(effort) =>
                   applyEffort(target.anchor, target.entry, config, effort)
                 }
-                onFastChange={(enabled) => applyFast(target.anchor, target.entry, config, enabled)}
+                onFastChange={async (enabled) => {
+                  if (enabled && !config.fast && config.agent === 'claude-code') {
+                    if (!(await confirmClaudeFastMode?.())) return;
+                  }
+                  applyFast(target.anchor, target.entry, config, enabled);
+                }}
                 onResetToRecommended={() => resetToRecommended(target.anchor, target.entry, config)}
                 onAddFavorite={() => addFavorite(target.anchor, config)}
                 onRemoveFavorite={() => removeFavorite(target.anchor, target.entry)}

@@ -224,8 +224,8 @@ export function ModelConfigFlyout({
               disabled={disabled}
               onClick={() => onFastChange(!config.fast)}
               aria-pressed={!!config.fast}
-              title={t('newChat.modelSelector.unified.fastTip')}
-              aria-label={t('newChat.modelSelector.unified.fastTip')}
+              title={t(config.agent === 'claude-code' ? 'newChat.modelSelector.claudeFastWarning.tip' : 'newChat.modelSelector.unified.fastTip')}
+              aria-label={t(config.agent === 'claude-code' ? 'newChat.modelSelector.claudeFastWarning.tip' : 'newChat.modelSelector.unified.fastTip')}
               data-fast-toggle
               className={cn(
                 'flex h-7 w-7 shrink-0 items-center justify-center rounded-full border transition-colors',

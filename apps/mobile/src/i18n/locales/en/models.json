@@ -45,6 +45,12 @@
       "ultra": "Ultra"
     }
   },
+  "claudeFastWarning": {
+    "title": "Enable Claude Fast mode?",
+    "description": "On Claude subscription plans, Fast mode is billed separately through extra usage (Usage credits). It does not use your included allowance, even if you have usage remaining.",
+    "confirm": "Enable Fast mode",
+    "dontShowAgain": "Don’t show again"
+  },
   "contextWindowSwitch": {
     "title": "This model can't fit the current conversation",
     "remoteTitle": "This remote model switch isn't supported",

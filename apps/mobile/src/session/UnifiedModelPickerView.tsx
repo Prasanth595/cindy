@@ -1,3 +1,5 @@
+import { ClaudeFastModeWarning } from './ClaudeFastModeWarning';
+import { useClaudeFastModeConfirmation } from './useClaudeFastModeConfirmation';
 import { ModelSpeedIcon } from './ModelSpeedIcon';
 import { ErrorNotice } from '@/components/ErrorNotice';
 /**
@@ -262,7 +264,14 @@ export function UnifiedModelPickerView(p: UnifiedMobilePickerViewProps) {
   }, [showSecondary]);
   const isFavorite = options?.isFavorite ?? !!options?.row.favorite;
   const config = options?.row.config;
-  const back = page ? () => setPage(null) : p.onBack;
+  const fastConfirmation = useClaudeFastModeConfirmation(
+    p.visible && !p.busy && options && config ? JSON.stringify([options.row.key, config]) : null,
+  );
+  const setFast = (fast: boolean | 'ultrafast') => {
+    if (!config || !options || p.busy) return;
+    fastConfirmation.request(config.agent, config.fast, fast, () => options.onChange({ ...config, fast }));
+  };
+  const back = fastConfirmation.warning?.onCancel ?? (page ? () => setPage(null) : p.onBack);
   const currentFilter = p.filters.find((item) => item.id === p.filter);
   const title =
     page === "sources"
@@ -543,7 +552,7 @@ export function UnifiedModelPickerView(p: UnifiedMobilePickerViewProps) {
                   key={speed}
                   disabled={p.busy}
                   title={t(`models.options.speed.${speed}`)}
-                  onPress={() => options.onChange({ ...config, fast: value })}
+                  onPress={() => setFast(value)}
                   trailing={config.fast === value ? <Check size={iconSize.action} color={colors.textPrimary} /> : null}
                 />;
               })}
@@ -556,8 +565,8 @@ export function UnifiedModelPickerView(p: UnifiedMobilePickerViewProps) {
               </Text>
               <NativeSwitch
                 accessibilityLabel={t("models.options.fastMode")}
-                disabled={p.busy}
-                onValueChange={(fast) => options.onChange({ ...config, fast })}
+                disabled={p.busy || fastConfirmation.reading}
+                onValueChange={setFast}
                 seedColor={colors.cta}
                 testID={`${p.testID}.fast`}
                 value={!!config.fast}
@@ -885,7 +894,9 @@ export function UnifiedModelPickerView(p: UnifiedMobilePickerViewProps) {
             title={title}
           >
             {p.error ? <ErrorNotice message={p.error} /> : null}
-            {page === "sources"
+            {fastConfirmation.warning
+              ? <ClaudeFastModeWarning {...fastConfirmation.warning} />
+              : page === "sources"
               ? sourcesPage
               : page === "harness" && options
                 ? harnessPage

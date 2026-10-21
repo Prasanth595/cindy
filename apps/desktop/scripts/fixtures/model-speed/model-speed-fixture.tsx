@@ -2,23 +2,33 @@ import { useState } from 'react';
 import { mountPage, subscription } from '../../ui-page/harness';
 import { ModelConfigFlyout } from '../../../src/renderer/components/new-chat/ModelConfigFlyout';
 import { SpeedIcon } from '../../../src/renderer/components/new-chat/SpeedIcon';
+import { useClaudeFastModeWarning } from '../../../src/renderer/components/new-chat/useClaudeFastModeWarning';
 import { BUNDLED_CATALOG, resolveModelMetadata, type Effort, type UnifiedModelEntry } from '@cindy/model-providers';
 
 function Fixture({ variant }: { variant: string }) {
-  const modelId = variant === 'sol' ? 'gpt-6.1-sol' : 'gpt-6-astra';
-  const metadata = resolveModelMetadata(BUNDLED_CATALOG.modelRegistry, 'openai', modelId, undefined, undefined, 'codex');
+  const isClaude = variant === 'claude';
+  const agent = isClaude ? 'claude-code' : 'codex';
+  const providerId = isClaude ? 'anthropic' : 'openai';
+  const modelId = isClaude ? 'claude-opus-5' : variant === 'sol' ? 'gpt-6.1-sol' : 'gpt-6-astra';
+  const metadata = resolveModelMetadata(BUNDLED_CATALOG.modelRegistry, providerId, modelId, undefined, undefined, agent);
   const capability = {
-    agent: 'codex' as const, wireModelId: modelId, efforts: metadata.efforts ?? [],
+    agent, wireModelId: modelId, efforts: metadata.efforts ?? [],
     defaultEffort: metadata.defaultEffort ?? null, defaultEffortSource: 'catalog' as const,
-    supportsFastMode: true, supportsUltrafastMode: true,
+    supportsFastMode: true, supportsUltrafastMode: !isClaude,
     contextWindow: metadata.contextWindow ?? 272000, contextWindowVerified: true,
   };
   const entry: UnifiedModelEntry = {
-    providerId: 'openai', modelId, displayName: metadata.name ?? modelId,
-    candidates: ['codex'], recommended: 'codex', nativeAgent: 'codex', capabilities: { codex: capability },
+    providerId, modelId, displayName: metadata.name ?? modelId,
+    candidates: [agent], recommended: agent, nativeAgent: agent, capabilities: { [agent]: capability },
   };
-  const [fast, setFast] = useState<boolean | 'ultrafast'>('ultrafast');
+  const [fast, setFast] = useState<boolean | 'ultrafast'>(isClaude ? false : 'ultrafast');
   const [effort, setEffort] = useState<Effort>('high');
+  const [pending, setPending] = useState(false);
+  const confirmClaudeFast = useClaudeFastModeWarning(modelId, setPending);
+  const changeFast = async (enabled: boolean | 'ultrafast') => {
+    if (isClaude && enabled && !(await confirmClaudeFast())) return;
+    setFast(enabled);
+  };
   return (
     <main className="mx-auto w-full max-w-[360px] p-4">
       <div className="mb-5 flex items-center gap-2 text-[var(--text-primary)]">
@@ -26,11 +36,11 @@ function Fixture({ variant }: { variant: string }) {
       </div>
       <div className="rounded-xl border border-[var(--border-default)] bg-[var(--bg-primary)] p-4">
         <ModelConfigFlyout entry={entry}
-          config={{engine:'codex', agent:'codex', efforts:capability.efforts, effort, fast,
+          config={{engine:isClaude ? 'cc' : 'codex', agent, efforts:capability.efforts, effort, fast,
             fastCapable:true, customized:true, capability, wireModelId:modelId}}
-          state="customized" sourceLabel="OpenAI" price={null}
+          state="customized" sourceLabel={isClaude ? 'Anthropic' : 'OpenAI'} price={null} disabled={pending}
           effortLabelOf={(_, value) => value === 'ultra' ? 'Ultra' : value}
-          onEngineChange={()=>{}} onEffortChange={setEffort} onFastChange={setFast}
+          onEngineChange={()=>{}} onEffortChange={setEffort} onFastChange={changeFast}
           onResetToRecommended={()=>{ setFast(false); setEffort(capability.defaultEffort ?? 'medium'); }}
           onAddFavorite={()=>{}} onRemoveFavorite={()=>{}}/>
       </div>

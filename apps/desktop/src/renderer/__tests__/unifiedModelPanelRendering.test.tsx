@@ -17,6 +17,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { FastMode } from '@cindy/maker-shared';
+import type { ProviderView } from '@cindy/model-providers';
 
 /** 统一面板发起的深度写入带上「面板已串行」标记(见 ModelSelector 的 onEffortChangeLive)。 */
 const FROM_PANEL = { serializedByPanel: true };
@@ -215,6 +216,8 @@ vi.mock('@/hooks/useRemoteClaudeSubscriptionUsage', () => ({
 }));
 
 import { ModelSelector, ModelSelectorContent } from '@/components/new-chat/ModelSelector';
+import { ConfirmDialogProvider } from '@/components/ui/confirm-dialog-provider';
+import { CLAUDE_FAST_MODE_WARNING_KEY } from '@/components/new-chat/useClaudeFastModeWarning';
 import {
   __resetForTest as resetEnginePrefs,
   getModelEngineOverride,
@@ -4252,5 +4255,176 @@ describe('harness configuration keeps the model menu open', () => {
     expect(screen.getByRole('listbox')).toBeTruthy();
     expect(screen.getByTestId('unified-model-config-flyout')
       .querySelector('[data-engine-capsule="codex"]')?.getAttribute('aria-pressed')).toBe('true');
+  });
+});
+
+/**
+ * 测试价值：真实 ModelSelector / ConfirmDialogProvider 入口，保护 Claude Fast 的计费确认与
+ * 本地“不再提示”偏好；用户要求开启前提示，取消不得开启或记住跳过。
+ * 现有面板测试未挂确认 Provider，无法发现 AlertDialog 抢焦点导致外层 Popover 卸载的问题。
+ * 最小失败输入：Claude Fast=false，打开配置后点击 Fast，再取消或确认；另覆盖旧配置入口。
+ * tier：unit（jsdom，真实 Radix/MorphPopover 与本地存储，无网络或 Electron 进程）。
+ * 实测：全文件 169 cases 9.16s（本组新增 7 cases）；存量含三个约 0.78s 浮层等待用例。
+ */
+describe('Claude Fast billing confirmation', () => {
+  const skipKey = `confirm-dialog.skip:${CLAUDE_FAST_MODE_WARNING_KEY}`;
+  const title = 'newChat.modelSelector.claudeFastWarning.title';
+  const accept = 'newChat.modelSelector.claudeFastWarning.confirm';
+  const cancel = 'commonUi.confirmDialog.cancel';
+  let originalProviders: unknown[];
+
+  beforeEach(() => {
+    localStorage.removeItem(skipKey);
+    originalProviders = providersRef.providers;
+    providersRef.providers = (originalProviders as ProviderView[]).map((provider) =>
+      provider.id === 'anthropic'
+        ? {
+            ...provider,
+            models: {
+              ...provider.models,
+              'claude-code': provider.models['claude-code']?.map((model) => ({
+                ...model,
+                supportsFastMode: true,
+              })),
+            },
+          }
+        : provider,
+    );
+  });
+
+  afterEach(() => {
+    providersRef.providers = originalProviders;
+    localStorage.removeItem(skipKey);
+    vi.useRealTimers();
+  });
+
+  function Picker({
+    change,
+    useMorphPopover = false,
+    unifiedPanel = true,
+    codex = false,
+    disabled = false,
+  }: {
+    change: (fast: boolean | 'ultrafast') => void;
+    useMorphPopover?: boolean;
+    unifiedPanel?: boolean;
+    codex?: boolean;
+    disabled?: boolean;
+  }) {
+    const [fast, setFast] = React.useState<boolean | 'ultrafast'>(false);
+    return <ConfirmDialogProvider>
+      <ModelSelector
+        modelId={codex ? 'gpt-5.5' : 'claude-opus-5'}
+        effort={codex ? 'high' : 'medium'}
+        vendorKey={codex ? 'codex' : 'cc'}
+        currentProviderId={codex ? 'xd' : 'anthropic'}
+        onModelChange={vi.fn()}
+        onEffortChange={vi.fn()}
+        fastMode={fast}
+        onFastModeChange={(next) => { change(next); setFast(next); }}
+        useMorphPopover={useMorphPopover}
+        unifiedPanel={unifiedPanel}
+        disabled={disabled}
+      />
+    </ConfirmDialogProvider>;
+  }
+
+  async function clickFast(name = 'Opus 5') {
+    const flyout = screen.queryByTestId('unified-model-config-flyout') ?? await openRowFlyout(name);
+    await act(async () => { fireEvent.click(flyout.querySelector('[data-fast-toggle]') as HTMLElement); });
+  }
+
+  async function finishConfirmation(action: string) {
+    // Provider keeps the dismissed item for its exit animation; advance that queue delay virtually.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    await act(async () => {
+      const button = within(screen.getByRole('alertdialog')).getByRole('button', { name: action });
+      fireEvent.pointerDown(button);
+      fireEvent.click(button);
+    });
+    await act(async () => { await vi.advanceTimersByTimeAsync(200); });
+    vi.useRealTimers();
+  }
+
+  it.each([false, true])('cancelling preserves the model menu and does not enable or skip the warning (morph=%s)', async (useMorphPopover) => {
+    const change = vi.fn();
+    render(<Picker change={change} useMorphPopover={useMorphPopover} />);
+    await act(async () => { fireEvent.click(screen.getByRole('button')); });
+    const menu = await screen.findByRole('listbox');
+    await clickFast();
+    const dialog = screen.getByRole('alertdialog', { name: title });
+    expect(within(dialog).getByText('newChat.modelSelector.claudeFastWarning.description')).toBeTruthy();
+    expect(menu.isConnected).toBe(true);
+    expect(change).not.toHaveBeenCalled();
+    const checkbox = within(dialog).getByRole('checkbox') as HTMLInputElement;
+    expect(checkbox.checked).toBe(false);
+    fireEvent.click(checkbox);
+    await finishConfirmation(cancel);
+    expect(change).not.toHaveBeenCalled();
+    expect(localStorage.getItem(skipKey)).toBeNull();
+    expect(screen.getByRole('listbox')).toBe(menu);
+    await clickFast();
+    expect(screen.getByRole('alertdialog', { name: title })).toBeTruthy();
+  });
+
+  it('remembers only an accepted opt-out, turns off without confirmation, and skips the next warning', async () => {
+    const change = vi.fn();
+    render(<Picker change={change} />);
+    await act(async () => { fireEvent.click(screen.getByRole('button')); });
+    await clickFast();
+    await finishConfirmation(accept);
+    expect(change.mock.calls).toEqual([[true]]);
+    expect(localStorage.getItem(skipKey)).toBeNull();
+    expect(screen.getByRole('listbox')).toBeTruthy();
+    await clickFast();
+    expect(change.mock.calls).toEqual([[true], [false]]);
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    await clickFast();
+    fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('checkbox'));
+    await finishConfirmation(accept);
+    expect(localStorage.getItem(skipKey)).toBe('1');
+    expect(change.mock.calls).toEqual([[true], [false], [true]]);
+    await clickFast();
+    await clickFast();
+    expect(change.mock.calls).toEqual([[true], [false], [true], [false], [true]]);
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+  });
+
+  it('does not present Claude billing terms when enabling Codex Fast', async () => {
+    const change = vi.fn();
+    render(<Picker change={change} codex />);
+    await act(async () => { fireEvent.click(screen.getByRole('button')); });
+    await clickFast('GPT-5.5');
+    expect(change.mock.calls).toEqual([[true]]);
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(localStorage.getItem(skipKey)).toBeNull();
+  });
+
+  it.each(['route changes', 'controls lock'] as const)('discards a pending choice when %s', async (reason) => {
+    const change = vi.fn();
+    const view = render(<Picker change={change} />);
+    await act(async () => { fireEvent.click(screen.getByRole('button')); });
+    await clickFast();
+    fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('checkbox'));
+    view.rerender(<Picker change={change} codex={reason === 'route changes'} disabled={reason === 'controls lock'} />);
+    await act(async () => {});
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(change).not.toHaveBeenCalled();
+    expect(localStorage.getItem(skipKey)).toBeNull();
+  });
+
+  it('also gates the legacy Claude Fast switch before changing its live value', async () => {
+    const change = vi.fn();
+    render(<Picker change={change} unifiedPanel={false} />);
+    await act(async () => { fireEvent.click(screen.getByRole('button')); });
+    const row = within(screen.getByRole('listbox')).getByText('Opus 5').closest('[role="option"]') as HTMLElement;
+    await act(async () => { fireEvent.pointerEnter(row); });
+    const toggle = screen.getByRole('button', { name: 'Fast Mode' });
+    await act(async () => { fireEvent.click(toggle); });
+    expect(screen.getByRole('alertdialog', { name: title })).toBeTruthy();
+    expect(change).not.toHaveBeenCalled();
+    await finishConfirmation(accept);
+    expect(change.mock.calls).toEqual([[true]]);
+    expect(localStorage.getItem(skipKey)).toBeNull();
   });
 });
