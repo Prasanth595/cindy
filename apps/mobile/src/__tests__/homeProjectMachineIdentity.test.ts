@@ -116,6 +116,17 @@ describe('chat machine identity (tasks without a project header)', () => {
     expect(buildHomeDeviceMachineIdentities(input).two.displayLabel).toBe('MacBook · two');
   });
 
+  it('falls back to the device ID like project rows when the device list name is blank', () => {
+    // The session still carries a stale cached name; neither row may show it.
+    const input = {
+      chats: [chat('1', 'a', 'Stale Mac')], pinned: [],
+      projects: [project('p', 'a', 'Old name')],
+      deviceFilters: [device('a', '   ')], selectedDeviceId: null,
+    } as never;
+    expect(buildHomeProjectMachineIdentities(input).get('p')?.displayLabel).toBe('a');
+    expect(buildHomeDeviceMachineIdentities(input).a.displayLabel).toBe('a');
+  });
+
   it('marks offline or failed devices as disconnected', () => {
     const chats = [chat('1', 'a', 'Alpha'), chat('2', 'b', 'Beta')];
     const result = buildHomeDeviceMachineIdentities(

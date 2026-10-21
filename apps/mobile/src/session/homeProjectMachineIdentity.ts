@@ -13,7 +13,6 @@ type DeviceFilter = MobileHomePresentation['deviceFilters'][number];
 interface SessionDeviceFields {
   canonicalDeviceId?: string | null;
   deviceLinkDeviceId?: string | null;
-  deviceLinkDeviceName?: string | null;
 }
 
 /** Display device of a task: same precedence as openSession (canonical first). */
@@ -33,9 +32,10 @@ function collectMachineNames(home: HomeMachineIdentitySource, filters: ReadonlyM
   const chatName = (session: object) => {
     const deviceId = homeSessionDeviceId(session);
     const label = deviceId ? filters.get(deviceId)?.label : undefined;
-    return label === undefined
-      ? null
-      : (label.trim() || ((session as SessionDeviceFields).deviceLinkDeviceName ?? '').trim());
+    // Same chain as project rows: the device list's current name, and a blank
+    // name falls back to the device ID. The name cached on the session is
+    // deliberately not used, or one computer could read differently per row.
+    return label === undefined ? null : label.trim();
   };
   const idsByName = new Map<string, Set<string>>();
   const chatNames = new Map<string, string>();
