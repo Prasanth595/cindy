@@ -1,7 +1,15 @@
 import type { MobileHomePresentation } from './mobileHome';
 
 export interface HomeProjectMachineIdentity {
+  /** Full single-line text (`name · id` when ambiguous): headings, drag chip, a11y. */
   displayLabel: string;
+  /**
+   * `displayLabel` split in two so a narrow row can truncate the name while the
+   * device ID that tells same-named computers apart stays visible.
+   */
+  name: string;
+  /** Device ID, only when visible computers share a name; otherwise null. */
+  suffix: string | null;
   disconnected: boolean;
   hideLabel: boolean;
 }
@@ -64,9 +72,11 @@ function machineIdentity(
   home: HomeMachineIdentitySource,
   connectionStates: Readonly<Record<string, string>>,
 ): HomeProjectMachineIdentity {
-  const ambiguous = name && (idsByName.get(name.toLowerCase())?.size ?? 0) > 1;
+  const ambiguous = !!name && (idsByName.get(name.toLowerCase())?.size ?? 0) > 1;
   return {
     displayLabel: ambiguous ? `${name} · ${deviceId}` : name || deviceId,
+    name: name || deviceId,
+    suffix: ambiguous ? deviceId : null,
     disconnected: !device?.available || connectionStates[deviceId] === 'failed',
     // As on Desktop, an explicit device heading makes the inline label redundant.
     hideLabel: home.selectedDeviceId === deviceId,

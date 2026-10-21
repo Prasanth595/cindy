@@ -2117,8 +2117,10 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
     () => applyHomeContentFilters(sharedGroup.home, contentFilters, filterTick || Date.now()),
     [contentFilters, filterTick, sharedGroup.home],
   );
-  // 机器标注只按真正渲染的行统计撞名(sidebar-redesign-plan「远程项目的机器标注」):
+  // 机器标注按「筛选后仍在列表里」的行统计撞名(sidebar-redesign-plan「远程项目的机器标注」):
   // 用共享拆分与内容筛选之后的 filteredHome,被筛掉的同名电脑不再迫使剩下的一台附 ID。
+  // 有意不随手动折叠(收起项目 / 置顶区、对话组预览、查看全部)变化,否则展开收起会让
+  // 其他行的标签在「Mac」与「Mac · ID」之间跳变;桌面项目分组同口径。
   const projectMachineIdentities = useMemo(
     () => buildHomeProjectMachineIdentities(filteredHome, deviceConnectionStates),
     [filteredHome, deviceConnectionStates],
