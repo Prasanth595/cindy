@@ -95,12 +95,10 @@ describe("incoming share native file ownership", () => {
     expect(patched).toContain("override func didSelectCancel()");
     // Invalid input, an empty parsed payload and a failed persistent write all
     // report reception failure, not "received" or silent completeRequest.
-    expect(patched.match(/showShareFeedback\(received: false\)/g)).toHaveLength(
-      3,
-    );
+    expect(patched).toContain("showShareFeedback(shareFailureFeedback)");
     expect(patched.match(/completeRequest\(returningItems:/g)).toHaveLength(1);
     expect(patched).toContain(
-      "guard saveToUserDefaults(payload) else {\n          showShareFeedback(received: false)",
+      "guard saveToUserDefaults(payload) else {\n          showShareFeedback(.saveFailed)",
     );
   });
 
@@ -122,6 +120,8 @@ describe("incoming share native file ownership", () => {
         "failedTitle",
         "receivedMessage",
         "receivedTitle",
+        "saveFailedMessage",
+        "saveFailedTitle",
         "tooManyMessage",
         "tooManyTitle",
       ]);
@@ -152,6 +152,7 @@ it("preserves original exports ahead of previews and copies temporary URLs withi
   if (result.error) throw result.error;
   if (result.status === 77) return skip();
   expect(result.status).toBe(0);
+  expect(result.stdout).toContain("PASS: filename and failure diagnostics regressions");
   expect(result.stdout).toContain("PASS: concrete Markdown/source files and plain text previews");
   expect(result.stdout).toContain("PASS: original documents/videos beat thumbnails; real images remain images");
   expect(result.stdout).toContain("PASS: web URL survives its image thumbnail");

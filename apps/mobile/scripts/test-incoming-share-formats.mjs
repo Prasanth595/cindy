@@ -5,12 +5,30 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 
 if (process.platform !== 'darwin') {
   console.error('[share-formats] SKIP: Apple frameworks unavailable');
   process.exit(77);
 }
+const require = createRequire(import.meta.url);
+const { patchShareExtension } = require('../plugins/with-incoming-share-files.js');
+const generated = patchShareExtension(readFileSync(join(dirname(require.resolve('expo-sharing/package.json')), 'plugin/template-files/ios/ShareIntoViewController.swift'), 'utf8'));
+function method(signature) {
+  const start = generated.indexOf(signature);
+  if (start < 0) throw new Error('Missing generated method: ' + signature);
+  const body = generated.indexOf('{', start);
+  let depth = 1, end = body + 1;
+  for (; depth && end < generated.length; end++) {
+    if (generated[end] === '{') depth++;
+    if (generated[end] === '}') depth--;
+  }
+  return generated.slice(start, end).replace('private func', 'func')
+    .replaceAll('FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupId)', 'destination');
+}
 const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../plugins/incoming-share-formats.swift'), 'utf8');
+const diagnostics = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../plugins/incoming-share-diagnostics.swift'), 'utf8')
+  .replace('private extension ShareIntoViewController', 'private extension Adapter');
 const harness = `
 import Foundation
 import UniformTypeIdentifiers
@@ -30,24 +48,21 @@ final class EphemeralProvider: NSItemProvider {
   }
 }
 enum ShareType { case text, url, image, video, audio, file }
-struct SharePayload { let type: ShareType; let value: String; let mimeType: String?; let metadata: String? }
+struct ShareMetadata { let originalName: String; let size: Int? }
+struct SharePayload { let type: ShareType; let value: String; let mimeType: String?; let metadata: ShareMetadata? }
+enum ShareFeedback { case received, failed, saveFailed }
+enum IncomingShareSlot { static func writeDiagnostic(_ data: Data, group: String) throws {} }
 final class Adapter {
   var requireProviderCallback = false
   func parse(_ provider: NSItemProvider) async -> SharePayload? { await parseProvider(provider) }
-  func copyAndProcessFile(url: URL, type: ShareType) -> SharePayload? {
-    precondition(!requireProviderCallback || Thread.current.threadDictionary["owning-provider-callback"] as? Bool == true, "URL escaped provider callback")
-    guard url.isFileURL, let bytes = try? Data(contentsOf: url) else { return nil }
-    return saveDataToAppGroup(data: bytes, fileName: url.lastPathComponent, type: type, mimeType: UTType(filenameExtension: url.pathExtension)?.preferredMIMEType)
-  }
-  func saveDataToAppGroup(data: Data, fileName: String, type: ShareType, mimeType: String?) -> SharePayload? {
-    let folder = testRoot.appendingPathComponent(UUID().uuidString)
-    try! FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-    let url = folder.appendingPathComponent(fileName)
-    try! data.write(to: url)
-    return SharePayload(type: type, value: url.absoluteString, mimeType: mimeType, metadata: nil)
-  }
+  var shareFailure: IncomingShareFailure?
+  var destination: URL? = testRoot
+  let appGroupId = "fixture"
+  ${method('private func copyAndProcessFile(').replace('    guard url.isFileURL', '    precondition(!requireProviderCallback || Thread.current.threadDictionary["owning-provider-callback"] as? Bool == true, "URL escaped provider callback")\n    guard url.isFileURL')}
+  ${method('private func saveDataToAppGroup(')}
   ${source}
 }
+${diagnostics}
 @main struct FormatTests {
   static func main() async {
     let root = testRoot.appendingPathComponent(UUID().uuidString)
@@ -57,6 +72,37 @@ final class Adapter {
     let selected = CommandLine.arguments[2]
     // The file URL owns the bytes; a separate image representation may be only
     // its thumbnail. Extensionless originals must not inherit that preview type.
+    precondition(!IncomingShareFailure.isStorageError(CocoaError(.fileReadNoPermission)))
+    precondition(IncomingShareFailure.isStorageError(CocoaError(.fileWriteOutOfSpace)))
+    precondition(IncomingShareFailure.isStorageError(CocoaError(.fileWriteVolumeReadOnly)))
+    precondition(!IncomingShareFailure.isStorageError(NSError(domain: "provider", code: 640)))
+    let original = root.appendingPathComponent("system-copy.pdf")
+    try! Data("pdf fixture".utf8).write(to: original)
+    let named = EphemeralProvider(); named.url = original; named.suggestedName = "Report"
+    named.registerItem(forTypeIdentifier: UTType.fileURL.identifier, loadHandler: { _, _, _ in })
+    guard let preserved = await adapter.parse(named), let preservedURL = URL(string: preserved.value) else { fatalError("Missing named file") }
+    precondition(preservedURL.lastPathComponent == "Report.pdf", "Suggested name lost source extension")
+    precondition(adapter.shareFailure == nil)
+    let missing = EphemeralProvider(); missing.url = root.appendingPathComponent("missing.pdf")
+    missing.registerItem(forTypeIdentifier: UTType.fileURL.identifier, loadHandler: { _, _, _ in })
+    let missingResult = await adapter.parse(missing)
+    precondition(missingResult == nil)
+    precondition(adapter.shareFailureFeedback == .failed && adapter.shareFailure?.error != nil)
+    let blocked = root.appendingPathComponent("not-a-directory")
+    try! Data("block destination".utf8).write(to: blocked)
+    adapter.destination = blocked
+    let raw = NSItemProvider(); raw.suggestedName = "private-name.zip"
+    raw.registerDataRepresentation(forTypeIdentifier: UTType.data.identifier, visibility: .all) { done in done(Data("zip".utf8), nil); return nil }
+    let rawResult = await adapter.parse(raw)
+    precondition(rawResult == nil)
+    precondition(adapter.shareFailureFeedback == .saveFailed && adapter.shareFailure?.step == "write-data")
+    let record = String(data: adapter.shareFailure!.json!, encoding: .utf8)!
+    precondition(!record.contains("private-name") && !record.contains(root.path) && record.contains("error"))
+    adapter.destination = testRoot
+    let plain = NSItemProvider(object: "shared snippet" as NSString)
+    guard let text = await adapter.parse(plain) else { fatalError("Missing plain text") }
+    precondition(text.type == .text && adapter.shareFailure == nil)
+    print("PASS: filename and failure diagnostics regressions")
     let png = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=")!
     if selected != "raw-image" {
       let url = root.appendingPathComponent("data encoded document.pdf")
@@ -89,7 +135,7 @@ final class Adapter {
         precondition(provider.suggestedName == nil)
         guard let payload = await adapter.parse(provider), payload.type == .image,
               let result = URL(string: payload.value) else { fatalError("Missing abstract image data") }
-        precondition(result.pathExtension == type.preferredFilenameExtension && payload.mimeType == type.preferredMIMEType,
+        precondition(result.pathExtension == type.preferredFilenameExtension && payload.mimeType == (type.preferredMIMEType ?? "application/octet-stream"),
                      "Abstract image bytes lost their concrete format")
         precondition(try! Data(contentsOf: result) == bytes)
       }
@@ -131,7 +177,7 @@ final class Adapter {
       guard let payload = await adapter.parse(provider), payload.type == .file,
             let result = URL(string: payload.value) else { fatalError("Concrete text became preview: " + ext) }
       precondition(result.lastPathComponent == url.lastPathComponent)
-      precondition(payload.mimeType == type.preferredMIMEType)
+      precondition(payload.mimeType == (type.preferredMIMEType ?? "application/octet-stream"))
       precondition(try! Data(contentsOf: result) == bytes)
       try! FileManager.default.removeItem(at: result.deletingLastPathComponent())
     }
@@ -155,7 +201,7 @@ final class Adapter {
         provider.registerDataRepresentation(forTypeIdentifier: type.identifier, visibility: .all) { done in done(bytes, nil); return nil }
         guard let payload = await adapter.parse(provider), payload.type == .file,
               let url = URL(string: payload.value) else { fatalError("Preview replaced concrete property list: " + type.identifier + "/" + preview.identifier) }
-        precondition(url.lastPathComponent == "original.plist" && payload.mimeType == type.preferredMIMEType)
+        precondition(url.lastPathComponent == "original.plist" && payload.mimeType == (type.preferredMIMEType ?? "application/octet-stream"))
         precondition(try! Data(contentsOf: url) == bytes)
       }
     }
@@ -178,7 +224,7 @@ final class Adapter {
       provider.registerDataRepresentation(forTypeIdentifier: type.identifier, visibility: .all) { done in done(bytes, nil); return nil }
       guard let payload = await adapter.parse(provider), payload.type == .image,
             let result = URL(string: payload.value) else { fatalError("Source URL replaced concrete image: " + type.identifier) }
-      precondition(result.lastPathComponent == name && payload.mimeType == type.preferredMIMEType)
+      precondition(result.lastPathComponent == name && payload.mimeType == (type.preferredMIMEType ?? "application/octet-stream"))
       precondition(try! Data(contentsOf: result) == bytes)
     }
     print("PASS: concrete images beat source URLs; abstract thumbnails remain previews")
@@ -212,7 +258,7 @@ final class Adapter {
         guard let payload = await adapter.parse(provider),
               payload.type == (type.conforms(to: .movie) ? .video : .file),
               let url = URL(string: payload.value) else { fatalError("Thumbnail replaced original export") }
-        precondition(url.lastPathComponent == name && payload.mimeType == type.preferredMIMEType)
+        precondition(url.lastPathComponent == name && payload.mimeType == (type.preferredMIMEType ?? "application/octet-stream"))
         precondition(try! Data(contentsOf: url) == bytes)
       }
       let image = NSItemProvider()

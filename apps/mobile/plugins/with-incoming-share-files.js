@@ -18,7 +18,7 @@ function patchShareExtension(source) {
   };
   replace(
     "  private func handleShare() {",
-    "  private var shareStarted = false\n\n  private func handleShare() {\n    guard !shareStarted else { return }\n    shareStarted = true",
+    "  private var shareStarted = false\n  private var shareFailure: IncomingShareFailure?\n\n  private func handleShare() {\n    guard !shareStarted else { return }\n    shareStarted = true",
     1,
   );
   replace(
@@ -38,7 +38,7 @@ function patchShareExtension(source) {
   );
   replace(
     "      userDefaults.set(encoded, forKey: SHARE_INTO_DEFAULTS_KEY)\n      userDefaults.synchronize()",
-    '      do {\n        try IncomingShareSlot.write(encoded, group: appGroupId)\n        return true\n      } catch {\n        print("Error: incoming share could not be saved")\n        return false\n      }',
+    '      do {\n        try IncomingShareSlot.write(encoded, group: appGroupId)\n        return true\n      } catch {\n        print("Error: incoming share could not be saved")\n        recordShareFailure(step: "save-slot", error: error, storage: true)\n        return false\n      }',
     1,
   );
   replace(
@@ -61,9 +61,22 @@ function patchShareExtension(source) {
     '      print("Error: Expo-sharing has failed to serialize shared data to JSON")\n      return false',
     1,
   );
+  replace(
+    '      try data.write(to: destinationURL)\n    } catch {\n      return nil',
+    '      try data.write(to: destinationURL)\n    } catch {\n      recordShareFailure(step: "write-data", error: error, storage: true)\n      return nil', 1);
+  replace(
+    '    guard let containerURL = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupId) else {\n      return nil',
+    '    guard let containerURL = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupId) else {\n      recordShareFailure(step: "app-group", error: POSIXError(.ENOENT), storage: true)\n      return nil', 2);
   source = patchIncomingShareFormats(source);
+  replace("  private func copyAndProcessFile(url: URL, type: ShareType) -> SharePayload? {",
+    "  private func copyAndProcessFile(url: URL, type: ShareType, preferredName: String? = nil) -> SharePayload? {", 1);
+  replace("    let fileName = url.lastPathComponent.isEmpty ? UUID().uuidString : url.lastPathComponent",
+    "    let fileName = preferredName ?? (url.lastPathComponent.isEmpty ? UUID().uuidString : url.lastPathComponent)", 1);
+  replace("      print(\"Error copying file: \\(error)\")", "      recordShareFailure(step: \"copy\", error: error, storage: IncomingShareFailure.isStorageError(error))", 1);
+
   return (
     patchShareFeedback(source) +
+    "\n" + fs.readFileSync(path.join(__dirname, "incoming-share-diagnostics.swift"), "utf8") +
     "\n" +
     fs.readFileSync(
       path.join(

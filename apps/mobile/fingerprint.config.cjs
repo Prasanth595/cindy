@@ -56,6 +56,7 @@ module.exports = {
       // the share extension. Metro cannot update them on an installed binary.
       ...[
         "plugins/incoming-share-formats.swift",
+        "plugins/incoming-share-diagnostics.swift",
         "plugins/incoming-share-feedback.swift",
         "plugins/incoming-share-strings.json",
         "plugins/incoming-share-webpage.js",

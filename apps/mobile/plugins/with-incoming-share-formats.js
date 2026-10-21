@@ -13,7 +13,7 @@ function patchIncomingShareFormats(source) {
   if (start < 0 || end < 0) throw new Error('expo-sharing provider contract changed');
   source = source.slice(0, start) + fs.readFileSync(path.join(__dirname, 'incoming-share-formats.swift'), 'utf8') + '\n' + source.slice(end);
   source = replace('    Task {', `    guard items.reduce(0, { $0 + ($1.attachments?.count ?? 0) }) <= 20 else {
-      showShareFeedback(received: false, tooMany: true)
+      showShareFeedback(.tooMany)
       return
     }
     Task {`);
@@ -39,16 +39,19 @@ function patchIncomingShareFormats(source) {
   source = replace('    let fileName = url.lastPathComponent.isEmpty', `    guard url.isFileURL else { return nil }
     let access = url.startAccessingSecurityScopedResource()
     defer { if access { url.stopAccessingSecurityScopedResource() } }
-    let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isDirectoryKey])
-    if values?.isDirectory == true {
+    let values: URLResourceValues
+    do { values = try url.resourceValues(forKeys: [.isRegularFileKey, .isDirectoryKey]) }
+    catch { recordShareFailure(step: "read-source", error: error); return nil }
+    if values.isDirectory == true {
       var result: SharePayload?
       var error: NSError?
       NSFileCoordinator().coordinate(readingItemAt: url, options: .forUploading, error: &error) { archive in
         result = self.copyAndProcessFile(url: archive, type: .file)
       }
-      return error == nil ? result : nil
+      if let error { recordShareFailure(step: "coordinate-source", error: error); return nil }
+      return result
     }
-    guard values?.isRegularFile == true else { return nil }
+    guard values.isRegularFile == true else { return nil }
     let fileName = url.lastPathComponent.isEmpty`);
   return source;
 }

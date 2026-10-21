@@ -2,6 +2,8 @@
   // Unknown exportable types use their original bytes; new formats normally need
   // no special handler. Add an adapter only when its representation needs decoding.
   private func parseProvider(_ provider: NSItemProvider) async -> SharePayload? {
+    shareFailure = nil
+    defer { if shareFailure != nil { shareFailure?.types = provider.registeredTypeIdentifiers } }
     if provider.hasItemConformingToTypeIdentifier(UTType.propertyList.identifier),
        let value = await loadShareItem(provider, identifier: UTType.propertyList.identifier) as? [String: Any],
        let page = value[NSExtensionJavaScriptPreprocessingResultsKey] as? [String: Any],
@@ -43,12 +45,15 @@
       }
     }
     // PDF, Office, archives, vCard, calendar, HTML/RTF, models and custom exports.
-    return await loadShareFile(provider, format: .data, kind: .file)
+    if let file = await loadShareFile(provider, format: .data, kind: .file) { return file }
+    if shareFailure == nil { recordShareFailure(step: "no-matching-type", types: provider.registeredTypeIdentifiers) }
+    return nil
   }
 
   private func loadShareItem(_ provider: NSItemProvider, identifier: String) async -> NSSecureCoding? {
     await withCheckedContinuation { continuation in
-      provider.loadItem(forTypeIdentifier: identifier, options: nil) { value, _ in
+      provider.loadItem(forTypeIdentifier: identifier, options: nil) { value, error in
+        if value == nil { self.recordShareFailure(step: "load-item", types: [identifier], error: error) }
         continuation.resume(returning: value)
       }
     }
@@ -73,8 +78,15 @@
       // NSKeyedArchive, not image bytes. Decode its UIImage via loadItem below.
       if identifier != UTType.image.identifier {
         file = await withCheckedContinuation { continuation in
-          provider.loadFileRepresentation(forTypeIdentifier: identifier) { url, _ in
-            continuation.resume(returning: url.flatMap { self.copyAndProcessFile(url: $0, type: kind) })
+          provider.loadFileRepresentation(forTypeIdentifier: identifier) { url, error in
+            guard let url else {
+              self.recordShareFailure(step: "file-representation", types: [identifier], error: error)
+              continuation.resume(returning: nil)
+              return
+            }
+            continuation.resume(returning: self.copyAndProcessFile(url: url, type: kind,
+              preferredName: self.incomingShareFileName(provider, fallback: url.lastPathComponent,
+                extensionHint: url.pathExtension.isEmpty ? UTType(identifier)?.preferredFilenameExtension : url.pathExtension)))
           }
         }
       }
@@ -86,14 +98,17 @@
 
   private func loadSharePayload(_ provider: NSItemProvider, identifier: String, kind: ShareType? = nil) async -> SharePayload? {
     await withCheckedContinuation { continuation in
-      provider.loadItem(forTypeIdentifier: identifier, options: nil) { value, _ in
+      provider.loadItem(forTypeIdentifier: identifier, options: nil) { value, error in
+        if value == nil { self.recordShareFailure(step: "load-item", types: [identifier], error: error) }
         // URL lifetime belongs to this callback, including loadItem fallbacks.
         // Only an explicitly advertised file-URL representation grants a data
         // value URL semantics; ordinary file/image bytes are never paths.
         let encodedURL = identifier == UTType.fileURL.identifier
           ? (value as? Data).flatMap { String(data: $0, encoding: .utf8) }.flatMap(URL.init(string:)) : nil
         if let url = (value as? URL) ?? encodedURL {
-          continuation.resume(returning: self.copyAndProcessFile(url: url, type: kind ?? self.fileShareType(url)))
+          continuation.resume(returning: self.copyAndProcessFile(url: url, type: kind ?? self.fileShareType(url),
+            preferredName: self.incomingShareFileName(provider, fallback: url.lastPathComponent,
+                extensionHint: url.pathExtension.isEmpty ? UTType(identifier)?.preferredFilenameExtension : url.pathExtension)))
           return
         }
         guard let kind, let data = (value as? Data) ?? (value as? UIImage)?.pngData() else {

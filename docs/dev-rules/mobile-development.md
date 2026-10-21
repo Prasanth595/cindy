@@ -276,10 +276,19 @@ iOS 的系统选图器在确认后立即把选中项交给现有附件队列。�
   主动重新分享同一文件仍可领取。临时副本沿用原有取消及七天过期回收流程。
 - 冷启动分享链接先进入首页，由信箱确认待接收内容后跳转，旧启动链接本身不能再次打开
   新建页。原生异常的具体原因只写无文件内容的诊断状态，不把路径或文件名写入日志。
+- 扩展沿用 incoming-share-formats.swift 的语义适配顺序与激活规则；文件副本必须在
+  provider 回调内复制，原始 URL 读取保留 security scope。提供方建议名缺扩展名时保留源副本后缀。
+- 扩展将源读取失败（包括文件协调失败）与目标保存失败分开提示；复制错误仅在 Cocoa 明确
+  标为写入错误时使用 saveFailed*，无法归因的复制错误保留 failed*，不声称已收到内容。
+  已读取的 Data 写副本失败、App Group 容器不可用或写信箱失败使用 saveFailed*。
+- 失败在 App Group 可用时写入独立的 expo-sharing-diagnostic 槽（步骤、provider 类型及
+  error domain/code，无文件名、路径或错误描述）；App 仅在 Debug 记录开启时读取并按原值清除。
+  App Group 本身不可用时无法留下该诊断，缺少日志不能排除签名或容器问题。
 
 实现：`src/session/incomingShareNative.ts`、`incomingShare.ts`、`incomingShareCleanup.ts`
 与 `IncomingShareBridge.tsx`。回归：`src/__tests__/incomingShare*.test.ts` 和
-`nativeIntent.test.ts`。上述 TS 层修复不修改原生配置或模块，不需要为此改变 runtime fingerprint。
+`nativeIntent.test.ts`。仅 TS 层消费修复不改变原生配置；上述扩展 Swift、文案与模块改动属于原生变更，
+必须按冷更边界随新包交付，不能靠 OTA 更新旧包。
 
 ## Android release 代码优化
 
