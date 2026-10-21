@@ -2048,15 +2048,6 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
     }),
     [deviceModels, scheduleIndex, selectedDeviceId, homeSessions, t],
   );
-  const projectMachineIdentities = useMemo(
-    () => buildHomeProjectMachineIdentities(home, deviceConnectionStates),
-    [home, deviceConnectionStates],
-  );
-  // Top-level chats and pinned tasks have no project header to say which computer owns them.
-  const deviceMachineIdentities = useMemo(
-    () => buildHomeDeviceMachineIdentities(home, deviceConnectionStates),
-    [home, deviceConnectionStates],
-  );
   const runningSessionIds = useMemo(() => {
     const ids = new Set<string>();
     for (const session of homeSessions) {
@@ -2125,6 +2116,17 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
   const filteredHome = useMemo(
     () => applyHomeContentFilters(sharedGroup.home, contentFilters, filterTick || Date.now()),
     [contentFilters, filterTick, sharedGroup.home],
+  );
+  // 机器标注只按真正渲染的行统计撞名(sidebar-redesign-plan「远程项目的机器标注」):
+  // 用共享拆分与内容筛选之后的 filteredHome,被筛掉的同名电脑不再迫使剩下的一台附 ID。
+  const projectMachineIdentities = useMemo(
+    () => buildHomeProjectMachineIdentities(filteredHome, deviceConnectionStates),
+    [filteredHome, deviceConnectionStates],
+  );
+  // Top-level chats and pinned tasks have no project header to say which computer owns them.
+  const deviceMachineIdentities = useMemo(
+    () => buildHomeDeviceMachineIdentities(filteredHome, deviceConnectionStates),
+    [filteredHome, deviceConnectionStates],
   );
   const homeSections = useMemo(
     () => buildHomeSections(filteredHome, groupByProject, pinnedCollapsed, {

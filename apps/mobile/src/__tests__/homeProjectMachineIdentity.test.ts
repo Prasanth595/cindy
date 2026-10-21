@@ -105,12 +105,14 @@ describe('chat machine identity (tasks without a project header)', () => {
   });
 
   it('labels a computer the same on its project row and its chat rows', () => {
+    // A owns a project and a chat, B only a chat: A must read the same on both rows.
     const input = {
-      chats: [chat('1', 'two', 'MacBook')], pinned: [],
+      chats: [chat('1', 'two', 'MacBook'), chat('2', 'one', 'MacBook')], pinned: [],
       projects: [project('p', 'one', 'MacBook')],
       deviceFilters: [device('one', 'MacBook'), device('two', 'MacBook')], selectedDeviceId: null,
     } as never;
     expect(buildHomeProjectMachineIdentities(input).get('p')?.displayLabel).toBe('MacBook · one');
+    expect(buildHomeDeviceMachineIdentities(input).one.displayLabel).toBe('MacBook · one');
     expect(buildHomeDeviceMachineIdentities(input).two.displayLabel).toBe('MacBook · two');
   });
 
