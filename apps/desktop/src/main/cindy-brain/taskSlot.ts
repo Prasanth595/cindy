@@ -85,8 +85,11 @@ export function validPluginTaskRequest(value: unknown): value is PluginTaskReque
     if (!isPluginTeamPlanWithinBudget(p)) return false;
     if (!object(p) || Object.keys(p).some(k => !['concurrency','items','task'].includes(k)) ||
         (p.concurrency !== null && (!Number.isSafeInteger(p.concurrency) || (p.concurrency as number) < 1)) ||
-        !Array.isArray(p.items) || !p.items.length || p.items.length > 1000) return false;
+        !Array.isArray(p.items) || p.items.length > 1000) return false;
     if (p.task !== undefined && !text(p.task, 8000)) return false;
+    // A single task needs authenticated scope too, but does not need Workers.
+    // Empty plans without scope still grant nothing and are rejected here.
+    if (!p.items.length && !text(p.task, 8000)) return false;
     const labels = new Set<string>();
     for (const item of p.items) {
       if (!object(item) || Object.keys(item).some(k => !['label','workingDir','route','task'].includes(k)) ||
@@ -157,6 +160,7 @@ export async function handlePluginTaskRequest(
         exactRoute: true,
         pluginDefaultModel: true,
         sourceCallContext: true,
+        standaloneTaskScope: true,
         hiddenTasks: declaresHiddenTasks(),
       },
     };

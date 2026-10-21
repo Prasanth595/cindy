@@ -57,6 +57,26 @@ function fixture(): PluginReviewSnapshot {
   };
 }
 describe('plugin delegated Auto context', () => {
+  // Standalone plans must still use the authenticated receipt and retain the
+  // existing missing-scope/revocation checks, rather than bypassing Auto (unit).
+  it('restores standalone scope and rejects missing scope, revocation and unregistered Workers', async () => {
+    const s = fixture();
+    delete s.worker;
+    s.plan = { concurrency: null, task: 'Read public web pages only; do not access local files.', items: [] };
+    const resolve = createPluginTaskReviewResolver(async () => s);
+    const result = await resolve(request);
+    expect(result.authorizationError).toBeUndefined();
+    expect(result.delegatedTask).toMatchObject({ source: 'approved-plugin', task: s.plan.task });
+    const scope = s.plan.task;
+    delete s.plan.task;
+    expect((await resolve(request)).authorizationError).toContain('scope is missing');
+    s.plan.task = scope;
+    s.authorized = false;
+    expect((await resolve(request)).delegatedTask).toBeUndefined();
+    s.authorized = true;
+    s.worker = { label: 'undeclared', activeTeam: true, directoryMatches: true };
+    expect((await resolve(request)).authorizationError).toContain('registered plan');
+  });
   it.each([false,true])('rejects oversized stored plans without legacy fallback (worker=%s)', async worker => {
     const s=fixture();
     if (!worker) delete s.worker;

@@ -220,6 +220,13 @@ const r = await cindy.agent.requestSchedule({
 首版保留 Codex 原生 Auto；其常规工作区动作可能直接执行，不保证每个动作都经过 Host 范围审批。
 卸载会撤销插件后续 API 控制，但不保证停止已派发的原生工作；需要停止时请使用任务停止入口。
 计划须在首次派发或创建 Worker 前登记，之后不可改写（包括补填 task）；需要不同范围时创建新任务。
+单任务不需要创建团队或虚构 Worker。仅当 `capabilities().standaloneTaskScope === true` 时，
+可以在新建自有任务、首次发送前用 `setTeamPlan({taskId, plan: {concurrency: null, task: scope, items: []}})`
+登记非空范围（最多 8000 字符）。空范围仍拒绝；空 items 不允许派发任何 Worker。
+范围登记不授予 Auto：仍须经宿主 `requestWriteAccess({taskId, mode: 'auto'})` 的用户确认，
+或由用户在原权限界面设置。只影响所选插件及其任务，不修改全局权限。
+旧 Host 缺少该能力时保留原任务和人工确认，不尝试私有 IPC；已经发送过消息的旧任务不得补填范围。
+用户明确选择迁移时，新建有范围的任务并保留旧任务历史，不删除、隐藏或清空旧任务。
 缺少该字段的存量计划继续可读，但 Host 不允许插件任务自动授权或普通 MCP 快捷放行，不会从 Agent 消息推导额外授权；进入 Host 的 Ask/acceptEdits 动作仍可沿原流程逐次确认。
 计划不授予目录权限。Worker 仅可使用宿主任务目录及解析后仍在其中的子目录、插件 AI 配置目录或用户亲选的确切目录；Library 绑定不自动变成 Agent 工作根。宿主在登记和创建时均复核。
 插件自有主任务不支持用 `execution_device_id` 新建跨设备 Worker；本机目录授权不代表已授权另一台电脑的同名目录，登记团队计划也不改变此限制。
