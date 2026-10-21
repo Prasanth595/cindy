@@ -64,10 +64,12 @@ export function resolveComposerEnterIntent(
   if (event.key !== 'Enter' || event.shiftKey || event.altKey) return null;
 
   const hasModifier = hasComposerModifier(event, options.platform);
-  const imeKey = event.isComposing || event.keyCode === 229;
-  // Plain Enter still belongs to the IME. Modifier send does not confirm a
-  // candidate; only an actually open composition session may keep it.
-  if (imeKey && (!hasModifier || options.compositionActive === true)) return 'native';
+  // Plain Enter still belongs to the IME. A modifier shortcut is released only
+  // when the caller explicitly reports that the composition session is closed.
+  // Omitting compositionActive keeps the old rule, so composers that do not
+  // know the session state cannot send mid-composition.
+  if (event.isComposing && (options.compositionActive !== false || !hasModifier)) return 'native';
+  if (event.keyCode === 229 && options.compositionActive === true) return 'native';
 
   if (event.repeat) {
     const isSendShortcut = preference === 'enter' || hasModifier;

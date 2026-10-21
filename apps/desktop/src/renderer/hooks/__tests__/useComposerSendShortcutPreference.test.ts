@@ -239,12 +239,21 @@ describe('useComposerSendShortcutPreference', () => {
         expected: 'native',
       },
       {
-        name: 'still steers when Cmd+Enter is flagged composing but no session is open',
+        name: 'keeps a composing Cmd+Enter native when the caller does not report session state',
+        preference: 'enter',
+        platform: 'darwin',
+        turnRunning: true,
+        event: enterEvent({ metaKey: true, isComposing: true }),
+        expected: 'native',
+      },
+      {
+        name: 'still steers when Cmd+Enter is flagged composing but the session is closed',
         preference: 'enter',
         platform: 'darwin',
         turnRunning: true,
         event: enterEvent({ metaKey: true, isComposing: true }),
         expected: 'steer',
+        compositionActive: false,
       },
       {
         name: 'keeps Cmd+Enter native while a composition session is actually open',
@@ -256,12 +265,13 @@ describe('useComposerSendShortcutPreference', () => {
         compositionActive: true,
       },
       {
-        name: 'queues a composing Cmd+Enter in modifier-enter mode when no session is open',
+        name: 'queues a closed-session Cmd+Enter in modifier-enter mode',
         preference: 'modifier-enter',
         platform: 'darwin',
         turnRunning: true,
-        event: enterEvent({ metaKey: true, keyCode: 229 }),
+        event: enterEvent({ metaKey: true, isComposing: true, keyCode: 229 }),
         expected: 'queue',
+        compositionActive: false,
       },
       {
         name: 'ignores Shift+Enter so list and hard-break handling can run',

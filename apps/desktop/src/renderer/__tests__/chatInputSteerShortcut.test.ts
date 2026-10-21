@@ -132,11 +132,25 @@ describe('ChatInput steer shortcut contract', () => {
     expect(modeB(makeEnterEvent({ shiftKey: true }))).toBeNull();
     expect(modeB(makeEnterEvent({ altKey: true }))).toBeNull();
     expect(modeB(makeEnterEvent({ isComposing: true }))).toBe('native');
-    expect(modeB(makeEnterEvent({ metaKey: true, isComposing: true }))).toBe('queue');
+    expect(modeB(makeEnterEvent({ metaKey: true, isComposing: true }))).toBe('native');
+    expect(
+      resolveComposerEnterIntent(makeEnterEvent({ metaKey: true, isComposing: true }), 'modifier-enter', {
+        turnRunning: true,
+        platform: 'darwin',
+        compositionActive: false,
+      }),
+    ).toBe('queue');
     expect(
       resolveComposerEnterIntent(makeEnterEvent({ metaKey: true, isComposing: true }), 'enter', {
         turnRunning: true,
         platform: 'darwin',
+      }),
+    ).toBe('native');
+    expect(
+      resolveComposerEnterIntent(makeEnterEvent({ metaKey: true, isComposing: true }), 'enter', {
+        turnRunning: true,
+        platform: 'darwin',
+        compositionActive: false,
       }),
     ).toBe('steer');
     expect(
