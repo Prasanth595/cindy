@@ -219,7 +219,7 @@ export function createPartnerTaskService(deps: PartnerBridgeDeps): PartnerTaskSe
         });
       }
     }
-    deps.log.warn('partner callback gave up', { taskId: task.taskId, url });
+    deps.log.warn('partner callback gave up', { taskId: task.taskId, url: sanitizeCallbackUrlForLog(url) });
   }
 
   async function readFinalText(
@@ -386,6 +386,14 @@ export function createPartnerTaskService(deps: PartnerBridgeDeps): PartnerTaskSe
       workingDir: workingDir ?? null,
       sessionId,
     });
+    // 收口后的取消仍然生效:这里落 cancelled 而不是"又跑成了成功"。
+    if (inflightTask.cancelled) {
+      task.status = 'cancelled';
+      task.errorCode = 'CANCELLED';
+      task.error = '调用方已取消这一单';
+      finish(task);
+      return;
+    }
     task.text = resolved.text;
     task.attachments = resolved.attachments;
     task.status = 'succeeded';
@@ -552,6 +560,22 @@ function isHttpUrl(value: string): boolean {
     return url.protocol === 'http:' || url.protocol === 'https:';
   } catch {
     return false;
+  }
+}
+
+/**
+ * 回调地址可能内嵌 Basic userinfo 或带签名 query;写日志前剥掉可复放的凭据部分。
+ */
+export function sanitizeCallbackUrlForLog(url: string): string {
+  try {
+    const parsed = new URL(url);
+    parsed.username = '';
+    parsed.password = '';
+    parsed.search = 'redacted';
+    parsed.hash = '';
+    return parsed.toString();
+  } catch {
+    return '(invalid callback url)';
   }
 }
 

@@ -17,7 +17,6 @@ import { sessionCreateToRow } from '../localDb/mapper.js';
 import { ensureDialogueWorkspaceDir } from '../localDb/dialogueWorkspace.js';
 import { ensureProjectGitInitialized } from '../git-snapshot/projectGitBootstrap.js';
 import { readGitSafetySettings } from '../maker-host/git-safety-settings-store.js';
-import { upsertRecentWorkdir } from '../localDb/ipc/recentWorkdirs.js';
 import { createLogger } from '../logger.js';
 import { normalizeWorkingDirForStorage } from '../../shared/workingDir.js';
 
@@ -41,6 +40,9 @@ export async function createPartnerSession(params: PartnerSessionCreateParams): 
         workingDir,
         workspaceKind,
         permissionMode: params.permissionMode,
+        // plan 档位单独映射到 Plan 意图:只落 permissionMode 字符串不会让首轮
+        // 进入 plan 协作模式(Codex 的权限与 Plan 是两条独立的开关)。
+        planModeEnabled: params.permissionMode === 'plan',
         ...(params.agentKind ? { agentKind: params.agentKind } : {}),
         ...(params.model ? { model: params.model } : {}),
         ...(params.effort ? { effort: params.effort } : {}),
@@ -61,9 +63,6 @@ export async function createPartnerSession(params: PartnerSessionCreateParams): 
     source: 'partner-bridge-session',
   });
   await db.insert(sessions).values(insertRow);
-  if (projectDir && insertRow.workingDir) {
-    void upsertRecentWorkdir(insertRow.workingDir, now);
-  }
   log.info('partner session created', {
     sessionId: id,
     key: params.key,

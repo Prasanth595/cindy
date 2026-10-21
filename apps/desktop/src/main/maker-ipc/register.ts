@@ -11400,6 +11400,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
      * reconcileCreateOptsAgainstDb 再读当前落库档位,不使用入队时的旧快照。
      */
     resumeWithStoredPermissionMode?: boolean;
+    /** 外部派发入口的纵向边界:忙时直接拒绝,不把输入排进用户队列。 */
+    rejectIfBusy?: boolean;
   }): Promise<SendToSessionInternalResult> {
     await assertTaskActionCurrent();
     if (hasTaskActionAuthorization()) params = { ...params, forceQueue: true };
@@ -11438,6 +11440,20 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       : undefined;
     if (!message) {
       return { ok: false, errorCode: 'INVALID_ARGS', message: 'message required' };
+    }
+    // 外部派发入口可要求"忙时拒绝入队":在投递边界拒绝,而不是让外部消息悄悄排进
+    // 用户队列再被当作常规 turn 执行。
+    if (
+      params.rejectIfBusy &&
+      targetSessionId &&
+      (isSessionInTurn(targetSessionId) ||
+        inputCoordinator.getQueueControlSnapshot(targetSessionId).pendingQueue.length > 0)
+    ) {
+      return {
+        ok: false,
+        errorCode: 'BUSY',
+        message: 'target session busy; input rejected instead of queued',
+      };
     }
     const sourcePlugin = params.sourcePlugin;
     // 空闲直发的 wire 来源说明与落库标签读同一份数据。

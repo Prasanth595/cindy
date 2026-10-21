@@ -52,7 +52,8 @@ Authorization: Bearer 加 token。
 - key：必填，会话分间键，1 到 200 个可打印字符。同一个 key 复用同一间会话。
 - prompt：必填，上限 32000 字符。
 - workingDir：可选，绝对路径，必须存在且是目录；缺省用 app 托管的对话目录。
-- permissionMode：可选，plan / acceptEdits / auto，缺省 plan（只读）。
+- permissionMode：可选，plan / acceptEdits / auto，缺省 plan。plan 沿用桌面端
+  既有 Plan 流程（先给计划、审批后执行），不是只读沙箱；需要限制写入时不要依赖它。
 - callbackUrl：可选，完成后 POST 结果到这个地址，只允许 http／https。
 - agentKind：可选，cc / codex / pi；缺省跟随 New Maker 草稿默认。
 

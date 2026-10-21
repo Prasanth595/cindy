@@ -36,7 +36,11 @@ function normalize(raw: unknown): PartnerBridgeState {
       if (typeof value === 'string' && SESSION_ID_PATTERN.test(value)) sessions[key] = value;
     }
   }
-  return { sessions };
+  // key 允许任意可打印字符串,constructor/__proto__ 都是合法 key:
+  // 底层用无原型对象存映射,读取时再走自有属性判断,不吃到继承槽。
+  const sessionsByOwnKeys: Record<string, string> = Object.create(null);
+  for (const [key, value] of Object.entries(sessions)) sessionsByOwnKeys[key] = value;
+  return { sessions: sessionsByOwnKeys };
 }
 
 const store = createOverrideSettingsFile<PartnerBridgeState>({
@@ -49,13 +53,15 @@ const store = createOverrideSettingsFile<PartnerBridgeState>({
 
 export function readPartnerSessionId(key: string): string | null {
   store.invalidateIfChanged();
-  return store.read().sessions[key] ?? null;
+  const sessions = store.read().sessions;
+  return Object.prototype.hasOwnProperty.call(sessions, key) ? (sessions[key] ?? null) : null;
 }
 
 /** 写/清某 key 的会话映射(null 即清除;会话失效重建时更新)。 */
 export function writePartnerSessionId(key: string, sessionId: string | null): void {
   store.invalidateIfChanged();
-  const sessions = { ...store.read().sessions };
+  const sessions: Record<string, string> = Object.create(null);
+  Object.assign(sessions, store.read().sessions);
   if (sessionId === null) delete sessions[key];
   else sessions[key] = sessionId;
   store.writePatch({ sessions });
