@@ -10685,6 +10685,7 @@ assertRouteCurrent();
           threadId,
           message,
           additionalDetails,
+          httpOnly: hostUsesCodexProxy && !threadUsesWebSocket,
         });
       } catch (errorFromHost) {
         log.warn('codex HTTP recovery arming failed; surfacing original error', {
