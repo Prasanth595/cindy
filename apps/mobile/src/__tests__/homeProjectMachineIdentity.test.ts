@@ -95,6 +95,25 @@ describe('chat machine identity (tasks without a project header)', () => {
     expect(result.b).toBeUndefined();
   });
 
+  it('gives no identity to shared-task peers or stale shards, so they never look disconnected', () => {
+    const result = buildHomeDeviceMachineIdentities(home(
+      [chat('1', 'shared-peer:x', 'Owner Mac'), chat('2', 'ghost', 'Old Mac'), chat('3', 'a', 'Alpha')],
+      [device('a', 'Alpha')],
+    ));
+    expect(Object.keys(result)).toEqual(['a']);
+    expect(result.a.disconnected).toBe(false);
+  });
+
+  it('labels a computer the same on its project row and its chat rows', () => {
+    const input = {
+      chats: [chat('1', 'two', 'MacBook')], pinned: [],
+      projects: [project('p', 'one', 'MacBook')],
+      deviceFilters: [device('one', 'MacBook'), device('two', 'MacBook')], selectedDeviceId: null,
+    } as never;
+    expect(buildHomeProjectMachineIdentities(input).get('p')?.displayLabel).toBe('MacBook · one');
+    expect(buildHomeDeviceMachineIdentities(input).two.displayLabel).toBe('MacBook · two');
+  });
+
   it('marks offline or failed devices as disconnected', () => {
     const chats = [chat('1', 'a', 'Alpha'), chat('2', 'b', 'Beta')];
     const result = buildHomeDeviceMachineIdentities(

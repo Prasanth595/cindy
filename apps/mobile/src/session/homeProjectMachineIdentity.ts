@@ -6,42 +6,9 @@ export interface HomeProjectMachineIdentity {
   hideLabel: boolean;
 }
 
-/** Mirrors Desktop remoteProjectIdentity: only visible, distinct devices disambiguate names. */
-export function buildHomeProjectMachineIdentities(
-  home: Pick<MobileHomePresentation, 'projects' | 'deviceFilters' | 'selectedDeviceId'>,
-  connectionStates: Readonly<Record<string, string>> = {},
-): ReadonlyMap<string, HomeProjectMachineIdentity> {
-  const filters = new Map(home.deviceFilters.map((device) => [device.deviceId, device]));
-  const deviceName = (project: MobileHomePresentation['projects'][number]) =>
-    (filters.get(project.deviceId)?.label ?? project.deviceName).trim();
-  const idsByName = new Map<string, Set<string>>();
-  for (const project of home.projects) {
-    const name = deviceName(project).toLowerCase();
-    if (!project.deviceId || !name) continue;
-    const ids = idsByName.get(name) ?? new Set<string>();
-    ids.add(project.deviceId);
-    idsByName.set(name, ids);
-  }
-  const identities = new Map<string, HomeProjectMachineIdentity>();
-  for (const project of home.projects) {
-    if (!project.deviceId) continue;
-    const name = deviceName(project);
-    const ambiguous = name && (idsByName.get(name.toLowerCase())?.size ?? 0) > 1;
-    const device = filters.get(project.deviceId);
-    identities.set(project.key, {
-      displayLabel: ambiguous ? `${name} · ${project.deviceId}` : name || project.deviceId,
-      disconnected: !device?.available || connectionStates[project.deviceId] === 'failed',
-      // As on Desktop, an explicit device heading makes the inline label redundant.
-      hideLabel: home.selectedDeviceId === project.deviceId,
-    });
-  }
-  return identities;
-}
-
-type HomeMachineIdentitySource = Pick<
-  MobileHomePresentation,
-  'chats' | 'pinned' | 'projects' | 'deviceFilters' | 'selectedDeviceId'
->;
+type HomeMachineIdentitySource = Pick<MobileHomePresentation, 'projects' | 'deviceFilters' | 'selectedDeviceId'>
+  & Partial<Pick<MobileHomePresentation, 'chats' | 'pinned'>>;
+type DeviceFilter = MobileHomePresentation['deviceFilters'][number];
 
 interface SessionDeviceFields {
   canonicalDeviceId?: string | null;
@@ -55,49 +22,91 @@ export function homeSessionDeviceId(session: object): string | null {
   return canonicalDeviceId ?? deviceLinkDeviceId ?? null;
 }
 
-function homeSessionDeviceName(session: object): string | null {
-  return (session as SessionDeviceFields).deviceLinkDeviceName ?? null;
+/**
+ * Visible machine names shared by project and chat rows, so one computer gets
+ * the same label on both. Chats only count when their device is a known device
+ * filter: shared-task peers and stale shards are not computers of this account.
+ */
+function collectMachineNames(home: HomeMachineIdentitySource, filters: ReadonlyMap<string | null, DeviceFilter>) {
+  const projectName = (project: MobileHomePresentation['projects'][number]) =>
+    (filters.get(project.deviceId)?.label ?? project.deviceName).trim();
+  const chatName = (session: object) => {
+    const deviceId = homeSessionDeviceId(session);
+    const label = deviceId ? filters.get(deviceId)?.label : undefined;
+    return label === undefined
+      ? null
+      : (label.trim() || ((session as SessionDeviceFields).deviceLinkDeviceName ?? '').trim());
+  };
+  const idsByName = new Map<string, Set<string>>();
+  const chatNames = new Map<string, string>();
+  const note = (deviceId: string | null, name: string) => {
+    if (!deviceId || !name) return;
+    const ids = idsByName.get(name.toLowerCase()) ?? new Set<string>();
+    ids.add(deviceId);
+    idsByName.set(name.toLowerCase(), ids);
+  };
+  for (const project of home.projects) note(project.deviceId, projectName(project));
+  for (const item of [...(home.chats ?? []), ...(home.pinned ?? [])]) {
+    const deviceId = homeSessionDeviceId(item.session);
+    const name = chatName(item.session);
+    if (!deviceId || name === null) continue;
+    if (!chatNames.get(deviceId)) chatNames.set(deviceId, name);
+    note(deviceId, name);
+  }
+  return { chatNames, idsByName, projectName };
+}
+
+function machineIdentity(
+  deviceId: string,
+  name: string,
+  idsByName: ReadonlyMap<string, ReadonlySet<string>>,
+  device: DeviceFilter | undefined,
+  home: HomeMachineIdentitySource,
+  connectionStates: Readonly<Record<string, string>>,
+): HomeProjectMachineIdentity {
+  const ambiguous = name && (idsByName.get(name.toLowerCase())?.size ?? 0) > 1;
+  return {
+    displayLabel: ambiguous ? `${name} · ${deviceId}` : name || deviceId,
+    disconnected: !device?.available || connectionStates[deviceId] === 'failed',
+    // As on Desktop, an explicit device heading makes the inline label redundant.
+    hideLabel: home.selectedDeviceId === deviceId,
+  };
+}
+
+/** Mirrors Desktop remoteProjectIdentity: only visible, distinct devices disambiguate names. */
+export function buildHomeProjectMachineIdentities(
+  home: HomeMachineIdentitySource,
+  connectionStates: Readonly<Record<string, string>> = {},
+): ReadonlyMap<string, HomeProjectMachineIdentity> {
+  const filters = new Map(home.deviceFilters.map((device) => [device.deviceId, device]));
+  const { idsByName, projectName } = collectMachineNames(home, filters);
+  const identities = new Map<string, HomeProjectMachineIdentity>();
+  for (const project of home.projects) {
+    if (!project.deviceId) continue;
+    identities.set(project.key, machineIdentity(
+      project.deviceId, projectName(project), idsByName, filters.get(project.deviceId), home, connectionStates,
+    ));
+  }
+  return identities;
 }
 
 /**
  * Machine identity keyed by the device a task belongs to, for rows that have no
- * project header (top-level chats, pinned). Same naming rules as projects, but
- * devices that only own chats still take part in same-name disambiguation.
- * Deliberately independent of `sessionAgentRunsOnOtherComputer`: that says where
- * the Agent runs, this says where the task lives.
+ * project header (top-level chats, pinned). Same names as project rows; only
+ * known computers get one, so shared-task peers and stale shards never show a
+ * false "disconnected" icon. Deliberately independent of
+ * `sessionAgentRunsOnOtherComputer`: that says where the Agent runs, this says
+ * where the task lives.
  */
 export function buildHomeDeviceMachineIdentities(
   home: HomeMachineIdentitySource,
   connectionStates: Readonly<Record<string, string>> = {},
 ): Readonly<Record<string, HomeProjectMachineIdentity>> {
   const filters = new Map(home.deviceFilters.map((device) => [device.deviceId, device]));
-  const names = new Map<string, string>();
-  const note = (deviceId: string | null | undefined, fallbackName: string | null | undefined) => {
-    if (!deviceId) return;
-    const name = (filters.get(deviceId)?.label ?? fallbackName ?? '').trim();
-    // The first non-empty name wins so a stale empty record cannot blank a known one.
-    if (!names.has(deviceId) || (!names.get(deviceId) && name)) names.set(deviceId, name);
-  };
-  for (const project of home.projects) {
-    note(project.deviceId, project.deviceName);
-    for (const item of project.sessions) note(homeSessionDeviceId(item.session), homeSessionDeviceName(item.session));
-  }
-  for (const item of [...home.chats, ...home.pinned]) {
-    note(homeSessionDeviceId(item.session), homeSessionDeviceName(item.session));
-  }
-  const idsByName = new Map<string, number>();
-  for (const name of names.values()) {
-    if (!name) continue;
-    idsByName.set(name.toLowerCase(), (idsByName.get(name.toLowerCase()) ?? 0) + 1);
-  }
+  const { chatNames, idsByName } = collectMachineNames(home, filters);
   const identities: Record<string, HomeProjectMachineIdentity> = {};
-  for (const [deviceId, name] of names) {
-    const ambiguous = name && (idsByName.get(name.toLowerCase()) ?? 0) > 1;
-    identities[deviceId] = {
-      displayLabel: ambiguous ? `${name} · ${deviceId}` : name || deviceId,
-      disconnected: !filters.get(deviceId)?.available || connectionStates[deviceId] === 'failed',
-      hideLabel: home.selectedDeviceId === deviceId,
-    };
+  for (const [deviceId, name] of chatNames) {
+    identities[deviceId] = machineIdentity(deviceId, name, idsByName, filters.get(deviceId), home, connectionStates);
   }
   return identities;
 }

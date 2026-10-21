@@ -4568,7 +4568,13 @@ function HomeSessionRowInner({
                 {sourceLabel}
               </Text>
             ) : null}
-            {machineIdentity ? <HomeProjectMachineLabel identity={machineIdentity} /> : null}
+            {machineIdentity ? (
+              <HomeProjectMachineLabel
+                identity={machineIdentity}
+                labelStyle={styles.sessionMachineLabel}
+                testID={`home.sessionMachineLabel.${item.session.id}`}
+              />
+            ) : null}
             {textMode && (showSchedule || showPinned) ? (
               <View style={styles.sessionInlineIcons}>
                 {showSchedule ? (
@@ -5310,9 +5316,13 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     maxWidth: '42%',
     minWidth: 0,
   },
-  // 与机器标识并排时先压缩机器名,「对话」来源标签保持完整。
+  // 与机器标识并排时:「对话」来源标签保持完整,机器名封顶后先截断。
+  // 标题组是 flex:1(基准 0),溢出时最先被压到 0;机器名封顶 72,标题至少能留出几个字。
   sessionSourceLabelKeep: {
     flexShrink: 0,
+  },
+  sessionMachineLabel: {
+    maxWidth: 72,
   },
 
   sharedRoleSlot: {
