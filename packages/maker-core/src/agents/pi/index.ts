@@ -7981,8 +7981,9 @@ export class PiAgent extends BaseAgent {
         return run;
       },
 
-      async setFastMode(enabled: boolean): Promise<void> {
+      async setFastMode(enabled: boolean | 'ultrafast'): Promise<void> {
         if (reviewMode) return;
+        if (enabled === 'ultrafast') throw new Error('Ultrafast requires the Codex runtime');
         updateRequestPrefs(enabled);
       },
 
@@ -8384,7 +8385,9 @@ export class PiAgent extends BaseAgent {
     }
     const log = this.deps.logger;
     const agentHome = this.resolveAgentHome(opts.remoteHostId);
-    const sessionDir = joinRemotePosixPath(agentHome, 'sessions');
+    const sessionDir = opts.hostedGuestHome
+      ? path.join(opts.hostedGuestHome, 'pi-sessions')
+      : joinRemotePosixPath(agentHome, 'sessions');
     // 离线 fork 只需 models.json 里有 `cindy` 供应商供 pi 启动校验 --provider。
     // 不能写共享的 agentHome/models.json:另一窗口正启动 BYOM 会话时(startSession
     // 写入 native providers 后到 spawn 之间还有多个 await),本处覆盖会把该 provider

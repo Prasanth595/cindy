@@ -121,8 +121,12 @@ afterEach(async () => { vi.restoreAllMocks(); await fs.rm(h.root, { recursive: t
 const nativeIdentity = async (packageId: string) => (await readNativeBotPackage(path.resolve('resources/bot-packages'), packageId))
   .snapshot.items.find(item => item.role === 'identity')!.text;
 async function nativeFinished(result: Awaited<ReturnType<typeof inviteNativeBotPackage>>) {
-  for (let i = 0; result.status === 'running' && i < 100; i++) {
-    await new Promise(resolve => setTimeout(resolve, 5));
+  // Admission can return while the transfer still owns the profile lock.
+  // Wait for that transfer (including file writes and checkpoint cleanup),
+  // rather than racing Windows IO against a fixed 500ms polling budget.
+  if (result.status === 'running') {
+    await withBotProfileLocks([result.botId], async () => {});
+    // The result reader may acquire the same lock for reconciliation.
     result = (await getCompanionImportResult(result.requestId))!;
   }
   expect(result.status).not.toBe('running');

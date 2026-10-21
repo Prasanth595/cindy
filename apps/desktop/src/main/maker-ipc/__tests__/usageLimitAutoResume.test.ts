@@ -73,6 +73,20 @@ describe('isAccountUsageLimitError', () => {
 });
 
 describe('UsageLimitAutoResume', () => {
+  // Unit regression: a pending group switch can still have the previous local route saved.
+  // Resetting that local account must not wake the group's wait or consume its retry budget.
+  it('keeps a group quota wait until its timer even when the old account resets', async () => {
+    const h = harness();
+    h.guard.onTurnError('group', { usageLimit: true, providerGroupUsageLimit: { resetAtMs: RESET_AT } });
+    await h.flush();
+    const matches = vi.fn(async () => true);
+    await h.guard.resumeRestored(matches);
+    expect(matches).not.toHaveBeenCalled();
+    expect(h.deps.continueSession).not.toHaveBeenCalled();
+    await h.fireLast();
+    expect(h.deps.continueSession).toHaveBeenCalledOnce();
+  });
+
   it('resumes only matching armed waits after a reset and respects user cancellation', async () => {
     const h = harness();
     h.guard.onTurnError('matching', LIMIT); h.guard.onTurnError('other', LIMIT);

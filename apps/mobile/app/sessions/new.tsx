@@ -1,3 +1,5 @@
+import { useIncomingShareComposer } from '@/session/useIncomingShareComposer';
+import { ModelSpeedIcon } from '@/session/ModelSpeedIcon';
 import { useNewSessionHostDefaults } from '@/session/useNewSessionHostDefaults';
 import { ErrorNotice } from '@/components/ErrorNotice';
 import { useNewSessionDefaultSelection } from '@/session/useNewSessionDefaultSelection';
@@ -121,9 +123,6 @@ import { goBackGuarded } from '@/utils/backGuard';
 import { buildMobileImageAttachmentCandidate } from '@/session/mobileImageAttachment';
 import { useMobileLocalAttachments } from '@/session/useMobileLocalAttachments';
 import {
-  consumeIncomingShareBatch,
-  deleteIncomingSharedFiles,
-  selectIncomingShareUploadCandidates,
   useIncomingShareBatch,
 } from '@/session/incomingShare';
 import {
@@ -926,6 +925,7 @@ export default function NewRemoteSessionScreen() {
     getPendingUploadCount,
     hasAttachmentInput,
     getUploadedSource,
+    insertUploadedAttachment,
     getUploadedAttachmentId,
     releaseUploadedSources,
   } = useMobileLocalAttachments({
@@ -937,7 +937,7 @@ export default function NewRemoteSessionScreen() {
         ?.decorateUploadedAttachment(rawAttachment, candidate) ?? rawAttachment;
       // create() 在 waitForPendingUploads 落定后同步读 ref,而 setState 到 commit 有
       // 微任务延迟——这里派发时同步镜像,保证「上传完成→立即创建」不丢刚落定的附件。
-      attachmentsRef.current = [...attachmentsRef.current, attachment];
+      attachmentsRef.current = insertUploadedAttachment(attachmentsRef.current, attachment);
       if (candidate.kind === 'image') {
         setAttachmentPreviews((current) => ({ ...current, [attachment.id]: candidate.uri }));
       }
@@ -946,7 +946,7 @@ export default function NewRemoteSessionScreen() {
         const sourceId = candidate.sourceId;
         setMediaAssetAttachments((current) => ({ ...current, [sourceId]: attachment.id }));
       }
-      setAttachments((current) => [...current, attachment]);
+      setAttachments((current) => insertUploadedAttachment(current, attachment));
     },
     onError: setAttachmentError,
     onPicked: () => setContextSheetOpen(false),
@@ -964,7 +964,7 @@ export default function NewRemoteSessionScreen() {
   }), [auth.getAccessToken, discardAllPendingUploads]);
   const incomingShareBatch = useIncomingShareBatch();
   const incomingShareReceivedRef = useRef(false);
-  if (incomingShareBatch) incomingShareReceivedRef.current = true;
+  if (incomingShareBatch?.destination === 'new') incomingShareReceivedRef.current = true;
   const isShareTargetFocused = useIsFocused();
   useAutoResumeNewSessionDraft({
     enabled: !(params.recoverySessionId || params.editSessionId || params.draft || params.suggestion
@@ -973,53 +973,6 @@ export default function NewRemoteSessionScreen() {
     hasInput: hasRecoveryInput,
     onResume: next => router.setParams(next),
   });
-  useEffect(() => {
-    if (!isShareTargetFocused || !auth.isAuthenticated || !incomingShareBatch
-      || getMobileAuthOwner().accountId !== auth.user?.id) return;
-    try {
-      if (!consumeIncomingShareBatch(incomingShareBatch.id)) return;
-    } catch {
-      setAttachmentError(i18n.t('composer.upload.shareReceiveFailed'));
-      return;
-    }
-    const selection = selectIncomingShareUploadCandidates(incomingShareBatch.payloads);
-    const remainingSlots = Math.max(
-      0,
-      MOBILE_MAX_ATTACHMENTS
-        - attachmentsRef.current.length
-        - getPendingUploadCount(),
-    );
-    const accepted = selection.candidates.slice(0, remainingSlots);
-    const dropped = selection.candidates.slice(remainingSlots);
-    const cleanupUris = [
-      ...selection.rejectedUris,
-      ...dropped.map((candidate) => candidate.uri),
-    ];
-    if (cleanupUris.length > 0) {
-      void deleteIncomingSharedFiles(cleanupUris).catch(() => undefined);
-    }
-    if (accepted.length > 0) {
-      enqueueUploads(accepted.map((candidate) => ({
-        ...candidate,
-        cleanupLocalUris: deleteIncomingSharedFiles,
-      })), { token: auth.getAccessToken() });
-    }
-    if (dropped.length > 0) {
-      setAttachmentError(i18n.t('composer.upload.maxAttachments', {
-        count: MOBILE_MAX_ATTACHMENTS,
-      }));
-    } else if (selection.rejectedUris.length > 0) {
-      setAttachmentError(i18n.t('composer.upload.noFileRead'));
-    } else {
-      setAttachmentError(null);
-    }
-  }, [
-    auth,
-    enqueueUploads,
-    getPendingUploadCount,
-    incomingShareBatch,
-    isShareTargetFocused,
-  ]);
   const pendingGoalSkillRef = useRef<string | null>(null);
   useEffect(() => {
     pendingGoalSkillRef.current = null;
@@ -1965,6 +1918,13 @@ export default function NewRemoteSessionScreen() {
     voiceDictionaryLearningTrackerRef.current?.inspectDraft(value);
   }, [editRecoveredDraft]);
 
+  useIncomingShareComposer({
+    destination: 'new', ready: isShareTargetFocused && newSessionPreferencesLoaded && !creating,
+    appendText: text => setFirstMessageDraft(current => [current, text].filter(Boolean).join('\n\n')),
+    attachmentCount: attachments.length,
+    enqueueUploads, getPendingUploadCount, onError: setAttachmentError,
+  });
+
   const handleFirstMessageInputContentSizeChange = useCallback((event: TextInputContentSizeChangeEvent) => {
     const nextHeight = Math.max(
       MOBILE_COMPOSER_INPUT_SINGLE_LINE_HEIGHT,
@@ -2045,6 +2005,9 @@ export default function NewRemoteSessionScreen() {
       autoDefaultDeviceRef.current = null;
       setRuntimeSettledDeviceId(null);
     }
+    // A share can arrive before the first computer is selected. Its uploads
+    // are not tied to a previous host; only a real host switch invalidates them.
+    const changesExistingDevice = !!selectedDeviceIdRef.current && option.deviceId !== selectedDeviceIdRef.current;
     selectedDeviceIdRef.current = option.deviceId;
     setSelectedDeviceId(option.deviceId);
     setSelectedDeviceName(option.name || option.deviceId);
@@ -2066,19 +2029,21 @@ export default function NewRemoteSessionScreen() {
     setBrowseLoading(false);
     setBrowseError(null);
     setContextSheetOpen(false);
-    // 切换电脑丢弃草稿附件前 best-effort 回收已上传的中转对象(codex review #504)。
-    for (const attachment of attachments) {
-      discardMobileUploadedAttachment(attachment, { getToken: () => auth.getAccessToken() });
+    if (changesExistingDevice) {
+      // 切换电脑丢弃草稿附件前 best-effort 回收已上传的中转对象(codex review #504)。
+      for (const attachment of attachments) {
+        discardMobileUploadedAttachment(attachment, { getToken: () => auth.getAccessToken() });
+      }
+      // 在途上传同样作废(codex review R10):不取消的话它们完成后会经 onUploaded 把
+      // 上一台电脑期间选的附件塞进新电脑的草稿;丢弃后由控制器在完成时回收 OSS 对象。
+      discardAllPendingUploads();
+      releaseUploadedSources(attachments.map((attachment) => attachment.id));
+      setAttachments([]);
+      setMediaAssetAttachments({});
+      setAttachmentPreviews({});
+      composerAnnotationsRef.current?.forgetAllAttachments();
+      setAttachmentError(null);
     }
-    // 在途上传同样作废(codex review R10):不取消的话它们完成后会经 onUploaded 把
-    // 上一台电脑期间选的附件塞进新电脑的草稿;丢弃后由控制器在完成时回收 OSS 对象。
-    discardAllPendingUploads();
-    releaseUploadedSources(attachments.map((attachment) => attachment.id));
-    setAttachments([]);
-    setMediaAssetAttachments({});
-    setAttachmentPreviews({});
-    composerAnnotationsRef.current?.forgetAllAttachments();
-    setAttachmentError(null);
     initialWorkspaceKeyRef.current = null;
     setDraft((current) => ({
       ...current,
@@ -2181,7 +2146,7 @@ export default function NewRemoteSessionScreen() {
   // 目标 agent 的 capabilities 就绪后,按 (agent, 来源, 模型) 记忆 + 与手动选行同款的
   // fastEditable 门控重评一次,通过才把 fastMode 打开。手动开关会写 draftMemory:
   // 用户主动关过 → 记忆为 false → 本 effect 不会重新打开;创建路径拿到的 fastMode
-  // 永远已过目标 agent 门控,不会发出目标不支持的 fastMode:true。
+  // 永远已按目标 agent、来源与速度档位门控,不会发出目标不支持的速度。
   // 关闭方向(codex review P2):已开启的 fastMode 在 (provider, model) 组合失去
   // Fast 支持(provider revision 下架 / caps 撤销 hasFastMode)时必须同步关闭——
   // 否则 UI 的 rowFastEditable 已显示关、创建仍发 fastMode:true 被拒。仅能力表
@@ -2205,6 +2170,7 @@ export default function NewRemoteSessionScreen() {
           draft.model,
           modelRowsRef.current,
           targetAgentHasFast(selectedDeviceId, draft.agentKind),
+          draft.fastMode,
         )
       ) {
         setDraft((current) => (
@@ -2218,20 +2184,22 @@ export default function NewRemoteSessionScreen() {
       }
       return;
     }
-    if (draftMemory.getFast(draft.agentKind, pid, draft.model) !== true) return;
+    const rememberedFast = draftMemory.getFast(draft.agentKind, pid, draft.model) ?? false;
+    if (!rememberedFast) return;
     if (!isFastRestorable(
       draft.agentKind,
       pid,
       draft.model,
       modelRowsRef.current,
       targetAgentHasFast(selectedDeviceId, draft.agentKind),
+      rememberedFast,
     )) return;
     setDraft((current) => (
       !current.fastMode
       && current.agentKind === draft.agentKind
       && current.model === draft.model
       && current.providerId === draft.providerId
-        ? { ...current, fastMode: true }
+        ? { ...current, fastMode: rememberedFast }
         : current
     ));
     // capabilities / modelRows / deviceProviders.ready 是触发信号(能力表或目录变化
@@ -4042,7 +4010,7 @@ export default function NewRemoteSessionScreen() {
           ) : null}
           <Text style={styles.modelPillText} numberOfLines={1}>{pillModelSummary}</Text>
           {(remoteAgentPick ? remoteAgentPick.fastMode : triggerFastOn)
-            ? <Zap color={colors.textTertiary} size={iconSize.sm} strokeWidth={iconStroke.regular} />
+            ? <ModelSpeedIcon mode={(remoteAgentPick ? remoteAgentPick.fastMode : draft.fastMode) ?? false} color={colors.textTertiary} size={iconSize.sm} />
             : null}
           <ChevronDown color={colors.textTertiary} size={iconSize.sm} strokeWidth={iconStroke.regular} />
         </Pressable>
@@ -4184,6 +4152,9 @@ export default function NewRemoteSessionScreen() {
           visibilityOverrides: deviceProvidersRef.current.modelVisibilityOverrides,
           flatModels: flatModelsForUnsupportedHost(selectedDeviceId, nextKind, deviceProvidersRef.current.unsupported),
         });
+        const rememberedFast = next.providerId
+          ? draftMemory.getFast(next.agentKind, next.providerId, next.model) ?? false
+          : false;
         return {
           ...current,
           agentKind: next.agentKind,
@@ -4198,8 +4169,8 @@ export default function NewRemoteSessionScreen() {
           // 能力表(codex review P1:此刻闭包里的 capabilities 属于切换前 agent 或
           // 为 null);目标 caps 未就绪 → false,由延迟恢复 effect 就绪后补评。
           fastMode: next.providerId
-            && isFastRestorable(next.agentKind, next.providerId, next.model, rowsNow, targetAgentHasFast(selectedDeviceId, next.agentKind))
-            ? (draftMemory.getFast(next.agentKind, next.providerId, next.model) ?? false)
+            && isFastRestorable(next.agentKind, next.providerId, next.model, rowsNow, targetAgentHasFast(selectedDeviceId, next.agentKind), rememberedFast)
+            ? rememberedFast
             : false,
         };
       });
@@ -4981,6 +4952,7 @@ export default function NewRemoteSessionScreen() {
                   resolved.model,
                   g.rows,
                   targetAgentHasFast(guardDeviceId, effectiveDraft.agentKind),
+                  effectiveDraft.fastMode,
                 )
               ) ? { fastMode: false } : {}),
             } : pairChanged ? {
@@ -5080,6 +5052,7 @@ export default function NewRemoteSessionScreen() {
                 resolved.model,
                 rows,
                 targetAgentHasFast(selectedDeviceId, effectiveDraft.agentKind),
+                effectiveDraft.fastMode,
               )
             ) ? { fastMode: false } : {}),
           };
@@ -5533,6 +5506,7 @@ export default function NewRemoteSessionScreen() {
                 resolved.model,
                 g.rows,
                 targetAgentHasFast(guardDeviceId, effectiveDraft.agentKind),
+                effectiveDraft.fastMode,
               )
             ) ? { fastMode: false } : {}),
           } : pairChanged ? {
@@ -7022,7 +6996,7 @@ export default function NewRemoteSessionScreen() {
           providersReady={collabDeviceProviders.ready}
           providersUnsupported={collabDeviceProviders.unsupported}
           selectedEffort={collabForm.form.model?.effort ?? ''}
-          selectedFastMode={!!collabForm.form.model?.fast}
+          selectedFastMode={collabForm.form.model?.fast ?? false}
           selectedProviderId={collabForm.form.model?.providerId ?? null}
           testID="newSession.collabModelSheet"
           visible={collabForm.modelPicker.open}

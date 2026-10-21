@@ -51,7 +51,7 @@ import type {
   BotDelegationInterjectResult,
 } from '../../shared/botCollaboration.js';
 import { BOT_DELEGATION_CLIENT_ID, BOT_INTERJECTION_MAX_CHARS as MAX_INTERJECTION_CHARS, botInterjectionPreview } from '../../shared/botCollaboration.js';
-import { buildBotGroupTaskCard, type BotGroupTaskCardLabels, type BotGroupTaskCardState } from '../../shared/botGroupChat.js';
+import { buildBotGroupTaskCard, parseBotGroupThreadRouteKey, type BotGroupTaskCardLabels, type BotGroupTaskCardState } from '../../shared/botGroupChat.js';
 import { t } from '../i18n.js';
 import type { BotGroupTaskPostInput, BotGroupTaskPostResult } from './botGroupChatService.js';
 import { ensureBotWorkspaceDir } from './botProfileFolder.js';
@@ -819,15 +819,23 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
     return requesterLiveSessionId(botId, null);
   };
 
+  /** Where a group task reports: its group and, when started in a Thread's lane, that Thread. */
+  type GroupTaskHome = { groupId: string; routeKey: string; threadRootId?: string };
+
   /**
    * 冻结这次协作双方的展示身份。名字后来改了不回填历史消息——消息流讲的是
    * 「当时谁把活交给了谁」，不是「他们现在叫什么」。
    */
-  /** The group a task was started from, by its persisted origin route (bot-group-chat.md §10). */
-  const groupHomeOf = (permissionSnapshotJson: string | null | undefined): { groupId: string; routeKey: string } | null => {
+  /**
+   * The group a task was started from, by its persisted origin route (bot-group-chat.md §10).
+   * A task started in a Thread's lane reports back into that Thread.
+   */
+  const groupHomeOf = (permissionSnapshotJson: string | null | undefined): GroupTaskHome | null => {
     const route = parseRecord(permissionSnapshotJson).groupOriginRoute;
     const match = typeof route === 'string' ? /^group:([^:]+)/.exec(route) : null;
-    return match ? { groupId: match[1]!, routeKey: route as string } : null;
+    if (!match) return null;
+    const threadRootId = parseBotGroupThreadRouteKey(route as string)?.threadRootId;
+    return { groupId: match[1]!, routeKey: route as string, ...(threadRootId ? { threadRootId } : {}) };
   };
 
   type GroupTaskRow = Pick<DelegationRow,
@@ -856,7 +864,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
 
   /** One task event as the teammate's own group message, carrying the task card. */
   const postGroupTaskEvent = async (
-    home: { groupId: string },
+    home: GroupTaskHome,
     row: GroupTaskRow,
     event: { clientId: string; text: string; state: BotGroupTaskCardState; summary?: string; files?: Array<{ absolutePath: string }> },
   ): Promise<BotGroupTaskPostResult> => {
@@ -879,6 +887,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
     return deps.postGroupTaskMessage({
       groupId: home.groupId, botId: row.requestingBotId, clientId: event.clientId, text: event.text, card,
       ...(event.files?.length ? { files: event.files } : {}),
+      ...(home.threadRootId ? { threadRootId: home.threadRootId } : {}),
     });
   };
 
@@ -894,7 +903,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
    * the card again. A continued task posts a fresh card for each run; the first run keeps the
    * client id it always had.
    */
-  const postGroupTaskStart = (home: { groupId: string }, row: GroupTaskRow, attempt = 0): Promise<void> => {
+  const postGroupTaskStart = (home: GroupTaskHome, row: GroupTaskRow, attempt = 0): Promise<void> => {
     const key = groupStartPostKey(row);
     const run = (async () => {
       try {
@@ -2403,7 +2412,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
       workingDir: string;
       model: string;
       effort?: string;
-      fastMode?: boolean;
+      fastMode?: boolean | 'ultrafast';
       providerId?: string | null;
       agentDeviceId?: string | null;
       agentKind: 'cc' | 'codex' | 'pi';
@@ -2775,7 +2784,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
         ...(taskRuntime.agentDeviceId ? { agentDeviceId: taskRuntime.agentDeviceId } : {}),
         providerId: taskRuntime.providerId ?? null,
         effort: taskRuntime.effort ?? '',
-        fastMode: Boolean(taskRuntime.fastMode),
+        fastMode: taskRuntime.fastMode ?? false,
       },
     };
   };

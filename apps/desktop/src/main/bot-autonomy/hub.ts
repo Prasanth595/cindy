@@ -5,14 +5,13 @@
  * 灵动岛依赖的 service.ts；运行体由 service.ts 在例行任务引擎启动后挂进来。
  */
 import type { BrowserWindow } from 'electron';
-import type { RoutineEngine } from '@cindy/maker-scheduler';
+import type { RoutineEngine, RoutineRun } from '@cindy/maker-scheduler';
 
 import {
-  DEFAULT_SCHEDULER_BOT_ID,
   type BotAutonomySettingsView,
   type BotGlance,
 } from '../../shared/botAutonomy.js';
-import { activeOwnerScopeKey, isAppSessionBoundaryPending } from '../appSessionState.js';
+import { activeOwnerScopeKey, isAppSessionBoundaryPending, ownerScopedUserDataPath } from '../appSessionState.js';
 import { createLogger } from '../logger.js';
 import {
   readBotAutonomySettingsOverride,
@@ -20,8 +19,8 @@ import {
   writeBotAutonomySchedulerBotId,
 } from '../maker-host/bot-autonomy-settings-store.js';
 import { throwIpcError } from '../utils/ipcValidate.js';
-import { resolveSchedulerBotId } from './follower.js';
-import { readBotDirectory } from './hostData.js';
+import { filterFollowUpEvents, resolveSchedulerBotId, type FollowUpSubject } from './follower.js';
+import { readBotDirectory, readLocalSessionMetas, readTaskOwnership } from './hostData.js';
 import type { BotAutonomyRuntime, GlanceOptions } from './runtime.js';
 import { errorCode, type BotAutonomyInputProjection } from './taskWatch.js';
 
@@ -74,11 +73,6 @@ export function getBotAutonomyGlance(botId: string, options?: GlanceOptions): Bo
   return active ? active.glance(botId, options) : emptyGlance(botId);
 }
 
-/** 默认总调度：在用的 Cindy 助理，否则没有。 */
-function defaultSchedulerBotId(bots: ReadonlyMap<string, { status: string }>): string | null {
-  return bots.get(DEFAULT_SCHEDULER_BOT_ID)?.status === 'active' ? DEFAULT_SCHEDULER_BOT_ID : null;
-}
-
 export async function getBotAutonomySettingsView(): Promise<BotAutonomySettingsView> {
   const scope = activeOwnerScopeKey();
   const bots = await readBotDirectory();
@@ -87,7 +81,7 @@ export async function getBotAutonomySettingsView(): Promise<BotAutonomySettingsV
   return {
     schedulerBotId: resolveSchedulerBotId(override, bots),
     isCustomized: override.customized,
-    defaults: { schedulerBotId: defaultSchedulerBotId(bots) },
+    defaults: { schedulerBotId: null },
   };
 }
 
@@ -123,4 +117,35 @@ async function afterSettingsChange(scope: string): Promise<BotAutonomySettingsVi
   if (runtime) await runtime.refreshFollowers().catch((error) => log.warn('autonomy refresh failed', { error: errorCode(error) }));
   log.info('autonomy scheduler setting changed');
   return getBotAutonomySettingsView();
+}
+
+/** null means startup is not ready; an empty batch has lost its authorization. */
+export async function currentFollowUpEvents(botId: string, events: RoutineRun['events']): Promise<{
+  events: RoutineRun['events']; canDispatch(): boolean;
+} | null> {
+  const active = current;
+  if (!active || !scopeIsCurrent(active.scope) || !active.runtime.watch.isReady()) return null;
+  const watch = active.runtime.watch;
+  const botsAtRead = watch.getBots();
+  // The queue outlives watched rows (including across restarts). Read current durable
+  // ownership for event subjects; only sweep needs the transient pending-state table.
+  const [metas, ownership] = await Promise.all([
+    readLocalSessionMetas(events.flatMap(({ event }) => event.type !== 'sweep' && typeof event.subject === 'string' ? [event.subject] : [])),
+    readTaskOwnership(ownerScopedUserDataPath()),
+  ]);
+  if (current !== active || !scopeIsCurrent(active.scope) || watch.getBots() !== botsAtRead) return null;
+  const subjects: FollowUpSubject[] = metas.filter(meta => meta.status === 'active' && meta.hiddenAt === null
+    && meta.orcaRole !== 'worker' && meta.source !== 'review'
+    && !['history', 'group', 'channel'].includes(meta.laneRole ?? '')).map(meta => {
+      const canonical = [...ownership.bots].find(([, bot]) => bot.canonicalSessionId === meta.id)?.[0]
+        ?? (meta.laneRole === 'canonical' ? meta.laneBotId : null);
+      const creator = ownership.creatorBySession.get(meta.id) ?? null;
+      return { sessionId: meta.id, deviceId: null, shared: meta.source === 'shared',
+        canonicalOfBotId: canonical, creatorBotId: creator === canonical ? null : creator };
+    });
+  const allowedNow = () => filterFollowUpEvents(botId, events, watch.list(),
+    resolveSchedulerBotId(readBotAutonomySettingsOverride(), ownership.bots), ownership.bots, Date.now(), subjects);
+  const allowed = allowedNow();
+  return { events: allowed, canDispatch: () => current === active && scopeIsCurrent(active.scope) && watch.isReady()
+    && watch.getBots() === botsAtRead && allowedNow().length === allowed.length };
 }

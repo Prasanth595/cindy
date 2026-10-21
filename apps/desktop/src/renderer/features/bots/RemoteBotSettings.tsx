@@ -465,6 +465,7 @@ function RemoteBotSettingsContent({ bot, beforeCloseRef, onDeleted, initialPage 
         void save();
       }}
     >
+      {item.id === 'follow-up' ? <p className="text-12 leading-5 text-[var(--text-secondary)]">{item.text}</p> : null}
       {item.id === 'avatar' ? (
         <BotPortraitPicker
           disabled={disabled}

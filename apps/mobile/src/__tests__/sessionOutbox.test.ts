@@ -1,3 +1,4 @@
+import { incomingShareSlotOrder } from '@/session/mobileLocalAttachmentUpload';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { DeviceLinkError } from '@cindy/device-link';
 import { i18n } from '@/i18n';
@@ -548,4 +549,19 @@ describe('outboxWithUploadResult / outboxOwnsUpload / replaceOutboxItem', () => 
     const replaced = replaceOutboxItem(items, { ...item, text: 'changed' });
     expect(replaced[0]?.text).toBe('changed');
   });
+});
+
+it('preserves external share order across completed and pending durable slots', () => {
+  const later = attachmentFor('second.pdf');
+  const item = itemWith({
+    readyAttachments: [later], readyPreviews: ['file:///stage/second'],
+    claimedUploads: [{ localId: 'first', failed: false, kind: 'file', name: 'first.pdf', previewUri: 'file:///share/first' }],
+    attachmentOrder: incomingShareSlotOrder([{ batchId: 'batch', index: 1 }, { batchId: 'batch', index: 0 }]),
+  });
+  expect(item.attachmentSlots).toEqual([null, later]);
+  expect(item.slotByLocalId.first).toBe(0);
+  expect(item.slotMeta.map(meta => meta.name)).toEqual(['first.pdf', 'second.pdf']);
+  expect(item.slotMeta.map(meta => meta.previewUri)).toEqual(['file:///share/first', 'file:///stage/second']);
+  const complete = outboxItemWithUpload(item, 'first', attachmentFor('first.pdf'));
+  expect(outboxItemAttachments(complete).map(attachment => attachment.name)).toEqual(['first.pdf', 'second.pdf']);
 });

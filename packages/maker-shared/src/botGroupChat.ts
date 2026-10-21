@@ -659,7 +659,26 @@ export function chatGroupLaneRouteKey(groupId: string, access: ChatLaneAccess): 
   return `group:${groupId}:access:${access.mode}:${access.revision}`;
 }
 export function isChatOnlyGroupLane(routeKey: string | null | undefined): boolean {
-  return /^group:[^:]+:access:chat:[1-9][0-9]*(?::plan:[^:]+)?$/.test(routeKey ?? '');
+  return /^group:[^:]+:access:chat:[1-9][0-9]*(?::plan:[^:]+|:thread:[^:]+)?$/.test(routeKey ?? '');
+}
+
+/**
+ * A Thread's own lane: one hidden Session per Thread, grant and teammate, so a Thread
+ * keeps its own short context apart from the main group and other Threads (bot-group-chat.md §3).
+ */
+export function chatGroupThreadRouteKey(groupId: string, access: ChatLaneAccess, threadRootId: string): string {
+  return `${chatGroupLaneRouteKey(groupId, access)}:thread:${threadRootId}`;
+}
+
+/** Group and Thread root of a Thread lane route key, or null for other routes. */
+export function parseBotGroupThreadRouteKey(routeKey: string | null | undefined): { groupId: string; threadRootId: string } | null {
+  const match = typeof routeKey === 'string' ? /^group:([^:]+):access:(?:owner|tools|chat):[1-9][0-9]*:thread:([^:]+)$/.exec(routeKey) : null;
+  return match ? { groupId: match[1]!, threadRootId: match[2]! } : null;
+}
+
+/** The group lane a Thread lane belongs to; a Thread works in the same place as its group lane. */
+export function groupLaneOfRouteKey(routeKey: string): string {
+  return routeKey.replace(/:thread:[^:]+$/, '');
 }
 
 export function botGroupLaneRouteKey(groupId: string): string {

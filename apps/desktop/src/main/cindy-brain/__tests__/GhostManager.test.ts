@@ -382,6 +382,30 @@ describe('GhostManager · 存量插件一次性迁移(§5 升级无感)', () => 
     expect(manager.list().find(ghost => installedGhostStoragePart(ghost) !== instanceId)?.taskCapabilityApproved).toBeUndefined();
   });
 
+  it('binds independent target consent to the approved instance and preserves it only for the same capability', async () => {
+    const manifest = { ...goodManifest(), slots: ['tool', 'agent'], agent: { tasks: true, targets: true } };
+    const pkg = await makeCindy('targets.cindy', manifest, { 'main.js': '// plugin' });
+    await manager.install(pkg, { taskCapabilityApproved: true });
+    await manager.install(pkg, { namespace: 'acme', taskCapabilityApproved: true });
+    const selected = manager.list().find(ghost => ghost.namespace === 'acme')!;
+    if (selected.approval.state !== 'approved') throw new Error('fixture not approved');
+    const instanceId = installedGhostStoragePart(selected);
+    expect(selected.targetCapabilityApproved).toBeUndefined();
+    expect(await manager.approveTaskCapability(instanceId, 'stale', () => true, 'targets')).toBe(false);
+    expect(await manager.approveTaskCapability(instanceId, selected.approval.revision, () => false, 'targets')).toBe(false);
+    expect(await manager.approveTaskCapability(instanceId, selected.approval.revision, () => true, 'targets')).toBe(true);
+    expect(manager.list().find(ghost => ghost.namespace === 'acme')?.targetCapabilityApproved).toBe(true);
+    expect(manager.list().find(ghost => ghost.namespace !== 'acme')?.targetCapabilityApproved).toBeUndefined();
+    const update = await makeCindy('targets-update.cindy', { ...manifest, version: '1.0.1' }, { 'main.js': '// update' });
+    const updated = await manager.update(update, { namespace: 'acme', expectedInstalledApproval: ghostInstallApprovalToken(selected.approval) });
+    expect(updated).toHaveProperty('ghost.targetCapabilityApproved', true);
+    if (!('ghost' in updated) || updated.ghost.approval.state !== 'approved') throw new Error('fixture update failed');
+    const removed = await makeCindy('targets-removed.cindy', { ...manifest, version: '1.0.2', agent: { tasks: true } }, { 'main.js': '// update' });
+    const result = await manager.update(removed, { namespace: 'acme', expectedInstalledApproval: ghostInstallApprovalToken(updated.ghost.approval) });
+    expect(result).toHaveProperty('ghost.taskCapabilityApproved', true);
+    expect(result).not.toHaveProperty('ghost.targetCapabilityApproved');
+  });
+
   it.each(['future', { future: true }, ['future'], null, false])('keeps historical unknown tasks %j enabled without task approval', async (tasks) => {
     await writeLegacyInstall('hello', {...goodManifest(), slots:['tool','agent'], agent:{tasks}});
     await manager.migrateLegacyApprovalsOnce();

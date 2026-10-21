@@ -369,7 +369,7 @@ function CompanionProfileSheetContent(props: CompanionProfileSheetProps) {
   const save = (target: ProfilePanel, blocked: boolean) => <MainWindowActionButton action={{ label: t('devices.companionProfile.save'), busy,
     disabled: blocked || !online || !dirty || conflict?.page === page, onPress: () => void submit(target) }} />;
   const formPanel = (target: ProfilePanel | undefined) => target?.action ? <>
-    {target.id === 'capability' && target.text ? noteText(target.text) : null}
+    {(target.id === 'capability' || target.id === 'follow-up') && target.text ? noteText(target.text) : null}
     <CompanionProfileForm panel={target} values={editing ? values : target.values} onChange={changeValues} disabled={busy || !online || !!target.action.disabled} />
     {save(target, !!target.action.disabled)}
   </> : target?.text ? <Text selectable style={styles.body}>{target.text}</Text> : !data && online ? spinner : note('hostUpgrade');
@@ -383,6 +383,7 @@ function CompanionProfileSheetContent(props: CompanionProfileSheetProps) {
       <Text accessibilityRole="header" numberOfLines={2} style={styles.name}>{name}</Text>
     </View>
     <View style={styles.group}>{row('profile', Info)}{row('memory', Brain)}{row('models', Sparkles)}{row('skills', Settings2)}</View>
+    {data?.panels.find(item => item.id === 'followUp')?.entries?.map(entry => <View style={styles.group} key={entry.id}><ContextSheetRow icon={null} trailing="chevron" label={label(entry.title)} onPress={() => void openEditor(entry.resourceId)} disabled={!online} /></View>)}
     <View style={styles.group}>{row('artifacts', FileText)}{onOpenSearch ? row('search', History, onOpenSearch) : null}{row('permissions', Hand)}</View>
     {onOpenHome ? <View style={styles.group}>{row('home', Monitor, onOpenHome)}</View> : null}
     {/* Host order, like iOS: restart / resume / delete are whatever the computer offers now. */}

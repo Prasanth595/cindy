@@ -22,7 +22,7 @@ export interface ProjectScheduleConfig {
   providerId?: string;
   effort?: string;
   /** Codex Fast 模式开关，仅 Codex 有意义。详见 Schedule.fastMode。 */
-  fastMode?: boolean;
+  fastMode?: boolean | 'ultrafast';
   useWorktree?: boolean;
   persistentSession?: boolean;
   silentWhenIdle?: boolean;

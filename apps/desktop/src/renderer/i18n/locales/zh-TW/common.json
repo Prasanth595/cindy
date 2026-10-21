@@ -6655,6 +6655,8 @@
         "agentTasksRequest": "確認任務權限",
         "agentTasks": "可建立和管理本插件的 Cindy 任務",
         "agentTasksDetail": "可傳送訊息、讀取結果和停止本插件的執行，任務對你可見。沿用插件的 AI 配置，可能產生模型費用；不授予其他任務的存取權。",
+        "agentTargets": "可向專案、現有任務和夥伴投遞訊息",
+        "agentTargetsDetail": "可查看本機專案目錄、任務和夥伴的名稱與識別碼，在專案中新建任務或向現有任務、夥伴傳送文字和圖片。可能觸發 AI 執行並產生模型費用；不授予其他任務的歷史讀取、設定修改或停止權限。",
         "agentHiddenTasks": "可建立不顯示在任務列表裡的後臺任務",
         "agentHiddenTasksDetail": "本插件建立的任務可以不出現在任務列表、搜尋和通知裡。你可以隨時在插件詳情的「後臺任務」中查看、開啟，或顯示到任務列表；解除安裝插件時這些任務會恢復顯示。",
         "agentErrand": "可建立任務、執行工作並讀取結果",
@@ -8975,11 +8977,11 @@
       }
     },
     "autonomy": {
-      "title": "自動跟進所有任務",
-      "descriptionOn": "{{name}}會定時看一遍所有任務，有等你的就告訴你。",
+      "title": "跟進我的任務",
+      "descriptionOn": "{{name}}會在任務有變化時查看摘要並提醒你。",
       "movedFrom": "已從{{name}}移到這裡",
       "heldBy": "現在由{{name}}負責，打開就移到這裡。",
-      "heldByNobody": "現在沒有夥伴負責。",
+      "heldByNobody": "尚未開啟",
       "restoreDefault": "恢復預設（{{name}}）",
       "saveFailed": "沒能儲存，請重試",
       "turnOff": {
@@ -8991,6 +8993,12 @@
       "allowSchedulerFollow": {
         "title": "它開的任務也交給{{name}}跟進",
         "description": "預設{{scheduler}}只看不跟。打開後，{{name}}開的任務沒做完時，{{scheduler}}也會接著跟進。"
+      },
+      "consent": "開啟後，我會讀取這台電腦上你建立的任務摘要，分析進度並提醒你重要變化。這會使用模型額度，你可以隨時關閉。",
+      "invitation": {
+        "title": "要我幫你跟進任務嗎？",
+        "start": "開始跟進",
+        "notNow": "暫不開啟"
       }
     },
     "remoteSettings": {
@@ -10116,6 +10124,130 @@
         "managed": "X 提問由夥伴處理。可在該夥伴的訊息平台設定中更改連結。",
         "riskBody": "X 提問會使用夥伴的共享記憶、能力和工作目錄，回答會公開。請勿透過 X 處理私人資訊。專線不會直接使用夥伴的私聊記錄。"
       }
+    },
+    "voiceMode": {
+      "showDetails": "展開通話記錄",
+      "hideDetails": "收起通話記錄",
+      "transcriptTitle": "目前辨識文字",
+      "transcriptEmpty": "說話後，辨識文字會顯示在這裡。",
+      "composerPaused": "結束語音後，繼續輸入訊息…",
+      "microphoneMuted": "麥克風已關閉",
+      "exit": {
+        "idle": "暫時沒有說話，即將退出語音模式",
+        "farewell": "已聽到道別，即將退出語音模式",
+        "semantic": "即將結束語音模式",
+        "sending": "正在提交，成功後退出語音模式…",
+        "countdown": "{{seconds}} 秒後退出語音模式",
+        "cancel": "取消退出",
+        "hint": "繼續說話或點擊「取消退出」可保留語音模式。進行中的任務不受影響。",
+        "mutedHint": "麥克風仍已靜音，點擊「取消退出」可保留語音模式。進行中的任務不受影響。"
+      },
+      "settingsTitle": "語音",
+      "openSettings": "語音設定",
+      "startConversation": "開始語音對話",
+      "settingsHint": "選擇這位夥伴使用的朗讀模型和音色。設定完成後，從輸入框開始語音對話。",
+      "incompleteSettings": "選擇語音介面和音色後自動儲存。",
+      "previewNeedsChat": "與夥伴開始對話後可試聽。",
+      "voiceId": "音色 ID",
+      "manualVoice": "手動輸入音色 ID",
+      "refreshVoices": "重新整理音色清單",
+      "voicesLoading": "正在取得音色…",
+      "voicesError": "無法取得音色清單。請重試，或手動輸入音色 ID。",
+      "voicesReference": "這是此型號的 OpenAI 參考音色；相容服務的實際支援可能不同。",
+      "voicesTruncated": "僅顯示部分音色；未列出的音色可手動輸入 ID。",
+      "voicesManual": "此介面沒有可用的音色清單，請手動輸入音色 ID。",
+      "preview": "試聽",
+      "stopPreview": "停止試聽",
+      "previewVoice": "試聽 {{voice}}",
+      "stopPreviewVoice": "停止試聽 {{voice}}",
+      "previewText": "你好，這是我的聲音。很高興與你交流。",
+      "previewStatus": {
+        "idle": "試聽會呼叫所選模型，可能產生用量。",
+        "preparing": "正在產生試聽語音…",
+        "playing": "正在試聽…",
+        "complete": "試聽完成。",
+        "error": "試聽失敗。請檢查介面、模型權限與音色 ID 後重試。"
+      },
+      "readAloud": "朗讀",
+      "stopReadAloud": "停止朗讀",
+      "finishBeforeReadAloud": "請先結束語音模式，再朗讀訊息。",
+      "readAloudFailed": "朗讀失敗，請在夥伴設定中檢查模型和音色後重試。",
+      "finishBeforeDictation": "請先結束語音模式，再開始聽寫。",
+      "title": "語音模式",
+      "model": "朗讀模型",
+      "refresh": "重新整理模型",
+      "voice": "音色",
+      "voiceHint": "填入所選模型支援的音色名稱，例如 alloy。",
+      "modelUnavailable": "先前選擇的朗讀模型已無法使用，請重新選擇。",
+      "noModels": "目前沒有可用的語音合成模型。",
+      "noModelsSupportedProtocols": "支援 MiniMax、ElevenLabs，以及提供 OpenAI 相容語音合成介面的供應商。",
+      "noModelsSetupHint": "連接供應商並啟用語音模型後，即可設定夥伴的朗讀聲音。",
+      "openProviders": "前往模型供應商",
+      "catalogError": "語音設定讀取或儲存失敗，請重試。",
+      "start": "開始說話",
+      "resume": "繼續",
+      "retrySend": "重新連線並傳送",
+      "mute": "靜音",
+      "interrupt": "停止朗讀",
+      "send": "傳送",
+      "end": "結束",
+      "unsent": "尚未傳送 · 可選取文字複製",
+      "hint": "停頓後自動傳送，回覆由 AI 語音朗讀。隨時開口即可插話。",
+      "status": {
+        "idle": "準備好就開始",
+        "connecting": "正在連接語音辨識…",
+        "listening": "正在聽",
+        "thinking": "正在思考…",
+        "speaking": "正在朗讀…",
+        "paused": "已暫停 · 麥克風已關閉",
+        "error": "已暫停 · 麥克風已關閉",
+        "question": "等待選擇 · 可說選項編號或名稱",
+        "confirmation": "等待你的確認 · 麥克風已關閉",
+        "preparing": "正在準備語音…",
+        "loading": "正在讀取語音設定…",
+        "microphone": "正在開啟麥克風…",
+        "muted": "麥克風已關閉 · 可以繼續收聽"
+      },
+      "errors": {
+        "connection": "語音連線中斷，未傳送的文字已保留。",
+        "microphone": "麥克風已停止，請檢查權限和裝置連線後繼續。",
+        "send": "這則訊息未被接收，文字已保留。",
+        "speech": "回覆朗讀失敗，文字回覆仍保留在對話中。請檢查朗讀模型和音色。"
+      },
+      "voiceIdHint": "填寫該供應商帳號可用的音色 ID。",
+      "speed": "語速",
+      "speedAdjusted": "已依所選模型調整為 {{speed}}×。",
+      "speedUnavailable": "目前模型暫不支援調整語速。",
+      "speedValue": "{{speed}}×",
+      "sentencePlayback": "逐句朗讀",
+      "sentencePlaybackHint": "回覆產生時，儘早按完整句子朗讀；關閉後等完整回覆再朗讀。需要等待回覆處理時，會自動延後。",
+      "preferenceHint": "語音設定僅為目前夥伴儲存。",
+      "resetPreference": "恢復預設",
+      "preferenceError": "無法讀取或儲存語音設定，請重試。",
+      "protocol": "語音介面",
+      "protocolOpenai": "OpenAI 相容",
+      "protocolHint": "選擇此位址實際支援的語音介面；切換介面不會更換供應商。",
+      "protocolCorrectedHint": "已依官方位址修正介面，請重新選擇音色。",
+      "unmute": "取消靜音",
+      "mutedHint": "麥克風已關閉，夥伴回覆仍會朗讀。取消靜音後可繼續說話。",
+      "microphoneResumeError": "無法開啟麥克風，仍可繼續收聽。請檢查權限和裝置後重試取消靜音。",
+      "callRecord": "本次通話",
+      "callHistoryTitle": "語音通話",
+      "you": "你",
+      "companion": "夥伴",
+      "callInProgress": "通話中",
+      "callSendFailed": "傳送失敗，原話已保留。",
+      "handoff": {
+        "sending": "正在交接…",
+        "accepted": "已交給夥伴處理",
+        "failed": "交接失敗，原話已保留",
+        "completed": "結果已返回"
+      },
+      "callSaved": "記錄已儲存",
+      "taskFromCall": "來自通話的工作",
+      "viewTaskProgress": "查看進度",
+      "liveDraft": "正在辨識",
+      "questionDraft": "待確認"
     }
   },
   "common": {
@@ -10614,7 +10746,13 @@
         "providerGroupRunningHere": "目前在這台電腦上執行",
         "providerGroupUnassigned": "開始後由供應商組選一台電腦，用量依那台顯示"
       },
-      "modelListAria": "模型清單"
+      "modelListAria": "模型清單",
+      "speed": {
+        "label": "速度",
+        "standard": "標準",
+        "fast": "快速",
+        "ultrafast": "超快"
+      }
     },
     "permissionSelector": {
       "triggerAria": "選擇權限模式：{{label}}",
@@ -10710,6 +10848,7 @@
       "recent": "最近",
       "browseFolder": "選擇其他資料夾",
       "browseProjectFolder": "選擇其他專案資料夾",
+      "browseFailed": "無法開啟資料夾選擇視窗，請重試。",
       "dialogue": "對話",
       "dialogueOrSelectProject": "對話或選擇專案",
       "searchProjects": "搜尋專案",
@@ -11117,6 +11256,14 @@
     "jumpToBottom": "跳到底部",
     "prevMessageJump": "跳到上一則提問：{{preview}}",
     "askUserQuestion": {
+      "voice": {
+        "hint": "可以說「第一項」或選項名稱；多選後請說「確認選擇」。",
+        "freeTextHint": "可以直接說出回答，檢查後說「確認選擇」提交。",
+        "confirm": "請檢查目前選擇，說「確認選擇」提交，或說「取消選擇」重選。",
+        "ambiguous": "無法確定你的選擇，請再說一個選項編號或完整名稱，也可以手動選擇。",
+        "unknown": "未辨識到明確選項，請說選項編號或完整名稱，也可以手動選擇。",
+        "cancelled": "已取消語音選擇，請重新選擇。"
+      },
       "skippedAnswer": "已跳過",
       "pendingTitle": "等待回答",
       "restoreAriaLabel": "展開問題卡片",
@@ -12035,7 +12182,7 @@
       "REMOTE_WORKDIR_UNAVAILABLE": "遠端工作目錄現在無法使用。請確認那台電腦上的目錄還在，然後重試。",
       "REMOTE_OPTIMISTIC_SESSION_STATE_UNAVAILABLE": "電腦端暫時無法確認這則訊息是否已經送出。請稍後再試，不要重複傳送同一則。",
       "REMOTE_AGENT_UNAVAILABLE": "暫時連不上執行 Agent 的電腦。確認那臺電腦在線並允許遠端控制後重試。",
-      "REMOTE_AGENT_PEER_TOO_OLD": "那臺電腦上的 Cindy 版本過舊，還不能替這臺電腦執行 Agent。請先在那臺電腦上更新 Cindy。",
+      "REMOTE_AGENT_PEER_TOO_OLD": "那臺電腦上的 Cindy 版本過舊，暫不支援此操作。請先在那臺電腦上更新 Cindy。",
       "REMOTE_AGENT_EXPIRED": "這個任務在執行 Agent 的電腦上已經結束。請重新傳送。",
       "REMOTE_AGENT_NOT_FOUND": "這個任務在執行 Agent 的電腦上已經結束。請重新傳送。",
       "REMOTE_AGENT_BUSY": "那臺電腦上同時執行的任務太多。先結束一些任務後再試。",
@@ -12045,6 +12192,7 @@
       "REMOTE_AGENT_SHARE_PAUSED": "對方已暫停對你的分享，恢復前不能使用這些模型。可以換成其他模型繼續。",
       "REMOTE_AGENT_SHARE_REMOVED": "這個分享已無法使用（對方刪除了分享或你已退出）。可以換成其他模型繼續。",
       "REMOTE_AGENT_SHARE_UNAVAILABLE": "分享的供應商暫時無法使用：對方電腦可能不在線，或對方暫時關閉了分享。可以稍後再試，或換成其他模型繼續。",
+      "REMOTE_AGENT_GROUP_USAGE_LIMIT": "此模型的可用帳號已達到用量上限。可改用其他模型，或等配額重置後繼續。",
       "REMOTE_AGENT_GROUP_UNAVAILABLE": "供應商組裡的電腦現在都不能執行這個任務：可能都離線、已暫停分配、正在冷卻，或沒有這個模型。可以到這個供應商的「遠端與分享」頁查看組內電腦。",
       "REMOTE_AGENT_DEVICE_LIMIT": "這台裝置保留的遠端任務數已達上限。可封存暫時不用的任務，或請遠端電腦的主人在「遠端與分享」中提高上限。",
       "REMOTE_AGENT_TOTAL_LIMIT": "遠端電腦保留的任務總數已達上限。請那台電腦的主人釋放暫時不用的任務，或在「遠端與分享」中提高上限。",
@@ -12592,6 +12740,23 @@
         "dirtyWorktreeWarning": "該任務的 worktree 有未提交的更改；歸檔前會自動儲存為 git 快照，之後可在任務內一鍵恢復。",
         "confirm": "確認",
         "cancel": "取消"
+      },
+      "dialogueAction": {
+        "search": "在對話中搜尋",
+        "restoreAll": "全部恢復",
+        "remoteBulkUnavailable": "暫不支援含遠端任務的批次操作"
+      },
+      "dialogueArchiveAll": {
+        "description": "將歸檔此對話群組內全部 {{count}} 個任務。歸檔後將從列表中移除。",
+        "descriptionWithSkip": "將歸檔此對話群組內 {{count}} 個任務，{{skip}}的任務會被跳過。歸檔後將從列表中移除。",
+        "allPinnedOrRunning": "此對話群組內任務全部已置頂或在執行中，無可歸檔項",
+        "allPinned": "此對話群組內任務全部已置頂，不會歸檔",
+        "allRunning": "此對話群組內所有任務都在執行中，請先停止後再歸檔",
+        "empty": "此對話群組內沒有可歸檔的任務"
+      },
+      "dialogueRestoreAll": {
+        "description": "將恢復此對話群組內 {{count}} 個已歸檔任務。恢復後將從「已歸檔」列表移除，並回到「活躍」列表。",
+        "empty": "此對話群組內沒有可恢復的任務"
       },
       "archiveAll": {
         "title": "歸檔全部任務",
@@ -14914,7 +15079,7 @@
       "codexBinaryMissingTitle": "Codex 元件未就緒",
       "codexBinaryMissingDescription": "Codex 元件尚未準備好，暫時無法使用這個功能。請稍後重試，或前往「模型供應商」檢查 Codex 連線狀態。",
       "piBinaryMissingTitle": "Pi 元件未就緒",
-      "piBinaryMissingDescription": "Pi 元件尚未準備好，暫時無法使用這個功能。請稍後重試，或前往「模型供應商」檢查 Pi 連線狀態。",
+      "piBinaryMissingDescription": "Pi 元件尚未準備好，暫時無法使用這個功能。請稍後重試，或前往「設定 → 關於」管理或恢復 Pi。",
       "goToSettings": "前往設定",
       "remoteCodexBinaryMissingTitle": "遠端電腦 Codex 元件未就緒",
       "remotePiBinaryMissingTitle": "遠端電腦 Pi 元件未就緒",
@@ -15029,6 +15194,25 @@
       "remoteWorkerLoading": "正在讀取 {{device}} 上的任務…",
       "remoteWorkerUnreachable": "{{device}} 目前無法連線，恢復後會自動顯示這個 Worker 的任務。",
       "closeAria": "關閉"
+    },
+    "workerProject": {
+      "missingDirectory": "目錄已不存在，請重新選擇。",
+      "label": "專案",
+      "current": "目前專案",
+      "shared": "與 Lead 共用：{{project}} · {{branch}}",
+      "direct": "將直接在 {{project}} 的 {{branch}} 分支上修改",
+      "inferred": "根據 Lead 最近的操作辨識",
+      "dirty": "這個目錄有尚未提交的變更，Worker 會在這些變更上繼續工作。",
+      "newWorktree": "為 Worker 新建 worktree",
+      "from": "從",
+      "fromSuffix": "建立（可更換）",
+      "splitWarning": "會從 {{branch}} 的最新提交建立新分支。Lead 尚未提交的變更不會帶過去，之後雙方的變更互不可見，需要再合併。",
+      "dialogue": "目前任務未指定專案，無法新建 worktree。Worker 將在 {{directory}} 工作。",
+      "notGit": "這個目錄不是 Git 儲存庫，無法新建 worktree。Worker 將在 {{directory}} 工作。",
+      "emptyRepo": "儲存庫還沒有任何提交，無法新建 worktree。Worker 將在 {{directory}} 工作。",
+      "detachedHead": "分離 HEAD · {{sha}}",
+      "directDetached": "將直接在 {{project}} 的 {{branch}} 上修改",
+      "loadFailed": "無法讀取專案目錄。"
     }
   },
   "splitGroup": {

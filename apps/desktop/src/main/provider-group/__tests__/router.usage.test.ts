@@ -121,6 +121,45 @@ function harness() {
 }
 
 describe('provider-group quota routing', () => {
+  // Unit regression: an exhausted model plus a paused backup used to lose the quota reason
+  // at pick(), preventing the task from showing/waiting for the actual reset.
+  it('reports model quota exhaustion and the earliest usable reset without counting paused members', async () => {
+    const h = harness();
+    h.config.members[1].paused = true;
+    h.usage.set('local', { ...snapshot(4, 66), scoped: [{ modelDisplayName: 'Opus', utilization: 100, resetsAt: 80_000 }] });
+    expect(await h.pick()).toMatchObject({ kind: 'unavailable', usageLimit: { resetAtMs: 80_000_000 } });
+    expect(await h.pick(SONNET)).toMatchObject({ kind: 'member' });
+    h.config.members[1].paused = false;
+    h.usage.set(h.config.members[1].key, snapshot(100, 20));
+    h.advance(15_001); // refresh the remote quota snapshot
+    expect(await h.pick()).toMatchObject({ kind: 'unavailable', usageLimit: { resetAtMs: 3_000_000 } });
+  });
+
+  it('keeps unknown resets unknown and does not call a paused or unsupported pool quota-limited', async () => {
+    const h = harness();
+    h.config.members[1].paused = true;
+    h.usage.set('local', { ...snapshot(4, 66), scoped: [{ modelDisplayName: 'Opus', utilization: 100, resetsAt: null }] });
+    expect(await h.pick()).toMatchObject({ kind: 'unavailable', usageLimit: { resetAtMs: null } });
+    expect(await h.pick('missing-model')).not.toHaveProperty('usageLimit');
+    h.config.members[0].paused = true;
+    expect(await h.pick()).not.toHaveProperty('usageLimit');
+  });
+
+  // PR #6611: pick() must not wake a task while its earliest quota-reset member is
+  // still cooling. Unit gap: existing quota and cooldown cases never overlapped.
+  it.each([undefined, OPUS])('waits for both quota reset and the existing cooldown (%s)', async (scope) => {
+    const h = harness();
+    const remote = h.config.members[1].key;
+    h.usage.set('local', { ...snapshot(100, 20), fiveHour: { utilization: 100, resetsAt: (NOW + 300_000) / 1000 } });
+    h.usage.set(remote, { ...snapshot(100, 20), fiveHour: { utilization: 100, resetsAt: (NOW + 600_000) / 1000 } });
+    h.router.markCooling('anthropic', 'local', NOW + 1_800_000, scope);
+    expect(await h.pick()).toMatchObject({ kind: 'unavailable', usageLimit: { resetAtMs: NOW + 600_000 } });
+    h.config.members[1].paused = true;
+    expect(await h.pick()).toMatchObject({ kind: 'unavailable', usageLimit: { resetAtMs: NOW + 1_800_000 } });
+    h.usage.set('local', { ...snapshot(100, 20), fiveHour: { utilization: 100, resetsAt: null } });
+    expect(await h.pick()).toMatchObject({ kind: 'unavailable', usageLimit: { resetAtMs: null } });
+  });
+
   it('isolates error cooldowns by model while total quota and account failures still block all models', async () => {
     const h = harness();
     h.config.strategy = 'order';

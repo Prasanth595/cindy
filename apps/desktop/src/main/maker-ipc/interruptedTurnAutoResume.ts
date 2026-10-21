@@ -26,6 +26,7 @@
 
 import { hasUserVisibleText } from '../../shared/visibleText.js';
 import type { AgentInputToolLoopDetails } from '../../shared/agentInputQueue.js';
+import type { ProviderGroupUsageLimit } from '../../shared/providerGroup.js';
 
 import {
   isNetworkishErrorMessage,
@@ -49,6 +50,8 @@ export interface InterruptedTurnErrorSignals {
   usageLimit?: boolean;
   /** 上游给出的限额重置时刻(unix ms)。 */
   usageResetAt?: number;
+  /** Main-only: verified group exhaustion before dispatch; never borrow the old route's quota. */
+  providerGroupUsageLimit?: ProviderGroupUsageLimit;
   /** Codex app-server 的结构化错误 tag(如 `usageLimitExceeded`)。 */
   codexErrorInfo?: string;
 }

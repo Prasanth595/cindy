@@ -543,6 +543,8 @@ describe('dynamic lizi MCP session context', () => {
           effort: 'high',
           focused: true,
           working_dir: '/repo',
+          owns_worktree: true,
+          worktree: { path: '/repo', branch: 'worker/dev' },
         }],
       })),
       listWorkerQueuedMessages: vi.fn(async () => ({
@@ -567,7 +569,7 @@ describe('dynamic lizi MCP session context', () => {
     const queue = parse(
       await tools(server).get_worker_queue_status.handler({ worker_id: 'worker-1' }) as never,
     );
-    expect(workspace).toMatchObject({ workers: [{ queued_count: 1 }] });
+    expect(workspace).toMatchObject({ workers: [{ queued_count: 1, owns_worktree: true, worktree: { path: '/repo', branch: 'worker/dev' } }] });
     expect(queue).toMatchObject({ queued_count: 1, queue: [{ consuming: true }] });
   });
 

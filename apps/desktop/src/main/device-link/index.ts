@@ -18,6 +18,7 @@ import { tryPeerInvoke, stopFilePeers } from './filePeer';
 import { assertBackgroundLinkAccepted, linkOpenCapabilities } from './backgroundLink';
 import { deviceName, initializeDeviceName } from './deviceName';
 import { desktopTransferCodec } from './transferCodec';
+import { desktopInvokeTransferMetrics } from './invokeTransferMetrics';
 import { watchNetworkChanges } from './networkChanges';
 import path from 'node:path';
 import { app, BrowserWindow } from 'electron';
@@ -751,6 +752,8 @@ export function initDeviceLinkService(options: DeviceLinkServiceOptions = {}): v
     // peer ACK 耗尽时，幂等的 local-db 读请求交给 linkRecovery 快速重开并只重试一次；
     // 写请求与长执行请求保持原有 in-flight 语义，避免重复副作用。
     peerResetReadRetry: true,
+    // debug 日志开启时按 channel 统计回包字节，作为流量治理前后的对照。
+    invokeMetrics: desktopInvokeTransferMetrics,
   });
 
   responsivenessTracker = createResponsivenessTracker({

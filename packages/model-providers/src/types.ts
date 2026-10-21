@@ -429,6 +429,8 @@ export interface CatalogModel {
    * 不能读跨 provider 拍平去重后的列表（那只保留首个 provider 的值，会错）。
    */
   supportsFastMode?: boolean;
+  /** Account-discovered Ultrafast access. Never inferred from a model name or plan label. */
+  supportsUltrafastMode?: boolean;
   /** Same-provider, same-harness catalog model used for Fast. null explicitly disables mapping.
    * Unlike a service tier, this changes the upstream model; availability must be checked per account.
    */

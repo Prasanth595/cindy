@@ -8,7 +8,7 @@ interface RuntimeRoute {
   model: string;
   providerId: string | null;
   effort: string | null;
-  fastMode: boolean;
+  fastMode: boolean | 'ultrafast';
 }
 
 interface BotRouteState {

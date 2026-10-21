@@ -27,7 +27,7 @@ export function readBotTaskModelOverride(value: unknown): BotModelRoute | null {
   const route = normalizeBotModelRoute(value);
   if (!route || !['claude', 'codex', 'pi'].includes(String(record.harness))
     || (record.providerId !== null && typeof record.providerId !== 'string')
-    || typeof record.effort !== 'string' || typeof record.fastMode !== 'boolean') {
+    || typeof record.effort !== 'string' || (typeof record.fastMode !== 'boolean' && record.fastMode !== 'ultrafast')) {
     throw new Error('Invalid task model route');
   }
   return route;

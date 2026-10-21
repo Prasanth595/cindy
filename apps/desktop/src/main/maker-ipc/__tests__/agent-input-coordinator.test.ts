@@ -10,6 +10,8 @@ import { createPluginTaskReviewResolver, type PluginReviewSnapshot } from '../pl
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { admitTaskAction, bindTaskActionInput, taskActionInputGuard } from '../taskActionAuthorization.js';
 import { AgentInputCoordinator } from '../agent-input-coordinator.js';
+import { ProviderGroupUsageLimitError } from '../../provider-group/failurePolicy.js';
+import { UsageLimitAutoResume, USAGE_LIMIT_MAX_CONSECUTIVE_RESUMES } from '../usageLimitAutoResume.js';
 import { MCP_APP_MESSAGE_CLIENT_PREFIX, MCP_APP_MESSAGE_GUARD } from '../../mcp-apps/message.js';
 import { hasAcceptedUserTaskInput } from '../pluginTaskInput.js';
 import { runSchedulerQueuedPreparation } from '../schedulerQueuedPreparation.js';
@@ -389,6 +391,7 @@ describe('INPUT_ENQUEUE crash-restored remote Worker pause', () => {
       getResolvedMainLocale: () => 'zh-CN',
       getInputSessionRow: async () => ({ clearedAt: null }),
       getMakerIfReady: () => null,
+      beginRemoteSendTrace: noop,
       remoteInputClientIdWasPersisted: () => false,
       hasInputDeliveryCancellation: () => false,
       materializeQueuedOssAttachmentsDeferred: (_sid: string, item: AgentInputQueuedMessage) => ({ item }),
@@ -1410,6 +1413,7 @@ function createHarness(opts?: {
   const persistQueueSnapshot =
     vi.fn<NonNullable<AgentInputCoordinatorDeps['persistQueueSnapshot']>>();
   const onUiRetry = vi.fn<NonNullable<AgentInputCoordinatorDeps['onUiRetry']>>(() => {});
+  const onUserAction = vi.fn<NonNullable<AgentInputCoordinatorDeps['onUserAction']>>(() => {});
   const onAutomaticEnqueue = vi.fn<
     NonNullable<AgentInputCoordinatorDeps['onAutomaticEnqueue']>
   >(() => {});
@@ -1439,6 +1443,7 @@ function createHarness(opts?: {
     steerToAgent,
     abortSession,
     onUiRetry,
+    onUserAction,
     onAutomaticEnqueue,
     onUserEnqueue,
     previewQueuedUserTurn,
@@ -1540,6 +1545,7 @@ function createHarness(opts?: {
     emitProjection,
     projections,
     onUiRetry,
+    onUserAction,
     onAutomaticEnqueue,
     onUserEnqueue,
     previewQueuedUserTurn,
@@ -1641,6 +1647,27 @@ describe('agent-chosen control steering', () => {
   function expected(h: ReturnType<typeof createHarness>) {
     return { session: h.getTurnSessionIdentity(), turnGeneration: 0 };
   }
+  // Production entry: steerControlInput. Plugin target grants must survive screening
+  // and provider preparation; existing turn-boundary cases do not revoke grants. In-memory unit tier.
+  it.each(['screening', 'provider-preparation'])('does not queue or accept input revoked during %s', async (stage) => {
+    const h = createHarness();
+    h.setRunning(true);
+    let revoked = false;
+    const beforeMutation = async () => { if (revoked) throw new Error('PERMISSION_DENIED'); };
+    if (stage === 'screening') h.setScreenUserMessage(async () => {
+      revoked = true;
+      return { action: 'allow' };
+    });
+    else h.steerToAgent.mockImplementationOnce(async (_id, _message, sendOpts) => {
+      revoked = true;
+      await sendOpts.beforeProviderStart?.();
+    });
+    await expect(h.coordinator.steerControlInput(sid, { item: makeItem('report', 'context') },
+      { ...expected(h), beforeMutation })).rejects.toThrow('PERMISSION_DENIED');
+    expect(h.coordinator.hasPendingQueueItem(sid, 'report')).toBe(false);
+    expect(h.onSteerAccepted).not.toHaveBeenCalled();
+    expect(h.sendToAgent).not.toHaveBeenCalled();
+  });
   // #6399, unit: real coordinator + action admission. Existing tests covered turn
   // changes, not a current tool's revoked authority over an otherwise valid row.
   it.each([
@@ -14221,6 +14248,230 @@ describe('usage-limit wait (ordinary tasks)', () => {
     maxAttempts: 3,
     sessionTotal: 0,
   };
+
+  // Unit regression (#6611): direct send rejections missed the transaction's bootstrap
+  // wrappers. Drive the real transaction + coordinator for lazy creation and rehydrate;
+  // a verified quota error must keep its reset metadata and original queued input.
+  it.each([
+    { rehydrate: false, resetAtMs: 5_000_000 },
+    { rehydrate: true, resetAtMs: 5_000_000 },
+    { rehydrate: false, resetAtMs: null },
+    { rehydrate: true, resetAtMs: null },
+  ])('preserves bootstrap quota through the send transaction (%j)', async ({ rehydrate, resetAtMs }) => {
+    const h = createHarness();
+    const sid = 'quota-bootstrap';
+    const session: MakerSendTransactionSession = {
+      id: sid, instanceId: 'runtime', agentKind: 'claude-code', workDir: '/repo',
+      remoteHostId: null, isTurnRunning: () => false,
+      send: vi.fn(async (_message, opts) => {
+        await opts?.beforeProviderStart?.();
+        await opts?.onAccepted?.();
+        opts?.onDispatching?.();
+        return { accepted: true as const };
+      }),
+    };
+    const quota = new ProviderGroupUsageLimitError({ resetAtMs });
+    const bootstrap = vi.fn(async () => ({
+      session, didInjectOrcaInstructions: false, didInjectProjectContext: false,
+    })).mockRejectedValueOnce(quota);
+    const transaction = createMakerSendTransaction({
+      getSession: () => rehydrate ? session : undefined,
+      closeSession: async () => {}, preflightBotRuntimeResources: async () => {},
+      getSessionMeta: async () => ({}), ensureRemoteReadyForSessionStart: async () => {},
+      checkWorkDirExists: async () => true, isOrcaMcpHydrated: () => !rehydrate,
+      buildCreateOptsWithStderr: x => x, synthesizeOrcaVendorOptionsFromDb: async () => rehydrate,
+      readSessionExtraDirsFromDb: async () => [], readSessionWorkingDirFromDb: async () => '/repo',
+      readWorkingDirectoryRecoveryCreateOpts: async () => ({ agentKind: 'claude-code', workingDir: '/repo', model: 'claude-opus-4-7' }),
+      withRehydrateCloseSuppressed: async (_id, fn) => fn(), bootstrapSession: bootstrap,
+      markOrcaRoleIfNeeded: async () => {}, broadcastSessionCreated: () => {},
+      prepareSendUserMessage: async (_id, message) => message as string,
+      createDbMessage: async (id, row) => { await mocks.createMessage(id, row); },
+      isSessionRunningError: () => false, log: { info: () => {}, warn: () => {} },
+    });
+    h.sendToAgent.mockImplementation(async (...args) =>
+      (await transaction.sendToAgentAccepted(...args)).outcome);
+    h.coordinator.enqueue(sid, makeItem('original', 'original task'));
+    await flush();
+    await h.sendToAgent.mock.results[0].value.catch(() => {});
+    await flush();
+    expect(bootstrap).toHaveBeenCalledOnce();
+    expect(session.send).not.toHaveBeenCalled();
+    expect(h.onUserMessagePersisted).not.toHaveBeenCalled();
+    expect(h.onUsageLimitedTurnError).toHaveBeenCalledWith(sid,
+      expect.objectContaining({ usageLimit: true, providerGroupUsageLimit: { resetAtMs } }),
+      expect.objectContaining({ clientId: 'original' }), expect.any(Number));
+    expect(h.coordinator.getProjection(sid).error).toBe(quota.message);
+    expect(h.coordinator.getProjection(sid).pendingQueue[0].clientId).toBe('original');
+    if (resetAtMs === null) {
+      expect(h.coordinator.getProjection(sid).usageLimitWait).toBeNull();
+      return;
+    }
+    const token = h.onUsageLimitedTurnError.mock.calls[0][3];
+    expect(h.coordinator.armUsageLimitWait(sid, token, resetAtMs)).toBe(true);
+    expect(await h.coordinator.continueAfterUsageLimitReset(sid, token, INFO)).toBe('resumed');
+    await flush();
+    await h.sendToAgent.mock.results[1].value;
+    await flush();
+    expect(session.send).toHaveBeenCalledOnce();
+    expect(h.onUserMessagePersisted).toHaveBeenCalledOnce();
+    expect(h.sendToAgent.mock.calls[1][3].persistUserMessage).toMatchObject({
+      clientId: 'original', autoResumeInfo: INFO,
+    });
+    expect(h.coordinator.getProjection(sid).usageLimitWait).toBeNull();
+  });
+
+  // Unit regression (#6611): existing cap tests called noteUserAction directly,
+  // missing the real queue-head Retry/Continue/new-input entrances before persistence.
+  // Drive both production owners with injected timers: three failed auto attempts,
+  // then a human action must start a fresh budget without reopening a channel turn.
+  it.each(['retry', 'continue', 'new-input'] as const)('starts a fresh quota episode on queue-head %s before persistence', async action => {
+    const h = createHarness();
+    const sid = 'quota-manual-episode';
+    const timers: Array<() => void> = [];
+    const attempts: number[] = [];
+    const guard = new UsageLimitAutoResume({
+      now: () => 1_000_000,
+      random: () => 0,
+      setTimer: fn => { timers.push(fn); return fn; },
+      clearTimer: () => {},
+      isEligible: async () => true,
+      resolveResetAt: async () => 5_000_000,
+      arm: (id, token, at) => h.coordinator.armUsageLimitWait(id, token, at),
+      isCurrent: (id, token) => h.coordinator.isUsageLimitWaitCurrent(id, token),
+      cancel: (id, token) => { h.coordinator.cancelUsageLimitWait(id, token); },
+      continueSession: (id, token, info) => {
+        attempts.push(info.attempt);
+        return h.coordinator.continueAfterUsageLimitReset(id, token, info);
+      },
+      log: () => {},
+    });
+    h.onUserAction.mockImplementation(id => guard.noteUserAction(id));
+    h.onUsageLimitedTurnError.mockImplementation((id, signals, _item, token) => guard.onTurnError(id, signals, token));
+    h.sendToAgent.mockRejectedValue(new ProviderGroupUsageLimitError({ resetAtMs: 5_000_000 }));
+    try {
+      h.coordinator.enqueue(sid, makeItem('original', 'original task'));
+      await flush();
+      for (let i = 0; i < USAGE_LIMIT_MAX_CONSECUTIVE_RESUMES; i++) {
+        expect(timers).toHaveLength(1);
+        timers.shift()!();
+        await flush();
+        await flush();
+      }
+      expect(attempts).toEqual([1, 2, 3]);
+      expect(timers).toHaveLength(0);
+      expect(h.coordinator.getProjection(sid).usageLimitWait).toBeNull();
+      expect(h.onUserMessagePersisted).not.toHaveBeenCalled();
+      if (action === 'retry') await h.coordinator.retryLastError(sid);
+      else h.coordinator.enqueue(sid, makeItem('next', action === 'continue' ? CONTINUE_AFTER_ERROR_PROMPT : 'new task'));
+      await flush();
+      expect(timers).toHaveLength(1);
+      expect(h.coordinator.getProjection(sid).usageLimitWait).not.toBeNull();
+      expect(h.onUiRetry).not.toHaveBeenCalled();
+      timers.shift()!();
+      await flush();
+      await flush();
+      expect(attempts).toEqual([1, 2, 3, 1]);
+      expect(h.sendToAgent.mock.calls.at(-1)?.[3].persistUserMessage?.clientId)
+        .toBe(action === 'new-input' ? 'next' : 'original');
+    } finally {
+      guard.dispose();
+    }
+  });
+
+  // Unit regression: group selection rejects before persistence. Existing tests covered only
+  // running turns; the original queued message must be sent once, or retained after cancellation.
+  it.each([false, true])('waits after a group quota rejection before dispatch (cancel=%s)', async (cancel) => {
+    const h = createHarness();
+    const sid = 'group-quota-before-send';
+    h.sendToAgent.mockRejectedValueOnce(new ProviderGroupUsageLimitError({ resetAtMs: 5_000_000 }));
+    h.coordinator.enqueue(sid, makeItem('q-original', 'original task'));
+    await flush();
+    expect(h.onUserMessagePersisted).not.toHaveBeenCalled();
+    const candidate = h.onUsageLimitedTurnError.mock.calls.at(-1)?.[3] as number;
+    expect(h.onUsageLimitedTurnError).toHaveBeenCalledWith(sid,
+      expect.objectContaining({ usageLimit: true, providerGroupUsageLimit: { resetAtMs: 5_000_000 } }),
+      expect.objectContaining({ clientId: 'q-original' }), expect.any(Number));
+    expect(h.coordinator.armUsageLimitWait(sid, candidate, 9_000_000)).toBe(true);
+    if (cancel) h.coordinator.cancelUsageLimitWait(sid, candidate);
+    expect(await h.coordinator.continueAfterUsageLimitReset(sid, candidate, INFO)).toBe(cancel ? 'superseded' : 'resumed');
+    await flush();
+    expect(h.sendToAgent).toHaveBeenCalledTimes(cancel ? 1 : 2);
+    if (!cancel) {
+      const persisted = h.sendToAgent.mock.calls[1][3].persistUserMessage;
+      expect(persisted).toMatchObject({ clientId: 'q-original', autoResumeInfo: INFO });
+      expect(persisted?.autoResume, 'the first user input must remain visible and count as a user turn').toBeUndefined();
+      expect(h.onUserMessagePersisted).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  // Unit regression for #6611 / usage-limit-auto-continue.md: the old preparation-failure
+  // case did not cover a crash before durable acceptance. Exercise snapshot writes plus
+  // legacy snapshot reads through the coordinator, then both explicit release entrances.
+  it.each(['resume', 'input'] as const)('drops process-local quota activity across a crash before %s', async release => {
+    const h = createHarness();
+    const sid = 'quota-retry-crash';
+    let snapshot: AgentInputQueuedMessage[] = [];
+    h.persistQueueSnapshot.mockImplementation((_sessionId, items) => {
+      // Capture bytes at the persistence boundary, not mutable mock call arguments.
+      snapshot = JSON.parse(JSON.stringify(items));
+    });
+    await h.coordinator.ensureQueueRestored(sid);
+    h.sendToAgent.mockRejectedValueOnce(new ProviderGroupUsageLimitError({ resetAtMs: 5_000_000 }));
+    h.coordinator.enqueue(sid, makeItem('original', 'original task'));
+    await flush();
+    const candidate = h.onUsageLimitedTurnError.mock.calls.at(-1)?.[3] as number;
+    h.coordinator.armUsageLimitWait(sid, candidate, 9_000_000);
+    const acceptance = deferred<AgentInputSendResult>();
+    h.sendToAgent.mockImplementationOnce(() => acceptance.promise);
+    await h.coordinator.continueAfterUsageLimitReset(sid, candidate, INFO);
+    await flush();
+    expect(h.sendToAgent.mock.calls[1][3].persistUserMessage?.autoResumeInfo).toMatchObject(INFO);
+    expect(snapshot[0]).toMatchObject({ clientId: 'original' });
+    expect(snapshot[0].autoResumeInfo).toBeUndefined();
+
+    // Also accept a snapshot produced by the previous version, which leaked this marker.
+    snapshot[0].autoResumeInfo = INFO;
+    const restarted = createHarness();
+    restarted.setLoadQueueSnapshot(async () => snapshot);
+    await restarted.coordinator.ensureQueueRestored(sid);
+    await flush();
+    expect(restarted.sendToAgent).not.toHaveBeenCalled();
+    if (release === 'resume') restarted.coordinator.resume(sid);
+    else restarted.coordinator.enqueue(sid, makeItem('next', 'next task'), { resumeRestorePausedQueue: true });
+    await flush();
+    expect(restarted.sendToAgent).toHaveBeenCalledOnce();
+    const persisted = restarted.sendToAgent.mock.calls[0][3].persistUserMessage;
+    expect(persisted).toMatchObject({ clientId: 'original' });
+    expect(persisted?.autoResumeInfo).toBeUndefined();
+    acceptance.resolve(sendSuccess());
+    await flush();
+  });
+
+  it('does not keep automatic activity on a manual retry after preparation fails', async () => {
+    const h = createHarness();
+    const sid = 'quota-retry-preparation-failed';
+    h.sendToAgent.mockRejectedValueOnce(new ProviderGroupUsageLimitError({ resetAtMs: 5_000_000 }));
+    h.coordinator.enqueue(sid, makeItem('original', 'original task'));
+    await flush();
+    const candidate = h.onUsageLimitedTurnError.mock.calls.at(-1)?.[3] as number;
+    h.coordinator.armUsageLimitWait(sid, candidate, 9_000_000);
+    h.sendToAgent.mockRejectedValueOnce(new Error('preparation failed'));
+    await h.coordinator.continueAfterUsageLimitReset(sid, candidate, INFO);
+    await flush();
+    expect(h.sendToAgent.mock.calls[1][3].persistUserMessage?.autoResumeInfo).toMatchObject(INFO);
+    await h.coordinator.retryLastError(sid);
+    await flush();
+    expect(h.sendToAgent.mock.calls[2][3].persistUserMessage).toMatchObject({ clientId: 'original' });
+    expect(h.sendToAgent.mock.calls[2][3].persistUserMessage?.autoResumeInfo).toBeUndefined();
+  });
+
+  it('does not arm a queue wait from an unverified provider error string', async () => {
+    const h = createHarness();
+    h.sendToAgent.mockRejectedValueOnce(new Error('usage_limit_reached; resets_at: 5000000'));
+    h.coordinator.enqueue('unknown-quota', makeItem('q-original', 'original task'));
+    await flush();
+    expect(h.onUsageLimitedTurnError).not.toHaveBeenCalled();
+  });
 
   async function failWithLimit(sid: string, progress: boolean) {
     const h = createHarness();

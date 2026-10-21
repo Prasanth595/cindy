@@ -1,3 +1,5 @@
+import { WorkerProjectField, useWorkerProjectSelection } from './WorkerProjectField';
+import type { WorkerWorktreeRequest } from '../../../shared/orca-worker-project';
 import { getDataOwnerGeneration } from '@/contexts/dataOwnerGeneration';
 import * as Dialog from '@radix-ui/react-dialog';
 import { WINDOW_NO_DRAG_STYLE } from '@/components/layout/windowDrag';
@@ -78,7 +80,7 @@ export interface CreateWorkerForm {
   agent: 'claude-code' | 'codex' | 'pi';
   model: string;
   effort?: Effort;
-  fast?: boolean;
+  fast?: boolean | 'ultrafast';
   /** 显式选定的模型来源;null = 未显式,由 main 侧按默认路由解析。 */
   providerId: string | null;
   initialTask: string;
@@ -88,8 +90,10 @@ export interface CreateWorkerForm {
   executionDeviceId?: string;
   /** 运行设备名，只用于失败提示。 */
   executionDeviceName?: string;
-  /** 运行设备上的指定工作目录；缺省在那台电脑创建对话任务。只在指定运行设备时有意义。 */
+  /** 本机显式项目目录，或指定运行设备上的目录；远程缺省创建对话任务。 */
   workingDir?: string;
+  worktree?: WorkerWorktreeRequest;
+  projectPath?: string;
   /**
    * Worker 的 Agent 所在电脑(远程供应商)：string = 那台电脑或分享，null = 任务所在电脑。
    * 缺省 = 不指定(任务所在电脑不支持选择时)，Worker 跟 Lead。
@@ -129,6 +133,7 @@ export function isAbsoluteRemoteDir(value: string): boolean {
 }
 
 export interface CreateWorkerPopoverProps {
+  leadSessionId?: string;
   open: boolean;
   onClose: () => void;
   onCreate: (form: CreateWorkerForm) => void | Promise<void>;
@@ -161,6 +166,7 @@ export interface CreateWorkerPopoverProps {
 }
 
 export function CreateWorkerPopover({
+  leadSessionId,
   open,
   onClose,
   onCreate,
@@ -208,6 +214,9 @@ export function CreateWorkerPopover({
   // 远程控制的 Lead 读它所在的电脑，选了运行设备则读运行设备。权限档始终跟 Lead 所在电脑走。
   const deviceId = agentDeviceId ?? leadDeviceId ?? executionDeviceId ?? undefined;
   const executionDevice = executionDevices.find((d) => d.deviceId === executionDeviceId) ?? null;
+  const localProjectEnabled =
+    !!leadSessionId && !leadDeviceId && !sshRemote && !executionDeviceId && !isSidebarWindow();
+  const project = useWorkerProjectSelection(open, leadSessionId, localProjectEnabled);
   const trimmedRemoteDir = remoteDir.trim();
   const remoteDirInvalid =
     !!executionDevice && remoteDirMode === 'path' && !isAbsoluteRemoteDir(trimmedRemoteDir);
@@ -576,7 +585,7 @@ export function CreateWorkerPopover({
   // 主动从模型级全局预设恢复(codex review:否则用户在非选中行 hover 配置的
   // effort/Fast 在选中该行后被丢弃);Fast 还要叠加该来源条目的 per-provider 能力。
   const handleProviderChange = useCallback(
-    (providerId: string | null, modelId?: string, reconciledEffort?: Effort, reconciledFast?: boolean) => {
+    (providerId: string | null, modelId?: string, reconciledEffort?: Effort, reconciledFast?: boolean | 'ultrafast') => {
       modelSelectionChosenRef.current = true;
       restoredModelSelectionRef.current = false;
       const nextModel = modelId ?? model;
@@ -699,7 +708,7 @@ export function CreateWorkerPopover({
     [activeMemorySourceId, agent, model, modelMemory],
   );
   const updateFast = useCallback(
-    (enabled: boolean) => {
+    (enabled: boolean | 'ultrafast') => {
       setFast(enabled);
       if (modelMemory && activeMemorySourceId && model) {
         modelMemory.setFast(agent, activeMemorySourceId, model, enabled);
@@ -736,6 +745,7 @@ export function CreateWorkerPopover({
   const agentLocationUnsendable =
     !agentLocationSelectable && agentDeviceId !== (leadAgentDeviceId ?? null);
   const canCreate =
+    (!localProjectEnabled || project.ready) &&
     !isSubmitting &&
     activeRole.length >= 1 &&
     activeRole.length <= 32 &&
@@ -815,6 +825,7 @@ export function CreateWorkerPopover({
         : (submitEffortMeta?.defaultEffort ?? undefined);
     try {
       await onCreate({
+        ...(localProjectEnabled ? project.fields : {}),
         role: activeRole,
         agent,
         model,
@@ -841,6 +852,8 @@ export function CreateWorkerPopover({
       setIsSubmitting(false);
     }
   }, [
+    localProjectEnabled,
+    project.fields,
     canCreate,
     prefs,
     modelSelectionScope,
@@ -974,6 +987,8 @@ export function CreateWorkerPopover({
           )}
         </div>
 
+        {localProjectEnabled && <WorkerProjectField selection={project} disabled={isSubmitting} />}
+
         {/* 运行设备与远程供应商互斥：Worker 的 Agent 已在另一台电脑时不提供运行设备。 */}
         {executionDevices.length > 0 && agentDeviceId === null ? (
           <ExecutionDeviceField
@@ -1010,7 +1025,7 @@ export function CreateWorkerPopover({
                 外置 FastModeToggle,不能删。 */}
             <div className="flex min-w-0 items-center gap-2">
               {deviceId && remoteProviders.unsupported && currentModelSupportsFast && (
-                <FastModeToggle enabled={fast} onToggle={() => setFast((v) => !v)} />
+                <FastModeToggle enabled={!!fast} onToggle={() => setFast((v) => !v)} />
               )}
               <ModelSelector
                 fastModeConfigurable={['codex', 'pi']}

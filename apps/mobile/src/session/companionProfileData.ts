@@ -4,6 +4,8 @@ import { normalizeRemoteCollectionItems } from '@/device-link/remoteResources';
 
 export type ProfileValues = Record<string, string | boolean>;
 export interface ProfilePanel {
+  invitationAvailable?: boolean;
+  dismissAction?: RemoteActionDescriptor;
   id: string;
   text: string;
   action?: RemoteActionDescriptor;
@@ -94,7 +96,12 @@ export function parseCompanionProfileData(raw: unknown, ref: RemoteResourceRef):
       return portrait && string(portrait.value, 160) && string(portrait.uri, 200_000) && /^data:image\/png;base64,[A-Za-z0-9+/]+=*$/.test(portrait.uri)
         ? [{ value: portrait.value, uri: portrait.uri }] : [];
     }) : undefined;
-    panels.push({ id: block.id, text: block.fallbackMarkdown, action: formAction, values, entries, portraits,
+    panels.push({
+      ...(block.id === 'follow-up' ? {
+        invitationAvailable: payload?.invitationAvailable === true,
+        dismissAction: actions.get(String(record(payload?.operationActions)?.dismiss ?? '')),
+      } : {}),
+      id: block.id, text: block.fallbackMarkdown, action: formAction, values, entries, portraits,
       ...(block.id === 'create' && string(payload?.creationModelChain, 4000) ? { creationModelChain: payload.creationModelChain as string } : {}),
       ...(string(block.primitive, 64) ? { primitive: block.primitive } : {}),
       ...(Number.isSafeInteger(payload?.count) && Number(payload?.count) >= 0 ? { count: Number(payload?.count) } : {}),

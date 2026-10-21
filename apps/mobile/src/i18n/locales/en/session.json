@@ -578,6 +578,7 @@
     "taskAlreadyCreated": "This task already exists on the computer. Its saved messages will resume there."
   },
   "remoteError": {
+    "REMOTE_AGENT_GROUP_USAGE_LIMIT": "The available accounts for this model have reached their usage limit. Switch models or continue when the quota resets.",
     "REMOTE_AGENT_GROUP_UNAVAILABLE": "No computer in the provider group can run this task right now. They may be offline, paused, cooling down, or missing this model. Check the group on this provider’s Remote & Sharing page on the computer.",
     "REMOTE_DAEMON_CLOSED": "The remote connection dropped, possibly during an update. This turn has ended. Send the message again.",
     "REMOTE_LOCAL_ATTACHMENT_UNSUPPORTED": "Local file/image attachments aren't accessible in remote sessions. Paste the content directly instead.",
@@ -727,5 +728,11 @@
     "hint": "Either rule uses the earliest-expiring card. Skip when all quotas are full. Runs on this computer while Cindy is running.",
     "failed": "Could not save. Try again.",
     "restore": "Restore defaults"
+  },
+  "followUp": {
+    "title": "Would you like me to follow up on your sessions?",
+    "start": "Start Following Up",
+    "notNow": "Not Now",
+    "saveFailed": "Couldn't save. Try again."
   }
 }

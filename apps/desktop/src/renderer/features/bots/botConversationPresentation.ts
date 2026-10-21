@@ -31,9 +31,9 @@ function expandWorkGroups(items: readonly RenderItem[]): RenderItem[] {
 /** A presentation-only projection. Never mutate messages or infer intent from prose.
  * isFinal from the adapters closes a text block, not a turn (Pi/Claude can call
  * another tool afterwards). Reuse the normal work-group turn seal, showing provider-marked final prose immediately while keeping
- * unclassified top-level intermediate prose hidden. Work groups (live activity and
- * the completed "worked Xs" summary), running agent tasks and workflow cards pass
- * through untouched so the bot chat shows its work exactly like a normal session.
+ * unclassified top-level intermediate prose hidden. While a turn runs its work groups
+ * show like a normal session; once the turn ends they are dropped, so a finished turn
+ * shows only what the bot said, results and errors. Agent tasks and workflow cards pass through.
  * On stop/error or old history without a seal, expose the last useful
  * prose so an answer or plain-text question cannot disappear permanently.
  */
@@ -199,6 +199,9 @@ function projectWindow(
       // Bots never produce change cards; keep them out like before. Thinking is
       // always folded into a work group by the shared grouping, never top level.
       if (item.type === 'turn_changes') return;
+      // The work process shows only while its turn runs; a finished turn keeps only what
+      // the bot said, results and errors (cindy-bots-runtime.md).
+      if (!active && item.type === 'work_group') return;
       if (item.type === 'message' && item.message.role === 'thinking') return;
       if (item.type === 'message' && item.message.isSyntheticTrigger) return;
       if (isProse(item)) {

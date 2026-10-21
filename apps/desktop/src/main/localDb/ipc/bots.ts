@@ -104,7 +104,7 @@ import { BOT_DELEGATION_CLIENT_ID } from '../../../shared/botCollaboration.js';
 import { generateBotCreationDraft, readBotCreationDraft, generateBotCreationAvatar } from '../../maker-ipc/botCreationDraft.js';
 import { botInvitationProgress, type BotInvitationProgress } from '../../../shared/botInvitation.js';
 import type { BotPackageOpening } from '../../../shared/botMarket.js';
-import { botGroupLaneRouteKey, botGroupPlanRouteKey, chatGroupLaneRouteKey, parseBotGroupIdFromRouteKey, type ChatLaneAccess } from '../../../shared/botGroupChat.js';
+import { botGroupLaneRouteKey, botGroupPlanRouteKey, chatGroupLaneRouteKey, chatGroupThreadRouteKey, groupLaneOfRouteKey, parseBotGroupIdFromRouteKey, type ChatLaneAccess } from '../../../shared/botGroupChat.js';
 import { queueBotInvitation as enqueueBotInvitation } from '../../maker-ipc/botInvitation.js';
 import { getMakerIfReady, validateBotCapabilityAdditions } from '../../maker-host/index.js';
 import type { BotCapabilityUpdate } from '../../maker-ipc/botCapabilityService.js';
@@ -309,6 +309,9 @@ export type EnsureBotGroupLaneResult =
  * With `plan`, the Bot's 分工 Session for that plan instead (§7.4): same Profile and
  * model chain, but it works in the plan's recorded work directory. A worktree plan
  * passes the Session id the worktree was registered for.
+ *
+ * With `threadRootId` (server groups only), the Bot's own lane for that Thread: same
+ * Profile, model chain and working place as the group lane, but its own context.
  */
 export async function ensureBotGroupLaneSession(input: {
   botId: string;
@@ -316,12 +319,14 @@ export async function ensureBotGroupLaneSession(input: {
   title: string;
   chatAccess?: ChatLaneAccess;
   plan?: { planId: string; workDir: string; sessionId?: string };
+  threadRootId?: string;
 }): Promise<EnsureBotGroupLaneResult> {
   const owner = captureBotOperationOwner();
   const client = getDbClient();
   const db = client.drizzle;
   const routeKey = input.plan
     ? input.chatAccess ? `${chatGroupLaneRouteKey(input.groupId, input.chatAccess)}:plan:${input.plan.planId}` : botGroupPlanRouteKey(input.groupId, input.plan.planId)
+    : input.chatAccess && input.threadRootId ? chatGroupThreadRouteKey(input.groupId, input.chatAccess, input.threadRootId)
     : input.chatAccess ? chatGroupLaneRouteKey(input.groupId, input.chatAccess) : botGroupLaneRouteKey(input.groupId);
   const [existing] = await db
     .select({ sessionId: botSessionLinks.sessionId })
@@ -355,7 +360,7 @@ export async function ensureBotGroupLaneSession(input: {
   if (!primaryRoute) return { ok: false, errorCode: 'NO_MODEL', message: '伙伴还没有可用模型' };
   const workspaceKind = input.plan && input.chatAccess?.mode !== 'chat' ? ('project' as const) : ('dialogue' as const);
   const workingDir = input.chatAccess?.mode === 'chat'
-    ? await ensureBotChatOnlyWorkspaceDir(owner.userDataDir, input.botId, routeKey)
+    ? await ensureBotChatOnlyWorkspaceDir(owner.userDataDir, input.botId, groupLaneOfRouteKey(routeKey))
     : input.plan ? input.plan.workDir : await ensureBotWorkspaceDir(owner.userDataDir, input.botId, app.getPath('userData'));
   const now = Date.now();
   const sessionId = resolveBusinessSessionId(input.plan?.sessionId);

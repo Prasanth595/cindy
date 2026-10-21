@@ -91,6 +91,15 @@ function deps(overrides: Partial<ProviderGroupRemoteHandlerDeps> = {}) {
 const PICK = { action: 'pick', sessionId: 's1', providerId: 'anthropic', agentKind: 'claude-code', model: 'opus', exclude: ['local'] };
 
 describe('provider-group:remote', () => {
+  // Unit protocol regression: the real host/client used to discard the reset at both boundaries.
+  it.each([null, 5_000_000])('preserves verified quota exhaustion across computers (reset=%s)', async (resetAtMs) => {
+    const d = deps();
+    d.router.pick.mockResolvedValueOnce({ kind: 'unavailable', resolved: [], usageLimit: { resetAtMs } } as never);
+    const client = createProviderGroupRemoteClient(async (_device, _channel, args) => ({
+      ok: true, result: await handleProviderGroupRemote(d, 'laptop', args[0]),
+    }));
+    expect(await client.pick('mini', { ...PICK, agentKind: 'claude-code' })).toEqual({ kind: 'unavailable', usageLimit: { resetAtMs } });
+  });
   it('carries the optional detail request across the same-account client and host without probing on ordinary reads', async () => {
     const d = deps();
     const invoke = vi.fn<ProviderGroupRemoteInvoke>(async (_device, _channel, args) => ({

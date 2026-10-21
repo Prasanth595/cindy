@@ -60,7 +60,7 @@ export interface OrcaWorkerRecord {
     model: string;
     effort: string;
     permissionMode: string;
-    fastMode: boolean;
+    fastMode: boolean | 'ultrafast';
     sdkSessionId?: string;
     /** Worker 的 Agent 在另一台电脑或分享上运行(远程供应商)；null = 任务所在电脑。旧端缺省。 */
     agentDeviceId?: string | null;
@@ -104,7 +104,7 @@ export interface OrcaWorkerLinkRecord {
     providerId?: string | null;
     effort: string;
     permissionMode: string;
-    fastMode: boolean;
+    fastMode: boolean | 'ultrafast';
     sdkSessionId?: string;
     title: string;
     /** SSH 远端 lead 的 host id;bridge rehydrate 必须带回 createSession。 */
@@ -511,7 +511,7 @@ export async function getWorkerLink(input: {
       providerId: row.leadSession.providerId ?? null,
       effort: row.leadSession.effort,
       permissionMode: row.leadSession.permissionMode,
-      fastMode: !!row.leadSession.fastMode,
+      fastMode: (row.leadSession.fastMode ?? false),
       sdkSessionId: row.leadSession.sdkSessionId ?? undefined,
       title: row.leadSession.title,
       remoteHostId: row.leadSession.remoteHostId ?? null,
@@ -709,7 +709,7 @@ function workerToRecord(
       model: session.model,
       effort: session.effort,
       permissionMode: session.permissionMode,
-      fastMode: !!session.fastMode,
+      fastMode: (session.fastMode ?? false),
       sdkSessionId: session.sdkSessionId ?? undefined,
       agentDeviceId: session.agentDeviceId && !session.remoteHostId ? session.agentDeviceId : null,
     },

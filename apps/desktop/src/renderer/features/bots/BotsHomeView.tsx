@@ -62,6 +62,7 @@ import { BotRoutines } from './BotRoutines';
 import { BotAutonomySettings } from './BotAutonomySettings';
 import { BotTodoList } from './BotTodoList';
 import { BotMemorySettings } from './BotMemorySettings';
+import { CompanionVoiceSettings } from './voice/CompanionVoiceSettings';
 import { BotChannelsPage } from './BotChannelsPage';
 import {
   botSettingsChanges,
@@ -102,7 +103,7 @@ export function BotSettings({
   beforeCloseRef,
   initialPage = 'home',
 }: {
-  initialPage?: 'home' | 'memory' | 'capabilities' | 'model' | 'channels';
+  initialPage?: 'home' | 'memory' | 'capabilities' | 'model' | 'voice' | 'channels';
   bot: BotProfile;
   beforeCloseRef?: { current: (() => Promise<boolean>) | null };
   onBack: () => void;
@@ -141,6 +142,7 @@ export function BotSettings({
     | 'profile'
     | 'personality'
     | 'model'
+    | 'voice'
     | 'capabilities'
     | 'channels'
     | 'history'
@@ -148,28 +150,31 @@ export function BotSettings({
     | 'routines'
     | 'memory'
   >(initialPage);
+  const voiceLeaveRef = useRef<(() => Promise<boolean>) | null>(null);
   const routineLeaveRef = useRef<(() => Promise<boolean>) | null>(null);
   const routineBackRef = useRef<(() => Promise<boolean>) | null>(null);
   const memoryLeaveRef = useRef<(() => Promise<boolean>) | null>(null);
   const memoryBackRef = useRef<(() => Promise<boolean>) | null>(null);
   const pageTitle =
-    page === 'channels'
-      ? t('bots.channels.title')
-      : page === 'memory'
-      ? t('bots.memory.title')
-      : page === 'model'
-        ? t('bots.settingsTabs.model')
-        : page === 'routines'
-          ? t('routines.title')
-          : page === 'history'
-            ? t('bots.historySearch.title')
-            : page === 'advanced'
-              ? t('bots.homeFolder.title')
-              : page === 'capabilities'
-                ? t('bots.capabilities.title')
-                : page === 'personality'
-                  ? t('bots.profile.personality')
-                  : t('bots.profile.title');
+    page === 'voice'
+      ? t('bots.voiceMode.settingsTitle')
+      : page === 'channels'
+        ? t('bots.channels.title')
+        : page === 'memory'
+          ? t('bots.memory.title')
+          : page === 'model'
+            ? t('bots.settingsTabs.model')
+            : page === 'routines'
+              ? t('routines.title')
+              : page === 'history'
+                ? t('bots.historySearch.title')
+                : page === 'advanced'
+                  ? t('bots.homeFolder.title')
+                  : page === 'capabilities'
+                    ? t('bots.capabilities.title')
+                    : page === 'personality'
+                      ? t('bots.profile.personality')
+                      : t('bots.profile.title');
   const [folderError, setFolderError] = useState<string | null>(null);
   const avatarInFlight = useRef(false);
   const [avatarBusy, setAvatarBusy] = useState(false);
@@ -233,6 +238,7 @@ export function BotSettings({
     if (avatarInFlight.current) return false;
     await autosave.flush();
     if (autosave.isDirty()) return false;
+    if (!((await voiceLeaveRef.current?.()) ?? true)) return false;
     if (!((await memoryLeaveRef.current?.()) ?? true)) return false;
     return (await routineLeaveRef.current?.()) ?? true;
   }, [autosave.flush, autosave.isDirty]);
@@ -262,7 +268,7 @@ export function BotSettings({
       settingsRowRefs.current.get(returnFocusRowRef.current)?.focus();
   }, [page]);
   const go = (next: typeof page) => {
-    if (!autosave.isDirty() && !routineLeaveRef.current && !memoryLeaveRef.current) {
+    if (!autosave.isDirty() && !routineLeaveRef.current && !memoryLeaveRef.current && !voiceLeaveRef.current) {
       showPage(next);
       return;
     }
@@ -317,7 +323,7 @@ export function BotSettings({
       ...current,
       [key]: value,
       ...(key === 'fastMode' && current.modelOverride
-        ? { modelOverride: { ...current.modelOverride, fastMode: value === true } }
+        ? { modelOverride: { ...current.modelOverride, fastMode: value === 'ultrafast' ? 'ultrafast' : value === true } }
         : {}),
     }));
     autosave.onEdit('instant');
@@ -413,6 +419,7 @@ export function BotSettings({
     ['personality', botSettingsIcons.personality, t('bots.profile.personality')],
     ['memory', botSettingsIcons.memory, t('bots.memory.title')],
     ['model', botSettingsIcons.model, t('bots.settingsTabs.model')],
+    ['voice', botSettingsIcons.voice, t('bots.voiceMode.settingsTitle')],
     ['capabilities', botSettingsIcons.capabilities, t('bots.capabilities.title')],
     ['channels', botSettingsIcons.channels, t('bots.channels.title')],
     ['routines', botSettingsIcons.routines, t('routines.title')],
@@ -726,6 +733,15 @@ export function BotSettings({
               </div>
             </div>
           </div>
+        ) : null}
+        {page === 'voice' ? (
+          <CompanionVoiceSettings botId={bot.id} sessionId={canonicalBotSessionId(bot) ?? undefined}
+            beforeLeaveRef={voiceLeaveRef}
+            onOpenProviders={() => {
+              void canLeave().then((allowed) => {
+                if (allowed) navigate('/settings?tab=providers');
+              });
+            }} />
         ) : null}
         {page === 'memory' ? (
           <BotMemorySettings

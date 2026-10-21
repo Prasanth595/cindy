@@ -130,7 +130,7 @@ function sanitizeAgentPrefs(raw: Partial<ScheduleAgentPrefs> | undefined): Sched
     model: typeof raw?.model === 'string' ? raw.model : '',
     providerId: typeof raw?.providerId === 'string' ? raw.providerId : '',
     effort: raw?.effort && isEffortValue(raw.effort) ? raw.effort : '',
-    fastMode: raw?.fastMode === true,
+    fastMode: (raw?.fastMode === 'ultrafast' ? 'ultrafast' : raw?.fastMode === true),
   };
 }
 
@@ -266,7 +266,7 @@ export function makeFormFromSchedule(s: Schedule | null): ScheduleFormState {
     model: s.model ?? '',
     providerId: s.providerId ?? '',
     effort: s.effort && isEffortValue(s.effort) ? s.effort : '',
-    fastMode: !!s.fastMode,
+    fastMode: (s.fastMode ?? false),
     workspaceKind,
     workingDir: s.workingDir ?? '',
     useWorktree: workspaceKind === 'project' && s.useWorktree,

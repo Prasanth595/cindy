@@ -168,7 +168,7 @@ describe('Chat Server Thread context reaches the Agent input', () => {
     return { root, otherReply, question };
   }
 
-  it('gives a Thread request its root, Thread replies and the exact request, with main chatter only as background', async () => {
+  it('runs a Thread request in that Thread\'s own lane with only its root, Thread replies and the exact request', async () => {
     const { root, otherReply, question } = reportedCase();
     const [nova] = trigger(question);
     const late = post('主群插入：乐观显示做完了吗？');
@@ -185,13 +185,14 @@ describe('Chat Server Thread context reaches the Agent input', () => {
     expect(data.thread.replies.map((m: { id: string }) => m.id)).toEqual([question.id]);
     expect(data.thread.earlierRepliesOmitted).toBe(false);
     expect(data.messages).toBeUndefined();
-    expect(data.mainGroupBackground).toHaveLength(30);
-    expect(data.mainGroupBackground.every((m: { threadRootId?: string; id: string }) => !m.threadRootId && m.id !== root.id)).toBe(true);
+    expect(data.mainGroupBackground).toBeUndefined();
+    expect(deps.ensureLane).toHaveBeenCalledWith(expect.objectContaining({ botId: 'nova', threadRootId: root.id }));
+    // Neither main-group chatter nor another Thread reaches a Thread's own lane.
+    expect(input.message).not.toContain('点发送就应该立刻看到');
     expect(input.message).not.toContain(otherReply.id);
     expect(input.message).not.toContain('其他话题');
     expect(input.message).not.toContain(late.id);
-    expect(input.message).toContain('currentRequest was posted in a Thread');
-    expect(input.message).toContain('do not answer them as the request');
+    expect(input.message).toContain('This conversation belongs to one Thread of the group');
     expect(input.attachments?.[0]?.id).toBe(root.content[1].mediaId);
 
     await settle('nova', '对：能管理任务不等于拿到全部工具权限。');
@@ -328,17 +329,17 @@ describe('Chat Server Thread context reaches the Agent input', () => {
       }
     });
 
-  it('keeps the Thread root file inside the attachment cap and offers it again behind the watermark', async () => {
+  it('offers a Thread request only its own Thread\'s files, again behind the watermark', async () => {
     const root = post('请看这张权限截图。', { media: ['permissions.png'] });
     for (let n = 0; n < 45; n++) post(`主群图片 ${n}`, { media: [`noise-${n}.png`] });
     const question = post('@所有人 截图里的说法对吗？', { threadRootId: root.id, mentions: bots.map(bot => bot.id) });
     trigger(question, { attachment_after_seq: '0' });
     await vi.advanceTimersByTimeAsync(2000);
     const input = inputs('nova')[0];
-    expect(input.attachments).toHaveLength(40);
-    expect(input.attachments?.[0]?.id).toBe(root.content[1].mediaId);
+    // The 45 main-group images belong to the main lane, not to this Thread.
+    expect(input.attachments?.map(a => a.id)).toEqual([root.content[1].mediaId]);
     expect(payload(input.message).thread.root.attachments).toEqual([{ name: 'permissions.png', delivery: 'included' }]);
-    expect(payload(input.message).unavailableAttachments).toHaveLength(6);
+    expect(payload(input.message).unavailableAttachments).toEqual([]);
 
     // The watermark only records a successful turn, not delivery: the Thread's own files are offered again.
     const followUp = post('@Pico 那现在呢？', { threadRootId: root.id, mentions: [bots[1].id] });
@@ -351,7 +352,7 @@ describe('Chat Server Thread context reaches the Agent input', () => {
     expect(second.message).not.toContain('sent-earlier');
   });
 
-  it('does not hand a Thread request the files of another Thread', async () => {
+  it('does not hand a Thread request the files of the main group or another Thread', async () => {
     const root = post('只要伙伴能管理任务，是不是就拿到了所有权限？');
     const mainFile = post('主群截图', { media: ['main-board.png'] });
     const otherRoot = post('发布流程要不要改？');
@@ -360,26 +361,11 @@ describe('Chat Server Thread context reaches the Agent input', () => {
     trigger(question, { attachment_after_seq: '0' });
     await vi.advanceTimersByTimeAsync(2000);
     const ids = inputs('nova')[0].attachments?.map(a => a.id);
-    expect(ids).toEqual([mainFile.content[1].mediaId]);
+    expect(ids).toEqual([]);
+    expect(ids).not.toContain(mainFile.content[1].mediaId);
     expect(ids).not.toContain(otherFile.content[1].mediaId);
+    expect(inputs('nova')[0].message).not.toContain('main-board.png');
     expect(inputs('nova')[0].message).not.toContain('release-plan.png');
-  });
-
-  it('reads the main-group background on its own when busy Threads fill the mixed page', async () => {
-    const main = Array.from({ length: 35 }, (_, n) => post(`主群消息 ${n}`));
-    const root = post('只要伙伴能管理任务，是不是就拿到了所有权限？');
-    const busyRoot = post('另一个很热闹的话题');
-    for (let n = 0; n < 120; n++) post(`热闹话题回复 ${n}`, { threadRootId: busyRoot.id });
-    const question = post('@所有人 我说的对吗？', { threadRootId: root.id, mentions: bots.map(bot => bot.id) });
-    trigger(question);
-    post('之后才发的主群消息');
-    await vi.advanceTimersByTimeAsync(2000);
-    const background = payload(inputs('nova')[0].message).mainGroupBackground as Array<{ id: string; threadRootId?: string }>;
-    // 30 newest main-timeline messages before the request: the busy root and the tail of `main`, never the Thread root.
-    expect(background).toHaveLength(30);
-    expect(background.at(-1)!.id).toBe(busyRoot.id);
-    expect(background[0].id).toBe(main[6].id);
-    expect(background.some(m => m.id === root.id || m.threadRootId)).toBe(false);
   });
 
   it('does not claim earlier delivery for a main request file behind the watermark', async () => {
@@ -392,7 +378,7 @@ describe('Chat Server Thread context reaches the Agent input', () => {
     expect(input.message).toContain('"not-resent" files were not attached this turn and earlier delivery cannot be confirmed');
   });
 
-  it('keeps a main-group request on the main timeline with Thread replies labeled as background', async () => {
+  it('keeps a main-group request in the main lane without Thread replies', async () => {
     const root = post('只要伙伴能管理任务，是不是就拿到了所有权限？');
     const reply = post('Thread 里的补充。', { threadRootId: root.id });
     const request = post('大家觉得乐观显示要先做吗？');
@@ -402,10 +388,11 @@ describe('Chat Server Thread context reaches the Agent input', () => {
     const data = payload(input.message);
     expect(data.currentRequest).toEqual({ id: request.id, from: 'Alex', kind: 'human', text: '大家觉得乐观显示要先做吗？', location: 'main' });
     expect(data.thread).toBeUndefined();
-    expect(data.messages.map((m: { id: string }) => m.id)).toEqual([root.id, reply.id, request.id]);
-    expect(data.messages[1].threadRootId).toBe(root.id);
-    expect(data.messages[0]).not.toHaveProperty('threadRootId');
-    expect(input.message).toContain('currentRequest was posted in the main group');
+    // Threads have their own lanes: their replies stay out of the main lane.
+    expect(data.messages.map((m: { id: string }) => m.id)).toEqual([root.id, request.id]);
+    expect(input.message).not.toContain(reply.id);
+    expect(vi.mocked(deps.ensureLane).mock.calls.every(([input]) => input.threadRootId === undefined)).toBe(true);
+    expect(input.message).toContain('currentRequest was posted in the main group. Thread replies are not included.');
     expect(fixture.handle.mock.calls.some(([route]) => String(route).includes('threadRootId='))).toBe(false);
   });
 });

@@ -10,7 +10,7 @@ import type { OutboxSessionPolicy } from '@/session/durableOutboxDelivery';
 const source = ts.createSourceFile('MobileOutboxBridge.tsx', readFileSync(resolve(
   process.cwd(), 'src/session/MobileOutboxBridge.tsx'), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 const expressions = new Map<string, string>();
-const names = ['knownSession', 'hidden', 'invokeOwned', 'canRun', 'sessionPolicy'];
+const names = ['knownSession', 'hidden', 'invokeOwned', 'readSessionOnce', 'canRun', 'sessionPolicy'];
 function visit(node: ts.Node) {
   if ((ts.isVariableDeclaration(node) || ts.isPropertyAssignment(node)
       && ['canRun', 'sessionPolicy'].includes(node.name.getText(source))) && node.initializer
@@ -21,7 +21,8 @@ visit(source);
 for (const name of names) if (!expressions.has(name)) throw new Error('Missing outbox callback: ' + name);
 const compiled = ts.transpileModule(
   'function create(deps) { const { remoteSessionStore, mobileDurableOutbox, latest, guard, AppState, CINDY_MAKE_ENABLED, isCindyMakeSource, isDurableOutboxSettled, isDurableOutboxHandedOff, cindyMakeOutboxPolicy, isCurrent } = deps;'
-  + ['knownSession', 'hidden', 'invokeOwned'].map(name => 'const ' + name + ' = ' + expressions.get(name) + ';').join('')
+  + 'const sessionReads = new Map(); const SESSION_READ_REUSE_MS = 2000;'
+  + ['knownSession', 'hidden', 'invokeOwned', 'readSessionOnce'].map(name => 'const ' + name + ' = ' + expressions.get(name) + ';').join('')
   + 'const needsReconciliation = () => true; const isDurableOutboxCreationHeld = () => false; const getNewSessionCreationTask = () => null;'
   + 'const maker = (record) => ({ getSession: (sessionId) => invokeOwned(record)(record.deviceId, "local-db:sessions:get", [sessionId]) });'
   + 'return { hidden, invokeOwned, canRun: ' + expressions.get('canRun') + ', sessionPolicy: ' + expressions.get('sessionPolicy') + ' }; }',

@@ -363,7 +363,10 @@ export function ErrorBanner({
   const remoteGuidance = remoteErrorKey && i18n.exists(remoteErrorKey) ? t(remoteErrorKey) : undefined;
   const terminalRateLimitRetryProgress = parseTerminalRateLimitRetryProgress(error, errorReason);
   const isCodexUsageLimitError =
-    agentKind === 'codex' && usageLimitRecovery?.isAccountUsageLimit === true;
+    agentKind === 'codex' && usageLimitRecovery?.isAccountUsageLimit === true
+    // Group selection may fail before the new route is saved. A reset card for the
+    // previous local account cannot restore the account chosen by that group.
+    && remoteErrorCode !== 'REMOTE_AGENT_GROUP_USAGE_LIMIT';
   const { snapshot: resetSnapshot, refresh: refreshResets } = useCodexRateLimits(
     isCodexUsageLimitError && isCodexOpenAiSource && !isAnyRemoteSession && !agentDeviceId,
     normalizedProviderId ?? 'openai',

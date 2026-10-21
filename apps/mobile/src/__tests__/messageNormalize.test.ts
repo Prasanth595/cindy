@@ -1529,6 +1529,19 @@ describe('normalizeRemoteMessages', () => {
       align: 'agent',
     });
   });
+
+  // Unit / PR #6611: quota recovery before the first dispatch must keep the
+  // original bubble and add the same activity as an active-turn continuation.
+  it('keeps the original input alongside a quota-reset activity after reload', () => {
+    const info = { reason: 'usage-limit-reset', attempt: 1, maxAttempts: 3, sessionTotal: 0 };
+    const items = normalizeRemoteMessages([
+      message({ id: 'original', role: 'user', content: 'original task', agentMeta: { autoResumeInfo: info } }),
+    ]);
+    expect(items).toHaveLength(2);
+    expect(items[0]).toMatchObject({ key: 'original', body: 'original task', label: 'user' });
+    expect(items[1]).toMatchObject({ key: 'original:usage-limit-resume', kind: 'system',
+      body: '', systemCardType: 'auto-resume', systemCardData: info });
+  });
 });
 
 describe('context rebuild boundaries', () => {

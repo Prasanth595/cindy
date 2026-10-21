@@ -1096,8 +1096,8 @@ function normalizeServiceTier(serviceTier: ServiceTier | null | undefined): Serv
   return serviceTier === 'priority' ? 'fast' : serviceTier;
 }
 
-function isFastServiceTier(serviceTier: ServiceTier | null | undefined): boolean {
-  return normalizeServiceTier(serviceTier) === 'fast';
+function fastModeFromServiceTier(serviceTier: ServiceTier | null | undefined): boolean | 'ultrafast' {
+  return serviceTier === 'ultrafast' ? 'ultrafast' : normalizeServiceTier(serviceTier) === 'fast';
 }
 
 function skillDescription(skill: SkillMetadata): string | undefined {
@@ -3177,7 +3177,7 @@ assertRouteCurrent();
               ...(!remoteHostId && historyHome ? { runtimeCodexHome: historyHome } : {}),
               // 受邀者任务的 app-server 与账号会话一样走按 host 分开的 proxy(鉴权注入方式冻结在这个 host 上)，
               // 不改写本机用户任务共用的 proxy 状态。
-              ...(key.startsWith('local-account:') || key.startsWith(LOCAL_GUEST_HOST_PREFIX)
+              ...(key.startsWith('local-account:') || key.startsWith(LOCAL_GUEST_HOST_PREFIX) || deviceHostedGuestProviderId
                 ? { accountHostKey: `${key}:${generation}` } : {}),
               credentialMode: spawnCredentialMode,
               ...(localAuthPolicy === 'isolated'
@@ -5019,9 +5019,9 @@ assertRouteCurrent();
     };
     // plan_review requestId 去重序号 (同一 turn 理论上只有一个 plan item, 防御性加序号)。
     let planReviewSeq = 0;
-    // Undefined = 不覆盖 app-server/config 默认; null = explicit standard; 'fast' = Fast mode.
+    // Undefined preserves app-server defaults; null selects standard; strings select a speed tier.
     let mutableServiceTier: ServiceTier | null | undefined =
-      opts.fastMode === undefined ? undefined : opts.fastMode ? 'fast' : null;
+      opts.fastMode === undefined ? undefined : opts.fastMode === 'ultrafast' ? 'ultrafast' : opts.fastMode ? 'fast' : null;
     // Older async thread start/resume responses must not overwrite a newer
     // Fast mode choice made while the request was in flight.
     let serviceTierMutationGeneration = 0;
@@ -11129,7 +11129,7 @@ assertRouteCurrent();
         completedAt: turn.completedAt ?? null,
         durationMs: turn.durationMs ?? null,
         serviceTier: mutableServiceTier ?? null,
-        fastMode: isFastServiceTier(mutableServiceTier),
+        fastMode: fastModeFromServiceTier(mutableServiceTier),
         // 本 turn 增量 (来自最近一次 thread/tokenUsage/updated 的 last)
         inputTokens: lastTurnTokenUsage?.inputTokens ?? null,
         cachedInputTokens: lastTurnTokenUsage?.cachedInputTokens ?? null,
@@ -12305,7 +12305,7 @@ assertRouteCurrent();
           effort: mutableEffort,
           permissionMode: mutablePermissionMode,
           serviceTier: mutableServiceTier ?? null,
-          fastMode: isFastServiceTier(mutableServiceTier),
+          fastMode: fastModeFromServiceTier(mutableServiceTier),
         });
       },
       tokenUsageUpdated: (params) => {
@@ -12365,11 +12365,11 @@ assertRouteCurrent();
               inputTokens: totalInput,
               outputTokens: last.outputTokens ?? 0,
               cacheReadTokens: cached,
-            }) ?? (isFastServiceTier(
-              turnServiceTier !== undefined ? turnServiceTier : mutableServiceTier,
-            )
-              ? 'priority'
-              : 'standard'),
+            }) ?? ((turnServiceTier !== undefined ? turnServiceTier : mutableServiceTier) === 'ultrafast'
+              ? 'ultrafast'
+              : fastModeFromServiceTier(turnServiceTier !== undefined ? turnServiceTier : mutableServiceTier)
+                ? 'priority'
+                : 'standard'),
           });
           // Input/cache-only segments still belong in the ledger, but cannot
           // pair already reported output with a later generation denominator.
@@ -12758,7 +12758,7 @@ assertRouteCurrent();
             threadId: params.threadId,
             from: before,
             to: mutableServiceTier ?? null,
-            fastMode: isFastServiceTier(mutableServiceTier),
+            fastMode: fastModeFromServiceTier(mutableServiceTier),
           });
         }
       },
@@ -13503,7 +13503,7 @@ assertRouteCurrent();
               log.debug('turn/start response serviceTier', {
                 turnId: resp.turn.id,
                 serviceTier: mutableServiceTier,
-                fastMode: isFastServiceTier(mutableServiceTier),
+                fastMode: fastModeFromServiceTier(mutableServiceTier),
                 note: 'serviceTier calibrated before buffered turn replay',
               });
             }
@@ -14542,12 +14542,11 @@ assertRouteCurrent();
         return mutablePlanMode || planCycleActive || currentTurnPlanModeActive;
       },
 
-      async setFastMode(enabled: boolean) {
+      async setFastMode(enabled: boolean | 'ultrafast') {
         if (reviewMode) return;
-        // 去重以"fast 是否开启"为准: undefined(未覆盖) / null / 'default' 都视为未开,
-        // 重复关 fast 或重复开 fast 不重推 (renderer 单次切换会全量重调 set*)。
-        if (isFastServiceTier(mutableServiceTier) === enabled) return;
-        const next: ServiceTier | null = enabled ? 'fast' : null;
+        // Compare exact tiers; undefined/null/default all mean standard.
+        if (fastModeFromServiceTier(mutableServiceTier) === enabled) return;
+        const next: ServiceTier | null = enabled === 'ultrafast' ? 'ultrafast' : enabled ? 'fast' : null;
         log.debug('setFastMode', { from: mutableServiceTier ?? null, to: next });
         serviceTierMutationGeneration += 1;
         mutableServiceTier = next;
@@ -14572,7 +14571,7 @@ assertRouteCurrent();
       },
 
       getFastMode() {
-        return isFastServiceTier(mutableServiceTier);
+        return fastModeFromServiceTier(mutableServiceTier);
       },
 
       async previewRewindFiles() {
@@ -14987,13 +14986,16 @@ assertRouteCurrent();
       note: 'Codex 精确 fork: 独立一次性 host 上 thread/fork 后按需 thread/rollback 新 thread 尾部 turn',
     });
     try {
-      const forkStorage = await this.deps.resolveCodexThreadStorage?.(opts.sourceSdkSessionId);
+      const guestCodexHome = opts.hostedGuestHome ? path.join(opts.hostedGuestHome, 'codex') : undefined;
+      const forkStorage = guestCodexHome
+        ? { historyHome: guestCodexHome, sqliteHome: guestCodexHome }
+        : await this.deps.resolveCodexThreadStorage?.(opts.sourceSdkSessionId);
       // Fork requires actual history; it must never use resume's unused-thread recovery.
       if (forkStorage?.rolloutPath && !(await fs.lstat(forkStorage.rolloutPath)).isFile()) {
         throw new CodexResumePreparationBlockedError('Codex fork history is unavailable');
       }
       // Source history inspection must not depend on the credentials we are leaving.
-      let preparedSourcePath = opts.stripEncryptedReasoning
+      let preparedSourcePath = opts.stripEncryptedReasoning && !guestCodexHome
         ? await this.deps.prepareCodexResumeSession?.(opts.sourceSdkSessionId)
         : undefined;
       let historyChecked = false;
@@ -15018,6 +15020,7 @@ assertRouteCurrent();
               ...(forkAccountId ? { providerId: forkAccountId } : {}),
               ...(forkSqliteHome ? { sqliteHome: forkSqliteHome } : {}),
               ...(forkStorage ? { historyHome: forkStorage.historyHome } : {}),
+              ...(guestCodexHome && opts.providerId ? { deviceHostedGuestProviderId: opts.providerId } : {}),
               routeIsCurrent: selection.isCurrent,
               routeSignal: forkRouteSignal,
               ...(selection.policy === 'isolated' ? { localAuthPolicy: selection.policy } : {}),
@@ -15040,7 +15043,7 @@ assertRouteCurrent();
             // fork app-server cannot resolve a freshly imported thread.
             // A first host may have just created the managed state DB needed for imports.
             stage = 'source-prepare';
-            preparedSourcePath ??= await this.deps.prepareCodexResumeSession?.(opts.sourceSdkSessionId);
+            if (!guestCodexHome) preparedSourcePath ??= await this.deps.prepareCodexResumeSession?.(opts.sourceSdkSessionId);
             if (opts.stripEncryptedReasoning && !historyChecked) {
               // Check before allocating a child: indexed native history must go through
               // Cindy's handoff recovery, never a file rewrite that invalidates Codex's DB.

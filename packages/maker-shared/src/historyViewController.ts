@@ -73,6 +73,8 @@ export class HistoryViewController<T extends HistoryMessageSource> {
   private pageGeneration = 0;
   private intentVersion = 0;
   private refreshTimer: ReturnType<typeof setTimeout> | null = null;
+  private latestReadStartedAtMs = 0;
+  private latestReadOkStartedAtMs = 0;
 
   constructor(
     private readonly transport: HistoryViewTransport<T>,
@@ -97,6 +99,20 @@ export class HistoryViewController<T extends HistoryMessageSource> {
   getSnapshot = (): HistoryViewSnapshot<T> => this.state;
   /** Pagination feedback only; background validation must not disturb the reading viewport. */
   isLoadingOlder = (): boolean => this.state.loading && this.pageOlder;
+  /**
+   * Wall-clock start of the most recent latest-page read (0 before the first). A caller
+   * holding the time a change notice arrived can tell whether a read already covers it,
+   * instead of forcing one more page read per notice.
+   */
+  latestReadStartedAt = (): number => this.latestReadStartedAtMs;
+  /**
+   * Start time of the most recent latest-page read that completed and was applied (0 before
+   * the first). A failed or superseded read never advances it, so "covered by a read" can
+   * be certified without trusting an error-cleared snapshot.
+   */
+  latestReadOkStartedAt = (): number => this.latestReadOkStartedAtMs;
+  /** True while a latest-page read is in flight; older-page reads do not count. */
+  isReadingLatest = (): boolean => this.pagePromise !== null && !this.pageOlder;
   subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
@@ -187,6 +203,8 @@ export class HistoryViewController<T extends HistoryMessageSource> {
     const generation = this.generation;
     const before = older ? this.state.nextCursor ?? undefined : undefined;
     const readReceipt = nextHistoryCacheReceipt();
+    const readStartedAt = Date.now();
+    if (!older) this.latestReadStartedAtMs = readStartedAt;
     this.publish({ loading: true, error: null });
     try {
       const page = await this.transport.page(before);
@@ -210,6 +228,7 @@ export class HistoryViewController<T extends HistoryMessageSource> {
       this.publish({ items: stableItems, ready: true, loading: false,
         ...(older ? {} : { stale: false, readReceipt }),
         hasMore: retained.hasMore, nextCursor: retained.nextCursor }, older ? 'older' : 'latest');
+      if (!older) this.latestReadOkStartedAtMs = readStartedAt;
       for (const summary of historyWorkSummaries(items)) {
         if (this.state.expanded.has(summary.key)) void this.loadDetails(summary);
       }

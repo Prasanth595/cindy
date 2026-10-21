@@ -294,7 +294,7 @@ export function getDesktopMcpToolApprovalPolicy(
       if (
         workers.some((worker) => {
           const spec = readJsonObject(worker);
-          return !spec || Object.hasOwn(spec, 'working_dir');
+          return !spec || Object.hasOwn(spec, 'working_dir') || Object.hasOwn(spec, 'new_worktree');
         })
       )
         return 'prompt-each-time';

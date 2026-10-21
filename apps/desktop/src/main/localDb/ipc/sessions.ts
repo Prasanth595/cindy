@@ -692,7 +692,7 @@ export async function applyAgentSwitchToSessionRow(
     sdkSessionId?: string | null;
     /** 目标引擎下的 effort / fastMode(意图登记时 renderer 按目标目录解析,apply 一并落库)。 */
     effort?: string;
-    fastMode?: boolean;
+    fastMode?: boolean | 'ultrafast';
     contextWindow?: number | null;
     /** 远程 Agent 换电脑:undefined = 不动,null = 改回任务所在电脑。 */
     agentDeviceId?: string | null;

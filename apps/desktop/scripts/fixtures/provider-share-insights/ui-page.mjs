@@ -57,6 +57,12 @@ export default {
   },
   async check(page, ui) {
     if (ui.case === 'owner') {
+      // The owner page reads idle-release settings on mount. A missing fixture reply
+      // used to turn that read into a forbidden operation and render an error.
+      const idleMinutes = page.getByTestId('remote-agent-idle-release-minutes');
+      await idleMinutes.waitFor();
+      assert.equal(await idleMinutes.inputValue(), '0');
+      assert.equal(await page.getByRole('alert').count(), 0);
       const quota = page.getByRole('switch', {
         name: await ui.t('providerShare.insights.allowQuota'),
         exact: true,

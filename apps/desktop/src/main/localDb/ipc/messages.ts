@@ -2666,6 +2666,7 @@ export async function listMessagesForAgentHandoff(
           // 非法 JSON 视为无 meta
         }
       }
+      if (agentMeta?.voiceCall) return null;
       if (agentMeta && typeof agentMeta.contextRebuild === 'object' && agentMeta.contextRebuild) {
         return null;
       }

@@ -15,7 +15,7 @@ import { findCatalogModel, isModelSelectableForNewRoute } from '@cindy/model-pro
 import type { AgentKind } from '@cindy/maker-core';
 import type { RemoteAgentCaps } from '@cindy/device-link';
 
-import type { ProviderGroupConfig, ProviderGroupMember, ProviderGroupView } from '../../shared/providerGroup.js';
+import type { ProviderGroupConfig, ProviderGroupMember, ProviderGroupView, ProviderGroupUsageLimit } from '../../shared/providerGroup.js';
 import type { ProviderGroupBinding } from './bindings.js';
 import type { ProviderGroupDirectory, ResolvedProviderGroupMember } from './directory.js';
 import { pickProviderGroupMember, type SchedulableMember } from './scheduler.js';
@@ -89,7 +89,7 @@ export const PROVIDER_GROUP_LOCAL_PROVISIONAL_MS = 30_000;
 export type ProviderGroupPickResult =
   | { kind: 'none' }
   | { kind: 'member'; member: ProviderGroupMember; label: string; resolved: ResolvedProviderGroupMember[] }
-  | { kind: 'unavailable'; resolved: ResolvedProviderGroupMember[] };
+  | { kind: 'unavailable'; resolved: ResolvedProviderGroupMember[]; usageLimit?: ProviderGroupUsageLimit };
 
 export interface ProviderGroupRouter {
   pick(input: ProviderGroupPickInput): Promise<ProviderGroupPickResult>;
@@ -245,7 +245,25 @@ export function createProviderGroupRouter(deps: ProviderGroupRouterDeps): Provid
         random: deps.random,
         now,
       });
-      if (!key) return { kind: 'unavailable', resolved };
+      if (!key) {
+        // Only members that could take this model after a quota reset count. A paused,
+        // offline or model-mismatched member must not supply a misleading reset time.
+        const limited = resolved.filter((r) => !paused(r) && !input.exclude?.has(r.member.key)
+          && offersModel(r, input.agentKind, input.model))
+          .map((r) => {
+            const quota = providerGroupMemberUsageState(r, input.model, now, input.agentKind);
+            // A reset is useful only once this member's existing cooldown also ends.
+            // A cooldown alone is not evidence of when an unknown quota resets.
+            return { ...quota, resetAtMs: quota.resetAtMs === null ? null
+              : Math.max(quota.resetAtMs, coolingUntil(input.providerId, r.member.key, input.model) ?? 0) };
+          })
+          .filter((quota) => quota.limited);
+        const resets = limited.flatMap((quota) => quota.resetAtMs === null ? [] : [quota.resetAtMs]);
+        return {
+          kind: 'unavailable', resolved,
+          ...(limited.length > 0 ? { usageLimit: { resetAtMs: resets.length > 0 ? Math.min(...resets) : null } } : {}),
+        };
+      }
       lastPicked.set(input.providerId, key);
       if (input.reserveFor) {
         provisional.set(input.reserveFor, {

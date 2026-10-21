@@ -1,3 +1,4 @@
+import type { BotAutonomySettingsView } from '../../../shared/botAutonomy.js';
 import { serializeModelRoutes } from '@cindy/maker-shared/model-route';
 import { normalizeBotModelChain, type BotModelRoute } from '../../../shared/botModelChain.js';
 import { createHash } from 'node:crypto';
@@ -11,6 +12,7 @@ import { createBotRemoteMemoryEditor, memoryCopy, type BotRemoteMemoryService } 
 type Kind = 'skill' | 'mcp' | 'toolset';
 type Capability = { id: string; name: string; description: string; available: boolean; joined: boolean };
 export interface BotRemoteEditorDeps extends Pick<BotRemoteSettingsDeps, 'owner' | 'assertOwner' | 'read' | 'update' | 'skills'> {
+  followUp?: { get(): Promise<BotAutonomySettingsView>; set(botId: string | null): Promise<BotAutonomySettingsView> };
   modelDefaults(): Promise<BotModelRoute[]>;
   create(input: { id: string; name: string; avatarImageBase64: string; locale?: string; capabilities?: { modelChainOverride: BotModelRoute[] } }): Promise<void>;
   avatar(botId: string, bytes: string, version: number, expectedAvatar: string): Promise<void>;
@@ -27,6 +29,11 @@ export interface BotRemoteEditorOptions {
 }
 const text = (fallback: string, cn: string, tw: string, ja: string, ko: string): RemoteLocalizedText => ({ fallback, translations: { 'zh-CN': cn, 'zh-TW': tw, ja, ko } });
 export const editorCopy = {
+  followUp: text("Follow Up on My Sessions", "跟进我的任务", "跟進我的任務", "自分のセッションをフォロー", "내 세션 후속 확인"),
+  followUpConsent: text("Once enabled, I’ll read summaries of sessions you create on the teammate’s computer, assess progress, and let you know about important changes. This uses your model allowance. You can turn it off anytime.", "开启后，我会读取伙伴所在电脑上你创建的任务摘要，分析进展并提醒你重要变化。这会使用模型额度，你可以随时关闭。", "開啟後，我會讀取夥伴所在電腦上你建立的任務摘要，分析進度並提醒你重要變化。這會使用模型額度，你可以隨時關閉。", "有効にすると、チームメイトが動作するコンピューターであなたが作成したセッションの要約を読み、進捗を確認して重要な変化をお知らせします。モデルの利用枠を消費します。いつでも無効にできます。", "켜면 팀원이 실행되는 컴퓨터에서 직접 만든 세션의 요약을 읽고 진행 상황을 분석하여 중요한 변화를 알려드립니다. 모델 사용량이 소모되며 언제든 끌 수 있습니다."),
+  followUpStart: text("Start Following Up", "开始跟进", "開始跟進", "フォローを開始", "후속 확인 시작"),
+  followUpSkip: text("Not Now", "暂不开启", "暫不開啟", "今はしない", "나중에"),
+
   create: text('New Teammate', '创建伙伴', '建立夥伴', 'チームメイトを作成', '팀원 만들기'),
   name: text('Name', '名字', '名字', '名前', '이름'),
   avatar: text('Avatar', '头像', '頭像', 'アバター', '아바타'),
@@ -97,6 +104,37 @@ export function createBotRemoteEditors(deps: BotRemoteEditorDeps, bind: ReturnTy
     if (memory) {
       const settings = await deps.read(memory[1]); deps.assertOwner(owner);
       return memoryEditor(context, { botId: memory[1], botName: settings.source.name, entry: memory[2], locale, query: options.query, primitives: options.primitives ?? [] });
+    }
+    const followUp = /^settings:([A-Za-z0-9_-]{1,128})\/follow-up$/.exec(id);
+    if (followUp && deps.followUp) {
+      const botId = followUp[1];
+      const profile = await deps.read(botId); deps.assertOwner(owner);
+      const choice = await deps.followUp.get(); deps.assertOwner(owner);
+      const enabled = choice.schedulerBotId === botId;
+      const readRevision = async () => {
+        const next = await deps.read(botId); deps.assertOwner(owner);
+        const current = await deps.followUp!.get(); deps.assertOwner(owner);
+        return hash([next.source.currentVersion, current]);
+      };
+      const panel = form('follow-up', editorCopy.followUp, [
+        { id: 'enabled', label: editorCopy.followUp, kind: 'toggle' },
+      ], { enabled });
+      const resource: RemoteResource = {
+        ref: ref(id), revision: hash([profile.source.currentVersion, choice]),
+        display: { title: editorCopy.followUp }, links: [],
+        blocks: [{ ...panel.block, fallbackMarkdown: resolveRemoteText(editorCopy.followUpConsent, locale),
+          data: { ...panel.block.data, invitationAvailable: !choice.isCustomized && choice.schedulerBotId === null && profile.source.status === 'active' } }],
+        actions: [{ ...panel.action, ...(!enabled ? { confirmation: { title: editorCopy.followUp, body: editorCopy.followUpConsent, confirmLabel: editorCopy.followUpStart } } : {}) },
+          { id: 'dismiss', label: editorCopy.followUpSkip }],
+      };
+      return bind(context, resource, readRevision, async request => {
+        const input = request.input ?? {};
+        keys(input, request.actionId === 'dismiss' ? [] : ['enabled']);
+        if (request.actionId !== 'dismiss' && typeof input.enabled !== 'boolean') fail();
+        await deps.followUp!.set(request.actionId === 'dismiss' || input.enabled === false ? null : botId);
+        deps.assertOwner(owner);
+        return receipt(id);
+      });
     }
     const match = /^settings:([A-Za-z0-9_-]{1,128})\/(skills|connections|avatar)(?:\/([a-z0-9-]+))?(?:\/([a-f0-9]{64}))?$/.exec(id);
     if (!match) throwIpcError('NOT_FOUND', 'Unknown teammate editor');

@@ -391,6 +391,16 @@ export function makerApiFor(sessionId: string): RoutableMaker {
 }
 
 /**
+ * 输入框开始打字时请任务所在电脑提前启动 Agent。尽力而为：旧被控端没有该 channel、
+ * 断线或拒绝都只意味着下一次发送照常冷启动，调用方不需要处理结果。
+ */
+export function prewarmSessionFor(sessionId: string, createOpts: unknown): Promise<unknown> {
+  const deviceId = getSessionDeviceId(sessionId);
+  if (deviceId) return invokeRemote(deviceId, 'maker:session:prewarm', [sessionId, createOpts]);
+  return window.electronAPI.maker.prewarmSession?.(sessionId, createOpts) ?? Promise.resolve(undefined);
+}
+
+/**
  * 粘滞归属版 maker 入口:曾解析到 deviceId 的会话,在 relay 瞬时重连清空注册表的窗口内
  * 仍走隧道,不会退回本机。
  *

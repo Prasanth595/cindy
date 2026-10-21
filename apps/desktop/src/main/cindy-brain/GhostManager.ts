@@ -2701,6 +2701,7 @@ export class GhostManager {
           ...(retirement ? { retirement } : {}),
           approval: { state: 'approved', revision: receipt.revision },
           ...(receipt.taskCapabilityApproved === true ? { taskCapabilityApproved: true as const } : {}),
+          ...(receipt.targetCapabilityApproved === true ? { targetCapabilityApproved: true as const } : {}),
           trust: receipt.trust,
           ...(!retired && receipt.manifest.skill?.items.length
             ? {
@@ -2891,18 +2892,20 @@ export class GhostManager {
   }
 
   /** Called only after Host permission UI confirms this exact installed revision. */
-  async approveTaskCapability(id: string, revision: string, isCurrent: () => boolean): Promise<boolean> {
+  async approveTaskCapability(id: string, revision: string, isCurrent: () => boolean, capability: 'tasks' | 'targets' = 'tasks'): Promise<boolean> {
     return this.runExclusiveMutation(async () => {
       const relId = this.approvalRelIdFor(id);
       if (!relId) return false;
       const approval = this.readApproval(relId);
       if (!isCurrent() || approval.state !== 'approved' || approval.receipt.revision !== revision ||
           approval.receipt.manifest.agent?.tasks !== true ||
+          (capability === 'targets' && (approval.receipt.manifest.agent.targets !== true || approval.receipt.taskCapabilityApproved !== true)) ||
           !findInstalledGhostByInstanceId(this.list(), id)?.enabled) return false;
-      if (approval.receipt.taskCapabilityApproved !== true) {
+      const field = capability === 'targets' ? 'targetCapabilityApproved' : 'taskCapabilityApproved';
+      if (approval.receipt[field] !== true) {
         const expired = new Error('Task capability approval owner changed');
         try {
-          await this.receiptStore.write({ ...approval.receipt, taskCapabilityApproved: true }, {
+          await this.receiptStore.write({ ...approval.receipt, [field]: true }, {
             relId,
             assertCurrent: () => { if (!isCurrent()) throw expired; },
           });
@@ -3575,6 +3578,7 @@ export class GhostManager {
     lizFilePath: string,
     opts?: {
       taskCapabilityApproved?: true;
+      targetCapabilityApproved?: true;
       initiallyEnabled?: boolean;
       expectedPackageSha256?: string;
       trustOverride?: GhostHostTrustOverride;
@@ -3599,6 +3603,7 @@ export class GhostManager {
     lizFilePath: string,
     opts?: {
       taskCapabilityApproved?: true;
+      targetCapabilityApproved?: true;
       initiallyEnabled?: boolean;
       expectedPackageSha256?: string;
       trustOverride?: GhostHostTrustOverride;
@@ -3771,6 +3776,7 @@ export class GhostManager {
           localeResources,
           enabled: initiallyEnabled,
           ...(opts?.taskCapabilityApproved === true && approvedManifest.agent?.tasks === true ? {taskCapabilityApproved:true as const} : {}),
+          ...(opts?.targetCapabilityApproved === true && approvedManifest.agent?.tasks === true && approvedManifest.agent.targets === true ? {targetCapabilityApproved:true as const} : {}),
           trust,
           // 指纹取自包投影而不是刚发布的 finalDir:发布后被换的字节应当在快照
           // 对账时被拒,而不是被首读钉成批准基线(P0-8)。
@@ -3893,6 +3899,7 @@ export class GhostManager {
     lizFilePath: string,
     opts: {
       taskCapabilityApproved?: true;
+      targetCapabilityApproved?: true;
       expectedInstalledApproval: string;
       expectedPackageSha256?: string;
       trustOverride?: GhostHostTrustOverride;
@@ -3911,6 +3918,7 @@ export class GhostManager {
     lizFilePath: string,
     opts: {
       taskCapabilityApproved?: true;
+      targetCapabilityApproved?: true;
       expectedInstalledApproval: string;
       expectedPackageSha256?: string;
       trustOverride?: GhostHostTrustOverride;
@@ -4156,6 +4164,8 @@ export class GhostManager {
         enabled,
         ...((opts.taskCapabilityApproved === true || (archiveId === undefined && approvalResult.state === 'approved' && approvalResult.receipt.taskCapabilityApproved === true)) &&
           approvedManifest.agent?.tasks === true ? { taskCapabilityApproved: true as const } : {}),
+        ...((opts.targetCapabilityApproved === true || (archiveId === undefined && approvalResult.state === 'approved' && approvalResult.receipt.targetCapabilityApproved === true)) &&
+          approvedManifest.agent?.tasks === true && approvedManifest.agent.targets === true ? { targetCapabilityApproved: true as const } : {}),
         trust,
         // 同 install:指纹取自包投影,发布后的目录漂移在快照对账时 fail closed(P0-8)。
         skillContentSha256: await this.hashSkillContentFromPackage(
@@ -4563,6 +4573,8 @@ export class GhostManager {
         packageSha256,
         ...(current.state === 'approved' && current.receipt.taskCapabilityApproved === true &&
           approvedManifest.agent?.tasks === true ? { taskCapabilityApproved: true as const } : {}),
+        ...(current.state === 'approved' && current.receipt.targetCapabilityApproved === true &&
+          approvedManifest.agent?.tasks === true && approvedManifest.agent.targets === true ? { targetCapabilityApproved: true as const } : {}),
         ...(iconDataUrl !== undefined ? { iconDataUrl } : {}),
         namespace: null,
       }),

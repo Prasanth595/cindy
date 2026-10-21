@@ -6,7 +6,7 @@
  *   并在「卡住 / 等你 / 出错 / 用量上限 / 做完」时发布 `host:sessions` 事件到例行任务引擎。
  * - 层 1 每个伙伴的被动跟进：只对自己开的任务收到事件；内置的「跟进」例行任务被叫醒后用轻量
  *   摘要工具读任务，再决定继续 / 代答 / 换模型 / 汇报 / 更新待办。
- * - 层 2 唯一总调度伙伴：账号内只有一个（默认 Cindy 助理）；收全设备全任务事件，推送主人，
+ * - 层 2 唯一总调度伙伴：账号内最多一个（默认关闭，用户选择开启）；收全设备全任务事件，推送主人，
  *   其它伙伴开的任务默认只看不跟。
  *
  * 规则正文见 docs/product-rules/cindy-bots-runtime.md §6.3 与 docs/product-rules/bot-routines.md。
@@ -18,7 +18,7 @@ export const HOST_SESSIONS_SOURCE_ID = 'host:sessions';
 /** 内置跟进例行任务的 id 前缀；完整 id 由主进程 builtinRoutine.ts 的 builtinFollowUpRoutineId 生成，幂等。 */
 export const BUILTIN_FOLLOW_UP_ROUTINE_PREFIX = 'builtin-follow-up-';
 
-/** 默认总调度伙伴：出厂 Cindy 助理。未自定义时派生，不写 override。 */
+/** 出厂 Cindy 助理的稳定 id；仅用于邀请入口，不意味着已开启自动跟进。 */
 export const DEFAULT_SCHEDULER_BOT_ID = 'cindy-default';
 
 /** 程序级阈值（内部常量，不进设置）。 */
@@ -144,7 +144,7 @@ export function autonomyEventId(type: AutonomyEventType, sessionId: string, phas
 
 /** 账号级设置：只存 override。 */
 export interface BotAutonomySettings {
-  /** 「自动跟进所有任务」归谁；null = 没有总调度。未自定义时默认 Cindy 助理。 */
+  /** 「自动跟进所有任务」归谁；null = 没有总调度。未自定义时关闭。 */
   schedulerBotId: string | null;
 }
 

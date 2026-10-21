@@ -130,7 +130,7 @@ export async function handleProviderGroupRemote(
       });
       // 等目录期间换了账号：这是上一个账号的组(占用也记在上一个账号那份里，随它作废)，不作数。
       if (!scope.isCurrent() || pick.kind === 'none') return { kind: 'none' };
-      if (pick.kind === 'unavailable') return { kind: 'unavailable' };
+      if (pick.kind === 'unavailable') return { kind: 'unavailable', ...(pick.usageLimit ? { usageLimit: pick.usageLimit } : {}) };
       const { key, kind, agentDeviceId, providerId: memberProviderId } = pick.member;
       return { kind: 'member', member: { key, kind, agentDeviceId, providerId: memberProviderId }, label: pick.label };
     }

@@ -12,7 +12,15 @@ import {
   providerGroupSummaryForWire,
   parseProviderGroupRemoteRequest,
   parseProviderGroupRemoteView,
+  parseProviderGroupRemotePick,
 } from '../providerGroup';
+
+// Unit protocol: legacy or malformed quota hints cannot manufacture an automatic wait.
+it.each([undefined, {}, { resetAtMs: '5000' }, { resetAtMs: -1 }, { resetAtMs: Infinity }])(
+  'ignores unavailable replies without a valid quota hint: %j', (usageLimit) => {
+    expect(parseProviderGroupRemotePick({ kind: 'unavailable', usageLimit }, 'anthropic')).toEqual({ kind: 'unavailable' });
+  },
+);
 
 describe('group detail diagnostics compatibility', () => {
   const config = { members: [{ kind: 'local' }] };

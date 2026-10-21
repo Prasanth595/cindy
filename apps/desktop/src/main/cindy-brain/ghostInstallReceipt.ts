@@ -122,6 +122,7 @@ function isValidIconDataUrl(value: unknown): value is string {
 export interface GhostInstallReceipt {
   /** Explicit Host confirmation; absent on older receipts, never inferred from manifest. */
   taskCapabilityApproved?: true;
+  targetCapabilityApproved?: true;
   schemaVersion: typeof RECEIPT_SCHEMA_VERSION;
   id: string;
   /** Missing is a pre-namespace receipt. null is root; a string is an organization. */
@@ -1222,6 +1223,7 @@ export function readLegacyInstallTrust(dir: string): GhostTrustInfo | null {
 
 export function createGhostInstallReceipt(input: {
   taskCapabilityApproved?: true;
+  targetCapabilityApproved?: true;
   manifest: GhostManifest;
   localeResources: Record<string, GhostManifestLocaleResource>;
   enabled: boolean;
@@ -1251,6 +1253,7 @@ export function createGhostInstallReceipt(input: {
     trust: input.trust,
     skillContentSha256: input.skillContentSha256,
     ...(input.taskCapabilityApproved === true ? { taskCapabilityApproved: true as const } : {}),
+    ...(input.targetCapabilityApproved === true ? { targetCapabilityApproved: true as const } : {}),
     ...(input.packageSha256 ? { packageSha256: input.packageSha256 } : {}),
     ...(input.iconDataUrl ? { iconDataUrl: input.iconDataUrl } : {}),
     ...(input.installOrigin !== undefined ? { installOrigin: input.installOrigin } : {}),
@@ -1445,6 +1448,7 @@ function validateReceipt(
       trust,
       skillContentSha256,
       ...(value.taskCapabilityApproved === true ? { taskCapabilityApproved: true as const } : {}),
+      ...(value.targetCapabilityApproved === true ? { targetCapabilityApproved: true as const } : {}),
       ...(typeof value.packageSha256 === 'string' ? { packageSha256: value.packageSha256 } : {}),
       ...(typeof value.iconDataUrl === 'string' ? { iconDataUrl: value.iconDataUrl } : {}),
       ...(installOrigin !== undefined ? { installOrigin } : {}),

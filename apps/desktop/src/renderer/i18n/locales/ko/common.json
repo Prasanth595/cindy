@@ -6655,6 +6655,8 @@
         "agentTasksRequest": "세션 권한 확인",
         "agentTasks": "이 플러그인의 Cindy 세션을 만들고 관리할 수 있음",
         "agentTasksDetail": "메시지를 보내고 결과를 읽으며 자신의 실행을 중지할 수 있습니다. 세션은 사용자에게 표시됩니다. 플러그인의 AI 설정을 사용하며 모델 비용이 발생할 수 있습니다. 다른 세션에 대한 접근 권한은 부여하지 않습니다.",
+        "agentTargets": "프로젝트, 기존 세션 및 파트너에 메시지를 보낼 수 있음",
+        "agentTargetsDetail": "로컬 프로젝트 디렉터리와 세션 및 파트너의 이름과 ID를 확인하고, 프로젝트에 세션을 만들거나 기존 세션 및 파트너에 텍스트와 이미지를 보낼 수 있습니다. AI 실행과 모델 비용이 발생할 수 있으며, 다른 세션의 기록 읽기, 설정 변경 또는 중지 권한은 부여하지 않습니다.",
         "agentHiddenTasks": "세션 목록에 표시되지 않는 백그라운드 세션을 만들 수 있음",
         "agentHiddenTasksDetail": "이 플러그인이 만든 세션을 세션 목록, 검색, 알림에 표시하지 않을 수 있습니다. 플러그인 상세의 「백그라운드 세션」에서 언제든지 확인하고 열거나 세션 목록에 표시할 수 있으며, 플러그인을 제거하면 다시 표시됩니다.",
         "agentErrand": "작업을 만들고 실행하며 결과를 읽을 수 있습니다",
@@ -8975,11 +8977,11 @@
       }
     },
     "autonomy": {
-      "title": "모든 세션 자동 후속 관리",
-      "descriptionOn": "{{name}}이(가) 모든 세션을 주기적으로 확인하고, 응답을 기다리는 일이 있으면 알려 줍니다.",
+      "title": "내 세션 후속 확인",
+      "descriptionOn": "{{name}} 님이 세션에 변화가 생기면 요약을 확인하고 알려드립니다.",
       "movedFrom": "{{name}}에서 여기로 옮겼습니다",
       "heldBy": "지금은 {{name}}이(가) 맡고 있습니다. 켜면 여기로 옮겨집니다.",
-      "heldByNobody": "지금 맡은 동료가 없습니다.",
+      "heldByNobody": "꺼짐",
       "restoreDefault": "기본값으로 복원({{name}})",
       "saveFailed": "저장하지 못했습니다. 다시 시도하세요",
       "turnOff": {
@@ -8991,6 +8993,12 @@
       "allowSchedulerFollow": {
         "title": "시작한 세션도 {{name}}에게 맡기기",
         "description": "기본적으로 {{scheduler}}은(는) 보기만 하고 후속 관리는 하지 않습니다. 켜면 {{name}}이(가) 시작한 세션이 끝나지 않았을 때 {{scheduler}}도 이어서 챙깁니다."
+      },
+      "consent": "켜면 이 컴퓨터에서 직접 만든 세션의 요약을 읽고 진행 상황을 분석하여 중요한 변화를 알려드립니다. 모델 사용량이 소모되며 언제든 끌 수 있습니다.",
+      "invitation": {
+        "title": "세션 후속 확인을 시작할까요?",
+        "start": "후속 확인 시작",
+        "notNow": "나중에"
       }
     },
     "remoteSettings": {
@@ -10116,6 +10124,130 @@
         "managed": "파트너가 X 질문을 담당합니다. 해당 파트너의 메시지 플랫폼 설정에서 연결을 변경할 수 있습니다.",
         "riskBody": "X 질문에는 파트너의 공유 기억, 도구와 작업 폴더가 사용되며 답글은 공개됩니다. 개인 정보를 다루는 용도로 사용하지 마세요. 비공개 채팅 기록을 직접 사용하지 않습니다."
       }
+    },
+    "voiceMode": {
+      "showDetails": "통화 기록 펼치기",
+      "hideDetails": "통화 기록 접기",
+      "transcriptTitle": "현재 인식된 텍스트",
+      "transcriptEmpty": "말한 내용이 여기에 표시됩니다.",
+      "composerPaused": "음성 모드를 종료하면 입력할 수 있습니다…",
+      "microphoneMuted": "마이크 꺼짐",
+      "exit": {
+        "idle": "잠시 대화가 없어 곧 음성 모드가 종료됩니다",
+        "farewell": "작별 인사를 인식했습니다. 곧 음성 모드가 종료됩니다",
+        "semantic": "곧 음성 모드가 종료됩니다",
+        "sending": "메시지를 보낸 후 음성 모드를 종료합니다…",
+        "countdown": "{{seconds}}초 후 음성 모드 종료",
+        "cancel": "음성 모드 유지",
+        "hint": "다시 말하거나 ‘음성 모드 유지’를 누르면 종료를 취소할 수 있습니다. 진행 중인 작업은 계속됩니다.",
+        "mutedHint": "마이크는 계속 음소거 상태입니다. ‘음성 모드 유지’를 누르면 종료를 취소할 수 있습니다. 진행 중인 작업은 계속됩니다."
+      },
+      "settingsTitle": "음성",
+      "openSettings": "음성 설정",
+      "startConversation": "음성 대화 시작",
+      "settingsHint": "이 파트너의 낭독 모델과 음성을 선택한 후 입력창에서 음성 대화를 시작하세요.",
+      "incompleteSettings": "음성 API와 음성을 선택하면 자동으로 저장됩니다.",
+      "previewNeedsChat": "파트너와 대화를 시작하면 음성을 미리 들을 수 있습니다.",
+      "voiceId": "음성 ID",
+      "manualVoice": "음성 ID 직접 입력",
+      "refreshVoices": "음성 목록 새로고침",
+      "voicesLoading": "음성 불러오는 중…",
+      "voicesError": "음성을 불러오지 못했습니다. 다시 시도하거나 음성 ID를 입력하세요.",
+      "voicesReference": "이 모델의 OpenAI 참고 음성입니다. 호환 서비스에서 지원하는 음성은 다를 수 있습니다.",
+      "voicesTruncated": "음성 목록의 일부만 표시합니다. 목록에 없는 음성은 ID를 입력하세요.",
+      "voicesManual": "이 인터페이스에는 음성 목록이 없습니다. 음성 ID를 입력하세요.",
+      "preview": "미리 듣기",
+      "stopPreview": "미리 듣기 중지",
+      "previewVoice": "{{voice}} 미리 듣기",
+      "stopPreviewVoice": "{{voice}} 미리 듣기 중지",
+      "previewText": "안녕하세요, 제 목소리입니다. 함께 이야기하게 되어 반갑습니다.",
+      "previewStatus": {
+        "idle": "미리 듣기는 선택한 모델을 사용하며 사용 요금이 발생할 수 있습니다.",
+        "preparing": "미리 듣기 음성 생성 중…",
+        "playing": "미리 듣는 중…",
+        "complete": "미리 듣기를 완료했습니다.",
+        "error": "미리 듣기에 실패했습니다. 인터페이스, 모델 접근 권한, 음성 ID를 확인한 후 다시 시도하세요."
+      },
+      "readAloud": "읽어주기",
+      "stopReadAloud": "읽어주기 중지",
+      "finishBeforeReadAloud": "메시지를 읽으려면 먼저 음성 모드를 종료하세요.",
+      "readAloudFailed": "읽어주기에 실패했습니다. 팀메이트 설정에서 모델과 음성을 확인한 후 다시 시도하세요.",
+      "finishBeforeDictation": "음성 모드를 종료한 후 받아쓰기를 시작하세요.",
+      "title": "음성 모드",
+      "model": "읽어주기 모델",
+      "refresh": "모델 새로고침",
+      "voice": "목소리",
+      "voiceHint": "선택한 모델이 지원하는 음성 이름을 입력하세요. 예: alloy.",
+      "modelUnavailable": "저장된 읽어주기 모델을 사용할 수 없습니다. 다른 모델을 선택하세요.",
+      "noModels": "사용 가능한 음성 합성 모델이 없습니다.",
+      "noModelsSupportedProtocols": "MiniMax, ElevenLabs 및 OpenAI 호환 음성 합성 API 제공자를 지원합니다.",
+      "noModelsSetupHint": "제공자를 연결하고 음성 모델을 활성화하면 파트너의 낭독 음성을 설정할 수 있습니다.",
+      "openProviders": "모델 제공자 열기",
+      "catalogError": "음성 설정을 불러오거나 저장하지 못했습니다. 다시 시도하세요.",
+      "start": "대화 시작",
+      "resume": "계속",
+      "retrySend": "다시 연결하고 보내기",
+      "mute": "음소거",
+      "interrupt": "읽기 중지",
+      "send": "보내기",
+      "end": "종료",
+      "unsent": "전송되지 않음 · 텍스트를 선택해 복사할 수 있습니다",
+      "hint": "말을 멈추면 자동으로 보내고 답변을 AI 음성으로 읽어줍니다. 언제든 말해서 끼어들 수 있습니다.",
+      "status": {
+        "idle": "준비되면 시작하세요",
+        "connecting": "음성 인식에 연결 중…",
+        "listening": "듣는 중",
+        "thinking": "생각 중…",
+        "speaking": "읽는 중…",
+        "paused": "일시 중지 · 마이크 꺼짐",
+        "error": "일시 중지 · 마이크 꺼짐",
+        "question": "선택 대기 중 · 옵션 번호나 이름을 말하세요",
+        "confirmation": "확인 대기 · 마이크 꺼짐",
+        "preparing": "음성 준비 중…",
+        "loading": "음성 설정 불러오는 중…",
+        "microphone": "마이크 켜는 중…",
+        "muted": "마이크 꺼짐 · 계속 들을 수 있습니다"
+      },
+      "errors": {
+        "connection": "음성 연결이 끊겼습니다. 전송되지 않은 텍스트는 유지됩니다.",
+        "microphone": "마이크가 중지되었습니다. 권한과 연결을 확인한 후 계속하세요.",
+        "send": "메시지가 접수되지 않았습니다. 텍스트는 유지됩니다.",
+        "speech": "답변을 읽지 못했습니다. 텍스트 답변은 대화에 남아 있습니다. 모델과 목소리를 확인하세요."
+      },
+      "voiceIdHint": "이 제공자 계정에서 사용할 수 있는 음성 ID를 입력하세요.",
+      "speed": "읽기 속도",
+      "speedAdjusted": "선택한 모델에 맞춰 {{speed}}배로 조정했어요.",
+      "speedUnavailable": "현재 이 모델은 읽기 속도 조절을 지원하지 않아요.",
+      "speedValue": "{{speed}}×",
+      "sentencePlayback": "문장별로 읽기",
+      "sentencePlaybackHint": "답변이 생성되는 동안 완성된 문장부터 읽습니다. 끄면 전체 답변이 완성된 후 읽습니다. 답변 처리가 필요한 경우 자동으로 기다립니다.",
+      "preferenceHint": "음성 설정은 이 파트너에만 저장됩니다.",
+      "resetPreference": "기본값 복원",
+      "preferenceError": "음성 설정을 불러오거나 저장하지 못했습니다. 다시 시도해 주세요.",
+      "protocol": "음성 API",
+      "protocolOpenai": "OpenAI 호환",
+      "protocolHint": "이 주소가 지원하는 음성 API를 선택하세요. 제공자는 변경되지 않습니다.",
+      "protocolCorrectedHint": "공식 주소에 맞게 API를 수정했습니다. 음성을 다시 선택하세요.",
+      "unmute": "음소거 해제",
+      "mutedHint": "마이크가 꺼져 있습니다. 답변은 계속 읽어 줍니다. 음소거를 해제하면 대화를 이어갈 수 있습니다.",
+      "microphoneResumeError": "마이크를 켜지 못했습니다. 답변은 계속 들을 수 있습니다. 권한과 장치를 확인한 뒤 음소거 해제를 다시 시도하세요.",
+      "callRecord": "이번 통화",
+      "callHistoryTitle": "음성 통화",
+      "you": "나",
+      "companion": "파트너",
+      "callInProgress": "통화 중",
+      "callSendFailed": "전송하지 못했습니다. 말한 내용은 보관됩니다.",
+      "handoff": {
+        "sending": "전달 중…",
+        "accepted": "파트너에게 전달됨",
+        "failed": "전달하지 못했습니다. 말한 내용은 보관됩니다",
+        "completed": "결과를 받았습니다"
+      },
+      "callSaved": "기록 저장됨",
+      "taskFromCall": "통화에서 전달한 작업",
+      "viewTaskProgress": "진행 상황 보기",
+      "liveDraft": "음성 인식 중",
+      "questionDraft": "확인 대기 중"
     }
   },
   "common": {
@@ -10614,6 +10746,12 @@
         "providerGroupRunningOn": "현재 {{device}}에서 실행 중",
         "providerGroupRunningHere": "현재 이 컴퓨터에서 실행 중",
         "providerGroupUnassigned": "시작하면 제공자 그룹이 컴퓨터를 고르고, 사용량은 그 컴퓨터 기준으로 표시됩니다"
+      },
+      "speed": {
+        "label": "속도",
+        "standard": "표준",
+        "fast": "빠름",
+        "ultrafast": "초고속"
       }
     },
     "permissionSelector": {
@@ -10710,6 +10848,7 @@
       "recent": "최근",
       "browseFolder": "다른 폴더 선택",
       "browseProjectFolder": "다른 프로젝트 폴더 선택",
+      "browseFailed": "폴더 선택 창을 열 수 없습니다. 다시 시도해 주세요.",
       "dialogue": "대화",
       "dialogueOrSelectProject": "대화 또는 프로젝트 선택",
       "searchProjects": "프로젝트 검색",
@@ -11118,6 +11257,14 @@
     "prevMessageJump": "이전 질문으로 이동: {{preview}}",
     "sessionLoading": "세션 불러오는 중",
     "askUserQuestion": {
+      "voice": {
+        "hint": "옵션 번호나 이름을 말하세요. 여러 개를 선택한 뒤에는 “선택 확인”이라고 말하세요.",
+        "freeTextHint": "답변을 말하고 내용을 검토한 뒤 “선택 확인”이라고 말하여 제출하세요.",
+        "confirm": "선택 내용을 검토한 뒤 “선택 확인”으로 제출하거나 “선택 취소”로 다시 선택하세요.",
+        "ambiguous": "선택이 명확하지 않습니다. 옵션 번호나 전체 이름 하나를 말하거나 직접 선택하세요.",
+        "unknown": "명확한 옵션을 인식하지 못했습니다. 옵션 번호나 전체 이름을 말하거나 직접 선택하세요.",
+        "cancelled": "음성 선택을 취소했습니다. 다시 선택하세요."
+      },
       "skippedAnswer": "건너뜀",
       "pendingTitle": "답변 대기 중",
       "restoreAriaLabel": "질문 카드 펼치기",
@@ -12036,7 +12183,7 @@
       "REMOTE_WORKDIR_UNAVAILABLE": "원격 작업 디렉터리를 지금 사용할 수 없습니다. 그 컴퓨터에 폴더가 아직 있는지 확인한 뒤 다시 시도하세요.",
       "REMOTE_OPTIMISTIC_SESSION_STATE_UNAVAILABLE": "컴퓨터에서 이 메시지가 이미 전송됐는지 아직 확인할 수 없습니다. 잠시 후 다시 시도하고, 같은 메시지를 중복으로 보내지 마세요.",
       "REMOTE_AGENT_UNAVAILABLE": "Agent를 실행하는 컴퓨터에 연결할 수 없습니다. 그 컴퓨터가 온라인이고 원격 제어를 허용하는지 확인한 뒤 다시 시도하세요.",
-      "REMOTE_AGENT_PEER_TOO_OLD": "상대 컴퓨터의 Cindy가 오래되어 이 컴퓨터의 Agent를 실행할 수 없습니다. 먼저 그 컴퓨터에서 Cindy를 업데이트하세요.",
+      "REMOTE_AGENT_PEER_TOO_OLD": "상대 컴퓨터의 Cindy 버전이 오래되어 이 작업을 지원하지 않습니다. 먼저 그 컴퓨터에서 Cindy를 업데이트하세요.",
       "REMOTE_AGENT_EXPIRED": "이 세션은 Agent를 실행하는 컴퓨터에서 이미 종료되었습니다. 다시 보내 주세요.",
       "REMOTE_AGENT_NOT_FOUND": "이 세션은 Agent를 실행하는 컴퓨터에서 이미 종료되었습니다. 다시 보내 주세요.",
       "REMOTE_AGENT_BUSY": "상대 컴퓨터에서 실행 중인 세션이 너무 많습니다. 일부를 종료한 뒤 다시 시도하세요.",
@@ -12046,6 +12193,7 @@
       "REMOTE_AGENT_SHARE_PAUSED": "공유한 사람이 나에 대한 공유를 일시 중지해서 재개될 때까지 이 모델을 사용할 수 없습니다. 다른 모델로 바꿔 계속할 수 있습니다.",
       "REMOTE_AGENT_SHARE_REMOVED": "이 공유는 더 이상 사용할 수 없습니다(공유한 사람이 삭제했거나 내가 나갔습니다). 다른 모델로 바꿔 계속할 수 있습니다.",
       "REMOTE_AGENT_SHARE_UNAVAILABLE": "공유된 제공자를 일시적으로 사용할 수 없습니다. 공유한 사람의 컴퓨터가 오프라인이거나 공유가 잠시 꺼져 있을 수 있습니다. 나중에 다시 시도하거나 다른 모델로 바꿔 계속할 수 있습니다.",
+      "REMOTE_AGENT_GROUP_USAGE_LIMIT": "이 모델을 사용할 수 있는 계정의 사용량이 한도에 도달했습니다. 다른 모델로 전환하거나 한도가 초기화된 후 계속하세요.",
       "REMOTE_AGENT_GROUP_UNAVAILABLE": "제공자 그룹의 컴퓨터가 지금 이 세션을 실행할 수 없습니다. 모두 오프라인이거나, 배정이 일시 중지되었거나, 대기 중이거나, 이 모델이 없을 수 있습니다. 이 제공자의 원격 및 공유 페이지에서 그룹을 확인하세요.",
       "REMOTE_AGENT_DEVICE_LIMIT": "이 기기의 원격 세션 수가 한도에 도달했습니다. 사용하지 않는 세션을 보관하거나 제공자에게 원격 및 공유에서 한도를 높여 달라고 요청하세요.",
       "REMOTE_AGENT_TOTAL_LIMIT": "제공자 컴퓨터의 전체 원격 세션 수가 한도에 도달했습니다. 제공자에게 불필요한 세션을 해제하거나 원격 및 공유에서 한도를 높여 달라고 요청하세요.",
@@ -12592,6 +12740,23 @@
         "dirtyWorktreeWarning": "이 세션의 워크트리에 커밋되지 않은 변경 사항이 있습니다. 보관 전에 git 스냅샷으로 자동 저장되며 나중에 세션에서 복원할 수 있습니다.",
         "confirm": "확인",
         "cancel": "취소"
+      },
+      "dialogueAction": {
+        "search": "이 대화 그룹에서 검색",
+        "restoreAll": "모두 복원",
+        "remoteBulkUnavailable": "원격 세션이 포함된 그룹의 일괄 작업은 아직 지원하지 않습니다"
+      },
+      "dialogueArchiveAll": {
+        "description": "이 대화 그룹의 세션 {{count}}개를 모두 보관합니다. 보관 후 목록에서 숨겨집니다.",
+        "descriptionWithSkip": "이 대화 그룹의 세션 {{count}}개를 보관합니다({{skip}}는 건너뜁니다). 보관 후 목록에서 숨겨집니다.",
+        "allPinnedOrRunning": "이 대화 그룹의 모든 세션이 고정되었거나 실행 중이므로 보관할 수 없습니다",
+        "allPinned": "이 대화 그룹의 모든 세션이 고정되어 있어 보관되지 않습니다",
+        "allRunning": "이 대화 그룹의 모든 세션이 실행 중입니다. 중지한 후 보관하세요",
+        "empty": "이 대화 그룹에 보관할 수 있는 세션이 없습니다"
+      },
+      "dialogueRestoreAll": {
+        "description": "이 대화 그룹의 보관된 세션 {{count}}개를 복원합니다. 복원 후 '보관됨' 목록에서 '활성' 목록으로 이동합니다.",
+        "empty": "이 대화 그룹에 복원할 수 있는 세션이 없습니다"
       },
       "archiveAll": {
         "title": "모든 세션 보관",
@@ -14914,7 +15079,7 @@
       "codexBinaryMissingTitle": "Codex 구성 요소가 준비되지 않음",
       "codexBinaryMissingDescription": "Codex 구성 요소가 아직 준비되지 않아 이 기능을 사용할 수 없습니다. 잠시 후 다시 시도하거나 설정 → 제공자에서 Codex 연결 상태를 확인하세요.",
       "piBinaryMissingTitle": "Pi 구성 요소가 준비되지 않음",
-      "piBinaryMissingDescription": "Pi 구성 요소가 아직 준비되지 않아 이 기능을 사용할 수 없습니다. 잠시 후 다시 시도하거나 설정 → 제공자에서 Pi 연결 상태를 확인하세요.",
+      "piBinaryMissingDescription": "Pi 구성 요소가 아직 준비되지 않아 이 기능을 사용할 수 없습니다. 잠시 후 다시 시도하거나 설정 → 정보에서 Pi를 관리하거나 복원하세요.",
       "goToSettings": "설정 열기",
       "remoteCodexBinaryMissingTitle": "원격 기기의 Codex 구성 요소가 준비되지 않음",
       "remotePiBinaryMissingTitle": "원격 기기의 Pi 구성 요소가 준비되지 않음",
@@ -15029,6 +15194,25 @@
       "remoteWorkerLoading": "{{device}}의 작업을 불러오는 중…",
       "remoteWorkerUnreachable": "{{device}}에 지금 연결할 수 없습니다. 다시 연결되면 이 Worker의 작업이 다시 표시됩니다.",
       "closeAria": "닫기"
+    },
+    "workerProject": {
+      "missingDirectory": "이 디렉터리가 더 이상 존재하지 않습니다. 다른 디렉터리를 선택해 주세요.",
+      "label": "프로젝트",
+      "current": "현재 프로젝트",
+      "shared": "Lead와 공유: {{project}} · {{branch}}",
+      "direct": "{{project}}의 {{branch}} 브랜치에서 직접 수정합니다",
+      "inferred": "Lead의 최근 작업을 바탕으로 확인했습니다",
+      "dirty": "이 디렉터리에는 커밋하지 않은 변경 사항이 있습니다. Worker는 이 상태에서 작업을 이어갑니다.",
+      "newWorktree": "Worker용 worktree 만들기",
+      "from": "분기 시작점",
+      "fromSuffix": "(변경 가능)",
+      "splitWarning": "{{branch}}의 최신 커밋에서 새 브랜치를 만듭니다. Lead가 커밋하지 않은 변경 사항은 가져오지 않습니다. 이후 양쪽 변경 사항은 서로 반영되지 않으므로 병합해야 합니다.",
+      "dialogue": "현재 세션에 프로젝트가 없어 worktree를 만들 수 없습니다. Worker는 {{directory}}에서 작업합니다.",
+      "notGit": "이 디렉터리는 Git 저장소가 아니므로 worktree를 만들 수 없습니다. Worker는 {{directory}}에서 작업합니다.",
+      "emptyRepo": "이 저장소에는 아직 커밋이 없어 worktree를 만들 수 없습니다. Worker는 {{directory}}에서 작업합니다.",
+      "detachedHead": "Detached HEAD · {{sha}}",
+      "directDetached": "{{project}}의 {{branch}}에서 직접 수정합니다",
+      "loadFailed": "프로젝트 디렉터리를 읽지 못했습니다."
     }
   },
   "splitGroup": {

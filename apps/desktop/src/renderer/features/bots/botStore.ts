@@ -37,7 +37,7 @@ export interface BotCapabilities {
   modelOverride?: BotModelOverride | null;
   providerId?: string | null;
   effort: string;
-  fastMode: boolean;
+  fastMode: boolean | 'ultrafast';
   harness: 'claude' | 'codex' | 'pi';
   /** Ordered, complete runtime routes. The first route is the normal choice. */
   modelChain: BotModelRoute[];
@@ -70,7 +70,7 @@ export interface BotModelOverride {
   model: string;
   providerId: string | null;
   effort: string;
-  fastMode: boolean;
+  fastMode: boolean | 'ultrafast';
 }
 
 export type { BotHarness, BotModelRoute };
@@ -99,7 +99,7 @@ function normalizeBotModelOverride(
         model: record.model.trim(),
         providerId: typeof record.providerId === 'string' ? record.providerId : null,
         effort: typeof record.effort === 'string' ? record.effort : '',
-        fastMode: record.fastMode === true,
+        fastMode: (record.fastMode === 'ultrafast' ? 'ultrafast' : record.fastMode === true),
       };
     }
   }
@@ -110,7 +110,7 @@ function normalizeBotModelOverride(
       model: capabilities.model.trim(),
       providerId: typeof capabilities.providerId === 'string' ? capabilities.providerId : null,
       effort: typeof capabilities.effort === 'string' ? capabilities.effort : '',
-      fastMode: capabilities.fastMode === true,
+      fastMode: (capabilities.fastMode === 'ultrafast' ? 'ultrafast' : capabilities.fastMode === true),
     };
   }
   return getEffectiveBotModelSettings(vendorForHarness(harness), null);
@@ -303,7 +303,7 @@ function readGlobalModelOverrides(): Partial<Record<BotModelVendor, BotModelOver
         model: record.model.trim(),
         providerId: typeof record.providerId === 'string' ? record.providerId : null,
         effort: typeof record.effort === 'string' ? record.effort : '',
-        fastMode: record.fastMode === true,
+        fastMode: (record.fastMode === 'ultrafast' ? 'ultrafast' : record.fastMode === true),
       };
     }
     return result;
@@ -382,7 +382,7 @@ export function getEffectiveBotModelChain(
       ...(draft.agentDeviceId ? { agentDeviceId: draft.agentDeviceId } : {}),
       harness: draft.vendor === 'cc' || draft.vendor === 'orca' ? 'claude' : draft.vendor,
       providerId: selected.providerId ?? null, model: selected.model,
-      effort: selected.effort ?? '', fastMode: draft.fastModeByModel[selected.model] === true,
+      effort: selected.effort ?? '', fastMode: (draft.fastModeByModel[selected.model] ?? false),
     },
     providersLoading: !providers, availableAgents: availableAgents ?? new Set(),
     availableAgentsLoaded: availableAgents !== null });
@@ -594,7 +594,7 @@ function normalizeDbProfile(value: unknown): BotProfile | null {
     model: resolvedModel.model || rawCapabilities?.model,
     providerId: resolvedModel.providerId ?? rawCapabilities?.providerId,
     effort: resolvedModel.effort || rawCapabilities?.effort,
-    fastMode: resolvedModel.fastMode || rawCapabilities?.fastMode === true,
+    fastMode: resolvedModel.fastMode || (rawCapabilities?.fastMode === 'ultrafast' ? 'ultrafast' : rawCapabilities?.fastMode === true),
   });
   const primaryRoute = modelChain[0];
   const legacyTools = normalizeStringList(rawCapabilities?.tools);
@@ -673,7 +673,7 @@ function normalizeDbProfile(value: unknown): BotProfile | null {
         primaryRoute?.fastMode ??
         (rawCapabilities?.modelOverride === null
           ? resolvedModel.fastMode
-          : modelOverride?.fastMode === true),
+          : modelOverride?.fastMode ?? false),
       permissions: normalizeBotPermissions(rawCapabilities?.permissions),
       skillMode: normalizeSkillMode(item.capabilities?.skillMode, item.skills),
       skillsExcluded: normalizeStringList(rawCapabilities?.skillsExcluded),
@@ -1294,7 +1294,7 @@ export async function setBotSchedulerBotId(schedulerBotId: string | null): Promi
   applyAutonomyView(await api.setSettings({ schedulerBotId }), owner);
 }
 
-/** 恢复默认 = 删除 override，跟随当前版本默认（出厂 Cindy 助理）。 */
+/** 恢复默认 = 删除 override，跟随当前版本默认（关闭）。 */
 export async function resetBotAutonomySettings(): Promise<void> {
   const api = autonomyApi();
   if (!api) throw new Error('Bot autonomy settings are not ready');

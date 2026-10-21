@@ -1,3 +1,4 @@
+import { fastModeToStorage } from '@cindy/maker-shared';
 import { runPluginUsageTransaction } from './pluginUsageTx.js';
 import { runTaskTagsTransaction } from './taskTagsTx.js';
 import { recordMediaSpend } from './mediaSpendTx.js';
@@ -765,7 +766,7 @@ function insertBotSession(db: Database.Database, s: Record<string, unknown>): vo
     .run(expectString(s.id, 'session.id'), expectString(s.title, 'session.title'),
       nullableString(s.workingDir), expectString(s.workspaceKind, 'session.workspaceKind'),
       expectString(s.model, 'session.model'), expectString(s.effort, 'session.effort'),
-      expectString(s.permissionMode, 'session.permissionMode'), s.fastMode === true ? 1 : 0,
+      expectString(s.permissionMode, 'session.permissionMode'), fastModeToStorage(s.fastMode),
       expectString(s.agentKind, 'session.agentKind'),
       nullableString(s.parentSessionId),
       expectString(s.extraDirs, 'session.extraDirs'), nullableString(s.remoteHostId), nullableString(s.providerId),
@@ -1570,7 +1571,7 @@ function contextRebuild(db: Database.Database, args: unknown): void {
           'UPDATE sessions SET sdk_session_id = NULL, context_tokens = 0, updated_at = ?, list_message_count = NULL, model = ?, provider_id = ?, effort = COALESCE(?, effort), fast_mode = ? WHERE id = ? AND ifnull(cleared_at, -1) = ifnull(?, -1) AND sdk_session_id = ? AND status != ?',
         ).run(updatedAt, expectString(replacement.model, 'replacementRoute.model'),
           nullableString(replacement.providerId), nullableString(replacement.effort),
-          replacement.fastMode === true ? 1 : 0, sessionId, expectedClearedAt,
+          fastModeToStorage(replacement.fastMode), sessionId, expectedClearedAt,
           expectString(replacement.expectedSdkSessionId, 'replacementRoute.expectedSdkSessionId'), 'deleted')
       : db.prepare(
           'UPDATE sessions SET sdk_session_id = NULL, context_tokens = 0, updated_at = ?, list_message_count = NULL WHERE id = ? AND ifnull(cleared_at, -1) = ifnull(?, -1)',
@@ -2306,7 +2307,7 @@ function imRotateSession(
       expectString(session.model, 'session.model'),
       expectString(session.effort, 'session.effort'),
       expectString(session.permissionMode, 'session.permissionMode'),
-      session.fastMode === true ? 1 : 0,
+      fastModeToStorage(session.fastMode),
       expectString(session.agentKind, 'session.agentKind'),
       nullableString(session.providerId),
       expectString(session.source, 'session.source'),
@@ -2954,9 +2955,9 @@ function forkSession(db: Database.Database, args: unknown): { messageCount: numb
         sdk_session_id, total_token_usage, total_cost_usd, context_tokens,
         context_window, context_window_runtime, fast_mode, cleared_at, pinned_at, user_send_at,
         agent_kind, workspace_kind, codex_history_has_product_prompt,
-        parent_session_id, forked_at_message_id,
+        parent_session_id, forked_at_message_id, agent_device_id,
         created_at, updated_at
-      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     ).run(
       expectString(newSession.id, 'newSession.id'),
       expectString(newSession.title, 'newSession.title'),
@@ -2972,7 +2973,7 @@ function forkSession(db: Database.Database, args: unknown): { messageCount: numb
       expectNumber(newSession.contextTokens, 'newSession.contextTokens'),
       expectNumber(newSession.contextWindow, 'newSession.contextWindow'),
       nullableNumber(newSession.contextWindowRuntime),
-      newSession.fastMode ? 1 : 0,
+      fastModeToStorage(newSession.fastMode),
       nullableNumber(newSession.clearedAt),
       nullableNumber(newSession.pinnedAt),
       nullableNumber(newSession.userSendAt),
@@ -2985,6 +2986,7 @@ function forkSession(db: Database.Database, args: unknown): { messageCount: numb
           : 0,
       nullableString(newSession.parentSessionId),
       nullableString(newSession.forkedAtMessageId),
+      nullableString(newSession.agentDeviceId),
       expectNumber(newSession.createdAt, 'newSession.createdAt'),
       expectNumber(newSession.updatedAt, 'newSession.updatedAt'),
     );
@@ -3136,7 +3138,7 @@ function sessionImportShare(db: Database.Database, args: unknown): { messageCoun
       expectNumber(rawSession.totalCostUsd, 'session.totalCostUsd'),
       expectNumber(rawSession.contextTokens, 'session.contextTokens'),
       expectNumber(rawSession.contextWindow, 'session.contextWindow'),
-      rawSession.fastMode ? 1 : 0,
+      fastModeToStorage(rawSession.fastMode),
       rawSession.planModeEnabled ? 1 : 0,
       expectString(rawSession.agentKind, 'session.agentKind'),
       nullableString(rawSession.orcaRole),
@@ -3498,7 +3500,7 @@ function orcaUpsertWorker(db: Database.Database, args: unknown): void {
           sessionId, expectString(proxy.title, 'proxySession.title'),
           expectString(proxy.model, 'proxySession.model'),
           proxy.effort == null ? 'high' : expectString(proxy.effort, 'proxySession.effort'),
-          expectString(proxy.permissionMode, 'proxySession.permissionMode'), proxy.fastMode === true ? 1 : 0,
+          expectString(proxy.permissionMode, 'proxySession.permissionMode'), fastModeToStorage(proxy.fastMode),
           expectString(proxy.agentKind, 'proxySession.agentKind'), now, now,
         );
       }

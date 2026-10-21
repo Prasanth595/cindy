@@ -104,16 +104,17 @@ export interface OrcaMcpDeps {
     model?: string;
     providerId?: string;
     effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
-    fast?: boolean;
+    fast?: boolean | 'ultrafast';
     label: string;
     workingDir?: string;
+    worktree?: { sourceBranch?: string };
     executionDeviceId?: string;
     /** Worker 的 Agent 所在位置：null = 任务所在电脑；省略 = 跟 Lead。 */
     agentDeviceId?: string | null;
     initialTask?: string;
   }) => Promise<
     ControlResult<
-      { workerId: string; workerSessionId: string; softLimitExceeded?: boolean; dispatched?: boolean; dispatchOutcome?: import('../lizi_xdtHelperMcpServer.js').ControlDispatchOutcome; queuedMessageId?: string },
+      { workerId: string; workerSessionId: string; workingDir?: string; worktree?: { path: string; branch: string }; softLimitExceeded?: boolean; dispatched?: boolean; dispatchOutcome?: import('../lizi_xdtHelperMcpServer.js').ControlDispatchOutcome; queuedMessageId?: string },
       'INVALID_PARAMS' | 'NOT_FOUND' | 'WORKER_LIMIT_HARD_EXCEEDED' | 'DUPLICATE_LABEL' | 'WORKER_CREATION_IN_PROGRESS' | 'BUDGET_MODEL_REQUIRES_API_MODE' | 'NO_PROVIDER_FOR_AGENT' | 'PROVIDER_ROUTE_UNAVAILABLE' | 'REMOTE_AGENT_DEVICE_UNREACHABLE' | 'REMOTE_AGENT_SHARE_PAUSED' | 'REMOTE_AGENT_SHARE_REMOVED' | 'REMOTE_AGENT_SHARE_UNAVAILABLE' | 'UNSUPPORTED_CAPABILITY'
     >
   >;
@@ -303,6 +304,8 @@ export interface OrcaWorkspaceInfo {
     effort: string | null;
     focused: boolean;
     working_dir: string;
+    owns_worktree?: boolean;
+    worktree?: { path: string; branch: string };
     /** 跑在另一台电脑上的 Worker 才有；working_dir 是那台电脑上的目录。 */
     execution_device?: {
       device_id: string;
@@ -411,7 +414,7 @@ function registerOrcaDiagnosticTools(
     name: 'get_workspace_info',
     category: 'control',
     description:
-      'List the current Orca workflow and worker sessions, including whether each worker queue is paused. execution_devices lists other same-account computers a worker can run on (pass device_id as create_worker.execution_device_id only when supported=true); workers running on another computer carry execution_device.',
+      'List the current Orca workflow and worker sessions, including whether each worker queue is paused. owns_worktree is true only for a Worker-owned checkout recycled on archive; worktree then includes its path and branch. Inheriting the Lead directory does not grant ownership. execution_devices lists other same-account computers a worker can run on (pass device_id as create_worker.execution_device_id only when supported=true); workers running on another computer carry execution_device.',
     inputShape: {},
     handler: async () => {
       const ctx = resolveLeadSessionContext(getSessionContext);

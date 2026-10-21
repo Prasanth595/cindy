@@ -39,9 +39,11 @@ export function BotSettingsDrawer() {
 
   const requestedPage = searchParams.get('settingsPage');
   const initialPage = requestedPage === 'memory' || requestedPage === 'capabilities' ? requestedPage : 'home';
-  // 「模型」「消息平台」只有本机伙伴有; 远端伙伴仍只认上面两页。
+  // 「模型」「语音」「消息平台」只有本机伙伴有; 远端伙伴仍只认上面两页。
   const localInitialPage =
-    requestedPage === 'model' || requestedPage === 'channels' ? requestedPage : initialPage;
+    requestedPage === 'model' || requestedPage === 'voice' || requestedPage === 'channels'
+      ? requestedPage
+      : initialPage;
   const allowNavigation = useRef(false);
   const pendingGuard = useRef<Promise<boolean> | null>(null);
   const beforeCloseRef = useRef<(() => Promise<boolean>) | null>(null);

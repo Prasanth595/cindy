@@ -57,6 +57,7 @@ async function setup(options: {
   beforeOwnershipRead?: () => void;
   creators?: Record<string, string>;
   extraBots?: string[];
+  schedulerOff?: boolean;
   subscribeActivity?: (watch: TaskWatch) => (() => void) | null;
 } = {}) {
   let now = 1_000_000;
@@ -100,7 +101,7 @@ async function setup(options: {
           options.beforeOwnershipRead?.();
           return { bots, creatorBySession: new Map(Object.entries(options.creators ?? {})), responsibleByBot: new Map() };
         },
-        readSchedulerOverride: () => ({ customized: true, schedulerBotId: 'sched' }),
+        readSchedulerOverride: () => ({ customized: !options.schedulerOff, schedulerBotId: options.schedulerOff ? null : 'sched' }),
         listRemoteDevices: async () => null,
         invokeRemote: async () => { throw new Error('unused'); },
       }),
@@ -119,6 +120,25 @@ async function setup(options: {
 }
 
 describe('BotAutonomyRuntime with the routine engine', () => {
+  it('never wakes for owner tasks without opt-in, while retaining explicitly delegated work', async () => {
+    const t = await setup({ schedulerOff: true, creators: { delegated: 'a' } });
+    const engine = await t.engine();
+    const runtime = await t.runtime(engine);
+    try {
+      runtime.watch.applyActivity('mine', errored('mine'));
+      runtime.watch.applyActivity('delegated', errored('delegated'));
+      await runtime.watch.settled();
+      await runtime.evaluate();
+      await vi.waitFor(() => expect(t.execute).toHaveBeenCalledOnce());
+      expect(t.execute.mock.calls[0]![0].botId).toBe('a');
+      expect(t.execute.mock.calls[0]![1].events.map(({ event }) => event.subject)).toEqual(['delegated']);
+      expect(engine.list('sched')[0].enabled).toBe(true);
+    } finally {
+      runtime.stop();
+      await engine.stop();
+    }
+  });
+
   it('re-registers the host source after an engine rebuild and keeps one built-in rule per active teammate', async () => {
     const t = await setup();
     const first = await t.engine();

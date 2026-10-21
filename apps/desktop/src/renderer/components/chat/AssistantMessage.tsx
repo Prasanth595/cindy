@@ -56,14 +56,13 @@ import type { AgentKind as RendererAgentKind } from '@/lib/ccAgent.types';
 import type { TurnUsageDetails } from '../../../shared/turnUsageDetails';
 import type { RegionalMoney } from '../../../shared/regionalMoney';
 import { useAgentCapabilities, type AgentKind as MakerAgentKind } from '@/hooks/useAgentCapabilities';
-import { useAgentOnOtherDevice } from './AgentOnOtherDeviceContext';
 import { useSessionFileOrigin } from './ChatSessionFileContext';
 import { originDeviceId } from '@/lib/sessionFileOrigin';
 import { buildSessionMessageDeepLink } from '@/lib/deepLink';
 import { getStickySessionDeviceId } from '@/features/device-link/stickySessionOrigin';
 import { insertSessionLinkIntoComposer } from '@/lib/composerActionsBus';
 import { MarkdownRenderer } from './MarkdownRenderer';
-import { MessageActionBar } from './MessageActionBar';
+import { BubbleHoverToolbar, MessageActionBar } from './MessageActionBar';
 import { shareSelectionStore } from './shareSelectionStore';
 import { useForkAtMessage } from './useForkAtMessage';
 import { useDeleteMessage } from './useDeleteMessage';
@@ -283,9 +282,8 @@ export const AssistantMessage = memo(function AssistantMessage({
   );
   const isRemote = Boolean(remoteHostId);
   const sharedGuest = isSharedTaskPeer(originDeviceId(sessionFileOrigin) ?? '');
-  const agentOnOtherDevice = useAgentOnOtherDevice();
   const forkSupported =
-    !isRemote && !agentOnOtherDevice && (!agentKind || (capabilities?.fork?.supported ?? true));
+    !isRemote && (!agentKind || (capabilities?.fork?.supported ?? true));
   const handleFork = useForkAtMessage({
     sessionId: currentSessionId,
     messageClientId,
@@ -331,18 +329,56 @@ export const AssistantMessage = memo(function AssistantMessage({
     ? `${currentSessionId ?? ''}\u0000${messageClientId}`
     : undefined;
 
+  // Empty streaming starts stay chrome-free until there is something to read.
+  const botBubble = simplifiedBotConversation
+    && Boolean(content.trim() || failedSamplingAttempt || ghostRenderCard);
+
+  const actionBar = !isStreaming && showActionBar ? (
+    <MessageActionBar
+      createdAt={createdAt}
+      copyText={richAnswerText(content)}
+      copyLinkText={messageDeepLink}
+      align="left"
+      hovered={hovered}
+      simplifiedBotConversation={simplifiedBotConversation}
+      readAloudMessage={simplifiedBotConversation && !ghostReplyPending && currentSessionId && messageClientId
+        ? { sessionId: currentSessionId, messageId: messageClientId }
+        : undefined}
+      compact={botBubble}
+      onFork={!sharedGuest && canFork ? handleFork : undefined}
+      onAddToChat={messageDeepLink ? handleAddToChat : undefined}
+      onShareAsImage={handleShareAsImage}
+      onDelete={!sharedGuest && currentSessionId && messageClientId ? handleDelete : undefined}
+      turnMoney={turnMoney}
+      turnCostUsd={turnCostUsd}
+      turnCostIsEstimate={turnCostIsEstimate}
+      userTurnMoney={userTurnMoney}
+      userTurnCostUsd={userTurnCostUsd}
+      userTurnCostIsEstimate={userTurnCostIsEstimate}
+      turnUsageDetails={userTurnUsageDetails ?? turnUsageDetails}
+    />
+  ) : null;
+
   return (
     <div
-      className="flex w-full flex-col items-start gap-1.5"
+      className={cn('flex w-full flex-col items-start gap-1.5', botBubble && 'group/message')}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
       <div
+        {...(botBubble ? { 'data-bot-reply-bubble': '' } : {})}
         className={cn(
           // min-w-0: flex item 默认 min-width: auto 会被 <pre> 的固有宽度撑爆，
           // 导致代码块溢出消息流右边界。加上 min-w-0 让 w-full 真正生效，
           // <pre> 的 overflow-x-auto 才能正常接管横向滚动。
-          'w-full min-w-0',
+          // 伙伴私聊：回复放进与群聊同一种气泡（卡片底 + 细边框，无阴影），宽度随内容、
+          // 上限 720；组件式回答按可用宽度排版，气泡取满上限。右侧为回复、朗读和更多留出位置。
+          botBubble
+            ? cn(
+                'relative min-w-0 max-w-[min(720px,calc(100%-96px))] rounded-xl border border-[var(--border-default)] bg-[var(--surface-elevated)] px-3.5 py-2.5',
+                hasRichAnswer(content) ? 'w-full' : 'w-fit',
+              )
+            : 'w-full min-w-0',
           CHAT_BODY_CLASS,
           'text-[var(--msg-assistant-text)]',
         )}
@@ -426,6 +462,7 @@ export const AssistantMessage = memo(function AssistantMessage({
             })}
           </div>
         )}
+        {botBubble && actionBar && <BubbleHoverToolbar side="right">{actionBar}</BubbleHoverToolbar>}
       </div>
       {simplifiedBotConversation && !isStreaming && content.trim() && botStarterOptions?.length
         ? <BotStarterOptions options={botStarterOptions} locked={starterOptionsLocked === true} /> : null}
@@ -437,28 +474,9 @@ export const AssistantMessage = memo(function AssistantMessage({
         </div>
       ) : null}
       {/* Streaming → bar not mounted at all (V1.2 验收 "流式期间不挂载");
-          非 turn 收尾正文(showActionBar=false)同样不挂,消息流保持紧凑 */}
-      {!isStreaming && showActionBar && (
-        <MessageActionBar
-          createdAt={createdAt}
-          copyText={richAnswerText(content)}
-          copyLinkText={messageDeepLink}
-          align="left"
-          hovered={hovered}
-          simplifiedBotConversation={simplifiedBotConversation}
-          onFork={!sharedGuest && canFork ? handleFork : undefined}
-          onAddToChat={messageDeepLink ? handleAddToChat : undefined}
-          onShareAsImage={handleShareAsImage}
-          onDelete={!sharedGuest && currentSessionId && messageClientId ? handleDelete : undefined}
-          turnMoney={turnMoney}
-          turnCostUsd={turnCostUsd}
-          turnCostIsEstimate={turnCostIsEstimate}
-          userTurnMoney={userTurnMoney}
-          userTurnCostUsd={userTurnCostUsd}
-          userTurnCostIsEstimate={userTurnCostIsEstimate}
-          turnUsageDetails={userTurnUsageDetails ?? turnUsageDetails}
-        />
-      )}
+          非 turn 收尾正文(showActionBar=false)同样不挂,消息流保持紧凑。
+          伙伴私聊的气泡把操作栏挂在气泡右侧(BubbleHoverToolbar),这里不再另起一行。 */}
+      {!botBubble && actionBar}
     </div>
   );
 });

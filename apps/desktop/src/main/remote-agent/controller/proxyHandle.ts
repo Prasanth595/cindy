@@ -45,6 +45,7 @@ export interface RemoteStartedInfo {
   shadowDir: string;
   /** Agent 主机上的虚拟镜像根。 */
   mirrorRoot?: string;
+  previousMirrorRoots?: string[];
   extraDirs?: string[];
   writableDirs?: string[];
   virtualWorkspace?: boolean;
@@ -69,6 +70,7 @@ export function parseStartedInfo(value: Record<string, unknown>, kind: AgentKind
     shadowDir: str(value.shadowDir) ?? '',
     virtualWorkspace: value.virtualWorkspace === true,
     ...(str(value.mirrorRoot) ? { mirrorRoot: str(value.mirrorRoot) } : {}),
+    previousMirrorRoots: Array.isArray(value.previousMirrorRoots) ? value.previousMirrorRoots.filter((item): item is string => typeof item === 'string') : [],
     extraDirs: Array.isArray(value.extraDirs) ? value.extraDirs.filter((item): item is string => typeof item === 'string') : [],
     writableDirs: Array.isArray(value.writableDirs) ? value.writableDirs.filter((item): item is string => typeof item === 'string') : [],
     methods: Array.isArray(value.methods) ? value.methods.filter((m): m is string => typeof m === 'string') : [],
@@ -226,7 +228,7 @@ export interface RemoteHandleDeps {
   /** 模型 / 推理强度 / 快速模式 / 思考开关变化(连回对方时按最新值打开)。 */
   onModel?: (model: string, opts?: { providerId?: string | null; effort?: Effort }) => void;
   onEffort?: (effort: Effort) => void;
-  onFastMode?: (enabled: boolean) => void;
+  onFastMode?: (enabled: boolean | 'ultrafast') => void;
   onThinkingEnabled?: (enabled: boolean) => void;
   /** 改用 Cindy 自动审查兜底(对方进程里的状态，连回来时要再告诉一次)。 */
   onAutoReviewFallback?: () => void;
@@ -418,7 +420,7 @@ export function createRemoteAgentHandle(deps: RemoteHandleDeps): RemoteAgentHand
     getCurrentTurnId: () => (typeof state.currentTurnId === 'string' ? state.currentTurnId : null),
     getPlanMode: () => (typeof state.planMode === 'boolean' ? state.planMode : null),
     getExecutionPlanMode: () => (typeof state.executionPlanMode === 'boolean' ? state.executionPlanMode : null),
-    getFastMode: () => state.fastMode === true,
+    getFastMode: () => state.fastMode === 'ultrafast' ? 'ultrafast' : state.fastMode === true,
     getEffort: () => (typeof state.effort === 'string' ? state.effort as Effort : null),
     listBackgroundTasks: () => (Array.isArray(state.backgroundTasks) ? state.backgroundTasks as BackgroundTaskSnapshot[] : []),
     countPendingWakeContinuations: () => (typeof state.pendingWake === 'number' ? state.pendingWake : 0),
@@ -451,7 +453,7 @@ export function createRemoteAgentHandle(deps: RemoteHandleDeps): RemoteAgentHand
       if (!await callIfLive('setEffort', effort)) state = { ...state, effort };
       deps.onEffort?.(effort);
     }),
-    ...optional('setFastMode', async (enabled: boolean) => {
+    ...optional('setFastMode', async (enabled: boolean | 'ultrafast') => {
       if (!await callIfLive('setFastMode', enabled)) state = { ...state, fastMode: enabled };
       deps.onFastMode?.(enabled);
     }),

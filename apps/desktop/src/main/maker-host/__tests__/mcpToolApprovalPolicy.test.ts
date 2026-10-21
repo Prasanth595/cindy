@@ -439,6 +439,17 @@ describe('Orca Worker directory authorization', () => {
     expect(getDesktopClaudeReadOnlyAllowedTools()).not.toContain('mcp__cindy_orca__create_workers');
   });
 
+  // PR2: a new checkout delegates filesystem access even without working_dir.
+  it.each([{}, {source_branch: 'main'}, null, true])('reviews new_worktree %j in single and batch calls before trusted-server approval', new_worktree => {
+    for (const [name, params] of [
+      ['create_worker', {new_worktree}],
+      ['create_workers', {workers: [{label: 'inherits'}, {new_worktree}]}],
+    ] as const) {
+      expect(policy(name, params)).toBe('prompt-each-time');
+      expect(policy(name, JSON.stringify(params))).toBe('prompt-each-time');
+    }
+  });
+
   it('preserves inherited-directory creation and other Orca operations', () => {
     expect(policy('create_worker', { label: 'inherits' })).toBe('auto-approve');
     expect(policy('create_workers', { workers: [{ label: 'a' }, { label: 'b' }] })).toBe(

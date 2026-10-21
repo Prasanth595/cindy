@@ -431,11 +431,17 @@ export interface ProviderGroupRemoteSessionGroup {
   group: ProviderGroupSessionGroup;
 }
 
+/** Only verified subscription exhaustion; never inferred from a generic cooldown. */
+export interface ProviderGroupUsageLimit {
+  /** Earliest reset of an otherwise eligible member; null when no reset is known. */
+  resetAtMs: number | null;
+}
+
 export type ProviderGroupRemotePick =
   /** 那个供应商现在没有组(组被删了或旧版本)：照常直接在组所在电脑上运行。 */
   | { kind: 'none' }
   | { kind: 'member'; member: Pick<ProviderGroupMember, 'key' | 'kind' | 'agentDeviceId' | 'providerId'>; label: string }
-  | { kind: 'unavailable' };
+  | { kind: 'unavailable'; usageLimit?: ProviderGroupUsageLimit };
 
 /** 一次最多报告的运行中任务数(每台电脑的任务上限远低于此)。 */
 export const PROVIDER_GROUP_REMOTE_MAX_LEASES = 512;
@@ -585,7 +591,12 @@ export function parseProviderGroupRemoteRequest(raw: unknown): ProviderGroupRemo
 export function parseProviderGroupRemotePick(raw: unknown, groupProviderId: string): ProviderGroupRemotePick {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { kind: 'none' };
   const value = raw as Record<string, unknown>;
-  if (value.kind === 'unavailable') return { kind: 'unavailable' };
+  if (value.kind === 'unavailable') {
+    const limit = value.usageLimit as Partial<ProviderGroupUsageLimit> | null | undefined;
+    const reset = limit?.resetAtMs;
+    const valid = limit && (reset === null || (typeof reset === 'number' && Number.isSafeInteger(reset) && reset > 0));
+    return { kind: 'unavailable', ...(valid ? { usageLimit: { resetAtMs: reset } as ProviderGroupUsageLimit } : {}) };
+  }
   if (value.kind !== 'member') return { kind: 'none' };
   const member = normalizeMember(value.member, groupProviderId);
   if (!member) return { kind: 'none' };

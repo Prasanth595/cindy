@@ -1045,15 +1045,21 @@ export async function copyClaudeSiviDirs(
  *   (不再无条件写全局 safe.directory:dubious-ownership 时由 gitExec 幂等按需处理;
  *    删除/归档时由 removeWorktreeForSession 清理该 path 的条目, 见 #2627)
  */
-export async function createWorktree(req: CreateWorktreeReq): Promise<CreateWorktreeResp> {
+// Only opt-in creators retain a handle for failure compensation; normal startup stays asynchronous.
+const backgroundCheckouts = new Map<string, Promise<void>>();
+export async function awaitBackgroundCheckout(sessionId: string): Promise<void> {
+  await backgroundCheckouts.get(sessionId)?.catch(() => undefined);
+}
+
+export async function createWorktree(req: CreateWorktreeReq, options?: { trackBackgroundCheckout?: boolean }): Promise<CreateWorktreeResp> {
   const create = () => withCreateWorktreeQueue(req.baseRepo, () => {
     assertPrecreatedSessionNotCancelled(req.sessionId);
-    return createWorktreeInner(req);
+    return createWorktreeInner(req, options);
   });
   return withPrecreatedWorktreeOperationQueue(req.sessionId, create);
 }
 
-async function createWorktreeInner(req: CreateWorktreeReq): Promise<CreateWorktreeResp> {
+async function createWorktreeInner(req: CreateWorktreeReq, options?: { trackBackgroundCheckout?: boolean }): Promise<CreateWorktreeResp> {
   const snap: CreatedSnapshot = {};
   const totalStartedAt = Date.now();
   try {
@@ -1198,6 +1204,13 @@ async function createWorktreeInner(req: CreateWorktreeReq): Promise<CreateWorktr
           (pid) => recordWorktreeRuntimeLeaseChild(checkoutLease, pid),
         ));
         bgPromise = stageRes.fullCheckoutPromise.finally(() => releaseWorktreeRuntimeLease(checkoutLease));
+        if (options?.trackBackgroundCheckout) {
+          const settled = bgPromise.catch(() => undefined);
+          backgroundCheckouts.set(req.sessionId, settled);
+          void settled.finally(() => {
+            if (backgroundCheckouts.get(req.sessionId) === settled) backgroundCheckouts.delete(req.sessionId);
+          });
+        }
       } catch (err) {
         await releaseWorktreeRuntimeLease(checkoutLease);
         // stageCheckout 内部已记 warn, 这里再保险记一条; 不视为致命
@@ -1213,6 +1226,7 @@ async function createWorktreeInner(req: CreateWorktreeReq): Promise<CreateWorktr
       try {
         await timed('configure hooks', () => configureHooksPath(worktreePath, baseRepo));
       } catch (err) {
+        if (options?.trackBackgroundCheckout) await awaitBackgroundCheckout(req.sessionId);
         await rollbackPartialCreate(snap);
         return { ok: false, error: classifyError(classifyAny(err)) };
       }
@@ -1275,6 +1289,8 @@ async function createWorktreeInner(req: CreateWorktreeReq): Promise<CreateWorktr
       return { ok: true, meta };
     });
   } catch (err) {
+    // Failed worker creation must also wait when metadata has not been published yet.
+    if (options?.trackBackgroundCheckout) await awaitBackgroundCheckout(req.sessionId);
     // 兜底: 任何未捕获的异常走 classifier + rollback
     await rollbackPartialCreate(snap);
     log.warn(

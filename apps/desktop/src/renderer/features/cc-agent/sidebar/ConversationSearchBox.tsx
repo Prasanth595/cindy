@@ -24,7 +24,10 @@ import type { NavigateFunction } from 'react-router-dom';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Spinner } from '@/components/ui/spinner';
 import { Tip } from '@/components/ui/tooltip';
-import { consumeConversationSearchRequest } from '@/state/conversationSearchRequest';
+import {
+  consumeConversationSearchRequest,
+  type ConversationSearchScopeRequest,
+} from '@/state/conversationSearchRequest';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -160,14 +163,7 @@ export interface UseConversationSearchParams {
   allKnownProjects: ProjectNodeData[];
   /** Kept for callers; explicit local/SSH project scope uses the project node sessions. */
   allowedSessionIds?: readonly string[];
-  projectFilterRequest?: {
-    projectKey: string;
-    projectName: string;
-    sessionIds: string[];
-    workingDir?: string | null;
-    deviceLinkDeviceId?: string | null;
-    requestId: number;
-  } | null;
+  projectFilterRequest?: ConversationSearchScopeRequest | null;
   machineSelection?: MachineSelection;
   searchDevices?: readonly ConversationSearchDevice[];
   /** 收到「在此项目内搜索」请求(锁定项目)时回调:popover 用它打开面板,内联用它聚焦输入。 */
@@ -213,19 +209,31 @@ export function useConversationSearch({
   const [lockedProjectSessionIds, setLockedProjectSessionIds] = useState<string[]>([]);
   const [lockedProjectWorkingDir, setLockedProjectWorkingDir] = useState<string | null>(null);
   const [lockedProjectDeviceId, setLockedProjectDeviceId] = useState<string | null>(null);
+  const [lockedSessionGroup, setLockedSessionGroup] = useState<{
+    name: string;
+    sessionIds: string[];
+    machineSelectionKey: string;
+  } | null>(null);
   const [status, setStatus] = useState<'idle' | 'searching' | 'done' | 'error'>('idle');
   const [response, setResponse] = useState<ConversationSearchResponse | null>(null);
   const requestSeqRef = useRef(0);
-  const requestProjectKey = projectFilterRequest?.projectKey ?? null;
-  const requestProjectName = projectFilterRequest?.projectName ?? null;
+  const projectRequest = projectFilterRequest?.kind === 'session-group' ? null : projectFilterRequest;
+  const groupRequest = projectFilterRequest?.kind === 'session-group' ? projectFilterRequest : null;
+  const requestProjectKey = projectRequest?.projectKey ?? null;
+  const requestProjectName = projectRequest?.projectName ?? null;
   const requestProjectSessionIds = projectFilterRequest?.sessionIds ?? EMPTY_SESSION_IDS;
-  const requestProjectWorkingDir = projectFilterRequest?.workingDir ?? null;
-  const requestProjectDeviceId = projectFilterRequest?.deviceLinkDeviceId ?? null;
+  const requestProjectWorkingDir = projectRequest?.workingDir ?? null;
+  const requestProjectDeviceId = projectRequest?.deviceLinkDeviceId ?? null;
+  const requestGroupName = groupRequest?.groupName ?? null;
+  const machineSelectionKey = JSON.stringify(
+    machineSelection === MACHINE_ALL ? machineSelection : [...machineSelection].sort(),
+  );
   const requestId = projectFilterRequest?.requestId ?? 0;
 
   const trimmed = query.trim();
   void _allowedSessionIds;
   const selectedProjectSessionIds = useMemo(() => {
+    if (lockedSessionGroup) return lockedSessionGroup.sessionIds;
     if (projectSelection === 'all') return null;
     const selected = buildProjectKeyComparisonSet(projectSelection, localPlatform);
     const selectedProjects = allKnownProjects.filter((project) => {
@@ -260,8 +268,10 @@ export function useConversationSearch({
     lockedProjectSessionIds,
     localPlatform,
     projectSelection,
+    lockedSessionGroup,
   ]);
   const selectedProjectTargets = useMemo(() => {
+    if (lockedSessionGroup) return null;
     if (projectSelection === 'all') return null;
     const selected = buildProjectKeyComparisonSet(projectSelection, localPlatform);
     const fromVisible = allKnownProjects
@@ -297,6 +307,7 @@ export function useConversationSearch({
     lockedProjectKey,
     lockedProjectWorkingDir,
     projectSelection,
+    lockedSessionGroup,
   ]);
   const searchOrigins = useMemo(
     () =>
@@ -329,18 +340,25 @@ export function useConversationSearch({
     if (statusFilter !== 'all') count += 1;
     if (agentFilter !== 'all') count += 1;
     if (lastActivityFilter !== 'all') count += 1;
-    if (projectSelection !== 'all') count += 1;
+    if (projectSelection !== 'all' || lockedSessionGroup) count += 1;
     return count;
-  }, [agentFilter, lastActivityFilter, projectSelection, statusFilter]);
+  }, [agentFilter, lastActivityFilter, projectSelection, statusFilter, lockedSessionGroup]);
 
   useEffect(() => {
-    if (!requestProjectKey) return;
+    if (!requestProjectKey && requestGroupName === null) return;
+    setLockedSessionGroup(
+      requestGroupName === null ? null : {
+        name: requestGroupName,
+        sessionIds: [...new Set(requestProjectSessionIds)].sort(),
+        machineSelectionKey,
+      },
+    );
     setLockedProjectKey(requestProjectKey);
     setLockedProjectName(requestProjectName);
     setLockedProjectSessionIds([...new Set(requestProjectSessionIds)]);
     setLockedProjectWorkingDir(requestProjectWorkingDir);
     setLockedProjectDeviceId(requestProjectDeviceId);
-    setProjectSelection([requestProjectKey]);
+    setProjectSelection(requestProjectKey ? [requestProjectKey] : 'all');
     onProgrammaticOpen?.(); // popover:打开面板并上报托盘;内联:聚焦输入框
     setQuery('');
     setResponse(null);
@@ -355,6 +373,8 @@ export function useConversationSearch({
     requestProjectSessionIds,
     requestProjectWorkingDir,
     requestProjectDeviceId,
+    requestGroupName,
+    machineSelectionKey,
     onProgrammaticOpen,
   ]);
 
@@ -492,16 +512,25 @@ export function useConversationSearch({
     setStatus('idle');
   }, []);
 
-  /** 清除项目锁定,回到全局搜索(popover 触发钮点击时调用)。 */
+  /** 清除项目或任务组锁定，回到全局搜索。 */
   const clearLock = useCallback(() => {
-    if (!lockedProjectKey) return;
+    if (!lockedProjectKey && !lockedSessionGroup) return;
+    setLockedSessionGroup(null);
     setLockedProjectKey(null);
     setLockedProjectName(null);
     setLockedProjectSessionIds([]);
     setLockedProjectWorkingDir(null);
     setLockedProjectDeviceId(null);
     setProjectSelection('all');
-  }, [lockedProjectKey]);
+  }, [lockedProjectKey, lockedSessionGroup]);
+
+  // A group lock is an explicit snapshot, not a synthetic project. Changing the
+  // machine scope releases it, just as leaving a locked project's machine does.
+  useEffect(() => {
+    if (!lockedSessionGroup || lockedSessionGroup.machineSelectionKey === machineSelectionKey) return;
+    reset();
+    clearLock();
+  }, [lockedSessionGroup, machineSelectionKey, reset, clearLock]);
 
   /** 筛选面板「重置」:清空各筛选;有项目锁定时回落到锁定项目。 */
   const resetFilters = useCallback(() => {
@@ -574,6 +603,7 @@ export function useConversationSearch({
     setProjectSelection,
     lockedProjectKey,
     lockedProjectName,
+    lockedSessionGroupName: lockedSessionGroup?.name ?? null,
     activeFilterCount,
     status,
     results,
@@ -678,14 +708,7 @@ export interface ConversationSearchBoxProps {
   allKnownProjects: ProjectNodeData[];
   allowedSessionIds: readonly string[];
   hiddenProjectKeys: ReadonlySet<string>;
-  projectFilterRequest?: {
-    projectKey: string;
-    projectName: string;
-    sessionIds: string[];
-    workingDir?: string | null;
-    deviceLinkDeviceId?: string | null;
-    requestId: number;
-  } | null;
+  projectFilterRequest?: ConversationSearchScopeRequest | null;
   machineSelection?: MachineSelection;
   searchDevices?: readonly ConversationSearchDevice[];
   /** icon variant 触发钮 className 覆盖——rail 用 SIDEBAR_RAIL_ICON_BUTTON_CLASS。 */
@@ -865,6 +888,7 @@ export function ConversationSearchBox({
               activeCount={search.activeFilterCount}
               lockedProjectKey={search.lockedProjectKey}
               lockedProjectName={search.lockedProjectName}
+              lockedSessionGroupName={search.lockedSessionGroupName}
               onStatusChange={search.setStatusFilter}
               onAgentKindChange={search.setAgentFilter}
               onLastActivityChange={search.setLastActivityFilter}
@@ -903,6 +927,7 @@ export function SearchFilterMenu({
   activeCount,
   lockedProjectKey,
   lockedProjectName,
+  lockedSessionGroupName,
   onStatusChange,
   onAgentKindChange,
   onLastActivityChange,
@@ -921,6 +946,7 @@ export function SearchFilterMenu({
   activeCount: number;
   lockedProjectKey: string | null;
   lockedProjectName: string | null;
+  lockedSessionGroupName?: string | null;
   onStatusChange: (value: ConversationSearchStatusFilter) => void;
   onAgentKindChange: (value: ConversationSearchAgentFilter) => void;
   onLastActivityChange: (value: ConversationSearchLastActivityFilter) => void;
@@ -950,14 +976,16 @@ export function SearchFilterMenu({
     ? projectDisplayLabelWithMachine(lockedProject)
     : lockedProjectName;
   const projectValue =
-    lockedProjectKey && lockedProjectLabel
-      ? lockedProjectLabel
-      : projects === 'all'
-      ? t('ccAgent.search.filter.allProjects')
-      : t('ccAgent.sidebar.filterSelectedProjects', { count: projects.length });
+    lockedSessionGroupName ?? (
+      lockedProjectKey && lockedProjectLabel
+        ? lockedProjectLabel
+        : projects === 'all'
+          ? t('ccAgent.search.filter.allProjects')
+          : t('ccAgent.sidebar.filterSelectedProjects', { count: projects.length })
+    );
   const selectedProjects =
     projects === 'all' ? null : buildProjectKeyComparisonSet(projects, localPlatform);
-  const projectsLocked = lockedProjectKey !== null;
+  const projectsLocked = lockedProjectKey !== null || lockedSessionGroupName != null;
 
   return (
     <DropdownMenu onOpenChange={onOpenChange}>

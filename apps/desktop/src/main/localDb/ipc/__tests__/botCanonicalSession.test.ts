@@ -4406,6 +4406,23 @@ describe('Bot Session task end-to-end runtime', () => {
     } finally { release(); runtime.dispose(); }
   });
 
+  it('reports work started in a Thread\'s own lane back into that Thread', async () => {
+    await seedPair(); seedGroupLane('thread-lane', 'group:fixture:access:owner:2:thread:root-1');
+    const release = registerGroupToolAuthority('thread-lane', { botId: 'bot-a', mode: 'owner', isCurrent: () => true, validate: async () => {} });
+    const postGroupTaskMessage = vi.fn(async (input: { clientId: string }) => ({ ok: true as const, messageId: `posted:${input.clientId}` }));
+    const runtime = createDelegationRuntime({ readCallerPermission: vi.fn(() => ({ mode: 'auto' as const, generation: 2 })), postGroupTaskMessage });
+    try {
+      const result = await runtime.delegation.startSessionTask({ callerSessionId: 'thread-lane', objective: 'Fixture-only Thread task' });
+      expect(result).toMatchObject({ ok: true, completionDestination: 'group' });
+      if (!result.ok) throw new Error(result.message);
+      expect(postGroupTaskMessage).toHaveBeenCalledWith(expect.objectContaining({
+        groupId: 'fixture', clientId: `bot-delegation-task:${result.delegationId}:started`, threadRootId: 'root-1' }));
+      await runtime.runPendingTurns();
+      expect(postGroupTaskMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+        groupId: 'fixture', clientId: `bot-delegation-task:${result.delegationId}:1:result`, threadRootId: 'root-1' }));
+    } finally { release(); runtime.dispose(); }
+  });
+
   it('never lets the result card overtake a start card still on its way to the group', async () => {
     await seedPair(); seedGroupLane();
     const release = registerGroupToolAuthority('group-lane', { botId: 'bot-a', mode: 'owner', isCurrent: () => true, validate: async () => {} });

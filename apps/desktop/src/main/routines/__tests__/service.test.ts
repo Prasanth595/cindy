@@ -1,7 +1,8 @@
-import type { RoutineState, Schedule, ScheduleRun } from '@cindy/maker-scheduler';
+import type { RoutineState, RoutineRun, Schedule, ScheduleRun } from '@cindy/maker-scheduler';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 const mock = vi.hoisted(() => ({
   scope: 'owner-a',
+  followUpEvents: vi.fn<(botId: string, events: RoutineRun['events']) => RoutineRun['events'] | null>((_id, events) => events),
   boundaryPending: false,
   schedulerReady: true,
   dbReady: true,
@@ -25,6 +26,10 @@ const mock = vi.hoisted(() => ({
     delete: vi.fn(async () => {}),
   },
 }));
+vi.mock('../../bot-autonomy/hub.js', () => ({ currentFollowUpEvents: async (botId: string, input: RoutineRun['events']) => {
+  const events = mock.followUpEvents(botId, input);
+  return events === null ? null : { events, canDispatch: () => mock.followUpEvents(botId, input)?.length === events.length };
+} }));
 vi.mock('../../appSessionState.js', () => ({
   activeOwnerScopeKey: () => mock.scope,
   getActiveAppSession: () => ({ dataOwnerId: mock.scope }),
@@ -68,6 +73,7 @@ beforeEach(() => configureRoutineHost({
 afterEach(async () => {
   await stopRoutines();
   vi.clearAllMocks();
+  mock.followUpEvents.mockImplementation((_id, events) => events);
   mock.scope = 'owner-a';
   mock.boundaryPending = false;
   mock.schedulerReady = true;
@@ -647,4 +653,28 @@ it('persists all imported paused routines before tool-policy setup and never dis
   expect(routines.every(routine => !routine.enabled)).toBe(true);
   expect(mock.scheduler.runNow).not.toHaveBeenCalled();
   await expect(routineTools.runNow('bot', routines[0].id)).rejects.toThrow('SOURCE_TOOL_POLICY_NEEDS_MAPPING');
+});
+
+// Regression: persisted queued batches survive app upgrades and settings changes.
+it('skips revoked follow-up batches and still dispatches authorized delegated events', async () => {
+  const engine = await getRoutineEngine();
+  const source = { id: 'host:sessions', name: 'Sessions', status: 'listening' as const,
+    events: [{ type: 'errored', name: 'Error', fields: [] }] };
+  engine.registerSource(source);
+  const routine = await engine.ensureBuiltin('bot', 'follow-up', {
+    name: 'Follow up', prompt: 'Follow', enabled: true,
+    triggers: [{ id: 'error', kind: 'event', sourceId: 'host:sessions', eventType: 'errored', filters: [] }],
+  }, 'builtin-follow-up-bot');
+  if (!routine) throw new Error('Follow-up routine was not created');
+  mock.followUpEvents.mockReturnValue([]);
+  await engine.publish('host:sessions', { id: 'old', type: 'errored', subject: 'revoked', occurredAt: Date.now(), data: { title: 'PRIVATE_OLD_SUMMARY' } });
+  await vi.waitFor(async () => expect((await routineTools.history('bot', routine.id))[0]?.status).toBe('skipped'));
+  expect(mock.scheduler.runNow).not.toHaveBeenCalled();
+  expect(mock.storage.insert).not.toHaveBeenCalled();
+
+  mock.followUpEvents.mockImplementation((_id, events) => events.filter(({ event }) => event.subject === 'delegated'));
+  await engine.publish('host:sessions', { id: 'authorized', type: 'errored', subject: 'delegated', occurredAt: Date.now(), data: { title: 'Assigned work' } });
+  await vi.waitFor(() => expect(mock.scheduler.runNow).toHaveBeenCalledOnce());
+  expect(mock.storage.insert.mock.calls[0][0].prompt).toContain('Assigned work');
+  expect(mock.storage.insert.mock.calls[0][0].prompt).not.toContain('PRIVATE_OLD_SUMMARY');
 });

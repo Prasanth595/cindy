@@ -1234,3 +1234,67 @@ it('cancels an enqueue if its page-independent resource check spans an account o
   deactivate(); check.resolve(); await run;
   expect(deps.enqueue).not.toHaveBeenCalled(); expect(store.getSnapshot()[0].enqueueStarted).toBe(false);
 });
+
+describe('known projection first send', () => {
+  const known = (): DeliveryProjection =>
+    ({ pendingQueue: [], inputDeliveryVersion: 1, clearBoundaryMs: 5 }) as unknown as DeliveryProjection;
+
+  it('makes the enqueue the only round trip for a never-sent message', async () => {
+    const { store, deps } = await setup();
+    await store.add(message());
+    await createDurableOutboxDelivery({ ...deps, knownProjection: known }).run();
+    expect(deps.projection).not.toHaveBeenCalled();
+    expect(deps.enqueue).toHaveBeenCalledOnce();
+    expect(store.getSnapshot()[0]).toMatchObject({
+      state: 'host-owned', clearBoundaryMs: 5, retrySafe: true, prepared: { durableDelivery: true },
+    });
+  });
+
+  it('asks the host once after it refuses a stale known clear boundary', async () => {
+    const { store, deps } = await setup();
+    await store.add(message());
+    const cleared = new Error('REMOTE_OPTIMISTIC_INPUT_CLEARED: expectedClearBoundaryMs=5; currentClearBoundaryMs=9');
+    deps.enqueue.mockRejectedValueOnce(cleared);
+    deps.projection.mockResolvedValue({ ...projection('id-1'), clearBoundaryMs: 9 } as DeliveryProjection);
+    const knownProjection = vi.fn(known);
+    await createDurableOutboxDelivery({
+      ...deps, knownProjection, staleClearBoundary: (error) => error === cleared,
+    }).run();
+    await vi.waitFor(() => expect(deps.enqueue).toHaveBeenCalledTimes(2));
+    expect(knownProjection).toHaveBeenCalledOnce();
+    expect(deps.projection).toHaveBeenCalledOnce();
+    expect(deps.enqueue.mock.calls[1]?.[0]).toMatchObject({ clearBoundaryMs: 9, enqueueStarted: true });
+    await vi.waitFor(() => expect(store.getSnapshot()[0]).toMatchObject({ state: 'host-owned' }));
+  });
+});
+
+it('starts a newly added message while another task is still being delivered', async () => {
+  const { store, deps, runner } = await setup();
+  await store.add(message('slow', 'session-a'));
+  const slow = deferred<DeliveryProjection>();
+  deps.enqueue.mockImplementationOnce(() => slow.promise);
+  const first = runner.run();
+  await vi.waitFor(() => expect(deps.enqueue).toHaveBeenCalledOnce());
+  await store.add(message('fresh', 'session-b'));
+  await runner.run();
+  expect(deps.enqueue.mock.calls.map(([r]) => r.item.clientId)).toEqual(['slow', 'fresh']);
+  slow.resolve(projection('slow'));
+  await first;
+});
+
+it('frees each delivery slot as soon as that delivery settles, not when its whole batch does', async () => {
+  const { store, deps, runner } = await setup();
+  await store.add(message('slow', 'session-a'));
+  await store.add(message('fast', 'session-b'));
+  const slow = deferred<DeliveryProjection>();
+  deps.enqueue.mockImplementation((r: DurableOutboxRecord) =>
+    r.item.clientId === 'slow' ? slow.promise : Promise.resolve(projection(r.item.clientId)));
+  const batch = runner.run();
+  await vi.waitFor(() => expect(store.getSnapshot().find((r) => r.item.clientId === 'fast')?.state).toBe('host-owned'));
+  await store.add(message('third', 'session-c'));
+  await runner.run();
+  await vi.waitFor(() =>
+    expect(deps.enqueue.mock.calls.map(([r]) => r.item.clientId)).toContain('third'));
+  slow.resolve(projection('slow'));
+  await batch;
+});

@@ -51,7 +51,7 @@ export interface OrcaRemoteWorkerOpenRequest {
   model?: string;
   providerId?: string;
   effort?: string;
-  fastMode?: boolean;
+  fastMode?: boolean | 'ultrafast';
   permissionMode: OrcaRemoteWorkerPermissionMode;
   /** 运行设备上的绝对目录；缺省 = 运行设备按自身设置分配任务目录。 */
   workingDir?: string;
@@ -71,7 +71,7 @@ export interface OrcaRemoteWorkerOpenResult {
   /** 运行设备实际保存的档位；空字符串 = 不使用档位，缺省 = 旧设备未返回。 */
   effort?: string;
   /** 运行设备实际保存的 Fast 状态；缺省 = 旧设备未返回。 */
-  fastMode?: boolean;
+  fastMode?: boolean | 'ultrafast';
 }
 
 export interface OrcaRemoteWorkerReleaseRequest {
@@ -118,7 +118,7 @@ export function parseOrcaRemoteWorkerOpenRequest(raw: unknown): OrcaRemoteWorker
   if (!ORCA_REMOTE_WORKER_PERMISSION_MODES.includes(permissionMode as OrcaRemoteWorkerPermissionMode)) {
     throw new Error('[INVALID_PARAMS] invalid permissionMode');
   }
-  if (raw.fastMode !== undefined && typeof raw.fastMode !== 'boolean') {
+  if (raw.fastMode !== undefined && (typeof raw.fastMode !== 'boolean' && raw.fastMode !== 'ultrafast')) {
     throw new Error('[INVALID_PARAMS] fastMode must be boolean');
   }
   if (!isRecord(raw.lead)) throw new Error('[INVALID_PARAMS] lead is required');
@@ -139,7 +139,7 @@ export function parseOrcaRemoteWorkerOpenRequest(raw: unknown): OrcaRemoteWorker
     ...(model ? { model } : {}),
     ...(providerId ? { providerId } : {}),
     ...(effort ? { effort } : {}),
-    ...(typeof raw.fastMode === 'boolean' ? { fastMode: raw.fastMode } : {}),
+    ...((typeof raw.fastMode === 'boolean' || raw.fastMode === 'ultrafast') ? { fastMode: raw.fastMode } : {}),
     permissionMode: permissionMode as OrcaRemoteWorkerPermissionMode,
     ...(workingDir ? { workingDir } : {}),
     title: requiredString(raw.title, 'title'),

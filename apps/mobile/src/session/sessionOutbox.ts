@@ -238,6 +238,8 @@ export function buildOutboxItem(input: {
   slashCommandRanges?: Array<{ start: number; end: number }>;
   permissionModeAtSend: string;
   planModeAtSend?: boolean;
+  /** Optional source order across ready and pending slots, for external shares. */
+  attachmentOrder?: readonly number[];
   /** 发送时刻已就绪的附件(占前段槽位)。 */
   readyAttachments: readonly RemoteSerializedAttachment[];
   /** 就绪附件的本地预览 uri(与 readyAttachments 对齐;缺失传 null)。 */
@@ -267,6 +269,15 @@ export function buildOutboxItem(input: {
     slotMeta.push({ kind: upload.kind ?? 'image', previewUri: upload.previewUri ?? null, name: upload.name });
     if (upload.failed) failedIds.push(upload.localId);
     else waitingIds.push(upload.localId);
+  }
+  if (input.attachmentOrder) {
+    const originalSlots = [...slots], originalMeta = [...slotMeta];
+    input.attachmentOrder.forEach((original, position) => {
+      slots[position] = originalSlots[original]; slotMeta[position] = originalMeta[original];
+    });
+    for (const localId of Object.keys(slotByLocalId)) {
+      slotByLocalId[localId] = input.attachmentOrder.indexOf(slotByLocalId[localId]);
+    }
   }
   return {
     clientId: input.clientId,

@@ -15,7 +15,7 @@ export interface AndroidInstallIO {
   supported(): boolean;
   hasPermission(): Promise<boolean>;
   requestPermission(): Promise<boolean>;
-  download(url: string, signal: AbortSignal, progress: (value: number | null) => void): Promise<string>;
+  download(url: string, signal: AbortSignal, progress: (value: number | null) => void, version: string): Promise<string>;
   install(uri: string, version: string, signal: AbortSignal): Promise<void>;
   remove(uri: string): Promise<void>;
   openBrowser(url: string): Promise<void>;
@@ -97,7 +97,7 @@ export class AndroidInstallController {
         this.update({ phase: 'downloading', target, progress: null });
         const file = await this.io.download(target.installUrl, operation.signal, (progress) => {
           if (current()) this.update({ phase: 'downloading', target, progress });
-        });
+        }, target.version);
         if (!current()) { await this.io.remove(file).catch(() => undefined); return; }
         this.file = file;
         this.handedToInstaller = false;

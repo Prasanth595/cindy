@@ -186,7 +186,7 @@ export interface ForkSessionArgs {
     contextTokens: number;
     contextWindow: number;
     contextWindowRuntime?: number | null;
-    fastMode: boolean | number;
+    fastMode: boolean | 'ultrafast' | number;
     clearedAt: number | null;
     pinnedAt: number | null;
     userSendAt: number | null;
@@ -273,7 +273,7 @@ export interface OrcaRemoteWorkerProxySessionSeed {
   model: string;
   effort: string | null;
   permissionMode: string;
-  fastMode: boolean;
+  fastMode: boolean | 'ultrafast';
 }
 
 export interface OrcaUpsertWorkerArgs {
@@ -418,7 +418,7 @@ export interface ContextRebuildArgs {
     model: string;
     providerId: string | null;
     effort: string | null;
-    fastMode: boolean;
+    fastMode: boolean | 'ultrafast';
   };
 }
 
@@ -553,7 +553,7 @@ export interface SessionImportShareSessionRow {
   totalCostUsd: number;
   contextTokens: number;
   contextWindow: number;
-  fastMode: boolean;
+  fastMode: boolean | 'ultrafast';
   planModeEnabled: boolean;
   agentKind: string;
   /** Orca 角色标记:协同包导入时 lead='lead'、Worker='worker';普通导入缺省(NULL)。 */
@@ -716,7 +716,7 @@ export interface BotsReplaceCanonicalSessionArgs {
     agentDeviceId?: string | null;
     parentSessionId?: string | null;
     extraDirs: string;
-    fastMode?: boolean;
+    fastMode?: boolean | 'ultrafast';
     source: string;
     createdAt: number;
     updatedAt: number;
@@ -1019,7 +1019,7 @@ export interface ImRotateSessionArgs {
     model: string;
     effort: string;
     permissionMode: string;
-    fastMode: boolean;
+    fastMode: boolean | 'ultrafast';
     agentKind: string;
     source: string;
     providerId: string | null;

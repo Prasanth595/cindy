@@ -53,6 +53,7 @@ import {
 } from '@/lib/localCatalogSnapshot';
 import { useResyncAgentIslandSettingsAfterLogin } from '@/hooks/useAgentIslandSettings';
 import {
+  getDraft,
   getDraftForOwnerPreferenceSync,
   applyAppDefaultModelSelection,
   subscribeDraft,
@@ -60,8 +61,12 @@ import {
   setFastModeForModel,
   setWorktreePreference,
   patchVendorPrefs,
+  patchVendorPrefsFromTaskModelSwitch,
   patchVendorPrefsPreservingModelChoice,
 } from '@/state/newMakerDraft';
+import { getCachedProvidersSnapshot } from '@/lib/providersSnapshotStore';
+import { resolveDraftEffectiveProviderId } from '@/lib/draftModelCalibration';
+import { isModelEnabled } from '@/state/modelVisibilityPrefs';
 import {
   snapshotForSeed,
   setProviderModelChoice,
@@ -115,7 +120,7 @@ function syncNewMakerPrefs(appDefaultModelRequestId?: string) {
     model: cc.model,
     effort: cc.effort,
     permissionMode: cc.permissionMode,
-    fastMode: draft.fastModeByModel[cc.model] === true,
+    fastMode: (draft.fastModeByModel[cc.model] ?? false),
     // /ctr 新建会话需要与模型配套的供应商路由；缺省会走隐式路由落到官方网关，
     // 用户供应商专有的模型（如 deepseek-v4-pro）会被网关 400 拒绝。
     providerId: cc.providerId ?? null,
@@ -134,7 +139,7 @@ function syncNewMakerPrefs(appDefaultModelRequestId?: string) {
       providerId: selected.providerId ?? null,
       model: selected.model,
       effort: selected.effort ?? '',
-      fastMode: draft.fastModeByModel[selected.model] === true,
+      fastMode: (draft.fastModeByModel[selected.model] ?? false),
     },
     lastByVendor: {
       cc: {
@@ -292,6 +297,7 @@ export function App() {
         fast,
         thinking,
         markModelChoice,
+        taskProviderId,
         appDefaultSelection,
       }) => {
         if (appDefaultSelection) {
@@ -309,7 +315,27 @@ export function App() {
           return;
         }
         const vendor = agentKindToVendor(agent);
-        if (active) {
+        if (active && taskProviderId && markModelChoice !== false) {
+          // 控制端在本机任务里只换了模型:按本机自己的新建默认判断是否写回(同本机换模)。
+          patchVendorPrefsFromTaskModelSwitch(
+            vendor,
+            {
+              model: modelId,
+              providerId: providerId || null,
+              ...(effort !== undefined ? { effort: effort as Effort } : {}),
+            },
+            taskProviderId,
+            (prefs) =>
+              resolveDraftEffectiveProviderId({
+                providers: getCachedProvidersSnapshot()?.providers ?? [],
+                agent,
+                model: prefs.model,
+                providerId: prefs.providerId,
+                chosenByUser: getDraft().modelChosenByVendor[vendor] === true,
+                isModelEnabled,
+              }),
+          );
+        } else if (active) {
           const patch =
             markModelChoice === false ? patchVendorPrefsPreservingModelChoice : patchVendorPrefs;
           const shouldPatchActiveModel = markModelChoice !== false || effort !== undefined;

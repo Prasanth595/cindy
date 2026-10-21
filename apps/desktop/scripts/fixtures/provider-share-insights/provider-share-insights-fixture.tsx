@@ -6,6 +6,10 @@ import type {
   ProviderShareQuotaAccount,
 } from '../../../src/shared/providerShareInsights';
 import type { ProviderShareReceived } from '@cindy/device-link';
+import {
+  DEFAULT_REMOTE_AGENT_IDLE_RELEASE,
+  type RemoteAgentIdleReleaseView,
+} from '../../../src/shared/remoteAgentIdleRelease';
 
 const now = Date.parse('2026-10-19T12:00:00Z');
 const share: ProviderShareReceived = {
@@ -204,6 +208,12 @@ void mountPage({
             customizedKeys: [],
             usage: { total: 0, devices: 0, largestDevice: 0 },
           };
+        case 'get-idle-release':
+          return {
+            value: { ...DEFAULT_REMOTE_AGENT_IDLE_RELEASE },
+            defaults: { ...DEFAULT_REMOTE_AGENT_IDLE_RELEASE },
+            isCustomized: false,
+          } satisfies RemoteAgentIdleReleaseView;
         default:
           return forbid(`providerShare.${cmd.action}`)();
       }

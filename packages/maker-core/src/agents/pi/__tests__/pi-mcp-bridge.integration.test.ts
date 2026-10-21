@@ -27,6 +27,8 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
 
+import { createWorkerSpecSchema } from '../../../../../lizi-mcps/src/xdt-helper/create_worker.js';
+
 import { PiAgent } from '../index.js';
 import type { AgentDeps, AgentSessionHandle, PiExtraSpawnConfig } from '../../base-agent.js';
 import type { AgentEvent, InteractionRequest, InteractionDecision } from '../../../types/events.js';
@@ -162,6 +164,17 @@ function scriptedAnthropicTurn(requestBody: string): string {
     const call = calls[toolResultCount];
     return call ? anthropicToolTurn(toolResultCount + 1, call.name, call.input)
       : anthropicTextTurn(5, 'Task controls complete');
+  }
+  if (requestBody.includes('create an Orca worktree worker')) {
+    const turns = [
+      {name: 'cindy_mcp_list_tools', input: {server: 'cindy_orca', tool: 'create_worker'}},
+      {name: 'cindy_mcp_call_tool', input: {server: 'cindy_orca', tool: 'create_worker', args: {
+        role: 'developer', agent: 'pi', label: 'dev', working_dir: '/repo/apps/web', new_worktree: {source_branch: 'release'},
+      }}},
+    ];
+    const next = turns[toolResultCount];
+    return next ? anthropicToolTurn(toolResultCount + 1, next.name, next.input)
+      : anthropicTextTurn(3, 'Worker created');
   }
   if (requestBody.includes('multi command MCP workflow')) {
     const turns: Array<{ name: string; input: Record<string, unknown> }> = [
@@ -322,6 +335,7 @@ describe.skipIf(!piAvailable)('PiAgent × cindy-bridge (real pi + MCP bridge + p
   const REMOTE_API_KEY = 'remote-api-key-secret';
   const REMOTE_ERROR_CANARY = 'remote-error-body-secret-canary';
   let agentHome = '';
+  const orcaCalls: Array<Record<string, unknown>> = [];
   const echoCalls: Array<{ text: unknown }> = [];
   const statusCalls: Array<Record<string, never>> = [];
   const sumCalls: Array<{ values: number[] }> = [];
@@ -530,12 +544,13 @@ describe.skipIf(!piAvailable)('PiAgent × cindy-bridge (real pi + MCP bridge + p
         res.writeHead(401).end('unauthorized');
         return;
       }
+      const isOrca = req.url?.includes('/orca') ?? false;
       const isWorkspace = req.url?.includes('/workspace') ?? false;
       const isContacts = req.url?.includes('/contacts') ?? false;
       const isHelper = req.url?.includes('/helper') ?? false;
       const isMemory = req.url?.includes('/memory') ?? false;
       const server = new McpServer({
-        name: isWorkspace
+        name: isOrca ? 'cindy_orca' : isWorkspace
           ? 'cindy_workspace'
           : isContacts
             ? 'cindy_contacts'
@@ -546,7 +561,17 @@ describe.skipIf(!piAvailable)('PiAgent × cindy-bridge (real pi + MCP bridge + p
               : 'cindy_echo',
         version: '1.0.0',
       });
-      if (isWorkspace) {
+      if (isOrca) {
+        server.registerTool('create_worker', {
+          description: 'Create an Orca Worker', inputSchema: createWorkerSpecSchema.shape,
+        }, async args => {
+          orcaCalls.push(args);
+          return {content: [{type: 'text', text: JSON.stringify({
+            ok: true, worker_id: 'worker', worker_session_id: 'session', working_dir: '/new/checkout/apps/web',
+            worktree: {path: '/new/checkout', branch: 'cindy/new'},
+          })}]};
+        });
+      } else if (isWorkspace) {
         server.registerTool(
           'status',
           { description: 'Read the workspace status', inputSchema: {} },
@@ -688,7 +713,7 @@ describe.skipIf(!piAvailable)('PiAgent × cindy-bridge (real pi + MCP bridge + p
 
   function buildDeps(
     bridgeMode:
-        | 'local' | 'local-multi' | 'bot-memory' | 'remote' | 'remote-sse' | 'remote-paginated' | 'remote-failures' = 'local',
+        | 'local' | 'orca' | 'local-multi' | 'bot-memory' | 'remote' | 'remote-sse' | 'remote-paginated' | 'remote-failures' = 'local',
     logger: Logger = noopLogger,
   ): AgentDeps {
     return {
@@ -833,6 +858,9 @@ describe.skipIf(!piAvailable)('PiAgent × cindy-bridge (real pi + MCP bridge + p
             mcpEnv: { CINDY_PI_REMOTE_MCP_SECRET_0: `Bearer ${REMOTE_BEARER}` },
           };
         }
+        if (bridgeMode === 'orca') {
+          return {mcpBridge: {token: MCP_TOKEN, servers: [{name: 'cindy_orca', url: `${mcpUrl}/orca?session=${encodeURIComponent(ctx?.sessionId ?? '')}`}]}};
+        }
         if (bridgeMode === 'local-multi') {
           const sessionQuery = ctx?.sessionId
             ? `?session=${encodeURIComponent(ctx.sessionId)}`
@@ -881,7 +909,7 @@ describe.skipIf(!piAvailable)('PiAgent × cindy-bridge (real pi + MCP bridge + p
     permissionMode: 'ask' | 'bypassPermissions',
     resolver: (req: InteractionRequest) => Promise<InteractionDecision>,
     bridgeMode:
-        | 'local' | 'local-multi' | 'bot-memory' | 'remote' | 'remote-sse' | 'remote-paginated' = 'local',
+        | 'local' | 'orca' | 'local-multi' | 'bot-memory' | 'remote' | 'remote-sse' | 'remote-paginated' = 'local',
     prompt = 'call the echo tool',
   ): Promise<{
     events: AgentEvent[];
@@ -926,6 +954,28 @@ describe.skipIf(!piAvailable)('PiAgent × cindy-bridge (real pi + MCP bridge + p
       rmSync(cwd, { recursive: true, force: true });
     }
   }
+
+  // PR2 integration: Pi has no private Worker schema. Exercise the real shared schema through
+  // tools/list, schema disclosure, approval identity, tools/call, and the resulting model input.
+  it('preserves new_worktree and spawn metadata through the dynamic Orca MCP gateway', {timeout: 90_000}, async () => {
+    orcaCalls.length = 0;
+    const approvals: Array<{toolName: string; input: unknown}> = [];
+    const {requests, permissionAsked} = await runOneTurn('ask', async req => {
+      if (req.kind === 'permission') approvals.push({toolName: req.toolName, input: req.input});
+      return {kind: 'permission', behavior: 'allow'};
+    }, 'orca', 'create an Orca worktree worker');
+    const args = {role: 'developer', agent: 'pi', label: 'dev', working_dir: '/repo/apps/web', new_worktree: {source_branch: 'release'}};
+    expect(orcaCalls).toEqual([args]);
+    expect(permissionAsked).toBe(true);
+    expect(approvals).toContainEqual({toolName: 'mcp__cindy_orca__create_worker', input: args});
+    const schema = JSON.parse(latestToolResultContent(requests[1] ?? {}));
+    expect(schema.tools[0].inputSchema.properties.new_worktree.properties.source_branch.type).toBe('string');
+    const output = latestToolResultContent(requests[2] ?? {});
+    expect(output).toContain('/new/checkout/apps/web');
+    expect(output).toContain('cindy/new');
+    const startupNames = (requests[0]?.tools as Array<{name: string}>).map(tool => tool.name);
+    expect(startupNames).not.toContain('mcp__cindy_orca__create_worker');
+  });
 
   it(
     'ask + allow: 模型经桥调 cindy 工具 → 触发权限询问 → 放行 → 工具执行 → 最终 text 含回显',

@@ -32,6 +32,7 @@ import type {
   ProviderGroupRemotePick,
   ProviderGroupSessionGroup,
   ProviderGroupView,
+  ProviderGroupUsageLimit,
 } from '../../shared/providerGroup.js';
 import { providerGroupMemberKey } from '../../shared/providerGroup.js';
 import { isProviderShareAgentDeviceId } from '../../shared/providerShare.js';
@@ -52,7 +53,7 @@ import {
 import {
   decideProviderGroupFailure,
   describeProviderGroupFailure,
-  PROVIDER_GROUP_UNAVAILABLE_ERROR,
+  providerGroupUnavailableError,
   providerGroupFailureSignals,
   type ProviderGroupFailureCause,
   type ProviderGroupFailureDecision,
@@ -346,7 +347,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | undefined>
 
 type SourcePick =
   | { kind: 'none' }
-  | { kind: 'unavailable' }
+  | { kind: 'unavailable'; usageLimit?: ProviderGroupUsageLimit }
   | { kind: 'member'; member: ProviderGroupMember; label: string; labelOf(memberKey: string): string | undefined };
 
 /** 组来源：本机的组，或同账号另一台电脑上的组。 */
@@ -665,7 +666,7 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
         reserveFor: sessionId,
         ...(exclude.size > 0 ? { fresh: true } : {}),
       });
-      if (pick.kind !== 'member') return { kind: pick.kind };
+      if (pick.kind !== 'member') return pick;
       return {
         kind: 'member',
         member: pick.member,
@@ -728,7 +729,7 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
           model,
           exclude: [...exclude],
         });
-        if (pick.kind !== 'member') return { kind: pick.kind };
+        if (pick.kind !== 'member') return pick;
         const labelOf = (key: string) => {
           const found = config.members.find((m) => m.key === key);
           return found ? deps.directory.memberLabel(found) || undefined : undefined;
@@ -1420,7 +1421,7 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
     if (pick.kind === 'none') return null;
     if (pick.kind === 'unavailable') {
       deps.log.warn('provider group: no computer available for a new task', { sessionId, groupProviderId, remote: true });
-      throw new Error(PROVIDER_GROUP_UNAVAILABLE_ERROR);
+      throw providerGroupUnavailableError(pick);
     }
     const route = source.routeOf(pick.member, null);
     await deps.writeBinding(sessionId, bindingFor(source, groupProviderId, pick.member.key));
@@ -1522,7 +1523,7 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
       if (pick.kind === 'none') return null;
       if (pick.kind === 'unavailable') {
         deps.log.warn('provider group: no computer available for a new task', { sessionId, groupProviderId });
-        throw new Error(PROVIDER_GROUP_UNAVAILABLE_ERROR);
+        throw providerGroupUnavailableError(pick);
       }
       const route = localSource.routeOf(pick.member, row.providerId);
       await deps.writeBinding(sessionId, { providerId: groupProviderId, memberKey: pick.member.key });
@@ -1604,7 +1605,7 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
       if (pick.kind === 'none') return null;
       if (pick.kind === 'unavailable') {
         deps.log.warn('provider group: no computer available for a task moved into the group', { sessionId, providerId });
-        throw new Error(PROVIDER_GROUP_UNAVAILABLE_ERROR);
+        throw providerGroupUnavailableError(pick);
       }
       const route = source.routeOf(pick.member, source.ownerDeviceId ? null : providerId);
       if (route.agentDeviceId === target.current.agentDeviceId && route.providerId !== target.current.providerId) return null;

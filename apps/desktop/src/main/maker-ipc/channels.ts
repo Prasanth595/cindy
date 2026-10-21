@@ -33,6 +33,11 @@ export const MAKER_INVOKE = {
   SESSION_DISABLE_ORCA: 'maker:session:disable-orca',
   /** renderer 回填「该会话是否真的在 turn 中」的权威运行态(#4513 中断横幅假阳性)。 */
   SESSION_TURN_ACTIVE: 'maker:session:turn-active',
+  /**
+   * 输入框开始打字时提前启动该任务的 Agent（尽力而为，无返回约定之外的副作用）。
+   * 本机 renderer 与 device-link 控制端共用；旧被控端没有该 channel 时控制端静默忽略。
+   */
+  SESSION_PREWARM: 'maker:session:prewarm',
   CLOSE_SESSION: 'maker:close-session',
   /**
    * 单条 user / assistant 消息本地内容删除。保留后续可见消息，但清当前原生
