@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { MobileHomeDeviceFilterItem, MobileHomeProjectGroup } from '@/session/mobileHome';
-import { buildHomeProjectMachineIdentities } from '@/session/homeProjectMachineIdentity';
+import { buildHomeDeviceMachineIdentities, buildHomeProjectMachineIdentities } from '@/session/homeProjectMachineIdentity';
 
 function project(key: string, deviceId: string | null, deviceName: string): MobileHomeProjectGroup {
   return {
@@ -67,5 +67,40 @@ describe('project machine identity parity with Desktop', () => {
     expect(result.get('a')?.displayLabel).toBe('Renamed Mac');
     expect(result.get('b')?.displayLabel).toBe('win');
     expect(result.has('c')).toBe(false);
+  });
+});
+
+describe('chat machine identity (tasks without a project header)', () => {
+  function chat(id: string, deviceId: string | undefined, deviceName: string, extra: object = {}) {
+    return { session: { id, canonicalDeviceId: deviceId, deviceLinkDeviceId: deviceId, deviceLinkDeviceName: deviceName, ...extra } } as never;
+  }
+  const home = (chats: never[], deviceFilters: MobileHomeDeviceFilterItem[], selectedDeviceId: string | null = null) =>
+    ({ chats, pinned: [], projects: [], deviceFilters, selectedDeviceId });
+
+  it('counts chat-only devices when disambiguating same-named computers', () => {
+    const result = buildHomeDeviceMachineIdentities(home(
+      [chat('1', 'one', 'MacBook'), chat('2', 'two', 'MacBook')],
+      [device('one', 'MacBook'), device('two', 'MacBook')],
+    ));
+    expect(result.one.displayLabel).toBe('MacBook · one');
+    expect(result.two.displayLabel).toBe('MacBook · two');
+  });
+
+  it('labels by the owning device, not by where the Agent runs, and keeps the icon under a selected device', () => {
+    const owned = chat('1', 'a', 'Alpha', { agentDeviceId: 'b', agentDeviceName: 'Beta' });
+    const result = buildHomeDeviceMachineIdentities(
+      home([owned], [device('a', 'Alpha'), device('b', 'Beta')], 'a'),
+    );
+    expect(result.a).toEqual({ displayLabel: 'Alpha', disconnected: false, hideLabel: true });
+    expect(result.b).toBeUndefined();
+  });
+
+  it('marks offline or failed devices as disconnected', () => {
+    const chats = [chat('1', 'a', 'Alpha'), chat('2', 'b', 'Beta')];
+    const result = buildHomeDeviceMachineIdentities(
+      home(chats, [device('a', 'Alpha', false), device('b', 'Beta')]), { b: 'failed' },
+    );
+    expect(result.a.disconnected).toBe(true);
+    expect(result.b.disconnected).toBe(true);
   });
 });

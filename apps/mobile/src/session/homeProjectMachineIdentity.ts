@@ -37,3 +37,67 @@ export function buildHomeProjectMachineIdentities(
   }
   return identities;
 }
+
+type HomeMachineIdentitySource = Pick<
+  MobileHomePresentation,
+  'chats' | 'pinned' | 'projects' | 'deviceFilters' | 'selectedDeviceId'
+>;
+
+interface SessionDeviceFields {
+  canonicalDeviceId?: string | null;
+  deviceLinkDeviceId?: string | null;
+  deviceLinkDeviceName?: string | null;
+}
+
+/** Display device of a task: same precedence as openSession (canonical first). */
+export function homeSessionDeviceId(session: object): string | null {
+  const { canonicalDeviceId, deviceLinkDeviceId } = session as SessionDeviceFields;
+  return canonicalDeviceId ?? deviceLinkDeviceId ?? null;
+}
+
+function homeSessionDeviceName(session: object): string | null {
+  return (session as SessionDeviceFields).deviceLinkDeviceName ?? null;
+}
+
+/**
+ * Machine identity keyed by the device a task belongs to, for rows that have no
+ * project header (top-level chats, pinned). Same naming rules as projects, but
+ * devices that only own chats still take part in same-name disambiguation.
+ * Deliberately independent of `sessionAgentRunsOnOtherComputer`: that says where
+ * the Agent runs, this says where the task lives.
+ */
+export function buildHomeDeviceMachineIdentities(
+  home: HomeMachineIdentitySource,
+  connectionStates: Readonly<Record<string, string>> = {},
+): Readonly<Record<string, HomeProjectMachineIdentity>> {
+  const filters = new Map(home.deviceFilters.map((device) => [device.deviceId, device]));
+  const names = new Map<string, string>();
+  const note = (deviceId: string | null | undefined, fallbackName: string | null | undefined) => {
+    if (!deviceId) return;
+    const name = (filters.get(deviceId)?.label ?? fallbackName ?? '').trim();
+    // The first non-empty name wins so a stale empty record cannot blank a known one.
+    if (!names.has(deviceId) || (!names.get(deviceId) && name)) names.set(deviceId, name);
+  };
+  for (const project of home.projects) {
+    note(project.deviceId, project.deviceName);
+    for (const item of project.sessions) note(homeSessionDeviceId(item.session), homeSessionDeviceName(item.session));
+  }
+  for (const item of [...home.chats, ...home.pinned]) {
+    note(homeSessionDeviceId(item.session), homeSessionDeviceName(item.session));
+  }
+  const idsByName = new Map<string, number>();
+  for (const name of names.values()) {
+    if (!name) continue;
+    idsByName.set(name.toLowerCase(), (idsByName.get(name.toLowerCase()) ?? 0) + 1);
+  }
+  const identities: Record<string, HomeProjectMachineIdentity> = {};
+  for (const [deviceId, name] of names) {
+    const ambiguous = name && (idsByName.get(name.toLowerCase()) ?? 0) > 1;
+    identities[deviceId] = {
+      displayLabel: ambiguous ? `${name} · ${deviceId}` : name || deviceId,
+      disconnected: !filters.get(deviceId)?.available || connectionStates[deviceId] === 'failed',
+      hideLabel: home.selectedDeviceId === deviceId,
+    };
+  }
+  return identities;
+}
