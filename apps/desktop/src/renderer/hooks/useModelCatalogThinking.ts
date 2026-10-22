@@ -93,6 +93,9 @@ export function useModelCatalogThinking(target: ModelCatalogThinkingTarget | nul
             }
           : prev),
         key,
+        // 首次读回前就写入也不会回退到「未加载」：loaded 是「已拿到过真值」的意思，
+        // 乐观写入本身就是一次提交，不该把控件重新锁上。
+        loaded: write ? true : prev.loaded,
         loading: !write,
         saving: write !== undefined,
         error: false,
