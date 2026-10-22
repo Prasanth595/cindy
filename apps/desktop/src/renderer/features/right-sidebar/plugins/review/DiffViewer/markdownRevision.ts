@@ -52,7 +52,7 @@ export const REVISION_MIN_UNCHANGED_RATIO = 0.3;
  * `- [x]` 拆成 `- [ {++x++}]`，remark-gfm 就不再把它当任务清单——复选框消失、
  * 退化成字面文字。这类变化回退整块装饰（两版各自完整渲染，复选框正常）。
  */
-const TASK_MARKER_PATTERN = /^[\t ]*[-*+] +\[([ xX])\]/gm;
+const TASK_MARKER_PATTERN = /^[\t ]*(?:[-*+]|\d{1,9}[.)]) +\[([ xX])\]/gm;
 
 /**
  * 任务标记序列（无任务列表时返回 null）。序列不一致就放弃词级。
@@ -316,6 +316,17 @@ export function buildMarkdownRevision(before: string, after: string): string | n
   if (slices.some((slice) => (slice.added || slice.removed) && /[{}]/.test(slice.value))) {
     return null;
   }
+  // 改动只盖住字符实体的一半时（`&copy;` → `&reg;`），标记会切断实体、预览显示字面
+  // 的实体名。实体是渲染期原子跨度，词级标记做不到，整块回退。
+  if (
+    slices.some(
+      (slice) =>
+        (slice.added || slice.removed) &&
+        (slice.added ? cutsHtmlEntity(slice.after, after) : cutsHtmlEntity(slice.before, before)),
+    )
+  ) {
+    return null;
+  }
   if (unchangedRatioOf(slices, before.length, after.length) < REVISION_MIN_UNCHANGED_RATIO) {
     return null;
   }
@@ -341,6 +352,24 @@ function buildWholeBlockRevision(
   if (/[{}]/.test(body)) return null;
   const injected = kind === 'insert' ? `{++${body}++}` : `{--${body}--}`;
   return validateRevision(injected, reference) ? injected : null;
+}
+
+/** HTML 字符实体（`&copy;` / `&#169;`）：标记落进实体内部会把它切断。 */
+const HTML_ENTITY_PATTERN = /&(?:[A-Za-z][A-Za-z0-9]*|#\d+|#x[0-9A-Fa-f]+);/g;
+
+/** 改动片段是否只盖住某个实体的**一部分**（`cost&copy;` → `cost&reg;` 的 `copy`）。 */
+function cutsHtmlEntity(
+  range: SourceRange | null,
+  source: string,
+): boolean {
+  if (!range) return false;
+  for (const entity of source.matchAll(HTML_ENTITY_PATTERN)) {
+    const start = entity.index ?? 0;
+    const end = start + entity[0].length;
+    if (range.start > start && range.start < end) return true;
+    if (range.end > start && range.end < end) return true;
+  }
+  return false;
 }
 
 /** 片段下标闭区间（区域 = 一段连续的 diff 片段）。 */

@@ -385,11 +385,11 @@ function reviseCodePiece(before: SourcePiece, after: SourcePiece): string | null
  * 换行会让 `$$…$$` 的闭合 `$$` 与下一个公式的开 `$` 粘成 `$$$`，整段被 remark-math
  * 当成一个坏公式 → 退化成字面文本、哨兵 LaTeX 直接显示给用户，而校验看不出问题。
  */
-function markTextPiece(piece: SourcePiece, kind: 'insert' | 'delete'): string {
+function markTextPiece(piece: SourcePiece, kind: 'insert' | 'delete'): string | null {
   if (piece.value.trim() === '') return piece.value;
-  // 内包裹不成立且含花括号（用不了 CriticMarkup）时一律保留原文：宁可不标注，
-  // 也不能让删除侧内容凭空消失（文本段的校验只比 after 侧，删掉是查不出来的）。
-  if (BRACES.test(piece.value)) return piece.value;
+  // 含花括号时 CriticMarkup 用不了（标记内容不允许出现 `{` / `}`）：返回失败让调用方
+  // 回退整块。不能原样保留——删除侧校验只比 after，撤掉的文字会继续显示成正文。
+  if (BRACES.test(piece.value)) return null;
   return kind === 'insert' ? `{++${piece.value}++}` : `{--${piece.value}--}`;
 }
 

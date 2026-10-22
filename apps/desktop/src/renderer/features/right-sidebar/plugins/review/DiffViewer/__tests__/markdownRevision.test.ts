@@ -275,3 +275,21 @@ describe('buildMarkdownRevision', () => {
     }
   });
 });
+
+describe('回退到整块装饰的边界', () => {
+  it('有序任务项的勾选态变化回退 null', () => {
+    // 有序列表也是任务项：`1. [x]` 的核心标记落在方括号里，词级标记会拆掉复选框。
+    expect(buildMarkdownRevision('1. [ ] 待办\n2. 其余\n', '1. [x] 待办\n2. 其余\n')).toBeNull();
+  });
+
+  it('把字符实体改一半时回退 null', () => {
+    // `cost&copy;` → `cost&reg;`：只改实体名会让标记插进 `&…;` 中间，
+    // 折叠后正文一致但预览显示字面的实体名。
+    expect(buildMarkdownRevision('cost&copy; 是版权符号\n', 'cost&reg; 是版权符号\n')).toBeNull();
+  });
+
+  it('实体完整保留时仍走词级标记', () => {
+    const revision = buildMarkdownRevision('cost&copy; 是符号\n', 'cost&copy; 是标记\n');
+    expect(revision).toContain('{--');
+  });
+});

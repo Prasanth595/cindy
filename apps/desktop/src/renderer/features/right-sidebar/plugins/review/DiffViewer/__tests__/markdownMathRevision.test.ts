@@ -363,3 +363,10 @@ describe('buildMarkdownMathRevision — 行内代码（原子跨度）', () => {
     expect(buildMarkdownMathRevision('keep {--x--} `c` OLD', 'keep {--x--} `c` NEW')).toBeNull();
   });
 });
+
+describe('含花括号的删除文本', () => {
+  it('放弃公式路径而不是保留原文', () => {
+    // `x {y} ` 删掉后，原样保留会让已删除的文字继续显示成正文（校验只比 after 侧）。
+    expect(buildMarkdownMathRevision('x {y} $abcdefghij$', '$abcdefghij$')).toBeNull();
+  });
+});
