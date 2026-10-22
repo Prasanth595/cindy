@@ -6,20 +6,29 @@
  * 但进程内没有其它入口回到登录态——refreshTimer 只在成功分支安排。结果就是
  * 这一次启动停在登录页,用户被迫重新收验证码。
  *
- * 本模块只管「什么时候再试」,不碰凭证、不判断失败类型:调用方只对 status 0
- * 的失败调用它。与 Electron 解耦,便于单测(authManager 本身依赖 Electron)。
+ * 本模块只管「什么时候再试」,不碰凭证:调用方只对传输层失败启动它,并且每次
+ * 重试后要明确回答「继续还是停止」。`continue` 只在该次失败仍是传输层失败时为真,
+ * 429 / 5xx / 确定性失效都必须停下,不按短间隔继续撞服务端。
+ * 与 Electron 解耦,便于单测(authManager 本身依赖 Electron)。
  */
 
 /** 累计约 67s,覆盖开机后 DHCP / VPN / 代理就绪的常见延迟。 */
 export const COLD_START_NETWORK_RETRY_DELAYS_MS = [2_000, 5_000, 10_000, 20_000, 30_000] as const;
 
+/** 一次重试的结果:恢复了 / 仍是传输层失败可以继续 / 其它失败必须停止。 */
+export type ColdStartRecoveryAttempt = 'recovered' | 'continue' | 'stop';
+
 export interface ColdStartNetworkRecoveryDeps {
-  /** 当前登录代次是否仍然一致(用户已手动登录 / 登出则作废)。 */
+  /**
+   * 是否仍处于本次冷启动流程。这里不复用登录代次:未登录态提交本身会推进
+   * `authStateEpoch`,但那正是重试的前置条件。用户登录 / 登出 / 进入本地模式
+   * 由 `isSignedOut` 之外的显式取消负责。
+   */
   isCurrent(): boolean;
   /** 是否仍停在冷启动的未登录状态。 */
   isSignedOut(): boolean;
-  /** 重试一次;返回 true 表示会话已恢复,停止后续尝试。 */
-  retry(): Promise<boolean>;
+  /** 重试一次;必须明确回答继续还是停止。 */
+  retry(): Promise<ColdStartRecoveryAttempt>;
   delaysMs?: readonly number[];
   setTimeoutFn?: typeof setTimeout;
   clearTimeoutFn?: typeof clearTimeout;
@@ -36,8 +45,8 @@ export interface ColdStartNetworkRecovery {
 /**
  * 安排一串有界的冷启动重试。
  *
- * 每次重试成功后停止(登录态由重试路径自己广播给 renderer);失败则排下一轮,
- * 直到节奏用完。取消 / 代次变化 / 已不再是未登录状态,三者任一都立即停止。
+ * 每次重试后按结果收口:`recovered` / `stop` 立即结束,`continue` 才排下一轮。
+ * 取消 / 已不再是未登录状态,两者任一都停止。
  */
 export function startColdStartNetworkRecovery(
   deps: ColdStartNetworkRecoveryDeps,
@@ -63,13 +72,12 @@ export function startColdStartNetworkRecovery(
       if (cancelled || !deps.isCurrent() || !deps.isSignedOut()) return;
       deps.onAttempt?.({ attempt, delayMs });
       void deps.retry().then(
-        (ok) => {
-          if (ok || cancelled || !deps.isCurrent()) return;
-          arm();
+        (result) => {
+          if (result === 'continue' && !cancelled && deps.isCurrent()) arm();
         },
         (error) => {
+          // 崩溃不等于网络已恢复:记日志后停止,把下一次机会留给下一次启动。
           deps.onError?.(error);
-          if (!cancelled && deps.isCurrent()) arm();
         },
       );
     }, delayMs);
@@ -85,4 +93,67 @@ export function startColdStartNetworkRecovery(
       }
     },
   };
+}
+
+export interface ColdStartRecoveryLifecycleDeps {
+  /** 当前 authStateEpoch。 */
+  epoch(): number;
+  /** 当前应用会话的 mode。 */
+  mode(): string;
+  /** 启动重试器;返回 cancel。 */
+  start(): () => void;
+  onStarted?: () => void;
+}
+
+/**
+ * 冷启动恢复器的生命周期:只允许在「未登录态提交之后」存在。
+ *
+ * 背景:未登录态提交会经 withAccountFreeOwnerCommit → clearAuth 取消已存在的
+ * 恢复器并推进 authStateEpoch。因此恢复器必须在该提交 settle 之后才创建;
+ * 提前创建会被立刻清掉,首次重试永不执行(PR #6741 review)。
+ *
+ * 本模块把「什么情况下允许创建 / 何时必须取消」收在一处,便于单测:真实的
+ * authManager 只在提交返回后调用 `arm()`。
+ */
+export class ColdStartRecoveryLifecycle {
+  private cancelCurrent: (() => void) | null = null;
+  private pending = false;
+  private started = false;
+  private minimumEpoch = 0;
+
+  constructor(private readonly deps: ColdStartRecoveryLifecycleDeps) {}
+
+  /**
+   * 提交前登记:提交会取消任何已存在的恢复器,因此这里只记下待启动。
+   * 已经启动的链不再重新登记 —— 冷启动超时转后台后原流程迟到失败会再进一次
+   * 失败分支,不能把节奏重来一遍。
+   */
+  request(): void {
+    if (this.started) return;
+    this.pending = true;
+  }
+
+  /** 提交完成后启动。仍处于未登录态且没有其它恢复器时才会真正创建。 */
+  arm(): void {
+    if (!this.pending) return;
+    this.pending = false;
+    if (this.started || this.deps.mode() !== 'signed-out') return;
+    this.started = true;
+    this.minimumEpoch = this.deps.epoch();
+    this.cancelCurrent = this.deps.start();
+    this.deps.onStarted?.();
+  }
+
+  /** 登录 / 登出 / 本地模式 / 会话清除时调用。 */
+  cancel(): void {
+    this.pending = false;
+    this.started = false;
+    this.cancelCurrent?.();
+    this.cancelCurrent = null;
+  }
+
+  /** 当前恢复器是否仍应存活(供 isCurrent 判定)。 */
+  isCurrent(): boolean {
+    return this.started && this.deps.epoch() >= this.minimumEpoch;
+  }
 }

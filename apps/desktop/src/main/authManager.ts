@@ -98,8 +98,9 @@ import { resolveLoginScenarioFetch } from '@cindy/auth-client/fixtures';
 
 import { createLogger } from './logger';
 import {
+  ColdStartRecoveryLifecycle,
   startColdStartNetworkRecovery,
-  type ColdStartNetworkRecovery,
+  type ColdStartRecoveryAttempt,
 } from './coldStartNetworkRecovery';
 import { requestErrorMessage } from './requestErrorMessage';
 import { AuthOwnerChangeShellGate } from './authOwnerChangeShellGate';
@@ -382,8 +383,8 @@ let activeAuthRealm: AuthRegion = AUTH_REGION;
 let pendingAuthRealm: AuthRegion | null = null;
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 let refreshPromise: Promise<boolean> | null = null;
-let coldStartNetworkRecovery: ColdStartNetworkRecovery | null = null;
-let coldStartNetworkRecoveryStarted = false;
+/** 最近一次冷启动 refresh 是否为无服务端响应的传输层失败。 */
+let lastColdStartFailureWasTransport = false;
 const refreshBackoff = new AuthRefreshBackoff();
 let sessionInvalidationPromise: Promise<void> | null = null;
 // Real owner change / logout: keep the renderer fail-closed even if a late
@@ -3335,42 +3336,42 @@ function scheduleNonXdOrgBetaDefault(input: {
  */
 let coldStartAuthInFlight: Promise<AuthState> | null = null;
 
-function retryColdStartAuthSession(): Promise<boolean> {
+async function retryColdStartAuthSession(): Promise<ColdStartRecoveryAttempt> {
   // 重跑完整冷启动:它会重新读磁盘凭据、加载端点清单、认领 legacy owner
   // namespace 并按 allowUnclaimedVault 写入 vault。只调 refresh() 会漏掉这些,
   // 升级后首次启动且离线时尤其明显。
-  return initialize().then((state) => state.isAuthenticated || state.canEnterApp);
+  const state = await initialize();
+  if (state.isAuthenticated || state.canEnterApp) return 'recovered';
+  // initialize() 的瞬时失败只可能来自本次重试;确定性失效会清凭据并让
+  // hasNoPersistedAuthCredentials() 为真。只有「还有凭据 + 仍是传输层失败」
+  // 才继续,429 / 5xx / DEVICE_MISMATCH 等一律停手,由原有路径处理。
+  if (hasNoPersistedAuthCredentials()) return 'stop';
+  return lastColdStartFailureWasTransport ? 'continue' : 'stop';
 }
 
 /**
- * 冷启动因**传输层失败**没能恢复会话时的自动重试。
- *
- * 只处理 status=0(没有服务端响应):开机自启时网络尚未就绪,本地 refresh token
- * 仍然有效,不能要求用户重新登录。确定性失效、device-mismatch、清单不可用等
- * 其它失败都不进这里,它们各自有明确的处理路径。
- *
- * 整条恢复链在一个进程内只启动一次(`coldStartNetworkRecoveryStarted`);重试
- * 过程中冷启动流程自身再失败、或超时后迟到失败,都不能把节奏重置成无限重试。
- * 用户登出 / 手动登录会由 clearAuth 取消并重新武装。
+ * 冷启动恢复器的生命周期。只在未登录态提交**之后**创建:提交内部的 clearAuth
+ * 会取消已存在的恢复器并推进 authStateEpoch,提前创建会让首次重试永不执行。
  */
-function scheduleColdStartNetworkRecovery(epoch: number): void {
-  if (coldStartNetworkRecoveryStarted) return;
-  coldStartNetworkRecoveryStarted = true;
-  coldStartNetworkRecovery?.cancel();
-  coldStartNetworkRecovery = startColdStartNetworkRecovery({
-    isCurrent: () => authStateEpoch === epoch,
-    isSignedOut: () => getActiveAppSession().mode === 'signed-out',
-    retry: retryColdStartAuthSession,
-    onAttempt: ({ attempt, delayMs }) =>
-      log.info('cold-start network recovery attempt %d after %dms', attempt, delayMs),
-    onExhausted: (attempts) =>
-      log.warn(
-        'cold-start network recovery exhausted %d retries; keeping the persisted session for the next launch',
-        attempts,
-      ),
-    onError: (error) => log.warn('cold-start network recovery refresh threw', error),
-  });
-}
+const coldStartRecovery: ColdStartRecoveryLifecycle = new ColdStartRecoveryLifecycle({
+  epoch: () => authStateEpoch,
+  mode: () => getActiveAppSession().mode,
+  start: () =>
+    startColdStartNetworkRecovery({
+      // 延迟读取:恢复器自身的存活判定要经过 lifecycle,初始化时还不能直接捕获。
+      isCurrent: () => coldStartRecovery.isCurrent(),
+      isSignedOut: () => getActiveAppSession().mode === 'signed-out',
+      retry: retryColdStartAuthSession,
+      onAttempt: ({ attempt, delayMs }) =>
+        log.info('cold-start network recovery attempt %d after %dms', attempt, delayMs),
+      onExhausted: (attempts) =>
+        log.warn(
+          'cold-start network recovery exhausted %d retries; keeping the persisted session for the next launch',
+          attempts,
+        ),
+      onError: (error) => log.warn('cold-start network recovery refresh threw', error),
+    }).cancel,
+});
 
 function scheduleRefreshRetryAfterTransientFailure(epoch: number, retryAt?: number, networkFailure = false): void {
   if (epoch !== authStateEpoch) return;
@@ -3736,9 +3737,7 @@ function clearAuth(
     clearTimeout(refreshTimer);
     refreshTimer = null;
   }
-  coldStartNetworkRecovery?.cancel();
-  coldStartNetworkRecovery = null;
-  coldStartNetworkRecoveryStarted = false;
+  coldStartRecovery.cancel();
   if (!opts.preservePersistedRefreshToken) {
     if (isPassiveSharedUserDataInstance()) {
       // passive 共享实例无权删整机凭证:它的登出只清本进程内存态,磁盘 token 留给
@@ -4652,6 +4651,8 @@ export async function initialize(options: AuthInitializeOptions = {}): Promise<A
     removeSafe(LEGACY_REFRESH_TOKEN_KEY);
     removeSafe(LEGACY_ACCOUNT_REFRESH_TOKEN_KEY);
   }
+  // 本次 initialize 的失败原因从零开始;重试链只认「这次」是否仍为传输层失败。
+  lastColdStartFailureWasTransport = false;
   let persistedSession: ReturnType<typeof readPersistedAuthSession>;
   try {
     persistedSession = await reconcileDesktopActiveAuthSession();
@@ -4724,7 +4725,15 @@ export async function initialize(options: AuthInitializeOptions = {}): Promise<A
       // A signed-out fallback is not safe until the shared Ghost projection
       // has been swept. Otherwise the previous cloud owner's links remain
       // available to local/anonymous Agent processes during a slow refresh.
+      // 黑洞网络 / captive portal 下原流程可能迟迟不返回:这里同样要登记恢复,
+      // 否则 splash 解锁后不会再有入口回来登录。恢复器在提交之后才 arm。
+      // 超时同样属于「没有服务端响应」,重试链可以按传输层失败继续。
+      if (hasPotentiallyPersistedAuthCredentials()) {
+        lastColdStartFailureWasTransport = true;
+        coldStartRecovery.request();
+      }
       await recoverAccountFreeOwnerAtStartup('signed-out', 'cold-start-timeout-recovery');
+      coldStartRecovery.arm();
       return snapshotLoggedOutAuthState();
     },
     onLateResult: (state) =>
@@ -4803,6 +4812,7 @@ async function runColdStartRefreshFlow(
       return finishColdStartSignedOut('cold-start-realm-changed');
     }
     if (!refreshResult.ok) {
+      lastColdStartFailureWasTransport = refreshResult.status === 0;
       // 只在「确定性凭据失效」时清除 token。429 限流 / 5xx / 断网等瞬时失败保留 token,
       // 让下次启动(或后续 refresh)能恢复登录,避免冷启动撞限流 / 网络抖动即被永久登出。
       // 与运行时 refresh() 的清除条件保持一致(共用 authRefreshFailure)。
@@ -4872,15 +4882,15 @@ async function runColdStartRefreshFlow(
         log.warn(
           `cold-start refresh still failing after ${attempts} attempt(s) — keeping refresh token, starting logged out`,
         );
-        // 传输层失败(尤其开机自启时系统网络还没就绪)不代表凭据失效。
-        // 此时以未登录解锁 UI,同时在后台按节奏重试;成功后照常广播登录态。
-        // 不用 finishColdStartSignedOut 的 reason 区分,避免后续新失败类型被
-        // 误加进自动恢复:只有 status=0 才排重试。
-        if (refreshResult.status === 0) {
-          scheduleColdStartNetworkRecovery(authStateEpoch);
-        }
       }
-      return finishColdStartSignedOut(`cold-start-refresh-${action.kind}`);
+      // 传输层失败(尤其开机自启时系统网络还没就绪)不代表凭据失效。
+      // 按 status 而不是按分支判定:replacement-retry 也可能是断网。
+      // 只登记;提交内部会经 withAccountFreeOwnerCommit → clearAuth 取消恢复器
+      // 并推进代次,所以必须等提交 settle 后再 arm。
+      if (refreshResult.status === 0) coldStartRecovery.request();
+      const signedOut = await finishColdStartSignedOut(`cold-start-refresh-${action.kind}`);
+      coldStartRecovery.arm();
+      return signedOut;
     }
 
     const refreshData = refreshResult.data as RefreshResponse;

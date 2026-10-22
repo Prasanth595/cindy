@@ -1,9 +1,14 @@
 /**
  * 冷启动断网恢复的静态契约守卫(authManager 依赖 Electron，无法在 unit 里 import)。
  *
- * 失效后果：若把确定性失效、DEVICE_MISMATCH 或 replacement-retry 也接进自动重试，
- * 已确认无效的凭据会被反复拿去撞服务端；反过来漏掉 status 0，开机断网时用户
- * 又会停在登录页被迫重新收验证码。
+ * 失效后果：
+ *  - 在 `finishColdStartSignedOut()` 之前启动恢复器：该函数内部的
+ *    `withAccountFreeOwnerCommit → clearAuth` 会取消恢复器并推进代次，首次重试
+ *    永不执行，用户联网后仍停在登录页。
+ *  - 把确定性失效 / 429 也当成可继续：已确认无效的凭据会被反复拿去撞服务端。
+ *
+ * 行为侧覆盖见 `coldStartNetworkRecovery.test.ts` 的 lifecycle 用例；这里只守
+ * authManager 里的调用顺序与取消点。
  *
  * 规则依据：docs/dev-rules/engineering-conventions.md §3.2（跨文件静态契约进 guard）。
  */
@@ -18,49 +23,72 @@ const authSource = readFileSync(resolve(process.cwd(), 'src/main/authManager.ts'
 
 function coldStartFailureBranch(): string {
   const start = authSource.indexOf('if (!refreshResult.ok) {');
-  const end = authSource.indexOf('const refreshData = refreshResult.data as RefreshResponse;', start);
+  const end = authSource.indexOf(
+    'const refreshData = refreshResult.data as RefreshResponse;',
+    start,
+  );
   expect(start).toBeGreaterThan(-1);
   expect(end).toBeGreaterThan(start);
   return authSource.slice(start, end);
 }
 
-function recoveryScheduler(): string {
-  const start = authSource.indexOf('function scheduleColdStartNetworkRecovery(');
-  const end = authSource.indexOf('function scheduleRefreshRetryAfterTransientFailure', start);
-  expect(start).toBeGreaterThan(-1);
-  return authSource.slice(start, end);
-}
-
 describe('cold start auth recovery boundary', () => {
-  it('只有传输层失败接入自动恢复，确定性失效仍清凭证', () => {
+  it('先登记、提交未登录态、再 arm', () => {
     const body = coldStartFailureBranch();
-    expect(body).toContain('if (refreshResult.status === 0) {');
-    expect(body).toContain('scheduleColdStartNetworkRecovery(authStateEpoch);');
+    const requestIdx = body.indexOf('coldStartRecovery.request()');
+    const commitIdx = body.indexOf('await finishColdStartSignedOut(');
+    const armIdx = body.indexOf('coldStartRecovery.arm()');
+    expect(requestIdx).toBeGreaterThan(-1);
+    expect(commitIdx).toBeGreaterThan(-1);
+    expect(armIdx).toBeGreaterThan(-1);
+    expect(requestIdx).toBeLessThan(commitIdx);
+    expect(commitIdx).toBeLessThan(armIdx);
+  });
+
+  it('按 status 判定传输层失败，确定性失效仍清凭证', () => {
+    const body = coldStartFailureBranch();
+    expect(body).toContain('if (refreshResult.status === 0) coldStartRecovery.request();');
     expect(body).toContain("action.kind === 'definitive-failure'");
     expect(body).toContain('clearConfirmedDeadRefreshTokens(');
-    // 自动恢复只挂在 else 分支里，definitive / foreign-device 分支不得触发。
-    expect(body.indexOf("action.kind === 'definitive-failure'")).toBeLessThan(
-      body.indexOf('scheduleColdStartNetworkRecovery(authStateEpoch);'),
+  });
+
+  it('重试结果区分继续与停止，确定性失效 / 无凭据都停手', () => {
+    const start = authSource.indexOf('async function retryColdStartAuthSession(');
+    const end = authSource.indexOf('\n}\n', start);
+    const body = authSource.slice(start, end);
+    expect(body).toContain("return 'recovered'");
+    expect(body).toContain('hasNoPersistedAuthCredentials()');
+    expect(body).toContain("lastColdStartFailureWasTransport ? 'continue' : 'stop'");
+  });
+
+  it('20s 超时路径同样在未登录态提交之后 arm', () => {
+    const start = authSource.indexOf('onTimeout: async () => {');
+    const end = authSource.indexOf('onLateResult:', start);
+    const body = authSource.slice(start, end);
+    const commitIdx = body.indexOf(
+      "recoverAccountFreeOwnerAtStartup('signed-out', 'cold-start-timeout-recovery')",
     );
+    const armIdx = body.indexOf('coldStartRecovery.arm()');
+    expect(commitIdx).toBeGreaterThan(-1);
+    expect(armIdx).toBeGreaterThan(-1);
+    expect(commitIdx).toBeLessThan(armIdx);
   });
 
-  it('恢复调度重跑完整 initialize，并按登录代次与登录态收口', () => {
-    const body = recoveryScheduler();
-    expect(authSource).toContain('return initialize().then(');
-    expect(body).toContain('retry: retryColdStartAuthSession');
-    expect(body).toContain('isCurrent: () => authStateEpoch === epoch');
-    expect(body).toContain("getActiveAppSession().mode === 'signed-out'");
-  });
-
-  it('整条恢复链每进程只启动一次，登出时取消', () => {
-    const body = recoveryScheduler();
-    expect(body).toContain('if (coldStartNetworkRecoveryStarted) return;');
-    expect(body).toContain('coldStartNetworkRecoveryStarted = true;');
-
+  it('清会话时取消恢复器，且恢复器以调度时刻的代次为下限', () => {
     const start = authSource.indexOf('function clearAuth(');
     const end = authSource.indexOf('if (!opts.preservePersistedRefreshToken)', start);
-    const clearBody = authSource.slice(start, end);
-    expect(clearBody).toContain('coldStartNetworkRecovery?.cancel();');
-    expect(clearBody).toContain('coldStartNetworkRecoveryStarted = false;');
+    expect(authSource.slice(start, end)).toContain('coldStartRecovery.cancel();');
+
+    const recoveryStart = authSource.indexOf(
+      'const coldStartRecovery: ColdStartRecoveryLifecycle =',
+    );
+    const recoveryEnd = authSource.indexOf(
+      'function scheduleRefreshRetryAfterTransientFailure',
+      recoveryStart,
+    );
+    const body = authSource.slice(recoveryStart, recoveryEnd);
+    expect(body).toContain('epoch: () => authStateEpoch');
+    expect(body).toContain('mode: () => getActiveAppSession().mode');
+    expect(body).toContain('isCurrent: () => coldStartRecovery.isCurrent()');
   });
 });

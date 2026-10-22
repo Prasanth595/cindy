@@ -2,19 +2,23 @@
  * 冷启动网络恢复重试的时序编排。
  *
  * 守护的契约:开机自启时网络未就绪导致 refresh 拿不到连接(status 0)后,
- * 进程要自己再试,而不是停在登录页等用户重新输入验证码;同时不能把
- * 429 / Retry-After 的等待、已登出、用户手动登录这些情况也拖进自动重试。
+ * 进程要自己再试,而不是停在登录页等用户重新输入验证码;同时 429 / 5xx /
+ * 确定性失效都必须停下,不能按短间隔继续撞服务端。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   COLD_START_NETWORK_RETRY_DELAYS_MS,
+  ColdStartRecoveryLifecycle,
   startColdStartNetworkRecovery,
+  type ColdStartNetworkRecoveryDeps,
 } from '../coldStartNetworkRecovery';
 
-function harness(overrides: Partial<Parameters<typeof startColdStartNetworkRecovery>[0]> = {}) {
-  const retry = vi.fn<() => Promise<boolean>>().mockResolvedValue(true);
-  const deps = {
+function harness(overrides: Partial<ColdStartNetworkRecoveryDeps> = {}) {
+  const retry = vi
+    .fn<() => Promise<'recovered' | 'continue' | 'stop'>>()
+    .mockResolvedValue('recovered');
+  const deps: ColdStartNetworkRecoveryDeps = {
     isCurrent: () => true,
     isSignedOut: () => true,
     retry,
@@ -33,7 +37,7 @@ describe('cold start network recovery', () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
-  it('网络恢复后重试一次即停止,不再继续排下一轮', async () => {
+  it('恢复成功后停止,不再继续排下一轮', async () => {
     const h = harness();
     await vi.advanceTimersByTimeAsync(1_000);
     expect(h.retry).toHaveBeenCalledTimes(1);
@@ -42,9 +46,11 @@ describe('cold start network recovery', () => {
     h.handle.cancel();
   });
 
-  it('仍然失败时按节奏继续重试,直到节奏用完', async () => {
+  it('仍是传输层失败时按节奏继续,直到节奏用完', async () => {
     const onExhausted = vi.fn();
-    const retry = vi.fn<() => Promise<boolean>>().mockResolvedValue(false);
+    const retry = vi
+      .fn<() => Promise<'recovered' | 'continue' | 'stop'>>()
+      .mockResolvedValue('continue');
     const h = harness({ retry, onExhausted });
     await vi.advanceTimersByTimeAsync(1_000);
     await flush();
@@ -56,6 +62,20 @@ describe('cold start network recovery', () => {
     await flush();
     expect(retry).toHaveBeenCalledTimes(2);
     expect(onExhausted).toHaveBeenCalledWith(2);
+    h.handle.cancel();
+  });
+
+  it('429 / 5xx / 确定性失效返回 stop 后立即停止', async () => {
+    const retry = vi
+      .fn<() => Promise<'recovered' | 'continue' | 'stop'>>()
+      .mockResolvedValue('stop');
+    const h = harness({ retry });
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flush();
+    expect(retry).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(60_000);
+    await flush();
+    expect(retry).toHaveBeenCalledTimes(1);
     h.handle.cancel();
   });
 
@@ -84,18 +104,18 @@ describe('cold start network recovery', () => {
     expect(h.retry).not.toHaveBeenCalled();
   });
 
-  it('retry 抛异常也继续排下一轮,不会让恢复链断掉', async () => {
+  it('重试抛异常时记录并停止,不继续撞服务端', async () => {
     const onError = vi.fn();
     const retry = vi
-      .fn<() => Promise<boolean>>()
+      .fn<() => Promise<'recovered' | 'continue' | 'stop'>>()
       .mockRejectedValueOnce(new Error('boom'))
-      .mockResolvedValueOnce(true);
+      .mockResolvedValueOnce('recovered');
     const h = harness({ retry, onError });
     await vi.advanceTimersByTimeAsync(1_000);
     await flush();
-    await vi.advanceTimersByTimeAsync(2_000);
+    await vi.advanceTimersByTimeAsync(60_000);
     await flush();
-    expect(retry).toHaveBeenCalledTimes(2);
+    expect(retry).toHaveBeenCalledTimes(1);
     expect(onError).toHaveBeenCalledTimes(1);
     h.handle.cancel();
   });
@@ -103,5 +123,87 @@ describe('cold start network recovery', () => {
   it('默认节奏覆盖开机后网络就绪的常见延迟,且有界', () => {
     expect(COLD_START_NETWORK_RETRY_DELAYS_MS.length).toBeGreaterThanOrEqual(4);
     expect(COLD_START_NETWORK_RETRY_DELAYS_MS.reduce((a, b) => a + b, 0)).toBeLessThan(120_000);
+  });
+});
+
+describe('cold start recovery lifecycle', () => {
+  function lifecycleHarness() {
+    let epoch = 1;
+    let mode = 'signed-out';
+    const cancel = vi.fn();
+    const start = vi.fn(() => cancel);
+    const lifecycle = new ColdStartRecoveryLifecycle({
+      epoch: () => epoch,
+      mode: () => mode,
+      start,
+    });
+    return {
+      lifecycle,
+      start,
+      cancel,
+      bumpEpoch: () => {
+        epoch += 1;
+      },
+      setMode: (next: string) => {
+        mode = next;
+      },
+      isCurrent: () => lifecycle.isCurrent(),
+    };
+  }
+
+  it('提交前 request 不创建恢复器,提交后再 arm 才创建', () => {
+    const h = lifecycleHarness();
+    h.lifecycle.request();
+    expect(h.start).not.toHaveBeenCalled();
+    h.bumpEpoch();
+    h.lifecycle.arm();
+    expect(h.start).toHaveBeenCalledTimes(1);
+    expect(h.isCurrent()).toBe(true);
+  });
+
+  it('提交内部的 clearAuth 会取消已存在的恢复器;之后的 arm 仍能重新启动', () => {
+    const h = lifecycleHarness();
+    h.lifecycle.request();
+    h.lifecycle.arm();
+    const firstCancel = h.cancel;
+    // 未登录态提交内部调用 clearAuth → cancel,并推进代次。
+    h.lifecycle.cancel();
+    expect(firstCancel).toHaveBeenCalledTimes(1);
+    expect(h.isCurrent()).toBe(false);
+
+    h.bumpEpoch();
+    h.lifecycle.request();
+    h.lifecycle.arm();
+    expect(h.start).toHaveBeenCalledTimes(2);
+    expect(h.isCurrent()).toBe(true);
+  });
+
+  it('已经离开未登录态时不创建恢复器', () => {
+    const h = lifecycleHarness();
+    h.setMode('local');
+    h.lifecycle.request();
+    h.lifecycle.arm();
+    expect(h.start).not.toHaveBeenCalled();
+  });
+
+  it('每进程只启动一条恢复链,重复 request / arm 不再创建', () => {
+    const h = lifecycleHarness();
+    h.lifecycle.request();
+    h.lifecycle.arm();
+    h.lifecycle.request();
+    h.lifecycle.arm();
+    expect(h.start).toHaveBeenCalledTimes(1);
+  });
+
+  it('已启动的链不会被迟到的 request 重置节奏', () => {
+    const h = lifecycleHarness();
+    h.lifecycle.request();
+    h.lifecycle.arm();
+    const cancel = h.cancel;
+    // 冷启动超时转后台后原流程迟到失败，会再走一次失败分支。
+    h.lifecycle.request();
+    expect(cancel).not.toHaveBeenCalled();
+    h.lifecycle.arm();
+    expect(h.start).toHaveBeenCalledTimes(1);
   });
 });
