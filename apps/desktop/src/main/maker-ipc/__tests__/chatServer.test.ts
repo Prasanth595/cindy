@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+const avatarUpload = vi.hoisted(() => vi.fn());
+vi.mock('../../ossPublicUpload.js', () => ({ uploadPublicAsset: avatarUpload }));
 const fixture = vi.hoisted(() => ({ upload: vi.fn(async (): Promise<unknown[]> => []), download: vi.fn(), packaged: true, urls: [] as string[], wsUrls: [] as string[], exists: vi.fn(), config: '', handle: vi.fn(), profiles: [] as unknown[], sockets: [] as import('ws').WebSocket[], token: 'isolated-test-token', refresh: vi.fn(async () => true), requests: [] as Array<{ url: string; token: string; actor?: string }> }));
 vi.mock('../../authManager.js', () => ({ getAccessToken: () => fixture.token, refresh: fixture.refresh }));
 vi.mock('../../clientEndpointsService.js', () => ({ getClientEndpoint: () => 'https://chat.cindy.app' }));
@@ -15,7 +17,8 @@ vi.mock('../botGroupTaskPostSnapshot.js', () => ({ prepareBotGroupTaskPost: asyn
 vi.mock('../chatServerWorkspaces.js', () => ({ chatServerWorkspaces: () => ({ read: () => null, save: vi.fn() }) }));
 const migration = vi.hoisted(() => ({ read: vi.fn<(_groupId: string) => { roomId: string; sequence: number; version: 2 } | null>(() => null) }));
 vi.mock('../chatMigrationReceipts.js', () => ({ chatMigrationReceipts: () => ({ read: migration.read, save: vi.fn() }) }));
-vi.mock('electron', () => ({ app: { get isPackaged() { return fixture.packaged; }, getPath: () => '/isolated' } }));
+vi.mock('electron', () => ({ app: { get isPackaged() { return fixture.packaged; }, getPath: () => '/isolated' },
+  nativeImage: { createFromBuffer: () => ({ isEmpty: () => false, getSize: () => ({ width: 1, height: 1 }) }) } }));
 // The real filesystem, except an `lstat` failure a test injects for a delivery file.
 const fsFault = vi.hoisted(() => ({ lstat: null as Error | null }));
 vi.mock('node:fs/promises', async (importOriginal) => {
@@ -163,6 +166,45 @@ describe('Chat Server result delivery and refresh', () => {
     await service.updateGroup({ groupId: roomId, name: 'Draft', expectedRevision: 7 });
     expect(fixture.handle).toHaveBeenCalledWith(`/conversations/${roomId}`, 'PATCH', expect.objectContaining({ name: 'Draft', expectedRevision: 7 }));
   });
+  // Group avatar regression: exercise the production manage entry, real image
+  // validation and HTTP payload, with only the network/image decoder faked.
+  it.each(['set', 'reset', 'keep', 'invalid', 'unsupported', 'upload-failure', 'account-change'] as const)(
+    'keeps group avatar %s scoped to the current room and account', async mode => {
+      let currentAccount = true;
+      service.dispose();
+      deps.captureOwnerScope = () => ({}) as ReturnType<NonNullable<typeof deps.captureOwnerScope>>;
+      deps.isOwnerScopeCurrent = () => currentAccount;
+      service = withChatServer({ listGroups: async () => ({ ok: true, groups: [] }), dispose: vi.fn() } as unknown as BotGroupChatService, deps);
+      fixture.handle.mockImplementation(route => {
+        if (route === '/me') return { body: { actor: { id: selfId }, capabilities: { groupMemberAvatar: mode === 'unsupported' ? undefined : 1 } } };
+        if (route.endsWith('/snapshot')) return { body: { room: room(roomId), members: [
+          { id: selfId, kind: 'human', name: 'Me', displayName: 'Account me', ownerActorId: selfId, state: 'joined', role: 'owner',
+            avatar: 'https://example.com/group.png', groupAvatar: 'https://example.com/group.png', defaultAvatarUrl: 'https://example.com/account.png' },
+        ], messages: [], cursor: '1' } };
+        return response(route);
+      });
+      avatarUpload.mockImplementation(async () => {
+        if (mode === 'account-change') currentAccount = false;
+        return mode === 'upload-failure' ? { ok: false, stage: 'put', status: 500 }
+          : { ok: true, publicUrl: 'https://example.com/new-group.png' };
+      });
+      const bytes = new Uint8Array(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6sQAAAABJRU5ErkJggg==', 'base64'));
+      const avatar = mode === 'reset' || mode === 'keep' ? { type: mode }
+        : { type: 'set' as const, data: mode === 'invalid' ? new Uint8Array([1]) : bytes, mimeType: 'image/png' };
+      const result = await service.chatServer!.manage({ groupId: roomId, action: { type: 'avatar', actorId: selfId, avatar } });
+      const writes = fixture.handle.mock.calls.filter(([route, method]) => route === `/conversations/${roomId}/nickname` && method === 'POST');
+      if (mode === 'set' || mode === 'reset') {
+        expect(result).toEqual({ ok: true });
+        expect(writes).toEqual([[`/conversations/${roomId}/nickname`, 'POST', {
+          operationId: expect.any(String), actorId: selfId, avatar: mode === 'reset' ? null : 'https://example.com/new-group.png',
+        }]]);
+      } else {
+        expect(writes).toEqual([]);
+        expect(result.ok).toBe(mode === 'keep');
+      }
+      if (['keep', 'reset', 'invalid', 'unsupported'].includes(mode)) expect(avatarUpload).not.toHaveBeenCalled();
+      expect(fixture.urls.some(url => url.includes('/api/me/profile'))).toBe(false);
+    });
   it('preserves a server revision conflict after the host precheck', async () => {
     fixture.handle.mockImplementation((route, method) => method === 'PATCH'
       ? { status: 409, body: { error: { code: 'REVISION_CONFLICT', message: 'private server detail' } } }

@@ -179,10 +179,14 @@ describe('provider share usage history wire budget', () => {
 });
 
 describe('remote task limit management payloads', () => {
-  it.each([{ perDevice: 24 }, { total: 80 }, { perDevice: 16, total: 64 }])('preserves only supplied fields in %j', limits => {
+  // idleMinutes：提供方的闲置收回时长，0 = 不收回(provider-sharing.md §3)。
+  it.each([{ perDevice: 24 }, { total: 80 }, { perDevice: 16, total: 64 }, { idleMinutes: 0 }, { idleMinutes: 1440 }])('preserves only supplied fields in %j', limits => {
     expect(parseProviderShareCommand({ action: 'set-run-limits', limits })).toEqual({ action: 'set-run-limits', limits });
   });
-  it.each([{}, { unknown: 1 }, { perDevice: '16' }, { perDevice: 0 }, { total: 1001 }, { total: 1.5 }])('rejects malformed patches %j', limits => {
+  it.each([
+    {}, { unknown: 1 }, { perDevice: '16' }, { perDevice: 0 }, { total: 1001 }, { total: 1.5 },
+    { idleMinutes: -1 }, { idleMinutes: 1441 }, { idleMinutes: '30' },
+  ])('rejects malformed patches %j', limits => {
     expect(() => parseProviderShareCommand({ action: 'set-run-limits', limits })).toThrow('INVALID_PARAMS');
   });
 });
@@ -233,16 +237,6 @@ describe('member note management', () => {
     await expect(executeProviderShareManagementCommand({ action: 'set-member-note', memberId: 'm1', note: 'Alice' }))
       .rejects.toThrow('PRECONDITION_FAILED');
     expect(memberNotes.set).not.toHaveBeenCalled();
-  });
-});
-
-describe('idle release setting payloads', () => {
-  it.each([0, 1, 10, 120])('accepts %i minutes', idleMinutes => {
-    expect(parseProviderShareCommand({ action: 'set-idle-release', value: { idleMinutes } }))
-      .toEqual({ action: 'set-idle-release', value: { idleMinutes } });
-  });
-  it.each([undefined, {}, { idleMinutes: -1 }, { idleMinutes: 121 }, { idleMinutes: 1.5 }, { idleMinutes: '10' }])('rejects %j', value => {
-    expect(() => parseProviderShareCommand({ action: 'set-idle-release', value })).toThrow('INVALID_PARAMS');
   });
 });
 

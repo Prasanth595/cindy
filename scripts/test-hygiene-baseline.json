@@ -117,7 +117,7 @@
       "sourceReads": 1
     },
     "apps/desktop/src/main/__tests__/sessionTaskSummary.test.ts": {
-      "sourceReads": 4
+      "sourceReads": 2
     },
     "apps/desktop/src/main/__tests__/setSessionsStatusInDb.test.ts": {
       "sourceReads": 2

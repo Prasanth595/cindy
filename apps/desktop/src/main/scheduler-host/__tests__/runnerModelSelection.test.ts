@@ -90,7 +90,7 @@ vi.mock('../runners/_shared', () => ({
 }));
 
 import { MakerScheduleRunner } from '../runner';
-import { applyScheduledModelSelection, resolveScheduledModelSelection } from '../../maker-ipc/scheduledModelSelection';
+import { applyScheduledModelSelection, createScheduledModelScope, resolveScheduledModelSelection } from '../../maker-ipc/scheduledModelSelection';
 import type { ProviderView } from '@cindy/model-providers';
 import type { Scheduler } from '@cindy/maker-scheduler';
 
@@ -249,7 +249,7 @@ function createRunnerHarness(
   opts: {
     sessionAlive?: boolean;
     acquirePendingAgentSwitch?: ConstructorParameters<typeof MakerScheduleRunner>[0]['acquirePendingAgentSwitch'];
-    preserveModelPreferences?: ConstructorParameters<typeof MakerScheduleRunner>[0]['preserveModelPreferences'];
+    prepareModelPreferences?: ConstructorParameters<typeof MakerScheduleRunner>[0]['prepareModelPreferences'];
     onModelDispatched?: ConstructorParameters<typeof MakerScheduleRunner>[0]['onModelDispatched'];
     applyPiModelSelectionUnderLock?: ConstructorParameters<typeof MakerScheduleRunner>[0]['applyPiModelSelectionUnderLock'];
     resolveModelSelection?: ConstructorParameters<typeof MakerScheduleRunner>[0]['resolveModelSelection'];
@@ -293,7 +293,7 @@ function createRunnerHarness(
     checkModelRoute: opts.checkModelRoute,
     ...(opts.isAgentOnOtherDevice ? { isAgentOnOtherDevice: opts.isAgentOnOtherDevice } : {}),
     acquirePendingAgentSwitch: opts.acquirePendingAgentSwitch,
-    preserveModelPreferences: opts.preserveModelPreferences,
+    prepareModelPreferences: opts.prepareModelPreferences,
     onModelDispatched: opts.onModelDispatched,
     applyPiModelSelectionUnderLock: opts.applyPiModelSelectionUnderLock ?? (async (_id, targetModel, providerId) => {
       await h.session.setModel(targetModel, { providerId });
@@ -332,20 +332,31 @@ describe('MakerScheduleRunner model selection', () => {
     mocks.getSessionRowSnapshot.mockResolvedValue({ status: 'active' });
   });
 
-  // Integration: follow the production runner from model override through completion/failure.
-  // The previous route tests asserted the automation model only, never the next user's choice.
+  // 2026-10-23 regression: completion restored the runtime and rebuilt a finished
+  // task's context. Unit tier: real runner success/failure must leave the native
+  // model untouched; the persisted owner preference is applied by the next send.
   it.each([
     ['legacy', 'success'], ['explicit', 'success'],
     ['legacy', 'failure'], ['explicit', 'failure'],
-  ] as const)('restores the owner model after %s dispatch %s', async (route, outcome) => {
+  ] as const)('keeps the native context after %s dispatch %s', async (route, outcome) => {
     const h = createSessionHarness();
     const original = h.session.model;
     const release = vi.fn();
-    const restore = vi.fn(async () => {
-      expect(release).toHaveBeenCalledTimes(1);
-      await h.session.setModel(original);
+    let baseline: string | null = null;
+    const restore = vi.fn(async (_id, profile) => {
+      await h.session.setModel(profile.model);
     });
-    const preserve = vi.fn(async () => restore);
+    const scope = createScheduledModelScope({
+      createId: () => 'owner-scope',
+      read: async () => ({ baseline, profile: {
+        agentKind: 'claude-code', model: h.session.model, providerId: null,
+        effort: 'high', fastMode: false,
+      } }),
+      write: async (_id, saved) => { baseline = saved ? JSON.stringify(saved) : null; },
+      isBusy: () => false,
+      apply: restore,
+    });
+    const preserve = vi.fn(async () => { await scope.begin(h.session.id); });
     const onModelDispatched = vi.fn(() => {
       expect(h.session.model).toBe('claude-opus-4-8');
     });
@@ -353,12 +364,17 @@ describe('MakerScheduleRunner model selection', () => {
       agentKind: 'claude-code', model: original, effort: 'high', workDir: '/work',
     }, {
       sessionAlive: true,
-      preserveModelPreferences: preserve,
+      prepareModelPreferences: preserve,
       onModelDispatched,
-      acquirePendingAgentSwitch: async (_id, _signal, selection) => {
-        if (!selection) return release;
+      acquirePendingAgentSwitch: async (_id, _signal, selection, scheduledModelOverride) => {
+        if (!selection) {
+          // Legacy model overrides must bypass owner restoration too.
+          expect(scheduledModelOverride).toBe(true);
+          return release;
+        }
+        await scope.begin(h.session.id);
         await h.session.setModel(selection.model);
-        return { release, selection, restore };
+        return { release, selection };
       },
     });
     const schedule = baseSchedule({
@@ -373,9 +389,15 @@ describe('MakerScheduleRunner model selection', () => {
       await fireToCompletion(harness, h, schedule);
       expect(onModelDispatched).toHaveBeenCalledWith(h.session.id, expect.any(String));
     }
-    expect(restore).toHaveBeenCalledTimes(1);
-    expect(h.session.model).toBe(original);
+    expect(restore).not.toHaveBeenCalled();
+    expect(h.session.model).toBe('claude-opus-4-8');
     expect(preserve).toHaveBeenCalledTimes(route === 'legacy' ? 1 : 0);
+    expect(JSON.parse(baseline!).model).toBe(original);
+    // Only the next ordinary send restores the user's route, including after
+    // an automation failed before dispatch. Completion itself cannot do it.
+    await scope.restore(h.session.id);
+    expect(h.session.model).toBe(original);
+    expect(baseline).toBeNull();
   });
 
   describe('resolved automation selection survives the full fire', () => {

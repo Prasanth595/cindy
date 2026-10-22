@@ -109,8 +109,8 @@ export interface ProviderGroupMemberStatus {
   /** 冷却到何时(unix ms)。 */
   coolingUntil?: number;
   /**
-   * 选电脑时排序用的那个配额窗口(provider-groups.md §5、§10)：本机与同账号电脑的订阅才有，读不到时省略。
-   * 发给同账号电脑，不进受邀者的匿名状态。
+   * 选电脑时排序用的那个配额窗口(provider-groups.md §5)：本机与同账号电脑的订阅才有，读不到时省略。
+   * 发给同账号电脑，用来提议任务进行中换号(§6.2)，界面不显示；不进受邀者的匿名状态。
    */
   quota?: ProviderGroupMemberQuota;
   /**
@@ -130,7 +130,7 @@ export interface ProviderGroupMemberStatus {
   reshare?: ProviderGroupReshareSummary;
 }
 
-/** 一个配额窗口此刻的用量：组内电脑行的进度条按它画已用多少、按时间该用到哪。 */
+/** 一个配额窗口此刻的用量：已用多少、何时重置、窗口多长，够算出这个账号的额度有多急着用。 */
 export interface ProviderGroupMemberQuota {
   usedPercent: number;
   /** 重置时刻(unix ms)；null = 这个窗口还没开始计时。 */

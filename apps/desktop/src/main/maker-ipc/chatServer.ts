@@ -1,7 +1,8 @@
 import { createConversationListState } from '@cindy/maker-shared/chatConversationList';
 /** Production chat transport. The server owns messages and execution leases;
  * local group rows only supply Agent lane metadata and the upgrade source. */
-import { app, net } from 'electron';
+import { app, net, nativeImage } from 'electron';
+import { validateAvatarUpload } from '../profileEdit.js';
 import { uploadPublicAsset } from '../ossPublicUpload.js';
 import { getClientEndpoint } from '../clientEndpointsService.js';
 import { t } from '../i18n.js';
@@ -53,7 +54,7 @@ import { DIRECT_ROOM_COMPLETION, deliverDirectRoomMessage, directRoomClientId } 
 
 interface Actor { id: string; kind: string; externalId: string; name: string; avatar?: string | null; avatarSource?: string | null; homeDeviceId?: string | null; disabled?: boolean }
 interface Member { id: string; kind: 'human' | 'bot' | 'integration'; name: string; state: string; role: 'owner' | 'admin' | 'member' | 'guest';
-  displayName: string; avatar: string | null; nickname: string | null; ownerActorId: string; ownerName: string;
+  displayName: string; avatar: string | null; groupAvatar?: string | null; defaultAvatarUrl?: string | null; nickname: string | null; ownerActorId: string; ownerName: string;
   guestAccess: 'none' | 'chat' | 'tools'; accessRevision: number }
 interface Message {
   id: string; seq: string; authorId: string; replyCount?: number; reactions?: Array<{ emoji: string; count: number; me: boolean }>; author: { kind: string; name: string };
@@ -323,6 +324,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
   let selfId = '';
   let supportsDissolve = false;
   let supportsListRemoval = false;
+  let supportsMemberAvatar = false;
   const personalList = createConversationListState();
   const syncPersonalList = async (force = false) => {
     if (supportsListRemoval) await (force ? personalList.sync(api) : personalList.ensureSynced(api));
@@ -738,9 +740,10 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     refreshActors = (async () => {
       actorsStale = false;
       profiles = await getDbClient().drizzle.select().from(botProfiles).where(undefined);
-      const me = await api<{ actor: Actor; deviceId?: string | null; capabilities?: { groupDiscussionParity?: number; groupSingleSpeaker?: number; companionHome?: boolean; directRoomClaim?: boolean; groupLifecycleVersion?: number; conversationListStateVersion?: number } }>('/me'); selfId = me.actor.id;
+      const me = await api<{ actor: Actor; deviceId?: string | null; capabilities?: { groupDiscussionParity?: number; groupSingleSpeaker?: number; companionHome?: boolean; directRoomClaim?: boolean; groupLifecycleVersion?: number; conversationListStateVersion?: number; groupMemberAvatar?: number } }>('/me'); selfId = me.actor.id;
       supportsDissolve = me.capabilities?.groupLifecycleVersion === 1;
       supportsListRemoval = me.capabilities?.conversationListStateVersion === 1;
+      supportsMemberAvatar = me.capabilities?.groupMemberAvatar === 1;
       groupDiscussionParity = me.capabilities?.groupDiscussionParity === 1;
       singleSpeaker = me.capabilities?.groupSingleSpeaker === 1;
       selfDeviceId = typeof me.deviceId === 'string' && me.deviceId ? me.deviceId : null;
@@ -1303,17 +1306,17 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     const lastView = last ? messageView(last, s.members) : null;
     // The sidebar never resolves shares: it names the sharer and never quotes the card's text.
     const lastIsShare = !!last && !!readBotGroupThreadShareCard(last);
-    return { serverBacked: true, reactionRevision: reactionRevisions.get(roomId)?.room ?? runtimeReactionRevision, reactionRevisions: { ...reactionRevisions.get(roomId)?.messages }, supportsGroupLeave: true, supportsDissolve, supportsListRemoval, dissolvedAt: s.room.dissolved_at ?? null, migrationPending: [...upgradeErrors.keys()].some(source => upgradedGroups.get(source) === roomId), archived: s.room.archived, selfActorId: selfId, topic: s.room.topic, description: s.room.description, revision: s.room.revision, canInvite: !s.room.dissolved_at && s.members.some(m => m.ownerActorId === selfId && m.state === 'joined' && ['owner', 'admin'].includes(m.role)), canStopAll: singleSpeaker && !!managementActor(s), ...(singleSpeaker ? { singleSpeaker: true } : {}), id: s.room.id, name: s.room.name, replyMode: s.room.response_mode, speakingMode: s.room.speaking_mode,
+    return { serverBacked: true, reactionRevision: reactionRevisions.get(roomId)?.room ?? runtimeReactionRevision, reactionRevisions: { ...reactionRevisions.get(roomId)?.messages }, supportsGroupLeave: true, supportsDissolve, supportsListRemoval, supportsMemberAvatar, dissolvedAt: s.room.dissolved_at ?? null, migrationPending: [...upgradeErrors.keys()].some(source => upgradedGroups.get(source) === roomId), archived: s.room.archived, selfActorId: selfId, topic: s.room.topic, description: s.room.description, revision: s.room.revision, canInvite: !s.room.dissolved_at && s.members.some(m => m.ownerActorId === selfId && m.state === 'joined' && ['owner', 'admin'].includes(m.role)), canStopAll: singleSpeaker && !!managementActor(s), ...(singleSpeaker ? { singleSpeaker: true } : {}), id: s.room.id, name: s.room.name, replyMode: s.room.response_mode, speakingMode: s.room.speaking_mode,
       members: s.members.filter(m => m.state === 'joined').map(m => {
         const p = localBot(m.id);
         return { botId: p?.id ?? m.id, actorId: m.id, actorKind: m.kind, isSelf: m.id === selfId,
-          role: m.role, nickname: m.nickname, displayName: m.displayName, ownerActorId: m.ownerActorId, ownerName: m.ownerName,
+          role: m.role, nickname: m.nickname, groupAvatar: m.groupAvatar ?? null, defaultAvatarUrl: m.defaultAvatarUrl ?? null, displayName: m.displayName, ownerActorId: m.ownerActorId, ownerName: m.ownerName,
           isOwned: m.ownerActorId === selfId, guestAccess: m.guestAccess, accessRevision: m.accessRevision,
           // Which computer runs my companion: a phone reaching this group through this computer
           // reads the companion's tasks there, not here (bot-group-chat.md §10).
           ...(m.ownerActorId === selfId && m.kind === 'bot' ? { homeDeviceId: actors.find(a => a.id === m.id)?.homeDeviceId ?? null } : {}),
           avatarUrl: m.avatar?.startsWith('https://') ? m.avatar : null,
-          name: memberName(m), avatar: p?.avatar ?? (m.avatar?.startsWith('https://') ? '' : m.avatar) ?? '', avatarColor: p?.avatarColor ?? 'violet', status: p?.status ?? 'active' };
+          name: memberName(m), avatar: m.groupAvatar ? '' : p?.avatar ?? (m.avatar?.startsWith('https://') ? '' : m.avatar) ?? '', avatarColor: p?.avatarColor ?? 'violet', status: p?.status ?? 'active' };
       }), organizerBotId: s.room.organizer_id ? localBot(s.room.organizer_id)?.id ?? s.room.organizer_id : s.members.find(m => m.kind === 'bot' && m.state === 'joined')?.id ?? null, projectDir: workspace?.projectDir ?? null, lastMessage: last && lastView ? {
         isSelf: lastView.isSelf, authorKind: lastView.authorKind, authorName: lastView.authorName, noticeCode: lastView.noticeCode,
         preview: lastIsShare ? '' : (botGroupMessageSummaryText(lastView) || mediaNames(last)).slice(0, 80), createdAt: lastView.createdAt, ...(lastIsShare ? { threadShare: true } : {}),
@@ -2160,6 +2163,10 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       const actorAction = z.object({ actorId: id });
       const action = z.discriminatedUnion('type', [
         z.object({ type: z.literal('update'), name: z.string().trim().min(1).max(40), topic: z.string().max(250), description: z.string().max(2000), responseMode: z.enum(['all', 'mentioned']).optional(), speakingMode: z.enum(['auto', 'sequential']).optional(), expectedRevision: z.number().int().positive() }).strict(),
+        actorAction.extend({ type: z.literal('avatar'), avatar: z.discriminatedUnion('type', [
+          z.object({ type: z.literal('keep') }).strict(), z.object({ type: z.literal('reset') }).strict(),
+          z.object({ type: z.literal('set'), data: z.instanceof(Uint8Array), mimeType: z.string() }).strict(),
+        ]) }).strict(),
         actorAction.extend({ type: z.literal('nickname'), nickname: z.string().trim().max(40).nullable() }).strict(),
         actorAction.extend({ type: z.literal('member'), action: z.enum(['invite', 'leave', 'remove', 'ban', 'unban', 'role']), role: z.enum(['admin', 'member']).optional() }).strict(),
         actorAction.extend({ type: z.literal('transfer') }).strict(),
@@ -2168,6 +2175,29 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
         z.object({ type: z.literal('dissolve'), expectedRevision: z.number().int().positive() }).strict(),
         z.object({ type: z.literal('archive'), archived: z.boolean(), expectedRevision: z.number().int().positive() }).strict(),
       ]).parse(input.action);
+      if (action.type === 'avatar') {
+        if (!supportsMemberAvatar) throw new Error('CHAT_UNAVAILABLE');
+        const snapshot = await groupSnapshot(target);
+        const member = snapshot.members.find(m => m.id === action.actorId && m.state === 'joined');
+        if (!member || (member.id !== selfId && member.ownerActorId !== selfId)) throw new Error('ACTOR_NOT_OWNED');
+        if (action.avatar.type === 'keep') return {};
+        let avatar: string | null = null;
+        if (action.avatar.type === 'set') {
+          validateAvatarUpload(action.avatar, ({ buffer }) => {
+            const image = nativeImage.createFromBuffer(Buffer.from(buffer));
+            return image.isEmpty() ? null : image.getSize();
+          });
+          if (!current()) throw new Error('OWNER_CHANGED');
+          const uploaded = await uploadPublicAsset({ fetchImpl: (input, init) => net.fetch(input, init),
+            getBaseUrl: () => getClientEndpoint('ossApiBaseUrl'), getToken: () => current() ? getAccessToken() : null },
+          { scene: 'avatar', contentType: action.avatar.mimeType, body: action.avatar.data });
+          if (!current()) throw new Error('OWNER_CHANGED');
+          if (!uploaded.ok) throw new Error('PROFILE_AVATAR_UPLOAD_FAILED');
+          avatar = uploaded.publicUrl;
+        }
+        await api(`/conversations/${target}/nickname`, 'POST', { operationId: randomUUID(), actorId: action.actorId, avatar });
+        changed(target); return {};
+      }
       if (action.type === 'hide') {
         if (!supportsListRemoval) throw new Error('LIFECYCLE_UNAVAILABLE');
         // Deliberately no snapshot read: historical members can remove after leaving.

@@ -39,6 +39,8 @@ export const REMOTE_AGENT_MAX_POLL_RUNS = 64;
 export const REMOTE_AGENT_INVOKE_TIMEOUT_MS = 30_000;
 /** 同一控制端在一台被控端上同时运行的远程 Agent 任务上限。 */
 export const REMOTE_AGENT_MAX_RUNS_PER_CONTROLLER = 16;
+/** 被控端设置的闲置收回时长上限(分钟，`caps.idleReclaimMinutes`)。 */
+export const REMOTE_AGENT_IDLE_RECLAIM_MAX_MINUTES = 1440;
 /** 一次 push 最多携带的 WebSocket 帧数。 */
 export const REMOTE_AGENT_MAX_PUSH_FRAMES = 64;
 
@@ -159,10 +161,13 @@ export type RemoteAgentRequest =
    * waitMs：没有新数据时最多挂起多久(缺省 READ_WAIT_MS)。控制端在已有一个长等待在途时，
    * 可以再发一个 waitMs=0 的短 poll 立刻取新任务或刚触发的数据；两个 poll 返回的数据可能重叠，
    * 控制端按 from 去重。
+   * hold：控制端这边还有这个任务的工作在进行、被控端看不到(如 Codex 经执行环境在控制端起的后台进程)，
+   * 被控端按有活动处理，不按闲置收回。旧被控端忽略。
    */
-  | { op: 'poll'; runs: Array<{ runId: string; cursor: number }>; waitMs?: number }
+  | { op: 'poll'; runs: Array<{ runId: string; cursor: number; hold?: true }>; waitMs?: number }
   | { op: 'reply'; runId: string; requestId: string; payload: RemoteAgentPayload }
-  | { op: 'push'; runId: string; seq: number; frames: RemoteAgentPushFrame[] }
+  /** hold: local work has started; protect it with the startup reply before the next poll batch. */
+  | { op: 'push'; runId: string; seq: number; frames: RemoteAgentPushFrame[]; hold?: true }
   | { op: 'close'; runId: string; mode: 'close' | 'detach'; reason: RemoteAgentTeardownReason }
   /**
    * 供应商组(组所在电脑 → 组内电脑)：组所在电脑删掉某个受邀者后，请组内电脑清掉替这个受邀者
@@ -273,6 +278,11 @@ export interface RemoteAgentCaps {
   reshareConsent?: boolean;
   /** 是否支持带 batch 的转分享请求；未声明时只能使用单片旧协议。 */
   reshareBatch?: boolean;
+  /**
+   * 这台电脑的主人设置的闲置收回时长(分钟，0 = 不收回)：任务不忙且闲置满这么久，这台就结束它的 Agent 进程
+   * (事件流 `closed` 带 `idleReclaimed`)。旧版电脑不声明，也不收回。
+   */
+  idleReclaimMinutes?: number;
 }
 
 export interface RemoteAgentReadResult {
@@ -303,7 +313,12 @@ export type RemoteAgentStreamItem =
   /** 被控端放弃了一个尚未回包的反向请求(如 Agent 取消了工具调用)，控制端应中止对应执行。 */
   | { t: 'cancel'; requestId: string }
   | { t: 'ws'; connId: string; kind: 'open' | 'message' | 'close'; path?: string; data?: string }
-  | { t: 'closed'; reason: string; error?: RemoteAgentErrorInfo };
+  /**
+   * idleReclaimed：被控端按主人设置的时长收回了这个闲置任务(reason 写 `ended`)。新控制端只断开对方的 Agent
+   * 进程、保留本机部分，下次要它干活时带原来的会话 id 连回；旧控制端不认识这个字段，按 `ended` 静默收起，
+   * 下次发消息时重建任务并接回原来的对话。
+   */
+  | { t: 'closed'; reason: string; error?: RemoteAgentErrorInfo; idleReclaimed?: true };
 
 const ID = /^[0-9a-f-]{36}$/;
 const CONN_ID = /^[A-Za-z0-9_-]{1,64}$/;
@@ -481,7 +496,11 @@ export function parseRemoteAgentRequest(value: unknown): RemoteAgentRequest {
       if (!Array.isArray(v.runs) || v.runs.length === 0 || v.runs.length > REMOTE_AGENT_MAX_POLL_RUNS) invalid();
       const runs = v.runs.map((item) => {
         const entry = record(item);
-        return { runId: id(entry.runId), cursor: count(entry.cursor, Number.MAX_SAFE_INTEGER) };
+        return {
+          runId: id(entry.runId),
+          cursor: count(entry.cursor, Number.MAX_SAFE_INTEGER),
+          ...(entry.hold === true ? { hold: true as const } : {}),
+        };
       });
       if (new Set(runs.map((run) => run.runId)).size !== runs.length) invalid();
       return {
@@ -493,7 +512,10 @@ export function parseRemoteAgentRequest(value: unknown): RemoteAgentRequest {
     case 'reply':
       return { op: 'reply', runId: id(v.runId), requestId: id(v.requestId), payload: payload(v.payload) };
     case 'push':
-      return { op: 'push', runId: id(v.runId), seq: count(v.seq, Number.MAX_SAFE_INTEGER), frames: pushFrames(v.frames) };
+      return {
+        op: 'push', runId: id(v.runId), seq: count(v.seq, Number.MAX_SAFE_INTEGER), frames: pushFrames(v.frames),
+        ...(v.hold === true ? { hold: true as const } : {}),
+      };
     case 'close':
       return {
         op: 'close',
@@ -612,6 +634,10 @@ export function parseRemoteAgentCaps(value: unknown): RemoteAgentCaps {
     ...(v.relayModelAccess === true ? { relayModelAccess: true } : {}),
     ...(v.reshareConsent === true ? { reshareConsent: true } : {}),
     ...(v.reshareBatch === true ? { reshareBatch: true } : {}),
+    // 可选能力：不合法时当作没声明，不让整个 caps 作废。
+    ...(Number.isSafeInteger(v.idleReclaimMinutes) && (v.idleReclaimMinutes as number) >= 0
+      && (v.idleReclaimMinutes as number) <= REMOTE_AGENT_IDLE_RECLAIM_MAX_MINUTES
+      ? { idleReclaimMinutes: v.idleReclaimMinutes as number } : {}),
   };
   if (caps.version < 1 || caps.maxRuns < 1 || caps.uploadChunkBytes < 1) invalid();
   return caps;
@@ -742,6 +768,7 @@ export function parseRemoteAgentStreamItem(line: string): RemoteAgentStreamItem 
         t: 'closed',
         reason: typeof v.reason === 'string' ? v.reason.slice(0, 128) : 'unknown',
         ...(v.error !== undefined ? { error: errorInfo(v.error) } : {}),
+        ...(v.idleReclaimed === true ? { idleReclaimed: true as const } : {}),
       };
     default:
       return null;

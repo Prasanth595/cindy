@@ -260,6 +260,37 @@ export async function chooseAvatarFile(deps: ProfileEditDeps): Promise<ChooseAva
   };
 }
 
+/** Validate cropped avatar bytes before either account or group upload. */
+export function validateAvatarUpload(
+  { data, mimeType }: Extract<AvatarAction, { type: 'set' }>,
+  decodeAvatarImage: ProfileEditDeps['decodeAvatarImage'],
+): void {
+  if (data.byteLength === 0 || data.byteLength > AVATAR_MAX_BYTES) {
+    throwIpcError('INVALID_PARAMS', `avatar data size out of range: ${data.byteLength}`);
+  }
+  if (!avatarBytesMatchMime(data, mimeType)) {
+    throwIpcError('INVALID_PARAMS', `avatar data does not match type: ${mimeType}`);
+  }
+  // renderer 不是安全边界:先按文件头限尺寸,再在 main 完整解码,尺寸一致才上传。
+  const declared = readAvatarDimensions(data, mimeType);
+  if (
+    !declared ||
+    declared.width < 1 ||
+    declared.height < 1 ||
+    declared.width > AVATAR_UPLOAD_MAX_EDGE_PX ||
+    declared.height > AVATAR_UPLOAD_MAX_EDGE_PX
+  ) {
+    throwIpcError(
+      'INVALID_PARAMS',
+      `avatar dimensions out of range: ${declared ? `${declared.width}x${declared.height}` : '<unreadable>'}`,
+    );
+  }
+  const decoded = decodeAvatarImage({ buffer: data, mimeType });
+  if (!decoded || decoded.width !== declared.width || decoded.height !== declared.height) {
+    throwIpcError('INVALID_PARAMS', 'avatar data failed to decode');
+  }
+}
+
 /**
  * 保存资料:name 与 avatar 各自收敛成 PATCH 字段,一次提交服务端。
  *   - name:trim 后为空或与当前一致 → 不改;否则 displayName;
@@ -303,30 +334,7 @@ export async function updateProfile(
   let nextAvatarUrl: string | null | undefined;
   if (avatarAction.type === 'set') {
     const { data, mimeType } = avatarAction;
-    if (data.byteLength === 0 || data.byteLength > AVATAR_MAX_BYTES) {
-      throwIpcError('INVALID_PARAMS', `avatar data size out of range: ${data.byteLength}`);
-    }
-    if (!avatarBytesMatchMime(data, mimeType)) {
-      throwIpcError('INVALID_PARAMS', `avatar data does not match type: ${mimeType}`);
-    }
-    // renderer 不是安全边界:先按文件头限尺寸,再在 main 完整解码,尺寸一致才上传。
-    const declared = readAvatarDimensions(data, mimeType);
-    if (
-      !declared ||
-      declared.width < 1 ||
-      declared.height < 1 ||
-      declared.width > AVATAR_UPLOAD_MAX_EDGE_PX ||
-      declared.height > AVATAR_UPLOAD_MAX_EDGE_PX
-    ) {
-      throwIpcError(
-        'INVALID_PARAMS',
-        `avatar dimensions out of range: ${declared ? `${declared.width}x${declared.height}` : '<unreadable>'}`,
-      );
-    }
-    const decoded = deps.decodeAvatarImage({ buffer: data, mimeType });
-    if (!decoded || decoded.width !== declared.width || decoded.height !== declared.height) {
-      throwIpcError('INVALID_PARAMS', 'avatar data failed to decode');
-    }
+    validateAvatarUpload(avatarAction, deps.decodeAvatarImage);
     requireSameAccount(deps, accountScope);
     const uploaded = await deps.uploadAvatar({ buffer: data, mimeType });
     if (!uploaded.ok) {

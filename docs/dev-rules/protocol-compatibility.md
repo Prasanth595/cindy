@@ -21,6 +21,21 @@ reader 的刷新完成（仍遵守节流/退避），不改变返回结构、授
 仍使用缓存优先读取；旧被控端忽略新增参数，返回其已有快照。自动续跑只使用实际受限窗口的可信
 重置时刻，不把请求成功当成已恢复，也不将远程快照替换为本机账号。无需服务端或 Mobile 原生更新。
 
+## 群内独立头像
+
+Chat Server 的 `/me.capabilities` 新增可选 `groupMemberAvatar: 1`；Desktop 的群投影对应
+`supportsMemberAvatar`，未声明时不展示换头像入口，也不退回账号头像编辑器。
+成员投影沿用 `avatar` 返回当前群的有效头像，并新增可选 `groupAvatar`（可空覆盖值）和
+`defaultAvatarUrl`（账号头像）。旧桌面与手机忽略新增字段，沿既有 `avatar` 显示路径读取。
+手机经电脑读取群资源时，成员解析须保留有效的 HTTPS `avatarUrl`，交给现有头像组件显示；
+缺失或非法地址沿用原头像回退。回归覆盖群头像、恢复账号头像与旧数据解析，不新增手机编辑入口。
+Desktop 既有 `chatServer.manage` 增加 `avatar` action；本机校验裁剪字节后复用 OSS 头像上传，
+复用 `POST /conversations/:id/nickname`，仅提交当前成员与可选 `avatar` 公开地址，`null` 恢复账号头像。
+该接口的 `nickname` 与 `avatar` 均为可选，至少提供一项；未传的字段保持原值，不回传缓存昵称。
+昵称请求的旧字段、空串归一化、响应和幂等摘要保持兼容；不新增头像 HTTP 路由。
+不新增 IPC channel 或设备互联权限。新服务端先部署，客户端随后发布；旧客户端在新服务端仍可读，
+旧服务端拒绝新 action，不能写入全局账号资料。服务端新增可空列，回滚保留列与已保存头像。
+
 ## 远程链路流量治理：交互优先名额与 Subagent 变更推送
 
 交互类 invoke（`maker:send`、`maker:abort-session`、`maker:input:enqueue` / `steer` / `stop` /
@@ -1469,10 +1484,40 @@ Codex 原生图片恢复（#6412）在既有 `maker:remote-agent:v1` 上追加�
   主进程拒绝。
 - **移动项目可用**：B 上的影子目录只按「控制端 + 任务 id」定址(虚拟工作区为必需能力)，与 A 的工作目录
   无关；A 换目录后关闭空闲 handle，下次发送按新目录重建，B 上的会话记录原样续用。
-- **控制端连接池：名额紧张时让出闲置任务的 Agent 进程**(2026-10-17)：B 按发起设备限制同时开着的 run(`caps.maxRuns`)，
+- **提供方闲置收回**(2026-10-22，用户确认由提供方决定；产品规则 `provider-sharing.md` §3)：B 的主人在「远程任务数量」里设
+  「闲置收回(分钟)」(`RemoteAgentLimits.idleMinutes`，0～1440，默认 30，0 = 不收回)，对全部控制端统一生效。仍用
+  `maker:remote-agent:v1`，不改 relay、服务器、数据库或协议版本；新增的都是可选字段：
+  - **B 收回**：巡检(每 5 秒)看到任务不忙且闲置满这个时长，就结束它的 Agent 进程。「忙」= 有等 A 回包的反向请求、
+    执行中的调用、Claude Code 待生效的回退(`commitRewindFiles` 成功后到下一个 `done`；Codex / Pi 返回时已完成回退)、还没启动好，或 Agent 状态里有在跑 / 在准备的
+    回合、后台任务、待唤醒续跑(中转任务看组内电脑报来的同一组字段)；巡检时忙就把闲置起点移到此刻。活动 = 打开、
+    `call` / `reply` / `push`、写进事件流的非 `state` 行；只被 `poll` 不算(闲着的任务 A 也一直在拉)。
+  - **收尾**：`closed` 行写 `reason: 'ended'` 并带可选 `idleReclaimed: true`，保留 3 分钟以覆盖 A 的 2 分钟断链重试
+    （普通收尾保留 1 分钟）；Agent 进程与名额仍在收回时立即释放。旧 A 不认识这个字段，按 `ended` 静默收起，
+    Maker 把事件流结束当成句柄已死、自动关闭任务，下次发送照常重建并带原生会话 id 接回(本机后台命令随句柄结束)；
+    新 A 不关句柄，与连接池让出名额同一状态(released)，本机部分保留，下次要 B 干活时连回。中转时组所在电脑把这个字段
+    原样转给受邀者(`relayClosed`)，`ended` 本来就在正常收尾的原因里，不触发换电脑。
+  - **A 报 hold**：`poll` 的每个任务项和 `push` 请求可选 `hold: true`，表示 A 这边还有 B 看不到的工作(当前只有 Codex 经执行环境在 A 上起的、
+    仍在运行的进程，`ExecServerRelay.busy()`)。本机进程的启动回包随 `push` 立即报 hold，不必等下一批 poll；组所在电脑逐跳接着报。
+    B 收到后在控制端的 3 分钟存活窗口内按忙处理，后续 poll 未带 hold 就解除，
+    再从忙完后计算闲置时长；组所在电脑在同一窗口内接着给组内电脑报 hold。大量任务按批轮询可能超过最短的 1 分钟
+    闲置设置，不能只把收到 hold 的那一刻算作活动。poll 的 hold 只在请求抵达时应用，等待结束后仅刷新存活时间，避免旧快照清掉新 hold。
+    旧 B 解析 poll / push 时丢弃不认识的字段。
+  - **caps**：B 声明 `idleReclaimMinutes`(不合法时当作没声明，不让整个 caps 作废)。A 的连接池按它判定「闲置满」，
+    旧 B 不声明 = 0，不让出。
+  - **四种组合**：A 新 × B 新 按上面；A 新 × B 旧 不收回、不让出；A 旧 × B 新 被收回后静默重建；A 旧 × B 旧 不变。
+    远程管理时，旧版电脑的设置读不到 `idleMinutes`，界面不显示这一项、也不提交(旧版会拒绝不认识的字段)；
+    旧控制端管理新电脑时只提交原来的两项。
+  - **故障半径**：只结束这一个任务的 Agent 进程，不动 relay、链路或同一台 B 上的其他任务。
+  - **已知限制**：B 结束进程与 A 同时发来调用的窄窗口里，那次调用会失败(B 没有执行它)，下一次发送正常连回。
+    Pi 任务经供应商组转给旧版组内电脑时，旧版会改写接回用的会话 id，接回时提示上下文没接上。
+    回归见 `remote-agent/__tests__/hostLifecycle.test.ts`(收回判据与收尾行)、`connectionPool.test.ts`(新控制端保留本机部分
+    并连回)、`poll.test.ts`(hold)与 `packages/device-link/src/__tests__/remoteAgent.test.ts`(字段解析)。
+- **控制端连接池：名额紧张时让出闲置任务的 Agent 进程**(2026-10-17；2026-10-22 起闲置时长改由 B 声明)：B 按发起设备限制同时开着的 run(`caps.maxRuns`)，
   A 上开着的任务即使闲着也占名额。A 对每台 B 一个连接池(`controller/connectionPool.ts`，计数口径与 B 的 `limitDeviceOf`
-  一致：这台设备)，**只在名额紧张时**让出「不忙且闲置满 N 分钟」的连接；N 是 A 本机设置(「远程与分享」页「这台电脑使用
-  其他电脑的模型」，只在管理本机时显示，0～120，**默认 0 = 从不让出**，与没有连接池时一样满了直接报错；升级后行为不变，用户自己打开才生效)。三条路径都只让有资格的：
+  一致：这台设备)，**只在名额紧张时**让出「不忙且闲置满 N 分钟」的连接；N 是 B 在 `caps.idleReclaimMinutes` 里声明的闲置
+  收回时长(A 原来的本机设置已删除；B 没声明或为 0 时从不让出，满了直接报错)。闲置满 N 分钟的任务 B 本来也会自己收回，
+  连接池只是名额紧张时不必等它那一轮巡检。主动让出前重新读取 B 的 caps，读取失败不按缓存值关进程，
+  主人改为 0 或延长时长不必等 A 再打开连接才生效。三条路径都只让有资格的：
   A 在这台 B 上开着的连接数到了水位线 `ceil(maxRuns×80%)`(只在水位线低于上限、即 maxRuns ≥ 5 时；每次 open 前与每分钟查一次)
   按最久没活动的顺序让，直到降到水位线以下；open 前已满先同步让一个；open 被拒且是名额类 `REMOTE_AGENT_BUSY`
   (`[DEVICE_LIMIT]` / `[TOTAL_LIMIT]`，旧 B 是 `too many tasks are running from this computer`；`too much staged data` 不算)
@@ -1724,11 +1769,12 @@ B 上的 Worker 是一条普通任务，`sessions.orca_remote_lead`(migration 01
   同账号不带 `model` 的 `view` 用已有 `cooling` / `coolingUntil` 表达总窗口耗尽，带 `model` 的发送前查询只在回显模型一致时
   临时表达该模型的额度状态，不能改变其他模型的可用性。账号切换时丢弃旧读取，不扩大 allowlist 或凭证访问。
 - **成员状态可选 `quota`（2026-10-21 用户确认）**：`ProviderGroupView.members[]` 增加可选
-  `quota: { usedPercent, resetAtMs: number | null, windowMs }`，只是选电脑排序用的那一个窗口（provider-groups.md §5、§10
-  的进度条），不带 5 小时窗口、模型桶名、账号标识或重置卡。组所在电脑本机界面与同账号 `view` 回包都带；读不到配额的成员
+  `quota: { usedPercent, resetAtMs: number | null, windowMs }`，只是选电脑排序用的那一个窗口（provider-groups.md §5），
+  同账号电脑据此提议任务进行中换号（§6.2）；2026-10-22 起界面不再画进度条（§10），字段保留。不带 5 小时窗口、模型桶名、
+  账号标识或重置卡。组所在电脑本机界面与同账号 `view` 回包都带；读不到配额的成员
   省略。`parseProviderGroupRemoteView` 只收有限数值（百分比收敛到 0–100，窗口 0–31 天，重置时刻为正数或 `null`），
-  分享来的成员一律丢弃；受邀者的匿名状态是白名单投影，不带此字段。旧组所在电脑不回此字段，查看端不画进度条；
-  旧查看端忽略它。不新增 channel、请求参数或持久数据。
+  分享来的成员一律丢弃；受邀者的匿名状态是白名单投影，不带此字段。旧组所在电脑不回此字段，查看端按读不到配额处理、
+  不提议换到这台；旧查看端忽略它。不新增 channel、请求参数或持久数据。
 - 不新增 channel，不改 relay、服务器、数据库或持久冷却格式。实现：`provider-group/usage.ts`、`directory.ts`、`runtime.ts`、
   `router.ts`、`remoteClient.ts`、`remoteHandler.ts`、`service.ts`；额度判定与自动继续复用 `shared/accountUsageLimit.ts`。回归见
   `provider-group/__tests__/usage.test.ts`、`router.usage.test.ts`、`runtime.test.ts` 与 `scheduler.test.ts`。
@@ -3091,3 +3137,13 @@ namespace + id 下同一插件的有界 JSON 请求；`deviceSync: true` 是独�
 配置读取、保存与包内导航照旧，完整跨文档确认隔离须两端都更新。插件本身无需更新，
 不改变已装批准、凭证、KV、版本或原生指纹。实现与时序验证见
 [原配置页协议](../remote-plugin-oauth.md#手机原配置页授权的增量能力)。
+
+
+## 伙伴关联项目
+
+`teammates` 增加 `settings:<botId>/projects` 与其项目详情资源。使用既有 list/form/toggle 原语，
+保存仍绑定账号、控制端、伙伴和资源 revision。远程不传目录绝对路径，项目 ID 为不透明摘要；
+旧控制端可忽略新入口，新控制端连接旧 Host 时不显示入口。手机两端与远程桌面共用宿主投影。
+本机新增 `local-db:bots:projects:list/set` 仅用于受信 renderer，不进入远程 IPC allowlist。
+旧 `workbench.json` 目录及设备归属沿用原格式；关联不进入任务负责范围或扩大文件权限。
+不改服务端、数据库 schema、Mobile 原生配置或指纹。

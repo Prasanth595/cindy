@@ -43,6 +43,102 @@ async function makeHarness(
 }
 
 describe('createBrowserMcpServer', () => {
+  // Historical form replay spent a second model call on every post-click read.
+  // Unit tier, production MCP entry: preserve successful mutations on read errors,
+  // select the returned tab, and retain the existing password-handoff behavior.
+  it.each([{}, { selector: '#form', maxChars: 1000 }])('returns an opt-in post-action snapshot on the actual resulting tab: %j', async (afterSnapshot) => {
+    const h = await makeHarness({}, (request) => request.action === 'snapshot'
+      ? { targetId: 'new-tab', snapshot: '- button "Continue" [ref=e1]' }
+      : request.request && (request.request as { kind: string }).kind === 'evaluate'
+        ? { result: { password: true } }
+        : { targetId: 'new-tab' });
+    try {
+      const response = await h.client.callTool({ name: 'call_tool', arguments: { name: 'browser', args: {
+        action: 'act', targetId: 'old-tab', request: { kind: 'click', ref: 'e2' }, afterSnapshot,
+      } } });
+      expect(response.isError).toBe(false);
+      expect(JSON.parse((response.content as Array<{ text: string }>)[0].text)).toMatchObject({
+        ok: true, data: { targetId: 'new-tab' }, afterSnapshot: {
+          ok: true, data: { snapshot: '- button "Continue" [ref=e1]' }, loginWall: { fields: ['password'] },
+        },
+      });
+      expect(h.calls[0]).not.toHaveProperty('afterSnapshot');
+      expect(h.calls[1]).toMatchObject({
+        action: 'snapshot', targetId: 'new-tab', compact: true,
+        refs: 'selector' in afterSnapshot ? 'role' : 'aria', maxChars: 'maxChars' in afterSnapshot ? 1000 : 4000,
+      });
+    } finally { await h.cleanup(); }
+  });
+
+  // Live Google Play role snapshots exceeded maxChars. Verify the production
+  // MCP response bounds text and removes hidden refs, while preserving success.
+  it.each([undefined, 64])('bounds post-action snapshots even when the runtime ignores maxChars (%s)', async (maxChars) => {
+    const visible = '- button "Continue" [ref=e1]';
+    const h = await makeHarness({}, (request) => request.action === 'snapshot'
+      ? { snapshot: `${visible}\n${'x'.repeat(5000)}\n- button "Hidden" [ref=e2]`, refs: { e1: { role: 'button', name: 'Continue' }, e2: { role: 'button', name: 'Hidden' } }, stats: { chars: 5100 } }
+      : { targetId: 'tab' });
+    try {
+      const response = await h.client.callTool({ name: 'call_tool', arguments: { name: 'browser', args: {
+        action: 'act', targetId: 'tab', request: { kind: 'click', ref: 'e1' }, afterSnapshot: { selector: '#main-content', ...(maxChars ? { maxChars } : {}) },
+      } } });
+      const result = JSON.parse((response.content as Array<{ text: string }>)[0].text);
+      expect(response.isError).toBe(false);
+      expect(result.ok).toBe(true);
+      expect(result.afterSnapshot.data.snapshot).toBe(visible);
+      expect(result.afterSnapshot.data.snapshot.length).toBeLessThanOrEqual(maxChars ?? 4000);
+      expect(Object.keys(result.afterSnapshot.data.refs)).toEqual(['e1']);
+      expect(result.afterSnapshot.data.truncated).toBe(true);
+      expect(result.afterSnapshot.data.stats).toBeUndefined();
+    } finally { await h.cleanup(); }
+  });
+
+  it.each(['throw', 'error'] as const)('preserves a successful upload when the subsequent snapshot fails (%s)', async (failure) => {
+    let uploads = 0;
+    const runtime: BrowserControlRuntime = { async call(req) {
+      if (req.action === 'snapshot') {
+        if (failure === 'throw') throw new Error('page closed');
+        return { ok: false, action: req.action, message: 'page closed' };
+      }
+      uploads++;
+      return { ok: true, action: req.action, data: { targetId: 'tab' } };
+    } };
+    const h = await makeHarness({ getRuntime: () => runtime });
+    try {
+      const response = await h.client.callTool({ name: 'call_tool', arguments: { name: 'browser', args: {
+        action: 'upload', targetId: 'tab', paths: ['/fake/bundle.aab'], afterSnapshot: {},
+      } } });
+      expect(response.isError).toBe(false);
+      expect(JSON.parse((response.content as Array<{ text: string }>)[0].text)).toMatchObject({
+        ok: true, action: 'upload', afterSnapshot: { ok: false, action: 'snapshot', message: 'page closed' },
+      });
+      expect(uploads).toBe(1);
+    } finally { await h.cleanup(); }
+  });
+
+  it('does not read a new snapshot after a failed action', async () => {
+    const calls: string[] = [];
+    const h = await makeHarness({ getRuntime: () => ({ async call(req) {
+      calls.push(req.action);
+      return { ok: false, action: req.action, message: 'stale ref' };
+    } }) });
+    try {
+      const response = await h.client.callTool({ name: 'call_tool', arguments: { name: 'browser', args: {
+        action: 'act', request: { kind: 'click', ref: 'e1' }, afterSnapshot: {},
+      } } });
+      expect(response.isError).toBe(true);
+      expect(calls).toEqual(['act']);
+    } finally { await h.cleanup(); }
+  });
+
+  it.each([{ action: 'stop' }, { action: 'setBackend', backend: 'external' }, { action: 'act', request: { kind: 'close' } }])('rejects incompatible post-action observation before any side effect: %j', async (args) => {
+    const h = await makeHarness({ setBackend: async () => { throw new Error('must not switch'); } });
+    try {
+      const response = await h.client.callTool({ name: 'call_tool', arguments: { name: 'browser', args: { ...args, afterSnapshot: {} } } });
+      expect(response.isError).toBe(true);
+      expect(h.calls).toEqual([]);
+    } finally { await h.cleanup(); }
+  });
+
   it('switches modes in the same MCP instance and immediately updates backend capabilities', async () => {
     let backend: 'external' | 'rsb-webview' = 'external';
     const switched: string[] = [];
@@ -634,7 +730,13 @@ describe('createBrowserMcpServer', () => {
         saved.push(input);
         return { ok: true, path: '/tmp/browser-recipes/x.com/recipe.json' };
       },
-    });
+    }, (_req, i) => ({ result: i === 0 ? true : { title: 'found' } }));
+    const recipeDraft = { id: 'x-search', steps: [{ action: 'evaluate', fn: '() => ({title: "found"})',
+      guard: { url: 'https://x.com/' }, expect: { requiredFields: ['title'] }, as: 'items' }], output: '{{items}}' };
+    const trial = await h.client.callTool({ name: 'call_tool', arguments: { name: 'browser', args: {
+      action: 'recipe', site: 'x.com', recipeDraft,
+    } } });
+    expect(trial.isError).toBe(false);
     const result = await h.client.callTool({
       name: 'call_tool',
       arguments: {
@@ -642,7 +744,7 @@ describe('createBrowserMcpServer', () => {
         args: {
           action: 'saveRecipe',
           site: 'x.com',
-          recipeDraft: { id: 'x-search', steps: [{ action: 'navigate', url: 'https://x.com/?q={{q}}' }] },
+          recipeDraft,
         },
       },
     });
@@ -1061,3 +1163,200 @@ describe('createBrowserMcpServer', () => {
   });
 });
 
+// Real MCP entry, no model stub: receipts, repair limits and persisted suspension.
+describe('recipe on-use maintenance', () => {
+  const draft = { id: 'maintenance-flow', steps: [{ action: 'evaluate' as const, fn: '() => ({title: "found"})',
+    guard: { url: 'https://example.com/' }, expect: { requiredFields: ['title'] }, as: 'items' }], output: '{{items}}' };
+  async function invoke(h: Awaited<ReturnType<typeof makeHarness>>, args: Record<string, unknown>) {
+    const r = await h.client.callTool({ name: 'call_tool', arguments: { name: 'browser', args } });
+    return JSON.parse((r.content as Array<{text: string}>)[0].text);
+  }
+  it('rejects unverified/modified/forged drafts and keeps evidence session-local', async () => {
+    const saved: unknown[] = [];
+    const deps = { saveUserRecipe: async (x: unknown) => { saved.push(x); return { ok: true }; } };
+    const h = await makeHarness(deps, (_req, i) => ({ result: i % 2 === 0 ? true : { title: 'found' } }));
+    const other = await makeHarness(deps);
+    try {
+      const save = { action: 'saveRecipe', site: 'example.com', recipeDraft: draft };
+      expect((await invoke(h, save)).ok).toBe(false);
+      expect((await invoke(h, { ...save, action: 'recipe' })).verified).toBe(true);
+      expect((await invoke(other, save)).ok).toBe(false);
+      expect((await invoke(h, { ...save, recipeDraft: { ...draft, description: 'changed' } })).ok).toBe(false);
+      expect((await invoke(h, { ...save, recipeDraft: { ...draft, validation: { site: 'example.com', state: 'active' } } })).ok).toBe(false);
+      expect((await invoke(h, save)).ok).toBe(true);
+      expect(saved).toHaveLength(1);
+      expect(saved[0]).toMatchObject({ recipe: { validation: { state: 'active' } } });
+    } finally { await h.cleanup(); await other.cleanup(); }
+  });
+  it('does not suspend a valid recipe when the caller omitted inputs', async () => {
+    const saved: unknown[] = [];
+    const stored = { ...draft, inputs: { query: { required: true } }, validation: { site: 'example.com', state: 'active' as const } };
+    const h = await makeHarness({
+      getUserRecipes: async () => ({ version: 'maintenance-missing-input', recipes: new Map([[stored.id, stored]]), siteGuides: new Map() }),
+      saveUserRecipe: async (x) => { saved.push(x); return { ok: true }; },
+    }, (_req, i) => ({ result: i === 0 ? true : { title: 'found' } }));
+    try {
+      expect((await invoke(h, { action: 'recipe', recipeId: stored.id })).ok).toBe(false);
+      expect(h.calls).toHaveLength(0);
+      expect(saved).toHaveLength(0);
+      expect((await invoke(h, { action: 'recipe', recipeId: stored.id, inputs: { query: 'test' } })).ok).toBe(true);
+    } finally { await h.cleanup(); }
+  });
+  // Review #6822: saved-use coverage above did not exercise repair preflight.
+  // MCP entry/unit: all three preflight paths must leave the page and budget untouched.
+  it.each(['missing', 'non-scalar', 'interpolation', 'equals'] as const)('preserves the repair trial after %s input preflight failure', async (failure) => {
+    const candidate = { ...draft, inputs: { query: { required: true } }, steps: [{ ...draft.steps[0],
+      ...(failure === 'equals' ? { expect: { equals: { title: '{{missing}}' } } } : {}),
+      guard: { url: 'https://example.com/', ...(failure === 'interpolation' ? { selector: '#{{missing}}' } : {}) } }] };
+    const stored = { ...candidate, validation: { site: 'example.com', state: 'suspended' as const } };
+    const saved: unknown[] = [];
+    const h = await makeHarness({
+      getUserRecipes: async () => ({ version: `repair-preflight-${failure}`, recipes: new Map([[stored.id, stored]]), siteGuides: new Map() }),
+      saveUserRecipe: async (x) => { saved.push(x); return { ok: true }; },
+    }, (_req, i) => ({ result: i === 0 ? true : { title: 'found' } }));
+    const run = { action: 'recipe', site: 'example.com', recipeDraft: candidate };
+    try {
+      const inputs = failure === 'missing' ? undefined : { query: failure === 'non-scalar' ? {} : 'test' };
+      expect((await invoke(h, { ...run, inputs })).ok).toBe(false);
+      expect(h.calls).toHaveLength(0);
+      expect(saved).toHaveLength(0);
+      expect((await invoke(h, { ...run, inputs: { query: 'test', missing: 'found' } })).verified).toBe(true);
+      const calls = h.calls.length;
+      expect((await invoke(h, { ...run, inputs: { query: 'test', missing: 'found' } })).message).toContain('次数已用完');
+      expect(h.calls).toHaveLength(calls);
+    } finally { await h.cleanup(); }
+  });
+  // Review #6822: a draft failure differs from failure of the saved definition.
+  // MCP entry/unit: guard/expect failures must not disable the old working recipe.
+  it.each(['guard', 'expect'] as const)('keeps an active recipe usable after a candidate %s failure', async (failure) => {
+    const stored = { ...draft, validation: { site: 'example.com', state: 'active' as const } };
+    const saved: unknown[] = [];
+    let trial = true;
+    const h = await makeHarness({
+      getUserRecipes: async () => ({ version: `active-draft-${failure}`, recipes: new Map([[stored.id, stored]]), siteGuides: new Map() }),
+      saveUserRecipe: async (x) => { saved.push(x); return { ok: true }; },
+    }, (req) => ({ result: (req.request as { fn?: string })?.fn?.includes('const g =')
+      ? !(trial && failure === 'guard') : { title: trial ? '' : 'found' } }));
+    try {
+      expect((await invoke(h, { action: 'recipe', site: 'example.com', recipeDraft: draft })).failureKind).toBe(failure);
+      expect(saved).toHaveLength(0);
+      trial = false;
+      expect((await invoke(h, { action: 'recipe', recipeId: stored.id })).ok).toBe(true);
+      expect((await invoke(h, { action: 'recipe', site: 'example.com', recipeDraft: draft })).verified).toBe(true);
+      expect(saved).toHaveLength(0);
+    } finally { await h.cleanup(); }
+  });
+  it('rejects moving an existing recipe id to a different site', async () => {
+    const stored = { ...draft, validation: { site: 'example.com', state: 'active' as const } };
+    const h = await makeHarness({
+      getUserRecipes: async () => ({ version: 'maintenance-wrong-site', recipes: new Map([[stored.id, stored]]), siteGuides: new Map() }),
+    });
+    try {
+      const moved = { ...draft, steps: [{ ...draft.steps[0], guard: { url: 'https://other.example/' } }] };
+      expect((await invoke(h, { action: 'recipe', site: 'other.example', recipeDraft: moved })).message).toContain('原站点');
+      expect(h.calls).toHaveLength(0);
+    } finally { await h.cleanup(); }
+  });
+  // #6822 dispatch checkpoint: permission denial is neither recipe aging nor a
+  // repair attempt. Exercise denial -> permission restored -> real execution,
+  // through separate evaluate guards and combined extract reads at the MCP entry.
+  it.each([
+    { candidate: true, extract: false }, { candidate: true, extract: true },
+    { candidate: false, extract: false }, { candidate: false, extract: true },
+  ])('preserves recipe state and repair budget across read restriction: %j', async ({ candidate, extract }) => {
+    const definition = extract ? { ...draft, steps: [{ action: 'extract' as const,
+      guard: draft.steps[0].guard, expect: draft.steps[0].expect,
+      extract: { fields: { title: 'h1' } }, as: 'items' }] } : draft;
+    const stored = { ...definition, validation: { site: 'example.com', state: candidate ? 'suspended' as const : 'active' as const } };
+    const saved: unknown[] = [];
+    let restricted = true;
+    const h = await makeHarness({
+      pageReadsRestricted: async () => restricted,
+      getUserRecipes: async () => ({ version: `restricted-${candidate}-${extract}`, recipes: new Map([[stored.id, stored]]), siteGuides: new Map() }),
+      saveUserRecipe: async (x) => { saved.push(x); return { ok: true }; },
+    }, (_req, i) => ({ result: extract ? { matched: true, value: { records: [{ title: 'found' }] } } : i === 0 ? true : { title: 'found' } }));
+    const run = candidate ? { action: 'recipe', site: 'example.com', recipeDraft: definition } : { action: 'recipe', recipeId: stored.id };
+    try {
+      expect((await invoke(h, run)).ok).toBe(false);
+      expect(h.calls).toHaveLength(0);
+      expect(saved).toHaveLength(0);
+      restricted = false;
+      expect((await invoke(h, run)).ok).toBe(true);
+      expect(h.calls.length).toBeGreaterThan(0);
+      expect(saved).toHaveLength(0);
+      if (candidate) {
+        const calls = h.calls.length;
+        expect((await invoke(h, run)).message).toContain('次数已用完');
+        expect(h.calls).toHaveLength(calls);
+      }
+    } finally { await h.cleanup(); }
+  });
+  it('persists failure of a legacy recipe using its guide, without replacing it with a failed draft', async () => {
+    const saved: unknown[] = [];
+    const legacy = { id: 'legacy-guide-flow', steps: [{ action: 'extract' as const, extract: { fields: { title: 'h1' } } }] };
+    const h = await makeHarness({
+      getUserRecipes: async () => ({ version: 'legacy-guide-flow-v1', recipes: new Map([[legacy.id, legacy]]),
+        siteGuides: new Map([['example.com', { site: 'example.com', recipes: [legacy.id] }]]) }),
+      saveUserRecipe: async (x) => { saved.push(x); return { ok: true }; },
+    }, () => ({ result: { ok: false, error: 'invalid selector' } }));
+    try {
+      expect((await invoke(h, { action: 'recipe', recipeId: legacy.id })).ok).toBe(false);
+      expect(saved).toEqual([{ site: 'example.com', recipe: { ...legacy, validation: { site: 'example.com', state: 'suspended' } } }]);
+    } finally { await h.cleanup(); }
+  });
+  it('reports a failed suspension write and still prevents this session from rerunning it', async () => {
+    const stored = { ...draft, validation: { site: 'example.com', state: 'active' as const } };
+    const h = await makeHarness({
+      getUserRecipes: async () => ({ version: 'maintenance-write-failure', recipes: new Map([[stored.id, stored]]), siteGuides: new Map() }),
+      saveUserRecipe: async () => ({ ok: false, message: 'disk full' }),
+    }, () => ({ result: false }));
+    try {
+      expect((await invoke(h, { action: 'recipe', recipeId: stored.id })).maintenanceMessage).toContain('保存失败');
+      expect((await invoke(h, { action: 'recipe', recipeId: stored.id })).ok).toBe(false);
+      expect(h.calls).toHaveLength(1);
+    } finally { await h.cleanup(); }
+  });
+  it('persists suspension, allows one repair, and never automatically replays a completed action', async () => {
+    const recipe = { ...draft, steps: [{ action: 'click' as const, selector: '#save', guard: { url: 'https://example.com/' } }, ...draft.steps],
+      validation: { site: 'example.com', state: 'active' as 'active' | 'suspended' } };
+    let stored = recipe;
+    let version = 0;
+    let good = false;
+    const deps: Partial<BrowserMcpDeps> = {
+      getUserRecipes: async () => ({ version: `maintenance-${version}`, recipes: new Map([[stored.id, stored]]), siteGuides: new Map() }),
+      saveUserRecipe: async (input) => { stored = input.recipe as typeof recipe; version++; return { ok: true }; },
+    };
+    const h = await makeHarness(deps, (req) => {
+      const fn = (req.request as {fn?: string})?.fn;
+      return { result: fn?.includes('const g =') ? true : good ? { title: 'found' } : { title: '' } };
+    });
+    try {
+      expect((await invoke(h, { action: 'recipe', recipeId: recipe.id })).failureKind).toBe('expect');
+      expect(stored.validation.state).toBe('suspended');
+      expect(h.calls.filter((r) => (r as { request?: {kind: string} }).request?.kind === 'click')).toHaveLength(1);
+      const count = h.calls.length;
+      expect((await invoke(h, { action: 'recipe', recipeId: recipe.id })).ok).toBe(false);
+      expect(h.calls).toHaveLength(count);
+      const fresh = await makeHarness(deps);
+      try {
+        expect((await invoke(fresh, { action: 'recipe', recipeId: recipe.id })).ok).toBe(false);
+        expect(fresh.calls).toHaveLength(0);
+      } finally { await fresh.cleanup(); }
+      // Repair is read-only: verify the already-completed write rather than re-submit.
+      expect((await invoke(h, { action: 'recipe', site: 'example.com', recipeDraft: draft })).ok).toBe(false);
+      good = true;
+      const repairCalls = h.calls.length;
+      expect((await invoke(h, { action: 'recipe', site: 'example.com', recipeDraft: draft })).message).toContain('次数已用完');
+      expect(h.calls).toHaveLength(repairCalls);
+      expect(stored.steps[0].action).toBe('click'); // failed draft did not replace it
+      expect((await invoke(h, { action: 'saveRecipe', site: 'example.com', recipeDraft: draft })).ok).toBe(false);
+    } finally { await h.cleanup(); }
+    // A later task can successfully validate and save a repaired definition.
+    const next = await makeHarness(deps, (_r, i) => ({ result: i === 0 ? true : { title: 'found' } }));
+    try {
+      expect((await invoke(next, { action: 'recipe', site: 'example.com', recipeDraft: draft })).ok).toBe(true);
+      expect((await invoke(next, { action: 'saveRecipe', site: 'example.com', recipeDraft: draft })).ok).toBe(true);
+      expect(stored.validation.state).toBe('active');
+    } finally { await next.cleanup(); }
+  });
+});

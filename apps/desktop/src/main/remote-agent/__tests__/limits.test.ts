@@ -59,7 +59,7 @@ function request(runId = randomUUID(), extra: Record<string, unknown> = {}) {
 }
 describe('provider computer session limits', () => {
   it('keeps defaults and advertises the configured limit', async () => {
-    expect(DEFAULT_REMOTE_AGENT_LIMITS).toEqual({ perDevice: 16, total: 64 });
+    expect(DEFAULT_REMOTE_AGENT_LIMITS).toEqual({ perDevice: 16, total: 64, idleMinutes: 30 });
     const host = makeHost();
     expect(await host.handle('a', { op: 'caps' })).toMatchObject({ maxRuns: 2 });
     limits = { perDevice: 70, total: 100 };
