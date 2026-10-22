@@ -76,7 +76,7 @@ interface ActionContext {
   assertCurrentSync?(): void;
   assertDeliveryCurrent(): Promise<void>;
 }
-const actionContext = new AsyncLocalStorage<ActionContext>();
+const actionContext = new AsyncLocalStorage<ActionContext | null>();
 export const TASK_ACTION_INPUT_GUARD = Symbol('task-action-input-guard');
 export type TaskActionDeliveryGuard = (() => Promise<void>) & {
   onSettled?: () => Promise<void>;
@@ -186,7 +186,11 @@ export async function assertTaskActionCurrent(): Promise<void> {
  * Agent grant.
  */
 export function runHostCompletionDelivery<T>(operation: () => Promise<T>): Promise<T> {
-  return actionContext.exit(operation);
+  // "No Agent action here", scoped to this delivery only. `exit` also hides the store from the
+  // delivery, but the legacy AsyncLocalStorage implementation does that by disabling the whole
+  // instance, so concurrent callers lose their grant too. An explicit `null` affects only this
+  // operation, and every reader here already treats a missing store as "no Agent authority".
+  return actionContext.run(null, operation);
 }
 
 /** Existing lifecycle callbacks can outlive the AsyncLocalStorage call itself. */

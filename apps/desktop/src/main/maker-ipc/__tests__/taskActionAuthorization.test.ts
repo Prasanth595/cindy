@@ -242,6 +242,38 @@ describe('Host system receipts', () => {
       await expect(runHostCompletionDelivery(assertTaskActionCurrent)).resolves.toBeUndefined();
     });
   });
+
+  // Regression #6756: a Host receipt is not an Agent action, so it must not read a still-live
+  // outer turn grant even when it is delivered from inside that outer scope.
+  it('delivers as Host work even when an outer turn scope is still live', async () => {
+    const assertCurrent = vi.fn(async () => {});
+    const authorize = createTaskActionAuthorizer({
+      capture: async () => ({
+        key: 'accepted-input',
+        ownerInput: true,
+        delegated: false,
+        assertCurrent,
+      }),
+      confirm: async () => true,
+    });
+    const outer = await authorize(call('start_session_task'));
+    if (!outer.ok || !outer.run) throw new Error('missing Host grant');
+    await outer.run(async () => {
+      const inner = await authorize(call('send_to_session'));
+      if (!inner.ok || !inner.run) throw new Error('missing Host grant');
+      await inner.run(async () => {
+        const beforeDelivery = assertCurrent.mock.calls.length;
+        await expect(
+          runHostCompletionDelivery(async () => {
+            await assertTaskActionCurrent();
+            expect(hasTaskActionAuthorization('companion')).toBe(false);
+            expect(assertCurrent).toHaveBeenCalledTimes(beforeDelivery);
+          }),
+        ).resolves.toBeUndefined();
+      });
+      expect(hasTaskActionAuthorization('companion')).toBe(true);
+    });
+  });
 });
 
 // Regression #6399: the pure scope fixture above cannot detect lost group owner
