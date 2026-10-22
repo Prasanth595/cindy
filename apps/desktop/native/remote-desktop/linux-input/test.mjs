@@ -8,6 +8,9 @@ import test from 'node:test';
 
 // Explicit native integration check: requires build dependencies, never connects
 // to the compositor or injects input. Unit tests cover the main-process adapter.
+// Raw Chinese/emoji must survive parsing (regression: json-c 0.18 strict mode
+// rejected signed non-ASCII bytes); malformed, overlong and surrogate encodings must
+// still fail at the production protocol boundary.
 test('native input rejects invalid batches before applying any event', () => {
   const output = fs.mkdtempSync(path.join(os.tmpdir(), 'cindy-input-test-'));
   try {
@@ -68,6 +71,7 @@ test('native input rejects invalid batches before applying any event', () => {
         { kind: 'button', button: 2, down: true, x: 0, y: 1 },
         { kind: 'scroll', dx: -2000, dy: 2000 },
         { kind: 'text', text: '中文🙂\n' },
+        { kind: 'text', text: '\\中文' },
         { kind: 'release' },
       ]) + '\n[]\n',
     );
@@ -89,9 +93,23 @@ test('native input rejects invalid batches before applying any event', () => {
     }
     for (const input of [
       '[] trailing\n',
+      '[{"kind":"text","text":"\\中"}]\n', // invalid JSON escape, not repairable
       '[',
       'x'.repeat(32768),
       Buffer.from([91, 34, 255, 34, 93, 10]),
+      ...[
+        [0xc0, 0xaf], // overlong ASCII
+        [0xe0, 0x80, 0xaf], // overlong three-byte sequence
+        [0xed, 0xa0, 0x80], // surrogate
+        [0xf4, 0x90, 0x80, 0x80], // beyond U+10FFFF
+        [0xe4, 0xb8], // truncated code point
+      ].map((bytes) =>
+        Buffer.concat([
+          Buffer.from('[{"kind":"text","text":"'),
+          Buffer.from(bytes),
+          Buffer.from('"}]\n'),
+        ]),
+      ),
     ]) {
       const result = run(input);
       assert.notEqual(result.stdout, 'ready\nok\n');
