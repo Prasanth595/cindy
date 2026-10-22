@@ -54,11 +54,13 @@ function findEndpointFile(dir) {
 }
 
 const endpointFile = findEndpointFile(discoveryDir);
-if (!endpointFile) {
+if (!endpointFile && !arg('socket')) {
   console.error(`找不到端点文件: ${discoveryDir}(先在 Cindy 里添加一条自定义渠道)`);
   process.exit(1);
 }
-const { socketPath } = JSON.parse(fs.readFileSync(endpointFile, 'utf8'));
+const { socketPath: discoveredSocketPath } = JSON.parse(fs.readFileSync(endpointFile, 'utf8'));
+// 显式 --socket 优先: 跨账号或手工转发时不必依赖发现文件。
+const socketPath = arg('socket') ?? discoveredSocketPath;
 const connectionId = arg('connection');
 const tokenFile = arg('token-file');
 const token = arg('token') ?? (tokenFile ? fs.readFileSync(tokenFile, 'utf8').trim() : null);

@@ -131,6 +131,7 @@ import {
   readCustomToken,
   registerCustomConnection,
   removeCustomToken,
+  stopCustomEndpoint,
   unregisterCustomConnection,
   writeCustomToken,
 } from './custom/runtime';
@@ -347,12 +348,22 @@ export function startImOrchestrators(): void {
       if (record.channel === 'custom') {
         const token = readCustomToken(record.id) ?? '';
         const im = createCustomIM(imHost, {
+          connectionId: record.id,
           displayName: record.custom?.displayName ?? record.id,
           token,
           callbackUrl: record.custom?.callbackUrl ?? null,
           resolveAttachment: customAttachmentMeta,
         });
-        void registerCustomConnection(record.id, im);
+        void registerCustomConnection(record.id, im).catch(async (err: unknown) => {
+          log.warn(
+            'custom im register failed connection=' +
+              record.id +
+              ': ' +
+              (err instanceof Error ? err.message : String(err)),
+          );
+          // 端点没起来就不要显示成已连接, 否则用户以为能发但地址根本不存在。
+          await im.dispose();
+        });
         const orchestrator = createImOrchestrator(
           buildCustomAdapter(im, CUSTOM_CONFIG, {
             connectionId: record.id,
@@ -821,6 +832,8 @@ const connectionLifecycle = createSerializedConnectionLifecycle({
       // 伙伴自有连接先放掉(记录保留, 下次登录再起), 再停设置页那份。
       await stopPersonalCustomChannels();
       await stopBotImConnections();
+      // 端点路径跟着账号目录走: 换账号必须关掉, 否则新账号的连接会注册进旧 socket。
+      await stopCustomEndpoint();
       await im.dispose();
     } finally {
       bindingStore.resetRuntime();

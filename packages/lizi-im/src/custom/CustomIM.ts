@@ -9,6 +9,7 @@
  */
 
 import { timingSafeEqual } from 'node:crypto';
+import path from 'node:path';
 
 import { BaseIM } from '../BaseIM.js';
 import type { TextChannelIM, ImFinalOutput } from '../channelIM.js';
@@ -17,6 +18,8 @@ import type { CustomInboundMessage, CustomOutboundAttachment } from './types.js'
 import { collectXdtFileRefs, stripXdtFileLinks } from '../xdtRefs.js';
 
 export interface CustomIMOptions {
+  /** 连接编号(会话路由身份; 同名连接也互不干扰)。 */
+  connectionId: string;
   /** 连接显示名(用于会话标题与日志)。 */
   displayName: string;
   /** 入站鉴权 token; 常量时间比较。 */
@@ -35,8 +38,14 @@ export class CustomIM extends BaseIM implements TextChannelIM {
   private readonly statusHandlers = new Set<(s: IMStatus) => void>();
   private readonly options: CustomIMOptions;
   private token: string;
-  /** conversationId → 本条消息指定的回调地址(null = 用连接默认值)。 */
-  private readonly pendingCallbackOverrides = new Map<string, string | null>();
+  /**
+   * conversationId → 尚未消费的回调地址队列。
+   *
+   * 入站消息各自带回调地址, 而终稿/直接回复是按 conversationId 发出去的。
+   * 同一地址连续入站只留一条(终端客户端每条消息都用同一个地址), 消费时按
+   * 先入先出取, 避免第二条消息把第一条的地址覆盖掉。
+   */
+  private readonly pendingCallbacks = new Map<string, string[]>();
 
   constructor(host: IMHost, options: CustomIMOptions) {
     super('custom', host);
@@ -72,9 +81,11 @@ export class CustomIM extends BaseIM implements TextChannelIM {
     if (!this.tokenMatches(token)) return false;
     const event: IMMessageEvent = {
       channelName: 'custom',
-      senderId: payload.userId?.trim() || payload.conversationId,
+      // 自定义渠道没有平台用户身份: 路由与会话一律锚在 conversationId 上,
+      // 发言人(userId/userName)只用于展示, 不参与会话查找。
+      senderId: payload.conversationId,
       chatId: payload.conversationId,
-      contextId: this.options.displayName,
+      contextId: this.options.connectionId,
       messageId: `custom-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       text: payload.text,
       ...(payload.userName ? { speaker: { id: payload.userId ?? payload.conversationId, name: payload.userName, isOwner: false } } : {}),
@@ -82,8 +93,7 @@ export class CustomIM extends BaseIM implements TextChannelIM {
       unsupported: [],
       scopeKey: payload.conversationId,
     };
-    // 单条消息的回调地址覆盖: 只对这次派发的 turn 生效。
-    this.pendingCallbackOverrides.set(payload.conversationId, payload.callbackUrl ?? null);
+    this.noteCallback(payload.conversationId, payload.callbackUrl);
     for (const handler of [...this.messageHandlers]) handler(event);
     return true;
   }
@@ -99,14 +109,14 @@ export class CustomIM extends BaseIM implements TextChannelIM {
   }
 
   async sendText(userId: string, text: string): Promise<{ messageId: string }> {
-    await this.deliver(userId, text, 'done', []);
+    await this.deliver(userId, text, 'done', [], undefined, undefined, this.takeCallback(userId));
     return { messageId: `custom-out-${Date.now()}` };
   }
 
   async sendMarkdownText(userId: string, markdown: string): Promise<{ messageId: string }> {
     // chunked-text 渠道的终稿走这里: xdt-file 引用在这里剥成附件。
     const split = this.splitFileRefs(markdown);
-    await this.deliver(userId, split.text, 'done', split.absPaths);
+    await this.deliver(userId, split.text, 'done', split.absPaths, undefined, undefined, this.takeCallback(userId));
     return { messageId: `custom-out-${Date.now()}` };
   }
 
@@ -117,7 +127,15 @@ export class CustomIM extends BaseIM implements TextChannelIM {
   ): Promise<SendFileResult> {
     const meta = this.options.resolveAttachment?.(absPath);
     if (!meta) return { ok: false, reason: 'NOT_FOUND' };
-    await this.deliver(userId, '', 'done', [absPath], undefined, displayName ?? meta.name);
+    await this.deliver(
+      userId,
+      '',
+      'done',
+      [absPath],
+      undefined,
+      displayName ?? meta.name,
+      this.takeCallback(userId),
+    );
     return { ok: true };
   }
 
@@ -127,8 +145,7 @@ export class CustomIM extends BaseIM implements TextChannelIM {
 
   /** 终稿投递(由 adapter 的 commitFinal 调用)。 */
   async commitFinal(output: ImFinalOutput): Promise<void> {
-    const override = this.pendingCallbackOverrides.get(output.userId);
-    this.pendingCallbackOverrides.delete(output.userId);
+    const override = this.takeCallback(output.userId);
     const split = this.splitFileRefs(output.text);
     await this.deliver(
       output.userId,
@@ -137,8 +154,26 @@ export class CustomIM extends BaseIM implements TextChannelIM {
       [...(output.mediaAbsPaths ?? []), ...split.absPaths],
       output.errorCode,
       undefined,
-      override ?? undefined,
+      override,
     );
+  }
+
+  /** 登记一条入站消息的回调地址; 相同地址连续入站不重复排队。 */
+  private noteCallback(conversationId: string, callbackUrl: string | null | undefined): void {
+    const url = callbackUrl?.trim();
+    if (!url) return;
+    const queue = this.pendingCallbacks.get(conversationId) ?? [];
+    if (queue[queue.length - 1] !== url) queue.push(url);
+    this.pendingCallbacks.set(conversationId, queue);
+  }
+
+  /** 取走本次外发要用的回调地址; 队列空了才回连接默认值。 */
+  private takeCallback(conversationId: string): string | undefined {
+    const queue = this.pendingCallbacks.get(conversationId);
+    if (!queue || queue.length === 0) return undefined;
+    const url = queue.shift();
+    if (queue.length === 0) this.pendingCallbacks.delete(conversationId);
+    return url;
   }
 
   private async deliver(
@@ -208,7 +243,7 @@ export class CustomIM extends BaseIM implements TextChannelIM {
   private toAttachments(payload: CustomInboundMessage): IMAttachment[] {
     const out: IMAttachment[] = [];
     for (const item of payload.attachments ?? []) {
-      if (typeof item.absPath !== 'string' || !item.absPath.startsWith('/')) continue;
+      if (typeof item.absPath !== 'string' || !path.isAbsolute(item.absPath)) continue;
       const meta = this.options.resolveAttachment?.(item.absPath);
       if (!meta) continue;
       out.push({
@@ -231,7 +266,7 @@ export class CustomIM extends BaseIM implements TextChannelIM {
 function xdtFileUrlToAbsPath(url: string): string {
   if (!url.startsWith('xdt-file://')) throw new Error('not an xdt-file URL');
   const decoded = decodeURIComponent(url.slice('xdt-file://'.length));
-  if (decoded.includes('\0') || !decoded.startsWith('/')) {
+  if (decoded.includes('\0') || !path.isAbsolute(decoded)) {
     throw new Error('xdt-file URL must contain an absolute path');
   }
   return decoded;

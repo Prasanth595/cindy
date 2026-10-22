@@ -4,6 +4,7 @@
  */
 
 import { afterEach, describe, expect, it } from 'vitest';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
@@ -170,6 +171,30 @@ describe('custom im endpoint (unix socket)', () => {
       body: JSON.stringify({ conversationId: 'c1', text: 'still-alive' }),
     });
     expect(ok.status).toBe(202);
+  });
+
+  it('进程被强杀留下的 socket 文件会被清理后重建', async () => {
+    const socketPath = resolveSocketPath(dir);
+    fs.mkdirSync(dir, { recursive: true });
+    // 真造一次崩溃: 子进程监听 socket 后被 SIGKILL, 文件留在原地且没人监听。
+    const child = spawn(
+      process.execPath,
+      ['-e', 'require("net").createServer().listen(process.argv[1]);setInterval(()=>{},1e6)', socketPath],
+      { stdio: 'ignore' },
+    );
+    const deadline = Date.now() + 5_000;
+    while (!fs.existsSync(socketPath) && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    child.kill('SIGKILL');
+    await new Promise((r) => child.once('exit', r));
+    expect(fs.statSync(socketPath).isSocket()).toBe(true);
+
+    endpoint = await startCustomEndpoint({
+      discoveryDir: dir,
+      log: { info: () => {}, warn: () => {} },
+    });
+    expect(endpoint.socketPath).toBe(socketPath);
   });
 
   it('崩溃残留的 socket 文件会被清理后重建', async () => {

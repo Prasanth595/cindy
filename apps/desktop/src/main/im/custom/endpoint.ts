@@ -54,6 +54,9 @@ export async function startCustomEndpoint(
   const liveSockets = new Set<import('node:net').Socket>();
   const socketPath = resolveSocketPath(opts.discoveryDir);
 
+  // 上次异常退出可能留下没人监听的 socket 文件; 先探活清理, 否则重启永远报 SOCKET_IN_USE。
+  await removeStaleSocket(socketPath);
+
   const server = http.createServer((req, res) => {
     res.setHeader('Server', SERVER_HEADER);
     void handle(req, res, targets, opts.log).catch((err: unknown) => {

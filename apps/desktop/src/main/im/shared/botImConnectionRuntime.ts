@@ -37,7 +37,12 @@ import { throwIpcError } from '../../utils/ipcValidate';
 import { ownerScopedImSecrets } from '../ownerScopedStorage';
 import { readWechatChannelSettings, writeWechatCompanionBinding } from '../wechat/channelSettings';
 import { ownerScopedImUserDataPath } from '../ownerScopedStorage';
-import { generateCustomToken, writeCustomToken } from '../custom/runtime';
+import {
+  generateCustomToken,
+  registerCustomConnection,
+  unregisterCustomConnection,
+  writeCustomToken,
+} from '../custom/runtime';
 import { resolveSocketPath, urlFor } from '../custom/endpoint';
 import {
   BOT_IM_CONNECTION_CHANGED_EVENT,
@@ -598,6 +603,8 @@ async function addBotImConnectionNow(
         if (!token) return rollback('secret-unavailable');
         transport.im.setToken(token);
         await transport.im.init();
+        // 端点按 token 校验, 换 token 后必须重注册, 否则旧 token 仍能进站。
+        await registerCustomConnection(record.id, transport.im);
         break;
       }
     }
@@ -703,6 +710,8 @@ export async function removeBotImConnection(id: string): Promise<BotImConnection
       if (transport.kind === 'telegram' || transport.kind === 'discord') {
         await transport.im.disconnect();
       } else if (transport.kind === 'custom') {
+        // 先注销端点目标: 只 dispose 会留下 token 仍有效的地址, 客户端会一直等回复。
+        unregisterCustomConnection(id);
         await transport.im.dispose();
       } else {
         await transport.im.clearCredentials();

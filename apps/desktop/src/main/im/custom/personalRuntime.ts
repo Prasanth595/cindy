@@ -67,6 +67,7 @@ async function startOne(connection: PersonalCustomConnection): Promise<void> {
     return;
   }
   const im = createCustomIM(imHost, {
+    connectionId: connection.id,
     displayName: connection.displayName,
     token,
     callbackUrl: connection.callbackUrl,

@@ -20,6 +20,7 @@ import { customAttachmentMeta } from './adapter';
 const log = createLogger('im:custom');
 
 let endpoint: CustomEndpointHandle | null = null;
+let starting: Promise<CustomEndpointHandle> | null = null;
 const registered = new Map<string, CustomIM>();
 
 /** 连接 id → token 的存储键(与 botImConnectionRuntime 的 SECRET_KEYS_BY_CHANNEL 对齐)。 */
@@ -51,18 +52,32 @@ export function removeCustomToken(connectionId: string): void {
 /** 启动回环端点(幂等)。 */
 export async function ensureCustomEndpoint(): Promise<CustomEndpointHandle> {
   if (endpoint) return endpoint;
-  // socket 路径固定(Unix domain socket / Windows named pipe), 不占端口;
-  // 外部系统的接入地址重启后不变。
-  endpoint = await startCustomEndpoint({
-    discoveryDir: ownerScopedImUserDataPath('im-custom'),
-    log,
-  });
-  return endpoint;
+  // 多条连接同时恢复会并发调用; 共用同一次启动, 避免第二次 listen 抢同一个路径。
+  if (!starting) {
+    // socket 路径固定(Unix domain socket / Windows named pipe), 不占端口;
+    // 外部系统的接入地址重启后不变。
+    starting = startCustomEndpoint({
+      discoveryDir: ownerScopedImUserDataPath('im-custom'),
+      log,
+    }).then(
+      (handle) => {
+        endpoint = handle;
+        starting = null;
+        return handle;
+      },
+      (err: unknown) => {
+        starting = null;
+        throw err;
+      },
+    );
+  }
+  return starting;
 }
 
 export async function stopCustomEndpoint(): Promise<void> {
   const current = endpoint;
   endpoint = null;
+  starting = null;
   registered.clear();
   if (current) await current.shutdown();
 }
