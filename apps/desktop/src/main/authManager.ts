@@ -2492,6 +2492,7 @@ async function withAccountFreeOwnerCommit(opts: {
   nextMode: Extract<AppSessionMode, 'signed-out' | 'local'>;
   credentialStoreUnavailable?: boolean;
   preservePersistedRefreshToken?: boolean;
+  keepColdStartRecoveryPending?: boolean;
   notify?: boolean;
   clearOnFailure?: boolean;
   authAlreadyCleared?: boolean;
@@ -2521,6 +2522,7 @@ async function withAccountFreeOwnerCommit(opts: {
         notify: false,
         nextMode: opts.nextMode,
         preservePersistedRefreshToken: true,
+        keepColdStartRecoveryPending: opts.keepColdStartRecoveryPending,
         credentialStoreUnavailable: opts.credentialStoreUnavailable,
         deferSessionCommit: true,
       });
@@ -2570,6 +2572,7 @@ async function withAccountFreeOwnerCommit(opts: {
             notify: false,
             nextMode: opts.nextMode,
             preservePersistedRefreshToken: opts.preservePersistedRefreshToken,
+            keepColdStartRecoveryPending: opts.keepColdStartRecoveryPending,
             credentialStoreUnavailable: opts.credentialStoreUnavailable,
             deferSessionCommit: true,
           });
@@ -2594,6 +2597,7 @@ async function withAccountFreeOwnerCommit(opts: {
           notify: false,
           nextMode: 'signed-out',
           preservePersistedRefreshToken: opts.preservePersistedRefreshToken,
+          keepColdStartRecoveryPending: opts.keepColdStartRecoveryPending,
           credentialStoreUnavailable: opts.credentialStoreUnavailable,
           deferSessionCommit: true,
         });
@@ -2647,6 +2651,7 @@ async function recoverAccountFreeOwnerAtStartup(
     notify: false,
     clearOnFailure: mode === 'signed-out',
     preservePersistedRefreshToken: true,
+    keepColdStartRecoveryPending: true,
   });
 }
 
@@ -3699,6 +3704,12 @@ function clearAuth(
     /** Preserve the reason a saved login could not be restored through owner cleanup. */
     credentialStoreUnavailable?: boolean;
     /**
+     * 冷启动 / 会话过期内部的 account-free 提交:不能顺手清掉已登记的冷启动恢复。
+     * 与 preservePersistedRefreshToken 刻意分开:后者也用于设备不匹配等真正要
+     * 停止恢复的路径。
+     */
+    keepColdStartRecoveryPending?: boolean;
+    /**
      * 为 true 时不删除磁盘上的 refresh token 文件。仅用于「凭证已确认缺席」的
      * 过期路径(credential-lost):此刻磁盘上没有属于本进程的 token 可清,而共享
      * userData 的另一个实例可能刚好在登出→重登间隙写入了新 token——无条件
@@ -3737,7 +3748,10 @@ function clearAuth(
     clearTimeout(refreshTimer);
     refreshTimer = null;
   }
-  coldStartRecovery.cancel();
+  // 冷启动内部的 account-free 提交会传 keepColdStartRecoveryPending:那是我们正在
+  // 等它完成的清理,不能顺手抹掉已登记的冷启动恢复。显式登出 / 设备不匹配等
+  // 路径没有这个标记,必须连待启动一起清掉。
+  coldStartRecovery.cancel({ keepPending: opts.keepColdStartRecoveryPending === true });
   if (!opts.preservePersistedRefreshToken) {
     if (isPassiveSharedUserDataInstance()) {
       // passive 共享实例无权删整机凭证:它的登出只清本进程内存态,磁盘 token 留给

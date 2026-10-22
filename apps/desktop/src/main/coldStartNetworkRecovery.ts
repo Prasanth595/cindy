@@ -102,7 +102,10 @@ export interface ColdStartRecoveryLifecycleDeps {
   mode(): string;
   /** 启动重试器;返回 cancel。 */
   start(): () => void;
+  /** 进程内最多允许启动几条链;默认 2(首次失败 + 一轮重试后再失败)。 */
+  maxChains?: number;
   onStarted?: () => void;
+  onExhausted?: () => void;
 }
 
 /**
@@ -120,40 +123,56 @@ export class ColdStartRecoveryLifecycle {
   private pending = false;
   private started = false;
   private minimumEpoch = 0;
+  private chainsStarted = 0;
 
   constructor(private readonly deps: ColdStartRecoveryLifecycleDeps) {}
 
   /**
    * 提交前登记:提交会取消任何已存在的恢复器,因此这里只记下待启动。
-   * 已经启动的链不再重新登记 —— 冷启动超时转后台后原流程迟到失败会再进一次
-   * 失败分支,不能把节奏重来一遍。
+   * 已启动的链不动它 —— 冷启动超时转后台后原流程迟到失败会再进一次失败分支,
+   * 不能把节奏重来一遍;重试自身的失败会先经 clearAuth 取消,再走到这里。
    */
   request(): void {
-    if (this.started) return;
     this.pending = true;
   }
 
-  /** 提交完成后启动。仍处于未登录态且没有其它恢复器时才会真正创建。 */
+  /**
+   * 提交完成后启动。要求仍处于未登录态、且这条链尚未启动。
+   * 用户手动登录 / 登出会先走 clearAuth → `cancel()`,因此到这里时 pending 已清。
+   */
   arm(): void {
     if (!this.pending) return;
     this.pending = false;
     if (this.started || this.deps.mode() !== 'signed-out') return;
+    if (this.chainsStarted >= (this.deps.maxChains ?? 2)) {
+      this.deps.onExhausted?.();
+      return;
+    }
+    this.chainsStarted += 1;
     this.started = true;
     this.minimumEpoch = this.deps.epoch();
     this.cancelCurrent = this.deps.start();
     this.deps.onStarted?.();
   }
 
-  /** 登录 / 登出 / 本地模式 / 会话清除时调用。 */
-  cancel(): void {
-    this.pending = false;
+  /**
+   * 取消当前恢复器。默认同时清掉待启动登记(显式登出 / 用户登录)。
+   * 未登录态提交内部调用的 `clearAuth` 传 `keepPending`,否则会把刚登记的
+   * 待启动一起抹掉 —— 那正是本次要恢复的路径。
+   */
+  cancel(opts: { keepPending?: boolean } = {}): void {
+    if (!opts.keepPending) this.pending = false;
     this.started = false;
     this.cancelCurrent?.();
     this.cancelCurrent = null;
   }
 
-  /** 当前恢复器是否仍应存活(供 isCurrent 判定)。 */
+  /**
+   * 当前恢复器是否仍应存活。必须**严格相等**:手动登录会先递增 authStateEpoch、
+   * 再提交 cloud owner;用 `>=` 会让旧恢复器在登录事务中再跑一次 initialize(),
+   * 与手动登录竞争同一枚 refresh token。
+   */
   isCurrent(): boolean {
-    return this.started && this.deps.epoch() >= this.minimumEpoch;
+    return this.started && this.deps.epoch() === this.minimumEpoch;
   }
 }

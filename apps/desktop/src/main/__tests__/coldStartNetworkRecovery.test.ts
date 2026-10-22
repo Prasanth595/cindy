@@ -195,6 +195,17 @@ describe('cold start recovery lifecycle', () => {
     expect(h.start).toHaveBeenCalledTimes(1);
   });
 
+  it('手动登录先递增代次时，旧恢复器立即失效(即使会话仍是 signed-out)', () => {
+    const h = lifecycleHarness();
+    h.lifecycle.request();
+    h.lifecycle.arm();
+    expect(h.isCurrent()).toBe(true);
+    // completeLogin() 先 ++authStateEpoch，再提交 cloud owner；此刻 mode 仍是
+    // signed-out，旧恢复器不能借这个窗口再跑一次 initialize()。
+    h.bumpEpoch();
+    expect(h.isCurrent()).toBe(false);
+  });
+
   it('已启动的链不会被迟到的 request 重置节奏', () => {
     const h = lifecycleHarness();
     h.lifecycle.request();
@@ -205,5 +216,34 @@ describe('cold start recovery lifecycle', () => {
     expect(cancel).not.toHaveBeenCalled();
     h.lifecycle.arm();
     expect(h.start).toHaveBeenCalledTimes(1);
+  });
+
+  it('重试自身再失败时允许重新起链，但受总链数上限约束', () => {
+    const onExhausted = vi.fn();
+    const cancel = vi.fn();
+    const start = vi.fn(() => cancel);
+    let epoch = 1;
+    const lifecycle = new ColdStartRecoveryLifecycle({
+      epoch: () => epoch,
+      mode: () => 'signed-out',
+      start,
+      maxChains: 2,
+      onExhausted,
+    });
+    // 重试自身再失败:request → account-free 提交内部 clearAuth(keepPending)
+    // → arm。总启动链数受 maxChains 约束。
+    const chain = () => {
+      lifecycle.request();
+      lifecycle.cancel({ keepPending: true });
+      epoch += 1;
+      lifecycle.arm();
+    };
+    chain();
+    expect(start).toHaveBeenCalledTimes(1);
+    chain();
+    expect(start).toHaveBeenCalledTimes(2);
+    chain();
+    expect(start).toHaveBeenCalledTimes(2);
+    expect(onExhausted).toHaveBeenCalledTimes(1);
   });
 });

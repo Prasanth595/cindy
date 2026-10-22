@@ -74,10 +74,12 @@ describe('cold start auth recovery boundary', () => {
     expect(commitIdx).toBeLessThan(armIdx);
   });
 
-  it('清会话时取消恢复器，且恢复器以调度时刻的代次为下限', () => {
+  it('清会话时取消恢复器，且恢复器要求代次严格相等', () => {
     const start = authSource.indexOf('function clearAuth(');
     const end = authSource.indexOf('if (!opts.preservePersistedRefreshToken)', start);
-    expect(authSource.slice(start, end)).toContain('coldStartRecovery.cancel();');
+    expect(authSource.slice(start, end)).toContain(
+      'coldStartRecovery.cancel({ keepPending: opts.keepColdStartRecoveryPending === true });',
+    );
 
     const recoveryStart = authSource.indexOf(
       'const coldStartRecovery: ColdStartRecoveryLifecycle =',
@@ -90,5 +92,15 @@ describe('cold start auth recovery boundary', () => {
     expect(body).toContain('epoch: () => authStateEpoch');
     expect(body).toContain('mode: () => getActiveAppSession().mode');
     expect(body).toContain('isCurrent: () => coldStartRecovery.isCurrent()');
+
+    // 手动登录会先递增代次、再提交 cloud owner;`>=` 会让旧恢复器在登录事务中
+    // 再跑一次 initialize()，与手动登录竞争同一枚 refresh token。
+    // 直接读生产模块的公开契约对象,不截取源码片段。
+    const lifecycleSource = readFileSync(
+      resolve(process.cwd(), 'src/main/coldStartNetworkRecovery.ts'),
+      'utf8',
+    );
+    expect(lifecycleSource).toContain('this.deps.epoch() === this.minimumEpoch');
+    expect(lifecycleSource).not.toContain('this.deps.epoch() >= this.minimumEpoch');
   });
 });
