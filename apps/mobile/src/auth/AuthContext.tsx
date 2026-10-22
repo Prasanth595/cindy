@@ -2073,11 +2073,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
               codeChallenge,
               state,
             });
-            const result = await WebBrowser.openAuthSessionAsync(
-              authUrl,
-              MOBILE_REDIRECT_URL,
-            );
-            assertLoginFlowCurrent(expectedLoginFlowEpoch);
+            let result: Awaited<ReturnType<typeof WebBrowser.openAuthSessionAsync>>;
+            try {
+              result = await WebBrowser.openAuthSessionAsync(
+                authUrl,
+                MOBILE_REDIRECT_URL,
+              );
+            } catch (error) {
+              // The browser promise outlives the dispatch body. Report launch
+              // failures here, while preserving a newer attempt's ownership.
+              if (loginFlowEpochRef.current !== expectedLoginFlowEpoch
+                || loginActionInFlightRef.current !== run) return false;
+              setAuthError(authErrorCode(error));
+              return false;
+            }
+            if (loginFlowEpochRef.current !== expectedLoginFlowEpoch) return false;
             // Linking may already have handed ownership to a continuation.
             // A late native result must not cancel or mutate that newer work.
             if (loginActionInFlightRef.current !== run) return true;

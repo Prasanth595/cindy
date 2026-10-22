@@ -101,6 +101,8 @@ export function createDurableOutboxDelivery(deps: DurableOutboxDeliveryDeps) {
   };
   async function deliver(initial: DurableOutboxRecord) {
     let record = initial;
+    // The upload in progress when an attempt throws is the image that did not get through.
+    let uploadingSlot: number | undefined;
     due.set(id(record), Date.now() + 5_000);
     const startedAt = Date.now();
     let markAt = startedAt;
@@ -300,7 +302,9 @@ export function createDurableOutboxDelivery(deps: DurableOutboxDeliveryDeps) {
       if (!record.prepared) {
         for (const upload of record.uploads) {
           if (record.item.attachmentSlots[upload.slot]) continue;
+          uploadingSlot = upload.slot;
           const attachment = await deps.upload(record, upload);
+          uploadingSlot = undefined;
           let retained = false;
           try {
             if (!current(record)) return;
@@ -317,6 +321,7 @@ export function createDurableOutboxDelivery(deps: DurableOutboxDeliveryDeps) {
                   (localId) => record.item.slotByLocalId[localId] !== upload.slot,
                 ),
               },
+              failedUploadSlot: undefined,
             });
             retained = true;
           } finally {
@@ -411,6 +416,7 @@ export function createDurableOutboxDelivery(deps: DurableOutboxDeliveryDeps) {
                 ? record.state
                 : "failed",
         error: deps.describe(error),
+        failedUploadSlot: uploadingSlot,
         ...(!isDurableOutboxSettled(record) && deps.mediaFailed?.(error) && record.uploads.length
           ? { refreshUploads: true }
           : {}),

@@ -12,6 +12,11 @@ import { SessionTurnActivityTracker } from '../sessionTurnActivityTracker.js';
 import { ProductTurnWallClockTracker, ProductTurnUsageTargetTracker } from '../turnWallClock.js';
 import { ClaudeOutputLagTimingGuard } from '../../usage/modelUsageDelta.js';
 import { createWorkerTurnStartSequencer } from '../workerTurnStartSequencer.js';
+import type { BotGroupLaneTerminal } from '../botGroupChatService.js';
+import { AutoResumeBookkeeping, type OrcaSuppressedTerminal } from '../autoResumeBookkeeping.js';
+import { createDeferredProductTurnFailureGate } from '../productTurnFailureOwner.js';
+import { createProviderGroupHeldTurnErrors } from '../../provider-group/heldTurnErrors.js';
+import { createProviderGroupHeldWorkerTerminals } from '../../provider-group/heldWorkerTerminals.js';
 import { isGatewayProxyTokenRecoveryErrorEventForProvider } from '../gatewayProxyTokenRecovery.js';
 import { GATEWAY_PROXY_TOKEN_INVALID_REASON } from '@cindy/maker-shared/error-redaction';
 import { reportCindyGatewayKeyRejectedForCurrentKey } from '../../model-access/gatewayKeyRejection.js';
@@ -286,6 +291,7 @@ function harness() {
       noteFailedTurnCompletionTail: vi.fn(),
       stashSuppressedError: vi.fn(),
       stashOrcaSuppressedTerminal: vi.fn(() => true),
+      stashBotGroupSuppressedTerminal: vi.fn(() => true),
       consumeFailedTurnCompletionTail: vi.fn(() => false),
       hasSuppressedError: vi.fn(() => false),
     },
@@ -314,6 +320,7 @@ function harness() {
     silentStopTurnLeaseGate: { turnLeaseIdForEvent: vi.fn(() => 'instance:1') },
     agentInputCoordinatorHolder: {
       getActiveInputClientId: vi.fn((): string | null => null),
+      getAcceptedInputProvenance: vi.fn((): { clientId: string; autoResume?: boolean; retrySourceClientId?: string } | null => null),
       getActiveInputClientIds: vi.fn((): string[] => []),
       isActiveTaskCoordination: vi.fn(() => false),
       getQueueControlSnapshot: vi.fn(() => ({ pendingQueue: [] as unknown[] })),
@@ -571,6 +578,125 @@ describe('production Session event pipeline', () => {
         );
       }
       await h.dispose();
+    },
+  );
+
+  // #6671 persisted product regression (unit): existing hold tests checked error
+  // rows and Worker/group reports, but not plugin/upstream receipts. A terminal
+  // capacity error with only a group hold must retain its real product owner;
+  // success discards failure, abandonment settles once, and async decline hands
+  // ownership back to generic recovery. Drive handleSessionEvent + real stores.
+  it.each([
+    ...(['continued', 'rejected', 'generic-continued', 'generic-rejected', 'unheld'] as const)
+      .map(outcome => ({ outcome, terminal: 'error' as const })),
+    ...(['continued', 'rejected', 'generic-continued', 'generic-rejected'] as const)
+      .flatMap(outcome => (['done', 'failed-done'] as const).map(terminal => ({ outcome, terminal }))),
+  ])(
+    'retains persisted product callers through a group capacity hold: $terminal / $outcome', async ({ outcome, terminal }) => {
+      const h = harness();
+      const gate = createDeferredProductTurnFailureGate();
+      const successful = h.deps.onSuccessfulProductTurn;
+      const unsuccessful = h.deps.onUnsuccessfulProductTurn;
+      const adapters = h.dependencies as {
+        -readonly [K in 'deferUnsuccessfulProductTurn' | 'onSuccessfulProductTurn'
+          | 'onUnsuccessfulProductTurn' | 'stashProviderGroupHeldError']: SessionEventDependencies[K];
+      };
+      const deferOwner = vi.fn((...args: Parameters<typeof gate.defer>) => gate.defer(...args));
+      adapters.deferUnsuccessfulProductTurn = deferOwner;
+      adapters.onSuccessfulProductTurn = async (_sessionId, owner) => {
+        if (owner) gate.clear(owner);
+        await successful();
+      };
+      adapters.onUnsuccessfulProductTurn = async (sessionId, owner) => {
+        if (owner) {
+          gate.clear(owner);
+          h.deps.onPluginTaskTerminal(sessionId, owner.originalExecution ?? owner, 'failed');
+        }
+        await unsuccessful();
+      };
+      const settleFailure = (sessionId: string) => gate.settle(
+        sessionId,
+        owner => owner.session === h.session && owner.instanceId === h.session.instanceId
+          && owner.generation === h.session.getTurnGeneration(),
+        owner => { void h.dependencies.onUnsuccessfulProductTurn?.(sessionId, owner); },
+      );
+      const held = createProviderGroupHeldTurnErrors<unknown>({
+        ownerKey: () => 'account', capture: (_sessionId, data) => data,
+        persist: vi.fn(), surface: vi.fn(), settleFailure,
+        releaseHold: () => {
+          h.deps.agentInputCoordinatorHolder.getProviderGroupSwitchHoldId.mockReturnValue(null);
+          return true;
+        },
+      });
+      adapters.stashProviderGroupHeldError = outcome === 'unheld'
+        ? () => false : (...args) => held.stash(...args);
+      const book = new AutoResumeBookkeeping({
+        persistSuppressedError: vi.fn(), surfaceSuppressedError: settleFailure,
+        markOutcome: vi.fn(), rollbackGuardPendingResume: vi.fn(), abandonTakeover: vi.fn(),
+      });
+      const failure = { message: 'model at capacity', reason: 'upstream-overload' };
+      const generation = h.session.getTurnGeneration();
+      const execution = { sessionInstanceId: h.session.instanceId, sessionTurnGeneration: generation };
+      try {
+        h.deps.agentInputCoordinatorHolder.getProviderGroupSwitchHoldId.mockReturnValue(3);
+        if (terminal !== 'error') {
+          // Coordinator can synthesize its error from this same-generation
+          // snapshot while the outer pipeline receives only the paired done.
+          vi.spyOn(h.session, 'getObservedCurrentTurnTerminal').mockReturnValue({
+            kind: 'error', generation, ...failure,
+          });
+          (h.deps as { stashProviderGroupHeldWorkerTerminal?: unknown }).stashProviderGroupHeldWorkerTerminal = vi.fn();
+        }
+        h.emit(terminal === 'error' ? event('error', failure, execution)
+          : event('done', terminal === 'failed-done' ? { status: 'failed' } : {}, execution));
+        if (outcome === 'unheld') {
+          expect(deferOwner).not.toHaveBeenCalled();
+          expect(unsuccessful).toHaveBeenCalledOnce();
+          expect(h.deps.onPluginTaskTerminal).toHaveBeenCalled();
+          return;
+        }
+        expect(h.deps.onPluginTaskTerminal.mock.calls.length).toBe(0);
+        expect(unsuccessful).not.toHaveBeenCalled();
+        expect(successful).not.toHaveBeenCalled();
+        expect(deferOwner).toHaveBeenCalledOnce();
+        expect(gate.pending('task')).toMatchObject({
+          session: h.session, instanceId: execution.sessionInstanceId, generation,
+        });
+        expect(effects.fn('onTurnErrorEvent')).not.toHaveBeenCalled();
+        if (terminal === 'error') {
+          h.deps.autoResumeBookkeeping.consumeFailedTurnCompletionTail.mockReturnValueOnce(true);
+          h.emit(event('done', {}, execution));
+          expect(deferOwner).toHaveBeenCalledOnce();
+          expect(h.deps.onPluginTaskTerminal).not.toHaveBeenCalled();
+        }
+
+        if (outcome.startsWith('generic-')) {
+          book.stashSuppressedError('task', held.takeForRecovery('task', 3));
+          h.deps.agentInputCoordinatorHolder.getProviderGroupSwitchHoldId.mockReturnValue(null);
+          held.release('task', 3);
+          expect(unsuccessful).not.toHaveBeenCalled();
+          expect(gate.pending('task')).toBeDefined();
+        }
+        const continued = outcome.endsWith('continued');
+        if (continued) {
+          held.discard('task', 3);
+          book.discardSuppressedError('task');
+          h.emit(event('done', { status: 'completed', result: 'Recovered reply' }, execution));
+        }
+        held.release('task', 3);
+        held.release('task', 3);
+        book.surfaceSuppressedError('task');
+        book.surfaceSuppressedError('task');
+        await microtasks();
+        expect(h.deps.onPluginTaskTerminal).toHaveBeenCalledExactlyOnceWith('task', expect.objectContaining({
+          instanceId: execution.sessionInstanceId, generation,
+        }), continued ? 'completed' : 'failed', ...(continued ? [undefined] : []));
+        expect(successful).toHaveBeenCalledTimes(continued ? 1 : 0);
+        expect(unsuccessful).toHaveBeenCalledTimes(continued ? 0 : 1);
+        expect(gate.pending('task')).toBeUndefined();
+      } finally {
+        await h.dispose();
+      }
     },
   );
   it.each([
@@ -920,19 +1046,25 @@ describe('production Session event pipeline', () => {
     expect(stashWorker).toHaveBeenCalledWith('task', 3, expect.objectContaining({
       status: 'error',
       diagnostic: "You've hit your session limit",
-    }));
+    }), null);
     expect(h.deps.orcaTeamServiceForEvents.handleWorkerTerminalTurn).not.toHaveBeenCalled();
     await h.dispose();
   });
 
   it('holds a failure that ends with only a done event during the switch instead of dropping it', async () => {
     const h = harness();
+    const settleLaneTurn = vi.fn(async () => true);
+    (h.deps as unknown as { botGroupChatServiceHolder: unknown }).botGroupChatServiceHolder = { settleLaneTurn };
+    h.deps.agentInputCoordinatorHolder.getActiveInputClientId.mockReturnValue('bot-group:g1:turn:bot-a');
     const stashWorker = vi.fn();
     (h.deps as { stashProviderGroupHeldWorkerTerminal?: unknown }).stashProviderGroupHeldWorkerTerminal = stashWorker;
     h.deps.agentInputCoordinatorHolder.getProviderGroupSwitchHoldId.mockReturnValue(5);
     h.emit(event('done', { result: '' }));
     await microtasks();
-    expect(stashWorker).toHaveBeenCalledWith('task', 5, expect.objectContaining({ status: 'done' }));
+    expect(stashWorker).toHaveBeenCalledWith('task', 5, expect.objectContaining({ status: 'done' }), expect.objectContaining({
+      activeInputClientId: 'bot-group:g1:turn:bot-a', outcome: 'done',
+    }));
+    expect(settleLaneTurn).not.toHaveBeenCalled();
     expect(h.deps.orcaTeamServiceForEvents.handleWorkerTerminalTurn).not.toHaveBeenCalled();
     await h.dispose();
   });
@@ -1909,8 +2041,10 @@ describe('Bot adapters in the shared event pipeline', () => {
       h.deps.agentInputCoordinatorHolder.getActiveInputClientId.mockReturnValue(null);
     });
     h.emit(event('text', { text: 'private reply' }));
+    // The reply also records which input it answers (companion chats can show it above the reply).
     expect(h.deps.broadcastToAllWindows).toHaveBeenLastCalledWith('maker:event', expect.objectContaining({
-      event: expect.objectContaining({ agentMeta: expect.objectContaining({ botPrivateReply: true }) }),
+      event: expect.objectContaining({ agentMeta: expect.objectContaining({
+        botPrivateReply: true, replyToClientId: 'bot-dm:thread:delivery' }) }),
     }));
     h.emit(event('done'));
     expect(h.deps.broadcastToAllWindows).toHaveBeenCalledWith('maker:event', expect.objectContaining({
@@ -1931,6 +2065,88 @@ describe('Bot adapters in the shared event pipeline', () => {
     await microtasks();
     expect(settleLaneTurn).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: 'task', activeInputClientId: 'bot-group:g1:turn:bot-a', outcome: 'done', resultText: '我来补充',
+    }));
+    await h.dispose();
+  });
+
+  it('settles a recovered group reply against its original input and holds recoverable failures', async () => {
+    const h = harness();
+    const settleLaneTurn = vi.fn(async () => true);
+    (h.deps as unknown as { botGroupChatServiceHolder: unknown }).botGroupChatServiceHolder = { settleLaneTurn };
+    h.deps.agentInputCoordinatorHolder.getActiveInputClientId.mockReturnValue('retry-receipt');
+    h.deps.agentInputCoordinatorHolder.getAcceptedInputProvenance.mockReturnValue({
+      clientId: 'retry-receipt', autoResume: true, retrySourceClientId: 'bot-group:g1:turn:bot-a',
+    });
+    h.deps.agentInputCoordinatorHolder.onTurnEvent.mockImplementation(() => {
+      h.deps.agentInputCoordinatorHolder.getActiveInputClientId.mockReturnValue(null);
+    });
+    h.emit(event('done', { result: 'Recovered reply' }));
+    await microtasks();
+    expect(settleLaneTurn).toHaveBeenCalledWith(expect.objectContaining({
+      activeInputClientId: 'bot-group:g1:turn:bot-a', outcome: 'done', resultText: 'Recovered reply',
+    }));
+    settleLaneTurn.mockClear();
+    h.deps.agentInputCoordinatorHolder.getActiveInputClientId.mockReturnValue('retry-receipt');
+    h.deps.agentInputCoordinatorHolder.isAutoResumePending.mockReturnValue(true);
+    h.emit(event('error', { isTerminal: true, codexErrorInfo: 'responseStreamDisconnected' }));
+    await microtasks();
+    expect(settleLaneTurn).not.toHaveBeenCalled();
+    expect(h.deps.autoResumeBookkeeping.stashBotGroupSuppressedTerminal).toHaveBeenCalledWith('task', expect.objectContaining({
+      activeInputClientId: 'bot-group:g1:turn:bot-a', outcome: 'error', failureCode: 'NETWORK_ERROR',
+    }));
+    await h.dispose();
+  });
+
+  // Unit regression for #6671 review / bot-group-chat §4.4: existing tests
+  // covered generic recovery and pre-persist transfer, not the direct group
+  // hold after persistence. Drive the production pipeline and hold store so a
+  // capacity failure cannot finish the group lane before recovery has an outcome.
+  it.each(['continued', 'rejected'] as const)('holds a persisted group capacity terminal through handoff: %s', async outcome => {
+    const h = harness();
+    const settleLaneTurn = vi.fn(async (_terminal: BotGroupLaneTerminal) => true);
+    (h.deps as unknown as { botGroupChatServiceHolder: unknown }).botGroupChatServiceHolder = { settleLaneTurn };
+    const held = createProviderGroupHeldWorkerTerminals<{
+      orcaTerminal: OrcaSuppressedTerminal;
+      groupTerminal: BotGroupLaneTerminal | null;
+    }>({
+      ownerKey: () => 'account',
+      deliver: (_sessionId, terminal) => {
+        if (terminal.groupTerminal) void settleLaneTurn(terminal.groupTerminal);
+      },
+    });
+    const adapters = h.deps as unknown as {
+      stashProviderGroupHeldError: NonNullable<SessionEventDependencies['stashProviderGroupHeldError']>;
+      stashProviderGroupHeldWorkerTerminal: NonNullable<SessionEventDependencies['stashProviderGroupHeldWorkerTerminal']>;
+    };
+    adapters.stashProviderGroupHeldError = () => true;
+    adapters.stashProviderGroupHeldWorkerTerminal = (sessionId, holdId, orcaTerminal, groupTerminal) =>
+      held.stash(sessionId, holdId, { orcaTerminal, groupTerminal: groupTerminal ?? null });
+    const inputId = 'bot-group:g1:turn:bot-a';
+    h.deps.agentInputCoordinatorHolder.getActiveInputClientId.mockReturnValue(inputId);
+    h.deps.agentInputCoordinatorHolder.getProviderGroupSwitchHoldId.mockReturnValue(3);
+    h.emit(event('error', { message: 'model at capacity', reason: 'upstream-overload' }, { sessionTurnGeneration: 4 }));
+    h.deps.agentInputCoordinatorHolder.getActiveInputClientId.mockReturnValue('new-input');
+    h.deps.autoResumeBookkeeping.consumeFailedTurnCompletionTail.mockReturnValueOnce(true);
+    h.emit(event('done', {}, { sessionTurnGeneration: 4 }));
+    await microtasks();
+    expect(settleLaneTurn).not.toHaveBeenCalled();
+    expect(held.has('task', 3)).toBe(true);
+    if (outcome === 'continued') {
+      held.discard('task', 3);
+      h.deps.agentInputCoordinatorHolder.getProviderGroupSwitchHoldId.mockReturnValue(null);
+      h.deps.agentInputCoordinatorHolder.getAcceptedInputProvenance.mockReturnValue({
+        clientId: 'new-input', autoResume: true, retrySourceClientId: inputId,
+      });
+      h.emit(event('done', { result: 'Recovered reply' }, { sessionTurnGeneration: 5 }));
+    }
+    held.release('task', 3);
+    held.release('task', 3);
+    await microtasks();
+    expect(settleLaneTurn).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      activeInputClientId: inputId,
+      ...(outcome === 'continued'
+        ? { outcome: 'done', resultText: 'Recovered reply' }
+        : { outcome: 'error', failureCode: 'UPSTREAM_OVERLOADED' }),
     }));
     await h.dispose();
   });

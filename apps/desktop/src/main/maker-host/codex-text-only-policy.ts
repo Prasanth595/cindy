@@ -36,7 +36,7 @@ export function restrictCodexRequest(bytes: Buffer, options: { serial?: boolean;
   if (options.afterProvider && !options.serial) delete next.tool_choice;
   else next.tool_choice = 'none';
   delete next.parallel_tool_calls;
-  // Only the resolved ChatGPT Responses route needs the Lite serial flag.
+  // Responses-Lite requires an explicit serial flag, including on custom gateways.
   if (options.serial) next.parallel_tool_calls = false;
   return Buffer.from(JSON.stringify(next));
 }
@@ -143,7 +143,10 @@ export function codexTextOnlyRequestGuard(
   return {
     transformBody: (body, route) => restrictCodexRequest(body, {
       afterProvider: Boolean(route),
-      serial: Boolean(route) && requiresSerial(route?.upstreamBase),
+      // Local protocol bridges consume ingress before this final outbound pass.
+      // Keep their empty-tool compatibility; forwarded Lite requests need false.
+      serial: Boolean(route) && (requiresSerial(route?.upstreamBase)
+        || ctx.headers['x-openai-internal-codex-responses-lite'] === 'true'),
     }),
     response: headers => createCodexTextOnlyResponseGuard(String(headers['content-type'] ?? ''), String(headers['content-encoding'] ?? '')),
   };

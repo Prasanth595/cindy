@@ -182,6 +182,23 @@ export function shouldPreserveWaitingContinuationOnlyAutoResume(input: {
   return input.hasLiveSchedule || input.hasQueuedAutoResume;
 }
 
+/** Keep only the exact fallback callback across a runtime rebuild or cross-harness switch. */
+export function shouldPreserveRuntimeFallbackAutoResume(input: {
+  closeReason: unknown;
+  leasedAttemptToken: number | undefined;
+  guardIsCurrentAttempt: boolean;
+  bookIsCurrentAttempt: boolean;
+  coordinatorAttemptToken: number | null | undefined;
+  isAutoResumePending: boolean;
+  hasLiveSchedule: boolean;
+}): boolean {
+  return (input.closeReason === 'requested' || input.closeReason === 'runtime-refresh' || input.closeReason === 'agent-switch')
+    && input.leasedAttemptToken !== undefined
+    && input.guardIsCurrentAttempt && input.bookIsCurrentAttempt
+    && input.coordinatorAttemptToken === input.leasedAttemptToken
+    && input.isAutoResumePending && input.hasLiveSchedule;
+}
+
 export function isInterruptedTurnError(signals: InterruptedTurnErrorSignals): boolean {
   // This is a deliberate exception to the broad 503/network allowlist. Check it
   // first so a future stable reason cannot accidentally re-enable auto-resume.

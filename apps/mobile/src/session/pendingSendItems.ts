@@ -1,3 +1,4 @@
+import { forwardedRequestDisplayText } from '@cindy/maker-shared/message-source';
 /**
  * 待发送消息 → 消息流渲染项。
  * ---------------------------------------------------------------------------
@@ -55,6 +56,8 @@ export type MobilePendingSendPhase =
   | 'settling'
   /** 本地 outbox:附件还在上传 / 等轮到队首。 */
   | 'uploading'
+  /** 本地 outbox:电脑离线,消息留在手机上,连上后自动发出(不算失败)。 */
+  | 'waiting'
   /** 上传或 enqueue 失败,气泡保留待用户重试 / 删除。 */
   | 'failed'
   /** 正在底部 composer 里编辑这一条。 */
@@ -107,6 +110,10 @@ export interface MobilePendingSendItem {
   source?: MobilePendingSendSource | null;
   /** 手机 / 另一台电脑发来的排队消息的设备来源(气泡按查看设备决定是否显示,与已发送消息同一规则)。 */
   sourceDevice?: MessageSourceDevice;
+  /** phase 为 waiting 时在等什么。 */
+  waitingFor?: MobilePendingSendWaitingFor;
+  /** 本机发出的时刻(手机时钟),伙伴对话的时间分隔按它分组,回流后同 key 沿用。 */
+  sentAt?: number;
 }
 
 export interface MobileMessageListExtraData {
@@ -140,7 +147,7 @@ export function isPendingSendItemInteractive(
   return item.actions !== null
     || (item.canCancel !== false && (item.phase === 'uploading'
       || item.phase === 'failed'
-      || (item.phase === 'sending' && item.queueIndex === null)));
+      || ((item.phase === 'sending' || item.phase === 'waiting') && item.queueIndex === null)));
 }
 
 export function pendingSendItemKey(clientId: string): string {
@@ -200,7 +207,8 @@ function pendingSendAgentText(item: PendingSendTextSource): string {
     const persisted = parseOrcaPersistedMessage(item.persistedContent);
     if (persisted) return persisted.body;
   }
-  return queueItemVisibleText(item);
+  const visible = queueItemVisibleText(item);
+  return origin?.kind === 'session' ? forwardedRequestDisplayText(visible) : visible;
 }
 
 /**
@@ -371,7 +379,14 @@ export interface BuildPendingSendItemsInput {
    */
   previewByOssRef?: ReadonlyMap<string, string>;
   getImagePreview?: GetSentMessageImagePreview;
+  /**
+   * 本地待发条目为什么暂时发不出去:手机没网,或电脑离线 / 无响应。只在真正断开时给,
+   * 同步中、自动恢复中这类几秒内就过去的状态不算,避免一闪而过的「等待」。
+   */
+  outboxWaitingFor?: MobilePendingSendWaitingFor | null;
 }
+
+export type MobilePendingSendWaitingFor = 'network' | 'computer';
 
 /**
  * 组装消息流末尾的待发送气泡项。
@@ -438,15 +453,20 @@ export function buildPendingSendItems(input: BuildPendingSendItemsInput): Mobile
     if (seen.has(item.clientId) || input.hiddenClientIds.has(item.clientId)) continue;
     seen.add(item.clientId);
     const uploadsPending = item.attachmentCount > 0 && item.uploadedCount < item.attachmentCount;
+    // 断开时整条投递(含附件上传)都停着:附件没传完也写「等连上」,图片不再转圈。
+    // 已交给电脑的条目不是在等着发,保持原有的交接 / 对账状态。
+    const waitingFor = !item.failed && !item.dispatching ? input.outboxWaitingFor ?? null : null;
     items.push({
       type: 'pending_send',
       key: pendingSendItemKey(item.clientId),
       clientId: item.clientId,
       text: item.quotesEncoded ? stripChatQuoteMarkerLines(item.text) : item.text,
       sentInlineTokens: buildPendingSentInlineTokens(item),
-      phase: item.failed ? 'failed' : uploadsPending ? 'uploading' : 'sending',
+      phase: item.failed ? 'failed' : waitingFor ? 'waiting' : uploadsPending ? 'uploading' : 'sending',
+      ...(waitingFor ? { waitingFor } : {}),
+      ...(item.sentAt !== undefined ? { sentAt: item.sentAt } : {}),
       queueIndex: null,
-      thumbs: item.thumbnails,
+      thumbs: waitingFor ? item.thumbnails.map((thumb) => ({ ...thumb, uploading: false })) : item.thumbnails,
       fileCount: item.fileCount,
       fileNames: item.fileNames,
       attachmentCount: item.attachmentCount,

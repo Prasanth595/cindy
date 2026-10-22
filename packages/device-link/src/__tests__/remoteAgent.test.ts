@@ -55,6 +55,17 @@ describe('remote agent channel', () => {
     const caps = { version: 1, agents: [], maxRuns: 16, uploadChunkBytes: 1024, maxPayloadBytes: 2048 };
     expect(parseRemoteAgentCaps({ ...caps, guestRelay: true }).guestRelay).toBe(true);
     expect(parseRemoteAgentCaps({ ...caps, guestRelay: 'yes' })).not.toHaveProperty('guestRelay');
+    // Restricted relays require an explicit capability; legacy/non-boolean
+    // values cannot authorize forwarding to an older execution host.
+    expect(parseRemoteAgentCaps(caps)).not.toHaveProperty('relayModelAccess');
+    expect(parseRemoteAgentCaps({ ...caps, relayModelAccess: true }).relayModelAccess).toBe(true);
+    expect(parseRemoteAgentCaps({ ...caps, relayModelAccess: 'yes' })).not.toHaveProperty('relayModelAccess');
+    const request = { t: 'request', requestId: otherId, request: { type: 'model-access', model: 'opus' } };
+    expect(parseRemoteAgentStreamItem(JSON.stringify(request))).toEqual(request);
+    expect(parseRemoteAgentStreamItem(JSON.stringify({ ...request, request: { type: 'model-access' } }))).toMatchObject({ request: { type: 'model-access' } });
+    for (const model of ['', 1, 'a'.repeat(513)]) {
+      expect(() => parseRemoteAgentStreamItem(JSON.stringify({ ...request, request: { type: 'model-access', model } }))).toThrow('REMOTE_AGENT_INVALID');
+    }
   });
 
   // 转分享(provider-sharing.md §4.3)：组所在电脑把它分享的人报给分享来的组内电脑，由那台的主人逐人同意。

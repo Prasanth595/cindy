@@ -48,6 +48,7 @@ vi.mock('../../maker-ipc/register.js', () => ({
   tryGetOrcaCollabService: () => mockState.collabService,
   isSessionInTurn: () => false,
   getTaskActionInputState: () => ({ key: 'owner-input', ownerInput: true, boundary: 'runtime-1' }),
+  getTaskActionSession: () => undefined,
   confirmTaskAction: vi.fn(async () => true),
 }));
 

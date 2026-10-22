@@ -998,6 +998,18 @@ describe('dynamic lizi MCP session context', () => {
     });
   });
 
+  // Runtime identity discovery must expose cross-device origin even when no local
+  // orcaRole exists (the 2026-10-21 live probe otherwise misidentified the Worker).
+  it('returns the execution-device Worker origin from the authoritative context', async () => {
+    const lead = { leadDeviceId: 'pc', leadSessionId: 'lead-1', workerLabel: 'tester' };
+    const server = createXdtHelperMcpServer({}, {
+      agentKind: 'codex', workingDir: '/worker', sessionId: 'remote-worker',
+      vendorOptions: { orcaRemoteWorker: true, orcaRemoteLead: lead },
+    });
+    const result = await tools(server).call_tool.handler({ name: 'get_current_session_id', args: {} });
+    expect(parse(result as never)).toMatchObject({ ok: true, session_id: 'remote-worker', orca_remote_lead: lead });
+  });
+
   it('fails closed when the authoritative accessor cannot resolve a session', async () => {
     const provider = createLiziMcpProviders({ xdtHelper: {} }).find(
       (candidate) => candidate.name === 'cindy_helper',

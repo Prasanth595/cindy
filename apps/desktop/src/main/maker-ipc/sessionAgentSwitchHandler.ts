@@ -145,6 +145,11 @@ export interface AgentSwitchBoundaryContent {
   toAgentDeviceId?: string | null;
   fromAgentDeviceName?: string | null;
   toAgentDeviceName?: string | null;
+  /**
+   * 只在供应商组换电脑、且原因要告诉用户时出现：`quota-rebalance` = 用户确认为了先用那台的配额换过去
+   * (原电脑没出问题，provider-groups.md §6.2「任务进行中换号」)。旧端忽略，照常显示「Agent 已改到 X 上运行」。
+   */
+  switchReason?: 'quota-rebalance';
 }
 
 export interface AgentSwitchSessionRow {
@@ -619,6 +624,11 @@ export async function performSessionAgentSwitch(
      * 只在 applyNow 时生效。
      */
     providerGroupRelocation?: boolean;
+    /**
+     * 仅限 main 内部：供应商组换电脑的原因写进分隔条。`quota-rebalance` = 用户确认为了先用那台的配额换过去
+     * (provider-groups.md §6.2「任务进行中换号」)。只在真正换了电脑时写。
+     */
+    providerGroupSwitchReason?: 'quota-rebalance';
   },
 ): Promise<SessionAgentSwitchResult> {
   const { sessionId, targetAgentKind, model, providerId, signal } = params;
@@ -987,6 +997,7 @@ export async function performSessionAgentSwitch(
             // 强制换电脑时实际运行的电脑由对方选，本机不知道是哪台(也不该显示)：分隔条写「另一台电脑」。
             fromAgentDeviceName: forcedRelocation ? null : deps.describeAgentDevice?.(currentAgentDeviceId) ?? null,
             toAgentDeviceName: forcedRelocation ? null : deps.describeAgentDevice?.(targetAgentDeviceId) ?? null,
+            ...(params.providerGroupSwitchReason ? { switchReason: params.providerGroupSwitchReason } : {}),
           }
         : {}),
     };

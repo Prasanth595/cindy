@@ -38,6 +38,7 @@ export interface ProviderGroupRemoteClient {
     agentKind: 'claude-code' | 'codex' | 'pi';
     model: string;
     exclude: readonly string[];
+    quotaRebalance?: string;
   }): Promise<ProviderGroupRemotePick>;
   cool(ownerDeviceId: string, input: {
     providerId: string;
@@ -83,7 +84,11 @@ export function createProviderGroupRemoteClient(invoke: ProviderGroupRemoteInvok
           agentKind: input.agentKind,
           model: input.model,
           exclude: [...input.exclude],
+          ...(input.quotaRebalance ? { quotaRebalance: input.quotaRebalance } : {}),
         });
+        // 旧组所在电脑可能忽略这个可选约束：只有明确执行并回显的结果才用于主动换号。
+        if (input.quotaRebalance && (!raw || typeof raw !== 'object'
+          || (raw as { quotaRebalance?: unknown }).quotaRebalance !== true)) return { kind: 'none' };
         return parseProviderGroupRemotePick(raw, input.providerId);
       } catch (error) {
         if (error instanceof ProviderGroupRemoteUnsupportedError) return { kind: 'none' };

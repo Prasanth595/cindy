@@ -172,8 +172,37 @@ export interface BotGroupMessageView {
   createdAt: number;
   /** Thread roots only: the newest replies, shown in the main chat without opening the thread. */
   threadPreview?: BotGroupThreadPreview;
+  /**
+   * Thread roots only: replies from others since this reader last opened the Thread, by the
+   * server's read state. Omitted when the server keeps no read state (older servers).
+   */
+  threadUnread?: BotGroupThreadUnread;
   /** A main-chat message that re-posts an existing thread reply by reference. */
   threadShare?: BotGroupThreadShareView;
+}
+
+/** Unread replies of one Thread; `mentioned` when one of them names this reader. */
+export interface BotGroupThreadUnread {
+  count: number;
+  mentioned: boolean;
+  /** Sequence of the newest unread reply; tells a new reply apart from the same ones counted again. */
+  latest?: number;
+}
+
+/**
+ * One Thread of the group for the in-chat 话题 list (bot-group-chat.md §10「话题未读与提示」).
+ * Root text and author come from the server's copy; empty while that copy is still being read.
+ */
+export interface BotGroupThreadSummary {
+  rootId: string;
+  rootAuthorName: string;
+  rootAuthorBotId: string | null;
+  rootText: string;
+  replyCount: number;
+  unread: BotGroupThreadUnread;
+  /** The reader chose to follow it; absent when the server keeps no read state. */
+  following?: boolean;
+  lastReply: { authorName: string; text: string; createdAt: number } | null;
 }
 
 /** Spoken summaries and distinct responders have independent limits. */
@@ -348,6 +377,12 @@ export interface BotGroupPlanView {
   /** Absolute work directory once started; git plans run in their own worktree. */
   workDir: string | null;
   branch: string | null;
+  /** Server groups: `talk` queues teammates answering in turn (the first five go on by themselves); `work` divides work into steps. */
+  kind?: 'talk' | 'work';
+  /** Server groups: the viewer may continue or stop it (creator, owner or admin). */
+  canManage?: boolean;
+  /** Server groups: what the viewer sends without naming anyone goes to the step under way (creator, or a human owner/admin). */
+  canAdd?: boolean;
   createdAt: number;
   updatedAt: number;
 }
@@ -360,6 +395,8 @@ export interface BotGroupOpenPlanSummary {
   /** Bot of the current step (running, being redone, or last finished / failed). */
   currentBotName: string | null;
   currentStepStatus: BotGroupPlanStepStatus | null;
+  /** Server groups: a queue of teammates answering in turn (`talk`) or a division of work. */
+  kind?: 'talk' | 'work';
 }
 
 export function isBotGroupPlanOpen(status: BotGroupPlanStatus): boolean {
@@ -394,6 +431,8 @@ export interface BotGroupRoundView {
   speakers: BotGroupSpeaker[];
   /** True when the latest round ended naturally and may be continued. */
   canContinue: boolean;
+  /** Server groups: someone else's request or teammate is also working, so stopping only yours leaves it running. */
+  othersActive?: boolean;
 }
 
 export interface BotGroupSummary {
@@ -407,6 +446,13 @@ export interface BotGroupSummary {
   archived?: boolean;
   migrationPending?: boolean;
   canInvite?: boolean;
+  /** Server groups: an owner or admin may also stop everyone's work, not only their own. */
+  canStopAll?: boolean;
+  /**
+   * Server groups whose server gives each request one teammate (the lead when nobody is named)
+   * and arranges turns itself; no reply/speaking modes and no 安排分工 entry (bot-group-chat.md §4).
+   */
+  singleSpeaker?: boolean;
   selfActorId?: string;
   topic?: string;
   description?: string;
@@ -455,6 +501,11 @@ export interface BotGroupDetail extends BotGroupSummary {
   round: BotGroupRoundView;
   /** Plans referenced by the loaded messages, plus the open plan. */
   plans: BotGroupPlanView[];
+  /**
+   * Threads with replies in the newest window, unread ones first. Omitted by local groups,
+   * older hosts and servers without read state.
+   */
+  threads?: BotGroupThreadSummary[];
 }
 
 export type BotGroupErrorCode =
@@ -659,7 +710,15 @@ export function chatGroupLaneRouteKey(groupId: string, access: ChatLaneAccess): 
   return `group:${groupId}:access:${access.mode}:${access.revision}`;
 }
 export function isChatOnlyGroupLane(routeKey: string | null | undefined): boolean {
-  return /^group:[^:]+:access:chat:[1-9][0-9]*(?::plan:[^:]+|:thread:[^:]+)?$/.test(routeKey ?? '');
+  return /^group:[^:]+:access:chat:[1-9][0-9]*(?::plan:[^:]+|:thread:[^:]+|:talk:[^:]+)?$/.test(routeKey ?? '');
+}
+
+/**
+ * A queue's own lane (bot-group-chat.md §7.0): one hidden Session per queue, grant and teammate,
+ * so each turn reads only its card. It talks in the group lane's place, never a project folder.
+ */
+export function chatGroupTalkRouteKey(groupId: string, access: ChatLaneAccess, planId: string): string {
+  return `${chatGroupLaneRouteKey(groupId, access)}:talk:${planId}`;
 }
 
 /**
@@ -676,9 +735,9 @@ export function parseBotGroupThreadRouteKey(routeKey: string | null | undefined)
   return match ? { groupId: match[1]!, threadRootId: match[2]! } : null;
 }
 
-/** The group lane a Thread lane belongs to; a Thread works in the same place as its group lane. */
+/** The group lane a Thread or queue lane belongs to; both work in the same place as their group lane. */
 export function groupLaneOfRouteKey(routeKey: string): string {
-  return routeKey.replace(/:thread:[^:]+$/, '');
+  return routeKey.replace(/:(?:thread|talk):[^:]+$/, '');
 }
 
 export function botGroupLaneRouteKey(groupId: string): string {
@@ -731,11 +790,24 @@ export interface ChatServerApi {
   ownedBots(): Promise<ChatServerResult<{ bots: Array<{ actorId: string; botId?: string; name: string }> }>>;
   refreshProfile(): Promise<ChatServerResult<Record<never, never>>>;
   status(): Promise<{ enabled: boolean; connected: boolean }>;
-  thread(input: { groupId: string; rootId: string; before?: number; sourceMessageIds?: string[] }): Promise<ChatServerResult<{
+  /**
+   * `markRead` (latest page only): the reader is looking at the Thread, so its server read state
+   * moves to the newest reply read here; `readBefore` is where it stood before this read.
+   * `following` (latest page only) is whether the reader follows the Thread; absent when the
+   * server keeps no read state.
+   */
+  thread(input: { groupId: string; rootId: string; before?: number; sourceMessageIds?: string[]; markRead?: boolean }): Promise<ChatServerResult<{
     root: BotGroupMessageView; replies: BotGroupMessageView[]; hasMore: boolean;
     /** Same authoritative state as the main timeline; root and replies use one projection. */
     executionFailures?: BotGroupExecutionFailureView[];
+    readBefore?: number;
+    following?: boolean;
   }>>;
+  /**
+   * Sets whether the reader follows a Thread (bot-group-chat.md §10「关注开关」) and answers what
+   * the server saved. Only the reader's own choice ever follows a Thread.
+   */
+  followThread(input: { groupId: string; rootId: string; following: boolean }): Promise<ChatServerResult<{ following: boolean }>>;
   reply(input: { groupId: string; rootId: string; text: string; clientId: string; mentions: BotGroupMention }): Promise<ChatServerResult<{ messageId: string }>>;
   /**
    * Re-post a thread reply to the main chat as the current user. Repeating it for the same

@@ -169,6 +169,13 @@ export async function assertTaskActionCurrent(): Promise<void> {
   await actionContext.getStore()?.assertCurrent();
 }
 
+/** Host lifecycle only: durable completion delivery is not another invocation
+ * of the tool that started the task. Its caller must validate the persisted
+ * delegation/run and recipient; this does not authorize any Agent task action. */
+export function runHostCompletionDelivery<T>(operation: () => Promise<T>): Promise<T> {
+  return actionContext.exit(operation);
+}
+
 /** Existing lifecycle callbacks can outlive the AsyncLocalStorage call itself. */
 export function captureTaskActionGuard(): (() => Promise<void>) | undefined {
   return actionContext.getStore()?.assertCurrent;

@@ -15,7 +15,9 @@ import {
 import {
   getProviderGroupOwnerScope,
   readProviderGroupOfSession,
+  readProviderGroupRebalanceSuggestion,
   readProviderRunningTurnsByProvider,
+  recordProviderGroupRebalanceDecision,
 } from './runtime.js';
 import { readProviderGroup } from './store.js';
 import { isProviderManagementRequest } from '../../shared/providerManagement.js';
@@ -30,6 +32,8 @@ export function registerProviderGroupRemoteHandler(options: { onGroupChanged?: (
     replaceReportedUsage: (controller, sinceDay, rows) =>
       currentProviderPartyUsageStore().replaceReported(controller, sinceDay, rows),
     sessionGroup: readProviderGroupOfSession,
+    rebalanceSuggestion: readProviderGroupRebalanceSuggestion,
+    rebalanceDecision: recordProviderGroupRebalanceDecision,
   };
   setProviderGroupRemoteHandler({
     handle: (controller, raw) => isProviderManagementRequest(raw)

@@ -10,6 +10,7 @@
  * 调用先连回同一个会话；只改设置的调用(换模型、权限档、计划模式、目录等)只记在本机，连回来时带上。
  */
 import fsp from 'node:fs/promises';
+import { isTerminalAgentErrorEvent } from '@cindy/maker-core';
 
 import type { RemoteAgentMethod, RemoteAgentReply, RemoteAgentReverseRequest, RemoteAgentTeardownReason } from '@cindy/device-link';
 import type {
@@ -283,6 +284,9 @@ export function createRemoteAgentHandle(deps: RemoteHandleDeps): RemoteAgentHand
   let carriedUsage: unknown;
   /** 回到某条消息后、下一轮跑完前(Claude Code 要到下一次发送才在对方截断)：不能让出名额。 */
   let rewindPending = false;
+  // The provider terminal owns this turn's failure, including its quota reset.
+  // A later transport teardown must close the handle without replacing that error.
+  let terminalErrorDelivered = false;
 
   const dispose = async () => {
     if (disposed) return;
@@ -343,6 +347,7 @@ export function createRemoteAgentHandle(deps: RemoteHandleDeps): RemoteAgentHand
     // 连回之后才转换路径：让出期间改过的目录要等连回补发后才有虚拟路径。
     projectMessage(wireMessage);
     if (encoded.wire.cindy?.autoReviewSourceContent) projectMessage(encoded.wire.cindy.autoReviewSourceContent);
+    if (method === 'send') terminalErrorDelivered = false;
     await client.callWithId(callId, method, [wireMessage, encoded.wire]);
   }
 
@@ -535,6 +540,7 @@ export function createRemoteAgentHandle(deps: RemoteHandleDeps): RemoteAgentHand
     onEvent(event) {
       if (!event || typeof event !== 'object' || typeof (event as AgentEvent).type !== 'string') return;
       let typed = event as AgentEvent;
+      if (isTerminalAgentErrorEvent(typed) && typed.turnScope !== 'background') terminalErrorDelivered = true;
       if (typed.type === 'image' && typed.source === 'codex'
         && (typed.data as { kind?: unknown } | null)?.kind === 'generation') {
         typed = { ...typed, data: { ...(typed.data as object), pathOrigin: 'remote-agent' } };
@@ -613,7 +619,7 @@ export function createRemoteAgentHandle(deps: RemoteHandleDeps): RemoteAgentHand
     onClosed(reason, message) {
       for (const projected of projection.flush()) queue.push(projected);
       // 'superseded'：同一任务被重新打开、旧实例让位给新实例，不是错误，静默收起。
-      if (reason !== 'closed' && reason !== 'detached' && reason !== 'ended' && reason !== 'superseded') {
+      if (!terminalErrorDelivered && reason !== 'closed' && reason !== 'detached' && reason !== 'ended' && reason !== 'superseded') {
         queue.push({
           type: 'error',
           data: {

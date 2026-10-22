@@ -102,6 +102,7 @@
     "./botGroupMentions": "./src/botGroupMentions.ts",
     "./botGroupPresentation": "./src/botGroupPresentation.ts",
     "./botDelegation": "./src/botDelegation.ts",
+    "./bot-deliverable": "./src/botDeliverable.ts",
     "./botTimeline": "./src/botTimeline.ts",
     "./remote-desktop-viewer": "./src/remote-desktop/viewerRuntime.js",
     "./remote-desktop-mobile": "./src/remote-desktop/mobileHtml.ts",

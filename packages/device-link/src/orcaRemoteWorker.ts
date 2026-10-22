@@ -1,17 +1,20 @@
 /**
  * 协同远端 Worker(同账号)：Lead 与团队留在发起电脑(控制端)，单个 Worker 的任务、目录、
  * 命令与文件都在运行设备(被控端)上。运行设备上的 Worker 是一条普通任务，带「来自哪台
- * 电脑的协同」标记；派活、停止与回报复用现有会话通道，这里只登记运行设备新增的三个入口：
+ * 电脑的协同」标记；派活、停止与自动回报复用现有会话通道；以下登记专用生命周期与桥接口：
  *
  *  - `caps`：能力探测。老版本没有该 channel → CHANNEL_NOT_ALLOWED，控制端据此提示更新，
  *    不回退到普通建任务(普通任务没有防嵌套与来源标记)。
  *  - `open`：按控制端给定的 sessionId 新建 Worker 任务，幂等(同一控制端重复 open 返回同一任务)。
  *    来源电脑身份取 server 盖章的 src，不采信载荷自报。
  *  - `release`：通知运行设备这个 Worker 已结束协同，任务与文件保留。幂等。
+ *  - `bridge`：运行设备向 Lead 转发四个既有 Worker 工具；只允许绑定的 Worker/active team。
  */
 export const ORCA_REMOTE_WORKER_CAPS_CHANNEL = 'maker:orca:remote-worker:caps';
 export const ORCA_REMOTE_WORKER_OPEN_CHANNEL = 'maker:orca:remote-worker:open';
 export const ORCA_REMOTE_WORKER_RELEASE_CHANNEL = 'maker:orca:remote-worker:release';
+/** Execution device → owning Lead. Never exposed to shared-task guests. */
+export const ORCA_REMOTE_WORKER_BRIDGE_CHANNEL = 'maker:orca:remote-worker:bridge';
 export const ORCA_REMOTE_WORKER_VERSION = 1;
 
 /**
@@ -41,6 +44,36 @@ export type OrcaRemoteWorkerPermissionMode =
 
 export interface OrcaRemoteWorkerCaps {
   version: number;
+  workerBridge?: true;
+}
+
+export const ORCA_REMOTE_WORKER_BRIDGE_TOOLS = ['send_to_lead', 'read_lead_history', 'read_lead', 'lead_status'] as const;
+export interface OrcaRemoteWorkerBridgeRequest {
+  sessionId: string;
+  leadSessionId: string;
+  tool: (typeof ORCA_REMOTE_WORKER_BRIDGE_TOOLS)[number];
+  args: Record<string, unknown>;
+  /** Host-captured inputs consumed by the reporting turn; absent on older peers. */
+  reportedInputClientIds?: string[];
+}
+
+export function parseOrcaRemoteWorkerBridgeRequest(raw: unknown): OrcaRemoteWorkerBridgeRequest {
+  if (!isRecord(raw) || !isOrcaRemoteWorkerSessionId(raw.sessionId)
+    || !isOrcaRemoteWorkerSessionId(raw.leadSessionId)
+    || !ORCA_REMOTE_WORKER_BRIDGE_TOOLS.includes(raw.tool as OrcaRemoteWorkerBridgeRequest['tool'])
+    || !isRecord(raw.args)
+    || (raw.reportedInputClientIds !== undefined
+      && (!Array.isArray(raw.reportedInputClientIds)
+        || raw.reportedInputClientIds.length > 64
+        || !raw.reportedInputClientIds.every(isOrcaRemoteWorkerSessionId)))) {
+    throw new Error('[INVALID_PARAMS] invalid remote worker bridge request');
+  }
+  return { sessionId: raw.sessionId, leadSessionId: raw.leadSessionId,
+    tool: raw.tool as OrcaRemoteWorkerBridgeRequest['tool'], args: raw.args,
+    ...(raw.reportedInputClientIds !== undefined
+      ? { reportedInputClientIds: [...new Set(raw.reportedInputClientIds as string[])] }
+      : {}),
+  };
 }
 
 export interface OrcaRemoteWorkerOpenRequest {

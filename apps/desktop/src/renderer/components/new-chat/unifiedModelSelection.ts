@@ -18,6 +18,7 @@
  */
 
 import type { ProviderView, UnifiedAgentCapability, UnifiedModelEntry } from '@cindy/model-providers';
+import { remoteInvocationModels } from '@cindy/model-providers';
 
 import type { AgentKind } from '@/hooks/useAgentCapabilities';
 import type { SelectableVendor } from '@/lib/agentVendors';
@@ -326,7 +327,7 @@ export type UnifiedRailFilter = UnifiedRailItem;
  * 远程控制那台电脑时照常列全部，不经过这里。
  */
 export function remoteAgentProviders(providers: readonly ProviderView[]): ProviderView[] {
-  return providers.filter((provider) => provider.remoteInvocationEnabled === true);
+  return providers.filter((provider) => provider.remoteInvocationEnabled === true).map(remoteInvocationModels);
 }
 
 /** 该格按哪个供应商筛选(本机或远程供应商格);其余格不按供应商筛。 */

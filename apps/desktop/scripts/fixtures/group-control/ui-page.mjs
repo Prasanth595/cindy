@@ -5,17 +5,27 @@ const members = [
   { botId: 'b', name: 'Nova' },
 ];
 const base = { name: 'Design review', members, messages: 0, sidebar: true };
+const QUEUE_CROWD = ['Aster', 'Nova', 'Mira', 'Orin', 'Pax', 'Quill', 'Rhea'].map((name, i) => ({ botId: 'abcdefg'[i], name }));
 const LONG_DEVICE = 'Mac Studio · A very long device name for layout verification';
 
 /** Migrated from check-group-control-layout.mjs (remote-control notice above the composer). */
 export default {
   name: 'group-chat',
+  // The single-page builder does not implement Vite's ?url imports. Voice is outside this fixture.
+  stubs: {
+    'src/renderer/voice-input/workletUrl': 'export const getVoiceInputWorkletUrl = () => { throw new Error("Voice input is not covered by this fixture"); };',
+  },
   entry: './group-control-fixture.tsx',
   viewport: { width: 1280, height: 800 },
   real: 'BotGroupChatView (timeline, composer, send button, header registration), ControlledBanner, ContentHeader shell, Markdown, theme, fonts and translations',
   notCovered:
     'Sending, round control, real device-link control and revocation, pending interactions, plans and attachments; the bubbles case shows a task snapshot, not a live task; the sidebar is an empty frame',
   cases: {
+    'body-answer': {
+      about: '#6550: component body is readable; literal punctuation and surrounding Markdown are retained',
+      viewport: { width: 720, height: 700 },
+      data: { ...base, sidebar: false, bodyAnswer: true },
+    },
     default: { about: 'Empty group, short controller name, expanded sidebar', data: base },
     'long-thread': {
       about: '40 messages: bottom pin and history position survive notice changes',
@@ -33,6 +43,30 @@ export default {
       about: 'Teammate bubbles: quote, corner reaction, thread entry, task card, long text at the width cap; hover shows the toolbar beside the bubble',
       data: { ...base, bubbles: true },
     },
+    arrangement: {
+      about: 'Single-speaker server group, nobody named: the queue card stands on its own, Aster answered and Nova is speaking next by itself',
+      data: { ...base, arrangement: 'running' },
+    },
+    'arrangement-done': {
+      about: 'The same queue once every turn is done: no 继续 row',
+      data: { ...base, arrangement: 'done' },
+    },
+    'arrangement-long': {
+      about: 'Seven teammates: the first five answered by themselves, the card folds to three turns around Quill, who waits for 继续',
+      data: { ...base, members: QUEUE_CROWD, arrangement: 'long' },
+    },
+    settings: {
+      about: 'Single-speaker group settings: no 回复方式, 发言方式, 负责人 or project folder',
+      data: { ...base, arrangement: 'running', settings: true },
+    },
+    'thread-unread': {
+      about: 'Server read state: unread thread entries (with @you), the in-chat 话题 hint above the composer and its list of this group\'s Threads',
+      data: { ...base, bubbles: true, threadUnread: true },
+    },
+    'thread-follow': {
+      about: 'The Thread panel\'s 关注 switch, off by default; switched on it reads 已关注',
+      data: { ...base, bubbles: true, threadUnread: true, threadPanel: true },
+    },
     'bubbles-wrapped': {
       about: 'PR #6549: wrapped reactions keep both toolbars level with their bubbles; server messages with empty mention ids still open unique member cards',
       viewport: { width: 800, height: 800 },
@@ -44,6 +78,14 @@ export default {
   },
   async check(page, ui) {
     const definition = this.cases[ui.case];
+    if (ui.case === 'body-answer') {
+      const timeline = page.getByTestId('bot-group-timeline');
+      assert.ok((await timeline.innerText()).includes('保留 <name>、*literal* 和 & 符号'));
+      assert.ok((await timeline.innerText()).includes('以上是本轮结论。'));
+      assert.equal(await timeline.getByText('重点', { exact: true }).count(), 1);
+      assert.ok(!(await timeline.innerText()).includes('"op":"create"'));
+      return;
+    }
     const input = page.locator('textarea');
     const chip = page.locator('[data-controlled-banner-chip]');
     const collapsedDot = page.locator('[data-controlled-banner="collapsed"]');
@@ -67,6 +109,67 @@ export default {
       await collapsedDot.click();
       await chip.waitFor();
     };
+
+    if (ui.case === 'settings') {
+      const drawer = page.getByRole('dialog');
+      await drawer.getByText('群名称', { exact: true }).waitFor();
+      // Who answers follows @ (everyone queues when nobody is named); no group modes, no organizer.
+      for (const label of ['发言方式', '没有 @ 人的时候', '负责人', '项目文件夹'])
+        assert.equal(await drawer.getByText(label, { exact: true }).count(), 0, label);
+      return;
+    }
+    if (ui.case.startsWith('arrangement')) {
+      const card = page.getByTestId('bot-group-arrangement');
+      await card.waitFor();
+      // The card is its own row, never part of a teammate's answer.
+      assert.equal(await card.locator('xpath=ancestor::article').count(), 0);
+      // Only a queue past its first five waits for 继续; a long queue folds to three turns until expanded.
+      assert.equal(await page.getByTestId('bot-group-plan-follow-up').count(), ui.case === 'arrangement-long' ? 1 : 0);
+      assert.equal(await card.locator('li').count(), ui.case === 'arrangement-long' ? 3 : 2);
+      // A queue waiting for 继续 takes a new request: the composer does not offer to revise the last answer.
+      const placeholder = await input.getAttribute('placeholder');
+      assert.ok(ui.case === 'arrangement' ? placeholder.includes('正在说') : !placeholder.includes('改改'), placeholder);
+      return;
+    }
+    if (ui.case === 'thread-unread') {
+      await page.getByText('Android 更新卡那个 PR', { exact: false }).waitFor();
+      // Unread replies replace the last-reply time on the entry; an @you is named there too.
+      assert.equal(await page.locator('[data-thread-preview="a1"] [data-thread-unread="2"]').count(), 1);
+      assert.equal(await page.locator('[data-thread-preview="q4"] [data-thread-unread]').count(), 0, 'a read Thread keeps its last-reply time');
+      const hint = page.locator('[data-thread-hint]');
+      await hint.waitFor();
+      const geometry = await page.evaluate(() => {
+        const box = document.querySelector('[data-thread-hint]').getBoundingClientRect();
+        const composer = document.querySelector('textarea').closest('form, [data-bot-group-composer], div').getBoundingClientRect();
+        const timeline = document.querySelector('[data-testid="bot-group-timeline"]').getBoundingClientRect();
+        return { aboveComposer: box.bottom <= composer.top + 1, inside: box.right <= timeline.right + 1 && box.left >= timeline.left };
+      });
+      assert.ok(geometry.inside, 'the hint stays inside the chat column');
+      // Threads that name the reader or that they follow ask for attention; others wait at their entry.
+      const label = await hint.textContent();
+      assert.ok(label.includes('3'), `the hint counts the two Threads that mention the reader and the one they follow (${label})`);
+      await ui.capture('hint');
+      await hint.locator('button').first().click();
+      const rows = page.locator('[data-thread-hint-row]');
+      await rows.first().waitFor();
+      assert.deepEqual(await rows.evaluateAll(list => list.map(row => row.getAttribute('data-thread-hint-row'))), ['a1', 'q3', 'q2', 'q4']);
+      await ui.capture('list');
+      return;
+    }
+
+    if (ui.case === 'thread-follow') {
+      await page.locator('[data-thread-preview="q2"]').click();
+      const follow = page.locator('[data-thread-follow]');
+      await follow.waitFor();
+      assert.equal(await follow.getAttribute('aria-pressed'), 'false', 'a Thread is not followed until the reader asks');
+      await ui.capture('off');
+      await follow.click();
+      await page.locator('[data-thread-follow][aria-pressed="true"]').waitFor();
+      // The resting state, not the hover the click leaves behind.
+      await page.mouse.move(0, 0);
+      await ui.capture('on');
+      return;
+    }
 
     if (ui.case.startsWith('bubbles')) {
       const answer = page.getByText('Android 更新卡那个 PR', { exact: false });

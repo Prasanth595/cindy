@@ -21,7 +21,7 @@ const SNAPSHOT_ID_ARG = z
   );
 
 const ELEMENT_TOKEN_ARG = z.string().min(1).optional().describe(
-  'Opaque element_token from the latest get_window_state. Prefer this over element_index; never invent or reuse it after another observation.',
+  'element_token from the latest get_window_state: `<data.snapshot_id>:<row>` for a tree_markdown row [row], or elements[].element_token when listed. Never invent or reuse it after another observation.',
 );
 
 const POSTCONDITION = z
@@ -141,7 +141,7 @@ const COMPUTER_TOOL_DEFINITIONS: readonly ComputerToolDef[] = [
   {
     name: 'get_window_state',
     description:
-      'Inspect one exact window before acting. Prefer elements[].element_token for actions, or pass snapshot_id with element_index. include_screenshot:false returns only the accessibility tree; request an image when visual grounding is needed. query, max_elements and max_depth bound the observation. Omit screenshot_out_file for a host-managed temporary image.',
+      'Inspect one exact window before acting. A tree_markdown row [N] is element_index N: act on it with the top-level snapshot_id plus element_index, or with its element_token. include_screenshot:false returns only the accessibility tree; request an image when visual grounding is needed. query, max_elements and max_depth bound the observation. Omit screenshot_out_file for a host-managed temporary image.',
     readOnly: true,
     inputShape: {
       pid: z.number().int().positive(),

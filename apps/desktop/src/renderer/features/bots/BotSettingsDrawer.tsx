@@ -10,6 +10,7 @@ import { BotSettings } from './BotsHomeView';
 import { useBotProfiles } from './botStore';
 import { useCompanionCloud } from './companionCloudStore';
 import { isBotChannelLaneSession } from './botGroupLane';
+import { BOT_DM_THREAD_PARAM } from './botDmThreadRoute';
 import { useRemoteBots } from './useRemoteBots';
 import { RemoteBotSettings } from './RemoteBotSettings';
 
@@ -168,7 +169,9 @@ export function BotSettingsDrawer() {
                     const route =
                       projection?.kind === 'history'
                         ? `/bots/${bot.id}/history/${sessionId}`
-                        : `/bots/${bot.id}/session/${sessionId}`;
+                        : projection?.kind === 'thread' && projection.threadRoot
+                          ? `/bots/${bot.id}/session/${projection.threadRoot.rootSessionId}?${BOT_DM_THREAD_PARAM}=${sessionId}`
+                          : `/bots/${bot.id}/session/${sessionId}`;
                     navigate(route, { state: searchJump ? { searchJump } : undefined });
                   }}
                 />

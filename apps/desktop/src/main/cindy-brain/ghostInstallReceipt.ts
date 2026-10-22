@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { readBoundedFileNoFollowSync } from '../utils/readBoundedFile.js';
+import { readBoundedFileNoFollow, readBoundedFileNoFollowSync } from '../utils/readBoundedFile.js';
 import { isValidPluginNamespace } from '@cindy/plugin-protocol';
 
 import {
@@ -306,6 +306,31 @@ export class GhostInstallReceiptStore {
     return { state: 'invalid', reason: result.reason };
   }
 
+  /** Bind the owner root before yielding; use the same validation as the sync reader. */
+  async readAsync(id: string): Promise<GhostInstallReceiptReadResult> {
+    const root = this.rootDir();
+    const receiptPath = this.receiptPath(id, root);
+    let bytes: Buffer | null;
+    try {
+      let parent = root;
+      for (const segment of id.split('/').slice(0, -1)) {
+        parent = path.join(parent, segment);
+        if (await classifyGhostDirEntry(parent) !== 'directory') {
+          throw new Error('managed plugin parent is not a real directory');
+        }
+      }
+      bytes = await readBoundedFileNoFollow(receiptPath, MAX_RECEIPT_BYTES, {
+        nonBlocking: true,
+        containWithin: await fs.promises.realpath(root),
+      });
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === 'ENOENT'
+        ? { state: 'legacy-unapproved' }
+        : { state: 'invalid', reason: error instanceof Error ? error.message : String(error) };
+    }
+    return this.parseReceiptBytes(id, bytes);
+  }
+
   captureLegacyFirstPartyEligibilitySync(id: string, expectedRevision: string): void {
     const identity = parsePluginInstallRelId(id);
     const read = this.readForRecovery(id);
@@ -356,6 +381,10 @@ export class GhostInstallReceiptStore {
         reason: error instanceof Error ? error.message : String(error),
       };
     }
+    return this.parseReceiptBytes(id, bytes);
+  }
+
+  private parseReceiptBytes(id: string, bytes: Buffer | null): Extract<GhostInstallReceiptReadResult, { state: 'approved' | 'invalid' }> {
     if (!bytes) {
       return { state: 'invalid', reason: 'receipt 不是普通文件或超过大小上限' };
     }

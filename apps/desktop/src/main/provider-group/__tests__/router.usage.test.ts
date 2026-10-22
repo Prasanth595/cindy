@@ -54,7 +54,7 @@ describe('OpenAI subscription group routing', () => {
     return { config, usage, router, pick, writeCooling, remote: config.members[1].key };
   }
 
-  it.each(PROVIDER_GROUP_STRATEGIES)('excludes exhausted windows, prefers expiring quota then lower usage (%s)', async (strategy) => {
+  it.each(PROVIDER_GROUP_STRATEGIES)('excludes exhausted windows and prefers the most urgent weekly quota (%s)', async (strategy) => {
     const h = openaiHarness();
     h.config.strategy = strategy;
     h.usage.set(h.remote, quota(40, 60));
@@ -66,9 +66,10 @@ describe('OpenAI subscription group routing', () => {
     h.usage.set('local', quota(10, 20));
     h.usage.set(h.remote, quota(40, 70, NOW + 3 * 3_600_000));
     expect(await h.pick()).toMatchObject({ member: { key: h.remote } });
+    // With the same weekly reset, more quota left wins; a busy 5-hour window short of exhaustion does not count.
     h.usage.set('local', quota(80, 20));
     h.usage.set(h.remote, quota(20, 30));
-    expect(await h.pick()).toMatchObject({ member: { key: h.remote } });
+    expect(await h.pick()).toMatchObject({ member: { key: 'local' } });
     expect(h.writeCooling).not.toHaveBeenCalled();
   });
 
@@ -212,24 +213,66 @@ describe('provider-group quota routing', () => {
       .toMatchObject({ kind: 'member', member: { key: h.config.members[1].key } });
   });
 
-  it.each([false, true])('uses quota that is about to reset first (own task=%s)', async (own) => {
+  // 2026-10-21 用户裁决(provider-groups.md §5)：快作废的额度最优先，其次各账号平均。Unit: real directory →
+  // router → scheduler. The old fixed "last 5 hours" tier plus raw usage ignored a week with half left a day before
+  // reset (case 1) and preferred a freshly reset account (case 3); case 2 guards against ranking by distance behind
+  // schedule, which would leave the last 3% of an expiring week unused.
+  it.each([false, true])('uses the quota that most needs using before it resets (own task=%s)', async (own) => {
     const h = harness();
     const remote = h.config.members[1].key;
-    const win = (utilization: number, inMs: number) => ({ utilization, resetsAt: (NOW + inMs) / 1000 });
-    const pick = () => h.router.pick({
-      providerId: 'anthropic', agentKind: 'claude-code', model: OPUS, ...(own ? { localTask: true as const } : {}),
+    const HOUR = 3_600_000;
+    const week = (utilization: number, inMs: number) => ({
+      updatedAt: NOW, fiveHour: { utilization: 10, resetsAt: (NOW + HOUR) / 1000 }, sevenDay: { utilization, resetsAt: (NOW + inMs) / 1000 },
     });
-    // Weekly quota resetting within 5 hours wins over lower usage elsewhere.
-    h.usage.set('local', snapshot(10, 20));
-    h.usage.set(remote, { ...snapshot(10, 70), sevenDay: win(70, 3 * 3_600_000) });
-    expect(await pick()).toMatchObject({ kind: 'member', member: { key: remote } });
-    // Without an expiring weekly window, a 5-hour window in its last hour comes next.
-    h.usage.set('local', { updatedAt: NOW, fiveHour: win(30, 20 * 60_000), sevenDay: win(20, 3 * 86_400_000) });
-    h.usage.set(remote, { updatedAt: NOW, fiveHour: win(5, 3 * 3_600_000), sevenDay: win(10, 3 * 86_400_000) });
-    expect(await pick()).toMatchObject({ kind: 'member', member: { key: 'local' } });
-    // Nothing about to reset: back to plain usage balancing.
-    h.usage.set('local', { updatedAt: NOW, fiveHour: win(30, 2 * 3_600_000), sevenDay: win(20, 3 * 86_400_000) });
-    expect(await pick()).toMatchObject({ kind: 'member', member: { key: remote } });
+    const pick = async () => {
+      const result = await h.router.pick({
+        providerId: 'anthropic', agentKind: 'claude-code', model: OPUS, ...(own ? { localTask: true as const } : {}),
+      });
+      return result.kind === 'member' ? result.member.key : result.kind;
+    };
+    // A week resetting tomorrow with 50% left beats a mid-week account with more left.
+    h.usage.set('local', week(30, 84 * HOUR));
+    h.usage.set(remote, week(50, 24 * HOUR));
+    expect(await pick()).toBe(remote);
+    // The last 3% of a week resetting in 3 hours still goes first, even though the other account is further behind.
+    h.usage.set('local', week(40, 84 * HOUR));
+    h.usage.set(remote, week(97, 3 * HOUR));
+    expect(await pick()).toBe(remote);
+    // A freshly reset week is not urgent.
+    h.usage.set(remote, week(0, 168 * HOUR));
+    expect(await pick()).toBe('local');
+  });
+
+  // 2026-10-21 用户裁决：5 小时配额快满、离重置还早的号先不分新任务(刚开始就撞上限会被迫换电脑、丢上下文)；
+  // 1 小时内就重置的照常分，把剩下的用掉。Unit: real directory → router → scheduler. Minimal input: the more
+  // urgent weekly account sits at 90% of its 5-hour window, resetting in 3 hours versus 30 minutes.
+  it.each([[3 * 3_600_000, 'remote'], [30 * 60_000, 'local']] as const)(
+    'avoids a nearly full 5-hour window unless it resets soon (resets in %i ms → %s)', async (fiveHourResetInMs, expected) => {
+      const h = harness();
+      const remote = h.config.members[1].key;
+      const DAY = 86_400_000;
+      h.usage.set('local', { updatedAt: NOW, fiveHour: { utilization: 90, resetsAt: (NOW + fiveHourResetInMs) / 1000 },
+        sevenDay: { utilization: 50, resetsAt: (NOW + DAY) / 1000 } });
+      h.usage.set(remote, { updatedAt: NOW, fiveHour: { utilization: 10, resetsAt: (NOW + 3_600_000) / 1000 },
+        sevenDay: { utilization: 20, resetsAt: (NOW + 3.5 * DAY) / 1000 } });
+      const result = await h.pick();
+      expect(result.kind === 'member' ? result.member.key : result.kind).toBe(expected === 'remote' ? remote : 'local');
+    },
+  );
+
+  // Unit / provider-groups.md §10 progress bar: the group status must carry the very window the ranking uses
+  // (the less urgent of total and model weekly), and nothing for an account whose quota cannot be read.
+  it('shows each account the weekly window it is ranked by, and nothing when unknown', async () => {
+    const h = harness();
+    const remote = h.config.members[1].key;
+    const sevenDay = { utilization: 30, resetsAt: 80_000 };
+    h.usage.set('local', { updatedAt: NOW, fiveHour: { utilization: 90, resetsAt: 3_000 }, sevenDay,
+      scoped: [{ modelDisplayName: 'Opus', utilization: 95, resetsAt: 80_000 }] });
+    const weekly = (usedPercent: number) => ({ usedPercent, resetAtMs: 80_000_000, windowMs: 7 * 86_400_000 });
+    expect((await h.router.view('anthropic')).members.map((m) => m.quota)).toEqual([weekly(30), undefined]);
+    expect((await h.router.view('anthropic', OPUS)).members[0].quota).toEqual(weekly(95));
+    h.usage.set(remote, snapshot(10, 20));
+    expect((await h.router.view('anthropic')).members[1].quota).toEqual(weekly(20));
   });
 
   it.each(PROVIDER_GROUP_STRATEGIES)('applies quota prefiltering to own tasks with the %s strategy', async (strategy) => {

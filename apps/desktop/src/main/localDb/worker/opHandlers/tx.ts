@@ -49,6 +49,7 @@ import type {
   BotGroupsCreateLaneResult,
   BotsArchiveChannelLanesArgs,
   BotsCreateChannelLaneArgs,
+  BotsCreateThreadLaneArgs,
 } from '../../client/tx/types.js';
 
 const LOCAL_DUPLICATE_WINDOW_MS = 5 * 60 * 1000;
@@ -180,6 +181,8 @@ function dispatchTransaction(db: Database.Database, args: unknown): unknown {
       return botsCreateGroupLane(db, txArgs as BotGroupsCreateLaneArgs);
     case 'bots.createChannelLane':
       return botsCreateChannelLane(db, txArgs as BotsCreateChannelLaneArgs);
+    case 'bots.createThreadLane':
+      return botsCreateThreadLane(db, txArgs as BotsCreateThreadLaneArgs);
     case 'bots.archiveChannelLanes':
       return botsArchiveChannelLanes(db, txArgs as BotsArchiveChannelLanesArgs);
     case 'botGroups.create':
@@ -438,7 +441,7 @@ function botsUpdateProfile(db: Database.Database, args: unknown): { currentVersi
       // their next runtime bootstrap. Route/worker links remain pinned to their
       // creation version.
       db.prepare(`UPDATE bot_session_links SET profile_version = ?
-        WHERE bot_id = ? AND role IN ('canonical', 'group', 'channel') AND archived_at IS NULL`)
+        WHERE bot_id = ? AND role IN ('canonical', 'group', 'channel', 'thread') AND archived_at IS NULL`)
         .run(nextVersion, id);
     }
     if (p.canonicalPermissionMode !== undefined) {
@@ -447,7 +450,7 @@ function botsUpdateProfile(db: Database.Database, args: unknown): { currentVersi
       // Group and IM channel lanes run under the same permission profile as the
       // Bot's canonical Chat (per-turn group policies still apply on top).
       db.prepare(`UPDATE sessions SET permission_mode = ? WHERE id IN
-        (SELECT session_id FROM bot_session_links WHERE bot_id = ? AND role IN ('canonical', 'group', 'channel') AND archived_at IS NULL)`)
+        (SELECT session_id FROM bot_session_links WHERE bot_id = ? AND role IN ('canonical', 'group', 'channel', 'thread') AND archived_at IS NULL)`)
         .run(mode, id);
     }
     return { currentVersion: nextVersion };
@@ -838,6 +841,50 @@ function botsCreateChannelLane(db: Database.Database, args: BotsCreateChannelLan
     db.prepare(`INSERT INTO bot_session_links
       (id, bot_id, session_id, profile_version, role, route_key, created_at, archived_at)
       VALUES (?, ?, ?, ?, 'channel', ?, ?, NULL)`)
+      .run(`${botId}:${sessionId}`, botId, sessionId, profile.version, routeKey, createdAt);
+    return { sessionId, created: true };
+  })();
+}
+
+/**
+ * A private-chat topic lane (`role = 'thread'`). The root must be a visible user or
+ * companion message in this Bot's current canonical Chat; one lane per root.
+ */
+function botsCreateThreadLane(db: Database.Database, args: BotsCreateThreadLaneArgs): BotGroupsCreateLaneResult {
+  const p = asRecord(args, 'bots.createThreadLane args');
+  const botId = expectString(p.botId, 'botId');
+  const routeKey = expectString(p.routeKey, 'routeKey');
+  const rootSessionId = expectString(p.rootSessionId, 'rootSessionId');
+  const rootClientId = expectString(p.rootClientId, 'rootClientId');
+  if (routeKey !== `dm-thread:${rootSessionId}:${rootClientId}`) throw new Error('Thread lane route key does not match its root');
+  const s = asRecord(p.session, 'session');
+  const sessionId = expectString(s.id, 'session.id');
+  const createdAt = expectNumber(s.createdAt, 'session.createdAt');
+  if (expectString(s.source, 'session.source') !== 'bot') throw new Error('Thread lane must be a Bot session');
+  return db.transaction(() => {
+    const profile = db.prepare('SELECT status, current_version AS version FROM bot_profiles WHERE id = ?')
+      .get(botId) as { status: string; version: number } | undefined;
+    if (!profile || profile.status !== 'active') {
+      throw Object.assign(new Error('伙伴当前不可用'), { code: 'BOT_UNAVAILABLE' });
+    }
+    const root = db.prepare(`SELECT 1 FROM messages m
+      INNER JOIN bot_session_links l ON l.session_id = m.session_id
+      INNER JOIN sessions s ON s.id = m.session_id
+      WHERE m.session_id = ? AND m.client_id = ? AND m.role IN ('user', 'assistant') AND m.rewind_at IS NULL
+        AND l.bot_id = ? AND l.role = 'canonical' AND l.archived_at IS NULL
+        AND s.source = 'bot' AND s.status = 'active'
+      LIMIT 1`).get(rootSessionId, rootClientId, botId);
+    if (!root) throw Object.assign(new Error('原消息已不在私聊里'), { code: 'ROOT_UNAVAILABLE' });
+    const existing = db.prepare(`SELECT l.session_id AS sessionId FROM bot_session_links l
+      INNER JOIN sessions s ON s.id = l.session_id
+      WHERE l.bot_id = ? AND l.role = 'thread' AND l.route_key = ? AND l.archived_at IS NULL
+        AND s.source = 'bot' AND s.status = 'active'
+      LIMIT 1`).get(botId, routeKey) as { sessionId: string } | undefined;
+    if (existing) return { sessionId: existing.sessionId, created: false };
+    insertBotSession(db, s);
+    db.prepare(`INSERT INTO bot_session_links
+      (id, bot_id, session_id, profile_version, role, route_key, created_at, archived_at)
+      VALUES (?, ?, ?, ?, 'thread', ?, ?, NULL)`)
       .run(`${botId}:${sessionId}`, botId, sessionId, profile.version, routeKey, createdAt);
     return { sessionId, created: true };
   })();

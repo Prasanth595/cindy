@@ -60,7 +60,6 @@ import { BotTaskModelEditor } from './BotTaskModelEditor';
 import { BotCapabilitySettings } from './BotCapabilitySettings';
 import { BotRoutines } from './BotRoutines';
 import { BotAutonomySettings } from './BotAutonomySettings';
-import { BotTodoList } from './BotTodoList';
 import { BotMemorySettings } from './BotMemorySettings';
 import { CompanionVoiceSettings } from './voice/CompanionVoiceSettings';
 import { BotChannelsPage } from './BotChannelsPage';
@@ -766,13 +765,6 @@ export function BotSettings({
                 allowSchedulerFollow={capabilities.allowSchedulerFollow === true}
                 onAllowSchedulerFollowChange={(value) => updateCapability('allowSchedulerFollow', value)}
               />
-            }
-            footer={
-              // 伙伴被叫醒后维护的待办：工作台里不再平铺，主人在这里查看与处理。
-              // 待办面板自带 20px 水平内边距，这里收回 8px，与例行任务行的文字起点对齐。
-              <div className="-mx-2 border-t border-[var(--border-default)] pt-2">
-                <BotTodoList botId={bot.id} />
-              </div>
             }
           />
         ) : null}

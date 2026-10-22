@@ -24,7 +24,7 @@ import type {
   McpToolApprovalPolicy,
 } from '@cindy/maker-core';
 import { canAutoApproveContactsMcpTool } from '@cindy/mcps';
-import { TASK_ACTION_TOOLS } from '../maker-ipc/taskActionAuthorization.js';
+import { ORCA_TASK_ACTION_TOOLS, TASK_ACTION_TOOLS } from '../maker-ipc/taskActionAuthorization.js';
 
 
 /**
@@ -236,8 +236,8 @@ export function getDesktopMcpToolApprovalPolicy(
       return 'prompt-each-time';
     }
     const action = progressive ? innerName : toolName;
-    // Runtime approval is not owner consent. The Host action gate remains mandatory
-    // even when Full Access bypasses this per-call risk policy.
+    // Use the normal runtime permission flow once: Full Access bypasses approval,
+    // Auto reviews the call, and Ask requests confirmation. Host guards retain scope checks.
     if (action && TASK_ACTION_TOOLS.has(action)) return 'prompt-each-time';
     if (toolName === 'call_tool' && (!innerName || !args)) return 'prompt-each-time';
     // Installing or saving a host command uses the session's existing approval flow.
@@ -281,24 +281,11 @@ export function getDesktopMcpToolApprovalPolicy(
   if (serverName === 'cindy_feishu_bot' && (!toolName || toolName === 'call_api' || toolName === 'recall_message')) {
     return 'prompt-each-time';
   }
-  // Choosing a new Worker root delegates filesystem access. Do not let the
-  // trusted-server shortcut or a cached server grant authorize another root.
-  // Full Access / Auto / Ask still use their existing permission flow.
+  // Orca mutations use the same per-call runtime flow as helper task writes.
+  // Reuse the Host's action set so no mutation slips through the trusted-server
+  // shortcut. Full Access still bypasses; read-only Orca operations stay trusted.
   if (serverName === 'cindy_orca') {
-    if (!toolName) return 'prompt-each-time';
-    if (toolName === 'create_worker' || toolName === 'create_workers') {
-      const params = readJsonObject(toolParams);
-      if (!params) return 'prompt-each-time';
-      const workers = toolName === 'create_worker' ? [params] : params.workers;
-      if (!Array.isArray(workers)) return 'prompt-each-time';
-      if (
-        workers.some((worker) => {
-          const spec = readJsonObject(worker);
-          return !spec || Object.hasOwn(spec, 'working_dir') || Object.hasOwn(spec, 'new_worktree');
-        })
-      )
-        return 'prompt-each-time';
-    }
+    if (!toolName || ORCA_TASK_ACTION_TOOLS.has(toolName)) return 'prompt-each-time';
   }
   if (TRUSTED_MCP_SERVERS.has(serverName)) {
     return 'auto-approve';

@@ -134,10 +134,25 @@ import {
 import {
   clearDraftAndNotify as clearComposerDraftAndNotify,
   getDraft as getComposerDraft,
+  getDraftPresence as getComposerDraftPresence,
   plainTextToTiptapDoc,
   restoreRemoteOptimisticDraft,
   saveDraft as saveComposerDraft,
+  subscribeDraftContent as subscribeComposerDraftContent,
 } from '@/lib/composerDraftStore';
+import {
+  canOpenProvisionalDraftTask,
+  composerDocPlainText,
+  discardProvisionalDraftTask,
+  ensureProvisionalDraftTask,
+  previewProvisionalDraftTitle,
+  provisionalDraftArgsKey,
+  provisionalDraftTaskGeneration,
+  provisionalDraftTaskId,
+  provisionalDraftTaskIdForCurrentOwner,
+  takeProvisionalDraftTask,
+  type ProvisionalDraftCreateArgs,
+} from './provisionalDraftTask';
 import type { JSONContent } from '@tiptap/core';
 import { base64ToUint8Array } from '@/lib/fileTypeInference';
 import {
@@ -709,7 +724,8 @@ export function NewMakerDraftRoute() {
   const handledFolderPickerRequestRef = useRef<string | null>(null);
   // Writable picker evidence is Main-owned and bound to the actual local task id.
   // Reserve that id for the lifetime of this draft instead of generating it after selection.
-  const localDraftSessionIdRef = useRef(makeDraftSessionId());
+  // 已有未发送任务(用户离开新建页又回来)时沿用它的 id,回来继续输入接着用同一条任务。
+  const localDraftSessionIdRef = useRef(provisionalDraftTaskIdForCurrentOwner() ?? makeDraftSessionId());
   // 首参 914=内容封顶宽(→ inputWidth 封顶 934):大屏留出左右呼吸空间,不再顶满全宽;
   // 与进行中对话页(CCAgentSessionView 同传 914)一致,发送首条消息时输入框宽度不跳变。
   // minWidth=640:小屏兜一个体面下限(与对话页对称);窄于下限时 hook 自动回落成
@@ -726,7 +742,24 @@ export function NewMakerDraftRoute() {
   // Icon-only mode is reserved for the tighter toolbar state, not merely a
   // moderately narrow content rail (for example, when attachments are present).
   const isDraftToolbarNarrow = inputWidthBand <= 1;
-  const { createSession, error: createSessionError } = useCCSessions();
+  const { createSession: createSessionRow, error: createSessionError } = useCCSessions();
+  /**
+   * 新建页的建任务入口：已有设置一致的未发送任务(见 provisionalDraftTask.ts)就接着用它,
+   * 否则先删掉它(同一个 id 可直接再建),再按原流程新建。
+   */
+  const createSession = useCallback(
+    async (args: Parameters<typeof createSessionRow>[0]) => {
+      try {
+        return (await takeProvisionalDraftTask({ ...args } as ProvisionalDraftCreateArgs))
+          ?? createSessionRow(args);
+      } catch (error) {
+        // 旧的未发送任务删不掉：与建任务失败同样处理(提示失败、保留草稿，可再发一次)。
+        log.warn('[draft send] unsent task could not be replaced', error);
+        return null;
+      }
+    },
+    [createSessionRow],
+  );
   const vendorAuthGate = useVendorAuthGate();
   const refreshWorktreeForSession = useRefreshWorktreeForSession();
 
@@ -1107,9 +1140,11 @@ export function NewMakerDraftRoute() {
     wtBranchPreferenceErrorRef.current = false;
     setWtBranchPreferenceError(false);
   }, []);
-  // 零可用模型引导卡:device-link 草稿不出(连接态在被控端,本机替它连不上)。
-  const providerOnboarding = useProviderOnboarding();
-  const showProviderOnboardingCard = providerOnboarding.visible && !isDeviceLinkDraft;
+  // 本机供应商连接引导只适用于在本机执行的草稿。
+  const providerOnboarding = useProviderOnboarding({
+    remote: isDeviceLinkDraft || isAgentDeviceDraft || !!effectiveRemoteHostId,
+  });
+  const showProviderOnboardingCard = providerOnboarding.visible;
   const effectiveExtraDirs = draft.extraDirs;
   const effectiveWritableDirs = draft.writableDirs;
   const effectiveCollab = collab;
@@ -2037,6 +2072,142 @@ export function NewMakerDraftRoute() {
     capabilityAgentKind,
   ]);
 
+  // ─── 未发送任务(见 provisionalDraftTask.ts):开始输入就先在本机建出任务并预热 Agent,
+  // 清空输入就删掉,发送时直接接着用。只覆盖本机普通项目 / 对话草稿。
+  const provisionalDraftArgs = useMemo<ProvisionalDraftCreateArgs | null>(() => {
+    if (isDeviceLinkDraft || usesDeviceCatalog) return null;
+    if (wtEnabled && wtConfirmedIneligible !== true) return null;
+    const workingDir = effectiveWorkingDir?.trim() || undefined;
+    return {
+      id: localDraftSessionIdRef.current,
+      agentKind: persistedAgentKind,
+      model: draftInitialModel,
+      effort: draftInitialEffort ?? '',
+      permissionMode: chatInitialPermissionMode,
+      fastMode: effectiveFastMode,
+      planModeEnabled: effectivePlanMode,
+      workingDir,
+      // Same shape the send path creates with: no project folder = a dialogue task.
+      workspaceKind: workingDir === undefined ? 'dialogue' : 'project',
+      remoteHostId: workingDir === undefined ? undefined : (effectiveRemoteHostId ?? undefined),
+      ...(effectiveAgentDeviceId ? { agentDeviceId: effectiveAgentDeviceId } : {}),
+      extraDirs: effectiveExtraDirs,
+      writableDirs: effectiveWritableDirs,
+      providerId: chatInitialProviderId ?? null,
+    };
+  }, [
+    isDeviceLinkDraft,
+    usesDeviceCatalog,
+    wtEnabled,
+    wtConfirmedIneligible,
+    effectiveWorkingDir,
+    persistedAgentKind,
+    draftInitialModel,
+    draftInitialEffort,
+    chatInitialPermissionMode,
+    effectiveFastMode,
+    effectivePlanMode,
+    effectiveRemoteHostId,
+    effectiveAgentDeviceId,
+    effectiveExtraDirs,
+    effectiveWritableDirs,
+    chatInitialProviderId,
+  ]);
+  const provisionalDraftArgsRef = useRef(provisionalDraftArgs);
+  provisionalDraftArgsRef.current = provisionalDraftArgs;
+  const provisionalTitleLabelsRef = useRef({ image: '', file: '' });
+  provisionalTitleLabelsRef.current = {
+    image: t('ccAgent.autoTitle.image'),
+    file: t('ccAgent.autoTitle.file'),
+  };
+  const refreshProvisionalTitle = useCallback(() => {
+    const text = composerDocPlainText(getComposerDraft(NEW_MAKER_DRAFT_KEY)?.text);
+    previewProvisionalDraftTitle(
+      text
+        ? optimisticFirstMessageTitle(text, [], [], undefined, provisionalTitleLabelsRef.current)
+        : null,
+    );
+  }, []);
+  const provisionalEmptyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** 输入一直是空的(清空了,或开始语音后什么都没说)就删掉未发送任务。 */
+  const armProvisionalEmptyCheck = useCallback((delayMs: number) => {
+    if (provisionalEmptyTimerRef.current) clearTimeout(provisionalEmptyTimerRef.current);
+    provisionalEmptyTimerRef.current = setTimeout(() => {
+      provisionalEmptyTimerRef.current = null;
+      if (!provisionalDraftTaskId() || getComposerDraftPresence(NEW_MAKER_DRAFT_KEY)) return;
+      void discardProvisionalDraftTask();
+    }, delayMs);
+  }, []);
+  /** 已为哪一次建出来的未发送任务做过一次性的初始化(按 key 区分重建)。 */
+  const provisionalSeededKeyRef = useRef<string | null>(null);
+  const openProvisionalDraftTask = useCallback(() => {
+    const args = provisionalDraftArgsRef.current;
+    if (!args || !canOpenProvisionalDraftTask(args)) return;
+    void ensureProvisionalDraftTask(args).then((session) => {
+      if (!session || provisionalDraftTaskId() !== session.id) return;
+      // 每次输入都会走到这里：建出来后只初始化一次，之后只续预热(接收方节流)。
+      const seededKey = `${session.id}:${provisionalDraftTaskGeneration()}`;
+      const firstTime = provisionalSeededKeyRef.current !== seededKey;
+      provisionalSeededKeyRef.current = seededKey;
+      if (firstTime) {
+        makerChatStore.setSessionRuntime(session.id, {
+          agentKind: dbToMakerAgentKind(args.agentKind),
+          fastMode: args.fastMode ?? false,
+          planModeEnabled: args.planModeEnabled ?? false,
+          remoteHostId: null,
+          sessionProviderId: args.providerId ?? null,
+        });
+      }
+      if (session.workingDir) {
+        makerChatStore.prewarmSession(
+          session.id,
+          args.model,
+          args.effort,
+          args.permissionMode,
+          session.workingDir,
+        );
+      }
+      if (!firstTime) return;
+      refreshProvisionalTitle();
+      // 粘贴图片 / 开始语音时输入框可能还是空的:给语音留出时间,之后仍为空再删掉。
+      if (!getComposerDraftPresence(NEW_MAKER_DRAFT_KEY)) armProvisionalEmptyCheck(60_000);
+    });
+  }, [armProvisionalEmptyCheck, refreshProvisionalTitle]);
+  useEffect(() => {
+    const unsubscribe = subscribeComposerDraftContent(NEW_MAKER_DRAFT_KEY, () => {
+      if (!provisionalDraftTaskId()) return;
+      refreshProvisionalTitle();
+      if (getComposerDraftPresence(NEW_MAKER_DRAFT_KEY)) {
+        if (provisionalEmptyTimerRef.current) clearTimeout(provisionalEmptyTimerRef.current);
+        provisionalEmptyTimerRef.current = null;
+      } else {
+        armProvisionalEmptyCheck(1_000);
+      }
+    });
+    return () => {
+      unsubscribe();
+      const pendingEmptyCheck = provisionalEmptyTimerRef.current;
+      if (pendingEmptyCheck) clearTimeout(pendingEmptyCheck);
+      provisionalEmptyTimerRef.current = null;
+      // Leaving the page while an empty-input delete is still pending: nothing will notify us
+      // again, so finish it now rather than leave an empty task behind.
+      if (pendingEmptyCheck && provisionalDraftTaskId() && !getComposerDraftPresence(NEW_MAKER_DRAFT_KEY)) {
+        void discardProvisionalDraftTask();
+      }
+    };
+  }, [armProvisionalEmptyCheck, refreshProvisionalTitle]);
+  // 草稿里影响任务本身的设置变了:按新设置重建(不再适合提前建任务就删掉)。
+  const provisionalDraftKey = provisionalDraftArgs ? provisionalDraftArgsKey(provisionalDraftArgs) : null;
+  useEffect(() => {
+    if (!provisionalDraftTaskId()) return;
+    const timer = setTimeout(() => {
+      if (!provisionalDraftTaskId() || sendInFlightRef.current) return;
+      const args = provisionalDraftArgsRef.current;
+      if (!args || !canOpenProvisionalDraftTask(args)) void discardProvisionalDraftTask();
+      else openProvisionalDraftTask();
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [provisionalDraftKey, openProvisionalDraftTask]);
   // 收藏锚点的失效兜底:选中一条收藏后,如果草稿的 (模型, 来源) 又被别的路径改掉(引擎
   // 不可用 coerce、模型校准、浮层里换来源…)，面板会用当前收藏与草稿完整配置比对，
   // 不一致就回落模型行。深度 / Fast 直接读实时值，不在锚点里复制第二份快照。
@@ -5721,6 +5892,7 @@ export function NewMakerDraftRoute() {
                 <div className="w-full">
                   <ChatInput
                     onSend={handleSend}
+                    onComposerTyping={openProvisionalDraftTask}
                     // 创建在途期间锁住输入框:handleSend 立刻返回、真正的创建在后台跑,远程要经
                     // 几次隧道往返。锁定态即时告诉用户「已发出、处理中」,也免得这段时间补写的
                     // 内容在交接成功清空草稿时被一并丢掉;失败解锁后原文仍在。

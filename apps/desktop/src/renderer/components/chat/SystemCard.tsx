@@ -1127,8 +1127,19 @@ function isEnglishSourceHandoff(handoff: string): boolean {
 /**
  * 远程 Agent 换电脑的分隔条文案:只有边界行带 toAgentDeviceId 时才是换电脑。null = 任务所在电脑 ——
  * 在本机打开的任务就是「本机」;远程控制另一台电脑上的任务时那台不是本机,用切换时快照的名字。
+ * 用户确认为了先用那台的配额换过去的(switchReason: 'quota-rebalance')在后面写明原因。
  */
 function agentRelocationLabel(
+  data: Record<string, unknown> | undefined,
+  sessionId: string | undefined,
+  t: ReturnType<typeof useTranslation>['t'],
+): string | null {
+  const place = agentRelocationPlace(data, sessionId, t);
+  if (place === null || data?.switchReason !== 'quota-rebalance') return place;
+  return `${place} · ${t('chat.systemCard.agentSwitch.quotaRebalance')}`;
+}
+
+function agentRelocationPlace(
   data: Record<string, unknown> | undefined,
   sessionId: string | undefined,
   t: ReturnType<typeof useTranslation>['t'],

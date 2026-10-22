@@ -59,6 +59,7 @@ export type DbTxName =
   | 'bots.persistSessionPermission'
   | 'bots.createGroupLane'
   | 'bots.createChannelLane'
+  | 'bots.createThreadLane'
   | 'bots.archiveChannelLanes'
   | 'botGroups.create'
   | 'botGroups.setMembers'
@@ -845,6 +846,18 @@ export interface BotsCreateChannelLaneArgs {
 }
 
 /**
+ * 主人私聊里的话题(`role = 'thread'`)。根消息必须是这位伙伴当前主任务里可见的
+ * user / assistant 消息;`routeKey` 由调用方按 `botDmThreadRouteKey` 生成。
+ */
+export interface BotsCreateThreadLaneArgs {
+  botId: string;
+  routeKey: string;
+  rootSessionId: string;
+  rootClientId: string;
+  session: BotsReplaceCanonicalSessionArgs['session'];
+}
+
+/**
  * 归档 IM 连接的伙伴专线: 精确 routeKey 或 routeKey 前缀(整条连接)二选一;
  * exceptBotId 非空时保留该伙伴的专线(改绑时只收旧伙伴的)。
  */
@@ -1424,6 +1437,7 @@ export type DbTxArgsByName = {
   'bots.persistSessionPermission': { sessionId: string; mode: string };
   'bots.createGroupLane': BotGroupsCreateLaneArgs;
   'bots.createChannelLane': BotsCreateChannelLaneArgs;
+  'bots.createThreadLane': BotsCreateThreadLaneArgs;
   'bots.archiveChannelLanes': BotsArchiveChannelLanesArgs;
   'botGroups.create': BotGroupsCreateArgs;
   'botGroups.setMembers': BotGroupsSetMembersArgs;
@@ -1522,6 +1536,7 @@ export type DbTxResultByName = {
   'bots.persistSessionPermission': { updated: boolean };
   'bots.createGroupLane': BotGroupsCreateLaneResult;
   'bots.createChannelLane': BotGroupsCreateLaneResult;
+  'bots.createThreadLane': BotGroupsCreateLaneResult;
   'bots.archiveChannelLanes': { archivedSessionIds: string[] };
   'botGroups.create': undefined;
   'botGroups.setMembers': BotGroupsSetMembersResult;

@@ -109,6 +109,16 @@ export interface ProviderGroupMemberStatus {
   /** 冷却到何时(unix ms)。 */
   coolingUntil?: number;
   /**
+   * 选电脑时排序用的那个配额窗口(provider-groups.md §5、§10)：本机与同账号电脑的订阅才有，读不到时省略。
+   * 发给同账号电脑，不进受邀者的匿名状态。
+   */
+  quota?: ProviderGroupMemberQuota;
+  /**
+   * 5 小时配额快满、离重置还早(provider-groups.md §5「配额先比」第 0 条)：任务进行中不提议换到这台。只在为真时出现，
+   * 规则同 `quota`。
+   */
+  fiveHourTight?: true;
+  /**
    * 另一台电脑上的组：组所在电脑那边看它能用，这台电脑却连不上(provider-groups.md §10)。只由这台电脑的主进程
    * 按自己的连接情况补上，不来自组所在电脑的回包。
    */
@@ -118,6 +128,50 @@ export interface ProviderGroupMemberStatus {
    * 组所在的供应商分享给了别人时有；不经设备互联发给其他电脑。
    */
   reshare?: ProviderGroupReshareSummary;
+}
+
+/** 一个配额窗口此刻的用量：组内电脑行的进度条按它画已用多少、按时间该用到哪。 */
+export interface ProviderGroupMemberQuota {
+  usedPercent: number;
+  /** 重置时刻(unix ms)；null = 这个窗口还没开始计时。 */
+  resetAtMs: number | null;
+  /** 窗口长度(ms)，周配额是 7 天。 */
+  windowMs: number;
+}
+
+/** 最长按 31 天的窗口接收，超出或格式不对就当没有。 */
+const MAX_QUOTA_WINDOW_MS = 31 * 86_400_000;
+
+export function readProviderGroupMemberQuota(value: unknown): ProviderGroupMemberQuota | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const { usedPercent, resetAtMs, windowMs } = value as Record<string, unknown>;
+  if (typeof usedPercent !== 'number' || !Number.isFinite(usedPercent)) return undefined;
+  if (typeof windowMs !== 'number' || !Number.isFinite(windowMs) || windowMs <= 0 || windowMs > MAX_QUOTA_WINDOW_MS) return undefined;
+  if (resetAtMs !== null && (typeof resetAtMs !== 'number' || !Number.isFinite(resetAtMs) || resetAtMs <= 0)) return undefined;
+  return { usedPercent: Math.min(100, Math.max(0, usedPercent)), resetAtMs, windowMs };
+}
+
+/**
+ * 任务进行中换号的提议(provider-groups.md §6.2「任务进行中换号」)：用户自己发下一条消息前问任务所在的电脑。
+ * `ask` = 弹窗问；`auto` = 这个任务选过「以后自动换」，不再问，直接确认这个提议。`label` 是要换去的那台(带账号名)。
+ */
+export type ProviderGroupRebalanceSuggestion =
+  | { kind: 'ask' | 'auto'; memberKey: string; label: string; quota: ProviderGroupMemberQuota }
+  | null;
+
+const REBALANCE_MEMBER_KEY_PATTERN = /^[A-Za-z0-9_.:-]{1,300}$/;
+/** 电脑名与账号名各最多 128 个 UTF-16 单元，组合时另加分隔符。 */
+export const PROVIDER_GROUP_REBALANCE_LABEL_MAX_LENGTH = 128 * 2 + 3;
+
+/** 客户端读任务所在电脑回的提议；旧端不认识这个动作、格式不对都按没有提议处理(照常发送)。 */
+export function parseProviderGroupRebalanceSuggestion(raw: unknown): ProviderGroupRebalanceSuggestion {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const value = raw as Record<string, unknown>;
+  if (value.kind !== 'ask' && value.kind !== 'auto') return null;
+  if (typeof value.memberKey !== 'string' || !REBALANCE_MEMBER_KEY_PATTERN.test(value.memberKey)) return null;
+  const label = normalizeLabel(value.label, PROVIDER_GROUP_REBALANCE_LABEL_MAX_LENGTH);
+  const quota = readProviderGroupMemberQuota(value.quota);
+  return label && quota ? { kind: value.kind, memberKey: value.memberKey, label, quota } : null;
 }
 
 /** 本机分享出去的一个人：分享来的那台电脑的主人是否同意他经组使用那台。 */
@@ -187,7 +241,11 @@ export type ProviderGroupLocalCommand =
   /** 本机全部组的设置(不读远端)。 */
   | { action: 'list' }
   /** 这个任务此刻归哪个组(模型列表把它显示在组那一项下)。 */
-  | { action: 'session-group'; sessionId: string };
+  | { action: 'session-group'; sessionId: string }
+  /** 用户发下一条消息前：要不要提议换号(provider-groups.md §6.2「任务进行中换号」)。 */
+  | { action: 'rebalance-suggestion'; sessionId: string }
+  /** 用户确认换号：这个任务的下一条消息先换到 `memberKey`；`remember` = 这个任务以后自动换。 */
+  | { action: 'rebalance-decision'; sessionId: string; memberKey: string; remember: boolean; clientId?: string };
 
 export type ProviderGroupCommand = ProviderGroupLocalCommand
   | { action: 'remote-manage'; deviceId: string; request: ProviderManagementRequest };
@@ -207,7 +265,9 @@ export type ProviderGroupCommandResult<C extends ProviderGroupCommand> =
         : C extends { action: 'delete' | 'delete-if-current' } ? ProviderGroupView
           : C extends { action: 'remote-view' } ? ProviderGroupView
             : C extends { action: 'session-group' } ? ProviderGroupSessionGroup
-              : never;
+              : C extends { action: 'rebalance-suggestion' } ? ProviderGroupRebalanceSuggestion
+                : C extends { action: 'rebalance-decision' } ? { ok: boolean }
+                  : never;
 
 const PROVIDER_ID_PATTERN = /^[a-zA-Z0-9._-]{1,128}$/;
 const DEVICE_ID_PATTERN = /^[A-Za-z0-9_.-]{1,128}$/;
@@ -241,11 +301,11 @@ function clampInt(value: unknown, min: number, max: number, fallback: number): n
   return Math.min(max, Math.max(min, Math.round(value)));
 }
 
-function normalizeLabel(value: unknown): string | undefined {
+function normalizeLabel(value: unknown, maxLength = 128): string | undefined {
   if (typeof value !== 'string') return undefined;
   const trimmed = value.trim();
   // eslint-disable-next-line no-control-regex -- 控制字符是显式拒绝目标
-  if (!trimmed || trimmed.length > 128 || /[\u0000-\u001f\u007f]/.test(trimmed)) return undefined;
+  if (!trimmed || trimmed.length > maxLength || /[\u0000-\u001f\u007f]/.test(trimmed)) return undefined;
   return trimmed;
 }
 
@@ -406,7 +466,7 @@ export interface ProviderGroupUsagePartAck {
 
 export type ProviderGroupRemoteRequest =
   /** 新任务该用组里哪台；选中即给那台记一个短暂的占用，同时开的几个任务不会全落到同一台。 */
-  | { action: 'pick'; sessionId: string; providerId: string; agentKind: 'claude-code' | 'codex' | 'pi'; model: string; exclude: string[] }
+  | { action: 'pick'; sessionId: string; providerId: string; agentKind: 'claude-code' | 'codex' | 'pi'; model: string; exclude: string[]; quotaRebalance?: string }
   /** 那台电脑出了问题(用量上限、登录失效、服务繁忙)：组所在电脑冷却它，不再分新任务。 */
   | { action: 'cool' | 'cool-model'; providerId: string; memberKey: string; cause: ProviderGroupRemoteCoolCause; resetAt?: number; model?: string }
   /** 这台电脑经组运行、正在跑的任务(整体替换上一份；seq 只增，乱序到达的旧份丢弃)。 */
@@ -424,7 +484,10 @@ export type ProviderGroupRemoteRequest =
    * 只读：这台电脑上的某个任务此刻归哪个组(手机与远程控制的模型列表用，provider-groups.md §10)。
    * 发给任务所在的电脑，不是组所在电脑。
    */
-  | { action: 'session-group'; sessionId: string };
+  | { action: 'session-group'; sessionId: string }
+  /** 发给任务所在的电脑(手机、远程控制)：同本机命令的 `rebalance-suggestion` / `rebalance-decision`。 */
+  | { action: 'rebalance-suggestion'; sessionId: string }
+  | { action: 'rebalance-decision'; sessionId: string; memberKey: string; remember: boolean; clientId?: string };
 
 /** `session-group` 的回包：坐标是任务所在电脑视角(`groupDeviceId` 为 null = 那台自己建的组)。 */
 export interface ProviderGroupRemoteSessionGroup {
@@ -515,6 +578,7 @@ export function parseProviderGroupRemoteRequest(raw: unknown): ProviderGroupRemo
         agentKind: agentKind as 'claude-code' | 'codex' | 'pi',
         model: value.model,
         exclude: exclude.map(remoteMemberKey),
+        ...(value.quotaRebalance !== undefined ? { quotaRebalance: remoteMemberKey(value.quotaRebalance) } : {}),
       };
     }
     case 'cool':
@@ -582,6 +646,17 @@ export function parseProviderGroupRemoteRequest(raw: unknown): ProviderGroupRemo
     }
     case 'session-group':
       return { action: 'session-group', sessionId: remoteSessionId(value.sessionId) };
+    case 'rebalance-suggestion':
+      return { action: 'rebalance-suggestion', sessionId: remoteSessionId(value.sessionId) };
+    case 'rebalance-decision':
+      if (typeof value.remember !== 'boolean') invalidRemote('invalid remember');
+      return {
+        action: 'rebalance-decision',
+        sessionId: remoteSessionId(value.sessionId),
+        memberKey: remoteMemberKey(value.memberKey),
+        remember: value.remember as boolean,
+        ...(value.clientId !== undefined ? { clientId: remoteSessionId(value.clientId) } : {}),
+      };
     default:
       invalidRemote('unknown provider group action');
   }
@@ -657,6 +732,9 @@ export function parseProviderGroupRemoteView(raw: unknown, groupProviderId: stri
     const guestSupport = ['supported', 'needs-update', 'unknown'].includes(item.guestSupport as string)
       ? item.guestSupport as ProviderGroupGuestSupport : undefined;
     const coolingUntil = typeof item.coolingUntil === 'number' && Number.isFinite(item.coolingUntil) ? item.coolingUntil : undefined;
+    // 分享来的电脑不读配额(provider-groups.md §5「分享边界」)：回包里有也不收。
+    const quota = member.kind === 'share' ? undefined : readProviderGroupMemberQuota(item.quota);
+    const fiveHourTight = quota !== undefined && item.fiveHourTight === true;
     return [{
       key: member.key,
       kind: member.kind,
@@ -672,6 +750,8 @@ export function parseProviderGroupRemoteView(raw: unknown, groupProviderId: stri
       weight: member.weight,
       paused: member.paused,
       ...(coolingUntil !== undefined ? { coolingUntil } : {}),
+      ...(quota ? { quota } : {}),
+      ...(fiveHourTight ? { fiveHourTight: true as const } : {}),
     }];
   });
   return { providerId: groupProviderId, config, members, ...(model ? { model } : {}) };

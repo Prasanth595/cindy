@@ -1176,6 +1176,23 @@ describe("app-owned delivery and reconciliation", () => {
     expect(deps.discardUploads).toHaveBeenCalledWith(expect.anything(), [old]);
     expect(store.getSnapshot()[0]?.item.attachmentSlots[1]).toEqual(unchanged);
   });
+  it('records the slot whose upload failed, even when uploads run out of slot order, and clears it once that slot lands', async () => {
+    const { store, deps, runner } = await setup();
+    const uploads = [
+      { slot: 1, fileName: 'b.png', name: 'b.png', kind: 'image' as const, size: 1 },
+      { slot: 0, fileName: 'a.png', name: 'a.png', kind: 'image' as const, size: 1 },
+    ];
+    await store.add({ ...message(), uploads, item: { ...message().item, attachmentSlots: [null, null] } });
+    const retryable = vi.fn(() => false);
+    const failing = createDurableOutboxDelivery({ ...deps, retryable });
+    deps.upload.mockRejectedValueOnce(new Error('upload failed'));
+    await failing.run();
+    expect(store.getSnapshot()[0]).toMatchObject({ state: 'failed', failedUploadSlot: 1 });
+    expect(deps.enqueue).not.toHaveBeenCalled();
+    await store.update(store.getSnapshot()[0]!, { state: 'queued', error: undefined });
+    await runner.run();
+    expect(store.getSnapshot()[0]?.failedUploadSlot).toBeUndefined();
+  });
   it("persists the first creation message as the FIFO barrier across restart", async () => {
     const first = await setup();
     await first.store.add({ ...message("first"), suspended: true });

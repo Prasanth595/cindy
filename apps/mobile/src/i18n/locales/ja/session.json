@@ -438,6 +438,13 @@
     "copyFailed": "コピーに失敗しました",
     "deleteConfirmTitle": "セッションを削除しますか？",
     "deleteConfirmBody": "削除すると元に戻せません。",
+    "archiveScheduleConfirmTitle": "セッションをアーカイブしますか？",
+    "archiveScheduleConfirmBody_one": "このセッションに紐づく自動化{{names}}は、アーカイブ後に一時停止されます。",
+    "archiveScheduleConfirmBody_other": "このセッションに紐づく自動化{{names}}は、アーカイブ後に一時停止されます。",
+    "archiveScheduleName": "「{{name}}」",
+    "archiveScheduleNameSeparator": "、",
+    "archiveScheduleBulkNotice_one": "そのうち {{count}} 件のセッションに自動化が紐づいており、アーカイブ後に一時停止されます。",
+    "archiveScheduleBulkNotice_other": "そのうち {{count}} 件のセッションに自動化が紐づいており、アーカイブ後に一時停止されます。",
     "dirAlreadyAdded": "このディレクトリはすでにリストにあります。",
     "resetCodexTitle": "Codex の使用量をリセットしますか？",
     "resetCodexBody": "{{account}} のリセットを 1 回消費します。クォータウィンドウはすぐに再開され、この操作は取り消せません。",
@@ -734,5 +741,14 @@
     "start": "フォローを開始",
     "notNow": "今はしない",
     "saveFailed": "保存できませんでした。もう一度お試しください"
+  },
+  "providerGroupRebalance": {
+    "title": "{{label}} に切り替えて続けますか？",
+    "body": "各アカウントのクォータを均等に使い切るため、このメッセージは {{label}} から送ることをおすすめします（{{quota}}）。直近数回のやり取りと要約は引き継がれますが、それより前の細部は失われることがあります。",
+    "quota": "残り {{left}}%",
+    "quotaReset": "残り {{left}}%・{{reset}}後にリセット",
+    "confirm": "切り替える",
+    "remember": "切り替えて、今後は自動にする（このタスクのみ）",
+    "cancel": "キャンセル"
   }
 }

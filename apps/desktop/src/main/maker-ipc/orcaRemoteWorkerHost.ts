@@ -113,7 +113,7 @@ export function createOrcaRemoteWorkerHost(deps: OrcaRemoteWorkerHostDeps) {
   return {
     caps(): OrcaRemoteWorkerCaps {
       requireCaller(deps);
-      return { version: ORCA_REMOTE_WORKER_VERSION };
+      return { version: ORCA_REMOTE_WORKER_VERSION, workerBridge: true };
     },
 
     async open(raw: unknown): Promise<OrcaRemoteWorkerOpenResult> {

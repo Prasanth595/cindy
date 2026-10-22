@@ -1,3 +1,4 @@
+import { checkGhostSecret } from './runtime/ghostSecretCheck.js';
 import { PluginDeviceSync } from './deviceSyncSlot.js';
 import { contactsSyncKeyStore } from '../contacts-sync/keyStore.js';
 import { RemotePluginPreferences } from './remotePluginPreferences.js';
@@ -577,6 +578,7 @@ import { resolveOneshotCatalogModel } from '../utility-model/textOneshotPinOptio
 import { hasOneshotProviderCredential } from '../utility-model/oneshotProviderUsability.js';
 import { readGhostCindyInflightLimit, relocateGhostCindyPrefs } from './cindyPrefsStore.js';
 import { createGhostComposerListHandler } from './ghostComposerIpc.js';
+import { createGhostDisplayListHandler } from './ghostDisplayListIpc.js';
 import { GHOST_COMPOSER_LIST_CHANNEL } from '../../shared/ghostComposer.js';
 import {
   isGhostDisabledForWorkdir,
@@ -1895,14 +1897,17 @@ export function getGhostManager(): GhostManager {
       canReclaimLegacyBareInstance: (input) =>
         getNamespaceMigrationHost().canReclaimLegacyBareInstance(input),
       isNamespaceMigrationBusy: (ghostId) => getNamespaceMigrationHost().isNamespaceMigrationBusy(ghostId),
-      marketIdentityForInstance: (instance) => {
+      marketIdentityForScan: () => {
         try {
-          const lookup = getPluginMarketLedger().lookupInstallationsForNamespaceMigration(instance.ghostId);
-          if (lookup.kind !== 'found') return null;
-          const pluginId = selectMarketPluginIdForInstance(instance, lookup.records ?? []);
-          return pluginId ? { pluginId } : null;
+          const read = getPluginMarketLedger().createNamespaceMigrationLookup();
+          return (instance) => {
+            const lookup = read(instance.ghostId);
+            if (lookup.kind !== 'found') return null;
+            const pluginId = selectMarketPluginIdForInstance(instance, lookup.records ?? []);
+            return pluginId ? { pluginId } : null;
+          };
         } catch {
-          return null;
+          return () => null;
         }
       },
       canResumePendingResidentOffline: (ghostId) => getNamespaceMigrationHost().canResumePendingResidentOffline(ghostId),
@@ -8084,7 +8089,7 @@ export function registerGhostIpc(): void {
       await runtime.spawn(ghost);
       await invokeGhostMobileRelay(ghost, { op: 'connect', pageId, channels });
     },
-    post: async (ghost, pageId, channel, data) => { await invokeGhostMobileRelay(ghost, { op: 'post', pageId, channel, data }); },
+    post: async (ghost, pageId, channel, data, sourceId) => { await invokeGhostMobileRelay(ghost, { op: 'post', pageId, channel, data, sourceId }); },
     poll: async (ghost, pageId, after) => await invokeGhostMobileRelay(ghost, { op: 'poll', pageId, after }) as PluginPagePoll['events'],
     disconnect: async (id, pageId) => {
       const ghost = findGhostForPhysicalStoragePart(id);
@@ -8223,6 +8228,12 @@ export function registerGhostIpc(): void {
       readBodyText,
       isCurrent,
       userSecretKeys,
+      checkSecretKeys: networkSecretDecls.filter((s) => s.check && (!s.source || s.source === 'user')).map((s) => s.key),
+      checkSecret: (key, value) => {
+        const secret = networkSecretDecls.find((s) => s.key === key)!;
+        return checkGhostSecret({ instanceKey: ghostId, secret, value, isCurrent,
+          fetch: (url, init) => outboundFetch(url, init) });
+      },
       identitySecretKeys,
       managedSecretStates,
       hostCredentialStates: ghCliSecretDecls.map((s) => ({
@@ -8974,8 +8985,15 @@ export function registerGhostIpc(): void {
     return { ok: true };
   });
 
+  const displayList = createGhostDisplayListHandler({
+    scopeKey: activeOwnerScopeKey,
+    isBoundaryPending: isAppSessionBoundaryPending,
+    list: () => availableGhosts().map(projectGhostForRenderer),
+    isScanComplete: () => getGhostManager().isInstallationScanComplete(),
+    warn: () => log.warn('plugin display roster scan unavailable; retaining last owner projection'),
+  });
   ipcMain.on('ghosts:list', (event) => {
-    event.returnValue = { ghosts: availableGhosts().map(projectGhostForRenderer) };
+    event.returnValue = displayList();
   });
   ipcMain.handle(GHOST_COMPOSER_LIST_CHANNEL, createGhostComposerListHandler({
     list: availableGhosts,

@@ -17,6 +17,10 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { FastMode } from '@cindy/maker-shared';
+import { MemoryRouter } from 'react-router-dom';
+import { ConfirmDialogProvider } from '@/components/ui/confirm-dialog-provider';
+import { CreateWorkerPopover } from '@/features/cc-agent/CreateWorkerPopover';
+import type { AgentCapabilities } from '@/hooks/useAgentCapabilities';
 
 /** 统一面板发起的深度写入带上「面板已串行」标记(见 ModelSelector 的 onEffortChangeLive)。 */
 const FROM_PANEL = { serializedByPanel: true };
@@ -60,12 +64,13 @@ vi.mock('@/hooks/useModelRouteDevices', () => ({
   useModelRouteDevices: () => ({ devices: [], leadAgentDeviceId: null }),
 }));
 
+const workerCapabilities = vi.hoisted(() => ({ byAgent: {} as Record<string, AgentCapabilities> }));
 vi.mock('@/hooks/useAgentCapabilities', () => ({
   getCachedCapabilities: vi.fn(() => null),
   evictDeviceCapabilities: vi.fn(),
   prefetchDeviceCapabilities: vi.fn(async () => {}),
-  useAgentCapabilities: () => ({
-    capabilities: { hasFastMode: true, effortLevels: [], availableModels: [] },
+  useAgentCapabilities: (agent: string) => ({
+    capabilities: workerCapabilities.byAgent[agent] ?? { hasFastMode: true, effortLevels: [], availableModels: [] },
     loading: false,
     error: null,
   }),
@@ -4141,8 +4146,86 @@ describe('settings configuration without shared memory', () => {
   });
 });
 
-// Teammate settings must use this real picker, including the portaled config.
-vi.mock('@/hooks/useAvailableAgents', () => ({ useAvailableAgents: () => ({
+// #4286: the old Worker form mocked ModelSelector and selectWorkerModels, so it could
+// not detect SSH removing Pi from the visible union. Unit/jsdom exercises the real
+// popover -> picker -> onCreate route, plus its existing SSH and empty-set guards.
+describe('Worker creation with the real model picker', () => {
+  const originalProviders = providersRef.providers;
+  const apiModel = { id: 'kimi-k2.5', name: 'Worker Pi API', contextWindow: 200000,
+    efforts: ['high'], defaultEffort: 'high' };
+  const subscriptionModels = [
+    { ...apiModel, id: 'chatgpt/gpt-5.6', name: 'Worker ChatGPT subscription' },
+    { ...apiModel, id: 'xai/grok-4', name: 'Worker xAI subscription' },
+  ];
+  const bridgedModel = { ...apiModel, id: 'bridge-only', name: 'Worker local Chat bridge' };
+
+  beforeEach(() => {
+    window.localStorage.removeItem('workerCreationPrefs');
+    window.localStorage.removeItem('xdt:modelPickerLayout:v1');
+    providersRef.providers = [
+      { id: 'worker-api', name: 'Worker API', source: 'user', connected: true, auth: { method: 'api-key' },
+        agents: ['pi'], routing: { pi: {} }, models: { pi: [apiModel] } },
+      { id: 'worker-subscription', name: 'Worker subscriptions', source: 'builtin', connected: true, auth: { method: 'api-key' },
+        agents: ['pi'], routing: { pi: {} }, models: { pi: subscriptionModels } },
+      { id: 'worker-bridge', name: 'Worker bridge', source: 'user', connected: true, auth: { method: 'api-key' },
+        agents: ['codex'], routing: { codex: { wireProtocol: 'openai-chat' } },
+        models: { codex: [bridgedModel] } },
+    ];
+    for (const [agent, models] of Object.entries({ pi: [apiModel, ...subscriptionModels], codex: [bridgedModel] })) {
+      workerCapabilities.byAgent[agent] = {
+        hasFastMode: false, effortLevels: [], permissionModes: [],
+        availableModels: models.map(({ name, ...model }) => ({ ...model, displayName: name })),
+      };
+    }
+  });
+  afterEach(() => {
+    providersRef.providers = originalProviders;
+    workerCapabilities.byAgent = {};
+    window.localStorage.removeItem('workerCreationPrefs');
+    window.localStorage.removeItem('xdt:modelPickerLayout:v1');
+  });
+
+  function renderWorker(sshRemote: boolean, onCreate = vi.fn()) {
+    const view = render(<MemoryRouter><ConfirmDialogProvider>
+      <CreateWorkerPopover open sshRemote={sshRemote} onClose={vi.fn()} onCreate={onCreate} />
+    </ConfirmDialogProvider></MemoryRouter>);
+    fireEvent.click(view.baseElement.querySelector('button[aria-haspopup="listbox"]')!);
+    return onCreate;
+  }
+
+  it.each([true, false])('selects and submits a Pi API route (SSH: %s)', async (sshRemote) => {
+    const onCreate = renderWorker(sshRemote);
+    const list = await screen.findByRole('listbox');
+    for (const restricted of [...subscriptionModels, bridgedModel]) {
+      expect(within(list).queryByText(restricted.name) !== null).toBe(!sshRemote);
+    }
+    await act(async () => { fireEvent.click(within(list).getByText(apiModel.name)); });
+    fireEvent.click(screen.getByRole('button', { name: 'orca.createWorker.submit' }));
+    await waitFor(() => expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({
+      agent: 'pi', model: apiModel.id, providerId: 'worker-api', effort: 'high', fast: undefined,
+    })));
+  });
+
+  it('cannot submit an SSH Worker when only prohibited routes remain', async () => {
+    providersRef.providers = providersRef.providers.slice(1);
+    const onCreate = renderWorker(true);
+    const list = await screen.findByRole('listbox');
+    expect(within(list).queryByText(apiModel.name)).toBeNull();
+    for (const restricted of [...subscriptionModels, bridgedModel]) {
+      expect(within(list).queryByText(restricted.name)).toBeNull();
+    }
+    fireEvent.keyDown(list, { key: 'Escape' });
+    const submit = screen.getByRole('button', { name: 'orca.createWorker.submit' });
+    expect((submit as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(submit);
+    expect(onCreate).not.toHaveBeenCalled();
+  });
+});
+
+// Teammate settings and Worker creation use the real picker, including portaled config.
+vi.mock('@/hooks/useAvailableAgents', () => ({
+  useModelPickerAgents: () => ['claude-code', 'codex', 'pi'],
+  useAvailableAgents: () => ({
   availableVendors: new Set(['cc', 'codex', 'pi']), loaded: true,
 }) }));
 vi.mock('@/features/bots/botStore', () => ({ getEffectiveBotModelSettings: () => ({

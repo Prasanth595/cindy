@@ -11,7 +11,6 @@ const h = vi.hoisted(() => ({
   profileListeners: new Set<() => void>(),
 }));
 // 工作台在右侧栏里有自己的数据订阅，这里只验证伙伴对话的挂载与读位。
-vi.mock('@/features/right-sidebar/lib/openBotWorkbenchTab', () => ({ ensureBotWorkbenchTab: vi.fn(async () => {}) }));
 vi.mock('../botStore', async () => {
   const { useSyncExternalStore } = await import('react');
   return {
@@ -29,6 +28,8 @@ vi.mock('react-router-dom', () => ({
 }));
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock('../useBotIslandVisibleSession', () => ({ useBotIslandVisibleSession: () => {} }));
+// The private-chat topic host belongs to the chat surface these tests isolate.
+vi.mock('../BotDmThreadHost', () => ({ BotDmThreadHost: ({ children }: { children: import('react').ReactNode }) => <>{children}</> }));
 vi.mock('@/features/cc-agent/CCAgentSessionView', () => ({
   CCAgentSessionView: ({ botIdentity, botInvitationStage, readOnly }: { botIdentity?: BotChatBinding; botInvitationStage?: string; readOnly?: boolean }) => {
     const sessions = useRemoteProjectSessions();

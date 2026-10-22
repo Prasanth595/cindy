@@ -113,6 +113,7 @@ const receipt = await cindy.routines.request({
 [伙伴运行时合同 §6.3](./cindy-bots-runtime.md)）。只为本机任务发：另一台电脑上的任务由那台电脑上的伙伴跟，这里只进工作台。它与插件来源走同一个引擎、同一套限速、24 小时回执去重和不可信数据封装，区别是：
 
 - 来源 id 由宿主固定，插件不能冒充；事件源表只在内存里，例行任务引擎每次创建后（含换账号、重建）由宿主重新登记。
+- 注册事件源不等于开启后台扫描。默认只观察明确委派的工作；全局跟进须主动开启。没有待跟进委派且全局跟进关闭时释放扫描定时器，远程状态只在查看工作台时读取。
 - 事件 `data` 只有扁平字段：`sessionId`、`deviceId`、`deviceName`、`title`、`phase`、`minutes`、`question`、`error`、
   `creatorBotId`、`followerBotId`、`occurrence`；`subject` 是任务 id（`sweep` 是伙伴 id，任务相关字段为空串）。只带标题与一句话摘要，不带工具入参、计划正文、
   代输入值或工作目录。

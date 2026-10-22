@@ -293,3 +293,40 @@ describe('conversationSearch personal companion chats', () => {
     }
   });
 });
+
+// Unit: search result rendering leaked JSON escapes after opening the same hit showed paragraphs.
+// Exercise the production search entry + SQLite metadata lookup; retrieval/FTS content stays raw.
+it('projects forwarded search hits only with their persisted session origin', async () => {
+  const db = createSearchDb();
+  const client = makeSearchDbClient(db);
+  setCurrentDbClient(client, 'test-user');
+  const content = '[来源] 用户原话由宿主从已接收的输入原样保留。\n用户原话："只检查"\nagent补充："第一段\\n\\n第二段 needle，保留 `\\\\n`"';
+  const ids = ['forwarded', 'human', 'malformed-meta'];
+  try {
+    for (const id of ids) {
+      insertSearchSession(db, id, 10, null);
+      db.prepare('INSERT INTO messages (id, client_id, session_id, role, content, agent_meta, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+        .run(id, id, id, 'user', content, id === 'forwarded' ? JSON.stringify({ origin: { kind: 'session' } }) : id === 'human' ? null : '{invalid', 10);
+    }
+    mocks.searchChatHistoryHybrid.mockResolvedValue({
+      hits: ids.map(id => ({ messageId: id, sessionId: id, role: 'user', createdAt: 10,
+        score: 1, ftsRank: 1, vectorRank: null, context: [{ isHit: true, content }] })),
+      sessions: {}, vectorUsed: false, vectorSkipReason: null, nextOffset: null,
+      hasMore: false, poolSize: 3, poolCapped: false,
+    });
+    const result = await searchConversations({ query: 'needle', semanticMode: 'keyword' });
+    const forwarded = result.results.find(item => item.session.id === 'forwarded')!.contentHit!;
+    expect(forwarded.preview).toContain('第一段 第二段 needle，保留 `\\n`');
+    expect(forwarded.snippet).toBe(forwarded.preview);
+    expect(forwarded.ftsRank).toBe(1);
+    for (const id of ['human', 'malformed-meta']) {
+      expect(result.results.find(item => item.session.id === id)!.contentHit!.preview)
+        .toBe(content.replace(/\s+/g, ' '));
+    }
+    expect(db.prepare('SELECT content FROM messages WHERE id = ?').get('forwarded')).toEqual({ content });
+    expect(mocks.searchChatHistoryHybrid.mock.calls[0][0].query).toBe('needle');
+  } finally {
+    clearCurrentDbClient(client);
+    db.close();
+  }
+});

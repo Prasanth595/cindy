@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { ORCA_TASK_ACTION_TOOLS } from '../../maker-ipc/taskActionAuthorization.js';
 
 import {
   getDesktopClaudeReadOnlyAllowedTools,
@@ -450,12 +451,17 @@ describe('Orca Worker directory authorization', () => {
     }
   });
 
-  it('preserves inherited-directory creation and other Orca operations', () => {
-    expect(policy('create_worker', { label: 'inherits' })).toBe('auto-approve');
+  // #6699: trusted-server approval used to skip Ask/Auto for Orca mutations.
+  // Unit: use the production policy for each protected action, preserving reads.
+  it('reviews all Orca mutations, including inherited-directory creation, and preserves reads', () => {
+    for (const tool of ORCA_TASK_ACTION_TOOLS) {
+      expect(policy(tool), tool).toBe('prompt-each-time');
+    }
+    expect(policy('create_worker', { label: 'inherits' })).toBe('prompt-each-time');
     expect(policy('create_workers', { workers: [{ label: 'a' }, { label: 'b' }] })).toBe(
-      'auto-approve',
+      'prompt-each-time',
     );
-    expect(policy('send_to_worker', { worker_id: 'a', message: 'continue' })).toBe('auto-approve');
+    expect(policy('send_to_worker', { worker_id: 'a', message: 'continue' })).toBe('prompt-each-time');
     expect(policy('list_workers')).toBe('auto-approve');
   });
 

@@ -6,7 +6,6 @@ import { botInvitationProgress, type BotInvitationProgress } from '../../../shar
 import { useSyncExternalStore } from 'react';
 import { getDataOwnerGeneration, isDataOwnerGenerationCurrent } from '@/contexts/dataOwnerGeneration';
 import { getModel } from '@cindy/model-providers';
-import { getDraft, getDraftForPreferenceSync, getPersistedVendorModel } from '@/state/newMakerDraft';
 import { getDefaultModelForVendor } from '@/lib/modelDefinitions';
 import { pickConnectedModelForAgent } from '@/lib/draftModelCalibration';
 import { refreshLocalCatalogSnapshot } from '@/lib/localCatalogSnapshot';
@@ -153,12 +152,14 @@ export interface BotSessionProjection {
    * Telegram / Feishu group handed to the Bot); see botGroupLane.ts before
    * counting sessions.
    */
-  kind: 'chat' | 'worker' | 'history' | 'group' | 'channel';
+  kind: 'chat' | 'worker' | 'history' | 'group' | 'channel' | 'thread';
   updatedAt: number;
   status?: 'active' | 'archived' | 'deleted';
-  role?: 'canonical' | 'delegation' | 'history' | 'group' | 'channel';
+  role?: 'canonical' | 'delegation' | 'history' | 'group' | 'channel' | 'thread';
   /** Group-lane only: the group whose chat owns this hidden Session. */
   groupId?: string;
+  /** Private-chat topic only: the main-chat message the topic was opened on. */
+  threadRoot?: { rootSessionId: string; rootClientId: string };
   profileVersion?: number;
   runtimeSnapshot?: {
     profileVersion: number;
@@ -242,8 +243,7 @@ function defaultBotModelSettings(vendor: ReturnType<typeof vendorForHarness>): B
 }
 
 export function defaultBotModel(vendor: ReturnType<typeof vendorForHarness>): string {
-  // `||` 不是 `??`:「没选过」在 getPersistedVendorModel 里是空串,不是 null。
-  return getPersistedVendorModel(vendor) || defaultBotModelSettings(vendor).model;
+  return defaultBotModelSettings(vendor).model;
 }
 
 const BOT_GLOBAL_MODEL_KEY = 'cindy.bots.global-model-overrides.v1';
@@ -251,10 +251,8 @@ const BOT_GLOBAL_MODEL_CHAIN_KEY = 'cindy.bots.global-model-chain.v2';
 type BotModelVendor = ReturnType<typeof vendorForHarness>;
 const botModelListeners = new Set<() => void>();
 function getDefaultModelInputs() {
-  const draft = getDraftForPreferenceSync();
   return {
     visibilityVersion: getModelVisibilityVersion(),
-    preference: JSON.stringify([draft.vendor, draft.lastByVendor[draft.vendor], draft.fastModeByModel, draft.agentDeviceId]),
     providers: getCachedProvidersSnapshot(),
     availableAgents: getCachedAvailableVendors(),
   };
@@ -349,7 +347,7 @@ export function getBotGlobalModelChain(): BotModelRoute[] | null {
   if (inputs) {
     const current = getDefaultModelInputs();
     if (inputs.providers !== current.providers || inputs.availableAgents !== current.availableAgents
-      || inputs.visibilityVersion !== current.visibilityVersion || inputs.preference !== current.preference)
+      || inputs.visibilityVersion !== current.visibilityVersion)
       return null;
   }
   return globalModelChainCache.modelChain;
@@ -374,16 +372,8 @@ export function getEffectiveBotModelChain(
   if (stored) return stored;
   const providers = getCachedProvidersSnapshot();
   const availableAgents = getCachedAvailableVendors();
-  const draft = getDraftForPreferenceSync();
-  const selected = draft.lastByVendor[draft.vendor];
   return defaultBotModelChain({ providers: providers?.providers ?? [],
     isModelEnabled,
-    preferredRoute: {
-      ...(draft.agentDeviceId ? { agentDeviceId: draft.agentDeviceId } : {}),
-      harness: draft.vendor === 'cc' || draft.vendor === 'orca' ? 'claude' : draft.vendor,
-      providerId: selected.providerId ?? null, model: selected.model,
-      effort: selected.effort ?? '', fastMode: (draft.fastModeByModel[selected.model] ?? false),
-    },
     providersLoading: !providers, availableAgents: availableAgents ?? new Set(),
     availableAgentsLoaded: availableAgents !== null });
 }
@@ -459,18 +449,14 @@ export function resetBotGlobalModelChain(): Promise<void> {
 function defaultCapabilities(
   harness: BotCapabilities['harness'] = NEW_BOT_DEFAULT_HARNESS,
 ): BotCapabilities {
-  const vendor = vendorForHarness(harness);
-  const prefs = getDraft().lastByVendor[vendor];
   const globalChain = getEffectiveBotModelChain(harness);
   const primary = globalChain[0] ?? { harness, model: '', providerId: null, effort: '', fastMode: false };
   const model = primary.model;
   return {
     model,
     modelOverride: null,
-    // 模型没沿用 lastByVendor 时,来源也不能沿用 —— providerId 与 model 必须同源,
-    // 否则会拿一个来源去解析另一个来源的模型 id。
-    providerId: primary.providerId ?? (model === prefs.model ? (prefs.providerId ?? null) : null),
-    effort: model ? primary.effort || prefs.effort : '',
+    providerId: primary.providerId,
+    effort: primary.effort,
     fastMode: model ? primary.fastMode : false,
     harness: primary.harness,
     modelChain: globalChain,

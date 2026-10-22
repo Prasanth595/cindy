@@ -66,6 +66,14 @@ export interface HistorySession {
   status: string;
   source: string;
   orcaRole: string | null;
+  orcaRemoteLead?: {
+    leadDeviceId: string;
+    leadDeviceName: string;
+    leadSessionId: string;
+    leadTitle: string;
+    workerLabel: string;
+    releasedAt?: number;
+  };
   parentSessionId: string | null;
   createdAt: number; // unix ms
   updatedAt: number;

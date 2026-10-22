@@ -122,8 +122,8 @@ import {
   rewriteSessionModelIdForRoute,
 } from './provider-route.js';
 import type { CodexSubagentRouteSnapshot } from './codex-subagent-config.js';
-import { getSessionProvider } from './session-provider-store.js';
-import { guestProviderOffersModel, guestProviderRouteForSession } from './guest-provider-route-store.js';
+import { getSessionProvider, hasHostedSessionModelAccess, hostedSessionModelAllowed } from './session-provider-store.js';
+import { guestProviderModelAllowed, guestProviderOffersModel, guestProviderRouteForSession, hostedProviderOffersModel } from './guest-provider-route-store.js';
 import { isOpenAiSubscriptionProviderId } from './codex-account-auth.js';
 import { composeResponseObservers } from './claude-rate-limit-headers-observer.js';
 import { createProviderUpstreamErrorObserver, reportProviderUpstreamError } from './provider-upstream-error-observer.js';
@@ -2535,23 +2535,45 @@ function codexGuestRouteRefusal(): RoutingDecision {
 export function createCodexGuestRoutingGuard(
   providerId: string,
   frozenAuthInjection?: CodexProxyAuthInjection,
-): (body: unknown, ctx: RequestTransformCtx) => RoutingDecision | null | undefined {
-  return (body, ctx) => {
-    if (parseCodexCustomProviderPath(ctx.url).kind !== 'not-custom-provider-route') return undefined;
+  guestSessionId?: string,
+  frozenRoutes?: readonly CodexCustomProviderRoute[],
+): (body: unknown, ctx: RequestTransformCtx) => Promise<RoutingDecision | null | undefined> {
+  return async (body, ctx) => {
     const requestModel = isPlainObject(body) && typeof body.model === 'string' ? body.model : '';
+    const requestSessionId = sessionIdFromHeaders(ctx.headers);
+    // This proxy belongs to one guest. Headerless calls use that binding, and
+    // headers cannot borrow another guest's grants, even on the same provider.
+    if (guestSessionId && ((requestSessionId && requestSessionId !== guestSessionId)
+      || guestProviderRouteForSession(guestSessionId)?.providerId !== providerId
+      || getSessionProvider(guestSessionId) !== providerId)) return codexGuestRouteRefusal();
+    const sessionId = requestSessionId ?? guestSessionId;
+    const customPath = parseCodexCustomProviderPath(ctx.url);
+    if (customPath.kind === 'route' && customPath.pathKind === 'images') {
+      // Image wire IDs are not catalog identities. The frozen image route checks
+      // its catalog grant after binding JSON or multipart to the deployment.
+      return customProviderRouteSnapshot(customPath.routeId, frozenRoutes)?.providerId === providerId
+        ? undefined : codexGuestRouteRefusal();
+    }
     if (!requestModel) return undefined;
+    // Guardian's internal marker is not a catalog model. Authorize its registered
+    // parent model, including when native OpenAI keeps the marker on the wire.
+    const reviewerModel = requestModel === CODEX_AUTO_REVIEW_MODEL && guardianParentThreadIdFromHeaders(ctx.headers) && sessionId
+      ? reviewerModelBySession.get(sessionId)
+      : undefined;
+    if (!await guestProviderModelAllowed(providerId, reviewerModel ?? requestModel, sessionId)) return codexGuestRouteRefusal();
+    if (parseCodexCustomProviderPath(ctx.url).kind !== 'not-custom-provider-route') return undefined;
     const authInjection = frozenAuthInjection ?? getCodexProxyAuthInjection();
     if (ctx.url.split('?', 1)[0]?.endsWith('/responses')) {
       const effectiveModel = providerAwareGuardianReviewerModel(body, ctx.headers, authInjection) ?? requestModel;
+      if (effectiveModel !== requestModel && !await guestProviderModelAllowed(providerId, effectiveModel, sessionId)) return codexGuestRouteRefusal();
       const offered = effectiveModel === CODEX_AUTO_REVIEW_MODEL
         ? isOpenAiSubscriptionProviderId(providerId)
-        : guestProviderOffersModel(providerId, 'codex', effectiveModel);
+        : await guestProviderOffersModel(providerId, 'codex', effectiveModel, sessionId ?? undefined);
       if (!offered) return codexGuestRouteRefusal();
     }
-    const sessionId = sessionIdFromHeaders(ctx.headers);
-    if (sessionId) {
-      return guestProviderRouteForSession(sessionId)?.providerId === providerId
-        && getSessionProvider(sessionId) === providerId
+    if (requestSessionId) {
+      return guestProviderRouteForSession(requestSessionId)?.providerId === providerId
+        && getSessionProvider(requestSessionId) === providerId
         ? undefined
         : codexGuestRouteRefusal();
     }
@@ -2773,6 +2795,7 @@ function resolveCodexCustomProviderRoutingDecision(
   body: unknown,
   ctx: RequestTransformCtx,
   frozenRoutes?: readonly CodexCustomProviderRoute[],
+  guestSessionId?: string,
 ): RoutingDecision | null | Promise<RoutingDecision | null> | undefined {
   const parsed = parseCodexCustomProviderPath(ctx.url);
   if (parsed.kind === 'not-custom-provider-route') return undefined;
@@ -2801,6 +2824,18 @@ function resolveCodexCustomProviderRoutingDecision(
     return codexCustomProviderRouteFailure(403, 'custom_provider_model_mismatch');
   }
   const wireModel = parsed.pathKind === 'responses' ? requestModel : undefined;
+  const sessionId = sessionIdFromHeaders(ctx.headers) ?? guestSessionId;
+  if (wireModel && !hostedProviderOffersModel(sessionId, route.providerId, 'codex', wireModel)) {
+    return codexCustomProviderRouteFailure(403, 'remote_model_not_allowed');
+  }
+  // Images use their own model IDs, not the parent's Responses model. The
+  // request-local transform also checks opaque multipart edits before dispatch.
+  const guestImage = !!guestSessionId || !!(sessionId && guestProviderRouteForSession(sessionId));
+  const allowsImageModel = parsed.pathKind === 'images' && sessionId && (guestImage || hasHostedSessionModelAccess(sessionId))
+    ? (model: string) => guestImage
+      ? guestProviderModelAllowed(route.providerId, model, sessionId)
+      : hostedSessionModelAllowed(sessionId, route.providerId, model)
+    : undefined;
   return resolveFrozenProviderRouteDecision(
     route.providerId,
     frozenRouting,
@@ -2809,7 +2844,10 @@ function resolveCodexCustomProviderRoutingDecision(
     _readGatewayKey(),
     wireModel,
   )
-    .then((resolved) => {
+    .then(async (resolved) => {
+      if (allowsImageModel && requestModel && !await allowsImageModel(frozenRouting.imageModel?.litellmModel ?? requestModel)) {
+        return codexCustomProviderRouteFailure(403, 'remote_model_not_allowed');
+      }
       if (!resolved?.decision || resolved.routing.disabled) {
         return codexCustomProviderRouteFailure(503, 'custom_provider_route_unavailable');
       }
@@ -2857,8 +2895,8 @@ function resolveCodexCustomProviderRoutingDecision(
         ...(headerDelete.size > 0 ? { headerDelete: [...headerDelete] } : {}),
         ...(parsed.pathKind === 'images'
           ? {
-              ...(frozenRouting.imageModel ? {
-                transformRequestBody: createCodexImageModelRewrite(frozenRouting.imageModel),
+              ...(frozenRouting.imageModel || allowsImageModel ? {
+                transformRequestBody: createCodexImageModelRewrite(frozenRouting.imageModel, allowsImageModel),
               } : {}),
               forwardLifecycle: createCodexImageGenerationForwardLifecycleObserver(
                 parsed.routeId,
@@ -2882,6 +2920,7 @@ export function createModelRoutingTransform(
   frozenCustomProviderRoutes?: readonly CodexCustomProviderRoute[],
   sourceHostAlive: () => boolean = () => true,
   onCrossProviderChildAuthorized?: (ctx: RequestTransformCtx) => void,
+  guestSessionId?: string,
 ): RoutingTransform {
   return (body, ctx) => {
     const inheritedPath = parseCodexCustomProviderPath(ctx.url);
@@ -2939,6 +2978,7 @@ export function createModelRoutingTransform(
       body,
       ctx,
       frozenCustomProviderRoutes,
+      guestSessionId,
     );
     if (customProviderRoute !== undefined) return customProviderRoute;
     // body 可能为 undefined —— 无 body 的 GET(典型: codex models-manager 的 `GET /models` 轮询,
@@ -2960,6 +3000,11 @@ export function createModelRoutingTransform(
     const model = subagentRoute?.catalogModel ?? reportedModel;
     const explicitProviderId = subagentRoute?.providerId
       ?? (sessionId ? getSessionProvider(sessionId) : null);
+    const authorizationModel = model === CODEX_AUTO_REVIEW_MODEL && guardianParentThreadIdFromHeaders(ctx.headers) && sessionId
+      ? reviewerModelBySession.get(sessionId) ?? model : model;
+    if (model && !hostedProviderOffersModel(sessionId, explicitProviderId, 'codex', authorizationModel)) {
+      return codexCustomProviderRouteFailure(403, 'remote_model_not_allowed');
+    }
     // 推理请求钉在 Claude 订阅上(旧会话 / 子代理快照):本地拒绝,不落任何默认上游。
     if (model && explicitProviderId && isClaudeSubscriptionProviderId(explicitProviderId)) {
       return claudeSubscriptionCodexRefusalDecision();
@@ -3355,6 +3400,7 @@ async function createCodexProxyHandle(
   frozenAuthInjection?: CodexProxyAuthInjection,
   frozenCustomProviderRoutes?: readonly CodexCustomProviderRoute[],
   guestProviderId?: string,
+  guestSessionId?: string,
 ): Promise<ProxyHandle> {
   const execAdapter = createCodexResponsesCompatibilityAdapter();
   let alive = true;
@@ -3364,12 +3410,12 @@ async function createCodexProxyHandle(
   // it also needs no settlement bookkeeping for cancelled/local-handler requests.
   const crossProviderRequests = new WeakSet<Readonly<Record<string, string>>>();
   const modelRoute = createModelRoutingTransform(frozenAuthInjection, frozenCustomProviderRoutes, () => alive,
-    ctx => { crossProviderRequests.add(ctx.headers); });
+    ctx => { crossProviderRequests.add(ctx.headers); }, guestSessionId);
   // 供应商分享受邀者的任务：先过受邀者守门，只经分享的那一个供应商出站。
-  const guestGuard = guestProviderId ? createCodexGuestRoutingGuard(guestProviderId, frozenAuthInjection) : undefined;
+  const guestGuard = guestProviderId ? createCodexGuestRoutingGuard(guestProviderId, frozenAuthInjection, guestSessionId, frozenCustomProviderRoutes) : undefined;
   const route: RoutingTransform = guestGuard
-    ? (body, ctx) => {
-      const guarded = guestGuard(body, ctx);
+    ? async (body, ctx) => {
+      const guarded = await guestGuard(body, ctx);
       return guarded !== undefined ? guarded : modelRoute(body, ctx);
     }
     : modelRoute;
@@ -3484,6 +3530,8 @@ async function createCodexProxyHandle(
      */
     resolveWebSocketUpstream: ({ headers }) => {
       if ((frozenAuthInjection ?? getCodexProxyAuthInjection()) !== 'oauth-bearer') return null;
+      // Hosted owner tasks need HTTP so every model request (and later revocation) reaches the live grant check.
+      if (hasHostedSessionModelAccess(sessionIdFromHeaders(headers))) return null;
       const threadId = selectedThreadIdFromHeaders(headers);
       const recoveryReason = httpRecoveryReasonByThread.get(threadId);
       if (recoveryReason) {
@@ -3634,11 +3682,13 @@ export async function ensureCodexCustomContextProxyReady(
   routes: readonly CodexCustomProviderRoute[],
   /** 供应商分享受邀者的任务：proxy 只经这个供应商出站(见 createCodexGuestRoutingGuard)。 */
   guestProviderId?: string,
+  guestSessionId?: string,
 ): Promise<void> {
   const key = scopeKey.trim();
   if (!key) throw new Error('custom-context Codex proxy requires a scope key');
+  if (guestProviderId && !guestSessionId?.trim()) throw new Error('shared-provider Codex proxy requires a guest session');
   const routeSignature = codexCustomProviderRoutesSignature(routes)
-    + (guestProviderId ? `\u0000guest:${guestProviderId}` : '');
+    + (guestProviderId ? `\u0000guest:${guestProviderId}\u0000session:${guestSessionId}` : '');
   const current = _customContextHandles.get(key);
   if (
     current?.authInjection === authInjection
@@ -3656,7 +3706,7 @@ export async function ensureCodexCustomContextProxyReady(
   let promise!: Promise<void>;
   promise = (async () => {
     try {
-      const handle = await createCodexProxyHandle(authInjection, [...routes], guestProviderId);
+      const handle = await createCodexProxyHandle(authInjection, [...routes], guestProviderId, guestSessionId);
       if (
         disposeGeneration !== _disposeGeneration
         || scopeGeneration !== (_customContextGenerations.get(key) ?? 0)

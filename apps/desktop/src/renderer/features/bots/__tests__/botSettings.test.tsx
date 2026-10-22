@@ -541,27 +541,21 @@ describe('Bot settings profile consolidation', () => {
     expect((await screen.findByRole('alert')).textContent).toContain('missing');
   });
 
-  it('keeps the teammate todos the heartbeat maintains visible on the routines page', async () => {
-    // 伙伴自主跟进：心跳叫醒伙伴后它会更新自己的待办；工作台不再平铺待办，主人在这里看。
+  it('keeps todos out of the routines page now that they live in 近况', async () => {
+    // 2026-10-21：待办只在聊天头部的近况里看、在对话里改；设置里的例行任务页不再列待办。
     const api = window.electronAPI as unknown as Record<string, Record<string, unknown>>;
     api.routines = {
       list: vi.fn(async () => []), sources: vi.fn(async () => []),
       history: vi.fn(async () => []), onChanged: vi.fn(() => () => undefined),
     };
-    (api.localDb.bots as Record<string, unknown>).todos = {
-      list: vi.fn(async () => ({ items: [{
-        id: 'todo-1', revision: 1, key: 'self:1', origin: 'discovered', title: '回复 Dash 的部署窗口问题',
-        progress: '', outcome: '', value: '', next: null, sources: [], associations: [], status: 'open',
-        createdAt: '2026-10-01T00:00:00.000Z', updatedAt: '2026-10-01T00:00:00.000Z', sourceDeadline: null,
-        deadlineCandidate: null, suggestedDate: null, decision: null, history: [], action: null,
-      }] })),
-    };
-    api.maker.onBotWorkbenchChanged = vi.fn(() => () => undefined);
+    const list = vi.fn(async () => ({ items: [] }));
+    (api.localDb.bots as Record<string, unknown>).todos = { list };
     mocks.initialSearch = 'settings=1&tab=growth';
     render(<ConfirmDialogProvider><BotSettings bot={bot()} onBack={vi.fn()} onOpenSession={vi.fn()} /></ConfirmDialogProvider>);
     fireEvent.click(screen.getByRole('button', { name: 'routines.title' }));
-    expect(await screen.findByText('回复 Dash 的部署窗口问题')).toBeTruthy();
-    expect(screen.getByRole('region', { name: 'teammateTodo.title' })).toBeTruthy();
+    await waitFor(() => expect(api.routines.list).toHaveBeenCalled());
+    expect(screen.queryByRole('region', { name: 'teammateTodo.title' })).toBeNull();
+    expect(list).not.toHaveBeenCalled();
   });
 
   it('starts at grouped settings and opens real inner pages without exposing hidden inputs', async () => {

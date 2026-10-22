@@ -12,6 +12,7 @@ import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import type { ProviderView } from '@cindy/model-providers';
+import { remoteInvocationModels } from '@cindy/model-providers';
 
 import { hasProviderLogo, ProviderLogoMark } from '@/components/icons/ProviderLogoMark';
 import { RemoteSourceMark } from '@/components/icons/RemoteSourceMark';
@@ -92,7 +93,7 @@ export function useOwnRemoteProviderList(): OwnRemoteProviderList {
             key,
             deviceId: device.deviceId,
             deviceName: device.name,
-            provider,
+            provider: remoteInvocationModels(provider),
             ...(catalog.modelVisibilityOverrides !== undefined
               ? { modelVisibilityOverrides: catalog.modelVisibilityOverrides }
               : {}),

@@ -1067,7 +1067,7 @@ describe('session runtime control wiring', () => {
     expect(registerSource).toContain(
       'shouldPreserveSessionRuntimeFallbackAutoResume(session, closeReason)',
     );
-    expect(registerSource).toContain('autoResumeBookkeeping.hasSchedule(session.id)');
+    expect(registerSource).toContain('autoResumeBookkeeping.hasLiveSchedule(session.id, attemptToken)');
     expect(registerSource).toContain(
       'decision.episodeAttempt,\n                decision.attemptToken,',
     );

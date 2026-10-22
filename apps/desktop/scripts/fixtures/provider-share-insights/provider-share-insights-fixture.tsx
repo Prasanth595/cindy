@@ -149,6 +149,12 @@ void mountPage({
       favoriteRecovery?: { ownerStamp: unknown };
     }) => {
       switch (cmd.action) {
+        case 'get-model-access':
+          return { version: 1, models: null, providerModels: null, availableModels: [
+            { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6' },
+            { id: 'claude-opus-4-6', name: 'Claude Opus 4.6' },
+            { id: 'gpt-5.5', name: 'GPT-5.5' },
+          ] };
         case 'get-visibility':
           return visibility;
         case 'set-visibility':
@@ -182,6 +188,8 @@ void mountPage({
           };
         case 'get-credential-consent':
           return { skip: false };
+        case 'get-idle-release':
+          return { value: { idleMinutes: 0 }, defaults: { idleMinutes: 0 }, isCustomized: false };
         case 'owned':
           return {
             ready: true,

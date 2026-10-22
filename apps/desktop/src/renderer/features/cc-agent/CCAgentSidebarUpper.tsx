@@ -49,6 +49,7 @@ import { projectDraftSessionTitle } from '@cindy/maker-shared/session-title';
 import { CINDY_MAKE_ENABLED, isCindyMakeSource } from '@cindy/maker-shared/cindy-make-feature';
 
 import { cn } from '@/lib/utils';
+import { provisionalDraftTaskId, subscribeProvisionalDraftTask } from './provisionalDraftTask';
 import { toast } from '@/lib/toast';
 import { isDataOwnerPushCurrent } from '@/contexts/dataOwnerGeneration';
 import { useCCSessions } from '@/hooks/useCCSessions';
@@ -308,6 +309,11 @@ import {
   useDeleteScheduleWithSessions,
   type DeletedScheduleGeneratedSessionResult,
 } from '@/features/scheduler/hooks/useDeleteScheduleWithSessions';
+import {
+  archiveConfirmDescription,
+  archiveScheduleWarningMany,
+  loadActiveBoundScheduleNames,
+} from '@/features/scheduler/lib/archiveScheduleWarning';
 import { resolveDialogueDeviceTarget, type DialogueDeviceTarget } from './lib/dialogueCreateTarget';
 import { makeDialogueNewMakerRouteState } from './lib/newMakerRouteState';
 import { makeGenericNewMakerRouteState } from './lib/genericNewMakerRouteState';
@@ -535,7 +541,11 @@ export function CCAgentSidebarUpper() {
   const match = useMatch('/cc-agent/:sessionId');
   const orcaMatch = useMatch('/cc-agent/orca/:sessionId');
   const filesMatch = useMatch('/cc-agent/files/:sessionId');
-  const activeSessionId = orcaMatch?.params.sessionId ?? match?.params.sessionId;
+  // 新建页上：它的未发送任务在列表里显示为当前项。
+  const provisionalDraftId = useSyncExternalStore(subscribeProvisionalDraftTask, provisionalDraftTaskId);
+  const routeSessionId = orcaMatch?.params.sessionId ?? match?.params.sessionId;
+  const activeSessionId =
+    routeSessionId === 'new' && provisionalDraftId ? provisionalDraftId : routeSessionId;
   const filesSessionId = filesMatch?.params.sessionId;
   // /bots/* 与任务列表共用本侧栏:正在看的伙伴会话同样算「注视中」,不记未读、不发通知。
   const viewedBotSessionId = useViewedBotSessionId();
@@ -868,6 +878,8 @@ interface ConfirmState {
   action: 'delete' | 'archive';
   /** P1: 会话 worktree 有未提交更改 → 确认文案追加警告(打开前预检)。 */
   dirtyWorktree: boolean;
+  /** 归档会暂停的 active 自动化名称(仅 archive;为空则不提示)。 */
+  scheduleNames?: readonly string[];
   /** Owned shared task to close before the confirmed archive/delete. */
   sharedTaskId?: string;
 }
@@ -877,6 +889,7 @@ const CONFIRM_INITIAL: ConfirmState = {
   sessionId: '',
   action: 'delete',
   dirtyWorktree: false,
+  scheduleNames: undefined,
   sharedTaskId: undefined,
 };
 
@@ -3094,9 +3107,9 @@ function ExpandedView({
   /* ---- Delete / Archive / Unarchive action handlers ----
    * delete 走 ConfirmDialog —— 不可逆，必须确认；
    * archive / archive-now 都直接执行，不弹确认框：归档可逆（菜单里就有「恢复」），
-   *   行内入口本身已经是两步确认，菜单入口再弹一次纯属多余摩擦。唯一例外是
-   *   worktree 有未提交改动 —— 归档会顺带回收 worktree，这时升级到 ConfirmDialog
-   *   展示 dirty warning；
+   *   行内入口本身已经是两步确认，菜单入口再弹一次纯属多余摩擦。例外有两个：
+   *   worktree 有未提交改动 —— 归档会顺带回收 worktree；任务绑定了 active 自动化
+   *   —— 归档后自动化会暂停。这两种情况升级到 ConfirmDialog 展示对应提醒；
    * unarchive 是 archive 的反向操作，无副作用，直接 patch 即可，不弹确认。
    *
    * 执行序列（关子进程 / 写库 / 乐观补丁 / 释放内存 / refresh / 跳转）抽在
@@ -3167,11 +3180,16 @@ function ExpandedView({
       };
       // 归档一律不弹确认框:它是可逆的(菜单里就有「恢复」),菜单入口与行内
       // 快捷按钮同一口径直接执行 —— 行内那个本身已经是两步确认。
-      // 唯一例外是 worktree 有未提交改动:归档会顺带回收 worktree,这时升级到
-      // 确认弹窗展示 dirty warning,不让改动被静默带走。
+      // 例外:worktree 有未提交改动(归档会顺带回收 worktree)、或任务绑定了
+      // active 自动化(归档后会暂停),这时升级到确认弹窗展示对应提醒。
       if (isArchiveLike) {
         // 接管拦截先结算:被接管时不该弹任何归档确认。
         if (await blockedByAttachment()) return;
+        // 自动化绑定读本地缓存,放在 worktree 预检之前,不占用预检之后的窗口。
+        const scheduleNames =
+          (await loadActiveBoundScheduleNames([
+            { id: sessionId, deviceLinkDeviceId: session?.deviceLinkDeviceId },
+          ])).get(sessionId) ?? [];
         // **worktree 预检必须是最后一个前置条件**(codex review):它之后再 await
         // 任何东西(比如原来排在后面的接管查询),都会给「clean 结论」留一段失效
         // 窗口 —— 编辑器或收尾中的 agent 在那段时间写脏工作区,归档就不带警告地
@@ -3193,12 +3211,13 @@ function ExpandedView({
         // 同样要弹确认框,否则归档会静默回收可能带着未提交改动的 worktree
         // (greptile review)。'unknown' 时不摆 dirty 警告文案 —— 那会谎称有改动,
         // 走的是普通归档确认。
-        if (preflight !== 'clean') {
+        if (preflight !== 'clean' || scheduleNames.length > 0) {
           setConfirm({
             open: true,
             sessionId,
             action: 'archive',
             dirtyWorktree: preflight === 'dirty',
+            scheduleNames,
             sharedTaskId,
           });
           return;
@@ -3419,6 +3438,7 @@ function ExpandedView({
       return;
     }
 
+    const scheduleWarning = await archiveScheduleWarningMany(t, candidates);
     const dirtyCount = await countDirtyWorktreesForRemoval(candidates);
 
     const skipNotes: string[] = [];
@@ -3444,7 +3464,8 @@ function ExpandedView({
           t('ccAgent.sidebar.bulkSelection.confirmArchive.dirtyWorktreeWarning', {
             count: dirtyCount,
           })
-        : '');
+        : '') +
+      (scheduleWarning ? ' ' + scheduleWarning : '');
 
     const ok = await confirmDialog({
       title: t('ccAgent.sidebar.bulkSelection.confirmArchive.title'),
@@ -3927,15 +3948,15 @@ function ExpandedView({
             : t('ccAgent.sidebar.confirmArchive.title')
         }
         description={
-          (confirm.action === 'delete'
-            ? t('ccAgent.sidebar.confirmDelete.description')
-            : t('ccAgent.sidebar.confirmArchive.description')) +
-          (confirm.dirtyWorktree
-            ? ' ' +
-              (confirm.action === 'delete'
-                ? t('ccAgent.sidebar.confirmDelete.dirtyWorktreeWarning')
-                : t('ccAgent.sidebar.confirmArchive.dirtyWorktreeWarning'))
-            : '')
+          confirm.action === 'delete'
+            ? t('ccAgent.sidebar.confirmDelete.description') +
+              (confirm.dirtyWorktree
+                ? ' ' + t('ccAgent.sidebar.confirmDelete.dirtyWorktreeWarning')
+                : '')
+            : archiveConfirmDescription(t, {
+                dirtyWorktree: confirm.dirtyWorktree,
+                scheduleNames: confirm.scheduleNames ?? [],
+              })
         }
         confirmText={
           confirm.action === 'delete'

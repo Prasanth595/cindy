@@ -503,7 +503,7 @@ export interface MakerSendTransactionDeps {
    * 保留意图本次不动。undefined = 不启用(测试最小 harness)。`signal` 是这次发送的取消信号：
    * 供应商组在这里等原电脑恢复时，发送被停止就不再等、不再换电脑。
    */
-  applyPendingAgentSwitch?(sessionId: string, options?: { signal?: AbortSignal; scheduled?: boolean }): Promise<void>;
+  applyPendingAgentSwitch?(sessionId: string, options?: { signal?: AbortSignal; scheduled?: boolean; clientId?: string }): Promise<void>;
   onModelDispatched?(sessionId: string, clientId: string): void;
   /**
    * 发送前换窗:必须在 getSession 之前。prepare 会关掉不健康的 live handle,
@@ -566,6 +566,16 @@ export interface MakerSendTransactionDeps {
    * into the wire message; the composer and saved user text remain unchanged.
    */
   readTaskSource?(sessionId: string): Promise<string | null>;
+  /**
+   * 伙伴私聊引用回复的 `[引用说明]`:按落库内容里的 `replyQuote` 从库里重读原消息;没有引用时为 null。
+   * 逐条都要带(陈述的是「本条」引用了什么),不进 wireNoteMemory 去重。
+   */
+  readReplyQuoteNote?(sessionId: string, persistedContent: string | undefined): Promise<string | null>;
+  /**
+   * 私聊话题的 `[话题说明]`(话题开在主对话的哪条消息上);不是私聊话题时为 null。
+   * 与 `[客户端说明]` 同层,只进 wire 消息。
+   */
+  readBotThreadNote?(sessionId: string): Promise<string | null>;
   /**
    * 逐轮环境说明去重(见 wireNoteMemory.ts):返回本轮真正要前置的段;与上一次已被
    * 引擎接受的内容相同的段不再重复。`force` 在交接首条(原生上下文刚重建)时整体重发。
@@ -1045,11 +1055,14 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
       const sendOrigin = requestedSendOpts.persistUserMessage?.origin ?? requestedSendOpts.origin;
       const scheduled = !!sendOrigin && typeof sendOrigin === 'object' &&
         (sendOrigin as { kind?: unknown }).kind === 'scheduler';
+      const rawClientId = requestedSendOpts.persistUserMessage?.clientId;
+      const clientId = typeof rawClientId === 'string' ? rawClientId : undefined;
       await deps.applyPendingAgentSwitch?.(
         sessionId,
-        requestedSendOpts.signal || scheduled ? {
+        requestedSendOpts.signal || scheduled || clientId ? {
           ...(requestedSendOpts.signal ? { signal: requestedSendOpts.signal } : {}),
           ...(scheduled ? { scheduled: true } : {}),
+          ...(clientId ? { clientId } : {}),
         } : undefined,
       );
       // 发送前的准备期间就被停止(如供应商组正在等原电脑恢复)：不再打开会话、不再派发，与 Session 在派发前
@@ -1387,9 +1400,15 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
             },
           )
         : null;
-      const withSourceNote = messageSourceNote
-        ? prependNoteToWireUserMessage(withGoalInactiveNote as HandoffWireMessage, messageSourceNote)
+      const replyQuoteNote = isOrdinaryUserTurn
+        ? ((await deps.readReplyQuoteNote?.(sessionId, typeof reconcilePersistContent === 'string' ? reconcilePersistContent : undefined).catch(() => null)) ?? null)
+        : null;
+      const withReplyQuoteNote = replyQuoteNote
+        ? prependNoteToWireUserMessage(withGoalInactiveNote as HandoffWireMessage, replyQuoteNote)
         : withGoalInactiveNote;
+      const withSourceNote = messageSourceNote
+        ? prependNoteToWireUserMessage(withReplyQuoteNote as HandoffWireMessage, messageSourceNote)
+        : withReplyQuoteNote;
       // 客户端说明(远程设备):同样只进 wire payload,落库/显示内容(persistUserMessage.content)
       // 不含它。位置在交接段**之前** —— 交接正文自带「以下是用户的新消息」结束标记,
       // 排在它后面会让说明插到那句话之后(顺序推导同 agentHandoff.composeForkOriginHandoff:
@@ -1419,9 +1438,13 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
       // 这三段是"环境说明":同一原生上下文里内容没变就不重复发(wireNoteMemory)。交接首条
       // (原生上下文刚重建)整体重发;只有引擎接受后才记为已发送。斜杠命令轮次本来就不带
       // 说明,也不改写记忆——它不代表模型已经看过新的环境。
+      const botThreadNote = allowsEnvironmentNotes
+        ? ((await deps.readBotThreadNote?.(sessionId).catch(() => null)) ?? null)
+        : null;
       const repeatableNotes: RepeatableWireNotes = {
         'side-chat': allowsEnvironmentNotes && taskSource === 'side-chat'
           ? SIDE_CHAT_CONTEXT : null,
+        'bot-thread': botThreadNote,
         'client-environment': mobileClientNote,
         'cindy-make': cindyMakeNote,
         'ui-language': uiLanguageNote,
@@ -1441,6 +1464,9 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
         : withCindyMakeNote;
       if (plannedNotes['side-chat']) {
         outgoing = prependNoteToWireUserMessage(outgoing as HandoffWireMessage, plannedNotes['side-chat']);
+      }
+      if (plannedNotes['bot-thread']) {
+        outgoing = prependNoteToWireUserMessage(outgoing as HandoffWireMessage, plannedNotes['bot-thread']);
       }
       const appContext = shouldPrependMobileClientPromptNote(normalized, sess.agentKind)
         ? await mcpAppModelContext(sessionId)

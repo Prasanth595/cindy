@@ -33,6 +33,8 @@ export interface RsbWindowContext {
   deviceLinkDeviceId?: string | null;
   /** Pi is the only harness that exposes the Subagents sidebar surface. */
   subagentsAvailable?: boolean;
+  /** Only the linked Bot identity needed by the detached add-tab menu. Absent on older senders. */
+  botOwner?: { botId: string; canonical: boolean } | null;
   /** 当前主窗视图是否有侧边栏语义(设置页等无会话视图为 false,子窗口显示占位空态)。 */
   available: boolean;
 }
@@ -40,14 +42,6 @@ export interface RsbWindowContext {
 /** main → 子窗口的命令推送(如主窗终端快捷键转发 / detached RSB 内定位文件)。 */
 export type RsbWindowCommand =
   | { type: 'open-routines-tab'; sessionId: string; botId: string }
-  /** 伙伴主任务页的工作台初始化或用户显式打开。 */
-  | {
-      type: 'open-bot-workbench-tab';
-      sessionId: string;
-      botId: string;
-      /** True is an explicit header click; absent keeps passive first-visit behavior. */
-      focusTab?: boolean;
-    }
   | { type: 'open-terminal'; sessionId: string }
   | { type: 'toggle-review-tab'; sessionId: string }
   | { type: 'open-web-browser'; sessionId: string; url: string }

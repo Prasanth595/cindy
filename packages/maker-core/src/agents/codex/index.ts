@@ -2574,6 +2574,8 @@ export class CodexAgent extends BaseAgent {
       historyHome?: string;
       /** 受邀者任务的 app-server：值是分享给它的供应商(见 prepareCodexExtraSpawnConfig)。 */
       deviceHostedGuestProviderId?: string;
+      deviceHostedGuestSessionId?: string;
+      deviceHostedGuestModelIds?: readonly string[];
     } = {},
   ): Promise<AppServerHost> {
     const key = opts.keyOverride ?? (opts.providerId ? `local-account:${opts.providerId}` : hostKey(remoteHostId));
@@ -2802,6 +2804,8 @@ assertRouteCurrent();
         opts.routeIsCurrent,
         opts.deviceHostedGuestProviderId,
         opts.nativeStorageOnly,
+        opts.deviceHostedGuestSessionId,
+        opts.deviceHostedGuestModelIds,
       ).finally(() => {
         // 成功: this.hosts 已赋值, 后续走快路径; 失败: 清掉 promise 让下次调用能重试
         const current = this.hostPromises.get(key);
@@ -3051,6 +3055,8 @@ assertRouteCurrent();
     routeIsCurrent?: () => boolean,
     deviceHostedGuestProviderId?: string,
     nativeStorageOnly?: boolean,
+    deviceHostedGuestSessionId?: string,
+    deviceHostedGuestModelIds?: readonly string[],
   ): Promise<AppServerHost> {
     const seq = (this.createHostSeqByKey.get(key) ?? 0) + 1;
     this.createHostSeqByKey.set(key, seq);
@@ -3195,7 +3201,7 @@ assertRouteCurrent();
                     customContextHostKey: `${key}:${generation}`,
                   }
                 : {}),
-              ...(deviceHostedGuestProviderId ? { deviceHostedGuestProviderId } : {}),
+              ...(deviceHostedGuestProviderId ? { deviceHostedGuestProviderId, deviceHostedGuestSessionId, deviceHostedGuestModelIds } : {}),
             },
           );
           hostRetirementCleanup = cfg.onHostRetired;
@@ -5151,7 +5157,7 @@ assertRouteCurrent();
           ? { keyOverride: currentHostKey }
           : {}),
         ...(localAuthPolicy === 'isolated' ? { localAuthPolicy } : {}),
-        ...(guestCodexHome && guestProviderId ? { deviceHostedGuestProviderId: guestProviderId } : {}),
+        ...(guestCodexHome && guestProviderId ? { deviceHostedGuestProviderId: guestProviderId, deviceHostedGuestSessionId: sid, deviceHostedGuestModelIds: hosted?.guestProvider?.modelIds } : {}),
         ...(reviewMode
           ? { hostPurpose: 'review' as const }
           : usesCustomContextHost
@@ -13143,6 +13149,7 @@ assertRouteCurrent();
     // ── AgentSessionHandle ──────────────────────────────────────────────────
     const handle: AgentSessionHandle = {
       disabledSkillPaths: disabledSkillSnapshot,
+      getAutoReviewOwner: () => currentApprovalConfig().approvalsReviewer === 'auto_review' ? 'native' : 'cindy',
       reviewAutoPermissionAction: async (action) => {
         const decision = await reviewAutoAction(action);
         if (decision.unavailable) autoReviewUnavailableNotice.notify();

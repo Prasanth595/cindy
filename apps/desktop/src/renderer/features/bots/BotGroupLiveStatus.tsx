@@ -13,6 +13,8 @@ import { Sparkles } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { Button } from '@/components/ui/button';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
+import { MENU_ITEM_CLASS } from '@/features/cc-agent/sidebar/menuStyles';
 import { cn } from '@/lib/utils';
 import { useAgentIslandActivity } from '@/state/agentIslandActivity';
 import { isBotGroupNoReplyText, type BotGroupMemberView, type BotGroupSpeakerActivity, type BotGroupSummary } from '../../../shared/botGroupChat';
@@ -100,11 +102,15 @@ export function BotGroupProgressStrip({
   step,
   speakers,
   onStop,
+  canStopAll = false,
   stopping,
 }: {
   step: (BotGroupRunningStep & { member: BotGroupMemberView | undefined; displayName: string }) | null;
   speakers: readonly BotGroupLiveSpeaker[];
-  onStop: () => void;
+  /** Stops your own work; `all` also stops other people's (owners and admins only). */
+  onStop: (scope?: 'all') => void;
+  /** Someone else's work is also running and you may stop it: Stop asks which. */
+  canStopAll?: boolean;
   stopping: boolean;
 }) {
   const { t } = useTranslation();
@@ -124,6 +130,8 @@ export function BotGroupProgressStrip({
   if (!step && (!lead || now - since < BOT_GROUP_PROGRESS_STRIP_DELAY_MS)) return null;
   const member = step ? step.member : lead?.member;
   const name = step ? step.displayName : lead?.displayName ?? '';
+  // A queue turn is someone speaking, not a numbered step of work.
+  const workStep = step && step.plan.kind !== 'talk' ? step : null;
   // The Session's compact detail may still be the previous turn's silence marker (NO_REPLY);
   // that is not an action anyone should read.
   const rawAction = live?.compactDetail?.trim() || '';
@@ -141,13 +149,13 @@ export function BotGroupProgressStrip({
         <div className={cn('flex min-h-9 min-w-0 items-center gap-2 py-1', expanded && canView ? 'px-3' : 'pl-2 pr-1')}>
           {member ? <BotAvatar bot={member} size="xs" /> : null}
           <p role="status" aria-live="polite" className="flex min-w-0 flex-1 items-center gap-1 truncate text-12 leading-5 text-[var(--text-secondary)]">
-            {step ? (
+            {workStep ? (
               <span className="shrink-0 font-medium text-[var(--text-primary)]">
-                {t('bots.groupChat.progress.step', { step: step.index, total: step.total })}
+                {t('bots.groupChat.progress.step', { step: workStep.index, total: workStep.total })}
               </span>
             ) : null}
             <span className="min-w-0 truncate">
-              {step ? ` · ${name} ${step.step.task}` : t('bots.groupChat.progress.speaking', { name })}
+              {workStep ? ` · ${name} ${workStep.step.task}` : t('bots.groupChat.progress.speaking', { name })}
             </span>
             <span className="shrink-0 tabular-nums">
               {' · '}
@@ -163,18 +171,39 @@ export function BotGroupProgressStrip({
                 {t(expanded ? 'bots.groupChat.progress.hideProcess' : 'bots.groupChat.progress.viewProcess')}
               </Button>
             ) : null}
-            <Button
-              type="button"
-              variant="secondary"
-              tone="quiet"
-              size="sm"
-              compact
-              loading={stopping}
-              onClick={onStop}
-              className="text-[var(--text-danger)]"
-            >
-              {t('bots.groupChat.progress.stop')}
-            </Button>
+            {canStopAll ? (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button type="button" variant="secondary" tone="quiet" size="sm" compact loading={stopping} className="text-[var(--text-danger)]">
+                    {t('bots.groupChat.progress.stop')}
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" side="top" className="min-w-[220px]">
+                  <DropdownMenuItem className={MENU_ITEM_CLASS} onSelect={() => onStop()}>
+                    {t('bots.groupChat.progress.stopMine')}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem className={cn(MENU_ITEM_CLASS, 'h-auto items-start py-2')} onSelect={() => onStop('all')}>
+                    <span className="flex min-w-0 flex-col gap-0.5">
+                      <span className="text-[var(--text-danger)]">{t('bots.groupChat.progress.stopAll')}</span>
+                      <span className="text-12 leading-[1.33] text-[var(--cmd-palette-item-meta)]">{t('bots.groupChat.progress.stopAllHint')}</span>
+                    </span>
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            ) : (
+              <Button
+                type="button"
+                variant="secondary"
+                tone="quiet"
+                size="sm"
+                compact
+                loading={stopping}
+                onClick={() => onStop()}
+                className="text-[var(--text-danger)]"
+              >
+                {t('bots.groupChat.progress.stop')}
+              </Button>
+            )}
           </span>
         </div>
         {expanded && canView && sessionId ? (
@@ -202,6 +231,8 @@ export function botGroupHeaderStatus(
   };
   const plan = group.openPlan;
   if (plan?.status === 'running' && plan.currentStep !== null && plan.currentStepStatus === 'running') {
+    // A queue's turn is someone speaking, not a step of work.
+    if (plan.kind === 'talk') return t('bots.groupChat.header.speaking', { name: plan.currentBotName?.trim() || '' });
     return t('bots.groupChat.header.stepRunning', { name: plan.currentBotName?.trim() || '', step: plan.currentStep + 1 });
   }
   if (group.planningBotId) return t('bots.groupChat.header.planning', { name: nameOf(group.planningBotId) });

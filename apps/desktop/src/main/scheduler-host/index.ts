@@ -45,6 +45,7 @@ import {
   cancelSchedulerAutoResume,
   enqueueSchedulerPrompt,
   ensureSchedulerQueueRestored,
+  findSchedulerUsageLimitWait,
   hasQueuedSchedulerPrompt,
   isSchedulerAutoResumePending,
   isSchedulerPromptTracked,
@@ -128,6 +129,7 @@ async function startSchedulerInternal(deps: StartSchedulerDeps): Promise<Schedul
       return listMessagesForAgentHandoff(sessionId, null, undefined, 'authorization');
     },
     onUndispatchedUserTurn: deps.onUndispatchedUserTurn,
+    findUsageLimitWait: findSchedulerUsageLimitWait,
     acquirePendingAgentSwitch: acquirePendingAgentSwitchForDirectSend,
     preserveModelPreferences: preserveScheduledModelPreferencesUnderLock,
     onModelDispatched: recordDispatchedModel,

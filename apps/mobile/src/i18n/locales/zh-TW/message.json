@@ -240,7 +240,15 @@
     "sendingMessage": "傳送中的訊息：{{text}}",
     "uploadingAttachments": "附件上傳中 {{uploaded}}/{{total}}",
     "delete": "刪除",
-    "retry": "重試"
+    "retry": "重試",
+    "notSent": "未傳送",
+    "imagesNotUploaded_one": "{{count}} 張圖片沒傳上去",
+    "imagesNotUploaded_other": "{{count}} 張圖片沒傳上去",
+    "waitingForComputer": "等電腦連上後傳送",
+    "waitingForNetwork": "等網路恢復後傳送",
+    "queued": "排隊中",
+    "retryImage": "重新上傳這張圖片",
+    "waitingMessage": "等待傳送的訊息：{{text}}"
   },
   "systemCard": {
     "contextRebuild": {
@@ -294,6 +302,7 @@
     "agentSwitchLocation": "Agent 改到 {{device}} 執行",
     "agentSwitchLocationThisComputer": "Agent 改回這台電腦執行",
     "agentSwitchLocationOtherComputer": "Agent 改到另一台電腦執行",
+    "agentSwitchLocationQuotaRebalance": "這個帳號的配額更該先用",
     "learnStarted": "技能學習已啟動",
     "learnStartedBody": "蒸餾在電腦端後臺進行，完成後請到電腦端檢視並評審技能草案。",
     "learnFailed": "技能學習未能啟動",

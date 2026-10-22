@@ -259,7 +259,10 @@ export interface SchedulerQueueDeps {
   /** 普通聊天自动续跑是否已接管当前 scheduler run。 */
   isAutoResumePending?: (sessionId: string, runId: string) => boolean;
   /** 已接管的续跑最终仍失败（含补发未 dispatch / Stop / clear）。 */
-  onAutoResumeFailed?: (sessionId: string, runId: string, listener: () => void) => () => void;
+  onAutoResumeFailed?: (
+    sessionId: string, runId: string, listener: () => void,
+    quotaWait?: { start(): void; resume(): boolean },
+  ) => () => void;
   /** Schedule pause/delete：撤销仍属于该 run 的退避或派发前隐藏续跑。 */
   cancelAutoResume?: (sessionId: string, runId: string) => void;
 }
@@ -272,6 +275,8 @@ export interface MakerScheduleRunnerDeps {
   readAutoReviewHistory?: (sessionId: string) => Promise<AutoReviewHistoryMessage[]>;
   beforeDispatchUserTurn?: (sessionId: string) => void | Promise<void>;
   onUndispatchedUserTurn?: (sessionId: string) => void;
+  /** Saved quota waits deduplicate by schedule even when each fire creates a new task. */
+  findUsageLimitWait?: (scheduleId: string) => Promise<string | null>;
   /**
    * 锁住 heartbeat session、落实 deferred switch 并 bootstrap 新 live session。
    * runner 在 Session.send 返回后 release。
@@ -430,6 +435,8 @@ interface TurnCompletionWaiter {
 
 interface TurnCompletionWaiterOptions {
   onProgress?: () => void;
+  onQueueWaitStart?: FireContext['onQueueWaitStart'];
+  endQueueWait?: FireContext['endQueueWait'];
   origin: { kind: 'scheduler'; scheduleId: string; scheduleName: string; runId: string };
   /** Coordinator queue path has authoritative per-turn origins; direct fallback keeps legacy compatibility. */
   requireTurnOrigin?: boolean;
@@ -572,6 +579,7 @@ export class MakerScheduleRunner implements ScheduleRunner {
       | 'session-running'
       | 'already-queued'
       | 'queue-restore-pending'
+      | 'usage-limit-wait'
       | 'routine-permission-unavailable'
       | 'routine-dispatch-invalidated'
       | 'queue-wait-timeout',
@@ -782,6 +790,14 @@ export class MakerScheduleRunner implements ScheduleRunner {
     ctx: FireContext,
     holder: EphemeralSessionHolder,
   ): Promise<FireResult> {
+    const waitingSessionId = await this.deps.findUsageLimitWait?.(schedule.id);
+    throwIfFireAborted(ctx.signal, 'quota wait check');
+    if (waitingSessionId) {
+      if (this.canDefer(schedule, ctx)) return this.deferFire(schedule, waitingSessionId, 'usage-limit-wait');
+      const message = 'SCHEDULE_USAGE_LIMIT_WAIT: this schedule already has a task waiting for quota recovery';
+      await this.notifyFailureSilent(schedule, ctx, message);
+      throw new Error(message);
+    }
     // 1. effort 白名单
     if (schedule.effort && !ALLOWED_EFFORT.has(schedule.effort)) {
       const errMsg = `invalid effort: ${schedule.effort}`;
@@ -1833,7 +1849,9 @@ export class MakerScheduleRunner implements ScheduleRunner {
       scheduleName: schedule.name,
       runId: ctx.runId,
     } as const;
-    const waiter = this.createTurnCompletionWaiter(session, { onProgress: ctx.onProgress, origin });
+    const waiter = this.createTurnCompletionWaiter(session, {
+      onProgress: ctx.onProgress, onQueueWaitStart: ctx.onQueueWaitStart, endQueueWait: ctx.endQueueWait, origin,
+    });
     const turnFinished = waiter.turnFinished;
 
     // 6. send 并在 onAccepted 中落库 user prompt（不要 close session）。
@@ -2620,6 +2638,8 @@ export class MakerScheduleRunner implements ScheduleRunner {
         if (live) {
           waiterSlot.current = this.createTurnCompletionWaiter(live, {
             onProgress: ctx.onProgress,
+            onQueueWaitStart: ctx.onQueueWaitStart,
+            endQueueWait: ctx.endQueueWait,
             origin,
             requireTurnOrigin: true,
           });
@@ -3210,6 +3230,8 @@ export class MakerScheduleRunner implements ScheduleRunner {
         this.deps.getDb(),
         live.id,
         {
+          // Model routing never owns a bound task's permission choice.
+          permissionMode: null,
           model: modelChanged && modelApplied ? targetModel : undefined,
           effort: effortChanged && effortApplied ? reconciledEffort : undefined,
           fastMode: resolvedSelection?.fastMode,
@@ -3391,6 +3413,7 @@ export class MakerScheduleRunner implements ScheduleRunner {
       let offStatus: () => void = () => undefined;
       let currentSession: Session | null = null;
       let settled = false;
+      let quotaWaiting = false;
       const clearInterruptedDoneTimer = (): void => {
         if (interruptedDoneTimer) {
           clearTimeout(interruptedDoneTimer);
@@ -3409,6 +3432,10 @@ export class MakerScheduleRunner implements ScheduleRunner {
         currentSession = null;
       };
       const cleanup = (): void => {
+        if (quotaWaiting) {
+          quotaWaiting = false;
+          options.endQueueWait?.(false);
+        }
         clearInterruptedDoneTimer();
         pendingSettleUnsub?.();
         pendingSettleUnsub = undefined;
@@ -3631,6 +3658,20 @@ export class MakerScheduleRunner implements ScheduleRunner {
         sessionId,
         options.origin.runId,
         () => fail(new Error('scheduled task auto-resume failed')),
+        {
+          start: () => {
+            if (settled || quotaWaiting) return;
+            quotaWaiting = true;
+            options.onQueueWaitStart?.();
+          },
+          resume: () => {
+            if (settled) return false;
+            if (!quotaWaiting) return true;
+            if (options.endQueueWait?.(true) === false) return false;
+            quotaWaiting = false;
+            return true;
+          },
+        },
       );
       stopListeningTurn = (): void => {
         cleanup();
@@ -3768,6 +3809,7 @@ function extractErr(data: unknown): string {
  */
 type FireAbortStage =
   | 'runner entry'
+  | 'quota wait check'
   | 'queue snapshot restore'
   | 'workspace allocation'
   | 'session creation'

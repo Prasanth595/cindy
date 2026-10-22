@@ -120,6 +120,7 @@ import {
   insertPromptIntoEditor,
   subscribePromptInsert,
   subscribeSessionLinkInsert,
+  subscribeTodoReferenceInsert,
 } from '@/lib/composerActionsBus';
 import { resolveComposerModelSelection } from './composerModelSelection';
 import type { SessionRuntimeProfileProjection, SessionRuntimePendingProjection } from '@/lib/ccAgent.types';
@@ -527,8 +528,8 @@ interface ChatInputProps {
     },
   ) => boolean | void | Promise<boolean | void>;
   /**
-   * 用户在已有任务的输入框里输入了内容（不含草稿恢复、语音回填、发送后清空等程序写入）。
-   * 父组件据此提前启动 Agent；每次按键都会调用，节流由接收方负责。
+   * 用户开始往输入框里放内容：键盘 / 输入法输入、粘贴、开始语音输入（不含草稿恢复、
+   * 语音回填、发送后清空等程序写入）。父组件据此提前启动 Agent；每次都会调用，节流由接收方负责。
    */
   onComposerTyping?: () => void;
   /** Session ID for binding workingDir. When absent, folder picker is hidden. */
@@ -2385,6 +2386,7 @@ export function ChatInput({
       },
       handlePaste(view, event) {
         if (composerMutationLockedRef.current) return true;
+        onComposerTypingRef.current?.();
         // Intercept clipboard file/folder/image. Three sources to handle,
         // matching the onDrop logic below:
         //   1. Folder copied from OS file manager  → addFolderPath (@dir chip)
@@ -3091,6 +3093,18 @@ export function ChatInput({
     });
   }, [editor, sessionId]);
 
+  // 伙伴近况里点一条待办：把它作为引用 chip 放进输入框，用户自己写一句再发。
+  useEffect(() => {
+    if (!editor || !sessionId) return;
+    return subscribeTodoReferenceInsert(({ targetSessionId, href, title }) => {
+      if (targetSessionId !== sessionId || editor.isDestroyed) return;
+      if (composerMutationLockedRef.current) return;
+      const at = lastComposerSelectionFromRef.current ?? editor.state.selection.from;
+      appendMentionChip(editor, { kind: 'todo', label: title, path: href }, { at });
+      lastComposerSelectionFromRef.current = editor.state.selection.from;
+    });
+  }, [editor, sessionId]);
+
   // 徽标类引导动作(如 PR 徽标在 gh 未登录时点击):把一句现成提示词填进
   // 输入框并聚焦,只填不发。发送中 / 语音占用时与键盘输入同锁,静默忽略。
   useEffect(() => {
@@ -3363,6 +3377,7 @@ export function ChatInput({
   const handleVoiceInputStart = useCallback((): boolean => {
     // 同步 claim 录音后立刻返回是否占用；授权确认（beforeStart）与启动提示音
     // 由 useVoiceInput 的后台启动流程继续处理。
+    onComposerTypingRef.current?.();
     return voiceInput.start({
       startedAt: performance.now(),
       beforeStart: onBeforeVoiceInputStart,

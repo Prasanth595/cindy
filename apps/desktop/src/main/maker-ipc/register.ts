@@ -44,7 +44,7 @@ import { getManagedLlamaCppService } from '../local-model-runtime/llamaCppServic
 import { ensureManagedLlamaCppProvider } from '../local-model-runtime/managedLlamaCppProvider.js';
 import { setBotRemoteMessageService } from './botRemoteMessageReceiver.js';
 import { handleListDevices, defaultDeps as deviceDirectoryDeps } from '../device-link/ipc.js';
-import { configureBotAutonomyHost, noteBotAutonomyInputProjection } from '../bot-autonomy/hub.js';
+import { configureBotAutonomyHost, getBotAutonomyGlance, noteBotAutonomyInputProjection } from '../bot-autonomy/hub.js';
 import { getHostSourceDevice, getSelfDeviceId, remoteBackgroundInvoke, remoteInvoke as invokeBotPeer } from '../device-link/index.js';
 import { readDeviceProviderViews } from '../remote-agent/controller/deviceCatalog.js';
 import { checkDeviceRoute } from '../remote-agent/controller/deviceRouteCheck.js';
@@ -72,8 +72,10 @@ import {
   setProviderGroupClaudeUsageReader,
   setProviderGroupCodexUsageReader,
   setProviderGroupSessionGroupReader,
+  setProviderGroupSessionRebalance,
   setProviderGroupTurnProbe,
 } from '../provider-group/runtime.js';
+import { readProviderGroupAutoRebalance, writeProviderGroupAutoRebalance } from '../provider-group/sessionPrefs.js';
 import { countProviderRunningTurns, type ProviderLocalLoadRoute } from '../provider-group/localLoad.js';
 import { remoteAgentHostRunningProviders, resolveRemoteAgentHostClaudeSessionId } from '../remote-agent/host/service.js';
 import {
@@ -85,7 +87,7 @@ import {
   type ProviderGroupStartContext,
   type ProviderGroupTurnErrorHooks,
 } from '../provider-group/service.js';
-import { createProviderGroupHeldTurnErrors } from '../provider-group/heldTurnErrors.js';
+import { createProviderGroupHeldRecovery, createProviderGroupHeldTurnErrors } from '../provider-group/heldTurnErrors.js';
 import { createProviderGroupHeldWorkerTerminals } from '../provider-group/heldWorkerTerminals.js';
 import { providerGroupSwitchCause } from '../provider-group/failurePolicy.js';
 import { listProviderGroups, readProviderGroup } from '../provider-group/store.js';
@@ -345,6 +347,7 @@ import {
 } from './sessionQueueControl.js';
 import {
   createSessionBindingLifecycle,
+  createSessionCloseTeardown,
   finalizeSessionClose,
   runSessionCloseCleanup,
 } from './sessionBindingLifecycle.js';
@@ -490,6 +493,8 @@ import {
   getSessionRowSnapshot,
   getSessionFsSnapshot,
   getSessionRowSnapshotStrict,
+  commitProvisionalSession,
+  discardProvisionalSessionRow,
   persistSessionFields,
   recycleSessionWorktreeForStatusChange,
   restoreArchivedSessionForSend,
@@ -533,6 +538,7 @@ import {
   orcaWorkers,
   orcaWorkerCreationReservations,
   sessions,
+  schedules,
 } from '../localDb/schema.js';
 import { nextBotModelRoute, normalizeBotModelChain, type BotModelRoute } from '../../shared/botModelChain.js';
 import { createBotModelRouteReconciler } from './botModelRouteReconciler.js';
@@ -597,7 +603,7 @@ import {
   createBotDirectMessageService,
   type BotDirectMessageService,
 } from './botDirectMessageService.js';
-import { createBotGroupChatService, type BotGroupChatService, type BotGroupChatServiceDeps } from './botGroupChatService.js';
+import { createBotGroupChatService, settleBotGroupLaneTerminal, type BotGroupChatService, type BotGroupChatServiceDeps, type BotGroupLaneTerminal } from './botGroupChatService.js';
 import { settleUndispatchedBotGroupTurn } from './botGroupRuntimeFailure.js';
 import { withChatServer } from './chatServer.js';
 import { companionHomes, isCompanionShadowed } from '../companion-cloud/homes.js';
@@ -652,6 +658,7 @@ import {
   ensureCodexMcpBridgeStartedForRemote,
   finalizeCodexAfterAuthModeChange,
   getMaker,
+  handleRemoteWorkerBridge,
   listCodexGatewayHostKeys,
   refreshCodexGatewayHost,
   setCodexGatewayKeyRefreshHook,
@@ -926,6 +933,7 @@ import {
   TRUSTED_DESKTOP_QUEUE_ORIGIN,
 } from './makerSendTransaction.js';
 import { createAgentPrewarmer, isAgentPrewarmEligible } from './agentPrewarm.js';
+import { isProvisionalSession } from '../localDb/provisionalSessions.js';
 import { findLatestAssistantTranscriptUuid } from './latestAssistantTranscriptUuid.js';
 import {
   installDesktopInteractionHandler,
@@ -1014,6 +1022,7 @@ import { createOrcaRemoteWorkers, invokeDeviceValue, isExecutionDeviceCandidate,
 import { getReceivedShares, providerShareAgentDeviceId } from '../device-link/providerShareGuest.js';
 import {
   ORCA_EXECUTION_DEVICES_CHANNEL,
+  ORCA_REMOTE_WORKER_BRIDGE_CHANNEL,
   COMPANION_CLOUD_CAPS_CHANNEL,
   COMPANION_CLOUD_FLUSH_CHANNEL,
   COMPANION_CLOUD_HAND_OVER_CHANNEL,
@@ -1090,13 +1099,19 @@ import {
 import { clearSealedCodexPlanState, readCodexPlanState } from '../localDb/codexPlanState.js';
 import { buildCompletedPlanGuardNote, buildPlanReconcileNote } from './planReconcile.js';
 import { peekGoalInactiveNote } from '../goal-host/inactiveNote.js';
+import { readReplyQuoteNote, REPLY_QUOTE_SOURCE_CONTENT } from './chatReplyQuoteNote.js';
+import { readBotDmThreadContextNote } from './botDmThreadContext.js';
 import { readTurnUsageResetAt } from '../goal-host/usageLimit.js';
 import {
   readAccountUsageLimit,
+  readRemoteAccountUsageLimit,
+  claudeAccountUsageLimit,
+  codexAccountUsageLimit,
   sessionUsesOtherMachineAccount,
   subscriptionFamilyOf,
 } from '../usage/accountUsageLimit.js';
 import { UsageLimitAutoResume } from './usageLimitAutoResume.js';
+import { createUsageLimitRecoveryStore, type SavedUsageLimitWait } from './usageLimitRecoveryStore.js';
 import { type MakerSessionCreateOpts, withCreateSessionStderr } from './sessionRequest.js';
 import { persistAndHydrateSessionProvider } from './sessionProviderBootstrap.js';
 import { registerMakerSessionSendHandler } from './sessionSendHandler.js';
@@ -1401,6 +1416,7 @@ import {
   isAutoResumeUserMessage,
   isInterruptedTurnError,
   shouldPreserveWaitingContinuationOnlyAutoResume,
+  shouldPreserveRuntimeFallbackAutoResume,
   type InterruptedTurnErrorSignals,
 } from './interruptedTurnAutoResume.js';
 import { readInterruptedTurnAutoResumeSettings } from '../maker-host/interrupted-turn-auto-resume-store.js';
@@ -1565,7 +1581,7 @@ export function resolveSessionRuntimeRoute(
 }
 
 /**
- * 会话所用账号的重置时刻:错误自带 → 报错原文 → 订阅用量快照(须显示已用满)。
+ * 会话所用账号的重置时刻:结构化错误 → 实际账号的用量窗口 → 报错原文。
  * 只服务订阅账号:API key / Coding Plan / 网关等来源的普通 429 即使带 Retry-After,也不是
  * 周期额度耗尽,按产品规则只报错不等待。
  */
@@ -1580,21 +1596,144 @@ async function resolveSessionUsageResetAt(
   const agentKind = row?.agentKind ? dbToMakerAgentKind(row.agentKind) : null;
   if (!row || !agentKind) return null;
   const { providerId, modelId } = resolveSessionRuntimeRoute(sessionId, agentKind, row);
-  if (!subscriptionFamilyOf(agentKind, providerId)) return null;
+  let family = subscriptionFamilyOf(agentKind, providerId);
+  if (!family && row.agentDeviceId && !row.remoteHostId && providerId) {
+    const views = await readDeviceProviderViews(remoteBackgroundInvoke, row.agentDeviceId);
+    family = views.find(view => view.id === providerId)?.auth.native ?? null;
+  }
+  if (!family) return null;
   // SSH 远程会话 / 远程 Agent 的报错用那台机器的本地时间:不带时区的钟点不按本机时区理解。
   const otherMachineAccount = sessionUsesOtherMachineAccount(row);
   const fromError = readTurnUsageResetAt(signals, Date.now(), {
     localTimeZoneTrusted: !otherMachineAccount,
   });
-  if (fromError !== null) return fromError;
-  // SSH 远端主机 / 远程 Agent 所在电脑用自己的登录,本机快照属于另一个账号,不能拿来推算。
-  if (otherMachineAccount) return null;
-  const limit = await readAccountUsageLimit(agentKind, providerId, modelId);
-  return limit?.limited ? limit.resetAtMs : null;
+  if (fromError !== null && signals.usageResetAt !== undefined) return fromError;
+  // Ask the actual account for its dated windows before relying on a text-only clock.
+  // SSH has no account-usage RPC; never substitute a local account there.
+  try {
+    const scope = activeOwnerScopeKey();
+    const limit = row.remoteHostId ? null : row.agentDeviceId && providerId
+      ? await readRemoteAccountUsageLimit({ deviceId: row.agentDeviceId, providerId, family, agentKind, modelId },
+        (deviceId, channel, args) => remoteBackgroundInvoke(deviceId, channel, args, {
+          preSend: () => { if (scope !== activeOwnerScopeKey()) throw new Error('Account changed'); },
+        }))
+      : family === 'claude'
+        ? claudeAccountUsageLimit(await readClaudeSubscriptionUsageSnapshotForDeviceLink(providerId ?? undefined, { fresh: true }), modelId)
+        : family === 'codex'
+          ? codexAccountUsageLimit(await readCodexAccountUsageSnapshotWithWebRefresh(providerId ?? undefined, { fresh: true }), { agentKind, modelId })
+          : await readAccountUsageLimit(agentKind, providerId, modelId);
+    if (scope !== activeOwnerScopeKey()) return null;
+    if (limit?.limited && limit.resetAtMs !== null) return limit.resetAtMs;
+  } catch (error) {
+    log.info('usage reset lookup unavailable; retaining provider error hint', { sessionId, error: String(error) });
+  }
+  return fromError;
 }
 
-// 普通任务撞上账号限额:照常报错,同时等额度重置后自动继续(仅本次运行内有效)。
+// 普通任务撞上账号限额:照常报错，保存等待并在额度重置后自动继续。
 // coordinator 是可变绑定,必须懒读。
+const usageLimitRecoveryStore = createUsageLimitRecoveryStore({
+  filePath: () => ownerScopedUserDataPath('usage-limit-waits.json'),
+  scopeKey: activeOwnerScopeKey,
+  log,
+});
+const savedUsageLimitWaits = new Map<string, { token: number; record: SavedUsageLimitWait }>();
+let usageLimitRecoverySuspended = false;
+
+function usageLimitSavedRoute(row: Awaited<ReturnType<typeof getSessionRowSnapshot>>): string {
+  return JSON.stringify([row?.agentKind, row?.providerId, row?.model, row?.agentDeviceId, row?.remoteHostId]);
+}
+
+async function isSavedUsageLimitWaitValid(record: SavedUsageLimitWait): Promise<boolean> {
+  const row = await getSessionRowSnapshot(record.sessionId);
+  if (!row || row.status !== 'active' || (row.clearedAt ?? 0) >= record.savedAt ||
+    (row.userSendAt ?? 0) > record.savedAt || usageLimitSavedRoute(row) !== record.route) return false;
+  const origin = record.item.origin;
+  if (origin?.kind === 'scheduler') {
+    const [schedule] = await getDbClient().drizzle.select({ status: schedules.status })
+      .from(schedules).where(eq(schedules.id, origin.scheduleId)).limit(1);
+    if (!schedule || schedule.status !== 'active') return false;
+  }
+  return true;
+}
+
+function forgetSavedUsageLimitWait(sessionId: string): void {
+  if (usageLimitRecoverySuspended) return;
+  const pending = savedUsageLimitWaits.get(sessionId);
+  if (!pending) return;
+  savedUsageLimitWaits.delete(sessionId);
+  void usageLimitRecoveryStore.take(sessionId, pending.record.id).catch(error =>
+    log.warn('could not cancel saved usage-limit wait', { sessionId, error: String(error) }));
+}
+
+/** Called before scheduler/Maker teardown; shutdown is not a user's cancellation. */
+export function suspendUsageLimitWaits(): void {
+  usageLimitRecoverySuspended = true;
+  usageLimitAutoResume.suspend();
+  for (const [sessionId, pending] of savedUsageLimitWaits) agentInputCoordinatorHolder?.unloadUsageLimitRecovery(sessionId, pending.token);
+  savedUsageLimitWaits.clear();
+}
+
+export async function flushUsageLimitWaits(): Promise<void> { await usageLimitRecoveryStore.flush(); }
+
+export async function reconcileScheduledUsageLimitWaits(scheduleId: string): Promise<void> {
+  const scope = activeOwnerScopeKey();
+  for (const [sessionId, pending] of savedUsageLimitWaits) {
+    if (pending.record.item.origin?.kind !== 'scheduler' || pending.record.item.origin.scheduleId !== scheduleId) continue;
+    const valid = await isSavedUsageLimitWaitValid(pending.record);
+    if (usageLimitRecoverySuspended || scope !== activeOwnerScopeKey()) return;
+    if (!valid && savedUsageLimitWaits.get(sessionId) === pending) {
+      agentInputCoordinatorHolder?.cancelUsageLimitWait(sessionId, pending.token);
+    }
+  }
+}
+
+/** Reuse the saved wait owner; a fresh-session schedule must not bypass it after restart. */
+export async function findSchedulerUsageLimitWait(scheduleId: string): Promise<string | null> {
+  const scope = activeOwnerScopeKey();
+  for (const [sessionId, pending] of savedUsageLimitWaits) {
+    if (pending.record.item.origin?.kind !== 'scheduler' || pending.record.item.origin.scheduleId !== scheduleId) continue;
+    const valid = await isSavedUsageLimitWaitValid(pending.record);
+    if (usageLimitRecoverySuspended || scope !== activeOwnerScopeKey()) return null;
+    if (valid && savedUsageLimitWaits.get(sessionId) === pending &&
+      agentInputCoordinatorHolder?.leaseUsageLimitRecovery(sessionId, pending.token)) return sessionId;
+  }
+  return null;
+}
+
+async function restoreSavedUsageLimitWait(sessionId: string): Promise<void> {
+  const coordinator = agentInputCoordinatorHolder;
+  if (!coordinator || usageLimitRecoverySuspended || savedUsageLimitWaits.has(sessionId) ||
+    (!app.isPackaged && process.env.XDT_SCHEDULER_PASSIVE === '1')) return;
+  const record = usageLimitRecoveryStore.readAll().find(wait => wait.sessionId === sessionId);
+  if (!record) return;
+  const scope = activeOwnerScopeKey();
+  const generation = coordinator.getGeneration(sessionId);
+  const valid = await isSavedUsageLimitWaitValid(record) && await isUsageLimitAutoResumeEligible(sessionId);
+  if (scope !== activeOwnerScopeKey() || usageLimitRecoverySuspended) return;
+  if (!valid) { await usageLimitRecoveryStore.take(sessionId, record.id); return; }
+  const pending = { token: 0, record };
+  savedUsageLimitWaits.set(sessionId, pending);
+  const token = coordinator.restoreUsageLimitRecovery(sessionId, record, generation);
+  if (token === null) { forgetSavedUsageLimitWait(sessionId); return; }
+  pending.token = token;
+  if (!usageLimitAutoResume.restore(sessionId, token, record.resumeAt, record.attempts, record.groupQuota === true)) {
+    coordinator.cancelUsageLimitWait(sessionId, token);
+  }
+}
+
+/** Run after account/DB readiness, before scheduler ticks. Passive instances only display state. */
+export async function restoreUsageLimitWaits(): Promise<void> {
+  if (!agentInputCoordinatorHolder || (!app.isPackaged && process.env.XDT_SCHEDULER_PASSIVE === '1')) return;
+  usageLimitRecoverySuspended = false;
+  const scope = activeOwnerScopeKey();
+  for (const record of usageLimitRecoveryStore.readAll()) {
+    if (scope !== activeOwnerScopeKey() || usageLimitRecoverySuspended) return;
+    await agentInputCoordinatorHolder.ensureQueueRestored(record.sessionId);
+    await restoreSavedUsageLimitWait(record.sessionId);
+  }
+}
+
 const usageLimitAutoResume = new UsageLimitAutoResume({
   now: () => Date.now(),
   random: () => Math.random(),
@@ -1609,14 +1748,50 @@ const usageLimitAutoResume = new UsageLimitAutoResume({
   arm: (sessionId, token, resumeAt) =>
     agentInputCoordinatorHolder?.armUsageLimitWait(sessionId, token, resumeAt) ?? false,
   isCurrent: (sessionId, token) =>
-    agentInputCoordinatorHolder?.isUsageLimitWaitCurrent(sessionId, token) ?? false,
+    !usageLimitRecoverySuspended && (agentInputCoordinatorHolder?.isUsageLimitWaitCurrent(sessionId, token) ?? false),
+  saveWait: async (sessionId, token, resumeAt, attempts, groupQuota) => {
+    const scope = activeOwnerScopeKey();
+    const snapshot = agentInputCoordinatorHolder?.snapshotUsageLimitRecovery(sessionId, token);
+    if (!snapshot || usageLimitRecoverySuspended) return false;
+    const row = await getSessionRowSnapshot(sessionId);
+    if (!row || scope !== activeOwnerScopeKey() || usageLimitRecoverySuspended ||
+      !agentInputCoordinatorHolder?.isUsageLimitWaitCurrent(sessionId, token)) return false;
+    const prior = savedUsageLimitWaits.get(sessionId);
+    const record: SavedUsageLimitWait = { ...snapshot, sessionId, resumeAt, attempts, groupQuota,
+      id: prior?.token === token ? prior.record.id : randomUUID(),
+      savedAt: prior?.token === token ? prior.record.savedAt : Date.now(), route: usageLimitSavedRoute(row) };
+    savedUsageLimitWaits.set(sessionId, { token, record });
+    if (!await usageLimitRecoveryStore.save(record, () => scope === activeOwnerScopeKey() &&
+      !usageLimitRecoverySuspended && agentInputCoordinatorHolder?.isUsageLimitWaitCurrent(sessionId, token) === true)) return false;
+    if (scope !== activeOwnerScopeKey() || usageLimitRecoverySuspended) return false;
+    if (!agentInputCoordinatorHolder?.isUsageLimitWaitCurrent(sessionId, token)) {
+      await usageLimitRecoveryStore.take(sessionId, record.id);
+      return false;
+    }
+    return true;
+  },
   cancel: (sessionId, token) => {
     agentInputCoordinatorHolder?.cancelUsageLimitWait(sessionId, token);
   },
-  continueSession: async (sessionId, token, info) =>
-    agentInputCoordinatorHolder
+  continueSession: async (sessionId, token, info) => {
+    const scope = activeOwnerScopeKey();
+    const saved = savedUsageLimitWaits.get(sessionId);
+    if (saved?.token !== token || !await isSavedUsageLimitWaitValid(saved.record) ||
+      scope !== activeOwnerScopeKey() || usageLimitRecoverySuspended) return 'superseded';
+    const pending = pendingSchedulerAutoResumeRunBySession.get(sessionId);
+    if (pending?.usageLimitToken === token) {
+      const listeners = schedulerAutoResumeFailureListeners.get(schedulerAutoResumeRunKey(sessionId, pending.runId));
+      for (const listener of listeners ?? []) {
+        if (listener.quotaWait?.resume() === false) return 'capacity-wait';
+      }
+    }
+    if (!await usageLimitRecoveryStore.take(sessionId, saved.record.id)) return 'superseded';
+    if (scope !== activeOwnerScopeKey() || usageLimitRecoverySuspended) return 'superseded';
+    savedUsageLimitWaits.delete(sessionId);
+    return agentInputCoordinatorHolder
       ? agentInputCoordinatorHolder.continueAfterUsageLimitReset(sessionId, token, info)
-      : 'superseded',
+      : 'superseded';
+  },
   log: (message, fields) => log.info(message, fields),
 });
 
@@ -1639,9 +1814,13 @@ onCodexAutoResetRestored(providerId => usageLimitAutoResume.resumeRestored(id =>
 // 和「最终仍失败」桥给 runner，让同一个 run 继续等待或正确失败。
 const pendingSchedulerAutoResumeRunBySession = new Map<
   string,
-  { runId: string; attemptToken: number }
+  { runId: string; attemptToken: number; usageLimitToken?: number; retryClientId?: string }
 >();
-const schedulerAutoResumeFailureListeners = new Map<string, Set<() => void>>();
+interface SchedulerRecoveryListener {
+  failed(): void;
+  quotaWait?: { start(): void; resume(): boolean };
+}
+const schedulerAutoResumeFailureListeners = new Map<string, Set<SchedulerRecoveryListener>>();
 
 function schedulerAutoResumeRunKey(sessionId: string, runId: string): string {
   return JSON.stringify([sessionId, runId]);
@@ -1684,7 +1863,7 @@ function notifySchedulerAutoResumeFailed(
   if (!listeners) return;
   for (const listener of listeners) {
     try {
-      listener();
+      listener.failed();
     } catch {
       // Runner listener failures must not break chat recovery cleanup.
     }
@@ -1697,6 +1876,15 @@ function failPendingSchedulerAutoResume(sessionId: string, attemptToken?: number
   notifySchedulerAutoResumeFailed(sessionId, current.runId, attemptToken);
 }
 
+/** Quota waits use the same run waiter; no second scheduler timer or replay queue. */
+function finishSchedulerUsageLimitWait(sessionId: string, token: number): void {
+  const pending = pendingSchedulerAutoResumeRunBySession.get(sessionId);
+  if (pending?.usageLimitToken !== token) return;
+  notifySchedulerAutoResumeFailed(sessionId, pending.runId, pending.attemptToken);
+  usageLimitAutoResume.clear(sessionId);
+  agentInputCoordinatorHolder?.releaseScheduledUsageLimitRecovery(sessionId, pending.runId, pending.retryClientId);
+}
+
 export function isSchedulerAutoResumePending(sessionId: string, runId: string): boolean {
   return pendingSchedulerAutoResumeRunBySession.get(sessionId)?.runId === runId;
 }
@@ -1705,6 +1893,7 @@ export function onSchedulerAutoResumeFailed(
   sessionId: string,
   runId: string,
   listener: () => void,
+  quotaWait?: SchedulerRecoveryListener['quotaWait'],
 ): () => void {
   const key = schedulerAutoResumeRunKey(sessionId, runId);
   let listeners = schedulerAutoResumeFailureListeners.get(key);
@@ -1712,9 +1901,10 @@ export function onSchedulerAutoResumeFailed(
     listeners = new Set();
     schedulerAutoResumeFailureListeners.set(key, listeners);
   }
-  listeners.add(listener);
+  const entry = { failed: listener, quotaWait };
+  listeners.add(entry);
   return () => {
-    listeners!.delete(listener);
+    listeners!.delete(entry);
     if (listeners!.size === 0) schedulerAutoResumeFailureListeners.delete(key);
   };
 }
@@ -1722,6 +1912,11 @@ export function onSchedulerAutoResumeFailed(
 /** Schedule pause/delete：只撤销仍属于该 run 的普通聊天自动续跑。 */
 export function cancelSchedulerAutoResume(sessionId: string, runId: string): boolean {
   if (!isSchedulerAutoResumePending(sessionId, runId)) return false;
+  const pending = pendingSchedulerAutoResumeRunBySession.get(sessionId);
+  if (pending?.usageLimitToken !== undefined) {
+    finishSchedulerUsageLimitWait(sessionId, pending.usageLimitToken);
+    return true;
+  }
   // teardown 是既有唯一生命周期出口：撤退避、清 coordinator 接管与隐藏续跑、
   // 结算活动行并通知 runner。runId 校验防止迟到的旧 abort 误杀新 run。
   autoResumeBookkeeping.teardown(sessionId);
@@ -1749,6 +1944,24 @@ function settleDeferredOrcaWorkerTerminal(sessionId: string, payload: OrcaSuppre
   })();
 }
 
+/** 恢复最终放出失败时，按原终态的 Session/代次结算产品调用，不得中断替换后的新一轮。 */
+function settleDeferredProductTurnFailure(sessionId: string): void {
+  deferredProductTurnFailureGate.settle(
+    sessionId,
+    isCurrentProductTurnFailureOwner,
+    (owner) => {
+      void interruptProductTurn(sessionId, owner).catch(() =>
+        log.warn('Could not interrupt product turn follow-up'));
+    },
+  );
+}
+
+function settleDeferredBotGroupTerminal(terminal: BotGroupLaneTerminal): void {
+  if (!botGroupChatServiceHolder) return;
+  void settleBotGroupLaneTerminal(botGroupChatServiceHolder, terminal, drainPersistQueue).catch(() =>
+    log.warn('Bot group recovery failure settlement failed'));
+}
+
 /**
  * 中断自愈的每会话簿记(压住的错误详情 / 待确认的重连记录 / 退避排期)。
  *
@@ -1762,21 +1975,12 @@ const autoResumeBookkeeping = new AutoResumeBookkeeping({
   persistSuppressedError: (sessionId, detail) => onTurnErrorEvent(sessionId, detail, null),
   surfaceSuppressedError: (sessionId, detail) => {
     surfaceSuppressedAutoResumeErrorInAgentIsland(sessionId, detail);
-    // L3 may run after a provider replacement or a newer user turn. Resolve
-    // the exact deferred owner before interrupting the product task; a bare
-    // session id can otherwise stop the replacement turn.
-    deferredProductTurnFailureGate.settle(
-      sessionId,
-      isCurrentProductTurnFailureOwner,
-      (owner) => {
-        void interruptProductTurn(sessionId, owner).catch(() =>
-          log.warn('Could not interrupt product turn follow-up'));
-      },
-    );
+    settleDeferredProductTurnFailure(sessionId);
   },
   // L3：auto-resume 放弃后，用当初压住的 capture 恰好一次收口 Orca status / auto-bridge。
   // L2 flush/discard 不会走到这里，避免「还在重试却已经把异常终止桥给 Lead」。
   finalizeOrcaSuppressedTerminal: settleDeferredOrcaWorkerTerminal,
+  finalizeBotGroupSuppressedTerminal: settleDeferredBotGroupTerminal,
   markOutcome: (sessionId, clientId, outcome) => {
     void markAutoResumeOutcome(sessionId, clientId, outcome);
   },
@@ -1810,6 +2014,7 @@ const providerGroupHeldErrors = createProviderGroupHeldTurnErrors<DeferredTurnEr
     persistDeferredTurnError(sessionId, row);
   },
   surface: (sessionId, detail) => surfaceSuppressedAutoResumeErrorInAgentIsland(sessionId, detail),
+  settleFailure: settleDeferredProductTurnFailure,
   // holder 是可变绑定,必须懒读。
   releaseHold: (sessionId, holdId) =>
     agentInputCoordinatorHolder?.releaseProviderGroupSwitchHold(sessionId, holdId) ?? false,
@@ -1819,42 +2024,33 @@ const providerGroupHeldErrors = createProviderGroupHeldTurnErrors<DeferredTurnEr
 
 /**
  * 协同 Worker 在换电脑期间先不回报给 Lead 的那次终态(provider-group/heldWorkerTerminals.ts)：换成了丢掉，由续跑那一轮
- * 照常回报结果；没换成才把这次异常终止回报给 Lead。与 providerGroupHeldErrors 按同一次登记结算。
+ * 照常回报结果；没换成才把这次异常终止回报给 Lead。群专线的终态也沿用同一次登记结算，
+ * 避免异步资格检查拒绝接管后群轮次一直等待。与 providerGroupHeldErrors 按同一次登记结算。
  */
-const providerGroupHeldWorkerTerminals = createProviderGroupHeldWorkerTerminals<OrcaSuppressedTerminal>({
-  deliver: settleDeferredOrcaWorkerTerminal,
+const providerGroupHeldTerminals = createProviderGroupHeldWorkerTerminals<{
+  orcaTerminal: OrcaSuppressedTerminal | null;
+  groupTerminal: BotGroupLaneTerminal | null;
+}>({
+  deliver: (sessionId, terminal) => {
+    if (terminal.orcaTerminal) settleDeferredOrcaWorkerTerminal(sessionId, terminal.orcaTerminal);
+    if (terminal.groupTerminal) settleDeferredBotGroupTerminal(terminal.groupTerminal);
+  },
   ownerKey: () => activeOwnerScopeKey(),
   log: (message, meta) => log.info(message, meta),
 });
 
-/**
- * 换成了、续跑已进队但还没派发出去的那次登记(任务 → 登记 id)：协同 Worker 暂存的终态等续跑真正派发出去才丢掉；
- * 续跑没派出去(打开那台又失败、被丢弃)时把这次异常终止回报给 Lead，Worker 不会一直停在运行中。
- */
-const providerGroupContinuationHolds = new Map<string, number>();
-
-/** 换电脑这一趟有了结局：换成了(续跑已进队)错误不再落；Worker 的终态等续跑派发出去再丢(见上)。 */
-function discardProviderGroupHeld(sessionId: string, holdId: number): void {
-  providerGroupHeldErrors.discard(sessionId, holdId);
-  if (providerGroupHeldWorkerTerminals.has(sessionId, holdId)) providerGroupContinuationHolds.set(sessionId, holdId);
-}
-
-/** 不再换了(交回原有处理、用户接手、迟迟没有结局)：放出错误，并把 Worker 的异常终止回报给 Lead。 */
-function releaseProviderGroupHeld(sessionId: string, holdId: number): void {
-  providerGroupHeldErrors.release(sessionId, holdId);
-  // 已换成、续跑在路上的那次由续跑的派发结果结算。
-  if (providerGroupContinuationHolds.get(sessionId) === holdId) return;
-  providerGroupHeldWorkerTerminals.release(sessionId, holdId);
-}
-
-/** 换电脑后的续跑有了派发结果：派发出去了丢掉 Worker 暂存的终态，没派出去回报给 Lead。 */
-function settleProviderGroupContinuation(sessionId: string, dispatched: boolean): void {
-  const holdId = providerGroupContinuationHolds.get(sessionId);
-  if (holdId === undefined) return;
-  providerGroupContinuationHolds.delete(sessionId);
-  if (dispatched) providerGroupHeldWorkerTerminals.discard(sessionId, holdId);
-  else providerGroupHeldWorkerTerminals.release(sessionId, holdId);
-}
+/** Queued handoffs keep their original product/Worker receipts until vendor dispatch. */
+const {
+  discard: discardProviderGroupHeld,
+  release: releaseProviderGroupHeld,
+  settleContinuation: settleProviderGroupContinuation,
+  hasPendingContinuation: hasPendingProviderGroupContinuation,
+} = createProviderGroupHeldRecovery({
+  errors: providerGroupHeldErrors,
+  terminals: providerGroupHeldTerminals,
+  settleFailure: settleDeferredProductTurnFailure,
+  ownerKey: () => activeOwnerScopeKey(),
+});
 
 /** 换电脑这一趟久久没有结局(交接卡住等)时不再瞒着：先把错误放出来，换成了照常续跑。 */
 const PROVIDER_GROUP_SWITCH_HOLD_MAX_MS = 3 * 60_000;
@@ -1928,6 +2124,10 @@ function settleUndispatchedInterruptedAutoResume(
   // 额度重置后的自动继续不走中断自愈记账(sessionTotal 刻意为 0),只需恢复原错误与手动重试入口。
   if (item.autoResume === true && item.autoResumeInfo?.reason === USAGE_LIMIT_RESET_AUTO_RESUME_REASON) {
     agentInputCoordinatorHolder?.restoreAutoResumeRecovery(sessionId, item.clientId, null);
+    const pending = pendingSchedulerAutoResumeRunBySession.get(sessionId);
+    if (pending?.usageLimitToken !== undefined && pending.retryClientId === item.clientId) {
+      finishSchedulerUsageLimitWait(sessionId, pending.usageLimitToken);
+    }
     // 供应商组换电脑后的续跑没派出去：协同 Worker 的这次异常终止回报给 Lead。
     settleProviderGroupContinuation(sessionId, false);
     return false;
@@ -2816,6 +3016,13 @@ export function stopOrcaRemoteWorkersForOwnerBoundary(): void {
   orcaRemoteWorkersForHost?.stop();
 }
 
+export function captureRemoteWorkerReportSettlement(
+  sessionId: string, reportedInputClientIds: readonly string[],
+): () => Promise<void> {
+  return orcaRemoteWorkersForHost?.captureReportSettlement(sessionId, reportedInputClientIds)
+    ?? (async () => {});
+}
+
 function markWorkerManualInterruptIfKnown(
   sessionId: string,
   reason: 'input_stop' | 'abort_session',
@@ -3378,6 +3585,12 @@ function getPendingInteractionsForSession(sessionId: string): PendingInteraction
 
 // 伙伴自主跟进：状态表读「等你的那句话」只取请求本身（不含 persistId 等宿主内部字段）。
 configureBotAutonomyHost({
+  readSessionExecution: (id) => {
+    const session = getMakerIfReady()?.getSession(id);
+    return session ? { instanceId: session.instanceId, generation: session.getTurnGeneration() } : null;
+  },
+  isCompletionHandledByTeammate: (sessionId, botId, execution) => botDelegationServiceHolder
+    ?.isCompletionHandledByTeammate(sessionId, { pendingForBotId: botId, execution }) ?? Promise.resolve(null),
   getPendingInteractions: (sessionId) => getPendingInteractionsForSession(sessionId).map((entry) => entry.request),
 });
 
@@ -3532,6 +3745,19 @@ function cancelPendingInteraction(requestId: string, decision: InteractionDecisi
   }
   // Use the same final-decision path as SharedPermission, never the paused answer gate.
   return resolvePendingInteraction(requestId, decision, true);
+}
+
+/** Narrow detached-workbench action: the Bot's live glance must still own this exact local permission. */
+export function allowBotWorkbenchPendingPermission(botId: string, sessionId: string, requestId: string): { accepted: boolean } {
+  const row = getBotAutonomyGlance(botId, undefined, false).waiting.find((item) =>
+    item.deviceId === null && item.sessionId === sessionId &&
+    item.requestId === requestId && item.waitingFor === 'permission');
+  const pending = pendingInteractionResolvers.get(requestId);
+  if (!row || !pending || pending.sessionId !== sessionId || pending.kind !== 'permission' ||
+      pending.request.kind !== 'permission' || pending.request.requestId !== requestId) {
+    return { accepted: false };
+  }
+  return { accepted: resolvePendingInteraction(requestId, { kind: 'permission', behavior: 'allow' }) };
 }
 
 function resolvePendingInteraction(requestId: string, decision: InteractionDecision, fromShared = false): boolean {
@@ -4173,21 +4399,23 @@ function shouldPreserveContinuationOnlyAutoResume(
  * Runtime fallback runs inside the already-fired retry callback. A route change
  * may synchronously close the old process before autoRetryLastError can reuse
  * its recovery record, so preserve only that exact callback token across the
- * requested close/rebuild handoff.
+ * requested close/rebuild or cross-harness agent-switch handoff.
  */
 function shouldPreserveSessionRuntimeFallbackAutoResume(
   session: WiredSession,
   closeReason: ReturnType<typeof getWiredSessionCloseReason>,
 ): boolean {
   const attemptToken = pendingSessionRuntimeFallbackRebuilds.get(session);
-  if (attemptToken === undefined) return false;
-  if (closeReason !== 'requested') return false;
-  if (!interruptedTurnAutoResumeGuard.isCurrentAttempt(session.id, attemptToken)) return false;
-  if (!autoResumeBookkeeping.isCurrentAttempt(session.id, attemptToken)) return false;
   const coordinator = agentInputCoordinatorHolder;
-  if (!coordinator || !coordinator.isAutoResumePending(session.id)) return false;
-  if (coordinator.getAutoResumeAttemptToken(session.id) !== attemptToken) return false;
-  return autoResumeBookkeeping.hasSchedule(session.id);
+  return shouldPreserveRuntimeFallbackAutoResume({
+    closeReason,
+    leasedAttemptToken: attemptToken,
+    guardIsCurrentAttempt: attemptToken !== undefined && interruptedTurnAutoResumeGuard.isCurrentAttempt(session.id, attemptToken),
+    bookIsCurrentAttempt: attemptToken !== undefined && autoResumeBookkeeping.isCurrentAttempt(session.id, attemptToken),
+    coordinatorAttemptToken: coordinator?.getAutoResumeAttemptToken(session.id),
+    isAutoResumePending: coordinator?.isAutoResumePending(session.id) === true,
+    hasLiveSchedule: attemptToken !== undefined && autoResumeBookkeeping.hasLiveSchedule(session.id, attemptToken),
+  });
 }
 
 /**
@@ -4443,6 +4671,11 @@ export function isSessionInTurn(sessionId: string): boolean {
 }
 
 /** Runtime-only attribution; queued or rejected steering cannot take ownership. */
+export function getSessionActiveInputClientIds(sessionId: string): string[] {
+  return agentInputCoordinatorHolder?.getActiveInputClientIds(sessionId) ?? [];
+}
+
+/** Runtime-only attribution; queued or rejected steering cannot take ownership. */
 export function getSessionInputProvenance(sessionId: string) {
   const input = agentInputCoordinatorHolder?.getAcceptedInputProvenance(sessionId) ?? null;
   return { input, executing: !!input || !!getMakerIfReady()?.getSession(sessionId)?.isTurnRunning() };
@@ -4452,21 +4685,36 @@ export function getSessionInputProvenance(sessionId: string) {
 export async function captureSessionAgentRequest(sessionId: string, supplement: string): Promise<CapturedAgentRequest> {
   const scope = captureDataOwnerBroadcastScope();
   const active = agentInputCoordinatorHolder?.getAcceptedInputProvenance(sessionId) ?? null;
+  // Only a companion's task instructions forward the owner's words. Ordinary
+  // sessions (including scheduled runs and child results) keep their own body.
+  const [companion] = await getDbClient().drizzle.select({ role: botSessionLinks.role })
+    .from(botSessionLinks).where(and(eq(botSessionLinks.sessionId, sessionId),
+      inArray(botSessionLinks.role, ['canonical', 'group', 'channel']), isNull(botSessionLinks.archivedAt))).limit(1);
   const request = await captureRequest(sessionId, supplement, active,
-    () => listMessagesForAgentHandoff(sessionId, 1, undefined, 'user'));
+    () => listMessagesForAgentHandoff(sessionId, 1, undefined, 'user'), !!companion);
   if (!isDataOwnerBroadcastScopeCurrent(scope)) throw new Error('Data owner changed before request capture');
   return request;
 }
 
 export function getTaskActionInputState(sessionId: string) {
   const input = getSessionInputProvenance(sessionId);
+  const session = getMakerIfReady()?.getSession(sessionId);
   return {
     key: JSON.stringify(input),
+    // Reuse the live permission/Plan generation guard; the DB can lag a mode change.
+    permission: resolveGhostFsSessionSnapshot(
+      (id) => getMakerIfReady()?.getSession(id), sessionId, session?.instanceId,
+    ),
     ownerInput: isActiveInputOwnerAuthored(sessionId),
     automatic: !!input.input && !isActiveInputOwnerAuthored(sessionId),
     orcaSenderSessionId: input.input?.orcaSenderSessionId,
-    boundary: `${getMakerIfReady()?.getSession(sessionId)?.instanceId ?? ''}:${agentInputCoordinatorHolder?.getGeneration(sessionId) ?? -1}`,
+    boundary: `${session?.instanceId ?? ''}:${agentInputCoordinatorHolder?.getGeneration(sessionId) ?? -1}`,
   };
+}
+
+/** Live permission authority for Host task actions; never reconstructed from DB defaults. */
+export function getTaskActionSession(sessionId: string) {
+  return getMakerIfReady()?.getSession(sessionId);
 }
 
 /** Owner-authored active input (see AgentInputCoordinator.isActiveInputOwnerAuthored). */
@@ -5540,7 +5788,9 @@ const sessionBindings = createSessionBindingLifecycle<WiredSession, WiredSession
     const closedDirectAbortBoundary = getDirectAbortBoundaryForClosingSession(session.id, session);
     const preserveAutoResumeIntent =
       shouldPreserveContinuationOnlyAutoResume(session, closeReason) ||
-      shouldPreserveSessionRuntimeFallbackAutoResume(session, closeReason);
+      shouldPreserveSessionRuntimeFallbackAutoResume(session, closeReason) ||
+      (closeReason === 'unexpected' && session.wasClosedByRuntime() &&
+        agentInputCoordinatorHolder?.hasUsageLimitRecovery(session.id) === true);
     pendingContinuationOnlyAutoResumeRebuilds.delete(session);
     return { closeReason, closedDirectAbortBoundary, preserveAutoResumeIntent };
   },
@@ -5579,14 +5829,16 @@ const sessionBindings = createSessionBindingLifecycle<WiredSession, WiredSession
       cleanupRuntimeState: () => cleanupClosedSessionRuntime(session),
     });
   },
-  beforeCloseTeardown: (session: WiredSession) => {
-    botCompactRuntimeRefreshCoordinator.clearForClosedSession(session);
-    cancelDirectAbortReconciliation(session.id);
-    pendingFailedTurnAssistantPersistId.delete(session.id);
-    // An explicit close has no replacement turn to inherit the deferred
-    // receipt. Retire it before late renderer callbacks can arrive.
-    deferredProductTurnFailureGate.clearSession(session.id, session);
-  },
+  beforeCloseTeardown: createSessionCloseTeardown<WiredSession>({
+    clearCompactRuntimeRefresh: session => botCompactRuntimeRefreshCoordinator.clearForClosedSession(session),
+    cancelDirectAbortReconciliation,
+    clearPendingFailedTurnPersist: sessionId => { pendingFailedTurnAssistantPersistId.delete(sessionId); },
+    isRehydrateCloseSuppressed: sessionId => rehydrateCloseSuppression.isSuppressed(sessionId),
+    getProviderGroupSwitchHoldId: sessionId => agentInputCoordinatorHolder?.getProviderGroupSwitchHoldId(sessionId),
+    hasPendingProviderGroupContinuation,
+    clearDeferredProductTurnFailure: (sessionId, session, options) =>
+      deferredProductTurnFailureGate.clearSession(sessionId, session, options),
+  }),
   finalizeClosedSession: (session: WiredSession, context) => {
     // 关闭前固化 live 用量（见 sessionLastLiveUsage.ts）：冷 Pi 切模的窗口核实
     // 预检用它代替可能低报的 DB 快照（Greptile P1）。
@@ -5602,6 +5854,11 @@ const sessionBindings = createSessionBindingLifecycle<WiredSession, WiredSession
     });
   },
 });
+
+/** Called only when the outgoing Maker is actually discarded, not on any error status. */
+export function releaseSessionBindingsForOwnerBoundary(): void {
+  sessionBindings.releaseForOwnerBoundary();
+}
 
 let pluginTaskServiceForCurrentOwner: (() => PluginTaskService) | null = null;
 let drainPluginTaskReceipts: (() => Promise<void>) | null = null;
@@ -5647,7 +5904,7 @@ async function interruptProductTurn(
     deferredProductTurnFailureGate.clear(owner);
     if (!isCurrentProductTurnFailureOwner(owner)) return;
   }
-  if (owner) notePluginTaskLifecycle(service => service.settle(sessionId, owner, 'failed'));
+  if (owner) notePluginTaskLifecycle(service => service.settle(sessionId, owner.originalExecution ?? owner, 'failed'));
   await interruptUpstreamMergeTurn(sessionId);
 }
 
@@ -5745,8 +6002,8 @@ const sessionEventDependencies: SessionEventDependencies = {
   },
   stashProviderGroupHeldError: (sessionId, holdId, data, agentMeta) =>
     providerGroupHeldErrors.stash(sessionId, holdId, data, agentMeta),
-  stashProviderGroupHeldWorkerTerminal: (sessionId, holdId, terminal) =>
-    providerGroupHeldWorkerTerminals.stash(sessionId, holdId, terminal),
+  stashProviderGroupHeldWorkerTerminal: (sessionId, holdId, terminal, groupTerminal) =>
+    providerGroupHeldTerminals.stash(sessionId, holdId, { orcaTerminal: terminal, groupTerminal: groupTerminal ?? null }),
   get pendingFailedTurnAssistantPersistId() {
     return pendingFailedTurnAssistantPersistId;
   },
@@ -8620,7 +8877,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         row.source !== 'bot' ||
         row.status !== 'active' ||
         (row.role !== 'canonical' && row.role !== 'delegation' && row.role !== 'group'
-          && row.role !== 'channel')
+          && row.role !== 'channel' && row.role !== 'thread')
       ) {
         return 'not-bot';
       }
@@ -9384,6 +9641,13 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     withSessionLock: withSendToSessionLock,
     now: Date.now,
   }));
+
+  makerSessionRegistry.handle(ORCA_REMOTE_WORKER_BRIDGE_CHANNEL, (_event: unknown, raw: unknown) => {
+    const ctx = getDeviceLinkInvokeContext();
+    return handleRemoteWorkerBridge(raw, ctx ? {
+      controllerDeviceId: ctx.controllerDeviceId, sharedTask: ctx.sharedTask,
+    } : null);
+  });
 
   const readSourceReviewCards = async (sourceSessionId: string) =>
     getDbClient()
@@ -10486,6 +10750,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           ...(switchOptions?.relocate ? { forceRelocation: true } : {}),
           // 发送前换电脑：随后的 lazy-create 按任务记录在新电脑上启动，不重复 bootstrap。
           ...(switchOptions?.beforeSend ? { skipBootstrap: true } : {}),
+          // 用户确认为了先用那台的配额换号：分隔条写明原因。
+          ...(switchOptions?.reason ? { providerGroupSwitchReason: switchOptions.reason } : {}),
           // 用户在等锁、读交接素材期间接手：在改动之前停下。
           ...(isCurrent ? { assertSelectionCurrent: assertCurrent } : {}),
         });
@@ -10523,6 +10789,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     fallback: (sessionId, signals, token) => usageLimitAutoResume.onTurnError(sessionId, signals, token),
     // 组内电脑的报错用那台机器的本地时间：不带时区的钟点不按本机时区理解。
     readResetAt: (signals) => readTurnUsageResetAt(signals, Date.now(), { localTimeZoneTrusted: false }),
+    // 任务里选过「以后自动换」的换号(provider-groups.md §6.2「任务进行中换号」)。
+    readAutoRebalance: readProviderGroupAutoRebalance,
+    writeAutoRebalance: (sessionId) => writeProviderGroupAutoRebalance(sessionId),
     now: () => Date.now(),
     log,
   });
@@ -10530,6 +10799,11 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   // 模型列表把归组的任务显示在组那一项下(provider-groups.md §10)。
   const sessionGroupService = providerGroupService;
   setProviderGroupSessionGroupReader((sessionId) => sessionGroupService.sessionGroup(sessionId));
+  // 电脑与手机发送前问要不要换号、记下用户的决定(provider-groups.md §6.2「任务进行中换号」)。
+  setProviderGroupSessionRebalance({
+    suggest: (sessionId) => sessionGroupService.rebalanceSuggestion(sessionId),
+    decide: (sessionId, memberKey, remember, clientId) => sessionGroupService.rebalanceDecision(sessionId, memberKey, remember, clientId),
+  });
   // 这台电脑上每个供应商正在运行一轮的任务数：组里「本机」这台显示它，同账号电脑读目录时也带上(§5)。
   setProviderGroupLocalLoad(() => countProviderRunningTurns({
     listTurnRunningSessions: () => maker.listActiveSessions().filter((s) => s.isTurnRunning()).map((s) => s.id),
@@ -12095,7 +12369,6 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   });
 
   botDirectMessageServiceHolder = createBotDirectMessageService({
-    captureRequest: captureSessionAgentRequest,
     transport: createBotMessageTransport({ selfDeviceId: getSelfDeviceId,
       listDevices: () => handleListDevices(deviceDirectoryDeps()), invoke: invokeBotPeer }),
     discardQueuedDelivery: async (sessionId, clientId, assertOwner) => {
@@ -12628,6 +12901,11 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     const chat = botGroupChatServiceHolder?.chatServer;
     return chat ? chat.react(input) : { ok: false, errorCode: 'HOST_NOT_READY' };
   });
+  ipcMain.handle(MAKER_INVOKE.CHAT_SERVER_FOLLOWTHREAD, async (event, input) => {
+    assertTrustedAppRendererEvent(event);
+    const chat = botGroupChatServiceHolder?.chatServer;
+    return chat ? chat.followThread(input) : { ok: false, errorCode: 'HOST_NOT_READY' };
+  });
   ipcMain.handle(MAKER_INVOKE.CHAT_SERVER_REACTORS, async (event, input) => {
     assertTrustedAppRendererEvent(event);
     const chat = botGroupChatServiceHolder?.chatServer;
@@ -12700,9 +12978,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     assertTrustedAppRendererEvent(event);
     return botGroupChatServiceHolder ? botGroupChatServiceHolder.continueRound(groupId) : botGroupNotReady;
   });
-  ipcMain.handle(MAKER_INVOKE.BOT_GROUP_STOP, async (event, groupId: unknown) => {
+  ipcMain.handle(MAKER_INVOKE.BOT_GROUP_STOP, async (event, groupId: unknown, scope?: unknown) => {
     assertTrustedAppRendererEvent(event);
-    return botGroupChatServiceHolder ? botGroupChatServiceHolder.stopRound(groupId) : botGroupNotReady;
+    return botGroupChatServiceHolder ? botGroupChatServiceHolder.stopRound(groupId, scope === 'all' ? 'all' : undefined) : botGroupNotReady;
   });
   ipcMain.handle(MAKER_INVOKE.BOT_GROUP_PLAN_START, async (event, input: unknown) => {
     assertTrustedAppRendererEvent(event);
@@ -15626,8 +15904,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         .innerJoin(sessions, eq(sessions.id, botSessionLinks.sessionId))
         .where(and(
           eq(botSessionLinks.sessionId, sessionId),
-          // Group / IM channel lanes follow the Bot's current model chain exactly like its canonical Chat.
-          inArray(botSessionLinks.role, ['canonical', 'group', 'channel']),
+          // Group / IM channel lanes and private-chat topics follow the Bot's current model chain exactly like its canonical Chat.
+          inArray(botSessionLinks.role, ['canonical', 'group', 'channel', 'thread']),
           isNull(botSessionLinks.archivedAt),
           // Paused settings may preview grants; sending still requires an active Bot.
           purpose === 'preview'
@@ -15776,7 +16054,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         and(
           eq(botSessionLinks.sessionId, sessionId),
           isNull(botSessionLinks.archivedAt),
-          inArray(botSessionLinks.role, ['canonical', 'delegation', 'group', 'channel']),
+          inArray(botSessionLinks.role, ['canonical', 'delegation', 'group', 'channel', 'thread']),
         ),
       )
       .limit(1);
@@ -16371,7 +16649,11 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     getSessionRuntime: (params) => sessionControlService.getSessionRuntime(params),
     setSessionRuntime: (params) => sessionControlService.setSessionRuntime(params),
     sendToSession: async (params) => {
-      const request = await captureSessionAgentRequest(params.dispatcherSessionId ?? '', params.message);
+      // A script follow-up may name a companion as its dispatcher while no
+      // owner turn is active. Never quote that companion's stale last input.
+      const request: CapturedAgentRequest = params[AUTO_REVIEW_DELEGATED_CONTINUATION]
+        ? { message: params.message, autoReviewUserText: { kind: 'agent-request' } }
+        : await captureSessionAgentRequest(params.dispatcherSessionId ?? '', params.message);
       params = { ...params, message: request.message };
       const ownerScope = captureDataOwnerBroadcastScope();
       let classification: Awaited<ReturnType<typeof classifySessionMessagePurpose>>;
@@ -17137,6 +17419,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     // 个人版制作任务说明:按持久化的 sessions.source 判定,每次 send 现读,不信任
     // 调用方自报;与手机说明同层(只进 wire 消息)。
     readTaskSource: readSessionSource,
+    // 伙伴私聊引用回复的 [引用说明]:按落库内容里的 replyQuote 从库里重读原消息。
+    readReplyQuoteNote,
+    // 私聊话题的 [话题说明]:按持久化的话题链接现读,不是话题时为 null。
+    readBotThreadNote: readBotDmThreadContextNote,
     // 原生压缩后的账本刷新:只对伙伴主对话且有账本的会话真正注入;读不到按无账本,
     // 标记仍由事务在 accepted 后按代次消费。
     peekWorkingMemoryRefresh: async (sessionId) => {
@@ -17164,6 +17450,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       // 等的时候进行中行显示「重新连接中 n/5」。
       await providerGroupService?.beforeSend(sessionId, {
         ...(options?.signal ? { signal: options.signal } : {}),
+        ...(options?.scheduled ? { scheduled: true } : {}),
+        ...(options?.clientId ? { clientId: options.clientId } : {}),
         progress: (state) => agentInputCoordinatorHolder?.setProviderGroupSendReconnect(sessionId, state),
       }).catch((error) => {
         log.warn('provider group: pre-send check failed', {
@@ -17180,7 +17468,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     log,
   });
 
-  // 输入框开始打字时预热 Agent（本机与 device-link 控制端共用）。只覆盖用户自己的普通
+  // 输入框开始输入（打字、粘贴、开始语音输入）时预热 Agent（本机与 device-link 控制端共用）。只覆盖用户自己的普通
   // 任务、且 Agent 在本机运行；Bot / IM / 定时 / 审查 / 共享 / 协同 / 远程主机等任务的
   // 启动另有专门的路由与权限检查，仍由真实发送处理。启动走发送路径的同一个懒创建，
   // 并在同一把会话发送锁里执行，真实发送不会与预热并发重复启动。
@@ -17198,7 +17486,6 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           remoteHostId: sessions.remoteHostId,
           agentDeviceId: sessions.agentDeviceId,
           orcaRole: sessions.orcaRole,
-          sdkSessionId: sessions.sdkSessionId,
         })
         .from(sessions)
         .where(eq(sessions.id, sessionId))
@@ -17209,6 +17496,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       if (co.remoteHostId || co.agentDeviceId) return false;
       return prewarmSessionRuntime(sessionId, co);
     }),
+    isLive: (sessionId) => maker.getSession(sessionId) !== undefined,
     // Runs under the send lock: a send that got there first has marked the runtime used
     // (and its turn is running), one that arrives later waits for the close to finish and
     // then cold-starts, instead of meeting a runtime that is half closed.
@@ -17239,6 +17527,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     const [sessionId] = args;
     if (typeof sessionId !== 'string') return await sendToAgentAcceptedUnlocked(...args);
     agentPrewarmer.markUsed(sessionId);
+    // 新建页的未发送任务第一次发送：renderer 通常已先转正，这里兜底。
+    if (isProvisionalSession(sessionId)) await commitProvisionalSession(sessionId);
     if (cindyMakeManager.isTaskPreparing(sessionId) && (args[3] as Record<PropertyKey, unknown> | undefined)?.[CINDY_MAKE_TASK_DISPATCH] !== true) {
       throwIpcError('PRECONDITION_FAILED', 'Cindy Make is still preparing this task');
     }
@@ -17270,7 +17560,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         throwIpcError('PRECONDITION_FAILED', SHADOWED_COMPANION_INPUT_MESSAGE);
       }
       if (args[2] && typeof args[2] === 'object') {
-        if (botInput?.source === 'bot' && ['canonical', 'delegation', 'group', 'channel'].includes(botInput.role ?? '')) {
+        if (botInput?.source === 'bot' && ['canonical', 'delegation', 'group', 'channel', 'thread'].includes(botInput.role ?? '')) {
           botFallbackInputs.add(args[2]);
         } else {
           botFallbackInputs.delete(args[2]);
@@ -17627,6 +17917,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       readonly [AUTO_REVIEW_DELEGATED_CONTINUATION]?: true;
       readonly [AUTO_REVIEW_USER_INTENT]?: string;
       readonly [MCP_APP_MESSAGE_GUARD]?: McpAppMessageGuard;
+      readonly [REPLY_QUOTE_SOURCE_CONTENT]?: string;
     };
     const readCurrentSteerSession = () => {
       const current = maker.getSession(sessionId);
@@ -17684,6 +17975,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     if (!sess.isTurnRunning()) {
       throwIpcError('NO_ACTIVE_TURN', `Session ${sessionId} has no active turn`);
     }
+    // Same `[引用说明]` as an ordinary send (steer does not go through the send transaction).
+    const steerReplyQuoteNote = shouldPrependMobileClientPromptNote(normalized, sess.agentKind)
+      ? ((await readReplyQuoteNote(sessionId, so[REPLY_QUOTE_SOURCE_CONTENT]).catch(() => null)) ?? null)
+      : null;
     const meta = await maker.getSessionMeta(sessionId).catch(() => null);
     sess = readCurrentSteerSession();
     const authorizationSession = sess;
@@ -17706,9 +18001,12 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           sharedTaskAuthor: so.sharedTaskAuthor,
         })
       : null;
-    const withSteerSourceNote = steerSourceNote
-      ? prependNoteToWireUserMessage(normalized as HandoffWireMessage, steerSourceNote)
+    const withSteerReplyQuoteNote = steerReplyQuoteNote
+      ? prependNoteToWireUserMessage(normalized as HandoffWireMessage, steerReplyQuoteNote)
       : normalized;
+    const withSteerSourceNote = steerSourceNote
+      ? prependNoteToWireUserMessage(withSteerReplyQuoteNote as HandoffWireMessage, steerSourceNote)
+      : withSteerReplyQuoteNote;
     // 设备来源只认盖章值(coordinator 透传 / 直连 IPC 边界按 async context 盖);没有设备
     // 信息时沿用旧手机判据:IPC 直连 steer 时 async context 在;coordinator 投递时靠透传。
     const steerDevice = readWireSourceDevice(so.sourceDevice);
@@ -18058,6 +18356,41 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       }
       void agentPrewarmer.request(sid, createOpts);
       return { accepted: true };
+    },
+  );
+
+  ipcMain.handle(
+    MAKER_INVOKE.SESSION_DISCARD_PROVISIONAL,
+    async (event, sessionId: unknown): Promise<{ discarded: boolean; remaining: boolean }> => {
+      const sid = requireSessionId(sessionId);
+      // Local renderer only: not on the device-link allowlist, and the sender must be the app window.
+      assertTrustedAppRendererEvent(event);
+      if (!isProvisionalSession(sid)) return { discarded: false, remaining: false };
+      // Under the send lock: a prewarm that is still starting finishes first, and one queued
+      // behind us finds no row and does nothing.
+      const discarded = await withSendToSessionLock(sid, async () => {
+        if (!isProvisionalSession(sid)) return false;
+        agentPrewarmer.markUsed(sid);
+        const live = maker.getSession(sid);
+        if (live?.isTurnRunning()) return false;
+        // Same close as idle prewarm reclaim; the row goes away right after.
+        if (live) await live.closeIfIdle();
+        if (maker.getSession(sid)) return false;
+        return discardProvisionalSessionRow(sid);
+      });
+      // remaining: the unsent task still exists (its runtime could not be closed), so the
+      // renderer keeps tracking it and retries instead of reopening the same id.
+      return { discarded, remaining: !discarded && isProvisionalSession(sid) };
+    },
+  );
+
+  ipcMain.handle(
+    MAKER_INVOKE.SESSION_COMMIT_PROVISIONAL,
+    async (event, sessionId: unknown): Promise<{ committed: boolean }> => {
+      const sid = requireSessionId(sessionId);
+      // Local renderer only: not on the device-link allowlist, and the sender must be the app window.
+      assertTrustedAppRendererEvent(event);
+      return { committed: await commitProvisionalSession(sid) };
     },
   );
 
@@ -18518,7 +18851,21 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       providerGroupService?.mayHandleTurnError(sessionId, signals)
         ? providerGroupSwitchCause(signals, 'run')
         : null,
-    onUsageLimitedTurnError: (sessionId, signals, _item, candidateToken) => {
+    onUsageLimitedTurnError: (sessionId, signals, item, candidateToken) => {
+      if (item.origin?.kind === 'scheduler' && item.origin.runId) {
+        // Claim synchronously, before the runner consumes this error. Reset-time
+        // lookup is async; unknown/unsafe resets release the run but keep Retry.
+        pendingSchedulerAutoResumeRunBySession.set(sessionId, {
+          runId: item.origin.runId, attemptToken: 0, usageLimitToken: candidateToken,
+        });
+        for (const listener of schedulerAutoResumeFailureListeners.get(schedulerAutoResumeRunKey(sessionId, item.origin.runId)) ?? []) {
+          listener.quotaWait?.start();
+        }
+        void usageLimitAutoResume.onTurnError(sessionId, signals, candidateToken).then(armed => {
+          if (!armed) finishSchedulerUsageLimitWait(sessionId, candidateToken);
+        });
+        return;
+      }
       // 供应商组分配的任务先试自动换电脑，不换时由它交回额度重置后自动继续。
       if (!providerGroupService || signals.providerGroupUsageLimit) {
         usageLimitAutoResume.onTurnError(sessionId, signals, candidateToken);
@@ -18536,13 +18883,23 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           holdTimer = setTimeout(() => {
             // 协同 Worker：到点把这次异常终止回报给 Lead 之后，这一趟换电脑就此停下——Lead 已据此重新安排，
             // 再换过去续跑会让它收到两份互相矛盾的结果。普通任务照旧：错误先放出来，换成了照常续跑。
-            const worker = providerGroupHeldWorkerTerminals.has(sessionId, holdId);
+            const worker = providerGroupHeldTerminals.has(sessionId, holdId);
             releaseProviderGroupHeld(sessionId, holdId);
             if (worker) providerGroupService?.noteUserAction(sessionId);
           }, PROVIDER_GROUP_SWITCH_HOLD_MAX_MS);
         };
         // 协同 Worker 的终态与 error 行按同一次登记结算：换成了不回报这次异常终止，没换成才回报给 Lead。
+        const recoveryOwner = activeOwnerScopeKey();
         hooks = {
+          notHandled: () => recoveryOwner === activeOwnerScopeKey() && inputCoordinator.resumeAfterProviderGroupDeclined(
+            sessionId, candidateToken, signals, (attemptToken) => {
+              const detail = providerGroupHeldErrors.takeForRecovery(sessionId, holdId);
+              if (detail) autoResumeBookkeeping.stashSuppressedError(sessionId, detail, attemptToken);
+              const terminal = providerGroupHeldTerminals.takeForRecovery(sessionId, holdId);
+              if (terminal?.orcaTerminal) autoResumeBookkeeping.stashOrcaSuppressedTerminal(sessionId, terminal.orcaTerminal);
+              if (terminal?.groupTerminal) autoResumeBookkeeping.stashBotGroupSuppressedTerminal(sessionId, terminal.groupTerminal);
+            },
+          ),
           beforeFallback: () => releaseProviderGroupHeld(sessionId, holdId),
           resumed: () => discardProviderGroupHeld(sessionId, holdId),
           // 先等原电脑恢复时进行中行显示「重新连接中 n/5」，开始换电脑时改回「正在换一台电脑继续」。
@@ -18576,8 +18933,18 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     },
     onResumableTurnErrorDiscarded: (
       sessionId: string,
-      options: { surfaceError: boolean; owner: SuppressedTurnErrorOwner },
+      options: { surfaceError: boolean; owner: SuppressedTurnErrorOwner; providerGroupSwitchHoldId?: number },
     ) => {
+      if (options.providerGroupSwitchHoldId !== undefined) {
+        const deferred = autoResumeBookkeeping.takeDeferredError(sessionId, options.owner);
+        if (deferred) {
+          providerGroupHeldErrors.stash(sessionId, options.providerGroupSwitchHoldId, deferred.detail);
+          if (deferred.orcaTerminal || deferred.groupTerminal) {
+            providerGroupHeldTerminals.stash(sessionId, options.providerGroupSwitchHoldId, deferred);
+          }
+        }
+        return;
+      }
       if (options.surfaceError) {
         autoResumeBookkeeping.surfaceSuppressedError(sessionId, { deferredOwner: options.owner });
       } else {
@@ -18887,6 +19254,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       botDelegationServiceHolder?.confirmQueuedSessionInputDispatched(sessionId, item.clientId);
       welcomeDispatchReceipts.settle(sessionId, item.clientId, true);
       const attemptToken = autoResumeAttemptToken(item);
+      const quotaClaim = pendingSchedulerAutoResumeRunBySession.get(sessionId);
+      if (quotaClaim?.usageLimitToken !== undefined && quotaClaim.retryClientId === item.clientId) {
+        clearSchedulerAutoResumePending(sessionId, quotaClaim.runId, quotaClaim.attemptToken);
+      }
       if (
         attemptToken !== null &&
         autoResumeBookkeeping.discardSuppressedError(sessionId, attemptToken)
@@ -18931,6 +19302,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     // 失败 turn 重试 → hook 侧把这一轮接回渠道那条已收口的消息。source 区分
     // 人工与自动续跑：只有真人接手才作废 scheduler waiter，自动路径不能取消自己。
     onUiRetry: (sessionId, clientId, source, attemptToken) => {
+      const quotaClaim = pendingSchedulerAutoResumeRunBySession.get(sessionId);
+      if (source === 'auto' && quotaClaim?.usageLimitToken !== undefined) {
+        quotaClaim.retryClientId = clientId;
+      }
       autoResumeBookkeeping.claimSuppressedErrorForRetry(sessionId, clientId, source);
       if (source === 'auto' && attemptToken !== undefined) {
         autoResumeBookkeeping.bindSuppressedErrorToClient(sessionId, attemptToken, clientId);
@@ -19009,6 +19384,11 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       );
     },
     onUnconfirmedAutoResumeTurn: (sessionId, item) => {
+      const pending = pendingSchedulerAutoResumeRunBySession.get(sessionId);
+      if (pending?.usageLimitToken !== undefined && pending.retryClientId === item.clientId) {
+        // Outcome is uncertain: settle the waiter without restoring/replaying input.
+        notifySchedulerAutoResumeFailed(sessionId, pending.runId, pending.attemptToken);
+      }
       const attemptToken = autoResumeAttemptToken(item);
       if (attemptToken === null) return;
       autoResumeBookkeeping.abandonUnconfirmedPersistedResume(
@@ -19075,6 +19455,16 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         gatewayCodexRestartHolder?.isSessionRestarting(sessionId) === true,
     }),
     emitProjection: (projection) => {
+      const savedWait = savedUsageLimitWaits.get(projection.sessionId);
+      if (savedWait && savedWait.token > 0 &&
+        !inputCoordinator.leaseUsageLimitRecovery(projection.sessionId, savedWait.token)) {
+        forgetSavedUsageLimitWait(projection.sessionId);
+      }
+      const quotaClaim = pendingSchedulerAutoResumeRunBySession.get(projection.sessionId);
+      if (quotaClaim?.usageLimitToken !== undefined && !quotaClaim.retryClientId &&
+        !inputCoordinator.hasUsageLimitRecovery(projection.sessionId, quotaClaim.usageLimitToken)) {
+        finishSchedulerUsageLimitWait(projection.sessionId, quotaClaim.usageLimitToken);
+      }
       broadcastToAllWindows(MAKER_PUSH.INPUT_PROJECTION, projection);
       // 伙伴自主跟进：出错 / 用量上限等待旁路进状态表（只读投影，不影响原广播）。
       try { noteBotAutonomyInputProjection(projection); } catch { /* 观察层异常不影响输入协调 */ }
@@ -19150,6 +19540,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     loadQueueSnapshot: async (sessionId) => {
       // Rehydrate durable task holds before any entry point can drain restored/new input.
       await botDelegationServiceHolder?.restorePauseForSession(sessionId);
+      await restoreSavedUsageLimitWait(sessionId);
       return loadAgentInputQueueSnapshot(sessionId);
     },
     getPersistedClientIds: getPersistedInputClientIds,

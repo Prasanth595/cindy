@@ -438,6 +438,13 @@
     "copyFailed": "複製失敗",
     "deleteConfirmTitle": "刪除任務？",
     "deleteConfirmBody": "刪除後不可恢復。",
+    "archiveScheduleConfirmTitle": "歸檔任務？",
+    "archiveScheduleConfirmBody_one": "該任務繫結了自動化{{names}}，歸檔後將暫停。",
+    "archiveScheduleConfirmBody_other": "該任務繫結了自動化{{names}}，歸檔後將暫停。",
+    "archiveScheduleName": "「{{name}}」",
+    "archiveScheduleNameSeparator": "、",
+    "archiveScheduleBulkNotice_one": "其中 {{count}} 個任務繫結了自動化，歸檔後這些自動化將暫停。",
+    "archiveScheduleBulkNotice_other": "其中 {{count}} 個任務繫結了自動化，歸檔後這些自動化將暫停。",
     "dirAlreadyAdded": "這個目錄已經在列表裡。",
     "resetCodexTitle": "重置 Codex 用量？",
     "resetCodexBody": "將為 {{account}} 消耗 1 次重置。配額視窗會立即重開，此操作不能撤銷。",
@@ -734,5 +741,14 @@
     "start": "開始跟進",
     "notNow": "暫不開啟",
     "saveFailed": "沒能儲存，請重試"
+  },
+  "providerGroupRebalance": {
+    "title": "換到 {{label}} 繼續？",
+    "body": "為了平均用完各帳號的配額，建議這則訊息換到 {{label}} 傳送（{{quota}}）。換過去會帶上最近幾輪對話和摘要，更早的細節可能記不全。",
+    "quota": "還剩 {{left}}%",
+    "quotaReset": "還剩 {{left}}%，{{reset}}後重置",
+    "confirm": "換過去",
+    "remember": "換過去，以後自動換（僅此任務）",
+    "cancel": "取消"
   }
 }

@@ -1029,7 +1029,7 @@ export function CreateWorkerPopover({
               )}
               <ModelSelector
                 fastModeConfigurable={['codex', 'pi']}
-                unifiedAgents={sshRemote ? (pickerAgents ?? ['claude-code', 'codex']).filter((kind) => kind !== 'pi') : pickerAgents}
+                unifiedAgents={pickerAgents}
                 onUnifiedSelect={deviceId && remoteProviders.unsupported ? undefined : (selection) => {
                   modelSelectionChosenRef.current = true;
                   restoredModelSelectionRef.current = false;

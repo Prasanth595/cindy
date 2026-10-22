@@ -228,6 +228,25 @@
     "closeAllDescription": "Guests will lose access. Task history is kept."
   },
   "providerShare": {
+    "modelAccess": {
+      "title": "Models allowed for remote use",
+      "description": "Only limits remote use. Local use is unchanged. Saved changes apply when creating a task, switching models, or sending the next message.",
+      "all": "All models",
+      "selected": "{{count}} models allowed",
+      "choose": "Choose models",
+      "memberTitle": "Allowed models",
+      "memberDescription": "Choose which models {{name}} can use, within the models open for remote use. These limits also apply to use reshared through this person.",
+      "inherit": "Follow remote model access",
+      "allFuture": "Allow all models, including future additions",
+      "search": "Search models",
+      "notOpen": "Not open remotely",
+      "empty": "No matching models",
+      "none": "No models selected. Remote calls will be blocked.",
+      "loading": "Loading model access…",
+      "loadFailed": "Could not load model access. Reopen these settings.",
+      "saveFailed": "Could not save model access. Try again.",
+      "needsUpdate": "Update Cindy on the provider’s computer to manage model access."
+    },
     "entry": {
       "label": "Remote & Sharing",
       "pending_one": "{{count}} share request waiting",
@@ -640,7 +659,7 @@
       "round": "Round Robin",
       "order": "In Order",
       "weight": "By Weight",
-      "quotaFirst": "When subscription usage is available, prefer computers whose quota resets soon, then those with lower usage; apply the group strategy among similar ones",
+      "quotaFirst": "When subscription usage is available, computers whose quota resets soon with plenty left go first, so each account is used up evenly over time; similar ones follow the group strategy",
       "description": {
         "least": "Goes to the least busy one",
         "round": "Rotates across computers",
@@ -677,6 +696,10 @@
       },
       "runningCount_one": "{{count}} task running",
       "runningCount_other": "{{count}} tasks running",
+      "pace": {
+        "used": "{{used}}% used",
+        "usedExpected": "{{used}}% used, {{expected}}% expected by now"
+      },
       "limitAria": "Task limit for {{name}}",
       "limitOption_one": "Max {{count}}",
       "limitOption_other": "Max {{count}}",
@@ -728,6 +751,15 @@
         }
       }
     },
+    "rebalance": {
+      "title": "Continue on {{label}}?",
+      "description": "To use every account’s quota evenly, send this message from {{label}} ({{quota}}). The last few messages and a summary carry over; older details may be lost.",
+      "quota": "{{left}}% left",
+      "quotaReset": "{{left}}% left · {{reset}}",
+      "confirm": "Switch",
+      "cancel": "Cancel",
+      "remember": "Switch automatically from now on (this task only)"
+    },
     "deleteConfirm": {
       "title": "Delete the {{provider}} provider group?",
       "description": "New tasks on this computer will run here. Tasks already on other computers stay where they are.",
@@ -773,11 +805,12 @@
     "windowsTitle": "Lock screen control",
     "windowsready": "Enabled for this Cindy process. Restarting Cindy requires administrator authorization again.",
     "windowsmissing": "Allow control of the lock screen and administrator prompts. Administrator authorization is required.",
-    "windowsinstallRequired": "Install Cindy for all users in Program Files to enable this feature.",
+    "windowsinstallRequired": "Cindy could not find its installation directory. Restart Cindy and try again.",
     "windowsunavailable": "The system service is unavailable. Reinstall Cindy and try again.",
     "windowsEnable": "Authorize",
     "windowsDisable": "Remove service",
     "windowsError": "Authorization was not completed. Try again on this computer.",
+    "windowsErrorDetail": "Error code {{code}}",
     "permissionsTitle": "Remote desktop permissions",
     "permissionsIntro": "Screen recording lets you view the desktop. Accessibility also enables control. Complete authorization on the computer; status updates automatically.",
     "permissionsReady": "System permissions are ready. You can reconnect.",
@@ -8185,8 +8218,7 @@
         "backgroundTasks": "Track background progress and output",
         "sideChat": "Ask separately with context from the main task",
         "browser": "Browse web pages in the panel",
-        "terminal": "Run commands and view output",
-        "workbench": "See what your teammate is working on"
+        "terminal": "Run commands and view output"
       },
       "kinds": {
         "fileBrowser": "File browser",
@@ -8977,42 +9009,38 @@
   },
   "bots": {
     "workbench": {
-      "title": "Workbench",
-      "open": "Open workbench",
-      "untitled": "Untitled session",
-      "followingMark": "This task is looked after by {{names}}",
-      "glance": {
-        "waiting": "Waiting on you",
-        "working": "Running",
-        "loadFailed": "Couldn't load the workbench right now.",
-        "quiet": "Nothing in progress, and nothing waiting on you.",
-        "allow": "Allow",
-        "answer": "Answer",
-        "look": "Take a Look",
-        "waitedFor": "waited {{duration}}",
-        "offline": "Offline",
-        "deviceOffline": "{{device}} is offline",
-        "thisComputer": "This computer",
-        "lessThanMinute": "under 1 min",
-        "minutes_one": "{{count}} min",
-        "minutes_other": "{{count}} min",
-        "hours_one": "{{count}} hr",
-        "hours_other": "{{count}} hr",
-        "days_one": "{{count}} day",
-        "days_other": "{{count}} days",
-        "notSeenYet": "Not checked yet",
-        "seenJust": "Just checked",
-        "seenMinutesAgo_one": "Checked {{count}} min ago",
-        "seenMinutesAgo_other": "Checked {{count}} min ago",
-        "seenHoursAgo_one": "Checked {{count}} hr ago",
-        "seenHoursAgo_other": "Checked {{count}} hr ago",
-        "doneToday_one": "{{count}} done today",
-        "doneToday_other": "{{count}} done today",
-        "devicesOffline": "{{devices}} offline",
-        "allowFailed": "Couldn't allow it. Handle it in the session.",
-        "more_one": "{{count}} more",
-        "more_other": "{{count}} more",
-        "less": "Show Less"
+      "followingMark": "This task is looked after by {{names}}"
+    },
+    "glance": {
+      "open": "{{name}} at a glance",
+      "dueUnseen": "A todo is due",
+      "computers": "Computers",
+      "runningHere": "Running here",
+      "online": "Online",
+      "offline": "Offline",
+      "current": "Current",
+      "offlineCount_one": "{{count}} offline",
+      "offlineCount_other": "{{count}} offline",
+      "todos": "Todos",
+      "showMore": "Show more",
+      "showLess": "Show less",
+      "doneCount_one": "{{count}} done",
+      "doneCount_other": "{{count}} done",
+      "delete": "Delete",
+      "deleted": "Deleted. It won't be added again.",
+      "undo": "Undo",
+      "undoFailed": "Couldn't undo. Try again.",
+      "deleteFailed": "Couldn't delete. Try again.",
+      "outputs": "Outputs",
+      "outputMeta": "{{time}} · {{task}}",
+      "openFailed": "Couldn't open the file",
+      "source": {
+        "conversation": "You asked",
+        "mail": "From email",
+        "feishu": "From Feishu",
+        "github": "From GitHub",
+        "community": "From the community",
+        "task": "From a task"
       }
     },
     "autonomy": {
@@ -9248,13 +9276,15 @@
       "composerPlaceholderLatin": "Say something to {{name}}…"
     },
     "globalSettings": {
-      "restoreHint": "Restoring defaults follows the client’s default model settings. Individual teammates’ custom models stay unchanged.",
+      "restoreHint": "Restore the recommended teammate model. Individual teammates’ custom models stay unchanged.",
       "restoreFailed": "Could not restore defaults. Try again.",
       "defaultModel": "Default model",
-      "defaultModelHint": "Teammates use this model by default. Each teammate can pick a different one in their own settings.",
+      "defaultModelHint": "For teammates, independently of new-task model choices. Each teammate can choose another model.",
       "title": "Teammates",
       "description": "Settings shared by all teammates. Anything about one teammate lives on their own page.",
-      "rosterNote": "The shipped roster grows with each release."
+      "rosterNote": "The shipped roster grows with each release.",
+      "showReplyTarget": "Show which message a reply answers",
+      "showReplyTargetHint": "Above a teammate’s reply, show which of your messages it answers. Older replies don’t show this."
     },
     "session": {
       "ownedByBot": "{{name}}'s background task",
@@ -9345,7 +9375,10 @@
         "elapsed": "{{time}} so far",
         "viewProcess": "Show work",
         "hideProcess": "Hide work",
-        "stop": "Stop"
+        "stop": "Stop",
+        "stopMine": "Stop Mine",
+        "stopAll": "Stop All",
+        "stopAllHint": "Includes other people’s requests"
       },
       "header": {
         "stepRunning": "{{name}} is on step {{step}}",
@@ -9417,6 +9450,7 @@
         "placeholderPlanProposed": "To change who does what, just say so…",
         "placeholderPlanWaiting": "Want {{name}} to change something? Just say so…",
         "placeholderPlanRunning": "What you say goes to {{name}}, who’s working on it…",
+        "placeholderQueueRunning": "What you say goes to {{name}}, who’s speaking…",
         "tooManyAttachments": "Too many attachments. The limit is {{max}} per message.",
         "attachmentsFailed": "Attachments not sent. Check that the files still exist, or remove them and try again.",
         "folderNotSupported": "Folders can’t be attached. Choose the files inside instead."
@@ -9454,7 +9488,8 @@
         "endPlan": "End Work Split",
         "planDone_one": "The step is done",
         "planDone_other": "All {{count}} steps are done",
-        "planDoneGeneric": "Work split finished"
+        "planDoneGeneric": "Work split finished",
+        "endTalk": "End"
       },
       "notice": {
         "memberJoined": "{{name}} joined the group",
@@ -9562,7 +9597,13 @@
         "keepOneStep": "Keep at least one",
         "startFailed": "Couldn’t start the plan. Try again.",
         "dismissFailed": "Couldn’t end this plan. Try again.",
-        "editFailed": "Couldn’t change this step. Try again."
+        "editFailed": "Couldn’t change this step. Try again.",
+        "talkTurn": "Share a view",
+        "stepSpeaking": "Speaking",
+        "stepSpoken": "Done",
+        "allTurns_one": "All {{count}} teammate",
+        "allTurns_other": "All {{count}} teammates",
+        "foldTurns": "Show fewer"
       },
       "speaking": {
         "planning": "Splitting the work…"
@@ -9626,7 +9667,23 @@
           "shareNotLoaded": "This share is further back in the main chat. Load earlier messages to see it.",
           "retryPost": "Send to main chat again",
           "alreadyPosted": "You've already posted this reply to the main chat.",
-          "shareUnavailable": "This reply was deleted or isn't available, so it can't be posted to the main chat."
+          "shareUnavailable": "This reply was deleted or isn't available, so it can't be posted to the main chat.",
+          "newReplies_one": "{{count}} new reply",
+          "newReplies_other": "{{count}} new replies",
+          "mentionedYou": "@you",
+          "hintOne": "New replies in a thread",
+          "hintMany_one": "New replies in {{count}} thread",
+          "hintMany_other": "New replies in {{count}} threads",
+          "hintMentioned": "You were mentioned",
+          "hintDismiss": "Not now",
+          "follow": "Follow",
+          "following": "Following",
+          "followTip": "Get a hint in the group chat when this thread has new replies",
+          "unfollowTip": "Unfollow: you will only be told when someone mentions you",
+          "listLabel": "Threads in this group chat",
+          "listNews": "New replies",
+          "listOthers": "Other threads",
+          "newSeparator": "New replies"
         },
         "replyPlaceholder": "Reply to this message; use @ to mention a companion…",
         "sendReply": "Send reply",
@@ -10288,6 +10345,13 @@
       "viewTaskProgress": "View progress",
       "liveDraft": "Transcribing",
       "questionDraft": "Awaiting confirmation"
+    },
+    "dmThread": {
+      "newReply": "New reply",
+      "you": "You",
+      "rootNotLoaded": "The original message is not in the loaded history",
+      "rootUnavailable": "The original message is no longer in this chat, so a thread can’t start here",
+      "openFailed": "The thread didn’t open. Try again."
     }
   },
   "common": {
@@ -11985,7 +12049,8 @@
         "relocatedHere": "Agent now runs on this computer",
         "relocatedTo": "Agent now runs on {{device}}",
         "relocatedTaskComputer": "Agent now runs on the task’s computer",
-        "relocatedElsewhere": "Agent now runs on another computer"
+        "relocatedElsewhere": "Agent now runs on another computer",
+        "quotaRebalance": "its quota should be used first"
       },
       "contextRebuild": {
         "labelOverflow": "Context reorganized, continuing",
@@ -12233,7 +12298,7 @@
       "REMOTE_AGENT_BUSY": "Too many sessions are running on the other computer. End some of them and try again.",
       "REMOTE_AGENT_UNSUPPORTED": "This Agent isn't available on the other computer. Install or sign in to it there, or pick another Agent.",
       "REMOTE_AGENT_INVALID": "Something went wrong talking to the computer running the Agent. Try again; if it keeps happening, update Cindy on both computers.",
-      "REMOTE_AGENT_PROVIDER_NOT_ALLOWED": "That computer hasn’t allowed remote use of this provider. On that computer, turn on “Allow remote use” in Settings → Providers, or pick another model.",
+      "REMOTE_AGENT_PROVIDER_NOT_ALLOWED": "That computer hasn’t granted you remote access to this provider or the selected model. Ask its owner to adjust access in Remote & Sharing, or pick another model.",
       "REMOTE_AGENT_SHARE_PAUSED": "The owner has paused this share for you, so these models can’t be used until it’s resumed. Switch to another model to continue.",
       "REMOTE_AGENT_SHARE_REMOVED": "This share is no longer available (the owner removed it or you left). Switch to another model to continue.",
       "REMOTE_AGENT_SHARE_UNAVAILABLE": "The shared provider is temporarily unavailable. The owner's computer may be offline, or sharing is turned off for now. Try again later, or switch to another model to continue.",
@@ -12791,6 +12856,12 @@
         "title": "Archive session",
         "description": "Archive this session? It will be removed from the list.",
         "dirtyWorktreeWarning": "This session's worktree has uncommitted changes; they will be saved as a git snapshot before archiving and can be restored from the session later.",
+        "scheduleWarning_one": "The automation {{names}} linked to this session will be paused after archiving.",
+        "scheduleWarning_other": "The automations {{names}} linked to this session will be paused after archiving.",
+        "scheduleWarningMany_one": "{{count}} of them has linked automations, which will be paused after archiving.",
+        "scheduleWarningMany_other": "{{count}} of them have linked automations, which will be paused after archiving.",
+        "scheduleName": "“{{name}}”",
+        "scheduleNameSeparator": ", ",
         "confirm": "Confirm",
         "cancel": "Cancel"
       },
@@ -16927,82 +16998,6 @@
     "idempotencyConflict": "This retry identifier was already used for a different message.",
     "privateUnconfirmed": "Private message delivery is unconfirmed. Retry with the same identifier.",
     "verificationUnavailable": "Group authorization could not be verified. Try again when the connection recovers."
-  },
-  "teammateTodo": {
-    "title": "Todos",
-    "new": "New todo",
-    "search": "Search todos",
-    "open": "Open",
-    "done": "Completed",
-    "hidden": "Dismissed / later",
-    "empty": "No todos",
-    "noMatch": "No matching todos",
-    "loading": "Loading…",
-    "retry": "Retry",
-    "error": "The action did not finish. Try again.",
-    "conflict": "This todo changed. Review it before editing.",
-    "received": "Received",
-    "accepted": "View progress",
-    "unknown": "Check progress",
-    "failed": "Retry next step",
-    "view": "View details",
-    "evidence": "View evidence",
-    "more": "More actions",
-    "discovered": "Discovered",
-    "assigned": "Assigned",
-    "suggested": "Suggested",
-    "candidate": "Confirm date",
-    "overdue": "Overdue",
-    "next": "Next step",
-    "outcome": "Completion condition",
-    "value": "Why it matters",
-    "sources": "Sources",
-    "associations": "Related work",
-    "deadline": "Due date",
-    "sourceDeadline": "Source deadline",
-    "clearDate": "Clear due date",
-    "date": "Date",
-    "time": "Exact time (optional)",
-    "zone": "Time zone",
-    "save": "Save",
-    "cancel": "Cancel",
-    "delete": "Delete this todo",
-    "mute": "Do not suggest this issue again",
-    "later": "Do later",
-    "until": "Do later until",
-    "restore": "Restore",
-    "reopen": "Reopen",
-    "complete": "Mark complete",
-    "summary": "Completion evidence",
-    "confirmDate": "Confirm date",
-    "deadlineReason": "Why the date needs confirmation",
-    "override": "Your deadline",
-    "reminder": "Deferred until",
-    "edit": "Edit todo",
-    "name": "Title",
-    "progress": "Progress",
-    "link": "Evidence link (optional)",
-    "page": "{{start}}–{{end}} / {{count}}",
-    "previous": "Previous",
-    "following": "Next",
-    "order": "Sort",
-    "dueOrder": "Due first",
-    "createdOrder": "Creation order",
-    "origin": "Origin",
-    "all": "All",
-    "close": "Close",
-    "laterConflict": "Deferring does not extend the deadline",
-    "legacyEvidence": "Legacy completion evidence needs verification",
-    "history": "Completion history",
-    "deleted": "Deleted",
-    "muted": "Not suggested again",
-    "deferred": "Deferred",
-    "continue": "Continue",
-    "filter": "Filter",
-    "deleteConfirmTitle": "Delete this todo?",
-    "deleteConfirmBody": "It won't show again, and the same issue won't be raised again. You can restore it from Dismissed / later.",
-    "muteConfirmTitle": "Stop suggesting this issue?",
-    "muteConfirmBody": "The same issue won't come back to your todos. You can restore it from Dismissed / later."
   },
   "codexResets": {
     "retryReset": "Retry Reset",

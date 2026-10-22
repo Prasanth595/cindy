@@ -104,6 +104,35 @@ function goodManifest(id = 'hello'): Record<string, unknown> {
 }
 
 describe('GhostManager enable revision boundary', () => {
+  // Unit regression: an unreadable installation subtree used to become an empty
+  // scan and persist active:false. Exercise list(), retain the approved install
+  // and registry bytes, then recover without reinstalling (compatibility §5).
+  it.each(['root', 'namespaces', 'namespace'] as const)(
+    'does not persist missing installations when the %s directory cannot be read',
+    async (scope) => {
+      await manager.install(await makeCindy('unreadable.cindy', goodManifest()));
+      expect(manager.list()[0].enabled).toBe(true);
+      const registryPath = path.join(workDir, 'ghosts-install-state', 'plugin-instances.v2.json');
+      const before = fs.readFileSync(registryPath, 'utf8');
+      const target = scope === 'root' ? rootDir : scope === 'namespaces'
+        ? path.join(rootDir, '_ns') : path.join(rootDir, '_ns', '_root');
+      const realReaddir = fs.readdirSync;
+      const read = vi.spyOn(fs, 'readdirSync').mockImplementation(((dir: never, options: never) => {
+        if (String(dir) === target) throw Object.assign(new Error('scan unavailable'), { code: 'EACCES' });
+        return realReaddir(dir, options);
+      }) as never);
+      try {
+        if (scope === 'root') expect(() => manager.list()).toThrow('scan unavailable');
+        else {
+          expect(manager.list()).toEqual([]);
+          expect(manager.isInstallationScanComplete()).toBe(false);
+        }
+        expect(fs.readFileSync(registryPath, 'utf8')).toBe(before);
+      } finally { read.mockRestore(); }
+      expect(manager.list()[0]).toMatchObject({ enabled: true, approval: { state: 'approved' } });
+    },
+  );
+
   // Regression: one list() used two validated receipt reads per plugin. Unit
   // coverage also rejects a cross-call cache: the next scan must see revocation.
   it('reads each receipt once per scan and observes changed approval on the next scan', async () => {
@@ -3836,6 +3865,138 @@ describe('GhostManager · uninstall', () => {
 });
 
 describe('GhostManager · list', () => {
+  // Compatibility §5 / #6667: an IO failure must not persist active:false or
+  // trigger a default reinstall. Existing sync-list coverage misses async IO.
+  // Unit; one approved install and one unreadable directory, then IO recovery.
+  it.each(['root', 'namespaces', 'namespace', 'install'] as const)('async scan refuses an incomplete %s view without changing the registry', async (scope) => {
+    await manager.install(await makeCindy('unreadable-async.cindy', goodManifest()));
+    const registryPath = path.join(workDir, 'ghosts-install-state', 'plugin-instances.v2.json');
+    const before = fs.readFileSync(registryPath, 'utf8');
+    const target = scope === 'root' ? rootDir : scope === 'namespaces'
+      ? path.join(rootDir, '_ns') : scope === 'namespace'
+      ? path.join(rootDir, '_ns', '_root') : path.join(rootDir, '_ns', '_root', 'hello');
+    const refresh = manager.createBackgroundRefresh();
+    const fail = () => { throw Object.assign(new Error('scan unavailable'), { code: 'EACCES' }); };
+    const readdir = fs.promises.readdir;
+    const lstat = fs.promises.lstat;
+    const read = scope === 'install'
+      ? vi.spyOn(fs.promises, 'lstat').mockImplementation(((file: never, options: never) => {
+          if (String(file) === target) fail();
+          return lstat(file, options);
+        }) as never)
+      : vi.spyOn(fs.promises, 'readdir').mockImplementation(((dir: never, options: never) => {
+          if (String(dir) === target) fail();
+          return readdir(dir, options);
+        }) as never);
+    try {
+      await expect(refresh.list()).rejects.toThrow('scan unavailable');
+      expect(fs.readFileSync(registryPath, 'utf8')).toBe(before);
+    } finally {
+      read.mockRestore();
+    }
+    expect((await refresh.list())[0]).toMatchObject({ enabled: true, approval: { state: 'approved' } });
+  });
+
+  // One market refresh must read installations once, while later refreshes and
+  // Host mutations observe fresh approval. Existing listAsync tests only cover
+  // independent scans, not this request lifetime (unit; one installed plugin).
+  it('reuses one scan inside a refresh and reads current approval in the next refresh', async () => {
+    await manager.install(await makeCindy('refresh.cindy', goodManifest()));
+    const read = vi.spyOn(GhostInstallReceiptStore.prototype, 'readAsync');
+    try {
+      const refresh = manager.createBackgroundRefresh();
+      const lists = await Promise.all([refresh.list(), refresh.list()]);
+      for (let i = 0; i < 4; i++) expect((await refresh.list())[0].enabled).toBe(true);
+      expect(lists[0]).toEqual(lists[1]);
+      expect(read).toHaveBeenCalledTimes(1);
+      const receiptPath = path.join(workDir, 'ghosts-install-state', '_ns', '_root', 'hello.json');
+      await fs.promises.writeFile(receiptPath, '{invalid');
+      expect((await manager.createBackgroundRefresh().list())[0]).toMatchObject({ enabled: false, approval: { state: 'invalid' } });
+      expect(read).toHaveBeenCalledTimes(2);
+    } finally {
+      read.mockRestore();
+    }
+  });
+
+  it.each(['disable', 'install', 'uninstall'] as const)('invalidates a refresh after a queued %s', async (change) => {
+    await manager.install(await makeCindy('refresh.cindy', goodManifest()));
+    const refresh = manager.createBackgroundRefresh();
+    expect((await refresh.list())[0].enabled).toBe(true);
+    const mutation = change === 'disable' ? manager.setEnabled('hello', false)
+      : change === 'uninstall' ? manager.uninstall('hello')
+      : manager.install(await makeCindy('new.cindy', goodManifest('other')));
+    const listing = refresh.list();
+    await mutation;
+    const current = await listing;
+    if (change === 'disable') expect(current[0].enabled).toBe(false);
+    if (change === 'uninstall') expect(current).toEqual([]);
+    if (change === 'install') expect(current.map((ghost) => ghost.manifest.id)).toEqual(['hello', 'other']);
+  });
+
+  it('rejects a cached refresh after the owner generation changes', async () => {
+    let owner = '1';
+    manager = new GhostManager({ getRootDir: () => rootDir, getOwnerContextKey: () => owner });
+    await manager.install(await makeCindy('refresh.cindy', goodManifest()));
+    const refresh = manager.createBackgroundRefresh();
+    await refresh.list();
+    owner = '2';
+    await expect(refresh.list()).rejects.toThrow(/owner context changed/);
+  });
+
+  // Background scanning must yield during receipt IO, reject an obsolete owner,
+  // and retry after a Host removal. Sync list coverage cannot exercise these
+  // await windows (plugin-security-and-authoring §5; unit, one installed plugin).
+  it('async scan reads fresh receipts without using the synchronous receipt reader', async () => {
+    await manager.install(await makeCindy('async.cindy', goodManifest()));
+    const syncRead = vi.spyOn(GhostInstallReceiptStore.prototype, 'readForRecovery');
+    try {
+      const first = await manager.listAsync();
+      expect(first[0]).toMatchObject({ enabled: true, approval: { state: 'approved' } });
+      expect(syncRead).not.toHaveBeenCalled();
+      const receiptPath = path.join(workDir, 'ghosts-install-state', '_ns', '_root', 'hello.json');
+      await fs.promises.writeFile(receiptPath, '{invalid');
+      expect((await manager.listAsync())[0]).toMatchObject({ enabled: false, approval: { state: 'invalid' } });
+    } finally {
+      syncRead.mockRestore();
+    }
+  });
+
+  it.each(['owner', 'uninstall'] as const)('async scan does not publish stale approval after %s changes during IO', async (change) => {
+    let ownerGeneration = 1;
+    manager = new GhostManager({ getRootDir: () => rootDir, getOwnerContextKey: () => String(ownerGeneration) });
+    await manager.install(await makeCindy('race.cindy', goodManifest()));
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const reading = new Promise<void>((resolve) => { entered = resolve; });
+    const original = GhostInstallReceiptStore.prototype.readAsync;
+    let paused = false;
+    const read = vi.spyOn(GhostInstallReceiptStore.prototype, 'readAsync').mockImplementation(async function (this: GhostInstallReceiptStore, id: string) {
+      const receipt = await original.call(this, id);
+      if (!paused && id.endsWith('/hello')) {
+        paused = true;
+        entered();
+        await gate;
+      }
+      return receipt;
+    });
+    try {
+      const listing = manager.listAsync();
+      const observed = change === 'owner' ? expect(listing).rejects.toThrow(/owner context changed/) : null;
+      await reading;
+      if (change === 'owner') ownerGeneration++;
+      else await manager.uninstall('hello');
+      release();
+      if (observed) await observed;
+      else {
+        expect(await listing).toEqual([]);
+      }
+    } finally {
+      release();
+      read.mockRestore();
+    }
+  });
+
   it('根目录不存在 → 空清单(不报错)', () => {
     expect(manager.list()).toEqual([]);
   });

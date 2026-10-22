@@ -54,6 +54,12 @@ export type WatchedPhase =
 
 export type WatchedSource = 'user' | 'bot-task' | 'routine' | 'other';
 
+/** Captured at the activity boundary; persisted events must not sample a later turn. */
+export interface BotAutonomyExecution {
+  instanceId: string;
+  generation: number;
+}
+
 /** 状态表里的一行。远程任务的 `sessionId` 带 `deviceId::` 前缀，与历史工具一致。 */
 export interface WatchedSession {
   sessionId: string;
@@ -68,6 +74,7 @@ export interface WatchedSession {
   phaseSince: number;
   lastActivityAt: number;
   startedAt: number | null;
+  execution?: BotAutonomyExecution;
   /** 等回答 / 等权限时的一句摘要（≤ 140 字），否则 null。 */
   pendingQuestion: string | null;
   /**
@@ -122,6 +129,9 @@ export const AUTONOMY_EVENT_TYPES: readonly AutonomyEventType[] = [
 
 /** `RoutineEvent.data` 的扁平字段（引擎要求 string|number|boolean）。 */
 export interface AutonomyEventData {
+  /** Optional for queues saved before execution attribution was introduced. */
+  executionInstanceId?: string;
+  executionGeneration?: number;
   sessionId: string;
   deviceId: string;
   deviceName: string;

@@ -726,9 +726,6 @@
     "apps/desktop/src/renderer/__tests__/releaseNotesNormalize.test.ts": {
       "resetModules": 2
     },
-    "apps/desktop/src/renderer/__tests__/remoteCatalogSnapshot.test.ts": {
-      "resetModules": 1
-    },
     "apps/desktop/src/renderer/__tests__/remoteHistoryHandoff.test.ts": {
       "sourceReads": 1
     },
@@ -835,9 +832,6 @@
       "realWaits": 1
     },
     "apps/desktop/src/renderer/features/bots/__tests__/botGroupListRemoval.test.ts": {
-      "resetModules": 1
-    },
-    "apps/desktop/src/renderer/features/bots/__tests__/botModelChainDefaults.test.tsx": {
       "resetModules": 1
     },
     "apps/desktop/src/renderer/features/bots/__tests__/botNavigation.test.ts": {

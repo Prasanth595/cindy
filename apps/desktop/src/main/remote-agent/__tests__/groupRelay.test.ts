@@ -21,6 +21,8 @@ import { decideProviderGroupFailure } from '../../provider-group/failurePolicy';
 import { RemoteAgentPoller } from '../controller/poller';
 import { RemoteAgentRunClient } from '../controller/runClient';
 import { relayKeyFor, reshareKeyFor, type RelayRunFailure } from '../host/groupRelay';
+import { createGuestProviderRouteBinder } from '../host/providerAccess';
+import { guestProviderRouteForToken } from '../../maker-host/guest-provider-route-store';
 import {
   createRemoteAgentHost,
   hostSessionIdFor,
@@ -63,6 +65,8 @@ function fakeAgentHost(name: string, started: Started[], options: {
   /** 转分享的同意(本机是分享者)。 */
   reshare?: Parameters<typeof createRemoteAgentHost>[0]['reshare'];
   resolveProvider?: NonNullable<Parameters<typeof createRemoteAgentHost>[0]['providerAccess']>['resolve'];
+  modelAccess?: Partial<NonNullable<Parameters<typeof createRemoteAgentHost>[0]['providerAccess']>>;
+  bindGuestProviderRoute?: Parameters<typeof createRemoteAgentHost>[0]['bindGuestProviderRoute'];
 }) {
   return createRemoteAgentHost({
     forkHosted: async (_kind, opts) => ({ newSdkSessionId: `${opts.sourceSdkSessionId}-fork`, uuidMap: new Map([['old', 'new']]) }),
@@ -121,9 +125,10 @@ function fakeAgentHost(name: string, started: Started[], options: {
     providerAccess: {
       resolve: options.resolveProvider ?? (async (_kind, _model, providerId) => providerId ?? 'shared-provider'),
       isAllowed: () => true,
+      ...options.modelAccess,
     },
     ...(options.guestRelayCapable === false ? {} : {
-      bindGuestProviderRoute: async () => ({ routeToken: 'route', modelIds: ['claude-opus'], release: () => {} }),
+      bindGuestProviderRoute: options.bindGuestProviderRoute ?? (async () => ({ routeToken: 'route', modelIds: ['claude-opus'], release: () => {} })),
     }),
     ...(options.purge ? { purgeHostedTranscripts: options.purge } : {}),
     ...(options.groupRelay ? { groupRelay: options.groupRelay } : {}),
@@ -201,8 +206,10 @@ function setup(options: {
   switchWorthy?: (failure: RelayRunFailure) => boolean;
   /** mini 这台的 Agent 表现。 */
   mini?: { failStart?: boolean; endImmediately?: boolean };
+  memberBinder?: Parameters<typeof createRemoteAgentHost>[0]['bindGuestProviderRoute'];
   /** 组所在电脑本机的 Agent 表现(组选中本机这一台时)。 */
   owner?: { failStart?: boolean; prepareImageEvent?: Parameters<typeof createRemoteAgentHost>[0]['prepareImageEvent'];
+    modelAccess?: Partial<NonNullable<Parameters<typeof createRemoteAgentHost>[0]['providerAccess']>>;
     isAgentAvailable?: Parameters<typeof createRemoteAgentHost>[0]['isAgentAvailable'] };
   /** 截住组所在电脑发给组内电脑的请求(模拟回包丢失、应答慢)。 */
   intercept?: (agentDeviceId: string, request: Record<string, unknown>, forward: () => Promise<unknown>) => Promise<unknown>;
@@ -212,6 +219,7 @@ function setup(options: {
     mini: fakeAgentHost('mini', memberStarted.mini, {
       trust: () => 'owner',
       guestRelayCapable: options.miniCapable ?? true,
+      bindGuestProviderRoute: options.memberBinder,
       purge: async () => undefined,
       ...options.mini,
     }),
@@ -304,6 +312,97 @@ function switchTokenIn(stream: Awaited<ReturnType<typeof openAsGuest>>['stream']
 }
 
 describe('provider group relay for shared users', () => {
+  // Review 4328897446, unit: the old three-host harness never exercised the
+  // original member's model restrictions at the executing computer. A allows
+  // only opus, while the executor offers opus and sonnet; revoke opus mid-run.
+  it('projects the original member catalog and rechecks every child call across the relay', async () => {
+    const allowed = new Set(['claude-opus']);
+    let executorAllowed = true;
+    const binder = createGuestProviderRouteBinder({
+      readProviders: async () => [{ id: MEMBER_MINI.providerId, models: { 'claude-code': [
+        { id: 'claude-opus' }, { id: 'claude-sonnet' },
+      ] } }] as never,
+      guestAccess: () => null, ownerAllowed: () => true, providerAllowed: () => executorAllowed,
+      modelAccess: { allows: () => true, read: () => ({ models: null, providerModels: null }) },
+    });
+    const check = vi.fn((_provider: string, controller: string, model?: string) => controller === GUEST_A && (!model || allowed.has(model)));
+    const env = setup({ memberBinder: binder, owner: { modelAccess: {
+      isAllowed: check, models: async () => [...allowed], restricted: () => true,
+    } } });
+    try {
+      const { client } = await openAsGuest(env, GUEST_A, openPayload(SESSION));
+      try {
+        const input = env.memberStarted.mini[0].input;
+        expect(input.guestProvider!.modelIds).toEqual(['claude-opus']);
+        const allows = async (model: string) => {
+          const response = await fetch(input.tunnel.url + '/cindy/model-access', { method: 'POST',
+            headers: { Authorization: 'Bearer ' + input.tunnel.token }, body: JSON.stringify({ model }) });
+          return (await response.json() as { allowed: boolean }).allowed;
+        };
+        expect(await allows('claude-opus')).toBe(true);
+        expect(await allows('claude-sonnet')).toBe(false);
+        allowed.clear();
+        expect(await allows('claude-opus')).toBe(false);
+        allowed.add('claude-opus');
+        expect(await allows('claude-opus')).toBe(true);
+        executorAllowed = false;
+        expect(await allows('claude-opus')).toBe(false);
+        expect(check).toHaveBeenCalledWith('shared-provider', GUEST_A, 'claude-sonnet');
+      } finally { await client.close('close', 'navigation'); }
+    } finally { for (const host of [env.owner, ...Object.values(env.members)]) { await host.abortAll(); host.dispose(); } }
+  });
+
+  it.each([true, false])('handles a legacy executor with restricted=%s and stops it when new restrictions appear', async restrictedAtStart => {
+    let restricted = restrictedAtStart;
+    const env = setup({
+      plans: [{ kind: 'member', ...MEMBER_MINI }, { kind: 'member', ...MEMBER_STUDIO }],
+      owner: { modelAccess: { models: async () => ['claude-opus'], restricted: () => restricted } },
+      intercept: async (id, request, forward) => {
+        const result = await forward();
+        return id === 'mini' && request.op === 'caps' ? { ...(result as object), relayModelAccess: undefined } : result;
+      },
+    });
+    try {
+      const { client } = await openAsGuest(env, GUEST_A, openPayload(SESSION));
+      try {
+        expect(env.memberStarted.mini).toHaveLength(restrictedAtStart ? 0 : 1);
+        expect(env.memberStarted.studio).toHaveLength(restrictedAtStart ? 1 : 0);
+        restricted = true;
+        await env.owner.revalidateModelAccess();
+        expect(env.owner.runCount()).toBe(restrictedAtStart ? 1 : 0);
+      } finally { await client.close('close', 'navigation'); }
+    } finally { for (const host of [env.owner, ...Object.values(env.members)]) { await host.abortAll(); host.dispose(); } }
+  });
+  // Unit regression for review 4328468761: existing three-computer tests stubbed
+  // the production binding. The real binder must start an owner-relayed guest,
+  // keep its isolated home/provider, and release the proxy token on close.
+  it('starts and releases a same-account group relay through the production guest binder', async () => {
+    const binder = createGuestProviderRouteBinder({
+      readProviders: async () => [],
+      guestAccess: () => null,
+      ownerAllowed: controller => controller === OWNER_DEVICE,
+      providerAllowed: provider => provider === MEMBER_MINI.providerId,
+      modelAccess: { allows: () => true, read: () => ({ models: null, providerModels: null }) },
+    });
+    const env = setup({ memberBinder: binder });
+    try {
+      const { client } = await openAsGuest(env, GUEST_A, openPayload(SESSION));
+      try {
+        const input = env.memberStarted.mini[0].input;
+        expect(input.guest).toBe(true);
+        expect(input.guestHome).toContain(path.join('mini', 'guest-homes'));
+        const token = input.guestProvider!.routeToken;
+        expect(guestProviderRouteForToken(token)).toEqual({ sessionId: input.hostSessionId, providerId: MEMBER_MINI.providerId });
+        await client.call('send', [{ content: 'hello', attachments: [] }, {}]);
+        expect(env.memberStarted.mini[0].sends).toHaveLength(1);
+        await client.close('close', 'navigation');
+        await vi.waitFor(() => expect(guestProviderRouteForToken(token)).toBeNull());
+      } finally { await client.close('close', 'navigation'); }
+    } finally {
+      for (const host of [env.owner, ...Object.values(env.members)]) { await host.abortAll(); host.dispose(); }
+    }
+  });
+
   // Public G -> O -> M handlers, with JSON serialization: a fork must remain pinned
   // to its original member and preserve the guest ownership needed for another fork.
   it('forks and resumes on the original member without allocating another group member', async () => {

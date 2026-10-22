@@ -15,6 +15,8 @@
  * 行用 `memo` 包住：父组件只在这条消息（或它的引用、安排快照、高亮状态）真的变了时才会
  * 让它重绘；回调一律是父组件的稳定引用，按消息 id 调用。
  */
+import type { BotGroupAuthorKind } from '@cindy/maker-shared/botGroupChat';
+import { botGroupBodyParts } from '@cindy/maker-shared/botGroupPresentation';
 import { memo, useEffect, useState, useLayoutEffect, useRef, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { CircleAlert, CornerDownRight, RefreshCcw } from 'lucide-react';
@@ -126,8 +128,8 @@ const MENTION_CARD_CLOSE_MS = 150;
  * Message text as Markdown, with `@名字` of known members in the link color. Resting the pointer on a
  * mention shows that member's card; mentions are text ranges, so the hit test reads their boxes.
  */
-function BotGroupMessageText({ content, mentionLabels, members, mentions, serverBacked }: {
-  content: string; mentionLabels: readonly string[]; members: readonly BotGroupMemberView[];
+function BotGroupMessageText({ content, mentionLabels, members, mentions, serverBacked, authorKind }: {
+  authorKind?: BotGroupAuthorKind; content: string; mentionLabels: readonly string[]; members: readonly BotGroupMemberView[];
   /** Who the message mentioned; decides whose card a highlighted name opens. */
   mentions: BotGroupMention;
   serverBacked: boolean;
@@ -192,7 +194,9 @@ function BotGroupMessageText({ content, mentionLabels, members, mentions, server
   return (
     <div ref={ref} className="relative min-w-0 break-words" onPointerMove={onPointerMove}
       onPointerLeave={() => { if (ref.current) ref.current.style.cursor = ''; scheduleClose(); }}>
-      <MarkdownRenderer workingDir="" content={content} allowPrivilegedLinks={false} />
+      {botGroupBodyParts(content, authorKind).map((part, index) => part.kind === 'markdown'
+        ? <MarkdownRenderer key={index} workingDir="" content={part.content} allowPrivilegedLinks={false} />
+        : <p key={index} className="whitespace-pre-wrap break-words">{part.content}</p>)}
       <BotGroupMentionCard member={card?.member ?? null} anchor={card?.anchor ?? null}
         onPointerEnter={keepOpen} onPointerLeave={scheduleClose} />
     </div>
@@ -441,7 +445,36 @@ function BotGroupTimelineItemImpl(props: BotGroupTimelineItemProps) {
     );
   }
 
-  // A server plan is signed by its human creator; present the organizer without changing authorship.
+  // A server queue stands on its own under the request: the turns it lines up, never folded
+  // into someone's reply (bot-group-chat.md §7).
+  if (message.kind === 'plan' && props.plan?.kind === 'talk') {
+    return (
+      <Row {...rowProps} block="author">
+        <div className="flex min-w-0 gap-2.5">
+          <span aria-hidden className="w-7 shrink-0" />
+          <div data-testid="bot-group-arrangement" className={cn('min-w-0', BUBBLE_COLUMN_CLASS)}>
+            <div className="w-fit min-w-0 max-w-full">
+              <BotGroupPlanCard
+                plan={props.plan}
+                members={members}
+                actionable={false}
+                // Only the creator, an owner or an admin may change who speaks next.
+                reassignable={(props.planReassignable ?? false) && props.plan.canManage !== false}
+                pending={props.planPending ?? null}
+                runningSince={props.planRunningSince ?? null}
+                doneAt={props.planDoneAt}
+                locale={locale}
+                onStart={() => undefined}
+                onDismiss={() => undefined}
+                onEditStep={(step, action, botId) => { if (message.planId) props.onEditStep?.(message.planId, step, action, botId); }}
+              />
+            </div>
+          </div>
+        </div>
+      </Row>
+    );
+  }
+  // A legacy plan is signed by its human creator; present the organizer without changing authorship.
   const isPlanCard = message.kind === 'plan';
   const timed = Number.isFinite(message.createdAt) && message.createdAt > 0;
   const clock = timed ? formatBotTimelineClock(message.createdAt, locale) : '';
@@ -505,7 +538,7 @@ function BotGroupTimelineItemImpl(props: BotGroupTimelineItemProps) {
                   {shareBody}
                   {!share && hasText ? (
                     <div className="min-w-0">
-                      <BotGroupMessageText content={message.content} mentionLabels={mentionLabels} members={members} mentions={message.mentions ?? NO_MENTIONS} serverBacked={Boolean(props.reactionGroupId)} />
+                      <BotGroupMessageText authorKind={message.authorKind} content={message.content} mentionLabels={mentionLabels} members={members} mentions={message.mentions ?? NO_MENTIONS} serverBacked={Boolean(props.reactionGroupId)} />
                     </div>
                   ) : null}
                   {/* A task this teammate started from the group, under what it said about it; mine is live

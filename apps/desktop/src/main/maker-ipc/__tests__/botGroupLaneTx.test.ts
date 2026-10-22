@@ -15,7 +15,7 @@ vi.mock('../../localDb/client/current.js', async () => {
 import { tx } from '../../localDb/worker/opHandlers/tx.js';
 import { BotPlanWorkDirUnavailableError, prepareBotWorkspaceRuntime } from '../botWorkspaceRuntime.js';
 import { ensureBotChatOnlyWorkspaceDir } from '../botProfileFolder.js';
-import { chatGroupLaneRouteKey } from '../../../shared/botGroupChat.js';
+import { chatGroupLaneRouteKey, chatGroupTalkRouteKey } from '../../../shared/botGroupChat.js';
 import type { MakerSessionCreateOpts } from '../sessionRequest.js';
 
 function laneSession(id: string) {
@@ -139,6 +139,20 @@ describe('Bot group lane transactions', () => {
       expect((await stat(opts.workingDir)).isDirectory()).toBe(true);
     }
     expect(ensureWorkspaceDir).not.toHaveBeenCalled();
+  });
+
+  // bot-group-chat.md §7.0: a queue turn has no project folder. It starts where its group lane works:
+  // the teammate's own place, or the grant's isolated chat folder for chat-only access.
+  it.each(['owner', 'tools', 'chat'] as const)('starts a %s queue lane where its group lane works', async mode => {
+    const access = { mode, revision: 1 };
+    const routeKey = chatGroupTalkRouteKey('g1', access, 'queue-1');
+    const workingDir = mode === 'chat' ? await ensureBotChatOnlyWorkspaceDir(ownerRoot, 'mimi', chatGroupLaneRouteKey('g1', access)) : '/private-bot-home';
+    const session = { ...laneSession('queue-step'), workingDir, workspaceKind: 'dialogue' };
+    tx(db, { name: 'bots.createGroupLane', args: { botId: 'mimi', groupId: 'g1', routeKey, session } });
+    const ensureWorkspaceDir = vi.fn(async () => '/private-bot-home');
+    const opts: MakerSessionCreateOpts = { id: session.id, agentKind: 'claude-code', model: session.model, workingDir: '', workspaceKind: 'project', remoteHostId: 'stale-host' };
+    await prepareBotWorkspaceRuntime(opts, { ownerUserDataPath: () => ownerRoot, ensureWorkspaceDir });
+    expect(opts).toMatchObject({ workingDir, workspaceKind: 'dialogue', remoteHostId: undefined });
   });
 
   it.each(['', ':plan:server-plan'])('isolates chat-only startup%s even with a matching legacy project plan and stale session directory', async suffix => {

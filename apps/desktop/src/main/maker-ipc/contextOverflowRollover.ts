@@ -542,13 +542,13 @@ export type ContextRebuildReason =
   | 'idle-gap';
 
 /**
- * 伙伴的对话(主对话 + IM 群 / 话题 / 外部私聊专线 + 伙伴群聊专线)共用同一套上下文自管理
+ * 伙伴的对话(主对话 + 私聊话题 + IM 群 / 话题 / 外部私聊专线 + 伙伴群聊专线)共用同一套上下文自管理
  * 规则:到线换窗、工具结果入交接、空闲间隔刷新。委派 / 历史任务不是对话,不在此列。
  */
 export function isBotChatContext(row: { source?: string | null; botRole?: string | null }): boolean {
   return (
     row.source === 'bot' &&
-    (row.botRole === 'canonical' || row.botRole === 'channel' || row.botRole === 'group')
+    (row.botRole === 'canonical' || row.botRole === 'thread' || row.botRole === 'channel' || row.botRole === 'group')
   );
 }
 

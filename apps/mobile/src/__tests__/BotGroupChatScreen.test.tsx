@@ -1327,3 +1327,16 @@ it('acknowledges other humans only once their messages reach the measured visibl
   expect(h.chat.markRead).toHaveBeenLastCalledWith(['incoming-human']);
   expect(h.markRead).not.toHaveBeenCalled();
 });
+
+// #6550: screen + real mobile Markdown parser, with RN host primitives simulated in jsdom.
+it('renders component body as readable text without changing the message', async () => {
+  const content = 'Before\n\n```cindy-ui\n' + JSON.stringify({ seq: 1, version: 1, op: 'create', id: 'body', kind: 'text', props: { text: 'Readable answer' } }) + '\n```\n\nAfter';
+  const reply = message('rich-body', 1, { authorBotId: 'mimi', authorName: '咪咪', content });
+  await render(group({ messages: [reply] }));
+  const body = byId('botGroup.message.bot')!;
+  expect(body.textContent).toContain('Readable answer');
+  expect(body.textContent).toContain('Before');
+  expect(body.textContent).toContain('After');
+  expect(body.textContent).not.toContain('"op":"create"');
+  expect(reply.content).toBe(content);
+});

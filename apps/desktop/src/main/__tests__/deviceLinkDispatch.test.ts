@@ -3031,6 +3031,8 @@ describe('remote subscription data reads', () => {
       ok: true, result: { providerId: 'account-2', fiveHour: { utilization: 12 } },
     });
     expect(reader).toHaveBeenCalledWith('account-2');
+    await runInvoke('ctrl', { channel, args: ['account-2', true] });
+    expect(reader).toHaveBeenLastCalledWith('account-2', { fresh: true });
     expect(ipcHandler).not.toHaveBeenCalled();
     reader.mockClear();
     await expect(runInvoke('ctrl', { channel, args: [42] })).resolves.toMatchObject({ ok: false, error: { code: 'IPC_ERROR', message: expect.stringContaining('[INVALID_PARAMS]') } });

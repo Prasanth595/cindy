@@ -8,6 +8,7 @@ import nativeFallbackPrompt from '../codex-native-fallback-prompt.md?raw';
 import {
   extractBundledCodexModelCatalog,
   prepareCodexCustomContextCatalog,
+  prepareCodexGuestModelCatalog,
   patchCodexModelMaxContextWindow,
   nativeCodexFallbackModel,
 } from '../codex-custom-context-catalog.js';
@@ -38,6 +39,18 @@ async function createFixtureBinary(
 }
 
 describe('Codex custom context model catalog', () => {
+  // Unit: a guest's native Codex children used the unfiltered binary catalog.
+  // One granted model must keep native metadata while the ungranted sibling
+  // disappears from the actual model_catalog_json passed to app-server.
+  it('writes only granted models for the guest app-server and preserves custom context metadata', async () => {
+    const granted = { slug: 'gpt-5.5', base_instructions: 'native prompt', context_window: 272000 };
+    const { root, binaryPath } = await createFixtureBinary({ models: [granted, { slug: 'private-model' }] });
+    const prepared = await prepareCodexGuestModelCatalog({ binaryPath, codexHome: root,
+      modelIds: ['gpt-5.5'], baseCatalog: { models: [{ ...granted, max_context_window: 1000000 }, { slug: 'private-model' }] } });
+    expect(JSON.parse(await fs.readFile(prepared.catalogPath, 'utf8')).models).toEqual([{ ...granted, max_context_window: 1000000 }]);
+    expect(prepared.extraArgs).toEqual(['-c', `model_catalog_json=${JSON.stringify(prepared.catalogPath)}`]);
+    await expect(prepareCodexGuestModelCatalog({ binaryPath, codexHome: root, modelIds: [] })).rejects.toThrow('no authorized models');
+  });
   it('extracts the complete embedded catalog across chunk boundaries', async () => {
     const catalog = {
       models: [

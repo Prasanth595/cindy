@@ -80,10 +80,11 @@ import {
 } from './claude-session-route-registry.js';
 import { createClaudeGatewayErrorObserver } from './claude-gateway-error-observer.js';
 import { shouldApplyExclusiveProviderReroute } from './model-route-guard.js';
-import { getSessionProvider } from './session-provider-store.js';
+import { getSessionProvider, hasHostedSessionModelAccess } from './session-provider-store.js';
 import {
   GUEST_ROUTE_HEADER,
   guestProviderOffersModel,
+  hostedProviderOffersModel,
   guestProviderRouteForSession,
   guestProviderRouteForToken,
   type GuestProviderRoute,
@@ -93,6 +94,7 @@ import {
   providerRoutingForModel,
   gatewayDefaultRouteDecision,
   getUserProviderIdForSession,
+  inferProviderIdForModel,
   resolveImplicitLocalBridgeRouteResolution,
   resolveImplicitProviderOAuthRouteDecision,
   resolvePendingSessionRouteDecision,
@@ -599,11 +601,11 @@ function unavailablePiProviderRoute(providerId: string): RoutingDecision {
 export function createModelRoutingTransform(): RoutingTransform {
   // guest：供应商分享受邀者的 Claude Code 请求(带路由令牌，已核对模型)，按其会话显式来源路由，
   // 不走隐式推断与默认网关(分享的就是网关时除外)。缺省 = 本机用户自己的请求，路由不变。
-  const route = (
+  const route = async (
     body: unknown,
     ctx: RequestTransformCtx,
     guest?: GuestProviderRoute,
-  ): RoutingDecision | null | Promise<RoutingDecision | null> => {
+  ): Promise<RoutingDecision | null> => {
     const claimedPiSessionId = headerValue(ctx.headers, 'x-cindy-pi-session-id');
     const claimedPiSessionToken = headerValue(ctx.headers, 'x-cindy-pi-session-token');
     if (
@@ -687,6 +689,33 @@ export function createModelRoutingTransform(): RoutingTransform {
     if (piGuest && !piRequestStaysOnGuestProvider(piGuest, piProviderId, registeredPiProviderId)) {
       return refuseGuestProviderRoute(403, 'shared_provider_only', 'This request is outside the provider shared with you.');
     }
+    if (piGuest || hasHostedSessionModelAccess(piSessionId)) {
+      const providerId = piGuest?.providerId ?? piProviderId ?? selectedPiProviderId;
+      // Check the live member grant before native handlers and all other Pi routing branches.
+      // Google's native API puts the authoritative model in the URL instead of body.model.
+      const requestModels: string[] = [];
+      if (isPlainObject(body)) {
+        if (typeof body.model === 'string' && body.model) requestModels.push(body.model);
+        // Subscription forwarders use body.model and rebuild their own URL; a forged Google
+        // path cannot stand in for a missing/opaque subscription request body.
+        if (!isOpenAiSubscriptionProviderId(providerId) && !isXaiSubscriptionProviderId(providerId)) {
+          const pathname = new URL(ctx.url, 'http://127.0.0.1').pathname;
+          const pathModel = /\/models\/(.+):(?:streamGenerateContent|generateContent|countTokens)$/.exec(pathname);
+          if (pathModel) requestModels.push(decodeURIComponent(pathModel[1]));
+        }
+      }
+      let deniedModel: string | undefined;
+      for (const model of requestModels) {
+        const allowed = piGuest
+          ? await guestProviderOffersModel(piGuest.providerId, 'pi', model, piGuest.sessionId)
+          : hostedProviderOffersModel(piSessionId, providerId, 'pi', model);
+        if (!allowed) { deniedModel = model; break; }
+      }
+      if (requestModels.length === 0 || deniedModel !== undefined) {
+        return piGuest ? refuseGuestForeignRoute(deniedModel ?? '')
+          : refuseGuestProviderRoute(403, 'remote_model_not_allowed', 'This model is not available for this remote task.');
+      }
+    }
     if (piSessionId && piProviderId && (isOpenAiSubscriptionProviderId(piProviderId) || isXaiSubscriptionProviderId(piProviderId))) {
       return {
         // PI has already built the provider-native request. The local handler
@@ -733,6 +762,12 @@ export function createModelRoutingTransform(): RoutingTransform {
     if (pendingRoute) return pendingRoute;
 
     const selectedProviderId = sessionId ? getSessionProvider(sessionId) : null;
+    // CC may resolve a different provider for this request (subscriptions and
+    // implicit child routes). Check the grant where the actual route is known.
+    const authorizeClaudeRoute = (providerId: string | null | undefined, model = wireModel): RoutingDecision | null =>
+      !piSessionId && !hostedProviderOffersModel(sessionId, providerId, 'claude-code', model)
+        ? refuseGuestProviderRoute(403, 'remote_model_not_allowed', 'This model is not available for this remote task.')
+        : null;
     if (guest && selectedProviderId !== guest.providerId) return refuseGuestForeignRoute(wireModel);
     const applyExclusiveReroute = shouldApplyExclusiveProviderReroute(
       selectedProviderId,
@@ -772,6 +807,11 @@ export function createModelRoutingTransform(): RoutingTransform {
       if (guest && !isOpenAiSubscriptionProviderId(selectedProviderId) && !isXaiSubscriptionProviderId(selectedProviderId)) {
         return refuseGuestForeignRoute(wireModel);
       }
+      const bridgeProviderId = isExclusiveXaiModelId(wireModel)
+        ? (isXaiSubscriptionProviderId(selectedProviderId) ? selectedProviderId : 'xai')
+        : (isOpenAiSubscriptionProviderId(selectedProviderId) ? selectedProviderId : 'openai');
+      const denied = authorizeClaudeRoute(bridgeProviderId, bridgedSubscriptionModel(wireModel));
+      if (denied) return denied;
       const bridgeHandler = getResponsesBridgeHandler((isOpenAiSubscriptionProviderId(selectedProviderId) || isXaiSubscriptionProviderId(selectedProviderId)) ? selectedProviderId! : undefined);
       if (!bridgeHandler) {
         if (isExclusiveXaiModelId(wireModel)) {
@@ -781,6 +821,7 @@ export function createModelRoutingTransform(): RoutingTransform {
           return refuseExclusiveXaiDefaultGateway(wireModel);
         }
         if (guest) return refuseGuestForeignRoute(wireModel);
+        if (hasHostedSessionModelAccess(sessionId)) return retryableLocalRoute('provider_route_unavailable', 'The selected provider route is unavailable; check its configuration and retry.');
         log.warn('订阅前缀模型但 responses handler 不可用,passthrough(该请求预期会 400)', { wireModel });
         return null;
       }
@@ -844,6 +885,10 @@ export function createModelRoutingTransform(): RoutingTransform {
       // 落到下方 ② 段 spawn 默认路由,分类器照常走网关/直连(issue #886)。
       const perSession = resolveSessionRouteDecision(sessionId, requestAgent, gatewayKey, wireModel);
       const recordSelectedRoute = (route: RoutingDecision | null): RoutingDecision | null => {
+        if (route) {
+          const denied = authorizeClaudeRoute(selectedProviderId);
+          if (denied) return denied;
+        }
         // A missing descriptor is not permission to use the default upstream.
         // Keep builtin subscription scope fallbacks, but pin explicit custom
         // requests even while their catalog/runtime is temporarily unavailable.
@@ -911,6 +956,8 @@ export function createModelRoutingTransform(): RoutingTransform {
         // 用户 Anthropic 兼容上游在目录里省略 wireProtocol(buildUserProvider 约定)。
         const bridgeWire = bridgeRoute?.routing.wireProtocol ?? 'anthropic-messages';
         if (bridgeRoute && bridgeRoute.providerId !== 'xd' && ['anthropic-messages', 'openai-chat', 'openai-responses', 'google-generative-ai'].includes(bridgeWire)) {
+          const denied = authorizeClaudeRoute(bridgeRoute.providerId);
+          if (denied) return denied;
           const bridged = buildRouteDecision(
             bridgeRoute.routing,
             gatewayKey,
@@ -929,9 +976,11 @@ export function createModelRoutingTransform(): RoutingTransform {
           'claude-code',
           gatewayKey,
         );
+        const authorizeImplicitOAuth = (decision: RoutingDecision | null): RoutingDecision | null =>
+          decision ? authorizeClaudeRoute(inferProviderIdForModel(wireModel, 'claude-code')) ?? decision : decideDefaultRoute();
         return implicitOAuth instanceof Promise
-          ? implicitOAuth.then((decision) => decision ?? decideDefaultRoute())
-          : (implicitOAuth ?? decideDefaultRoute());
+          ? implicitOAuth.then(authorizeImplicitOAuth)
+          : authorizeImplicitOAuth(implicitOAuth);
       });
     }
     return decideDefaultRoute();
@@ -939,6 +988,8 @@ export function createModelRoutingTransform(): RoutingTransform {
     // ② 未显式选供应商 → 据请求凭证判定 spawn 形态(见上方注释)。
     // 函数声明提升:①.5 的回落分支在自身解析落空时复用本段,行为与引入 ①.5 前一致。
     function decideDefaultRoute(): RoutingDecision | null {
+      const denied = authorizeClaudeRoute('xd');
+      if (denied) return denied;
       // 计费路由旁路只记「未显式选供应商」的会话(registry 声明的语义,消费方也只在
       // providerId=null 时读)——显式选了供应商但被 scope 门放下来的辅助请求(如 xai 会话
       // 的 claude-* 分类器调用)不该往表里写死记录。
@@ -1052,7 +1103,7 @@ export function createModelRoutingTransform(): RoutingTransform {
         headerDelete: [...new Set([...(resolved?.headerDelete ?? []), GUEST_ROUTE_HEADER])],
       };
     };
-    const routeGuest = (token: string): ReturnType<typeof route> => {
+    const routeGuest = async (token: string): ReturnType<typeof route> => {
       const guest = guestProviderRouteForToken(token);
       if (!guest) {
         return refuseGuestProviderRoute(401, 'invalid_guest_route', 'Invalid or expired shared-provider session.');
@@ -1066,7 +1117,7 @@ export function createModelRoutingTransform(): RoutingTransform {
           : refuseGuestProviderRoute(403, 'shared_provider_only', 'This request is outside the provider shared with you.');
       }
       const wireModel = typeof body.model === 'string' ? body.model : '';
-      if (!guestProviderOffersModel(guest.providerId, 'claude-code', wireModel)) return refuseGuestForeignRoute(wireModel);
+      if (!await guestProviderOffersModel(guest.providerId, 'claude-code', wireModel, guest.sessionId)) return refuseGuestForeignRoute(wireModel);
       return route(body, ctx, guest);
     };
     try {

@@ -1684,6 +1684,8 @@ export function createTurnRunner(
             });
           }
           if (item.channelToolScope) {
+            // A retried dispatch must not reuse an earlier input receipt.
+            delete item.channelToolScope.inputClientId;
             item.turn.channelToolScopeRelease = beginChannelToolScope({
               sessionId: rowId,
               sessionInstanceId: state.makerSession.instanceId,
@@ -1793,6 +1795,7 @@ export function createTurnRunner(
           });
           if (persisted) {
             item.prePersistedUserMessage = { sessionId: rowId, clientId: persisted.clientId };
+            if (item.channelToolScope) item.channelToolScope.inputClientId = persisted.clientId;
             await beginTurnChangeSetAtDispatch(state.makerSession, persisted.clientId);
             turnChangeSetStarted = true;
           }

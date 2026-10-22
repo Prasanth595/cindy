@@ -240,7 +240,15 @@
     "sendingMessage": "Sending message: {{text}}",
     "uploadingAttachments": "Uploading attachments {{uploaded}}/{{total}}",
     "delete": "Delete",
-    "retry": "Retry"
+    "retry": "Retry",
+    "notSent": "Not sent",
+    "imagesNotUploaded_one": "{{count}} image didn't upload",
+    "imagesNotUploaded_other": "{{count}} images didn't upload",
+    "waitingForComputer": "Sends when your computer is back",
+    "waitingForNetwork": "Sends when you’re back online",
+    "queued": "Queued",
+    "retryImage": "Upload this image again",
+    "waitingMessage": "Waiting to send: {{text}}"
   },
   "systemCard": {
     "contextRebuild": {
@@ -294,6 +302,7 @@
     "agentSwitchLocation": "Agent moved to {{device}}",
     "agentSwitchLocationThisComputer": "Agent moved back to this computer",
     "agentSwitchLocationOtherComputer": "Agent moved to another computer",
+    "agentSwitchLocationQuotaRebalance": "its quota should be used first",
     "learnStarted": "Skill learning started",
     "learnStartedBody": "Distillation runs in the background on desktop. When it's done, review the skill draft on desktop.",
     "learnFailed": "Skill learning couldn't start",

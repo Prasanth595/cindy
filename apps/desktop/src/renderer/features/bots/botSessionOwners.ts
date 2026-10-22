@@ -13,6 +13,7 @@ import type { BotSessionOwner } from '@/features/cc-agent/lib/projectGrouping';
 import type { BotProfile } from './botStore';
 import type { RemoteBot } from './remoteBotRoster';
 import { isBotGroupLaneSession } from './botGroupLane';
+import { BOT_DM_THREAD_PARAM } from './botDmThreadRoute';
 
 /**
  * Find the Bot that owns a real Cindy Session through the projected
@@ -55,7 +56,8 @@ export interface BotSessionEntryTarget {
 /**
  * Resolve the public Bot route for a notification or other session-only entry.
  * The stable main task stays on the short Bot route; history keeps its own
- * read-only route and a group lane returns to its group.
+ * read-only route, a group lane returns to its group and a private-chat topic
+ * opens beside its private chat.
  * Background tasks keep their ordinary `/cc-agent/:sessionId` route with its
  * message anchors and error controls; other live chats use the Bot session route.
  */
@@ -71,6 +73,13 @@ export function botRouteForOwnedSession(
     return {
       route: projection?.groupId ? `/bots/groups/${encodeURIComponent(projection.groupId)}` : botRoute,
       consumesAlert: true,
+    };
+  }
+  if ((projection?.kind === 'thread' || projection?.role === 'thread') && projection.threadRoot) {
+    // A private-chat topic has no page of its own: open the private chat with the topic beside it.
+    return {
+      route: `${botRoute}/session/${encodeURIComponent(projection.threadRoot.rootSessionId)}?${BOT_DM_THREAD_PARAM}=${encodeURIComponent(sessionId)}`,
+      consumesAlert: false,
     };
   }
   if (projection?.kind === 'history' || projection?.role === 'history') {

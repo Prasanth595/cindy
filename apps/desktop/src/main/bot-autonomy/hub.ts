@@ -10,6 +10,7 @@ import type { RoutineEngine, RoutineRun } from '@cindy/maker-scheduler';
 import {
   type BotAutonomySettingsView,
   type BotGlance,
+  type BotAutonomyExecution,
 } from '../../shared/botAutonomy.js';
 import { activeOwnerScopeKey, isAppSessionBoundaryPending, ownerScopedUserDataPath } from '../appSessionState.js';
 import { createLogger } from '../logger.js';
@@ -27,6 +28,9 @@ import { errorCode, type BotAutonomyInputProjection } from './taskWatch.js';
 const log = createLogger('bot-autonomy');
 
 export interface BotAutonomyHostDeps {
+  readSessionExecution(sessionId: string): BotAutonomyExecution | null;
+  /** A durable terminal receipt owns this event's execution, including pending delivery. */
+  isCompletionHandledByTeammate(sessionId: string, botId: string, execution: BotAutonomyExecution): Promise<boolean | null>;
   /** 某个本机任务当前挂起的交互请求（只读）。 */
   getPendingInteractions(sessionId: string): readonly unknown[];
   getMainWindow(): BrowserWindow | null;
@@ -63,14 +67,23 @@ export function noteBotAutonomyInputProjection(projection: unknown): void {
   runtime.watch.applyInputProjection(projection as BotAutonomyInputProjection);
 }
 
-function emptyGlance(botId: string): BotGlance {
-  return { botId, scope: 'own', waiting: [], working: [], lastSweepAt: 0, doneToday: 0, offlineDevices: [] };
-}
-
-export function getBotAutonomyGlance(botId: string, options?: GlanceOptions): BotGlance {
+export function getBotAutonomyGlance(
+  botId: string, options?: GlanceOptions, refreshRemote = true,
+): BotGlance {
   if (isAppSessionBoundaryPending()) throwIpcError('PRECONDITION_FAILED', 'App session is switching; retry later.');
   const active = current && scopeIsCurrent(current.scope) ? current.runtime : null;
-  return active ? active.glance(botId, options) : emptyGlance(botId);
+  // 与伙伴工具读取保持一致：运行体或归属未就绪不是「没有任务」。
+  // 沿用已有错误协议，旧查看端也能进入读取失败分支；就绪后的变化推送会触发重读。
+  if (!active?.watch.isReady()) throwIpcError('PRECONDITION_FAILED', 'Bot autonomy is not ready; retry later.');
+  const scope = activeOwnerScopeKey();
+  // The hidden auto-open probe and Agent reads use cached projections only.
+  // Return cached/local rows immediately; the watch pushes changes when remote IO settles.
+  if (refreshRemote && active.watch.getSchedulerBotId() === botId) {
+    void active.watch.refreshRemote().catch((error) => log.warn('autonomy remote refresh failed', { error: errorCode(error) }));
+  }
+  assertOwner(scope);
+  if (current?.runtime !== active) throwIpcError('PRECONDITION_FAILED', 'Task observation changed; retry later.');
+  return active.glance(botId, options);
 }
 
 export async function getBotAutonomySettingsView(): Promise<BotAutonomySettingsView> {
@@ -136,7 +149,7 @@ export async function currentFollowUpEvents(botId: string, events: RoutineRun['e
   if (current !== active || !scopeIsCurrent(active.scope) || watch.getBots() !== botsAtRead) return null;
   const subjects: FollowUpSubject[] = metas.filter(meta => meta.status === 'active' && meta.hiddenAt === null
     && meta.orcaRole !== 'worker' && meta.source !== 'review'
-    && !['history', 'group', 'channel'].includes(meta.laneRole ?? '')).map(meta => {
+    && !['history', 'group', 'channel', 'thread'].includes(meta.laneRole ?? '')).map(meta => {
       const canonical = [...ownership.bots].find(([, bot]) => bot.canonicalSessionId === meta.id)?.[0]
         ?? (meta.laneRole === 'canonical' ? meta.laneBotId : null);
       const creator = ownership.creatorBySession.get(meta.id) ?? null;
@@ -145,7 +158,28 @@ export async function currentFollowUpEvents(botId: string, events: RoutineRun['e
     });
   const allowedNow = () => filterFollowUpEvents(botId, events, watch.list(),
     resolveSchedulerBotId(readBotAutonomySettingsOverride(), ownership.bots), ownership.bots, Date.now(), subjects);
-  const allowed = allowedNow();
+  const eligible = allowedNow();
+  // Only the built-in follow-up consumes this gate. Keep publishing host events
+  // for user-authored routines, and recheck persisted batches before model work.
+  let handled: (boolean | null)[];
+  try {
+    handled = await Promise.all(eligible.map(({ event }) => {
+      const { executionInstanceId, executionGeneration } = event.data;
+      // Legacy batches have no execution proof. Preserve their follow-up rather
+      // than attributing them to whichever native turn happens to be live now.
+      if (event.type !== 'finished' || typeof event.subject !== 'string'
+        || typeof executionInstanceId !== 'string' || !executionInstanceId
+        || typeof executionGeneration !== 'number' || !Number.isSafeInteger(executionGeneration)) return false;
+      return hostDeps.isCompletionHandledByTeammate?.(event.subject, botId,
+        { instanceId: executionInstanceId, generation: executionGeneration }) ?? null;
+    }));
+  } catch (error) {
+    log.warn('autonomy completion ownership deferred', { error: errorCode(error) });
+    return null;
+  }
+  if (current !== active || !scopeIsCurrent(active.scope) || watch.getBots() !== botsAtRead
+    || handled.includes(null)) return null;
+  const allowed = eligible.filter((_event, index) => !handled[index]);
   return { events: allowed, canDispatch: () => current === active && scopeIsCurrent(active.scope) && watch.isReady()
-    && watch.getBots() === botsAtRead && allowedNow().length === allowed.length };
+    && watch.getBots() === botsAtRead && allowedNow().length === eligible.length };
 }

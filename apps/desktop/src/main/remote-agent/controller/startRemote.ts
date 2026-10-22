@@ -22,6 +22,7 @@ import {
   type RemoteAgentStreamItem,
 } from '@cindy/device-link';
 import type { AgentEvent, AgentSessionHandle, Effort, StartSessionOptions } from '@cindy/maker-core';
+import { withTransientRemoteRetry } from '@cindy/maker-shared/device-link-contract';
 
 import { PROVIDER_SHARE_CREDENTIAL_SESSION_APPROVAL } from '../../../shared/providerShareCredentialConsent';
 import { credentialGrantPermission, type CredentialGrantRecord } from '../executor/credentialGrants';
@@ -680,7 +681,14 @@ export async function startRemoteAgentSession(
     reconnect: boolean,
     onOpened: (started: RemoteStartedInfo) => void,
   ): Promise<RemoteAgentRunClient> {
-    const caps = await RemoteAgentRunClient.caps(deps.invoke);
+    // 重启恢复可能撞上 relay 尚未上线/拥堵冷却；只重试无副作用的能力读取，
+    // 等既有链路自行恢复。open/upload/send 的交付不确定时不能整次重放。
+    const caps = await withTransientRemoteRetry(() => {
+      if (linkState === 'closed') {
+        throw new Error('[REMOTE_AGENT_EXPIRED] The task has ended on this computer.');
+      }
+      return RemoteAgentRunClient.caps(deps.invoke);
+    });
     if (caps.virtualWorkspace !== true) {
       throw new Error('[REMOTE_AGENT_UNSUPPORTED] The other computer does not support the virtual workspace required to protect local paths.');
     }

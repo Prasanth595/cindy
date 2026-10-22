@@ -244,6 +244,8 @@ async function makeFixture(options: {
   surviveStdinEnd?: boolean;
   /** Model a wedged runner: publish status, never consume the stop mailbox. */
   ignoreStopControl?: boolean;
+  /** Inject OS signal failures into the real runner, without faking its receipt. */
+  failChildTermination?: boolean;
   /** Runner config of a shared-user (guest) hosted session. */
   guestIsolation?: boolean;
   /**
@@ -280,7 +282,7 @@ async function makeFixture(options: {
   // the control mailbox. Written *into the run dir* so its argv path carries the
   // run UUID, exactly as the production runner does — that path is the identity
   // the host verifies before signalling.
-  const runnerFile = options.ignoreStopControl
+  const runnerFile = options.ignoreStopControl || options.failChildTermination
     ? path.join(runDir, 'runner.cjs')
     : await sharedRunnerFile();
   const fakePiFile = path.join(root, 'fake-pi.cjs');
@@ -294,6 +296,22 @@ async function makeFixture(options: {
   const tokensFile = path.join(root, 'tokens.jsonl');
   const pidsFile = path.join(root, 'child-pids.jsonl');
   const poisonedSessionDir = path.join(root, 'poisoned-session-dir');
+  if (options.failChildTermination) {
+    await writeFile(runnerFile, `
+const cp = require('node:child_process');
+const originalSpawn = cp.spawn;
+cp.spawn = function (...args) {
+  const child = originalSpawn(...args);
+  child.kill = function () { return false; };
+  return child;
+};
+const originalKill = process.kill.bind(process);
+process.kill = function (pid, signal) {
+  if (pid < 0) throw Object.assign(new Error('injected EPERM'), { code: 'EPERM' });
+  return originalKill(pid, signal);
+};
+` + CINDY_SUBAGENT_RUNNER_SOURCE, { mode: 0o700 });
+  }
   if (options.ignoreStopControl) {
     await writeFile(runnerFile, `
 'use strict';
@@ -470,7 +488,7 @@ process.stdin.on('end', () => {
     version: 1,
     runId,
     taskId: 'tool-fixture',
-    parentSessionId: 'parent-fixture',
+    parentSessionId: path.basename(root),
     ...(options.runtimeOwnerId ? { runtimeOwnerId: options.runtimeOwnerId } : {}),
     ...(options.guestIsolation ? { guestIsolation: true } : {}),
     runDir,
@@ -557,8 +575,8 @@ afterEach(async () => {
 
 describe('Cindy durable PI Subagent runner', () => {
   /**
-   * result.json is an attachment, not the verdict. Nothing in the product reads
-   * it back; status.json is what the Host converges on. So a failure to write it
+   * result.json is a best-effort attachment; status.json is the primary record.
+   * Account-boundary recovery may read a valid receipt, but a failure to write it
    * must not be able to change what the run reports — the old code let the throw
    * from the success path land in the failure handler, which rewrote the state
    * to `failed` and republished, and a throw from the failure handler escaped it
@@ -598,6 +616,48 @@ describe('Cindy durable PI Subagent runner', () => {
       });
       await waitForClose(fixture.child, fixture.stderr);
     });
+  });
+
+  // #6694 integration: use the actual runner's persisted receipt, after its
+  // child and runner have exited. A hand-built JSON fixture alone cannot prove
+  // that the independent artifact has the identity required by recovery.
+  it('recovers account teardown from a real terminal receipt after status corruption', async () => {
+    const fixture = await makeFixture();
+    await waitForClose(fixture.child, fixture.stderr);
+    const files = ['result.json', 'transcript.jsonl', 'config.json'];
+    const before = await Promise.all(files.map(file => readFile(path.join(fixture.runDir, file))));
+    await writeFile(path.join(fixture.runDir, 'status.json'), Buffer.alloc(72_506));
+    await expect(stopForAccountBoundary(fixture.root, { timeoutMs: 0 })).resolves.toBe(true);
+    expect(await Promise.all(files.map(file => readFile(path.join(fixture.runDir, file)))))
+      .toEqual(before);
+  });
+
+  it.skipIf(process.platform === 'win32')('refuses a real signal receipt until the orphan child has exited', async () => {
+    // SIGTERM handlers are a POSIX path; Windows abrupt termination cannot
+    // execute this handler. Keep the actual runner's signal/result code intact.
+    const fixture = await makeFixture({ hang: true, surviveStdinEnd: true, failChildTermination: true });
+    const childPid = await waitFor(async () => {
+      const content = await readFile(fixture.pidsFile, 'utf8').catch(() => '');
+      const pid = Number(content.trim().split('\n')[0]);
+      return Number.isSafeInteger(pid) && pid > 0 ? pid : null;
+    });
+    try {
+      fixture.child.kill('SIGTERM');
+      await waitForClose(fixture.child, fixture.stderr);
+      const receipt = JSON.parse(await readFile(path.join(fixture.runDir, 'result.json'), 'utf8'));
+      expect(receipt.state).toBe('stopped');
+      expect(receipt.tasks[0].status).toBe('stopped');
+      expect(process.kill(childPid, 0)).toBe(true);
+      await writeFile(path.join(fixture.runDir, 'status.json'), Buffer.alloc(72_506));
+      await expect(stopForAccountBoundary(fixture.root, { timeoutMs: 0 })).resolves.toBe(false);
+      // The read-only inventory must not kill a discovered process by its PID.
+      expect(process.kill(childPid, 0)).toBe(true);
+    } finally {
+      // This PID is from our own fixture, never from a product recovery scan.
+      try { process.kill(childPid, 'SIGKILL'); } catch { /* already gone */ }
+    }
+    await waitFor(async () => await stopForAccountBoundary(fixture.root, { timeoutMs: 0 }) ? true : null,
+      undefined, 'the independent process inventory to confirm the orphan exited');
   });
 
   // A profile prompt long enough to blow the platform spawn command line budget

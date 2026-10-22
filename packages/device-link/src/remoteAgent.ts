@@ -104,6 +104,7 @@ export interface RemoteAgentErrorInfo {
 
 /** 被控端请控制端处理的反向请求。 */
 export type RemoteAgentReverseRequest =
+  | { type: 'model-access'; model?: string }
   | { type: 'interaction'; request: unknown }
   | {
       type: 'http';
@@ -263,6 +264,8 @@ export interface RemoteAgentCaps {
    * 不声明的电脑，组所在电脑不给它分受邀者的任务(否则受邀者会拿到主人级权限)。
    */
   guestRelay?: boolean;
+  /** Group relays can query the original member's live model grants before dispatch. */
+  relayModelAccess?: boolean;
   /**
    * 供应商组转分享：受邀者(组所在电脑)可以报上它分享的人、由这台的主人逐人同意(op `reshare`)，组转来的受邀者任务
    * 只在同意过的人上运行。不声明的电脑给不出同意，组所在电脑不把受邀者的任务分给它。
@@ -606,6 +609,7 @@ export function parseRemoteAgentCaps(value: unknown): RemoteAgentCaps {
     ...(v.imageRecovery === true ? { imageRecovery: true } : {}),
     ...(v.imageRecoveryRelay === true ? { imageRecoveryRelay: true } : {}),
     ...(v.guestRelay === true ? { guestRelay: true } : {}),
+    ...(v.relayModelAccess === true ? { relayModelAccess: true } : {}),
     ...(v.reshareConsent === true ? { reshareConsent: true } : {}),
     ...(v.reshareBatch === true ? { reshareBatch: true } : {}),
   };
@@ -666,6 +670,9 @@ function headerList(value: unknown): Array<[string, string]> {
 function reverseRequest(value: unknown): RemoteAgentReverseRequest {
   const v = record(value);
   switch (v.type) {
+    case 'model-access':
+      if (v.model !== undefined && (typeof v.model !== 'string' || !v.model || v.model.length > 512)) invalid();
+      return { type: 'model-access', ...(typeof v.model === 'string' ? { model: v.model } : {}) };
     case 'interaction':
       return { type: 'interaction', request: v.request };
     case 'http': {

@@ -19,14 +19,18 @@ vi.mock('react-native', async () => {
     if (props.testID) handlers.set(String(props.testID), props);
     return createElement(tag, { 'data-testid': props.testID, onClick: props.disabled ? undefined : props.onPress }, props.children);
   };
+  class AnimatedValue { setValue() {} interpolate() { return 0; } }
   return { View: view('div'), Text: view('span'), Pressable: view('button'), ActivityIndicator: () => null,
-    StyleSheet: { create: (styles: unknown) => styles, hairlineWidth: 1 } };
+    StyleSheet: { create: (styles: unknown) => styles, hairlineWidth: 1 },
+    Animated: { View: view('div'), Value: AnimatedValue, timing: () => ({ start() {}, stop() {} }) },
+    Easing: { bezier: () => (value: number) => value },
+    AccessibilityInfo: { isReduceMotionEnabled: () => Promise.resolve(true), addEventListener: () => ({ remove() {} }) } };
 });
 vi.mock('@/components/AppText', async () => ({ Text: (await import('react-native')).Text }));
 vi.mock('lucide-react-native', () => ({ Check: () => null, AlertCircle: () => null, ArrowUp: () => null,
   ListEnd: () => null, Paperclip: () => null, Pencil: () => null, RotateCcw: () => null, Trash2: () => null,
   Bot: () => null, Ghost: () => null, Send: () => null, Timer: () => null,
-  Monitor: () => null, Smartphone: () => null }));
+  Monitor: () => null, Smartphone: () => null, Clock: () => null }));
 vi.mock('@/session/SentInlineAtomBody', () => ({ SentInlineAtomBody: () => null }));
 vi.mock('@/session/sentAttachmentThumbStore', () => ({ getSentAttachmentThumbUri: (ref: string) => durableThumbs.get(ref) ?? null,
   useSentAttachmentThumbsVersion: () => 0 }));
@@ -45,6 +49,7 @@ const select = vi.fn();
 const openLink = vi.fn();
 const openImage = vi.fn();
 const removeOutbox = vi.fn();
+const retryOutbox = vi.fn();
 const item: MobilePendingSendItem = {
   type: 'pending_send', key: 'message-a', clientId: 'a', phase: 'queued', text: 'hello',
   queueIndex: 1, sentInlineTokens: [], thumbs: [], fileCount: 0, attachmentCount: 0, uploadedCount: 0,
@@ -71,7 +76,7 @@ function show(
 ) {
   handlers.clear();
   const actions: PendingSendBubbleActions = { selectedClientId, onSelect: select, onRemove: vi.fn(),
-    onBeginEdit: vi.fn(), onSteer: vi.fn(), onRetryOutbox: vi.fn(), onRemoveOutbox: removeOutbox };
+    onBeginEdit: vi.fn(), onSteer: vi.fn(), onRetryOutbox: retryOutbox, onRemoveOutbox: removeOutbox };
   act(() => root.render(<PendingSendBubble item={{ ...item, ...overrides }} actions={actions} viewerDeviceId={viewerDeviceId}
     onOpenImage={openImage}
     renderImage={() => null} renderFile={() => null}
@@ -112,6 +117,19 @@ it('lets an in-flight local outbox message open its cancel action', () => {
   show({ actions: null, phase: 'sending', queueIndex: null }, 'a');
   act(() => host.querySelector<HTMLElement>('[data-testid="pendingSend.outboxRemove.a"]')!.click());
   expect(removeOutbox).toHaveBeenCalledWith('a');
+});
+it('offers retry and delete on a failed send without opening it first, and re-uploads only the failed image', () => {
+  show({ actions: null, phase: 'failed', queueIndex: null, attachmentCount: 2, thumbs: [
+    { key: 'a-slot-0', uri: 'file:///ok.jpg', ossRef: 'cindy-oss-attach://ok', uploading: false },
+    { key: 'a-slot-1', uri: 'file:///bad.jpg', ossRef: null, uploading: false, failed: true },
+  ] });
+  expect(host.querySelector('[data-testid="pendingSend.imageRetry.a-slot-0"]')).toBeNull();
+  act(() => host.querySelector<HTMLElement>('[data-testid="pendingSend.imageRetry.a-slot-1"]')!.click());
+  act(() => host.querySelector<HTMLElement>('[data-testid="pendingSend.outboxRetry.a"]')!.click());
+  expect(retryOutbox.mock.calls).toEqual([['a'], ['a']]);
+  act(() => host.querySelector<HTMLElement>('[data-testid="pendingSend.outboxRemove.a"]')!.click());
+  expect(removeOutbox).toHaveBeenCalledWith('a');
+  expect(select).not.toHaveBeenCalled();
 });
 it('lets a real body link consume the pending tap before the frame commits', () => {
   show(); touch('Start'); touch('End');

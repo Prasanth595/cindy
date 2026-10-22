@@ -89,7 +89,8 @@ async function context(callerSessionId: string, opts?: { allowPaused?: boolean; 
   if (
     !row ||
     row.source !== 'bot' ||
-    (!groupAuthority && (row.role !== 'canonical' || row.canonicalSessionId !== callerSessionId)) ||
+    // The owner's Bot Chat: the current main Chat or one of its private-chat topics.
+    (!groupAuthority && row.role !== 'thread' && (row.role !== 'canonical' || row.canonicalSessionId !== callerSessionId)) ||
     row.archivedAt !== null ||
     row.sessionStatus !== 'active' ||
     !profileAllowed

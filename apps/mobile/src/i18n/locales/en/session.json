@@ -438,6 +438,13 @@
     "copyFailed": "Copy failed",
     "deleteConfirmTitle": "Delete session?",
     "deleteConfirmBody": "This can't be undone.",
+    "archiveScheduleConfirmTitle": "Archive session?",
+    "archiveScheduleConfirmBody_one": "The automation {{names}} linked to this session will be paused after archiving.",
+    "archiveScheduleConfirmBody_other": "The automations {{names}} linked to this session will be paused after archiving.",
+    "archiveScheduleName": "“{{name}}”",
+    "archiveScheduleNameSeparator": ", ",
+    "archiveScheduleBulkNotice_one": "{{count}} of them has linked automations, which will be paused after archiving.",
+    "archiveScheduleBulkNotice_other": "{{count}} of them have linked automations, which will be paused after archiving.",
     "dirAlreadyAdded": "This directory is already in the list.",
     "resetCodexTitle": "Reset Codex usage?",
     "resetCodexBody": "This uses 1 reset for {{account}}. The quota window reopens immediately and this can't be undone.",
@@ -734,5 +741,14 @@
     "start": "Start Following Up",
     "notNow": "Not Now",
     "saveFailed": "Couldn't save. Try again."
+  },
+  "providerGroupRebalance": {
+    "title": "Continue on {{label}}?",
+    "body": "To use every account’s quota evenly, send this message from {{label}} ({{quota}}). The last few messages and a summary carry over; older details may be lost.",
+    "quota": "{{left}}% left",
+    "quotaReset": "{{left}}% left · resets in {{reset}}",
+    "confirm": "Switch",
+    "remember": "Switch, and do it automatically from now on (this task only)",
+    "cancel": "Cancel"
   }
 }

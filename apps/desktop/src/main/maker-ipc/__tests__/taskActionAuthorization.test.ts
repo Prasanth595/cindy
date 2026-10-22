@@ -1,11 +1,13 @@
 /**
  * Value: production tool admission + queued dispatch guards, no real account or network.
- * Regression: host wakes previously inherited scheduler/creator and Full Access write authority.
+ * Regression: task actions added owner consent checks after the normal runtime permission flow.
  * Gap: workbench tests cover visibility; SDK approval tests cannot prove Host consent.
- * Minimum input: automatic wake + send/stop/runtime tool; expect no queue/route change.
+ * Minimum input: non-owner provenance + runtime change; live execution modes do not review twice.
  * Tier: unit. This file isolates the process-local authorization lifetime from SQLite/IPC.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { AutoReviewDecision, PermissionMode, SendOrigin } from '@cindy/maker-core';
+import { getDesktopMcpToolApprovalPolicy } from '../../maker-host/mcp-tool-approval-policy.js';
 import { withToolCallAuthority } from '../../../../../../packages/lizi-mcps/src/tool-call-authority.js';
 import { createOrcaMcpServer } from '../../../../../../packages/lizi-mcps/src/orca/server.js';
 import type { AgentInputQueuedMessage } from '../../../shared/agentInputQueue.js';
@@ -262,6 +264,11 @@ function desktopFixture(kind: 'private' | 'group' | 'automatic' = 'group') {
   hostFacts.getDb.mockReturnValue(db);
   hostFacts.boundaryPending.mockReturnValue(false);
   const activeInput = {
+    permission: undefined as undefined | {
+      permissionMode: string;
+      planModeEnabled: boolean;
+      isCurrent(): boolean;
+    },
     orcaSenderSessionId: undefined as string | undefined,
     key: 'owner-request',
     ownerInput: kind === 'private',
@@ -269,8 +276,17 @@ function desktopFixture(kind: 'private' | 'group' | 'automatic' = 'group') {
     boundary: 'runtime-1',
   };
   const confirm = vi.fn(async () => true);
-  const authorize = createDesktopTaskActionAuthorizer({ input: () => ({ ...activeInput }), confirm });
-  return { authorize, confirm, activeInput, caller, rows };
+  const runtime = {
+    stablePermissionModeState: { mode: 'auto' as PermissionMode, generation: 1 },
+    stablePlanModeState: { enabled: false, generation: 1 },
+    getCurrentTurnOrigin: (): SendOrigin | null => null,
+    reviewHostPermissionAction: vi.fn(async (): Promise<AutoReviewDecision> => ({ verdict: 'allow' })),
+  };
+  const getSession = vi.fn((): typeof runtime | undefined => runtime);
+  const authorize = createDesktopTaskActionAuthorizer({
+    input: () => ({ ...activeInput }), confirm, getSession,
+  });
+  return { authorize, confirm, activeInput, caller, rows, runtime, getSession };
 }
 const ownerWrites = [
   ['cindy_helper', 'start_session_task'],
@@ -283,7 +299,200 @@ const ownerWrites = [
   ['cindy_orca', 'switch_focus'],
 ] as const;
 
+// Regression #6399 / maker-core-and-agent-behavior.md "同范围自动跟进":
+// production Desktop admission must deliver a user-scheduled send after normal
+// permission review. Existing Bot-only automatic fixtures miss ordinary schedules.
+// Minimum: ordinary scheduled turn + approved send_to_session; unit, in-memory IO.
+// Standalone Vitest run: 2.72s (4.4s command wall time on Windows).
+describe('Owner-delegated scheduled task actions', () => {
+  function scheduledFixture() {
+    const h = desktopFixture('automatic');
+    h.caller.botId = null;
+    h.caller.source = 'scheduler';
+    const origin: SendOrigin = { kind: 'scheduler', runId: 'run-1' };
+    h.runtime.getCurrentTurnOrigin = () => origin;
+    return h;
+  }
+  const scheduledSend = () => ({
+    ...call('send_to_session'),
+    args: { target_session_id: 'target', message: 'Dispatch the new PR feedback' },
+  });
+
+  it('reuses a live scheduled permission flow without invoking the recovery reviewer', async () => {
+    const h = scheduledFixture();
+    h.activeInput.permission = {
+      permissionMode: 'auto', planModeEnabled: false, isCurrent: () => true,
+    };
+    expect(await withToolCallAuthority(h.authorize, scheduledSend(), async () => 'sent')).toBe('sent');
+    expect(h.runtime.reviewHostPermissionAction).not.toHaveBeenCalled();
+    expect(h.confirm).not.toHaveBeenCalled();
+  });
+
+  it.each(['direct', 'queued', 'bound'] as const)('delivers an approved %s scheduled dispatch without another confirmation', async route => {
+    const h = scheduledFixture();
+    if (route === 'bound') h.caller.source = 'desktop';
+    h.activeInput.automatic = route === 'queued';
+    const request = scheduledSend();
+    const queued = input();
+    const result = await withToolCallAuthority(h.authorize, request, async () => {
+      bindTaskActionInput('target', queued);
+      return 'sent';
+    });
+    expect(result).toBe('sent');
+    // The admitted message can wait behind busy work after its source turn ends.
+    h.runtime.getCurrentTurnOrigin = () => null;
+    await expect(taskActionInputGuard('target', queued)!()).resolves.toBeUndefined();
+    expect(h.runtime.reviewHostPermissionAction).toHaveBeenCalledWith({
+      kind: 'other',
+      description: JSON.stringify({
+        toolName: 'mcp__cindy_helper__send_to_session',
+        input: request.args,
+        context: { source: 'scheduler', phase: 'triggered-continuation' },
+      }),
+    });
+    expect(h.confirm).not.toHaveBeenCalled();
+  });
+
+  it.each(['bot', 'forwarded', 'missing-runtime', 'plan'] as const)('does not infer consent from %s scheduled metadata', async source => {
+    const h = scheduledFixture();
+    if (source === 'bot') h.caller.botId = 'bot';
+    if (source === 'forwarded') h.runtime.getCurrentTurnOrigin = () => null;
+    if (source === 'missing-runtime') h.getSession.mockReturnValue(undefined);
+    if (source === 'plan') h.runtime.stablePlanModeState.enabled = true;
+    const effect = vi.fn(async () => 'sent');
+    expect(await withToolCallAuthority(h.authorize, scheduledSend(), effect)).toMatchObject({ isError: true });
+    expect(effect).not.toHaveBeenCalled();
+    expect(h.runtime.reviewHostPermissionAction).not.toHaveBeenCalled();
+    expect(h.confirm).not.toHaveBeenCalled();
+  });
+
+  it.each(['block', 'ask', 'cancel'] as const)('respects a normal %s permission decision', async verdict => {
+    const h = scheduledFixture();
+    h.runtime.reviewHostPermissionAction.mockResolvedValue({ verdict: verdict === 'cancel' ? 'ask' : verdict });
+    h.confirm.mockResolvedValue(verdict !== 'cancel');
+    const effect = vi.fn(async () => 'sent');
+    const result = await withToolCallAuthority(h.authorize, scheduledSend(), effect);
+    if (verdict === 'ask') expect(result).toBe('sent');
+    else expect(result).toMatchObject({ isError: true });
+    expect(effect).toHaveBeenCalledTimes(verdict === 'ask' ? 1 : 0);
+    expect(h.confirm).toHaveBeenCalledTimes(verdict === 'block' ? 0 : 1);
+  });
+
+  it.each(['message', 'target_session_id'] as const)('rejects %s rewritten while the permission review is pending', async key => {
+    const h = scheduledFixture();
+    const request = scheduledSend();
+    h.runtime.reviewHostPermissionAction.mockImplementation(async () => {
+      request.args[key] = 'unreviewed';
+      return { verdict: 'allow' };
+    });
+    const effect = vi.fn(async () => 'sent');
+    const result = await withToolCallAuthority(h.authorize, request, effect);
+    expect(result).toMatchObject({ isError: true });
+    expect(JSON.stringify(result)).toContain('TASK_ACTION_AUTHORIZATION_EXPIRED');
+    expect(effect).not.toHaveBeenCalled();
+  });
+
+  it.each(['permission', 'plan', 'instance', 'account', 'input'] as const)('invalidates admission and delayed delivery after %s changes', async changed => {
+    const h = scheduledFixture();
+    const queued = input();
+    const guard = await withToolCallAuthority(h.authorize, scheduledSend(), async () => {
+      bindTaskActionInput('target', queued);
+      return captureTaskActionSyncGuard()!;
+    });
+    if (typeof guard !== 'function') throw new Error('Expected an admitted delivery guard');
+    await expect(taskActionInputGuard('target', queued)!()).resolves.toBeUndefined();
+    expect(() => guard()).not.toThrow();
+    if (changed === 'permission') h.runtime.stablePermissionModeState.generation++;
+    if (changed === 'plan') h.runtime.stablePlanModeState.generation++;
+    if (changed === 'instance') h.getSession.mockReturnValue({ ...h.runtime });
+    if (changed === 'account') hostFacts.boundaryPending.mockReturnValue(true);
+    if (changed === 'input') h.activeInput.boundary = 'replacement-runtime';
+    expect(() => guard()).toThrow('AUTHORIZATION_EXPIRED');
+    await expect(taskActionInputGuard('target', queued)!()).rejects.toThrow('AUTHORIZATION_EXPIRED');
+  });
+
+  it.each(['permission', 'account', 'turn'] as const)('does not act or prompt if %s changes during review', async changed => {
+    const h = scheduledFixture();
+    h.runtime.reviewHostPermissionAction.mockImplementation(async () => {
+      if (changed === 'permission') h.runtime.stablePermissionModeState.generation++;
+      if (changed === 'account') hostFacts.boundaryPending.mockReturnValue(true);
+      if (changed === 'turn') h.runtime.getCurrentTurnOrigin = () => ({ kind: 'scheduler', runId: 'run-2' });
+      return { verdict: 'ask' };
+    });
+    const effect = vi.fn(async () => 'sent');
+    const result = await withToolCallAuthority(h.authorize, scheduledSend(), effect);
+    expect(result).toMatchObject({ isError: true });
+    expect(JSON.stringify(result)).toContain('TASK_ACTION_AUTHORIZATION_EXPIRED');
+    expect(effect).not.toHaveBeenCalled();
+    expect(h.confirm).not.toHaveBeenCalled();
+  });
+});
+
 describe('Desktop owner input task actions', () => {
+  // Runtime permission decisions must survive missing owner provenance (including resumed turns).
+  // Exercise admission and the downstream queue receipt, not only a mode predicate.
+  it.each(['bypassPermissions', 'auto', 'ask', 'default', 'acceptEdits'])(
+    'honors the live %s permission flow for helper and Orca without another confirmation', async permissionMode => {
+      const h = desktopFixture('automatic');
+      h.activeInput.permission = {
+        permissionMode, planModeEnabled: false, isCurrent: () => true,
+      };
+      for (const [server, tool] of ownerWrites) {
+        // Host admission can reuse approval only if the production tool policy
+        // actually routes this mutation through the runtime permission flow.
+        expect(getDesktopMcpToolApprovalPolicy({ serverName: server, toolName: tool }))
+          .toBe('prompt-each-time');
+        expect(await withToolCallAuthority(h.authorize, { ...call(tool), server }, async () => {
+          expect(hasTaskActionAuthorization('companion')).toBe(true);
+          const queued = input();
+          bindTaskActionInput('target', queued);
+          await taskActionInputGuard('target', queued)!();
+          return 'changed';
+        })).toBe('changed');
+      }
+      expect(h.confirm).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['unknown', 'plan', 'active-plan', 'stale', 'shared'])(
+    'does not admit a runtime permission decision from %s state', async state => {
+      const h = desktopFixture('automatic');
+      h.activeInput.permission = {
+        permissionMode: ['unknown', 'plan'].includes(state) ? state : 'auto',
+        planModeEnabled: state === 'active-plan', isCurrent: () => state !== 'stale',
+      };
+      if (state === 'shared') h.caller.source = 'shared';
+      const effect = vi.fn(async () => 'changed');
+      expect(await withToolCallAuthority(h.authorize, call('set_session_runtime'), effect))
+        .toMatchObject({ isError: true });
+      expect(effect).not.toHaveBeenCalled();
+      expect(h.confirm).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['bypassPermissions', 'auto', 'ask'])(
+    'revokes the %s admission before execution and delayed delivery when live permissions change', async permissionMode => {
+      const h = desktopFixture('automatic');
+      let current = true;
+      h.activeInput.permission = {
+        permissionMode, planModeEnabled: false, isCurrent: () => current,
+      };
+      const queued = input();
+      const decision = await h.authorize(call('set_session_runtime'));
+      const syncGuard = await withToolCallAuthority(h.authorize, call('send_to_session'), async () => {
+        bindTaskActionInput('target', queued);
+        return captureTaskActionSyncGuard()!;
+      });
+      if (!decision.ok || !decision.run || typeof syncGuard !== 'function') throw new Error('Missing admission');
+      current = false;
+      const effect = vi.fn(async () => 'changed');
+      await expect(decision.run(effect)).rejects.toThrow('AUTHORIZATION_EXPIRED');
+      await expect(taskActionInputGuard('target', queued)!()).rejects.toThrow('AUTHORIZATION_EXPIRED');
+      expect(() => syncGuard()).toThrow('AUTHORIZATION_EXPIRED');
+      expect(effect).not.toHaveBeenCalled();
+    },
+  );
+
   // #6399, unit: the action-set loop cannot detect a missing tool. Invoke the
   // registered DirectToolSink handler: an automatic focus request must not reach
   // the Host callback that persists focus/resumes an idle Worker; owner input can.
@@ -381,6 +590,9 @@ describe('Desktop owner input task actions', () => {
     'rejects %s group authority before helper or Orca effects, without prompting',
     async (mode) => {
       const h = desktopFixture();
+      h.activeInput.permission = {
+        permissionMode: 'bypassPermissions', planModeEnabled: false, isCurrent: () => true,
+      };
       if (mode !== 'missing')
         releases.push(
           registerGroupToolAuthority('companion', {

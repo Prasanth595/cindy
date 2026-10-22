@@ -1174,9 +1174,9 @@ it('allows model configuration but disables preview before a canonical conversat
     ),
   );
   expect(screen.getByText('bots.voiceMode.previewNeedsChat')).toBeTruthy();
-  expect(
-    screen.getByRole('button', { name: 'bots.voiceMode.preview' }).hasAttribute('disabled'),
-  ).toBe(true);
+  // Linux CI can enable model configuration before the voice catalog resolves.
+  const preview = await screen.findByRole('button', { name: 'bots.voiceMode.preview' });
+  expect(preview.hasAttribute('disabled')).toBe(true);
   expect(start).not.toHaveBeenCalled();
 });
 

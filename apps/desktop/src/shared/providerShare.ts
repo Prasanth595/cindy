@@ -4,6 +4,7 @@
  */
 import type { RemoteAgentIdleRelease, RemoteAgentIdleReleaseView } from './remoteAgentIdleRelease';
 import type { RemoteAgentLimits, RemoteAgentLimitsView } from './remoteAgentLimits';
+import type { RemoteModelAccessView, RemoteModelSelection } from './remoteModelAccess';
 
 import type {
   ProviderShareLinkPreview,
@@ -191,7 +192,10 @@ export interface ProviderShareSettledEvent {
   preview: ProviderShareLinkPreview | null;
 }
 
+
 export type ProviderShareCommand =
+  | { action: 'get-model-access'; providerId: string; memberId?: string }
+  | { action: 'set-model-access'; providerId: string; memberId?: string; models: RemoteModelSelection }
   | { action: 'get-visibility'; providerId: string }
   | { action: 'set-visibility'; providerId: string; visibility: Partial<ProviderShareVisibility> }
   | { action: 'quota-account'; providerId: string }
@@ -231,6 +235,8 @@ export interface ProviderShareCredentialConsentView {
 }
 
 export interface ProviderShareCommandResult {
+  'get-model-access': RemoteModelAccessView;
+  'set-model-access': RemoteModelAccessView;
   'get-visibility': ProviderShareVisibility;
   'set-visibility': ProviderShareVisibility;
   'quota-account': ProviderShareQuotaAccount;

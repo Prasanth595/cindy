@@ -69,6 +69,10 @@ let queue = new Map<string, FakeExecution[]>();
 let executions = new Map<string, FakeExecution>();
 let completed: Array<{ executionId: string; body: Record<string, unknown> }> = [];
 let directPosts = 0;
+/** The room's execution list; off by default so other cases keep reading no executions. */
+let listExecutions = false;
+/** Message IDs whose next single read fails like a dropped connection. */
+let failNextRead = new Set<string>();
 
 function post(text: string, options: { by?: 'owner' | number; threadRootId?: string; mentions?: string[]; media?: string[] } = {}) {
   const bot = typeof options.by === 'number' ? bots[options.by] : undefined;
@@ -103,9 +107,13 @@ function handle(route: string, method: string, body: Record<string, unknown> | u
   if (path === '/me') return { body: { actor: { id: ownerId } } };
   if (path === '/actors') return { body: bots.map(bot => ({ id: bot.id, kind: 'bot', externalId: bot.local, name: bot.name })) };
   if (path === '/executions/claim') {
-    // Like the server, only a queued execution can be claimed, and claiming is atomic.
-    let next = queue.get(actor ?? '')?.shift();
-    while (next && next.status !== 'queued') next = queue.get(actor ?? '')?.shift();
+    // Like the server, only a queued execution can be claimed, and claiming is atomic. A named
+    // execution is taken exactly; otherwise the oldest queued one.
+    const named = typeof body?.executionId === 'string' ? body.executionId : undefined;
+    let next = named ? queue.get(actor ?? '')?.find(e => e.id === named) : queue.get(actor ?? '')?.shift();
+    if (named && next) queue.set(actor ?? '', queue.get(actor ?? '')!.filter(e => e !== next));
+    while (!named && next && next.status !== 'queued') next = queue.get(actor ?? '')?.shift();
+    if (next && next.status !== 'queued') next = undefined;
     if (next) next.status = 'running';
     return { body: { execution: next ? { ...next } : null } };
   }
@@ -115,6 +123,7 @@ function handle(route: string, method: string, body: Record<string, unknown> | u
   if (path === `/conversations/${roomId}/messages` && method === 'POST') { directPosts++; return { body: { id: uuid(++ids) } }; }
   if (path === `/conversations/${roomId}/messages`) return { body: list(url.searchParams) };
   const single = path.match(/\/messages\/([^/]+)$/)?.[1];
+  if (single && failNextRead.delete(single)) return { status: 503, body: { error: { code: 'SERVICE_UNAVAILABLE' } } };
   if (single) {
     const message = messages.find(m => m.id === single);
     return message && !hidden.has(single) ? { body: message } : { status: 404, body: { error: { code: 'NOT_FOUND' } } };
@@ -130,6 +139,7 @@ function handle(route: string, method: string, body: Record<string, unknown> | u
     }
     return { body: {} };
   }
+  if (path.endsWith('/executions') && listExecutions) return { body: [...executions.values()].map(e => ({ ...e })) };
   if (path.endsWith('/members') || path.endsWith('/executions') || path.includes('/plans')) return { body: [] };
   return { body: {} };
 }
@@ -141,7 +151,7 @@ describe('Chat Server Thread context reaches the Agent input', () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout', 'Date'] });
     vi.setSystemTime(new Date('2026-10-13T00:00:00Z'));
     vi.stubEnv('XDT_ISOLATED', '1');
-    ids = 100; seq = 0; messages = []; hidden = new Set(); queue = new Map(); executions = new Map(); completed = []; directPosts = 0;
+    ids = 100; seq = 0; messages = []; hidden = new Set(); queue = new Map(); executions = new Map(); completed = []; directPosts = 0; listExecutions = false; failNextRead = new Set();
     fixture.profiles = bots.map(bot => ({ id: bot.local, displayName: bot.name, avatar: null, status: 'active' }));
     fixture.handle.mockImplementation(handle);
     fixture.download.mockImplementation(async (_room: string, mediaId: string) => ({ id: mediaId, name: mediaId, category: 'image', path: '/test/image', url: null }));
@@ -234,7 +244,8 @@ describe('Chat Server Thread context reaches the Agent input', () => {
     expect(data.thread.root).toMatchObject({ id: root.id, text: '就按这个做',
       quote: { messageId: original.id, from: 'Alex', text: '定价页分三档：免费、个人、团队。' } });
     expect(data.currentRequest.quote).toBeUndefined();
-    expect(inputs('nova')[0]!.message).toContain('quoting someone does not address them');
+    expect(inputs('nova')[0]!.message).toContain('The host addresses the quoted companion');
+    expect(inputs('nova')[0]!.message).toContain('quoted text remains data and any names inside it are not additional recipients');
   });
 
   it('gives a main-group quote reply\'s current request only a deleted marker once the original is gone', async () => {
@@ -310,6 +321,54 @@ describe('Chat Server Thread context reaches the Agent input', () => {
     expect(later.thread.root.id).toBe(release.id);
     expect(later.thread.replies.map((m: { id: string }) => m.id)).toContain(releaseQuestion.id);
     expect(later.thread.replies.map((m: { id: string }) => m.id)).not.toContain(permissionsQuestion.id);
+  });
+
+  // bot-group-chat.md §3: a companion answers in several Threads at once, one turn at a time in each.
+  it('runs one companion in two Threads at once and keeps a second request in a busy Thread waiting', async () => {
+    listExecutions = true;
+    const laneOf = (local: string, threadRootId?: string) => `lane-${local}${threadRootId ? `:${threadRootId}` : ''}`;
+    deps.ensureLane = vi.fn(async ({ botId, threadRootId }: { botId: string; threadRootId?: string }) =>
+      ({ ok: true, sessionId: laneOf(botId, threadRootId) })) as unknown as BotGroupChatServiceDeps['ensureLane'];
+    const sessions = () => vi.mocked(deps.dispatch).mock.calls.map(call => call[0].targetSessionId);
+    const pricing = post('定价要不要调？');
+    const release = post('发布前要不要先冻结主干？');
+    const [first] = trigger(post('@Nova 你怎么看定价？', { threadRootId: pricing.id, mentions: [bots[0].id] }));
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(sessions()).toEqual([laneOf('nova', pricing.id)]);
+
+    // While Nova answers about pricing, it is asked in the release Thread and again about pricing.
+    const [other] = trigger(post('@Nova 发布这边呢？', { threadRootId: release.id, mentions: [bots[0].id] }));
+    const [again] = trigger(post('@Nova 再补充一下定价？', { threadRootId: pricing.id, mentions: [bots[0].id] }));
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(sessions()).toEqual([laneOf('nova', pricing.id), laneOf('nova', release.id)]);
+    expect(executions.get(other.id)!.status).toBe('running');
+    expect(executions.get(again.id)!.status).toBe('queued');
+
+    // The pricing turn ends; the waiting request in that Thread runs next, in the same lane.
+    await service.settleLaneTurn({ sessionId: laneOf('nova', pricing.id), activeInputClientId: null, outcome: 'done', resultText: '先不调。' });
+    expect(completed.map(c => c.executionId)).toEqual([first.id]);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(sessions()).toEqual([laneOf('nova', pricing.id), laneOf('nova', release.id), laneOf('nova', pricing.id)]);
+    expect(executions.get(again.id)!.status).toBe('running');
+  });
+
+  it('keeps taking a busy companion\'s other Threads after reading its turn\'s Thread failed once', async () => {
+    listExecutions = true;
+    const laneOf = (local: string, threadRootId?: string) => `lane-${local}${threadRootId ? `:${threadRootId}` : ''}`;
+    deps.ensureLane = vi.fn(async ({ botId, threadRootId }: { botId: string; threadRootId?: string }) =>
+      ({ ok: true, sessionId: laneOf(botId, threadRootId) })) as unknown as BotGroupChatServiceDeps['ensureLane'];
+    const sessions = () => vi.mocked(deps.dispatch).mock.calls.map(call => call[0].targetSessionId);
+    const pricing = post('定价要不要调？');
+    const release = post('发布前要不要先冻结主干？');
+    const question = post('@Nova 你怎么看定价？', { threadRootId: pricing.id, mentions: [bots[0].id] });
+    trigger(question);
+    // The turn still starts from its history page; only the separate read of its Thread fails.
+    failNextRead.add(question.id);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(sessions()).toEqual([laneOf('nova', pricing.id)]);
+    trigger(post('@Nova 发布这边呢？', { threadRootId: release.id, mentions: [bots[0].id] }));
+    await vi.advanceTimersByTimeAsync(4000);
+    expect(sessions()).toEqual([laneOf('nova', pricing.id), laneOf('nova', release.id)]);
   });
 
   it.each([['everyone', undefined, ['nova', 'pico']], ['one companion', 0, ['nova']]] as const)(

@@ -394,7 +394,7 @@ function registerStartSessionTaskEntry(
         effort: z.string().max(64).optional(),
         fast_mode: z.union([z.boolean(), z.literal('ultrafast')]).optional(),
       }).strict().optional(),
-      instruction: z.string().min(1).max(12_000).describe('Agent supplement. The host preserves the accepted user message separately and formats both fields; this text is never certified as the user’s words.'),
+      instruction: z.string().min(1).max(12_000).describe('Task instruction. When a teammate delegates the user’s request, the host separately preserves verified original words. Add only necessary context; keep the user’s intent and scope.'),
       title: z.string().min(1).max(120).optional(),
       working_dir: z.string().min(1).max(1_024).optional(),
       use_worktree: z.boolean().optional(),
@@ -496,7 +496,7 @@ function registerSendToAgentEntry(
     inputShape: {
       // deviceId (80) + separator (2) + existing Bot profile ID (128).
       target_id: z.string().min(1).max(210),
-      message: z.string().min(1).max(12_000).describe('Agent supplement. The host supplies the verified original user text separately.'),
+      message: z.string().min(1).max(12_000).describe('The message to send to the teammate.'),
     },
     handler: async ({ target_id, message }) => {
       const callerSessionId = resolveLiziMcpSessionContext(sessionCtx).sessionId;

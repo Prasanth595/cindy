@@ -107,6 +107,7 @@ import {
   loadSharedSessionScheduleIndex,
 } from '@/session/scheduleIndex';
 import { shouldSuppressRemoteListEmptyState } from '@/session/sessionEmptyState';
+import { anyMayHaveBoundSchedules, countSessionsWithActiveBoundSchedules } from '@/session/archiveScheduleConfirm';
 import type { RemoteSession } from '@/session/types';
 import { useTheme, useThemedStyles, type ThemeColors } from '@/theme';
 import { fontWeight, lineHeight, radius, spacing, typeScale } from '@/theme/tokens';
@@ -275,6 +276,11 @@ function DeviceDetailScreenContent() {
   const [expandedAutomationGroups, setExpandedAutomationGroups] = useState<string[]>([]);
   const [bulkActionPending, setBulkActionPending] = useState<MobileSessionBulkAction | null>(null);
   const [bulkConfirmAction, setBulkConfirmAction] = useState<MobileSessionBulkAction | null>(null);
+  // 批量归档确认里「绑定了自动化的任务数」;按请求序号丢弃过期结果。
+  const [bulkScheduleCount, setBulkScheduleCount] = useState(0);
+  // 查询返回(成功或失败)前不允许确认归档,否则提醒还没出现任务就已归档。
+  const [bulkScheduleLoading, setBulkScheduleLoading] = useState(false);
+  const bulkScheduleRequestRef = useRef(0);
   const [bulkNotice, setBulkNotice] = useState<string | null>(null);
   const [scheduleIndex, setScheduleIndex] = useState<Map<string, RemoteSessionScheduleInfo>>(
     () => new Map(),
@@ -646,6 +652,14 @@ function DeviceDetailScreenContent() {
     }
   }, [bulkActionPending, deviceId, loadSessions, maker, t]);
 
+  // 确认卡打开后所选任务变了:提醒是按打开时的候选算的,关掉卡片让用户重新发起,
+  // 避免确认时归档了从未被查询过的任务。
+  useEffect(() => {
+    bulkScheduleRequestRef.current += 1;
+    setBulkScheduleLoading(false);
+    setBulkConfirmAction(null);
+  }, [selectedSessionIds]);
+
   const requestBulkAction = useCallback((action: MobileSessionBulkAction) => {
     const summary = bulkActionSummaries[action];
     if (summary.candidates.length === 0) {
@@ -662,8 +676,21 @@ function DeviceDetailScreenContent() {
       );
       return;
     }
+    const scheduleRequest = ++bulkScheduleRequestRef.current;
+    setBulkScheduleCount(0);
+    // 全部已知无绑定时不查询、不禁用确认(与单条路径同一个快路径)。
+    const needsLookup = action === 'archive' && anyMayHaveBoundSchedules(deviceId, summary.candidates);
+    setBulkScheduleLoading(needsLookup);
+    if (needsLookup) {
+      void countSessionsWithActiveBoundSchedules(deviceId, invoke, summary.candidates)
+        .then((count) => {
+          if (bulkScheduleRequestRef.current !== scheduleRequest) return;
+          setBulkScheduleCount(count);
+          setBulkScheduleLoading(false);
+        });
+    }
     setBulkConfirmAction(action);
-  }, [bulkActionSummaries, t]);
+  }, [bulkActionSummaries, deviceId, invoke, t]);
 
   const actionOverlays = (
     <>
@@ -1164,11 +1191,17 @@ function DeviceDetailScreenContent() {
               <View style={styles.bulkConfirmCard} testID="deviceDetail.bulkConfirmCard">
                 <Text style={styles.bulkConfirmTitle}>{bulkConfirmSummary.title}</Text>
                 <Text style={styles.bulkConfirmText}>{bulkConfirmSummary.description}</Text>
+                {bulkConfirmSummary.action === 'archive' && bulkScheduleCount > 0 ? (
+                  <Text style={styles.bulkConfirmText}>
+                    {t('session.menu.archiveScheduleBulkNotice', { count: bulkScheduleCount })}
+                  </Text>
+                ) : null}
                 <MainWindowActionGroup
                   primaryActions={[
                     {
                       accessibilityLabel: bulkActionAccessibilityLabel(bulkConfirmSummary.action, t),
-                      disabled: bulkActionPending !== null || bulkConfirmSummary.candidates.length === 0,
+                      disabled: bulkActionPending !== null || bulkConfirmSummary.candidates.length === 0
+                        || (bulkConfirmSummary.action === 'archive' && bulkScheduleLoading),
                       label: bulkActionPending === bulkConfirmSummary.action
                         ? bulkActionPendingLabel(bulkConfirmSummary.action, t)
                         : bulkConfirmSummary.confirmText,

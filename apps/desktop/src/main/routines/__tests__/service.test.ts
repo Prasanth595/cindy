@@ -678,3 +678,23 @@ it('skips revoked follow-up batches and still dispatches authorized delegated ev
   expect(mock.storage.insert.mock.calls[0][0].prompt).toContain('Assigned work');
   expect(mock.storage.insert.mock.calls[0][0].prompt).not.toContain('PRIVATE_OLD_SUMMARY');
 });
+
+// #6440 / unit: one completion can match both built-in and explicitly configured
+// follow-up. A receipt-owned batch must skip only the former, before model work.
+it('preserves user routines while skipping receipt-owned built-in completion', async () => {
+  const engine = await getRoutineEngine();
+  engine.registerSource({ id: 'host:sessions', name: 'Sessions', status: 'listening',
+    events: [{ type: 'finished', name: 'Finished', fields: [] }] });
+  const input = { name: 'Completion', prompt: 'Handle result', enabled: true,
+    triggers: [{ id: 'done', kind: 'event' as const, sourceId: 'host:sessions', eventType: 'finished', filters: [] }] };
+  const builtin = await engine.ensureBuiltin('bot', 'follow-up', input, 'builtin-follow-up-bot');
+  const custom = await routineTools.save('bot', input);
+  if (!builtin) throw new Error('Follow-up routine was not created');
+  mock.followUpEvents.mockReturnValue([]);
+  await engine.publish('host:sessions', { id: 'done', type: 'finished', subject: 'delegated', occurredAt: Date.now(), data: {} });
+  await vi.waitFor(async () => {
+    expect((await routineTools.history('bot', builtin.id))[0]?.status).toBe('skipped');
+    expect((await routineTools.history('bot', custom.id))[0]?.status).toBe('success');
+  });
+  expect(mock.scheduler.runNow).toHaveBeenCalledOnce();
+});

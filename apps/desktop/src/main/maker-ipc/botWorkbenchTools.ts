@@ -52,7 +52,7 @@ export async function resolveWorkbenchCaller(callerSessionId: string): Promise<W
   if (row.sessionStatus !== 'active' || row.profileStatus !== 'active' || row.linkArchivedAt !== null) {
     return { ok: false, errorCode: 'BOT_SESSION_INACTIVE', message: '伙伴或它的主任务已停用' };
   }
-  if (row.role !== 'canonical') {
+  if (row.role !== 'canonical' && row.role !== 'thread') {
     return { ok: false, errorCode: 'BOT_MAIN_TASK_REQUIRED', message: '只有伙伴的主任务可以使用工作台' };
   }
   if (row.remoteHostId) {

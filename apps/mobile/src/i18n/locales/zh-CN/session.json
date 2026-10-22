@@ -434,6 +434,13 @@
     "copyFailed": "复制失败",
     "deleteConfirmTitle": "删除任务？",
     "deleteConfirmBody": "删除后不可恢复。",
+    "archiveScheduleConfirmTitle": "归档任务？",
+    "archiveScheduleConfirmBody_one": "该任务绑定了自动化{{names}}，归档后将暂停。",
+    "archiveScheduleConfirmBody_other": "该任务绑定了自动化{{names}}，归档后将暂停。",
+    "archiveScheduleName": "「{{name}}」",
+    "archiveScheduleNameSeparator": "、",
+    "archiveScheduleBulkNotice_one": "其中 {{count}} 个任务绑定了自动化，归档后这些自动化将暂停。",
+    "archiveScheduleBulkNotice_other": "其中 {{count}} 个任务绑定了自动化，归档后这些自动化将暂停。",
     "dirAlreadyAdded": "这个目录已经在列表里。",
     "resetCodexTitle": "重置 Codex 用量？",
     "resetCodexBody": "将为 {{account}} 消耗 1 次重置。配额窗口会立即重开，此操作不能撤销。",
@@ -730,5 +737,14 @@
     "start": "开始跟进",
     "notNow": "暂不开启",
     "saveFailed": "没能保存，请重试"
+  },
+  "providerGroupRebalance": {
+    "title": "换到 {{label}} 继续？",
+    "body": "为了均匀用完各账号的配额，建议这条消息换到 {{label}} 发送（{{quota}}）。换过去会带上最近几轮对话和摘要，更早的细节可能记不全。",
+    "quota": "还剩 {{left}}%",
+    "quotaReset": "还剩 {{left}}%，{{reset}}后重置",
+    "confirm": "换过去",
+    "remember": "换过去，以后自动换（仅本任务）",
+    "cancel": "取消"
   }
 }

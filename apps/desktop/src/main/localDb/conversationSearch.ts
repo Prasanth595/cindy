@@ -141,7 +141,7 @@ export async function searchConversations(
   });
 
   const contentMessageIds = content.hits.map((hit) => hit.messageId);
-  const clientIdByMessageId = await fetchClientIds(contentMessageIds);
+  const messageById = await fetchHitMessages(contentMessageIds);
   const contentHits: Array<{
     session: ConversationSearchSessionSummary;
     hit: ConversationSearchContentHit;
@@ -150,10 +150,11 @@ export async function searchConversations(
   for (const hit of content.hits) {
     const session = sessionSummaries.get(hit.sessionId);
     if (!session) continue;
-    const messageClientId = clientIdByMessageId.get(hit.messageId);
+    const message = messageById.get(hit.messageId);
+    const messageClientId = message?.clientId;
     if (!messageClientId) continue;
     const hitContext = hit.context.find((item) => item.isHit) ?? hit.context[0] ?? null;
-    const preview = normalizeConversationContentPreview(hit.role, hitContext?.content ?? '', query);
+    const preview = normalizeConversationContentPreview(hit.role, hitContext?.content ?? '', query, 180, message?.agentMeta);
     // 可见文本对 query 字面不匹配时，仍可能是 FTS 命中（「边，界」按字相邻）。
     // 不要只靠 keywordRanges 清掉 ftsRank，否则这类命中会被整条丢弃。
     // 但附件文件名、内部 citation 等隐藏字段命中不能当可见结果：
@@ -161,6 +162,7 @@ export async function searchConversations(
     const visibleText = visibleMessageTextForConversationSearch(
       hit.role,
       hitContext?.content ?? '',
+      message?.agentMeta,
     );
     const ftsRank =
       preview.keywordMatchedVisibleText || visibleTextMatchesMessagesFtsQuery(visibleText, query)
@@ -417,13 +419,13 @@ async function fetchMessageCounts(sessionIds: string[]): Promise<Map<string, num
   return new Map(rows.map((row) => [row.sessionId, Number(row.cnt)]));
 }
 
-async function fetchClientIds(messageIds: string[]): Promise<Map<string, string>> {
+async function fetchHitMessages(messageIds: string[]): Promise<Map<string, { clientId: string; agentMeta: string | null }>> {
   if (messageIds.length === 0) return new Map();
   const rows = await getDbClient().drizzle
-    .select({ id: messages.id, clientId: messages.clientId })
+    .select({ id: messages.id, clientId: messages.clientId, agentMeta: messages.agentMeta })
     .from(messages)
     .where(inArray(messages.id, messageIds));
-  return new Map(rows.map((row) => [row.id, row.clientId]));
+  return new Map(rows.map((row) => [row.id, row]));
 }
 
 function sessionSummaryFromRow(

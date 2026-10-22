@@ -36,13 +36,10 @@ export function BotRoutines({
   backRef,
   embedded = false,
   header,
-  footer,
 }: {
   embedded?: boolean;
   /** Settings shown above the list (not inside the editor), e.g. the teammate's follow-up switches. */
   header?: ReactNode;
-  /** Shown below the list (not inside the editor), e.g. the teammate's todos. */
-  footer?: ReactNode;
   botId: string;
   beforeLeaveRef?: { current: (() => Promise<boolean>) | null };
   /** Host back button: steps from the editor to the list first (the inline back button is then omitted). */
@@ -305,7 +302,6 @@ export function BotRoutines({
           ))}
         </div>
       ) : null}
-      {!draft && footer ? <div className="mt-6">{footer}</div> : null}
       {draft ? (
         <fieldset ref={editorRef} disabled={busy} className="min-w-0 space-y-5">
           <div className="flex flex-wrap items-center justify-between gap-2">

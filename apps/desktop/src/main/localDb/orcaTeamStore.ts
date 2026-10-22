@@ -2,6 +2,7 @@ import { BrowserWindow } from 'electron';
 import { and, desc, eq, gt, inArray, isNotNull, isNull, ne } from 'drizzle-orm';
 import { createId } from '@paralleldrive/cuid2';
 import type { OrcaRemotePendingReport } from '../../shared/orcaRemoteWorker.js';
+import { parseOrcaRemoteLead } from '../../shared/orcaRemoteWorker.js';
 
 import { getDbClient } from './client/current.js';
 import type { OrcaRemoteWorkerProxySessionSeed } from './client/tx/types.js';
@@ -529,6 +530,14 @@ export async function getSessionOrcaRole(sessionId: string): Promise<OrcaRole | 
   return row?.orcaRole === 'lead' || row?.orcaRole === 'worker' ? row.orcaRole : null;
 }
 
+/** Persisted execution-device identity; never inferred from model-supplied vendor options. */
+export async function getRemoteOrcaSession(sessionId: string) {
+  const [row] = await getDbClient().drizzle
+    .select({ status: sessions.status, orcaRemoteLead: sessions.orcaRemoteLead })
+    .from(sessions).where(eq(sessions.id, sessionId)).limit(1);
+  return row ? { status: row.status, orcaRemoteLead: parseOrcaRemoteLead(row.orcaRemoteLead) } : null;
+}
+
 /**
  * 设置 worker 的 task status。**`status === 'running'` 时会同时清掉 `idleSince`**
  * (idle→running 唤醒收敛点, 见 review F3)。其他状态切换不动 `idleSince`,
@@ -769,12 +778,15 @@ export async function saveWorkerRemoteReport(
   workerId: string,
   pending: OrcaRemotePendingReport | null,
   lastBridgedMessageId?: string,
+  markWorkerDone = false,
 ): Promise<void> {
   const db = getDbClient();
   await db
     .drizzle.update(orcaWorkers)
     .set({ pendingRemoteReport: pending ? JSON.stringify(pending) : null,
-      ...(lastBridgedMessageId ? { lastBridgedMessageId } : {}) })
+      ...(lastBridgedMessageId ? { lastBridgedMessageId } : {}),
+      // One SQL update commits retirement and status together; neither can succeed alone.
+      ...(markWorkerDone ? { status: 'done' as const, updatedAt: Date.now() } : {}) })
     .where(eq(orcaWorkers.id, workerId));
 }
 

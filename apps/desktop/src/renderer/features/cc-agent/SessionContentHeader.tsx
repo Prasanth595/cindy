@@ -63,6 +63,10 @@ import { OrcaRemoteLeadBadge } from './OrcaRemoteLeadBadge';
 import { BotTaskOwnerChip } from '@/features/bots/BotTaskOwnerChip';
 import { SessionRenameInput } from './SessionRenameInput';
 import { useSessionBoundSchedules } from '@/features/scheduler/lib/scheduleSessionBinding';
+import {
+  archiveConfirmDescription,
+  loadActiveBoundScheduleNames,
+} from '@/features/scheduler/lib/archiveScheduleWarning';
 import { ScheduleBindingBadge } from './sidebar/ScheduleBindingBadge';
 import { RemoteProjectIcon } from './sidebar/RemoteProjectIcon';
 import { VendorIcon, agentKindToVendor } from '@/components/sidebar/VendorIcon';
@@ -478,6 +482,11 @@ export function SessionContentHeader({
       toast.warning(t('ccAgent.sidebar.archiveBlocked.attached'));
       return;
     }
+    // 绑定了 active 自动化:归档后会暂停,需要确认。读本地缓存,排在 worktree 预检之前。
+    const scheduleNames =
+      (await loadActiveBoundScheduleNames([
+        { id: session.id, deviceLinkDeviceId: session.deviceLinkDeviceId },
+      ])).get(session.id) ?? [];
     // **worktree 预检必须是最后一个前置条件**(codex review):原来这里用 Promise.all
     // 一起等,dirty 先返回 clean、接管查询还在飞的那段时间就是 clean 结论的失效窗口。
     // 改成接管结算之后再 resolve —— clean 一律重查(见 worktreeRemovalWarning),
@@ -488,14 +497,13 @@ export function SessionContentHeader({
     // 免确认的判据是「**确认**干净」:worktree 脏、或预检失败拿不到结论('unknown')
     // 都要确认 —— 归档会顺带回收 worktree,不能静默带走改动(greptile review)。
     // 'unknown' 只弹普通归档确认,不摆 dirty 警告文案(那会谎称有未提交改动)。
-    if (preflight !== 'clean') {
+    if (preflight !== 'clean' || scheduleNames.length > 0) {
       const ok = await confirmDialog({
         title: t('ccAgent.sidebar.confirmArchive.title'),
-        description:
-          t('ccAgent.sidebar.confirmArchive.description') +
-          (preflight === 'dirty'
-            ? ' ' + t('ccAgent.sidebar.confirmArchive.dirtyWorktreeWarning')
-            : ''),
+        description: archiveConfirmDescription(t, {
+          dirtyWorktree: preflight === 'dirty',
+          scheduleNames,
+        }),
         confirmText: t('ccAgent.sidebar.confirmArchive.confirm'),
         cancelText: t('ccAgent.sidebar.confirmArchive.cancel'),
       });

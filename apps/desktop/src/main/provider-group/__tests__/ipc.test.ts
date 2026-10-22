@@ -10,6 +10,8 @@ vi.mock('../runtime.js', () => ({
   getProviderGroupRouter: vi.fn(),
   getProviderGroupRemoteClient: vi.fn(),
   readProviderGroupOfSession: vi.fn(),
+  readProviderGroupRebalanceSuggestion: vi.fn(),
+  recordProviderGroupRebalanceDecision: vi.fn(),
 }));
 vi.mock('../store.js', () => ({ readProviderGroup: vi.fn(), writeProviderGroup: vi.fn(), listProviderGroups: vi.fn() }));
 vi.mock('../bindings.js', () => ({ pruneProviderGroupBindings: vi.fn() }));
@@ -86,6 +88,18 @@ function deps(candidates: ProviderGroupCandidate[], existing: ProviderGroupConfi
 }
 
 describe('parseProviderGroupCommand', () => {
+  // Unit: the real command boundary must preserve the confirmed message ID instead of a session-wide decision.
+  it('passes a confirmed message id through parsing and execution', async () => {
+    const d = deps([]);
+    d.rebalanceDecision = vi.fn(async () => true);
+    const request = { action: 'rebalance-decision', sessionId: 's1', memberKey: MINI.key, remember: false, clientId: 'message-a' };
+    const command = parseProviderGroupCommand(request);
+    if (command.action !== 'rebalance-decision') throw new Error('Expected the rebalance decision command');
+    expect(await executeProviderGroupCommand(d, command)).toEqual({ ok: true });
+    expect(d.rebalanceDecision).toHaveBeenCalledWith('s1', MINI.key, false, 'message-a');
+    expect(() => parseProviderGroupCommand({ ...request, clientId: 'bad id' })).toThrow();
+  });
+
   it('rejects malformed commands', () => {
     expect(() => parseProviderGroupCommand(null)).toThrow();
     expect(() => parseProviderGroupCommand({ action: 'get', providerId: 'bad id' })).toThrow();

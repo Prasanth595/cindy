@@ -228,6 +228,25 @@
     "closeAllDescription": "所有访客将无法继续访问，任务记录保留。"
   },
   "providerShare": {
+    "modelAccess": {
+      "title": "允许远程调用的模型",
+      "description": "只限制远程调用，本机使用不受影响。保存后，创建任务、切换模型和发送下一轮消息时生效。",
+      "all": "全部模型",
+      "selected": "已开放 {{count}} 个模型",
+      "choose": "选择模型",
+      "memberTitle": "可用模型",
+      "memberDescription": "设置 {{name}} 可以使用的模型，只能选择远程已开放的模型。也适用于经此人转分享的调用。",
+      "inherit": "跟随远程开放范围",
+      "allFuture": "允许全部模型（含之后新增）",
+      "search": "搜索模型",
+      "notOpen": "远程未开放",
+      "empty": "没有匹配的模型",
+      "none": "未选择模型，将无法远程调用。",
+      "loading": "正在读取模型范围…",
+      "loadFailed": "未能读取模型范围，请重新打开此设置。",
+      "saveFailed": "未能保存模型范围，请重试。",
+      "needsUpdate": "请更新供应商所在电脑的 Cindy 后再设置模型范围。"
+    },
     "entry": {
       "label": "远程与分享",
       "pending_other": "{{count}} 个分享申请待处理",
@@ -635,7 +654,7 @@
       "round": "轮询",
       "order": "按顺序",
       "weight": "按权重",
-      "quotaFirst": "能读取订阅用量时，先用配额快重置的电脑，再选用量低的，相近时按组策略",
+      "quotaFirst": "能读取订阅用量时，先用快重置、还剩得多的电脑，各账号会按时间均匀用掉；差不多时按组策略",
       "description": {
         "least": "给最闲的那台",
         "round": "依次轮流",
@@ -670,6 +689,10 @@
         "share": "别人分享的电脑不显示配额"
       },
       "runningCount_other": "{{count}} 个任务运行中",
+      "pace": {
+        "used": "已用 {{used}}%",
+        "usedExpected": "已用 {{used}}%，该用到 {{expected}}%"
+      },
       "limitAria": "{{name}} 的并发上限",
       "limitOption_other": "上限 {{count}}",
       "weightAria": "{{name}} 的权重",
@@ -718,6 +741,15 @@
         }
       }
     },
+    "rebalance": {
+      "title": "换到 {{label}} 继续？",
+      "description": "为了均匀用完各账号的配额，建议这条消息换到 {{label}} 发送（{{quota}}）。换过去会带上最近几轮对话和摘要，更早的细节可能记不全。",
+      "quota": "还剩 {{left}}%",
+      "quotaReset": "还剩 {{left}}%，{{reset}}",
+      "confirm": "换过去",
+      "cancel": "取消",
+      "remember": "以后自动换，不再询问（仅本任务）"
+    },
     "deleteConfirm": {
       "title": "删除 {{provider}} 的供应商组？",
       "description": "之后这台电脑上的新任务都在本机运行；已经分到其他电脑的任务留在那台电脑上。",
@@ -761,11 +793,12 @@
     "windowsTitle": "锁屏控制",
     "windowsready": "已为本次运行的 Cindy 开启。重新启动 Cindy 后需要再次由管理员授权。",
     "windowsmissing": "允许操作锁屏界面和管理员提示，需要管理员授权。",
-    "windowsinstallRequired": "请将 Cindy 安装到 Program Files 并选择为所有用户安装，再启用此功能。",
+    "windowsinstallRequired": "找不到 Cindy 的安装位置，请重新启动 Cindy 后重试。",
     "windowsunavailable": "系统服务不可用，请重新安装 Cindy 后重试。",
     "windowsEnable": "授权开启",
     "windowsDisable": "移除服务",
     "windowsError": "未完成授权，请在这台电脑上重试。",
+    "windowsErrorDetail": "错误码 {{code}}",
     "permissionsTitle": "远程桌面权限",
     "permissionsIntro": "查看桌面需要屏幕录制权限；操作桌面还需要辅助功能权限。请在电脑上完成授权，结果会自动更新。",
     "permissionsReady": "系统权限已就绪，可以重新连接。",
@@ -8153,8 +8186,7 @@
         "backgroundTasks": "跟踪后台运行的进度与输出",
         "sideChat": "基于主任务上下文独立提问",
         "browser": "在面板中浏览网页",
-        "terminal": "运行命令，查看输出",
-        "workbench": "查看伙伴的工作进展"
+        "terminal": "运行命令，查看输出"
       },
       "kinds": {
         "fileBrowser": "文件浏览器",
@@ -8945,35 +8977,36 @@
   },
   "bots": {
     "workbench": {
-      "title": "工作台",
-      "open": "打开工作台",
-      "untitled": "未命名任务",
-      "followingMark": "{{names}}在跟进这个任务",
-      "glance": {
-        "waiting": "等你",
-        "working": "在做",
-        "loadFailed": "暂时读不到工作台的内容。",
-        "quiet": "没有在做的事，也没有等你的。",
-        "allow": "允许",
-        "answer": "回答",
-        "look": "看看",
-        "waitedFor": "等了 {{duration}}",
-        "offline": "离线",
-        "deviceOffline": "{{device}} 离线",
-        "thisComputer": "这台电脑",
-        "lessThanMinute": "不到 1 分钟",
-        "minutes_other": "{{count}} 分钟",
-        "hours_other": "{{count}} 小时",
-        "days_other": "{{count}} 天",
-        "notSeenYet": "还没看过一遍",
-        "seenJust": "刚看过一遍",
-        "seenMinutesAgo_other": "{{count}} 分钟前看过一遍",
-        "seenHoursAgo_other": "{{count}} 小时前看过一遍",
-        "doneToday_other": "今天做完 {{count}} 件",
-        "devicesOffline": "{{devices}} 离线",
-        "allowFailed": "没能允许，请到任务里处理",
-        "more_other": "还有 {{count}} 件",
-        "less": "收起"
+      "followingMark": "{{names}}在跟进这个任务"
+    },
+    "glance": {
+      "open": "{{name}}的近况",
+      "dueUnseen": "有待办到期",
+      "computers": "电脑",
+      "runningHere": "正在这台上运行",
+      "online": "在线",
+      "offline": "离线",
+      "current": "当前",
+      "offlineCount_other": "离线 {{count}} 台",
+      "todos": "待办",
+      "showMore": "显示更多",
+      "showLess": "收起",
+      "doneCount_other": "已完成 {{count}}",
+      "delete": "删除",
+      "deleted": "已删除，同一件事以后不再记",
+      "undo": "撤销",
+      "undoFailed": "没能撤销，请重试",
+      "deleteFailed": "没能删除，请重试",
+      "outputs": "输出内容",
+      "outputMeta": "{{time}} · {{task}}",
+      "openFailed": "没能打开文件",
+      "source": {
+        "conversation": "你交代的",
+        "mail": "来自邮件",
+        "feishu": "来自飞书",
+        "github": "来自 GitHub",
+        "community": "来自社区",
+        "task": "来自任务"
       }
     },
     "autonomy": {
@@ -9209,13 +9242,15 @@
       "composerPlaceholderLatin": "跟 {{name}} 说点什么…"
     },
     "globalSettings": {
-      "restoreHint": "恢复默认后将跟随客户端默认模型设置，单个伙伴的自定义模型保持不变。",
+      "restoreHint": "恢复伙伴推荐模型，单个伙伴的自定义模型保持不变。",
       "restoreFailed": "恢复默认失败，请重试。",
       "defaultModel": "默认模型",
-      "defaultModelHint": "伙伴默认使用的模型，单个伙伴可以在自己的设置里另选。",
+      "defaultModelHint": "仅用于伙伴，与新任务的模型选择独立。单个伙伴可以另选。",
       "title": "伙伴",
       "description": "和伙伴有关的通用设置。单个伙伴的设置在{{pronoun}}自己的页面里。",
-      "rosterNote": "预置阵容会随版本更新。"
+      "rosterNote": "预置阵容会随版本更新。",
+      "showReplyTarget": "显示回复对应的消息",
+      "showReplyTargetHint": "伙伴回复上方标出它回的是你哪条消息。较早的回复不显示。"
     },
     "session": {
       "ownedByBot": "{{name}} 的后台任务",
@@ -9306,7 +9341,10 @@
         "elapsed": "已做 {{time}}",
         "viewProcess": "看过程",
         "hideProcess": "收起过程",
-        "stop": "停止"
+        "stop": "停止",
+        "stopMine": "停止我发起的",
+        "stopAll": "全部停止",
+        "stopAllHint": "包括其他人发起的"
       },
       "header": {
         "stepRunning": "{{name}} 正在做第 {{step}} 步",
@@ -9378,6 +9416,7 @@
         "placeholderPlanProposed": "想换人或改步骤，直接说…",
         "placeholderPlanWaiting": "想让{{name}}改改，直接说…",
         "placeholderPlanRunning": "说的话会带给正在做的{{name}}…",
+        "placeholderQueueRunning": "说的话会带给正在说的{{name}}…",
         "tooManyAttachments": "附件太多了，一条消息最多 {{max}} 个",
         "attachmentsFailed": "附件没能发出去，请检查文件是否还在，或移除后重试",
         "folderNotSupported": "文件夹不能作为附件，请选择其中的文件"
@@ -9415,7 +9454,8 @@
         "endPlan": "结束分工",
         "planDone_one": "{{count}} 步都做完了",
         "planDone_other": "{{count}} 步都做完了",
-        "planDoneGeneric": "分工做完了"
+        "planDoneGeneric": "分工做完了",
+        "endTalk": "结束"
       },
       "notice": {
         "memberJoined": "{{name}}加入了群聊",
@@ -9523,7 +9563,13 @@
         "keepOneStep": "至少留一步",
         "startFailed": "没能开始分工，请再试一次",
         "dismissFailed": "没能结束这个安排，请再试一次",
-        "editFailed": "这一步没改成，请再试一次"
+        "editFailed": "这一步没改成，请再试一次",
+        "talkTurn": "说说看法",
+        "stepSpeaking": "正在说",
+        "stepSpoken": "说完了",
+        "allTurns_one": "共 {{count}} 位",
+        "allTurns_other": "共 {{count}} 位",
+        "foldTurns": "收起"
       },
       "speaking": {
         "planning": "正在安排…"
@@ -9587,7 +9633,23 @@
           "shareNotLoaded": "这条贴回在更早的群聊记录里，往上加载后可以看到。",
           "retryPost": "重新发到群聊",
           "alreadyPosted": "你已经把这条回复贴到群聊了",
-          "shareUnavailable": "这条回复已删除或无法查看，不能贴到群聊。"
+          "shareUnavailable": "这条回复已删除或无法查看，不能贴到群聊。",
+          "newReplies_one": "{{count}} 条新回复",
+          "newReplies_other": "{{count}} 条新回复",
+          "mentionedYou": "@你",
+          "hintOne": "话题有新回复",
+          "hintMany_one": "{{count}} 个话题有新回复",
+          "hintMany_other": "{{count}} 个话题有新回复",
+          "hintMentioned": "有人提到你",
+          "hintDismiss": "先不看",
+          "follow": "关注",
+          "following": "已关注",
+          "followTip": "关注后，有新回复时在群聊右下角提示你",
+          "unfollowTip": "取消关注后，只在有人提到你时提示",
+          "listLabel": "这个群聊里的话题",
+          "listNews": "有新回复",
+          "listOthers": "其他话题",
+          "newSeparator": "新回复"
         },
         "replyPlaceholder": "回复这条消息，可用 @ 点名伙伴…",
         "sendReply": "发送回复",
@@ -10248,6 +10310,13 @@
       "viewTaskProgress": "查看进展",
       "liveDraft": "正在识别",
       "questionDraft": "待确认"
+    },
+    "dmThread": {
+      "newReply": "有新回复",
+      "you": "你",
+      "rootNotLoaded": "原消息不在已加载的记录里",
+      "rootUnavailable": "原消息已不在私聊里，不能开话题",
+      "openFailed": "话题没打开，请重试"
     }
   },
   "common": {
@@ -11941,7 +12010,8 @@
         "relocatedHere": "Agent 已改到这台电脑上运行",
         "relocatedTo": "Agent 已改到 {{device}} 上运行",
         "relocatedTaskComputer": "Agent 已改到任务所在的电脑上运行",
-        "relocatedElsewhere": "Agent 已改到另一台电脑上运行"
+        "relocatedElsewhere": "Agent 已改到另一台电脑上运行",
+        "quotaRebalance": "这个账号的配额更该先用"
       },
       "contextRebuild": {
         "labelOverflow": "已整理上下文并继续",
@@ -12189,7 +12259,7 @@
       "REMOTE_AGENT_BUSY": "那台电脑上同时运行的任务太多。先结束一些任务后再试。",
       "REMOTE_AGENT_UNSUPPORTED": "那台电脑上这个 Agent 不可用。在那台电脑上安装或登录后再试，或换一个 Agent。",
       "REMOTE_AGENT_INVALID": "和运行 Agent 的电脑通信出错。请重试；如果一直出现，请把两台电脑上的 Cindy 都更新到最新版。",
-      "REMOTE_AGENT_PROVIDER_NOT_ALLOWED": "那台电脑没有允许远程调用这个供应商。请在那台电脑的「设置 → 模型供应商」里打开「允许被远程调用」，或换一个模型。",
+      "REMOTE_AGENT_PROVIDER_NOT_ALLOWED": "那台电脑未向你开放这个供应商或所选模型。请让电脑主人在「远程与分享」中调整开放范围，或换一个模型。",
       "REMOTE_AGENT_SHARE_PAUSED": "对方已暂停对你的分享，恢复前不能使用这些模型。可以换成其他模型继续。",
       "REMOTE_AGENT_SHARE_REMOVED": "这个分享已不可用（对方删除了分享或你已退出）。可以换成其他模型继续。",
       "REMOTE_AGENT_SHARE_UNAVAILABLE": "分享的供应商暂时不可用：对方电脑可能不在线，或对方暂时关闭了分享。可以稍后再试，或换成其他模型继续。",
@@ -12738,6 +12808,12 @@
         "title": "归档任务",
         "description": "确定要归档这个任务吗？归档后将从列表中移除。",
         "dirtyWorktreeWarning": "该任务的 worktree 有未提交的更改；归档前会自动保存为 git 快照，之后可在任务内一键恢复。",
+        "scheduleWarning_one": "该任务绑定了自动化{{names}}，归档后将暂停。",
+        "scheduleWarning_other": "该任务绑定了自动化{{names}}，归档后将暂停。",
+        "scheduleWarningMany_one": "其中 {{count}} 个任务绑定了自动化，归档后这些自动化将暂停。",
+        "scheduleWarningMany_other": "其中 {{count}} 个任务绑定了自动化，归档后这些自动化将暂停。",
+        "scheduleName": "「{{name}}」",
+        "scheduleNameSeparator": "、",
         "confirm": "确认",
         "cancel": "取消"
       },
@@ -16868,82 +16944,6 @@
     "idempotencyConflict": "此重试标识已用于另一条消息。",
     "privateUnconfirmed": "私聊未确认送达，请使用同一重试标识重试。",
     "verificationUnavailable": "暂时无法核验群聊授权，请在连接恢复后重试。"
-  },
-  "teammateTodo": {
-    "title": "待办",
-    "new": "新建待办",
-    "search": "搜索待办",
-    "open": "未完成",
-    "done": "已完成",
-    "hidden": "已忽略 / 稍后",
-    "empty": "暂无待办",
-    "noMatch": "没有匹配的待办",
-    "loading": "正在读取…",
-    "retry": "重试",
-    "error": "操作未完成，请重试。",
-    "conflict": "待办已更新，请重新查看后再修改。",
-    "received": "已收到",
-    "accepted": "查看进展",
-    "unknown": "核实进展",
-    "failed": "重试下一步",
-    "view": "查看详情",
-    "evidence": "查看依据",
-    "more": "更多操作",
-    "discovered": "发现",
-    "assigned": "交办",
-    "suggested": "建议",
-    "candidate": "待确认",
-    "overdue": "已逾期",
-    "next": "下一步",
-    "outcome": "完成条件",
-    "value": "为什么值得处理",
-    "sources": "来源依据",
-    "associations": "关联",
-    "deadline": "到期时间",
-    "sourceDeadline": "来源期限",
-    "clearDate": "清除到期",
-    "date": "日期",
-    "time": "确切时间（可选）",
-    "zone": "时区",
-    "save": "保存",
-    "cancel": "取消",
-    "delete": "删除此条",
-    "mute": "此问题不再提示",
-    "later": "稍后处理",
-    "until": "稍后至",
-    "restore": "恢复",
-    "reopen": "重新打开",
-    "complete": "标记完成",
-    "summary": "完成依据",
-    "confirmDate": "确认日期",
-    "deadlineReason": "日期待确认的原因",
-    "override": "你设置的期限",
-    "reminder": "稍后至",
-    "edit": "编辑待办",
-    "name": "标题",
-    "progress": "当前进展",
-    "link": "依据链接（可选）",
-    "page": "{{start}}–{{end}} / {{count}}",
-    "previous": "上一页",
-    "following": "下一页",
-    "order": "排序",
-    "dueOrder": "到期优先",
-    "createdOrder": "创建顺序",
-    "origin": "来源类型",
-    "all": "全部",
-    "close": "关闭",
-    "laterConflict": "稍后处理不延长真实期限",
-    "legacyEvidence": "旧记录的完成依据待核实",
-    "history": "完成记录",
-    "deleted": "已删除",
-    "muted": "不再提示",
-    "deferred": "稍后处理",
-    "continue": "继续",
-    "filter": "筛选",
-    "deleteConfirmTitle": "删除这条待办？",
-    "deleteConfirmBody": "删除后不再显示，同一问题也不会再被提起；可以在「已忽略 / 稍后」里恢复。",
-    "muteConfirmTitle": "此问题不再提示？",
-    "muteConfirmBody": "同一问题以后不会再出现在待办里；可以在「已忽略 / 稍后」里恢复。"
   },
   "codexResets": {
     "retryReset": "重试重置",

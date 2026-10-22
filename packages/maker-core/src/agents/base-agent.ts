@@ -1074,6 +1074,9 @@ export interface AgentDeps {
        * 调配、不暴露 spawn 的模型覆写，自定义供应商路由与按模型分流也只保留这个供应商。
        */
       deviceHostedGuestProviderId?: string;
+      /** Owning guest session for model authorization on requests without thread headers. */
+      deviceHostedGuestSessionId?: string;
+      deviceHostedGuestModelIds?: readonly string[];
     },
   ) => Promise<CodexExtraSpawnConfig>;
 
@@ -2471,6 +2474,9 @@ export interface AgentSessionHandle {
 
   /** Host tool approval uses the same live intent/model/scope as native tool approval. */
   reviewAutoPermissionAction?(action: ReviewableAction): Promise<AutoReviewDecision>;
+
+  /** Actual runtime reviewer, not subscription availability. Only applies to harness-dispatched tools. */
+  getAutoReviewOwner?(): 'native' | 'cindy';
 
   /** 运行时切换模型 —— 不支持时抛 NotSupportedError */
   setModel?(model: string, opts?: { providerId?: string | null; effort?: Effort }): Promise<void>;

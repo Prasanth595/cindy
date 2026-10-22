@@ -38,6 +38,12 @@ export const MAKER_INVOKE = {
    * 本机 renderer 与 device-link 控制端共用；旧被控端没有该 channel 时控制端静默忽略。
    */
   SESSION_PREWARM: 'maker:session:prewarm',
+  /**
+   * 新建页的未发送任务（本机 renderer 专用，不进 device-link）：清空输入时删除，
+   * 第一次发送前转为普通任务。见 localDb/provisionalSessions.ts。
+   */
+  SESSION_DISCARD_PROVISIONAL: 'maker:session:discard-provisional',
+  SESSION_COMMIT_PROVISIONAL: 'maker:session:commit-provisional',
   CLOSE_SESSION: 'maker:close-session',
   /**
    * 单条 user / assistant 消息本地内容删除。保留后续可见消息，但清当前原生
@@ -761,6 +767,7 @@ export const MAKER_INVOKE = {
   RSB_WINDOW_CLOSE: 'maker:rsb-window:close',
   RSB_WINDOW_SET_DETACHED: 'maker:rsb-window:set-detached',
   RSB_WINDOW_GET_CONTEXT: 'maker:rsb-window:get-context',
+  RSB_WINDOW_ALLOW_BOT_WORKBENCH_PERMISSION: 'maker:rsb-window:allow-bot-workbench-permission',
   RSB_WINDOW_READY: 'maker:rsb-window:ready',
   RSB_WINDOW_SEND_COMMAND: 'maker:rsb-window:send-command',
   /**
@@ -809,6 +816,7 @@ export const MAKER_INVOKE = {
   CHAT_SERVER_REFRESHPROFILE: 'maker:chat-server:refreshProfile',
   CHAT_SERVER_STATUS: 'maker:chat-server:status',
   CHAT_SERVER_THREAD: 'maker:chat-server:thread',
+  CHAT_SERVER_FOLLOWTHREAD: 'maker:chat-server:followThread',
   CHAT_SERVER_REPLY: 'maker:chat-server:reply',
   CHAT_SERVER_SHARETOMAIN: 'maker:chat-server:shareToMain',
   CHAT_SERVER_REACT: 'maker:chat-server:react',
