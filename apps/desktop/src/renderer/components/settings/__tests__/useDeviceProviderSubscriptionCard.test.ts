@@ -171,23 +171,49 @@ describe('useDeviceProviderSubscriptionCard', () => {
   });
 
   // Unit regression: PR #6752 review r4344705884. Existing reconnect coverage used
-  // a completed/mocked mirror; an old in-flight account read must queue a recovery
-  // read when native RPC is unavailable. No timer advance is needed to show 82%.
-  it('queues the fallback mirror read after reconnect when an old request is still pending', async () => {
+  // a completed/mocked mirror. r4344881854 adds foreground/member-online recovery:
+  // those paths temporarily unmount the epoch listener, so they must also queue
+  // one read behind the old pending request. No timer advance is needed for 82%.
+  it.each([
+    { resume: 'reconnect', native: false },
+    { resume: 'foreground', native: true },
+    { resume: 'member-online', native: false },
+    { resume: 'reopen', native: true },
+  ] as const)('queues one recovery read on $resume when the old request is still pending', async ({ resume, native }) => {
     const openai = provider('openai-extra', { method: 'oauth', native: 'codex' });
+    const quotaChannel = native ? 'maker:usage:codex-rate-limits' : 'maker:usage:account';
     let rejectOld!: (error: Error) => void;
     let reads = 0;
     mocks.invoke.mockImplementation((_deviceId, channel) => {
-      if (channel === 'maker:usage:codex-rate-limits') return Promise.reject(new Error('[CHANNEL_NOT_ALLOWED] old computer'));
+      if (channel !== quotaChannel) return native ? Promise.resolve(null)
+        : Promise.reject(new Error('[CHANNEL_NOT_ALLOWED] old computer'));
       if (reads++ === 0) return new Promise((_resolve, reject) => { rejectOld = reject; });
-      return Promise.resolve({ providerId: openai.id, primary: { usedPercent: 82, windowMinutes: 300 } });
+      const quota = { primary: { usedPercent: 82, windowMinutes: 300 } };
+      return Promise.resolve(native ? { providerId: openai.id, account: { planType: 'plus' }, rateLimits: quota }
+        : { providerId: openai.id, ...quota });
     });
-    const hook = renderHook(() => useDeviceProviderSubscriptionCard(openai, 'mini', { live: true }));
+    const renderCard = () => renderHook(({ selected, deviceId }: { selected: ProviderView | undefined; deviceId: string | null }) =>
+      useDeviceProviderSubscriptionCard(selected, deviceId, { live: true }),
+    { initialProps: { selected: openai as ProviderView | undefined, deviceId: 'mini' as string | null } });
+    let hook = renderCard();
     await act(async () => {});
     expect(remaining(hook.result.current)).toBeUndefined();
+    expect(reads).toBe(1);
+    if (resume === 'foreground') {
+      vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+      act(() => document.dispatchEvent(new Event('visibilitychange')));
+    } else if (resume === 'member-online') hook.rerender({ selected: undefined, deviceId: null });
+    else if (resume === 'reopen') hook.unmount();
+    if (resume !== 'reconnect') expect(mocks.reopened.size).toBe(0);
     act(() => mocks.reopened.forEach(listener => listener({ deviceId: 'mini' })));
+    if (resume === 'foreground') {
+      vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
+      act(() => document.dispatchEvent(new Event('visibilitychange')));
+    } else if (resume === 'member-online') hook.rerender({ selected: openai, deviceId: 'mini' });
+    else if (resume === 'reopen') hook = renderCard();
     await act(async () => rejectOld(new Error('old link disconnected')));
     expect(remaining(hook.result.current)).toEqual([['primary', 82]]);
+    expect(reads).toBe(2);
   });
 
   // Unit regression: PR #6752 r4344811616. A native snapshot can outlive a missed

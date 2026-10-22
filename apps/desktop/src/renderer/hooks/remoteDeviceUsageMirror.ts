@@ -140,8 +140,11 @@ export function createRemoteDeviceUsageMirror<T extends object>(cfg: {
         entry.listeners.size > 0 &&
         entry.settledAt > 0 &&
         Date.now() - entry.settledAt < MOUNT_REUSE_MS;
+      // A pending request from before an observation gap cannot stand in for
+      // the fresh read required on resume. Concurrent live consumers still share it.
+      const resumePending = entry.listeners.size === 0 && entry.pending;
       entry.listeners.add(notify);
-      if (!settled) request(deviceId, providerId);
+      if (!settled) request(deviceId, providerId, resumePending);
       const off = window.electronAPI.deviceLink.onRemotePush((push, ownerStamp) => {
         if (
           push.deviceId !== deviceId ||
