@@ -27,7 +27,7 @@ const registerSource = readFileSync(resolve(__dirname, '..', 'register.ts'), 'ut
 );
 
 function lazyResumeCreateOpts(): string {
-  const start = registerSource.indexOf('async function sendToSessionInternal(params: {');
+  const start = registerSource.indexOf('async function sendToSessionInternal(');
   const resume = registerSource.indexOf("lockStage = 'lazy-resume-bootstrap';", start);
   const end = registerSource.indexOf('await synthesizeOrcaVendorOptionsFromDb(targetSessionId, createOpts);', resume);
   expect(start).toBeGreaterThanOrEqual(0);
@@ -97,7 +97,7 @@ function botTaskDispatchSlice(): string {
   };
   const lockReturn = 'return trackSendToSessionLockRun(targetSessionId, run, () => lockStage);';
   const sendToSessionInternal =
-    slice('async function sendToSessionInternal(params: {', lockReturn) + `${lockReturn}\n}`;
+    slice('async function sendToSessionInternal(', lockReturn) + `${lockReturn}\n}`;
   const dispatchBotSessionMessage = slice(
     'const dispatchBotSessionMessage = async (params: {',
     '\n  setBotInvitationWelcomeDispatch(dispatchBotSessionMessage);',

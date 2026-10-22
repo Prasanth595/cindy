@@ -34,7 +34,7 @@ describe('Orca provider routing snapshot wiring', () => {
   });
 
   it('resumes an idle parent with the stored provider so Bot completions can wake it', () => {
-    const start = registerSource.indexOf('async function sendToSessionInternal(params: {');
+    const start = registerSource.indexOf('async function sendToSessionInternal(');
     const resume = registerSource.indexOf('const createOpts = buildCreateOptsWithStderr({',
       registerSource.indexOf('const persistUserMessage = async (): Promise<void> => {', start),
     );
@@ -48,7 +48,7 @@ describe('Orca provider routing snapshot wiring', () => {
   });
 
   it('validates explicit execution config before allocating a handoff worktree', () => {
-    const start = registerSource.indexOf('async function sendToSessionInternal(params: {');
+    const start = registerSource.indexOf('async function sendToSessionInternal(');
     const end = registerSource.indexOf('const newTitle =', start);
     expect(start).toBeGreaterThanOrEqual(0);
     expect(end).toBeGreaterThan(start);

@@ -93,7 +93,7 @@ it('restores human authorization for both live and cold internal delegated sends
 });
 
 it('marks plugin dispatch and every queue fallback with the host-only receipt', () => {
-  const start = source.indexOf('async function sendToSessionInternal(params: {');
+  const start = source.indexOf('async function sendToSessionInternal(');
   const end = source.indexOf('const startOrcaTeamForCaller', start);
   const dispatch = source.slice(start, end);
   expect(dispatch).toContain("message: text, autoReviewUserText: { kind: 'delegated-continuation' }, forceQueue: true");
