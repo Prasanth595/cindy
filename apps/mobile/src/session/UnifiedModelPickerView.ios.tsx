@@ -1,8 +1,13 @@
-import { NativeErrorNotice } from '@/components/NativeErrorNotice.ios';
-import { ModelSpeedIcon } from './ModelSpeedIcon';
+import { NativeErrorNotice } from "@/components/NativeErrorNotice.ios";
+import { ModelSpeedIcon } from "./ModelSpeedIcon";
 import {
+  Background,
   Button,
+  Divider,
   HStack,
+  LazyVStack,
+  ScrollView,
+  UnevenRoundedRectangle,
   Picker,
   ProgressView,
   RNHostView,
@@ -15,6 +20,14 @@ import {
 import {
   accessibilityLabel,
   buttonStyle,
+  id,
+  onAppear,
+  onDisappear,
+  onGeometryChange,
+  onScrollPhaseChange,
+  scrollDismissesKeyboard,
+  scrollPosition,
+  scrollTargetLayout,
   disabled,
   font,
   foregroundStyle,
@@ -38,10 +51,10 @@ import {
   LayoutGrid,
 } from "lucide-react-native";
 import type { ReactNode } from "react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { View } from "react-native";
-import { iconSize, useTheme } from "@/theme";
+import { Platform, View } from "react-native";
+import { iconSize, radius, spacing, useTheme } from "@/theme";
 import { MobileAgentMark } from "@/components/MobileAgentMark";
 import { ComposerSheet } from "./ComposerSheet";
 import { ComposerNativeSection as Section } from "./ComposerNativeSection";
@@ -107,6 +120,62 @@ export function UnifiedModelPickerView(p: UnifiedMobilePickerViewProps) {
   const options = p.options;
   const isFavorite = options?.isFavorite ?? !!options?.row.favorite;
   const config = options?.row.config;
+  const rootActive = !options && !page;
+  // scrollPosition needs iOS 17, but reliable user-drag cancellation needs 18.
+  // The installed Expo UI has no drag gesture bridge for older systems.
+  const supportsInitialReveal = Number.parseInt(String(Platform.Version), 10) >= 18;
+  const selectedGroup = p.groups.find((group) =>
+    group.rows.some((row) => row.selected && !row.favorite),
+  );
+  const selectedRow = selectedGroup?.rows.find(
+    (row) => row.selected && !row.favorite,
+  );
+  const selectedTarget =
+    selectedGroup && selectedRow
+      ? JSON.stringify([selectedGroup.key, selectedRow.key])
+      : null;
+  const scrollTarget = useNativeState<string | null>(null);
+  const reveal = useRef({
+    pending: false,
+    appeared: false,
+    laidOut: false,
+    rootStarted: false,
+  });
+  const cancelReveal = () => {
+    reveal.current.pending = false;
+  };
+  const revealSelected = () => {
+    const state = reveal.current;
+    if (
+      !supportsInitialReveal ||
+      !p.visible ||
+      p.busy ||
+      p.loading ||
+      !rootActive ||
+      p.query?.trim() ||
+      !state.pending ||
+      !state.appeared ||
+      !state.laidOut ||
+      !selectedTarget
+    )
+      return;
+    state.pending = false;
+    scrollTarget.set(selectedTarget);
+  };
+  useEffect(() => {
+    reveal.current.pending = supportsInitialReveal && p.visible;
+    reveal.current.rootStarted = false;
+    if (!p.visible) reveal.current.appeared = false;
+    if (supportsInitialReveal) scrollTarget.set(null);
+  }, [p.visible, scrollTarget, supportsInitialReveal]);
+  useEffect(() => {
+    if (!p.visible) return;
+    // Parent resets an old details page on opening. Wait for the root once,
+    // then a user's navigation away cancels any still-pending initial reveal.
+    if (rootActive) reveal.current.rootStarted = true;
+    else if (reveal.current.rootStarted) cancelReveal();
+    revealSelected();
+  }, [p.visible, p.busy, p.loading, rootActive, selectedTarget, p.query]);
   const level = (id: string) =>
     t(`models.options.effortLevels.${id}`, { defaultValue: id });
   const listHeader = (
@@ -114,7 +183,11 @@ export function UnifiedModelPickerView(p: UnifiedMobilePickerViewProps) {
       {mark(Search)}
       <TextField
         text={search}
-        onTextChange={p.onQuery}
+        onFocusChange={(focused) => { if (focused) cancelReveal(); }}
+        onTextChange={(value) => {
+          cancelReveal();
+          p.onQuery(value);
+        }}
         placeholder={t("models.picker.searchPlaceholder")}
         modifiers={[
           frame({ maxWidth: Infinity, minHeight: 44 }),
@@ -125,7 +198,10 @@ export function UnifiedModelPickerView(p: UnifiedMobilePickerViewProps) {
       />
       {p.query ? (
         <Button
-          onPress={() => p.onQuery("")}
+          onPress={() => {
+            cancelReveal();
+            p.onQuery("");
+          }}
           modifiers={[
             buttonStyle("plain"),
             accessibilityLabel(t("devices.detail.search.clearA11y")),
@@ -137,7 +213,10 @@ export function UnifiedModelPickerView(p: UnifiedMobilePickerViewProps) {
         </Button>
       ) : null}
       <Button
-        onPress={() => setPage("sources")}
+        onPress={() => {
+          cancelReveal();
+          setPage("sources");
+        }}
         modifiers={[
           buttonStyle("plain"),
           frame({ maxWidth: 120, minHeight: 44 }),
@@ -164,7 +243,224 @@ export function UnifiedModelPickerView(p: UnifiedMobilePickerViewProps) {
       </Button>
     </HStack>
   );
-  const listContent = (
+  const renderModelRow = (row: (typeof p.groups)[number]["rows"][number]) => (
+    <ComposerNativeRow
+      key={row.key}
+      title={row.entry.displayName}
+      subtitle={[
+        mobileAgentLabel(row.config.agent),
+        row.subtitle,
+        row.quotaLabel,
+      ]
+        .filter(Boolean)
+        .join(" · ")}
+      titleAccessory={
+        <HStack spacing={4}>
+          {row.costMarks ? (
+            <Text
+              modifiers={[
+                font({ textStyle: "caption" }),
+                foregroundStyle(colors.textSecondary),
+              ]}
+            >
+              {row.costMarks}
+            </Text>
+          ) : null}
+          <RNHostView matchContents>
+            <View
+              pointerEvents="none"
+              style={{ width: iconSize.sm, height: iconSize.sm }}
+            >
+              <MobileAgentMark
+                agentKind={row.config.agent}
+                color={colors.textSecondary}
+              />
+            </View>
+          </RNHostView>
+          {row.effortLabel ? (
+            <Text
+              modifiers={[
+                font({ textStyle: "caption" }),
+                foregroundStyle(colors.textSecondary),
+              ]}
+            >
+              {row.effortLabel}
+            </Text>
+          ) : null}
+          {row.config.fast ? (
+            <NativeMark>
+              <ModelSpeedIcon
+                mode={row.config.fast}
+                color={colors.textSecondary}
+              />
+            </NativeMark>
+          ) : null}
+        </HStack>
+      }
+      subtitleContent={
+        <VStack alignment="leading" spacing={2}>
+          <Text
+            modifiers={[
+              font({ textStyle: "caption" }),
+              foregroundStyle(colors.textSecondary),
+            ]}
+          >
+            {row.subtitle}
+          </Text>
+          {row.quotaLabel ? (
+            <Text
+              modifiers={[
+                font({ textStyle: "caption2" }),
+                foregroundStyle(colors.textTertiary),
+              ]}
+            >
+              {row.quotaLabel}
+            </Text>
+          ) : null}
+        </VStack>
+      }
+      leading={
+        <RNHostView matchContents>
+          <View
+            style={{
+              width: 28,
+              height: 28,
+              justifyContent: "center",
+            }}
+          >
+            <MobileModelIconMark
+              icon={row.entry.icon}
+              {...row.providerMark}
+              color={colors.textSecondary}
+              remote={row.remoteDevice != null}
+            />
+          </View>
+        </RNHostView>
+      }
+      optionsIcon={mark(SlidersHorizontal)}
+      selectionIcon={mark(Check)}
+      accessory={row.favorite ? mark(Star, true) : undefined}
+      selected={row.selected}
+      disabled={p.busy || row.disabled}
+      onPress={() => {
+        cancelReveal();
+        p.onSelect(row);
+      }}
+      onOptions={() => {
+        cancelReveal();
+        p.onOptions(row);
+      }}
+      optionsLabel={t("models.picker.configureAccessibility", {
+        model: row.entry.displayName,
+      })}
+      testID={`${p.testID}.model.${row.key}`}
+    />
+  );
+  // Form/List do not support SwiftUI scrollPosition. Keep the root mounted,
+  // but use the already-installed native ScrollView and flat lazy targets.
+  // Group-rounded backgrounds and separators retain the existing form layout.
+  const listContent = supportsInitialReveal ? (
+    <ScrollView
+      testID={`${p.testID}.list`}
+      modifiers={[
+        scrollPosition(scrollTarget, { anchor: "center" }),
+        scrollDismissesKeyboard("interactively"),
+        onAppear(() => {
+          if (p.visible) reveal.current.appeared = true;
+          revealSelected();
+        }),
+        onDisappear(() => {
+          reveal.current.appeared = false;
+        }),
+        onGeometryChange(({ width, height }) => {
+          reveal.current.laidOut = width > 0 && height > 0;
+          revealSelected();
+        }),
+        onScrollPhaseChange((phase) => {
+          if (phase === "tracking" || phase === "interacting") cancelReveal();
+        }),
+      ]}
+    >
+      <LazyVStack
+        alignment="leading"
+        spacing={0}
+        modifiers={[
+          scrollTargetLayout(),
+          padding({ horizontal: spacing.lg, bottom: spacing.xl }),
+        ]}
+      >
+        {p.error ? <NativeErrorNotice message={p.error} /> : null}
+        {p.groups.flatMap((group) => [
+          <Text
+            key={`header:${group.key}`}
+            modifiers={[
+              font({ textStyle: "footnote" }),
+              foregroundStyle(colors.textSecondary),
+              padding({
+                top: spacing.xl,
+                leading: spacing.lg,
+                bottom: spacing.sm,
+              }),
+            ]}
+          >
+            {group.title}
+          </Text>,
+          ...group.rows.map((row, index) => (
+            <Background
+              key={JSON.stringify([group.key, row.key])}
+              modifiers={[id(JSON.stringify([group.key, row.key]))]}
+            >
+              <VStack
+                spacing={0}
+                modifiers={[
+                  frame({ maxWidth: Infinity, alignment: "leading" }),
+                ]}
+              >
+                <VStack
+                  modifiers={[
+                    padding({ horizontal: spacing.lg, vertical: spacing.sm }),
+                  ]}
+                >
+                  {renderModelRow(row)}
+                </VStack>
+                {index < group.rows.length - 1 ? (
+                  <Divider
+                    modifiers={[
+                      padding({ leading: spacing.lg }),
+                      foregroundStyle(colors.border),
+                    ]}
+                  />
+                ) : null}
+              </VStack>
+              <Background.Content>
+                <UnevenRoundedRectangle
+                  topLeadingRadius={index === 0 ? radius.container : 0}
+                  topTrailingRadius={index === 0 ? radius.container : 0}
+                  bottomLeadingRadius={
+                    index === group.rows.length - 1 ? radius.container : 0
+                  }
+                  bottomTrailingRadius={
+                    index === group.rows.length - 1 ? radius.container : 0
+                  }
+                  modifiers={[foregroundStyle(colors.surfaceTranslucent)]}
+                />
+              </Background.Content>
+            </Background>
+          )),
+        ])}
+        {!p.groups.length ? (
+          <Text
+            modifiers={[
+              foregroundStyle(colors.textSecondary),
+              padding({ all: spacing.lg }),
+            ]}
+          >
+            {p.loading ? t("models.picker.loadingDefault") : p.emptyHint}
+          </Text>
+        ) : null}
+      </LazyVStack>
+    </ScrollView>
+  ) : (
     <>
       {p.error ? (
         <Section>
@@ -173,108 +469,7 @@ export function UnifiedModelPickerView(p: UnifiedMobilePickerViewProps) {
       ) : null}
       {p.groups.map((group) => (
         <Section key={group.key} title={group.title}>
-          {group.rows.map((row) => (
-            <ComposerNativeRow
-              key={row.key}
-              title={row.entry.displayName}
-              subtitle={[
-                mobileAgentLabel(row.config.agent),
-                row.subtitle,
-                row.quotaLabel,
-              ]
-                .filter(Boolean)
-                .join(" · ")}
-              titleAccessory={
-                <HStack spacing={4}>
-                  {row.costMarks ? (
-                    <Text
-                      modifiers={[
-                        font({ textStyle: "caption" }),
-                        foregroundStyle(colors.textSecondary),
-                      ]}
-                    >
-                      {row.costMarks}
-                    </Text>
-                  ) : null}
-                  <RNHostView matchContents>
-                    <View
-                      pointerEvents="none"
-                      style={{ width: iconSize.sm, height: iconSize.sm }}
-                    >
-                      <MobileAgentMark
-                        agentKind={row.config.agent}
-                        color={colors.textSecondary}
-                      />
-                    </View>
-                  </RNHostView>
-                  {row.effortLabel ? (
-                    <Text
-                      modifiers={[
-                        font({ textStyle: "caption" }),
-                        foregroundStyle(colors.textSecondary),
-                      ]}
-                    >
-                      {row.effortLabel}
-                    </Text>
-                  ) : null}
-                  {row.config.fast ? (
-                    <NativeMark><ModelSpeedIcon mode={row.config.fast} color={colors.textSecondary} /></NativeMark>
-                  ) : null}
-                </HStack>
-              }
-              subtitleContent={
-                <VStack alignment="leading" spacing={2}>
-                  <Text
-                    modifiers={[
-                      font({ textStyle: "caption" }),
-                      foregroundStyle(colors.textSecondary),
-                    ]}
-                  >
-                    {row.subtitle}
-                  </Text>
-                  {row.quotaLabel ? (
-                    <Text
-                      modifiers={[
-                        font({ textStyle: "caption2" }),
-                        foregroundStyle(colors.textTertiary),
-                      ]}
-                    >
-                      {row.quotaLabel}
-                    </Text>
-                  ) : null}
-                </VStack>
-              }
-              leading={
-                <RNHostView matchContents>
-                  <View
-                    style={{
-                      width: 28,
-                      height: 28,
-                      justifyContent: "center",
-                    }}
-                  >
-                    <MobileModelIconMark
-                      icon={row.entry.icon}
-                      {...row.providerMark}
-                      color={colors.textSecondary}
-                      remote={row.remoteDevice != null}
-                    />
-                  </View>
-                </RNHostView>
-              }
-              optionsIcon={mark(SlidersHorizontal)}
-              selectionIcon={mark(Check)}
-              accessory={row.favorite ? mark(Star, true) : undefined}
-              selected={row.selected}
-              disabled={p.busy || row.disabled}
-              onPress={() => p.onSelect(row)}
-              onOptions={() => p.onOptions(row)}
-              optionsLabel={t("models.picker.configureAccessibility", {
-                model: row.entry.displayName,
-              })}
-              testID={`${p.testID}.model.${row.key}`}
-            />
-          ))}
+          {group.rows.map(renderModelRow)}
         </Section>
       ))}
       {!p.groups.length ? (
@@ -345,7 +540,8 @@ export function UnifiedModelPickerView(p: UnifiedMobilePickerViewProps) {
       }
       testID={p.testID}
       nativeRoot={{
-        active: !options && !page,
+        active: rootActive,
+        contentScrolls: supportsInitialReveal,
         header: listHeader,
         content: listContent,
       }}

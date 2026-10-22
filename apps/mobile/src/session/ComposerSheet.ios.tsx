@@ -144,12 +144,14 @@ export function ComposerSheet({
                   ]}
                 >
                   {nativeRoot.header}
-                  <Form
-                    testID={testID ? `${testID}.list` : undefined}
-                    modifiers={[scrollContentBackground("hidden")]}
-                  >
-                    {nativeRoot.content}
-                  </Form>
+                  {nativeRoot.contentScrolls ? nativeRoot.content : (
+                    <Form
+                      testID={testID ? `${testID}.list` : undefined}
+                      modifiers={[scrollContentBackground("hidden")]}
+                    >
+                      {nativeRoot.content}
+                    </Form>
+                  )}
                 </VStack>
                 {!nativeRoot.active ? (
                   <VStack

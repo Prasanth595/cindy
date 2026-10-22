@@ -67,6 +67,7 @@ import type {
   UnifiedMobileRow,
 } from "./UnifiedModelPickerSheet";
 import { mobileInteractionStyles } from "@/components/mobileInteractionStyles";
+import { useInitialModelListScroll } from "./useInitialModelListScroll";
 
 type Page = "sources" | "harness" | null;
 
@@ -219,7 +220,6 @@ export function UnifiedModelPickerView(p: UnifiedMobilePickerViewProps) {
   const [page, setPage] = useState<Page>(null);
   const [effortExpanded, setEffortExpanded] = useState(false);
   const searchRef = useRef<RNTextInput>(null);
-  const modelListRef = useRef<FlatList>(null);
   const modelItems = useMemo(
     () =>
       p.groups.flatMap((group) => [
@@ -233,9 +233,6 @@ export function UnifiedModelPickerView(p: UnifiedMobilePickerViewProps) {
       ]),
     [p.groups],
   );
-  useEffect(() => {
-    modelListRef.current?.scrollToOffset({ offset: 0, animated: false });
-  }, [p.query, p.filter]);
   // 与 iOS 同口径:重新打开或切换设置对象都回到主页。
   useEffect(() => {
     setPage(null);
@@ -257,6 +254,21 @@ export function UnifiedModelPickerView(p: UnifiedMobilePickerViewProps) {
     t(`models.options.effortLevels.${id}`, { defaultValue: id });
   const options = p.options;
   const showSecondary = !!options || !!page;
+  const selectedIndex = modelItems.findIndex(
+    (item) => item.kind === "model" && item.row.selected && !item.row.favorite,
+  );
+  const initialScroll = useInitialModelListScroll({
+    visible: p.visible,
+    active: !showSecondary && !p.busy && !p.loading,
+    query: p.query,
+    filter: p.filter,
+    target: selectedIndex < 0
+      ? null
+      : { key: modelItems[selectedIndex].key, index: selectedIndex },
+  });
+  useEffect(() => {
+    initialScroll.listRef.current?.scrollToOffset({ offset: 0, animated: false });
+  }, [p.query, p.filter]);
   useEffect(() => {
     if (showSecondary) searchRef.current?.blur();
   }, [showSecondary]);
@@ -294,9 +306,15 @@ export function UnifiedModelPickerView(p: UnifiedMobilePickerViewProps) {
           accessibilityLabel={t("models.picker.searchAccessibility")}
           autoCapitalize="none"
           autoCorrect={false}
-          onChangeText={p.onQuery}
+          onChangeText={(value) => {
+            initialScroll.cancel();
+            p.onQuery(value);
+          }}
           // Android adjustResize:聚焦搜索时吸到 full,边输边看列表(与旧版模型浮窗同口径)。
-          onFocus={() => setSnap("full")}
+          onFocus={() => {
+            initialScroll.cancel();
+            setSnap("full");
+          }}
           placeholder={t("models.picker.searchPlaceholder")}
           placeholderTextColor={colors.textPlaceholder}
           ref={searchRef}
@@ -309,7 +327,10 @@ export function UnifiedModelPickerView(p: UnifiedMobilePickerViewProps) {
             accessibilityLabel={t("devices.detail.search.clearA11y")}
             accessibilityRole="button"
             hitSlop={4}
-            onPress={() => p.onQuery("")}
+            onPress={() => {
+              initialScroll.cancel();
+              p.onQuery("");
+            }}
             style={({ pressed }) => [
               styles.iconButton,
               pressed && styles.pressed,
@@ -328,7 +349,10 @@ export function UnifiedModelPickerView(p: UnifiedMobilePickerViewProps) {
         accessibilityLabel={t("models.unified.source")}
         accessibilityRole="button"
         accessibilityValue={{ text: currentFilter?.label ?? "" }}
-        onPress={() => setPage("sources")}
+        onPress={() => {
+          initialScroll.cancel();
+          setPage("sources");
+        }}
         style={({ pressed }) => [
           styles.sourceButton,
           pressed && styles.pressed,
@@ -668,7 +692,10 @@ export function UnifiedModelPickerView(p: UnifiedMobilePickerViewProps) {
           accessibilityRole="button"
           accessibilityState={{ selected: row.selected, disabled }}
           disabled={disabled}
-          onPress={() => p.onSelect(row)}
+          onPress={() => {
+            initialScroll.cancel();
+            p.onSelect(row);
+          }}
           style={({ pressed }) => [
             styles.modelMain,
             row.disabled && styles.rowDisabled,
@@ -746,7 +773,10 @@ export function UnifiedModelPickerView(p: UnifiedMobilePickerViewProps) {
           accessibilityRole="button"
           accessibilityState={{ disabled }}
           disabled={disabled}
-          onPress={() => p.onOptions(row)}
+          onPress={() => {
+            initialScroll.cancel();
+            p.onOptions(row);
+          }}
           style={({ pressed }) => [
             styles.optionsButton,
             pressed && styles.pressed,
@@ -816,8 +846,13 @@ export function UnifiedModelPickerView(p: UnifiedMobilePickerViewProps) {
               ? (scrollProps) => (
                   <FlatList
                     {...scrollProps}
-                    ref={modelListRef}
+                    ref={initialScroll.listRef}
                     data={modelItems}
+                    onLayout={initialScroll.onLayout}
+                    onContentSizeChange={initialScroll.onContentSizeChange}
+                    onViewableItemsChanged={initialScroll.onViewableItemsChanged}
+                    onScrollBeginDrag={initialScroll.cancel}
+                    onScrollToIndexFailed={initialScroll.onScrollToIndexFailed}
                     keyExtractor={(item) => item.key}
                     initialNumToRender={8}
                     maxToRenderPerBatch={4}
@@ -839,6 +874,7 @@ export function UnifiedModelPickerView(p: UnifiedMobilePickerViewProps) {
                       item.kind === "header" ? (
                         <View
                           style={styles.group}
+                          onLayout={() => initialScroll.onItemLayout(item.key)}
                           testID={`${p.testID}.group.${item.group.key}`}
                         >
                           <Text style={styles.groupLabel}>
@@ -846,7 +882,7 @@ export function UnifiedModelPickerView(p: UnifiedMobilePickerViewProps) {
                           </Text>
                         </View>
                       ) : (
-                        <View>
+                        <View onLayout={() => initialScroll.onItemLayout(item.key)}>
                           {item.separator ? (
                             <View style={styles.separator} />
                           ) : null}

@@ -4,13 +4,15 @@ import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { UnifiedModelPickerView } from '@/session/UnifiedModelPickerView';
 import { UnifiedModelPickerView as IosModelPickerView } from '@/session/UnifiedModelPickerView.ios';
+const nativeScroll = vi.hoisted(() => ({ modifiers: [] as any[] }));
+const platform = vi.hoisted(() => ({ OS: 'android', Version: '18.0' }));
 const virtualList = vi.hoisted(() => ({ scrollToOffset: vi.fn() }));
 const theme = vi.hoisted(() => ({ mode: 'light' as 'light' | 'dark' }));
 vi.mock('react-native', async () => {
   const { createElement: el, useImperativeHandle } = await import('react');
   const View = ({ children, accessibilityElementsHidden, pointerEvents }: any) => el('div', { 'aria-hidden': accessibilityElementsHidden, 'data-pointer-events': pointerEvents }, children);
   return {
-    Platform: { OS: "android" },
+    Platform: platform,
     View, ScrollView: View,
     FlatList: ({
       ref,
@@ -62,15 +64,20 @@ vi.mock('@expo/ui/swift-ui', async () => {
     'data-testid': testID, 'data-modifiers': JSON.stringify(modifiers),
     'aria-hidden': modifiers?.some((m:any) => m.accessibilityHidden === true),
   }, children);
+  const Background = Object.assign(Container, { Content: Container });
   return {
-    ...Object.fromEntries(['Form', 'BottomSheet', 'Group', 'ZStack', 'Image', 'Spacer', 'HStack', 'Picker', 'ProgressView', 'RNHostView', 'VStack', 'Text', 'TextField', 'Toggle'].map(key => [key, Container])),
+    Background,
+    Form: (props: any) => createElement('div', { 'data-testid': props.testID, 'data-native-form': '' }, props.children),
+    ScrollView: (props: any) => { nativeScroll.modifiers = props.modifiers; return createElement(Container, props); },
+    TextField: ({ onTextChange, onFocusChange, text, testID }: any) => createElement('input', { 'data-testid': testID, value: text.get(), onFocus: () => onFocusChange?.(true), onChange: (event:any) => onTextChange(event.target.value) }),
+    ...Object.fromEntries(['BottomSheet', 'Group', 'ZStack', 'Image', 'Spacer', 'HStack', 'Picker', 'ProgressView', 'RNHostView', 'VStack', 'LazyVStack', 'Divider', 'UnevenRoundedRectangle', 'Text', 'Toggle'].map(key => [key, Container])),
     Button: ({ children, onPress, modifiers }: any) => createElement('button', {onClick:onPress, 'aria-label':modifiers?.find((m:any)=>m.accessibilityLabel)?.accessibilityLabel}, children),
-    useNativeState: (initial: string) => useRef({ value: initial, get() { return this.value; }, set(value: string) { this.value = value; } }).current,
+    useNativeState: (initial: string | null) => useRef({ value: initial, get() { return this.value; }, set: vi.fn(function(this: any, value: string | null) { this.value = value; }) }).current,
   };
 });
 vi.mock('@expo/ui/swift-ui/modifiers', () => ({...Object.fromEntries(
-  ['background', 'fixedSize', 'accessibilityElement', 'accessibilityHidden', 'opacity', 'scrollDisabled', 'scrollContentBackground', 'presentationDetents', 'presentationDragIndicator', 'interactiveDismissDisabled', 'contentShape', 'accessibilityLabel', 'buttonStyle', 'disabled', 'font', 'foregroundStyle', 'frame', 'pickerStyle', 'progressViewStyle', 'tint', 'tag', 'padding', 'autocorrectionDisabled', 'textInputAutocapitalization', 'lineLimit'].map(key => [key, (value: any) => ({ [key]: value })]),
-), shapes:{rectangle:()=>({}), roundedRectangle:(value: any)=>value}}));
+  ['onAppear', 'onDisappear', 'onGeometryChange', 'onScrollPhaseChange', 'scrollTargetLayout', 'id', 'scrollDismissesKeyboard', 'background', 'fixedSize', 'accessibilityElement', 'accessibilityHidden', 'opacity', 'scrollDisabled', 'scrollContentBackground', 'presentationDetents', 'presentationDragIndicator', 'interactiveDismissDisabled', 'contentShape', 'accessibilityLabel', 'buttonStyle', 'disabled', 'font', 'foregroundStyle', 'frame', 'pickerStyle', 'progressViewStyle', 'tint', 'tag', 'padding', 'autocorrectionDisabled', 'textInputAutocapitalization', 'lineLimit'].map(key => [key, (value: any) => ({ [key]: value })]),
+), scrollPosition: (state:any, options:any) => ({ scrollPosition: { state, options } }), shapes:{rectangle:()=>({}), roundedRectangle:(value: any)=>value}}));
 vi.mock('@expo/ui', () => ({Host:({children}:any)=>children}));
 vi.mock('@/session/ComposerSheet', () => import('@/session/ComposerSheet.ios'));
 vi.mock('@/session/ComposerNativeSection', () => ({ ComposerNativeSection: ({ children, title }: any) => createElement('div', null, title, children) }));
@@ -94,7 +101,9 @@ vi.mock('@/theme', async () => {
 let root: ReturnType<typeof createRoot>;
 let host: HTMLDivElement;
 beforeEach(() => {
+  platform.Version = '18.0';
   virtualList.scrollToOffset.mockClear();
+  nativeScroll.modifiers = [];
   (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
   host = document.createElement('div');
   root = createRoot(host);
@@ -173,9 +182,12 @@ it.each([['Android', UnifiedModelPickerView], ['iOS', IosModelPickerView]] as co
 );
 
 it.each([
-  ['Android', UnifiedModelPickerView, 'modelSheet.scroll', 'modelSheet.list.scroll'],
-  ['iOS', IosModelPickerView, 'modelSheet.list', 'modelSheet.list'],
-] as const)('retains the long list and its scroll position when returning from details on %s', async (_platform, Component, listId, hiddenListId) => {
+  ['Android', UnifiedModelPickerView, 'modelSheet.scroll', 'modelSheet.list.scroll', '18.0'],
+  ['iOS 18', IosModelPickerView, 'modelSheet.list', 'modelSheet.list', '18.0'],
+  ['iOS 17', IosModelPickerView, 'modelSheet.list', 'modelSheet.list', '17.7'],
+  ['iOS 16.4', IosModelPickerView, 'modelSheet.list', 'modelSheet.list', '16.4'],
+] as const)('retains the long list and its scroll position when returning from details on %s', async (_platform, Component, listId, hiddenListId, version) => {
+  platform.Version = version;
   const rows = Array.from({length:60}, (_, i) => ({
     key:`model-${i}`, entry:{displayName:`Model ${i}`, capabilities:{codex:{efforts:[]}}},
     config:{agent:'codex'}, subtitle:'Provider', providerMark:{},
@@ -191,6 +203,12 @@ it.each([
   await act(async () => render());
   const list = host.querySelector(`[data-testid="${listId}"]`) as HTMLElement;
   expect(list).not.toBeNull();
+  // iOS 16/17 have no reliable drag-phase callback in the installed Expo UI.
+  // Preserve the original Form rather than starting a reveal we cannot cancel.
+  if (Number.parseInt(version, 10) < 18) {
+    expect(list.hasAttribute('data-native-form')).toBe(true);
+    expect(nativeModifier('scrollPosition')).toBeUndefined();
+  }
   list.scrollTop = 960;
   virtualList.scrollToOffset.mockClear();
   const listChildren = [...list.childNodes];
@@ -310,3 +328,103 @@ it.each(["query", "filter"])(
     expect(host.textContent).toContain("No results");
   },
 );
+
+
+// Test value: drive the native list's presentation/layout/drag events, then assert
+// the actual scroll binding written by the real picker. Existing list-retention
+// tests never open on a selected model. Minimal failure: selected row after many
+// favorites, including a catalog delivered after opening. Tier: unit.
+function iosRevealProps(overrides: Record<string, unknown> = {}) {
+  const row = (key: string, selected = false) => ({
+    key, selected, entry: { displayName: key, capabilities: { codex: { efforts: [] } } },
+    config: { agent: 'codex' }, subtitle: 'Provider', providerMark: {},
+  });
+  return {
+    visible: true, testID: 'modelSheet', title: 'Models', query: '', filter: 'all',
+    filters: [{ id: 'all', label: 'All' }], onClose: vi.fn(), onQuery: vi.fn(), onOptions: vi.fn(),
+    groups: [
+      { key: 'favorites', title: 'Favorites', rows: Array.from({ length: 30 }, (_, index) => row(`favorite-${index}`)) },
+      { key: 'provider', title: 'Provider', rows: [row('current', true)] },
+    ],
+    ...overrides,
+  };
+}
+function nativeModifier(name: string) {
+  return nativeScroll.modifiers.find(item => item && name in item)?.[name];
+}
+function presentNativeList() {
+  nativeModifier('onAppear')();
+  nativeModifier('onGeometryChange')({ x: 0, y: 100, width: 400, height: 350 });
+}
+it('reveals the selected native row after layout, preserves manual scroll, and reveals again on reopen', async () => {
+  const props = iosRevealProps();
+  await act(async () => root.render(createElement(IosModelPickerView, props as any)));
+  const position = nativeModifier('scrollPosition')?.state;
+  expect(position).toBeDefined();
+  expect(position.get()).toBeNull();
+  await act(async () => presentNativeList());
+  const selectedTarget = position.get();
+  expect(selectedTarget).toContain('current');
+  const writes = position.set.mock.calls.length;
+  position.value = 'manually-scrolled-row';
+  await act(async () => root.render(createElement(IosModelPickerView, { ...props, busy: true } as any)));
+  expect(position.set).toHaveBeenCalledTimes(writes);
+  expect(position.get()).toBe('manually-scrolled-row');
+  await act(async () => root.render(createElement(IosModelPickerView, { ...props, visible: false } as any)));
+  await act(async () => root.render(createElement(IosModelPickerView, props as any)));
+  await act(async () => presentNativeList());
+  expect(position.get()).toBe(selectedTarget);
+});
+it('waits for a late native catalog without treating automatic source selection as a user scroll', async () => {
+  const props = iosRevealProps();
+  await act(async () => root.render(createElement(IosModelPickerView, { ...props, groups: [] } as any)));
+  await act(async () => presentNativeList());
+  const position = nativeModifier('scrollPosition').state;
+  expect(position.get()).toBeNull();
+  await act(async () => root.render(createElement(IosModelPickerView, { ...props, filter: 'provider' } as any)));
+  expect(position.get()).toContain('current');
+});
+it.each(['drag', 'focus', 'search', 'sources', 'options'])('does not steal native scroll from %s while the catalog arrives', async action => {
+  const props = iosRevealProps();
+  await act(async () => root.render(createElement(IosModelPickerView, { ...props, groups: [] } as any)));
+  await act(async () => presentNativeList());
+  const position = nativeModifier('scrollPosition').state;
+  await act(async () => {
+    if (action === 'drag') nativeModifier('onScrollPhaseChange')('tracking', {});
+    if (action === 'focus') (host.querySelector('[data-testid="modelSheet.search"]') as HTMLInputElement).dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+    if (action === 'search') {
+      const input = host.querySelector('[data-testid="modelSheet.search"]') as HTMLInputElement;
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, 'query');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    if (action === 'sources') (host.querySelector('button[aria-label="models.unified.source"]') as HTMLButtonElement).click();
+    if (action === 'options') root.render(createElement(IosModelPickerView, { ...props, groups: [], options: { row: props.groups[1].rows[0], agents: ['codex'] } } as any));
+  });
+  await act(async () => root.render(createElement(IosModelPickerView, props as any)));
+  expect(position.get()).toBeNull();
+});
+
+it.each(['query', 'options'])('waits for stale %s from the previous presentation to reset on reopening', async stale => {
+  const props = iosRevealProps();
+  const oldPage = stale === 'query' ? { query: 'old search' } : {
+    options: { row: props.groups[1].rows[0], agents: ['codex'] },
+  };
+  await act(async () => root.render(createElement(IosModelPickerView, { ...props, ...oldPage, visible: false } as any)));
+  await act(async () => root.render(createElement(IosModelPickerView, { ...props, ...oldPage } as any)));
+  await act(async () => presentNativeList());
+  const position = nativeModifier('scrollPosition').state;
+  expect(position.get()).toBeNull();
+  await act(async () => root.render(createElement(IosModelPickerView, props as any)));
+  expect(position.get()).toContain('current');
+});
+it('waits until the picker is ready and catalog loading finishes before positioning the native list', async () => {
+  const props = iosRevealProps();
+  await act(async () => root.render(createElement(IosModelPickerView, { ...props, busy: true, loading: true } as any)));
+  await act(async () => presentNativeList());
+  const position = nativeModifier('scrollPosition').state;
+  expect(position.get()).toBeNull();
+  await act(async () => root.render(createElement(IosModelPickerView, { ...props, loading: true } as any)));
+  expect(position.get()).toBeNull();
+  await act(async () => root.render(createElement(IosModelPickerView, props as any)));
+  expect(position.get()).toContain('current');
+});

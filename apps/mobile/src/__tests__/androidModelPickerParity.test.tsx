@@ -18,6 +18,10 @@ const native = vi.hoisted(() => ({
     }
   >(),
   onClosed: undefined as (() => void) | undefined,
+  modelList: null as AnyProps | null,
+  scrollToIndex: vi.fn(),
+  scrollToOffset: vi.fn(),
+  modelLayouts: new Map<string, () => void>(),
   layouts: new Map<
     string,
     (event: { nativeEvent: { layout: { y: number } } }) => void
@@ -32,7 +36,7 @@ const flatStyle = (style: unknown): AnyProps => {
 };
 vi.mock('@/hooks/useReduceMotion', () => ({ useReduceMotionEnabled: () => false, getCachedReduceMotionEnabled: () => false }));
 vi.mock("react-native", async () => {
-  const { createElement: el } = await import("react");
+  const { createElement: el, useImperativeHandle } = await import("react");
   const passthrough = ({ children }: AnyProps) => el("div", null, children);
   const View = ({
     children,
@@ -103,22 +107,26 @@ vi.mock("react-native", async () => {
       );
     },
     ScrollView: passthrough,
-    FlatList: ({
-      data,
-      renderItem,
-      ListHeaderComponent,
-      ListEmptyComponent,
-    }: AnyProps) =>
-      el(
+    FlatList: ({ ref, ...props }: AnyProps) => {
+      native.modelList = props;
+      const { data, renderItem, ListHeaderComponent, ListEmptyComponent } = props;
+      useImperativeHandle(ref, () => ({
+        scrollToIndex: native.scrollToIndex,
+        scrollToOffset: native.scrollToOffset,
+      }), []);
+      return el(
         "div",
         null,
         ListHeaderComponent,
         data.length
-          ? data.map((item: any, index: number) =>
-              el("div", { key: item.key }, renderItem({ item, index })),
-            )
+          ? data.map((item: any, index: number) => {
+              const child = renderItem({ item, index });
+              if (child.props.onLayout) native.modelLayouts.set(item.key, child.props.onLayout);
+              return el("div", { key: item.key }, child);
+            })
           : ListEmptyComponent,
-      ),
+      );
+    },
     StyleSheet: { create: <T,>(styles: T) => styles, hairlineWidth: 1 },
     Easing: { bezier: () => (t: number) => t },
     View,
@@ -346,6 +354,10 @@ beforeEach(() => {
   native.menus.clear();
   native.onClosed = undefined;
   native.layouts.clear();
+  native.modelLayouts.clear();
+  native.modelList = null;
+  native.scrollToIndex.mockReset();
+  native.scrollToOffset.mockReset();
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
@@ -441,6 +453,133 @@ function unifiedProps(overrides: AnyProps = {}): AnyProps {
     ...overrides,
   };
 }
+
+// Regression: opening a long model list must reveal the current model without
+// selecting it again. Existing parity cases only rendered rows and never drove
+// native layout / offscreen-index failures (unit, real picker + FlatList boundary).
+describe("Android model picker opening position", () => {
+  let frames: Map<number, FrameRequestCallback>;
+  let frameId: number;
+  let visibleKey: string | null;
+  beforeEach(() => {
+    frames = new Map();
+    frameId = 0;
+    visibleKey = null;
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      frames.set(++frameId, callback);
+      return frameId;
+    });
+    vi.stubGlobal("cancelAnimationFrame", (id: number) => frames.delete(id));
+    native.scrollToIndex.mockImplementation(({ index }: { index: number }) => {
+      visibleKey = native.modelList!.data[index].key;
+    });
+  });
+  afterEach(() => vi.unstubAllGlobals());
+  const flushFrames = () => act(() => {
+    const pending = [...frames.values()];
+    frames.clear();
+    pending.forEach((callback) => callback(0));
+  });
+  const propsFor = (selected = 19) => unifiedProps({
+    groups: [{ key: "account", title: "Account", rows: Array.from({ length: 20 }, (_, i) =>
+      unifiedRow({ key: `model-${i}`, selected: i === selected }),
+    ) }],
+  });
+  const layout = (...keys: string[]) => {
+    act(() => {
+      native.modelList!.onLayout?.({ nativeEvent: { layout: { width: 400, height: 320 } } });
+      keys.forEach((key) => native.modelLayouts.get(key)?.());
+    });
+    flushFrames();
+  };
+
+  it("reveals the selected account/model once, and resets on reopening", () => {
+    const props = propsFor();
+    render(createElement(UnifiedModelPickerView, props as never));
+    act(() => {
+      native.modelList!.onLayout?.({ nativeEvent: { layout: { width: 400, height: 0 } } });
+      native.modelLayouts.get("account:model-19")?.();
+    });
+    flushFrames();
+    expect(native.scrollToIndex).not.toHaveBeenCalled();
+    layout("account:model-19");
+    expect(visibleKey).toBe("account:model-19");
+    expect(props.onSelect).not.toHaveBeenCalled();
+    expect(props.onOptions).not.toHaveBeenCalled();
+    native.scrollToIndex.mockClear();
+    render(createElement(UnifiedModelPickerView, propsFor(17) as never));
+    layout("account:model-17");
+    expect(native.scrollToIndex).not.toHaveBeenCalled();
+    render(createElement(UnifiedModelPickerView, { ...props, visible: false } as never));
+    render(createElement(UnifiedModelPickerView, propsFor(17) as never));
+    layout("account:model-17");
+    expect(visibleKey).toBe("account:model-17");
+  });
+
+  it("waits for a delayed catalog and native layout", () => {
+    const props = propsFor();
+    render(createElement(UnifiedModelPickerView, { ...props, groups: [], loading: true } as never));
+    layout();
+    expect(native.scrollToIndex).not.toHaveBeenCalled();
+    render(createElement(UnifiedModelPickerView, props as never));
+    layout("account:model-19");
+    expect(visibleKey).toBe("account:model-19");
+  });
+
+  it.each([false, true])("keeps the opening anchor when remote favorites arrive, unless browsing started: %s", (browsing) => {
+    const props = propsFor();
+    render(createElement(UnifiedModelPickerView, props as never));
+    layout("account:model-19");
+    native.scrollToIndex.mockClear();
+    if (browsing) act(() => native.modelList!.onScrollBeginDrag());
+    const favorites = { key: "favorites", title: "Favorites", rows: Array.from({ length: 30 }, (_, i) =>
+      unifiedRow({ key: `favorite-${i}`, selected: false, favorite: { uid: `saved-${i}` } }),
+    ) };
+    render(createElement(UnifiedModelPickerView, { ...props, groups: [favorites, ...props.groups] } as never));
+    layout("account:model-19");
+    if (browsing) expect(native.scrollToIndex).not.toHaveBeenCalled();
+    else expect(native.scrollToIndex).toHaveBeenCalledWith(expect.objectContaining({ index: 51, animated: false }));
+  });
+
+  it("recovers an unmeasured offscreen row before completing the reveal", () => {
+    native.scrollToIndex.mockImplementationOnce(({ index }: { index: number }) => {
+      native.modelList!.onScrollToIndexFailed({ index, averageItemLength: 60, highestMeasuredFrameIndex: 7 });
+    });
+    render(createElement(UnifiedModelPickerView, propsFor() as never));
+    layout("header:account", "account:model-0");
+    expect(native.scrollToOffset).toHaveBeenCalledWith({ offset: 1200, animated: false });
+    expect(visibleKey).toBeNull();
+    layout("account:model-19");
+    expect(visibleKey).toBe("account:model-19");
+    expect(native.scrollToIndex).toHaveBeenLastCalledWith(expect.objectContaining({ index: 20, animated: false }));
+  });
+
+  it.each(["drag", "search", "sources", "close"])("cancels delayed positioning after %s", (action) => {
+    const props = propsFor();
+    render(createElement(UnifiedModelPickerView, { ...props, groups: [] } as never));
+    layout();
+    if (action === "drag") act(() => native.modelList!.onScrollBeginDrag?.());
+    if (action === "search") act(() => byId("modelSheet.search")!.focus());
+    if (action === "sources") click("modelSheet.filter");
+    const next = { ...props, ...(action === "search" ? { query: "model" } : {}), ...(action === "close" ? { visible: false } : {}) };
+    render(createElement(UnifiedModelPickerView, next as never));
+    layout("account:model-19");
+    expect(native.scrollToIndex).not.toHaveBeenCalled();
+  });
+
+  it.each(["query", "options"])("waits for opening initialization to clear previous %s", (previous) => {
+    const props = propsFor();
+    const stale = previous === "query" ? { query: "previous search" } : {
+      options: { row: unifiedRow(), agents: ["codex"], onChange: vi.fn() },
+    };
+    render(createElement(UnifiedModelPickerView, { ...props, ...stale } as never));
+    layout("account:model-19");
+    expect(native.scrollToIndex).not.toHaveBeenCalled();
+    render(createElement(UnifiedModelPickerView, props as never));
+    flushFrames();
+    expect(visibleKey).toBe("account:model-19");
+  });
+});
 
 describe("Android unified model picker follows the iOS structure", () => {
   it("pins a labelled search field with a clear action and preserves the query value", () => {
