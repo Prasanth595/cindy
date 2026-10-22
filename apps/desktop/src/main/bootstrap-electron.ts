@@ -6007,6 +6007,15 @@ const registerIpcHandlers = () => {
   ipcMain.handle('auth:initialize', async () => {
     try {
       let pendingCompletion: Promise<authManager.AuthState> | null = null;
+      // 冷启动断网后后台恢复成功时,也走同一个统计同意迁移通道;否则这条
+      // 迟到登录绕过了 noteAuthColdStartState,存量账号整段不采集。
+      authManager.setColdStartRecoveredHandler((recovered) => {
+        try {
+          noteAuthColdStartState(recovered, null);
+        } catch (analyticsErr) {
+          console.warn('[analytics] cold-start recovery migration failed', analyticsErr);
+        }
+      });
       const state = await authManager
         .initialize({
           onColdStartPending: (completion) => {

@@ -61,6 +61,30 @@ describe('cold start auth recovery boundary', () => {
     expect(body).toContain("lastColdStartFailureWasTransport ? 'continue' : 'stop'");
   });
 
+  it('超时后脱钩仍挂起的冷启动流程，恢复链才能发出新的 refresh', () => {
+    const start = authSource.indexOf('onTimeout: async () => {');
+    const end = authSource.indexOf('onLateResult:', start);
+    const body = authSource.slice(start, end);
+    expect(body).toContain('detachHungColdStartFlow();');
+
+    const detachStart = authSource.indexOf('function detachHungColdStartFlow(): void {');
+    const detachEnd = authSource.indexOf('\n}\n', detachStart);
+    const detachBody = authSource.slice(detachStart, detachEnd);
+    expect(detachBody).toContain('authStateEpoch += 1;');
+    expect(detachBody).toContain('coldStartAuthInFlight = null;');
+  });
+
+  it('恢复成功接回冷启动统计同意迁移通道', () => {
+    expect(authSource).toContain('if (coldStartRetryInFlight) coldStartRecoveredHandler?.(recoveredState);');
+    expect(authSource).toContain('setColdStartRecoveredHandler');
+    const bootstrapSource = readFileSync(
+      resolve(process.cwd(), 'src/main/bootstrap-electron.ts'),
+      'utf8',
+    );
+    expect(bootstrapSource).toContain('authManager.setColdStartRecoveredHandler');
+    expect(bootstrapSource).toContain('noteAuthColdStartState(recovered, null);');
+  });
+
   it('20s 超时路径同样在未登录态提交之后 arm', () => {
     const start = authSource.indexOf('onTimeout: async () => {');
     const end = authSource.indexOf('onLateResult:', start);

@@ -385,6 +385,15 @@ let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 let refreshPromise: Promise<boolean> | null = null;
 /** 最近一次冷启动 refresh 是否为无服务端响应的传输层失败。 */
 let lastColdStartFailureWasTransport = false;
+/** `auth:initialize` 包装注册的恢复完成回调;恢复链成功时把结果交回同一通道。 */
+let coldStartRecoveredHandler: ((state: AuthState) => void) | null = null;
+/** 当前这次冷启动流程是否由断网恢复链发起。 */
+let coldStartRetryInFlight = false;
+
+/** Register the one-shot cold-start recovery completion channel (bootstrap owns it). */
+export function setColdStartRecoveredHandler(handler: ((state: AuthState) => void) | null): void {
+  coldStartRecoveredHandler = handler;
+}
 const refreshBackoff = new AuthRefreshBackoff();
 let sessionInvalidationPromise: Promise<void> | null = null;
 // Real owner change / logout: keep the renderer fail-closed even if a late
@@ -3341,17 +3350,40 @@ function scheduleNonXdOrgBetaDefault(input: {
  */
 let coldStartAuthInFlight: Promise<AuthState> | null = null;
 
+/**
+ * 冷启动超时后,原链路可能永远不 settle(黑洞网络 / captive portal)。
+ * 恢复链再调 initialize() 时若还复用这条 promise,每一轮都只是再等同一个
+ * 永不返回的请求 20s,并不会真正发出新的 refresh。
+ *
+ * 超时路径在确认「原流程仍挂起」后调用本函数脱钩:原 promise 继续在后台跑,
+ * 但它持有的登录代次在这里作废,迟到结果(无论成功失败)都会被 epochChanged
+ * 守卫丢弃,不会和恢复链并发提交 owner 或删掉新写入的 token。
+ */
+function detachHungColdStartFlow(): void {
+  if (coldStartAuthInFlight === null) return;
+  log.warn(
+    'cold-start flow still pending after gate timeout; detaching it so recovery can issue a fresh refresh',
+  );
+  authStateEpoch += 1;
+  coldStartAuthInFlight = null;
+}
+
 async function retryColdStartAuthSession(): Promise<ColdStartRecoveryAttempt> {
   // 重跑完整冷启动:它会重新读磁盘凭据、加载端点清单、认领 legacy owner
   // namespace 并按 allowUnclaimedVault 写入 vault。只调 refresh() 会漏掉这些,
   // 升级后首次启动且离线时尤其明显。
-  const state = await initialize();
-  if (state.isAuthenticated || state.canEnterApp) return 'recovered';
-  // initialize() 的瞬时失败只可能来自本次重试;确定性失效会清凭据并让
-  // hasNoPersistedAuthCredentials() 为真。只有「还有凭据 + 仍是传输层失败」
-  // 才继续,429 / 5xx / DEVICE_MISMATCH 等一律停手,由原有路径处理。
-  if (hasNoPersistedAuthCredentials()) return 'stop';
-  return lastColdStartFailureWasTransport ? 'continue' : 'stop';
+  coldStartRetryInFlight = true;
+  try {
+    const state = await initialize();
+    if (state.isAuthenticated || state.canEnterApp) return 'recovered';
+    // initialize() 的瞬时失败只可能来自本次重试;确定性失效会清凭据并让
+    // hasNoPersistedAuthCredentials() 为真。只有「还有凭据 + 仍是传输层失败」
+    // 才继续,429 / 5xx / DEVICE_MISMATCH 等一律停手,由原有路径处理。
+    if (hasNoPersistedAuthCredentials()) return 'stop';
+    return lastColdStartFailureWasTransport ? 'continue' : 'stop';
+  } finally {
+    coldStartRetryInFlight = false;
+  }
 }
 
 /**
@@ -4746,6 +4778,7 @@ export async function initialize(options: AuthInitializeOptions = {}): Promise<A
         lastColdStartFailureWasTransport = true;
         coldStartRecovery.request();
       }
+      detachHungColdStartFlow();
       await recoverAccountFreeOwnerAtStartup('signed-out', 'cold-start-timeout-recovery');
       coldStartRecovery.arm();
       return snapshotLoggedOutAuthState();
@@ -5020,7 +5053,9 @@ async function runColdStartRefreshFlow(
     // 广播拿到冷启动状态——不广播就永远收不到 auto-login 事件。
     notifyRenderer();
     notifyAuthListeners();
-    return snapshotAuthState();
+    const recoveredState = snapshotAuthState();
+    if (coldStartRetryInFlight) coldStartRecoveredHandler?.(recoveredState);
+    return recoveredState;
   } catch (err) {
     // 网络类失败都在 apiFetch 内部消化(返回 status 0),能走到这里的是 refresh 成功
     // **之后**的本地状态同步代码(writeSafe / provider owner reconcile 等)抛异常——
