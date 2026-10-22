@@ -38,7 +38,15 @@ function items(caseName: string): TeammateTodo[] {
 mountPage({
   route: '/bots/cindy-default',
   host: (ctx) => ({
-    localDb: { bots: { todos: { list: async () => ({ items: items(ctx.case), version: 1 }), update: forbid('todos.update') } } },
+    localDb: { bots: { todos: {
+      list: async () => ({ items: items(ctx.case), version: 1 }),
+      update: forbid('todos.update'),
+      // 「每天帮我查一次」：默认关；打开浮层时只读不写。
+      dailyCheck: async (_botId: string, enabled?: boolean) => {
+        if (enabled !== undefined) throw new Error('dailyCheck write is not expected in this page');
+        return false;
+      },
+    } } },
     maker: { onBotWorkbenchChanged: subscription('todos') },
     deviceLink: { invoke: forbid('deviceLink.invoke'), onRemotePush: subscription('remote') },
     openPath: forbid('openPath'),

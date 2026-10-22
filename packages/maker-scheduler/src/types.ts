@@ -224,6 +224,12 @@ export interface Schedule {
    * 语义与 desktop `session-provider-store` 的 null 对齐。
    */
   providerId?: string;
+  /**
+   * 新建任务时 Agent 运行在哪台电脑(同账号另一台电脑或分享来的供应商)。undefined = 本机。
+   * 设了时 providerId / model 属于那台电脑的已授权目录。绑定的任务仍存在时不使用:
+   * 运行位置跟随被绑定的任务。
+   */
+  agentDeviceId?: string;
   effort?: string;
   /**
    * Fast 模式：仅 Codex 有意义（agent capability `hasFastMode` 为 true）。
@@ -360,6 +366,8 @@ export interface CreateScheduleInput {
    * 语义与 desktop `session-provider-store` 的 null 对齐。
    */
   providerId?: string;
+  /** Agent 运行位置。详见 Schedule.agentDeviceId。 */
+  agentDeviceId?: string;
   effort?: string;
   /** Codex Fast 模式开关，仅 Codex 有意义。详见 Schedule.fastMode。 */
   fastMode?: boolean | 'ultrafast';

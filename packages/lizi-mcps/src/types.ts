@@ -327,6 +327,11 @@ export interface SchedulerMcpDeps {
    * (同 MemoryMcpDeps.searchSessions 模式)。
    */
   hookScript?: SchedulerHookScriptService;
+  /**
+   * 本机定时任务可选的 Agent 运行位置与各处的模型(与协同 Worker 的 list_available_models
+   * 同一份 host 实现)。agentDeviceId:null = 本机。缺省 = schedule_list_models 不注册。
+   */
+  listModels?: import('./xdt-helper/list_available_models.js').ListAvailableModelsDeps['listAvailableModels'];
   logger?: LiziMcpLogger;
 }
 
@@ -338,6 +343,8 @@ export interface SchedulerHookScriptService {
    * meta.workDir 为准。未注入时回落 schedule.workingDir 旧行为。
    */
   resolveSessionWorkDir?(sessionId: string): Promise<string | undefined>;
+  /** Bound task's current Agent location; remote-only routes cannot generate local hook scripts. */
+  isSessionAgentOnOtherDevice?(sessionId: string): Promise<boolean>;
   /**
    * 把受支持的单脚本相对命令固化为绝对路径。任意 shell 命令保持原样；相对脚本
    * 缺少原 cwd 或文件不存在时必须报错，避免改绑后以 fail-open 静默绕过 hook。

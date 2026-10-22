@@ -366,6 +366,14 @@ export default {
             '**/*.bench.ts',
           ],
         },
+        integration: {
+          status: 'manual',
+          reason: 'Local application Agent protocol tests open real loopback sockets and temporary authorization stores.',
+          execution: 'exclusive',
+          coverage: 'allowlist',
+          command: vitestBin('run', '--maxWorkers=2'),
+          include: ['src/main/local-agent/__tests__/*.integration.test.ts'],
+        },
         'git-integration': {
           status: 'manual',
           reason: 'Full real-Git coverage is explicit because it spawns hundreds of local subprocesses and is coordinated across worktrees.',

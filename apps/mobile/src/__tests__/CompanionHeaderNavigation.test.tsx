@@ -58,7 +58,7 @@ afterEach(() => act(() => root.unmount()));
 
 it('goes back from the chat instead of opening a drawer, opens 近况 from the avatar and the profile from settings', async () => {
   const onBack = vi.fn(), onSearch = vi.fn();
-  await act(async () => root.render(<CompanionHeader sessionId="s1" onQuoteTodo={() => {}} resource={resource} deviceId="pc" deviceName="PC" online onBack={onBack} onSearch={onSearch} />));
+  await act(async () => root.render(<CompanionHeader sessionId="s1" onQuoteTodo={() => {}} onAskCompanion={() => {}} resource={resource} deviceId="pc" deviceName="PC" online onBack={onBack} onSearch={onSearch} />));
   await act(async () => button('companion.back').click());
   expect(h.dismiss).toHaveBeenCalledOnce();
   expect(onBack).toHaveBeenCalledOnce();
@@ -76,17 +76,17 @@ it('goes back from the chat instead of opening a drawer, opens 近况 from the a
 });
 
 it('shows the computer and whether it is online, and breathes while the companion works', async () => {
-  await act(async () => root.render(<CompanionHeader sessionId="s1" onQuoteTodo={() => {}} resource={resource} deviceId="pc" deviceName="Office iMac" online={false} working onBack={() => {}} onSearch={() => {}} />));
+  await act(async () => root.render(<CompanionHeader sessionId="s1" onQuoteTodo={() => {}} onAskCompanion={() => {}} resource={resource} deviceId="pc" deviceName="Office iMac" online={false} working onBack={() => {}} onSearch={() => {}} />));
   expect(host.textContent).toContain('devices.resources.hostOffline · Office iMac');
   expect(host.querySelector('[data-testid="ring"]')).not.toBeNull();
-  await act(async () => root.render(<CompanionHeader sessionId="s1" onQuoteTodo={() => {}} resource={resource} deviceId="pc" deviceName="Office iMac" online onBack={() => {}} onSearch={() => {}} />));
+  await act(async () => root.render(<CompanionHeader sessionId="s1" onQuoteTodo={() => {}} onAskCompanion={() => {}} resource={resource} deviceId="pc" deviceName="Office iMac" online onBack={() => {}} onSearch={() => {}} />));
   expect(host.textContent).toContain('Office iMac');
   expect(host.textContent).not.toContain('devices.resources.hostOffline');
   expect(host.querySelector('[data-testid="ring"]')).toBeNull();
 });
 
 it('keeps profile controls closed until the chat entry is validated', async () => {
-  await act(async () => root.render(<CompanionHeader sessionId="s1" onQuoteTodo={() => {}} resource={resource} deviceId="pc" deviceName="PC" online controlsReady={false} onBack={() => {}} onSearch={() => {}} />));
+  await act(async () => root.render(<CompanionHeader sessionId="s1" onQuoteTodo={() => {}} onAskCompanion={() => {}} resource={resource} deviceId="pc" deviceName="PC" online controlsReady={false} onBack={() => {}} onSearch={() => {}} />));
   expect(button('companion.settings').disabled).toBe(true);
   expect(button('companion.identity').disabled).toBe(true);
   expect(h.profile.visible).toBe(false);
@@ -127,7 +127,7 @@ const moduleConstant = (name: string) => source.statements.find(n => ts.isVariab
   && n.declarationList.declarations.some(d => d.name.getText(source) === name))!.getText(source);
 const compiled = ts.transpileModule(`${moduleConstant('COMPANION_NATIVE_HEADER_OPTIONS')}
 function PageHost({ bindings }) {
-  const { auth, deviceId, sessionId, companionResource, companionEntry, shareSelectionActive, setSearchOpen, goBackToHome, companionWorkingLabel, quoteTodoInComposer } = bindings;
+  const { auth, deviceId, sessionId, companionResource, companionEntry, shareSelectionActive, setSearchOpen, goBackToHome, companionWorkingLabel, quoteTodoInComposer, askCompanionInComposer, canUseComposer, composerDraftHydrated } = bindings;
   const currentSession = null;
   const isSideChatSheet = false;
   const companionSettingsRequest = bindings.companionSettingsRequest;
@@ -143,7 +143,7 @@ const PageHost = new Function('React', 'useState', 'useHostManagedSession', 'Com
 const pageBindings = () => ({ auth: h.auth, deviceId: 'pc', sessionId: 'session-a', shareSelectionActive: false,
   companionEntry: { ready: true },
   companionResource: { ref: { kind: 'bot', collectionId: 'bots', id: 'bot-a' }, display: { title: 'Cindy' } } as RemoteResource | null,
-  setSearchOpen: vi.fn(), goBackToHome: vi.fn(), companionWorkingLabel: null as string | null, quoteTodoInComposer: vi.fn() });
+  setSearchOpen: vi.fn(), goBackToHome: vi.fn(), companionWorkingLabel: null as string | null, quoteTodoInComposer: vi.fn(), askCompanionInComposer: vi.fn(), canUseComposer: true, composerDraftHydrated: true });
 const showPage = (bindings: ReturnType<typeof pageBindings>) => act(async () => { root.render(<PageHost bindings={bindings} />); });
 
 it('wires the page: title while entry validation runs, Back to the roster, and the working breath', async () => {
@@ -175,17 +175,17 @@ it('shows the ordinary task header on non-companion pages and while sharing', as
 });
 
 it('opens learning links in the existing profile sheet on the requested page', async () => {
-  await act(async () => root.render(<CompanionHeader sessionId="s1" onQuoteTodo={() => {}} resource={resource} deviceId="pc" deviceName="PC" online onBack={() => {}} onSearch={() => {}}
+  await act(async () => root.render(<CompanionHeader sessionId="s1" onQuoteTodo={() => {}} onAskCompanion={() => {}} resource={resource} deviceId="pc" deviceName="PC" online onBack={() => {}} onSearch={() => {}}
     settingsRequest={{ page: 'memory', sequence: 1 }} />));
   expect(h.profile).toMatchObject({ visible: true, initialPage: 'memory' });
   await act(async () => h.profile.onClose());
-  await act(async () => root.render(<CompanionHeader sessionId="s1" onQuoteTodo={() => {}} resource={resource} deviceId="pc" deviceName="PC" online onBack={() => {}} onSearch={() => {}}
+  await act(async () => root.render(<CompanionHeader sessionId="s1" onQuoteTodo={() => {}} onAskCompanion={() => {}} resource={resource} deviceId="pc" deviceName="PC" online onBack={() => {}} onSearch={() => {}}
     settingsRequest={{ page: 'capabilities', sequence: 2 }} />));
   expect(h.profile).toMatchObject({ visible: true, initialPage: 'capabilities' });
 });
 
 it('reads todos only for an advertised, online host, and clears the due dot by opening 近况', async () => {
-  const props = { resource, deviceId: 'pc', deviceName: 'PC', online: true, sessionId: 's1', onQuoteTodo: vi.fn(), onBack: vi.fn(), onSearch: vi.fn() };
+  const props = { resource, deviceId: 'pc', deviceName: 'PC', online: true, sessionId: 's1', onQuoteTodo: vi.fn(), onAskCompanion: vi.fn(), onBack: vi.fn(), onSearch: vi.fn() };
   await act(async () => root.render(<CompanionHeader {...props} />));
   expect(h.glanceTodos).toMatchObject({ botId: 'bot', deviceId: 'pc', enabled: false });
   const withTodos: RemoteResource = { ...resource, links: [{ rel: 'todos', label: 'Todo', target: { kind: 'resource', ref: { collectionId: 'teammates', kind: 'bot', id: 'todos:bot' } } }] };
@@ -199,13 +199,19 @@ it('reads todos only for an advertised, online host, and clears the due dot by o
   expect(h.markSeen).toHaveBeenCalledOnce();
   // Quoting a todo goes to this chat's composer.
   expect(h.glance.onQuoteTodo).toBe(props.onQuoteTodo);
+  // 「帮我查查」 is the owner's own words, sent through this chat's composer.
+  await act(async () => h.glance.onCheckTodos());
+  expect(props.onAskCompanion).toHaveBeenCalledWith('devices.glance.checkPrompt');
+  // While the chat cannot take it (read-only, locked, draft not restored) 「帮我查查」 is not offered.
+  await act(async () => root.render(<CompanionHeader {...props} resource={withTodos} askCompanionReady={false} />));
+  expect(h.glance.onCheckTodos).toBeUndefined();
   await act(async () => h.glance.onOpenTask('child-1'));
   expect(h.push).toHaveBeenCalledWith({ pathname: '/sessions/[sessionId]', params: { sessionId: 'child-1', deviceId: 'pc' } });
 });
 
 it('names the main computer of a cloud companion and lets the profile change it', async () => {
   h.cloud = { supported: true, actors: [{ kind: 'bot', externalId: 'bot', homeDeviceId: 'pc' }] };
-  await act(async () => root.render(<CompanionHeader sessionId="s1" onQuoteTodo={() => {}} resource={resource} deviceId="pc" deviceName="Office iMac" online onBack={() => {}} onSearch={() => {}} />));
+  await act(async () => root.render(<CompanionHeader sessionId="s1" onQuoteTodo={() => {}} onAskCompanion={() => {}} resource={resource} deviceId="pc" deviceName="Office iMac" online onBack={() => {}} onSearch={() => {}} />));
   expect(host.textContent).toContain('devices.cloudCompanion.runsOn');
   await act(async () => button('companion.settings').click());
   await act(async () => h.profile.onOpenHome());
@@ -223,7 +229,7 @@ it('names the main computer of a cloud companion and lets the profile change it'
 });
 
 it('offers no computer change for a companion without a known main computer', async () => {
-  await act(async () => root.render(<CompanionHeader sessionId="s1" onQuoteTodo={() => {}} resource={resource} deviceId="pc" deviceName="PC" online onBack={() => {}} onSearch={() => {}} />));
+  await act(async () => root.render(<CompanionHeader sessionId="s1" onQuoteTodo={() => {}} onAskCompanion={() => {}} resource={resource} deviceId="pc" deviceName="PC" online onBack={() => {}} onSearch={() => {}} />));
   await act(async () => button('companion.settings').click());
   expect(h.profile.onOpenHome).toBeUndefined();
 });

@@ -46,6 +46,7 @@ import { readAccountRateLimitsWithRefresh } from './app-server/account-rate-limi
 
 import {
   BaseAgent,
+  LOCAL_AGENT_CLIENT,
   INHERITED_CAPABILITY_SELECTION,
   PINNED_SKILL_INVOCATION,
   CodexResumePreparationBlockedError,
@@ -2570,6 +2571,7 @@ export class CodexAgent extends BaseAgent {
       hostPurpose?: 'control-plane' | 'review' | 'custom-context';
       /** Archive-only control host: native storage RPCs, no turns, no MCP bridge. */
       nativeStorageOnly?: boolean;
+      localToolCatalog?: string;
       customContextModel?: string;
       customContextWindow?: number;
       sqliteHome?: string;
@@ -2808,6 +2810,7 @@ assertRouteCurrent();
         opts.nativeStorageOnly,
         opts.deviceHostedGuestSessionId,
         opts.deviceHostedGuestModelIds,
+        opts.localToolCatalog,
       ).finally(() => {
         // 成功: this.hosts 已赋值, 后续走快路径; 失败: 清掉 promise 让下次调用能重试
         const current = this.hostPromises.get(key);
@@ -3059,6 +3062,7 @@ assertRouteCurrent();
     nativeStorageOnly?: boolean,
     deviceHostedGuestSessionId?: string,
     deviceHostedGuestModelIds?: readonly string[],
+    localToolCatalog?: string,
   ): Promise<AppServerHost> {
     const seq = (this.createHostSeqByKey.get(key) ?? 0) + 1;
     this.createHostSeqByKey.set(key, seq);
@@ -3185,7 +3189,7 @@ assertRouteCurrent();
               ...(!remoteHostId && historyHome ? { runtimeCodexHome: historyHome } : {}),
               // 受邀者任务的 app-server 与账号会话一样走按 host 分开的 proxy(鉴权注入方式冻结在这个 host 上)，
               // 不改写本机用户任务共用的 proxy 状态。
-              ...(key.startsWith('local-account:') || key.startsWith(LOCAL_GUEST_HOST_PREFIX) || deviceHostedGuestProviderId
+              ...(key.startsWith('local-account:') || key.startsWith(LOCAL_GUEST_HOST_PREFIX) || deviceHostedGuestProviderId || localToolCatalog
                 ? { accountHostKey: `${key}:${generation}` } : {}),
               credentialMode: spawnCredentialMode,
               ...(localAuthPolicy === 'isolated'
@@ -3298,6 +3302,7 @@ assertRouteCurrent();
       break;
     }
     if (!remoteHostId && sqliteHome) extraArgs.push('-c', `sqlite_home=${JSON.stringify(sqliteHome)}`);
+    if (localToolCatalog) extraArgs.push('-c', `model_catalog_json=${JSON.stringify(localToolCatalog)}`);
     let externalAuth: CodexExternalAuth | undefined;
     const requireEphemeralAuth = !remoteHostId && (localAuthPolicy === 'isolated'
       || (!!historyHome && path.resolve(historyHome) !== path.resolve(env.CODEX_HOME ?? '')));
@@ -5038,7 +5043,7 @@ assertRouteCurrent();
       // Windows Review requires 0.156+ and exposes flat function tools. The legacy
       // ordinary provider gate concerns namespace tools, not these scoped reads.
       ...(reviewMode && process.platform === 'win32' ? REVIEW_READ_TOOLS : []),
-      ...(!reviewMode && shouldRegisterAskUserDynamicTool(opts) ? [ASK_USER_DYNAMIC_TOOL] : []),
+      ...(!reviewMode && !opts[LOCAL_AGENT_CLIENT]?.hostToolsOnly && shouldRegisterAskUserDynamicTool(opts) ? [ASK_USER_DYNAMIC_TOOL] : []),
     ];
     const accountProviderId = this.deps.isCodexAccountProvider?.(opts.providerId) ? opts.providerId! : undefined;
     const accountSessionHost = !opts.remoteHostId && (accountProviderId !== undefined || this.deps.isolateCodexAccountSessions === true);
@@ -5109,11 +5114,21 @@ assertRouteCurrent();
     // 受邀者：CODEX_HOME 换成远程 Agent 运行根下的受邀者目录(本机用户的 AGENTS.md、配置、技能与
     // 历史都不在这里)。登录经既有的 token 桥从本机只读取得，受邀者目录用 ephemeral 凭证存储，
     // 不复制也不在这里刷新本机的 auth.json；也不按 id 到本机的 Codex 历史里查找线程。
+    const localToolCatalog = opts[LOCAL_AGENT_CLIENT]?.hostToolsOnly
+      ? await this.deps.prepareCodexHostToolCatalog?.(opts.model ?? '', initialCustomContextWindow) : undefined;
+    if (opts[LOCAL_AGENT_CLIENT]?.hostToolsOnly && !localToolCatalog) throw new Error('Host-owned conversations require an isolated native tool catalog.');
+    const localClient = opts[LOCAL_AGENT_CLIENT];
+    const localApplicationHome = localClient?.storageDirectory
+      ? path.join(localClient.storageDirectory, 'native-history')
+      : localToolCatalog ? path.join(path.dirname(localToolCatalog), 'native-history') : undefined;
+    if (localApplicationHome) await fs.mkdir(localApplicationHome, {recursive:true,mode:0o700});
     const guestCodexHome = hosted && hostedGuest && hosted.guestHome
       ? path.join(hosted.guestHome, 'codex')
       : undefined;
     if (guestCodexHome) await fs.mkdir(guestCodexHome, { recursive: true, mode: 0o700 });
-    const sessionStorage = guestCodexHome
+    const sessionStorage = localApplicationHome
+      ? {historyHome:localApplicationHome,sqliteHome:localApplicationHome}
+      : guestCodexHome
       ? { historyHome: guestCodexHome, sqliteHome: guestCodexHome }
       : !opts.remoteHostId && opts.resumeSessionId
         ? await this.deps.resolveCodexThreadStorage?.(opts.resumeSessionId)
@@ -5126,7 +5141,7 @@ assertRouteCurrent();
       reviewMode, customContext: usesCustomContextHost, storage: sessionStorage, policy: localAuthPolicy,
       environmentIdentity: companionEnvironment?.identity,
       ...(guestCodexHome ? { guestSession: true } : {}),
-    });
+    }) + (localToolCatalog ? `:host-tools-only:${opts.model ?? ''}` : '');
     let currentHostKey = resolveSessionHostKey();
     let releaseHostBindingLease: (() => void) | null = null;
     const acquireHostBindingLeaseIfNeeded = (): void => {
@@ -5147,6 +5162,7 @@ assertRouteCurrent();
       if (!routeSelection.isCurrent()) throw new CodexRouteSelectionChangedError();
       acquireHostBindingLeaseIfNeeded();
       return await this.getHost(opts.remoteHostId, credentialMode, {
+        ...(localToolCatalog ? {keyOverride:currentHostKey,localToolCatalog} : {}),
         ...(companionEnvironment ? { keyOverride: currentHostKey } : {}),
         ...(accountProviderId ? { providerId: accountProviderId } : {}),
         ...(sessionSqliteHome ? { sqliteHome: sessionSqliteHome } : {}),
@@ -5446,15 +5462,17 @@ assertRouteCurrent();
     const buildLocalCapabilityIsolationConfig = async (keep?: {
       skill: (skillPath: string, scope?: SkillMetadata['scope']) => boolean;
       mcpServer: (serverName: string) => boolean;
+      plugin?: (pluginId: string) => boolean;
+      allSkills?: true;
     }): Promise<Record<string, unknown>> => {
-      const { skills, errors } = await this.listSkillsForHost(
+      const { skills, errors } = keep?.allSkills ? { skills: [], errors: [] } : await this.listSkillsForHost(
         host,
         opts.workingDir,
         false,
         CRITICAL_THREAD_RPC_TIMEOUT_MS,
       );
       const unscopedSkillError = errors.find((error) => !error.path);
-      if (unscopedSkillError) throw new Error(unscopedSkillError.message);
+      if (unscopedSkillError && !keep?.skill('')) throw new Error(unscopedSkillError.message);
 
       const configResponse = await host.request<{ config?: Record<string, unknown> }>(
         Method.ConfigRead,
@@ -5533,9 +5551,9 @@ assertRouteCurrent();
         ] = false;
       }
       for (const pluginId of pluginIds) {
-        isolationConfig[
-          `plugins.${quoteReviewConfigSegment(pluginId)}.enabled`
-        ] = false;
+        if (!keep?.plugin?.(pluginId)) {
+          isolationConfig[`plugins.${quoteReviewConfigSegment(pluginId)}.enabled`] = false;
+        }
         const pluginMcp = asRecord(asRecord(configuredPlugins[pluginId]).mcp_servers);
         for (const [serverName, serverConfig] of Object.entries(pluginMcp)) {
           if (!hasCodexMcpTransport(serverConfig)) continue;
@@ -5546,20 +5564,25 @@ assertRouteCurrent();
       }
       return isolationConfig;
     };
-    if (reviewMode) {
+    if (reviewMode || opts[LOCAL_AGENT_CLIENT]) {
       try {
-        assertCurrentHost('Review capability isolation');
-        const reviewCapabilityConfig = await buildLocalCapabilityIsolationConfig();
+        assertCurrentHost('local capability isolation');
+        // Native execution retains its project Skills and installed native plugins.
+        // Only the automatically inherited credential-bearing MCP connections are excluded.
+        const nativeClient = opts[LOCAL_AGENT_CLIENT] && !opts[LOCAL_AGENT_CLIENT]!.hostToolsOnly;
+        const reviewCapabilityConfig = await buildLocalCapabilityIsolationConfig(nativeClient
+          ? { skill: () => true, plugin: () => true, mcpServer: () => false, allSkills: true }
+          : undefined);
         capabilityRoutingConfig = {
           ...capabilityRoutingConfig,
           ...reviewCapabilityConfig,
         };
-        assertCurrentHost('Review capability isolation');
+        assertCurrentHost('local capability isolation');
       } catch (error) {
         releaseHostBindingLeaseIfNeeded();
         if (error instanceof CodexRouteSelectionChangedError) throw error;
         throw new Error(
-          `Cannot start Codex Review safely because Cindy could not disable local Skills, plugins, and MCP servers: ${error instanceof Error ? error.message : String(error)}`,
+          `Cannot prepare this Codex session's capability scope: ${error instanceof Error ? error.message : String(error)}`,
         );
       }
     }
@@ -5604,6 +5627,13 @@ assertRouteCurrent();
       return out;
     };
     const readSessionMcpConfig = (): Record<string, unknown> => {
+      const client = opts[LOCAL_AGENT_CLIENT];
+      if (client) return {
+        [`mcp_servers.${client.mcpName ?? 'client'}.url`]: client.url,
+        [`mcp_servers.${client.mcpName ?? 'client'}.http_headers`]: { Authorization: `Bearer ${client.token}` },
+        [`mcp_servers.${client.mcpName ?? 'client'}.enabled`]: true,
+        [`mcp_servers.${client.mcpName ?? 'client'}.default_tools_approval_mode`]: 'approve',
+      };
       if (hosted) return readHostedMcpConfig();
       const config = host.getSessionMcpConfig(opts.sessionInstanceId, { vendorOptions: vo });
       if (opts.remoteHostId && opts.botRuntimeProfile?.mcpPolicy
@@ -5612,7 +5642,22 @@ assertRouteCurrent();
       }
       return config;
     };
-    let botMcpConfig: Record<string, unknown> = {};
+    let botMcpConfig: Record<string, unknown> = opts[LOCAL_AGENT_CLIENT] ? { 'features.apps': false } : {};
+    if (opts[LOCAL_AGENT_CLIENT]?.hostToolsOnly) {
+      botMcpConfig.model_catalog_json = localToolCatalog;
+      const features = await listCodexFeatures(cursor => host.request(Method.ExperimentalFeatureList, { cursor, limit: 100 }));
+      const infrastructure = new Set(['secret_auth_storage', 'enable_request_compression', 'system_proxy_fallback', 'content_item_kinds', 'compaction_image_budget']);
+      for (const feature of features) {
+        if (infrastructure.has(feature.name) || feature.stage === 'removed' || feature.stage === 'deprecated' && !feature.enabled) continue;
+        botMcpConfig[`features.${feature.name}`] = false;
+      }
+      Object.assign(botMcpConfig, { web_search: 'disabled', include_apply_patch_tool: false, project_doc_max_bytes: 0,
+        'features.shell_tool': false, 'features.unified_exec': false, 'features.shell_snapshot': false,
+        'features.view_image': false, 'features.code_mode': false, 'features.code_mode_only': false,
+        'features.js_repl': false, 'features.browser_use': false, 'features.computer_use': false,
+        'features.image_generation': false, 'features.multi_agent': false, 'features.multi_agent_v2': false,
+        'memories.generate_memories': false, 'memories.use_memories': false });
+    }
     if (!reviewMode && opts.botRuntimeProfile?.mcpPolicy) {
       try {
         const response = await host.request<{ config?: Record<string, unknown> }>(
@@ -6418,6 +6463,7 @@ assertRouteCurrent();
       cleanup: () => host.unsubscribeThread(detachedThreadId),
     });
     function currentApprovalConfig(): CodexPermissionConfig {
+      if (opts[LOCAL_AGENT_CLIENT]?.hostToolsOnly) return { approvalPolicy: 'never', sandbox: 'read-only' };
       if (reviewMode) {
         return { approvalPolicy: 'never', sandbox: 'read-only' };
       }
@@ -6627,7 +6673,7 @@ assertRouteCurrent();
         // Its host omits Cindy's MCP bridge, so a bare memory override would
         // create an invalid transport even though the entry is disabled.
         // 设备托管：只停用本机确实配置了的 cindy_memory(没有传输配置的空条目会让 Codex 拒绝配置)。
-        ...(!reviewMode && !makerMemoryEnabled && !opts.botRuntimeProfile
+        ...(!reviewMode && !opts[LOCAL_AGENT_CLIENT] && !makerMemoryEnabled && !opts.botRuntimeProfile
           && (!hosted || hostedLocalMcpNames.includes('cindy_memory'))
           ? { 'mcp_servers.cindy_memory.enabled': false }
           : {}),
