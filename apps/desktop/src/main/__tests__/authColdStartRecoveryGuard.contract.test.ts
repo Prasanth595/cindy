@@ -61,19 +61,6 @@ describe('cold start auth recovery boundary', () => {
     expect(body).toContain("lastColdStartFailureWasTransport ? 'continue' : 'stop'");
   });
 
-  it('超时后脱钩仍挂起的冷启动流程，恢复链才能发出新的 refresh', () => {
-    const start = authSource.indexOf('onTimeout: async () => {');
-    const end = authSource.indexOf('onLateResult:', start);
-    const body = authSource.slice(start, end);
-    expect(body).toContain('detachHungColdStartFlow();');
-
-    const detachStart = authSource.indexOf('function detachHungColdStartFlow(): void {');
-    const detachEnd = authSource.indexOf('\n}\n', detachStart);
-    const detachBody = authSource.slice(detachStart, detachEnd);
-    expect(detachBody).toContain('authStateEpoch += 1;');
-    expect(detachBody).toContain('coldStartAuthInFlight = null;');
-  });
-
   it('恢复成功接回冷启动统计同意迁移通道', () => {
     expect(authSource).toContain('if (coldStartRetryInFlight) coldStartRecoveredHandler?.(recoveredState);');
     expect(authSource).toContain('setColdStartRecoveredHandler');
@@ -85,17 +72,17 @@ describe('cold start auth recovery boundary', () => {
     expect(bootstrapSource).toContain('noteAuthColdStartState(recovered, null);');
   });
 
-  it('20s 超时路径同样在未登录态提交之后 arm', () => {
+  it('20s 超时路径不启动重试，避免用已消费的旧 token 再请求', () => {
     const start = authSource.indexOf('onTimeout: async () => {');
     const end = authSource.indexOf('onLateResult:', start);
     const body = authSource.slice(start, end);
-    const commitIdx = body.indexOf(
+    expect(body).toContain(
       "recoverAccountFreeOwnerAtStartup('signed-out', 'cold-start-timeout-recovery')",
     );
-    const armIdx = body.indexOf('coldStartRecovery.arm()');
-    expect(commitIdx).toBeGreaterThan(-1);
-    expect(armIdx).toBeGreaterThan(-1);
-    expect(commitIdx).toBeLessThan(armIdx);
+    // refresh 可能已在服务端轮换、只是响应没回来;超时后重发会用旧 token
+    // 命中 INVALID_REFRESH_TOKEN 并清凭证。
+    expect(body).not.toContain('coldStartRecovery.request()');
+    expect(body).not.toContain('coldStartRecovery.arm()');
   });
 
   it('清会话时取消恢复器，且恢复器要求代次严格相等', () => {

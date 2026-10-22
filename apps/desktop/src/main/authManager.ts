@@ -3350,24 +3350,6 @@ function scheduleNonXdOrgBetaDefault(input: {
  */
 let coldStartAuthInFlight: Promise<AuthState> | null = null;
 
-/**
- * 冷启动超时后,原链路可能永远不 settle(黑洞网络 / captive portal)。
- * 恢复链再调 initialize() 时若还复用这条 promise,每一轮都只是再等同一个
- * 永不返回的请求 20s,并不会真正发出新的 refresh。
- *
- * 超时路径在确认「原流程仍挂起」后调用本函数脱钩:原 promise 继续在后台跑,
- * 但它持有的登录代次在这里作废,迟到结果(无论成功失败)都会被 epochChanged
- * 守卫丢弃,不会和恢复链并发提交 owner 或删掉新写入的 token。
- */
-function detachHungColdStartFlow(): void {
-  if (coldStartAuthInFlight === null) return;
-  log.warn(
-    'cold-start flow still pending after gate timeout; detaching it so recovery can issue a fresh refresh',
-  );
-  authStateEpoch += 1;
-  coldStartAuthInFlight = null;
-}
-
 async function retryColdStartAuthSession(): Promise<ColdStartRecoveryAttempt> {
   // 重跑完整冷启动:它会重新读磁盘凭据、加载端点清单、认领 legacy owner
   // namespace 并按 allowUnclaimedVault 写入 vault。只调 refresh() 会漏掉这些,
@@ -4771,16 +4753,11 @@ export async function initialize(options: AuthInitializeOptions = {}): Promise<A
       // A signed-out fallback is not safe until the shared Ghost projection
       // has been swept. Otherwise the previous cloud owner's links remain
       // available to local/anonymous Agent processes during a slow refresh.
-      // 黑洞网络 / captive portal 下原流程可能迟迟不返回:这里同样要登记恢复,
-      // 否则 splash 解锁后不会再有入口回来登录。恢复器在提交之后才 arm。
-      // 超时同样属于「没有服务端响应」,重试链可以按传输层失败继续。
-      if (hasPotentiallyPersistedAuthCredentials()) {
-        lastColdStartFailureWasTransport = true;
-        coldStartRecovery.request();
-      }
-      detachHungColdStartFlow();
+      // 超时不是「可安全重放」的失败:refresh 是 token-rotating 端点,请求可能已在
+      // 服务端完成轮换、只是响应没回来。此时再发一次只会用旧 token 命中
+      // INVALID_REFRESH_TOKEN 并清掉持久凭证,把本可迟到恢复的用户强制登出。
+      // 原流程继续在后台跑,迟到成功仍由 notifyRenderer 带回登录态。
       await recoverAccountFreeOwnerAtStartup('signed-out', 'cold-start-timeout-recovery');
-      coldStartRecovery.arm();
       return snapshotLoggedOutAuthState();
     },
     onLateResult: (state) =>
