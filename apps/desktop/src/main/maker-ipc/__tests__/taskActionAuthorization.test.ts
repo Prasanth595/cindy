@@ -319,6 +319,7 @@ function desktopFixture(kind: 'private' | 'group' | 'automatic' = 'group') {
       status: string;
       runSequence: number;
       permissionSnapshotJson: string;
+      pendingInteractionJson?: string | null;
     },
     team: null as null | { id: string },
   };
@@ -1132,6 +1133,57 @@ describe('Desktop private-chat action confirmation', () => {
     expect(await withToolCallAuthority(h.authorize, call('set_session_runtime'), effect))
       .toMatchObject({ isError: true });
     expect(effect).not.toHaveBeenCalled();
+  });
+
+  // Review P1 (comment 4347064565) on #6756: an answer card is about one exact waiting
+  // request, but `botDelegationService.reply()` submits that answer by delegation id — to
+  // whichever request the task is waiting on when the card is consumed. A request settled
+  // elsewhere (the task's own window, another device, a timeout) and the next one raised for
+  // the same task moves neither the input boundary, nor `runSequence`, nor the pause intent,
+  // so every existing recheck still passed and the old card answered the new question.
+  const answerCall = {
+    ...call('message_session_task'),
+    args: { task_id: 'task', decision: 'approve' as const },
+  };
+  function waitingDelegation(requestId: string | null, status = 'waiting') {
+    return {
+      status, runSequence: 1, permissionSnapshotJson: JSON.stringify({}),
+      pendingInteractionJson: requestId
+        ? JSON.stringify({ requestId, kind: 'permission', summary: 'Raise the limit', raisedAt: 1 })
+        : null,
+    };
+  }
+
+  it.each([
+    ['another request', 'request-b', 'waiting'],
+    ['no request at all', null, 'running'],
+  ] as const)('drops an answer card when the task is on %s by the time it is answered', async (_state, requestId, status) => {
+    const h = desktopFixture('automatic');
+    h.activeInput.permission = null;
+    h.rows.delegation = waitingDelegation('request-a');
+    h.confirm.mockImplementation(async () => {
+      h.rows.delegation = waitingDelegation(requestId, status);
+      return true;
+    });
+    const reply = vi.fn(async () => 'answered');
+    const result = await withToolCallAuthority(h.authorize, answerCall, reply);
+    expect(result).toMatchObject({ isError: true });
+    expect(JSON.stringify(result)).toContain('TASK_ACTION_AUTHORIZATION_EXPIRED');
+    expect(reply).not.toHaveBeenCalled();
+  });
+
+  it('keeps the answer card valid while the same request is still waiting', async () => {
+    const h = desktopFixture('automatic');
+    h.activeInput.permission = null;
+    h.rows.delegation = waitingDelegation('request-a');
+    h.confirm.mockImplementation(async () => {
+      // A refreshed row with the same waiting request is still that request.
+      h.rows.delegation = waitingDelegation('request-a');
+      return true;
+    });
+    const reply = vi.fn(async () => 'answered');
+    expect(await withToolCallAuthority(h.authorize, answerCall, reply)).toBe('answered');
+    expect(reply).toHaveBeenCalledTimes(1);
   });
 });
 

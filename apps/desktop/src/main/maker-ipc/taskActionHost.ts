@@ -61,6 +61,17 @@ function captureScheduledRuntime(
   };
 }
 
+/** The one waiting request an answer would be submitted to, exactly as the row records it. */
+function readPendingRequestId(row: { pendingInteractionJson: string | null } | null): string | null {
+  if (!row?.pendingInteractionJson) return null;
+  try {
+    const parsed = JSON.parse(row.pendingInteractionJson) as { requestId?: unknown };
+    return typeof parsed.requestId === 'string' ? parsed.requestId : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Adapt the shared gate to Host facts. No transcript parsing or Agent-supplied approval fields. */
 export function createDesktopTaskActionAuthorizer(deps: {
   input(sessionId: string): {
@@ -267,6 +278,20 @@ export function createDesktopTaskActionAuthorizer(deps: {
         // card rests on, and pausing or reopening that run must revoke the answer either way.
         const delegationRow = useRuntimePermissions ? null : await readDelegationRow();
         const delegation = useRuntimePermissions ? null : await readDelegation(delegationRow);
+        // An answer card is answered by delegation, not by request: `reply()` submits the
+        // yes/no or the answers to whichever request that one task is waiting on when the
+        // card is consumed. Freeze the request the owner was shown, so a request already
+        // settled elsewhere (the task's own window, another device, a timeout) can never be
+        // answered by an older card for the next one — that swap moves neither the input
+        // boundary nor `runSequence` nor the pause intent. `mode=resume` never answers a
+        // request, so it keeps its own pause/run recheck and freezes nothing here.
+        const answersWaitingRequest = !useRuntimePermissions && cardOwnerLane
+          && call.tool === 'message_session_task'
+          && args.mode !== 'resume'
+          && !!(args.decision || args.answers);
+        const frozenPendingRequestId = answersWaitingRequest
+          ? readPendingRequestId(delegationRow)
+          : undefined;
         // A real Worker report continues its ordinary Lead's existing team. It
         // cannot authorize helper writes to unrelated tasks or create a new team.
         const readOrcaTeam = async () => {
@@ -324,6 +349,14 @@ export function createDesktopTaskActionAuthorizer(deps: {
           if (delegationRow) {
             const currentRow = await readDelegationRow();
             if (!currentRow || currentRow.runSequence !== delegationRow.runSequence)
+              throw new Error('TASK_ACTION_AUTHORIZATION_EXPIRED');
+            // The request the owner answered for is part of this evidence. The same task
+            // asking something else — or nothing — is a different answer, and this is the
+            // one recheck both consumption points pass through: execution
+            // (`admitTaskAction.run()`) and queued delivery, plus `reply()`'s own refresh
+            // before it resolves the interaction.
+            if (frozenPendingRequestId !== undefined &&
+              readPendingRequestId(currentRow) !== frozenPendingRequestId)
               throw new Error('TASK_ACTION_AUTHORIZATION_EXPIRED');
             if (delegation) {
               if (!(await readDelegation(currentRow, true)))
