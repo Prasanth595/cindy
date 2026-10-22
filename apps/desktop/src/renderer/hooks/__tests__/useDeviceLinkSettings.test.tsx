@@ -119,20 +119,24 @@ describe('useDeviceLinkSettings deletion', () => {
     unmount();
   });
 
-  // 服务端以「在线」拒绝删除(409 → ALREADY_EXISTS)时，提示要跟列表里看到的状态一致：
-  // 列表显示离线的设备不能再提示「尚不支持移除在线设备」，并要刷新列表与服务端对齐。
+  // 服务端以「在线」拒绝删除(409 → ALREADY_EXISTS)时，先刷新列表再选提示，提示要跟刷新后
+  // 列表里看到的状态一致：仍显示离线的设备不能再提示「尚不支持移除在线设备」；点删除时与
+  // 刷新后状态不同，以刷新后的为准(否则提示会与刚重绘的列表矛盾)。
   it.each([
-    [false, 'settings.devices.toast.deleteRejectedWhileOffline'],
-    [true, 'settings.devices.toast.deleteOnline'],
-  ] as const)('explains an online rejection by the listed presence (listed online: %s)', async (online, message) => {
+    [false, false, 'settings.devices.toast.deleteRejectedWhileOffline'],
+    [true, true, 'settings.devices.toast.deleteOnline'],
+    [false, true, 'settings.devices.toast.deleteOnline'],
+    [true, false, 'settings.devices.toast.deleteRejectedWhileOffline'],
+  ] as const)('explains an online rejection by the refreshed presence (online before: %s, after refresh: %s)', async (onlineBefore, onlineAfter, message) => {
     const off = vi.fn();
     const subscribe = vi.fn(() => off);
+    const listed = (online: boolean) => ({
+      devices: [{ deviceId: 'target', name: 'MacBook', platform: 'darwin', appVersion: null, lastSeenAt: null,
+        online, busy: false, remoteControlEnabled: false, controlEnabled: true, isSelf: false }],
+    });
     const api = {
       getState: vi.fn(() => new Promise<never>(() => {})),
-      listDevices: vi.fn(async () => ({
-        devices: [{ deviceId: 'target', name: 'MacBook', platform: 'darwin', appVersion: null, lastSeenAt: null,
-          online, busy: false, remoteControlEnabled: false, controlEnabled: true, isSelf: false }],
-      })),
+      listDevices: vi.fn().mockResolvedValueOnce(listed(onlineBefore)).mockResolvedValue(listed(onlineAfter)),
       deleteDevice: vi.fn().mockRejectedValue(new Error('[ALREADY_EXISTS] device is online')),
       onOwnershipChanged: subscribe,
       onPresenceChanged: subscribe,

@@ -84,6 +84,9 @@ export function useDeviceLinkSettings(active = true): DeviceLinkSettings {
   const disabledControlDeviceIdsRef = useRef<string[]>([]);
   // getState() 与 ownership push 可能乱序返回;事件版本推进后,旧快照不得覆盖新事实。
   const ownershipEventVersion = useRef(0);
+  // 最近一次拉到的设备列表。删除被拒时要按「此刻」的在线状态选提示,异步调用里读闭包的
+  // devices 会拿到发起删除那一刻的旧列表。
+  const latestDevices = useRef<DeviceLinkDeviceView[] | null>(null);
 
   const applyDisabledControlDeviceIds = useCallback((ids: string[]) => {
     disabledControlDeviceIdsRef.current = ids;
@@ -106,6 +109,7 @@ export function useDeviceLinkSettings(active = true): DeviceLinkSettings {
       try {
         const { devices: list } = await window.electronAPI.deviceLink.listDevices();
         if (!mounted.current || generation !== refreshGeneration.current) return;
+        latestDevices.current = list;
         setDevices(list);
         setListError(null);
       } catch (err) {
@@ -248,10 +252,13 @@ export function useDeviceLinkSettings(active = true): DeviceLinkSettings {
           toast.error(t('settings.devices.toast.deleteFailed'));
           return false;
         }
-        // 服务端以「设备在线」拒绝删除。列表里这台设备若显示离线，说明两边的在线判断不一致，
-        // 不能再提示「尚不支持移除在线设备」让用户误以为设备真在线；同时刷新列表与服务端对齐。
+        // 服务端以「设备在线」拒绝删除。先刷新一次列表与服务端对齐，再按刷新后的列表选提示：
+        // 仍显示离线说明两边的在线判断不一致，不能再提示「尚不支持移除在线设备」让用户误以为
+        // 设备真在线；刷新后显示在线则沿用原提示，避免提示与刚重绘的列表互相矛盾。
+        await refresh();
         const listedOffline =
-          devices?.some((device) => device.deviceId === deviceId && !device.online) ?? false;
+          latestDevices.current?.some((device) => device.deviceId === deviceId && !device.online) ??
+          false;
         toast.error(
           t(
             listedOffline
@@ -259,11 +266,10 @@ export function useDeviceLinkSettings(active = true): DeviceLinkSettings {
               : 'settings.devices.toast.deleteOnline',
           ),
         );
-        void refresh();
         return false;
       }
     },
-    [devices, refresh, t],
+    [refresh, t],
   );
 
   const disconnectAll = useCallback(async () => {
