@@ -6,6 +6,7 @@
  * Tier: unit. This file isolates the process-local authorization lifetime from SQLite/IPC.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { Session } from '@cindy/maker-core';
 import type { AutoReviewDecision, PermissionMode, SendOrigin } from '@cindy/maker-core';
 import { getDesktopMcpToolApprovalPolicy } from '../../maker-host/mcp-tool-approval-policy.js';
 import { withToolCallAuthority } from '../../../../../../packages/lizi-mcps/src/tool-call-authority.js';
@@ -290,6 +291,7 @@ vi.mock('../../routines/service.js', () => ({
 }));
 import { botDelegations, orcaTeams } from '../../localDb/schema.js';
 import { createDesktopTaskActionAuthorizer } from '../taskActionHost.js';
+import { buildTaskActionInputState, type TaskActionInputState } from '../taskActionInputState.js';
 import { OrcaWorkerPermissionConfirmBridge } from '../orcaWorkerPermissionConfirmBridge.js';
 import { taskActionConfirmationCopy } from '../taskActionConfirmation.js';
 import { MAKER_PUSH } from '../channels.js';
@@ -1129,6 +1131,171 @@ describe('Desktop private-chat action confirmation', () => {
     const effect = vi.fn(async () => 'changed');
     expect(await withToolCallAuthority(h.authorize, call('set_session_runtime'), effect))
       .toMatchObject({ isError: true });
+    expect(effect).not.toHaveBeenCalled();
+  });
+});
+
+/** Real Session authority with an in-memory provider, so the resolver reads live state. */
+function makeRealSession(initial: { permissionMode?: PermissionMode; plan?: boolean | null } = {}) {
+  let planMode: boolean | null = initial.plan === undefined ? false : initial.plan;
+  let endEvents!: () => void;
+  const eventsEnded = new Promise<void>((resolve) => { endEvents = resolve; });
+  let releaseSwitch: (() => void) | null = null;
+  const handle = {
+    id: 'provider-session', agentKind: 'pi', model: 'test',
+    async *events() { await eventsEnded; },
+    async close() { endEvents(); },
+    setInteractionResolver() {},
+    getPlanMode: () => planMode,
+    setPlanMode: async (enabled: boolean) => { planMode = enabled; },
+    // Resolves only when the test says the user's switch has been applied by the provider.
+    setPermissionMode: vi.fn(
+      () => new Promise<void>((resolve) => { releaseSwitch = resolve; }),
+    ),
+    reviewAutoPermissionAction: vi.fn(async () => ({ verdict: 'allow' as const })),
+  };
+  const session = new Session({
+    id: 'companion', sessionInstanceId: 'instance-1', agentKind: 'pi', workDir: '/repo',
+    permissionMode: initial.permissionMode ?? 'auto',
+    handle: handle as never,
+    capabilities: {
+      planMode: { supported: true },
+      permissionModes: [
+        { id: 'ask', displayName: 'Ask' },
+        { id: 'auto', displayName: 'Auto' },
+      ],
+      setPermissionModeMidSession: { supported: true },
+    } as never,
+    logger: {
+      trace() {}, debug() {}, info() {}, warn() {}, error() {}, fatal() {},
+      child() { return this; },
+    },
+  });
+  return {
+    session,
+    settlePermissionSwitch: () => releaseSwitch?.(),
+  };
+}
+
+type RealSession = ReturnType<typeof makeRealSession>;
+
+// Review P2 on #6756: the card used to be gated on "no input snapshot" *and* a frozen live
+// tier, but one Session read produces both halves of that pair, so the branch was
+// unreachable and the owner still only got `TASK_ACTION_AUTHORIZATION_REQUIRED`. These cases
+// drive the real input composition (`buildTaskActionInputState`, exactly what
+// `getTaskActionInputState` wires) against a real maker-core Session, so the admission they
+// assert is one this Host actually emits.
+// Unit tier: no Electron, no SQLite, no provider process.
+describe('Production card admission from the live input state', () => {
+  function productionFixture(deps: {
+    live?: RealSession;
+    session?: () => Session | undefined;
+    transform?: (state: TaskActionInputState) => TaskActionInputState;
+  } = {}) {
+    // Installs the caller row (private canonical Bot lane, no delegation) and the confirm spy.
+    const h = desktopFixture('automatic');
+    const live = deps.live ?? makeRealSession();
+    const readInput = () => {
+      const state = buildTaskActionInputState('companion', {
+        session: deps.session ?? (() => live.session),
+        provenance: () => ({ input: null, executing: true }),
+        ownerInput: () => false,
+        inputGeneration: () => 1,
+      });
+      return deps.transform ? deps.transform(state) : state;
+    };
+    const authorize = createDesktopTaskActionAuthorizer({
+      input: readInput,
+      getSession: () => (deps.session ? deps.session() : live.session),
+      confirm: h.confirm,
+    });
+    return { ...h, live, authorize, readInput };
+  }
+
+  it('reuses the live permission decision instead of asking the owner again', async () => {
+    const h = productionFixture();
+    expect(h.readInput()).toMatchObject({ permissionUnavailable: null });
+    expect(h.readInput().permission).not.toBeNull();
+    const effect = vi.fn(async () => 'ran');
+    expect(await withToolCallAuthority(h.authorize, call('set_session_runtime'), effect)).toBe('ran');
+    expect(h.confirm).not.toHaveBeenCalled();
+    expect(effect).toHaveBeenCalledTimes(1);
+  });
+
+  it('offers the card while the tier change is in flight and runs the exact call after the owner allows it', async () => {
+    const h = productionFixture();
+    const settling = h.live.session.setPermissionModeTracked('ask');
+    const state = h.readInput();
+    expect(state.permission).toBeNull();
+    expect(state.permissionUnavailable).toBe('permission-switching');
+    // The owner answers after the provider applied the switch, as in production.
+    h.confirm.mockImplementation(async () => {
+      h.live.settlePermissionSwitch();
+      await settling;
+      return true;
+    });
+    const effect = vi.fn(async () => 'ran');
+    expect(await withToolCallAuthority(h.authorize, call('set_session_runtime'), effect)).toBe('ran');
+    expect(h.confirm).toHaveBeenCalledExactlyOnceWith('companion', 'set_session_runtime', call().args);
+    expect(effect).toHaveBeenCalledTimes(1);
+    expect(h.live.session.stablePermissionModeState).toMatchObject({ mode: 'ask' });
+  });
+
+  it('offers no card on a missing snapshot alone, so the reason is what admits it', async () => {
+    const h = productionFixture({ transform: (state) => ({ ...state, permissionUnavailable: null }) });
+    // A tier change is what makes the snapshot absent; without the reason the Host must not
+    // guess that the live states are there (they are not: this is the same read).
+    const settling = h.live.session.setPermissionModeTracked('ask');
+    const effect = vi.fn(async () => 'ran');
+    const result = await withToolCallAuthority(h.authorize, call('set_session_runtime'), effect);
+    expect(result).toMatchObject({ isError: true });
+    expect(JSON.stringify(result)).toContain('TASK_ACTION_AUTHORIZATION_REQUIRED');
+    expect(h.confirm).not.toHaveBeenCalled();
+    expect(effect).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(h.live.session.stablePermissionModeState).toBeNull());
+    h.live.settlePermissionSwitch();
+    await settling;
+  });
+
+  it.each([
+    ['a Plan state that is still switching or unknown', 'plan-state-unavailable', () => ({
+      live: makeRealSession({ plan: null }),
+    })],
+    ['a closing Session', 'session-closing', () => ({
+      live: makeRealSession({ permissionMode: 'ask' }), close: true,
+    })],
+    ['no live Session', 'no-live-session', () => ({
+      live: makeRealSession(), session: () => undefined,
+    })],
+  ] as const)('stays silent for %s', async (_state, reason, prepare) => {
+    const setup = prepare();
+    if ('close' in setup) await setup.live.session.close();
+    const h = productionFixture(setup);
+    const state = h.readInput();
+    expect(state.permission).toBeNull();
+    expect(state.permissionUnavailable).toBe(reason);
+    const effect = vi.fn(async () => 'ran');
+    const result = await withToolCallAuthority(h.authorize, call('set_session_runtime'), effect);
+    expect(result).toMatchObject({ isError: true });
+    expect(JSON.stringify(result)).toContain('TASK_ACTION_AUTHORIZATION_REQUIRED');
+    expect(h.confirm).not.toHaveBeenCalled();
+    expect(effect).not.toHaveBeenCalled();
+  });
+
+  it('revokes the answer when the switch instead settles on Plan state', async () => {
+    const h = productionFixture();
+    const settling = h.live.session.setPermissionModeTracked('ask');
+    h.confirm.mockImplementation(async () => {
+      h.live.settlePermissionSwitch();
+      await settling;
+      // A Plan toggle advances the Plan generation, which the admission pinned.
+      await h.live.session.setPlanMode(true);
+      return true;
+    });
+    const effect = vi.fn(async () => 'ran');
+    const result = await withToolCallAuthority(h.authorize, call('set_session_runtime'), effect);
+    expect(result).toMatchObject({ isError: true });
+    expect(JSON.stringify(result)).toContain('TASK_ACTION_AUTHORIZATION_EXPIRED');
     expect(effect).not.toHaveBeenCalled();
   });
 });

@@ -12,6 +12,7 @@ import {
 import { tryGetDbClient } from '../localDb/client/current.js';
 import { isAppSessionBoundaryPending } from '../appSessionState.js';
 import { authorizeGroupTool } from './botGroupToolAuthorization.js';
+import type { FsSessionSnapshotUnavailable } from './ghostFsSessionSnapshot.js';
 import {
   admitTaskAction,
   createTaskActionAuthorizer,
@@ -73,6 +74,8 @@ export function createDesktopTaskActionAuthorizer(deps: {
       planModeEnabled?: boolean;
       isCurrent?: () => boolean;
     } | null;
+    /** Explicit Host fact: there is no reusable permission decision, and why. */
+    permissionUnavailable?: FsSessionSnapshotUnavailable | null;
     boundary: string;
   };
   getSession(sessionId: string): TaskActionSession | undefined;
@@ -162,26 +165,31 @@ export function createDesktopTaskActionAuthorizer(deps: {
         // from whatever happens to be live at delivery: Auto→Ask advances only this tier's
         // generation while Plan state and the input boundary stay put. A tier still switching
         // has no stable state to freeze, and Plan itself never authorizes side effects, so
-        // without a frozen non-Plan tier there is no card to offer.
+        // without a frozen non-Plan tier there is no tier to compare later.
         const frozenCardSource = !useRuntimePermissions && cardOwnerLane
           ? deps.getSession(sessionId)?.stablePermissionModeState
           : null;
         const frozenCardTier = frozenCardSource
           ? { mode: frozenCardSource.mode, generation: frozenCardSource.generation }
           : null;
-        // A card is only usable with that frozen non-Plan tier. Other admissions of this same
-        // lane (a delegation grant, the scheduled reviewer) keep their own authority and are
-        // covered by the narrower check inside `assertPermissionCurrent` below.
-        const ownerConfirmable = frozenCardTier !== null && frozenCardTier.mode !== 'plan';
+        // Without a reusable decision the card rests on the Host fact the input read carried,
+        // not on a second guess at the live states: only a tier change still committed in
+        // flight — active Session, Plan settled and known off — can put a yes/no in front of
+        // the owner. A closing or absent Session and an unknown Plan state stay silent, so
+        // "no snapshot" is never by itself enough to ask.
+        const ownerConfirmable = cardOwnerLane && (frozenCardTier
+          ? frozenCardTier.mode !== 'plan'
+          : input.permissionUnavailable === 'permission-switching');
         const assertPermissionCurrent = () => {
           if (runtimePermissionApplies && permission?.isCurrent?.() !== true)
             throw new Error('TASK_ACTION_AUTHORIZATION_EXPIRED');
           // A card is only ever offered off Plan and is never a reusable permission decision.
           // Both the execution and the queued delivery of that answer re-check the tier frozen
           // at admission, so Auto→Ask — which advances only this generation and leaves Plan
-          // state and the input boundary untouched — revokes it. When this lane was admitted
-          // without a card there is no frozen tier; the live one must then at least be stable
-          // and off Plan, as before.
+          // state and the input boundary untouched — revokes it. A card admitted while the
+          // tier change was still in flight has no tier to compare (the owner answered for one
+          // exact action, not for a tier): it requires the Session to have settled on some
+          // stable non-Plan tier, and Plan or an unavailable tier still revokes it.
           if (!useRuntimePermissions && cardOwnerLane) {
             const live = deps.getSession(sessionId);
             const currentPermission = live?.stablePermissionModeState;

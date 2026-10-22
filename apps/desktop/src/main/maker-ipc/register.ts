@@ -482,6 +482,7 @@ import {
 
 import { broadcastSubagentRunsChanged } from '../localDb/ipc/subagentRuns.js';
 import { resolveGhostFsSessionSnapshot } from './ghostFsSessionSnapshot.js';
+import { buildTaskActionInputState } from './taskActionInputState.js';
 import { clearSubagentObservationRewindState } from '../subagentObservationRewindFence.js';
 import {
   applyAgentSwitchToSessionRow,
@@ -4695,19 +4696,14 @@ export async function captureSessionAgentRequest(sessionId: string, supplement: 
 }
 
 export function getTaskActionInputState(sessionId: string) {
-  const input = getSessionInputProvenance(sessionId);
-  const session = getMakerIfReady()?.getSession(sessionId);
-  return {
-    key: JSON.stringify(input),
-    // Reuse the live permission/Plan generation guard; the DB can lag a mode change.
-    permission: resolveGhostFsSessionSnapshot(
-      (id) => getMakerIfReady()?.getSession(id), sessionId, session?.instanceId,
-    ),
-    ownerInput: isActiveInputOwnerAuthored(sessionId),
-    automatic: !!input.input && !isActiveInputOwnerAuthored(sessionId),
-    orcaSenderSessionId: input.input?.orcaSenderSessionId,
-    boundary: `${session?.instanceId ?? ''}:${agentInputCoordinatorHolder?.getGeneration(sessionId) ?? -1}`,
-  };
+  // The composition lives beside the decision it feeds, so tests can drive the production
+  // input state instead of rebuilding a scope by hand (#6756).
+  return buildTaskActionInputState(sessionId, {
+    session: (id) => getMakerIfReady()?.getSession(id),
+    provenance: getSessionInputProvenance,
+    ownerInput: isActiveInputOwnerAuthored,
+    inputGeneration: (id) => agentInputCoordinatorHolder?.getGeneration(id) ?? -1,
+  });
 }
 
 /** Live permission authority for Host task actions; never reconstructed from DB defaults. */
