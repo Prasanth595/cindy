@@ -1171,6 +1171,9 @@ export function ModelAdvancedDrawer({
                             // 本机都不可覆盖，控件保留但禁用（与同抽屉其他不可改项一致）；
                             // Main IPC 侧另有 INVALID_PARAMS / PERMISSION_DENIED 拒写兜底。
                             disabled={
+                              // 首次读回前空值只是占位：此时勾一档会把「只有这一档」当成完整集合
+                              // 写盘，靜默覆盖本机已声明的档位与默认档。后续后台刷新不受影响。
+                              !thinking.loaded ||
                               thinking.saving ||
                               provider.id === 'xd' ||
                               isOrganizationManagedProvider(provider)

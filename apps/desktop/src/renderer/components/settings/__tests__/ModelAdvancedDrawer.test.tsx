@@ -301,6 +301,34 @@ describe('model advanced editor', () => {
     expect(screen.getByText(/Chat Completions/)).toBeTruthy();
   });
 
+  it('keeps the thinking declaration disabled until the first read lands', async () => {
+    // 首次读回前 value 是空占位：此时能点开菜单并勾一档，就会把「只有这一档」当成完整
+    // 集合写盘，覆盖本机已声明的档位与默认档。
+    let release!: (view: unknown) => void;
+    const pending = new Promise((resolve) => {
+      release = resolve;
+    });
+    const setTiers = vi.fn(async () => undefined);
+    const previous = window.electronAPI;
+    Object.defineProperty(window, 'electronAPI', { configurable: true, value: { maker: {
+      updateCustomProvider: vi.fn(async () => ({ ok: true })),
+      getModelCatalogThinking: vi.fn(() => pending),
+      setModelCatalogThinking: setTiers,
+    } } });
+    const source = { ...buildUserProvider({ id: 'fixture', name: 'Fixture', runtimes: {
+      codex: { baseUrl: 'https://supplier.example/v1', wireProtocol: 'openai-responses', requestPath: '/custom/chat',
+        models: [{ id: 'gpt-6', name: 'GPT-6', efforts: [] as never, route: { baseUrl: 'https://supplier.example/v1', wireProtocol: 'openai-responses', requestPath: '/custom/chat' } }] },
+    } }), connected: true } as ProviderView;
+    try {
+      render(drawer(source.models.codex![0], 'high', ['high'], source));
+      const trigger = screen.getByRole('button', { name: 'settings.providers.models.advanced.thinkingOverride.label' });
+      expect((trigger as HTMLButtonElement).disabled).toBe(true);
+      release({ value: ['low', 'high', 'max'], defaultEffort: 'max', isCustomized: true });
+      await waitFor(() => expect((trigger as HTMLButtonElement).disabled).toBe(false));
+      expect(setTiers).not.toHaveBeenCalled();
+    } finally { Object.defineProperty(window, 'electronAPI', { configurable: true, value: previous }); }
+  });
+
   it('disables the thinking declaration for organization-managed providers', () => {
     // 企业托管：能力由管理员下发，本机 override 是最高优先级，必须在控件上就拦住。
     // （按钮禁用挡不住受信 renderer 直调，IPC 侧另有 PERMISSION_DENIED 兜底。）

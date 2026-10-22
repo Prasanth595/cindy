@@ -41,6 +41,8 @@ export function useModelCatalogThinking(target: ModelCatalogThinkingTarget | nul
     ...EMPTY,
     key,
     loading: true,
+    /** 首次读回是否完成：未完成时界面上的空值只是占位，不能据此写入。 */
+    loaded: false,
     saving: false,
     error: false,
     errorReason: undefined as string | undefined,
@@ -64,7 +66,15 @@ export function useModelCatalogThinking(target: ModelCatalogThinkingTarget | nul
       if (!write && writesInFlight.current > 0 && writesInFlightKey.current === key) return true;
       const request = ++generation.current;
       if (!stableTarget) {
-        setState({ ...EMPTY, key, loading: false, saving: false, error: false, errorReason: undefined });
+        setState({
+          ...EMPTY,
+          key,
+          loading: false,
+          loaded: true,
+          saving: false,
+          error: false,
+          errorReason: undefined,
+        });
         return false;
       }
       const owner = getDataOwnerGeneration();
@@ -107,7 +117,15 @@ export function useModelCatalogThinking(target: ModelCatalogThinkingTarget | nul
           : await window.electronAPI.maker.getModelCatalogThinking(stableTarget);
         echoLanded = current();
         if (echoLanded) {
-          setState({ ...view, key, loading: false, saving: false, error: false, errorReason: undefined });
+          setState({
+            ...view,
+            key,
+            loading: false,
+            loaded: true,
+            saving: false,
+            error: false,
+            errorReason: undefined,
+          });
         }
         return true;
       } catch (error) {
@@ -120,7 +138,15 @@ export function useModelCatalogThinking(target: ModelCatalogThinkingTarget | nul
             const view = await window.electronAPI.maker.getModelCatalogThinking(stableTarget);
             echoLanded = current();
             if (echoLanded) {
-              setState({ ...view, key, loading: false, saving: false, error: true, errorReason: reason });
+              setState({
+                ...view,
+                key,
+                loading: false,
+                loaded: true,
+                saving: false,
+                error: true,
+                errorReason: reason,
+              });
             }
             return false;
           } catch (readError) {
@@ -129,7 +155,15 @@ export function useModelCatalogThinking(target: ModelCatalogThinkingTarget | nul
         }
         echoLanded = current();
         if (echoLanded) {
-          setState({ ...EMPTY, key, loading: false, saving: false, error: true, errorReason: reason });
+          setState({
+            ...EMPTY,
+            key,
+            loading: false,
+            loaded: true,
+            saving: false,
+            error: true,
+            errorReason: reason,
+          });
         }
         return false;
       } finally {
@@ -151,6 +185,7 @@ export function useModelCatalogThinking(target: ModelCatalogThinkingTarget | nul
       ...EMPTY,
       key,
       loading: stableTarget !== null,
+      loaded: false,
       saving: false,
       error: false,
       errorReason: undefined,
