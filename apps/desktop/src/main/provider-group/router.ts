@@ -374,6 +374,8 @@ export function createProviderGroupRouter(deps: ProviderGroupRouterDeps): Provid
             weight: r.member.weight,
             paused: r.member.paused,
             ...(until !== null ? { coolingUntil: until } : {}),
+            // 展示确认的配额原因，不把登录/繁忙等普通冷却说成配额耗尽；不改分配与持久冷却。
+            ...(state === 'cooling' && quota.limited ? { usageLimit: { resetAtMs: quota.resetAtMs } } : {}),
             // 与选电脑排序用的同一个窗口(provider-groups.md §10 进度条)；分享来的电脑本来就不读配额。
             ...(quota.quota ? { quota: quota.quota } : {}),
             ...(quota.quota && quota.fiveHourTight ? { fiveHourTight: true as const } : {}),
