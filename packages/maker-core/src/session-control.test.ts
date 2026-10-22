@@ -568,6 +568,7 @@ describe('Session current-generation terminal observation', () => {
         reason: 'empty-response',
         sdkError: 'server_error',
         errorStatus: 529,
+        codexErrorInfo: 'badRequest',
       },
     });
     await secondError;
@@ -578,6 +579,7 @@ describe('Session current-generation terminal observation', () => {
       reason: 'empty-response',
       sdkError: 'server_error',
       errorStatus: 529,
+      codexErrorInfo: 'badRequest',
     });
     stub.push({ type: 'done', data: {} });
     await vi.waitFor(() => expect(session.isTurnRunning()).toBe(false));
@@ -588,6 +590,7 @@ describe('Session current-generation terminal observation', () => {
       reason: 'empty-response',
       sdkError: 'server_error',
       errorStatus: 529,
+      codexErrorInfo: 'badRequest',
     });
   });
 

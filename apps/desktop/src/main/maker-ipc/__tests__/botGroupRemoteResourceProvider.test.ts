@@ -122,6 +122,18 @@ describe('bot group remote resources', () => {
 
   afterEach(() => h.sqlite?.close());
 
+  it('omits archived groups from phone lists while keeping authorized history readable', async () => {
+    const archived = detail({ serverBacked: true, archived: true });
+    service.listGroups.mockResolvedValue({ ok: true, groups: [archived, summary({ id: 'active' })] });
+    const result = await remoteResourceRegistry.list(context, { client: client(), collectionId: BOT_GROUP_REMOTE_COLLECTION_ID });
+    expect(result.items.map(item => item.ref.id)).toEqual(['active']);
+    service.getGroup.mockResolvedValue({ ok: true, group: archived });
+    const history = await remoteResourceRegistry.get(context, { client: client([BOT_GROUP_CHAT_PRIMITIVE]), ref: ref('g1') });
+    expect(history.blocks?.[0]).toMatchObject({ data: { archived: true, messages: archived.messages } });
+    expect(service.deleteGroup).not.toHaveBeenCalled();
+    expect(service.chatServer.manage).not.toHaveBeenCalled();
+  });
+
   it('advertises revision-checked settings only for server groups', () => {
     expect(botGroupRemoteChatData(detail()).supportsSettingsManagement).toBe(false);
     expect(botGroupRemoteChatData(detail({ serverBacked: true, revision: 3 })).supportsSettingsManagement).toBe(true);

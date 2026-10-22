@@ -25,6 +25,7 @@ import {
 } from '@/session/swipeRowRegistry';
 import type { RemoteSession } from '@/session/types';
 import { withNewSessionCreationRemoval } from '@/session/newSessionCreation';
+import { confirmArchiveWithSchedules, loadActiveBoundScheduleNames } from '@/session/archiveScheduleConfirm';
 
 /**
  * 首页与设备详情共用的任务行写回 / 滑动 / 选项菜单 / 重命名。
@@ -133,6 +134,24 @@ export function useSessionListActions(options?: { animateListChange?: (apply: ()
     });
   }, [patchSession, swipeRegistry, t]);
 
+  // 绑定了 active 自动化的任务归档前先确认(归档后电脑会暂停它们);普通任务直接归档。
+  const archiveWithScheduleConfirm = useCallback(async (session: RemoteSession) => {
+    const devices = resolveSessionWriteDevices(session.id, session);
+    const names = devices
+      ? await loadActiveBoundScheduleNames({
+        deviceId: devices.rpcDeviceId,
+        invoke,
+        sessionId: session.id,
+        source: session.source,
+      })
+      : [];
+    if (!(await confirmArchiveWithSchedules(t, names))) {
+      swipeRegistry.closeOpenRow();
+      return;
+    }
+    runSwipeAction(session, 'archive');
+  }, [invoke, runSwipeAction, swipeRegistry, t]);
+
   const applySessionSheetAction = useCallback((session: RemoteSession, action: SessionSwipeAction) => {
     if (action === 'delete') {
       const title = projectDraftSessionTitle(session.title, t('session.menu.unnamedTitle')).trim()
@@ -148,16 +167,20 @@ export function useSessionListActions(options?: { animateListChange?: (apply: ()
       setRenameSessionTarget(session);
       return;
     }
+    if (action === 'archive') {
+      void archiveWithScheduleConfirm(session);
+      return;
+    }
     runSwipeAction(session, action);
-  }, [runSwipeAction, t]);
+  }, [archiveWithScheduleConfirm, runSwipeAction, t]);
 
   const handleSessionSheetAction = useCallback((action: SessionSwipeAction) => {
     const session = actionSheetSession;
     setActionSheetSession(null);
     if (!session) return;
-    if (action === 'rename' || action === 'delete') {
+    if (action === 'rename' || action === 'delete' || action === 'archive') {
       // Android Compose BottomSheet、iOS Expo BottomSheet、系统 Alert 都不能在 Sheet
-      // dismiss 过程中再 present,否则会被吞掉或压在后面。
+      // dismiss 过程中再 present,否则会被吞掉或压在后面。归档可能弹自动化确认,同样延后。
       pendingSheetActionRef.current = () => applySessionSheetAction(session, action);
       return;
     }
@@ -191,8 +214,10 @@ export function useSessionListActions(options?: { animateListChange?: (apply: ()
   }, [runSwipeAction]);
 
   const archiveSession = useCallback((session: RemoteSession) => {
-    runSwipeAction(session, statusToggleAction(session.status).action);
-  }, [runSwipeAction]);
+    const { action } = statusToggleAction(session.status);
+    if (action === 'archive') void archiveWithScheduleConfirm(session);
+    else runSwipeAction(session, action);
+  }, [archiveWithScheduleConfirm, runSwipeAction]);
 
   const showSessionOptions = useCallback((session: RemoteSession) => {
     setActionSheetSession(session);

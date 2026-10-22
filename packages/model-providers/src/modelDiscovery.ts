@@ -151,6 +151,11 @@ export function parseModelsListResponse(
     const inputModalities = (modalities as { input?: unknown } | undefined)?.input ?? record.input_modalities;
     const contextWindowMax = pickModelMetadata({ contextWindowMax: record.max_context_window ?? record.contextWindowMax }).contextWindowMax;
     const serviceTiers = record.service_tiers;
+    const additionalSpeedTiers = record.additional_speed_tiers;
+    const declaredSpeedTiers = [
+      ...(Array.isArray(serviceTiers) ? serviceTiers.map(tier => tier?.id) : []),
+      ...(Array.isArray(additionalSpeedTiers) ? additionalSpeedTiers : []),
+    ];
     const isVercel = sourceUrl !== undefined && (() => {
       try { const url = new URL(sourceUrl); return url.origin === 'https://ai-gateway.vercel.sh'
         && url.pathname.replace(/\/+$/, '') === '/v1/models'; } catch { return false; }
@@ -211,7 +216,9 @@ export function parseModelsListResponse(
       supportsFastMode: record.supports_fast_mode ?? record.supportsServiceTier ??
         (Array.isArray(serviceTiers) && serviceTiers.every(tier =>
           tier && typeof tier === 'object' && typeof tier.id === 'string')
-          ? serviceTiers.some(tier => tier.id === 'priority') : undefined),
+          ? declaredSpeedTiers.some(tier => tier === 'priority' || tier === 'fast')
+          : Array.isArray(additionalSpeedTiers)
+            ? additionalSpeedTiers.includes('fast') : undefined),
       supportsImageInput:
         record.supports_image_input ?? info.supports_vision ?? capabilities.vision ??
         (Array.isArray(inputModalities) && inputModalities.every(value => typeof value === 'string')
@@ -252,6 +259,8 @@ export function parseModelsListResponse(
     );
     out.push({
       id,
+      ...(Array.isArray(serviceTiers) || Array.isArray(additionalSpeedTiers)
+        ? { supportsUltrafastMode: declaredSpeedTiers.includes('ultrafast') } : {}),
       discoveredMetadata,
       ...(Object.keys(discoveredCost).length ? { discoveredCost } : {}),
       name,

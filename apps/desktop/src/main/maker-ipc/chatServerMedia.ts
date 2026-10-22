@@ -1,4 +1,5 @@
 import { chatErrorDiagnostic } from './chatServerErrors.js';
+import { retryAfterDeadline } from '@cindy/auth-client';
 import { net } from 'electron';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -29,7 +30,8 @@ export function createChatMedia(api: ChatApi, current: () => boolean, log?: { wa
      * blocks in the files' order. Every file settles before a failure is reported, so no
      * upload keeps running after the send has given up; the first failure in order wins.
      */
-    async upload(roomId: string, source: string, attachments: BotGroupAttachment[], actorId: string): Promise<ChatContentBlock[]> {
+    async upload(roomId: string, source: string, attachments: BotGroupAttachment[], actorId: string, assertCurrent?: () => void): Promise<ChatContentBlock[]> {
+      const checkUpload = () => { check(); assertCurrent?.(); };
       const results: Array<PromiseSettledResult<ChatContentBlock>> = new Array(attachments.length);
       let next = 0;
       const worker = async () => {
@@ -48,15 +50,15 @@ export function createChatMedia(api: ChatApi, current: () => boolean, log?: { wa
         let stage = 'read';
         const started = Date.now();
         try {
-          check();
+          checkUpload();
           if (attachment.size > MAX_SIZE) throw new Error('ATTACHMENT_TOO_LARGE');
           if (attachment.path) {
-            const stat = await fs.stat(attachment.path); check();
+            const stat = await fs.stat(attachment.path); checkUpload();
             if (!stat.isFile() || stat.size > MAX_SIZE) throw new Error('ATTACHMENT_TOO_LARGE');
           }
           const bytes = attachment.url?.startsWith('cindy-media://') ? (await readMedia(attachment.url)).buffer
             : attachment.path ? await fs.readFile(attachment.path) : null;
-          check();
+          checkUpload();
           if (!bytes || !bytes.length || bytes.length > MAX_SIZE) throw new Error('ATTACHMENT_UNAVAILABLE');
           const key = createHash('sha256').update(source).update(attachment.id).update(bytes).digest('hex');
           // Expired abandoned uploads must get a new prepare receipt, but a successful
@@ -73,12 +75,13 @@ export function createChatMedia(api: ChatApi, current: () => boolean, log?: { wa
               operationId: `media:${key}:${randomUUID()}`, name: attachment.name, type: attachment.mimeType, size: bytes.length,
             }, actorId);
           }
-          check();
+          checkUpload();
           stage = 'upload';
           const response = await net.fetch(signedUrl(upload.uploadUrl), { method: 'PUT', redirect: 'error',
             headers: { 'Content-Type': attachment.mimeType }, body: new Uint8Array(bytes), signal: AbortSignal.timeout(60000) });
-          if (!response.ok) throw Object.assign(new Error('MEDIA_UPLOAD_FAILED'), { status: response.status });
-          check();
+          if (!response.ok) throw Object.assign(new Error('MEDIA_UPLOAD_FAILED'), { status: response.status,
+            ...(response.status === 429 ? { retryAt: retryAfterDeadline(response) } : {}) });
+          checkUpload();
           stage = 'complete';
           await api(`/conversations/${roomId}/media/${upload.id}/complete`, 'POST', { operationId: `seal:${upload.id}` }, actorId);
           return { type: 'media', mediaId: upload.id, caption: attachment.name };

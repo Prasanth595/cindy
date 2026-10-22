@@ -162,7 +162,7 @@ function mountWorkspace(options: { initialWorkingDir?: string; restoredKind?: Ne
     ) {
       await act(async () => {
         resolveRead({ workspaceKind: kind, device: { deviceId, name: deviceId },
-          agentKind: null, permissionModeByAgent: {}, workingDirByDevice });
+          agentKind: null, permissionModeByAgent: {}, workingDirByDevice, remoteAgentByDevice: {} });
         await pendingRead;
       });
     },

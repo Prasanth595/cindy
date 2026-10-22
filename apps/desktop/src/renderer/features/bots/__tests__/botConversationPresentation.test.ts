@@ -41,14 +41,20 @@ describe('teammate final-result presentation', () => {
           : ending === 'retrying' ? [] : [message('error', 'error', 'Reply interrupted')]),
       ], ending === 'retrying');
       expect(proseIds(result)).toEqual(ending === 'completed' ? ['intro', 'success'] : []);
-      expect(allKeys(result)).toContain('msg-failed');
-      expect(allKeys(result)).toContain('msg-failed-commentary');
+      // Failed output stays in the live work history; once the turn ends the process leaves with it.
+      if (ending === 'retrying') {
+        expect(allKeys(result)).toContain('msg-failed');
+        expect(allKeys(result)).toContain('msg-failed-commentary');
+      } else {
+        expect(allKeys(result)).not.toContain('msg-failed');
+        expect(allKeys(result)).not.toContain('msg-failed-commentary');
+      }
     });
   it('keeps coordination input hidden while process, explicit inputs, results and errors remain visible', () => {
     const rows = [message('coordination', 'user', '[UI_ACTION_TRIGGER]File agreement', { isSyntheticTrigger: true }),
       tool('audit'), message('visible-input', 'user', 'Requested status'),
       message('result', 'assistant', 'Final result', { turnCompleted: true }), message('error', 'error', 'Action required')];
-    expect(shape(project(rows, false))).toBe('work-audit[tools-audit], msg-visible-input, msg-result, msg-error');
+    expect(shape(project(rows, false))).toBe('msg-visible-input, msg-result, msg-error');
   });
 
   it('folds process rows into the normal work summary and keeps final answers without mutating history', () => {
@@ -57,7 +63,7 @@ describe('teammate final-result presentation', () => {
     const result = project(input, false);
     expect(proseIds(result)).toEqual(['final']);
     // Same shape as a normal session: one outer summary with intermediate prose and inner groups.
-    expect(shape(result)).toBe('msg-u, work-summary-t1[msg-a, work-t1[tools-t1], msg-b, work-t2[tools-t2]], msg-final');
+    expect(shape(result)).toBe('msg-u, msg-final');
     expect(input[1]).toEqual(message('a', 'assistant'));
   });
 
@@ -72,7 +78,7 @@ describe('teammate final-result presentation', () => {
     expect(shape(continued)).toBe('msg-u, work-t1[tools-t1]');
     const done = project([...work, message('b', 'assistant', 'B', { turnCompleted: true })], false);
     expect(proseIds(done)).toEqual(['b']);
-    expect(shape(done)).toBe('msg-u, work-summary-t1[msg-a, work-t1[tools-t1]], msg-b');
+    expect(shape(done)).toBe('msg-u, msg-b');
   });
 
   it.each(['stopped', 'failed', 'history'])('retains the last useful text with no final: %s', () => {
@@ -80,7 +86,7 @@ describe('teammate final-result presentation', () => {
       message('last', 'assistant'), tool('t2'), message('err', 'error')];
     const result = project(input, false);
     expect(proseIds(result)).toEqual(['last']);
-    expect(shape(result)).toBe('msg-u, work-t1[tools-t1], msg-last, work-t2[tools-t2], msg-err');
+    expect(shape(result)).toBe('msg-u, msg-last, msg-err');
   });
 
   it('keeps all blocks of sealed replies across continuation tools and history reloads', () => {
@@ -91,10 +97,12 @@ describe('teammate final-result presentation', () => {
     for (const streaming of [true, false]) {
       const result = project(input, streaming);
       expect(proseIds(result)).toEqual(['first', 'second', 'third', 'fourth']);
-      // An earlier background-wake reply is lifted out of the fold; the summary keeps
-      // its key and the following activity group stays the same inner group.
-      expect(shape(result)).toBe('msg-u, work-summary-t1[msg-progress, work-t1[tools-t1]], msg-first, '
-        + 'msg-second, work-t2[tools-t2], msg-third, msg-fourth');
+      // An earlier background-wake reply is lifted out of the fold; while running the summary
+      // keeps its key and the following activity group stays the same inner group. Once the
+      // turn ends the work leaves and the replies remain.
+      expect(shape(result)).toBe(streaming
+        ? 'msg-u, work-summary-t1[msg-progress, work-t1[tools-t1]], msg-first, msg-second, work-t2[tools-t2], msg-third, msg-fourth'
+        : 'msg-u, msg-first, msg-second, msg-third, msg-fourth');
     }
   });
 
@@ -131,7 +139,7 @@ describe('teammate final-result presentation', () => {
     });
     const input = [message('u', 'user'), message('progress', 'assistant'), tool('t'), receipt];
     expect(shape(project(input, true))).toBe('msg-u, work-t*[tools-t], msg-receipt');
-    expect(shape(project(input, false))).toBe('msg-u, work-t[tools-t], msg-receipt');
+    expect(shape(project(input, false))).toBe('msg-u, msg-receipt');
   });
 
   it('retains a later explanation after partial delivery and ignores unverified file candidates', () => {
@@ -153,8 +161,8 @@ describe('teammate final-result presentation', () => {
       message('u2', 'user'), message('explanation', 'assistant'), tool('failed')];
     const result = simplifyBotRenderItems(groupWorkRuns(input, false), false, new Set(['files']));
     expect(proseIds(result)).toEqual(['final', 'explanation']);
-    expect(shape(result)).toBe('msg-u, work-summary-t[msg-progress, work-t[tools-t]], msg-final, files, '
-      + 'msg-u2, msg-explanation, work-failed[tools-failed]');
+    // Both turns are over: their work leaves, the answers, files and explanation stay.
+    expect(shape(result)).toBe('msg-u, msg-final, files, msg-u2, msg-explanation');
   });
 
   it('does not extend a final seal or delivery fallback across a history gap without tools', () => {
@@ -206,34 +214,34 @@ describe('teammate final-result presentation', () => {
     const input: RenderItem[] = [message('u', 'user'), message('empty', 'assistant', '  '),
       { type: 'work_group', key: 'work-nested', isStreaming: false, children: [thinking, tool('t')] },
       message('answer', 'assistant')];
-    expect(shape(project(input, false))).toBe('msg-u, work-nested[msg-private, tools-t], msg-answer');
+    expect(shape(project(input, false))).toBe('msg-u, msg-answer');
     expect(thinking).toEqual(message('private', 'thinking', 'Not public execution'));
   });
 
-  it('passes unloaded technical history to the normal work fold without calling its expansion or retry API', () => {
+  it('drops a finished turn\'s technical history, loaded or not, without calling its expansion or retry API', () => {
     const deferred = { owner: {}, key: 'range', expanded: false, loading: false, failed: false,
       toggle: vi.fn(), retry: vi.fn(), setVisible: vi.fn() };
     const group: RenderItem = { type: 'work_group', key: 'work-history', isStreaming: false,
       children: [], deferred };
     const input = [message('u', 'user'), group, message('final', 'assistant')];
     const unloaded = simplifyBotRenderItems(input, false);
-    expect(shape(unloaded)).toBe('msg-u, work-history[], msg-final');
-    expect(unloaded[1]).toBe(group);
+    expect(shape(unloaded)).toBe('msg-u, msg-final');
+    expect(unloaded).not.toContain(group);
     const loaded = { ...group, children: [message('thinking', 'thinking'), message('public', 'assistant'), tool('t')] };
     const result = simplifyBotRenderItems([input[0], loaded as RenderItem, input[2]], false);
-    expect(shape(result)).toBe('msg-u, work-history[msg-thinking, msg-public, tools-t], msg-final');
+    expect(shape(result)).toBe('msg-u, msg-final');
     expect(deferred.toggle).not.toHaveBeenCalled();
     expect(deferred.retry).not.toHaveBeenCalled();
     expect(group.deferred).toBe(deferred);
   });
 
-  it('keeps deferred history controls when lifting a reply after one nested work group', () => {
+  it('keeps deferred history controls while the turn runs when lifting a reply after one nested work group', () => {
     const deferred = { owner: {}, key: 'range', expanded: false, loading: false, failed: true,
       previewComplete: false, toggle: vi.fn(), retry: vi.fn(), setVisible: vi.fn() };
     const nested: RenderItem = { type: 'work_group', key: 'work-inner', isStreaming: false, children: [tool('t')] };
     const reply = message('delivered', 'assistant', 'Here is the result', { explicitDelivery: true });
     const history: RenderItem = { type: 'work_group', key: 'work-history', isStreaming: false, children: [nested, reply], deferred };
-    const result = simplifyBotRenderItems([history], false);
+    const result = simplifyBotRenderItems([history], true);
     expect(shape(result)).toBe('work-history[work-inner[tools-t]], msg-delivered');
     const retained = result[0];
     expect(retained.type === 'work_group' && retained.deferred).toBe(deferred);
@@ -242,11 +250,11 @@ describe('teammate final-result presentation', () => {
     expect(deferred.retry).not.toHaveBeenCalled();
     expect(history.children).toEqual([nested, reply]);
     // Ordinary complete groups still unwrap the single inner group with its stable key.
-    const complete = simplifyBotRenderItems([{ ...history, deferred: undefined }], false);
+    const complete = simplifyBotRenderItems([{ ...history, deferred: undefined }], true);
     expect(complete).toEqual([nested, reply]);
   });
 
-  it('shows a running turn as a live work group and a finished turn as the summary with the answer outside', () => {
+  it('shows a running turn as a live work group and a finished turn as the answer alone', () => {
     const at = (offset: number) => new Date(Date.parse('2026-10-15T08:00:00Z') + offset).toISOString();
     const running = [message('u', 'user', 'Fix it', { createdAt: at(0) }),
       message('think', 'thinking', 'Looking at refresh', { createdAt: at(1000) }),
@@ -258,9 +266,8 @@ describe('teammate final-result presentation', () => {
 
     const finished = project([...running,
       message('answer', 'assistant', 'Done', { createdAt: at(9000), turnCompleted: true })], false);
-    expect(shape(finished)).toBe('msg-u, work-think[msg-think, tools-read], msg-answer');
-    const doneGroup = finished[1];
-    expect(doneGroup.type === 'work_group' && doneGroup.durationMs).toBe(9000);
+    // A finished turn shows only the answer; the work process leaves with the turn.
+    expect(shape(finished)).toBe('msg-u, msg-answer');
     expect(proseIds(finished)).toEqual(['answer']);
   });
 
@@ -274,8 +281,9 @@ describe('teammate final-result presentation', () => {
         message('after', 'assistant', 'Continuing', { createdAt: at(6000) }),
         { type: 'work_group', key: 'work-b', isStreaming: false, children: [tool('b')] },
       ] };
+    // While the turn still runs its work stays visible, split around the delivered reply.
     const result = simplifyBotRenderItems([message('u', 'user'), summary,
-      message('final', 'assistant', 'Final', { turnCompleted: true })], false);
+      message('final', 'assistant', 'Final', { turnCompleted: true })], true);
     expect(shape(result)).toBe('msg-u, work-summary-x[msg-note, work-a[tools-a]], msg-told, '
       + 'work-summary-x~msg-after[msg-after, work-b[tools-b]], msg-final');
     const [first, , second] = result.slice(1);
@@ -304,7 +312,7 @@ it('nests only explicitly bound results, preserving original anchor and human me
   const anchor = message('anchor', 'assistant', '', { systemCardType: 'bot-session-task' });
   const final = message('final', 'assistant', 'Summary', { turnCompleted: true, botTaskResults: [card] });
   const input = [anchor, receipt, message('human', 'user'), message('progress', 'assistant'), tool('t'), final];
-  expect(shape(project(input, false))).toBe('msg-anchor, msg-human, work-summary-t[msg-progress, work-t[tools-t]], msg-final');
+  expect(shape(project(input, false))).toBe('msg-anchor, msg-human, msg-final');
   expect(final.message.botTaskResults).toEqual([card]);
   expect(allKeys(project(input.slice(0, -1), false))).toContain('msg-receipt');
   expect(allKeys(project([receipt, message('unrelated', 'assistant', 'Other', { turnCompleted: true })], false))).toContain('msg-receipt');

@@ -116,8 +116,8 @@ export function composeAtomicModelSelection(args: {
   efforts: readonly Effort[];
   effort: Effort;
   fastSupported: boolean;
-  requestedFast: boolean;
-}): { effort: Effort | null; fastMode: boolean } {
+  requestedFast: boolean | 'ultrafast';
+}): { effort: Effort | null; fastMode: boolean | 'ultrafast' } {
   return {
     effort: args.efforts.length === 0 ? null : args.effort,
     fastMode: args.fastSupported && args.requestedFast,

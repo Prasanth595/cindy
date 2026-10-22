@@ -31,6 +31,32 @@ const validManifest = {
 } as const;
 
 describe('Ghost manifest contract', () => {
+  it.each([2, 3])('preserves the optional Host task card visibility flag in schema v%s', (schemaVersion) => {
+    const base = {
+      ...validManifest,
+      schemaVersion,
+      ...(schemaVersion === 3 ? { minCindyVersion: '0.1.0' } : {}),
+      slots: schemaVersion === 2 ? ['agent'] : undefined,
+      tools: undefined,
+      agent: { tasks: true },
+    };
+    for (const showTaskPreferences of [undefined, true, false]) {
+      const result = validateGhostManifest({ ...base, showTaskPreferences });
+      expect(result.ok).toBe(true);
+      if (!result.ok) continue;
+      expect(result.manifest.showTaskPreferences).toBe(showTaskPreferences);
+      expect(Object.hasOwn(result.manifest, 'showTaskPreferences')).toBe(showTaskPreferences !== undefined);
+      expect(result.manifest.agent?.tasks).toBe(true);
+      expect(validateGhostManifest(result.manifest)).toEqual(result);
+    }
+    for (const showTaskPreferences of [null, 0, 1, 'false', {}, []]) {
+      expect(validateGhostManifest({ ...base, showTaskPreferences })).toMatchObject({
+        ok: false,
+        reason: 'showTaskPreferences 必须是布尔值',
+      });
+    }
+  });
+
   it('keeps main-view in the v2 compatibility contract', () => {
     expect(LEGACY_GHOST_SLOTS).toContain('main-view');
     expect(GHOST_MAIN_VIEW_ICONS).toEqual([
@@ -1784,11 +1810,35 @@ describe('Ghost manifest contract', () => {
       if (!rejected.ok) expect(rejected.reason).toContain('仅停靠形态');
     }
 
-    // top/bottom 仍收词明确拒绝,野值仍拒。
-    const pending = validateGhostManifest(withPanel({ position: 'top' }));
-    expect(pending.ok).toBe(false);
-    if (!pending.ok) expect(pending.reason).toContain('暂未支持');
+    // 四条边都是真实的页签组位置(与 Desktop 校验一致),野值仍拒。
+    for (const side of ['left', 'right', 'top', 'bottom'] as const) {
+      const ok = validateGhostManifest(withPanel({ position: side }));
+      expect(ok.ok, side).toBe(true);
+      if (ok.ok) expect(ok.manifest.panel?.position).toBe(side);
+    }
     expect(validateGhostManifest(withPanel({ position: 'center' })).ok).toBe(false);
+  });
+
+  it('mainView.open / side / multiple 与 Desktop 校验一致:合法保留,野值与错配拒', () => {
+    const withView = (mainView: Record<string, unknown>) =>
+      validateGhostManifest({
+        schemaVersion: 3,
+        minCindyVersion: '0.1.61',
+        id: 'view-helper',
+        name: 'View Helper',
+        version: '1.0.0',
+        entry: 'main.js',
+        mainView: { html: 'main-view.html', ...mainView },
+      });
+    const ok = withView({ open: 'sidebar', side: 'bottom', multiple: true });
+    expect(ok.ok).toBe(true);
+    if (ok.ok) {
+      expect(ok.manifest.mainView).toMatchObject({ open: 'sidebar', side: 'bottom', multiple: true });
+    }
+    expect(withView({ open: 'popup' }).ok).toBe(false);
+    expect(withView({ open: 'page', side: 'left' }).ok).toBe(false);
+    expect(withView({ open: 'sidebar', side: 'middle' }).ok).toBe(false);
+    expect(withView({ multiple: false }).ok).toBe(false);
   });
 });
 
@@ -1876,4 +1926,15 @@ describe('agent.hiddenTasks declaration', () => {
     const visible = validateGhostManifest({ ...v3, agent: { tasks: true, hiddenTasks: false } });
     expect(visible.ok && visible.manifest.agent).toEqual({ tasks: true });
   });
+});
+
+// New target access is not implied by the old plugin-owned tasks declaration.
+it('validates independent target access without dropping the tasks dependency', () => {
+  const base = { schemaVersion: 3, minCindyVersion: '0.1.0', id: 'target-test', name: 'Targets', version: '1.0.0', entry: 'main.js' };
+  const approved = validateGhostManifest({ ...base, agent: { tasks: true, targets: true } });
+  expect(approved.ok && approved.manifest.agent).toEqual({ tasks: true, targets: true });
+  expect(validateGhostManifest({ ...base, agent: { targets: true } }).ok).toBe(false);
+  expect(validateGhostManifest({ ...base, agent: { tasks: true, targets: 'yes' } }).ok).toBe(false);
+  const disabled = validateGhostManifest({ ...base, agent: { tasks: true, targets: false } });
+  expect(disabled.ok && disabled.manifest.agent).toEqual({ tasks: true });
 });

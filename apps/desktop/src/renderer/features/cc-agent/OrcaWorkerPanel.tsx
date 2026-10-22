@@ -257,6 +257,7 @@ export function OrcaWorkerPanel({
         )}
       </div>
       <CreateWorkerPopover
+        leadSessionId={leadSessionId}
         open={createOpen}
         onClose={() => setCreateOpen(false)}
         onCreate={handleCreateWorker}

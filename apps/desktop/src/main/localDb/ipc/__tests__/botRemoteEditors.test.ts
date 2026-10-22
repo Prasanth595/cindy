@@ -217,3 +217,28 @@ describe('portable teammate memory pages', () => {
     await expect(f.resource('settings:bot-a/memory/user_coffee')).rejects.toThrow('OWNER_CHANGED');
   });
 });
+
+// Existing opaque grants must bind follow-up consent to this owner, computer and current choice.
+it('keeps follow-up off until chosen and rejects an invitation made stale by another explicit choice', async () => {
+  const f = fixture();
+  let choice = { schedulerBotId: null as string | null, isCustomized: false, defaults: { schedulerBotId: null } };
+  f.deps.followUp = { get: vi.fn(async () => choice), set: vi.fn(async id => {
+    choice = { ...choice, isCustomized: true, schedulerBotId: id }; return choice;
+  }) };
+  const read = () => f.resource('settings:bot-a/follow-up');
+  const invitation = await read();
+  expect((invitation.blocks![0].data as any).invitationAvailable).toBe(true);
+  expect(f.deps.followUp.set).not.toHaveBeenCalled();
+  await f.send(invitation, {}, 1);
+  expect(choice).toMatchObject({ schedulerBotId: null, isCustomized: true });
+  expect((await read()).blocks![0].data).toMatchObject({ invitationAvailable: false });
+  await expect(f.send(invitation, { enabled: true })).rejects.toThrow();
+  await f.send(await read(), { enabled: true });
+  expect(choice.schedulerBotId).toBe('bot-a');
+  const enabled = await read();
+  expect(enabled.actions![0].confirmation).toBeUndefined();
+  await f.send(enabled, { enabled: false });
+  expect(choice.schedulerBotId).toBeNull();
+  const stale = await read(); f.owner('b');
+  await expect(f.send(stale, { enabled: true })).rejects.toThrow();
+});

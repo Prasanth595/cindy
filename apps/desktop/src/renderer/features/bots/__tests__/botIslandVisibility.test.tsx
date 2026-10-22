@@ -17,6 +17,8 @@ vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (s: string) => s }
 vi.mock('@/hooks/useAgentIslandSettings', () => ({
   isAgentIslandSupported: () => mocks.supported,
 }));
+// The private-chat topic host belongs to the chat surface these tests isolate.
+vi.mock('../BotDmThreadHost', () => ({ BotDmThreadHost: ({ children }: { children: import('react').ReactNode }) => <>{children}</> }));
 vi.mock('@/features/cc-agent/CCAgentSessionView', () => ({
   CCAgentSessionView: () => <div data-testid="chat" />,
 }));

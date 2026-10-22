@@ -2,6 +2,7 @@
 // Unit coverage missing from delivered-media tests; image-only and mixed video are minimal inputs.
 import { describe, it, expect } from "vitest";
 import {
+  readFailedImageDelivery,
   collectNativeToolMedia,
   readToolProcessMedia,
   readToolProcessText,
@@ -78,4 +79,11 @@ it("budgets whole references and exposes the original multiline tool text", () =
   const json = '{"ok":true,"text":"note"}';
   expect(JSON.parse(readToolProcessText(withToolProcessMedia(json, refs.slice(-1)))!)).toEqual(JSON.parse(json));
   expect(readToolProcessText(json)).toBe(json);
+});
+
+it('only offers image delivery retry for a failed Host artifact record', () => {
+  const value = { kind: 'generation', native_image_delivery: { id: 'a'.repeat(64), state: 'failed' } };
+  expect(readFailedImageDelivery(JSON.stringify(value))).toBe('a'.repeat(64));
+  expect(readFailedImageDelivery(JSON.stringify({ ...value, native_image_delivery: { ...value.native_image_delivery, state: 'stored' } }))).toBeNull();
+  expect(readFailedImageDelivery(JSON.stringify({ ...value, native_image_delivery: { id: '/tmp/image.png', state: 'failed' } }))).toBeNull();
 });

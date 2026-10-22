@@ -877,16 +877,15 @@ describe('maker:event hot path ordering', () => {
     expect(wireSessionSource).toContain(
       'if (!wasInTurn) advanceSessionTurnBoundaryGeneration(session.id);',
     );
-    expectOrder(
-      closedBlock,
-      'const closedDirectAbortBoundary = getDirectAbortBoundaryForClosingSession(',
-      'cancelDirectAbortReconciliation(session.id);',
+    // Cross-file race wiring guard: the imported close adapter must retain the
+    // real abort/persist stores. Its execution order and captured Goal outcome
+    // are exercised through the lifecycle in sessionBindingLifecycle.test.ts.
+    expect(closedBlock).toMatch(
+      /beforeCloseTeardown:\s*createSessionCloseTeardown<WiredSession>\(\{/,
     );
-    expect(closedBlock).toContain('cancelDirectAbortReconciliation(session.id);');
-    expectOrder(
-      closedBlock,
-      'cancelDirectAbortReconciliation(session.id);',
-      'pendingFailedTurnAssistantPersistId.delete(session.id);',
+    expect(closedBlock).toMatch(/\bcancelDirectAbortReconciliation\s*,/);
+    expect(closedBlock).toMatch(
+      /clearPendingFailedTurnPersist:\s*sessionId\s*=>\s*\{\s*pendingFailedTurnAssistantPersistId\.delete\(sessionId\);\s*\}/,
     );
     expect(closedBlock).toContain('sessionTurnBoundaryGenerationById.delete(session.id);');
     expectOrder(

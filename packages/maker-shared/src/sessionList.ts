@@ -34,7 +34,7 @@ export interface RemoteSessionListSessionLike extends SessionInterruptionState {
   agentDeviceId?: string | null;
   createdAt: string;
   effort?: string | null;
-  fastMode?: boolean;
+  fastMode?: boolean | 'ultrafast';
   id: string;
   model: string;
   orcaRole?: 'lead' | 'worker' | string | null;

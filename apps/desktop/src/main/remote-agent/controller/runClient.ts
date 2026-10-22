@@ -72,6 +72,10 @@ export class RemoteAgentRunClient implements PolledRun {
   private readonly drained: Promise<void>;
   private markDrained!: () => void;
   private pushSeq = 0;
+  /** 在途的 push 批次(含重试中的)。 */
+  private pushing = 0;
+  /** 正在回答的反向请求(从收到到回包交付完)。 */
+  private answering = 0;
   private readonly pendingCalls = new Map<string, { resolve(value: unknown): void; reject(error: Error): void }>();
   private started: { resolve(handle: Record<string, unknown>): void; reject(error: Error): void } | null = null;
   private readonly splitter = new LineSplitter(MAX_LINE_BYTES);
@@ -168,33 +172,40 @@ export class RemoteAgentRunClient implements PolledRun {
     this.pushSeq += 1;
     const seq = this.pushSeq;
     let delay = 500;
-    for (let attempt = 1; ; attempt += 1) {
-      if (this.closed) return;
-      try {
-        await this.invoke([{ op: 'push', runId: this.runId, seq, frames }]);
-        return;
-      } catch (error) {
-        const retryable = isRetryableLinkError(error) && attempt < MAX_PUSH_DELIVER_ATTEMPTS;
-        this.log?.warn(retryable ? 'remote agent: push failed; retrying' : 'remote agent: push failed', {
-          runId: this.runId,
-          seq,
-          attempt,
-          error: String(error),
-        });
-        if (!retryable) throw error;
-        await sleep(delay);
-        delay = Math.min(delay * 2, 5_000);
+    this.pushing += 1;
+    try {
+      for (let attempt = 1; ; attempt += 1) {
+        if (this.closed) return;
+        try {
+          await this.invoke([{ op: 'push', runId: this.runId, seq, frames }]);
+          return;
+        } catch (error) {
+          const retryable = isRetryableLinkError(error) && attempt < MAX_PUSH_DELIVER_ATTEMPTS;
+          this.log?.warn(retryable ? 'remote agent: push failed; retrying' : 'remote agent: push failed', {
+            runId: this.runId,
+            seq,
+            attempt,
+            error: String(error),
+          });
+          if (!retryable) throw error;
+          await sleep(delay);
+          delay = Math.min(delay * 2, 5_000);
+        }
       }
+    } finally {
+      this.pushing -= 1;
     }
   }
 
   async close(mode: 'close' | 'detach', reason: RemoteAgentTeardownReason): Promise<void> {
     if (this.closed) return;
+    let delivered = false;
     try {
       await this.invoke([{ op: 'close', runId: this.runId, mode, reason }]);
+      delivered = true;
     } finally {
-      // 收尾事件仍会经 poll 到达；流结束时自行收口。
-      if (this.registered) await Promise.race([this.drained, sleep(CLOSE_DRAIN_MS)]);
+      // 收尾事件仍会经 poll 到达；流结束时自行收口。close 没送到时对方不会收尾，不用等。
+      if (this.registered && delivered) await Promise.race([this.drained, sleep(CLOSE_DRAIN_MS)]);
       this.finish('closed');
     }
   }
@@ -206,6 +217,11 @@ export class RemoteAgentRunClient implements PolledRun {
 
   get isClosed(): boolean {
     return this.closed;
+  }
+
+  /** 还有没收尾的往来：在等的方法结果、正在回答的反向请求(权限确认、执行器 / MCP 请求等)或在推的帧。 */
+  get hasPendingWork(): boolean {
+    return this.pendingCalls.size > 0 || this.answering > 0 || this.pushing > 0 || this.started !== null;
   }
 
   private finish(reason: string, error?: RemoteAgentErrorInfo): void {
@@ -297,16 +313,21 @@ export class RemoteAgentRunClient implements PolledRun {
   private async answer(requestId: string, request: RemoteAgentReverseRequest): Promise<void> {
     const abort = new AbortController();
     this.inflight.set(requestId, abort);
-    let reply: RemoteAgentReply;
+    this.answering += 1;
     try {
-      reply = await this.handlers.onRequest(request, abort.signal);
-    } catch (error) {
-      reply = { type: 'error', error: { code: 'CONTROLLER_ERROR', message: error instanceof Error ? error.message : String(error) } };
+      let reply: RemoteAgentReply;
+      try {
+        reply = await this.handlers.onRequest(request, abort.signal);
+      } catch (error) {
+        reply = { type: 'error', error: { code: 'CONTROLLER_ERROR', message: error instanceof Error ? error.message : String(error) } };
+      } finally {
+        this.inflight.delete(requestId);
+      }
+      if (this.closed || abort.signal.aborted) return;
+      await this.deliverReply(requestId, reply);
     } finally {
-      this.inflight.delete(requestId);
+      this.answering -= 1;
     }
-    if (this.closed || abort.signal.aborted) return;
-    await this.deliverReply(requestId, reply);
   }
 
   /**

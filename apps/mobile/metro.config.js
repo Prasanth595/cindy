@@ -24,6 +24,7 @@ const workspaceTsSourcePackages = [
   'device-link-protocol',
   'maker-shared',
   'model-providers',
+  'voice-input-core',
 ];
 
 config.resolver.disableHierarchicalLookup = true;

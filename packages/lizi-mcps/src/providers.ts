@@ -251,9 +251,9 @@ export function createLiziMcpProviders(
         instance: createFeishuBotMcpServer({
           // 每个 host dep 都带上当前 tool-call 的 session:宿主据此选出这一轮真正要
           // 出站的 bot(个人设置页那份,或触发本轮的伙伴自有连接)。
-          getChatId: () => {
+          getChatId: async () => {
             const current = resolveLiziMcpSessionContext(ctx);
-            return readFeishuChatId(current) ?? opts.feishuBot!.getOwnerOpenId(current) ?? null;
+            return readFeishuChatId(current) ?? await opts.feishuBot!.getOwnerOpenId(current) ?? null;
           },
           sendFile: (chatId, absPath, displayName) =>
             opts.feishuBot!.sendFile(chatId, absPath, displayName, resolveLiziMcpSessionContext(ctx)),

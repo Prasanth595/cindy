@@ -78,6 +78,7 @@ export const REMOTE_AGENT_ERROR_CODES = [
   'REMOTE_AGENT_INVALID',
   'REMOTE_AGENT_NOT_FOUND',
   'REMOTE_AGENT_UNSUPPORTED',
+  'REMOTE_AGENT_PEER_TOO_OLD',
   'REMOTE_AGENT_BUSY',
   'REMOTE_AGENT_EXPIRED',
   'REMOTE_AGENT_ACCOUNT_CHANGED',
@@ -103,6 +104,7 @@ export interface RemoteAgentErrorInfo {
 
 /** 被控端请控制端处理的反向请求。 */
 export type RemoteAgentReverseRequest =
+  | { type: 'model-access'; model?: string }
   | { type: 'interaction'; request: unknown }
   | {
       type: 'http';
@@ -145,6 +147,11 @@ export const REMOTE_AGENT_MAX_PUSH_CHARS = 3 * 1024 * 1024;
 
 export type RemoteAgentRequest =
   | { op: 'caps' }
+  | ({ op: 'fork' } & RemoteAgentForkRequest)
+  /** Native image recovery is scoped to the caller's task; never accepts file paths. */
+  | { op: 'images'; sessionId: string; relay?: string; action: 'list'; offset: number }
+  | { op: 'images'; sessionId: string; relay?: string; action: 'read'; imageId: string; offset: number }
+  | { op: 'images'; sessionId: string; relay?: string; action: 'release'; imageId: string }
   | { op: 'upload'; uploadId: string; index: number; data: string }
   | { op: 'open'; runId: string; agentKind: RemoteAgentKind; payload: RemoteAgentPayload }
   | { op: 'call'; runId: string; callId: string; method: RemoteAgentMethod; payload: RemoteAgentPayload }
@@ -218,7 +225,33 @@ export const REMOTE_AGENT_GROUP_SWITCH_STATE_KEY = 'providerGroupSwitch';
 export const REMOTE_AGENT_TEARDOWN_REASONS = ['navigation', 'account-boundary', 'app-quit'] as const;
 export type RemoteAgentTeardownReason = (typeof REMOTE_AGENT_TEARDOWN_REASONS)[number];
 
+/** Native fork control plane. Paths and guest storage are resolved by the host, never the caller. */
+export interface RemoteAgentForkRequest {
+  sourceSessionId: string;
+  newSessionId: string;
+  agentKind: RemoteAgentKind;
+  sourceSdkSessionId: string;
+  model: string;
+  providerId?: string | null;
+  upToMessageId?: string;
+  lastTurnId?: string;
+  tailTurnsToDrop?: number;
+  forkAtTimestampMs?: number;
+  relay?: string;
+  reshareKey?: string;
+}
+
+export interface RemoteAgentForkResult {
+  newSdkSessionId: string;
+  uuidMap: Array<[string, string]>;
+  initialContextTokens?: number;
+  usedNativeForkAnchor?: boolean;
+}
+
 export interface RemoteAgentCaps {
+  nativeFork?: boolean;
+  imageRecovery?: boolean;
+  imageRecoveryRelay?: boolean;
   version: number;
   agents: Array<{ kind: RemoteAgentKind; available: boolean }>;
   maxRuns: number;
@@ -231,6 +264,8 @@ export interface RemoteAgentCaps {
    * 不声明的电脑，组所在电脑不给它分受邀者的任务(否则受邀者会拿到主人级权限)。
    */
   guestRelay?: boolean;
+  /** Group relays can query the original member's live model grants before dispatch. */
+  relayModelAccess?: boolean;
   /**
    * 供应商组转分享：受邀者(组所在电脑)可以报上它分享的人、由这台的主人逐人同意(op `reshare`)，组转来的受邀者任务
    * 只在同意过的人上运行。不声明的电脑给不出同意，组所在电脑不把受邀者的任务分给它。
@@ -375,6 +410,51 @@ export function parseRemoteAgentRequest(value: unknown): RemoteAgentRequest {
   switch (v.op) {
     case 'caps':
       return { op: 'caps' };
+    case 'fork': {
+      const text = (value: unknown, max = 4096): string => {
+        if (typeof value !== 'string' || !value.length || value.length > max || value.includes('\0')) invalid();
+        return value as string;
+      };
+      const sessionId = (value: unknown): string => {
+        const valueText = text(value, 128);
+        if (!/^[A-Za-z0-9_-]+$/.test(valueText)) invalid();
+        return valueText;
+      };
+      const result: RemoteAgentForkRequest = {
+        sourceSessionId: sessionId(v.sourceSessionId),
+        newSessionId: sessionId(v.newSessionId),
+        agentKind: oneOf(v.agentKind, REMOTE_AGENT_KINDS),
+        sourceSdkSessionId: text(v.sourceSdkSessionId),
+        model: text(v.model, 512),
+      };
+      for (const key of ['upToMessageId', 'lastTurnId'] as const) {
+        if (v[key] !== undefined) result[key] = text(v[key], 256);
+      }
+      if (v.providerId !== undefined) result.providerId = v.providerId === null ? null : text(v.providerId, 512);
+      for (const key of ['relay', 'reshareKey'] as const) {
+        if (v[key] !== undefined) {
+          const value = text(v[key], 64);
+          if (!REMOTE_AGENT_RELAY_KEY_PATTERN.test(value)) invalid();
+          result[key] = value;
+        }
+      }
+      if (v.tailTurnsToDrop !== undefined) result.tailTurnsToDrop = count(v.tailTurnsToDrop, Number.MAX_SAFE_INTEGER);
+      if (v.forkAtTimestampMs !== undefined) result.forkAtTimestampMs = count(v.forkAtTimestampMs, Number.MAX_SAFE_INTEGER);
+      if (result.sourceSessionId === result.newSessionId) invalid();
+      return { op: 'fork', ...result };
+    }
+    case 'images': {
+      // Same task-id contract as the open payload, including non-UUID internal tasks.
+      const sessionId = v.sessionId;
+      if (typeof sessionId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(sessionId)) invalid();
+      if (v.relay !== undefined && (typeof v.relay !== 'string' || !REMOTE_AGENT_RELAY_KEY_PATTERN.test(v.relay))) invalid();
+      const relay = typeof v.relay === 'string' ? { relay: v.relay } : {};
+      const action = oneOf(v.action, ['list', 'read', 'release'] as const);
+      if (action === 'list') return { op: 'images', sessionId, ...relay, action, offset: count(v.offset ?? 0, Number.MAX_SAFE_INTEGER) };
+      if (typeof v.imageId !== 'string' || !/^[a-f0-9]{64}$/.test(v.imageId)) invalid();
+      if (action === 'release') return { op: 'images', sessionId, ...relay, action, imageId: v.imageId as string };
+      return { op: 'images', sessionId, ...relay, action, imageId: v.imageId as string, offset: count(v.offset, Number.MAX_SAFE_INTEGER) };
+    }
     case 'upload':
       return {
         op: 'upload',
@@ -492,6 +572,23 @@ export function isRemoteAgentReadInvoke(channel: string, args: unknown[] | undef
 /** 控制端接受的单次 read 数据上限：高于本版本的 READ_MAX_BYTES，给新版被控端留余量。 */
 const READ_RESULT_ACCEPT_BYTES = 2 * 1024 * 1024;
 
+export function parseRemoteAgentForkResult(value: unknown): RemoteAgentForkResult {
+  const v = record(value);
+  const text = (value: unknown): value is string =>
+    typeof value === 'string' && value.length > 0 && value.length <= 4096 && !value.includes('\0');
+  if (!text(v.newSdkSessionId) || !Array.isArray(v.uuidMap) || v.uuidMap.length > 100_000) invalid();
+  const uuidMap: Array<[string, string]> = (v.uuidMap as unknown[]).map((pair) => {
+    if (!Array.isArray(pair) || pair.length !== 2 || !text(pair[0]) || !text(pair[1])) invalid();
+    return [pair[0], pair[1]];
+  });
+  return {
+    newSdkSessionId: v.newSdkSessionId as string,
+    uuidMap,
+    ...(v.initialContextTokens !== undefined ? { initialContextTokens: count(v.initialContextTokens, Number.MAX_SAFE_INTEGER) } : {}),
+    ...(v.usedNativeForkAnchor === true ? { usedNativeForkAnchor: true } : {}),
+  };
+}
+
 export function parseRemoteAgentCaps(value: unknown): RemoteAgentCaps {
   const v = record(value);
   const agents = Array.isArray(v.agents)
@@ -508,7 +605,11 @@ export function parseRemoteAgentCaps(value: unknown): RemoteAgentCaps {
     uploadChunkBytes: count(v.uploadChunkBytes, REMOTE_AGENT_UPLOAD_CHUNK_BYTES),
     maxPayloadBytes: count(v.maxPayloadBytes, Number.MAX_SAFE_INTEGER),
     ...(v.virtualWorkspace === true ? { virtualWorkspace: true } : {}),
+    ...(v.nativeFork === true ? { nativeFork: true } : {}),
+    ...(v.imageRecovery === true ? { imageRecovery: true } : {}),
+    ...(v.imageRecoveryRelay === true ? { imageRecoveryRelay: true } : {}),
     ...(v.guestRelay === true ? { guestRelay: true } : {}),
+    ...(v.relayModelAccess === true ? { relayModelAccess: true } : {}),
     ...(v.reshareConsent === true ? { reshareConsent: true } : {}),
     ...(v.reshareBatch === true ? { reshareBatch: true } : {}),
   };
@@ -569,6 +670,9 @@ function headerList(value: unknown): Array<[string, string]> {
 function reverseRequest(value: unknown): RemoteAgentReverseRequest {
   const v = record(value);
   switch (v.type) {
+    case 'model-access':
+      if (v.model !== undefined && (typeof v.model !== 'string' || !v.model || v.model.length > 512)) invalid();
+      return { type: 'model-access', ...(typeof v.model === 'string' ? { model: v.model } : {}) };
     case 'interaction':
       return { type: 'interaction', request: v.request };
     case 'http': {

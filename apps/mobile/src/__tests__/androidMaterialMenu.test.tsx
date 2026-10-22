@@ -27,6 +27,7 @@ vi.mock("react-native", () => ({
       disabled={disabled}
       data-testid={testID}
       onClick={onPress ?? onLongPress}
+      onContextMenu={onLongPress}
     >
       {children}
     </button>
@@ -225,6 +226,26 @@ it("creates the host on demand and reuses it across dismiss/reopen without block
   expect(container.querySelector("[data-theme]")).toBe(host);
   expect(host?.parentElement?.getAttribute("data-pointer-events")).toBe("none");
   expect(container.textContent).toContain("One");
+});
+// 伙伴近况的待办行：长按开菜单（删除），短按要把待办交给对话。触发器接管整块触摸，短按必须经 onPress 转发。
+it("long-press mode opens on long press and forwards a tap to onPress", () => {
+  const tap = vi.fn();
+  act(() =>
+    root.render(
+      <AnchoredPullDownMenu longPress onPress={tap} actions={[{ id: "delete", title: "Delete", destructive: true }]} onAction={vi.fn()}>
+        <span>Todo</span>
+      </AnchoredPullDownMenu>,
+    ),
+  );
+  click("Todo");
+  expect(tap).toHaveBeenCalledOnce();
+  expect(container.textContent).not.toContain("Delete");
+  act(() => {
+    Array.from(container.querySelectorAll("button")).find((b) => b.textContent === "Todo")!
+      .dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+  });
+  expect(container.textContent).toContain("Delete");
+  expect(tap).toHaveBeenCalledOnce();
 });
 it("navigates a submenu, returns through its back row, dismisses and resets the path on reopen", () => {
   act(() =>

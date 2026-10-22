@@ -42,7 +42,6 @@ import {
 import { sessionsStore } from '@/lib/sessionsStore';
 import { recentWorkdirsStore } from '@/lib/recentWorkdirsStore';
 import { isSidebarWindow } from '@/lib/sidebarWindow';
-import { isGhostPanelWindow } from '@/lib/ghostPanelWindow';
 import { setModelEnginePrefsOwner } from '@/state/modelEnginePrefs';
 import { setModelFavoritesOwner } from '@/state/modelFavorites';
 import { setProviderModelMemoryOwner } from '@/state/providerModelMemory';
@@ -57,6 +56,7 @@ import { rememberSsoOrgIdentifier } from '@/state/ssoOrgHistory';
 import { setDeferredUiAssignmentOwner } from '@/features/cc-agent/deferredUiAssignment';
 import { invalidateProvidersSnapshot } from '@/lib/providersSnapshotStore';
 import { preloadLocalCatalogSnapshot } from '@/lib/localCatalogSnapshot';
+import { invalidateRemoteCatalogSnapshots } from '@/lib/remoteCatalogSnapshot';
 import { awaitDesktopLoginStateLoad, type DesktopLoginState } from '../../shared/authIpc';
 import { getDataOwnerGeneration, setDataOwnerGeneration } from './dataOwnerGeneration';
 
@@ -144,6 +144,7 @@ function publishDataOwnerGeneration(
   const ownerChanged = previousOwnerId !== dataOwnerId;
   if (ownerChanged) {
     resetTaskTagCatalogCache();
+    invalidateRemoteCatalogSnapshots();
   }
   // The pre-commit fence may already publish null. A committed owner change
   // must still close sessions even when that published owner stays null.
@@ -454,7 +455,7 @@ export function AuthProvider({
   useEffect(() => {
     if (!isAuthenticated || !accountDeletionRestored) return;
     setAccountDeletionRestored(false);
-    if (isSecondaryWindow() || isSidebarWindow() || isGhostPanelWindow()) return;
+    if (isSecondaryWindow() || isSidebarWindow()) return;
     let disposed = false;
     void authServiceRef
       .current!.consumeAccountDeletionRestoredNotice()

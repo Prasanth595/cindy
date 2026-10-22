@@ -229,9 +229,22 @@ describe('LibraryBindingStore', () => {
     const saved = path.join(tmp, 'saved-parent');
     await fs.promises.rename(candidate, saved);
     await fs.promises.mkdir(candidate);
+    // Windows inode numbers can exceed Number.MAX_SAFE_INTEGER, so two real
+    // directories may compare equal. Exercise this root-rejection branch with
+    // a distinct identity, then restore native stats for the successful retry.
+    const { rootIdentity, record } = JSON.parse(contents).pendingRelocation;
+    const lstat = fs.promises.lstat.bind(fs.promises);
+    const parentIdentity = vi.spyOn(fs.promises, 'lstat').mockImplementation(async (...args) => {
+      const stat = await lstat(...args);
+      if (args[0] === record.realPathAtGrant) {
+        Object.assign(stat, { ino: rootIdentity.ino === 1 ? 2 : 1 });
+      }
+      return stat;
+    });
     const restarted = new LibraryBindingStore(deps);
     await expect(restarted.relocateBinding('hello', '_ns__acme__hello')).rejects.toThrow('root identity changed');
     expect(await fs.promises.readFile(bindingFile, 'utf8')).toBe(contents);
+    parentIdentity.mockRestore();
     await fs.promises.rm(candidate, { recursive: true });
     await fs.promises.rename(saved, candidate);
     await restarted.relocateBinding('hello', '_ns__acme__hello');

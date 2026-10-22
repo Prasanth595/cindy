@@ -28,6 +28,14 @@
     },
     {
       "file": "extension/src/browser/chrome.ts",
+      "desc": "reuse the bounded CDP command helper for graceful Windows Chrome shutdown"
+    },
+    {
+      "file": "extension/src/browser/chrome.ts",
+      "desc": "close Windows Chrome via CDP and wait for actual process exit before force-stop"
+    },
+    {
+      "file": "extension/src/browser/chrome.ts",
       "desc": "start headed automation Chrome without an empty foreground window"
     },
     {
@@ -104,7 +112,7 @@
     }
   ],
   "fileCount": 335,
-  "contentHash": "8aac31b28f77b2d9ea66ff460bb674fbab7a0bedb8200aa253f3d579f816f948",
+  "contentHash": "9a4e02b5c865d4f3cec6e44b1862050ba706542d96a67f564c4c3b60cf7fdc97",
   "fsSafe": {
     "package": "@openclaw/fs-safe",
     "version": "0.4.0"

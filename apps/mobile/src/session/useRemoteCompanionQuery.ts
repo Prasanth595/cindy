@@ -4,8 +4,9 @@ import { AppState } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import { useAuth } from '@/auth/AuthContext';
 import { subscribeRemoteBotChanges, useDeviceLink } from '@/device-link/DeviceLinkContext';
+import { readCompanionTask, subscribeCompanionTaskRefresh } from './companionTaskReads';
 
-const pending = new Map<string, { promise: Promise<unknown>; invalidated: boolean }>();
+const pending = new Map<string, { promise: Promise<unknown>; invalidated: boolean; consumers: Set<() => boolean> }>();
 
 /** Share concurrent list reads between cards; responses never outlive their account/link. */
 export function useRemoteCompanionQuery<T>(
@@ -21,6 +22,7 @@ export function useRemoteCompanionQuery<T>(
   const link = useDeviceLink();
   const { accountGeneration } = useAuth();
   const argsKey = JSON.stringify(args);
+  const taskReadScope = JSON.stringify([accountGeneration, link.connectionEpoch, deviceId]);
   const identity = JSON.stringify([accountGeneration, deviceId, channel, argsKey]);
   const binding = JSON.stringify([
     accountGeneration,
@@ -67,9 +69,14 @@ export function useRemoteCompanionQuery<T>(
           return;
         }
         if (!entry) {
+          const consumers = new Set<() => boolean>();
           entry = {
-            promise: link.invoke(deviceId, channel, JSON.parse(argsKey)),
+            promise: channel === 'local-db:sessions:get'
+              ? readCompanionTask(taskReadScope, deviceId, JSON.parse(argsKey)[0], link.invoke,
+                () => [...consumers].some((current) => current()))
+              : link.invoke(deviceId, channel, JSON.parse(argsKey)),
             invalidated: false,
+            consumers,
           };
           pending.set(binding, entry);
           const captured = entry;
@@ -79,6 +86,7 @@ export function useRemoteCompanionQuery<T>(
             })
             .catch(() => undefined);
         }
+        entry.consumers.add(() => !disposed && currentBinding.current === binding && AppState.currentState === 'active');
         void entry.promise
           .then((value) => {
             if (!disposed && generation === expected && currentBinding.current === binding) {
@@ -125,7 +133,10 @@ export function useRemoteCompanionQuery<T>(
           });
       };
       load();
-      const interval = options.refreshIntervalMs
+      const taskRefresh = channel === 'local-db:sessions:get' && options.refreshIntervalMs
+        ? subscribeCompanionTaskRefresh(taskReadScope, options.refreshIntervalMs, load)
+        : undefined;
+      const interval = !taskRefresh && options.refreshIntervalMs
         ? setInterval(load, options.refreshIntervalMs)
         : undefined;
       const unsubscribe = subscribeRemoteBotChanges((source, changedChannel, payload) => {
@@ -160,9 +171,11 @@ export function useRemoteCompanionQuery<T>(
         appState.remove();
         if (timer) clearTimeout(timer);
         if (interval) clearInterval(interval);
+        taskRefresh?.();
       };
     }, [
       argsKey,
+      taskReadScope,
       binding,
       channel,
       deviceId,

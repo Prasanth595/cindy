@@ -210,7 +210,7 @@ function coerceCachedSession(item: unknown): RemoteSession | null {
     model: typeof item.model === 'string' ? truncateText(item.model) : '',
     effort: typeof item.effort === 'string' ? item.effort : '',
     permissionMode: typeof item.permissionMode === 'string' ? item.permissionMode : '',
-    fastMode: item.fastMode === true,
+    fastMode: (item.fastMode === 'ultrafast' ? 'ultrafast' : item.fastMode === true),
     status,
     agentKind: item.agentKind === 'codex' || item.agentKind === 'pi' ? item.agentKind : 'cc',
     userSendAt: typeof item.userSendAt === 'string' ? item.userSendAt : null,

@@ -1272,10 +1272,12 @@ function forward(
             strippedBytes: retryBody.length,
           });
           const threadId = selectedHeaderValue(headers, rule.threadIdHeaders ?? DEFAULT_THREAD_ID_HEADERS);
-          const model = clientModel || extractBodyModel(body);
-          if (threadId && model) {
+          if (threadId) {
             for (const appliedRule of appliedRules) {
-              appliedRule.onRetry?.(threadId, model);
+              const model = appliedRule.useUpstreamModel
+                ? extractBodyModel(body)
+                : clientModel || extractBodyModel(body);
+              if (model) appliedRule.onRetry?.(threadId, model);
             }
           }
           const retry = (): void => {
@@ -2240,7 +2242,9 @@ export async function createAnthropicCompatProxy(opts: ProxyOptions): Promise<Pr
         headers['accept-encoding'] = 'identity';
         installResponseGuard(res, () => res.statusCode >= 400
           ? new PassThrough() // Native clients treat HTTP failures as errors, never executable output.
-          : requestGuard!.response(res.getHeaders()));
+          : requestGuard!.response(res.getHeaders()), error => {
+          logger.warn?.('response guard rejected upstream payload', { reqId, err: String(error) });
+        });
       }
     } catch {
       res.writeHead(403); res.end(); req.resume(); return;

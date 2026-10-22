@@ -92,6 +92,7 @@ import { resetChannelGroupContextCursors } from './shared/channelGroupWindow';
 import { getImOrchestrator, listImOrchestrators } from './shared/orchestrator';
 import {
   configureBotImConnectionRuntime,
+  setWechatCompanionBinding,
   registerBotImConnectionIpc as registerBotImConnectionRuntimeIpc,
   startBotImConnections,
   stopBotImConnections,
@@ -122,6 +123,7 @@ import { getUpdateStatus, isUpdateRelaunchImminent } from '../updateService';
 
 import { createLogger } from '../logger';
 import { assertTrustedAppRendererEvent } from '../security/trustedAppRenderer';
+import { throwIpcError } from '../utils/ipcValidate';
 import {
   readWechatChannelSettings,
   resetWechatWorkingDir,
@@ -153,7 +155,7 @@ export interface DesktopCcPrefs {
   providerId?: string | null;
   effort: string;
   permissionMode: string;
-  fastMode: boolean;
+  fastMode: boolean | 'ultrafast';
 }
 
 let _desktopCcPrefs: DesktopCcPrefs | null = null;
@@ -264,6 +266,17 @@ export function startImOrchestrators(): void {
   // 伙伴自有 IM 连接: 每条记录一份传输层 + 编排器, 与上面设置页那份并存。
   // 实例在 initializeImConnection 里按记录起, 这里只注入装配方式。
   configureBotImConnectionRuntime({
+    removeWechatCompanionBinding: (update, isCurrent) => {
+      const generation = captureImAccountGeneration();
+      if (generation === null) return Promise.reject(new Error('ACCOUNT_CHANGED'));
+      return wechatIm.updateCompanionBinding(() => {
+        if (!isImAccountGenerationCurrent(generation)) throw new Error('ACCOUNT_CHANGED');
+        update();
+      }, { cancelPendingIf: () => {
+        if (!isImAccountGenerationCurrent(generation)) throw new Error('ACCOUNT_CHANGED');
+        return isCurrent();
+      } });
+    },
     create: (record) => {
       const prefix = secretKeyPrefixFor(record.id);
       if (record.channel === 'telegram') {
@@ -399,6 +412,31 @@ export function startImOrchestrators(): void {
   ipcMain.handle('wechatBot:get-channel-settings', (event) => {
     assertTrustedAppRendererEvent(event);
     return readWechatChannelSettings();
+  });
+  ipcMain.handle('wechatBot:set-companion', (event, botId: unknown) => {
+    assertTrustedAppRendererEvent(event);
+    if (botId !== null && (typeof botId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(botId))) {
+      throwIpcError('INVALID_ARGUMENT', 'Invalid teammate');
+    }
+    return connectionLifecycle.runWhileStarted(async () => {
+      const generation = captureImAccountGeneration();
+      if (generation === null) throwIpcError('PRECONDITION_FAILED', 'Account unavailable');
+      try {
+        await setWechatCompanionBinding(botId as string | null, (commit) => wechatIm.updateCompanionBinding(() => {
+          if (!isImAccountGenerationCurrent(generation)) throw new Error('ACCOUNT_CHANGED');
+          commit();
+        }));
+      } catch (error) {
+        const code = error instanceof Error ? error.message : '';
+        throwIpcError('PRECONDITION_FAILED',
+          ['WECHAT_CONNECTION_BUSY', 'BOT_INACTIVE', 'WECHAT_COMPANION_IN_USE'].includes(code)
+            ? code : 'WECHAT_COMPANION_UPDATE_FAILED');
+      }
+      BrowserWindow.getAllWindows().forEach((window) => {
+        if (!window.isDestroyed()) window.webContents.send('wechatBot:channel-settings-changed', readWechatChannelSettings());
+      });
+      return readWechatChannelSettings();
+    });
   });
   ipcMain.handle('wechatBot:choose-working-directory', async (event) => {
     assertTrustedAppRendererEvent(event);

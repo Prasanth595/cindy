@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { useIsFocused } from 'expo-router';
 import { AppState } from 'react-native';
 import type { RemoteResourceBlock } from '@cindy/device-link';
+import { parseMailCard } from '@cindy/maker-shared/ghost-card-form';
 import { useAuth } from '@/auth/AuthContext';
 import { useDeviceLink } from '@/device-link/DeviceLinkContext';
 import { getRemoteResource } from '@/device-link/remoteResources';
@@ -11,7 +12,10 @@ import { startFocusedTopicSubscription } from '@/device-link/focusedTopicSubscri
  * Refresh after foreground/reconnect and host invalidation; stale replies cannot
  * replace a recycled row or another account's card. */
 export function usePluginResultCard(deviceId: string | undefined, sessionId: string, callId: string) {
-  return useSessionPluginResource(deviceId, sessionId, callId, 'plugin-results', 'card');
+  const resource = useSessionPluginResource(deviceId, sessionId, callId, 'plugin-results', 'card');
+  const hidden = resource.blocks?.some(block => block.primitive === 'plugin-card-actions' &&
+    !!parseMailCard((block.data as { mail?: unknown } | undefined)?.mail)?.supersededBy) ?? false;
+  return { ...resource, hidden };
 }
 
 export function useSessionPluginResource(deviceId: string | undefined, sessionId: string, callId: string, collectionId: string, kind: string) {
@@ -35,7 +39,7 @@ export function useSessionPluginResource(deviceId: string | undefined, sessionId
       const expected = ++generation;
       const valid = () => !disposed && current.current === binding && generation === expected && AppState.currentState === 'active';
       try {
-        const resource = await getRemoteResource(invoke, { deviceId, deviceName: deviceId }, { collectionId, kind, id }, undefined, collectionId === 'plugin-results' ? ['plugin-card-actions'] : []);
+        const resource = await getRemoteResource(invoke, { deviceId, deviceName: deviceId }, { collectionId, kind, id }, undefined, collectionId === 'plugin-results' ? ['plugin-card-actions', 'plugin-card-forms'] : []);
         if (valid()) setState({ binding, blocks: resource.blocks ?? [], title: typeof resource.display.title === 'string' ? resource.display.title : resource.display.title.fallback, error: kind === 'card' && !resource.blocks?.length });
       } catch (error) {
         const code = error && typeof error === 'object' ? (error as { code?: unknown }).code : undefined;

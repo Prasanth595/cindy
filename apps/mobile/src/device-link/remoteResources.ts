@@ -45,6 +45,8 @@ const RICH_REMOTE_RESOURCE_PRIMITIVES: readonly string[] = [
   BOT_GROUP_CHAT_PRIMITIVE,
   'plugin-capabilities',
   'plugin-card-actions',
+  'plugin-card-forms',
+  'mail-message',
   'teammate-todos',
 ];
 
@@ -229,6 +231,7 @@ function validDescriptor(value: unknown): RemoteCollectionDescriptor | null {
     id,
     resourceKind,
     title,
+    ...(record.actions !== undefined ? { actions: normalizeRemoteActions(record.actions) } : {}),
     ...(placement ? { placement } : {}),
     ...(iconName && iconFallbackText !== null
       ? { icon: { name: iconName, fallbackText: iconFallbackText } }

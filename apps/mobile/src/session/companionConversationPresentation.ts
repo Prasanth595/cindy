@@ -2,7 +2,7 @@ import { hasRichAnswer } from '@cindy/maker-shared/rich-answer';
 import { botTaskResultKey, readBotTaskResults } from '@cindy/maker-shared/botCollaboration';
 import { HISTORY_GAP_SPLIT_MS } from '@cindy/maker-shared/history-gap';
 import { collectMobileMarkdownImages } from './messageMarkdown';
-import type { MobileMessageRenderItem } from './messageRenderModel';
+import type { MobileMessageRenderItem, MobileWorkGroupItem, MobileWorkChildItem } from './messageRenderModel';
 
 const isDelivery = (item: MobileMessageRenderItem) => (item.type === 'message' && !item.message.failedSamplingAttempt && item.message.kind === 'assistant' && hasRichAnswer(item.message.body)) || item.type === 'tool_media' && item.tools.some(tool => !!tool.media?.length || !!tool.files?.length)
   || item.type === 'message' && !item.message.failedSamplingAttempt && (item.message.companion?.kind === 'task' && item.message.companion.meta.role === 'delegation-result'
@@ -11,6 +11,39 @@ const isDelivery = (item: MobileMessageRenderItem) => (item.type === 'message' &
 
 const expandWorkGroups = (items: readonly MobileMessageRenderItem[]): MobileMessageRenderItem[] =>
   items.flatMap(item => item.type === 'work_group' ? expandWorkGroups(item.children) : [item]);
+
+/** Lift addressed replies without destroying the process tree or its lazy loader. */
+function liftReplies(group: MobileWorkGroupItem, isReply: (item: MobileMessageRenderItem) => boolean): MobileMessageRenderItem[] {
+  if (!group.children.some(isReply)) return [group];
+  const result: MobileMessageRenderItem[] = [];
+  let pending: MobileWorkChildItem[] = [];
+  let chunk = 0;
+  let start = group.startedAtMs;
+  const groupEnd = start !== undefined && group.durationMs !== undefined ? start + group.durationMs : undefined;
+  const flush = (end: number | undefined) => {
+    if (!pending.length) return;
+    if (!group.deferred && pending.length === 1 && pending[0].type === 'work_group') result.push(pending[0]);
+    else result.push({
+      ...group, key: chunk === 0 ? group.key : `${group.key}~${pending[0].key}`,
+      children: pending, startedAtMs: start,
+      durationMs: start !== undefined && end !== undefined && end >= start ? end - start : undefined,
+      deferred: chunk === 0 ? group.deferred : undefined,
+    });
+    pending = [];
+    chunk++;
+  };
+  for (const child of group.children) {
+    if (isReply(child) && child.type === 'message') {
+      const time = Date.parse(child.message.createdAt);
+      const at = Number.isFinite(time) ? time : undefined;
+      flush(at);
+      result.push(child);
+      start = at;
+    } else pending.push(child);
+  }
+  flush(groupEnd);
+  return result;
+}
 
 /** Presentation only. The host's persisted messages and lazy history remain intact. */
 export function companionConversationItems(items: readonly MobileMessageRenderItem[]): MobileMessageRenderItem[] {
@@ -35,7 +68,13 @@ export function companionConversationItems(items: readonly MobileMessageRenderIt
       if (sealedRun) sealed.add(item.key);
     }
   }
-  const flattened = items.flatMap(item => item.type === 'work_group' ? companionConversationItems(item.children) : [item]);
+  const isAddressedReply = (item: MobileMessageRenderItem) => item.type === 'message'
+    && item.message.kind === 'assistant' && !item.message.failedSamplingAttempt
+    && !!item.message.body.trim()
+    && (item.message.source.agentMeta?.assistantPhase !== 'commentary' || item.message.explicitDelivery || hasRichAnswer(item.message.body))
+    && (item.message.source.agentMeta?.assistantPhase === 'final_answer' || item.message.turnCompleted
+      || sealed.has(item.key) || Boolean(item.message.sourceGroup) || item.message.explicitDelivery || hasRichAnswer(item.message.body));
+  const flattened = items.flatMap(item => item.type === 'work_group' ? liftReplies(item, isAddressedReply) : [item]);
   // A later delivery is already the result. Do not restore its unsealed preamble.
   const deliveredAfter = new Set<string>();
   let delivery = false;
@@ -60,12 +99,10 @@ export function companionConversationItems(items: readonly MobileMessageRenderIt
     if (item.type === 'message' && item.message.companion?.kind === 'task'
       && item.message.companion.meta.role === 'delegation-result'
       && attached.has(botTaskResultKey(item.message.companion.meta))) return false;
-    if (item.type === 'thinking' || item.type === 'tool_group' || item.type === 'agent_task'
-      || item.type === 'subagent_group' || item.type === 'todo') return false;
+    if (item.type === 'thinking') return false;
     if (item.type !== 'message') return true;
     const message = item.message;
-    // Companion chats omit process prose; the original failed rows remain in
-    // persisted history and the ordinary task's expandable work group.
+    // Failed samples remain available inside the preserved work group, never as replies.
     if (message.kind === 'assistant' && message.failedSamplingAttempt) return false;
     // Desktop drops persisted synthetic resume separators from teammate chats; only the live
     // reconnect card (still in progress) remains. The composer status carries recovery copy.
@@ -74,7 +111,9 @@ export function companionConversationItems(items: readonly MobileMessageRenderIt
     }
     if (message.systemCardType) return true;
     if (message.kind === 'thinking' || message.kind === 'tool') return false;
-    return message.kind !== 'assistant' || Boolean(message.sourceGroup) || message.explicitDelivery || message.turnCompleted || sealed.has(item.key) || isDelivery(item)
+    if (message.kind === 'assistant' && message.source.agentMeta?.assistantPhase === 'commentary'
+      && !message.explicitDelivery && !isDelivery(item)) return false;
+    return message.kind !== 'assistant' || isAddressedReply(item) || isDelivery(item)
       || message.isTurnFinalAssistant && !deliveredAfter.has(item.key);
   });
 }

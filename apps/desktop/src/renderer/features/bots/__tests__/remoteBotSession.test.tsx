@@ -2,6 +2,8 @@
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { parseRemoteResourceGetRequest } from '@cindy/device-link';
+import { resolveBotChatIdentity } from '../botChatPresentation';
+import type { BotChatBinding } from '../botChatPresentation';
 const h = vi.hoisted(() => ({
   invoke: vi.fn(),
   markRead: vi.fn(),
@@ -76,7 +78,9 @@ beforeEach(() => {
   window.electronAPI = { deviceLink: { invoke: h.invoke } } as unknown as Window['electronAPI'];
 });
 afterEach(cleanup);
-it('resolves the latest canonical task and pins its host before mounting writable chat', async () => {
+// Unit regression: a host conversation link + active bot session must reach the shared
+// parent chat as canonical, or its post-send follow-up invitation can never appear.
+it('resolves the latest canonical task and passes its verified identity to writable chat', async () => {
   const { rerender } = render(<RemoteBotSessionView />);
   await screen.findByText('remote-conversation');
   expect(h.merge).toHaveBeenCalledWith('home', 'Home', [
@@ -85,11 +89,12 @@ it('resolves the latest canonical task and pins its host before mounting writabl
   expect(h.view).toHaveBeenLastCalledWith(
     expect.objectContaining({
       sessionIdProp: 'new-canonical', routeOwner: true, readOnly: false,
-      botIdentity: expect.objectContaining({ id: 'writer', sessionId: 'new-canonical' }),
+      botIdentity: expect.objectContaining({ id: 'writer', sessionId: 'new-canonical', canonicalChat: true }),
     }),
   );
   expect(h.markRead).not.toHaveBeenCalled();
   const identity = h.view.mock.lastCall![0].botIdentity;
+  expect(resolveBotChatIdentity(identity as BotChatBinding, 'new-canonical')?.canonicalChat).toBe(true);
   const requestCount = h.invoke.mock.calls.length;
   h.lastReplyAt = 123;
   rerender(<RemoteBotSessionView />);

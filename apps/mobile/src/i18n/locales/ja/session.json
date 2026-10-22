@@ -1,4 +1,33 @@
 {
+  "sideChat": {
+    "collapse": "サイドチャットを閉じる",
+    "resume": "サイドチャットを続ける",
+    "list": "サイドチャット一覧",
+    "summary": "サイドチャット · {{count}} 件",
+    "fromMain": "「{{title}}」から",
+    "mainTask": "メインセッション",
+    "commandDescription": "サイドチャットを開く。/side の後に質問を入力できます",
+    "commandAttachments": "現在の添付ファイルを処理してから /side を使ってください。",
+    "unavailable": "このセッションではサイドチャットを利用できません。",
+    "title": "サイドチャット",
+    "ask": "サイドチャットで質問",
+    "create": "新しいサイドチャット",
+    "returnMain": "元のセッションに戻る",
+    "item": "サイドチャット {{index}}",
+    "current": "現在",
+    "description": "元のセッションの文脈を引き継いで個別に質問できます。回答は元のセッションに自動で追加されません。",
+    "empty": "サイドチャットはまだありません",
+    "loadFailed": "サイドチャットを読み込めませんでした。コンピューターの接続を確認してください。古いデスクトップ版では更新が必要です。",
+    "createFailed": "サイドチャットを作成できませんでした。元のセッションはそのままです。",
+    "unsupported": "このコンピューターはサイドチャットに未対応です。デスクトップアプリを更新してください。",
+    "waitForReply": "元のセッションの最初の回答が完了してから作成してください。"
+  },
+  "leaveWhileUploading": {
+    "title": "送信を中止しますか？",
+    "body": "添付のアップロードがまだ終わっていません。今離れるとこのメッセージは送信されません。",
+    "stay": "待つ",
+    "discard": "送信を中止"
+  },
   "entry": {
     "title": "タスクを開く",
     "loading": "タスクを読み込み中…",
@@ -409,6 +438,13 @@
     "copyFailed": "コピーに失敗しました",
     "deleteConfirmTitle": "セッションを削除しますか？",
     "deleteConfirmBody": "削除すると元に戻せません。",
+    "archiveScheduleConfirmTitle": "セッションをアーカイブしますか？",
+    "archiveScheduleConfirmBody_one": "このセッションに紐づく自動化{{names}}は、アーカイブ後に一時停止されます。",
+    "archiveScheduleConfirmBody_other": "このセッションに紐づく自動化{{names}}は、アーカイブ後に一時停止されます。",
+    "archiveScheduleName": "「{{name}}」",
+    "archiveScheduleNameSeparator": "、",
+    "archiveScheduleBulkNotice_one": "そのうち {{count}} 件のセッションに自動化が紐づいており、アーカイブ後に一時停止されます。",
+    "archiveScheduleBulkNotice_other": "そのうち {{count}} 件のセッションに自動化が紐づいており、アーカイブ後に一時停止されます。",
     "dirAlreadyAdded": "このディレクトリはすでにリストにあります。",
     "resetCodexTitle": "Codex の使用量をリセットしますか？",
     "resetCodexBody": "{{account}} のリセットを 1 回消費します。クォータウィンドウはすぐに再開され、この操作は取り消せません。",
@@ -549,6 +585,7 @@
     "taskAlreadyCreated": "このセッションはコンピューターに作成済みです。保存されたメッセージは元のセッションで送信を再開します。"
   },
   "remoteError": {
+    "REMOTE_AGENT_GROUP_USAGE_LIMIT": "このモデルを利用できるアカウントの使用量が上限に達しました。別のモデルに切り替えるか、上限のリセット後に続行できます。",
     "REMOTE_AGENT_GROUP_UNAVAILABLE": "プロバイダーグループ内のパソコンは現在このセッションを実行できません。オフライン、割り当て停止中、クールダウン中、またはこのモデルがない可能性があります。パソコンでこのプロバイダーの「リモートと共有」ページを確認してください。",
     "REMOTE_DAEMON_CLOSED": "リモート接続が切れました。更新中の可能性があります。このターンは終了したので、もう一度送信してください。",
     "REMOTE_LOCAL_ATTACHMENT_UNSUPPORTED": "リモートセッションではローカルのファイル/画像の添付にアクセスできません。内容を直接貼り付けてください。",
@@ -579,6 +616,7 @@
     "REMOTE_AGENT_BUSY": "相手のパソコンで実行中のセッションが多すぎます。いくつか終了してからもう一度お試しください。",
     "REMOTE_AGENT_DEVICE_LIMIT": "このデバイスのリモートセッション数が上限に達しました。不要なセッションをアーカイブするか、提供者に「リモートと共有」で上限の変更を依頼してください。",
     "REMOTE_AGENT_TOTAL_LIMIT": "提供者のパソコンのリモートセッション総数が上限に達しました。提供者に不要なセッションの解放、または「リモートと共有」での上限変更を依頼してください。",
+    "REMOTE_AGENT_RESUME_LOST": "相手のパソコンでのこれまでの会話に再接続できなかったため、Agent はその文脈なしで続行します。",
     "REMOTE_AGENT_UNSUPPORTED": "相手のパソコンではこの Agent を使えません。そのパソコンでインストールまたはサインインするか、別の Agent を選んでください。",
     "REMOTE_AGENT_INVALID": "Agent を実行しているパソコンとの通信でエラーが発生しました。もう一度お試しください。続く場合は両方のパソコンの Cindy を最新版に更新してください。",
     "REMOTE_AGENT_PROVIDER_NOT_ALLOWED": "そのパソコンでは、このプロバイダーのリモート利用が許可されていません。そのパソコンの「設定 → モデルプロバイダー」で「リモート利用を許可」をオンにするか、別のモデルを選んでください。",
@@ -678,5 +716,39 @@
       "ORCA_CREATE_UNCONFIRMED": "Worker の作成がタイムアウトし、成功したか確認できませんでした。まず Worker 一覧を確認し、新しい Worker がない場合のみ再試行してください。",
       "ORCA_ACTION_UNCONFIRMED": "操作がタイムアウトしたため、結果をまだ確認できません。一覧を更新しました。現在の表示を基準にしてください。"
     }
+  },
+  "resetAutoUse": {
+    "label": "自動使用",
+    "rules": "自動使用ルール",
+    "lowQuota": "週間配分の残りが 1% 未満で使用",
+    "resetDistance": "配分リセットまでの残り時間",
+    "days": "{{count}} 日以上",
+    "unlimited": "制限なし",
+    "custom": "カスタム…",
+    "customDays": "日数を指定",
+    "dayUnit": "日以上",
+    "apply": "適用",
+    "expiring": "カードの有効期限前に使用",
+    "leadTime": "使用するタイミング",
+    "minutes": "有効期限の {{count}} 分前",
+    "hours": "有効期限の {{count}} 時間前",
+    "hint": "いずれかの条件で、期限が近いカードから使用します。全配分が満量の場合は使用しません。このパソコンで Cindy の起動中に実行します。",
+    "failed": "保存できませんでした。再試行してください。",
+    "restore": "既定に戻す"
+  },
+  "followUp": {
+    "title": "セッションのフォローを始めましょうか？",
+    "start": "フォローを開始",
+    "notNow": "今はしない",
+    "saveFailed": "保存できませんでした。もう一度お試しください"
+  },
+  "providerGroupRebalance": {
+    "title": "{{label}} に切り替えて続けますか？",
+    "body": "各アカウントのクォータを均等に使い切るため、このメッセージは {{label}} から送ることをおすすめします（{{quota}}）。直近数回のやり取りと要約は引き継がれますが、それより前の細部は失われることがあります。",
+    "quota": "残り {{left}}%",
+    "quotaReset": "残り {{left}}%・{{reset}}後にリセット",
+    "confirm": "切り替える",
+    "remember": "切り替えて、今後は自動にする（このタスクのみ）",
+    "cancel": "キャンセル"
   }
 }

@@ -200,6 +200,8 @@ export class GhostPipeDispatcher {
     sessionId?: string;
     /** Host debug actions are explicitly excluded. Never exposed in plugin payloads. */
     recordUsage?: false;
+    /** Native reader's explicit opening intent. Never sourced from tool args. */
+    mailReaderOpened?: true;
   }): Promise<GhostToolCallResult> {
     const { ghostId, namespace, tool, args } = request;
 
@@ -239,7 +241,14 @@ export class GhostPipeDispatcher {
 
     // ── 派发 + 配对等待 ────────────────────────────────────────────────
     const callId = request.callId && request.callId.length > 0 ? request.callId : randomUUID();
-    const payload: GhostPipeToolCall = { type: 'tool-call', callId, tool, args };
+    let toolArgs = args;
+    if (ghost.manifest.mail === true && ghost.manifest.mailReader?.tool === tool) {
+      toolArgs = { ...args };
+      delete toolArgs.markRead;
+      if (request.mailReaderOpened === true && ghost.manifest.mailReader.markRead === true)
+        toolArgs.markRead = true;
+    }
+    const payload: GhostPipeToolCall = { type: 'tool-call', callId, tool, args: toolArgs };
 
     return new Promise<GhostToolCallResult>((resolve) => {
       const startedAt = Date.now();
