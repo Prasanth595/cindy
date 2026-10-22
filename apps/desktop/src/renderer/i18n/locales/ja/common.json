@@ -10330,6 +10330,14 @@
   "commonUi": {
     "retry": "再試行",
     "crossAgentConvert": {
+      "suppressAgentsMd": "このワークスペースでは表示しない",
+      "suppressAgentsMdHint": "AGENTS.md → CLAUDE.md の確認のみ非表示にします。設定 → 一般で戻せます。他の変換には影響しません。",
+      "preferenceFailed": "変換の確認設定を保存できませんでした",
+      "preferenceLoadFailed": "変換の確認設定を読み込めませんでした",
+      "preferencesTitle": "AGENTS.md 変換の確認",
+      "preferencesHint": "以下のワークスペースでは AGENTS.md → CLAUDE.md の確認を非表示にしています。戻すと、次に変換が必要になった際に表示されます。",
+      "restorePrompt": "確認を再表示",
+      "restoreWorkspace": "{{workingDir}} の変換確認を再表示",
       "asking": {
         "title": "変換できるワークスペース設定を検出",
         "description": "このワークスペースには {{sourceAgent}} のプロジェクト設定があります。{{targetAgent}} 用の対応設定を生成しますか？変更はこのワークスペース内にのみ書き込まれます。",

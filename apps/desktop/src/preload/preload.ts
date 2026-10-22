@@ -8218,11 +8218,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
     // ── 跨 Agent 工作区互转（双向，5 项独立判断；进度 step 通过 push 流转）────
     crossAgent: {
+      listSuppressedWorkspaces: (): Promise<string[]> =>
+        ipcRenderer.invoke('maker:cross-agent:prompt-preferences', 'list'),
+      suppressAgentsMdPrompt: (workingDir: string): Promise<string[]> =>
+        ipcRenderer.invoke('maker:cross-agent:prompt-preferences', 'suppress', workingDir),
+      restoreAgentsMdPrompt: (workingDir: string): Promise<string[]> =>
+        ipcRenderer.invoke('maker:cross-agent:prompt-preferences', 'restore', workingDir),
       detect: (
         workingDir: string,
         agentKind: 'claude-code' | 'codex',
+        respectPromptPreference = true,
       ): Promise<{ items: CrossAgentMigrationItem[] }> =>
-        ipcRenderer.invoke('maker:cross-agent:detect', workingDir, agentKind),
+        ipcRenderer.invoke('maker:cross-agent:detect', workingDir, agentKind, respectPromptPreference),
       convert: (
         items: CrossAgentMigrationItem[],
       ): Promise<{

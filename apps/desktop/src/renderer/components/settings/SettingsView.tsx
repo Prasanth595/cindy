@@ -50,6 +50,7 @@ import { LinkOpenSection } from './LinkOpenSection';
 import { StreamFadeSection } from './StreamFadeSection';
 import { TipsSection } from './TipsSection';
 import { ExperimentalSection } from './ExperimentalSection';
+import { MigrationPromptSection } from './MigrationPromptSection';
 import { GitSafetySection } from './GitSafetySection';
 import { SessionImportSection } from './SessionImportSection';
 import { HelpSection } from './HelpSection';
@@ -453,6 +454,8 @@ export function SettingsView() {
                         </div>
                       </div>
                     </section>
+
+                    <MigrationPromptSection />
 
                     {/* Section — Experimental (py 18). */}
                     <section id="settings-search-target-general-experimental" className="py-[18px]" aria-label={t('settings.sections.experimental')}>

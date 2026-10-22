@@ -7157,9 +7157,13 @@ interface ElectronAPI {
 
     /* ── 跨 Agent 工作区互转（双向，5 项独立判断；进度 step 通过 push 流转）── */
     crossAgent: {
+      listSuppressedWorkspaces: () => Promise<string[]>;
+      suppressAgentsMdPrompt: (workingDir: string) => Promise<string[]>;
+      restoreAgentsMdPrompt: (workingDir: string) => Promise<string[]>;
       detect: (
         workingDir: string,
         agentKind: 'claude-code' | 'codex' | 'pi',
+        respectPromptPreference?: boolean,
       ) => Promise<{ items: CrossAgentMigrationItem[] }>;
       convert: (items: CrossAgentMigrationItem[]) => Promise<{
         total: number;

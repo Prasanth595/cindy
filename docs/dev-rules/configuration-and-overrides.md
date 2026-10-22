@@ -77,6 +77,23 @@ token）与 [`engineering-conventions.md`](engineering-conventions.md)（i18n）
   约定。
 - agent 修改配置时，只有用户明确要求才写入 override，不得把当前默认值固化回用户配置。
 
+### 工作区 AGENTS.md 转换提示
+
+本机 Desktop 新建任务的转换弹窗可对当前工作目录选择「此工作区不再提示」，只关闭
+`AGENTS.md → CLAUDE.md` 这一项。其他目录、反向转换及 agents/hooks/MCP 转换照常检测；
+普通取消、Esc 与转换失败不写入该选择。设置 → 通用仅在存在此类选择时显示恢复列表，
+逐目录恢复会删除对应 override，下次确实需要转换时再提示。
+自动创建 worktree 前的弹窗仍检测基础仓库，但不读取该仓库的提示偏好，也不提供持久关闭
+选项，避免把尚未创建的工作区选择写到基础仓库；直接选择已存在的 worktree 时按其目录记录。
+
+偏好在当前 Desktop profile 的 `userData/cross-agent-prompt-preferences.json`：
+`{ "suppressedWorkspaces": ["绝对目录路径"] }`。仅存显式关闭的目录；目录经 realpath 归一，
+Windows 按不区分大小写匹配，每个物理 worktree 单独记录，不写项目文件。复用跨进程锁和
+原子写入，损坏文件保留且拒绝覆盖；空列表删除 override 文件。此处是本机提示偏好，不同步
+设备、不开放远控写入；SSH、托管远程任务与 Mobile 沿用不弹此迁移提示的现状。
+
+检测沿用原有文件条件；此偏好只记住用户的显式选择，不推断或修改引擎的指令读取能力。
+
 ## Review 清单
 
 1. 新配置的可见性层级选对了吗？是否因“技术上能配”就塞进了设置页外层？

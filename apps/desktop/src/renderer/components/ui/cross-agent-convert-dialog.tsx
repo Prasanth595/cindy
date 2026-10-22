@@ -26,6 +26,8 @@ export interface CrossAgentConvertDialogProps {
   onOpenChange: (open: boolean) => void;
   onConfirm: () => void;
   onCancel: () => void;
+  onSuppressAgentsMd: (() => void) | null;
+  savingPreference: boolean;
 }
 
 export function CrossAgentConvertDialog({
@@ -36,6 +38,8 @@ export function CrossAgentConvertDialog({
   onOpenChange,
   onConfirm,
   onCancel,
+  onSuppressAgentsMd,
+  savingPreference,
 }: CrossAgentConvertDialogProps) {
   const { t } = useTranslation();
   const isRunning = phase === 'running';
@@ -62,11 +66,11 @@ export function CrossAgentConvertDialog({
         <AlertDialog.Content
           className={cn(
             'modal-panel fixed left-1/2 top-1/2 z-[10000] -translate-x-1/2 -translate-y-1/2',
-            'w-full max-w-[440px] p-4',
+            'w-[calc(100vw-32px)] max-w-[440px] p-4',
           )}
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
           onEscapeKeyDown={(e) => {
-            if (isRunning) e.preventDefault();
+            if (isRunning || savingPreference) e.preventDefault();
           }}
         >
           <AlertDialog.Title
@@ -91,7 +95,7 @@ export function CrossAgentConvertDialog({
                 <li
                   key={item.id}
                   className={cn(
-                    'flex items-center gap-2 rounded-md px-2 py-1.5 text-13',
+                    'flex items-center gap-2 rounded-lg px-2 py-1.5 text-13',
                     'text-[var(--confirm-title)]',
                   )}
                 >
@@ -105,13 +109,25 @@ export function CrossAgentConvertDialog({
             })}
           </ul>
 
+          {onSuppressAgentsMd && items.some((item) => item.kind === 'agents-md' && item.direction === 'to-claude') && (
+            <div className="mt-4 space-y-2">
+              <Button variant="secondary" palette="confirmation" size="md" type="button"
+                disabled={isRunning || savingPreference} loading={savingPreference} onClick={onSuppressAgentsMd}>
+                {t('commonUi.crossAgentConvert.suppressAgentsMd')}
+              </Button>
+              <p className="text-12 text-[var(--confirm-desc)]">
+                {t('commonUi.crossAgentConvert.suppressAgentsMdHint')}
+              </p>
+            </div>
+          )}
+
           <div className="mt-6 flex justify-end gap-2.5">
             <Button
               variant="secondary"
               palette="confirmation"
               size="lg"
               type="button"
-              disabled={isRunning}
+              disabled={isRunning || savingPreference}
               onClick={onCancel}
             >
               {phaseText.cancel}
@@ -122,7 +138,7 @@ export function CrossAgentConvertDialog({
               size="lg"
               loading={isRunning}
               type="button"
-              disabled={isRunning}
+              disabled={isRunning || savingPreference}
               onClick={onConfirm}
             >
               {phaseText.primary}

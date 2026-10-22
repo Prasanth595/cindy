@@ -4206,15 +4206,19 @@ export function NewMakerDraftRoute() {
           // 跨 Agent 工作区检测 + 迁移：必须在 createSession 之前完成，
           // agent 启动时看到的工作区已是迁移后的状态。fail-soft：检测错误只 warn，不阻塞 send。
           try {
-            const wd = effectiveWorkingDir;
+            const wd = selectedWorkingDir;
+            // This pre-create prompt inspects the base repo, not the future worktree.
+            // Keep its existing conversion flow without reading/writing the base preference.
+            const canRememberWorkspace = !(selectedWorktree.enabled && selectedWorktree.baseRepo);
             if (wd && !isRemoteProjectDraft && persistedAgentKind !== 'pi') {
               const r = await crossAgentConvertService.detect(
                 wd,
                 persistedAgentKind === 'cc' ? 'claude-code' : persistedAgentKind,
+                canRememberWorkspace,
               );
               if (r.items.length > 0) {
                 // 阻塞等弹窗关闭（用户点不要 / 完成转换 / 失败）—— 都视为流程结束
-                await crossAgentDialog.runMigrationFlow(r.items);
+                await crossAgentDialog.runMigrationFlow(r.items, canRememberWorkspace ? wd : null);
               }
             }
           } catch (err) {
@@ -6119,15 +6123,7 @@ export function NewMakerDraftRoute() {
         </div>
 
         {/* 跨 Agent 工作区互转 (5 项独立判断 + 步骤式进度) —— send 流程会 await 等它关闭 */}
-        <CrossAgentConvertDialog
-          open={crossAgentDialog.open}
-          phase={crossAgentDialog.phase}
-          items={crossAgentDialog.items}
-          stepMap={crossAgentDialog.stepMap}
-          onOpenChange={crossAgentDialog.onOpenChange}
-          onConfirm={crossAgentDialog.onConfirm}
-          onCancel={crossAgentDialog.onCancel}
-        />
+        <CrossAgentConvertDialog {...crossAgentDialog} />
 
         {/* 「开启协同」富弹窗:与会话内 CCAgentSessionView 同一组件/标题。草稿态没有 sessionId,
             不立刻 enableOrca —— onCreate 把 Worker 富配置写进 draft.collab,createSession 后由
