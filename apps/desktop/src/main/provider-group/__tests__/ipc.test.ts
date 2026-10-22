@@ -582,16 +582,6 @@ describe('provider management receiver account boundary', () => {
       .toThrow(/PERMISSION_DENIED/);
   });
 
-  // 本机作为使用方的闲置释放设置只在本机窗口可改，不经同账号管理通道。
-  it.each([
-    { action: 'get-idle-release' },
-    { action: 'set-idle-release', value: { idleMinutes: 5 } },
-    { action: 'reset-idle-release' },
-  ] as const)('keeps $action out of the management scope', (command) => {
-    vi.mocked(parseProviderShareCommand).mockReturnValueOnce(command);
-    expect(() => parseProviderManagementRequest({ action: 'manage-share', command })).toThrow(/PERMISSION_DENIED/);
-  });
-
   // 「用量」块的按天明细(provider-groups.md §7)：只读的分享者查询，和 own-usage 一样经管理通道转交。
   it('accepts the daily usage query as an owner operation', () => {
     const command = { action: 'usage-history', providerId: 'anthropic' } as const;

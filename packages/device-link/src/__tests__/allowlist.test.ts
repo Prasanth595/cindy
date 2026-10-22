@@ -108,6 +108,7 @@ describe('REMOTE_INVOKE_ALLOWLIST', () => {
 
   it('放行会话未读已读回执(控制端看完会话,清被控端灵动岛 / 角标 / 侧栏未读)', () => {
     expect(REMOTE_INVOKE_ALLOWLIST.has('notification:clear-session-attention')).toBe(true);
+    expect(REMOTE_INVOKE_ALLOWLIST.has('agent-island:completion-action')).toBe(true);
     // mark 方向不放行:未读的产生真相只在被控端 main,远程不得凭空标未读。
     expect(REMOTE_INVOKE_ALLOWLIST.has('notification:mark-session-attention')).toBe(false);
   });

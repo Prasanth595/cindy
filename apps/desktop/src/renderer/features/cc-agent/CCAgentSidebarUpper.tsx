@@ -871,16 +871,14 @@ interface ExpandedProps {
 /** rail 未分类隐藏态的空列表(引用稳定,免得 lampScope 发布 effect 空转)。 */
 const EMPTY_SESSION_LIST: Session[] = [];
 
-/** State for the delete/archive confirm dialog. */
+/** State for the controlled delete confirmation. Archive awaits confirmDialog. */
 interface ConfirmState {
   open: boolean;
   sessionId: string;
-  action: 'delete' | 'archive';
+  action: 'delete';
   /** P1: 会话 worktree 有未提交更改 → 确认文案追加警告(打开前预检)。 */
   dirtyWorktree: boolean;
-  /** 归档会暂停的 active 自动化名称(仅 archive;为空则不提示)。 */
-  scheduleNames?: readonly string[];
-  /** Owned shared task to close before the confirmed archive/delete. */
+  /** Owned shared task to close before the confirmed delete. */
   sharedTaskId?: string;
 }
 
@@ -889,7 +887,6 @@ const CONFIRM_INITIAL: ConfirmState = {
   sessionId: '',
   action: 'delete',
   dirtyWorktree: false,
-  scheduleNames: undefined,
   sharedTaskId: undefined,
 };
 
@@ -953,7 +950,7 @@ function ExpandedView({
     },
     [t],
   );
-  // 批量菜单走全局确认弹窗，与单条操作的 inline ConfirmDialog 解耦。
+  // 归档和批量菜单共用可等待的确认弹窗；删除保留受控 ConfirmDialog。
   const { confirm: confirmDialog } = useConfirmDialog();
   const handleScheduleDeleted = useCallback(
     async ({ disposition, affectedSessionIds }: DeletedScheduleGeneratedSessionResult) => {
@@ -3183,55 +3180,60 @@ function ExpandedView({
       // 例外:worktree 有未提交改动(归档会顺带回收 worktree)、或任务绑定了
       // active 自动化(归档后会暂停),这时升级到确认弹窗展示对应提醒。
       if (isArchiveLike) {
-        // 接管拦截先结算:被接管时不该弹任何归档确认。
-        if (await blockedByAttachment()) return;
-        // 自动化绑定读本地缓存,放在 worktree 预检之前,不占用预检之后的窗口。
-        const scheduleNames =
-          (await loadActiveBoundScheduleNames([
-            { id: sessionId, deviceLinkDeviceId: session?.deviceLinkDeviceId },
-          ])).get(sessionId) ?? [];
-        // **worktree 预检必须是最后一个前置条件**(codex review):它之后再 await
-        // 任何东西(比如原来排在后面的接管查询),都会给「clean 结论」留一段失效
-        // 窗口 —— 编辑器或收尾中的 agent 在那段时间写脏工作区,归档就不带警告地
-        // 过去了。并行没有丢:菜单打开 / 亮出 Confirm 胶囊时的 prefetch 已经把查询
-        // 发出去并热了 git cache,而这里 resolve 对 clean 一律重查(见
-        // worktreeRemovalWarning 的非对称复用),拿到的是此刻的结论。
-        //
-        // 窗口不可能压到零 —— 从这次查询返回到 main 侧真正 `git worktree remove`
-        // 之间还有写库和回收链;那一段由 main 在删除前重新检测 + auto-stash 兜住
-        // (WorktreeManager.removeWorktreeForSession),renderer 这层负责的是「别拿
-        // 明显过期的结论免掉确认」。
-        //
-        // 预检与确认期间保留列表行和当前任务；只有确定归档后才隐藏并跳离。
-        const preflight = await resolveWorktreeRemovalPreflight(
-          sessionId,
-          session?.deviceLinkDeviceId,
-        );
-        // 免确认的判据是「**确认**干净」,不是「不是脏的」:'unknown'(预检失败)
-        // 同样要弹确认框,否则归档会静默回收可能带着未提交改动的 worktree
-        // (greptile review)。'unknown' 时不摆 dirty 警告文案 —— 那会谎称有改动,
-        // 走的是普通归档确认。
-        if (preflight !== 'clean' || scheduleNames.length > 0) {
-          setConfirm({
-            open: true,
-            sessionId,
-            action: 'archive',
-            dirtyWorktree: preflight === 'dirty',
-            scheduleNames,
-            sharedTaskId,
-          });
-          return;
-        }
-        // 重定向判定用 viewedSessionId:files 路由下归档「正在浏览的会话」也要
-        // 跳离失效的文件视图(codex review;正常路由下两者恒等)。经 ref 读:它随
-        // 路由切换而变,留在 deps 里会让本 handler 每次切换都重建、打穿整表 memo。
-        // Preflight may have outlived the idle state; sharing must stay open when blocked.
-        if (archiveBlockedByRunning(sessionId, session?.deviceLinkDeviceId)) return;
-        if (!(await closeOwnedSharedTask(sharedTaskId))) {
-          return;
-        }
         await runSessionAction(sessionId, 'archive', {
           activeSessionId: viewedSessionIdRef.current,
+          prepareArchive: async (isCurrent) => {
+            // 接管拦截先结算:被接管时不该弹任何归档确认。
+            if (await blockedByAttachment()) return false;
+            // 自动化绑定读本地缓存,放在 worktree 预检之前,不占用预检之后的窗口。
+            const scheduleNames =
+              (await loadActiveBoundScheduleNames([
+                { id: sessionId, deviceLinkDeviceId: session?.deviceLinkDeviceId },
+              ])).get(sessionId) ?? [];
+            // **worktree 预检必须是最后一个前置条件**(codex review):它之后再 await
+            // 任何东西(比如原来排在后面的接管查询),都会给「clean 结论」留一段失效
+            // 窗口 —— 编辑器或收尾中的 agent 在那段时间写脏工作区,归档就不带警告地
+            // 过去了。并行没有丢:菜单打开 / 亮出 Confirm 胶囊时的 prefetch 已经把查询
+            // 发出去并热了 git cache,而这里 resolve 对 clean 一律重查(见
+            // worktreeRemovalWarning 的非对称复用),拿到的是此刻的结论。
+            //
+            // 窗口不可能压到零 —— 从这次查询返回到 main 侧真正 `git worktree remove`
+            // 之间还有写库和回收链;那一段由 main 在删除前重新检测 + auto-stash 兜住
+            // (WorktreeManager.removeWorktreeForSession),renderer 这层负责的是「别拿
+            // 明显过期的结论免掉确认」。
+            //
+            // 远程列表行已经乐观换桶；确认期间保持叠加层，取消或拦截才恢复。
+            const preflight = await resolveWorktreeRemovalPreflight(
+              sessionId,
+              session?.deviceLinkDeviceId,
+            );
+            if (!isCurrent()) return false;
+            // 免确认的判据是「**确认**干净」,不是「不是脏的」:'unknown'(预检失败)
+            // 同样要弹确认框,否则归档会静默回收可能带着未提交改动的 worktree
+            // (greptile review)。'unknown' 时不摆 dirty 警告文案 —— 那会谎称有改动,
+            // 走的是普通归档确认。
+            if (preflight !== 'clean' || scheduleNames.length > 0) {
+              const confirmed = await confirmDialog({
+                title: t('ccAgent.sidebar.confirmArchive.title'),
+                description: archiveConfirmDescription(t, {
+                  dirtyWorktree: preflight === 'dirty',
+                  scheduleNames,
+                }),
+                confirmText: t('ccAgent.sidebar.confirmArchive.confirm'),
+                cancelText: t('ccAgent.sidebar.confirmArchive.cancel'),
+              });
+              if (!confirmed || !isCurrent()) return false;
+            }
+            // 重定向判定用 viewedSessionId:files 路由下归档「正在浏览的会话」也要
+            // 跳离失效的文件视图(codex review;正常路由下两者恒等)。经 ref 读:它随
+            // 路由切换而变,留在 deps 里会让本 handler 每次切换都重建、打穿整表 memo。
+            // Preflight may have outlived the idle state; sharing must stay open when blocked.
+            if (archiveBlockedByRunning(sessionId, session?.deviceLinkDeviceId)) return false;
+            if (!(await closeOwnedSharedTask(sharedTaskId))) {
+              return false;
+            }
+            return true;
+          },
         });
         return;
       }
@@ -3255,6 +3257,7 @@ function ExpandedView({
     [
       closeOwnedSharedTask,
       archiveBlockedByRunning,
+      confirmDialog,
       runSessionAction,
       unarchiveSession,
       t,
@@ -3269,18 +3272,14 @@ function ExpandedView({
       setConfirm(CONFIRM_INITIAL);
       return;
     }
-    if (action === 'archive' && archiveBlockedByRunning(sessionId, session?.deviceLinkDeviceId)) {
-      setConfirm(CONFIRM_INITIAL);
-      return;
-    }
     if (!(await closeOwnedSharedTask(sharedTaskId))) {
       return;
     }
     // 重定向判定统一用 viewedSessionId(files 路由下 = 被浏览文件的会话,
-    // 正常路由下与 activeSessionId 恒等):从面板删除/归档正在浏览的会话时
+    // 正常路由下与 activeSessionId 恒等):从面板删除正在浏览的会话时
     // 也要跳离失效的 /cc-agent/files/:id(codex review)。
     const deleteRedirectRoute =
-      action === 'delete' && sessionId === viewedSessionId
+      sessionId === viewedSessionId
         ? await resolveSessionRemovalRedirect(new Set([sessionId]), sessionId)
         : null;
     await runSessionAction(sessionId, action, {
@@ -3288,7 +3287,7 @@ function ExpandedView({
       deleteRedirectRoute,
     });
     setConfirm(CONFIRM_INITIAL);
-  }, [closeOwnedSharedTask, archiveBlockedByRunning, viewedSessionId, confirm, resolveSessionRemovalRedirect, runSessionAction, sessionsById, t]);
+  }, [closeOwnedSharedTask, viewedSessionId, confirm, resolveSessionRemovalRedirect, runSessionAction, sessionsById, t]);
 
   const handleCancelConfirm = useCallback(() => {
     setConfirm(CONFIRM_INITIAL);
@@ -3936,38 +3935,21 @@ function ExpandedView({
         }}
       />
 
-      {/* Delete / Archive confirm dialog */}
+      {/* Delete confirm dialog */}
       <ConfirmDialog
         open={confirm.open}
         onOpenChange={(open) => {
           if (!open) handleCancelConfirm();
         }}
-        title={
-          confirm.action === 'delete'
-            ? t('ccAgent.sidebar.confirmDelete.title')
-            : t('ccAgent.sidebar.confirmArchive.title')
-        }
+        title={t('ccAgent.sidebar.confirmDelete.title')}
         description={
-          confirm.action === 'delete'
-            ? t('ccAgent.sidebar.confirmDelete.description') +
-              (confirm.dirtyWorktree
-                ? ' ' + t('ccAgent.sidebar.confirmDelete.dirtyWorktreeWarning')
-                : '')
-            : archiveConfirmDescription(t, {
-                dirtyWorktree: confirm.dirtyWorktree,
-                scheduleNames: confirm.scheduleNames ?? [],
-              })
+          t('ccAgent.sidebar.confirmDelete.description') +
+            (confirm.dirtyWorktree
+              ? ' ' + t('ccAgent.sidebar.confirmDelete.dirtyWorktreeWarning')
+              : '')
         }
-        confirmText={
-          confirm.action === 'delete'
-            ? t('ccAgent.sidebar.confirmDelete.confirm')
-            : t('ccAgent.sidebar.confirmArchive.confirm')
-        }
-        cancelText={
-          confirm.action === 'delete'
-            ? t('ccAgent.sidebar.confirmDelete.cancel')
-            : t('ccAgent.sidebar.confirmArchive.cancel')
-        }
+        confirmText={t('ccAgent.sidebar.confirmDelete.confirm')}
+        cancelText={t('ccAgent.sidebar.confirmDelete.cancel')}
         onConfirm={handleConfirm}
         onCancel={handleCancelConfirm}
       />

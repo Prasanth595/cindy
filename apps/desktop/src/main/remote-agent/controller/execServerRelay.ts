@@ -34,6 +34,11 @@ const MAX_LINE_CHARS = 48 * 1024 * 1024;
 const FRAME_CHARS = REMOTE_AGENT_MAX_INLINE_PAYLOAD_CHARS - 1024;
 /** 一次回推超过这么久算慢链路(每个 Codex 文件请求都要等一次回推)。 */
 const SLOW_PUSH_MS = 2_000;
+/**
+ * 本机 exec-server 从启动到第一次输出(initialize 的回包)超过这么久就记一条：对方的 Codex 握手只等 10 秒，
+ * 这段时间要与链路往返一起算进去。
+ */
+const SLOW_FIRST_REPLY_MS = 2_000;
 
 export interface ExecServerRelayDeps {
   codexPath: string;
@@ -426,8 +431,17 @@ export class ExecServerRelay {
     }
     const connection: Connection = { child, buffer: '', closed: false, processes: new Set(), starting: new Map() };
     this.connections.set(connId, connection);
+    // 只记耗时、字节数与退出码(不记输出内容)：首次握手失败时能分清是本机进程起得慢、异常退出，还是链路慢。
+    const now = this.deps.now ?? Date.now;
+    const openedAt = now();
+    let firstReplyMs: number | undefined;
+    let stderrBytes = 0;
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk: string) => {
+      if (firstReplyMs === undefined) {
+        firstReplyMs = now() - openedAt;
+        if (firstReplyMs >= SLOW_FIRST_REPLY_MS) this.deps.log?.warn('remote agent: exec-server first reply slow', { connId, firstReplyMs });
+      }
       if (connection.closed) return;
       connection.buffer += chunk;
       for (;;) {
@@ -445,12 +459,22 @@ export class ExecServerRelay {
         this.dropConnection(connId, true);
       }
     });
-    child.stderr.resume();
-    child.on('error', () => {
-      if (this.connections.get(connId) === connection) this.dropConnection(connId, true);
+    child.stderr.on('data', (chunk: Buffer) => {
+      stderrBytes += chunk.length;
+    });
+    child.on('error', (error) => {
+      if (this.connections.get(connId) !== connection) return;
+      this.deps.log?.warn('remote agent: exec-server process error', { connId, code: (error as NodeJS.ErrnoException).code ?? 'unknown' });
+      this.dropConnection(connId, true);
     });
     // close 在 stdout 完全读完后触发；尾部结果的异步投影完成后才通知对端连接结束。
-    child.on('close', () => {
+    child.on('close', (exitCode, signal) => {
+      // 本机这边关掉的(对方断开、让出名额)不算；进程自己退出的记下退出码，对方的 Codex 会看到环境断开。
+      if (!connection.closed) {
+        this.deps.log?.warn('remote agent: exec-server exited', {
+          connId, exitCode, signal, stderrBytes, uptimeMs: now() - openedAt, answered: firstReplyMs !== undefined,
+        });
+      }
       void (connection.output ?? Promise.resolve()).then(() => {
         if (this.connections.get(connId) === connection) this.dropConnection(connId, true);
       });

@@ -3,7 +3,9 @@ import {
   type SpeechVoiceCatalog,
   type SpeechVoice,
 } from '../../shared/voiceConversation.js';
-import { referenceSpeechVoices } from '../../shared/speechVoices.js';
+import { gatewayReferenceSpeechVoices, referenceSpeechVoices } from '../../shared/speechVoices.js';
+import { alibabaSystemVoices } from '../../shared/alibabaSpeechVoices.js';
+import { loadDashscopeVoices } from './dashscopeVoices.js';
 import type { SpeechConnection } from './speech.js';
 
 type RecordValue = Record<string, unknown>;
@@ -49,13 +51,22 @@ export async function loadSpeechVoices(
   modelId: string,
   fetcher: typeof fetch,
   assertCurrent: () => void,
+  providerId?: string,
 ): Promise<SpeechVoiceCatalog> {
   assertCurrent();
-  if (connection.protocol === 'openai') {
-    const voices = referenceSpeechVoices(modelId, connection.protocol).map((id) => ({
-      id,
-      name: id,
-    }));
+  if (providerId === 'xd' && connection.protocol === 'openai') {
+    const voices = gatewayReferenceSpeechVoices(modelId);
+    if (voices.length)
+      return { source: 'reference', voices: voices.map((voice) => ({ ...voice })) };
+  }
+  if (connection.protocol === 'openai' || connection.protocol === 'qwen-tts') {
+    const voices =
+      connection.protocol === 'qwen-tts'
+        ? alibabaSystemVoices(modelId, connection.protocol, connection.baseUrl)
+        : referenceSpeechVoices(modelId, connection.protocol).map((id) => ({
+            id,
+            name: id,
+          }));
     return { source: voices.length ? 'reference' : 'manual', voices };
   }
   const controller = new AbortController();
@@ -70,6 +81,7 @@ export async function loadSpeechVoices(
   };
   const request = async (url: URL, body?: unknown): Promise<RecordValue> => {
     assertCurrent();
+    controller.signal.throwIfAborted();
     const response = await fetcher(url.toString(), {
       method: body ? 'POST' : 'GET',
       headers: { ...connection.headers, ...(body ? { 'content-type': 'application/json' } : {}) },
@@ -83,6 +95,8 @@ export async function loadSpeechVoices(
   };
   try {
     const base = connection.baseUrl.replace(/\/+$/, '');
+    if (connection.protocol === 'dashscope-tts')
+      return await loadDashscopeVoices(modelId, base, request, assertCurrent);
     if (connection.protocol === 'minimax') {
       // https://platform.minimax.io/docs/api-reference/voice-management-get
       const json = await request(new URL(`${base}/get_voice`), { voice_type: 'all' });

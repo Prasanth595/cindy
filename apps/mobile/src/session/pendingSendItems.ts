@@ -36,6 +36,8 @@ import {
   type SentInlineToken,
 } from '@/session/sentMessageAtoms';
 import type { QueuedRemoteMessage } from '@/session/types';
+import type { ChatReplyQuote } from '@cindy/maker-shared/chat-reply-quote';
+import { queuedMessageReplyQuote } from '@/session/inputProjection';
 import { sentImageGalleryKey, type GetSentMessageImagePreview } from '@/session/sentMessageImagePreviews';
 import type { MobileMessageRenderItem } from '@/session/messageRenderModel';
 import {
@@ -114,6 +116,8 @@ export interface MobilePendingSendItem {
   waitingFor?: MobilePendingSendWaitingFor;
   /** 本机发出的时刻(手机时钟),伙伴对话的时间分隔按它分组,回流后同 key 沿用。 */
   sentAt?: number;
+  /** 伙伴私聊的引用回复:乐观气泡同样先画出引用块,回流后原位不跳。 */
+  replyQuote?: ChatReplyQuote;
 }
 
 export interface MobileMessageListExtraData {
@@ -408,6 +412,7 @@ export function buildPendingSendItems(input: BuildPendingSendItemsInput): Mobile
     const agentText = pendingSendAgentText(item);
     // 合成指令只显示标签:结构化 atom 也不能从原文里重建出来。
     const synthetic = pendingSendSyntheticKind(item, agentText) !== null;
+    const replyQuote = item.persistedContent ? queuedMessageReplyQuote({ persistedContent: item.persistedContent }) : undefined;
     items.push({
       type: 'pending_send',
       key: pendingSendItemKey(item.clientId),
@@ -431,6 +436,7 @@ export function buildPendingSendItems(input: BuildPendingSendItemsInput): Mobile
       hint: presentation?.hint ?? null,
       source: pendingSendSource(item),
       ...(readMessageSourceDevice(item) ? { sourceDevice: readMessageSourceDevice(item) } : {}),
+      ...(replyQuote ? { replyQuote } : {}),
     });
   };
 
@@ -476,6 +482,7 @@ export function buildPendingSendItems(input: BuildPendingSendItemsInput): Mobile
       actions: null,
       hint: null,
       source: null,
+      ...(item.replyQuote ? { replyQuote: item.replyQuote } : {}),
     });
   }
   return items;

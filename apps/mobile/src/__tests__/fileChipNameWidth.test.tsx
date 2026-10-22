@@ -6,6 +6,10 @@ import type { BotGroupAttachment } from '@cindy/maker-shared/botGroupChat';
 import type { ResolveRemoteMediaFn } from '@/session/remoteMedia';
 
 // This suite exercises attachment layout; keep the unrelated native App surface out of Node.
+vi.mock('@/platform/gestureHandler', () => {
+  const chain = (): any => new Proxy({}, { get: (_target, key) => key === 'then' ? undefined : () => chain() });
+  return { GestureDetector: ({ children }: { children: unknown }) => children, Gesture: { LongPress: chain } };
+});
 vi.mock('@/session/McpAppCard', () => ({ McpAppCard: () => null }));
 vi.mock('react-native-webview', () => ({ WebView: () => null }));
 vi.mock('expo-modules-core', () => ({ requireOptionalNativeModule: () => null }));

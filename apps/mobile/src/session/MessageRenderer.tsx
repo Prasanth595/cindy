@@ -15,6 +15,11 @@ import { AgentErrorDetails } from './AgentErrorDetails';
 import { ErrorNotice } from '@/components/ErrorNotice';
 import { FileTypeIcon } from '@/components/FileTypeIcon';
 import { CompanionMessageActions } from './CompanionMessageActions';
+import { BotGroupQuote } from './BotGroupQuote';
+import { companionReplyQuoteDisplay, companionReplyQuoteFor } from './companionReplyQuote';
+import type { ChatReplyQuote } from '@cindy/maker-shared/chat-reply-quote';
+import type { NativePullDownAction } from '@/platform/chrome/NativePullDownMenu';
+import { Gesture, GestureDetector } from '@/platform/gestureHandler';
 import { useMessageHistoryActive, useMessageHistoryPositioning } from './messageHistoryActivity';
 import { usePaneViewport } from '@/platform/AdaptiveWindowContext';
 import { messageReadingPosition } from './messageReadingPosition';
@@ -650,9 +655,30 @@ export type MobileMessageActionBusyKind = 'fork' | 'rewind' | 'delete';
 export const COMPANION_AVATAR_SIZE = 28;
 const COMPANION_AVATAR_GAP = 10;
 
+/** 伙伴私聊引用回复与「回复对应的消息」（docs/product-rules/cindy-bots-runtime.md）。 */
+export interface CompanionQuoteOptions {
+  names: { owner: string; companion: string };
+  /** 「显示回复对应的消息」本机偏好。 */
+  showReplyTargets: boolean;
+  /** Put a quote of this message above the composer. */
+  onQuote: (quote: ChatReplyQuote) => void;
+  /** Scroll to and highlight a message of this chat, loading it first when needed. */
+  onLocate: (clientId: string) => void;
+  /** 「选择文字」: the page shows this message's text where the system text selection works. */
+  onSelectText: (text: string) => void;
+}
+
+interface CompanionQuoteActions extends CompanionQuoteOptions {
+  /** The message as this chat has it loaded; reads the latest list without re-rendering every row. */
+  getMessage: (clientId: string) => NormalizedRemoteMessage | undefined;
+  /** Whether `assistantClientId` is the last loaded reply of the turn it answers. */
+  isLastReplyFor: (assistantClientId: string) => boolean;
+}
+
 interface MessageActions {
   onRetryImageDelivery?: (imageId: string) => Promise<void>;
   companion?: boolean;
+  companionQuoteActions?: CompanionQuoteActions;
   onCompanionReadThrough?: (at: number) => void;
   onOpenCompanionSettings?: (page: 'memory' | 'capabilities') => void;
   companionWorkingLabel?: string | null;
@@ -729,6 +755,7 @@ interface MessageActions {
 
 export function MessageRenderer({
   companion = false,
+  companionQuote,
   companionWorkingLabel,
   onOpenCompanionSettings,
   companionAvatar,
@@ -791,6 +818,8 @@ export function MessageRenderer({
   devRecycleItems = false,
 }: {
   companion?: boolean;
+  /** Companion private chats only; ordinary tasks keep their existing message actions. */
+  companionQuote?: CompanionQuoteOptions;
   onOpenCompanionSettings?: (page: 'memory' | 'capabilities') => void;
   companionWorkingLabel?: string | null;
   companionAvatar?: ReactNode;
@@ -1762,8 +1791,42 @@ export function MessageRenderer({
     return item.type === 'message' && (item.message.kind === 'user' || item.message.kind === 'assistant' || item.message.companion)
       ? [{ clientId: item.key, createdAt: pendingSentAtRef.current.get(item.key) ?? localSendStartedAt(item.key) ?? item.message.createdAt }] : [];
   })) : undefined, [companion, items]);
+  const quoteItemsRef = useRef(items);
+  quoteItemsRef.current = items;
+  const showCompanionReplyTargets = !!(companion && companionQuote?.showReplyTargets);
+  // The last reply of each turn, as a stable key: rows re-render when a later reply of the same turn
+  // arrives (so the earlier one drops its reply target), not on every streaming update.
+  const lastCompanionReplyKey = useMemo(() => {
+    if (!showCompanionReplyTargets) return '';
+    const answered = new Set<string>();
+    const lastReplies: string[] = [];
+    for (let index = items.length - 1; index >= 0; index -= 1) {
+      const entry = items[index];
+      if (entry.type !== 'message' || entry.message.kind !== 'assistant') continue;
+      const target = readReplyToClientId(entry.message);
+      if (!target || answered.has(target)) continue;
+      answered.add(target);
+      lastReplies.push(messageClientId(entry));
+    }
+    return lastReplies.join('\n');
+  }, [items, showCompanionReplyTargets]);
+  const companionQuoteActions = useMemo<CompanionQuoteActions | undefined>(() => {
+    if (!companion || !companionQuote) return undefined;
+    const lastReplies = new Set(lastCompanionReplyKey ? lastCompanionReplyKey.split('\n') : []);
+    return {
+    ...companionQuote,
+    getMessage: (clientId) => {
+      for (const entry of quoteItemsRef.current) {
+        if (entry.type === 'message' && messageClientId(entry) === clientId) return entry.message;
+      }
+      return undefined;
+    },
+    isLastReplyFor: (assistantClientId) => lastReplies.has(assistantClientId),
+    };
+  }, [companion, companionQuote, lastCompanionReplyKey]);
   const actions: MessageActions & { firstUserMessageClientId?: string } = useMemo(() => ({
     companion,
+    companionQuoteActions,
     companionWorkingLabel,
   onOpenCompanionSettings,
     companionAvatar,
@@ -1806,6 +1869,7 @@ export function MessageRenderer({
     screenWidth: viewportLayout.contentWidth,
   }), [
     companion,
+    companionQuoteActions,
     companionWorkingLabel,
   onOpenCompanionSettings,
     companionAvatar,
@@ -3027,6 +3091,13 @@ const RenderItemView = memo(function RenderItemView({
           <PendingSendBubble
             actions={actions.pendingSend}
             item={item}
+            renderReplyQuote={actions.companionQuoteActions ? (quote) => (
+              <View style={styles.companionQuote}>
+                <BotGroupQuote display={companionReplyQuoteDisplay(quote,
+                  actions.companionQuoteActions!.getMessage(quote.clientId), actions.companionQuoteActions!.names)}
+                  onPress={() => actions.companionQuoteActions!.onLocate(quote.clientId)} />
+              </View>
+            ) : undefined}
             onOpenImage={actions.onOpenPayload}
             screenWidth={actions.screenWidth}
             viewerDeviceId={actions.viewerDeviceId}
@@ -3621,6 +3692,37 @@ function MessageBubble({
   const actionBusy = !!clientId && actions.busyClientId === clientId;
   const forkBusy = actionBusy && actions.busyAction === 'fork';
   const disabled = !!actions.busyClientId;
+  // 伙伴私聊：长按消息弹出系统菜单（对应桌面悬停时的「回复」等按钮），消息下方不再常驻图标。
+  // iOS 用系统操作表（MenuView 的长按预览在新架构下抬不起气泡，不改原生代码时不用它）；
+  // Android 用平台下拉菜单。都不可用时退回原来的操作行。长按交给菜单后正文不再就地选字，改由「选择文字」打开。
+  const companionQuote = actions.companionQuoteActions;
+  const companionMenuEnabled = !!(actions.companion && hasActions
+    && (Platform.OS === 'ios' ? usesSystemActionMenu() : usesNativePullDownMenu()));
+  const bubbleTextSelectable = canSelectVisibleText && !companionMenuEnabled;
+  const replyQuote = companionQuote && item.message.kind === 'user' ? item.message.replyQuote : undefined;
+  const replyTargetId = companionQuote?.showReplyTargets && item.message.kind === 'assistant' && clientId
+    ? readReplyToClientId(item.message) : null;
+  const replyTargetMessage = replyTargetId ? companionQuote?.getMessage(replyTargetId) : undefined;
+  const replyTarget = replyTargetId && isOwnerTypedMessage(replyTargetMessage)
+    && companionQuote?.isLastReplyFor(clientId)
+    ? companionReplyQuoteFor(replyTargetMessage) : null;
+  const companionMenuActions = useMemo<NativePullDownAction[]>(() => {
+    if (!companionMenuEnabled) return [];
+    const quick: NativePullDownAction[] = [
+      ...(companionQuote && canAddToChat ? [{ id: 'reply', title: t('message.renderer.reply'), image: 'bubble.left' }] : []),
+      ...(canCopy ? [{ id: 'copy', title: t('message.renderer.copyStateCopy'), image: 'doc.on.doc' }] : []),
+    ];
+    return [
+      // Reply and copy first, in their own group (Desktop's hover bar leads with Reply).
+      ...(quick.length ? [{ id: 'quick', title: '', displayInline: true, subactions: quick }] : []),
+      ...(canSelectVisibleText ? [{ id: 'select-text', title: t('message.renderer.selectText'), image: 'character.cursor.ibeam' }] : []),
+      ...(canShare ? [{ id: 'share', title: t('session.shareImage.shareMessage'), image: 'square.and.arrow.up' }] : []),
+      // Teammates own one timeline: no fork or per-turn cost here, the same as Desktop.
+      ...messageMenu.filter(entry => entry.id !== 'add-to-chat').map(entry => ({
+        id: entry.id, title: entry.label, image: entry.image, destructive: entry.destructive, disabled,
+      })),
+    ];
+  }, [disabled, canAddToChat, canCopy, canSelectVisibleText, canShare, companionMenuEnabled, companionQuote, messageMenu, t]);
 
   useEffect(() => {
     if (copyState === 'idle' || copyState === 'copying') return;
@@ -3688,6 +3790,28 @@ function MessageBubble({
     if (id === 'side-chat') return actions.onSideChatMessage?.(copyText);
     actions.onCopyMessageLink?.(clientId);
   }, [actions, clientId, copyText, selectControlAction]);
+  const selectCompanionMenuAction = useCallback((id: string) => {
+    if (id === 'reply') {
+      const quote = companionReplyQuoteFor(item.message);
+      if (quote) companionQuote?.onQuote(quote);
+    } else if (id === 'copy') copyMessage();
+    else if (id === 'select-text') companionQuote?.onSelectText(copyText);
+    else if (id === 'share') actions.onEnterShareSelection?.(clientId);
+    else if (messageMenu.some(entry => entry.id === id)) selectMenuAction(id as MobileMessageMenuActionId);
+  }, [actions, clientId, companionQuote, copyMessage, copyText, item.message, messageMenu, selectMenuAction]);
+  const openCompanionActionSheet = useCallback(() => {
+    const items = companionMenuActions.flatMap(entry => entry.subactions ?? [entry])
+      .map(entry => ({ key: entry.id, label: entry.title, destructive: entry.destructive, disabled: entry.disabled }));
+    void showActionMenu({
+      ...(absoluteTime ? { title: absoluteTime } : {}),
+      items,
+      cancelLabel: t('session.common.cancel'),
+      userInterfaceStyle: mode,
+    }).then(result => { if (result.kind === 'action') selectCompanionMenuAction(result.key); });
+  }, [absoluteTime, companionMenuActions, mode, selectCompanionMenuAction, t]);
+  // Long press fails as soon as the finger moves, so tables and code blocks keep scrolling sideways.
+  const companionMenuGesture = useMemo(() => Gesture.LongPress().minDuration(450).runOnJS(true)
+    .onStart(() => openCompanionActionSheet()), [openCompanionActionSheet]);
   const openMessageActionMenu = useCallback(() => {
     if (usesSystemActionMenu()) {
       const disabled = actionBusy
@@ -3759,7 +3883,13 @@ function MessageBubble({
     && Boolean(item.message.pluginInvocations?.length);
   const hasBubbleContent = !!(
     item.message.systemCardType || displayBubbleBody || item.message.secondaryBody || hasPluginInvocations
+    // A quote or reply target alone still needs the bubble, e.g. an attachment-only reply.
+    || (companionQuote && (replyQuote || replyTarget))
   );
+  // The long-press menu lives on the bubble; without one (attachment-only, error) the action row stays.
+  const bubbleShown = item.message.role !== 'error'
+    && (hasBubbleContent || (!attachmentStripNode && messageQuotes.length === 0));
+  const companionMenuMounted = companionMenuEnabled && bubbleShown;
   // 气泡是纯 View,不承接任何手势:文本选择走正文原生 Text selectable(长按文字就地选择复制),
   // 气泡上不能挂 Pressable——它会参与触摸协商,干扰正文里表格/代码块横向 ScrollView 的拖动。
   const bubble = (
@@ -3769,6 +3899,7 @@ function MessageBubble({
         presentation.density === 'compact' && styles.bubbleCompact,
         presentation.density === 'rich' && styles.bubbleRich,
         isUser ? styles.userBubble : styles.agentBubble,
+        companionMenuEnabled && styles.companionMenuBubble,
         actions.companion && !isUser && !item.message.systemCardType && styles.companionAnswer,
         hookSource && styles.hookSourceBubble,
         isUser && !item.message.systemCardType && userBubbleColors
@@ -3801,6 +3932,17 @@ function MessageBubble({
           ) : null}
         </View>
       ) : null}
+      {replyQuote && companionQuote ? (
+        <View style={styles.companionQuote}>
+          <BotGroupQuote display={companionReplyQuoteDisplay(replyQuote, companionQuote.getMessage(replyQuote.clientId), companionQuote.names)}
+            onPress={() => companionQuote.onLocate(replyQuote.clientId)} />
+        </View>
+      ) : replyTarget && replyTargetId && companionQuote ? (
+        <View style={styles.companionQuote} testID="message.replyTarget">
+          <BotGroupQuote display={companionReplyQuoteDisplay(replyTarget, replyTargetMessage, companionQuote.names)}
+            onPress={() => companionQuote.onLocate(replyTargetId)} />
+        </View>
+      ) : null}
       {item.message.systemCardType === 'mcp-app' ? (
         <ViewabilityGatedMcpAppCard deviceId={actions.remoteDeviceId} sessionId={item.message.source.sessionId}
           clientId={item.message.source.clientId} title={String(item.message.systemCardData?.title ?? '')}
@@ -3824,7 +3966,7 @@ function MessageBubble({
               interactiveAtoms={false}
               maxVisibleLines={collapsedLineCount}
               numberOfLines={collapsedLineCount}
-              selectable={canSelectVisibleText}
+              selectable={bubbleTextSelectable}
               testID="message.collapsedSentInlineAtoms"
               textStyle={styles.messageText}
               tokens={sentInlineTokens}
@@ -3835,7 +3977,7 @@ function MessageBubble({
             // MarkdownSelectableText(iOS UITextView 原生支持 numberOfLines)。
             <MarkdownSelectableText
               numberOfLines={collapsedLineCount}
-              selectable={canSelectVisibleText}
+              selectable={bubbleTextSelectable}
               style={styles.messageText}
               testID="message.collapsedBody"
             >
@@ -3853,7 +3995,7 @@ function MessageBubble({
                   onOpenPayload={actions.onOpenPayload}
                   onOpenSessionLink={actions.onOpenSessionLink}
                   pinContentWidth={!isUser}
-                  selectable={canSelectVisibleText}
+                  selectable={bubbleTextSelectable}
                   streaming={false}
                   text={text}
                 />
@@ -3871,7 +4013,7 @@ function MessageBubble({
             onOpenPayload={actions.onOpenPayload}
             onOpenSessionLink={actions.onOpenSessionLink}
             pinContentWidth={!isUser}
-            selectable={canSelectVisibleText}
+            selectable={bubbleTextSelectable}
             streaming={isStreamingAssistant}
             text={bubbleBody}
           />
@@ -3922,7 +4064,7 @@ function MessageBubble({
         </Text>
       ) : null}
       {item.message.secondaryBody ? (
-        <MarkdownSelectableText selectable={canSelectVisibleText} style={styles.detailText}>
+        <MarkdownSelectableText selectable={bubbleTextSelectable} style={styles.detailText}>
           {item.message.secondaryBody}
         </MarkdownSelectableText>
       ) : null}
@@ -3995,7 +4137,21 @@ function MessageBubble({
         <ErrorNotice message={displayBubbleBody}>
           {item.message.rawError ? <AgentErrorDetails key={item.message.key} message={item.message.rawError} /> : null}
         </ErrorNotice>
-      ) : hasBubbleContent || (!attachmentStripNode && messageQuotes.length === 0) ? bubble : null}
+      ) : bubbleShown ? (
+        companionMenuEnabled ? (Platform.OS === 'ios' ? (
+          <GestureDetector gesture={companionMenuGesture}>
+            <View style={isUser ? styles.companionMenuUser : styles.companionMenuAgent} testID="companion.messageMenu">
+              {bubble}
+            </View>
+          </GestureDetector>
+        ) : (
+          <NativePullDownMenu longPress actions={companionMenuActions}
+            onAction={selectCompanionMenuAction} style={isUser ? styles.companionMenuUser : styles.companionMenuAgent}
+            testID="companion.messageMenu">
+            {bubble}
+          </NativePullDownMenu>
+        )) : bubble
+      ) : null}
       {actions.companion && item.message.kind === 'assistant' && item.message.body.trim() ? (
         <CompanionLearningFooter receipts={item.message.source.agentMeta?.botLearning}
           onOpenSettings={actions.onOpenCompanionSettings} />
@@ -4019,7 +4175,7 @@ function MessageBubble({
           </Text>
         </View>
       ) : null}
-      {hasActions && actions.companion ? <CompanionMessageActions user={isUser} copied={copyState === 'copied'} copying={copyState === 'copying'} disabled={disabled}
+      {companionMenuMounted ? null : hasActions && actions.companion ? <CompanionMessageActions user={isUser} copied={copyState === 'copied'} copying={copyState === 'copying'} disabled={disabled}
         onCopy={canCopy ? copyMessage : undefined}
         actions={[
           ...(canCopy ? [{ id: 'copy', title: copyActionLabel(copyState), image: 'doc.on.doc', disabled: copyState === 'copying' }] : []),
@@ -8530,6 +8686,18 @@ function messageClientId(item: MobileMessageItem): string {
   return item.message.source.clientId || item.message.source.id || item.message.key;
 }
 
+/** Host-stamped input a companion reply answers (agentMeta.replyToClientId). */
+function readReplyToClientId(message: NormalizedRemoteMessage): string | null {
+  const value = message.source.agentMeta?.replyToClientId;
+  return typeof value === 'string' && value ? value : null;
+}
+
+/** A message the companion's reply can point back to: a visible message the owner typed. */
+function isOwnerTypedMessage(message: NormalizedRemoteMessage | undefined): message is NormalizedRemoteMessage {
+  return !!message && message.kind === 'user' && !message.isSyntheticTrigger && !message.automationOrigin
+    && !message.hookSource && !message.sessionOrigin && !message.systemCardType;
+}
+
 /** 语法 kind → 样式。plain 不走这里(直接当字符串塞进父 Text,少一层节点)。 */
 function syntaxStyleFor(
   styles: ReturnType<typeof makeStyles>,
@@ -8696,6 +8864,12 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     gap: spacing.sm,
   },
   companionAnswer: { backgroundColor: colors.surface, borderWidth: 0, paddingHorizontal: 0 },
+  // The long-press menu wraps the bubble, so it takes the bubble's place in the row.
+  companionMenuUser: { alignSelf: 'flex-end', maxWidth: '86%', minWidth: 0 },
+  companionMenuAgent: { alignSelf: 'stretch' },
+  // The bubble fills its long-press wrapper, so the wrapper is exactly the bubble.
+  companionMenuBubble: { alignSelf: 'stretch', maxWidth: '100%' },
+  companionQuote: { alignSelf: 'stretch', marginBottom: spacing.xs },
   // Desktop BotAvatar sm (28) + gap-2.5; the task card reuses the same inset.
   companionAvatarRow: { flexDirection: 'row', alignItems: 'flex-start', gap: COMPANION_AVATAR_GAP },
   companionAvatarSlot: { flexShrink: 0, marginTop: 2 },

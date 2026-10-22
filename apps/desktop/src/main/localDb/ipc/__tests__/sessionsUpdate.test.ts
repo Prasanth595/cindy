@@ -1194,6 +1194,19 @@ describe('local-db:sessions:update handler wiring', () => {
     expect(h.closeSharedTask).toHaveBeenCalledWith('codex-local', h.client);
   });
 
+  // Real status writer + SQLite: completion guards run inside resource locks and
+  // again after recycle preparation, before any lifecycle write (integration).
+  it('rejects a superseded completed card after worktree preparation without archiving it', async () => {
+    let current = true;
+    h.requestRecycle.mockImplementationOnce(async () => { current = false; });
+    await expect(patchSessionMetaInDb('codex-local', { status: 'archived' }, {
+      beforeWrite: () => { if (!current) throw new Error('card changed'); },
+    })).rejects.toThrow('[PRECONDITION_FAILED]');
+    expect(h.sqlite!.prepare('SELECT status FROM sessions WHERE id = ?').get('codex-local')).toEqual({ status: 'active' });
+    expect(h.runtimeCleanup).not.toHaveBeenCalled();
+    expect(h.prepareSharedTaskClosure).not.toHaveBeenCalled();
+  });
+
   it('does not commit a terminal status when the shared-task journal cannot be prepared', async () => {
     h.prepareSharedTaskClosure.mockRejectedValueOnce(new Error('disk failed'));
 

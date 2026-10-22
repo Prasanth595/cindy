@@ -16,6 +16,7 @@
     "./branding": "./src/branding.ts",
     "./brand-identity": "./src/brandIdentity.ts",
     "./chat-quotes": "./src/chatQuotes.ts",
+    "./chat-reply-quote": "./src/chatReplyQuote.ts",
     "./command-display": "./src/commandDisplay.ts",
     "./client-endpoints": "./src/clientEndpoints.ts",
     "./cindy-make-feature": "./src/cindyMakeFeature.ts",

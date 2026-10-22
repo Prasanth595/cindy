@@ -228,7 +228,9 @@ import { isSessionUpgrading } from '@/state/ccMgrUpgradeStore';
 import { i18n } from '@/i18n';
 import { toast } from '@/lib/toast';
 import { openUrlInSidebarBrowser } from '@/features/right-sidebar/lib/openInSidebarBrowser';
+import { openPluginTaskTab } from '@/features/right-sidebar/lib/openPluginTaskTab';
 import { isSidebarWindow } from '@/lib/sidebarWindow';
+import { isSecondaryWindow } from '@/lib/secondaryWindow';
 import {
   extractUsageLimitRecoveryHint,
   type UsageLimitRecoveryHint,
@@ -9783,7 +9785,7 @@ function initGlobalListeners(options: GlobalListenerOptions = {}): void {
     window.electronAPI.ghosts,
     (raw: unknown, ownerStamp?: unknown) => {
       if (!isCurrentLocalLiveIngress(ownerStamp)) return;
-      if (isSidebarWindow()) return;
+      if (isSidebarWindow() || isSecondaryWindow()) return;
       const p = raw as {
         name?: string;
         iconDataUrl?: string;
@@ -9804,6 +9806,23 @@ function initGlobalListeners(options: GlobalListenerOptions = {}): void {
       });
     },
     'ghosts-preview-open',
+  );
+
+  // ── 插件任务页开页(taskView 槽):main 已做资格审与落点解析,这里只在该任务的
+  // 右侧栏打开 / 聚焦任务页页签。与 preview 同样只由主窗口处理,不抢前台。
+  bindIpc(
+    (cb: (data: unknown, ownerStamp?: unknown) => void) =>
+      window.electronAPI.ghosts?.onTaskViewOpen?.(cb),
+    (raw: unknown, ownerStamp?: unknown) => {
+      if (!isCurrentLocalLiveIngress(ownerStamp)) return;
+      if (isSidebarWindow() || isSecondaryWindow()) return;
+      const p = raw as { instanceId?: unknown; sessionId?: unknown } | null;
+      if (!p || typeof p.instanceId !== 'string' || typeof p.sessionId !== 'string') return;
+      void openPluginTaskTab(p.sessionId, p.instanceId, { userInitiated: false }).catch(() => {
+        /* 标签落地失败(任务桶异常等)不致命,静默 */
+      });
+    },
+    'ghosts-task-view-open',
   );
 
   // ── 后台活动熄灭 → stale running 对账(终态事件丢失的自动自愈)──
@@ -12583,7 +12602,11 @@ function removeMessagesByClientIds(
   // 启动就把它 hydrate 回来(review: codex P1)。缓存是纯优化,清掉即可(下一次成功的
   // 最新页拉取会重新写上)。
   invalidateRemoteMessageCache(sessionId);
-  discardPendingTextDelta(sessionId);
+  // An older item can be retracted while the next item is still streaming.
+  // Retire only the deleted item's batch; keep unrelated text and its ingress fence.
+  const pending = pendingTextDeltaBatches.get(sessionId);
+  const pendingClientId = pending?.persistId ?? sessions.get(sessionId)?.streamingClientId;
+  if (!pendingClientId || deletedClientIds.has(pendingClientId)) discardPendingTextDelta(sessionId);
   // 作废删除提交前发起的历史分页，避免旧页响应把已经清除的行重新 merge 回来。
   if (options.invalidateHistory !== false) invalidateMessageHistoryWindow(sessionId);
   setState(sessionId, (s) => {

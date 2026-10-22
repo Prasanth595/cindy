@@ -16,6 +16,8 @@ import {
   type BrowserControlRuntime,
 } from '@cindy/browser-control-runtime';
 
+import type { BrowserMcpDeps } from '@cindy/mcps';
+
 import { createLogger } from '../logger.js';
 import { extractBrowserAvailability, type BrowserAvailability } from './browser-availability.js';
 import { loadUserBrowserRecipes, type UserRecipesResult } from '../browser-recipes/loader.js';
@@ -63,6 +65,8 @@ import {
 } from './browser-real-profile/index.js';
 import { assertTrustedAppRendererEvent } from '../security/trustedAppRenderer.js';
 import { createBrowserBackendIpcHandlers } from './browser-backend/settings-ipc.js';
+import { resolveBrowserScreenshot } from './browserScreenshotResolver.js';
+import { compressInlineImage } from './inlineImageCompressor.js';
 import { raiseAgentBrowserWindow } from './raise-agent-browser-window.js';
 import { hasSecretPages, isSecretPage } from '../input-handoff/secretTaint.js';
 import {
@@ -449,6 +453,8 @@ export function setBrowserUseRealProfile(enabled: boolean): Promise<boolean> {
  */
 export function getBrowserMcpDeps(): {
   getRuntime(): BrowserControlRuntime;
+  resolveScreenshot: NonNullable<BrowserMcpDeps['resolveScreenshot']>;
+  compressInlineImage: NonNullable<BrowserMcpDeps['compressInlineImage']>;
   setBackend(kind: BackendKind): Promise<BackendKind>;
   supportsResourceDownloads(): boolean;
   supportsSemanticQueries(): boolean;
@@ -471,6 +477,11 @@ export function getBrowserMcpDeps(): {
     // the backend split. Swapping the active backend (Phase 5) is invisible from
     // @cindy/mcps' perspective.
     getRuntime: () => backendController,
+    resolveScreenshot: (result) =>
+      resolveBrowserScreenshot(result, {
+        runtimeDir: process.env.XDT_BROWSER_RUNTIME_DIR,
+      }),
+    compressInlineImage,
     supportsResourceDownloads: () => backendController.kind === 'rsb-webview',
     supportsSemanticQueries: () => backendController.kind === 'rsb-webview',
     // 代输入: pause page-state reads on a tab still showing a page where the owner typed a secret.

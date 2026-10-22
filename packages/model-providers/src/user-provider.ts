@@ -640,6 +640,10 @@ export function buildUserProvider(
       return {
         ...(imported?.cost ? { cost: imported.cost } : {}),
         ...projected,
+        // Only this native account's latest discovery grants Ultrafast. Public
+        // defaults, same-name API connections and other engines cannot inherit it.
+        ...(nativeCodex && agent === 'codex'
+          ? { supportsUltrafastMode: storedModel.supportsUltrafastMode === true } : {}),
         ...(nativeApi !== undefined ? { nativeApi } : {}),
         // Projection is not a user edit. Save only the original configuration.
         userModelConfig: structuredClone(storedModel),
@@ -733,6 +737,7 @@ export function buildUserProvider(
           id: model.id,
           name: model.name,
           mode: model.mode,
+          defaultEnabled: model.defaultEnabled,
           discoveredMetadata: model.discoveredMetadata,
           sourceAgent: agent as AgentKind,
           ...(model.modalities ? { modalities: model.modalities } : {}),

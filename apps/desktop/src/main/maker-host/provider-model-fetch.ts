@@ -129,7 +129,7 @@ function withoutCredentialHeaders(
   const normalized: Record<string, string> = {};
   for (const [name, value] of Object.entries(headers ?? {})) {
     const lower = name.toLowerCase();
-    if (lower !== 'authorization' && lower !== 'x-api-key' && lower !== 'x-goog-api-key') normalized[lower] = value;
+    if (lower !== 'authorization' && lower !== 'x-api-key' && lower !== 'xi-api-key' && lower !== 'x-goog-api-key') normalized[lower] = value;
   }
   return normalized;
 }
@@ -173,7 +173,15 @@ export function buildModelsFetchRequest(spec: ProviderModelsFetchSpec): {
   const discoveryEndpoint = new URL(discoveryUrl);
   const longcatOpenAiCatalog = discoveryEndpoint.origin === 'https://api.longcat.chat'
     && discoveryEndpoint.pathname.replace(/\/+$/, '') === '/openai/v1/models';
-  if (isOpenRouterModelsUrl(discoveryUrl) || longcatOpenAiCatalog) {
+  if (discoveryEndpoint.origin === 'https://api.elevenlabs.io'
+    && discoveryEndpoint.pathname.replace(/\/+$/, '') === '/v1/models') {
+    // ElevenLabs discovery uses xi-api-key, independently of the chat runtime slot.
+    delete headers.authorization;
+    delete headers['x-api-key'];
+    delete headers['anthropic-version'];
+    delete headers['anthropic-beta'];
+    if (spec.apiKey) headers['xi-api-key'] = spec.apiKey;
+  } else if (isOpenRouterModelsUrl(discoveryUrl) || longcatOpenAiCatalog) {
     // Discovery is provider-specific, not the generation harness's wire format.
     // OpenRouter's Anthropic view rewrites IDs and defaults to only 20 results.
     // LongCat explicitly shares its OpenAI catalog with the Messages runtime.

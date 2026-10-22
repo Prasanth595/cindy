@@ -1,4 +1,5 @@
 import { todoAccess } from '../../maker-ipc/botTodoAccess.js';
+import { botLinkedProjectAccess } from '../../maker-ipc/botLinkedProjects.js';
 import type { TodoPatch } from '@cindy/maker-shared/teammate-todo';
 /** Cindy Bots 的 main-side 权威数据边界。
  *
@@ -113,6 +114,7 @@ import { getResolvedMainLocale } from '../../i18n.js';
 import { SUPPORTED_LOCALES, type SupportedLocale } from '../../../shared/locale.js';
 import { normalizeBotWelcomeContext, type BotWelcomeContext } from '../../../shared/botWelcomeContext';
 import { broadcastBotRemoteResourceChanged } from '../../maker-ipc/botRemoteResourceInvalidation.js';
+import { routineTools } from '../../routines/service.js';
 import { createBotMemoryService } from '../../maker-ipc/botMemoryService.js';
 
 const log = createLogger('bots');
@@ -2563,6 +2565,17 @@ export function registerBotIpc(): void {
     const workbench: BotWorkbench = { responsibleSessionIds };
     return workbench;
   });
+  for (const operation of ['list', 'set'] as const) {
+    ipcMain.handle(`local-db:bots:projects:${operation}`, async (event, rawBotId: unknown, rawId?: unknown, rawLinked?: unknown) => {
+      assertTrustedAppRendererEvent(event);
+      const botId = readText(rawBotId, 'botId', 128, true);
+      const access = await botLinkedProjectAccess(botId);
+      if (operation === 'list') return access.read();
+      const id = readText(rawId, 'projectId', 64, true);
+      if (typeof rawLinked !== 'boolean') throwIpcError('INVALID_PARAMS', 'linked must be a boolean');
+      return access.set(id, rawLinked);
+    });
+  }
   for (const operation of ['list', 'update', 'act'] as const) {
     ipcMain.handle(`local-db:bots:todos:${operation}`, async (event, rawBotId: unknown, input: unknown) => {
       assertTrustedAppRendererEvent(event);
@@ -2574,6 +2587,17 @@ export function registerBotIpc(): void {
       owner.assertCurrent();return result;
     });
   }
+  // 近况「每天帮我查一次」：不传 enabled 只读，传了就开 / 关内置「每天查待办」。返回当前是否开着。
+  ipcMain.handle('local-db:bots:todos:daily-check', async (event, rawBotId: unknown, rawEnabled: unknown) => {
+    assertTrustedAppRendererEvent(event);
+    const botId = readText(rawBotId, 'botId', 128, true);
+    if (rawEnabled !== undefined && typeof rawEnabled !== 'boolean') throw new Error('Invalid enabled');
+    const owner = captureBotOperationOwner();
+    const result = rawEnabled === undefined ? await routineTools.todoCheckEnabled(botId) : await routineTools.setTodoCheck(botId, rawEnabled);
+    owner.assertCurrent();
+    if (rawEnabled !== undefined) broadcastBotRemoteResourceChanged(botId);
+    return result;
+  });
   // Exact per-task responsibility IDs from the current owner, without message bodies.
   ipcMain.handle('local-db:bots:workbench:follow-scopes', async (event) => {
     assertTrustedAppRendererEvent(event);

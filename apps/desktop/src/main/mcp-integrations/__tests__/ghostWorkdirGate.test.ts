@@ -1390,7 +1390,7 @@ describe('花名册 / ghost_list 过滤', () => {
           ghost_id: discovered.id,
           ...(Object.hasOwn(discovered, 'namespace') ? { namespace: discovered.namespace } : {}),
         };
-        const called = JSON.parse((await handleGhostCall(deps, { ...target, tool: 'run' })).content[0].text);
+        const called = JSON.parse(((await handleGhostCall(deps, { ...target, tool: 'run' })).content[0] as { text: string }).text);
         expect(called).toMatchObject({ ok: true, result: 'done' });
         const manual = JSON.parse((await handleGhostManual(deps, target)).content[0].text);
         expect(manual).toMatchObject({ ok: true, manual: [{ name: 'guide' }] });
@@ -1417,7 +1417,7 @@ describe('花名册 / ghost_list 过滤', () => {
       const target = { ghost_id: discovered.id, namespace: discovered.namespace };
       const info = JSON.parse((await handleGhostInfo(deps, target)).content[0].text);
       expect(info).toMatchObject({ ok: true, ghost: { id: 'art', namespace: discovered.namespace } });
-      expect(JSON.parse((await handleGhostCall(deps, { ...target, tool: 'run' })).content[0].text))
+      expect(JSON.parse(((await handleGhostCall(deps, { ...target, tool: 'run' })).content[0] as { text: string }).text))
         .toMatchObject({ ok: true, result: 'done' });
     }
     expect(dispatchMock).toHaveBeenNthCalledWith(1, expect.objectContaining({ ghostId: '_root__art' }));

@@ -49,12 +49,15 @@
 | 任务     | 模型、推理强度、Fast                                       | 有   | 无               |
 | 任务     | 删除、Fork、Rewind、切换权限档、代用户确认权限或回答提问   | 无   | 无               |
 | 协同 / Worker | 单个 / 批量创建、指定已有目录、查询实际目录与自有 worktree | 有 | 有（运行设备；新建 worktree 仅本机） |
+| 协同 / Worker | Lead 使用远程供应商时派发跨设备 Worker；独立选择工作电脑与模型电脑 | 有 | 有（`execution_device_id` + `agent_device_id`；目录查询支持同一工作电脑范围） |
 | 协同 / Worker | 为 Worker 新建 worktree、指定源分支、归档时回收 | 有 | 无 |
 | 定时任务 | 列出、详情、运行记录、修改、暂停、恢复、删除、立即运行     | 有   | 有（2026-10-14） |
-| 定时任务 | 新建、安装检查脚本                                         | 有   | 无               |
+| 定时任务 | 新建、安装检查脚本                                         | 有（绑定远程 Agent 时由本机辅助模型生成脚本） | 无 |
+| 定时任务 | 查可选运行位置与模型；设每次新建任务的 Agent 运行位置（其他电脑 / 分享来的供应商） | 有（2026-10-22） | 无 |
 | 定时任务 | 删除单条运行记录、标记已读                                 | 无   | 无               |
 | 项目     | 列出、登记、改名、移除；工作目录列表                       | 有   | 无               |
 | 伙伴     | 发现伙伴、伙伴间消息                                       | 有   | 有               |
+| 伙伴     | 自身关联项目：列出、添加与移除（原有文件工具按需读资料） | 有 | 无（远程设置界面可管理） |
 | 伙伴     | 资料、能力、待办、后台任务                                 | 有   | 无               |
 | 伙伴     | 「一眼」投影（等你 / 在做；用户界面已改为近况，2026-10-21） | 有   | 无               |
 | 伙伴     | 跟进任务：读取与继续（自动跟进所有任务的伙伴）             | 有   | 有（2026-10-17） |
@@ -72,6 +75,10 @@ Worker 工具省略 working_dir 时保持继承 Lead 任务记录目录，不跟
 - 工具索引与作用范围：`packages/lizi-mcps/src/lizi_xdtHelperMcpServer.ts`
   （`HELPER_CATEGORY_DESCRIPTIONS`）、`cindy_schedulerMcpServer.ts`
   （`SCHEDULER_CATEGORY_DESCRIPTIONS`）、`xdt-helper/capabilities.ts` 的 `self-management`。
+- 定时任务的 Agent 运行位置：`packages/lizi-mcps/src/scheduler/listModels.ts`（与协同 Worker 的
+  `list_available_models` 共用 host 实现；模型项的 `id` 对应 `model`，`providers[].id` 对应
+  `providerId`）、`create.ts` / `update.ts` 的 `agentDeviceId`；执行见
+  `apps/desktop/src/main/scheduler-host/runner.ts`（按那台电脑的已授权目录解析，不回落本机同名来源）。
 - 跨电脑定时任务：`packages/lizi-mcps/src/scheduler/_devices.ts`、
   `apps/desktop/src/main/mcp-integrations/schedulerDevices.ts`。
 - 跨电脑发消息：`apps/desktop/src/main/mcp-integrations/sessionHandoffRemote.ts`、

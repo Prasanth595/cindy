@@ -761,7 +761,10 @@
     "uploadAvatar": "上传头像",
     "avatarFailed": "无法打开此图片，请换一张。",
     "nameTaken": "已有同名伙伴，请换一个名字。",
-    "home": "主力电脑"
+    "home": "主力电脑",
+    "chat": "对话",
+    "showReplyTarget": "显示回复对应的消息",
+    "showReplyTargetHint": "伙伴回复上方标出它回的是你哪条消息。对所有伙伴生效，较早的回复不显示。"
   },
   "companionImport": {
     "title": "导入伙伴",
@@ -852,6 +855,12 @@
     "undo": "撤销",
     "undoFailed": "没能撤销，请重试",
     "deleteFailed": "没能删除，请重试",
+    "check": "帮我查查",
+    "checkMeta": "在已连接的邮件和消息里找新待办",
+    "checkPrompt": "帮我查查已连接的邮箱、消息等来源里，有没有需要我处理的新事项，有就记成待办。",
+    "dailyCheck": "每天帮我查一次",
+    "dailyCheckMeta": "工作日 9:00，没有新待办不打扰",
+    "dailyCheckFailed": "没能保存，请重试",
     "loadFailed": "没能读取待办",
     "outputs": "输出内容",
     "outputMeta": "{{time}} · {{task}}",

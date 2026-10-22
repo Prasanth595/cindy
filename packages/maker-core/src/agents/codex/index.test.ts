@@ -20,6 +20,7 @@ import {
   AUTO_REVIEW_SOURCE_CONTENT,
   INHERITED_CAPABILITY_SELECTION,
   MAIN_OWNED_SEND_CONTEXT,
+  LOCAL_AGENT_CLIENT,
   PINNED_SKILL_INVOCATION,
   CodexResumePreparationBlockedError,
   AgentNotAuthenticatedError,
@@ -34274,8 +34275,10 @@ describe('CodexAgent custom provider context window override', () => {
       }),
     );
     expect(params.model).toBe('gpt-5.6-sol');
-    expect(params.config?.model_context_window).toBe(1_050_000);
-    expect(params.config?.model_auto_compact_token_limit).toBe(945_000);
+    // The host catalog carries this model's budget. Thread-global overrides
+    // would also overwrite the previous model during native downshift compaction.
+    expect(params.config?.model_context_window).toBeUndefined();
+    expect(params.config?.model_auto_compact_token_limit).toBeUndefined();
     await handle.close();
   });
 
@@ -34331,6 +34334,7 @@ describe('CodexAgent custom provider context window override', () => {
       hostPurpose: 'custom-context',
       customContextModel: 'gpt-5.6-sol',
       customContextWindow: 700_000,
+      customContextProviderId: 'mygpt',
       customContextHostKey: 'local-custom-context:session-custom-host-lifecycle:1',
     });
     expect(Array.from(
@@ -34889,6 +34893,22 @@ describe('CodexAgent compaction storm escalation', () => {
 
 
 describe('Codex native model context overrides', () => {
+  // Host-owned conversations replace the ordinary budget catalog with a restricted
+  // tool catalog. Dropping their thread budget would silently restore native 272K.
+  it('preserves the budget when a host-tools-only catalog replaces the context catalog', async () => {
+    const agent = new CodexAgent(createDeps({}, {
+      resolveCodexThreadContextWindow: () => 500_000,
+      prepareCodexHostToolCatalog: async () => '/tmp/fixture-host-tools/catalog.json',
+    }));
+    const host = installFakeHost(agent, method => method === Method.ExperimentalFeatureList
+      ? { data: [{ name: 'shell_tool', stage: 'stable', enabled: true }], nextCursor: null } : undefined,
+    { userAgent: 'mock-codex/0.159.2' });
+    const handle = await agent.startSession({ sessionId: 'host-tools-budget', model: 'gpt-5.4', workingDir: '/repo',
+      [LOCAL_AGENT_CLIENT]: { url: 'http://127.0.0.1:1/mcp', token: 'fixture-token', hostToolsOnly: true, mcpName: 'fixture' } });
+    const start = host.request.mock.calls.find(([method]) => method === Method.ThreadStart)![1] as { config: Record<string, unknown> };
+    expect(start.config).toMatchObject({ model_context_window: 500_000, model_auto_compact_token_limit: 450_000 });
+    await handle.close();
+  });
   it.each([
     { storedLimit: 100_000, expectedWindow: 100_000, expectedCompact: 90_000 },
     { storedLimit: 500_000, expectedWindow: 500_000, expectedCompact: 450_000 },
@@ -34920,9 +34940,8 @@ describe('Codex native model context overrides', () => {
     const startParams = host.request.mock.calls.find(([method]) => method === Method.ThreadStart)![1] as {
       config: Record<string, unknown>;
     };
-    expect(startParams.config).toMatchObject({
-      model_context_window: expectedWindow, model_auto_compact_token_limit: expectedCompact,
-    });
+    expect(startParams.config.model_context_window).toBe(storedLimit === null ? undefined : expectedWindow);
+    expect(startParams.config.model_auto_compact_token_limit).toBe(storedLimit === null ? undefined : expectedCompact);
     const pushUsage = (turnId: string, reportedWindow: number) => {
       host.getThreadHandlers()!.tokenUsageUpdated?.({
         threadId: handle.id, turnId,
@@ -34948,9 +34967,8 @@ describe('Codex native model context overrides', () => {
       const resumed = host.request.mock.calls.find(([method]) => method === Method.ThreadResume)![1] as {
         config: Record<string, unknown>;
       };
-      expect(resumed.config).toMatchObject({
-        model_context_window: 200_000, model_auto_compact_token_limit: 180_000,
-      });
+      expect(resumed.config.model_context_window).toBeUndefined();
+      expect(resumed.config.model_auto_compact_token_limit).toBeUndefined();
     }
     pushUsage('custom-budget-2', 190_000);
     expect(handle.getUsageSnapshot().contextWindow).toBe(190_000);

@@ -1734,6 +1734,33 @@ describe('CreateWorkerPopover execution device', () => {
       expect(onCreate.mock.calls[0]![0]).not.toHaveProperty(field);
   });
 
+  // Unit/jsdom: a remote-model Lead can place files on another host and select
+  // an independent model computer, without leaking the Lead's model location.
+  it('keeps the selected work host when choosing a remote model for its Worker', async () => {
+    listExecutionDevices.mockResolvedValue({ devices: [
+      { deviceId: 'mac-mini', name: 'Mac mini', supported: true, supportsAgentDevice: true },
+    ] });
+    const invoke = vi.fn(async () => ({ locations: [{ agentDeviceId: 'agent-pc', name: 'Agent PC' }] }));
+    Object.assign(window.electronAPI, { deviceLink: { invoke } });
+    mocks.remoteProviders = [{ id: 'openai', name: 'OpenAI', connected: true,
+      remoteInvocationEnabled: true, agents: ['codex'], models: { codex: [model('codex/gpt-5.5')] } }];
+    const onCreate = vi.fn();
+    render(<CreateWorkerPopover open leadSessionId="lead" leadAgentDeviceId="lead-model-pc"
+      remoteAgentDevices={[{deviceId: 'agent-pc', name: 'Agent PC'}]} executionDevicesEnabled onClose={vi.fn()} onCreate={onCreate} />);
+    const picker = await screen.findByRole('combobox', { name: 'orca.createWorker.executionDeviceLabel' });
+    fireEvent.keyDown(picker, { key: 'ArrowDown' });
+    fireEvent.click(await screen.findByRole('option', { name: /Mac mini/ }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('mac-mini', 'maker:orca:remote-worker:models', [{}]));
+    expect(mocks.deviceProvidersFor).toBe('mac-mini');
+    await waitFor(() => expect(screen.getByTestId('model-selector').dataset.remoteHome).toBe('mac-mini'));
+    fireEvent.click(screen.getByTestId('pick-remote-codex'));
+    expect(mocks.deviceProvidersFor).toBe('agent-pc');
+    fireEvent.click(screen.getByRole('button', { name: 'orca.createWorker.submit' }));
+    await waitFor(() => expect(onCreate).toHaveBeenCalledOnce());
+    expect(onCreate.mock.calls[0]![0]).toMatchObject({ executionDeviceId: 'mac-mini',
+      agentDeviceId: 'agent-pc', model: 'codex/gpt-5.5', providerId: 'openai' });
+  });
+
   it('offers other computers only when enabled and the list is not empty', async () => {
     const { unmount } = render(<CreateWorkerPopover open onClose={vi.fn()} onCreate={vi.fn()} />);
     expect(listExecutionDevices).not.toHaveBeenCalled();

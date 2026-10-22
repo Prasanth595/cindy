@@ -761,7 +761,10 @@
     "uploadAvatar": "上傳頭像",
     "avatarFailed": "無法開啟此圖片，請換一張。",
     "nameTaken": "已有同名夥伴，請換一個名字。",
-    "home": "主力電腦"
+    "home": "主力電腦",
+    "chat": "對話",
+    "showReplyTarget": "顯示回覆對應的訊息",
+    "showReplyTargetHint": "夥伴回覆上方標出它回的是你哪則訊息。對所有夥伴生效，較早的回覆不顯示。"
   },
   "companionImport": {
     "title": "匯入夥伴",
@@ -852,6 +855,12 @@
     "undo": "復原",
     "undoFailed": "無法復原，請重試",
     "deleteFailed": "無法刪除，請重試",
+    "check": "幫我查查",
+    "checkMeta": "在已連接的郵件和訊息裡找新待辦",
+    "checkPrompt": "幫我查查已連接的信箱、訊息等來源裡，有沒有需要我處理的新事項，有就記成待辦。",
+    "dailyCheck": "每天幫我查一次",
+    "dailyCheckMeta": "工作日 9:00，沒有新待辦不打擾",
+    "dailyCheckFailed": "沒能儲存，請重試",
     "loadFailed": "無法讀取待辦",
     "outputs": "輸出內容",
     "outputMeta": "{{time}} · {{task}}",

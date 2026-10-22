@@ -51,7 +51,7 @@ import type {
   AgentInputQueuedMessage,
 } from '../../../shared/agentInputQueue.js';
 import { HOST_ONLY_AGENT_PREFIX, USAGE_LIMIT_RESET_AUTO_RESUME_REASON, isAutomaticInputOriginKind } from '../../../shared/agentInputQueue.js';
-import { buildRemoteWorkerQueuedMessage } from '../orcaRemoteWorkerRuntime.js';
+import { buildRemoteWorkerQueuedMessage, createOrcaRemoteWorkerRuntime, type RemoteWorkerTurnEnd } from '../orcaRemoteWorkerRuntime.js';
 import { stampMobileClientOrigin } from '../mobileClientPromptNote.js';
 import {
   CONTINUE_AFTER_APP_EXIT_PROMPT,
@@ -15438,4 +15438,85 @@ describe('Goal input boundary', () => {
     pendingInteraction = false;
     expect(await gate.ensureGoalInputReady('goal-task')).toBe(true);
   });
+});
+
+// Regression through production coordinator + remote runtime. Unit, no real waits.
+// Orca contract 5a: a recoverable vendor boundary must not settle the Lead dispatch.
+// Existing coverage only polls after autoResume has already completed.
+it('keeps remote Lead reporting pending through real coordinator recovery stages', async () => {
+  vi.useFakeTimers();
+  const h = createHarness();
+  const sid = 'capacity-real-coordinator';
+  const takeover = { error: 'Selected model is at capacity.', reason: 'upstream-overload', attempt: 1, maxAttempts: 5, sessionTotal: 1 };
+  h.setResumableTurnErrorTakeover(takeover);
+  h.setResumableTurnErrorCandidate(() => true);
+  h.setHasAssistantProgressAfter(async () => true);
+  h.coordinator.enqueue(sid, makeItem('lead-input', 'original task'));
+  await flush();
+  expect(h.sendToAgent).toHaveBeenCalledTimes(1);
+  h.setRunning(false);
+  h.coordinator.onTurnEvent(sid, 'error', takeover.error, { reason: takeover.reason });
+  await flush();
+  const backoff = h.coordinator.getProjection(sid);
+  expect(backoff.autoResumePending).toMatchObject({ attempt: 1 });
+  expect(backoff.turnInProgress).toBe(false);
+  const gate = deferred<void>(), entered = deferred<void>();
+  h.getSdkSessionId.mockImplementationOnce(async () => { entered.resolve(); await gate.promise; return 'sdk-session'; });
+  h.setRunning(true);
+  expect(await h.coordinator.autoRetryLastError(sid, takeover.sessionTotal)).toBe('resumed');
+  await flush();
+  h.setRunning(false);
+  const queued = h.coordinator.getProjection(sid);
+  expect(queued.autoResumePending).toBeUndefined();
+  expect(queued.turnInProgress).toBe(false);
+  expect(queued.pendingQueue.some(item => item.autoResume === true)).toBe(true);
+  h.coordinator.wakeSession(sid, 'probe-idle');
+  await entered.promise;
+  const preparing = h.coordinator.getProjection(sid);
+  expect(preparing.autoResumePending).toMatchObject({ attempt: 1 });
+  expect(preparing.turnInProgress).toBe(true);
+  gate.resolve();
+  await flush();
+  expect(h.sendToAgent).toHaveBeenCalledTimes(2);
+  h.setRunning(false);
+  h.coordinator.onTurnEvent(sid, 'done');
+  await flush();
+  const completed = h.coordinator.getProjection(sid);
+  expect(completed.turnInProgress).toBe(false);
+  for (const [phase, projection] of [['backoff', backoff], ['queued', queued], ['preparing', preparing]] as const) {
+    let currentProjection = projection;
+    let recovered = false;
+    const calls: RemoteWorkerTurnEnd[] = [];
+    const invoke = async (_device: string, channel: string, args: unknown[]): Promise<unknown> => {
+      if (channel === 'maker:list-active') return { sessions: [{ sessionId: sid, isTurnRunning: false }] };
+      if (channel === 'maker:input:get-projection') return { ...currentProjection, deliveryReceipts: [{ clientId: 'lead-input', state: 'accepted' }] };
+      if (channel === 'local-db:history:messages') {
+        const request = args[0] as { roles: string[] };
+        const rows = [
+          { id: 'u-1', clientId: 'lead-input', role: 'user', content: 'original task' },
+          { id: 'partial', role: 'assistant', content: 'Partial before capacity error' },
+          ...(recovered ? [
+            { id: 'u-continue', role: 'user', content: 'Continue', agentMeta: { autoResume: true } },
+            { id: 'final', role: 'assistant', content: 'FINAL_AFTER_CAPACITY_RECOVERY' },
+          ] : []),
+        ].filter(row => request.roles.includes(row.role)).reverse();
+        return { items: rows, hasMore: false, terminal: null };
+      }
+      throw new Error(channel);
+    };
+    const runtime = createOrcaRemoteWorkerRuntime({
+      invoke, deviceName: () => 'execution device', saveReport: async () => {},
+      onTurnStarted: async () => {}, captureTurnEnded: () => async turn => { calls.push(turn); return true; },
+      onWorkerStateChanged: () => {}, now: () => 1, setTimeout: () => 0, clearTimeout: () => {}, log: { info: () => {}, warn: () => {} },
+    });
+    runtime.track({ workerId: 'w', teamId: 't', leadSessionId: 'lead', proxySessionId: 'proxy', deviceId: 'execution', remoteSessionId: sid, lastBridgedMessageId: null, pendingReport: { clientIds: ['lead-input'], baselineMessageId: null } }, { workingDir: '/qa' });
+    await runtime.pollNow();
+    expect(calls, phase).toEqual([]);
+    currentProjection = completed;
+    recovered = true;
+    await runtime.pollNow();
+    await runtime.pollNow();
+    expect(calls, phase).toEqual([{ status: 'done', finalText: 'FINAL_AFTER_CAPACITY_RECOVERY' }]);
+    runtime.stop();
+  }
 });

@@ -29,7 +29,8 @@ import { getCurrentDbClientSnapshot } from '../localDb/client/current.js';
 import { botProfiles } from '../localDb/schema.js';
 import { isCompanionShadowed } from '../companion-cloud/homes.js';
 import { currentFollowUpEvents } from '../bot-autonomy/hub.js';
-import { BUILTIN_FOLLOW_UP_ROUTINE_PREFIX } from '../../shared/botAutonomy.js';
+import { BUILTIN_FOLLOW_UP_ROUTINE_PREFIX, BUILTIN_TODO_CHECK_ROUTINE_PREFIX } from '../../shared/botAutonomy.js';
+import { TODO_CHECK_PROMPT_VERSION, buildTodoCheckRoutineInput, builtinTodoCheckRoutineId } from '../bot-autonomy/todoCheckRoutine.js';
 
 /** Bootstrap supplies live getters without a service -> scheduler -> IPC dependency cycle. */
 export interface RoutineHostDeps {
@@ -520,6 +521,27 @@ export const routineTools = {
       return engine.history(id);
     }),
   sources: async () => (await getRoutineEngine()).listSources(),
+  /** 近况里「每天帮我查一次」：内置「每天查待办」是否存在且开着。 */
+  todoCheckEnabled: (botId: string) => withBot(botId, (engine) =>
+    engine.list(botId).some((routine) => routine.id === builtinTodoCheckRoutineId(botId) && routine.enabled)),
+  /**
+   * 打开时按模板落地（首次创建，或模板版本变化时重写）并恢复；关掉只暂停，保留同一条。
+   * 内置规则只能经 ensureBuiltin 写内容，这里的 put 只切换 enabled。
+   */
+  setTodoCheck: (botId: string, enabled: boolean) => withBot(botId, async (engine, scope) => {
+    const id = builtinTodoCheckRoutineId(botId);
+    let routine = engine.list(botId).find((row) => row.id === id) ?? null;
+    if (enabled) {
+      const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+      routine = await engine.ensureBuiltin(botId, 'todo-check', buildTodoCheckRoutineInput(timezone), id, TODO_CHECK_PROMPT_VERSION);
+      assertScope(scope);
+      if (!routine) throw new Error('The teammate is paused');
+    }
+    if (!routine || routine.enabled === enabled) return enabled && !!routine;
+    const { name, prompt, triggers, silentWhenIdle, preRunHook } = routine;
+    const saved = await engine.put(botId, { name, prompt, triggers, silentWhenIdle, preRunHook, enabled }, id, routine.revision);
+    return saved.enabled;
+  }),
 };
 
 /** A stopped/crashed plugin must not continue to appear as a listening source. */
@@ -576,7 +598,8 @@ export async function importCompanionRoutines(botId: string, routines: Companion
   const builtinIds = new Set(listed.filter((routine) => routine.builtin).map((routine) => routine.id));
   const now = Date.now();
   for (const routine of routines) {
-    if (builtinIds.has(routine.id) || routine.id.startsWith(BUILTIN_FOLLOW_UP_ROUTINE_PREFIX)) continue;
+    if (builtinIds.has(routine.id) || routine.id.startsWith(BUILTIN_FOLLOW_UP_ROUTINE_PREFIX)
+      || routine.id.startsWith(BUILTIN_TODO_CHECK_ROUTINE_PREFIX)) continue;
     const foreignHook = !!routine.input.preRunHook?.command?.trim() && routine.originDeviceId !== selfDeviceId;
     const passed = routine.input.triggers.some((trigger) => trigger.kind === 'once' && trigger.at <= now);
     const input: RoutineInput = { ...routine.input, enabled: routine.input.enabled && !foreignHook && !passed };

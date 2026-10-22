@@ -98,7 +98,7 @@ Pi 读取独立的设置页百分比，在每次启动或恢复任务时冻结�
 `Agent.continue()` 语义压缩续接。Cindy 只消费 Pi 的 `compaction_start`／`compaction_end` 事件做
 UI、usage 与 digest 投影，不再向 Pi 注入 host 自动 compact RPC。
 
-本机占用 ≥ 100%，或 host／bridge 自动 compact 已确定性失败（空摘要、compact 路径上的
+Claude Code／Pi 本机占用 ≥ 100%，或 host／bridge 自动 compact 已确定性失败（空摘要、compact 路径上的
 invalid-request 400）时，走
 `host-controlled rollover + model-controlled bounded retrieval`：host 关闭旧原生窗口、写交接并
 在下一次发送前 fresh bootstrap，不再继续 compact。Pi 原生 threshold／overflow compact 出现同类
@@ -109,7 +109,7 @@ upstream idle watchdog 打断静默 `/compact` 时只清 fired，不得在本次
 该锁存只活在当前 live
 controller／进程内；重启后没有 live handle 时不凭估算换窗。Orca 空闲 live 直发必须先走与
 `sendToSessionInternal` 相同的 `prepareUnhealthySession`，不能把消息打进应被关闭的旧窗口。切到更小窗口模型的 `danger`／`overflow`
-预检仍按 `assessModelSwitchContext`，与同模型 compact 解耦。不要关闭 Claude Code SDK 或 Pi 原生
+预检在 Claude Code／Pi 仍按 `assessModelSwitchContext`，与同模型 compact 解耦。不要关闭 Claude Code SDK 或 Pi 原生
 自动压缩。远端 Pi 同样依赖原生 auto-compaction；远端没有本地换窗，确定性失败不得伪装成已交接。
 明确 `context-overflow` 且本轮没有助手输出或
 工具副作用时，host 才会对失败的 user 消息做一次 wire-only replay；有副作用或分类不确定时必须
@@ -129,7 +129,7 @@ Cindy 保底压缩是**一套**交接重建流程。装得进当前约束就不�
 带调用关联的文本结果摘要，省略图片数据；伙伴主对话及显式重启也保留这些结果，其他交接沿用原规则。
 可剥图不足一半的混合大尾巴有意不救。打开会话不触发；只在终态错误或下次发送时
 由 main 侧 claim。SSH 不承诺。不确定 fail closed。救援摘要不得依赖额外模型调用。
-伙伴 canonical 主对话在发送边界达到已知窗口的 90%，或本地 Codex 图片活尾巴实测超限时，
+Claude Code／Pi 伙伴 canonical 主对话在发送边界达到已知窗口的 90%，或本地 Codex 图片活尾巴实测超限时，
 复用同一持久交接提前重建；保留有界工具结果、按输入取消恢复，后台原生工作未结束时不换窗。
 权限依据为有效 Bot link 与 active Profile；其它任务保留原来的满窗门槛。
 伙伴下一次发送也识别已记录、明确来自压缩的空摘要／invalid-request 错误；不扩大原生 latch
@@ -153,11 +153,21 @@ Codex 图片历史重建后，普通用户任务和伙伴主对话可在同一�
 同引擎切到更小窗口时，main 在实际 send 持有的 session 锁内按目标窗口评估；
 用户发送即同意为最终选择执行必要的上下文整理，不再弹出二次确认。
 仅选择或反复切换模型不构成整理授权；同窗或扩窗不因此触发摘要重建。
-Claude Code／Codex／Pi 的强制换窗线
+Claude Code／Pi 的强制换窗线
 统一固定为目标窗口 90%，与各 harness 的日常 auto-compaction 百分比解耦；Claude Code
 与 Pi 的日常默认值也设为 90%，对齐 Codex 口径，但用户已有显式 override 继续生效。命中
 `danger`／`overflow` 的本机会话先走同一套 `context_rebuild` bounded handoff，再落目标
 route，不能 resume 旧原生窗口。
+Codex 同引擎切模（包括自动任务、Orca、设备互联与 SSH）保留原生历史，由 Codex 自己判断并执行
+压缩；本地同供应商冷恢复时可先用旧的大窗口模型压缩，再执行目标模型。跨供应商不假定目标凭证
+能调用旧模型；旧模型预算不可用时，原生仍按目标预算在采样前压缩。SSH 的逐 thread 预算也保留
+这条目标模型原生压缩路径，不能因无法使用旧模型而提前拒绝切模。不得仅因目标窗口较小、占用到
+90%／100% 或伙伴账本新鲜而抢先生成 Cindy 交接。窗口预算与用户 override 保持不变；重载模型
+目录或凭证执行句柄不等于重建历史。Cindy 只在明确的上下文超限、原生压缩失败或历史字节超限后
+沿用既有兜底及副作用保护。跨引擎交接、显式重启和伙伴空闲间隔刷新仍按各自生命周期规则处理。
+真实 CLI 的同供应商、跨供应商与逐 thread 预算回归见
+`apps/desktop/src/main/maker-host/__tests__/codexContextSwitch.native.test.ts`；逐 thread 回归在本机
+模拟服务运行，不代表完成了真实 SSH 端到端验收。
 Codex 跨凭证优先保留同一个原生线程；仅当目标需要另一个 host、旧 host 仍持有原生 writer
 时，关闭该任务的业务 handle 后使用不剥离历史的原生 fork，并等待一次性 fork host 退出，
 再以任务 owner 与旧 SDK／路由版本为条件原子保存新 SDK thread 和目标路由。任务 ID 与
@@ -242,7 +252,7 @@ HTTP 回退遇到缺失 `Content-Type` 的成功响应时，只允许从明文 S
 确认事件流并补齐响应头；显式非 SSE 类型、HTML／JSON、空响应与只有心跳的正文不能放行。
 正在运行的 turn、SSH 远端缺少本地交接能力、或已有恢复动作在途时必须 fail closed，不能
 先热切再发送。三个 harness 的同模型自动压缩所有权保持不变。token 破了只认：终态超限、
-占用 ≥ 100%、官方 compact 确定性失败；普通 timeout 不算。
+Claude Code／Pi 占用 ≥ 100%、官方 compact 确定性失败；Codex 单纯占用到线和普通 timeout 不算。
 
 Codex 已选远端压缩的本地任务，在原生 `contextCompaction` 生命周期内收到终态失败时，
 只有明确的 HTTP 400/404/405/422/500/501/502/503 拒绝或失败响应，才自动改用同一模型的

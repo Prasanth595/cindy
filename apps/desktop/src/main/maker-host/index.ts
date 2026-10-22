@@ -206,6 +206,7 @@ import { resolveDesktopModelContextProviderId, resolveDesktopModelEfforts } from
 import {
   prepareCodexCustomContextCatalog,
   prepareCodexGuestModelCatalog,
+  readNativeCodexCatalog, findCodexCatalogModel, nativeCodexFallbackModel, patchCodexModelMaxContextWindow,
 } from './codex-custom-context-catalog.js';
 import { buildPiAgent } from './pi-host.js';
 import {
@@ -233,9 +234,9 @@ import {
   getRipgrepBinaryPath,
 } from './runtime-configs.js';
 import { createDeviceAgentStarter } from '../remote-agent/controller/service.js';
-import { readRemoteAgentIdleReleaseMinutes } from '../remote-agent/controller/idleReleaseStore.js';
 import { extractReviewPdfTextInChild } from '../reviewer/reviewPdfProcess.js';
 import { disposeRemoteAgentHost, installRemoteAgentHost } from '../remote-agent/host/service.js';
+import { disposeLocalAgentHost, installLocalAgentHost } from '../local-agent/service.js';
 import {
   getClaudeEndpoint,
   setClaudeProxyGatewayKeyReader,
@@ -1782,6 +1783,25 @@ export function getMaker(): Maker {
           resolveDesktopModelContextProviderId(getDesktopSelectableCatalog(), 'codex', providerId, modelId), modelId),
       resolveCodexContextWindowInfo: (modelId, config, reportedUsableWindow, codexHome) =>
         readCodexContextWindowInfo({ codexHome: codexHome ?? getCodexHome(), binaryPath: codexPath, modelId, config, reportedUsableWindow }),
+      prepareCodexHostToolCatalog: async (modelId, contextWindow) => {
+        let catalog = await readNativeCodexCatalog(codexPath, getCodexHome());
+        if (!findCodexCatalogModel(catalog, modelId)) catalog.models.push(nativeCodexFallbackModel(modelId));
+        if (contextWindow !== null) catalog = patchCodexModelMaxContextWindow(catalog, modelId, contextWindow);
+        const restricted = { ...catalog, models: catalog.models.map(model => ({...model, apply_patch_tool_type: null, supports_search_tool: false})) };
+        const directory = ownerScopedUserDataPath('local-agent', 'codex-catalogs');
+        await fs.mkdir(directory, {recursive:true});
+        // Content-addressed: an existing identical file is reused, so Windows never has to
+        // replace a catalog another session may still hold or be publishing concurrently.
+        const content = JSON.stringify(restricted);
+        const target = path.join(directory, `host-tools-only-${createHash('sha256').update(content).digest('hex')}.json`);
+        const published = () => fs.readFile(target, 'utf8').then(existing => existing === content, () => false);
+        if (await published()) return target;
+        const temporary = target + '.' + randomUUID() + '.tmp';
+        try { await fs.writeFile(temporary, content, {mode:0o600}); await fs.rename(temporary,target); }
+        catch (error) { if (!(await published())) throw error; }
+        finally { await fs.rm(temporary,{force:true}); }
+        return target;
+      },
       resolveCodexLocalAuthPolicy: captureCodexLocalAuthPolicy,
       resolveCodexThreadContextWindow: (providerId, modelId) => {
         const source = resolveDesktopModelContextProviderId(getDesktopSelectableCatalog(), 'codex', providerId, modelId);
@@ -1801,6 +1821,7 @@ export function getMaker(): Maker {
           if (!previous?.runtimes.codex || previous.auth?.native !== 'codex') return;
           const next = { ...previous, runtimes: { codex: { ...previous.runtimes.codex,
             models: mapped.map((model) => ({ id: model.id, name: model.name,
+              supportsUltrafastMode: model.supportsUltrafastMode === true,
               ...(model.contextWindowVerified ? { contextWindow: model.contextWindow } : {}),
               discoveredMetadata: model.discoveredMetadata,
             })),
@@ -2062,11 +2083,18 @@ export function getMaker(): Maker {
             ) {
               throw new Error('custom-context Codex host is missing its model or context window');
             }
+            const catalog = getDesktopSelectableCatalog();
+            const source = resolveDesktopModelContextProviderId(catalog, 'codex', ctx.customContextProviderId, modelId);
             const customCatalog = await prepareCodexCustomContextCatalog({
               binaryPath: codexPath,
               codexHome: effectiveCodexHome,
               modelId,
               contextWindow,
+              modelIds: catalog.providers.find(provider => provider.id === source)?.models.codex?.map(model => model.id),
+              resolveContextWindow: (nativeModelId) => {
+                return (source ? readModelContextLimit('codex', source, nativeModelId) : null)
+                  ?? resolveModelDefaultContextWindow(catalog, 'codex', source, nativeModelId);
+              },
               ...(smartSubagentConfig
                 ? { baseCatalog: smartSubagentConfig.modelCatalog }
                 : {}),
@@ -2882,8 +2910,6 @@ export function getMaker(): Maker {
           const shareId = parseProviderShareAgentDeviceId(deviceId);
           return shareId !== null && isProviderShareCredentialConsentSkipped(shareId);
         },
-        // 名额紧张时闲置满这么多分钟的任务让出那台电脑上的 Agent 进程(「远程与分享」里的设置，0 = 不让)。
-        idleReleaseMinutes: readRemoteAgentIdleReleaseMinutes,
         logger: desktopMakerLogger,
       }),
       makerMemory: makerMemoryManager,
@@ -3108,6 +3134,7 @@ export function getMaker(): Maker {
     });
     // 本机作为「Agent 运行的电脑」：同账号另一台电脑的任务可让 Agent 在这里运行。
     installRemoteAgentHost({ getMaker: () => getMaker(), userDataDir: app.getPath('userData') });
+    installLocalAgentHost(_maker);
     botRuntimeResourcePreflight = async (opts) => {
       const preflightOpts = { ...opts };
       return hydrateBotProfileRuntime(preflightOpts, buildBotRuntimeDeps(), {
@@ -3303,6 +3330,7 @@ export function resetMaker(): void {
   // Callers keep this Maker when PI teardown is unconfirmed, preserving supervision.
   releaseSessionBindingsForOwnerBoundary();
   remoteWorkerBridge = null;
+  void disposeLocalAgentHost();
   disposeRemoteAgentHost();
   _sessionArchiveSync?.stop();
   _sessionArchiveSync = null;

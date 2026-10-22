@@ -48,6 +48,7 @@ import { configureBotAutonomyHost, getBotAutonomyGlance, noteBotAutonomyInputPro
 import { getHostSourceDevice, getSelfDeviceId, remoteBackgroundInvoke, remoteInvoke as invokeBotPeer } from '../device-link/index.js';
 import { readDeviceProviderViews } from '../remote-agent/controller/deviceCatalog.js';
 import { checkDeviceRoute } from '../remote-agent/controller/deviceRouteCheck.js';
+import { cancelPendingRemoteStart } from '../remote-agent/controller/startRemote.js';
 import { forgetCredentialGrants } from '../remote-agent/executor/credentialGrants.js';
 import { isProviderShareAgentDeviceId } from '../../shared/providerShare.js';
 import {
@@ -965,7 +966,7 @@ import {
   createOrcaUiAssignmentDispatchClaims,
   createOrcaUiAssignmentHistoryGate,
 } from './orcaUiAssignmentHistoryGate.js';
-import { throwOrcaServiceFailure } from './orcaServiceFailure.js';
+import { orcaModelDiscoveryFailure, throwOrcaServiceFailure } from './orcaServiceFailure.js';
 import {
   createOrcaTeamService,
   findFocusTargetWorker,
@@ -1187,6 +1188,7 @@ import {
   runGenericOAuthLogin,
 } from '../maker-host/generic-oauth.js';
 import {
+  revokeCodexAccountUltrafast,
   getCustomProvider,
   mergeDiscoveredModelsIntoConfig,
   updateCustomProviderIfUnchanged,
@@ -1455,7 +1457,7 @@ import {
   resolveGhostUserHookModel,
   withGhostUserHookModel,
 } from '../cindy-brain/subscriptionGateway.js';
-import { createSessionExecutionResolver } from './sessionExecutionSelection.js';
+import { createSessionExecutionResolver, resolveSessionExecutionSelection } from './sessionExecutionSelection.js';
 import { createGhostErrandRunner } from './ghostErrandRunner.js';
 import {
   createPluginTaskSession,
@@ -2878,6 +2880,8 @@ interface OrcaCollabService {
   listAvailableModels: (params: {
     agent?: AgentKind;
     callerSessionId?: string;
+    /** Worker task/model discovery is owned by this execution computer. */
+    executionDeviceId?: string;
     /** 列哪里的模型：缺省 = Lead 所在位置；null = 任务所在电脑；string = 那台电脑或分享。 */
     agentDeviceId?: string | null;
   }) => Promise<
@@ -4460,19 +4464,20 @@ let pendingAgentSwitchApplyHolder:
     signal?: AbortSignal,
     selection?: ScheduledModelSelection,
     beforeApply?: () => Promise<boolean | void>,
-  ) => Promise<{ release: () => void; selection?: ScheduledModelSelection; restore?: () => Promise<void> }>) | null = null;
+    scheduledModelOverride?: boolean,
+  ) => Promise<{ release: () => void; selection?: ScheduledModelSelection }>) | null = null;
 let cancelPendingAgentSwitchHolder: ((sessionId: string) => void) | null = null;
-let preserveScheduledModelPreferencesHolder: ((sessionId: string) => Promise<() => Promise<void>>) | null = null;
+let prepareScheduledModelPreferencesHolder: ((sessionId: string, override: boolean) => Promise<void>) | null = null;
 let recordDispatchedModelHolder: ((sessionId: string, clientId: string) => void) | null = null;
 
 export function recordDispatchedModel(sessionId: string, clientId: string): void {
   recordDispatchedModelHolder?.(sessionId, clientId);
 }
 
-/** Scheduler caller already owns the send lock; cleanup reacquires it after the run. */
-export async function preserveScheduledModelPreferencesUnderLock(sessionId: string) {
-  if (!preserveScheduledModelPreferencesHolder) throw new Error('Scheduled model selection is not initialized');
-  return preserveScheduledModelPreferencesHolder(sessionId);
+/** Send boundary: preserve an override's owner choice, or apply that choice for a following run. */
+export async function prepareScheduledModelPreferencesUnderLock(sessionId: string, override: boolean) {
+  if (!prepareScheduledModelPreferencesHolder) throw new Error('Scheduled model selection is not initialized');
+  return prepareScheduledModelPreferencesHolder(sessionId, override);
 }
 
 /** 会话级完整路由选择(引擎 + 模型 + 来源 + 档位 + Fast)。 */
@@ -4762,24 +4767,28 @@ export function clearWorkingDirectoryRecoveryForOwnerBoundary(): void {
  * intent,返回 no-op release 即可。
  */
 export function acquirePendingAgentSwitchForDirectSend(
-  sessionId: string, signal?: AbortSignal,
+  sessionId: string, signal?: AbortSignal, selection?: undefined, scheduledModelOverride?: boolean,
 ): Promise<() => void>;
 export function acquirePendingAgentSwitchForDirectSend(
   sessionId: string, signal: AbortSignal | undefined, selection: ScheduledModelSelection,
 ): Promise<ScheduledModelSelectionLease>;
+export function acquirePendingAgentSwitchForDirectSend(
+  sessionId: string, signal?: AbortSignal, selection?: ScheduledModelSelection, scheduledModelOverride?: boolean,
+): Promise<(() => void) | ScheduledModelSelectionLease>;
 export async function acquirePendingAgentSwitchForDirectSend(
   sessionId: string,
   signal?: AbortSignal,
   selection?: ScheduledModelSelection,
+  scheduledModelOverride?: boolean,
 ): Promise<(() => void) | ScheduledModelSelectionLease> {
   if (selection && !pendingAgentSwitchApplyHolder) throw new Error('Scheduled model selection is not initialized');
-  const lease = await pendingAgentSwitchApplyHolder?.(sessionId, signal, selection);
+  const lease = await pendingAgentSwitchApplyHolder?.(sessionId, signal, selection, undefined, scheduledModelOverride);
   if (!selection) return lease?.release ?? (() => {});
   if (!lease?.selection) {
     lease?.release();
     throw new Error('Scheduled model selection was not resolved');
   }
-  return { release: lease.release, selection: lease.selection, restore: lease.restore };
+  return { release: lease.release, selection: lease.selection };
 }
 
 /** 直发路径在 createSession / 重读 live session 之前关掉不健康原生会话。 */
@@ -6463,6 +6472,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     });
   });
   setSessionRuntimeCleanup((sessionId) => {
+    // 任务在另一台电脑上还没启动完：让那台停下，不再迟到地启动、跑完这一轮。
+    cancelPendingRemoteStart(sessionId);
     workingDirectoryRecovery.discard(sessionId);
     clearSessionRuntimeControlState(sessionId);
     clearSessionProvider(sessionId);
@@ -7373,10 +7384,17 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       if (method === 'device') throw new Error('Device login is only available for Grok');
       if (isCodexAccountProvider(providerId)) {
         const owner = getActiveAppSession();
-        const current = () => isCurrent() && getActiveAppSession().generation === owner.generation;
+        const sameOwner = () => getActiveAppSession().generation === owner.generation;
+        const current = () => isCurrent() && sameOwner();
         const result = await loginCodexAccount(providerId, isCurrent, onBrowserUrl);
         if (!result.ok) return result;
-        return { ...result, afterCommit: async () => {
+        return { ...result,
+          ...(result.identityChanged ? {
+            commitAccountCapabilities: () => revokeCodexAccountUltrafast(providerId, sameOwner),
+          } : {}),
+          afterCommit: async () => {
+          if (!sameOwner()) return;
+          if (result.identityChanged) await refreshCustomProvidersIntoCatalog();
           if (!current()) return;
           const previous = await getCustomProvider(providerId);
           if (!current()) return;
@@ -9577,6 +9595,13 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     return (await activeCompanionCloud()?.transfer(botId, targetDeviceId, companionSwitchOptions(options))) ?? { ok: false, code: 'NOT_ENABLED' };
   });
   registerOrcaRemoteWorkerHandlers(makerSessionRegistry, createOrcaRemoteWorkerHost({
+    readModels: async (request) => {
+      const owner = getCurrentDbClientSnapshot();
+      const result = await orcaCollabServiceHolder?.listAvailableModels({ ...request, agentDeviceId: request.agentDeviceId ?? null });
+      if (getCurrentDbClientSnapshot() !== owner) throwIpcError('PRECONDITION_FAILED', 'Worker account changed');
+      if (!result?.ok) throw new Error(`[${result?.errorCode ?? 'HOST_NOT_READY'}] ${result?.message ?? 'Worker model service is not ready'}`);
+      return result;
+    },
     getCaller: () => {
       const context = getDeviceLinkInvokeContext();
       return context
@@ -9591,6 +9616,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       const [row] = await getDbClient()
         .drizzle.select({
           orcaRemoteLead: sessions.orcaRemoteLead,
+          agentDeviceId: sessions.agentDeviceId,
+          providerId: sessions.providerId,
           status: sessions.status,
           workingDir: sessions.workingDir,
           model: sessions.model,
@@ -9610,10 +9637,40 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         agentKind: row.agentKind === 'cc' ? 'claude-code' : (row.agentKind as 'codex' | 'pi'),
         effort: row.effort,
         fastMode: row.fastMode,
+        agentDeviceId: row.agentDeviceId,
+        providerId: row.providerId,
       };
     },
     openSession: createOrcaRemoteWorkerSessionOpener({
       openSession,
+      isSelfDeviceId: deviceId => deviceId === getSelfDeviceId(),
+      captureOwner: () => {
+        const owner = getCurrentDbClientSnapshot();
+        return () => { if (getCurrentDbClientSnapshot() !== owner) throwIpcError('PRECONDITION_FAILED', 'Worker account changed'); };
+      },
+      resolveAgentSelection: async request => {
+        const views = await readDeviceProviderViews(remoteBackgroundInvoke, request.agentDeviceId!);
+        const routing = deviceWorkerRoutingContext(views, request.agentKind);
+        const models = routing.remoteCodexModels ?? [];
+        const providers = routing.availability[request.agentKind];
+        const model = request.model ?? (request.providerId
+          ? providers.find(provider => provider.id === request.providerId)?.models[0]
+          : models[0]?.id);
+        try {
+          const selected = resolveSessionExecutionSelection({
+            selection: { agentKind: request.agentKind, model, providerId: request.providerId,
+              effort: request.effort, fastMode: request.fastMode },
+            availableAgents: [request.agentKind], availableModels: models, providerRouting: routing,
+            // The connected remote provider owns its credential; it validates the
+            // credential again when starting. Never require/copy this host's key.
+            hasCindyAiApiKey: true,
+          });
+          return { ...request, model: selected.model, providerId: selected.providerId ?? undefined,
+            effort: selected.effort, fastMode: selected.fastMode };
+        } catch (error) {
+          throwIpcError('INVALID_PARAMS', error instanceof Error ? error.message : 'Worker model is unavailable');
+        }
+      },
       insertSession: async (row) => {
         await getDbClient().drizzle.insert(sessions).values(row).run();
       },
@@ -9629,6 +9686,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           workingDir: opened.workingDir ?? '',
           model: opened.model,
           providerId: opened.providerId,
+          agentDeviceId: opened.agentDeviceId ?? undefined,
           effort: (opened.effort || undefined) as CreateOpts['effort'],
           fastMode: opened.fastMode,
           permissionMode: opened.permissionMode as CreateOpts['permissionMode'],
@@ -10883,6 +10941,11 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     },
     isBusy: () => isSessionInTurn(sessionId) || !!maker.getSession(sessionId)?.isTurnRunning(),
     resolveSelection: async (route) => {
+      // Agent 在另一台电脑运行的任务:自动化的选择按那台的已授权目录解析,本机停用轴不适用。
+      const row = await agentSwitchDeps.getSessionRow(sessionId);
+      if (row?.agentDeviceId && !row.remoteHostId) {
+        return resolveScheduledModelSelectionLive(route, { agentDeviceId: row.agentDeviceId });
+      }
       const reroute = await assertModelRouteUsable(route.agentKind, route.model, route.providerId);
       return resolveScheduledModelSelectionLive({ ...route,
         providerId: reroute && shouldApplyExclusiveProviderRerouteLive(route.providerId)
@@ -10996,18 +11059,18 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     await updateScheduledPreference(sessionId, patch);
     return true;
   };
-  preserveScheduledModelPreferencesHolder = async (sessionId) => {
-    const scopeId = await scheduledModelScope.begin(sessionId);
-    return scopeId
-      ? () => withSendToSessionLock(sessionId, () => scheduledModelScope.restore(sessionId, scopeId))
-      : async () => {};
+  prepareScheduledModelPreferencesHolder = async (sessionId, override) => {
+    if (override) await scheduledModelScope.begin(sessionId);
+    else await scheduledModelScope.restore(sessionId);
   };
-  pendingAgentSwitchApplyHolder = async (sessionId, signal, selection, beforeApply) => {
+  pendingAgentSwitchApplyHolder = async (sessionId, signal, selection, beforeApply, scheduledModelOverride) => {
     let stage = 'direct-send:acquire';
     let deferPendingApply = false;
     const release = await acquireSendToSessionLock(sessionId, undefined, () => stage);
     try {
-      await scheduledModelScope.restore(sessionId);
+      // An automation with a model override goes straight to its own route. Restoring
+      // the owner first could destructively shrink history that this send can use.
+      if (!selection && !scheduledModelOverride) await scheduledModelScope.restore(sessionId);
       // Read after acquisition: a picker can have been queued ahead of this
       // send. Restore under this same lease through dispatch, without re-taking it.
       const pendingSelection = agentSwitchPending.get(sessionId);
@@ -11033,20 +11096,16 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         });
       }
       let resolvedSelection: ScheduledModelSelection | undefined;
-      let scheduledScopeId: string | undefined;
       if (selection) {
         stage = 'direct-send:applyScheduledModelSelection';
-        scheduledScopeId = await scheduledModelScope.begin(sessionId);
+        await scheduledModelScope.begin(sessionId);
         resolvedSelection = await applyScheduledProfile(sessionId, selection, signal);
       }
       stage = 'direct-send:prepareUnhealthySession';
       await contextOverflowRolloverHolder?.prepareUnhealthySession(sessionId);
       // The caller retains the lease through runtime refresh and Session.send.
       stage = 'direct-send:caller-dispatch';
-      return { release, selection: resolvedSelection,
-        ...(scheduledScopeId ? { restore: () => withSendToSessionLock(sessionId,
-          () => scheduledModelScope.restore(sessionId, scheduledScopeId)) } : {}),
-      };
+      return { release, selection: resolvedSelection };
     } catch (err) {
       release();
       throw err;
@@ -16897,8 +16956,15 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         };
       }
     },
-    listAvailableModels: async ({ agent, callerSessionId, agentDeviceId: requestedAgentDeviceId }) => {
+    listAvailableModels: async ({ agent, callerSessionId, executionDeviceId, agentDeviceId: requestedAgentDeviceId }) => {
       try {
+        if (executionDeviceId) {
+          if (!orcaRemoteWorkersForHost) throw new Error('[HOST_NOT_READY] Worker service is not ready');
+          const result = await orcaRemoteWorkersForHost.readModels(executionDeviceId, {
+            ...(agent ? { agent } : {}), agentDeviceId: requestedAgentDeviceId ?? null,
+          });
+          return { ok: true, ...result };
+        }
         const agents: AgentKind[] = agent ? [agent] : ['codex', 'claude-code', 'pi'];
         // SSH Lead 的 Worker 在 SSH 主机上运行 Agent，不能放到别的电脑：不列可选位置。
         const sshLead = callerSessionId ? Boolean(await readSessionRemoteHostIdCached(callerSessionId)) : false;
@@ -16959,11 +17025,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         }
         return { ok: true, agentDeviceId: null, ...(locations ? { locations } : {}), ...result };
       } catch (err) {
-        return {
-          ok: false,
-          errorCode: 'INTERNAL',
-          message: err instanceof Error ? err.message : String(err),
-        };
+        return orcaModelDiscoveryFailure(err, Boolean(executionDeviceId));
       }
     },
   };

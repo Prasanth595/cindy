@@ -975,6 +975,9 @@ export function createContextOverflowRollover(deps: ContextOverflowRolloverDeps)
     if (!sessionRow || sessionRow.status === 'deleted' || !sessionRow.sdkSessionId) {
       return 'not-needed';
     }
+    // Native Codex can compact with the previous model before the smaller turn.
+    // This direct entry also serves automatic/Orca switches outside the UI gate.
+    if (sessionRow.agentKind === 'codex') return 'not-needed';
     const persistedContextTokens =
       typeof sessionRow.contextTokens === 'number' &&
       Number.isFinite(sessionRow.contextTokens) &&
@@ -1156,13 +1159,13 @@ export function createContextOverflowRollover(deps: ContextOverflowRolloverDeps)
       sessionRow.agentKind,
     );
     const window = effectiveContextWindow(sessionRow.model, reportedWindow, verified);
-    // At a send boundary, checkpoint a pressured companion before the next turn
-    // enters native compaction. Native compaction remains enabled within a turn.
+    // Codex owns native pressure compaction, including companions. Other harnesses
+    // retain their send-boundary companion checkpoints and full-window guard.
     // 账本新鲜(复盘已覆盖最近完成轮)时线提前到 70%;不新鲜维持 90%,免得换窗丢掉还没进
     // 账本的内容。只有落在 70%–90% 之间才去读账本;提前换窗必须拿到渲染好的账本段并原样
     // 带进交接——同一个快照只读一次,免得判新鲜之后第二次读取失败,交接反而没带账本。
     let earlyWorkingMemory: string | undefined;
-    const pressure = botChat
+    const pressure = sessionRow.agentKind === 'codex' ? false : botChat
       ? shouldRebuildForContextPressure(usedTokens, window * BOT_CONTEXT_CHECKPOINT_RATIO) ||
         (shouldRebuildForContextPressure(usedTokens, window * BOT_CONTEXT_CHECKPOINT_RATIO_FRESH) &&
           (await isWorkingMemoryFresh(sessionId)) &&

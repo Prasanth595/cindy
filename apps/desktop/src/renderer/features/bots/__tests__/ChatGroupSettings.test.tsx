@@ -7,7 +7,9 @@ import type { BotGroupSummary } from '../../../../shared/botGroupChat';
 const mocks = vi.hoisted(() => ({ manage: vi.fn(), ownedBots: vi.fn(), refresh: vi.fn(), confirm: vi.fn() }));
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock('@/components/ui/confirm-dialog-provider', () => ({ useConfirmDialog: () => ({ confirm: mocks.confirm }) }));
-vi.mock('@/components/settings/ProfileEditDialog', () => ({ ProfileEditDialog: () => null }));
+vi.mock('@/components/settings/ProfileEditDialog', () => ({ ProfileEditDialog: ({ open, avatarEditor }: {
+  open: boolean; avatarEditor?: { hint: string; save(avatar: { type: 'reset' }): Promise<void> };
+}) => open && avatarEditor ? <button onClick={() => void avatarEditor.save({ type: 'reset' })}>{avatarEditor.hint}</button> : null }));
 vi.mock('../botStore', () => ({ useBotProfiles: () => [{ id: 'bot' }] }));
 vi.mock('../BotAvatar', () => ({ BotAvatar: () => null }));
 vi.mock('../botGroupStore', () => ({ refreshBotGroups: mocks.refresh }));
@@ -54,6 +56,20 @@ it('keeps a sole archived owner in the group and offers restoring its history', 
   }));
 });
 afterEach(cleanup);
+// The actual dialog is covered by ProfileEditDialog.avatarCrop.test.tsx.
+// Here the real group settings must supply a group destination, never account editing.
+it('edits only this member avatar and hides editing on older servers', async () => {
+  const view = render(<MemoryRouter><ChatGroupSettings group={group()} /></MemoryRouter>);
+  expect(screen.queryByRole('button', { name: key('editProfile') })).toBeNull();
+  expect(screen.queryByRole('button', { name: key('groupAvatar') })).toBeNull();
+  view.rerender(<MemoryRouter><ChatGroupSettings group={{ ...group(), supportsMemberAvatar: true }} /></MemoryRouter>);
+  fireEvent.click(screen.getByRole('button', { name: key('groupAvatar') }));
+  fireEvent.click(screen.getByRole('button', { name: key('groupAvatarHint') }));
+  await waitFor(() => expect(mocks.manage).toHaveBeenCalledWith({
+    groupId: 'room', action: { type: 'avatar', actorId: 'me', avatar: { type: 'reset' } },
+  }));
+  expect(mocks.refresh).toHaveBeenCalledOnce();
+});
 it('lets a member change their own nickname while keeping another owner’s grant read-only', async () => {
   render(<MemoryRouter><ChatGroupSettings group={group()} /></MemoryRouter>);
   expect((screen.getByRole('textbox', { name: key('name') }) as HTMLInputElement).disabled).toBe(true);

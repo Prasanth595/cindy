@@ -149,6 +149,11 @@ export interface ScheduleFormState {
    * `form.providerId || nativeDefaultSourceId(agentKind)` 算出当前高亮的来源。
    */
   providerId: string;
+  /**
+   * 每次新建任务时 Agent 在哪台电脑运行(同账号另一台电脑或分享来的供应商);'' / 缺省 = 本机。
+   * 与 providerId 成对:来源属于那台电脑的目录。绑定已有任务时运行位置跟随任务,不保存。
+   */
+  agentDeviceId?: string;
   effort: EffortValue | '';
   /** Codex Fast 模式开关。仅 Codex 有意义;切到 Claude / 不支持 fast 的模型时自动清为 false。 */
   fastMode: boolean | 'ultrafast';
@@ -294,6 +299,7 @@ export interface RememberedBinding {
   targetSessionId: string;
   model: string;
   providerId: string;
+  agentDeviceId?: string;
   effort: EffortValue | '';
   fastMode: boolean | 'ultrafast';
   agentKind: ScheduleFormState['agentKind'];
@@ -308,6 +314,7 @@ export function captureBinding(form: ScheduleFormState): RememberedBinding | nul
     targetSessionId: form.targetSessionId,
     model: form.model,
     providerId: form.providerId,
+    agentDeviceId: form.agentDeviceId,
     effort: form.effort,
     fastMode: form.fastMode,
     agentKind: form.agentKind,
@@ -343,6 +350,7 @@ export function applyRunMode(
           targetSessionId: remembered.targetSessionId,
           model: remembered.model,
           providerId: remembered.providerId,
+          agentDeviceId: remembered.agentDeviceId,
           effort: remembered.effort,
           fastMode: remembered.fastMode,
           agentKind: remembered.agentKind,
@@ -566,6 +574,12 @@ export function buildScheduleInput(form: ScheduleFormState): CreateScheduleInput
     intervalMs: form.intervalMs,
     agentKind: scheduleAgentKindForForm(form),
     modelAgentKind: !isScript && form.model.trim() ? form.modelAgentKind : undefined,
+    // 恒带 key:运行位置与模型 / 来源成对,update 时 undefined 清回本机。只有每次新建任务
+    // (含持续会话首次与重建)才用它;绑定任务的运行位置跟随任务本身。
+    agentDeviceId:
+      !isScript && form.model.trim() && (!isHeartbeat || form.persistentSession)
+        ? form.agentDeviceId?.trim() || undefined
+        : undefined,
     workspaceKind: form.workspaceKind,
     useWorktree: !isScript && form.workspaceKind === 'project' && form.useWorktree,
     persistentSession: !isScript && form.persistentSession,
@@ -628,6 +642,7 @@ export function scheduleToUserCreateInput(
     modelAgentKind: schedule.modelAgentKind,
     model: schedule.model,
     providerId: schedule.providerId,
+    agentDeviceId: schedule.agentDeviceId,
     fastMode: schedule.fastMode,
     effort: schedule.effort,
     workspaceKind: schedule.workspaceKind,

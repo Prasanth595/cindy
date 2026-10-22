@@ -171,7 +171,9 @@
     "diffEditCount": "{{n}} edits",
     "groupSentNamed": "Sent from group “{{name}}”",
     "groupSent": "Sent from a group",
-    "sourceGroupId": "Group ID: {{id}}"
+    "sourceGroupId": "Group ID: {{id}}",
+    "selectText": "Select Text",
+    "you": "You"
   },
   "actions": {
     "attachmentsPrefix": "Attachments: {{names}}",

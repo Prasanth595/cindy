@@ -7,6 +7,7 @@ import {
 } from '@/../shared/voiceConversation';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { setDataOwnerGeneration } from '@/contexts/dataOwnerGeneration';
+import type { SpeechPlayer } from '../PcmSpeechPlayer';
 
 vi.mock('@/components/ui/select', () => ({
   Select: ({
@@ -40,7 +41,11 @@ vi.mock('@/components/ui/select', () => ({
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string, options?: { voice?: string }) =>
-      options?.voice ? `${key}: ${options.voice}` : key,
+      key === 'settings.providers.xd.title'
+        ? 'Cindy AI'
+        : options?.voice
+          ? `${key}: ${options.voice}`
+          : key,
   }),
 }));
 vi.mock('@/hooks/useVoiceInputSettings', () => ({
@@ -53,7 +58,7 @@ const audio = vi.hoisted(() => ({
   stop: vi.fn(async () => {}),
   onPcm16k: vi.fn(),
   close: vi.fn(),
-  play: vi.fn(async () => {}),
+  play: vi.fn<SpeechPlayer['play']>(async () => {}),
 }));
 vi.mock('@/voice-input/WebMicAudioEngine', () => ({
   WebMicAudioEngine: class {
@@ -73,6 +78,7 @@ vi.mock('../PcmSpeechPlayer', () => ({
 }));
 
 import { CompanionVoiceSettings } from '../CompanionVoiceSettings';
+import { resolveVoiceConfiguration } from '../voiceConfiguration';
 const sessionState = vi.hoisted(() => ({ value: {} }));
 vi.mock('@/lib/makerChatStore', () => ({
   makerChatStore: { subscribeLight: () => () => {}, getLightSnapshot: () => sessionState.value },
@@ -238,6 +244,45 @@ it('keeps the menu and saved voice on preview failure, retries and stops playbac
   expect(window.electronAPI.voiceConversation.setPreference).not.toHaveBeenCalled();
   expect(voicePicker().value).toBe('voice:river');
 });
+
+// PR #6660 P2: real settings -> preview -> status must distinguish header/read
+// timeouts in both voice inputs. Existing failure coverage only used a generic
+// rejection in the menu. Unit tier; one rejected IPC is the minimal reproducer.
+it.each([
+  { input: 'list', stage: 'preview' },
+  { input: 'list', stage: 'readPreview' },
+  { input: 'manual', stage: 'preview' },
+  { input: 'manual', stage: 'readPreview' },
+] as const)(
+  'shows a timeout for $input voice $stage without changing preferences',
+  async ({ input, stage }) => {
+    listedVoices();
+    const api = window.electronAPI.voiceConversation;
+    vi.mocked(api[stage]).mockRejectedValueOnce(
+      new Error(
+        `Error invoking remote method 'voice-conversation:${stage}': Error: [VOICE_SPEECH_TIMEOUT] Speech timed out`,
+      ),
+    );
+    audio.play.mockImplementationOnce(async (read) => {
+      await read();
+    });
+    renderSettings();
+    const menu = await openVoices();
+    if (input === 'manual') {
+      fireEvent.click(menu.getByRole('button', { name: 'bots.voiceMode.manualVoice' }));
+      fireEvent.click(await screen.findByRole('button', { name: 'bots.voiceMode.preview' }));
+    } else {
+      fireEvent.click(menu.getByRole('button', { name: 'bots.voiceMode.previewVoice: Bella' }));
+    }
+    await screen.findByText('bots.voiceMode.errors.speechTimeout');
+    expect(screen.queryByText('bots.voiceMode.previewStatus.error')).toBeNull();
+    expect(api.preview).toHaveBeenCalledOnce();
+    expect(api.stopPreview).toHaveBeenCalledOnce();
+    expect(audio.close).toHaveBeenCalled();
+    expect(api.setPreference).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
+  },
+);
 
 it.each(['no-session', 'permission'] as const)(
   'keeps inline preview disabled with %s',
@@ -489,7 +534,7 @@ it('shows a useful empty state without requesting a microphone or inventing mode
   view.unmount();
   models = [{ id: 'tts', name: 'Speech', defaultVoice: 'alloy' }];
   renderSettings();
-  await screen.findByRole('option', { name: 'Speech' });
+  await screen.findByRole('option', { name: 'Speech · Cindy AI' });
   expect(screen.queryByText('bots.voiceMode.noModelsSupportedProtocols')).toBeNull();
   expect(screen.queryByRole('button', { name: 'bots.voiceMode.openProviders' })).toBeNull();
   expect(screen.getByText('bots.voiceMode.settingsHint')).toBeTruthy();
@@ -517,6 +562,45 @@ it('does not present a catalog failure as missing models or suggest adding a con
   await screen.findByText('bots.voiceMode.noModels');
   expect(refresh).toHaveBeenCalledWith('xd');
 });
+
+// Unit regression: the real settings component previously rendered the raw
+// Gateway catalog name. Existing fixtures already used its localized display name.
+it.each(['xd', undefined])(
+  'localizes the Gateway name with provider %s while retaining BYOK names and route IDs',
+  async (providerId) => {
+    const gateway: VoiceConversationModel = {
+      id: 'elevenlabs/eleven_v3',
+      name: 'Eleven v3',
+      providerId,
+      providerName: 'XD Gateway',
+      protocol: 'openai',
+      defaultVoice: 'reference-voice',
+    };
+    const byok: VoiceConversationModel = {
+      ...gateway,
+      providerId: 'my-elevenlabs',
+      providerName: '我的 ElevenLabs',
+      agent: 'codex',
+    };
+    models = [byok, gateway];
+    renderSettings();
+    const field = await screen.findByRole('combobox', { name: 'bots.voiceMode.model' });
+    await waitFor(() => expect((field as HTMLSelectElement).disabled).toBe(false));
+    expect(within(field).getByRole('option', { name: 'Eleven v3 · Cindy AI' })).toBeTruthy();
+    expect(within(field).getByRole('option', { name: 'Eleven v3 · 我的 ElevenLabs' })).toBeTruthy();
+    expect(within(field).queryByRole('option', { name: 'Eleven v3 · XD Gateway' })).toBeNull();
+    expect(window.electronAPI.voiceConversation.setPreference).not.toHaveBeenCalled();
+    fireEvent.change(field, { target: { value: voiceModelKey(gateway) } });
+    await waitFor(() =>
+      expect(window.electronAPI.voiceConversation.setPreference).toHaveBeenCalledWith('bot', {
+        providerId,
+        agent: undefined,
+        modelId: gateway.id,
+        voice: gateway.defaultVoice,
+      }),
+    );
+  },
+);
 
 it('selects the exact BYOK connection for duplicate IDs and persists it for this companion', async () => {
   models = ['a', 'b'].map((providerId) => ({
@@ -747,7 +831,7 @@ it('keeps a proxy API override and shows its selector only while a custom endpoi
     Array.from(field.options)
       .map((option) => option.value)
       .filter(Boolean),
-  ).toEqual(['openai', 'elevenlabs', 'minimax']);
+  ).toEqual(['openai', 'elevenlabs', 'minimax', 'qwen-tts', 'dashscope-tts']);
   await act(async () => {
     fireEvent.change(field, { target: { value: 'minimax' } });
   });
@@ -925,6 +1009,98 @@ it('shows the last selected label on re-entry, refreshes renamed voices, and ret
   expect(window.electronAPI.voiceConversation.setPreference).not.toHaveBeenCalled();
   expect(window.electronAPI.voiceConversation.preview).not.toHaveBeenCalled();
   expect(audio.start).not.toHaveBeenCalled();
+});
+
+// Unit tier: a partial private catalog is still a usable public catalog, but may
+// omit the saved custom ID. Refresh must not silently select the first system voice.
+it('keeps the saved custom ID and usable system choices after private discovery fails', async () => {
+  models = [
+    {
+      id: 'cosyvoice-v3-flash',
+      name: 'CosyVoice',
+      providerId: 'mine',
+      agent: 'codex',
+      protocol: 'dashscope-tts',
+    },
+  ];
+  vi.mocked(window.electronAPI.voiceConversation.preference).mockResolvedValue({
+    selection: {
+      providerId: 'mine',
+      agent: 'codex',
+      modelId: 'cosyvoice-v3-flash',
+      voice: 'my-clone',
+    },
+    customized: true,
+  });
+  vi.mocked(window.electronAPI.voiceConversation.voices).mockResolvedValue({
+    source: 'reference',
+    customVoicesUnavailable: true,
+    voices: [
+      { id: 'longanyang', name: '龙安洋' },
+      { id: 'longanhuan', name: '龙安欢' },
+    ],
+  });
+  renderSettings();
+  await screen.findByText('bots.voiceMode.voicesCustomError');
+  expect((screen.getByLabelText('bots.voiceMode.voiceId') as HTMLInputElement).value).toBe(
+    'my-clone',
+  );
+  const menu = await openVoices();
+  expect(menu.getByRole('button', { name: '龙安欢' })).toBeTruthy();
+  closeVoices();
+  fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.refreshVoices' }));
+  await waitFor(() => expect(window.electronAPI.voiceConversation.voices).toHaveBeenCalledTimes(2));
+  expect(window.electronAPI.voiceConversation.setPreference).not.toHaveBeenCalled();
+  expect(window.electronAPI.voiceConversation.preview).not.toHaveBeenCalled();
+});
+
+it('retains the selected custom name and public options when a refresh returns a partial catalog', async () => {
+  models = [
+    {
+      id: 'cosyvoice-v3-flash',
+      name: 'CosyVoice',
+      providerId: 'mine',
+      agent: 'codex',
+      protocol: 'dashscope-tts',
+    },
+  ];
+  vi.mocked(window.electronAPI.voiceConversation.preference).mockResolvedValue({
+    selection: {
+      providerId: 'mine',
+      agent: 'codex',
+      modelId: 'cosyvoice-v3-flash',
+      voice: 'my-clone',
+    },
+    customized: true,
+  });
+  vi.mocked(window.electronAPI.voiceConversation.voices)
+    .mockResolvedValueOnce({
+      source: 'mixed',
+      voices: [
+        { id: 'my-clone', name: 'My Voice' },
+        { id: 'longanyang', name: '龙安洋' },
+      ],
+    })
+    .mockResolvedValue({
+      source: 'reference',
+      customVoicesUnavailable: true,
+      voices: [{ id: 'longanyang', name: '龙安洋' }],
+    });
+  const first = renderSettings();
+  await screen.findByText('My Voice');
+  fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.refreshVoices' }));
+  await screen.findByText('bots.voiceMode.voicesCustomError');
+  expect(voicePicker().textContent).toBe('My Voice');
+  expect(screen.queryByLabelText('bots.voiceMode.voiceId')).toBeNull();
+  const menu = await openVoices();
+  expect(menu.getByRole('button', { name: '龙安洋' })).toBeTruthy();
+  expect(menu.getByRole('button', { name: 'My Voice' })).toBeTruthy();
+  first.unmount();
+  renderSettings();
+  await screen.findByText('bots.voiceMode.voicesCustomError');
+  expect(voicePicker().textContent).toBe('My Voice');
+  expect(window.electronAPI.voiceConversation.setPreference).not.toHaveBeenCalled();
+  expect(window.electronAPI.voiceConversation.preview).not.toHaveBeenCalled();
 });
 
 it('does not display or cache a late catalog from the previous account', async () => {
@@ -1190,3 +1366,93 @@ it('blocks preview while the companion is waiting for confirmation', async () =>
   ).toBe(true);
   expect(start).not.toHaveBeenCalled();
 });
+
+// Review regression: visibility is picker policy, not saved-route eligibility.
+// Existing UI tests had only visible or missing routes (Renderer unit, mock bridge).
+it('does not default to or offer unchecked speech models, while restoring a saved hidden selection', async () => {
+  models = [
+    { id: 'hidden', name: 'Saved hidden speech', pickerVisible: false, defaultVoice: 'alloy' },
+    { id: 'unchecked', name: 'Unchecked speech', pickerVisible: false, defaultVoice: 'alloy' },
+    { id: 'visible', name: 'Visible speech', defaultVoice: 'alloy' },
+  ];
+  expect(resolveVoiceConfiguration(models, null).selection?.modelId).toBe('visible');
+  const saved = { modelId: 'hidden', voice: 'nova' };
+  expect(resolveVoiceConfiguration(models, saved).selection).toEqual(saved);
+  vi.mocked(window.electronAPI.voiceConversation.preference).mockResolvedValue({ selection: saved, customized: true });
+  renderSettings();
+  const field = await screen.findByRole('combobox', { name: 'bots.voiceMode.model' });
+  await waitFor(() => expect((field as HTMLSelectElement).value).toBe(voiceModelKey(saved)));
+  // The saved value remains displayed; other unchecked models are not offered.
+  expect(within(field).queryByRole('option', { name: 'Unchecked speech' })).toBeNull();
+  expect(screen.queryByText('bots.voiceMode.modelUnavailable')).toBeNull();
+  expect(window.electronAPI.voiceConversation.setPreference).not.toHaveBeenCalled();
+});
+
+it('shows setup guidance when all speech models are hidden and there is no saved choice', async () => {
+  models = [{ id: 'unchecked', name: 'Unchecked speech', pickerVisible: false, defaultVoice: 'alloy' }];
+  expect(resolveVoiceConfiguration(models, null).selection).toBeNull();
+  renderSettings();
+  await screen.findByText('bots.voiceMode.noModels');
+  expect(screen.queryByRole('combobox', { name: 'bots.voiceMode.model' })).toBeNull();
+});
+
+// Unit tier, actual settings/preview entry with the host boundary mocked: switching
+// to Qwen must discard an unsupported speed without losing the selected connection.
+it.each([
+  ['qwen-tts', 'qwen3-tts-flash', 'Cherry', undefined],
+  ['dashscope-tts', 'cosyvoice-v3-flash', 'longanyang', 1.5],
+] as const)(
+  'saves and previews the %s proxy override with native parameter limits',
+  async (protocol, modelId, voice, speed) => {
+    models = [{ id: modelId, name: modelId, providerId: 'proxy', agent: 'codex' }];
+    vi.mocked(window.electronAPI.voiceConversation.preference).mockResolvedValue({
+      selection: {
+        providerId: 'proxy',
+        agent: 'codex',
+        modelId,
+        protocol: 'openai',
+        voice: 'old-voice',
+        speed: 1.5,
+      },
+      customized: true,
+    });
+    renderSettings();
+    const field = await screen.findByLabelText('bots.voiceMode.protocol');
+    await waitFor(() => expect((field as HTMLSelectElement).disabled).toBe(false));
+    await act(async () => {
+      fireEvent.change(field, { target: { value: protocol } });
+    });
+    await waitFor(() =>
+      expect(window.electronAPI.voiceConversation.setPreference).toHaveBeenLastCalledWith('bot', {
+        providerId: 'proxy',
+        agent: 'codex',
+        modelId,
+        protocol,
+        voice,
+        ...(speed === undefined ? {} : { speed }),
+      }),
+    );
+    const slider = screen.queryByRole('slider', { name: 'bots.voiceMode.speed' });
+    if (speed === undefined) expect(slider).toBeNull();
+    else {
+      expect(slider?.getAttribute('aria-valuemin')).toBe('0.5');
+      expect(slider?.getAttribute('aria-valuemax')).toBe('2');
+    }
+    fireEvent.click(await screen.findByRole('button', { name: 'bots.voiceMode.preview' }));
+    await waitFor(() =>
+      expect(window.electronAPI.voiceConversation.preview).toHaveBeenCalledWith(
+        expect.objectContaining({
+          providerId: 'proxy',
+          agent: 'codex',
+          modelId,
+          protocol,
+          voice,
+        }),
+      ),
+    );
+    expect(vi.mocked(window.electronAPI.voiceConversation.preview).mock.calls[0][0].speed).toBe(
+      speed,
+    );
+    expect(audio.start).not.toHaveBeenCalled();
+  },
+);

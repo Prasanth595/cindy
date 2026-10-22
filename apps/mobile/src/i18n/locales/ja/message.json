@@ -171,7 +171,9 @@
     "diffEditCount": "{{n}} 件の編集",
     "groupSentNamed": "グループ「{{name}}」から送信",
     "groupSent": "グループから送信",
-    "sourceGroupId": "グループ ID: {{id}}"
+    "sourceGroupId": "グループ ID: {{id}}",
+    "selectText": "テキストを選択",
+    "you": "あなた"
   },
   "actions": {
     "attachmentsPrefix": "添付ファイル：{{names}}",

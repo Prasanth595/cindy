@@ -211,13 +211,16 @@ async function withStatusWriteLock<T>(
   status: unknown,
   task: () => Promise<T>,
   alreadyLocked = false,
+  beforeWrite?: () => void,
 ): Promise<T> {
   const write = async () => {
     const resources = status === undefined ? [] : await readSessionWorktreeResources(db, sessionId);
     const physicalResources = await Promise.all(resources.map(physicalWorktreeKey));
     const mutate = async () => {
+      beforeWrite?.();
       if (status === 'archived' || status === 'deleted')
         await requestWorktreeRecycle(sessionId, resources);
+      beforeWrite?.();
       const result = await task();
       for (const resource of physicalResources) notifyWorktreeRecycleOpportunity(resource);
       return result;
@@ -1855,6 +1858,8 @@ export function registerSessionIpc(
         status: sessions.status,
         title: sessions.title,
         agentKind: sessions.agentKind,
+        agentDeviceId: sessions.agentDeviceId,
+        remoteHostId: sessions.remoteHostId,
       })
       .from(sessions)
       .where(inArray(sessions.id, sessionIds));
@@ -1869,6 +1874,7 @@ export function registerSessionIpc(
         status: row.status,
         title: row.title,
         agentKind: normalizeDbAgentKind(row.agentKind),
+        agentDeviceId: row.agentDeviceId && !row.remoteHostId ? row.agentDeviceId : null,
       };
     });
   });
@@ -2379,7 +2385,7 @@ export async function patchSessionMetaInDb(
     title?: string;
     pinnedAt?: string | null;
   },
-  options: { routeLockHeld?: boolean; signal?: AbortSignal } = {},
+  options: { routeLockHeld?: boolean; signal?: AbortSignal; beforeWrite?: () => void } = {},
 ): Promise<ReturnType<typeof sessionToCamel>> {
   const ownerScope = captureOwnerScope();
   for (const k of Object.keys(patch)) {
@@ -2407,15 +2413,18 @@ export async function patchSessionMetaInDb(
   let deletedSideChats: SessionsSetTerminalStatusResult['deletedSideChats'] | undefined;
   const updated = await withStatusWriteLock(db, sessionId, patch.status, async () => {
     if (patch.status !== undefined) await assertGenericSessionLifecycleAllowed(db, sessionId);
+    options.beforeWrite?.();
     const terminal = patch.status === 'archived' || patch.status === 'deleted';
     if (terminal) {
       if (typeof dbClient.tx === 'function') {
         const { status: _status, ...nonTerminalPatch } = setObj;
         await writeSessionPatch(db, sessionId, nonTerminalPatch, undefined);
+        options.beforeWrite?.();
         deletedSideChats = await setTerminalSessionStatus(dbClient, sessionId, patch.status as 'archived' | 'deleted');
       } else {
         const prepared = await prepareSharedTaskClosure(sessionId, dbClient);
         try {
+          options.beforeWrite?.();
           await writeSessionPatch(db, sessionId, setObj, patch.status);
         } catch (error) {
           await rollbackSharedTaskClosure(dbClient, prepared);
@@ -2441,7 +2450,7 @@ export async function patchSessionMetaInDb(
       await closeSharedTaskForTask(sessionId, dbClient);
     }
     return sessionToCamel(row);
-  }, options.routeLockHeld);
+  }, options.routeLockHeld, options.beforeWrite);
   if (updated.status === 'deleted' && isOwnerScopeCurrent(ownerScope)) {
     clearSessionAttention(sessionId, 'explicit');
   }
