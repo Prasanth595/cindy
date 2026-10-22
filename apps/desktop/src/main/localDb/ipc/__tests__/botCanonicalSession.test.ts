@@ -6523,6 +6523,81 @@ describe('Bot Session task end-to-end runtime', () => {
     }
   });
 
+  // Regression #6703: the parent turn that authorized a background task is over long before the
+  // task ends, yet the terminal wake-up inherited that turn's action credential and expired on
+  // every delivery attempt. The Host send boundary is reproduced here by rerunning it in dispatch.
+  it('delivers a task result after the starting turn ended without spending its expired credential', async () => {
+    await seedPair();
+    let current = true;
+    const runtime = createDelegationRuntime({
+      decorateDispatch: dispatch => async params => {
+        await assertTaskActionCurrent();
+        return dispatch(params);
+      },
+    });
+    try {
+      const task = await runOwnerAction('start_session_task', () => current, async () => {
+        const started = await runtime.delegation.startSessionTask({
+          callerSessionId: 'session-1', objective: 'Survey the long compatibility matrix.',
+        });
+        if (!started.ok) throw new Error(started.message);
+        // The turn that authorized the task is over; the background task keeps running.
+        current = false;
+        await runtime.settleChild(started.childSessionId, 'Matrix is compatible.');
+        return started;
+      });
+      const completionClientId = `bot-delegation-completion:${task.delegationId}`;
+      expect(runtime.dispatch.mock.calls.some(([params]) => params.clientId === completionClientId)).toBe(true);
+      expect(h.sqlite!.prepare('SELECT completion_delivered_at FROM bot_delegations WHERE id = ?')
+        .pluck().get(task.delegationId)).not.toBeNull();
+    } finally { runtime.dispose(); }
+  });
+
+  // Regression #6703 (same AsyncLocalStorage leak, second call site): the child asks for a
+  // decision long after the starting turn ended, so the "task needs you" wake-up would spend
+  // that expired credential, throw, and climb the 1s→60s retry ladder forever. The wake-up is a
+  // Host receipt and must be accepted on the first attempt, exactly once.
+  it('delivers a pending-question wake-up after the starting turn ended, once, without the retry ladder', async () => {
+    await seedPair();
+    vi.useFakeTimers();
+    let current = true;
+    const runtime = createDelegationRuntime({
+      resolveInteraction: () => true,
+      decorateDispatch: dispatch => async params => {
+        await assertTaskActionCurrent();
+        return dispatch(params);
+      },
+    });
+    try {
+      const task = await runOwnerAction('start_session_task', () => current, async () => {
+        const started = await runtime.delegation.startSessionTask({
+          callerSessionId: 'session-1', objective: 'Ask before the destructive step.',
+        });
+        if (!started.ok) throw new Error(started.message);
+        // The turn that authorized the task is over; the background task keeps running.
+        current = false;
+        await runtime.delegation.handleInteractionStart(started.childSessionId, {
+          kind: 'permission', requestId: 'asked-after-start-turn',
+          toolName: 'write_file', input: { path: '/tmp/report.md' }, title: '写入报告',
+        });
+        return started;
+      });
+      const wakeId = `bot-delegation-interaction:${task.delegationId}:asked-after-start-turn`;
+      const wakes = () => runtime.dispatch.mock.calls.filter(([params]) => params.clientId === wakeId);
+      expect(wakes()).toHaveLength(1);
+      expect(h.sqlite!.prepare('SELECT 1 FROM messages WHERE session_id = ? AND client_id = ?')
+        .get('session-1', wakeId)).toBeTruthy();
+      // The 60s retry that #6703 reports would fire here if the wake-up had been denied.
+      await vi.advanceTimersByTimeAsync(61_000);
+      expect(wakes()).toHaveLength(1);
+      expect(await runtime.delegation.getSessionTask('session-1', task.delegationId))
+        .toMatchObject({ task: { status: 'waiting', pendingInteraction: { requestId: 'asked-after-start-turn' } } });
+    } finally {
+      runtime.dispose();
+      vi.useRealTimers();
+    }
+  });
+
   it.each(['done', 'error'] as const)('keeps the Session visible and background work alive after %s, without restarting on restore', async (outcome) => {
     await seedPair();
     const runtime = createDelegationRuntime();
