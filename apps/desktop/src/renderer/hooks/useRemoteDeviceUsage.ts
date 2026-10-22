@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import type { MobileCodexRateLimitsResult } from '@cindy/maker-shared/device-link-contract';
 import { useDeviceLinkReconnectEpoch } from '../features/device-link/useDeviceLinkReconnectEpoch';
 import { CLAUDE_QUOTA_STATE_READ, isClaudeQuotaClear } from '../../shared/claudeQuotaState';
 /**
@@ -46,6 +47,29 @@ const codexAccountMirror = createRemoteDeviceUsageMirror<RemoteCodexAccountUsage
   defaultProviderId: 'openai',
   providerPushChannel: 'usage:codex-provider-account-changed',
 });
+const codexRateLimitsMirror = createRemoteDeviceUsageMirror<MobileCodexRateLimitsResult>({
+  invokeChannel: 'maker:usage:codex-rate-limits',
+  pushChannel: 'usage:codex-account-changed',
+  defaultProviderId: 'openai',
+  providerPushChannel: 'usage:codex-provider-account-changed',
+  decodeRead: (value) => {
+    if (
+      !value ||
+      typeof value !== 'object' ||
+      !('account' in value) ||
+      !('rateLimits' in value) ||
+      !value.account ||
+      typeof value.account !== 'object' ||
+      !value.rateLimits ||
+      typeof value.rateLimits !== 'object'
+    )
+      return undefined;
+    return value as MobileCodexRateLimitsResult;
+  },
+  // Native reads also emit usage pushes. Only identity clears apply to this richer
+  // RPC result; refetching on its own non-null push would create a request loop.
+  decodePush: (value) => (value === null ? null : undefined),
+});
 const claudeAccountMirror = createRemoteDeviceUsageMirror<ClaudeAccountUsageSnapshot>({
   invokeChannel: 'maker:usage:account',
   invokeArgs: ['claude-code', CLAUDE_QUOTA_STATE_READ],
@@ -80,6 +104,20 @@ export function useRemoteCodexAccountUsage(
 export function requestRemoteCodexAccountRefresh(deviceId: string, providerId?: string): void {
   codexAccountMirror.request(deviceId, providerId);
 }
+
+/** Query the execution computer's native account RPC even when another card has a cached result. */
+export function useRemoteCodexRateLimits(
+  deviceId: string | null,
+  providerId?: string,
+): MobileCodexRateLimitsResult | null {
+  const snapshot = codexRateLimitsMirror.useMirror(deviceId, providerId);
+  useEffect(() => {
+    if (deviceId) codexRateLimitsMirror.request(deviceId, providerId);
+  }, [deviceId, providerId]);
+  return snapshot;
+}
+
+export const requestRemoteCodexRateLimitsRefresh = codexRateLimitsMirror.request;
 
 /** 被控端 Claude 网关配额(LiteLLM daily/monthly)镜像(远程网关形态会话 chip 用)。 */
 export function useRemoteClaudeAccountUsage(
@@ -138,6 +176,7 @@ export function selectRemoteCodexAccountUsage(
 /** 供单测重置全部镜像缓存。 */
 export function resetRemoteDeviceUsageMirrorsForTest(): void {
   codexAccountMirror.resetForTest();
+  codexRateLimitsMirror.resetForTest();
   claudeAccountMirror.resetForTest();
   xaiSubscriptionMirror.resetForTest();
   xaiRateLimitMirror.resetForTest();

@@ -19,6 +19,8 @@ import { createRemoteDeviceUsageMirror } from '../hooks/remoteDeviceUsageMirror'
 import {
   selectRemoteCodexAccountUsage,
   useRemoteCodexAccountUsage,
+  useRemoteCodexRateLimits,
+  requestRemoteCodexRateLimitsRefresh,
   useRemoteClaudeAccountUsage,
   useRemoteXaiRateLimit,
   resetRemoteDeviceUsageMirrorsForTest,
@@ -197,6 +199,43 @@ describe('createRemoteDeviceUsageMirror', () => {
     await flushMicrotasks();
     expect(mocks.invoke).toHaveBeenCalledTimes(2);
     expect(second.result.current).toMatchObject({ primary: { usedPercent: 3 } });
+  });
+});
+
+// Unit regression (provider-groups.md §10): native quota has a richer RPC result
+// than the account push. Existing mirror tests do not cover those different shapes.
+// Minimal inputs: two cards share one pending native read; a clear arrives before it settles.
+// Single-file command wall time: 2.54s (2026-10-22).
+describe('remote native Codex quota', () => {
+  it('shares native reads, ignores read-generated usage pushes, and fences late reads after a clear', async () => {
+    let resolve!: (value: unknown) => void;
+    mocks.invoke.mockImplementation(() => new Promise(done => { resolve = done; }));
+    const first = renderHook(() => useRemoteCodexRateLimits('device-1', 'openai-extra'));
+    const second = renderHook(() => useRemoteCodexRateLimits('device-1', 'openai-extra'));
+    expect(mocks.invoke).toHaveBeenCalledTimes(1);
+    expect(mocks.invoke).toHaveBeenCalledWith('device-1', 'maker:usage:codex-rate-limits', ['openai-extra']);
+    const native = { providerId: 'openai-extra', account: { planType: 'plus' }, rateLimits: { primary: { usedPercent: 73 } } };
+    await act(async () => resolve(native));
+    expect(first.result.current).toEqual(native);
+    expect(second.result.current).toEqual(native);
+    act(() => emitPush({ deviceId: 'device-1', channel: 'usage:codex-provider-account-changed',
+      payload: { providerId: 'openai-extra', snapshot: { primary: { usedPercent: 74 } } } }));
+    expect(first.result.current).toEqual(native);
+    expect(mocks.invoke).toHaveBeenCalledTimes(1);
+
+    act(() => requestRemoteCodexRateLimitsRefresh('device-1', 'openai-extra'));
+    act(() => emitPush({ deviceId: 'device-1', channel: 'usage:codex-provider-account-changed',
+      payload: { providerId: 'openai-extra', snapshot: null } }));
+    await act(async () => resolve(native));
+    expect(first.result.current).toBeNull();
+    expect(second.result.current).toBeNull();
+  });
+
+  it('rejects an older peer returning its builtin account for a named connection', async () => {
+    mocks.invoke.mockResolvedValue({ account: { planType: 'plus' }, rateLimits: { primary: { usedPercent: 9 } } });
+    const hook = renderHook(() => useRemoteCodexRateLimits('device-1', 'openai-extra'));
+    await flushMicrotasks();
+    expect(hook.result.current).toBeNull();
   });
 });
 

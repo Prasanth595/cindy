@@ -141,6 +141,12 @@ function cachedRateLimits(providerId: string): CachedRateLimits {
   return entry;
 }
 
+/** Visible group cards share in-flight native reads with the local settings card. */
+export function requestCodexRateLimitsRefresh(providerId = 'openai'): void {
+  const entry = cachedRateLimits(providerId);
+  if (entry.pendingReads === 0) refreshEntry(entry);
+}
+
 export function useCodexRateLimits(enabled: boolean, providerId = 'openai'): CodexRateLimitsState {
   const entry = cachedRateLimits(providerId);
   const subscribe = useCallback((listener: () => void) => {

@@ -23,6 +23,8 @@ export interface RemoteDeviceUsageMirror<T> {
 export function createRemoteDeviceUsageMirror<T extends object>(cfg: {
   invokeChannel: string | null;
   decodeRead?: (value: unknown) => T | null | undefined;
+  /** A read may return a richer contract than its invalidation push. */
+  decodePush?: (value: unknown) => T | null | undefined;
   invokeArgs?: unknown[];
   pushChannel: string;
   defaultProviderId?: string;
@@ -155,8 +157,10 @@ export function createRemoteDeviceUsageMirror<T extends object>(cfg: {
           value = push.payload.snapshot;
         } else return;
         if (value !== null && !isSnapshotShape(value)) return;
+        const decoded = cfg.decodePush ? cfg.decodePush(value) : (value as T | null);
+        if (decoded === undefined) return;
         entry.unsupportedUntil = 0;
-        apply(entry, value as T | null);
+        apply(entry, decoded);
       });
       return () => {
         entry.listeners.delete(notify);
