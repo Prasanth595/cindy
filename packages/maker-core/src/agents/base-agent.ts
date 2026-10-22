@@ -2181,7 +2181,7 @@ export type TurnPermissionOrigin =
   | { kind: 'desktop' }
   | {
       kind: 'im';
-      channel: 'feishu' | 'discord' | 'slack' | 'wechat' | 'telegram' | 'dingtalk' | 'wecom';
+      channel: 'feishu' | 'discord' | 'slack' | 'wechat' | 'telegram' | 'dingtalk' | 'wecom' | 'custom';
       taskId?: string;
     }
   | { kind: 'scheduler' }
