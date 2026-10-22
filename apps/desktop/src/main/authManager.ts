@@ -97,6 +97,10 @@ import {
 import { resolveLoginScenarioFetch } from '@cindy/auth-client/fixtures';
 
 import { createLogger } from './logger';
+import {
+  startColdStartNetworkRecovery,
+  type ColdStartNetworkRecovery,
+} from './coldStartNetworkRecovery';
 import { requestErrorMessage } from './requestErrorMessage';
 import { AuthOwnerChangeShellGate } from './authOwnerChangeShellGate';
 import {
@@ -378,6 +382,8 @@ let activeAuthRealm: AuthRegion = AUTH_REGION;
 let pendingAuthRealm: AuthRegion | null = null;
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 let refreshPromise: Promise<boolean> | null = null;
+let coldStartNetworkRecovery: ColdStartNetworkRecovery | null = null;
+let coldStartNetworkRecoveryStarted = false;
 const refreshBackoff = new AuthRefreshBackoff();
 let sessionInvalidationPromise: Promise<void> | null = null;
 // Real owner change / logout: keep the renderer fail-closed even if a late
@@ -3329,6 +3335,43 @@ function scheduleNonXdOrgBetaDefault(input: {
  */
 let coldStartAuthInFlight: Promise<AuthState> | null = null;
 
+function retryColdStartAuthSession(): Promise<boolean> {
+  // 重跑完整冷启动:它会重新读磁盘凭据、加载端点清单、认领 legacy owner
+  // namespace 并按 allowUnclaimedVault 写入 vault。只调 refresh() 会漏掉这些,
+  // 升级后首次启动且离线时尤其明显。
+  return initialize().then((state) => state.isAuthenticated || state.canEnterApp);
+}
+
+/**
+ * 冷启动因**传输层失败**没能恢复会话时的自动重试。
+ *
+ * 只处理 status=0(没有服务端响应):开机自启时网络尚未就绪,本地 refresh token
+ * 仍然有效,不能要求用户重新登录。确定性失效、device-mismatch、清单不可用等
+ * 其它失败都不进这里,它们各自有明确的处理路径。
+ *
+ * 整条恢复链在一个进程内只启动一次(`coldStartNetworkRecoveryStarted`);重试
+ * 过程中冷启动流程自身再失败、或超时后迟到失败,都不能把节奏重置成无限重试。
+ * 用户登出 / 手动登录会由 clearAuth 取消并重新武装。
+ */
+function scheduleColdStartNetworkRecovery(epoch: number): void {
+  if (coldStartNetworkRecoveryStarted) return;
+  coldStartNetworkRecoveryStarted = true;
+  coldStartNetworkRecovery?.cancel();
+  coldStartNetworkRecovery = startColdStartNetworkRecovery({
+    isCurrent: () => authStateEpoch === epoch,
+    isSignedOut: () => getActiveAppSession().mode === 'signed-out',
+    retry: retryColdStartAuthSession,
+    onAttempt: ({ attempt, delayMs }) =>
+      log.info('cold-start network recovery attempt %d after %dms', attempt, delayMs),
+    onExhausted: (attempts) =>
+      log.warn(
+        'cold-start network recovery exhausted %d retries; keeping the persisted session for the next launch',
+        attempts,
+      ),
+    onError: (error) => log.warn('cold-start network recovery refresh threw', error),
+  });
+}
+
 function scheduleRefreshRetryAfterTransientFailure(epoch: number, retryAt?: number, networkFailure = false): void {
   if (epoch !== authStateEpoch) return;
   const delay = refreshBackoff.defer(epoch, retryAt, networkFailure);
@@ -3693,6 +3736,9 @@ function clearAuth(
     clearTimeout(refreshTimer);
     refreshTimer = null;
   }
+  coldStartNetworkRecovery?.cancel();
+  coldStartNetworkRecovery = null;
+  coldStartNetworkRecoveryStarted = false;
   if (!opts.preservePersistedRefreshToken) {
     if (isPassiveSharedUserDataInstance()) {
       // passive 共享实例无权删整机凭证:它的登出只清本进程内存态,磁盘 token 留给
@@ -4826,6 +4872,13 @@ async function runColdStartRefreshFlow(
         log.warn(
           `cold-start refresh still failing after ${attempts} attempt(s) — keeping refresh token, starting logged out`,
         );
+        // 传输层失败(尤其开机自启时系统网络还没就绪)不代表凭据失效。
+        // 此时以未登录解锁 UI,同时在后台按节奏重试;成功后照常广播登录态。
+        // 不用 finishColdStartSignedOut 的 reason 区分,避免后续新失败类型被
+        // 误加进自动恢复:只有 status=0 才排重试。
+        if (refreshResult.status === 0) {
+          scheduleColdStartNetworkRecovery(authStateEpoch);
+        }
       }
       return finishColdStartSignedOut(`cold-start-refresh-${action.kind}`);
     }
