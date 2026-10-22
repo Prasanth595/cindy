@@ -1,4 +1,27 @@
 {
+  "sideChat": {
+    "collapse": "收起追问",
+    "resume": "继续追问",
+    "list": "追问列表",
+    "summary": "侧边追问 · {{count}} 个",
+    "fromMain": "来自「{{title}}」",
+    "mainTask": "主任务",
+    "commandDescription": "打开侧边追问，可在 /side 后写问题",
+    "commandAttachments": "请先处理当前附件，再用 /side 发起追问。",
+    "unavailable": "当前任务暂不支持侧边追问。",
+    "title": "侧边追问",
+    "ask": "在追问中询问",
+    "create": "新建追问",
+    "returnMain": "返回主任务",
+    "item": "追问 {{index}}",
+    "current": "当前",
+    "description": "继承主任务已有上下文，独立追问。回复不会自动写回主任务。",
+    "empty": "还没有追问",
+    "loadFailed": "未能读取追问。请检查电脑连接；旧版电脑端需要更新后才能使用。",
+    "createFailed": "未能创建追问，主任务保持不变。",
+    "unsupported": "这台电脑暂不支持追问，请更新电脑端。",
+    "waitForReply": "请等主任务完成第一条回复后再创建追问。"
+  },
   "leaveWhileUploading": {
     "title": "放弃发送？",
     "body": "附件还没上传完，现在离开这条消息就不会发送。",
@@ -411,6 +434,13 @@
     "copyFailed": "复制失败",
     "deleteConfirmTitle": "删除任务？",
     "deleteConfirmBody": "删除后不可恢复。",
+    "archiveScheduleConfirmTitle": "归档任务？",
+    "archiveScheduleConfirmBody_one": "该任务绑定了自动化{{names}}，归档后将暂停。",
+    "archiveScheduleConfirmBody_other": "该任务绑定了自动化{{names}}，归档后将暂停。",
+    "archiveScheduleName": "「{{name}}」",
+    "archiveScheduleNameSeparator": "、",
+    "archiveScheduleBulkNotice_one": "其中 {{count}} 个任务绑定了自动化，归档后这些自动化将暂停。",
+    "archiveScheduleBulkNotice_other": "其中 {{count}} 个任务绑定了自动化，归档后这些自动化将暂停。",
     "dirAlreadyAdded": "这个目录已经在列表里。",
     "resetCodexTitle": "重置 Codex 用量？",
     "resetCodexBody": "将为 {{account}} 消耗 1 次重置。配额窗口会立即重开，此操作不能撤销。",
@@ -552,6 +582,7 @@
     "taskAlreadyCreated": "电脑上已创建这个任务，已保存的消息会在原任务中继续发送。"
   },
   "remoteError": {
+    "REMOTE_AGENT_GROUP_USAGE_LIMIT": "此模型的可用账号已达到用量上限。可换用其他模型，或等配额重置后继续。",
     "REMOTE_AGENT_GROUP_UNAVAILABLE": "供应商组里的电脑现在都不能运行这个任务：可能都不在线、已暂停分配、正在冷却，或没有这个模型。可以在电脑上这个供应商的「远程与分享」页查看组内电脑。",
     "REMOTE_DAEMON_CLOSED": "远程连接中断了，可能正在更新。这一轮已经结束，请重新发送。",
     "REMOTE_LOCAL_ATTACHMENT_UNSUPPORTED": "远程任务无法访问本地文件或图片附件。请直接粘贴内容。",
@@ -701,5 +732,20 @@
     "hint": "任一条件满足时，优先用最早到期的卡。配额全满时跳过。由这台电脑执行，需保持 Cindy 运行。",
     "failed": "保存失败，请重试。",
     "restore": "恢复默认"
+  },
+  "followUp": {
+    "title": "要我帮你跟进任务吗？",
+    "start": "开始跟进",
+    "notNow": "暂不开启",
+    "saveFailed": "没能保存，请重试"
+  },
+  "providerGroupRebalance": {
+    "title": "换到 {{label}} 继续？",
+    "body": "为了均匀用完各账号的配额，建议这条消息换到 {{label}} 发送（{{quota}}）。换过去会带上最近几轮对话和摘要，更早的细节可能记不全。",
+    "quota": "还剩 {{left}}%",
+    "quotaReset": "还剩 {{left}}%，{{reset}}后重置",
+    "confirm": "换过去",
+    "remember": "换过去，以后自动换（仅本任务）",
+    "cancel": "取消"
   }
 }

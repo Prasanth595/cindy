@@ -28,6 +28,7 @@ import {
   pinnedSidebarEntryComparisonKey,
 } from '@/features/cc-agent/lib/pinnedSidebarOrder';
 import type { Session } from '@/lib/ccAgent.types';
+import { setProvisionalDraftTaskId } from '@/features/cc-agent/lib/provisionalDraftTaskId';
 import { findProjectRepresentativeKey } from '@/features/cc-agent/lib/sidebarProjectVisibility';
 
 /* ---------------- helpers ---------------- */
@@ -782,6 +783,21 @@ describe('groupSessions', () => {
     expect(r.projects).toHaveLength(1);
     expect(r.projects[0].sessions).toHaveLength(1);
     expect(r.projects[0].sessions[0]).toBe(real);
+  });
+
+  // 新建页里正在输入的未发送任务：已选好项目就放在项目下，不进未分类。
+  it('places the new-task page\'s unsent task under its chosen project', () => {
+    const unsent = s({ workingDir: '/p/foo', userSendAt: null });
+    const otherDraft = s({ workingDir: '/p/foo', userSendAt: null });
+    setProvisionalDraftTaskId(unsent.id);
+    try {
+      const r = groupSessions([unsent, otherDraft]);
+      expect(r.unclassified).toEqual([otherDraft]);
+      expect(r.projects).toHaveLength(1);
+      expect(r.projects[0].sessions).toEqual([unsent]);
+    } finally {
+      setProvisionalDraftTaskId(null);
+    }
   });
 
   // SDK echo 失败 / 老数据 backfill 漏掉的孤儿：userSendAt 没写上但 messages

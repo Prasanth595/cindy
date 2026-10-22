@@ -4,6 +4,7 @@ import type { StartSchedulerDeps } from '../index';
 
 const mocks = vi.hoisted(() => ({
   restore: vi.fn<(sessionId: string) => Promise<boolean>>(),
+  quotaWait: vi.fn<(scheduleId: string) => Promise<string | null>>(),
   runnerDeps: null as MakerScheduleRunnerDeps | null,
 }));
 
@@ -25,7 +26,9 @@ vi.mock('../../agent-island/service.js', () => ({ getAgentIslandService: () => n
 vi.mock('../../notificationService.js', () => ({ getDesktopNotificationsEnabled: () => false }));
 vi.mock('../../maker-ipc/register.js', () => ({
   ensureSchedulerQueueRestored: mocks.restore,
+  findSchedulerUsageLimitWait: mocks.quotaWait,
   applyPiImModelSelectionUnderLock: vi.fn(), acquirePendingAgentSwitchForDirectSend: vi.fn(),
+  preserveScheduledModelPreferencesUnderLock: vi.fn(), recordDispatchedModel: vi.fn(),
   broadcastSessionCreated: vi.fn(), cancelSchedulerAutoResume: vi.fn(),
   enqueueSchedulerPrompt: vi.fn(), hasQueuedSchedulerPrompt: vi.fn(),
   isSchedulerAutoResumePending: vi.fn(), isSchedulerPromptTracked: vi.fn(),
@@ -56,6 +59,7 @@ import { resetScheduler, startScheduler } from '../index';
 afterEach(async () => {
   await resetScheduler();
   mocks.restore.mockReset();
+  mocks.quotaWait.mockReset();
   mocks.runnerDeps = null;
 });
 
@@ -72,5 +76,9 @@ describe('scheduler queue wiring', () => {
     expect(restore).toBe(mocks.restore);
     await expect(restore!('restored-session')).resolves.toBe(restored);
     expect(mocks.restore).toHaveBeenCalledExactlyOnceWith('restored-session');
+    // Production startup must retain schedule-wide quota deduplication, including fresh-session fires.
+    mocks.quotaWait.mockResolvedValue('old-quota-session');
+    await expect(mocks.runnerDeps?.findUsageLimitWait?.('schedule')).resolves.toBe('old-quota-session');
+    expect(mocks.quotaWait).toHaveBeenCalledExactlyOnceWith('schedule');
   });
 });

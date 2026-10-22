@@ -24,13 +24,15 @@ export function requestSourceFromInput(sessionId: string, input: RequestInputEvi
   return { userText: null };
 }
 
-/** The active accepted input wins over newer queued text. Legacy/model-labelled text is never evidence. */
+/** Only companion task instructions opt in. Accepted input wins over queued text; model labels are not evidence. */
 export async function captureAgentRequest(
   sessionId: string,
   supplement: string,
   active: RequestInputEvidence | null,
   readLatestInput: () => Promise<AutoReviewHistoryMessage[]>,
+  preserveUserRequest = false,
 ): Promise<CapturedAgentRequest> {
+  if (!preserveUserRequest) return { message: supplement, autoReviewUserText: { kind: 'agent-request' } };
   let source: ForwardedRequestSource;
   if (active) source = requestSourceFromInput(sessionId, active);
   else {
@@ -52,7 +54,8 @@ export async function captureAgentRequest(
     autoReviewUserText: { kind: 'agent-request', request: source } };
 }
 
-/** New envelopes follow this host's resolved UI language; authored contents are never translated. */
+/** Quote only a real owner request. Missing-source envelopes remain readable through the shared legacy validator. */
 export function formatForwardedRequest(source: ForwardedRequestSource, supplement: string): string {
-  return formatLocalizedForwardedRequest(source, supplement, getResolvedMainLocale());
+  return source.userText === null ? supplement
+    : formatLocalizedForwardedRequest(source, supplement, getResolvedMainLocale());
 }

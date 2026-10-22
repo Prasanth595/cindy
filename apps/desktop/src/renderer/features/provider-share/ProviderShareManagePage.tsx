@@ -1,4 +1,5 @@
 import { ProviderShareVisibilitySection } from './ProviderShareVisibilitySection';
+import { RemoteModelAccessSection, RemoteModelAccessDialog } from './RemoteModelAccessSection';
 import { RemoteAgentIdleReleaseSection } from './RemoteAgentIdleReleaseSection';
 import { RemoteAgentLimitsSection } from './RemoteAgentLimitsSection';
 /**
@@ -85,6 +86,8 @@ export function ProviderShareManagePage({
   const [remoteGroup, setRemoteGroup] = useState<ProviderGroupConfig | null>(initialGroup ?? null);
   const [state, setState] = useState<ProviderShareOwnerState | null>(null);
   const [noteMemberId, setNoteMemberId] = useState<string | null>(null);
+  const [modelMemberId, setModelMemberId] = useState<string | null>(null);
+  const modelTriggerRef = useRef<HTMLButtonElement | null>(null);
   const noteTriggerRef = useRef<HTMLButtonElement | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
   const [loadErrorKey, setLoadErrorKey] = useState<string | null>(null);
@@ -331,9 +334,11 @@ export function ProviderShareManagePage({
     onTogglePause: (member) => void setMember(member, member.status === 'paused' ? 'resume' : 'pause'),
     onRemove: (member) => void removeMember(member),
     onEditNote: (member, trigger) => { noteTriggerRef.current = trigger; setNoteMemberId(member.memberId); },
+    onModelAccess: (member, trigger) => { modelTriggerRef.current = trigger; setModelMemberId(member.memberId); },
     onReshare: (member, reshare, decision) => void decideReshare(reshare, providerShareMemberName(member), decision),
   }), [busy, decideReshare, loadFailed, providerClassificationReady, removeMember, setMember]);
   const noteMember = members.find((member) => member.memberId === noteMemberId);
+  const modelMember = members.find((member) => member.memberId === modelMemberId);
 
   return (
     // 这一页自己滚动(设置页外层在「模型供应商」分区不滚)。始终预留滚动条槽位：展开组内电脑的配额、
@@ -502,6 +507,8 @@ export function ProviderShareManagePage({
         </section>
       )}
 
+      <RemoteModelAccessSection key={`models:${deviceId ?? 'local'}:${providerId}`} providerId={providerId} deviceId={deviceId} />
+
       <ProviderGroupSection
         providerId={providerId} providerName={providerName} deviceId={deviceId} deviceName={deviceName}
         initialConfig={initialGroup} remoteProvider={remoteProvider} onConfigChange={setRemoteGroup}
@@ -551,6 +558,10 @@ export function ProviderShareManagePage({
           }}
         />
       )}
+      {modelMember && <RemoteModelAccessDialog key={`${deviceId ?? 'local'}:${modelMember.memberId}`}
+        providerId={providerId} deviceId={deviceId} memberId={modelMember.memberId}
+        memberName={providerShareMemberName(modelMember)} returnFocusTo={modelTriggerRef.current}
+        onClose={() => setModelMemberId(null)} />}
     </div>
   );
 }

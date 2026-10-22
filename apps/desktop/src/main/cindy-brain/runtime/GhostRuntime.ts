@@ -57,6 +57,7 @@ interface GhostRuntimeOptions {
 interface RuntimeEntry {
   state: GhostRuntimeState;
   handle: SandboxHandle | null;
+  loading: Promise<void> | null;
   /** 熔断窗口内的崩溃时间戳(旧的滚动淘汰)。 */
   crashTimestamps: number[];
 }
@@ -108,7 +109,8 @@ export class GhostRuntime {
     entry.handle = handle;
     handle.onGone((details) => this.handleGone(id, details.reason));
     try {
-      await handle.load();
+      entry.loading = handle.load();
+      await entry.loading;
     } catch (err) {
       // 入口都加载不出来按一次崩溃记账(坏 entry 反复 spawn 同样会熔断)。
       this.options.log?.warn('ghost sandbox load failed', { id, error: err instanceof Error ? err.message : String(err) });
@@ -123,8 +125,17 @@ export class GhostRuntime {
     }
     // load 期间可能已被 stop/crash 改道;只有仍处 starting 才转 running。
     // (经 stateOf 重读:setState 走方法赋值,TS 的字面量收窄跟不上。)
-    if (this.stateOf(id) === 'starting') this.setState(id, entry, 'running');
+    if (entry.handle === handle && this.stateOf(id) === 'starting') this.setState(id, entry, 'running');
     return { ok: true, state: this.stateOf(id) };
+  }
+
+  /** Await this sandbox's actual entry load, including an already-starting instance. */
+  async waitUntilRunning(id: string): Promise<boolean> {
+    const entry = this.entries.get(id);
+    const handle = entry?.handle;
+    if (!entry || !handle) return false;
+    try { await entry.loading; } catch { return false; }
+    return entry.handle === handle && entry.state === 'running';
   }
 
   /** 熄灯(沉睡 / 抽离 / 闲置超时 / 退出前逐个关)。幂等。 */
@@ -169,7 +180,7 @@ export class GhostRuntime {
   private getEntry(id: string): RuntimeEntry {
     let entry = this.entries.get(id);
     if (!entry) {
-      entry = { state: 'off', handle: null, crashTimestamps: [] };
+      entry = { state: 'off', handle: null, loading: null, crashTimestamps: [] };
       this.entries.set(id, entry);
     }
     return entry;

@@ -6,6 +6,10 @@ import type {
   ProviderShareQuotaAccount,
 } from '../../../src/shared/providerShareInsights';
 import type { ProviderShareReceived } from '@cindy/device-link';
+import {
+  DEFAULT_REMOTE_AGENT_IDLE_RELEASE,
+  type RemoteAgentIdleReleaseView,
+} from '../../../src/shared/remoteAgentIdleRelease';
 
 const now = Date.parse('2026-10-19T12:00:00Z');
 const share: ProviderShareReceived = {
@@ -145,6 +149,12 @@ void mountPage({
       favoriteRecovery?: { ownerStamp: unknown };
     }) => {
       switch (cmd.action) {
+        case 'get-model-access':
+          return { version: 1, models: null, providerModels: null, availableModels: [
+            { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6' },
+            { id: 'claude-opus-4-6', name: 'Claude Opus 4.6' },
+            { id: 'gpt-5.5', name: 'GPT-5.5' },
+          ] };
         case 'get-visibility':
           return visibility;
         case 'set-visibility':
@@ -178,6 +188,8 @@ void mountPage({
           };
         case 'get-credential-consent':
           return { skip: false };
+        case 'get-idle-release':
+          return { value: { idleMinutes: 0 }, defaults: { idleMinutes: 0 }, isCustomized: false };
         case 'owned':
           return {
             ready: true,
@@ -204,6 +216,12 @@ void mountPage({
             customizedKeys: [],
             usage: { total: 0, devices: 0, largestDevice: 0 },
           };
+        case 'get-idle-release':
+          return {
+            value: { ...DEFAULT_REMOTE_AGENT_IDLE_RELEASE },
+            defaults: { ...DEFAULT_REMOTE_AGENT_IDLE_RELEASE },
+            isCustomized: false,
+          } satisfies RemoteAgentIdleReleaseView;
         default:
           return forbid(`providerShare.${cmd.action}`)();
       }

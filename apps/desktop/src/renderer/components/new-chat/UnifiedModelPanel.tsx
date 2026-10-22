@@ -101,7 +101,7 @@ export interface UnifiedSelectedRow {
   /** 该行**生效**引擎(推荐 ⊕ override ⊕ 会话内 pinnedEngine ⊕ 收藏副本)。 */
   engine: UnifiedEngine;
   /** 该行生效的 Fast(不具备能力时恒 false)。 */
-  fast: boolean;
+  fast: boolean | 'ultrafast';
   /** 选中的是一条收藏副本时给它的锚点 uid;模型行为 null。 */
   favoriteUid: string | null;
   /**
@@ -145,7 +145,7 @@ export interface UnifiedModelPanelProps {
   /** 会话 / 草稿当前真正在用的引擎 —— 判定「这行是不是 live 选中行」。 */
   liveAgentKind: AgentKind | null;
   /** live 选中行的 Fast 实时值(会话 = live;草稿 = 调用方派生)。 */
-  fastMode?: boolean;
+  fastMode?: boolean | 'ultrafast';
   /** live 选中行的深度实时值(同上)。 */
   selectedEffort?: Effort;
   modelMemory?: ModelMemoryAccessors;
@@ -220,7 +220,7 @@ export interface UnifiedModelPanelProps {
        * 那个值 —— 显式给值(含 `false`)时调用方必须原样应用到切换事务,不得按目标记忆
        * 重解析;缺省(拿不到目标配置的入口)才由事务自行解析。
        */
-      fast?: boolean;
+      fast?: boolean | 'ultrafast';
       /**
        * 这次选中的**收藏锚点**(选普通模型行 = null;引擎胶囊 / 恢复推荐 / 删收藏这些
        * 非「选中一行」的动作不带)。会话侧据此在事务真成功后记住「现在选中的是哪条收藏」——
@@ -278,7 +278,7 @@ export interface UnifiedModelPanelProps {
    * live 选中行改 Fast —— 必须等调用方持久化成功,不预写记忆(device-link 写穿失败会污染
    * 被控端草稿)。返回值语义同 `onEffortChangeLive`。
    */
-  onFastModeChangeLive?: (enabled: boolean) => void | boolean | Promise<void | boolean>;
+  onFastModeChangeLive?: (enabled: boolean | 'ultrafast') => void | boolean | Promise<void | boolean>;
   /** 面板容器元素(浮层按它的左 / 右外侧定位)。 */
   panelElement: HTMLElement | null;
   overlayClassName?: string;
@@ -697,7 +697,7 @@ export function UnifiedModelPanel({
         fast: liveFast,
         customized:
           base.customized ||
-          liveFast ||
+          !!liveFast ||
           (liveEffort !== null &&
             base.capability?.defaultEffort != null &&
             liveEffort !== base.capability.defaultEffort),

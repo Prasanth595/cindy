@@ -83,6 +83,7 @@ describe("bounded Computer Use recovery", () => {
         window_id: 2,
         session: "recovery-test",
         include_screenshot: false,
+        tree_format: "markdown",
       },
       expect.objectContaining({
         sessionId: "recovery-test",
@@ -107,7 +108,7 @@ describe("bounded Computer Use recovery", () => {
     else expect(result.outcome.status).toBe("unknown");
     expect(dispatch).toHaveBeenLastCalledWith(
       "get_window_state",
-      { pid: 1, window_id: 2, session: "recovery-test", include_screenshot: false },
+      { pid: 1, window_id: 2, session: "recovery-test", include_screenshot: false, tree_format: "markdown" },
       expect.objectContaining({ observationPurpose: "recovery" }),
     );
     expect(dispatch).toHaveBeenCalledTimes(2);

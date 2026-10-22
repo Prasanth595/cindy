@@ -30,7 +30,7 @@ export function RemoteBotSessionView() {
   const bot = bots.find((row) => row.id === botId && row.deviceId === deviceId);
   const cloud = useCompanionCloud();
   const cloudActor = cloudCompanionAt(cloud, deviceId, botId);
-  const [ready, setReady] = useState<(RemoteBot & { sessionId: string }) | null>(null);
+  const [ready, setReady] = useState<(RemoteBot & { sessionId: string; canonicalChat: true }) | null>(null);
   const [validatedSessionId, setValidatedSessionId] = useState<string | null | undefined>(null);
   const [failed, setFailed] = useState(false);
   const [retry, setRetry] = useState(0);
@@ -82,7 +82,7 @@ export function RemoteBotSessionView() {
         isSessionReadCurrent.mergeActivity(session),
       ]);
       readOwner.current = owner;
-      setReady({ ...resolved, sessionId: canonicalId });
+      setReady({ ...resolved, sessionId: canonicalId, canonicalChat: true });
       setValidatedSessionId(sessionId);
     })().catch(() => {
       if (!disposed) setFailed(true);

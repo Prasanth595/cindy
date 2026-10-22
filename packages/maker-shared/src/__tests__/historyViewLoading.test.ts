@@ -12,6 +12,43 @@ function fixture() {
   return { view, transport };
 }
 
+describe('history read coverage', () => {
+  // Desktop's push-driven repair asks these two questions to avoid a second page read
+  // per notice; an older-page read must not count as covering a latest-page notice.
+  it('reports when the latest page was last read and whether a latest read is in flight', async () => {
+    const { view, transport } = fixture();
+    expect(view.latestReadStartedAt()).toBe(0);
+    expect(view.isReadingLatest()).toBe(false);
+    let finish!: (value: typeof page) => void;
+    transport.page.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const before = Date.now();
+    const latest = view.refresh();
+    expect(view.isReadingLatest()).toBe(true);
+    expect(view.latestReadStartedAt()).toBeGreaterThanOrEqual(before);
+    finish(page);
+    await latest;
+    expect(view.isReadingLatest()).toBe(false);
+    const startedAt = view.latestReadStartedAt();
+    transport.page.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const older = view.refresh(true);
+    expect(view.isReadingLatest()).toBe(false);
+    expect(view.latestReadStartedAt()).toBe(startedAt);
+    finish(page);
+    await older;
+  });
+
+  it('stamps a latest read as certified only after it was applied', async () => {
+    const { view, transport } = fixture();
+    expect(view.latestReadOkStartedAt()).toBe(0);
+    transport.page.mockRejectedValueOnce(new Error('link hiccup'));
+    await view.refresh();
+    expect(view.latestReadStartedAt()).toBeGreaterThan(0);
+    expect(view.latestReadOkStartedAt()).toBe(0);
+    await view.refresh();
+    expect(view.latestReadOkStartedAt()).toBe(view.latestReadStartedAt());
+  });
+});
+
 describe('history pagination feedback', () => {
   it('keeps initial and repeated background reads silent, including a queued older page', async () => {
     const { view, transport } = fixture();

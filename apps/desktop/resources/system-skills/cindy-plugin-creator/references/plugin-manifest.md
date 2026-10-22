@@ -155,7 +155,8 @@ node secretBindings key、setup kv key——都不能使用 `__proto__`、`const
 v3 直接用顶层字段声明插件贡献项与自主 Host 能力，不再有 `slots`。带详单的字段是 `tools`、`cindy`、
 `agent`、`panel`、`mainView`、`card`、`subscribe`、`network`、`node`、`preview`、
 `skill`；布尔能力写成字面量 `true`：`notify`、`badge`、`confirm`、`fs`、
-`library`、`sessionContext`、`pick`、`workspace`。不用的字段直接省略，
+`library`、`deviceSync`、`sessionContext`、`pick`、`workspace`。不用的字段直接省略。
+`deviceSync` 的声明与调用约定见 [§4.10.2 同账号电脑间的插件资料同步](plugin-files-and-library.md#4102-同账号电脑间的插件资料同步)。
 邮件插件声明 `mail: true`，调用 Cindy 内置 `cindyMail.register(adapter)`
 （version 1），不生成卡片 HTML、不打包公共流程；纯邮件插件不需要 `card`。
 阅读邮件可声明 `mailReader:{tool,hosts}`，工具接收 `{url}` 并返回 MailMessage，默认只读。
@@ -200,6 +201,9 @@ Host 能力字段。v2 的 `slots` 只用于存量包兼容，新插件不得再
 用普通任务接口(§4.11.3)写 `"agent": { "tasks": true }`;需要把自己创建的任务放到后台
 (不进任务列表、搜索与通知)时再加 `"hiddenTasks": true`,它必须与 `"tasks": true` 同时
 出现,否则拒装;详情页单列一档。
+向项目、已有任务或伙伴投递内容时另声明 `"agent": { "tasks": true, "targets": true }`（§4.11.3）。
+`targets` 是独立权限，安装/更新确认单列，需 Host 显式批准；旧 tasks 批准不授予目标访问。
+新包的 targets 必须是布尔值，targets:true 缺 tasks:true 时拒装。
 
 **node 工作进程详单**(声明 node 时必写,详见 §4.12):
 

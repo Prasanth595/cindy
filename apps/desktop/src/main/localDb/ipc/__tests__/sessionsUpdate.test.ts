@@ -20,6 +20,7 @@ import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } fr
 import type { InvokeResultPayload } from '@cindy/device-link';
 
 import { messages, recentWorkdirs, sessions } from '../../schema';
+import { tx as runDbTransaction } from '../../worker/opHandlers/tx';
 import type { SessionRouteLock } from '../../sessionRouteLock';
 import { normalizeWorkingDirForStorage } from '../../../../shared/workingDir';
 
@@ -174,6 +175,7 @@ vi.mock('../../../cindy-brain/index.js', () => ({
 }));
 
 import {
+  applyAgentSwitchToSessionRow,
   broadcastSessionPatched,
   deleteBotProfileAndDetachSessionsInDb,
   patchSessionMetaInDb,
@@ -196,6 +198,7 @@ import { setSessionRouteLockImplementation } from '../../sessionRouteLock';
 import { assertTrustedAppRendererEvent } from '../../../security/trustedAppRenderer.js';
 import { createRemoteSessionsStatusSetter } from '../../../mcp-integrations/sessionStatusRemote.js';
 import * as sessionQueries from '../../sessionQueries';
+import { setSessionRuntimeProjector } from '../../mapper';
 
 function createDb(): void {
   const sqlite = new Database(':memory:');
@@ -220,6 +223,7 @@ function createDb(): void {
       title TEXT NOT NULL DEFAULT 'New CCS',
       working_dir TEXT,
       model TEXT NOT NULL DEFAULT 'claude-sonnet-4-6',
+      scheduled_model_baseline TEXT,
       effort TEXT NOT NULL DEFAULT 'high',
       permission_mode TEXT NOT NULL DEFAULT 'ask',
       status TEXT NOT NULL DEFAULT 'active',
@@ -385,6 +389,26 @@ afterEach(async () => {
 });
 
 describe('local-db:sessions:update handler wiring', () => {
+  // Terminal lifecycle through both real public handlers: an ordinary fork survives,
+  // but a hidden side chat must not remain running after its parent becomes unreachable (unit).
+  it.each([invokeUpdate, invokePatchMeta])('deletes dependent side chats without deleting ordinary forks (%#)', async update => {
+    // Unit, #6529: use the real terminal transaction so post-commit cleanup and
+    // broadcasts cannot depend on writing a deleted child a second time.
+    h.sqlite!.exec(`CREATE TABLE shared_task_events (shared_task_id TEXT, session_id TEXT,
+      revision INTEGER, kind TEXT, terminal INTEGER, snapshot TEXT, recorded_at INTEGER,
+      PRIMARY KEY (shared_task_id, kind, revision))`);
+    Object.assign(h.client!, { tx: async (name: string, args: unknown) => runDbTransaction(h.sqlite!, { name, args }) });
+    h.sqlite!.prepare("UPDATE sessions SET parent_session_id = 'cc-local', source = 'side-chat' WHERE id = 'codex-local'").run();
+    h.sqlite!.prepare("UPDATE sessions SET parent_session_id = 'cc-local' WHERE id = 'pi-local'").run();
+    await update('cc-local', { status: 'deleted' });
+    expect(h.sqlite!.prepare('SELECT status FROM sessions WHERE id = ?').get('codex-local')).toEqual({ status: 'deleted' });
+    expect(h.sqlite!.prepare('SELECT status FROM sessions WHERE id = ?').get('pi-local')).toEqual({ status: 'active' });
+    expect(h.runtimeCleanup).toHaveBeenCalledWith('codex-local');
+    expect(h.runtimeCleanup).not.toHaveBeenCalledWith('pi-local');
+    expect(h.tapWindowBroadcast).toHaveBeenCalledWith('local-db:sessions:patched', {
+      sessionId: 'codex-local', patch: { status: 'deleted' },
+    });
+  });
   it.each([invokeUpdate, invokePatchMeta])(
     'clears only the deleted task from event-backed app attention (%#)',
     async (update) => {
@@ -855,6 +879,32 @@ describe('local-db:sessions:update handler wiring', () => {
       effort: 'high',
       fast_mode: 0,
     });
+  });
+
+  it.each(['model', 'harness'])('projects the saved owner choice during an automatic %s switch', async (kind) => {
+    const baseline = JSON.stringify({ scopeId: 'run', agentKind: 'pi', model: 'owner-model',
+      providerId: 'owner-provider', effort: 'high', fastMode: true });
+    h.sqlite!.prepare('UPDATE sessions SET scheduled_model_baseline = ? WHERE id = ?').run(baseline, 'pi-local');
+    const project = vi.fn((row: { scheduledModelBaseline?: string | null }) =>
+      row.scheduledModelBaseline ? { model: 'owner-model' } : {});
+    setSessionRuntimeProjector(project);
+    try {
+      if (kind === 'harness') {
+        await applyAgentSwitchToSessionRow('pi-local', {
+          agentKind: 'codex', model: 'automatic-model', providerId: null,
+        });
+      } else {
+        await persistSessionFields('pi-local', { model: 'automatic-model' });
+      }
+      expect(project).toHaveBeenCalledWith(expect.objectContaining({
+        model: 'automatic-model', scheduledModelBaseline: baseline,
+      }));
+      expect(h.tapWindowBroadcast).toHaveBeenCalledWith('local-db:sessions:patched', expect.objectContaining({
+        sessionId: 'pi-local', patch: expect.objectContaining({ model: 'owner-model' }),
+      }));
+    } finally {
+      setSessionRuntimeProjector(null);
+    }
   });
 
   it('rejects setting drift for retained Review tasks while preserving metadata edits', async () => {
@@ -1340,6 +1390,19 @@ describe('local-db:sessions:update handler wiring', () => {
       h.sqlite!.prepare('SELECT working_dir FROM sessions WHERE id = ?').get('codex-local'),
     ).toEqual({ working_dir: '/old/dir' });
     expect(h.tapWindowBroadcast).not.toHaveBeenCalled();
+  });
+
+  // #6399, unit: a mutable authorization check must precede runtime close, not
+  // just the final DB write; previous coverage only revoked after that close.
+  it.each(['codex-local', 'pi-local'])('does not close %s when the pre-mutation check rejects', async (id) => {
+    await expect(updateSessionInDb(id, { workingDir: '/new/dir' }, undefined, {
+      assertCurrent: () => undefined,
+      beforeUpdate: async () => undefined,
+      beforeWrite: async () => { throw new Error('TASK_ACTION_AUTHORIZATION_EXPIRED'); },
+    })).rejects.toThrow('PRECONDITION_FAILED');
+    expect(h.closeIdleSessionForMove).not.toHaveBeenCalled();
+    expect(h.sqlite!.prepare('SELECT working_dir FROM sessions WHERE id = ?').get(id))
+      .toEqual({ working_dir: '/old/dir' });
   });
 
   it('retains transcript relocation and returned resume identity for a guarded MCP move', async () => {

@@ -31,6 +31,7 @@ import {
   PinOff,
   RefreshCw,
   Search,
+  MessageSquarePlus,
   Sparkles,
   Trash2,
 } from 'lucide-react-native';
@@ -123,6 +124,7 @@ export interface SessionMenuSheetProps {
   modelLabel?: string | null;
   messageOnly?: boolean;
   onOpenSearch?: () => void;
+  onOpenSideChats?: () => void;
   accountProvider?: OpenAiAccountProvider;
   usageReader: SessionMenuUsageReader & Pick<MobileMakerTransport, 'getContextUsage'>;
   /**
@@ -167,6 +169,8 @@ export interface SessionMenuSheetProps {
   leavingSharing?: boolean;
   onTogglePinned(): void;
   onArchive(): void;
+  /** 归档前的确认(如绑定了自动化);返回 false 时保留菜单、不归档。 */
+  confirmArchive?: () => Promise<boolean>;
   onRestore(): void;
   onDelete(): void;
   onClose(): void;
@@ -180,6 +184,7 @@ export function SessionMenuSheet({
   modelLabel,
   messageOnly = false,
   onOpenSearch,
+  onOpenSideChats,
   usageReader,
   accountUsageReader = usageReader,
   accountProvider,
@@ -207,6 +212,7 @@ export function SessionMenuSheet({
   leavingSharing = false,
   onTogglePinned,
   onArchive,
+  confirmArchive,
   onRestore,
   onDelete,
   onClose,
@@ -488,9 +494,17 @@ export function SessionMenuSheet({
         onClose();
         return;
       case 'archive':
-        if (session.status === 'archived') onRestore();
-        else onArchive();
-        onClose();
+        if (session.status === 'archived') {
+          onRestore();
+          onClose();
+          return;
+        }
+        // 与删除同序:确认弹窗在菜单仍展开时弹出,确认后再收起并归档。
+        void (confirmArchive?.() ?? Promise.resolve(true)).then((ok) => {
+          if (!ok) return;
+          onArchive();
+          onClose();
+        });
         return;
       case 'delete':
         confirmDelete();
@@ -498,7 +512,7 @@ export function SessionMenuSheet({
       default:
         return;
     }
-  }, [confirmDelete, copyValue, onArchive, onClose, onRestore, onTogglePinned, renamePrefill, session]);
+  }, [confirmArchive, confirmDelete, copyValue, onArchive, onClose, onRestore, onTogglePinned, renamePrefill, session]);
 
   const currentExtraDirs = normalizeExtraDirs(session.extraDirs ?? undefined);
   const addExtraDir = useCallback((path: string) => {
@@ -680,22 +694,11 @@ export function SessionMenuSheet({
             <WorkerMenuActions onClose={onClose} worker={worker} />
           ) : null}
 
-          {workerMode ? null : !messageOnly && isSharedTaskPeer(session.deviceLinkDeviceId) && onLeaveSharing ? (
+          {onOpenSideChats ? (
             Platform.OS === 'ios' ? <SessionDetailsNativeActions actions={[{
-              label: t('sharedTask.leave'), danger: true, disabled: leavingSharing,
-              onPress: onLeaveSharing, testID: 'session.leaveSharingButton',
+              label: t('session.sideChat.title'), onPress: onOpenSideChats, testID: 'session.sideChat.entry',
             }]} /> : <View style={styles.actionGroup}>
-              <MenuActionRow icon={LogOut} label={t('sharedTask.leave')} danger disabled={leavingSharing}
-                onPress={onLeaveSharing} testID="session.leaveSharingButton" />
-            </View>
-          ) : !messageOnly && onOpenSharing && !isSharedTaskPeer(session.deviceLinkDeviceId) ? (
-            Platform.OS === 'ios' ? <SessionDetailsNativeActions actions={[{
-              label: t('sharedTask.title'),
-              onPress: onOpenSharing,
-              testID: 'session.sharingButton',
-            }]} /> : <View style={styles.actionGroup}>
-              <MenuActionRow icon={Link2} label={t('sharedTask.title')}
-                onPress={onOpenSharing} testID="session.sharingButton" />
+              <MenuActionRow icon={MessageSquarePlus} label={t('session.sideChat.title')} onPress={onOpenSideChats} testID="session.sideChat.entry" />
             </View>
           ) : null}
           {Platform.OS === 'ios' ? (
@@ -719,6 +722,25 @@ export function SessionMenuSheet({
               />
             ))}
           </View>}
+
+          {workerMode ? null : !messageOnly && isSharedTaskPeer(session.deviceLinkDeviceId) && onLeaveSharing ? (
+            Platform.OS === 'ios' ? <SessionDetailsNativeActions actions={[{
+              label: t('sharedTask.leave'), danger: true, disabled: leavingSharing,
+              onPress: onLeaveSharing, testID: 'session.leaveSharingButton',
+            }]} /> : <View style={styles.actionGroup}>
+              <MenuActionRow icon={LogOut} label={t('sharedTask.leave')} danger disabled={leavingSharing}
+                onPress={onLeaveSharing} testID="session.leaveSharingButton" />
+            </View>
+          ) : !messageOnly && onOpenSharing && !isSharedTaskPeer(session.deviceLinkDeviceId) ? (
+            Platform.OS === 'ios' ? <SessionDetailsNativeActions actions={[{
+              label: t('sharedTask.title'),
+              onPress: onOpenSharing,
+              testID: 'session.sharingButton',
+            }]} /> : <View style={styles.actionGroup}>
+              <MenuActionRow icon={Link2} label={t('sharedTask.title')}
+                onPress={onOpenSharing} testID="session.sharingButton" />
+            </View>
+          ) : null}
 
           {onOpenSearch && !workerMode ? (
             Platform.OS === 'ios' ? <SessionDetailsNativeActions actions={[{

@@ -70,7 +70,7 @@ export interface OrcaRemoteWorkerExistingSession {
   model: string;
   agentKind: OrcaRemoteWorkerOpenResult['agentKind'];
   effort?: string;
-  fastMode?: boolean;
+  fastMode?: boolean | 'ultrafast';
 }
 
 export interface OrcaRemoteWorkerHostDeps {
@@ -88,7 +88,7 @@ export interface OrcaRemoteWorkerHostDeps {
     model: string;
     agentKind: OrcaRemoteWorkerOpenResult['agentKind'];
     effort?: string;
-    fastMode?: boolean;
+    fastMode?: boolean | 'ultrafast';
   }>;
   writeRemoteLead(sessionId: string, lead: OrcaRemoteLead): Promise<void>;
   /** 同一任务 id 的 open / release 串行。 */
@@ -113,7 +113,7 @@ export function createOrcaRemoteWorkerHost(deps: OrcaRemoteWorkerHostDeps) {
   return {
     caps(): OrcaRemoteWorkerCaps {
       requireCaller(deps);
-      return { version: ORCA_REMOTE_WORKER_VERSION };
+      return { version: ORCA_REMOTE_WORKER_VERSION, workerBridge: true };
     },
 
     async open(raw: unknown): Promise<OrcaRemoteWorkerOpenResult> {

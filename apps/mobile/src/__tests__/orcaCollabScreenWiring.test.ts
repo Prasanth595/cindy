@@ -61,25 +61,8 @@ describe('mobile Orca collaboration wiring', () => {
     expect(source).toContain('return subscribeOrcaStartFailure((failedSessionId) => {');
   });
 
-  it('gives Worker tasks a Worker-only header and details menu', () => {
-    const page = read('app/sessions/[sessionId].tsx');
-    // 右上角只留「更多」:不出远程桌面 / 文件夹。
-    expect(page).toContain("const workerHeader = currentSession?.orcaRole === 'worker';");
-    expect(page).toContain('detailsOnly={workerHeader}');
-    expect(page).toContain('{workerHeader ? null : (');
-    expect(page).toContain('worker={collab.isWorker ? {');
-    const menu = read('src/session/SessionMenuSheet.tsx');
-    expect(menu).toContain("const workerMode = !messageOnly && session.orcaRole === 'worker';");
-    expect(menu).toContain('const listedActions = workerMode ? [] : mainActions;');
-    expect(menu).toContain('{onOpenSearch && !workerMode ? (');
-    expect(menu).toContain('{!messageOnly && !workerMode && (');
-    expect(menu).toContain('{workerMode ? null : !messageOnly && isSharedTaskPeer');
-    // 归档确认在面板仍展开时弹出(iOS 原生 sheet 收起中弹 Alert 会丢),确认后再收起。
-    expect(menu).toContain('const archive = () => onArchive(onClose);');
-    // Worker 详情只有归档:不再有返回 Lead / 设为焦点。
-    expect(page).not.toContain('onOpenLead:');
-    expect(page).not.toContain('onSetFocus:');
-  });
+  // Header visibility and Worker archive-confirm ordering are exercised through
+  // production components in sideChatsSheet.test.tsx / SessionMenuRenameEntry.test.tsx.
 
   it('keeps Worker lifecycle on the Orca path instead of the generic task menu', () => {
     const source = read('src/session/SessionMenuSheet.tsx');

@@ -123,8 +123,8 @@ import { requestSessionSwitch } from '@/features/cc-agent/lib/sessionSwitchComma
 import { makeFolderPickerNewMakerRouteState } from '@/features/cc-agent/lib/newMakerRouteState';
 import { makeGenericNewMakerRouteState } from '@/features/cc-agent/lib/genericNewMakerRouteState';
 import { resolveSessionRoute } from '@/lib/orcaSessionIdentity';
-import { ensureBotProfilesLoaded, getBotProfiles } from '@/features/bots/botStore';
-import { botRouteForOwnedSession, createSessionEntryNavigator, remoteBotRouteForSession, resolveBotRouteForSessionEntry } from '@/features/bots/botSessionOwners';
+import { canonicalBotSessionId, ensureBotProfilesLoaded, getBotProfiles, useBotProfiles } from '@/features/bots/botStore';
+import { botRouteForOwnedSession, createSessionEntryNavigator, findBotProfileForSession, remoteBotRouteForSession, resolveBotRouteForSessionEntry } from '@/features/bots/botSessionOwners';
 import { readRemoteBots } from '@/features/bots/useRemoteBots';
 import { useSessionEntryLocationCommits } from '@/features/bots/useSessionEntryLocationCommits';
 import { islandEntryRouteState, requestIslandEntryAlertDisposal } from '@/features/bots/islandEntryAlert';
@@ -317,6 +317,12 @@ export function MainLayout() {
   // 当前 cc-agent session id —— 由 CCAgentSessionView 的路由主实例(ownsRoute=true)经 outlet context
   // 推上来,Shell 据此从 module-level store 拉对应桶的 tab 列表持久化数据。null = 不在聊天会话内。
   const [rightSidebarSessionId, setRightSidebarSessionId] = useState<string | null>(null);
+  const sidebarBotProfiles = useBotProfiles();
+  const sidebarBot = rightSidebarSessionId
+    ? findBotProfileForSession(sidebarBotProfiles, rightSidebarSessionId) : undefined;
+  const sidebarBotOwner = sidebarBot && rightSidebarSessionId
+    ? { botId: sidebarBot.id, canonical: canonicalBotSessionId(sidebarBot) === rightSidebarSessionId }
+    : null;
   const [rightSidebarSubagentsAvailable, setRightSidebarSubagentsAvailable] = useState<
     boolean | undefined
   >(undefined);
@@ -1042,12 +1048,15 @@ export function MainLayout() {
       remoteHostId: rightSidebarWorkdirInfo.remoteHostId,
       deviceLinkDeviceId: rightSidebarWorkdirInfo.deviceLinkDeviceId,
       subagentsAvailable: rightSidebarSubagentsAvailable,
+      botOwner: sidebarBotOwner,
       available: rightSidebarAvailable,
     });
   }, [
     rightSidebarSessionId,
     rightSidebarWorkdirInfo,
     rightSidebarSubagentsAvailable,
+    sidebarBot?.id,
+    sidebarBotOwner?.canonical,
     rightSidebarAvailable,
   ]);
 

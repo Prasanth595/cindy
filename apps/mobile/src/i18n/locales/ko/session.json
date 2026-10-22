@@ -1,4 +1,27 @@
 {
+  "sideChat": {
+    "collapse": "사이드 채팅 접기",
+    "resume": "사이드 채팅 계속",
+    "list": "사이드 채팅 목록",
+    "summary": "사이드 채팅 · {{count}}개",
+    "fromMain": "출처: {{title}}",
+    "mainTask": "기본 세션",
+    "commandDescription": "사이드 채팅 열기. /side 뒤에 질문을 입력할 수 있습니다",
+    "commandAttachments": "현재 첨부 파일을 처리한 후 /side를 사용하세요.",
+    "unavailable": "이 세션에서는 사이드 채팅을 사용할 수 없습니다.",
+    "title": "사이드 채팅",
+    "ask": "사이드 채팅에서 질문",
+    "create": "새 사이드 채팅",
+    "returnMain": "원래 세션으로 돌아가기",
+    "item": "사이드 채팅 {{index}}",
+    "current": "현재",
+    "description": "원래 세션의 맥락을 이어받아 별도로 질문합니다. 답변은 원래 세션에 자동으로 추가되지 않습니다.",
+    "empty": "아직 사이드 채팅이 없습니다",
+    "loadFailed": "사이드 채팅을 불러오지 못했습니다. 컴퓨터 연결을 확인하세요. 이전 데스크톱 버전은 업데이트가 필요합니다.",
+    "createFailed": "사이드 채팅을 만들지 못했습니다. 원래 세션은 그대로 유지됩니다.",
+    "unsupported": "이 컴퓨터는 아직 사이드 채팅을 지원하지 않습니다. 데스크톱 앱을 업데이트하세요.",
+    "waitForReply": "원래 세션의 첫 번째 답변이 완료된 후 만들어 주세요."
+  },
   "leaveWhileUploading": {
     "title": "보내기를 취소할까요?",
     "body": "첨부 업로드가 아직 끝나지 않았습니다. 지금 나가면 이 메시지는 보내지지 않습니다.",
@@ -411,6 +434,13 @@
     "copyFailed": "복사 실패",
     "deleteConfirmTitle": "세션을 삭제할까요?",
     "deleteConfirmBody": "삭제하면 되돌릴 수 없습니다.",
+    "archiveScheduleConfirmTitle": "세션을 보관할까요?",
+    "archiveScheduleConfirmBody_one": "이 세션에 연결된 자동화 {{names}}은(는) 보관 후 일시중지됩니다.",
+    "archiveScheduleConfirmBody_other": "이 세션에 연결된 자동화 {{names}}은(는) 보관 후 일시중지됩니다.",
+    "archiveScheduleName": "\"{{name}}\"",
+    "archiveScheduleNameSeparator": ", ",
+    "archiveScheduleBulkNotice_one": "그중 {{count}}개 세션에 자동화가 연결되어 있으며, 보관 후 일시중지됩니다.",
+    "archiveScheduleBulkNotice_other": "그중 {{count}}개 세션에 자동화가 연결되어 있으며, 보관 후 일시중지됩니다.",
     "dirAlreadyAdded": "이 디렉터리는 이미 목록에 있습니다.",
     "resetCodexTitle": "Codex 사용량을 재설정할까요?",
     "resetCodexBody": "{{account}}에 대해 재설정 1회를 사용합니다. 사용량 창이 즉시 다시 열리며 이 작업은 취소할 수 없습니다.",
@@ -552,6 +582,7 @@
     "taskAlreadyCreated": "이 세션은 컴퓨터에 이미 생성되어 있습니다. 저장된 메시지는 기존 세션에서 전송을 재개합니다."
   },
   "remoteError": {
+    "REMOTE_AGENT_GROUP_USAGE_LIMIT": "이 모델을 사용할 수 있는 계정의 사용량이 한도에 도달했습니다. 다른 모델로 전환하거나 한도가 초기화된 후 계속하세요.",
     "REMOTE_AGENT_GROUP_UNAVAILABLE": "제공자 그룹의 컴퓨터가 지금 이 세션을 실행할 수 없습니다. 모두 오프라인이거나, 배정이 일시 중지되었거나, 대기 중이거나, 이 모델이 없을 수 있습니다. 컴퓨터에서 이 제공자의 원격 및 공유 페이지를 확인하세요.",
     "REMOTE_DAEMON_CLOSED": "원격 연결이 끊겼습니다. 업데이트 중일 수 있습니다. 이번 차례는 끝났으니 다시 보내 주세요.",
     "REMOTE_LOCAL_ATTACHMENT_UNSUPPORTED": "원격 세션에서는 로컬 파일/이미지 첨부에 접근할 수 없습니다. 내용을 직접 붙여넣으세요.",
@@ -701,5 +732,20 @@
     "hint": "어느 조건이든 충족하면 만료가 가장 가까운 카드를 사용합니다. 모든 할당량이 가득 차면 건너뜁니다. 이 컴퓨터에서 Cindy가 실행 중이어야 합니다.",
     "failed": "저장하지 못했습니다. 다시 시도하세요.",
     "restore": "기본값 복원"
+  },
+  "followUp": {
+    "title": "세션 후속 확인을 시작할까요?",
+    "start": "후속 확인 시작",
+    "notNow": "나중에",
+    "saveFailed": "저장하지 못했습니다. 다시 시도하세요"
+  },
+  "providerGroupRebalance": {
+    "title": "{{label}}(으)로 바꿔서 계속할까요?",
+    "body": "각 계정의 할당량을 고르게 쓰기 위해 이 메시지는 {{label}}에서 보내는 것을 권장합니다({{quota}}). 최근 몇 번의 대화와 요약은 이어지지만, 그 이전의 세부 내용은 빠질 수 있습니다.",
+    "quota": "{{left}}% 남음",
+    "quotaReset": "{{left}}% 남음 · {{reset}} 후 초기화",
+    "confirm": "전환",
+    "remember": "전환하고 앞으로 자동으로(이 작업만)",
+    "cancel": "취소"
   }
 }

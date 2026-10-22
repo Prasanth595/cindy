@@ -401,6 +401,53 @@ describe('computer snapshot guard', () => {
     await h.cleanup();
   });
 
+  it('registers tokens from a Markdown-plus-elements read and keeps only Markdown for the model', async () => {
+    const callTool = vi.fn(async (name: string) => {
+      if (name === 'get_window_state') {
+        return {
+          ok: true,
+          snapshot_id: 's0000002d',
+          tree_markdown: '- [0] AXWindow "Calc"\n  - [1] AXButton (7)',
+          elements: [
+            { element_index: 0, element_token: 's0000002d:0' },
+            { element_index: 1, element_token: 's0000002d:1' },
+          ],
+        };
+      }
+      return { ok: true };
+    });
+    const h = await makeHarness({ getStatus: vi.fn(), callTool }, { sessionId: 'sess-1' });
+
+    const observed = await h.call('get_window_state', { pid: 100, window_id: 1 });
+    expect(observed.data).toEqual({
+      ok: true,
+      snapshot_id: 's0000002d',
+      tree_markdown: '- [0] AXWindow "Calc"\n  - [1] AXButton (7)',
+    });
+
+    expect((await h.call('click', { pid: 100, window_id: 1, element_token: 's0000002d:1' })).ok).toBe(true);
+    expect(callTool).toHaveBeenLastCalledWith('click', {
+      pid: 100,
+      window_id: 1,
+      element_token: 's0000002d:1',
+      session: 'sess-1',
+    }, { signal: expect.any(AbortSignal), sessionId: 'sess-1' });
+    await h.cleanup();
+  });
+
+  it('keeps elements when the Markdown tree is empty so the model still has targets', async () => {
+    const callTool = vi.fn(async (name: string) =>
+      name === 'get_window_state'
+        ? { ok: true, snapshot_id: 's0000002d', tree_markdown: '', elements: [{ element_index: 0, element_token: 's0000002d:0' }] }
+        : { ok: true });
+    const h = await makeHarness({ getStatus: vi.fn(), callTool }, { sessionId: 'sess-1' });
+
+    const observed = await h.call('get_window_state', { pid: 100, window_id: 1 });
+    expect(observed.ok).toBe(true);
+    expect(observed.data).toMatchObject({ elements: [{ element_token: 's0000002d:0' }] });
+    await h.cleanup();
+  });
+
   it('accepts a driver data.snapshot_id as a snapshot_id alias', async () => {
     const callTool = vi.fn(async (name: string) => {
       if (name === 'get_window_state') {
@@ -700,7 +747,10 @@ describe('computer snapshot guard', () => {
         });
         expect(observed.ok).toBe(ok);
         expect(Boolean(observed.snapshot_id)).toBe(ok);
-        expect(observed.data).toEqual(state);
+        // The model reads Markdown rows; the structured duplicate stays host-side.
+        const { elements: _elements, ...markdownOnly } = state as Record<string, unknown>;
+        const hasMarkdown = "tree_markdown" in state && typeof state.tree_markdown === "string" && state.tree_markdown.trim() !== "";
+        expect(observed.data).toEqual(ok && hasMarkdown ? markdownOnly : state);
         // A failed AX observation may discover windows once, but never replays
         // the observation, switches the target, or restarts the driver.
         const rediscovered =

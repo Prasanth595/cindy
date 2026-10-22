@@ -131,7 +131,9 @@ describe('mobile optimistic composer while session is not ready', () => {
     const bridge = readSource('src/session/MobileOutboxBridge.tsx');
     expect(bridge).toContain('getNewSessionCreationTask(r.item.sessionId) === null');
     expect(bridge).toContain('!isDurableOutboxCreationHeld(r.item.sessionId)');
-    expect(bridge).toContain('const session = await maker(r).getSession(r.item.sessionId)');
+    // Preparation reads the Host's row; the policy check of the same message may share that read.
+    expect(bridge).toContain('const read = maker(r).getSession(r.item.sessionId)');
+    expect(bridge).toContain('const session = await readSessionOnce(r)');
     expect(bridge).toContain('if (!session?.workingDir)');
     expect(bridge).toContain('}, [link.status, link.connectionEpoch])');
   });

@@ -7,6 +7,12 @@
  * Push channel（main → renderer）以 'maker:event:' 前缀。
  */
 
+import {
+  RSB_WINDOW_COMMAND_CHANNEL,
+  RSB_WINDOW_CONTEXT_CHANGED_CHANNEL,
+  RSB_WINDOW_STATE_CHANGED_CHANNEL,
+} from '../../shared/rightSidebarWindow.js';
+
 export const MAKER_INVOKE = {
   CREATE_SESSION: 'maker:create-session',
   START_REVIEW: 'maker:review:start',
@@ -27,6 +33,17 @@ export const MAKER_INVOKE = {
   SESSION_DISABLE_ORCA: 'maker:session:disable-orca',
   /** renderer 回填「该会话是否真的在 turn 中」的权威运行态(#4513 中断横幅假阳性)。 */
   SESSION_TURN_ACTIVE: 'maker:session:turn-active',
+  /**
+   * 输入框开始打字时提前启动该任务的 Agent（尽力而为，无返回约定之外的副作用）。
+   * 本机 renderer 与 device-link 控制端共用；旧被控端没有该 channel 时控制端静默忽略。
+   */
+  SESSION_PREWARM: 'maker:session:prewarm',
+  /**
+   * 新建页的未发送任务（本机 renderer 专用，不进 device-link）：清空输入时删除，
+   * 第一次发送前转为普通任务。见 localDb/provisionalSessions.ts。
+   */
+  SESSION_DISCARD_PROVISIONAL: 'maker:session:discard-provisional',
+  SESSION_COMMIT_PROVISIONAL: 'maker:session:commit-provisional',
   CLOSE_SESSION: 'maker:close-session',
   /**
    * 单条 user / assistant 消息本地内容删除。保留后续可见消息，但清当前原生
@@ -322,6 +339,8 @@ export const MAKER_INVOKE = {
   REWIND_PREVIEW: 'maker:rewind:preview',
   REWIND_COMMIT: 'maker:rewind:commit',
   FORK: 'maker:fork',
+  SIDE_CHAT: 'maker:side-chat:v1',
+  SIDE_CHAT_LIST: 'maker:side-chat:list:v1',
   FORK_STRIP_ENCRYPTED: 'maker:fork-strip-encrypted',
   // Agent 鉴权 (取代老 codex:auth:*) —— 走 Maker.{getAgentAuthState/triggerAgentLogin/...}
   AUTH_GET_STATE: 'maker:auth:get-state',
@@ -748,6 +767,7 @@ export const MAKER_INVOKE = {
   RSB_WINDOW_CLOSE: 'maker:rsb-window:close',
   RSB_WINDOW_SET_DETACHED: 'maker:rsb-window:set-detached',
   RSB_WINDOW_GET_CONTEXT: 'maker:rsb-window:get-context',
+  RSB_WINDOW_ALLOW_BOT_WORKBENCH_PERMISSION: 'maker:rsb-window:allow-bot-workbench-permission',
   RSB_WINDOW_READY: 'maker:rsb-window:ready',
   RSB_WINDOW_SEND_COMMAND: 'maker:rsb-window:send-command',
   /**
@@ -796,6 +816,7 @@ export const MAKER_INVOKE = {
   CHAT_SERVER_REFRESHPROFILE: 'maker:chat-server:refreshProfile',
   CHAT_SERVER_STATUS: 'maker:chat-server:status',
   CHAT_SERVER_THREAD: 'maker:chat-server:thread',
+  CHAT_SERVER_FOLLOWTHREAD: 'maker:chat-server:followThread',
   CHAT_SERVER_REPLY: 'maker:chat-server:reply',
   CHAT_SERVER_SHARETOMAIN: 'maker:chat-server:shareToMain',
   CHAT_SERVER_REACT: 'maker:chat-server:react',
@@ -1051,11 +1072,11 @@ export const MAKER_PUSH = {
   /**
    * 右侧栏子窗口状态广播 { detached, open }——发所有窗口(主窗按钮态 + 子窗口自身都消费)。
    */
-  RSB_WINDOW_STATE_CHANGED: 'maker:rsb-window:state-changed',
+  RSB_WINDOW_STATE_CHANGED: RSB_WINDOW_STATE_CHANGED_CHANNEL,
   /** 侧边栏渲染上下文变化(主窗切会话),只发子窗口。payload = RsbWindowContext。 */
-  RSB_WINDOW_CONTEXT_CHANGED: 'maker:rsb-window:context-changed',
+  RSB_WINDOW_CONTEXT_CHANGED: RSB_WINDOW_CONTEXT_CHANGED_CHANNEL,
   /** main → 子窗口命令(如 open-terminal),只发子窗口。payload = RsbWindowCommand。 */
-  RSB_WINDOW_COMMAND: 'maker:rsb-window:command',
+  RSB_WINDOW_COMMAND: RSB_WINDOW_COMMAND_CHANNEL,
   /** 子窗口合并回主窗口前交接不可持久化 session 的 tab 快照，只发主窗口。 */
   RSB_WINDOW_TAB_HANDOFF: 'maker:rsb-window:tab-handoff',
   /**

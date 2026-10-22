@@ -1,3 +1,6 @@
+import { checkGhostSecret } from './runtime/ghostSecretCheck.js';
+import { PluginDeviceSync } from './deviceSyncSlot.js';
+import { contactsSyncKeyStore } from '../contacts-sync/keyStore.js';
 import { RemotePluginPreferences } from './remotePluginPreferences.js';
 import { readDeviceLinkSettings } from '../device-link/settings-store.js';
 import { isSharedTaskPeer, isProviderSharePeer } from '@cindy/device-link';
@@ -75,7 +78,8 @@ import { getDesktopProviderService } from '../maker-host/createDesktopProviderSe
 import { PluginDownloadSlot } from './downloadSlot.js';
 import { createDownloader } from '../downloader/index.js';
 import { handlePluginTaskRequest, type PluginTaskHandler } from './taskSlot.js';
-import { ensurePluginTaskApproval, hasPluginTaskApproval, PluginTaskApprovalGate } from './taskCapability.js';
+import { PluginTargetSlot, type PluginTargetAdapter } from './pluginTargetSlot.js';
+import { ensurePluginTaskApproval, hasPluginTaskApproval, hasPluginTargetApproval, PluginTaskApprovalGate } from './taskCapability.js';
 import {
   registerGhostCardRemoteProvider,
   persistGhostCardWithRemoteChange,
@@ -111,10 +115,10 @@ import { isDeepStrictEqual } from 'node:util';
 import type { GhostInstallConsentFacts } from '../../shared/ghostInstallConsent.js';
 
 const taskApprovalGate = new PluginTaskApprovalGate();
-function requestPluginTaskApproval(id: string, isCurrent: () => boolean, confirm: (facts: GhostInstallConsentFacts) => Promise<boolean>, explicit = false): Promise<boolean> {
+function requestPluginTaskApproval(id: string, isCurrent: () => boolean, confirm: (facts: GhostInstallConsentFacts) => Promise<boolean>, explicit = false, capability: 'tasks' | 'targets' = 'tasks'): Promise<boolean> {
   const ghost = findGhostForInstanceId(id);
   if (!isCurrent()) return Promise.resolve(false);
-  if (hasPluginTaskApproval(ghost)) return Promise.resolve(true);
+  if ((capability === 'targets' ? hasPluginTargetApproval : hasPluginTaskApproval)(ghost)) return Promise.resolve(true);
   const owner = getActiveDataOwnerPushStamp();
   const manager = getGhostManager();
   const revision = ghostInstallApprovalToken(ghost?.approval);
@@ -123,10 +127,10 @@ function requestPluginTaskApproval(id: string, isCurrent: () => boolean, confirm
     return isCurrent() && owner.dataOwnerId === current.dataOwnerId && owner.ownerGeneration === current.ownerGeneration &&
       ghostInstallApprovalToken(findGhostForInstanceId(id)?.approval) === revision;
   };
-  return taskApprovalGate.request(id, JSON.stringify([owner.dataOwnerId, owner.ownerGeneration, revision]), explicit, () => ensurePluginTaskApproval(id, {
+  return taskApprovalGate.request(`${capability}:${id}`, JSON.stringify([owner.dataOwnerId, owner.ownerGeneration, revision]), explicit, () => ensurePluginTaskApproval(id, {
     getGhost: findGhostForInstanceId, isCurrent: active, confirm,
-    approve: (pluginId, expected, current) => manager.approveTaskCapability(pluginId, expected, current),
-  }));
+    approve: (pluginId, expected, current) => manager.approveTaskCapability(pluginId, expected, current, capability),
+  }, capability));
 }
 
 import { isValidPluginNamespace, supportsCindyVersion, PLUGIN_MEMBER_UPLOAD_MAX_ARCHIVE_BYTES } from '@cindy/plugin-protocol';
@@ -574,6 +578,7 @@ import { resolveOneshotCatalogModel } from '../utility-model/textOneshotPinOptio
 import { hasOneshotProviderCredential } from '../utility-model/oneshotProviderUsability.js';
 import { readGhostCindyInflightLimit, relocateGhostCindyPrefs } from './cindyPrefsStore.js';
 import { createGhostComposerListHandler } from './ghostComposerIpc.js';
+import { createGhostDisplayListHandler } from './ghostDisplayListIpc.js';
 import { GHOST_COMPOSER_LIST_CHANNEL } from '../../shared/ghostComposer.js';
 import {
   isGhostDisabledForWorkdir,
@@ -1247,6 +1252,7 @@ export async function interruptGhostCallsForAccountBoundary(): Promise<void> {
   // Drain in-flight staging.release (tombstone/fsync) before tearing Library
   // sessions. Owner mutation leases stay held until each call unwinds; waiting
   // for idle first would let marker-window teardown race the lease.
+  pluginDeviceSync.reset();
   await getGhostLibrarySlot().disposeAll();
   if (libraryExtraDirSync) {
     await libraryExtraDirSync(null).catch((error) => {
@@ -1891,14 +1897,17 @@ export function getGhostManager(): GhostManager {
       canReclaimLegacyBareInstance: (input) =>
         getNamespaceMigrationHost().canReclaimLegacyBareInstance(input),
       isNamespaceMigrationBusy: (ghostId) => getNamespaceMigrationHost().isNamespaceMigrationBusy(ghostId),
-      marketIdentityForInstance: (instance) => {
+      marketIdentityForScan: () => {
         try {
-          const lookup = getPluginMarketLedger().lookupInstallationsForNamespaceMigration(instance.ghostId);
-          if (lookup.kind !== 'found') return null;
-          const pluginId = selectMarketPluginIdForInstance(instance, lookup.records ?? []);
-          return pluginId ? { pluginId } : null;
+          const read = getPluginMarketLedger().createNamespaceMigrationLookup();
+          return (instance) => {
+            const lookup = read(instance.ghostId);
+            if (lookup.kind !== 'found') return null;
+            const pluginId = selectMarketPluginIdForInstance(instance, lookup.records ?? []);
+            return pluginId ? { pluginId } : null;
+          };
         } catch {
-          return null;
+          return () => null;
         }
       },
       canResumePendingResidentOffline: (ghostId) => getNamespaceMigrationHost().canResumePendingResidentOffline(ghostId),
@@ -2008,6 +2017,7 @@ export function getGhostRuntime(): GhostRuntime {
         const storagePart = isValidPluginInstallRelId(id) ? pluginInstallStoragePart(id) : id;
         log.info('ghost runtime state', { id, state });
         if (state !== 'running') disconnectRoutineSource(storagePart);
+        if (['off', 'stopping', 'crashed', 'fused'].includes(state)) pluginDeviceSync.invalidate(storagePart);
         // 崩溃/熄灯时把该意识名下的在途工具调用收掉(结构化失败给 agent)。
         getGhostPipeDispatcher().onRuntimeState(storagePart, state);
         broadcastGhostRuntimeStates();
@@ -2016,6 +2026,23 @@ export function getGhostRuntime(): GhostRuntime {
   }
   return runtimeSingleton;
 }
+
+export const pluginDeviceSync = new PluginDeviceSync({
+  scope: activeOwnerScopeKey,
+  keys: contactsSyncKeyStore,
+  getGhost: findGhostForInstanceId,
+  listGhosts: () => getGhostManager().list(),
+  deliver: async (ghost, message, isCurrent) => {
+    if (!isCurrent()) return false;
+    const scope = activeOwnerScopeKey();
+    const id = installedGhostStoragePart(ghost);
+    const runtime = getGhostRuntime();
+    const started = await runtime.spawn(ghost);
+    if (!started.ok || !await runtime.waitUntilRunning(id)) return false;
+    return started.ok && isCurrent() && scope === activeOwnerScopeKey() &&
+      ghostInstallApprovalToken(findGhostForInstanceId(id)?.approval) === ghostInstallApprovalToken(ghost.approval) && sendToGhostLogic(id, message);
+  },
+});
 
 let dispatcherSingleton: GhostPipeDispatcher | null = null;
 
@@ -2083,6 +2110,12 @@ export function setGhostSessionRevealer(reveal: ((sessionId: string) => void) | 
   getGhostErrandSlot().setRevealSession(reveal);
 }
 
+const pluginTargetSlot = new PluginTargetSlot();
+export function setPluginTargetAdapter(adapter: PluginTargetAdapter): void { pluginTargetSlot.adapter = adapter; }
+export async function assertPluginTargetQueuedDelivery(taskId: string, clientId: string): Promise<void> {
+  await pluginTargetSlot.assertQueuedDelivery(taskId, clientId);
+}
+
 let pluginTaskHandler: PluginTaskHandler | null = null;
 export function setPluginTaskHandler(handler: PluginTaskHandler | null): void { pluginTaskHandler = handler; }
 let pluginTaskUninstaller: ((pluginId: string, remove: () => Promise<void>) => Promise<void>) | null = null;
@@ -2104,6 +2137,11 @@ export function pluginTaskAuthorizationRevision(id: string): string | null {
   const ghost = findGhostForInstanceId(id);
   return ghost?.enabled && ghost.manifest.agent?.tasks && ghost.approval.state === 'approved'
     ? ghost.approval.revision : null;
+}
+
+export function pluginTargetAuthorizationRevision(id: string): string | null {
+  const ghost = findGhostForInstanceId(id);
+  return hasPluginTargetApproval(ghost) ? pluginTaskAuthorizationRevision(id) : null;
 }
 
 export function isPluginTaskAuthorized(id: string): boolean {
@@ -6894,6 +6932,7 @@ async function installAndDockLocked(
   // 则走 manager.update 延续既有状态。保留 false 缺省以兼容内部受控调用方。
   const result = await manager.install(lizFilePath, {
     taskCapabilityApproved: confirmedTaskCapability(opts.consent.decision, installedBefore, opts.consent.manifest),
+    targetCapabilityApproved: confirmedTaskCapability(opts.consent.decision, installedBefore, opts.consent.manifest, 'targets'),
     initiallyEnabled: opts.enable ?? false,
     expectedPackageSha256: opts.expectedPackageSha256,
     ...(opts.trustOverride ? { trustOverride: opts.trustOverride } : {}),
@@ -7024,96 +7063,102 @@ async function updateLocalGhostPackageLocked(
   );
   if (sourceChanged) assertGhostRelocationIdle(instanceId);
   rejectUnauthorizedTokenBroker(inspected.canonicalManifest, authorizationOverrides);
-  runtime.stop(instanceId);
-  // 等待失败表示旧进程仍可能存活；此时不能恢复 resident，否则会产生
-  // 两份后台进程。仅在确认退出后的更新阶段失败时恢复旧版本。
-  await getGhostNodeRuntimeBroker().stopAndWait(instanceId);
-  // 用户已明确选择了这份本地真实包：同 id 可以原位替换，市场来源不是永久所有权。
-  // 替换前先切断旧市场更新路由；用户状态由安装事务隔离归档，落位失败再恢复。
-  const detachMarketRecord = Boolean(marketRecord?.installed);
-  const restoreMarketRecord = (): void => {
-    if (!detachMarketRecord || !marketRecord) return;
-    try {
-      // 来源解绑不触碰 opt-out，失败恢复同样只恢复旧路由；用户过去的显式
-      // 卸载决定因此既不会被新增，也不会被清除。
-      marketLedger.restoreInstallation(marketRecord);
-    } catch (error) {
-      // 恢复失败时保持路由失效是安全降级：不能让旧市场自动覆盖用户明确选择的本地包。
-      log.error('failed to restore Plugin market provenance after local update failure', {
-        ghostId: inspected.manifest.id,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  };
-  if (detachMarketRecord && marketRecord) {
-    try {
-      // 先持久化切断自动更新路由，再改真实包。普通本地/Forge 换源不是
-      // 用户显式卸载，不得产生 default-install opt-out。
-      marketLedger.markRemovedRecord(marketRecord, null);
-    } catch (error) {
-      restoreMarketRecord();
-      spawnIfResident(previousGhost);
-      log.warn('failed to detach Plugin market provenance before local update', {
-        ghostId: inspected.manifest.id,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      throwIpcError('INTERNAL', 'Unable to detach the installed Plugin source');
-    }
-  }
-  getGhostAgentSlot().clearGhost(instanceId);
-  getGhostErrandSlot().clearGhost(instanceId);
-  let result: Awaited<ReturnType<typeof manager.update>>;
-  let packagePlaced = false;
+  const releaseSync = pluginDeviceSync.beginMutation(instanceId);
   try {
-    result = await withActiveOwnerGhostOauthMutationLock(
-      instanceId,
-      () =>
-        manager.update(cindyFilePath, {
-        taskCapabilityApproved: confirmedTaskCapability(consent, previousGhost, inspected.manifest),
-        expectedPackageSha256,
-        expectedInstalledApproval,
-        installOrigin: installOrigin ?? 'manual',
-        ...(sourceChanged ? { sourceStateArchiveId: ghostSourceStateArchiveId(previousGhost) } : {}),
-        ...deliveryNamespaceFields(previousGhost),
-        beforePackageCommit: () => {
-          if (isCurrent?.() === false) throwIpcError('PRECONDITION_FAILED', 'Plugin operation is no longer current');
-          return getGhostOauthAccountManager().prepareAccountsForChangedClients(
-            previousGhost.manifest, inspected.canonicalManifest, instanceId,
-          );
-        },
-        onPackagePlaced: () => {
-          packagePlaced = true;
-        },
-      }),
-    );
-  } catch (err) {
-    if (!packagePlaced) {
-      restoreMarketRecord();
-      spawnIfResident(previousGhost);
-      throw err;
+    runtime.stop(instanceId);
+    // 等待失败表示旧进程仍可能存活；此时不能恢复 resident，否则会产生
+    // 两份后台进程。仅在确认退出后的更新阶段失败时恢复旧版本。
+    await getGhostNodeRuntimeBroker().stopAndWait(instanceId);
+    // 用户已明确选择了这份本地真实包：同 id 可以原位替换，市场来源不是永久所有权。
+    // 替换前先切断旧市场更新路由；用户状态由安装事务隔离归档，落位失败再恢复。
+    const detachMarketRecord = Boolean(marketRecord?.installed);
+    const restoreMarketRecord = (): void => {
+      if (!detachMarketRecord || !marketRecord) return;
+      try {
+        // 来源解绑不触碰 opt-out，失败恢复同样只恢复旧路由；用户过去的显式
+        // 卸载决定因此既不会被新增，也不会被清除。
+        marketLedger.restoreInstallation(marketRecord);
+      } catch (error) {
+        // 恢复失败时保持路由失效是安全降级：不能让旧市场自动覆盖用户明确选择的本地包。
+        log.error('failed to restore Plugin market provenance after local update failure', {
+          ghostId: inspected.manifest.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    };
+    if (detachMarketRecord && marketRecord) {
+      try {
+        // 先持久化切断自动更新路由，再改真实包。普通本地/Forge 换源不是
+        // 用户显式卸载，不得产生 default-install opt-out。
+        marketLedger.markRemovedRecord(marketRecord, null);
+      } catch (error) {
+        restoreMarketRecord();
+        spawnIfResident(previousGhost);
+        log.warn('failed to detach Plugin market provenance before local update', {
+          ghostId: inspected.manifest.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throwIpcError('INTERNAL', 'Unable to detach the installed Plugin source');
+      }
     }
-    const placed = findInstalledGhostByInstanceId(manager.list(), instanceId) ??
-      manager.list().find((ghost) => ghost.dir === previousGhost.dir);
-    if (!placed) throw err;
-    log.warn('local ghost post-placement notification failed', {
-      ghostId: inspected.manifest.id,
-      error: err instanceof Error ? err.message : String(err),
-    });
-    result = { ghost: placed };
-  }
-  if ('rejection' in result) {
-    // 回滚失败时安装目录可能已是新字节或缺失，不能恢复旧 runtime 或旧市场来源路由。
-    if (!(result.rejection.code === 'io' && result.rejection.rollbackFailed)) {
-      restoreMarketRecord();
-      spawnIfResident(previousGhost);
+    getGhostAgentSlot().clearGhost(instanceId);
+    getGhostErrandSlot().clearGhost(instanceId);
+    let result: Awaited<ReturnType<typeof manager.update>>;
+    let packagePlaced = false;
+    try {
+      result = await withActiveOwnerGhostOauthMutationLock(
+        instanceId,
+        () =>
+          manager.update(cindyFilePath, {
+          taskCapabilityApproved: confirmedTaskCapability(consent, previousGhost, inspected.manifest),
+          targetCapabilityApproved: confirmedTaskCapability(consent, previousGhost, inspected.manifest, 'targets'),
+          expectedPackageSha256,
+          expectedInstalledApproval,
+          installOrigin: installOrigin ?? 'manual',
+          ...(sourceChanged ? { sourceStateArchiveId: ghostSourceStateArchiveId(previousGhost) } : {}),
+          ...deliveryNamespaceFields(previousGhost),
+          beforePackageCommit: () => {
+            if (isCurrent?.() === false) throwIpcError('PRECONDITION_FAILED', 'Plugin operation is no longer current');
+            return getGhostOauthAccountManager().prepareAccountsForChangedClients(
+              previousGhost.manifest, inspected.canonicalManifest, instanceId,
+            );
+          },
+          onPackagePlaced: () => {
+            packagePlaced = true;
+          },
+        }),
+      );
+    } catch (err) {
+      if (!packagePlaced) {
+        restoreMarketRecord();
+        spawnIfResident(previousGhost);
+        throw err;
+      }
+      const placed = findInstalledGhostByInstanceId(manager.list(), instanceId) ??
+        manager.list().find((ghost) => ghost.dir === previousGhost.dir);
+      if (!placed) throw err;
+      log.warn('local ghost post-placement notification failed', {
+        ghostId: inspected.manifest.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      result = { ghost: placed };
     }
-    throwInstallError(result.rejection);
+    if ('rejection' in result) {
+      // 回滚失败时安装目录可能已是新字节或缺失，不能恢复旧 runtime 或旧市场来源路由。
+      if (!(result.rejection.code === 'io' && result.rejection.rollbackFailed)) {
+        restoreMarketRecord();
+        spawnIfResident(previousGhost);
+      }
+      throwInstallError(result.rejection);
+    }
+    runtime.resetFuse(instanceId);
+    await bindPluginUsage(result.ghost,
+      !detachMarketRecord && previousGhost?.approval.state === 'approved' ? previousGhost.approval.revision : undefined);
+    spawnIfResident(result.ghost);
+    return result.ghost;
+  } finally {
+    releaseSync();
   }
-  runtime.resetFuse(instanceId);
-  await bindPluginUsage(result.ghost,
-    !detachMarketRecord && previousGhost?.approval.state === 'approved' ? previousGhost.approval.revision : undefined);
-  spawnIfResident(result.ghost);
-  return result.ghost;
 }
 
 /**
@@ -7380,6 +7425,7 @@ async function installOrUpdateMarketGhostPackageLocked(
 ): Promise<InstalledGhost> {
   const mutationOwner = captureGhostMutationOwner();
   let releaseMutation: (() => void) | null = null;
+  let releaseSync: (() => void) | undefined;
   try {
     const manager = getGhostManager();
     const registryError = blockedInstanceRegistryMarketError(manager.isInstanceRegistryBlocked());
@@ -7504,6 +7550,7 @@ async function installOrUpdateMarketGhostPackageLocked(
     expected.beforeCommitInLock?.();
     if (expected.sourceChanged) assertGhostRelocationIdle(installedGhostStoragePart(installed));
     const runtime = getGhostRuntime();
+    releaseSync = pluginDeviceSync.beginMutation(installedGhostStoragePart(installed));
     runtime.stop(installedGhostStoragePart(installed));
     // 无法确认旧进程已退出时保持停止态，不能启动第二份 resident。只有旧进程
     // 已确认退出、后续目录更新失败时，才恢复原版本。
@@ -7528,6 +7575,7 @@ async function installOrUpdateMarketGhostPackageLocked(
       result = await withActiveOwnerGhostOauthMutationLock(installedGhostStoragePart(installed), () =>
         manager.update(cindyFilePath, {
           taskCapabilityApproved: confirmedTaskCapability(expected.consent, installed, inspected.manifest),
+          targetCapabilityApproved: confirmedTaskCapability(expected.consent, installed, inspected.manifest, 'targets'),
           expectedPackageSha256: inspected.packageSha256,
           expectedInstalledApproval: expected.expectedInstalledApproval!,
           ...(expected.sourceChanged ? { sourceStateArchiveId: ghostSourceStateArchiveId(installed) } : {}),
@@ -7574,6 +7622,7 @@ async function installOrUpdateMarketGhostPackageLocked(
     await bindPluginUsage(result.ghost);
     return result.ghost;
   } finally {
+    releaseSync?.();
     releaseMutation?.();
   }
 }
@@ -7621,6 +7670,7 @@ async function uninstallGhostAndCleanupLocked(
   options?: { skipMarketLedger?: boolean; assertCurrent?: () => void },
 ): Promise<void> {
   const releaseMutation = beginGhostMutation();
+  let releaseSync: (() => void) | undefined;
   try {
     options?.assertCurrent?.();
     requireGhostAvailableForActiveSession(id);
@@ -7639,6 +7689,7 @@ async function uninstallGhostAndCleanupLocked(
     const runtime = getGhostRuntime();
     // Library 的 orphaned 标记要在 uninstall 之前取显示名(收走后 list 里就没了)。
     const libraryDisplayName = ghost.manifest.name;
+    releaseSync = pluginDeviceSync.beginMutation(storagePart);
     runtime.stop(storagePart);
     await getGhostNodeRuntimeBroker().stopAndWait(storagePart);
     getGhostAgentSlot().clearGhost(storagePart);
@@ -7750,6 +7801,7 @@ async function uninstallGhostAndCleanupLocked(
       });
     }
   } finally {
+    releaseSync?.();
     releaseMutation();
   }
 }
@@ -7814,6 +7866,7 @@ async function setGhostEnabledForUser(id: string, enabled: boolean, expectedInst
     // 安装目录)再动态写 receipt —— 不持租约,这个异步窗口里切号落定会拿 A 的镜像
     // 状态改 B 的 receipt(启停同时落在两个 owner 的两半)。
     const releaseMutation = beginGhostMutation(captureGhostMutationOwner());
+    const releaseSync = pluginDeviceSync.beginMutation(storagePart);
     try {
       if (!enabled) {
         runtime.stop(storagePart); // 沉睡立即熄灯
@@ -7859,6 +7912,7 @@ async function setGhostEnabledForUser(id: string, enabled: boolean, expectedInst
       return { ok: true };
     } finally {
       releaseMutation();
+      releaseSync();
     }
 }
 
@@ -8035,7 +8089,7 @@ export function registerGhostIpc(): void {
       await runtime.spawn(ghost);
       await invokeGhostMobileRelay(ghost, { op: 'connect', pageId, channels });
     },
-    post: async (ghost, pageId, channel, data) => { await invokeGhostMobileRelay(ghost, { op: 'post', pageId, channel, data }); },
+    post: async (ghost, pageId, channel, data, sourceId) => { await invokeGhostMobileRelay(ghost, { op: 'post', pageId, channel, data, sourceId }); },
     poll: async (ghost, pageId, after) => await invokeGhostMobileRelay(ghost, { op: 'poll', pageId, after }) as PluginPagePoll['events'],
     disconnect: async (id, pageId) => {
       const ghost = findGhostForPhysicalStoragePart(id);
@@ -8174,6 +8228,12 @@ export function registerGhostIpc(): void {
       readBodyText,
       isCurrent,
       userSecretKeys,
+      checkSecretKeys: networkSecretDecls.filter((s) => s.check && (!s.source || s.source === 'user')).map((s) => s.key),
+      checkSecret: (key, value) => {
+        const secret = networkSecretDecls.find((s) => s.key === key)!;
+        return checkGhostSecret({ instanceKey: ghostId, secret, value, isCurrent,
+          fetch: (url, init) => outboundFetch(url, init) });
+      },
       identitySecretKeys,
       managedSecretStates,
       hostCredentialStates: ghCliSecretDecls.map((s) => ({
@@ -8591,6 +8651,7 @@ export function registerGhostIpc(): void {
     }
     // library-request = library 持久作品库(资格审/binding 根解析/owner scope
     // 复核/SQL 语句门在 librarySlot;结果结构化 errorCode,永不 reject)。
+    if (type === 'device-sync-request') return pluginDeviceSync.handle(id, payload);
     if (type === 'library-request') {
       return getGhostLibrarySlot().handleLibraryRequest(id, payload);
     }
@@ -8603,7 +8664,7 @@ export function registerGhostIpc(): void {
     // 专属 errand 会话跑一轮,最终回复文字取回给插件;任务文本同样只进
     // 普通 user 消息。资格审/频控/任务表在 errandSlot,会话与收口在注入
     // 的 runner(maker-ipc)。
-    if (type === 'tasks-request') {
+    if (type === 'tasks-request' || type === 'targets-request') {
       const owner = getActiveDataOwnerPushStamp();
       const pageId = (payload as { mobilePageId?: unknown }).mobilePageId;
       const pageCurrent = pageId === undefined ? undefined : mobilePluginPages?.captureSource(pageId, id);
@@ -8613,25 +8674,48 @@ export function registerGhostIpc(): void {
         return owner.dataOwnerId === current.dataOwnerId && owner.ownerGeneration === current.ownerGeneration &&
           !event.sender.isDestroyed() && ghostIdForLogicWebContents(event.sender.id) === id && (!pageCurrent || pageCurrent());
       };
-      return handlePluginTaskRequest(id, payload, {
-        getGhost: findGhostForInstanceId, handler: pluginTaskHandler,
-        isCurrent,
-        ensureAuthorized: () => requestPluginTaskApproval(id, isCurrent, facts => {
-            const pageId = (payload as { mobilePageId?: string }).mobilePageId;
-            if (pageId) {
-              const permissions = facts.kind === 'update' ? facts.added : facts.permissions;
-              const interpolate = (key: string, args: Record<string, string> = {}) => Object.entries(args).reduce((value, [name, replacement]) => value.replaceAll(`{{${name}}}`, replacement), t(key));
-              return showMobilePluginTaskPermission(id, pageId, {
-                title: t('settings.ghosts.installConsent.addedTitle'), message: '',
-                detail: permissions.map(item => [interpolate(`settings.ghosts.perm.${item.labelKey}`, item.labelArgs), item.detailKey ? interpolate(`settings.ghosts.perm.${item.detailKey}`, item.detailArgs) : item.detail].filter(Boolean).join('\n')).join('\n\n'),
-                allow: t('settings.ghosts.connections.confirmAllow'), cancel: t('settings.ghosts.installConsent.cancel'),
-              });
-            }
-            const window = getDeepLinkMainWindow();
-            if (!window || !isTrustedAppRendererWindow(window)) return Promise.resolve(false);
-            return createWindowGhostInstallConsentPrompt(window.webContents)({ purpose: 'task-capability', initiator: 'user', origin: 'local-file', facts });
-        }),
+      if (type === 'targets-request' && pageId !== undefined) throw new Error('UNSUPPORTED_CAPABILITY');
+      if (type === 'targets-request' && findGhostForInstanceId(id)?.manifest.agent?.targets !== true) {
+        return { ok: false, error: { code: 'PERMISSION_DENIED', message: 'PERMISSION_DENIED', retryable: false } };
+      }
+      const confirmCapability = (facts: GhostInstallConsentFacts) => {
+        const pageId = (payload as { mobilePageId?: string }).mobilePageId;
+        if (pageId) {
+          const permissions = facts.kind === 'update' ? facts.added : facts.permissions;
+          const interpolate = (key: string, args: Record<string, string> = {}) => Object.entries(args).reduce((value, [name, replacement]) => value.replaceAll(`{{${name}}}`, replacement), t(key));
+          return showMobilePluginTaskPermission(id, pageId, {
+            title: t('settings.ghosts.installConsent.addedTitle'), message: '',
+            detail: permissions.map(item => [interpolate(`settings.ghosts.perm.${item.labelKey}`, item.labelArgs), item.detailKey ? interpolate(`settings.ghosts.perm.${item.detailKey}`, item.detailArgs) : item.detail].filter(Boolean).join('\n')).join('\n\n'),
+            allow: t('settings.ghosts.connections.confirmAllow'), cancel: t('settings.ghosts.installConsent.cancel'),
+          });
+        }
+        const window = getDeepLinkMainWindow();
+        if (!window || !isTrustedAppRendererWindow(window)) return Promise.resolve(false);
+        return createWindowGhostInstallConsentPrompt(window.webContents)({ purpose: 'task-capability', initiator: 'user', origin: 'local-file', facts });
+      };
+      const result = await handlePluginTaskRequest(id, type === 'targets-request' ? { type: 'tasks-request', kind: 'capabilities' } : payload, {
+        getGhost: findGhostForInstanceId, handler: pluginTaskHandler, isCurrent,
+        ensureAuthorized: () => requestPluginTaskApproval(id, isCurrent, confirmCapability),
       });
+      if (type !== 'targets-request' || !result.ok) return result;
+      try {
+        if (!await requestPluginTaskApproval(id, isCurrent, confirmCapability, false, 'targets')) {
+          return { ok: false, error: { code: 'PERMISSION_DENIED', message: 'PERMISSION_DENIED', retryable: false } };
+        }
+      } catch {
+        return { ok: false, error: { code: 'PERMISSION_DENIED', message: 'PERMISSION_DENIED', retryable: false } };
+      }
+      const revision = pluginTargetAuthorizationRevision(id);
+      const assertAuthorized = () => {
+        if (!isCurrent() || !revision || pluginTargetAuthorizationRevision(id) !== revision)
+          throw Object.assign(new Error('PERMISSION_DENIED'), { code: 'PERMISSION_DENIED' });
+      };
+      try { return { ok: true, data: await pluginTargetSlot.handle(id, payload, assertAuthorized) }; }
+      catch (error) {
+        const rawCode = (error as { code?: unknown })?.code ?? (error instanceof Error ? error.message : '');
+        const code = ['PERMISSION_DENIED', 'HOST_NOT_READY', 'INVALID_PARAMS', 'INVALID_ATTACHMENTS', 'TASK_BUSY', 'TARGET_UNAVAILABLE', 'SUPERSEDED', 'REQUEST_KEY_CONFLICT', 'DELIVERY_UNCERTAIN', 'DELIVERY_REJECTED', 'STALE_REVISION', 'ROUTE_UNAVAILABLE'].includes(String(rawCode)) ? String(rawCode) : 'HOST_NOT_READY';
+        return { ok: false, error: { code, message: code, retryable: code === 'TASK_BUSY' } };
+      }
     }
     if (type === 'agent-errand-request') {
       return getGhostErrandSlot().handleRequest(id, payload);
@@ -8901,8 +8985,15 @@ export function registerGhostIpc(): void {
     return { ok: true };
   });
 
+  const displayList = createGhostDisplayListHandler({
+    scopeKey: activeOwnerScopeKey,
+    isBoundaryPending: isAppSessionBoundaryPending,
+    list: () => availableGhosts().map(projectGhostForRenderer),
+    isScanComplete: () => getGhostManager().isInstallationScanComplete(),
+    warn: () => log.warn('plugin display roster scan unavailable; retaining last owner projection'),
+  });
   ipcMain.on('ghosts:list', (event) => {
-    event.returnValue = { ghosts: availableGhosts().map(projectGhostForRenderer) };
+    event.returnValue = displayList();
   });
   ipcMain.handle(GHOST_COMPOSER_LIST_CHANNEL, createGhostComposerListHandler({
     list: availableGhosts,

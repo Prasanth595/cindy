@@ -25,9 +25,10 @@ import { downloadRemoteMediaShareTemp } from './remoteMediaDiskCacheExpo';
 import { usePluginResultCard } from './usePluginResultCard';
 import { extractPayloadToolResultMedia, managedToolMediaKind } from '@cindy/maker-shared/payload-summary';
 import { AuthorizationMessageCard } from './AuthorizationMessageCard';
-import { collectBotMessageTimeGroups, formatBotMessageGroupTime } from '@cindy/maker-shared/botTimeline';
+import { collectBotMessageTimeGroups, formatBotMessageGroupTime, type BotTimelineMessage } from '@cindy/maker-shared/botTimeline';
 import { CompanionMessageCard } from '@/session/CompanionMessageCard';
 import { CompanionEntering } from '@/session/CompanionEntering';
+import { LOCAL_SEND_FRESH_MS, localSendStartedAt } from '@/session/localSendMotion';
 import { mobileDebugEnabled, mobileDebugLog } from '@/debug/mobileDebugLog';
 import { createScrollDebugSampler } from '@/debug/scrollDebugSampler';
 import { errorText, resolvedUrlKind } from '@/debug/fileDiagnostics';
@@ -143,6 +144,7 @@ import {
   SelectionQuoteContext,
   handleSelectionQuoteMenuAction,
 } from '@/session/selectionQuote';
+import { SelectionMenuText } from '@/session/SelectionMenuText';
 import {
   MOBILE_COMPOSER_CONTROL_SIZE,
   MOBILE_COMPOSER_VOICE_ANCHOR_RIGHT,
@@ -594,14 +596,18 @@ function MarkdownSelectableText({
         // RN Text props 里,组件内部私有附加(经 {...rest} 透传到原生组件)。
         {...{
           menuActionLabel: selectionQuoteMenuLabel(),
+          sideChatMenuActionLabel: quoteCtx.askInSideChat ? i18n.t('session.sideChat.title') : '',
           onMenuAction: (event: { nativeEvent: { target: number; start: number; end: number } }) => {
             handleSelectionQuoteMenuAction(event, renderedLinesRef.current, quoteCtx);
+          },
+          onSideChatMenuAction: (event: { nativeEvent: { target: number; start: number; end: number } }) => {
+            handleSelectionQuoteMenuAction(event, renderedLinesRef.current, quoteCtx, 'side-chat');
           },
         }}
       />
     );
   }
-  return <Text selectable={selectable} {...rest} />;
+  return <SelectionMenuText selectable={selectable} {...rest} />;
 }
 
 /**
@@ -663,6 +669,7 @@ interface MessageActions {
   onCopyMessageLink?: (clientId: string) => void;
   /** Insert this message's anchored link as an atom in the active composer. */
   onAddMessageToComposer?: (clientId: string) => void;
+  onSideChatMessage?: (text: string) => void;
   /**
    * chat-text-quote:选中消息文字 → 系统选择菜单「添加到对话」项的采集回调
    * (会话页写入 chatQuoteStore)。未传时选区采集整体关闭(context 为 null,
@@ -735,6 +742,7 @@ export function MessageRenderer({
   itemsStructureKey,
   onCopyMessageLink,
   onAddMessageToComposer,
+  onSideChatMessage,
   onForkMessage,
   onDeleteMessage,
   onLoadEarlier,
@@ -1740,9 +1748,20 @@ export function MessageRenderer({
   }, []);
   const companionPluginWork = useMemo(() => companion ? companionPluginWorkEntries(items, companionPluginInvocations) : undefined, [companion, items, companionPluginInvocations]);
   // Desktop MessageStream groups the visible teammate conversation (not hidden work) into five-minute stamps.
-  const companionTimeGroups = useMemo(() => companion ? collectBotMessageTimeGroups(items.flatMap((item) =>
-    item.type === 'message' && (item.message.kind === 'user' || item.message.kind === 'assistant' || item.message.companion)
-      ? [{ clientId: item.key, createdAt: item.message.createdAt }] : [])) : undefined, [companion, items]);
+  // Your own send is grouped by its send time from the moment its bubble appears, and its echo
+  // (same key) keeps that time, so a phone/computer clock skew cannot add or move a stamp on
+  // confirmation. Outbox rows carry the time across restarts.
+  const pendingSentAtRef = useRef(new Map<string, number>());
+  const companionTimeGroups = useMemo(() => companion ? collectBotMessageTimeGroups(items.flatMap((item): BotTimelineMessage[] => {
+    if (item.type === 'pending_send') {
+      const sentAt = item.sentAt ?? localSendStartedAt(item.key);
+      if (sentAt === null) return [];
+      pendingSentAtRef.current.set(item.key, sentAt);
+      return [{ clientId: item.key, createdAt: sentAt }];
+    }
+    return item.type === 'message' && (item.message.kind === 'user' || item.message.kind === 'assistant' || item.message.companion)
+      ? [{ clientId: item.key, createdAt: pendingSentAtRef.current.get(item.key) ?? localSendStartedAt(item.key) ?? item.message.createdAt }] : [];
+  })) : undefined, [companion, items]);
   const actions: MessageActions & { firstUserMessageClientId?: string } = useMemo(() => ({
     companion,
     companionWorkingLabel,
@@ -1753,6 +1772,7 @@ export function MessageRenderer({
     showPluginInvocations,
     remoteDeviceId,
     onAddMessageToComposer,
+    onSideChatMessage,
     onCopyMessageLink,
     onForkMessage,
     onDeleteMessage,
@@ -1803,6 +1823,7 @@ export function MessageRenderer({
     makerTurnRunning,
     onCopyMessageLink,
     onAddMessageToComposer,
+    onSideChatMessage,
     onDeleteMessage,
     onForkMessage,
     onOpenForkOrigin,
@@ -1824,16 +1845,15 @@ export function MessageRenderer({
     shareSelectionBusy,
     viewportLayout.contentWidth,
   ]);
-  // chat-text-quote:选区采集 context。仅「会话页传了采集回调 + iOS」时启用
-  // (Android RN Text 无系统菜单扩展点,v1 降级只读系统复制;只读宿主不传回调,
-  // context 为 null,MarkdownSelectableText 零开销)。菜单点按 → 直接提交,
-  // 无浮层状态。
-  const selectionQuoteEnabled = !!onQuoteSelection && Platform.OS === 'ios';
+  // Native selection menus share the host's action availability. Read-only hosts
+  // keep the system menu; side-chat tasks do not recursively offer side chats.
+  const selectionQuoteEnabled = !!onQuoteSelection;
+  const commitSelectionQuote = useCallback((text: string) => onQuoteSelection?.({ text }), [onQuoteSelection]);
   const selectionQuoteContextValue = useMemo(
-    () => (selectionQuoteEnabled && onQuoteSelection
-      ? { commitQuote: (text: string) => onQuoteSelection({ text }) }
+    () => (selectionQuoteEnabled
+      ? { commitQuote: commitSelectionQuote, askInSideChat: onSideChatMessage }
       : null),
-    [onQuoteSelection, selectionQuoteEnabled],
+    [onSideChatMessage, selectionQuoteEnabled, commitSelectionQuote],
   );
   const showJumpToLatest = isAwayFromBottom && !hasNewMessages;
   const focusRunKey = focusedItemKey
@@ -1921,6 +1941,25 @@ export function MessageRenderer({
     setHasNewMessages(false);
     scrollToEndProgrammatically(true, 'explicit');
   }, [cancelHistoryPrependTransaction, scrollToEndProgrammatically]);
+
+  // The send-time follow runs before the local bubble exists, so the bubble would then land through
+  // the instant tail correction. Follow once more, animated, the moment it is in the list: the list
+  // carries the bubble up while it eases in.
+  const followedLocalSendKeysRef = useRef(new Set<string>());
+  useLayoutEffect(() => {
+    if (!historyActive) return;
+    const now = Date.now();
+    for (let index = listData.length - 1; index >= Math.max(0, listData.length - 3); index--) {
+      const item = listData[index];
+      if (item.type !== 'pending_send' && item.type !== 'message') continue;
+      const sentAt = localSendStartedAt(item.key);
+      if (sentAt === null || now - sentAt >= LOCAL_SEND_FRESH_MS) continue;
+      if (followedLocalSendKeysRef.current.has(item.key)) return;
+      followedLocalSendKeysRef.current.add(item.key);
+      scrollToBottom();
+      return;
+    }
+  }, [historyActive, listData, scrollToBottom]);
 
   // A retained list must not replay requests issued while another task was active.
   const followRequestWasActiveRef = useRef(historyActive);
@@ -3024,14 +3063,20 @@ const RenderItemView = memo(function RenderItemView({
       logUnhandledRenderItem(item);
       break;
   }
-  const groupTimestamp = actions.companion && item.type === 'message'
+  const groupTimestamp = actions.companion && (item.type === 'message' || item.type === 'pending_send')
     ? actions.companionTimeGroups?.get(item.key) : undefined;
   // Cards and work groups share the reply text column, leaving the avatar slot empty.
   const alignWithReplies = !!actions.companionAvatar && actions.companion
     && (item.type === 'work_group' || (item.type === 'message' && !!item.message.companion));
   const aligned = alignWithReplies ? <View style={styles.companionAvatarInset}>{node}</View> : node;
-  // Companion chats: a new message or finished reply eases in once (M4 / M5); everything else stays still.
-  const entering = actions.companion && item.type === 'message' && !item.message.systemCardType
+  // Your own send eases in once, as its local bubble (both chats). Its echo keeps the same key and
+  // wrapper, so it neither remounts nor replays. Companion chats also ease in a new message or
+  // finished reply (M4 / M5).
+  const localSendAt = item.type === 'pending_send' || item.type === 'message'
+    ? localSendStartedAt(item.key) : null;
+  const entering = localSendAt !== null
+    ? <CompanionEntering key={item.key} id={item.key} createdAt={localSendAt} kind="send">{aligned}</CompanionEntering>
+    : actions.companion && item.type === 'message' && !item.message.systemCardType
     && (item.message.kind === 'user' || item.message.kind === 'assistant')
     ? <CompanionEntering key={item.key} id={item.key} createdAt={item.message.createdAt} kind={item.message.kind === 'user' ? 'send' : 'reply'}>{aligned}</CompanionEntering>
     : aligned;
@@ -3404,9 +3449,11 @@ function MessageBubble({
   const displayBubbleBody = hasSentInlineAtoms
     ? sentInlineTokensDisplayText(sentInlineTokens)
     : bubbleBody;
+  const draftBody = item.message.draftBody ?? item.message.body;
+  const draftText = item.message.draftBody ?? bubbleBody;
   const composerDraftDocument = useMemo(
     () => (item.message.kind === 'user'
-      ? composerDocumentFromSerializedMessage(item.message.body, {
+      ? composerDocumentFromSerializedMessage(draftBody, {
           quotesEncoded: item.message.quotesEncoded,
           agentReferences: item.message.agentReferences,
           pastedTextRanges: item.message.pastedTextRanges,
@@ -3414,7 +3461,7 @@ function MessageBubble({
         })
       : null),
     [
-      item.message.body,
+      draftBody,
       item.message.agentReferences,
       item.message.kind,
       item.message.pastedTextRanges,
@@ -3489,6 +3536,7 @@ function MessageBubble({
   );
   const canCopyLink = !!(showCompletedActionBar && clientId && actions.onCopyMessageLink);
   const canAddToChat = !!(showCompletedActionBar && clientId && actions.onAddMessageToComposer);
+  const canSideChat = !!(showCompletedActionBar && copyText.trim() && actions.onSideChatMessage);
   const canShare = !!(
     showCompletedActionBar
     && clientId
@@ -3553,11 +3601,12 @@ function MessageBubble({
   // label 走 i18n.t,所以语言必须进依赖:否则用户在任务页挂载期间切语言,菜单会一直
   // 停在切换前的语言,直到 capability 变化或组件重挂。
   const messageMenu = useMemo(() => buildMobileMessageMenu({
+    canSideChat,
     canAddToChat,
     canCopyLink,
     canDelete,
     canRewind,
-  }), [canAddToChat, canCopyLink, canDelete, canRewind, i18nInstance.language]);
+  }), [canSideChat, canAddToChat, canCopyLink, canDelete, canRewind, i18nInstance.language]);
   const actionBar = useMemo(() => buildMessageActionBarPresentation({
     align: isUser ? 'user' : 'agent',
     canCopy,
@@ -3596,10 +3645,10 @@ function MessageBubble({
     }
     if (id === 'rewind' && clientId) {
       actions.onPreviewRewind?.(clientId, {
-        document: composerDraftDocument ?? composerDocumentFromSerializedMessage(item.message.body),
-        text: bubbleBody,
+        document: composerDraftDocument ?? composerDocumentFromSerializedMessage(draftBody),
+        text: draftText,
         quotes: messageQuotes,
-        ...(item.message.quotesEncoded === true ? { orderedBody: item.message.body } : {}),
+        ...(item.message.quotesEncoded === true ? { orderedBody: draftBody } : {}),
       });
       return;
     }
@@ -3608,10 +3657,10 @@ function MessageBubble({
         clientId,
         item.message.kind === 'user'
           ? {
-              document: composerDraftDocument ?? composerDocumentFromSerializedMessage(item.message.body),
-              text: bubbleBody,
+              document: composerDraftDocument ?? composerDocumentFromSerializedMessage(draftBody),
+              text: draftText,
               quotes: messageQuotes,
-              ...(item.message.quotesEncoded === true ? { orderedBody: item.message.body } : {}),
+              ...(item.message.quotesEncoded === true ? { orderedBody: draftBody } : {}),
             }
           : undefined,
       );
@@ -3622,11 +3671,11 @@ function MessageBubble({
     }
   }, [
     actions,
-    bubbleBody,
+    draftText,
     clientId,
     composerDraftDocument,
     copyMessage,
-    item.message.body,
+    draftBody,
     item.message.kind,
     item.message.quotesEncoded,
     messageQuotes,
@@ -3636,8 +3685,9 @@ function MessageBubble({
     if (id === 'rewind') return selectControlAction('rewind');
     if (id === 'delete') return selectControlAction('delete');
     if (id === 'add-to-chat') return actions.onAddMessageToComposer?.(clientId);
+    if (id === 'side-chat') return actions.onSideChatMessage?.(copyText);
     actions.onCopyMessageLink?.(clientId);
-  }, [actions, clientId, selectControlAction]);
+  }, [actions, clientId, copyText, selectControlAction]);
   const openMessageActionMenu = useCallback(() => {
     if (usesSystemActionMenu()) {
       const disabled = actionBusy
@@ -5306,7 +5356,8 @@ function MobileAgentSwitchCard({ data }: { data?: Record<string, unknown> }) {
   const handoff = typeof data?.handoff === 'string' ? data.handoff : '';
   const resumed = data?.resumed === true;
   // 远程 Agent 换了电脑:药丸说位置(「Agent 改到 X 运行」),否则仍是「已从 X 切换到 Y」。
-  const label = formatAgentSwitchLocationLabel(data, (key, options) => t(key, options))
+  const modelOnly = data?.modelOnly === true;
+  const label = modelOnly ? `${data?.fromModel ?? ''} → ${toModel}` : formatAgentSwitchLocationLabel(data, (key, options) => t(key, options))
     ?? t('message.renderer.agentSwitchLabel', { from, to });
 
   return (
@@ -5322,7 +5373,7 @@ function MobileAgentSwitchCard({ data }: { data?: Record<string, unknown> }) {
         >
           <ArrowLeftRight color={colors.textTertiary} size={iconSize.xs} strokeWidth={iconStroke.regular} />
           <Text style={styles.agentSwitchPillText} numberOfLines={1}>{label}</Text>
-          {toModel ? (
+          {toModel && !modelOnly ? (
             <>
               <Text style={styles.agentSwitchDot}>·</Text>
               <Text style={styles.agentSwitchModel} numberOfLines={1}>{toModel}</Text>

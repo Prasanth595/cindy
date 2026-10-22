@@ -155,7 +155,7 @@ export interface DesktopCcPrefs {
   providerId?: string | null;
   effort: string;
   permissionMode: string;
-  fastMode: boolean;
+  fastMode: boolean | 'ultrafast';
 }
 
 let _desktopCcPrefs: DesktopCcPrefs | null = null;

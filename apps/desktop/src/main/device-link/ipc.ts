@@ -11,6 +11,7 @@ import { capturePluginOauthPeer } from '../plugin-oauth/runtime.js';
 import { openRemotePluginSettings, closeRemotePluginSettings, answerRemotePluginSettingsDirectory } from '../cindy-brain/remotePluginSettingsController.js';
 import { REMOTE_PLUGIN_SETTINGS_OPEN, REMOTE_PLUGIN_SETTINGS_CLOSE, REMOTE_PLUGIN_SETTINGS_DIRECTORY_ANSWER } from '../../shared/remotePluginSettings.js';
 import {
+  decodeModelSpeedPayload,
   REMOTE_RESOURCE_MANIFEST_CHANNEL,
   REMOTE_RESOURCE_INVOKE_CHANNEL,
   REMOTE_RESOURCE_PROTOCOL_VERSION,
@@ -759,7 +760,7 @@ export async function handleInvoke(
     rethrowDeviceLinkError(err);
   }
 
-  if (result.ok) return result.result;
+  if (result.ok) return decodeModelSpeedPayload(channel, result.result);
   // 被控端透传回来的错误:IPC_ERROR 的 message 已是 `[CODE] message` 形态,
   // 直接抛原样 Error 让 renderer extractIpcError 解码;其余隧道码走映射
   if (result.error.code === 'IPC_ERROR') {

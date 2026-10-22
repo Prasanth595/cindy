@@ -134,6 +134,7 @@ export function AnchoredPullDownMenu({
   children,
   longPress,
   onAction,
+  onPress,
   style,
   testID,
   accessibilityLabel,
@@ -173,7 +174,7 @@ export function AnchoredPullDownMenu({
         accessibilityValue={child.accessibilityValue}
         accessibilityRole="button"
         accessibilityState={{ ...child.accessibilityState, expanded: open }}
-        onPress={longPress ? undefined : show}
+        onPress={longPress ? onPress : show}
         onLongPress={longPress ? show : undefined}
         testID={testID}
       >

@@ -2258,6 +2258,7 @@ export class PiAgent extends BaseAgent {
       disabledSkills?: DisabledSkillLaunchSnapshot;
       /** 受邀者分享的不是 Cindy 网关：网关 provider 块不写任何模型(Pi 选不到网关路由)。 */
       omitGatewayModels?: boolean;
+      allowedModelIds?: readonly string[];
     } = {},
   ): Promise<{
     cacheRoutes: Map<string, PiCacheCompatibility>;
@@ -2286,11 +2287,12 @@ export class PiAgent extends BaseAgent {
       }
       this.deps.logger.warn('pi: runtimeConfig.endpoint missing — models.json will have no usable provider');
     }
-    const publicModels = opts.omitGatewayModels
+    const gatewayModels = opts.omitGatewayModels
       ? []
       : this.deps.resolvePiRuntimeModels?.() ?? this.capabilities.availableModels;
+    const publicModels = opts.allowedModelIds ? gatewayModels.filter(model => opts.allowedModelIds!.includes(model.id)) : gatewayModels;
     const runtimeModels =
-      !opts.omitGatewayModels && retainedRuntimeModel && !publicModels.some((m) => m.id === retainedRuntimeModel.id)
+      !opts.omitGatewayModels && retainedRuntimeModel && (!opts.allowedModelIds || opts.allowedModelIds.includes(retainedRuntimeModel.id)) && !publicModels.some((m) => m.id === retainedRuntimeModel.id)
         ? [...publicModels, retainedRuntimeModel]
         : publicModels;
     const gatewayImageInputByModel = new Map<string, boolean>();
@@ -2684,7 +2686,7 @@ export class PiAgent extends BaseAgent {
     const sessionNativeProviderResolver = (): AgentDeps['resolvePiNativeProviders'] => {
       const resolve = this.deps.resolvePiNativeProviders;
       if (!resolve || !guestProviderId) return resolve?.bind(this.deps);
-      return async (input) => restrictPiGuestNativeProviders(await resolve.call(this.deps, input), guestProviderId);
+      return async (input) => restrictPiGuestNativeProviders(await resolve.call(this.deps, input), guestProviderId, hosted?.guestProvider?.modelIds);
     };
     const resolvePiNativeProviders = sessionNativeProviderResolver();
     const sessionPiAutoCompactPct = this.deps.runtimeConfig.piAutoCompactThresholdPct;
@@ -3005,6 +3007,7 @@ export class PiAgent extends BaseAgent {
     // the current `cindy` provider and leak an invalid unnamespaced model id.
     // 受邀者分享的不是网关时，子代理不能改走网关。
     const routedGatewaySubagentModels = guestOmitsGateway ? [] : gatewaySubagentModels.filter((model) => {
+      if (hostedGuest && !hosted?.guestProvider?.modelIds.includes(model.id)) return false;
       const resolverContext = { remote, runtimeBinaryPath: sessionRuntimeBinaryPath };
       const spec = this.deps.resolvePiGatewayModelSpec?.(PI_PROVIDER_ID, model.id, resolverContext);
       const api = spec?.api ?? this.deps.resolvePiGatewayModelApi?.(
@@ -3296,6 +3299,7 @@ export class PiAgent extends BaseAgent {
         piCompactionPct: sessionPiAutoCompactPct,
         runtimeBinaryPath: sessionRuntimeBinaryPath,
         ...(guestOmitsGateway ? { omitGatewayModels: true } : {}),
+        ...(hostedGuest ? { allowedModelIds: hosted?.guestProvider?.modelIds } : {}),
       },
     );
     const explicitlyRequestedGateway = isExplicitPiGatewayProviderId(opts.providerId);
@@ -5535,7 +5539,7 @@ export class PiAgent extends BaseAgent {
         ...(proxyEnv ?? {}),
         // BYOM 原生 provider 的 api keys(键名对应 spec.apiKeyEnvVar,models.json 用 $ENV 引用)。
         ...nativeEnv,
-        CINDY_PI_NATIVE_PROVIDER_ADAPTERS: JSON.stringify(nativeProviderAdapterAliases(nativeProviders)),
+        CINDY_PI_NATIVE_PROVIDER_ADAPTERS: JSON.stringify(nativeProviderAdapterAliases(nativeProviders, hostedGuest ? hosted?.guestProvider?.modelIds : undefined, Boolean(hosted))),
         // 外部 MCP header 真值只经 env 交给 bridge extension；host 生成独立名字，
         // 且这些键已进入 piSecretEnvNames，LLM 可调用的 bash 子进程拿不到。
         ...mcpEnv,
@@ -6746,6 +6750,7 @@ export class PiAgent extends BaseAgent {
           ?? retainedRuntimeModel) : retainedLiveGatewayModel,
         gateway ? requestedProviderId : authProviderId,
         { remote, fileOps, preview: true,
+          allowedModelIds: hosted?.guestProvider?.modelIds,
           contextWindow: targetContextWindow ?? ctx.contextWindow ?? startupContextWindow,
           workingContextWindow: this.deps.resolveModelContextLimit?.(sourceId, model) ?? undefined,
           piCompactionPct: sessionPiAutoCompactPct,
@@ -6761,8 +6766,8 @@ export class PiAgent extends BaseAgent {
       const envChanged = Object.keys({ ...nativeEnv, ...latestEnv }).some(
         (key) => nativeEnv[key] !== latestEnv[key],
       );
-      const adaptersChanged = JSON.stringify(nativeProviderAdapterAliases(nativeProviders))
-        !== JSON.stringify(nativeProviderAdapterAliases(latestProviders));
+      const adaptersChanged = JSON.stringify(nativeProviderAdapterAliases(nativeProviders, hostedGuest ? hosted?.guestProvider?.modelIds : undefined, Boolean(hosted)))
+        !== JSON.stringify(nativeProviderAdapterAliases(latestProviders, hostedGuest ? hosted?.guestProvider?.modelIds : undefined, Boolean(hosted)));
       let gatewayCredentialChanged = false;
       if (remote && gateway) {
         try {
@@ -6834,7 +6839,7 @@ export class PiAgent extends BaseAgent {
       const gatewayAuthEnv = remote && nextGateway
         ? await this.deps.auth.getAuthEnv({ credentialMode: 'gateway-key', providerId: requestedProviderId })
         : authEnv;
-      const nextAliases = nativeProviderAdapterAliases(nextProviders);
+      const nextAliases = nativeProviderAdapterAliases(nextProviders, hostedGuest ? hosted?.guestProvider?.modelIds : undefined, Boolean(hosted));
       const mutableEnv = (value: Record<string, string>) => Object.fromEntries(
         Object.entries(value).filter(([key]) => /^CINDY_PI_KEY_[A-Z0-9_]+$/.test(key)
           || key === PI_API_KEY_ENV || key === PI_SESSION_TOKEN_ENV
@@ -6886,6 +6891,7 @@ export class PiAgent extends BaseAgent {
           nextGateway ? (nextDescriptor ?? retainedLiveGatewayModel ?? retainedRuntimeModel) : retainedLiveGatewayModel,
           nextGateway ? requestedProviderId : authProviderId,
           { remote, fileOps, contextWindow: nextDescriptor?.contextWindow ?? ctx.contextWindow,
+            allowedModelIds: hosted?.guestProvider?.modelIds,
             workingContextWindow: this.deps.resolveModelContextLimit?.(sourceId, model) ?? undefined,
             piCompactionPct: sessionPiAutoCompactPct, runtimeBinaryPath: sessionRuntimeBinaryPath,
             packages: nativePackagePaths,
@@ -7983,8 +7989,9 @@ export class PiAgent extends BaseAgent {
         return run;
       },
 
-      async setFastMode(enabled: boolean): Promise<void> {
+      async setFastMode(enabled: boolean | 'ultrafast'): Promise<void> {
         if (reviewMode) return;
+        if (enabled === 'ultrafast') throw new Error('Ultrafast requires the Codex runtime');
         updateRequestPrefs(enabled);
       },
 
@@ -8386,7 +8393,9 @@ export class PiAgent extends BaseAgent {
     }
     const log = this.deps.logger;
     const agentHome = this.resolveAgentHome(opts.remoteHostId);
-    const sessionDir = joinRemotePosixPath(agentHome, 'sessions');
+    const sessionDir = opts.hostedGuestHome
+      ? path.join(opts.hostedGuestHome, 'pi-sessions')
+      : joinRemotePosixPath(agentHome, 'sessions');
     // 离线 fork 只需 models.json 里有 `cindy` 供应商供 pi 启动校验 --provider。
     // 不能写共享的 agentHome/models.json:另一窗口正启动 BYOM 会话时(startSession
     // 写入 native providers 后到 spawn 之间还有多个 await),本处覆盖会把该 provider

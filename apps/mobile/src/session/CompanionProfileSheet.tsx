@@ -1,3 +1,4 @@
+import { serializeModelRoutes } from '@cindy/maker-shared/model-route';
 import { CompanionImportSheet } from './CompanionImportSheet';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'expo-router';
@@ -306,7 +307,7 @@ function CompanionProfileSheetContent(props: CompanionProfileSheetProps) {
   const changeValues = (next: ProfileValues) => { if (!editing) draftBase.current = panel?.values ?? {}; setValues(next); setEditing(true); };
   const taskValues = {
     modelChain: modelValues.taskFollowsPrimary === true
-      ? JSON.stringify(readCompanionModelChain(modelValues.modelChain).slice(0, 1))
+      ? serializeModelRoutes(readCompanionModelChain(modelValues.modelChain).slice(0, 1))
       : modelValues.taskModel,
     followsDefault: modelValues.taskFollowsPrimary === true,
   };
@@ -342,11 +343,11 @@ function CompanionProfileSheetContent(props: CompanionProfileSheetProps) {
     onClose={() => setModelStage('closing-picker')} onClosed={() => setModelStage('profile')}
     onSelect={route => {
       if (modelPurpose === 'task') {
-        changeValues({ ...modelValues, taskModel: JSON.stringify([route]), taskFollowsPrimary: false }); return true;
+        changeValues({ ...modelValues, taskModel: serializeModelRoutes([route]), taskFollowsPrimary: false }); return true;
       }
       const chain = readCompanionModelChain(modelValues.modelChain);
-      if (chain.some((item, index) => index !== modelIndex && item.harness === route.harness && item.model === route.model && item.providerId === route.providerId)) return false;
-      chain[modelIndex] = route; changeValues({ ...modelValues, modelChain: JSON.stringify(chain), followsDefault: false }); return true; }} />;
+      if (chain.some((item, index) => index !== modelIndex && item.harness === route.harness && item.model === route.model && item.providerId === route.providerId && (item.agentDeviceId ?? null) === (route.agentDeviceId ?? null))) return false;
+      chain[modelIndex] = route; changeValues({ ...modelValues, modelChain: serializeModelRoutes(chain), followsDefault: false }); return true; }} />;
 
   if (Platform.OS === 'ios') return <>{modelPicker}<CompanionProfileNativeView models={models}
     visible={visible && modelStage === 'profile'} title={confirmation?.action?.confirmation ? label(confirmation.action.confirmation.title) : page === 'editor' && editor ? label(editor.resource.display.title) : t(`devices.companionProfile.${titleKey}`)}
@@ -368,7 +369,7 @@ function CompanionProfileSheetContent(props: CompanionProfileSheetProps) {
   const save = (target: ProfilePanel, blocked: boolean) => <MainWindowActionButton action={{ label: t('devices.companionProfile.save'), busy,
     disabled: blocked || !online || !dirty || conflict?.page === page, onPress: () => void submit(target) }} />;
   const formPanel = (target: ProfilePanel | undefined) => target?.action ? <>
-    {target.id === 'capability' && target.text ? noteText(target.text) : null}
+    {(target.id === 'capability' || target.id === 'follow-up') && target.text ? noteText(target.text) : null}
     <CompanionProfileForm panel={target} values={editing ? values : target.values} onChange={changeValues} disabled={busy || !online || !!target.action.disabled} />
     {save(target, !!target.action.disabled)}
   </> : target?.text ? <Text selectable style={styles.body}>{target.text}</Text> : !data && online ? spinner : note('hostUpgrade');
@@ -382,6 +383,7 @@ function CompanionProfileSheetContent(props: CompanionProfileSheetProps) {
       <Text accessibilityRole="header" numberOfLines={2} style={styles.name}>{name}</Text>
     </View>
     <View style={styles.group}>{row('profile', Info)}{row('memory', Brain)}{row('models', Sparkles)}{row('skills', Settings2)}</View>
+    {data?.panels.find(item => item.id === 'followUp')?.entries?.map(entry => <View style={styles.group} key={entry.id}><ContextSheetRow icon={null} trailing="chevron" label={label(entry.title)} onPress={() => void openEditor(entry.resourceId)} disabled={!online} /></View>)}
     <View style={styles.group}>{row('artifacts', FileText)}{onOpenSearch ? row('search', History, onOpenSearch) : null}{row('permissions', Hand)}</View>
     {onOpenHome ? <View style={styles.group}>{row('home', Monitor, onOpenHome)}</View> : null}
     {/* Host order, like iOS: restart / resume / delete are whatever the computer offers now. */}
@@ -539,7 +541,7 @@ function CompanionCreateSheetContent({ visible, onClose, onClosed, deviceId, dev
     onPick={() => setModelStage('closing-form')} /> : null;
   const modelPicker = <CompanionModelPicker visible={visible && modelStage === 'picker'} deviceId={deviceId} route={modelChain[0]}
     onClose={() => setModelStage('closing-picker')} onClosed={() => setModelStage('form')}
-    onSelect={route => { setModelValues({ followsDefault: false, modelChain: JSON.stringify([route]) }); return true; }} />;
+    onSelect={route => { setModelValues({ followsDefault: false, modelChain: serializeModelRoutes([route]) }); return true; }} />;
   if (importing) return <CompanionImportSheet visible={visible} onClose={onClose} onClosed={onClosed} deviceId={deviceId} deviceName={deviceName} online={online} onCreated={onCreated} />;
   if (Platform.OS === 'ios') return <>{modelPicker}<CompanionCreateNativeView models={models} modelMissing={modelMissing} onImport={data?.resource.actions?.some(action => action.id === 'open-agent-import') ? openImport : undefined} deviceName={deviceName} nameTaken={nameTaken} duplicate={duplicate} locked={unconfirmed} visible={visible && !openingImport && modelStage === 'form'} onClose={close} onClosed={creationClosed} panel={data?.panels[0]} values={values} onChange={change} onSubmit={() => void submit()} onRetry={() => void reload()} online={online} busy={busy} loading={loading} error={error} dirty={dirty} /></>;
   const panel = data?.panels[0];

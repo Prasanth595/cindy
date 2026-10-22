@@ -128,15 +128,22 @@ wire 字段或修改远程目录优先级。Server 仍可按原 schema/revision 
 用户重命名改变匹配；使用稳定的模型 ID。添加系列时补齐五语资源，覆盖测试遍历本地
 Registry 的全部模型及其 routes，防止只翻译当前默认启用的几款。
 
-### GPT 日常窗口与 Codex Chat Completions（2026-09-06 用户裁决）
+### GPT 日常窗口与 Codex Chat Completions（2026-10-20 更新）
 
-- 所有来源的 OpenAI 聊天模型采用至多 272,000 tokens 的日常默认窗口，包括内置订阅、XD、
+- OpenAI 聊天模型未声明订阅工作默认时采用至多 272,000 tokens 的日常默认窗口，包括内置订阅、XD、
   自定义 API／Sub2API、第三方预设和组织连接，覆盖 Claude Code、Codex、Pi。
   覆盖 GPT、Codex、o 系列的原始 ID、`codex/`、`openai/`、`chatgpt/` 别名，以及 Registry
   明确关联到 OpenAI 公共型号的部署 ID。已解析的公共型号身份优先于名称；只有未解析身份时
   才按上述系列与命名空间推断，任意私有命名空间不推断。较小模型不扩容；仅有兼容协议不推断厂商。
   `contextWindowMax` 保留供应商容量；这是客户端工作默认策略，不修改服务端能力声明。
-- 显式上下文 override 仍优先，可设置 1M；恢复默认删除 override 后采用 272K。
+- OpenAI 订阅的日常窗口由 Server 既有 `routes[].defaults.contextWindow` 与
+  `perAgent[引擎].contextWindow` 下发；最终工作预算采用 perAgent，Pi 跟随 Codex 的订阅预算。活动目录以该工作
+  默认限制已解析窗口，不扩容较小的实报，也不从 route 或 `baseModels` 的总容量推导工作默认。
+  GPT-6.1 Sol 的订阅默认为 500,000，Astra 仍为 272,000；自定义 API、XD 和第三方预设
+  不继承订阅工作预算。用户覆盖仍最高。实现及刷新/恢复默认回归见
+  `active-catalog.ts` 与 `openAiContextDefaults.test.ts`。
+- 显式上下文 override 仍优先，可设置 1M；恢复默认删除 override 后重新读取对应订阅工作默认，
+  未声明的路由使用 272K。
   用户显式模型窗口、公共型号与连接／引擎补丁仍优先；非 OpenAI 模型和媒体模型不套用此策略。
   导入、刷新、离线回退、组织同步与本地 addition 经同一活动目录出口投影，不把默认值写回发现快照或用户配置。
 - Codex CLI 0.153.0 已移除原生 Chat Completions。Cindy 的既有转换路径仍可使用，

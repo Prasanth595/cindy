@@ -21,6 +21,11 @@
     "messageCount": "메일 {{count}}개",
     "showMessages": "메일 {{count}}개 펼치기"
   },
+  "taskActionConfirmation": {
+    "title": "세션 작업 확인",
+    "once": "아래 대상, 작업과 전체 내용을 확인하세요. 허용은 이번 작업에 한 번만 적용됩니다.",
+    "delegation": "독립 세션의 목표와 설정을 확인하세요. 허용하면 세션을 시작하고 위임이 끝날 때까지 범위 내 메시지 전송과 중지가 가능합니다. 대신 답변하기, 일시 정지 해제와 모델 변경은 별도 확인이 필요합니다."
+  },
   "logSupport": {
     "title": "로그 및 피드백",
     "localFiles": "문제가 발생한 날짜의 로그를 선택하세요. 민감 정보가 가려지지 않았으므로 공유 전에 확인하세요.",
@@ -223,6 +228,25 @@
     "closeAllDescription": "모든 게스트의 접근이 차단됩니다. 작업 기록은 유지됩니다."
   },
   "providerShare": {
+    "modelAccess": {
+      "title": "원격 호출을 허용할 모델",
+      "description": "원격 사용만 제한하며 로컬 사용에는 영향이 없습니다. 저장 후 작업 생성, 모델 변경, 다음 메시지 전송 시 적용됩니다.",
+      "all": "모든 모델",
+      "selected": "모델 {{count}}개 허용",
+      "choose": "모델 선택",
+      "memberTitle": "사용 가능한 모델",
+      "memberDescription": "원격으로 공개된 모델 중 {{name}} 님이 사용할 모델을 선택합니다. 이 사람을 통한 재공유에도 적용됩니다.",
+      "inherit": "원격 공개 범위 따르기",
+      "allFuture": "추가되는 모델을 포함해 모두 허용",
+      "search": "모델 검색",
+      "notOpen": "원격 미공개",
+      "empty": "일치하는 모델 없음",
+      "none": "선택한 모델이 없어 원격 호출이 차단됩니다.",
+      "loading": "모델 허용 범위를 불러오는 중…",
+      "loadFailed": "모델 허용 범위를 불러오지 못했습니다. 설정을 다시 열어 주세요.",
+      "saveFailed": "모델 허용 범위를 저장하지 못했습니다. 다시 시도해 주세요.",
+      "needsUpdate": "제공자의 컴퓨터에서 Cindy를 업데이트해 주세요."
+    },
     "entry": {
       "label": "원격 및 공유",
       "pending_other": "대기 중인 공유 요청 {{count}}개",
@@ -630,7 +654,7 @@
       "round": "순환",
       "order": "순서대로",
       "weight": "가중치",
-      "quotaFirst": "Claude 구독 사용량을 확인할 수 있으면 할당량 초기화가 가까운 컴퓨터를 우선하고, 그다음 사용량이 적은 컴퓨터를 선택합니다. 비슷하면 그룹 배정 방식을 따릅니다",
+      "quotaFirst": "구독 사용량을 확인할 수 있으면 초기화가 가깝고 남은 양이 많은 컴퓨터를 먼저 사용해 각 계정을 시간에 맞춰 고르게 소진합니다. 비슷하면 그룹 배정 방식을 따릅니다",
       "description": {
         "least": "가장 여유로운 컴퓨터로",
         "round": "차례대로 배정",
@@ -665,6 +689,10 @@
         "share": "다른 사람이 공유한 컴퓨터의 할당량은 표시되지 않습니다"
       },
       "runningCount_other": "{{count}}개 실행 중",
+      "pace": {
+        "used": "{{used}}% 사용",
+        "usedExpected": "{{used}}% 사용, 기준 {{expected}}%"
+      },
       "limitAria": "{{name}}의 동시 실행 한도",
       "limitOption_other": "한도 {{count}}",
       "weightAria": "{{name}}의 가중치",
@@ -713,6 +741,15 @@
         }
       }
     },
+    "rebalance": {
+      "title": "{{label}}(으)로 바꿔서 계속할까요?",
+      "description": "각 계정의 할당량을 고르게 쓰기 위해 이 메시지는 {{label}}에서 보내는 것을 권장합니다({{quota}}). 최근 몇 번의 대화와 요약은 이어지지만, 그 이전의 세부 내용은 빠질 수 있습니다.",
+      "quota": "{{left}}% 남음",
+      "quotaReset": "{{left}}% 남음 · {{reset}}",
+      "confirm": "전환",
+      "cancel": "취소",
+      "remember": "앞으로 묻지 않고 자동 전환(이 작업만)"
+    },
     "deleteConfirm": {
       "title": "{{provider}} 제공자 그룹을 삭제할까요?",
       "description": "이 컴퓨터의 새 세션은 이 컴퓨터에서 실행됩니다. 다른 컴퓨터에 배정된 세션은 그대로 남습니다.",
@@ -756,11 +793,12 @@
     "windowsTitle": "잠금 화면 제어",
     "windowsready": "현재 Cindy 실행에 허용되었습니다. Cindy를 다시 시작하면 관리자 승인이 다시 필요합니다.",
     "windowsmissing": "잠금 화면과 관리자 확인 창을 제어하려면 관리자 승인이 필요합니다.",
-    "windowsinstallRequired": "Cindy를 Program Files에 모든 사용자용으로 설치하세요.",
+    "windowsinstallRequired": "Cindy의 설치 위치를 찾을 수 없습니다. Cindy를 다시 시작한 후 다시 시도하세요.",
     "windowsunavailable": "시스템 서비스를 사용할 수 없습니다. Cindy를 다시 설치하세요.",
     "windowsEnable": "승인 후 활성화",
     "windowsDisable": "서비스 제거",
     "windowsError": "승인이 완료되지 않았습니다. 이 컴퓨터에서 다시 시도하세요.",
+    "windowsErrorDetail": "오류 코드 {{code}}",
     "permissionsTitle": "원격 데스크톱 권한",
     "permissionsIntro": "데스크톱을 보려면 화면 기록 권한이, 조작하려면 손쉬운 사용 권한도 필요합니다. 컴퓨터에서 허용하면 상태가 자동으로 갱신됩니다.",
     "permissionsReady": "시스템 권한이 준비되었습니다. 다시 연결할 수 있습니다.",
@@ -6650,6 +6688,8 @@
         "agentTasksRequest": "세션 권한 확인",
         "agentTasks": "이 플러그인의 Cindy 세션을 만들고 관리할 수 있음",
         "agentTasksDetail": "메시지를 보내고 결과를 읽으며 자신의 실행을 중지할 수 있습니다. 세션은 사용자에게 표시됩니다. 플러그인의 AI 설정을 사용하며 모델 비용이 발생할 수 있습니다. 다른 세션에 대한 접근 권한은 부여하지 않습니다.",
+        "agentTargets": "프로젝트, 기존 세션 및 파트너에 메시지를 보낼 수 있음",
+        "agentTargetsDetail": "로컬 프로젝트 디렉터리와 세션 및 파트너의 이름과 ID를 확인하고, 프로젝트에 세션을 만들거나 기존 세션 및 파트너에 텍스트와 이미지를 보낼 수 있습니다. AI 실행과 모델 비용이 발생할 수 있으며, 다른 세션의 기록 읽기, 설정 변경 또는 중지 권한은 부여하지 않습니다.",
         "agentHiddenTasks": "세션 목록에 표시되지 않는 백그라운드 세션을 만들 수 있음",
         "agentHiddenTasksDetail": "이 플러그인이 만든 세션을 세션 목록, 검색, 알림에 표시하지 않을 수 있습니다. 플러그인 상세의 「백그라운드 세션」에서 언제든지 확인하고 열거나 세션 목록에 표시할 수 있으며, 플러그인을 제거하면 다시 표시됩니다.",
         "agentErrand": "작업을 만들고 실행하며 결과를 읽을 수 있습니다",
@@ -6691,6 +6731,8 @@
         "confirmDetail": "작업 전에 Cindy 자체와 동일한 확인 대화상자를 열어 물어볼 수 있습니다. 질문 내용은 플러그인이 제공하며 대화상자에는 그 이름이 표시됩니다. 확인이든 취소든 직접 클릭해야 하고 플러그인은 스스로 누를 수 없습니다. 동시에 하나만 열 수 있으며 너무 자주 요청하면 차단됩니다.",
         "fsWrite": "파일을 쓸 수 있음(생성/수정)",
         "fsWriteDetail": "전용 데이터 폴더에는 언제든지 쓸 수 있습니다. 현재 세션의 작업 디렉터리 쓰기는 세션의 권한 모드를 따릅니다(자동 승인 모드에서는 바로 쓰고, 개별 확인 모드에서는 먼저 승인을 요청합니다). 그 외 폴더에 쓰려면 매번 확인이 필요합니다. 파일은 항상 호스트가 대신 기록하며 플러그인 자체는 파일 시스템에 직접 접근할 수 없습니다.",
+        "deviceSync": "내 컴퓨터 간 플러그인 데이터 동기화",
+        "deviceSyncDetail": "같은 Cindy 계정으로 로그인한 온라인 컴퓨터의 동일한 플러그인과 데이터를 암호화하여 교환합니다. 병합과 삭제는 플러그인이 처리하며, 인증 정보나 다른 플러그인의 데이터는 공유하지 않습니다.",
         "libraryPersist": "영구 라이브러리 사용 가능(대용량 파일 및 데이터베이스)",
         "libraryPersistDetail": "Cindy가 관리하는 독립 저장 공간을 받아 작업 데이터(캔버스, 이미지, 데이터베이스 등)를 저장하며, 일반 플러그인 데이터 할당량 제한을 받지 않습니다. 파일과 데이터베이스 작업은 모두 호스트가 대신 실행하고 플러그인은 라이브러리 내 상대 경로만 사용하여 다른 파일에는 접근할 수 없습니다. 라이브러리 파일을 시스템 폴더에서 보여 주거나 시스템 다른 이름으로 저장 대화상자를 열어 복사 위치를 고르게 할 수도 있으며, 취소하면 아무 파일도 복사되지 않습니다. 확인 대화상자 없이 PNG 비트맵을 시스템 클립보드에 쓸 수도 있으며, 이때 현재 클립보드 내용이 덮어쓰입니다. 플러그인을 제거해도 이 데이터는 삭제되지 않으며, 삭제는 Cindy 설정에서 별도 확인이 필요합니다.",
         "networkHost": "네트워크 도메인 {{host}}에 접근",
@@ -8137,6 +8179,15 @@
         "alreadyOpen": "열림",
         "pluginsLabel": "플러그인"
       },
+      "descriptions": {
+        "fileBrowser": "작업 폴더의 파일 탐색",
+        "review": "코드 변경 사항과 리뷰 결과 확인",
+        "subagents": "하위 작업의 진행 상황과 결과 확인",
+        "backgroundTasks": "백그라운드 실행의 진행 상황과 출력 확인",
+        "sideChat": "주 작업의 맥락을 이어 별도로 질문",
+        "browser": "패널에서 웹페이지 탐색",
+        "terminal": "명령 실행 및 출력 확인"
+      },
       "kinds": {
         "fileBrowser": "파일 브라우저",
         "browser": "브라우저",
@@ -8168,21 +8219,9 @@
       "empty": {
         "eyebrow": "오른쪽 사이드바",
         "title": "패널 시작하기",
-        "desc": "왼쪽 채팅과 나란히 작업할 수 있도록 파일, 리뷰, 활성 상태 보기, 내장 브라우저, 터미널을 여기에 여세요.",
-        "openFile": "파일 열기",
-        "fileSub": "파일",
-        "openReview": "리뷰 열기",
-        "reviewSub": "리뷰",
-        "openSubagents": "하위 에이전트 열기",
-        "subagentsSub": "나중에도 볼 수 있는 하위 작업",
-        "openBackgroundTasks": "백그라운드 작업 열기",
-        "backgroundTasksSub": "백그라운드 작업",
+        "desc": "메인 작업과 나란히 추가 질문을 하거나 파일을 보고 도구를 사용하세요.",
         "openResourceUsage": "활성 상태 보기 열기",
-        "openBrowser": "브라우저 열기",
-        "browserSub": "브라우저",
-        "openTerminal": "터미널 열기",
-        "terminalSub": "터미널",
-        "addMoreHint": "위쪽 + 버튼에서 다른 패널 유형을 선택할 수 있어요"
+        "addMoreHint": "상단 + 버튼으로도 패널을 선택할 수 있습니다"
       },
       "placeholderHint": "{{kind}} — 콘텐츠는 이후 단계에서 추가됩니다"
     },
@@ -8938,43 +8977,44 @@
   },
   "bots": {
     "workbench": {
-      "title": "작업대",
-      "open": "워크벤치 열기",
-      "untitled": "제목 없는 세션",
-      "followingMark": "이 세션 담당: {{names}}",
-      "glance": {
-        "waiting": "응답 대기",
-        "working": "실행 중",
-        "loadFailed": "작업대를 불러오지 못했습니다.",
-        "quiet": "실행 중인 일도, 응답을 기다리는 일도 없습니다.",
-        "allow": "허용",
-        "answer": "답하기",
-        "look": "살펴보기",
-        "waitedFor": "{{duration}} 대기",
-        "offline": "오프라인",
-        "deviceOffline": "{{device}} 오프라인",
-        "thisComputer": "이 컴퓨터",
-        "lessThanMinute": "1분 미만",
-        "minutes_other": "{{count}}분",
-        "hours_other": "{{count}}시간",
-        "days_other": "{{count}}일",
-        "notSeenYet": "아직 확인하지 않음",
-        "seenJust": "방금 확인함",
-        "seenMinutesAgo_other": "{{count}}분 전에 확인함",
-        "seenHoursAgo_other": "{{count}}시간 전에 확인함",
-        "doneToday_other": "오늘 {{count}}건 완료",
-        "devicesOffline": "{{devices}} 오프라인",
-        "allowFailed": "허용하지 못했습니다. 세션에서 처리하세요",
-        "more_other": "{{count}}건 더 보기",
-        "less": "접기"
+      "followingMark": "이 세션 담당: {{names}}"
+    },
+    "glance": {
+      "open": "{{name}}의 근황",
+      "dueUnseen": "기한이 된 할 일이 있습니다",
+      "computers": "컴퓨터",
+      "runningHere": "이 컴퓨터에서 실행 중",
+      "online": "온라인",
+      "offline": "오프라인",
+      "current": "현재",
+      "offlineCount_other": "오프라인 {{count}}대",
+      "todos": "할 일",
+      "showMore": "더 보기",
+      "showLess": "접기",
+      "doneCount_other": "완료 {{count}}",
+      "delete": "삭제",
+      "deleted": "삭제했습니다. 같은 일은 다시 기록하지 않습니다",
+      "undo": "실행 취소",
+      "undoFailed": "실행 취소하지 못했습니다. 다시 시도하세요",
+      "deleteFailed": "삭제하지 못했습니다. 다시 시도하세요",
+      "outputs": "결과물",
+      "outputMeta": "{{time}} · {{task}}",
+      "openFailed": "파일을 열지 못했습니다",
+      "source": {
+        "conversation": "직접 부탁한 일",
+        "mail": "메일에서",
+        "feishu": "Feishu에서",
+        "github": "GitHub에서",
+        "community": "커뮤니티에서",
+        "task": "작업에서"
       }
     },
     "autonomy": {
-      "title": "모든 세션 자동 후속 관리",
-      "descriptionOn": "{{name}}이(가) 모든 세션을 주기적으로 확인하고, 응답을 기다리는 일이 있으면 알려 줍니다.",
+      "title": "내 세션 후속 확인",
+      "descriptionOn": "{{name}} 님이 세션에 변화가 생기면 요약을 확인하고 알려드립니다.",
       "movedFrom": "{{name}}에서 여기로 옮겼습니다",
       "heldBy": "지금은 {{name}}이(가) 맡고 있습니다. 켜면 여기로 옮겨집니다.",
-      "heldByNobody": "지금 맡은 동료가 없습니다.",
+      "heldByNobody": "꺼짐",
       "restoreDefault": "기본값으로 복원({{name}})",
       "saveFailed": "저장하지 못했습니다. 다시 시도하세요",
       "turnOff": {
@@ -8986,6 +9026,12 @@
       "allowSchedulerFollow": {
         "title": "시작한 세션도 {{name}}에게 맡기기",
         "description": "기본적으로 {{scheduler}}은(는) 보기만 하고 후속 관리는 하지 않습니다. 켜면 {{name}}이(가) 시작한 세션이 끝나지 않았을 때 {{scheduler}}도 이어서 챙깁니다."
+      },
+      "consent": "켜면 이 컴퓨터에서 직접 만든 세션의 요약을 읽고 진행 상황을 분석하여 중요한 변화를 알려드립니다. 모델 사용량이 소모되며 언제든 끌 수 있습니다.",
+      "invitation": {
+        "title": "세션 후속 확인을 시작할까요?",
+        "start": "후속 확인 시작",
+        "notNow": "나중에"
       }
     },
     "remoteSettings": {
@@ -9196,13 +9242,15 @@
       "composerPlaceholderLatin": "{{name}} 에게 말 걸기…"
     },
     "globalSettings": {
-      "restoreHint": "기본값으로 복원하면 클라이언트의 기본 모델 설정을 따릅니다. 개별 파트너의 사용자 지정 모델은 유지됩니다.",
+      "restoreHint": "파트너 추천 모델로 복원합니다. 개별 파트너의 사용자 지정 모델은 유지됩니다.",
       "restoreFailed": "기본값을 복원하지 못했습니다. 다시 시도해 주세요.",
       "defaultModel": "기본 사용 모델",
-      "defaultModelHint": "파트너가 기본으로 사용하는 모델입니다. 개별 파트너는 각자의 설정에서 다른 모델을 선택할 수 있어요.",
+      "defaultModelHint": "새 작업의 모델 선택과 별개인 파트너용 모델입니다. 개별 파트너는 다른 모델을 선택할 수 있어요.",
       "title": "파트너",
       "description": "파트너 전체에 적용되는 설정입니다. 개별 파트너 설정은 각자의 페이지에 있어요.",
-      "rosterNote": "기본 제공되는 구성원은 버전마다 늘어납니다."
+      "rosterNote": "기본 제공되는 구성원은 버전마다 늘어납니다.",
+      "showReplyTarget": "답장 대상 메시지 표시",
+      "showReplyTargetHint": "팀메이트 답장 위에 어떤 메시지에 대한 답장인지 표시합니다. 이전 답장에는 표시되지 않습니다."
     },
     "session": {
       "ownedByBot": "{{name}}의 백그라운드 작업",
@@ -9293,7 +9341,10 @@
         "elapsed": "{{time}} 경과",
         "viewProcess": "과정 보기",
         "hideProcess": "과정 접기",
-        "stop": "중지"
+        "stop": "중지",
+        "stopMine": "내 요청 중지",
+        "stopAll": "모두 중지",
+        "stopAllHint": "다른 사람의 요청도 포함"
       },
       "header": {
         "stepRunning": "{{name}} 님이 {{step}}단계 작업 중",
@@ -9365,6 +9416,7 @@
         "placeholderPlanProposed": "담당이나 단계를 바꾸려면 그냥 말해 주세요…",
         "placeholderPlanWaiting": "{{name}} 님에게 고칠 점이 있으면 그냥 말해 주세요…",
         "placeholderPlanRunning": "보내는 말은 작업 중인 {{name}} 님에게 전달됩니다…",
+        "placeholderQueueRunning": "보내는 말은 지금 말하고 있는 {{name}} 님에게 전달됩니다…",
         "tooManyAttachments": "첨부 파일이 너무 많습니다. 메시지 하나에 최대 {{max}}개까지 보낼 수 있습니다",
         "attachmentsFailed": "첨부 파일을 보내지 못했습니다. 파일이 아직 있는지 확인하거나, 제거한 후 다시 시도하세요",
         "folderNotSupported": "폴더는 첨부할 수 없습니다. 폴더 안의 파일을 선택하세요"
@@ -9402,7 +9454,8 @@
         "endPlan": "역할 분담 끝내기",
         "planDone_one": "{{count}}단계를 모두 마쳤습니다",
         "planDone_other": "{{count}}단계를 모두 마쳤습니다",
-        "planDoneGeneric": "역할 분담을 마쳤습니다"
+        "planDoneGeneric": "역할 분담을 마쳤습니다",
+        "endTalk": "끝내기"
       },
       "notice": {
         "memberJoined": "{{name}} 님이 그룹에 참여했습니다",
@@ -9510,7 +9563,13 @@
         "keepOneStep": "최소 한 단계는 남겨야 합니다",
         "startFailed": "역할 분담을 시작하지 못했습니다. 다시 시도하세요",
         "dismissFailed": "이 계획을 끝내지 못했습니다. 다시 시도하세요",
-        "editFailed": "이 단계를 바꾸지 못했습니다. 다시 시도하세요"
+        "editFailed": "이 단계를 바꾸지 못했습니다. 다시 시도하세요",
+        "talkTurn": "의견 말하기",
+        "stepSpeaking": "말하는 중",
+        "stepSpoken": "완료",
+        "allTurns_one": "전체 {{count}}명",
+        "allTurns_other": "전체 {{count}}명",
+        "foldTurns": "접기"
       },
       "speaking": {
         "planning": "역할을 나누는 중…"
@@ -9574,7 +9633,23 @@
           "shareNotLoaded": "이 공유는 메인 채팅의 이전 메시지에 있습니다. 이전 메시지를 불러오면 볼 수 있습니다.",
           "retryPost": "메인 채팅에 다시 보내기",
           "alreadyPosted": "이 답글은 이미 메인 채팅에 올렸습니다.",
-          "shareUnavailable": "이 답글은 삭제되었거나 볼 수 없어 메인 채팅에 올릴 수 없습니다."
+          "shareUnavailable": "이 답글은 삭제되었거나 볼 수 없어 메인 채팅에 올릴 수 없습니다.",
+          "newReplies_one": "새 답글 {{count}}개",
+          "newReplies_other": "새 답글 {{count}}개",
+          "mentionedYou": "@나",
+          "hintOne": "스레드에 새 답글이 있습니다",
+          "hintMany_one": "스레드 {{count}}개에 새 답글이 있습니다",
+          "hintMany_other": "스레드 {{count}}개에 새 답글이 있습니다",
+          "hintMentioned": "나를 언급했습니다",
+          "hintDismiss": "나중에 보기",
+          "follow": "팔로우",
+          "following": "팔로우 중",
+          "followTip": "새 답글이 있으면 그룹 채팅에서 알려 드립니다",
+          "unfollowTip": "팔로우를 해제하면 나를 언급할 때만 알려 드립니다",
+          "listLabel": "이 그룹 채팅의 스레드",
+          "listNews": "새 답글 있음",
+          "listOthers": "다른 스레드",
+          "newSeparator": "새 답글"
         },
         "replyPlaceholder": "이 메시지에 답글을 쓰세요. @로 파트너를 멘션할 수 있어요…",
         "sendReply": "답글 보내기",
@@ -10111,6 +10186,137 @@
         "managed": "파트너가 X 질문을 담당합니다. 해당 파트너의 메시지 플랫폼 설정에서 연결을 변경할 수 있습니다.",
         "riskBody": "X 질문에는 파트너의 공유 기억, 도구와 작업 폴더가 사용되며 답글은 공개됩니다. 개인 정보를 다루는 용도로 사용하지 마세요. 비공개 채팅 기록을 직접 사용하지 않습니다."
       }
+    },
+    "voiceMode": {
+      "showDetails": "통화 기록 펼치기",
+      "hideDetails": "통화 기록 접기",
+      "transcriptTitle": "현재 인식된 텍스트",
+      "transcriptEmpty": "말한 내용이 여기에 표시됩니다.",
+      "composerPaused": "음성 모드를 종료하면 입력할 수 있습니다…",
+      "microphoneMuted": "마이크 꺼짐",
+      "exit": {
+        "idle": "잠시 대화가 없어 곧 음성 모드가 종료됩니다",
+        "farewell": "작별 인사를 인식했습니다. 곧 음성 모드가 종료됩니다",
+        "semantic": "곧 음성 모드가 종료됩니다",
+        "sending": "메시지를 보낸 후 음성 모드를 종료합니다…",
+        "countdown": "{{seconds}}초 후 음성 모드 종료",
+        "cancel": "음성 모드 유지",
+        "hint": "다시 말하거나 ‘음성 모드 유지’를 누르면 종료를 취소할 수 있습니다. 진행 중인 작업은 계속됩니다.",
+        "mutedHint": "마이크는 계속 음소거 상태입니다. ‘음성 모드 유지’를 누르면 종료를 취소할 수 있습니다. 진행 중인 작업은 계속됩니다."
+      },
+      "settingsTitle": "음성",
+      "openSettings": "음성 설정",
+      "startConversation": "음성 대화 시작",
+      "settingsHint": "이 파트너의 낭독 모델과 음성을 선택한 후 입력창에서 음성 대화를 시작하세요.",
+      "incompleteSettings": "음성 API와 음성을 선택하면 자동으로 저장됩니다.",
+      "previewNeedsChat": "파트너와 대화를 시작하면 음성을 미리 들을 수 있습니다.",
+      "voiceId": "음성 ID",
+      "manualVoice": "음성 ID 직접 입력",
+      "refreshVoices": "음성 목록 새로고침",
+      "voicesLoading": "음성 불러오는 중…",
+      "voicesError": "음성을 불러오지 못했습니다. 다시 시도하거나 음성 ID를 입력하세요.",
+      "voicesReference": "이 모델의 OpenAI 참고 음성입니다. 호환 서비스에서 지원하는 음성은 다를 수 있습니다.",
+      "voicesTruncated": "음성 목록의 일부만 표시합니다. 목록에 없는 음성은 ID를 입력하세요.",
+      "voicesManual": "이 인터페이스에는 음성 목록이 없습니다. 음성 ID를 입력하세요.",
+      "preview": "미리 듣기",
+      "stopPreview": "미리 듣기 중지",
+      "previewVoice": "{{voice}} 미리 듣기",
+      "stopPreviewVoice": "{{voice}} 미리 듣기 중지",
+      "previewText": "안녕하세요, 제 목소리입니다. 함께 이야기하게 되어 반갑습니다.",
+      "previewStatus": {
+        "idle": "미리 듣기는 선택한 모델을 사용하며 사용 요금이 발생할 수 있습니다.",
+        "preparing": "미리 듣기 음성 생성 중…",
+        "playing": "미리 듣는 중…",
+        "complete": "미리 듣기를 완료했습니다.",
+        "error": "미리 듣기에 실패했습니다. 인터페이스, 모델 접근 권한, 음성 ID를 확인한 후 다시 시도하세요."
+      },
+      "readAloud": "읽어주기",
+      "stopReadAloud": "읽어주기 중지",
+      "finishBeforeReadAloud": "메시지를 읽으려면 먼저 음성 모드를 종료하세요.",
+      "readAloudFailed": "읽어주기에 실패했습니다. 팀메이트 설정에서 모델과 음성을 확인한 후 다시 시도하세요.",
+      "finishBeforeDictation": "음성 모드를 종료한 후 받아쓰기를 시작하세요.",
+      "title": "음성 모드",
+      "model": "읽어주기 모델",
+      "refresh": "모델 새로고침",
+      "voice": "목소리",
+      "voiceHint": "선택한 모델이 지원하는 음성 이름을 입력하세요. 예: alloy.",
+      "modelUnavailable": "저장된 읽어주기 모델을 사용할 수 없습니다. 다른 모델을 선택하세요.",
+      "noModels": "사용 가능한 음성 합성 모델이 없습니다.",
+      "noModelsSupportedProtocols": "MiniMax, ElevenLabs 및 OpenAI 호환 음성 합성 API 제공자를 지원합니다.",
+      "noModelsSetupHint": "제공자를 연결하고 음성 모델을 활성화하면 파트너의 낭독 음성을 설정할 수 있습니다.",
+      "openProviders": "모델 제공자 열기",
+      "catalogError": "음성 설정을 불러오거나 저장하지 못했습니다. 다시 시도하세요.",
+      "start": "대화 시작",
+      "resume": "계속",
+      "retrySend": "다시 연결하고 보내기",
+      "mute": "음소거",
+      "interrupt": "읽기 중지",
+      "send": "보내기",
+      "end": "종료",
+      "unsent": "전송되지 않음 · 텍스트를 선택해 복사할 수 있습니다",
+      "hint": "말을 멈추면 자동으로 보내고 답변을 AI 음성으로 읽어줍니다. 언제든 말해서 끼어들 수 있습니다.",
+      "status": {
+        "idle": "준비되면 시작하세요",
+        "connecting": "음성 인식에 연결 중…",
+        "listening": "듣는 중",
+        "thinking": "생각 중…",
+        "speaking": "읽는 중…",
+        "paused": "일시 중지 · 마이크 꺼짐",
+        "error": "일시 중지 · 마이크 꺼짐",
+        "question": "선택 대기 중 · 옵션 번호나 이름을 말하세요",
+        "confirmation": "확인 대기 · 마이크 꺼짐",
+        "preparing": "음성 준비 중…",
+        "loading": "음성 설정 불러오는 중…",
+        "microphone": "마이크 켜는 중…",
+        "muted": "마이크 꺼짐 · 계속 들을 수 있습니다"
+      },
+      "errors": {
+        "connection": "음성 연결이 끊겼습니다. 전송되지 않은 텍스트는 유지됩니다.",
+        "microphone": "마이크가 중지되었습니다. 권한과 연결을 확인한 후 계속하세요.",
+        "send": "메시지가 접수되지 않았습니다. 텍스트는 유지됩니다.",
+        "speech": "답변을 읽지 못했습니다. 텍스트 답변은 대화에 남아 있습니다. 모델과 목소리를 확인하세요."
+      },
+      "voiceIdHint": "이 제공자 계정에서 사용할 수 있는 음성 ID를 입력하세요.",
+      "speed": "읽기 속도",
+      "speedAdjusted": "선택한 모델에 맞춰 {{speed}}배로 조정했어요.",
+      "speedUnavailable": "현재 이 모델은 읽기 속도 조절을 지원하지 않아요.",
+      "speedValue": "{{speed}}×",
+      "sentencePlayback": "문장별로 읽기",
+      "sentencePlaybackHint": "답변이 생성되는 동안 완성된 문장부터 읽습니다. 끄면 전체 답변이 완성된 후 읽습니다. 답변 처리가 필요한 경우 자동으로 기다립니다.",
+      "preferenceHint": "음성 설정은 이 파트너에만 저장됩니다.",
+      "resetPreference": "기본값 복원",
+      "preferenceError": "음성 설정을 불러오거나 저장하지 못했습니다. 다시 시도해 주세요.",
+      "protocol": "음성 API",
+      "protocolOpenai": "OpenAI 호환",
+      "protocolHint": "이 주소가 지원하는 음성 API를 선택하세요. 제공자는 변경되지 않습니다.",
+      "protocolCorrectedHint": "공식 주소에 맞게 API를 수정했습니다. 음성을 다시 선택하세요.",
+      "unmute": "음소거 해제",
+      "mutedHint": "마이크가 꺼져 있습니다. 답변은 계속 읽어 줍니다. 음소거를 해제하면 대화를 이어갈 수 있습니다.",
+      "microphoneResumeError": "마이크를 켜지 못했습니다. 답변은 계속 들을 수 있습니다. 권한과 장치를 확인한 뒤 음소거 해제를 다시 시도하세요.",
+      "callRecord": "이번 통화",
+      "callHistoryTitle": "음성 통화",
+      "you": "나",
+      "companion": "파트너",
+      "callInProgress": "통화 중",
+      "callSendFailed": "전송하지 못했습니다. 말한 내용은 보관됩니다.",
+      "handoff": {
+        "sending": "전달 중…",
+        "accepted": "파트너에게 전달됨",
+        "failed": "전달하지 못했습니다. 말한 내용은 보관됩니다",
+        "completed": "결과를 받았습니다"
+      },
+      "callSaved": "기록 저장됨",
+      "taskFromCall": "통화에서 전달한 작업",
+      "viewTaskProgress": "진행 상황 보기",
+      "liveDraft": "음성 인식 중",
+      "questionDraft": "확인 대기 중"
+    },
+    "dmThread": {
+      "newReply": "새 답장",
+      "you": "나",
+      "rootNotLoaded": "원본 메시지가 불러온 기록에 없습니다",
+      "rootUnavailable": "원본 메시지가 이 채팅에 없어 스레드를 시작할 수 없습니다",
+      "openFailed": "스레드를 열지 못했습니다. 다시 시도하세요."
     }
   },
   "common": {
@@ -10609,6 +10815,12 @@
         "providerGroupRunningOn": "현재 {{device}}에서 실행 중",
         "providerGroupRunningHere": "현재 이 컴퓨터에서 실행 중",
         "providerGroupUnassigned": "시작하면 제공자 그룹이 컴퓨터를 고르고, 사용량은 그 컴퓨터 기준으로 표시됩니다"
+      },
+      "speed": {
+        "label": "속도",
+        "standard": "표준",
+        "fast": "빠름",
+        "ultrafast": "초고속"
       }
     },
     "permissionSelector": {
@@ -10705,6 +10917,7 @@
       "recent": "최근",
       "browseFolder": "다른 폴더 선택",
       "browseProjectFolder": "다른 프로젝트 폴더 선택",
+      "browseFailed": "폴더 선택 창을 열 수 없습니다. 다시 시도해 주세요.",
       "dialogue": "대화",
       "dialogueOrSelectProject": "대화 또는 프로젝트 선택",
       "searchProjects": "프로젝트 검색",
@@ -11113,6 +11326,14 @@
     "prevMessageJump": "이전 질문으로 이동: {{preview}}",
     "sessionLoading": "세션 불러오는 중",
     "askUserQuestion": {
+      "voice": {
+        "hint": "옵션 번호나 이름을 말하세요. 여러 개를 선택한 뒤에는 “선택 확인”이라고 말하세요.",
+        "freeTextHint": "답변을 말하고 내용을 검토한 뒤 “선택 확인”이라고 말하여 제출하세요.",
+        "confirm": "선택 내용을 검토한 뒤 “선택 확인”으로 제출하거나 “선택 취소”로 다시 선택하세요.",
+        "ambiguous": "선택이 명확하지 않습니다. 옵션 번호나 전체 이름 하나를 말하거나 직접 선택하세요.",
+        "unknown": "명확한 옵션을 인식하지 못했습니다. 옵션 번호나 전체 이름을 말하거나 직접 선택하세요.",
+        "cancelled": "음성 선택을 취소했습니다. 다시 선택하세요."
+      },
       "skippedAnswer": "건너뜀",
       "pendingTitle": "답변 대기 중",
       "restoreAriaLabel": "질문 카드 펼치기",
@@ -11221,6 +11442,7 @@
     },
     "messageActionBar": {
       "copy": "메시지 복사",
+      "copied": "복사했습니다",
       "reply": "답장",
       "linkCopied": "링크가 복사되었습니다",
       "moreActions": "메시지 추가 작업",
@@ -11537,6 +11759,12 @@
       "staleBadge": "캐시 복사본",
       "downloadToLocal": "이 컴퓨터로 다운로드",
       "downloadPacking": "원격 컴퓨터에서 묶는 중…{{size}} 완료",
+      "folderPreparing": "폴더 준비 중…",
+      "cancelFolderPreparation": "폴더 준비 취소",
+      "folderPacking": "묶는 중…{{size}}",
+      "folderFailed": "폴더 준비에 실패했습니다. 연결과 디스크 여유 공간을 확인한 후 다시 끌어다 놓으세요",
+      "folderUnsupported": "이 연결은 아직 폴더 전송을 지원하지 않습니다. 원격 컴퓨터의 Cindy를 업데이트한 후 다시 시도하세요",
+      "folderConnectionUnsupported": "이 연결은 아직 폴더 전송을 지원하지 않습니다. 먼저 대상 컴퓨터에 폴더를 복사한 다음 해당 디렉터리를 참조하세요",
       "downloadProgress": "다운로드 중…{{percent}}% · {{speed}}",
       "downloadProgressUnknown": "다운로드 중…{{received}} · {{speed}}",
       "uploadProgress": "원격 컴퓨터에서 업로드 중…{{percent}}% · {{speed}}",
@@ -11782,7 +12010,8 @@
         "relocatedHere": "이제 Agent가 이 컴퓨터에서 실행됩니다",
         "relocatedTo": "이제 Agent가 {{device}}에서 실행됩니다",
         "relocatedTaskComputer": "이제 Agent가 작업이 있는 컴퓨터에서 실행됩니다",
-        "relocatedElsewhere": "이제 Agent가 다른 컴퓨터에서 실행됩니다"
+        "relocatedElsewhere": "이제 Agent가 다른 컴퓨터에서 실행됩니다",
+        "quotaRebalance": "이 계정의 할당량을 먼저 쓰기 위해"
       },
       "contextRebuild": {
         "labelOverflow": "컨텍스트를 정리하고 계속합니다",
@@ -12024,16 +12253,17 @@
       "REMOTE_WORKDIR_UNAVAILABLE": "원격 작업 디렉터리를 지금 사용할 수 없습니다. 그 컴퓨터에 폴더가 아직 있는지 확인한 뒤 다시 시도하세요.",
       "REMOTE_OPTIMISTIC_SESSION_STATE_UNAVAILABLE": "컴퓨터에서 이 메시지가 이미 전송됐는지 아직 확인할 수 없습니다. 잠시 후 다시 시도하고, 같은 메시지를 중복으로 보내지 마세요.",
       "REMOTE_AGENT_UNAVAILABLE": "Agent를 실행하는 컴퓨터에 연결할 수 없습니다. 그 컴퓨터가 온라인이고 원격 제어를 허용하는지 확인한 뒤 다시 시도하세요.",
-      "REMOTE_AGENT_PEER_TOO_OLD": "상대 컴퓨터의 Cindy가 오래되어 이 컴퓨터의 Agent를 실행할 수 없습니다. 먼저 그 컴퓨터에서 Cindy를 업데이트하세요.",
+      "REMOTE_AGENT_PEER_TOO_OLD": "상대 컴퓨터의 Cindy 버전이 오래되어 이 작업을 지원하지 않습니다. 먼저 그 컴퓨터에서 Cindy를 업데이트하세요.",
       "REMOTE_AGENT_EXPIRED": "이 세션은 Agent를 실행하는 컴퓨터에서 이미 종료되었습니다. 다시 보내 주세요.",
       "REMOTE_AGENT_NOT_FOUND": "이 세션은 Agent를 실행하는 컴퓨터에서 이미 종료되었습니다. 다시 보내 주세요.",
       "REMOTE_AGENT_BUSY": "상대 컴퓨터에서 실행 중인 세션이 너무 많습니다. 일부를 종료한 뒤 다시 시도하세요.",
       "REMOTE_AGENT_UNSUPPORTED": "상대 컴퓨터에서는 이 Agent를 사용할 수 없습니다. 그 컴퓨터에서 설치하거나 로그인한 뒤 다시 시도하거나, 다른 Agent를 선택하세요.",
       "REMOTE_AGENT_INVALID": "Agent를 실행하는 컴퓨터와 통신하는 중 오류가 발생했습니다. 다시 시도하고, 계속되면 두 컴퓨터의 Cindy를 모두 최신 버전으로 업데이트하세요.",
-      "REMOTE_AGENT_PROVIDER_NOT_ALLOWED": "그 컴퓨터에서 이 제공자의 원격 사용을 허용하지 않았습니다. 그 컴퓨터의 설정 → 모델 제공자에서 원격 사용 허용을 켜거나 다른 모델을 선택하세요.",
+      "REMOTE_AGENT_PROVIDER_NOT_ALLOWED": "그 컴퓨터에서 이 제공자 또는 선택한 모델의 원격 사용을 허용하지 않았습니다. 제공자에게 원격 및 공유에서 사용 범위를 조정해 달라고 요청하거나 다른 모델을 선택하세요.",
       "REMOTE_AGENT_SHARE_PAUSED": "공유한 사람이 나에 대한 공유를 일시 중지해서 재개될 때까지 이 모델을 사용할 수 없습니다. 다른 모델로 바꿔 계속할 수 있습니다.",
       "REMOTE_AGENT_SHARE_REMOVED": "이 공유는 더 이상 사용할 수 없습니다(공유한 사람이 삭제했거나 내가 나갔습니다). 다른 모델로 바꿔 계속할 수 있습니다.",
       "REMOTE_AGENT_SHARE_UNAVAILABLE": "공유된 제공자를 일시적으로 사용할 수 없습니다. 공유한 사람의 컴퓨터가 오프라인이거나 공유가 잠시 꺼져 있을 수 있습니다. 나중에 다시 시도하거나 다른 모델로 바꿔 계속할 수 있습니다.",
+      "REMOTE_AGENT_GROUP_USAGE_LIMIT": "이 모델을 사용할 수 있는 계정의 사용량이 한도에 도달했습니다. 다른 모델로 전환하거나 한도가 초기화된 후 계속하세요.",
       "REMOTE_AGENT_GROUP_UNAVAILABLE": "제공자 그룹의 컴퓨터가 지금 이 세션을 실행할 수 없습니다. 모두 오프라인이거나, 배정이 일시 중지되었거나, 대기 중이거나, 이 모델이 없을 수 있습니다. 이 제공자의 원격 및 공유 페이지에서 그룹을 확인하세요.",
       "REMOTE_AGENT_DEVICE_LIMIT": "이 기기의 원격 세션 수가 한도에 도달했습니다. 사용하지 않는 세션을 보관하거나 제공자에게 원격 및 공유에서 한도를 높여 달라고 요청하세요.",
       "REMOTE_AGENT_TOTAL_LIMIT": "제공자 컴퓨터의 전체 원격 세션 수가 한도에 도달했습니다. 제공자에게 불필요한 세션을 해제하거나 원격 및 공유에서 한도를 높여 달라고 요청하세요.",
@@ -12167,6 +12397,26 @@
     },
     "ghostPreview": {
       "opened": "미리보기 페이지를 열었습니다"
+    },
+    "sideChat": {
+      "openPage": "전체 작업 페이지 열기",
+      "returnMain": "기본 작업으로 돌아가기",
+      "new": "새 사이드 채팅",
+      "mainWindowDescription": "사이드 채팅은 현재 메인 창에서 사용할 수 있습니다. 대화 내용은 저장되어 있습니다.",
+      "returnToMain": "메인 창에서 계속하기",
+      "commandDescription": "메인 작업의 맥락으로 사이드 채팅을 엽니다. 명령 뒤의 질문은 초안으로 입력됩니다.",
+      "title": "사이드 채팅",
+      "context": "메인 작업의 기존 맥락으로 별도로 질문합니다. 답변은 메인 작업에 자동으로 반영되지 않습니다.",
+      "opening": "여는 중…",
+      "notReady": "메인 작업의 첫 답변이 완료될 때까지 기다려 주세요.",
+      "unsupported": "이 Agent의 원격 작업은 아직 사이드 채팅을 지원하지 않습니다.",
+      "updateHost": "작업을 실행하는 컴퓨터를 업데이트한 후 다시 시도해 주세요.",
+      "failed": "사이드 채팅을 열지 못했습니다. 다시 시도해 주세요.",
+      "mainTaskOnly": "메인 작업에서 사이드 채팅을 열어 주세요.",
+      "closeTitle": "사이드 채팅을 닫을까요?",
+      "closeDescription": "이 채팅을 중지하고 삭제합니다. 메인 작업에는 영향을 주지 않습니다.",
+      "closeConfirm": "닫고 삭제",
+      "closeFailed": "삭제하지 못했습니다. 다시 시도해 주세요."
     }
   },
   "ccAgent": {
@@ -12558,8 +12808,31 @@
         "title": "세션 보관",
         "description": "이 세션을 보관하시겠습니까? 보관 후 목록에서 사라집니다.",
         "dirtyWorktreeWarning": "이 세션의 워크트리에 커밋되지 않은 변경 사항이 있습니다. 보관 전에 git 스냅샷으로 자동 저장되며 나중에 세션에서 복원할 수 있습니다.",
+        "scheduleWarning_one": "이 세션에 연결된 자동화 {{names}}은(는) 보관 후 일시중지됩니다.",
+        "scheduleWarning_other": "이 세션에 연결된 자동화 {{names}}은(는) 보관 후 일시중지됩니다.",
+        "scheduleWarningMany_one": "그중 {{count}}개 세션에 자동화가 연결되어 있으며, 보관 후 일시중지됩니다.",
+        "scheduleWarningMany_other": "그중 {{count}}개 세션에 자동화가 연결되어 있으며, 보관 후 일시중지됩니다.",
+        "scheduleName": "\"{{name}}\"",
+        "scheduleNameSeparator": ", ",
         "confirm": "확인",
         "cancel": "취소"
+      },
+      "dialogueAction": {
+        "search": "이 대화 그룹에서 검색",
+        "restoreAll": "모두 복원",
+        "remoteBulkUnavailable": "원격 세션이 포함된 그룹의 일괄 작업은 아직 지원하지 않습니다"
+      },
+      "dialogueArchiveAll": {
+        "description": "이 대화 그룹의 세션 {{count}}개를 모두 보관합니다. 보관 후 목록에서 숨겨집니다.",
+        "descriptionWithSkip": "이 대화 그룹의 세션 {{count}}개를 보관합니다({{skip}}는 건너뜁니다). 보관 후 목록에서 숨겨집니다.",
+        "allPinnedOrRunning": "이 대화 그룹의 모든 세션이 고정되었거나 실행 중이므로 보관할 수 없습니다",
+        "allPinned": "이 대화 그룹의 모든 세션이 고정되어 있어 보관되지 않습니다",
+        "allRunning": "이 대화 그룹의 모든 세션이 실행 중입니다. 중지한 후 보관하세요",
+        "empty": "이 대화 그룹에 보관할 수 있는 세션이 없습니다"
+      },
+      "dialogueRestoreAll": {
+        "description": "이 대화 그룹의 보관된 세션 {{count}}개를 복원합니다. 복원 후 '보관됨' 목록에서 '활성' 목록으로 이동합니다.",
+        "empty": "이 대화 그룹에 복원할 수 있는 세션이 없습니다"
       },
       "archiveAll": {
         "title": "모든 세션 보관",
@@ -14883,7 +15156,7 @@
       "codexBinaryMissingTitle": "Codex 구성 요소가 준비되지 않음",
       "codexBinaryMissingDescription": "Codex 구성 요소가 아직 준비되지 않아 이 기능을 사용할 수 없습니다. 잠시 후 다시 시도하거나 설정 → 제공자에서 Codex 연결 상태를 확인하세요.",
       "piBinaryMissingTitle": "Pi 구성 요소가 준비되지 않음",
-      "piBinaryMissingDescription": "Pi 구성 요소가 아직 준비되지 않아 이 기능을 사용할 수 없습니다. 잠시 후 다시 시도하거나 설정 → 제공자에서 Pi 연결 상태를 확인하세요.",
+      "piBinaryMissingDescription": "Pi 구성 요소가 아직 준비되지 않아 이 기능을 사용할 수 없습니다. 잠시 후 다시 시도하거나 설정 → 정보에서 Pi를 관리하거나 복원하세요.",
       "goToSettings": "설정 열기",
       "remoteCodexBinaryMissingTitle": "원격 기기의 Codex 구성 요소가 준비되지 않음",
       "remotePiBinaryMissingTitle": "원격 기기의 Pi 구성 요소가 준비되지 않음",
@@ -14998,6 +15271,25 @@
       "remoteWorkerLoading": "{{device}}의 작업을 불러오는 중…",
       "remoteWorkerUnreachable": "{{device}}에 지금 연결할 수 없습니다. 다시 연결되면 이 Worker의 작업이 다시 표시됩니다.",
       "closeAria": "닫기"
+    },
+    "workerProject": {
+      "missingDirectory": "이 디렉터리가 더 이상 존재하지 않습니다. 다른 디렉터리를 선택해 주세요.",
+      "label": "프로젝트",
+      "current": "현재 프로젝트",
+      "shared": "Lead와 공유: {{project}} · {{branch}}",
+      "direct": "{{project}}의 {{branch}} 브랜치에서 직접 수정합니다",
+      "inferred": "Lead의 최근 작업을 바탕으로 확인했습니다",
+      "dirty": "이 디렉터리에는 커밋하지 않은 변경 사항이 있습니다. Worker는 이 상태에서 작업을 이어갑니다.",
+      "newWorktree": "Worker용 worktree 만들기",
+      "from": "분기 시작점",
+      "fromSuffix": "(변경 가능)",
+      "splitWarning": "{{branch}}의 최신 커밋에서 새 브랜치를 만듭니다. Lead가 커밋하지 않은 변경 사항은 가져오지 않습니다. 이후 양쪽 변경 사항은 서로 반영되지 않으므로 병합해야 합니다.",
+      "dialogue": "현재 세션에 프로젝트가 없어 worktree를 만들 수 없습니다. Worker는 {{directory}}에서 작업합니다.",
+      "notGit": "이 디렉터리는 Git 저장소가 아니므로 worktree를 만들 수 없습니다. Worker는 {{directory}}에서 작업합니다.",
+      "emptyRepo": "이 저장소에는 아직 커밋이 없어 worktree를 만들 수 없습니다. Worker는 {{directory}}에서 작업합니다.",
+      "detachedHead": "Detached HEAD · {{sha}}",
+      "directDetached": "{{project}}의 {{branch}}에서 직접 수정합니다",
+      "loadFailed": "프로젝트 디렉터리를 읽지 못했습니다."
     }
   },
   "splitGroup": {
@@ -15607,6 +15899,7 @@
     }
   },
   "modelDescriptions": {
+    "automaticRouting": "제공자가 모델을 선택합니다.",
     "longContext": "긴 문맥을 위한 선택 옵션입니다. 입력이 길면 비용이 늘어날 수 있습니다.",
     "security": "보안 분석과 코드 검토에 적합합니다.",
     "research": "자료 조사, 복잡한 문제, 코딩과 문서 작성에 적합합니다.",
@@ -16652,82 +16945,6 @@
     "idempotencyConflict": "이 재시도 식별자는 다른 메시지에 이미 사용되었습니다.",
     "privateUnconfirmed": "개인 메시지 전달이 확인되지 않았습니다. 같은 식별자로 다시 시도해 주세요.",
     "verificationUnavailable": "그룹 권한을 확인할 수 없습니다. 연결이 복구되면 다시 시도하세요."
-  },
-  "teammateTodo": {
-    "title": "할 일",
-    "new": "할 일 추가",
-    "search": "할 일 검색",
-    "open": "미완료",
-    "done": "완료",
-    "hidden": "숨김 / 나중에",
-    "empty": "할 일이 없습니다",
-    "noMatch": "일치하는 할 일이 없습니다",
-    "loading": "불러오는 중…",
-    "retry": "다시 시도",
-    "error": "작업이 완료되지 않았습니다. 다시 시도하세요.",
-    "conflict": "할 일이 변경되었습니다. 확인 후 수정하세요.",
-    "received": "접수됨",
-    "accepted": "진행 보기",
-    "unknown": "진행 확인",
-    "failed": "다음 단계 재시도",
-    "view": "상세 보기",
-    "evidence": "완료 근거 보기",
-    "more": "더 많은 작업",
-    "discovered": "발견",
-    "assigned": "요청",
-    "suggested": "제안",
-    "candidate": "날짜 확인",
-    "overdue": "기한 지남",
-    "next": "다음 단계",
-    "outcome": "완료 조건",
-    "value": "처리할 이유",
-    "sources": "출처",
-    "associations": "관련 항목",
-    "deadline": "기한",
-    "sourceDeadline": "출처 기한",
-    "clearDate": "기한 삭제",
-    "date": "날짜",
-    "time": "정확한 시각 (선택)",
-    "zone": "시간대",
-    "save": "저장",
-    "cancel": "취소",
-    "delete": "이 항목 삭제",
-    "mute": "이 문제를 다시 제안하지 않기",
-    "later": "나중에 처리",
-    "until": "미룰 날짜",
-    "restore": "복원",
-    "reopen": "다시 열기",
-    "complete": "완료로 표시",
-    "summary": "완료 근거",
-    "confirmDate": "날짜 확정",
-    "deadlineReason": "날짜 확인이 필요한 이유",
-    "override": "설정한 기한",
-    "reminder": "미룬 시각",
-    "edit": "할 일 수정",
-    "name": "제목",
-    "progress": "진행 상황",
-    "link": "근거 링크 (선택)",
-    "page": "{{start}}–{{end}} / {{count}}",
-    "previous": "이전",
-    "following": "다음",
-    "order": "정렬",
-    "dueOrder": "기한순",
-    "createdOrder": "생성순",
-    "origin": "유형",
-    "all": "전체",
-    "close": "닫기",
-    "laterConflict": "미루어도 실제 기한은 연장되지 않습니다",
-    "legacyEvidence": "이전 완료 기록의 근거를 확인해야 합니다",
-    "history": "완료 기록",
-    "deleted": "삭제됨",
-    "muted": "다시 제안하지 않음",
-    "deferred": "미뤄짐",
-    "continue": "계속",
-    "filter": "필터",
-    "deleteConfirmTitle": "이 항목을 삭제할까요?",
-    "deleteConfirmBody": "더 이상 표시되지 않고 같은 문제도 다시 제안되지 않습니다. '숨김 / 나중에'에서 복원할 수 있습니다.",
-    "muteConfirmTitle": "이 문제를 다시 제안하지 않을까요?",
-    "muteConfirmBody": "같은 문제가 다시 할 일에 나타나지 않습니다. '숨김 / 나중에'에서 복원할 수 있습니다."
   },
   "codexResets": {
     "retryReset": "초기화 다시 시도",

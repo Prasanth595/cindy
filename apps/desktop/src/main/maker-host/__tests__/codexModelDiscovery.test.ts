@@ -315,6 +315,22 @@ describe('mapCodexModelsToCatalog', () => {
 });
 
 describe('mapCodexAppServerModelsToCatalog', () => {
+  // Account access must survive discovery without inferring it from a GPT model ID.
+  it('only exposes Ultrafast when the account advertises that tier', () => {
+    const base = {
+      id: 'gpt-6-astra', model: 'gpt-6-astra', displayName: 'GPT-6 Astra',
+      description: '', hidden: false, supportedReasoningEfforts: [],
+      defaultReasoningEffort: 'high', additionalSpeedTiers: [], isDefault: false,
+    };
+    const available = mapCodexAppServerModelsToCatalog([{
+      ...base, serviceTiers: [{ id: 'ultrafast', name: 'Ultrafast', description: '' }],
+    } as CodexModelListItem]);
+    const unavailable = mapCodexAppServerModelsToCatalog([{
+      ...base, serviceTiers: [],
+    } as CodexModelListItem]);
+    expect(available[0]?.supportsUltrafastMode).toBe(true);
+    expect(unavailable[0]?.supportsUltrafastMode).toBe(false);
+  });
   it('live 即使把内部 ID 标成 hidden:false 也过滤 codex-auto-review', () => {
     const out = mapCodexAppServerModelsToCatalog([
       {

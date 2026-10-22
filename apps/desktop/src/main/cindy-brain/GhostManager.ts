@@ -89,6 +89,12 @@ import {
 } from './pluginNamespaceMigration.js';
 import { confirmUnconfirmedInstances } from './pluginInstanceConfirmation.js';
 import {
+  createGhostBackgroundRefresh,
+  type GhostBackgroundRefresh,
+  type GhostBackgroundScan,
+  type GhostScanState,
+} from './ghostBackgroundRefresh.js';
+import {
   commitPendingNamespaceMigration,
   reconcilePendingNamespaceMigrations,
   type NamespaceCommitReceiptSnapshot,
@@ -239,6 +245,28 @@ export interface ApprovedGhostInstallEvidence {
   legacyMigrated: boolean;
 }
 
+interface ParsedGhostPackage {
+  manifest: GhostManifest;
+  approvedManifest: GhostManifest;
+  canonicalManifest: GhostManifest;
+  localeResources: Record<string, GhostManifestLocaleResource>;
+  unsupportedLegacySlots: string[];
+  trust: GhostTrustInfo;
+  packageSha256: string;
+  rawManifestSha256: string;
+  releasedLegacyDigestFormat: unknown;
+  iconDataUrl?: string;
+  allEntries: JSZip.JSZipObject[];
+  prefix: string;
+}
+
+function cloneParsedGhostPackage(parsed: ParsedGhostPackage): ParsedGhostPackage {
+  const { allEntries, ...metadata } = parsed;
+  // ZIP objects stay private to the manager. Callers must never mutate the
+  // validated metadata retained for another inspect/install of these bytes.
+  return { ...structuredClone(metadata), allEntries };
+}
+
 export interface GhostManagerOptions {
   /** 意识仓库根目录(生产:userData/cindy-brain;测试:os.tmpdir 下临时目录)。 */
   getRootDir: () => string;
@@ -289,6 +317,8 @@ export interface GhostManagerOptions {
     namespace: string | null;
     packageSha256: string | null;
   }) => { pluginId: string } | null;
+  /** Capture ledger facts only for one uninterrupted synchronous registry scan. */
+  marketIdentityForScan?: () => NonNullable<GhostManagerOptions['marketIdentityForInstance']>;
   /**
    * Market evidence that a bare-id library left by an organization install
    * removed before the registry existed belongs to this organization plugin.
@@ -639,6 +669,14 @@ export class GhostManager {
   private readonly retirements = new FeatureRetirementStore(() => this.receiptStore.rootDir());
   private ownerContextKey: string;
   private mutationTail: Promise<void> = Promise.resolve();
+  /** One small archive, for the inspect → consent → install path only. */
+  private parsedPackageCache: {
+    packageSha256: string;
+    locale: string | undefined;
+    trustRegistry: string;
+    expiresAt: number;
+    parsed: ParsedGhostPackage;
+  } | null = null;
   private activeMutationContext: {
     ownerContextKey: string;
     contentRoot: string;
@@ -662,6 +700,7 @@ export class GhostManager {
     ensureOwner: () => this.ensureCurrentOwnerContextSync(),
     registryStore: () => this.instanceRegistryStore(),
     listContentEntries: () => this.listContentEntries(),
+    isPresenceUnknown: (relId) => this.isContentPresenceUnknown(relId),
     receiptFact: (relId) => this.receiptFact(relId),
     censusCandidates: () => collectRootInstallCensusCandidates({
       contentRoot: this.contentRootDir(),
@@ -678,6 +717,8 @@ export class GhostManager {
       this.receiptStore.captureLegacyFirstPartyEligibilitySync(relId, revision);
     },
     marketIdentityForInstance: (instance) => this.options.marketIdentityForInstance?.(instance) ?? null,
+    marketIdentityForScan: () => this.options.marketIdentityForScan?.()
+      ?? ((instance) => this.options.marketIdentityForInstance?.(instance) ?? null),
     log: {
       warn: (message, meta) => { this.options.log?.warn(message, meta); },
     },
@@ -807,13 +848,25 @@ export class GhostManager {
     return createPluginInstanceRegistryStore(pluginInstanceRegistryPath(this.stateRootDir()));
   }
 
+  private readonly unavailableContentRoots = new Set<string>();
+
+  isInstallationScanComplete(): boolean {
+    return this.unavailableContentRoots.size === 0;
+  }
+
+  private isContentPresenceUnknown(relId: string): boolean {
+    return [...this.unavailableContentRoots].some((root) => relId === root || relId.startsWith(root + '/'));
+  }
+
   private listContentEntries(): Array<{ relId: string; dir: string }> {
+    this.unavailableContentRoots.clear();
     const root = this.contentRootDir();
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(root, { withFileTypes: true });
-    } catch {
-      return [];
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      throw error;
     }
     const listed = this.listManagedInstallDirs(root);
     for (const entry of entries) {
@@ -821,7 +874,9 @@ export class GhostManager {
       const dir = path.join(root, entry.name);
       try {
         if (classifyGhostDirEntrySync(dir) !== 'directory') continue;
-      } catch {
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+        this.unavailableContentRoots.add(entry.name);
         continue;
       }
       if (!isValidGhostId(entry.name)) {
@@ -883,6 +938,7 @@ export class GhostManager {
   }
 
   private planInstancePlacement(
+    registry: PluginInstanceRegistry,
     ghostId: string,
     namespace: string | null,
     source?: PluginInstanceSource,
@@ -891,7 +947,6 @@ export class GhostManager {
   ):
     | { kind: 'blocked'; reason: string }
     | { kind: 'ok'; instanceKey: string; relId: string } {
-    const registry = this.syncInstanceRegistry();
     const relId = pluginNewInstallRelId(createPluginLogicalIdentity(namespace, ghostId));
     const instanceKey = pluginInstallStoragePart(relId);
     if (!this.instanceRegistryService.isBlocked()) {
@@ -1029,7 +1084,7 @@ export class GhostManager {
     return { kind: 'proceed' };
   }
 
-  async reconcilePendingRootNamespaces(marketSyncCompleted: boolean): Promise<void> {
+  async reconcilePendingRootNamespaces(marketSyncCompleted: boolean, refresh?: GhostBackgroundRefresh): Promise<void> {
     await reconcilePendingNamespaceMigrations({
       ensureCensus: () => this.ensureNamespaceMigrationCensus(),
       ownerContextKey: () => this.currentOwnerContextKey(),
@@ -1040,19 +1095,31 @@ export class GhostManager {
       classify: this.options.classifyPendingNamespace,
       commit: (ghostId, namespace, basis, expectedReceipt) =>
         this.commitPendingNamespace(ghostId, namespace, basis, expectedReceipt),
-      confirmUnconfirmed: () => this.confirmUnconfirmedInstances(),
+      confirmUnconfirmed: () => this.confirmUnconfirmedInstances(refresh),
       log: this.options.log,
     }, marketSyncCompleted);
   }
 
 
-  private async confirmUnconfirmedInstances(): Promise<void> {
-    await confirmUnconfirmedInstances({
+  private async confirmUnconfirmedInstances(refresh?: GhostBackgroundRefresh): Promise<void> {
+    const result = await confirmUnconfirmedInstances({
       readEvidence: this.options.readUnconfirmedConfirmationEvidence,
       isBlocked: () => this.instanceRegistryService.isBlocked(),
       sync: () => this.syncInstanceRegistry(),
+      prepare: refresh ? () => refresh.registry() : undefined,
       ownerContextKey: () => this.currentOwnerContextKey(),
       readApproval: (relId) => this.readApproval(relId),
+      orphanPendingNamespace: (record, approval) => {
+        if (approval.state !== 'approved') return undefined;
+        if (hasDeliveryNamespace(approval.receipt)) return { namespace: approval.receipt.namespace ?? null };
+        const classification = this.options.classifyPendingNamespace?.(record.ghostId, true);
+        // An orphan cannot gain census-only Forge-prefix or manual adoption
+        // privileges. A market-derived candidate still needs independent positive
+        // evidence (same approved package, namespace and current organization).
+        if (classification?.kind !== 'commit' || classification.basis === 'forge-current-org' ||
+            classification.basis === 'manual-after-sync' || classification.basis === 'builtin') return undefined;
+        return { namespace: classification.namespace };
+      },
       log: this.options.log,
       runExclusive: (body) => this.runExclusiveMutation(body),
       contentPath: (relId) => this.contentPath(relId),
@@ -1066,20 +1133,33 @@ export class GhostManager {
         this.instanceRegistryService.replaceCache(registry);
       },
     });
+    if (result.mutationFailures > 0) {
+      throw new Error('plugin instance namespace confirmation failed');
+    }
+    if (result.unresolvedPending > 0) {
+      // Evidence may stay absent until the owner/market changes. Preserve the
+      // pending install and let independent maintenance retry, rather than
+      // triggering the startup coordinator's full-batch retry loop.
+      this.options.log?.warn('pending plugin instances await namespace evidence', {
+        pendingCount: result.unresolvedPending,
+      });
+    }
   }
 
-  resumePendingResidentsOffline(): void {
+  resumePendingResidentsOffline(installed?: readonly InstalledGhost[]): void {
     const ledger = this.ensureNamespaceMigrationCensus();
     if (!ledger || !this.options.canResumePendingResidentOffline ||
         !this.options.onResumePendingResidentOffline) return;
-    const ghosts = this.list();
+    const ghosts = installed ?? this.list();
     for (const ghost of ghosts) {
       const ghostId = ghost.manifest.id;
       if (ghost.dir !== this.contentPath(ghostId) ||
           ghost.namespaceState !== 'pending' || !ghost.enabled ||
           ghost.approval.state !== 'approved' || this.hasPendingMutationJournal(ghostId)) continue;
       const approval = this.readApproval(ghostId);
-      if (approval.state !== 'approved' || hasDeliveryNamespace(approval.receipt)) continue;
+      if (approval.state !== 'approved' || hasDeliveryNamespace(approval.receipt) ||
+          approval.receipt.revision !== ghost.approval.revision ||
+          !this.effectiveEnabled(ghost.dir, approval.receipt.enabled)) continue;
       if (this.options.canResumePendingResidentOffline(ghostId)) {
         this.options.onResumePendingResidentOffline(ghost);
       }
@@ -1143,7 +1223,9 @@ export class GhostManager {
       parents = fs.readdirSync(managedRoot)
         .filter((namespace) => namespace === PLUGIN_ROOT_INSTALL_DIR || isValidPluginNamespace(namespace))
         .map((namespace) => PLUGIN_NS_INSTALL_ROOT + '/' + namespace);
-    } catch {
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return listed;
+      this.unavailableContentRoots.add(PLUGIN_NS_INSTALL_ROOT);
       return listed;
     }
     for (const parent of parents) {
@@ -1152,7 +1234,9 @@ export class GhostManager {
       try {
         if (classifyGhostDirEntrySync(parentDir) !== 'directory') continue;
         entries = fs.readdirSync(parentDir);
-      } catch {
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+        this.unavailableContentRoots.add(parent);
         continue;
       }
       for (const entry of entries) {
@@ -1161,7 +1245,9 @@ export class GhostManager {
         const dir = path.join(parentDir, entry);
         try {
           if (classifyGhostDirEntrySync(dir) === 'directory') listed.push({ relId, dir });
-        } catch {
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+          this.unavailableContentRoots.add(relId);
           continue;
         }
       }
@@ -2580,6 +2666,155 @@ export class GhostManager {
 
   /** Synchronous first-frame projection; share disk reads only within this call. */
   list(): InstalledGhost[] {
+    return this.scanInstalled().ghosts;
+  }
+
+  /**
+   * Background discovery only. Fresh receipt IO runs off the main thread, with
+   * at most four reads in flight. Projection yields between plugins; it shares
+   * the sync list's approval/isolation rules, never a completed approval cache.
+   * Do not call from inside runExclusiveMutation: discovery waits for that lane.
+   */
+  async listAsync(): Promise<InstalledGhost[]> {
+    return (await this.scanInstalledAsync()).ghosts;
+  }
+
+  /** Only the caller's current market refresh retains this read-only view. */
+  createBackgroundRefresh(): GhostBackgroundRefresh {
+    return createGhostBackgroundRefresh({
+      state: () => this.backgroundScanState(),
+      scan: () => this.scanInstalledAsync(),
+    });
+  }
+
+  private backgroundScanState(): GhostScanState {
+    return {
+      owner: this.currentOwnerContextKey(),
+      mutation: this.mutationTail,
+      // Registry/census changes can happen without a content transaction. Use
+      // their value, not parsed-object identity, so unchanged reloads still share.
+      identity: JSON.stringify([
+        this.options.getLocale?.(),
+        this.instanceRegistryService.current(),
+        this.instanceRegistryService.isBlocked(),
+        [...this.untrustedApprovals],
+        [...this.recoveryBlockedApprovalNamespaces],
+        [...this.unavailableContentRoots],
+      ]),
+    };
+  }
+
+  private async scanInstalledAsync(): Promise<GhostBackgroundScan> {
+    const owner = this.currentOwnerContextKey();
+    const ownerKey = this.options.getOwnerContextKey?.();
+    const contentRoot = this.options.getRootDir();
+    const stateRootOption = this.options.getStateDir?.();
+    const assertOwner = (checkPhysicalRoots = false) => {
+      // Per-turn checks are cheap. Re-resolve filesystem identities at commit
+      // and return, rather than synchronously stat-ing both roots per plugin.
+      if (this.options.getOwnerContextKey?.() !== ownerKey ||
+          this.options.getRootDir() !== contentRoot ||
+          this.options.getStateDir?.() !== stateRootOption ||
+          (checkPhysicalRoots && this.currentOwnerContextKey() !== owner)) {
+        throw new Error('ghost owner context changed during background scan');
+      }
+    };
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const mutations = this.mutationTail;
+      await mutations;
+      assertOwner(true);
+      if (mutations !== this.mutationTail) continue;
+      this.ensureCurrentOwnerContextSync();
+      const locale = this.options.getLocale?.();
+      const root = this.contentRootDir();
+      const stateRoot = this.stateRootDir();
+      const receipts = new GhostInstallReceiptStore(() => stateRoot);
+      const entries = await this.listContentEntriesAsync(root);
+      assertOwner();
+      if (mutations !== this.mutationTail) continue;
+      const approved = new Map<string, GhostInstallReceiptReadResult>();
+      const disabled = new Map<string, boolean>();
+      let next = 0;
+      await Promise.all(Array.from({ length: Math.min(4, entries.length) }, async () => {
+        while (next < entries.length) {
+          const { relId, dir } = entries[next++];
+          approved.set(relId, await receipts.readAsync(relId));
+          try {
+            await classifyGhostDirEntry(path.join(dir, DISABLED_MARKER_FILE));
+            disabled.set(dir, true);
+          } catch (error) {
+            disabled.set(dir, (error as NodeJS.ErrnoException).code !== 'ENOENT');
+          }
+          await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+      }));
+      assertOwner(true);
+      if (mutations !== this.mutationTail) continue;
+      // This short commit has no await: an intervening Host install, disable or
+      // removal invalidates the entire preparation before registry publication.
+      this.unavailableContentRoots.clear();
+      const readReceipt = (relId: string) => approved.get(relId)!;
+      const registry = this.instanceRegistryService.sync({
+        listContentEntries: () => entries,
+        receiptFact: (relId) => this.receiptFact(relId, readReceipt(relId)),
+        isPresenceUnknown: () => false,
+      });
+      const result: InstalledGhost[] = [];
+      for (const entry of entries) {
+        result.push(...this.projectListedEntries([entry], readReceipt, disabled));
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assertOwner();
+        if (mutations !== this.mutationTail) break;
+      }
+      if (mutations !== this.mutationTail) continue;
+      assertOwner(true);
+      if (locale !== this.options.getLocale?.() ||
+          (registry !== this.instanceRegistryService.current() &&
+           JSON.stringify(registry) !== JSON.stringify(this.instanceRegistryService.current()))) continue;
+      return {
+        ghosts: result.sort((a, b) => a.manifest.id.localeCompare(b.manifest.id)),
+        registry,
+        state: this.backgroundScanState(),
+      };
+    }
+    throw new Error('ghost installations changed repeatedly during background scan');
+  }
+
+  private async listContentEntriesAsync(root: string): Promise<Array<{ relId: string; dir: string }>> {
+    const listed: Array<{ relId: string; dir: string }> = [];
+    const scan = async (parent: string): Promise<string[]> => {
+      const dir = path.join(root, ...parent.split('/'));
+      try {
+        if (await classifyGhostDirEntry(dir) !== 'directory') return [];
+        return await fs.promises.readdir(dir);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+        throw error;
+      }
+    };
+    const add = async (parent: string, names: string[]) => {
+      for (const name of names) {
+        const relId = parent ? parent + '/' + name : name;
+        if (!parsePluginInstallRelId(relId)) continue;
+        const dir = path.join(root, ...relId.split('/'));
+        try {
+          if (await classifyGhostDirEntry(dir) === 'directory') listed.push({ relId, dir });
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        }
+      }
+    };
+    const names = await scan('');
+    for (const namespace of await scan(PLUGIN_NS_INSTALL_ROOT)) {
+      if (namespace !== PLUGIN_ROOT_INSTALL_DIR && !isValidPluginNamespace(namespace)) continue;
+      const parent = PLUGIN_NS_INSTALL_ROOT + '/' + namespace;
+      await add(parent, await scan(parent));
+    }
+    await add('', names.filter((name) => !name.startsWith('.') && name !== PLUGIN_NS_INSTALL_ROOT));
+    return listed;
+  }
+
+  private scanInstalled(): { ghosts: InstalledGhost[]; registry: PluginInstanceRegistry } {
     this.ensureCurrentOwnerContextSync();
     const entries = this.listContentEntries();
     const receipts = new Map<string, GhostInstallReceiptReadResult>();
@@ -2593,13 +2828,14 @@ export class GhostManager {
     };
     // Registry facts and the list projection consume the same validated bytes.
     // No cache survives this synchronous scan; isolation checks still run below.
-    this.instanceRegistryService.sync({
+    const registry = this.instanceRegistryService.sync({
       listContentEntries: () => entries,
       receiptFact: (relId) => this.receiptFact(relId, readReceipt(relId)),
+      isPresenceUnknown: (relId) => this.isContentPresenceUnknown(relId),
     });
     const result = this.projectListedEntries(entries, readReceipt);
     result.sort((a, b) => a.manifest.id.localeCompare(b.manifest.id));
-    return result;
+    return { ghosts: result, registry };
   }
 
   /**
@@ -2626,6 +2862,7 @@ export class GhostManager {
   private projectListedEntries(
     listedDirs: Array<{ relId: string; dir: string }>,
     readReceipt?: (relId: string) => GhostInstallReceiptReadResult,
+    disabledMarkers?: ReadonlyMap<string, boolean>,
   ): InstalledGhost[] {
     const result: InstalledGhost[] = [];
     for (const listed of listedDirs) {
@@ -2635,6 +2872,9 @@ export class GhostManager {
       const approvalResult = this.readApproval(relId, readReceipt);
       if (approvalResult.state === 'approved') {
         const receipt = approvalResult.receipt;
+        const enabled = disabledMarkers
+          ? receipt.enabled && disabledMarkers.get(dir) === false
+          : this.effectiveEnabled(dir, receipt.enabled);
         const localizedManifest = this.localizeApprovedManifest(receipt);
         const retired = findFeatureRetirement(receipt.manifest);
         let retirement: InstalledGhost['retirement'];
@@ -2643,7 +2883,7 @@ export class GhostManager {
             retirement = this.retirements.observe(
               retired.id,
               pluginInstallStoragePart(relId),
-              this.effectiveEnabled(dir, receipt.enabled),
+              enabled,
             );
           } catch (error) {
             // Do not consume the observation on failed IO. The original receipt
@@ -2654,7 +2894,7 @@ export class GhostManager {
             });
             retirement = {
               id: retired.id,
-              eligible: this.effectiveEnabled(dir, receipt.enabled),
+              eligible: enabled,
               unread: false,
             };
           }
@@ -2663,10 +2903,11 @@ export class GhostManager {
           manifest: localizedManifest,
           dir,
           ...this.instanceProjection(relId, identity.ghostId),
-          enabled: !retired && this.effectiveEnabled(dir, receipt.enabled),
+          enabled: !retired && enabled,
           ...(retirement ? { retirement } : {}),
           approval: { state: 'approved', revision: receipt.revision },
           ...(receipt.taskCapabilityApproved === true ? { taskCapabilityApproved: true as const } : {}),
+          ...(receipt.targetCapabilityApproved === true ? { targetCapabilityApproved: true as const } : {}),
           trust: receipt.trust,
           ...(!retired && receipt.manifest.skill?.items.length
             ? {
@@ -2857,18 +3098,20 @@ export class GhostManager {
   }
 
   /** Called only after Host permission UI confirms this exact installed revision. */
-  async approveTaskCapability(id: string, revision: string, isCurrent: () => boolean): Promise<boolean> {
+  async approveTaskCapability(id: string, revision: string, isCurrent: () => boolean, capability: 'tasks' | 'targets' = 'tasks'): Promise<boolean> {
     return this.runExclusiveMutation(async () => {
       const relId = this.approvalRelIdFor(id);
       if (!relId) return false;
       const approval = this.readApproval(relId);
       if (!isCurrent() || approval.state !== 'approved' || approval.receipt.revision !== revision ||
           approval.receipt.manifest.agent?.tasks !== true ||
+          (capability === 'targets' && (approval.receipt.manifest.agent.targets !== true || approval.receipt.taskCapabilityApproved !== true)) ||
           !findInstalledGhostByInstanceId(this.list(), id)?.enabled) return false;
-      if (approval.receipt.taskCapabilityApproved !== true) {
+      const field = capability === 'targets' ? 'targetCapabilityApproved' : 'taskCapabilityApproved';
+      if (approval.receipt[field] !== true) {
         const expired = new Error('Task capability approval owner changed');
         try {
-          await this.receiptStore.write({ ...approval.receipt, taskCapabilityApproved: true }, {
+          await this.receiptStore.write({ ...approval.receipt, [field]: true }, {
             relId,
             assertCurrent: () => { if (!isCurrent()) throw expired; },
           });
@@ -3109,25 +3352,7 @@ export class GhostManager {
   }
 
   /** 装入的前半程(读文件 / 解包 / 校验清单),inspect 与 install 共用。 */
-  private async parse(lizFilePath: string): Promise<
-    | {
-        manifest: GhostManifest;
-        // 同一份包内清单的两个名字:approvedManifest 供 receipt 写入(我们),
-        // canonicalManifest 供 inspect/可恢复复核比对(main)。parse 里都置为 v.manifest。
-        approvedManifest: GhostManifest;
-        canonicalManifest: GhostManifest;
-        localeResources: Record<string, GhostManifestLocaleResource>;
-        unsupportedLegacySlots: string[];
-        trust: GhostTrustInfo;
-        packageSha256: string;
-        rawManifestSha256: string;
-        releasedLegacyDigestFormat: unknown;
-        iconDataUrl?: string;
-        allEntries: JSZip.JSZipObject[];
-        prefix: string;
-      }
-    | { rejection: InstallRejection }
-  > {
+  private async parse(lizFilePath: string): Promise<ParsedGhostPackage | { rejection: InstallRejection }> {
     // 1) 读源文件(带体积上限)。stat 后再 readFile 是两次独立打开,期间文件
     // 可被换成超大文件绕过上限——单句柄限量读。允许跟随链接:用户拖入的
     // .cindy 本身可以是链接,防篡改由 expectedPackageSha256 对账负责。
@@ -3150,6 +3375,22 @@ export class GhostManager {
         rejection: { code: 'io', reason: err instanceof Error ? err.message : String(err) },
       };
     }
+
+    // Always reread the complete, stable source before reuse: a pathname or mtime
+    // is not evidence that the package approved before consent is still present.
+    const packageSha256 = crypto.createHash('sha256').update(buf).digest('hex');
+    const locale = this.options.getLocale?.();
+    const trustRegistry = structuredClone(this.options.trustRegistry ?? {});
+    const trustRegistryKey = JSON.stringify(trustRegistry);
+    const cached = this.parsedPackageCache;
+    if (
+      cached && cached.expiresAt > Date.now() &&
+      cached.packageSha256 === packageSha256 && cached.locale === locale &&
+      cached.trustRegistry === trustRegistryKey
+    ) {
+      return cloneParsedGhostPackage(cached.parsed);
+    }
+    this.parsedPackageCache = null;
 
     // 2) 解析 zip + 找 ghost.json(容忍"压缩时多包了一层文件夹"的常见做法)
     let zip: JSZip;
@@ -3292,7 +3533,7 @@ export class GhostManager {
         },
       };
     }
-    let localizedManifest = withGhostResolvedLocale(v.manifest, this.options.getLocale?.());
+    let localizedManifest = withGhostResolvedLocale(v.manifest, locale);
     const localeResources: Record<string, GhostManifestLocaleResource> = {};
     if (v.manifest.locales !== undefined) {
       const resources = new Map<string, GhostManifestLocaleResource>();
@@ -3338,7 +3579,7 @@ export class GhostManager {
         resources.set(localePath, validated.resource);
         localeResources[localePath] = validated.resource;
       }
-      const localePath = ghostLocalePathFor(v.manifest, this.options.getLocale?.());
+      const localePath = ghostLocalePathFor(v.manifest, locale);
       const resource = localePath ? resources.get(localePath) : undefined;
       if (resource) localizedManifest = resolveGhostManifestLocale(localizedManifest, resource);
     }
@@ -3364,7 +3605,7 @@ export class GhostManager {
       zip,
       prefix,
       v.manifest,
-      this.options.trustRegistry,
+      trustRegistry,
     );
     if (!signature.ok) {
       return { rejection: { code: 'file-invalid', reason: `签名验证失败:${signature.reason}` } };
@@ -3509,14 +3750,14 @@ export class GhostManager {
       }
     }
 
-    return {
+    const parsed: ParsedGhostPackage = {
       manifest: localizedManifest,
       approvedManifest: v.manifest,
       canonicalManifest: v.manifest,
       localeResources,
       unsupportedLegacySlots: v.unsupportedLegacySlots,
       trust: signature.trust,
-      packageSha256: crypto.createHash('sha256').update(buf).digest('hex'),
+      packageSha256,
       rawManifestSha256: crypto.createHash('sha256').update(manifestBytes).digest('hex'),
       releasedLegacyDigestFormat: ghostManifestToLegacyV2DigestFormat(
         v.manifest,
@@ -3526,12 +3767,24 @@ export class GhostManager {
       allEntries,
       prefix,
     };
+    // Large bundled CLI archives must not become a long-lived memory cache.
+    if (buf.byteLength <= MAX_BASIC_CINDY_FILE_BYTES) {
+      this.parsedPackageCache = {
+        packageSha256,
+        locale,
+        trustRegistry: trustRegistryKey,
+        expiresAt: Date.now() + 60_000,
+        parsed,
+      };
+    }
+    return cloneParsedGhostPackage(parsed);
   }
 
   async install(
     lizFilePath: string,
     opts?: {
       taskCapabilityApproved?: true;
+      targetCapabilityApproved?: true;
       initiallyEnabled?: boolean;
       expectedPackageSha256?: string;
       trustOverride?: GhostHostTrustOverride;
@@ -3556,6 +3809,7 @@ export class GhostManager {
     lizFilePath: string,
     opts?: {
       taskCapabilityApproved?: true;
+      targetCapabilityApproved?: true;
       initiallyEnabled?: boolean;
       expectedPackageSha256?: string;
       trustOverride?: GhostHostTrustOverride;
@@ -3606,7 +3860,9 @@ export class GhostManager {
     const identity = createPluginLogicalIdentity(opts?.namespace ?? null, manifest.id);
     const registrySource = opts?.registrySource ??
       (opts?.installOrigin === 'agent-forge' ? 'agent-forge' : 'manual');
+    const preflight = this.scanInstalled();
     const placement = this.planInstancePlacement(
+      preflight.registry,
       manifest.id, identity.namespace, registrySource, opts?.pluginId, opts?.reclaimLegacyBareInstance === true,
     );
     if (placement.kind === 'blocked') {
@@ -3617,7 +3873,7 @@ export class GhostManager {
     if (this.hasPendingMutationJournal(relId)) {
       return { rejection: { code: 'io', reason: '意识正在恢复，请稍后重试' } };
     }
-    if (findInstalledGhostByIdentity(this.list(), identity)) {
+    if (findInstalledGhostByIdentity(preflight.ghosts, identity)) {
       return { rejection: { code: 'already-installed', reason: `意识 ${manifest.id} 已装入` } };
     }
     const physicalRel = this.resolvePhysicalRelId(relId) ?? relId;
@@ -3726,6 +3982,7 @@ export class GhostManager {
           localeResources,
           enabled: initiallyEnabled,
           ...(opts?.taskCapabilityApproved === true && approvedManifest.agent?.tasks === true ? {taskCapabilityApproved:true as const} : {}),
+          ...(opts?.targetCapabilityApproved === true && approvedManifest.agent?.tasks === true && approvedManifest.agent.targets === true ? {targetCapabilityApproved:true as const} : {}),
           trust,
           // 指纹取自包投影而不是刚发布的 finalDir:发布后被换的字节应当在快照
           // 对账时被拒,而不是被首读钉成批准基线(P0-8)。
@@ -3848,6 +4105,7 @@ export class GhostManager {
     lizFilePath: string,
     opts: {
       taskCapabilityApproved?: true;
+      targetCapabilityApproved?: true;
       expectedInstalledApproval: string;
       expectedPackageSha256?: string;
       trustOverride?: GhostHostTrustOverride;
@@ -3866,6 +4124,7 @@ export class GhostManager {
     lizFilePath: string,
     opts: {
       taskCapabilityApproved?: true;
+      targetCapabilityApproved?: true;
       expectedInstalledApproval: string;
       expectedPackageSha256?: string;
       trustOverride?: GhostHostTrustOverride;
@@ -4111,6 +4370,8 @@ export class GhostManager {
         enabled,
         ...((opts.taskCapabilityApproved === true || (archiveId === undefined && approvalResult.state === 'approved' && approvalResult.receipt.taskCapabilityApproved === true)) &&
           approvedManifest.agent?.tasks === true ? { taskCapabilityApproved: true as const } : {}),
+        ...((opts.targetCapabilityApproved === true || (archiveId === undefined && approvalResult.state === 'approved' && approvalResult.receipt.targetCapabilityApproved === true)) &&
+          approvedManifest.agent?.tasks === true && approvedManifest.agent.targets === true ? { targetCapabilityApproved: true as const } : {}),
         trust,
         // 同 install:指纹取自包投影,发布后的目录漂移在快照对账时 fail closed(P0-8)。
         skillContentSha256: await this.hashSkillContentFromPackage(
@@ -4518,6 +4779,8 @@ export class GhostManager {
         packageSha256,
         ...(current.state === 'approved' && current.receipt.taskCapabilityApproved === true &&
           approvedManifest.agent?.tasks === true ? { taskCapabilityApproved: true as const } : {}),
+        ...(current.state === 'approved' && current.receipt.targetCapabilityApproved === true &&
+          approvedManifest.agent?.tasks === true && approvedManifest.agent.targets === true ? { targetCapabilityApproved: true as const } : {}),
         ...(iconDataUrl !== undefined ? { iconDataUrl } : {}),
         namespace: null,
       }),

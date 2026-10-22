@@ -26,6 +26,7 @@ export function sshCodexWorkerRoutingContext(views: ProviderView[]): OrcaWorkerP
       codex: models.length ? [{
         id: 'openai', name: views[0]!.name, models: models.map((model) => model.id),
         fastModels: models.filter((model) => model.supportsFastMode).map((model) => model.id),
+        ultrafastModels: models.filter((model) => model.supportsUltrafastMode).map((model) => model.id),
         effortMetaByModel: Object.fromEntries(models.map((model) =>
           [model.id, {
             efforts: model.efforts,
@@ -53,6 +54,7 @@ export function deviceWorkerRoutingContext(views: ProviderView[], agent: AgentKi
         name: provider.name,
         models: models.map((model) => model.id),
         fastModels: models.filter((model) => model.supportsFastMode).map((model) => model.id),
+        ultrafastModels: models.filter((model) => kind === 'codex' && model.supportsUltrafastMode).map((model) => model.id),
         effortMetaByModel: Object.fromEntries(
           models.map((model) => [model.id, { efforts: model.efforts, defaultEffort: model.defaultEffort }]),
         ),
@@ -160,6 +162,7 @@ export async function readOrcaWorkerProviderRoutingContext(deps: {
         models: models.map((model) => model.id),
         registryIdentityByModel,
         fastModels: models.filter((model) => model.supportsFastMode).map((model) => model.id),
+        ultrafastModels: models.filter((model) => agent === 'codex' && model.supportsUltrafastMode).map((model) => model.id),
         effortMetaByModel: Object.fromEntries(
           models.map((model) => [
             model.id,

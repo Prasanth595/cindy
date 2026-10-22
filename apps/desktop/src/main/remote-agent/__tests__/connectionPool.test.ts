@@ -587,6 +587,62 @@ afterEach(async () => {
 });
 
 describe('remote connection pool with a real host', () => {
+  // 回归：重启恢复遇到 1.5s 建连超时就失败；原用例只覆盖已连上的打开/连回。
+  // 生产入口 startRemoteAgentSession，最小输入为 caps 连续两次 NOT_CONNECTED；
+  // unit，假计时器验证等待期间另一控制端仍可请求，且恢复后只打开一个 run。
+  it('waits for a reconnect before opening, without blocking another controller', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const ready = deps();
+    let attempts = 0;
+    const pending = startRemoteAgentSession('claude-code', {
+      sessionId: 'restored-task', workingDir: project, model: 'm1', resumeSessionId: 'native-before-restart',
+    } as StartSessionOptions, {
+      ...ready,
+      invoke: async (args) => {
+        if ((args[0] as { op: string }).op === 'caps' && ++attempts <= 2) {
+          throw Object.assign(new Error('not online within 1500ms'), { code: 'NOT_CONNECTED' });
+        }
+        return ready.invoke(args);
+      },
+    });
+    void pending.catch(() => undefined);
+    try {
+      await vi.waitFor(() => expect(attempts).toBe(1));
+      expect(opens).toBe(0);
+      await expect(host.handle('another-controller', { op: 'caps' })).resolves.toMatchObject({ virtualWorkspace: true });
+      await vi.waitFor(() => expect(attempts).toBe(3));
+      vi.useRealTimers();
+      const handle = await pending;
+      opened.push(handle);
+      expect(opens).toBe(1);
+      expect(scenario.started[0].options.resumeSessionId).toBe('native-before-restart');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // 同一入口的停止分支：授权拒绝立即结束；open 的结果不明时不重放写入。
+  it.each(['caps', 'open'] as const)('does not replay %s after a permanent denial or uncertain write', async (phase) => {
+    const ready = deps();
+    let attempts = 0;
+    await expect(startRemoteAgentSession('claude-code', {
+      sessionId: 'failed-resume', workingDir: project, model: 'm1',
+    } as StartSessionOptions, {
+      ...ready,
+      invoke: async (args) => {
+        if ((args[0] as { op: string }).op === phase) {
+          attempts += 1;
+          throw Object.assign(new Error(phase === 'caps' ? 'share paused' : 'reply lost'), {
+            code: phase === 'caps' ? 'REMOTE_AGENT_SHARE_PAUSED' : 'NOT_CONNECTED',
+          });
+        }
+        return ready.invoke(args);
+      },
+    })).rejects.toThrow();
+    expect(attempts).toBe(1);
+    expect(scenario.started).toHaveLength(0);
+  });
+
   it('makes room when full, then reconnects the released task to the same conversation', async () => {
     const pool = newPool();
     const a = await start(pool);

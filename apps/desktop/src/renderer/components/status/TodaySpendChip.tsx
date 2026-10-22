@@ -1510,6 +1510,9 @@ export function TodaySpendChip({
     if (usesGatewayQuota || isDeviceLinkRemoteGateway) {
       account.title = t('quotaCard.gatewayTitle');
       if (creditTotals) {
+        // Keep the retained balance's observation time; a render/refresh is not new data.
+        const observedAt = Date.parse(creditUsage?.observedAt ?? '');
+        if (Number.isFinite(observedAt)) account.updatedAt = observedAt;
         account.windows.push({
           key: 'balance',
           title: t('quotaCard.balanceLabel'),

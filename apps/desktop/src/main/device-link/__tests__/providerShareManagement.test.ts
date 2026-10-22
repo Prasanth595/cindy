@@ -16,6 +16,8 @@ const usageStores = vi.hoisted(() => ({ ownHistory: vi.fn(), memberHistory: vi.f
 const memberNotes = vi.hoisted(() => ({ read: vi.fn(), set: vi.fn() }));
 vi.mock('../providerShareQuota.js', () => ({ readProviderShareQuota: vi.fn(), readProviderShareQuotaAccount: vi.fn() }));
 const visibility = vi.hoisted(() => ({ read: vi.fn(), set: vi.fn() }));
+const modelAccess = vi.hoisted(() => ({ read: vi.fn(), set: vi.fn(), allows: vi.fn() }));
+vi.mock('../remoteModelAccess.js', () => ({ remoteModelAccess: modelAccess }));
 vi.mock('../providerShareVisibility.js', () => ({ providerShareVisibility: visibility }));
 vi.mock('../providerShareMemberNotes.js', () => ({ providerShareMemberNotes: memberNotes }));
 
@@ -51,7 +53,7 @@ vi.mock('../providerShareApi.js', () => ({
 }));
 vi.mock('../dispatch.js', () => ({
   getControllerDisplayName: vi.fn(), providerShareActiveControllers: vi.fn(),
-  revokeProviderShareControllers: vi.fn(), setProviderShareAccess: vi.fn(),
+  revalidateRemoteModelAccess: vi.fn(async () => undefined), revokeProviderShareControllers: vi.fn(), setProviderShareAccess: vi.fn(),
 }));
 vi.mock('../providerShareHost.js', () => ({
   startProviderShareHost: vi.fn(), stopProviderShareHost: vi.fn(),
@@ -109,6 +111,8 @@ beforeEach(() => {
   host.refresh.mockResolvedValue(undefined);
   memberNotes.read.mockReturnValue({});
   memberNotes.set.mockResolvedValue(undefined);
+  modelAccess.read.mockReturnValue({ models: null, providerModels: null });
+  modelAccess.set.mockImplementation(async (_provider, _models, _member, assertCurrent) => { assertCurrent(); });
   host.snapshot.mockReturnValue([{ requests: [{ requestId: 'r1' }], members: [{ memberId: 'm1' }] }]);
   usageStores.ownHistory.mockReturnValue({ self: { lastUsedAt: null, days: [] }, relays: [] });
   usageStores.memberHistory.mockReturnValue([]);
@@ -345,6 +349,56 @@ describe('same-account share management during account transitions', () => {
     host.quiet.mockRejectedValueOnce(new Error('ownership save failed'));
     await expect(executeProviderShareManagementCommand(createLink)).rejects.toThrow('ownership save failed');
     expect(remember).not.toHaveBeenCalled();
+  });
+});
+
+/* 用户要求的型号权限：生产命令入口验证成员归属和切号；原来的备注、分享开关不覆盖型号范围。
+ * 最小输入为另一供应商的同名成员以及读目录期间切号。unit，复用本文件进程内 fixture。 */
+describe('remote model access management', () => {
+  beforeEach(() => {
+    listProviders.mockResolvedValue([{ id: 'anthropic', models: { 'claude-code': [
+      { id: 'small', name: 'Small' }, { id: 'large', name: 'Large' }, { id: 'stopped', disabled: true },
+    ] } }]);
+    host.snapshot.mockReturnValue([{ providerId: 'anthropic', requests: [], members: [{ memberId: 'm1' }] }]);
+  });
+  it.each([undefined, 'm1'])('saves remote model permissions in the managed owner scope: member=%s', async (memberId) => {
+    const command = parseProviderShareCommand({ action: 'set-model-access', providerId: 'anthropic', memberId, models: ['small'] }) as ProviderShareManagementCommand;
+    const result = await executeProviderShareManagementCommand(command);
+    expect(modelAccess.set).toHaveBeenCalledWith('anthropic', ['small'], memberId, expect.any(Function));
+    expect(result).toMatchObject({ version: 1, availableModels: [{ id: 'small', name: 'Small' }, { id: 'large', name: 'Large' }] });
+    expect(api.setMember).not.toHaveBeenCalled();
+  });
+  // Unit regression for review 4326867264: the management command must offer every
+  // enabled media model; the old fixture only covered chat models. Media-only providers
+  // and duplicated ids must yield a usable, deduplicated authorization selection too.
+  it.each([false, true])('offers media models alongside chat models or on their own: mediaOnly=%s', async (mediaOnly) => {
+    listProviders.mockResolvedValue([{
+      id: 'anthropic',
+      models: mediaOnly ? {} : { codex: [{ id: 'chat', name: 'Chat' }], pi: [{ id: 'chat', name: 'Chat' }] },
+      imageModels: [{ id: 'image', name: 'Image' }, { id: 'disabled-image', disabled: true }],
+      videoModels: [{ id: 'video', name: 'Video' }],
+      audioModels: [{ id: 'audio', name: 'Audio' }],
+      embeddingModels: [{ id: 'embedding' }, { id: 'image', name: 'Image' }],
+    }]);
+    const result = await executeProviderShareManagementCommand({ action: 'get-model-access', providerId: 'anthropic', memberId: 'm1' });
+    expect(result).toMatchObject({ availableModels: [
+      ...(mediaOnly ? [] : [{ id: 'chat', name: 'Chat' }]),
+      { id: 'image', name: 'Image' }, { id: 'video', name: 'Video' },
+      { id: 'audio', name: 'Audio' }, { id: 'embedding', name: 'embedding' },
+    ] });
+  });
+  it('refuses to modify a person who belongs to a different provider', async () => {
+    host.snapshot.mockReturnValue([{ providerId: 'other', members: [{ memberId: 'm1' }] }]);
+    await expect(executeProviderShareManagementCommand({ action: 'set-model-access', providerId: 'anthropic', memberId: 'm1', models: [] })).rejects.toThrow('NOT_FOUND');
+    expect(modelAccess.set).not.toHaveBeenCalled();
+  });
+  it('does not save a delayed model selection into a newly signed-in account', async () => {
+    listProviders.mockImplementationOnce(async () => { state.owner = 'owner-b'; return [{ id: 'anthropic', models: {} }]; });
+    await expect(executeProviderShareManagementCommand({ action: 'set-model-access', providerId: 'anthropic', models: [] })).rejects.toThrow('PRECONDITION_FAILED');
+    expect(modelAccess.set).not.toHaveBeenCalled();
+  });
+  it.each([['small', 'small'], [false], {}, undefined])('rejects invalid selection payload %#', (models) => {
+    expect(() => parseProviderShareCommand({ action: 'set-model-access', providerId: 'anthropic', models })).toThrow('INVALID_PARAMS');
   });
 });
 

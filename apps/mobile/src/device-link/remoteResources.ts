@@ -231,6 +231,7 @@ function validDescriptor(value: unknown): RemoteCollectionDescriptor | null {
     id,
     resourceKind,
     title,
+    ...(record.actions !== undefined ? { actions: normalizeRemoteActions(record.actions) } : {}),
     ...(placement ? { placement } : {}),
     ...(iconName && iconFallbackText !== null
       ? { icon: { name: iconName, fallbackText: iconFallbackText } }

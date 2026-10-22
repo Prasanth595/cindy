@@ -115,17 +115,16 @@ it('uses the registered host entry for both quiet and explicitly visible delegat
       { clientId: request.clientId, authoredText: request.userText }, async () => []));
   await dispatch({ dispatcherSessionId: 'child', targetSessionId: 'parent', message: 'Agreement' });
   expect(send).toHaveBeenLastCalledWith(expect.objectContaining({ forceQueue: true, botTaskCoordination: receipt,
-    persistedContent: '[UI_ACTION_TRIGGER]' + formatForwardedRequest(request, 'Agreement'),
-    autoReviewUserText: { kind: 'delegated-continuation', request } }));
+    persistedContent: '[UI_ACTION_TRIGGER]Agreement',
+    autoReviewUserText: { kind: 'delegated-continuation' } }));
   await dispatch({ dispatcherSessionId: 'child', targetSessionId: 'parent', message: 'Requested result', messagePurpose: 'user-visible' });
-  expect(send).toHaveBeenLastCalledWith(expect.objectContaining({ message: formatForwardedRequest(request, 'Requested result'),
-    autoReviewUserText: { kind: 'delegated-continuation', request } }));
+  expect(send).toHaveBeenLastCalledWith(expect.objectContaining({ message: 'Requested result',
+    autoReviewUserText: { kind: 'delegated-continuation' } }));
   expect(send.mock.calls.at(-1)?.[0]).not.toHaveProperty('botTaskCoordination');
   await dispatch({ dispatcherSessionId: 'ordinary', targetSessionId: 'parent', message: 'Ordinary task message' });
-  const ordinaryRequest = { ...request, sessionId: 'ordinary' };
   expect(send).toHaveBeenLastCalledWith({ dispatcherSessionId: 'ordinary', targetSessionId: 'parent',
-    message: formatForwardedRequest(ordinaryRequest, 'Ordinary task message'),
-    autoReviewUserText: { kind: 'agent-request', request: ordinaryRequest } });
+    message: 'Ordinary task message',
+    autoReviewUserText: { kind: 'agent-request' } });
   currentOwner = false;
   const count = send.mock.calls.length;
   expect(await dispatch({ dispatcherSessionId: 'child', targetSessionId: 'parent', message: 'Agreement' })).toMatchObject({ ok: false });

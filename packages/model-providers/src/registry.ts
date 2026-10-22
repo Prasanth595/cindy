@@ -97,6 +97,8 @@ export type ModelDiscoveryFailureState = Partial<
 export interface ProviderView extends Provider {
   /** 本机是否允许同账号另一台电脑调用该供应商；缺省等同关闭。 */
   remoteInvocationEnabled?: boolean;
+  /** Exact model IDs offered to remote Agents. Absent preserves the legacy unrestricted scope. */
+  remoteModelIds?: string[];
   /** Definition remains available for adding a removed local connection again. */
   removed?: boolean;
   subscriptionAccount?: { source: 'local' | 'oauth' | 'unknown'; identity?: string; reconnectRequired?: boolean };

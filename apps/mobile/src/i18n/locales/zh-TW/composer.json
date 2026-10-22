@@ -72,6 +72,7 @@
     "noFileRead": "沒有讀取到可上傳的檔案。"
   },
   "voice": {
+    "cancelled": "語音輸入已取消。",
     "recordingEmpty": "錄音為空，不能轉寫。",
     "recordingTooLarge": "錄音超過上限 {{size}}MB。",
     "invalidUploadUrl": "服務端沒有返回有效的語音上傳地址。",
@@ -103,5 +104,20 @@
     "transcriptKept": "{{message}}（識別出的文字已經保留，可以直接編輯）",
     "micPermission": "麥克風權限未開啟，請在系統設定裡允許 {{appName}} 使用麥克風。",
     "realtimeAudioUnavailable": "當前安裝包不支援即時語音輸入，請安裝包含原生錄音模組的測試版。"
+  },
+  "incomingShare": {
+    "title": "傳送到 Cindy",
+    "empty": "沒有待接收的分享",
+    "file": "檔案",
+    "fileCount": "{{count}} 個檔案",
+    "hint": "選擇去向後，可以補充說明再傳送。",
+    "search": "搜尋任務和夥伴",
+    "newTask": "新增任務",
+    "companions": "夥伴",
+    "tasks": "現有任務",
+    "unavailable": "暫時無法接收分享",
+    "noCompanions": "還沒有夥伴",
+    "noTasks": "還沒有任務",
+    "retry": "部分內容未能讀取，點此重試。"
   }
 }

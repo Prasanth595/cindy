@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { parseGoalCommand } from '@cindy/maker-shared/goal-command';
 import { executeMobileGoalCommand, parseMobileDesktopCommand } from '@/session/desktopSlashCommands';
 import { humanizeRemoteError } from '@/device-link/remoteStatus';
+import { incomingShareSlotOrder } from '@/session/mobileLocalAttachmentUpload';
 import { composerDocumentProjectedText, emptyComposerDocument, normalizeComposerDocument, reconcileComposerProjectedText, serializeComposerDocument, textComposerDocument } from '@/session/composerDocument';
 
 // Execute the actual page callbacks, excluding unrelated native/network UI.
@@ -91,14 +92,16 @@ function existingHarness(args = 'target') {
     sendInFlightRef: { current: false }, sending: false, setSending: vi.fn((_sending: boolean) => {}), currentSession: session,
     invalidateHistoryRecoveryNavigation: vi.fn(),
     outboxConnectionBlockedNow: () => false, getPendingUploadCount: () => 0,
+    outboxRef: { current: [] }, remoteSessionRunning: false, currentTurnStreaming: false,
+    offerMobileSessionRebalance: vi.fn(async () => {}), askMobileSessionRebalance: vi.fn(), invoke: vi.fn(),
     parseMobileLocalSystemCommand: () => null, parseMobileDesktopCommand, pendingSkillSelectionRef: { current: null },
     resolveSessionAgentKind: () => 'pi', modelNeedsReselection: () => false, getCachedDeviceProviders: () => undefined,
     commandNeedsRemoteSession: () => false, extractMobileSessionReferences: () => [], outboxDispatchBlockedNow: () => false,
     runtimeOptions: { planModeSupported: true }, permissionModeOrAsk: (mode: string) => mode,
     dismissPromptRecommendation: noop, hydrateComposerMessageReferenceBodies: async (doc: unknown) => doc,
-    resolvePastedSessionLinkLabel: noop, requestMessageListFollowLatest: noop, hasPastePlaceholders: () => false,
+    resolvePastedSessionLinkLabel: noop, requestMessageListFollowLatest: noop, noteLocalSend: noop, hasPastePlaceholders: () => false,
     beginOutboxAttachmentHandoff: async () => ({ prepare: async () => [], release: noop }),
-    attachmentPreviews: {}, buildOutboxItem: (input: unknown) => input, createOutboxClientId: () => 'ordinary-message',
+    attachmentPreviews: {}, incomingShareSlotOrder, buildOutboxItem: (input: unknown) => input, createOutboxClientId: () => 'ordinary-message',
     mobileDurableOutbox: { add: vi.fn(async (_record: unknown) => {}) }, rememberSentAttachmentPreviews: noop,
     releaseUploadedSources: noop, setMediaAssetAttachments: noop, setAttachmentPreviews: noop,
     composerAnnotationsRef: { current: null }, setAttachments: noop, setAttachmentError: noop,

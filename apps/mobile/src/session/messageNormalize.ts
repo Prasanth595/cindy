@@ -1,3 +1,4 @@
+import { forwardedRequestDisplayText } from '@cindy/maker-shared/message-source';
 import { formatDuration } from '@cindy/maker-shared/message-render';
 import { parseMcpAppHistory } from '@cindy/maker-shared/mcp-apps';
 import { collectPluginInvocations, type PluginInvocation } from './pluginInvocations';
@@ -90,6 +91,8 @@ export interface NormalizedRemoteMessage {
   role: RemoteMessageRole;
   label: string;
   body: string;
+  /** Original forwarded envelope for fork / rewind; display-only decoding must not change drafts. */
+  draftBody?: string;
   rawError?: string;
   errorSummaryKey?: string;
   /** user 消息正文包含产品引用编码；驱动跨端 marker/legacy 解析。 */
@@ -414,6 +417,15 @@ export function normalizeRemoteMessages(
       continue;
     }
 
+    if (message.role === 'assistant' && readRecord(message.agentMeta?.modelChange)) {
+      result.push({
+        key: messageNormalizeKey(message), source: message, kind: 'system',
+        role: message.role, label: 'system:agent-switch', body: '',
+        systemCardType: 'agent-switch', systemCardData: readRecord(message.agentMeta?.modelChange)!,
+        align: 'agent', createdAt: message.createdAt,
+      });
+      continue;
+    }
     // Desktop persists context rebuilds as empty assistant rows with metadata.
     if (message.role === 'assistant') {
       const rebuild = readRecord(message.agentMeta?.contextRebuild);
@@ -576,7 +588,8 @@ export function normalizeRemoteMessages(
     // 本机 IM 落库的就是用户原文:正文保持完整落库内容,分叉 / 回退据此恢复草稿。
     const body = hookSource && !hookSource.userTextContent
       ? hookSource.userText
-      : message.role === 'assistant' ? stripGoalVerdictBlock(rawBody) : rawBody;
+      : message.role === 'assistant' ? stripGoalVerdictBlock(rawBody)
+        : readRecord(message.agentMeta?.origin)?.kind === 'session' ? forwardedRequestDisplayText(rawBody) : rawBody;
     const turnCost = readTurnCost(message);
     result.push({
       key: messageNormalizeKey(message),
@@ -585,6 +598,7 @@ export function normalizeRemoteMessages(
       role: message.role,
       label: message.role,
       body,
+      ...(message.role === 'user' && !hookSource && body !== rawBody ? { draftBody: rawBody } : {}),
       attachments: userContent?.attachments,
       ...(userContent?.quotesEncoded === true ? { quotesEncoded: true } : {}),
       sessionReferences: userContent?.sessionReferences,
@@ -613,6 +627,24 @@ export function normalizeRemoteMessages(
       ...(message.role === 'user' ? readMessageSourceFields(message) : {}),
       ...(hookSource ? { hookSource } : {}),
     });
+    const quotaResumeInfo = readRecord(message.agentMeta?.autoResumeInfo);
+    if (message.role === 'user' && quotaResumeInfo?.reason === 'usage-limit-reset') {
+      // Same durable row, two visible parts: retain the user's original input
+      // and show the existing recovery activity without creating another turn.
+      result.push({
+        key: `${messageNormalizeKey(message)}:usage-limit-resume`,
+        source: message,
+        kind: 'system',
+        role: message.role,
+        label: 'system:auto-resume',
+        body: '',
+        systemCardType: 'auto-resume',
+        systemCardData: quotaResumeInfo,
+        isSyntheticTrigger: true,
+        align: 'agent',
+        createdAt: message.createdAt,
+      });
+    }
   }
 
   const pluginInvocations = collectPluginInvocations(sorted, toolResultPairing);

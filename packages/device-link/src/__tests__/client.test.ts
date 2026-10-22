@@ -33,6 +33,7 @@ import {
   parseTransportAck,
   parseTransportPayload,
 } from '../transport.js';
+import { PLUGIN_SYNC_CHANNEL } from '../pluginSyncProtocol.js';
 import { DL_CONTACTS_SYNC_CHANNEL } from '../contactsSyncProtocol.js';
 import { resolveRemoteInvokeTimeoutMs } from '../invokePolicy.js';
 import { SESSION_ACTIVITY_CHANNEL } from '../topics.js';
@@ -245,14 +246,15 @@ describe('outbound invoke admission', () => {
       for (let i = 0; i < 6; i++) calls.push(h.client.invoke(peers[i % 3], {
         channel: 'git-context:pr-refs:list', args: [i],
       }).catch(e => e));
+      // An ordinary foreground write: sends are interactive and have their own allowance.
       for (let i = 0; i < 10; i++) calls.push(h.client.invoke(peers[i % 3], {
-        channel: 'maker:send', args: [i],
+        channel: 'maker:input:update-text', args: [i],
       }).catch(e => e));
       const sent = () => h.current().sent.filter(e => e.kind === 'invoke' && e.dst === 'desktop');
       expect(sent()).toHaveLength(12);
       expect(sent().filter(e => (e.payload as { channel: string }).channel === 'git-context:pr-refs:list')).toHaveLength(4);
       expect(sent().slice(0, 3).map(e => e.sharedTask?.sharedTaskId)).toEqual([undefined, 'task-a', 'task-b']);
-      calls.push(h.client.invoke(sharedTaskHostPeer('task-c', 'other'), { channel: 'maker:send', args: [] }).catch(e => e));
+      calls.push(h.client.invoke(sharedTaskHostPeer('task-c', 'other'), { channel: 'maker:input:update-text', args: [] }).catch(e => e));
       expect(h.current().sent.filter(e => e.kind === 'invoke' && e.dst === 'other')).toHaveLength(1);
       // A normal-stream response releases shared capacity; the next task keeps its scoped route.
       h.current().push({ v: PROTOCOL_VERSION, kind: 'invoke-result', src: 'desktop', id: sent()[4].id,
@@ -260,7 +262,7 @@ describe('outbound invoke admission', () => {
       await vi.advanceTimersByTimeAsync(1);
       expect(sent()).toHaveLength(13);
       expect(sent().at(-1)).toMatchObject({ dst: 'desktop', sharedTask: { sharedTaskId: 'task-b', target: { role: 'host' } },
-        payload: { channel: 'maker:send', args: [8] } });
+        payload: { channel: 'maker:input:update-text', args: [8] } });
     } finally {
       h.client.stop(); await Promise.all(calls); vi.useRealTimers();
     }
@@ -275,14 +277,14 @@ describe('outbound invoke admission', () => {
     try {
       h.client.start(); await vi.advanceTimersByTimeAsync(1); h.current().ack();
       for (let i = 0; i < 12; i++) calls.push(h.client.invoke('a', {
-        channel: 'maker:send', args: [i],
+        channel: 'maker:input:update-text', args: [i],
       }).catch(e => e));
       let current = true;
       const cancelled = new Error('owner changed while queued');
       const preSend = vi.fn(() => { if (!current) throw cancelled; });
-      const stale = h.client.invoke('a', { channel: 'maker:send', args: ['stale'] }, undefined, { preSend }).catch(e => e);
+      const stale = h.client.invoke('a', { channel: 'maker:input:update-text', args: ['stale'] }, undefined, { preSend }).catch(e => e);
       calls.push(stale);
-      calls.push(h.client.invoke('a', { channel: 'maker:send', args: ['fresh'] }).catch(e => e));
+      calls.push(h.client.invoke('a', { channel: 'maker:input:update-text', args: ['fresh'] }).catch(e => e));
       const sent = () => h.current().sent.filter(e => e.kind === 'invoke');
       expect(sent()).toHaveLength(12);
       expect(preSend).not.toHaveBeenCalled();
@@ -293,7 +295,7 @@ describe('outbound invoke admission', () => {
       expect(await stale).toBe(cancelled);
       expect(preSend).toHaveBeenCalledTimes(1);
       expect(sent()).toHaveLength(13);
-      expect(sent().at(-1)?.payload).toMatchObject({ channel: 'maker:send', args: ['fresh'] });
+      expect(sent().at(-1)?.payload).toMatchObject({ channel: 'maker:input:update-text', args: ['fresh'] });
       expect(sent().some(e => (e.payload as { args: unknown[] }).args[0] === 'stale')).toBe(false);
       expect(metrics.mock.calls.filter(([event]) => event.phase === 'sent')).toHaveLength(13);
     } finally {
@@ -3455,7 +3457,8 @@ describe('DeviceLinkClient', () => {
     h.client.stop();
   });
 
-  it('显式 close 后词典只读快照 push 仍走 unlinked legacy,不报 LINK_NOT_OPEN', async () => {
+  // PR #6569: plugin data sync remains independent from the control link (unit wire fixture).
+  it.each(['device-link:voice:dictionary:snapshot', PLUGIN_SYNC_CHANNEL])('显式 close 后 %s push 仍走 unlinked legacy,不报 LINK_NOT_OPEN', async (channel) => {
     const h = makeHarness({ timing: { pingIntervalMs: 1_000 } });
     h.client.start();
     await tick();
@@ -3488,7 +3491,7 @@ describe('DeviceLinkClient', () => {
     const sentBefore = h.current().sent.length;
     expect(() => h.client.sendPush(
       'dev-b',
-      'device-link:voice:dictionary:snapshot',
+      channel,
       { ok: true, entries: [] },
     )).not.toThrow();
     const sent = h.current().sent.at(-1)!;
@@ -3496,7 +3499,7 @@ describe('DeviceLinkClient', () => {
     expect(sent).toMatchObject({
       kind: 'push',
       dst: 'dev-b',
-      payload: { channel: 'device-link:voice:dictionary:snapshot' },
+      payload: { channel },
     });
     expect(parseTransportPayload(sent.payload)).toBeNull();
     h.client.stop();

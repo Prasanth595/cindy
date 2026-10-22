@@ -2242,7 +2242,9 @@ export async function createAnthropicCompatProxy(opts: ProxyOptions): Promise<Pr
         headers['accept-encoding'] = 'identity';
         installResponseGuard(res, () => res.statusCode >= 400
           ? new PassThrough() // Native clients treat HTTP failures as errors, never executable output.
-          : requestGuard!.response(res.getHeaders()));
+          : requestGuard!.response(res.getHeaders()), error => {
+          logger.warn?.('response guard rejected upstream payload', { reqId, err: String(error) });
+        });
       }
     } catch {
       res.writeHead(403); res.end(); req.resume(); return;

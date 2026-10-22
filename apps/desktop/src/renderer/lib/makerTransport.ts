@@ -198,6 +198,8 @@ export interface RoutableMaker {
   // —— 完整对等:会话级功能(fork / rewind / context-usage / extra-dirs / close / orca)——
   // 本地分支返回完整 maker 天然带这些;远程分支在 remoteMakerApi 里逐一隧道映射。
   fork: FullMaker['fork'];
+  createSideChat: FullMaker['createSideChat'];
+  listSideChats: FullMaker['listSideChats'];
   forkStripEncrypted: FullMaker['forkStripEncrypted'];
   rewindPreview: FullMaker['rewindPreview'];
   rewindCommit: FullMaker['rewindCommit'];
@@ -310,6 +312,8 @@ function remoteMakerApi(deviceId: string): RoutableMaker {
     ) as FullMaker['getPendingInteractions'],
     deleteMessage: t('maker:message:delete') as FullMaker['deleteMessage'],
     fork: t('maker:fork') as FullMaker['fork'],
+    createSideChat: t('maker:side-chat:v1') as FullMaker['createSideChat'],
+    listSideChats: t('maker:side-chat:list:v1') as FullMaker['listSideChats'],
     forkStripEncrypted: t('maker:fork-strip-encrypted') as FullMaker['forkStripEncrypted'],
     rewindPreview: t('maker:rewind:preview') as FullMaker['rewindPreview'],
     rewindCommit: t('maker:rewind:commit') as FullMaker['rewindCommit'],
@@ -384,6 +388,16 @@ export function agentCapabilitiesForDevice(
 export function makerApiFor(sessionId: string): RoutableMaker {
   const deviceId = getSessionDeviceId(sessionId);
   return deviceId ? makerApiForDevice(deviceId) : window.electronAPI.maker;
+}
+
+/**
+ * 输入框开始打字时请任务所在电脑提前启动 Agent。尽力而为：旧被控端没有该 channel、
+ * 断线或拒绝都只意味着下一次发送照常冷启动，调用方不需要处理结果。
+ */
+export function prewarmSessionFor(sessionId: string, createOpts: unknown): Promise<unknown> {
+  const deviceId = getSessionDeviceId(sessionId);
+  if (deviceId) return invokeRemote(deviceId, 'maker:session:prewarm', [sessionId, createOpts]);
+  return window.electronAPI.maker.prewarmSession?.(sessionId, createOpts) ?? Promise.resolve(undefined);
 }
 
 /**

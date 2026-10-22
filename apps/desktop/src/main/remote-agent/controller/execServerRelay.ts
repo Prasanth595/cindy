@@ -25,7 +25,7 @@ import {
 import { readExistingTextSync } from '../executor/files';
 import type { ExecutorAction, ExecutorGateDecision } from '../executor/gate';
 import { resolveExecutorShell } from '../executor/shell';
-import type { ExecutorWorkspace } from '../executor/workspace';
+import type { ExecutorAgentProjection, ExecutorWorkspace } from '../executor/workspace';
 
 export const EXEC_SERVER_WS_PATH = '/ws/exec-server';
 /** exec-server 单行(一条 JSON-RPC 消息)上限：大文件读写的 base64 也在这里面。 */
@@ -73,6 +73,8 @@ interface Connection {
   closed: boolean;
   /** 有消息在等本机确认时，后面的消息按顺序排在它后面。 */
   queue?: Promise<void>;
+  /** 异步准备输出路径时保持连接内顺序；不占用入站确认队列。 */
+  output?: Promise<void>;
   /**
    * 还在运行的进程(`process/start` 起的，收到 `process/closed` / `process/exited` 或启动失败前都算)。
    * Codex 的后台终端就是这些：编号在对方的 Codex 里，进程在这里，连接一断就没了。
@@ -292,40 +294,52 @@ function existingTextFor(target: unknown, workspace: ExecutorWorkspace): string 
   return workspace.isSensitive(local) ? null : readExistingTextSync(local);
 }
 
+/** 一条结果只解析一次目录；磁盘 realpath 走异步文件系统，不阻塞 Electron 主线程。 */
+export async function mapExecServerResult(value: unknown, workspace: ExecutorWorkspace, method?: string): Promise<unknown> {
+  const directories: string[] = [];
+  const collect = (item: unknown): void => {
+    if (!item || typeof item !== 'object') return;
+    if (Array.isArray(item)) { item.forEach(collect); return; }
+    const record = item as Record<string, unknown>;
+    if (record.environmentInfo && typeof record.environmentInfo === 'object') {
+      const info = record.environmentInfo as Record<string, unknown>;
+      for (const dir of [info.userHomeDir, info.tempDir, ...(Array.isArray(info.temporaryDirectories) ? info.temporaryDirectories : [])]) {
+        if (typeof dir !== 'string') continue;
+        try { directories.push(dir.startsWith('file://') ? fileURLToPath(dir) : dir); } catch { /* 无效 URI 不登记。 */ }
+      }
+    }
+    Object.values(record).forEach(collect);
+  };
+  collect(value);
+  if (directories.length) await workspace.virtualizeDirsAsync(directories);
+  return projectExecServerResult(value, await workspace.prepareAgentProjection(), method);
+}
+
 /** JSON 层逐字符串投影；文件 base64 数据保持原始字节，进程输出单独解码。 */
-export function mapExecServerResult(value: unknown, workspace: ExecutorWorkspace, method?: string): unknown {
+function projectExecServerResult(value: unknown, projection: ExecutorAgentProjection, method?: string): unknown {
   if (typeof value === 'string') {
     if (value.startsWith('file://')) {
       try {
         const uri = new URL(value);
         const real = fileURLToPath(uri);
-        const virtual = workspace.toAgentPath(real);
+        const virtual = projection.toAgentPath(real);
         if (virtual === real) return value;
         uri.host = '';
         uri.pathname = virtual.replace(/\\/g, '/');
         return uri.href;
       } catch { return value; }
     }
-    return workspace.mapTextForAgent(value);
+    return projection.mapTextForAgent(value);
   }
-  if (Array.isArray(value)) return value.map((item) => mapExecServerResult(item, workspace, method));
+  if (Array.isArray(value)) return value.map((item) => projectExecServerResult(item, projection, method));
   if (!value || typeof value !== 'object') return value;
   const record = value as Record<string, unknown>;
-  // 初始化里的 HOME / temp 同样只暴露本机虚拟目录；这些别名不增加执行权限。
-  if (record.environmentInfo && typeof record.environmentInfo === 'object') {
-    const info = record.environmentInfo as Record<string, unknown>;
-    const directories = [info.userHomeDir, info.tempDir, ...(Array.isArray(info.temporaryDirectories) ? info.temporaryDirectories : [])];
-    workspace.virtualizeDirs(directories.flatMap((dir) => {
-      if (typeof dir !== 'string') return [];
-      try { return [dir.startsWith('file://') ? fileURLToPath(dir) : dir]; } catch { return []; }
-    }));
-  }
   const currentMethod = typeof record.method === 'string' ? record.method : method;
   return Object.fromEntries(Object.entries(record).map(([key, item]) => {
     if (currentMethod === 'process/output' && key === 'chunk' && typeof item === 'string') {
-      return [key, workspace.mapOutputForAgent(Buffer.from(item, 'base64')).toString('base64')];
+      return [key, projection.mapOutputForAgent(Buffer.from(item, 'base64')).toString('base64')];
     }
-    return [key, mapExecServerResult(item, workspace, currentMethod)];
+    return [key, projectExecServerResult(item, projection, currentMethod)];
   }));
 }
 
@@ -363,7 +377,8 @@ export class ExecServerRelay {
    * 这时断开对方的 Agent 会丢掉它们，连接池不让出名额。
    */
   busy(): boolean {
-    return this.outbox.length > 0 || Boolean(this.flushing) || this.hasWork();
+    return this.outbox.length > 0 || Boolean(this.flushing) || this.hasWork()
+      || [...this.connections.values()].some((connection) => Boolean(connection.output));
   }
 
   /** 各条连接上还有没有工作(在跑的进程、启动中的请求、待确认的消息)；还没推完的帧不算。 */
@@ -413,6 +428,7 @@ export class ExecServerRelay {
     this.connections.set(connId, connection);
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk: string) => {
+      if (connection.closed) return;
       connection.buffer += chunk;
       for (;;) {
         const index = connection.buffer.indexOf('\n');
@@ -421,7 +437,7 @@ export class ExecServerRelay {
         connection.buffer = connection.buffer.slice(index + 1);
         if (line.trim()) {
           this.trackOutbound(connection, line);
-          this.sendMessage(connId, this.projectOutbound(line));
+          this.enqueueOutput(connId, connection, line);
         }
       }
       if (connection.buffer.length > MAX_LINE_CHARS) {
@@ -430,8 +446,15 @@ export class ExecServerRelay {
       }
     });
     child.stderr.resume();
-    child.on('error', () => this.dropConnection(connId, true));
-    child.on('exit', () => this.dropConnection(connId, true));
+    child.on('error', () => {
+      if (this.connections.get(connId) === connection) this.dropConnection(connId, true);
+    });
+    // close 在 stdout 完全读完后触发；尾部结果的异步投影完成后才通知对端连接结束。
+    child.on('close', () => {
+      void (connection.output ?? Promise.resolve()).then(() => {
+        if (this.connections.get(connId) === connection) this.dropConnection(connId, true);
+      });
+    });
   }
 
   private forward(connId: string, data: string): void {
@@ -558,12 +581,36 @@ export class ExecServerRelay {
     }));
   }
 
-  private projectOutbound(line: string): string {
+  private enqueueOutput(connId: string, connection: Connection, line: string): void {
+    connection.child.stdout.pause();
+    const next = (connection.output ?? Promise.resolve()).then(async () => {
+      if (connection.closed) return;
+      const projected = await this.projectOutbound(line);
+      if (!connection.closed) this.sendMessage(connId, projected);
+    }).catch(() => {
+      // 不发送未投影的本机路径；只结束这条连接，不能影响同一设备上的其它任务。
+      if (!connection.closed) {
+        this.deps.log?.warn('remote agent: exec-server output projection failed; closing connection', { connId });
+        this.dropConnection(connId, true);
+      }
+    });
+    connection.output = next;
+    void next.then(() => {
+      if (connection.output !== next) return;
+      connection.output = undefined;
+      if (!connection.closed) connection.child.stdout.resume();
+    });
+  }
+
+  private async projectOutbound(line: string): Promise<string> {
+    let value: unknown;
     try {
-      return JSON.stringify(mapExecServerResult(JSON.parse(line), this.deps.workspace));
+      value = JSON.parse(line);
     } catch {
-      return this.deps.workspace.mapTextForAgent(line);
+      const projection = await this.deps.workspace.prepareAgentProjection();
+      return projection.mapTextForAgent(line);
     }
+    return JSON.stringify(await mapExecServerResult(value, this.deps.workspace));
   }
 
   private dropConnection(connId: string, notifyRemote: boolean): void {

@@ -103,6 +103,9 @@ Telegram / Slack / X）是同一件事的两套实现：把渠道里的一条消
    workdir 快照放行，再由 `codexEnvironment.buildSessionMcpConfig` / `piEnvironment` 逐会话收可见性）。
    渠道工具租约还被 `botSkillService` 复用来判定专线上「是不是主人触发的轮次」；没有 `channelToolScopeFor`
    的可绑定渠道靠 `LaneTurnScope` 兜住这一判定，否则主人在专线上也只能只读技能。
+   `onAccepted` 成功落库后把本轮输入的 `clientId` 绑定到同一租约；事件持久化在租约释放前
+   将它写为 `replyToClientId`。后台学习只据这条确切输入的持久主人来源判定，不借用后续轮次
+   的租约或最近一条消息。受保护内容未落库时不绑定，复用作用域前清除旧输入。
    6b. **发送前上下文体检同源**：个人 IM 的 `dispatchQueuedSend` 在伙伴守卫（`companion.prepareSend`）
    之后、拿发送锁（`acquirePendingAgentSwitch`）之前调用 `deps.prepareUnhealthySession`（orchestrator 接
    `register.prepareUnhealthySessionForSend`），与桌面直发、官方 hook 走同一个

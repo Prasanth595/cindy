@@ -198,6 +198,7 @@ beforeEach(() => {
   vi.mocked(toast.success).mockClear();
   command.mockReset();
   command.mockImplementation(async (cmd: { action: string }) => {
+    if (cmd.action === 'get-model-access') return { version: 1, models: null, providerModels: null, availableModels: [] };
     if (cmd.action === 'get-visibility') return { quota: false, usage: false };
     if (cmd.action === 'owned') return owned();
     if (cmd.action === 'own-usage') return ownUsage();
@@ -271,6 +272,25 @@ function renderPage(
 }
 
 describe('ProviderShareManagePage', () => {
+  // Verify the person's row opens a grant for that member, rather than editing the provider-wide policy.
+  it('opens and saves the selected person’s model grant from their row menu', async () => {
+    const respond = command.getMockImplementation()!;
+    const models = { version: 1, models: null, providerModels: null,
+      availableModels: [{ id: 'small', name: 'Small' }, { id: 'large', name: 'Large' }] };
+    command.mockImplementation(async (cmd) => {
+      if (cmd.action === 'get-model-access' || cmd.action === 'set-model-access') return models;
+      return respond(cmd);
+    });
+    renderPage();
+    fireEvent.click(within(await findMemberRow()).getByRole('button', { name: 'providerShare.modelAccess.memberTitle' }));
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(await within(dialog).findByRole('checkbox', { name: 'Large' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'settings.providers.custom.save' }));
+    await waitFor(() => expect(command).toHaveBeenCalledWith({
+      action: 'set-model-access', providerId: 'xd', memberId: 'mem-1', models: ['small'],
+    }));
+  });
+
   /* 测试价值：2026-10-19 用户备注；生产页面的新增入口、保存/清空、原用户名与筛选同步显示。
    * 现有测试只有暂停/删除。最小输入：一个成员，分别在本机和 studio 管理。tier: unit。
    * 单文件实测 17.21 秒，其中导入 7.16 秒、30 用例 8.61 秒；复用既有页面与完整用量图表 fixture，

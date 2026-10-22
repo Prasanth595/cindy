@@ -1,4 +1,4 @@
-import { isPeerResetRetryableInvoke, isBackgroundInvoke, bypassInvokeScheduling } from './invokePolicy.js';
+import { isPeerResetRetryableInvoke, bypassInvokeScheduling, resolveInvokePriority } from './invokePolicy.js';
 import { InvokeScheduler } from './invokeScheduler.js';
 import { SessionMessageReuse } from './sessionMessageReuse.js';
 import {
@@ -14,6 +14,8 @@ import { PROVIDER_SHARE_RELAY_CAPABILITY, ROUTED_KINDS, SHARED_TASK_RELAY_CAPABI
 import {
   requestSessionTagCatalog,
   decodeSessionTagCatalog,
+  decodeModelSpeedPayload,
+  encodeModelSpeedPayload,
 } from './sessionListTransport.js';
 import { CongestionSendBudget } from './congestionSendBudget.js';
 import { PUSH_FORWARD_ALLOWLIST, REMOTE_INVOKE_ALLOWLIST } from './allowlist.js';
@@ -67,6 +69,7 @@ import {
   byteLength,
   type RetransmitEstimate,
 } from './transport.js';
+import { PLUGIN_SYNC_CHANNEL } from './pluginSyncProtocol.js';
 import { MAKER_EVENT_BATCH_CHANNEL } from './topics.js';
 
 /** Budget measurement: physical wire envelope size regardless of relay announcement. */
@@ -1469,12 +1472,12 @@ export class DeviceLinkClient {
       return result.ok
         ? {
             ...result,
-            result: reuse.decode(decodeSessionTagCatalog(payload.channel, result.result)),
+            result: reuse.decode(decodeModelSpeedPayload(payload.channel, decodeSessionTagCatalog(payload.channel, result.result))),
           }
         : result;
     };
     return bypassInvokeScheduling(payload) ? send() : this.invokeScheduler.run(
-      dst, options?.background ?? isBackgroundInvoke(payload.channel),
+      dst, resolveInvokePriority(payload.channel, options?.background),
       Math.min(timeoutMs ?? this.timing.requestTimeoutMs, 30_000), send,
     );
   }
@@ -1607,6 +1610,7 @@ export class DeviceLinkClient {
     payload: unknown,
     ownerStamp?: import('./protocol.js').PushOwnerStamp,
   ): void {
+    payload = encodeModelSpeedPayload(channel, payload);
     if (this.status !== 'online') return;
     const pushPayload = {
       channel,
@@ -2988,7 +2992,9 @@ export class DeviceLinkClient {
     }
     if (env.kind === 'push' && env.src) {
       const push = env.payload as { channel: string; payload: unknown };
-      this.messageReuse.receive(env.src, push.channel, push.payload);
+      const decoded = decodeModelSpeedPayload(push.channel, push.payload);
+      if (decoded !== push.payload) env = { ...env, payload: { ...push, payload: decoded } };
+      this.messageReuse.receive(env.src!, push.channel, decoded);
     }
     let ok = true;
     let chain: Promise<void> | null = null;
@@ -5227,6 +5233,9 @@ const UNLINKED_LEGACY_INVOKE_CHANNELS = new Set([
   'maker:git-safety:get',
 ]);
 const UNLINKED_LEGACY_PUSH_CHANNELS = new Set([
+  // Same-account encrypted sync does not require an open remote-control link.
+  // The Desktop plugin-sync receiver still checks owner, revocation and capability.
+  PLUGIN_SYNC_CHANNEL,
   'device-link:voice:dictionary:snapshot',
 ]);
 
