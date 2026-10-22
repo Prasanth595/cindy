@@ -1844,6 +1844,11 @@ export interface DeviceHostedLinkActivity {
   execRoundTripMaxMs?: number;
   /** 正在经隧道处理的 Cindy 工具(HTTP)请求数。 */
   httpInFlight: number;
+  /**
+   * 隧道上现在开着的 WebSocket 连接数(Codex 的执行环境连接走这里)。为 0 时执行环境可能已断开或从没连上；
+   * 旧接线不提供时缺省。
+   */
+  wsConnectionsOpen?: number;
 }
 
 /** 受邀者会话的供应商边界，见 DeviceHostedSession.guestProvider。 */

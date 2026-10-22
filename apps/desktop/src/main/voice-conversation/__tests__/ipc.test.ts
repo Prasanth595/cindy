@@ -65,6 +65,7 @@ vi.mock('../dialogue.js', () => ({ CompanionCallDialogue: class {
 import { normalizeVoiceInputSettings } from '../../../shared/voiceInputData.js';
 import { registerVoiceConversationIpc } from '../index.js';
 import { outboundFetch } from '../../maker-host/outbound-fetch.js';
+import { clearModelVisibilityMirror, setModelVisibilityMirror } from '../../maker-host/model-visibility-mirror.js';
 const sender = (id = 1) => ({ sender: { id, once: vi.fn() } });
 const call = (name: string, ...args: unknown[]) =>
   h.handlers.get(`voice-conversation:${name}`)!(sender(), ...args);
@@ -74,6 +75,7 @@ beforeEach(() => {
   h.trusted.mockReset();
   h.append.mockReset();
   h.boundary = false;
+  setModelVisibilityMirror({});
   vi.mocked(outboundFetch).mockReset();
   let settings = normalizeVoiceInputSettings({});
   registerVoiceConversationIpc({
@@ -95,6 +97,7 @@ beforeEach(() => {
   });
 });
 afterEach(async () => {
+  clearModelVisibilityMirror();
   h.trusted.mockReset();
   await call('end', 'call');
   await call('stop-preview', 'preview');
@@ -107,6 +110,19 @@ const start = () =>
     modelId: 'voice-test',
     voice: 'alloy',
   });
+
+// PR #6768 unit regression: model discovery must wait for current-owner display
+// preferences. Existing IPC tests start with ready state and cannot catch this race.
+it('waits for display preferences before returning the speech picker catalog', async () => {
+  clearModelVisibilityMirror();
+  const ready = vi.fn();
+  const pending = call('models') as Promise<unknown>;
+  void pending.then(ready);
+  await Promise.resolve();
+  expect(ready).not.toHaveBeenCalled();
+  setModelVisibilityMirror({});
+  await expect(pending).resolves.toEqual([expect.objectContaining({ id: 'voice-test' })]);
+});
 
 // Oct 21 TTS stall: transport tests did not cover the IPC catch-all losing its
 // timeout cause. Unit: real handlers/service/transport, stalled fetch or PCM read.

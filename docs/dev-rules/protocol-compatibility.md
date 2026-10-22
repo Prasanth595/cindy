@@ -1297,7 +1297,8 @@ Codex 原生图片恢复（#6412）在既有 `maker:remote-agent:v1` 上追加�
 
 - **方向**：A 始终是发起方。`open / call / reply / push / close / upload / caps` 是 A → B 的指令，
   `poll` 按游标拉取 B 的 NDJSON 事件流：同一台 B 上的全部任务共用一个 poll(一次带上各任务游标，
-  最多 64 个；无新数据时 B 挂起最多 10s)。A 登记新任务时可再发一个覆盖全部任务的 poll，两个 poll
+  最多 64 个；无新数据时 B 挂起最多 10s)。A 登记新任务时可再发一个覆盖全部任务的 poll(两个长等待都只含
+  旧任务时再多一个只为新任务补位的，合计最多 3 个；只是 A 本地调度，B 对并发 poll 本来就逐个处理)，几个 poll
   返回的数据可能重叠，回包里的 `from` 标明数据起点，A 按 `from` 去重、游标只进不退；B 不认识的任务
   或超出已写范围的游标回 `missing`。B 需要 A 处理的事(权限确认、执行器与 MCP 的 HTTP 请求、
   Codex exec-server 的 WebSocket 帧、`cancel`)都作为事件流里的反向请求，A 用 `reply / push` 回传。
@@ -1319,6 +1320,13 @@ Codex 原生图片恢复（#6412）在既有 `maker:remote-agent:v1` 上追加�
   `fs/readFile`、`fs/open` 的缺省/read 模式与目录读取按读取，显式非 read 的 open 模式仍从严按写入；`fs/walk` 按
   目录级读取，`fs/getMetadata`、`fs/canonicalize` 等只看元数据的不过闸门，其余 `fs/` 方法按写入；
   升级 Codex 后核对 exec-server 新增的方法，只读的要显式归类，否则会被当成写入拒掉(#5764)。
+  B 的隧道对镜像根内 A 映射不到的虚拟垫层，以及 A 在 `open` 的 `ancestorMarkers` 里明确报了「没有」的上级目录
+  标记，只读查询由 B 本机回答。镜像根外的绝对路径照常转发，只有两端路径格式相同且 A 明确报告其缺失的标记
+  才可本机回答；隐藏文件和未知外部标记不能凭名字判不存在。本机回答使用
+  原生的不存在错误 `-32004`(固定版本 `codex-rs/exec-server/src/remote_file_system.rs` 按 NotFound 处理)，不转给 A；
+  B 的 Codex 在执行环境断开时按同一个 id 重新 `environment/add`，先用实验接口 `environment/status` 判断。两者都随
+  Codex 版本可能变化，升级时一并核对(见 [`remote-and-mobile-adaptation.md`](remote-and-mobile-adaptation.md)
+  「托管 Codex 启动的跨机往返与执行环境恢复」)。
   非完全访问档下 `process/start` 与 `fs/*` 带 `sandbox`(固定版本 `codex-rs/file-system/src/lib.rs` 的
   `WireFileSystemSandboxContext`)，其中目录与权限条目都是 B 上看到的 file URI，中继换成 A 的路径：虚拟工作区内的
   映射为本机路径(绝对 glob 里本机目录名按字面转义)；不在其中的是 B 自己的目录(如它的 Codex 记忆目录)，读写
@@ -1331,7 +1339,10 @@ Codex 原生图片恢复（#6412）在既有 `maker:remote-agent:v1` 上追加�
   `CLAUDE.md` / `CLAUDE.local.md` / `AGENTS.md` / `AGENTS.override.md`，按层级 `up`，最多 24 级)与
   `personal`(A 的个人配置：Claude Code 的 `~/.claude/CLAUDE.md`、`skills/agents/commands/rules`、`settings.json`
   里的权限规则；Codex 的 `AGENTS(.override).md`；Codex / Pi 的个人 Skill 放在 `.agents/skills`、
-  `.codex/skills`；不含 hooks / env)。两者缺省按空处理。B 把影子目录按
+  `.codex/skills`；不含 hooks / env)。两者缺省按空处理。Codex 任务另带可选的 `ancestorMarkers`
+  (`{ names, levels: [{ up, present }] }`：A 检查过的名字与各级上级目录里存在的那些，`up` 从 1 起到根目录、最多
+  24 级)，只报名字在不在、不带内容，Agent 本来就能逐个查到，不多泄露上级目录的其它内容；格式有任何不对 B 整段丢弃。
+  旧 A 不带、旧 B 解码时丢弃，都退回逐个转发，只是慢。B 把影子目录按
   A 的真实路径逐级镜像在 `<runs>/workspaces/<控制端>/<任务>/fs/` 下，`open` 回包的 `mirrorRoot` 告诉 A
   镜像根，A 据此把影子路径逐级映射回真实路径；项目里已有的同名文件以项目为准。A 收集这些文件时跟随
   符号链接(与本机 Agent 加载一致，只防链接绕回上级目录与指向整个用户目录)，额度先给入口文件(SKILL.md、
@@ -1446,11 +1457,15 @@ Codex 原生图片恢复（#6412）在既有 `maker:remote-agent:v1` 上追加�
   字段；这两个协议位是整台 A 的，控制端用 A 一定注册的 Claude Code 读(Worker 选的 Agent 可能只装在 Agent 所在
   电脑上)。开启协同提交前再按能力核对一次，降级的 A 直接失败、不静默建错；控制端读不到 Lead 所在位置的目录时
   (控制端自己、只有 A 收到的分享)维持 A 的目录、不发这个字段。A 在占槽与启动前读那台的目录，读不到回
-  `REMOTE_AGENT_DEVICE_UNREACHABLE` / `REMOTE_AGENT_SHARE_*`；与运行设备(`executionDeviceId`)同给、SSH Lead 回
-  `INVALID_PARAMS`。Worker 列表(`local-db:orca-workflows:list-workers-by-lead` 的 `session.agentDeviceId`)只在 Agent
+  `REMOTE_AGENT_DEVICE_UNREACHABLE` / `REMOTE_AGENT_SHARE_*`；SSH Lead 回
+  `INVALID_PARAMS`。与 `executionDeviceId` 同给时，位置相对工作电脑，省略或 null 使用该电脑默认；
+  Lead 的 Agent 在其他电脑运行不影响创建。工作电脑 `remote-worker:caps.agentDevice: true` 且 Lead 的
+  `execution-devices` 投影 `supportsAgentDevice: true` 才开放独立位置；显式字段发给旧端前返回
+  `UNSUPPORTED_CAPABILITY`，不静默建错。新增同账号 `maker:orca:remote-worker:models` 查询 `{agent?, agentDeviceId?}`，
+  返回模型列表与 `locations`；共享访客不可调用。open 新增可选 `agentDeviceId`，回包可带准入后的
+  `agentDeviceId` / `providerId`；旧请求仍保持原行为。`list_available_models.execution_device_id` 从工作电脑读取目录。Worker 列表(`local-db:orca-workflows:list-workers-by-lead` 的 `session.agentDeviceId`)只在 Agent
   不在任务所在电脑时带值，旧端忽略即可。Lead 的 MCP 工具同步：`list_available_models` 可选 `agent_device_id` 并返回
-  `locations`，`create_worker` / `create_workers` 可选 `agent_device_id`(`"local"` = 任务所在电脑)。不新增 channel，
-  allowlist 不变。回归见 `orcaWorkerCreationService.test.ts`、`CreateWorkerPopover.test.tsx`、Mobile
+  `locations`，`create_worker` / `create_workers` 可选 `agent_device_id`(`"local"` = 任务所在电脑)。同账号 allowlist 新增上述 models 查询；共享任务清单不变。回归见 `orcaWorkerCreationService.test.ts`、`CreateWorkerPopover.test.tsx`、Mobile
   `orcaTeam.test.ts` / `useOrcaWorkerForm.test.tsx`。
 - **账号余量**(2026-10-09)：这一轮消耗的是 Agent 所在那台(B)的账号，桌面底部用量 chip 与手机任务菜单都改读 B 的
   余量，不读任务所在电脑(本机或被控电脑)的同名账号。直接经 device-link 调 B 已有的 `maker:usage:*` 读取与推送
@@ -1581,6 +1596,13 @@ Codex 原生图片恢复（#6412）在既有 `maker:remote-agent:v1` 上追加�
 
 ## 协同远端 Worker：Worker 在另一台电脑运行
 
+`maker:input:get-projection` 的既有输入投影可选增加 `turnInProgress`，由输入协调器按
+当前派发、运行、交互及终态持久化边界生成；它不表示 vendor 的 `isTurnRunning`。
+Lead 的自动回报同时识别既有 `autoResumePending`、`usageLimitWait` 和隐藏续跑队列，
+读取历史后再次核对投影，恢复期间保留原派活身份，不推进回报去重游标。旧查看端忽略新字段；
+新 Lead 连接旧运行端时仍使用既有恢复字段，完整的进行中边界核对需要运行端同时更新。
+只调整单个 Worker 的回报收尾，不改变通道、权限、relay、服务端或 Mobile 原生配置。
+
 主动回报可选追加 `maker:orca:remote-worker:bridge`，仅同账号 allowlist；不进入共享任务、
 供应商分享清单。运行设备从本机持久来源标记选定 Lead 电脑，传真实任务 ID、Lead ID、
 四个既有 Worker 工具名之一与其原参数。Lead 从 server 盖章的来源设备 ID 反查 active team
@@ -1618,7 +1640,7 @@ B 上的 Worker 是一条普通任务，`sessions.orca_remote_lead`(migration 01
 方案与产品决策见 [`../orca-cross-device-worker-plan.md`](../orca-cross-device-worker-plan.md)。
 
 - **新增 channel**(`packages/device-link/src/orcaRemoteWorker.ts`，只进同账号 allowlist，不进共享任务清单)：
-  `maker:orca:remote-worker:caps`(能力探测，回 `{ version }`)、`…:open`(按 A 给定的任务 id 新建 Worker 任务，
+  `maker:orca:remote-worker:caps`(能力探测，回 `{ version, agentDevice? }`)、`…:models`(查询工作电脑的模型与 Agent 位置)、`…:open`(按 A 给定的任务 id 新建 Worker 任务，
   幂等；超时 60s)、`…:release`(结束协同，任务与文件保留，幂等)。B 侧实现见
   `apps/desktop/src/main/maker-ipc/orcaRemoteWorkerHost.ts`。
 - **幂等 open 的终态检查**：同来源、同 Lead 且未 release 的已有任务也必须仍为 `active`；

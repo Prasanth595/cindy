@@ -1228,6 +1228,8 @@ const CRITICAL_THREAD_RPC_TIMEOUT_MS = 60_000;
 // 往来、或从发出起等满 5 分钟, 仍按超时收口(错误里带链路计数)。
 const HOSTED_THREAD_RPC_IDLE_MS = 30_000;
 const HOSTED_THREAD_RPC_MAX_MS = 5 * 60_000;
+// 设备托管：执行环境已断开时，下一轮开始前查询它状态的上限(只在隧道上已没有执行环境连接时查)。
+const HOSTED_ENVIRONMENT_STATUS_TIMEOUT_MS = 10_000;
 
 /**
  * upstream-response-idle watchdog 阈值 — codex 侧对齐 claude-code 的同名机制
@@ -6475,6 +6477,47 @@ assertRouteCurrent();
       };
     }
 
+    /** 设备托管：把任务所在电脑的 exec-server 登记成执行环境(同一个 id 再登记会换成新连接)。 */
+    async function addHostedEnvironment(): Promise<void> {
+      if (!hosted || !hostedEnvironmentId) return;
+      assertCurrentHost('environment/add');
+      await host.request(Method.EnvironmentAdd, {
+        environmentId: hostedEnvironmentId,
+        execServerUrl: `${stripTrailingSlashes(hosted.tunnelUrl.replace(/^http/, 'ws'))}/ws/exec-server`,
+        authBearerToken: hosted.tunnelToken,
+      }, { timeoutMs: CRITICAL_THREAD_RPC_TIMEOUT_MS });
+      assertCurrentHost('environment/add');
+    }
+
+    /**
+     * 设备托管：执行环境首次握手失败(如 10 秒内没等到 initialize 回包)后，Codex 把这个环境记为失败，之后
+     * 每一轮都跳过它——模型能回答，却没有 Shell 与文件工具，链路恢复也不会自己重连(固定 Codex 0.159.2：
+     * 首次连接的结果只记一次)。下一轮开始前，隧道上已没有执行环境连接时问一次 Codex；环境已断开或已不在，
+     * 就按同一个 id 重新登记，这一轮 turn/start 带上的环境选择会换成新连接。连接还开着时不发任何请求，
+     * 正常发送路径不多一次往返。查询或重新登记失败只记日志，照常发送(不比原来更差)。
+     */
+    function repairHostedEnvironmentIfDisconnected(): Promise<void> | undefined {
+      if (!hosted || !hostedEnvironmentId) return undefined;
+      const openConnections = hosted.linkActivity?.().wsConnectionsOpen;
+      if (openConnections === undefined || openConnections > 0) return undefined;
+      return (async () => {
+        try {
+          const response = await host.request<{ status?: unknown; error?: unknown }>(
+            Method.EnvironmentStatus, { environmentId: hostedEnvironmentId },
+            { timeoutMs: HOSTED_ENVIRONMENT_STATUS_TIMEOUT_MS },
+          );
+          if (response.status !== 'disconnected' && response.status !== 'unknown') return;
+          log.warn('codex: hosted execution environment is not connected; registering it again', {
+            status: response.status,
+            ...(typeof response.error === 'string' ? { error: response.error.slice(0, 300) } : {}),
+          });
+          await addHostedEnvironment();
+        } catch (error) {
+          log.warn('codex: hosted execution environment check failed', { error: String(error) });
+        }
+      })();
+    }
+
     /**
      * thread/start、thread/resume、turn/start 的等待上限。设备托管且宿主提供了隧道往来记录时，链路上
      * 还有往来就顺延(见 HOSTED_THREAD_RPC_IDLE_MS)；其它会话保持固定 60s。
@@ -7175,13 +7218,7 @@ assertRouteCurrent();
         }
         assertCurrentHost('experimentalFeature/list');
       }
-      assertCurrentHost('environment/add');
-      await host.request(Method.EnvironmentAdd, {
-        environmentId: hostedEnvironmentId,
-        execServerUrl: `${stripTrailingSlashes(hosted.tunnelUrl.replace(/^http/, 'ws'))}/ws/exec-server`,
-        authBearerToken: hosted.tunnelToken,
-      }, { timeoutMs: CRITICAL_THREAD_RPC_TIMEOUT_MS });
-      assertCurrentHost('environment/add');
+      await addHostedEnvironment();
     }
     if (opts.resumeSessionId && isLikelyValidThreadId(opts.resumeSessionId)) {
       // Phase 3: thread/resume is the historical-session path. Only the exact
@@ -13270,6 +13307,8 @@ assertRouteCurrent();
           if (contextRefresh) await contextRefresh;
           const profileRefresh = ensureWorkspacePermissionProfileForNextTurn(sendOpts?.signal);
           if (profileRefresh) await profileRefresh;
+          const environmentRepair = repairHostedEnvironmentIfDisconnected();
+          if (environmentRepair) await environmentRepair;
           turnWorkspaceConfig = currentTurnWorkspaceConfig();
           // A stale-daemon retry must hydrate the exact thread-level profile
           // that matches this turn, not mutable settings changed while the

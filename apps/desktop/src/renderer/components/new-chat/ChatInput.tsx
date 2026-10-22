@@ -15,7 +15,7 @@ import {
 import { isSharedTaskPeer } from '@cindy/device-link';
 import { useNavigate } from 'react-router-dom';
 import { buildLocalSkillPathRoute } from '@/features/skillhub/lib/localRoutes';
-import { AudioLines, Folder, MessageSquarePlus, Mic, TriangleAlert, X } from 'lucide-react';
+import { Folder, MessageSquarePlus, Mic, TriangleAlert, X } from 'lucide-react';
 import { useStableTranslation as useTranslation } from '@/hooks/useStableTranslation';
 import type { AgentInputReference } from '@cindy/maker-shared/agent-input-projection';
 import { CINDY_MAKE_ENABLED } from '@cindy/maker-shared/cindy-make-feature';
@@ -3685,7 +3685,6 @@ export function ChatInput({
   useEffect(() => {
     if (!composerLongPressVoiceInputEnabled) return;
     let capture: { pointerId: number; target: Element } | null = null;
-    let gesture: ComposerLongPressVoiceGesture;
 
     const handleLostPointerCapture = (event: Event) => {
       if (!(event instanceof PointerEvent)) return;
@@ -3707,7 +3706,7 @@ export function ChatInput({
       }
     };
 
-    gesture = createComposerLongPressVoiceGesture({
+    const gesture = createComposerLongPressVoiceGesture({
       getState: () => voiceInputGetStateRef.current(),
       start: () => handleVoiceInputStartRef.current(),
       stop: () => voiceInputStopRef.current(),
@@ -4041,7 +4040,7 @@ export function ChatInput({
       saveComposerTextAfterAsyncTransition(prevEditorKey, editor.getJSON(), recoveryCheckpoint!);
     };
 
-    let cancelled = false;
+    const cancelled = false;
     const isCurrentTransition = () =>
       !cancelled &&
       !editor.isDestroyed &&
@@ -8865,6 +8864,16 @@ export function ChatInput({
   const showSecondaryStop =
     !queueEditActive &&
     showStopButton && (canSend || voiceBusyOnCurrentComposer) && !sendDispatchInFlight;
+  // Companion-only idle action: keep the existing send/stop slots and voice-release
+  // target. Recording/refinement and queue editing must never become "start call".
+  const mainSlotIsVoice = Boolean(
+    onStartVoiceConversation &&
+      !queueEditActive &&
+      !mainSlotIsStop &&
+      !canSend &&
+      !hasVoiceDraftText &&
+      !voiceBusyOnCurrentComposer,
+  );
   useEffect(() => {
     voiceInputCanStopAndSendRef.current = !queueEditActive && !sendButtonDisabled;
     composerCanSubmitRef.current = !sendButtonDisabled;
@@ -9759,20 +9768,6 @@ export function ChatInput({
                       }
                     />
                   )}
-                  {!queueEditActive && onStartVoiceConversation ? (
-                    <Tip text={t('bots.voiceMode.startConversation')} side="top">
-                      <button
-                        ref={voiceConversationButtonRef}
-                        type="button"
-                        aria-label={t('bots.voiceMode.startConversation')}
-                        disabled={voiceConversationDisabled || composerEditorLocked || !editor || voiceInput.isBusy}
-                        onClick={onStartVoiceConversation}
-                        className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-full border border-[var(--border-default)] bg-[var(--composer-pill-bg)] text-[var(--composer-pill-icon)] transition-colors hover:bg-[var(--model-trigger-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring-soft)] disabled:cursor-not-allowed disabled:opacity-40"
-                      >
-                        <AudioLines size={15} aria-hidden="true" />
-                      </button>
-                    </Tip>
-                  ) : null}
                   {/* mousedown 吃掉默认行为:否则点发送会把焦点从 contenteditable
                       挪到 button 上,发完光标就没了(接着打字要先点回输入框),
                       推荐提示词的 Tab 也会因为编辑器失焦而落到原生焦点导航上。
@@ -9789,6 +9784,8 @@ export function ChatInput({
                   >
                     {mainSlotIsStop ? (
                       <SendButton
+                        ref={voiceConversationButtonRef}
+                        companionVoice={Boolean(onStartVoiceConversation)}
                         disabled={false}
                         onClick={handleStop}
                         isStreaming
@@ -9797,7 +9794,9 @@ export function ChatInput({
                     ) : (
                       <Tip
                         text={
-                          queueEditActive
+                          mainSlotIsVoice
+                            ? t('bots.voiceMode.startConversation')
+                            : queueEditActive
                             ? t('newChat.pendingQueue.editSaveAria')
                             : voiceReleaseToSendActive
                             ? t('newChat.chatInput.voiceInput.releaseToSend')
@@ -9815,7 +9814,11 @@ export function ChatInput({
                                   ? `${t('newChat.sendButton.send')} · ${composerSendShortcutLabel}`
                                   : selectedSourceDisconnected
                                     ? t('newChat.sourceDisconnected.sendBlocked')
-                                    : null
+                                    : onStartVoiceConversation
+                                      // Keep Tip mounted while the shared action is disabled:
+                                      // removing it remounts the button, losing focus and motion.
+                                      ? t('newChat.sendButton.send')
+                                      : null
                         }
                         side="top"
                         forceOpen={voiceReleaseToSendActive}
@@ -9825,19 +9828,28 @@ export function ChatInput({
                             running 时“排队/快捷键插话”提示完全不出现。 */}
                         <span className="inline-flex rounded-full">
                           <SendButton
-                            disabled={sendButtonDisabled}
+                            ref={voiceConversationButtonRef}
+                            companionVoice={Boolean(onStartVoiceConversation)}
+                            disabled={
+                              mainSlotIsVoice
+                                ? voiceConversationDisabled || composerEditorLocked || !editor || voiceInput.isBusy
+                                : sendButtonDisabled
+                            }
                             highlighted={voiceReleaseToSendActive}
-                            action={queueEditActive ? 'save' : 'send'}
+                            action={queueEditActive ? 'save' : mainSlotIsVoice ? 'voice' : 'send'}
                             visualVariant={isCreateAgentVariant ? 'create-agent' : 'default'}
                             ariaLabel={
-                              queueEditActive
+                              mainSlotIsVoice
+                                ? t('bots.voiceMode.startConversation')
+                                : queueEditActive
                                 ? t('newChat.pendingQueue.editSaveAria')
                                 : showStopButton
                                   ? t('newChat.sendButton.queue')
                                   : t('newChat.sendButton.send')
                             }
                             onClick={() => {
-                              void handleClickSend();
+                              if (mainSlotIsVoice) onStartVoiceConversation?.();
+                              else void handleClickSend();
                             }}
                           />
                         </span>

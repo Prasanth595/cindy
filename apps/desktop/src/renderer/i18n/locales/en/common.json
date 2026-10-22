@@ -3381,7 +3381,7 @@
         "paymentRequired": "Paid",
         "paymentUnlock": "Pay to unlock",
         "enableModel": "Enable This Model",
-        "capabilityGroupHint": "Not shown in the chat model picker. The switch controls image and video features.",
+        "capabilityGroupHint": "Not shown in the chat model picker. The switch controls visibility in the relevant feature.",
         "accessWriteFailed": "Couldn't save the change. Please try again.",
         "visibilityWriteFailed": "Couldn't save the model visibility setting. Try again, or restart Cindy if the problem continues.",
         "disabledGroup": "Disabled",
@@ -3856,7 +3856,26 @@
         "pending": "Preparing credentials",
         "unavailable": "Temporarily unavailable"
       },
-      "claudeAccountRetired": "Cindy no longer supports signing in to your subscription through this legacy Claude connection. Your Claude account and subscription are unaffected. Use “Sign in with Claude Code” to connect."
+      "claudeAccountRetired": "Cindy no longer supports signing in to your subscription through this legacy Claude connection. Your Claude account and subscription are unaffected. Use “Sign in with Claude Code” to connect.",
+      "speechSetup": {
+        "title": "Speech",
+        "add": "Add speech models",
+        "referenceHint": "Reference models come from the public catalog, not your account entitlements. Availability depends on an actual request.",
+        "discoveryHint": "These models were returned by the provider catalog. Speech execution has not been tested.",
+        "saved": "Added",
+        "reference": "Reference",
+        "discovered": "Discovered",
+        "more": "More speech models ({{count}})",
+        "manual": "Enter a speech model ID",
+        "modelId": "Speech model ID",
+        "modelsHint": "Saving speech models does not start speech synthesis. Choose voices and sentence playback in companion voice settings.",
+        "otherModels": "Chat and other models",
+        "separateKey": "Speech requires an API key. This creates a separate connection and keeps your subscription or device-code connection.",
+        "fetchFailed": "The model catalog is unavailable. You can still add reference models.",
+        "saveFailed": "Could not add models. Reopen this page and try again.",
+        "manualSource": "Manual",
+        "manualHint": "Enter the speech model ID provided by your supplier."
+      }
     },
     "experimental": {
       "title": "Experimental",

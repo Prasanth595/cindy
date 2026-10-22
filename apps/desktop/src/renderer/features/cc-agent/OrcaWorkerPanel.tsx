@@ -263,8 +263,8 @@ export function OrcaWorkerPanel({
         onCreate={handleCreateWorker}
         deviceId={deviceId ?? undefined}
         sshRemote={sshRemote}
-        // 仅任务与 Agent 均已确认在本机的 Lead 可选择 Worker 运行设备，与主进程限制一致。
-        executionDevicesEnabled={deviceId === null && agentDeviceId === null && !sshRemote}
+        // 工作电脑与 Lead 的 Agent 位置独立；SSH 沿用原限制。
+        executionDevicesEnabled={deviceId === null && !sshRemote}
         // Worker 的模型目录默认跟 Lead 的 Agent 所在电脑；可在面板里换到本机或其他电脑。控制端读不到
         // 那台目录时(见 useWorkerAgentDevices)维持被控电脑的目录，Worker 跟 Lead。
         leadAgentDeviceId={workerAgentDevices.leadAgentDeviceId}

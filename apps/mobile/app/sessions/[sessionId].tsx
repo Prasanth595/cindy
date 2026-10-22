@@ -2740,7 +2740,7 @@ function SessionScreenContent() {
       && !isSharedTaskPeer(deviceId)
       && collab.workerForm.agentLocationSelectable
       && collab.workerForm.modelPicker.open,
-    controlledDeviceId: deviceId,
+    controlledDeviceId: collabWorkerDeviceId,
     keepDeviceIds: workerAgentKeepDeviceIds,
   });
   // Agent 在另一台电脑时,模型 / 来源都属于那台的目录:展示与校验按那份,读不到时按加载中处理。

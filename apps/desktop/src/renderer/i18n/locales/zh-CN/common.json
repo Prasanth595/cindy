@@ -3351,7 +3351,7 @@
         "paymentRequired": "付费",
         "paymentUnlock": "付费解锁",
         "enableModel": "启用此模型",
-        "capabilityGroupHint": "不会出现在对话模型选择中；开关控制图像、视频等功能是否列出",
+        "capabilityGroupHint": "不会出现在对话模型选择中；开关控制对应功能是否列出",
         "accessWriteFailed": "停用设置未能保存，请重试",
         "visibilityWriteFailed": "模型显示设置未能保存，请重试；如果仍然失败，请重启 Cindy。",
         "disabledGroup": "已停用",
@@ -3825,7 +3825,26 @@
         "pending": "凭据准备中",
         "unavailable": "暂时不可用"
       },
-      "claudeAccountRetired": "Cindy 已不再支持通过这条旧版 Claude 连接登录订阅，不影响你的 Claude 账号和订阅。请改用「使用 Claude Code 登录」连接订阅"
+      "claudeAccountRetired": "Cindy 已不再支持通过这条旧版 Claude 连接登录订阅，不影响你的 Claude 账号和订阅。请改用「使用 Claude Code 登录」连接订阅",
+      "speechSetup": {
+        "title": "语音",
+        "add": "添加语音模型",
+        "referenceHint": "参考型号来自公共模型资料，不代表当前账号已开通。是否可用以实际调用为准。",
+        "discoveryHint": "以下型号由供应商目录返回，尚未验证语音调用。",
+        "saved": "已添加",
+        "reference": "参考型号",
+        "discovered": "目录返回",
+        "more": "更多语音型号（{{count}}）",
+        "manual": "手动输入语音型号",
+        "modelId": "语音模型 ID",
+        "modelsHint": "保存语音模型不会发起语音合成。音色和逐句朗读可在伙伴语音设置中调整。",
+        "otherModels": "对话与其他模型",
+        "separateKey": "语音服务需要 API Key。将创建独立连接，原有订阅或设备码连接会保留。",
+        "fetchFailed": "模型目录暂时无法获取，仍可选择参考型号添加。",
+        "saveFailed": "添加失败，请重新打开此页面后重试。",
+        "manualSource": "手动添加",
+        "manualHint": "输入供应商提供的语音模型 ID。"
+      }
     },
     "experimental": {
       "title": "实验性功能",

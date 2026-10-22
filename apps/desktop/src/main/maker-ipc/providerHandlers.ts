@@ -1,3 +1,4 @@
+import { appendSpeechModels } from '../../shared/speechProviderSetup.js';
 import { setProviderPresentation, retainProviderPresentationAfterAuthChange } from '../maker-host/provider-presentation-store.js';
 import { pruneProviderGroupBindings } from '../provider-group/bindings.js';
 import { writeProviderGroup } from '../provider-group/store.js';
@@ -195,16 +196,19 @@ function parseCustomProviderUpdateOptions(input: unknown): CustomProviderUpdateO
   if (input === undefined) return {};
   if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
   const entries = Object.entries(input as Record<string, unknown>);
-  if (entries.some(([key]) => key !== 'source' && key !== 'codexImageGenerationRestartPolicy'))
+  if (entries.some(([key]) => key !== 'source' && key !== 'codexImageGenerationRestartPolicy' && key !== 'appendSpeechModelsOnly'))
     return null;
   const source = (input as Record<string, unknown>).source;
   if (source !== undefined && source !== 'manual-settings') return null;
   const policy = (input as Record<string, unknown>).codexImageGenerationRestartPolicy;
-  if (policy === undefined) return source === 'manual-settings' ? { source } : {};
-  if (policy !== 'interrupt') return null;
+  const append = (input as Record<string, unknown>).appendSpeechModelsOnly;
+  if (append !== undefined && append !== true) return null;
+  if (policy !== undefined && policy !== 'interrupt') return null;
+  if (append && (source || policy)) return null;
   return {
     ...(source === 'manual-settings' ? { source } : {}),
-    codexImageGenerationRestartPolicy: policy,
+    ...(policy ? { codexImageGenerationRestartPolicy: policy } : {}),
+    ...(append ? { appendSpeechModelsOnly: true as const } : {}),
   };
 }
 
@@ -2057,7 +2061,14 @@ export function registerProviderHandlers(
         const previous = await getCustomProvider(config.id);
         assertProviderMutationOwner(ownerAtIngress);
         if (!previous) throwIpcError('NOT_FOUND', `custom provider '${config.id}' not found`);
-        if (resolveLatest) {
+        if (options.appendSpeechModelsOnly) {
+          if (Object.keys(keys).length) throwIpcError('INVALID_PARAMS', 'speech additions cannot change credentials');
+          try { config = appendSpeechModels(previous, config, deps.listPresets()); }
+          catch { throwIpcError('INVALID_PARAMS', 'connection changed or invalid speech additions'); }
+          const validation = validateCustomProviderConfig(config, { allowLegacyXai: true });
+          if (!validation.ok) throwIpcError(validation.code, validation.message);
+          separated = splitCustomProviderHeaders(config);
+        } else if (resolveLatest) {
           // Main-only key import merges under the same queue, never from a stale UI snapshot.
           config = resolveLatest(previous);
           const latestValidation = validateCustomProviderConfig(config, { allowLegacyXai: true });

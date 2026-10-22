@@ -3351,7 +3351,7 @@
         "paymentRequired": "付費",
         "paymentUnlock": "付費解鎖",
         "enableModel": "啟用此模型",
-        "capabilityGroupHint": "不會出現在對話模型選擇中；開關控制影像、影片等功能是否列出",
+        "capabilityGroupHint": "不會出現在對話模型選擇中；開關控制對應功能是否列出",
         "accessWriteFailed": "停用設定未能儲存，請重試",
         "visibilityWriteFailed": "模型顯示設定未能儲存，請重試；如果仍然失敗，請重新啟動 Cindy。",
         "disabledGroup": "已停用",
@@ -3825,7 +3825,26 @@
         "pending": "憑證準備中",
         "unavailable": "暫時無法使用"
       },
-      "claudeAccountRetired": "Cindy 已不再支援透過這筆舊版 Claude 連線登入訂閱，不影響你的 Claude 帳號和訂閱。請改用「使用 Claude Code 登入」連線訂閱"
+      "claudeAccountRetired": "Cindy 已不再支援透過這筆舊版 Claude 連線登入訂閱，不影響你的 Claude 帳號和訂閱。請改用「使用 Claude Code 登入」連線訂閱",
+      "speechSetup": {
+        "title": "語音",
+        "add": "新增語音模型",
+        "referenceHint": "參考型號來自公開模型資料，不代表目前帳號已開通。是否可用以實際呼叫為準。",
+        "discoveryHint": "以下型號由供應商目錄傳回，尚未驗證語音呼叫。",
+        "saved": "已新增",
+        "reference": "參考型號",
+        "discovered": "目錄傳回",
+        "more": "更多語音型號（{{count}}）",
+        "manual": "手動輸入語音型號",
+        "modelId": "語音模型 ID",
+        "modelsHint": "儲存語音模型不會啟動語音合成。音色和逐句朗讀可在夥伴語音設定中調整。",
+        "otherModels": "對話與其他模型",
+        "separateKey": "語音服務需要 API Key。將建立獨立連線，原有訂閱或裝置碼連線會保留。",
+        "fetchFailed": "暫時無法取得模型目錄，仍可選擇參考型號新增。",
+        "saveFailed": "新增失敗，請重新開啟此頁面後重試。",
+        "manualSource": "手動新增",
+        "manualHint": "輸入供應商提供的語音模型 ID。"
+      }
     },
     "experimental": {
       "title": "實驗性功能",

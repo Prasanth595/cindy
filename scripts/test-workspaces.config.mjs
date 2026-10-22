@@ -149,6 +149,8 @@ const mobileGuardInclude = [
 // in the explicit guard tier. Keeping an exact allowlist makes it impossible
 // for a new source scan to silently become part of the ordinary unit gate.
 const desktopGuardInclude = [
+  // Cross-hook voice stop/refine ownership and composer hydration race wiring.
+  'src/renderer/__tests__/voiceInputEnterToSend.test.ts',
   'src/renderer/__tests__/sessionAgentSwitchRemoteRouting.contract.test.ts',
   // 插件链与 globals.css 的源码文本契约：单测层不得 readFileSync（test-hygiene
   // sourceReads），审查页与聊天页共用的注册顺序契约集中在这里。

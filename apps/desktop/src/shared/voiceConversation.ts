@@ -81,6 +81,8 @@ export type SpeechPreviewStart = VoiceConversationSelection & {
   text: string;
 };
 export type VoiceConversationModel = {
+  /** Display preference only; hidden routes remain available for saved selections. */
+  pickerVisible?: boolean;
   id: string;
   name: string;
   providerId?: string;

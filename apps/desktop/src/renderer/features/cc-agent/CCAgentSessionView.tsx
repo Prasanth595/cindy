@@ -6384,9 +6384,9 @@ function CCAgentSessionContent({
         // openai-chat 桥接 Codex 只挂在本地 proxy),与 main 侧 remote-worker
         // guard 同规则(codex review R28)。
         sshRemote={!!session?.remoteHostId}
-        // 首个 Worker 也可放到另一台电脑：仅本机 Lead(非 SSH、Agent 也在本机)。
+        // Lead 的 Agent 位置独立于 Worker 的工作电脑；SSH Lead 仍沿用原限制。
         executionDevicesEnabled={
-          !remoteDeviceId && !session?.remoteHostId && !session?.agentDeviceId
+          !remoteDeviceId && !session?.remoteHostId
         }
         // Worker 的 Agent 默认跟 Lead 的 Agent 所在电脑(远程供应商)，模型目录也先按那台读；
         // 面板里列出与输入框同一份其他电脑 / 分享的供应商，可以换到本机或别处。

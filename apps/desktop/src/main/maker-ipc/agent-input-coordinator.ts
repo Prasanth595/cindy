@@ -4459,6 +4459,7 @@ export class AgentInputCoordinator {
     return {
       sessionId,
       pendingQueue,
+      turnInProgress: this.isDispatchBoundaryBusy(sessionId, state),
       // Modern projections always carry the explicit null token for a session
       // that has never been cleared.  Only an older controlled Desktop can
       // omit the field at the wire boundary; keeping null here lets a remote

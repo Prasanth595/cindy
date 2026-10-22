@@ -14,7 +14,12 @@ Agent 启动 Desktop 只使用仓库根的安全包装命令，并显式选择�
 命令默认使用固定的 `dev` 命名隔离沙箱（等价于自动附加 `--isolated=dev`），
 不再默认共享 Cindy 账号登录态与业务数据。OpenAI 模型登录态是刻意保留的例外：
 普通 Dev 可只读复用同区域 Release／本机 Codex 已有登录态，能够调用模型，但不能在
-Dev 内发起 OpenAI 登录或断开共享登录态。Claude Code 的配置目录同样不隔离：Dev 与正式版
+Dev 内发起 OpenAI 登录或断开共享登录态。同 owner 的 Release 授权通常优先；若其 access
+token 已过期，且本机 Codex 有同账号／workspace、有效期明确且尚未过期的授权，则改用
+本机授权，避免旧 Release 快照挡住已恢复的登录。有效期未知或账号无法确认时保持原优先级；
+与 Release 共用 userData 的 Dev 不自动切换来源。实现与回归见
+`maker-host/codex-shared-auth.ts`、`codexAuthIsolatedSandbox.test.ts`。
+Claude Code 的配置目录同样不隔离：Dev 与正式版
 一样使用 CLI 默认的 `~/.claude`（不设 `CLAUDE_CONFIG_DIR`），所以直接沿用本机 Claude Code
 的订阅登录；在 Dev 里「使用 Claude Code 登录」等同于在终端运行 `claude auth login`，「断开」
 只撤销本实例的使用许可。代价是多个 Dev 实例与安装版在同机共用 `~/.claude` 下的 Claude 转录

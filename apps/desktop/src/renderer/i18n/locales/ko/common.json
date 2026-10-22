@@ -3351,7 +3351,7 @@
         "paymentRequired": "유료",
         "paymentUnlock": "유료로 잠금 해제",
         "enableModel": "이 모델 활성화",
-        "capabilityGroupHint": "대화 모델 선택에는 표시되지 않습니다. 스위치로 이미지·영상 기능 노출을 제어합니다.",
+        "capabilityGroupHint": "대화 모델 선택에는 표시되지 않습니다. 스위치로 해당 기능에서의 표시 여부를 설정합니다.",
         "accessWriteFailed": "변경 사항을 저장하지 못했습니다. 다시 시도해 주세요.",
         "visibilityWriteFailed": "모델 표시 설정을 저장하지 못했습니다. 다시 시도해 주세요. 문제가 계속되면 Cindy를 다시 시작해 주세요.",
         "disabledGroup": "비활성화됨",
@@ -3825,7 +3825,26 @@
         "pending": "인증 정보 준비 중",
         "unavailable": "일시적으로 사용할 수 없음"
       },
-      "claudeAccountRetired": "Cindy에서는 이 이전 Claude 연결 방식으로 구독에 로그인할 수 없습니다. Claude 계정과 구독에는 영향이 없습니다. ‘Claude Code로 로그인’을 사용해 구독을 연결하세요."
+      "claudeAccountRetired": "Cindy에서는 이 이전 Claude 연결 방식으로 구독에 로그인할 수 없습니다. Claude 계정과 구독에는 영향이 없습니다. ‘Claude Code로 로그인’을 사용해 구독을 연결하세요.",
+      "speechSetup": {
+        "title": "음성",
+        "add": "음성 모델 추가",
+        "referenceHint": "참조 모델은 공개 카탈로그를 기반으로 하며 계정의 이용 권한을 의미하지 않습니다. 실제 사용 가능 여부는 호출 시 확인됩니다.",
+        "discoveryHint": "제공자 카탈로그에서 반환된 모델입니다. 음성 실행은 아직 검증되지 않았습니다.",
+        "saved": "추가됨",
+        "reference": "참조 모델",
+        "discovered": "검색됨",
+        "more": "음성 모델 더 보기 ({{count}})",
+        "manual": "음성 모델 ID 직접 입력",
+        "modelId": "음성 모델 ID",
+        "modelsHint": "음성 모델을 저장해도 음성 합성은 시작되지 않습니다. 음색과 문장별 읽기는 파트너 음성 설정에서 조정할 수 있습니다.",
+        "otherModels": "대화 및 기타 모델",
+        "separateKey": "음성에는 API 키가 필요합니다. 별도 연결을 만들고 기존 구독 또는 기기 코드 연결은 유지합니다.",
+        "fetchFailed": "모델 목록을 가져올 수 없습니다. 참조 모델을 선택하여 추가할 수 있습니다.",
+        "saveFailed": "모델을 추가하지 못했습니다. 이 페이지를 다시 열고 시도해 주세요.",
+        "manualSource": "직접 추가",
+        "manualHint": "제공자가 제공한 음성 모델 ID를 입력하세요."
+      }
     },
     "experimental": {
       "title": "실험적 기능",

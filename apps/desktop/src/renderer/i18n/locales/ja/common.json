@@ -3351,7 +3351,7 @@
         "paymentRequired": "有料",
         "paymentUnlock": "有料で解放",
         "enableModel": "このモデルを有効にする",
-        "capabilityGroupHint": "チャットのモデル選択には表示されません。スイッチで画像・動画機能への掲載を制御します。",
+        "capabilityGroupHint": "チャットのモデル選択には表示されません。スイッチで各機能での表示を切り替えます。",
         "accessWriteFailed": "変更を保存できませんでした。もう一度お試しください。",
         "visibilityWriteFailed": "モデルの表示設定を保存できませんでした。もう一度お試しください。問題が解決しない場合は、Cindy を再起動してください。",
         "disabledGroup": "無効",
@@ -3825,7 +3825,26 @@
         "pending": "認証情報を準備中",
         "unavailable": "一時的に利用できません"
       },
-      "claudeAccountRetired": "Cindy では、この旧式の Claude 接続を使ったサブスクリプションへのログインに対応していません。Claude アカウントとサブスクリプションには影響ありません。「Claude Code でログイン」から接続してください。"
+      "claudeAccountRetired": "Cindy では、この旧式の Claude 接続を使ったサブスクリプションへのログインに対応していません。Claude アカウントとサブスクリプションには影響ありません。「Claude Code でログイン」から接続してください。",
+      "speechSetup": {
+        "title": "音声",
+        "add": "音声モデルを追加",
+        "referenceHint": "参考モデルは公開カタログに基づき、アカウントの利用権限を示すものではありません。実際に利用できるかは呼び出し時に確認されます。",
+        "discoveryHint": "以下はプロバイダーのカタログから取得したモデルです。音声の実行は未検証です。",
+        "saved": "追加済み",
+        "reference": "参考モデル",
+        "discovered": "取得済み",
+        "more": "その他の音声モデル（{{count}}）",
+        "manual": "音声モデル ID を入力",
+        "modelId": "音声モデル ID",
+        "modelsHint": "音声モデルを保存しても、音声合成は開始されません。音声や文ごとの読み上げはパートナーの音声設定で調整できます。",
+        "otherModels": "チャットとその他のモデル",
+        "separateKey": "音声には API キーが必要です。別の接続を作成し、既存のサブスクリプションやデバイスコードの接続は保持します。",
+        "fetchFailed": "モデル一覧を取得できません。参考モデルを選んで追加できます。",
+        "saveFailed": "モデルを追加できませんでした。このページを開き直して再試行してください。",
+        "manualSource": "手動追加",
+        "manualHint": "プロバイダーが提供する音声モデル ID を入力してください。"
+      }
     },
     "experimental": {
       "title": "実験的機能",

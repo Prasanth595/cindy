@@ -32,6 +32,7 @@ import { RemoteConnectionPool } from './connectionPool';
 import { remoteAgentEventMapper } from './eventMap';
 import {
   collectAncestorInstructionFiles,
+  collectAncestorMarkers,
   collectInstructionImports,
   collectPersonalConfig,
   collectProjectInstructionFiles,
@@ -253,6 +254,8 @@ export function createDeviceAgentStarter(deps: DeviceAgentServiceDeps) {
       collectAncestorFiles: input.agentKind === 'codex'
         ? undefined
         : (workingDir) => collectAncestorInstructionFiles(workingDir, collect),
+      // Codex 建线程时沿上级目录逐级查找 .git 与插件清单：先把有没有报过去，对方不再逐个经设备互联来问。
+      ...(input.agentKind === 'codex' ? { collectAncestorMarkers } : {}),
       collectPersonal: (kind, projectFiles) => collectPersonalConfig(kind, projectFiles, collect),
       collectImports: (imports) => collectInstructionImports(imports, collect),
       isGitRepo,
