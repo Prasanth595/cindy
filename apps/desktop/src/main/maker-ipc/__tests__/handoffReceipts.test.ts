@@ -108,6 +108,23 @@ describe('handoff receipt sender', () => {
     );
   });
 
+  it('创建 sender 后登录/切号, 新发起的回执正常投递', async () => {
+    // sender 随 IPC 一次性注册，登录/切号后不会重建：归属账号若在工厂里读取，
+    // 「注册时库未就绪(null)」会让登录后的回执全部被丢弃，切号后新账号自己的回执也会。
+    const send = vi.fn(async () => ({ ok: true as const }));
+    let current: string | null = null;
+    const deliver = createHandoffReceiptSender({
+      send,
+      currentUserId: () => current,
+      delay: async () => {},
+    });
+    current = 'user-b';
+    await deliver('tgt-9', [INPUT_ID]);
+    current = 'user-c';
+    await deliver('tgt-9', [INPUT_ID]);
+    expect(send).toHaveBeenCalledTimes(2);
+  });
+
   it('重发永远携带同一 clientId(配合唯一索引幂等), 首次成功即停', async () => {
     const send = vi
       .fn()

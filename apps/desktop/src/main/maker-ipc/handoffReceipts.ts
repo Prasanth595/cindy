@@ -93,10 +93,13 @@ export function createHandoffReceiptSender(deps: {
     deps.delay ??
     ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms).unref?.()));
   const warn = deps.warn ?? (() => {});
-  const owner = deps.currentUserId?.() ?? null;
-  const ownerChanged = () =>
-    deps.currentUserId !== undefined && deps.currentUserId() !== owner;
   return async (targetSessionId, inputClientIds) => {
+    // 归属账号必须在**每次投递开始时**读：本 sender 随 IPC 一次性注册，登录/切号后
+    // 不会重建。在工厂里读会让「注册时库未就绪(null)」永久丢弃登录后的全部回执，
+    // 也会让切号后新账号自己的回执被当成串号丢掉。
+    const owner = deps.currentUserId?.() ?? null;
+    const ownerChanged = () =>
+      deps.currentUserId !== undefined && deps.currentUserId() !== owner;
     for (const inputClientId of inputClientIds) {
       const parsed = parseHandoffReceiptInputClientId(inputClientId);
       if (!parsed) continue;
