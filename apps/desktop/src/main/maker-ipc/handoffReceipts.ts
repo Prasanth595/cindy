@@ -82,11 +82,20 @@ export function createHandoffReceiptSender(deps: {
   /** 注入以便单测;缺省 1s×attempt 的真实退避。 */
   delay?: (ms: number) => Promise<void>;
   warn?: (message: string, details: Record<string, unknown>) => void;
+  /**
+   * 当前数据归属账号。回执是**跨退避**的重试，未绑定账号时：首次投递失败后用户切号，
+   * 后续重试仍读当前库的任务元数据与来源身份；飞书等任务的 id 是确定性的，新账号存在
+   * 同 id 任务时旧账号的完成回执会进新账号队列并唤醒它。
+   */
+  currentUserId?: () => string | null;
 }): (targetSessionId: string, inputClientIds: readonly string[]) => Promise<void> {
   const delay =
     deps.delay ??
     ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms).unref?.()));
   const warn = deps.warn ?? (() => {});
+  const owner = deps.currentUserId?.() ?? null;
+  const ownerChanged = () =>
+    deps.currentUserId !== undefined && deps.currentUserId() !== owner;
   return async (targetSessionId, inputClientIds) => {
     for (const inputClientId of inputClientIds) {
       const parsed = parseHandoffReceiptInputClientId(inputClientId);
@@ -94,6 +103,14 @@ export function createHandoffReceiptSender(deps: {
       const message = buildHandoffReceiptMessage({ targetSessionId, inputClientId });
       const clientId = handoffReceiptDoneClientId(parsed.nonce);
       for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
+        if (ownerChanged()) {
+          warn('handoff receipt dropped after account switch', {
+            targetSessionId,
+            dispatcherSessionId: parsed.dispatcherSessionId,
+            inputClientId,
+          });
+          return;
+        }
         // 确定性 clientId + messages 表 (sessionId, clientId) 唯一索引:重发不会产生第二条回执。
         const result = await deps
           .send({

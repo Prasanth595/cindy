@@ -222,8 +222,15 @@ export function prepareSessionEvent(
     ? (deps.agentInputCoordinatorHolder?.getActiveInputClientIds?.(session.id, event.sessionTurnGeneration) ?? [])
       .filter(id => taskResultClientIdForInput(id) !== null) : [];
   // send_to_session 完成回执:同一时点快照本 turn 消费的回执请求输入。
+  // requireDispatched：迟到的 done(旧代次)到达时下一条输入可能已进入派发前准备
+  // (`vendorTurnGeneration === null`)，此时 snapshot 里有的是**还没被消费**的新输入，
+  // 发给它就成了「目标尚未处理即报已结束处理」。
   const handoffReceiptInputIds = event.type === 'done' && event.turnScope !== 'background'
-    ? (deps.agentInputCoordinatorHolder?.getActiveInputClientIds?.(session.id, event.sessionTurnGeneration) ?? [])
+    ? (deps.agentInputCoordinatorHolder?.getActiveInputClientIds?.(
+      session.id,
+      event.sessionTurnGeneration,
+      { requireDispatched: true },
+    ) ?? [])
       .filter(id => id.startsWith(HANDOFF_RECEIPT_INPUT_PREFIX)) : [];
   // 同代次内 error→done 配对时(claude-code translator 无条件推 done),该 done 不得回投回执。
   // 代次是单实例计数,归属必须含 sessionInstanceId。

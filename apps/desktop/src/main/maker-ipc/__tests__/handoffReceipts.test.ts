@@ -83,6 +83,31 @@ describe('handoff receipt sender', () => {
     );
   });
 
+  it('退避期间切账号则停止投递(回执不跨账号)', async () => {
+    // 回执跨退避重试；未绑定账号时，首次失败后用户切号，后续重试仍按当前库读任务来源，
+    // 飞书等确定性 id 在新账号撞同名任务时会把旧账号的回执投进新账号队列。
+    const send = vi.fn(async () => ({
+      ok: false as const,
+      errorCode: 'AGENT_NOT_READY',
+      message: 'x',
+    }));
+    const warn = vi.fn();
+    const owners = ['user-a'];
+    await createHandoffReceiptSender({
+      send,
+      warn,
+      currentUserId: () => owners[owners.length - 1]!,
+      delay: async () => {
+        owners.push('user-b');
+      },
+    })('tgt-9', [INPUT_ID]);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(
+      'handoff receipt dropped after account switch',
+      expect.objectContaining({ targetSessionId: 'tgt-9', inputClientId: INPUT_ID }),
+    );
+  });
+
   it('重发永远携带同一 clientId(配合唯一索引幂等), 首次成功即停', async () => {
     const send = vi
       .fn()

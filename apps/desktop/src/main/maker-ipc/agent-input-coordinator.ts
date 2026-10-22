@@ -1356,11 +1356,28 @@ export class AgentInputCoordinator {
     return typeof text === 'string' && !!text.trim() && !text.startsWith('[UI_ACTION_TRIGGER]');
   }
 
-  /** Inputs consumed by this native turn, excluding queued work and stale generations. */
-  getActiveInputClientIds(sessionId: string, vendorGeneration?: number): string[] {
+  /**
+   * Inputs consumed by this native turn, excluding queued work and stale generations.
+   *
+   * `requireDispatched`：带代次调用时，若当前 active turn 还没派发
+   * (`vendorTurnGeneration === null`，新输入正在派发前准备)，则一律返回空 ——
+   * 该终态属于上一个已派发的 turn，不能把尚未被消费的新输入算成它的消费者
+   * (否则 send_to_session 回执会在目标还没处理消息时就报「已结束处理」)。
+   */
+  getActiveInputClientIds(
+    sessionId: string,
+    vendorGeneration?: number,
+    opts?: { requireDispatched?: boolean },
+  ): string[] {
     const active = this.states.get(sessionId)?.activeTurn;
-    if (!active || (vendorGeneration !== undefined && active.vendorTurnGeneration !== null
-      && vendorGeneration !== active.vendorTurnGeneration)) return [];
+    if (!active) return [];
+    if (vendorGeneration !== undefined) {
+      if (active.vendorTurnGeneration === null) {
+        if (opts?.requireDispatched) return [];
+      } else if (vendorGeneration !== active.vendorTurnGeneration) {
+        return [];
+      }
+    }
     const item = active.item;
     return [...new Set([...(active.replyInputClientIds ?? []),
       item?.clientId, item?.retrySourceClientId, item?.supersedesUserClientId].filter((id): id is string => !!id))];

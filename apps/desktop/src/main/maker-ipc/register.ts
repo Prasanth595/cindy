@@ -371,6 +371,7 @@ import { createGeneratedImageDelivery } from '../cindy-media/generatedImageDeliv
 import { setGeneratedImageRecovery } from '../cindy-media/generatedImageRecovery.js';
 import {
   getCurrentDbClientSnapshot,
+  getCurrentDbClientUserId,
   getDbClient,
   isDbClientNotReadyError,
   tryGetDbClient,
@@ -11378,6 +11379,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   deliverHandoffReceiptsImpl = createHandoffReceiptSender({
     send: (params) => sendToSessionInternalBase(params),
     warn: (message, details) => log.warn(message, details),
+    currentUserId: () => getCurrentDbClientUserId(),
   });
 
   /**

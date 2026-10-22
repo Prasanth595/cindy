@@ -461,6 +461,13 @@ describe('production Session event pipeline', () => {
       }));
       expect(h.deps.deliverHandoffReceipts).toHaveBeenCalledOnce();
       expect(h.deps.deliverHandoffReceipts).toHaveBeenCalledWith(h.session.id, [receiptInputId]);
+      // 迟到的 done 属于上一个已派发的 turn：必须要求快照里的输入已派发，
+      // 否则尚未被消费的新输入会收到「已结束处理」。
+      expect(h.deps.agentInputCoordinatorHolder.getActiveInputClientIds).toHaveBeenCalledWith(
+        h.session.id,
+        3,
+        { requireDispatched: true },
+      );
     } finally { await h.dispose(); }
   });
 
