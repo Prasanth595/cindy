@@ -25,6 +25,8 @@ export function createRemoteDeviceUsageMirror<T extends object>(cfg: {
   decodeRead?: (value: unknown) => T | null | undefined;
   /** A read may return a richer contract than its invalidation push. */
   decodePush?: (value: unknown) => T | null | undefined;
+  /** A failed reread cannot establish that a cached native snapshot still belongs to the current account. */
+  clearOnReadFailure?: boolean;
   invokeArgs?: unknown[];
   pushChannel: string;
   defaultProviderId?: string;
@@ -95,12 +97,16 @@ export function createRemoteDeviceUsageMirror<T extends object>(cfg: {
           providerId !== cfg.defaultProviderId &&
           value !== null &&
           (!isSnapshotShape(value) || value.providerId !== providerId)
-        )
+        ) {
+          if (cfg.clearOnReadFailure) apply(entry, null);
           return;
+        }
         if (cfg.decodeRead) {
           const decoded = cfg.decodeRead(value);
           if (decoded !== undefined) apply(entry, decoded);
+          else if (cfg.clearOnReadFailure) apply(entry, null);
         } else if (value === null || isSnapshotShape(value)) apply(entry, value as T | null);
+        else if (cfg.clearOnReadFailure) apply(entry, null);
       })
       .catch((error: unknown) => {
         if (!isDataOwnerGenerationCurrent(entry.owner) || entry.revision !== revision) return;
@@ -110,6 +116,7 @@ export function createRemoteDeviceUsageMirror<T extends object>(cfg: {
         ) {
           entry.unsupportedUntil = Date.now() + UNSUPPORTED_RETRY_AFTER_MS;
         }
+        if (cfg.clearOnReadFailure) apply(entry, null);
       })
       .finally(() => {
         entry.pending = false;

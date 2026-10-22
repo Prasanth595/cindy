@@ -69,6 +69,7 @@ vi.mock('@/hooks/useRemoteDeviceUsage', async () => {
 });
 
 import { useDeviceProviderSubscriptionCard } from '../useProviderSubscriptionCard';
+import { resetRemoteDeviceUsageMirrorsForTest } from '@/hooks/useRemoteDeviceUsage';
 
 function provider(id: string, auth: Record<string, unknown>): ProviderView {
   return { id, name: id, source: 'user', connected: true, auth } as unknown as ProviderView;
@@ -79,6 +80,7 @@ const apiKey = provider('openrouter', { method: 'api-key' });
 beforeEach(() => {
   vi.useFakeTimers();
   setDataOwnerGeneration('quota-owner');
+  resetRemoteDeviceUsageMirrorsForTest();
   vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
   mocks.invoke.mockReset();
   mocks.readLocal.mockReset();
@@ -186,6 +188,39 @@ describe('useDeviceProviderSubscriptionCard', () => {
     act(() => mocks.reopened.forEach(listener => listener({ deviceId: 'mini' })));
     await act(async () => rejectOld(new Error('old link disconnected')));
     expect(remaining(hook.result.current)).toEqual([['primary', 82]]);
+  });
+
+  // Unit regression: PR #6752 r4344811616. A native snapshot can outlive a missed
+  // account-switch clear. Existing cases start without a cached native snapshot.
+  // A fresh B mirror must replace A after the native reread fails, on either
+  // remount or link reopen; a later successful native read must become primary.
+  it.each(['remount', 'reconnect'] as const)('discards stale native quota after a missed account clear and failed %s read', async (mode) => {
+    const openai = provider('openai-switched', { method: 'oauth', native: 'codex' });
+    const native = (accountId: string, usedPercent: number) => ({
+      providerId: openai.id, account: { accountId, planType: 'plus' },
+      rateLimits: { primary: { usedPercent, windowMinutes: 300 } },
+    });
+    const account = (accountId: string, usedPercent: number) => ({
+      providerId: openai.id, accountId, primary: { usedPercent, windowMinutes: 300 },
+    });
+    mocks.invoke.mockImplementation(async (_deviceId, channel) => channel === 'maker:usage:account'
+      ? account('account-a', 50) : native('account-a', 73));
+    let hook = renderHook(() => useDeviceProviderSubscriptionCard(openai, 'mini', { live: true }));
+    await act(async () => {});
+    expect(remaining(hook.result.current)).toEqual([['primary', 73]]);
+    if (mode === 'remount') hook.unmount();
+    mocks.invoke.mockImplementation(async (_deviceId, channel) => {
+      if (channel === 'maker:usage:account') return account('account-b', 82);
+      throw new Error('native quota temporarily unavailable');
+    });
+    if (mode === 'remount') hook = renderHook(() => useDeviceProviderSubscriptionCard(openai, 'mini', { live: true }));
+    else act(() => mocks.reopened.forEach(listener => listener({ deviceId: 'mini' })));
+    await act(async () => {});
+    expect(remaining(hook.result.current)).toEqual([['primary', 82]]);
+    mocks.invoke.mockImplementation(async (_deviceId, channel) => channel === 'maker:usage:account'
+      ? account('account-b', 82) : native('account-b', 91));
+    await act(async () => { vi.advanceTimersByTime(15_000); });
+    expect(remaining(hook.result.current)).toEqual([['primary', 91]]);
   });
 
   it('refreshes the local account on the same live-card interval without querying another computer', async () => {

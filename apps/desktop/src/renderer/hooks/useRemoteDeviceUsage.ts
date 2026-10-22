@@ -52,7 +52,11 @@ const codexRateLimitsMirror = createRemoteDeviceUsageMirror<MobileCodexRateLimit
   pushChannel: 'usage:codex-account-changed',
   defaultProviderId: 'openai',
   providerPushChannel: 'usage:codex-provider-account-changed',
+  // A missed identity clear while collapsed/disconnected must not let an old
+  // native account override a fresh mirror indefinitely after a failed reread.
+  clearOnReadFailure: true,
   decodeRead: (value) => {
+    if (value === null) return null;
     if (
       !value ||
       typeof value !== 'object' ||

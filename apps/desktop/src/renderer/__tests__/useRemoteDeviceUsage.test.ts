@@ -231,11 +231,27 @@ describe('remote native Codex quota', () => {
     expect(second.result.current).toBeNull();
   });
 
-  it('rejects an older peer returning its builtin account for a named connection', async () => {
-    mocks.invoke.mockResolvedValue({ account: { planType: 'plus' }, rateLimits: { primary: { usedPercent: 9 } } });
+  it('invalidates cached native quota when a reread cannot establish the named account', async () => {
+    // PR #6752 r4344811616: a rejected/malformed/cleared native reread must not
+    // leave an earlier account cached. Existing coverage started from null.
+    const native = { providerId: 'openai-extra', account: { planType: 'plus' }, rateLimits: { primary: { usedPercent: 73 } } };
+    mocks.invoke.mockResolvedValue(native);
     const hook = renderHook(() => useRemoteCodexRateLimits('device-1', 'openai-extra'));
     await flushMicrotasks();
-    expect(hook.result.current).toBeNull();
+    for (const invalid of [
+      { account: { planType: 'plus' }, rateLimits: { primary: { usedPercent: 9 } } },
+      { providerId: 'openai-extra', account: null, rateLimits: {} },
+      null,
+    ]) {
+      mocks.invoke.mockResolvedValue(native);
+      act(() => requestRemoteCodexRateLimitsRefresh('device-1', 'openai-extra'));
+      await flushMicrotasks();
+      expect(hook.result.current).toEqual(native);
+      mocks.invoke.mockResolvedValue(invalid);
+      act(() => requestRemoteCodexRateLimitsRefresh('device-1', 'openai-extra'));
+      await flushMicrotasks();
+      expect(hook.result.current).toBeNull();
+    }
   });
 });
 
