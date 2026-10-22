@@ -994,6 +994,25 @@ describe('Desktop private-chat action confirmation', () => {
     );
   });
 
+  // The generation half of the same rule: a tier can be re-issued under the mode it already
+  // had (Auto→Ask→Auto ends on `auto` with a new generation), so a comparison that only looks
+  // at the mode would dispatch the old answer under a freshly issued tier.
+  it('revokes an approved card delivery when only the permission tier generation advances', async () => {
+    const h = desktopFixture('automatic');
+    h.activeInput.permission = null;
+    setLivePlan(h, { enabled: false, generation: 2 });
+    h.confirm.mockResolvedValueOnce(true);
+    const queued = input();
+    expect(await withToolCallAuthority(h.authorize, call('send_to_session'), async () => {
+      bindTaskActionInput('target', queued);
+      return 'queued';
+    })).toBe('queued');
+    Object.assign(h.runtime, { stablePermissionModeState: { mode: 'auto', generation: 2 } });
+    await expect(taskActionInputGuard('target', queued)!()).rejects.toThrow(
+      'AUTHORIZATION_EXPIRED',
+    );
+  });
+
   // The other half of the same rule: the comparison is by (mode, generation) value, so an
   // unchanged tier keeps both the execution and the queued delivery of the answer valid.
   it('keeps an approved card valid while the permission tier stays the same', async () => {
