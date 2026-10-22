@@ -180,6 +180,9 @@
 - 修改本地协议 package、插件分发来源边界或 device-link 协议／relay／隧道
   payload／IPC allowlist，或任何改动跨端 wire protocol 前，必须先读
   `docs/dev-rules/protocol-compatibility.md`。
+- 修改自定义 IM 渠道（/im/custom/* 入站端点、token 存储、conversationId 分线、
+  出站回调或设置页／伙伴页入口）前，必须先读 docs/custom-im-channel.md：端点端口
+  首次分配后必须复用，token 只进 safeStorage，入站只绑回环。
 - 修改 package 依赖方向、main 进程模块加载方式，或主界面布局树结构前，必须先读
   `docs/dev-rules/architecture-invariants.md`。
 - 新增或修改 Settings UI、配置文件、本地偏好、运行时 profile，或 agent／MCP／provider
