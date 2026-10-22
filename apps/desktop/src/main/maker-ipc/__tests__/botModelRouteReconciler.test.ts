@@ -218,3 +218,17 @@ it('does not retry a superseded failed switch after the account owner changes', 
   expect((await results).map(result => result.status)).toEqual(['rejected', 'rejected']);
   expect(h.apply).toHaveBeenCalledOnce();
 });
+
+// Regression: changing only the account location must still move the runtime.
+it('reconciles shared-to-local and local-to-shared selections of the same model', async () => {
+  const h = harness();
+  const local = { agentKind: 'codex' as const, model: 'luna', providerId: 'xd', effort: 'medium' as const, fastMode: false };
+  h.state.current = local;
+  h.state.chain[0]!.agentDeviceId = 'share:one';
+  await h.reconcile('canonical');
+  expect(h.apply).toHaveBeenLastCalledWith('canonical', { ...local, agentDeviceId: 'share:one' }, local);
+  h.state.current = { ...local, agentDeviceId: 'share:one' };
+  delete h.state.chain[0]!.agentDeviceId;
+  await h.reconcile.profileChanged('canonical');
+  expect(h.apply).toHaveBeenLastCalledWith('canonical', local, h.state.current);
+});

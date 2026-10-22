@@ -1510,6 +1510,9 @@ export function TodaySpendChip({
     if (usesGatewayQuota || isDeviceLinkRemoteGateway) {
       account.title = t('quotaCard.gatewayTitle');
       if (creditTotals) {
+        // Keep the retained balance's observation time; a render/refresh is not new data.
+        const observedAt = Date.parse(creditUsage?.observedAt ?? '');
+        if (Number.isFinite(observedAt)) account.updatedAt = observedAt;
         account.windows.push({
           key: 'balance',
           title: t('quotaCard.balanceLabel'),
@@ -1744,7 +1747,7 @@ export function TodaySpendChip({
           >
             <Dialog.Title className="sr-only">{t('codexResets.title')}</Dialog.Title>
             <div className="max-h-[60vh] overflow-y-auto">
-              <CodexResetCredits variant="dialog" snapshot={codexRateLimits} busy={manualReset.busy}
+              <CodexResetCredits providerId={providerId ?? 'openai'} onChanged={refreshCodexRateLimits} variant="dialog" snapshot={codexRateLimits} busy={manualReset.busy}
                 canReset={manualReset.canReset} canRetry={manualReset.canRetry} onReset={(credit) => {
                   setResetListOpen(false);
                   const context = quotaPopoverContextRef.current.identity;

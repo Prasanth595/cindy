@@ -8,6 +8,7 @@ const driveMenu = vi.hoisted(() => ({ props: null as any }));
 vi.mock("react-native", () => ({
   View: ({ children }: any) => <div>{children}</div>,
   ActivityIndicator: () => <span>loading</span>,
+  StyleSheet: { create: (styles: unknown) => styles, hairlineWidth: 1 },
   useWindowDimensions: () => ({ width: 400, height: 800 }),
 }));
 vi.mock("react-native-safe-area-context", () => ({
@@ -25,8 +26,10 @@ vi.mock("@/theme", () => ({
   spacing: {},
   typeScale: {},
   useTheme: () => ({ colors: {} }),
+  useThemedStyles: (make: (colors: object) => unknown) => make({}),
 }));
 vi.mock("lucide-react-native", () => ({
+  CircleAlert: () => null,
   ArrowUp: () => null,
   ChevronRight: () => null,
   Folder: () => null,

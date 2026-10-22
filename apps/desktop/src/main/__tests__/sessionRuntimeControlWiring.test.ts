@@ -1,6 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import ts from 'typescript';
 import { describe, expect, it, vi } from 'vitest';
+import { createEffortChangeCoordinator, enqueueEffortChange } from '../../renderer/components/new-chat/effortChangeQueue';
 
 const mainRoot = resolve(__dirname, '..');
 const bootstrapSource = readFileSync(resolve(mainRoot, 'bootstrap-electron.ts'), 'utf8').replace(
@@ -39,6 +41,167 @@ function handlerBody(source: string, channel: string, nextChannel: string): stri
   expect(end).toBeGreaterThan(start);
   return source.slice(start, end);
 }
+
+// Run the production axis closures without importing the Electron bootstrap.
+// Guard tier: verifies the lifecycle/persistence contract shared by Desktop and
+// Device Link. The previous tests only checked that terminal guards existed;
+// an archived row plus a remote effort/Fast write is the minimal regression.
+const axisHandlers = new Map<string, string>();
+const registerAst = ts.createSourceFile('register.ts', registerSource, ts.ScriptTarget.Latest, true);
+// Compile only the production predicate; importing its runtime module here
+// would load the entire harness dependency chain into this fast guard suite.
+const switchAst = ts.createSourceFile('sessionAgentSwitchHandler.ts', readFileSync(
+  resolve(mainRoot, 'maker-ipc/sessionAgentSwitchHandler.ts'), 'utf8'), ts.ScriptTarget.Latest, true);
+const userIntentPredicate = switchAst.statements.find((node): node is ts.FunctionDeclaration =>
+  ts.isFunctionDeclaration(node) && node.name?.text === 'isUserPendingAgentSwitchIntent')!;
+const isUserPendingAgentSwitchIntent = new Function(ts.transpileModule(
+  `return (intent) => ${userIntentPredicate.body!.getText(switchAst)};`,
+  { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
+).outputText)();
+function collectAxisHandlers(node: ts.Node): void {
+  if (ts.isVariableDeclaration(node) && node.initializer &&
+      ['applyEffort', 'applyFastMode', 'persistEffort', 'persistFastMode', 'stagePendingUserRuntimeAxis'].includes(node.name.getText(registerAst))) {
+    axisHandlers.set(node.name.getText(registerAst), ts.transpileModule(
+      `return ${node.initializer.getText(registerAst)};`,
+      { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
+    ).outputText);
+  }
+  ts.forEachChild(node, collectAxisHandlers);
+}
+collectAxisHandlers(registerAst);
+// Cross-file persistence contract: the real Renderer adapter must leave the
+// decision to Main even before its pending-intent projection reaches this UI.
+const rendererStoreAst = ts.createSourceFile('store.ts', readFileSync(
+  resolve(mainRoot, '../renderer/lib/makerChatStore.ts'), 'utf8'), ts.ScriptTarget.Latest, true);
+const rendererInputAst = ts.createSourceFile('ChatInput.tsx', readFileSync(
+  resolve(mainRoot, '../renderer/components/new-chat/ChatInput.tsx'), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+const fastSetter = rendererStoreAst.statements.find((node): node is ts.FunctionDeclaration =>
+  ts.isFunctionDeclaration(node) && node.name?.text === 'setFastMode')!;
+let effortPipeline = '';
+function findEffortPipeline(node: ts.Node): void {
+  if (ts.isCallExpression(node) && node.expression.getText(rendererInputAst) === 'enqueueEffortChange')
+    effortPipeline = node.arguments[3].getText(rendererInputAst);
+  ts.forEachChild(node, findEffortPipeline);
+}
+findEffortPipeline(rendererInputAst);
+
+describe.each([
+  ['applyEffort', 'persistEffort', 'effort', 'high'],
+  ['applyFastMode', 'persistFastMode', 'fastMode', true],
+] as const)('archived settings: %s', (handler, persistName, field, value) => {
+  function setup(status: 'archived' | 'deleted', remote = true) {
+    const row = { status, effort: 'low', fastMode: false } as Record<string, unknown>;
+    const pending = new Map();
+    const persist = vi.fn(async () => { row[field] = value; });
+    const response = remote ? {} : undefined;
+    const query = { from: () => query, where: () => query, limit: async () => [row] };
+    const getSession = vi.fn(() => { throw new Error('archived runtime must remain untouched'); });
+    const bindings = {
+      sessionId: 'archived-task', effort: 'high', enabled: true,
+      sessions: {}, eq: vi.fn(), getDbClient: () => ({ drizzle: { select: () => query } }),
+      remoteResponse: response, persistSessionFields: persist, agentSwitchPending: pending,
+      // These archived fixtures have no saved automation model scope.
+      updateSavedScheduledAxis: vi.fn(async () => false),
+      updateScheduledPreference: vi.fn(async () => {}),
+      assertOwnerCurrent: vi.fn(), assertSharedTaskCurrent: { admit: vi.fn() },
+      markRemoteSettingPersistedInsideHandler: vi.fn(), maker: { getSession },
+      isUserPendingAgentSwitchIntent, projectPendingAgentSwitchIntent: (intent: unknown) => intent,
+      wakeSessionInputAfterCredentialSwitch: vi.fn(),
+      getActiveCatalog: () => ({}),
+      getDesktopProviderService: () => ({ listProviders: async () => [{ id: 'next-provider', connected: true }] }),
+      readUsableAgentDeviceProviders: async () => [{ id: 'next-provider', connected: true }],
+      effectiveSourceIdForModel: () => 'next-provider', findCatalogModel: () => ({}),
+      resolveSessionRuntimeAxes: (axes: object) => ({ ok: true, ...axes }),
+      agentSwitchDeps: { getSessionRow: async () => row,
+        selectSameAgentModel: async (id: string, intent: unknown) => { pending.set(id, intent); },
+        onPendingSwitchChanged: vi.fn() },
+      throwIpcError: (code: string, message: string) => { throw new Error(`[${code}] ${message}`); },
+    };
+    const persistAxis = new Function(...Object.keys(bindings), axisHandlers.get(persistName)!)(...Object.values(bindings));
+    const stagePendingUserRuntimeAxis = new Function(...Object.keys(bindings), axisHandlers.get('stagePendingUserRuntimeAxis')!)(...Object.values(bindings));
+    const runBindings = { ...bindings, [persistName]: persistAxis, stagePendingUserRuntimeAxis };
+    const run = new Function(...Object.keys(runBindings), axisHandlers.get(handler)!)(...Object.values(runBindings));
+    return { run, row, persist, response, getSession, pending, changed: bindings.agentSwitchDeps.onPendingSwitchChanged };
+  }
+
+  it('acknowledges the saved axis while the task stays archived and the runtime stays untouched', async () => {
+    const h = setup('archived');
+    await expect(h.run()).resolves.toBe(h.response);
+    expect(h.row).toMatchObject({ status: 'archived', [field]: value });
+    expect(h.persist).toHaveBeenCalledOnce();
+    expect(h.getSession).not.toHaveBeenCalled();
+  });
+
+  it.each(['same-agent', 'cross-engine', 'relocation'] as const)('updates the selected %s model instead of the old route', async kind => {
+    const h = setup('archived');
+    const intent = { targetAgentKind: kind === 'cross-engine' ? 'pi' : 'codex', model: 'next-model',
+      providerId: 'next-provider', effort: 'low', fastMode: false, confirmedContextWindow: 200000,
+      ...(kind === 'same-agent' ? { sameAgentSelection: true } : {}),
+      ...(kind === 'relocation' ? { targetAgentDeviceId: 'other-device' } : {}),
+    };
+    h.pending.set('archived-task', intent);
+    await h.run();
+    expect(h.pending.get('archived-task')).toEqual({ ...intent, [field]: value });
+    if (kind !== 'same-agent') expect(h.changed).toHaveBeenCalledWith('archived-task',
+      expect.objectContaining({ model: 'next-model', [field]: value }));
+    expect(h.row).toMatchObject({ status: 'archived', effort: 'low', fastMode: false });
+    expect(h.persist).not.toHaveBeenCalled();
+    expect(h.getSession).not.toHaveBeenCalled();
+  });
+
+  it.each([{ configStaged: true }, { runtimeSource: 'agent' }])('keeps automatic intent %j separate from user axis writes', async source => {
+    const h = setup('archived');
+    const intent = { sameAgentSelection: true, model: 'automatic-model', ...source };
+    h.pending.set('archived-task', intent);
+    await h.run();
+    expect(h.pending.get('archived-task')).toBe(intent);
+    expect(h.row).toMatchObject({ status: 'archived', [field]: value });
+    expect(h.persist).toHaveBeenCalledOnce();
+    expect(h.getSession).not.toHaveBeenCalled();
+  });
+
+  it('rejects a deleted task before saving anything', async () => {
+    const h = setup('deleted');
+    await expect(h.run()).rejects.toThrow('PRECONDITION_FAILED');
+    expect(h.persist).not.toHaveBeenCalled();
+    expect(h.getSession).not.toHaveBeenCalled();
+  });
+
+  it('reports a persistence failure without applying the axis to a runtime', async () => {
+    const h = setup('archived');
+    h.persist.mockRejectedValueOnce(new Error('sqlite rejected'));
+    await expect(h.run()).rejects.toThrow('sqlite rejected');
+    expect(h.row).toMatchObject({ status: 'archived', effort: 'low', fastMode: false });
+    expect(h.getSession).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])('commits local Renderer changes through Main (pending intent: %s)', async hasIntent => {
+    const h = setup('archived', false);
+    if (hasIntent) h.pending.set('archived-task', { targetAgentKind: 'pi', model: 'next', effort: 'low', fastMode: false });
+    const compile = (expression: string, bindings: Record<string, unknown>) => new Function(...Object.keys(bindings),
+      ts.transpileModule(`return (${expression});`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText)(...Object.values(bindings));
+    const bindings = { sessionService: { update: h.persist }, window: { electronAPI: { maker: {
+      setEffort: h.run, setFastMode: h.run,
+    } } }, log: { warn: vi.fn() }, getStickySessionDeviceId: () => undefined, setState: vi.fn(),
+      activeModel: undefined, fastMode: false, onEffortDidChange: vi.fn() };
+    if (field === 'fastMode') await compile(fastSetter.getText(rendererStoreAst), bindings)('archived-task', true);
+    else {
+      const coordinator = createEffortChangeCoordinator();
+      await enqueueEffortChange(coordinator, 'archived-task', 'high', compile(effortPipeline, bindings));
+      await coordinator.awaitRuntimeSettled('archived-task');
+    }
+    if (hasIntent) {
+      expect(h.pending.get('archived-task')).toMatchObject({ [field]: value });
+      expect(h.persist).not.toHaveBeenCalled();
+      h.pending.clear(); // restart before send loses only the volatile selection
+      expect(h.row).toEqual({ status: 'archived', effort: 'low', fastMode: false });
+    } else {
+      expect(h.persist).toHaveBeenCalledOnce();
+      expect(h.row).toMatchObject({ [field]: value });
+    }
+    expect(h.getSession).not.toHaveBeenCalled();
+  });
+});
 
 describe('session runtime control wiring', () => {
   it('replays Windows attention after the main window is shown independently of inventory loading', () => {
@@ -114,14 +277,14 @@ describe('session runtime control wiring', () => {
       'stampTrustedDesktopQueuedOrigin(stampMobileClientOrigin(updated, editor.isMobile), remote, true)',
     );
     expect(updateText).toContain('if (!remote) assertTrustedAppRendererEvent(event);');
-    expect(updateText).toContain('stampQueuedEditProvenance(updated, remote, editor)');
+    expect(updateText).toContain('stampQueuedEditProvenance(sid, updated, remote, editor)');
     const updateContent = handlerBody(
       registerSource,
       'MAKER_INVOKE.INPUT_UPDATE_CONTENT,',
       'MAKER_INVOKE.INPUT_MOVE,',
     );
     expect(updateContent).toContain('if (!remote) assertTrustedAppRendererEvent(event);');
-    expect(updateContent).toContain('stampQueuedEditProvenance(updated, remote, editor)');
+    expect(updateContent).toContain('stampQueuedEditProvenance(sid, updated, remote, editor)');
     const enqueue = handlerBody(
       registerSource,
       'MAKER_INVOKE.INPUT_ENQUEUE,',
@@ -209,7 +372,7 @@ describe('session runtime control wiring', () => {
       'setAppSessionCommitBoundaryHook(() => {',
       '// ── Custom protocol registration',
     );
-    expect(body).toContain('ghostPanelWindowsController.closeForOwnerChange();');
+    expect(body).toContain('sidebarTabWindowsController.destroyAllWindows();');
     expect(body.indexOf('clearAllSessionAttention();')).toBeGreaterThan(-1);
     expect(body.indexOf('clearAllSessionAttention();')).toBeLessThan(
       body.indexOf('authManager.setStableOwnerPostCommitTask('),
@@ -771,7 +934,10 @@ describe('session runtime control wiring', () => {
     );
   });
 
-  it('rejects terminal tasks inside the shared route lock before runtime mutations', () => {
+  // Guard tier: archive/delete and settings share the route lock. A picker may
+  // stage an archived task, but automatic changes and send-time application must
+  // still stop before recreating runtime state. The old guard rejected all three.
+  it('allows only user picker staging on archived tasks inside the shared route lock', () => {
     const setModel = handlerBody(
       registerSource,
       'const handleSetModel = async (',
@@ -784,6 +950,12 @@ describe('session runtime control wiring', () => {
     expect(setModel).toContain(
       'internalOptions.sessionLockHeld ? applyLocked() : withSendToSessionLock(sessionId, applyLocked)',
     );
+    const archiveAdmission = setModel.slice(setModel.indexOf('const canStageArchivedSelection'), terminalGuard);
+    expect(archiveAdmission).toContain("runtimeStatus.status === 'archived'");
+    expect(archiveAdmission).toContain("internalOptions.source === 'user'");
+    expect(archiveAdmission).toContain('!internalOptions.applyingUserSelectionOnSend');
+    expect(setModel).toContain("runtimeStatus.status !== 'active' && !canStageArchivedSelection");
+    expect(setModel).toContain("(!runtimeStatus.remoteHostId || canStageArchivedSelection)");
   });
 
   it('stages user routes before every runtime mutation and prevents remote persistence of the source route', () => {
@@ -827,7 +999,10 @@ describe('session runtime control wiring', () => {
     );
   });
 
-  it('rejects terminal tasks before effort or Fast mutations recreate runtime state', () => {
+  // Regression: desktop persisted effort before the rejected runtime IPC, while
+  // Mobile rejected the whole action. Archived axes must acknowledge persistence
+  // without restoring the runtime stores cleared by archive cleanup.
+  it('saves archived effort and Fast without recreating runtime state, and rejects deleted tasks', () => {
     const effort = handlerBody(
       registerSource,
       'ipcMain.handle(MAKER_INVOKE.SET_EFFORT',
@@ -838,15 +1013,25 @@ describe('session runtime control wiring', () => {
       'MAKER_INVOKE.SET_FAST_MODE',
       'MAKER_INVOKE.SET_THINKING_ENABLED',
     );
-    for (const [body, commit] of [
-      [effort, 'commit: commitEffort'],
-      [fast, 'commit: commitFastMode'],
+    for (const [body, commit, persist] of [
+      [effort, 'commit: commitEffort', 'persistEffort'],
+      [fast, 'commit: commitFastMode', 'persistFastMode'],
     ] as const) {
       const terminalGuard = body.indexOf("runtimeStatus.status !== 'active'");
       expect(terminalGuard).toBeGreaterThan(-1);
       expect(terminalGuard).toBeLessThan(body.indexOf(commit));
       expect(body.indexOf('.select({ status: sessions.status })')).toBeLessThan(terminalGuard);
       expect(body).toContain('return withSendToSessionLock(sessionId');
+      expect(body).toContain("runtimeStatus.status !== 'active' && runtimeStatus.status !== 'archived'");
+      const archiveStart = body.indexOf("if (runtimeStatus.status === 'archived')");
+      expect(archiveStart).toBeGreaterThan(body.indexOf('if (isUserPendingAgentSwitchIntent(userIntent))'));
+      const archiveEnd = body.indexOf('const livePatch:', archiveStart);
+      const archive = body.slice(archiveStart, archiveEnd);
+      expect(archive).toContain(`await ${persist}();`);
+      expect(archive).toContain('return remoteResponse;');
+      expect(archive).not.toContain('setSession');
+      expect(archive).not.toContain('recordUserSessionRuntime');
+      expect(archiveStart).toBeLessThan(body.indexOf('const sess = maker.getSession'));
     }
   });
 
@@ -882,7 +1067,7 @@ describe('session runtime control wiring', () => {
     expect(registerSource).toContain(
       'shouldPreserveSessionRuntimeFallbackAutoResume(session, closeReason)',
     );
-    expect(registerSource).toContain('autoResumeBookkeeping.hasSchedule(session.id)');
+    expect(registerSource).toContain('autoResumeBookkeeping.hasLiveSchedule(session.id, attemptToken)');
     expect(registerSource).toContain(
       'decision.episodeAttempt,\n                decision.attemptToken,',
     );

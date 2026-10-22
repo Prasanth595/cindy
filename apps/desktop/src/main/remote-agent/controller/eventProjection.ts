@@ -155,6 +155,10 @@ export class RemoteEventProjection {
   }
 
   project(event: AgentEvent): AgentEvent[] {
+    // Native image payloads are bytes and source-side recovery metadata, not
+    // virtual-workspace text. In particular JPEG Base64 can start with '/'.
+    if (event.type === 'image' && event.source === 'codex'
+      && (event.data as { kind?: unknown } | null)?.kind === 'generation') return [event];
     const data = event.data as { text?: unknown; isFinal?: boolean; isFullText?: boolean; isRunning?: boolean; agentMessageId?: string } | null;
     const stream = this.streamKey(event);
     let pending = this.pending.get(stream);

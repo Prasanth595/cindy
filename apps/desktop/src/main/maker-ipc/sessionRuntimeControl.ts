@@ -1,3 +1,4 @@
+import { modelRouteLocationKey } from '@cindy/maker-shared/model-route';
 import type { AgentKind, Effort } from '@cindy/maker-core';
 import type { Session as RendererSession } from '../../renderer/lib/ccAgent.types';
 import {
@@ -11,11 +12,12 @@ import {
 export type SessionRuntimeMutationSource = 'agent' | 'fallback';
 
 export interface SessionRuntimeProfile {
+  agentDeviceId?: string | null;
   agentKind: AgentKind;
   model: string;
   providerId: string | null;
   effort: Effort | null;
-  fastMode: boolean;
+  fastMode: boolean | 'ultrafast';
 }
 
 export interface PendingSessionRuntimeMutation {
@@ -87,9 +89,9 @@ const states = new Map<string, SessionRuntimeControlState>();
 let ownerEpoch = 0;
 
 function routeKey(
-  profile: Pick<SessionRuntimeProfile, 'agentKind' | 'providerId' | 'model'>,
+  profile: Pick<SessionRuntimeProfile, 'agentKind' | 'providerId' | 'model' | 'agentDeviceId'>,
 ): string {
-  return `${profile.agentKind}\u0000${profile.providerId ?? ''}\u0000${profile.model}`;
+  return `${profile.agentKind}\u0000${profile.providerId ?? ''}\u0000${profile.model}${modelRouteLocationKey(profile.agentDeviceId)}`;
 }
 
 function stateFor(sessionId: string): SessionRuntimeControlState {
@@ -419,12 +421,12 @@ export function resolveCompatibleSessionRuntimeEffort(
 export function resolveSessionRuntimeAxes(params: {
   model: CatalogModel;
   effort: Effort | null;
-  fastMode: boolean;
+  fastMode: boolean | 'ultrafast';
   effortExplicit: boolean;
   fastExplicit: boolean;
   allowFixedEffortPlaceholder?: boolean;
 }):
-  | { ok: true; effort: Effort | null; fastMode: boolean }
+  | { ok: true; effort: Effort | null; fastMode: boolean | 'ultrafast' }
   | { ok: false; reason: 'effort-unavailable' | 'fast-unavailable' } {
   if (
     params.effortExplicit &&
@@ -437,13 +439,13 @@ export function resolveSessionRuntimeAxes(params: {
   ) {
     return { ok: false, reason: 'effort-unavailable' };
   }
-  if (params.fastExplicit && params.fastMode && params.model.supportsFastMode !== true) {
+  if (params.fastExplicit && params.fastMode && (params.model.supportsFastMode !== true || (params.fastMode === 'ultrafast' && params.model.supportsUltrafastMode !== true))) {
     return { ok: false, reason: 'fast-unavailable' };
   }
   return {
     ok: true,
     effort: resolveCompatibleSessionRuntimeEffort(params.model, params.effort),
-    fastMode: params.fastMode && params.model.supportsFastMode === true,
+    fastMode: params.model.supportsFastMode === true && (params.fastMode !== 'ultrafast' || params.model.supportsUltrafastMode === true) ? params.fastMode : false,
   };
 }
 

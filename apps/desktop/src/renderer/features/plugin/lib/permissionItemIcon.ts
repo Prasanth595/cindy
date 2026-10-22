@@ -18,6 +18,7 @@ const PERMISSION_ICON: Record<GhostPermissionItem['kind'], LucideIcon> = {
   confirm: MessageCircleQuestion,
   fs: FilePen,
   library: Library,
+  deviceSync: Radio,
   'session-context': MapPin,
   pick: FolderOpen,
   preview: AppWindow,

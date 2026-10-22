@@ -1,4 +1,7 @@
-import type { BrowserControlRuntime } from '@cindy/browser-control-runtime';
+import type {
+  BrowserControlResult,
+  BrowserControlRuntime,
+} from '@cindy/browser-control-runtime';
 import type { AgentKind } from '@cindy/maker-core';
 
 import type { Recipe, SiteGuide } from './browser/recipe-loader.js';
@@ -103,6 +106,8 @@ export interface FeishuBotSendMessageResult {
 export interface FeishuBotHostSession {
   sessionId?: string;
   sessionInstanceId?: string;
+  /** Trusted host session metadata; preserves an explicit Feishu reply target. */
+  vendorOptions?: Readonly<Record<string, unknown>>;
 }
 
 /**
@@ -203,7 +208,7 @@ export interface FeishuBotMcpHostDeps {
    * Returns null when no owner has been bound yet — user must DM the bot once
    * first (same precondition as scheduler feishu-completion notifications).
    */
-  getOwnerOpenId(session?: FeishuBotHostSession): string | null;
+  getOwnerOpenId(session?: FeishuBotHostSession): string | null | Promise<string | null>;
   logger?: LiziMcpLogger;
 }
 
@@ -629,9 +634,24 @@ export type ControlResult<T extends object = object, E extends string = never> =
  */
 export type ControlWorkerAgent = 'claude-code' | 'codex' | 'pi';
 
+export interface ResolvedBrowserScreenshot {
+  buffer: Buffer;
+  mimeType: 'image/png' | 'image/jpeg';
+}
+
 /** Browser automation MCP host deps. Core browser execution is injected by host. */
 export interface BrowserMcpDeps {
   getRuntime(): BrowserControlRuntime;
+  /**
+   * Resolve a successful screenshot runtime result into verified image bytes.
+   * The host owns file-system access so this package never receives a generic
+   * arbitrary-path reader; inline-only hosts may validate and decode in memory.
+   */
+  resolveScreenshot?(
+    result: BrowserControlResult,
+  ): Promise<ResolvedBrowserScreenshot>;
+  /** Shrink the LLM-facing copy to the shared stream-safe byte budget. */
+  compressInlineImage?: CompressInlineImageFn;
   /** Switch the host-wide, persisted automation target; returns the actual mode. */
   setBackend?(backend: 'external' | 'rsb-webview'): Promise<'external' | 'rsb-webview'>;
   /** Whether the active backend accepts managed resource downloads. */

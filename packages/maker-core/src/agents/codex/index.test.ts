@@ -12,6 +12,7 @@ import {
 } from './index.js';
 import { CodexForkError } from './fork-error.js';
 import { Session } from '../../session.js';
+import { AUTO_REVIEW_CONTINUATION_POLICY } from '../shared/continuation-policy.js';
 import { Method, type TurnStartParams } from './app-server/protocol.js';
 import type { Effort } from '../../types/common.js';
 import type { AppServerHost, ThreadEventHandlers } from './app-server/host.js';
@@ -592,13 +593,19 @@ describe('Codex archive synchronization', () => {
     MockCodexTransport.onCreate = transport => transport.setMockResponse('thread/read', { result: {
       thread: { id: 'archived-thread', path: '/history/archived_sessions/rollout.jsonl' },
     } });
+    const prepareCodexExtraSpawnConfig = vi.fn(async () => ({ extraArgs: [], extraEnv: {} }));
     const agent = new CodexAgent(createDeps({}, {
       resolveCodexThreadStorage: async () => ({ historyHome: '/history', sqliteHome: '/state' }),
       recordCodexThreadLocation,
+      prepareCodexExtraSpawnConfig,
     }));
     try {
       await agent.syncThreadArchiveState({ threadId: 'archived-thread', archived: true, assertCurrent: () => {} });
       expect(createdTransports).toHaveLength(1);
+      // Archive hosts never run turns; the host builds no MCP bridge for them.
+      expect(prepareCodexExtraSpawnConfig).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        hostPurpose: 'control-plane', nativeStorageOnly: true,
+      }));
       expect(createdStdioOptions[0].extraArgs).toContain('sqlite_home="/state"');
       expect(recordCodexThreadLocation).toHaveBeenCalledWith('archived-thread', '/state', '/history/archived_sessions/rollout.jsonl');
       await agent.releaseArchiveHosts();
@@ -1311,6 +1318,37 @@ describe('CodexAgent spawn configuration', () => {
     guard.release();
     finish.resolve();
     const handle = await startup;
+    await handle.close();
+    await agent.dispose();
+  });
+
+  it('a refused MCP refresh does not make a starting session reselect its route or respawn', async () => {
+    // 2026-10-19:hook-control 每 2 秒重试一次因伙伴会话 busy 而被拒绝的 MCP 刷新;此前预约就推进
+    // 配置代次,正在启动的会话每次都判定「路由已变」重来,7 次后以 LAZY_CREATE_FAILED 失败。
+    // 被拒绝的变更没有改变任何 host:启动中的会话必须沿用原路由、只 spawn 一次。
+    const started = deferred<void>();
+    const finish = deferred<void>();
+    const resolvePolicy = vi.fn(async () => 'legacy-shared' as const);
+    const agent = new CodexAgent(createDeps({}, {
+      resolveCodexLocalAuthPolicy: resolvePolicy,
+      prepareCodexExtraSpawnConfig: async () => {
+        started.resolve();
+        await finish.promise;
+        return { extraArgs: [], extraEnv: {} };
+      },
+    }));
+    const startup = agent.startSession({ sessionId: 'starting-during-refused-refresh', model: 'gpt-5.4', workingDir: '/repo' });
+    await started.promise;
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const guard = await agent.beginLocalHostCredentialChange('MCP refresh', { allLocalHosts: true });
+      expect(() => guard.assertIdle()).toThrow(/active Codex session/);
+      await expect(guard.retireActiveHost()).rejects.toThrow(/active Codex session/);
+      guard.release();
+    }
+    finish.resolve();
+    const handle = await startup;
+    expect(resolvePolicy).toHaveBeenCalledTimes(1);
+    expect(createdTransports).toHaveLength(1);
     await handle.close();
     await agent.dispose();
   });
@@ -2376,7 +2414,9 @@ describe('CodexAgent permissions', () => {
   });
 
   it('keeps Bot identity and MCP config while honoring the selected task permission mode', async () => {
-    const agent = new CodexAgent(createDeps());
+    const deps = createDeps();
+    deps.runtimeConfig.answerDeliveryPrompt = 'DELIVERY PROTOCOL';
+    const agent = new CodexAgent(deps);
     const host = installFakeHost(agent, undefined, {
       buildSessionMcpConfig: () => ({
         'mcp_servers.bot_helper.url': 'http://127.0.0.1:45831/mcp',
@@ -2403,6 +2443,7 @@ describe('CodexAgent permissions', () => {
     });
     expect(threadStart).not.toHaveProperty('permissions');
     expect(threadStart.developerInstructions).toContain('BOT SOUL');
+    expect(threadStart.developerInstructions).toContain('DELIVERY PROTOCOL');
 
     await handle.setPermissionMode?.('ask');
     await handle.send({ type: 'user', content: 'Inspect the project.' });
@@ -5378,6 +5419,21 @@ describe('CodexAgent.refreshLocalModels', () => {
     }
   });
 
+  it('remote daemon restart cleanup still cancels an in-flight host creation instead of reporting it active', async () => {
+    // #6396 review:本地配置变更守卫把 in-flight 创建算作 active 并提前拒绝,但远程 daemon 重启清理同样
+    // failIfActive,却依赖取消由模型发现占用、尚无 Session 的创建,不能被那条规则挡住。
+    const agent = new CodexAgent(createDeps());
+    const creation = deferred<void>();
+    (agent as any).hostPromises.set('remote:builder', {
+      promise: creation.promise, credentialMode: undefined, credentialModeResolved: true, generation: 0,
+    });
+    const cleanup = agent.disposeRemoteHostAfterRestart('builder');
+    // 清理取消 in-flight 创建后会等它收尾(最多 1.5s);让创建立即结束,避免真实等待。
+    creation.resolve();
+    await expect(cleanup).resolves.toBeUndefined();
+    expect((agent as any).hostPromises.has('remote:builder')).toBe(false);
+  });
+
   it('rejects an in-flight SSH catalog on daemon closure and allows a fresh retry', async () => {
     const transports: InstanceType<typeof MockCodexTransport>[] = [];
     const agent = new CodexAgent(createDeps({}, { getRemoteCodexTransport: () => {
@@ -7076,6 +7132,20 @@ describe('CodexAgent.startSession developerInstructions', () => {
 });
 
 describe('CodexAgent fast mode service tier', () => {
+  it('sends saved Ultrafast on both thread creation and the first turn', async () => {
+    const agent = new CodexAgent(createDeps());
+    const host = installFakeHost(agent);
+    const handle = await agent.startSession({ sessionId: 'ultrafast-saved', model: 'gpt-6-astra',
+      workingDir: '/repo', fastMode: 'ultrafast' });
+    expect(host.request.mock.calls.find(([method]) => method === Method.ThreadStart)?.[1])
+      .toMatchObject({ serviceTier: 'ultrafast' });
+    await handle.send({ type: 'user', content: 'hello' });
+    expect(host.request.mock.calls.find(([method]) => method === Method.TurnStart)?.[1])
+      .toMatchObject({ serviceTier: 'ultrafast' });
+    expect(handle.getFastMode?.()).toBe('ultrafast');
+    await handle.close();
+  });
+
   it.each(['standard', 'priority'] as const)('prices the actual proxy execution (%s) without clearing Fast', async priceVariant => {
     const agent = new CodexAgent(createDeps());
     const host = installFakeHost(agent, method => method === Method.TurnStart ? { turn: { id: 'turn-1' } } : undefined);
@@ -7103,7 +7173,7 @@ describe('CodexAgent fast mode service tier', () => {
   });
 
 
-  it('normalizes app-server priority service tier from thread/start as fast mode', async () => {
+  it.each(['priority', 'ultrafast'] as const)('preserves app-server %s service tier from thread/start through turn/start', async (tier) => {
     const agent = new CodexAgent(createDeps());
     const host = installFakeHost(agent, (method) => {
       if (method === Method.ThreadStart) {
@@ -7112,7 +7182,7 @@ describe('CodexAgent fast mode service tier', () => {
           model: 'gpt-5.4',
           modelProvider: 'openai',
           cwd: '/repo',
-          serviceTier: 'priority',
+          serviceTier: tier,
         };
       }
       return undefined;
@@ -7123,14 +7193,14 @@ describe('CodexAgent fast mode service tier', () => {
       workingDir: '/repo',
     });
 
-    expect(handle.getFastMode?.()).toBe(true);
+    expect(handle.getFastMode?.()).toBe(tier === 'ultrafast' ? 'ultrafast' : true);
 
     await handle.send({ type: 'user', content: 'hello' });
 
     const turnStartParams = host.request.mock.calls.find(([method]) => method === Method.TurnStart)?.[1] as
       | { serviceTier?: unknown }
       | undefined;
-    expect(turnStartParams?.serviceTier).toBe('fast');
+    expect(turnStartParams?.serviceTier).toBe(tier === 'ultrafast' ? 'ultrafast' : 'fast');
     await handle.close();
   });
 
@@ -7303,10 +7373,14 @@ describe('CodexAgent thread/settings/update channel', () => {
     expect(settingsCalls(host)).toHaveLength(0);
 
     await handle.setFastMode?.(true);
+    // Ultrafast must remain a distinct tier through live settings and getters.
+    await handle.setFastMode?.('ultrafast');
+    expect(handle.getFastMode?.()).toBe('ultrafast');
     await handle.setFastMode?.(false);
 
     expect(settingsCalls(host)).toEqual([
       { threadId: 'start-thread-id', serviceTier: 'fast' },
+      { threadId: 'start-thread-id', serviceTier: 'ultrafast' },
       { threadId: 'start-thread-id', serviceTier: null },
     ]);
     await handle.close();
@@ -11322,6 +11396,7 @@ describe('CodexAgent MCP thread context hooks', () => {
     it.each([
       ['encrypted_content', ENCRYPTED_ERROR],
       ['tool_item_id', "Invalid 'input[285].id': 'fc_legacy'. Expected an ID that begins with 'ctc'."],
+      ['responses_reasoning_content', "Invalid 'input[15].content': array too long. Expected an array with maximum length 0, but got an array with length 1 instead."],
     ])('arms HTTP fallback and retries the same zero-output turn once (%s)', async (reason, recoveryError) => {
       const armCodexHttpRecovery = vi.fn(() => reason);
       const agent = new CodexAgent(createDeps({}, { armCodexHttpRecovery }));
@@ -16607,7 +16682,7 @@ describe('CodexAgent MCP thread context hooks', () => {
       expect(params.approvalsReviewer).toBe(permissionMode === 'auto' ? 'auto_review'
         : permissionMode === 'ask' ? 'user' : undefined);
       expect(params.approvalPolicy).toBe(permissionMode === 'bypassPermissions' ? 'never' : 'on-request');
-      expect(params.config?.['auto_review.policy']).toContain('authorization to complete work');
+      expect(params.config?.['auto_review.policy']).toContain(AUTO_REVIEW_CONTINUATION_POLICY);
       expect(params.config?.['auto_review.policy']).toContain('### Data Exfiltration');
       await handle.setPermissionMode?.('auto');
       await handle.send({ type: 'user', content: 'continue' });
@@ -16878,6 +16953,7 @@ describe('CodexAgent MCP thread context hooks', () => {
       workingDir: '/repo',
       permissionMode: 'auto',
     });
+    expect(handle.getAutoReviewOwner?.()).toBe('cindy');
 
     const startParams = host.request.mock.calls.find(([method]) => method === Method.ThreadStart)?.[1] as {
       approvalPolicy?: string;
@@ -17825,6 +17901,7 @@ describe('CodexAgent MCP thread context hooks', () => {
       workingDir: '/repo',
       permissionMode: 'auto',
     });
+    expect(handle.getAutoReviewOwner?.()).toBe('native');
     const handlers = host.getThreadHandlers();
     if (!handlers?.autoApprovalReviewCompleted) throw new Error('expected autoApprovalReviewCompleted');
     handlers.autoApprovalReviewCompleted({
@@ -17838,6 +17915,7 @@ describe('CodexAgent MCP thread context hooks', () => {
       review: { status: 'timedOut', riskLevel: null, userAuthorization: null, rationale: 'review timed out' },
       action: { type: 'networkAccess', target: 'https://example.com', host: 'example.com', protocol: 'https', port: 443 },
     });
+    expect(handle.getAutoReviewOwner?.()).toBe('cindy');
     await handle.send({ type: 'user', content: 'Run the type checker' });
     const turnParams = host.request.mock.calls.find(([method]) => method === Method.TurnStart)?.[1] as {
       approvalPolicy?: string;
@@ -24269,6 +24347,55 @@ describe('CodexAgent native fork anchor events', () => {
 });
 
 describe('CodexAgent.forkSdkSession', () => {
+  // Review #6563: exercise createHost/spawn configuration, which a mocked getHost
+  // bypasses. A shared subscription needs the same scoped proxy as a guest turn.
+  it('starts shared-subscription forks with their own proxy scope and retires it', async () => {
+    MockCodexTransport.userAgent = 'mock-codex/0.153.4';
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-guest-fork-'));
+    tempRoots.push(home);
+    const onHostRetired = vi.fn(async () => {});
+    const prepare = vi.fn<NonNullable<AgentDeps['prepareCodexExtraSpawnConfig']>>(async (_providers, ctx) => {
+      if (!ctx?.accountHostKey) throw Object.assign(new Error('shared-provider Codex host requires its own scoped proxy'), { codexSpawnConfigFatal: true });
+      return { extraArgs: [], extraEnv: {}, onHostRetired };
+    });
+    MockCodexTransport.onCreate = transport => transport.setMockResponse('account/login/start', {
+      result: { type: 'chatgptAuthTokens' },
+    });
+    const agent = new CodexAgent(createDeps({}, {
+      prepareCodexExtraSpawnConfig: prepare,
+      createCodexAuthTokenReader: () => async () => ({ accessToken: 'test-guest-token', chatgptAccountId: 'shared-account' }),
+    }));
+    try {
+      await expect(agent.forkSdkSession({ sourceSdkSessionId: 'guest-source',
+        upToMessageId: undefined, lastTurnId: 'guest-turn', hostedGuestHome: home,
+        providerId: 'openai', model: 'gpt-5.4' })).resolves.toMatchObject({ newSdkSessionId: 'fork-thread-1' });
+      expect(prepare).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        accountHostKey: expect.stringMatching(/^local-fork:/),
+        runtimeCodexHome: path.join(home, 'codex'),
+        deviceHostedGuestProviderId: 'openai',
+      }));
+      expect(createdTransports).toHaveLength(1);
+      expect(createdTransports[0].closed).toBe(true);
+      expect(onHostRetired).toHaveBeenCalledOnce();
+    } finally { await agent.dispose(); }
+  });
+  // Shared-provider forks must never discover history in the owner's default home.
+  it('forks shared-provider history in the host-resolved guest home', async () => {
+    const resolveCodexThreadStorage = vi.fn();
+    const prepareCodexResumeSession = vi.fn();
+    const agent = new CodexAgent(createDeps({}, { resolveCodexThreadStorage, prepareCodexResumeSession }));
+    const home = path.join(os.tmpdir(), 'guest-fork-fixture');
+    const codexHome = path.join(home, 'codex');
+    const host = installFakeHost(agent, undefined, { userAgent: 'mock-codex/0.153.4', codexHome });
+    await expect(agent.forkSdkSession({ sourceSdkSessionId: 'guest-source', upToMessageId: undefined,
+      lastTurnId: 'guest-turn', hostedGuestHome: home, providerId: 'xd' }))
+      .resolves.toMatchObject({ newSdkSessionId: 'fork-thread-id' });
+    expect(host.getHost).toHaveBeenCalledWith(undefined, expect.anything(), expect.objectContaining({
+      historyHome: codexHome, sqliteHome: codexHome, deviceHostedGuestProviderId: 'xd',
+    }));
+    expect(resolveCodexThreadStorage).not.toHaveBeenCalled();
+    expect(prepareCodexResumeSession).not.toHaveBeenCalled();
+  });
   it('reads cross-account fork boundaries and records the child in the source index', async () => {
     const recordCodexThreadLocation = vi.fn(async () => {});
     const agent = new CodexAgent(createDeps({}, {

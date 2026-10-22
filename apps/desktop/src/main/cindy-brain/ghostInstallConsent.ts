@@ -54,11 +54,12 @@ export function confirmedTaskCapability(
   decision: GhostInstallConsentDecision,
   installed: InstalledGhost | null | undefined,
   next: GhostManifest,
+  capability: 'tasks' | 'targets' = 'tasks',
 ): true | undefined {
   if (decision.mode !== 'confirmed') return undefined;
   const facts = evaluateGhostInstallConsent(installed, next);
   const shown = facts?.kind === 'install' ? facts.permissions : facts?.added;
-  return shown?.some(item => item.key === 'agent:tasks') ? true : undefined;
+  return shown?.some(item => item.key === `agent:${capability}`) ? true : undefined;
 }
 
 /**

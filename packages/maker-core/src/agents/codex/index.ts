@@ -175,6 +175,7 @@ import {
   beginCodexGenerationTurn,
   codexGenerationDurationMs,
   finalizeCodexGenerationTurn,
+  finishCodexSamplingTurn,
   pauseCodexGeneration,
   resetCodexGenerationTiming,
   resumeCodexGeneration,
@@ -442,9 +443,11 @@ function buildCodexDeveloperInstructions(parts: {
   botProfileContextPrompt?: string;
   botUserProfilePrompt?: string;
   userPrompt?: string;
+  answerDeliveryPrompt?: string;
 }): string {
   return [
     parts.botProfilePrompt,
+    parts.answerDeliveryPrompt,
     MAKER_CODEX_SYSTEM_PROMPT_APPEND,
     parts.makerMemoryRules,
     parts.contactsRules,
@@ -1093,8 +1096,8 @@ function normalizeServiceTier(serviceTier: ServiceTier | null | undefined): Serv
   return serviceTier === 'priority' ? 'fast' : serviceTier;
 }
 
-function isFastServiceTier(serviceTier: ServiceTier | null | undefined): boolean {
-  return normalizeServiceTier(serviceTier) === 'fast';
+function fastModeFromServiceTier(serviceTier: ServiceTier | null | undefined): boolean | 'ultrafast' {
+  return serviceTier === 'ultrafast' ? 'ultrafast' : normalizeServiceTier(serviceTier) === 'fast';
 }
 
 function skillDescription(skill: SkillMetadata): string | undefined {
@@ -1966,6 +1969,8 @@ export class CodexAgent extends BaseAgent {
       if (!opts.remoteHostId) this.archiveHostKeys.add(key);
       const host = await this.getHost(opts.remoteHostId, undefined, {
         keyOverride: key, hostPurpose: 'control-plane',
+        // Local archive hosts never run turns; skip the MCP bridge they would never use.
+        ...(!opts.remoteHostId ? { nativeStorageOnly: true } : {}),
         ...(storage ? { historyHome: storage.historyHome, sqliteHome: storage.sqliteHome } : {}),
       });
       return { key, host };
@@ -2372,7 +2377,18 @@ export class CodexAgent extends BaseAgent {
       if (pending.length === 0) break;
       await Promise.allSettled(pending);
     }
-    this.bumpHostGeneration(LOCAL_CONFIGURATION_CHANGE_KEY);
+    // 配置代次只在变更真正落地(host 被退役 / finalize 通过 busy 检查)时才推进。
+    // 预约本身已经通过 hostCredentialModeSwitches 挡住新的 host 获取;若在预约时就推进代次,
+    // 一次因 busy 被拒绝、随后 release 的变更也会让所有正在准备 host 的会话判定「路由已变」而
+    // 重来——hook-control 每 2 秒重试一次被拒的 MCP 刷新时,新启动的 Codex 任务会连续撞满 7 次
+    // 重试并以 LAZY_CREATE_FAILED 收场(2026-10-19 实排:伙伴会话长时间 busy,窗口期内任何 Codex
+    // 任务都无法启动)。
+    let generationBumped = false;
+    const commitConfigurationChange = (): void => {
+      if (generationBumped) return;
+      generationBumped = true;
+      this.bumpHostGeneration(LOCAL_CONFIGURATION_CHANGE_KEY);
+    };
 
     let releaseSwitch!: () => void;
     const switchPromise = new Promise<void>((resolve) => {
@@ -2406,10 +2422,12 @@ export class CodexAgent extends BaseAgent {
       for (const candidate of affectedKeys()) {
         await this.retireHostKey(candidate, reason, {
           failIfActive: options.allLocalHosts === true && options.forceRetire !== true,
+          rejectBeforeMutation: options.allLocalHosts === true && options.forceRetire !== true,
           logPrefix: 'codex local credential hard cut',
           throwOnShutdownFailure: true,
         });
       }
+      commitConfigurationChange();
     };
 
     return {
@@ -2436,6 +2454,7 @@ export class CodexAgent extends BaseAgent {
               await retire();
             } else {
               await this.disposeLocalHostForCredentialChangeUnlocked(key, reason);
+              commitConfigurationChange();
             }
           }
         } finally {
@@ -2547,12 +2566,16 @@ export class CodexAgent extends BaseAgent {
       localAuthPolicy?: 'isolated' | 'legacy-shared';
       keyOverride?: string;
       hostPurpose?: 'control-plane' | 'review' | 'custom-context';
+      /** Archive-only control host: native storage RPCs, no turns, no MCP bridge. */
+      nativeStorageOnly?: boolean;
       customContextModel?: string;
       customContextWindow?: number;
       sqliteHome?: string;
       historyHome?: string;
       /** 受邀者任务的 app-server：值是分享给它的供应商(见 prepareCodexExtraSpawnConfig)。 */
       deviceHostedGuestProviderId?: string;
+      deviceHostedGuestSessionId?: string;
+      deviceHostedGuestModelIds?: readonly string[];
     } = {},
   ): Promise<AppServerHost> {
     const key = opts.keyOverride ?? (opts.providerId ? `local-account:${opts.providerId}` : hostKey(remoteHostId));
@@ -2780,6 +2803,9 @@ assertRouteCurrent();
         opts.localAuthPolicy,
         opts.routeIsCurrent,
         opts.deviceHostedGuestProviderId,
+        opts.nativeStorageOnly,
+        opts.deviceHostedGuestSessionId,
+        opts.deviceHostedGuestModelIds,
       ).finally(() => {
         // 成功: this.hosts 已赋值, 后续走快路径; 失败: 清掉 promise 让下次调用能重试
         const current = this.hostPromises.get(key);
@@ -3028,6 +3054,9 @@ assertRouteCurrent();
     localAuthPolicy?: 'isolated' | 'legacy-shared',
     routeIsCurrent?: () => boolean,
     deviceHostedGuestProviderId?: string,
+    nativeStorageOnly?: boolean,
+    deviceHostedGuestSessionId?: string,
+    deviceHostedGuestModelIds?: readonly string[],
   ): Promise<AppServerHost> {
     const seq = (this.createHostSeqByKey.get(key) ?? 0) + 1;
     this.createHostSeqByKey.set(key, seq);
@@ -3154,7 +3183,7 @@ assertRouteCurrent();
               ...(!remoteHostId && historyHome ? { runtimeCodexHome: historyHome } : {}),
               // 受邀者任务的 app-server 与账号会话一样走按 host 分开的 proxy(鉴权注入方式冻结在这个 host 上)，
               // 不改写本机用户任务共用的 proxy 状态。
-              ...(key.startsWith('local-account:') || key.startsWith(LOCAL_GUEST_HOST_PREFIX)
+              ...(key.startsWith('local-account:') || key.startsWith(LOCAL_GUEST_HOST_PREFIX) || deviceHostedGuestProviderId
                 ? { accountHostKey: `${key}:${generation}` } : {}),
               credentialMode: spawnCredentialMode,
               ...(localAuthPolicy === 'isolated'
@@ -3164,6 +3193,7 @@ assertRouteCurrent();
                 ? { requestedCredentialMode: credentialMode }
                 : {}),
               ...(hostPurpose ? { hostPurpose } : {}),
+              ...(nativeStorageOnly ? { nativeStorageOnly } : {}),
               ...(hostPurpose === 'custom-context'
                 ? {
                     customContextModel,
@@ -3171,7 +3201,7 @@ assertRouteCurrent();
                     customContextHostKey: `${key}:${generation}`,
                   }
                 : {}),
-              ...(deviceHostedGuestProviderId ? { deviceHostedGuestProviderId } : {}),
+              ...(deviceHostedGuestProviderId ? { deviceHostedGuestProviderId, deviceHostedGuestSessionId, deviceHostedGuestModelIds } : {}),
             },
           );
           hostRetirementCleanup = cfg.onHostRetired;
@@ -4995,9 +5025,9 @@ assertRouteCurrent();
     };
     // plan_review requestId 去重序号 (同一 turn 理论上只有一个 plan item, 防御性加序号)。
     let planReviewSeq = 0;
-    // Undefined = 不覆盖 app-server/config 默认; null = explicit standard; 'fast' = Fast mode.
+    // Undefined preserves app-server defaults; null selects standard; strings select a speed tier.
     let mutableServiceTier: ServiceTier | null | undefined =
-      opts.fastMode === undefined ? undefined : opts.fastMode ? 'fast' : null;
+      opts.fastMode === undefined ? undefined : opts.fastMode === 'ultrafast' ? 'ultrafast' : opts.fastMode ? 'fast' : null;
     // Older async thread start/resume responses must not overwrite a newer
     // Fast mode choice made while the request was in flight.
     let serviceTierMutationGeneration = 0;
@@ -5127,7 +5157,7 @@ assertRouteCurrent();
           ? { keyOverride: currentHostKey }
           : {}),
         ...(localAuthPolicy === 'isolated' ? { localAuthPolicy } : {}),
-        ...(guestCodexHome && guestProviderId ? { deviceHostedGuestProviderId: guestProviderId } : {}),
+        ...(guestCodexHome && guestProviderId ? { deviceHostedGuestProviderId: guestProviderId, deviceHostedGuestSessionId: sid, deviceHostedGuestModelIds: hosted?.guestProvider?.modelIds } : {}),
         ...(reviewMode
           ? { hostPurpose: 'review' as const }
           : usesCustomContextHost
@@ -6283,6 +6313,7 @@ assertRouteCurrent();
       if (closed) return;
       closed = true;
       cancelInteractionContinuation(reason);
+      translatorRt.samplingSegments.clear();
       resetCodexGenerationTiming(translatorRt);
       resetUpstreamIdleForTurnEnd();
       unregisterCodexMcpContext(threadId);
@@ -6972,6 +7003,7 @@ assertRouteCurrent();
       ? ''
       : (this.deps.getGhostRosterPrompt?.({ workingDir: opts.workingDir }) ?? '');
     const developerInstructions = buildCodexDeveloperInstructions({
+      answerDeliveryPrompt: reviewMode ? undefined : this.deps.runtimeConfig.answerDeliveryPrompt,
       makerMemoryRules,
       contactsRules,
       ghostRosterPrompt,
@@ -8603,6 +8635,7 @@ assertRouteCurrent();
 
       resetCodexGenerationTiming(translatorRt);
       turnDiffSnapshots.clear();
+      translatorRt.samplingSegments.clear();
       proposedPlanText = null;
       translatorRt.lastAuthErrorKey = null;
       translatorRt.networkRetryNotice = null;
@@ -11102,7 +11135,7 @@ assertRouteCurrent();
         completedAt: turn.completedAt ?? null,
         durationMs: turn.durationMs ?? null,
         serviceTier: mutableServiceTier ?? null,
-        fastMode: isFastServiceTier(mutableServiceTier),
+        fastMode: fastModeFromServiceTier(mutableServiceTier),
         // 本 turn 增量 (来自最近一次 thread/tokenUsage/updated 的 last)
         inputTokens: lastTurnTokenUsage?.inputTokens ?? null,
         cachedInputTokens: lastTurnTokenUsage?.cachedInputTokens ?? null,
@@ -11152,6 +11185,9 @@ assertRouteCurrent();
       // 到这里 = 这个 turn 的终态**要出 UI**, 逻辑 send 就此收口。墓碑压掉的那条路在上面
       // 已经 return, 所以退避中的正常重投(死 turn 恒有墓碑)不会被误撤。
       revokeOverloadRetryOnTerminalSettle(`turn_${turn.status}`);
+      const assistantAttemptFailure = finishCodexSamplingTurn(
+        translatorRt, params.threadId, turn.id, turn.status, turn.error,
+      );
 
       if (turn.status === 'failed' || turn.status === 'interrupted') {
         // 失败 / 中断的 plan turn 不发审批 — 半截计划没有审批意义, 循环就此结束。
@@ -11164,6 +11200,7 @@ assertRouteCurrent();
             type: 'error',
             data: {
               ...classified.data,
+              ...(assistantAttemptFailure ? { assistantAttemptFailure } : {}),
               isTerminal: true,
             },
             source: 'codex',
@@ -11180,6 +11217,7 @@ assertRouteCurrent();
               message: '任务执行失败（模型未返回错误详情）。',
               isTerminal: true,
               reason: 'turn-failed',
+              ...(assistantAttemptFailure ? { assistantAttemptFailure } : {}),
             },
             source: 'codex',
           });
@@ -11189,6 +11227,7 @@ assertRouteCurrent();
           data: {
             type: 'codex/event/task_complete',
             cancelled: turn.status === 'interrupted',
+            ...(assistantAttemptFailure ? { assistantAttemptFailure } : {}),
             usage: codexDoneUsage,
             raw: turn,
           },
@@ -12272,7 +12311,7 @@ assertRouteCurrent();
           effort: mutableEffort,
           permissionMode: mutablePermissionMode,
           serviceTier: mutableServiceTier ?? null,
-          fastMode: isFastServiceTier(mutableServiceTier),
+          fastMode: fastModeFromServiceTier(mutableServiceTier),
         });
       },
       tokenUsageUpdated: (params) => {
@@ -12332,11 +12371,11 @@ assertRouteCurrent();
               inputTokens: totalInput,
               outputTokens: last.outputTokens ?? 0,
               cacheReadTokens: cached,
-            }) ?? (isFastServiceTier(
-              turnServiceTier !== undefined ? turnServiceTier : mutableServiceTier,
-            )
-              ? 'priority'
-              : 'standard'),
+            }) ?? ((turnServiceTier !== undefined ? turnServiceTier : mutableServiceTier) === 'ultrafast'
+              ? 'ultrafast'
+              : fastModeFromServiceTier(turnServiceTier !== undefined ? turnServiceTier : mutableServiceTier)
+                ? 'priority'
+                : 'standard'),
           });
           // Input/cache-only segments still belong in the ledger, but cannot
           // pair already reported output with a later generation denominator.
@@ -12725,7 +12764,7 @@ assertRouteCurrent();
             threadId: params.threadId,
             from: before,
             to: mutableServiceTier ?? null,
-            fastMode: isFastServiceTier(mutableServiceTier),
+            fastMode: fastModeFromServiceTier(mutableServiceTier),
           });
         }
       },
@@ -12967,6 +13006,7 @@ assertRouteCurrent();
         translateErrorNotification(effectiveParams, eventQueue, {
           rt: translatorRt,
           log,
+          onSamplingAttemptFailed: () => assistantReplyByTurn.delete(effectiveParams.turnId),
           tryTakeOverOverload: () => {
             // 只接管 app-server 本来就不重试的容量拒绝(原始 willRetry !== true)。
             // TurnRetryTracker 把持续 retry 升级成终态的那条路径不接管：那说明
@@ -13067,6 +13107,7 @@ assertRouteCurrent();
       if (closed) return;
       closed = true;
       cancelInteractionContinuation('session_closed', true);
+      translatorRt.samplingSegments.clear();
       resetCodexGenerationTiming(translatorRt);
       clearReconnectStall();
       resetUpstreamIdleForTurnEnd();
@@ -13108,6 +13149,7 @@ assertRouteCurrent();
     // ── AgentSessionHandle ──────────────────────────────────────────────────
     const handle: AgentSessionHandle = {
       disabledSkillPaths: disabledSkillSnapshot,
+      getAutoReviewOwner: () => currentApprovalConfig().approvalsReviewer === 'auto_review' ? 'native' : 'cindy',
       reviewAutoPermissionAction: async (action) => {
         const decision = await reviewAutoAction(action);
         if (decision.unavailable) autoReviewUnavailableNotice.notify();
@@ -13468,7 +13510,7 @@ assertRouteCurrent();
               log.debug('turn/start response serviceTier', {
                 turnId: resp.turn.id,
                 serviceTier: mutableServiceTier,
-                fastMode: isFastServiceTier(mutableServiceTier),
+                fastMode: fastModeFromServiceTier(mutableServiceTier),
                 note: 'serviceTier calibrated before buffered turn replay',
               });
             }
@@ -14507,12 +14549,11 @@ assertRouteCurrent();
         return mutablePlanMode || planCycleActive || currentTurnPlanModeActive;
       },
 
-      async setFastMode(enabled: boolean) {
+      async setFastMode(enabled: boolean | 'ultrafast') {
         if (reviewMode) return;
-        // 去重以"fast 是否开启"为准: undefined(未覆盖) / null / 'default' 都视为未开,
-        // 重复关 fast 或重复开 fast 不重推 (renderer 单次切换会全量重调 set*)。
-        if (isFastServiceTier(mutableServiceTier) === enabled) return;
-        const next: ServiceTier | null = enabled ? 'fast' : null;
+        // Compare exact tiers; undefined/null/default all mean standard.
+        if (fastModeFromServiceTier(mutableServiceTier) === enabled) return;
+        const next: ServiceTier | null = enabled === 'ultrafast' ? 'ultrafast' : enabled ? 'fast' : null;
         log.debug('setFastMode', { from: mutableServiceTier ?? null, to: next });
         serviceTierMutationGeneration += 1;
         mutableServiceTier = next;
@@ -14537,7 +14578,7 @@ assertRouteCurrent();
       },
 
       getFastMode() {
-        return isFastServiceTier(mutableServiceTier);
+        return fastModeFromServiceTier(mutableServiceTier);
       },
 
       async previewRewindFiles() {
@@ -14952,13 +14993,16 @@ assertRouteCurrent();
       note: 'Codex 精确 fork: 独立一次性 host 上 thread/fork 后按需 thread/rollback 新 thread 尾部 turn',
     });
     try {
-      const forkStorage = await this.deps.resolveCodexThreadStorage?.(opts.sourceSdkSessionId);
+      const guestCodexHome = opts.hostedGuestHome ? path.join(opts.hostedGuestHome, 'codex') : undefined;
+      const forkStorage = guestCodexHome
+        ? { historyHome: guestCodexHome, sqliteHome: guestCodexHome }
+        : await this.deps.resolveCodexThreadStorage?.(opts.sourceSdkSessionId);
       // Fork requires actual history; it must never use resume's unused-thread recovery.
       if (forkStorage?.rolloutPath && !(await fs.lstat(forkStorage.rolloutPath)).isFile()) {
         throw new CodexResumePreparationBlockedError('Codex fork history is unavailable');
       }
       // Source history inspection must not depend on the credentials we are leaving.
-      let preparedSourcePath = opts.stripEncryptedReasoning
+      let preparedSourcePath = opts.stripEncryptedReasoning && !guestCodexHome
         ? await this.deps.prepareCodexResumeSession?.(opts.sourceSdkSessionId)
         : undefined;
       let historyChecked = false;
@@ -14983,6 +15027,7 @@ assertRouteCurrent();
               ...(forkAccountId ? { providerId: forkAccountId } : {}),
               ...(forkSqliteHome ? { sqliteHome: forkSqliteHome } : {}),
               ...(forkStorage ? { historyHome: forkStorage.historyHome } : {}),
+              ...(guestCodexHome && opts.providerId ? { deviceHostedGuestProviderId: opts.providerId } : {}),
               routeIsCurrent: selection.isCurrent,
               routeSignal: forkRouteSignal,
               ...(selection.policy === 'isolated' ? { localAuthPolicy: selection.policy } : {}),
@@ -15005,7 +15050,7 @@ assertRouteCurrent();
             // fork app-server cannot resolve a freshly imported thread.
             // A first host may have just created the managed state DB needed for imports.
             stage = 'source-prepare';
-            preparedSourcePath ??= await this.deps.prepareCodexResumeSession?.(opts.sourceSdkSessionId);
+            if (!guestCodexHome) preparedSourcePath ??= await this.deps.prepareCodexResumeSession?.(opts.sourceSdkSessionId);
             if (opts.stripEncryptedReasoning && !historyChecked) {
               // Check before allocating a child: indexed native history must go through
               // Cindy's handoff recovery, never a file rewrite that invalidates Codex's DB.
@@ -15350,6 +15395,8 @@ assertRouteCurrent();
       expectedGeneration?: number;
       /** Propagate shutdown failure to callers that must not mutate persisted state afterward. */
       throwOnShutdownFailure?: boolean;
+      /** Refuse (counting an in-flight creation as active) before cancelling or mutating anything. */
+      rejectBeforeMutation?: boolean;
     },
   ): Promise<void> {
     const retiring = this.retiringHosts.get(key);
@@ -15380,6 +15427,23 @@ assertRouteCurrent();
         reason,
       });
       return;
+    }
+    // 本地配置变更守卫(allLocalHosts)的拒绝必须发生在任何状态改动之前:下面处理 in-flight 创建时会
+    // 推进 key 代次并摘掉 hostPromises,若之后才因 active 抛错,正在创建的 host 会以「superseded」
+    // 失败,等于一次被拒绝的退役仍然打掉了正在启动的会话。in-flight 创建本身也算 active(与守卫
+    // assertIdle 口径一致)。只对该守卫生效:远程 daemon 重启清理同样 failIfActive,却依赖取消
+    // 模型发现等占用的 in-flight 创建(review #6396)。
+    if (opts.failIfActive && opts.rejectBeforeMutation) {
+      const host = this.hosts.get(key);
+      const activeUseCount = (host
+        ? this.hostActiveUseCount(key, host)
+        : (this.hostSessionBindingLeases.get(key) ?? 0))
+        + (this.hostPromises.has(key) ? 1 : 0);
+      if (activeUseCount > 0) {
+        throw new Error(
+          `Cannot restart local Codex host while ${activeUseCount} active Codex session(s) are attached`,
+        );
+      }
     }
     const inflight = this.hostPromises.get(key);
     if (inflight) {

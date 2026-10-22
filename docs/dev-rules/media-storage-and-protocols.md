@@ -99,8 +99,11 @@
 - 所有官方壁纸原图均为 OSS/CDN 按需分发（2026-10-17 用户裁决，将三款场景的已有下载链路
   扩展到其余静态图片，替代静态原图随包的决定）。包内仅保留
   `renderer/assets/wallpapers/previews/` 中的三款 640×400 WebP 与 `thumbnails/` 中的静态缩略图；
-  原始高清图和 2304×1440 MP4 保留为发布输入，不进入 Renderer 资源依赖图。
-  清单中静态条目只有 `delivery` 与 `image`，顶层视频元数据仅用于三款动态场景；
+  原始高清图和 MP4 保留为发布输入，不进入 Renderer 资源依赖图。
+  清单中静态条目只有 `delivery` 与 `image`，顶层视频元数据仅用于带动态版的场景；
+  2026-10-17 起五张 Cindy 壁纸（悄悄话、夜色回眸、赤夜漫步、霓光侧影、棱镜碎光）增加 1920×1080 动态版，
+  窗边陪伴、未来工作室、梦境漫游从选择器下架（`RETIRED_WALLPAPER_IDS`），清单条目与 CDN 对象保留，
+  已选用户的静态与动态照常可用，并在其设置中临时显示为选中项；
   静态条目不暴露动态选项、不下载视频。默认无壁纸和浏览设置列表不下载，
   选中且可见时下载对应高清图，动态模式且未启用减少动态效果时再下载视频；下载或解码失败保留可用背景。
   传输复用统一下载器并保留 guardedOutboundFetch 的来源校验，清单大小及 SHA-256 校验后入仓。
@@ -111,9 +114,11 @@
   回归见 `main/__tests__/wallpaperVideo.test.ts` 的升级离线复用及损坏修复测试，
   `customWallpaper.test.ts` 覆盖自定义媒体操作不误删官方图片和视频。
   发布脚本默认核验仓内原始素材，`--directory` 也接受按 hash 命名的导出目录或旧 `-hd.mp4` 输入。
-  `node scripts/publish-wallpaper-videos.mjs --verify-only` 离线核验；
+  `node scripts/publish-wallpaper-videos.mjs --verify-only --directory=<原始素材目录>` 离线核验（MP4 原片不入库，
+  需指向导出目录）；`--check-cdn` 只按清单读取线上对象，干净检出即可运行；
   `node scripts/publish-wallpaper-videos.mjs --check-cdn --region=global` 只读校验清单全部线上文件；
-  实际发布使用 `node --env-file=<发布配置> scripts/publish-wallpaper-videos.mjs --region=global`。
+  实际发布使用 `node --env-file=<发布配置> scripts/publish-wallpaper-videos.mjs --directory=<原始素材目录> --region=global`，
+  目录与离线核验为同一份受审核素材（按 `<sha256>.<ext>` 或 `<壁纸 ID>.<ext>` 命名）。
   中国大陆版显式用 `--region=cn`，内部 dev 环境显式用 `--region=dev`；三个环境分别发布并校验，
   资源先于对应客户端上线。只读校验优先读取本环境的 `XDT_GLOBAL_CDN_BASE_URL` / `XDT_CDN_BASE_URL` /
   `XDT_DEVCH_CDN_BASE_URL`，未配置时读取对应 endpoint 文件；dev 不回落到生产配置。
@@ -128,6 +133,8 @@
   字节识别为图片、且不超过头像上限（5 MB）的内容；公开头像走共用的受控公网图片下载。两种地址各自不可变
   （blob 地址即内容指纹，云端换头像会生成新地址），命中不需要重新校验。Renderer 经
   `maker:companion-avatar:resolve` 先查本机副本，未命中时照常显示原地址并在后台保存一份。
+  Mobile 的伙伴与群成员头像复用 `peerFileCache` 的账号／realm 文件缓存，按来源设备与头像地址查本地字节；
+  命中无需设备在线或重新下载，未命中才沿原媒体通道取件并保存（至多 5 MB）。远程下载落盘前复用图片头部嗅探，以实际 MIME 保存；HTML 等错误响应不入缓存，后续可重新取件。复用既有磁盘压力回收，换头像以新地址区分。
 - 可再生 HTML 临时快照缓存是独立副本的例外：仅在快照已物化自己的文件、HTTP 服务不依赖
   媒体仓 blob、且该缓存不作为持久附件提交时，使用 `isCache: true` 和空引用入仓。
   必须验证媒体仓缓存不可用时快照仍可读取，以及重复打开、失败、取消和重试不新增业务引用；
@@ -149,9 +156,14 @@
 - 默认不把媒体仓绝对路径直接暴露给 Renderer、插件或远端。跨边界传递使用托管 URL、
   受控 grant／deposit／ledger，或已有上传与远程媒体服务。
 - 唯一的路径揭示例外是：用户明确询问某个受管媒体地址在本机的存储位置时，Host 先用
-  安全解析器核验为现存普通文件。Auto 档对精确单文件路径和用户请求进行 AI 审阅；
-  allow 可返回当前 Agent，block 返回原因，ask 或服务故障才使用 Host-owned 确认卡。
-  其它档位仍须用户点击允许。路径进入会话记录，因此也可能同步到用户的配对设备。
+  安全解析器核验为现存普通文件。Auto 档沿用实时审批负责人：原生审批已审核受管 URL
+  及“向 Agent 返回该媒体的本机绝对路径并写入任务记录”这一效果时，不因安全解析而再调
+  Cindy 复审；这里仍是同一受管资源，不是符号链接暴露出的新文件目标。由 Cindy 负责时，
+  对精确单文件路径和用户请求进行 AI 审阅。工具说明必须写明真实效果和当前权限流程，
+  不得以“之后一定弹确认卡”误导审批。Cindy 审阅 allow 可返回当前 Agent，block 返回原因，
+  ask 或服务故障才使用 Host-owned 确认卡。本地活跃 Full Access 自动允许，
+  其它档位仍须用户点击允许；远程任务不能借此自动取得控制端文件路径。
+  路径进入会话记录，因此也可能同步到用户的配对设备。
   Agent 自报“用户已同意”不是授权证据，也不能借路径揭示给插件或远端开放文件读取。
 - `xdt-image://`、`xdt-video://`、`xdt-model://` 和 `userData/cc-agent/` 是冻结的历史兼容层。
   可以读取已有地址，不得新增写入路径、扩展生命周期或把新功能接回旧仓。
@@ -228,6 +240,36 @@
   [Gemini](https://ai.google.dev/gemini-api/docs/generate-content/image-generation)、
   [xAI](https://docs.x.ai/developers/model-capabilities/images/generation)。
   回归覆盖 `imageParameters.test.ts`、`invocationService.test.ts` 和各图像通道测试。
+
+## Codex 原生生成图交付（#6412）
+
+- `imageGeneration` 完成事件保留 native thread / turn / item 标识、`savedPath` 与 `result`；
+  裸 Base64 是图片数据，路径不能覆盖同时返回的字节。翻译层不读文件、不解码图片。
+- 远程 Agent 的源 Host 在事件进入可确认的传输日志前读取源文件或验证原生字节，按真实
+  MIME 与 20 MiB 上限校验；控制端声明支持持久交付回执时才入 `cindy-media` 建立恢复所有权。
+  旧控制端没有回执能力时只准备传输字节，不留下永久固定的源副本。跨设备发送不带源文件路径的 data URL；控制端给
+  native 图片标注远端来源，不做工作区路径替换，不读本机同名文件。SSH 只走已有远端文件服务。
+- 图片字节只存在媒体总仓。账号私有 `cindy-media/generated-images-v1` 记录小型交付日志，
+  不保存 Base64；native 标识生成稳定交付 ID，任务 scope 和源 Host scope 隔离。待交付副本
+  复用 `integration-cache` 引用但设 `isCache: false`，不可按可再生缓存清掉已付费产物。
+- 任务 Host 先保存 blob、持久工具结果及 `session-attachment` 引用，再确认源副本可释放；
+  事件流 ACK 不等于持久交付。成功只表示任务 Host 已保存，不能宣称手机已下载。
+- 失败结果分别保留生成状态与交付状态。Desktop / Mobile 的“重试交付”只按交付 ID 重读
+  原产物；不发送 Agent 消息、不重新生图。首次历史读取触发后台恢复，不阻塞历史首屏。
+  重启后复用已有 blob 或源 Host 副本；原产物确已不存在时保留失败，不能假成功。
+  重试更新已有结果后，通过 `broadcastMessageRow` 推送相同消息 ID 的最新持久内容，
+  让 Mobile 即时替换失败状态；不能仅依赖 `maker:event` 的工具结果事件。
+- 每个异步边界检查账号；消息发布检查任务删除、清空与结果 tombstone / rewind。
+  清空前的未知远端产物不自动补入；新代次仍可恢复。清理独立枚举源端，只释放清空前代次的产物（删除释放全部）。
+  代次来自任务 Host 的 `cleared_at`，随新远程会话传递，不比较两台设备的墙钟。清理回执
+  先落盘，源端离线时保留，账号下次就绪重试；即使没有本地图片日志，也从任务清空/删除
+  状态重建清理。删除/回退只抑制对应稳定结果 ID，不能阻断后续无关图片恢复。
+  供应商组中转持久保存上游设备/任务/relay 回执，自己入仓且引用落库后再释放成员副本；
+  回执失败跨重启重试，流收尾等待图片准备完成。分享撤销清理同一受邀者的源 Host 引用。
+  原生交付自行提交带任务边界的附件引用，消息写入器不并发启动普通附件挂账。
+  清空若发生在引用写入期间，释放会按同一任务的可见消息条件补偿；其它任务或清空后
+  新消息仍引用同一图片时保留引用。释放日志保留受管地址，重启可继续未完成的引用清理。
+  同一任务并发交付/恢复合并，重复 native 完成事件复用消息 ID 与附件引用。
 
 ## 多端与远程
 

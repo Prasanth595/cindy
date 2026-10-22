@@ -533,6 +533,10 @@ final class MenubarStore: ObservableObject {
   /// Set when the panel opens on a short screen (13–14" laptops at default scaling): tubes,
   /// rings and the task list tighten so the main page stays well clear of the Dock.
   @Published var short = false
+  /// True from `open` until the closing fade has ordered the panel out. While false the pages
+  /// are not rendered, so their clocks and repeating animations stop instead of running in a
+  /// hidden window.
+  @Published var panelVisible = false
 
   var strings: [String: String] { view?.strings ?? [:] }
 
@@ -825,6 +829,7 @@ final class StatusController: NSObject, NSWindowDelegate {
     openRetries = 0
     isOpen = true
     closing = false
+    store.panelVisible = true
     let panel = ensurePanel()
     let screen = statusAnchor()?.screen ?? NSScreen.main ?? NSScreen.screens.first
     let short = forceShort || (screen.map { $0.visibleFrame.height < Self.shortScreenHeight } ?? false)
@@ -871,6 +876,7 @@ final class StatusController: NSObject, NSWindowDelegate {
         guard let self, self.closing else { return }
         panel.orderOut(nil)
         self.closing = false
+        self.store.panelVisible = false
         self.store.page = .main
         self.store.draftOrder = nil
       }
@@ -1078,7 +1084,9 @@ struct PanelRoot: View {
 
   var body: some View {
     ZStack(alignment: .topTrailing) {
-      if let view = store.view {
+      if !store.panelVisible {
+        // Ordered out: render nothing, so no clock or repeating animation keeps running.
+      } else if let view = store.view {
         pages(view)
       } else {
         ProgressView().controlSize(.small).frame(maxWidth: .infinity, maxHeight: .infinity)

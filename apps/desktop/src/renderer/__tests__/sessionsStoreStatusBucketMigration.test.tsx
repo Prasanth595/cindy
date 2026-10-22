@@ -30,7 +30,6 @@ vi.mock('@/lib/sessionService', () => ({
 }));
 
 import { useCCSessions } from '@/hooks/useCCSessions';
-import { useWorkbenchSessionPages } from '@/features/bots/useWorkbenchSessionPages';
 import { emitAutoTitlePreview } from '@/lib/sessionsBus';
 import { sessionsStore } from '@/lib/sessionsStore';
 import type { ListStatusFilter } from '@/lib/sessionService';
@@ -71,20 +70,6 @@ describe('sessionsStore status bucket migration', () => {
   afterEach(() => {
     cleanup();
     sessionsStore.reset();
-  });
-
-  it('updates the workbench when the original sidebar archives and restores the same session', async () => {
-    const row = session('sidebar-task');
-    mocks.list.mockImplementation(async (_limit: number, filter: string) => filter === 'active' ? [row] : []);
-    await sessionsStore.ensureByFilter('active');
-    const { result } = renderHook(() => useWorkbenchSessionPages('bot', 'archived', true));
-    await waitFor(() => expect(result.current.loading).toBe(false));
-    expect(result.current.rows).toEqual([]);
-    let token!: NonNullable<ReturnType<typeof sessionsStore.beginStatusTransition>>;
-    act(() => { token = sessionsStore.beginStatusTransition(row.id, { status: 'archived', updatedAt: '2026-10-09T00:00:00.000Z' })!; });
-    expect(result.current.rows).toEqual([expect.objectContaining({ id: row.id, status: 'archived', title: row.title })]);
-    act(() => { sessionsStore.rollbackStatusTransition(token); });
-    expect(result.current.rows).toEqual([]);
   });
 
   it('publishes original list mutations with the preserved row, including deletion outside cached windows', async () => {

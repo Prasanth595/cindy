@@ -1874,7 +1874,7 @@ describe("formatGhostRoster(花名册快照:JSONL 召回数据源)", () => {
         ],
       }),
     ) as unknown as {
-      _registeredTools: Record<string, { description?: string } | undefined>;
+      _registeredTools: Record<string, { description?: string; inputSchema?: { shape?: Record<string, { description?: string }> } } | undefined>;
     };
 
     const listDesc = server._registeredTools.ghost_list?.description ?? "";
@@ -1894,10 +1894,17 @@ describe("formatGhostRoster(花名册快照:JSONL 召回数据源)", () => {
     // ghost_call 仍保留自身基线描述(去重不等于把描述删空)。
     expect(callDesc).toContain("调用某个插件(Ghost)提供的工具。");
     expect(callDesc).toContain("ghost_info 或 ghost_list");
-    // 权限契约必须进入模型可见描述:本地 Full Access 自动交接,远程/降档
-    // 仍 fail closed，且自动交接不伪装成人工永久授权。
-    expect(callDesc).toContain("Full Access(bypassPermissions)");
-    expect(callDesc).toContain("远程会话仍向用户弹确认卡");
+    // PR #6731 权限协议：原生审核读取真实注册的工具/参数说明；不能因
+    // “之后还有确认卡”的错误承诺放行。旧测试只覆盖 Full Access 总说明，
+    // 漏掉 Auto 与四个参数入口。unit：核验模型可见协议，而非扫描源码。
+    const callTool = server._registeredTools.ghost_call;
+    for (const description of [callDesc, ...['grant_only', 'attachments', 'dir', 'save_dir'].map(
+      (name) => callTool?.inputSchema?.shape?.[name]?.description ?? '',
+    )]) {
+      expect(description).toContain("Auto 沿用实际审批负责人，可能直接交接");
+      expect(description).toContain("Ask 需用户确认");
+      expect(description).toContain("不保证另有确认卡");
+    }
     expect(callDesc).toContain("不写人工永久授权");
   });
 

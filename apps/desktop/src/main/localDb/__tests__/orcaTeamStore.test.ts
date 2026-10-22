@@ -117,6 +117,31 @@ describe('orcaTeamStore', () => {
       lastBridgedMessageId: 'reply-1', remoteStopConfirmedAt: 1234 });
   });
 
+  // PR #6659 discussion_r4335615412: status and retirement used separate writes.
+  // Real store API + SQLite abort proves they roll back together; a reread after
+  // retry must contain done with no pending to prevent replay after restart. Unit
+  // tier, existing in-memory DB fixture; old cursor tests did not cover status.
+  it('commits remote report retirement and done status atomically', async () => {
+    const store = await import('../orcaTeamStore.js');
+    const client = createTestDbClient();
+    setCurrentDbClient(client, 'test-user');
+    await seedOrcaWorkers(client);
+    await store.setWorkerRemoteExecution('worker-1', { deviceId: 'device-b', remoteSessionId: 'remote-1' });
+    const pending = { clientIds: ['c-1'], baselineMessageId: 'old-reply' };
+    await store.updateWorkerStatus('worker-1', 'running');
+    await store.saveWorkerRemoteReport('worker-1', pending);
+    await client.exec(`CREATE TRIGGER reject_retirement BEFORE UPDATE OF pending_remote_report ON orca_workers
+      WHEN NEW.pending_remote_report IS NULL BEGIN SELECT RAISE(ABORT, 'retirement failed'); END`);
+    await expect(store.saveWorkerRemoteReport('worker-1', null, undefined, true)).rejects.toThrow('retirement failed');
+    expect(await client.queryOne('SELECT status, pending_remote_report FROM orca_workers WHERE id = ?', ['worker-1']))
+      .toEqual({ status: 'running', pending_remote_report: JSON.stringify(pending) });
+    await client.exec('DROP TRIGGER reject_retirement');
+    await store.saveWorkerRemoteReport('worker-1', null, undefined, true);
+    expect(await client.queryOne('SELECT status, pending_remote_report FROM orca_workers WHERE id = ?', ['worker-1']))
+      .toEqual({ status: 'done', pending_remote_report: null });
+    expect(await store.getRemoteWorkerByProxySession('worker-session-1')).toMatchObject({ pendingReport: null });
+  });
+
   it('does not classify an associated remote open as orphaned even if removing its intent was interrupted', async () => {
     const store = await import('../orcaTeamStore.js');
     const client = createTestDbClient();
@@ -451,6 +476,7 @@ describe('orcaTeamStore', () => {
         working_dir TEXT,
         workspace_kind TEXT NOT NULL DEFAULT 'project',
         model TEXT NOT NULL DEFAULT 'gpt-5.4',
+        scheduled_model_baseline TEXT,
         effort TEXT NOT NULL DEFAULT 'high',
         permission_mode TEXT NOT NULL DEFAULT 'ask',
         status TEXT NOT NULL DEFAULT 'active',

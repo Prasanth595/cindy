@@ -635,16 +635,7 @@ describe('performSessionAgentSwitch', () => {
 describe('deferred switch (turn running)', () => {
   function makeDepsWithPending(overrides: Partial<MakerSessionAgentSwitchHandlerDeps> = {}) {
     const base = makeDeps(overrides);
-    const store = new Map<
-      string,
-      {
-        targetAgentKind: 'claude-code' | 'codex' | 'pi';
-        model: string;
-        providerId: string | null | undefined;
-        effort?: string;
-        fastMode?: boolean;
-      }
-    >();
+    const store = new Map<string, PendingAgentSwitchIntent>();
     base.deps.pendingSwitches = {
       set: (id, intent) => void store.set(id, intent),
       get: (id) => store.get(id),
@@ -1354,7 +1345,23 @@ describe('远程 Agent:选模型时换 Agent 所在电脑', () => {
       resumed: false,
     });
     expect(boundary.handoff).toContain('Claude Code (on a different computer)');
+    expect(boundary).not.toHaveProperty('switchReason');
     expect(h.pending.get('s1')).toBeUndefined();
+  });
+
+  it('供应商组按用户确认、为了先用那台的配额换电脑：分隔条写明原因(provider-groups.md §6.2)', async () => {
+    const h = relocationHarness();
+    await performSessionAgentSwitch(h.deps, {
+      ...backToTaskComputer,
+      applyNow: true,
+      providerGroupRelocation: true,
+      providerGroupSwitchReason: 'quota-rebalance',
+    });
+    expect(vi.mocked(h.deps.insertBoundaryMessage).mock.calls[0][1]).toMatchObject({
+      fromAgentDeviceId: 'studio-mac',
+      toAgentDeviceId: null,
+      switchReason: 'quota-rebalance',
+    });
   });
 
   it('挪到另一台电脑:登记前与落地前都按那台的目录校验', async () => {

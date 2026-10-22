@@ -201,8 +201,10 @@ function entryTimeMs(entry: MainListEntry, sortBy: FilterSortBy = 'recency'): nu
   return max;
 }
 
-function entryPriorityRecencyMs(entry: MainListEntry, ctx: MainListPriorityContext): number {
-  const sessions = getMainListEntrySessions(entry);
+function sessionGroupPriorityRecencyMs(
+  sessions: readonly Session[],
+  ctx: MainListPriorityContext,
+): number {
   let max = 0;
   for (const s of sessions) {
     const ms = sessionPriorityRecencyMs(s, ctx);
@@ -211,8 +213,10 @@ function entryPriorityRecencyMs(entry: MainListEntry, ctx: MainListPriorityConte
   return max;
 }
 
-function entryPriorityRank(entry: MainListEntry, ctx: MainListPriorityContext): number {
-  const sessions = getMainListEntrySessions(entry);
+function sessionGroupPriorityRank(
+  sessions: readonly Session[],
+  ctx: MainListPriorityContext,
+): number {
   let min: number = LIVE_TASK_PRIORITY.rest;
   for (const s of sessions) {
     const rank = sessionPriorityRank(s, ctx);
@@ -220,6 +224,18 @@ function entryPriorityRank(entry: MainListEntry, ctx: MainListPriorityContext): 
     if (min === LIVE_TASK_PRIORITY.waiting) break;
   }
   return min;
+}
+
+/** 项目行与折叠侧栏共用的优先级比较：档位优先，同档再比最近活动。 */
+export function compareSessionGroupsByPriority(
+  a: readonly Session[],
+  b: readonly Session[],
+  ctx: MainListPriorityContext,
+): number {
+  return (
+    sessionGroupPriorityRank(a, ctx) - sessionGroupPriorityRank(b, ctx) ||
+    sessionGroupPriorityRecencyMs(b, ctx) - sessionGroupPriorityRecencyMs(a, ctx)
+  );
 }
 
 /**
@@ -454,9 +470,10 @@ function compareEntriesBySortBy(
   ctx: MainListPriorityContext,
 ): number {
   if (sortBy === 'priority') {
-    return (
-      entryPriorityRank(a, ctx) - entryPriorityRank(b, ctx) ||
-      entryPriorityRecencyMs(b, ctx) - entryPriorityRecencyMs(a, ctx)
+    return compareSessionGroupsByPriority(
+      getMainListEntrySessions(a),
+      getMainListEntrySessions(b),
+      ctx,
     );
   }
   const timeDifference = entryTimeMs(b, sortBy) - entryTimeMs(a, sortBy);

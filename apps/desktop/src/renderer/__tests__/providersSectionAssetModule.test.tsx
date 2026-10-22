@@ -33,6 +33,7 @@ const {
     dataOwnerId: 'account-1' as string | null,
   },
   quotaState: {
+    unlimited: false,
     usage: null as import('../hooks/useClaudeAccountUsage').ClaudeAccountUsageSnapshot | null,
   },
   creditUsageState: { available: null as string | null },
@@ -83,6 +84,7 @@ vi.mock('@/hooks/useModelAccessCreditUsage', () => ({
 vi.mock('@/hooks/useClaudeAccountUsage', () => ({
   useClaudeAccountUsageResult: (enabled: boolean) => ({
     usage: enabled ? quotaState.usage : null,
+    unlimited: enabled && quotaState.unlimited,
     loading: false,
     refresh: vi.fn(),
   }),
@@ -218,6 +220,7 @@ beforeEach(() => {
   authState.dataOwnerId = 'account-1';
   creditUsageState.available = '18.42';
   quotaState.usage = null;
+  quotaState.unlimited = false;
   modelAccessState.state = 'ok';
   modelAccessState.source = 'server';
   modelAccessState.accountTier = null;
@@ -363,6 +366,17 @@ describe('ProvidersSection — Cindy AI 账户资产模块', () => {
     expect(screen.getByText('USD:75')).toBeTruthy();
     expect(primaryActionState.lastEnabled).toBe(false);
     expect(screen.queryByText('billing.settings.topupCard.action')).toBeNull();
+  });
+
+  it('shows no personal limit rather than an unavailable quota for an enterprise', async () => {
+    authState.user = { membershipKind: 'org' };
+    quotaState.unlimited = true;
+    renderSection();
+    expect(await screen.findByText('settings.providers.xd.asset.noPersonalLimit')).toBeTruthy();
+    expect(screen.queryByText('settings.providers.xd.asset.unavailable')).toBeNull();
+    expect(screen.getByText('settings.providers.xd.asset.refresh')).toBeTruthy();
+    expect(screen.queryByText('billing.balance.title')).toBeNull();
+    expect(primaryActionState.lastEnabled).toBe(false);
   });
 
   it('local 会话(未登录云账号):同样不渲染', async () => {

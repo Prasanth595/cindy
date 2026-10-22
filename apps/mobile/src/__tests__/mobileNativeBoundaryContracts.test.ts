@@ -276,7 +276,7 @@ const settings = readFileSync(resolve(process.cwd(), 'app/settings.tsx'), 'utf8'
 expect(settings).toContain('isGooglePlayInstallation: playManagedUpdates,');
 expect(settings).toContain('checkBundleUpdate: bundleCheckEnabled ? checkBundleUpdate : undefined,');
 expect(settings).toContain('const updateCheckEnabled = bundleCheckEnabled || updatesEnabled;');
-expect(settings).toContain("t('settings.version.googlePlayContentUpdateUnavailable')");
+expect(settings).toContain("t('settings.version.googlePlayUpdateManaged')");
 });
 
 // guard: native persistent history hosts must wrap routes and replace route prefetch ownership.

@@ -43,3 +43,28 @@ function toNullableString(value: unknown): string | null | undefined {
   if (value === null || typeof value === 'string') return value;
   return undefined;
 }
+
+/**
+ * 伙伴身份变化的接收方由灵动岛服务在初始化时登记：localDb 与灵动岛服务互相依赖，
+ * 这里用登记回调解开循环，而不是运行时动态 import（见 architecture-invariants.md §2）。
+ */
+export interface AgentIslandCompanionChangeSink {
+  companionChanged: (botId: string) => void;
+  groupChanged: (groupId: string) => void;
+}
+
+let companionChangeSink: AgentIslandCompanionChangeSink | null = null;
+
+export function setAgentIslandCompanionChangeSink(sink: AgentIslandCompanionChangeSink | null): void {
+  companionChangeSink = sink;
+}
+
+/** 伙伴群改名或解散后，让灵动岛重读以该群群专线说话的任务。 */
+export function notifyAgentIslandBotGroupChanged(groupId: string): void {
+  companionChangeSink?.groupChanged(groupId);
+}
+
+/** 伙伴改名或换头像后，让灵动岛重画以它身份说话的任务。 */
+export function notifyAgentIslandCompanionChanged(botId: string): void {
+  companionChangeSink?.companionChanged(botId);
+}

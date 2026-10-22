@@ -53,6 +53,8 @@ export function TeammateHomeScreen({ active = true }: { active?: boolean }) {
   // Main computers (cloud-companions.md): only with a server that declares companionHome.
   const cloud = useCloudCompanionHome(focused);
   // One row per companion, under its main computer (a row built from the cloud when none is listed).
+  // Loading is freshness, not identity: preserve known conversation links and previews.
+  // Otherwise an unrelated slow host turns a cached chat into a read-only cloud entry.
   const items = useMemo(() => cloud.supported ? cloudCompanionRows(roster.items, cloud.actors, cloud.deviceNames) : roster.items,
     [cloud.actors, cloud.deviceNames, cloud.supported, roster.items]);
   // A cloud companion opens its normal chat (cached when its computer is unreachable). Only a row
@@ -164,7 +166,7 @@ export function TeammateHomeScreen({ active = true }: { active?: boolean }) {
       quietPresence={quietPresence}
       topInset={nativeHeader ? headerHeight : undefined}
       notice={navigation.saveFailed ? <Text accessibilityRole="alert" style={styles.notice}>{t('devices.companions.preferenceSaveFailed')}</Text> : null} autoFocusSearch={searchEpoch > 0}
-      loading={roster.items.length + groups.items.length === 0 && (roster.loading || groups.loading)}
+      loading={roster.loading || groups.loading}
       refreshing={roster.refreshing || groups.refreshing}
       error={groups.error ?? roster.error}
       onRefresh={() => { void roster.refresh(); void cloud.refresh(); if (groups.supported) void groups.refresh(); }}

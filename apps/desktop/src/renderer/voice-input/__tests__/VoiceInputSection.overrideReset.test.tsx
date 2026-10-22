@@ -18,9 +18,12 @@ vi.mock('@/components/ui/tooltip', () => ({ Tip: ({ children }: { children: Reac
 vi.mock('@/lib/logger', () => ({ createLogger: () => ({ warn: vi.fn(), debug: vi.fn() }) }));
 vi.mock('@/lib/toast', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 vi.mock('../../components/settings/VoiceSpeakerFilterCard', () => ({ VoiceSpeakerFilterCard: () => null }));
-// Service credentials are a separate card; keep the reset controls and settings hook real.
+const serviceModel = vi.hoisted(() => ({ current: {
+  ready: false, selection: null, asrProfiles: [],
+} as Record<string, unknown> }));
+// Keep the page and settings hook real; supply only the service-selection snapshot.
 vi.mock('@/hooks/useVoiceInputModelSelection', () => ({
-  useVoiceInputModelSelection: () => ({ ready: false, selection: null, asrProfiles: [] }),
+  useVoiceInputModelSelection: () => serviceModel.current,
 }));
 
 const defaults = getDefaultVoiceInputSettings('win32');
@@ -30,6 +33,7 @@ const updateSettings = vi.fn();
 
 beforeEach(() => {
   vi.clearAllMocks();
+  serviceModel.current = { ready: false, selection: null, asrProfiles: [] };
   settings = {
     ...defaults,
     composerLongPressEnabled: !defaults.composerLongPressEnabled,
@@ -52,6 +56,38 @@ beforeEach(() => {
   } });
 });
 afterEach(cleanup);
+
+/**
+ * Review #6347/r4303186814 and DESIGN ErrorNotice exclusions: field validation must remain
+ * associated with the input on desktop as well as mobile. Invalid → valid → invalid catches
+ * the desktop half missed by the earlier mobile-only fix, including stale accessibility links.
+ * Extend the existing component harness; this is a unit interaction, not a voice-service E2E.
+ */
+it('keeps custom ASR URL validation inline and associated through repeated edits', async () => {
+  serviceModel.current = {
+    ready: true,
+    asrProfiles: [],
+    selection: {
+      serviceMode: 'byok', asrProvider: 'custom-realtime-asr',
+      customAsr: { protocol: 'openai-realtime', websocketUrl: 'wss://voice.example/realtime', model: 'test' },
+    },
+  };
+  render(<MemoryRouter><VoiceInputSection /></MemoryRouter>);
+  const input = screen.getByPlaceholderText('settings.voiceInput.serviceSource.customAsr.websocketUrl.placeholder');
+  await waitFor(() => expect((input as HTMLInputElement).value).toBe('wss://voice.example/realtime'));
+  const errorText = 'settings.voiceInput.serviceSource.customAsr.websocketUrl.invalid';
+  for (const invalidUrl of ['https://voice.example', 'not a URL']) {
+    fireEvent.change(input, { target: { value: invalidUrl } });
+    const error = screen.getByRole('alert');
+    expect(error.textContent).toBe(errorText);
+    expect(input.getAttribute('aria-invalid')).toBe('true');
+    expect(document.getElementById(input.getAttribute('aria-describedby')!)).toBe(error);
+    fireEvent.change(input, { target: { value: 'wss://voice.example/realtime' } });
+    expect(screen.queryByText(errorText)).toBeNull();
+    expect(input.getAttribute('aria-invalid')).not.toBe('true');
+    expect(input.hasAttribute('aria-describedby')).toBe(false);
+  }
+});
 
 const cases = [
   { field: 'composerLongPressEnabled', override: 'composerLongPressEnabledOverride',

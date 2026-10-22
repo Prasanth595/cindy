@@ -901,7 +901,7 @@ function DetailHeader({
                 }
               >
                 {resetEnabled ? (
-                  <CodexResetCredits key={provider?.id} variant="embedded" snapshot={resetSnapshot} busy={manualReset.busy} canReset={manualReset.canReset} canRetry={manualReset.canRetry} onReset={(credit) => void manualReset.reset(credit)} />
+                  <CodexResetCredits providerId={provider?.id} onChanged={refreshResets} key={provider?.id} variant="embedded" snapshot={resetSnapshot} busy={manualReset.busy} canReset={manualReset.canReset} canRetry={manualReset.canRetry} onReset={(credit) => void manualReset.reset(credit)} />
                 ) : null}
               </QuotaHoverCard>
             </div>
@@ -1735,6 +1735,7 @@ function XdGatewayHeader({
     available: credit.usage?.available ?? null,
     quotaAccessible,
     quota: quota.usage,
+    quotaUnlimited: quota.unlimited,
     loading: billingAccessible ? credit.loading : quota.loading,
   });
   const primaryAction = useXdAssetPrimaryAction(assetState.kind === 'balance');
@@ -1894,7 +1895,7 @@ function XdGatewayHeader({
             </p>
             <PillButton label={t('settings.providers.xd.sync.retry')} onClick={handleRetry} />
           </>
-        ) : assetState.kind === 'loading' || assetState.kind === 'unavailable' ? (
+        ) : assetState.kind === 'loading' || assetState.kind === 'unavailable' || assetState.kind === 'unlimited' ? (
           <>
             <div>
               <p className="text-12 text-[var(--text-secondary)]">
@@ -1908,7 +1909,9 @@ function XdGatewayHeader({
                 {t(
                   assetState.kind === 'loading'
                     ? 'settings.providers.xd.asset.loading'
-                    : 'settings.providers.xd.asset.unavailable',
+                    : assetState.kind === 'unlimited'
+                      ? 'settings.providers.xd.asset.noPersonalLimit'
+                      : 'settings.providers.xd.asset.unavailable',
                 )}
               </p>
             </div>

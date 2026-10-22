@@ -17,3 +17,9 @@ The native toolbar tints the template; Duo's custom 44pt button uses the same
 artwork and semantic tint. Do not use an empty Stack.Toolbar.Badge: the iOS
 header bridge constructs a text badge even for an empty value, producing an
 oversized circle. These are JS-bundled images, not native asset-catalog inputs.
+
+The home display button uses ellipsis.svg (template) and, while the list shows
+archived tasks, ellipsis-attention-light.svg / ellipsis-attention-dark.svg. They
+share the same 26pt canvas and Lucide Ellipsis geometry as the Android header;
+the attention variants add the same 6pt dot at the upper right in statusAccent
+and are rendered as original images, so each theme has its own glyph color.

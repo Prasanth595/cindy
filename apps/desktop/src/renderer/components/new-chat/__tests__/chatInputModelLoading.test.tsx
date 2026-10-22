@@ -10,11 +10,20 @@ import { ChatInput } from '../ChatInput';
 import * as providerMemory from '@/state/providerModelMemory';
 import * as draftMemory from '@/state/newMakerDraft';
 import { getEffortChangeCoordinator } from '../effortChangeQueue';
+import { clearDraft } from '@/lib/composerDraftStore';
+import { makerChatStore } from '@/lib/makerChatStore';
+import {
+  __testing as promptRecommendations,
+  beginPromptRecommendationPrediction,
+  clearPromptRecommendationSession,
+  resolvePromptRecommendationPrediction,
+} from '@/lib/promptRecommendationStore';
 
 const h = vi.hoisted(() => ({ t: (key: string) => key, confirm: vi.fn(), editor: null as Editor | null, listening: false, stop: vi.fn().mockResolvedValue(undefined),
   setModel: vi.fn(), selectModel: undefined as undefined | ((id: string) => Promise<void | boolean>), selectEffort: undefined as string | null | undefined, remoteProviders: [] as ProviderView[],
   localProviders: [] as ProviderView[],
   remoteStatus: 'ready' as 'ready' | 'loading' | 'error',
+  platform: 'darwin',
 }));
 vi.mock('react-i18next', async (original) => ({ ...await original<typeof import('react-i18next')>(), useTranslation: () => ({ t: h.t }) }));
 vi.mock('react-router-dom', () => ({ useNavigate: () => vi.fn() }));
@@ -79,7 +88,7 @@ const api: any = new Proxy({}, { get: (_obj, key) => {
   if (key === 'listSync') return () => ({ ghosts: [] });
   if (key === 'getDataSnapshot') return () => { throw new Error('test bridge unavailable'); };
   if (key === 'setGlobalShortcut') return () => Promise.resolve({ ok: true });
-  if (key === 'platform') return 'darwin';
+  if (key === 'platform') return h.platform;
   if (key === 'then') return undefined;
   if (String(key).startsWith('on')) return () => noOp;
   return new Proxy(() => Promise.resolve(undefined), { get: (_fn, nested) => api[nested] });
@@ -91,8 +100,8 @@ const attachments: ComponentProps<typeof ChatInput>['attachmentState'] = {
   pendingFileMentionsVersion: 0, consumePendingFileMentions: () => [],
   removeFile: noOp, updateFile: noOp, discardFiles: noOp, clearFiles: noOp, restoreFiles: (files) => [...files],
 };
-beforeEach(() => { h.listening = false; h.stop.mockClear(); h.selectEffort = undefined; window.electronAPI = api; vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} }); });
-afterEach(() => { cleanup(); h.remoteProviders = []; h.localProviders = []; h.remoteStatus = 'ready'; h.setModel.mockReset(); h.confirm.mockReset(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+beforeEach(() => { h.platform = 'darwin'; h.listening = false; h.stop.mockClear(); h.selectEffort = undefined; window.electronAPI = api; vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} }); });
+afterEach(() => { cleanup(); clearDraft('queue-shortcut'); clearPromptRecommendationSession('queue-shortcut'); h.remoteProviders = []; h.localProviders = []; h.remoteStatus = 'ready'; h.setModel.mockReset(); h.confirm.mockReset(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 const props = {
   sessionId: 'loading-test', initialWorkingDir: '/workspace', runtimeAgentKind: 'codex' as const,
@@ -167,6 +176,95 @@ const queuedMessage = {
     workingDir: '/workspace',
   },
 } as NonNullable<ComponentProps<typeof ChatInput>['pendingQueue']>[number];
+
+// PR #6422: helper-only coverage cannot detect a disconnected window capture
+// handler or a visible recommendation being bypassed. Exercise the real editor
+// keydown and its outgoing queue/send callbacks. Minimal unit inputs: one/two
+// queued rows, a typed draft, or an empty document with a ready recommendation.
+// Reuse this jsdom harness; no additional module loads or real timer waits.
+// Single-file run: 10.10s (7.68s existing ChatInput import collection, 1.57s tests).
+const queueShortcutProps = {
+  ...props,
+  sessionId: 'queue-shortcut', draftKey: 'queue-shortcut', deviceLinkDeviceId: null,
+  initialModel: 'gpt-6-astra', initialProviderId: 'openai', initialEffort: 'medium',
+  pendingQueue: [queuedMessage],
+};
+const queueShortcuts = [
+  { platform: 'darwin', metaKey: true, ctrlKey: false },
+  { platform: 'win32', metaKey: false, ctrlKey: true },
+];
+
+it.each(queueShortcuts)('steers the sole queued message from the empty focused composer on $platform', async shortcut => {
+  h.platform = shortcut.platform;
+  h.localProviders = [sshNativeCodexProvider([sshModel('gpt-6-astra')])];
+  const onQueueSteer = vi.fn().mockResolvedValue(true);
+  const onSend = vi.fn().mockResolvedValue(true);
+  render(<ChatInput {...queueShortcutProps} onQueueSteer={onQueueSteer} onSend={onSend} />);
+  await waitFor(() => expect(h.editor).not.toBeNull());
+  const editor = h.editor!.view.dom;
+  editor.focus();
+  expect(document.activeElement).toBe(editor);
+  expect(h.editor!.getText()).toBe('');
+
+  await act(async () => { fireEvent.keyDown(editor, { key: 'Enter', code: 'Enter', ...shortcut }); });
+
+  expect(onQueueSteer).toHaveBeenCalledExactlyOnceWith(queuedMessage.clientId);
+  expect(onSend).not.toHaveBeenCalled();
+});
+
+it.each(['two queued messages', 'typed draft'] as const)('preserves composer dispatch with %s', async scenario => {
+  h.localProviders = [sshNativeCodexProvider([sshModel('gpt-6-astra')])];
+  const onQueueSteer = vi.fn().mockResolvedValue(true);
+  const onSend = vi.fn().mockResolvedValue(true);
+  const pendingQueue = scenario === 'typed draft' ? [queuedMessage] : [queuedMessage, { ...queuedMessage, clientId: 'queue-2' }];
+  render(<ChatInput {...queueShortcutProps} pendingQueue={pendingQueue} onQueueSteer={onQueueSteer} onSend={onSend} />);
+  await waitFor(() => expect(h.editor).not.toBeNull());
+  if (scenario === 'typed draft') {
+    await act(async () => { h.editor!.commands.setContent('<p>Send this draft</p>'); });
+  }
+  const editor = h.editor!.view.dom;
+  editor.focus();
+  await act(async () => { fireEvent.keyDown(editor, { key: 'Enter', code: 'Enter', metaKey: true }); });
+
+  expect(onQueueSteer).not.toHaveBeenCalled();
+  if (scenario === 'typed draft') {
+    expect(onSend).toHaveBeenCalledTimes(1);
+    expect(onSend.mock.calls[0][0]).toBe('Send this draft');
+  } else {
+    expect(onSend).not.toHaveBeenCalled();
+  }
+});
+
+it.each(queueShortcuts)('sends the visible recommendation ahead of a queued message on $platform', async shortcut => {
+  h.platform = shortcut.platform;
+  h.localProviders = [sshNativeCodexProvider([sshModel('gpt-6-astra')])];
+  const onQueueSteer = vi.fn().mockResolvedValue(true);
+  const onSend = vi.fn().mockResolvedValue(true);
+  render(<ChatInput {...queueShortcutProps} onQueueSteer={onQueueSteer} onSend={onSend} />);
+  await waitFor(() => expect(h.editor).not.toBeNull());
+  vi.spyOn(makerChatStore, 'getPromptRecommendationCompletionStatus').mockReturnValue({
+    turnStoppedByUser: false, hasTerminalError: false, sideTask: false,
+    hasBackgroundAgentWork: false, hasAutoDrainingQueue: false,
+  });
+  await act(async () => {
+    promptRecommendations.applyRunningSnapshot(new Map([['queue-shortcut', { isRunning: true }]]));
+    promptRecommendations.noteTurnEnded('queue-shortcut', 200);
+    promptRecommendations.applyRunningSnapshot(new Map());
+    promptRecommendations.settleCompletion('queue-shortcut');
+    const seq = beginPromptRecommendationPrediction('queue-shortcut', 200)!;
+    resolvePromptRecommendationPrediction('queue-shortcut', 200, seq, 'Continue with the recommendation');
+  });
+  expect(screen.getByText('Continue with the recommendation')).toBeTruthy();
+  expect(h.editor!.getText()).toBe('');
+  const editor = h.editor!.view.dom;
+  editor.focus();
+  await act(async () => { fireEvent.keyDown(editor, { key: 'Enter', code: 'Enter', ...shortcut }); });
+
+  expect(onQueueSteer).not.toHaveBeenCalled();
+  expect(onSend).toHaveBeenCalledTimes(1);
+  expect(onSend.mock.calls[0][0]).toBe('Continue with the recommendation');
+  expect(promptRecommendations.getSessionSnapshot('queue-shortcut')).toBeUndefined();
+});
 
 function QueueEditHarness({
   onCancel,
@@ -425,4 +523,44 @@ it.each([320, 480, 800])('preserves the model slot across hydration (width=%s)',
   expect(screen.getByTestId('permission-selector')).toBeTruthy();
   await act(async () => {});
   expect(onSend).not.toHaveBeenCalled();
+});
+
+it('places the companion call action between dictation and send without consuming the draft', async () => {
+  const onSend = vi.fn();
+  const onStartVoiceConversation = vi.fn();
+  const inputProps = { ...props, onSend, onStartVoiceConversation };
+  const view = render(<ChatInput {...inputProps} />);
+  await act(async () => { h.editor?.commands.setContent('<p>Keep this draft</p>'); });
+  const call = screen.getByRole('button', { name: 'bots.voiceMode.startConversation' }) as HTMLButtonElement;
+  const dictation = screen.getByRole('button', { name: 'newChat.chatInput.voiceInput.start' });
+  const send = screen.getByRole('button', { name: 'newChat.sendButton.send' });
+  expect(dictation.compareDocumentPosition(call) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(call.compareDocumentPosition(send) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(call.disabled).toBe(false);
+  fireEvent.click(call);
+  expect(onStartVoiceConversation).toHaveBeenCalledOnce();
+  expect(onSend).not.toHaveBeenCalled();
+  expect(h.editor?.getText()).toBe('Keep this draft');
+
+  view.rerender(<ChatInput {...inputProps} voiceConversationDisabled />);
+  expect(call.disabled).toBe(true);
+  h.listening = true;
+  view.rerender(<ChatInput {...inputProps} />);
+  expect(call.disabled).toBe(true);
+  h.listening = false;
+  view.rerender(<ChatInput {...inputProps} voiceConversationActive />);
+  // The call now leaves the composer visible. Its production mutation lock
+  // must reject text sends (not just dim the controls) while retaining drafts.
+  expect(h.editor?.isEditable).toBe(false);
+  expect((send as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(send);
+  expect(onSend).not.toHaveBeenCalled();
+  expect(h.editor?.getText()).toBe('Keep this draft');
+  view.rerender(<ChatInput {...inputProps} voiceConversationActive={false} />);
+  expect(h.editor?.isEditable).toBe(true);
+  expect(h.editor?.getText()).toBe('Keep this draft');
+  expect(document.activeElement).toBe(call);
+
+  view.rerender(<ChatInput {...props} onSend={onSend} />);
+  expect(screen.queryByRole('button', { name: 'bots.voiceMode.startConversation' })).toBeNull();
 });

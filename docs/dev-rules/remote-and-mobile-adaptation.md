@@ -108,6 +108,34 @@ relay 以 close 1013 `inbound backpressure` 主动断连，此时任何「立即
 一起打掉线，由 #1405 收窄止损半径修复。协议兼容、allowlist、单测三层防线对这类问题
 全部免疫，只有 review 时点名问「半径」才拦得住。
 
+### 直连优先、中继兜底(同账号设备)
+
+产品要求：Device Link 的设备间功能(含手机)在两端已授权、网络实际可达时优先直连，
+直连失败、超时或中途断开时自动改走 relay，不能让功能卡住，也不能重复执行命令。
+选路与兜底在 `packages/device-link` 统一实现(`directPath.ts` 与 `DeviceLinkClient`)，
+平台只负责建立通道并调用 `attachDirectPath`。
+
+- **分工**：relay 仍是控制面——登录、在线状态、账号归属、link-open/accept/close、
+  链路确认 ACK 都只走 relay。直连只承载已建立可靠链路上的 reliable-transport 帧
+  (invoke / invoke-result / push)及普通累计 ACK。可靠层按 seq 去重、按序交付，
+  同一条消息经两条路径各到一次也只执行一次。
+- **授权**：直连帧的来源取自通道绑定的设备，不信任帧内 `src`；被控端照常逐条复验
+  被控开关、撤权名单与 allowlist。共享任务、供应商分享等跨账号范围不走直连，逐帧
+  授权仍由 relay 执行。relay 报告对端离线(含被移出账号)、链路被关闭或撤权、客户端
+  停止时立即撤下直连。ACK 原路返回，单向失效时发送端不会被困在直连上。
+- **故障半径三问**：① 故障层级是单个 peer 的直连通道(通道关闭、写入失败、发送缓冲
+  在一个可靠重试基准期内没有下降，或已发出的帧过了自适应 ACK 基准期仍未确认)；直连
+  判活不乘 relay 的大消息字节退避，单条大结果也能及时回退；缓冲仍有进展时
+  继续等待排空，不误判正常背压；② 动作只撤下这一台设备的直连，把它仍未确认的帧
+  恢复为未发送、按 relay 既有恢复预算(先探测一批、收到 ACK 再继续)重发，不重连
+  relay、不重建链路，直连的失败不消耗 relay 的重试次数；③ 回归见
+  `packages/device-link/src/__tests__/client.test.ts`「直连优先、中继兜底」：两个控制端
+  共用同一被控端，其中一个的直连静默，断言命令只执行一次、结果经 relay 送达，另一个
+  控制端仍走直连、在途请求与 relay 连接不受影响。
+- **范围**：本阶段只有连接层选路与兜底，没有平台接入通道时行为与改动前完全相同，
+  也没有 wire 变更。relay 断线期间链路随之复位，直连暂不单独维持链路。Desktop 与
+  Mobile 经已授权信令建立 WebRTC 直连、手机局域网权限等平台接入另行实现。
+
 ## 远程 Agent 的拉取与恢复(`maker:remote-agent:v1`)
 
 协议见 [`protocol-compatibility.md`](protocol-compatibility.md)「远程 Agent」。恢复策略按故障半径三问：
@@ -115,7 +143,9 @@ relay 以 close 1013 `inbound backpressure` 主动断连，此时任何「立即
 1. **故障层级**：只处理同一台被控端的事件拉取。`poll` 遇到 peer reset、超时、背压或链路暂断时，
    用同样的游标重拉(0.5s 起指数退避，上限 5s；另一个在途 poll 成功即提前恢复)；连续 2 分钟拉不到
    才结束这台被控端上的任务并提示对方不可达。单个任务的流数据与游标对不上时只结束那一个任务。
-   其余 op 不自动重放。
+   打开或连回 Agent 前的只读 `caps` 查询复用共享瞬态重试策略（最多 6 次），等待启动建连或拥堵冷却
+   结束；授权拒绝、旧端不支持等非瞬态错误立即结束。只重读这台电脑的能力，不重建 link、不重启 relay，
+   不重放 `open`、上传或发送。回归见 `remote-agent/__tests__/connectionPool.test.ts`。其余 op 不自动重放。
 2. **动作层级**：与故障同半径——只影响这台被控端的拉取器，不重建 link、不断开 relay、不影响其它
    被控端和普通远控请求。被控端侧对无人拉取的任务按任务超时(3 分钟)收尾，不波及其它任务。
 3. **多 peer**：被控端按 `(控制端, runId)` 隔离任务；默认每台控制设备最多 16 个任务、整机最多 64 个，
@@ -124,6 +154,17 @@ relay 以 close 1013 `inbound backpressure` 主动断连，此时任何「立即
    `poll.test.ts` 用 130 / 1000 个空闲任务验证拉取间隔始终短于 3 分钟的回收期限。
    被控端连续立即返回空结果时控制端放慢到 1s 一次，防止空转。2 台控制端共享被控端、
    其中一台静默的回归仍需在双实例实机验证中补测。
+
+**控制端连接池的让出与连回**(2026-10-17，协议见 [`protocol-compatibility.md`](protocol-compatibility.md)「控制端连接池」)：
+
+1. **故障层级**：B 的单设备名额(`caps.maxRuns`)快满或已满，或 B 以名额类 `REMOTE_AGENT_BUSY` 拒绝一次 open；只涉及这台 A 在
+   这台 B 上的连接。
+2. **动作层级**：与故障同半径——只结束这台 B 上一个不忙且闲置满设置时长的 run(`close`)，本机部分与对话记录不动，不碰 link、
+   relay、拉取器与其它 B；被拒后只重试一次，没有能让的就按原错误返回，不排队、不循环。连回只在这个任务下一次要 Agent 干活时发生，
+   连不回(B 离线、仍满等)保持已让出、按原错误报给用户，下次发送再试，不自动重放；发送路径上 Maker 会按通用发送失败关闭句柄，
+   本机后台命令随之结束，对话由下次发送重建时接回(已知限制，见协议文档同节)。
+3. **多 peer**：B 按 `(控制端, runId)` 计数，A 的计数只算自己的连接；多实例、别的设备的占用与 B 刚改的上限都可能让 A 的计数不准，
+   因此 A 不据此拒绝打开，只据此决定要不要先让，最终以 B 的裁决为准。设置为 0(默认)时三条路径都不让，与没有连接池时一致。
 
 **托管 Codex 的关键线程 RPC**(#5764)：Agent 所在电脑上的 Codex 经 exec-server 逐个读任务所在电脑的
 项目说明与 Skill，`thread/start` 实测约 35 轮串行往返，耗时 ≈ 轮数 × 链路往返，慢链路下合法地超过
@@ -193,7 +234,11 @@ Desktop 向曾协商可靠传输、当前发送链路未就绪的设备发起新
 单 peer，不重启共享 relay、不重放已发出的写操作；回归覆盖另一 peer 与 legacy 请求继续工作。
 
 普通出站 invoke 在共享 `InvokeScheduler` 中按目标设备排队：每台最多 12 个在途，
-其中 PR 引用／状态、定时任务侧栏和用量同步等后台查询最多 4 个。
+其中 PR 引用／状态、定时任务侧栏、用量同步和轮后提示预测等后台查询最多 4 个。
+发送、插话、停止、回答交互这类用户正在等的写入（`invokePolicy.ts` 的
+`isInteractiveInvoke`）另有 2 个专用名额，排队时先于普通前台请求出队，不与历史和列表读取
+竞争；被控端 dispatch 的 per-controller 16 / 全局 64 消息准入对它们同样各多 2 / 4 个，
+字节准入不放宽。这只是本地准入顺序，不改变授权、超时与重试。
 同一真实设备的普通远控与多个共享任务共用并发和等待配额；取消仍按各自 scoped peer
 隔离，关闭一个任务不会取消其他任务或普通远控请求，transport 的任务范围保持不变。
 任务列表首拉与恢复探测走前台配额（仍受总并发 12 限制）；Desktop 的周期弱刷新与归档
@@ -427,9 +472,13 @@ Desktop 的同账号远程 Cindy Make 任务同样消费该投影：准备与测
 旧被控端不支持或批量回复超帧预算时回退到原有有界 GET；超时、撤权、损坏回复不触发
 成倍重试，迟到回复不能覆盖更新的 push。
 
+Mobile 伙伴任务卡的列表外补读由 `companionTaskReads.ts` 按账号、连接代次和电脑聚合，
+每批最多 8 个、批次串行；同组共享刷新时钟，旧端单条回退同样串行。焦点或账号切换后
+不发送已失效的排队读取，不缓存已完成批次；卡片优先使用普通任务列表中的更新结果。
+
 Debug 日志区分两层耗时：
 
-- `remote invoke slow execution`（至少 1 秒）包含 `stagesMs`：调用前授权、业务 handler、
+- `remote invoke slow execution`（至少 300 毫秒）包含 `stagesMs`：调用前授权、业务 handler、
   调用后授权、设置持久化、返回投影。总耗时还包含调度和序列化，不等于 SQL 执行时间。
 - `db-rpc` 的 `rpc.slow`（至少 250 毫秒）包含 `queueMs`（主线程待发送队列）、
   `workerWaitMs`（投递到 Worker 开始处理）、`workerExecutionMs`（整个 Worker 操作）、
@@ -439,6 +488,20 @@ Debug 日志区分两层耗时：
 诊断只记录本地 RPC 序号、操作类别、数量与耗时，不记录 SQL、参数、消息内容或结果。
 性能复测应同时包含前台发送、另一控制端刷新与补读、本地读取；分别报告请求数量和延迟，
 不能把内存数据库基准当成真机网络端到端改善。
+
+远程发送的端到端耗时按同一 clientId（只记前 8 位）在三端分别记 debug 日志，各端只用本机时钟：
+
+- 被控端 `remote enqueue timing`：enqueue handler 内 `gate`（准入与清除边界）、`restore`、
+  `prepare`（附件物化与引用水合）、`recheck`、`dedupe`、`coordinator`、`snapshot` 各阶段耗时；
+  `remote send pushed`：coordinator 收下到用户行 `messages:created` 推出的耗时（含 Agent 冷启动）。
+- Desktop 控制端 `remote send accepted`（点击到被控端收下、最后一次派发耗时、尝试次数）与
+  `remote send echoed`（点击到回显）。
+- Mobile 控制端（调试记录开启时）`send accepted`：`policy` / `projection` / `prepare` / `enqueue`
+  各阶段、是否跳过发送前 projection、点击到收下；`send history confirmed`：点击到落库确认。
+- Desktop 控制端在 debug 级别每 30 秒输出 `transport bytes`：按 channel 统计 invoke 回包数与字节数
+  （只在 debug 开启时为统计再序列化一次回包）。
+
+这些日志不改变 wire、ACK、重试或授权语义。
 
 `device-link request slow/failed/timeout` 另记录 `firstWriteWaitMs`（请求建立到首次
 WebSocket 写入成功）与 `afterFirstWriteMs`（首次写入到结束）；从未写出时记录

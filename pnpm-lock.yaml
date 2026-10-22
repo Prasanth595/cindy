@@ -41,7 +41,7 @@ patchedDependencies:
     hash: a43177abd7b38a283598e880a738eab3f69580e3c5dfea51dc2572570fafc7b1
     path: dependency-patches/react-native-screens@4.26.2.patch
   react-native-uitextview@2.2.0:
-    hash: 89f3c768724000c3f1284fa9381db2d983748684dddffa6f271313f415a27057
+    hash: 68d02e35cc7c0e2bcbd99481a2b5879591a334f60043ad21568e19cd8711e7ca
     path: dependency-patches/react-native-uitextview@2.2.0.patch
   react-native-webview@13.16.1:
     hash: c4e335ad426e4028c24ae12915857a01c4eeb7e6e2ea00efdc07dbb7bffa56f0
@@ -521,7 +521,7 @@ importers:
     devDependencies:
       '@electron-forge/cli':
         specifier: ^7.11.1
-        version: 7.11.2(lightningcss@1.33.0)(postcss@8.5.19)
+        version: 7.11.2(esbuild@0.28.1)(lightningcss@1.33.0)(postcss@8.5.19)
       '@electron-forge/maker-deb':
         specifier: ^7.11.1
         version: 7.11.2
@@ -597,6 +597,9 @@ importers:
       electron:
         specifier: 42.11.12
         version: 42.11.12
+      esbuild:
+        specifier: 0.28.1
+        version: 0.28.1
       eslint:
         specifier: ^9.0.0
         version: 9.39.5(jiti@1.21.7)
@@ -606,6 +609,9 @@ importers:
       jsdom:
         specifier: ^29.1.1
         version: 29.1.1(@noble/hashes@1.8.0)
+      playwright-core:
+        specifier: 1.60.0
+        version: 1.60.0
       postcss:
         specifier: ^8.4.49
         version: 8.5.19
@@ -812,7 +818,7 @@ importers:
         version: 15.15.4(react-native@0.86.3(@babel/core@7.29.7)(@react-native/metro-config@0.86.3(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.3))(react@19.2.3)
       react-native-uitextview:
         specifier: 2.2.0
-        version: 2.2.0(patch_hash=89f3c768724000c3f1284fa9381db2d983748684dddffa6f271313f415a27057)(react-native@0.86.3(@babel/core@7.29.7)(@react-native/metro-config@0.86.3(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.3))(react@19.2.3)
+        version: 2.2.0(patch_hash=68d02e35cc7c0e2bcbd99481a2b5879591a334f60043ad21568e19cd8711e7ca)(react-native@0.86.3(@babel/core@7.29.7)(@react-native/metro-config@0.86.3(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.3))(react@19.2.3)
       react-native-web:
         specifier: ^0.21.2
         version: 0.21.2(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
@@ -1320,6 +1326,10 @@ importers:
         version: 3.2.7(@types/debug@4.1.13)(@types/node@25.9.5)(jiti@2.7.0)(jsdom@29.1.1(@noble/hashes@1.8.0))(lightningcss@1.33.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0)
 
   packages/maker-shared:
+    dependencies:
+      parse5:
+        specifier: 8.0.1
+        version: 8.0.1
     devDependencies:
       '@eslint/js':
         specifier: ^9.0.0
@@ -12440,9 +12450,9 @@ snapshots:
     dependencies:
       '@types/hammerjs': 2.0.46
 
-  '@electron-forge/cli@7.11.2(lightningcss@1.33.0)(postcss@8.5.19)':
+  '@electron-forge/cli@7.11.2(esbuild@0.28.1)(lightningcss@1.33.0)(postcss@8.5.19)':
     dependencies:
-      '@electron-forge/core': 7.11.2(lightningcss@1.33.0)(postcss@8.5.19)
+      '@electron-forge/core': 7.11.2(esbuild@0.28.1)(lightningcss@1.33.0)(postcss@8.5.19)
       '@electron-forge/core-utils': 7.11.2
       '@electron-forge/shared-types': 7.11.2
       '@electron/get': 3.1.0
@@ -12487,7 +12497,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@electron-forge/core@7.11.2(lightningcss@1.33.0)(postcss@8.5.19)':
+  '@electron-forge/core@7.11.2(esbuild@0.28.1)(lightningcss@1.33.0)(postcss@8.5.19)':
     dependencies:
       '@electron-forge/core-utils': 7.11.2
       '@electron-forge/maker-base': 7.11.2
@@ -12498,7 +12508,7 @@ snapshots:
       '@electron-forge/template-vite': 7.11.2
       '@electron-forge/template-vite-typescript': 7.11.2
       '@electron-forge/template-webpack': 7.11.2
-      '@electron-forge/template-webpack-typescript': 7.11.2(lightningcss@1.33.0)(postcss@8.5.19)
+      '@electron-forge/template-webpack-typescript': 7.11.2(esbuild@0.28.1)(lightningcss@1.33.0)(postcss@8.5.19)
       '@electron-forge/tracer': 7.11.2
       '@electron/get': 3.1.0
       '@electron/packager': 18.4.4
@@ -12652,13 +12662,13 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@electron-forge/template-webpack-typescript@7.11.2(lightningcss@1.33.0)(postcss@8.5.19)':
+  '@electron-forge/template-webpack-typescript@7.11.2(esbuild@0.28.1)(lightningcss@1.33.0)(postcss@8.5.19)':
     dependencies:
       '@electron-forge/shared-types': 7.11.2
       '@electron-forge/template-base': 7.11.2
       fs-extra: 10.1.0
       typescript: 5.4.5
-      webpack: 5.108.4(lightningcss@1.33.0)(postcss@8.5.19)
+      webpack: 5.108.4(esbuild@0.28.1)(lightningcss@1.33.0)(postcss@8.5.19)
     transitivePeerDependencies:
       - '@minify-html/node'
       - '@swc/core'
@@ -20453,14 +20463,15 @@ snapshots:
 
   minimist@1.2.8: {}
 
-  minimizer-webpack-plugin@5.6.1(lightningcss@1.33.0)(postcss@8.5.19)(webpack@5.108.4(lightningcss@1.33.0)(postcss@8.5.19)):
+  minimizer-webpack-plugin@5.6.1(esbuild@0.28.1)(lightningcss@1.33.0)(postcss@8.5.19)(webpack@5.108.4(esbuild@0.28.1)(lightningcss@1.33.0)(postcss@8.5.19)):
     dependencies:
       '@jridgewell/trace-mapping': 0.3.31
       jest-worker: 27.5.1
       schema-utils: 4.3.3
       terser: 5.49.0
-      webpack: 5.108.4(lightningcss@1.33.0)(postcss@8.5.19)
+      webpack: 5.108.4(esbuild@0.28.1)(lightningcss@1.33.0)(postcss@8.5.19)
     optionalDependencies:
+      esbuild: 0.28.1
       lightningcss: 1.33.0
       postcss: 8.5.19
 
@@ -21267,7 +21278,7 @@ snapshots:
       react-native: 0.86.3(@babel/core@7.29.7)(@react-native/metro-config@0.86.3(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.3)
       warn-once: 0.1.1
 
-  react-native-uitextview@2.2.0(patch_hash=89f3c768724000c3f1284fa9381db2d983748684dddffa6f271313f415a27057)(react-native@0.86.3(@babel/core@7.29.7)(@react-native/metro-config@0.86.3(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.3))(react@19.2.3):
+  react-native-uitextview@2.2.0(patch_hash=68d02e35cc7c0e2bcbd99481a2b5879591a334f60043ad21568e19cd8711e7ca)(react-native@0.86.3(@babel/core@7.29.7)(@react-native/metro-config@0.86.3(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.3))(react@19.2.3):
     dependencies:
       react: 19.2.3
       react-native: 0.86.3(@babel/core@7.29.7)(@react-native/metro-config@0.86.3(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.3)
@@ -22975,7 +22986,7 @@ snapshots:
 
   webpack-sources@3.5.1: {}
 
-  webpack@5.108.4(lightningcss@1.33.0)(postcss@8.5.19):
+  webpack@5.108.4(esbuild@0.28.1)(lightningcss@1.33.0)(postcss@8.5.19):
     dependencies:
       '@types/estree': 1.0.9
       '@types/json-schema': 7.0.15
@@ -22993,7 +23004,7 @@ snapshots:
       graceful-fs: 4.2.11
       loader-runner: 4.3.2
       mime-db: 1.54.0
-      minimizer-webpack-plugin: 5.6.1(lightningcss@1.33.0)(postcss@8.5.19)(webpack@5.108.4(lightningcss@1.33.0)(postcss@8.5.19))
+      minimizer-webpack-plugin: 5.6.1(esbuild@0.28.1)(lightningcss@1.33.0)(postcss@8.5.19)(webpack@5.108.4(esbuild@0.28.1)(lightningcss@1.33.0)(postcss@8.5.19))
       neo-async: 2.6.2
       schema-utils: 4.3.3
       tapable: 2.3.3

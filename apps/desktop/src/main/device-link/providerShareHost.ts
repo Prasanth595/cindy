@@ -119,6 +119,8 @@ interface RetainedRemoteLinkState {
 }
 
 let runtime: Runtime | null = null;
+let accessRevision = 0;
+export function providerShareAccessRevision(): number { return accessRevision; }
 /** 分享快照变化的旁听者(见 onProviderShareHostChanged)。 */
 const snapshotListeners = new Set<() => void>();
 
@@ -215,6 +217,7 @@ function schedule(rt: Runtime): void {
 
 function applySnapshot(rt: Runtime, next: ProviderShareOwned[]): void {
   const previous = rt.shares;
+  if (JSON.stringify(previous) !== JSON.stringify(next)) accessRevision++;
   rt.shares = next;
   rt.fetchedAt = Date.now();
   // 原来 active 的成员不再 active：结束任务、断开连接。成员从快照里消失(删除、退出)时，不论之前
@@ -357,6 +360,7 @@ export function startProviderShareHost(events: ProviderShareHostEvents, options:
 }
 
 export function stopProviderShareHost(): void {
+  accessRevision++;
   const rt = runtime;
   if (!rt) return;
   rt.stopped = true;

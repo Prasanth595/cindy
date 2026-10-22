@@ -1,3 +1,4 @@
+import { ErrorNotice } from '@/components/ui/error-notice';
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 import { useTranslation } from 'react-i18next';
 import * as Dialog from '@radix-ui/react-dialog';
@@ -321,9 +322,7 @@ export function VoiceSpeakerEnrollmentDialog({
           </div>
 
           {errorText ? (
-            <p role="alert" className="text-12 leading-[1.4] text-[var(--error-fg)]">
-              {errorText}
-            </p>
+            <ErrorNotice role="alert" message={errorText} />
           ) : null}
 
           <div className="flex justify-end gap-2">

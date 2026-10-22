@@ -1595,6 +1595,72 @@ export async function quarantineTargetWithoutClosing(opts: {
   ],
   'extension/src/browser/chrome.ts': [
     {
+      desc: 'reuse the bounded CDP command helper for graceful Windows Chrome shutdown',
+      find: `  openCdpWebSocket,\n} from "./cdp.helpers.js";`,
+      replace: `  openCdpWebSocket,\n  withCdpSocket,\n} from "./cdp.helpers.js";`,
+    },
+    {
+      desc: 'close Windows Chrome via CDP and wait for actual process exit before force-stop',
+      find: `    if (proc.killed) {
+      return;
+    }
+    try {
+      proc.kill("SIGTERM");
+    } catch {
+      // ignore
+    }
+
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      if (!proc.exitCode && proc.killed) {
+        break;
+      }
+      if (
+        !(await isChromeReachable(cdpUrlForPort(running.cdpPort), CHROME_STOP_PROBE_TIMEOUT_MS))
+      ) {
+        return;
+      }
+      const remainingMs = timeoutMs - (Date.now() - start);`,
+      replace: `    if (proc.exitCode != null || proc.signalCode != null) {
+      return;
+    }
+    // LOCAL PATCH (Cindy, via sync.mjs): Windows SIGTERM force-kills too.
+    // Ask Chrome to flush and close via CDP, within the existing grace period.
+    const start = Date.now();
+    if (!proc.killed && process.platform === "win32" && timeoutMs > 0) {
+      try {
+        // Discovery, WebSocket handshake and command each share the budget.
+        const cdpTimeoutMs = Math.max(1, Math.floor(timeoutMs / 3));
+        const wsUrl = await getChromeWebSocketUrl(
+          cdpUrlForPort(running.cdpPort), cdpTimeoutMs,
+        );
+        if (wsUrl && proc.exitCode == null && proc.signalCode == null && Date.now() - start < timeoutMs) {
+          await withCdpSocket(wsUrl, (send) => send("Browser.close"), {
+            handshakeTimeoutMs: cdpTimeoutMs,
+            commandTimeoutMs: cdpTimeoutMs,
+            handshakeRetries: 0,
+          });
+        }
+      } catch {
+        // Closing Chrome can drop CDP before replying. Still wait for exit.
+      }
+    } else if (!proc.killed && process.platform !== "win32") {
+      try {
+        proc.kill("SIGTERM");
+      } catch {
+        // ignore
+      }
+    }
+
+    while (true) {
+      // CDP can disappear while Chrome is still flushing its profile.
+      if (proc.exitCode != null || proc.signalCode != null) {
+        return;
+      }
+      const remainingMs = timeoutMs - (Date.now() - start);
+      if (remainingMs <= 0) break;`,
+    },
+    {
       desc: 'start headed automation Chrome without an empty foreground window',
       find: `  if (headlessMode.headless) {\n    args.push("--headless=new");\n    args.push("--disable-gpu");\n  }`,
       replace: `  if (headlessMode.headless) {\n    args.push("--headless=new");\n    args.push("--disable-gpu");\n  } else {\n    args.push("--no-startup-window");\n  }`,

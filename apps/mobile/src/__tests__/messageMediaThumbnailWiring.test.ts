@@ -75,8 +75,9 @@ describe('mobile message media thumbnail wiring', () => {
   it('renders image attachments desktop-style: outside the bubble, aspect-contained, no filename', () => {
     // 附件条渲染在气泡外(文字气泡上方),纯图片消息不渲染空气泡
     expect(rendererSource).toContain('{attachmentStripNode}');
+    // 普通消息仍按原判据省略空气泡；外层现在先分流独立错误卡片。
     expect(rendererSource).toContain(
-      '{hasBubbleContent || (!attachmentStripNode && messageQuotes.length === 0) ? bubble : null}',
+      '&& (hasBubbleContent || (!attachmentStripNode && messageQuotes.length === 0));',
     );
     const attachmentStrip = rendererSource.slice(
       rendererSource.indexOf('function AttachmentStrip'),
@@ -119,7 +120,7 @@ describe('mobile message media thumbnail wiring', () => {
     expect(pendingBranch).toContain('<FileChip');
     expect(pendingBranch).toContain('<MarkdownBody');
     expect(pendingBranch).not.toContain('onOpenPayload=');
-    expect(pending.indexOf('<AttachmentThumbStrip')).toBeLessThan(pending.indexOf('{hasBody ?'));
+    expect(pending.indexOf('<AttachmentThumbStrip')).toBeLessThan(pending.indexOf('{hasBody || (item.replyQuote && renderReplyQuote) ?'));
     expect(pending).toContain('item.fileNames.map(renderFile)');
     expect(pending).not.toContain('height: 72');
     expect(pending).not.toContain('contentFit="cover"');

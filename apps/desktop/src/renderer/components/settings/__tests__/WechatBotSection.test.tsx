@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { WechatBotSection } from '../WechatBotSection';
+import { SETTINGS_SEARCH_ENTRIES } from '../settingsSearchCatalog';
 
 const mocks = vi.hoisted(() => ({
   confirm: vi.fn(),
@@ -11,6 +12,8 @@ const mocks = vi.hoisted(() => ({
   unbind: vi.fn(),
   chooseWorkingDirectory: vi.fn(),
   resetWorkingDirectory: vi.fn(),
+  setCompanion: vi.fn(),
+  companionBotId: undefined as string | undefined,
   state: {
     phase: 'disconnected',
     bound: false,
@@ -35,6 +38,7 @@ vi.mock('@/hooks/useWechatBot', () => ({
       version: 1,
       workingDir: null,
       workingDirAvailable: true,
+      companionBotId: mocks.companionBotId,
     },
     isAuthorizing: false,
     isUnbinding: false,
@@ -44,6 +48,8 @@ vi.mock('@/hooks/useWechatBot', () => ({
     unbind: mocks.unbind,
     chooseWorkingDirectory: mocks.chooseWorkingDirectory,
     resetWorkingDirectory: mocks.resetWorkingDirectory,
+    setCompanion: mocks.setCompanion,
+    isUpdatingCompanion: false,
   }),
 }));
 
@@ -51,24 +57,12 @@ vi.mock('../ImDefaultSettingsSection', () => ({
   ImDefaultSettingsSection: () => <div data-testid="defaults" />,
 }));
 
-vi.mock('../ImChannelSettingsCard', () => ({
+vi.mock('../ImChannelSettingsCard', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../ImChannelSettingsCard')>(),
   useImChannelSettingsSummary: () => [null, vi.fn()],
-  ImChannelSettingsCard: ({
-    title,
-    status,
-    children,
-  }: {
-    title: string;
-    status: React.ReactNode;
-    children: React.ReactNode;
-  }) => (
-    <section>
-      <h2>{title}</h2>
-      {status}
-      {children}
-    </section>
-  ),
 }));
+
+const searchTarget = SETTINGS_SEARCH_ENTRIES.find((entry) => entry.id === 'imBot.wechat')!.targetId;
 
 describe('WechatBotSection', () => {
   beforeEach(() => {
@@ -81,10 +75,52 @@ describe('WechatBotSection', () => {
     mocks.confirm.mockResolvedValue(true);
     mocks.authorize.mockResolvedValue(true);
     mocks.unbind.mockResolvedValue(true);
+    mocks.companionBotId = undefined;
+    mocks.setCompanion.mockResolvedValue(true);
   });
 
-  it('explains the external Tencent authorization flow before starting it', async () => {
-    render(<WechatBotSection expanded onToggle={vi.fn()} />);
+  // The teammate entry must use the existing authorization and binding APIs, without
+  // exposing independent model defaults or replacing another teammate's connection.
+  it('adopts an already connected WeChat account without reauthorizing it', async () => {
+    mocks.state = { phase: 'connected', bound: true, queuedTasks: 0 };
+    render(<WechatBotSection expanded onToggle={vi.fn()} companion={{ id: 'bot-cindy', name: 'Cindy' }} />);
+    expect(screen.queryByTestId('defaults')).toBeNull();
+    expect(document.getElementById(`${searchTarget}-trigger`)).toBeNull();
+    expect(screen.getByRole('region').getAttribute('id')).toBe('companion-im-wechat-panel');
+    fireEvent.click(screen.getByRole('button', { name: 'settings.wechatBot.companion.useExisting' }));
+    await waitFor(() => expect(mocks.setCompanion).toHaveBeenCalledWith('bot-cindy'));
+    expect(mocks.authorize).not.toHaveBeenCalled();
+    expect(mocks.unbind).not.toHaveBeenCalled();
+  });
+
+  it('does not expose authorization or unbind controls for another teammate', () => {
+    mocks.state = { phase: 'connected', bound: true, queuedTasks: 0 };
+    mocks.companionBotId = 'bot-other';
+    render(<WechatBotSection expanded onToggle={vi.fn()} companion={{ id: 'bot-cindy', name: 'Cindy' }} />);
+    expect(screen.getByText('settings.wechatBot.companion.other')).toBeTruthy();
+    expect(screen.getAllByRole('button')).toHaveLength(1);
+    expect(screen.getByRole('button').getAttribute('aria-controls')).toBe('companion-im-wechat-panel');
+  });
+
+  it('does not open authorization if assigning the teammate fails', async () => {
+    mocks.setCompanion.mockResolvedValue(false);
+    render(<WechatBotSection expanded onToggle={vi.fn()} companion={{ id: 'bot-cindy', name: 'Cindy' }} />);
+    fireEvent.click(screen.getByRole('button', { name: 'settings.wechatBot.actions.connect' }));
+    await waitFor(() => expect(mocks.setCompanion).toHaveBeenCalledWith('bot-cindy'));
+    expect(mocks.authorize).not.toHaveBeenCalled();
+  });
+
+  // CI #39297827964: verify the catalog's dynamic WeChat target in the real card DOM
+  // (unit tier), rather than assuming every anchor is a literal JSX attribute.
+  it('preserves the personal search target and explains authorization before starting it', async () => {
+    const onToggle = vi.fn();
+    render(<WechatBotSection expanded onToggle={onToggle} />);
+    const trigger = document.getElementById(`${searchTarget}-trigger`);
+    expect(trigger).not.toBeNull();
+    expect(trigger!.getAttribute('aria-controls')).toBe(`${searchTarget}-panel`);
+    expect(document.getElementById(`${searchTarget}-panel`)?.getAttribute('role')).toBe('region');
+    fireEvent.click(trigger!);
+    expect(onToggle).toHaveBeenCalledOnce();
 
     fireEvent.click(screen.getByRole('button', { name: 'settings.wechatBot.actions.connect' }));
 

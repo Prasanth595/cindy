@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-vi.mock('@/session/TaskTags', () => ({ TaskTagsPanel: () => null }));
+vi.mock('@/session/TaskTags', () => ({ TaskTagsPanel: () => <div data-testid="session.testTags" /> }));
 import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vitest";
@@ -191,4 +191,31 @@ it.each([
   } finally {
     await act(async () => root.unmount());
   }
+});
+
+// PR #6529 replaces the brittle source guard with the production menu. Unit:
+// a Worker has archive enabled; the old checks did not exercise confirmation.
+// Ordinary rename cases above cannot catch the iOS failure where closing the
+// sheet before confirmation loses the Alert. Close only after onConfirmed.
+it("Worker details hide ordinary actions and wait for archive confirmation before closing", async () => {
+  const onArchive = vi.fn();
+  const props = baseProps({ initialView: "menu", worker: { onArchive },
+    session: { id: "worker", title: "Worker", orcaRole: "worker", status: "active" } as SessionMenuSheetProps['session'] });
+  const { host, root, click } = await renderSheet({ ...props, session: { ...props.session, orcaRole: undefined } });
+  const ordinaryActions = ["session.renameAction", "session.copyLinkAction", "session.detailsSearch",
+    "session.pinButton", "session.archiveButton", "session.deleteButton", "session.testTags"];
+  try {
+    for (const id of ordinaryActions) {
+      expect(host.querySelector(`[data-testid="${id}"]`)).not.toBeNull();
+    }
+    await act(async () => root.render(<SessionMenuSheet {...props} />));
+    for (const id of ordinaryActions) {
+      expect(host.querySelector(`[data-testid="${id}"]`)).toBeNull();
+    }
+    await click("session.workerArchive");
+    expect(onArchive).toHaveBeenCalledExactlyOnceWith(props.onClose);
+    expect(props.onClose).not.toHaveBeenCalled();
+    await act(async () => onArchive.mock.calls[0]![0]());
+    expect(props.onClose).toHaveBeenCalledOnce();
+  } finally { await act(async () => root.unmount()); }
 });

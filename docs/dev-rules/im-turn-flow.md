@@ -58,8 +58,23 @@ Telegram / Slack / X）是同一件事的两套实现：把渠道里的一条消
 | `pendingInteractions.pending` / `interactions.ts pending` | 两侧 | requestId / interactionId | 并入（批次 5：交互挂起表合一，超时策略按渠道参数） |
 | `groupHistoryAccess.activeBySession` | `im/shared` | sessionId | 已同源，不动 |
 | 群消息本地窗口（`hook_group_messages`）与上下文游标（`hook_group_context_cursors`） | `im/shared/groupWindowCore.ts`；个人渠道经 `im/shared/channelGroupWindow.ts`（Telegram / 企业微信 / 钉钉各一份 provider 前缀，`<渠道>-personal:<botContextId>`），官方经 `hook-control/groupWindow.ts` | provider + chat / cursorKey | 已同源，不另建存储：新渠道接群上下文时复用 `createChannelGroupWindow`，在 `prepareAgentTurnText` 入窗并拼前缀、受理后 `commit`，终稿发出后把机器人回复入窗 |
-| `channelToolScope.activeBySession`（`cindy_telegram_bot` / `cindy_feishu_bot` 轮次内工具的逐轮作用域） | `im/shared` | sessionId | 个人渠道能力；与群历史租约同一生命周期（`beforeProviderStart` 登记、`releaseTurnInteractionRoute` 释放）。Telegram、飞书 / Lark 各一种作用域，带着触发本轮那条连接自己的 transport；企业微信 / 钉钉 / Discord 没有渠道直通工具，伙伴专线轮次由 `messageHandler` 登记不带 transport 的 `LaneTurnScope`（只给触发者身份与当前对话）；`cindy_feishu_bot` 的 `send_*_to_user` 也按它选出站 bot（2026-10-17 前恒走设置页那份，伙伴绑定的飞书连接会从错的 bot 发出） |
+| `channelToolScope.activeBySession`（`cindy_telegram_bot` / `cindy_feishu_bot` 轮次内工具的逐轮作用域） | `im/shared` | sessionId | 个人渠道能力；与群历史租约同一生命周期（`beforeProviderStart` 登记、`releaseTurnInteractionRoute` 释放）。Telegram、飞书 / Lark 各一种作用域，带着触发本轮那条连接自己的 transport；企业微信 / 钉钉 / Discord 没有渠道直通工具，伙伴专线轮次由 `messageHandler` 登记不带 transport 的 `LaneTurnScope`（只给触发者身份与当前对话）；`cindy_feishu_bot` 的 `send_*_to_user` 优先按它选出站 bot，无租约时按下述主人通知规则解析 |
 | Telegram 传输层（`chatQueues` / `typingLoops` / 回挂目标） | `packages/lizi-im/src/telegram/index.ts` | chat | 保留（个人出站载体） |
+
+**飞书主人通知的无租约路径**：`send_message_to_user` / `send_file_to_user` 在伙伴 canonical
+主任务的后台回报、心跳或桌面轮次中可主动通知主人。无飞书逐轮作用域时，宿主异步查询当前账号的
+`bot_session_links`（`role='canonical'`，关联 `sessions.source='bot'`），确认伙伴 Profile 为 `active`，
+选择该伙伴已连接且已绑定主人的飞书连接；发送时校验连接的 owner 与已解析收件人一致。
+已识别伙伴但没有匹配的可用连接、伙伴 Profile 非 active 或缺失、数据库查询失败、账号边界处于 pending
+或 owner 代次变化，均拒绝发送，不回落个人 bot；查询前后
+及实际调用发送前都复核账号边界、owner 代次与所用 DB 快照。没有 canonical 伙伴归属的普通
+任务仍保留设置页个人 bot 的主人通知能力。使用个人 bot 发送时，已解析收件人必须匹配它当前的主人
+或宿主任务记录的显式 `feishuChatId`；两阶段之间 canonical 关联消失时，不将伙伴的收件人交给个人
+凭证发送。此路径不向主任务持久写入 `feishuChatId`，也不生成租约
+或授予轮次内原生 API 权限；`cindyBotImChannels` 只控制工具挂载，不作为归属或授权依据。
+实现见 [`feishuTransportRouting.ts`](../../apps/desktop/src/main/mcp-integrations/feishuTransportRouting.ts)
+与 [`botImConnectionRuntime.ts`](../../apps/desktop/src/main/im/shared/botImConnectionRuntime.ts)，
+真实 worker DB 路径回归见 [`feishuTransportRouting.test.ts`](../../apps/desktop/src/main/mcp-integrations/__tests__/feishuTransportRouting.test.ts)。
 
 **不为合并新增**全局状态机或持久化表：队列与停止交给已有公共入口持有的状态；合并只移动和
 删除现有状态。
@@ -77,8 +92,9 @@ Telegram / Slack / X）是同一件事的两套实现：把渠道里的一条消
 5. **session-new-v1**：`/new` 成功时新任务已落库并出现在列表；**turn-reopen-v1**：续跑轮
    断连即终局、`turn.end` 直发不缓存。
 6. **群历史租约与渠道工具租约**：`beginGroupHistoryAccess` / `beginChannelToolScope` 都在 provider 真正
-   开始这一轮前登记、终态释放；`sessionInstanceId` 挡住旧实例借用新权限。渠道工具的目标 chat 与
-   触发者身份只来自租约，不来自模型参数。每个可绑定渠道的 `channelNoteSourceFor` 都要在 `[渠道说明]`
+   开始这一轮前登记、终态释放；`sessionInstanceId` 挡住旧实例借用新权限。轮次内原生 API 的目标 chat 与
+   触发者身份只来自租约，不来自模型参数，无租约时 fail closed；飞书 `send_*_to_user` 的主人通知
+   例外见上节，不扩大原生 API 的作用域。每个可绑定渠道的 `channelNoteSourceFor` 都要在 `[渠道说明]`
    末尾给 `toolsHint` 点名本轮可用的渠道工具（Telegram：`TELEGRAM_TOOLS_HINT`；飞书：`feishuToolsHint`），
    Agent 不该靠摸瞎试工具才知道自己在哪个渠道；新增可绑定渠道时四件事一起补——渠道说明提示、
    `channelToolScopeFor` 作用域、轮次内直通工具、以及该渠道工具在**三个 Harness** 的挂载门禁
@@ -87,6 +103,9 @@ Telegram / Slack / X）是同一件事的两套实现：把渠道里的一条消
    workdir 快照放行，再由 `codexEnvironment.buildSessionMcpConfig` / `piEnvironment` 逐会话收可见性）。
    渠道工具租约还被 `botSkillService` 复用来判定专线上「是不是主人触发的轮次」；没有 `channelToolScopeFor`
    的可绑定渠道靠 `LaneTurnScope` 兜住这一判定，否则主人在专线上也只能只读技能。
+   `onAccepted` 成功落库后把本轮输入的 `clientId` 绑定到同一租约；事件持久化在租约释放前
+   将它写为 `replyToClientId`。后台学习只据这条确切输入的持久主人来源判定，不借用后续轮次
+   的租约或最近一条消息。受保护内容未落库时不绑定，复用作用域前清除旧输入。
    6b. **发送前上下文体检同源**：个人 IM 的 `dispatchQueuedSend` 在伙伴守卫（`companion.prepareSend`）
    之后、拿发送锁（`acquirePendingAgentSwitch`）之前调用 `deps.prepareUnhealthySession`（orchestrator 接
    `register.prepareUnhealthySessionForSend`），与桌面直发、官方 hook 走同一个
@@ -101,7 +120,17 @@ Telegram / Slack / X）是同一件事的两套实现：把渠道里的一条消
    被召唤的消息永远不经过判定。判定走共享辅助模型链（`im/shared/ambientReplyJudge.ts`），不得在这里起主模型。
 7. **计划对账**只在真实用户轮次注入（官方仅 `source.im` 存在时）。
 8. **终稿必达**（官方）：`turn.end` 先进持久出箱；客户端发布终稿时以 `clientFinal` 交回。
-   带附件的轮次不由客户端发布（出箱只存文本）；兜底帧写不进出箱时也不由客户端发布；本进程
+   带附件的轮次不由客户端发布。Telegram / Slack 的持久出箱只存文本；X 的出箱保留
+   `cindy-media` 地址、引用 ID、名称、MIME 与大小，Base64 只存在传输帧和内存中。
+   X 仅收 JPEG / PNG / WebP / GIF / MP4 / MOV；单图片 5 MiB、GIF 15 MiB、视频 10 MiB，
+   一轮最多 8 项、总计 30 MiB（服务端再核验 X 的附件组合；持久出箱仍按 32 MB 总预算计入媒体的传输大小）。托管媒体通过 `ingestMedia`
+   作为非缓存入库；待发 pin 使用 `message` 引用、出生任务与 `hook-outbox` 来源，沿用
+   任务删除清理。恢复时核对当前账号、任务与引用，失效不重放附件；仍待发的结果保留 24 小时。
+   收到 `turn.delivery`（未协商回执时为 transport 接受）后清除出箱媒体地址并释放 pin；
+   定时及读路径清理过期出箱，媒体仓同时回收崩溃遗留 pin，
+   物理字节仅由既有媒体回收器处置，不删除仍被聊天／画廊引用的媒体。
+   媒体入仓或出箱失败时保留原有完整内存发送兜底，并记录持久化失败；不得将丢附件记作持久化成功。
+   兜底帧写不进出箱时也不由客户端发布；本进程
    仍在发布、正式 `turn.end` 还没进入发送 / 缓冲路径时，重连扫描与服务端重投 `task.dispatch` 都不重放出箱里的兜底帧（重投只回放 ack）；终稿段
    回执未知先同 opId 有界重发对账，仍未知才交回。
 9. **明确停止 = 与桌面 Stop 同一语义**：撤自动续跑与退避簿记、取消上下文溢出恢复、暂停
@@ -117,6 +146,12 @@ Telegram / Slack / X）是同一件事的两套实现：把渠道里的一条消
     **边界**：`Maker.createSession` 内部「先异步启动 Agent、再取当前库写行」的窗口不在本条范围——
     它是桌面、IM、目标恢复等所有建任务入口共有的既有问题，要堵需让账号守卫穿过 maker-core
     启动 / 持久化边界或新增回滚机制，另行处理。
+
+12. **飞书回复跟随提问位置**：群主聊天的消息用群 lane，带 `thread_id` 的消息用原话题 lane；
+    普通引用的 `parent_id` / `root_id` 不等于话题，不自动开新话题。个人和伙伴复用同一渠道实现。
+    工作中编辑进度卡；完成后在同一位置新发终稿，确认发送成功再撤回进度卡，避免失败时丢掉已有内容。
+    终稿和附件不领取下一轮排队消息的锚点。空结果撤回进度卡且不发占位，图片／文件仍正常投递；
+    新消息发送失败时保留进度卡并尝试就地展示终稿，撤回失败不得重复发送已成功的终稿。
 
 ## 4. 状态模型（一轮）
 
@@ -174,3 +209,11 @@ inbound ──► admitted ──► queued? ──► dispatching ──► run
 | 模型准入（`openSession`） | 只做凭证检查 | 新任务做路由检查 | 已按 Dash 指定改走 `openSession` 准入：新任务的模型 / 来源 / 推理强度 / Fast 不被支持时直接拒绝（文案「不会自动更换模型或供应商」），准入还会规范化来源与推理强度；渠道默认配置若指向已停用的模型，新任务会建不出来（以前会照建） |
 | live session 改走 `bootstrapSession` | 不注入项目上下文 / Orca 指令 | 同左 | 未改：改了等于给 IM / hook 任务新增项目上下文与 Orca 指令注入、目录授权准备等行为，属产品决定 |
 | 缺口 2b / 2e / 2f / 默认配置取值链 | 见台账 | 见台账 | 各自保留，合并只共享实现骨架 |
+
+### 官方 X 的伙伴路由
+
+`hook-control/xCompanion.ts` 通过既有 `ensureBotChannelLaneSession` 创建 X 公开专线。
+绑定正本为账号隔离的 hook store `x.companionBotId`，不修改跨端 wire 或数据库 schema。
+Dispatcher 只接受宿主解析的专线 ID 和精确工作目录，忽略入站指定的任务 ID；执行与排队恢复时
+重新核对绑定。Runner 在获取切模锁前执行伙伴模型/能力刷新，provider 启动前登记 X 的
+`LaneTurnScope`，终态释放；source 仍保留 `bot`，渠道说明逐轮追加。普通未绑定 X 路由保持原样。

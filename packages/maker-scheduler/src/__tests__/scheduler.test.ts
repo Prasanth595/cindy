@@ -236,6 +236,37 @@ describe('Scheduler', () => {
     expect(list).toHaveLength(1);
   });
 
+  // 测试价值
+  // - 生产入口与可观察结果：Scheduler.tick 认领到期任务、运行 runner 并重排 nextFireAt；下一合法槽位前不得重复调用。
+  // - Bug／规则依据：#5924；重排结果必须严格晚于完成时刻。
+  // - 现有覆盖缺口：已有 tick/互斥测试未在 Lord Howe 亚小时回拨时区验证 cron 重排结果。
+  // - 最小失败输入：Lord Howe 回拨后的整点 cron，完成时刻 15:30Z。
+  // - tier：unit；内存 storage、假时钟、无副作用 runner。
+  // - 实测耗时：随现有 scheduler.test.ts 定向运行记录在 PR 验证项。
+  it('Lord Howe 回拨后真实 tick 重排到未来且下一合法槽前不重复', async () => {
+    const local = makeHarness();
+    local.clock.setTo(Date.UTC(2026, 3, 4, 14, 0, 21));
+    const schedule = await local.scheduler.create({
+      ...baseInput,
+      cronExpr: '0 * * * *',
+      timezone: 'Australia/Lord_Howe',
+    });
+    expect(schedule.nextFireAt).toBe(Date.UTC(2026, 3, 4, 15, 30, 0));
+
+    local.clock.setTo(Date.UTC(2026, 3, 4, 15, 30, 0));
+    await local.scheduler.tick();
+    expect(local.runner.fire).toHaveBeenCalledTimes(1);
+    const run = (await local.storage.listRuns(schedule.id))[0];
+    const updated = await local.storage.get(schedule.id);
+    expect(run?.finishedAt).toBeDefined();
+    expect(updated?.nextFireAt).toBeDefined();
+    expect(updated!.nextFireAt!).toBeGreaterThan(run!.finishedAt!);
+
+    local.clock.advance(30_000);
+    await local.scheduler.tick();
+    expect(local.runner.fire).toHaveBeenCalledTimes(1);
+  });
+
   it('marks skipped child runs as zero-cost', async () => {
     const childHarness = makeHarness({
       runnerImpl: async (_schedule, ctx) => {

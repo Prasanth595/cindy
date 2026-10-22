@@ -6,7 +6,6 @@ import { botInvitationProgress, type BotInvitationProgress } from '../../../shar
 import { useSyncExternalStore } from 'react';
 import { getDataOwnerGeneration, isDataOwnerGenerationCurrent } from '@/contexts/dataOwnerGeneration';
 import { getModel } from '@cindy/model-providers';
-import { getDraft, getDraftForPreferenceSync, getPersistedVendorModel } from '@/state/newMakerDraft';
 import { getDefaultModelForVendor } from '@/lib/modelDefinitions';
 import { pickConnectedModelForAgent } from '@/lib/draftModelCalibration';
 import { refreshLocalCatalogSnapshot } from '@/lib/localCatalogSnapshot';
@@ -17,6 +16,7 @@ import {
   NEW_BOT_DEFAULT_HARNESS,
 } from '../../../shared/botDefaults';
 import { getBotLastReadAtMap, pruneBotReadState, seedMissingBotReadState } from './botReadState';
+import type { BotAutonomySettingsView } from '../../../shared/botAutonomy';
 import { registerLoadedBotProfilesReader } from './botSessionOwners';
 import type { BotGender } from '../../../shared/botGender';
 import { BOT_FAILURE_REASONS, type BotFailureReason } from '../../../shared/botFailureReason';
@@ -36,7 +36,7 @@ export interface BotCapabilities {
   modelOverride?: BotModelOverride | null;
   providerId?: string | null;
   effort: string;
-  fastMode: boolean;
+  fastMode: boolean | 'ultrafast';
   harness: 'claude' | 'codex' | 'pi';
   /** Ordered, complete runtime routes. The first route is the normal choice. */
   modelChain: BotModelRoute[];
@@ -58,13 +58,18 @@ export interface BotCapabilities {
   permissions: 'ask' | 'auto' | 'trusted';
   /** 代输入: may this companion ask the owner to finish an on-screen step. Missing = allowed. */
   inputHandoff?: boolean;
+  /**
+   * 它开的任务是否也交给「自动跟进所有任务」的伙伴跟（它暂停或不在时接手）。
+   * 缺省 = false：别的伙伴开的任务，负责所有任务的伙伴默认只看不跟（shared/botAutonomy.ts）。
+   */
+  allowSchedulerFollow?: boolean;
 }
 
 export interface BotModelOverride {
   model: string;
   providerId: string | null;
   effort: string;
-  fastMode: boolean;
+  fastMode: boolean | 'ultrafast';
 }
 
 export type { BotHarness, BotModelRoute };
@@ -93,7 +98,7 @@ function normalizeBotModelOverride(
         model: record.model.trim(),
         providerId: typeof record.providerId === 'string' ? record.providerId : null,
         effort: typeof record.effort === 'string' ? record.effort : '',
-        fastMode: record.fastMode === true,
+        fastMode: (record.fastMode === 'ultrafast' ? 'ultrafast' : record.fastMode === true),
       };
     }
   }
@@ -104,7 +109,7 @@ function normalizeBotModelOverride(
       model: capabilities.model.trim(),
       providerId: typeof capabilities.providerId === 'string' ? capabilities.providerId : null,
       effort: typeof capabilities.effort === 'string' ? capabilities.effort : '',
-      fastMode: capabilities.fastMode === true,
+      fastMode: (capabilities.fastMode === 'ultrafast' ? 'ultrafast' : capabilities.fastMode === true),
     };
   }
   return getEffectiveBotModelSettings(vendorForHarness(harness), null);
@@ -147,12 +152,14 @@ export interface BotSessionProjection {
    * Telegram / Feishu group handed to the Bot); see botGroupLane.ts before
    * counting sessions.
    */
-  kind: 'chat' | 'worker' | 'history' | 'group' | 'channel';
+  kind: 'chat' | 'worker' | 'history' | 'group' | 'channel' | 'thread';
   updatedAt: number;
   status?: 'active' | 'archived' | 'deleted';
-  role?: 'canonical' | 'delegation' | 'history' | 'group' | 'channel';
+  role?: 'canonical' | 'delegation' | 'history' | 'group' | 'channel' | 'thread';
   /** Group-lane only: the group whose chat owns this hidden Session. */
   groupId?: string;
+  /** Private-chat topic only: the main-chat message the topic was opened on. */
+  threadRoot?: { rootSessionId: string; rootClientId: string };
   profileVersion?: number;
   runtimeSnapshot?: {
     profileVersion: number;
@@ -236,8 +243,7 @@ function defaultBotModelSettings(vendor: ReturnType<typeof vendorForHarness>): B
 }
 
 export function defaultBotModel(vendor: ReturnType<typeof vendorForHarness>): string {
-  // `||` 不是 `??`:「没选过」在 getPersistedVendorModel 里是空串,不是 null。
-  return getPersistedVendorModel(vendor) || defaultBotModelSettings(vendor).model;
+  return defaultBotModelSettings(vendor).model;
 }
 
 const BOT_GLOBAL_MODEL_KEY = 'cindy.bots.global-model-overrides.v1';
@@ -245,10 +251,8 @@ const BOT_GLOBAL_MODEL_CHAIN_KEY = 'cindy.bots.global-model-chain.v2';
 type BotModelVendor = ReturnType<typeof vendorForHarness>;
 const botModelListeners = new Set<() => void>();
 function getDefaultModelInputs() {
-  const draft = getDraftForPreferenceSync();
   return {
     visibilityVersion: getModelVisibilityVersion(),
-    preference: JSON.stringify([draft.vendor, draft.lastByVendor[draft.vendor], draft.fastModeByModel]),
     providers: getCachedProvidersSnapshot(),
     availableAgents: getCachedAvailableVendors(),
   };
@@ -297,7 +301,7 @@ function readGlobalModelOverrides(): Partial<Record<BotModelVendor, BotModelOver
         model: record.model.trim(),
         providerId: typeof record.providerId === 'string' ? record.providerId : null,
         effort: typeof record.effort === 'string' ? record.effort : '',
-        fastMode: record.fastMode === true,
+        fastMode: (record.fastMode === 'ultrafast' ? 'ultrafast' : record.fastMode === true),
       };
     }
     return result;
@@ -343,7 +347,7 @@ export function getBotGlobalModelChain(): BotModelRoute[] | null {
   if (inputs) {
     const current = getDefaultModelInputs();
     if (inputs.providers !== current.providers || inputs.availableAgents !== current.availableAgents
-      || inputs.visibilityVersion !== current.visibilityVersion || inputs.preference !== current.preference)
+      || inputs.visibilityVersion !== current.visibilityVersion)
       return null;
   }
   return globalModelChainCache.modelChain;
@@ -368,15 +372,8 @@ export function getEffectiveBotModelChain(
   if (stored) return stored;
   const providers = getCachedProvidersSnapshot();
   const availableAgents = getCachedAvailableVendors();
-  const draft = getDraftForPreferenceSync();
-  const selected = draft.lastByVendor[draft.vendor];
   return defaultBotModelChain({ providers: providers?.providers ?? [],
     isModelEnabled,
-    preferredRoute: {
-      harness: draft.vendor === 'cc' || draft.vendor === 'orca' ? 'claude' : draft.vendor,
-      providerId: selected.providerId ?? null, model: selected.model,
-      effort: selected.effort ?? '', fastMode: draft.fastModeByModel[selected.model] === true,
-    },
     providersLoading: !providers, availableAgents: availableAgents ?? new Set(),
     availableAgentsLoaded: availableAgents !== null });
 }
@@ -452,18 +449,14 @@ export function resetBotGlobalModelChain(): Promise<void> {
 function defaultCapabilities(
   harness: BotCapabilities['harness'] = NEW_BOT_DEFAULT_HARNESS,
 ): BotCapabilities {
-  const vendor = vendorForHarness(harness);
-  const prefs = getDraft().lastByVendor[vendor];
   const globalChain = getEffectiveBotModelChain(harness);
   const primary = globalChain[0] ?? { harness, model: '', providerId: null, effort: '', fastMode: false };
   const model = primary.model;
   return {
     model,
     modelOverride: null,
-    // 模型没沿用 lastByVendor 时,来源也不能沿用 —— providerId 与 model 必须同源,
-    // 否则会拿一个来源去解析另一个来源的模型 id。
-    providerId: primary.providerId ?? (model === prefs.model ? (prefs.providerId ?? null) : null),
-    effort: model ? primary.effort || prefs.effort : '',
+    providerId: primary.providerId,
+    effort: primary.effort,
     fastMode: model ? primary.fastMode : false,
     harness: primary.harness,
     modelChain: globalChain,
@@ -587,7 +580,7 @@ function normalizeDbProfile(value: unknown): BotProfile | null {
     model: resolvedModel.model || rawCapabilities?.model,
     providerId: resolvedModel.providerId ?? rawCapabilities?.providerId,
     effort: resolvedModel.effort || rawCapabilities?.effort,
-    fastMode: resolvedModel.fastMode || rawCapabilities?.fastMode === true,
+    fastMode: resolvedModel.fastMode || (rawCapabilities?.fastMode === 'ultrafast' ? 'ultrafast' : rawCapabilities?.fastMode === true),
   });
   const primaryRoute = modelChain[0];
   const legacyTools = normalizeStringList(rawCapabilities?.tools);
@@ -666,7 +659,7 @@ function normalizeDbProfile(value: unknown): BotProfile | null {
         primaryRoute?.fastMode ??
         (rawCapabilities?.modelOverride === null
           ? resolvedModel.fastMode
-          : modelOverride?.fastMode === true),
+          : modelOverride?.fastMode ?? false),
       permissions: normalizeBotPermissions(rawCapabilities?.permissions),
       skillMode: normalizeSkillMode(item.capabilities?.skillMode, item.skills),
       skillsExcluded: normalizeStringList(rawCapabilities?.skillsExcluded),
@@ -1212,4 +1205,86 @@ export function removeBotProfile(id: string): void {
 export async function retryBotInvitation(id: string): Promise<void> {
   await botsApi()?.update({ id, retryInvitation: true });
   refreshBotProfiles();
+}
+
+// ── 自动跟进所有任务（账号级，只存 override） ─────────────────────────────
+// 宿主是唯一事实源：这里只缓存最近一次读到的视图，按需读取，收到
+// onBotAutonomyChanged 后重读；换账号时丢弃旧视图与在途读取。
+
+let autonomyView: BotAutonomySettingsView | null = null;
+let autonomyOwner = getDataOwnerGeneration();
+let autonomyRequest = 0;
+let autonomyOff: (() => void) | null = null;
+const autonomyListeners = new Set<() => void>();
+
+function autonomyApi() {
+  return window.electronAPI?.localDb?.bots?.autonomy;
+}
+
+function ensureAutonomyOwner(): void {
+  if (isDataOwnerGenerationCurrent(autonomyOwner)) return;
+  autonomyOwner = getDataOwnerGeneration();
+  autonomyView = null;
+  autonomyRequest += 1;
+}
+
+function applyAutonomyView(view: BotAutonomySettingsView, owner: ReturnType<typeof getDataOwnerGeneration>): void {
+  if (!isDataOwnerGenerationCurrent(owner)) return;
+  ensureAutonomyOwner();
+  autonomyView = view;
+  for (const listener of autonomyListeners) listener();
+}
+
+function loadAutonomySettings(): void {
+  const api = autonomyApi();
+  if (!api) return;
+  ensureAutonomyOwner();
+  const owner = getDataOwnerGeneration();
+  const request = ++autonomyRequest;
+  void api.getSettings().then((view) => {
+    if (request === autonomyRequest) applyAutonomyView(view, owner);
+  }).catch(() => undefined);
+}
+
+export function subscribeBotAutonomySettings(listener: () => void): () => void {
+  autonomyListeners.add(listener);
+  if (autonomyListeners.size === 1) {
+    autonomyOff = window.electronAPI?.maker?.onBotAutonomyChanged?.(() => loadAutonomySettings()) ?? null;
+    loadAutonomySettings();
+  }
+  return () => {
+    autonomyListeners.delete(listener);
+    if (autonomyListeners.size === 0) {
+      autonomyOff?.();
+      autonomyOff = null;
+    }
+  };
+}
+
+export function getBotAutonomySettings(): BotAutonomySettingsView | null {
+  ensureAutonomyOwner();
+  return autonomyView;
+}
+
+/** null = 还没读到（或宿主不支持）；界面在读到之前不显示开关状态。 */
+export function useBotAutonomySettings(): BotAutonomySettingsView | null {
+  return useSyncExternalStore(subscribeBotAutonomySettings, getBotAutonomySettings, getBotAutonomySettings);
+}
+
+/** 把「自动跟进所有任务」交给某个伙伴（null = 没有伙伴负责）。写入的是用户 override。 */
+export async function setBotSchedulerBotId(schedulerBotId: string | null): Promise<void> {
+  const api = autonomyApi();
+  if (!api) throw new Error('Bot autonomy settings are not ready');
+  const owner = getDataOwnerGeneration();
+  autonomyRequest += 1;
+  applyAutonomyView(await api.setSettings({ schedulerBotId }), owner);
+}
+
+/** 恢复默认 = 删除 override，跟随当前版本默认（关闭）。 */
+export async function resetBotAutonomySettings(): Promise<void> {
+  const api = autonomyApi();
+  if (!api) throw new Error('Bot autonomy settings are not ready');
+  const owner = getDataOwnerGeneration();
+  autonomyRequest += 1;
+  applyAutonomyView(await api.resetSettings(), owner);
 }

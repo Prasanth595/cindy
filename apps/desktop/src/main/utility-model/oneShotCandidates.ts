@@ -1,3 +1,4 @@
+import { readUtilityTextStream, streamTextResult } from './streamText.js';
 import { isOpenAiSubscriptionProvider, providerCatalogId } from '@cindy/model-providers';
 import { randomUUID } from 'node:crypto';
 
@@ -138,6 +139,7 @@ export type UtilityTextRequestOptions = {
   signal?: AbortSignal;
   /** Provider-native system/instructions text, kept separate from reference data. */
   systemPrompt?: string;
+  onText?: (text: string) => void;
   /** Additional output-shape instruction (mainly for Responses-compatible routes). */
   responseInstructions?: string;
   /** Reject unusable output before selecting a winner, so the configured chain can continue. */
@@ -1002,6 +1004,7 @@ async function requestExplicitProviderText(
       disableReasoning: opts.disableReasoning,
       signal: opts.signal,
       systemPrompt: opts.systemPrompt,
+      onText: opts.onText,
       responseInstructions: opts.responseInstructions,
       validateResponse: opts.validateResponse,
       beforeDispatch: opts.beforeDispatch,
@@ -1117,6 +1120,7 @@ async function requestExplicitProviderText(
         disableReasoning: requestOpts?.disableReasoning,
         signal: requestOpts?.signal,
         systemPrompt: requestOpts?.systemPrompt,
+        onText: requestOpts?.onText,
         responseInstructions: requestOpts?.responseInstructions,
         beforeDispatch: requestOpts?.beforeDispatch
           ? () => requestOpts.beforeDispatch!({ providerId: provider.id, agentKind, model })
@@ -1191,6 +1195,7 @@ async function requestBuiltinProviderText(
     disableReasoning?: boolean;
     signal?: AbortSignal;
     systemPrompt?: string;
+    onText?: (text: string) => void;
     responseInstructions?: string;
     validateResponse?: (text: string) => boolean;
     beforeDispatch?: (route: UtilityTextDispatchRoute) => Promise<boolean>;
@@ -1286,6 +1291,7 @@ async function requestBuiltinProviderText(
         timeoutMs: requestOpts?.timeoutMs ?? input.timeoutMs,
         signal: requestOpts?.signal ?? input.signal,
         systemPrompt: requestOpts?.systemPrompt,
+        onText: requestOpts?.onText,
         responseInstructions: requestOpts?.responseInstructions,
         beforeDispatch: requestOpts?.beforeDispatch
           ? () => requestOpts.beforeDispatch!({
@@ -1370,6 +1376,7 @@ async function requestBuiltinProviderText(
         supportsMaxOutputTokens: false,
         signal: requestOpts?.signal ?? input.signal,
         systemPrompt: requestOpts?.systemPrompt,
+        onText: requestOpts?.onText,
         responseInstructions: requestOpts?.responseInstructions,
         beforeDispatch: requestOpts?.beforeDispatch
           ? () => requestOpts.beforeDispatch!({
@@ -1423,6 +1430,7 @@ async function requestBuiltinProviderText(
         timeoutMs: requestOpts?.timeoutMs ?? input.timeoutMs,
         signal: requestOpts?.signal ?? input.signal,
         systemPrompt: requestOpts?.systemPrompt,
+        onText: requestOpts?.onText,
         responseInstructions: requestOpts?.responseInstructions,
         beforeDispatch: requestOpts?.beforeDispatch
           ? () => requestOpts.beforeDispatch!({
@@ -1575,6 +1583,7 @@ function resolveLiteLlmCandidate(profile: UtilityModelProfile): UtilityTextCandi
         disableReasoning: opts?.disableReasoning,
         signal: opts?.signal,
         systemPrompt: opts?.systemPrompt,
+        onText: opts?.onText,
         responseInstructions: opts?.responseInstructions,
         beforeDispatch: opts?.beforeDispatch
           ? () => opts.beforeDispatch!({
@@ -1600,6 +1609,7 @@ async function requestLiteLlmText(input: {
   disableReasoning?: boolean;
   signal?: AbortSignal;
   systemPrompt?: string;
+  onText?: (text: string) => void;
   responseInstructions?: string;
   /** Async final dispatch fence, including owner/settings checks. */
   beforeDispatch?: () => Promise<boolean>;
@@ -1799,6 +1809,7 @@ async function requestProviderHttpText(input: {
   signal?: AbortSignal;
   /** Provider-native system text, never concatenated with untrusted reference data. */
   systemPrompt?: string;
+  onText?: (text: string) => void;
   /** Additional output-shape instructions. */
   responseInstructions?: string;
   /** Session/owner/config guard, evaluated immediately before each HTTP dispatch. */
@@ -1845,6 +1856,7 @@ async function requestProviderHttpText(input: {
           ...(instructions ? { system: instructions } : {}),
           ...(rung.kind === 'off' ? { thinking: { type: 'disabled' } } : {}),
           ...(effort ? { output_config: { effort } } : {}),
+          ...(input.onText ? { stream: true } : {}),
           messages: [{ role: 'user', content: input.prompt }],
         };
       }
@@ -1877,6 +1889,7 @@ async function requestProviderHttpText(input: {
               : { thinking: { type: 'disabled' }, reasoning_effort: 'minimal' }
             : {}),
           ...(effort ? { reasoning_effort: effort } : {}),
+          ...(input.onText ? { stream: true } : {}),
           messages: [
             ...(instructions ? [{ role: 'system', content: instructions }] : []),
             { role: 'user', content: input.prompt },
@@ -1996,7 +2009,7 @@ async function requestProviderHttpText(input: {
       throw new UtilityTextExecutionError({ reason: 'http_error', httpStatus: response.status });
     }
 
-    let raw = await response.text();
+    let raw = await readUtilityTextStream(response, input.onText);
     const parsed = responseStructure(step.wire, raw);
     let text = wireResponseText(step.wire, raw);
     // thinking:disabled 只是请求侧建议,BYOM 网关可以无视;max_tokens 是含思考的
@@ -2019,7 +2032,7 @@ async function requestProviderHttpText(input: {
       // 的可选字段不重新加回去(原样重来只会再被拒一次)。
       const budgeted = await send(step, buildBody(step, retryBudget));
       if (budgeted.ok) {
-        raw = await budgeted.text();
+        raw = await readUtilityTextStream(budgeted, input.onText);
         text = wireResponseText(step.wire, raw);
       } else {
         if (budgeted.status === 401) input.onUnauthorized?.();
@@ -2179,6 +2192,10 @@ function responseStructure(wire: ProviderWire, raw: string): unknown {
 }
 
 function wireResponseText(wire: ProviderWire, raw: string): string {
+  if (raw.trimStart().startsWith('data:') || raw.trimStart().startsWith('event:')) {
+    const streamed = streamTextResult(raw);
+    if (streamed) return streamed.trim();
+  }
   return wire === 'responses'
     ? parseCodexResponseText(raw)
     : wire === 'anthropic-messages'
@@ -2294,6 +2311,7 @@ async function requestCustomProviderText(input: {
   disableReasoning?: boolean;
   signal?: AbortSignal;
   systemPrompt?: string;
+  onText?: (text: string) => void;
   responseInstructions?: string;
   beforeDispatch?: () => Promise<boolean>;
   credentialStillCurrent?: () => boolean | Promise<boolean>;
@@ -2360,6 +2378,7 @@ async function requestCustomProviderText(input: {
     isOllama: input.isOllama,
     signal: input.signal,
     systemPrompt: input.systemPrompt,
+    onText: input.onText,
     responseInstructions: input.responseInstructions,
     beforeDispatch: input.beforeDispatch,
     credentialStillCurrent: input.credentialStillCurrent,
@@ -2413,6 +2432,7 @@ function parseCodexResponseText(raw: string): string {
 }
 
 function parseAnthropicResponseText(raw: string): string {
+  if (raw.trimStart().startsWith('data:') || raw.includes('\nevent:')) return streamTextResult(raw).trim();
   try {
     const json = JSON.parse(raw) as { content?: Array<{ type?: string; text?: unknown }> };
     return (json.content ?? [])

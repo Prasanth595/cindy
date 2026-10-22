@@ -194,7 +194,7 @@ export function CloudCompanionOfflineView({ botId, deviceId, name, avatar, avata
             </article>
           ) : (
             <article key={message.id} className={`flex min-w-0 flex-col gap-2 text-[var(--msg-assistant-text)] ${CHAT_BODY_CLASS}`}>
-              {message.text ? <MarkdownRenderer workingDir="" content={message.text} allowPrivilegedLinks={false} /> : null}
+              {message.text ? <MarkdownRenderer renderRichAnswers streamFadeKey={`cloud:${botId}:${message.id}`} workingDir="" content={message.text} allowPrivilegedLinks={false} /> : null}
               {message.attachments?.length ? <CloudMessageAttachments botId={botId} files={message.attachments} align="start" /> : null}
             </article>
           ))}

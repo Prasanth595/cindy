@@ -90,7 +90,7 @@ export interface ModelFavoriteConfig {
   /** 思考深度**档位 key**('low' | 'high' | …);缺省 = 跟随该 (模型, 引擎) 的推荐档。 */
   effort?: Effort;
   /** Fast(插队加速)。**只在开启时存 true**,关闭即缺省 —— 不落「等于默认」的快照。 */
-  fast?: true;
+  fast?: true | 'ultrafast';
 }
 
 /** 落盘 / 消费的收藏条目:配置 + 独立锚点 uid。 */
@@ -103,7 +103,7 @@ export interface ModelFavoritePatch {
   agent?: ModelEngine;
   /** `null` = 清除该条深度(回落推荐档);`undefined`(不传该键)= 不改。 */
   effort?: Effort | null;
-  fast?: boolean;
+  fast?: boolean | 'ultrafast';
 }
 
 interface FavoritesState {
@@ -170,7 +170,7 @@ function normalizeConfig(raw: {
   const config: ModelFavoriteConfig = { providerId, modelId, agent: raw.agent };
   // effort 非法(显示文案 / 过期档名 / 非字符串)→ 只丢这个字段,条目保留,调用层回落推荐档。
   if (isCanonicalEffort(raw.effort)) config.effort = raw.effort;
-  if (raw.fast === true) config.fast = true;
+  if (raw.fast === true || raw.fast === 'ultrafast') config.fast = raw.fast;
   return config;
 }
 
@@ -186,7 +186,7 @@ function identityOf(config: ModelFavoriteConfig): string {
     config.modelId,
     config.agent,
     config.effort ?? '',
-    config.fast === true ? '1' : '0',
+    config.fast === 'ultrafast' ? '2' : config.fast === true ? '1' : '0',
   ].join(' ');
 }
 
@@ -369,7 +369,7 @@ function configOf(item: ModelFavoriteItem): ModelFavoriteConfig {
     // 缺省字段保持缺省(effort 缺省 = 跟随推荐档,fast 缺省 = 关):补一个 undefined 键会让
     // `'effort' in config` 之类的存在性判断错位,也会把 undefined 写进 JSON 之外的比较里。
     ...(item.effort ? { effort: item.effort } : {}),
-    ...(item.fast ? { fast: true as const } : {}),
+    ...(item.fast ? { fast: item.fast } : {}),
   };
 }
 
@@ -395,7 +395,7 @@ function patchConfig(
     else delete next.effort;
   }
   if (patch.fast !== undefined) {
-    if (patch.fast === true) next.fast = true;
+    if (patch.fast === true || patch.fast === 'ultrafast') next.fast = patch.fast;
     else delete next.fast;
   }
   return next;
@@ -748,7 +748,7 @@ export function accessHostModelFavorites(ownerId: string | null, mutation?: Mode
       if (base.items.length >= 4096 && !base.items.some(item => identityOf(item) === identityOf(config))) throw new Error('Favorites limit reached');
       commitOp({kind:'add',config,preferredUid:uidOfSeq(base.uidSeq)},base);
     } else if (op.kind === 'remove') commitOp({kind:'remove',uid:op.expected.uid},base);
-    else commitOp({kind:'update',uid:op.expected.uid,patch:{agent:op.item.agent, effort:(op.item.effort as Effort | undefined) ?? null, fast:!!op.item.fast}},base);
+    else commitOp({kind:'update',uid:op.expected.uid,patch:{agent:op.item.agent, effort:(op.item.effort as Effort | undefined) ?? null, fast:op.item.fast ?? false}},base);
     return readDurable().items;
   } finally { requireDurableWrite = false; }
 }

@@ -251,7 +251,16 @@ it('resets identity-bound row state before a recycled cell displays another item
     expect(source).toContain('const [failedLocalUris, setFailedLocalUris] = usePreviewState<readonly string[]>([]);');
     expect(source.match(/const \[intrinsicSize, setIntrinsicSize\] = usePreviewState</g)).toHaveLength(2);
     expect(source.match(/usePreviewState=\{usePreviewState\}/g)).toHaveLength(2);
-    expect(source).not.toContain('usePreviewState={useState}');
+    // Rich answers also live outside LegendList. Their ordinary state is safe
+    // only behind a message/source identity key; keep the original list contract
+    // for every other preview. Regression: PR #6373 used unkeyed React state.
+    const richMediaStart = source.indexOf('function RichAnswerMedia(');
+    expect(richMediaStart).toBeGreaterThan(-1);
+    expect(source.slice(0, richMediaStart)).not.toContain('usePreviewState={useState}');
+    const richMediaSource = source.slice(richMediaStart);
+    expect(richMediaSource).toContain('const previewKey = JSON.stringify([origin?.deviceId, origin?.sessionId, body.richStateKey ?? body.markdownImageCacheKey, node.id, url]);');
+    expect(richMediaSource).toContain('<MediaPreview key={previewKey}');
+    expect(richMediaSource).toContain('usePreviewState={useState}');
     const groupSource = readFileSync(
       resolve(process.cwd(), 'src/session/BotGroupMessageAttachments.tsx'), 'utf8',
     );
@@ -290,10 +299,12 @@ it('renders message bodies natively with in-place per-block selectable text', ()
     const markdownBodyEnd = source.indexOf('function renderInline', markdownBodyStart);
     const markdownBodySource = source.slice(markdownBodyStart, markdownBodyEnd);
 
-    // 完成态才可选中;正文与 secondaryBody 都走原生 selectable。
+    // 完成态才可选中;正文与 secondaryBody 都走原生 selectable。伙伴私聊的长按交给系统菜单,
+    // 正文改由菜单里的「选择文字」选取,其余任务照旧就地选择。
     expect(source).toContain('const canSelectVisibleText = canUseCompletedActions && copyText.trim().length > 0;');
-    expect(bubbleSource).toContain('selectable={canSelectVisibleText}');
-    expect(bubbleSource).toContain('<MarkdownSelectableText selectable={canSelectVisibleText} style={styles.detailText}>');
+    expect(source).toContain('const bubbleTextSelectable = canSelectVisibleText && !companionMenuEnabled;');
+    expect(bubbleSource).toContain('selectable={bubbleTextSelectable}');
+    expect(bubbleSource).toContain('<MarkdownSelectableText selectable={bubbleTextSelectable} style={styles.detailText}>');
 
     // iOS 部分选择:RN Text 底层是 UILabel 只能整块拷贝(facebook/react-native#13938),
     // 可选中块在 iOS 换用 react-native-uitextview(真 UITextView,系统选择手柄);
@@ -306,9 +317,11 @@ it('renders message bodies natively with in-place per-block selectable text', ()
     expect(source).toContain('const SpanText = ctx.SpanText ?? MessageBodyText;');
     expect(markdownBodySource).toContain('blockSelectable && allowIosUITextView && Platform.OS === \'ios\'');
 
-    // 气泡是纯 View,不挂 Pressable/onLongPress(避免干扰横向 ScrollView 手势)。
+    // 气泡是纯 View,不挂 Pressable/onLongPress(避免干扰横向 ScrollView 手势)。伙伴私聊的长按
+    // 只用 RNGH LongPress:手指一移动就失败,表格与代码块照旧横向滚动。
     expect(bubbleSource).not.toContain('<Pressable');
     expect(bubbleSource).not.toContain('onLongPress');
+    expect(bubbleSource).toContain('Gesture.LongPress().minDuration(450).runOnJS(true)');
 
     // 列表内正文只有原生渲染路径:无选择 WebView、无全屏选择查看器。
     expect(markdownBodySource).toContain('testID="message.markdownBody"');

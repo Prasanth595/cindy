@@ -158,6 +158,7 @@ export function registerListSessionsTool(
           };
           if (queuedCounts !== null) out.queuedCount = queuedCounts[s.id] ?? 0;
           if (s.orcaRole !== null) out.orcaRole = s.orcaRole;
+          if (s.orcaRemoteLead) out.orcaRemoteLead = s.orcaRemoteLead;
           if (s.parentSessionId !== null) out.parentSessionId = s.parentSessionId;
           if (s.userSendAt !== null) out.userSendAt = new Date(s.userSendAt).toISOString();
           return out;

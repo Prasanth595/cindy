@@ -2,12 +2,14 @@ import { describe, expect, it } from 'vitest';
 import {
   INVOKE_TIMEOUT_OVERRIDES_MS,
   ORCA_REMOTE_WORKER_CAPS_CHANNEL,
+  ORCA_REMOTE_WORKER_BRIDGE_CHANNEL,
   ORCA_REMOTE_WORKER_OPEN_CHANNEL,
   ORCA_REMOTE_WORKER_OPEN_TIMEOUT_MS,
   ORCA_REMOTE_WORKER_RELEASE_CHANNEL,
   REMOTE_INVOKE_ALLOWLIST,
   parseOrcaRemoteWorkerOpenRequest,
   parseOrcaRemoteWorkerReleaseRequest,
+  parseOrcaRemoteWorkerBridgeRequest,
 } from '../index.js';
 
 const base = {
@@ -18,11 +20,31 @@ const base = {
   lead: { leadSessionId: 'lead-1', leadTitle: '整理产品访谈报告', workerLabel: '转写' },
 };
 
+// Optional Host input correlation must survive the wire without breaking older requests.
+// Review bug: a report for A cleared queued B. Unit tier: real parser, one bridge request;
+// existing open/release tests do not cover this input-specific settlement metadata.
+describe('parseOrcaRemoteWorkerBridgeRequest', () => {
+  const request = { sessionId: 'remote-1', leadSessionId: 'lead-1', tool: 'send_to_lead', args: { worker_id: 'worker-1' } };
+  it('accepts legacy requests and copies bounded input correlation', () => {
+    expect(parseOrcaRemoteWorkerBridgeRequest(request)).toEqual(request);
+    const ids = ['a', 'a', 'b'];
+    const parsed = parseOrcaRemoteWorkerBridgeRequest({ ...request, reportedInputClientIds: ids });
+    ids.push('c');
+    expect(parsed.reportedInputClientIds).toEqual(['a', 'b']);
+  });
+  it.each([null, 'a', ['../x'], Array.from({ length: 65 }, (_, i) => `input-${i}`)])(
+    'rejects invalid input correlation %j', (ids) => {
+      expect(() => parseOrcaRemoteWorkerBridgeRequest({ ...request, reportedInputClientIds: ids })).toThrow(/INVALID_PARAMS/);
+    },
+  );
+});
+
 describe('orca remote worker channels', () => {
   // Shared-task guests are refused by the desktop shared-task gate (not in its channel list).
   it('registers caps / open / release on the same-account allowlist', () => {
     for (const channel of [
       ORCA_REMOTE_WORKER_CAPS_CHANNEL,
+      ORCA_REMOTE_WORKER_BRIDGE_CHANNEL,
       ORCA_REMOTE_WORKER_OPEN_CHANNEL,
       ORCA_REMOTE_WORKER_RELEASE_CHANNEL,
     ]) {

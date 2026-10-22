@@ -479,6 +479,8 @@ describe('Codex device-hosted guest sessions', () => {
     expect(String(options?.keyOverride)).toMatch(/^local-guest:hosted-session/);
     // 独占的 app-server 带上分享的供应商：host 据此只留这个供应商的路由，不开智能子代理调配。
     expect(options?.deviceHostedGuestProviderId).toBe('xd');
+    expect(options?.deviceHostedGuestSessionId).toBe('hosted-session');
+    expect(options?.deviceHostedGuestModelIds).toEqual(SHARED_PROVIDER.modelIds);
     // 不按 id 到本机用户的 Codex 历史里查找，不把本机托管技能投影进来，也不登记线程位置。
     expect(fixture.prepareCodexResumeSession).not.toHaveBeenCalled();
     expect(fixture.resolveCodexThreadStorage).not.toHaveBeenCalled();
@@ -492,6 +494,7 @@ describe('Codex device-hosted guest sessions', () => {
     const handle = await fixture.started;
     expect(fixture.getHost.mock.calls.some(([, , opts]) => opts?.historyHome)).toBe(false);
     expect(fixture.getHost.mock.calls.some(([, , opts]) => opts && 'deviceHostedGuestProviderId' in opts)).toBe(false);
+    expect(fixture.getHost.mock.calls.some(([, , opts]) => opts && 'deviceHostedGuestSessionId' in opts)).toBe(false);
     expect(fixture.prepareCodexResumeSession).toHaveBeenCalled();
     expect(fixture.resolveCodexThreadStorage).toHaveBeenCalled();
     expect(fixture.prepareCodexSkills).toHaveBeenCalled();

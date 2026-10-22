@@ -82,6 +82,30 @@ function makeHarness(opts: {
 
 const CALL = { ghostId: 'art', tool: 'gen_image', args: { prompt: '一只猫' } };
 
+// #6404: wrapper-only tests did not exercise ordinary ghost_call arguments.
+// Unit: dispatch real tool payloads; only Host opening + literal opt-in may mark read.
+describe('mail reader opening intent', () => {
+  it.each([
+    { opened: undefined, optIn: true, tool: 'read_mail', expected: false },
+    { opened: true, optIn: true, tool: 'read_mail', expected: true },
+    { opened: true, optIn: undefined, tool: 'read_mail', expected: false },
+    { opened: true, optIn: 'true', tool: 'read_mail', expected: false },
+    { opened: true, optIn: false, tool: 'read_mail', expected: false },
+    { opened: undefined, optIn: true, tool: 'set_read', expected: true },
+  ] as const)('dispatches $tool with opening=$opened, opt-in=$optIn', async ({ opened, optIn, tool, expected }) => {
+    const ghost = fakeGhost();
+    Object.assign(ghost.manifest, { mail: true, mailReader: { tool: 'read_mail', hosts: ['mail.example.test'], markRead: optIn } });
+    ghost.manifest.tools = ['read_mail', 'set_read'].map(name => ({ name, description: name }));
+    const h = makeHarness({ ghost });
+    const args = { url: 'https://mail.example.test/message/one', markRead: !opened, mailReaderOpened: true };
+    const pending = h.dispatcher.callGhostTool({ ghostId: 'art', tool, args, ...(opened ? { mailReaderOpened: true as const } : {}) });
+    expect(h.sent[0].args).toEqual(expected ? { ...args, markRead: true } : { url: args.url, mailReaderOpened: true });
+    expect(args.markRead).toBe(!opened); // Never mutate the caller's data.
+    h.dispatcher.handleToolResult('art', { callId: h.sent[0].callId, ok: true, result: 'mail' });
+    expect(await pending).toEqual({ ok: true, result: 'mail' });
+  });
+});
+
 describe('caller cancellation', () => {
   it('Host Stop affects only opted-in calls in that session, preserving legacy calls', async () => {
     const h = makeHarness();

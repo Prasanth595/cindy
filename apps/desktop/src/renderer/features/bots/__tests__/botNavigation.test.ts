@@ -129,7 +129,7 @@ describe('伙伴创建兼容旧创建链接', () => {
   it('侧栏加号复用同一个创建弹窗入口', () => {
     expect(sidebar).not.toContain('?add=1');
     // 伙伴段头的加号与空态入口都走同一个创建菜单。
-    expect(sidebar).toContain('<BotCreateMenu variant="header" />');
+    expect(sidebar).toContain('<BotCreateMenu variant="header" entryHint={marketHint} />');
     expect(sidebar).toContain("<BotCreateMenu label={t('bots.add')} />");
   });
 });
@@ -172,15 +172,8 @@ describe('Bot task route recovery', () => {
     expect(source).toContain('botUnreadBoundaryAt={gate.unreadBoundaryAt}');
   });
 
-  it.each(['\n', '\r\n'])('keeps the teammate a teammate in archived transcripts with line ending %j, without touching the write path', (lineEnding) => {
-    const history = readFileSync(resolve(__dirname, '..', 'BotHistorySessionView.tsx'), 'utf8')
-      .replace(/\r?\n/g, lineEnding);
-    // 只读历史也带头像与伙伴 lockup:这个视图本来就已经查过 history(botId) 确认归属。
-    expect(history).toMatch(/window\.electronAPI\.localDb\.bots\s*\.get\(botId\)/);
-    expect(history).toContain(
-      "botIdentity={{ ...(identity ?? { id: botId, name: '' }), sessionId }}",
-    );
-  });
+  // Archived transcript identity/read-only coverage lives in the rendered
+  // BotHistorySessionView cases in botSessionPresentation.test.tsx.
 
   it('keeps welcome delivery out of the renderer navigation projection', () => {
     // 欢迎语由 main 在创建伙伴和持久任务关系的同一边界内落库。URL 只负责

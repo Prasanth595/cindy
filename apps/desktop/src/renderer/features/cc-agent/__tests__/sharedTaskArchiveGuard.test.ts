@@ -35,6 +35,7 @@ function harness(result: unknown, reject = false, sharedTaskId: string | undefin
     toast, t: (key: string) => key, sharedTaskErrorKey: () => 'sharedTask.retry',
     sessionsById: new Map([['task', session]]), sessionsByIdRef: { current: new Map([['task', session]]) },
     runningSessionIds: new Set(), attachedSessionIdsRef: { current: new Set() },
+    loadActiveBoundScheduleNames: async () => new Map(),
     isRemoteSessionWriteBlocked: () => false, resolveWorktreeRemovalPreflight: preflight,
     archiveBlockedByRunning,
     viewedSessionIdRef: { current: 'other' }, viewedSessionId: 'other',
@@ -125,7 +126,7 @@ describe('archive preserves the current task until preflight and confirmation fi
     { name: 'hardware shortcut', file: 'lib/sessionHardwareTaskActions.ts', handler: 'archive' },
   ];
 
-  function archiveHarness(entry: typeof entrypoints[number]) {
+  function archiveHarness(entry: typeof entrypoints[number], scheduleNames: string[] = []) {
     const entrySource = ts.createSourceFile(entry.file, readFileSync(resolve(process.cwd(),
       'src/renderer/features/cc-agent', entry.file), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
     const preflight = deferred<'clean' | 'dirty' | 'unknown'>();
@@ -147,6 +148,9 @@ describe('archive preserves the current task until preflight and confirmation fi
       runningSessionIds: new Set(), attachedSessionIdsRef: { current: new Set() },
       isRemoteSessionWriteBlocked: () => false, remoteWritesBlocked: false,
       resolveWorktreeRemovalPreflight: resolvePreflight,
+      loadActiveBoundScheduleNames: async () =>
+        new Map(scheduleNames.length > 0 ? [['task', scheduleNames]] : []),
+      archiveConfirmDescription: () => 'description',
       viewedSessionIdRef: { current: 'task' }, viewedSessionId: 'task',
       resolveSessionRemovalRedirect: vi.fn(), unarchiveSession: vi.fn(),
       runSessionAction, setConfirm, CONFIRM_INITIAL: { open: false },
@@ -223,6 +227,23 @@ describe('archive preserves the current task until preflight and confirmation fi
       expect(h.runSessionAction).toHaveBeenCalledWith('task', 'archive', expect.objectContaining({ activeSessionId: 'task' }));
       expect(h.selected()).toBeNull();
       expect(h.visible()).toBe(false);
+    });
+
+    it(entry.name + ' confirms a clean archive when the task has an active automation', async () => {
+      const h = archiveHarness(entry, ['Daily report']);
+      const pending = h.archive();
+      h.preflight.resolve('clean');
+      await vi.waitFor(() => {
+        expect(entry.name === 'sidebar' ? h.setConfirm : h.confirmDialog).toHaveBeenCalled();
+      });
+      if (entry.name === 'sidebar') {
+        expect(h.setConfirm).toHaveBeenCalledWith(expect.objectContaining({ scheduleNames: ['Daily report'] }));
+      }
+      expect(h.runSessionAction).not.toHaveBeenCalled();
+      await h.finish(false);
+      await pending;
+      expect(h.runSessionAction).not.toHaveBeenCalled();
+      expect(h.selected()).toBe('task');
     });
   }
 });

@@ -1,3 +1,4 @@
+import type { VoiceConversationApi } from '../shared/voiceConversation';
 import { createAccessibilitySupportBridge } from './accessibilitySupport';
 import { createWallpaperAssetsBridge } from './wallpaperAssets';
 import type { CompanionImportApi, CompanionImportSelection } from '@cindy/maker-shared/companion-import';
@@ -30,6 +31,7 @@ import {
 } from '../shared/loginItem';
 import type { BotToolsetContext } from '../shared/botRemoteCapabilities';
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
+import { createChatFolderUpload } from './chatFolderUpload';
 import { DESKTOP_LOCAL, type RemoteDesktopApi } from '../shared/remoteDesktop';
 import { DEVICE_LINK_PUSH } from '../shared/deviceLinkIpc';
 import { PROVIDER_SHARE_IPC, type ProviderShareCommand } from '../shared/providerShare';
@@ -243,9 +245,20 @@ import type {
 import type {
   RsbWindowCommandRouteRequest,
   RsbWindowCommandRouteResult,
+  RsbWindowContext,
   RsbWindowTabHandoff,
 } from '../shared/rightSidebarWindow';
-import { RSB_WINDOW_TAB_HANDOFF_CHANNEL } from '../shared/rightSidebarWindow';
+import {
+  RSB_WINDOW_COMMAND_CHANNEL,
+  RSB_WINDOW_CONTEXT_CHANGED_CHANNEL,
+  RSB_WINDOW_STATE_CHANGED_CHANNEL,
+  RSB_WINDOW_TAB_HANDOFF_CHANNEL,
+} from '../shared/rightSidebarWindow';
+import type {
+  SidebarTabReturnedPayload,
+  SidebarTabWindowOpenRequest,
+  SidebarTabWindowsState,
+} from '../shared/sidebarTabWindow';
 import {
   RSB_NATIVE_POPUP_CLAIM_CHANNEL,
   RSB_NATIVE_POPUP_CLOSE_CHANNEL,
@@ -544,14 +557,16 @@ const fanOutWindowBackdropMaterialChanged = createIpcFanOut(
 );
 const fanOutOrcaWorkerChanged = createIpcFanOut('maker:orca:worker-changed');
 // 右侧栏独立子窗口(RSB window)状态 / 上下文 / 命令推送
-const fanOutRsbWindowStateChanged = createIpcFanOut('maker:rsb-window:state-changed');
-const fanOutRsbWindowContextChanged = createIpcFanOut('maker:rsb-window:context-changed');
-const fanOutRsbWindowCommand = createIpcFanOut('maker:rsb-window:command');
+const fanOutRsbWindowStateChanged = createIpcFanOut(RSB_WINDOW_STATE_CHANGED_CHANNEL);
+const fanOutRsbWindowContextChanged = createIpcFanOut(RSB_WINDOW_CONTEXT_CHANGED_CHANNEL);
+const fanOutRsbWindowCommand = createIpcFanOut(RSB_WINDOW_COMMAND_CHANNEL);
 const fanOutRsbWindowTabHandoff = createIpcFanOut(RSB_WINDOW_TAB_HANDOFF_CHANNEL);
-// 插件停靠面板独立窗口(ghost panel window)状态推送
-const fanOutGhostPanelWindowStateChanged = createIpcFanOut(
-  'maker:ghost-panel-window:state-changed',
+// 右侧栏单页签独立窗口(sidebar tab window)状态 / 页签交回 / 页签持久化变更推送
+const fanOutSidebarTabWindowStateChanged = createIpcFanOut(
+  'maker:sidebar-tab-window:state-changed',
 );
+const fanOutSidebarTabWindowTabReturned = createIpcFanOut('maker:sidebar-tab-window:tab-returned');
+const fanOutRightSidebarTabsChanged = createIpcFanOut('maker:right-sidebar-tabs:changed');
 const fanOutBinaryDownloadProgress = createIpcFanOut('binary-download-progress');
 // Settings →「电脑使用」cua-driver 更新的下载进度(main 侧采样后广播)
 const fanOutComputerDriverUpdateProgress = createIpcFanOut('computer-driver-update-progress');
@@ -668,6 +683,7 @@ const fanOutDingTalkBotOwnerChange = createIpcFanOut('dingtalkBot:owner-change')
 const fanOutWecomBotStatusChange = createIpcFanOut('wecomBot:status-changed');
 // Personal WeChat: main owns auth/polling and broadcasts a credential-free state snapshot.
 const fanOutWechatBotStateChange = createIpcFanOut('wechatBot:state-changed');
+const fanOutWechatChannelSettingsChange = createIpcFanOut('wechatBot:channel-settings-changed');
 const fanOutVoiceInputEvent = createIpcFanOut('voice-input:event');
 const fanOutVoiceInputGlobalShortcutTrigger = createIpcFanOut(
   'voice-input:global-shortcut-trigger',
@@ -719,6 +735,7 @@ const fanOutGhostAssistantPending = createIpcFanOut('ghosts:assistant-message-pe
 const fanOutGhostHookFused = createIpcFanOut('ghosts:hook-fused');
 // 意识系统提示(notify 槽:宿主 Toast 渲染,带意识身份头)。
 const fanOutGhostNotify = createIpcFanOut('ghosts:notify');
+const fanOutRemoteSettingsDirectory = createIpcFanOut('device-link:plugin-settings:directory');
 // 意识未读角标(badge 槽:插件入口与插件卡上的绿点,持久状态非一次性 toast)。
 const fanOutGhostBadge = createIpcFanOut('ghosts:badge');
 // 未读全量快照(换账号后整表替换;逐条 badge 只表达增量)。
@@ -810,6 +827,7 @@ const fanOutBotGroupChanged = createIpcFanOut('maker:bot-group:changed');
 const fanOutCompanionCloudChanged = createIpcFanOut('maker:companion-cloud:changed');
 const fanOutBotProfileChanged = createIpcFanOut('maker:bot-profile:changed');
 const fanOutBotWorkbenchChanged = createIpcFanOut('maker:bot-workbench:changed');
+const fanOutBotAutonomyChanged = createIpcFanOut('maker:bot-autonomy:changed');
 const fanOutBotLifecycleChanged = createIpcFanOut('maker:bot-lifecycle:changed');
 const fanOutMakerPiPackagesChanged = createIpcFanOut('maker:pi-packages:changed');
 const fanOutMakerUsageTodaySpend = createIpcFanOut('usage:today-spend-changed'); // Claude USD
@@ -1073,6 +1091,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
       };
     },
   } satisfies ModelFavoritesHostApi,
+  botMarket: {
+    list: () => ipcRenderer.invoke('companion-import', 'packages'),
+    invite: (input: import('../shared/botMarket').BotPackageIdentity & { locale?: string }) => ipcRenderer.invoke('companion-import', 'invite-package', input),
+    status: (requestId: string) => ipcRenderer.invoke('companion-import', 'status', requestId),
+  } satisfies import('../shared/botMarket').BotMarketApi,
   companionImport: {
     sources: () => ipcRenderer.invoke('companion-import', 'sources'),
     preview: (sourceId: string) => ipcRenderer.invoke('companion-import', 'preview', sourceId),
@@ -1251,6 +1274,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 意识仓库 (shared/ghost.ts)。listSync 走 sendSync:意识面板要与内置
   // 面板同帧注册进布局引擎(规则 7 无跳变);目录扫描极小,同步读不卡启动。
   ghosts: {
+    mailPreview: (sessionId: string, url: string, read: boolean, opened = false) => ipcRenderer.invoke('ghosts:mail-preview', sessionId, url, read, opened),
+    openRemoteSettings: (target: import('../shared/remotePluginSettings').RemotePluginSettingsTarget): Promise<import('../shared/remotePluginSettings').RemotePluginSettingsView> =>
+      ipcRenderer.invoke('device-link:plugin-settings:open', target),
+    closeRemoteSettings: (id: string): Promise<void> => ipcRenderer.invoke('device-link:plugin-settings:close', id),
+    onRemoteSettingsDirectory: fanOutRemoteSettingsDirectory,
+    answerRemoteSettingsDirectory: (answer: import('../shared/remotePluginSettings').RemotePluginSettingsDirectoryAnswer): Promise<void> =>
+      ipcRenderer.invoke('device-link:plugin-settings:answer-directory', answer),
     recommendationsSync:
       (): import('../shared/homePluginRecommendations').HomePluginRecommendationsSnapshot =>
         ipcRenderer.sendSync('ghosts:recommendations'),
@@ -1457,8 +1487,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
       callId: string,
       actionId: string,
       prompt?: string,
+      formValues?: Record<string, string>,
+      formChange?: boolean,
     ): Promise<{ ok: boolean }> =>
-      ipcRenderer.invoke('ghosts:card:action', callId, actionId, prompt),
+      ipcRenderer.invoke('ghosts:card:action', callId, actionId, prompt, formValues, formChange),
     resolvePanelMedia: (
       uri: string,
       purpose?: 'attach' | 'menu',
@@ -1585,6 +1617,32 @@ contextBridge.exposeInMainWorld('electronAPI', {
     resolveConfirm: (requestId: string, confirmed: boolean): Promise<{ handled: boolean }> =>
       ipcRenderer.invoke('plugin-publisher:resolve-confirm', { requestId, confirmed }),
   },
+  voiceConversation: {
+    promoteTurn: (callId, inputId) => ipcRenderer.invoke("voice-conversation:promote-turn", callId, inputId),
+    submitTurn: (callId, inputId, text, forceHandoff) => ipcRenderer.invoke("voice-conversation:submit-turn", callId, inputId, text, forceHandoff),
+    models: () => ipcRenderer.invoke('voice-conversation:models'),
+    voices: (selection) => ipcRenderer.invoke('voice-conversation:voices', selection),
+    preview: (input) => ipcRenderer.invoke('voice-conversation:preview', input),
+    readPreview: (previewId) => ipcRenderer.invoke('voice-conversation:read-preview', previewId),
+    stopPreview: (previewId) => ipcRenderer.invoke('voice-conversation:stop-preview', previewId),
+    preference: (botId) => ipcRenderer.invoke('voice-conversation:preference', botId),
+    setPreference: (botId, selection, sentencePlayback) => ipcRenderer.invoke('voice-conversation:set-preference', botId, selection, sentencePlayback),
+    start: (input) => ipcRenderer.invoke('voice-conversation:start', input),
+    startPlayback: (input) => ipcRenderer.invoke('voice-conversation:start-playback', input),
+    classifyExit: (callId, utteranceId, inputGeneration) => ipcRenderer.invoke('voice-conversation:classify-exit', callId, utteranceId, inputGeneration),
+    audio: (input) => ipcRenderer.send('voice-conversation:audio', input),
+    finishUtterance: (callId) => ipcRenderer.invoke('voice-conversation:finish-utterance', callId),
+    setInputMuted: (callId, muted) => ipcRenderer.invoke('voice-conversation:set-input-muted', callId, muted),
+    end: (callId) => ipcRenderer.invoke('voice-conversation:end', callId),
+    speak: (input) => ipcRenderer.invoke('voice-conversation:speak', input),
+    readSpeech: (callId, requestId) => ipcRenderer.invoke('voice-conversation:read-speech', callId, requestId),
+    interrupt: (callId) => ipcRenderer.invoke('voice-conversation:interrupt', callId),
+    onEvent: (callback) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: Parameters<typeof callback>[0]) => callback(payload);
+      ipcRenderer.on('voice-conversation:event', listener);
+      return () => ipcRenderer.removeListener('voice-conversation:event', listener);
+    },
+  } satisfies VoiceConversationApi,
   voiceInput: {
     prewarm: (payload?: {
       sourceLanguage?: string;
@@ -1953,28 +2011,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ): Promise<{ detached: boolean; lastOpen: boolean; open: boolean }> =>
       ipcRenderer.invoke('maker:rsb-window:set-detached', detached, handoff),
     /** 子窗口 mount 时拉主窗上报的渲染上下文(main 缓存的最后一份)。 */
-    getContext: (): Promise<{
-      sessionId: string | null;
-      workdir: string | null;
-      remoteHostId: string | null;
-      deviceLinkDeviceId?: string | null;
-      subagentsAvailable?: boolean;
-      available: boolean;
-    } | null> => ipcRenderer.invoke('maker:rsb-window:get-context'),
+    getContext: (): Promise<RsbWindowContext | null> =>
+      ipcRenderer.invoke('maker:rsb-window:get-context'),
     /** 子窗口根组件挂载握手(main 侧 ensureOpen 等它)。 */
     ready: (): Promise<void> => ipcRenderer.invoke('maker:rsb-window:ready'),
     /** 主窗请求 main 原子裁决命令宿主；必要时 main 开窗、排队或取消 stale intent。 */
     sendCommand: (request: RsbWindowCommandRouteRequest): Promise<RsbWindowCommandRouteResult> =>
       ipcRenderer.invoke('maker:rsb-window:send-command', request),
     /** 主窗上报侧边栏渲染上下文。fire-and-forget,main 只信主窗 sender。 */
-    setContext: (ctx: {
-      sessionId: string | null;
-      workdir: string | null;
-      remoteHostId: string | null;
-      deviceLinkDeviceId?: string | null;
-      subagentsAvailable?: boolean;
-      available: boolean;
-    }): void => ipcRenderer.send('maker:rsb-window:set-context', ctx),
+    setContext: (ctx: RsbWindowContext): void =>
+      ipcRenderer.send('maker:rsb-window:set-context', ctx),
     onStateChanged: fanOutRsbWindowStateChanged,
     onContextChanged: fanOutRsbWindowContextChanged,
     onCommand: fanOutRsbWindowCommand,
@@ -1982,35 +2028,38 @@ contextBridge.exposeInMainWorld('electronAPI', {
       fanOutRsbWindowTabHandoff((data) => cb(data as RsbWindowTabHandoff)),
   },
 
-  // ── 插件停靠面板独立窗口(ghost panel window)──────────────────────────
-  // 每 ghostId 一扇窗。状态机在 main(ghost-panel-window/controller.ts),
-  // renderer 只 invoke + 订阅广播;首帧走 sendSync(规则 7 无跳变)。
-  ghostPanelWindow: {
-    /** 首帧同步读全量状态(ghostId → { detached, lastOpen, open })。 */
-    getStateSync: (): Record<string, { detached: boolean; lastOpen: boolean; open: boolean }> =>
-      ipcRenderer.sendSync('ghost-panel-window:get-state-sync') as Record<
-        string,
-        { detached: boolean; lastOpen: boolean; open: boolean }
-      >,
-    getState: (): Promise<
-      Record<string, { detached: boolean; lastOpen: boolean; open: boolean }>
-    > => ipcRenderer.invoke('maker:ghost-panel-window:get-state'),
-    /** 幂等:已开则 show + focus。 */
-    open: (ghostId: string): Promise<void> =>
-      ipcRenderer.invoke('maker:ghost-panel-window:open', ghostId),
-    /** 写偏好;true 开窗抽离,false 关窗回停靠。返回新全量 state。 */
-    setDetached: (
-      ghostId: string,
-      detached: boolean,
-    ): Promise<Record<string, { detached: boolean; lastOpen: boolean; open: boolean }>> =>
-      ipcRenderer.invoke('maker:ghost-panel-window:set-detached', ghostId, detached),
-    onStateChanged: fanOutGhostPanelWindowStateChanged,
-  },
 
   // ── 资源用量独立子窗口 ──────────────────────────────────────────────
   // 主窗口只持有打开能力；资源窗口的关闭与就绪能力在专用 preload 中暴露。
   resourceUsageWindow: {
     open: (): Promise<void> => ipcRenderer.invoke(RESOURCE_USAGE_WINDOW_OPEN_CHANNEL),
+  },
+
+  // ── 右侧栏单页签独立窗口(sidebar tab window)──────────────────────────
+  // 每个弹出的页签一扇窗。状态机在 main(sidebar-tab-window/controller.ts),
+  // 主窗只 invoke + 订阅广播;弹出窗口自身的握手桥在 sidebarWindowPreload。
+  sidebarTabWindow: {
+    getState: (): Promise<SidebarTabWindowsState> =>
+      ipcRenderer.invoke('maker:sidebar-tab-window:get-state'),
+    /** 把页签弹出到独立窗口;已弹出则聚焦。 */
+    open: (request: SidebarTabWindowOpenRequest): Promise<void> =>
+      ipcRenderer.invoke('maker:sidebar-tab-window:open', request),
+    focus: (tabId: string): Promise<void> =>
+      ipcRenderer.invoke('maker:sidebar-tab-window:focus', tabId),
+    /** 页签已在侧边栏关闭:销毁其弹出窗口,不交回。 */
+    closeForTab: (tabId: string): Promise<void> =>
+      ipcRenderer.invoke('maker:sidebar-tab-window:close-for-tab', tabId),
+    /** 把弹在独立窗口里的全局页签(插件视图)交回侧栏;任务页签由窗口自己合并回来。 */
+    returnTab: (tabId: string): Promise<boolean> =>
+      ipcRenderer.invoke('maker:sidebar-tab-window:return-tab', tabId),
+    /** 页签拖出窗口:窗外跟随指针的预览卡(复用任务拖出的那扇预览窗口)。 */
+    beginDragPreview: (label: string, palette: SessionDragPreviewPalette): Promise<void> =>
+      ipcRenderer.invoke('maker:sidebar-tab-drag-preview:start', label, palette),
+    endDragPreview: (): void => ipcRenderer.send('maker:sidebar-tab-drag-preview:end'),
+    onStateChanged: (cb: (state: SidebarTabWindowsState) => void): (() => void) =>
+      fanOutSidebarTabWindowStateChanged((data) => cb(data as SidebarTabWindowsState)),
+    onTabReturned: (cb: (payload: SidebarTabReturnedPayload) => void): (() => void) =>
+      fanOutSidebarTabWindowTabReturned((data) => cb(data as SidebarTabReturnedPayload)),
   },
 
   agentIsland: {
@@ -2547,18 +2596,22 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getChannelSettings: (): Promise<{
       version: 1;
       workingDir: string | null;
-      workingDirAvailable: boolean;
+      workingDirAvailable: boolean; companionBotId?: string;
     }> => ipcRenderer.invoke('wechatBot:get-channel-settings'),
+    setCompanion: (botId: string | null): Promise<{
+      version: 1; workingDir: string | null; workingDirAvailable: boolean; companionBotId?: string;
+    }> => ipcRenderer.invoke('wechatBot:set-companion', botId),
     chooseWorkingDirectory: (): Promise<{
       canceled: boolean;
-      state: { version: 1; workingDir: string | null; workingDirAvailable: boolean };
+      state: { version: 1; workingDir: string | null; workingDirAvailable: boolean; companionBotId?: string };
     }> => ipcRenderer.invoke('wechatBot:choose-working-directory'),
     resetWorkingDirectory: (): Promise<{
       version: 1;
       workingDir: string | null;
-      workingDirAvailable: boolean;
+      workingDirAvailable: boolean; companionBotId?: string;
     }> => ipcRenderer.invoke('wechatBot:reset-working-directory'),
     onStateChange: fanOutWechatBotStateChange,
+    onChannelSettingsChange: fanOutWechatChannelSettingsChange,
   },
 
   // Renderer → main 的 "用户已登录 + localDb 已就绪" 信号。LocalDbGate 在
@@ -2579,7 +2632,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     model: string;
     effort: string;
     permissionMode: string;
-    fastMode: boolean;
+    fastMode: boolean | 'ultrafast';
     providerId: string | null;
   }): void => ipcRenderer.send('desktop:cc-prefs-changed', prefs),
 
@@ -2601,13 +2654,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     >;
     /** 每个 vendor 是否由用户在 New Maker 中明确选过模型；device-link 默认校准据此保护显式选择。 */
     modelChosenByVendor: Partial<Record<'cc' | 'codex' | 'pi', boolean>>;
-    fastModeByModel: Record<string, boolean>;
+    fastModeByModel: Record<string, boolean | 'ultrafast'>;
     effortByModel: Record<string, string>;
     providerModelMemory?: Record<
       string,
       {
         effortByModel: Record<string, string>;
-        fastByModel: Record<string, boolean>;
+        fastByModel: Record<string, boolean | 'ultrafast'>;
       }
     >;
     /** 「新建会话默认启用 worktree」勾选记忆(vendor 无关根字段,远程草稿播种用)。 */
@@ -2626,7 +2679,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   syncProviderModelMemory: (
     snapshot: Record<
       string,
-      { effortByModel: Record<string, string>; fastByModel: Record<string, boolean> }
+      { effortByModel: Record<string, string>; fastByModel: Record<string, boolean | 'ultrafast'> }
     >,
   ): void => ipcRenderer.send('maker:sync-provider-model-memory', snapshot),
 
@@ -2640,7 +2693,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     providerId: string;
     model: string;
     effort?: string;
-    fast?: boolean;
+    fast?: boolean | 'ultrafast';
   }): void => ipcRenderer.send('maker:sync-session-model-pref', pref),
 
   /**
@@ -3031,6 +3084,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     /** 取消进行中的 chatFetch / chatDownload(按发起时的 requestId);已结束时无操作。 */
     chatCancel: (requestId: string): Promise<void> =>
       ipcRenderer.invoke('maker:chat-file:cancel', requestId),
+    uploadChatFolder: createChatFolderUpload(
+      (file) => webUtils.getPathForFile(file),
+      (params) => ipcRenderer.invoke('maker:chat-folder:upload', params),
+    ),
     /** 聊天流文件 chip 点亮预检:远端精确 stat。file=点亮;nonfile=保持纯文本;unknown=乐观点亮。 */
     chatStat: (params: {
       origin: { kind: 'device'; deviceId: string } | { kind: 'ssh'; remoteHostId: string };
@@ -4660,6 +4717,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     onChanged: fanOutProviderGroupChanged,
   },
   deviceLink: {
+    confirmSkillMutation: (deviceId: string, operationId: string): Promise<import('../shared/remoteSkills').RemoteSkillReceipt> => ipcRenderer.invoke('device-link:confirm-skill-mutation', { deviceId, operationId }),
+    pickPluginPackage: (deviceId: string): Promise<{ attachment: string } | null> => ipcRenderer.invoke('device-link:pick-plugin-package', deviceId),
     taskMigration: (deviceId: string | null, request: import('@cindy/device-link').TaskMigrationRequest): Promise<import('@cindy/device-link').TaskMigrationView> =>
       ipcRenderer.invoke(TASK_MIGRATION_LOCAL_CHANNEL, deviceId, request),
     getState: (): Promise<{
@@ -5158,6 +5217,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('maker:hook-control:set-provider-enabled', { provider, enabled }),
     setWorkspaces: (workspaces: Record<string, string>): Promise<{ hook: unknown }> =>
       ipcRenderer.invoke('maker:hook-control:set-workspaces', { workspaces }),
+    setXCompanion: (botId: string | null, expectedBotId: string | null): Promise<{ hook: unknown }> =>
+      ipcRenderer.invoke('maker:hook-control:set-x-companion', { botId, expectedBotId }),
     setProviderDefaultWorkspace: (
       provider: 'telegram' | 'x',
       alias: string | null,
@@ -5629,6 +5690,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
       /** interrupted-turn-resume:「疑似中断」(startedAt > endedAt)的 active 会话 id。 */
       interruptedPending: (): Promise<string[]> =>
         ipcRenderer.invoke('local-db:sessions:interrupted-pending'),
+      /** 启动「继续上次中断的任务」弹窗:中断会话 + 中断时间 + 中断前正在做的事。 */
+      interruptedResumeCandidates: (): Promise<
+        { sessionId: string; interruptedAt: number; activity: string | null }[]
+      > => ipcRenderer.invoke('local-db:sessions:interrupted-resume-candidates'),
       /** 红点派生的周期性重算源:尾部停在未 dismissed 错误行的 active 会话 id。
        *  与 interruptedPending 分开消费——后者只在启动首拉一次(它对正在跑的 turn
        *  天然成立,周期性重跑会把运行中的会话误判为中断)。 */
@@ -5682,6 +5747,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
         ipcRenderer.invoke('local-db:bots:create-canonical-session', body),
       history: (botId: string): Promise<unknown[]> =>
         ipcRenderer.invoke('local-db:bots:history', botId),
+      dmThread: {
+        ensure: (body: { botId: string; rootSessionId: string; rootClientId: string; title?: string }): Promise<unknown> =>
+          ipcRenderer.invoke('local-db:bots:dm-thread:ensure', body),
+        list: (body: { botId: string; rootSessionId: string }): Promise<unknown> =>
+          ipcRenderer.invoke('local-db:bots:dm-thread:list', body),
+      },
       todos: {
         list: (botId: string) => ipcRenderer.invoke('local-db:bots:todos:list', botId),
         update: (botId: string, patch: import('@cindy/maker-shared/teammate-todo').TodoPatch) => ipcRenderer.invoke('local-db:bots:todos:update', botId, patch),
@@ -5690,16 +5761,23 @@ contextBridge.exposeInMainWorld('electronAPI', {
       workbench: {
         get: (botId: string): Promise<unknown> =>
           ipcRenderer.invoke('local-db:bots:workbench:get', botId),
-        addDirectory: (botId: string, path: string): Promise<unknown> =>
-          ipcRenderer.invoke('local-db:bots:workbench:add-directory', botId, path),
-        removeDirectory: (botId: string, path: string, deviceId?: string): Promise<void> =>
-          ipcRenderer.invoke('local-db:bots:workbench:remove-directory', botId, path, deviceId),
         readTask: (botId: string, taskId: string): Promise<unknown> =>
           ipcRenderer.invoke('local-db:bots:workbench:read-task', botId, taskId),
-        candidates: (botId: string): Promise<unknown> =>
-          ipcRenderer.invoke('local-db:bots:workbench:candidates', botId),
         followScopes: (): Promise<unknown> =>
           ipcRenderer.invoke('local-db:bots:workbench:follow-scopes'),
+      },
+      /** 伙伴自主跟进：工作台「一眼」与「自动跟进所有任务」设置（shared/botAutonomy.ts）。 */
+      autonomy: {
+        glance: (botId: string, refreshRemote = true): Promise<import('../shared/botAutonomy').BotGlance> =>
+          ipcRenderer.invoke('local-db:bots:autonomy:glance', botId, refreshRemote),
+        getSettings: (): Promise<import('../shared/botAutonomy').BotAutonomySettingsView> =>
+          ipcRenderer.invoke('local-db:bots:autonomy:settings-get'),
+        setSettings: (
+          patch: import('../shared/botAutonomy').BotAutonomySettings,
+        ): Promise<import('../shared/botAutonomy').BotAutonomySettingsView> =>
+          ipcRenderer.invoke('local-db:bots:autonomy:settings-set', patch),
+        resetSettings: (): Promise<import('../shared/botAutonomy').BotAutonomySettingsView> =>
+          ipcRenderer.invoke('local-db:bots:autonomy:settings-reset'),
       },
       listSkills: (botId: string): Promise<import('../shared/botSkill').BotSkillSummary[]> =>
         ipcRenderer.invoke('local-db:bots:skills:list', botId),
@@ -5755,6 +5833,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
       /** 一次性重写 session 内 tab position(orderedIds 数组下标 = 新 position)。 */
       reorder: (input: { sessionId: string; orderedIds: string[] }): Promise<unknown> =>
         ipcRenderer.invoke('local-db:right-sidebar-tabs:reorder', input),
+      /** 其它 renderer(弹出的单页签窗口)改动了某会话的页签持久化数据。 */
+      onChanged: (cb: (payload: { sessionId: string }) => void): (() => void) =>
+        fanOutRightSidebarTabsChanged((data) => cb(data as { sessionId: string })),
     },
     subagentRuns: {
       /** Durable Cindy-owned Subagent records for one parent task. */
@@ -5820,7 +5901,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
           effort?: string;
           permissionMode?: string;
           planMode?: boolean;
-          fastMode?: boolean;
+          fastMode?: boolean | 'ultrafast';
           providerId?: string | null;
         };
         overwrite?: boolean;
@@ -5833,6 +5914,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
         ipcRenderer.invoke('local-db:session-share:classify-path', request),
     },
     orcaWorkflows: {
+      projectContext: (leadSessionId: string, directory?: string) => ipcRenderer.invoke('maker:worker:project-context', leadSessionId, directory),
+      projectLabel: (workerSessionId: string) => ipcRenderer.invoke('maker:worker:project-label', workerSessionId),
       getByLeadSession: (leadSessionId: string): Promise<unknown> =>
         ipcRenderer.invoke('local-db:orca-workflows:get-by-lead', leadSessionId),
       getByWorkerSession: (workerSessionId: string): Promise<unknown> =>
@@ -6102,6 +6185,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
         ipcRenderer.invoke('maker:chat-server:status'),
       thread: (input: Parameters<import('../shared/botGroupChat').ChatServerApi['thread']>[0]): ReturnType<import('../shared/botGroupChat').ChatServerApi['thread']> =>
         ipcRenderer.invoke('maker:chat-server:thread', input),
+      followThread: (input: Parameters<import('../shared/botGroupChat').ChatServerApi['followThread']>[0]): ReturnType<import('../shared/botGroupChat').ChatServerApi['followThread']> =>
+        ipcRenderer.invoke('maker:chat-server:followThread', input),
       reply: (input: Parameters<import('../shared/botGroupChat').ChatServerApi['reply']>[0]): ReturnType<import('../shared/botGroupChat').ChatServerApi['reply']> =>
         ipcRenderer.invoke('maker:chat-server:reply', input),
       shareToMain: (input: Parameters<import('../shared/botGroupChat').ChatServerApi['shareToMain']>[0]): ReturnType<import('../shared/botGroupChat').ChatServerApi['shareToMain']> =>
@@ -6146,8 +6231,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('maker:bot-group:send', input),
     continueBotGroupRound: (groupId: string): Promise<import('../shared/botGroupChat').BotGroupMutationResult> =>
       ipcRenderer.invoke('maker:bot-group:continue', groupId),
-    stopBotGroupRound: (groupId: string): Promise<import('../shared/botGroupChat').BotGroupMutationResult> =>
-      ipcRenderer.invoke('maker:bot-group:stop', groupId),
+    /** Stops your own work; `all` (owners/admins of server groups) stops everyone's. */
+    stopBotGroupRound: (groupId: string, scope?: 'all'): Promise<import('../shared/botGroupChat').BotGroupMutationResult> =>
+      ipcRenderer.invoke('maker:bot-group:stop', groupId, scope),
     startBotGroupPlan: (
       input: import('../shared/botGroupChat').BotGroupPlanActionInput,
     ): Promise<import('../shared/botGroupChat').BotGroupMutationResult> =>
@@ -6194,6 +6280,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('maker:companion-avatar:resolve', request),
     onBotProfileChanged: fanOutBotProfileChanged,
     onBotWorkbenchChanged: fanOutBotWorkbenchChanged,
+    onBotAutonomyChanged: fanOutBotAutonomyChanged,
     runBotLifecycleAction: (
       request: import('../shared/botLifecycle').BotLifecycleActionRequest,
     ): Promise<import('../shared/botLifecycle').BotLifecycleActionResult> =>
@@ -6827,7 +6914,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       orcaRole?: 'lead' | 'worker' | null;
       // 与 @cindy/maker-core types/common.ts Effort union 一致
       effort?: string;
-      fastMode?: boolean;
+      fastMode?: boolean | 'ultrafast';
       permissionMode?: string;
       /** 计划模式一级开关(与 permissionMode 正交)。 */
       planMode?: boolean;
@@ -6878,7 +6965,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
         label?: string;
         model?: string;
         effort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
-        fast?: boolean;
+        fast?: boolean | 'ultrafast';
         /** 显式选定的模型来源(标准面板 per-worker 选择);缺省 = 跟随默认路由解析。 */
         providerId?: string | null;
         /** Worker 创建默认权限；缺省沿用当前偏好，显式值会更新偏好。 */
@@ -6889,6 +6976,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
         executionDeviceId?: string;
         /** 运行设备上的工作目录；缺省由那台分配。 */
         workingDir?: string;
+        worktree?: import('../shared/orca-worker-project').WorkerWorktreeRequest;
+        projectPath?: string;
         /** 首个 Worker 的 Agent 所在电脑(远程供应商)；null = 任务所在电脑，缺省 = 跟 Lead。 */
         agentDeviceId?: string | null;
       },
@@ -6940,7 +7029,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
         model: string;
         orcaRole?: 'lead' | 'worker' | null;
         effort?: string;
-        fastMode?: boolean;
+        fastMode?: boolean | 'ultrafast';
         permissionMode?: string;
         /** 计划模式一级开关(与 permissionMode 正交)。 */
         planMode?: boolean;
@@ -6985,7 +7074,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
         model: string;
         orcaRole?: 'lead' | 'worker' | null;
         effort?: string;
-        fastMode?: boolean;
+        fastMode?: boolean | 'ultrafast';
         permissionMode?: string;
         /** 计划模式一级开关(与 permissionMode 正交)。 */
         planMode?: boolean;
@@ -7109,7 +7198,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       model: string,
       providerId?: string | null,
       expectedAgentSwitchRevision?: number,
-      selection?: { effort: string | null; fastMode: boolean },
+      selection?: { effort: string | null; fastMode: boolean | 'ultrafast' },
     ): Promise<{ deferred: boolean; superseded?: boolean } | undefined> =>
       ipcRenderer.invoke(
         'maker:set-model',
@@ -7131,7 +7220,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       model: string,
       providerId?: string | null,
       effort?: string,
-      fastMode?: boolean,
+      fastMode?: boolean | 'ultrafast',
       // 远程 Agent:同时换 Agent 所在电脑(null = 任务所在电脑)。不传 = 位置不变。
       options?: { agentDeviceId?: string | null; confirmedContextWindow?: number },
     ): Promise<{
@@ -7172,19 +7261,27 @@ contextBridge.exposeInMainWorld('electronAPI', {
       model: string;
       providerId: string | null;
       effort?: string;
-      fastMode?: boolean;
+      fastMode?: boolean | 'ultrafast';
     } | null> => ipcRenderer.invoke('maker:get-session-agent-switch-intent', sessionId),
     // effort/mode 透传 string —— 合法值由 maker capabilities 在运行时校验,
     // preload 不重复枚举 (避免 capabilities 加新值时这里也要改)。
     setEffort: (sessionId: string, effort: string): Promise<void> =>
       ipcRenderer.invoke('maker:set-effort', sessionId, effort),
+    // 输入框开始打字时提前启动 Agent；尽力而为,main 决定是否真的启动。
+    prewarmSession: (sessionId: string, createOpts: unknown): Promise<{ accepted: boolean }> =>
+      ipcRenderer.invoke('maker:session:prewarm', sessionId, createOpts),
+    // 新建页的未发送任务：清空输入时删除 / 第一次发送前转为普通任务（仅本机）。
+    discardProvisionalSession: (sessionId: string): Promise<{ discarded: boolean; remaining?: boolean }> =>
+      ipcRenderer.invoke('maker:session:discard-provisional', sessionId),
+    commitProvisionalSession: (sessionId: string): Promise<{ committed: boolean }> =>
+      ipcRenderer.invoke('maker:session:commit-provisional', sessionId),
     setPermissionMode: (sessionId: string, mode: string): Promise<void> =>
       ipcRenderer.invoke('maker:set-permission-mode', sessionId, mode),
     getPluginWriteAccessRecovery: (sessionId: string): Promise<{available: boolean}> =>
       ipcRenderer.invoke('maker:get-plugin-write-access-recovery', sessionId),
     retryPluginWriteAccess: (sessionId: string): Promise<{granted: boolean; mode?: 'acceptEdits' | 'auto'}> =>
       ipcRenderer.invoke('maker:retry-plugin-write-access', sessionId),
-    setFastMode: (sessionId: string, enabled: boolean): Promise<void> =>
+    setFastMode: (sessionId: string, enabled: boolean | 'ultrafast'): Promise<void> =>
       ipcRenderer.invoke('maker:set-fast-mode', sessionId, enabled),
     setThinkingEnabled: (sessionId: string, enabled: boolean): Promise<void> =>
       ipcRenderer.invoke('maker:set-thinking-enabled', sessionId, enabled),
@@ -7655,6 +7752,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
         opts?: { expectedClearBoundaryMs?: number | null },
       ): Promise<import('../shared/agentInputQueue').AgentInputProjection> =>
         ipcRenderer.invoke('maker:input:resume', sessionId, opts),
+      retryImageDelivery: (sessionId: string, imageId: string): Promise<void> =>
+        ipcRenderer.invoke('maker:images:retry', sessionId, imageId),
       retryLastError: (
         sessionId: string,
         opts?: { expectedClearBoundaryMs?: number | null },
@@ -7831,6 +7930,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       clientId: string,
       opts?: { requireLatestUser?: boolean; stopIfRunning?: boolean; allowFileRestore?: boolean },
     ): Promise<unknown> => ipcRenderer.invoke('maker:rewind:commit', sessionId, clientId, opts),
+    createSideChat: (sourceSessionId: string) => ipcRenderer.invoke('maker:side-chat:v1', sourceSessionId),
+    listSideChats: (sourceSessionId: string) => ipcRenderer.invoke('maker:side-chat:list:v1', sourceSessionId),
     fork: (sourceSessionId: string, messageClientId: string): Promise<unknown> =>
       ipcRenderer.invoke('maker:fork', sourceSessionId, messageClientId),
     forkStripEncrypted: (sourceSessionId: string): Promise<unknown> =>
@@ -7896,6 +7997,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       getCodexRateLimits: (providerId?: string): Promise<MobileCodexRateLimitsResult> =>
         ipcRenderer.invoke('maker:usage:codex-rate-limits', providerId),
       /** Consume one desktop-issued reset offer; Main validates its account and expiry. */
+      setCodexResetAutoUse: (patch: Partial<import('@cindy/maker-shared/device-link-contract').CodexResetAutoUseSettings> | null, accountKey: string, providerId?: string): Promise<MobileCodexRateLimitsResult> =>
+        ipcRenderer.invoke('maker:usage:codex-reset-auto-use', patch, accountKey, providerId),
       consumeCodexRateLimitReset: (idempotencyKey: string, providerId?: string): Promise<MobileCodexRateLimitResetResult> =>
         ipcRenderer.invoke('maker:usage:codex-rate-limit-reset', idempotencyKey, providerId),
       /** Claude 订阅账号余量 (5h/周/分模型窗口, cached-first, main 侧按需后台刷新)。 */

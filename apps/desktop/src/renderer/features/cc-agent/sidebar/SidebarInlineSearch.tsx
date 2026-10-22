@@ -76,7 +76,7 @@ export function SidebarInlineSearch({
     : null;
   const lockedProjectLabel = lockedProject
     ? projectDisplayLabelWithMachine(lockedProject)
-    : search.lockedProjectName;
+    : search.lockedSessionGroupName ?? search.lockedProjectName;
 
   // 程序化展开信号:展开并聚焦输入框(input 在展开态才挂载,置 forceOpen 触发挂载后再 focus)。
   useEffect(() => {
@@ -137,7 +137,7 @@ export function SidebarInlineSearch({
       <Search size={15} strokeWidth={1.8} className="shrink-0 text-[var(--sidebar-nav-text)]" />
       {expanded ? (
         <>
-          {search.lockedProjectKey && (
+          {(search.lockedProjectKey || search.lockedSessionGroupName) && (
             // 锁定项目 chip:展开态显示「在此项目内搜索」锁定的项目名 + 解锁 X。
             <span className="flex min-w-0 max-w-[48%] shrink items-center gap-1 rounded-full bg-[var(--surface-chip)] py-0.5 pl-2 pr-0.5 text-xs text-[var(--text-secondary)]">
               <span className="min-w-0 truncate">{lockedProjectLabel}</span>
@@ -204,6 +204,7 @@ export function SidebarInlineSearch({
             activeCount={search.activeFilterCount}
             lockedProjectKey={search.lockedProjectKey}
             lockedProjectName={search.lockedProjectName}
+            lockedSessionGroupName={search.lockedSessionGroupName}
             onStatusChange={search.setStatusFilter}
             onAgentKindChange={search.setAgentFilter}
             onLastActivityChange={search.setLastActivityFilter}
