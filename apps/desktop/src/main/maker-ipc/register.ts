@@ -11385,33 +11385,11 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
    * (`handoff-receipt:<dispatcher>:<nonce>`,见 maker-shared handoffReceipt),目标任务
    * 的完成钩子按同一前缀识别并回投。基础投递逻辑全部在 sendToSessionInternalBase。
    */
-  async function sendToSessionInternal(params: {
-    taskActionDeliveryGuard?: TaskActionDeliveryGuard;
-    botTaskCoordination?: BotTaskCoordination;
-    targetSessionId?: string;
-    message: string;
-    persistedContent?: string;
-    /** Host-managed images; attachment callers always use the durable queue. */
-    files?: AgentInputQueuedMessage['files'];
-    clientId?: string;
-    dispatcherSessionId?: string;
-    title?: string;
-    useWorktree?: boolean;
-    workingDir?: string;
-    execution?: SendToSessionExecutionOverrides;
-    requestReceipt?: boolean;
-    onAccepted?: () => void | Promise<void>;
-    onAcceptedRollback?: () => void | Promise<void>;
-    onAcceptedCommit?: () => void | Promise<void>;
-    origin?: AgentInputQueuedMessage['origin'];
-    autoReviewUserText?: { kind: 'delegated-continuation' };
-    authorizationGuard?: BotAuthorizationInputGuard;
-    createDefaults?: SendToSessionCreateDefaults;
-    inheritSourcePermissionMode?: boolean;
-    forceQueue?: boolean;
-    resumeWithStoredPermissionMode?: boolean;
-    sourcePlugin?: AgentInputQueuedMessage['sourcePlugin'];
-  }): Promise<SendToSessionInternalResult> {
+  async function sendToSessionInternal(
+    // 参数从 Base 派生，只额外加 requestReceipt：手写两份一定会漂移（Base 加字段、
+    // 这里没有 → `params.files` 报错；调用方多传字段 → excess property 报错）。
+    params: Parameters<typeof sendToSessionInternalBase>[0] & { requestReceipt?: boolean },
+  ): Promise<SendToSessionInternalResult> {
     if (!params.requestReceipt) return sendToSessionInternalBase(params);
     if (!params.targetSessionId) {
       return { ok: false, errorCode: 'INVALID_ARGS', message: 'request_receipt v1 supports existing sessions only; create mode dispatches its first message outside the durable input queue and cannot observe turn completion. Delegate tasks already return completion automatically.' };
@@ -11443,6 +11421,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     targetSessionId?: string;
     message: string;
     persistedContent?: string;
+    /** Host-managed images; attachment callers always use the durable queue. */
+    files?: AgentInputQueuedMessage['files'];
     clientId?: string;
     dispatcherSessionId?: string;
     title?: string;
@@ -11465,6 +11445,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     forceQueue?: boolean;
     /** Explicit target delivery preserves the recipient's current plan mode. */
     inheritTargetPlanMode?: boolean;
+    /** 宿主侧的派发前置校验（插件任务的目标队列/授权刷新）。 */
+    taskActionDeliveryGuard?: TaskActionDeliveryGuard;
     /** 插件任务派发的来源(只用于标签与 `[消息来源]`,不是权限判据,也不是 origin)。 */
     sourcePlugin?: AgentInputQueuedMessage['sourcePlugin'];
     /**
