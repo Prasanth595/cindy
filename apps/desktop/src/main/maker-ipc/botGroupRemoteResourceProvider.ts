@@ -319,7 +319,7 @@ export function registerBotGroupRemoteResourceProvider(service: () => BotGroupCh
       const scope = captureDataOwnerBroadcastScope();
       const result = await requireService().listGroups();
       if (!result.ok) refuse(result);
-      const groups = await visibleGroups(result.groups);
+      const groups = await visibleGroups(result.groups.filter(group => !group.archived));
       if (!isDataOwnerBroadcastScopeCurrent(scope)) throw new RemoteResourceRegistryError('NOT_FOUND', 'Account changed');
       const query = request.query?.trim().toLocaleLowerCase() ?? '';
       const matched = query

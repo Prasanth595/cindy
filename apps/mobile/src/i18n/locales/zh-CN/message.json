@@ -171,7 +171,9 @@
     "diffEditCount": "{{n}} 处编辑",
     "groupSentNamed": "从群聊「{{name}}」发送",
     "groupSent": "从群聊发送",
-    "sourceGroupId": "群聊 ID：{{id}}"
+    "sourceGroupId": "群聊 ID：{{id}}",
+    "selectText": "选择文字",
+    "you": "你"
   },
   "actions": {
     "attachmentsPrefix": "附件：{{names}}",
@@ -182,6 +184,9 @@
     "turnTokens": "{{tokens}} tokens"
   },
   "lightbox": {
+    "originalUnavailable": "原图暂不可用",
+    "retryOriginal": "重试原图",
+    "loadingOriginal": "正在加载原图…",
     "sourceMissing": "源图片已不在这台电脑上，请重新导入原文件。",
     "deviceOffline": "电脑尚未连接，请恢复连接后重试。",
     "cancelAnnotation": "取消标注",
@@ -237,7 +242,15 @@
     "sendingMessage": "发送中的消息：{{text}}",
     "uploadingAttachments": "附件上传中 {{uploaded}}/{{total}}",
     "delete": "删除",
-    "retry": "重试"
+    "retry": "重试",
+    "notSent": "未发送",
+    "imagesNotUploaded_one": "{{count}} 张图片没传上去",
+    "imagesNotUploaded_other": "{{count}} 张图片没传上去",
+    "waitingForComputer": "等电脑连上后发送",
+    "waitingForNetwork": "等网络恢复后发送",
+    "queued": "排队中",
+    "retryImage": "重新上传这张图片",
+    "waitingMessage": "等待发送的消息：{{text}}"
   },
   "systemCard": {
     "contextRebuild": {
@@ -291,6 +304,7 @@
     "agentSwitchLocation": "Agent 改到 {{device}} 运行",
     "agentSwitchLocationThisComputer": "Agent 改回这台电脑运行",
     "agentSwitchLocationOtherComputer": "Agent 改到另一台电脑运行",
+    "agentSwitchLocationQuotaRebalance": "这个账号的配额更该先用",
     "learnStarted": "技能学习已启动",
     "learnStartedBody": "蒸馏在电脑端后台进行，完成后请到电脑端查看并评审技能草案。",
     "learnFailed": "技能学习未能启动",

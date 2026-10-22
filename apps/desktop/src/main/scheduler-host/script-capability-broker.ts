@@ -229,7 +229,7 @@ export class SchedulerScriptCapabilityBroker implements ScriptCapabilityBroker {
       model,
       providerId: explicitProviderId ?? dynamicDefaultRoute?.providerId ?? null,
       effort: schedule.effort as DispatchEffort | undefined,
-      fastMode: !!schedule.fastMode,
+      fastMode: (schedule.fastMode ?? false),
       workingDir: schedule.workingDir ?? '',
       workspaceKind: 'project' as const,
       permissionMode: 'bypassPermissions' as const,

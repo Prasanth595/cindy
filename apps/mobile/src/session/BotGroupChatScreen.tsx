@@ -586,7 +586,7 @@ function BotGroupTimelineItem({
           {message.task ? <BotGroupTaskCard task={message.task} owned={member !== undefined && member.isOwned !== false}
             deviceId={member?.homeDeviceId || deviceId || ''} /> : null}
           {message.attachments?.length ? <BotGroupMessageAttachments messageId={message.id} attachments={message.attachments} align="left" onResolveRemoteMedia={resolveMedia} resolveServerMedia={resolveServerMedia} /> : null}
-          {message.content.trim() ? <BotGroupMarkdownText content={message.content} /> : null}
+          {message.content.trim() ? <BotGroupMarkdownText content={message.content} authorKind={message.authorKind} /> : null}
           <BotGroupHandoffFiles files={message.files} />
         </>}
     </View>

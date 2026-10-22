@@ -174,9 +174,15 @@ describe('downloadAttachments: 图片 → 媒体总仓', () => {
   });
 
   it('缓存命中的图片同样套 30MB 上限(升级前缓存可能存有超限图片)', async () => {
-    const bigPath = path.join(legacyDir, '..', `big-cached-${Date.now()}.png`);
-    fs.writeFileSync(bigPath, Buffer.alloc(MAX_FILE_SIZE + 1));
+    const bigPath = path.join(legacyDir, '..', `${path.basename(legacyDir)}-big-cached.png`);
     try {
+      // 生产入口只读 stat.size；保留真实文件检查，避免 Windows CI 写入 30MB 内容超时。
+      const fd = fs.openSync(bigPath, 'wx');
+      try {
+        fs.ftruncateSync(fd, MAX_FILE_SIZE + 1);
+      } finally {
+        fs.closeSync(fd);
+      }
       const media = makeMedia({
         getCachedImage: vi.fn(async () => ({ absPath: bigPath, url: CINDY_URL, mimeType: 'image/png' })),
       });

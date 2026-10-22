@@ -77,7 +77,7 @@ describe('orca remote worker host', () => {
   });
 
   it('reports its protocol version', () => {
-    expect(setup().host.caps()).toEqual({ version: ORCA_REMOTE_WORKER_VERSION });
+    expect(setup().host.caps()).toEqual({ version: ORCA_REMOTE_WORKER_VERSION, workerBridge: true });
   });
 
   it('opens a worker task stamped with the server-verified caller, ignoring payload claims', async () => {

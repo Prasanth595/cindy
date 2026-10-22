@@ -10,11 +10,13 @@
 export * from "./protocol.js";
 export * from "./allowlist.js";
 export * from "./client.js";
+export * from "./directPath.js";
 export * from "./transport.js";
 export * from "./invokeTransfer.js";
 export * from "./topics.js";
 export * from "./attachmentOssRef.js";
 export * from "./contactsSyncProtocol.js";
+export * from "./pluginSyncProtocol.js";
 export * from "./discordSchedulerProtocol.js";
 export * from "./remoteResources.js";
 export * from "./remoteDesktop.js";
@@ -49,13 +51,14 @@ export * from "./providerShareEnvelope.js";
 export * from "./providerGroup.js";
 export * from "./modelFavorites.js";
 export * from "./sessionListTransport.js";
-export * from './sessionMessageReuse.js';
+export * from "./sessionMessageReuse.js";
 
 export * from "./clipboardSync.js";
 export * from "./clipboardSyncFailure.js";
 export * from "./clipboardTransfer.js";
 
 export * from "./pluginOauth.js";
+export * from "./pluginSettings.js";
 export * from "./pluginAuthorization.js";
 export * from "./pluginSecretSubmission.js";
 export * from "./pluginConnectionSubmission.js";
@@ -67,4 +70,4 @@ export * from "./taskMigration.js";
 export * from "./remoteAgent.js";
 export * from "./orcaRemoteWorker.js";
 export * from "./companionCloud.js";
-export * from './pluginPages.js';
+export * from "./pluginPages.js";

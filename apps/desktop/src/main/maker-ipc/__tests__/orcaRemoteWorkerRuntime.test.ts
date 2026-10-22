@@ -159,7 +159,7 @@ describe('orca remote worker runtime', () => {
     expect(state.enqueued[0]).toMatchObject({
       clientId: 'c-1',
       durableDelivery: true,
-      text: '[From Orca Lead]\n转写这段访谈',
+      text: expect.stringContaining('[From Orca Lead]\n转写这段访谈'),
       origin: { kind: 'orca', senderLabel: 'Lead', displayText: '转写这段访谈' },
       createOpts: {
         agentKind: 'claude-code',
@@ -168,7 +168,7 @@ describe('orca remote worker runtime', () => {
         resumeSessionId: 'sdk-1',
       },
     });
-    expect((state.enqueued[0] as { text: string }).text).not.toContain('worker_id');
+    expect((state.enqueued[0] as { text: string }).text).toContain('worker_id for tool calls is worker-1');
     expect(runtime.hasPendingReport('proxy-1')).toBe(true);
   });
 
@@ -195,6 +195,164 @@ describe('orca remote worker runtime', () => {
 
     await runtime.pollNow();
     expect(deps.onTurnEnded).toHaveBeenCalledTimes(1);
+  });
+
+  // A manual bridge report must retire the same persisted poll identity, even before
+  // the first running poll; otherwise the next poll reopens running and reports twice.
+  it('retires a manual report before the first running poll without auto-reporting it again', async () => {
+    const { runtime, deps, state } = setup();
+    await runtime.dispatch({ proxySessionId: 'proxy-1', rawContent: 'report', clientId: 'c-1' });
+    await expect(runtime.captureReportSettlement('proxy-1', ['c-1'])()).resolves.toBe(true);
+    expect(deps.saveReport).toHaveBeenLastCalledWith('worker-1', null);
+    state.running = true;
+    await runtime.pollNow();
+    state.running = false;
+    state.receipts['c-1'] = 'accepted';
+    state.assistant = { id: 'msg-1', content: 'already reported' };
+    await runtime.pollNow();
+    expect(deps.onTurnStarted).not.toHaveBeenCalled();
+    expect(deps.onTurnEnded).not.toHaveBeenCalled();
+    expect(runtime.hasPendingReport('proxy-1')).toBe(false);
+  });
+
+  it('does not let an older manual report settle a newly dispatched task', async () => {
+    const { runtime } = setup();
+    await runtime.dispatch({ proxySessionId: 'proxy-1', rawContent: 'old', clientId: 'c-1' });
+    const settleOld = runtime.captureReportSettlement('proxy-1', ['c-1']);
+    await runtime.dispatch({ proxySessionId: 'proxy-1', rawContent: 'new', clientId: 'c-2' });
+    await expect(settleOld()).resolves.toBe(false);
+    expect(runtime.hasPendingReport('proxy-1')).toBe(true);
+  });
+
+  // Unit regression for the 2026-10-21 review: capture used to retire the whole A+B
+  // group when A reported after B was already queued. The older test captured before B.
+  // Public dispatch/settlement/poll must keep B's durable identity and deliver its result,
+  // including after track restores the saved pending record; no timers or real device IO.
+  it.each([false, true])('reports queued B after A reports, restored=%s', async (restore) => {
+    const { runtime, deps, state } = setup();
+    await runtime.dispatch({ proxySessionId: 'proxy-1', rawContent: 'A', clientId: 'a' });
+    state.receipts.a = 'accepted';
+    state.running = true;
+    await runtime.pollNow();
+    await runtime.dispatch({ proxySessionId: 'proxy-1', rawContent: 'B', clientId: 'b' });
+
+    await expect(runtime.captureReportSettlement('proxy-1', ['a'])()).resolves.toBe(false);
+    expect(state.receipts.b).toBe('pending');
+    expect(runtime.hasPendingReport('proxy-1')).toBe(true);
+    expect(deps.saveReport).toHaveBeenLastCalledWith('worker-1', {
+      clientIds: ['b'], baselineMessageId: 'msg-0',
+    });
+    if (restore) {
+      runtime.untrack('proxy-1');
+      runtime.track({ ...ref, pendingReport: { clientIds: ['b'], baselineMessageId: 'msg-0' } });
+    }
+    state.receipts.b = 'accepted';
+    state.running = false;
+    state.assistant = { id: 'result-b', content: 'B completed' };
+    await runtime.pollNow();
+    expect(deps.onTurnEnded).toHaveBeenCalledExactlyOnceWith('proxy-1', {
+      status: 'done', finalText: 'B completed',
+    });
+  });
+
+  it('waits for an in-flight running notification before settling a manual report', async () => {
+    const { runtime, deps, state } = setup();
+    let release!: () => void;
+    vi.mocked(deps.onTurnStarted).mockImplementationOnce(() => new Promise<void>(resolve => { release = resolve; }));
+    await runtime.dispatch({ proxySessionId: 'proxy-1', rawContent: 'report', clientId: 'c-1' });
+    state.running = true;
+    const poll = runtime.pollNow();
+    await vi.waitFor(() => expect(deps.onTurnStarted).toHaveBeenCalledTimes(1));
+    const settled = runtime.captureReportSettlement('proxy-1', ['c-1'])();
+    expect(runtime.hasPendingReport('proxy-1')).toBe(true);
+    release();
+    await poll;
+    await expect(settled).resolves.toBe(true);
+    expect(runtime.hasPendingReport('proxy-1')).toBe(false);
+  });
+
+  it('keeps automatic reporting when an older peer supplies no input identity', async () => {
+    const { runtime, deps, state } = setup();
+    await runtime.dispatch({ proxySessionId: 'proxy-1', rawContent: 'A', clientId: 'a' });
+    await expect(runtime.captureReportSettlement('proxy-1')()).resolves.toBe(false);
+    state.receipts.a = 'accepted';
+    state.assistant = { id: 'result-a', content: 'A completed' };
+    await runtime.pollNow();
+    expect(deps.onTurnEnded).toHaveBeenCalledExactlyOnceWith('proxy-1', {
+      status: 'done', finalText: 'A completed',
+    });
+  });
+
+  // The settlement save can overlap a new dispatch; its failed enqueue must not roll
+  // back to already reported A. Public dispatch/poll and persisted state are the contract.
+  it('does not resurrect reported A when B is prepared during settlement then rejected', async () => {
+    const { runtime, deps, state, invoke } = setup();
+    await runtime.dispatch({ proxySessionId: 'proxy-1', rawContent: 'A', clientId: 'a' });
+    let release!: () => void;
+    vi.mocked(deps.saveReport).mockImplementationOnce(() => new Promise<void>(resolve => { release = resolve; }));
+    const settle = runtime.captureReportSettlement('proxy-1', ['a'])();
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+    invoke.mockClear();
+    const dispatch = runtime.dispatch({
+      proxySessionId: 'proxy-1', rawContent: 'B', clientId: 'b',
+      beforeEnqueue: () => { throw new Error('B rejected'); },
+    }).catch((error: unknown) => error);
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith(ref.deviceId, 'local-db:sessions:get', ['remote-1']));
+    release();
+    await settle;
+    expect(await dispatch).toMatchObject({ message: 'B rejected' });
+    expect(runtime.hasPendingReport('proxy-1')).toBe(false);
+    expect(deps.saveReport).toHaveBeenLastCalledWith('worker-1', null, undefined);
+    state.receipts.a = 'accepted';
+    state.assistant = { id: 'result-a', content: 'already reported' };
+    await runtime.pollNow();
+    expect(deps.onTurnEnded).not.toHaveBeenCalled();
+  });
+
+  it('preserves automatic reporting when persisting manual settlement fails', async () => {
+    const { runtime, deps, state } = setup();
+    await runtime.dispatch({ proxySessionId: 'proxy-1', rawContent: 'report', clientId: 'c-1' });
+    vi.mocked(deps.saveReport).mockRejectedValueOnce(new Error('storage unavailable'));
+    await expect(runtime.captureReportSettlement('proxy-1', ['c-1'])()).rejects.toThrow('storage unavailable');
+    expect(runtime.hasPendingReport('proxy-1')).toBe(true);
+    state.receipts['c-1'] = 'accepted';
+    state.assistant = { id: 'msg-1', content: 'result' };
+    await runtime.pollNow();
+    expect(deps.onTurnEnded).toHaveBeenCalledTimes(1);
+  });
+
+  // The Team commit callback adds an asynchronous boundary to report retirement.
+  // Public dispatch/settlement/poll must preserve B prepared while that callback waits;
+  // the old save-only races did not exercise this boundary. Unit, no real IO/timers.
+  it('preserves B prepared while the Team settlement is waiting', async () => {
+    const { runtime, deps, invoke, state } = setup();
+    await runtime.dispatch({ proxySessionId: 'proxy-1', rawContent: 'A', clientId: 'a' });
+    let release!: () => void;
+    let entered!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const settle = runtime.captureReportSettlement('proxy-1', ['a'], async commit => {
+      entered(); await gate; await commit(true);
+    })();
+    try {
+      await started;
+      invoke.mockClear();
+      const dispatch = runtime.dispatch({ proxySessionId: 'proxy-1', rawContent: 'B', clientId: 'b' });
+      await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith(ref.deviceId, 'local-db:sessions:get', ['remote-1']));
+      release();
+      await expect(settle).resolves.toBe(false);
+      await dispatch;
+      expect(runtime.hasPendingReport('proxy-1')).toBe(true);
+      expect(deps.saveReport).toHaveBeenLastCalledWith('worker-1', {
+        clientIds: ['b'], baselineMessageId: 'msg-0',
+      }, undefined);
+      state.receipts.b = 'accepted';
+      state.assistant = { id: 'result-b', content: 'B completed' };
+      await runtime.pollNow();
+      expect(deps.onTurnEnded).toHaveBeenCalledExactlyOnceWith('proxy-1', {
+        status: 'done', finalText: 'B completed',
+      });
+    } finally { release(); await settle; }
   });
 
   it('keeps waiting while the message is still queued behind other input on the device', async () => {

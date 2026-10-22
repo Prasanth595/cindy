@@ -298,7 +298,8 @@ export function useDeviceProviders(deviceId?: string): UseDeviceProvidersResult 
       if (cancelled) return;
       if (event.status === 'loading') {
         retryGeneration = undefined;
-        // 保留上一份完整列表避免视觉跳变，但让模型选择逻辑等待同轮新快照。
+        // 配置刷新可保留显示快照；断链或账号切换必须立即清掉旧目录。
+        if (!event.retainDisplaySnapshot) setPayload(EMPTY_PAYLOAD);
         setOwnerDeviceId(deviceId);
         setLoading(true);
         setError(null);
@@ -418,4 +419,10 @@ export function evictDeviceProviders(
     ...(options?.retainDisplaySnapshot ? { retainDisplaySnapshot: true } : {}),
   });
   return deviceGen.get(deviceId)!;
+}
+
+/** 账号边界：缓存、在途读取及挂载中的旧账号目录一起失效。 */
+export function evictAllDeviceProviders(): void {
+  const devices = new Set([...cache.keys(), ...inflight.keys(), ...listeners.keys(), ...deviceGen.keys()]);
+  for (const deviceId of devices) evictDeviceProviders(deviceId);
 }

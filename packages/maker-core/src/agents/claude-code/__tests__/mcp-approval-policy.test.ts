@@ -1291,6 +1291,7 @@ describe('fail-closed still precedes the MCP policy', () => {
     const { handle, canUseTool, seen } = await startSession(() => 'auto-approve', {
       permissionMode: 'auto',
     });
+    expect(handle.getAutoReviewOwner?.()).toBe('cindy');
 
     const result = await canUseTool('mcp__cindy_browser__call_tool', {}, { toolUseID: 't-auto-trusted' });
 

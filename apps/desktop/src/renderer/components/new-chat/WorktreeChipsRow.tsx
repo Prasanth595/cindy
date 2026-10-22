@@ -416,8 +416,10 @@ function FolderChipBig({
 
 // ── [分支 │ ☑ worktree] 联合控件(对齐 Claude Code,2026-07-29 用户裁决) ──────
 
-function BranchWorktreeChip({
+export function BranchWorktreeChip({
   branchLabel,
+  branchDisplayLabel = branchLabel,
+  branchOnly = false,
   branches,
   branchesLoading,
   branchesFailed,
@@ -433,6 +435,9 @@ function BranchWorktreeChip({
   compact,
 }: {
   branchLabel: string;
+  /** Display text only; branchLabel remains the selection value. */
+  branchDisplayLabel?: string;
+  branchOnly?: boolean;
   branches: string[];
   branchesLoading: boolean;
   /** 上次分支列表请求失败(区分于"仓库没分支"),菜单给重试入口。 */
@@ -552,7 +557,7 @@ function BranchWorktreeChip({
       aria-label={t('newChat.branchChip.label')}
     >
       <GitBranch size={compact ? 12 : 15} className="shrink-0" />
-      <span className="min-w-0 truncate">{branchLabel}</span>
+      <span className="min-w-0 truncate" title={branchDisplayLabel}>{branchDisplayLabel}</span>
       {branchInteractive && (
         <ChevronDown
           size={12}
@@ -788,6 +793,7 @@ function BranchWorktreeChip({
       )}
     >
       {branchArea}
+      {!branchOnly && <>
       {/* 悬停激活任一半区时分隔线隐去,让 hover 填充看起来是一体的(对齐 Claude Code)。 */}
       <span
         aria-hidden
@@ -797,6 +803,7 @@ function BranchWorktreeChip({
         )}
       />
       {checkboxArea}
+      </>}
     </div>
   );
 }

@@ -56,7 +56,9 @@ function setup(agent: 'cc' | 'codex' | 'pi' = 'codex', role: string | null = 'wo
   } as unknown as ProviderView]);
   const persist = vi.fn(async () => {});
   const throwIpcError = (code: string, message: string): never => { throw new Error(`[${code}] ${message}`); };
+  const accept = vi.fn(() => 1);
   const bindings = {
+    acceptSessionRuntimeMutation: accept, broadcastSessionPatched: vi.fn(),
     maker: { getSession: () => live, closeSession: close }, agentSwitchPending: pending,
     hasSessionProvider: () => false, getSessionProvider: () => 'provider', normalizeSessionProviderId: (id: unknown) => id,
     dbToMakerAgentKind: () => agentKind, isSessionInTurn: () => false,
@@ -64,6 +66,8 @@ function setup(agent: 'cc' | 'codex' | 'pi' = 'codex', role: string | null = 'wo
     resolveVerifiedContextWindow, contextOverflowRolloverHolder: rollover,
     agentSwitchDeps: { onPendingSwitchChanged: vi.fn() }, projectPendingAgentSwitchIntent,
     wakeSessionInputAfterCredentialSwitch: vi.fn(), persistSessionFields: persist,
+    updateScheduledPreference: vi.fn(async () => {}),
+    isDeviceLinkInvoke: () => false, markRemoteSettingPersistedInsideHandler: vi.fn(),
     setSessionProvider: vi.fn(), setSessionEffort: vi.fn(), setSessionFastMode: vi.fn(), getSessionEffort: () => 'high',
     recordUserSessionRuntimeMutation: () => 1, broadcastSessionRuntimeProjection: async () => {},
     withRehydrateCloseSuppressed: async (_id: string, run: () => unknown) => run(), throwIpcError, log,
@@ -83,7 +87,10 @@ function setup(agent: 'cc' | 'codex' | 'pi' = 'codex', role: string | null = 'wo
     sameAgentSelection: true, targetAgentKind: agentKind, model: 'new', providerId: 'provider', effort: 'high', fastMode: false,
     ...(confirmedContextWindow !== undefined ? { confirmedContextWindow } : {}),
   } satisfies PendingAgentSwitchIntent, false);
-  return { state, stage, send: () => applyPendingAgentSwitchIfIdle(deps, 's1'),
+  const fallback = () => applyRemote({ sessionId: 's1', model: 'new', providerId: 'other',
+    atomicSelection: { effort: 'high', fastMode: true }, internalOptions: { source: 'fallback' }, runtimeStatus: row,
+    assertRuntimeOwnerCurrent, assertSharedTaskCurrent: { admit: vi.fn() }, supersededByOwnerBoundary: () => false });
+  return { state, stage, fallback, accept, send: () => applyPendingAgentSwitchIfIdle(deps, 's1'),
     readProviders, pending, runtime, close, rebuild, persist, rollover, assertRuntimeOwnerCurrent };
 }
 
@@ -182,4 +189,14 @@ describe('Orca remote-Agent window protection at send', () => {
     expect(h.runtime.setModel).not.toHaveBeenCalled();
     expect(h.persist).not.toHaveBeenCalled();
   });
+});
+
+it('applies same-location fallback to the remote runtime and retains its execution location', async () => {
+  const h = setup('codex', null);
+  expect(await h.fallback()).toMatchObject({ deferred: false, superseded: false });
+  expect(h.runtime.setModel).toHaveBeenCalledWith('new', { providerId: 'other', effort: 'high' });
+  expect(h.runtime.setFastMode).toHaveBeenCalledWith(true);
+  expect(h.persist).toHaveBeenCalledWith('s1', expect.objectContaining({ model: 'new', providerId: 'other' }));
+  expect(h.accept).toHaveBeenCalledWith(expect.objectContaining({ source: 'fallback',
+    profile: expect.objectContaining({ agentDeviceId: 'executor', providerId: 'other', model: 'new' }) }));
 });

@@ -1,5 +1,7 @@
+import { FORWARDED_REQUEST_RECEIPT } from '../../shared/forwardedRequest.js';
 import type { AutoReviewUserIntent } from '@cindy/maker-core';
 import {
+  PI_CACHE_RECOVERY_EXPECTATION,
   CodexResumePreparationBlockedError,
   AUTO_REVIEW_SOURCE_CONTENT,
   AUTO_REVIEW_USER_INTENT,
@@ -26,6 +28,7 @@ import {
   toDesktopSessionDispatchOutcome,
 } from '../maker-host/send-outcome.js';
 import { isCredentialModeSwitchBusyError } from '../maker-host/codex-credential-switch.js';
+import { ProviderGroupUsageLimitError } from '../provider-group/failurePolicy.js';
 import { routinePermissionSnapshot } from '../maker-host/routinePermission.js';
 import { throwIpcError } from '../utils/ipcValidate.js';
 import {
@@ -41,6 +44,7 @@ import {
 } from './mobileClientPromptNote.js';
 import { buildWireMessageSourceNote, readWireSourceDevice, readWireSourcePlugin } from './messageSourceNote.js';
 import { buildCindyMakeTaskNote } from '../cindy-make/taskNote.js';
+import { SIDE_CHAT_CONTEXT } from './sideChatContext.js';
 import { getResolvedMainLocale } from '../i18n.js';
 import { buildUiLanguageErrorNote, turnUiLanguageFromSendOpts } from './uiLanguageErrorNote.js';
 import type { RepeatableWireNotes, WireNotePlan } from './wireNoteMemory.js';
@@ -248,6 +252,7 @@ export function revokeTrustedDesktopQueuedOrigin(item: AgentInputQueuedMessage):
 }
 
 type MakerSendOptions = {
+  readonly [PI_CACHE_RECOVERY_EXPECTATION]?: import('@cindy/maker-core').SendOptions[typeof PI_CACHE_RECOVERY_EXPECTATION];
   /** Main-only live card guard, never serialized to queue history or provider options. */
   readonly [MCP_APP_MESSAGE_GUARD]?: McpAppMessageGuard;
   readonly [AUTO_REVIEW_DELEGATED_CONTINUATION]?: true;
@@ -297,6 +302,7 @@ type MakerSendOptions = {
    */
   sourceDevice?: MessageSourceDevice;
   persistUserMessage?: {
+    [FORWARDED_REQUEST_RECEIPT]?: AgentInputQueuedMessage['autoReviewUserText'];
     botTaskCoordination?: AgentInputQueuedMessage['botTaskCoordination'];
     sharedTaskAuthor?: AgentInputQueuedMessage['sharedTaskAuthor'];
     /** 插件来源(只写入 agentMeta.sourcePlugin 并生成 `[消息来源]`,不传给 maker-core)。 */
@@ -497,7 +503,8 @@ export interface MakerSendTransactionDeps {
    * 保留意图本次不动。undefined = 不启用(测试最小 harness)。`signal` 是这次发送的取消信号：
    * 供应商组在这里等原电脑恢复时，发送被停止就不再等、不再换电脑。
    */
-  applyPendingAgentSwitch?(sessionId: string, options?: { signal?: AbortSignal }): Promise<void>;
+  applyPendingAgentSwitch?(sessionId: string, options?: { signal?: AbortSignal; scheduled?: boolean; clientId?: string }): Promise<void>;
+  onModelDispatched?(sessionId: string, clientId: string): void;
   /**
    * 发送前换窗:必须在 getSession 之前。prepare 会关掉不健康的 live handle,
    * 随后本事务按空 session 走 lazy-create,避免 peek 之后对已关闭对象 send。
@@ -555,10 +562,20 @@ export interface MakerSendTransactionDeps {
    */
   readHostDeviceIdentity?(): MessageSourceHostDevice;
   /**
-   * 个人版制作任务(sessions.source='cindy-make')判定,由 host 按持久化来源现读。
-   * 命中时每轮把任务说明追加到 wire 用户消息(不落库、不显示),见 cindy-make/taskNote.ts。
+   * Host-owned task source, read from persistence. Scoped task instructions go only
+   * into the wire message; the composer and saved user text remain unchanged.
    */
-  isCindyMakeSession?(sessionId: string): Promise<boolean>;
+  readTaskSource?(sessionId: string): Promise<string | null>;
+  /**
+   * 伙伴私聊引用回复的 `[引用说明]`:按落库内容里的 `replyQuote` 从库里重读原消息;没有引用时为 null。
+   * 逐条都要带(陈述的是「本条」引用了什么),不进 wireNoteMemory 去重。
+   */
+  readReplyQuoteNote?(sessionId: string, persistedContent: string | undefined): Promise<string | null>;
+  /**
+   * 私聊话题的 `[话题说明]`(话题开在主对话的哪条消息上);不是私聊话题时为 null。
+   * 与 `[客户端说明]` 同层,只进 wire 消息。
+   */
+  readBotThreadNote?(sessionId: string): Promise<string | null>;
   /**
    * 逐轮环境说明去重(见 wireNoteMemory.ts):返回本轮真正要前置的段;与上一次已被
    * 引擎接受的内容相同的段不再重复。`force` 在交接首条(原生上下文刚重建)时整体重发。
@@ -580,6 +597,13 @@ export interface MakerSendTransaction {
     createOpts?: unknown,
     sendOpts?: unknown,
   ): Promise<DesktopMakerSendResult>;
+  /**
+   * Start the Agent runtime the next send would otherwise start lazily, using
+   * the same bootstrap path. `createOpts` must already be reconciled with the
+   * task row. Returns false when a runtime already exists or startup failed;
+   * the next send then follows its normal path.
+   */
+  prewarmSession(sessionId: string, createOpts: CreateOpts): Promise<boolean>;
 }
 
 type ResolveSessionResult =
@@ -587,6 +611,7 @@ type ResolveSessionResult =
   | { kind: 'failure'; result: DesktopMakerSendResult };
 
 function readPersistUserMessageOption(sendOpts: MakerSendOptions): {
+  [FORWARDED_REQUEST_RECEIPT]?: AgentInputQueuedMessage['autoReviewUserText'];
   botTaskCoordination?: AgentInputQueuedMessage['botTaskCoordination'];
   sharedTaskAuthor?: AgentInputQueuedMessage['sharedTaskAuthor'];
   sourcePlugin?: AgentInputQueuedMessage['sourcePlugin'];
@@ -610,6 +635,7 @@ function readPersistUserMessageOption(sendOpts: MakerSendOptions): {
   if (!persist || typeof persist.clientId !== 'string') return null;
   const sourcePlugin = readWireSourcePlugin(persist.sourcePlugin);
   return {
+    ...(persist[FORWARDED_REQUEST_RECEIPT] && typeof persist[FORWARDED_REQUEST_RECEIPT] === 'object' ? { [FORWARDED_REQUEST_RECEIPT]: persist[FORWARDED_REQUEST_RECEIPT] } : {}),
     ...(persist.botTaskCoordination ? { botTaskCoordination: persist.botTaskCoordination } : {}),
     ...(persist.sharedTaskAuthor ? { sharedTaskAuthor: persist.sharedTaskAuthor } : {}),
     ...(sourcePlugin ? { sourcePlugin } : {}),
@@ -881,6 +907,9 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
       });
       return { kind: 'session', session };
     } catch (err) {
+      // Let the input coordinator own verified group quota waits; generic host
+      // failure results would erase the structured reset time before it sees it.
+      if (err instanceof ProviderGroupUsageLimitError) throw err;
       if (isCredentialModeSwitchBusyError(err)) {
         // 不映射成 SESSION_RUNNING:那会命中输入协调器的静默无限重试(250ms 一次),
         // 用户看到消息永远排队(2026-07-03 实报)。CREDENTIAL_SWITCH_BUSY 由协调器
@@ -962,6 +991,8 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
       });
       return { kind: 'session', session: lazySess };
     } catch (err) {
+      // Same boundary as rehydrate: preserve the branded error and its reset data.
+      if (err instanceof ProviderGroupUsageLimitError) throw err;
       if (isCredentialModeSwitchBusyError(err)) {
         // 不映射成 SESSION_RUNNING:那会命中输入协调器的静默无限重试(250ms 一次),
         // 用户看到消息永远排队(2026-07-03 实报)。CREDENTIAL_SWITCH_BUSY 由协调器
@@ -1001,6 +1032,11 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
   }
 
   return {
+    async prewarmSession(sessionId, createOpts) {
+      if (deps.getSession(sessionId)) return false;
+      const lazy = await lazyCreateSession(sessionId, createOpts);
+      return lazy.kind === 'session';
+    },
     async sendToAgentAccepted(
       sessionId,
       message,
@@ -1016,9 +1052,18 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
       // session-agent-switch:pending 切换在发送时刻生效(用户语义:「消息真正发出
       // 去时才切」)。必须在 getSession 之前——apply 会 close 旧引擎的 live session,
       // 让下方走 lazy-create 按 DB 新值 spawn 新引擎。
+      const sendOrigin = requestedSendOpts.persistUserMessage?.origin ?? requestedSendOpts.origin;
+      const scheduled = !!sendOrigin && typeof sendOrigin === 'object' &&
+        (sendOrigin as { kind?: unknown }).kind === 'scheduler';
+      const rawClientId = requestedSendOpts.persistUserMessage?.clientId;
+      const clientId = typeof rawClientId === 'string' ? rawClientId : undefined;
       await deps.applyPendingAgentSwitch?.(
         sessionId,
-        requestedSendOpts.signal ? { signal: requestedSendOpts.signal } : undefined,
+        requestedSendOpts.signal || scheduled || clientId ? {
+          ...(requestedSendOpts.signal ? { signal: requestedSendOpts.signal } : {}),
+          ...(scheduled ? { scheduled: true } : {}),
+          ...(clientId ? { clientId } : {}),
+        } : undefined,
       );
       // 发送前的准备期间就被停止(如供应商组正在等原电脑恢复)：不再打开会话、不再派发，与 Session 在派发前
       // 收到取消是同一个结果，由调用方按「派发前取消」收尾。
@@ -1355,9 +1400,15 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
             },
           )
         : null;
-      const withSourceNote = messageSourceNote
-        ? prependNoteToWireUserMessage(withGoalInactiveNote as HandoffWireMessage, messageSourceNote)
+      const replyQuoteNote = isOrdinaryUserTurn
+        ? ((await deps.readReplyQuoteNote?.(sessionId, typeof reconcilePersistContent === 'string' ? reconcilePersistContent : undefined).catch(() => null)) ?? null)
+        : null;
+      const withReplyQuoteNote = replyQuoteNote
+        ? prependNoteToWireUserMessage(withGoalInactiveNote as HandoffWireMessage, replyQuoteNote)
         : withGoalInactiveNote;
+      const withSourceNote = messageSourceNote
+        ? prependNoteToWireUserMessage(withReplyQuoteNote as HandoffWireMessage, messageSourceNote)
+        : withReplyQuoteNote;
       // 客户端说明(远程设备):同样只进 wire payload,落库/显示内容(persistUserMessage.content)
       // 不含它。位置在交接段**之前** —— 交接正文自带「以下是用户的新消息」结束标记,
       // 排在它后面会让说明插到那句话之后(顺序推导同 agentHandoff.composeForkOriginHandoff:
@@ -1375,8 +1426,9 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
           })
         : null;
       // 个人版制作任务说明:与手机说明同层、同占位规则(原生命令必须留在消息开头)。
+      const taskSource = await deps.readTaskSource?.(sessionId);
       const cindyMakeNote =
-        (await deps.isCindyMakeSession?.(sessionId).catch(() => false)) === true &&
+        taskSource === 'cindy-make' &&
         allowsEnvironmentNotes
           ? buildCindyMakeTaskNote()
           : null;
@@ -1386,7 +1438,13 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
       // 这三段是"环境说明":同一原生上下文里内容没变就不重复发(wireNoteMemory)。交接首条
       // (原生上下文刚重建)整体重发;只有引擎接受后才记为已发送。斜杠命令轮次本来就不带
       // 说明,也不改写记忆——它不代表模型已经看过新的环境。
+      const botThreadNote = allowsEnvironmentNotes
+        ? ((await deps.readBotThreadNote?.(sessionId).catch(() => null)) ?? null)
+        : null;
       const repeatableNotes: RepeatableWireNotes = {
+        'side-chat': allowsEnvironmentNotes && taskSource === 'side-chat'
+          ? SIDE_CHAT_CONTEXT : null,
+        'bot-thread': botThreadNote,
         'client-environment': mobileClientNote,
         'cindy-make': cindyMakeNote,
         'ui-language': uiLanguageNote,
@@ -1404,6 +1462,12 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
       let outgoing = plannedNotes['ui-language']
         ? prependNoteToWireUserMessage(withCindyMakeNote as HandoffWireMessage, plannedNotes['ui-language'])
         : withCindyMakeNote;
+      if (plannedNotes['side-chat']) {
+        outgoing = prependNoteToWireUserMessage(outgoing as HandoffWireMessage, plannedNotes['side-chat']);
+      }
+      if (plannedNotes['bot-thread']) {
+        outgoing = prependNoteToWireUserMessage(outgoing as HandoffWireMessage, plannedNotes['bot-thread']);
+      }
       const appContext = shouldPrependMobileClientPromptNote(normalized, sess.agentKind)
         ? await mcpAppModelContext(sessionId)
         : undefined;
@@ -1605,6 +1669,10 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
         const retryTranscriptUserEntryId = sess.agentKind === 'pi' && so.retryUserClientId
           ? await deps.readPiUserEntry?.(sessionId, so.retryUserClientId)
           : undefined;
+        // Automatic cache replay replaces the native user entry without adding
+        // another Cindy row. Keep later manual Retry attached to the active entry.
+        const transcriptUserClientId = persistUserMessage?.clientId
+          ?? (so[PI_CACHE_RECOVERY_EXPECTATION] ? so.retryUserClientId : undefined);
         // Other-task mail is the only non-scheduler turn whose reply IM relays (channelTurnSignal).
         const sendResult = await withChannelTurnSource(sess.id, channelTurnSourceFor(
           persistUserMessage?.origin,
@@ -1650,6 +1718,7 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
           ...(so.toolsDisabled === true ? { toolsDisabled: true } : {}),
           turnAttemptToken: so.turnAttemptToken,
           signal: so.signal,
+          [PI_CACHE_RECOVERY_EXPECTATION]: so[PI_CACHE_RECOVERY_EXPECTATION],
           ...(so.onVendorTurnReserved ? { onTurnReserved: so.onVendorTurnReserved } : {}),
           // scheduler 排队消息:origin 打到本轮 turnOrigin(IM 转播识别自动 turn),
           // 与 runner 直发路径的 session.send({ origin }) 语义对齐。
@@ -1664,20 +1733,20 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
             ? { planMode: (createOpts as { planMode: boolean }).planMode }
             : {}),
           ...(sess.agentKind === 'pi' &&
-          persistUserMessage &&
+          transcriptUserClientId &&
           deps.linkPiUserEntry
             ? {
                 onTranscriptUserEntry: async (piEntryId: string) => {
                   try {
                     const linked = await deps.linkPiUserEntry?.(
                       sessionId,
-                      persistUserMessage.clientId,
+                      transcriptUserClientId,
                       piEntryId,
                     );
                     if (linked === false) {
                       deps.log.warn('send: Pi transcript entry target row missing', {
                         sessionId,
-                        clientId: persistUserMessage.clientId,
+                        clientId: transcriptUserClientId,
                         piEntryId,
                       });
                     }
@@ -1686,7 +1755,7 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
                     // 把发送结果翻成 rejected，避免 UI 重发同一条消息。
                     deps.log.warn('send: Pi transcript entry link failed (non-fatal)', {
                       sessionId,
-                      clientId: persistUserMessage.clientId,
+                      clientId: transcriptUserClientId,
                       piEntryId,
                       err: err instanceof Error ? err.message : String(err),
                     });
@@ -1719,7 +1788,9 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
                         ...(sourceDevice ? { sourceDevice } : {}),
                         ...(persistUserMessage.sourcePlugin ? { sourcePlugin: persistUserMessage.sourcePlugin } : {}),
                         uuid: so.messageUuid,
-                        ...(so.origin?.kind === 'scheduler'
+                        ...(persistUserMessage[FORWARDED_REQUEST_RECEIPT]
+                          ? { autoReviewUserText: persistUserMessage[FORWARDED_REQUEST_RECEIPT] }
+                          : so.origin?.kind === 'scheduler'
                           ? { autoReviewUserText: { kind: 'scheduled-continuation' } }
                           : so[AUTO_REVIEW_DELEGATED_CONTINUATION]
                             ? { autoReviewUserText: { kind: 'delegated-continuation' } }
@@ -1784,6 +1855,9 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
               );
             }
             deps.assertBeforeVendorDispatch?.(sessionId, finalFenceSendOpts);
+            if (persistUserMessage?.clientId) {
+              deps.onModelDispatched?.(sessionId, persistUserMessage.clientId);
+            }
             dispatchProductTurn?.();
             if (userPromptPreviewSessionId) {
               deps.dispatchUserPromptPreview?.(

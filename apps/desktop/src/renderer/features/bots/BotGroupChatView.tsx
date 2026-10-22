@@ -1,4 +1,6 @@
 import { RemoveChatFromListButton } from './RemoveChatFromListButton';
+import { useThreadPanelResize } from './useThreadPanelResize';
+import { cn } from '@/lib/utils';
 /**
  * 群聊页：顶栏（成员头像、群名、成员与负责人、此刻谁在做什么、群设置入口）+ 多作者时间线 +
  * 进行中条 + 输入框。
@@ -64,6 +66,7 @@ import { useRegisterContentHeader } from '../feature-context';
 import { BotGroupAvatarStack } from './BotGroupAvatars';
 import { botGroupAttachmentScope, refreshPendingBotGroupAttachments } from './botGroupAttachments';
 import { BotGroupComposer } from './BotGroupComposer';
+import { BotGroupThreadHint } from './BotGroupThreadHint';
 import { findThreadMessageElement, flashThreadTarget } from './BotGroupThreadViews';
 import {
   BotGroupHeaderStatusText,
@@ -558,17 +561,22 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
   const threadLayoutRef = useRef<HTMLDivElement>(null);
   const threadHeaderRef = useRef<HTMLDivElement>(null);
   const threadCloseAnimationRef = useRef<Animation | null>(null);
+  const threadOpenAnimationRef = useRef<Animation | null>(null);
+  const cancelThreadOpening = useCallback(() => threadOpenAnimationRef.current?.cancel(), []);
+  const threadResize = useThreadPanelResize(threadLayoutRef, threadRootId, cancelThreadOpening);
   const threadWasOpenRef = useRef(false);
   useLayoutEffect(() => {
     const opening = !!threadRootId && !threadWasOpenRef.current;
     threadWasOpenRef.current = !!threadRootId;
     if (!opening) return;
     const panel = threadLayoutRef.current?.querySelector('aside');
-    const animation = panel && animateThreadPanelWidth(panel, '0px', '50%');
+    const animation = panel && animateThreadPanelWidth(panel, '0px',
+      threadResize.width === undefined ? '50%' : `${threadResize.width}px`);
     if (!animation) return;
+    threadOpenAnimationRef.current = animation;
     void animation.finished.then(() => animation.cancel(), () => {});
     return () => animation.cancel();
-  }, [threadRootId]);
+  }, [threadRootId, threadResize.width]);
   const closeThread = useCallback(() => {
     if (threadCloseAnimationRef.current) return;
     const panel = threadLayoutRef.current?.querySelector('aside');
@@ -611,7 +619,8 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
 
   const settingsLabel = t('bots.groupChat.settings.open');
   const headerStatus = headerGroup ? botGroupHeaderStatus(headerGroup, displayName, t) : null;
-  const organizerBotId = headerGroup?.organizerBotId ?? null;
+  // A single-speaker group has no organizer: requests queue everyone or the named teammates.
+  const organizerBotId = headerGroup?.singleSpeaker ? null : headerGroup?.organizerBotId ?? null;
   const header = useMemo(() => {
     if (!headerGroup) return null;
     const names = botGroupMemberNames(members.map((member) => ({ name: botGroupMemberDisplayName(member) })), separator);
@@ -842,12 +851,13 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
     }
   };
 
-  const stopRound = async () => {
+  /** Stops your own work; owners and admins may choose `all` (bot-group-chat.md §4.4). */
+  const stopRound = async (scope?: 'all') => {
     const api = botGroupApi();
     if (!api || stopping) return;
     setStopping(true);
     try {
-      const result = await api.stopBotGroupRound(groupId);
+      const result = await (scope ? api.stopBotGroupRound(groupId, scope) : api.stopBotGroupRound(groupId));
       if (!result.ok) toast.error(t('bots.groupChat.composer.stopFailed'));
     } catch {
       toast.error(t('bots.groupChat.composer.stopFailed'));
@@ -1052,7 +1062,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
   const enterAfter = enterAfterRef.current;
 
   return (
-    <div ref={threadLayoutRef} className="flex h-full min-w-0 overflow-hidden">
+    <div ref={threadLayoutRef} className={cn('flex h-full min-w-0 overflow-hidden', threadResize.isDragging && 'select-none [&_*]:cursor-col-resize')}>
     <main
       className="relative flex h-full min-w-0 flex-1 flex-col overflow-hidden bg-[var(--surface)]"
       onDragEnter={(event) => {
@@ -1169,9 +1179,11 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
               </Fragment>
             );
           })}
-          {openPlan && followUp ? (
+          {openPlan && followUp && (openPlan.canManage ?? true) ? (
             <div className="mt-3">
               <BotGroupPlanFollowUpRow
+                talk={openPlan.kind === 'talk'}
+                plan={openPlan}
                 followUp={followUp}
                 members={members}
                 pending={followUpPending(pendingFor(openPlan.id))}
@@ -1195,6 +1207,14 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
           </div>
         </div>
       )}
+      {group.threads?.length && !sharing && !group.archived ? (
+        // Floats over the bottom of the timeline, at the column's right edge (bot-group-chat.md §10).
+        <div className="relative h-0 shrink-0 px-5">
+          <div className="pointer-events-none relative mx-auto h-0 w-full max-w-[760px] px-2">
+            <BotGroupThreadHint threads={group.threads} members={group.members} openRootId={threadRootId} onOpen={rootId => onOpenThread(rootId)} />
+          </div>
+        </div>
+      ) : null}
       {running && (runningStep || speakers.length > 0) && !sharing && !group.archived ? (
         <BotGroupProgressStrip
           key={runningStep ? `step:${runningStep.plan.id}:${runningStep.step.position}` : speakingKey}
@@ -1207,7 +1227,8 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
             })(),
           } : null}
           speakers={speakers}
-          onStop={() => void stopRound()}
+          onStop={scope => void stopRound(scope)}
+          canStopAll={!!group.canStopAll && !!group.round.othersActive}
           stopping={stopping}
         />
       ) : null}
@@ -1218,6 +1239,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
         members={group.members}
         running={running}
         planState={botGroupComposerPlanState(openPlan)}
+        divisionAvailable={!group.singleSpeaker}
         attachments={attachmentState}
         attachmentScope={attachmentScope}
         dragOver={dragOver}
@@ -1239,7 +1261,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
       ) : null}
     </main>
     {group.serverBacked && threadRootId && <ChatThreadPanel key={`${group.id}:${threadRootId}`} group={group} rootId={threadRootId} quoteSources={quoteSources}
-      focus={threadFocus} sharedReplies={sharedReplies} onRevealShare={revealMainMessage} onClose={closeThread} />}
+      focus={threadFocus} sharedReplies={sharedReplies} onRevealShare={revealMainMessage} onClose={closeThread} resize={threadResize} />}
     </div>
   );
 }

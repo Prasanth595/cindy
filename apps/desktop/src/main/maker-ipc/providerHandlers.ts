@@ -360,6 +360,8 @@ export interface ProviderHandlerDeps {
     ok: boolean;
     reason?: string;
     rollbackCredentials?: () => boolean;
+    /** Required account-state commit. False or failure must roll credentials back. */
+    commitAccountCapabilities?: () => Promise<boolean>;
     /** Publish identity/model changes only after the login is accepted, outside rollback. */
     afterCommit?: () => Promise<void>;
   }>;
@@ -635,6 +637,7 @@ export function registerProviderHandlers(
   deps: ProviderHandlerDeps,
 ): void {
   const oauthMutationGeneration = new Map<string, symbol>();
+  const acceptingOAuthGenerations = new Set<symbol>();
   const beginOAuthMutation = (providerId: string): symbol => {
     // Unique token avoids ABA when a completed entry is deleted and the same provider starts again.
     const generation = Symbol(providerId);
@@ -682,6 +685,7 @@ export function registerProviderHandlers(
   };
   const cancelOwnedProviderOAuth = (owner: ProviderOAuthOwner): void => {
     if (!isOAuthMutationCurrent(owner.providerId, owner.generation)) return;
+    if (acceptingOAuthGenerations.has(owner.generation)) return;
     const cancellationGeneration = beginOAuthMutation(owner.providerId);
     try {
       deps.oauthCancel(owner.providerId);
@@ -2795,6 +2799,20 @@ export function registerProviderHandlers(
         });
         if (isOAuthMutationCurrent(id, generation)) {
           if (result.ok) {
+            if (result.commitAccountCapabilities) {
+              // Credentials are installed: close cancellation before committing their
+              // capabilities so cancellation cannot split the accepted account state.
+              acceptingOAuthGenerations.add(generation);
+              let committed = false;
+              try { committed = await result.commitAccountCapabilities(); } catch { /* Roll back below. */ }
+              if (!committed) {
+                if (!result.rollbackCredentials?.()) {
+                  finishRouteMutation.commit?.();
+                  throwIpcError('INTERNAL', 'failed to restore credentials after account capability update');
+                }
+                return { ok: false, reason: 'login_cancelled' };
+              }
+            }
             finishRouteMutation.commit?.();
             try {
               await result.afterCommit?.();
@@ -2819,6 +2837,7 @@ export function registerProviderHandlers(
         if (isIpcError(err)) throw err;
         throwIpcError('INVALID_PARAMS', err instanceof Error ? err.message : String(err));
       } finally {
+        acceptingOAuthGenerations.delete(generation);
         if (codexHostPrepared) deps.cancelCodexCustomProviderHostChange?.();
         if (ownerId && owner) removeProviderOAuthOwner(ownerId, sender ?? undefined, owner);
         finishOAuthMutation(id, generation);
@@ -2933,6 +2952,8 @@ export function registerProviderHandlers(
         if (owner) cancelOwnedProviderOAuth(owner);
         return { ok: true };
       }
+      const currentGeneration = oauthMutationGeneration.get(id);
+      if (currentGeneration && acceptingOAuthGenerations.has(currentGeneration)) return { ok: true };
       clearProviderOAuthOwners(id);
       const generation = beginOAuthMutation(id);
       try {

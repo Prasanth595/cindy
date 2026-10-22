@@ -169,6 +169,7 @@ export function BotGroupComposer({
   running,
   disabled = false,
   planState = null,
+  divisionAvailable = true,
   attachments: attachmentState = NO_ATTACHMENTS,
   attachmentScope = '',
   dragOver = false,
@@ -192,6 +193,8 @@ export function BotGroupComposer({
   disabled?: boolean;
   /** The group's open plan, for placeholders and the 「安排分工」 gate. */
   planState?: BotGroupComposerPlanState | null;
+  /** False when the server arranges turns itself: the lead splits work when asked (§7). */
+  divisionAvailable?: boolean;
   attachments?: BotGroupComposerAttachments;
   /** Scope for writing annotated images before send (see botGroupAttachmentScope). */
   attachmentScope?: string;
@@ -504,7 +507,7 @@ export function BotGroupComposer({
       : planState?.kind === 'proposed'
         ? t('bots.groupChat.composer.placeholderPlanProposed')
         : planState?.kind === 'running' && planState.botName
-          ? t('bots.groupChat.composer.placeholderPlanRunning', { name: planState.botName })
+          ? t(planState.talk ? 'bots.groupChat.composer.placeholderQueueRunning' : 'bots.groupChat.composer.placeholderPlanRunning', { name: planState.botName })
           : planState?.kind === 'waiting' && planState.stepDone && planState.botName
             ? t('bots.groupChat.composer.placeholderPlanWaiting', { name: planState.botName })
             : t('bots.groupChat.composer.placeholder');
@@ -664,7 +667,7 @@ export function BotGroupComposer({
                       {t('extraDirs.addFiles')}
                     </span>
                   </DropdownMenuItem>
-                  <DropdownMenuItem
+                  {divisionAvailable ? <DropdownMenuItem
                     disabled={divisionBlocked}
                     className={cn(MENU_ITEM_CLASS, 'h-auto items-start gap-2.5 py-2')}
                     onSelect={() => {
@@ -685,7 +688,7 @@ export function BotGroupComposer({
                         )}
                       </span>
                     </span>
-                  </DropdownMenuItem>
+                  </DropdownMenuItem> : null}
                 </DropdownMenuContent>
               </DropdownMenu>
               </>)}

@@ -49,6 +49,7 @@ import {
   type ProjectScope,
 } from '../../../../shared/projectKeys';
 import type { RemoteProjectMachineIdentity } from './remoteProjectIdentity';
+import { getProvisionalDraftTaskId } from './provisionalDraftTaskId';
 
 export { deviceLinkProjectKey, normalizeProjectKey, projectKeyComparisonKey, projectIdentityKey };
 
@@ -596,7 +597,9 @@ export function groupSessions(
     const dir = normalizeWorkingDir(s.workingDir);
     const noPhysicalMessages = (s._count?.messages ?? 0) === 0;
     const isOrcaLead = isOrcaLeadSession(s);
-    const isAutoPlacedSession = s.source === 'scheduler' || s.source === 'plugin';
+    // 新建页里正在输入、还没发送的任务：已经选好项目，就放在那个项目下。
+    const isAutoPlacedSession =
+      s.source === 'scheduler' || s.source === 'plugin' || s.id === getProvisionalDraftTaskId();
     if (
       dir == null ||
       (!options.includeDraftsInProjects &&

@@ -198,3 +198,36 @@ describe('GhostRuntime · 状态机', () => {
     expect(runtime.stateOf('_ns__acme__helper')).toBe('running');
   });
 });
+
+// PR #6569: a resident plugin can still be loading when sync calls spawn again.
+// Existing tests used immediately-loaded sandboxes; these deferred loads exercise
+// the production readiness boundary and stale-handle rejection without real waits (unit).
+it.each(['ready', 'failed', 'replaced'] as const)('waits for the same sandbox load before delivery: %s', async (outcome) => {
+  const loads: Array<{ resolve(): void; reject(error: Error): void }> = [];
+  const runtime = new GhostRuntime({ adapter: { create: () => {
+    const handle = new FakeHandle();
+    handle.load = () => new Promise<void>((resolve, reject) => { loads.push({ resolve, reject }); });
+    return handle;
+  } } });
+  const first = runtime.spawn(chipGhost());
+  expect(await runtime.spawn(chipGhost())).toEqual({ ok: true, state: 'starting' });
+  let delivered = false;
+  const readiness = runtime.waitUntilRunning('demo').then(ready => { delivered = ready; return ready; });
+  await Promise.resolve();
+  expect(delivered).toBe(false);
+  if (outcome === 'replaced') {
+    runtime.stop('demo');
+    const replacement = runtime.spawn(chipGhost());
+    loads[0].resolve(); await first;
+    expect(await readiness).toBe(false);
+    expect(runtime.stateOf('demo')).toBe('starting');
+    loads[1].resolve(); await replacement;
+    expect(await runtime.waitUntilRunning('demo')).toBe(true);
+  } else {
+    if (outcome === 'failed') loads[0].reject(new Error('load failed'));
+    else loads[0].resolve();
+    await first;
+    expect(await readiness).toBe(outcome === 'ready');
+  }
+  runtime.destroyAll();
+});

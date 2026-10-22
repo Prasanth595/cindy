@@ -119,6 +119,7 @@ export type ResolveRemoteMediaFn = (
     front?: boolean;
     signal?: AbortSignal;
     forceRefresh?: boolean;
+    /** 不新建取件;与 front 同用可提升已有排队项。 */
     cachedOnly?: boolean;
   },
 ) => Promise<MobileResolvedRemoteMedia>;

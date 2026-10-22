@@ -626,6 +626,9 @@ export function ModelAdvancedDrawer({
       return model?.efforts.includes(effort) || model?.displayEfforts?.includes(effort);
     }),
   );
+  const ultrafastSupport = chatAgents.includes('codex')
+    ? row.byAgent.codex?.supportsUltrafastMode
+    : false;
   /**
    * 推理强度的存储是 per (agent, provider, model) 的。这里按显示轴同一条哲学
    * **一次写该模型全部可用引擎** —— 用户在这个面板里选的是「这个模型默认想多用力」,
@@ -865,6 +868,14 @@ export function ModelAdvancedDrawer({
                       <SegmentedControl
                         className="mt-1"
                         fullWidth
+                        // Six translated labels exceed a details column. Keep every
+                        // level visible instead of hiding Ultra in horizontal overflow.
+                        style={shownEfforts.length > 4 ? {
+                          display: 'grid',
+                          gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
+                          borderRadius: 'var(--radius-xl)',
+                        } : undefined}
+                        optionClassName={shownEfforts.length > 4 ? '!min-w-0 px-1' : undefined}
                         height={32}
                         optionHeight={24}
                         aria-label={t('settings.providers.models.advanced.defaultEffort')}
@@ -1242,6 +1253,14 @@ export function ModelAdvancedDrawer({
                         state={primaryModel.supportsFastMode}
                         label={t(
                           `settings.providers.models.advanced.${primaryModel.supportsFastMode === true ? 'supported' : primaryModel.supportsFastMode === false ? 'unsupported' : 'undeclared'}`,
+                        )}
+                      />
+                    </Row>
+                    <Row label={t('newChat.modelSelector.speed.ultrafast')} muted>
+                      <CapabilityValue
+                        state={ultrafastSupport}
+                        label={t(
+                          `settings.providers.models.advanced.${ultrafastSupport === true ? 'supported' : ultrafastSupport === false ? 'unsupported' : 'undeclared'}`,
                         )}
                       />
                     </Row>

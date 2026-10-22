@@ -13,6 +13,7 @@
 - **iOS 优先**,触控优先,跟随系统 light / dark 自动切换(`useColorScheme`)。
 - **灰度环境**:除品牌 teal(就绪态)、Heart Orange(运行/thinking 态)和已登记的 Beta 渠道红色状态徽标外,界面全是黑白之间的灰阶。不引入任何品牌蓝 / 绿 / 红等装饰色。
   - 唯一的个性化例外:用户在设置里主动选择的「我的消息气泡颜色」,只染用户自己的消息气泡,默认仍是灰阶;规则见根规范 `DESIGN.md`「Personal message bubble colors」。
+  - 模型选择器的账号额度条沿用桌面语义：剩余 ≥30% 用 `textSecondary`，10% < 剩余 <30% 用 `quotaBarWarn`，剩余 ≤10% 用 `quotaBarCrit`。额度专用语义在根规范 `DESIGN.md` §2 / §10 登记，不借用房主皇冠或任务错误 token。颜色只用于额度条，百分比文字继续保留；iOS / Android 共用真实比例绘制，不设置最小填充长度，0% 留空。
 - **圆角走四档阶梯**(与 `src/theme/tokens.ts` 的 `radius` 一致,守护测试拦截阶梯外值):`micro`(4,缩略图内 chip、勾选指示器等微元素)/ `control`(8,卡片内层控件)/ `container`(12,卡片 / 容器)/ `pill`(9999,交互元素)。**禁止**阶梯外中间值(0 / 3 / 6 / 28 等)与字面量圆角。根规范 `docs/design-rules/DESIGN.md` §5 的三档制约束的是桌面 surface;其「Mobile」节明确把 §15.13 / §16 之外的 mobile 布局细节委托给 `apps/mobile` 的实现,mobile 圆角阶梯以 `tokens.ts` 为准。
 - **默认零阴影**:层次靠背景色差 + 1px 边框。2026-09-27 用户明确要求的局部例外：首页主菜单抽屉（含伙伴入口）用右侧容器圆角与柔和投影，颜色走 homeDrawerShadow，外壳承载阴影、内层裁切内容；不扩展到页面卡片或任务列表侧栏，见 DESIGN.md §6。
 - **字重克制**:按角色用 400 / 500 / 600(见 §3「字重与字色按角色搭配」)。**UI chrome 无 700+**。唯一例外是根规范 `docs/design-rules/DESIGN.md` §3「排版豁免登记表」已登记的域——原生 Markdown strong(`src/session/MessageRenderer.tsx` 的 `markdownStrong` → `fontWeight.bold`)与登录品牌画布(`app/(auth)/login.tsx`、`src/components/LoginSkinControls.tsx`、`src/auth/loginSkinLayout.ts`)。这些是用户内容语义与品牌画布,不算 chrome;chrome 本身的上限仍是 600。
@@ -47,6 +48,8 @@
 | `homeListFab` | `#0F0F0F` | `#E6E6E6` | 素雅新建对话 FAB:dark 比 cta 略收,避免主入口在深底上过跳 |
 | `statusReady` | `#19D2C1` | `#19D2C1` | 就绪 / 在线点(品牌 teal,**语义不变**) |
 | `statusAccent` | `#EA6B17` | `#EA6B17` | 运行 / thinking + 完全访问权限(Heart Orange,**语义不变**) |
+| `quotaBarWarn` | `#F3A115` | `#F3A115` | 账号额度条剩余不足 30%、高于 10% 的填充，其他用途不复用 |
+| `quotaBarCrit` | `#D91F37` | `#D91F37` | 账号额度条剩余不超过 10% 的填充，其他用途不复用 |
 | `betaChannelBadgeBackground` | `#DF0C27` | `#DF0C27` | Beta 渠道开关已打开时,当前版本旁的状态徽标底色 |
 | `betaChannelBadgeForeground` | `#FFFFFF` | `#FFFFFF` | Beta 渠道状态徽标文字,与底色对比度 4.98:1 |
 | `permAutoAccent` | `#417CDD` | `#417CDD` | 自动审批权限模式强调 |
@@ -190,6 +193,17 @@
 
 文本 / 卡片 / 分隔线目前仍在各屏重复定义——这是已知优化点(见执行计划),新代码尽量收敛、不要再新增一份同义样式。
 
+### 设置类分组:说明文字写在卡片外(2026-10-19 用户定稿)
+
+设置页及其二级页统一用 `src/session/SettingsGroupRows.tsx` 的 `SettingsGroup`。对齐 iOS Section footer / Android 列表辅助文字:
+
+- **卡片里只放「名称 + 取值 / 开关 / 箭头」**。成句的说明写在分组下方的 `footer`(13/18 400 `textSecondary`);操作结果、权限被拒、保存失败等临时提示走 `messages`,接在说明后面。行组件不提供 `hint` / `detail`。
+- **一组只配一段说明**。同组几行各需说明时拆成几个分组。
+- **点不了的入口不摆出来**:检查更新等当前不可用的动作直接不显示,原因写进 footer,不留灰按钮加解释。
+- 原地执行的动作行(检查更新、清空日志)传 `chevron={false}`,只有进入子页 / 外链的行画箭头。
+- 例外:列表条目自身的元数据(如词典别名)和录入流程里紧贴控件的步骤状态,可以留在行内。
+- **「+」面板里的表单(开启协同 / 创建 Worker 等 `ContextSheet*`)同一规则**:`ContextSheetGroup` 的 `footer` 承载说明与校验提示(报错传 `footerTone="error"`),`ContextSheetRow` 用 `value` 放右侧取值、不再把说明塞进行内 `detail`;iOS 下拉行自带行名、分段控件选项自明,分组不再加标题(Android 药丸没有行名,保留分组标题);底部主按钮撑满宽度。iOS 上「+」面板的分组标题用 13/18 600 `textTertiary`(系统默认分组标题在新版 iOS 是大号粗体,由 `ComposerSectionSettingsHeader` 统一换掉);面板底与卡片保持系统玻璃样式,不改实色,以免丢掉原生 sheet 的玻璃过渡动画。
+
 ### 主题接入模式(强制)
 
 样式随主题变化,**不能再用模块级静态 `StyleSheet.create`**。统一两种写法:
@@ -277,6 +291,16 @@ iOS 新增与改造界面遵循 [iOS 原生界面规范](../../../docs/design-ru
   平分,次要在左、主操作在右;次要按钮用 `surfaceChip` 填充不加描边。不要在卡片里写 `textAlign: 'left'` 的按钮。
 - **动效**:新消息与卡片用 `CompanionEntering` / `CompanionFadeIn`(RN `Animated`,原生驱动,只动 opacity /
   transform,系统减弱动效时静止);工作中用 `CompanionPresenceRing` + `ThinkingDots`,不另写循环动画。
+
+### 待发送气泡（2026-10-21 定稿，任务与伙伴私聊共用）
+
+`PendingSendBubble` 是自己刚发出、还没被确认的消息。稿件：`Designs/cindy/send-bubble`（选定 B 方案）。
+
+- **一直是实色**：点发送当帧上屏，与正式气泡同款；网络往返、排队、等电脑都不变灰。只有「正在下方输入框编辑」时淡化。
+- **状态只放两处**：气泡左侧图标（转圈 = 发送中 / 上传中，队列图标 = 排队中，时钟 = 等电脑或网络，红色感叹号 `statusError` = 失败），以及气泡下方那一行。送达后正式消息的「复制 / …」占的就是这一行，所以前后行高不变、列表不跳。
+- **本机刚发出的消息**：0.6 秒内不出任何状态，慢了才淡入转圈；入场上浮一次，确认时不重播。
+- **下方那一行**：排队中「排队中 | 插话 编辑 取消」；失败「未发送 | 重试 删除」，有具体原因时原因写在下面；等待「等电脑连上后发送 | 取消」。文字 13/18，按钮命中区补到 44。报错文字保持黑白（`errorText`），只有左侧图标是红色。
+- **带图**：每张图自己转圈；只有那张没传上去的图上显示重传按钮。
 
 ## 5. 间距 / 圆角 / 触控 / 安全区
 

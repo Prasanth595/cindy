@@ -2,6 +2,10 @@ import { useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { useConfirmDialog } from '@/components/ui/confirm-dialog-provider';
+import {
+  archiveConfirmDescription,
+  loadActiveBoundScheduleNames,
+} from '@/features/scheduler/lib/archiveScheduleWarning';
 import { useSessionRunningStatus } from '@/hooks/useSessionRunningStatus';
 import type { Session } from '@/lib/ccAgent.types';
 import { createLogger } from '@/lib/logger';
@@ -74,16 +78,19 @@ export function useSessionHardwareTaskActions({
       toast.warning(t('ccAgent.sidebar.archiveBlocked.attached'));
       return;
     }
+    const scheduleNames =
+      (await loadActiveBoundScheduleNames([{ id: sessionId, deviceLinkDeviceId }])).get(
+        sessionId,
+      ) ?? [];
     // 预检与确认期间保留当前任务，确定归档后再隐藏并跳离。
     const preflight = await resolveWorktreeRemovalPreflight(sessionId, deviceLinkDeviceId);
-    if (preflight !== 'clean') {
+    if (preflight !== 'clean' || scheduleNames.length > 0) {
       const ok = await confirmDialog({
         title: t('ccAgent.sidebar.confirmArchive.title'),
-        description:
-          t('ccAgent.sidebar.confirmArchive.description') +
-          (preflight === 'dirty'
-            ? ' ' + t('ccAgent.sidebar.confirmArchive.dirtyWorktreeWarning')
-            : ''),
+        description: archiveConfirmDescription(t, {
+          dirtyWorktree: preflight === 'dirty',
+          scheduleNames,
+        }),
         confirmText: t('ccAgent.sidebar.confirmArchive.confirm'),
         cancelText: t('ccAgent.sidebar.confirmArchive.cancel'),
       });

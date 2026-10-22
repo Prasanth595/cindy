@@ -144,14 +144,14 @@ export function buildDeferredRuntimeSelectionProfile<
   agentKind: TAgent;
   model: string;
   providerId: string | null;
-  atomicSelection?: { effort: TEffort; fastMode: boolean } | null;
-  currentFastMode: boolean;
+  atomicSelection?: { effort: TEffort; fastMode: boolean | 'ultrafast' } | null;
+  currentFastMode: boolean | 'ultrafast';
 }): {
   agentKind: TAgent;
   model: string;
   providerId: string | null;
   effort: TEffort | null;
-  fastMode: boolean;
+  fastMode: boolean | 'ultrafast';
 } {
   return {
     agentKind: input.agentKind,
@@ -187,13 +187,13 @@ export interface UserRuntimeModelSwitchPlan {
   outcome: UserRuntimeModelSwitchOutcome;
   skipRebuild: boolean;
   reason?: 'remote-shrink-rebuild';
-  selection: { effort: string | null; fastMode: boolean };
+  selection: { effort: string | null; fastMode: boolean | 'ultrafast' };
   pendingProfile: {
     agentKind: string;
     model: string;
     providerId: string | null;
     effort: string | null;
-    fastMode: boolean;
+    fastMode: boolean | 'ultrafast';
   };
 }
 
@@ -205,14 +205,14 @@ export function planUserRuntimeModelSwitch(input: {
   agentKind: string;
   model: string;
   providerId: string | null;
-  currentFastMode: boolean;
+  currentFastMode: boolean | 'ultrafast';
   gate: RuntimeModelSwitchGateInput;
-  selection?: { effort: string | null; fastMode: boolean };
+  selection?: { effort: string | null; fastMode: boolean | 'ultrafast' };
   click?: {
     efforts: readonly string[];
     effort: string;
     fastSupported: boolean;
-    requestedFast: boolean;
+    requestedFast: boolean | 'ultrafast';
   };
 }): UserRuntimeModelSwitchPlan {
   const selection =

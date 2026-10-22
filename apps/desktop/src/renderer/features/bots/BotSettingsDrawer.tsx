@@ -10,6 +10,7 @@ import { BotSettings } from './BotsHomeView';
 import { useBotProfiles } from './botStore';
 import { useCompanionCloud } from './companionCloudStore';
 import { isBotChannelLaneSession } from './botGroupLane';
+import { BOT_DM_THREAD_PARAM } from './botDmThreadRoute';
 import { useRemoteBots } from './useRemoteBots';
 import { RemoteBotSettings } from './RemoteBotSettings';
 
@@ -39,9 +40,11 @@ export function BotSettingsDrawer() {
 
   const requestedPage = searchParams.get('settingsPage');
   const initialPage = requestedPage === 'memory' || requestedPage === 'capabilities' ? requestedPage : 'home';
-  // 「模型」「消息平台」只有本机伙伴有; 远端伙伴仍只认上面两页。
+  // 「模型」「语音」「消息平台」只有本机伙伴有; 远端伙伴仍只认上面两页。
   const localInitialPage =
-    requestedPage === 'model' || requestedPage === 'channels' ? requestedPage : initialPage;
+    requestedPage === 'model' || requestedPage === 'voice' || requestedPage === 'channels'
+      ? requestedPage
+      : initialPage;
   const allowNavigation = useRef(false);
   const pendingGuard = useRef<Promise<boolean> | null>(null);
   const beforeCloseRef = useRef<(() => Promise<boolean>) | null>(null);
@@ -166,7 +169,9 @@ export function BotSettingsDrawer() {
                     const route =
                       projection?.kind === 'history'
                         ? `/bots/${bot.id}/history/${sessionId}`
-                        : `/bots/${bot.id}/session/${sessionId}`;
+                        : projection?.kind === 'thread' && projection.threadRoot
+                          ? `/bots/${bot.id}/session/${projection.threadRoot.rootSessionId}?${BOT_DM_THREAD_PARAM}=${sessionId}`
+                          : `/bots/${bot.id}/session/${sessionId}`;
                     navigate(route, { state: searchJump ? { searchJump } : undefined });
                   }}
                 />

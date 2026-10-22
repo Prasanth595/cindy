@@ -446,6 +446,7 @@ import { cindyGhostSchemePrivilege } from './cindy-brain/runtime/electronSandbox
 import { fetchReleaseNotes, fetchReleaseNotesIndex } from './releaseNotesService';
 import { resolveWorkspacePathCached, resolveWorkspacePathBatchCached } from './pathResolver';
 import { registerLocalDbIpc } from './localDb/ipc/registerAll';
+import { listRecentWorkdirs } from './localDb/ipc/recentWorkdirs';
 import { getActiveCatalog } from './maker-host/active-catalog';
 import { resolveSessionContextWindow } from '../shared/sessionContextWindow';
 import { resumeDeletedPiSubagentCleanup } from './localDb/ipc/sessions';
@@ -556,6 +557,8 @@ import {
 import { initNotificationService, showDeviceSessionDesktopEvent } from './notificationService';
 import { initWecomGroupNotificationIpc } from './wecomGroupNotification';
 import { getAgentIslandService, initAgentIslandService } from './agent-island/service.js';
+import { setCompanionAvatarResolver } from './agent-island/companionIdentity.js';
+import { companionAvatarCache } from './companion-cloud/avatarCacheHost.js';
 import { attachWorkLouderCodexWindowReveal } from './worklouder-codex/index.js';
 import {
   disposeInputDevices,
@@ -640,7 +643,7 @@ import { reconcileSavepointRefsForDeletedSessions } from './git-snapshot/savepoi
 import { registerGitContextIpc, disposeGitContext } from './git-context';
 import { registerGitReviewDeviceOp, registerGitReviewIpc } from './git-review';
 import { registerProjectOrderIpc } from './projectOrderStore';
-import { registerSidebarSettingsIpc } from './sidebarSettingsStore';
+import { registerSidebarSettingsIpc, loadSidebarSettingsSnapshot, setLocalMainViewHidden } from './sidebarSettingsStore';
 import { registerModelVisibilityOwnerClaimIpc } from './maker-host/model-visibility-owner-claim.js';
 import { registerRemotePrecreatedWorktreeLedgerIpc } from './remotePrecreatedWorktreeLedger';
 import { registerTerminalHandlers } from './maker-ipc/terminal-handlers';
@@ -667,7 +670,7 @@ import { rehydrateCloseSuppression } from './maker-host/rehydrateCloseSuppressio
 import {
   builtInSkillDescriptors,
 } from './maker-host/built-in-skills.js';
-import { isCindyLearnSkillEnabled } from './skillhub/activationPreferences';
+import { isCindyLearnSkillEnabled, isCindyLearnSkillEnabledForCommandListing } from './skillhub/activationPreferences';
 // Maker Core 一阶段重构（新链路）—— 静态 import 避免 dynamic import 触发 vite chunking
 // 让 imageProtocol 等需要 app.ready 前注册的模块跑在错误时机。getMaker() 是 lazy 的，
 // 静态 import 不会触发 Maker / Agent 的实例化。
@@ -749,15 +752,11 @@ import { ResourceUsageWindowController } from './resource-usage-window/controlle
 import { createResourceUsageWindow } from './resource-usage-window/window.js';
 import { registerResourceUsageWindowIpc } from './resource-usage-window/ipc.js';
 import { isResourceUsageOpenSender } from './resource-usage-window/open-sender.js';
-import { GhostPanelWindowsController } from './ghost-panel-window/controller.js';
-import { createGhostPanelWindow } from './ghost-panel-window/window.js';
-import { registerGhostPanelWindowIpc } from './ghost-panel-window/ipc.js';
-import {
-  patchGhostPanelWindowEntry,
-  readGhostPanelWindowsSettings,
-  removeGhostPanelWindowEntry,
-  resetGhostPanelWindowSettingsForStartup,
-} from './ghost-panel-window/settings-store.js';
+import { SidebarTabWindowsController } from './sidebar-tab-window/controller.js';
+import { resolveWindowBoundsNearPoint } from './windowBounds.js';
+import { createSidebarTabWindow } from './sidebar-tab-window/window.js';
+import { registerSidebarTabWindowIpc } from './sidebar-tab-window/ipc.js';
+import { hasAssignedBotWorkbenchTab, setRightSidebarTabsChangeBroadcaster } from './localDb/ipc/rightSidebarTabs.js';
 import {
   readRsbWindowSettings,
   resetRsbWindowSettingsForStartup,
@@ -765,8 +764,13 @@ import {
 } from './right-sidebar-window/settings-store.js';
 import {
   anySessionInTurn,
+  allowBotWorkbenchPendingPermission,
   applyCodexSpawnConfigChangeWithRestart,
   clearDeferredCodexRestartForOwnerBoundary,
+  restoreUsageLimitWaits,
+  suspendUsageLimitWaits,
+  flushUsageLimitWaits,
+  reconcileScheduledUsageLimitWaits,
   scheduleDeferredCodexRestart,
   clearWorkingDirectoryRecoveryForOwnerBoundary,
   collectAgentInputQueueScanTexts,
@@ -974,9 +978,11 @@ import {
 } from './secondary-windows.js';
 import {
   beginSessionDragPreview,
+  beginSidebarTabDragPreview,
   consumeNativeSessionDragOpenResult,
   disposeSessionDragPreview,
   endSessionDragPreview,
+  endSidebarTabDragPreview,
   prewarmSessionDragReleaseHelper,
 } from './session-drag-preview.js';
 import {
@@ -1111,24 +1117,25 @@ import {
   getGhostManager,
   getGhostSessionActivityTracker,
   interruptGhostCallsForAccountBoundary,
-  isGhostAvailableForActiveSession,
   reconcileGhostOauthAccountsForActiveOwner,
   refreshGhostLocalization,
   refreshPluginUsageBindings,
   registerGhostIpc,
+  setRemotePluginManagementServices,
   runStableOwnerPostCommitTask,
   setGhostNodeRuntimeStartAttemptContextReader,
-  setGhostsChangedObserver,
   suspendAllGhosts,
   waitForGhostMutations,
 } from './cindy-brain/index.js';
-import { installedGhostStoragePart } from '../shared/pluginIdentity.js';
 import { setCodexImageAuthBinding } from './cindy-brain/codexImageAuthBinding.js';
+import { configureMailAttachmentHost } from './cindy-brain/mailAttachmentUpload.js';
+import { writeTempFile, materializeDirectSendOssAttachments } from './maker-ipc/normalizeAttachments.js';
 import { listActiveClaudeBackgroundActivitySessions } from './maker-host/claude-session-background-activity.js';
 import { registerRelaunchBusyActivityIpc } from './relaunchBusyActivityIpc.js';
 import { getGhostSetupChangeBus } from './cindy-brain/ghostSetupChangeBus.js';
 import { getGhostSetupInteractionBridge } from './cindy-brain/ghostSetupInteractionBridge.js';
-import { registerPluginMarketIpc, syncDefaultMarketPlugins } from './plugin-market/registerIpc.js';
+import { registerPluginMarketIpc, syncDefaultMarketPlugins, refreshForegroundMarketPlugins } from './plugin-market/registerIpc.js';
+import { getPluginMarketService } from './plugin-market/service.js';
 import { StableOwnerPostCommitStep } from './stableOwnerPostCommit.js';
 import { registerPluginPublisherIpc } from './plugin-publisher/registerIpc.js';
 import { findCindyFileInArgv } from './cindy-brain/argv.js';
@@ -1283,6 +1290,8 @@ async function attemptStartSchedulerOnce(): Promise<void> {
   }
   const automationGitBaselineHooks = createAutomationUserTurnGitBaselineHooks();
   try {
+    await restoreUsageLimitWaits();
+    if (getGoalTeardownGeneration() !== goalGenBefore) return;
     const scheduler = await startScheduler({
       maker,
       getDb: () => getDbClient().drizzle,
@@ -1308,6 +1317,10 @@ async function attemptStartSchedulerOnce(): Promise<void> {
     // 内通过 registerScheduleHandlers() 提前挂好,handler 内部 awaitReady 等本行
     // setSchedulerReady 调用。
     if (!_scheduleIpcRegistered.has(scheduler)) {
+      scheduler.on('changed', event => {
+        void reconcileScheduledUsageLimitWaits(event.scheduleId).catch(error =>
+          console.warn('[usage-limit] schedule reconciliation failed', error));
+      });
       attachSchedulerEventListeners(scheduler, getScheduleStorage());
       registerProjectAutomationIpc(getProjectAutomationLoader());
       _scheduleIpcRegistered.add(scheduler);
@@ -1910,7 +1923,9 @@ async function teardownAuthAccountBoundary(reason: string): Promise<void> {
     // 等 relogin 后的 setSchedulerReady 喂入**新实例**(与 worker bug #1 的 relogin
     // 路径同构,这里关掉 teardown 路径的对偶窗口)。
     // 不 reject _pending — 让在途请求继续等下次 setSchedulerReady,30s 超时兜底。
+    suspendUsageLimitWaits();
     resetSchedulerReady();
+    await flushUsageLimitWaits();
     agentIslandService = getAgentIslandService();
     agentIslandService?.resetRuntimeState();
     // ② 再停旧 scheduler。scheduler 持有旧 user 的 storage drizzle 引用,必须在
@@ -2291,44 +2306,41 @@ const rsbWindowController = new RsbWindowController({
 registerRsbWindowIpc({
   controller: rsbWindowController,
   getMainWindow: () => mainWindowRef,
+  allowBotWorkbenchPermission: allowBotWorkbenchPendingPermission,
+  authorizePoppedWorkbench: async (sender, botId) => {
+    const slot = sidebarTabWindowsController.slotForSender(sender);
+    if (!slot?.visible) return false;
+    const assignment = slot.assignment;
+    if (!assignment?.sessionId || assignment.context.remoteHostId !== null) return false;
+    const owner = await resolveRsbHostContextFromSession(assignment.sessionId);
+    if (owner?.botOwner?.botId !== botId || !owner.botOwner.canonical || owner.remoteHostId !== null) return false;
+    const hasTab = await hasAssignedBotWorkbenchTab(assignment.sessionId, assignment.tabs.map((tab) => tab.tabId), botId);
+    return hasTab && slot.visible && slot.assignment === assignment &&
+      sidebarTabWindowsController.slotForSender(sender) === slot;
+  },
 });
 
-// ── 插件停靠面板独立窗口(ghost panel window)────────────────────────────
-// 每 ghostId 一扇窗:PanelChrome「独立窗口」按钮 → setDetached(id, true) 开窗,
-// 主窗布局树里该 pane 停止渲染(树不动);关窗/合并即回停靠。装/卸/启停广播
-// 经 setGhostsChangedObserver 喂 reconcile,失去资格的窗口即时收掉。
-// deps 同样全 lazy(isQuitting 声明在后),状态机见 ghost-panel-window/controller.ts。
-resetGhostPanelWindowSettingsForStartup();
-const ghostPanelWindowsController = new GhostPanelWindowsController({
-  settings: {
-    read: readGhostPanelWindowsSettings,
-    patchEntry: patchGhostPanelWindowEntry,
-    removeEntry: removeGhostPanelWindowEntry,
-  },
-  createWindow: (ghostId) => {
-    const ghost = getGhostManager()
-      .list()
-      .find((g) => installedGhostStoragePart(g) === ghostId);
-    const title = ghost?.manifest.panel?.title ?? ghost?.manifest.name ?? ghostId;
-    return createGhostPanelWindow(ghostId, title);
-  },
-  isGhostDetachable: (ghostId) => {
-    const ghost = getGhostManager()
-      .list()
-      .find((g) => installedGhostStoragePart(g) === ghostId);
-    return (
-      ghost !== undefined &&
-      ghost.enabled !== false &&
-      ghost.manifest.panel !== undefined &&
-      ghost.manifest.panel.position !== 'tab' &&
-      isGhostAvailableForActiveSession(ghostId)
+
+// ── 右侧栏单页签独立窗口(sidebar tab window)────────────────────────────
+// 每个弹出的页签一扇窗:侧栏「在独立窗口中打开」→ open(request);主窗侧栏把该
+// 页签从投影里隐藏(数据仍在它的桶 / SQLite),弹出窗口按同一会话水合后只渲染这
+// 一个页签。关窗 / 合并 / 崩溃 → notifyTabReturned 交回主窗。状态机见
+// sidebar-tab-window/controller.ts。deps 同样全 lazy(isQuitting 声明在后)。
+const sidebarTabWindowsController = new SidebarTabWindowsController({
+  createWindow: (cascadeIndex) => createSidebarTabWindow(cascadeIndex),
+  // 拖出窗口松手弹窗:窗口的标题栏落在松手点附近,整窗保持在所在显示器可见范围内。
+  positionWindow: (win, point) => {
+    const bounds = win.getBounds();
+    const workArea = screen.getDisplayNearestPoint(point).workArea;
+    win.setBounds(
+      resolveWindowBoundsNearPoint(point, { width: bounds.width, height: bounds.height }, workArea),
     );
   },
   broadcastState: (state) => {
     for (const win of BrowserWindow.getAllWindows()) {
       if (win.isDestroyed()) continue;
       try {
-        win.webContents.send(MAKER_PUSH.GHOST_PANEL_WINDOW_STATE_CHANGED, state);
+        win.webContents.send(MAKER_PUSH.SIDEBAR_TAB_WINDOW_STATE_CHANGED, state);
       } catch {
         // window torn down mid-broadcast — ignore
       }
@@ -2341,10 +2353,33 @@ const ghostPanelWindowsController = new GhostPanelWindowsController({
       /* ignore */
     }
   },
+  notifyTabReturned: (payload) => {
+    const main = mainWindowRef;
+    if (!main || main.isDestroyed()) return;
+    try {
+      main.webContents.send(MAKER_PUSH.SIDEBAR_TAB_WINDOW_TAB_RETURNED, payload);
+    } catch {
+      /* main window torn down */
+    }
+  },
   isQuitting: () => isQuitting,
-  log: createLogger('ghost-panel-window-controller'),
+  log: createLogger('sidebar-tab-window-controller'),
 });
-registerGhostPanelWindowIpc(ghostPanelWindowsController);
+registerSidebarTabWindowIpc({
+  controller: sidebarTabWindowsController,
+  getMainWindow: () => mainWindowRef,
+});
+// 同一会话的页签同时活在主窗与弹出窗口时,一方落库后通知其它 renderer 刷新。
+setRightSidebarTabsChangeBroadcaster((sessionId, senderWebContentsId) => {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed() || win.webContents.id === senderWebContentsId) continue;
+    try {
+      win.webContents.send(MAKER_PUSH.RIGHT_SIDEBAR_TABS_CHANGED, { sessionId });
+    } catch {
+      /* window torn down mid-broadcast */
+    }
+  }
+});
 
 // ── 资源监视器辅助窗口 ──────────────────────────────────────────────
 // 单实例轻量辅助窗口:顶部菜单「资源监视器」→ open()。不需要 detach/attach 偏好、
@@ -2382,10 +2417,6 @@ const remoteDesktopViewerWindows = new RemoteDesktopViewerWindows((sender) =>
 );
 remoteDesktopViewerWindows.register();
 
-setGhostsChangedObserver((ghosts) => {
-  ghostPanelWindowsController.reconcile(ghosts);
-});
-
 const rsbBrowserRegistry = getRsbBrowserBridge();
 registerRsbNativePopupSurfaceIpc(rsbBrowserRegistry);
 registerRsbBrowserBridgeIpc({
@@ -2408,7 +2439,13 @@ setRsbPopupOpenerReportSubscriber((listener) =>
 // popup 路由目标 host 动态解析:异步等待(归属反查 / deferred URL 捕获)期间用户
 // detach 侧边栏或切视图后,捕获时的 hostContents 已过时 —— 发送时刻按当前宿主
 // 形态解析(与 tab-op bridge 同一来源),消息才能落到活着的订阅者。
-setRsbPopupHostResolver(() => rsbWindowController.getHostWebContents());
+// 弹出到独立页签窗口的浏览器页签,guest 挂在那扇窗口的 renderer 上:popup 与快捷键转发
+// 回到它(捕获时的 host 仍是页签窗口就保持),不被改投给整栏侧栏宿主。
+setRsbPopupHostResolver((capturedHost) =>
+  sidebarTabWindowsController.slotForSender(capturedHost)
+    ? capturedHost
+    : rsbWindowController.getHostWebContents(),
+);
 // Tab-op result handler for the main → renderer request/response bridge —
 // RsbWebviewBackend (Phase 3) uses this to drive `open` / `focus` / `close`
 // against the renderer's RSB store.
@@ -2425,7 +2462,13 @@ registerTabOpResultHandler({
 // `mainWindowRef`, assigned later in `createMainWindow`). `ensureHost` lets
 // an automation tab-op pop the sidebar window first when the user prefers
 // detached mode but has the window closed.
-setMainWindowAccessorForBackend(() => rsbWindowController.getHostWebContents());
+// 按页签路由:被弹出到独立窗口的页签由那扇窗口的 renderer 承载,带 tabId 的
+// tab-op(focus / close / ensure)必须落到它的 store;其余(open / probe)仍走侧栏宿主。
+setMainWindowAccessorForBackend((op) => {
+  const tabId = op && 'tabId' in op && typeof op.tabId === 'string' ? op.tabId : null;
+  const popped = tabId ? sidebarTabWindowsController.getWebContentsForTab(tabId) : null;
+  return popped ?? rsbWindowController.getHostWebContents();
+});
 setEnsureHostForBackend((sessionId) => rsbWindowController.ensureOpenForAutomation({ sessionId }));
 setIsDetachedForBackend(() => readRsbWindowSettings().detached);
 setBrowserSessionUploadRootResolver(async (sessionId) => {
@@ -2470,6 +2513,22 @@ setCodexImageAuthBinding({
   getAuth: getChatgptBridgeAuth,
   onAuthFailure: invalidateChatgptBridgeAuth,
 });
+configureMailAttachmentHost({ writeTempFile, materializeDirectSendOssAttachments });
+setRemotePluginManagementServices({
+  isRelayOnline: () => getDeviceLinkStatus() === 'online',
+  listProjects: listRecentWorkdirs,
+  sidebar: {
+    read: id => !loadSidebarSettingsSnapshot().hiddenMainViewGhostIds.includes(id),
+    write: async (id, visible, assertCurrent) => { await setLocalMainViewHidden(id, !visible, assertCurrent); },
+  },
+  market: {
+    snapshot: () => getPluginMarketService().snapshot({ discoveryOnly: true }),
+    detail: id => getPluginMarketService().detail(id),
+    install: async (id, options, prompt, assertCurrent, assertScope) => {
+      await getPluginMarketService().install(id, options, { consent: { prompt, initiator: 'user' }, assertCurrent, assertScope });
+    },
+  },
+});
 registerGhostIpc();
 registerPluginMarketIpc();
 registerPluginPublisherIpc();
@@ -2478,7 +2537,8 @@ setAppSessionCommitBoundaryHook(() => {
   cancelClaudeCliLogin();
   clearAllSessionAttention();
   remoteDesktopViewerWindows.reset();
-  ghostPanelWindowsController.closeForOwnerChange();
+  // 弹出的页签窗口带着旧 owner 的任务指派与 renderer 本地页签缓存:同步销毁,不让新 owner 看到旧内容。
+  sidebarTabWindowsController.destroyAllWindows();
   clearAllSessionProviders();
   clearAllSessionRuntimeAxes();
   clearAllSessionRuntimeControlStates();
@@ -2492,6 +2552,12 @@ const builtinPostCommitStep = new StableOwnerPostCommitStep({
 // the entire batch (catalog/auth/locks included), not the lifetime of a write.
 const marketPostCommitStep = new StableOwnerPostCommitStep({
   name: 'plugin-market', timeoutMs: 180_000,
+  warn: (message, meta) => ownerBackgroundLog.warn(message, meta),
+});
+// A lightweight catalog request must not occupy the full maintenance slot.
+// The service still coalesces catalog fetches and any overlapping full writes.
+const foregroundMarketPostCommitStep = new StableOwnerPostCommitStep({
+  name: 'plugin-market-foreground', timeoutMs: 180_000,
   warn: (message, meta) => ownerBackgroundLog.warn(message, meta),
 });
 const oauthPostCommitStep = new StableOwnerPostCommitStep({
@@ -2520,7 +2586,7 @@ authManager.setStableOwnerPostCommitTask(async ({ reason, scopeKey, dataOwnerId 
   let deferred = false;
   const marketOutcome = await marketPostCommitStep.run(scopeKey, async () => {
     if (!isCurrent()) return 'deferred';
-    return syncDefaultMarketPlugins();
+    return syncDefaultMarketPlugins('owner-ready');
   });
   if (!isCurrent()) return 'deferred';
   if (marketOutcome === 'failed') needsRetry = true;
@@ -3037,7 +3103,7 @@ ipcMain.handle('app-menu:set-locale', (_event, locale: unknown): { ok: true } =>
   resourceUsageWindowController.setLocale(currentApplicationMenuLocale);
   remoteDesktopViewerWindows.setLocale(currentApplicationMenuLocale);
   rsbWindowController.setLocale(currentApplicationMenuLocale);
-  ghostPanelWindowsController.setLocale(currentApplicationMenuLocale);
+  sidebarTabWindowsController.setLocale(currentApplicationMenuLocale);
   refreshGhostLocalization();
   const mainWindow = mainWindowRef && !mainWindowRef.isDestroyed() ? mainWindowRef : null;
   if (mainWindow) {
@@ -3538,7 +3604,7 @@ app.on('browser-window-focus', (_event, win) => {
   const focusedAppContent = isAppContentWindow(win);
   syncAppFocusState();
   if (focusedAppContent) {
-    syncPluginMarketForActiveOwner(30_000);
+    syncPluginMarketForActiveOwner(30_000, 'foreground');
     // OAuth and system settings may complete outside Cindy. Focus is a
     // metadata-only fallback wake-up: each pending plugin is re-assessed, but
     // no stored value crosses the change bus.
@@ -3941,7 +4007,7 @@ const createWindow = () => {
     resourceUsageWindowController.destroyWindow();
     remoteDesktopViewerWindows.reset();
     rsbWindowController.destroyWindow();
-    ghostPanelWindowsController.destroyAllWindows();
+    sidebarTabWindowsController.destroyAllWindows();
     if (mainWindowRef === mainWindow) mainWindowRef = null;
     setDeepLinkMainWindow(null);
   });
@@ -4077,9 +4143,10 @@ const createWindow = () => {
         currentApplicationMenuLocale ?? getPreferredApplicationLocale(),
       );
       remoteDesktopViewerWindows.prewarm();
-      // 右侧栏子窗口预热:复刻资源用量窗口模式,主窗口可见后后台创建
-      // 隐藏 BrowserWindow 并加载轻量 renderer,后续 detach 点击仅 show+focus。
-      rsbWindowController.prewarm();
+      // 侧栏「弹出」已改为按页签弹出(sidebar tab window):预热一扇未指派的隐藏
+      // 窗口,弹出时直接指派 → 首份内容 → show。整栏子窗口(rsbWindowController)
+      // 不再有用户入口,不再预热,避免启动期多养一个隐藏 renderer。
+      sidebarTabWindowsController.prewarm();
       // 插件面板保持按需创建：分离状态不跨重启恢复，多实例也不在启动期全量预热。
     }, 1_500);
     resourceUsagePrewarmTimer.unref?.();
@@ -4252,6 +4319,8 @@ let disposeProviderAccessAuthListener: (() => void) | null = null;
 let pluginMarketSyncInFlightScope: string | null = null;
 let lastPluginMarketSyncScope: string | null = null;
 let lastPluginMarketSyncAt = 0;
+let lastPluginMarketForegroundScope: string | null = null;
+let lastPluginMarketForegroundAt = 0;
 let pluginMarketPeriodicSyncTimer: ReturnType<typeof setInterval> | null = null;
 const PLUGIN_MARKET_PERIODIC_SYNC_MS = 30 * 60 * 1000;
 
@@ -4304,21 +4373,31 @@ function checkDatabaseSizeWarningAtStartup(): void {
 }
 
 /** Run market discovery and automatic updates for the current stable owner. */
-function syncPluginMarketForActiveOwner(minIntervalMs = 0): void {
+function syncPluginMarketForActiveOwner(minIntervalMs = 0, trigger: 'foreground' | 'resume' | 'periodic' = 'periodic'): void {
   const session = getActiveAppSession();
   if (!session.dataOwnerId || isAppSessionBoundaryPending()) return;
   const scope = activeOwnerScopeKey();
+  if (trigger === 'foreground') {
+    if (scope === lastPluginMarketForegroundScope && Date.now() - lastPluginMarketForegroundAt < minIntervalMs) return;
+    void foregroundMarketPostCommitStep.run(scope, async () => {
+      if (isAppSessionBoundaryPending() || activeOwnerScopeKey() !== scope) return 'deferred';
+      lastPluginMarketForegroundScope = scope;
+      lastPluginMarketForegroundAt = Date.now();
+      return refreshForegroundMarketPlugins();
+    });
+    return;
+  }
   if (scope === pluginMarketSyncInFlightScope) return;
   const now = Date.now();
   if (scope === lastPluginMarketSyncScope && now - lastPluginMarketSyncAt < minIntervalMs) {
     return;
   }
   pluginMarketSyncInFlightScope = scope;
-  lastPluginMarketSyncScope = scope;
-  lastPluginMarketSyncAt = now;
   void marketPostCommitStep.run(scope, async () => {
     if (isAppSessionBoundaryPending() || activeOwnerScopeKey() !== scope) return 'deferred';
-    return syncDefaultMarketPlugins();
+    lastPluginMarketSyncScope = scope;
+    lastPluginMarketSyncAt = Date.now();
+    return syncDefaultMarketPlugins(trigger);
   }).finally(() => {
     if (pluginMarketSyncInFlightScope === scope) pluginMarketSyncInFlightScope = null;
   });
@@ -4429,6 +4508,7 @@ const registerIpcHandlers = () => {
     feishuIm,
   });
   initWecomGroupNotificationIpc();
+  setCompanionAvatarResolver((request) => companionAvatarCache.resolve(request));
   initAgentIslandService({
     // The relay waits for native done before checking the durable result handoff.
     isCompletionHandledByTeammate,
@@ -4531,6 +4611,26 @@ const registerIpcHandlers = () => {
       );
     },
   );
+
+  // 右侧栏页签拖出窗口的窗外预览卡:与任务拖出同一扇预览窗口,只是没有原生 mouse-up 协调。
+  ipcMain.handle(
+    MAKER_IPC_INVOKE.SIDEBAR_TAB_DRAG_PREVIEW_START,
+    (event, labelRaw: unknown, paletteRaw: unknown) => {
+      assertTrustedAppRendererEvent(event);
+      if (typeof labelRaw !== 'string') throwIpcError('INVALID_PARAMS', 'label required');
+      const palette = parseSessionDragPreviewPalette(paletteRaw);
+      if (!palette) throwIpcError('INVALID_PARAMS', 'invalid drag preview palette');
+      const sourceWindow = BrowserWindow.fromWebContents(event.sender);
+      if (!sourceWindow || sourceWindow.isDestroyed()) return;
+      beginSidebarTabDragPreview(sourceWindow, truncateSessionDragPreviewLabel(labelRaw), palette);
+    },
+  );
+  ipcMain.on(MAKER_SEND.SIDEBAR_TAB_DRAG_PREVIEW_END, (event) => {
+    if (!isTrustedAppRendererEvent(event)) return;
+    const sourceWindow = BrowserWindow.fromWebContents(event.sender);
+    if (!sourceWindow || sourceWindow.isDestroyed()) return;
+    endSidebarTabDragPreview(sourceWindow);
+  });
 
   ipcMain.on(MAKER_SEND.SESSION_DRAG_PREVIEW_END, (event, dragEndAtMsRaw: unknown) => {
     // Fire-and-forget callers cannot receive an IPC error. Drop stale or
@@ -6060,6 +6160,7 @@ const registerIpcHandlers = () => {
   //    资料直写 auth-server,头像经 oss-server 预签名直传) ──
 
   const profileEditLog = createLogger('profileEdit');
+  const publicUploadLog = createLogger('serverApiClient:public-upload');
   const profileEditDeps: profileEdit.ProfileEditDeps = {
     getCurrentUserId: () => authManager.getCurrentUserId(),
     getAccountScopeKey: activeOwnerScopeKey,
@@ -6083,6 +6184,7 @@ const registerIpcHandlers = () => {
           fetchImpl: (input, init) => net.fetch(input, init),
           getBaseUrl: () => getClientEndpoint('ossApiBaseUrl'),
           getToken: () => authManager.getAccessToken(),
+          onError: (stage, message) => publicUploadLog.warn('avatar upload failed', stage, message),
         },
         { scene: 'avatar', contentType: mimeType, body: buffer },
       );
@@ -6272,6 +6374,7 @@ const registerIpcHandlers = () => {
         getGoalController,
         getLearnController,
         isLearnEnabled: isCindyLearnSkillEnabled,
+        isLearnEnabledForListing: isCindyLearnSkillEnabledForCommandListing,
         remoteInvoke: (deviceId, channel, args) =>
           deviceLinkHandleInvoke(deviceLinkIpcDeps(), deviceId, channel, args),
       });
@@ -6898,6 +7001,7 @@ const registerIpcHandlers = () => {
   );
 
   registerSkillhubIpc({
+    remoteIsRelayOnline: () => getDeviceLinkStatus() === 'online',
     getMaker: getMakerCore,
     getManagedSkillRoots: () => getGhostManager().managedRootDirs(),
     getBuiltInSkills: () => builtInSkillDescriptors(
@@ -9772,7 +9876,7 @@ app.on('ready', async () => {
     authCredentialRecovery.request();
     authManager.handleResume();
     handleProviderModelSystemResume();
-    syncPluginMarketForActiveOwner(30_000);
+    syncPluginMarketForActiveOwner(30_000, 'resume');
     // device-link:睡醒立即重连 relay,不干等退避计时器 + 心跳判死(最坏合计 ~75s)。
     handleDeviceLinkSystemResume();
   });
@@ -9841,10 +9945,12 @@ onQuit(
 onQuit(
   'session-active-turn-freeze',
   () => {
+    suspendUsageLimitWaits();
     freezeSessionActiveTurnMarkers();
   },
   'sync',
 );
+onQuit('usage-limit-waits-flush', flushUsageLimitWaits, 'async');
 onQuit(
   'reap-claude-children',
   () => {
@@ -9863,7 +9969,7 @@ onQuit('auth-manager', () => authManager.dispose(), 'sync');
 onQuit('windows-process-scan-workers', disposeWindowsProcessScanWorkers, 'sync');
 onQuit('resource-usage-window', () => resourceUsageWindowController.dispose(), 'sync');
 onQuit('rsb-window', () => rsbWindowController.dispose(), 'sync');
-onQuit('ghost-panel-windows', () => ghostPanelWindowsController.dispose(), 'sync');
+onQuit('sidebar-tab-windows', () => sidebarTabWindowsController.dispose(), 'sync');
 onQuit('app-badge-clear', () => clearAllSessionAttention(), 'sync');
 onQuit('session-drag-preview', () => disposeSessionDragPreview(), 'sync');
 onQuit('input-devices', () => disposeInputDevices(), 'async');

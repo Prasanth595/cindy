@@ -80,3 +80,113 @@ describe.skipIf(!fs.existsSync(CODEX))('native exec-server workspace projection'
     }
   });
 });
+
+// Codex 的后台终端在本机 exec-server 里：还有进程在跑时中继算忙，连接池不能让出名额
+// (对方 Codex 一退出，本机 exec-server 随连接关闭，后台终端就没了)。
+describe.skipIf(!fs.existsSync(CODEX) || process.platform === 'win32')('exec-server relay busy tracking', () => {
+  it('is busy while a started process runs, idle after it closes or its connection is dropped, and reset drops the exec-server', async () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cindy-exec-busy-')));
+    const workspace = new ExecutorWorkspace({ workingDir: root });
+    const messages: Array<{ id?: number; method?: string; params?: { processId?: string }; error?: unknown }> = [];
+    let parts = '';
+    let ended = 0;
+    // 模拟交付链路断开：下一次推送失败，中继会丢掉未发帧并从本机这侧关掉全部连接。
+    let failNextPush = false;
+    const relay = new ExecServerRelay({
+      codexPath: CODEX,
+      cwd: root,
+      workspace,
+      authorize: (action) => (action.kind === 'exec' && action.command.includes('denied') ? { ok: false, reason: 'no' } : { ok: true }),
+      // 最后一个进程结束 = 一次活动(连接池的闲置从这时算起)。
+      onProcessesEnded: () => {
+        ended += 1;
+      },
+      push: async (frames) => {
+        if (failNextPush) {
+          failNextPush = false;
+          throw new Error('link down');
+        }
+        for (const frame of frames) {
+          if (frame.kind !== 'message') continue;
+          parts += frame.data;
+          if (!frame.more) { messages.push(JSON.parse(parts)); parts = ''; }
+        }
+      },
+    });
+    const send = (message: unknown) => relay.handle({ t: 'ws', connId: 'c1', kind: 'message', data: JSON.stringify(message) });
+    const start = (id: number, processId: string, script: string) => send({ id, method: 'process/start', params: {
+      processId, argv: ['/bin/sh', '-c', script], cwd: pathToFileURL(root).href, env: {}, tty: false,
+    } });
+    try {
+      relay.handle({ t: 'ws', connId: 'c1', kind: 'open', path: '/ws/exec-server' });
+      expect(relay.busy()).toBe(false);
+      send({ id: 1, method: 'initialize', params: { clientName: 'cindy-test', clientVersion: '1' } });
+      await expect.poll(() => messages.find((item) => item.id === 1), { timeout: 5000 }).toBeDefined();
+      send({ method: 'initialized', params: {} });
+
+      // 闸门拒绝的启动不会留下进程。
+      start(2, 'denied', 'echo denied');
+      await expect.poll(() => messages.find((item) => item.id === 2)?.error, { timeout: 5000 }).toBeDefined();
+      await expect.poll(() => relay.busy(), { timeout: 5000 }).toBe(false);
+      expect(ended).toBe(0);
+
+      // 短命令跑完就不忙。
+      start(3, 'short', 'exit 0');
+      await expect.poll(() => messages.some((item) => item.method === 'process/closed' && item.params?.processId === 'short'), { timeout: 5000 }).toBe(true);
+      await expect.poll(() => relay.busy(), { timeout: 5000 }).toBe(false);
+      expect(ended).toBe(1);
+
+      // 还在跑的(如 Codex 的后台终端)算忙。
+      start(4, 'long', 'sleep 30');
+      await expect.poll(() => messages.some((item) => item.id === 4), { timeout: 5000 }).toBe(true);
+      expect(relay.busy()).toBe(true);
+      expect(ended).toBe(1);
+      send({ id: 5, method: 'process/terminate', params: { processId: 'long' } });
+      await expect.poll(() => messages.some((item) => item.method === 'process/closed' && item.params?.processId === 'long'), { timeout: 5000 }).toBe(true);
+      await expect.poll(() => relay.busy(), { timeout: 5000 }).toBe(false);
+      // closed / exited 可能都会来，只算一次。
+      expect(ended).toBe(2);
+
+      // 本机这侧断开(推送失败、exec-server 异常退出)：先排进关闭帧再删连接，带着的工作同样算一次由忙转闲。
+      // 用对方不认识的方法只换来一条错误回复，进程仍在跑，不会经 process/closed 先报一次。
+      start(6, 'local', 'sleep 30');
+      await expect.poll(() => messages.some((item) => item.id === 6), { timeout: 5000 }).toBe(true);
+      expect(relay.busy()).toBe(true);
+      failNextPush = true;
+      send({ id: 7, method: 'cindy/test-ping', params: {} });
+      await expect.poll(() => ended, { timeout: 5000 }).toBe(3);
+
+      // 对方关闭 WebSocket：连接带着还在跑的进程被整条删掉，同样算一次。
+      relay.handle({ t: 'ws', connId: 'c1', kind: 'open', path: '/ws/exec-server' });
+      send({ id: 8, method: 'initialize', params: { clientName: 'cindy-test', clientVersion: '1' } });
+      await expect.poll(() => messages.find((item) => item.id === 8), { timeout: 5000 }).toBeDefined();
+      send({ method: 'initialized', params: {} });
+      start(10, 'dropped', 'sleep 30');
+      await expect.poll(() => messages.some((item) => item.id === 10), { timeout: 5000 }).toBe(true);
+      expect(relay.busy()).toBe(true);
+      relay.handle({ t: 'ws', connId: 'c1', kind: 'close' });
+      await expect.poll(() => relay.busy(), { timeout: 5000 }).toBe(false);
+      expect(ended).toBe(4);
+
+      // 让出名额后关掉 exec-server，中继本身还能接新的连接。
+      relay.reset();
+      expect(relay.busy()).toBe(false);
+      relay.handle({ t: 'ws', connId: 'c2', kind: 'open', path: '/ws/exec-server' });
+      relay.handle({ t: 'ws', connId: 'c2', kind: 'message', data: JSON.stringify({ id: 9, method: 'initialize', params: { clientName: 'cindy-test', clientVersion: '1' } }) });
+      await expect.poll(() => messages.find((item) => item.id === 9), { timeout: 5000 }).toBeDefined();
+
+      // 启动失败(exec-server 回 JSON-RPC 错误)不会留下进程，同样算一次由忙转闲。
+      const sendC2 = (message: unknown) => relay.handle({ t: 'ws', connId: 'c2', kind: 'message', data: JSON.stringify(message) });
+      sendC2({ method: 'initialized', params: {} });
+      sendC2({ id: 11, method: 'process/start', params: {
+        processId: 'missing-binary', argv: [path.join(root, 'no-such-binary')], cwd: pathToFileURL(root).href, env: {}, tty: false,
+      } });
+      await expect.poll(() => messages.find((item) => item.id === 11), { timeout: 5000 }).toBeDefined();
+      expect(messages.find((item) => item.id === 11)?.error).toBeDefined();
+      await expect.poll(() => ended, { timeout: 5000 }).toBe(5);
+    } finally {
+      relay.close();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+});
