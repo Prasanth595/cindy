@@ -193,6 +193,8 @@ const desktopGuardInclude = [
   'src/main/__tests__/authCaptchaIpcSecurity.test.ts',
   'src/main/__tests__/appearanceUtilityWindowRegistration.test.ts',
   'src/main/__tests__/authSameOwnerRefreshUi.test.ts',
+  // 冷启动断网恢复只许接传输层失败；authManager 依赖 Electron，只能做源码契约。
+  'src/main/__tests__/authColdStartRecoveryGuard.contract.test.ts',
   'src/main/__tests__/browserRuntimeDirStartup.test.ts',
   'src/main/__tests__/clearSessionHandoffOrdering.test.ts',
   'src/main/__tests__/dbSlimmingIpcSecurity.test.ts',
