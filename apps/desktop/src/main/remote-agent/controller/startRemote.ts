@@ -6,8 +6,9 @@
  * 本机 Maker / Session 来说就是普通会话。
  *
  * 本机部分(执行器及其中的后台命令、本机 MCP 身份、Codex 执行环境中继)跟着句柄走；对方电脑上的
- * Agent 进程是一条可以让出的连接：名额紧张时连接池(connectionPool.ts)只结束对方的进程，要它干活时
- * 带原来的会话 id 连回来，接回同一套本机部分。
+ * Agent 进程是一条可以让出的连接：名额紧张时连接池(connectionPool.ts)只结束对方的进程，对方按主人
+ * 设置的时长收回闲置任务(事件流 `closed` 带 idleReclaimed)时也一样，要它干活时带原来的会话 id 连回来，
+ * 接回同一套本机部分。
  */
 import os from 'node:os';
 import path from 'node:path';
@@ -552,7 +553,7 @@ export async function startRemoteAgentSession(
         if (relay) relay.handle(item);
         else if (item.kind === 'open') void client.push([{ connId: item.connId, kind: 'close' }]).catch(() => undefined);
       },
-      onClosed: (reason, error) => {
+      onClosed: (reason, error, idleReclaimed) => {
         // 让出名额或已被换下的连接：不是任务结束。
         if (active !== client || linkState === 'releasing') return;
         if (!opened) {
@@ -560,10 +561,20 @@ export async function startRemoteAgentSession(
           return;
         }
         active = null;
+        // 对方按闲置收回了它的 Agent 进程(它只收回不忙的任务)：与连接池让出名额一样，本机部分与对话都留着，
+        // 要它干活时带原来的会话 id 连回。
+        if (idleReclaimed && controller) {
+          relay?.reset();
+          linkState = 'released';
+          deps.log?.info('remote agent connection reclaimed by the other computer', { kind, runId: client.runId });
+          return;
+        }
         linkState = 'closed';
         if (controller) controller.onClosed(reason, error?.message);
         else void disposeLocal();
       },
+      // Codex 经执行环境在本机起的进程还在跑(对方看不到)：拉取时告诉对方，免得被当成闲置收回。
+      holdsRemote: () => isCurrent() && relay?.busy() === true,
     }, deps.newId, deps.log);
     if (stateNow() === 'closed') throw new Error('[REMOTE_AGENT_EXPIRED] The task has ended on this computer.');
     active = client;
@@ -693,6 +704,7 @@ export async function startRemoteAgentSession(
       throw new Error('[REMOTE_AGENT_UNSUPPORTED] The other computer does not support the virtual workspace required to protect local paths.');
     }
     deps.pool?.noteMaxRuns(caps.maxRuns);
+    deps.pool?.noteIdleReclaimMinutes(caps.idleReclaimMinutes);
     await deps.pool?.beforeOpen(member);
     const payload = await buildPayload(reconnect);
     try {

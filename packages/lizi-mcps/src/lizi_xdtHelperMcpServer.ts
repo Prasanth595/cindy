@@ -154,7 +154,7 @@ export const HELPER_CATEGORY_DESCRIPTIONS: Record<(typeof CATEGORY_ENUM)[number]
   handoff: '给已有任务发消息，或新建任务。发给已有任务可跨电脑（deviceId::sessionId）；新建只在本机。',
   skills: 'Skill 的搜索、发布与学习。本机与 SkillHub。',
   app_update: `检查与安装本机的 ${BRAND_NAME} 更新。本机。`,
-  bots: '伙伴：资料、能力、工作台、待办、后台任务、伙伴间消息与主力电脑。伙伴间消息（list_agents / send_to_agent）、主力电脑（get_teammate_home / move_teammate_home）、总调度伙伴读取与继续另一台电脑上的任务（read_workbench_task / continue_workbench_task 传 deviceId::sessionId）可跨电脑；其余本机。',
+  bots: '伙伴：资料、能力、关联项目（list_teammate_projects / set_teammate_project，仅自身）、工作台、待办、后台任务、伙伴间消息与主力电脑。伙伴间消息（list_agents / send_to_agent）、主力电脑（get_teammate_home / move_teammate_home）、总调度伙伴读取与继续另一台电脑上的任务（read_workbench_task / continue_workbench_task 传 deviceId::sessionId）可跨电脑；其余本机。',
 };
 
 interface SessionTaskCallbacks {

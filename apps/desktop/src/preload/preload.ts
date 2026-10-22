@@ -5758,6 +5758,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
         update: (botId: string, patch: import('@cindy/maker-shared/teammate-todo').TodoPatch) => ipcRenderer.invoke('local-db:bots:todos:update', botId, patch),
         act: (botId: string, input: {id:string;revision:number;requestId:string;locale?:string}) => ipcRenderer.invoke('local-db:bots:todos:act', botId, input),
       },
+      projects: {
+        list: (botId: string): Promise<import('../shared/botWorkbench').BotProjectOption[]> =>
+          ipcRenderer.invoke('local-db:bots:projects:list', botId),
+        set: (botId: string, projectId: string, linked: boolean): Promise<import('../shared/botWorkbench').BotProjectOption[]> =>
+          ipcRenderer.invoke('local-db:bots:projects:set', botId, projectId, linked),
+      },
       workbench: {
         get: (botId: string): Promise<unknown> =>
           ipcRenderer.invoke('local-db:bots:workbench:get', botId),

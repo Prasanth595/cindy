@@ -28,7 +28,7 @@ vi.mock('../../maker-ipc/register.js', () => ({
   ensureSchedulerQueueRestored: mocks.restore,
   findSchedulerUsageLimitWait: mocks.quotaWait,
   applyPiImModelSelectionUnderLock: vi.fn(), acquirePendingAgentSwitchForDirectSend: vi.fn(),
-  preserveScheduledModelPreferencesUnderLock: vi.fn(), recordDispatchedModel: vi.fn(),
+  prepareScheduledModelPreferencesUnderLock: vi.fn(), recordDispatchedModel: vi.fn(),
   broadcastSessionCreated: vi.fn(), cancelSchedulerAutoResume: vi.fn(),
   enqueueSchedulerPrompt: vi.fn(), hasQueuedSchedulerPrompt: vi.fn(),
   isSchedulerAutoResumePending: vi.fn(), isSchedulerPromptTracked: vi.fn(),

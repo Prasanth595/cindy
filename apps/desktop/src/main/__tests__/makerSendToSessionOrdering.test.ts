@@ -653,7 +653,7 @@ describe('sendToSession ordering', () => {
     }
     expectOrder(directSendSwitchBlock, 'prepareUnhealthySession', "stage = 'direct-send:caller-dispatch'");
     expectOrder(directSendSwitchBlock, 'applyPendingAgentSwitchIfIdle(', 'prepareUnhealthySession');
-    expectOrder(directSendSwitchBlock, 'prepareUnhealthySession', 'return { release, selection: resolvedSelection,');
+    expectOrder(directSendSwitchBlock, 'prepareUnhealthySession', 'return { release, selection: resolvedSelection');
   });
 
   it('仅 Device Link 归一化 SET_MODEL 的 JSON null 可选占位,本地仍走严格校验', () => {

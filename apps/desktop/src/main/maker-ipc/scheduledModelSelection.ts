@@ -15,10 +15,9 @@ export interface ScheduledModelSelection {
 export interface ScheduledModelSelectionLease {
   release: () => void;
   selection: ScheduledModelSelection;
-  restore?: () => Promise<void>;
 }
 
-/** All calls run under the existing session send lock. The saved preference survives restart. */
+/** Send-boundary operations only. The saved preference survives idle time and restart. */
 export function createScheduledModelScope(deps: {
   read: (sessionId: string) => Promise<{
     profile: Omit<ScheduledModelSelection, 'effort'> & {

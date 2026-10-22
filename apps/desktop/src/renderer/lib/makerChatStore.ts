@@ -12583,7 +12583,11 @@ function removeMessagesByClientIds(
   // 启动就把它 hydrate 回来(review: codex P1)。缓存是纯优化,清掉即可(下一次成功的
   // 最新页拉取会重新写上)。
   invalidateRemoteMessageCache(sessionId);
-  discardPendingTextDelta(sessionId);
+  // An older item can be retracted while the next item is still streaming.
+  // Retire only the deleted item's batch; keep unrelated text and its ingress fence.
+  const pending = pendingTextDeltaBatches.get(sessionId);
+  const pendingClientId = pending?.persistId ?? sessions.get(sessionId)?.streamingClientId;
+  if (!pendingClientId || deletedClientIds.has(pendingClientId)) discardPendingTextDelta(sessionId);
   // 作废删除提交前发起的历史分页，避免旧页响应把已经清除的行重新 merge 回来。
   if (options.invalidateHistory !== false) invalidateMessageHistoryWindow(sessionId);
   setState(sessionId, (s) => {

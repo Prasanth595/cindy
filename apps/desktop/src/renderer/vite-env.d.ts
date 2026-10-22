@@ -4973,6 +4973,10 @@ interface ElectronAPI {
         update: (botId:string, patch:import('@cindy/maker-shared/teammate-todo').TodoPatch) => Promise<import('@cindy/maker-shared/teammate-todo').TeammateTodo>;
         act: (botId:string, input:{id:string;revision:number;requestId:string;locale?:string}) => Promise<import('@cindy/maker-shared/teammate-todo').TeammateTodo | null>;
       };
+      projects: {
+        list: (botId: string) => Promise<import('../shared/botWorkbench').BotProjectOption[]>;
+        set: (botId: string, projectId: string, linked: boolean) => Promise<import('../shared/botWorkbench').BotProjectOption[]>;
+      };
       workbench: {
         get: (botId: string) => Promise<import('../shared/botWorkbench').BotWorkbench | null>;
         readTask: (

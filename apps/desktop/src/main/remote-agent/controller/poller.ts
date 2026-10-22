@@ -35,6 +35,8 @@ export interface PolledRun {
   onData(data: Buffer, done: boolean): void;
   /** 任务已不能再拉取(对方不认识这个任务、协议错误或对方长时间不可达)。 */
   onLost(reason: string, error: RemoteAgentErrorInfo): void;
+  /** 本机还有这个任务的工作在进行、对方看不到(拉取时报 hold，对方不按闲置收回)。 */
+  holdsRemote?(): boolean;
 }
 
 interface Entry {
@@ -107,8 +109,16 @@ export class RemoteAgentPoller {
     void this.pollOnce();
   }
 
-  private snapshot(): Array<{ runId: string; cursor: number }> {
-    const all = [...this.entries.values()].map((entry) => ({ runId: entry.run.runId, cursor: entry.cursor }));
+  private snapshot(): Array<{ runId: string; cursor: number; hold?: true }> {
+    const all = [...this.entries.values()].map((entry) => {
+      let hold = false;
+      try {
+        hold = entry.run.holdsRemote?.() === true;
+      } catch {
+        // 判断失败时照常拉取，不报 hold。
+      }
+      return { runId: entry.run.runId, cursor: entry.cursor, ...(hold ? { hold: true as const } : {}) };
+    });
     if (all.length <= REMOTE_AGENT_MAX_POLL_RUNS) return all;
     // 按整批推进，避免大量空闲任务在下次被拉取前超过 host 的存活期限。
     const start = this.rotation % all.length;

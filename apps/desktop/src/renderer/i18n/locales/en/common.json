@@ -513,10 +513,13 @@
     },
     "runLimits": {
       "title": "Remote session limits",
-      "description": "Applies to all providers on this computer, including your other computers and devices using shared providers. Idle sessions count until released. Sessions run directly on this computer do not count.",
+      "description": "Applies to all providers on this computer, including your other computers and devices using shared providers. Idle sessions count until they are reclaimed. Sessions run directly on this computer do not count.",
       "perDevice": "Maximum sessions per connected device",
       "total": "Maximum sessions across all connected devices",
       "invalid": "Enter whole numbers from 1 to {{max}}. The per-device limit cannot exceed the total limit.",
+      "idleMinutes": "Reclaim idle sessions after (minutes)",
+      "idleHint": "When a session has been idle this long, this computer stops its agent and frees the slot. The next message reconnects to the same conversation. Running sessions are never reclaimed. Enter 0 to never reclaim.",
+      "idleInvalid": "Enter a whole number from 0 to {{max}}.",
       "usage": "{{used}} / {{total}} sessions held by {{devices}} devices; the busiest device holds {{largest}}.",
       "applyHint": "Changes apply immediately. Lowering a limit only blocks new sessions; existing sessions continue. Group relays count toward the directly connected device.",
       "save": "Save",
@@ -558,18 +561,6 @@
       "updated": "Updated {{time}}",
       "usageTitle": "Usage Details",
       "allowUsageDescription": "When enabled, everyone using this shared provider can view the sharer's and every other user's display names and detailed usage history."
-    },
-    "idleRelease": {
-      "title": "When this computer uses models on other computers",
-      "description": "When tasks on this computer use models on another computer, that computer limits how many of them it runs at once. As the limit gets close, you can let tasks idle longer than the time below disconnect temporarily to make room for new tasks. Send one a message and it reconnects automatically, with the earlier conversation intact. Tasks that are running are never disconnected; while a task is disconnected, its background commands on this computer keep running.",
-      "minutes": "Idle release (minutes)",
-      "hint": "The default is 0, which never disconnects; when the limit is reached you see the limit message. With 1–120, a task can disconnect only after it has been idle this long.",
-      "invalid": "Enter a whole number from 0 to {{max}}.",
-      "save": "Save",
-      "reset": "Restore defaults",
-      "saved": "Idle release setting saved",
-      "retry": "Reload",
-      "loading": "Loading…"
     }
   },
   "providerGroup": {
@@ -696,10 +687,6 @@
       },
       "runningCount_one": "{{count}} task running",
       "runningCount_other": "{{count}} tasks running",
-      "pace": {
-        "used": "{{used}}% used",
-        "usedExpected": "{{used}}% used, {{expected}}% expected by now"
-      },
       "limitAria": "Task limit for {{name}}",
       "limitOption_one": "Max {{count}}",
       "limitOption_other": "Max {{count}}",
@@ -9731,7 +9718,9 @@
           "topic": "Topic",
           "description": "Description",
           "save": "Save",
-          "myProfile": "My profile",
+          "myProfile": "My profile in this group",
+          "groupAvatar": "Change group avatar",
+          "groupAvatarHint": "Only shown in this group. Your account and other groups stay unchanged. Reset to use your account avatar.",
           "editProfile": "Edit name and photo",
           "nickname": "My name in this group",
           "nicknameHint": "Only shown here. Leave empty to use your profile name.",
@@ -10357,6 +10346,18 @@
       "rootNotLoaded": "The original message is not in the loaded history",
       "rootUnavailable": "The original message is no longer in this chat, so a thread can’t start here",
       "openFailed": "The thread didn’t open. Try again."
+    },
+    "projects": {
+      "title": "Linked Projects",
+      "description": "Read project materials when needed. Linking a project does not assign its sessions or start background work.",
+      "empty": "No linked projects yet.",
+      "choose": "Choose a project",
+      "add": "Add",
+      "remove": "Remove {{name}}",
+      "otherComputer": "On another computer",
+      "unavailable": "Directory unavailable",
+      "failed": "Could not update projects. Reload to check the saved state.",
+      "noAvailable": "Add more projects from the project list first."
     }
   },
   "common": {
