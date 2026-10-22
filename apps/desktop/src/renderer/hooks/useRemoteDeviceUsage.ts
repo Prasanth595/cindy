@@ -101,8 +101,12 @@ export function useRemoteCodexAccountUsage(
   return codexAccountMirror.useMirror(deviceId, providerId);
 }
 
-export function requestRemoteCodexAccountRefresh(deviceId: string, providerId?: string): void {
-  codexAccountMirror.request(deviceId, providerId);
+export function requestRemoteCodexAccountRefresh(
+  deviceId: string,
+  providerId?: string,
+  queueIfPending = false,
+): void {
+  codexAccountMirror.request(deviceId, providerId, queueIfPending);
 }
 
 /** Query the execution computer's native account RPC even when another card has a cached result. */
@@ -139,8 +143,12 @@ export function useRemoteXaiSubscriptionUsage(
   return xaiSubscriptionMirror.useMirror(deviceId, providerId);
 }
 
-export function requestRemoteXaiSubscriptionRefresh(deviceId: string, providerId?: string): void {
-  xaiSubscriptionMirror.request(deviceId, providerId);
+export function requestRemoteXaiSubscriptionRefresh(
+  deviceId: string,
+  providerId?: string,
+  queueIfPending = false,
+): void {
+  xaiSubscriptionMirror.request(deviceId, providerId, queueIfPending);
 }
 
 /** 被控端 xAI 限流头镜像(push-only,tooltip 尽力显示;独立账号订阅各自的 provider 镜像)。 */

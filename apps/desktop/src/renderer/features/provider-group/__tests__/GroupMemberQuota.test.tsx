@@ -19,9 +19,11 @@ const mocks = vi.hoisted(() => ({
   deviceReads: [] as Array<string | undefined>,
   cardReads: [] as Array<[string | undefined, string | null]>,
   cards: {} as Record<string, { title: string }>,
+  devices: [] as Array<{ deviceId: string; online: boolean; remoteControlEnabled: boolean; controlEnabled: boolean }>,
 }));
 
 vi.mock('@/hooks/useProviders', () => ({ useProviders: () => ({ providers: mocks.local }) }));
+vi.mock('@/features/device-link/useDeviceLinkDeviceList', () => ({ useDeviceLinkDeviceList: () => mocks.devices }));
 vi.mock('@/hooks/useDeviceProviders', () => ({
   useDeviceProviders: (deviceId?: string) => {
     mocks.deviceReads.push(deviceId);
@@ -52,6 +54,7 @@ function show(target: GroupMemberQuotaTarget, offline = false) {
 }
 
 beforeEach(() => {
+  mocks.devices = [];
   mocks.local = [claude('anthropic')];
   mocks.byDevice = { mini: [claude('anthropic-1a2b')], pc: [apiKey('openrouter')] };
   mocks.deviceReads.length = 0;
@@ -64,6 +67,33 @@ afterEach(() => {
 });
 
 describe('GroupMemberQuota', () => {
+  // Unit regression: PR #6752 review r4344705878. The existing offline test only
+  // checks that quota reads stop, not recovery from a stale offline group view.
+  // Public component must read the target as soon as the shared device list says
+  // it is online, even while the group still has a cached offline status.
+  it('recovers quota reads from live device presence without waiting for the cached group status', () => {
+    vi.useFakeTimers();
+    const view = <GroupMemberQuota id="quota" target={{ kind: 'device', deviceId: 'mini', providerId: 'anthropic-1a2b' }} offline />;
+    const mounted = render(view);
+    expect(screen.getByText('providerGroup.member.quota.offline')).toBeTruthy();
+    expect(mocks.deviceReads.every(deviceId => deviceId === undefined)).toBe(true);
+    mocks.devices = [{ deviceId: 'mini', online: true, remoteControlEnabled: true, controlEnabled: true }];
+    mounted.rerender(<GroupMemberQuota id="quota" target={{ kind: 'device', deviceId: 'mini', providerId: 'anthropic-1a2b' }} offline />);
+    expect(screen.getByTestId('quota-card').textContent).toBe('Mini’s Claude');
+    // Losing connectivity/permission must stop reads even if the group still
+    // reports online. An online presence alone cannot override either switch.
+    for (const unavailable of [
+      { online: false, remoteControlEnabled: true, controlEnabled: true },
+      { online: true, remoteControlEnabled: false, controlEnabled: true },
+      { online: true, remoteControlEnabled: true, controlEnabled: false },
+    ]) {
+      mocks.devices = [{ deviceId: 'mini', ...unavailable }];
+      mounted.rerender(<GroupMemberQuota id="quota" target={{ kind: 'device', deviceId: 'mini', providerId: 'anthropic-1a2b' }} offline={false} />);
+      expect(screen.getByText('providerGroup.member.quota.offline')).toBeTruthy();
+      expect(mocks.cardReads.at(-1)).toEqual([undefined, null]);
+    }
+  });
+
   it('reads this computer’s account for this computer', () => {
     show({ kind: 'local', providerId: 'anthropic' });
     expect(screen.getByTestId('quota-card').textContent).toBe('This computer’s Claude');

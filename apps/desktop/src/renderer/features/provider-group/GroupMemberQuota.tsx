@@ -12,6 +12,7 @@ import { QuotaHoverCard } from '@/components/status/QuotaHoverCard';
 import { providerWeeklyQuotaSource } from '@/components/new-chat/useProviderWeeklyQuota';
 import { useDeviceProviders } from '@/hooks/useDeviceProviders';
 import { useProviders } from '@/hooks/useProviders';
+import { useDeviceLinkDeviceList } from '@/features/device-link/useDeviceLinkDeviceList';
 import { cn } from '@/lib/utils';
 
 import type { ProviderGroupMember } from '../../../shared/providerGroup';
@@ -33,17 +34,25 @@ export function GroupMemberQuota({
 }: {
   id: string;
   target: GroupMemberQuotaTarget;
-  /** 组里报这台不在线：不去读，直接说明。 */
+  /** 组里报这台不在线：设备在线状态尚未恢复时不去读，直接说明。 */
   offline: boolean;
   /** 左侧缩进，让卡片内容与行里的电脑名对齐(卡片自带 16px 内边距)。 */
   inset?: string;
 }) {
   const { t } = useTranslation();
-  const remoteDeviceId = target.kind === 'device' && !offline ? target.deviceId : null;
+  // Keep observing presence while offline, independently of quota/provider hooks.
+  // The group's cached status can lag a reconnect; the shared device list lets
+  // quota reads recover without waiting for that cache and the next group poll.
+  const devices = useDeviceLinkDeviceList();
+  const device = target.kind === 'device' ? devices?.find((entry) => entry.deviceId === target.deviceId) : undefined;
+  const quotaOffline = device
+    ? !device.online || !device.remoteControlEnabled || !device.controlEnabled
+    : offline;
+  const remoteDeviceId = target.kind === 'device' && !quotaOffline ? target.deviceId : null;
   const { providers: localProviders } = useProviders();
   const deviceCatalog = useDeviceProviders(remoteDeviceId ?? undefined);
   const provider =
-    offline
+    quotaOffline
       ? undefined
       : target.kind === 'local'
         ? localProviders.find((entry) => entry.id === target.providerId)
@@ -61,7 +70,7 @@ export function GroupMemberQuota({
 
   let note: string | null = null;
   if (target.kind === 'share') note = t('providerGroup.member.quota.share');
-  else if (offline) note = t('providerGroup.member.quota.offline');
+  else if (quotaOffline) note = t('providerGroup.member.quota.offline');
   else if (!card) {
     if (provider && !providerWeeklyQuotaSource({ ...provider, suspended: false })) {
       note = t('providerGroup.member.quota.none');

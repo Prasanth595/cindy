@@ -59,7 +59,7 @@ vi.mock('@/hooks/useRemoteDeviceUsage', async () => {
     selectRemoteCodexAccountUsage: actual.selectRemoteCodexAccountUsage,
     useRemoteCodexAccountUsage: (deviceId: string | null, providerId?: string) => {
       mocks.remoteCodex.push([deviceId, providerId]);
-      return deviceId ? mocks.codexUsage : null;
+      return actual.useRemoteCodexAccountUsage(deviceId, providerId) ?? (deviceId ? mocks.codexUsage : null);
     },
     useRemoteXaiSubscriptionUsage: (deviceId: string | null, providerId?: string) => {
       mocks.remoteXai.push([deviceId, providerId]);
@@ -124,7 +124,9 @@ describe('useDeviceProviderSubscriptionCard', () => {
       rateLimitsByLimitId: { codex: { primary: { usedPercent, windowMinutes: 300 } } },
     });
     mocks.codexUsage = { primary: { usedPercent: 50, windowMinutes: 300 } };
-    mocks.invoke.mockResolvedValueOnce(native(73)).mockResolvedValue(native(84));
+    let nativeReads = 0;
+    mocks.invoke.mockImplementation(async (_deviceId, channel) => channel === 'maker:usage:account'
+      ? mocks.codexUsage : native(nativeReads++ === 0 ? 73 : 84));
     const hook = renderHook(() => useDeviceProviderSubscriptionCard(openai, 'mini', { live: true }));
     await act(async () => {});
     expect(remaining(hook.result.current)).toEqual([['primary', 73]]);
@@ -138,14 +140,16 @@ describe('useDeviceProviderSubscriptionCard', () => {
     await act(async () => { vi.advanceTimersByTime(45_000); });
     expect(mocks.invoke).toHaveBeenCalledTimes(readsBeforeHiding);
 
-    mocks.invoke.mockResolvedValue(native(91));
+    mocks.invoke.mockImplementation(async (_deviceId, channel) => channel === 'maker:usage:account'
+      ? mocks.codexUsage : native(91));
     vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
     await act(async () => document.dispatchEvent(new Event('visibilitychange')));
     expect(remaining(hook.result.current)).toEqual([['primary', 91]]);
     const readsBeforeReconnect = mocks.invoke.mock.calls.length;
     act(() => mocks.reopened.forEach(listener => listener({ deviceId: 'other' })));
     expect(mocks.invoke).toHaveBeenCalledTimes(readsBeforeReconnect);
-    mocks.invoke.mockResolvedValue(native(96));
+    mocks.invoke.mockImplementation(async (_deviceId, channel) => channel === 'maker:usage:account'
+      ? mocks.codexUsage : native(96));
     await act(async () => mocks.reopened.forEach(listener => listener({ deviceId: 'mini' })));
     expect(remaining(hook.result.current)).toEqual([['primary', 96]]);
     hook.unmount();
@@ -162,6 +166,26 @@ describe('useDeviceProviderSubscriptionCard', () => {
     const hook = renderHook(() => useDeviceProviderSubscriptionCard(openai, 'mini'));
     await act(async () => {});
     expect(remaining(hook.result.current)).toEqual([['primary', 50]]);
+  });
+
+  // Unit regression: PR #6752 review r4344705884. Existing reconnect coverage used
+  // a completed/mocked mirror; an old in-flight account read must queue a recovery
+  // read when native RPC is unavailable. No timer advance is needed to show 82%.
+  it('queues the fallback mirror read after reconnect when an old request is still pending', async () => {
+    const openai = provider('openai-extra', { method: 'oauth', native: 'codex' });
+    let rejectOld!: (error: Error) => void;
+    let reads = 0;
+    mocks.invoke.mockImplementation((_deviceId, channel) => {
+      if (channel === 'maker:usage:codex-rate-limits') return Promise.reject(new Error('[CHANNEL_NOT_ALLOWED] old computer'));
+      if (reads++ === 0) return new Promise((_resolve, reject) => { rejectOld = reject; });
+      return Promise.resolve({ providerId: openai.id, primary: { usedPercent: 82, windowMinutes: 300 } });
+    });
+    const hook = renderHook(() => useDeviceProviderSubscriptionCard(openai, 'mini', { live: true }));
+    await act(async () => {});
+    expect(remaining(hook.result.current)).toBeUndefined();
+    act(() => mocks.reopened.forEach(listener => listener({ deviceId: 'mini' })));
+    await act(async () => rejectOld(new Error('old link disconnected')));
+    expect(remaining(hook.result.current)).toEqual([['primary', 82]]);
   });
 
   it('refreshes the local account on the same live-card interval without querying another computer', async () => {

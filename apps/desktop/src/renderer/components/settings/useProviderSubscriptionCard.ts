@@ -198,10 +198,10 @@ function refreshSubscriptionCard(
   if (deviceId) {
     if (source === 'codex') {
       requestRemoteCodexRateLimitsRefresh(deviceId, providerId, queueIfPending);
-      requestRemoteCodexAccountRefresh(deviceId, providerId);
+      requestRemoteCodexAccountRefresh(deviceId, providerId, queueIfPending);
     } else if (source === 'claude') {
       requestRemoteClaudeSubscriptionRefresh(deviceId, providerId, queueIfPending);
-    } else requestRemoteXaiSubscriptionRefresh(deviceId, providerId);
+    } else requestRemoteXaiSubscriptionRefresh(deviceId, providerId, queueIfPending);
   } else if (source === 'codex') {
     requestCodexRateLimitsRefresh(providerId);
     requestCodexAccountRefresh(providerId);
