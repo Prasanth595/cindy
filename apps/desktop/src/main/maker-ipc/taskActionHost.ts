@@ -132,14 +132,41 @@ export function createDesktopTaskActionAuthorizer(deps: {
         // Its revocation lifetime starts here; the approval-to-Host handoff keeps
         // ordinary session semantics and is not made atomic by this gate.
         const permission = input.permission;
+        // The confirmation card below exists exactly when no reusable permission snapshot
+        // is available, so Plan cannot be ruled out from that absent snapshot ("no
+        // snapshot" is not "not Plan"). Read the live Session state instead — the same
+        // authority `captureScheduledRuntime` and the permission reviewer use.
+        const livePlan = permission == null
+          ? deps.getSession(sessionId)?.stablePlanModeState
+          : null;
+        const planPermitsOwnerCard = permission == null
+          ? livePlan?.enabled === false
+          : permission.permissionMode !== 'plan' && permission.planModeEnabled !== true;
         const runtimePermissionApplies = caller.source !== 'shared'
           && ['bypassPermissions', 'auto', 'ask', 'default', 'acceptEdits'].includes(permission?.permissionMode ?? '')
           && permission != null
           && permission.planModeEnabled === false
           && permission.isCurrent?.() === true;
+        // Without a reusable runtime permission decision the agent otherwise gets a bare
+        // "authorization required" with nowhere to grant it. Only the owner's own private
+        // lane has a live owner to ask: Plan never authorizes side effects, a snapshot we
+        // already know changed is not re-usable, and shared guests answer for someone else.
+        const ownerConfirmable = caller.source !== 'shared'
+          && !!caller.botId
+          && (caller.role === 'canonical' || caller.role === 'thread')
+          && planPermitsOwnerCard
+          && (permission == null || permission.isCurrent?.() === true);
         const assertPermissionCurrent = () => {
           if (runtimePermissionApplies && permission?.isCurrent?.() !== true)
             throw new Error('TASK_ACTION_AUTHORIZATION_EXPIRED');
+          // A card is only ever offered off Plan; the live Plan generation still governs
+          // the answer, so switching Plan on while the card is open revokes it.
+          if (ownerConfirmable && livePlan) {
+            const currentPlan = deps.getSession(sessionId)?.stablePlanModeState;
+            if (!currentPlan || currentPlan.enabled !== livePlan.enabled ||
+              currentPlan.generation !== livePlan.generation)
+              throw new Error('TASK_ACTION_AUTHORIZATION_EXPIRED');
+          }
         };
         const useRuntimePermissions = ownerInput || runtimePermissionApplies;
         // Retain scheduled-review recovery only when no live runtime decision can
@@ -152,6 +179,8 @@ export function createDesktopTaskActionAuthorizer(deps: {
             ? (call.args as Record<string, unknown>)
             : {};
         const taskId = typeof args.task_id === 'string' ? args.task_id : undefined;
+        /** The owner paused this work on purpose: no card may reopen it. */
+        let delegationPaused = false;
         const readDelegation = async (rechecking = false) => {
           if (
             !taskId ||
@@ -182,6 +211,7 @@ export function createDesktopTaskActionAuthorizer(deps: {
           // That intent cannot revoke the very same stop; it still blocks every
           // new admission and every message/resume delivery.
           const completingPause = rechecking && call.tool === 'stop_session_task' && args.mode === 'pause';
+          if (rechecking === false && snapshot.taskPause && !completingPause) delegationPaused = true;
           if ((snapshot.taskPause && !completingPause) || args.decision || args.answers || args.mode === 'resume')
             return null;
           return grant?.version === 1 && grant.actions?.includes(call.tool) ? row : null;
@@ -269,6 +299,7 @@ export function createDesktopTaskActionAuthorizer(deps: {
         const scope: TaskActionScope = {
           key: input.key,
           ownerInput,
+          ownerConfirmable: ownerConfirmable && !delegationPaused,
           delegated: !!delegation || !!orcaTeam,
           assertDeliveryCurrent,
           assertCurrentSync,

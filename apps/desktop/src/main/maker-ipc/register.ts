@@ -916,6 +916,7 @@ import {
   type OrcaInterAgentMessageSource,
 } from './orcaInterAgentDispatcher.js';
 import { OrcaWorkerPermissionConfirmBridge } from './orcaWorkerPermissionConfirmBridge.js';
+import { taskActionConfirmationCopy } from './taskActionConfirmation.js';
 import { assertTaskActionCurrent, captureTaskActionGuard, bindTaskActionInput, hasTaskActionAuthorization, taskActionInputGuard, settleTaskActionInput, TaskActionAuthorizationError, type TaskActionDeliveryGuard } from './taskActionAuthorization.js';
 import {
   getOrcaWorkspaceInfoReadOnly,
@@ -3249,12 +3250,9 @@ const taskActionConfirmBridge = new OrcaWorkerPermissionConfirmBridge({
 });
 
 export async function confirmTaskAction(sessionId: string, tool: string, args: unknown): Promise<boolean> {
-  const result = await taskActionConfirmBridge.request(sessionId, {
-    title: t('taskActionConfirmation.title'),
-    description: t(tool === 'start_session_task' ? 'taskActionConfirmation.delegation' : 'taskActionConfirmation.once'),
-    action: { toolName: `mcp__cindy_helper__${tool}`,
-      input: args as Record<string, unknown>, confirmation: 'task_action' },
-  });
+  const result = await taskActionConfirmBridge.request(
+    sessionId, taskActionConfirmationCopy(tool, args),
+  );
   return result.confirmed;
 }
 
