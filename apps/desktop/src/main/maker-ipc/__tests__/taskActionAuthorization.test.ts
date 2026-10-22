@@ -938,10 +938,12 @@ describe('Desktop private-chat action confirmation', () => {
 
   // Review P1 on #6756: switching the permission tier into Plan advances only that tier's
   // generation and leaves the Plan generation untouched, so the Plan re-read above cannot
-  // revoke the card. A tier still switching at answer time is not stable either.
+  // revoke the card. A tier still switching at answer time is not stable either, and any
+  // other tier is a different tier than the one the owner answered for.
   it.each([
     ['a Plan tier', { mode: 'plan' as PermissionMode, generation: 3 }],
     ['no stable tier', null],
+    ['another non-Plan tier', { mode: 'ask' as PermissionMode, generation: 2 }],
   ] as const)('drops the approval when the card is answered with %s', async (_state, tier) => {
     const h = desktopFixture('automatic');
     h.activeInput.permission = null;
@@ -971,6 +973,59 @@ describe('Desktop private-chat action confirmation', () => {
     await expect(taskActionInputGuard('target', queued)!()).rejects.toThrow(
       'AUTHORIZATION_EXPIRED',
     );
+  });
+
+  // Review P2 on #6756: Auto→Ask in the same session advances only the permission tier's
+  // generation; Plan state and the input boundary stay put, so the already-queued answer was
+  // dispatched under a tier the owner never approved. The tier frozen at admission decides.
+  it('revokes an approved card delivery when the permission tier changes without Plan', async () => {
+    const h = desktopFixture('automatic');
+    h.activeInput.permission = null;
+    setLivePlan(h, { enabled: false, generation: 2 });
+    h.confirm.mockResolvedValueOnce(true);
+    const queued = input();
+    expect(await withToolCallAuthority(h.authorize, call('send_to_session'), async () => {
+      bindTaskActionInput('target', queued);
+      return 'queued';
+    })).toBe('queued');
+    Object.assign(h.runtime, { stablePermissionModeState: { mode: 'ask', generation: 2 } });
+    await expect(taskActionInputGuard('target', queued)!()).rejects.toThrow(
+      'AUTHORIZATION_EXPIRED',
+    );
+  });
+
+  // The other half of the same rule: the comparison is by (mode, generation) value, so an
+  // unchanged tier keeps both the execution and the queued delivery of the answer valid.
+  it('keeps an approved card valid while the permission tier stays the same', async () => {
+    const h = desktopFixture('automatic');
+    h.activeInput.permission = null;
+    setLivePlan(h, { enabled: false, generation: 2 });
+    h.confirm.mockImplementation(async () => {
+      // A fresh object with the same mode and generation is still the frozen tier.
+      Object.assign(h.runtime, { stablePermissionModeState: { mode: 'auto', generation: 1 } });
+      return true;
+    });
+    const queued = input();
+    expect(await withToolCallAuthority(h.authorize, call('send_to_session'), async () => {
+      bindTaskActionInput('target', queued);
+      return 'queued';
+    })).toBe('queued');
+    await expect(taskActionInputGuard('target', queued)!()).resolves.toBeUndefined();
+  });
+
+  // A tier that is still switching has no stable state to freeze, and the card is a yes/no
+  // about one exact tier: without a frozen tier there is nothing to show or to approve.
+  it('does not offer a card while the permission tier is switching', async () => {
+    const h = desktopFixture('automatic');
+    h.activeInput.permission = null;
+    setLivePlan(h, { enabled: false, generation: 2 });
+    Object.assign(h.runtime, { stablePermissionModeState: null });
+    const effect = vi.fn(async () => 'changed');
+    const result = await withToolCallAuthority(h.authorize, call('set_session_runtime'), effect);
+    expect(result).toMatchObject({ isError: true });
+    expect(JSON.stringify(result)).toContain('TASK_ACTION_AUTHORIZATION_REQUIRED');
+    expect(effect).not.toHaveBeenCalled();
+    expect(h.confirm).not.toHaveBeenCalled();
   });
 
   // Review P2 on #6756: resume input re-reads the delegation row only for its grant, so a

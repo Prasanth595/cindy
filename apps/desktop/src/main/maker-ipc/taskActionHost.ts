@@ -152,27 +152,49 @@ export function createDesktopTaskActionAuthorizer(deps: {
         // "authorization required" with nowhere to grant it. Only the owner's own private
         // lane has a live owner to ask: Plan never authorizes side effects, a snapshot we
         // already know changed is not re-usable, and shared guests answer for someone else.
-        const ownerConfirmable = caller.source !== 'shared'
+        const cardOwnerLane = caller.source !== 'shared'
           && !!caller.botId
           && (caller.role === 'canonical' || caller.role === 'thread')
           && planPermitsOwnerCard
           && (permission == null || permission.isCurrent?.() === true);
+        // A card answers one exact action under the permission tier the owner was shown, so
+        // that stable tier is frozen here, when the decision is formed, and not re-derived
+        // from whatever happens to be live at delivery: Auto→Ask advances only this tier's
+        // generation while Plan state and the input boundary stay put. A tier still switching
+        // has no stable state to freeze, and Plan itself never authorizes side effects, so
+        // without a frozen non-Plan tier there is no card to offer.
+        const frozenCardSource = !useRuntimePermissions && cardOwnerLane
+          ? deps.getSession(sessionId)?.stablePermissionModeState
+          : null;
+        const frozenCardTier = frozenCardSource
+          ? { mode: frozenCardSource.mode, generation: frozenCardSource.generation }
+          : null;
+        // A card is only usable with that frozen non-Plan tier. Other admissions of this same
+        // lane (a delegation grant, the scheduled reviewer) keep their own authority and are
+        // covered by the narrower check inside `assertPermissionCurrent` below.
+        const ownerConfirmable = frozenCardTier !== null && frozenCardTier.mode !== 'plan';
         const assertPermissionCurrent = () => {
           if (runtimePermissionApplies && permission?.isCurrent?.() !== true)
             throw new Error('TASK_ACTION_AUTHORIZATION_EXPIRED');
           // A card is only ever offered off Plan and is never a reusable permission decision.
-          // Switching the tier into/out of Plan advances only the permission generation and
-          // leaves the Plan generation untouched, so Plan must be re-read from the stable
-          // permission state too; a tier that is still switching has no stable state and
-          // cannot authorize side effects either.
-          if (!useRuntimePermissions && ownerConfirmable) {
+          // Both the execution and the queued delivery of that answer re-check the tier frozen
+          // at admission, so Auto→Ask — which advances only this generation and leaves Plan
+          // state and the input boundary untouched — revokes it. When this lane was admitted
+          // without a card there is no frozen tier; the live one must then at least be stable
+          // and off Plan, as before.
+          if (!useRuntimePermissions && cardOwnerLane) {
             const live = deps.getSession(sessionId);
             const currentPermission = live?.stablePermissionModeState;
             const currentPlan = live?.stablePlanModeState;
             const planStillOff = livePlan
               ? currentPlan?.enabled === false && currentPlan.generation === livePlan.generation
               : currentPlan?.enabled === false;
-            if (!currentPermission || currentPermission.mode === 'plan' || !planStillOff)
+            const tierStillCurrent = frozenCardTier
+              ? currentPermission != null &&
+                currentPermission.mode === frozenCardTier.mode &&
+                currentPermission.generation === frozenCardTier.generation
+              : currentPermission != null && currentPermission.mode !== 'plan';
+            if (!tierStillCurrent || !planStillOff)
               throw new Error('TASK_ACTION_AUTHORIZATION_EXPIRED');
           }
         };
@@ -311,6 +333,8 @@ export function createDesktopTaskActionAuthorizer(deps: {
               throw new Error('TASK_ACTION_AUTHORIZATION_EXPIRED');
           }
           group?.assertCurrent();
+          // Queued delivery and execution share this one stable-tier recheck, so an answer can
+          // never be dispatched under a tier other than the one frozen at admission.
           assertPermissionCurrent();
           if (db !== tryGetDbClient() || isAppSessionBoundaryPending())
             throw new Error('OWNER_SCOPE_CHANGED');
