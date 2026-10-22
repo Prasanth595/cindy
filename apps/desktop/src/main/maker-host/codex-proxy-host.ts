@@ -242,6 +242,20 @@ const encryptedContentRecoveryRule = {
     onRetry: (threadId, model) => encryptedStripController.markActive(threadId, model),
   }),
   strip: stripCodexEncryptedReasoning,
+  unrecoverableCode: (rawBody: Buffer): string | null => {
+    // Classification must share strip's protocol boundary: business fields
+    // named encrypted_content cannot make opaque compaction recoverable.
+    if (stripCodexEncryptedReasoning(rawBody)) return null;
+    try {
+      const body: unknown = JSON.parse(rawBody.toString('utf8'));
+      return isPlainObject(body) && Array.isArray(body.input) && body.input.some(item =>
+        isPlainObject(item) && item.type === 'compaction'
+        && typeof item.encrypted_content === 'string' && item.encrypted_content.length > 0)
+        ? 'CINDY_ENCRYPTED_COMPACTION_INCOMPATIBLE' : null;
+    } catch {
+      return null;
+    }
+  },
 };
 const imageGenerationIdRecoveryRule = createImageGenerationIdRecoveryRule({
   onRetry: (threadId, model) => imageGenerationStripController.markActive(threadId, model),
