@@ -1070,7 +1070,8 @@ test("devEnvPrefix passes the explicit isolated OAuth write escape hatch", () =>
 });
 
 test("devEnvPrefix passes the restart-managed marker so auto-isolation never overrides restart semantics", () => {
-	// XDT_RESTART_MANAGED 是 restart 链路的显式表态（无参=共库+正常调度），必须
+	// XDT_RESTART_MANAGED 是 restart 链路的显式表态（无参 / --passive 默认
+	// --isolated=dev，--shared / --preserve-running 共享），必须
 	// 经白名单透传给 dev 进程；worktree 内裸 dev:remote 的自动隔离判定据此跳过
 	// restart 链路（review-pr P1，PR #2640）。
 	const prefix = devEnvPrefix(

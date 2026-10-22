@@ -31,8 +31,9 @@ const args = stripDesktopDevRegionArgs(rawArgs);
 
 // XDT_RESTART_MANAGED 是 restart 链路的一跳（one-hop）启动标记：只在判定「本进程
 // 是不是 restart 拉起的」时有意义。**判定必须用含标记的环境**——restart 链路靠它
-// 识别「受 restart 管理」而免于自动隔离（无参=共库+正常调度契约）；进入 Electron 后
-// 该标记会被 agent 进程继承，导致 agent 在 worktree 跑裸 dev:remote 时误判「受 restart
+// 识别「受 restart 管理」而免于自动隔离（restart 自己按参数选定沙箱：无参 / --passive
+// 默认 --isolated=dev，--shared / --preserve-running 共享正式 profile）；进入 Electron
+// 后该标记会被 agent 进程继承，导致 agent 在 worktree 跑裸 dev:remote 时误判「受 restart
 // 管理」而禁用自动隔离（review-pr P1/P2, PR #2640）——因此判定完成后从传给 Electron
 // 的 env 删除标记，只用于本次启动判定。
 const worktreeIsolation = resolveWorktreeIsolationFromCwd({

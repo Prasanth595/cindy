@@ -12,6 +12,7 @@ import {
   resolveWorktreeIsolationFromCwd,
   stripDesktopDevRegionArgs,
   worktreeNameFromPath,
+  worktreeRootFromPath,
 } from "../shared/desktop-dev-region.mjs";
 
 test("desktop shared userData follows the region identity", () => {
@@ -219,32 +220,69 @@ test("worktreeNameFromPath extracts the name from worktree root and nested cwd",
   assert.equal(worktreeNameFromPath("."), null);
 });
 
+test("worktreeRootFromPath returns the checkout root prefix used for the sandbox digest", () => {
+  assert.equal(
+    worktreeRootFromPath(worktreeCwd("epic-thompson", "apps", "desktop")),
+    worktreeCwd("epic-thompson"),
+  );
+  assert.equal(
+    worktreeRootFromPath(path.join(".xdt-worktrees", "legacy-tree")),
+    path.join(".xdt-worktrees", "legacy-tree"),
+  );
+  assert.equal(worktreeRootFromPath(path.join("somewhere", "else")), null);
+});
+
+const isolationNamePattern = (base) => new RegExp(`^${base}-[0-9a-f]{6}$`);
+
 test("worktree dev launch auto-derives the named isolation sandbox", () => {
-  assert.deepEqual(
+  assert.match(
     resolveWorktreeIsolationFromCwd({
       cwd: worktreeCwd("epic-thompson"),
       argv: [],
       env: {},
-    }),
-    { worktreeName: "epic-thompson" },
+    }).worktreeName,
+    isolationNamePattern("epic-thompson"),
   );
-  assert.deepEqual(
+  // 嵌套 cwd 与 worktree 根派生同一个沙箱名
+  assert.equal(
     resolveWorktreeIsolationFromCwd({
       cwd: worktreeCwd("epic-thompson", "apps", "desktop"),
       argv: ["start", "--"],
       env: {},
-    }),
-    { worktreeName: "epic-thompson" },
+    }).worktreeName,
+    resolveWorktreeIsolationFromCwd({
+      cwd: worktreeCwd("epic-thompson"),
+      argv: [],
+      env: {},
+    }).worktreeName,
   );
   // 旧目录形态同样命中
-  assert.deepEqual(
+  assert.match(
     resolveWorktreeIsolationFromCwd({
       cwd: path.join(".xdt-worktrees", "legacy-tree"),
       argv: [],
       env: {},
-    }),
-    { worktreeName: "legacy-tree" },
+    }).worktreeName,
+    isolationNamePattern("legacy-tree"),
   );
+});
+
+test("auto sandbox names include a checkout digest so same-named worktrees never collide", () => {
+  // 两个 clone 里同名 worktree（或名为 dev 的 worktree）不能落进同一个沙箱，
+  // 否则会共享登录数据与派生 deviceId（review-pr P2, PR #2640）。
+  const nameOf = (root) =>
+    resolveWorktreeIsolationFromCwd({
+      cwd: path.join(root, ".cindy-worktrees", "same-name"),
+      argv: [],
+      env: {},
+    }).worktreeName;
+  const first = nameOf(path.join("clone-a"));
+  const second = nameOf(path.join("clone-b"));
+  assert.match(first, isolationNamePattern("same-name"));
+  assert.match(second, isolationNamePattern("same-name"));
+  assert.notEqual(first, second);
+  assert.ok(first.length <= 32);
+  assert.ok(second.length <= 32);
 });
 
 test("worktree dev launch honors explicit isolation/sharing intent and never overrides it", () => {
@@ -267,13 +305,13 @@ test("worktree dev launch honors explicit isolation/sharing intent and never ove
   // 裸 dev 路径上的 --preserve-running 不豁免自动隔离：Electron 侧不认这个参数
   // （只有 restart 会翻译成 XDT_SCHEDULER_PASSIVE=1），豁免它会共享 userData 却
   // 正常调度 + 正常单实例锁，造成定时任务重复 / 无法再开预览（review-pr P1）。
-  assert.deepEqual(
+  assert.match(
     resolveWorktreeIsolationFromCwd({
       cwd: worktreeCwd("epic-thompson"),
       argv: ["--preserve-running"],
       env: {},
-    }),
-    { worktreeName: "epic-thompson" },
+    }).worktreeName,
+    isolationNamePattern("epic-thompson"),
   );
   // XDT_ISOLATED / XDT_USER_DATA_DIR / XDT_SCHEDULER_PASSIVE 单独出现**均不豁免**：
   // 它们都可能是宿主 Desktop（以 --isolated / --passive 模式运行）留在 process.env
@@ -287,18 +325,19 @@ test("worktree dev launch honors explicit isolation/sharing intent and never ove
     { XDT_SCHEDULER_PASSIVE: "1" },
     { XDT_ISOLATED: "1", XDT_USER_DATA_DIR: "C:\\custom\\profile", XDT_SCHEDULER_PASSIVE: "1" },
   ]) {
-    assert.deepEqual(
+    assert.match(
       resolveWorktreeIsolationFromCwd({
         cwd: worktreeCwd("epic-thompson"),
         argv: [],
         env,
-      }),
-      { worktreeName: "epic-thompson" },
+      }).worktreeName,
+      isolationNamePattern("epic-thompson"),
       `env ${JSON.stringify(env)} must not suppress auto-isolation (agent inheritance)`,
     );
   }
-  // restart 链路显式表态：参数契约由 restart 自己负责（无参=共库+正常调度），
-  // 自动隔离兜底不得静默覆盖（review-pr P1，PR #2640）
+  // restart 链路显式表态：参数契约由 restart 自己负责（无参 / --passive 默认
+  // --isolated=dev，--shared / --preserve-running 共享），自动隔离兜底不得静默覆盖
+  // restart 已选定的沙箱（review-pr P1，PR #2640）
   assert.equal(
     resolveWorktreeIsolationFromCwd({
       cwd: worktreeCwd("epic-thompson"),
@@ -351,9 +390,10 @@ test("worktree dev launch falls back to the default sandbox for invalid names", 
 // ── restart 一跳标记 / 裸 preserve-running（review-pr P1，PR #2640）─────────────
 
 test("restart marker is one-hop: honored during launch decision but stripped from the Electron env", () => {
-  // 判定必须用含 XDT_RESTART_MANAGED 的环境：restart 链路（无参）靠它识别「受 restart
-  // 管理」而免于自动隔离（无参=共库+正常调度契约，review-pr P2 指正）。标记的删除
-  // 发生在 dev-remote-env 判定之后、传给 Electron 的 env 上（防 agent 子进程继承）。
+  // 判定必须用含 XDT_RESTART_MANAGED 的环境：restart 链路（无参 / --passive 默认
+  // --isolated=dev，--shared / --preserve-running 共享）靠它识别「受 restart 管理」
+  // 而免于自动隔离（review-pr P2 指正）。标记的删除发生在 dev-remote-env 判定之后、
+  // 传给 Electron 的 env 上（防 agent 子进程继承）。
   assert.equal(
     resolveWorktreeIsolationFromCwd({
       cwd: worktreeCwd("epic-thompson"),
@@ -382,35 +422,35 @@ test("restart marker is one-hop: honored during launch decision but stripped fro
     null,
   );
   // 无标记（agent 子进程场景）→ worktree 裸启动命中自动隔离（#2635 防护恢复）
-  assert.deepEqual(
+  assert.match(
     resolveWorktreeIsolationFromCwd({
       cwd: worktreeCwd("epic-thompson"),
       argv: [],
       env: {},
-    }),
-    { worktreeName: "epic-thompson" },
+    }).worktreeName,
+    isolationNamePattern("epic-thompson"),
   );
 });
 
 test("bare dev:remote with --preserve-running in a worktree is isolated (no silent shared userData)", () => {
   // 裸路径（不经 restart）--preserve-running 不被豁免：Electron 侧不认该参数，
   // 豁免会导致共享 userData 却正常调度 + 正常单实例锁（定时任务重复 / 预览失败）。
-  assert.deepEqual(
+  assert.match(
     resolveWorktreeIsolationFromCwd({
       cwd: worktreeCwd("epic-thompson"),
       argv: ["--preserve-running"],
       env: {},
-    }),
-    { worktreeName: "epic-thompson" },
+    }).worktreeName,
+    isolationNamePattern("epic-thompson"),
   );
   // 继承的 XDT_SCHEDULER_PASSIVE 单独出现不豁免（agent 子进程场景，防绕过隔离）
-  assert.deepEqual(
+  assert.match(
     resolveWorktreeIsolationFromCwd({
       cwd: worktreeCwd("epic-thompson"),
       argv: [],
       env: { XDT_SCHEDULER_PASSIVE: "1" },
-    }),
-    { worktreeName: "epic-thompson" },
+    }).worktreeName,
+    isolationNamePattern("epic-thompson"),
   );
   // 但 restart 链路的 --preserve-running 经 XDT_RESTART_MANAGED 表达共享意图
   assert.equal(
@@ -434,15 +474,26 @@ test("applyWorktreeIsolationEnv clears host-inherited launch overrides and injec
     XDT_USER_DATA_DIR: "C:\\host\\sandbox",
     XDT_USER_DATA_DIR_EPOCH: "1",
     XDT_DEVICE_ID_OVERRIDE: "dev-host-abc",
+    XDT_BROWSER_RUNTIME_DIR: "C:\\host\\sandbox\\browser-runtime",
     XDT_SCHEDULER_PASSIVE: "1",
     XDT_ISOLATED_NAME: "host-sandbox",
+    XDT_ISOLATED_AUTH: "1",
+    XDT_ALLOW_DEV_OAUTH_WRITE: "1",
+    XDT_ISOLATED_AUTH_PROOF: "host-proof",
     UNRELATED: "keep",
   };
   const env = applyWorktreeIsolationEnv(inherited, "epic-thompson");
   assert.equal(env.XDT_USER_DATA_DIR, undefined);
   assert.equal(env.XDT_USER_DATA_DIR_EPOCH, undefined);
   assert.equal(env.XDT_DEVICE_ID_OVERRIDE, undefined);
+  // 宿主固定的 browser runtime 目录必须清掉，新 Electron 才会按新 userData 重算
+  // （否则持久 Cookie/登录态仍写在宿主目录；review-pr P1, PR #2640）。
+  assert.equal(env.XDT_BROWSER_RUNTIME_DIR, undefined);
   assert.equal(env.XDT_SCHEDULER_PASSIVE, undefined);
+  // isolated-auth 授权只在 restart 本次调用内有效，裸 dev 没有授权路径。
+  assert.equal(env.XDT_ISOLATED_AUTH, undefined);
+  assert.equal(env.XDT_ALLOW_DEV_OAUTH_WRITE, undefined);
+  assert.equal(env.XDT_ISOLATED_AUTH_PROOF, undefined);
   assert.equal(env.XDT_ISOLATED, "1");
   assert.equal(env.XDT_ISOLATED_NAME, "epic-thompson");
   assert.equal(env.UNRELATED, "keep");
@@ -451,6 +502,7 @@ test("applyWorktreeIsolationEnv clears host-inherited launch overrides and injec
   // 纯函数：不改入参
   assert.equal(inherited.XDT_USER_DATA_DIR, "C:\\host\\sandbox");
   assert.equal(inherited.XDT_ISOLATED_NAME, "host-sandbox");
+  assert.equal(inherited.XDT_BROWSER_RUNTIME_DIR, "C:\\host\\sandbox\\browser-runtime");
 });
 
 test("applyWorktreeIsolationEnv clears restart-derived userData even without the dev-host marker", () => {
@@ -461,12 +513,14 @@ test("applyWorktreeIsolationEnv clears restart-derived userData even without the
       XDT_USER_DATA_DIR: "/host/sandbox",
       XDT_USER_DATA_DIR_EPOCH: "1",
       XDT_DEVICE_ID_OVERRIDE: "dev-host-abc",
+      XDT_BROWSER_RUNTIME_DIR: "/host/sandbox/browser-runtime",
     },
     "epic-thompson",
   );
   assert.equal(env.XDT_USER_DATA_DIR, undefined);
   assert.equal(env.XDT_USER_DATA_DIR_EPOCH, undefined);
   assert.equal(env.XDT_DEVICE_ID_OVERRIDE, undefined);
+  assert.equal(env.XDT_BROWSER_RUNTIME_DIR, undefined);
   assert.equal(env.XDT_ISOLATED, "1");
   assert.equal(env.XDT_ISOLATED_NAME, "epic-thompson");
 });
@@ -474,12 +528,24 @@ test("applyWorktreeIsolationEnv clears restart-derived userData even without the
 test("applyWorktreeIsolationEnv respects a human-set userData override", () => {
   // 人肉在 shell 里显式设 XDT_USER_DATA_DIR（无宿主信号）时按 docs「已手动设则尊重」
   // 保留；自动隔离只补隔离意图与独立 deviceId，不静默改目录（review-pr P1, PR #2640）。
+  // isolated-auth 标记例外：它们不是用户配置，裸 dev 一律清除。
   const env = applyWorktreeIsolationEnv(
-    { XDT_USER_DATA_DIR: "D:\\my\\custom-profile", XDT_DEVICE_ID_OVERRIDE: "my-device" },
+    {
+      XDT_USER_DATA_DIR: "D:\\my\\custom-profile",
+      XDT_DEVICE_ID_OVERRIDE: "my-device",
+      XDT_BROWSER_RUNTIME_DIR: "D:\\my\\browser-runtime",
+      XDT_ISOLATED_AUTH: "1",
+      XDT_ALLOW_DEV_OAUTH_WRITE: "1",
+      XDT_ISOLATED_AUTH_PROOF: "human-proof",
+    },
     "epic-thompson",
   );
   assert.equal(env.XDT_USER_DATA_DIR, "D:\\my\\custom-profile");
   assert.equal(env.XDT_DEVICE_ID_OVERRIDE, "my-device");
+  assert.equal(env.XDT_BROWSER_RUNTIME_DIR, "D:\\my\\browser-runtime");
+  assert.equal(env.XDT_ISOLATED_AUTH, undefined);
+  assert.equal(env.XDT_ALLOW_DEV_OAUTH_WRITE, undefined);
+  assert.equal(env.XDT_ISOLATED_AUTH_PROOF, undefined);
   assert.equal(env.XDT_ISOLATED, "1");
   assert.equal(env.XDT_ISOLATED_NAME, "epic-thompson");
 });

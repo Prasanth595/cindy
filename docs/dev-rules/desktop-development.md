@@ -140,7 +140,9 @@ checkout 的启动器顶掉）。因此并行多开的标准姿势是：**每个
 （不经 restart 包装的人类/agent 入口）从 `<repo>/.cindy-worktrees/<名字>`（含迁移前
 `.xdt-worktrees/<名字>`）下启动时，若没有显式传 `--isolated` / `--passive`、也不是
 restart 链路（`XDT_RESTART_MANAGED=1`），启动包装自动注入 `XDT_ISOLATED=1` +
-`XDT_ISOLATED_NAME=<worktree 名>`（名字不合法时回落默认沙箱，并先删除继承的旧名字），
+`XDT_ISOLATED_NAME=<worktree 名>-<6 位 checkout 路径摘要>`（与 restart 的
+`--isolated=@worktree` 同一派生规则，避免同机不同 clone 的同名 worktree 或名为
+`dev` 的 worktree 共用沙箱；名字本身不合法时回落默认沙箱，并先删除继承的旧名字），
 并在控制台打印提示——否则 dev 会沿用区域默认 profile + 物理机 deviceId，登录后把同机
 正式版的设备连接顶掉、覆盖其服务端 refresh token（4409 → `INVALID_REFRESH_TOKEN` →
 正式版被登出）。显式传入任一模式时保持原语义；baseRepo 直跑 `pnpm dev:remote` 仍是
@@ -148,16 +150,20 @@ restart 链路（`XDT_RESTART_MANAGED=1`），启动包装自动注入 `XDT_ISOL
 命中自动隔离时还会清除**继承自宿主 dev 进程**的启动覆写：存在 `XDT_DESKTOP_DEV_MODE`
 （dev wrapper 注入 Electron、会被 agent 子进程继承）或 `XDT_USER_DATA_DIR_EPOCH=1`
 （restart 派生的可信纪元信号）时，删除继承的 `XDT_USER_DATA_DIR` /
-`XDT_DEVICE_ID_OVERRIDE` / `XDT_SCHEDULER_PASSIVE`，让沙箱目录与 deviceId 由注入的
-`XDT_ISOLATED` / `XDT_ISOLATED_NAME` 正常派生。人工在 shell 里显式设置的
+`XDT_DEVICE_ID_OVERRIDE` / `XDT_BROWSER_RUNTIME_DIR`，让沙箱目录、deviceId 与
+browser runtime 目录由注入的 `XDT_ISOLATED` / `XDT_ISOLATED_NAME` 正常派生；
+`XDT_SCHEDULER_PASSIVE` 与 `XDT_ISOLATED_AUTH` / `XDT_ALLOW_DEV_OAUTH_WRITE` /
+`XDT_ISOLATED_AUTH_PROOF` 无论来源都清除（passive 属于宿主共享 profile；isolated-auth
+授权只在 restart 本次调用内有效，裸 dev 没有授权路径）。人工在 shell 里显式设置的
 `XDT_USER_DATA_DIR` / `XDT_DEVICE_ID_OVERRIDE` 不带这两个信号，按上文「已手动设则
 尊重」保留，不被静默丢弃。
 注意 `--preserve-running` 与单独设置的 `XDT_SCHEDULER_PASSIVE=1` **不豁免**自动隔离
 （见下方说明）。
 **restart 链路（`restart-desktop-remote.mjs`）不受此自动隔离影响**：restart 会置
-`XDT_RESTART_MANAGED=1` 显式表态（其参数契约即语义：无参=共库+正常调度、
-`--isolated`=隔离、`--passive` / `--preserve-running`=共享），自动隔离判定识别后一律
-不干预——避免 worktree 内无参 restart 被静默改造成隔离沙箱。该标记是**一跳（one-hop）
+`XDT_RESTART_MANAGED=1` 显式表态（其参数契约即语义：无参 / `--passive` 由
+`normalizeDesktopRestartArgv()` 补成固定 `--isolated=dev` 沙箱，`--isolated=<名>` /
+`--isolated=@worktree` 用命名沙箱，只有 `--shared` / `--preserve-running` 选择共享
+正式 profile），自动隔离判定识别后一律不干预。该标记是**一跳（one-hop）
 启动标记**：`dev-remote-env.mjs` / `dev-local-env.mjs` 在构造完传给 Electron 的环境后
 即删除它，避免被 agent 子进程继承后禁用自动隔离（agent 在 worktree 跑裸 `dev:remote`
 时防护必须恢复）。

@@ -1216,12 +1216,13 @@ async function main() {
   }
   const killOnly = argv.includes('--kill-only');
   const waitReady = argv.includes('--wait-ready');
-  // 显式表态：本启动由 restart 参数契约管理（无参=共库+正常调度、--isolated=隔离、
-  // --passive / --preserve-running=共享），经 devEnvPrefix 白名单透传给 dev 进程。
-  // worktree 内裸 dev:remote 的自动隔离兜底（desktop-dev-region.mjs 的
-  // resolveWorktreeIsolationFromCwd）据此识别 restart 链路并不干预——否则无参
-  // restart 在 worktree 内会被静默改造成隔离沙箱，违背「不带 = 共库 + 正常调度」
-  // 契约（review-pr P1，PR #2640）。
+  // 显式表态：本启动由 restart 参数契约管理（无参 / --passive 由
+  // normalizeDesktopRestartArgv() 补成固定 --isolated=dev，--shared /
+  // --preserve-running 共享正式 profile，--isolated=@worktree 走命名沙箱），经
+  // devEnvPrefix 白名单透传给 dev 进程。worktree 内裸 dev:remote 的自动隔离兜底
+  // （desktop-dev-region.mjs 的 resolveWorktreeIsolationFromCwd）据此识别 restart
+  // 链路并不干预——否则 restart 已选定的沙箱会被自动隔离再改一次（review-pr P1,
+  // PR #2640）。
   process.env.XDT_RESTART_MANAGED = '1';
   const preserveRunning = argv.includes('--preserve-running');
   const replaceRunningArg = argv.find((arg) => arg.startsWith('--replace-running-root='));
