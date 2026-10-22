@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -25,6 +26,52 @@ const WORKTREE_NAME_DIGEST_LEN = 6;
 function worktreeHashKey(rootDir, foldCase) {
   const resolved = path.resolve(rootDir).replaceAll("\\", "/");
   return foldCase ? resolved.toLowerCase() : resolved;
+}
+
+/**
+ * 探测已存在的目录所在卷是否大小写不敏感（macOS 可有大小写敏感卷、Windows 可有
+ * 大小写敏感目录）。同名路径是否折叠不能按平台猜，必须看文件系统真值。
+ */
+export function volumeIsCaseInsensitive(existingDir) {
+  let dir = existingDir;
+  for (;;) {
+    const parent = path.dirname(dir);
+    const atRoot = parent === dir;
+    if (!atRoot) {
+      try {
+        if (fs.statSync(parent).dev !== fs.statSync(dir).dev) return false;
+      } catch {
+        return false;
+      }
+    }
+    const name = path.basename(dir);
+    const flipped = name.replace(/[a-zA-Z]/g, (ch) => (
+      ch === ch.toLowerCase() ? ch.toUpperCase() : ch.toLowerCase()
+    ));
+    if (flipped !== name) {
+      try {
+        return fs.realpathSync.native(path.join(parent, flipped))
+          === fs.realpathSync.native(dir);
+      } catch {
+        return false;
+      }
+    }
+    if (atRoot) return false;
+    dir = parent;
+  }
+}
+
+/**
+ * 给 `isolationNameFromWorktree` 的卷语义参数：目录不存在（首启/测试假路径）时
+ * 返回 `{}`，让调用方沿用平台默认；存在时按卷真值决定是否折叠大小写。
+ */
+export function foldCaseOption(dir) {
+  try {
+    fs.statSync(dir);
+    return { foldCase: volumeIsCaseInsensitive(dir) };
+  } catch {
+    return {};
+  }
 }
 
 /**
@@ -280,7 +327,8 @@ export function worktreeRootFromPath(cwd) {
  * 语义：
  * - cwd 命中托管 worktree 且调用方未声明任何显式模式时返回 `{ worktreeName }`；
  *   worktree 名按 checkout 完整路径派生 `<名>-<6 位摘要>`（`isolationNameFromWorktree`，
- *   避免同机不同 clone 的同名 worktree 共用沙箱）；worktree 名本身不合法时返回
+ *   摘要的路径按卷语义决定是否折叠大小写，避免同机不同 clone 的同名 worktree 共用
+ *   沙箱——包括只在大小写上不同的真实不同 checkout）；worktree 名本身不合法时返回
  *   `{ worktreeName: null }`（仍隔离，回退默认沙箱，与 devCliFlags 的
  *   invalidIsolationName 语义一致——回落到不隔离会混进正式版数据）；
  * - 显式 `--isolated[=<名>]` / `--passive`（argv，人类裸跑 `pnpm dev:remote -- --passive`
@@ -332,7 +380,8 @@ export function resolveWorktreeIsolationFromCwd({
   const name = worktreeNameFromPath(cwd);
   if (name === null) return null;
   if (!ISOLATION_NAME_RE.test(name)) return { worktreeName: null };
+  const root = worktreeRootFromPath(cwd) ?? name;
   return {
-    worktreeName: isolationNameFromWorktree(worktreeRootFromPath(cwd) ?? name),
+    worktreeName: isolationNameFromWorktree(root, foldCaseOption(root)),
   };
 }

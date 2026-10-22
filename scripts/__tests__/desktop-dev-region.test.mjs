@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
@@ -7,6 +9,8 @@ import {
   applyWorktreeIsolationEnv,
   desktopUserDataDirForRegion,
   desktopUserDataDirNameForRegion,
+  foldCaseOption,
+  isolationNameFromWorktree,
   resolveDesktopDevRegion,
   resolveDesktopDevStartupConfig,
   resolveWorktreeIsolationFromCwd,
@@ -283,6 +287,34 @@ test("auto sandbox names include a checkout digest so same-named worktrees never
   assert.notEqual(first, second);
   assert.ok(first.length <= 32);
   assert.ok(second.length <= 32);
+});
+
+test("auto sandbox name applies the checkout volume's case-folding semantics", async () => {
+  // 摘要默认按平台猜大小写；自动路径必须复用 restart 的卷探测结果，否则 macOS
+  // 大小写敏感卷上两个只差大小写的 checkout 会得到同一摘要（review-pr P2, PR #2640）。
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cindy-worktree-name-"));
+  const worktreeRoot = path.join(tempRoot, ".cindy-worktrees", "same-name");
+  await mkdir(worktreeRoot, { recursive: true });
+  try {
+    assert.deepEqual(
+      resolveWorktreeIsolationFromCwd({ cwd: worktreeRoot, argv: [], env: {} }),
+      {
+        worktreeName: isolationNameFromWorktree(
+          worktreeRoot,
+          foldCaseOption(worktreeRoot),
+        ),
+      },
+    );
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("foldCaseOption falls back to the platform default for a missing checkout", () => {
+  assert.deepEqual(
+    foldCaseOption(path.join(".cindy-worktrees", "definitely-missing-checkout")),
+    {},
+  );
 });
 
 test("worktree dev launch honors explicit isolation/sharing intent and never overrides it", () => {

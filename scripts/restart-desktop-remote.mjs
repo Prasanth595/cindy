@@ -9,7 +9,9 @@ import {
   applyDesktopDevStartupConfig,
   DESKTOP_DEV_REGIONS,
   desktopUserDataDirNameForRegion,
+  foldCaseOption,
   resolveDesktopDevRegion,
+  volumeIsCaseInsensitive,
 } from './shared/desktop-dev-region.mjs';
 import {
   buildDesktopDevVerdictFromFailure,
@@ -623,44 +625,6 @@ export function inheritedUserDataBlocksNamedIsolation(isolatedArg, envUserDataDi
   if (!envUserDataDir || !isolatedArg || !isolatedArg.includes('=')) return false;
   if (!looksLikeCindyManagedUserDataDir(envUserDataDir)) return false;
   return canonicalizeUserDataDir(envUserDataDir) !== canonicalizeUserDataDir(derivedDir);
-}
-
-function volumeIsCaseInsensitive(existingDir) {
-  let dir = existingDir;
-  for (;;) {
-    const parent = path.dirname(dir);
-    const atRoot = parent === dir;
-    if (!atRoot) {
-      try {
-        if (fs.statSync(parent).dev !== fs.statSync(dir).dev) return false;
-      } catch {
-        return false;
-      }
-    }
-    const name = path.basename(dir);
-    const flipped = name.replace(/[a-zA-Z]/g, (ch) => (
-      ch === ch.toLowerCase() ? ch.toUpperCase() : ch.toLowerCase()
-    ));
-    if (flipped !== name) {
-      try {
-        return fs.realpathSync.native(path.join(parent, flipped))
-          === fs.realpathSync.native(dir);
-      } catch {
-        return false;
-      }
-    }
-    if (atRoot) return false;
-    dir = parent;
-  }
-}
-
-function foldCaseOption(dir) {
-  try {
-    fs.statSync(dir);
-    return { foldCase: volumeIsCaseInsensitive(dir) };
-  } catch {
-    return {};
-  }
 }
 
 export function canonicalizeUserDataDir(dir) {
