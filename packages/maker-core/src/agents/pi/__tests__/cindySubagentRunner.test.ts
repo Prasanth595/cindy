@@ -403,6 +403,12 @@ fs.appendFileSync(process.env.CINDY_TEST_PI_ARGS, JSON.stringify(process.argv.sl
 if (process.env.CINDY_TEST_PI_PIDS) {
   fs.appendFileSync(process.env.CINDY_TEST_PI_PIDS, String(process.pid) + '\\n');
 }
+${options.surviveStdinEnd
+    // An orphan must outlive its runner's pipes. A prompt already delivered
+    // when the runner dies is still answered; that write fails with EPIPE and,
+    // unhandled, ends this process, so the case would race its own premise.
+    ? "process.stdout.on('error', () => {});\nprocess.stderr.on('error', () => {});"
+    : ''}
 if (process.env.CINDY_TEST_PI_TOKENS) {
   fs.appendFileSync(process.env.CINDY_TEST_PI_TOKENS, JSON.stringify(process.env.CINDY_PI_SESSION_TOKEN || null) + '\\n');
 }
