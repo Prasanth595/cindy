@@ -10,9 +10,18 @@ import {
   providerGroupDeviceCount,
   providerGroupMemberKey,
   providerGroupSummaryForWire,
+  parseProviderGroupRebalanceSuggestion,
   parseProviderGroupRemoteRequest,
   parseProviderGroupRemoteView,
+  parseProviderGroupRemotePick,
 } from '../providerGroup';
+
+// Unit protocol: legacy or malformed quota hints cannot manufacture an automatic wait.
+it.each([undefined, {}, { resetAtMs: '5000' }, { resetAtMs: -1 }, { resetAtMs: Infinity }])(
+  'ignores unavailable replies without a valid quota hint: %j', (usageLimit) => {
+    expect(parseProviderGroupRemotePick({ kind: 'unavailable', usageLimit }, 'anthropic')).toEqual({ kind: 'unavailable' });
+  },
+);
 
 describe('group detail diagnostics compatibility', () => {
   const config = { members: [{ kind: 'local' }] };
@@ -38,6 +47,64 @@ describe('group detail diagnostics compatibility', () => {
       expect(member.guestSupport).toBeUndefined();
     },
   );
+
+  // Unit protocol (protocol-compatibility.md 供应商组配额): the same-account `view` may carry one quota window
+  // for the progress bar. Old owners omit it; malformed values must not draw a bar from invented numbers.
+  it('keeps a valid quota window and clamps its percentage', () => {
+    const week = 7 * 86_400_000;
+    expect(parseProviderGroupRemoteView(payload({ quota: { usedPercent: 140, resetAtMs: 5_000, windowMs: week } }), 'anthropic')
+      .members[0].quota).toEqual({ usedPercent: 100, resetAtMs: 5_000, windowMs: week });
+    expect(parseProviderGroupRemoteView(payload({ quota: { usedPercent: 0, resetAtMs: null, windowMs: week } }), 'anthropic')
+      .members[0].quota).toEqual({ usedPercent: 0, resetAtMs: null, windowMs: week });
+  });
+
+  it.each([
+    'full', { usedPercent: '40', resetAtMs: 5_000, windowMs: 1 }, { usedPercent: 40, windowMs: 1 },
+    { usedPercent: 40, resetAtMs: -1, windowMs: 1 }, { usedPercent: 40, resetAtMs: 5_000, windowMs: 0 },
+    { usedPercent: 40, resetAtMs: 5_000, windowMs: 32 * 86_400_000 },
+  ])('drops a malformed quota window: %j', (quota) => {
+    expect(parseProviderGroupRemoteView(payload({ quota }), 'anthropic').members[0]).not.toHaveProperty('quota');
+  });
+
+  it('never takes a quota window for a shared-in computer', () => {
+    const raw = {
+      config: { members: [{ kind: 'share', agentDeviceId: 'share:s1', providerId: 'anthropic' }] },
+      members: [{ key: 'share:s1:anthropic', state: 'available', quota: { usedPercent: 40, resetAtMs: 5_000, windowMs: 1_000 } }],
+    };
+    expect(parseProviderGroupRemoteView(raw, 'anthropic').members[0]).not.toHaveProperty('quota');
+  });
+});
+
+// Unit protocol (protocol-compatibility.md 供应商组任务进行中换号)：手机与远程控制经 `provider-group:remote` 问任务所在电脑
+// 要不要换号、转达用户的选择。旧端不认识这两个动作(客户端按不提议处理)；被控端必须拒绝改不了组的坏请求，客户端不能
+// 用编造的提议弹窗。
+describe('switching accounts between messages', () => {
+  const quota = { usedPercent: 20, resetAtMs: 5_000, windowMs: 7 * 86_400_000 };
+
+  it('reads both requests and rejects a malformed choice', () => {
+    expect(parseProviderGroupRemoteRequest({ action: 'rebalance-suggestion', sessionId: 's1' }))
+      .toEqual({ action: 'rebalance-suggestion', sessionId: 's1' });
+    expect(parseProviderGroupRemoteRequest({ action: 'rebalance-decision', sessionId: 's1', memberKey: 'device:mini:anthropic', remember: true }))
+      .toEqual({ action: 'rebalance-decision', sessionId: 's1', memberKey: 'device:mini:anthropic', remember: true });
+    for (const bad of [{ remember: 'true' }, { memberKey: 'a b' }, { memberKey: '' }]) {
+      expect(() => parseProviderGroupRemoteRequest({
+        action: 'rebalance-decision', sessionId: 's1', memberKey: 'device:mini:anthropic', remember: false, ...bad,
+      })).toThrow();
+    }
+  });
+
+  it('only turns a well-formed reply into a suggestion', () => {
+    // 电脑名和账号名分别合法，组合名称不能让整条提议消失（review #6693）。
+    const label = `${'D'.repeat(128)} · ${'A'.repeat(128)}`;
+    expect(parseProviderGroupRebalanceSuggestion({ kind: 'ask', memberKey: 'local', label, quota })?.label).toBe(label);
+    expect(parseProviderGroupRebalanceSuggestion({ kind: 'ask', memberKey: 'local', label: `${label}X`, quota })).toBeNull();
+    expect(parseProviderGroupRebalanceSuggestion({ kind: 'auto', memberKey: 'device:mini:anthropic', label: 'Mini', quota }))
+      .toEqual({ kind: 'auto', memberKey: 'device:mini:anthropic', label: 'Mini', quota });
+    for (const raw of [null, { ok: false }, { kind: 'move', memberKey: 'local', label: 'Mini', quota },
+      { kind: 'ask', memberKey: 'local', label: '', quota }, { kind: 'ask', memberKey: 'local', label: 'Mini', quota: { usedPercent: 20 } }]) {
+      expect(parseProviderGroupRebalanceSuggestion(raw)).toBeNull();
+    }
+  });
 });
 
 describe('accounts on the same computer', () => {

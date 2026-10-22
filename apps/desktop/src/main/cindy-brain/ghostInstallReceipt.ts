@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { readBoundedFileNoFollowSync } from '../utils/readBoundedFile.js';
+import { readBoundedFileNoFollow, readBoundedFileNoFollowSync } from '../utils/readBoundedFile.js';
 import { isValidPluginNamespace } from '@cindy/plugin-protocol';
 
 import {
@@ -85,6 +85,32 @@ export function assertManagedPluginParentSync(
  * 校验 —— 只认前缀会让被改写的 receipt 把任意字符串塞进 renderer 的 img src。
  */
 const ICON_DATA_URL_RE = /^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/]+={0,2}$/;
+const MAX_CACHED_ICON_DATA_URLS = 64;
+const MAX_CACHED_ICON_DATA_URL_BYTES = 4 * 1024 * 1024;
+const validatedIconDataUrls = new Set<string>();
+let cachedIconDataUrlBytes = 0;
+
+/** Only immutable, fully validated icon strings are reused, never receipt approval. */
+function isValidIconDataUrl(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+  if (validatedIconDataUrls.has(value)) {
+    validatedIconDataUrls.delete(value);
+    validatedIconDataUrls.add(value);
+    return true;
+  }
+  const bytes = Buffer.byteLength(value, 'utf8');
+  if (bytes > MAX_ICON_DATA_URL_BYTES || !ICON_DATA_URL_RE.test(value)) return false;
+  while (validatedIconDataUrls.size >= MAX_CACHED_ICON_DATA_URLS ||
+      cachedIconDataUrlBytes + bytes > MAX_CACHED_ICON_DATA_URL_BYTES) {
+    const oldest = validatedIconDataUrls.values().next().value;
+    if (oldest === undefined) break;
+    validatedIconDataUrls.delete(oldest);
+    cachedIconDataUrlBytes -= Buffer.byteLength(oldest, 'utf8');
+  }
+  validatedIconDataUrls.add(value);
+  cachedIconDataUrlBytes += bytes;
+  return true;
+}
 
 /**
  * 一次明确批准的插件安装事实；只允许 Host 写入安装目录之外的状态根。
@@ -96,6 +122,7 @@ const ICON_DATA_URL_RE = /^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/
 export interface GhostInstallReceipt {
   /** Explicit Host confirmation; absent on older receipts, never inferred from manifest. */
   taskCapabilityApproved?: true;
+  targetCapabilityApproved?: true;
   schemaVersion: typeof RECEIPT_SCHEMA_VERSION;
   id: string;
   /** Missing is a pre-namespace receipt. null is root; a string is an organization. */
@@ -251,8 +278,7 @@ export class GhostInstallReceiptStore {
     return path.resolve(this.getRootDir());
   }
 
-  private assertPathParentSync(absPath: string, createMissing = false): boolean {
-    const root = this.rootDir();
+  private assertPathParentSync(absPath: string, createMissing = false, root = this.rootDir()): boolean {
     return assertManagedPluginParentSync(
       root,
       path.relative(root, absPath).split(path.sep).join('/'),
@@ -278,6 +304,31 @@ export class GhostInstallReceiptStore {
     if (result.state === 'approved') return result;
     if (result.state === 'missing') return { state: 'legacy-unapproved' };
     return { state: 'invalid', reason: result.reason };
+  }
+
+  /** Bind the owner root before yielding; use the same validation as the sync reader. */
+  async readAsync(id: string): Promise<GhostInstallReceiptReadResult> {
+    const root = this.rootDir();
+    const receiptPath = this.receiptPath(id, root);
+    let bytes: Buffer | null;
+    try {
+      let parent = root;
+      for (const segment of id.split('/').slice(0, -1)) {
+        parent = path.join(parent, segment);
+        if (await classifyGhostDirEntry(parent) !== 'directory') {
+          throw new Error('managed plugin parent is not a real directory');
+        }
+      }
+      bytes = await readBoundedFileNoFollow(receiptPath, MAX_RECEIPT_BYTES, {
+        nonBlocking: true,
+        containWithin: await fs.promises.realpath(root),
+      });
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === 'ENOENT'
+        ? { state: 'legacy-unapproved' }
+        : { state: 'invalid', reason: error instanceof Error ? error.message : String(error) };
+    }
+    return this.parseReceiptBytes(id, bytes);
   }
 
   captureLegacyFirstPartyEligibilitySync(id: string, expectedRevision: string): void {
@@ -309,14 +360,17 @@ export class GhostInstallReceiptStore {
 
   /** Recovery must not confuse transient state-root IO with missing/corrupt approval state. */
   readForRecovery(id: string): GhostInstallReceiptRecoveryReadResult {
-    const receiptPath = this.receiptPath(id);
+    // Bind path construction and all containment checks to one resolved owner
+    // root for this read. Each call still opens and validates the actual bytes.
+    const root = this.rootDir();
+    const receiptPath = this.receiptPath(id, root);
     let bytes: Buffer | null;
     try {
-      if (!this.assertPathParentSync(receiptPath)) {
+      if (!this.assertPathParentSync(receiptPath, false, root)) {
         return { state: 'missing' };
       }
       bytes = readBoundedFileNoFollowSync(receiptPath, MAX_RECEIPT_BYTES, {
-        containWithin: this.realRootDirSync(),
+        containWithin: fs.realpathSync(root),
       });
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
@@ -327,6 +381,10 @@ export class GhostInstallReceiptStore {
         reason: error instanceof Error ? error.message : String(error),
       };
     }
+    return this.parseReceiptBytes(id, bytes);
+  }
+
+  private parseReceiptBytes(id: string, bytes: Buffer | null): Extract<GhostInstallReceiptReadResult, { state: 'approved' | 'invalid' }> {
     if (!bytes) {
       return { state: 'invalid', reason: 'receipt 不是普通文件或超过大小上限' };
     }
@@ -996,9 +1054,9 @@ export class GhostInstallReceiptStore {
     return { state: 'ok', ids, blocked };
   }
 
-  private receiptPath(id: string): string {
+  private receiptPath(id: string, root = this.rootDir()): string {
     if (!isValidPluginInstallRelId(id)) throw new Error('invalid ghost id for receipt path');
-    return path.join(this.rootDir(), ...id.split('/').slice(0, -1), `${id.split('/').at(-1)}.json`);
+    return path.join(root, ...id.split('/').slice(0, -1), `${id.split('/').at(-1)}.json`);
   }
 
   private async ensureSkillSnapshot(
@@ -1194,6 +1252,7 @@ export function readLegacyInstallTrust(dir: string): GhostTrustInfo | null {
 
 export function createGhostInstallReceipt(input: {
   taskCapabilityApproved?: true;
+  targetCapabilityApproved?: true;
   manifest: GhostManifest;
   localeResources: Record<string, GhostManifestLocaleResource>;
   enabled: boolean;
@@ -1223,6 +1282,7 @@ export function createGhostInstallReceipt(input: {
     trust: input.trust,
     skillContentSha256: input.skillContentSha256,
     ...(input.taskCapabilityApproved === true ? { taskCapabilityApproved: true as const } : {}),
+    ...(input.targetCapabilityApproved === true ? { targetCapabilityApproved: true as const } : {}),
     ...(input.packageSha256 ? { packageSha256: input.packageSha256 } : {}),
     ...(input.iconDataUrl ? { iconDataUrl: input.iconDataUrl } : {}),
     ...(input.installOrigin !== undefined ? { installOrigin: input.installOrigin } : {}),
@@ -1352,9 +1412,7 @@ function validateReceipt(
   }
   if (
     value.iconDataUrl !== undefined &&
-    (typeof value.iconDataUrl !== 'string' ||
-      Buffer.byteLength(value.iconDataUrl, 'utf8') > MAX_ICON_DATA_URL_BYTES ||
-      !ICON_DATA_URL_RE.test(value.iconDataUrl))
+    !isValidIconDataUrl(value.iconDataUrl)
   ) {
     return { ok: false, reason: 'receipt iconDataUrl 不合法' };
   }
@@ -1419,6 +1477,7 @@ function validateReceipt(
       trust,
       skillContentSha256,
       ...(value.taskCapabilityApproved === true ? { taskCapabilityApproved: true as const } : {}),
+      ...(value.targetCapabilityApproved === true ? { targetCapabilityApproved: true as const } : {}),
       ...(typeof value.packageSha256 === 'string' ? { packageSha256: value.packageSha256 } : {}),
       ...(typeof value.iconDataUrl === 'string' ? { iconDataUrl: value.iconDataUrl } : {}),
       ...(installOrigin !== undefined ? { installOrigin } : {}),

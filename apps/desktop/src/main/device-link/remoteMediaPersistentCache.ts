@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import { constants } from 'node:fs';
+import { parseAttachmentOssRef, parsePeerAttachmentRef } from '@cindy/device-link';
+import { blobUrl, extForMime } from '../cindy-media/blobStore';
 import { getActiveAppSession } from '../appSessionState';
 import { getDbClient } from '../localDb/client/current';
 import { integrationCacheGet, integrationCachePut } from '../cindy-media/integrationCache';
@@ -35,6 +37,41 @@ export function isImmutableRemoteMedia(url: string): boolean {
     /^cindy-media:\/\/blobs\/[a-f0-9]{64}\.[a-z0-9]+$/.test(url) ||
     /^xdt-image:\/\/[^/?#]+\/[^/?#]+$/.test(url)
   );
+}
+
+/** Seed the existing device/account cache with the actual upload, including compressed
+ * images. Capture validity before uploading; account switches and cache clearing win. */
+export function createSentImageRetainer(device: string) {
+  const assertCurrent = captureRemoteMediaCacheValidity();
+  return async (source: string | Buffer, ref: string): Promise<void> => {
+    assertCurrent();
+    const metadata = parseAttachmentOssRef(ref) ?? parsePeerAttachmentRef(ref);
+    // Same bound as the remote protocol's buffered image path. Never read a large
+    // non-image attachment into memory just to keep a preview.
+    if (!metadata?.mimeType?.startsWith('image/') || !metadata.sha256 || !metadata.size
+      || metadata.size > 64 * 1024 * 1024) return;
+    let bytes: Buffer;
+    if (typeof source === 'string') {
+      const file = await fs.open(source, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+      try {
+        const stat = await file.stat();
+        if (!stat.isFile() || stat.size !== metadata.size) return;
+        bytes = Buffer.alloc(stat.size);
+        let offset = 0;
+        while (offset < bytes.length) {
+          const { bytesRead } = await file.read(bytes, offset, bytes.length - offset, offset);
+          if (!bytesRead) return;
+          offset += bytesRead;
+        }
+      } finally { await file.close(); }
+    } else bytes = source;
+    assertCurrent();
+    if (bytes.length !== metadata.size || createHash('sha256').update(bytes).digest('hex') !== metadata.sha256) return;
+    const mimeType = sniffMediaMime(bytes, metadata.mimeType);
+    const ext = mimeType && extForMime(mimeType);
+    if (!mimeType?.startsWith('image/') || !ext) return;
+    await remoteMediaPersistentCache(device, blobUrl(metadata.sha256, ext))?.put(bytes, mimeType);
+  };
 }
 
 /** Only an index adapter: bytes and references belong to the existing media warehouse.

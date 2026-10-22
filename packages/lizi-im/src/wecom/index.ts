@@ -462,7 +462,7 @@ export class WecomIM extends BaseIM implements TextChannelIM {
       .filter(Boolean)
       .join("\n\n");
     const chunks = chunkWecomMarkdown(
-      visibleText || (attachments.length > 0 ? "📎 附件如下" : "_(空回复)_"),
+      visibleText || (attachments.length > 0 ? "📎 附件如下" : ""),
     );
     await this.sendFinalChunks(output.userId, chunks);
     let failedAttachmentCount = 0;

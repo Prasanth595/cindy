@@ -53,7 +53,8 @@ describe('稳定层:能力必须写进提示词', () => {
     expect(stable).toContain('沿用当前任务的权限档与用户授权');
     expect(stable).not.toContain('OWNER_TURN_REQUIRED');
     expect(stable).not.toContain('TASK_OUT_OF_SCOPE');
-    expect(stable).toContain('add_workbench_project');
+    expect(stable).toContain('set_workbench_task_responsibility');
+    expect(stable).not.toContain('add_workbench_project');
     expect(stable).not.toContain('你能建普通自动化');
     main.capabilities.automationEnabled = true;
     expect(buildBotStableTier(main)).toContain('schedule_create');

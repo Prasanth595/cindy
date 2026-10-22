@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { throwIpcError } from '../../../utils/ipcValidate';
 import { createHistoryViewReader } from '../historyViewReader';
-import { projectHistoryView, type HistoryMessageSource, type HistoryViewItem } from '@cindy/maker-shared/message-window';
+import { historyViewLeaves, projectHistoryView, type HistoryMessageSource, type HistoryViewItem } from '@cindy/maker-shared/message-window';
 function row(n: number, role = 'thinking'): HistoryMessageSource {
   return { id: String(n), clientId: `c${n}`, rowid: n, role, content: 'body '.repeat(200), createdAt: new Date(1700000000000 + n).toISOString() };
 }
@@ -349,19 +349,23 @@ describe('outline history reads', () => {
     expect(card?.type === 'messages' && card.deferred?.messageCount).toBe(1201);
   });
 
+  // Phone regression (2026-10-22): the 20-item cut separated an Agent header from
+  // its children and disabled folded history. Unit coverage now requires paging
+  // every source row exactly once, including deferred results and live children.
   it.each([
     { lazy: false, outlined: false, large: false },
     { lazy: true, outlined: false, large: false },
     { lazy: true, outlined: true, large: false },
     { lazy: true, outlined: true, large: true },
+    { lazy: true, outlined: true, large: true, newerTail: true },
     { lazy: true, outlined: true, large: false, resultOnly: true },
     { lazy: true, outlined: true, large: false, liveTail: true },
-  ])('falls back instead of cutting an Agent with the returned cursor ($lazy/$outlined/$large/$resultOnly/$liveTail)', async ({ lazy, outlined, large, resultOnly = false, liveTail = false }) => {
+  ])('pages an intact Agent across the item target, retaining the byte limit ($lazy/$outlined/$large/$resultOnly/$liveTail/$newerTail)', async ({ lazy, outlined, large, resultOnly = false, liveTail = false, newerTail = false }) => {
     let n = 0;
     const source = [row(n++, 'user'),
-      { ...row(n++, 'tool_use'), toolUseId: 'a', content: { toolName: 'Agent', input: {} } }];
+      { ...row(n++, 'tool_use'), toolUseId: 'a', content: { toolName: 'Agent', input: { description: 'Full agent description' } } }];
     if (resultOnly) source.push({ ...row(n++, 'tool_use'), toolUseId: 'child-call', content: { toolName: 'Bash', input: {} }, agentMeta: { parentUuid: 'a' } });
-    for (let i = 0; i < (large ? 6 : 30); i++) {
+    for (let i = 0; i < (large ? 6 : 75); i++) {
       source.push(resultOnly || liveTail ? row(n++) : { ...row(n++), agentMeta: { parentUuid: 'a' } });
       source.push({ ...row(n++, 'assistant'), content: '# Result\n' + 'x'.repeat(large ? 200000 : 10), agentMeta: { turnCompleted: true } });
     }
@@ -369,11 +373,54 @@ describe('outline history reads', () => {
       : { ...row(n++), agentMeta: { parentUuid: 'a' } };
     const live = liveTail ? [{ ...tail, id: `history-live:${tail.clientId}` }] : [];
     if (!liveTail) source.push(tail);
+    if (newerTail) source.push(row(n++, 'user'));
     const base = reader(source);
-    const api = createHistoryViewReader({ list: base.list,
-      ...(outlined ? { outline: base.list, hydrate: async (_sid: string, ids: string[]) => source.filter((r) => ids.includes(r.id)) } : {}),
+    // readMessagesList clamps raw reads to 100 even when more rows are requested.
+    const api = createHistoryViewReader({ list: (sid, opts) => base.list(sid, { ...opts, limit: Math.min(opts.limit, 100) }),
+      ...(outlined ? {
+        outline: async (sid: string, opts: { before?: string; after?: string; limit: number }) =>
+          (await base.list(sid, opts)).map((message) => message.role === 'tool_use'
+            ? { ...message, content: { ...message.content as object, input: {} } }
+            : message.role === 'assistant' ? { ...message, content: '# Result\nOutline' } : message),
+        hydrate: async (_sid: string, ids: string[]) => source.filter((r) => ids.includes(r.id)),
+      } : {}),
       anchor: async (_sid, id) => [...source, ...live].find((r) => r.id === id)!, running: () => liveTail, live: () => live });
-    await expect(api.page('s', undefined, lazy)).rejects.toMatchObject({ code: 'UNSUPPORTED_CAPABILITY' });
+    if (large) {
+      let before: string | undefined;
+      if (newerTail) {
+        const page = await api.page('s', undefined, lazy);
+        expect(page.items).toHaveLength(1);
+        expect(page.items[0]).toMatchObject({ type: 'messages', messages: [source.at(-1)] });
+        expect(page.hasMore).toBe(true);
+        before = page.nextCursor!;
+      }
+      await expect(api.page('s', before, lazy)).rejects.toMatchObject({ code: 'UNSUPPORTED_CAPABILITY' });
+      return;
+    }
+    const seen: string[] = [];
+    let before: string | undefined;
+    do {
+      const page = await api.page('s', before, lazy);
+      for (const item of historyViewLeaves(page.items)) {
+        if (item.type === 'messages') {
+          seen.push(...item.messages.map((message) => message.id));
+          // The extra header outside the usual 20 items must also be hydrated.
+          for (const message of item.messages) expect(message.content).toEqual(source.find((r) => r.id === message.id)?.content);
+        }
+        const ref = item.type === 'work' ? item.summary : item.deferred;
+        if (ref) {
+          let after: string | undefined;
+          do {
+            const detail = await api.details('s', ref, after);
+            seen.push(...detail.messages.map((message) => message.id));
+            after = detail.nextCursor ?? undefined;
+          } while (after);
+        }
+      }
+      expect(page.nextCursor).not.toBe(before);
+      before = page.nextCursor ?? undefined;
+    } while (before);
+    expect(seen.sort()).toEqual([...source, ...live].map((message) => message.id).sort());
   });
 
   it('reads visible bodies first across thousands of interleaved subagent rows, then pages only the expanded agent', async () => {

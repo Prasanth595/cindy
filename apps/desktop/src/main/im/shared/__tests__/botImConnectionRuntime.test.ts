@@ -18,6 +18,7 @@ const h = vi.hoisted(() => ({
   archiveCalls: [] as unknown[],
   sent: [] as Array<{ channel: string; payload: unknown }>,
   ownerKey: 'owner-a',
+  drainWechat: vi.fn(async (update: () => void, isCurrent: () => boolean) => { if (isCurrent()) update(); }),
   /** 每次 Telegram setConfig 落盘前调用(测并发添加 / 建连期间切账号)。 */
   beforeTelegramSetConfig: null as (() => Promise<void> | void) | null,
 }));
@@ -82,6 +83,8 @@ vi.mock('../../../security/trustedAppRenderer', () => ({ assertTrustedAppRendere
 import {
   addBotImConnection,
   configureBotImConnectionRuntime,
+  setWechatCompanionBinding,
+  getBotFeishuTransport,
   listBotImConnectionGroups,
   removeBotImConnection,
   setBotImConnectionGroupMode,
@@ -90,7 +93,9 @@ import {
   stopBotImConnections,
   __testing,
 } from '../botImConnectionRuntime';
-import { listBotImConnections, secretKeyPrefixFor } from '../botImConnectionStore';
+import { addBotImConnectionRecord, listBotImConnections, secretKeyPrefixFor } from '../botImConnectionStore';
+import { withBotProfileLocks } from '../../../maker-ipc/botProfileLock';
+import { readWechatChannelSettings, writeWechatCompanionBinding, writeWechatWorkingDir } from '../../wechat/channelSettings';
 import {
   adoptPersonalBot,
   configureBotImPersonalAdoption,
@@ -292,7 +297,9 @@ describe('bot im connection runtime', () => {
     connectOutcome = true;
     telegramConflictAfterConnect = false;
     adoptionTesting.reset();
+    h.drainWechat.mockClear();
     configureBotImConnectionRuntime({
+      removeWechatCompanionBinding: h.drainWechat,
       create: (record) => {
         const prefix = secretKeyPrefixFor(record.id);
         const orchestrator = fakeOrchestrator();
@@ -319,6 +326,48 @@ describe('bot im connection runtime', () => {
       }),
       listKnownGroups: async () => [{ chatId: '-1001', chatName: 'Dev Group' }],
     });
+  });
+
+  // #6439: persisted connections can fail init and remain in instances. Exercise
+  // the real store/start/select lifecycle (unit) instead of a selector replica.
+  it('skips failed and ownerless Feishu connections without changing the resolved recipient', async () => {
+    const states = [
+      { kind: 'error', owner: 'ou_failed' },
+      { kind: 'connected', owner: null },
+      { kind: 'connected', owner: 'ou_target' },
+      { kind: 'connected', owner: 'ou_other' },
+    ];
+    const records: BotImConnectionRecord[] = [];
+    for (let index = 0; index < states.length; index += 1) {
+      records.push(await addBotImConnectionRecord({ botId: 'bot-mia', channel: 'feishu' }, { now: () => index }));
+    }
+    configureBotImConnectionRuntime({
+      removeWechatCompanionBinding: h.drainWechat,
+      create: (record) => {
+        const state = states[records.findIndex((candidate) => candidate.id === record.id)]!;
+        return {
+          kind: 'feishu',
+          im: {
+            init: async () => { if (state.kind === 'error') throw new Error('startup failed'); },
+            dispose: async () => undefined,
+            onStatusChange: () => () => undefined,
+            getStatus: () => ({ kind: state.kind }),
+            getOwnerOpenId: () => state.owner,
+          } as never,
+          orchestrator: fakeOrchestrator() as never,
+        };
+      },
+      settingsIdentity: () => ({ telegramToken: null, feishuAppId: null, wecomBotId: null, dingtalkAppKey: null, discordToken: null }),
+      listKnownGroups: async () => [],
+    });
+    await startBotImConnections();
+    expect(getBotFeishuTransport('bot-mia')?.getOwnerOpenId()).toBe('ou_target');
+    states[2]!.kind = 'error';
+    // A later tool phase must not retry a resolved target through another owner.
+    expect(getBotFeishuTransport('bot-mia', 'ou_target')).toBeNull();
+    expect(getBotFeishuTransport('unrelated-bot')).toBeNull();
+    await stopBotImConnections();
+    expect(getBotFeishuTransport('bot-mia')).toBeNull();
   });
 
   it('lists known groups with their per-connection activation and toggles it live', async () => {
@@ -436,6 +485,63 @@ describe('bot im connection runtime', () => {
     expect([...h.secrets.keys()]).toEqual([]);
     expect(listBotImConnections()).toEqual([]);
     expect(removed.connections).toEqual([]);
+  });
+
+  // #6492 r4318509719, unit: existing cleanup tests miss an initially unbound
+  // teammate being deleted during transport drain. Use the real binding/store
+  // entry and the same profile lock as botLifecycleService, with controlled gates.
+  it('does not resurrect a deleted teammate when its first WeChat binding is draining', async () => {
+    let release!: () => void;
+    let entered!: () => void;
+    const draining = new Promise<void>((resolve) => { entered = resolve; });
+    const drained = new Promise<void>((resolve) => { release = resolve; });
+    const binding = setWechatCompanionBinding('bot-mia', async (commit) => {
+      entered();
+      await drained;
+      commit();
+    });
+    await draining;
+    const deletion = withBotProfileLocks(['bot-mia'], async () => {
+      h.botStatus = 'deleting';
+      await removeBotImConnectionsForBot('bot-mia');
+      h.botStatus = null;
+    });
+    // Run until deletion either completes or waits on the binding's profile lock.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    release();
+    await Promise.all([binding, deletion]);
+    expect(readWechatChannelSettings().companionBotId).toBeUndefined();
+    const apply = vi.fn(async (commit: () => void) => { commit(); });
+    await expect(setWechatCompanionBinding('bot-mia', apply)).rejects.toThrow('BOT_INACTIVE');
+    expect(apply).not.toHaveBeenCalled();
+    // A different active teammate can claim the shared connection afterwards.
+    h.botStatus = 'active';
+    await setWechatCompanionBinding('bot-other', apply);
+    expect(readWechatChannelSettings().companionBotId).toBe('bot-other');
+  });
+
+  // Regression #6492: a WeChat-only teammate has no connection-store records.
+  // unit tier: real deletion cleanup and settings store; keep shared auth and unrelated owners.
+  it('clears only the deleted teammate’s WeChat assignment and broadcasts without removing authorization', async () => {
+    writeWechatWorkingDir(h.root);
+    writeWechatCompanionBinding('bot-mia');
+    h.secrets.set('wechat_credentials_test', 'retained-test-credential');
+    h.secrets.set('wechat_data_key_v1', 'retained-test-key');
+    const before = readWechatChannelSettings();
+    const secrets = new Map(h.secrets);
+    await removeBotImConnectionsForBot('bot-other');
+    expect(readWechatChannelSettings()).toEqual(before);
+    expect(h.sent).toEqual([]);
+
+    h.drainWechat.mockRejectedValueOnce(new Error('DRAIN_FAILED'));
+    await expect(removeBotImConnectionsForBot('bot-mia')).rejects.toThrow('DRAIN_FAILED');
+    expect(readWechatChannelSettings()).toEqual(before);
+    expect(h.sent).toEqual([]);
+    await removeBotImConnectionsForBot('bot-mia');
+    expect(h.drainWechat).toHaveBeenCalledTimes(2);
+    expect(readWechatChannelSettings()).toEqual({ version: 1, workingDir: before.workingDir, workingDirAvailable: true });
+    expect(h.secrets).toEqual(secrets);
+    expect(h.sent).toEqual([{ channel: 'wechatBot:channel-settings-changed', payload: readWechatChannelSettings() }]);
   });
 
   it('starts recorded connections on login, keeps records across stop, and drops them with the teammate', async () => {

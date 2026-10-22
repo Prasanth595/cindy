@@ -87,6 +87,7 @@ import { TEAMMATE_COLLECTION_ID } from '@/session/useTeammateRoster';
 import { AccountSwitcherSheet } from '@/session/AccountSwitcherSheet';
 import { HomeChromeFrost } from '@/session/HomeChromeFrost';
 import { HomeGlassMenuPanel, HomeMenuScrim } from '@/session/HomeGlassMenuPanel';
+import { FilterReminderDot } from '@/components/FilterReminderDot';
 import { HomeHeaderGlassButton } from '@/session/HomeHeaderGlassButton';
 import { useAdaptiveWindow } from '@/platform/AdaptiveWindowContext';
 import { useBalancedTitle } from '@/platform/chrome/balancedTitle';
@@ -153,11 +154,11 @@ import {
   patchDeviceViewsWithPresence,
 } from '@/device-link/presenceDevices';
 import {
-  connectionIssueHint,
-  connectionIssueTitle,
+  connectionHealthCopy,
   describeRemoteError,
   formatRemoteError,
 } from '@/device-link/remoteStatus';
+import { useLocalNetworkStatus } from '@/device-link/localNetworkStatus';
 import { withTransientRemoteRetry } from '@/device-link/remoteRetry';
 import { ConnectionRecoveryProgress } from '@/components/ConnectionBanner';
 import { ConnectionNoticeOverlay, useDelayedConnectionNotice } from '@/components/ConnectionNoticeOverlay';
@@ -173,6 +174,7 @@ import {
 import { ConversationSearchFilterSheet } from '@/session/ConversationSearchFilterSheet';
 import {
   conversationSearchAllowsLocalWrites,
+  conversationSearchCompanionParams,
   conversationSearchOriginsFromDeviceModels,
   listConversationSearchProjects,
   shouldReplaceListWithSearchResults,
@@ -525,6 +527,7 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
   const {
     connectionEpoch,
     connectionIssue,
+    getPresenceAvailability,
     invoke,
     lastPresenceSnapshot,
     recoveringDeviceIds,
@@ -703,6 +706,9 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
   const [retryingDeviceIds, setRetryingDeviceIds] = useState<ReadonlySet<string>>(new Set());
   const retryingDeviceIdsRef = useRef<Set<string>>(new Set());
   const [statusFilter, setStatusFilter] = useRetainedHomeState<HomeStatusFilter>(viewSession, 'statusFilter', 'active');
+  const requestedListFilter = active ? remoteListStatusFilter(statusFilter) : 'active';
+  const homeListFilterRef = useRef(requestedListFilter);
+  const homeListFilterChanged = homeListFilterRef.current !== requestedListFilter;
   const [collapsedProjectKeys, setCollapsedProjectKeys] = useRetainedHomeState<string[]>(viewSession, 'collapsedProjectKeys', []);
   const [pinnedCollapsed, setPinnedCollapsed] = useRetainedHomeState(viewSession, 'pinnedCollapsed', false);
   // 已展开的自动化组 key(页面级 state:SectionList 虚拟化回收行组件时展开态不丢)。
@@ -806,6 +812,25 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
     }
     return diff;
   }, [advanceHomeSyncGeneration, releaseHomeListOwner]);
+
+  useLayoutEffect(() => {
+    // Neither the previous computer's error nor the previous filter's error
+    // describes the new list scope. Clear it before painting its loading state.
+    setError(null);
+    if (homeListFilterRef.current === requestedListFilter) return;
+    homeListFilterRef.current = requestedListFilter;
+    // A new filter is a new list scope even on the same computer. Reuse the
+    // existing generation fence so an old active/archive response cannot settle it.
+    for (const deviceId of homeSyncTargetDeviceIdsRef.current) {
+      advanceHomeSyncGeneration(deviceId);
+      homeListFreshnessRef.current.invalidate(deviceId);
+    }
+    setDeviceConnectionStates((current) => {
+      const next = { ...current };
+      for (const deviceId of homeSyncTargetDeviceIdsRef.current) next[deviceId] = 'syncing';
+      return next;
+    });
+  }, [advanceHomeSyncGeneration, requestedListFilter, selectedDeviceId]);
 
   useEffect(() => () => {
     const owned = [...homeListOwnedDeviceIdsRef.current];
@@ -943,7 +968,7 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
             const epoch = remoteSessionStore.captureDeviceSessionListMutationEpoch(device.deviceId);
             const list = await invoke<RemoteSession[]>(device.deviceId, 'local-db:sessions:list', [
               LIST_LIMIT,
-              active ? remoteListStatusFilter(statusFilter) : 'active',
+              requestedListFilter,
               { includePinned: true, fresh: true },
             ]);
             return [list, epoch] as const;
@@ -1047,7 +1072,7 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
         superseded: false,
       };
     }
-  }, 'foreground'), [HOME_LIST_SUBSCRIPTION_OWNER, homeCacheUserId, invoke, isCurrentHomeSyncTarget, markDeviceOffline, markHomeScheduleIndexDirty, refreshDeviceScheduleIndex, statusFilter, active, subscribe, updateDeviceConnectionState]);
+  }, 'foreground'), [HOME_LIST_SUBSCRIPTION_OWNER, homeCacheUserId, invoke, isCurrentHomeSyncTarget, markDeviceOffline, markHomeScheduleIndexDirty, refreshDeviceScheduleIndex, requestedListFilter, subscribe, updateDeviceConnectionState]);
 
   const hydrateDeviceSessions = useCallback((
     device: DeviceView,
@@ -1057,6 +1082,7 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
     const expectedHomeSyncGeneration = homeSyncGenerationByDeviceRef.current.get(device.deviceId);
     if (
       expectedHomeSyncGeneration === undefined
+      || homeListFilterRef.current !== requestedListFilter
       || homeAccountGenerationRef.current !== expectedAccountGeneration
       || !isCurrentHomeSyncTarget(device.deviceId, expectedHomeSyncGeneration)
     ) {
@@ -1107,7 +1133,7 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
       () => settle(false),
     );
     return promise;
-  }, [accountGeneration, hydrateDeviceSessionsOnce, isCurrentHomeSyncTarget, updateDeviceConnectionState]);
+  }, [accountGeneration, hydrateDeviceSessionsOnce, isCurrentHomeSyncTarget, requestedListFilter, updateDeviceConnectionState]);
   hydrateDeviceSessionsRef.current = hydrateDeviceSessions;
 
   const probeRevokedDeviceAccess = useCallback(async (
@@ -1777,7 +1803,13 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
       return () => { cancelled = true; };
     }
     void discoverRemoteHomeCollections(
-      invoke,
+      (deviceId, channel, args) => invoke(deviceId, channel, args, {
+        background: true,
+        preSend: () => {
+          if (cancelled || homeAccountGenerationRef.current !== accountGeneration)
+            throw new Error('Remote discovery superseded');
+        },
+      }),
       targets,
       i18nInstance.language,
       remoteHomeCollectionsRef.current,
@@ -2154,8 +2186,13 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
   }, [homeListCacheHydrated, initialHomeSettled]);
   // Hydration can settle without another content-size event (for example a warm cache).
   useEffect(() => { restoreListPosition(); }, [restoreListPosition, sections]);
-  const initialHomeLoading = !initialHomeSettled && !connectionError;
-  const initialHomeError = !initialHomeSettled && !!connectionError;
+  // Empty is a result of the current scope, not a synonym for "no cached rows".
+  // Include the render before effects acquire a newly selected computer/filter.
+  const homeListScopePending = homeListFilterChanged || isTaskSuggestionsSyncPending(
+    homeSyncDeviceIds, homeListOwnedDeviceIdsRef.current, rawDeviceConnectionStates,
+  );
+  const initialHomeLoading = (!initialHomeSettled || homeListScopePending || indexedSearch.status === 'searching') && !connectionError;
+  const initialHomeError = !!connectionError;
   // 首次同步完成后校验恢复/当前选中的设备,不成立时回退「所有对话」并同步持久化:
   // - 设备已不存在(解绑):home.selectedDeviceId 是归一化后的口径,查不到会变 null,
   //   若不回退,表头显示旧设备名而列表实际展示全部会话,两者口径不一致。
@@ -2179,8 +2216,22 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
   }, [home.deviceFilters, home.selectedDeviceId, initialHomeSettled, selectedDeviceId]);
   // 连接层失败原因比请求级 error 更根因:unstable 在 online 时也需保持可见。
   const activeConnectionIssue = status !== 'online' || connectionIssue?.kind === 'unstable' ? connectionIssue : null;
-  const selectedDeviceDisconnected = resolveHomeDeviceDisconnected(home.deviceFilters, selectedDeviceId, status === 'connecting');
-  const showConnectionRow = selectedDeviceDisconnected || resolveConnectionBannerVisibility({
+  const network = useLocalNetworkStatus();
+  const networkUnavailable = network === 'unavailable';
+  // Cached rows and failed hydration are not proof that a computer is offline.
+  // Use this relay generation's authoritative presence; unknown stays neutral.
+  const selectedDeviceDisconnected = status === 'online'
+    && resolveHomeDeviceDisconnected(home.deviceFilters.map((device) => ({
+      deviceId: device.deviceId,
+      sessionCount: device.sessionCount,
+      available: device.deviceId === null || getPresenceAvailability(device.deviceId) !== false,
+    })), selectedDeviceId, false);
+  const healthCopy = connectionHealthCopy({
+    network, status, issue: activeConnectionIssue,
+    deviceDisconnected: selectedDeviceDisconnected,
+    deviceUnresponsive: homeDeviceRecovery && homeDeviceUnresponsive,
+  });
+  const showConnectionRow = networkUnavailable || selectedDeviceDisconnected || resolveConnectionBannerVisibility({
     offline: status !== 'online',
     connecting: status === 'connecting',
     offlineLongEnough: true,
@@ -2191,7 +2242,7 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
   });
   const showConnectionNotice = useDelayedConnectionNotice(showConnectionRow);
   const quietSyncing = !showConnectionRow && (refreshing || homeRecoveringDeviceIds.size > 0 || status === 'connecting');
-  const showHomeSyncAction = resolveConnectionBannerSyncActionVisibility({
+  const showHomeSyncAction = !networkUnavailable && resolveConnectionBannerSyncActionVisibility({
     online: status === 'online',
     hasActiveIssue: activeConnectionIssue !== null,
     deviceUnresponsive: homeDeviceRecovery,
@@ -2199,19 +2250,15 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
     // loadHome has no outer retry after its bounded REST retries are exhausted.
     requestErrorAutoRecovering: false,
   });
-  const showHomeRecoveryProgress = (!activeConnectionIssue
+  const showHomeRecoveryProgress = !networkUnavailable && (!activeConnectionIssue
     || activeConnectionIssue.kind === 'unstable' || activeConnectionIssue.kind === 'replaced')
     && (status === 'connecting' || homeDeviceRecovery);
-  const connectionTone = activeConnectionIssue
+  const connectionTone = networkUnavailable || activeConnectionIssue
     ? 'off'
     : homeDeviceRecovery ? 'busy' : selectedDeviceDisconnected ? 'off' : connectionError ? 'muted' : status === 'online' ? 'ready' : status === 'connecting' ? 'busy' : 'off';
-  const connectionTitle = activeConnectionIssue
-    ? connectionIssueTitle(activeConnectionIssue.kind)
-    : homeDeviceRecovery ? t(homeDeviceUnresponsive ? 'deviceLink.deviceUnresponsiveTitle' : 'deviceLink.recovery.syncing')
-      : selectedDeviceDisconnected ? t('deviceLink.cachedHistory.title') : connectionError ? t('devices.list.syncFailed') : homeConnectionTitle(status, t);
-  const connectionCopy = activeConnectionIssue
-    ? connectionIssueHint(activeConnectionIssue.kind)
-    : homeDeviceRecovery ? t(homeDeviceUnresponsive ? 'deviceLink.deviceUnresponsiveHint' : 'deviceLink.recovery.syncingHint') : selectedDeviceDisconnected ? t('deviceLink.cachedHistory.hint') : connectionError;
+  const connectionTitle = healthCopy?.title ?? (homeDeviceRecovery ? t('deviceLink.recovery.syncing')
+    : connectionError ? t('devices.list.syncFailed') : homeConnectionTitle(status, t));
+  const connectionCopy = healthCopy?.hint ?? (homeDeviceRecovery ? t('deviceLink.recovery.syncingHint') : connectionError);
   const emptyStateTitle = initialHomeError ? t('devices.list.syncFailed') : home.emptyTitle;
   const emptyStateCopy = initialHomeError ? (connectionError ?? t('devices.list.requestFailed')) : home.emptyCopy;
   // 无可控制电脑的引导态(landing)可见性,与 ListEmptyComponent 的分支同口径。
@@ -2318,6 +2365,7 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
         deviceName: session.deviceLinkDeviceName ?? deviceId,
         sessionId: session.id,
         ...(focusClientId ? { focusClientId } : {}),
+        ...conversationSearchCompanionParams(item),
       },
     } as const;
     rememberTask(href);
@@ -2832,6 +2880,12 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
     vendorFilter,
     viewMode,
   }), [displayedProjectOrder, groupByProject, groupDialogue, lastActivityFilter, projectFilter, sortBy, statusFilter, taskInfoFields, vendorFilter, viewMode]);
+  // 在看已归档任务时,顶栏「⋯」带提醒点(iOS 系统顶栏 / 自绘按钮两条路径共用这一个判据),
+  // 同时把状态写进无障碍名称,读屏用户不用打开菜单也知道列表不是平常的进行中任务。
+  const archivedReminder = statusFilter === 'archived';
+  const displayA11y = archivedReminder
+    ? t('devices.list.a11y.openDisplaySettingsWithStatus', { status: t('devices.list.search.filter.status.archived') })
+    : t('devices.list.a11y.openDisplaySettings');
   const homeDisplayPullDownActions = useMemo(
     () => buildHomeDisplayPullDownActions({
       // 与项目候选的 sessionCount 同口径:自动化组行按组内运行数计。
@@ -3127,8 +3181,9 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
         <HomeNativeStackHeader
           keepMenuTopLeft={keepMenuTopLeft}
           syncing={quietSyncing}
-          displayA11y={t('devices.list.a11y.openDisplaySettings')}
+          displayA11y={displayA11y}
           displayActions={stableDisplayActions}
+          displayBadge={archivedReminder}
           menuA11y={t('devices.list.a11y.openMenu')}
           onDisplayAction={stableDisplayAction}
           onOpenDeviceMenu={openDeviceMenu}
@@ -3214,8 +3269,12 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
             ) : null}
             {/* 系统菜单不可用(未编进 MenuView 的旧 iOS 包)时退回同一份菜单模型的 Cindy 自绘菜单。 */}
             <HomeDisplayMenu actions={homeDisplayPullDownActions} onAction={handleDisplayAction}>
-              <HomeHeaderGlassButton accessibilityLabel={t('devices.list.a11y.openDisplaySettings')} onPress={() => undefined} testID="home.displaySettingsButton">
-                <Ellipsis color={colors.textPrimary} size={iconSize.action} strokeWidth={iconStroke.regular} />
+              <HomeHeaderGlassButton accessibilityLabel={displayA11y} onPress={() => undefined} testID="home.displaySettingsButton">
+                <View>
+                  <Ellipsis color={colors.textPrimary} size={iconSize.action} strokeWidth={iconStroke.regular} />
+                  {/* 在看已归档任务时标一个点,提醒列表不是平常的进行中任务。 */}
+                  {archivedReminder ? <FilterReminderDot offset={styles.displayFilterDotOffset} testID="home.displayFilterDot" /> : null}
+                </View>
               </HomeHeaderGlassButton>
             </HomeDisplayMenu>
           </View>
@@ -3244,7 +3303,7 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
           style={[styles.connectionRow, (connectionError || activeConnectionIssue) && styles.connectionRowError]}
           testID="connection.banner"
         >
-          <StatusDot tone={connectionTone} pulsing={!activeConnectionIssue && status === 'connecting'} />
+          <StatusDot tone={connectionTone} pulsing={!networkUnavailable && !activeConnectionIssue && status === 'connecting'} />
           <Text ellipsizeMode="tail" numberOfLines={1} style={styles.connectionText} testID="connection.title">
             {connectionCopy ? `${connectionTitle} · ${connectionCopy}` : connectionTitle}
           </Text>
@@ -3680,6 +3739,7 @@ function ProjectDragOverlay({
 
 function HomeProjectWindowAnchorTracker({
   childOffsets,
+  deferOffscreen = false,
   onAnchorChange,
   projectHeaderHeight,
   projectLayoutRevision,
@@ -3688,6 +3748,7 @@ function HomeProjectWindowAnchorTracker({
   viewportHeight,
 }: {
   childOffsets: readonly number[];
+  deferOffscreen?: boolean;
   onAnchorChange(anchor: number): void;
   projectHeaderHeight: SharedValue<number>;
   projectLayoutRevision: SharedValue<number>;
@@ -3707,6 +3768,7 @@ function HomeProjectWindowAnchorTracker({
       if (!layout || !Number.isFinite(layout.pageY)) return null;
       return resolveHomeProjectChildAnchor({
         childOffsets,
+        preloadDistance: deferOffscreen ? viewportHeight : 0,
         projectHeaderHeight: projectHeaderHeight.value,
         projectTop: layout.pageY,
         shift: PROJECT_CHILD_WINDOW_SHIFT,
@@ -3715,12 +3777,14 @@ function HomeProjectWindowAnchorTracker({
       });
     },
     (next, previous) => {
-      // A temporarily unavailable native view is not evidence that its rows
-      // left the viewport. Keep the last bounded window until measured again.
-      if (next === null || next === previous) return;
+      // Project blocks retain their window until the outer list recycles them.
+      // Nested groups instead release rows beyond the preload band, avoiding
+      // one full native window per expanded group. Failed measurement retains
+      // either window; it is not proof that the group has left the screen.
+      if (next === null || (next < 0 && !deferOffscreen) || next === previous) return;
       runOnJS(onAnchorChange)(next);
     },
-    [childOffsets, onAnchorChange, projectHeaderHeight, projectLayoutRevision, projectRef, scrollY, viewportHeight],
+    [childOffsets, deferOffscreen, onAnchorChange, projectHeaderHeight, projectLayoutRevision, projectRef, scrollY, viewportHeight],
   );
   return null;
 }
@@ -3818,7 +3882,7 @@ function ProjectRow({
   const textMode = useHomeRowDisplay().viewMode === 'text';
   const projectRef = useAnimatedRef<View>();
   const prepareDisclosure = useDisclosurePrepare();
-  const [windowAnchor, setWindowAnchor] = useState(-1);
+  const [windowAnchor, setWindowAnchor] = useState(0);
   const projectLayoutRevision = useSharedValue(0);
   const estimatedChildHeights = useMemo(() => {
     const expandedKeys = new Set(expandedAutomationGroups);
@@ -3828,11 +3892,10 @@ function ProjectRow({
     () => buildHomeProjectChildOffsets(estimatedChildHeights),
     [estimatedChildHeights],
   );
-  // Keep the common five-row preview unchanged. A large expanded group keeps
-  // its complete estimated height as a spacer until native layout establishes
-  // that its child area intersects the viewport. This avoids mounting an
-  // off-screen child window just because the folder header entered the outer
-  // SectionList render window.
+  // Render a bounded child window immediately, including before native layout
+  // is ready. A full-height placeholder here becomes visible when scrolling
+  // into a project before its measurement reaches JS. The outer SectionList
+  // still bounds mounted groups, and ordinary five-row previews are unchanged.
   const windowingEnabled = shouldWindowHomeProjectChildren({
     collapsed,
     itemCount: visibleSessions.length,
@@ -3840,21 +3903,13 @@ function ProjectRow({
     threshold: PROJECT_CHILD_WINDOW_THRESHOLD,
   });
   const scrollY = homeScrollY;
-  const childContentHeight = estimatedChildOffsets[estimatedChildOffsets.length - 1] ?? 0;
   const childWindow = windowingEnabled
-    ? windowAnchor >= 0
-      ? resolveHomeProjectChildWindow({
+    ? resolveHomeProjectChildWindow({
         anchor: windowAnchor,
         childOffsets: estimatedChildOffsets,
         overscan: PROJECT_CHILD_WINDOW_OVERSCAN,
         windowSize: PROJECT_CHILD_WINDOW_SIZE,
       })
-      : {
-          end: 0,
-          leadingSpacerHeight: 0,
-          start: 0,
-          trailingSpacerHeight: childContentHeight,
-        }
     : {
         end: visibleSessions.length,
         leadingSpacerHeight: 0,
@@ -4655,6 +4710,8 @@ function AutomationGroupChildren({
   const childrenRef = useAnimatedRef<View>();
   const layoutRevision = useSharedValue(0);
   const headerHeight = useSharedValue(0);
+  // A project can retain many expanded automation groups. Preload nearby runs
+  // after layout instead of multiplying every project slot by a child window.
   const [windowAnchor, setWindowAnchor] = useState(-1);
   const textMode = useHomeRowDisplay().viewMode === 'text';
   const childOffsets = buildHomeProjectChildOffsets(visibleItems.map((child) => estimateHomeSessionRowHeight(child, textMode)));
@@ -4673,6 +4730,7 @@ function AutomationGroupChildren({
       onLayout={() => { if (windowingEnabled) layoutRevision.value += 1; }}
       style={styles.automationGroupChildren} testID={childrenTestID ?? `${testID}.automationGroupChildren`}>
       {windowingEnabled && viewport ? <HomeProjectWindowAnchorTracker
+        deferOffscreen
         childOffsets={childOffsets} onAnchorChange={setWindowAnchor}
         projectHeaderHeight={headerHeight} projectLayoutRevision={layoutRevision}
         projectRef={childrenRef} scrollY={viewport.scrollY} viewportHeight={viewport.viewportHeight}
@@ -4912,6 +4970,7 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   headerActionsWide: {
     width: navigationChrome.target * 2 + spacing.xs,
   },
+  displayFilterDotOffset: { top: -1, right: -2 },
   // 菜单外层替标题占住顶栏中间的剩余宽度,长设备名在这里截断而不是挤开右侧按钮。
   headerTitleSlot: {
     flex: 1,

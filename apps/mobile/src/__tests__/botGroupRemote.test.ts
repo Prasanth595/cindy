@@ -47,6 +47,18 @@ function chatData(overrides: Record<string, unknown> = {}) {
 }
 
 describe('parseBotGroupChatData', () => {
+  // The new public group image field must not turn a host path, credentialed URL
+  // or malformed input into a phone image source; keep the legacy fallback (unit).
+  it.each([null, 7, 'http://example.invalid/avatar.png', 'file:///avatar.png',
+    'https://user:pass@example.invalid/avatar.png', 'https://', `https://example.invalid/${'x'.repeat(4_096)}`,
+  ])('drops an invalid member image URL without dropping its fallback: %s', avatarUrl => {
+    const member = parseBotGroupChatData(chatData({ members: [
+      { botId: 'person', name: 'Person', avatar: '🙂', avatarUrl, status: 'active' },
+    ] }))!.members[0];
+    expect(member.avatarUrl).toBeUndefined();
+    expect(member.avatar).toBe('🙂');
+  });
+
   it('retains validated management roles, revisions and capability without granting them to old hosts', () => {
     const parsed = parseBotGroupChatData(chatData({ revision: 3, supportsSettingsManagement: true,
       members: [{ botId: 'mimi', name: 'Mimi', role: 'admin', isOwned: true }] }));

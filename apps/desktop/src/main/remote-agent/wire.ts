@@ -101,7 +101,7 @@ export interface RemoteAgentWireStartOptions {
   model: string;
   providerId?: string | null;
   effort?: string;
-  fastMode?: boolean;
+  fastMode?: boolean | 'ultrafast';
   thinkingEnabled?: boolean;
   userPrompt?: string;
   botProfilePrompt?: string;
@@ -154,6 +154,10 @@ export interface RemoteAgentWirePersonal {
 }
 
 export interface RemoteAgentOpenPayload {
+  /** Controller can acknowledge durable image delivery; absent on legacy controllers. */
+  acceptsImageDeliveryReceipts?: boolean;
+  /** Task Host clear generation, preserved through provider-group relays. */
+  imageDeliveryEpoch?: number;
   /** 控制端任务 id。 */
   sessionId: string;
   /** 能力增量：Agent 使用本机虚拟工作区；新控制端在 open 前必须确认对端 caps 支持。 */
@@ -168,6 +172,8 @@ export interface RemoteAgentOpenPayload {
    * 隔离运行，会话记录与目录按(控制端, relay)分开。只发给 caps 声明了 guestRelay 的电脑。
    */
   relay?: string;
+  /** Capability-negotiated reverse checks against the original sharing member. */
+  relayModelAccess?: boolean;
   /**
    * 供应商组转分享：组所在电脑把受邀者的任务转给分享来的组内电脑时，带上这个受邀者(按账号)的转分享键，
    * 与组所在电脑经 op `reshare` 报上去的键相同。那台的主人同意过这个人才运行；没同意或没带时拒绝。
@@ -325,9 +331,13 @@ export function decodeOpenPayload(value: unknown): RemoteAgentOpenPayload {
   });
   return {
     sessionId,
+    ...(value.acceptsImageDeliveryReceipts === true ? { acceptsImageDeliveryReceipts: true } : {}),
+    ...(typeof value.imageDeliveryEpoch === 'number' && Number.isSafeInteger(value.imageDeliveryEpoch) && value.imageDeliveryEpoch >= 0
+      ? { imageDeliveryEpoch: value.imageDeliveryEpoch } : {}),
     ...(value.virtualWorkspace === true ? { virtualWorkspace: true } : {}),
     ...(value.groupAssigned === true ? { groupAssigned: true } : {}),
     ...(typeof value.relay === 'string' && REMOTE_AGENT_RELAY_KEY_PATTERN.test(value.relay) ? { relay: value.relay } : {}),
+    ...(value.relayModelAccess === true ? { relayModelAccess: true } : {}),
     ...(typeof value.reshareKey === 'string' && REMOTE_AGENT_RELAY_KEY_PATTERN.test(value.reshareKey)
       ? { reshareKey: value.reshareKey }
       : {}),

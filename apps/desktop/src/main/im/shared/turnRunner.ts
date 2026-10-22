@@ -515,6 +515,8 @@ export interface ImRunAgentTurnArgs {
   trackBackgroundTask?: (operation: () => Promise<void>) => void;
   /** Optional per-turn host policy (personal WeChat routes confirmations to Desktop). */
   turnPermissionPolicy?: TurnPermissionPolicy;
+  /** Opt in to native permissions only for a resolved companion route and verified owner. */
+  inheritCompanionOwnerPermissions?: boolean;
   /**
    * The triggering message passed the channel's owner check (DM owner gate or
    * group speaker.isOwner). Only this unlocks owner-only Host actions; omitted = not owner.
@@ -1339,7 +1341,11 @@ export function createTurnRunner(
       queueMode: args.queueMode,
       ...(args.beforeProviderStart ? { beforeProviderStart: args.beforeProviderStart } : {}),
       ...(args.onRouteResolved ? { onRouteResolved: args.onRouteResolved } : {}),
-      ...(args.turnPermissionPolicy ? { turnPermissionPolicy: args.turnPermissionPolicy } : {}),
+      // Binding presence is insufficient: unavailable companions fall back to
+      // channel-owned sessions, which must retain the mandatory policy.
+      ...(args.turnPermissionPolicy && !(args.inheritCompanionOwnerPermissions === true
+        && args.requesterIsOwner === true && target.botOwned)
+        ? { turnPermissionPolicy: args.turnPermissionPolicy } : {}),
       ...(args.requesterIsOwner === true ? { requesterIsOwner: true } : {}),
       ...(args.onEarlyReject ? { onEarlyReject: args.onEarlyReject } : {}),
       ...(args.protectedContent === true ? { protectedContent: true } : {}),
@@ -1684,6 +1690,8 @@ export function createTurnRunner(
             });
           }
           if (item.channelToolScope) {
+            // A retried dispatch must not reuse an earlier input receipt.
+            delete item.channelToolScope.inputClientId;
             item.turn.channelToolScopeRelease = beginChannelToolScope({
               sessionId: rowId,
               sessionInstanceId: state.makerSession.instanceId,
@@ -1793,6 +1801,7 @@ export function createTurnRunner(
           });
           if (persisted) {
             item.prePersistedUserMessage = { sessionId: rowId, clientId: persisted.clientId };
+            if (item.channelToolScope) item.channelToolScope.inputClientId = persisted.clientId;
             await beginTurnChangeSetAtDispatch(state.makerSession, persisted.clientId);
             turnChangeSetStarted = true;
           }
@@ -1963,7 +1972,7 @@ export function createTurnRunner(
       const agentKind = toCoreAgentKind(row.agentKind);
       hydrateSessionProvider(sessionId, row.providerId ?? null);
       if (row.effort) setSessionEffort(sessionId, row.effort);
-      setSessionFastMode(sessionId, !!row.fastMode);
+      setSessionFastMode(sessionId, (row.fastMode ?? false));
       current = await maker.createSession({
         id: sessionId,
         agentKind,
@@ -2216,7 +2225,7 @@ export function createTurnRunner(
     // bridge 会话态(effort / fast)同点 hydrate —— chatgpt/ / xai/ 模型经 IM 触发 turn 时,
     // compat-proxy 路由决策从这两个 store 读出闭包进订阅 handler(与 register.ts bootstrapSession 对齐)。
     if (row.effort) setSessionEffort(row.id, row.effort);
-    setSessionFastMode(row.id, !!row.fastMode);
+    setSessionFastMode(row.id, (row.fastMode ?? false));
     // 接管路径: 必须传 resumeSessionId 让 Claude SDK 用 desktop 留下的 sdkSessionId
     // resume, 否则 maker.activeSessions 没该 row.id 时会 spawn 全新空会话——oneshot
     // "总结当前状态" 就变成总结空会话, agent 输出短促/无内容; 用户看到渠道卡片
@@ -3179,8 +3188,12 @@ export function createTurnRunner(
     // 它不置 turn.done, composeStreamingView 会把 activity 一起写进正文。
     clearRunningIndicators(t.activity);
     try {
-      // 没产出任何内容(无文本无步骤)且无错 → 不留空卡。
-      if (!t.streamingHandle && t.buffer.length === 0 && t.mediaAbsPaths.length === 0 && t.activity.totalSteps === 0 && !errMsg) {
+      // 成功但没有正文或附件：标题、步骤不算回复，也不新建空卡。
+      if (!t.buffer.trim() && t.mediaAbsPaths.length === 0 && !errMsg) {
+        if (t.streamingHandlePromise) await t.streamingHandlePromise;
+        if (sessionStates.get(state.makerSession.id) === state) {
+          await t.streamingHandle?.finalize('');
+        }
         return;
       }
       if (silenced && !t.streamingHandlePromise) return;
@@ -3730,34 +3743,27 @@ export function createTurnRunner(
         // The terminal branch below handles the missing output surface.
       }
     }
+    // 所有渠道共用空成功结果语义；文本渠道仍须提交终态（微信持久任务依赖它）。
+    if (!turn.streamingHandle && turn.mediaAbsPaths.length > 0) {
+      await ensureStreamingHandle(turn);
+    }
+    const finalView = composeStreamingView(turn);
     if (turn.streamingHandle) {
-      const finalView = composeStreamingView(turn) || '_(空回复)_';
-      await finalizeTurnStream(turn, finalView);
-    } else if (turn.presenter.wholeText().length === 0) {
-      // No streamed text at all — send a one-shot text so the user knows the
-      // turn ended. (Rare; normally agents emit at least one text block.)
+      await finalizeTurnStream(turn, finalView.trim() ? finalView : '');
+    } else if (!finalView.trim() && turn.mediaAbsPaths.length === 0) {
       try {
         if (output.kind === 'chunked-text') {
           await output.commitFinal({
             userId,
-            text: '✅ (本轮无文本输出)',
+            text: '',
             terminal: turn.terminalKind,
             threadTs: turn.scopeKey,
-            ...(turn.mediaAbsPaths.length > 0 ? { mediaAbsPaths: turn.mediaAbsPaths } : {}),
           });
         } else {
-          // 群主流 @ 开话题但本轮无流式输出: pending opener 尚未被认领 —
-          // 仅当 opener 是本轮消息创建的(trigger 匹配)才消费, 否则另发
-          // (避免消费上一轮遗留的 opener 造成归属错乱)。
+          // 只清除本轮自己的待认领开场白，不能消费别的轮次。
           const triggerId = output.im.getPendingOpenerTrigger?.(userId);
-          const isMyOpener = triggerId === turn.userMessageId;
-          const consumed =
-            isMyOpener
-              ? ((await output.im.consumePendingOpenerCard?.(userId, '✅ (本轮无文本输出)')) ??
-                false)
-              : false;
-          if (!consumed) {
-            await sendTextClaimingOpener(userId, '✅ (本轮无文本输出)', turn.scopeKey);
+          if (triggerId && triggerId === turn.userMessageId) {
+            await output.im.consumePendingOpenerCard?.(userId, '');
           }
         }
       } catch {
@@ -3765,7 +3771,7 @@ export function createTurnRunner(
       }
     } else {
       // 初始流式输出面创建失败但正文已生成(#2164):此前两条分支都不命中,
-      // 已持久化的助手回复在渠道侧静默消失。收口时一次性降级为普通文本发送
+      // 已持久化的助手回复在渠道侧静默消失。收口时一次性降级发送正文和附件
       // (turn.done 已置,composeStreamingView 只含干净正文;长度限制由渠道发送
       // 实现兑现)。发送失败只记脱敏日志,不阻塞 settle / 队列放行。
       try {
@@ -3779,12 +3785,17 @@ export function createTurnRunner(
             ...(turn.mediaAbsPaths.length > 0 ? { mediaAbsPaths: turn.mediaAbsPaths } : {}),
           });
         } else {
-          await output.im.sendText(userId, fallbackText, { threadTs: turn.scopeKey });
+          if (fallbackText.trim()) {
+            await output.im.sendText(userId, fallbackText, { threadTs: turn.scopeKey });
+          }
+          for (const absPath of turn.mediaAbsPaths) {
+            await output.im.sendFile(userId, absPath, undefined, { threadTs: turn.scopeKey });
+          }
         }
-        log.info(`[${channel}/turn] streaming surface unavailable — final text delivered via plain send`);
+        log.info(`[${channel}/turn] streaming surface unavailable — final output delivered via fallback`);
       } catch (err) {
         log.warn(
-          `[${channel}/turn] plain-text fallback send failed (non-fatal): ${
+          `[${channel}/turn] fallback send failed (non-fatal): ${
             err instanceof Error ? err.message : String(err)
           }`,
         );

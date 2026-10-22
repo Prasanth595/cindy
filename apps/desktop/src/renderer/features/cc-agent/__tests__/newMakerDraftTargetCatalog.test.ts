@@ -15,6 +15,7 @@ import {
   type RemoteDraftDefaults,
 } from '../deviceLinkDraftDefaults';
 import { isSameNewMakerDevice } from '../lib/newMakerRouteState';
+import { rememberRemoteDraftDefaults } from '../remoteDraftDefaultsCache';
 
 // Run the real async project-selection and target-transition callbacks. Only their
 // React setters and IPC are replaced; catalog parsing and effort resolution stay real.
@@ -106,11 +107,12 @@ function harness(options: {
     agentCatalogProviders: [provider('source', ['low'])],
     isSameNewMakerDevice, normalizeDbAgentKind, resolveDeviceLinkDraftDefaults,
     parseDeviceProvidersPayload, extractIpcError, patchDraft, setRemoteDraftState,
+    rememberRemoteDraftDefaults, wtPreferenceTransactionRef: { current: null },
     window: { electronAPI: { deviceLink: { invoke } } },
     setDlSel: (next: DeviceLinkDraftSelection | null | ((prev: DeviceLinkDraftSelection | null) => DeviceLinkDraftSelection | null)) => {
       current = typeof next === 'function' ? next(current) : next;
     },
-    dlSeedKeyRef, dlSeedCapabilitiesRef: { current: null },
+    dlSeedKeyRef, dlSeedCapabilitiesRef: { current: null }, dlSeedDefaultsRef: { current: null },
     dlRuntimeTouchedRef: { current: true }, skipDefaultsRefetchRef: { current: false },
     wtBranchReadSeqRef: { current: 0 }, wtBranchWriteSeqRef: { current: 0 },
     wtBranchPreferenceSavingRef: { current: false }, wtBranchTargetRef: { current: null },

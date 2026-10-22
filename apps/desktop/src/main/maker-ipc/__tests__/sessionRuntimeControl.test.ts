@@ -597,6 +597,17 @@ describe('session runtime fallback selection', () => {
     expect(getSessionRuntimeControlSnapshot(sessionId).visitedRoutes).toEqual([]);
   });
 
+  it('admits Ultrafast only for the model copy advertising that tier', () => {
+    const model = provider('openai', [{ id: 'gpt-6-astra', fast: true }]).models.codex![0]!;
+    const request = { model, effort: null, fastMode: 'ultrafast' as const,
+      effortExplicit: false, fastExplicit: true };
+    expect(resolveSessionRuntimeAxes(request)).toEqual({ ok: false, reason: 'fast-unavailable' });
+    expect(resolveSessionRuntimeAxes({ ...request, model: { ...model, supportsUltrafastMode: true } }))
+      .toMatchObject({ ok: true, fastMode: 'ultrafast' });
+    expect(resolveSessionRuntimeAxes({ ...request, fastExplicit: false }))
+      .toMatchObject({ ok: true, fastMode: false });
+  });
+
   it('rejects explicit unsupported axes and normalizes inherited axes', () => {
     const model = provider('xd', [
       { id: 'gpt-main', efforts: ['medium'], fast: false },

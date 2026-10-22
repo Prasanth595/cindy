@@ -1,3 +1,4 @@
+import { ErrorNotice } from '@/components/ui/error-notice';
 /**
  * 生成分享链接(设计稿场景 3)：一次性链接、5 分钟倒计时、过期后可重新生成。
  * 打开即生成；「重新生成链接」再要一条新的，旧链接仍按自己的 5 分钟过期(不提供撤回)。
@@ -107,9 +108,7 @@ export function ProviderShareLinkDialog({
       <p className="mt-2 text-13 leading-[1.5] text-[var(--confirm-desc)]">{t('providerShare.link.description')}</p>
 
       {state.status === 'error' ? (
-        <p role="alert" className="mt-4 text-13 leading-[1.5] text-[var(--text-danger)]">
-          {state.message}
-        </p>
+        <ErrorNotice role="alert" className="mt-4" message={state.message} />
       ) : (
         <>
           <div className="mt-4 flex items-center gap-2 rounded-full border border-[var(--border-default)] bg-[var(--surface)] py-1 pl-3 pr-1">

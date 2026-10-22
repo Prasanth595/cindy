@@ -128,6 +128,16 @@ function directMessage(overrides: Record<string, unknown> = {}) {
 }
 
 describe("DingTalkIM", () => {
+  it.each(['', ' \n '])('does not send an empty final %j', async (text) => {
+    const { host } = makeHost();
+    const fetcher = outboundImageFetcher();
+    const im = new DingTalkIM(host, { clientFactory: () => new FakeClient(), fetcher });
+    await im.init();
+    fetcher.mockClear();
+    await im.commitFinal({ userId: 'owner-1', text, terminal: 'done' });
+    expect(fetcher).not.toHaveBeenCalled();
+    await im.dispose();
+  });
   it("clears the text waiter after a Desktop decision so the next message is ordinary input", async () => {
     const { host } = makeHost();
     const client = new FakeClient();

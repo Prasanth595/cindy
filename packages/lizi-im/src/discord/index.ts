@@ -392,6 +392,11 @@ export class DiscordIM extends BaseIM implements ChannelIM {
 
   async patchMarkdownCard(messageId: string, markdown: string): Promise<void> {
     const message = await this.fetchMessage(messageId);
+    if (!markdown.trim()) {
+      await message.delete();
+      this.cardSpecs.delete(messageId);
+      return;
+    }
     const { text } = markdownToDiscord(markdown);
     await message.edit({
       content: text.slice(0, 2000),
@@ -417,6 +422,10 @@ export class DiscordIM extends BaseIM implements ChannelIM {
           await message.edit(text);
         },
         markdownToDiscord,
+        remove: async (messageId) => {
+          const message = await this.fetchMessage(messageId);
+          await message.delete();
+        },
         chunk: chunkDiscordText,
         resolveImageUrl: this.opts.resolveImageUrl,
         uploadImages: (messageId, absPaths) => this.uploadImages(messageId, absPaths),
@@ -973,6 +982,7 @@ export class DiscordIM extends BaseIM implements ChannelIM {
       fetch(messageId: string): Promise<{
         react(emoji: string): Promise<unknown>;
         edit(payload: unknown): Promise<unknown>;
+        delete(): Promise<unknown>;
         reactions: {
           resolve(token: string): { users: { remove(userId: string | undefined): Promise<unknown> } } | null;
         };
@@ -991,6 +1001,7 @@ export class DiscordIM extends BaseIM implements ChannelIM {
         fetch(messageId: string): Promise<{
           react(emoji: string): Promise<unknown>;
           edit(payload: unknown): Promise<unknown>;
+          delete(): Promise<unknown>;
           reactions: {
             resolve(token: string): { users: { remove(userId: string | undefined): Promise<unknown> } } | null;
           };
@@ -999,7 +1010,7 @@ export class DiscordIM extends BaseIM implements ChannelIM {
     };
   }
 
-  private async fetchMessage(messageId: string): Promise<{ edit(payload: unknown): Promise<unknown> }> {
+  private async fetchMessage(messageId: string): Promise<{ edit(payload: unknown): Promise<unknown>; delete(): Promise<unknown> }> {
     const { channelId, messageId: nativeMessageId } = decodeMessageId(messageId);
     const channel = await this.fetchChannel(channelId);
     return channel.messages.fetch(nativeMessageId);

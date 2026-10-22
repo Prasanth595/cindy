@@ -276,11 +276,40 @@ const settings = readFileSync(resolve(process.cwd(), 'app/settings.tsx'), 'utf8'
 expect(settings).toContain('isGooglePlayInstallation: playManagedUpdates,');
 expect(settings).toContain('checkBundleUpdate: bundleCheckEnabled ? checkBundleUpdate : undefined,');
 expect(settings).toContain('const updateCheckEnabled = bundleCheckEnabled || updatesEnabled;');
-expect(settings).toContain("t('settings.version.googlePlayContentUpdateUnavailable')");
+expect(settings).toContain("t('settings.version.googlePlayUpdateManaged')");
 });
 
 // guard: native persistent history hosts must wrap routes and replace route prefetch ownership.
 describe('persistent native history ownership', () => {
+  // guard: mobile-development.md native rendering boundary; a route-local notice cannot
+  // paint above Android's opaque resident message surface regardless of its zIndex.
+  it('hosts transient route notices above the resident message surface', () => {
+    const source = ts.createSourceFile('session.tsx', readFileSync(
+      resolve(process.cwd(), 'app/sessions/[sessionId].tsx'), 'utf8',
+    ), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    const notices: ts.JsxSelfClosingElement[] = [];
+    const visit = (node: ts.Node) => {
+      if (ts.isJsxSelfClosingElement(node) && node.tagName.getText(source) === 'SessionTransientNotice') notices.push(node);
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+    expect(notices).toHaveLength(1);
+    const parent = notices[0]!.parent;
+    expect(ts.isJsxElement(parent)).toBe(true);
+    if (!ts.isJsxElement(parent)) return;
+    expect(parent.openingElement.tagName.getText(source)).toBe('MessageHistoryOverlay');
+    // Unlike the sidebar panel, a notice needs the overlay on persistent layouts too.
+    expect(parent.openingElement.attributes.properties).toHaveLength(0);
+  });
+  // guard: keep the real route wired to the shared list and native clipping layers.
+  // The provider behavior suite cannot exercise Android native stacking.
+  it('keeps the persistent sidebar on the shared list below its native host', () => {
+    const home = readFileSync(resolve(process.cwd(), 'src/session/HomeSurface.tsx'), 'utf8');
+    expect(home).toContain('{residentList.enabled ? (');
+    expect(home).not.toContain('residentList.enabled && !embedded');
+    const route = readFileSync(resolve(process.cwd(), 'app/sessions/[sessionId].tsx'), 'utf8');
+    expect(route).toContain('<MessageHistoryOverlay enabled={!paneLayout.persistent || sessionListDrawerOverlayMounted}>');
+  });
   it('does not keep the old route preloading mechanism alongside the resident host', () => {
     const home = readFileSync(resolve(process.cwd(), 'src/session/HomeSurface.tsx'), 'utf8');
     expect(home).not.toContain('useRecentTaskPreload');

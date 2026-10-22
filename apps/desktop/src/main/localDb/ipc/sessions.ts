@@ -1,4 +1,16 @@
-import { openSession } from '../sessionOpening.js';
+import { ensureOpenedProjectGit, openSession } from '../sessionOpening.js';
+import {
+  claimOwnedProvisionalSession,
+  configureProvisionalSessions,
+  deleteUnsentSessionRow,
+  forgetProvisionalSession,
+  isProvisionalSession,
+  markProvisionalSession,
+  provisionalManagedDir,
+  removeEmptyDialogueDir,
+  sweepLeftoverProvisionalSessions,
+} from '../provisionalSessions.js';
+import { emitSessionCreated, emitSessionListChangedLocally } from './sessionCreatedBroadcast.js';
 /**
  * chat-data-localization F5：Sessions IPC handlers（C6）。
  *
@@ -27,6 +39,7 @@ import { DEFAULT_DRAFT_SESSION_TITLE, normalizeAutoTitle } from '@cindy/maker-sh
 import { getDbClient } from '../client/current';
 import * as currentDb from '../client/current';
 import type { DbClient } from '../client/DbClient';
+import type { SessionsSetTerminalStatusResult } from '../client/tx/types';
 import { sessions, messages } from '../schema';
 import { clearSessionAttention } from '../../appBadgeService';
 import {
@@ -82,6 +95,7 @@ import type { SessionReference } from '../../../shared/sessionReference.js';
 import * as broadcastTap from '../../device-link/broadcast-tap.js';
 import { notifyAgentIslandSessionPatch } from '../agentIslandSessionPatch';
 import { ensureHiddenSessionRegistryLoaded } from '../hiddenSessionRegistry.js';
+import { recoverGeneratedImagesForHistory } from '../../cindy-media/generatedImageRecovery';
 import { noteSessionClearBoundary } from '../../messagePersistBroadcaster';
 import {
   ackSessionTurnEndedDurable,
@@ -92,6 +106,9 @@ import {
   listInterruptedPendingSessionIds,
   setOnSessionTurnEndedPersisted,
 } from '../sessionActiveTurn';
+import { listInterruptedResumeCandidateRows } from '../interruptedResumeCandidates';
+import { formatIslandToolDetail } from '../../agent-island/toolDetail';
+import { createLocalizedToolRowWording } from '../../agent-island/toolWording';
 import { dismissErrorMessage, rebroadcastAgentSwitchBoundary } from './messages';
 import { SESSION_READ_BATCH_LIMIT } from '../../../shared/sessionRead';
 import { isDeviceLinkInvoke } from '../../device-link/invoke-context.js';
@@ -194,13 +211,16 @@ async function withStatusWriteLock<T>(
   status: unknown,
   task: () => Promise<T>,
   alreadyLocked = false,
+  beforeWrite?: () => void,
 ): Promise<T> {
   const write = async () => {
     const resources = status === undefined ? [] : await readSessionWorktreeResources(db, sessionId);
     const physicalResources = await Promise.all(resources.map(physicalWorktreeKey));
     const mutate = async () => {
+      beforeWrite?.();
       if (status === 'archived' || status === 'deleted')
         await requestWorktreeRecycle(sessionId, resources);
+      beforeWrite?.();
       const result = await task();
       for (const resource of physicalResources) notifyWorktreeRecycleOpportunity(resource);
       return result;
@@ -330,9 +350,10 @@ async function setTerminalSessionStatus(
   dbClient: DbClient,
   sessionId: string,
   status: 'archived' | 'deleted',
-): Promise<void> {
+): Promise<SessionsSetTerminalStatusResult['deletedSideChats']> {
   try {
-    await dbClient.tx('sessions.setTerminalStatus', { sessionId, status });
+    const result = await dbClient.tx('sessions.setTerminalStatus', { sessionId, status });
+    return result.deletedSideChats;
   } catch (error) {
     const code = (error as { code?: string }).code;
     const message = error instanceof Error ? error.message : String(error);
@@ -340,6 +361,47 @@ async function setTerminalSessionStatus(
       throwIpcError(code, message);
     }
     throw error;
+  }
+}
+
+/** Side chats belong to the parent view; deleting it must not strand invisible running tasks. */
+async function deleteDependentSideChats(
+  parentId: string,
+  dbClient: DbClient,
+  ownerScope: OwnerScope,
+  committed?: SessionsSetTerminalStatusResult['deletedSideChats'],
+): Promise<void> {
+  if (committed) {
+    for (const child of committed) {
+      if (!isOwnerScopeCurrent(ownerScope) || getDbClient() !== dbClient) return;
+      // The transaction already committed every status. Cleanup can be fenced
+      // by owner/route without stranding active children when it is interrupted.
+      await withStatusWriteLock(dbClient.drizzle, child.sessionId, 'deleted', async () => {
+        if (!isOwnerScopeCurrent(ownerScope) || getDbClient() !== dbClient) return;
+        cleanupSessionRuntimeForTerminalStatus(child.sessionId, 'deleted');
+        const { closeSharedTaskForTask } = await import('../../device-link/sharedTaskRuntime.js');
+        await closeSharedTaskForTask(child.sessionId, dbClient);
+      });
+      if (!isOwnerScopeCurrent(ownerScope) || getDbClient() !== dbClient) return;
+      clearSessionAttention(child.sessionId, 'explicit');
+      broadcastSessionPatched(child.sessionId, { status: 'deleted' }, ownerScope);
+      notifyAgentIslandSessionPatch(child.sessionId, { ...child, status: 'deleted' });
+      void imageCacheStore.removeSession(child.sessionId).catch((err) => {
+        log.warn('side chat image cleanup failed', { sessionId: child.sessionId, err: String(err) });
+      });
+      scheduleWorktreeRecycleForStatusChange(child.sessionId, 'deleted', { ownerScope, mediaDb: dbClient.drizzle });
+      notifyGhostSessionStatusChange(child.sessionId, 'deleted', child.workingDir);
+      cleanupSessionTerminalArtifacts(child.sessionId, 'deleted');
+      compactTerminalSessionToolResults(dbClient, child.sessionId, 'deleted');
+    }
+    return;
+  }
+  // Compatibility for callers without the transaction API (legacy adapters).
+  const children = await dbClient.drizzle.select({ id: sessions.id }).from(sessions)
+    .where(and(eq(sessions.parentSessionId, parentId), eq(sessions.source, 'side-chat'), ne(sessions.status, 'deleted')));
+  for (const child of children) {
+    if (!isOwnerScopeCurrent(ownerScope) || getDbClient() !== dbClient) return;
+    await patchSessionMetaInDb(child.id, { status: 'deleted' });
   }
 }
 
@@ -373,7 +435,10 @@ export function broadcastSessionPatched(
   const hasCapturedScope = ownerScope !== undefined && ownerScope !== null;
   const ownerStamp = hasCapturedScope ? ownerScope.ownerStamp : getSafeOwnerPushStamp();
   try {
-    if (hasCapturedScope) {
+    // 未发送任务只在本机可见，转正前不推给控制端。
+    if (isProvisionalSession(sessionId)) {
+      // local windows only
+    } else if (hasCapturedScope) {
       broadcastTap.tapWindowBroadcast(
         'local-db:sessions:patched',
         { sessionId, patch },
@@ -645,7 +710,7 @@ export async function applyAgentSwitchToSessionRow(
     sdkSessionId?: string | null;
     /** 目标引擎下的 effort / fastMode(意图登记时 renderer 按目标目录解析,apply 一并落库)。 */
     effort?: string;
-    fastMode?: boolean;
+    fastMode?: boolean | 'ultrafast';
     contextWindow?: number | null;
     /** 远程 Agent 换电脑:undefined = 不动,null = 改回任务所在电脑。 */
     agentDeviceId?: string | null;
@@ -679,6 +744,7 @@ export async function applyAgentSwitchToSessionRow(
     .returning({
       id: sessions.id, agentKind: sessions.agentKind, model: sessions.model,
       providerId: sessions.providerId, effort: sessions.effort, fastMode: sessions.fastMode,
+      scheduledModelBaseline: sessions.scheduledModelBaseline,
     });
   if (!committed || !isOwnerScopeCurrent(ownerScope)) return;
   broadcastSessionPatched(
@@ -779,7 +845,18 @@ export async function persistSessionFields(
   });
   if (Object.keys(setObj).length === 0) return;
   await db.update(sessions).set(setObj).where(eq(sessions.id, sessionId));
-  if (isOwnerScopeCurrent(ownerScope)) broadcastSessionPatched(sessionId, clean, ownerScope);
+  let runtimeProjection = {};
+  if (['model', 'providerId', 'effort', 'fastMode'].some((key) => key in clean)) {
+    const [row] = await db.select({
+      id: sessions.id, agentKind: sessions.agentKind, model: sessions.model,
+      providerId: sessions.providerId, effort: sessions.effort, fastMode: sessions.fastMode,
+      scheduledModelBaseline: sessions.scheduledModelBaseline,
+    }).from(sessions).where(eq(sessions.id, sessionId)).limit(1);
+    if (row?.scheduledModelBaseline) {
+      runtimeProjection = projectSessionRuntimeFields({ ...row, agentKind: normalizeDbAgentKind(row.agentKind) });
+    }
+  }
+  if (isOwnerScopeCurrent(ownerScope)) broadcastSessionPatched(sessionId, { ...clean, ...runtimeProjection }, ownerScope);
 }
 
 const MAX_LIMIT = 1000;
@@ -1015,6 +1092,68 @@ export async function touchUserSendInDb(id: string, atMs?: number): Promise<void
   }
 }
 
+/**
+ * 未发送任务转为普通任务（第一次发送）：补做建任务时延后的副作用，并让控制端看到它。
+ * 不是未发送任务时什么都不做。最近项目由随后的 touchUserSend 照常记录。
+ */
+export async function commitProvisionalSession(sessionId: string): Promise<boolean> {
+  if (claimOwnedProvisionalSession(sessionId) !== 'owned') return false;
+  const db = getDbClient().drizzle;
+  const [row] = await db
+    .select({
+      workingDir: sessions.workingDir,
+      workspaceKind: sessions.workspaceKind,
+      remoteHostId: sessions.remoteHostId,
+    })
+    .from(sessions)
+    .where(eq(sessions.id, sessionId))
+    .limit(1);
+  if (!row) return false;
+  await ensureOpenedProjectGit({ id: sessionId, ...row }).catch((error) => {
+    log.warn('provisional session git bootstrap failed', {
+      sessionId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
+  // The account may have changed during the awaits: then it stays an unsent leftover of the
+  // old account (claim parks it) instead of becoming an ordinary task there.
+  if (claimOwnedProvisionalSession(sessionId) !== 'owned') return false;
+  forgetProvisionalSession(sessionId);
+  emitSessionCreated(sessionId);
+  void import('../../cindy-brain/index.js')
+    .then((m) =>
+      m.notifyGhostSessionEvent('created', {
+        sessionId,
+        ...(row.workingDir ? { workdir: row.workingDir } : {}),
+      }),
+    )
+    .catch(() => {});
+  log.info('provisional session committed', { sessionId });
+  return true;
+}
+
+/**
+ * 删掉一个未发送任务（用户清空了新建页的输入）：仍未发送、没有消息时才真正删除行，
+ * 顺带删掉为它新建、仍为空的对话目录，并通知本机窗口移除。调用方负责先关掉它的 Agent。
+ */
+export async function discardProvisionalSessionRow(sessionId: string): Promise<boolean> {
+  if (claimOwnedProvisionalSession(sessionId) !== 'owned') return false;
+  const managedDir = provisionalManagedDir(sessionId);
+  const deleted = await deleteUnsentSessionRow(sessionId);
+  if (!deleted) {
+    // Already sent (or gone): it is an ordinary task now.
+    forgetProvisionalSession(sessionId);
+    return false;
+  }
+  removeEmptyDialogueDir(sessionId, managedDir);
+  forgetProvisionalSession(sessionId);
+  // Other local windows re-read their lists; the row is gone, so it drops out. No status
+  // patch: the same id may be opened again when the user types again.
+  emitSessionListChangedLocally(sessionId);
+  log.info('provisional session discarded', { sessionId });
+  return true;
+}
+
 /** fork 出来的会话的占位标题前缀("[Fork] …" / "[Fork·已剥离] …")。 */
 const FORK_PLACEHOLDER_TITLE_PREFIX = '[Fork';
 
@@ -1188,6 +1327,7 @@ export async function clearSessionContextInDb(sessionId: string, atMs?: number):
     .where(eq(sessions.id, sessionId))
     .limit(1);
   const effectiveClearedAt = updated?.clearedAt ?? ts;
+  if (isOwnerScopeCurrent(ownerScope)) void recoverGeneratedImagesForHistory(sessionId).catch(() => undefined);
   const effectiveUpdatedAt = updated?.updatedAt ?? effectiveClearedAt;
   // Concurrent clears can make SQLite return a newer monotonic boundary than
   // this request supplied. Mirror the effective value into the in-memory gate.
@@ -1227,6 +1367,10 @@ export function registerSessionIpc(
   opts: RegisterSessionIpcOpts = {},
 ): void {
   registeredSessionIpcOpts = opts;
+  configureProvisionalSessions(() => app.getPath('userData'), {
+    // Windows that listed before the sweep finished drop the deleted leftover.
+    onSwept: (sessionId) => emitSessionListChangedLocally(sessionId),
+  });
   // interrupted-turn-resume 假阳性修复:每次 last_turn_ended_at 真正落库(正常收尾 /
   // barrier 版收尾 / ack)都广播 lastTurnEndedAt patch —— renderer 的 session 快照可能
   // 是在 turn 飞行中或「done → ended 落库」空窗里取的(startedAt > endedAt),此前
@@ -1261,6 +1405,9 @@ export function registerSessionIpc(
       void import('../../sessionTaskSummary.js').then((m) => m.backfillPinnedSessionSummaries());
       // 首次 list 即账号库就绪:预热插件后台任务索引,灵动岛/通知的同步判定从此可用。
       void ensureHiddenSessionRegistryLoaded();
+      // 同一时机清掉上次运行没来得及删的未发送任务；先等它清完再读列表，残留不会被列出来。
+      // 每个账号库只真正清理一次，之后直接返回同一个结果。
+      await sweepLeftoverProvisionalSessions().catch(() => undefined);
       const cap = clampLimit(limit, 20);
       const includePinned = shouldIncludePinnedSessions(options);
       const fresh = shouldBypassSessionListSingleFlight(options);
@@ -1344,7 +1491,7 @@ export function registerSessionIpc(
       };
       // key 用同一快照上的 userId + clientEpoch + 归一化参数。
       // forceRefresh / status 重拉带 fresh，不并入写前那次查询。
-      const result = usageHistory
+      const loaded = usageHistory
         ? await loadUsageHistoryRows()
         : userId && !fresh && !before && !ids
           ? await runSessionListSingleFlight(
@@ -1358,6 +1505,11 @@ export function registerSessionIpc(
               loadRows,
             )
           : await loadRows();
+      // 未发送任务只出现在本机任务列表里，手机 / 其它电脑在它第一次发送后才看到。
+      // 在 single-flight 之外过滤：同一次查询可能同时供本机与控制端使用。
+      const result = isDeviceLinkInvoke()
+        ? ((loaded as Array<{ id: string }>).filter((row) => !isProvisionalSession(row.id)) as typeof loaded)
+        : loaded;
       const finishedAt = performance.now();
       const filter = statusFilter ?? 'all';
       const elapsedMs = Math.round(finishedAt - startedAt);
@@ -1390,7 +1542,17 @@ export function registerSessionIpc(
     const now = Date.now();
     const bodyObj = body && typeof body === 'object' ? (body as Record<string, unknown>) : {};
     const id = resolveBusinessSessionId(bodyObj.id);
-    const createBody = bodyObj as Parameters<typeof sessionCreateToRow>[1];
+    // 未发送任务（新建页开始输入时先建出来，见 provisionalSessions.ts）：只给本机普通任务，
+    // 延后的创建副作用在第一次发送转正时补做。
+    const { provisional: provisionalFlag, ...bodyWithoutProvisional } = bodyObj;
+    const provisional = provisionalFlag === true;
+    if (provisional && (
+      bodyObj.remoteHostId || bodyObj.agentDeviceId || bodyObj.orcaRole || bodyObj.source !== undefined
+      || (Array.isArray(bodyObj.writableDirs) && bodyObj.writableDirs.length > 0)
+    )) {
+      throwIpcError('INVALID_PARAMS', 'only ordinary local tasks can be opened before the first send');
+    }
+    const createBody = bodyWithoutProvisional as Parameters<typeof sessionCreateToRow>[1];
     // M16: agentKind 白名单校验（防止 renderer 传非法值）
     const ALLOWED_AGENT_KINDS = new Set<string>(['cc', 'codex', 'pi']);
     if (bodyObj.agentKind !== undefined && !ALLOWED_AGENT_KINDS.has(bodyObj.agentKind as string)) {
@@ -1473,17 +1635,36 @@ export function registerSessionIpc(
         );
       }
     }
-    const { row: insertRow } = await openSession({ id, now,
-      body: { ...createBody, workspaceKind, workingDir },
-    }, async (prepared, assertCurrent) => {
-      const resource = !prepared.remoteHostId && prepared.workingDir
-        ? managedWorktreeRoot(prepared.workingDir) : null;
-      const insert = async () => { assertCurrent(); await db.insert(sessions).values(prepared); };
-      if (resource) await withWorktreeMutation([resource], insert);
-      else await insert();
-    });
-    const [row] = await db.select().from(sessions).where(eq(sessions.id, id));
+    // 未发送任务在写入之前就登记：行一出现，任务列表 / 控制端 / IM / hook 的过滤就已生效。
+    const markedProvisional = provisional && !isProvisionalSession(id);
+    if (markedProvisional) {
+      // Only a dialogue folder allocated here is ours to tidy up if the task is discarded.
+      const managedDir = workspaceKind === 'dialogue' && !explicitWorkingDir ? workingDir : undefined;
+      markProvisionalSession(id, now, managedDir);
+    }
+    let insertRow: Awaited<ReturnType<typeof openSession>>['row'];
+    let row: typeof sessions.$inferSelect | undefined;
+    try {
+      ({ row: insertRow } = await openSession({ id, now,
+        body: { ...createBody, workspaceKind, workingDir },
+        ...(provisional ? { deferGitInit: true } : {}),
+      }, async (prepared, assertCurrent) => {
+        const resource = !prepared.remoteHostId && prepared.workingDir
+          ? managedWorktreeRoot(prepared.workingDir) : null;
+        const insert = async () => { assertCurrent(); await db.insert(sessions).values(prepared); };
+        if (resource) await withWorktreeMutation([resource], insert);
+        else await insert();
+      }));
+      [row] = await db.select().from(sessions).where(eq(sessions.id, id));
+    } catch (error) {
+      if (markedProvisional) forgetProvisionalSession(id);
+      throw error;
+    }
     if (!row) throwIpcError('NOT_FOUND', 'Session 创建后查询失败');
+    if (provisional) {
+      log.info('provisional session opened', { sessionId: id, workspaceKind: insertRow.workspaceKind });
+      return sessionToCamel({ ...row, messageCount: 0 });
+    }
     // recent-workdirs: 项目目录走 sidebar 分组,要进"最近"列表;dialogue 目录是
     // app-managed 临时 cwd,跟用户选过的项目目录语义不同,不污染最近列表。
     // 失败仅日志,不阻断创建流程。
@@ -1519,6 +1700,23 @@ export function registerSessionIpc(
   // 断定飞行中的 turn 来自上一个进程。周期性重跑会把运行中的会话误判为中断。
   ipcMain.handle('local-db:sessions:interrupted-pending', async () => {
     return listInterruptedPendingSessionIds();
+  });
+
+  // 启动「继续上次中断的任务」弹窗:同一批中断会话,附中断时间与中断那一轮最后一次
+  // 工具调用的文案(与灵动岛同源)。查询带 bootAt 守卫,任何时刻调用都不会把本进程
+  // 正在跑的 turn 算进来。只服务本机顶层 renderer,不进 device-link allowlist。
+  ipcMain.handle('local-db:sessions:interrupted-resume-candidates', async (event) => {
+    assertTrustedAppRendererEvent(event);
+    const rows = await listInterruptedResumeCandidateRows();
+    const wording = createLocalizedToolRowWording();
+    return rows.map(({ sessionId, interruptedAt, lastToolUse }) => ({
+      sessionId,
+      interruptedAt,
+      activity: lastToolUse
+        ? (formatIslandToolDetail(lastToolUse.toolName, lastToolUse.input, { wording })
+          ?? lastToolUse.toolName)
+        : null,
+    }));
   });
 
   // 「尾部停在未 dismissed 错误行」的 active 会话 id —— 红点派生的周期性重算源。
@@ -1916,6 +2114,7 @@ export async function updateSessionInDb(
     // before persisting the new directory so the next send lazily recreates the
     // runtime with the moved session's cwd instead of continuing in the old one.
     if (movingLocalNonClaudeSession) {
+      await moveGuard?.beforeWrite?.();
       moveGuard?.assertCurrent();
       if (!opts.closeIdleSessionForMove) {
         throwIpcError('INTERNAL', '会话移动 runtime 操作未配置');
@@ -1987,6 +2186,7 @@ export async function updateSessionInDb(
     // 先记号后写库,代价只是写库失败时该会话本进程内不再自动起名 —— 用户毕竟确实
     // 按下过保存,这个方向的偏差是安全的。
     if (typeof p.title === 'string') noteUserTitleWritten(sid);
+    let deletedSideChats: SessionsSetTerminalStatusResult['deletedSideChats'] | undefined;
     await withStatusWriteLock(
       db,
       sid,
@@ -2001,7 +2201,7 @@ export async function updateSessionInDb(
           if (typeof dbClient.tx === 'function') {
             const { status: _status, ...nonTerminalPatch } = setObj;
             await writeSessionPatch(db, sid, nonTerminalPatch, undefined);
-            await setTerminalSessionStatus(dbClient, sid, p.status as 'archived' | 'deleted');
+            deletedSideChats = await setTerminalSessionStatus(dbClient, sid, p.status as 'archived' | 'deleted');
           } else {
             const prepared = await prepareSharedTaskClosure(sid, dbClient);
             try {
@@ -2130,6 +2330,7 @@ export async function updateSessionInDb(
     notifyGhostSessionStatusChange(sid, p.status, updated.workingDir);
     cleanupSessionTerminalArtifacts(sid, p.status);
     compactTerminalSessionToolResults(dbClient, sid, p.status);
+    if (p.status === 'deleted' && updated.source !== 'side-chat') await deleteDependentSideChats(sid, dbClient, ownerScope, deletedSideChats);
     return updated;
   };
   if (p.workingDir === undefined && !moveGuard) return update();
@@ -2151,10 +2352,13 @@ export async function updateSessionInDb(
 
 /** Sending continues an ordinary archived task. Serialize with archive/delete and
  * use the normal status writer so native projection and all clients see active. */
-export async function restoreArchivedSessionForSend(sessionId: string): Promise<void> {
+export async function restoreArchivedSessionForSend(
+  sessionId: string,
+  options: { routeLockHeld?: boolean; signal?: AbortSignal } = {},
+): Promise<void> {
   const ownerScope = captureOwnerScope();
   const db = getDbClient().drizzle;
-  await withSessionRouteLock(sessionId, async () => {
+  const restore = async () => {
     const [row] = await db.select({
       status: sessions.status, source: sessions.source, orcaRole: sessions.orcaRole,
       orcaRemoteLead: sessions.orcaRemoteLead,
@@ -2165,8 +2369,10 @@ export async function restoreArchivedSessionForSend(sessionId: string): Promise<
     if (row.source === 'bot' || row.orcaRole === 'worker' || row.orcaRemoteLead) {
       throwIpcError('PRECONDITION_FAILED', 'Restore the managed task before continuing');
     }
-    await patchSessionMetaInDb(sessionId, { status: 'active' });
-  });
+    await patchSessionMetaInDb(sessionId, { status: 'active' }, { ...options, routeLockHeld: true });
+  };
+  if (options.routeLockHeld) await restore();
+  else await withSessionRouteLock(sessionId, restore);
 }
 
 export async function patchSessionMetaInDb(
@@ -2176,6 +2382,7 @@ export async function patchSessionMetaInDb(
     title?: string;
     pinnedAt?: string | null;
   },
+  options: { routeLockHeld?: boolean; signal?: AbortSignal; beforeWrite?: () => void } = {},
 ): Promise<ReturnType<typeof sessionToCamel>> {
   const ownerScope = captureOwnerScope();
   for (const k of Object.keys(patch)) {
@@ -2200,17 +2407,21 @@ export async function patchSessionMetaInDb(
   const setObj = sessionPatchToRow(patch, { bumpUpdatedAt: false });
   // 控制端远程改名走这条,与本机改名同口径(同样先记号后写库)。
   if (patch.title !== undefined) noteUserTitleWritten(sessionId);
+  let deletedSideChats: SessionsSetTerminalStatusResult['deletedSideChats'] | undefined;
   const updated = await withStatusWriteLock(db, sessionId, patch.status, async () => {
     if (patch.status !== undefined) await assertGenericSessionLifecycleAllowed(db, sessionId);
+    options.beforeWrite?.();
     const terminal = patch.status === 'archived' || patch.status === 'deleted';
     if (terminal) {
       if (typeof dbClient.tx === 'function') {
         const { status: _status, ...nonTerminalPatch } = setObj;
         await writeSessionPatch(db, sessionId, nonTerminalPatch, undefined);
-        await setTerminalSessionStatus(dbClient, sessionId, patch.status as 'archived' | 'deleted');
+        options.beforeWrite?.();
+        deletedSideChats = await setTerminalSessionStatus(dbClient, sessionId, patch.status as 'archived' | 'deleted');
       } else {
         const prepared = await prepareSharedTaskClosure(sessionId, dbClient);
         try {
+          options.beforeWrite?.();
           await writeSessionPatch(db, sessionId, setObj, patch.status);
         } catch (error) {
           await rollbackSharedTaskClosure(dbClient, prepared);
@@ -2219,6 +2430,9 @@ export async function patchSessionMetaInDb(
         await finalizeSharedTaskClosure(dbClient, prepared);
       }
     } else {
+      // All asynchronous preparation has finished. Once this write is issued,
+      // cancellation does not roll back a committed lifecycle transition.
+      if (options.signal?.aborted) throwIpcError('PRECONDITION_FAILED', 'Session send aborted');
       await writeSessionPatch(db, sessionId, setObj, patch.status);
     }
     const row = await selectSessionWithCount(db, sessionId);
@@ -2233,7 +2447,7 @@ export async function patchSessionMetaInDb(
       await closeSharedTaskForTask(sessionId, dbClient);
     }
     return sessionToCamel(row);
-  });
+  }, options.routeLockHeld, options.beforeWrite);
   if (updated.status === 'deleted' && isOwnerScopeCurrent(ownerScope)) {
     clearSessionAttention(sessionId, 'explicit');
   }
@@ -2269,6 +2483,7 @@ export async function patchSessionMetaInDb(
     );
   }
   compactTerminalSessionToolResults(dbClient, sessionId, patch.status);
+  if (patch.status === 'deleted' && updated.source !== 'side-chat') await deleteDependentSideChats(sessionId, dbClient, ownerScope, deletedSideChats);
   return updated;
 }
 
@@ -2312,6 +2527,7 @@ export interface RenameSessionMetaItem {
 export async function renameSessionTitlesInDb(
   changes: RenameSessionMetaChange[],
   dryRun: boolean,
+  beforeMutation?: () => Promise<void>,
 ): Promise<RenameSessionMetaItem[]> {
   if (changes.length === 0) return [];
   const ownerScope = captureOwnerScope();
@@ -2355,6 +2571,7 @@ export async function renameSessionTitlesInDb(
 
   if (dryRun) return preview;
 
+  await beforeMutation?.();
   // 批量改名(MCP 工具)同样是"人给的名字",自动起名不得再覆盖;与上面两条出口
   // 一样先记号后写库,不给并发的智能标题留窗口。
   for (const change of changes) noteUserTitleWritten(change.sessionId);
@@ -2400,6 +2617,7 @@ export interface SessionStatusChangeRow {
 export async function setSessionsStatusInDb(
   sessionIds: string[],
   status: 'active' | 'archived',
+  beforeMutation?: () => Promise<void>,
 ): Promise<SessionStatusChangeRow[]> {
   if (sessionIds.length === 0) return [];
   const ownerScope = captureOwnerScope();
@@ -2415,8 +2633,12 @@ export async function setSessionsStatusInDb(
     const physicalResources = await Promise.all([...new Set(resources)].map(physicalWorktreeKey));
     return withWorktreeMutation(resources, async () => {
       if (status === 'archived') {
-        for (const id of sessionIds) await requestWorktreeRecycle(id, perSession.get(id));
+        for (const id of sessionIds) {
+          await beforeMutation?.();
+          await requestWorktreeRecycle(id, perSession.get(id));
+        }
       }
+      await beforeMutation?.();
       const rows = await dbClient.tx('sessions.setStatus', status === 'archived'
         ? { sessionIds, status, closeSharedTasks: true }
         : { sessionIds, status }).catch((err) => {
@@ -2569,6 +2791,7 @@ export async function deleteBotProfileAndDetachSessionsInDb(
  * 文件在 turn 送出后即无用。所有把 session 置为终态的路径都应调用。
  */
 function removeHookAttachmentDir(sessionId: string, status: unknown): void {
+  if (status === 'deleted') void recoverGeneratedImagesForHistory(sessionId).catch(() => undefined);
   if (status !== 'deleted' && status !== 'archived') return;
   if (status === 'deleted') {
     void removeTurnChangeSetsForSession(sessionId).catch((err) => {

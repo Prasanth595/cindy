@@ -1,3 +1,4 @@
+import { readChatReplyQuote } from '@cindy/maker-shared/chat-reply-quote';
 import { useEffect, useRef, useSyncExternalStore } from "react";
 import { Alert, AppState } from "react-native";
 import { useAuth } from "@/auth/AuthContext";
@@ -38,7 +39,9 @@ import {
   uploadMobileAttachmentFromFile,
   discardMobileUploadedAttachment,
 } from "./mobileAttachmentUpload";
-import { buildQueuedTextMessage } from "./inputProjection";
+import { buildQueuedTextMessage, EMPTY_INPUT_PROJECTION } from "./inputProjection";
+import { mobileDebugLog } from "@/debug/mobileDebugLog";
+import type { RemoteSession } from "./types";
 import { outboxItemAttachments } from "./sessionOutbox";
 import { sessionFromCreateResult } from "./newSession";
 import { dismissRecoveredPrecreatedSession, getNewSessionCreationTask, restoreNewSessionDurableEdit } from "./newSessionCreation";
@@ -55,6 +58,9 @@ import {
   isDurableOutboxSettled,
   type DurableOutboxRecord,
 } from "./durableOutbox";
+
+/** One authoritative session read serves the policy check and preparation of the same attempt. */
+const SESSION_READ_REUSE_MS = 2_000;
 
 /** Runs only while the OS gives the app execution time; foreground/reconnect resume the same ledger. */
 export function MobileOutboxBridge() {
@@ -126,6 +132,49 @@ export function MobileOutboxBridge() {
         deviceId: r.deviceId,
         invoke: invokeOwned(r),
       });
+    // The policy check and message preparation both need the authoritative
+    // session row; one read serves both within a single delivery attempt.
+    // Keyed per message: each read runs under that message's ownership guard.
+    const sessionReads = new Map<string, { at: number; read: Promise<RemoteSession> }>();
+    const readSessionOnce = (r: DurableOutboxRecord): Promise<RemoteSession> => {
+      const key = JSON.stringify([r.deviceId, r.item.sessionId, r.item.clientId]);
+      const now = Date.now();
+      // Only reads inside the reuse window are useful; drop the rest so the map stays tiny.
+      for (const [other, entry] of sessionReads)
+        if (now - entry.at >= SESSION_READ_REUSE_MS) sessionReads.delete(other);
+      const cached = sessionReads.get(key);
+      if (cached) return cached.read;
+      const read = maker(r).getSession(r.item.sessionId);
+      sessionReads.set(key, { at: now, read });
+      read.catch(() => {
+        if (sessionReads.get(key)?.read === read) sessionReads.delete(key);
+      });
+      return read;
+    };
+    // Learned from this host's own projection / enqueue replies. A first send in
+    // a task whose boundary is known needs no projection round trip.
+    const durableHosts = new Set<string>();
+    const knownClearBoundaries = new Map<string, number | null>();
+    // What a host answered belongs to the connection it answered on: a host that
+    // restarted or was replaced by an older build must be asked again.
+    let learnedEpoch = latest.current.link.connectionEpoch;
+    const forgetStaleLearning = () => {
+      const epoch = latest.current.link.connectionEpoch;
+      if (epoch === learnedEpoch) return;
+      learnedEpoch = epoch;
+      durableHosts.clear();
+      knownClearBoundaries.clear();
+    };
+    const learnProjection = (r: DurableOutboxRecord, projection: unknown) => {
+      forgetStaleLearning();
+      if (!projection || typeof projection !== 'object') return;
+      const value = projection as { inputDeliveryVersion?: unknown; clearBoundaryMs?: unknown };
+      if (value.inputDeliveryVersion === 1) durableHosts.add(r.deviceId);
+      if (value.clearBoundaryMs === null
+        || (typeof value.clearBoundaryMs === 'number' && Number.isFinite(value.clearBoundaryMs))) {
+        knownClearBoundaries.set(leaseKey(r), value.clearBoundaryMs);
+      }
+    };
     const epochs = new Map<string, { authority: number; remote: number }>();
     const leases = new Map<
       string,
@@ -133,6 +182,16 @@ export function MobileOutboxBridge() {
     >();
     const leaseKey = (r: DurableOutboxRecord) =>
       JSON.stringify([r.deviceId, r.item.sessionId]);
+    const captureProjectionEpoch = (r: DurableOutboxRecord) => {
+      epochs.set(leaseKey(r), {
+        authority: remoteSessionStore.captureInputProjectionAuthorityEpoch(
+          r.item.sessionId,
+        ),
+        remote: remoteSessionStore.captureInputProjectionRemoteEpoch(
+          r.item.sessionId,
+        ),
+      });
+    };
     // Accepted sends remain durable in the outbox while hidden. Neither poll
     // their history nor pin their raw message windows just for display handoff.
     const needsReconciliation = (r: DurableOutboxRecord) =>
@@ -199,18 +258,11 @@ export function MobileOutboxBridge() {
             getNewSessionCreationTask(r.item.sessionId) === null)),
       sessionPolicy: (record) => cindyMakeOutboxPolicy(record, {
         knownSession: () => knownSession(record),
-        readSession: () => maker(record).getSession(record.item.sessionId),
+        readSession: () => readSessionOnce(record),
         isCurrent: () => isCurrent() && mobileDurableOutbox.getSnapshot().includes(record),
       }),
       projection: async (r) => {
-        epochs.set(leaseKey(r), {
-          authority: remoteSessionStore.captureInputProjectionAuthorityEpoch(
-            r.item.sessionId,
-          ),
-          remote: remoteSessionStore.captureInputProjectionRemoteEpoch(
-            r.item.sessionId,
-          ),
-        });
+        captureProjectionEpoch(r);
         return invoke<DeliveryProjection>(
           r.deviceId,
           "maker:input:get-projection",
@@ -222,9 +274,28 @@ export function MobileOutboxBridge() {
           ],
         );
       },
+      knownProjection: (r) => {
+        forgetStaleLearning();
+        const clearBoundaryMs = knownClearBoundaries.get(leaseKey(r));
+        if (!durableHosts.has(r.deviceId) || clearBoundaryMs === undefined) return undefined;
+        // The enqueue reply is applied with the epoch captured here, exactly as
+        // it would be after a fetched projection.
+        captureProjectionEpoch(r);
+        return {
+          ...EMPTY_INPUT_PROJECTION,
+          sessionId: r.item.sessionId,
+          inputDeliveryVersion: 1,
+          clearBoundaryMs,
+        };
+      },
+      staleClearBoundary: (error) =>
+        formatRemoteError(error).includes("REMOTE_OPTIMISTIC_INPUT_CLEARED"),
+      trace: (event, fields) => mobileDebugLog("debug", "device-link", event, fields),
       session: (r) => maker(r).getSession(r.item.sessionId),
       applyProjection: (r, projection) => {
         guard();
+        // Every fetched projection and enqueue reply passes through here.
+        learnProjection(r, projection);
         const epoch = epochs.get(leaseKey(r));
         if (epoch)
           remoteSessionStore.setInputProjectionIfCurrent(
@@ -235,7 +306,7 @@ export function MobileOutboxBridge() {
           );
       },
       prepare: async (r) => {
-        const session = await maker(r).getSession(r.item.sessionId);
+        const session = await readSessionOnce(r);
         guard();
         if (!session?.workingDir)
           throw new Error(i18n.t("session.screen.missingWorkingDir"));
@@ -252,6 +323,7 @@ export function MobileOutboxBridge() {
             agentReferences: item.agentReferences,
             pastedTextRanges: item.pastedTextRanges,
             slashCommandRanges: item.slashCommandRanges,
+            replyQuote: readChatReplyQuote(item.replyQuote) ?? undefined,
           },
         );
         return prepareMobileQueuedSessionReferences(
@@ -286,6 +358,7 @@ export function MobileOutboxBridge() {
             token,
             deviceId: r.deviceId,
             sharedTaskId: parseSharedTaskPeer(r.deviceId)?.sharedTaskId,
+            isActive: () => isCurrent() && mobileDurableOutbox.getSnapshot().includes(r),
           },
         );
         if (!isCurrent() || !mobileDurableOutbox.getSnapshot().includes(r)) {

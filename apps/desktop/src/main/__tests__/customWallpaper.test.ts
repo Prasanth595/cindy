@@ -16,6 +16,10 @@ vi.mock('../../shared/wallpaper-video-manifest.json', () => ({
       sha256: 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad',
       image: { sha256: 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad' },
     },
+    still: {
+      delivery: 'cdn',
+      image: { sha256: '88d4266fd4e6338d13b845fcf289579d209c897823b9217da3e161936f031589' },
+    },
   },
 }));
 vi.mock('../localDb/client/current.js', () => ({
@@ -154,21 +158,25 @@ describe('client-owned custom wallpaper lifecycle', () => {
     await removeCustomWallpaper();
     expect((await listBlobFiles('client-wallpaper')).entries).toHaveLength(0);
   });
-  it.each(['video/mp4', 'image/webp'])(
-    'retains official CDN %s across custom import and removal',
-    async (mimeType) => {
-      const official = await writeBlob({
-        buffer: Buffer.from('abc'),
-        mimeType,
-        scope: 'client-wallpaper',
-      });
-      await selectImage();
-      await importCustomWallpaper(parent);
-      await removeCustomWallpaper();
-      expect((await readClientWallpaperFile(official.url)).buffer).toEqual(Buffer.from('abc'));
-      expect((await listBlobFiles('client-wallpaper')).entries).toHaveLength(1);
-    },
-  );
+  // User request 2026-10-17: static CDN entries have no video hash. Exercise
+  // custom import/removal with one such cached image to prevent data loss;
+  // previous fixtures only covered two-kind scenes. Unit tier.
+  it.each([
+    ['video/mp4', 'abc'],
+    ['image/webp', 'abc'],
+    ['image/webp', 'abcd'],
+  ])('retains official CDN %s across custom import and removal', async (mimeType, content) => {
+    const official = await writeBlob({
+      buffer: Buffer.from(content),
+      mimeType,
+      scope: 'client-wallpaper',
+    });
+    await selectImage();
+    await importCustomWallpaper(parent);
+    await removeCustomWallpaper();
+    expect((await readClientWallpaperFile(official.url)).buffer).toEqual(Buffer.from(content));
+    expect((await listBlobFiles('client-wallpaper')).entries).toHaveLength(1);
+  });
 
   it('rejects oversized or fake MP4 files without replacing the current image', async () => {
     await selectImage();

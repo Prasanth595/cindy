@@ -431,6 +431,8 @@ interface LaneAnchorState {
   queue: string[];
   /** 当前回合持有的锚点。 */
   held: string | null;
+  /** Trigger owned by the claimed opener, separate from a later pending opener. */
+  heldOpenerTrigger?: string;
   /** 普通群: held 是否已用于引用回复(用过则后续 chat_id 直发)。 */
   quotedHeld: boolean;
   /**
@@ -472,6 +474,7 @@ export function pushPatchableOpener(
 ): void {
   S().patchableOpeners.set(laneUserId, messageId);
   if (triggerMessageId) S().openerTriggers.set(laneUserId, triggerMessageId);
+  else S().openerTriggers.delete(laneUserId);
 }
 
 /**
@@ -483,8 +486,6 @@ export function claimPatchableOpener(laneUserId: string): string | null {
   const openerId = S().patchableOpeners.get(laneUserId);
   if (!openerId) return null;
   S().patchableOpeners.delete(laneUserId);
-  // openerTriggers 保留 — patch/替换失败撤回开场白卡时需要回拨锚点
-  // (rearmAnchorToTrigger 消费); 正常认领成功则随下次 push 覆盖或账号替换清空。
   const state = S().laneAnchors.get(laneUserId) ?? {
     queue: [],
     held: null,
@@ -494,6 +495,8 @@ export function claimPatchableOpener(laneUserId: string): string | null {
   // 锚点队列头正常就是这张开场白卡; 对不上说明顺序被破坏, 保守起见仍保留队列。
   if (state.queue[0] === openerId) state.queue.shift();
   state.held = openerId;
+  state.heldOpenerTrigger = S().openerTriggers.get(laneUserId);
+  S().openerTriggers.delete(laneUserId);
   state.quotedHeld = true;
   state.inThreadReply = false;
   S().laneAnchors.set(laneUserId, state);
@@ -592,16 +595,13 @@ export function getOpenerTrigger(laneUserId: string): string | undefined {
  * reply_in_thread 标记)。兜底发送向触发消息 reply 且 reply_in_thread=true,
  * 仍落回话题 — 而不是向已删除的开场白卡 reply 失败。无触发记录返回 false。
  */
-export function rearmAnchorToTrigger(laneUserId: string): boolean {
-  const triggerId = S().openerTriggers.get(laneUserId);
-  S().openerTriggers.delete(laneUserId);
+export function rearmAnchorToTrigger(laneUserId: string, expectedOpenerId: string): boolean {
+  // A delayed recall must not replace the anchor claimed by a newer round.
+  const state = S().laneAnchors.get(laneUserId);
+  if (!state || state.held !== expectedOpenerId) return false;
+  const triggerId = state.heldOpenerTrigger;
   if (!triggerId) return false;
-  const state = S().laneAnchors.get(laneUserId) ?? {
-    queue: [],
-    held: null,
-    quotedHeld: false,
-    inThreadReply: false,
-  };
+  delete state.heldOpenerTrigger;
   state.held = triggerId;
   state.quotedHeld = true;
   state.inThreadReply = true;
@@ -643,6 +643,7 @@ function resolveSendTarget(userId: string, opts?: { advanceRound?: boolean; thre
   // held: 话题 lane 复用旧锚点仍落回正确话题(话题内任意消息都是合法锚点)。
   if ((opts?.advanceRound || !state.held) && state.queue.length > 0) {
     state.held = state.queue.shift() ?? null;
+    delete state.heldOpenerTrigger;
     state.quotedHeld = false;
     state.inThreadReply = false;
   }
@@ -1218,7 +1219,7 @@ export async function patchCardRaw(messageId: string, cardJson: unknown): Promis
 export async function sendCardRaw(
   userId: string,
   cardJson: unknown,
-  opts?: { threadTs?: string },
+  opts?: { threadTs?: string; advanceRound?: boolean },
 ): Promise<{ messageId: string }> {
   return withSendTarget(userId, { advanceRound: true, ...opts }, (target) => createMessage(
     target,

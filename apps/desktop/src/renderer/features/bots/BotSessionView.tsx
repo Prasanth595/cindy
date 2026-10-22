@@ -12,10 +12,10 @@ import { CompanionShadowBanner } from './CompanionShadowBanner';
 import type { ComposerBotMention } from '@/lib/fileTypes';
 import { getBotLastReadAt, markBotRead } from './botReadState';
 import { useBotProfiles } from './botStore';
-import { ensureBotWorkbenchTab } from '@/features/right-sidebar/lib/openBotWorkbenchTab';
 import type { BotChatIdentity } from './BotSessionContentHeader';
 import type { BotChatBinding } from './botChatPresentation';
 import { useBotIslandVisibleSession } from './useBotIslandVisibleSession';
+import { BotDmThreadHost } from './BotDmThreadHost';
 
 type BotSessionGate =
   | { kind: 'loading' }
@@ -94,6 +94,7 @@ function BotSessionGateView() {
   const liveName = liveProfile?.name;
   const liveAvatar = liveProfile?.avatar;
   const liveAvatarColor = liveProfile?.avatarColor;
+  const liveInvitationStage = liveProfile?.invitation?.stage;
   const gateIdentity = gate.kind === 'ready' ? gate.identity : null;
   const identity = useMemo(
     () =>
@@ -196,16 +197,6 @@ function BotSessionGateView() {
     };
   }, [botId, reloadVersion, sessionId]);
 
-  // 本机伙伴主任务:右侧栏默认带上「工作台」标签(首次进入时创建并展开)。
-  // 远程伙伴走 RemoteBotSessionView,不经过这里;渠道任务、历史任务不提供工作台。
-  const workbenchSessionId = gate.kind === 'ready' && gate.isCanonical ? sessionId : undefined;
-  useEffect(() => {
-    if (!botId || !workbenchSessionId) return;
-    const controller = new AbortController();
-    void ensureBotWorkbenchTab(workbenchSessionId, botId, controller.signal).catch(() => undefined);
-    return () => controller.abort();
-  }, [botId, workbenchSessionId]);
-
   const onReadThrough = useCallback((at: number) => {
     if (isDataOwnerGenerationCurrent(readOwner.current) && gate.kind === 'ready' && gate.isCanonical && botId && gate.identity.sessionId === sessionId) markBotRead(botId, at);
   }, [botId, gate, sessionId]);
@@ -270,18 +261,21 @@ function BotSessionGateView() {
   const readOnly = shadowed && gate.isCanonical;
   return (
     <main className="relative flex h-full min-w-0 overflow-hidden bg-[var(--surface)]">
-      <div className="flex min-w-0 flex-1 flex-col">
+      {/* 私聊话题只属于本机的伙伴主对话；只读副本没有话题。 */}
+      <BotDmThreadHost enabled={gate.isCanonical && !readOnly} bot={identity ?? gate.identity}
+        rootSessionId={sessionId} mentions={gate.mentions}>
         {readOnly && botId ? <CompanionShadowBanner botId={botId} name={(identity ?? gate.identity).name} /> : null}
         <div className="min-h-0 flex-1">
           <CCAgentSessionView
             botMentions={gate.mentions}
             botIdentity={chatIdentity ?? gate.identity}
+            botInvitationStage={gate.isCanonical ? liveInvitationStage : undefined}
             botUnreadBoundaryAt={gate.unreadBoundaryAt}
             onBotReadThrough={gate.isCanonical ? onReadThrough : undefined}
             {...(readOnly ? { readOnly: true } : {})}
           />
         </div>
-      </div>
+      </BotDmThreadHost>
     </main>
   );
 }

@@ -194,10 +194,13 @@ export function BotTaskCard({
   card,
   sessionId,
   attached = false,
+  inset = false,
 }: {
   card: BotCollaborationMeta;
   sessionId?: string;
   attached?: boolean;
+  /** Inside a message bubble (group chat): a flat inset instead of a bordered card. */
+  inset?: boolean;
 }) {
   const { t } = useTranslation();
   const fileContext = useChatSessionFile();
@@ -413,7 +416,9 @@ export function BotTaskCard({
     <div
       ref={observeCard}
       data-bot-task-card={state}
-      className="my-2 w-full min-w-0 max-w-[560px] rounded-xl border border-[var(--msg-tool-card-border)] bg-[var(--msg-tool-card-bg)] px-3 py-2.5"
+      className={inset
+        ? 'w-full min-w-0 rounded-lg bg-[var(--surface)] px-3 py-2.5'
+        : 'my-2 w-full min-w-0 max-w-[560px] rounded-xl border border-[var(--msg-tool-card-border)] bg-[var(--msg-tool-card-bg)] px-3 py-2.5'}
     >
       <div className="flex min-w-0 items-center gap-2">
         <StatusGlyph state={state} />
@@ -479,6 +484,8 @@ export function BotTaskCard({
               <MarkdownRenderer
                 workingDir={workingDir}
                 currentSessionId={childSessionId ?? undefined}
+                renderRichAnswers
+                streamFadeKey={`bot-result:${childSessionId ?? parentSessionId}:${card.delegationId}`}
                 content={resultText}
               />
             ) : (

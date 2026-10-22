@@ -5,7 +5,7 @@ export type ScheduleBinding = Pick<
   Schedule,
   'id' | 'name' | 'status' | 'targetSessionId' | 'cronExpr' | 'manual' | 'intervalMs'
 > &
-  Partial<Pick<Schedule, 'recurring'>>;
+  Partial<Pick<Schedule, 'recurring' | 'persistentSession'>>;
 
 let lastInput: readonly ScheduleBinding[] | null = null;
 let lastMap: ReadonlyMap<string, ScheduleBinding[]> = new Map();
@@ -61,6 +61,8 @@ export function parseScheduleBindings(raw: unknown): ScheduleBinding[] {
       manual: s.manual === true,
       recurring: s.recurring as boolean | undefined,
       intervalMs: s.intervalMs as number | undefined,
+      // 持续会话在任务归档后会换绑新任务继续跑,归档确认据此不提示。
+      ...(s.persistentSession === true ? { persistentSession: true } : {}),
     });
   }
   return result;

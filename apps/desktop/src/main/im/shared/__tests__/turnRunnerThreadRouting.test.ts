@@ -1104,6 +1104,17 @@ describe('turnRunner 自动任务转播(scheduler turn → 远程控制 thread)'
   const withOrigin = (e: Partial<AgentEvent>): AgentEvent =>
     ({ ...e, turnOrigin: schedulerOrigin }) as AgentEvent;
 
+  it('successful background work without a reply removes the progress card and its title', async () => {
+    const stub = streamingHandleStub();
+    mocks.slackIm.startStreamingText.mockResolvedValue(stub);
+    const h = await attachAndIdle();
+    h.emit(withOrigin({ type: 'tool_use', data: { toolName: 'Read', input: { file_path: '/x/a.ts' } } }));
+    await vi.waitFor(() => expect(mocks.slackIm.startStreamingText).toHaveBeenCalledTimes(1));
+    h.emit(withOrigin({ type: 'done', data: {} }));
+    await vi.waitFor(() => expect(stub.finalize).toHaveBeenCalledExactlyOnceWith(''));
+    expect(mocks.slackIm.startStreamingText).toHaveBeenCalledTimes(1);
+  });
+
   it('does not forward child output or settle on a child terminal during scheduled turns', async () => {
     const stub = streamingHandleStub();
     mocks.slackIm.startStreamingText.mockResolvedValue(stub);

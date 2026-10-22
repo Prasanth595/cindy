@@ -920,6 +920,12 @@ export class TelegramIM extends BaseIM implements ChannelIM {
 
   async patchMarkdownCard(messageId: string, markdown: string): Promise<void> {
     const { chatId, messageId: nativeId } = decodeMessageId(messageId);
+    if (!markdown.trim()) {
+      await this.requireApi().call('deleteMessage', {
+        chat_id: chatId, message_id: Number(nativeId),
+      });
+      return;
+    }
     const { html } = markdownToTelegramHtml(markdown);
     await this.editHtml(chatId, nativeId, html, undefined);
   }

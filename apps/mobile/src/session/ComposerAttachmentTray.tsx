@@ -32,6 +32,8 @@ export interface ComposerAttachmentTrayProps {
   onPreview: (attachmentId: string) => void;
   /** 乐观上传中的本机附件(图片=缩略卡,文件=chip,均带转圈;失败态带重试)。 */
   pendingUploads?: readonly PendingLocalAttachmentUpload[];
+  /** Screen owns the viewer so keyboard blur cannot unmount it with this tray. */
+  onPreviewPending: (localId: string) => void;
   /** X 一个上传中的附件(取消上传)。 */
   onRemovePending?: (localId: string) => void;
   /** 重试一个失败态的上传卡。 */
@@ -53,6 +55,7 @@ export function ComposerAttachmentTray({
   onRemove,
   onPreview,
   pendingUploads = [],
+  onPreviewPending,
   onRemovePending,
   onRetryPending,
   pastePlaceholderCount = 0,
@@ -144,9 +147,16 @@ export function ComposerAttachmentTray({
                 <Text style={styles.thumbFailedText}>{t('composer.attachments.retry')}</Text>
               </Pressable>
             ) : (
-              <View style={styles.thumbBusyOverlay}>
+              <Pressable
+                accessibilityLabel={t('composer.attachments.viewImage', { name: pending.name })}
+                accessibilityRole="button"
+                disabled={!pending.previewUri}
+                onPress={() => onPreviewPending(pending.localId)}
+                style={({ pressed }) => [styles.thumbBusyOverlay, pressed && styles.pressed]}
+                testID={`${testIDPrefix}.attachmentPendingPreviewButton`}
+              >
                 <ActivityIndicator color={colors.swipeActionText} size="small" />
-              </View>
+              </Pressable>
             )}
           </View>
           <Pressable

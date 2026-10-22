@@ -556,6 +556,11 @@ function RemoteFileBrowserContent() {
               deviceId,
               openLink,
               presignGet,
+              deleteOssObject: (key) => {
+                void auth.apiFetch('/api/device-link/media', {
+                  baseUrl: DEVICE_LINK_API_BASE_URL, method: 'DELETE', body: { key },
+                }).catch(() => undefined);
+              },
               isCancelled: () => unmountedRef.current || run.cancelled,
             },
             workdir,
@@ -564,7 +569,8 @@ function RemoteFileBrowserContent() {
           );
           mime = shareMimeForFileName(item.name);
         }
-        if (run.cancelled) return;
+        // Consume late staging results even after cancellation; the helper
+        // releases them without starting another copy or download.
         const localUri = await downloadRemoteMediaShareTemp(url, mime, item.name, run.abort.signal);
         if (run.cancelled) return;
         if (!localUri) throw new Error(t('files.browser.downloadFailed'));
@@ -580,7 +586,7 @@ function RemoteFileBrowserContent() {
         }
       }
     })();
-  }, [absolutePathOf, deviceId, maker, openLink, presignGet, resolveFileMedia, showNotice, stopExportRun, t, workdir]);
+  }, [absolutePathOf, auth, deviceId, maker, openLink, presignGet, resolveFileMedia, showNotice, stopExportRun, t, workdir]);
 
   /** lightbox 底部显式操作(与预览页底栏同构):复制路径 / 发送到会话。 */
   const lightboxActions = useMemo((): readonly ImageLightboxAction[] => [

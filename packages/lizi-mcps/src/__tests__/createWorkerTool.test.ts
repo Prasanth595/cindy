@@ -50,6 +50,25 @@ function setupWorkerSession() {
 }
 
 describe('create_worker tool', () => {
+  // PR2: the public tool must preserve a new worktree request and return actual spawn facts.
+  // Existing directory tests only cover an explicit existing path. Unit, real registry schema.
+  it.each([{}, { source_branch: 'release' }])('passes new_worktree %j and returns the actual directory and owned checkout', async (request) => {
+    const registry = new XdtHelperToolRegistry();
+    const createWorker = vi.fn(async () => ({ ok: true as const, workerId: 'worker', workerSessionId: 'session',
+      workingDir: '/repo/.cindy-worktrees/new/apps/web', worktree: { path: '/repo/.cindy-worktrees/new', branch: 'cindy/new' } }));
+    registerCreateWorkerTool(registry, { sessionId: 'lead', createWorker });
+    const result = parse(await registry.call('create_worker', { role: 'developer', agent: 'codex', label: 'worker', new_worktree: request }));
+    expect(createWorker).toHaveBeenCalledWith(expect.objectContaining({worktree: request.source_branch === undefined ? {} : { sourceBranch: request.source_branch }}));
+    expect(result).toMatchObject({working_dir: '/repo/.cindy-worktrees/new/apps/web', worktree: {path: '/repo/.cindy-worktrees/new', branch: 'cindy/new'}});
+  });
+
+  it.each([null, true, {source_branch: ''}, {source_branch: '-unsafe'}, {source_branch: 'bad\nbranch'}, {unknown: true}])('rejects malformed new_worktree %j before host creation', async new_worktree => {
+    const {registry, createWorker} = setup();
+    const result = await registry.call('create_worker', {role: 'developer', agent: 'codex', label: 'worker', new_worktree});
+    expect(result.isError).toBe(true);
+    expect(createWorker).not.toHaveBeenCalled();
+  });
+
   it('forwards the explicit working_dir to the host', async () => {
     const { registry, createWorker } = setup();
     const result = await registry.call('create_worker', {

@@ -342,7 +342,7 @@ describe('TelegramIM', () => {
     expect(events[1]).toMatchObject({ senderId: 'g/-100200', text: '/nonsense extra args' });
   });
 
-  it('名字召唤: 手打 "@显示名" 与句首裸名字都触发(非 username), 句中提到不触发', async () => {
+  it('手打 @显示名触发，只有名字无论句首还是句中都不触发', async () => {
     const events: IMMessageEvent[] = [];
     im.onMessage((e) => events.push(e));
     await connect();
@@ -351,10 +351,11 @@ describe('TelegramIM', () => {
       groupMessage({ text: '@Cindy 你在?', fromId: 111, messageId: 30 }),
       groupMessage({ text: 'cindy 帮我看看这个', fromId: 222, messageId: 31 }),
       groupMessage({ text: '我问过 Cindy 了不用管', fromId: 111, messageId: 32 }),
+      groupMessage({ text: '明确召唤', fromId: 111, messageId: 34, mentionBot: true }),
     ]);
     await vi.waitFor(() => expect(events).toHaveLength(2));
     expect(events[0]).toMatchObject({ senderId: 'g/-100200', text: '你在?' });
-    expect(events[1]).toMatchObject({ senderId: 'g/-100200', text: '帮我看看这个' });
+    expect(events[1]).toMatchObject({ senderId: 'g/-100200', text: '明确召唤' });
   });
 
   it('纯 @bot 无正文仍召唤一轮，单独传递 invoked', async () => {

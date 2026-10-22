@@ -46,9 +46,6 @@
     "apps/desktop/src/main/__tests__/computerUsePluginIpc.test.ts": {
       "sourceReads": 11
     },
-    "apps/desktop/src/main/__tests__/controlProjects.test.ts": {
-      "sourceReads": 1
-    },
     "apps/desktop/src/main/__tests__/deviceLinkSettingsStore.test.ts": {
       "resetModules": 1
     },
@@ -120,7 +117,7 @@
       "sourceReads": 1
     },
     "apps/desktop/src/main/__tests__/sessionTaskSummary.test.ts": {
-      "sourceReads": 4
+      "sourceReads": 2
     },
     "apps/desktop/src/main/__tests__/setSessionsStatusInDb.test.ts": {
       "sourceReads": 2
@@ -144,9 +141,6 @@
       "resetModules": 9
     },
     "apps/desktop/src/main/__tests__/usageBroadcasterXaiSubscription.test.ts": {
-      "resetModules": 1
-    },
-    "apps/desktop/src/main/__tests__/wallpaperVideo.test.ts": {
       "resetModules": 1
     },
     "apps/desktop/src/main/__tests__/windowsDiagnosticsTrayWiring.test.ts": {
@@ -390,9 +384,6 @@
     },
     "apps/desktop/src/main/plugin-publisher/__tests__/host.test.ts": {
       "resetModules": 1
-    },
-    "apps/desktop/src/main/provider-group/__tests__/coolingStore.test.ts": {
-      "resetModules": 2
     },
     "apps/desktop/src/main/provider-group/__tests__/failoverSessionClose.test.ts": {
       "sourceReads": 1
@@ -711,9 +702,6 @@
     "apps/desktop/src/renderer/__tests__/newMakerWorktreeSend.test.ts": {
       "sourceReads": 2
     },
-    "apps/desktop/src/renderer/__tests__/pendingHandoffRecovery.test.ts": {
-      "resetModules": 2
-    },
     "apps/desktop/src/renderer/__tests__/permissionSessionApproval.test.ts": {
       "sourceReads": 1
     },
@@ -737,9 +725,6 @@
     },
     "apps/desktop/src/renderer/__tests__/releaseNotesNormalize.test.ts": {
       "resetModules": 2
-    },
-    "apps/desktop/src/renderer/__tests__/remoteCatalogSnapshot.test.ts": {
-      "resetModules": 1
     },
     "apps/desktop/src/renderer/__tests__/remoteHistoryHandoff.test.ts": {
       "sourceReads": 1
@@ -807,9 +792,6 @@
     "apps/desktop/src/renderer/__tests__/voiceInputEnterToSend.test.ts": {
       "sourceReads": 2
     },
-    "apps/desktop/src/renderer/__tests__/worktreeRemovalWarning.test.ts": {
-      "sourceReads": 2
-    },
     "apps/desktop/src/renderer/components/chat/__tests__/embeddedSessionNavigation.test.tsx": {
       "sourceReads": 1
     },
@@ -852,11 +834,8 @@
     "apps/desktop/src/renderer/features/bots/__tests__/botGroupListRemoval.test.ts": {
       "resetModules": 1
     },
-    "apps/desktop/src/renderer/features/bots/__tests__/botModelChainDefaults.test.tsx": {
-      "resetModules": 1
-    },
     "apps/desktop/src/renderer/features/bots/__tests__/botNavigation.test.ts": {
-      "sourceReads": 6
+      "sourceReads": 5
     },
     "apps/desktop/src/renderer/features/bots/__tests__/botStore.lifecycle.test.ts": {
       "resetModules": 2
@@ -1020,9 +999,6 @@
     "apps/mobile/src/__tests__/mobileVoiceHistoryStore.test.ts": {
       "resetModules": 1
     },
-    "apps/mobile/src/__tests__/outboxHistoryCache.test.ts": {
-      "realWaits": 1
-    },
     "apps/mobile/src/__tests__/remoteHistoryReentry.test.ts": {
       "sourceReads": 1
     },
@@ -1084,7 +1060,7 @@
       "realWaits": 2
     },
     "packages/maker-core/src/agents/pi/__tests__/cindySubagentRunner.test.ts": {
-      "realWaits": 2
+      "realWaits": 1
     },
     "packages/maker-core/src/agents/pi/__tests__/cindySubagentSource.test.ts": {
       "sourceReads": 3

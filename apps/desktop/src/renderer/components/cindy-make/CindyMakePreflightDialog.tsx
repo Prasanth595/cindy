@@ -1,3 +1,4 @@
+import { ErrorNotice } from '@/components/ui/error-notice';
 import { useEffect, useRef, useState } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { useTranslation } from 'react-i18next';
@@ -218,9 +219,7 @@ export function CindyMakePreflightDialog({
               />
             )}
             {failed && (
-              <p role="alert" className="text-13 text-[var(--error-fg)]">
-                {t('cindyMake.code.preparationFailed')}
-              </p>
+              <ErrorNotice role="alert" message={t('cindyMake.code.preparationFailed')} />
             )}
           </div>
           {report?.status === 'completed' &&

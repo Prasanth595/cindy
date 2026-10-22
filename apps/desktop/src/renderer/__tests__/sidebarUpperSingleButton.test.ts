@@ -112,7 +112,7 @@ describe('archive dirty-worktree warning', () => {
   it('only skips the archive dialog when the preflight confirms the worktree is clean', () => {
     // 钉的是预检顺序与放行判据,不是排版:末段用 [\s\S]*? 容忍换行。
     //   · 菜单归档与行内 archive-now 共用 isArchiveLike 这一条无弹窗路径 ——
-    //     归档可逆,只有 worktree 有情况才升级到 ConfirmDialog;
+    //     归档可逆,只有 worktree 有情况或绑定了 active 自动化才升级到 ConfirmDialog;
     //   · 判据必须是 `preflight !== 'clean'`,**不能**退回布尔的「不是脏的就放行」:
     //     预检失败是 'unknown',塌成放行就会静默回收带未提交改动的 worktree
     //     (greptile review);
@@ -122,7 +122,7 @@ describe('archive dirty-worktree warning', () => {
     //     让 handleActionClick 的 useCallback deps 保持稳定,见 sessionRowRenderIsolation
     //     的行渲染隔离不变量。
     expect(sidebarSource).toMatch(
-      /if \(isArchiveLike\) \{[\s\S]*?resolveWorktreeRemovalPreflight\([\s\S]*?if \(preflight !== 'clean'\) \{[\s\S]*?setConfirm\(\{[\s\S]*?action: 'archive',[\s\S]*?dirtyWorktree: preflight === 'dirty',[\s\S]*?\}\);[\s\S]*?return;[\s\S]*?await runSessionAction\(sessionId, 'archive', \{[\s\S]*?activeSessionId: viewedSessionIdRef\.current,[\s\S]*?\}\);/,
+      /if \(isArchiveLike\) \{[\s\S]*?resolveWorktreeRemovalPreflight\([\s\S]*?if \(preflight !== 'clean' \|\| scheduleNames\.length > 0\) \{[\s\S]*?setConfirm\(\{[\s\S]*?action: 'archive',[\s\S]*?dirtyWorktree: preflight === 'dirty',[\s\S]*?scheduleNames,[\s\S]*?\}\);[\s\S]*?return;[\s\S]*?await runSessionAction\(sessionId, 'archive', \{[\s\S]*?activeSessionId: viewedSessionIdRef\.current,[\s\S]*?\}\);/,
     );
   });
 
@@ -134,6 +134,11 @@ describe('archive dirty-worktree warning', () => {
     )?.[0];
     expect(archiveBranch).toBeTruthy();
     expect(archiveBranch!.indexOf('blockedByAttachment()')).toBeLessThan(
+      archiveBranch!.indexOf('resolveWorktreeRemovalPreflight('),
+    );
+    // 自动化绑定读本地缓存,也排在预检之前。
+    expect(archiveBranch!.indexOf('loadActiveBoundScheduleNames(')).toBeGreaterThan(-1);
+    expect(archiveBranch!.indexOf('loadActiveBoundScheduleNames(')).toBeLessThan(
       archiveBranch!.indexOf('resolveWorktreeRemovalPreflight('),
     );
   });

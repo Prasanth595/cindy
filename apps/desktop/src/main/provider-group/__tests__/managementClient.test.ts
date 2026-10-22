@@ -39,6 +39,11 @@ beforeEach(() => {
 });
 
 describe('provider management client', () => {
+  it.each(['get-run-limits', 'set-run-limits', 'reset-run-limits'] as const)('reports an old computer for %s instead of accepting an unknown command', async (action) => {
+    const invoke: ProviderGroupRemoteInvoke = async () => ({ ok: false, error: { code: 'IPC_ERROR', message: '[INVALID_PARAMS] Unknown command' } });
+    const command = action === 'set-run-limits' ? { action, limits: { perDevice: 16, total: 64 } } : { action };
+    await expect(invokeProviderManagement(invoke, 'old-computer', { action: 'manage-share', command })).rejects.toThrow(/UNSUPPORTED_CAPABILITY/);
+  });
   it('does not dispatch management while account teardown is pending with the same owner key', async () => {
     state.boundaryPending = true;
     const invoke = replying(null);

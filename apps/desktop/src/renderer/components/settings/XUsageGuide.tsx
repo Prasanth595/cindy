@@ -78,7 +78,7 @@ function GuideBody({ children }: { children: React.ReactNode }) {
   return <span className="text-12 leading-[1.45] text-[var(--text-tertiary)]">{children}</span>;
 }
 
-export function XUsageGuide() {
+export function XUsageGuide({ companion = false }: { companion?: boolean } = {}) {
   const { t } = useTranslation();
   const k = (name: string) => `settings.remoteControl.hook.x.guide.${name}`;
 
@@ -119,7 +119,7 @@ export function XUsageGuide() {
               {t(k('riskPublicBody'))}
             </span>
             <span className="text-12 leading-[1.45] text-[var(--text-primary)]">
-              {t(k('riskWorkdirBody'))}
+              {t(companion ? 'bots.channels.officialX.riskBody' : k('riskWorkdirBody'))}
             </span>
           </div>
         </div>

@@ -247,11 +247,13 @@ export function buildClaudeSystemPromptAppend(parts: {
   botProfileContextPrompt?: string;
   botUserProfilePrompt?: string;
   userPrompt?: string;
+  answerDeliveryPrompt?: string;
   /** 设备托管：项目在哪台电脑、文件与命令工具是哪些。 */
   deviceHostedNote?: string;
 }): string {
   return [
     parts.botProfilePrompt,
+    parts.answerDeliveryPrompt,
     MAKER_SYSTEM_PROMPT_APPEND,
     parts.deviceHostedNote,
     parts.makerMemoryRules,
@@ -3817,6 +3819,7 @@ export class ClaudeCodeAgent extends BaseAgent {
             : {}),
           systemPrompt: (() => {
             const appendText = buildClaudeSystemPromptAppend({
+              answerDeliveryPrompt: reviewMode ? undefined : this.deps.runtimeConfig.answerDeliveryPrompt,
               makerMemoryRules,
               contactsRules,
               ghostRosterPrompt,
@@ -4374,6 +4377,7 @@ export class ClaudeCodeAgent extends BaseAgent {
           // 空段被 .filter 跳过 (.md 文件为空 / userPrompt 为空 = 不 append).
           systemPrompt: (() => {
             const appendText = buildClaudeSystemPromptAppend({
+              answerDeliveryPrompt: reviewMode ? undefined : this.deps.runtimeConfig.answerDeliveryPrompt,
               makerMemoryRules,
               contactsRules,
               ghostRosterPrompt,
@@ -6358,6 +6362,7 @@ export class ClaudeCodeAgent extends BaseAgent {
     };
     const handle: AgentSessionHandle = {
       disabledSkillPaths: disabledSkillSnapshot,
+      getAutoReviewOwner: () => usesNativeClaudeAutoReview() ? 'native' : 'cindy',
       reviewAutoPermissionAction: async (action) => {
         const decision = await reviewAutoAction(
           action,
@@ -7567,8 +7572,9 @@ export class ClaudeCodeAgent extends BaseAgent {
         mutableEffort = newEffort;
       },
 
-      async setFastMode(enabled: boolean) {
+      async setFastMode(enabled: boolean | 'ultrafast') {
         if (reviewMode) return;
+        if (enabled === 'ultrafast') throw new Error('Ultrafast requires the Codex runtime');
         // 与 setEffort 同款:走 SDK applyFlagSettings 改 flag settings 层 `fastMode`。
         // cc 二进制的 sticky-on latch 负责缓存安全(header 一旦发出整 session 保持,中途 toggle
         // 不破 server 端 cache key)—— 所以这里直接切、不做缓存兜底。是否 Opus/官方/firstParty

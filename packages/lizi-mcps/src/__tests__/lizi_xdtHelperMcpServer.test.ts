@@ -432,6 +432,18 @@ describe("cindy_helper MCP server", () => {
         }),
       );
 
+      // 折叠形态的 context_refs 也要自愈(glm 兼容层 <item> 序列化,同 #6369/images 病)。
+      const foldedRefs = parsePayload(
+        await client.callTool({ name: "call_tool", arguments: { name: "start_session_task", args: {
+            instruction: "Summarize the demo state.",
+            context_refs: { item: ["note-1", "note-2"] },
+          } } }),
+      );
+      expect(foldedRefs).toMatchObject({ ok: true, task_id: "session-task-1" });
+      expect(startSessionTask).toHaveBeenLastCalledWith(
+        expect.objectContaining({ contextRefs: ["note-1", "note-2"] }),
+      );
+
       // An old local-only group cannot carry the task's messages: the teammate must not promise them there.
       startSessionTask.mockResolvedValueOnce({ ok: true as const, delegationId: "session-task-2", childSessionId: "desktop-child-2",
         status: "running", completionDestination: 'private', deadlineAt: 1_788_000_000_000 });

@@ -145,6 +145,11 @@ export interface AgentSwitchBoundaryContent {
   toAgentDeviceId?: string | null;
   fromAgentDeviceName?: string | null;
   toAgentDeviceName?: string | null;
+  /**
+   * 只在供应商组换电脑、且原因要告诉用户时出现：`quota-rebalance` = 用户确认为了先用那台的配额换过去
+   * (原电脑没出问题，provider-groups.md §6.2「任务进行中换号」)。旧端忽略，照常显示「Agent 已改到 X 上运行」。
+   */
+  switchReason?: 'quota-rebalance';
 }
 
 export interface AgentSwitchSessionRow {
@@ -263,7 +268,7 @@ export interface MakerSessionAgentSwitchHandlerDeps {
       sdkSessionId?: string | null;
       /** 目标引擎下的 effort / fastMode(意图登记时由 renderer 解析,apply 时一并落库)。 */
       effort?: string;
-      fastMode?: boolean;
+      fastMode?: boolean | 'ultrafast';
       /** Agent 换电脑:undefined = 不动,null = 改回任务所在电脑。 */
       agentDeviceId?: string | null;
     },
@@ -365,13 +370,15 @@ export interface PendingAgentSwitchIntent {
    * 落地时不给任务打「脱离跟随」标记。用户 picker 选择不带此标(PR #5155)。
    */
   configStaged?: boolean;
+  /** Auto 跟随登记时验证的两端身份；仅内存使用，目录移除来源后仍可撤销/改登记。 */
+  cindyAutoRelocation?: { fromProviderId: string; targetProviderId: string };
   /** SET_MODEL intent: apply the route without a cross-engine handoff. */
   sameAgentSelection?: boolean;
   targetAgentKind: AgentKind;
   model: string;
   providerId: string | null | undefined;
   effort?: string;
-  fastMode?: boolean;
+  fastMode?: boolean | 'ultrafast';
   /**
    * Agent 在另一台电脑运行的任务：点选时按那台的目录确认过的目标上下文窗口。本机目录里没有
    * 那台的模型，发送时据此做「换小窗口前先交接」。本机 Orca 也保留选择时核对的窗口，
@@ -394,13 +401,20 @@ export interface PendingAgentSwitchIntent {
   };
 }
 
+/** 用户 picker 意图的统一来源判据；引擎与执行电脑是否改变不影响归属。 */
+export function isUserPendingAgentSwitchIntent(
+  intent: PendingAgentSwitchIntent | undefined,
+): intent is PendingAgentSwitchIntent {
+  return !!intent && intent.configStaged !== true && intent.runtimeSource !== 'agent';
+}
+
 /** 控制端可见的 pending intent 投影；刻意排除 main 内部恢复载荷。 */
 export interface PublicAgentSwitchIntent {
   targetAgentKind: AgentKind;
   model: string;
   providerId: string | null;
   effort?: string;
-  fastMode?: boolean;
+  fastMode?: boolean | 'ultrafast';
   /** 只在换 Agent 所在电脑时出现(null = 任务所在电脑)；旧控制端忽略。 */
   agentDeviceId?: string | null;
 }
@@ -430,7 +444,7 @@ export function projectPendingAgentSwitchIntent(
     model: intent.model,
     providerId: intent.providerId ?? null,
     ...(intent.effort ? { effort: intent.effort } : {}),
-    ...(typeof intent.fastMode === 'boolean' ? { fastMode: intent.fastMode } : {}),
+    ...((typeof intent.fastMode === 'boolean' || intent.fastMode === 'ultrafast') ? { fastMode: intent.fastMode } : {}),
     ...(intent.targetAgentDeviceId !== undefined ? { agentDeviceId: intent.targetAgentDeviceId } : {}),
   };
 }
@@ -610,6 +624,11 @@ export async function performSessionAgentSwitch(
      * 只在 applyNow 时生效。
      */
     providerGroupRelocation?: boolean;
+    /**
+     * 仅限 main 内部：供应商组换电脑的原因写进分隔条。`quota-rebalance` = 用户确认为了先用那台的配额换过去
+     * (provider-groups.md §6.2「任务进行中换号」)。只在真正换了电脑时写。
+     */
+    providerGroupSwitchReason?: 'quota-rebalance';
   },
 ): Promise<SessionAgentSwitchResult> {
   const { sessionId, targetAgentKind, model, providerId, signal } = params;
@@ -773,7 +792,7 @@ export async function performSessionAgentSwitch(
         model,
         providerId: normalizedProviderId,
         ...(typeof params.effort === 'string' ? { effort: params.effort } : {}),
-        ...(typeof params.fastMode === 'boolean' ? { fastMode: params.fastMode } : {}),
+        ...((typeof params.fastMode === 'boolean' || params.fastMode === 'ultrafast') ? { fastMode: params.fastMode } : {}),
         sameAgentSelection: true,
         ...(confirmedContextWindow !== undefined ? { confirmedContextWindow } : {}),
         ...(params.runtimeSource ? { runtimeSource: params.runtimeSource } : {}),
@@ -840,7 +859,7 @@ export async function performSessionAgentSwitch(
       model,
       providerId: normalizedProviderId,
       ...(typeof params.effort === 'string' && params.effort ? { effort: params.effort } : {}),
-      ...(typeof params.fastMode === 'boolean' ? { fastMode: params.fastMode } : {}),
+      ...((typeof params.fastMode === 'boolean' || params.fastMode === 'ultrafast') ? { fastMode: params.fastMode } : {}),
       ...(agentDeviceChanges ? { targetAgentDeviceId } : {}),
     };
     deps.pendingSwitches.set(sessionId, intent);
@@ -943,7 +962,7 @@ export async function performSessionAgentSwitch(
       providerId: normalizedProviderId,
       sdkSessionId: parked?.sdkSessionId ?? null,
       ...(typeof params.effort === 'string' && params.effort ? { effort: params.effort } : {}),
-      ...(typeof params.fastMode === 'boolean' ? { fastMode: params.fastMode } : {}),
+      ...((typeof params.fastMode === 'boolean' || params.fastMode === 'ultrafast') ? { fastMode: params.fastMode } : {}),
       // 组选回的当前位置在另一台电脑时也带上位置：提交按它判断窗口该查哪台的目录，不能拿本机目录。
       ...(agentDeviceChanges || (orcaGroupReturnRebuild && targetAgentDeviceId)
         ? { agentDeviceId: targetAgentDeviceId }
@@ -978,6 +997,7 @@ export async function performSessionAgentSwitch(
             // 强制换电脑时实际运行的电脑由对方选，本机不知道是哪台(也不该显示)：分隔条写「另一台电脑」。
             fromAgentDeviceName: forcedRelocation ? null : deps.describeAgentDevice?.(currentAgentDeviceId) ?? null,
             toAgentDeviceName: forcedRelocation ? null : deps.describeAgentDevice?.(targetAgentDeviceId) ?? null,
+            ...(params.providerGroupSwitchReason ? { switchReason: params.providerGroupSwitchReason } : {}),
           }
         : {}),
     };
@@ -1040,7 +1060,7 @@ export async function performSessionAgentSwitch(
                 model,
                 providerId: normalizedProviderId,
                 ...(typeof params.effort === 'string' && params.effort ? { effort: params.effort } : {}),
-                ...(typeof params.fastMode === 'boolean' ? { fastMode: params.fastMode } : {}),
+                ...((typeof params.fastMode === 'boolean' || params.fastMode === 'ultrafast') ? { fastMode: params.fastMode } : {}),
                 resumeFallbackRecovery: {
                   boundaryClientId,
                   boundaryContent: fallbackBoundaryContent,
@@ -1065,7 +1085,7 @@ export async function performSessionAgentSwitch(
               model,
               providerId: normalizedProviderId,
               ...(typeof params.effort === 'string' && params.effort ? { effort: params.effort } : {}),
-              ...(typeof params.fastMode === 'boolean' ? { fastMode: params.fastMode } : {}),
+              ...((typeof params.fastMode === 'boolean' || params.fastMode === 'ultrafast') ? { fastMode: params.fastMode } : {}),
               resumeFallbackRecovery: {
                 boundaryClientId: null,
                 boundaryContent: fallbackBoundaryContent,
@@ -1166,7 +1186,7 @@ async function noteLandedUserRouteSelection(
   sessionId: string,
   intent: PendingAgentSwitchIntent,
 ): Promise<void> {
-  if (intent.configStaged === true || intent.runtimeSource === 'agent') return;
+  if (!isUserPendingAgentSwitchIntent(intent)) return;
   try {
     await deps.onUserRouteSelectionLanded?.(sessionId);
   } catch (err) {

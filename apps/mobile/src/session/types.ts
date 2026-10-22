@@ -45,7 +45,7 @@ export interface RemoteSession {
   providerId?: string | null;
   effort: string;
   permissionMode: string;
-  fastMode: boolean;
+  fastMode: boolean | 'ultrafast';
   /** Temporary host runtime route; optional for older controlled Desktop versions. */
   runtimeGeneration?: number;
   runtimeBaseline?: RemoteSessionRuntimeProfile;
@@ -122,7 +122,7 @@ export interface RemoteSessionRuntimeProfile {
   model: string;
   providerId: string | null;
   effort: string | null;
-  fastMode: boolean;
+  fastMode: boolean | 'ultrafast';
 }
 
 export interface RemoteSessionRuntimePending {
@@ -132,6 +132,8 @@ export interface RemoteSessionRuntimePending {
 }
 
 export interface RemoteMessage {
+  /** Local durable-push order, retained by the display cache. */
+  cacheReceipt?: import('@cindy/maker-shared/message-window').HistoryCacheReceipt;
   id: string;
   clientId: string;
   sessionId: string;
@@ -243,7 +245,7 @@ export interface QueuedRemoteMessage {
     model: string;
     effort?: string;
     permissionMode?: string;
-    fastMode?: boolean;
+    fastMode?: boolean | 'ultrafast';
     displayReasoning?: string;
     resumeSessionId?: string;
     makerMemoryEnabled?: boolean;

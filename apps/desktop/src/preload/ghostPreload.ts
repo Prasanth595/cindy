@@ -65,8 +65,17 @@ contextBridge.exposeInMainWorld('cindy', {
   },
   fs: (req: Record<string, unknown>): Promise<unknown> =>
     ipcRenderer.invoke('ghost-pipe:send', { ...req, type: 'fs-request' }),
+  deviceSync: (req: Record<string, unknown>): Promise<unknown> =>
+    ipcRenderer.invoke('ghost-pipe:send', { ...req, type: 'device-sync-request' }),
   library: (req: Record<string, unknown>): Promise<unknown> =>
     ipcRenderer.invoke('ghost-pipe:send', { ...req, type: 'library-request' }),
+  targets: Object.fromEntries(['list', 'resolve', 'send', 'cancel'].map(kind => [kind,
+    async (req: Record<string, unknown> = {}): Promise<unknown> => {
+      const result = await ipcRenderer.invoke('ghost-pipe:send', { ...req, type: 'targets-request', kind });
+      if (result?.ok === true) return result.data;
+      throw Object.assign(new Error(result?.error?.message ?? 'Target request failed'), { code: result?.error?.code ?? 'HOST_NOT_READY' });
+    },
+  ])),
   tasks: Object.fromEntries(
     ['capabilities', 'models', 'setModel', 'requestWriteAccess', 'startTeam', 'getTeam', 'setTeamPlan', 'releaseWorker', 'create', 'list', 'get', 'send', 'getRun', 'listRuns', 'cancel', 'readMessages', 'setHidden'].map(kind => [
       kind, async (req: Record<string, unknown> = {}): Promise<unknown> => {

@@ -7,10 +7,19 @@ import { expect, it } from 'vitest';
 import { botDelegations, botProfiles, botSessionLinks, sessions } from '../../localDb/schema.js';
 
 // Exercise the real authority queries against SQLite, without Electron startup.
+// PR #6813 inserted another exported function between the queried functions, breaking
+// the old substring boundary before any authority assertions ran. Extract exactly the
+// named production declaration so the existing identity/ownership checks still execute.
+// Minimum fixture: canonical, human, group and remote callers; two bots' delegation rows.
+// Tier: existing unit authority regression; real SQLite, no new cases or app startup.
+// Single-file run: 989ms; all original caller and delegation assertions retained.
 const source = readFileSync(new URL('../botWorkbenchTools.ts', import.meta.url), 'utf8');
-function bind(name: string, end: string, db: ReturnType<typeof drizzle>) {
-  const start = source.indexOf(`async function ${name}`);
-  const chunk = source.slice(start, source.indexOf(end, start));
+const parsed = ts.createSourceFile('botWorkbenchTools.ts', source, ts.ScriptTarget.Latest, true);
+function bind(name: string, db: ReturnType<typeof drizzle>) {
+  const declaration = parsed.statements.find((node): node is ts.FunctionDeclaration =>
+    ts.isFunctionDeclaration(node) && node.name?.text === name);
+  if (!declaration) throw new Error(`Missing production function: ${name}`);
+  const chunk = declaration.getText(parsed).replace(/^export\s+/, '');
   const js = ts.transpileModule(`${chunk}; return ${name};`, {
     compilerOptions: { target: ts.ScriptTarget.ES2022 },
   }).outputText;
@@ -30,8 +39,8 @@ it('derives caller identity from the active local canonical link and creation on
       INSERT INTO bot_session_links VALUES ('canonical','one','canonical',NULL),('group','one','group',NULL),('remote','one','canonical',NULL);
       INSERT INTO bot_delegations VALUES ('one','own-across-directory','completed',NULL,1),('two','their-task','running',NULL,2),('one',NULL,'pending',NULL,3);`);
     const db = drizzle(sqlite);
-    const resolve = bind('resolveWorkbenchCaller', 'async function readWorkbenchTarget', db);
-    const creations = bind('listBotDelegationChildren', '/** Exact responsibility IDs', db);
+    const resolve = bind('resolveWorkbenchCaller', db);
+    const creations = bind('listBotDelegationChildren', db);
     expect(await resolve('canonical')).toEqual({ ok: true, botId: 'one' });
     expect(await resolve('human')).toMatchObject({ ok: false, errorCode: 'NOT_A_BOT_SESSION' });
     expect(await resolve('group')).toMatchObject({ ok: false, errorCode: 'BOT_MAIN_TASK_REQUIRED' });

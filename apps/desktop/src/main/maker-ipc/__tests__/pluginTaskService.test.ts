@@ -4,6 +4,11 @@ import { createHash } from 'node:crypto';
 import ts from 'typescript';
 import { createSessionExecutionResolver } from '../sessionExecutionSelection.js';
 import { Session } from '@cindy/maker-core';
+import { fastModeToStorage } from '@cindy/maker-shared';
+import { handlePluginTaskRequest } from '../../cindy-brain/taskSlot.js';
+import { withParsedPluginMessageAttachments } from '../../cindy-media/pluginMessageAttachments.js';
+import { PLUGIN_ATTACHMENT_MAX_BYTES } from '../../../shared/pluginAttachments.js';
+import type { InstalledGhost } from '../../../shared/ghost.js';
 import {
   createPluginTaskService,
   isPluginTaskPermissionAllowed,
@@ -39,7 +44,7 @@ it.each([false,true])('production Auto context checks uninstall after its projec
     const epoch={client:{drizzle:{select:()=>query},queryOne:async()=>({unchanged:1}),tx:async()=>{if(revoked)await f.service.withUninstall('p',async()=>{});return {};}}};
     let load!:(id:string)=>Promise<unknown>;
     const deps={setAutoReviewContextResolver:(callback:typeof load)=>{load=callback;},createPluginTaskReviewResolver:(callback:typeof load)=>callback,
-      getCurrentDbClientSnapshot:()=>epoch,sessions:{},orcaWorkers:{},orcaTeams:{},eq:()=>true,
+      getCurrentDbClientSnapshot:()=>epoch,sessions:{},orcaWorkers:{},orcaTeams:{},eq:()=>true,fastModeToStorage,
       createPluginTaskStore:()=>f.deps.store,drainPersistQueue:async()=>{},
       pluginTaskServiceForCurrentOwner:()=>f.service,readPluginTaskConfig:()=>({permissionMode:'auto'}),
       readPluginTaskPlanReceipt,pluginTaskAuthorizationRevision:()=> 'new-install',isPluginTaskAuthorized:()=>true};
@@ -165,6 +170,83 @@ function fixture() {
     },
   };
 }
+
+// Targets create in a selected project through the same service, not directly through
+// session persistence. Without its create receipt, helper tools and uninstall lose ownership.
+// Minimal regression: a Host-supplied task ID + project, then get and uninstall (unit).
+it('retains task ownership and uninstall revocation for Host-selected project creation', async () => {
+  const f = fixture();
+  const context = { taskId: 'target-project-task', workingDir: '/selected-project', assertCurrent: vi.fn() };
+  const task = await f.service.create('p', { requestKey: 'target-create', title: 'Selected project' }, context);
+  expect(task.taskId).toBe(context.taskId);
+  expect(await f.service.get('p', context.taskId)).toMatchObject({ taskId: context.taskId });
+  expect(f.rows.get(context.taskId)).toMatchObject({ operation: 'create', pluginId: 'p' });
+  expect(vi.mocked(f.deps.createSession).mock.calls[0]?.[9]).toBe(context);
+  await f.service.withUninstall('p', async () => {});
+  await expect(f.service.get('p', context.taskId)).rejects.toMatchObject({ code: 'TASK_NOT_FOUND' });
+});
+it('rechecks Host target context after route resolution before persisting a task', async () => {
+  const f = fixture();
+  let current = true;
+  vi.mocked(f.deps.resolveRoute).mockImplementationOnce(async () => { current = false; return f.route; });
+  await expect(f.service.create('p', { requestKey: 'target-create', title: 'Selected project' }, {
+    taskId: 'target-project-task', workingDir: '/selected-project',
+    assertCurrent: () => { if (!current) throw new PluginTaskError('PERMISSION_DENIED', 'Target changed'); },
+  })).rejects.toMatchObject({ code: 'PERMISSION_DENIED' });
+  expect(f.tasks.size).toBe(0);
+  expect(f.rows.size).toBe(0);
+});
+
+it('includes message images in owned-task replay identity without persisting screenshot bytes', async () => {
+  const f = fixture(), task = await f.create();
+  const base64 = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).toString('base64');
+  const request = { taskId: task.taskId, requestKey: 'image', expectedRevision: task.revision,
+    text: 'context', attachments: [{ base64, name: 'window.png' }] };
+  await f.service.send('p', request);
+  await f.service.send('p', structuredClone(request));
+  expect(f.deps.dispatch).toHaveBeenCalledOnce();
+  expect(vi.mocked(f.deps.dispatch).mock.calls[0]?.[4]?.[0]).toMatchObject({ mimeType: 'image/png' });
+  expect(JSON.stringify([...f.rows.values()])).not.toContain(base64);
+  await expect(f.service.send('p', { ...request, attachments: [{ base64, name: 'other.png' }] }))
+    .rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
+});
+
+// Exercise the public pipe with the real service, including its error sanitization.
+it.each(['INVALID_ATTACHMENTS', 'TASK_BUSY'] as const)('preserves %s across the public task boundary', async code => {
+  const f = fixture(), task = await f.create();
+  const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const pending: Promise<unknown>[] = [];
+  try {
+    if (code === 'TASK_BUSY') {
+      const large = Buffer.alloc(PLUGIN_ATTACHMENT_MAX_BYTES);
+      png.copy(large);
+      const attachments = [{ base64: large.toString('base64') }];
+      pending.push(withParsedPluginMessageAttachments(attachments, () => held));
+      pending.push(withParsedPluginMessageAttachments(attachments, () => held));
+    }
+    const ghost = { enabled: true, taskCapabilityApproved: true, approval: { state: 'approved' },
+      manifest: { agent: { tasks: true } } } as InstalledGhost;
+    const result = await handlePluginTaskRequest('p', {
+      type: 'tasks-request', kind: 'send', taskId: task.taskId, requestKey: 'attachment-error',
+      expectedRevision: task.revision, text: 'context',
+      attachments: [{ base64: (code === 'TASK_BUSY' ? png : Buffer.from('not an image')).toString('base64') }],
+    }, {
+      getGhost: () => ghost, isCurrent: () => true,
+      handler: (pluginId, request) => {
+        if (request.kind !== 'send') throw new Error('Unexpected operation');
+        return f.service.send(pluginId, request);
+      },
+    });
+    expect(result).toMatchObject({ ok: false, error: { code, retryable: code === 'TASK_BUSY' } });
+    expect(f.deps.dispatch).not.toHaveBeenCalled();
+    expect([...f.rows.values()].some(row => row.operation === 'send')).toBe(false);
+  } finally {
+    release();
+    await Promise.all(pending);
+  }
+});
 
 describe('plugin dispatch uses live Plan execution authority', () => {
   it.each(['send', 'accept'] as const)('%s rejects consumed Pi intent while execution is active, unknown or switching', async entry => {

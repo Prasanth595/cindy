@@ -87,6 +87,7 @@ const bindingNames = [
   'saveNewSessionPreferences', 'drainStashedNewSessionDraft', 'loadBrowsePath', 'setDevicePickerOpen',
   'setAttachmentError', 'setBrowseOpen', 'setBrowseError',
   'setShowHiddenDirectories', 'setWorkspacePickerOpen',
+  'editRecoveredDraft', 'creatingRef', 'voiceDictionaryLearningTrackerRef',
 ];
 const readRouteString = source.statements.find((node): node is ts.FunctionDeclaration =>
   ts.isFunctionDeclaration(node) && node.name?.text === 'readRouteString');
@@ -117,6 +118,7 @@ function mountWorkspace(options: { initialWorkingDir?: string; restoredKind?: Ne
   const deviceOptions = [{ deviceId: 'a', name: 'A' }, { deviceId: 'b', name: 'B' }];
   const initialWorkingDir = options.initialWorkingDir ?? null;
   const bindings = {
+    editRecoveredDraft: vi.fn(), creatingRef: { current: false }, voiceDictionaryLearningTrackerRef: { current: null },
     isRemoteTaskSuggestionId, params: { suggestion: options.suggestion, draft: options.routeDraft, editSessionId: options.restoredKind ? 'failed-task' : undefined }, t: i18n.getFixedT('zh-CN'),
     useState, useRef, useMemo, useEffect, useCallback, DEFAULT_NEW_SESSION_DRAFT,
     pickNewSessionDefaultDevice, buildRecentWorkspaceOptions,
@@ -160,7 +162,7 @@ function mountWorkspace(options: { initialWorkingDir?: string; restoredKind?: Ne
     ) {
       await act(async () => {
         resolveRead({ workspaceKind: kind, device: { deviceId, name: deviceId },
-          agentKind: null, permissionModeByAgent: {}, workingDirByDevice });
+          agentKind: null, permissionModeByAgent: {}, workingDirByDevice, remoteAgentByDevice: {} });
         await pendingRead;
       });
     },

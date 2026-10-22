@@ -7,6 +7,9 @@
  */
 import type { DeviceView } from '@cindy/device-link';
 import type { ProviderView } from '@cindy/model-providers/registry';
+import { remoteInvocationModels } from '@cindy/model-providers';
+import type { NewSessionRemoteAgentPick } from './newSession';
+import { matchesEntry, mobileUnifiedEntries } from './unifiedMobileModels';
 
 import { toDeviceListItems } from '@/device-link/devices';
 import type { ProviderShareCatalogEntry } from '@/device-link/providerShareCatalogCache';
@@ -29,7 +32,7 @@ export interface RemoteAgentCatalog {
 export function remoteAgentProviders(providers: readonly ProviderView[]): ProviderView[] {
   return providers.filter(
     (provider) => (provider as { remoteInvocationEnabled?: unknown }).remoteInvocationEnabled === true,
-  );
+  ).map(remoteInvocationModels);
 }
 
 /**
@@ -91,6 +94,8 @@ export function providerShareRemoteCatalogs(input: {
       deviceId: share.agentDeviceId,
       name: input.deviceName(share),
       status: payload ? 'ready' : 'error',
+      // 已暂停 / 分享者电脑不在线的分享只因被选着才留在清单里:与留下的离线电脑一样标出,选不了。
+      ...(reachable ? {} : { offline: true as const }),
       providers: payload
         ? remoteAgentProviders(payload.providers).filter((provider) => provider.id === share.providerId)
         : [],
@@ -105,4 +110,22 @@ export function providerShareRemoteCatalogs(input: {
     }
   }
   return catalogs;
+}
+
+/**
+ * 按记忆恢复的远程选择此刻还能不能用:清单读完后那台电脑 / 分享不在了、读不到、离线,或模型已不在
+ * 那份目录里「可选」的条目(供应商断开 / 停用、模型被隐藏)都算不能用。清单没读完先不下结论。
+ */
+export function restoredRemoteAgentUnusable(input: {
+  pick: NewSessionRemoteAgentPick;
+  catalog: RemoteAgentCatalog | undefined;
+  settled: boolean;
+}): boolean {
+  const { pick, catalog } = input;
+  if (!catalog) return input.settled;
+  if (catalog.status === 'loading') return false;
+  if (catalog.status === 'error' || catalog.offline) return true;
+  return !mobileUnifiedEntries(catalog.providers, [pick.agentKind], catalog.modelVisibilityOverrides, false)
+    .some((entry) => (pick.providerId === null || entry.providerId === pick.providerId)
+      && matchesEntry(entry, pick.model));
 }

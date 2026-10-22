@@ -328,6 +328,7 @@ export async function fetchRemoteFileToCache(
   executor: FetchExecutor,
   onProgress: FetchProgressFn,
   signal?: AbortSignal,
+  options: { revalidate?: boolean } = {},
 ): Promise<string> {
   const scope = id.scope ?? activeOwnerScopeKey();
   assertCacheOwner(scope);
@@ -343,6 +344,24 @@ export async function fetchRemoteFileToCache(
       log.debug('cache progress consumer unavailable');
     }
   };
+  // Only real fills enter inflight: a revalidation must never join a plain cache hit.
+  // Join an active fill synchronously so another consumer's cancellation cannot abort it.
+  const pendingFill = inflight.get(dest);
+  if (!options.revalidate && (!pendingFill || pendingFill.controller.signal.aborted)) {
+    const st = await fs.stat(dest).catch(() => null);
+    assertCacheOwner(scope);
+    if (signal?.aborted) throw new Error('FILE_PEER_CANCELLED');
+    if (st?.isFile() && st.size === id.size) {
+      const now = new Date();
+      await fs.utimes(dest, now, now).catch(() => undefined);
+      assertCacheOwner(scope);
+      if (signal?.aborted) throw new Error('FILE_PEER_CANCELLED');
+      consumerProgress(id.size, id.size);
+      assertCacheOwner(scope);
+      if (signal?.aborted) throw new Error('FILE_PEER_CANCELLED');
+      return dest;
+    }
+  }
   const existing = inflight.get(dest);
   if (existing && !existing.controller.signal.aborted) {
     const consumer = Symbol('remote-file-consumer');
@@ -378,22 +397,6 @@ export async function fetchRemoteFileToCache(
   };
   const firstConsumer = Symbol('remote-file-consumer');
   const run = (async () => {
-    try {
-      const st = await fs.stat(dest);
-      assertActive();
-      if (st.size === id.size) {
-        // 命中:touch 更新 LRU 位次,秒回。
-        const now = new Date();
-        await fs.utimes(dest, now, now).catch(() => undefined);
-        report(id.size, id.size);
-        assertCacheOwner(scope);
-        return dest;
-      }
-      assertCacheOwner(scope);
-      await fs.rm(dest, { force: true });
-    } catch {
-      // miss
-    }
     assertActive();
     await fs.mkdir(cacheDir(), { recursive: true });
     // An abandoned executor can still be unwinding when its replacement starts.

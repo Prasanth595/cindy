@@ -69,10 +69,16 @@ const D_GHOST_MANUAL = [
   "每次调用都实时检查插件是否存在、账号可用、当前工作目录是否停用以及是否已启用；可见性错误码与 ghost_info 一致。",
 ].join("\n");
 
+// Model-visible handoff authorization must describe the same flow in the tool
+// overview and every path parameter; native review must not assume later consent.
+const D_FILE_HANDOFF_PERMISSION = "工作目录内按现有路径校验交接；工作目录外：本地 Full Access 自动交接，Auto 沿用实际审批负责人，可能直接交接，Ask 需用户确认。不保证另有确认卡；远程任务不能借权限档位自动访问控制端文件。";
+
 const D_GHOST_CALL = [
   "调用某个插件(Ghost)提供的工具。ghost_id 与 tool 来自 ghost_info 或 ghost_list 的返回,",
   "或用户消息[插件指令]附带的工具清单;",
   "args 按该工具声明的参数 schema 传 JSON 对象。",
+  "邮件默认先创建并展示 Cindy 草稿卡，供用户核对收件人和内容，等确认后再发送。只有用户已明确确认这封邮件，或有效的用户/任务指令明确授权该范围内直接发送时，才可不再询问；‘帮我写/回一封邮件’、修改草稿、自动审批或完全访问模式本身不等于确认发送。",
+  "即使明确授权直接发送，也必须通过同一草稿卡的公共发送流程，使用最新编辑内容，并保留 10 秒倒计时、撤销和立即发送；不能用底层直发、CLI 或其他旁路跳过。卡片发送点击即为确认，不重复询问；等待最终回执才报告已发送，撤销后不得自动重试。",
   "伙伴中需要授权时，Host 发出独立持久卡并立即返回 SETUP_REQUIRED；结束本轮，等 Host 授权成功后自动续接，不要轮询或重复调用。普通任务仍沿用原调用等待。",
   "部分插件(如 cindy-github / cindy-gitlab)采用二级分派:ghost_info / ghost_list 只暴露 list_tools 与",
   "call_tool 两个工具,具体操作(如 create_pull_request_review)不是顶层 tool,必须经 call_tool",
@@ -88,15 +94,13 @@ const D_GHOST_CALL = [
   "要把一个本地目录或单个文件交给插件上传(如部署构建产物)时,把其**绝对路径**放进",
   "顶层 dir(不是塞进 args):主机会收集文件并以",
   "一次性票据注入 args.dir_deposit,供需要把选定目录或单文件整体交给插件的工具上传。",
-  "过户钳制(attachments / dir / save_dir 通用):路径在当前会话工作目录内直接放行;",
-  "工作目录外若是本地 Full Access(bypassPermissions)会话则自动过户、不弹卡;其它权限档及",
-  "远程会话仍向用户弹确认卡,被拒绝/超时后不要重试,转告用户即可。Full Access 自动交接",
-  "不写人工永久授权,热切回其它权限档后会恢复确认;用户已明确允许的同一文件(按内容指纹)",
+  D_FILE_HANDOFF_PERMISSION,
+  "原生接管且真实目标未变时不再调用 Cindy 复审；symlink/junction 解析暴露新目标时由 Cindy 审核真实路径。",
+  "被拒绝/超时后不要重试,转告用户即可。Auto / Full Access 自动交接不写人工永久授权，切回 Ask 后恢复确认；用户已明确允许的同一文件(按内容指纹)",
   "对同一插件永久生效,同一目录在本会话内生效。",
-  "批量预授权:非 Full Access 下计划连续多次调用同一插件、每次用一个工作目录外文件时",
-  "(如逐张图生成视频),**必须**先发一次 grant_only:true + attachments 列出整批文件",
-  "(≤32 张,tool 随便填会被忽略)——用户只需在一张卡上批一次。Full Access 下普通调用本就",
-  "自动过户;grant_only 只做提前交接,不会建立降档后仍生效的人工授权。",
+  "批量交接：需要连续使用多个文件时，可用 grant_only:true + attachments 列出整批文件",
+  "(≤32 张,tool 随便填会被忽略)。Ask 可一次确认整批；Auto / Full Access 普通调用已按当前权限交接，无需为审批额外预授权。",
+  "grant_only 只做提前交接,不会建立降档后仍生效的人工授权。",
   "结构化错误:GHOST_NOT_FOUND(未安装或已卸载)/ GHOST_ASLEEP(未启用,可提示用户到主界面侧边栏「插件」中启用)/",
   "GHOST_DISABLED_IN_WORKDIR(用户在当前工作目录停用了该插件——不要重试,改用其它方式完成)/",
   "TOOL_NOT_FOUND(常见是把二级分派操作名当成了顶层 tool,按上文 call_tool 形态改写后重试)/ GHOST_CRASHED /",
@@ -115,21 +119,17 @@ const D_MEDIA = [
   "插件已返回用户配置的 model_id/provider_id 时必须原样传给 prepare，再按目标 capability 走 prepare → request；provider_id 用于区分不同 Provider 下的同名模型。没有已配置模型时，先用 list_models 查询。Gateway 模型的 prepare 会由 Server 根据 model_id 返回 Guide，并在 Guide 不存在或不支持该 capability 时明确报错。",
   "异步任务的 request 返回 pending 时，再按 recommended_poll_after_ms 调 poll；同步任务会直接返回 xdt_image_urls / xdt_video_urls。",
   "Core 图片完成结果由当前 Agent 控制呈现：在最终回复中用返回的受管地址只嵌入展示一次，不要同时重复口播或再次附同一图片。",
-  "展示、改图和附件交接都直接使用 cindy-media:// / xdt-image:// / xdt-video:// 受管地址，不需要本地路径。仅当用户明确询问文件存储位置或本地路径时，才调用 resolve_local_path 并原样传入 url；Host 会要求用户点击确认后才返回路径。不要猜路径或扫描磁盘。",
+  "展示、改图和附件交接都直接使用 cindy-media:// / xdt-image:// / xdt-video:// 受管地址，不需要本地路径。仅当用户明确询问文件存储位置或本地路径时，才调用 resolve_local_path 并原样传入 url；此调用会把该受管媒体的本机绝对路径返回给 Agent 并写入任务记录。Host 按当前权限处理：Ask 需点击确认，Auto 由当前审批负责人审核，本地 Full Access 自动允许。不要假定稍后还会有确认卡；不要猜路径或扫描磁盘。",
   "模型 id、endpoint、Authorization 和 wire model 均由 Host 管理，不要写进 body，不要猜测或覆盖。",
   "Guide 缺失、能力不匹配或当前客户端不支持协议时，结果会带稳定 errorCode、retryable、outcomeKnown 和 allowedActions；可按 allowedActions 换模型、改用其它已授权工具或仍存在的旧链路，不要把 INTERNAL 当成协议能力结论。",
   "prepare 返回的 invocation_id 是一次性付费提交令牌；request 超时或返回 SUBMISSION_OUTCOME_UNKNOWN 时不要自动重提，以免重复扣费。",
 ].join("\n");
 
 const D_GHOST_FORGE_GUIDE = [
-  "获取《插件(Ghost)编写手册》——为用户制作/修改插件(.cindy 能力包)前必读。",
-  "手册随主机版本走,包含:设计对齐提问清单、ghost.json 身份卡全字段、直接能力声明、",
-  "管子 API(cindy.send)、面板与主题、沙箱红线、打包与测试流程。整本超出单次工具",
-  '结果上限,分章取用:不传参数返回目录,传 section(章号如 "4.7" 或章标题关键词如',
-  '"network")返回单章正文。用户说"帮我做一个 XX 插件 / 改一下某插件"时,先取目录、',
-  "先按第 0 章「设计对齐」用带选项的提问卡片和用户确认界面形态(停靠面板/插件页内",
-  "面板/纯工具)等关键决策,再按需读相关章;新插件可用 ghost_forge_scaffold 生成骨架,",
-  "修改完成后缺省用 ghost_forge_pack 校验并生成 .cindy 产物；只有用户明确要求直接安装或更新时，才调用独立的 ghost_forge_install。本工具自身不安装插件。",
+  "读取内置 cindy-plugin-creator Skill 中的插件编写参考资料，随当前主机版本发布。",
+  "创建、修改、调试、打包或发布 Cindy 插件时使用该 Skill；本工具保留按章读取同一份资料的兼容入口。",
+  '不传参数返回目录，传 section（章号如 "4.7" 或标题关键词如 "network"）返回单章正文。',
+  "本工具只读文档，不安装或发布插件。",
 ].join("\n");
 
 const D_GHOST_FORGE_SCAFFOLD = [
@@ -1322,26 +1322,26 @@ export function createCindyGhostsMcpServer(
         .boolean()
         .optional()
         .describe(
-          "可选:true = 本次调用只做 attachments 批量交接、不执行工具(tool/args/dir/save_dir 全部被忽略)。非 Full Access 下计划连续使用多个工作目录外文件时必须先走一次,attachments 上限放宽到 32 项,让用户在一张确认卡上批完。Full Access 下不弹卡,且该自动交接不会建立降档后仍生效的人工永久授权。",
+          "可选:true = 本次调用只做 attachments 批量交接、不执行工具(tool/args/dir/save_dir 全部被忽略)，上限放宽到 32 项。Ask 可一次确认整批；Auto / Full Access 无需为审批额外预授权，自动交接不建立人工永久授权。" + D_FILE_HANDOFF_PERMISSION,
         ),
       attachments: z
         .array(z.string())
         .max(32)
         .optional()
         .describe(
-          "可选,普通调用 ≤4 项(grant_only 批量交接 ≤32 项):要交给插件处理或收录的图片/媒体文件。地址原样透传即可,四种写法都认:xdt-image://<会话ID>/<文件名>、cindy-media://blobs/<指纹>.<后缀>、消息里给出的本机绝对路径(主机会归一化并验归属),或本机媒体文件(图/视频/音频)的绝对路径——工作目录内直接放行;工作目录外在本地 Full Access 下自动过户,其它权限档及远程会话弹确认卡。不要自己拼地址。主机过户给该插件后以指纹注入 args.attachments。用户明确交出的媒体与当前 Agent / Core 工具刚生成、目标插件工具明确要求接收的结果都可使用;非媒体类型文件改用顶层 dir。",
+          "可选,普通调用 ≤4 项(grant_only 批量交接 ≤32 项):要交给插件处理或收录的图片/媒体文件。地址原样透传即可,四种写法都认:xdt-image://<会话ID>/<文件名>、cindy-media://blobs/<指纹>.<后缀>、消息里给出的本机绝对路径(主机会归一化并验归属),或本机媒体文件(图/视频/音频)的绝对路径。" + D_FILE_HANDOFF_PERMISSION + "不要自己拼地址。主机过户给该插件后以指纹注入 args.attachments。用户明确交出的媒体与当前 Agent / Core 工具刚生成、目标插件工具明确要求接收的结果都可使用;非媒体类型文件改用顶层 dir。",
         ),
       dir: z
         .string()
         .optional()
         .describe(
-          "可选:要交给插件上传的本地目录或单个文件的绝对路径(如站点部署的构建产物目录、要传的附件文件)。位于当前会话工作目录内直接放行;工作目录外在本地 Full Access 下自动过户,其它权限档及远程会话弹确认卡。主机收集文件(自动排除 node_modules/.git/.env 等)并以一次性票据注入 args.dir_deposit,插件凭票上传,摸不到路径与字节。仅当目标工具的说明要求交付目录/文件时使用。",
+          "可选:要交给插件上传的本地目录或单个文件的绝对路径(如站点部署的构建产物目录、要传的附件文件)。" + D_FILE_HANDOFF_PERMISSION + "主机收集文件(自动排除 node_modules/.git/.env 等)并以一次性票据注入 args.dir_deposit,插件凭票上传,摸不到路径与字节。仅当目标工具的说明要求交付目录/文件时使用。",
         ),
       save_dir: z
         .string()
         .optional()
         .describe(
-          "可选:让插件把下载的文件存进的本地目录绝对路径(如附件下载目标目录)。必须是已存在的目录;位于当前会话工作目录内直接放行;工作目录外在本地 Full Access 下自动过户,其它权限档及远程会话弹确认卡。主机发限时票据注入 args.save_deposit = { token, dir_name },插件凭票让主机把下载字节直接写进该目录(文件名主机消毒、不覆盖已有文件),插件摸不到绝对路径与字节。仅当目标工具的说明要求提供落盘目录时使用。",
+          "可选:让插件把下载的文件存进的本地目录绝对路径(如附件下载目标目录)。必须是已存在的目录。" + D_FILE_HANDOFF_PERMISSION + "主机发限时票据注入 args.save_deposit = { token, dir_name },插件凭票让主机把下载字节直接写进该目录(文件名主机消毒、不覆盖已有文件),插件摸不到绝对路径与字节。仅当目标工具的说明要求提供落盘目录时使用。",
         ),
       setup_plan: ghostSetupPlanInputSchema
         .optional()
@@ -1384,7 +1384,7 @@ export function createCindyGhostsMcpServer(
         .string()
         .max(4096)
         .optional()
-        .describe("resolve_local_path 时必填；原样传入 cindy-media://、xdt-image:// 或 xdt-video:// 受管地址。仅在用户明确询问本地存储路径时使用，Host 会要求用户点击确认"),
+        .describe("resolve_local_path 时必填；原样传入 cindy-media://、xdt-image:// 或 xdt-video:// 受管地址。调用会向 Agent 返回该媒体的本机绝对路径并写入任务记录，仅在用户明确询问时使用；按当前权限审核，不保证另有确认卡"),
       invocation_id: z
         .string()
         .max(128)

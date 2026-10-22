@@ -902,7 +902,7 @@ function defaultClientFactory(credentials: Credentials): DingTalkStreamClient {
 }
 
 function chunkText(text: string): string[] {
-  const normalized = text.trim() || "（空回复）";
+  const normalized = text.trim();
   const chunks: string[] = [];
   let remaining = normalized;
   while (remaining.length > OUTBOUND_CHUNK_SIZE) {
@@ -923,7 +923,7 @@ function chunkText(text: string): string[] {
 }
 
 function normalizeFinalText(text: string): string {
-  return text.trim() || "✅ 本轮已完成，没有文本输出。";
+  return text.trim();
 }
 
 function safeConnectionError(error: unknown): string {

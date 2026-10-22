@@ -5,6 +5,7 @@ import {
 } from 'expo-modules-core';
 import type { AudioTrace } from '@cindy/voice-input-core';
 import { i18n } from '@/i18n';
+import { logMobileVoice } from '@/session/mobileVoiceDiagnostics';
 
 export type MobileRealtimeAudioChunk = {
   pcm16: ArrayBuffer;
@@ -24,7 +25,11 @@ type NativeAudioErrorEvent = {
 };
 
 type NativeRealtimeAudioModule = {
-  start(options?: { sampleRate?: number; bufferSize?: number }): Promise<void>;
+  start(options?: { sampleRate?: number; bufferSize?: number }): Promise<{
+    inputPortTypes: string[];
+    inputSampleRate: number;
+    inputChannels: number;
+  } | void>;
   stop(): Promise<void>;
   prewarm(): Promise<void>;
 };
@@ -170,9 +175,16 @@ async function startCustomNativeRealtimeAudio(
     subscriptions.push(binding.module.addListener('onAudioError', (event) => {
       options.onError?.(new Error(event.message));
     }));
-    await binding.module.start({
+    const input = await binding.module.start({
       sampleRate: options.sampleRate ?? 16_000,
       bufferSize: options.bufferSize ?? DEFAULT_NATIVE_AUDIO_BUFFER_SIZE,
+    });
+    logMobileVoice('debug', 'capture input', {
+      backend: 'ios-native',
+      // Older installed native modules return void; capture remains compatible.
+      inputPortTypes: input?.inputPortTypes ?? ['unknown'],
+      inputSampleRate: input?.inputSampleRate,
+      inputChannels: input?.inputChannels,
     });
   } catch (error) {
     try {
@@ -296,6 +308,12 @@ async function startExpoAudioRealtimeAudio(
 
   try {
     await stream.start();
+    logMobileVoice('debug', 'capture input', {
+      backend: 'expo-audio',
+      inputPortTypes: ['unknown'],
+      inputSampleRate: stream.sampleRate,
+      inputChannels: stream.channels,
+    });
     streamStarted = true;
     lastChunkAt = Date.now();
     watchdog = setInterval(() => {

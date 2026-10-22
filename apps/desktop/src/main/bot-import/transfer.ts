@@ -8,8 +8,11 @@ import { normalizeImportSkill, readImportSkillTree } from './skills.js';
 import { indexAutomationDependencies, normalizeAutomation } from './sourceAutomations.js';
 import { memoryFileContent } from './memoryFiles.js';
 import { resolveImportEnvironmentDependencies, selectedImportEnvironment } from './environmentSelection.js';
+import type { ImportBotRecord } from './botTakeover.js';
 
 export interface ImportReceipt {
+  nativePackage?: import('../../shared/botMarket.js').BotPackageIdentity & { locale?: string;
+    opening?: import('../../shared/botMarket.js').BotPackageOpening };
   selectionHash: string;
   /** Present on receipts whose identity includes the original setup choice. */
   deferSetup?: boolean;
@@ -29,6 +32,8 @@ export interface ImportReceipt {
   /** Durable fence: a deleted companion's old preview/request must never recreate it. */
   cancelled?: boolean;
   routines: Record<string, { id: string; phase: 'created' | 'verified' | 'pausing-source' | 'source-paused' | 'complete'; sourceRestored?: boolean }>;
+  /** `bots` entries: source stop / companion connect progress, by entry ID. */
+  bots?: Record<string, ImportBotRecord>;
 }
 
 export interface TransferDeps {
@@ -43,7 +48,7 @@ export interface TransferDeps {
   importItem(botId: string, item: ImportItem, snapshot: ImportSnapshot): Promise<void>;
   saveEnvironment(botId: string, items: ImportItem[]): Promise<void>;
   saveCheckpoint(botId: string, items: ImportItem[]): Promise<void>;
-  createConversation(botId: string): Promise<string>;
+  createConversation(botId: string): Promise<string | undefined>;
   createRoutine(botId: string, input: RoutineInput, creationId: string, item: ImportItem): Promise<string>;
   /** Success requires actual read evidence from the target environment, not just presence of keys. */
   verifyAutomation(botId: string, item: ImportItem): Promise<{ verified: boolean; reason?: string }>;
@@ -55,6 +60,11 @@ export interface TransferDeps {
    * Resolves to an advisory issue code when it could not; the credential stays saved for delivery.
    */
   connectImBot?(botId: string, item: ImportItem): Promise<string | undefined>;
+  /**
+   * `bots` entries: stop the bot in the source agent, then connect it as the companion's own.
+   * `save` persists the durable progress record; resolves to an advisory issue code.
+   */
+  takeOverImBot?(botId: string, item: ImportItem, record: ImportBotRecord | undefined, save: (record: ImportBotRecord | undefined) => Promise<void>): Promise<string | undefined>;
 }
 
 /** Advisory outcomes of connecting an imported bot. They never block automations that only deliver through it. */
@@ -63,6 +73,10 @@ export const IMPORT_IM_BOT_ISSUES: ReadonlySet<string> = new Set([
   'IMPORT_IM_BOT_GATEWAY_RUNNING',
   'IMPORT_IM_BOT_IN_USE',
   'IMPORT_IM_BOT_CONNECT_FAILED',
+  'IMPORT_IM_BOT_SOURCE_STOP_UNCONFIRMED',
+  'IMPORT_IM_BOT_SOURCE_CHANGED',
+  // The source CLI is missing: the bot credential is saved, only its source stop did not run.
+  'SOURCE_COMMAND_UNAVAILABLE',
 ]);
 const IM_BOT_FORMATS = new Set(['telegram', 'discord']);
 
@@ -96,6 +110,9 @@ export function validateImportSelection(value: CompanionImportSelection, snapsho
   const items = snapshot.items.filter(item => ranges ? item.sourceIndex !== undefined && remaining.delete(item.sourceIndex) : selected.has(item.view.id));
   if (items.length !== count || remaining.size) throw new CompanionImportError('SELECTION_CHANGED');
   selectedImportEnvironment(items);
+  // Owner alternatives of one bot are mutually exclusive, like conflicting env accounts.
+  const chosen = new Set(items.map(item => item.view.id));
+  if (items.some(item => item.view.category === 'bots' && item.view.exclusiveWith?.some(id => chosen.has(id)))) throw new CompanionImportError('INVALID_SELECTION');
   return resolveImportEnvironmentDependencies(items);
 }
 
@@ -139,6 +156,7 @@ export async function transferCompanion(snapshot: ImportSnapshot, selection: Com
   const receipt: ImportReceipt = existing ?? { selectionHash, handoverMarkers: true, copied: [], routines: {}, result: {
     requestId: selection.requestId, botId: `import_${fingerprint(selection.requestId).slice(0, 24)}`, status: 'running', checks: [],
   } };
+  receipt.nativePackage ??= snapshot.nativePackage;
   receipt.selectionHash = selectionHash;
   receipt.deferSetup = selection.deferSetup === true;
   const botId = receipt.result.botId;
@@ -264,7 +282,7 @@ export async function transferCompanion(snapshot: ImportSnapshot, selection: Com
   receipt.companionCreated = true;
   await save();
   // Retry only selected resources; saved batches skip completed idempotent copies.
-  for (const item of items.filter(item => item.view.category !== 'automations' && item.view.category !== 'connections')) {
+  for (const item of items.filter(item => !['automations', 'connections', 'bots'].includes(item.view.category))) {
     if (copied.has(item.view.id)) continue;
     deps.assertOwner();
     try {
@@ -286,16 +304,28 @@ export async function transferCompanion(snapshot: ImportSnapshot, selection: Com
     receipt.environmentSaved = true;
     await save();
   }
-  for (const item of items.filter(item => item.view.category === 'connections')) {
+  for (const item of items.filter(item => item.view.category === 'connections' || item.view.category === 'bots')) {
     let issue = item.view.dependsOn?.some(id => !selected.has(id)) ? 'AUTOMATION_DEPENDENCY_NOT_SELECTED' : item.view.issues?.[0];
-    if (!issue && deps.connectImBot && IM_BOT_FORMATS.has(item.credential?.format ?? '')) {
-      const index = checkIndexes.get(item.view.id);
-      const prior = index === undefined ? undefined : receipt.result.checks[index]?.message;
+    const id = item.view.id;
+    const index = checkIndexes.get(id);
+    const prior = index === undefined ? undefined : receipt.result.checks[index]?.message;
+    if (!issue && item.view.category === 'bots' && deps.takeOverImBot) {
+      // Reconciliation resumes an interrupted takeover, but never retries a reported outcome on its own.
+      issue = reconcileOnly && prior ? prior : await deps.takeOverImBot(botId, item, receipt.bots?.[id], async record => {
+        receipt.bots ??= {};
+        if (record) receipt.bots[id] = record; else delete receipt.bots[id];
+        await save();
+      });
+      deps.assertOwner();
+      check(id, issue ? 'needs-attention' : 'taken-over', issue);
+      continue;
+    }
+    if (!issue && item.view.category === 'connections' && deps.connectImBot && IM_BOT_FORMATS.has(item.credential?.format ?? '')) {
       // Background reconciliation keeps an earlier advisory outcome instead of retrying the platform.
       issue = reconcileOnly && prior && IMPORT_IM_BOT_ISSUES.has(prior) ? prior : await deps.connectImBot(botId, item);
       deps.assertOwner();
     }
-    check(item.view.id, issue ? 'needs-attention' : 'copied', issue);
+    check(id, issue ? 'needs-attention' : 'copied', issue);
   }
   receipt.result.canonicalSessionId = await deps.createConversation(botId);
   await save();
@@ -386,7 +416,7 @@ export async function transferCompanion(snapshot: ImportSnapshot, selection: Com
     }
   }
   receipt.result.savedEntryIds = [...new Set([...receipt.copied,
-    ...items.filter(item => item.view.category === 'connections' && receipt.environmentSaved).map(item => item.view.id),
+    ...items.filter(item => (item.view.category === 'connections' || item.view.category === 'bots') && receipt.environmentSaved).map(item => item.view.id),
     ...Object.keys(receipt.routines),
   ])];
   receipt.result.saved = true;

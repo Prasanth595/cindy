@@ -2583,6 +2583,8 @@ const CINDY_DIRECT_BOT_TOOLS = new Set([
   CINDY_CREATE_TEAMMATE_TOOL,
   'routine_list', 'routine_save', 'routine_sources',
   'routine_history', 'routine_delete', 'routine_run_now', 'schedule_notify_current_run', 'schedule_set_pre_run_hook',
+  // Follow-up loop: a woken companion reads the short task summary first, then its glance.
+  'get_task_digest', 'get_workbench', 'read_workbench_task', 'continue_workbench_task',
 ]);
 
 interface ConnectedMcpTool {
@@ -3486,7 +3488,16 @@ class CindyMcpGateway {
         { name: 'routine_run_now', description: 'Run one of your saved routines now when requested.' },
       ].map((tool) => ({ ...tool, properties: { id: { type: 'string', minLength: 1 } }, required: ['id'] })),
     ];
-    for (const tool of routineTools) {
+    // Follow-up tools use the same direct facade so a routine-woken companion does not need
+    // nested discovery before reading the event's task.
+    const taskIdProperty = { type: 'string', minLength: 1, description: 'Local task ID, or deviceId::sessionId for another computer.' };
+    const followUpTools = [
+      { name: 'get_task_digest', description: 'Read a short (<=2KB) summary of one task: phase, elapsed minutes, last ask and answer, pending question, error, route, suggested next route, PR status and queue. Read this before deciding how to follow up.', properties: { session_id: taskIdProperty }, required: ['session_id'] },
+      { name: 'get_workbench', description: 'Your workbench at a glance: tasks waiting for the owner and tasks in progress, with the last sweep time.', properties: {}, required: [] },
+      { name: 'read_workbench_task', description: 'Read the recent bounded transcript of a task you follow (all tasks if you follow every task).', properties: { task_id: taskIdProperty }, required: ['task_id'] },
+      { name: 'continue_workbench_task', description: 'Send one message into a task you follow so it continues. Use get_task_digest first; never resend after DELIVERY_UNKNOWN without checking.', properties: { task_id: taskIdProperty, message: { type: 'string', minLength: 1, maxLength: 4000 } }, required: ['task_id', 'message'] },
+    ];
+    for (const tool of [...routineTools, ...followUpTools]) {
       if (!this.resolveDirectHelperTool(tool.name, {})) continue;
       pi.registerTool({
         name: tool.name,
@@ -4004,9 +4015,22 @@ export default async function cindyBridge(piApi: any) {
     },
   });
   if (!currentPermissionState().reviewOnly) registerCindyQuestionTool(pi);
+  function learnedCachePayload(payload, model) {
+    if (model?.api !== 'openai-completions' || !payload || typeof payload !== 'object' || Array.isArray(payload)) return payload;
+    try {
+      const file = path.join(process.env.PI_CODING_AGENT_DIR || '', 'pi-cache-compatibility.json');
+      if (!process.env.PI_CODING_AGENT_DIR || statSync(file).size > 256 * 1024) return payload;
+      const rules = JSON.parse(readFileSync(file, 'utf8'));
+      if (!Array.isArray(rules) || !rules.some((rule) => rule.provider === model.provider && rule.id === model.id && rule.baseUrl === model.baseUrl)) return payload;
+      const next = { ...payload };
+      delete next.prompt_cache_key;
+      delete next.prompt_cache_retention;
+      return next;
+    } catch { return payload; }
+  }
   pi.on('before_provider_request', async (event, ctx) => {
     const payload = astraResponsesPayload(event.payload, ctx.model) ?? event.payload;
-    return (await nativeFastPayload(payload, ctx.model, ctx)) ?? payload;
+    return learnedCachePayload((await nativeFastPayload(payload, ctx.model, ctx)) ?? payload, ctx.model);
   });
   const mcpGateway = new CindyMcpGateway();
   // bash 隔离 home 经 resolveBashPackageHome 解析(首次加载读删 + 防篡改 stash,

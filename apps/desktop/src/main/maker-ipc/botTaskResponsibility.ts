@@ -3,8 +3,9 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { withCrossProcessLock } from '../device-link/crossProcessLock.js';
 import { botProfileDir } from './botProfileFolder.js';
+import { signalBotAutonomyBotsChanged } from '../bot-autonomy/botsChangedSignal.js';
 
-/** Per-task responsibility, independent of project discovery, judgments and Todo.
+/** Per-task responsibility, independent of directories and Todo.
  * Releases override creation evidence; nothing is inferred from conversation text.
  */
 export type TaskResponsibilities = Record<string, { responsible: boolean; updatedAt: string }>;
@@ -69,6 +70,8 @@ export async function setTaskResponsibility(
     }
     assertCurrent();
   });
+  // 接手 / 解除立即让自主跟进重读归属：工作台与跟进者不必等 60 秒的定时重读。
+  signalBotAutonomyBotsChanged();
 }
 
 export interface TaskResponsibilityScope {

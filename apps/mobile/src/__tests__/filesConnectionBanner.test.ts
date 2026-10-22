@@ -11,7 +11,9 @@ const banner = ts.createSourceFile('banner.tsx', readFileSync(resolve(process.cw
 const hook = banner.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'useShowConnectionBanner');
 if (!hook) throw new Error('Missing production banner eligibility function');
 const hookCode = ts.transpileModule(hook.getText(banner).replace(/^export /, ''), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
-const useShowConnectionBanner = new Function('resolveConnectionBannerVisibility', 'resolveEffectiveConnectionError', hookCode + '\nreturn useShowConnectionBanner;')(resolveConnectionBannerVisibility, resolveEffectiveConnectionError);
+// This expression fixture has no native network; live network transitions are
+// exercised through the real component in connectionBannerRecovery.test.tsx.
+const useShowConnectionBanner = new Function('resolveConnectionBannerVisibility', 'resolveEffectiveConnectionError', 'useLocalNetworkStatus', hookCode + '\nreturn useShowConnectionBanner;')(resolveConnectionBannerVisibility, resolveEffectiveConnectionError, () => 'unknown');
 let visibility: ts.Expression | undefined, render: ts.Expression | undefined, footer: ts.Expression | undefined;
 function visit(node: ts.Node) {
   if (ts.isVariableDeclaration(node) && node.name.getText(page) === 'showConnectionBanner') visibility = node.initializer;

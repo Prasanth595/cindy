@@ -291,6 +291,11 @@ export class FeishuIM extends BaseIM implements ChannelIM {
       try {
         if ('markdown' in entry) {
           await streamingText.patchMarkdown(openerId, entry.markdown);
+          if (!entry.markdown.trim()) {
+            if (outbound.getAccountEpoch() === epoch) outbound.rearmAnchorToTrigger(entry.userId, entry.openerId);
+            resolveFlush(null);
+            continue;
+          }
         } else {
           await outbound.updateInteractive(openerId, entry.spec);
           outbound.registerCardLane(entry.userId, openerId);
@@ -333,7 +338,11 @@ export class FeishuIM extends BaseIM implements ChannelIM {
           resolveFlush(null);
           continue;
         }
-        outbound.rearmAnchorToTrigger(entry.userId);
+        outbound.rearmAnchorToTrigger(entry.userId, entry.openerId);
+        if ('markdown' in entry && !entry.markdown.trim()) {
+          resolveFlush(null);
+          continue;
+        }
         try {
           // 走 outbound 直发, 避免再进 sendWithDeferred 等待自己造成死锁。
           const sent =
@@ -559,6 +568,9 @@ export class FeishuIM extends BaseIM implements ChannelIM {
     const epoch = outbound.getAccountEpoch();
     try {
       await streamingText.patchMarkdown(openerId, markdown);
+      if (!markdown.trim() && outbound.getAccountEpoch() === epoch) {
+        outbound.rearmAnchorToTrigger(userId, openerId);
+      }
       return true;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -664,7 +676,7 @@ export class FeishuIM extends BaseIM implements ChannelIM {
       this.log.info('consumePendingOpener: account changed during recall — dropping turn');
       return true;
     }
-    outbound.rearmAnchorToTrigger(userId);
+    outbound.rearmAnchorToTrigger(userId, openerId);
     return false;
   }
 
@@ -738,6 +750,9 @@ export class FeishuIM extends BaseIM implements ChannelIM {
       try {
         if ('markdown' in entry) {
           await streamingText.patchMarkdown(entry.openerId, entry.markdown);
+          if (!entry.markdown.trim() && outbound.getAccountEpoch() === epoch) {
+            outbound.rearmAnchorToTrigger(userId, entry.openerId);
+          }
         } else {
           await outbound.updateInteractive(entry.openerId, entry.spec);
           outbound.registerCardLane(userId, entry.openerId);
@@ -772,7 +787,7 @@ export class FeishuIM extends BaseIM implements ChannelIM {
           this.log.warn('sendWithDeferredOpenerConsume: recall failed — keeping opener for retry');
           throw err;
         }
-        outbound.rearmAnchorToTrigger(userId);
+        outbound.rearmAnchorToTrigger(userId, entry.openerId);
         // fallthrough: 回落正常发送
       }
     }

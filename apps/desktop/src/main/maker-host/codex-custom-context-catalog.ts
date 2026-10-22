@@ -311,6 +311,41 @@ async function persistCatalog(codexHome: string, content: string): Promise<strin
   return file;
 }
 
+async function catalogWithModels(base: CodexModelCatalog, bundled: CodexModelCatalog, modelIds: readonly string[], binaryPath: string): Promise<CodexModelCatalog> {
+  let instructions: string | undefined;
+  for (const modelId of new Set(modelIds)) {
+    if (base.models.some(model => model.slug === modelId)) continue;
+    const native = findCodexCatalogModel(bundled, modelId);
+    if (native) {
+      base = { ...base, models: [...base.models, { ...native, slug: modelId }] };
+      continue;
+    }
+    if (instructions === undefined) {
+      // Verify the CLI's unknown-model prompt once for the entire guest catalog.
+      const binary = await fs.readFile(binaryPath);
+      const unixPrompt = nativeFallbackPrompt.replace(/\r\n/g, '\n');
+      const windowsPrompt = unixPrompt.replace(/\n/g, '\r\n');
+      instructions = binary.includes(Buffer.from(unixPrompt)) ? unixPrompt
+        : binary.includes(Buffer.from(windowsPrompt)) ? windowsPrompt : undefined;
+      if (instructions === undefined) throw new Error('Codex native fallback metadata changed; update the bundled compatibility descriptor');
+    }
+    base = { ...base, models: [...base.models, nativeCodexFallbackModel(modelId, instructions)] };
+  }
+  return base;
+}
+
+/** A guest app-server and its native children receive only the granted catalog. */
+export async function prepareCodexGuestModelCatalog(params: {
+  binaryPath: string; codexHome: string; modelIds: readonly string[]; baseCatalog?: CodexModelCatalog;
+}): Promise<{ catalogPath: string; extraArgs: string[] }> {
+  if (!params.modelIds.length) throw new Error('shared-provider Codex host has no authorized models');
+  const native = await readNativeCodexCatalog(params.binaryPath, params.codexHome);
+  const base = await catalogWithModels(params.baseCatalog ?? native, native, params.modelIds, params.binaryPath);
+  const catalog = { ...base, models: base.models.filter(model => params.modelIds.includes(model.slug)) };
+  const catalogPath = await persistCatalog(params.codexHome, `${JSON.stringify(catalog)}\n`);
+  return { catalogPath, extraArgs: buildCodexModelCatalogSpawnArgs(catalogPath) };
+}
+
 export async function prepareCodexCustomContextCatalog(params: {
   binaryPath: string;
   codexHome: string;
@@ -324,24 +359,7 @@ export async function prepareCodexCustomContextCatalog(params: {
   let base = params.baseCatalog === undefined
     ? bundled
     : normalizeNativeCatalog(parseCodexModelCatalog(JSON.stringify(params.baseCatalog)));
-  if (!base.models.some((model) => model.slug === params.modelId)) {
-    const native = findCodexCatalogModel(bundled, params.modelId);
-    if (native) base = { ...base, models: [...base.models, { ...native, slug: params.modelId }] };
-    else {
-      // A runtime upgrade must not silently replace an unknown model's native prompt.
-      const binary = await fs.readFile(params.binaryPath);
-      // Git checkout and native CLI builds can use different line endings.
-      // Verify both byte-exact variants regardless of this checkout's format.
-      const unixPrompt = nativeFallbackPrompt.replace(/\r\n/g, '\n');
-      const windowsPrompt = unixPrompt.replace(/\n/g, '\r\n');
-      const instructions = binary.includes(Buffer.from(unixPrompt)) ? unixPrompt
-        : binary.includes(Buffer.from(windowsPrompt)) ? windowsPrompt : null;
-      if (instructions === null) {
-        throw new Error('Codex native fallback metadata changed; update the bundled compatibility descriptor');
-      }
-      base = { ...base, models: [...base.models, nativeCodexFallbackModel(params.modelId, instructions)] };
-    }
-  }
+  base = await catalogWithModels(base, bundled, [params.modelId], params.binaryPath);
   const patched = patchCodexModelMaxContextWindow(
     base,
     params.modelId,

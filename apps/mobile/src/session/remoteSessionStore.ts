@@ -1,4 +1,5 @@
 import { readTokenSpeedSnapshot, type TokenSpeedSnapshot } from '@cindy/maker-shared/usage-format';
+import { historyTurnEnded, nextHistoryCacheReceipt } from '@cindy/maker-shared/message-window';
 import { normalizeTaskTags, reconcileTaskTags } from '@cindy/maker-shared';
 import {
   createContext,
@@ -388,6 +389,10 @@ const INPUT_PROJECTION_REMOTE_EVIDENCE_LIMIT = 256;
 const sessionLiveActivity = new Map<string, RemoteSessionLiveActivity>();
 const sessionRunning = new Map<string, boolean>();
 const sessionRunStatus = new Map<string, RemoteSessionRunStatus>();
+// Pushes can precede the first task list. Keep their provenance until list
+// reconciliation can decide whether they belong to the selected task row.
+const sessionRuntimeSources = new Map<string, string>();
+const sessionInteractionSources = new Map<string, string>();
 // `maker:list-active` snapshots race live maker pushes during reconnect hydration. A snapshot
 // may clear an older transient reconnect attempt, but must not erase a newer retry event that
 // arrived after the request started.
@@ -620,6 +625,16 @@ const sessionTaskUpdates = new Map<string, ReadonlyMap<string, AgentTaskUpdate>>
 // Keep one temporary assistant row per session and reconcile it with the persisted row by
 // clientId/persistId when the database push arrives.
 const streamingAssistantClientIds = new Map<string, string>();
+// Identities known to be separate from the current anonymous stream: rows present
+// at its start, plus persisted rows kept separate from it. Retain until it resolves.
+const generatedStreamPriorIdentities = new Map<string, Set<string>>();
+// Existing provider item identity can link a legacy delta without persistId to
+// its final. null means the anonymous batch did not establish one identity.
+const generatedStreamAgentIdentities = new Map<string, {
+  agentMessageId: string;
+  source: string | null;
+  deviceId: string | undefined;
+} | null>();
 // The same persisted streaming identity can be replayed by a stale transport after
 // re-link. Track the transport currently assembling that identity so a device switch
 // replaces the stale live text instead of concatenating two transports into one row.
@@ -663,6 +678,8 @@ const pendingTextDeltaBatches = new Map<string, {
   persistId?: string;
   deviceId?: string;
   agentMeta: Record<string, unknown> | null;
+  agentMessageId: string | null;
+  source: string | null;
 }>();
 let textDeltaFlushTimer: ReturnType<typeof setTimeout> | null = null;
 let textDeltaFlushDeadlineAt: number | null = null;
@@ -692,6 +709,8 @@ function forgetStreamingAssistantDeviceId(sessionId: string, clientId: string): 
 }
 
 function clearStreamingAssistantPointer(sessionId: string): boolean {
+  generatedStreamPriorIdentities.delete(sessionId);
+  generatedStreamAgentIdentities.delete(sessionId);
   return streamingAssistantClientIds.delete(sessionId);
 }
 
@@ -715,7 +734,8 @@ const pendingRefreshSessions = new Set<string>();
 const reseedHandlers = new Map<string, Set<() => void>>();
 // A whole-list read after app start or a reconnect reseed may follow a gap in live pushes.
 // Listeners read changed tasks ahead; ordinary list refreshes while pushes flow do not fire.
-const sessionListRefreshListeners = new Set<(deviceId: string) => void>();
+const sessionListRefreshListeners = new Set<(deviceId: string, sessionId?: string) => void>();
+const sessionRemovalListeners = new Set<(deviceId: string, sessionId: string) => void>();
 const sessionListRefreshArmed = new Set<string>();
 const sessionListRefreshSeen = new Set<string>();
 const subs = new Set<() => void>();
@@ -1073,6 +1093,50 @@ function listMessageWriteAllowed(sessionId: string, deviceId?: string): boolean 
     && retentionForSession(sessionId) === 'regular';
 }
 
+/** Match live state to the same selected host as the merged task row. */
+function sessionStateWriteAllowed(sessionId: string, deviceId?: string): boolean {
+  const indexedDeviceId = sessionDeviceIndex.get(sessionId);
+  return !deviceId || !indexedDeviceId || indexedDeviceId === deviceId
+    || mergedSessionById.get(sessionId)?.canonicalDeviceId === deviceId;
+}
+
+function sessionStateReadAllowed(sessionId: string, deviceId: string | undefined, sources: Map<string, string>): boolean {
+  if (!deviceId) return true;
+  if (!sessionStateWriteAllowed(sessionId, deviceId)) return false;
+  const source = sources.get(sessionId);
+  return !source || source === deviceId || (sessionDeviceIndex.has(sessionId) && sessionStateWriteAllowed(sessionId, source));
+}
+
+function clearSourcedSessionState(sessionId: string, sources: Map<string, string>): void {
+  sources.delete(sessionId);
+  if (sources === sessionInteractionSources) {
+    deletePendingInteractionState(sessionId);
+    pendingInteractionsAuthoritative.delete(sessionId);
+  } else {
+    deleteSessionLiveActivity(sessionId);
+    writeSessionRunStatus(sessionId, EMPTY_SESSION_RUN_STATUS);
+    writeMakerTurnRunning(sessionId, false);
+    sessionMakerActivityEpochs.delete(sessionId);
+  }
+}
+
+function acceptSessionStateSource(
+  sessionId: string,
+  deviceId: string | undefined,
+  sources: Map<string, string>,
+): boolean {
+  if (!sessionStateWriteAllowed(sessionId, deviceId)) return false;
+  if (!deviceId) return true; // Local optimistic updates retain their remote provenance.
+  const previous = sources.get(sessionId);
+  if (previous && previous !== deviceId && !(sessionDeviceIndex.has(sessionId)
+    && sessionStateWriteAllowed(sessionId, previous))) {
+    clearSourcedSessionState(sessionId, sources);
+    emit();
+  }
+  sources.set(sessionId, deviceId);
+  return true;
+}
+
 function normalizeWindowForRetention(
   sessionId: string,
   list: readonly RemoteMessage[],
@@ -1128,6 +1192,8 @@ function invalidateSessionMessageWindowState(
 }
 
 function removeSessionRuntimeState(sessionId: string): void {
+  sessionRuntimeSources.delete(sessionId);
+  sessionInteractionSources.delete(sessionId);
   protectedQuestions.delete(sessionId);
   visibleInteractionCache.delete(sessionId);
   void clearHistoryDisk(undefined, sessionId);
@@ -1211,7 +1277,7 @@ function discardTransportOwnedPendingSessionState(
   }
   const streamingClientId = streamingAssistantClientIds.get(sessionId);
   if (streamingClientId && pendingAnchorIds.has(streamingClientId)) {
-    streamingAssistantClientIds.delete(sessionId);
+    clearStreamingAssistantPointer(sessionId);
   }
   for (const id of pendingAnchorIds) forgetStreamingAssistantDeviceId(sessionId, id);
   if (pendingAnchors) {
@@ -1661,6 +1727,13 @@ function recomputeSessions(): void {
   reconcileVisibleSessions();
   mergedSessionById.clear();
   for (const session of mergedSessions) mergedSessionById.set(session.id, session);
+  for (const sources of [sessionRuntimeSources, sessionInteractionSources]) {
+    for (const [sessionId, deviceId] of sources) {
+      if (sessionDeviceIndex.has(sessionId) && !sessionStateWriteAllowed(sessionId, deviceId)) {
+        clearSourcedSessionState(sessionId, sources);
+      }
+    }
+  }
   // Usage-only patches bypass this projection and cannot change Home fields.
   // Reuse the list comparison above to skip its scan and allocations entirely.
   if (sessionsChanged) reconcileHomeSessions();
@@ -1704,9 +1777,8 @@ function sameElementRefs<T>(a: readonly T[], b: readonly T[]): boolean {
 }
 
 function reconcileVisibleSessions(): void {
-  const next = CINDY_MAKE_ENABLED
-    ? mergedSessions
-    : mergedSessions.filter((session) => !isCindyMakeSource(session.source));
+  const next = mergedSessions.filter((session) => session.source !== 'side-chat'
+    && (CINDY_MAKE_ENABLED || !isCindyMakeSource(session.source)));
   if (!sameElementRefs(visibleSessions, next)) visibleSessions = next;
 }
 
@@ -2377,7 +2449,7 @@ function reanchorPendingLiveAssistantRows(
 
 function retireGeneratedStreamingFallback(sessionId: string): void {
   const current = streamingAssistantClientIds.get(sessionId);
-  if (isGeneratedStreamingClientId(current)) streamingAssistantClientIds.delete(sessionId);
+  if (isGeneratedStreamingClientId(current)) clearStreamingAssistantPointer(sessionId);
   forgetGeneratedPendingLiveAssistantClientIds(sessionId);
 }
 
@@ -2437,6 +2509,8 @@ interface StreamingClientIdResolution {
 }
 
 function migrateGeneratedStreamingClientId(sessionId: string, generatedClientId: string, persistId: string): boolean {
+  generatedStreamPriorIdentities.delete(sessionId);
+  generatedStreamAgentIdentities.delete(sessionId);
   streamingAssistantClientIds.set(sessionId, persistId);
 
   const hadPendingLiveId = pendingLiveAssistantClientIds.get(sessionId)?.has(generatedClientId) === true;
@@ -2485,6 +2559,12 @@ function migrateGeneratedStreamingClientId(sessionId: string, generatedClientId:
   return true;
 }
 
+function excludeFromGeneratedStream(sessionId: string, ...ids: (string | undefined)[]): void {
+  const identities = generatedStreamPriorIdentities.get(sessionId);
+  if (!identities) return;
+  for (const id of ids) if (id) identities.add(id);
+}
+
 function streamingClientIdFor(sessionId: string, persistId: string | undefined): StreamingClientIdResolution {
   const normalizedPersistId = persistId?.trim();
   if (normalizedPersistId) {
@@ -2495,12 +2575,17 @@ function streamingClientIdFor(sessionId: string, persistId: string | undefined):
         changed: migrateGeneratedStreamingClientId(sessionId, existing, normalizedPersistId),
       };
     }
+    generatedStreamPriorIdentities.delete(sessionId);
+    generatedStreamAgentIdentities.delete(sessionId);
     streamingAssistantClientIds.set(sessionId, normalizedPersistId);
     return { clientId: normalizedPersistId, changed: false };
   }
   const existing = streamingAssistantClientIds.get(sessionId);
   if (existing) return { clientId: existing, changed: false };
   const generated = `mobile-stream-${++streamingFallbackSequence}`;
+  generatedStreamPriorIdentities.set(sessionId, new Set(
+    (messages.get(sessionId) ?? []).flatMap((row) => [row.id, row.clientId].filter((id): id is string => Boolean(id))),
+  ));
   streamingAssistantClientIds.set(sessionId, generated);
   return { clientId: generated, changed: false };
 }
@@ -2512,6 +2597,8 @@ function upsertMessage(
     /** Caller already resolved this exact identity in the current message array. */
     knownIndex?: number;
     retirePendingAssistantIdentityOnEqual?: boolean;
+    /** An older final with no proven link must not retire an anonymous new stream. */
+    preserveGeneratedStreamingFallback?: boolean;
     /** A streaming text replacement changes row content but not list structure or identities. */
     preserveStructureOnReplace?: boolean;
     /** Streaming replacement preserves the already sorted message order. */
@@ -2519,6 +2606,10 @@ function upsertMessage(
   } = {},
 ): boolean {
   const existing = messages.get(sessionId) ?? [];
+  const priorIdentities = generatedStreamPriorIdentities.get(sessionId);
+  let preservesGeneratedStream = options.preserveGeneratedStreamingFallback === true
+    || priorIdentities?.has(message.id) === true
+    || (message.clientId ? priorIdentities?.has(message.clientId) === true : false);
   const candidateIndex = options.knownIndex ?? -1;
   const index = candidateIndex >= 0
     && candidateIndex < existing.length
@@ -2530,6 +2621,7 @@ function upsertMessage(
     fallbackIndex = findPendingGeneratedStreamingFallbackIndex(sessionId, existing);
     if (
       fallbackIndex >= 0
+      && !preservesGeneratedStream
       && generatedFallbackMatchesPersistedMessage(existing[fallbackIndex], message)
     ) {
       // A producer without persistId creates a temporary mobile-stream-* row. The
@@ -2543,10 +2635,16 @@ function upsertMessage(
       return true;
     }
   }
+  if (isPersistedAssistantMessage(message)
+    && isGeneratedStreamingClientId(streamingAssistantClientIds.get(sessionId))) {
+    // This row did not merge with the live fallback. Keep that separation on replay.
+    excludeFromGeneratedStream(sessionId, message.id, message.clientId);
+    preservesGeneratedStream = true;
+  }
   if (index < 0) {
     messages.set(sessionId, normalizeMessages([...existing, message]));
     applyMessageWriteRetention(sessionId);
-    if (isPersistedAssistantMessage(message) && fallbackIndex < 0) {
+    if (isPersistedAssistantMessage(message) && fallbackIndex < 0 && !preservesGeneratedStream) {
       retireGeneratedStreamingFallback(sessionId);
     }
     bumpMessageVersion(sessionId);
@@ -2573,7 +2671,7 @@ function upsertMessage(
       message.id,
       message.clientId,
     );
-    if (isPersistedAssistantMessage(message)) retireGeneratedStreamingFallback(sessionId);
+    if (isPersistedAssistantMessage(message) && !preservesGeneratedStream) retireGeneratedStreamingFallback(sessionId);
     return hadPendingIdentity;
   }
   const next = existing.slice();
@@ -2597,7 +2695,7 @@ function upsertMessage(
       message.id,
       message.clientId,
     );
-    if (isPersistedAssistantMessage(message)) retireGeneratedStreamingFallback(sessionId);
+    if (isPersistedAssistantMessage(message) && !preservesGeneratedStream) retireGeneratedStreamingFallback(sessionId);
   }
   bumpMessageVersion(sessionId);
   return true;
@@ -2677,14 +2775,41 @@ function mergeRemoteTextEvent(
 
   const previousStreamingClientId = streamingAssistantClientIds.get(sessionId);
   const normalizedPersistId = persistId?.trim();
-  const itemBoundaryClientId = normalizedPersistId
+  // A completed older item may deliver its full text after a newer stream has
+  // started. Its exact row owns this correction, not the current stream pointer.
+  const priorIdentities = generatedStreamPriorIdentities.get(sessionId);
+  const finalReusesExistingItem = isFinal && data?.isFullText === true && normalizedPersistId
+    && (priorIdentities?.has(normalizedPersistId) === true
+      || currentMessages.some((row) => row.role === 'assistant'
+        && (row.clientId === normalizedPersistId || row.id === normalizedPersistId)));
+  const itemBoundaryClientId = !finalReusesExistingItem && normalizedPersistId
     && previousStreamingClientId
     && !isGeneratedStreamingClientId(previousStreamingClientId)
     && previousStreamingClientId !== normalizedPersistId
     ? previousStreamingClientId
     : undefined;
-  const clientIdResolution = streamingClientIdFor(sessionId, persistId);
+  // A DB/history arrival alone cannot identify an anonymous stream. A final
+  // carrying the same provider item from the same transport can, even when the
+  // text is short or the authoritative final corrects it to a different prefix.
+  const hasGeneratedStream = isGeneratedStreamingClientId(previousStreamingClientId);
+  const agentMessageId = data ? readString(data, 'agentMessageId') : null;
+  const source = readString(event, 'source');
+  const generatedIdentity = generatedStreamAgentIdentities.get(sessionId);
+  const finalIdentifiesGeneratedStream = hasGeneratedStream && isFinal && data?.isFullText === true
+    && agentMessageId && generatedIdentity?.agentMessageId === agentMessageId
+    && generatedIdentity.source === source && generatedIdentity.deviceId === deviceId;
+  const clientIdResolution = finalReusesExistingItem && normalizedPersistId && !finalIdentifiesGeneratedStream
+    ? { clientId: normalizedPersistId, changed: false }
+    : streamingClientIdFor(sessionId, persistId);
   const { clientId } = clientIdResolution;
+  if (!isFinal && isGeneratedStreamingClientId(clientId)) {
+    if (!generatedStreamAgentIdentities.has(sessionId)) {
+      generatedStreamAgentIdentities.set(sessionId, agentMessageId ? { agentMessageId, source, deviceId } : null);
+    } else if (generatedIdentity && (generatedIdentity.agentMessageId !== agentMessageId
+      || generatedIdentity.source !== source || generatedIdentity.deviceId !== deviceId)) {
+      generatedStreamAgentIdentities.set(sessionId, null);
+    }
+  }
   const previousStreamingDeviceId = streamingAssistantDeviceId(sessionId, clientId);
   const currentAfterClientIdResolution = messages.get(sessionId) ?? [];
   const matchedExistingIndex = findMessageIndexByIdentity(currentAfterClientIdResolution, clientId);
@@ -2796,7 +2921,9 @@ function mergeRemoteTextEvent(
   const nextText = isFinal
     ? (finalTextWasTruncated && existing
       ? currentText
-      : existing && currentText
+      : data?.isFullText === true
+        ? text
+        : existing && currentText
         ? (text.startsWith(currentText)
           ? text
           : currentText.startsWith(text)
@@ -2841,6 +2968,7 @@ function mergeRemoteTextEvent(
     ),
   }, {
     knownIndex: matchedExistingIndex,
+    preserveGeneratedStreamingFallback: Boolean(finalReusesExistingItem && hasGeneratedStream && !finalIdentifiesGeneratedStream),
     preserveOrderOnReplace: !changesCreatedAt,
     preserveStructureOnReplace: !isFinal && existing !== undefined && !changesCreatedAt,
   });
@@ -2914,8 +3042,11 @@ function enqueueRemoteTextDelta(
   }
   const current = pendingTextDeltaBatches.get(sessionId);
   const incomingMeta = isRecord(event.agentMeta) ? event.agentMeta : null;
+  const agentMessageId = data ? readString(data, 'agentMessageId') : null;
+  const source = readString(event, 'source');
   if (current) {
     current.chunks.push(text);
+    if (current.agentMessageId !== agentMessageId || current.source !== source) current.agentMessageId = null;
     if (incomingMeta) current.agentMeta = { ...(current.agentMeta ?? {}), ...incomingMeta };
     if (!current.persistId) current.persistId = persistId;
     if (current.deviceId === undefined) current.deviceId = deviceId;
@@ -2925,6 +3056,8 @@ function enqueueRemoteTextDelta(
       persistId,
       deviceId,
       agentMeta: incomingMeta,
+      agentMessageId,
+      source,
     });
   }
   scheduleTextDeltaFlush(sessionId);
@@ -2940,7 +3073,8 @@ function flushPendingTextDelta(sessionId: string): boolean {
     sessionId,
     {
       type: 'text',
-      data: { text: batch.chunks.join(''), isFinal: false },
+      data: { text: batch.chunks.join(''), isFinal: false, agentMessageId: batch.agentMessageId },
+      ...(batch.source ? { source: batch.source } : {}),
       ...(batch.agentMeta ? { agentMeta: batch.agentMeta } : {}),
     },
     batch.persistId,
@@ -3424,7 +3558,9 @@ export const remoteSessionStore = {
     {
       const snapshotIds = new Set(nextSessions.map((s) => s.id));
       const pendingStatusRows = (existing?.sessions ?? []).filter((row) =>
-        !snapshotIds.has(row.id) && sessionPendingWrites.pendingFields(row.id).includes('status'));
+        !snapshotIds.has(row.id) && (sessionPendingWrites.pendingFields(row.id).includes('status')
+          // These details are deliberately omitted from the host's ordinary task list.
+          || (row.source === 'side-chat' && (row.status === 'active' || row.status === 'archived'))));
       if (pendingStatusRows.length > 0) nextSessions = [...pendingStatusRows, ...nextSessions];
     }
     if (
@@ -3523,16 +3659,20 @@ export const remoteSessionStore = {
     // even when the removed row has not reached this shard yet.
     if (patch.status === 'deleted' || patch.status === 'archived') bumpDeviceSessionListMutationEpoch(deviceId);
     const shard = shards.get(deviceId);
-    if (!shard) {
-      if (patch.status === 'active') reseedHandlers.get(deviceId)?.forEach((handler) => handler());
-      return;
-    }
-    const idx = shard.sessions.findIndex((s) => s.id === sessionId);
-    if (idx === -1) {
-      if (patch.status === 'active') reseedHandlers.get(deviceId)?.forEach((handler) => handler());
+    const idx = shard?.sessions.findIndex((s) => s.id === sessionId) ?? -1;
+    if (!shard || idx === -1) {
+      if (patch.status === 'deleted' || patch.status === 'archived') {
+        sessionRemovalListeners.forEach(listener => listener(deviceId, sessionId));
+      }
+      // Separate host-owned lists can include children never opened in this mirror.
+      // Terminal changes invalidate those lists just as unseen creations do.
+      if (patch.status === 'active' || patch.status === 'deleted' || patch.status === 'archived') {
+        reseedHandlers.get(deviceId)?.forEach((handler) => handler());
+      }
       return;
     }
     let shouldReseedAfterPatch = false;
+    const turnEnded = historyTurnEnded(shard.sessions[idx], patch);
     if (patch.status === 'deleted' || patch.status === 'archived') {
       protectedQuestions.delete(sessionId);
       visibleInteractionCache.delete(sessionId);
@@ -3574,6 +3714,12 @@ export const remoteSessionStore = {
       shouldReseedAfterPatch = wasPinned && unpinned;
     }
     recomputeSessions();
+    if (patch.status === 'deleted' || patch.status === 'archived') {
+      sessionRemovalListeners.forEach(listener => listener(deviceId, sessionId));
+    }
+    if (turnEnded && patch.status !== 'deleted' && patch.status !== 'archived') {
+      for (const listener of sessionListRefreshListeners) listener(deviceId, sessionId);
+    }
     if (shouldReseedAfterPatch) this.requestReseed(deviceId);
   },
 
@@ -3791,7 +3937,11 @@ export const remoteSessionStore = {
       if (isPersistedAssistantMessage(item)) {
         const fallbackIndex = findPendingGeneratedStreamingFallbackIndex(sessionId, existing);
         const fallback = fallbackIndex >= 0 ? existing[fallbackIndex] : undefined;
-        if (fallback && generatedFallbackMatchesPersistedMessage(fallback, item)) {
+        const priorIdentities = generatedStreamPriorIdentities.get(sessionId);
+        const knownSeparateIdentity = priorIdentities?.has(item.id) === true
+          || (item.clientId ? priorIdentities?.has(item.clientId) === true : false)
+          || messageIdentityIndexHas(existingIdentityIndex, item);
+        if (fallback && !knownSeparateIdentity && generatedFallbackMatchesPersistedMessage(fallback, item)) {
           // History sync may be the first place the authoritative DB identity
           // arrives. Remove the generated key before inserting the persisted row;
           // otherwise the newer temporary row is kept as a tail and the DB row
@@ -3811,6 +3961,7 @@ export const remoteSessionStore = {
           continue;
         }
       }
+      if (isPersistedAssistantMessage(item)) excludeFromGeneratedStream(sessionId, item.id, item.clientId);
       const directKey = messageKey(item);
       const identityKey = findMessageMergeKey(byKey, item);
       const key = identityKey ?? directKey;
@@ -4163,8 +4314,9 @@ export const remoteSessionStore = {
   setPendingInteractions(
     sessionId: string,
     list: readonly PendingInteraction[],
-    options: { finalizeStreaming?: boolean } = {},
+    options: { finalizeStreaming?: boolean; deviceId?: string } = {},
   ): void {
+    if (!acceptSessionStateSource(sessionId, options.deviceId, sessionInteractionSources)) return;
     // 已确认 dismiss 的延长抑制条目按「缺席即过期」回收:本轮快照不含该
     // requestId = 被控端已确认移除,慢的旧快照此后不可能再带着它(权威读取按
     // 请求序返回),条目可以安全解除;仍含 = 这是 resolve 前发出的旧快照,保留
@@ -4347,8 +4499,7 @@ export const remoteSessionStore = {
       if (!isRecord(item)) continue;
       const sessionId = readString(item, 'sessionId');
       if (sessionId && typeof item.isTurnRunning === 'boolean') {
-        const indexedDeviceId = sessionDeviceIndex.get(sessionId);
-        if (indexedDeviceId && indexedDeviceId !== deviceId) continue;
+        if (!sessionStateWriteAllowed(sessionId, deviceId)) continue;
         snapshotStates.set(sessionId, {
           running: item.isTurnRunning,
           activityPhase: readString(item, 'activityPhase'),
@@ -4358,6 +4509,7 @@ export const remoteSessionStore = {
     }
     let changed = false;
     for (const [sessionId, { running, activityPhase, activityAttention }] of snapshotStates) {
+      acceptSessionStateSource(sessionId, deviceId, sessionRuntimeSources);
       if (!running) {
         changed = flushAndFinalizeRemoteStreamingMessages(sessionId) || changed;
         changed = writeMakerTurnRunning(sessionId, false) || changed;
@@ -4394,8 +4546,8 @@ export const remoteSessionStore = {
       changed = writeSessionRunStatus(sessionId, next) || changed;
     }
     if (completeResponse) {
-      for (const [sessionId, indexedDeviceId] of sessionDeviceIndex) {
-        if (indexedDeviceId !== deviceId || snapshotStates.has(sessionId)
+      for (const sessionId of sessionDeviceIndex.keys()) {
+        if (!sessionStateWriteAllowed(sessionId, deviceId) || snapshotStates.has(sessionId)
           || (sessionMakerActivityEpochs.get(sessionId) ?? 0) > activityEpochAtFetchStart) continue;
         // A runtime absent from a complete host snapshot has ended. Do not
         // discard a newer live push that arrived while this read was in flight.
@@ -4604,8 +4756,9 @@ export const remoteSessionStore = {
       const fromList = payload.listMessage === true;
       if (fromList && (!sessionId || !listMessageWriteAllowed(sessionId, deviceId))) return;
       if (sessionId && message) {
-        this.appendMessage(sessionId, message, { listMessage: fromList });
-        if (fromList) void cacheSessionListMessage(deviceId, sessionId, message);
+        const received = fromList ? { ...message, cacheReceipt: nextHistoryCacheReceipt() } : message;
+        this.appendMessage(sessionId, received, { listMessage: fromList });
+        if (fromList) void cacheSessionListMessage(deviceId, sessionId, received);
       }
       return;
     }
@@ -4675,7 +4828,7 @@ export const remoteSessionStore = {
     if (channel === 'maker:status-changed' && isRecord(payload)) {
       const sessionId = readString(payload, 'sessionId');
       const status = readString(payload, 'status');
-      if (sessionId && status === 'closed') this.setSessionRunning(sessionId, false);
+      if (sessionId && status === 'closed' && acceptSessionStateSource(sessionId, deviceId, sessionRuntimeSources)) this.setSessionRunning(sessionId, false);
       return;
     }
     if (channel === 'usage:message-turn-cost' && isRecord(payload)) {
@@ -4774,7 +4927,7 @@ export const remoteSessionStore = {
     if (channel === 'maker:interaction-request' && isRecord(payload)) {
       const sessionId = readString(payload, 'sessionId');
       const request = isRecord(payload.request) ? payload.request : null;
-      if (sessionId && request) {
+      if (sessionId && request && acceptSessionStateSource(sessionId, deviceId, sessionInteractionSources)) {
         this.applyInteractionRequest(sessionId, {
           request: request as PendingInteraction['request'],
           persistId: readString(payload, 'persistId') ?? undefined,
@@ -4785,7 +4938,7 @@ export const remoteSessionStore = {
     if (channel === 'maker:interaction-dismissed' && isRecord(payload)) {
       const sessionId = readString(payload, 'sessionId');
       const requestId = readString(payload, 'requestId');
-      if (sessionId && requestId) {
+      if (sessionId && requestId && acceptSessionStateSource(sessionId, deviceId, sessionInteractionSources)) {
         if (payload.reason === 'resolved' && !(isRecord(payload.decision) && payload.decision.dismissed === true)) {
           this.confirmProtectedQuestion(sessionId, requestId);
         }
@@ -4821,11 +4974,12 @@ export const remoteSessionStore = {
     emit();
   },
 
-  applySessionActivity(_deviceId: string, payload: unknown): void {
+  applySessionActivity(deviceId: string, payload: unknown): void {
     if (!isRecord(payload)) return;
     const sessionId = readString(payload, 'sessionId');
     const phase = readString(payload, 'phase');
-    if (!sessionId || !isRemoteSessionLiveActivityPhase(phase)) return;
+    if (!sessionId || !isRemoteSessionLiveActivityPhase(phase)
+      || !acceptSessionStateSource(sessionId, deviceId, sessionRuntimeSources)) return;
     markSessionMakerActivity(sessionId);
     const compactDetail = typeof payload.compactDetail === 'string' ? payload.compactDetail : '';
     let changed = false;
@@ -4889,8 +5043,12 @@ export const remoteSessionStore = {
     deviceId?: string,
     fromList = false,
   ): void {
-    markSessionMakerActivity(sessionId);
     const type = readString(event, 'type');
+    // Text has its own transport replacement/retention rules; only fence the
+    // runtime signals here, so reconnecting transports keep their existing data path.
+    if ((type === 'status' || type === 'done' || type === 'error')
+      && !acceptSessionStateSource(sessionId, deviceId, sessionRuntimeSources)) return;
+    markSessionMakerActivity(sessionId);
     const reconnectCleared = type !== null && type !== 'error' && type !== 'done'
       ? clearSessionReconnectAttempt(sessionId)
       : false;
@@ -5341,6 +5499,8 @@ export const remoteSessionStore = {
       bumpHomeStatusVersion();
     }
     sessionRunStatus.clear();
+    sessionRuntimeSources.clear();
+    sessionInteractionSources.clear();
     sessionMakerActivityEpochs.clear();
     makerActivityEpoch = 0;
     sessionMessageSyncMarkers.clear();
@@ -5348,6 +5508,8 @@ export const remoteSessionStore = {
     sessionLiveStreamAcked.clear();
     sessionTaskUpdates.clear();
     streamingAssistantClientIds.clear();
+    generatedStreamPriorIdentities.clear();
+    generatedStreamAgentIdentities.clear();
     streamingAssistantDeviceIds.clear();
     pendingLiveAssistantClientIds.clear();
     pendingHostAnchorLiveAssistantClientIds.clear();
@@ -5402,10 +5564,16 @@ export const remoteSessionStore = {
     reseedHandlers.get(deviceId)?.forEach((handler) => handler());
   },
 
-  /** Whole-list reads that may follow missed pushes (first read per app run, reconnect reseed). */
-  onSessionListRefreshAfterGap(listener: (deviceId: string) => void): () => void {
+  /** First/reconnected lists, or a specific task whose durable turn just ended. */
+  onSessionHistoryPrefetchRequested(listener: (deviceId: string, sessionId?: string) => void): () => void {
     sessionListRefreshListeners.add(listener);
     return () => { sessionListRefreshListeners.delete(listener); };
+  },
+
+  /** Explicit lifecycle changes only: a missing snapshot or disconnect is not deletion. */
+  onSessionRemoved(listener: (deviceId: string, sessionId: string) => void): () => void {
+    sessionRemovalListeners.add(listener);
+    return () => { sessionRemovalListeners.delete(listener); };
   },
 
   getSessionDeviceId(sessionId: string): string | undefined {
@@ -5571,7 +5739,8 @@ export const remoteSessionStore = {
     return newMakerWorktreeBranchPreferences.get(deviceId)?.get(baseRepo.trim()) ?? null;
   },
 
-  getPendingInteractions(sessionId: string): PendingInteraction[] {
+  getPendingInteractions(sessionId: string, deviceId?: string): PendingInteraction[] {
+    if (!sessionStateReadAllowed(sessionId, deviceId, sessionInteractionSources)) return emptyPendingInteractions;
     return pendingInteractions.get(sessionId) ?? emptyPendingInteractions;
   },
 
@@ -5622,12 +5791,13 @@ export const remoteSessionStore = {
     return inputProjections.get(sessionId) ?? EMPTY_INPUT_PROJECTION;
   },
 
-  getSessionLiveActivity(sessionId: string): RemoteSessionLiveActivity | null {
+  getSessionLiveActivity(sessionId: string, deviceId?: string): RemoteSessionLiveActivity | null {
+    if (!sessionStateReadAllowed(sessionId, deviceId, sessionRuntimeSources)) return null;
     return sessionLiveActivity.get(sessionId) ?? null;
   },
 
-  isSessionRunning(sessionId: string): boolean {
-    return sessionRunning.get(sessionId) === true;
+  isSessionRunning(sessionId: string, deviceId?: string): boolean {
+    return sessionStateReadAllowed(sessionId, deviceId, sessionRuntimeSources) && sessionRunning.get(sessionId) === true;
   },
 
   getSessionRunStatus(sessionId: string): RemoteSessionRunStatus {
@@ -6094,6 +6264,14 @@ function usePausableRemoteSessionStoreSnapshot<T>(
 
 export function useRemoteSessions(): RemoteSession[] {
   return usePausableRemoteSessionStoreSnapshot('sessions', remoteSessionStore.getVisibleSessions);
+}
+
+/** A hidden child can be opened without making it an ordinary Home list row. */
+export function useRemoteSessionDetail(deviceId: string, sessionId: string): RemoteSession | null {
+  const read = useCallback(() => remoteSessionStore.getSessions().find(session =>
+    session.id === sessionId && session.deviceLinkDeviceId === deviceId) ?? null,
+  [deviceId, sessionId]);
+  return usePausableRemoteSessionStoreSnapshot(read, read);
 }
 
 /** Home rows/actions do not consume usage; session details must use useRemoteSessions. */

@@ -84,7 +84,7 @@ export async function writeHistoryDisk(authority: Authority, snapshot: HistoryVi
     const items = (values: readonly HistoryViewItem<RemoteMessage>[]): HistoryViewItem<RemoteMessage>[] => values.map(item =>
       item.type === 'messages' ? { ...item, messages: messages(item.messages), ...(item.deferred ? { deferred: summary(item.deferred) } : {}) }
         : { ...item, summary: summary(item.summary), ...(item.children ? { children: items(item.children) } : {}) });
-    const text = JSON.stringify({ version: 1, items: items(snapshot.items),
+    const text = JSON.stringify({ version: 1, readReceipt: snapshot.readReceipt, items: items(snapshot.items),
       details: [...snapshot.details].filter(([, detail]) => detail.complete && !detail.loading && !detail.error)
         .map(([key, detail]) => [key, { ...detail, messages: messages(detail.messages) }]),
       expanded: [...snapshot.expanded], nextCursor: snapshot.nextCursor, hasMore: snapshot.hasMore,

@@ -89,7 +89,8 @@ async function context(callerSessionId: string, opts?: { allowPaused?: boolean; 
   if (
     !row ||
     row.source !== 'bot' ||
-    (!groupAuthority && (row.role !== 'canonical' || row.canonicalSessionId !== callerSessionId)) ||
+    // The owner's Bot Chat: the current main Chat or one of its private-chat topics.
+    (!groupAuthority && row.role !== 'thread' && (row.role !== 'canonical' || row.canonicalSessionId !== callerSessionId)) ||
     row.archivedAt !== null ||
     row.sessionStatus !== 'active' ||
     !profileAllowed
@@ -306,7 +307,7 @@ export function createBotCapabilityService(deps: BotCapabilityServiceDeps) {
             const choice = available.find(item => item.id === selection.id);
             if (!choice || seen.has(selection.id)
               || (selection.effort !== undefined && selection.effort !== '' && !choice.efforts.some(effort => effort === selection.effort))
-              || (selection.fastMode === true && !choice.supportsFastMode)) {
+              || (selection.fastMode && (!choice.supportsFastMode || (selection.fastMode === 'ultrafast' && !choice.supportsUltrafastMode)))) {
               throw new Error('Model route or settings are unavailable');
             }
             seen.add(selection.id);

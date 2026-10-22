@@ -16,7 +16,7 @@ import { readReferencedClientWallpaperUrls } from './custom-wallpaper-settings.j
 import { createDownloader } from './downloader/index.js';
 import { createLogger } from './logger.js';
 
-type Scene = keyof typeof manifest;
+type OfficialWallpaper = keyof typeof manifest;
 type Asset = { sha256: string; bytes: number };
 type ProgressBytes = Pick<WallpaperDownloadProgress, 'loaded' | 'total'>;
 type Transfer = {
@@ -29,7 +29,7 @@ const pending = new Map<string, Transfer>();
 const download = createDownloader();
 const log = createLogger('wallpaper-assets');
 
-export function isWallpaperVideoScene(id: unknown): id is Scene {
+function isOfficialWallpaper(id: unknown): id is OfficialWallpaper {
   return typeof id === 'string' && Object.hasOwn(manifest, id);
 }
 
@@ -46,10 +46,11 @@ async function ensureWallpaperAsset(
   kind: 'image' | 'video',
   onProgress?: ProgressListener,
 ): Promise<string | null> {
-  if (!isWallpaperVideoScene(id)) throwIpcError('INVALID_PARAMS', 'Unsupported wallpaper');
+  if (!isOfficialWallpaper(id)) throwIpcError('INVALID_PARAMS', 'Unsupported wallpaper');
   const entry = manifest[id];
   if (entry.delivery !== 'cdn') return null;
-  const asset = kind === 'image' ? entry.image : entry;
+  const asset = kind === 'image' ? entry.image : 'sha256' in entry ? entry : null;
+  if (!asset) return null;
   const ext = kind === 'image' ? '.webp' : '.mp4';
   const key = asset.sha256 + ext;
   let transfer = pending.get(key);

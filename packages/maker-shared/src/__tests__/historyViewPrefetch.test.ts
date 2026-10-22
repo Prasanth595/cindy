@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { historyPrefetchVersion, historySnapshotCovers, historySnapshotForCache, historySnapshotFromPage, selectHistoryPrefetchSessions } from '../historyViewPrefetch.js';
+import { historyPrefetchVersion, historySnapshotCovers, historySnapshotForCache, historySnapshotFromPage, selectHistoryPrefetchSessions, mergeHistoryPrefetchRequest } from '../historyViewPrefetch.js';
 import type { HistoryViewSnapshot } from '../historyViewController.js';
 import type { HistoryMessageSource, HistoryViewItem, HistoryWorkSummary } from '../historyView.js';
 
@@ -12,6 +12,19 @@ const work = (key: string, revision: string, endedAtMs = 0): HistoryViewItem<His
 const detail = (revision: string) => ({ messages: [], revision, lastMessageId: 'x', loading: false, complete: true, error: null });
 
 describe('history read ahead', () => {
+  // The bridge and both in-flight queues use this union, so a reconnect cannot
+  // erase a completion outside the five-task list budget in either arrival order.
+  it.each([false, true])('selects recent tasks plus explicit completions (recent first=%s)', (recentFirst) => {
+    let request = mergeHistoryPrefetchRequest(undefined, recentFirst ? undefined : new Set(['done']));
+    request = mergeHistoryPrefetchRequest(request, recentFirst ? new Set(['done']) : undefined);
+    const running = Array.from({ length: 5 }, (_, i) => ({ id: `running-${i}`, updatedAt: '2026-10-11T00:00:09Z', activeTurnStartedAt: 100 }));
+    const picked = selectHistoryPrefetchSessions([...running,
+      { id: 'done', updatedAt: '2026-10-11T00:00:01Z' }, { id: 'unrelated', updatedAt: '2026-10-11T00:00:02Z' }], {
+      limit: request.recent ? undefined : 0, targets: request.targets, eligible: () => true, prefetchedAt: () => undefined,
+    });
+    expect(picked.map(s => s.id)).toEqual([...running.map(s => s.id), 'done']);
+  });
+
   it('discards collapsed details before expanded ones and folds only if the latest page still cannot fit', () => {
     const page = { version: 1 as const, items: [work('collapsed', 'r1'), work('expanded', 'r1')], hasMore: false, nextCursor: null };
     const previous: HistoryViewSnapshot<HistoryMessageSource> = {

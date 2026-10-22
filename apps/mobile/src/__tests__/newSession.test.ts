@@ -1,3 +1,6 @@
+import { modelNeedsReselection } from '../session/modelReselection';
+import { isCindyAutoModelId } from '@cindy/model-providers/provider-identity';
+import { buildMobileModelSections, flattenProviderSections, isFastRestorable } from '../session/providerModelSections';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import ts from 'typescript';
@@ -52,6 +55,13 @@ import type { RemoteSession } from '@/session/types';
 // Windows checkout(core.autocrlf)下源码是 CRLF;统一归一成 LF,含 \n 的多行片段断言才跨平台成立。
 const readTextLf = (...args: Parameters<typeof readFileSync>): string =>
   String(readFileSync(...args)).replace(/\r\n/g, '\n');
+
+// Existing source contracts follow the extracted hooks; load their text once.
+const newSessionSources = [
+  'app/sessions/new.tsx',
+  'src/session/useNewSessionDefaultSelection.ts',
+  'src/session/useNewSessionHostDefaults.ts',
+].map(path => readTextLf(resolve(process.cwd(), path), 'utf8')).join('\n');
 
 // 文案已 i18n 化;固定 zh-CN 让字面量断言与语言环境解耦(全局 mock 默认 en-US)。
 beforeAll(async () => {
@@ -204,16 +214,16 @@ describe('resolveSubmitGuardCatalog —— 提交终检目录取信(代际安全
   it('ordinary creation hands off without awaiting a hung catalog refresh', async () => {
     const fetch = vi.fn(() => new Promise<TestPayload>(() => {}));
     const result = await resolveSubmitGuardCatalog({ ...baseArgs, fetch, cached: () => payload('cached'), deferRefreshToCreation: true });
-    expect(result).toEqual({ rows: [], catalogKnown: false, genAt: 1 });
+    expect(result).toEqual({ rows: [], providers: [], catalogKnown: false, genAt: 1 });
     const selected = { model: 'newly-connected-model', providerId: 'newly-connected-provider' };
-    expect(resolveRecentModelAndProvider(result.rows, selected, 'codex', result.catalogKnown)).toEqual(selected);
+    expect(resolveRecentModelAndProvider(result.rows, selected, 'codex', result.catalogKnown, result.providers)).toEqual(selected);
     expect(fetch).not.toHaveBeenCalled();
   });
 
   it('defers an evicted catalog to the post-link check without trusting stale rows', async () => {
     const fetch = vi.fn(baseArgs.fetch);
     const result = await resolveSubmitGuardCatalog({ ...baseArgs, fetch, deferRefreshToCreation: true });
-    expect(result).toEqual({ rows: [], catalogKnown: false, genAt: 1 });
+    expect(result).toEqual({ rows: [], providers: [], catalogKnown: false, genAt: 1 });
     expect(fetch).not.toHaveBeenCalled();
   });
 
@@ -336,7 +346,7 @@ describe('stored agent restore gating', () => {
       catalogReady: false,
       providersUnsupported: false,
     })).toBe(false);
-    expect(pickAgentDefaultRuntime({
+    expect(pickAgentDefaultRuntime({ providers: [],
       agentKind: 'claude-code',
       hostRuntime: null,
       modelRows: [],
@@ -408,7 +418,7 @@ describe('stored agent restore gating', () => {
   });
 
   it('gates the stored agent restore on real data and leaves the auto-default unblocked', () => {
-    const source = readTextLf(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8');
+    const source = newSessionSources;
     const storedStart = source.indexOf('const storedAgentKind = newSessionPreferences?.agentKind;');
     const autoStart = source.indexOf('const result = resolveNewSessionAutoDefault({');
     const storedSource = source.slice(storedStart, source.indexOf('storedAgentRestoreRef.current = restoreState', storedStart));
@@ -426,7 +436,7 @@ describe('stored agent restore gating', () => {
   });
 
   it('reads and writes the host new-task defaults instead of inferring from task history', () => {
-    const source = readTextLf(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8');
+    const source = newSessionSources;
     // 读:与桌面远程新建同一读源,三个 agent 一次读齐。
     expect(source).toContain('return maker.getNewMakerDefaults(agentKind);');
     expect(source).toContain('return hostDraftRuntimeFromDefaults(defaults, agentKind);');
@@ -449,7 +459,7 @@ describe('stored agent restore gating', () => {
     // 切 agent 先等被控电脑默认读完再选模型,不把目录默认当成最终选择(Greptile P1)。
     const switchStart = source.indexOf('const switchAgent = useCallback(');
     const switchBody = source.slice(switchStart, source.indexOf('\n  }, [', switchStart));
-    const waitAt = switchBody.indexOf('await waitHostDraftDefaults(selectedDeviceId);');
+    const waitAt = switchBody.indexOf('await waitHostDraftDefaults(selectedDeviceId, nextKind);');
     expect(waitAt).toBeGreaterThan(-1);
     expect(waitAt).toBeLessThan(switchBody.indexOf('pickAgentDefaultRuntime({'));
   });
@@ -463,16 +473,16 @@ describe('pickAgentDefaultRuntime on hosts without provider:list', () => {
 
   it('uses the advertised capabilities model instead of settling an empty one', () => {
     const base = { agentKind: 'claude-code' as const, hostRuntime: null, modelRows: [], currentEffort: 'medium', catalogReady: false };
-    expect(pickAgentDefaultRuntime({ ...base, flatModels: [flat('a', false), flat('b', true)] }))
+    expect(pickAgentDefaultRuntime({ providers: ((base).modelRows).map((row: ProviderModelRow) => row.provider), ...base, flatModels: [flat('a', false), flat('b', true)] }))
       .toMatchObject({ model: 'b', providerId: null, effort: 'high' });
-    expect(pickAgentDefaultRuntime({ ...base, flatModels: [flat('a', false)] })).toMatchObject({ model: 'a', providerId: null });
+    expect(pickAgentDefaultRuntime({ providers: ((base).modelRows).map((row: ProviderModelRow) => row.provider), ...base, flatModels: [flat('a', false)] })).toMatchObject({ model: 'a', providerId: null });
     // 能力表也没有时才留空。
-    expect(pickAgentDefaultRuntime({ ...base, flatModels: [] })).toMatchObject({ model: '' });
-    expect(pickAgentDefaultRuntime(base)).toMatchObject({ model: '' });
+    expect(pickAgentDefaultRuntime({ providers: ((base).modelRows).map((row: ProviderModelRow) => row.provider), ...base, flatModels: [] })).toMatchObject({ model: '' });
+    expect(pickAgentDefaultRuntime({ ...base, providers: base.modelRows.map((row: ProviderModelRow) => row.provider) })).toMatchObject({ model: '' });
   });
 
   it('passes capabilities models only for unsupported hosts, on both stored-agent restore and agent switch', () => {
-    const source = readTextLf(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8');
+    const source = newSessionSources;
     expect(source).toContain('flatModels: flatModelsForUnsupportedHost(selectedDeviceId, storedAgentKind, deviceProvidersRef.current.unsupported),');
     expect(source).toContain('flatModels: flatModelsForUnsupportedHost(selectedDeviceId, nextKind, deviceProvidersRef.current.unsupported),');
     expect(source).toContain('if (!providersUnsupported || !deviceId) return undefined;');
@@ -509,7 +519,7 @@ describe('isNewSessionRuntimePending', () => {
   });
 
   it('rolls back the restore marker and device lock when an automatic write is dropped', () => {
-    const source = readTextLf(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8');
+    const source = newSessionSources;
     const storedStart = source.indexOf('const storedAgentKind = newSessionPreferences?.agentKind;');
     const storedEffect = source.slice(storedStart, source.indexOf('}, [', storedStart));
     expect(storedEffect).toContain('if (storedAgentRestoreRef.current === restoreState) storedAgentRestoreRef.current = previousRestore;');
@@ -520,7 +530,7 @@ describe('isNewSessionRuntimePending', () => {
   });
 
   it('binds the settled model to the computer it was settled for', () => {
-    const source = readTextLf(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8');
+    const source = newSessionSources;
     // 切到另一台电脑后重新等待,不能沿用上一台电脑落定的模型直接创建。
     expect(source).toContain('settled: !!selectedDeviceId && runtimeSettledDeviceId === selectedDeviceId,');
     expect(source).toContain("settleRuntime('stored-agent', deviceAtTrigger);");
@@ -529,7 +539,7 @@ describe('isNewSessionRuntimePending', () => {
   });
 
   it('drops the previous computer\'s auto-picked model on device switch and gates goal creation too', () => {
-    const source = readTextLf(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8');
+    const source = newSessionSources;
     const selectStart = source.indexOf('const selectDevice = useCallback(');
     const selectDevice = source.slice(selectStart, source.indexOf('const handleBack = useCallback(', selectStart));
     // 用户没手动选过模型时清掉旧电脑的自动选择并重新等待;手动选过的保留。
@@ -548,14 +558,14 @@ describe('isNewSessionRuntimePending', () => {
     expect(() => assertSubmitModelResolved({ model: '' }, 'delisted-model'))
       .toThrow('delisted-model 在这台电脑上已不可用，请重新选择模型后再发送。');
     // 三处提交终检(创建前两处 + 鉴权后重验)都要经过这道拦截。
-    const source = readTextLf(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8');
+    const source = newSessionSources;
     expect(source.split('assertSubmitModelResolved(resolved, effectiveDraft.model);').length - 1).toBe(3);
   });
 });
 
 describe('pickAgentDefaultRuntime', () => {
   it('follows the host new-task default of the target agent (model + effort reconciled)', () => {
-    const runtime = pickAgentDefaultRuntime({
+    const runtime = pickAgentDefaultRuntime({ providers: ([modelRow('gpt-5.4', ['low', 'medium', 'high'], 'medium')]).map((row: ProviderModelRow) => row.provider),
       agentKind: 'codex',
       hostRuntime: hostRuntime('codex', 'gpt-5.4', { effort: 'high' }),
       modelRows: [modelRow('gpt-5.4', ['low', 'medium', 'high'], 'medium')],
@@ -567,7 +577,7 @@ describe('pickAgentDefaultRuntime', () => {
   });
 
   it('reconciles the recent effort down to the model default when unsupported', () => {
-    const runtime = pickAgentDefaultRuntime({
+    const runtime = pickAgentDefaultRuntime({ providers: ([modelRow('gpt-5.4', ['low', 'medium'], 'low')]).map((row: ProviderModelRow) => row.provider),
       agentKind: 'codex',
       hostRuntime: hostRuntime('codex', 'gpt-5.4', { effort: 'xhigh' }),
       modelRows: [modelRow('gpt-5.4', ['low', 'medium'], 'low')],
@@ -579,7 +589,7 @@ describe('pickAgentDefaultRuntime', () => {
   });
 
   it('omits the effort when the catalog is ready but the model has no row (delisted → omit, codex P2)', () => {
-    const runtime = pickAgentDefaultRuntime({
+    const runtime = pickAgentDefaultRuntime({ providers: ([modelRow('gpt-5.4', ['low', 'medium'], 'low')]).map((row: ProviderModelRow) => row.provider),
       agentKind: 'codex',
       hostRuntime: hostRuntime('codex', 'gpt-legacy', { effort: 'high' }),
       modelRows: [modelRow('gpt-5.4', ['low', 'medium'], 'low')],
@@ -591,7 +601,7 @@ describe('pickAgentDefaultRuntime', () => {
   });
 
   it('keeps the recent effort while the catalog is not ready (no authoritative section model yet)', () => {
-    const runtime = pickAgentDefaultRuntime({
+    const runtime = pickAgentDefaultRuntime({ providers: [],
       agentKind: 'codex',
       hostRuntime: hostRuntime('codex', 'gpt-legacy', { effort: 'high' }),
       modelRows: [],
@@ -603,7 +613,7 @@ describe('pickAgentDefaultRuntime', () => {
   });
 
   it('inherits the recent session providerId when that provider still offers the model (#1898)', () => {
-    const runtime = pickAgentDefaultRuntime({
+    const runtime = pickAgentDefaultRuntime({ providers: ([modelRow('deepseek-v4-flash', ['low', 'medium'], 'medium')]).map((row: ProviderModelRow) => row.provider),
       agentKind: 'claude-code',
       hostRuntime: hostRuntime('claude-code', 'deepseek-v4-flash', { providerId: 'prov-deepseek-v4-flash' }),
       modelRows: [modelRow('deepseek-v4-flash', ['low', 'medium'], 'medium')],
@@ -614,7 +624,7 @@ describe('pickAgentDefaultRuntime', () => {
   });
 
   it('reroutes to another connected provider offering the same model when the recent provider is gone (codex P1)', () => {
-    const runtime = pickAgentDefaultRuntime({
+    const runtime = pickAgentDefaultRuntime({ providers: ([modelRow('deepseek-v4-flash', ['low', 'medium'], 'medium')]).map((row: ProviderModelRow) => row.provider),
       agentKind: 'claude-code',
       hostRuntime: hostRuntime('claude-code', 'deepseek-v4-flash', { providerId: 'prov-deleted' }),
       modelRows: [modelRow('deepseek-v4-flash', ['low', 'medium'], 'medium')],
@@ -647,26 +657,18 @@ describe('pickAgentDefaultRuntime', () => {
       },
     });
     expect(
-      resolveRecentModelAndProvider(
-        [fullRow('custom'), fullRow('xd')],
-        { model: 'gpt-5.4', providerId: 'prov-deleted' },
-        'codex',
-        true,
+      resolveRecentModelAndProvider([fullRow('custom'), fullRow('xd')], { model: 'gpt-5.4', providerId: 'prov-deleted' }, 'codex', true, ([fullRow('custom'), fullRow('xd')]).map((row: ProviderModelRow) => row.provider)
       ),
     ).toEqual({ model: 'gpt-5.4', providerId: 'xd' });
     // 全部来源不可路由(未连接)→ 解析不到 → 落目录首项(整体回退)
     expect(
-      resolveRecentModelAndProvider(
-        [fullRow('custom', false), fullRow('xd', false)],
-        { model: 'gpt-5.4', providerId: 'prov-deleted' },
-        'codex',
-        true,
+      resolveRecentModelAndProvider([fullRow('custom', false), fullRow('xd', false)], { model: 'gpt-5.4', providerId: 'prov-deleted' }, 'codex', true, ([fullRow('custom', false), fullRow('xd', false)]).map((row: ProviderModelRow) => row.provider)
       ),
     ).toEqual({ model: 'gpt-5.4', providerId: 'custom' });
   });
 
   it('falls back to the catalog top row (with its provider) when no provider offers the recent model', () => {
-    const runtime = pickAgentDefaultRuntime({
+    const runtime = pickAgentDefaultRuntime({ providers: ([modelRow('claude-sonnet-4-6', ['low', 'medium'], 'low'), modelRow('claude-haiku', ['low'], 'low')]).map((row: ProviderModelRow) => row.provider),
       agentKind: 'claude-code',
       hostRuntime: hostRuntime('claude-code', 'delisted-model', { providerId: 'prov-deleted' }),
       modelRows: [modelRow('claude-sonnet-4-6', ['low', 'medium'], 'low'), modelRow('claude-haiku', ['low'], 'low')],
@@ -677,7 +679,7 @@ describe('pickAgentDefaultRuntime', () => {
   });
 
   it('leaves the model empty with the default route when the catalog is ready but empty and the provider is gone', () => {
-    const runtime = pickAgentDefaultRuntime({
+    const runtime = pickAgentDefaultRuntime({ providers: [],
       agentKind: 'codex',
       hostRuntime: hostRuntime('codex', 'delisted-model', { providerId: 'prov-deleted' }),
       modelRows: [],
@@ -689,7 +691,7 @@ describe('pickAgentDefaultRuntime', () => {
   });
 
   it('trusts the recent providerId while modelRows are still loading (empty)', () => {
-    const runtime = pickAgentDefaultRuntime({
+    const runtime = pickAgentDefaultRuntime({ providers: [],
       agentKind: 'claude-code',
       hostRuntime: hostRuntime('claude-code', 'deepseek-v4-flash', { providerId: 'deepseek' }),
       modelRows: [],
@@ -700,7 +702,7 @@ describe('pickAgentDefaultRuntime', () => {
   });
 
   it('falls back the model together when the catalog is ready but empty (loaded ≠ loading, codex P1)', () => {
-    const runtime = pickAgentDefaultRuntime({
+    const runtime = pickAgentDefaultRuntime({ providers: [],
       agentKind: 'claude-code',
       hostRuntime: hostRuntime('claude-code', 'deepseek-v4-flash', { providerId: 'deepseek' }),
       modelRows: [],
@@ -723,7 +725,7 @@ describe('pickAgentDefaultRuntime', () => {
         contextWindow: 0,
       },
     });
-    const runtime = pickAgentDefaultRuntime({
+    const runtime = pickAgentDefaultRuntime({ providers: ([shared('provA', ['low'], 'low'), shared('provB', ['high', 'xhigh'], 'high')]).map((row: ProviderModelRow) => row.provider),
       agentKind: 'claude-code',
       hostRuntime: hostRuntime('claude-code', 'shared-model', { effort: 'xhigh', providerId: 'provB' }),
       modelRows: [shared('provA', ['low'], 'low'), shared('provB', ['high', 'xhigh'], 'high')],
@@ -745,7 +747,7 @@ describe('pickAgentDefaultRuntime', () => {
         contextWindow: 0,
       },
     });
-    const runtime = pickAgentDefaultRuntime({
+    const runtime = pickAgentDefaultRuntime({ providers: ([shared('provA', ['low'], 'low')]).map((row: ProviderModelRow) => row.provider),
       agentKind: 'claude-code',
       hostRuntime: hostRuntime('claude-code', 'shared-model', { effort: 'xhigh', providerId: 'provB' }),
       // 目录未就绪时的残留行:只有 provA 提供同 modelId,provB 不在其中
@@ -758,7 +760,7 @@ describe('pickAgentDefaultRuntime', () => {
   });
 
   it('falls back to the top of the target agent\'s model list when the host default belongs to another agent', () => {
-    const runtime = pickAgentDefaultRuntime({
+    const runtime = pickAgentDefaultRuntime({ providers: ([modelRow('gpt-5.4', ['low', 'medium'], 'low'), modelRow('gpt-mini', ['low'], 'low')]).map((row: ProviderModelRow) => row.provider),
       agentKind: 'codex',
       hostRuntime: hostRuntime('claude-code', 'claude-opus-4-8'),
       modelRows: [modelRow('gpt-5.4', ['low', 'medium'], 'low'), modelRow('gpt-mini', ['low'], 'low')],
@@ -775,14 +777,14 @@ describe('pickAgentDefaultRuntime', () => {
       modelRow('pi-regional', ['high'], 'high', ['pi']),
     ];
     // 区域默认来自 provider 行 → 携带该行 provider(#1898 语义,merge main 后适配)
-    expect(pickAgentDefaultRuntime({
+    expect(pickAgentDefaultRuntime({ providers: (rows).map((row: ProviderModelRow) => row.provider),
       agentKind: 'claude-code',
       hostRuntime: null,
       modelRows: rows,
       currentEffort: 'high',
       catalogReady: true,
     })).toEqual({ agentKind: 'claude-code', model: 'cc-regional', effort: 'medium', providerId: 'prov-cc-regional' });
-    expect(pickAgentDefaultRuntime({
+    expect(pickAgentDefaultRuntime({ providers: (rows).map((row: ProviderModelRow) => row.provider),
       agentKind: 'pi',
       hostRuntime: null,
       modelRows: rows,
@@ -792,7 +794,10 @@ describe('pickAgentDefaultRuntime', () => {
   });
 
   it('uses only the explicit Pi regional default marker', () => {
-    expect(pickAgentDefaultRuntime({
+    expect(pickAgentDefaultRuntime({ providers: ([
+        modelRow('top', ['low'], 'low'),
+        modelRow('pi-regional', ['high'], 'high', ['pi']),
+      ]).map((row: ProviderModelRow) => row.provider),
       agentKind: 'pi',
       hostRuntime: null,
       modelRows: [
@@ -822,7 +827,7 @@ describe('pickAgentDefaultRuntime', () => {
       },
     });
     // [A/foo(无标记), B/foo(标记)]:必须在行层面选中 B,携带 B 的来源并按其档位表校准
-    const runtime = pickAgentDefaultRuntime({
+    const runtime = pickAgentDefaultRuntime({ providers: ([shared('provA', false, ['low'], 'low'), shared('provB', true, ['high', 'xhigh'], 'high')]).map((row: ProviderModelRow) => row.provider),
       agentKind: 'claude-code',
       hostRuntime: null,
       modelRows: [shared('provA', false, ['low'], 'low'), shared('provB', true, ['high', 'xhigh'], 'high')],
@@ -833,14 +838,14 @@ describe('pickAgentDefaultRuntime', () => {
   });
 
   it('leaves the model empty and omits effort when the catalog is ready but empty (codex P2)', () => {
-    expect(pickAgentDefaultRuntime({
+    expect(pickAgentDefaultRuntime({ providers: [],
       agentKind: 'codex',
       hostRuntime: null,
       modelRows: [],
       currentEffort: 'medium',
       catalogReady: true,
     })).toEqual({ agentKind: 'codex', model: '', effort: '', providerId: null });
-    expect(pickAgentDefaultRuntime({
+    expect(pickAgentDefaultRuntime({ providers: [],
       agentKind: 'claude-code',
       hostRuntime: null,
       modelRows: [],
@@ -850,7 +855,7 @@ describe('pickAgentDefaultRuntime', () => {
   });
 
   it('skips the top-row branch while the catalog is not ready (stale rows from the previous device, codex P1)', () => {
-    const runtime = pickAgentDefaultRuntime({
+    const runtime = pickAgentDefaultRuntime({ providers: ([modelRow('gpt-5.4', ['low', 'medium'], 'low')]).map((row: ProviderModelRow) => row.provider),
       agentKind: 'codex',
       hostRuntime: null,
       modelRows: [modelRow('gpt-5.4', ['low', 'medium'], 'low')],
@@ -884,22 +889,76 @@ describe('pickAgentDefaultRuntime', () => {
       },
     });
     expect(
-      resolveRecentModelAndProvider(
-        [fullRow('anthropic'), fullRow('xd')],
-        { model: 'gpt-5.4', providerId: null },
-        'codex',
-        true,
+      resolveRecentModelAndProvider([fullRow('anthropic'), fullRow('xd')], { model: 'gpt-5.4', providerId: null }, 'codex', true, ([fullRow('anthropic'), fullRow('xd')]).map((row: ProviderModelRow) => row.provider)
       ),
     ).toEqual({ model: 'gpt-5.4', providerId: 'xd' });
     // 全部来源不可路由(未连接)→ 解析不到 → 保留 null 默认路由,不固化任何来源
     expect(
-      resolveRecentModelAndProvider(
-        [fullRow('anthropic', false), fullRow('xd', false)],
-        { model: 'gpt-5.4', providerId: null },
-        'codex',
-        true,
+      resolveRecentModelAndProvider([fullRow('anthropic', false), fullRow('xd', false)], { model: 'gpt-5.4', providerId: null }, 'codex', true, ([fullRow('anthropic', false), fullRow('xd', false)]).map((row: ProviderModelRow) => row.provider)
       ),
     ).toEqual({ model: 'gpt-5.4', providerId: null });
+  });
+
+  it('Auto 只按模型 ID 认:服务端把它挪到另一家 Cindy 来源后跟过去,不落到用户自己接的供应商', () => {
+    const autoRow = (
+      providerId: string,
+      source: 'builtin' | 'organization' | 'user',
+      modelIds: readonly string[],
+      modelId: string,
+    ): ProviderModelRow => ({
+      provider: {
+        id: providerId,
+        name: providerId,
+        source,
+        agents: ['pi'],
+        routing: { pi: {} },
+        connected: true,
+        models: { pi: modelIds.map((id) => ({ id, name: id })) },
+      } as unknown as ProviderModelRow['provider'],
+      model: { id: modelId, displayName: modelId, efforts: [], defaultEffort: null, contextWindow: 0 },
+    });
+    const auto = 'auto/group-1';
+    // 号池 → Cindy AI:记住的号池还在(有别的模型),但已不再提供这个 Auto。
+    const toPlatform = [
+      autoRow('custom', 'user', [auto], auto),
+      autoRow('org-pool', 'organization', ['pool-model'], 'pool-model'),
+      autoRow('xd', 'builtin', ['auto', auto], auto),
+    ];
+    expect(
+      resolveRecentModelAndProvider(toPlatform, { model: auto, providerId: 'org-pool' }, 'pi', true, (toPlatform).map((row: ProviderModelRow) => row.provider)),
+    ).toEqual({ model: auto, providerId: 'xd' });
+    // Cindy AI → 号池:用户自己接的供应商排在前面也提供同 ID,不能被通用顶替规则选中。
+    const toPool = [
+      autoRow('custom', 'user', [auto], auto),
+      autoRow('xd', 'builtin', ['auto'], 'auto'),
+      autoRow('org-pool', 'organization', ['pool-model', auto], auto),
+    ];
+    expect(
+      resolveRecentModelAndProvider(toPool, { model: auto, providerId: 'xd' }, 'pi', true, (toPool).map((row: ProviderModelRow) => row.provider)),
+    ).toEqual({ model: auto, providerId: 'org-pool' });
+    // PR #6355 Greptile P1：身份取完整目录，但隐藏的 Cindy AI 同名模型不能挤掉可见号池。
+    // unit：旧号池无行，平台组 Auto 无行，自定义来源排在前面；仍选可见的新号池。
+    const visible = [toPool[0], toPool[2]];
+    const fullCatalog = [
+      ...visible.map((row: ProviderModelRow) => row.provider),
+      autoRow('old-pool', 'organization', [], 'unused').provider,
+      autoRow('xd', 'builtin', [auto], auto).provider,
+    ];
+    expect(
+      resolveRecentModelAndProvider(visible, { model: auto, providerId: 'old-pool' }, 'pi', true, fullCatalog, undefined),
+    ).toEqual({ model: auto, providerId: 'org-pool' });
+    // 负向:用户自己接的供应商仍提供同名 auto/... 时原样保留,不被拉去 Cindy 来源。
+    expect(
+      resolveRecentModelAndProvider(toPlatform, { model: auto, providerId: 'custom' }, 'pi', true, (toPlatform).map((row: ProviderModelRow) => row.provider)),
+    ).toEqual({ model: auto, providerId: 'custom' });
+    // 负向:Auto 从两份目录都消失时不崩,按既有规则落到目录首项。
+    const gone = [
+      autoRow('xd', 'builtin', ['auto'], 'auto'),
+      autoRow('org-pool', 'organization', ['pool-model'], 'pool-model'),
+    ];
+    expect(
+      resolveRecentModelAndProvider(gone, { model: auto, providerId: 'org-pool' }, 'pi', true, (gone).map((row: ProviderModelRow) => row.provider)),
+    ).toEqual({ model: 'auto', providerId: 'xd' });
   });
 });
 
@@ -918,7 +977,7 @@ describe('resolveNewSessionAutoDefault', () => {
   };
 
   it('intent ⓪: waits until the host new-task defaults are read (no premature catalog default)', () => {
-    expect(resolveNewSessionAutoDefault({
+    expect(resolveNewSessionAutoDefault({ providers: ([modelRow('claude-sonnet-4-6', ['low', 'medium'], 'low')]).map((row: ProviderModelRow) => row.provider),
       ...baseInput,
       hostDefaultsSettled: false,
       modelRows: [modelRow('claude-sonnet-4-6', ['low', 'medium'], 'low')],
@@ -926,7 +985,7 @@ describe('resolveNewSessionAutoDefault', () => {
   });
 
   it('intent ①: follows the host new-task default of the current agent (model + effort reconciled, agent untouched)', () => {
-    const result = resolveNewSessionAutoDefault({
+    const result = resolveNewSessionAutoDefault({ providers: ([modelRow('gpt-5.4', ['low', 'medium', 'high'], 'medium')]).map((row: ProviderModelRow) => row.provider),
       ...baseInput,
       rowsAgentKind: 'codex',
       hostRuntime: hostRuntime('codex', 'gpt-5.4', { effort: 'high' }),
@@ -947,7 +1006,10 @@ describe('resolveNewSessionAutoDefault', () => {
   it('intent ①a: a host default is the only default — task history no longer steers it', () => {
     // 回归:自动化 / 测试任务(从未由用户发消息)曾因更新时间最新被当成「最近使用」,
     // 把新建任务默认带成 Haiku。现在没有被控电脑默认时只看目录区域默认。
-    const result = resolveNewSessionAutoDefault({
+    const result = resolveNewSessionAutoDefault({ providers: ([
+        modelRow('claude-haiku-4-5', ['high'], 'high'),
+        modelRow('claude-opus-5-5', ['high'], 'high', ['claude-code']),
+      ]).map((row: ProviderModelRow) => row.provider),
       ...baseInput,
       modelRows: [
         modelRow('claude-haiku-4-5', ['high'], 'high'),
@@ -958,7 +1020,7 @@ describe('resolveNewSessionAutoDefault', () => {
   });
 
   it('intent ①+: inherits the host default providerId when the provider still offers the model (#1898)', () => {
-    const result = resolveNewSessionAutoDefault({
+    const result = resolveNewSessionAutoDefault({ providers: ([modelRow('deepseek-v4-flash', ['low', 'medium', 'high'], 'medium')]).map((row: ProviderModelRow) => row.provider),
       ...baseInput,
       hostRuntime: hostRuntime('claude-code', 'deepseek-v4-flash', { providerId: 'prov-deepseek-v4-flash' }),
       modelRows: [modelRow('deepseek-v4-flash', ['low', 'medium', 'high'], 'medium')],
@@ -970,7 +1032,7 @@ describe('resolveNewSessionAutoDefault', () => {
   });
 
   it('intent ①-: reroutes to another provider offering the same model when the host default provider is gone (codex P1)', () => {
-    const result = resolveNewSessionAutoDefault({
+    const result = resolveNewSessionAutoDefault({ providers: ([modelRow('deepseek-v4-flash', ['low', 'medium', 'high'], 'medium')]).map((row: ProviderModelRow) => row.provider),
       ...baseInput,
       hostRuntime: hostRuntime('claude-code', 'deepseek-v4-flash', { providerId: 'prov-gone' }),
       modelRows: [modelRow('deepseek-v4-flash', ['low', 'medium', 'high'], 'medium')],
@@ -982,7 +1044,7 @@ describe('resolveNewSessionAutoDefault', () => {
   });
 
   it('intent ①-fallback: falls back to the catalog top row when no provider offers the host default model', () => {
-    const result = resolveNewSessionAutoDefault({
+    const result = resolveNewSessionAutoDefault({ providers: ([modelRow('claude-sonnet-4-6', ['low', 'medium'], 'low')]).map((row: ProviderModelRow) => row.provider),
       ...baseInput,
       hostRuntime: hostRuntime('claude-code', 'delisted-model', { providerId: 'prov-gone' }),
       modelRows: [modelRow('claude-sonnet-4-6', ['low', 'medium'], 'low')],
@@ -994,7 +1056,7 @@ describe('resolveNewSessionAutoDefault', () => {
   });
 
   it('intent ①z: ignores a host default that belongs to another agent than the rows', () => {
-    const result = resolveNewSessionAutoDefault({
+    const result = resolveNewSessionAutoDefault({ providers: ([modelRow('claude-sonnet-4-6', ['low', 'medium'], 'medium')]).map((row: ProviderModelRow) => row.provider),
       ...baseInput,
       rowsAgentKind: 'claude-code',
       hostRuntime: hostRuntime('codex', 'gpt-5.4', { effort: 'xhigh', providerId: 'prov-codex-only' }),
@@ -1004,7 +1066,7 @@ describe('resolveNewSessionAutoDefault', () => {
   });
 
   it('intent ①r: reconciles the host default effort against the matched row ladder', () => {
-    const result = resolveNewSessionAutoDefault({
+    const result = resolveNewSessionAutoDefault({ providers: ([modelRow('deepseek-v4-flash', ['low', 'medium'], 'medium')]).map((row: ProviderModelRow) => row.provider),
       ...baseInput,
       hostRuntime: hostRuntime('claude-code', 'deepseek-v4-flash', { effort: 'xhigh', providerId: 'prov-deepseek-v4-flash' }),
       modelRows: [modelRow('deepseek-v4-flash', ['low', 'medium'], 'medium')],
@@ -1017,7 +1079,7 @@ describe('resolveNewSessionAutoDefault', () => {
   });
 
   it('intent ②: no host default → top of the model list (model + reconciled effort + row provider, agentKind untouched)', () => {
-    const result = resolveNewSessionAutoDefault({
+    const result = resolveNewSessionAutoDefault({ providers: ([modelRow('claude-sonnet-4-6', ['low', 'medium'], 'low'), modelRow('claude-haiku', ['low'], 'low')]).map((row: ProviderModelRow) => row.provider),
       ...baseInput,
       currentEffort: 'high', // 不被首个模型支持 → reconcile 到默认 'low'
       modelRows: [modelRow('claude-sonnet-4-6', ['low', 'medium'], 'low'), modelRow('claude-haiku', ['low'], 'low')],
@@ -1031,7 +1093,7 @@ describe('resolveNewSessionAutoDefault', () => {
   });
 
   it('intent ②-wait: catalog not ready → do not copy the (stale) top row, wait for the real catalog (codex P1)', () => {
-    const result = resolveNewSessionAutoDefault({
+    const result = resolveNewSessionAutoDefault({ providers: ([modelRow('claude-sonnet-4-6', ['low', 'medium'], 'low')]).map((row: ProviderModelRow) => row.provider),
       ...baseInput,
       catalogReady: false,
       modelRows: [modelRow('claude-sonnet-4-6', ['low', 'medium'], 'low')],
@@ -1040,7 +1102,10 @@ describe('resolveNewSessionAutoDefault', () => {
   });
 
   it('intent ②a: no host default → regional default before the top row (upstream main 移植)', () => {
-    const result = resolveNewSessionAutoDefault({
+    const result = resolveNewSessionAutoDefault({ providers: ([
+        modelRow('top', ['low'], 'low'),
+        modelRow('regional', ['medium'], 'medium', ['claude-code']),
+      ]).map((row: ProviderModelRow) => row.provider),
       ...baseInput,
       currentEffort: 'high',
       modelRows: [
@@ -1064,7 +1129,7 @@ describe('resolveNewSessionAutoDefault', () => {
         ...(marked ? { newSessionDefault: ['claude-code'] } : {}),
       },
     });
-    const result = resolveNewSessionAutoDefault({
+    const result = resolveNewSessionAutoDefault({ providers: ([shared('provA', false, ['low'], 'low'), shared('provB', true, ['high', 'xhigh'], 'high')]).map((row: ProviderModelRow) => row.provider),
       ...baseInput,
       currentEffort: 'high',
       modelRows: [shared('provA', false, ['low'], 'low'), shared('provB', true, ['high', 'xhigh'], 'high')],
@@ -1074,7 +1139,7 @@ describe('resolveNewSessionAutoDefault', () => {
   });
 
   it('intent ②b: provider list unavailable → regional default from normalized capabilities (upstream main 移植)', () => {
-    const result = resolveNewSessionAutoDefault({
+    const result = resolveNewSessionAutoDefault({ providers: ((baseInput).modelRows).map((row: ProviderModelRow) => row.provider),
       ...baseInput,
       providersUnsupported: true,
       currentEffort: 'high',
@@ -1095,14 +1160,14 @@ describe('resolveNewSessionAutoDefault', () => {
   });
 
   it('intent ③: switching device (not manually touched) recomputes for the new device', () => {
-    expect(resolveNewSessionAutoDefault({
+    expect(resolveNewSessionAutoDefault({ providers: ([modelRow('model-B', ['low'], 'low')]).map((row: ProviderModelRow) => row.provider),
       ...baseInput, hostRuntime: hostRuntime('claude-code', 'model-B'), appliedDeviceId: 'devA', selectedDeviceId: 'devB',
       modelRows: [modelRow('model-B', ['low'], 'low')],
     })?.patch).toMatchObject({ model: 'model-B' });
   });
 
   it('intent ④: userTouched → null (never overrides a manual selection)', () => {
-    expect(resolveNewSessionAutoDefault({
+    expect(resolveNewSessionAutoDefault({ providers: ([modelRow('gpt-5.4', ['low'], 'low')]).map((row: ProviderModelRow) => row.provider),
       ...baseInput,
       userTouched: true,
       hostRuntime: hostRuntime('claude-code', 'gpt-5.4'),
@@ -1111,11 +1176,11 @@ describe('resolveNewSessionAutoDefault', () => {
   });
 
   it('returns null when modelRows are not ready yet and there is no host default (no premature set)', () => {
-    expect(resolveNewSessionAutoDefault({ ...baseInput, modelRows: [] })).toBeNull();
+    expect(resolveNewSessionAutoDefault({ providers: [], ...baseInput, modelRows: [] })).toBeNull();
   });
 
   it('applies the capabilities flat default when the catalog is explicitly unavailable (old host without provider:list, codex P2)', () => {
-    const result = resolveNewSessionAutoDefault({
+    const result = resolveNewSessionAutoDefault({ providers: [],
       ...baseInput,
       hostRuntime: null,
       modelRows: [],
@@ -1146,7 +1211,7 @@ describe('resolveNewSessionAutoDefault', () => {
   });
 
   it('does not fall back to flat defaults while the catalog is merely loading (error is empty, codex P2)', () => {
-    expect(resolveNewSessionAutoDefault({
+    expect(resolveNewSessionAutoDefault({ providers: [],
       ...baseInput,
       hostRuntime: null,
       modelRows: [],
@@ -1159,10 +1224,10 @@ describe('resolveNewSessionAutoDefault', () => {
   });
 
   it('returns null when this device was already applied, and when no device is selected', () => {
-    expect(resolveNewSessionAutoDefault({
+    expect(resolveNewSessionAutoDefault({ providers: ([modelRow('m', ['low'], 'low')]).map((row: ProviderModelRow) => row.provider),
       ...baseInput, appliedDeviceId: 'devA', modelRows: [modelRow('m', ['low'], 'low')],
     })).toBeNull();
-    expect(resolveNewSessionAutoDefault({ ...baseInput, selectedDeviceId: '' })).toBeNull();
+    expect(resolveNewSessionAutoDefault({ providers: ((baseInput).modelRows).map((row: ProviderModelRow) => row.provider), ...baseInput, selectedDeviceId: '' })).toBeNull();
   });
 });
 
@@ -1218,7 +1283,7 @@ describe('new session default device follows the home device filter', () => {
   });
 
   it('treats the deviceExplicit route flag as an explicit device on the new-session screen', () => {
-    const newSource = readTextLf(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8');
+    const newSource = newSessionSources;
     expect(newSource).toContain('deviceExplicit?: string;');
     expect(newSource).toContain("readRouteString(params.deviceExplicit) === '1'");
   });
@@ -1275,7 +1340,7 @@ describe('new session model', () => {
       { seq: 3, deviceId: '' },
     )).toBe(false);
 
-    const newSource = readTextLf(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8');
+    const newSource = newSessionSources;
     expect(newSource).toContain('browseSeqRef.current += 1');
     expect(newSource).toContain('selectedDeviceIdRef.current = option.deviceId');
     expect(newSource).toContain('isCurrentRemoteBrowseRequest');
@@ -1288,13 +1353,13 @@ describe('new session model', () => {
     expect(shouldRetryRemoteBrowseDrives(false, 0)).toBe(false);
     expect(shouldRetryRemoteBrowseDrives(undefined, 0)).toBe(false);
 
-    const newSource = readTextLf(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8');
+    const newSource = newSessionSources;
     expect(newSource).toContain('shouldRetryRemoteBrowseDrives');
     expect(newSource).toContain('result.drivesPending');
   });
 
   it('keeps the Android drive pill at 34pt and wraps it in a 44pt hit target', () => {
-    const newSource = readTextLf(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8');
+    const newSource = newSessionSources;
     expect(newSource).toContain('styles.browseDriveHit');
     expect(newSource).toMatch(/browseDriveHit:\s*\{[^}]*minHeight:\s*44/);
     expect(newSource).toMatch(/browseDriveHit:\s*\{[^}]*minWidth:\s*44/);
@@ -1430,7 +1495,7 @@ describe('new session model', () => {
   });
 
   it('wires the new-session screen to gate agents by list-available-agents and coerce off unavailable', () => {
-    const newSource = readTextLf(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8');
+    const newSource = newSessionSources;
     // 拉被控端 runtime 注册集合,渲染按可用集过滤,选中不可用时 coerce。
     expect(newSource).toContain('maker.listAvailableAgents()');
     expect(newSource).toContain('onAgentsChanged');
@@ -1613,7 +1678,7 @@ describe('new session model', () => {
   });
 
   it('keeps the recent-project list nested-scrollable with a visible scroll indicator (#5013)', () => {
-    const source = readTextLf(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8');
+    const source = newSessionSources;
     // Scope the guard to this list: the remote directory FlatList already has
     // these props, so checking the whole page would miss the Android regression.
     // Native gesture dispatch still needs Android emulator/device verification.
@@ -1958,7 +2023,7 @@ describe('new session model', () => {
 
 describe('new session composer surface', () => {
   it('keeps the controlled caret at the end after palette insertion and draft restore', () => {
-    const newSource = readTextLf(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8');
+    const newSource = newSessionSources;
     const slashStart = newSource.indexOf('const selectSlashCommand = useCallback');
     const slashEnd = newSource.indexOf('const selectAtResource = useCallback', slashStart);
     const slashSource = newSource.slice(slashStart, slashEnd);
@@ -1984,7 +2049,7 @@ describe('new session composer surface', () => {
   });
 
   it('does not double-apply the Android safe-area inset to the top navigation', () => {
-    const newSource = readTextLf(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8');
+    const newSource = newSessionSources;
 
     expect(newSource).toContain(
       "const NEW_SESSION_SCREEN_TOP_PADDING = Platform.OS === 'android' ? 0 : spacing.xl;",
@@ -1993,7 +2058,7 @@ describe('new session composer surface', () => {
   });
 
   it('uses the shared platform keyboard avoidance rule for the new-session composer', () => {
-    const newSource = readTextLf(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8');
+    const newSource = newSessionSources;
     const normalizedNewSource = newSource.replace(/\r\n/g, '\n');
 
     expect(newSource).toContain("import { keyboardAvoidingBehaviorForPlatform } from '@/session/mobileNativeShellLayout';");
@@ -2004,7 +2069,7 @@ describe('new session composer surface', () => {
   });
 
   it('uses the shared mobile composer row rather than a separate input implementation', () => {
-    const newSource = readTextLf(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8');
+    const newSource = newSessionSources;
     const sessionSource = readTextLf(resolve(process.cwd(), 'app/sessions/[sessionId].tsx'), 'utf8');
     const sharedSource = readTextLf(resolve(process.cwd(), 'src/session/MobileComposerInputRow.tsx'), 'utf8');
     const newComposerStart = newSource.indexOf('<MobileComposerInputRow');
@@ -2328,7 +2393,7 @@ describe('new session worktree wiring (source locks)', () => {
   //  - 两步共用同一预生成 sessionId(工作端 close-session 按绑定回收 worktree);
   //  - 成功后以 meta.path 替换 effectiveDraft.workingDir 再进管线;
   //  - 失败(业务 {ok:false} / invoke 抛错)早退留在表单,不建会话。
-  const newSource = readTextLf(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8');
+  const newSource = newSessionSources;
 
   it('runs worktree:create before the optimistic pipeline with the same preset sessionId', () => {
     const requestIdx = newSource.indexOf('const createRequest = buildWorktreeCreateRequest({');
@@ -2550,7 +2615,7 @@ describe('submit guard catalog wiring (source locks)', () => {
   //    deviceAtCreate 捕获 + ensureDeviceAlive/abortIfDeviceSwitched,handoff
   //    (startNewSessionCreation / maker.createSession / goal.set)前必复核;
   //    已 precreate 后失配必须走 ledger 补偿(forgetPendingPrecreatedWorktree)。
-  const newSource = readTextLf(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8');
+  const newSource = newSessionSources;
 
   it('both submit guards resolve catalog trust via the generation-safe helper', () => {
     const guardCalls = newSource.match(/resolveSubmitGuardCatalog\(\{/g) ?? [];
@@ -2602,7 +2667,7 @@ describe('submit guard catalog wiring (source locks)', () => {
     // goal:prepare 循环(1)+ post-started 循环(前查 + 后查,2)+ 鉴权降级 re-fence(1)
     //   + 设备切换 commit 分支 re-fence(1)
     expect(goalSlice.match(/if \(getDeviceProvidersGen\(guardDeviceId\) === guardResult\.genAt\) break;/g) ?? []).toHaveLength(5);
-    const failOpen = 'rows: [], catalogKnown: false, genAt: getDeviceProvidersGen(guardDeviceId),';
+    const failOpen = 'rows: [], providers: [], catalogKnown: false, genAt: getDeviceProvidersGen(guardDeviceId),';
     const failOpenCount = (slice: string): number =>
       slice.split(failOpen).length - 1;
     expect(failOpenCount(createSlice)).toBe(2); // 哨兵 + 耗尽
@@ -2811,23 +2876,68 @@ describe('fast memory restore wiring (source locks)', () => {
   //  - 必须存在延迟恢复 effect:目标 caps 就绪后按 (agent, 来源, 模型) 记忆重评,
   //    通过才打开 fastMode——「永久清除合法记忆」与「恢复出目标不支持的 fast」
   //    两个故障形态都靠这对接线闭合。
-  const newSource = readTextLf(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8');
+  const newSource = newSessionSources;
 
   it('both restore sites gate on target-agent cached capabilities, never the closure state', () => {
-    const gated = newSource.match(/isFastRestorable\(next\.agentKind, next\.providerId, next\.model, rowsNow, targetAgentHasFast\(selectedDeviceId, next\.agentKind\)\)/g) ?? [];
+    const gated = newSource.match(/isFastRestorable\(next\.agentKind, next\.providerId, next\.model, rowsNow, targetAgentHasFast\(selectedDeviceId, next\.agentKind\), rememberedFast\)/g) ?? [];
     expect(gated.length).toBe(2);
     // 恢复点不再直接消费 capabilities state 做门控
     const stale = newSource.match(/isFastRestorable\(next\.agentKind[^)]*capabilities\?\.hasFastMode/g) ?? [];
     expect(stale.length).toBe(0);
   });
 
-  it('defers the remembered-fast restore until target-agent capabilities arrive', () => {
-    expect(newSource).toContain('function targetAgentHasFast(deviceId: string, agentKind: NewSessionAgentKind): boolean');
-    // 延迟恢复 effect:记忆为 true 才评 + 门控用目标 agent 缓存能力表 + 写回前再核一次当前草稿
-    // (来源 id 与 changeSelectedFastMode 同口径:显式 providerId 优先,默认路由用推断来源)
-    expect(newSource).toContain('draftMemory.getFast(draft.agentKind, pid, draft.model) !== true');
-    expect(newSource).toContain('targetAgentHasFast(selectedDeviceId, draft.agentKind)');
-    expect(newSource).toContain('current.providerId === draft.providerId');
+  // PR #6559 P1: replace the boolean-only source assertion with the production
+  // effect's draft output. Unit tier; no React Native mount or real waiting.
+  const effectStart = newSource.indexOf('  useEffect(() => {', newSource.indexOf('  // Fast 记忆延迟恢复'));
+  const effectJs = ts.transpileModule(newSource.slice(effectStart, newSource.indexOf('  // 拉被控端 runtime', effectStart)), {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  const runRestoreEffect = new Function('env', `
+    const {selectedDeviceId, draft, draftMemory, modelRowsRef, activeSourceIdRef,
+      catalogReadyRef, targetAgentHasFast, getCachedAgentCapabilities,
+      buildAgentCapabilitiesCacheKey, setDraft, capabilities, modelRows,
+      deviceProviders, isFastRestorable} = env;
+    const useEffect = fn => fn();
+    ${effectJs}
+  `);
+
+  it('defers speed restoration until capabilities arrive and clears a revoked Ultrafast tier', () => {
+    const rows = flattenProviderSections(buildMobileModelSections({
+      agentKind: 'codex', providers: [{
+        id: 'openai', name: 'OpenAI', connected: true, agents: ['codex'],
+        source: 'builtin', auth: { method: 'oauth' },
+        routing: { codex: { upstream: 'https://example.test', authStrategy: 'oauth-passthrough' } },
+        models: { codex: [{ id: 'gpt', name: 'GPT', contextWindow: 1000,
+          efforts: [], defaultEffort: null, supportsFastMode: true, supportsUltrafastMode: true }] },
+      }],
+    }).sections);
+    let draft = { agentKind: 'codex' as const, model: 'gpt', providerId: 'openai', fastMode: false as boolean | 'ultrafast' };
+    let capsKnown = false;
+    let remembered: boolean | 'ultrafast' = 'ultrafast';
+    const restore = () => runRestoreEffect({
+      selectedDeviceId: 'host', draft, draftMemory: { getFast: () => remembered },
+      modelRowsRef: { current: rows }, activeSourceIdRef: { current: 'openai' },
+      catalogReadyRef: { current: true }, targetAgentHasFast: () => capsKnown,
+      getCachedAgentCapabilities: () => capsKnown ? {} : undefined,
+      buildAgentCapabilitiesCacheKey: () => 'host:codex',
+      setDraft: (update: (current: typeof draft) => typeof draft) => { draft = update(draft); },
+      capabilities: null, modelRows: rows, deviceProviders: { ready: true }, isFastRestorable,
+    });
+    restore();
+    expect(draft.fastMode).toBe(false);
+    capsKnown = true;
+    restore();
+    expect(draft.fastMode).toBe('ultrafast');
+    rows[0].model.supportsUltrafastMode = false;
+    restore();
+    expect(draft.fastMode).toBe(false);
+    rows[0].model.supportsUltrafastMode = true;
+    restore();
+    expect(draft.fastMode).toBe('ultrafast');
+    remembered = false;
+    draft.fastMode = false;
+    restore();
+    expect(draft.fastMode).toBe(false);
   });
 });
 
@@ -2998,10 +3108,10 @@ describe('closed saved model requires reselection', () => {
   const rows = [modelRow('replacement', ['medium'], 'medium')];
   const saved = hostRuntime('codex', selected.model, { providerId: selected.providerId, effort: 'high' });
   it('preserves the hidden pair during catalog reconciliation and remembered-agent restoration', () => {
-    expect(resolveRecentModelAndProvider(rows, selected, 'codex', true, visibilityOverrides)).toEqual(selected);
-    expect(pickAgentDefaultRuntime({ agentKind: 'codex', hostRuntime: saved, modelRows: rows,
+    expect(resolveRecentModelAndProvider(rows, selected, 'codex', true, (rows).map((row: ProviderModelRow) => row.provider), visibilityOverrides)).toEqual(selected);
+    expect(pickAgentDefaultRuntime({ providers: (rows).map((row: ProviderModelRow) => row.provider), agentKind: 'codex', hostRuntime: saved, modelRows: rows,
       currentEffort: 'medium', catalogReady: true, visibilityOverrides })).toMatchObject({ ...selected, effort: 'high' });
-    expect(resolveNewSessionAutoDefault({ userTouched: false, appliedDeviceId: null, selectedDeviceId: 'devA',
+    expect(resolveNewSessionAutoDefault({ providers: (rows).map((row: ProviderModelRow) => row.provider), userTouched: false, appliedDeviceId: null, selectedDeviceId: 'devA',
       hostDefaultsSettled: true, hostRuntime: saved, modelRows: rows, rowsAgentKind: 'codex', catalogReady: true, visibilityOverrides,
       currentEffort: 'medium' })?.patch).toMatchObject(selected);
   });
@@ -3010,4 +3120,126 @@ describe('closed saved model requires reselection', () => {
       fetch: async () => ({ providers: [], modelVisibilityOverrides: visibilityOverrides }), buildRows: () => rows });
     expect(result).toMatchObject({ catalogKnown: true, rows, visibilityOverrides });
   });
+});
+
+// unit：执行页面原始回调与生产解析函数（不复制逻辑、不扫描参数字符串），断言最终计费来源。
+// 原 Hook 用例没有覆盖 app/ 的接线；旧号池或 xd 无模型行，自定义来源与新号池同名且排在前。
+describe('页面 Auto 校准和提交保留 Cindy 来源身份', () => {
+  const pageSource = ts.createSourceFile(
+    'new.tsx',
+    readTextLf(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8'),
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TSX,
+  );
+  const callbacks: ts.ArrowFunction[] = [];
+  function visit(node: ts.Node) {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === 'resolveRecentModelAndProvider'
+    ) {
+      let parent: ts.Node | undefined = node.parent;
+      while (parent && !ts.isArrowFunction(parent)) parent = parent.parent;
+      if (!parent || !ts.isArrowFunction(parent))
+        throw new Error('Missing page reconciliation callback');
+      callbacks.push(parent);
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(pageSource);
+  if (callbacks.length !== 4) throw new Error('Update Auto entry coverage after page refactor');
+  const entryNames = ['目录校准', '普通提交终检', '鉴权后终检', '目标模式终检'];
+  const entries = callbacks.map((callback, index) => {
+    const compiled = ts.transpileModule(
+      `async function run(bindings) {
+      let { effectiveDraft } = bindings;
+      const { modelRows, deviceProviders, rows, resolveRecentModelAndProvider,
+        modelNeedsReselection, assertSubmitModelResolved, reconcileEffortAfterFallback,
+        isCindyAutoModelId, buildMobileModelSections, flattenProviderSections } = bindings;
+      const guardSelected = () => ({ model: effectiveDraft.model, providerId: effectiveDraft.providerId });
+      const apply = ${callback.getText(pageSource)};
+      const result = await apply(bindings.argument);
+      return result ?? effectiveDraft;
+    }`,
+      { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
+    ).outputText;
+    return {
+      name: entryNames[index],
+      index,
+      run: new Function(`${compiled}; return run;`)() as (
+        bindings: Record<string, unknown>,
+      ) => Promise<{ model: string; providerId: string | null }>,
+    };
+  });
+  const auto = 'auto/group-1';
+  const provider = (id: string, source: 'builtin' | 'organization' | 'user', ids: string[]) =>
+    ({
+      id,
+      name: id,
+      source,
+      agents: ['pi'],
+      routing: { pi: {} },
+      connected: true,
+      models: {
+        pi: ids.map((model) => ({
+          id: model,
+          name: model,
+          displayName: model,
+          efforts: [],
+          defaultEffort: null,
+          contextWindow: 0,
+        })),
+      },
+    }) as unknown as ProviderModelRow['provider'];
+  const providers = [
+    provider('custom', 'user', [auto]),
+    provider('pool-new', 'organization', [auto]),
+    provider('pool-old', 'organization', []),
+    provider('xd', 'builtin', []),
+  ];
+  const rows: ProviderModelRow[] = providers.slice(0, 2).map((p) => ({
+    provider: p,
+    model: {
+      id: auto,
+      displayName: auto,
+      efforts: [],
+      defaultEffort: null,
+      contextWindow: 0,
+    },
+  }));
+  const fresh = { providers };
+  it.each(entries.flatMap((entry) => ['pool-old', null].map((from) => ({ ...entry, from }))))(
+    '$name：$from 搬到新号池，不采用排在前面的自定义来源',
+    async ({ index, run, from }) => {
+      const draft = {
+        ...DEFAULT_NEW_SESSION_DRAFT,
+        agentKind: 'pi',
+        model: auto,
+        providerId: from,
+        fastMode: false,
+      };
+      const guard = await resolveSubmitGuardCatalog({
+        cached: () => undefined,
+        gen: () => 0,
+        fetch: async () => fresh,
+        buildRows: () => rows,
+      });
+      const result = await run({
+        effectiveDraft: draft,
+        modelRows: rows,
+        rows,
+        deviceProviders: fresh,
+        argument: index === 0 ? draft : index === 2 ? fresh : guard,
+        resolveRecentModelAndProvider,
+        modelNeedsReselection,
+        isCindyAutoModelId,
+        buildMobileModelSections,
+        flattenProviderSections,
+        assertSubmitModelResolved,
+        reconcileEffortAfterFallback,
+      });
+      expect(result).toMatchObject({ model: auto, providerId: 'pool-new' });
+    },
+  );
 });

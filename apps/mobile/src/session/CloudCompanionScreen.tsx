@@ -23,6 +23,10 @@ import { useUserBubbleAppearance } from '@/theme/userBubblePreference';
 import { goBackGuarded } from '@/utils/backGuard';
 import { BOT_GROUP_MESSAGE_AVATAR_SIZE } from './BotGroupAvatars';
 import { BotGroupMarkdownText, BotGroupUserText } from './BotGroupMessageText';
+import { hasRichAnswer } from '@cindy/maker-shared/rich-answer';
+import { MarkdownBody } from './MessageRenderer';
+import { buildMessageContentLayout } from './messageContentLayout';
+import { useAdaptiveWindow } from '@/platform/AdaptiveWindowContext';
 import { CHAT_HEADER_MARK_SIZE, ChatIdentityHeader, ChatIdentitySubtitle } from './ChatIdentityHeader';
 import { CompanionCardActions, CompanionCardButton } from './CompanionCardButton';
 import { CompanionSettingsRow } from './CompanionSettingsRow';
@@ -51,6 +55,8 @@ export function CloudCompanionScreen({ actorId, botId, deviceId, deviceName, tit
 }) {
   const { t } = useTranslation();
   const { colors } = useTheme();
+  const { width } = useAdaptiveWindow();
+  const answerLayout = useMemo(() => buildMessageContentLayout({ screenWidth: width }), [width]);
   const styles = useThemedStyles(makeStyles);
   const router = useRouter();
   const { user } = useAuth();
@@ -210,7 +216,9 @@ export function CloudCompanionScreen({ actorId, botId, deviceId, deviceName, tit
         const continued = index > 0 && messages[index - 1]!.fromCompanion;
         return <View key={message.id} style={[styles.replyRow, continued && styles.replyRowContinued]} testID="cloudCompanion.message.companion">
           {continued ? <View style={styles.avatarSpacer} /> : <View style={styles.avatarSlot}>{avatar(BOT_GROUP_MESSAGE_AVATAR_SIZE)}</View>}
-          <View style={styles.replyColumn}><BotGroupMarkdownText content={message.text} /></View>
+          <View style={styles.replyColumn}>{hasRichAnswer(message.text)
+            ? <MarkdownBody renderRichAnswers markdownImageCacheKey={`cloud:${actorId}:${message.id}`} layout={answerLayout} text={message.text} selectable />
+            : <BotGroupMarkdownText content={message.text} />}</View>
         </View>;
       })}
     </ScrollView>;

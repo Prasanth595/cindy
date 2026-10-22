@@ -90,7 +90,7 @@ vi.mock('../runners/_shared', () => ({
 }));
 
 import { MakerScheduleRunner } from '../runner';
-import { applyScheduledModelSelection, resolveScheduledModelSelection } from '../../maker-ipc/scheduledModelSelection';
+import { applyScheduledModelSelection, createScheduledModelScope, resolveScheduledModelSelection } from '../../maker-ipc/scheduledModelSelection';
 import type { ProviderView } from '@cindy/model-providers';
 import type { Scheduler } from '@cindy/maker-scheduler';
 
@@ -112,6 +112,7 @@ function createSessionHarness(): FakeSessionHarness {
   const listeners: Array<(event: AgentEvent) => void> = [];
   const send = vi.fn<SendImpl>(async (_message, opts) => {
     await opts?.onAccepted?.();
+    opts?.onDispatching?.();
     return { accepted: true };
   });
   // setModel 声明 string 入参(签名与真实 Session.setModel 一致),下面 mockImplementation 才能
@@ -124,6 +125,8 @@ function createSessionHarness(): FakeSessionHarness {
     id: 'scheduler-session',
     agentKind: 'claude-code',
     model: 'claude-sonnet-4-6',
+    stablePermissionModeState: { mode: 'ask' },
+    stablePlanModeState: { enabled: false },
     remoteHostId: null,
     send,
     setModel,
@@ -246,6 +249,8 @@ function createRunnerHarness(
   opts: {
     sessionAlive?: boolean;
     acquirePendingAgentSwitch?: ConstructorParameters<typeof MakerScheduleRunner>[0]['acquirePendingAgentSwitch'];
+    prepareModelPreferences?: ConstructorParameters<typeof MakerScheduleRunner>[0]['prepareModelPreferences'];
+    onModelDispatched?: ConstructorParameters<typeof MakerScheduleRunner>[0]['onModelDispatched'];
     applyPiModelSelectionUnderLock?: ConstructorParameters<typeof MakerScheduleRunner>[0]['applyPiModelSelectionUnderLock'];
     resolveModelSelection?: ConstructorParameters<typeof MakerScheduleRunner>[0]['resolveModelSelection'];
     activeSessions?: Session[];
@@ -288,6 +293,8 @@ function createRunnerHarness(
     checkModelRoute: opts.checkModelRoute,
     ...(opts.isAgentOnOtherDevice ? { isAgentOnOtherDevice: opts.isAgentOnOtherDevice } : {}),
     acquirePendingAgentSwitch: opts.acquirePendingAgentSwitch,
+    prepareModelPreferences: opts.prepareModelPreferences,
+    onModelDispatched: opts.onModelDispatched,
     applyPiModelSelectionUnderLock: opts.applyPiModelSelectionUnderLock ?? (async (_id, targetModel, providerId) => {
       await h.session.setModel(targetModel, { providerId });
       return { status: 'applied' as const };
@@ -323,6 +330,74 @@ describe('MakerScheduleRunner model selection', () => {
     mocks.setSessionFastMode.mockReset();
     mocks.isSessionInTurn.mockReturnValue(false);
     mocks.getSessionRowSnapshot.mockResolvedValue({ status: 'active' });
+  });
+
+  // 2026-10-23 regression: completion restored the runtime and rebuilt a finished
+  // task's context. Unit tier: real runner success/failure must leave the native
+  // model untouched; the persisted owner preference is applied by the next send.
+  it.each([
+    ['legacy', 'success'], ['explicit', 'success'],
+    ['legacy', 'failure'], ['explicit', 'failure'],
+  ] as const)('keeps the native context after %s dispatch %s', async (route, outcome) => {
+    const h = createSessionHarness();
+    const original = h.session.model;
+    const release = vi.fn();
+    let baseline: string | null = null;
+    const restore = vi.fn(async (_id, profile) => {
+      await h.session.setModel(profile.model);
+    });
+    const scope = createScheduledModelScope({
+      createId: () => 'owner-scope',
+      read: async () => ({ baseline, profile: {
+        agentKind: 'claude-code', model: h.session.model, providerId: null,
+        effort: 'high', fastMode: false,
+      } }),
+      write: async (_id, saved) => { baseline = saved ? JSON.stringify(saved) : null; },
+      isBusy: () => false,
+      apply: restore,
+    });
+    const preserve = vi.fn(async () => { await scope.begin(h.session.id); });
+    const onModelDispatched = vi.fn(() => {
+      expect(h.session.model).toBe('claude-opus-4-8');
+    });
+    const harness = createRunnerHarness(h, {
+      agentKind: 'claude-code', model: original, effort: 'high', workDir: '/work',
+    }, {
+      sessionAlive: true,
+      prepareModelPreferences: preserve,
+      onModelDispatched,
+      acquirePendingAgentSwitch: async (_id, _signal, selection, scheduledModelOverride) => {
+        if (!selection) {
+          // Legacy model overrides must bypass owner restoration too.
+          expect(scheduledModelOverride).toBe(true);
+          return release;
+        }
+        await scope.begin(h.session.id);
+        await h.session.setModel(selection.model);
+        return { release, selection };
+      },
+    });
+    const schedule = baseSchedule({
+      targetSessionId: h.session.id, model: 'claude-opus-4-8',
+      ...(route === 'explicit' ? { modelAgentKind: 'claude-code' as const } : {}),
+    });
+    if (outcome === 'failure') {
+      h.send.mockRejectedValueOnce(new Error('dispatch failed'));
+      await expect(harness.runner.fire(schedule, createFireContext())).rejects.toThrow('Session send failed before dispatch');
+      expect(onModelDispatched).not.toHaveBeenCalled();
+    } else {
+      await fireToCompletion(harness, h, schedule);
+      expect(onModelDispatched).toHaveBeenCalledWith(h.session.id, expect.any(String));
+    }
+    expect(restore).not.toHaveBeenCalled();
+    expect(h.session.model).toBe('claude-opus-4-8');
+    expect(preserve).toHaveBeenCalledTimes(route === 'legacy' ? 1 : 0);
+    expect(JSON.parse(baseline!).model).toBe(original);
+    // Only the next ordinary send restores the user's route, including after
+    // an automation failed before dispatch. Completion itself cannot do it.
+    await scope.restore(h.session.id);
+    expect(h.session.model).toBe(original);
+    expect(baseline).toBeNull();
   });
 
   describe('resolved automation selection survives the full fire', () => {

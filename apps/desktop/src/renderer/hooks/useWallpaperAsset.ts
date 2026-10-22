@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { WallpaperId } from '@/../shared/appearanceSettings';
-import { isSceneWallpaper } from '@/lib/wallpaper';
+import { isCdnWallpaper } from '@/lib/wallpaper';
 import manifest from '@/../shared/wallpaper-video-manifest.json';
 
 type AssetState = {
@@ -14,12 +14,21 @@ type AssetState = {
 export function useWallpaperAsset(id: WallpaperId, kind: 'image' | 'video', enabled: boolean) {
   const key = `${id}:${kind}`;
   const [state, setState] = useState<AssetState | null>(null);
+  // Keep resolved URLs across selections. Only decoded images enter this cache;
+  // main remains responsible for durable files and validation on first use.
+  const readyUrls = useRef(new Map<string, string>());
   const [attempt, setAttempt] = useState(0);
   const retry = useCallback(() => setAttempt((value) => value + 1), []);
-  const active = enabled && isSceneWallpaper(id);
-  const entry = isSceneWallpaper(id) ? manifest[id] : null;
-  const total = entry ? (kind === 'image' ? entry.image.bytes : entry.bytes) : 0;
-  const url = state?.key === key ? state.url : null;
+  const entry = isCdnWallpaper(id) ? manifest[id] : null;
+  const videoBytes = entry && 'bytes' in entry && typeof entry.bytes === 'number' ? entry.bytes : 0;
+  const total = kind === 'image' ? (entry?.image.bytes ?? 0) : videoBytes;
+  const active = enabled && total > 0;
+  const url = readyUrls.current.get(key) ?? (state?.key === key ? state.url : null);
+  const failed = active && !url && state?.key === key && state.status === 'failed';
+  const bridge = window.electronAPI?.appearanceSettings;
+  const canEnsure = Boolean(
+    kind === 'image' ? bridge?.ensureWallpaperImage : bridge?.ensureWallpaperVideo,
+  );
 
   useEffect(() => {
     if (!active || url) return;
@@ -57,6 +66,7 @@ export function useWallpaperAsset(id: WallpaperId, kind: 'image' | 'video', enab
       }
       running = false;
       if (!current) return;
+      if (downloaded) readyUrls.current.set(key, downloaded);
       setState((previous) => ({
         key,
         url: downloaded,
@@ -83,8 +93,10 @@ export function useWallpaperAsset(id: WallpaperId, kind: 'image' | 'video', enab
 
   return {
     url,
-    loading: active && !url && state?.key === key && state.status === 'loading',
-    failed: active && state?.key === key && state.status === 'failed',
+    // Report pending on the selection's first render, before the effect starts,
+    // so the canvas cannot flash its thumbnail for a frame.
+    loading: active && !url && !failed && canEnsure,
+    failed,
     loaded: active ? (url ? total : state?.key === key ? state.loaded : 0) : 0,
     total: active ? total : 0,
     retry,

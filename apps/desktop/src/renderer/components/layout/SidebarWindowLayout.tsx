@@ -29,6 +29,7 @@ import { useTranslation } from 'react-i18next';
 import { PanelRight } from 'lucide-react';
 
 import { RightSidebarShell } from '@/features/right-sidebar/RightSidebarShell';
+import { DetachedBotMenuOwnerContext } from '@/features/right-sidebar/botMenuOwnerContext';
 import { ToastContainer } from '@/components/ui/toast';
 import { useDeviceLinkRemoteProjects } from '@/features/device-link/useDeviceLinkRemoteProjects';
 import { onRequestRightSidebarVisibility } from '@/features/right-sidebar/lib/sidebarCommands';
@@ -58,6 +59,7 @@ interface SidebarWindowContext {
   remoteHostId: string | null;
   deviceLinkDeviceId?: string | null;
   subagentsAvailable?: boolean;
+  botOwner?: { botId: string; canonical: boolean } | null;
   available: boolean;
 }
 
@@ -71,7 +73,7 @@ export function SidebarWindowLayout() {
   useEffect(() => {
     // 子窗口需要实时事件来维护面板内容，但认证失败后的凭证读取、会话重启与消息重发
     // 必须只由主 renderer 执行，避免多个 renderer 对同一远程任务并发重试。
-    makerChatStore.initGlobalListeners({ ownsRemoteAuthRetry: false });
+    makerChatStore.initGlobalListeners({ ownsRemoteAuthRetry: false, ownsRemoteListCache: false });
   }, []);
   const isMac = window.electronAPI?.platform === 'darwin';
   const [ctx, setCtx] = useState<SidebarWindowContext | null>(null);
@@ -316,15 +318,20 @@ export function SidebarWindowLayout() {
           时 Shell 自渲染空白,叠一层"跟随主窗口会话"占位文案;窗口不自动关
           (避免主窗路由抖动导致窗口闪没)。 */}
       <div className="relative flex flex-1 flex-col overflow-hidden">
-        <RightSidebarShell
-          sessionId={sessionId}
-          workdir={ctx?.workdir ?? ''}
-          remoteHostId={ctx?.remoteHostId ?? null}
-          deviceLinkDeviceId={ctx?.deviceLinkDeviceId}
-          subagentsAvailable={ctx?.subagentsAvailable}
-          shellVisible={windowVisible}
-          isMac={isMac}
-        />
+        <DetachedBotMenuOwnerContext.Provider value={sessionId && ctx?.botOwner
+          ? { sessionId, botId: ctx.botOwner.botId,
+              canonical: ctx.botOwner.canonical && !ctx.remoteHostId && !ctx.deviceLinkDeviceId }
+          : null}>
+          <RightSidebarShell
+            sessionId={sessionId}
+            workdir={ctx?.workdir ?? ''}
+            remoteHostId={ctx?.remoteHostId ?? null}
+            deviceLinkDeviceId={ctx?.deviceLinkDeviceId}
+            subagentsAvailable={ctx?.subagentsAvailable}
+            shellVisible={windowVisible}
+            isMac={isMac}
+          />
+        </DetachedBotMenuOwnerContext.Provider>
         {(!windowVisible || !sessionId) && (
           <div className="absolute inset-0 z-10 flex items-center justify-center bg-[var(--panel-bg)]">
             <span className="text-13 text-[var(--text-tertiary)]">

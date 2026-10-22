@@ -123,6 +123,15 @@ export function markAllPtyDetached(): void {
   for (const entry of pool.values()) entry.ptyAttached = false;
 }
 
+/**
+ * 单个页签在「侧边栏 ↔ 单页签独立窗口」间迁移时调用(弹出前 / 交回后各一次):
+ * 只复位这一个 entry 的 ptyAttached,其余终端页签不受影响。语义同 markAllPtyDetached。
+ */
+export function markPtyDetached(tabId: string): void {
+  const entry = pool.get(tabId);
+  if (entry) entry.ptyAttached = false;
+}
+
 /** 仅供 plugin.onBeforeClose 调用：真正销毁实例 + 释放 GPU/DOM 资源。 */
 export function disposeXterm(tabId: string): void {
   const entry = pool.get(tabId);

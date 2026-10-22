@@ -1,16 +1,105 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import ts from 'typescript';
 import { i18n } from '@/i18n';
 import { startBoundedStartupRead } from '@/session/mobileHomeStartup';
-import { resolveConnectionBannerSyncActionVisibility, resolveHomeConnectionFeedback } from '@/components/connectionBannerVisibility';
-import { describeRemoteError } from '@/device-link/remoteStatus';
+import { resolveConnectionBannerSyncActionVisibility, resolveConnectionBannerVisibility, resolveHomeConnectionFeedback } from '@/components/connectionBannerVisibility';
+import { connectionHealthCopy, describeRemoteError } from '@/device-link/remoteStatus';
+import { isTaskSuggestionsSyncPending } from '@/session/useRemoteTaskSuggestionsPresentation';
 
 function readSource(relativePath: string): string {
   return readFileSync(resolve(process.cwd(), relativePath), 'utf8').replace(/\r\n/g, '\n');
 }
 
+// Exercise Home's actual feedback expressions: literal-source assertions missed
+// phone-wide outages and broke when the same shared policy gained that input.
+const homeSource = ts.createSourceFile('HomeSurface.tsx', readSource('src/session/HomeSurface.tsx'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+const feedbackExpressions = new Map<string, string>();
+const feedbackNames = new Set(['homeListScopePending', 'initialHomeLoading', 'initialHomeError', 'healthCopy', 'showConnectionRow', 'showHomeSyncAction', 'showHomeRecoveryProgress', 'connectionTitle']);
+let listScopeEffect = '';
+function collectFeedback(node: ts.Node) {
+  if (ts.isExpressionStatement(node) && ts.isCallExpression(node.expression)
+    && node.expression.expression.getText(homeSource) === 'useLayoutEffect'
+    && node.expression.arguments[0]?.getText(homeSource).includes('homeListFilterRef.current === requestedListFilter')) {
+    listScopeEffect = ts.transpileModule(node.getText(homeSource), {
+      compilerOptions: { target: ts.ScriptTarget.ES2022 },
+    }).outputText;
+  }
+  if (ts.isVariableDeclaration(node) && feedbackNames.has(node.name.getText(homeSource)) && node.initializer) {
+    feedbackExpressions.set(node.name.getText(homeSource), ts.transpileModule(`const result = ${node.initializer.getText(homeSource)};`, {
+      compilerOptions: { target: ts.ScriptTarget.ES2022 },
+    }).outputText);
+  }
+  ts.forEachChild(node, collectFeedback);
+}
+collectFeedback(homeSource);
+function homeFeedback(overrides: Record<string, unknown>) {
+  const bindings: Record<string, unknown> = {
+    network: 'available', networkUnavailable: false, status: 'online',
+    selectedDeviceDisconnected: false, activeConnectionIssue: null,
+    homeDeviceRecovery: false, homeDeviceUnresponsive: false, connectionError: null,
+    initialHomeSettled: true, homeListFilterChanged: false, indexedSearch: { status: 'idle' },
+    homeSyncDeviceIds: ['mac'], homeListOwnedDeviceIdsRef: { current: new Set(['mac']) },
+    rawDeviceConnectionStates: { mac: 'idle' }, isTaskSuggestionsSyncPending,
+    resolveConnectionBannerSyncActionVisibility, resolveConnectionBannerVisibility, connectionHealthCopy,
+    t: (key: string) => i18n.t(key), homeConnectionTitle: () => 'online', ...overrides,
+  };
+  for (const name of feedbackNames) {
+    const expression = feedbackExpressions.get(name);
+    if (!expression) throw new Error(`Missing Home feedback: ${name}`);
+    bindings[name] = new Function(...Object.keys(bindings), `${expression}\nreturn result;`)(...Object.values(bindings));
+  }
+  return bindings;
+}
+
 describe('mobile Home connection feedback', () => {
+  // PR #6381: an error from A masked B's loading state. Existing feedback tests
+  // never changed the selection after an error. Unit: run the production layout
+  // effect with React's dependency comparison, before deriving the next frame.
+  it('retires the previous computer error before painting a new selection', () => {
+    let previousDeps: unknown[] = [];
+    let error: string | null = null;
+    const bindings = {
+      useLayoutEffect: (effect: () => void, deps: unknown[]) => {
+        if (deps.some((value, index) => value !== previousDeps[index])) effect();
+        previousDeps = deps;
+      },
+      setError: (value: string | null) => { error = value; },
+      homeListFilterRef: { current: 'active' }, requestedListFilter: 'active',
+      selectedDeviceId: 'a', advanceHomeSyncGeneration: () => undefined,
+    };
+    const render = () => new Function(...Object.keys(bindings), listScopeEffect)(...Object.values(bindings));
+    render();
+    error = 'A failed';
+    render();
+    expect(error).toBe('A failed');
+    bindings.selectedDeviceId = 'b';
+    render();
+    expect(homeFeedback({
+      connectionError: error, homeListOwnedDeviceIdsRef: { current: new Set() },
+    })).toMatchObject({ initialHomeLoading: true, initialHomeError: false });
+  });
+
+  // Unit regression for the reported active/archive flash: run Home's actual
+  // presentation expressions after startup has already settled. Existing tests
+  // only exercised connection banners and never a new list scope or search.
+  it.each([
+    { homeListFilterChanged: true },
+    { homeListOwnedDeviceIdsRef: { current: new Set() } },
+    { rawDeviceConnectionStates: { mac: 'syncing' } },
+    { indexedSearch: { status: 'searching' } },
+  ])('keeps an empty list loading during %o after the first sync', (state) => {
+    expect(homeFeedback(state).initialHomeLoading).toBe(true);
+  });
+
+  it('shows a failed reload as an error instead of a successful empty result', () => {
+    expect(homeFeedback({ connectionError: 'failed' })).toMatchObject({
+      initialHomeLoading: false, initialHomeError: true,
+    });
+    expect(homeFeedback({})).toMatchObject({ initialHomeLoading: false, initialHomeError: false });
+  });
+
   it('does not offer manual sync for the device-prefixed unresponsive error shown on Home', () => {
     expect(resolveConnectionBannerSyncActionVisibility({
       online: true,
@@ -25,10 +114,20 @@ describe('mobile Home connection feedback', () => {
     const source = readSource('src/session/HomeSurface.tsx');
     expect(source).toContain('resolveHomeConnectionFeedback(error, homeRecoveringDeviceIds, describeRemoteError)');
     expect(source).toContain('deviceUnresponsive: homeDeviceRecovery,');
-    expect(source).toContain('const showHomeSyncAction = resolveConnectionBannerSyncActionVisibility(');
-    expect(source).toContain('const showConnectionRow = selectedDeviceDisconnected || resolveConnectionBannerVisibility(');
     expect(source).toContain('deviceUnresponsive: homeDeviceUnresponsive,');
-    expect(source).toContain("homeDeviceRecovery ? t(homeDeviceUnresponsive ? 'deviceLink.deviceUnresponsiveTitle' : 'deviceLink.recovery.syncing')");
+    expect(homeFeedback({})).toMatchObject({ showConnectionRow: false, showHomeSyncAction: false });
+    expect(homeFeedback({ selectedDeviceDisconnected: true })).toMatchObject({
+      showConnectionRow: true, connectionTitle: i18n.t('deviceLink.cachedHistory.title'),
+    });
+    expect(homeFeedback({ homeDeviceRecovery: true, homeDeviceUnresponsive: true })).toMatchObject({
+      showConnectionRow: true, showHomeSyncAction: false, showHomeRecoveryProgress: true,
+      connectionTitle: i18n.t('deviceLink.deviceUnresponsiveTitle'),
+    });
+    expect(homeFeedback({ connectionError: 'failed' })).toMatchObject({ showConnectionRow: true, showHomeSyncAction: true });
+    expect(homeFeedback({ network: 'unavailable', networkUnavailable: true, connectionError: 'failed' })).toMatchObject({
+      showConnectionRow: true, showHomeSyncAction: false, showHomeRecoveryProgress: false,
+      connectionTitle: i18n.t('deviceLink.localNetwork.title'),
+    });
     expect(source).toContain("recoveringDeviceIds.has(id) || rawDeviceConnectionStates[id] === 'syncing'");
     const hydrate = source.slice(source.indexOf('const hydrateDeviceSessions = useCallback('), source.indexOf('const probeRevokedDeviceAccess'));
     expect(hydrate.indexOf("updateDeviceConnectionState(device.deviceId, 'syncing')")).toBeLessThan(hydrate.indexOf('const promise = hydrateDeviceSessionsOnce('));
@@ -520,9 +619,7 @@ describe('mobile home desktop-first surface', () => {
     expect(source).toContain("updateDeviceConnectionState(device.deviceId, 'syncing');");
     expect(source).toContain("updateDeviceConnectionState(device.deviceId, 'failed');");
     expect(source).toContain("updateDeviceConnectionState(device.deviceId, 'idle');");
-    expect(source).toContain(
-      'const showConnectionRow = selectedDeviceDisconnected || resolveConnectionBannerVisibility(',
-    );
+    // Row visibility is exercised through Home's actual expressions above.
     expect(source).toContain('homeSyncDeviceIds.filter((id) => unresponsiveDevices.has(id)');
     expect(source).toContain('function DeviceMenuItem');
     expect(source).not.toContain('function DeviceConnectionSpinner');
@@ -752,8 +849,12 @@ describe('mobile home desktop-first surface', () => {
     const source = readSource('src/session/HomeSurface.tsx');
 
     expect(source).toContain('const initialHomeSettled = deviceIdentityCacheReady && lastSyncedAt !== null;');
-    expect(source).toContain('const initialHomeLoading = !initialHomeSettled && !connectionError;');
-    expect(source).toContain('const initialHomeError = !initialHomeSettled && !!connectionError;');
+    expect(homeFeedback({ initialHomeSettled: false })).toMatchObject({
+      initialHomeLoading: true, initialHomeError: false,
+    });
+    expect(homeFeedback({ initialHomeSettled: false, connectionError: 'failed' })).toMatchObject({
+      initialHomeLoading: false, initialHomeError: true,
+    });
     expect(source).toContain('const hasOpenableLiveDevice = deviceModels.some((item) => item.canOpen);');
     // 首次 loadHome 落地前(含失败态)FAB 只认 live 设备:首页列表缓存画出的会话会合成出
     // 「可用」的 primaryDevice,但缓存设备不能当 live 设备开新会话(settle 后回归 primaryDevice 语义)。

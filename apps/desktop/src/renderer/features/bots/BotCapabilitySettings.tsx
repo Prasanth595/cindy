@@ -151,13 +151,19 @@ export function BotCapabilitySettings({
         if (!isCurrent()) return;
         const [personalResult, skillResult, toolsetResult] = results;
         const next: Partial<Record<Kind, Entry[]>> = {};
-        if (skillResult.status === 'fulfilled' && skillResult.value.success)
-          next.skill = (skillResult.value.skills ?? []).map((item) => ({
+        if (skillResult.status === 'fulfilled' && skillResult.value.success) {
+          // Match resolveBotSkillReferences: the last entry for a name wins.
+          // Map retains first-seen display order without changing discovery data.
+          const skillsByName = new Map(
+            (skillResult.value.skills ?? []).map((item) => [item.name, item]),
+          );
+          next.skill = [...skillsByName.values()].map((item) => ({
             id: item.name,
             name: item.name,
             description: item.description,
             available: item.enabled !== false && item.runtimeStatus !== 'failed',
           }));
+        }
         if (personalResult.status === 'fulfilled') next.skill = [
           ...personalResult.value.map(item => ({ id: `personal:${item.slug}`, name: item.name, available: item.enabled !== false, personal: true })),
           ...(next.skill ?? []),

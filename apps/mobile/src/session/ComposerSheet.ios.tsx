@@ -49,6 +49,7 @@ export function ComposerSheet({
   onClosed,
   title,
   onBack,
+  backDisabled = false,
   backLabel,
   children,
   aboveContent,
@@ -100,7 +101,7 @@ export function ComposerSheet({
               ]}
             >
               {onBack ? (
-                <Button onPress={onBack} modifiers={[buttonStyle("plain"), accessibilityLabel(backLabel ?? t("interaction.contextSheet.backAccessibility"))]}>
+                <Button onPress={onBack} modifiers={[buttonStyle("plain"), disabled(backDisabled), accessibilityLabel(backLabel ?? t("interaction.contextSheet.backAccessibility"))]}>
                   <Image size={iconSize.lg} systemName="chevron.left" modifiers={[frame({ width: 44, height: 44 }), contentShape(shapes.rectangle())]} />
                 </Button>
               ) : null}
