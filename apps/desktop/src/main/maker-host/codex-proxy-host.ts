@@ -340,9 +340,12 @@ export function armCodexHttpRecovery(args: {
     disconnectedWebSockets += handle.disconnectWebSocketsForThread?.(threadId) ?? 0;
     provenScopedWebSocket ||= handle.hasProvenWebSocketForThread?.(threadId) === true;
   }
-  const scopedHttpRecovery = args.httpOnly === true && reason === 'encrypted_content'
+  // Use the same live hosted-owner policy as resolveWebSocketUpstream: native
+  // WS support does not imply a WS transport when the proxy rejects upgrades.
+  const httpOnly = args.httpOnly === true || hasHostedSessionModelAccess(sessionId);
+  const scopedHttpRecovery = httpOnly && reason === 'encrypted_content'
     && Boolean(sessionId) && existingSessionId === sessionId;
-  // API-only threads never attempt a WS handshake. A 200 SSE error therefore
+  // API-only and proxy-forced HTTP threads have no scoped WS proof. A 200 SSE error
   // needs the same one-shot body repair, with no socket teardown or global fallback.
   if (disconnectedWebSockets === 0 && !provenScopedWebSocket && !scopedHttpRecovery) {
     httpRecoveryReasonByThread.delete(threadId);

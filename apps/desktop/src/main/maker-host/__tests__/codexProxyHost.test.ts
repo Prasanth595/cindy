@@ -2809,6 +2809,14 @@ describe('codex proxy host', () => {
       const resolve = mockState.createAnthropicCompatProxy.mock.calls[0][0].resolveWebSocketUpstream;
       expect(resolve({ headers: { 'thread-id': 'remote-thread' } })).toBeNull();
       expect(resolve({ headers: { 'thread-id': 'local-thread' } })).toBe('https://chatgpt.com/backend-api/codex');
+      // #6717 review 4349611761: native WS support can remain enabled while
+      // this proxy forces hosted-owner traffic to HTTP before any WS proof.
+      const recovery = { message: 'invalid_encrypted_content', httpOnly: false };
+      host.registerComposed('local-owner', 'local-thread', 'prompt');
+      expect(host.armCodexHttpRecovery({ ...recovery, sessionId: 'local-owner', threadId: 'local-thread' })).toBeNull();
+      expect(host.armCodexHttpRecovery({ ...recovery, sessionId: 'local-owner', threadId: 'remote-thread' })).toBeNull();
+      expect(host.armCodexHttpRecovery({ ...recovery, sessionId: 'remote-owner', threadId: 'remote-thread' })).toBe('encrypted_content');
+      expect(resolve({ headers: { 'thread-id': 'local-thread' } })).toBe('https://chatgpt.com/backend-api/codex');
     } finally { binding.release(); }
   });
 
