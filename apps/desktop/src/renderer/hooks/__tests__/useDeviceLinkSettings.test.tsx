@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, renderHook } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { useDeviceLinkSettings } from '../useDeviceLinkSettings';
@@ -116,6 +116,42 @@ describe('useDeviceLinkSettings deletion', () => {
       expect(effects.removeDevice).not.toHaveBeenCalled();
       expect(effects.error).toHaveBeenCalledWith('settings.devices.toast.deleteFailed');
     }
+    unmount();
+  });
+
+  // 服务端以「在线」拒绝删除(409 → ALREADY_EXISTS)时，提示要跟列表里看到的状态一致：
+  // 列表显示离线的设备不能再提示「尚不支持移除在线设备」，并要刷新列表与服务端对齐。
+  it.each([
+    [false, 'settings.devices.toast.deleteRejectedWhileOffline'],
+    [true, 'settings.devices.toast.deleteOnline'],
+  ] as const)('explains an online rejection by the listed presence (listed online: %s)', async (online, message) => {
+    const off = vi.fn();
+    const subscribe = vi.fn(() => off);
+    const api = {
+      getState: vi.fn(() => new Promise<never>(() => {})),
+      listDevices: vi.fn(async () => ({
+        devices: [{ deviceId: 'target', name: 'MacBook', platform: 'darwin', appVersion: null, lastSeenAt: null,
+          online, busy: false, remoteControlEnabled: false, controlEnabled: true, isSelf: false }],
+      })),
+      deleteDevice: vi.fn().mockRejectedValue(new Error('[ALREADY_EXISTS] device is online')),
+      onOwnershipChanged: subscribe,
+      onPresenceChanged: subscribe,
+      onStatusChanged: subscribe,
+      onConnectionIssue: subscribe,
+      onControlledState: subscribe,
+      onControlTargetChanged: subscribe,
+    };
+    (window as unknown as { electronAPI: { deviceLink: typeof api } }).electronAPI = { deviceLink: api };
+    const { result, unmount } = renderHook(() => useDeviceLinkSettings());
+    await waitFor(() => expect(result.current.devices).toHaveLength(1));
+
+    let deleted = true;
+    await act(async () => { deleted = await result.current.remove('target'); });
+
+    expect(deleted).toBe(false);
+    expect(effects.error).toHaveBeenCalledWith(message);
+    expect(effects.removeDevice).not.toHaveBeenCalled();
+    expect(api.listDevices).toHaveBeenCalledTimes(2);
     unmount();
   });
 });

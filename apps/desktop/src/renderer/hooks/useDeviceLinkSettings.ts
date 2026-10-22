@@ -244,15 +244,26 @@ export function useDeviceLinkSettings(active = true): DeviceLinkSettings {
       } catch (err) {
         log.warn('deleteDevice failed', err);
         const ipcErr = extractIpcError(err);
+        if (ipcErr?.code !== 'ALREADY_EXISTS') {
+          toast.error(t('settings.devices.toast.deleteFailed'));
+          return false;
+        }
+        // 服务端以「设备在线」拒绝删除。列表里这台设备若显示离线，说明两边的在线判断不一致，
+        // 不能再提示「尚不支持移除在线设备」让用户误以为设备真在线；同时刷新列表与服务端对齐。
+        const listedOffline =
+          devices?.some((device) => device.deviceId === deviceId && !device.online) ?? false;
         toast.error(
-          ipcErr?.code === 'ALREADY_EXISTS'
-            ? t('settings.devices.toast.deleteOnline')
-            : t('settings.devices.toast.deleteFailed'),
+          t(
+            listedOffline
+              ? 'settings.devices.toast.deleteRejectedWhileOffline'
+              : 'settings.devices.toast.deleteOnline',
+          ),
         );
+        void refresh();
         return false;
       }
     },
-    [refresh, t],
+    [devices, refresh, t],
   );
 
   const disconnectAll = useCallback(async () => {
