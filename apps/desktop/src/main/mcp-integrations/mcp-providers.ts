@@ -86,6 +86,7 @@ import {
 import {
   captureBotCreatedTaskResponsibility,
   runBotWorkbenchTool,
+  runBotProjectsTool,
   type BotWorkbenchHostDeps,
 } from '../maker-ipc/botWorkbenchTools.js';
 import { createTaskDigestReader } from './taskDigest.js';
@@ -1114,6 +1115,7 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
       // 授权在 botWorkbenchAccess 里逐次确定性校验;投递复用 send_to_session 的同一条宿主路径。
       // 停止走通用的 stop_session_turn。
       botWorkbench: {
+        projects: runBotProjectsTool,
         todos: async (caller, operation, input) => {
           try {
             const access = await todoForCaller(caller, () => getTaskActionInputState(caller).ownerInput);

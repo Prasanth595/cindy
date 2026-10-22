@@ -20,6 +20,18 @@ import { z } from 'zod';
 
 import { ExtractSpecSchema } from './extract.js';
 
+/** Cheap page identity check, evaluated before a step (no model call). */
+const RecipeGuardSchema = z.object({
+  url: z.string().min(1),
+  selector: z.string().optional(),
+  text: z.string().optional(),
+});
+const RecipeExpectationSchema = z.object({
+  minCount: z.number().int().positive().optional(),
+  requiredFields: z.array(z.string().min(1)).optional(),
+  equals: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(),
+}).refine((v) => v.minCount !== undefined || Boolean(v.requiredFields?.length) || Boolean(Object.keys(v.equals ?? {}).length), 'expect must contain a result check');
+
 /** A single declarative step. `action` maps to a browser primitive (see runner). */
 export const RecipeStepSchema = z.object({
   action: z.enum([
@@ -56,7 +68,10 @@ export const RecipeStepSchema = z.object({
   as: z.string().optional(),
   /** If true, a failed step is logged but does not abort the recipe. */
   optional: z.boolean().optional(),
-});
+  guard: RecipeGuardSchema.optional(),
+  expect: RecipeExpectationSchema.optional(),
+}).refine((s) => !s.expect || s.action === 'extract' || s.action === 'evaluate', 'expect is only supported for extract/evaluate')
+  .refine((s) => !s.optional || (!s.guard && !s.expect), 'validation steps cannot be optional');
 
 export const RecipeSchema = z.object({
   id: z.string().min(1),
@@ -67,6 +82,11 @@ export const RecipeSchema = z.object({
   steps: z.array(RecipeStepSchema).min(1),
   /** Output template, e.g. "{{results}}". A bare single-var ref returns that var verbatim. */
   output: z.string().optional(),
+  /** Host-owned state; authored drafts cannot supply this. Legacy files remain runnable. */
+  validation: z.object({
+    site: z.string(),
+    state: z.enum(['active', 'suspended']),
+  }).optional(),
 });
 
 export type Recipe = z.infer<typeof RecipeSchema>;

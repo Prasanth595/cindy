@@ -4461,19 +4461,20 @@ let pendingAgentSwitchApplyHolder:
     signal?: AbortSignal,
     selection?: ScheduledModelSelection,
     beforeApply?: () => Promise<boolean | void>,
-  ) => Promise<{ release: () => void; selection?: ScheduledModelSelection; restore?: () => Promise<void> }>) | null = null;
+    scheduledModelOverride?: boolean,
+  ) => Promise<{ release: () => void; selection?: ScheduledModelSelection }>) | null = null;
 let cancelPendingAgentSwitchHolder: ((sessionId: string) => void) | null = null;
-let preserveScheduledModelPreferencesHolder: ((sessionId: string) => Promise<() => Promise<void>>) | null = null;
+let prepareScheduledModelPreferencesHolder: ((sessionId: string, override: boolean) => Promise<void>) | null = null;
 let recordDispatchedModelHolder: ((sessionId: string, clientId: string) => void) | null = null;
 
 export function recordDispatchedModel(sessionId: string, clientId: string): void {
   recordDispatchedModelHolder?.(sessionId, clientId);
 }
 
-/** Scheduler caller already owns the send lock; cleanup reacquires it after the run. */
-export async function preserveScheduledModelPreferencesUnderLock(sessionId: string) {
-  if (!preserveScheduledModelPreferencesHolder) throw new Error('Scheduled model selection is not initialized');
-  return preserveScheduledModelPreferencesHolder(sessionId);
+/** Send boundary: preserve an override's owner choice, or apply that choice for a following run. */
+export async function prepareScheduledModelPreferencesUnderLock(sessionId: string, override: boolean) {
+  if (!prepareScheduledModelPreferencesHolder) throw new Error('Scheduled model selection is not initialized');
+  return prepareScheduledModelPreferencesHolder(sessionId, override);
 }
 
 /** 会话级完整路由选择(引擎 + 模型 + 来源 + 档位 + Fast)。 */
@@ -4763,24 +4764,28 @@ export function clearWorkingDirectoryRecoveryForOwnerBoundary(): void {
  * intent,返回 no-op release 即可。
  */
 export function acquirePendingAgentSwitchForDirectSend(
-  sessionId: string, signal?: AbortSignal,
+  sessionId: string, signal?: AbortSignal, selection?: undefined, scheduledModelOverride?: boolean,
 ): Promise<() => void>;
 export function acquirePendingAgentSwitchForDirectSend(
   sessionId: string, signal: AbortSignal | undefined, selection: ScheduledModelSelection,
 ): Promise<ScheduledModelSelectionLease>;
+export function acquirePendingAgentSwitchForDirectSend(
+  sessionId: string, signal?: AbortSignal, selection?: ScheduledModelSelection, scheduledModelOverride?: boolean,
+): Promise<(() => void) | ScheduledModelSelectionLease>;
 export async function acquirePendingAgentSwitchForDirectSend(
   sessionId: string,
   signal?: AbortSignal,
   selection?: ScheduledModelSelection,
+  scheduledModelOverride?: boolean,
 ): Promise<(() => void) | ScheduledModelSelectionLease> {
   if (selection && !pendingAgentSwitchApplyHolder) throw new Error('Scheduled model selection is not initialized');
-  const lease = await pendingAgentSwitchApplyHolder?.(sessionId, signal, selection);
+  const lease = await pendingAgentSwitchApplyHolder?.(sessionId, signal, selection, undefined, scheduledModelOverride);
   if (!selection) return lease?.release ?? (() => {});
   if (!lease?.selection) {
     lease?.release();
     throw new Error('Scheduled model selection was not resolved');
   }
-  return { release: lease.release, selection: lease.selection, restore: lease.restore };
+  return { release: lease.release, selection: lease.selection };
 }
 
 /** 直发路径在 createSession / 重读 live session 之前关掉不健康原生会话。 */
@@ -11004,18 +11009,18 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     await updateScheduledPreference(sessionId, patch);
     return true;
   };
-  preserveScheduledModelPreferencesHolder = async (sessionId) => {
-    const scopeId = await scheduledModelScope.begin(sessionId);
-    return scopeId
-      ? () => withSendToSessionLock(sessionId, () => scheduledModelScope.restore(sessionId, scopeId))
-      : async () => {};
+  prepareScheduledModelPreferencesHolder = async (sessionId, override) => {
+    if (override) await scheduledModelScope.begin(sessionId);
+    else await scheduledModelScope.restore(sessionId);
   };
-  pendingAgentSwitchApplyHolder = async (sessionId, signal, selection, beforeApply) => {
+  pendingAgentSwitchApplyHolder = async (sessionId, signal, selection, beforeApply, scheduledModelOverride) => {
     let stage = 'direct-send:acquire';
     let deferPendingApply = false;
     const release = await acquireSendToSessionLock(sessionId, undefined, () => stage);
     try {
-      await scheduledModelScope.restore(sessionId);
+      // An automation with a model override goes straight to its own route. Restoring
+      // the owner first could destructively shrink history that this send can use.
+      if (!selection && !scheduledModelOverride) await scheduledModelScope.restore(sessionId);
       // Read after acquisition: a picker can have been queued ahead of this
       // send. Restore under this same lease through dispatch, without re-taking it.
       const pendingSelection = agentSwitchPending.get(sessionId);
@@ -11041,20 +11046,16 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         });
       }
       let resolvedSelection: ScheduledModelSelection | undefined;
-      let scheduledScopeId: string | undefined;
       if (selection) {
         stage = 'direct-send:applyScheduledModelSelection';
-        scheduledScopeId = await scheduledModelScope.begin(sessionId);
+        await scheduledModelScope.begin(sessionId);
         resolvedSelection = await applyScheduledProfile(sessionId, selection, signal);
       }
       stage = 'direct-send:prepareUnhealthySession';
       await contextOverflowRolloverHolder?.prepareUnhealthySession(sessionId);
       // The caller retains the lease through runtime refresh and Session.send.
       stage = 'direct-send:caller-dispatch';
-      return { release, selection: resolvedSelection,
-        ...(scheduledScopeId ? { restore: () => withSendToSessionLock(sessionId,
-          () => scheduledModelScope.restore(sessionId, scheduledScopeId)) } : {}),
-      };
+      return { release, selection: resolvedSelection };
     } catch (err) {
       release();
       throw err;

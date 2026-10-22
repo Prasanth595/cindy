@@ -285,8 +285,9 @@ export interface MakerScheduleRunnerDeps {
     sessionId: string,
     signal?: AbortSignal,
     selection?: ScheduledModelSelection,
+    scheduledModelOverride?: boolean,
   ) => Promise<(() => void) | ScheduledModelSelectionLease>;
-  preserveModelPreferences?: (sessionId: string) => Promise<() => Promise<void>>;
+  prepareModelPreferences?: (sessionId: string, override: boolean) => Promise<void>;
   onModelDispatched?: (sessionId: string, clientId: string) => void;
   /** Resolve the same provider-specific snapshot for fresh explicit choices. */
   resolveModelSelection?: (selection: ScheduledModelSelection) => Promise<ScheduledModelSelection>;
@@ -752,12 +753,8 @@ export class MakerScheduleRunner implements ScheduleRunner {
       closeQuietOutput?.();
       holder.releaseAgentSwitchLock?.();
       holder.releaseAgentSwitchLock = undefined;
-      try {
-        await holder.restoreModelPreferences?.();
-      } catch (error) {
-        // The durable baseline remains authoritative; the next input retries before sending.
-        this.deps.logger.warn?.('[runner] scheduled model restoration deferred', error);
-      }
+      // Owner preferences already project from the durable baseline. Leave the
+      // native context intact until an actual next send chooses its target model.
       await this.clearSchedulerRunContext(holder);
       holder.headlessGhostSetupTurn?.close();
       if (
@@ -967,9 +964,10 @@ export class MakerScheduleRunner implements ScheduleRunner {
       try {
         const lease = await (selection
           ? this.deps.acquirePendingAgentSwitch?.(sessionId, ctx.signal, selection)
+          : schedule.model?.trim()
+          ? this.deps.acquirePendingAgentSwitch?.(sessionId, ctx.signal, undefined, true)
           : this.deps.acquirePendingAgentSwitch?.(sessionId, ctx.signal));
         holder.releaseAgentSwitchLock = typeof lease === 'function' ? lease : lease?.release;
-        if (typeof lease !== 'function') holder.restoreModelPreferences = lease?.restore;
         if (selection) {
           if (!lease || typeof lease === 'function')
             throw new Error('Scheduled model selection was not resolved');
@@ -1094,8 +1092,8 @@ export class MakerScheduleRunner implements ScheduleRunner {
             providerId: row?.providerId ?? null,
           });
         }
-        if (!holder.restoreModelPreferences && hasScheduledModelOverride(schedule)) {
-          holder.restoreModelPreferences = await this.deps.preserveModelPreferences?.(sessionId);
+        if (!resolvedSelection && hasScheduledModelOverride(schedule)) {
+          await this.deps.prepareModelPreferences?.(sessionId, true);
         }
         resumeSessionId = meta?.sdkSessionId;
         heartbeatWorkingDir = meta?.workDir;
@@ -2466,8 +2464,19 @@ export class MakerScheduleRunner implements ScheduleRunner {
           : schedule.prompt,
       origin,
       onPreparing: async () => {
-        if (schedule.targetSessionId && hasScheduledModelOverride(schedule) && this.deps.preserveModelPreferences) {
-          holder.restoreModelPreferences = await this.deps.preserveModelPreferences?.(sessionId);
+        if (schedule.targetSessionId && this.deps.prepareModelPreferences) {
+          const override = hasScheduledModelOverride(schedule);
+          await this.deps.prepareModelPreferences(sessionId, override);
+          if (!override) {
+            // The previous automation can have left its native route in place
+            // while this item waited. Use the restored owner route at dispatch.
+            const meta = await this.deps.maker.getSessionMeta(sessionId);
+            routingBaseline = {
+              ...routingBaseline, model: meta?.model, agentKind: meta?.agentKind,
+              effort: meta?.effort, fastMode: meta?.fastMode,
+              providerId: getSessionProvider(sessionId) ?? null,
+            };
+          }
         }
         const preparingLive = this.deps.maker.getSession(sessionId);
         if ((preparingLive?.agentKind ?? routingBaseline.agentKind ?? schedule.agentKind) !== 'pi') return;
@@ -3841,7 +3850,6 @@ interface EphemeralSessionHolder {
   keepAlive?: boolean;
   /** heartbeat direct-send route lock; released immediately after Session.send settles. */
   releaseAgentSwitchLock?: () => void;
-  restoreModelPreferences?: () => Promise<void>;
   /** unique ownership generation for the session-level scheduler run context. */
   schedulerRunContextOwner?: SchedulerRunContextOwner;
 }

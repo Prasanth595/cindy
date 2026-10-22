@@ -414,6 +414,7 @@ function createRunnerHarness(
     /** 停用轴裁决桩(缺省 = 不裁决,与生产未接线时一致)。 */
     checkModelRoute?: MakerScheduleRunnerDeps['checkModelRoute'];
     acquirePendingAgentSwitch?: MakerScheduleRunnerDeps['acquirePendingAgentSwitch'];
+    prepareModelPreferences?: MakerScheduleRunnerDeps['prepareModelPreferences'];
     resolveModelSelection?: MakerScheduleRunnerDeps['resolveModelSelection'];
     applyPiModelSelectionUnderLock?: MakerScheduleRunnerDeps['applyPiModelSelectionUnderLock'];
   } = {},
@@ -453,6 +454,7 @@ function createRunnerHarness(
     schedulerQueue,
     checkModelRoute: opts.checkModelRoute,
     acquirePendingAgentSwitch: opts.acquirePendingAgentSwitch,
+    prepareModelPreferences: opts.prepareModelPreferences,
     applyPiModelSelectionUnderLock: opts.applyPiModelSelectionUnderLock ?? (async (_id, model, providerId) => {
       await liveSession.setModel(model, { providerId });
       mocks.getSessionProvider.mockReturnValue(providerId);
@@ -495,6 +497,37 @@ beforeEach(() => {
 });
 
 describe('MakerScheduleRunner queued dispatch (busy bound session)', () => {
+  // 2026-10-23 regression, unit tier: a follow-owner run queued behind an
+  // override must refresh its route at dispatch, not keep the enqueue-time
+  // automation model. Earlier queue cases had no deferred owner preference.
+  it('uses the restored owner route when a queued run follows the task model', async () => {
+    const h = createSessionHarness(async () => ({ accepted: true }));
+    const queue = createQueueHarness({ busy: true });
+    Object.assign(h.session, { model: 'automatic-model' });
+    const checkModelRoute = vi.fn<NonNullable<MakerScheduleRunnerDeps['checkModelRoute']>>(
+      async () => ({ kind: 'pass' }),
+    );
+    const opts = {
+      metaModel: 'automatic-model', checkModelRoute,
+      prepareModelPreferences: vi.fn(async (_id: string, override: boolean) => {
+        expect(override).toBe(false);
+        opts.metaModel = 'owner-model';
+        Object.assign(h.session, { model: 'owner-model' });
+      }),
+    };
+    const { runner } = createRunnerHarness(h.session, queue.deps, opts);
+    const fire = runner.fire(heartbeatSchedule(), createFireContext());
+    await vi.waitFor(() => expect(queue.enqueueCalls).toHaveLength(1));
+    expect(opts.prepareModelPreferences).not.toHaveBeenCalled();
+    await queue.accept();
+    expect(checkModelRoute).toHaveBeenLastCalledWith('claude-code', 'owner-model', null);
+    expect(h.session.setModel).not.toHaveBeenCalledWith('automatic-model', expect.anything());
+    await vi.waitFor(() => expect(h.listenerCount()).toBe(1));
+    h.emit({ type: 'done', data: {}, source: 'claude-code' });
+    await expect(fire).resolves.toMatchObject({ sessionId: SESSION_ID });
+    expect(opts.prepareModelPreferences).toHaveBeenCalledTimes(1);
+  });
+
   it('dispatches a fresh implicit provider route using the resolved fire-local schedule', async () => {
     const h = createSessionHarness(async () => ({ accepted: true }));
     Object.assign(h.session, { agentKind: 'pi', model: 'shared-model' });

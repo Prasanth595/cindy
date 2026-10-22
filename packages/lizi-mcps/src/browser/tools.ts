@@ -29,6 +29,7 @@ import {
   SiteGuideSchema,
   type MergedRecipe,
   type MergedSiteGuide,
+  type Recipe,
 } from './recipe-loader.js';
 import { runRecipe, findUnsafeEvaluateInterpolations } from './recipe-runner.js';
 import { isHttpUrl } from './url-guard.js';
@@ -120,14 +121,14 @@ function readsPageState(request: BrowserControlRequest): boolean {
   return request.action === 'act' && (act?.kind === 'evaluate' || (act?.kind === 'wait' && act.fn !== undefined));
 }
 
-function getRuntime(deps: BrowserMcpDeps): BrowserControlRuntime {
+function getRuntime(deps: BrowserMcpDeps, onDispatch?: () => void): BrowserControlRuntime {
   const runtime = deps.getRuntime();
   const restricted = deps.pageReadsRestricted;
-  if (!restricted) return runtime;
+  if (!restricted && !onDispatch) return runtime;
   // Every path (tool actions, extract, recipes, hints) goes through this check.
   return {
     call: async (request) => {
-      if (readsPageState(request)
+      if (restricted && readsPageState(request)
         && await restricted({
           ...(request.profile ? { profile: request.profile } : {}),
           ...(request.targetId ? { targetId: request.targetId } : {}),
@@ -140,6 +141,9 @@ function getRuntime(deps: BrowserMcpDeps): BrowserControlRuntime {
           data: { reason: 'secret_entered' },
         };
       }
+      // This is the sole boundary after host preflight and before execution;
+      // callers must count attempts here, including throws/timeouts afterwards.
+      onDispatch?.();
       return runtime.call(request);
     },
   };
@@ -238,6 +242,29 @@ async function detectLoginWall(runtime: BrowserControlRuntime, profile: unknown,
 function readTargetId(result: { data?: unknown }): string | undefined {
   const id = (result.data as { targetId?: unknown } | undefined)?.targetId;
   return typeof id === 'string' && id ? id : undefined;
+}
+
+/** Some runtime role snapshots ignore maxChars; bound the advertised observation here. */
+function limitAfterSnapshot(result: BrowserControlResult, maxChars: number): BrowserControlResult {
+  const data = result.data as { snapshot?: unknown; refs?: Record<string, unknown>; [key: string]: unknown } | undefined;
+  if (!result.ok || typeof data?.snapshot !== 'string' || data.snapshot.length <= maxChars) return result;
+  const prefix = data.snapshot.slice(0, maxChars);
+  const newline = prefix.lastIndexOf('\n');
+  const snapshot = newline >= 0 ? prefix.slice(0, newline) : prefix;
+  const visibleRefs = new Set([...snapshot.matchAll(/\[ref=([^\]]+)\]/g)].map((match) => match[1]));
+  return {
+    ...result,
+    data: {
+      ...data,
+      snapshot,
+      ...(data.refs ? { refs: Object.fromEntries(Object.entries(data.refs).filter(([id]) => visibleRefs.has(id))) } : {}),
+      // The original statistics describe the full page, not this bounded view.
+      stats: undefined,
+      truncated: true,
+      originalChars: data.snapshot.length,
+      hint: '快照正文已截断；若缺少所需内容，请缩小 selector 范围或单独 snapshot 补读，不要重复已成功的动作。',
+    },
+  };
 }
 
 function resultText(value: unknown): string {
@@ -448,12 +475,42 @@ async function screenshotToolResult(
 function toRuntimeRequest(args: Record<string, unknown>): BrowserControlRequest {
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(args)) {
-    if (value !== undefined) out[key] = value;
+    if (value !== undefined && key !== 'afterSnapshot') out[key] = value;
   }
   return out as unknown as BrowserControlRequest;
 }
 
 export function registerBrowserTools(registry: BrowserToolRegistry, deps: BrowserMcpDeps): void {
+  // Session-local evidence and repair budget: never share successful trials
+  // between agents, and never retain caller inputs or page contents here.
+  const verifiedDrafts = new Map<string, { site: string; content: string }>();
+  const failedRecipes = new Set<string>();
+  const repairUsed = new Set<string>();
+  const runningRecipes = new Set<string>();
+  const recovery = '先重新观察当前页面；当前任务每个配方最多验证一轮修订。失败后回普通操作。写操作先核实是否已成功，不得自动重放。';
+  function draftIssue(recipe: Recipe, site: string | undefined): string | undefined {
+    if (recipe.validation) return 'validation 由宿主管理，recipeDraft 不得提供';
+    if (!site || !/^[a-zA-Z0-9][a-zA-Z0-9.-]{0,252}$/.test(site)) return '试跑配方需要 site（完整站点 host）';
+    const unsafe = findUnsafeEvaluateInterpolations(recipe);
+    if (unsafe.length) return `recipeDraft 插值不安全:${unsafe.join('; ')}`;
+    for (const step of recipe.steps) {
+      if (['click', 'type', 'select', 'extract', 'evaluate'].includes(step.action) && !step.guard) {
+        return '交互和读取步骤必须有 guard:{url,selector?,text?}，先确认页面身份';
+      }
+      for (const url of [step.guard?.url, step.action === 'navigate' ? step.url : undefined]) {
+        if (url !== undefined) {
+          try {
+            if (!isHttpUrl(url) || new URL(url).hostname !== site.toLowerCase()) return 'guard/navigation URL 必须属于 site';
+          } catch { return 'guard/navigation URL 不合法'; }
+        }
+      }
+    }
+    const last = recipe.steps.at(-1);
+    if (!last?.expect || !last.as || recipe.output !== `{{${last.as}}}`) {
+      return '最后一步必须用 expect 验证结果，并用 as/output 返回该结果';
+    }
+    return undefined;
+  }
   const actKind = actKindSchema(deps);
   const elementQuery = elementQuerySchema(deps);
   registry.register({
@@ -463,6 +520,7 @@ export function registerBrowserTools(registry: BrowserToolRegistry, deps: Browse
       '浏览器自动化统一入口。通过 action 选择 status/start/tabs/navigate/snapshot/screenshot/act 等操作; ' +
       'status 返回实际浏览器模式; setBackend 切换并保存全局浏览器模式(内置 rsb-webview / 外置 external)。' +
       '优先使用 snapshot 返回的 ref 执行 click/type/press,不要猜测 CSS selector。' +
+      'act/open/navigate/upload 可带 afterSnapshot:{}，一次返回动作结果和精简快照；可用 selector 限定区域。' +
       '注意:直接调用本工具时,wait/evaluate/saveResource 不是顶层 action(会报 INVALID_ARGS),它们只能作为 act 的 request.kind 子操作(配方 steps 里仅 wait/evaluate 是合法 DSL action,saveResource 在配方中同样不可用)。',
     rules: ['browser-workflow', 'recipe-author'],
     inputShape: {
@@ -494,6 +552,13 @@ export function registerBrowserTools(registry: BrowserToolRegistry, deps: Browse
       depth: z.number().int().nonnegative().optional(),
       selector: z.string().optional(),
       frame: z.string().optional(),
+      afterSnapshot: z.strictObject({
+        selector: z.string().trim().min(1).optional(),
+        frame: z.string().trim().min(1).optional(),
+        interactive: z.boolean().optional(),
+        depth: z.number().int().nonnegative().optional(),
+        maxChars: z.number().int().min(1).max(20_000).optional(),
+      }).optional().describe('动作成功后读取精简快照，正文默认最多 4000 字符；只读失败不改变动作的成功状态，不要重复动作'),
       labels: z.boolean().optional(),
       urls: z.boolean().optional(),
       fullPage: z.boolean().optional(),
@@ -524,7 +589,7 @@ export function registerBrowserTools(registry: BrowserToolRegistry, deps: Browse
       recipeDraft: z
         .record(z.string(), z.unknown())
         .optional()
-        .describe('action=saveRecipe: 要保存到本地层的配方对象(同 recipe schema:id/steps/inputs/output…),会先按 schema 校验'),
+        .describe('action=recipe: 带 site 试跑候选配方；成功后 action=saveRecipe 保存相同 site 和 recipeDraft。需要 guard 页面校验和末步 expect 结果校验。'),
       siteGuideDraft: z
         .record(z.string(), z.unknown())
         .optional()
@@ -569,6 +634,10 @@ export function registerBrowserTools(registry: BrowserToolRegistry, deps: Browse
     },
     handler: async (args) => {
       try {
+        if (args.afterSnapshot && (!['act', 'open', 'navigate', 'upload'].includes(args.action)
+          || (args.action === 'act' && args.request?.kind === 'close'))) {
+          return errorResult(args.action, 'afterSnapshot 仅用于 act（不含 close）、open、navigate、upload');
+        }
         // Host configuration is not a vendored browser action. Await the same
         // lifecycle transition as Settings before issuing any new page actions.
         if (args.action === 'setBackend') {
@@ -610,7 +679,8 @@ export function registerBrowserTools(registry: BrowserToolRegistry, deps: Browse
             );
           }
         }
-        const runtime = getRuntime(deps);
+        let onRecipeDispatch: (() => void) | undefined;
+        const runtime = getRuntime(deps, () => onRecipeDispatch?.());
         // Block non-web schemes at the boundary: navigate/open to file:// /
         // chrome:// / data: would let the agent reach local files or browser
         // internals. Only the scheme is constrained — localhost/private HTTP
@@ -662,14 +732,30 @@ export function registerBrowserTools(registry: BrowserToolRegistry, deps: Browse
         // recipe: run a declarative per-site flow (composition over primitives).
         // Merged L1 (bundled) + L2 (user); user version shadows builtin by id.
         if (args.action === 'recipe') {
-          if (!args.recipeId) return errorResult('recipe', 'recipe requires `recipeId`');
           let entry: MergedRecipe | undefined;
-          try {
+          const candidate = args.recipeDraft !== undefined;
+          if (candidate) {
+            const parsed = RecipeSchema.safeParse(args.recipeDraft);
+            if (!parsed.success) return errorResult('recipe', `recipeDraft 不合法:${parsed.error.message}`);
+            if (args.recipeId && args.recipeId !== parsed.data.id) return errorResult('recipe', 'recipeId 必须与 recipeDraft.id 一致');
+            const issue = draftIssue(parsed.data, args.site);
+            if (issue) return errorResult('recipe', issue);
+            entry = { recipe: parsed.data, provenance: 'user' };
+          } else {
+            if (!args.recipeId) return errorResult('recipe', 'recipe requires recipeId 或 recipeDraft + site');
             entry = (await recipeRegistry(deps)).get(args.recipeId);
-          } catch (err) {
-            return errorResult('recipe', `recipe registry error: ${err instanceof Error ? err.message : String(err)}`);
           }
           if (!entry) return errorResult('recipe', `unknown recipe: ${args.recipeId}`);
+          const id = entry.recipe.id;
+          const persisted = candidate ? (await recipeRegistry(deps)).get(id)?.recipe : entry.recipe;
+          if (runningRecipes.has(id)) return errorResult('recipe', '该配方正在执行，请勿并发重放');
+          if (candidate && persisted?.validation && persisted.validation.site !== args.site) {
+            return errorResult('recipe', '已有配方的修订必须保存在原站点，请保持相同 site');
+          }
+          const suspended = failedRecipes.has(id) || persisted?.validation?.state === 'suspended';
+          if (!candidate && suspended) return errorResult('recipe', `配方已暂停复用。${recovery}`);
+          if (candidate && repairUsed.has(id)) return errorResult('recipe', `本任务的修复验证次数已用完。${recovery}`);
+          verifiedDrafts.delete(id);
           // Thread the caller's tab/profile routing into every recipe step:
           // step requests from stepToRequest carry no profile/targetId, so
           // without this each navigate/extract would fall back to the runtime's
@@ -684,8 +770,15 @@ export function registerBrowserTools(registry: BrowserToolRegistry, deps: Browse
           // which is ambiguous with multiple tabs open). Once a navigate hands back
           // a target, the whole recipe stays pinned to it.
           let activeTargetId = args.targetId;
+          let lastCallDispatched = false;
+          onRecipeDispatch = () => {
+            lastCallDispatched = true;
+            if (candidate && suspended) repairUsed.add(id);
+          };
+          runningRecipes.add(id);
           const runResult = await runRecipe(entry.recipe, args.inputs as Record<string, unknown> | undefined, {
             call: async (req) => {
+              lastCallDispatched = false;
               const res = await runtime.call({
                 ...req,
                 ...(args.profile ? { profile: args.profile } : {}),
@@ -696,10 +789,35 @@ export function registerBrowserTools(registry: BrowserToolRegistry, deps: Browse
               return res;
             },
             logger: deps.logger,
-          });
+          }).finally(() => runningRecipes.delete(id));
+          let maintenanceMessage: string | undefined;
+          if (runResult.ok && candidate) {
+            verifiedDrafts.set(id, { site: args.site!, content: JSON.stringify(entry.recipe) });
+          } else if (!runResult.ok && lastCallDispatched && runResult.failureKind !== 'input' && runResult.failedStep !== undefined) {
+            // A failed draft is not evidence that the saved active version is
+            // stale. Keep its state, while limiting new/previously failed drafts.
+            if (!candidate || !persisted || suspended) failedRecipes.add(id);
+            // Only failure while using the saved definition can suspend it on disk.
+            if (!candidate && persisted && deps.saveUserRecipe) {
+              try {
+                // Bundled recipes predate validation metadata; their guide
+                // supplies the owning site. Never guess from a host substring.
+                const sites = persisted.validation ? [persisted.validation.site] :
+                  [...siteGuideRegistryFrom(await resolveUserLayer(deps)).values()]
+                    .filter((g) => g.guide.recipes?.includes(id)).map((g) => g.guide.site);
+                if (sites.length === 1) {
+                  const saved = await deps.saveUserRecipe({ site: sites[0],
+                    recipe: { ...persisted, validation: { site: sites[0], state: 'suspended' } } });
+                  if (!saved.ok) maintenanceMessage = '本任务已暂停；跨任务停用保存失败，请勿复用旧配方。';
+                  recipeCache = null;
+                } else maintenanceMessage = '本任务已暂停；无法确定配方所属站点，未保存跨任务停用状态。';
+              } catch { maintenanceMessage = '本任务已暂停；跨任务停用保存失败，请勿复用旧配方。'; }
+            }
+          }
           return {
             content: [
-              { type: 'text', text: resultText({ action: 'recipe', provenance: entry.provenance, ...runResult }) },
+              { type: 'text', text: resultText({ action: 'recipe', provenance: entry.provenance, ...runResult,
+                ...(!runResult.ok ? { recovery, maintenanceMessage } : candidate ? { verified: true } : {}) }) },
             ],
             isError: !runResult.ok,
           };
@@ -735,6 +853,7 @@ export function registerBrowserTools(registry: BrowserToolRegistry, deps: Browse
                 // input constraints (e.g. "id must be passed as a string") that the
                 // bare input-name list cannot express.
                 description: r?.recipe.description,
+                ...(r?.recipe.validation ? { state: r.recipe.validation.state } : {}),
                 inputs: Object.keys(spec),
                 required: Object.entries(spec)
                   .filter(([, v]) => v?.required)
@@ -847,8 +966,17 @@ export function registerBrowserTools(registry: BrowserToolRegistry, deps: Browse
               );
             }
           }
-          const saved = await deps.saveUserRecipe({ site: args.site, recipe: parsed.data, siteGuide: guide });
+          const issue = draftIssue(parsed.data, args.site);
+          if (issue) return errorResult('saveRecipe', issue);
+          const verified = verifiedDrafts.get(parsed.data.id);
+          if (!verified || verified.site !== args.site || verified.content !== JSON.stringify(parsed.data)) {
+            return errorResult('saveRecipe', '请先用 action=recipe、site、相同 recipeDraft 试跑并通过校验；不能保存未验证或已改动的配方');
+          }
+          const saved = await deps.saveUserRecipe({ site: args.site,
+            recipe: { ...parsed.data, validation: { site: args.site, state: 'active' } }, siteGuide: guide });
           if (saved.ok) {
+            verifiedDrafts.delete(parsed.data.id);
+            failedRecipes.delete(parsed.data.id);
             // invalidate so this session sees it now (cross-session is covered by
             // the content-derived version check in the registry).
             recipeCache = null;
@@ -908,6 +1036,38 @@ export function registerBrowserTools(registry: BrowserToolRegistry, deps: Browse
           const loginWall = await detectLoginWall(runtime, args.profile, readTargetId(result) ?? args.targetId);
           // First key, so it survives truncation of a large snapshot.
           if (loginWall) result = { loginWall, ...result } as typeof result;
+        }
+        if (args.afterSnapshot && result.ok) {
+          // Keep observation separate: a successful upload/click must never be
+          // reported as failed (and replayed) because its follow-up read failed.
+          const snapshotOptions = args.afterSnapshot;
+          const targetId = readTargetId(result) ?? args.request?.targetId ?? args.targetId;
+          let afterSnapshot: BrowserControlResult;
+          try {
+            afterSnapshot = await runtime.call({
+              action: 'snapshot',
+              profile: args.profile,
+              targetId,
+              snapshotFormat: 'ai',
+              refs: snapshotOptions.selector || snapshotOptions.frame ? 'role' : 'aria',
+              compact: true,
+              maxChars: 4000,
+              ...snapshotOptions,
+            });
+            if (afterSnapshot.ok) {
+              const loginWall = await detectLoginWall(runtime, args.profile, readTargetId(afterSnapshot) ?? targetId);
+              if (loginWall) afterSnapshot = { loginWall, ...afterSnapshot } as typeof afterSnapshot;
+              afterSnapshot = limitAfterSnapshot(afterSnapshot, snapshotOptions.maxChars ?? 4000);
+            }
+          } catch (err) {
+            afterSnapshot = {
+              ok: false,
+              action: 'snapshot',
+              errorCode: 'BROWSER_RUNTIME_ACTION_FAILED',
+              message: err instanceof Error ? err.message : String(err),
+            };
+          }
+          result = { ...result, afterSnapshot } as typeof result;
         }
         // For extract, the runtime call may succeed (evaluate ran) while the
         // in-page extract reports ok:false (invalid selector); surface that as an
