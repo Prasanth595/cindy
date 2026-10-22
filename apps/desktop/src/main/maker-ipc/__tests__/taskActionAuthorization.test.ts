@@ -904,6 +904,98 @@ describe('Desktop private-chat action confirmation', () => {
     expect(effect).not.toHaveBeenCalled();
   });
 
+  // Review P1 on #6756: switching the permission tier into Plan advances only that tier's
+  // generation and leaves the Plan generation untouched, so the Plan re-read above cannot
+  // revoke the card. A tier still switching at answer time is not stable either.
+  it.each([
+    ['a Plan tier', { mode: 'plan' as PermissionMode, generation: 3 }],
+    ['no stable tier', null],
+  ] as const)('drops the approval when the card is answered with %s', async (_state, tier) => {
+    const h = desktopFixture('automatic');
+    h.activeInput.permission = null;
+    setLivePlan(h, { enabled: false, generation: 2 });
+    h.confirm.mockImplementation(async () => {
+      Object.assign(h.runtime, { stablePermissionModeState: tier });
+      return true;
+    });
+    const effect = vi.fn(async () => 'changed');
+    const result = await withToolCallAuthority(h.authorize, call('set_session_runtime'), effect);
+    expect(result).toMatchObject({ isError: true });
+    expect(JSON.stringify(result)).toContain('TASK_ACTION_AUTHORIZATION_EXPIRED');
+    expect(effect).not.toHaveBeenCalled();
+  });
+
+  it('also revokes an approved card delivery when the permission tier turns into Plan', async () => {
+    const h = desktopFixture('automatic');
+    h.activeInput.permission = null;
+    setLivePlan(h, { enabled: false, generation: 2 });
+    h.confirm.mockResolvedValueOnce(true);
+    const queued = input();
+    expect(await withToolCallAuthority(h.authorize, call('send_to_session'), async () => {
+      bindTaskActionInput('target', queued);
+      return 'queued';
+    })).toBe('queued');
+    Object.assign(h.runtime, { stablePermissionModeState: { mode: 'plan', generation: 3 } });
+    await expect(taskActionInputGuard('target', queued)!()).rejects.toThrow(
+      'AUTHORIZATION_EXPIRED',
+    );
+  });
+
+  // Review P2 on #6756: resume input re-reads the delegation row only for its grant, so a
+  // pause (or a new run) written while the card was open survived as a frozen false boolean.
+  const resumeCall = {
+    ...call('message_session_task'),
+    args: { task_id: 'task', mode: 'resume', message: 'continue' },
+  };
+  function pausableDelegation(h: ReturnType<typeof desktopFixture>) {
+    const grant = { taskActionAuthority: { version: 1, actions: ['message_session_task'] } };
+    h.rows.delegation = {
+      status: 'running', runSequence: 1, permissionSnapshotJson: JSON.stringify(grant),
+    };
+    return grant;
+  }
+  const ownerPause = { token: 'pause-1', pausedAt: 1, previousStatus: 'running' };
+
+  it('drops the resume approval when the owner pauses that delegation while the card is open', async () => {
+    const h = desktopFixture('automatic');
+    h.activeInput.permission = null;
+    const grant = pausableDelegation(h);
+    h.confirm.mockImplementation(async () => {
+      h.rows.delegation!.permissionSnapshotJson = JSON.stringify({ ...grant, taskPause: ownerPause });
+      return true;
+    });
+    const effect = vi.fn(async () => 'continued');
+    const result = await withToolCallAuthority(h.authorize, resumeCall, effect);
+    expect(result).toMatchObject({ isError: true });
+    expect(JSON.stringify(result)).toContain('TASK_ACTION_AUTHORIZATION_EXPIRED');
+    expect(effect).not.toHaveBeenCalled();
+  });
+
+  it.each(['pause', 'new run'] as const)(
+    'revokes an approved resume delivery when the delegation gets a %s first',
+    async (change) => {
+      const h = desktopFixture('automatic');
+      h.activeInput.permission = null;
+      const grant = pausableDelegation(h);
+      h.confirm.mockResolvedValueOnce(true);
+      const queued = input();
+      expect(await withToolCallAuthority(h.authorize, resumeCall, async () => {
+        bindTaskActionInput('target', queued);
+        return 'continued';
+      })).toBe('continued');
+      // A real read returns a new row; never let the admission snapshot alias it.
+      h.rows.delegation = change === 'pause'
+        ? {
+            ...h.rows.delegation!,
+            permissionSnapshotJson: JSON.stringify({ ...grant, taskPause: ownerPause }),
+          }
+        : { ...h.rows.delegation!, runSequence: 2 };
+      await expect(taskActionInputGuard('target', queued)!()).rejects.toThrow(
+        'AUTHORIZATION_EXPIRED',
+      );
+    },
+  );
+
   it('does not offer a card for work the owner paused', async () => {
     const h = desktopFixture('automatic');
     h.rows.delegation = {

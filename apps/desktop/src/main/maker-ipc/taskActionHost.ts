@@ -147,6 +147,7 @@ export function createDesktopTaskActionAuthorizer(deps: {
           && permission != null
           && permission.planModeEnabled === false
           && permission.isCurrent?.() === true;
+        const useRuntimePermissions = ownerInput || runtimePermissionApplies;
         // Without a reusable runtime permission decision the agent otherwise gets a bare
         // "authorization required" with nowhere to grant it. Only the owner's own private
         // lane has a live owner to ask: Plan never authorizes side effects, a snapshot we
@@ -159,16 +160,22 @@ export function createDesktopTaskActionAuthorizer(deps: {
         const assertPermissionCurrent = () => {
           if (runtimePermissionApplies && permission?.isCurrent?.() !== true)
             throw new Error('TASK_ACTION_AUTHORIZATION_EXPIRED');
-          // A card is only ever offered off Plan; the live Plan generation still governs
-          // the answer, so switching Plan on while the card is open revokes it.
-          if (ownerConfirmable && livePlan) {
-            const currentPlan = deps.getSession(sessionId)?.stablePlanModeState;
-            if (!currentPlan || currentPlan.enabled !== livePlan.enabled ||
-              currentPlan.generation !== livePlan.generation)
+          // A card is only ever offered off Plan and is never a reusable permission decision.
+          // Switching the tier into/out of Plan advances only the permission generation and
+          // leaves the Plan generation untouched, so Plan must be re-read from the stable
+          // permission state too; a tier that is still switching has no stable state and
+          // cannot authorize side effects either.
+          if (!useRuntimePermissions && ownerConfirmable) {
+            const live = deps.getSession(sessionId);
+            const currentPermission = live?.stablePermissionModeState;
+            const currentPlan = live?.stablePlanModeState;
+            const planStillOff = livePlan
+              ? currentPlan?.enabled === false && currentPlan.generation === livePlan.generation
+              : currentPlan?.enabled === false;
+            if (!currentPermission || currentPermission.mode === 'plan' || !planStillOff)
               throw new Error('TASK_ACTION_AUTHORIZATION_EXPIRED');
           }
         };
-        const useRuntimePermissions = ownerInput || runtimePermissionApplies;
         // Retain scheduled-review recovery only when no live runtime decision can
         // be reused. A current permission flow must never be reviewed twice.
         const runtime = !useRuntimePermissions && scheduled
@@ -181,7 +188,8 @@ export function createDesktopTaskActionAuthorizer(deps: {
         const taskId = typeof args.task_id === 'string' ? args.task_id : undefined;
         /** The owner paused this work on purpose: no card may reopen it. */
         let delegationPaused = false;
-        const readDelegation = async (rechecking = false) => {
+        /** The one delegation row this call acts on, before any grant/pause interpretation. */
+        const readDelegationRow = async () => {
           if (
             !taskId ||
             !DELEGATED_TASK_ACTIONS.includes(call.tool as (typeof DELEGATED_TASK_ACTIONS)[number])
@@ -194,16 +202,25 @@ export function createDesktopTaskActionAuthorizer(deps: {
               and(eq(botDelegations.id, taskId), eq(botDelegations.parentSessionId, sessionId)),
             )
             .limit(1);
-          if (!row || !['queued', 'running', 'waiting'].includes(row.status)) return null;
-          let snapshot: {
-            taskActionAuthority?: { version?: number; actions?: string[] };
-            taskPause?: unknown;
-          };
+          return row ?? null;
+        };
+        const readDelegationSnapshot = (row: { permissionSnapshotJson: string }) => {
           try {
-            snapshot = JSON.parse(row.permissionSnapshotJson);
+            return JSON.parse(row.permissionSnapshotJson) as {
+              taskActionAuthority?: { version?: number; actions?: string[] };
+              taskPause?: unknown;
+            };
           } catch {
             return null;
           }
+        };
+        const readDelegation = async (
+          row: Awaited<ReturnType<typeof readDelegationRow>>,
+          rechecking = false,
+        ) => {
+          if (!row || !['queued', 'running', 'waiting'].includes(row.status)) return null;
+          const snapshot = readDelegationSnapshot(row);
+          if (!snapshot) return null;
           const grant = snapshot.taskActionAuthority;
           // Paused work only resumes following a new owner request. Permission answers
           // and model changes are also exact decisions, never a standing message grant.
@@ -216,7 +233,10 @@ export function createDesktopTaskActionAuthorizer(deps: {
             return null;
           return grant?.version === 1 && grant.actions?.includes(call.tool) ? row : null;
         };
-        const delegation = useRuntimePermissions ? null : await readDelegation();
+        // The row itself is delivery evidence: a reused grant is not the only authority a
+        // card rests on, and pausing or reopening that run must revoke the answer either way.
+        const delegationRow = useRuntimePermissions ? null : await readDelegationRow();
+        const delegation = useRuntimePermissions ? null : await readDelegation(delegationRow);
         // A real Worker report continues its ordinary Lead's existing team. It
         // cannot authorize helper writes to unrelated tasks or create a new team.
         const readOrcaTeam = async () => {
@@ -271,10 +291,20 @@ export function createDesktopTaskActionAuthorizer(deps: {
             (caller.botId && (fresh.botStatus !== 'active' || fresh.archivedAt !== null))
           )
             throw new Error('TASK_ACTION_AUTHORIZATION_EXPIRED');
-          if (delegation) {
-            const current = await readDelegation(true);
-            if (!current || current.runSequence !== delegation.runSequence)
+          if (delegationRow) {
+            const currentRow = await readDelegationRow();
+            if (!currentRow || currentRow.runSequence !== delegationRow.runSequence)
               throw new Error('TASK_ACTION_AUTHORIZATION_EXPIRED');
+            if (delegation) {
+              if (!(await readDelegation(currentRow, true)))
+                throw new Error('TASK_ACTION_AUTHORIZATION_EXPIRED');
+            } else {
+              // A card reuses no grant, but the same row's pause intent still governs it.
+              const completingPause =
+                call.tool === 'stop_session_task' && args.mode === 'pause';
+              if (readDelegationSnapshot(currentRow)?.taskPause && !completingPause)
+                throw new Error('TASK_ACTION_AUTHORIZATION_EXPIRED');
+            }
           }
           if (orcaTeam) {
             if ((await readOrcaTeam())?.id !== orcaTeam.id)
