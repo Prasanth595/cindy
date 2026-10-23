@@ -1,3 +1,4 @@
+import { ToolMarkupProjection } from '../shared/tool-markup-projection.js';
 /**
  * CodexAgent — 路线 A 完整版 (Phase 1+2+3+4 全打通)。
  *
@@ -3784,6 +3785,7 @@ assertRouteCurrent();
     const eventQueue: AsyncQueue<AgentEvent> = createAsyncQueue<AgentEvent>();
     const usageTracker = new UsageTracker();
     const translatorRt: CodexRuntimeState = newCodexRuntimeState();
+    const toolMarkup = new ToolMarkupProjection({ requireResponseOwnedCalls: true });
     const liveUsageSnapshot = () => attachLiveGeneration(usageTracker.snapshot(), {
       tokenSpeed: translatorRt.generationTimingReliable ? translatorRt.tokenSpeed.snapshot() : undefined,
       outputTokens: usageTracker.getTurnUsage().output,
@@ -8714,6 +8716,7 @@ assertRouteCurrent();
      */
     function activateRootTurn(turnId: string): void {
       const isNewTurn = currentTurnId !== turnId;
+      if (isNewTurn) toolMarkup.begin({ push: rawEventQueuePush }, turnId);
       currentTurnId = turnId;
       isTurnInFlight = true;
       bindYieldContinuationTurn(turnId);
@@ -9303,7 +9306,7 @@ assertRouteCurrent();
           armUpstreamIdle();
         }
       }
-      const accepted = rawEventQueuePush(ev);
+      const accepted = toolMarkup.push(ev, { push: rawEventQueuePush });
       if (!accepted) releaseYieldContinuationEvent(ev);
       return accepted;
     };
@@ -13103,7 +13106,11 @@ assertRouteCurrent();
         translateErrorNotification(effectiveParams, eventQueue, {
           rt: translatorRt,
           log,
-          onSamplingAttemptFailed: () => assistantReplyByTurn.delete(effectiveParams.turnId),
+          onSamplingAttemptFailed: () => {
+            assistantReplyByTurn.delete(effectiveParams.turnId);
+            toolMarkup.finish({ push: rawEventQueuePush }, true);
+            if (effectiveParams.willRetry) toolMarkup.begin({ push: rawEventQueuePush });
+          },
           tryTakeOverOverload: () => {
             // 只接管 app-server 本来就不重试的容量拒绝(原始 willRetry !== true)。
             // TurnRetryTracker 把持续 retry 升级成终态的那条路径不接管：那说明
