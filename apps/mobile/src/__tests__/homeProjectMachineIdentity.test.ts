@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { MobileHomeDeviceFilterItem, MobileHomeProjectGroup } from '@/session/mobileHome';
-import { buildHomeProjectMachineIdentities } from '@/session/homeProjectMachineIdentity';
+import { buildHomeDeviceMachineIdentities, buildHomeProjectMachineIdentities } from '@/session/homeProjectMachineIdentity';
 
 function project(key: string, deviceId: string | null, deviceName: string): MobileHomeProjectGroup {
   return {
@@ -25,7 +25,7 @@ describe('project machine identity parity with Desktop', () => {
       selectedDeviceId: null,
     });
     expect([...result.values()].map((item) => item.displayLabel)).toEqual(['Windows', 'MacBook', 'MacBook']);
-    expect(result.get('a')).toEqual({ displayLabel: 'Windows', disconnected: false, hideLabel: false });
+    expect(result.get('a')).toEqual({ displayLabel: 'Windows', name: 'Windows', suffix: null, disconnected: false, hideLabel: false });
   });
 
   it('only disambiguates visible projects on distinct same-named devices, ignoring case and padding', () => {
@@ -47,7 +47,7 @@ describe('project machine identity parity with Desktop', () => {
       projects: [project('a', 'mac', 'MacBook')],
       deviceFilters: [device('mac', 'MacBook', false)], selectedDeviceId: 'mac',
     });
-    expect(result.get('a')).toEqual({ displayLabel: 'MacBook', disconnected: true, hideLabel: true });
+    expect(result.get('a')).toEqual({ displayLabel: 'MacBook', name: 'MacBook', suffix: null, disconnected: true, hideLabel: true });
   });
 
   it('reflects a failed connection and a later recovery without hiding the machine label', () => {
@@ -67,5 +67,91 @@ describe('project machine identity parity with Desktop', () => {
     expect(result.get('a')?.displayLabel).toBe('Renamed Mac');
     expect(result.get('b')?.displayLabel).toBe('win');
     expect(result.has('c')).toBe(false);
+  });
+});
+
+describe('chat machine identity (tasks without a project header)', () => {
+  function chat(id: string, deviceId: string | undefined, deviceName: string, extra: object = {}) {
+    return { session: { id, canonicalDeviceId: deviceId, deviceLinkDeviceId: deviceId, deviceLinkDeviceName: deviceName, ...extra } } as never;
+  }
+  const home = (chats: never[], deviceFilters: MobileHomeDeviceFilterItem[], selectedDeviceId: string | null = null) =>
+    ({ chats, pinned: [], projects: [], deviceFilters, selectedDeviceId });
+
+  it('counts chat-only devices when disambiguating same-named computers', () => {
+    const result = buildHomeDeviceMachineIdentities(home(
+      [chat('1', 'one', 'MacBook'), chat('2', 'two', 'MacBook')],
+      [device('one', 'MacBook'), device('two', 'MacBook')],
+    ));
+    expect(result.one.displayLabel).toBe('MacBook · one');
+    expect(result.two.displayLabel).toBe('MacBook · two');
+  });
+
+  it('labels by the owning device, not by where the Agent runs, and keeps the icon under a selected device', () => {
+    const owned = chat('1', 'a', 'Alpha', { agentDeviceId: 'b', agentDeviceName: 'Beta' });
+    const result = buildHomeDeviceMachineIdentities(
+      home([owned], [device('a', 'Alpha'), device('b', 'Beta')], 'a'),
+    );
+    expect(result.a).toEqual({ displayLabel: 'Alpha', name: 'Alpha', suffix: null, disconnected: false, hideLabel: true });
+    expect(result.b).toBeUndefined();
+  });
+
+  it('gives no identity to shared-task peers or stale shards, so they never look disconnected', () => {
+    const result = buildHomeDeviceMachineIdentities(home(
+      [chat('1', 'shared-peer:x', 'Owner Mac'), chat('2', 'ghost', 'Old Mac'), chat('3', 'a', 'Alpha')],
+      [device('a', 'Alpha')],
+    ));
+    expect(Object.keys(result)).toEqual(['a']);
+    expect(result.a.disconnected).toBe(false);
+  });
+
+  it('labels a computer the same on its project row and its chat rows', () => {
+    // A owns a project and a chat, B only a chat: A must read the same on both rows.
+    const input = {
+      chats: [chat('1', 'two', 'MacBook'), chat('2', 'one', 'MacBook')], pinned: [],
+      projects: [project('p', 'one', 'MacBook')],
+      deviceFilters: [device('one', 'MacBook'), device('two', 'MacBook')], selectedDeviceId: null,
+    } as never;
+    expect(buildHomeProjectMachineIdentities(input).get('p')?.displayLabel).toBe('MacBook · one');
+    expect(buildHomeDeviceMachineIdentities(input).one.displayLabel).toBe('MacBook · one');
+    expect(buildHomeDeviceMachineIdentities(input).two.displayLabel).toBe('MacBook · two');
+  });
+
+  it('falls back to the device ID like project rows when the device list name is blank', () => {
+    // The session still carries a stale cached name; neither row may show it.
+    const input = {
+      chats: [chat('1', 'a', 'Stale Mac')], pinned: [],
+      projects: [project('p', 'a', 'Old name')],
+      deviceFilters: [device('a', '   ')], selectedDeviceId: null,
+    } as never;
+    expect(buildHomeProjectMachineIdentities(input).get('p')?.displayLabel).toBe('a');
+    expect(buildHomeDeviceMachineIdentities(input).a.displayLabel).toBe('a');
+  });
+
+  it('splits name and ID for project and chat rows so a narrow row can keep the ID', () => {
+    const long = 'MacBook Pro of a very long name';
+    const input = {
+      chats: [chat('1', 'one', long), chat('2', 'two', long)], pinned: [],
+      projects: [project('p', 'one', long)],
+      deviceFilters: [device('one', long), device('two', long)], selectedDeviceId: null,
+    } as never;
+    const projectRow = buildHomeProjectMachineIdentities(input).get('p');
+    const chats = buildHomeDeviceMachineIdentities(input);
+    expect(projectRow).toMatchObject({ name: long, suffix: 'one', displayLabel: `${long} · one` });
+    expect(chats.one).toMatchObject({ name: long, suffix: 'one' });
+    expect(chats.two).toMatchObject({ name: long, suffix: 'two' });
+    // A name that is not shared carries no suffix.
+    const solo = buildHomeDeviceMachineIdentities(
+      home([chat('1', 'one', long)], [device('one', long)]),
+    );
+    expect(solo.one).toMatchObject({ name: long, suffix: null });
+  });
+
+  it('marks offline or failed devices as disconnected', () => {
+    const chats = [chat('1', 'a', 'Alpha'), chat('2', 'b', 'Beta')];
+    const result = buildHomeDeviceMachineIdentities(
+      home(chats, [device('a', 'Alpha', false), device('b', 'Beta')]), { b: 'failed' },
+    );
+    expect(result.a.disconnected).toBe(true);
+    expect(result.b.disconnected).toBe(true);
   });
 });

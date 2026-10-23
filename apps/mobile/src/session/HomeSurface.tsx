@@ -93,7 +93,12 @@ import { useAdaptiveWindow } from '@/platform/AdaptiveWindowContext';
 import { useBalancedTitle } from '@/platform/chrome/balancedTitle';
 import { HomeSearchBar } from '@/session/HomeSearchBar';
 import { HomeProjectMachineLabel } from '@/session/HomeProjectMachineLabel';
-import { buildHomeProjectMachineIdentities, type HomeProjectMachineIdentity } from '@/session/homeProjectMachineIdentity';
+import {
+  buildHomeDeviceMachineIdentities,
+  buildHomeProjectMachineIdentities,
+  homeSessionDeviceId,
+  type HomeProjectMachineIdentity,
+} from '@/session/homeProjectMachineIdentity';
 import {
   HomeNativeStackHeader,
   NativePullDownMenu,
@@ -2045,10 +2050,6 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
     }),
     [deviceModels, scheduleIndex, selectedDeviceId, homeSessions, t],
   );
-  const projectMachineIdentities = useMemo(
-    () => buildHomeProjectMachineIdentities(home, deviceConnectionStates),
-    [home, deviceConnectionStates],
-  );
   const runningSessionIds = useMemo(() => {
     const ids = new Set<string>();
     for (const session of homeSessions) {
@@ -2117,6 +2118,19 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
   const filteredHome = useMemo(
     () => applyHomeContentFilters(sharedGroup.home, contentFilters, filterTick || Date.now()),
     [contentFilters, filterTick, sharedGroup.home],
+  );
+  // 机器标注按「筛选后仍在列表里」的行统计撞名(sidebar-redesign-plan「远程项目的机器标注」):
+  // 用共享拆分与内容筛选之后的 filteredHome,被筛掉的同名电脑不再迫使剩下的一台附 ID。
+  // 有意不随手动折叠(收起项目 / 置顶区、对话组预览、查看全部)变化,否则展开收起会让
+  // 其他行的标签在「Mac」与「Mac · ID」之间跳变;桌面项目分组同口径。
+  const projectMachineIdentities = useMemo(
+    () => buildHomeProjectMachineIdentities(filteredHome, deviceConnectionStates),
+    [filteredHome, deviceConnectionStates],
+  );
+  // Top-level chats and pinned tasks have no project header to say which computer owns them.
+  const deviceMachineIdentities = useMemo(
+    () => buildHomeDeviceMachineIdentities(filteredHome, deviceConnectionStates),
+    [filteredHome, deviceConnectionStates],
   );
   const homeSections = useMemo(
     () => buildHomeSections(filteredHome, groupByProject, pinnedCollapsed, {
@@ -2763,7 +2777,11 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
       expandedAutomationGroups={expandedAutomationGroups}
       isLastPinnedRow={section.key === 'pinned' && index === section.data.length - 1 && sections.length > 1}
       item={item}
+      chatMachineIdentities={item.kind === 'dialogue' ? deviceMachineIdentities : undefined}
       machineIdentity={isFolderHomeRow(item) ? projectMachineIdentities.get(item.project.key) : undefined}
+      sessionMachineIdentity={item.kind === 'session' && (item.source === 'chat' || item.source === 'pinned')
+        ? deviceMachineIdentities[homeSessionDeviceId(item.item.session) ?? '']
+        : undefined}
       nextIsBlock={isBlockHomeRow(section.data[index + 1])}
       onArchive={archiveSession}
       onOpenAutomationGroup={openAutomationGroup}
@@ -2814,6 +2832,7 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
     toggleSessionPinned,
     homeScrollY,
     screenHeight,
+    deviceMachineIdentities,
     projectMachineIdentities,
   ]);
 
@@ -3799,6 +3818,7 @@ function ProjectRow({
   dragging = false,
   expandedAutomationGroups,
   headerRefs,
+  chatMachineIdentities,
   kind = 'project',
   machineIdentity,
   onDragEnd,
@@ -3821,6 +3841,8 @@ function ProjectRow({
   collapsed: boolean;
   dragging?: boolean;
   expandedAutomationGroups: readonly string[];
+  /** 仅「对话」组:组内对话行按所属电脑标注(项目组由项目头标注,不重复)。 */
+  chatMachineIdentities?: Readonly<Record<string, HomeProjectMachineIdentity>>;
   headerRefs?: MutableRefObject<Map<string, View>>;
   kind?: 'project' | 'dialogue' | 'cindy-make';
   machineIdentity?: HomeProjectMachineIdentity;
@@ -4090,6 +4112,7 @@ function ProjectRow({
                 hideDivider={hiddenRowCount === 0 && index === visibleSessions.length - 1}
                 indented
                 item={item}
+                machineIdentity={chatMachineIdentities?.[homeSessionDeviceId(item.session) ?? '']}
                 onOpenAutomationGroup={onOpenAutomationGroup}
                 onOpenSession={onOpenSession}
                 onToggleAutomationGroup={onToggleAutomationGroup}
@@ -4175,6 +4198,7 @@ function homeListRowPropsEqual(
 
 function HomeListRowInner({
   expandedAutomationGroups,
+  chatMachineIdentities,
   isLastPinnedRow,
   item,
   machineIdentity,
@@ -4199,10 +4223,12 @@ function HomeListRowInner({
   homeScrollY,
   viewportHeight,
   registry,
+  sessionMachineIdentity,
   showAllDialogue,
   swipe,
 }: {
   expandedAutomationGroups: readonly string[];
+  chatMachineIdentities?: Readonly<Record<string, HomeProjectMachineIdentity>>;
   /** 置顶组展开态:行进入置顶卡片内的缩进/描边形态(CINDY list 视觉)。 */
   isLastPinnedRow: boolean;
   item: HomeRow;
@@ -4228,6 +4254,8 @@ function HomeListRowInner({
   homeScrollY?: SharedValue<number>;
   viewportHeight: number;
   registry: ReturnType<typeof createSwipeRowRegistry>;
+  /** 顶层对话 / 置顶行所属电脑的标识(无项目头可依附)。 */
+  sessionMachineIdentity?: HomeProjectMachineIdentity;
   showAllDialogue: boolean;
   swipe: SessionSwipeControls;
 }) {
@@ -4238,6 +4266,7 @@ function HomeListRowInner({
         dragging={projectDragging}
         expandedAutomationGroups={expandedAutomationGroups}
         headerRefs={projectHeaderRefs}
+        chatMachineIdentities={chatMachineIdentities}
         kind={item.kind}
         machineIdentity={machineIdentity}
         onDragEnd={item.kind === 'project' ? onProjectDragEnd : undefined}
@@ -4266,6 +4295,7 @@ function HomeListRowInner({
       expandedAutomationGroups={expandedAutomationGroups}
       hideDivider={nextIsBlock || isLastPinnedRow}
       item={item.item}
+      machineIdentity={sessionMachineIdentity}
       onOpenAutomationGroup={onOpenAutomationGroup}
       onOpenSession={onOpenSession}
       onToggleAutomationGroup={onToggleAutomationGroup}
@@ -4310,6 +4340,7 @@ function HomeSessionRowInner({
   hideDivider = false,
   indented = false,
   item,
+  machineIdentity,
   onLongPress,
   onOpenAutomationGroup,
   onOpenSession,
@@ -4347,6 +4378,8 @@ function HomeSessionRowInner({
   hideDivider?: boolean;
   indented?: boolean;
   item: RemoteSessionListItem;
+  /** 任务所属电脑(非 Agent 运行位置);仅无项目头的顶层 / 对话组 / 置顶行传入。 */
+  machineIdentity?: HomeProjectMachineIdentity;
   onLongPress?: () => void;
   /** 组展开后子运行超过限量时,点「查看全部 N 次运行」进入该任务的专属列表页(与项目组一致)。 */
   onOpenAutomationGroup?: (group: RemoteAutomationSessionGroup) => void;
@@ -4552,11 +4585,18 @@ function HomeSessionRowInner({
               <Text
                 ellipsizeMode="tail"
                 numberOfLines={1}
-                style={styles.sessionSourceLabel}
+                style={[styles.sessionSourceLabel, machineIdentity && styles.sessionSourceLabelKeep]}
                 testID={`home.sessionSourceLabel.${item.session.id}`}
               >
                 {sourceLabel}
               </Text>
+            ) : null}
+            {machineIdentity ? (
+              <HomeProjectMachineLabel
+                identity={machineIdentity}
+                labelStyle={styles.sessionMachineLabel}
+                testID={`home.sessionMachineLabel.${item.session.id}`}
+              />
             ) : null}
             {textMode && (showSchedule || showPinned) ? (
               <View style={styles.sessionInlineIcons}>
@@ -5299,6 +5339,14 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     lineHeight: lineHeight.body,
     maxWidth: '42%',
     minWidth: 0,
+  },
+  // 与机器标识并排时:「对话」来源标签保持完整,机器名封顶后先截断。
+  // 标题组是 flex:1(基准 0),溢出时最先被压到 0;机器名封顶 72,标题至少能留出几个字。
+  sessionSourceLabelKeep: {
+    flexShrink: 0,
+  },
+  sessionMachineLabel: {
+    maxWidth: 72,
   },
 
   sharedRoleSlot: {
