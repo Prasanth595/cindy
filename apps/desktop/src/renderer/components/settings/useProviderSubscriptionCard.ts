@@ -80,12 +80,15 @@ export function buildSettingsCodexUsageCard(
   );
 }
 
-export function useProviderSubscriptionCard(provider?: ProviderView): UsageCardAccount | null {
+export function useProviderSubscriptionCard(
+  provider?: ProviderView,
+  options: { queueIfPending?: boolean } = {},
+): UsageCardAccount | null {
   const { t, i18n } = useTranslation();
   // Suspension only disables routing; settings must still show the saved account.
   const source = provider ? providerWeeklyQuotaSource({ ...provider, suspended: false }) : null;
   const providerId = provider?.id ?? 'openai';
-  const { snapshot } = useCodexRateLimits(source === 'codex', providerId);
+  const { snapshot } = useCodexRateLimits(source === 'codex', providerId, options);
   const account = useAccountUsage(
     undefined,
     source === 'codex' ? 'codex' : undefined,
@@ -166,7 +169,9 @@ export function useDeviceProviderSubscriptionCard(
     options.live && source ? deviceId ?? undefined : undefined,
   );
   const previousEpoch = useRef(epoch);
-  const local = useProviderSubscriptionCard(deviceId === null ? activeProvider : undefined);
+  const local = useProviderSubscriptionCard(deviceId === null ? activeProvider : undefined, {
+    queueIfPending: options.live === true,
+  });
   const remote = useRemoteProviderSubscriptionCard(
     deviceId === null ? undefined : activeProvider,
     deviceId,

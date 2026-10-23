@@ -328,6 +328,30 @@ describe('useDeviceProviderSubscriptionCard', () => {
     expect(remaining(hook.result.current)).toEqual([['primary', 91]]);
   });
 
+  // Unit regression r4362108215 / provider-groups.md §10: remote recovery tests
+  // did not cover the local native hook. Hide/resume during its first pending
+  // read, then fail the queued reread: the first successful quota must remain.
+  it('keeps a pending local quota result across foreground resume and queues one reread', async () => {
+    const openai = provider('openai', { method: 'oauth', native: 'codex' });
+    const native = { account: { planType: 'plus' }, rateLimits: { primary: { usedPercent: 73, windowMinutes: 300 } } };
+    let resolveFirst!: (value: typeof native) => void;
+    let rejectNext!: (error: Error) => void;
+    mocks.readLocal.mockImplementationOnce(() => new Promise(resolve => { resolveFirst = resolve; }))
+      .mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectNext = reject; }));
+    const hook = renderHook(() => useDeviceProviderSubscriptionCard(openai, null, { live: true }));
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+    act(() => document.dispatchEvent(new Event('visibilitychange')));
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
+    act(() => document.dispatchEvent(new Event('visibilitychange')));
+    expect(mocks.readLocal).toHaveBeenCalledTimes(1);
+    await act(async () => resolveFirst(native));
+    expect(remaining(hook.result.current)).toEqual([['primary', 73]]);
+    expect(mocks.readLocal).toHaveBeenCalledTimes(2);
+    await act(async () => rejectNext(new Error('quota temporarily unavailable')));
+    expect(remaining(hook.result.current)).toEqual([['primary', 73]]);
+    expect(mocks.invoke).not.toHaveBeenCalled();
+  });
+
   it('refreshes the local account on the same live-card interval without querying another computer', async () => {
     const openai = provider('openai', { method: 'oauth', native: 'codex' });
     const native = (usedPercent: number) => ({
