@@ -477,7 +477,10 @@ export class PiBackgroundCommands {
     this.options = options;
     this.platform = options.platform ?? process.platform;
     this.maxRunning = options.maxRunning ?? PI_BACKGROUND_COMMAND_MAX_RUNNING;
-    liveManagers.add(this);
+    // 不在构造时登记：PiAgent 先创建它再 createTransport，传输/进程创建失败时
+    // 没有任何 catch 会 dispose，失败的会话就会在 liveManagers 里留下环境、回调
+    // 与关联对象（重试也不会撤销）。真正的登记点是第一次 start —— 那才是「本进程
+    // spawn 过该会话的后台命令」这个判据成立的时候（见 hasPiBackgroundCommandManagerForRoot）。
   }
 
   /**
@@ -511,6 +514,7 @@ export class PiBackgroundCommands {
    */
   async start(request: PiBackgroundCommandStartRequest): Promise<{ taskId: string; logPath: string }> {
     if (this.disposed) throw new Error('Background commands are unavailable for this task.');
+    liveManagers.add(this);
     const command = typeof request.command === 'string' ? request.command : '';
     if (!command.trim()) throw new Error('A background command requires a non-empty command.');
     if (command.length > PI_BACKGROUND_COMMAND_MAX_CHARS) {

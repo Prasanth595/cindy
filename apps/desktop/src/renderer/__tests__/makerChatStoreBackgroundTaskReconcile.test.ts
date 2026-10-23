@@ -598,6 +598,45 @@ describe('活动熄灭触发的 stale running 对账', () => {
     }
   });
 
+  it('请求在飞期间 active:true 作废响应时按剩余预算补挂,不丢这次仲裁', async () => {
+    const sid = `stop-inflight-${Math.random().toString(36).slice(2, 8)}`;
+    try {
+      applyTask(sid, {
+        provider: 'pi',
+        taskId: 'bash-inflight',
+        status: 'running',
+        taskType: 'local_bash',
+      });
+      // 第一次请求一直挂着：响应回来时已经是旧代际。
+      let settleFirst: ((value: { tasks: unknown[] }) => void) | null = null;
+      listTasks.mockImplementationOnce(
+        () => new Promise((resolve) => { settleFirst = resolve; }),
+      );
+      makerChatStore.requestBackgroundTaskReconcile(sid, 100);
+      await vi.advanceTimersByTimeAsync(110);
+      expect(listTasks).toHaveBeenCalledTimes(1);
+
+      // 请求在飞窗口内会话重新活跃 → 代际作废。
+      emitActivity({ sessionId: sid, active: true });
+      settleFirst?.({ tasks: [] });
+      await vi.advanceTimersByTimeAsync(0);
+      // 旧响应被丢弃，僵尸行仍是 running（还没被仲裁）。
+      expect(makerChatStore.getSnapshot(sid).taskUpdates?.get('bash-inflight')?.status).toBe(
+        'running',
+      );
+
+      // 补挂的那次请求落地 → 收口。若销账发生在请求发出前，这里就永远不会有第二次。
+      await vi.advanceTimersByTimeAsync(1200);
+      expect(listTasks).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(makerChatStore.getSnapshot(sid).taskUpdates?.get('bash-inflight')?.status).toBe(
+        'stopped',
+      );
+    } finally {
+      makerChatStore.purgeSession(sid);
+    }
+  });
+
   it('停止点击后的补挂有预算上限(活跃会话里不会退化成轮询)', async () => {
     const sid = `stop4-${Math.random().toString(36).slice(2, 8)}`;
     try {

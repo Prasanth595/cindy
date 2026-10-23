@@ -7585,6 +7585,12 @@ const backgroundTaskStopReconcilePending = new Map<string, PendingStopReconcile>
 function clearPendingStopBackgroundTaskReconcile(sessionId: string): void {
   backgroundTaskStopReconcilePending.delete(sessionId);
 }
+/** 按剩余预算重新挂一次停止后的对账(响应被作废时用)。 */
+function rearmStopReconcile(sessionId: string): void {
+  const rearmDelayMs = takeStopReconcileRearm(sessionId);
+  if (rearmDelayMs !== null) scheduleBackgroundTaskReconcile(sessionId, rearmDelayMs);
+}
+
 /** 取一次补挂机会(消耗预算);预算用尽返回 null。 */
 function takeStopReconcileRearm(sessionId: string): number | null {
   const pending = backgroundTaskStopReconcilePending.get(sessionId);
@@ -7665,12 +7671,9 @@ function scheduleBackgroundTaskReconcile(
       if ((backgroundTaskReconcileEpoch.get(sessionId) ?? 0) !== reconcileEpochAtSchedule) {
         // 代际被作废(active 翻转 / purge)。停止点击后的那次对账不能就这么消失:按新
         // 代际再挂一次(预算有限)。熄灭沿的定时器没有 pending 标记,照旧直接丢弃。
-        const rearmDelayMs = takeStopReconcileRearm(sessionId);
-        if (rearmDelayMs !== null) scheduleBackgroundTaskReconcile(sessionId, rearmDelayMs);
+        rearmStopReconcile(sessionId);
         return;
       }
-      // 真正发出请求才销账(上面的作废分支已经取走预算)。
-      clearPendingStopBackgroundTaskReconcile(sessionId);
       // 触发沿复查远程归属(粘滞版):调度沿已筛过,但 3s 窗口内会话可能被识别
       // 为远程(启动期 registry 迟到水合等)。误放行的代价是拿本机空快照把镜像
       // 里真实在跑的任务错误收口,必须再拦一次。
@@ -7697,11 +7700,20 @@ function scheduleBackgroundTaskReconcile(
           if (
             (backgroundTaskReconcileEpoch.get(sessionId) ?? 0) !== reconcileEpochAtSchedule
           ) {
+            // 响应作废 ≠ 这次点击的仲裁已落地：销账必须等到响应被接受，否则在飞
+            // 窗口内的 active:true 会让「已销账 + 响应被丢弃」同时成立，僵尸行再
+            // 也没有补挂机会（预算还没用完也一样）。按新代际重挂。
+            rearmStopReconcile(sessionId);
             return;
           }
           // 响应落地前再复查一次:请求在飞期间远程注册表才完成会话水合的话,
           // 本机「查无此会话」的空表不可用于收口镜像任务。
-          if (isRemoteSessionSticky(sessionId)) return;
+          if (isRemoteSessionSticky(sessionId)) {
+            rearmStopReconcile(sessionId);
+            return;
+          }
+          // 到这里这次快照真的被接受了，才销账。
+          clearPendingStopBackgroundTaskReconcile(sessionId);
           makerChatStore.seedBackgroundTaskSnapshots(sessionId, tasks, {
             staleRunningCandidates,
             reconcileWakeBridge: capturedWakeBridge,
