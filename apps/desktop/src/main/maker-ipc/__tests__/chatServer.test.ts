@@ -162,6 +162,25 @@ describe('Chat Server result delivery and refresh', () => {
     service = withChatServer({ listGroups: vi.fn(async () => ({ ok: true, groups: [] })), settleLaneTurn: vi.fn(async () => false), dispose: vi.fn() } as unknown as BotGroupChatService, deps);
   });
   afterEach(() => { service.dispose(); vi.useRealTimers(); vi.unstubAllEnvs(); fixture.config = ''; vi.clearAllMocks(); });
+  // #6907: getGroup feeds Desktop and remote phones. Existing fixtures never pair group name A
+  // with the bot's account ownerName B; exercise the production projection (unit tier).
+  it.each(['Nickname A', 'Account B', '   ', null] as const)('uses the current room owner name %s with safe account fallback', async name => {
+    const ownerId = '30000000-0000-4000-8000-000000000002';
+    const bot = { id: botId, kind: 'bot', name: 'Companion X', state: 'joined', role: 'member', ownerActorId: ownerId, ownerName: 'Account B' };
+    const members = [bot, ...(name === null ? [] : [{ id: ownerId, kind: 'human', name, state: 'joined', role: 'member', ownerActorId: ownerId }])];
+    const messages = [{ id: execution.source_message_id, seq: '1', authorId: botId, author: { kind: 'bot', name: 'Companion X' },
+      content: [{ type: 'text', text: 'Example reply' }], createdAt: '2026-10-03T00:00:00Z', deleted: false, threadRootId: null }];
+    if (name !== null) messages.push({ ...messages[0], id: '50000000-0000-4000-8000-000000000002', seq: '2', authorId: ownerId,
+      author: { kind: 'human', name: 'Account B' }, content: [{ type: 'text', text: 'Example owner message' }], createdAt: '2026-10-03T00:06:00Z' });
+    fixture.handle.mockImplementation(route => route.endsWith('/snapshot') ? { body: { room: room(roomId), members, messages, cursor: '1' } } : route.includes('/messages?') ? { body: messages } : response(route));
+    const result = await service.getGroup(roomId);
+    if (!result.ok) throw new Error(result.errorCode);
+    const owner = name?.trim() || 'Account B';
+    expect(result.group.members.find(m => m.actorId === botId)).toMatchObject({ name: `Companion X (${owner})`, ownerName: owner, ownerActorId: ownerId, isOwned: false });
+    expect(result.group.messages[0]).toMatchObject({ authorName: `Companion X (${owner})`, authorBotId: botId });
+    if (name !== null) expect(result.group.messages[1]).toMatchObject({ authorName: name, authorBotId: ownerId, authorKind: 'user' });
+    expect(bot).toMatchObject({ name: 'Companion X', ownerName: 'Account B', ownerActorId: ownerId });
+  });
   it('uses the mobile edited revision instead of a newer server snapshot when saving settings', async () => {
     await service.updateGroup({ groupId: roomId, name: 'Draft', expectedRevision: 7 });
     expect(fixture.handle).toHaveBeenCalledWith(`/conversations/${roomId}`, 'PATCH', expect.objectContaining({ name: 'Draft', expectedRevision: 7 }));

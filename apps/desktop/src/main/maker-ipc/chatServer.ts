@@ -46,7 +46,7 @@ import {
 import type { BotGroupChatService, BotGroupChatServiceDeps, BotGroupLaneTerminal, BotGroupTaskPostInput, BotGroupTaskPostResult } from './botGroupChatService.js';
 import { readPersistedReplyText } from './botGroupChatService.js';
 import { botGroupRuntimeFailureCode, botGroupRuntimeFailureDetail } from './botGroupRuntimeFailure.js';
-import { botGroupExecutionFailureBatches } from '@cindy/maker-shared/botGroupPresentation';
+import { chatGroupMemberName as memberName, chatGroupOwnerName, botGroupExecutionFailureBatches } from '@cindy/maker-shared/botGroupPresentation';
 import { createThreadProjection, isShareableThreadReply, threadPreviewAttachments, threadPreviewText } from './chatServerThreads.js';
 import { companionSnapshot, registerCompanionHomes } from '../companion-cloud/homes.js';
 import { startCompanionCloud, type CompanionCloudRuntime } from '../companion-cloud/runtime.js';
@@ -259,8 +259,6 @@ function quoteContext(m: Message, history: readonly Message[]) {
     text: original ? botGroupQuoteExcerpt(quotedText(original)) : quote.excerpt,
     ...(files ? quoteAttachments(files.length, botGroupQuoteAttachmentName(files)) : quoteAttachments(quote.attachmentCount, quote.attachmentName)) } };
 }
-// Presentation only: keep actor IDs and stored names independent of ownership labels.
-const memberName = (m: Member) => m.kind === 'bot' && m.ownerName.trim() ? `${m.name} (${m.ownerName.trim()})` : m.name;
 /** A person's request that 「继续讨论」 may restart; a re-posted thread reply is not a new request. */
 const discussionSource = (m: Message) => !m.deleted && m.origin !== 'system' && m.author.kind === 'human'
   && !m.content.some(b => b.namespace === 'cindy.plan') && !readBotGroupThreadShareCard(m);
@@ -1045,7 +1043,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     const task = m.deleted || planCard ? null : taskCardOf(m);
     return { id: m.id, sequence: Number(m.seq), deleted: m.deleted, kind: planCard ? 'plan' : 'message', authorKind: legacy?.authorKind === 'system' ? 'system' : m.author.kind === 'human' ? 'user' : 'bot',
       isSelf: m.authorId === selfId, threadRootId: m.threadRootId, replyCount: m.replyCount ?? 0, reactions: m.reactions ?? [], ...(quote ? { quote } : {}), ...(task ? { task } : {}),
-      authorBotId: localBot(m.authorId)?.id ?? m.authorId, authorName: legacy?.authorKind === 'system' && typeof legacy.authorName === 'string' ? legacy.authorName : member ? memberName(member) : m.author.name, content: displayText(m),
+      authorBotId: localBot(m.authorId)?.id ?? m.authorId, authorName: legacy?.authorKind === 'system' && typeof legacy.authorName === 'string' ? legacy.authorName : member ? memberName(member, members) : m.author.name, content: displayText(m),
       mentions: { all: false, botIds: [] }, noticeCode: null, planId: typeof planCard?.data?.planId === 'string' ? planCard.data.planId : null, files: [], attachments: [], createdAt: Date.parse(m.createdAt) };
   }
   /**
@@ -1310,13 +1308,13 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       members: s.members.filter(m => m.state === 'joined').map(m => {
         const p = localBot(m.id);
         return { botId: p?.id ?? m.id, actorId: m.id, actorKind: m.kind, isSelf: m.id === selfId,
-          role: m.role, nickname: m.nickname, groupAvatar: m.groupAvatar ?? null, defaultAvatarUrl: m.defaultAvatarUrl ?? null, displayName: m.displayName, ownerActorId: m.ownerActorId, ownerName: m.ownerName,
+          role: m.role, nickname: m.nickname, groupAvatar: m.groupAvatar ?? null, defaultAvatarUrl: m.defaultAvatarUrl ?? null, displayName: m.displayName, ownerActorId: m.ownerActorId, ownerName: m.kind === 'bot' ? chatGroupOwnerName(m, s.members) : m.ownerName,
           isOwned: m.ownerActorId === selfId, guestAccess: m.guestAccess, accessRevision: m.accessRevision,
           // Which computer runs my companion: a phone reaching this group through this computer
           // reads the companion's tasks there, not here (bot-group-chat.md §10).
           ...(m.ownerActorId === selfId && m.kind === 'bot' ? { homeDeviceId: actors.find(a => a.id === m.id)?.homeDeviceId ?? null } : {}),
           avatarUrl: m.avatar?.startsWith('https://') ? m.avatar : null,
-          name: memberName(m), avatar: m.groupAvatar ? '' : p?.avatar ?? (m.avatar?.startsWith('https://') ? '' : m.avatar) ?? '', avatarColor: p?.avatarColor ?? 'violet', status: p?.status ?? 'active' };
+          name: memberName(m, s.members), avatar: m.groupAvatar ? '' : p?.avatar ?? (m.avatar?.startsWith('https://') ? '' : m.avatar) ?? '', avatarColor: p?.avatarColor ?? 'violet', status: p?.status ?? 'active' };
       }), organizerBotId: s.room.organizer_id ? localBot(s.room.organizer_id)?.id ?? s.room.organizer_id : s.members.find(m => m.kind === 'bot' && m.state === 'joined')?.id ?? null, projectDir: workspace?.projectDir ?? null, lastMessage: last && lastView ? {
         isSelf: lastView.isSelf, authorKind: lastView.authorKind, authorName: lastView.authorName, noticeCode: lastView.noticeCode,
         preview: lastIsShare ? '' : (botGroupMessageSummaryText(lastView) || mediaNames(last)).slice(0, 80), createdAt: lastView.createdAt, ...(lastIsShare ? { threadShare: true } : {}),
@@ -1436,7 +1434,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       const member = members.find(value => value.id === failure.botId);
       const cachedCode = failureCodes.get(`${failure.executionId}:${failure.epoch}`);
       return [{ ...failure, botId: localBot(failure.botId)?.id ?? failure.botId,
-        botName: member ? memberName(member) : actors.find(actor => actor.id === failure.botId)?.name ?? '',
+        botName: member ? memberName(member, members) : actors.find(actor => actor.id === failure.botId)?.name ?? '',
         code: !isBotGroupRuntimeFailureCode((row as Record<string, unknown>).failure_code) && cachedCode ? cachedCode : failure.code }];
     });
   }
@@ -2266,7 +2264,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       const members = await api<Member[]>(`/conversations/${room}/members`);
       const author = members.find(member => member.id === source.authorId);
       const card = buildBotGroupThreadShareCard({ messageId: source.id, threadRootId: source.threadRootId!,
-        authorName: author ? memberName(author) : source.author.name,
+        authorName: author ? memberName(author, members) : source.author.name,
         text: threadPreviewText(source) || threadPreviewAttachments(source, attachmentName).map(file => file.name).join(', ') });
       try {
         const posted = await api<{ id: string }>(`/conversations/${room}/messages`, 'POST', {
@@ -2333,7 +2331,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       }
       return { reactors: [...actorIds].map(actorId => {
         const member = members.find(m => m.id === actorId);
-        return { actorId, name: member ? memberName(member) : null, isSelf: actorId === self, formerMember: !!member && member.state !== 'joined' };
+        return { actorId, name: member ? memberName(member, members) : null, isSelf: actorId === self, formerMember: !!member && member.state !== 'joined' };
       }) };
     }),
     createInvite: input => result(async () => {

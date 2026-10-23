@@ -502,6 +502,7 @@ Desktop 主群输入框发送即乐观显示：点发送后消息立即接在时
 手机直连入口同样在发送前读取已加入成员、校验全部显式目标，再展开所有人。点名失效沿用本地化提示和草稿恢复，不把群页标为离线；重选当前成员后可以立即继续发送。回归见 `chatServerMobileEntry.test.tsx` 与 `BotGroupChatScreen.test.tsx`。
 
 多人群里的伙伴统一显示为 `伙伴名 (主人昵称)`，例如 `Cindy (Chris)`，便于区分不同人带来的同名伙伴。消息、Thread、成员列表、侧栏摘要与 @ 候选使用同一显示名；后缀仅用于展示，身份、授权和 @ 路由仍依据唯一 ID。已有短名 @ 继续可用，选取完整名字时只点名对应伙伴。
+主人名称按 `ownerActorId` 关联当前群已加入的人类成员，复用其有效群名称（含群昵称），缺失或空白时回退到伙伴原有的 `ownerName`；均不可用时不加后缀。Desktop 与手机直连共用 `maker-shared/botGroupPresentation.ts` 的解析规则，手机经电脑读取沿用 Desktop 投影。昵称刷新沿既有成员资料读取与页面刷新规则生效，不重写历史消息、全局资料或归属字段。回归见 `chatServer.test.ts` 与 `chatServerClient.test.ts`。
 
 Desktop 主群与 Thread 的表情回应徽标参考 Telegram：某个表情的回应者不超过 3 人时，徽标直接显示他们的头像
 （替代数字，不需要悬停）；超过 3 人时显示数字。头像按 Actor ID 从群成员投影取，同名伙伴各用自己的头像；

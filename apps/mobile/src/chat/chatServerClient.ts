@@ -1,7 +1,7 @@
 import { createConversationListState } from '@cindy/maker-shared/chatConversationList';
 /** The existing Chat Server HTTP contract; no device-link or executor registration. */
 import { botGroupMessageSummaryText, readBotGroupExecutionFailure, readBotGroupQuote, readBotGroupQuoteCard, readBotGroupTaskCard, readImportedBotGroupRuntimeFailureCode, type BotGroupAttachment, type BotGroupMemberView, type BotGroupMessageView, type BotGroupRemoteChatData } from '@cindy/maker-shared/botGroupChat';
-import { botGroupExecutionFailureBatches, projectBotGroupExecutionFailures } from '@cindy/maker-shared/botGroupPresentation';
+import { chatGroupMemberName as memberName, botGroupExecutionFailureBatches, projectBotGroupExecutionFailures } from '@cindy/maker-shared/botGroupPresentation';
 import type { HostedRemoteCollectionItem } from '@/device-link/remoteResources';
 // The app's `@/i18n` sets up this default instance; importing it here would pull React bindings into a plain client.
 import i18next from 'i18next';
@@ -60,8 +60,6 @@ export function chatRejection(error: unknown, status: number, code: string): Rec
   const details = (error as { details?: unknown }).details;
   return details && typeof details === 'object' && !Array.isArray(details) ? details as Record<string, unknown> : {};
 }
-const memberName = (member: ChatMember) => member.kind === 'bot' && member.ownerName?.trim()
-  ? `${member.name} (${member.ownerName.trim()})` : member.name;
 // A recognized 引用回复 card renders as the quote; an unknown revision keeps its readable fallback.
 // A task card is the message's task only on a teammate's own message (bot-group-chat.md §10).
 const taskCardOf = (message: ChatMessage) => message.author.kind === 'bot' ? message.content.map(readBotGroupTaskCard).find(Boolean) ?? null : null;
@@ -86,14 +84,14 @@ export function chatRoomRow(room: ChatRoom, snapshot?: ChatSnapshot, selfId?: st
     .sort((a, b) => BigInt(chatCursor(a.seq)) < BigInt(chatCursor(b.seq)) ? 1 : -1)[0];
   return { key: `chat:${room.id}`, host: { deviceId: '', deviceName: '' },
     lastReplySequence: snapshot && selfId ? chatLastReplySequence(snapshot.messages, selfId) : undefined,
-    groupMembers: snapshot ? members.map(chatMemberIdentity) : undefined, item: {
+    groupMembers: snapshot ? members.map(member => chatMemberIdentity(member, members)) : undefined, item: {
     ref: { collectionId: 'bot-groups', kind: 'bot-group', id: room.id },
     revision: String(room.head ?? room.revision), display: { title: room.name,
-      subtitle: members.map(memberName).join(' · '),
-      ...(snapshot ? { preview: last ? (botGroupMessageSummaryText({ content: contentText(last), task: taskCardOf(last) ?? undefined, deleted: last.deleted }) || mediaNames(last)).slice(0, 160) || members.map(memberName).join(' · ') : '' } : {}),
+      subtitle: members.map(member => memberName(member, members)).join(' · '),
+      ...(snapshot ? { preview: last ? (botGroupMessageSummaryText({ content: contentText(last), task: taskCardOf(last) ?? undefined, deleted: last.deleted }) || mediaNames(last)).slice(0, 160) || members.map(member => memberName(member, members)).join(' · ') : '' } : {}),
       timestamp: Date.parse(last?.createdAt ?? room.updated_at),
       lastReplyAt: snapshot && selfId ? chatLastReplyAt(snapshot.messages, selfId) : undefined },
-    links: members.map(member => ({ rel: 'member', label: memberName(member),
+    links: members.map(member => ({ rel: 'member', label: memberName(member, members),
       target: { kind: 'resource', ref: { collectionId: 'teammates', kind: 'bot', id: member.id } } })),
   } };
 }
@@ -132,8 +130,8 @@ function chatMemberAvatar(value: string | null): Pick<BotGroupMemberView, 'avata
   return { avatar, avatarUrl: null };
 }
 
-function chatMemberIdentity(member: ChatMember) {
-  return { botId: member.id, name: memberName(member), ...chatMemberAvatar(member.avatar), avatarColor: '' };
+function chatMemberIdentity(member: ChatMember, members: readonly ChatMember[]) {
+  return { botId: member.id, name: memberName(member, members), ...chatMemberAvatar(member.avatar), avatarColor: '' };
 }
 
 /**
@@ -144,7 +142,7 @@ export function chatGroupView(page: ChatPage, selfId: string, actors: readonly C
   const { room, members } = page.snapshot;
   const active = members.filter(member => member.state === 'joined');
   const memberViews: BotGroupMemberView[] = active.map(member => ({
-    ...chatMemberIdentity(member), actorId: member.id, actorKind: member.kind, isSelf: member.id === selfId,
+    ...chatMemberIdentity(member, members), actorId: member.id, actorKind: member.kind, isSelf: member.id === selfId,
     isOwned: member.ownerActorId === selfId, role: member.role,
     ...(member.ownerActorId === selfId && member.kind === 'bot'
       ? { homeDeviceId: actors.find(actor => actor.id === member.id)?.homeDeviceId ?? null } : {}),
@@ -169,7 +167,7 @@ export function chatGroupView(page: ChatPage, selfId: string, actors: readonly C
       ...(task ? { task } : {}),
       authorKind: message.origin === 'system' ? 'system' : message.author.kind === 'human' ? 'user' : 'bot',
       authorBotId: message.authorId, authorName: joined && typeof joined.data?.displayName === 'string' ? joined.data.displayName
-        : member ? memberName(member) : message.author.name,
+        : member ? memberName(member, members) : message.author.name,
       isSelf: message.authorId === selfId, content: contentText(message), mentions: { all: false, botIds: [] },
       ...(quote ? { quote: deletedIds.has(quote.messageId) ? { ...quote, originalDeleted: true } : quote } : {}),
       noticeCode: joined ? 'member-joined' : null, planId: null, files: [],
@@ -184,7 +182,7 @@ export function chatGroupView(page: ChatPage, selfId: string, actors: readonly C
     const failure = readBotGroupExecutionFailure(row, room.id);
     if (!failure) return [];
     const member = members.find(candidate => candidate.id === failure.botId);
-    return [{ ...failure, botName: member ? memberName(member) : '' }];
+    return [{ ...failure, botName: member ? memberName(member, members) : '' }];
   });
   return { id: room.id, name: room.name, serverBacked: true, supportsGroupLeave: true, dissolvedAt: room.dissolved_at ?? null, archived: room.archived, selfActorId: selfId,
     revision: room.revision, members: memberViews, replyMode: room.response_mode, speakingMode: room.speaking_mode,

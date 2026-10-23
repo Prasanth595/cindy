@@ -13,6 +13,26 @@ const snapshot = (): ChatSnapshot => ({ room: room(), cursor: '9007199254741099'
 ] });
 
 describe('direct Chat Server client', () => {
+  // #6907: existing fixtures never pair a human's group name A with account ownerName B (unit tier).
+  it('keeps owner labels scoped to each group and follows refreshed names without changing identities', () => {
+    const human = { ...snapshot().members[0], name: 'Nickname A' };
+    const bot = { ...human, id: id(12), kind: 'bot' as const, name: 'Companion X', ownerName: 'Account B' };
+    const messages = [message(20), { ...message(21), authorId: bot.id, author: { kind: 'bot', name: bot.name } }];
+    const group = (name: string, roomNumber = 1) => ({ ...snapshot(), room: room(roomNumber), members: [{ ...human, name }, bot], messages });
+    const project = (s: ChatSnapshot) => chatGroupView({ snapshot: s, messages, before: null }, id(11));
+    const first = group('Nickname A');
+    expect(project(first).messages.map(m => m.authorName)).toEqual(['Nickname A', 'Companion X (Nickname A)']);
+    expect(chatRoomRow(first.room, first).item.display.subtitle).toBe('Nickname A · Companion X (Nickname A)');
+    expect(project(group('Nickname C')).messages[1].authorName).toBe('Companion X (Nickname C)');
+    expect(project(group('Nickname D', 2)).messages[1].authorName).toBe('Companion X (Nickname D)');
+    expect(project(first).messages[1].authorName).toBe('Companion X (Nickname A)');
+    for (const name of ['Account B', '   ']) expect(project(group(name)).messages[1].authorName).toBe('Companion X (Account B)');
+    expect(project({ ...first, members: [bot] }).messages[1].authorName).toBe('Companion X (Account B)');
+    expect(project({ ...first, members: [{ ...human, state: 'left' }, bot] }).messages[1].authorName).toBe('Companion X (Account B)');
+    expect(project({ ...first, members: [{ ...bot, ownerName: '   ' }] }).messages[1].authorName).toBe('Companion X');
+    expect(project(first).members.find(m => m.actorId === bot.id)).toMatchObject({ botId: bot.id, isOwned: false });
+    expect(bot).toMatchObject({ name: 'Companion X', ownerName: 'Account B', ownerActorId: human.id });
+  });
   it('reads a 引用回复 card as the quote, keeps it out of text and previews, and marks a deleted original', () => {
     const card = buildBotGroupQuoteCard({ messageId: id(20), authorName: 'Other member', authorKind: 'user', excerpt: 'original words',
       attachmentCount: 0, attachmentName: null, sequence: 20 });
