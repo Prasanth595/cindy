@@ -5,6 +5,8 @@
  */
 
 import path from 'node:path';
+import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 
 import { describe, expect, it, vi } from 'vitest';
 import {
@@ -47,9 +49,10 @@ import {
   type HookSessionRunner,
   type PrepareWorktreeResult,
 } from '../dispatcher';
+import type { HookMediaStore } from '../../cindy-media/hookOutbox';
 import type { HookBindingStore } from '../bindings';
 import { isPathWithin } from '../paths';
-import type { HookRequestLedger, HookTerminalRecord } from '../requestLedger';
+import { createHookRequestLedger, type HookRequestLedger, type HookTerminalRecord } from '../requestLedger';
 import type { HookConnectionConfig } from '../store';
 
 const noopLog = { info: () => {}, warn: () => {} };
@@ -222,6 +225,7 @@ function makeDispatcher(overrides?: {
   runner?: HookSessionRunner;
   bindings?: HookBindingStore;
   terminalLedger?: HookRequestLedger;
+  mediaStore?: HookMediaStore;
   config?: HookConnectionConfig | null;
   prepareWorktree?: HookDispatcherDeps['prepareWorktree'];
   buildContextPrefix?: HookDispatcherDeps['buildContextPrefix'];
@@ -245,6 +249,7 @@ function makeDispatcher(overrides?: {
       (() => (overrides?.config === undefined ? CONFIG : overrides.config)),
     bindings,
     terminalLedger: overrides?.terminalLedger,
+    mediaStore: overrides?.mediaStore,
     runner,
     prepareWorktree: overrides?.prepareWorktree,
     buildContextPrefix: overrides?.buildContextPrefix,
@@ -3230,48 +3235,90 @@ describe('dispatcher 核心语义', () => {
     }
   });
 
-  it('ACK 模式回执前重启 -> 新 dispatcher 从账本经 ACK 缓冲补发, 回执后收口 sent', async () => {
-    vi.useFakeTimers();
-    const firstRunner = fakeRunner();
-    const terminalLedger = memoryTerminalLedger();
-    const first = makeDispatcher({ runner: firstRunner.runner, terminalLedger });
-    const firstCollector = collector();
-    try {
-      first.d.onConnected('conn-1', firstCollector.send, [HOOK_FEATURE_TURN_DELIVERY]);
-      first.d.handleDispatch('conn-1', dispatch(), firstCollector.send);
-      await tick();
-      firstRunner.finish({ finalText: '重启前完成' });
-      await tick();
-      expect(terminalLedger.records[0]?.delivery).toBe('pending');
-      first.d.dispose();
+  // #6447: direct ledger tests missed dispatcher stripping media before persistence.
+  // Unit with a temporary ledger: offline X completion -> fresh dispatcher -> exact bytes + ACK.
+  it.each([['x', 'image/png'], ['x', 'video/mp4'], ['telegram', 'image/png']] as const)(
+    '%s 离线 %s 回复恢复遵循渠道附件约定, 回执后停止补发', async (provider, mimeType) => {
+      vi.useFakeTimers();
+      const firstRunner = fakeRunner();
+      const directory = mkdtempSync(path.join(tmpdir(), 'hook-media-recovery-'));
+      const mediaStore: HookMediaStore = {
+        prepare: vi.fn(async () => [{ url: `cindy-media://blobs/${'a'.repeat(64)}.mp4`,
+          refId: 'outbox-pin', name: 'clip.mp4', mimeType, bytes: 6 * 1024 * 1024 }]),
+        restore: vi.fn(async (turn) => ({ ...turn, attachments })),
+        release: vi.fn(async () => {}), prune: vi.fn(async () => {}),
+      };
+      const openLedger = () => createHookRequestLedger({ filePath: path.join(directory, 'ledger.json'),
+        log: noopLog, releaseMedia: mediaStore.release });
+      const terminalLedger = openLedger();
+      const attachments = [{
+        mimeType,
+        name: mimeType === 'video/mp4' ? 'clip.mp4' : 'shot.png',
+        dataBase64: Buffer.alloc(mimeType === 'video/mp4' ? 6 * 1024 * 1024 : 32, 7).toString('base64'),
+      }];
+      const first = makeDispatcher({ runner: firstRunner.runner, terminalLedger, mediaStore });
+      const firstCollector = collector();
+      let secondDispatcher: ReturnType<typeof makeDispatcher>['d'] | undefined;
+      try {
+        first.d.onConnected('conn-1', firstCollector.send, [HOOK_FEATURE_TURN_DELIVERY]);
+        first.d.handleDispatch('conn-1', dispatch({ source: { im: provider } }), firstCollector.send);
+        await tick();
+        firstCollector.setOnline(false);
+        firstRunner.finish({ finalText: '重启前完成', attachments });
+        await tick();
+        expect(terminalLedger.get('conn-1', 'req-1')?.delivery).toBe('pending');
+        expect(readFileSync(path.join(directory, 'ledger.json'), 'utf8')).not.toContain('dataBase64');
+        first.d.dispose();
 
-      const secondRunner = fakeRunner();
-      const second = makeDispatcher({ runner: secondRunner.runner, terminalLedger });
-      const secondCollector = collector();
-      second.d.onConnected('conn-1', secondCollector.send, [HOOK_FEATURE_TURN_DELIVERY]);
-      expect(secondRunner.calls).toHaveLength(0);
-      expect(secondCollector.ofType('turn.end')).toHaveLength(1);
-      expect(secondCollector.last('turn.end')?.payload).toMatchObject({
-        requestId: 'req-1',
-        finalText: '重启前完成',
-      });
-      // 回执到达前账本保持 pending; 回执后收口, 停止重放。
-      expect(terminalLedger.records[0]?.delivery).toBe('pending');
-      second.d.handleTurnDelivery('conn-1', {
-        requestId: 'req-1',
-        state: 'accepted',
-        attempt: 0,
-        retryAt: null,
-        error: null,
-      });
-      expect(terminalLedger.records[0]?.delivery).toBe('sent');
-      await vi.advanceTimersByTimeAsync(120_000);
-      expect(secondCollector.ofType('turn.end')).toHaveLength(1);
-      second.d.dispose();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
+        const secondRunner = fakeRunner();
+        const restoredLedger = openLedger();
+        const second = makeDispatcher({ runner: secondRunner.runner, terminalLedger: restoredLedger, mediaStore });
+        secondDispatcher = second.d;
+        const secondCollector = collector();
+        second.d.onConnected('conn-1', secondCollector.send, [HOOK_FEATURE_TURN_DELIVERY]);
+        await tick();
+        expect(secondRunner.calls).toHaveLength(0);
+        expect(secondCollector.ofType('turn.end')).toHaveLength(1);
+        expect(secondCollector.last('turn.end')?.payload).toMatchObject({
+          requestId: 'req-1',
+          finalText: '重启前完成',
+        });
+        const restoredAttachments = secondCollector.last('turn.end')?.payload.attachments;
+        if (provider === 'x') {
+          expect(restoredAttachments).toHaveLength(1);
+          expect(restoredAttachments?.[0]?.mimeType).toBe(mimeType);
+          expect(restoredAttachments?.[0]?.dataBase64 === attachments[0]!.dataBase64).toBe(true);
+        } else {
+          expect(restoredAttachments).toBeUndefined();
+        }
+        // 回执到达前账本保持 pending; 回执后收口, 停止重放。
+        expect(restoredLedger.get('conn-1', 'req-1')?.delivery).toBe('pending');
+        second.d.handleTurnDelivery('conn-1', {
+          requestId: 'req-1',
+          state: 'accepted',
+          attempt: 0,
+          retryAt: null,
+          error: null,
+        });
+        expect(restoredLedger.get('conn-1', 'req-1')?.delivery).toBe('sent');
+        expect(restoredLedger.get('conn-1', 'req-1')?.media).toBeUndefined();
+        if (provider === 'x') {
+          expect(mediaStore.release).toHaveBeenCalledTimes(1);
+          second.d.handleDispatch('conn-1', dispatch({ source: { im: provider } }), secondCollector.send);
+          await tick();
+          expect(secondCollector.ofType('turn.end')).toHaveLength(1); // no text-only duplicate
+        }
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(secondCollector.ofType('turn.end')).toHaveLength(1);
+        second.d.dispose();
+      } finally {
+        first.d.dispose();
+        secondDispatcher?.dispose();
+        rmSync(directory, { recursive: true, force: true });
+        vi.useRealTimers();
+      }
+    },
+  );
 
   it('同 socket 能力降级且回落发送失败 -> 旧退避 timer 被缴械, 不再向老 server 重放', async () => {
     vi.useFakeTimers();
@@ -5672,5 +5719,48 @@ describe('渠道 /stop 走统一明确停止', () => {
     expect(stopSessionExplicitly).not.toHaveBeenCalled();
     fr.finish();
     await deactivated;
+  });
+});
+
+// Official X companion routing: an authenticated dispatch uses only the host's
+// public lane, never the supplied private session. Revocation also stops queued
+// work. Ordinary workspace tests have no companion binding (unit).
+describe('official X companion assignment', () => {
+  it('routes to the companion lane and rejects queued work after unbinding', async () => {
+    const config = { ...CONFIG, id: 'account:x', workspaces: {}, companionBotId: 'bot-one' as string | null };
+    const fake = fakeRunner();
+    const out = collector();
+    const resolver = vi.fn(async () => ({ sessionId: 'public-lane', workingDir: '/companion/home' }));
+    const dispatcher = createHookDispatcher({ getConnection: () => config, bindings: memoryBindings(),
+      runner: fake.runner, resolveCompanionTarget: resolver, log: noopLog });
+    const payload = dispatch({ externalKey: 'x:thread:principal', source: { im: 'x' }, sessionId: 'private-chat' });
+    dispatcher.handleDispatch(config.id, payload, out.send);
+    await tick(30);
+    expect(fake.calls).toHaveLength(1);
+    expect(fake.calls[0]).toMatchObject({ sessionId: 'public-lane', companionBotId: 'bot-one', isNew: false });
+    expect(fake.calls[0].isDirAuthorized?.('/companion/home')).toBe(true);
+    expect(fake.calls[0].isDirAuthorized?.('/another/private/path')).toBe(false);
+    dispatcher.handleDispatch(config.id, { ...payload, requestId: 'req-2' }, out.send);
+    await tick(30);
+    config.companionBotId = null;
+    expect(fake.calls[0].isDirAuthorized?.('/companion/home')).toBe(false);
+    fake.finish();
+    await tick(60);
+    expect(fake.calls).toHaveLength(1);
+    expect(out.ofType('turn.end').some(frame => frame.payload.requestId === 'req-2' && frame.payload.status === 'error')).toBe(true);
+    dispatcher.dispose();
+  });
+  it('does not fall back to ordinary tasks when the assigned companion is unavailable', async () => {
+    const fake = fakeRunner();
+    const out = collector();
+    const dispatcher = createHookDispatcher({
+      getConnection: () => ({ ...CONFIG, companionBotId: 'missing-bot' }), bindings: memoryBindings(),
+      runner: fake.runner, resolveCompanionTarget: async () => { throw new Error('Companion unavailable'); }, log: noopLog,
+    });
+    dispatcher.handleDispatch('account:x', dispatch({ source: { im: 'x' }, externalKey: 'x:thread:principal' }), out.send);
+    await tick(30);
+    expect(fake.calls).toHaveLength(0);
+    expect(out.last('task.ack')?.payload.result).toBe('rejected');
+    dispatcher.dispose();
   });
 });

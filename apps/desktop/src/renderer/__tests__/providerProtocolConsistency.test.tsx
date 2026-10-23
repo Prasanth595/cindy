@@ -172,7 +172,10 @@ it.each([
     fireEvent.keyDown(button, { key: 'ArrowDown' });
     fireEvent.click(await screen.findByRole('menuitem', { name: 'settings.providers.models.advanced.protocol.restoreRoute' }));
     await waitFor(() => expect(update).toHaveBeenCalledOnce());
-    const { api: _api, piApi: _piApi, route: _route, ...unchanged } = original;
+    const unchanged = { ...original };
+    delete unchanged.api;
+    delete unchanged.piApi;
+    delete unchanged.route;
     expect(saved.runtimes[engine]!.models[0]).toEqual(unchanged);
     const restored = buildUserProvider(saved);
     expect(modelProtocolComparison(restored, { [engine]: restored.models[engine]![0]! }).forAgent(engine))
@@ -180,6 +183,52 @@ it.each([
     view.unmount();
     renderDrawer();
     expect(screen.getByText(`settings.providers.models.advanced.protocol.source${source === 'catalog' ? 'Catalog' : 'Connection'}`)).toBeTruthy();
+  } finally {
+    cleanup();
+    Object.defineProperty(window, 'electronAPI', { configurable: true, value: previousAPI });
+  }
+});
+
+
+// Main's V6 interface picker and #6015's reset/source labels must agree after merging.
+it.each([
+  { interfaceId: 'auto', source: 'catalog', api: 'openai-responses' },
+  { interfaceId: 'moonshot-kimi-code-openai-completions', source: 'model', api: 'openai-completions' },
+  { interfaceId: 'moonshot-kimi-code-openai-responses', source: 'model', api: 'openai-responses' },
+] as const)('keeps V6 interface intent and reset provenance: $interfaceId', async ({ interfaceId, source, api }) => {
+  let saved: CustomProviderConfig = { id: 'interface-fixture', name: 'Interface fixture', runtimes: {
+    codex: { catalogPresetId: 'moonshot-kimi-code', baseUrl: 'https://api.kimi.com/coding/v1', wireProtocol: 'openai-chat',
+      models: [{ id: 'k3.1-pro', name: 'K3.1', interfaceId, contextWindow: 32768 }, { id: 'other', name: 'Other' }] },
+    pi: { baseUrl: 'https://other.example.test/v1', wireProtocol: 'openai-chat', models: [{ id: 'other', name: 'Other' }] },
+  } };
+  const before = structuredClone(saved);
+  const previousAPI = window.electronAPI;
+  const update = vi.fn(async (value: CustomProviderConfig) => { saved = structuredClone(value); return { ok: true }; });
+  Object.defineProperty(window, 'electronAPI', { configurable: true, value: { maker: { updateCustomProvider: update } } });
+  try {
+    const provider = { ...buildUserProvider(saved), connected: true } as ProviderView;
+    const model = provider.models.codex![0]!;
+    expect(modelProtocolComparison(provider, { codex: model }).forAgent('codex'))
+      .toMatchObject({ outbound: api, source, customized: source === 'model' });
+    render(<ModelAdvancedDrawer provider={provider}
+      row={{ id: model.id, name: model.name, avail: ['codex'], byAgent: { codex: model } }}
+      open onOpenChange={vi.fn()} pricePresentationOf={() => null}
+      onDisable={vi.fn()} disabled={false} paymentRequired={false} />);
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Codex · settings.providers.custom.fields.wireProtocol' }), { key: 'ArrowDown' });
+    const restore = await screen.findByRole('menuitem', { name: 'settings.providers.models.advanced.protocol.restoreRoute' });
+    if (source === 'catalog') {
+      expect(restore.getAttribute('aria-disabled')).toBe('true');
+      expect(update).not.toHaveBeenCalled();
+      return;
+    }
+    fireEvent.click(restore);
+    await waitFor(() => expect(update).toHaveBeenCalledOnce());
+    const expected = structuredClone(before);
+    delete expected.runtimes.codex!.models[0]!.interfaceId;
+    expect(saved).toEqual(expected);
+    const restored = buildUserProvider(saved);
+    expect(modelProtocolComparison(restored, { codex: restored.models.codex![0]! }).forAgent('codex'))
+      .toMatchObject({ outbound: 'openai-responses', source: 'catalog', customized: false });
   } finally {
     cleanup();
     Object.defineProperty(window, 'electronAPI', { configurable: true, value: previousAPI });

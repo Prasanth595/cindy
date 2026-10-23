@@ -131,3 +131,43 @@ it('keeps a preset API reference with a declared custom request path', () => {
   expect(provider.models.codex![0].userModelConfig).toEqual(raw.runtimes.codex.models[0]);
   expect(provider.routing.codex!.requestPath).toBe('/tenant/infer');
 });
+
+// Tier: unit. Production import/projection must follow a new directory revision
+// without materializing automatic choices into saved API overrides.
+describe('V6 remote interface bindings', () => {
+  function connection(model: Record<string, unknown> = {}) {
+    return { id: 'kimi-v6', name: 'Kimi', runtimes: { codex: {
+      catalogPresetId: 'moonshot-kimi-code', baseUrl: 'https://api.kimi.com/coding/v1',
+      wireProtocol: 'openai-chat' as const, models: [{ id: 'k3.1-pro', name: 'K3.1', ...model }],
+    } } };
+  }
+  it('follows new defaults, keeps explicit selections and preserves the Coding limit', () => {
+    const registry = structuredClone(BUNDLED_CATALOG.modelRegistry!);
+    const options = { modelRegistry: registry, presets: BUNDLED_CATALOG.presets };
+    const automatic = buildUserProvider(connection(), options).models.codex![0];
+    expect(automatic).toMatchObject({ api: 'openai-responses', contextWindow: 262144, maxOutput: 262144 });
+    expect(automatic.availableInterfaces).toHaveLength(3);
+    expect(automatic.userModelConfig).not.toHaveProperty('api');
+    const route = registry.models.flatMap(e => e.routes).find(r => r.providerId === 'moonshot-kimi-code' && r.modelId === 'k3.1-pro')!;
+    route.preferredInterfaces!.codex = ['moonshot-kimi-code-anthropic-messages'];
+    expect(buildUserProvider(connection(), options).models.codex![0].api).toBe('anthropic-messages');
+    expect(buildUserProvider(connection({ interfaceId: 'moonshot-kimi-code-openai-completions' }), options).models.codex![0].api).toBe('openai-completions');
+    expect(buildUserProvider(connection({ route: { baseUrl: 'https://api.kimi.com/coding/v1', wireProtocol: 'openai-chat' } }), options).models.codex![0].api).toBe('openai-completions');
+    expect(buildUserProvider(connection({ api: 'openai-completions', contextWindow: 64000 }), options).models.codex![0])
+      .toMatchObject({ api: 'openai-completions', contextWindow: 64000 });
+  });
+  it('excludes unknown required behavior and keeps another supported binding', () => {
+    const registry = structuredClone(BUNDLED_CATALOG.modelRegistry!);
+    registry.interfaceProfiles!.find(p => p.id === 'moonshot-kimi-code-openai-responses')!.requires = ['future-adapter-v99'];
+    const model = buildUserProvider(connection(), { modelRegistry: registry, presets: BUNDLED_CATALOG.presets }).models.codex![0];
+    expect(model.api).toBe('openai-completions');
+    expect(model.availableInterfaces?.some(p => p.api === 'openai-responses')).toBe(false);
+  });
+  it('does not redirect a custom endpoint or request path using an official profile', () => {
+    const input = connection();
+    input.runtimes.codex.baseUrl = 'https://my-relay.example/coding/v1';
+    expect(buildUserProvider(input, { modelRegistry: BUNDLED_CATALOG.modelRegistry }).models.codex![0].selectedInterface).toBeUndefined();
+    const custom = connection({ route: { baseUrl: 'https://api.kimi.com/coding/v1', wireProtocol: 'openai-chat', requestPath: '/private/chat' } });
+    expect(buildUserProvider(custom).models.codex![0].route?.requestPath).toBe('/private/chat');
+  });
+});

@@ -1,3 +1,4 @@
+import { forwardedRequestDisplayText } from '@cindy/maker-shared/message-source';
 import type {
   ConversationSearchContentHit,
   ConversationSearchResultItem,
@@ -243,8 +244,9 @@ export function normalizeConversationContentPreview(
   content: unknown,
   query: string,
   max = 180,
+  agentMeta?: string | null,
 ): NormalizedConversationContentPreview {
-  const visibleText = visibleMessageTextForConversationSearch(role, content);
+  const visibleText = visibleMessageTextForConversationSearch(role, content, agentMeta);
   const ranges = keywordRanges(visibleText, query);
   const snippet = ranges.length > 0 ? visibleSnippet(visibleText, ranges[0], max) : null;
   return {
@@ -254,8 +256,12 @@ export function normalizeConversationContentPreview(
   };
 }
 
-export function visibleMessageTextForConversationSearch(role: string, content: unknown): string {
-  return visibleMessageText(role, content).replace(/\s+/g, ' ').trim();
+export function visibleMessageTextForConversationSearch(role: string, content: unknown, agentMeta?: string | null): string {
+  const text = visibleMessageText(role, content);
+  const meta = tryParseJsonLike(agentMeta ?? '') as { origin?: { kind?: unknown } } | null;
+  const displayText = role === 'user' && meta?.origin?.kind === 'session'
+    ? forwardedRequestDisplayText(text) : text;
+  return displayText.replace(/\s+/g, ' ').trim();
 }
 
 /** Full visible content for result rendering; only search previews flatten Markdown. */

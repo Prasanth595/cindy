@@ -30,6 +30,9 @@ export function modelProtocolComparison(
       : provider.id === 'openai' && models.codex
         ? 'openai-responses'
         : null;
+  const declaredApis = Object.values(models).map(m => m.nativeApis).filter(v => v !== undefined);
+  const nativeApis = declaredApis.length ? declaredApis.every(v => JSON.stringify(v) === JSON.stringify(declaredApis[0]))
+    ? declaredApis[0] : null : reference ? [reference] : null;
   const forAgent = (agent: AgentKind) => {
     const model = models[agent];
     if (!model) return null;
@@ -49,6 +52,7 @@ export function modelProtocolComparison(
     // Stored customization is separate from the effective source: a custom
     // path can make stale API metadata inactive, but it must still be resettable.
     const customized = model.protocolCustomized ?? Boolean(
+      (model.userModelConfig?.interfaceId && model.userModelConfig.interfaceId !== 'auto') ||
       model.userModelConfig?.api || model.userModelConfig?.piApi || model.userModelConfig?.route,
     );
     const usesModelProtocol = agent === 'pi'
@@ -61,13 +65,12 @@ export function modelProtocolComparison(
       agent === 'pi' ? outbound : agent === 'codex' ? 'openai-responses' : 'anthropic-messages';
     const outboundProtocol = compatibilityProtocol(outbound) ?? outbound;
     const harnessProtocol = compatibilityProtocol(harness) ?? harness;
-    const referenceProtocol = compatibilityProtocol(reference) ?? reference;
     const localConversion = Boolean(agent !== 'pi' && outboundProtocol && harnessProtocol && outboundProtocol !== harnessProtocol);
     // Pi speaks the selected upstream API directly. Fixed-protocol harnesses
     // also need compatibility when the supplier converts the model's native API.
     // The location of that conversion never changes the default-on decision.
     const compatibility =
-      localConversion || Boolean(agent !== 'pi' && referenceProtocol && outboundProtocol && referenceProtocol !== outboundProtocol);
+      localConversion || Boolean(agent !== 'pi' && nativeApis?.length && outboundProtocol && !nativeApis.some(api => (compatibilityProtocol(api) ?? api) === outboundProtocol));
     return {
       harness,
       outbound,
@@ -77,12 +80,12 @@ export function modelProtocolComparison(
       localConversion,
       mode: compatibility
         ? ('compatibility' as const)
-        : outbound && (reference || agent === 'pi')
+        : outbound && (nativeApis?.length || agent === 'pi')
           ? ('matching' as const)
           : ('unknown' as const),
     };
   };
-  return { reference, forAgent };
+  return { reference, nativeApis, forAgent };
 }
 
 /** Default-on engines use a configured protocol without harness or provider compatibility. */

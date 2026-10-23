@@ -1,3 +1,5 @@
+import { CatalogDeviceScope, type CatalogDeviceControl } from './useCatalogDevice';
+import { RemotePluginPage } from './RemotePluginPage';
 import { featureRetirementById } from '../../../shared/featureRetirements';
 import { RetiredFeatureDetail } from './RetiredFeatureDetail';
 import { Button } from '@/components/ui/button';
@@ -29,28 +31,17 @@ import {
   ChevronDown,
   ChevronRight,
   MessageCircle,
-  Plus,
   ShieldAlert,
   SlidersHorizontal,
-  Sparkles,
-  Store,
-  Upload,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { WINDOW_NO_DRAG_STYLE } from '@/components/layout/windowDrag';
 import { useConfirmDialog } from '@/components/ui/confirm-dialog-provider';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
 import { toast } from '@/lib/toast';
 import { extractIpcError } from '@/utils/ipcError';
 import { useAuth } from '@/contexts/AuthContext';
-import { useInstalledGhosts } from '@/cindy-brain/useInstalledGhosts';
+import { readInstalledGhostsSnapshot, useInstalledGhosts } from '@/cindy-brain/useInstalledGhosts';
 import {
   cancelPendingPluginSuggestion,
   getPendingPluginSuggestion,
@@ -59,16 +50,19 @@ import {
 } from '@/features/cc-agent/pendingPluginSuggestion';
 import { readPluginRecommendationSnapshot } from '@/features/cc-agent/pluginHomeSuggestions';
 import { NEW_MAKER_DRAFT_KEY } from '@/features/cc-agent/newMakerDraftKeys';
+import { CINDY_PLUGIN_CREATOR_NAME } from '../../../shared/cindyBuiltInSkills';
+import { dbToMakerAgentKind, normalizeDbAgentKind } from '../../../shared/agentKindConversion';
+import { isSlashCommandUnavailable, loadAllCommands } from '@/lib/slashCommands';
 import {
   getDraft as getComposerDraft,
   plainTextToTiptapDoc,
   saveDraft as saveComposerDraft,
 } from '@/lib/composerDraftStore';
-import { resetDraftWorkspaceTargets } from '@/state/newMakerDraft';
+import { getDraft as getWorkspaceDraft, resetDraftWorkspaceTargets } from '@/state/newMakerDraft';
 import { ghostInstallErrorKey } from '@/cindy-brain/installErrorKey';
 import { installGhostFromFile, pickAndUpdateGhost } from '@/cindy-brain/installFlow';
 import { SegmentedControl } from '@/components/ui/segmented-control';
-import { cn } from '@/lib/utils';
+import { cn, basename } from '@/lib/utils';
 import { AttentionDot } from '@/components/sidebar/AttentionDot';
 import {
   useGhostUnread,
@@ -76,11 +70,10 @@ import {
   useGhostUnreadSummary,
 } from '@/cindy-brain/ghostUnreadStore';
 import { getLastWorkingDir, subscribeToLastWorkingDir } from '@/state/lastWorkingDir';
-import { findSplitChildByPanelKind } from '../../../shared/layoutTree';
+import { useGlobalTabs } from '@/features/right-sidebar/globalTabs';
 import { resolveSystemLocale } from '../../../shared/locale';
 import {
   ghostInstallApprovalToken,
-  ghostPanelKind,
   isUserInstallReservedGhostId,
   type GhostSetupStatus,
   type InstalledGhost,
@@ -124,10 +117,14 @@ import {
   PLUGIN_MANAGEMENT_CARD_GRID_CLASS,
   PLUGIN_INSTALLED_CARD_GRID_CLASS,
   PluginManagementLayout,
+  InstalledCatalogHeader,
+  CatalogTargetControls,
+  CatalogManagementNotice,
   PluginManagementPage,
 } from './PluginManagementLayout';
 import { usePluginListScrollRestoration } from './lib/usePluginListScrollRestoration';
 import { GhostPagePanelHost } from './GhostPagePanelHost';
+import { GhostPluginActions } from './GhostPluginActions';
 import { GhostPluginDetailView } from './GhostPluginDetailView';
 import { PluginSharedUsage } from './PluginSharedUsage';
 import {
@@ -139,7 +136,7 @@ import {
 import { UpdateAllDialog } from './UpdateAllDialog';
 import { GhostPluginIcon } from './GhostPluginIcon';
 import { MarketPluginDetailView } from './MarketPluginDetailView';
-import { PluginScopePicker, usePluginRecentWorkdirs } from './PluginScopePicker';
+import { PluginProjectMenu, usePluginRecentWorkdirs } from './PluginScopePicker';
 import {
   canOfferMarketInstall,
   ghostReapprovalRoute,
@@ -402,6 +399,13 @@ export function shouldOpenInstalledDetailAfterMarketSuccess(isUpdate: boolean): 
   return !isUpdate;
 }
 
+function installedGhostMarketKeyFor(ghosts: readonly InstalledGhost[]): string {
+  return ghosts
+    .map((ghost) => `${ghost.manifest.id}\0${ghost.manifest.version}`)
+    .sort()
+    .join('\0');
+}
+
 /** 读「忽略本轮更新」的持久值(键按数据归属分桶,见 ignoredRoundStorageKey)。 */
 function readIgnoredRound(storageKey: string): string {
   try {
@@ -418,11 +422,19 @@ function readIgnoredRound(storageKey: string): string {
  * real Ghost runtime. The page deliberately keeps the previous list/detail
  * interaction shape, while every displayed field comes from InstalledGhost.
  */
-export function GhostPluginPage({
+export function GhostPluginPage(props: { embedded?: boolean; active?: boolean; onSelectCatalogTab?: (tab: 'plugins' | 'skills') => void } = {}) {
+  return <CatalogDeviceScope>{(device, online, generation, deviceControl) => device
+    ? <RemotePluginPage key={`${generation}:${device.deviceId}`} device={device} online={online} deviceControl={deviceControl} {...props} />
+    : <LocalGhostPluginPage deviceControl={deviceControl} {...props} />}</CatalogDeviceScope>;
+}
+
+function LocalGhostPluginPage({
   embedded = false,
+  deviceControl,
   onSelectCatalogTab,
 }: {
   embedded?: boolean;
+  deviceControl?: CatalogDeviceControl;
   onSelectCatalogTab?: (tab: 'plugins' | 'skills') => void;
 } = {}) {
   const { i18n, t } = useTranslation();
@@ -503,11 +515,7 @@ export function GhostPluginPage({
   const ghosts = useInstalledGhosts();
   useMainViewVisibilityRevision();
   const installedGhostMarketKey = useMemo(
-    () =>
-      ghosts
-        .map((ghost) => `${ghost.manifest.id}\0${ghost.manifest.version}`)
-        .sort()
-        .join('\0'),
+    () => installedGhostMarketKeyFor(ghosts),
     [ghosts],
   );
   const installedGhostLocationsKey = ghosts
@@ -570,6 +578,7 @@ export function GhostPluginPage({
     useState<LegacyGhostRecoveryStatus | null>(null);
   const [legacyRecoveryRetrying, setLegacyRecoveryRetrying] = useState(false);
   const refreshMarket = useCallback(async (preserveOnError = false) => {
+    installedGhostMarketKeyRef.current = installedGhostMarketKeyFor(readInstalledGhostsSnapshot());
     const requestId = ++marketRefreshRequestRef.current;
     try {
       const snapshot = await window.electronAPI.pluginMarket.snapshot();
@@ -616,11 +625,16 @@ export function GhostPluginPage({
     });
   }, [refreshMarket]);
   useEffect(() => {
-    if (installedGhostMarketKeyRef.current === installedGhostMarketKey) return;
-    installedGhostMarketKeyRef.current = installedGhostMarketKey;
+    if (
+      installedGhostMarketKeyRef.current === installedGhostMarketKey ||
+      marketBusyLockRef.current !== null
+    ) {
+      return;
+    }
     // 已装集合或版本变化(装/卸/后台更新)时刷新市场;排序是反应式的。
+    // 安装广播早于市场账本提交；等待事务收尾，由成功刷新消费，失败/取消后补刷。
     void refreshMarket(true).catch(() => undefined);
-  }, [installedGhostMarketKey, refreshMarket]);
+  }, [installedGhostMarketKey, marketBusyId, refreshMarket]);
   const activeSessionWorkingDir = useSyncExternalStore(
     subscribeToLastWorkingDir,
     getLastWorkingDir,
@@ -970,23 +984,19 @@ export function GhostPluginPage({
     setOpenPanelId((current) => nextOpenPanelIdForOwner(previous, panelOwnerKey, current));
   }, [panelOwnerKey]);
 
+  // 停靠形态的面板现在以右侧栏全局页签承载:状态只分「在右侧栏中」与「已从右侧栏关闭」。
+  const globalTabs = useGlobalTabs();
   const panelStatus = useMemo(() => {
     if (!selectedDetail || selectedDetail.panelMinWidth === null) return null;
     // 页签形态(面板收束):由插件页承载,没有停靠状态可言。
     if (selectedDetail.tabPanel) return t('settings.ghosts.detail.panelPageHosted');
-    try {
-      const kind = ghostPanelKind(selectedDetail.id);
-      const docked =
-        findSplitChildByPanelKind(window.electronAPI.layout.getStateSync().layout, kind) !== null;
-      return docked
-        ? t('settings.ghosts.detail.panelDocked', {
-            min: selectedDetail.panelMinWidth,
-          })
-        : t('settings.ghosts.detail.panelNotDocked');
-    } catch {
-      return t('settings.ghosts.detail.panelNotDocked');
-    }
-  }, [selectedDetail, t]);
+    const inSidebar = globalTabs.some(
+      (tab) => (tab.state as { instanceId?: string } | null)?.instanceId === selectedDetail.id,
+    );
+    return inSidebar
+      ? t('settings.ghosts.detail.panelInSidebar')
+      : t('settings.ghosts.detail.panelDismissed');
+  }, [globalTabs, selectedDetail, t]);
 
   const handleToggle = useCallback(
     async (id: string, enabled: boolean, displayName: string) => {
@@ -995,7 +1005,7 @@ export function GhostPluginPage({
         const dir = scopeDirRef.current;
         if (dir) {
           const result = await window.electronAPI.ghosts.setWorkdirDisabled(dir, id, !enabled);
-          setProjectDisabled(new Set(result.disabled));
+          if (scopeDirRef.current === dir) setProjectDisabled(new Set(result.disabled));
           toast.success(
             t(
               enabled
@@ -1210,9 +1220,26 @@ export function GhostPluginPage({
     }
   }, [refreshMarket]);
 
-  const handleCreateWithCindy = useCallback(() => {
+  const handleCreateWithCindy = useCallback(async () => {
+    const agentKind = dbToMakerAgentKind(normalizeDbAgentKind(getWorkspaceDraft().vendor));
+    // Creation starts locally without a project. Use Main-attested identity: a
+    // same-named user Skill must never own this entry, including Claude aliases.
+    const commands = await loadAllCommands(agentKind, null);
+    const creator = commands.find((command) => (
+      command.kind === 'agent-skill'
+      && command.builtIn === true
+      && command.enabled !== false
+      && !isSlashCommandUnavailable(command)
+      && (command.name === CINDY_PLUGIN_CREATOR_NAME
+        || command.name === `cindy:${CINDY_PLUGIN_CREATOR_NAME}`)
+    ));
+    if (!creator) {
+      toast.error(t('settings.ghosts.page.creatorUnavailable'));
+      return;
+    }
     saveComposerDraft(NEW_MAKER_DRAFT_KEY, {
-      text: plainTextToTiptapDoc(t('settings.ghosts.page.createPrompt')),
+      text: plainTextToTiptapDoc(`/${creator.name} ${t('settings.ghosts.page.createPrompt')}`),
+      builtInSkillIntent: { name: CINDY_PLUGIN_CREATOR_NAME, commandName: creator.name },
       attachments: [],
       focusAtEnd: true,
     });
@@ -1741,17 +1768,23 @@ export function GhostPluginPage({
         >
           <PluginManagementPage>
             {recommendationNotice}
-            <header className="plugin-motion-page-header pb-2">
+            <header className="plugin-motion-page-header pb-2" data-catalog-region="heading">
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <h1 className="text-28 font-medium leading-tight text-[var(--text-primary)]">
                     {t('settings.ghosts.title')}
                   </h1>
-                  <PluginScopePicker
-                    scopeDir={scopeDir}
-                    activeSessionWorkingDir={activeSessionWorkingDir ?? undefined}
-                    recentWorkdirs={recentWorkdirs}
-                    onPick={handlePickScope}
+                  <CatalogTargetControls
+                    computer={deviceControl}
+                    project={
+                      <PluginProjectMenu
+                        scopeDir={scopeDir}
+                        activeSessionWorkingDir={activeSessionWorkingDir ?? undefined}
+                        recentWorkdirs={recentWorkdirs}
+                        onPick={handlePickScope}
+                      />
+                    }
+                    projectLabel={scopeDir ? basename(scopeDir) : undefined}
                   />
                 </div>
                 <p className="mt-2 max-w-2xl text-14 leading-6 text-[var(--text-secondary)]">
@@ -1772,37 +1805,32 @@ export function GhostPluginPage({
                 />
               }
             >
+            <section className="plugin-motion-page-section mt-6 min-w-0">
+              <InstalledCatalogHeader
+                title={t('settings.ghosts.page.installedSection')}
+                count={searchedInstalledItems.length}
+              />
             {scopeDir ? (
-              <div className="mt-5 flex items-center justify-between gap-3 rounded-xl border border-[var(--border-default)] bg-[var(--surface-chip)] px-4 py-3">
-                <div className="flex min-w-0 items-center gap-2.5">
-                  <span className="truncate text-13 font-medium text-[var(--text-primary)]">
-                    {scopeDir}
-                  </span>
-                  <span className="truncate text-12 text-[var(--text-tertiary)]">
-                    {t('settings.ghosts.projectBanner.desc')}
-                  </span>
-                </div>
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  compact
-                  type="button"
-                  onClick={() => handlePickScope(null)}
-                >
-                  {t('settings.ghosts.projectBanner.backToGlobal')}
-                </Button>
-              </div>
+              <CatalogManagementNotice
+                title={t('settings.ghosts.projectBanner.title', { name: basename(scopeDir) })}
+                action={
+                  <Button
+                    variant="secondary"
+                    tone="quiet"
+                    size="sm"
+                    compact
+                    onClick={() => handlePickScope(null)}
+                  >
+                    {t('settings.ghosts.projectBanner.backToGlobal')}
+                  </Button>
+                }
+              >
+                {t('settings.ghosts.projectBanner.desc', {
+                  device: t('settings.ghosts.remote.thisComputer'),
+                })}
+              </CatalogManagementNotice>
             ) : null}
 
-            <section className="plugin-motion-page-section mt-6 min-w-0">
-              <div className="mb-4 flex items-baseline gap-2">
-                <h2 className="text-20 font-medium text-[var(--text-primary)]">
-                  {t('settings.ghosts.page.installedSection')}
-                </h2>
-                <span className="text-13 tabular-nums text-[var(--text-tertiary)]">
-                  {searchedInstalledItems.length}
-                </span>
-              </div>
 
               {legacyRecoveryStatus ? (
                 <LegacyGhostRecoveryNotice
@@ -1985,6 +2013,9 @@ export function GhostPluginPage({
                   />
                 </div>
 
+                <p className="mb-3 text-12 leading-5 text-[var(--text-tertiary)]">
+                  {t('settings.ghosts.remote.installDestination', { device: t('settings.ghosts.remote.thisComputer') })}
+                </p>
                 {marketSnapshot?.unavailableReason ? (
                   <p className="mb-4 rounded-xl border border-[var(--border-default)] bg-[var(--surface-chip)] px-4 py-3 text-12 text-[var(--text-secondary)]">
                     {t(
@@ -2276,88 +2307,6 @@ export function MarketPluginCard({
   );
 }
 
-/** Plugin-specific creation and import actions rendered after the shared search. */
-function GhostPluginActions({
-  onInstall,
-  onCreateWithCindy,
-  onAddMarketplace,
-}: {
-  onInstall: () => void;
-  onCreateWithCindy: () => void;
-  onAddMarketplace: () => void;
-}) {
-  const { t } = useTranslation();
-
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button
-          variant="primary"
-          size="lg"
-          type="button"
-          aria-label={t('settings.ghosts.page.addPluginAria')}
-          className="plugin-management-action-trigger group shrink-0 shadow-[var(--plugin-card-shadow)] data-[state=open]:[--button-face-bg:var(--surface-chip)]"
-        >
-          <Plus size={14} strokeWidth={1.8} aria-hidden="true" />
-          <span className="plugin-management-action-label">
-            {t('settings.ghosts.page.addPlugin')}
-          </span>
-          <ChevronDown
-            size={13}
-            strokeWidth={1.75}
-            className="plugin-management-action-chevron transition-transform duration-150 group-data-[state=open]:rotate-180 motion-reduce:transition-none"
-            aria-hidden="true"
-          />
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent
-        align="end"
-        sideOffset={8}
-        className="w-max min-w-52 max-w-[calc(100vw-2rem)] p-1.5"
-      >
-        <DropdownMenuItem
-          onSelect={onCreateWithCindy}
-          className="gap-3 whitespace-nowrap"
-        >
-          <Sparkles
-            size={16}
-            strokeWidth={1.7}
-            className="text-[var(--text-secondary)]"
-            aria-hidden="true"
-          />
-          {t('settings.ghosts.page.createWithCindy')}
-        </DropdownMenuItem>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem
-          onSelect={onInstall}
-          className="gap-3 whitespace-nowrap"
-        >
-          <Upload
-            size={16}
-            strokeWidth={1.7}
-            className="text-[var(--text-secondary)]"
-            aria-hidden="true"
-          />
-          {t('settings.ghosts.install')}
-        </DropdownMenuItem>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem
-          onSelect={onAddMarketplace}
-          className="gap-3 whitespace-nowrap"
-        >
-          <Store
-            size={16}
-            strokeWidth={1.7}
-            className="text-[var(--text-secondary)]"
-            aria-hidden="true"
-          />
-          {t('settings.ghosts.market.sources.addMarketplace')}
-        </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
-  );
-}
-
 /**
  * 已安装插件卡片(设计定稿):
  * - 整卡可点 = 进详情(与滑杆管理入口同目标);
@@ -2367,7 +2316,9 @@ function GhostPluginActions({
  */
 export function GhostPluginCard({
   item,
+  readOnly = false,
   sourceLabel,
+  showLocalUnread = true,
   marketItem,
   author,
   updateVersion,
@@ -2380,8 +2331,10 @@ export function GhostPluginCard({
   onManage,
   onIconLoadError,
 }: {
-  item: GhostPluginListItem;
+  item: Pick<GhostPluginListItem, 'id' | 'name' | 'description'> & Partial<GhostPluginListItem>;
+  readOnly?: boolean;
   sourceLabel?: string;
+  showLocalUnread?: boolean;
   marketItem?: PluginMarketItem | null;
   author?: string | null;
   /** 市场存在新版本时的目标版本;与 onUpdate 同时提供。 */
@@ -2399,10 +2352,15 @@ export function GhostPluginCard({
   const { t } = useTranslation();
   const metadataId = useId();
   const enabled = effectiveEnabled ?? item.enabled;
-  // 单卡未读点使用呼吸动效，未读摘要替换静态描述。
-  const unread = useGhostUnread(item.id);
-  const unreadSummary = useGhostUnreadSummary(item.id);
-  const primary = ghostPrimaryAction(item);
+  // 远程列表不投影本机同名插件的未读状态。
+  const localUnread = useGhostUnread(item.id);
+  const localUnreadSummary = useGhostUnreadSummary(item.id);
+  const unread = showLocalUnread && localUnread;
+  const unreadSummary = showLocalUnread ? localUnreadSummary : undefined;
+  const primary = ghostPrimaryAction({
+    canUse: item.canUse ?? false,
+    tabPanel: item.tabPanel ?? false,
+  });
   const handleCardKeyDown = (event: KeyboardEvent<HTMLElement>) => {
     if (event.target !== event.currentTarget) return;
     if (event.key !== 'Enter' && event.key !== ' ') return;
@@ -2410,8 +2368,14 @@ export function GhostPluginCard({
     onManage();
   };
   let primaryControl: ReactNode;
-  if (item.retirement) {
-    primaryControl = <CardPillButton onClick={onManage} label={t('settings.ghosts.retirement.view')} />;
+  if (readOnly) {
+    primaryControl = (
+      <CardPillButton onClick={onManage} label={t('settings.ghosts.market.details')} />
+    );
+  } else if (item.retirement) {
+    primaryControl = (
+      <CardPillButton onClick={onManage} label={t('settings.ghosts.retirement.view')} />
+    );
   } else if (!enabled) {
     primaryControl = (
       <CardPillButton onClick={onManage} label={t('settings.ghosts.page.manageAction')} />
@@ -2456,7 +2420,7 @@ export function GhostPluginCard({
         'active:translate-y-0 active:scale-[0.992]',
         'motion-reduce:transform-none motion-reduce:transition-none',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]',
-        !enabled && !item.retirement && 'opacity-60',
+        enabled === false && !item.retirement && 'opacity-60',
       )}
     >
       <GhostPluginIcon
@@ -2470,9 +2434,16 @@ export function GhostPluginCard({
           <span className="truncate text-15 font-medium text-[var(--text-primary)]">
             {item.name}
           </span>
-          {item.retirement?.unread ? <AttentionDot tone="awaiting" size={6} className="mt-px" /> : unread ? <AttentionDot breathing size={6} className="mt-px" /> : null}
+          {item.retirement?.unread ? (
+            <AttentionDot tone="awaiting" size={6} className="mt-px" />
+          ) : unread ? (
+            <AttentionDot breathing size={6} className="mt-px" />
+          ) : null}
         </span>
-        <span id={metadataId} className="mt-1 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-11 text-[var(--text-tertiary)]">
+        <span
+          id={metadataId}
+          className="mt-1 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-11 text-[var(--text-tertiary)]"
+        >
           {sourceLabel ? <span className="shrink-0">{sourceLabel}</span> : null}
           {author ? (
             <>
@@ -2481,6 +2452,16 @@ export function GhostPluginCard({
             </>
           ) : null}
           {marketItem ? <PluginSharedUsage detail={marketItem} variant="list" /> : null}
+          {readOnly && item.version ? <span>v{item.version}</span> : null}
+          {readOnly && enabled !== undefined ? (
+            <span>
+              {t(
+                enabled
+                  ? 'settings.ghosts.detail.enabledLabel'
+                  : 'settings.ghosts.detail.disabledLabel',
+              )}
+            </span>
+          ) : null}
           {item.retirement ? (
             <span> · {t('settings.ghosts.retirement.status')}</span>
           ) : item.oauthAuthorizationExpired ? (
@@ -2496,7 +2477,9 @@ export function GhostPluginCard({
               {t('settings.ghosts.installConsent.updateNeedsConsent')}
             </span>
           ) : null}
-          {!enabled && !item.retirement ? ` · ${t('settings.ghosts.disabledTag')}` : ''}
+          {!readOnly && enabled === false && !item.retirement
+            ? ` · ${t('settings.ghosts.disabledTag')}`
+            : ''}
         </span>
         <span
           className={cn(
@@ -2504,7 +2487,9 @@ export function GhostPluginCard({
             unreadSummary ? 'text-[var(--text-primary)]' : 'text-[var(--text-secondary)]',
           )}
         >
-          {item.retirement ? t('settings.ghosts.retirement.cardNotice') : unreadSummary || item.description || item.id}
+          {item.retirement
+            ? t('settings.ghosts.retirement.cardNotice')
+            : unreadSummary || item.description || item.id}
         </span>
       </span>
       {/* 仅真实控件拦截冒泡，右列空白仍可进入详情。 */}
@@ -2530,15 +2515,17 @@ export function GhostPluginCard({
               {t('settings.ghosts.page.updateTo', { version: updateVersion })}
             </Button>
           ) : null}
-          <button
-            type="button"
-            onClick={stopAnd(onManage)}
-            aria-label={t('settings.ghosts.page.manageAria', { name: item.name })}
-            title={t('settings.ghosts.page.manageAction')}
-            className="grid size-7 place-items-center rounded-full text-[var(--text-tertiary)] transition-colors duration-150 hover:bg-[var(--surface-hover-soft)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
-          >
-            <SlidersHorizontal size={14} aria-hidden="true" />
-          </button>
+          {!readOnly ? (
+            <button
+              type="button"
+              onClick={stopAnd(onManage)}
+              aria-label={t('settings.ghosts.page.manageAria', { name: item.name })}
+              title={t('settings.ghosts.page.manageAction')}
+              className="grid size-7 place-items-center rounded-full text-[var(--text-tertiary)] transition-colors duration-150 hover:bg-[var(--surface-hover-soft)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
+            >
+              <SlidersHorizontal size={14} aria-hidden="true" />
+            </button>
+          ) : null}
         </span>
         {primaryControl}
       </span>

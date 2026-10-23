@@ -1,4 +1,6 @@
-import { readToolProcessMedia, readToolProcessText } from '@cindy/maker-shared/tool-process-media';
+import { readFailedImageDelivery, readToolProcessMedia, readToolProcessText } from '@cindy/maker-shared/tool-process-media';
+import { isSharedTaskPeer } from '@cindy/device-link';
+import { Button } from '@/components/ui/button';
 import { ChatVideoView } from './ChatVideoView';
 import { ChatImageView } from './ChatImageView';
 import { FileTypeIcon } from '@/components/ui/file-type-icon';
@@ -1177,6 +1179,7 @@ export function AgentActionRow({
           {rawCommand}
         </div>
       )}
+      {readFailedImageDelivery(resultText) && <GeneratedImageRetry imageId={readFailedImageDelivery(resultText)!} />}
       {processMedia.length > 0 && (
         <div className="flex min-w-0 flex-col gap-3 py-2 pl-8" data-tool-process-media="true">
           {processMedia.map((media) => media.kind === 'image'
@@ -1252,4 +1255,21 @@ export function AgentActionRow({
       )}
     </div>
   );
+}
+
+function GeneratedImageRetry({ imageId }: { imageId: string }) {
+  const { t } = useTranslation();
+  const { sessionId, origin } = useChatSessionFile();
+  const [pending, setPending] = useState(false);
+  const [failed, setFailed] = useState(false);
+  return <div className="flex flex-wrap items-center gap-2 py-2 pl-8 text-13 text-muted-foreground">
+    <span role="status">{t(failed ? 'chat.imageDelivery.retryFailed' : 'chat.imageDelivery.failed')}</span>
+    {sessionId && !(origin.kind === 'device' && isSharedTaskPeer(origin.deviceId)) && <Button variant="secondary" size="sm" disabled={pending} onClick={async () => {
+      setPending(true); setFailed(false);
+      try {
+        if (origin.kind === 'device') await window.electronAPI.deviceLink.invoke(origin.deviceId, 'maker:images:retry', [sessionId, imageId]);
+        else await window.electronAPI.maker.input.retryImageDelivery(sessionId, imageId);
+      } catch { setFailed(true); } finally { setPending(false); }
+    }}>{t(pending ? 'chat.imageDelivery.retrying' : 'chat.imageDelivery.retry')}</Button>}
+  </div>;
 }

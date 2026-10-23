@@ -121,6 +121,10 @@ function memoryStore(initial: Partial<SlackHookConfigState> & { url: string }): 
           : { ...state, telegramBindingCache: entry ? { ...entry } : null };
       return state;
     },
+    setXCompanionBotId(botId) {
+      state = { ...state, xCompanionBotId: botId };
+      return state;
+    },
     setProviderDefaultWorkspace(provider: 'telegram' | 'x', alias: string | null) {
       state =
         provider === 'x'

@@ -277,3 +277,11 @@ it('opens remote settings for the route device instead of searching the local bo
   expect(screen.getByTestId('remote-settings').textContent).toBe('other-mac');
   expect(screen.queryByTestId('simple-bot-settings')).toBeNull();
 });
+
+it('routes a local voice deep link to the voice settings page', async () => {
+  const router = createMemoryRouter([{ path: '*', element: <BotSettingsDrawer /> }], {
+    initialEntries: ['/bots/bot-1?settings=1&settingsPage=voice'],
+  });
+  render(<RouterProvider router={router} />);
+  expect(screen.getByTestId('simple-bot-settings').getAttribute('data-initial-page')).toBe('voice');
+});

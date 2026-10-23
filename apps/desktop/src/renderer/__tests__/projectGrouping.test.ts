@@ -784,6 +784,16 @@ describe('groupSessions', () => {
     expect(r.projects[0].sessions[0]).toBe(real);
   });
 
+  // 新建页里正在输入的未发送任务：已选好项目就放在项目下，不进未分类。
+  it('places the new-task page\'s unsent task under its chosen project', () => {
+    const unsent = s({ workingDir: '/p/foo', userSendAt: null });
+    const otherDraft = s({ workingDir: '/p/foo', userSendAt: null });
+    const r = groupSessions([unsent, otherDraft], { provisionalDraftTaskId: unsent.id });
+    expect(r.unclassified).toEqual([otherDraft]);
+    expect(r.projects).toHaveLength(1);
+    expect(r.projects[0].sessions).toEqual([unsent]);
+  });
+
   // SDK echo 失败 / 老数据 backfill 漏掉的孤儿：userSendAt 没写上但 messages
   // 表里有 row 的 session 不是草稿，应入 Project，避免堆到未分类。
   it('treats null-userSendAt with messages>0 as non-draft (SDK echo failure fallback)', () => {

@@ -7,9 +7,12 @@
  * 与 设置 → IM 机器人 里那份个人 bot 各用各的凭证; 添加时也可以把那份个人 bot 一次性移过来
  * (个人 bot 随之清空)。远端伙伴没有这一页。
  */
+
+import { HookConnectionsSection } from '@/components/settings/HookConnectionsSection';
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { Briefcase, Gamepad2, MessageSquare, Plus, Send, Zap, type LucideIcon } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 
 import { AttentionDot } from '@/components/sidebar/AttentionDot';
 import { Button } from '@/components/ui/button';
@@ -19,6 +22,7 @@ import { Input } from '@/components/ui/input';
 import { SegmentedControl } from '@/components/ui/segmented-control';
 import { Select } from '@/components/ui/select';
 import { Spinner } from '@/components/ui/spinner';
+import { WechatBotSection } from '@/components/settings/WechatBotSection';
 import { cn } from '@/lib/utils';
 import { formatRelative } from '@/hooks/useRelativeTime';
 import { extractIpcError } from '@/utils/ipcError';
@@ -104,6 +108,7 @@ export function BotChannelsPage({ bot }: { bot: BotProfile }) {
   const { payload, loading, apply } = useBotImConnections();
   const { confirm } = useConfirmDialog();
   const [adding, setAdding] = useState(false);
+  const [wechatExpanded, setWechatExpanded] = useState(false);
   const [removingId, setRemovingId] = useState<string | null>(null);
 
   const mine = (payload?.connections ?? []).filter((item) => item.botId === bot.id);
@@ -147,6 +152,7 @@ export function BotChannelsPage({ bot }: { bot: BotProfile }) {
 
   return (
     <section className="flex flex-col gap-4 pt-3" aria-label={t('bots.channels.title')}>
+      {typeof window.electronAPI.hookControl?.setXCompanion === 'function' ? <HookConnectionsSection companion={{ id: bot.id, name: bot.name }} /> : null}
       {loading && !payload ? (
         <div className="flex justify-center py-6 text-[var(--text-tertiary)]">
           <Spinner size={16} />
@@ -209,7 +215,7 @@ export function BotChannelsPage({ bot }: { bot: BotProfile }) {
                   <ConnectionGroups connectionId={view.id} botName={bot.name} />
                 ) : null}
                 {view.botContextId && botImConnectionLanesSupported() ? (
-                  <ConnectionLanes connectionId={view.id} botName={bot.name} />
+                  <ConnectionLanes connectionId={view.id} botId={bot.id} botName={bot.name} />
                 ) : null}
               </li>
             );
@@ -226,6 +232,10 @@ export function BotChannelsPage({ bot }: { bot: BotProfile }) {
           {t('bots.channels.add.button')}
         </Button>
       </div>
+      {typeof window.electronAPI.wechatBot?.setCompanion === 'function' ? (
+        <WechatBotSection companion={{ id: bot.id, name: bot.name }} expanded={wechatExpanded}
+          onToggle={() => setWechatExpanded((expanded) => !expanded)} />
+      ) : null}
       <p className="px-1 text-12 leading-[1.5] text-[var(--text-tertiary)]">
         {t('bots.channels.externalNote', { name: bot.name })}
       </p>
@@ -346,10 +356,11 @@ const LANE_KIND_KEY: Record<BotImConnectionLane['kind'], string> = {
 /**
  * 一条连接的「隐藏任务」小节: 主人私聊(伙伴主任务)、每个群 / 话题与其他人的私聊各一行,
  * 显示状态、最近活动和当前上下文里的消息数; 卡住时可以让某一条重新开始(同一条任务,
- * 记录保留, 下一条消息换干净的上下文)。隐藏任务没有自己的任务页, 所以这里不提供打开。
+ * 记录保留, 下一条消息换干净的上下文)。点击记录复用主界面的只读历史页, 不取消隐藏。
  */
-function ConnectionLanes({ connectionId, botName }: { connectionId: string; botName: string }) {
+function ConnectionLanes({ connectionId, botId, botName }: { connectionId: string; botId: string; botName: string }) {
   const { t } = useBotTranslation();
+  const navigate = useNavigate();
   const { confirm } = useConfirmDialog();
   const [lanes, setLanes] = useState<BotImConnectionLane[] | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
@@ -459,19 +470,23 @@ function ConnectionLanes({ connectionId, botName }: { connectionId: string; botN
         ].filter((part): part is string => !!part);
         return (
           <div key={lane.sessionId} className="flex items-center gap-3">
-            <div className="min-w-0 flex-1">
-              <div className="flex min-w-0 items-center gap-1.5">
-                <span className="min-w-0 truncate text-12 text-[var(--text-primary)]" title={name}>
-                  {name}
+            <button
+              type="button"
+              onClick={() => navigate(`/bots/${encodeURIComponent(botId)}/history/${encodeURIComponent(lane.sessionId)}`)}
+              className="min-w-0 flex-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
+            >
+                <span className="flex min-w-0 items-center gap-1.5">
+                  <span className="min-w-0 truncate text-12 text-[var(--text-primary)]" title={name}>
+                    {name}
+                  </span>
+                  {lane.state === 'running' ? (
+                    <Spinner size={12} aria-hidden className="shrink-0 text-[var(--text-tertiary)]" />
+                  ) : lane.state === 'failed' ? (
+                    <AttentionDot tone="error" />
+                  ) : null}
                 </span>
-                {lane.state === 'running' ? (
-                  <Spinner size={12} aria-hidden className="shrink-0 text-[var(--text-tertiary)]" />
-                ) : lane.state === 'failed' ? (
-                  <AttentionDot tone="error" />
-                ) : null}
-              </div>
-              <div className="text-11 leading-[1.5] text-[var(--text-tertiary)]">{meta.join(' · ')}</div>
-            </div>
+                <span className="block text-11 leading-[1.5] text-[var(--text-tertiary)]">{meta.join(' · ')}</span>
+            </button>
             <Button
               type="button"
               variant="secondary"

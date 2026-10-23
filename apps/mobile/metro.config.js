@@ -24,6 +24,7 @@ const workspaceTsSourcePackages = [
   'device-link-protocol',
   'maker-shared',
   'model-providers',
+  'voice-input-core',
 ];
 
 config.resolver.disableHierarchicalLookup = true;
@@ -79,7 +80,20 @@ const loginFixturesStub = path.join(
   'packages/auth-client/fixtures/loginScenarios.production-stub.ts',
 );
 
+const devEndpointManifest = path.join(workspaceRoot, 'config/endpoint.dev.json');
+
 config.resolver.resolveRequest = (context, moduleName, platform) => {
+  // Metro collects static requires even in inactive env.ts branches. This private,
+  // gitignored manifest is only an input to explicitly selected CindyDev builds;
+  // Global/CN must work without it and must not bundle it when it happens to exist.
+  // Dev uses normal resolution, so a missing manifest still fails explicitly.
+  if (
+    process.env.EXPO_PUBLIC_CINDY_AUTH_REGION?.trim() !== 'dev' &&
+    path.resolve(path.dirname(context.originModulePath), moduleName) === devEndpointManifest
+  ) {
+    return { type: 'empty' };
+  }
+
   if (moduleName === loginFixturesModule && process.env.NODE_ENV === 'production') {
     return { type: 'sourceFile', filePath: loginFixturesStub };
   }

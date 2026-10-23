@@ -169,6 +169,7 @@ export function BotGroupComposer({
   running,
   disabled = false,
   planState = null,
+  divisionSteps = false,
   attachments: attachmentState = NO_ATTACHMENTS,
   attachmentScope = '',
   dragOver = false,
@@ -192,6 +193,8 @@ export function BotGroupComposer({
   disabled?: boolean;
   /** The group's open plan, for placeholders and the 「安排分工」 gate. */
   planState?: BotGroupComposerPlanState | null;
+  /** Server groups: a 分工 that writes out who does what starts as written; otherwise the organizer arranges it (§7.0). */
+  divisionSteps?: boolean;
   attachments?: BotGroupComposerAttachments;
   /** Scope for writing annotated images before send (see botGroupAttachmentScope). */
   attachmentScope?: string;
@@ -500,11 +503,11 @@ export function BotGroupComposer({
     : !hasMembers
     ? t('bots.groupChat.composer.noMembers')
     : division
-      ? t('bots.groupChat.composer.placeholderDivision')
+      ? t(divisionSteps ? 'bots.groupChat.composer.placeholderDivisionSteps' : 'bots.groupChat.composer.placeholderDivision')
       : planState?.kind === 'proposed'
         ? t('bots.groupChat.composer.placeholderPlanProposed')
         : planState?.kind === 'running' && planState.botName
-          ? t('bots.groupChat.composer.placeholderPlanRunning', { name: planState.botName })
+          ? t(planState.talk ? 'bots.groupChat.composer.placeholderQueueRunning' : 'bots.groupChat.composer.placeholderPlanRunning', { name: planState.botName })
           : planState?.kind === 'waiting' && planState.stepDone && planState.botName
             ? t('bots.groupChat.composer.placeholderPlanWaiting', { name: planState.botName })
             : t('bots.groupChat.composer.placeholder');
@@ -681,7 +684,7 @@ export function BotGroupComposer({
                         {t(
                           divisionBlocked
                             ? 'bots.groupChat.composer.divisionBusy'
-                            : 'bots.groupChat.composer.divisionDescription',
+                            : divisionSteps ? 'bots.groupChat.composer.divisionDescriptionSteps' : 'bots.groupChat.composer.divisionDescription',
                         )}
                       </span>
                     </span>

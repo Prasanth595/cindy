@@ -116,7 +116,7 @@ export type FeishuBotMcpDeps = Omit<FeishuBotMcpHostDeps, 'getOwnerOpenId' | 're
    * (typically: user has never DM'd the bot). Tools translate null into
    * NO_CHAT_CONTEXT with guidance.
    */
-  getChatId: () => string | null | undefined;
+  getChatId: () => string | null | undefined | Promise<string | null | undefined>;
   /**
    * 会话来源(ctx.vendorOptions.source,session 构建期确定)。Cindy hook 来源给
    * 本 server 全部工具描述追加渠道路由提示——若通道选择交给模型自由判断会
@@ -163,7 +163,7 @@ function registerSendFileToUser(
         .describe('发送给用户看到的文件名,默认用 basename(absPath)'),
     },
     handler: async ({ absPath, displayName }) => {
-      const chatId = deps.getChatId();
+      const chatId = await deps.getChatId();
       if (!chatId) {
         return buildJsonResult(
           {
@@ -230,7 +230,7 @@ function registerSendMessageToUser(
         ),
     },
     handler: async ({ text }) => {
-      const chatId = deps.getChatId();
+      const chatId = await deps.getChatId();
       if (!chatId) {
         return buildJsonResult(
           {

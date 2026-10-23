@@ -2,7 +2,6 @@ import { Button } from '@/components/ui/button';
 import { Fragment, useState, type ReactNode } from 'react';
 import { ArrowDown, ArrowUp, Plus, Trash2 } from 'lucide-react';
 
-import { ModelSelector } from '@/components/new-chat/ModelSelector';
 import { DefaultOverrideControls } from '@/components/settings/DefaultOverrideControls';
 import {
   SETTINGS_ROW_CLASS,
@@ -14,14 +13,13 @@ import { cn } from '@/lib/utils';
 import type { AgentKind } from '@/hooks/useAgentCapabilities';
 import { useDeviceProviders } from '@/hooks/useDeviceProviders';
 import { providerAccountLabel, providerDisplayName } from '@/lib/providerDisplayName';
-import { useAvailableAgents } from '@/hooks/useAvailableAgents';
+import { ModelRouteSelector } from '@/components/new-chat/ModelRouteSelector';
 import type { MakerVendor } from '@/lib/ccAgent.types';
 import {
   BOT_MODEL_CHAIN_MAX,
   type BotHarness,
   type BotModelRoute,
 } from '../../../shared/botModelChain';
-import { getEffectiveBotModelSettings } from './botStore';
 import { useBotTranslation } from './botPronounContext';
 
 function vendorFor(harness: BotHarness): 'cc' | 'codex' | 'pi' {
@@ -34,10 +32,6 @@ function harnessFor(vendor: 'cc' | 'codex' | 'pi'): BotHarness {
 
 function agentKindFor(vendor: 'cc' | 'codex' | 'pi'): AgentKind {
   return vendor === 'cc' ? 'claude-code' : vendor;
-}
-
-function defaultRoute(vendor: 'cc' | 'codex' | 'pi'): BotModelRoute {
-  return { harness: harnessFor(vendor), ...getEffectiveBotModelSettings(vendor, null) };
 }
 
 export function BotModelChainEditor({
@@ -74,7 +68,6 @@ export function BotModelChainEditor({
   settingsRows?: { primaryLabel: string; primaryHint: string };
 }) {
   const { t } = useBotTranslation();
-  const { availableVendors, loaded } = useAvailableAgents(deviceId);
   const catalog = useDeviceProviders(deviceId);
   const [expanded, setExpanded] = useState(false);
   const [pendingRoute, setPendingRoute] = useState<BotModelRoute | null>(null);
@@ -83,22 +76,12 @@ export function BotModelChainEditor({
   const onChange = (next: BotModelRoute[]) => {
     if (!disabled) onValueChange(next);
   };
-  // Keep the local roster gate and SSH hiddenVendors contract. Device-link
-  // rosters are advisory until loaded: a failed request must not block editing
-  // the target device's independently loaded provider catalog.
-  const waitingForLocalRoster = !remote && !deviceId && !loaded;
   const visibleVendors = (['pi', 'codex', 'cc'] as const)
-    .filter((vendor) => !hiddenVendors.includes(vendor))
-    .filter(
-      (vendor) =>
-        (remote && !deviceId) ||
-        (deviceId && !loaded) ||
-        (loaded && availableVendors.has(vendor)),
-    );
+    .filter((vendor) => !hiddenVendors.includes(vendor));
   const unifiedAgents = visibleVendors.map(agentKindFor);
 
   const replace = (index: number, patch: Partial<BotModelRoute>) => {
-    if (disabled || waitingForLocalRoster) return;
+    if (disabled) return;
     if (pendingRoute && index === routes.length) {
       const next = { ...pendingRoute, ...patch };
       if (next.model && routes.length < BOT_MODEL_CHAIN_MAX) {
@@ -126,18 +109,16 @@ export function BotModelChainEditor({
     );
     const vendor = unused ?? visibleVendors[0];
     if (!vendor) return;
-    const route = deviceId
-      ? { harness: harnessFor(vendor), model: '', providerId: null, effort: '', fastMode: false }
-      : defaultRoute(vendor);
-    if (route.model) onChange([...routes, route]);
-    else setPendingRoute(route);
+    setPendingRoute({ harness: harnessFor(vendor), model: '', providerId: null, effort: '', fastMode: false });
   };
 
   const picker = (route: BotModelRoute, index: number, wrapperClassName = 'min-w-0 flex-1') => (
     <div className={wrapperClassName}>
-      <ModelSelector
-        disabled={disabled || waitingForLocalRoster}
+      <ModelRouteSelector
+        disabled={disabled}
         deviceId={deviceId}
+        agentDeviceId={route.agentDeviceId}
+        sshRemote={remote && !deviceId}
         vendorKey={vendorFor(route.harness)}
         modelId={route.model}
         effort={route.effort}
@@ -160,6 +141,7 @@ export function BotModelChainEditor({
           if (!visibleVendors.includes(selection.engine)) return;
           replace(index, {
             harness: harnessFor(selection.engine),
+            ...(route.agentDeviceId || selection.agentDevice ? { agentDeviceId: selection.agentDevice?.deviceId ?? null } : {}),
             providerId: selection.providerId,
             model: selection.modelId,
             effort: selection.effort ?? '',
@@ -168,7 +150,7 @@ export function BotModelChainEditor({
         }}
         unknownModelLabel={(model) => t('bots.modelUnavailable', { model })}
       />
-      {deviceId && route.providerId
+      {deviceId && !route.agentDeviceId && route.providerId
         ? (() => {
             const provider = catalog.providers.find((item) => item.id === route.providerId);
             return provider ? (

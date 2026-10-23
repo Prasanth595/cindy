@@ -11,7 +11,12 @@ import type { BotProfile } from '../botStore';
 
 const mocks = vi.hoisted(() => ({
   confirm: vi.fn(async () => true),
+  navigate: vi.fn(),
 }));
+
+vi.mock('react-router-dom', () => ({ useNavigate: () => mocks.navigate }));
+// The shared-quota rail observes auth; this component fixture has no auth host.
+vi.mock('@/contexts/AuthContext', () => ({ useOptionalAuthUser: () => null }));
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -85,6 +90,7 @@ let lanesApi: {
 } = {};
 
 beforeEach(() => {
+  mocks.navigate.mockClear();
   mocks.confirm.mockReset();
   mocks.confirm.mockResolvedValue(true);
   groupsApi = {};
@@ -93,6 +99,29 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe('BotChannelsPage', () => {
+  // 测试价值: 真实列表点击应打开主界面只读详情, 旧覆盖只有重启; 最小输入为一条渠道记录。
+  // unit: 校验路由与副作用, 不需真实飞书连接。
+  it('opens each IM record in the existing history page without restarting it', async () => {
+    const lanes = ['owner-dm', 'group', 'topic', 'guest-dm'].map((kind) => ({
+      sessionId: `s/${kind}`, kind, chatId: '-1001', threadId: 'thread-1', name: kind,
+      state: 'idle', lastActivityAt: null, contextMessageCount: 0,
+    }));
+    lanesApi = {
+      listLanes: vi.fn(async () => ({ connectionId: 'a1b2c3d4e5f6', lanes })),
+      resetLane: vi.fn(),
+    };
+    installApi({ connections: [connection({ channel: 'feishu', botId: 'bot/1' })] });
+    render(<BotChannelsPage bot={{ ...mia, id: 'bot/1' }} />);
+    for (const lane of lanes) {
+      const name = lane.kind === 'owner-dm' ? 'bots.channels.lanes.ownerName' : lane.name;
+      const open = await screen.findByRole('button', { name: new RegExp(`^${name}`) });
+      fireEvent.click(open);
+      expect(mocks.navigate).toHaveBeenLastCalledWith(`/bots/bot%2F1/history/${encodeURIComponent(lane.sessionId)}`);
+    }
+    expect(lanesApi.resetLane).not.toHaveBeenCalled();
+    expect(mocks.confirm).not.toHaveBeenCalled();
+  });
+
   it('lets the owner switch a known group to always-on per connection, and hides the section without groups', async () => {
     let activation: 'mention' | 'always' = 'mention';
     const groups = () => ({
@@ -147,6 +176,7 @@ describe('BotChannelsPage', () => {
     );
     expect(await screen.findByRole('status')).toBeTruthy();
     expect(lanesApi.resetLane).toHaveBeenCalledTimes(1);
+    expect(mocks.navigate).not.toHaveBeenCalled();
   });
 
   it('does not start a hidden task over when the owner cancels', async () => {

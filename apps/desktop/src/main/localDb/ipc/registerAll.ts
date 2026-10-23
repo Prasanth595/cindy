@@ -2,6 +2,7 @@ import { registerCompanionImport } from '../../bot-import/registration.js';
 import { registerTaskTagsIpc } from './taskTags';
 import { registerRoutineRemoteResources } from '../../routines/remote.js';
 import { registerRoutinesIpc } from '../../routines/service.js';
+import { registerNightlyLearningIpc } from '../../routines/nightlyLearningIpc.js';
 /**
  * chat-data-localization F2/F5：聚合注册所有 localDb IPC handlers + ensure-ready。
  *
@@ -18,6 +19,7 @@ import { getCurrentDbClientUserId, tryGetDbClient } from '../client/current';
 import {
   registerSessionIpc,
   type RegisterSessionIpcOpts,
+  setSessionWorktreeBindingLookup,
   setSessionWorktreeRecycle,
 } from './sessions';
 import { registerMessageIpc } from './messages';
@@ -41,6 +43,7 @@ import { createLogger } from '../../logger';
 import { recordDesktopDevLocalDbStartupResult } from '../../devStartupStatus';
 import { createOwnerEnsureCoordinator } from './ownerEnsureCoordinator';
 import { reconcileSessionMediaRefsForDeletedSessions } from '../../cindy-media/sessionCleanup';
+import { reconcileGeneratedImageRecovery } from '../../cindy-media/generatedImageRecovery';
 import { reconcileMediaRefCompensationsForOwner } from '../../cindy-media/refCompensationJournal';
 import { setSessionRouteLockImplementation } from '../sessionRouteLock';
 
@@ -70,6 +73,7 @@ function startMediaRefCompensationReconcile(
     }, MEDIA_REF_COMPENSATION_BUSY_RETRY_MS);
     retry.unref?.();
   };
+  void reconcileGeneratedImageRecovery().catch(() => log.warn('native image cleanup reconciliation deferred'));
   void run(true).catch((error) => {
     log.warn('media reference compensation reconcile failed', {
       userId,
@@ -90,6 +94,8 @@ export interface RegisterLocalDbIpcOpts {
   beforeEnsureReady?: (userId: string) => void | Promise<void>;
   /** Record worktree recycle intent before a terminal session status is persisted. */
   requestWorktreeRecycle?: (sessionId: string, resources?: readonly string[]) => Promise<void>;
+  /** 当前 worktree 绑定（worktreeStore 是 source of truth，DB 只存反范式快照）。 */
+  lookupSessionWorktreeBinding?: (sessionId: string) => string | null;
   /** Close a moved local Pi/Codex runtime after revalidating that its turn is idle. */
   closeIdleSessionForMove?: (sessionId: string) => Promise<boolean>;
   /** Serialize startup tombstone cleanup with task restore/start/send operations. */
@@ -115,6 +121,7 @@ export interface RegisterLocalDbIpcOpts {
 
 export function registerLocalDbIpc(opts: RegisterLocalDbIpcOpts = {}): void {
   setSessionWorktreeRecycle(opts.requestWorktreeRecycle ?? null);
+  setSessionWorktreeBindingLookup(opts.lookupSessionWorktreeBinding ?? null);
   setSessionRouteLockImplementation(opts.withSessionLock ?? null);
   const runEnsureReady = createOwnerEnsureCoordinator({
     isOwnerCurrent: opts.isOwnerCurrent ?? (() => true),
@@ -238,6 +245,7 @@ export function registerLocalDbIpc(opts: RegisterLocalDbIpcOpts = {}): void {
   registerBotIpc();
   registerCompanionImport();
   registerRoutinesIpc();
+  registerNightlyLearningIpc();
   registerRoutineRemoteResources(botRemoteManagement);
   registerBotRemoteResourceProvider(botRemoteManagement);
   registerSessionImportIpc();

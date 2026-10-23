@@ -1,3 +1,4 @@
+import { getBotAutonomySettingsView, setBotAutonomySchedulerBotId } from '../../bot-autonomy/hub.js';
 import { readEffectiveBotModelChain } from '../../maker-host/bot-model-chain-settings-store.js';
 import type { RemoteResourceHostContext } from '../../device-link/remoteResourceRegistry.js';
 import { botRemoteResourceFromSource } from './botRemoteResourceProjection.js';
@@ -13,6 +14,7 @@ import { createBotRemoteEditors } from './botRemoteEditors.js';
 import { decodeBotAvatarImage } from './botAvatarSelection.js';
 import { runRegisteredBotLifecycleAction } from '../../maker-ipc/botLifecycleService.js';
 import { listBotSettingsCapabilities, validateBotCapabilityAdditions } from '../../maker-host/index.js';
+import { botLinkedProjectAccess } from '../../maker-ipc/botLinkedProjects.js';
 
 async function validateModelChain(chain: BotModelRoute[]) {
   const scope = activeOwnerScopeKey();
@@ -43,6 +45,11 @@ const settings = createBotRemoteSettingsResource({ ...deps,
   lifecycle: (botId, action, confirmName, guard) => runRegisteredBotLifecycleAction({ botId, action, confirmName, keepTaskHistory: true, worktreeDisposition: 'retain' }, guard),
 });
 const getEditor = createBotRemoteEditors({ ...deps,
+  projects: {
+    list: async botId => (await botLinkedProjectAccess(botId)).read(),
+    set: async (botId, id, linked) => (await botLinkedProjectAccess(botId)).set(id, linked),
+  },
+  followUp: { get: getBotAutonomySettingsView, set: setBotAutonomySchedulerBotId },
   async modelDefaults() {
     const owner = deps.owner();
     const chain = await readEffectiveBotModelChain({});

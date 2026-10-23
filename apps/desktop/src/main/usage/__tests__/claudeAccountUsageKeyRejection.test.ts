@@ -7,10 +7,12 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 const mocks = vi.hoisted(() => ({
   outboundFetch: vi.fn(),
   report: vi.fn(),
+  readOrganization: vi.fn(),
+  windows: [] as Array<{ isDestroyed: () => boolean; webContents: { send: (...args: unknown[]) => void } }>,
 }));
 
 vi.mock('electron', () => ({
-  BrowserWindow: { getAllWindows: () => [] },
+  BrowserWindow: { getAllWindows: () => mocks.windows },
 }));
 vi.mock('../../authManager', () => ({
   getAuthState: () => ({
@@ -38,7 +40,7 @@ vi.mock('../../model-access/gatewayKeyRejection', () => ({
 }));
 
 // This suite exercises the explicit old-server / Nova compatibility path.
-vi.mock('../organizationAccountUsage.js', () => ({ readOrganizationAccountUsage: async () => undefined }));
+vi.mock('../organizationAccountUsage.js', () => ({ readOrganizationAccountUsage: mocks.readOrganization }));
 let usage: typeof import('../claudeAccountUsage');
 let credentials: typeof import('../../model-access/quotaCredentialState');
 
@@ -58,11 +60,48 @@ describe('claudeAccountUsage Cindy AI key rejection', () => {
     vi.useFakeTimers();
     mocks.outboundFetch.mockReset();
     mocks.report.mockReset();
+    mocks.readOrganization.mockReset().mockResolvedValue(undefined);
+    mocks.windows = [];
     credentials.__resetQuotaCredentialStateForTesting('cloud:user-1:1', {
       state: 'ok', source: 'server', endpoint: 'https://gateway.test.invalid', accountTier: null,
     });
   });
   afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); });
+
+  it('shares the main-process quota read across primary and secondary window IPC senders', async () => {
+    const { registerMakerUsageHandlers } = await import('../../maker-ipc/usageHandlers');
+    const { IpcHarness } = await import('../../maker-ipc/__tests__/helpers/ipcHarness');
+    const { MAKER_INVOKE } = await import('../../maker-ipc/channels');
+    const harness = new IpcHarness();
+    registerMakerUsageHandlers(harness, {
+      readClaudeAccountUsageSnapshot: usage.readClaudeAccountUsageSnapshot,
+      readClaudeAccountQuotaClear: usage.readClaudeAccountQuotaClear,
+      triggerClaudeAccountUsageRefresh: usage.triggerClaudeAccountUsageRefresh,
+    } as Parameters<typeof registerMakerUsageHandlers>[1]);
+    const read = (sender: number) => harness.invokeFrom(sender, MAKER_INVOKE.USAGE_ACCOUNT, 'claude-code', 'cindy-quota-state-v1');
+    const confirmations: Promise<unknown>[] = [];
+    const sends = [1, 2].map(sender => vi.fn(() => { confirmations.push(read(sender)); }));
+    mocks.windows = sends.map(send => ({ isDestroyed: () => false, webContents: { send } }));
+    let complete!: (value: 'unlimited') => void;
+    mocks.readOrganization.mockImplementation(() => new Promise(resolve => { complete = resolve; }));
+    const first = read(1);
+    const second = read(2);
+    let secondFinished = false;
+    void second.then(() => { secondFinished = true; });
+    await Promise.resolve(); await Promise.resolve();
+    expect(mocks.readOrganization).toHaveBeenCalledTimes(1);
+    expect(secondFinished).toBe(false);
+    complete('unlimited');
+    expect(await Promise.all([first, second])).toEqual([{ quotaState: 'unlimited' }, { quotaState: 'unlimited' }]);
+    await Promise.all(confirmations);
+    expect(mocks.readOrganization).toHaveBeenCalledTimes(1);
+    for (const send of sends) expect(send).toHaveBeenCalledTimes(1);
+    mocks.readOrganization.mockResolvedValue('unlimited');
+    await vi.advanceTimersByTimeAsync(11_000);
+    await read(2);
+    expect(mocks.readOrganization).toHaveBeenCalledTimes(2);
+    for (const send of sends) expect(send).toHaveBeenCalledTimes(1);
+  });
 
   it('reports the sent key when user/info and daily/activity are rejected with 401', async () => {
     mocks.outboundFetch.mockImplementation(async () => jsonResponse({ error: 'invalid key' }, 401));
@@ -111,5 +150,11 @@ describe('claudeAccountUsage Cindy AI key rejection', () => {
 
     expect(mocks.outboundFetch).toHaveBeenCalledTimes(2);
     expect(mocks.report).not.toHaveBeenCalled();
+    // Unit compatibility: the legacy reader keeps daily data without opting in
+    // to the enterprise switch (missing switch must not disable this path).
+    expect(usage.readClaudeAccountUsageSnapshot()).toEqual({
+      spend: 1, maxBudget: 10, currency: 'USD', budgetResetAt: null,
+      todaySpend: 0, fetchedAt: expect.any(Number),
+    });
   });
 });

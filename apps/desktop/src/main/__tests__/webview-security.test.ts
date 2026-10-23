@@ -1088,6 +1088,40 @@ describe('installDeferredPopupRouter', () => {
     expect(hostContents.send).not.toHaveBeenCalled();
   });
 
+  // 测试价值
+  // - 生产入口与可观察结果:installDeferredPopupRouter 经 host resolver 发送 popup;可观察的是 resolver
+  //   收到捕获时的 hostContents,并可据此让「弹出到独立窗口的页签」的 popup 留在那扇窗口 renderer。
+  // - Bug / 规则依据:review「弹出的浏览器页签的 window.open 被改投整栏侧栏,popup 页签无法显示、
+  //   原生 popup surface owner 校验失败」。
+  // - 现有覆盖缺口:现有用例的 resolver 不看捕获的 host。
+  // - 最小失败输入:resolver 对捕获的页签窗口 host 返回其自身,对其它 host 返回侧栏宿主。
+  it('把捕获的 hostContents 交给 host resolver,页签窗口的 popup 留在原 renderer', () => {
+    const { childContents, hostContents, popupWindow } = makePopupHarness();
+    const sidebarHost = {
+      isDestroyed: vi.fn(() => false),
+      send: vi.fn(),
+    } as unknown as WebContents & { send: ReturnType<typeof vi.fn> };
+    const seen: unknown[] = [];
+    setRsbPopupHostResolver((captured) => {
+      seen.push(captured);
+      return captured === hostContents ? captured : sidebarHost;
+    });
+
+    installDeferredPopupRouter(
+      hostContents,
+      popupWindow as unknown as BrowserWindow,
+      'foreground-tab',
+    );
+    childContents.emit('will-navigate', {}, 'https://accounts.example.com/oauth');
+
+    expect(seen).toEqual([hostContents]);
+    expect(hostContents.send).toHaveBeenCalledWith(RSB_BROWSER_POPUP_CHANNEL, {
+      url: 'https://accounts.example.com/oauth',
+      disposition: 'foreground-tab',
+    });
+    expect(sidebarHost.send).not.toHaveBeenCalled();
+  });
+
   it('host resolver 解析失败或返回已销毁 host 时回落捕获的 hostContents', () => {
     const { childContents, hostContents, popupWindow } = makePopupHarness();
     setRsbPopupHostResolver(() => null);

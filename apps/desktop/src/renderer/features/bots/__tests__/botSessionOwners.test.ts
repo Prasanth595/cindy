@@ -17,6 +17,7 @@ import {
   buildBotSessionOwners,
   createSessionEntryNavigator,
   findBotProfileForSession,
+  remoteBotRouteForSession,
   resolveBotRouteForSessionEntry,
   type BotSessionEntryTarget,
 } from '../botSessionOwners';
@@ -56,6 +57,17 @@ function profile(over: Partial<BotProfile> = {}): BotProfile {
 }
 
 describe('伙伴归属表', () => {
+  // 测试价值: 灵动岛/通知统一入口遇到 IM channel 原先落入不可用的可写页。
+  // 最小失败输入: 只有一条 channel 投影; unit, 直接验证生产路由结果。
+  it('opens hidden IM tasks through the read-only history gate', () => {
+    const bot = profile({ sessions: [
+      { id: 's/feishu', role: 'channel', kind: 'channel', status: 'active' },
+    ] as BotProfile['sessions'] });
+    expect(botRouteForOwnedSession([bot], 's/feishu')).toEqual({
+      route: '/bots/bot-a/history/s%2Ffeishu', consumesAlert: false, gateConsumesAlert: true,
+    });
+  });
+
   it('主对话、渠道任务、归档历史三种都收', () => {
     const owners = buildBotSessionOwners([profile()]);
     expect([...owners.keys()].sort()).toEqual(['s-main', 's-old', 's-telegram']);
@@ -132,6 +144,16 @@ describe('伙伴归属表', () => {
       route: '/cc-agent/s-delegated',
       consumesAlert: false,
     });
+  });
+
+  // 主力电脑在另一台设备的伙伴不在本机投影里：此前灵动岛点击只能落到普通任务页。
+  it('主力电脑在别的设备上的伙伴，点击回到那台设备的伙伴页', () => {
+    const remote = [{ id: 'opus', deviceId: 'mac studio', sessionId: 's-remote' }];
+    expect(remoteBotRouteForSession(remote, 's-remote')).toEqual({
+      route: '/bots/remote/mac%20studio/opus',
+      consumesAlert: false,
+    });
+    expect(remoteBotRouteForSession(remote, 's-other')).toBeNull();
   });
 
   it('群专线回到它所在的群，点击即处置；缺群 id 的旧投影回伙伴主页', () => {

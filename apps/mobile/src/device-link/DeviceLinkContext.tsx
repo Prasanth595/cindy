@@ -1,4 +1,5 @@
 import Constants from 'expo-constants';
+import { DirectLinkTransport } from './DirectLinkTransport';
 import { tryMobilePeerInvoke, resetMobilePeer } from './peerFileRegistry';
 import { isHistoryViewUnavailable, type HistoryWorkPatch } from '@cindy/maker-shared/message-window';
 import { findRemoteHistoryView } from '@/session/remoteHistoryView';
@@ -12,6 +13,7 @@ import { dispatchCredentialSwitchOutcome } from '@/session/credentialSwitchOutco
 import { mobileRuntimeIdentity } from '@/debug/mobileRuntimeIdentity';
 import {
   DeviceLinkClient,
+  createDirectRuntimeBridge,
   isSharedTaskPeer,
   probeSharedTaskHost,
   sharedTaskTopics,
@@ -38,6 +40,7 @@ import {
   type PushPayload,
   type RemoteResourceChangedPayload,
   type Topic,
+  decodeModelSpeedPayload,
 } from '@cindy/device-link';
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { deviceLinkWsUrl, DEVICE_LINK_API_BASE_URL } from '@/config/env';
@@ -384,6 +387,7 @@ export function DeviceLinkProvider({ children }: { children: ReactNode }) {
   }
 
   const auth = useAuth();
+  const [directBridge] = useState(() => createDirectRuntimeBridge());
   const sharedTaskApi = useSharedTaskApi();
   const currentDataOwnerIdRef = useRef<string | null>(auth.user?.id ?? null);
   currentDataOwnerIdRef.current = auth.user?.id ?? null;
@@ -952,6 +956,7 @@ export function DeviceLinkProvider({ children }: { children: ReactNode }) {
     // 会被 scheduler generation 丢弃，不能写回新账号。
     peerRecoverySchedulerRef.current?.clear();
     const client = new DeviceLinkClient({
+      directRuntime: directBridge.runtime,
       getWsUrl: () => deviceLinkWsUrl(),
       getToken: auth.getAccessToken,
       getHello: () => ({
@@ -1565,7 +1570,7 @@ export function DeviceLinkProvider({ children }: { children: ReactNode }) {
           preSend();
           if (clientRef.current !== client) throw new DeviceLinkError('NOT_CONNECTED', 'link changed');
           if (result) {
-            return withAccessRevokedHandling(deviceId, async () => unwrapInvoke<T>(result));
+            return withAccessRevokedHandling(deviceId, async () => unwrapInvoke<T>(result, channel));
           }
         }
         return sendInvokeWithAccessHandling<T>(client, deviceId, channel, args, { preSend, background: opts?.background });
@@ -1655,7 +1660,11 @@ export function DeviceLinkProvider({ children }: { children: ReactNode }) {
     subscriptionVersion,
   ]);
 
-  return <DeviceLinkContext.Provider value={value}>{children}</DeviceLinkContext.Provider>;
+  return <DeviceLinkContext.Provider value={value}>
+    <DirectLinkTransport key={`${auth.accountGeneration}:${connectionEpoch}`} bridge={directBridge}
+      owner={`${auth.accountGeneration}:${connectionEpoch}`} enabled={auth.isAuthenticated && status === 'online'} />
+    {children}
+  </DeviceLinkContext.Provider>;
 }
 
 function VisualMockDeviceLinkProvider({ children }: { children: ReactNode }) {
@@ -1705,7 +1714,8 @@ export function routeFrame(env: Envelope, handlers: RouteFrameHandlers = {}): vo
   }
   if (peerLinkClosed) return;
   if (env.kind !== 'push' || !env.src) return;
-  const push = env.payload as PushPayload;
+  const rawPush = env.payload as PushPayload;
+  const push = { ...rawPush, payload: decodeModelSpeedPayload(rawPush.channel, rawPush.payload) };
   recordDeviceLinkPush(push.channel, push.payload);
   dispatchCredentialSwitchOutcome(env.src, push.channel, push.payload);
   if (push.channel === 'local-db:task-tags:changed') {
@@ -1859,7 +1869,7 @@ async function rebuildSessionSnapshot(
   const applyPending = (value: PendingInteraction[]) => {
     if (!isCurrent()) return false;
     if (Array.isArray(value)) {
-      remoteSessionStore.setPendingInteractions(sessionId, value, { finalizeStreaming: true });
+      remoteSessionStore.setPendingInteractions(sessionId, value, { finalizeStreaming: true, deviceId });
       return true;
     }
     return false;
@@ -2128,7 +2138,7 @@ async function sendInvoke<T>(
   if (isInvokeResultReachabilityEvidence(result)) {
     markRemoteResponseEvidence(deviceId);
   }
-  return unwrapInvoke<T>(result);
+  return unwrapInvoke<T>(result, channel);
 }
 
 async function sendSubscribeWithAccessHandling(
@@ -2245,8 +2255,8 @@ async function sendUnsubscribe(
   unwrapInvoke(result);
 }
 
-function unwrapInvoke<T = unknown>(result: InvokeResultPayload): T {
-  if (result.ok) return result.result as T;
+function unwrapInvoke<T = unknown>(result: InvokeResultPayload, channel?: string): T {
+  if (result.ok) return decodeModelSpeedPayload(channel, result.result) as T;
   if (result.error.code === 'IPC_ERROR') throw new Error(result.error.message);
   throw new DeviceLinkError(result.error.code, result.error.message);
 }

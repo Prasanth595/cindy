@@ -14,7 +14,7 @@ export interface SessionControlsSessionLike {
   contextTokens?: number;
   contextWindow?: number;
   effort?: string;
-  fastMode: boolean;
+  fastMode: boolean | 'ultrafast';
   model: string;
   permissionMode: string;
   status: 'active' | 'archived' | 'deleted' | string;
@@ -273,8 +273,7 @@ export function summarizeCodexRateLimitReset(
     earliestExpiryAt,
     availableCount,
     shouldPrompt,
-    canReset: shouldPrompt
-      && availableCount > 0
+    canReset: availableCount > 0
       // Offer TTL belongs to the issuing Desktop clock. Mobile only checks presence;
       // consume returns a typed precondition error when Desktop has actually expired it.
       && Boolean(value.resetOffer),
