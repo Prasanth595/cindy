@@ -154,6 +154,10 @@ function namedIgnoredDirs(hrefs: readonly string[], ignoreDirs: ReadonlySet<stri
   return named;
 }
 
+function ignoredDirPair(parent: string, name: string): string {
+  return `${normalizeForSuffix(path.basename(parent))}/${normalizeForSuffix(name)}`;
+}
+
 function skipsDirectory(
   parent: string,
   name: string,
@@ -161,7 +165,7 @@ function skipsDirectory(
   named: ReadonlySet<string>,
 ): boolean {
   if (!ignoreDirs.has(name)) return false;
-  return !named.has(`${normalizeForSuffix(path.basename(parent))}/${normalizeForSuffix(name)}`);
+  return !named.has(ignoredDirPair(parent, name));
 }
 
 /**
@@ -340,17 +344,24 @@ export async function bfsFindManyBySuffix(
   const isPathAllowed = options.isPathAllowed ?? (() => true);
 
   // One bucket per unique href; suffix precomputed for the endsWith test.
-  const buckets = new Map<string, { suffix: string; out: string[] }>();
+  // `named` stays per href: the walk enters an ignored directory any href
+  // names, but only that href may match files under it, so every bucket ends
+  // up with what `bfsFindBySuffix` would return for its href alone.
+  const buckets = new Map<string, { suffix: string; named: Set<string>; out: string[] }>();
   for (const href of hrefs) {
     if (buckets.has(href)) continue;
     buckets.set(href, {
       suffix: '/' + normalizeForSuffix(href).replace(/^\/+/, ''),
+      named: namedIgnoredDirs([href], ignoreDirs),
       out: [],
     });
   }
   const result = new Map<string, string[]>();
   for (const [href, bucket] of buckets) result.set(href, bucket.out);
-  const named = namedIgnoredDirs([...buckets.keys()], ignoreDirs);
+  const enterable = new Set<string>();
+  for (const bucket of buckets.values()) {
+    for (const pair of bucket.named) enterable.add(pair);
+  }
 
   const allFull = (): boolean => {
     for (const bucket of buckets.values()) {
@@ -360,9 +371,12 @@ export async function bfsFindManyBySuffix(
   };
 
   // Depth-tagged queue so we can cut off at maxDepth without recursion.
-  const queue: Array<{ dir: string; depth: number }> = [{ dir: root, depth: 0 }];
+  // `crossed` lists the ignored directories entered on the way down.
+  const queue: Array<{ dir: string; depth: number; crossed: readonly string[] }> = [
+    { dir: root, depth: 0, crossed: [] },
+  ];
   while (queue.length > 0 && !allFull()) {
-    const { dir, depth } = queue.shift()!;
+    const { dir, depth, crossed } = queue.shift()!;
     let entries: fs.Dirent[];
     try {
       entries = await fs.promises.readdir(dir, { withFileTypes: true });
@@ -372,13 +386,18 @@ export async function bfsFindManyBySuffix(
     for (const ent of entries) {
       if (ent.isDirectory()) {
         if (depth >= maxDepth) continue;
-        if (skipsDirectory(dir, ent.name, ignoreDirs, named)) continue;
-        queue.push({ dir: path.join(dir, ent.name), depth: depth + 1 });
+        if (skipsDirectory(dir, ent.name, ignoreDirs, enterable)) continue;
+        queue.push({
+          dir: path.join(dir, ent.name),
+          depth: depth + 1,
+          crossed: ignoreDirs.has(ent.name) ? [...crossed, ignoredDirPair(dir, ent.name)] : crossed,
+        });
       } else if (ent.isFile()) {
         const abs = path.join(dir, ent.name);
         const norm = normalizeForSuffix(abs);
         for (const bucket of buckets.values()) {
           if (bucket.out.length >= maxCandidates) continue;
+          if (!crossed.every((pair) => bucket.named.has(pair))) continue;
           if (norm.endsWith(bucket.suffix) && isPathAllowed(abs)) {
             bucket.out.push(abs);
           }

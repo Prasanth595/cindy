@@ -1789,8 +1789,8 @@ const MarkdownRendererBase = memo(function MarkdownRendererBase({
   );
   // 本机会话消息里的相对媒体路径，直接拼接找不到时按任务目录搜索（见 useWorkspaceMediaPath）。
   // 不传 currentSessionId 的调用方渲染的是文件内容而非会话消息，保持原拼接行为。
-  const resolveMediaInWorkspace =
-    Boolean(currentSessionId) && allowPrivilegedLinks && !isRemoteFileOrigin(sessionFileCtx.origin);
+  // 远程归属注入前 origin 会暂时是 local，所以以「已确认本机」为准，不看 origin。
+  const resolveMediaInWorkspace = Boolean(currentSessionId) && allowPrivilegedLinks && sessionFileCtx.localConfirmed === true;
   // F1: text-local <a> click → open TextLightbox with the resolved abs path.
   const [textLightboxFile, setTextLightboxFile] = useState<{
     path: string;
@@ -2052,7 +2052,7 @@ export const MarkdownRenderer = memo(function MarkdownRenderer(props: MarkdownRe
     if (node.kind === 'video' && youtubeVideo(raw)) return <VideoSitePreview src={raw} title={richString(node, 'alt', 'YouTube')} />;
     const allowPrivilegedLinks = props.allowPrivilegedLinks !== false;
     // 与 Markdown 图片同一条判定：只在本机会话消息里按任务目录搜索相对路径。
-    const resolveInWorkspace = Boolean(props.currentSessionId) && allowPrivilegedLinks && !isRemoteFileOrigin(sessionFileCtx.origin);
+    const resolveInWorkspace = Boolean(props.currentSessionId) && allowPrivilegedLinks && sessionFileCtx.localConfirmed === true;
     return (
       <WorkspaceMediaSrc src={raw} workingDir={props.workingDir} enabled={resolveInWorkspace}>
         {(localSrc = raw) => {

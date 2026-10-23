@@ -368,6 +368,19 @@ describe('bfsFindManyBySuffix (single-walk multi-href)', () => {
     expect(found.get('src/App.tsx')).toEqual([real]);
   });
 
+  // 一个 href 点名的被忽略目录(renders 下的 out)只对它自己放行：同一批里的 clip.mp4 不能借道
+  // 匹配到那里的输出文件，否则单独解析是 none/unique 的路径会因为同批的其他引用变成错误的结果。
+  it('keeps an ignored directory one href names closed to the other hrefs', async () => {
+    write('film/renders/out/other.mp4');
+    write('film/renders/out/clip.mp4');
+    write('docs/clip.mp4');
+    const hrefs = ['renders/out/other.mp4', 'clip.mp4', 'out/clip.mp4'];
+
+    const found = await bfsFindManyBySuffix(workspace, hrefs);
+    expect(found.get('clip.mp4')).toEqual([path.join(workspace, 'docs/clip.mp4')]);
+    for (const href of hrefs) expect(found.get(href)).toEqual(bfsFindBySuffix(workspace, href));
+  });
+
   it('caps each bucket independently at maxCandidates', async () => {
     write('a/foo.ts');
     write('b/foo.ts');
