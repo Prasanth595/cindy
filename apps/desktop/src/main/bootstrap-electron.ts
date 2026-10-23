@@ -7322,13 +7322,16 @@ const registerIpcHandlers = () => {
       // fails (ELOOP) instead of following into a denied file. Falls back to 0
       // where the platform lacks the flag (Windows), matching saveChatAttachment.
       const noFollow = typeof fs.constants.O_NOFOLLOW === 'number' ? fs.constants.O_NOFOLLOW : 0;
+      // If a regular file becomes a FIFO after stat, open must still reach the
+      // core's descriptor checks instead of blocking a filesystem worker.
+      const nonBlock = typeof fs.constants.O_NONBLOCK === 'number' ? fs.constants.O_NONBLOCK : 0;
       return readFileBytesForPreview(params, {
         isPathAllowed: (p) => isPathAllowedAgainst(p, getSensitiveMediaBlocklist()),
         realpath: (p) => fs.promises.realpath(p),
         // bigint stats: dev/ino identity must not be rounded (see FileIdentityStat).
         stat: (p) => fs.promises.stat(p, { bigint: true }),
         open: async (p) => {
-          const handle = await fs.promises.open(p, fs.constants.O_RDONLY | noFollow);
+          const handle = await fs.promises.open(p, fs.constants.O_RDONLY | noFollow | nonBlock);
           return {
             stat: () => handle.stat({ bigint: true }),
             read: (buffer, offset, length, position) =>

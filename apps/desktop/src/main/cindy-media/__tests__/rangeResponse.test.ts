@@ -25,12 +25,17 @@ describe('buildRangedMediaResponse', () => {
     expect(Buffer.from(await r.arrayBuffer()).toString()).toBe('0123456789');
   });
 
-  it('合法 Range → 206 精确分片 + Content-Range', async () => {
-    const r = buildRangedMediaResponse({ ...base, rangeHeader: 'bytes=2-5' });
+  // RFC 9110 §14.1.2: a valid start remains satisfiable when the requested end
+  // exceeds EOF. The previous matrix only covered ranges entirely in the file.
+  it.each([
+    ['bytes=2-5', 'bytes 2-5/10', '2345'],
+    ['bytes=2-999', 'bytes 2-9/10', '23456789'],
+  ])('合法 Range %s → 206 精确分片 + Content-Range', async (rangeHeader, contentRange, body) => {
+    const r = buildRangedMediaResponse({ ...base, rangeHeader });
     expect(r.status).toBe(206);
-    expect(r.headers.get('Content-Range')).toBe('bytes 2-5/10');
-    expect(r.headers.get('Content-Length')).toBe('4');
-    expect(Buffer.from(await r.arrayBuffer()).toString()).toBe('2345');
+    expect(r.headers.get('Content-Range')).toBe(contentRange);
+    expect(r.headers.get('Content-Length')).toBe(String(body.length));
+    expect(Buffer.from(await r.arrayBuffer()).toString()).toBe(body);
   });
 
   it('开区间 Range(bytes=8-)→ 206 到末尾;越界 → 416 带总长', async () => {

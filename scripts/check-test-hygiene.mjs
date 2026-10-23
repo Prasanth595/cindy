@@ -26,7 +26,8 @@ import { createRequire } from 'node:module';
 import process from 'node:process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const SCRIPT_PATH = realpathSync(fileURLToPath(import.meta.url));
+const ROOT = path.resolve(path.dirname(SCRIPT_PATH), '..');
 const BASELINE_REL = 'scripts/test-hygiene-baseline.json';
 const BASELINE_PATH = path.join(ROOT, BASELINE_REL);
 const SCAN_ROOTS = ['apps', 'packages', 'scripts'];
@@ -63,7 +64,7 @@ const DB_SOURCE_INPUTS = new Set([
 ]);
 // Reuse Desktop's declared parser to locate test/hook callbacks and local helpers.
 // No type checking or module loading is needed.
-const requireDesktop = createRequire(new URL('../apps/desktop/package.json', import.meta.url));
+const requireDesktop = createRequire(path.join(ROOT, 'apps', 'desktop', 'package.json'));
 let typescript;
 
 function parseTestSource(ts, code) {
@@ -1454,9 +1455,18 @@ export async function main(args = process.argv.slice(2)) {
   return 1;
 }
 
-// macOS temp directories and linked CLI entrypoints may spell the same file
-// differently from import.meta.url, which Node resolves to its real path.
-if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
+// Node resolves the module URL through symlinks, but leaves argv[1] as invoked.
+// Comparing lexical paths silently skips this gate in aliased checkouts or tmpdirs.
+function isCliEntrypoint() {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(process.argv[1]) === SCRIPT_PATH;
+  } catch {
+    return false;
+  }
+}
+
+if (isCliEntrypoint()) {
   main().then((code) => { process.exitCode = code; }, (error) => {
     console.error(`[test-hygiene] ${error.message}`);
     process.exitCode = 2;

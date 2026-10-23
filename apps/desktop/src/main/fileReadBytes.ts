@@ -132,6 +132,11 @@ export async function readFileBytesForPreview(
   const expected = await deps
     .stat(realPath)
     .catch(() => throwIpcError('NOT_FOUND', 'file not found'));
+  // O_RDONLY on a FIFO waits for a writer before returning a handle. Reject
+  // known non-files now; the later fstat still protects against replacement.
+  if (!expected.isFile()) {
+    throwIpcError('INVALID_PARAMS', 'not a regular file');
+  }
 
   const handle = await deps
     .open(realPath)
