@@ -862,7 +862,7 @@ export function ConversationSearchBox({
               onChange={(event) => search.setQuery(event.target.value)}
               placeholder={t('ccAgent.search.placeholder')}
               aria-label={t('ccAgent.search.placeholder')}
-              className="min-w-0 flex-1 bg-transparent text-13 text-[var(--text-primary)] outline-none placeholder:text-[var(--text-tertiary)]"
+              className="min-w-0 flex-1 bg-transparent text-13 text-[var(--text-primary)] outline-none placeholder:text-[var(--text-placeholder)]"
             />
             {search.query && (
               <Tip text={t('ccAgent.search.clear')} side="bottom">

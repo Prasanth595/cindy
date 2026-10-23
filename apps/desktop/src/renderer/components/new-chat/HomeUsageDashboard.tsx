@@ -396,7 +396,7 @@ export function HomeUsageDashboard(): React.JSX.Element {
               todayKey={layoutHistory.todayKey}
             />
             {layoutHistory.models.length === 0 && (
-              <div className="mt-1.5 text-10 text-[var(--text-tertiary)] opacity-70">
+              <div className="mt-1.5 text-10 text-[var(--text-tertiary)]">
                 {t('usageDashboard.emptyModels')}
               </div>
             )}

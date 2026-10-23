@@ -3301,8 +3301,8 @@ function ModelSelectorContentView({
         className={cn(
           'min-w-0 flex-1 bg-transparent text-14 outline-none',
           interactionDisabled
-            ? 'cursor-not-allowed text-[var(--text-disabled)] placeholder:text-[var(--text-disabled-tertiary)]'
-            : 'text-[var(--model-item-text)] placeholder:text-[var(--text-tertiary)]',
+            ? 'cursor-not-allowed text-[var(--text-disabled)] placeholder:text-[var(--text-disabled)]'
+            : 'text-[var(--model-item-text)] placeholder:text-[var(--text-placeholder)]',
         )}
         aria-label={t('newChat.modelSelector.search.placeholderAll')}
       />
@@ -3505,8 +3505,8 @@ function ModelSelectorContentView({
               className={cn(
                 'min-w-0 flex-1 bg-transparent text-13 outline-none',
                 interactionDisabled
-                  ? 'cursor-not-allowed text-[var(--text-disabled)] placeholder:text-[var(--text-disabled-tertiary)]'
-                  : 'text-[var(--model-item-text)] placeholder:text-[var(--text-tertiary)]',
+                  ? 'cursor-not-allowed text-[var(--text-disabled)] placeholder:text-[var(--text-disabled)]'
+                  : 'text-[var(--model-item-text)] placeholder:text-[var(--text-placeholder)]',
               )}
               aria-label={t('newChat.modelSelector.search.placeholderAll')}
             />

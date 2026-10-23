@@ -468,7 +468,7 @@ export function BotTaskCard({
             }}
             aria-label={t('bots.collab.addNote')}
             placeholder={t('bots.collab.addNotePlaceholder')}
-            className="h-8 w-full rounded-full border border-[var(--border-default)] bg-[var(--surface)] px-3 text-12 text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--focus-ring)]"
+            className="h-8 w-full rounded-full border border-[var(--border-default)] bg-[var(--surface)] px-3 text-12 text-[var(--text-primary)] placeholder:text-[var(--text-placeholder)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--focus-ring)]"
           />
         </form>
       ) : null}

@@ -6190,7 +6190,7 @@ function CCAgentSessionContent({
                       <Spinner size={12} className="text-[var(--workingdir-icon)]" />
                       <span className="block min-w-0 truncate text-12 font-medium leading-none text-[var(--workingdir-text)]">
                         {t('ccAgent.layout.worktreeCreating', '正在创建 worktree')}{' '}
-                        <code className="font-mono text-11 opacity-80">
+                        <code className="font-mono text-11 text-[var(--text-tertiary)]">
                           {worktreeCreation.name}
                         </code>
                         …
