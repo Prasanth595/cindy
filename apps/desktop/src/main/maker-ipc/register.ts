@@ -1467,6 +1467,14 @@ import {
 import { createSessionExecutionResolver, resolveSessionExecutionSelection } from './sessionExecutionSelection.js';
 import { createGhostErrandRunner } from './ghostErrandRunner.js';
 import {
+  collectPartnerAttachments,
+  createPartnerSession,
+  readPartnerSessionId,
+  writePartnerSessionId,
+} from '../partner-bridge/index.js';
+import { setPartnerBridgeDeps, startPartnerBridgeRuntime } from '../partner-bridge/runtime.js';
+import { guardedOutboundFetch } from '../maker-host/outbound-fetch.js';
+import {
   createPluginTaskSession,
   createPluginDraftSession,
   findActiveSessionByWorkdir,
@@ -11545,6 +11553,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
      * reconcileCreateOptsAgainstDb 再读当前落库档位,不使用入队时的旧快照。
      */
     resumeWithStoredPermissionMode?: boolean;
+    /** 外部派发入口的纵向边界:忙时直接拒绝,不把输入排进用户队列。 */
+    rejectIfBusy?: boolean;
   }): Promise<SendToSessionInternalResult> {
     await assertTaskActionCurrent();
     if (hasTaskActionAuthorization()) params = { ...params, forceQueue: true };
@@ -11583,6 +11593,20 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       : undefined;
     if (!message) {
       return { ok: false, errorCode: 'INVALID_ARGS', message: 'message required' };
+    }
+    // 外部派发入口可要求"忙时拒绝入队":在投递边界拒绝,而不是让外部消息悄悄排进
+    // 用户队列再被当作常规 turn 执行。
+    if (
+      params.rejectIfBusy &&
+      targetSessionId &&
+      (isSessionInTurn(targetSessionId) ||
+        inputCoordinator.getQueueControlSnapshot(targetSessionId).pendingQueue.length > 0)
+    ) {
+      return {
+        ok: false,
+        errorCode: 'BUSY',
+        message: 'target session busy; input rejected instead of queued',
+      };
     }
     const sourcePlugin = params.sourcePlugin;
     // 空闲直发的 wire 来源说明与落库标签读同一份数据。
@@ -14161,6 +14185,183 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         warn: (message, meta) => log.warn(message, meta),
       },
     }),
+  );
+
+  // 外部系统的本机回环入口(partner-bridge):与本仓其它 headless 跑 turn 的
+  // 路径(errand / scheduler / hook)共用同一套投递与收口语义,只是没有渠道身份。
+  // 启停走 bootstrap 的 app 生命周期(见 partner-bridge/runtime.ts),这里只接线。
+  setPartnerBridgeDeps({
+    readSessionId: readPartnerSessionId,
+    writeSessionId: writePartnerSessionId,
+    getSessionRow: async (sessionId) => {
+      const [row] = await getDbClient()
+        .drizzle.select({
+          status: sessions.status,
+          agentKind: sessions.agentKind,
+          permissionMode: sessions.permissionMode,
+          workingDir: sessions.workingDir,
+          workspaceKind: sessions.workspaceKind,
+        })
+        .from(sessions)
+        .where(eq(sessions.id, sessionId))
+        .limit(1);
+      return row ?? null;
+    },
+    createSession: async (params) => {
+      const sessionId = await createPartnerSession(params);
+      // 与 errand／scheduler 同一条 local-db:sessions:created 通道刷新侧边栏:
+      // 外部调用建的会话必须立刻可见(透明是这个能力的安全边界之一)。
+      broadcastSessionCreated(sessionId);
+      return sessionId;
+    },
+    getDraftDefaults: (agentKind) => {
+      // 优先跟随 New Maker 当前激活的 route:renderer 会给每个 vendor 都填默认值,
+      // 按 vendor 优先级判断会永远落在 cc 上(真机:默认模型是 codex 却建了 cc)。
+      const route = getSelectedNewMakerRoute(activeOwnerScopeKey());
+      const routeVendor = route
+        ? route.harness === 'claude'
+          ? ('cc' as const)
+          : route.harness
+        : null;
+      if (route && routeVendor && (!agentKind || agentKind === routeVendor)) {
+        return {
+          agentKind: routeVendor,
+          model: route.model,
+          effort: route.effort,
+          fastMode: route.fastMode,
+          ...(route.providerId !== null ? { providerId: route.providerId } : {}),
+        };
+      }
+      // 请求指定了另一个 agent:只取该 agent 自己的默认,不串用别的 agent 的模型。
+      const pick = (vendor: 'cc' | 'codex' | 'pi') => {
+        const defaults = getWorkerDefaultsFromNewMaker(
+          vendor === 'cc' ? 'claude-code' : vendor,
+        );
+        return defaults.model ? { agentKind: vendor, ...defaults } : null;
+      };
+      if (agentKind) return pick(agentKind) ?? { agentKind };
+      return pick('cc') ?? pick('codex') ?? pick('pi') ?? {};
+    },
+    normalizeWorkingDir: async (dir) => {
+      // normalizeWorkingDirForStorage 只整理字符串,不能证明这个目录真的存在。
+      if (!path.isAbsolute(dir)) return null;
+      try {
+        const stat = await fsp.stat(dir);
+        if (!stat.isDirectory()) return null;
+      } catch {
+        return null;
+      }
+      return normalizeWorkingDirForStorage(dir);
+    },
+    isSessionBusy: (sessionId) =>
+      isSessionInTurn(sessionId) ||
+      inputCoordinator.getQueueControlSnapshot(sessionId).pendingQueue.length > 0,
+    captureOwnerScope: () => activeOwnerScopeKey(),
+    isOwnerScopeCurrent: (scope) => activeOwnerScopeKey() === scope,
+    dispatch: async ({ targetSessionId, message, key }) => {
+      // 投递边界再复查一次忙状态:宁可直接拒绝,也不把外部消息塞进用户队列。
+      if (
+        isSessionInTurn(targetSessionId) ||
+        inputCoordinator.getQueueControlSnapshot(targetSessionId).pendingQueue.length > 0
+      ) {
+        return { ok: false, errorCode: 'BUSY', message: '会话正忙,本单未入队' };
+      }
+      // 会话是"只建了 DB 行"的懒启动态:不恢复已保存的权限档,首轮会落到
+      // bypassPermissions,默认的 plan 任务就绕过了只读限制。
+      const r = await sendToSessionInternal({
+        targetSessionId,
+        message,
+        resumeWithStoredPermissionMode: true,
+        origin: { kind: 'bridge', key, displayText: message },
+      });
+      if (!r.ok) return { ok: false, errorCode: r.errorCode, message: r.message };
+      return { ok: true, wakeKind: r.wakeKind };
+    },
+    abortSession: stopSessionTurnExplicitly,
+    getObservableSession: (sessionId) => maker.getSession(sessionId) ?? null,
+    onSilentStopSettled,
+    readLatestAssistantText: async (sessionId, sinceMs) => {
+      const [row] = await getDbClient()
+        .drizzle.select({ content: messages.content })
+        .from(messages)
+        .where(
+          and(
+            eq(messages.sessionId, sessionId),
+            eq(messages.role, 'assistant'),
+            isNull(messages.rewindAt),
+            gte(messages.createdAt, sinceMs),
+          ),
+        )
+        .orderBy(desc(messages.createdAt), desc(messages.id))
+        .limit(1);
+      if (!row) return null;
+      const text = visibleMessageTextForConversationSearch('assistant', row.content ?? '');
+      return text.length > 0 ? text : null;
+    },
+    resolveAttachments: async ({ text, workingDir, sessionId }) => {
+      // 允许根 = 该会话干活的那个目录:project 会话是用户工作目录,dialogue 会话
+      // 是 app 托管目录。没有根就不收 xdt-file(fail-closed,与 hook 出站同口径)。
+      let root = workingDir;
+      if (!root) {
+        const [row] = await getDbClient()
+          .drizzle.select({ workingDir: sessions.workingDir })
+          .from(sessions)
+          .where(eq(sessions.id, sessionId))
+          .limit(1);
+        root = row?.workingDir ?? null;
+      }
+      return collectPartnerAttachments(text, root ? [root] : [], {
+        resolveImageUrl: (url) => {
+          try {
+            return url.startsWith('cindy-media://')
+              ? resolveCindyMediaUrl(url).absPath
+              : imageCacheStore.resolveSafe(url).absPath;
+          } catch {
+            return null;
+          }
+        },
+        realpath: (p) => fsp.realpath(p),
+        statSize: async (p) => {
+          const stat = await fsp.stat(p);
+          return stat.isFile() ? stat.size : null;
+        },
+        log: { warn: (message, meta) => log.warn(message, meta) },
+      });
+    },
+    deliverCallback: async (url, payload) => {
+      // 目标地址由持 token 的调用方给出(通常就是本机或内网的自家服务),所以
+      // 显式放行 http 与私网 —— 但只对这一个 URL 生效,且拒绝跟随重定向。
+      const { response, release } = await guardedOutboundFetch(
+        url,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json; charset=utf-8' },
+          body: JSON.stringify(payload),
+          redirect: 'error',
+          signal: AbortSignal.timeout(15_000),
+        },
+        () => {},
+        { targetUrl: url, allowHttp: true, allowPrivateNetwork: true },
+      );
+      try {
+        if (!response.ok) throw new Error(`callback returned ${response.status}`);
+        await response.arrayBuffer();
+      } finally {
+        await release();
+      }
+    },
+    log: {
+      info: (message, meta) => log.info(message, meta),
+      warn: (message, meta) => log.warn(message, meta),
+    },
+  });
+  // 接线完就走 app 生命周期启动:失败只告警,不影响正常启动。
+  void startPartnerBridgeRuntime(path.join(app.getPath('userData'), 'partner-bridge')).catch(
+    (error: unknown) => {
+      log.warn('partner bridge start failed', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    },
   );
 
   // Ghost 的 workspace 槽:判重/创建走 localDb 服务,创建后广播与 scheduler

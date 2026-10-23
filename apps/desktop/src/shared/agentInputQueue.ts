@@ -378,6 +378,15 @@ export interface AgentInputQueuedMessage {
         /** 来源会话属于某个伙伴时的伙伴身份快照；接收方标签改显示伙伴名与头像。 */
         senderBotId?: string;
         senderBotName?: string;
+      }
+    | {
+        /**
+         * 外部系统经 partner-bridge 派发的消息。由主进程写入,不采信 wire 值;
+         * 用于把外部输入与用户本地输入在落库/审计上区分开。
+         */
+        kind: 'bridge';
+        key: string;
+        displayText?: string;
       };
   /**
    * 本条由**手机控制端**入队 / 插入。
