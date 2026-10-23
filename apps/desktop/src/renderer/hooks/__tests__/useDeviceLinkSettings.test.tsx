@@ -120,23 +120,30 @@ describe('useDeviceLinkSettings deletion', () => {
   });
 
   // 服务端以「在线」拒绝删除(409 → ALREADY_EXISTS)时，先刷新列表再选提示，提示要跟刷新后
-  // 列表里看到的状态一致：仍显示离线的设备不能再提示「尚不支持移除在线设备」；点删除时与
-  // 刷新后状态不同，以刷新后的为准(否则提示会与刚重绘的列表矛盾)。
+  // 界面上的列表一致：仍显示离线的设备不能再提示「尚不支持移除在线设备」；点删除时与刷新后
+  // 状态不同，以刷新后的为准。刷新失败(界面换成错误块)或一直不返回(界面没更新)时不能断言
+  // 「列表中显示离线」，沿用原提示；没有截止时间的请求也不能让删除一直不返回。
   it.each([
-    [false, false, 'settings.devices.toast.deleteRejectedWhileOffline'],
-    [true, true, 'settings.devices.toast.deleteOnline'],
-    [false, true, 'settings.devices.toast.deleteOnline'],
-    [true, false, 'settings.devices.toast.deleteRejectedWhileOffline'],
-  ] as const)('explains an online rejection by the refreshed presence (online before: %s, after refresh: %s)', async (onlineBefore, onlineAfter, message) => {
+    [false, 'offline', 'settings.devices.toast.deleteRejectedWhileOffline'],
+    [true, 'online', 'settings.devices.toast.deleteOnline'],
+    [false, 'online', 'settings.devices.toast.deleteOnline'],
+    [true, 'offline', 'settings.devices.toast.deleteRejectedWhileOffline'],
+    [false, 'fails', 'settings.devices.toast.deleteOnline'],
+    [false, 'never returns', 'settings.devices.toast.deleteOnline'],
+  ] as const)('explains an online rejection by the refreshed list (online before: %s, refresh: %s)', async (onlineBefore, refreshed, message) => {
     const off = vi.fn();
     const subscribe = vi.fn(() => off);
     const listed = (online: boolean) => ({
       devices: [{ deviceId: 'target', name: 'MacBook', platform: 'darwin', appVersion: null, lastSeenAt: null,
         online, busy: false, remoteControlEnabled: false, controlEnabled: true, isSelf: false }],
     });
+    const listDevices = vi.fn().mockResolvedValueOnce(listed(onlineBefore));
+    if (refreshed === 'fails') listDevices.mockRejectedValue(new Error('[INTERNAL] list failed'));
+    else if (refreshed === 'never returns') listDevices.mockReturnValue(new Promise<never>(() => {}));
+    else listDevices.mockResolvedValue(listed(refreshed === 'online'));
     const api = {
       getState: vi.fn(() => new Promise<never>(() => {})),
-      listDevices: vi.fn().mockResolvedValueOnce(listed(onlineBefore)).mockResolvedValue(listed(onlineAfter)),
+      listDevices,
       deleteDevice: vi.fn().mockRejectedValue(new Error('[ALREADY_EXISTS] device is online')),
       onOwnershipChanged: subscribe,
       onPresenceChanged: subscribe,
@@ -149,10 +156,19 @@ describe('useDeviceLinkSettings deletion', () => {
     const { result, unmount } = renderHook(() => useDeviceLinkSettings());
     await waitFor(() => expect(result.current.devices).toHaveLength(1));
 
-    let deleted = true;
-    await act(async () => { deleted = await result.current.remove('target'); });
-
-    expect(deleted).toBe(false);
+    vi.useFakeTimers();
+    try {
+      let deleted: boolean | undefined;
+      await act(async () => {
+        const removing = result.current.remove('target').then((value) => { deleted = value; });
+        // 「一直不返回」靠超时收口；其余情况不需要推进时间也已结束。
+        await vi.advanceTimersByTimeAsync(60_000);
+        await removing;
+      });
+      expect(deleted).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
     expect(effects.error).toHaveBeenCalledWith(message);
     expect(effects.removeDevice).not.toHaveBeenCalled();
     expect(api.listDevices).toHaveBeenCalledTimes(2);

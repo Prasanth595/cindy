@@ -64,6 +64,8 @@ export interface DeviceLinkSettings {
 }
 
 const POLL_INTERVAL_MS = 30_000;
+/** 删除被拒后补拉列表的最长等待:列表请求没有截止时间,不能让删除弹窗一直停在「删除中」。 */
+const REJECTED_DELETE_REFRESH_TIMEOUT_MS = 5_000;
 
 export function useDeviceLinkSettings(active = true): DeviceLinkSettings {
   const { t } = useTranslation();
@@ -84,9 +86,14 @@ export function useDeviceLinkSettings(active = true): DeviceLinkSettings {
   const disabledControlDeviceIdsRef = useRef<string[]>([]);
   // getState() 与 ownership push 可能乱序返回;事件版本推进后,旧快照不得覆盖新事实。
   const ownershipEventVersion = useRef(0);
-  // 最近一次拉到的设备列表。删除被拒时要按「此刻」的在线状态选提示,异步调用里读闭包的
-  // devices 会拿到发起删除那一刻的旧列表。
-  const latestDevices = useRef<DeviceLinkDeviceView[] | null>(null);
+  // 最近一次拉列表的结果。删除被拒时要按「此刻」界面上的列表选提示:异步调用里读闭包的
+  // devices 会拿到发起删除那一刻的旧列表;version 只在成功拉到列表时递增,ok 记录最近一次
+  // 拉取是否成功(失败时界面显示错误块,不再显示设备行)。
+  const latestList = useRef<{ devices: DeviceLinkDeviceView[] | null; version: number; ok: boolean }>({
+    devices: null,
+    version: 0,
+    ok: false,
+  });
 
   const applyDisabledControlDeviceIds = useCallback((ids: string[]) => {
     disabledControlDeviceIdsRef.current = ids;
@@ -109,12 +116,13 @@ export function useDeviceLinkSettings(active = true): DeviceLinkSettings {
       try {
         const { devices: list } = await window.electronAPI.deviceLink.listDevices();
         if (!mounted.current || generation !== refreshGeneration.current) return;
-        latestDevices.current = list;
+        latestList.current = { devices: list, version: latestList.current.version + 1, ok: true };
         setDevices(list);
         setListError(null);
       } catch (err) {
         log.warn('listDevices failed', err);
         if (!mounted.current || generation !== refreshGeneration.current) return;
+        latestList.current = { ...latestList.current, ok: false };
         const ipcErr = extractIpcError(err);
         setListError(
           ipcErr?.code === 'DEVICE_LINK_UNAVAILABLE'
@@ -254,11 +262,22 @@ export function useDeviceLinkSettings(active = true): DeviceLinkSettings {
         }
         // 服务端以「设备在线」拒绝删除。先刷新一次列表与服务端对齐，再按刷新后的列表选提示：
         // 仍显示离线说明两边的在线判断不一致，不能再提示「尚不支持移除在线设备」让用户误以为
-        // 设备真在线；刷新后显示在线则沿用原提示，避免提示与刚重绘的列表互相矛盾。
-        await refresh();
+        // 设备真在线；刷新后显示在线、刷新失败(界面换成错误块)或超时(界面没更新)时都沿用原
+        // 提示，不对界面上已不成立的状态下结论。
+        const versionBeforeRefresh = latestList.current.version;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        await Promise.race([
+          refresh(),
+          new Promise<void>((resolve) => {
+            timer = setTimeout(resolve, REJECTED_DELETE_REFRESH_TIMEOUT_MS);
+          }),
+        ]);
+        clearTimeout(timer);
+        const { devices: listed, version, ok } = latestList.current;
         const listedOffline =
-          latestDevices.current?.some((device) => device.deviceId === deviceId && !device.online) ??
-          false;
+          ok &&
+          version > versionBeforeRefresh &&
+          (listed?.some((device) => device.deviceId === deviceId && !device.online) ?? false);
         toast.error(
           t(
             listedOffline
