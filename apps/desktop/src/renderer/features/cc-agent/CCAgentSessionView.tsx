@@ -1803,7 +1803,15 @@ function CCAgentSessionContent({
     slashCommandRanges?: SlashCommandRange[];
     onRemoteOptimisticFailure?: (clientId: string, error?: unknown) => void;
     onDeferredAccepted?: () => void;
+    literalText?: boolean;
+    resolveSubmission?: (accepted: boolean) => void;
   } | null>(null);
+
+  useEffect(() => () => {
+    // A picker abandoned by navigation must release the originating rich button.
+    pendingSendRef.current?.resolveSubmission?.(false);
+    pendingSendRef.current = null;
+  }, [sessionId]);
 
   const handleTitleUpdate = useCallback(() => {
     refreshSessions();
@@ -3300,6 +3308,7 @@ function CCAgentSessionContent({
     setFolderPickerOpen(open);
     // If user closed the popover without selecting, clear pending send
     if (!open) {
+      pendingSendRef.current?.resolveSubmission?.(false);
       pendingSendRef.current = null;
     }
   }, []);
@@ -3711,43 +3720,46 @@ function CCAgentSessionContent({
       pendingSendRef.current = null;
       void (async () => {
         try {
-          const slashDispatch = await maybeDispatchDesktopSlashCommand(
-            pending.message,
-            pending.files,
-            {
-              allowDesktopDispatch: pending.deliveryMode !== 'steer',
-              piRuntimeRetryDelaysMs: PI_RUNTIME_SKILL_RETRY_DELAYS_MS,
-              workingDirOverride: newDir,
-              builtInSkillIntent: pending.builtInSkillIntent,
-              preparePiRuntime: async () => {
-                if (!sessionId || dbToMakerAgentKind(session?.agentKind) !== 'pi') return;
-                const createOpts = {
-                  id: sessionId,
-                  ...buildCreateOptsForCurrentSession(
-                    sessionId,
-                    pending.model,
-                    pending.effort,
-                    pending.permissionMode,
-                    newDir,
-                    pending.vendorOptions ? { vendorOptions: pending.vendorOptions } : undefined,
-                  ),
-                  agentKind: 'pi' as const,
-                  workingDir: newDir,
-                  orcaRole: session?.orcaRole ?? null,
-                };
-                if (remoteDeviceId) {
-                  await window.electronAPI.deviceLink.invoke(
-                    remoteDeviceId,
-                    'maker:create-session',
-                    [createOpts],
-                  );
-                } else {
-                  await window.electronAPI.maker.createSession(createOpts);
-                }
-              },
-            },
-          );
+          const slashDispatch = pending.literalText
+            ? { handled: false, accepted: false, message: pending.message }
+            : await maybeDispatchDesktopSlashCommand(
+                pending.message,
+                pending.files,
+                {
+                  allowDesktopDispatch: pending.deliveryMode !== 'steer',
+                  piRuntimeRetryDelaysMs: PI_RUNTIME_SKILL_RETRY_DELAYS_MS,
+                  workingDirOverride: newDir,
+                  builtInSkillIntent: pending.builtInSkillIntent,
+                  preparePiRuntime: async () => {
+                    if (!sessionId || dbToMakerAgentKind(session?.agentKind) !== 'pi') return;
+                    const createOpts = {
+                      id: sessionId,
+                      ...buildCreateOptsForCurrentSession(
+                        sessionId,
+                        pending.model,
+                        pending.effort,
+                        pending.permissionMode,
+                        newDir,
+                        pending.vendorOptions ? { vendorOptions: pending.vendorOptions } : undefined,
+                      ),
+                      agentKind: 'pi' as const,
+                      workingDir: newDir,
+                      orcaRole: session?.orcaRole ?? null,
+                    };
+                    if (remoteDeviceId) {
+                      await window.electronAPI.deviceLink.invoke(
+                        remoteDeviceId,
+                        'maker:create-session',
+                        [createOpts],
+                      );
+                    } else {
+                      await window.electronAPI.maker.createSession(createOpts);
+                    }
+                  },
+                },
+              );
           if (slashDispatch.handled) {
+            pending.resolveSubmission?.(slashDispatch.accepted);
             if (slashDispatch.accepted) {
               pending.onDeferredAccepted?.();
               const resumedSessionId = sessionId;
@@ -3828,6 +3840,7 @@ function CCAgentSessionContent({
                 }
               : undefined,
           );
+          pending.resolveSubmission?.(accepted);
           if (accepted) {
             pending.onDeferredAccepted?.();
             const resumedSessionId = sessionId;
@@ -3839,6 +3852,7 @@ function CCAgentSessionContent({
             }
           }
         } catch (error) {
+          pending.resolveSubmission?.(false);
           log.warn(
             'pending send after working directory selection failed:',
             error instanceof Error ? error.message : String(error),
@@ -4116,9 +4130,17 @@ function CCAgentSessionContent({
 
       // ② Working directory check
       if (!session?.workingDir) {
+        // Composer sends keep their existing deferred callback contract. A rich
+        // submission awaits acceptance so its receipt cannot disagree with dispatch.
+        let resolveSubmission: ((accepted: boolean) => void) | undefined;
+        const submission = opts?.independent
+          ? new Promise<boolean>((resolve) => { resolveSubmission = resolve; })
+          : false;
         pendingSendRef.current = {
           deliveryMode,
           builtInSkillIntent: opts?.builtInSkillIntent,
+          literalText: opts?.literalText,
+          resolveSubmission,
           message,
           model,
           effort,
@@ -4138,7 +4160,7 @@ function CCAgentSessionContent({
           ...(opts?.onDeferredAccepted ? { onDeferredAccepted: opts.onDeferredAccepted } : {}),
         };
         setFolderPickerOpen(true);
-        return false;
+        return submission;
       }
 
       // ③ Auto-unarchive: 在 archived session 中发消息视为"激活"——状态先落库到
@@ -6079,7 +6101,7 @@ function CCAgentSessionContent({
                   }
                   folderPickerOpen={folderPickerOpen}
                   onFolderPickerOpenChange={handleFolderPickerOpenChange}
-                  showFolderPicker={false}
+                  showFolderPicker={folderPickerOpen}
                   onModelDidChange={handleModelDidChange}
                   onEffortDidChange={handleEffortDidChange}
                   onPermissionModeDidChange={handlePermissionModeDidChange}
