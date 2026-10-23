@@ -151,7 +151,8 @@ export function prepareSessionEvent(
   // on-demand detail IPC; forwarding the raw diff through maker:event would duplicate a
   // potentially multi-megabyte payload to every renderer and device-link controller.
   if (event.type === 'turn_diff') return;
-  if (event.type === 'compact_boundary') deps.botCompactRuntimeRefreshCoordinator.noteBoundary(session);
+  // Native compaction keeps its current runtime. Only explicit resource/configuration
+  // changes register a companion refresh; compaction itself is not such a change.
   if (event.type === 'compact_boundary') deps.workingMemoryRefresh?.markCompacted(session.id);
   if (event.type === 'compact_boundary') deps.wireNoteMemory?.reset(session.id);
   if (

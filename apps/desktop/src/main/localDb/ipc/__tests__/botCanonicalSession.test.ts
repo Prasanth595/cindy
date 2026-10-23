@@ -34,6 +34,8 @@ import { buildBotMcpCatalog } from '../../../maker-host/botMcpCatalog';
 import { CustomMcpProvider } from '../../../mcp-integrations/custom-mcp-provider';
 import type { McpProvider } from '@cindy/maker-core';
 import type { CustomMcpConfig } from '../../../../shared/customMcp';
+import { Session } from '@cindy/maker-core';
+import { withSessionPermissionChange } from '../../../maker-ipc/sessionPermissionChange';
 import { getMaker, getPluginRegistry, isBotToolsetAvailable } from '../../../maker-host/index';
 import { getBuiltinMcpServerNames, refreshCustomMcpProviders, registerCustomMcpArrays, resetCustomMcpRegistry } from '../../../mcp-integrations/custom-mcp-registry';
 import { isBotToolsetAvailableOnTarget } from '../../../../shared/botRemoteCapabilities';
@@ -90,7 +92,7 @@ const h = await vi.hoisted(async () => {
   remove: vi.fn(async (_path: import('node:fs').PathLike, _options?: import('node:fs').RmOptions) => undefined),
   ensureGit: vi.fn(async () => undefined),
   closeSession: vi.fn(async () => undefined),
-  getSession: vi.fn(() => null as {
+  getSession: vi.fn((_id?: string) => null as {
     capabilities?: { manualCompact?: { supported?: boolean } };
     isTurnRunning?: () => boolean;
     compactSession: (instructions?: string) => Promise<unknown>;
@@ -143,7 +145,22 @@ vi.mock('electron', () => ({
   dialog: { showOpenDialog: h.showOpenDialog },
 }));
 vi.mock('../../client/current', () => ({
-  getCurrentDbClientSnapshot: () => h,
+  getCurrentDbClientSnapshot: (() => {
+    let current: { key: string; client: {
+      tx: (name: string, args: unknown) => Promise<unknown>;
+      query: (sql: string, params: unknown[]) => Promise<unknown[]>;
+    } } | null = null;
+    return () => {
+      if (!current || current.key !== h.ownerScopeKey) current = {
+        key: h.ownerScopeKey,
+        client: {
+          tx: (name, args) => h.tx!(name, args),
+          query: async (sql, params) => h.sqlite!.prepare(sql).all(...params),
+        },
+      };
+      return current;
+    };
+  })(),
   getDbClient: () => ({ drizzle: h.db, tx: h.tx }),
   tryGetDbClient: () => ({ drizzle: h.db, tx: h.tx }),
 }));
@@ -922,6 +939,140 @@ describe('Bot canonical Session lifecycle', () => {
     h.sqlite!.prepare("UPDATE sessions SET permission_mode = 'default' WHERE id = ?").run(created.session.id);
     await invoke('local-db:bots:update', { id: 'bot-1', capabilities: { permissions } });
     expect(h.sqlite!.prepare('SELECT permission_mode AS mode FROM sessions WHERE id = ?').get(created.session.id)).toEqual({ mode });
+  });
+
+  // #6782, unit: real settings IPC and worker transaction. Earlier coverage did
+  // not commit a composer permission between the profile read and settings save.
+  it.each([['ask', 'bypassPermissions', 'trusted'], ['trusted', 'ask', 'ask']])(
+    'preserves a newer permission through an in-flight profile edit (%s -> %s)',
+    async (previous, mode, expected) => {
+      const initial = await invoke('local-db:bots:update', { id: 'bot-1', capabilities: { permissions: previous } });
+      const created = await invoke('local-db:bots:create-canonical-session', {
+        botId: 'bot-1', expectedCanonicalSessionId: null, expectedProfileVersion: initial.currentVersion,
+      });
+      const lane = await ensureBotChannelLaneSession({ botId: 'bot-1', routeKey: 'im:feishu:fixture:g:1', title: 'Fixture' });
+      if (!lane.ok) throw new Error(lane.message);
+      const runTx = h.tx!;
+      let interleaved = false;
+      h.tx = async (name, args) => {
+        if (name === 'bots.updateProfile' && !interleaved) {
+          interleaved = true;
+          await runTx('bots.persistSessionPermission', { sessionId: created.session.id, mode });
+        }
+        return runTx(name, args);
+      };
+      const updated = await invoke('local-db:bots:update', { id: 'bot-1', name: 'Edited name' });
+      expect(interleaved).toBe(true);
+      expect(updated).toMatchObject({ name: 'Edited name', capabilities: { permissions: expected } });
+      expect(h.sqlite!.prepare('SELECT permission_mode FROM sessions WHERE id IN (?, ?)').pluck().all(created.session.id, lane.sessionId))
+        .toEqual([mode, mode]);
+      const next = await ensureBotChannelLaneSession({ botId: 'bot-1', routeKey: 'im:feishu:fixture:g:2', title: 'New fixture' });
+      if (!next.ok) throw new Error(next.message);
+      expect(h.sqlite!.prepare('SELECT permission_mode FROM sessions WHERE id = ?').pluck().get(next.sessionId)).toBe(mode);
+    },
+  );
+
+  // #6782, unit: creation repairs in the worker before Main can see the old
+  // Profile. The returned repair receipt must still update an existing runtime.
+  it('repairs legacy permissions during new channel creation and hot-switches an existing lane', async () => {
+    const initial = await invoke('local-db:bots:update', { id: 'bot-1', capabilities: { permissions: 'ask' } });
+    const created = await invoke('local-db:bots:create-canonical-session', {
+      botId: 'bot-1', expectedCanonicalSessionId: null, expectedProfileVersion: initial.currentVersion,
+    });
+    const existing = await ensureBotChannelLaneSession({ botId: 'bot-1', routeKey: 'im:feishu:fixture:g:1', title: 'Old' });
+    if (!existing.ok) throw new Error(existing.message);
+    h.sqlite!.prepare("UPDATE sessions SET permission_mode = 'bypassPermissions' WHERE id = ?").run(created.session.id);
+    const live = { compactSession: vi.fn(), stablePermissionModeState: { mode: 'ask' },
+      setPermissionMode: vi.fn(async (mode: string) => { live.stablePermissionModeState = { mode }; }) };
+    h.getSession.mockImplementation(id => id === existing.sessionId ? live : null);
+    const next = await ensureBotChannelLaneSession({ botId: 'bot-1', routeKey: 'im:feishu:fixture:g:2', title: 'New' });
+    if (!next.ok) throw new Error(next.message);
+    expect(live.stablePermissionModeState.mode).toBe('bypassPermissions');
+    expect(live.setPermissionMode).toHaveBeenCalledTimes(1);
+    expect(h.sqlite!.prepare('SELECT permission_mode FROM sessions WHERE id IN (?, ?, ?)').pluck()
+      .all(created.session.id, existing.sessionId, next.sessionId)).toEqual(Array(3).fill('bypassPermissions'));
+    expect((await invoke('local-db:bots:get', 'bot-1')).capabilities.permissions).toBe('trusted');
+  });
+
+  // P1 review: settings remain available when the canonical task/link is absent.
+  // Persisted rows alone never updated an already loaded IM runtime in this case.
+  it('tightens a live channel from settings without a canonical link', async () => {
+    await invoke('local-db:bots:update', { id: 'bot-1', capabilities: { permissions: 'trusted' } });
+    const lane = await ensureBotChannelLaneSession({ botId: 'bot-1', routeKey: 'im:feishu:fixture:g:orphan', title: 'Orphan' });
+    if (!lane.ok) throw new Error(lane.message);
+    const live = { compactSession: vi.fn(), stablePermissionModeState: { mode: 'bypassPermissions' },
+      setPermissionMode: vi.fn(async (mode: string) => { live.stablePermissionModeState = { mode }; }) };
+    h.getSession.mockImplementation(id => id === lane.sessionId ? live : null);
+    await invoke('local-db:bots:update', { id: 'bot-1', capabilities: { permissions: 'ask' } });
+    expect(live.stablePermissionModeState.mode).toBe('ask');
+    expect(live.setPermissionMode).toHaveBeenCalledWith('ask');
+    expect(h.sqlite!.prepare('SELECT permission_mode FROM sessions WHERE id = ?').pluck().get(lane.sessionId)).toBe('ask');
+  });
+
+  // #6782, unit: an explicit idempotent edit is still a new permission intent.
+  // The previous diff only protected changed=true profile saves.
+  it('commits an explicit same-value permission after a concurrent composer choice', async () => {
+    await invoke('local-db:bots:update', { id: 'bot-1', capabilities: { permissions: 'ask' } });
+    const initial = await invoke('local-db:bots:get', 'bot-1');
+    const created = await invoke('local-db:bots:create-canonical-session', {
+      botId: 'bot-1', expectedCanonicalSessionId: null, expectedProfileVersion: initial.currentVersion,
+    });
+    const lane = await ensureBotChannelLaneSession({ botId: 'bot-1', routeKey: 'im:feishu:fixture:g:1', title: 'Fixture' });
+    if (!lane.ok) throw new Error(lane.message);
+    const runTx = h.tx!;
+    let interleaved = false;
+    h.tx = async (name, args) => {
+      if (name === 'bots.updateProfile' && !interleaved) {
+        interleaved = true;
+        await runTx('bots.persistSessionPermission', { sessionId: created.session.id, mode: 'bypassPermissions' });
+      }
+      return runTx(name, args);
+    };
+    const updated = await invoke('local-db:bots:update', { id: 'bot-1', capabilities: { permissions: 'ask' } });
+    expect(updated.capabilities.permissions).toBe('ask');
+    expect(h.sqlite!.prepare('SELECT permission_mode FROM sessions WHERE id IN (?, ?)').pluck().all(created.session.id, lane.sessionId))
+      .toEqual(['ask', 'ask']);
+  });
+
+  // Actual Session serialization alone cannot order the surrounding DB commits.
+  it('orders complete settings and composer permission commits with a real Session', async () => {
+    const created = await invoke('local-db:bots:create-canonical-session', {
+      botId: 'bot-1', expectedCanonicalSessionId: null, expectedProfileVersion: 1,
+    });
+    let release!: () => void;
+    let entered!: () => void;
+    let validated!: () => void;
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const preflight = new Promise<void>(resolve => { validated = resolve; });
+    const logger = { info() {}, debug() {}, trace() {}, warn() {}, error() {}, fatal() {}, child() { return logger; } };
+    const live = new Session({ id: created.session.id, agentKind: 'codex', workDir: created.session.workingDir,
+      permissionMode: 'ask', turnStallMs: 0, logger,
+      capabilities: { permissionModes: [{ id: 'ask' }, { id: 'bypassPermissions' }], setPermissionModeMidSession: { supported: true } } as never,
+      handle: { setInteractionResolver() {}, close: async () => {}, setPermissionMode: async (mode: string) => {
+        if (mode === 'bypassPermissions') { entered(); await pending; }
+      } } as never,
+    });
+    h.getSession.mockImplementation(id => id === live.id ? live as never : null);
+    const composer = withSessionPermissionChange(live.id, async () => {
+      await live.setPermissionMode('bypassPermissions');
+      await h.tx!('bots.persistSessionPermission', { sessionId: live.id, mode: 'bypassPermissions' });
+    });
+    await started;
+    h.validateCapabilityAdditions.mockImplementationOnce(async () => { validated(); });
+    const settings = invoke('local-db:bots:update', { id: 'bot-1', name: 'Edited name', capabilities: { permissions: 'ask' } });
+    await preflight;
+    // Let continuations already released by the completed validation reach either
+    // the native queue or the host commit fence; no wall-clock sleep is involved.
+    await new Promise<void>(resolve => setImmediate(resolve));
+    release();
+    try {
+      await Promise.all([composer, settings]);
+      expect(live.stablePermissionModeState?.mode).toBe('ask');
+      expect(h.sqlite!.prepare('SELECT permission_mode FROM sessions WHERE id = ?').pluck().get(live.id)).toBe('ask');
+      const profile = await invoke('local-db:bots:get', 'bot-1');
+      expect(profile.capabilities.permissions).toBe('ask');
+    } finally { await live.close(); }
   });
 
   it('retires a runtime whose permission change failed and keeps the saved setting for restart', async () => {
@@ -2278,32 +2429,40 @@ describe('Bot canonical Session lifecycle', () => {
   // memory/Skill index. Exercise hydrate + persisted applied snapshots, not hash
   // implementation details; the minimal mutation keeps Profile and paths fixed.
   it.each(['canonical', 'channel', 'thread'])('refreshes shared learned resources in a running %s chat', async role => {
-    const created = await invoke('local-db:bots:create-canonical-session', {
-      botId: 'bot-1', expectedCanonicalSessionId: null, expectedProfileVersion: 1,
-    });
-    h.sqlite!.prepare('UPDATE bot_session_links SET role=? WHERE session_id=?').run(role, created.session.id);
-    const makeOpts = (): MakerSessionCreateOpts => ({
-      id: created.session.id, agentKind: 'codex', workingDir: created.session.workingDir,
-      workspaceKind: 'dialogue', model: 'gpt-5', permissionMode: 'bypassPermissions',
-    });
-    let index = '# Memory\n';
-    let updatedAt = 'v1';
-    const deps = {
-      readMemoryIndex: async () => index,
-      listOwnSkills: async () => ({ pluginRoot: '/skills', skills: [{
-        name: 'report', description: 'A verified report format', path: '/skills/report', updatedAt,
-      }] }),
-    };
-    const initial = await hydrateBotProfileRuntime(makeOpts(), deps);
-    await markBotProfileRuntimeApplied(initial!);
-    expect((await hydrateBotProfileRuntime(makeOpts(), deps))?.runtimeEpochChanged).toBe(false);
-    index += '- [Conclusion first](feedback_conclusion.md)\n';
-    const changed = await hydrateBotProfileRuntime(makeOpts(), deps);
-    expect(changed?.runtimeEpochChanged).toBe(true);
-    await markBotProfileRuntimeApplied(changed!);
-    expect((await hydrateBotProfileRuntime(makeOpts(), deps))?.runtimeEpochChanged).toBe(false);
-    updatedAt = 'v2';
-    expect((await hydrateBotProfileRuntime(makeOpts(), deps))?.runtimeEpochChanged).toBe(true);
+    // Model successive completed bootstraps at distinct persisted times. Real
+    // millisecond ties otherwise make the existing latest-snapshot query arbitrary.
+    let now = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => ++now);
+    try {
+      const created = await invoke('local-db:bots:create-canonical-session', {
+        botId: 'bot-1', expectedCanonicalSessionId: null, expectedProfileVersion: 1,
+      });
+      h.sqlite!.prepare('UPDATE bot_session_links SET role=? WHERE session_id=?').run(role, created.session.id);
+      const makeOpts = (): MakerSessionCreateOpts => ({
+        id: created.session.id, agentKind: 'codex', workingDir: created.session.workingDir,
+        workspaceKind: 'dialogue', model: 'gpt-5', permissionMode: 'bypassPermissions',
+      });
+      let index = '# Memory\n';
+      let updatedAt = 'v1';
+      const deps = {
+        readMemoryIndex: async () => index,
+        listOwnSkills: async () => ({ pluginRoot: '/skills', skills: [{
+          name: 'report', description: 'A verified report format', path: '/skills/report', updatedAt,
+        }] }),
+      };
+      const initial = await hydrateBotProfileRuntime(makeOpts(), deps);
+      await markBotProfileRuntimeApplied(initial!);
+      expect((await hydrateBotProfileRuntime(makeOpts(), deps))?.runtimeEpochChanged).toBe(false);
+      index += '- [Conclusion first](feedback_conclusion.md)\n';
+      const changed = await hydrateBotProfileRuntime(makeOpts(), deps);
+      expect(changed?.runtimeEpochChanged).toBe(true);
+      await markBotProfileRuntimeApplied(changed!);
+      expect((await hydrateBotProfileRuntime(makeOpts(), deps))?.runtimeEpochChanged).toBe(false);
+      updatedAt = 'v2';
+      expect((await hydrateBotProfileRuntime(makeOpts(), deps))?.runtimeEpochChanged).toBe(true);
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   it('refreshes canonical Skill resources in place when their fingerprint changes', async () => {

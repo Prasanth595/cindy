@@ -17076,5 +17076,12 @@
     "taskSource": "[任務來源] 本任務由夥伴發起。",
     "taskId": "任務 ID：",
     "contextReferences": "參考資料："
+  },
+  "subscriptionFastPolicy": {
+    "label": "允許使用 Fast",
+    "providerHint": "關閉後，此訂閱帳號使用普通模式，包括自己使用和分享使用。也適用於 Ultrafast。",
+    "groupHint": "關閉後，經此組執行的任務使用普通模式，也適用於 Ultrafast。",
+    "pending": "部分電腦尚未確認設定。請保持連線，並更新不支援此設定的組內電腦。",
+    "saveFailed": "設定可能已儲存，但執行中的任務尚未全部確認切換為普通模式。請檢查連線後重試。"
   }
 }

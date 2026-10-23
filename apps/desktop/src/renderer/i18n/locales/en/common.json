@@ -17130,5 +17130,12 @@
     "taskSource": "[Task source] A companion started this task.",
     "taskId": "Task ID:",
     "contextReferences": "Context references:"
+  },
+  "subscriptionFastPolicy": {
+    "label": "Allow Fast",
+    "providerHint": "When off, this subscription account uses standard speed for your own and shared tasks, including Ultrafast.",
+    "groupHint": "When off, all tasks routed through this group use standard speed, including Ultrafast.",
+    "pending": "Some computers have not confirmed the setting. Keep them connected and update group computers that do not support this setting.",
+    "saveFailed": "The setting may be saved, but some running tasks have not confirmed standard speed. Check the connection and retry."
   }
 }

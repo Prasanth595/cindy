@@ -94,6 +94,8 @@ import {
   type RemoteAgentControllerTrust,
 } from './guestIsolation';
 import { createRunTunnel, type RunTunnel, type TunnelHttpRequest, type TunnelHttpResponse } from './tunnel';
+import { hostSessionIdFor } from './sessionIdentity.js';
+export { hostSessionIdFor } from './sessionIdentity.js';
 
 const gunzipAsync = promisify(gunzip);
 
@@ -131,6 +133,7 @@ const STATE_INTERVAL_MS = 2_000;
 const MAX_REMEMBERED_CALLS = 256;
 
 export interface HostedStartInput {
+  groupProviderId?: string;
   kind: RemoteAgentKind;
   /** 本机侧的任务 id(由控制端与任务 id 派生，恢复同一任务时不变)。 */
   hostSessionId: string;
@@ -180,6 +183,7 @@ export interface OwnerProviderRouteBinding {
 }
 
 export interface RemoteAgentHostDeps {
+  fastPolicy?(controller: string, command: import('@cindy/device-link').RemoteAgentFastPolicy): Promise<unknown>;
   /** Prepare native bytes; retain recovery ownership only for receipted controllers. */
   prepareImageEvent?(hostSessionId: string, event: AgentEvent, upstream: GeneratedImageUpstream | undefined, retainForRecovery: boolean): Promise<AgentEvent>;
   imageArtifacts?(hostSessionId: string, request: Extract<RemoteAgentRequest, { op: 'images' }>): Promise<unknown>;
@@ -299,6 +303,7 @@ export type GroupRelayPlan =
   | { kind: 'unavailable' };
 
 export interface RemoteAgentGroupRelayDeps {
+  bindFastPolicy?(input: { group: string; deviceId?: string | null; sessionId: string; relay?: string }): Promise<void>;
   /**
    * 受邀者的新任务该交给谁；这个供应商没有组返回 null(照常在本机运行)。`reserve`：选中的同一步就计入那台的负载
    * (返回的 `load`)，同时来的几个任务不会全落到同一台；只是问问有没有能接的电脑时不预占。
@@ -369,6 +374,7 @@ interface PendingReverse {
 }
 
 interface Run {
+  groupProviderId?: string;
   id: string;
   controller: string;
   trust: RemoteAgentControllerTrust;
@@ -507,10 +513,6 @@ export function remoteAgentErrorInfo(error: unknown): RemoteAgentErrorInfo {
 }
 
 /** 本机侧的任务 id：控制端设备 + 控制端任务 id 派生，避免与本机自己的任务撞 id。 */
-export function hostSessionIdFor(controller: string, sessionId: string): string {
-  const hex = createHash('sha256').update(`${controller}\0${sessionId}`).digest('hex');
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
-}
 
 function safeCall<T>(fn: (() => T) | undefined): T | undefined {
   if (!fn) return undefined;
@@ -1319,6 +1321,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
           : undefined);
       }
       const handle = await deps.startHosted({
+        ...(run.groupProviderId ? { groupProviderId: run.groupProviderId } : {}),
         kind: run.kind,
         hostSessionId,
         shadowDir,
@@ -1808,6 +1811,9 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
         if (run.hostSessionId) await recordRelayDevice(run.controller, run.hostSessionId, current.agentDeviceId);
         if (run.closing) return;
         openSent = true;
+        await deps.groupRelay?.bindFastPolicy?.({ group: groupProviderId, deviceId: current.agentDeviceId,
+          sessionId: relaySessionIdFor(run.controller, payload.sessionId), relay: relayKeyFor(run.controller) });
+        if (run.closing) return;
         const started = await backend.client.open(run.kind, relayedOpenPayload(run, payload, current));
         if (run.closing) {
           await backend.client.close('close', 'navigation').catch(() => undefined);
@@ -2338,6 +2344,9 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
     const request = parseRemoteAgentRequest(raw);
     if (!deps.isControllerAuthorized(controller)) fail('REMOTE_AGENT_UNAVAILABLE', 'remote control is not allowed');
     switch (request.op) {
+      case 'fast-policy':
+        if (!deps.fastPolicy) fail('REMOTE_AGENT_UNSUPPORTED', 'subscription Fast policy is not supported');
+        return deps.fastPolicy!(controller, request);
       case 'fork': {
         const owner = deps.captureOwner();
         const controllerTrust = trustOf(controller);
@@ -2435,6 +2444,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
         const guest = trustOf(controller) === 'guest';
         const limits = deps.readLimits?.() ?? DEFAULT_REMOTE_AGENT_LIMITS;
         const caps: RemoteAgentCaps = {
+          ...(deps.fastPolicy ? { subscriptionFastPolicy: true as const } : {}),
           version: REMOTE_AGENT_VERSION,
           agents: (['claude-code', 'codex', 'pi'] as const).map((kind) => ({
             kind,
@@ -2601,6 +2611,10 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
           throw error;
         }
         const run: Run = {
+          // Routing hints prevent group loops; they are not permission to skip
+          // this executor's policy. Direct and relayed guests inherit its local
+          // group restriction even when the caller says it was already assigned.
+          ...(trust === 'guest' && deps.groupRelay && providerId ? { groupProviderId: providerId } : {}),
           id: request.runId,
           authorizedModel: payload.options.model,
           acceptsImageDeliveryReceipts: payload.acceptsImageDeliveryReceipts === true,
