@@ -16,7 +16,7 @@ export function botGroupAttachmentScope(groupId: string): string {
   return `bot-group:${groupId}`;
 }
 
-/** Draft key of a 话题's reply box; text only (thread replies carry no attachments). */
+/** Draft key and attachment scope of a 话题's reply box. */
 export function botGroupThreadDraftKey(groupId: string, rootId: string): string {
   return `${botGroupAttachmentScope(groupId)}:thread:${rootId}`;
 }

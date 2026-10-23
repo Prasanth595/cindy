@@ -10,6 +10,7 @@ import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useMemo, useR
 import { Bell, BellRing, Check, CornerDownRight, MessageSquareShare, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { toast } from '@/lib/toast';
+import { useAttachments } from '@/hooks/useAttachments';
 import { cn } from '@/lib/utils';
 import { findThreadMessageElement, flashThreadTarget } from './BotGroupThreadViews';
 import { Button } from '@/components/ui/button';
@@ -165,6 +166,8 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
   const shareScope = `bot-group:${group.id}:thread:${rootId}`;
   const sharing = useShareSelectionActive(shareScope);
   const readOnly = Boolean(group.archived || group.dissolvedAt);
+  const attachmentScope = botGroupThreadDraftKey(group.id, rootId);
+  const attachmentState = useAttachments(attachmentScope, attachmentScope);
   const contentRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
@@ -415,7 +418,7 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
   const revealShare = (shareId: string) => {
     if (!onRevealShare?.(shareId)) toast.info(t(key('thread.shareNotLoaded')));
   };
-  const sendReply = async (input: { text: string; clientId: string; mentions: BotGroupMessageView['mentions'] }) => {
+  const sendReply: NonNullable<Parameters<typeof BotGroupComposer>[0]['sendReply']> = async input => {
     const owner = getDataOwnerGeneration();
     const toMain = alsoSend;
     const result = await api().reply({ groupId: group.id, rootId, ...input });
@@ -550,6 +553,8 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
               mode="thread"
               groupId={group.id}
               draftKey={botGroupThreadDraftKey(group.id, rootId)}
+              attachmentScope={attachmentScope}
+              attachments={attachmentState}
               members={members}
               running={false}
               disabled={readOnly}
