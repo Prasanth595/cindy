@@ -2,10 +2,12 @@ import { useEffect } from 'react';
 import { Route, Routes, useSearchParams } from 'react-router-dom';
 import { AppFrame, forbid, mountPage, subscription } from '../../ui-page/harness';
 import { BotGroupChatView } from '../../../src/renderer/features/bots/BotGroupChatView';
+import { BotGroupComposer } from '../../../src/renderer/features/bots/BotGroupComposer';
 import { BotGroupSettingsDrawer } from '../../../src/renderer/features/bots/BotGroupSettingsDrawer';
 import { BOT_GROUP_SETTINGS_PARAM } from '../../../src/renderer/features/bots/botGroupPresentation';
 import { refreshBotGroups } from '../../../src/renderer/features/bots/botGroupStore';
 import { ControlledBanner } from '../../../src/renderer/features/remote-device/ControlledBanner';
+import { getDefaultVoiceInputSettings } from '../../../src/shared/voiceInputData';
 
 interface GroupData {
   bodyAnswer?: boolean;
@@ -16,6 +18,7 @@ interface GroupData {
   /** A server group with teammates' bubbles: quote, reactions, thread entry and a task card. */
   bubbles?: boolean;
   wrappedReactions?: boolean;
+  replyComposer?: boolean;
   /** A single-speaker server group: nobody was named, so everyone answers in turn (bot-group-chat.md §4.0/§7.0). */
   arrangement?: Queue;
   /** Open the group settings drawer as its owner. */
@@ -260,6 +263,15 @@ void mountPage({
       return { ok: true, root, replies, hasMore: false, following };
     };
     return {
+      voiceInput: {
+        getDataSnapshot: () => ({ settings: { ...getDefaultVoiceInputSettings('win32'), fastActivationEnabled: false }, history: [] }),
+        onDataChanged: subscription('voiceDataChanged'),
+        onEvent: subscription('voiceEvent'),
+        onGlobalShortcutTrigger: subscription('voiceShortcut'),
+        setGlobalShortcut: async () => ({ ok: true }),
+        prewarm: async () => ({ ok: true }),
+        start: forbid('voiceInput.start'),
+      },
       maker: {
         listBotGroups: async () => ({ ok: true, groups: (ctx.data as unknown as GroupData).settings ? [group] : [] }),
         getBotGroup: async () => ({ ok: true, group }),
@@ -289,9 +301,12 @@ void mountPage({
       <>
         <AppFrame sidebar={sidebar}>
           <div className="min-h-0 flex-1" data-ui-page-subject>
-            <Routes>
+            {data.replyComposer ? <div className="flex h-full flex-col justify-end">
+              <BotGroupComposer groupId="fixture-group" draftKey="fixture-reply" mode="thread"
+                members={[]} running={false} sendReply={forbid('sendReply')} />
+            </div> : <Routes>
               <Route path="/bots/groups/:groupId" element={<BotGroupChatView />} />
-            </Routes>
+            </Routes>}
           </div>
         </AppFrame>
         <ControlledBanner />

@@ -10,6 +10,7 @@ import type {
   VoiceInputRendererEvent,
   VoiceInputState,
 } from '@cindy/voice-input-core';
+import { takeRefinementContextHead, takeRefinementContextTail } from '@cindy/voice-input-core';
 
 import { createLogger } from '@/lib/logger';
 import { toast } from '@/lib/toast';
@@ -174,10 +175,19 @@ type StopCompletionWaiter = {
 };
 
 export type UseVoiceInputOptions = {
+  /** Plain-text composers use string offsets instead of ProseMirror positions. */
+  textTarget?: VoiceInputTextTarget;
   onMicrophonePermissionRequired?: (error: string) => void | Promise<void>;
   /** When false, keep refining in the background but do not write the live editor. */
   shouldApplyToEditor?: () => boolean;
   getDraftStorageKey?: () => string | undefined;
+};
+
+export type VoiceInputTextTarget = {
+  getText: () => string;
+  getSelection: () => EditorTextRange;
+  replace: (range: EditorTextRange, text: string) => { start: number; end: number } | null;
+  focus: () => void;
 };
 
 /**
@@ -383,6 +393,11 @@ export function useVoiceInput(
     // editor and leave keyboard input feeling stuck after dictation ends.
     window.requestAnimationFrame(() => {
       window.setTimeout(() => {
+        if (optionsRef.current?.shouldApplyToEditor?.() === false || disabledRef.current) return;
+        if (optionsRef.current?.textTarget) {
+          optionsRef.current.textTarget.focus();
+          return;
+        }
         const current = editorRef.current;
         if (!current || current.isDestroyed || disabledRef.current) return;
         if (!current.isEditable) {
@@ -536,6 +551,11 @@ export function useVoiceInput(
   ]);
 
   const readEditorSnapshot = useCallback(() => {
+    const target = optionsRef.current?.textTarget;
+    if (target) {
+      const range = target.getSelection();
+      return { inputValue: target.getText(), selectionStart: range.from, selectionEnd: range.to };
+    }
     const current = editorRef.current;
     if (!current || current.isDestroyed) {
       return {
@@ -552,6 +572,7 @@ export function useVoiceInput(
   }, []);
 
   const readEditorSelectionRange = useCallback((): EditorTextRange | null => {
+    if (optionsRef.current?.textTarget) return optionsRef.current.textTarget.getSelection();
     const current = editorRef.current;
     if (!current || current.isDestroyed) return null;
     return {
@@ -612,6 +633,8 @@ export function useVoiceInput(
   }, [clearDictionaryLearningWatchTimer, publishDictionaryLearningEvidence]);
 
   const upsertDictionaryLearningWatch = useCallback((watch: DictionaryLearningWatch) => {
+    // ProseMirror transaction watches do not apply to controlled textareas.
+    if (optionsRef.current?.textTarget) return;
     const watches = dictionaryLearningWatchesRef.current;
     clearDictionaryLearningWatchTimer(watches.get(watch.segmentId));
     watches.set(watch.segmentId, watch);
@@ -787,6 +810,18 @@ export function useVoiceInput(
       settings: voiceInputSettings,
     });
     const replyToMessage = buildReplyToMessageFromChatMessages(chatMessages);
+    const target = optionsRef.current?.textTarget;
+    if (target) {
+      const text = target.getText();
+      const range = insertionRangeRef.current ?? target.getSelection();
+      return {
+        ...baseContext,
+        selectionBefore: takeRefinementContextTail(text.slice(0, range.from)),
+        selectedText: takeRefinementContextHead(text.slice(range.from, range.to)),
+        selectionAfter: takeRefinementContextHead(text.slice(range.to)),
+        replyToMessage,
+      };
+    }
     if (!current || current.isDestroyed) {
       return {
         ...baseContext,
@@ -837,6 +872,12 @@ export function useVoiceInput(
 
   const insertSubmittedText = useCallback((text: string): { start: number; end: number } | null => {
     if (optionsRef.current?.shouldApplyToEditor?.() === false) return null;
+    const target = optionsRef.current?.textTarget;
+    if (target) {
+      const range = insertionRangeRef.current ?? target.getSelection();
+      insertionRangeRef.current = null;
+      return target.replace(range, text);
+    }
     const current = editorRef.current;
     if (!current || current.isDestroyed) return null;
     current.commands.focus();
@@ -864,6 +905,18 @@ export function useVoiceInput(
     if (optionsRef.current?.shouldApplyToEditor?.() === false) return false;
     const segmentId = event.range.segmentIds[0];
     const range = segmentId ? submittedRangesRef.current.get(segmentId) : undefined;
+    const target = optionsRef.current?.textTarget;
+    if (target) {
+      if (!segmentId || !range) return false;
+      const text = target.getText();
+      const basedOnText = event.segment.basedOnText ?? range.rawTranscriptText ?? range.submittedText;
+      if (range.end > text.length || ![range.submittedText, basedOnText].includes(text.slice(range.start, range.end))) return false;
+      const replaced = target.replace({ from: range.start, to: range.end }, event.text);
+      if (!replaced) return false;
+      submittedRangesRef.current.set(segmentId, { ...range, ...replaced, submittedText: event.text });
+      if (range.historyEntryId) updateVoiceInputHistoryEntry(range.historyEntryId, event.text);
+      return true;
+    }
     const current = editorRef.current;
     if (!segmentId) {
       log.debug('refinement skipped: missing segment id', {
@@ -943,11 +996,16 @@ export function useVoiceInput(
   }, [upsertDictionaryLearningWatch]);
 
   useEffect(() => {
-    const unsubscribe = window.electronAPI.voiceInput.onEvent((event) => {
+    const unsubscribe = window.electronAPI?.voiceInput?.onEvent((event) => {
       if (!shouldHandleVoiceInputEvent(
         ownedRunIdRef.current,
         event.runId,
-        isVoiceInputEventScopeActive(stateRef.current),
+        isVoiceInputEventScopeActive(stateRef.current) && (
+          !optionsRef.current?.textTarget
+          // start() can emit auth-required before its IPC result supplies runId.
+          // Keep other unowned textarea events fenced out during that window.
+          || (event.type === 'auth-required' && optionsRef.current.shouldApplyToEditor?.() !== false)
+        ),
       )) return;
       switch (event.type) {
         case 'auth-required':
@@ -1037,6 +1095,14 @@ export function useVoiceInput(
             if (optionsRef.current?.shouldApplyToEditor?.() === false) break;
             const segmentId = event.range.segmentIds[0];
             const range = segmentId ? submittedRangesRef.current.get(segmentId) : undefined;
+            const target = optionsRef.current?.textTarget;
+            if (range && target) {
+              if (target.getText().slice(range.start, range.end) !== range.submittedText) break;
+              draftDisplayRangeRef.current = { from: range.start, to: range.end };
+              setDraftText(buildRefinementPreviewText(event.segment.basedOnText ?? range.submittedText, event.text));
+              setDraftSource('refinement');
+              break;
+            }
             const current = editorRef.current;
             if (range && current && !current.isDestroyed) {
               const currentDoc = current.state.doc;
@@ -1093,8 +1159,17 @@ export function useVoiceInput(
           draftDisplayRangeRef.current = null;
           insertionRangeRef.current = null;
           setVoiceState('error');
+          // Dispose the failed main-process run before dropping its ID. This
+          // releases inline shortcut routing even if the composer stays mounted;
+          // a scoped cancel cannot stop a newer run from another composer.
+          const failedRunId = ownedRunIdRef.current ?? runIdRef.current;
           runIdRef.current = null;
           ownedRunIdRef.current = null;
+          if (failedRunId) {
+            void window.electronAPI.voiceInput.cancel({ runId: failedRunId }).catch((error) => {
+              log.warn('failed voice input cleanup:', error instanceof Error ? error.message : String(error));
+            });
+          }
           resolveStopCompletion();
           reportVoiceInputError(formattedMessage);
           restoreEditorFocusAfterVoiceInput();
@@ -1114,24 +1189,24 @@ export function useVoiceInput(
       }
     });
     return () => {
-      if (hasArmedDetachedVoiceDraft(optionsRef.current?.getDraftStorageKey?.())) {
-        const timeoutId = window.setTimeout(unsubscribe, STOP_WAIT_REFINEMENT_FAILSAFE_MS);
+      if (!optionsRef.current?.textTarget && hasArmedDetachedVoiceDraft(optionsRef.current?.getDraftStorageKey?.())) {
+        const timeoutId = window.setTimeout(() => unsubscribe?.(), STOP_WAIT_REFINEMENT_FAILSAFE_MS);
         const intervalId = window.setInterval(() => {
           if (hasArmedDetachedVoiceDraft(optionsRef.current?.getDraftStorageKey?.())) return;
           window.clearInterval(intervalId);
           window.clearTimeout(timeoutId);
-          unsubscribe();
+          unsubscribe?.();
         }, 100);
         return;
       }
-      unsubscribe();
+      unsubscribe?.();
     };
   }, [applyRefinedText, clampEditorTextRange, commitUsageStats, formatVoiceInputError, insertSubmittedText, promptCodexSessionExpired, recordVisibleTextChanged, reportVoiceInputError, resolveStopCompletion, restoreEditorFocusAfterVoiceInput, restoreSystemAudioForRecording, setVoiceState, stopEngine, upsertDictionaryLearningWatch]);
 
   useEffect(() => {
     return () => {
       const draftKey = optionsRef.current?.getDraftStorageKey?.();
-      if (hasArmedDetachedVoiceDraft(draftKey)) {
+      if (!optionsRef.current?.textTarget && hasArmedDetachedVoiceDraft(draftKey)) {
         const stop = stopWithGateRef.current;
         void (stop ? stop({ waitForRefinement: true }) : Promise.resolve())
           .catch(() => undefined)
@@ -1147,21 +1222,28 @@ export function useVoiceInput(
           });
         return;
       }
-      if (hasArmedDetachedVoiceDraft()) {
+      if (!optionsRef.current?.textTarget && hasArmedDetachedVoiceDraft()) {
         // Another ChatInput owns the in-flight persist; do not cancel or settle it.
         return;
       }
       resolveStopCompletion();
+      invalidateStartAttempt();
+      const ownedRunId = ownedRunIdRef.current ?? runIdRef.current;
+      ownedRunIdRef.current = null;
+      runIdRef.current = null;
       commitUsageStats();
       clearDictionaryLearningWatches();
       void stopEngine();
       void restoreSystemAudioForRecording();
-      void window.electronAPI.voiceInput.cancel();
+      // A main-group and a thread composer can coexist. Disposing an idle
+      // composer must never cancel the other one's recording.
+      if (ownedRunId) void window.electronAPI.voiceInput.cancel({ runId: ownedRunId });
       clearInlineErrorDismissTimer();
     };
   }, [
     clearDictionaryLearningWatches,
     clearInlineErrorDismissTimer,
+    invalidateStartAttempt,
     commitUsageStats,
     resolveStopCompletion,
     restoreSystemAudioForRecording,
@@ -1193,7 +1275,7 @@ export function useVoiceInput(
   // idempotent and throttled internally — running on every ChatInput mount
   // is cheap. Errors are swallowed; prewarm must never disrupt the UI.
   useEffect(() => {
-    if (disabledRef.current) return;
+    if (disabledRef.current || !window.electronAPI?.voiceInput) return;
     void window.electronAPI.voiceInput.prewarm({
       sourceLanguage: voiceInputSettings.language,
       refinementEnabled: voiceInputSettings.refinementEnabled,
@@ -1208,7 +1290,7 @@ export function useVoiceInput(
   // refinement changes used to re-assert keep-alive intent here, which kept the
   // device warm for reasons the user never asked for.
   useEffect(() => {
-    if (disabledRef.current) return;
+    if (disabledRef.current || !window.electronAPI?.voiceInput) return;
     if (!voiceInputSettings.fastActivationEnabled) {
       void disposeKeepAliveVoiceInputMicrophone('setting_disabled').catch(() => undefined);
       return;
@@ -1240,7 +1322,7 @@ export function useVoiceInput(
     const currentState = stateRef.current;
     if (
       disabled ||
-      !editorRef.current ||
+      (!editorRef.current && !optionsRef.current?.textTarget) ||
       stopInFlightRef.current ||
       currentState === 'listening' ||
       currentState === 'submitting' ||
@@ -1611,7 +1693,7 @@ export function useVoiceInput(
   }, []);
 
   const cancel = useCallback(async () => {
-    const runId = runIdRef.current;
+    const runId = ownedRunIdRef.current ?? runIdRef.current;
     invalidateStartAttempt();
     resolveStopCompletion();
     await stopEngine();
@@ -1758,7 +1840,7 @@ export function useVoiceInput(
   stopWithGateRef.current = stopWithGate;
 
   useEffect(() => {
-    const editorUnavailable = !editor || editor.isDestroyed || disabled;
+    const editorUnavailable = (!options?.textTarget && (!editor || editor.isDestroyed)) || disabled;
     if (!editorUnavailable) return;
     const currentState = stateRef.current;
     if (
@@ -1775,7 +1857,7 @@ export function useVoiceInput(
       editorDestroyed: Boolean(editor?.isDestroyed),
     });
     void cancel();
-  }, [cancel, disabled, editor]);
+  }, [cancel, disabled, editor, options?.textTarget]);
 
   return {
     state,
