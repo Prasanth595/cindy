@@ -225,7 +225,7 @@ function computeMetricSlots(
       }),
       available: true,
     };
-    if (typeof claudeQuota.todaySpend === 'number') {
+    if (claudeQuota.dailyLimitEnabled !== false && typeof claudeQuota.todaySpend === 'number') {
       const softLimit = (claudeQuota.maxBudget / 30) * DAILY_SOFT_LIMIT_FACTOR;
       slots.daily = {
         label: t('todaySpend.dailyLimitLabel', {
@@ -1524,7 +1524,7 @@ export function TodaySpendChip({
         });
       }
       if (claudeQuota && claudeQuota.maxBudget > 0) {
-        if (typeof claudeQuota.todaySpend === 'number') {
+        if (claudeQuota.dailyLimitEnabled !== false && typeof claudeQuota.todaySpend === 'number') {
           const softLimit = (claudeQuota.maxBudget / 30) * DAILY_SOFT_LIMIT_FACTOR;
           account.windows.push({
             key: 'daily',
@@ -1548,7 +1548,7 @@ export function TodaySpendChip({
       }
       if (!claudeQuota && !creditTotals) {
         account.emptyText = t('todaySpend.tooltip.monthlyUnavailable');
-      } else if (claudeQuota?.todaySpend === null) {
+      } else if (claudeQuota?.dailyLimitEnabled !== false && claudeQuota?.todaySpend === null) {
         account.details = [t('todaySpend.tooltip.dailyUnavailable')];
       }
     }

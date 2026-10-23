@@ -2,6 +2,7 @@ import { registerCompanionImport } from '../../bot-import/registration.js';
 import { registerTaskTagsIpc } from './taskTags';
 import { registerRoutineRemoteResources } from '../../routines/remote.js';
 import { registerRoutinesIpc } from '../../routines/service.js';
+import { registerNightlyLearningIpc } from '../../routines/nightlyLearningIpc.js';
 /**
  * chat-data-localization F2/F5：聚合注册所有 localDb IPC handlers + ensure-ready。
  *
@@ -244,6 +245,7 @@ export function registerLocalDbIpc(opts: RegisterLocalDbIpcOpts = {}): void {
   registerBotIpc();
   registerCompanionImport();
   registerRoutinesIpc();
+  registerNightlyLearningIpc();
   registerRoutineRemoteResources(botRemoteManagement);
   registerBotRemoteResourceProvider(botRemoteManagement);
   registerSessionImportIpc();

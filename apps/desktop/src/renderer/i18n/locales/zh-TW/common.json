@@ -1762,6 +1762,16 @@
           "description": "僅調整程式碼區塊、修改比較和編輯器字級；不影響行內程式碼、狀態數字、徽章和路徑標籤",
           "aria": "調整程式碼字號"
         },
+        "terminalFamily": {
+          "label": "終端字型",
+          "description": "僅用於內建終端，建議使用等寬字型。",
+          "aria": "選擇終端字型"
+        },
+        "terminalSize": {
+          "label": "終端字號",
+          "description": "調整內建終端中的文字大小。",
+          "aria": "調整終端字號"
+        },
         "presetsUi": {
           "default": "Inter（預設）",
           "codexStyle": "Codex 風格",
@@ -1771,8 +1781,12 @@
           "default": "Codex 風格（預設）",
           "jetbrainsMono": "JetBrains Mono"
         },
+        "presetsTerminal": {
+          "default": "等寬字型（預設）"
+        },
         "previewSamples": {
-          "ui": "中文字型預覽，清晰銳利 ABC xyz · a/b/c/d · a,b · 0123456789 !?@&"
+          "ui": "中文字型預覽，清晰銳利 ABC xyz · a/b/c/d · a,b · 0123456789 !?@&",
+          "terminal": "$ echo \"終端字型預覽\"\n終端字型預覽\n0123456789 0O 1lI"
         }
       },
       "singleVariant": {
@@ -3352,6 +3366,7 @@
         "refreshingAria": "正在重新整理模型列表…",
         "refreshDone": "模型列表已重新整理",
         "refreshAdded": "已發現 {{count}} 個新模型",
+        "refreshSpeechAdded": "已更新模型，補充了 1 個語音參考型號",
         "refreshNoNew": "模型列表已是最新，無新增",
         "refreshFailed": "模型列表重新整理失敗，請稍後再試",
         "refreshFetchDisabled": "模型目錄遠端擷取未啟用，已跳過重新整理",
@@ -5159,10 +5174,6 @@
         "android": {
           "name": "Android 自動化",
           "description": "檢視、點擊和操作連接到本機的 Android 裝置。"
-        },
-        "ios-simulator": {
-          "name": "iOS 模擬器",
-          "description": "在 iOS 模擬器中安裝、執行和檢查應用程式。"
         },
         "browser": {
           "name": "瀏覽器",
@@ -7095,10 +7106,10 @@
         "embeddedSimulator": {
           "title": "原內建模擬器已下線",
           "description": "Cindy 已移除原內建模擬器。",
-          "replacementName": "Baguette 模擬器",
-          "replacementDescription": "在 Cindy 側邊欄查看即時畫面、操作裝置、執行 App 和擷取畫面。",
+          "replacementName": "裝置模擬器",
+          "replacementDescription": "在 Cindy 側邊欄查看即時畫面、操作裝置、執行 App 和擷取畫面。基於開源專案 Baguette。",
           "requirements": "需要 Apple Silicon Mac、macOS 15 或更新版本及完整 Xcode。",
-          "dataNotice": "原模擬器的裝置和應用程式資料不會被刪除。安裝 Baguette 不會自動遷移裝置、App 或登入狀態。"
+          "dataNotice": "原模擬器的裝置和應用程式資料不會被刪除。安裝新的裝置模擬器不會自動遷移裝置、App 或登入狀態。"
         }
       },
       "remote": {
@@ -9458,10 +9469,12 @@
         "more": "更多操作",
         "division": "安排分工",
         "divisionDescription": "讓負責人先分好工，夥伴們一步步做",
+        "divisionDescriptionSteps": "按你寫的步驟，或由負責人來分；夥伴們一步步做",
         "divisionBusy": "正在分工，做完或停止後才能安排新的",
         "divisionTag": "分工",
         "removeDivision": "移除分工",
         "placeholderDivision": "說說要做成什麼，負責人會先分好工…",
+        "placeholderDivisionSteps": "寫好誰做什麼（@A 出方案，@B 實作），或只說目標讓負責人來分…",
         "placeholderPlanProposed": "想換人或改步驟，直接說…",
         "placeholderPlanWaiting": "想讓{{name}}改改，直接說…",
         "placeholderPlanRunning": "說的話會帶給正在做的{{name}}…",
@@ -9565,6 +9578,9 @@
         "projectDirChange": "更換",
         "projectDirClear": "清除",
         "projectDirNote": "分工做事時，夥伴們在這裡工作。不選也行，會用這個群聊自己的資料夾；選了 git 專案，每次分工會新開一個 worktree 和分支，不動你手上的程式碼。",
+        "handoff": "分工交接",
+        "autoContinueNote": "開著時，你在這個群聊發起的分工做完一步就自動交給下一位；關著時每一步都等你點「繼續」。只在這台電腦上生效。",
+        "autoContinueSaveFailed": "分工交接沒能儲存，請再試一次",
         "projectDirSaveFailed": "專案資料夾沒能儲存，確認資料夾還在後再試"
       },
       "errors": {
@@ -9600,6 +9616,8 @@
         "dismiss": "不用了",
         "editHint": "點某一步可以換人",
         "pauseNote": "每做完一步會停下來，等你點「繼續」。",
+        "autoContinue": "做完一步自動交給下一位",
+        "autoNote": "做完一步會自動交給下一位。",
         "superseded": "已更新",
         "dismissed": "不用了",
         "stopped": "已停止",
@@ -10851,11 +10869,14 @@
       },
       "unified": {
         "railFavorites": "收藏",
+        "railRecent": "最近",
         "railAll": "全部",
         "railRemoteProvider": "{{provider}} · {{device}}",
         "remoteLoading": "正在讀取那臺電腦的模型…",
         "remoteFavoriteUnavailable": "{{source}} · 暫時讀不到那臺電腦的模型",
         "favoritesGroup": "收藏",
+        "recentGroup": "最近",
+        "recentEmpty": "還沒有最近使用——選一個模型後，它會出現在這裡",
         "favoritesSaveFailed": "未能儲存收藏變更",
         "favoritesCleanupFailed": "未能清理已失效的分享模型收藏",
         "favoritesEmpty": "還沒有收藏——把滑鼠停到模型列上，點 ☆ 存到這裡",
@@ -15305,6 +15326,19 @@
         "dirUnavailable": "{{device}} 上的目錄暫時無法存取。請檢查連線或網路磁碟後重試。Worker 沒有建立。"
       }
     },
+    "editWorker": {
+      "title": "編輯 Worker",
+      "submit": "儲存",
+      "closeAria": "關閉編輯 Worker 彈窗",
+      "labelLabel": "標識",
+      "labelHint": "標識用於在團隊內唯一識別這個 Worker，只能包含字母、數字、連字號與底線；改動後 Lead 與各處引用會依新標識定位。",
+      "labelHintAria": "標識說明",
+      "labelPlaceholder": "Worker 標識（留空表示不變更）",
+      "labelInvalid": "標識只能包含字母、數字、連字號與底線",
+      "duplicateLabel": "標識 {{label}} 已被本團隊其他 Worker 使用",
+      "saveFailed": "儲存失敗，請重試",
+      "labelLocked": "該 Worker 的標識已被活躍的插件團隊計畫引用，計畫結束前不能修改；可改角色名，或先釋放該 Worker。"
+    },
     "rolePill": {
       "unread": "未讀更新",
       "worker": "Worker",
@@ -15312,6 +15346,7 @@
       "workerCountSummary_other": "{{totalCount}} 個 Worker · {{activeCount}} 執行中",
       "statusAria": "狀態 {{status}}",
       "archiveWorkerAria": "歸檔 Worker {{name}}",
+      "editWorkerAria": "編輯 Worker {{name}}",
       "createWorker": "建立新 Worker",
       "hardLimitHint": "已達硬上限 {{count}} 個 · 歸檔現有 Worker 後可繼續建立",
       "hardLimitSettingsHint": "已達硬上限 {{count}} 個 · 點擊前往協同設定調整",
@@ -16070,6 +16105,61 @@
     "builtinTodoCheck": {
       "name": "每天查待辦（內建）",
       "hint": "工作日 9:00 在已連接的來源裡找新待辦，沒有就不打擾；在近況裡開關，只能暫停或恢復。"
+    },
+    "builtinNightlyLearning": {
+      "name": "夜間學習（內建）",
+      "title": "夜間學習",
+      "hint": "每天 3:30 整理和你的對話：合併記憶，把反覆用到的做法總結成技能。沒有新對話就略過，不呼叫模型。",
+      "hintWeekly": "每週一 3:30 整理這一週和你的對話：合併記憶，把反覆用到的做法總結成技能。沒有新對話就略過，不呼叫模型。"
+    },
+    "nightly": {
+      "switchLabel": "到點自動整理",
+      "paused": "已暫停。對話照常計數，開啟後到點開始整理。",
+      "running": "正在整理…",
+      "memoryOff": "記憶已關閉，只整理技能。",
+      "pending": "待整理",
+      "pendingTurns_one": "{{count}} 輪對話",
+      "pendingTurns_other": "{{count}} 輪對話",
+      "pendingNone": "沒有新對話，到點會略過",
+      "last": "上次",
+      "lastNever": "還沒整理過",
+      "lastFailed": "沒整理完，下次會再試",
+      "lastLearned_one": "整理了 {{count}} 項",
+      "lastLearned_other": "整理了 {{count}} 項",
+      "nothing": "沒有需要整理的",
+      "viewHistory": "查看紀錄",
+      "notHere": "夜間學習只在夥伴的主力電腦上執行。",
+      "switchHint": "沒有新對話就略過，不呼叫模型",
+      "frequency": "頻率",
+      "daily": "每天",
+      "weekly": "每週",
+      "dailyHint": "每天 3:30",
+      "weeklyHint": "每週一 3:30",
+      "runNow": "現在整理",
+      "history": "紀錄",
+      "empty": "還沒有整理過。有新對話後，到點會第一次整理。",
+      "manual": "手動整理",
+      "readTurns_one": "看了 {{count}} 輪對話",
+      "readTurns_other": "看了 {{count}} 輪對話",
+      "undone": "已復原",
+      "undo": "復原",
+      "redo": "恢復",
+      "watching": "觀察中的做法",
+      "watchingHint": "只出現過一次的做法先放在這裡，不會載入。再遇到同類事才會總結成技能。",
+      "promote": "現在記成技能",
+      "decline": "不用學",
+      "changedSince": "這一條之後被改過，無法復原",
+      "failed": "沒能完成，請重試",
+      "item": {
+        "memoryCreated": "新記住「{{title}}」",
+        "memoryUpdated": "整理了記憶「{{title}}」",
+        "memoryDeleted": "刪除了記憶「{{title}}」",
+        "memoryMerged": "把記憶「{{title}}」併入「{{into}}」",
+        "skillCreated": "新學技能「{{title}}」",
+        "skillUpdated": "更新了技能「{{title}}」",
+        "skillDisabled": "停用了技能「{{title}}」",
+        "skillMerged": "把技能「{{title}}」併入「{{into}}」並停用"
+      }
     }
   },
   "cindyMakeDoctor": {

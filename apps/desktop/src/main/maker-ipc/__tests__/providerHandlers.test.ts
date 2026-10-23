@@ -2,8 +2,8 @@ import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { afterEach, describe, it, expect, vi } from 'vitest';
 
-import type { AgentKind, CustomProviderConfig, ProviderPreset, ProviderView } from '@cindy/model-providers';
-import { buildUserProvider } from '@cindy/model-providers';
+import type { AgentKind, CustomProviderConfig, DiscoveredModel, ModelRegistry, ProviderPreset, ProviderView } from '@cindy/model-providers';
+import { BUNDLED_CATALOG, buildUserProvider, mergeDiscoveredRuntimeModels } from '@cindy/model-providers';
 import { providerViewToCustomProviderConfig } from '../../../renderer/lib/customProviders.js';
 
 import type { ProviderImportPreview } from '../../../shared/providerImport.js';
@@ -130,6 +130,7 @@ function makeDeps(over: Partial<ProviderHandlerDeps> = {}): ProviderHandlerDeps 
     setProviderOrder: vi.fn(() => true),
     getProviderOrder: () => [],
     listPresets: () => [],
+    getModelCatalog: () => BUNDLED_CATALOG,
     testConnection: vi.fn(async () => ({ ok: true, latencyMs: 1 })),
     fetchModels: vi.fn(async () => ({ ok: true, models: [{ id: 'm1', name: 'M1' }] })),
     rediscoverModels: vi.fn(async () => null),
@@ -4835,6 +4836,177 @@ it('preserves the actual Vertex API through the probe IPC and rejects unknown SD
   await expect(harness.invoke(MAKER_INVOKE.PROVIDER_TEST_CONNECTION,
     { kind: 'adhoc', spec: { ...spec, api: 'invented-sdk' } })).rejects.toThrow(/INVALID_PARAMS/);
   expect(deps.testConnection).toHaveBeenCalledOnce();
+});
+
+// #6928 unit regression: discovery returns a new ID without mode, and only the
+// active Registry classifies it. Exercise fetch -> merge -> update -> DB reread;
+// Renderer-only tests cannot prove Main classifies before the one persisted write.
+describe('manual refresh speech references through the real provider update handler', () => {
+  // #6928 P1, unit with an in-memory DB: the real update handler/signature must
+  // gate a reference-only Responses route change before persistence/Host restart.
+  // The existing speech cases use openai-chat, so they never require a restart.
+  it.each([true, false])('gates reference-only Responses changes before saving (busy=%s)', async busy => {
+    mountDb();
+    const harness = new IpcHarness();
+    const config = imageProviderConfig('refresh-image-speech', {
+      baseUrl: 'https://api.openai.com/v1',
+      models: [{ id: 'chat-model', name: 'My chat', defaultEnabled: false }],
+    });
+    let busyIds: string[] = [];
+    const deps = makeDeps({
+      listBusyLocalCodexSessionIds: () => busyIds,
+      listProviders: async () => [{ ...buildUserProvider((await getCustomProvider(config.id))!), connected: true }],
+    });
+    registerProviderHandlers(harness, deps);
+    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_CREATE, config);
+    const before = (await getCustomProvider(config.id))!;
+    vi.mocked(deps.prepareCodexCustomProviderHostChange!).mockClear().mockImplementation(async () => {
+      expect((await getCustomProvider(config.id))!.runtimes).toEqual(before.runtimes);
+    });
+    vi.mocked(deps.finalizeCodexCustomProviderHostChange!).mockClear();
+    vi.mocked(deps.storeCustomProviderKey).mockClear();
+    vi.mocked(deps.refreshCatalog).mockClear();
+    busyIds = busy ? ['local-codex-running'] : [];
+    const options = { source: 'manual-settings', speechReferenceRefreshAgents: ['codex'] };
+    const first = await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE, before, {}, options);
+    if (busy) {
+      expect(first).toEqual({ ok: false, confirmationRequired: 'codex-image-generation-reload', busyCount: 1 });
+      expect((await getCustomProvider(config.id))!.runtimes).toEqual(before.runtimes);
+      expect(deps.prepareCodexCustomProviderHostChange).not.toHaveBeenCalled();
+      expect(deps.finalizeCodexCustomProviderHostChange).not.toHaveBeenCalled();
+      expect(deps.storeCustomProviderKey).not.toHaveBeenCalled();
+      expect(deps.refreshCatalog).not.toHaveBeenCalled();
+      expect(await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE, before, {}, {
+        ...options, codexImageGenerationRestartPolicy: 'interrupt',
+      })).toEqual({ ok: true, speechReferenceAdded: true });
+    } else {
+      expect(first).toEqual({ ok: true, speechReferenceAdded: true });
+    }
+    const saved = (await getCustomProvider(config.id))!;
+    expect(saved.runtimes.codex!.models).toEqual([
+      before.runtimes.codex!.models[0],
+      expect.objectContaining({ id: 'gpt-4o-mini-tts', defaultEnabled: true }),
+    ]);
+    expect(deps.prepareCodexCustomProviderHostChange).toHaveBeenCalledOnce();
+    expect(deps.finalizeCodexCustomProviderHostChange).toHaveBeenCalledOnce();
+    expect(deps.storeCustomProviderKey).not.toHaveBeenCalled();
+    // Refreshing the saved reference neither duplicates it nor restarts again.
+    expect(await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE, saved, {}, options)).toEqual({ ok: true });
+    expect((await getCustomProvider(config.id))!.runtimes).toEqual(saved.runtimes);
+    expect(deps.prepareCodexCustomProviderHostChange).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    'new', 'new-pi', 'hidden', 'hidden-pi', 'transcription', 'discovery-other',
+    'user-other', 'missing', 'reference-other', 'failed-target', 'disabled', 'oauth', 'proxy',
+    'registry-other', 'registry-transcription',
+  ] as const)('preserves effective classification and saved settings: %s', async kind => {
+    mountDb();
+    const harness = new IpcHarness();
+    const id = kind === 'reference-other' ? 'speech-2.8-turbo' : 'server-only-audio';
+    const registryMode = kind === 'transcription' ? 'audio_transcription' : 'audio_speech';
+    const modelRegistry: ModelRegistry = {
+      ...BUNDLED_CATALOG.modelRegistry!,
+      baseModels: [...BUNDLED_CATALOG.modelRegistry!.baseModels!,
+        { id: 'server-only-audio', aliases: [], defaults: { mode: registryMode } }],
+    };
+    // #6928 P2, Main unit: unlike reference-other, this ID is absent from both
+    // saved settings and discovery. The active Registry must also govern the
+    // candidate before the real update handler persists a reference addition.
+    if (kind === 'registry-other' || kind === 'registry-transcription') {
+      modelRegistry.baseModels = modelRegistry.baseModels!.map(model =>
+        model.aliases.includes('speech-2.8-turbo') ? { ...model, defaults: { ...model.defaults,
+          mode: kind === 'registry-other' ? 'other' : 'audio_transcription' } } : model);
+    }
+    const config: CustomProviderConfig = { id: 'refresh-speech', name: 'My connection', runtimes: {
+      codex: { baseUrl: kind === 'proxy' ? 'https://proxy.example/v1' : 'https://api.minimax.io/v1',
+        wireProtocol: 'openai-chat', models: [{ id: 'MiniMax-M3', name: 'My chat', defaultEnabled: false }] },
+    } };
+    const agent = kind === 'new-pi' || kind === 'hidden-pi' ? 'pi' : 'codex';
+    if (agent === 'pi') config.runtimes.pi = {
+      baseUrl: 'https://api.minimax.io/anthropic', wireProtocol: 'anthropic-messages', models: [],
+    };
+    if (kind === 'hidden' || kind === 'hidden-pi' || kind === 'user-other') {
+      config.runtimes[agent]!.models.push({ id, name: 'My saved audio', defaultEnabled: false,
+        ...(kind === 'user-other' ? { mode: 'other' as const } : {}) });
+    }
+    const discovered: DiscoveredModel[] = ['missing', 'failed-target', 'disabled', 'oauth', 'proxy',
+      'registry-other', 'registry-transcription'].includes(kind)
+      ? [{ id: 'MiniMax-M3', name: 'Upstream chat' }]
+      : [{ id, name: 'Discovered audio', ...(['discovery-other', 'reference-other'].includes(kind)
+        ? { discoveredMetadata: { mode: 'other' as const } } : {}) }];
+    const deps = makeDeps({
+      getModelCatalog: () => ({ modelRegistry }),
+      fetchModels: vi.fn(async () => ({ ok: true as const, models: discovered })),
+      listProviders: async () => {
+        const current = (await getCustomProvider(config.id))!;
+        const provider: ProviderView = { ...buildUserProvider(current, { modelRegistry }), connected: true };
+        if (kind === 'disabled') provider.routing.codex!.disabled = true;
+        if (kind === 'oauth') provider.auth = { method: 'oauth' };
+        return [provider];
+      },
+    });
+    registerProviderHandlers(harness, deps);
+    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_CREATE, config);
+    vi.mocked(deps.storeCustomProviderKey).mockClear();
+    const fetched = await harness.invoke(MAKER_INVOKE.PROVIDER_MODELS_FETCH, {
+      agent, baseUrl: config.runtimes[agent]!.baseUrl, authMethod: 'apiKey', savedProviderId: config.id,
+    }) as { ok: true; models: DiscoveredModel[] };
+    const merged = structuredClone(config);
+    merged.runtimes[agent]!.models = mergeDiscoveredRuntimeModels(merged.runtimes[agent]!.models, fetched.models);
+    const options = { speechReferenceRefreshAgents: kind === 'failed-target' ? ['pi'] : ['codex', 'pi'] };
+    const shouldAdd = ['transcription', 'discovery-other', 'user-other', 'missing'].includes(kind);
+    expect(await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE, merged, {}, options))
+      .toEqual({ ok: true, ...(shouldAdd ? { speechReferenceAdded: true } : {}) });
+    const saved = (await getCustomProvider(config.id))!;
+    const expected = structuredClone(merged);
+    if (shouldAdd) expected.runtimes.codex!.models.push({
+      id: 'speech-2.8-turbo', name: 'MiniMax Speech 2.8 Turbo', defaultEnabled: true,
+    });
+    expect(saved.runtimes).toEqual(expected.runtimes);
+    expect(saved.name).toBe(config.name);
+    expect(deps.storeCustomProviderKey).not.toHaveBeenCalled();
+    const speechIds = buildUserProvider(saved, { modelRegistry }).audioModels
+      ?.filter(model => model.mode === 'audio_speech').map(model => model.id) ?? [];
+    expect(speechIds).toEqual(shouldAdd ? ['speech-2.8-turbo']
+      : ['new', 'new-pi', 'hidden', 'hidden-pi'].includes(kind) ? [id] : []);
+    // A repeated refresh starts from the saved configuration and never adds HD.
+    expect(await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE, saved, {}, options)).toEqual({ ok: true });
+    expect((await getCustomProvider(config.id))!.runtimes).toEqual(saved.runtimes);
+  });
+
+  it('rejects invalid refresh routes and incompatible append options before saving', async () => {
+    mountDb();
+    const harness = new IpcHarness();
+    registerProviderHandlers(harness, makeDeps());
+    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_CREATE, validConfig);
+    for (const agents of [[], ['unknown'], ['codex', 'codex'], 'codex']) {
+      await expect(harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE, validConfig, {},
+        { speechReferenceRefreshAgents: agents })).rejects.toThrow(/INVALID_PARAMS/);
+    }
+    await expect(harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE, validConfig, {},
+      { speechReferenceRefreshAgents: ['codex'], appendSpeechModelsOnly: true })).rejects.toThrow(/INVALID_PARAMS/);
+    expect((await getCustomProvider(validConfig.id))!.runtimes).toEqual(validConfig.runtimes);
+  });
+
+  it('does not save after the owner changes during the current provider lookup', async () => {
+    mountDb();
+    const harness = new IpcHarness();
+    const owner = { dataOwnerId: 'owner-a', generation: 1 };
+    const deps = makeDeps({
+      currentOwnerSession: () => ({ ...owner }),
+      listProviders: async () => {
+        owner.generation += 2;
+        return [{ ...buildUserProvider(validConfig), connected: true }];
+      },
+    });
+    registerProviderHandlers(harness, deps);
+    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_CREATE, validConfig);
+    await expect(harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE,
+      { ...validConfig, name: 'Stale refresh' }, {}, { speechReferenceRefreshAgents: ['codex'] }))
+      .rejects.toThrow(/INTERNAL/);
+    expect((await getCustomProvider(validConfig.id))!.name).toBe(validConfig.name);
+  });
 });
 
 describe('speech additions through the real provider update handler', () => {

@@ -276,6 +276,8 @@ export interface BotGroupTimelineItemProps {
   onPlanAction?: (action: 'start' | 'dismiss', planId: string) => void;
   readOnly?: boolean;
   onEditStep?: (planId: string, step: BotGroupPlanStepView, action: 'reassign' | 'remove', botId?: string) => void;
+  /** Present on the open 分工 card for whoever may press 继续 (§7.4). */
+  onPlanAutoContinue?: (planId: string, on: boolean) => void;
 }
 
 function Row({ message, highlighted, focusable, entering, block, children }: {
@@ -530,6 +532,8 @@ function BotGroupTimelineItemImpl(props: BotGroupTimelineItemProps) {
                     onStart={() => { if (message.planId) props.onPlanAction?.('start', message.planId); }}
                     onDismiss={() => { if (message.planId) props.onPlanAction?.('dismiss', message.planId); }}
                     onEditStep={(step, action, botId) => { if (message.planId) props.onEditStep?.(message.planId, step, action, botId); }}
+                    onAutoContinueChange={props.onPlanAutoContinue && message.planId
+                      ? (on) => props.onPlanAutoContinue?.(message.planId!, on) : undefined}
                   />
                 </div>
               ) : (

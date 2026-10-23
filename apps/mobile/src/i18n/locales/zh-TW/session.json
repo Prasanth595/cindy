@@ -568,6 +568,7 @@
     "encryptedContentInvalid": "由於更換供應商導致加密不可用，本任務只能在原供應商下使用；請回到電腦端處理（可以用「從這裡開啟新任務」丟棄協議加密內容，在新任務裡繼續）。"
   },
   "row": {
+    "markRead": "已讀",
     "moreOptions": "更多選項",
     "archiveConversation": "歸檔任務",
     "closeActionMenu": "關閉任務操作選單",

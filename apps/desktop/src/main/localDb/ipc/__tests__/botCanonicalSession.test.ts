@@ -10074,8 +10074,11 @@ describe('Teammate model selection shares profile persistence and route reconcil
         const bot = await invoke('local-db:bots:get', 'bot-1');
         return { chain: await modelSettings.readEffectiveBotModelChain(bot.capabilities),
           current: state.profile, hasRuntimeOverride: true,
-          scheduledModelBaseline: state.baseline ? JSON.parse(state.baseline) : null };
+          scheduledModelBaseline: state.baseline };
       }, apply,
+      onSelectionAccepted: async (id, expected) => h.sqlite!.prepare(
+        'UPDATE sessions SET scheduled_model_baseline = NULL WHERE id = ? AND scheduled_model_baseline IS ?',
+      ).run(id, expected ?? null).changes === 1,
     });
     let savingReachedLock!: () => void;
     const waiting = new Promise<void>((resolve) => { savingReachedLock = resolve; });
@@ -10108,7 +10111,7 @@ describe('Teammate model selection shares profile persistence and route reconcil
         expect(JSON.parse((await read()).baseline!).model).not.toBe('new-saved-model');
       } finally { release(); }
       await saving;
-      expect((await read()).baseline).toBeNull();
+      expect(JSON.parse((await read()).baseline!)).toMatchObject({ pendingBotProfileVersion: 2 });
     } else {
       await save();
     }
@@ -10165,7 +10168,7 @@ describe('Teammate model selection shares profile persistence and route reconcil
     await invoke('local-db:bots:update', { id: 'bot-1', capabilities: {
       modelChainOverride: [{ harness: 'codex', model: 'new-saved-model', providerId: null, effort: 'medium', fastMode: false }],
     } });
-    expect((await read()).baseline).toBeNull();
+    expect(JSON.parse((await read()).baseline!)).toMatchObject({ pendingBotProfileVersion: 2 });
     const bot = await invoke('local-db:bots:get', 'bot-1');
     const apply = async (_id: string, route: ScheduledModelSelection) => {
       h.sqlite!.prepare('UPDATE sessions SET agent_kind = ?, model = ?, provider_id = ?, effort = ?, fast_mode = ? WHERE id = ?')
@@ -10173,7 +10176,10 @@ describe('Teammate model selection shares profile persistence and route reconcil
     };
     const cold = createBotModelRouteReconciler({ ownerEpoch: () => h.ownerScopeKey,
       read: async () => ({ chain: await modelSettings.readEffectiveBotModelChain(bot.capabilities),
-        current: (await read()).profile, hasRuntimeOverride: false, scheduledModelBaseline: null }), apply,
+        current: (await read()).profile, hasRuntimeOverride: false, scheduledModelBaseline: (await read()).baseline }), apply,
+      onSelectionAccepted: async (id, expected) => h.sqlite!.prepare(
+        'UPDATE sessions SET scheduled_model_baseline = NULL WHERE id = ? AND scheduled_model_baseline IS ?',
+      ).run(id, expected ?? null).changes === 1,
     });
     expect(await cold.preview(sessionId)).toMatchObject({ model: 'new-saved-model' });
     const deps = { read, apply, isBusy: () => false, createId: () => 'retry', prepareBaseline: cold,
@@ -10212,17 +10218,21 @@ describe('Teammate model selection shares profile persistence and route reconcil
       modelChainOverride: [{ harness: 'codex', model: 'new-saved-model', providerId: null, effort: 'medium', fastMode: false }],
     } })).rejects.toThrow('simulated process loss after commit');
     expect(h.requestRuntimeRefresh).not.toHaveBeenCalled();
-    expect(readBaseline()).toBeNull();
+    expect(JSON.parse(readBaseline()!)).toMatchObject({ pendingBotProfileVersion: 3 });
     const profile = await invoke('local-db:bots:get', 'bot-1');
     const chain = await modelSettings.readEffectiveBotModelChain(profile.capabilities);
     const apply = vi.fn();
     const cold = createBotModelRouteReconciler({ ownerEpoch: () => h.ownerScopeKey,
       read: async () => ({ chain, current: { agentKind: 'pi', model: 'temporary-model', providerId: null, effort: null, fastMode: false },
-        scheduledModelBaseline: readBaseline() ? JSON.parse(readBaseline()!) : null, hasRuntimeOverride: false }), apply,
+        scheduledModelBaseline: readBaseline(), hasRuntimeOverride: false }), apply,
+      onSelectionAccepted: async (id, expected) => h.sqlite!.prepare(
+        'UPDATE sessions SET scheduled_model_baseline = NULL WHERE id = ? AND scheduled_model_baseline IS ?',
+      ).run(id, expected ?? null).changes === 1,
     });
     expect(await cold.preview(sessionId)).toMatchObject({ agentKind: 'codex', model: 'new-saved-model' });
     await cold(sessionId);
     expect(apply).toHaveBeenCalledWith(sessionId, expect.objectContaining({ agentKind: 'codex', model: 'new-saved-model' }), expect.anything());
+    expect(readBaseline()).toBeNull();
   });
 
   async function setupModelControl() {

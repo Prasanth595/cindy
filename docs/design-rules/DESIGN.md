@@ -1926,7 +1926,7 @@ The execution rulebook for subsequent desktop / mobile UI updates. Sources: the 
 - **Fills and lines (user ruling 2026-10-22, replaces dual anchoring)**: hover, chip, selected and pressed fills and all borders and dividers are the same ink at low alpha — soft hover 3.5% / 4%, hover and chip 5% / 6%, selected and pressed 8% / 10%, weak tier (file chip, scrollbar hover) 10% / 13%, borders and dividers 8% / 10% (Light black / Dark white). A translucent fill shifts whatever plane it sits on — page, card, popover, glass or wallpaper — by the same step, so page- and card-anchored variants are no longer needed, and in Dark a chip is always lighter than the card beneath it. Borders read softer on wallpaper than the former solid lines; this was accepted with the ruling. A line or fill that sits over a transparent window region (the layout dividers between panes under glass) is laid on the page color first, so the native window material never shows through. The Light switch off-track darkens to `#808080` so it keeps 3:1 on hovered rows. Values: token-decision-table §9.2–§9.3.
 - **Icons on ink**: icons take their tier through `currentColor`, so an icon drawn from several strokes would turn darker (Light) or brighter (Dark) wherever its strokes overlap. In the CINDY family `globals.css` composites each icon as one shape — strokes drawn opaque, the whole icon masked to the ink's alpha — so it reads like a solid icon at reduced opacity; opaque icon colors are unchanged. Lucide icons get this automatically; a hand-drawn single-color icon made of several strokes adds `data-ink-icon`. Don't add it to an SVG whose parts carry their own colors: the mask would fade those parts too.
 - **Twin sync**: every color carried in both hex/rgba and HSL forms (24 pairs) must stay value-identical, translucent tiers included (same alpha in both forms). Pairs follow the tier, not the token name: `text-tertiary-hsl` / `muted-foreground` serve the secondary tier (`text-secondary`), exactly as in Classic. Control outlines such as `chat-input-border-focus` keep their own values and are no longer derived from a text tier.
-- **Exempt families untouched**: `login-*` (58 tokens), `diff-*`, `error-*`, `overlay-*`, semantic status colors, shadows — per §10/§16 and `protected-tokens.ts`.
+- **Exempt families untouched**: `login-*` (58 tokens; its six text tokens take the same ink values since 2026-10-23, §16.1, but stay protected from theme overrides), `diff-*`, `error-*`, `overlay-*`, semantic status colors, shadows — per §10/§16 and `protected-tokens.ts`.
 - User-tuned one-offs: dark sidebar glass `rgba(5,5,5,0.85)` (2026-08-11); light sidebar glass 85% opacity (2026-08-17, aligned with dark).
 
 ### 15.17 Switch color and motion (owner decisions 2026-09-15 / 2026-09-16)
@@ -1960,19 +1960,20 @@ and media position (`ui/media-scrubber`, seconds in/out). Native media controls 
 
 ## 16. Login Flow (登录链路)
 
-> 本节是登录全链路的设计系统规范。逐参数权威 = 同目录的 [`figma-component-spec.md`](./figma-component-spec.md)（组件 / 色板速查，nodeId 溯源）与 [`token-decision-table.md`](./token-decision-table.md)（token / 尺寸决策）——两份自 2026-07-24 起随 `docs/design-rules/` 入仓维护；`DESIGN-login`（逐屏规格）、`flow-map`（状态机）、`fidelity-matrix`（保真度验收矩阵）仍为设计阶段工作文件，不入仓库。本节不重复抄全表，只钉死设计规则与组件契约，逐参数值以 Figma 组件库及本节色板表为准。
+> 本节是登录全链路的设计系统规范，也是登录域唯一的现行规则来源：色值以 §16.1 色板表（由 `packages/design-tokens` 生成）为准，几何以 §16.2 常量表与 `loginDesignTokens.ts` / `loginSkinLayout.ts` 为准。[`token-decision-table.md`](./token-decision-table.md) 保留为 token / 尺寸的决策记录。原 `figma-component-spec.md`（Figma 组件逐态读取记录）已于 2026-10-23 移除：其现行值均已并入本节与代码常量，后续改版未再回写；代码注释里的 `figma §N` 指它的章节，可在 git 历史（移除前的提交 `70b32d7578`）查阅，Figma nodeId 仍直接写在注释里。`DESIGN-login`（逐屏规格）、`flow-map`（状态机）、`fidelity-matrix`（保真度验收矩阵）仍为设计阶段工作文件，不入仓库。
 >
-> **交付状态**：**亮色** as-built 已合并入 main；**深色**为目标规格（色值经 Figma 组件库 Dark symbol 逐个核验，见 §16.1 双态表 / §16.5），token 已注册但 dark 槽位当前为 light 占位值，待实现 PR 填入真实深色值。两模式均受 §10「Light / Dark 双模式交付门槛」约束——非可选愿景。
+> **交付状态**：亮色与深色均已落地——dark token 槽位已填入真实值（经 Figma 组件库 Dark symbol 逐个核验，见 §16.1 双态表）、深色字标 / slogan 资产随模式切换、组件经 `--login-overlay-*` 消费 hover / pressed 叠层。**唯一现存缺口**：部分叠层取值仍是 2026-07-24 改判前的旧值，见 §16.5 第 1 条〔落码状态〕。两模式均受 §10「Light / Dark 双模式交付门槛」约束。
 >
-> 本节独立于 §1–§15 默认皮肤与 CINDY 皮肤族——登录页是独立白底 / 深底反色体系，**不消费编辑器主题的 `--surface` / `--text-*` 等 slot**，只走本节定义的 `--login-*` token（light / dark 二态已注册于 `apps/desktop/src/renderer/themes/colors.ts`；见 §10）。`--login-*` 随基础 light / dark **二态**切换，但**不跟随具体扩展主题**（登录页只认 light / dark 模式；首次亮、后续跟随见 §16.5）。
+> 本节独立于 §1–§15 默认皮肤与 CINDY 皮肤族——登录页是独立白底 / 深底反色体系，**不消费编辑器主题的 `--surface` / `--text-*` 等 slot**，只走本节定义的 `--login-*` token（文字类 token 的**值**与 §15.16 墨水阶梯相同，但仍是独立 token，扩展主题改主界面文字色不会影响登录页）（light / dark 二态已注册于 `apps/desktop/src/renderer/themes/colors.ts`；见 §10）。`--login-*` 随基础 light / dark **二态**切换，但**不跟随具体扩展主题**（登录页只认 light / dark 模式；首次亮、后续跟随见 §16.5）。
 
 ### 16.1 视觉风格
 
 登录页是**黑白反色**体系（亮色 = 白底墨字 / 深色 = 深底米字），与编辑器主界面解耦，亮 / 深两模式镜像同构：
 
-- **面板 / 控件走墨黑–米白反色，深色镜像反相**：亮色白面板 `#FBFBFB` + 米白控件 `#EEEEEE` + 墨黑主按钮 `#2A2828`；深色反相为深面板 `#312F2F` + 深控件 `#2C2A2A` + 白主按钮 `#EEEEEE`。**两模式的面板 / 控件底色与文字都不出现纯黑 `#000` 或纯白 `#fff`**（`figma-component-spec §1.1`）；细描边例外——暗色主按钮 / 圆钮的 `#FFFFFF` 白边为 figma `white_button` 实测值，不受此限。
+- **面板 / 控件走墨黑–米白反色，深色镜像反相**：亮色白面板 `#FBFBFB` + 米白控件 `#EEEEEE` + 墨黑主按钮 `#2A2828`；深色反相为深面板 `#312F2F` + 深控件 `#2C2A2A` + 白主按钮 `#EEEEEE`。**两模式的面板 / 控件底色都不出现纯黑 `#000` 或纯白 `#fff`**；细描边例外——暗色主按钮 / 圆钮的 `#FFFFFF` 白边为 figma `white_button` 实测值，不受此限。
+- **文字走墨水阶梯（2026-10-23 用户裁决）**：标题、输入已填字、副标题 / 倒计时 / 「跳过登录」、空态占位，以及回调页标题与正文，与主界面同用 §15.16 的墨水档——亮色黑、深色白加透明度：标题与已填字 = 正文档 88% / 82%，副标题与回调正文 = 次要档 56% / 55%，占位 = 占位档 32% / 30%。不再为登录页单独挑灰（原双模同值 `#6F6F6F` 在深色面板上只有约 2.6:1，已退役）。改主界面墨水档时登录页同步改，由 `loginInkLadder.test.ts` 守护。按钮前景（主按钮字、链接字、禁用钮字）不属文字档，仍按反色体系取实色。Mobile 登录皮暂保留原实色，另行收拢。
 - **品牌红 `#DF0C27` 在登录画布内只用于区域徽标（旧称 Global pill，见 §16.3）与字标红元素等品牌 accent，跨模式不变**；画布外仅有 §15.10 登记的 Mobile Beta 渠道状态徽标例外。**禁止作页面背景**（wave4 改判，见 `token-decision-table §3` 对 `#df0c27` 的语义判定），不渗入面板内部（呼应 §15.10 红色边界）。画布底走 `--login-bg-base`（亮 `#F2F2ED` / 深 `#181818`，与 CINDY 皮肤页底同值，固定不随扩展主题），红只经 `--login-brand-accent` 消费。错误红 `#D91F37` 同样跨模式不变（语义豁免，呼应 §10 豁免族）。
-- **`--login-*` 调色板双态目标值** —— token 已注册于 `apps/desktop/src/renderer/themes/colors.ts`（dark 槽位当前为 light 占位值）。下表为深色实现的目标规格，经 Figma 组件库 Dark symbol 逐个核验；实现 PR 须将 dark 槽位更新为本表 dark 列的值：
+- **`--login-*` 调色板双态值** —— 注册于 `apps/desktop/src/renderer/themes/colors.ts`，下表由 `packages/design-tokens` 生成：
 
 <!-- BEGIN GENERATED DS-8: login-colors -->
 | token | light | dark | 核验源 |
@@ -1984,10 +1985,10 @@ and media position (`ui/media-scrubber`, seconds in/out). Native media controls 
 | `--login-back-border`（返回钮描边） | `#FFFFFF` | `#434343` | figma 549:897 |
 | `--login-control-border` | `#D4D4D4` | `#434343` | figma `Dark_normal` |
 | `--login-control-border-active`（focus / filled） | `#2A2828` | `#EEEEEE` | figma `Dark_highlight` |
-| `--login-control-text`（输入填充字，Bold） | `#252222` | `#EEEEEE` | figma Dark 填充 / error 态 |
-| `--login-control-placeholder`（空态字） | `#D4D4D4` | `#6F6F6F` | figma Dark 空态 |
-| `--login-title-text` | `#252222` | `#D4D4D4` | callback-title dark |
-| `--login-secondary-text`（副标题 / 倒计时） | `#6F6F6F` | `#6F6F6F` | 两模式同值 |
+| `--login-control-text`（输入填充字，Bold） | `rgba(0, 0, 0, 0.88)` | `rgba(255, 255, 255, 0.82)` | 墨水正文档 黑 88% / 白 82%（2026-10-23 并入墨水阶梯，同主界面 `text-primary`） |
+| `--login-control-placeholder`（空态字） | `rgba(0, 0, 0, 0.32)` | `rgba(255, 255, 255, 0.30)` | 墨水占位档 黑 32% / 白 30%（2026-10-23 并入墨水阶梯，同主界面 `text-placeholder`） |
+| `--login-title-text` | `rgba(0, 0, 0, 0.88)` | `rgba(255, 255, 255, 0.82)` | 墨水正文档 黑 88% / 白 82%（2026-10-23 并入墨水阶梯） |
+| `--login-secondary-text`（副标题 / 倒计时） | `rgba(0, 0, 0, 0.56)` | `rgba(255, 255, 255, 0.55)` | 墨水次要档 黑 56% / 白 55%（2026-10-23 并入墨水阶梯，同主界面 `text-secondary`；原双模同值 `#6F6F6F` 退役） |
 | `--login-primary-button-bg` | `#2A2828` | `#EEEEEE` | figma `white_button` / callback-cta dark |
 | `--login-primary-button-border` | `#434343` | `#FFFFFF` | 同上 |
 | `--login-primary-button-text`（Bold） | `#D4D4D4` | `#2A2828` | 同上 |
@@ -2003,17 +2004,17 @@ and media position (`ui/media-scrubber`, seconds in/out). Native media controls 
 
 品牌保护项 `--login-brand-accent` / `--login-brand-accent-pressed` 仍按原决定保留 `#DF0C27` / `#A61629`，两模式相同；尚未接管，不由本表生成。上表已接管行从 DTCG 自动生成，核验源说明保留原批准依据。
 
-余下 token（`-control-border-disabled` / `-inverted-button-border` / `-callback-*` 等）的**亮色**值与 callback 族**双态**值见 `token-decision-table §3`、`figma-component-spec §1.1`（注意：这两份外部 spec 只覆盖亮色 + callback 族 dark，**登录主皮 dark 值以本表为权威**，原※推导值已经 Figma 组件库核验确认，本表为目标规格）；深色反相机制与 3 处组件改动见 §16.5。
+余下 token（`-control-border-disabled` / `-inverted-button-border` / `-callback-*` 等）的现行双态值以 `colors.ts` 为准，决策理由见 `token-decision-table §3`；深色反相机制与 3 处组件改动见 §16.5。
 
 - **社交圆钮深色 = 白圆**：与主按钮共用 `--login-primary-button-bg / -border`，深色自动反相为白圆 `#EEEEEE` + 白边，**圆内图标保持品牌色**（Google 彩 / WeChat 绿 / SSO），非反相（figma `white apple/google/wechat/SSO` symbol 核验）。
 
 ### 16.2 设计规则
 
-**Desktop 登录成功回调页当前覆盖（2026-09-02）**：成功态移除「回到 Cindy」按钮，卡片收紧为 **560×500** 的内容流布局，并在底部显示本地化 3 秒倒计时；倒计时结束先移除倒计时文字，再调用 `window.close()`。失败 / Warning 保留原 **680×680** 卡片与返回操作。该条是当前产品 UX 对旧 Figma 成功态回调帧（680×680 + CTA）的明确覆盖；`figma-component-spec.md §6` 的旧节点仍作为历史视觉来源记录，现行客户端实现以本条与代码测试为准。
+**Desktop 登录成功回调页当前覆盖（2026-09-02）**：成功态移除「回到 Cindy」按钮，卡片收紧为 **560×500** 的内容流布局，并在底部显示本地化 3 秒倒计时；倒计时结束先移除倒计时文字，再调用 `window.close()`。失败 / Warning 保留原 **680×680** 卡片与返回操作。该条是当前产品 UX 对旧 Figma 成功态回调帧（680×680 + CTA）的明确覆盖，现行客户端实现以本条与代码测试为准。
 
-**Token 体系**：`--login-*` 已注册于 `apps/desktop/src/renderer/themes/colors.ts`（dark 槽位当前为 light 占位值，待实现 PR 填入 §16.1 表中的目标深色值）。组件经 `LOGIN_COLORS`（桌面 `loginDesignTokens.ts`）/ `loginColors`（手机 `theme/tokens.ts`）单点消费。**禁止硬编码 hex pair**（呼应 §10）——`hardcoded-color-audit` 守护全绿才允许合入。`--login-*` 随基础 **light / dark 二态**切换（对齐 `callback-*` 族与 §15 CINDY 皮肤族的双态做法），但**不跟随具体扩展主题**——登录页只认 light / dark 模式，扩展主题不 override `--login-*`（首次亮、后续跟随上次模式见 §16.5）。
+**Token 体系**：`--login-*` 注册于 `apps/desktop/src/renderer/themes/colors.ts`（值由 `packages/design-tokens` 生成，见 §16.1）。组件经 `LOGIN_COLORS`（桌面 `loginDesignTokens.ts`）/ `loginColors`（手机 `theme/tokens.ts`）单点消费。**禁止硬编码 hex pair**（呼应 §10）——`hardcoded-color-audit` 守护全绿才允许合入。`--login-*` 随基础 **light / dark 二态**切换（对齐 `callback-*` 族与 §15 CINDY 皮肤族的双态做法），但**不跟随具体扩展主题**——登录页只认 light / dark 模式，扩展主题不 override `--login-*`（首次亮、后续跟随上次模式见 §16.5）。
 
-**几何 / 布局常量**：固化在两个常量文件，数值权威 = `figma-component-spec §5.1` + `token-decision-table §4`，不按截图目测补值。
+**几何 / 布局常量**：固化在两个常量文件，数值权威 = 下表与常量文件本身（决策理由见 `token-decision-table §4`），不按截图目测补值。
 
 | 常量 | 值 | 引用 |
 |---|---|---|
@@ -2092,7 +2093,7 @@ and media position (`ui/media-scrubber`, seconds in/out). Native media controls 
 
 ### 16.3 组件定义
 
-桌面 `apps/desktop/src/renderer/components/login/LoginControls.tsx`（11 组件），手机 `apps/mobile/src/components/LoginSkinControls.tsx`（13 组件）。两端同名组件同参数源。逐组件契约（逐参数规格见 `figma-component-spec §4`）：
+桌面 `apps/desktop/src/renderer/components/login/LoginControls.tsx`（11 组件），手机 `apps/mobile/src/components/LoginSkinControls.tsx`（13 组件）。两端同名组件同参数源。逐组件契约（逐参数值以组件常量与 §16.2 几何表为准）：
 
 | 组件                                               | 端      | 用途                                                                                                           | 关键 props                                                                        | token / 几何                                                                                                                                                                                                                                                                                   |
 | -------------------------------------------------- | ------- | -------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -2106,8 +2107,8 @@ and media position (`ui/media-scrubber`, seconds in/out). Native media controls 
 | `LoginSocialButton`                                | 双      | 第三方 / SSO 圆钮                                                                                              | `label`, `onClick`, `children`, `isLoading / busy`                                | 80×80 r50 `--login-primary-button-bg / -border`；icon 48 居中；仅 normal + hover（桌面）+ pressed，**无 disabled / loading 视觉态**                                                                                                                                                            |
 | `LoginSocialGlyph`                                 | 手机    | 社交图标矢量（Apple / Google / WeChat / SSO；**apple 分支仅非 iOS 场景**——iOS 走官方按钮不进圆钮行，见 §16.2） | 内部                                                                              | Google / WeChat 品牌色不变；Apple / SSO 单色随圆钮底反相（暗色白圆上 `#2A2828`）                                                                                                                                                                                                               |
 | `LoginBackButton`                                  | 双      | 返回                                                                                                           | `label`, `onClick`, `disabled`                                                    | @(20,20) 60×60 r40 `--login-action-control-bg` / `--login-back-border`；chevron 24                                                                                                                                                                                                             |
-| `LoginTextLink`（桌）/ `LoginTextLinkSlot`（手）   | 桌 / 手 | 重发链接 / 提示文案（**文字链接**，不承载「跳过登录」）                                                        | `variant`（link / countdown，桌）, `tone`, `children`                             | @(70,238) 540×50 20；link 变体 `--login-link-text` 下划线可点、hover / pressed 变色；countdown / slot `--login-control-placeholder` 不可点                                                                                                                                                     |
-| `LoginSkipEntry`（桌）/ `LoginSkipLoginLink`（手） | 桌 / 手 | 「跳过登录」入口（**文字按钮**，与上一行的文字链接是两种组件）                                                 | 桌：`children`, `onClick`, `disabled`, `testId`；手：`label`, `onPress`, `testID` | 槽 @(0,430) 680×60，文字 24 Regular + 下划线、`--login-secondary-text`（双模同值），**hover / pressed 不变色**；命中区 = 文字实宽 + 左右各扩（桌 30 / 手 50 设计px）、高占满 60 槽，容器不可点 —— 逐条口径见下方「登录文字按钮」                                                               |
+| `LoginTextLink`（桌）/ `LoginTextLinkSlot`（手）   | 桌 / 手 | 重发链接 / 提示文案（**文字链接**，不承载「跳过登录」）                                                        | `variant`（link / countdown，桌）, `tone`, `children`                             | @(70,238) 540×50 20；link 变体 `--login-link-text` 下划线可点、hover / pressed 变色；countdown 变体（桌面）`--login-secondary-text`（墨水次要档 黑 56% / 白 55%）不可点；手机 `LoginTextLinkSlot` / 倒计时暂保留 `controlPlaceholder` 实色，另行收拢                                                                                                                                                     |
+| `LoginSkipEntry`（桌）/ `LoginSkipLoginLink`（手） | 桌 / 手 | 「跳过登录」入口（**文字按钮**，与上一行的文字链接是两种组件）                                                 | 桌：`children`, `onClick`, `disabled`, `testId`；手：`label`, `onPress`, `testID` | 槽 @(0,430) 680×60，文字 24 Regular + 下划线、`--login-secondary-text`（桌面：墨水次要档 黑 56% / 白 55%；手机端该入口已剥离，见 §16.5 勘误），**hover / pressed 不变色**；命中区 = 文字实宽 + 左右各扩（桌 30 / 手 50 设计px）、高占满 60 槽，容器不可点 —— 逐条口径见下方「登录文字按钮」                                                               |
 | `LoginResendCountdown`                             | 手机    | 验证码重发（倒计时 / 重发二态）                                                                                | `deadline`, `countdownTemplate`, `resendLabel`, `onResend`                        | @(70,238)；`deadline=null` → 常驻可点无倒计时（SSO 验证码屏用）                                                                                                                                                                                                                                |
 | `LoginMethodRow`                                   | 双      | 方式选择行（企业 / 个人）                                                                                      | `top`, `title`, `subtitle`, `icon`(enterprise / person), `onClick`                | 540×100 r60 `--login-action-control-bg` / `--login-control-border`；左图标 24@(27,37) / person 18×20@(30,39)；右 share 18@(490,40)；文字 @(67) 垂直居中                                                                                                                                        |
 | `LoginErrorText`                                   | 双      | 错误提示                                                                                                       | `children`                                                                        | @(0,380) 680×50 20 `--login-error-fg`                                                                                                                                                                                                                                                          |
@@ -2118,7 +2119,7 @@ and media position (`ui/media-scrubber`, seconds in/out). Native media controls 
 |                 | **文字链接**（`LoginTextLink` / `LoginTextLinkSlot`）      | **文字按钮**（`LoginSkipEntry` / `LoginSkipLoginLink`）                                                                                                                                                         |
 | --------------- | ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 语义            | 链接：跳转 / 重试 / 次要说明（重发验证码、sso-org 帮助行） | 按钮：触发一次产品级动作（跳过登录 → 进入本地模式）                                                                                                                                                             |
-| 色              | `--login-link-text` 族（light `#2A2828` / dark `#EEEEEE`） | `--login-secondary-text`（`#6F6F6F`，**light / dark 同值**，零新增 token）                                                                                                                                      |
+| 色              | `--login-link-text` 族（light `#2A2828` / dark `#EEEEEE`） | `--login-secondary-text`（墨水次要档 黑 56% / 白 55%，零新增 token；手机端无此入口，见 §16.5 勘误）                                                                                                                                      |
 | hover / pressed | 变色（`--login-link-hover` / `-pressed`）                  | **不变色**——只靠下划线常显 + 指针形状（桌面 `cursor:pointer`）给反馈                                                                                                                                            |
 | 字号 / 槽       | 20，槽 540×50 @(70,238)                                    | 24，槽 680×60 @(0,430)                                                                                                                                                                                          |
 | 命中区          | 槽内整块                                                   | **文字实宽 + 左右各扩**（桌面 30 / 移动 50 设计px），高度占满 60 槽；680×60 容器只做居中定位、自身不可点（桌面 `pointer-events:none` + 内层 button `auto`；移动 `pointerEvents="box-none"` + 内层 `Pressable`） |
@@ -2139,7 +2140,7 @@ and media position (`ui/media-scrubber`, seconds in/out). Native media controls 
 **组件库新增（2026-07-24 登记；协议 UI 已随 consent PR 落地，游客圆钮方案已由上述「跳过登录」文字按钮取代）**：
 
 - **协议勾选 radio**（figma `radiobutton 600:627`，四态双模式）：24×24 命中区，圈 20×20 r9 + 2px 描边，选中为**对勾**（非圆点）。亮：未选 `#F1F0F1` 底 / `#434343` 边 → 选中 `#2A2828` 实底 + 白勾；暗：未选 `#2A2828` 底 / `#F1F0F1` 边 → 选中 `#F1F0F1` 底 + `#2A2828` 勾——选中反色与登录黑白反色体系同构。用于登录页 `服务条款` 协议行。
-- **服务条款弹窗小按钮**（figma `light_button_*` / `Dark_button_*` 四母版，`602:846/863/1297/1311`）：260×80 r40 文字 Bold 24；强调钮 = 模式反色（亮强调深底 `#2A2828`、暗强调浅底 `#EEEEEE`），暗模式普通钮引入新灰 `#434141` 底 / `#565454` 边。逐态值见 `figma-component-spec §11.3`。
+- **服务条款弹窗小按钮**（figma `light_button_*` / `Dark_button_*` 四母版，`602:846/863/1297/1311`）：260×80 r40 文字 Bold 24；强调钮 = 模式反色（亮强调深底 `#2A2828`、暗强调浅底 `#EEEEEE`），暗模式普通钮引入新灰 `#434141` 底 / `#565454` 边。逐态值见 §16.5 状态矩阵。
 - 既有组件扩容：`SSO 登录_企业` 与 `back` 均扩为含 Dark 三态的六态集（值已并入 §16.1 `--login-action-control-bg` / `--login-back-border` 口径），`white_button` 增 loading 五态。
 
 ### 16.4 登录链路逐屏
@@ -2197,25 +2198,40 @@ and media position (`ui/media-scrubber`, seconds in/out). Native media controls 
 
 ### 16.5 深色模式与主题跟随
 
-> 深色受 §10「Light / Dark 双模式交付门槛」约束，是**必须交付**的另一模式，非可选愿景。深色色值经 Figma 组件库 Dark symbol 逐个核验（见 §16.1 双态表），为目标规格——token dark 槽位已预留，待实现 PR 填入真实值并补齐 overlay token、深色资产切换及主题跟随逻辑。落地机制如下。
+> 深色受 §10「Light / Dark 双模式交付门槛」约束，是**必须交付**的另一模式，非可选愿景。深色色值经 Figma 组件库 Dark symbol 逐个核验（见 §16.1 双态表），已落地：token dark 槽位已填入真实值，overlay token、深色资产切换及主题跟随均已实现；仅下面第 1 条所述的叠层取值尚未全部对齐新口径。机制如下。
 
 **深色 = 黑白反色在深底的镜像**：面板 / 控件深底、主按钮与社交圆钮反相白、文字反相米白，几何 / 布局 / props / 状态机 / i18n **零改动**——只换色值。
 
-**大部分组件纯 token 驱动**（补 §16.1 双态表的 dark 值即自动深色，组件不动）：`LoginPanel` / `LoginInput` / `LoginPrimaryButton`（底 / 边 / 字 + spinner）/ `LoginSocialButton`（随主按钮 token 自动反相白圆）/ `LoginBackButton` / `LoginTitleBlock` / `LoginTextLink` / `LoginMethodRow` / `LoginErrorText` / `LoginLoadingRing`。
+**大部分组件纯 token 驱动**（由 §16.1 双态表的 dark 值驱动，组件不动）：`LoginPanel` / `LoginInput` / `LoginPrimaryButton`（底 / 边 / 字 + spinner）/ `LoginSocialButton`（随主按钮 token 自动反相白圆）/ `LoginBackButton` / `LoginTitleBlock` / `LoginTextLink` / `LoginMethodRow` / `LoginErrorText` / `LoginLoadingRing`。
 
 **3 处非纯 token、需组件改动**：
 
-1. **hover / pressed 叠层二态**：叠层原为组件内 figma 实测 rgba 字面值，暗色起 token 化为 `--login-overlay-*` 二态。**〔2026-07-24 组件库更新改判〕hover 统一「叠白变亮」**：全按钮族 hover = normal 底上叠白色半透明（深底 `#2A2828`/`#434141` 族 +白 8%；浅底 `#EEEEEE` 族 +白 10%；**唯一例外**：`back` 亮色 hover 维持既有白 70%），两模式同向——旧「白底钮 hover = 黑 5% 变暗」口径作废（figma `white_button 347:2529`、SSO `549:779` 已按新值改稿）。pressed 维持叠黑，alpha 分档：**深底强调钮 50%**（`log_in_button` 与亮模式强调小钮 `light_button_highlight`，不论尺寸）/ 暗普通小钮 `Dark_button_Normal` 20% / 浅底钮 10%（边 `#E5E5E5`）/ 方式行与返回钮 8%。归纳仅作速记，**落码逐组件对拍 `figma-component-spec §11.1` 的状态矩阵，不按类别名推断**。**〔落码状态〕本改判当前仅在文档层生效**：as-built 组件（含回调页 dark CTA / `oauthResultPage`）仍消费改判前的旧叠层值（浅底 hover 黑 5%、pressed 黑 10% 等），与新口径的同步随暗色实现 PR 的 `--login-overlay-*` token 化一并落地——在那之前「文档新口径 vs 代码旧值」的差异是已知且有意的，不构成实现缺陷；落地后以本段口径为准。hover 方向不再随底色反转，但 alpha 档位随组件底色深浅取值，`--login-overlay-*` 系列 light / dark 二态 token 照常承载，组件把字面 rgba 改为 `var(--login-overlay-*)`（机械替换，零行为变化）。
+1. **hover / pressed 叠层二态**：叠层原为组件内 figma 实测 rgba 字面值，暗色起 token 化为 `--login-overlay-*` 二态。**〔2026-07-24 组件库更新改判〕hover 统一「叠白变亮」**：全按钮族 hover = normal 底上叠白色半透明（深底 `#2A2828`/`#434141` 族 +白 8%；浅底 `#EEEEEE` 族 +白 10%；**唯一例外**：`back` 亮色 hover 维持既有白 70%），两模式同向——旧「白底钮 hover = 黑 5% 变暗」口径作废（figma `white_button 347:2529`、SSO `549:779` 已按新值改稿）。pressed 维持叠黑，alpha 分档：**深底强调钮 50%**（`log_in_button` 与亮模式强调小钮 `light_button_highlight`，不论尺寸）/ 暗普通小钮 `Dark_button_Normal` 20% / 浅底钮 10%（边 `#E5E5E5`）/ 方式行与返回钮 8%。归纳仅作速记，**落码逐组件对拍本条下方的状态矩阵，不按类别名推断**。**〔落码状态，2026-10-23 核对〕**：token 化已完成——桌面登录组件的 hover / pressed 叠层已全部消费 `var(--login-overlay-*)`，不再写字面 rgba。**仍未对齐新口径的是个别取值**：例如深色的 `--login-overlay-button-hover` 仍是改判前的黑 5%（新口径：浅底钮 hover 为白 10%），回调页（`oauthResultPage`）深色 CTA 的 hover 同样是黑 5%（该页在系统浏览器里，不能引用 renderer token，用内联常量）。这是已知缺口，由后续单独 PR 逐组件对拍下方状态矩阵后改值；在那之前，以本段口径和状态矩阵为准，不要照抄这些旧值。hover 方向不再随底色反转，但 alpha 档位随组件底色深浅取值，`--login-overlay-*` 系列 light / dark 二态 token 照常承载。
+
+   按钮族状态矩阵（Figma 组件库 2026-07-24 实测；原载已移除的 `figma-component-spec §11.1 / §11.3`，hover 仅桌面）：
+
+   | 组件 | normal 底 | hover 叠层 | pressed 叠层 |
+   |---|---|---|---|
+   | `log_in_button` 主按钮 | `#2A2828` | 白 8% | 黑 50% |
+   | `white_button` | `#EEEEEE` | 白 10% | 黑 10%（边 `#E5E5E5`） |
+   | `SSO 登录_企业` 方式行 Light / Dark | `#EEEEEE` / `#2A2828` | 白 10% + 边 `#FFFFFF` / 白 8% | 黑 8% / 黑 8% |
+   | `back` Light / Dark | `#EEEEEE` / `#2A2828` | 白 70% / 白 8% | 黑 8% / 黑 8% |
+   | 服务条款小按钮 `light_button_highlight` | `#2A2828` 边 `#434343` 字 `#D4D4D4` | 白 8% | 黑 50% |
+   | 服务条款小按钮 `light_button_Normal` | `#EEEEEE` 边 `#FFFFFF` 字 `#2A2828` | 白 10% | 黑 10%（边 `#E5E5E5`） |
+   | 服务条款小按钮 `Dark_button_highlight` | `#EEEEEE` 边 `#FFFFFF` 字 `#2A2828` | 白 10% | 黑 10%（边 `#E5E5E5`） |
+   | 服务条款小按钮 `Dark_button_Normal` | `#434141` 边 `#565454` 字 `#EEEEEE` | 白 8% | 黑 20% |
+
+   四个小按钮的 disabled 同值：`#2A2828` 上叠白 70%，边 `#B4B4B4`，字 `#D4D4D4`。
 2. **`--login-bg-base` 前提变更**：画布底原为「跨主题恒定白 `#EDEDED`」，深色为 `#1F1F1E`（figma 532:585 帧实测）——即 `--login-*` 从「跨主题恒定」改为「随 light / dark 二态」（见 §16.2）。〔2026-10-01〕两态改为与 CINDY 皮肤页底同值 `#F2F2ED` / `#181818`，登录前后背景不再变色；仍为固定值，不随扩展主题。
-3. **`LoginBrandStage` 资产按模式切**：深色画布用**登录专用**白字版字标 / slogan 资产（`assets/login/wordmark-dark*.png` / `slogan-dark*.png`，源自 figma 532:585 `CINDY_Standard_White` 与 SLOGAN `#FBFBFB`，由暗色实现 PR 新增；**不是** §15.7 的新页横版 `cindy-logo-dark.png`——落位与尺寸不同）；立绘两模式同资产。
+3. **`LoginBrandStage` 资产按模式切**：深色画布用**登录专用**白字版字标 / slogan 资产（`assets/login/wordmark-dark*.png` / `slogan-dark*.png`，源自 figma 532:585 `CINDY_Standard_White` 与 SLOGAN `#FBFBFB`，已随暗色实现 PR 新增；**不是** §15.7 的新页横版 `cindy-logo-dark.png`——落位与尺寸不同）；立绘两模式同资产。
 
 **disabled 态特例**：主按钮 disabled **两模式同构**——深底 `#2A2828`（独立 token `--login-disabled-button-bg`，**不随** `--login-primary-button-bg` 反相；组件需 disabled 分支切换底/字）+ 白 70% 叠层（`--login-disabled-button-overlay`）+ 边 `#B4B4B4` + 文字 `#D4D4D4`（`--login-disabled-button-text`）opacity 0.8（figma `white_button` Disable 态核验：深色 disabled 不反相为白底，仍走亮色同款灰态）。
 
 **双模式门槛覆盖**：深色须覆盖亮色全部态——控件 default / hover(桌) / focus / filled / active / pressed / disabled / loading / error，全部 11 屏，桌面 Win / Mac + 手机 iOS / Android（phone / pad）两端同 token 同值；`scripts/__fixtures__/login-fidelity/`（待后续补充，当前不存在于仓库中）补深色 fixture，checker 跑深色矩阵。色值以设计稿为唯一基准，1:1 还原，不引入设计稿之外的验收标准。
 
-**主题跟随（产品逻辑）**：用户**首次**打开 Cindy → **亮色**登录界面（默认）；**第二次起** → 登录界面跟随用户上一次使用的 **light / dark 模式**（登录页只认 light / dark，不随具体扩展主题，见 §16.2）。这需要持久化「上次登录模式」+ 首次默认逻辑，超出纯 token 补范围，是一段状态逻辑，在暗色实现 PR 内一并落地。
+**主题跟随（产品逻辑）**：用户**首次**打开 Cindy → **亮色**登录界面（默认）；**第二次起** → 登录界面跟随用户上一次使用的 **light / dark 模式**（登录页只认 light / dark，不随具体扩展主题，见 §16.2）。这需要持久化「上次登录模式」+ 首次默认逻辑，超出纯 token 补范围，是一段状态逻辑。**已落地**：`apps/desktop/src/renderer/hooks/useTheme.ts` 持久化首启标记（`login.firstLaunchLightShown`），bootstrap 阶段由 `initLoginFirstLaunchLightGate` 对真首启整个登录前会话按亮色解析，登录页卸载时经 `endLoginFirstLaunchLightGate` 结束并恢复存储主题，不改用户的 theme 偏好。
 
-**决策记录（2026-07-23 已定）**：(1) `--login-*`「跨主题恒定 → light / dark 二态」前提变更 + 新增 `--login-overlay-*` 二态 token——**已采纳**；(2) 深色落点 = **跟随编辑器 light / dark mode** + 上述主题跟随逻辑——**已采纳**；(3) 立绘 / 社交图标深色版——已核验（立绘两模式同资产，社交深色白圆 + 品牌色图标，见 §16.1）；本节原 ※推导值（splash 进度条 / 链接 hover / pressed）已经 Figma 组件库核验确认，§16.1 表已回填目标值。**（2026-07-24 增补）画布渐变定稿**：暗色帧红晕层（532:588/589）按 1:1 几何落地后，经实机走查拍板去除——两模式画布纯平（亮色撤渐变 = PR#104 拍板，两条决策相互独立、结论一致）；`--login-bg-gradient-*` token 保留 override 锚、值恒 `none`，红晕如需恢复须以该走查结论为基线重新与设计确认。**（2026-07-24 增补）组件库状态扩充**：hover 统一「叠白变亮」改判（本节 (1) 已按新口径改写，旧「白底钮 hover 叠黑 5%」作废）；新增协议勾选 radio 与服务条款弹窗小按钮目标规格（见 §16.3 尾注）；`SSO 登录_企业` / `back` Dark 三态、`white_button` loading 五态入库（权威逐参数 = `figma-component-spec §11`）。~~游客登录（跳过登录）样式为独立实现任务，不在本节展开~~〔**已回收（2026-07-27）**：该规格缺口已由本次改版关闭——入口定形为面板内「跳过登录」**文字按钮**（新组件类别，规格见 §16.3「登录文字按钮」；几何见 §16.2 表），游客圆钮方案与其图标资产一并退役〕。**（2026-07-24 增补·二）多语言长文本口径**：登录链路禁止以截断 / 省略号作为可见结果，文案侧按槽位长度预算约束（含 agent 翻译硬约束），说明类文本折行 ≤2 行 + 顶对齐 + 只向下伸展——规则全文见 §16.2「多语言长文本与翻译长度预算」。同日二次拍板：**副标题改判入说明类**（禁省略号、完整展示 ≤2 行，几何 540@70 对齐控件列，原 figma 单行 599@41 作废），双端已落码（桌面 `LoginTitleBlock` + 手机 `LOGIN_SUBTITLE`）。
+**决策记录（2026-07-23 已定）**：(1) `--login-*`「跨主题恒定 → light / dark 二态」前提变更 + 新增 `--login-overlay-*` 二态 token——**已采纳**；(2) 深色落点 = **跟随编辑器 light / dark mode** + 上述主题跟随逻辑——**已采纳**；(3) 立绘 / 社交图标深色版——已核验（立绘两模式同资产，社交深色白圆 + 品牌色图标，见 §16.1）；本节原 ※推导值（splash 进度条 / 链接 hover / pressed）已经 Figma 组件库核验确认，§16.1 表已回填目标值。**（2026-07-24 增补）画布渐变定稿**：暗色帧红晕层（532:588/589）按 1:1 几何落地后，经实机走查拍板去除——两模式画布纯平（亮色撤渐变 = PR#104 拍板，两条决策相互独立、结论一致）；`--login-bg-gradient-*` token 保留 override 锚、值恒 `none`，红晕如需恢复须以该走查结论为基线重新与设计确认。**（2026-07-24 增补）组件库状态扩充**：hover 统一「叠白变亮」改判（本节 (1) 已按新口径改写，旧「白底钮 hover 叠黑 5%」作废）；新增协议勾选 radio 与服务条款弹窗小按钮目标规格（见 §16.3 尾注）；`SSO 登录_企业` / `back` Dark 三态、`white_button` loading 五态入库（逐态值见 §16.5 状态矩阵）。~~游客登录（跳过登录）样式为独立实现任务，不在本节展开~~〔**已回收（2026-07-27）**：该规格缺口已由本次改版关闭——入口定形为面板内「跳过登录」**文字按钮**（新组件类别，规格见 §16.3「登录文字按钮」；几何见 §16.2 表），游客圆钮方案与其图标资产一并退役〕。**（2026-07-24 增补·二）多语言长文本口径**：登录链路禁止以截断 / 省略号作为可见结果，文案侧按槽位长度预算约束（含 agent 翻译硬约束），说明类文本折行 ≤2 行 + 顶对齐 + 只向下伸展——规则全文见 §16.2「多语言长文本与翻译长度预算」。同日二次拍板：**副标题改判入说明类**（禁省略号、完整展示 ≤2 行，几何 540@70 对齐控件列，原 figma 单行 599@41 作废），双端已落码（桌面 `LoginTitleBlock` + 手机 `LOGIN_SUBTITLE`）。
 
 **决策记录（2026-07-27 登录改版，拍板人 = 用户；依据 = figma 新稿 `705:915` / `705:799` / `700:783`）**：(1) **面板 440→500、登录组 560→620**，增的 60 全部给面板内新增的「跳过登录」槽（430..490），面板内其余元素坐标不动；圆钮行 480→540、协议行 582→642 随组顺移；error 槽回到 680×50 @380 与跳过槽首尾相接。(2) **游客圆钮退役 → 面板内「跳过登录」文字按钮**（新组件类别，见 §16.3），图标资产删除；圆钮行 `count` 动态。(3) **跳过登录 / 本地模式免协议门**（推翻 2026-07-24「个人登录一律先同意、含游客」），且不写统计同意；其它入口协议门不变（见 §16.4）。(4) **手机端新增跳过入口与无账号通路**（推翻 2026-07-24「手机 / pad 必须有账号、不加游客登录」）。(5) 移动端**键盘停靠锚改为 error 槽底**，键盘态允许遮挡跳过槽（见 §16.2）。(6) 手机短屏 / 长屏几何整档换新稿基准，短屏以下锚常量 `dh-640`→`dh-712`；**pad 竖屏为推导值（无 figma 源，用户接受推导，待设计回看）**。(7) **Splash 面板不跟随 500，保持 440**（拆出独立常量）。逐条落点见 §16.2 / §16.3 / §16.4 与 `design-decision-log.md`「2026-07-27」条。
 

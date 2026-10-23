@@ -949,6 +949,7 @@ describe('AgentInputCoordinator Orca priority queue transactions', () => {
       restoreManualInterrupt: (_sessionId, snapshot) => {
         manualInterrupt.current = snapshot;
       },
+      updateWorkerIdentity: async () => ({ ok: true as const }),
       broadcastOrcaWorkerChanged: () => {},
       dispatchWorkerMessage: async (params) => {
         await params.onAccepted?.();
@@ -14532,12 +14533,12 @@ describe('usage-limit wait (ordinary tasks)', () => {
       session, didInjectOrcaInstructions: false, didInjectProjectContext: false,
     })).mockRejectedValueOnce(quota);
     const transaction = createMakerSendTransaction({
+      statDirectory: async () => ({ isDirectory: () => true }),
       getSession: () => rehydrate ? session : undefined,
       closeSession: async () => {}, preflightBotRuntimeResources: async () => {},
       getSessionMeta: async () => ({}), ensureRemoteReadyForSessionStart: async () => {},
       checkWorkDirExists: async () => true, isOrcaMcpHydrated: () => !rehydrate,
       buildCreateOptsWithStderr: x => x, synthesizeOrcaVendorOptionsFromDb: async () => rehydrate,
-      statDirectory: async () => ({ isDirectory: () => true }),
       readSessionExtraDirsFromDb: async () => [], readSessionWorkingDirFromDb: async () => '/repo',
       readWorkingDirectoryRecoveryCreateOpts: async () => ({ agentKind: 'claude-code', workingDir: '/repo', model: 'claude-opus-4-7' }),
       withRehydrateCloseSuppressed: async (_id, fn) => fn(), bootstrapSession: bootstrap,

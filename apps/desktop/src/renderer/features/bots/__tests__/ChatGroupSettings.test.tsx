@@ -134,12 +134,15 @@ it('labels reply and speaking modes with the same words as the local group setti
   expect(screen.queryByText(key('replyMode'))).toBeNull();
 });
 
-it('saves mention-only replies for single-speaker groups without restoring orchestration settings', async () => {
+// bot-group-chat.md §4.0 (2026-10-23): single-speaker groups keep 「只有被 @ 的回答」 and the
+// 分工 settings (organizer, project folder); only the speaking mode no longer applies.
+it('keeps reply mode and 分工 settings for single-speaker groups and saves mention-only replies', async () => {
   render(<MemoryRouter><ChatGroupSettings group={{ ...group(true), singleSpeaker: true, replyMode: 'all', speakingMode: 'auto' }} /></MemoryRouter>);
+  expect(screen.queryByRole('combobox', { name: 'bots.groupChat.settings.speakingMode' })).toBeNull();
+  expect(screen.getByRole('combobox', { name: 'bots.groupChat.organizer' })).toBeTruthy();
+  expect(screen.getByText('bots.groupChat.settings.projectDir')).toBeTruthy();
   fireEvent.click(screen.getByRole('combobox', { name: 'bots.groupChat.settings.replyMode' }));
   fireEvent.click(screen.getByRole('option', { name: 'bots.groupChat.settings.replyModeMentioned' }));
-  expect(screen.queryByRole('combobox', { name: 'bots.groupChat.settings.speakingMode' })).toBeNull();
-  expect(screen.queryByRole('combobox', { name: 'bots.groupChat.organizer' })).toBeNull();
   fireEvent.submit(screen.getByRole('textbox', { name: key('name') }).closest('form')!);
   await waitFor(() => expect(mocks.manage).toHaveBeenCalledWith({ groupId: 'room', action: expect.objectContaining({
     type: 'update', responseMode: 'mentioned', expectedRevision: 1,

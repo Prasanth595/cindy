@@ -500,6 +500,13 @@ describe('group timeline', () => {
     expect(h.chat.act).toHaveBeenLastCalledWith('plan-edit', { planId: 'p1', position: 0, action: 'remove' });
   });
 
+  // The computer's 自动交接 survives the phone's parse, so the card does not promise a 继续 that never comes.
+  it.each([[true, 'groupChat.plan.autoNote'], [undefined, 'groupChat.plan.pauseNote']] as const)('says how steps hand on (autoContinue=%s)', async (autoContinue, note) => {
+    const data = group();
+    await render(parseBotGroupChatData({ ...data, plans: data.plans.map(plan => ({ ...plan, ...(autoContinue ? { autoContinue } : {}) })) })!);
+    expect(byId('botGroup.message.plan')?.textContent).toContain(note);
+  });
+
   it.each([undefined, true, false])('renders human-signed plans as organizer cards with working actions and read-only old plans (isSelf=%s)', async (isSelf) => {
     const data = group();
     data.messages = data.messages.map(message => message.kind === 'plan'
@@ -740,12 +747,14 @@ describe('group composer', () => {
     expect(last).not.toHaveProperty('division');
   });
 
-  // Remote resource -> screen regression: transport through Desktop must not expose
-  // unsupported division in a single-speaker room (component tier).
-  it.each([true, false])('gates remote 安排分工 using singleSpeaker=%s', async singleSpeaker => {
-    h.chat.server = false;
-    await render(parseBotGroupChatData(group({ serverBacked: true, singleSpeaker, replyMode: 'mentioned', openPlan: null }))!);
-    expect(!!byId('botGroup.composer.menu.action.division')).toBe(!singleSpeaker);
+  // bot-group-chat.md §7.0 (2026-10-23): the computer arranges a 分工 in single-speaker rooms too,
+  // so a phone working through it keeps 安排分工; a phone talking to the server directly does not, nor one
+  // whose older computer would answer the request as a queue (no supportsDivision) (component tier).
+  it.each([[true, true, false, true], [true, false, false, false], [false, false, false, true], [true, true, true, false]])(
+    'offers 安排分工 (singleSpeaker=%s, supportsDivision=%s, direct=%s)', async (singleSpeaker, supportsDivision, direct, offered) => {
+    h.chat.server = direct;
+    await render(parseBotGroupChatData(group({ serverBacked: true, singleSpeaker, ...(supportsDivision ? { supportsDivision } : {}), replyMode: 'mentioned', openPlan: null }))!);
+    expect(!!byId('botGroup.composer.menu.action.division')).toBe(offered);
   });
 
   it.each(['all', 'mentioned'] as const)('keeps the running work-plan gate and uses truthful %s copy', async replyMode => {

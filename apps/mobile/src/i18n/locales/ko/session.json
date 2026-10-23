@@ -564,6 +564,7 @@
     "encryptedContentInvalid": "제공자 변경으로 암호화를 사용할 수 없게 되어 이 세션은 원래 제공자에서만 사용할 수 있습니다. 컴퓨터에서 처리하세요('여기서 새 세션 시작'으로 프로토콜 암호화 콘텐츠를 버린 후 새 세션에서 계속할 수 있습니다)."
   },
   "row": {
+    "markRead": "읽음으로 표시",
     "moreOptions": "기타 옵션",
     "archiveConversation": "세션 보관",
     "closeActionMenu": "세션 작업 메뉴 닫기",

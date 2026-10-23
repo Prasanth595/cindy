@@ -9,8 +9,8 @@ export const SPEECH_PROTOCOLS = [
 export type SpeechProtocol = (typeof SPEECH_PROTOCOLS)[number];
 export type SpeechSpeedRange = { min: number; max: number } | null;
 
-/** Native synthesis limits, shared by settings and Main. Compatible proxies must
- * implement their selected protocol; this is not a claim about gateway forwarding.
+/** Synthesis limits, shared by settings and Main. Compatible proxies must
+ * implement their selected protocol, subject to verified model-specific limits.
  * Eleven v3 currently excludes speed: https://elevenlabs.io/docs/eleven-creative/playground/text-to-speech#speed
  */
 export function speechSpeedRange(
@@ -26,6 +26,10 @@ export function speechSpeedRange(
     case 'minimax':
       return { min: 0.5, max: 2 };
     case 'openai':
+      // Gateway Qwen retains the provider's limits: 0.5/2 verified on 2026-10-23;
+      // 0.25/4 fail. Do not apply this exception to unknown Qwen versions.
+      // https://www.alibabacloud.com/help/en/model-studio/qwen-audio-tts-http-api
+      if (modelId === 'qwen/qwen-audio-3.1-tts-plus') return { min: 0.5, max: 2 };
       return { min: 0.25, max: 4 };
     default:
       return null;

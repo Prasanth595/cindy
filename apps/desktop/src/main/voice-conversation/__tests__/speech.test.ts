@@ -272,6 +272,9 @@ it.each([
 
 it.each([
   ['openai', 'tts', 4.1],
+  // Live Gateway rejects these speeds; transport must guard direct callers too.
+  ['openai', 'qwen/qwen-audio-3.1-tts-plus', 0.25],
+  ['openai', 'qwen/qwen-audio-3.1-tts-plus', 4],
   ['elevenlabs', 'eleven_flash_v2_5', 1.25],
   ['elevenlabs', 'eleven_v3', 1],
   ['minimax', 'speech-02-hd', 0.4],

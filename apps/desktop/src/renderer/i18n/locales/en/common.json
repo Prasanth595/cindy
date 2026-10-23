@@ -1791,6 +1791,16 @@
           "description": "Resize text only in code blocks, change comparisons, and editors. Inline code, status numbers, badges, and path labels keep their size.",
           "aria": "Adjust code font size"
         },
+        "terminalFamily": {
+          "label": "Terminal font",
+          "description": "Used only by the built-in terminal. A monospace font is recommended.",
+          "aria": "Select terminal font"
+        },
+        "terminalSize": {
+          "label": "Terminal font size",
+          "description": "Adjust the text size in the built-in terminal.",
+          "aria": "Adjust terminal font size"
+        },
         "presetsUi": {
           "default": "Inter (Default)",
           "codexStyle": "Codex style",
@@ -1800,8 +1810,12 @@
           "default": "Codex style (Default)",
           "jetbrainsMono": "JetBrains Mono"
         },
+        "presetsTerminal": {
+          "default": "Monospace (Default)"
+        },
         "previewSamples": {
-          "ui": "The quick brown fox jumps over the lazy dog ABC xyz · a/b/c/d · a,b · 0123456789 !?@&"
+          "ui": "The quick brown fox jumps over the lazy dog ABC xyz · a/b/c/d · a,b · 0123456789 !?@&",
+          "terminal": "$ echo \"Terminal font preview\"\nTerminal font preview\n0123456789 0O 1lI"
         }
       },
       "singleVariant": {
@@ -3382,6 +3396,7 @@
         "refreshingAria": "Refreshing model list…",
         "refreshDone": "Model list refreshed",
         "refreshAdded": "Found {{count}} new models",
+        "refreshSpeechAdded": "Models updated; added 1 suggested speech model",
         "refreshNoNew": "Model list is up to date — nothing new",
         "refreshFailed": "Model list couldn’t be refreshed — try again later",
         "refreshFetchDisabled": "Remote model catalog fetching is disabled — refresh skipped",
@@ -5190,10 +5205,6 @@
         "android": {
           "name": "Android automation",
           "description": "View and operate Android devices connected to this computer."
-        },
-        "ios-simulator": {
-          "name": "iOS Simulator",
-          "description": "Install, run and inspect apps in an iOS Simulator."
         },
         "browser": {
           "name": "Browser",
@@ -7126,10 +7137,10 @@
         "embeddedSimulator": {
           "title": "The original built-in simulator has been retired",
           "description": "Cindy has removed the original built-in simulator.",
-          "replacementName": "Baguette Simulator",
-          "replacementDescription": "View a live screen in the Cindy sidebar, control devices, run apps, and take screenshots.",
+          "replacementName": "Device Simulator",
+          "replacementDescription": "View a live screen in the Cindy sidebar, control devices, run apps, and take screenshots. Built on the open-source Baguette.",
           "requirements": "Requires an Apple Silicon Mac, macOS 15 or later, and full Xcode.",
-          "dataNotice": "Your original simulator devices and app data will not be deleted. Installing Baguette does not automatically migrate devices, apps, or sign-ins."
+          "dataNotice": "Your original simulator devices and app data will not be deleted. Installing the new Device Simulator does not automatically migrate devices, apps, or sign-ins."
         }
       },
       "remote": {
@@ -9492,10 +9503,12 @@
         "more": "More Actions",
         "division": "Split the Work",
         "divisionDescription": "The organizer splits the work first, then teammates take it step by step",
+        "divisionDescriptionSteps": "Follow the steps you write, or let the organizer split the work; teammates take it step by step",
         "divisionBusy": "A work split is underway. Finish or stop it before starting another.",
         "divisionTag": "Work split",
         "removeDivision": "Remove Work Split",
         "placeholderDivision": "Describe what to get done. The organizer will split the work first…",
+        "placeholderDivisionSteps": "Write who does what (@A drafts a plan, @B builds it), or just the goal for the organizer to split…",
         "placeholderPlanProposed": "To change who does what, just say so…",
         "placeholderPlanWaiting": "Want {{name}} to change something? Just say so…",
         "placeholderPlanRunning": "What you say goes to {{name}}, who’s working on it…",
@@ -9599,6 +9612,9 @@
         "projectDirChange": "Change Folder",
         "projectDirClear": "Clear Folder",
         "projectDirNote": "Teammates work here when they split the work. You can leave it empty and they’ll use this group chat’s own folder. If you choose a git project, each work split gets a new worktree and branch, so your own code stays untouched.",
+        "handoff": "Step handoffs",
+        "autoContinueNote": "When on, work splits you start in this group move on to the next step by themselves. When off, each step waits until you click “Start Next Step”. Applies on this computer only.",
+        "autoContinueSaveFailed": "Couldn’t save step handoffs. Try again.",
         "projectDirSaveFailed": "Couldn’t save the project folder. Make sure the folder still exists, then try again."
       },
       "errors": {
@@ -9634,6 +9650,8 @@
         "dismiss": "Skip Plan",
         "editHint": "Click a step to hand it to someone else",
         "pauseNote": "Work pauses after each step until you click “Start Next Step”.",
+        "autoContinue": "Start the next step automatically",
+        "autoNote": "Each finished step starts the next one automatically.",
         "superseded": "Updated",
         "dismissed": "Skipped",
         "stopped": "Stopped",
@@ -10887,11 +10905,14 @@
       },
       "unified": {
         "railFavorites": "Favorites",
+        "railRecent": "Recent",
         "railAll": "All",
         "railRemoteProvider": "{{provider}} · {{device}}",
         "remoteLoading": "Loading models from that computer…",
         "remoteFavoriteUnavailable": "{{source}} · Can't read that computer's models right now",
         "favoritesGroup": "Favorites",
+        "recentGroup": "Recent",
+        "recentEmpty": "No recent models yet — pick a model and it will show up here",
         "favoritesSaveFailed": "Could not save favorite changes",
         "favoritesCleanupFailed": "Could not remove favorites for revoked provider shares",
         "favoritesEmpty": "No favorites yet — hover a model and hit ☆ to pin it here",
@@ -15354,14 +15375,28 @@
         "dirUnavailable": "The folder on {{device}} is temporarily unavailable. Check the connection or network drive, then try again. The Worker wasn't created."
       }
     },
+    "editWorker": {
+      "title": "Edit worker",
+      "submit": "Save",
+      "closeAria": "Close edit worker dialog",
+      "labelLabel": "Label",
+      "labelHint": "The label uniquely identifies this worker inside the team. Use letters, numbers, hyphens and underscores only; after saving, the Lead and other references locate the worker by the new label.",
+      "labelHintAria": "About worker label",
+      "labelPlaceholder": "Worker label (leave empty to keep)",
+      "labelInvalid": "Label may only contain letters, numbers, hyphens and underscores",
+      "duplicateLabel": "Label {{label}} is already used by another worker in this team",
+      "saveFailed": "Failed to save. Please try again.",
+      "labelLocked": "This worker's label is referenced by an active plugin team plan and can't be changed until the plan finishes. Change the role name, or release the worker first."
+    },
     "rolePill": {
       "unread": "Unread update",
       "worker": "Worker",
       "workersHeader": "Workers",
-      "workerCountSummary_one": "{{totalCount}} worker · {{activeCount}} active",
-      "workerCountSummary_other": "{{totalCount}} workers · {{activeCount}} active",
+      "workerCountSummary_one": "{{totalCount}} worker · {{activeCount}} running",
+      "workerCountSummary_other": "{{totalCount}} workers · {{activeCount}} running",
       "statusAria": "status {{status}}",
       "archiveWorkerAria": "Archive worker {{name}}",
+      "editWorkerAria": "Edit worker {{name}}",
       "createWorker": "Create new worker",
       "hardLimitHint": "Hard limit reached: {{count}}. Archive an existing worker to create another one.",
       "hardLimitSettingsHint": "Hard limit reached: {{count}}. Click to adjust in collaboration settings.",
@@ -16120,6 +16155,61 @@
     "builtinTodoCheck": {
       "name": "Daily todo check (built-in)",
       "hint": "Looks for new todos in connected sources on weekdays at 9:00 and stays quiet when there is nothing new. Turned on or off from the glance; it can only be paused or resumed."
+    },
+    "builtinNightlyLearning": {
+      "name": "Nightly learning (built-in)",
+      "title": "Nightly learning",
+      "hint": "Every night at 3:30, reviews your conversations: tidies memories and saves approaches that keep coming up as skills. Skipped without calling a model when there’s nothing new.",
+      "hintWeekly": "Mondays at 3:30, reviews the week’s conversations: tidies memories and saves approaches that keep coming up as skills. Skipped without calling a model when there’s nothing new."
+    },
+    "nightly": {
+      "switchLabel": "Review on schedule",
+      "paused": "Paused. Conversations are still counted; reviews resume on schedule once you switch it back on.",
+      "running": "Reviewing…",
+      "memoryOff": "Memory is off, so only skills are reviewed.",
+      "pending": "To review",
+      "pendingTurns_one": "{{count}} exchange",
+      "pendingTurns_other": "{{count}} exchanges",
+      "pendingNone": "Nothing new; the next run will be skipped",
+      "last": "Last run",
+      "lastNever": "Not run yet",
+      "lastFailed": "Didn’t finish; it will try again next time",
+      "lastLearned_one": "{{count}} change",
+      "lastLearned_other": "{{count}} changes",
+      "nothing": "Nothing to change",
+      "viewHistory": "View history",
+      "notHere": "Nightly learning runs only on the teammate’s main computer.",
+      "switchHint": "Skipped without calling a model when there’s nothing new",
+      "frequency": "Frequency",
+      "daily": "Daily",
+      "weekly": "Weekly",
+      "dailyHint": "Every day at 3:30",
+      "weeklyHint": "Mondays at 3:30",
+      "runNow": "Review now",
+      "history": "History",
+      "empty": "Nothing reviewed yet. Once there are new conversations, the first review runs on schedule.",
+      "manual": "Run by you",
+      "readTurns_one": "Read {{count}} exchange",
+      "readTurns_other": "Read {{count}} exchanges",
+      "undone": "Undone",
+      "undo": "Undo",
+      "redo": "Restore",
+      "watching": "Approaches being watched",
+      "watchingHint": "Approaches seen only once wait here and aren’t loaded. They become skills only if something similar comes up again.",
+      "promote": "Make it a skill",
+      "decline": "Don’t learn",
+      "changedSince": "This item was changed afterwards, so it can’t be undone",
+      "failed": "Couldn’t finish. Try again.",
+      "item": {
+        "memoryCreated": "Remembered “{{title}}”",
+        "memoryUpdated": "Tidied memory “{{title}}”",
+        "memoryDeleted": "Deleted memory “{{title}}”",
+        "memoryMerged": "Merged memory “{{title}}” into “{{into}}”",
+        "skillCreated": "Learned skill “{{title}}”",
+        "skillUpdated": "Updated skill “{{title}}”",
+        "skillDisabled": "Disabled skill “{{title}}”",
+        "skillMerged": "Merged skill “{{title}}” into “{{into}}” and disabled it"
+      }
     }
   },
   "cindyMakeDoctor": {

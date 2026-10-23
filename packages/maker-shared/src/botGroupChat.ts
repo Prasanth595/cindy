@@ -386,6 +386,11 @@ export interface BotGroupPlanView {
   canManage?: boolean;
   /** Server groups: what the viewer sends without naming anyone goes to the step under way (creator, or a human owner/admin). */
   canAdd?: boolean;
+  /**
+   * Server 分工: this computer starts the next step once one is done, instead of waiting for 继续.
+   * A choice of the computer that made it, not shared chat state; absent where unsupported.
+   */
+  autoContinue?: boolean;
   createdAt: number;
   updatedAt: number;
 }
@@ -454,9 +459,11 @@ export interface BotGroupSummary {
   canStopAll?: boolean;
   /**
    * Server groups whose server gives each request one teammate (the lead when nobody is named)
-   * and arranges turns itself; no reply/speaking modes and no 安排分工 entry (bot-group-chat.md §4).
+   * and arranges turns itself; no speaking modes (bot-group-chat.md §4).
    */
   singleSpeaker?: boolean;
+  /** A single-speaker group whose computer arranges 「安排分工」 (older computers answered it as a queue). */
+  supportsDivision?: boolean;
   selfActorId?: string;
   topic?: string;
   description?: string;
@@ -470,6 +477,11 @@ export interface BotGroupSummary {
   organizerBotId: string | null;
   /** 项目文件夹; null means the group's own folder. */
   projectDir: string | null;
+  /**
+   * Server groups: 分工 you start here go on to the next step by themselves instead of waiting
+   * for 继续 (§7.4). Kept on this computer like the project folder; absent where unsupported.
+   */
+  autoContinue?: boolean;
   lastMessage: BotGroupLastMessage | null;
   /** Latest visible incoming message (Bot or another human), excluding self and runtime activity. Older hosts omit it. */
   lastReplyAt?: number;
@@ -570,6 +582,8 @@ export interface BotGroupUpdateInput {
   organizerBotId?: string | null;
   /** Absolute existing local directory; null uses the group's own folder. */
   projectDir?: string | null;
+  /** Server groups: whether 分工 you start go on by themselves (kept on this computer). */
+  autoContinue?: boolean;
 }
 
 export interface BotGroupSetMembersInput {

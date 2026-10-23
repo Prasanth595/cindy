@@ -435,6 +435,51 @@ it('reconciles the saved speed on model changes and keeps it when changing the v
   expect(saved).not.toHaveProperty('speed');
 });
 
+// Unit regression at the actual settings entry: Gateway Qwen accepts 0.5–2,
+// although its transport is OpenAI-compatible. The old protocol-only range let
+// users save 4x and receive a Gateway error; retain the existing adjustment flow.
+it('clamps speed when switching to Gateway Qwen and previews the adjusted choice', async () => {
+  const openai = {
+    id: 'tts-1',
+    name: 'OpenAI speech',
+    providerId: 'xd',
+    protocol: 'openai' as const,
+    protocolLocked: true,
+    defaultVoice: 'alloy',
+  };
+  const qwen = {
+    ...openai,
+    id: 'qwen/qwen-audio-3.1-tts-plus',
+    name: 'Qwen speech',
+    defaultVoice: 'longanlingxin_v3.1',
+  };
+  models = [openai, qwen];
+  vi.mocked(window.electronAPI.voiceConversation.preference).mockResolvedValueOnce({
+    selection: { providerId: 'xd', modelId: openai.id, voice: 'alloy', speed: 4 },
+    customized: true,
+  });
+  renderSettings();
+  const model = await screen.findByRole('combobox', { name: 'bots.voiceMode.model' });
+  await waitFor(() => expect((model as HTMLSelectElement).disabled).toBe(false));
+  fireEvent.change(model, { target: { value: voiceModelKey(qwen) } });
+  await waitFor(() =>
+    expect(window.electronAPI.voiceConversation.setPreference).toHaveBeenLastCalledWith(
+      'bot',
+      expect.objectContaining({ modelId: qwen.id, voice: qwen.defaultVoice, speed: 2 }),
+    ),
+  );
+  const slider = await screen.findByRole('slider', { name: 'bots.voiceMode.speed' });
+  expect(slider.getAttribute('aria-valuemin')).toBe('0.5');
+  expect(slider.getAttribute('aria-valuemax')).toBe('2');
+  expect(screen.getByText('bots.voiceMode.speedAdjusted')).toBeTruthy();
+  fireEvent.click(await screen.findByRole('button', { name: 'bots.voiceMode.preview' }));
+  await waitFor(() =>
+    expect(window.electronAPI.voiceConversation.preview).toHaveBeenCalledWith(
+      expect.objectContaining({ modelId: qwen.id, voice: qwen.defaultVoice, speed: 2 }),
+    ),
+  );
+});
+
 // OpenRouter uses OpenAI transport, but does not promise OpenAI's speed range.
 // Exercise real settings save/preview and call-start resolution with an old saved speed.
 it('honors route speed limits when reopening, editing and previewing an OpenRouter voice', async () => {

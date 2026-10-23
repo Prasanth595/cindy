@@ -568,6 +568,7 @@
     "encryptedContentInvalid": "Switching providers made the encryption unavailable, so this session works only under the original provider. Handle it on the computer (use “Start new session from here” to drop the encrypted protocol content and continue in a new session)."
   },
   "row": {
+    "markRead": "Mark as read",
     "moreOptions": "More options",
     "archiveConversation": "Archive session",
     "closeActionMenu": "Close session actions menu",

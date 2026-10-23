@@ -372,7 +372,7 @@ export function BotGroupChatScreen({ deviceId, deviceName, groupId }: { deviceId
       </ScrollView>
       <BotGroupComposer members={group.members} identityFor={identityFor} deviceId={deviceId} online={chat.online && !group.archived && !group.dissolvedAt}
         running={group.round.status === 'running'} planState={botGroupComposerPlanState(openBotGroupPlan(group), group.replyMode)}
-        divisionSupported={!chat.server && !group.singleSpeaker} attachmentsSupported={group.supportsAttachments === true} onSend={send} onStop={stop} />
+        divisionSupported={!chat.server && (!group.singleSpeaker || group.supportsDivision === true)} attachmentsSupported={group.supportsAttachments === true} onSend={send} onStop={stop} />
     </KeyboardAvoidingView>;
   }
 

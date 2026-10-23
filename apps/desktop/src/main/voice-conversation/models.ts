@@ -63,13 +63,15 @@ function apiBase(raw: string): URL | null {
  * See docs/product-rules/companion-voice-mode.md, "后续扩展计划".
  */
 function nativeProtocol(catalog: Catalog, providerId: string, model: ProviderMediaModel) {
+  // Family rules describe chat protocols. Pass the discovered mode so a new
+  // media model cannot inherit one; explicit route declarations still win.
   const declared =
     model.nativeApi !== undefined
       ? model.nativeApi
-      : resolveModelNativeApi(catalog.modelRegistry, providerId, model.id);
+      : resolveModelNativeApi(catalog.modelRegistry, providerId, model.id, model.mode);
   return declared !== undefined
     ? declared
-    : resolveModelNativeApi(BUNDLED_CATALOG.modelRegistry, providerId, model.id);
+    : resolveModelNativeApi(BUNDLED_CATALOG.modelRegistry, providerId, model.id, model.mode);
 }
 
 /** The provider endpoint owns the adapter. Alibaba exposes different APIs on its

@@ -1067,9 +1067,12 @@ Every setup step has a fixed code — `stage-write`, `service-create`,
 `authorize-connect` and so on — carrying the OS error number and nothing else:
 no path, account name or other machine content. The elevated child is hidden, so
 its console output never reaches the parent; it returns its step as its exit
-code instead, and the parent reports it as `elevate-child/<step>`. Main logs the
-code under `remote-desktop:windows` and the settings page shows it beside the
-failure, so a report says which step failed rather than only that setup failed.
+code instead, and the parent reports it as `elevate-child/<step>`. A failure in
+the generated bootstrap script itself — a check it refuses or an error it raises
+— is `elevate-child/elevate-bootstrap`, so it cannot be mistaken for a rejected
+argument list. Main logs the code under `remote-desktop:windows` and the
+settings page shows it beside the failure, so a report says which step failed
+rather than only that setup failed.
 `windowsLockScreenSetup.test.ts` covers that path end to end in Main.
 
 The service drops and recreates its listening pipe instance after every accept

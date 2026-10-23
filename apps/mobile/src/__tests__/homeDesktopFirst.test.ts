@@ -794,7 +794,14 @@ describe('mobile home desktop-first surface', () => {
     expect(source).toContain('result.becameControllable');
     expect(source).toContain('remoteSessionStore.registerReseedHandler(item.device.deviceId');
     expect(source).toContain('syncInFlightRef');
-    expect(source).not.toContain('presenceVersion');
+    // Presence can refresh the pure project-icon projection. It must not
+    // restart network hydration/silent sync for every heartbeat.
+    expect(hydrateSource).not.toContain('presenceVersion');
+    const silentSyncSource = source.slice(
+      source.indexOf('const startSilentHomeSync = useCallback'),
+      source.indexOf('// 把当前权威设备列表注入 remoteSessionStore'),
+    );
+    expect(silentSyncSource).not.toContain('presenceVersion');
     expect(source).not.toContain('refreshControl={<RefreshControl refreshing={loading}');
   });
 
