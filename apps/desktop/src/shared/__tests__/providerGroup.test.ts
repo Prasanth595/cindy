@@ -86,6 +86,9 @@ describe('switching accounts between messages', () => {
       .toEqual({ action: 'rebalance-suggestion', sessionId: 's1' });
     expect(parseProviderGroupRemoteRequest({ action: 'rebalance-decision', sessionId: 's1', memberKey: 'device:mini:anthropic', remember: true }))
       .toEqual({ action: 'rebalance-decision', sessionId: 's1', memberKey: 'device:mini:anthropic', remember: true });
+    expect(parseProviderGroupRemoteRequest({ action: 'rebalance-decline', sessionId: 's1' }))
+      .toEqual({ action: 'rebalance-decline', sessionId: 's1' });
+    expect(() => parseProviderGroupRemoteRequest({ action: 'rebalance-decline', sessionId: 'a b' })).toThrow();
     for (const bad of [{ remember: 'true' }, { memberKey: 'a b' }, { memberKey: '' }]) {
       expect(() => parseProviderGroupRemoteRequest({
         action: 'rebalance-decision', sessionId: 's1', memberKey: 'device:mini:anthropic', remember: false, ...bad,
@@ -116,6 +119,13 @@ describe('accounts on the same computer', () => {
       { kind: 'share', agentDeviceId: 'share:s1', providerId: 'openai' },
     ],
   };
+
+  it('keeps automatic balancing only when it is turned on', () => {
+    expect(normalizeProviderGroupConfig({ ...raw, autoRebalance: true }, 'openai')?.autoRebalance).toBe(true);
+    for (const value of [false, 'true', undefined]) {
+      expect('autoRebalance' in normalizeProviderGroupConfig({ ...raw, autoRebalance: value }, 'openai')!).toBe(false);
+    }
+  });
 
   it('counts each computer once however many of its accounts are in the group', () => {
     const config = normalizeProviderGroupConfig(raw, 'openai')!;

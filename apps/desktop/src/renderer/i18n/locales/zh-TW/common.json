@@ -658,6 +658,10 @@
       "label": "自動換電腦",
       "description": "達到上限、連不上或登入失效時自動換一臺"
     },
+    "autoRebalance": {
+      "label": "任務進行中自動換號",
+      "description": "另一台電腦的配額更該先用時，傳送下一則訊息前直接換過去，不再提示。換過去只帶上最近幾輪對話和摘要。"
+    },
     "member": {
       "local": "本機",
       "version": {
@@ -730,13 +734,13 @@
       }
     },
     "rebalance": {
-      "title": "換到 {{label}} 繼續？",
-      "description": "為了平均用完各帳號的配額，建議這則訊息換到 {{label}} 傳送（{{quota}}）。換過去會帶上最近幾輪對話和摘要，更早的細節可能記不全。",
+      "hint": "{{label}} 的配額更該先用（{{quota}}）",
       "quota": "還剩 {{left}}%",
       "quotaReset": "還剩 {{left}}%，{{reset}}",
-      "confirm": "換過去",
-      "cancel": "取消",
-      "remember": "以後自動換，不再詢問（僅此任務）"
+      "switch": "切換",
+      "armed": "下一則訊息會換到 {{label}} 繼續，只帶上最近幾輪對話和摘要",
+      "undo": "復原",
+      "dismiss": "這一輪不再提醒"
     },
     "deleteConfirm": {
       "title": "刪除 {{provider}} 的供應商組？",

@@ -61,6 +61,11 @@ export interface ProviderGroupConfig {
   strategy: ProviderGroupStrategy;
   /** 组内电脑失败时自动换一台继续，默认开启。 */
   autoSwitch: boolean;
+  /**
+   * 任务进行中换号不再提醒、直接换(provider-groups.md §6.2)，默认关闭。旧版本不认识这个字段，读到的是关闭；
+   * 只在打开时写出，旧版本保存组设置会把它丢掉(回到关闭，即提醒)。
+   */
+  autoRebalance?: boolean;
   members: ProviderGroupMember[];
 }
 
@@ -245,7 +250,9 @@ export type ProviderGroupLocalCommand =
   /** 用户发下一条消息前：要不要提议换号(provider-groups.md §6.2「任务进行中换号」)。 */
   | { action: 'rebalance-suggestion'; sessionId: string }
   /** 用户确认换号：这个任务的下一条消息先换到 `memberKey`；`remember` = 这个任务以后自动换。 */
-  | { action: 'rebalance-decision'; sessionId: string; memberKey: string; remember: boolean; clientId?: string };
+  | { action: 'rebalance-decision'; sessionId: string; memberKey: string; remember: boolean; clientId?: string }
+  /** 用户选「不换，以后别问」：这个任务以后不再提议换号。独立动作让旧端明确拒绝，不会被当成确认换号。 */
+  | { action: 'rebalance-decline'; sessionId: string };
 
 export type ProviderGroupCommand = ProviderGroupLocalCommand
   | { action: 'remote-manage'; deviceId: string; request: ProviderManagementRequest };
@@ -266,7 +273,7 @@ export type ProviderGroupCommandResult<C extends ProviderGroupCommand> =
           : C extends { action: 'remote-view' } ? ProviderGroupView
             : C extends { action: 'session-group' } ? ProviderGroupSessionGroup
               : C extends { action: 'rebalance-suggestion' } ? ProviderGroupRebalanceSuggestion
-                : C extends { action: 'rebalance-decision' } ? { ok: boolean }
+                : C extends { action: 'rebalance-decision' | 'rebalance-decline' } ? { ok: boolean }
                   : never;
 
 const PROVIDER_ID_PATTERN = /^[a-zA-Z0-9._-]{1,128}$/;
@@ -383,7 +390,7 @@ export function normalizeProviderGroupConfig(raw: unknown, groupProviderId: stri
     members.push(member);
   }
   if (members.length === 0) return null;
-  return { strategy, autoSwitch: value.autoSwitch !== false, members };
+  return { strategy, autoSwitch: value.autoSwitch !== false, ...(value.autoRebalance === true ? { autoRebalance: true } : {}), members };
 }
 
 // ─── 同账号电脑之间(`maker:provider:list` 的 `group` 字段与 `provider-group:remote` 通道) ─────
@@ -485,9 +492,10 @@ export type ProviderGroupRemoteRequest =
    * 发给任务所在的电脑，不是组所在电脑。
    */
   | { action: 'session-group'; sessionId: string }
-  /** 发给任务所在的电脑(手机、远程控制)：同本机命令的 `rebalance-suggestion` / `rebalance-decision`。 */
+  /** 发给任务所在的电脑(手机、远程控制)：同本机命令的 `rebalance-suggestion` / `rebalance-decision` / `rebalance-decline`。 */
   | { action: 'rebalance-suggestion'; sessionId: string }
-  | { action: 'rebalance-decision'; sessionId: string; memberKey: string; remember: boolean; clientId?: string };
+  | { action: 'rebalance-decision'; sessionId: string; memberKey: string; remember: boolean; clientId?: string }
+  | { action: 'rebalance-decline'; sessionId: string };
 
 /** `session-group` 的回包：坐标是任务所在电脑视角(`groupDeviceId` 为 null = 那台自己建的组)。 */
 export interface ProviderGroupRemoteSessionGroup {
@@ -657,6 +665,8 @@ export function parseProviderGroupRemoteRequest(raw: unknown): ProviderGroupRemo
         remember: value.remember as boolean,
         ...(value.clientId !== undefined ? { clientId: remoteSessionId(value.clientId) } : {}),
       };
+    case 'rebalance-decline':
+      return { action: 'rebalance-decline', sessionId: remoteSessionId(value.sessionId) };
     default:
       invalidRemote('unknown provider group action');
   }

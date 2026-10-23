@@ -300,6 +300,18 @@ describe('ProviderGroupSection', () => {
     await waitFor(() => expect(stored?.autoSwitch).toBe(false));
   });
 
+  // 2026-10-22：任务进行中换号不再弹窗，「以后自动换」从弹窗挪到组设置；关掉时不在设置里留 false。
+  it('turns automatic balancing between messages on and off', async () => {
+    stored = { strategy: 'least', autoSwitch: true, members: [LOCAL, MINI] };
+    render(<ProviderGroupSection providerId="anthropic" providerName="Anthropic" />);
+    await screen.findAllByTestId('provider-group-member');
+    const toggle = screen.getByRole('switch', { name: 'providerGroup.autoRebalance.label' });
+    fireEvent.click(toggle);
+    await waitFor(() => expect(stored?.autoRebalance).toBe(true));
+    fireEvent.click(screen.getByRole('switch', { name: 'providerGroup.autoRebalance.label' }));
+    await waitFor(() => expect(stored && 'autoRebalance' in stored).toBe(false));
+  });
+
   it('removes a computer after confirmation', async () => {
     stored = { strategy: 'least', autoSwitch: true, members: [LOCAL, MINI] };
     render(<ProviderGroupSection providerId="anthropic" providerName="Anthropic" />);

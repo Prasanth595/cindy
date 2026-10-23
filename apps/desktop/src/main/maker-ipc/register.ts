@@ -76,7 +76,12 @@ import {
   setProviderGroupSessionRebalance,
   setProviderGroupTurnProbe,
 } from '../provider-group/runtime.js';
-import { readProviderGroupAutoRebalance, writeProviderGroupAutoRebalance } from '../provider-group/sessionPrefs.js';
+import {
+  readProviderGroupAutoRebalance,
+  readProviderGroupRebalanceSnoozed,
+  writeProviderGroupAutoRebalance,
+  writeProviderGroupRebalanceSnooze,
+} from '../provider-group/sessionPrefs.js';
 import { countProviderRunningTurns, type ProviderLocalLoadRoute } from '../provider-group/localLoad.js';
 import { remoteAgentHostRunningProviders, resolveRemoteAgentHostClaudeSessionId } from '../remote-agent/host/service.js';
 import {
@@ -10847,9 +10852,11 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     fallback: (sessionId, signals, token) => usageLimitAutoResume.onTurnError(sessionId, signals, token),
     // 组内电脑的报错用那台机器的本地时间：不带时区的钟点不按本机时区理解。
     readResetAt: (signals) => readTurnUsageResetAt(signals, Date.now(), { localTimeZoneTrusted: false }),
-    // 任务里选过「以后自动换」的换号(provider-groups.md §6.2「任务进行中换号」)。
+    // 任务里选过「以后自动换」、关掉过换号提示(provider-groups.md §6.2「任务进行中换号」)。
     readAutoRebalance: readProviderGroupAutoRebalance,
     writeAutoRebalance: (sessionId) => writeProviderGroupAutoRebalance(sessionId),
+    readRebalanceSnoozed: (sessionId) => readProviderGroupRebalanceSnoozed(sessionId),
+    writeRebalanceSnooze: (sessionId, until) => writeProviderGroupRebalanceSnooze(sessionId, until),
     now: () => Date.now(),
     log,
   });
@@ -10861,6 +10868,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   setProviderGroupSessionRebalance({
     suggest: (sessionId) => sessionGroupService.rebalanceSuggestion(sessionId),
     decide: (sessionId, memberKey, remember, clientId) => sessionGroupService.rebalanceDecision(sessionId, memberKey, remember, clientId),
+    decline: (sessionId) => sessionGroupService.rebalanceDecline(sessionId),
   });
   // 这台电脑上每个供应商正在运行一轮的任务数：组里「本机」这台显示它，同账号电脑读目录时也带上(§5)。
   setProviderGroupLocalLoad(() => countProviderRunningTurns({

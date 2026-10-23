@@ -1727,7 +1727,8 @@ B 上的 Worker 是一条普通任务，`sessions.orca_remote_lead`(migration 01
     负载与绑定。旧版本回 `CHANNEL_NOT_ALLOWED`(没有这个通道)或 `[INVALID_PARAMS] unknown provider group action`(有通道没有这个
     动作)，控制端一律按没归组处理，即与改动前相同。
   - `rebalance-suggestion { sessionId }` / `rebalance-decision { sessionId, memberKey, remember: boolean }`(2026-10-21，任务进行中
-    换号，provider-groups.md §6.2)：同样发给**任务所在的电脑**，见下方「供应商组任务进行中换号」。
+    换号，provider-groups.md §6.2)与 `rebalance-decline { sessionId }`(2026-10-22)：同样发给**任务所在的电脑**，见下方
+    「供应商组任务进行中换号」。
   旧 O 回 `CHANNEL_NOT_ALLOWED`：`pick` 按 `none` 处理，任务照旧直接在 O 上运行。
 - **`maker:provider:list` 新增可选字段 `group`**：只对同账号调用方、只加在建了组且「允许被远程调用」的供应商上：
   `{ strategy, autoSwitch, members: [{ key, kind, agentDeviceId, providerId, label?, paused }] }`(并发上限与权重不外发)。
@@ -1822,9 +1823,9 @@ B 上的 Worker 是一条普通任务，`sessions.orca_remote_lead`(migration 01
 ## 供应商组任务进行中换号
 
 产品规则见 [`provider-groups.md`](../product-rules/provider-groups.md) §6.2（2026-10-21 用户裁决：上一轮结束、用户发下一条消息
-前弹窗问要不要换号，可为这个任务选「以后自动换」，手机与电脑一致）。
+前弹窗问要不要换号，可为这个任务选「以后自动换」，手机与电脑一致；2026-10-22 改成输入框上方的提示，「以后自动换」挪到组设置）。
 
-- **两个新动作，发给任务所在的电脑**：本机走 `providerGroup.command`（IPC，只限本机 renderer），手机与桌面远程控制走已有的
+- **三个新动作，发给任务所在的电脑**：本机走 `providerGroup.command`（IPC，只限本机 renderer），手机与桌面远程控制走已有的
   同账号 `provider-group:remote`（dispatch 已拒绝受邀者与共享任务访客，allowlist 不变）。
   - `rebalance-suggestion { sessionId }` → `{ kind: 'ask' | 'auto', memberKey, label, quota } | null`：只读，不记占用、不改绑定。
     `auto` = 这个任务选过以后自动换，客户端不弹窗、直接回 `rebalance-decision`。`quota` 是要换去那台排序用的窗口，形状同
@@ -1833,10 +1834,17 @@ B 上的 Worker 是一条普通任务，`sessions.orca_remote_lead`(migration 01
   - `rebalance-decision { sessionId, memberKey, remember, clientId? }` → `{ ok: boolean }`：只允许这个任务中匹配 `clientId` 的消息
     发送前换到 `memberKey`（2 分钟内有效，定时任务不消费）；复用 `persistUserMessage.clientId`，不增加发送协议字段。
     缺少消息 ID 或 `memberKey` 不在组里回 `ok: false`，不记决定与偏好；`remember: true` 时另记这个任务以后自动换。
+  - `rebalance-decline { sessionId }`（2026-10-22）→ `{ ok: boolean }`：用户点了输入框上方换号提示的 ×，任务所在电脑记下
+    这个任务到提议那台的配额重置前（最多 7 天；读不到重置时间 24 小时）不再提议（期间 `rebalance-suggestion` 回 `null`），并撤掉
+    按任务的「以后自动换」；没归组回 `ok: false`。用独立动作而不是给 `rebalance-decision` 加字段：旧端会忽略多出的字段、把它当成
+    确认换号。旧端回 `[INVALID_PARAMS]`，客户端忽略，并在本机内存里同样先不显示到那个时刻。
+  - 2026-10-22 起客户端不再弹窗，也不再发 `remember: true`；任务所在电脑仍接受它（旧手机），照旧记下按任务的自动换。
+  - **组设置 `ProviderGroupConfig.autoRebalance?: true`**（2026-10-22）：打开时 `rebalance-suggestion` 回 `kind: 'auto'`。只在打开时
+    写出；旧端读到的是关闭，旧端保存组设置会把它丢掉（回到关闭，即提示），不影响其他字段。
   - 解析：`sessionId`、`clientId` 与 `memberKey` 按已有远程 id 规则校验，`remember` 必须是布尔值，坏请求回 `[INVALID_PARAMS]`。客户端读回包用
     `parseProviderGroupRebalanceSuggestion`（手机端 `parseMobileRebalanceSuggestion`，口径相同），格式不对按不提议处理。
 - **时机**：客户端在任务空闲时预先问 `rebalance-suggestion`（变空闲、打开任务时，空闲期间每 5 分钟；单次最多等 5 秒），
-  结果 10 分钟内有效、只用于一条消息；点发送时只用问好的结果，不为它多等一次往返。只有用户确认换号（或任务选过自动换）时，
+  结果 10 分钟内有效、只用于一条消息；点发送时只用问好的结果，不为它多等一次往返。只有用户点过「切换」（或组里打开自动换号、任务选过自动换）时，
   发送前等 `rebalance-decision` 回来再发，确保任务所在电脑先记下决定。
 - **新旧兼容**：旧任务所在电脑不认识这两个动作，回 `[INVALID_PARAMS] unknown provider group action`；客户端失败或超时都按
   不提议处理、照常发送，与改动前一致。旧客户端不发这两个动作，任务所在电脑不会自己换号（没有用户确认就不换），行为与改动前

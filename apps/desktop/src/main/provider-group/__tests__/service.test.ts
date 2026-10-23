@@ -80,6 +80,7 @@ function harness(options: {
   const released = new Map<string, ProviderGroupRef>();
   /** 选过「以后自动换号」的任务。 */
   const autoRebalance = new Set<string>();
+  const snoozeRebalance = new Map<string, number>();
   // 现读那台的状态：默认与组内电脑状态同一份离线名单，单测按需逐次指定。
   const probe = vi.fn(async (agentDeviceId: string, providerId: string): Promise<ResolvedMemberState> => {
     const found = config.members.find((m) => m.agentDeviceId === agentDeviceId && m.providerId === providerId);
@@ -159,6 +160,10 @@ function harness(options: {
     readAutoRebalance: vi.fn((id: string) => autoRebalance.has(id)),
     writeAutoRebalance: vi.fn(async (id: string) => {
       autoRebalance.add(id);
+    }),
+    readRebalanceSnoozed: vi.fn((id: string) => (snoozeRebalance.get(id) ?? 0) > now),
+    writeRebalanceSnooze: vi.fn(async (id: string, until: number) => {
+      snoozeRebalance.set(id, until);
     }),
     now: () => now,
     // 等原电脑恢复时的退避不真等。
@@ -1358,6 +1363,29 @@ describe('switching accounts between messages to balance quota', () => {
     expect(h.deps.writeAutoRebalance).toHaveBeenCalledWith('s1');
     expect(await h.service.rebalanceSuggestion('s1')).toMatchObject({ kind: 'auto', memberKey: MINI.key });
     expect(await h.service.rebalanceSuggestion('s2')).toMatchObject({ kind: 'ask', memberKey: MINI.key });
+  });
+
+  // 2026-10-22 用户反馈：弹窗只能「取消」，下一条消息又弹，像流氓软件。改成输入框上方的提示：关掉后这一轮不再提醒，
+  // 「这一轮」以提议那台的配额重置为准；只停这个任务，别的任务照常提醒。
+  it('stops offering for that task until the proposed account resets after the hint is closed', async () => {
+    const h = paced();
+    h.bindings.set('s2', { providerId: 'anthropic', memberKey: 'local', at: 1_000_000 });
+    expect(await h.service.rebalanceDecline('s1')).toBe(true);
+    expect(h.deps.writeRebalanceSnooze).toHaveBeenCalledWith('s1', 87_400_000);
+    expect(await h.service.rebalanceSuggestion('s1')).toBeNull();
+    expect(await h.service.rebalanceSuggestion('s2')).toMatchObject({ kind: 'ask', memberKey: MINI.key });
+    await h.service.beforeSend('s1', { clientId: 'message-a' });
+    expect(h.deps.switchAgentLocation).not.toHaveBeenCalled();
+    h.advance(87_400_000 - 1_000_000 + 1);
+    expect(h.deps.readRebalanceSnoozed('s1')).toBe(false);
+    // 没归组的任务不记。
+    expect(await h.service.rebalanceDecline('ungrouped')).toBe(false);
+  });
+
+  it('switches without the hint when the group turns on automatic balancing', async () => {
+    const h = paced();
+    h.config.autoRebalance = true;
+    expect(await h.service.rebalanceSuggestion('s1')).toMatchObject({ kind: 'auto', memberKey: MINI.key });
   });
 
   // §6.2：A 确认后离开而未发送，B 取消或没有提议时不能继承 A 的换号；此前只按任务 id 暂存。

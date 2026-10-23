@@ -66,6 +66,14 @@ const selectableStrategy = (strategy: ProviderGroupStrategy): ProviderGroupStrat
 const LIMIT_OPTIONS = Array.from({ length: PROVIDER_GROUP_MAX_LIMIT }, (_, i) => String(i + 1));
 const WEIGHT_OPTIONS = ['1', '2', '3', '5', '10', '20', '50', String(PROVIDER_GROUP_MAX_WEIGHT)];
 
+/** 组设置只在打开时写出 `autoRebalance`(与读的口径一致，关掉后文件里不留 false)。 */
+function withAutoRebalance(config: ProviderGroupConfig, autoRebalance: boolean): ProviderGroupConfig {
+  const next = { ...config };
+  if (autoRebalance) next.autoRebalance = true;
+  else delete next.autoRebalance;
+  return next;
+}
+
 export function ProviderGroupSection({ providerId, providerName, deviceId, deviceName, initialConfig, remoteProvider, onConfigChange }: {
   providerId: string;
   providerName: string;
@@ -256,6 +264,20 @@ export function ProviderGroupSection({ providerId, providerName, deviceId, devic
                 disabled={blocked}
                 aria-label={t('providerGroup.autoSwitch.label')}
                 onCheckedChange={(autoSwitch) => void save({ ...config, autoSwitch })}
+              />
+            </div>
+            <div className="flex items-start justify-between gap-3 border-t border-[var(--settings-theme-card-border)] px-4 py-3">
+              <div className="flex min-w-0 flex-col gap-0.5">
+                <span className="text-13 text-[var(--text-primary)]">{t('providerGroup.autoRebalance.label')}</span>
+                <span className="text-12 leading-[1.4] text-[var(--text-tertiary)]">
+                  {t('providerGroup.autoRebalance.description')}
+                </span>
+              </div>
+              <Switch
+                checked={config.autoRebalance === true}
+                disabled={blocked}
+                aria-label={t('providerGroup.autoRebalance.label')}
+                onCheckedChange={(autoRebalance) => void save(withAutoRebalance(config, autoRebalance))}
               />
             </div>
           </>

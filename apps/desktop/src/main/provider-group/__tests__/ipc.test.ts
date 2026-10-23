@@ -12,6 +12,7 @@ vi.mock('../runtime.js', () => ({
   readProviderGroupOfSession: vi.fn(),
   readProviderGroupRebalanceSuggestion: vi.fn(),
   recordProviderGroupRebalanceDecision: vi.fn(),
+  recordProviderGroupRebalanceDecline: vi.fn(),
 }));
 vi.mock('../store.js', () => ({ readProviderGroup: vi.fn(), writeProviderGroup: vi.fn(), listProviderGroups: vi.fn() }));
 vi.mock('../bindings.js', () => ({ pruneProviderGroupBindings: vi.fn() }));
@@ -98,6 +99,16 @@ describe('parseProviderGroupCommand', () => {
     expect(await executeProviderGroupCommand(d, command)).toEqual({ ok: true });
     expect(d.rebalanceDecision).toHaveBeenCalledWith('s1', MINI.key, false, 'message-a');
     expect(() => parseProviderGroupCommand({ ...request, clientId: 'bad id' })).toThrow();
+  });
+
+  it('passes “stay, don’t ask again” through parsing and execution', async () => {
+    const d = deps([]);
+    d.rebalanceDecline = vi.fn(async () => true);
+    const command = parseProviderGroupCommand({ action: 'rebalance-decline', sessionId: 's1' });
+    if (command.action !== 'rebalance-decline') throw new Error('Expected the rebalance decline command');
+    expect(await executeProviderGroupCommand(d, command)).toEqual({ ok: true });
+    expect(d.rebalanceDecline).toHaveBeenCalledWith('s1');
+    expect(() => parseProviderGroupCommand({ action: 'rebalance-decline', sessionId: 'bad id' })).toThrow();
   });
 
   it('rejects malformed commands', () => {

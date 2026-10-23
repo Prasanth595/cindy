@@ -116,6 +116,14 @@ describe('provider-group:remote', () => {
     expect(rebalanceDecision).toHaveBeenCalledWith('s1', MINI.key, false, 'message-a');
   });
 
+  it('records “stay, don’t ask again” on the task host and answers false when it cannot', async () => {
+    const rebalanceDecline = vi.fn(async () => true);
+    expect(await handleProviderGroupRemote(deps({ rebalanceDecline }), 'laptop', { action: 'rebalance-decline', sessionId: 's1' }))
+      .toEqual({ ok: true });
+    expect(rebalanceDecline).toHaveBeenCalledWith('s1');
+    expect(await handleProviderGroupRemote(deps(), 'laptop', { action: 'rebalance-decline', sessionId: 's1' })).toEqual({ ok: false });
+  });
+
   // Unit protocol regression: the real host/client used to discard the reset at both boundaries.
   it.each([null, 5_000_000])('preserves verified quota exhaustion across computers (reset=%s)', async (resetAtMs) => {
     const d = deps();

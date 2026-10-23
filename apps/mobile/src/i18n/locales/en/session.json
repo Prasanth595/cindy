@@ -743,12 +743,13 @@
     "saveFailed": "Couldn't save. Try again."
   },
   "providerGroupRebalance": {
-    "title": "Continue on {{label}}?",
-    "body": "To use every account’s quota evenly, send this message from {{label}} ({{quota}}). The last few messages and a summary carry over; older details may be lost.",
+    "hint": "Use {{label}}’s quota first ({{quota}})",
     "quota": "{{left}}% left",
     "quotaReset": "{{left}}% left · resets in {{reset}}",
-    "confirm": "Switch",
-    "remember": "Switch, and do it automatically from now on (this task only)",
-    "cancel": "Cancel"
+    "switch": "Switch",
+    "switchTo": "Switch to {{label}}",
+    "armed": "Your next message continues on {{label}} with the last few messages and a summary",
+    "undo": "Undo",
+    "dismiss": "Don’t remind me until the quota resets"
   }
 }

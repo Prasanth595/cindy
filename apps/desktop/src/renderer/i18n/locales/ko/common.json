@@ -658,6 +658,10 @@
       "label": "컴퓨터 자동 전환",
       "description": "한도 초과, 연결 불가, 로그인 만료 시 전환합니다"
     },
+    "autoRebalance": {
+      "label": "작업 중 자동 전환",
+      "description": "다른 컴퓨터의 할당량을 먼저 써야 할 때 다음 메시지를 보내기 전에 묻지 않고 전환합니다. 최근 몇 번의 대화와 요약만 이어집니다."
+    },
     "member": {
       "local": "이 컴퓨터",
       "version": {
@@ -730,13 +734,13 @@
       }
     },
     "rebalance": {
-      "title": "{{label}}(으)로 바꿔서 계속할까요?",
-      "description": "각 계정의 할당량을 고르게 쓰기 위해 이 메시지는 {{label}}에서 보내는 것을 권장합니다({{quota}}). 최근 몇 번의 대화와 요약은 이어지지만, 그 이전의 세부 내용은 빠질 수 있습니다.",
+      "hint": "{{label}}의 할당량을 먼저 쓰는 것이 좋습니다({{quota}})",
       "quota": "{{left}}% 남음",
       "quotaReset": "{{left}}% 남음 · {{reset}}",
-      "confirm": "전환",
-      "cancel": "취소",
-      "remember": "앞으로 묻지 않고 자동 전환(이 작업만)"
+      "switch": "전환",
+      "armed": "다음 메시지부터 {{label}}에서 이어갑니다(최근 몇 번의 대화와 요약만 이어짐)",
+      "undo": "실행 취소",
+      "dismiss": "할당량이 초기화될 때까지 알리지 않기"
     },
     "deleteConfirm": {
       "title": "{{provider}} 제공자 그룹을 삭제할까요?",

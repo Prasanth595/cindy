@@ -739,12 +739,13 @@
     "saveFailed": "没能保存，请重试"
   },
   "providerGroupRebalance": {
-    "title": "换到 {{label}} 继续？",
-    "body": "为了均匀用完各账号的配额，建议这条消息换到 {{label}} 发送（{{quota}}）。换过去会带上最近几轮对话和摘要，更早的细节可能记不全。",
+    "hint": "{{label}} 的配额更该先用（{{quota}}）",
     "quota": "还剩 {{left}}%",
     "quotaReset": "还剩 {{left}}%，{{reset}}后重置",
-    "confirm": "换过去",
-    "remember": "换过去，以后自动换（仅本任务）",
-    "cancel": "取消"
+    "switch": "切换",
+    "switchTo": "切换到 {{label}}",
+    "armed": "下一条消息会换到 {{label}} 继续，只带上最近几轮对话和摘要",
+    "undo": "撤销",
+    "dismiss": "这一轮不再提醒"
   }
 }

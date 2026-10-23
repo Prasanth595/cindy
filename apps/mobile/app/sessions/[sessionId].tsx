@@ -49,6 +49,7 @@ import { isInFlightDeviceLinkError, isSharedTaskPeer, resolveRemoteText } from '
 import { takeRefinementContextTail, truncateRefinementReply } from '@cindy/voice-input-core';
 import {
   ArrowDown,
+  ArrowRightLeft,
   Camera,
   Check,
   ChevronDown,
@@ -408,7 +409,7 @@ import { useRemoteAgentCatalogs } from '@/session/useRemoteAgentCatalogs';
 import { isProviderShareAgentDeviceId } from '@/session/providerShareAgentDevice';
 import { useSessionProviderGroup } from '@/session/useSessionProviderGroup';
 import {
-  askMobileSessionRebalance,
+  describeMobileRebalanceHint,
   offerMobileSessionRebalance,
   useMobileSessionRebalancePrefetch,
 } from '@/session/sessionRebalancePrompt';
@@ -784,6 +785,8 @@ const SESSION_ACTION_TEST_IDS = {
   usage: 'session.usageButton',
 } satisfies Record<SessionActionStripActionId, string>;
 const COMPOSER_CONTROL_HIT_SLOP = { bottom: 8, left: 8, right: 8, top: 8 };
+// 换号提示的 × 可见 26pt,四边各补 9pt 到 44pt 命中区。
+const REBALANCE_HINT_CLOSE_HIT_SLOP = { bottom: 9, left: 9, right: 9, top: 9 };
 /**
  * The companion chat draws its own header row (back, identity, settings). Hide the native bar the
  * task header may have configured while the entry was still resolving, so its title and sync
@@ -2642,8 +2645,9 @@ function SessionScreenContent() {
     () => currentTurnHasStreamingAssistant(latestMessagesRef.current),
     [messageStructureToken],
   );
-  // 任务空闲时预先问好要不要换号，点发送时不多等一次往返(provider-groups.md §6.2「任务进行中换号」)。
-  useMobileSessionRebalancePrefetch({
+  // 任务空闲时预先问好要不要换号，点发送时不多等一次往返(provider-groups.md §6.2「任务进行中换号」)；
+  // ask 类提议在输入框上方显示一行可「切换」/ × 的轻提示，不弹窗。
+  const sessionRebalance = useMobileSessionRebalancePrefetch({
     invoke,
     hostDeviceId: deviceId,
     sessionId,
@@ -6631,9 +6635,9 @@ function SessionScreenContent() {
     const planModeAtSend = runtimeOptions?.planModeSupported === true
       ? (readSessionRowNow() ?? currentSession).planModeEnabled === true
       : undefined;
-    // 上一轮已经结束、用户发下一条消息：供应商组里另一个账号的配额明显更该先用时，问要不要换过去
-    // (provider-groups.md §6.2「任务进行中换号」，与电脑一致)。只把选择记到任务所在电脑，这条消息照常发出；
-    // 前面还有没发出的消息、断线或正在回复时不问。
+    // 上一轮已经结束、用户发下一条消息：用户在输入框上方的提示里点过「切换」(或组设为自动均衡)时，先把换号记到
+    // 任务所在电脑再发(provider-groups.md §6.2「任务进行中换号」)；没点就照常用当前账号发，不弹窗。
+    // 前面还有没发出的消息、断线或正在回复时不记，提示也不取走。
     if (
       useDurableOutbox
       && !dispatchBlockedAtSend
@@ -6642,8 +6646,8 @@ function SessionScreenContent() {
       && !currentTurnStreaming
       && !isRemoteSessionMissing(readSessionRowNow())
     ) {
-      await offerMobileSessionRebalance({ invoke, hostDeviceId: deviceId, sessionId, clientId: outboxClientId!, ask: askMobileSessionRebalance });
-      // 弹窗期间离开了这个任务：草稿还没清空，留在原处，不发。
+      await offerMobileSessionRebalance({ invoke, hostDeviceId: deviceId, sessionId, clientId: outboxClientId! });
+      // 等任务所在电脑记换号期间离开了这个任务：草稿还没清空，留在原处，不发。
       if (outboxSessionAliveRef.current !== sessionId) return;
     }
     pendingSkillSelectionRef.current = null;
@@ -10954,6 +10958,51 @@ function SessionScreenContent() {
                   <ChevronRight size={iconSize.sm} color={colors.textTertiary} strokeWidth={iconStroke.regular} />
                 </Pressable>
               ) : null}
+              {/* 换号轻提示(provider-groups.md §6.2):不拦发送,什么都不点就照常用当前账号;点「切换」只管下一条消息,
+                  × 让任务所在电脑在配额重置前不再提议。只在任务空闲、连着、能发消息时出现。 */}
+              {sessionRebalance.hint && !shareSelectionActive && !companionChat && !queueEditing
+                && sessionOperationLayout.composerSlot === 'editable' && canUseComposer && !companionEntry.readOnly
+                && status === 'online' && !remoteSessionRunning && !currentTurnStreaming
+                && inputProjection.pendingQueue.length === 0 && !sessionSettingsLocked ? (
+                <View
+                  style={[
+                    styles.queueEditBar,
+                    styles.rebalanceHintBar,
+                    { marginHorizontal: composerTouchLayout.composerPaddingHorizontal },
+                  ]}
+                  testID="session.rebalanceHint"
+                >
+                  <ArrowRightLeft
+                    color={sessionRebalance.hint.armed ? colors.textPrimary : colors.textTertiary}
+                    size={iconSize.sm}
+                    strokeWidth={iconStroke.regular}
+                  />
+                  <Text accessibilityLiveRegion="polite" numberOfLines={2} style={styles.queueEditBarText}>
+                    {describeMobileRebalanceHint(sessionRebalance.hint.suggestion, sessionRebalance.hint.armed)}
+                  </Text>
+                  <RouteActionButton
+                    accessibilityLabel={sessionRebalance.hint.armed
+                      ? t('session.providerGroupRebalance.undo')
+                      : t('session.providerGroupRebalance.switchTo', { label: sessionRebalance.hint.suggestion.label })}
+                    onPress={sessionRebalance.hint.armed ? sessionRebalance.undo : sessionRebalance.arm}
+                    style={styles.rebalanceHintAction}
+                    testID={sessionRebalance.hint.armed ? 'session.rebalanceHint.undo' : 'session.rebalanceHint.switch'}
+                  >
+                    <Text style={styles.rebalanceHintActionText}>
+                      {t(sessionRebalance.hint.armed ? 'session.providerGroupRebalance.undo' : 'session.providerGroupRebalance.switch')}
+                    </Text>
+                  </RouteActionButton>
+                  <RouteActionButton
+                    accessibilityLabel={t('session.providerGroupRebalance.dismiss')}
+                    hitSlop={REBALANCE_HINT_CLOSE_HIT_SLOP}
+                    onPress={sessionRebalance.dismiss}
+                    style={styles.queueEditBarClose}
+                    testID="session.rebalanceHint.dismiss"
+                  >
+                    <X color={colors.textSecondary} size={iconSize.sm} strokeWidth={iconStroke.regular} />
+                  </RouteActionButton>
+                </View>
+              ) : null}
               {companionChat && pendingCompanionReplyQuote && sessionId && !shareSelectionActive
                 && sessionOperationLayout.composerSlot === 'editable' ? (
                 <View
@@ -13136,6 +13185,24 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     fontSize: typeScale.footnote,
     lineHeight: lineHeight.caption,
     minWidth: 0,
+  },
+  // 换号轻提示:沿用 queueEditBar 的条形底,只把行高撑到 44 让「切换 / 撤销」的命中区够大。
+  rebalanceHintBar: {
+    minHeight: 44,
+    paddingVertical: 0,
+  },
+  rebalanceHintAction: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 44,
+    minWidth: 44,
+    paddingHorizontal: spacing.sm,
+  },
+  rebalanceHintActionText: {
+    color: colors.textPrimary,
+    fontSize: typeScale.footnote,
+    fontWeight: fontWeight.medium,
+    lineHeight: lineHeight.caption,
   },
   queueEditBarClose: {
     alignItems: 'center',

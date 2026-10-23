@@ -266,6 +266,7 @@ export async function readProviderGroupOfSession(sessionId: string): Promise<Pro
 export interface ProviderGroupSessionRebalance {
   suggest(sessionId: string): Promise<ProviderGroupRebalanceSuggestion>;
   decide(sessionId: string, memberKey: string, remember: boolean, clientId?: string): Promise<boolean>;
+  decline(sessionId: string): Promise<boolean>;
 }
 
 let sessionRebalance: ProviderGroupSessionRebalance | null = null;
@@ -289,6 +290,16 @@ export async function recordProviderGroupRebalanceDecision(sessionId: string, me
   if (!sessionRebalance) return false;
   try {
     return await sessionRebalance.decide(sessionId, memberKey, remember, clientId);
+  } catch {
+    return false;
+  }
+}
+
+/** 记下用户选的「不换，以后别问」；没记上返回 false，下一条消息还会再问。 */
+export async function recordProviderGroupRebalanceDecline(sessionId: string): Promise<boolean> {
+  if (!sessionRebalance) return false;
+  try {
+    return await sessionRebalance.decline(sessionId);
   } catch {
     return false;
   }

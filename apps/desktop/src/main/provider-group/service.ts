@@ -199,6 +199,10 @@ export interface ProviderGroupServiceDeps {
   readAutoRebalance?(sessionId: string): boolean;
   /** 记下这个任务以后自动换号。 */
   writeAutoRebalance?(sessionId: string): Promise<void>;
+  /** 这个任务的换号提示此刻处于暂不提醒(用户关掉了提示)。不提供 = 没关过。 */
+  readRebalanceSnoozed?(sessionId: string): boolean;
+  /** 这个任务的换号提示暂不出现到 `until`(unix ms)。 */
+  writeRebalanceSnooze?(sessionId: string, until: number): Promise<void>;
   /**
    * 分享的人这边的「需要换一台」凭证(guestSwitch.ts)；不提供 = 分享来的供应商出错时一律交回原有处理。
    */
@@ -300,6 +304,11 @@ export interface ProviderGroupService {
    * `remember` = 以后自动换。`memberKey` 不在组里返回 false。
    */
   rebalanceDecision(sessionId: string, memberKey: string, remember: boolean, clientId?: string): Promise<boolean>;
+  /**
+   * 用户关掉了输入框上方的换号提示：这个任务到提议那台的配额重置前不再提议(最多 7 天；读不到重置时间按 24 小时)。
+   * 只停主动换号，不影响出问题时的自动换电脑(§6.1)。没归组或没记上返回 false。
+   */
+  rebalanceDecline(sessionId: string): Promise<boolean>;
 }
 
 export interface ProviderGroupBeforeSendOptions {
@@ -337,6 +346,10 @@ export const PROVIDER_GROUP_REBALANCE_ACCEPT_TTL_MS = 2 * 60_000;
 
 /** 换号没换成的那台，这么久内不再提议(看着能用却接不了任务时，不每条消息都打扰一次)。 */
 export const PROVIDER_GROUP_REBALANCE_BACKOFF_MS = 30 * 60_000;
+/** 关掉换号提示后最多多久不再提醒(周配额窗口)。 */
+export const PROVIDER_GROUP_REBALANCE_SNOOZE_MAX_MS = 7 * 24 * 60 * 60_000;
+/** 关掉换号提示时读不到那台的重置时间：先停一天。 */
+export const PROVIDER_GROUP_REBALANCE_SNOOZE_FALLBACK_MS = 24 * 60 * 60_000;
 
 /**
  * 那台连不上时，换电脑前先等它恢复：同一轮每台最多重试几次。两次之间的等待与中断自愈相同
@@ -1018,6 +1031,18 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
     const current = located === binding.memberKey ? config.members.find((m) => m.key === located) : undefined;
     if (!current || (current.paused && !(source.ownerDeviceId === null && current.kind === 'local'))) return null;
     return { binding, source, config, row: { ...row, model: row.model }, current };
+  }
+
+  /** 要换去哪台：任务所在那台能用、组里另一台的配额明显更该先用时返回那台；不看暂不提醒与自动换。 */
+  async function rebalanceProposal(sessionId: string) {
+    const context = await rebalanceContext(sessionId);
+    if (!context) return null;
+    const { binding, source, config, row, current } = context;
+    const target = await source.rebalanceTarget(
+      binding.providerId, config, current.key, row.model, row.agentKind,
+      rebalanceExclusion(source, binding.providerId, config, current),
+    );
+    return target ? { config, target } : null;
   }
 
   /**
@@ -1996,15 +2021,11 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
     },
 
     async rebalanceSuggestion(sessionId) {
-      const context = await rebalanceContext(sessionId);
-      if (!context) return null;
-      const { binding, source, config, row, current } = context;
-      const target = await source.rebalanceTarget(
-        binding.providerId, config, current.key, row.model, row.agentKind,
-        rebalanceExclusion(source, binding.providerId, config, current),
-      );
-      if (!target) return null;
-      return { kind: deps.readAutoRebalance?.(sessionId) ? 'auto' : 'ask', ...target };
+      if (deps.readRebalanceSnoozed?.(sessionId)) return null;
+      const proposal = await rebalanceProposal(sessionId);
+      if (!proposal) return null;
+      const auto = proposal.config.autoRebalance === true || deps.readAutoRebalance?.(sessionId) === true;
+      return { kind: auto ? 'auto' : 'ask', ...proposal.target };
     },
 
     async rebalanceDecision(sessionId, memberKey, remember, clientId) {
@@ -2024,6 +2045,24 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
         }
       }
       return true;
+    },
+
+    async rebalanceDecline(sessionId) {
+      if (!deps.writeRebalanceSnooze || !deps.readBinding(sessionId)) return false;
+      // 「这一轮」= 提议那台的配额重置前：重置后那台不再有快过期的配额，要不要换重新按尺子算。
+      const resetAtMs = (await rebalanceProposal(sessionId))?.target.quota.resetAtMs ?? null;
+      const now = deps.now();
+      const until = resetAtMs !== null && resetAtMs > now
+        ? Math.min(resetAtMs, now + PROVIDER_GROUP_REBALANCE_SNOOZE_MAX_MS)
+        : now + PROVIDER_GROUP_REBALANCE_SNOOZE_FALLBACK_MS;
+      try {
+        await deps.writeRebalanceSnooze(sessionId, until);
+        return true;
+      } catch (error) {
+        // 没记住只影响之后还会再提醒。
+        deps.log.warn('provider group: snoozing quota balancing failed', { sessionId, error: errorText(error) });
+        return false;
+      }
     },
 
     claimGuestStartSwitch(sessionId) {

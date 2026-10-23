@@ -97,6 +97,9 @@ describe('Cindy Make composer presentation', () => {
         sessionId: session?.id,
         pendingReplyQuote: null,
         remoteMakeCards: { blocked: false, handlesSession: false, supported: false },
+        SessionRebalanceHint: 'rebalance-hint',
+        rebalanceHint: null,
+        remoteDeviceId: null,
       });
 
     // Recovery must still reach ChatInput, never replace it with a blocking card.

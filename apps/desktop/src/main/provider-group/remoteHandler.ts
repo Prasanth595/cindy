@@ -48,6 +48,8 @@ export interface ProviderGroupRemoteHandlerDeps {
   rebalanceSuggestion?(sessionId: string): Promise<ProviderGroupRebalanceSuggestion>;
   /** 记下用户确认的换号。 */
   rebalanceDecision?(sessionId: string, memberKey: string, remember: boolean, clientId?: string): Promise<boolean>;
+  /** 记下用户选的「不换，以后别问」。 */
+  rebalanceDecline?(sessionId: string): Promise<boolean>;
 }
 
 /** 每个账号、每台报告来的电脑最近收下的用量报告序号(乱序到达的旧份丢弃)。按账号的负载对象区分账号。 */
@@ -133,6 +135,9 @@ export async function handleProviderGroupRemote(
         ? await deps.rebalanceDecision(request.sessionId, request.memberKey, request.remember, request.clientId)
         : false,
     };
+  }
+  if (request.action === 'rebalance-decline') {
+    return { ok: deps.rebalanceDecline ? await deps.rebalanceDecline(request.sessionId) : false };
   }
   const scope = deps.scope();
   switch (request.action) {

@@ -663,6 +663,10 @@
       "label": "Switch Computers Automatically",
       "description": "Switches when one hits its limit, is unreachable or is signed out"
     },
+    "autoRebalance": {
+      "label": "Switch automatically between messages",
+      "description": "When another computer’s quota should be used first, switch before your next message without asking. Only the last few messages and a summary carry over."
+    },
     "member": {
       "local": "This Computer",
       "version": {
@@ -740,13 +744,13 @@
       }
     },
     "rebalance": {
-      "title": "Continue on {{label}}?",
-      "description": "To use every account’s quota evenly, send this message from {{label}} ({{quota}}). The last few messages and a summary carry over; older details may be lost.",
+      "hint": "Use {{label}}’s quota first ({{quota}})",
       "quota": "{{left}}% left",
       "quotaReset": "{{left}}% left · {{reset}}",
-      "confirm": "Switch",
-      "cancel": "Cancel",
-      "remember": "Switch automatically from now on (this task only)"
+      "switch": "Switch",
+      "armed": "Your next message continues on {{label}} with the last few messages and a summary",
+      "undo": "Undo",
+      "dismiss": "Don’t remind me until the quota resets"
     },
     "deleteConfirm": {
       "title": "Delete the {{provider}} provider group?",
