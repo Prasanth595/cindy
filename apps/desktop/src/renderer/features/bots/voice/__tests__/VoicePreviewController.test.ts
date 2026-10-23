@@ -84,7 +84,7 @@ it('keeps the current preview alive when an earlier request settles late', async
   );
   const current = controller.start({ ...choice, voice: 'second' }, 'new');
   await vi.waitFor(() => expect(controller.getSnapshot()).toBe('playing'));
-  fail(new Error('cancelled'));
+  fail(new Error('[VOICE_SPEECH_TIMEOUT] Speech timed out'));
   await old;
   expect(controller.getSnapshot()).toBe('playing');
   drain();

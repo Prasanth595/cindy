@@ -6,6 +6,10 @@ import type { ResolveRemoteMediaFn } from '@/session/remoteMedia';
 import { openBrowserAsync } from 'expo-web-browser';
 
 // The shared renderer imports site-video; replace only its native surface.
+vi.mock('@/platform/gestureHandler', () => {
+  const chain = (): any => new Proxy({}, { get: (_target, key) => key === 'then' ? undefined : () => chain() });
+  return { GestureDetector: ({ children }: { children: unknown }) => children, Gesture: { LongPress: chain } };
+});
 vi.mock('react-native-webview', () => ({ WebView: () => null }));
 vi.mock('expo-modules-core', () => ({ requireOptionalNativeModule: () => null }));
 

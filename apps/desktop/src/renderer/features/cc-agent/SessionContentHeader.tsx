@@ -472,47 +472,51 @@ export function SessionContentHeader({
       toast.warning(t('ccAgent.sidebar.archiveBlocked.running'));
       return;
     }
-    // 接管查询先发不 await,让它与菜单打开时那次 prefetch 在链路上重叠;
-    // resolveSession 失败降级为「未接管」,不阻断归档(与 sidebar 同口径)。
-    const attachedPromise = window.electronAPI.binding
-      .resolveSession(session.id)
-      .then((binding) => binding.attached)
-      .catch(() => false);
-    if (await attachedPromise) {
-      toast.warning(t('ccAgent.sidebar.archiveBlocked.attached'));
-      return;
-    }
-    // 绑定了 active 自动化:归档后会暂停,需要确认。读本地缓存,排在 worktree 预检之前。
-    const scheduleNames =
-      (await loadActiveBoundScheduleNames([
-        { id: session.id, deviceLinkDeviceId: session.deviceLinkDeviceId },
-      ])).get(session.id) ?? [];
-    // **worktree 预检必须是最后一个前置条件**(codex review):原来这里用 Promise.all
-    // 一起等,dirty 先返回 clean、接管查询还在飞的那段时间就是 clean 结论的失效窗口。
-    // 改成接管结算之后再 resolve —— clean 一律重查(见 worktreeRemovalWarning),
-    // 拿到的是此刻的结论;菜单打开时的 prefetch 仍然热了 git cache。
-    // 预检与确认期间保留当前任务，确定归档后再由 runSessionAction 隐藏并跳离。
-    const preflight = await resolveWorktreeRemovalPreflight(session.id, session.deviceLinkDeviceId);
-    // 归档不弹确认框 —— 可逆操作(菜单里就有「恢复」),与 sidebar 同口径。
-    // 免确认的判据是「**确认**干净」:worktree 脏、或预检失败拿不到结论('unknown')
-    // 都要确认 —— 归档会顺带回收 worktree,不能静默带走改动(greptile review)。
-    // 'unknown' 只弹普通归档确认,不摆 dirty 警告文案(那会谎称有未提交改动)。
-    if (preflight !== 'clean' || scheduleNames.length > 0) {
-      const ok = await confirmDialog({
-        title: t('ccAgent.sidebar.confirmArchive.title'),
-        description: archiveConfirmDescription(t, {
-          dirtyWorktree: preflight === 'dirty',
-          scheduleNames,
-        }),
-        confirmText: t('ccAgent.sidebar.confirmArchive.confirm'),
-        cancelText: t('ccAgent.sidebar.confirmArchive.cancel'),
-      });
-      if (!ok) {
-        return;
-      }
-    }
     await runSessionAction(session.id, 'archive', {
       activeSessionId: session.id,
+      prepareArchive: async (isCurrent) => {
+        // 接管查询先发不 await,让它与菜单打开时那次 prefetch 在链路上重叠;
+        // resolveSession 失败降级为「未接管」,不阻断归档(与 sidebar 同口径)。
+        const attachedPromise = window.electronAPI.binding
+          .resolveSession(session.id)
+          .then((binding) => binding.attached)
+          .catch(() => false);
+        if (await attachedPromise) {
+          toast.warning(t('ccAgent.sidebar.archiveBlocked.attached'));
+          return false;
+        }
+        // 绑定了 active 自动化:后续运行会恢复原任务,需要确认。读本地缓存,排在 worktree 预检之前。
+        const scheduleNames =
+          (await loadActiveBoundScheduleNames([
+            { id: session.id, deviceLinkDeviceId: session.deviceLinkDeviceId },
+          ])).get(session.id) ?? [];
+        // **worktree 预检必须是最后一个前置条件**(codex review):原来这里用 Promise.all
+        // 一起等,dirty 先返回 clean、接管查询还在飞的那段时间就是 clean 结论的失效窗口。
+        // 改成接管结算之后再 resolve —— clean 一律重查(见 worktreeRemovalWarning),
+        // 拿到的是此刻的结论;菜单打开时的 prefetch 仍然热了 git cache。
+        // 远程列表已经乐观换桶；预检与确认期间保留当前详情，取消时恢复行。
+        const preflight = await resolveWorktreeRemovalPreflight(session.id, session.deviceLinkDeviceId);
+        if (!isCurrent()) return false;
+        // 归档不弹确认框 —— 可逆操作(菜单里就有「恢复」),与 sidebar 同口径。
+        // 免确认的判据是「**确认**干净」:worktree 脏、或预检失败拿不到结论('unknown')
+        // 都要确认 —— 归档会顺带回收 worktree,不能静默带走改动(greptile review)。
+        // 'unknown' 只弹普通归档确认,不摆 dirty 警告文案(那会谎称有未提交改动)。
+        if (preflight !== 'clean' || scheduleNames.length > 0) {
+          const ok = await confirmDialog({
+            title: t('ccAgent.sidebar.confirmArchive.title'),
+            description: archiveConfirmDescription(t, {
+              dirtyWorktree: preflight === 'dirty',
+              scheduleNames,
+            }),
+            confirmText: t('ccAgent.sidebar.confirmArchive.confirm'),
+            cancelText: t('ccAgent.sidebar.confirmArchive.cancel'),
+          });
+          if (!ok) {
+            return false;
+          }
+        }
+        return true;
+      },
     });
   }, [
     confirmDialog,

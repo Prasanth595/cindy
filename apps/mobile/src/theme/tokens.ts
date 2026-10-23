@@ -139,6 +139,10 @@ export interface ThemeColors {
   statusAccent: string;
   /** 房主皇冠标识金色；与 Desktop --warning-fg 对齐，Light / Dark 均保持醒目。 */
   warningFg: string;
+  /** 账号额度条预警填充（剩余不足 30%）；仅额度图形使用，双模式同值。 */
+  quotaBarWarn: string;
+  /** 账号额度条紧张填充（剩余不超过 10%）；仅额度图形使用，双模式同值。 */
+  quotaBarCrit: string;
   /** 会话状态点 — 等待用户回复/选择(TapTap 蓝,对齐桌面 --card-status-awaiting 与灵动岛 needs-interaction) */
   statusAwaiting: string;
   /**
@@ -462,6 +466,8 @@ export const lightColors: ThemeColors = {
   statusRecording: '#D91F37',
   statusAccent: '#EA6B17',
   warningFg: '#F3A115',
+  quotaBarWarn: '#F3A115',
+  quotaBarCrit: '#D91F37',
   statusAwaiting: '#19D2C1',
   statusError: '#D91F37',
   statusDone: '#2AAE5B',
@@ -553,6 +559,8 @@ export const darkColors: ThemeColors = {
   statusRecording: '#D91F37',
   statusAccent: '#EA6B17',
   warningFg: '#F3A115',
+  quotaBarWarn: '#F3A115',
+  quotaBarCrit: '#D91F37',
   statusAwaiting: '#19D2C1',
   statusError: '#D91F37',
   statusDone: '#2AAE5B',

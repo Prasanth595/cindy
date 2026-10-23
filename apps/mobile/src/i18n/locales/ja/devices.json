@@ -761,7 +761,10 @@
     "uploadAvatar": "アバターをアップロード",
     "avatarFailed": "この画像を開けません。別の画像を選んでください。",
     "nameTaken": "この名前は使用されています。別の名前を選んでください。",
-    "home": "メインのパソコン"
+    "home": "メインのパソコン",
+    "chat": "チャット",
+    "showReplyTarget": "返信の対象メッセージを表示",
+    "showReplyTargetHint": "チームメイトの返信の上に、どのメッセージへの返信かを表示します。すべてのチームメイトに適用されます。以前の返信には表示されません。"
   },
   "companionImport": {
     "title": "仲間をインポート",
@@ -852,6 +855,12 @@
     "undo": "元に戻す",
     "undoFailed": "元に戻せませんでした。もう一度お試しください",
     "deleteFailed": "削除できませんでした。もう一度お試しください",
+    "check": "確認して",
+    "checkMeta": "接続済みのメールやメッセージから新しい Todo を探します",
+    "checkPrompt": "接続済みのメールやメッセージなどに、私が対応すべき新しい用件がないか確認して、あれば Todo に追加して。",
+    "dailyCheck": "毎日確認する",
+    "dailyCheckMeta": "平日 9:00、新しい Todo がなければ通知しません",
+    "dailyCheckFailed": "保存できませんでした。もう一度お試しください",
     "loadFailed": "Todo を読み込めませんでした",
     "outputs": "成果物",
     "outputMeta": "{{time}} · {{task}}",

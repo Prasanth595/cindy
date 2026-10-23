@@ -3949,11 +3949,19 @@ function registerCindyHostedTools(
 }
 
 export default async function cindyBridge(piApi: any) {
+  const localHostToolsOnly = process.env.CINDY_LOCAL_HOST_TOOLS_ONLY === '1';
   // 受邀者：只放行 Cindy 扩展注册的工具(本扩展经下面的 pi 注册的，加上子代理扩展的工具)。
-  const guestToolGate = CINDY_HOSTED && CINDY_HOSTED.guest
+  const guestToolGate = (CINDY_HOSTED && CINDY_HOSTED.guest) || process.env.CINDY_LOCAL_HOST_TOOLS_ONLY === '1'
     ? createCindyGuestToolGate(piApi, [${JSON.stringify(CINDY_SUBAGENT_TOOL_NAME)}])
     : null;
   const pi = guestToolGate ? guestToolGate.pi : piApi;
+  if (localHostToolsOnly) {
+    const allowed = new Set(['cindy_mcp_list_tools', 'cindy_mcp_call_tool']);
+    const isolate = () => pi.setActiveTools([...allowed]);
+    pi.on('session_start', isolate);
+    pi.on('before_agent_start', isolate);
+    pi.on('tool_call', (event: any) => allowed.has(event.toolName) ? undefined : { block: true, reason: 'This session only exposes the authorized client tools.' });
+  }
   if (guestToolGate) {
     // 被拦的工具也不交给模型(例如 Pi 自带的 codemode、tool_search)。
     pi.on('before_agent_start', () => {

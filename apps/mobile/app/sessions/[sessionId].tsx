@@ -177,9 +177,20 @@ import { InteractionPanel, type MobilePlanViewerState } from '@/session/Interact
 import {
   COMPANION_AVATAR_SIZE,
   MessageRenderer,
+  type CompanionQuoteOptions,
   type MobileMessageActionBusyKind,
   type MobileMessageDraft,
 } from '@/session/MessageRenderer';
+import { BotGroupQuote } from '@/session/BotGroupQuote';
+import { CompanionSelectTextSheet } from '@/session/CompanionSelectTextSheet';
+import {
+  clearSentCompanionReplyQuote,
+  companionReplyQuoteDisplay,
+  getPendingCompanionReplyQuote,
+  setPendingCompanionReplyQuote,
+  usePendingCompanionReplyQuote,
+} from '@/session/companionReplyQuote';
+import { useCompanionReplyTargetPreference } from '@/session/companionReplyTargetPreference';
 import {
   bundledAssetToDataUri,
   cleanupConversationSharePngTemps,
@@ -411,6 +422,7 @@ import {
   buildQueueRowPresentation,
   createQueueEditTextState,
   queuedMessageHasEncodedQuotes,
+  queuedMessageReplyQuote,
   resolveQueueEditTextSubmission,
   stopOptionsForProjection,
   type QueueEditTextState,
@@ -612,6 +624,7 @@ import {
 import { deferScheduleIndexHydration } from '@/session/scheduleIndexDefer';
 import { sessionMayHaveScheduleRuns } from '@/session/scheduleIndex';
 import { confirmArchiveWithSchedules, loadActiveBoundScheduleNames } from '@/session/archiveScheduleConfirm';
+import { useSessionListActions } from '@/session/useSessionListActions';
 import { markSessionScheduleRunsRead, unreadRunIdFromProjection } from '@/session/scheduleRunRead';
 import { useRemoteScheduleEventSnapshot } from '@/scheduler/remoteScheduleEvents';
 import { buildSessionNativeShellLayout } from '@/session/mobileNativeShellLayout';
@@ -2728,7 +2741,7 @@ function SessionScreenContent() {
       && !isSharedTaskPeer(deviceId)
       && collab.workerForm.agentLocationSelectable
       && collab.workerForm.modelPicker.open,
-    controlledDeviceId: deviceId,
+    controlledDeviceId: collabWorkerDeviceId,
     keepDeviceIds: workerAgentKeepDeviceIds,
   });
   // Agent 在另一台电脑时,模型 / 来源都属于那台的目录:展示与校验按那份,读不到时按加载中处理。
@@ -6221,6 +6234,29 @@ function SessionScreenContent() {
     companionName, companionOnline, deviceId]);
   const companionReplyAvatar = useMemo(() => companionChat ? companionPortrait(COMPANION_AVATAR_SIZE) : undefined,
     [companionChat, companionPortrait]);
+  const showCompanionReplyTargets = useCompanionReplyTargetPreference();
+  const pendingCompanionReplyQuote = usePendingCompanionReplyQuote(companionChat ? sessionId : null);
+  const companionQuoteNames = useMemo(() => ({ owner: t('message.renderer.you'), companion: companionName }), [companionName, t]);
+  const [companionSelectText, setCompanionSelectText] = useState<string | null>(null);
+  useEffect(() => setCompanionSelectText(null), [sessionId]);
+  const companionQuoteOptions = useMemo<CompanionQuoteOptions | undefined>(() => (companionChat && sessionId ? {
+    names: companionQuoteNames,
+    showReplyTargets: showCompanionReplyTargets,
+    onQuote: (quote) => {
+      setPendingCompanionReplyQuote(sessionId, quote);
+      requestAnimationFrame(() => composerInputRef.current?.focus());
+    },
+    onLocate: (clientId) => router.setParams({ focusClientId: clientId, focusRequestKey: String(Date.now()) }),
+    onSelectText: (text) => setCompanionSelectText(text),
+  } : undefined), [companionChat, companionQuoteNames, router, sessionId, showCompanionReplyTargets]);
+  const pendingCompanionQuoteOriginal = useMemo(() => {
+    const clientId = pendingCompanionReplyQuote?.clientId;
+    if (!clientId) return undefined;
+    for (const entry of messageListItems) {
+      if (entry.type === 'message' && (entry.message.source.clientId || entry.message.source.id) === clientId) return entry.message;
+    }
+    return undefined;
+  }, [messageListItems, pendingCompanionReplyQuote?.clientId]);
   const companionInteractionIdentity = useMemo(() => companionChat && companionName
     ? { name: companionName, avatar: companionPortrait(COMPANION_AVATAR_SIZE) } : null,
   [companionChat, companionName, companionPortrait]);
@@ -6463,6 +6499,8 @@ function SessionScreenContent() {
     // 立刻撞回断链。真正恢复后的 load / connection epoch 会负责清理并唤醒 pump。
     if (!connectionDispatchBlockedAtSend) setError(null);
     const outboxEligible = !queueEditAtSendStart;
+    // 伙伴私聊的待发引用随这条消息写进信封；送达交接后才撤下，失败时保留以便重发。
+    const replyQuoteAtSend = outboxEligible ? getPendingCompanionReplyQuote(sessionId) ?? undefined : undefined;
     const uploadsInFlight = outboxEligible ? getPendingUploadCount() : 0;
     const willHaveAttachments = attachmentsRef.current.length > 0 || uploadsInFlight > 0;
     const earlyLocalCommand = willHaveAttachments ? null : parseMobileLocalSystemCommand(body);
@@ -6732,6 +6770,7 @@ function SessionScreenContent() {
             clientId: outboxClientId!, sessionId, text, quotesEncoded: quotesEncodedAtSend,
             sessionRefs: sessionRefsAtSend, agentReferences: agentReferencesAtSend,
             pastedTextRanges: pastedTextRangesAtSend, slashCommandRanges: slashCommandRangesAtSend ?? [],
+            ...(replyQuoteAtSend ? { replyQuote: replyQuoteAtSend } : {}),
             permissionModeAtSend, planModeAtSend, readyAttachments, readyPreviews,
             attachmentOrder: incomingShareSlotOrder([
               ...readyAttachments.map(attachment => getUploadedSource(attachment.id)?.incomingShareOrder),
@@ -6760,6 +6799,7 @@ function SessionScreenContent() {
           noteLocalSend(record.item.clientId);
           await mobileDurableOutbox.add(record);
           committed = true;
+          if (replyQuoteAtSend) clearSentCompanionReplyQuote(sessionId, replyQuoteAtSend);
           handoff.release(true);
           // Durable ownership precedes clearing the composer or deleting annotation sources.
           if (!isMobileAuthOwnerCurrent(ownerAtSend) || !sendScopeStillAlive()) {
@@ -6865,6 +6905,7 @@ function SessionScreenContent() {
             agentReferences: agentReferencesAtSend,
             pastedTextRanges: pastedTextRangesAtSend,
             slashCommandRanges: slashCommandRangesAtSend,
+            replyQuote: queuedMessageReplyQuote(original),
           }),
           ...(original.sessionRefs && original.sessionRefs.length > 0
             ? { sessionRefs: [...original.sessionRefs] }
@@ -7080,6 +7121,7 @@ function SessionScreenContent() {
         agentReferences: agentReferencesAtSend,
         pastedTextRanges: pastedTextRangesAtSend,
         slashCommandRanges: slashCommandRangesAtSend,
+        replyQuote: replyQuoteAtSend,
       });
       let queued: QueuedRemoteMessage;
       try {
@@ -7151,6 +7193,7 @@ function SessionScreenContent() {
           queued.clientId,
         );
         enqueueAccepted = true;
+        if (replyQuoteAtSend) clearSentCompanionReplyQuote(sessionId, replyQuoteAtSend);
       } catch (err) {
         // 回滚前先分辨「确实没应用」vs「已应用但响应丢了」:优先 refetch 权威
         // projection 判断。只有权威证据能保留乐观气泡；证据不可用时回到现有
@@ -9211,20 +9254,33 @@ function SessionScreenContent() {
   //(sessionMetaWriteGuard / sessionMetaWriteQueue / sessionPendingWrites),
   // 首页与本页是同组元数据写的两个入口,写序必须跨页面共享(review P1:首页
   // 置顶在退避中,本页取消置顶——实例级守卫感知不到对方,退避恢复后旧写覆盖
-  // 新写)。点击当帧 applySessionPatch 即时生效,归档 / 删除立即退回首页,RPC
+  // 新写)。归档经列表事务先预览、确认后退出；删除立即退回首页。RPC
   // 经共享队列串行出网;成功仅在本笔仍是最新写时用回包对账,失败时最新写整体
   // 还原会话对象(归档 / 删除把行移出了列表,反向 patch 复活不了)、非最新写
   // requestReseed 收敛,并 Alert 提示(人可能已回到首页,会话页 error 条看不见)。
+  const { patchSession: patchSessionFromList } = useSessionListActions({ preferredRpcDeviceId: deviceId });
   const patchSessionMeta = useCallback((
     patch: Parameters<typeof maker.patchSessionMeta>[1],
+    prepare?: (isCurrent: () => boolean) => Promise<boolean>,
   ) => {
     const session = currentSession;
     if (!deviceId || !session) return;
+    if (patch.status === 'archived') {
+      // 列表与详情共用预览、确认、写序与失败回滚；只在实际提交时退出详情。
+      const isCurrent = () => sessionSubscriptionIdentityRef.current === sessionSubscriptionIdentity;
+      if (!isCurrent()) return;
+      return patchSessionFromList(session, patch, async (isLatest) => {
+        const canConfirm = () => isCurrent() && isLatest();
+        return canConfirm() && (await (prepare?.(canConfirm) ?? true)) && canConfirm();
+      }, goBackToHome).catch((err: unknown) => {
+        Alert.alert(t('session.screen.operationFailed'), humanizeRemoteError(err));
+      });
+    }
     // 出网沿用本页路由设备;乐观 patch / 回滚 / reseed 落行真实所在的物理 shard(与首页
     // 同一解析):re-link 后两者可能不同,按路由 id 落 shard 会让归档移行落空、回滚插错 shard。
     const { rpcDeviceId, shardId } = resolveSessionWriteDevices(sessionId, session, deviceId)
       ?? { rpcDeviceId: deviceId, shardId: deviceId };
-    const leavesDetailScreen = patch.status === 'archived' || patch.status === 'deleted';
+    const leavesDetailScreen = patch.status === 'deleted';
     if (leavesDetailScreen) {
       goBackToHome();
     }
@@ -9308,7 +9364,7 @@ function SessionScreenContent() {
         releasePending();
       }
     })();
-  }, [currentSession, deviceId, goBackToHome, invoke, maker, sessionId]);
+  }, [currentSession, deviceId, goBackToHome, invoke, maker, patchSessionFromList, sessionId, sessionSubscriptionIdentity, t]);
 
   const previewRewindAtMessage = useCallback(async (clientId: string, draft: MobileMessageDraft) => {
     if (messageActionBusy) return;
@@ -9611,6 +9667,23 @@ function SessionScreenContent() {
     requestAnimationFrame(() => composerInputRef.current?.focus());
   }, [applyComposerDocument, canUseComposer, companionResource]);
 
+  // 伙伴近况里的「帮我查查」：输入框空着就作为主人的一句话直接发出（与手动发送同一条路径，带来源设备）；
+  // 已有草稿或附件时不替主人连同草稿一起发，只把这句话放进输入框。
+  const askCompanionInComposer = useCallback((text: string) => {
+    if (!canUseComposer || !composerDraftHydrated) return;
+    const idle = !composerDocumentHasContent(composerDocumentRef.current)
+      && attachments.length === 0 && pendingUploads.length === 0 && !queueEditingRef.current;
+    if (idle && sendLatestRef.current) {
+      void sendLatestRef.current({ documentOverride: textComposerDocument(text) });
+      return;
+    }
+    const node = { type: 'text' as const, text: composerDocumentHasContent(composerDocumentRef.current) ? `\n${text}` : text };
+    const editor = composerInputRef.current;
+    if (editor) editor.insertNode(node);
+    else applyComposerDocument(appendComposerNode(composerDocumentRef.current, node));
+    requestAnimationFrame(() => composerInputRef.current?.focus());
+  }, [applyComposerDocument, attachments.length, canUseComposer, composerDraftHydrated, pendingUploads.length]);
+
   const deleteMessage = useCallback((clientId: string) => {
     if (!deviceId || messageActionBusy) return;
     // 运行中能否删由被控端判定:点停止后本地运行态可能晚于被控端收敛,
@@ -9714,6 +9787,8 @@ function SessionScreenContent() {
         working={!!companionWorkingLabel}
         sessionId={sessionId ?? ''}
         onQuoteTodo={quoteTodoInComposer}
+        onAskCompanion={askCompanionInComposer}
+        askCompanionReady={canUseComposer && composerDraftHydrated}
         onSearch={() => setSearchOpen(true)}
         onBack={goBackToHome} />
     </> : <SessionHeaderBar
@@ -9878,10 +9953,13 @@ function SessionScreenContent() {
             extraDirBrowser={extraDirBrowser}
             initialView={menuInitialView}
             keyboardAvoidingBehavior={nativeShellLayout.keyboardAvoidingBehavior}
-            onArchive={() => patchSessionMeta({ status: 'archived' })}
-            confirmArchive={async () => confirmArchiveWithSchedules(t, deviceId
-              ? await loadActiveBoundScheduleNames({ deviceId, invoke, sessionId, source: sessionSourceForSchedule })
-              : [])}
+            onArchive={(prepare) => { void patchSessionMeta({ status: 'archived' }, prepare); }}
+            confirmArchive={async (isCurrent) => {
+              const names = deviceId
+                ? await loadActiveBoundScheduleNames({ deviceId, invoke, sessionId, source: sessionSourceForSchedule })
+                : [];
+              return isCurrent() && confirmArchiveWithSchedules(t, names);
+            }}
             onClose={() => setSettingsOpen(false)}
             onClosed={handleSessionMenuClosed}
             onDelete={() => patchSessionMeta({ status: 'deleted' })}
@@ -9924,6 +10002,10 @@ function SessionScreenContent() {
           />
         ) : null
         )}</MountOnFirstOpen>
+        {companionSelectText !== null ? (
+          <CompanionSelectTextSheet key={`select-text:${deviceId}:${sessionId}`} text={companionSelectText}
+            onClose={() => setCompanionSelectText(null)} />
+        ) : null}
         {currentSession ? <SideChatsSheet key={`${deviceId}:${sessionId}`} visible={sideChatsOpen}
           session={currentSession} maker={maker} onClose={() => setSideChatsOpen(false)}
           onCreate={() => createSideChat()} onSelect={openSideChat} /> : null}
@@ -10326,7 +10408,7 @@ function SessionScreenContent() {
                   interactive={!sessionListDrawerOverlayMounted}>
 
                 <ChatFilePathContext.Provider value={chatFilePathContextValue}>
-                  <MessageRenderer companion={companionChat}
+                  <MessageRenderer companion={companionChat} companionQuote={companionQuoteOptions}
                     onOpenCompanionSettings={openCompanionSettings} onCompanionReadThrough={companionChat ? companionEntry.markReadThrough : undefined} companionWorkingLabel={companionWorkGroupLabel}
                     companionAvatar={companionReplyAvatar}
                     companionPluginInvocations={companionPluginInvocations}
@@ -10871,6 +10953,27 @@ function SessionScreenContent() {
                   <Text numberOfLines={1} style={styles.queueEditBarText}>{t('session.sideChat.summary', { count: sideChatCount })}</Text>
                   <ChevronRight size={iconSize.sm} color={colors.textTertiary} strokeWidth={iconStroke.regular} />
                 </Pressable>
+              ) : null}
+              {companionChat && pendingCompanionReplyQuote && sessionId && !shareSelectionActive
+                && sessionOperationLayout.composerSlot === 'editable' ? (
+                <View
+                  style={[styles.companionQuoteBar, { marginHorizontal: composerTouchLayout.composerPaddingHorizontal }]}
+                  testID="session.companionQuoteBar"
+                >
+                  <View style={styles.companionQuoteBarBody}>
+                    <BotGroupQuote display={companionReplyQuoteDisplay(pendingCompanionReplyQuote,
+                      pendingCompanionQuoteOriginal, companionQuoteNames)} />
+                  </View>
+                  <RouteActionButton
+                    accessibilityLabel={t('message.quote.remove')}
+                    hitSlop={COMPOSER_CONTROL_HIT_SLOP}
+                    onPress={() => setPendingCompanionReplyQuote(sessionId, null)}
+                    style={styles.queueEditBarClose}
+                    testID="session.companionQuoteRemove"
+                  >
+                    <X color={colors.textSecondary} size={iconSize.sm} strokeWidth={iconStroke.regular} />
+                  </RouteActionButton>
+                </View>
               ) : null}
               <SessionResourceCards state={sessionResourceCards} />
               {!sessionResourceCards.blocked ? <SessionComposerInput
@@ -12996,6 +13099,21 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     backgroundColor: 'transparent',
     overflow: 'visible',
   },
+  // Same card as the other bars above the composer, so the transcript never shows through.
+  companionQuoteBar: {
+    alignItems: 'center',
+    backgroundColor: colors.surfaceElevated,
+    borderColor: colors.border,
+    borderRadius: radius.container,
+    borderWidth: StyleSheet.hairlineWidth,
+    flexDirection: 'row',
+    gap: spacing.sm,
+    marginBottom: spacing.xs,
+    paddingLeft: spacing.md,
+    paddingRight: spacing.xs,
+    paddingVertical: spacing.sm,
+  },
+  companionQuoteBarBody: { flex: 1, minWidth: 0 },
   // 排队消息编辑提示条(composer 上方):✎ + 「正在编辑第 N 条排队消息」 + × 放弃。
   queueEditBar: {
     alignItems: 'center',

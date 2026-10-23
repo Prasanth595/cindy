@@ -1,5 +1,7 @@
 import { mountPage, forbid } from '../../ui-page/harness';
 import { CompanionVoiceSettings } from '../../../src/renderer/features/bots/voice/CompanionVoiceSettings';
+import { alibabaSystemVoices } from '../../../src/shared/alibabaSpeechVoices';
+import { gatewayReferenceSpeechVoices } from '../../../src/shared/speechVoices';
 import type {
   SpeechProtocol,
   VoiceConversationPreference,
@@ -17,7 +19,19 @@ mountPage({
   host: (ctx) => {
     const protocol = (ctx.data.protocol ?? 'elevenlabs') as SpeechProtocol;
     const modelId = String(ctx.data.modelId ?? 'eleven_flash_v2_5');
-    const initialVoice = ctx.data.manual ? 'custom-voice' : 'river';
+    const gatewayVoices = ctx.data.gatewayReference ? gatewayReferenceSpeechVoices(modelId) : [];
+    const providerId = ctx.data.gatewayReference ? 'xd' : 'fixture';
+    const agent = ctx.data.gatewayReference ? undefined : ('codex' as const);
+    const referenceVoice = String(ctx.data.voiceId ?? gatewayVoices[0]?.id ?? 'river');
+    const initialVoice = ctx.data.manual ? 'custom-voice' : referenceVoice;
+    const systemVoices = alibabaSystemVoices(modelId, protocol);
+    ctx.data.gatewayVoices = gatewayVoices;
+    ctx.data.voiceId = ctx.data.voiceId ?? (ctx.data.gatewayReference ? referenceVoice : undefined);
+    ctx.data.voiceLabel = ctx.data.gatewayReference
+      ? gatewayVoices.find((voice) => voice.id === referenceVoice)?.name
+      : ctx.data.systemCatalog
+        ? systemVoices.find((voice) => voice.id === referenceVoice)?.name
+        : undefined;
     const pending = new Map<string, () => void>();
     const previews: Array<{ voice: string; speed?: number; previewId: string }> = [];
     const stops: string[] = [];
@@ -26,15 +40,17 @@ mountPage({
     ctx.data.savedVoice = initialVoice;
     let preference: VoiceConversationPreference = {
       selection: {
-        providerId: 'fixture',
-        agent: 'codex',
+        providerId,
+        agent,
         modelId,
         voice: initialVoice,
+        ...(ctx.data.custom ? { protocol } : {}),
         ...(typeof ctx.data.speed === 'number' ? { speed: ctx.data.speed } : {}),
       },
       customized: ctx.data.speed !== undefined || !!ctx.data.manual,
       sentencePlayback: true,
     };
+    if (ctx.data.noPreference) preference.selection = null;
     return {
       onAuthStateChange: () => () => {},
       voiceInput: { onPowerStateChange: () => () => {} },
@@ -46,37 +62,62 @@ mountPage({
             : [
                 {
                   id: modelId,
+                  ...(ctx.data.hidden ? { pickerVisible: false } : {}),
                   name: modelId,
-                  providerId: 'fixture',
-                  providerName:
-                    protocol === 'elevenlabs'
+                  providerId,
+                  providerName: ctx.data.gatewayReference
+                    ? 'XD Gateway'
+                    : protocol === 'elevenlabs'
                       ? 'ElevenLabs'
                       : protocol === 'minimax'
                         ? 'MiniMax'
-                        : 'OpenAI',
-                  agent: 'codex',
-                  protocol,
-                  protocolLocked: true,
-                  defaultVoice: 'river',
+                        : protocol === 'qwen-tts' || protocol === 'dashscope-tts'
+                          ? 'Alibaba Cloud'
+                          : 'OpenAI',
+                  agent,
+                  protocol: ctx.data.custom ? undefined : protocol,
+                  protocolLocked: !ctx.data.custom,
+                  defaultVoice: referenceVoice,
                 },
+                ...(ctx.data.hidden ? [{ id: 'unchecked', name: 'Unchecked speech', providerId: 'fixture', agent: 'codex' as const, pickerVisible: false }] : []),
+                ...(ctx.data.hidden && !ctx.data.noPreference ? [{ id: 'visible', name: 'Visible speech', providerId: 'fixture', agent: 'codex' as const, protocol, protocolLocked: true, defaultVoice: 'river' }] : []),
               ],
-        voices: async () => ({
-          source: 'provider',
-          voices: [
-            { id: 'river', name: 'River — Relaxed, Neutral, Informative' },
-            ...(ctx.data.menu
-              ? [
-                  { id: 'bella', name: 'Bella — Professional, Bright, Warm' },
-                  { id: 'sarah', name: 'Sarah — Mature, Reassuring, Confident' },
-                  { id: 'roger', name: 'Roger — Laid-Back, Casual, Resonant' },
-                  { id: 'laura', name: 'Laura — Enthusiast, Quirky Attitude' },
-                  { id: 'charlie', name: 'Charlie — Deep, Confident, Energetic' },
-                  { id: 'george', name: 'George — Warm, Captivating Storyteller' },
-                  { id: 'callum', name: 'Callum — Husky, Trickster' },
-                ]
-              : []),
-          ],
-        }),
+        voices: async () =>
+          ctx.data.gatewayReference
+            ? { source: 'reference', voices: gatewayVoices.map((voice) => ({ ...voice })) }
+            : ctx.data.systemCatalog
+              ? {
+                  source: ctx.data.customCatalog ? 'mixed' : 'reference',
+                  ...(ctx.data.customCatalogFailure ? { customVoicesUnavailable: true } : {}),
+                  voices: [
+                    ...systemVoices,
+                    ...(ctx.data.customCatalog
+                      ? [{ id: 'account-clone', name: 'My Custom Voice' }]
+                      : []),
+                  ],
+                }
+              : {
+                  source: ctx.data.voiceId ? 'reference' : 'provider',
+                  voices: [
+                    {
+                      id: referenceVoice,
+                      name: ctx.data.voiceId
+                        ? referenceVoice
+                        : 'River — Relaxed, Neutral, Informative',
+                    },
+                    ...(ctx.data.menu
+                      ? [
+                          { id: 'bella', name: 'Bella — Professional, Bright, Warm' },
+                          { id: 'sarah', name: 'Sarah — Mature, Reassuring, Confident' },
+                          { id: 'roger', name: 'Roger — Laid-Back, Casual, Resonant' },
+                          { id: 'laura', name: 'Laura — Enthusiast, Quirky Attitude' },
+                          { id: 'charlie', name: 'Charlie — Deep, Confident, Energetic' },
+                          { id: 'george', name: 'George — Warm, Captivating Storyteller' },
+                          { id: 'callum', name: 'Callum — Husky, Trickster' },
+                        ]
+                      : []),
+                  ],
+                },
         preference: async () => preference,
         setPreference: async (
           _botId: string,
@@ -102,6 +143,7 @@ mountPage({
         },
         preview: async (input: { voice: string; speed?: number; previewId: string }) => {
           previews.push(input);
+          if (ctx.data.previewTimeout) throw new Error('[VOICE_SPEECH_TIMEOUT] Speech timed out');
           if (ctx.data.previewFailure) throw new Error('fixture preview unavailable');
           await new Promise<void>((resolve) => pending.set(input.previewId, resolve));
           return { sampleRate: 24000 };

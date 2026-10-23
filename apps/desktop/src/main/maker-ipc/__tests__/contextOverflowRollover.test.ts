@@ -372,7 +372,7 @@ describe('createContextOverflowRollover', () => {
     };
   }
 
-  it.each(['cc', 'codex', 'pi'])('checkpoints a pressured %s companion before send, retaining outcomes without replay', async (agentKind) => {
+  it.each(['cc', 'pi'])('checkpoints a pressured %s companion before send, retaining outcomes without replay', async (agentKind) => {
     const deps = makeDeps([
       msg('user', 'Keep the game keyboard accessible', 'u1'),
       { ...msg('tool_use', { toolName: 'Write', input: { file_path: '/game/index.html' } }, 't1'), toolUseId: 'write-1' },
@@ -758,7 +758,7 @@ describe('createContextOverflowRollover', () => {
     expect(deps.setPendingHandoff).toHaveBeenCalledOnce();
   });
 
-  it.each(['cc', 'codex', 'pi'] as const)(
+  it.each(['cc', 'pi'] as const)(
     'rebuilds %s native context before a pressured 500K → 272K model switch',
     async (agentKind) => {
       const deps = makeDeps([
@@ -1903,7 +1903,7 @@ describe('createContextOverflowRollover', () => {
     expect(deps.replayUserMessage).not.toHaveBeenCalled();
   });
 
-  it('uses the same full-window pressure guard for Claude Code and Codex before send', async () => {
+  it('lets Codex handle full-window pressure natively while keeping the Claude guard', async () => {
     for (const agentKind of ['cc', 'codex'] as const) {
       const deps = makeDeps([msg('user', '继续', 'u1'), msg('assistant', '好', 'a1')]);
       deps.getSessionRow.mockResolvedValue({
@@ -1919,14 +1919,30 @@ describe('createContextOverflowRollover', () => {
       });
       const rollover = createContextOverflowRollover(deps);
 
-      await expect(rollover.prepareUnhealthySession(`session-${agentKind}`)).resolves.toBe(true);
-      expect(deps.commitRebuild).toHaveBeenCalled();
+      await expect(rollover.prepareUnhealthySession(`session-${agentKind}`)).resolves.toBe(agentKind === 'cc');
+      expect(deps.commitRebuild).toHaveBeenCalledTimes(agentKind === 'cc' ? 1 : 0);
       deps.commitRebuild.mockClear();
     }
   });
 
+  // Unit: the direct/Orca switch path must not bypass the native-first gate.
+  // Both persisted and live usage can exceed the target without any native error.
+  it.each([false, true])('preserves Codex history through shrink and send preflight (companion=%s)', async (companion) => {
+    const deps = makeDeps([msg('user', 'Continue the task', 'u1'), msg('assistant', 'Progress', 'a1')]);
+    deps.getSessionRow.mockResolvedValue({ ...await deps.getSessionRow(), agentKind: 'codex',
+      ...(companion ? { source: 'bot', botRole: 'canonical' } : {}),
+      contextTokens: 480_000, contextWindow: 500_000 });
+    const rollover = createContextOverflowRollover(deps);
+    await expect(rollover.prepareModelWindowSwitch('s1', { contextWindow: 272_000 })).resolves.toBe('not-needed');
+    await expect(rollover.prepareUnhealthySession('s1')).resolves.toBe(false);
+    expect(deps.closeSession).not.toHaveBeenCalled();
+    expect(deps.commitRebuild).not.toHaveBeenCalled();
+    expect(deps.setPendingHandoff).not.toHaveBeenCalled();
+  });
+
   it('fails closed when a pre-send rebuild cannot commit', async () => {
-    const deps = makeDeps([msg('user', '继续', 'u1'), msg('assistant', '好', 'a1')]);
+    const deps = makeDeps([msg('user', '继续', 'u1'),
+      msg('error', { reason: 'context-overflow', message: 'Context window exceeded' }, 'e1')]);
     deps.getSessionRow.mockResolvedValue({
       status: 'active',
       source: 'desktop',

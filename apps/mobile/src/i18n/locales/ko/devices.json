@@ -761,7 +761,10 @@
     "uploadAvatar": "아바타 업로드",
     "avatarFailed": "이미지를 열 수 없습니다. 다른 이미지를 선택하세요.",
     "nameTaken": "이미 사용 중인 이름입니다. 다른 이름을 선택하세요.",
-    "home": "주 컴퓨터"
+    "home": "주 컴퓨터",
+    "chat": "채팅",
+    "showReplyTarget": "답장 대상 메시지 표시",
+    "showReplyTargetHint": "팀원 답장 위에 어떤 메시지에 대한 답장인지 표시합니다. 모든 팀원에게 적용되며, 이전 답장에는 표시되지 않습니다."
   },
   "companionImport": {
     "title": "동료 가져오기",
@@ -852,6 +855,12 @@
     "undo": "실행 취소",
     "undoFailed": "실행 취소하지 못했습니다. 다시 시도하세요",
     "deleteFailed": "삭제하지 못했습니다. 다시 시도하세요",
+    "check": "확인해 줘",
+    "checkMeta": "연결된 메일과 메시지에서 새 할 일을 찾습니다",
+    "checkPrompt": "연결된 메일, 메시지 등에서 내가 처리해야 할 새 일이 있는지 확인하고, 있으면 할 일에 추가해 줘.",
+    "dailyCheck": "매일 확인",
+    "dailyCheckMeta": "평일 9:00, 새 할 일이 없으면 알리지 않습니다",
+    "dailyCheckFailed": "저장하지 못했습니다. 다시 시도하세요",
     "loadFailed": "할 일을 불러오지 못했습니다",
     "outputs": "결과물",
     "outputMeta": "{{time}} · {{task}}",

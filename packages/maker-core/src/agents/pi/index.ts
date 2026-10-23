@@ -66,6 +66,7 @@ import {
   AgentStartupCleanupPendingError,
   AgentStartupStoppedError,
   BaseAgent,
+  LOCAL_AGENT_CLIENT,
   MAIN_OWNED_SEND_CONTEXT,
   ASYNC_QUESTION_ANSWER,
   PINNED_SKILL_INVOCATION,
@@ -3341,7 +3342,7 @@ export class PiAgent extends BaseAgent {
     // directory. Keep the capability absent until the wire protocol owns those
     // files remotely end-to-end.
     const localSubagentSupported = Boolean(
-      !reviewMode
+      !reviewMode && !opts[LOCAL_AGENT_CLIENT]?.hostToolsOnly
       && !remote
       // 设备托管：子代理进程继承 CINDY_PI_HOSTED 与同一份 cindy-bridge，文件与命令工具同样经
       // 隧道回到任务所在电脑(隧道随任务关闭，任务结束后仍在后台跑的子代理会失去工具)。
@@ -3696,7 +3697,12 @@ export class PiAgent extends BaseAgent {
       opts.remoteHostId && this.deps.remotePiSkipMcpBridge?.(opts.remoteHostId));
     const mcpReadyStartedAt = Date.now();
     let mcpReadyStatus: 'ok' | 'degraded' | 'skipped' = 'skipped';
-    if (hosted) {
+    if (opts[LOCAL_AGENT_CLIENT]) {
+      const client = opts[LOCAL_AGENT_CLIENT]!;
+      mcpBridge = { token: client.token, servers: [{ name: client.mcpName ?? 'client', url: client.url }] };
+      registeredMcpServerNames.add(client.mcpName ?? 'client');
+      mcpReadyStatus = 'ok';
+    } else if (hosted) {
       // 设备托管：Cindy 工具都在任务所在电脑上，经隧道访问；本机的 MCP 桥不参与。
       mcpBridge = deviceHostedPiMcpBridge(hosted);
       for (const server of mcpBridge.servers) registeredMcpServerNames.add(server.name);
@@ -3864,7 +3870,7 @@ export class PiAgent extends BaseAgent {
       ? [] : [...(this.deps.getDisabledSkillPaths?.() ?? [])];
     let disabledSkillLaunch = snapshotDisabledSkillLaunch(disabledSkillPaths);
     const disabledSkillSnapshot = disabledSkillLaunch.identities;
-    const loadProjectResourcesInPlace = !reviewMode && !opts.botRuntimeProfile && !opts.remoteHostId;
+    const loadProjectResourcesInPlace = !reviewMode && !opts.botRuntimeProfile && !opts.remoteHostId && !opts[LOCAL_AGENT_CLIENT]?.hostToolsOnly;
     let projectResourceAssembly = unavailablePiProjectResourceAssembly(
       reviewMode ? 'review-mode-project-resources-disabled' : 'approval-resolver-unavailable',
     );
@@ -3917,7 +3923,7 @@ export class PiAgent extends BaseAgent {
     if (!reviewMode && !opts.remoteHostId && !hostedGuest) {
       if (this.deps.resolvePiNativePackagePaths) {
         try {
-          nativePackagePaths = await this.deps.resolvePiNativePackagePaths();
+          nativePackagePaths = opts[LOCAL_AGENT_CLIENT]?.hostToolsOnly ? [] : await this.deps.resolvePiNativePackagePaths();
           await this.writePiRuntimeSettings(configHome, {
             contextWindow: startupContextWindow,
             workingContextWindow: startupWorkingContextWindow,
@@ -4003,7 +4009,7 @@ export class PiAgent extends BaseAgent {
     try {
       const managedSkillGrants = snapshotManagedSkillGrants(opts.botRuntimeProfile?.skillPolicy);
       // 受邀者不带本机安装的托管技能(属于本机用户与其组织)。
-      const managedSkills = opts.remoteHostId || reviewMode || hostedGuest ? [] : await this.deps.getManagedSkills?.() ?? [];
+      const managedSkills = opts.remoteHostId || reviewMode || hostedGuest || opts[LOCAL_AGENT_CLIENT]?.hostToolsOnly ? [] : await this.deps.getManagedSkills?.() ?? [];
       const managedDisabledPaths = snapshotDisabledSkillLaunch(opts.remoteHostId || reviewMode || hostedGuest ? [] : this.deps.getDisabledSkillPaths?.() ?? []);
       const managedSourceIdentities = new Set(managedSkills.flatMap((skill) =>
         skill.path ? [canonicalSkillPath(skill.path)] : []));
@@ -4013,7 +4019,7 @@ export class PiAgent extends BaseAgent {
       // The catalog path may alias a managed source. Apply the managed grant and
       // activation checks once, including paths already selected by the Bot.
       const additionalSkillPaths = [...new Map([
-        ...(loadProjectResourcesInPlace ? [] : botSkillSelection.explicitSkillPaths.filter((skillPath) =>
+        ...(loadProjectResourcesInPlace || opts[LOCAL_AGENT_CLIENT]?.hostToolsOnly ? [] : botSkillSelection.explicitSkillPaths.filter((skillPath) =>
           !managedSourcePaths.has(path.resolve(skillPath)) && !managedSourceIdentities.has(canonicalSkillPath(skillPath)))),
       ].map((skillPath) => [canonicalSkillPath(skillPath), skillPath])).values()];
 
@@ -4048,6 +4054,7 @@ export class PiAgent extends BaseAgent {
         '--model',
         initialWireModel,
         ...(reviewMode ? ['--tools', 'read,grep,find,ls'] : []),
+        ...(opts[LOCAL_AGENT_CLIENT]?.hostToolsOnly ? ['--no-skills', '--no-context-files', '--no-prompt-templates'] : []),
         // Bot sessions must not absorb project/global AGENTS.md or CLAUDE.md from
         // the cwd chain — their context is the Bot profile, not the workspace.
         ...(opts.botRuntimeProfile ? ['--no-context-files'] : []),
@@ -4068,7 +4075,7 @@ export class PiAgent extends BaseAgent {
         '--extension',
         bridgeExtensionPath,
         ...(localSubagentSupported ? ['--extension', subagentExtensionPath] : []),
-        ...(!reviewMode && planModeExtAvailable ? ['--extension', planModeExtPath] : []),
+        ...(!reviewMode && !opts[LOCAL_AGENT_CLIENT]?.hostToolsOnly && planModeExtAvailable ? ['--extension', planModeExtPath] : []),
         ...(loadProjectResourcesInPlace
           ? piProjectResourceCliArgs(projectResourceCli)
           : []),
@@ -5580,6 +5587,7 @@ export class PiAgent extends BaseAgent {
         // 支持者（如 Anthropic）可避免较长会话在短 TTL 后重新计费。
         PI_CACHE_RETENTION: 'long',
         ...(mcpBridge && mcpBridge.servers.length > 0 ? { [PI_MCP_BRIDGE_ENV]: JSON.stringify(mcpBridge) } : {}),
+        CINDY_LOCAL_HOST_TOOLS_ONLY: opts[LOCAL_AGENT_CLIENT]?.hostToolsOnly ? '1' : '',
       };
       // 不继承宿主进程里碰巧存在的同名变量；Windows 环境键大小写不敏感，必须先清掉
       // 所有 casing 再写入 host 校验并 stage 后的唯一绝对路径。

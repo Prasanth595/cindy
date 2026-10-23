@@ -1,3 +1,4 @@
+import { readChatReplyQuote, type ChatReplyQuote } from '@cindy/maker-shared/chat-reply-quote';
 import { forwardedRequestDisplayText } from '@cindy/maker-shared/message-source';
 import { formatDuration } from '@cindy/maker-shared/message-render';
 import { parseMcpAppHistory } from '@cindy/maker-shared/mcp-apps';
@@ -103,6 +104,8 @@ export interface NormalizedRemoteMessage {
   slashCommandRanges?: Array<{ start: number; end: number }>;
   /** user Composer 的结构化语义引用；用于 fork / rewind 恢复同款 chip。 */
   agentReferences?: AgentInputReference[];
+  /** user 专用：伙伴私聊的引用回复（信封 replyQuote），气泡正文上方显示引用块。 */
+  replyQuote?: ChatReplyQuote;
   secondaryBody?: string;
   authorization?: Record<string, unknown>;
   systemCardData?: Record<string, unknown>;
@@ -611,6 +614,7 @@ export function normalizeRemoteMessages(
       ...(userContent?.agentReferences?.length
         ? { agentReferences: userContent.agentReferences }
         : {}),
+      ...(userContent?.replyQuote ? { replyQuote: userContent.replyQuote } : {}),
       align: message.role === 'user' && hookSource === undefined ? 'user' : 'agent',
       createdAt: message.createdAt,
       isStreaming: readMessageStreaming(message) || undefined,
@@ -758,6 +762,7 @@ function parseUserContent(content: unknown): {
   pastedTextRanges?: Array<{ start: number; end: number; display: string }>;
   slashCommandRanges?: Array<{ start: number; end: number }>;
   agentReferences?: AgentInputReference[];
+  replyQuote?: ChatReplyQuote;
 } {
   const parsed = parseMaybeJsonObject(content);
   if (!parsed) {
@@ -772,8 +777,10 @@ function parseUserContent(content: unknown): {
   const pastedTextRanges = readSentPastedTextRanges(parsed.pastedTextRanges, text);
   const slashCommandRanges = readSentSlashCommandRanges(parsed.slashCommandRanges, text);
   const agentReferences = readAgentInputReferences(parsed.agentReferences, text);
+  const replyQuote = readChatReplyQuote(parsed.replyQuote);
   return {
     text,
+    ...(replyQuote ? { replyQuote } : {}),
     quotesEncoded: parsed.quotesEncoded === true,
     ...(pastedTextRanges ? { pastedTextRanges } : {}),
     ...(slashCommandRanges !== undefined ? { slashCommandRanges } : {}),

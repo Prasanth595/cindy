@@ -76,21 +76,26 @@ export function SpeechVoicePicker({
     () => readSpeechVoiceLabel(owner, botId, selectionRouteKey, voice),
     [owner, botId, selectionRouteKey, voice, catalog],
   );
-  // A saved label bridges initial loading and offline re-entry. A successful
-  // response is authoritative for display, but never changes the saved ID.
-  const showCachedLabel = !!cachedLabel && !catalog && (initialLoading || failed);
+  // A partial private lookup is not evidence that the saved voice was removed.
+  // Keep its known label as well as the public choices, without changing the ID.
+  const showCachedLabel =
+    !!cachedLabel &&
+    !listed &&
+    ((!catalog && (initialLoading || failed)) || !!catalog?.customVoicesUnavailable);
   const showManual =
     manual ||
     (!initialLoading && !showCachedLabel && ((!!voice && !listed) || !catalog?.voices.length));
   const catalogHint = failed
     ? t('bots.voiceMode.voicesError')
-    : catalog?.source === 'reference'
-      ? t('bots.voiceMode.voicesReference')
+    : catalog?.customVoicesUnavailable
+      ? t('bots.voiceMode.voicesCustomError')
       : catalog?.truncated
         ? t('bots.voiceMode.voicesTruncated')
-        : !initialLoading && !catalog?.voices.length
-          ? t('bots.voiceMode.voicesManual')
-          : '';
+        : catalog?.source === 'reference' || catalog?.source === 'mixed'
+          ? t('bots.voiceMode.voicesReference')
+          : !initialLoading && !catalog?.voices.length
+            ? t('bots.voiceMode.voicesManual')
+            : '';
   const voiceOptions = useMemo(() => {
     const voices = (catalog?.voices ?? []).map((item) => ({
       ...item,
@@ -154,13 +159,9 @@ export function SpeechVoicePicker({
 
   useEffect(() => {
     if (currentCatalog?.phase !== 'ready' || !catalog || !voice) return;
-    rememberSpeechVoiceLabel(
-      owner,
-      botId,
-      selectionRouteKey,
-      voice,
-      voiceOptions.find((option) => option.value === `voice:${voice}`)?.label,
-    );
+    const label = voiceOptions.find((option) => option.value === `voice:${voice}`)?.label;
+    if (catalog.customVoicesUnavailable && !label) return;
+    rememberSpeechVoiceLabel(owner, botId, selectionRouteKey, voice, label);
   }, [owner, botId, selectionRouteKey, voice, currentCatalog, catalog, voiceOptions]);
 
   useEffect(() => {
@@ -207,7 +208,7 @@ export function SpeechVoicePicker({
               }
               options={[
                 ...(showCachedLabel
-                  ? [{ value: `voice:${voice}`, label: cachedLabel! }]
+                  ? [{ value: `voice:${voice}`, label: cachedLabel! }, ...voiceOptions]
                   : initialLoading
                     ? [{ value: LOADING, label: t('bots.voiceMode.voicesLoading'), disabled: true }]
                     : voiceOptions),
@@ -298,7 +299,11 @@ export function SpeechVoicePicker({
             )}
           </FormField>
           <p role="status" className="text-12 text-[var(--text-secondary)]">
-            {t(`bots.voiceMode.previewStatus.${phase}`)}
+            {t(
+              phase === 'timeout'
+                ? 'bots.voiceMode.errors.speechTimeout'
+                : `bots.voiceMode.previewStatus.${phase}`,
+            )}
           </p>
         </div>
       ) : null}

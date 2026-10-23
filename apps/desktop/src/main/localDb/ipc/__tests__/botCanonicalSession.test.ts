@@ -117,6 +117,8 @@ vi.mock('node:fs/promises', async importOriginal => {
 });
 // Legacy byte migration has its own real-storage suite.
 vi.mock('../legacyTeammateAvatar.js', () => ({ migrateLegacyTeammateAvatar: async () => false }));
+// Native activity UI is outside this database/runtime integration test.
+vi.mock('../../../agent-island/service.js', () => ({ getAgentIslandService: () => null }));
 vi.mock('../../../maker-ipc/botDefaultProvisioning.js', () => ({
   provisionDefaultBot: vi.fn(), markDefaultBotOffered: vi.fn(),
   withDefaultBotProvisioningLock: async (_root: string, assertOwner: () => void, action: () => Promise<unknown>) => {

@@ -82,6 +82,7 @@ import {
   deriveGhostSessionContext,
   ghostInstallApprovalToken,
   type GhostSessionContextInjected,
+  type GhostToolCallResult,
   type GhostSetupAssessment,
   type InstalledGhost,
 } from '../../shared/ghost.js';
@@ -94,6 +95,8 @@ import {
   resolveInstalledGhost,
 } from '../../shared/pluginIdentity.js';
 import { withCardToken } from '../cindy-brain/cardService.js';
+import { fitGhostModelImages } from '../cindy-brain/ghostModelImages.js';
+import { compressInlineImage } from './inlineImageCompressor.js';
 import { drainGhostCallMedia } from '../cindy-brain/ghostMediaLedger.js';
 import {
   getGhostCardService,
@@ -2406,13 +2409,23 @@ export function getCindyGhostsMcpDeps(
       // 失败也 drain(清账防泄漏),但只在成功结果上附带——cindy-tools 层
       // 在意识未声明媒体字段时以 xdt_media_produced 注入,兜底 IM/hook 送达。
       const producedMedia = drainGhostCallMedia(instanceId, callId);
-      const finalized = withCardToken(result, cardService.finalizeCall(callId), callId);
+      // Images the plugin shows the model stay out of the card and media-ledger
+      // path (never stored, never sent to IM): fit them into the inline budget
+      // and let ghost_call return them as image content (ghostModelImages.ts).
+      const requestedImages = result.ok ? result.images : undefined;
+      const plainResult: GhostToolCallResult = result.ok && result.images ? { ok: true, result: result.result } : result;
+      const finalized = withCardToken(plainResult, cardService.finalizeCall(callId), callId);
       if (!finalized.ok) return finalized;
+      const fitted = requestedImages?.length ? await fitGhostModelImages(requestedImages, compressInlineImage) : null;
+      const modelImages = {
+        ...(fitted?.images.length ? { images: fitted.images } : {}),
+        ...(fitted?.omitted ? { imagesOmitted: fitted.omitted } : {}),
+      };
       // 附最后一道 gate(postCtx)的快照:它是派发前最新的 ready 判定。
       const advisory = postCtxAssessment.reauthSuggest ? { setup: postCtxAssessment } : {};
       const base = producedMedia.length > 0
-        ? { ...finalized, ...advisory, producedMedia }
-        : { ...finalized, ...advisory };
+        ? { ...finalized, ...advisory, producedMedia, ...modelImages }
+        : { ...finalized, ...advisory, ...modelImages };
       // 视觉桥工具结果图片描述(最佳努力,不阻塞):把工具返回的 cindy-media://
       // 图片 URL 转成文字描述,附加为 xdt_media_descriptions——纯文本模型
       // (deepseek 等)拿不到 image block,只能看到 URL 文本,易幻觉编造图片

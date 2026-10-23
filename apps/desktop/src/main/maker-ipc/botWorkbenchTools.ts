@@ -6,10 +6,10 @@
  * - 逐任务责任读伙伴家的 task-responsibility 与它自己开的后台任务(bot_delegations);
  * - 继续复用宿主已有的发消息路径(本机 = send_to_session 同一条链路;另一台电脑 =
  *   跨电脑 send_to_session 的同一条通路),由调用方注入;停止走通用的 stop_session_turn。
- * 2026-10-17 放弃「项目」:不再按目录发现候选、不再现算项目素材、不再导入本机外部会话。
+ * 项目关联只提供按需阅读的入口，不按目录发现候选任务或导入本机外部会话。
  */
 import { and, desc, eq, isNotNull } from 'drizzle-orm';
-import { hasTaskActionAuthorization, assertTaskActionCurrent } from './taskActionAuthorization.js';
+import { hasTaskActionAuthorization, assertTaskActionCurrent, captureTaskActionSyncGuard } from './taskActionAuthorization.js';
 
 import { getDbClient } from '../localDb/client/current.js';
 import { botDelegations, botProfiles, botSessionLinks, sessions } from '../localDb/schema.js';
@@ -20,6 +20,7 @@ import {
 } from '../appSessionState.js';
 import type { WorkbenchDelegationStatus, WorkbenchTranscriptItem } from '../../shared/botWorkbench.js';
 import { broadcastBotWorkbenchChanged } from './botWorkbenchService.js';
+import { botLinkedProjectAccess } from './botLinkedProjects.js';
 import { boundTranscript, readSessionTranscript } from './botWorkbenchTranscripts.js';
 import { readTaskResponsibilities, responsibleSessionIds, setTaskResponsibility } from './botTaskResponsibility.js';
 import { readBotGlance, readSchedulerBotId, readWatchedSession } from './botWorkbenchAutonomyBridge.js';
@@ -59,6 +60,35 @@ export async function resolveWorkbenchCaller(callerSessionId: string): Promise<W
     return { ok: false, errorCode: 'REMOTE_WORKBENCH_UNAVAILABLE', message: '远端伙伴暂不支持工作台' };
   }
   return { ok: true, botId: row.botId };
+}
+
+/** Query context only. The workbench authorization and task responsibility remain untouched. */
+export async function runBotProjectsTool(params: {
+  callerSessionId: string; projectId?: string; linked?: boolean; includeAvailable?: boolean;
+}) {
+  const owner = activeOwnerScopeKey();
+  try {
+    if (isAppSessionBoundaryPending()) throw new Error('OWNER_SCOPE_CHANGED');
+    const caller = await resolveWorkbenchCaller(params.callerSessionId);
+    if (!caller.ok) return caller;
+    if (owner !== activeOwnerScopeKey() || isAppSessionBoundaryPending()) throw new Error('OWNER_SCOPE_CHANGED');
+    const access = await botLinkedProjectAccess(caller.botId);
+    let projects;
+    if (params.projectId !== undefined) {
+      if (typeof params.linked !== 'boolean' || !hasTaskActionAuthorization(params.callerSessionId))
+        return { ok: false as const, errorCode: 'TASK_ACTION_AUTHORIZATION_REQUIRED', message: 'Changing project links requires authorization.' };
+      await assertTaskActionCurrent();
+      projects = await access.set(params.projectId, params.linked, captureTaskActionSyncGuard());
+    } else projects = await access.read();
+    return { ok: true as const, projects: projects.filter(project => project.linked || params.includeAvailable).map(project => ({
+      project_id: project.id, name: project.name, working_dir: project.path,
+      device_id: project.deviceId ?? null, linked: project.linked, available_locally: project.available,
+      // These are locations to check on demand, not promises that the files exist.
+      ...(!project.deviceId && project.available ? { context_locations: ['AGENTS.md', 'CLAUDE.md', 'README.md', '.cindy/project-knowledge/TOC.md'] } : {}),
+    })) };
+  } catch {
+    return { ok: false as const, errorCode: 'PROJECTS_UNAVAILABLE', message: 'Could not read or save project links. Re-read the saved state before retrying.' };
+  }
 }
 
 async function readWorkbenchTarget(taskId: string): Promise<WorkbenchTargetFacts | null> {

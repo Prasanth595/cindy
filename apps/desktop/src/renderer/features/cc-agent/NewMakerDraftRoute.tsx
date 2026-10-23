@@ -508,6 +508,7 @@ function draftEnableOrcaOptions(
       ...(deferDelegateTask ? { deferDelegateTask: true } : {}),
       workerPermissionMode: cfg.workerPermissionMode,
       executionDeviceId: cfg.executionDeviceId,
+      ...(cfg.agentDeviceId !== undefined ? { agentDeviceId: cfg.agentDeviceId } : {}),
       ...(cfg.executionWorkingDir ? { workingDir: cfg.executionWorkingDir } : {}),
     };
   }
@@ -6167,9 +6168,9 @@ export function NewMakerDraftRoute() {
           // SSH 远程草稿(draft.remoteHostId):worker 在远端 spawn,模型清单按 SSH
           // 口径过滤,与本路由 ChatInput 候选及 main 侧 remote-worker guard 同口径。
           sshRemote={!!effectiveRemoteHostId}
-          // 首个 Worker 也可放到另一台电脑：仅本机草稿(非 SSH、非远程 Agent)。
+          // 本机草稿可独立选择 Worker 工作电脑，Agent 可在远端；SSH 沿用原限制。
           executionDevicesEnabled={
-            !effectiveDeviceLinkDeviceId && !effectiveRemoteHostId && !isAgentDeviceDraft
+            !effectiveDeviceLinkDeviceId && !effectiveRemoteHostId
           }
           // Worker 的 Agent 默认跟草稿选的 Agent 所在电脑(远程供应商)，面板里列出与输入框同一份
           // 其他电脑 / 分享的供应商，可以换到任务所在电脑或别处。

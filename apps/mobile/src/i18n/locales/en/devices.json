@@ -761,7 +761,10 @@
     "uploadAvatar": "Upload Avatar",
     "avatarFailed": "Could not open this image. Try another.",
     "nameTaken": "That name is already in use. Choose another.",
-    "home": "Main Computer"
+    "home": "Main Computer",
+    "chat": "Chat",
+    "showReplyTarget": "Show which message a reply answers",
+    "showReplyTargetHint": "Above a teammate’s reply, show which of your messages it answers. Applies to all teammates. Older replies don’t show this."
   },
   "companionImport": {
     "title": "Import a teammate",
@@ -852,6 +855,12 @@
     "undo": "Undo",
     "undoFailed": "Couldn't undo. Try again.",
     "deleteFailed": "Couldn't delete. Try again.",
+    "check": "Check for me",
+    "checkMeta": "Look for new todos in connected mail and chats",
+    "checkPrompt": "Check my connected sources, like mail and messages, for anything new I need to handle, and add it to my todos.",
+    "dailyCheck": "Check every day",
+    "dailyCheckMeta": "Weekdays at 9:00, quiet when nothing is new",
+    "dailyCheckFailed": "Couldn't save. Try again.",
     "loadFailed": "Couldn't load todos",
     "outputs": "Outputs",
     "outputMeta": "{{time}} · {{task}}",

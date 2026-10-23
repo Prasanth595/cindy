@@ -10,7 +10,7 @@ export default {
   viewport: { width: 1040, height: 760 },
   real: 'BotSessionContentHeader, BotGlancePopover (computers, todos, outputs, due dots, context menu), Radix popover/menu, theme and translations',
   notCovered:
-    'Live todo/delegation data, cloud companion home switching, remote teammates over device-link, sending the quoted todo, opening files',
+    'Live todo/delegation data, cloud companion home switching, remote teammates over device-link, sending the quoted todo or 帮我查查, toggling the daily check, opening files',
   stubs: {
     'src/renderer/features/bots/botStore': {
       partial: `export const useBotProfiles=()=>${data}.case==='new'?[]:[{id:'cindy-default',name:'Cindy',templateId:'cindy',status:'active',sessionId:'chat-1'}];export const useBotUnreadCounts=()=>({});`,
@@ -30,7 +30,7 @@ export default {
   cases: {
     default: { about: 'Cindy on several computers, todos with one due today, finished deliverables' },
     menu: { about: 'Right-clicking a todo offers only Delete' },
-    new: { about: 'A new teammate: only the Computers block, no empty todos or outputs' },
+    new: { about: 'A new teammate: Computers, and the todo block with only 帮我查查 and the daily switch; no outputs' },
   },
   async ready(page) {
     await page.getByTestId('bot-glance-button').waitFor();
@@ -47,13 +47,16 @@ export default {
     const popover = page.getByTestId('bot-glance-popover');
     await popover.waitFor();
     if (ui.case === 'new') {
-      assert.equal(await page.getByTestId('bot-glance-todo').count(), 0, 'no todos block');
+      assert.equal(await page.getByTestId('bot-glance-todo').count(), 0, 'no todo rows');
+      assert.equal(await page.getByTestId('bot-glance-check').count(), 1, '帮我查查 even without todos');
+      assert.equal(await page.getByTestId('bot-glance-daily-check').count(), 1, 'daily switch');
       assert.equal(await page.getByTestId('bot-glance-output').count(), 0, 'no outputs block');
       assert.equal(await page.getByTestId('bot-glance-computer').count(), 1, 'only this computer');
       await ui.capture('open');
       return;
     }
     assert.equal(await page.getByTestId('bot-glance-todo').count(), 5, 'five todos before Show more');
+    assert.equal(await page.getByTestId('bot-glance-check').count(), 1, '帮我查查 first in the todo block');
     assert.equal(await page.getByTestId('bot-glance-output').count(), 3, 'three outputs before Show more');
     assert.equal(await page.getByTestId('bot-glance-computer').count(), 2, 'offline computers folded');
     const box = await popover.boundingBox();

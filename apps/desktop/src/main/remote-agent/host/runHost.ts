@@ -14,6 +14,8 @@ import { DEFAULT_REMOTE_AGENT_LIMITS, type RemoteAgentLimits, type RemoteAgentLi
  *  - 其他账号的控制端(供应商分享的受邀者，deps.controllerTrust 判定)不可信：载荷按白名单复核
  *    (guestIsolation.ts)，只开放已隔离的 Agent，只能恢复自己建立的会话；
  *  - 本机从不主动向控制端发起请求，一切经控制端拉取的事件流交付；控制端长时间不拉取视为离开；
+ *  - 任务不忙且闲置满主人设置的时长(远程任务数量里的「闲置收回」)就结束它的 Agent 进程，事件流以带
+ *    idleReclaimed 的 `closed` 收尾，控制端再要它干活时带原来的会话 id 重新打开；
  *  - 本机的地址、凭证与供应商配置不进事件流：事件只含 Agent 输出与反向请求；
  *  - open / call / reply / push / close 都按各自的 id 去重，poll 按游标幂等；
  *  - 同一控制端的全部任务共用一个 poll，任务再多也只占设备互联的一个在途请求。
@@ -52,8 +54,10 @@ import {
 } from '@cindy/device-link';
 import type { AgentEvent, AgentSessionHandle, DeviceHostedLinkActivity, InteractionRequest, ForkSdkSessionOptions, ForkSdkSessionResult } from '@cindy/maker-core';
 
+import { EXEC_SERVER_WS_PATH } from '../controller/execServerRelay';
 import { RemoteAgentRunClient, type RemoteAgentInvoke, type RemoteAgentPoller } from '../controller/runClient';
 import { EventLog, waitForAny } from '../eventLog';
+import { createExecServerShortcut, type ExecServerShortcutLayout } from './execServerShortcut';
 import { createGuestUsageMeter, type GuestUsageSample } from './guestUsage';
 import {
   GROUP_SWITCH_STATE_KEY,
@@ -97,6 +101,11 @@ const gunzipAsync = promisify(gunzip);
 export const REMOTE_AGENT_HOST_UNREAD_BYTES = 64 * 1024 * 1024;
 /** 运行中的任务超过这么久没有被读取，视为控制端已离开。 */
 export const REMOTE_AGENT_HOST_IDLE_MS = 3 * 60_000;
+/**
+ * 控制端在 poll 里报「这边还有工作在进行」(hold)后，在控制端存活窗口内按忙处理；后续 poll 不带 hold 就解除。
+ * 组所在电脑据此在拉取组内电脑时接着报 hold。大量任务按批轮转可能超过最短的 1 分钟闲置设置。
+ */
+const REMOTE_HOLD_FRESH_MS = REMOTE_AGENT_HOST_IDLE_MS;
 /** 结束后保留一段时间供控制端读完收尾事件。 */
 export const REMOTE_AGENT_HOST_RETAIN_MS = 60_000;
 /** 「需要换一台」凭证多久内有效(受邀者那边交接通常几秒内完成，重开时带回)。 */
@@ -105,6 +114,11 @@ export const GROUP_SWITCH_TOKEN_TTL_MS = 10 * 60_000;
 const GROUP_SWITCH_ROUND_MS = 30 * 60_000;
 /** 打开的结果不明(超时、断链)时，换下一台之前最多等多久请那台关掉同一个任务。 */
 const RELAY_CLOSE_WAIT_MS = 5_000;
+/**
+ * 中转任务的一批帧从收到到推给组内电脑完成超过这么久算慢(每个 Codex 文件请求的回包都要经过这里，
+ * 与控制端中继的慢回推同一口径)。每个任务只记第一次，带排队与推送两段耗时。
+ */
+const RELAY_SLOW_PUSH_MS = 2_000;
 /** 删除受邀者时没通知到的组内电脑(离线等)，多久后再试一次。 */
 const FORGET_RETRY_MS = 10 * 60_000;
 /** 那台上的任务以这些原因结束是正常收尾，不算失败。 */
@@ -332,8 +346,12 @@ interface RelayBackend {
   started: boolean;
   /** 那台上正在运行一轮(按它报来的状态)。 */
   turnRunning: boolean;
+  /** 那台报来的忙闲状态(在准备回合、后台任务、待唤醒续跑)：本机按闲置收回时与本机 Agent 同一判据。 */
+  activity: Record<string, unknown>;
   /** 推帧按任务串行，保证 Codex exec-server 帧的顺序。 */
   pushChain: Promise<void>;
+  /** 已记过一次转发慢(排队加推送超过 RELAY_SLOW_PUSH_MS)。 */
+  slowPushLogged?: boolean;
   model?: string;
   load: GroupRelayLoad;
 }
@@ -364,6 +382,17 @@ interface Run {
   kind: RemoteAgentKind;
   log: EventLog;
   lastReadAt: number;
+  /**
+   * 最后一次活动(闲置收回从这里算起)：打开、控制端的调用 / 回包 / 推帧、写进事件流的非状态行、控制端报 hold，
+   * 以及巡检时看到它还忙。只被拉取(poll)不算：闲着的任务控制端也一直在拉。
+   */
+  activeAt: number;
+  /** 控制端最近一次在 poll 里报 hold 的时间(中转时接着报给组内电脑)。 */
+  heldAt?: number;
+  /** 回到某条消息后、下一轮跑完前：Claude Code 要到下一次发送才截断对话，结束进程会丢掉这次回退。 */
+  rewindPending?: boolean;
+  /** 按闲置收回结束(收尾的 `closed` 行带 idleReclaimed)。 */
+  idleReclaimed?: boolean;
   closedAt?: number;
   closing: boolean;
   handle?: AgentSessionHandle;
@@ -514,6 +543,26 @@ export function snapshotHandleState(handle: AgentSessionHandle): Record<string, 
   };
   for (const key of Object.keys(state)) if (state[key] === undefined) delete state[key];
   return JSON.parse(JSON.stringify(state)) as Record<string, unknown>;
+}
+
+/**
+ * 状态里还有放不下的事：在跑或在准备的回合、后台任务、待唤醒续跑。与控制端判断能否让出名额同一判据
+ * (controller/proxyHandle.ts isQuiet)。
+ */
+function activityBusy(state: Record<string, unknown>): boolean {
+  return state.turnRunning === true
+    || state.preparing === true
+    || (Array.isArray(state.backgroundTasks) && state.backgroundTasks.length > 0)
+    || (typeof state.pendingWake === 'number' && state.pendingWake > 0);
+}
+
+function handleActivity(handle: AgentSessionHandle): Record<string, unknown> {
+  return {
+    turnRunning: safeCall(handle.isTurnRunning?.bind(handle)),
+    preparing: safeCall(handle.isPreparingUserTurn?.bind(handle)),
+    backgroundTasks: safeCall(handle.listBackgroundTasks?.bind(handle)),
+    pendingWake: safeCall(handle.countPendingWakeContinuations?.bind(handle)),
+  };
 }
 
 /** 启动结果里给控制端的会话描述(静态部分 + 支持哪些可选方法)。 */
@@ -779,14 +828,40 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
     }
   }
 
+  /** 主人设置的闲置收回时长(分钟，0 = 不收回)；caps 声明的与巡检用的是同一个值。 */
+  function idleReclaimMinutes(): number {
+    return (deps.readLimits?.() ?? DEFAULT_REMOTE_AGENT_LIMITS).idleMinutes ?? 0;
+  }
+
+  /**
+   * 不能按闲置收回：有在等控制端回包的反向请求(权限确认、执行器 / MCP 请求)、在执行的方法调用、待生效的回退，
+   * 还没启动好，或 Agent 那边还有放不下的事(中转任务按组内电脑报来的状态)。
+   */
+  function busyForReclaim(run: Run): boolean {
+    if (run.heldAt !== undefined && now() - run.heldAt < REMOTE_HOLD_FRESH_MS) return true;
+    if (run.pending.size > 0 || run.rewindPending) return true;
+    for (const status of run.calls.values()) if (status === 'running') return true;
+    if (run.relay) return !run.relay.started || activityBusy(run.relay.activity);
+    return !run.handle || activityBusy(handleActivity(run.handle));
+  }
+
   function sweep(): void {
     const t = now();
     for (const [uploadKey, upload] of uploads) {
       if (t - upload.touchedAt > UPLOAD_IDLE_MS) uploads.delete(uploadKey);
     }
+    let reclaimMs = 0;
+    try {
+      reclaimMs = idleReclaimMinutes() * 60_000;
+    } catch (error) {
+      // 换账号途中读不到设置：这一轮不收回。
+      deps.log?.warn('remote agent: idle reclaim setting unavailable', { error: String(error) });
+    }
     for (const run of runs.values()) {
       if (run.closedAt !== undefined) {
-        if (t - run.closedAt > REMOTE_AGENT_HOST_RETAIN_MS) void disposeRun(run);
+        // 闲置收回的通知必须覆盖控制端 2 分钟的断链重试；否则恢复后只读到 missing，会误关本机部分。
+        const retainMs = run.idleReclaimed ? REMOTE_AGENT_HOST_IDLE_MS : REMOTE_AGENT_HOST_RETAIN_MS;
+        if (t - run.closedAt > retainMs) void disposeRun(run);
         continue;
       }
       if (!deps.isControllerAuthorized(run.controller)) {
@@ -795,6 +870,16 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
         void finishRun(run, 'account-changed', 'account-boundary');
       } else if (t - run.lastReadAt > REMOTE_AGENT_HOST_IDLE_MS) {
         void finishRun(run, 'controller-gone', 'navigation');
+      } else if (run.closing) {
+        continue;
+      } else if (busyForReclaim(run)) {
+        // 忙到哪一刻，闲置就从哪一刻算起(后台任务跑得再久，结束后也要再闲置满设置的时长)。
+        run.activeAt = t;
+      } else if (reclaimMs > 0 && t - run.activeAt >= reclaimMs) {
+        deps.log?.info('remote agent: reclaiming an idle run', { runId: run.id, idleMinutes: reclaimMs / 60_000 });
+        // 原因写旧控制端也认识的 `ended`(静默收起，下次发消息重建并接回)；新控制端按 idleReclaimed 保留本机部分。
+        run.idleReclaimed = true;
+        void finishRun(run, 'ended', 'navigation');
       }
     }
     stopSweepIfIdle();
@@ -871,6 +956,10 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
   }
 
   function appendPrepared(run: Run, item: unknown): void {
+    const line = item as { t?: unknown; event?: { type?: unknown } };
+    // 状态行在闲着时也可能有变化(用量等)，不算活动；忙闲由巡检直接看。
+    if (line.t !== 'state') run.activeAt = now();
+    if (line.t === 'event' && line.event?.type === 'done') run.rewindPending = false;
     if (run.log.append(item)) return;
     if (!run.closing) {
       deps.log?.warn('remote agent event log overflow; ending run', { runId: run.id });
@@ -971,7 +1060,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
     payload: RemoteAgentOpenPayload,
     hostSessionId: string,
     trust: RemoteAgentControllerTrust,
-  ): Promise<{ shadowDir: string; mirrorRoot: string; sessionRoot: string; extraDirs: string[]; writableDirs: string[]; projectText(text: string): string }> {
+  ): Promise<{ shadowDir: string; mirrorRoot: string; shortcutLayout: ExecServerShortcutLayout; sessionRoot: string; extraDirs: string[]; writableDirs: string[]; projectText(text: string): string }> {
     const sessionRoot = shadowSessionRoot(controller, hostSessionId);
     /** 受邀者的说明文件：指向会话目录之外的 `@` 引用不再被当作导入(否则会在本机读文件)。 */
     const instructionBytes = (data: Buffer, fileDir: string): Buffer => (
@@ -1019,13 +1108,38 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
     }
     let realParent = payload.workspace.workingDir;
     let virtualParent = shadowDir;
+    /** 控制端有对应目录的各级上级目录在影子里的位置(下标 = 向上几级)。 */
+    const mappedAncestors: string[] = [];
+    const taskAncestors: string[] = [payload.workspace.workingDir];
     for (let up = 1; up <= MAX_ANCESTOR_LEVELS; up += 1) {
       const nextReal = foreignPath.dirname(realParent);
       if (nextReal === realParent) break;
       realParent = nextReal;
       virtualParent = path.dirname(virtualParent);
+      mappedAncestors[up] = virtualParent;
+      taskAncestors[up] = realParent;
       pathAliases.push({ from: realParent, to: virtualParent });
     }
+    // 控制端报来的各级上级目录里不存在的标记名(只认有对应目录的级别；通往工作区的那一级目录名不算)。
+    const ancestorAbsence = payload.virtualWorkspace && payload.ancestorMarkers
+      ? payload.ancestorMarkers.levels.flatMap(({ up, present }) => {
+          const dir = mappedAncestors[up];
+          const towardWorkspace = path.basename(up === 1 ? shadowDir : mappedAncestors[up - 1] ?? '');
+          const absent = payload.ancestorMarkers!.names.filter((name) => !present.includes(name) && name !== towardWorkspace);
+          return dir && absent.length ? [{ dir, absent: new Set(absent) }] : [];
+        })
+      : [];
+    // 镜像外的绝对路径原样交给任务电脑：只复用它已确认不存在的标记，不猜这台电脑上级目录里隐藏文件的存在性。
+    // Windows 与 POSIX 的路径格式不同，不能拿一边的绝对路径直接匹配另一边的 file URI。
+    const samePathFormat = (payload.workspace.platform === 'win32') === (process.platform === 'win32');
+    const taskAncestorAbsence = payload.virtualWorkspace && payload.ancestorMarkers && samePathFormat
+      ? payload.ancestorMarkers.levels.flatMap(({ up, present }) => {
+          const dir = taskAncestors[up];
+          const towardWorkspace = foreignPath.basename(taskAncestors[up - 1] ?? '');
+          const absent = payload.ancestorMarkers!.names.filter((name) => !present.includes(name) && name !== towardWorkspace);
+          return dir && absent.length ? [{ dir, absent: new Set(absent) }] : [];
+        })
+      : [];
     [...payload.workspace.extraDirs, ...payload.workspace.writableDirs].forEach((from, index) => {
       pathAliases.push({ from, to: virtualAll[index] });
     });
@@ -1082,7 +1196,9 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
       await writeNew(target, markdownBytes(projectBytes(Buffer.from(file.data, 'base64')), target));
     }
     if (personal.permissions) await mergeLocalPermissions(path.join(shadowDir, '.claude', 'settings.local.json'), Object.fromEntries(Object.entries(personal.permissions).map(([key, rules]) => [key, rules?.map(projectText)])));
-    return { shadowDir, mirrorRoot, sessionRoot, extraDirs: virtualAll.slice(0, extraCount), writableDirs: virtualAll.slice(extraCount), projectText };
+    // virtualParent 停在控制端有对应目录的最上一级(与控制端 shadowAliases 逐级映射的范围一致)。
+    const shortcutLayout: ExecServerShortcutLayout = { mirrorRoot, mappedRoot: virtualParent, ancestorAbsence, taskAncestorAbsence };
+    return { shadowDir, mirrorRoot, shortcutLayout, sessionRoot, extraDirs: virtualAll.slice(0, extraCount), writableDirs: virtualAll.slice(extraCount), projectText };
   }
 
   async function startRun(run: Run, payload: RemoteAgentOpenPayload): Promise<void> {
@@ -1100,7 +1216,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
         guestHome = guestHomeFor(guestScopeOf(run.controller, run.relayKey));
         await fsp.mkdir(guestHome, { recursive: true, mode: 0o700 });
       }
-      const { shadowDir, mirrorRoot, sessionRoot, extraDirs, writableDirs, projectText } = await withShadowLock(hostSessionId, async () => {
+      const { shadowDir, mirrorRoot, shortcutLayout, sessionRoot, extraDirs, writableDirs, projectText } = await withShadowLock(hostSessionId, async () => {
         // 断线后旧实例还没清理就重新打开同一任务时，新旧实例共用同一个影子目录：
         // 先结束旧实例再重建，避免删掉旧 Agent 还在使用的目录，或两个实例争用重建后的目录。
         for (const other of runs.values()) {
@@ -1112,6 +1228,9 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
       });
       run.workspaceDir = sessionRoot;
       run.virtualRoot = payload.virtualWorkspace ? mirrorRoot : undefined;
+      // 虚拟工作区里注定不存在的路径查询由本机直接回答，不再逐条跨设备往返(见 execServerShortcut)。
+      const shortcut = payload.virtualWorkspace ? createExecServerShortcut(shortcutLayout) : null;
+      const execConns = new Set<string>();
       const tunnel = await createRunTunnel({
         http: async (request, signal) => {
           // Pi API-key providers keep their native transports. Their adapter
@@ -1138,11 +1257,20 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
         },
         wsOpen: (connId, wsPath) => {
           (run.localWs ??= new Set()).add(connId);
+          if (wsPath.split('?')[0] === EXEC_SERVER_WS_PATH) execConns.add(connId);
           append(run, { t: 'ws', connId, kind: 'open', path: wsPath });
         },
-        wsMessage: (connId, data) => append(run, { t: 'ws', connId, kind: 'message', data }),
+        wsMessage: (connId, data) => {
+          const local = shortcut && execConns.has(connId) ? shortcut(data) : null;
+          if (local !== null) {
+            run.tunnel?.sendWs(connId, local);
+            return;
+          }
+          append(run, { t: 'ws', connId, kind: 'message', data });
+        },
         wsClose: (connId) => {
           run.localWs?.delete(connId);
+          execConns.delete(connId);
           append(run, { t: 'ws', connId, kind: 'close' });
         },
       });
@@ -1525,6 +1653,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
         attempt,
         started: false,
         turnRunning: false,
+        activity: {},
         pushChain: Promise.resolve(),
         load,
       };
@@ -1554,11 +1683,20 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
             for (const fn of queue) fn();
           });
       };
-      /** 那台上的任务开始运行之后结束了：这个任务也结束。 */
-      const relayClosed = (reason: string, error?: RemoteAgentErrorInfo) => {
+      /**
+       * 那台上的任务开始运行之后结束了：这个任务也结束。那台按闲置收回的(idleReclaimed)原样转告受邀者，
+       * 它连回时组所在电脑按会话记录回到同一台。
+       */
+      const relayClosed = (reason: string, error?: RemoteAgentErrorInfo, idleReclaimed = false) => {
         const finish = () => {
           if (run.closing) return;
-          append(run, { t: 'closed', reason, ...(error ? { error: relayErrorForGuest(error) } : {}) });
+          if (idleReclaimed) run.idleReclaimed = true;
+          append(run, {
+            t: 'closed',
+            reason,
+            ...(error ? { error: relayErrorForGuest(error) } : {}),
+            ...(idleReclaimed ? { idleReclaimed: true } : {}),
+          });
           void finishRun(run, reason, 'navigation', false, true);
         };
         // 一轮进行中那台的任务意外结束(离线、崩溃等)：与终态错误一样可以换一台。
@@ -1610,6 +1748,9 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
             backend.turnRunning = state.turnRunning;
             backend.load.setRunning(state.turnRunning);
           }
+          for (const field of ['turnRunning', 'preparing', 'backgroundTasks', 'pendingWake'] as const) {
+            if (field in state) backend.activity[field] = state[field];
+          }
           if (run.hostSessionId) {
             void recordGuestSession(run.controller, undefined, run.hostSessionId, [
               typeof state.id === 'string' ? state.id : undefined,
@@ -1640,14 +1781,16 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
             if (!run.closing) append(run, { ...item, connId });
           });
         },
-        onClosed: (reason, error) => {
+        onClosed: (reason, error, idleReclaimed) => {
           if (run.relay !== backend || run.closing) return;
           if (!backend.started) {
             closedEarly = { reason, ...(error ? { error } : {}) };
             return;
           }
-          relayClosed(reason, error);
+          relayClosed(reason, error, idleReclaimed);
         },
+        // 受邀者那边还有这个任务的工作(它在拉取本机时报的 hold)：接着报给组内电脑，免得那台按闲置收回。
+        holdsRemote: () => run.heldAt !== undefined && now() - run.heldAt < REMOTE_HOLD_FRESH_MS,
       }, randomUUID, deps.log);
       run.relay = backend;
       try {
@@ -1773,6 +1916,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
       }
       const value = await relay.client.callWithId(callId, method, callArgs);
       if (method === 'setModel' && typeof args[0] === 'string') run.authorizedModel = args[0];
+      if (method === 'commitRewindFiles' && run.kind === 'claude-code') run.rewindPending = true;
       append(run, { t: 'result', callId, ok: true, ...(value !== undefined ? { value: JSON.parse(JSON.stringify(value)) } : {}) });
     } catch (error) {
       append(run, { t: 'result', callId, ok: false, error: relayErrorInfoFrom(error) });
@@ -1831,10 +1975,10 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
     // Native image materialization must finish before the log becomes unreadable.
     await imagePreparation.get(run);
     // 收尾事件绕过 closing 判断直接写入。
-    if (!skipClosedEvent) run.log.append({ t: 'closed', reason });
+    if (!skipClosedEvent) run.log.append({ t: 'closed', reason, ...(run.idleReclaimed ? { idleReclaimed: true } : {}) });
     run.log.end();
     run.closedAt = now();
-    deps.log?.info('remote agent run finished', { runId: run.id, reason });
+    deps.log?.info('remote agent run finished', { runId: run.id, reason, ...(run.idleReclaimed ? { idleReclaimed: true } : {}) });
   }
 
   async function disposeRun(run: Run): Promise<void> {
@@ -1960,6 +2104,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
       }
       if (nextProviderId && !run.closing) run.providerId = nextProviderId;
       if (method === 'setModel' && typeof args[0] === 'string' && !run.closing) run.authorizedModel = args[0];
+      if (method === 'commitRewindFiles' && run.kind === 'claude-code') run.rewindPending = true;
       append(run, { t: 'result', callId, ok: true, ...(value !== undefined ? { value: JSON.parse(JSON.stringify(value)) } : {}) });
     } catch (error) {
       append(run, { t: 'result', callId, ok: false, error: remoteAgentErrorInfo(error) });
@@ -1980,26 +2125,33 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
 
   async function poll(
     controller: string,
-    wanted: ReadonlyArray<{ runId: string; cursor: number }>,
+    wanted: ReadonlyArray<{ runId: string; cursor: number; hold?: true }>,
     waitMs: number,
     signal?: AbortSignal,
   ): Promise<RemoteAgentPollResult> {
-    const touch = () => {
+    const touch = (updateHold: boolean) => {
       const t = now();
-      for (const { runId } of wanted) {
+      for (const { runId, hold } of wanted) {
         const run = runs.get(key(controller, runId));
-        if (run) run.lastReadAt = t;
+        if (!run) continue;
+        run.lastReadAt = t;
+        // Only apply the snapshot when this request arrives; an older long poll returning later must
+        // not clear a newer hold received with a process startup reply.
+        if (!updateHold) continue;
+        // 控制端那边还有这个任务的工作在进行：按有活动算，不按闲置收回。
+        if (hold) run.activeAt = run.heldAt = t;
+        else run.heldAt = undefined;
       }
     };
     const live = () => wanted.flatMap(({ runId, cursor }) => {
       const run = runs.get(key(controller, runId));
       return run && run.log.isValidCursor(cursor) ? [{ run, cursor }] : [];
     });
-    touch();
+    touch(true);
     const initial = live();
     const anyReady = initial.length < wanted.length || initial.some(({ run, cursor }) => run.log.isReady(cursor));
     if (!anyReady && waitMs > 0) await waitForAny(initial.map(({ run }) => run.log), waitMs, signal);
-    touch();
+    touch(false);
     const out: RemoteAgentPollResult = { runs: [] };
     let budget = REMOTE_AGENT_POLL_MAX_BYTES;
     const start = wanted.length ? pollRotation++ % wanted.length : 0;
@@ -2281,13 +2433,15 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
       }
       case 'caps': {
         const guest = trustOf(controller) === 'guest';
+        const limits = deps.readLimits?.() ?? DEFAULT_REMOTE_AGENT_LIMITS;
         const caps: RemoteAgentCaps = {
           version: REMOTE_AGENT_VERSION,
           agents: (['claude-code', 'codex', 'pi'] as const).map((kind) => ({
             kind,
             available: deps.isAgentAvailable(kind) && (!guest || GUEST_SUPPORTED_AGENTS.has(kind)),
           })),
-          maxRuns: (deps.readLimits?.() ?? DEFAULT_REMOTE_AGENT_LIMITS).perDevice,
+          maxRuns: limits.perDevice,
+          idleReclaimMinutes: limits.idleMinutes ?? 0,
           uploadChunkBytes: REMOTE_AGENT_UPLOAD_CHUNK_BYTES,
           maxPayloadBytes: REMOTE_AGENT_MAX_PAYLOAD_BYTES,
           virtualWorkspace: true,
@@ -2458,6 +2612,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
           kind: request.agentKind,
           log: new EventLog(REMOTE_AGENT_HOST_UNREAD_BYTES),
           lastReadAt: now(),
+          activeAt: now(),
           closing: false,
           // runId 由控制端取，按控制端分目录：不同控制端的同名 runId 不会共用、互删附件。
           attachmentsDir: path.join(deps.runsRoot, 'attachments', controllerDir(controller), request.runId),
@@ -2501,6 +2656,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
           return {};
         }
         run.calls.set(request.callId, 'running');
+        run.activeAt = now();
         void call(run, request.callId, request.method, request.payload);
         return {};
       }
@@ -2516,13 +2672,19 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
         }
         const reply = parseRemoteAgentReply(await resolvePayload(controller, request.payload));
         run.pending.delete(request.requestId);
+        run.activeAt = now();
         pending.resolve(reply);
         return {};
       }
       case 'push': {
         const run = requireRun(controller, request.runId);
+        // The first local process may start between poll batches. Its startup reply carries the hold
+        // immediately; retries refresh the lease without delivering the frames again.
+        if (request.hold) run.activeAt = run.heldAt = now();
         if (run.pushSeq.has(request.seq)) return {};
         run.pushSeq.add(request.seq);
+        // Codex 执行环境在控制端的输出与回包：控制端那边还在干活。
+        run.activeAt = now();
         if (run.pushSeq.size > 1024) run.pushSeq.delete(run.pushSeq.values().next().value as number);
         const relay = run.relay;
         if (relay) {
@@ -2532,8 +2694,18 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
             return connId ? [{ ...frame, connId }] : [];
           });
           if (frames.length) {
+            const queuedAt = now();
             relay.pushChain = relay.pushChain
-              .then(() => relay.client.push(frames))
+              .then(async () => {
+                const startedAt = now();
+                await relay.client.push(frames);
+                const waitMs = startedAt - queuedAt;
+                const pushMs = now() - startedAt;
+                if (waitMs + pushMs >= RELAY_SLOW_PUSH_MS && !relay.slowPushLogged) {
+                  relay.slowPushLogged = true;
+                  deps.log?.warn('remote agent relay push slow', { runId: run.id, waitMs, pushMs, frames: frames.length });
+                }
+              })
               .catch((error) => {
                 deps.log?.warn('remote agent relay push failed', { runId: run.id, error: String(error) });
                 // 转发不上：两边都关掉这些连接，Agent 那边按连接断开处理。

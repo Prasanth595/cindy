@@ -143,12 +143,15 @@ describe('saved automation model selection at dispatch', () => {
     expect(deps.switchHarness).not.toHaveBeenCalled();
     expect(deps.applyModel).not.toHaveBeenCalled();
   });
-  it.each(['missing', 'archived', 'deleted'])('returns the resolved snapshot for %s target recovery without touching the target', async (status) => {
+  // PR #6832: recovery must not depend on a dead target's catalog. The previous
+  // fixture only resolved successfully, hiding offline/revoked-share failures.
+  // Unit tier: unresolved saved preferences reach the runner without remote I/O.
+  it.each(['missing', 'archived', 'deleted'])('preserves the saved choice for %s recovery without resolving the old catalog', async (status) => {
     const deps = fixture();
-    const expected = { ...selection, effort: 'medium' as const };
     deps.getTarget.mockResolvedValue(status === 'missing' ? null as never : { agentKind: 'codex', status });
-    deps.resolveSelection.mockResolvedValue(expected);
-    await expect(applyScheduledModelSelection(selection, deps)).resolves.toEqual(expected);
+    deps.resolveSelection.mockRejectedValue(new Error('old target offline or share revoked'));
+    await expect(applyScheduledModelSelection(selection, deps)).resolves.toEqual(selection);
+    expect(deps.resolveSelection).not.toHaveBeenCalled();
     expect(deps.switchHarness).not.toHaveBeenCalled();
     expect(deps.applyModel).not.toHaveBeenCalled();
   });
