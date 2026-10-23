@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { executeArchivedGroupTool } from '../archivedGroupRecovery.js';
 const avatarUpload = vi.hoisted(() => vi.fn());
 vi.mock('../../ossPublicUpload.js', () => ({ uploadPublicAsset: avatarUpload }));
 const fixture = vi.hoisted(() => ({ upload: vi.fn(async (): Promise<unknown[]> => []), download: vi.fn(), packaged: true, urls: [] as string[], wsUrls: [] as string[], exists: vi.fn(), config: '', handle: vi.fn(), profiles: [] as unknown[], sockets: [] as import('ws').WebSocket[], token: 'isolated-test-token', refresh: vi.fn(async () => true), requests: [] as Array<{ url: string; token: string; actor?: string }> }));
@@ -658,6 +659,87 @@ describe('Chat Server result delivery and refresh', () => {
       expect(writes()).toHaveLength(count);
       fixture.handle.mockImplementation(original);
       expect(await executeCurrentGroupTool('lane', { type: 'inspect' }, confirm)).toMatchObject({ ok: true, group: { name: 'Applied' } });
+    });
+    // #6944: reconciliation reads the advanced revision after a lost response.
+    // Unit, real Host/HTTP adapter: the retry must keep the exact idempotent payload.
+    it.each(['update', 'plan'] as const)('retries an unknown %s with the original wire request after reconciliation', async type => {
+      await setup();
+      const planId = '80000000-0000-4000-8000-000000000001';
+      let revision = 1; let status = 'waiting';
+      const original = fixture.handle.getMockImplementation()!;
+      fixture.handle.mockImplementation((route, method, body) => method === 'GET' && route.includes('/plans')
+        ? { body: [{ id: planId, revision, status, current_step: null, steps: [] }] } : original(route, method, body));
+      mutate = () => { group.revision = 2; revision = 2; status = 'stopped'; throw new Error('REQUEST_TIMEOUT'); };
+      const action = type === 'update' ? { type, expectedRevision: 1, name: 'Applied' }
+        : { type, expectedRevision: 1, planId, action: 'dismiss' as const };
+      expect(await call(action)).toMatchObject({ ok: false, errorCode: 'GROUP_RESULT_UNKNOWN' });
+      const first = writes()[0];
+      expect(await executeCurrentGroupTool('lane', { type: 'inspect' }, confirm)).toMatchObject({ ok: true });
+      mutate = () => ({ body: { revision: 2 } });
+      expect(await call(action)).toMatchObject({ ok: true });
+      expect(writes()).toHaveLength(2);
+      expect(writes()[1]).toEqual(first);
+    });
+    it('identifies the bound execution alongside source and plan linkage', async () => {
+      await setup();
+      const other = { ...execution, id: '80000000-0000-4000-8000-000000000001',
+        source_message_id: '80000000-0000-4000-8000-000000000002', plan_id: '80000000-0000-4000-8000-000000000003', plan_step: 2 };
+      const original = fixture.handle.getMockImplementation()!;
+      fixture.handle.mockImplementation((route, method, body) => method === 'GET' && route.endsWith('/executions')
+        ? { body: [execution, other] } : original(route, method, body));
+      expect(await executeCurrentGroupTool('lane', { type: 'inspect' }, confirm)).toMatchObject({ ok: true,
+        currentExecution: { id: execution.id, sourceMessageId: execution.source_message_id },
+        executions: [expect.objectContaining({ id: execution.id, sourceMessageId: execution.source_message_id }),
+          expect.objectContaining({ id: other.id, sourceMessageId: other.source_message_id, planId: other.plan_id, planStep: 2 })] });
+    });
+    // #6944 unit: archiving kills the group lease, so recovery must come from
+    // the same bot's owner-private-chat with fresh role/input checks, not that lease.
+    it.each(['restore', 'unknown', 'role-revoked', 'wrong-bot', 'guest', 'group-lane', 'queued-input-changed'] as const)('recovers archived groups through a separate private grant: %s', async mode => {
+      await setup();
+      const original = fixture.handle.getMockImplementation()!;
+      fixture.handle.mockImplementation((route, method, body) => {
+        if (route.startsWith('/conversations?')) return { body: [{ ...group, state: 'joined' }] };
+        if (group.archived && body?.action === 'heartbeat') return { status: 409, body: { error: { code: 'STALE_EXECUTOR' } } };
+        if (method === 'PATCH' && body?.archived === false) return mutate(route, body);
+        return original(route, method, body);
+      });
+      mutate = () => { group.archived = true; group.revision = 2; return { body: { revision: 2 } }; };
+      expect(await call({ type: 'archive', archived: true, expectedRevision: 1 })).toMatchObject({ ok: true });
+      expect(deps.abortLane).toHaveBeenCalledWith('lane');
+      expect((await executeCurrentGroupTool('lane', { type: 'inspect' }, confirm)).ok).toBe(false);
+      let key = 'private-input';
+      const permission = { planModeEnabled: false, isCurrent: () => true };
+      const recoveryDeps = {
+        caller: async () => ({ botId: mode === 'wrong-bot' ? 'other-local-bot' : 'local-bot', source: 'bot', role: mode === 'group-lane' ? 'group' : 'canonical',
+          status: 'active', botStatus: 'active', archivedAt: null, remoteHostId: null }),
+        input: () => ({ key, boundary: 'owner', ownerInput: mode !== 'guest', permission }),
+      };
+      const recover = (request: import('@cindy/mcps').ArchivedGroupRequest) => executeArchivedGroupTool('private-chat', request, recoveryDeps);
+      const inspected = await recover({ type: 'list-archived' });
+      if (mode === 'restore' || mode === 'unknown') expect(inspected).toMatchObject({ ok: true, groups: [{ id: roomId, revision: 2 }] });
+      if (mode === 'role-revoked') members[0].role = 'member';
+      if (mode === 'queued-input-changed') {
+        fixture.handle.mockImplementation((route, method, body) => {
+          if (route === '/conversations/' + roomId + '/snapshot' && method === 'GET') key = 'new-private-input';
+          return original(route, method, body);
+        });
+      }
+      mutate = () => { group.archived = false; group.revision = 3; if (mode === 'unknown') throw new Error('REQUEST_TIMEOUT'); return { body: { revision: 3 } }; };
+      const request = { type: 'restore-archived' as const, mutation: { groupId: roomId, expectedRevision: 2, operationId: '70000000-0000-4000-8000-000000000003' } };
+      const result = await recover(request);
+      if (mode === 'unknown') {
+        expect(result).toMatchObject({ ok: false, errorCode: 'GROUP_RESULT_UNKNOWN' });
+        expect(await recover(request)).toMatchObject({ ok: false, errorCode: 'GROUP_RESULT_UNKNOWN' });
+        expect(await recover({ type: 'list-archived' })).toMatchObject({ ok: true, groups: [{ id: roomId, archived: false }] });
+        mutate = () => ({ body: { revision: 3 } });
+        expect(await recover(request)).toMatchObject({ ok: true });
+      } else expect(result.ok).toBe(mode === 'restore');
+      const restored = fixture.handle.mock.calls.filter(([, method, body]) => method === 'PATCH' && body?.archived === false);
+      expect(restored).toHaveLength(mode === 'restore' ? 1 : mode === 'unknown' ? 2 : 0);
+      if (restored.length) {
+        expect(restored[0][2]).toEqual({ operationId: request.mutation.operationId, archived: false, expectedRevision: 2 });
+        expect(fixture.requests.filter(r => new URL(r.url).pathname === '/v1/conversations/' + roomId).at(-1)?.actor).toBe(botId);
+      }
     });
     it.each([401, 403, 500])('does not automatically replay a management write after HTTP %s', async status => {
       await setup();

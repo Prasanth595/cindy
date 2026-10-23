@@ -760,7 +760,9 @@ Desktop 群聊与话题之间的分隔线支持左右拖拽和方向键调宽；
 Host 从活跃执行绑定群与伙伴，不接受模型指定群或执行身份；查询读取当前服务端快照、成员与队列，
 返回伙伴自身角色、请求者角色和有效权限。角色投影复用 chatGroupRolePermissions。
 公开成员保留 ownerActorId／ownerName，以区分同名伙伴；计划返回 currentStep 及每步的位置、
-任务、负责伙伴 Chat actor ID 与状态，使移除／更换步骤有查询依据。人类主人请求且当前伙伴
+任务、负责伙伴 Chat actor ID 与状态，使移除／更换步骤有查询依据。查询同时返回 currentExecution
+（本次工具绑定的执行 ID、sourceMessageId、planId、planStep）和队列内各执行的同样来源关联；
+需要全部停止时先停止其他执行，最后停止 currentExecution，避免自己的工具授权提前失效。人类主人请求且当前伙伴
 有管理角色时，额外返回主人自有的可邀请伙伴（本地 botId 与 Chat actorId），复用 ownedBots
 身份映射；非主人请求不暴露该非群成员名册，也不增加伙伴私人资料访问。
 UI 的账号代演规则仍可选主人拥有的群主／管理员；伙伴工具只使用当前 execution.bot_id，
@@ -782,7 +784,7 @@ UI 的账号代演规则仍可选主人拥有的群主／管理员；伙伴工�
 | 成员邀请、移除、封禁、解禁 | member | 当前伙伴 owner/admin；保护群主、执行伙伴与请求者；最终由服务端校验目标 |
 | 成员管理员／普通角色 | member.action=role | 当前伙伴 owner；禁止降级群主，转让单独处理 |
 | 创建／撤销邀请链接 | createInvite / revokeInvite | 当前伙伴 owner/admin；撤销复用 UI 口令解析；严格校验回执 |
-| 归档／取消归档 | archive | 当前伙伴 owner/admin；检查 revision；已解散群不可恢复 |
+| 归档／取消归档 | archive；私聊 get_archived_groups / restore_archived_group | 当前伙伴 owner/admin；检查 revision；归档中止群执行后由主人私聊发起恢复；已解散群不可恢复 |
 | 停止某次执行 | execution | 当前伙伴 owner/admin；先核对目标属于本群；使用同一操作标识 |
 | 队列／分工开始、继续、重试、停止、结束、移除／更换步骤 | plan | 当前伙伴 owner/admin；检查计划 revision 与目标成员 |
 | 全部停止 | 查询队列后按项停止 | 每项独立授权与回执；不宣称批次原子完成；停止当前执行后旧权限失效 |
@@ -804,10 +806,22 @@ Full Access 沿用正常语义；群角色校验不能替代任务权限。转�
 本轮仍有未知操作时阻止新的写入，成功读取群状态后才允许重新决定。
 同一 operationId 与内容的已成功回执在当前授权核验后返回，不再套用首次写入的旧版本；
 撤权仍拒绝读取回执，同一标识更换内容仍返回 OPERATION_CONFLICT。
+结果未知的操作在成功查询之后，可由调用者明确决定以相同标识和内容重试：保留首次提交的
+完整 HTTP 路由及载荷（含计划 dismiss 在 waiting 时转为 stop 的结果），让服务端返回幂等回执，
+不被本地已经变化的版本提前拦住；角色、请求者与当前执行仍逐次核验，新操作仍检查版本。
 如果转让／解散已使执行失效，查询也可能被拒绝，必须通过有权的群设置核对，不换身份重试。
 
+取消归档有独立恢复入口，不续用被归档撤销的执行租约。主人在同一伙伴的 canonical／私聊话题
+任务请求 get_archived_groups，查询这个伙伴自身当前有管理角色的归档群 ID、名称与版本，
+再调用 restore_archived_group。Host 从私聊绑定反查伙伴身份，逐次核对主人输入、任务／账号／
+权限代次、有效私聊绑定，以及群内这位伙伴与主人仍在群，恢复写入只带该伙伴的 X-Chat-Actor。
+群专线、后台任务、别的伙伴来信与非主人输入不能使用此入口；角色不授予其他管理动作或私人访问。
+恢复写入接入正常任务审批、Plan 模式拒绝，禁用认证自动重发；未知结果阻止后续恢复写入，
+成功读取后才可明确重试原操作。恢复查询也返回仍待核对的已取消归档群，避免丢失核对目标。
+以上恢复与尝试记录均为当前 Host 生命周期内状态，不宣称有跨重启持久发件箱。
+
 实现与合同证据：maker-ipc/currentGroupManagement.ts、botGroupToolAuthorization.ts、chatServer.ts
-的活跃执行注册与 api、mcp-integrations/mcp-providers.ts；工具发现见
+的活跃执行注册与 api、archivedGroupRecovery.ts、mcp-integrations/mcp-providers.ts；工具发现见
 packages/lizi-mcps/src/xdt-helper/group_management.ts 与 helper 工厂。
 回归：chatServer.test.ts 的 #6906 分组经真实适配器和隔离 HTTP fixture 验证角色矩阵、主人代演、
 非主人拒绝、排队及确认等待撤权、目标保护、未知回执、邀请和队列控制；

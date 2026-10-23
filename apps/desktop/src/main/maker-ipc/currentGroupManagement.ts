@@ -11,6 +11,7 @@ interface Room { id: string; kind?: string; name: string; topic: string; descrip
 type Confirm = (summary: Record<string, unknown>) => Promise<boolean>;
 interface Dependencies {
   botActorId: string; requesterId?: string;
+  execution: { id: string; source_message_id: string; plan_id?: string | null; plan_step?: number | null };
   validate(): Promise<void>;
   assertCurrent(): void;
   snapshot(): Promise<{ room: Room; members: Member[] }>;
@@ -28,7 +29,8 @@ interface Dependencies {
 export function createCurrentGroupManagement(deps: Dependencies) {
   let tail: Promise<unknown> = Promise.resolve();
   let unknownResult = false;
-  const attempts = new Map<string, { fingerprint: string; result: CurrentGroupResult }>();
+  type Wire = { route: string; method: string; payload: Record<string, unknown> };
+  const attempts = new Map<string, { fingerprint: string; result: CurrentGroupResult; wire?: Wire }>();
   const manager = (member: Member) => chatGroupRolePermissions(member.role).manager;
   async function context() {
     await deps.validate();
@@ -53,7 +55,7 @@ export function createCurrentGroupManagement(deps: Dependencies) {
       const bothOwn = () => ctx.bot.role === 'owner' && ownerProxy();
       const roomPath = `/conversations/${ctx.room.id}`;
       if (request.type === 'inspect') {
-        const executions = await deps.api<Array<{ id: string; status: string; bot_id: string; requester_id?: string }>>(`${roomPath}/executions`);
+        const executions = await deps.api<Array<{ id: string; status: string; bot_id: string; requester_id?: string; source_message_id: string; plan_id?: string | null; plan_step?: number | null }>>(`${roomPath}/executions`);
         const plans = await deps.api<Plan[]>(`${roomPath}/plans`);
         // This account's non-member roster is private to its owner, even when a
         // guest has tools access to a bot. Recheck before projecting the result.
@@ -67,7 +69,8 @@ export function createCurrentGroupManagement(deps: Dependencies) {
           protectedActorIds: ctx.members.filter(m => (m.role === 'owner' && m.state === 'joined') || m.id === ctx.bot.id || m.id === ctx.requester.id).map(m => m.id),
           members: ctx.members.map(m => ({ actorId: m.id, kind: m.kind, name: m.name, role: m.role, state: m.state, ownerActorId: m.ownerActorId, ownerName: m.ownerName })),
           invitableBots: active && bothManage() ? ownedBots.filter(b => !ctx.members.some(m => m.id === b.actorId && m.state === 'joined')) : [],
-          executions: executions.map(e => ({ id: e.id, status: e.status, botActorId: e.bot_id, requesterId: e.requester_id })),
+          currentExecution: { id: deps.execution.id, sourceMessageId: deps.execution.source_message_id, planId: deps.execution.plan_id ?? null, planStep: deps.execution.plan_step ?? null },
+          executions: executions.map(e => ({ id: e.id, status: e.status, botActorId: e.bot_id, requesterId: e.requester_id, sourceMessageId: e.source_message_id, planId: e.plan_id ?? null, planStep: e.plan_step ?? null })),
           plans: plans.map(p => ({ id: p.id, revision: p.revision, status: p.status, kind: p.kind, currentStep: p.current_step,
             steps: p.steps.map(s => ({ position: s.position, botActorId: s.botId, botName: s.botName, task: s.task, status: s.status })) })),
           scope: 'current-group', privateAccessUnchanged: true,
@@ -78,6 +81,8 @@ export function createCurrentGroupManagement(deps: Dependencies) {
       const mutation = currentGroupMutation.parse(request.mutation);
       const { operationId, action } = mutation;
       const fingerprint = JSON.stringify(action);
+      const previous = attempts.get(operationId);
+      const replay = previous && !previous.result.ok && previous.result.errorCode === 'GROUP_RESULT_UNKNOWN' ? previous.wire : undefined;
       // Even cached receipts require current authorization; operation ids cannot change their payload.
       const checkAuthorization = () => {
         if (!ownerProxy()) throw new Error('GROUP_REQUESTER_AUTHORIZATION_UNSUPPORTED');
@@ -94,7 +99,7 @@ export function createCurrentGroupManagement(deps: Dependencies) {
           if (action.position === undefined) throw new Error('INVALID_ACTION');
           if (action.action === 'reassign' && !ctx.members.some(m => m.id === action.botId && m.kind === 'bot' && m.state === 'joined')) throw new Error('INVALID_MEMBER');
         }
-        if ('expectedRevision' in action && action.type !== 'plan' && action.expectedRevision !== ctx.room.revision) throw new Error('REVISION_CONFLICT');
+        if (!replay && 'expectedRevision' in action && action.type !== 'plan' && action.expectedRevision !== ctx.room.revision) throw new Error('REVISION_CONFLICT');
         if (action.type === 'member' || action.type === 'transfer') {
           const target = ctx.members.find(m => m.id === action.actorId);
           if (action.type === 'transfer') {
@@ -108,7 +113,6 @@ export function createCurrentGroupManagement(deps: Dependencies) {
         deps.assertCurrent(); assertPermission();
       };
       checkAuthorization();
-      const previous = attempts.get(operationId);
       if (previous && previous.fingerprint !== fingerprint) throw new Error('OPERATION_CONFLICT');
       if (unknownResult) throw new Error('GROUP_RESULT_UNKNOWN');
       if (previous?.result.ok) return previous.result;
@@ -118,7 +122,8 @@ export function createCurrentGroupManagement(deps: Dependencies) {
         ctx = await context(); check();
       }
       let route = roomPath; let method = 'POST'; let payload: Record<string, unknown>;
-      switch (action.type) {
+      if (replay) ({ route, method, payload } = replay);
+      else switch (action.type) {
         case 'update': { const { type: _, ...fields } = action; method = 'PATCH'; payload = fields; break; }
         case 'archive': method = 'PATCH'; payload = { archived: action.archived, expectedRevision: action.expectedRevision }; break;
         case 'member': { const { type: _, ...fields } = action; route += '/members'; payload = fields; break; }
@@ -166,7 +171,7 @@ export function createCurrentGroupManagement(deps: Dependencies) {
         if (typeof status !== 'number' || status >= 500 || status === 408) {
           unknownResult = true;
           const result: CurrentGroupResult = { ok: false, errorCode: 'GROUP_RESULT_UNKNOWN', message: 'The operation may have succeeded. Read get_current_group and reconcile its state before deciding whether to retry with the same operationId.' };
-          attempts.set(operationId, { fingerprint, result }); return result;
+          attempts.set(operationId, { fingerprint, result, wire: { route, method, payload } }); return result;
         }
         throw error;
       }

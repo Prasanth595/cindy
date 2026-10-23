@@ -49,6 +49,7 @@ import { readPersistedReplyText } from './botGroupChatService.js';
 import { botGroupRuntimeFailureCode, botGroupRuntimeFailureDetail } from './botGroupRuntimeFailure.js';
 import { botGroupExecutionFailureBatches } from '@cindy/maker-shared/botGroupPresentation';
 import { createThreadProjection, isShareableThreadReply, threadPreviewAttachments, threadPreviewText } from './chatServerThreads.js';
+import { createArchivedGroupRecovery, registerArchivedGroupRecovery } from './archivedGroupRecovery.js';
 import { companionSnapshot, registerCompanionHomes } from '../companion-cloud/homes.js';
 import { startCompanionCloud, type CompanionCloudRuntime } from '../companion-cloud/runtime.js';
 import { DIRECT_ROOM_COMPLETION, deliverDirectRoomMessage, directRoomClientId } from '../companion-cloud/directRoom.js';
@@ -1665,6 +1666,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
           botId: bot.id, mode: execution.access_mode,
           currentGroup: createCurrentGroupManagement({
             botActorId: execution.bot_id, requesterId: execution.requester_id,
+            execution,
             validate: async () => {
               assertGroupToolAuthorityCurrent(lane.sessionId, groupAuthority);
               await authorizeGroupTool(lane.sessionId, bot.id, 'read-self');
@@ -2523,6 +2525,28 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
   // A lost controller ACK must not consume the phone upload or submit the same message twice.
   const pendingSends = new Map<string, ReturnType<BotGroupChatService['sendMessage']>>();
   const sendReceipts = new Map<string, Awaited<ReturnType<BotGroupChatService['sendMessage']>>>();
+  const releaseArchivedRecovery = registerArchivedGroupRecovery(createArchivedGroupRecovery({
+    assertCurrent: () => { if (!current()) throw new Error('GROUP_AUTHORIZATION_REQUIRED'); },
+    actor: async botId => {
+      await ensureRegistered();
+      const actor = actors.find(a => a.kind === 'bot' && a.externalId === botId && !a.disabled && localBot(a.id)?.status === 'active');
+      return actor ? { actorId: actor.id, ownerId: selfId } : undefined;
+    },
+    rooms: async () => {
+      const rooms: Room[] = [];
+      let after: string | undefined;
+      do {
+        const page = await api<Array<Room & { state: string }>>(`/conversations?limit=100${after ? `&after=${after}` : ''}`);
+        rooms.push(...page.filter(r => r.state === 'joined' && isGroupRoom(r)));
+        after = page.length === 100 ? page.at(-1)!.id : undefined;
+      } while (after);
+      return rooms;
+    },
+    snapshot: groupId => groupSnapshot(groupId),
+    // Same bot actor and existing PATCH contract; never account managementActor.
+    restore: (groupId, actorId, payload) => api(`/conversations/${id.parse(groupId)}`, 'PATCH', payload, actorId, true, 200),
+    changed,
+  }));
   return {
     chatServer,
     listGroups: () => safe(async () => {
@@ -2751,6 +2775,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     continuePlan: input => safe(() => actPlan(input, 'continue')), retryPlan: input => safe(() => actPlan(input, 'retry')),
     editPlanStep: input => safe(() => actPlan(input, 'reassign')),
     dispose: () => {
+      releaseArchivedRecovery();
       disposed = true; threads.dispose(); clearInterval(timer); clearInterval(heartbeat); clearTimeout(reconnect); clearTimeout(claimTrigger); socket?.close();
       companion?.dispose(); companion = undefined; deps.companionCloud?.homes.reset();
       for (const refresh of attachmentRefreshes.values()) clearTimeout(refresh);

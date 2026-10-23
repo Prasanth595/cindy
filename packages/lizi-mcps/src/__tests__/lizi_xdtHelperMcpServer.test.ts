@@ -38,6 +38,13 @@ describe("cindy_helper MCP server", () => {
       const mutation = { operationId: '70000000-0000-4000-8000-000000000001', action: { type: 'update', expectedRevision: 1, name: 'New name' } };
       expect(parsePayload(await client.callTool({ name: 'call_tool', arguments: { name: 'manage_current_group', args: mutation } }))).toMatchObject({ ok: true });
       expect(currentGroup).toHaveBeenLastCalledWith('group-lane', { type: 'manage', mutation });
+      expect(catalog.tools).toEqual(expect.arrayContaining([expect.objectContaining({ name: 'get_archived_groups' }), expect.objectContaining({ name: 'restore_archived_group' })]));
+      expect(parsePayload(await client.callTool({ name: 'call_tool', arguments: { name: 'get_archived_groups', args: {} } }))).toMatchObject({ ok: true });
+      expect(currentGroup).toHaveBeenLastCalledWith('group-lane', { type: 'list-archived' });
+      const restore = { groupId: '70000000-0000-4000-8000-000000000002', operationId: mutation.operationId, expectedRevision: 2 };
+      expect(parsePayload(await client.callTool({ name: agentKind === 'pi' ? 'call_tool' : 'restore_archived_group',
+        arguments: agentKind === 'pi' ? { name: 'restore_archived_group', args: restore } : restore }))).toMatchObject({ ok: true });
+      expect(currentGroup).toHaveBeenLastCalledWith('group-lane', { type: 'restore-archived', mutation: restore });
       const count = currentGroup.mock.calls.length;
       const invalid = await client.callTool({ name: 'call_tool', arguments: { name: 'manage_current_group', args: { ...mutation, action: { type: 'botAccess', actorId: '70000000-0000-4000-8000-000000000002', access: 'tools' } } } });
       expect(invalid.isError).toBe(true); expect(currentGroup).toHaveBeenCalledTimes(count);

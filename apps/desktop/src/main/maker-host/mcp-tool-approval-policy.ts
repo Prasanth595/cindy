@@ -259,7 +259,7 @@ export function getDesktopMcpToolApprovalPolicy(
     if (action && TASK_ACTION_TOOLS.has(action)) return 'prompt-each-time';
     // Group role authorization is separate from Ask/Auto tool approval. Keep
     // ordinary writes in the runtime flow; transfer/dissolution also confirm in Host.
-    if (action === 'manage_current_group') return 'prompt-each-time';
+    if (action === 'manage_current_group' || action === 'restore_archived_group') return 'prompt-each-time';
     if (toolName === 'call_tool' && (!innerName || !args)) return 'prompt-each-time';
     // Installing or saving a host command uses the session's existing approval flow.
     if (action === 'schedule_set_pre_run_hook' || (action === 'routine_save' && args?.preRunHook != null)) {
