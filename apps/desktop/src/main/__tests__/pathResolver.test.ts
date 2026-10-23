@@ -73,6 +73,20 @@ describe('bfsFindBySuffix', () => {
     expect(matches).toEqual([real]);
   });
 
+  // 用户场景：Agent 在子文件夹 film/ 里渲染出 renders/out/clip.mp4，回复里写相对子文件夹的路径。
+  // 路径自己点名经过的被忽略目录(renders 下的 out)必须能进入；别处的 out 与首段就是被忽略
+  // 目录的查找仍按原规则跳过，避免打开整棵树里的构建产物。
+  it.each([
+    ['renders/out/clip.mp4', ['film/renders/out/clip.mp4']],
+    ['out/clip.mp4', []],
+  ])('enters an ignored directory only where %s names it', (href, expected) => {
+    write('film/renders/out/clip.mp4');
+    write('film/out/clip.mp4');
+    write('web/out/renders/out/clip.mp4');
+
+    expect(bfsFindBySuffix(workspace, href)).toEqual(expected.map((rel) => path.join(workspace, rel)));
+  });
+
   it('respects maxCandidates and stops early', () => {
     write('a/foo.ts');
     write('b/foo.ts');
@@ -377,6 +391,14 @@ describe('resolveWorkspacePathBatch', () => {
     expect(out['src/App.tsx']).toEqual({ status: 'unique', candidates: [direct], kind: 'file' });
     expect(out['src/deep.tsx']).toEqual({ status: 'unique', candidates: [nested], kind: 'file' });
     expect(out['ghost/x.ts']).toEqual({ status: 'none', candidates: [] });
+  });
+
+  it('finds a file under an output directory named by the href (real resolver)', async () => {
+    const real = write('chaoshan-film/renders2d/out/seg3_2d_v1.mp4');
+    write('chaoshan-film/out/seg3_2d_v1.mp4');
+
+    const result = await resolveWorkspacePathBatch(['renders2d/out/seg3_2d_v1.mp4'], workspace);
+    expect(result['renders2d/out/seg3_2d_v1.mp4']).toEqual({ status: 'unique', candidates: [real], kind: 'file' });
   });
 
   it('decodes percent-encoded hrefs in batch mode', async () => {

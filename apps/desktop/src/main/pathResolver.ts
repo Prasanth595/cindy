@@ -136,6 +136,35 @@ function normalizeForSuffix(p: string): string {
 }
 
 /**
+ * Ignored directories that a lookup names on its own path. `renders/out/clip.mp4`
+ * can only be found by entering an `out` directory, so the ignore list must not
+ * hide it. Entries are `<parent>/<ignored>` pairs: only the `out` under a
+ * `renders` directory opens, every other `out` (build output elsewhere) is still
+ * skipped. An ignored name in the first segment stays ignored, since allowing it
+ * would open every same-named directory in the tree.
+ */
+function namedIgnoredDirs(hrefs: readonly string[], ignoreDirs: ReadonlySet<string>): Set<string> {
+  const named = new Set<string>();
+  for (const href of hrefs) {
+    const segments = normalizeForSuffix(href).split('/').filter(Boolean);
+    for (let i = 1; i < segments.length - 1; i++) {
+      if (ignoreDirs.has(segments[i])) named.add(`${segments[i - 1]}/${segments[i]}`);
+    }
+  }
+  return named;
+}
+
+function skipsDirectory(
+  parent: string,
+  name: string,
+  ignoreDirs: ReadonlySet<string>,
+  named: ReadonlySet<string>,
+): boolean {
+  if (!ignoreDirs.has(name)) return false;
+  return !named.has(`${normalizeForSuffix(path.basename(parent))}/${normalizeForSuffix(name)}`);
+}
+
+/**
  * BFS-walk `root` looking for files whose absolute path ends with `/<href>`.
  * Stops when `maxCandidates` matches are found OR the queue empties.
  *
@@ -153,6 +182,7 @@ export function bfsFindBySuffix(
   const isPathAllowed = options.isPathAllowed ?? (() => true);
 
   const suffix = '/' + normalizeForSuffix(href).replace(/^\/+/, '');
+  const named = namedIgnoredDirs([href], ignoreDirs);
   const out: string[] = [];
   // Depth-tagged queue so we can cut off at maxDepth without recursion.
   const queue: Array<{ dir: string; depth: number }> = [{ dir: root, depth: 0 }];
@@ -169,7 +199,7 @@ export function bfsFindBySuffix(
       if (out.length >= maxCandidates) break;
       if (ent.isDirectory()) {
         if (depth >= maxDepth) continue;
-        if (ignoreDirs.has(ent.name)) continue;
+        if (skipsDirectory(dir, ent.name, ignoreDirs, named)) continue;
         queue.push({ dir: path.join(dir, ent.name), depth: depth + 1 });
       } else if (ent.isFile()) {
         const abs = path.join(dir, ent.name);
@@ -320,6 +350,7 @@ export async function bfsFindManyBySuffix(
   }
   const result = new Map<string, string[]>();
   for (const [href, bucket] of buckets) result.set(href, bucket.out);
+  const named = namedIgnoredDirs([...buckets.keys()], ignoreDirs);
 
   const allFull = (): boolean => {
     for (const bucket of buckets.values()) {
@@ -341,7 +372,7 @@ export async function bfsFindManyBySuffix(
     for (const ent of entries) {
       if (ent.isDirectory()) {
         if (depth >= maxDepth) continue;
-        if (ignoreDirs.has(ent.name)) continue;
+        if (skipsDirectory(dir, ent.name, ignoreDirs, named)) continue;
         queue.push({ dir: path.join(dir, ent.name), depth: depth + 1 });
       } else if (ent.isFile()) {
         const abs = path.join(dir, ent.name);
