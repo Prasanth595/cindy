@@ -11,12 +11,16 @@
  * 卡内其余 Tab 行为不变（多行卡的行间移动照旧自然进行）。
  */
 
-/** 文档序的全部可 Tab 元素（可见性判据与 Radix FocusScope 的 getTabbableCandidates 同源）。 */
-function collectTabbables(root: Document): HTMLElement[] {
+/**
+ * 文档序的可 Tab 元素（可见性判据与 Radix FocusScope 的 getTabbableCandidates 同源）。
+ * `scope` 限定扫描子树：卡内边缘判定只扫卡片子树（小），只有真要出卡时才扫全文档。
+ */
+function collectTabbables(scope: Document | HTMLElement): HTMLElement[] {
   const nodes: HTMLElement[] = [];
-  const walkerRoot = root.documentElement ?? root.body;
+  const walkerRoot = scope instanceof Document ? (scope.documentElement ?? scope.body) : scope;
   if (!walkerRoot) return nodes;
-  const walker = root.createTreeWalker(walkerRoot, NodeFilter.SHOW_ELEMENT, {
+  const doc = scope instanceof Document ? scope : scope.ownerDocument;
+  const walker = doc.createTreeWalker(walkerRoot, NodeFilter.SHOW_ELEMENT, {
     acceptNode: (node) => {
       const element = node as HTMLElement;
       const isHiddenInput = element instanceof HTMLInputElement && element.type === 'hidden';
@@ -27,17 +31,26 @@ function collectTabbables(root: Document): HTMLElement[] {
     },
   });
   while (walker.nextNode()) nodes.push(walker.currentNode as HTMLElement);
-  return nodes.filter((element) => !isHiddenForFocus(element));
+  const hiddenCache = new Map<Element, boolean>();
+  return nodes.filter((element) => !isHiddenForFocus(element, hiddenCache));
 }
 
-function isHiddenForFocus(node: HTMLElement): boolean {
-  if (node.ownerDocument.defaultView?.getComputedStyle(node).visibility === 'hidden') return true;
+/** 隐藏判定带记忆化：一次扫描里共享父节点（卡片根、容器等）只查一次 getComputedStyle。 */
+function isHiddenForFocus(node: HTMLElement, hiddenCache: Map<Element, boolean>): boolean {
+  const cached = hiddenCache.get(node);
+  if (cached !== undefined) return cached;
+  const view = node.ownerDocument.defaultView;
+  let result = view?.getComputedStyle(node).visibility === 'hidden';
   let cursor: HTMLElement | null = node;
-  while (cursor) {
-    if (cursor.ownerDocument.defaultView?.getComputedStyle(cursor).display === 'none') return true;
+  while (!result && cursor) {
+    const cursorCached = hiddenCache.get(cursor);
+    if (cursorCached !== undefined) { result = cursorCached; break; }
+    result = view?.getComputedStyle(cursor).display === 'none';
+    hiddenCache.set(cursor, result);
     cursor = cursor.parentElement;
   }
-  return false;
+  hiddenCache.set(node, result);
+  return result;
 }
 
 /**
@@ -48,11 +61,20 @@ export function handOffTabFromCard(
   cardRoot: HTMLElement,
   event: { shiftKey: boolean },
 ): boolean {
-  const tabbables = collectTabbables(cardRoot.ownerDocument);
-  if (tabbables.length === 0) return false;
   const active = cardRoot.ownerDocument.activeElement;
   if (!(active instanceof HTMLElement) || !cardRoot.contains(active)) return false;
 
+  // 先只扫卡片子树判边缘：不在边缘立即放行（不扫全文档 —— Tab 是高频按键，
+  // 长聊天记录下每次全页 TreeWalker + getComputedStyle 会拖慢键盘移动）。
+  const inside = collectTabbables(cardRoot);
+  if (inside.length === 0) return false;
+  const atLastEdge = !event.shiftKey && active === inside[inside.length - 1];
+  const atFirstEdge = event.shiftKey && active === inside[0]!;
+  if (!atLastEdge && !atFirstEdge) return false;
+
+  // 只有边缘的 Tab 才值得做全文档序定位，找出卡外目标。
+  const tabbables = collectTabbables(cardRoot.ownerDocument);
+  if (tabbables.length === 0) return false;
   const activeIndex = tabbables.indexOf(active);
   if (activeIndex === -1) return false;
   const lastInside = (() => {

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render } from '@testing-library/react';
 import { useState } from 'react';
 
@@ -56,15 +56,27 @@ describe('handOffTabFromCard', () => {
     expect(document.activeElement).toBe(usage);
   });
 
-  it('卡内中间元素的 Tab 不接管（让浏览器的自然顺序继续走）', () => {
+  it('卡内中间元素的 Tab 不接管（自然顺序继续走，且不触发全文档扫描）', () => {
     render(<CardHarness extraInsideMiddle />);
     const cardRoot = document.getElementById('card-root')!;
     document.getElementById('card-region')!.focus();
     expect(handOffTabFromCard(cardRoot, { shiftKey: false })).toBe(false);
-    // 自然行为：调用方不 preventDefault，浏览器把焦点走到下一个元素（中间档）。
+    // 调用方不 preventDefault，浏览器按自然 Tab 顺序移动焦点（jsdom 不执行 Tab 默认
+    // 行为，无法在单测里模拟自然移动；出卡方向的移动由上面两条边缘用例直接断言）。
     expect(document.activeElement).toBe(document.getElementById('card-region'));
-    fireEvent.keyDown(document.getElementById('card-region')!, { key: 'Tab' });
-    expect(document.activeElement).toBe(document.getElementById('card-region'));
+  });
+
+  it('卡内中间的 Tab 只扫卡片子树，不扫全文档（长聊天记录下的键盘性能）', () => {
+    render(<CardHarness extraInsideMiddle />);
+    const cardRoot = document.getElementById('card-root')!;
+    document.getElementById('card-region')!.focus();
+    const walkerSpy = vi.spyOn(document, 'createTreeWalker');
+    expect(handOffTabFromCard(cardRoot, { shiftKey: false })).toBe(false);
+    // 全文档扫描的标志是被 walk 到 documentElement；卡中间只应 walk 卡根。
+    for (const call of walkerSpy.mock.calls) {
+      expect(call[0]).toBe(cardRoot);
+    }
+    walkerSpy.mockRestore();
   });
 
   it('焦点不在卡内时不做任何事', () => {
