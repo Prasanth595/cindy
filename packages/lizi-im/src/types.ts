@@ -267,6 +267,8 @@ export interface IMMessageEvent {
   replyContext?: {
     author: string;
     text: string;
+    /** 被引用消息的渠道身份(飞书 open_id 等);缺失时只用显示名。 */
+    senderId?: string;
     isBot?: boolean;
     /** 被引消息的附件数(已并入本事件 attachments;0/缺省 = 无)。 */
     attachmentCount?: number;

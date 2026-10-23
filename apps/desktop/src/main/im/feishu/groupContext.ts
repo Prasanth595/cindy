@@ -115,6 +115,11 @@ export interface FeishuGroupContextDeps {
 export interface FeishuGroupContextResult {
   /** Included messages, not lines, attachment sections or omitted older history. */
   messageCount: number;
+  /**
+   * 本窗口内出现过的群成员(去重、时间正序) — 供渠道侧零成本登记进智能
+   * 通讯录。owner 与 bot 已剔除; 只有身份可靠的 open_id 才会出现在这里。
+   */
+  speakers: FeishuGroupSpeaker[];
   /** 拼在触发消息正文前的完整上下文前缀(含防注入包裹与警告, 发言人带 user_id)。 */
   prefix: string;
   /**
@@ -150,6 +155,11 @@ function renderHistoryLine(m: FeishuRecentChatMessage, senderId?: string): strin
   );
 }
 
+export interface FeishuGroupSpeaker {
+  openId: string;
+  name: string;
+}
+
 /** open_id 只允许平台 id 字符, 防止异常值伪造行结构。 */
 function safeOpenId(value: string): string | undefined {
   const id = value.trim();
@@ -182,6 +192,26 @@ function senderIdsForLines(messages: FeishuRecentChatMessage[]): Array<string | 
 }
 
 /**
+ * 窗口内的群成员名单: 同一 open_id 只留第一次出现, 名字取最早那条。
+ * 调用方据此把「群里说过话的人」登记进智能通讯录。
+ */
+function collectSpeakers(
+  messages: FeishuRecentChatMessage[],
+  ownerOpenId: string | null | undefined,
+): FeishuGroupSpeaker[] {
+  const out: FeishuGroupSpeaker[] = [];
+  const seen = new Set<string>();
+  for (const m of messages) {
+    if (m.senderIsBot) continue;
+    const id = safeOpenId(m.senderOpenId);
+    if (!id || seen.has(id) || id === ownerOpenId) continue;
+    seen.add(id);
+    out.push({ openId: id, name: sanitizeDisplayText(m.senderName) });
+  }
+  return out;
+}
+
+/**
  * 飞书普通引用回复的精确上下文。它与泛化群历史分开包裹并紧邻当前问题,
  * 让「看下这个」优先指向 parent_id 对应内容;引用仍是不可信数据,不能执行。
  */
@@ -189,8 +219,10 @@ export function buildFeishuReplyContextBlock(
   reply: NonNullable<IMMessageEvent['replyContext']>,
 ): string {
   const author = sanitizeDisplayText(reply.author) || (reply.isBot ? 'bot' : 'user');
+  const senderId = reply.isBot ? '' : safeOpenId(reply.senderId ?? '') ?? '';
+  const idPart = senderId ? ' (user_id: ' + senderId + ')' : '';
   const line = neutralizeFenceTags(
-    `[${author}${reply.isBot ? ' (bot)' : ''}] ${reply.text.slice(
+    `[${author}${idPart}${reply.isBot ? ' (bot)' : ''}] ${reply.text.slice(
       0,
       GROUP_WINDOW_ENTRY_TEXT_MAX_CHARS,
     )}`,
@@ -440,5 +472,6 @@ export async function buildFeishuGroupContext(args: {
     displayPrefix: buildPrefix(renderLines(false)),
     contextAttachments,
     messageCount: picked.length,
+    speakers: collectSpeakers(visible, ownerOpenId),
   };
 }

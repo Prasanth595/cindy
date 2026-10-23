@@ -3962,6 +3962,11 @@
         "hint": "透過已繫結的飛書或 Lark 機器人，向你私聊傳送一條訊息；僅在視窗失焦時傳送。",
         "disabledHint": "需要先配置 Bot 並向它傳送一條訊息以完成繫結。"
       },
+      "contacts": {
+        "contactsOn": "群裡說話的人會自動記入智慧通訊錄（總開關已開啟）。",
+        "contactsOff": "智慧通訊錄未開啟，群裡說話的人不會被自動記住。",
+        "contactsEnable": "開啟"
+      },
       "bind": "繫結"
     },
     "wechatBot": {

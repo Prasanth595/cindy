@@ -41,6 +41,7 @@ import {
   FILTERED_HISTORY_PLACEHOLDER,
   looksLikePromptInjection,
 } from './groupContextInjection';
+import { autoRegisterFeishuSpeakers } from './contactsAutoRegister';
 import { createFeishuGroupTurnPermissionPolicy } from './permissionPolicy';
 import { ui, REACTION_PROCESSING } from './uiText';
 
@@ -449,10 +450,28 @@ export function buildFeishuAdapter(
           ? {
               author: event.replyContext.author,
               text: FILTERED_HISTORY_PLACEHOLDER,
+              ...(event.replyContext.senderId ? { senderId: event.replyContext.senderId } : {}),
               ...(event.replyContext.isBot ? { isBot: true } : {}),
             }
           : event.replyContext;
         const replyPrefix = buildFeishuReplyContextBlock(safeReply);
+        // 引用回复路径不拉群历史, 用原消息 sender_open_id 登记被引用的发言人。
+        if (safeReply.senderId) {
+          autoRegisterFeishuSpeakers(
+            [
+              {
+                openId: safeReply.senderId,
+                name: safeReply.author,
+                isBot: safeReply.isBot,
+              },
+            ],
+            {
+              chatName: cachedChatNameForNote(feishuIm, lane.chatId),
+              appId: event.contextId,
+              platformLabel: isLark() ? 'Lark' : '飞书',
+            },
+          );
+        }
         return {
           agentText: `${replyPrefix}${event.text}`,
           contextSnapshot: captureImContext({ replyPrefix, replyMessageCount: 1 }),
@@ -479,6 +498,20 @@ export function buildFeishuAdapter(
         },
       });
       if (!built) return null;
+      // 记住每个人: 群历史里说过话的人登记进智能通讯录(零 LLM 成本)。
+      autoRegisterFeishuSpeakers(
+        [
+          ...(event.speaker && !event.speaker.isOwner
+            ? [{ openId: event.speaker.id, name: event.speaker.name }]
+            : []),
+          ...built.speakers,
+        ],
+        {
+          chatName: cachedChatNameForNote(feishuIm, contextLane.chatId),
+          appId: event.contextId,
+          platformLabel: isLark() ? 'Lark' : '飞书',
+        },
+      );
       return {
         agentText: `${built.prefix}${event.text}`,
         // 快照用不带 user_id 的展示版: id 只给模型, 不进「群聊背景」展示。

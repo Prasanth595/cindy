@@ -3962,6 +3962,11 @@
         "hint": "通过已绑定的飞书或 Lark 机器人，向你私聊发送一条消息；仅在窗口失焦时发送。",
         "disabledHint": "需要先配置 Bot 并向它发送一条消息以完成绑定。"
       },
+      "contacts": {
+        "contactsOn": "群里说话的人会自动记入智能通讯录（总开关已开启）。",
+        "contactsOff": "智能通讯录未开启，群里说话的人不会被自动记住。",
+        "contactsEnable": "开启"
+      },
       "bind": "绑定"
     },
     "wechatBot": {
