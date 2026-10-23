@@ -88,7 +88,7 @@ import {
   markdownImageDecorationField,
 } from './markdownImageLivePreview';
 import { computeFenceLineRoles, type FenceLineRole } from './markdownFenceLines';
-import { getPlaintextEditorChrome } from './plaintextEditorChrome';
+import { findHexColors, getPlaintextEditorChrome } from './plaintextEditorChrome';
 import { useIsDarkMode } from './useIsDarkMode';
 
 export interface PlaintextEditorSearchHandle {
@@ -235,6 +235,67 @@ const searchHighlightField = StateField.define<DecorationSet>({
   },
   provide: (f) => EditorView.decorations.from(f),
 });
+
+class HexColorWidget extends WidgetType {
+  constructor(private readonly color: string) {
+    super();
+  }
+
+  toDOM(): HTMLElement {
+    const span = document.createElement('span');
+    span.setAttribute('aria-hidden', 'true');
+    span.className = 'cm-hex-color-swatch';
+    // 色块展示的是文档里的颜色值，不是主题 token。
+    span.style.backgroundColor = this.color;
+    return span;
+  }
+
+  eq(other: HexColorWidget): boolean {
+    return this.color === other.color;
+  }
+}
+
+const hexColorPreviewPlugin = ViewPlugin.fromClass(
+  class {
+    decorations: DecorationSet;
+
+    constructor(view: EditorView) {
+      this.decorations = this.buildDecorations(view);
+    }
+
+    update(update: ViewUpdate) {
+      if (update.docChanged || update.viewportChanged) {
+        this.decorations = this.buildDecorations(update.view);
+      }
+    }
+
+    private buildDecorations(view: EditorView): DecorationSet {
+      const builder = new RangeSetBuilder<Decoration>();
+      // 只扫可视行，大文件滚动时也只承担当前视口的成本。
+      for (const range of view.visibleRanges) {
+        let line = view.state.doc.lineAt(range.from);
+        while (line.from <= range.to) {
+          for (const match of findHexColors(line.text)) {
+            builder.add(
+              line.from + match.from,
+              line.from + match.from,
+              Decoration.widget({
+                widget: new HexColorWidget(match.color),
+                side: -1,
+              }),
+            );
+          }
+          if (line.to >= view.state.doc.length) break;
+          line = view.state.doc.line(line.number + 1);
+        }
+      }
+      return builder.finish();
+    }
+  },
+  {
+    decorations: (plugin) => plugin.decorations,
+  },
+);
 
 class MarkdownMarkerWidget extends WidgetType {
   constructor(
@@ -1195,6 +1256,7 @@ export const PlaintextEditor = forwardRef<PlaintextEditorHandle, PlaintextEditor
         keymap.of([indentWithTab, ...defaultKeymap, ...historyKeymap]),
         ...(initialConfig.skipWrap ? [] : [EditorView.lineWrapping]),
         ...(initialConfig.useCodeChrome ? [lineNumbers()] : []),
+        ...(initialConfig.useCodeChrome ? [hexColorPreviewPlugin] : []),
         ...highlightExtensions,
         ...(initialConfig.isMarkdown
           ? [
