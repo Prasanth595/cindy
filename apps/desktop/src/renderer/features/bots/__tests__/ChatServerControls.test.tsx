@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 
 import { ChatInviteButton, ChatMessageActions } from '../ChatServerControls';
 import { ChatInviteDialog } from '../ChatInviteDialog';
 import { ChatThreadPanel } from '../ChatThreadPanel';
-import { botGroupThreadDraftKey } from '../botGroupAttachments';
+import { botGroupDraftText, botGroupThreadDraftKey } from '../botGroupAttachments';
 import { clearDraft, getDraft } from '@/lib/composerDraftStore';
 import { flashThreadTarget } from '../BotGroupThreadViews';
 import { chatErrorKey } from '../chatError';
@@ -632,6 +632,36 @@ describe('chat interaction controls', () => {
     fireEvent.click(screen.getByRole('button', { name: k('sendReply') }));
     await waitFor(() => expect(mocks.reply).toHaveBeenCalledTimes(2));
     expect(mocks.reply.mock.calls[1][0]).toEqual(original);
+    clearDraft(botGroupThreadDraftKey(group.id, 'other'));
+  });
+
+  // Review #6930: reopen BEFORE the old request fails. A file-only test missed
+  // text restored in the store but never applied to the new composer instance.
+  it.each(['', 'New unsent text'])('keeps late recovery visible after reopening, preserving newer text %j', async newerText => {
+    Object.assign(window.electronAPI, { getFilePath: (file: File) => `/test/${file.name}`, getFileThumbnail: vi.fn(async () => null) });
+    let settle!: (value: { ok: false; errorCode: string }) => void;
+    mocks.reply.mockReturnValueOnce(new Promise(resolve => { settle = resolve; })).mockResolvedValue({ ok: true, messageId: 'recovered-file' });
+    const panel = (id: string) => <Tooltip.Provider><ChatThreadPanel key={id} group={group} rootId={id} onClose={vi.fn()} /></Tooltip.Provider>;
+    const view = render(panel('root'));
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Original text with file' } });
+    fireEvent.change(document.querySelector('input[type="file"]')!, { target: { files: [new File(['log'], 'reopened.txt', { type: 'text/plain' })] } });
+    await screen.findByText('reopened.txt');
+    fireEvent.click(screen.getByRole('button', { name: k('sendReply') }));
+    await waitFor(() => expect(mocks.reply).toHaveBeenCalledOnce());
+    const original = mocks.reply.mock.calls[0][0];
+    view.rerender(panel('other'));
+    view.rerender(panel('root'));
+    if (newerText) fireEvent.change(screen.getByRole('textbox'), { target: { value: newerText } });
+    await act(async () => settle({ ok: false, errorCode: 'REQUEST_TIMEOUT' }));
+    expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe(newerText || original.text);
+    expect(screen.getByText('reopened.txt')).toBeTruthy();
+    view.rerender(panel('other'));
+    expect(botGroupDraftText(getDraft(botGroupThreadDraftKey(group.id, 'root'))?.text)).toBe(newerText || original.text);
+    view.rerender(panel('root'));
+    fireEvent.click(screen.getByRole('button', { name: k('sendReply') }));
+    await waitFor(() => expect(mocks.reply).toHaveBeenCalledTimes(2));
+    expect(mocks.reply.mock.calls[1][0].text).toBe(newerText || original.text);
+    if (!newerText) expect(mocks.reply.mock.calls[1][0]).toEqual(original);
     clearDraft(botGroupThreadDraftKey(group.id, 'other'));
   });
 

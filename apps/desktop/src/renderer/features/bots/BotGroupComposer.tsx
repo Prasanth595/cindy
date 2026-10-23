@@ -59,6 +59,7 @@ import {
   getDraft,
   isDraftDiscardTokenCurrent,
   saveDraft,
+  subscribeDraft,
 } from '@/lib/composerDraftStore';
 import type { AttachedFile } from '@/lib/fileTypes';
 import { isAnnotationBurnInError, materializeAnnotatedAttachmentsForSend } from '@/lib/annotationBurnIn';
@@ -309,6 +310,20 @@ export function BotGroupComposer({
 
   // Keep the unsent text with the group (or 话题), like a task's composer draft.
   const discardTokenRef = useRef(captureDraftDiscardToken(draftKey));
+  useEffect(() => {
+    if (!thread) return;
+    const owner = getDataOwnerGeneration();
+    // A previous instance can restore a failed send after this thread reopened.
+    // Apply that external write immediately, before cleanup can save empty text.
+    // New typing in this instance always wins, even before its debounce saves.
+    return subscribeDraft(draftKey, () => {
+      if (!isDataOwnerGenerationCurrent(owner) || !isDraftDiscardTokenCurrent(discardTokenRef.current) || textRef.current || sendingRef.current) return;
+      const restored = botGroupDraftText(getDraft(draftKey)?.text);
+      if (!restored) return;
+      textRef.current = restored;
+      setText(restored);
+    });
+  }, [draftKey, thread]);
   const persistDraft = useRef((value: string) => {
     if (!isDraftDiscardTokenCurrent(discardTokenRef.current)) return;
     const existing = getDraft(draftKey);
