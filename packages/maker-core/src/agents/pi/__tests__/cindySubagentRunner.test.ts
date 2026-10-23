@@ -403,6 +403,12 @@ fs.appendFileSync(process.env.CINDY_TEST_PI_ARGS, JSON.stringify(process.argv.sl
 if (process.env.CINDY_TEST_PI_PIDS) {
   fs.appendFileSync(process.env.CINDY_TEST_PI_PIDS, String(process.pid) + '\\n');
 }
+${options.surviveStdinEnd
+    // An orphan must outlive its runner's pipes. A prompt already delivered
+    // when the runner dies is still answered; that write fails with EPIPE and,
+    // unhandled, ends this process, so the case would race its own premise.
+    ? "process.stdout.on('error', () => {});\nprocess.stderr.on('error', () => {});"
+    : ''}
 if (process.env.CINDY_TEST_PI_TOKENS) {
   fs.appendFileSync(process.env.CINDY_TEST_PI_TOKENS, JSON.stringify(process.env.CINDY_PI_SESSION_TOKEN || null) + '\\n');
 }
@@ -642,6 +648,14 @@ describe('Cindy durable PI Subagent runner', () => {
       return Number.isSafeInteger(pid) && pid > 0 ? pid : null;
     });
     try {
+      // CI #6768: the PID is published before the fake child's prompt output.
+      // Killing the runner in that window can make the child exit on EPIPE,
+      // invalidating the live-orphan premise. Wait until the real runner has
+      // persisted the last startup event, so no output races its pipe closing.
+      await waitFor(async () => {
+        const [run] = await listPiSubagentRuns(fixture.root);
+        return run?.state === 'running' && run.tasks[0]?.toolUses === 1 ? true : null;
+      }, undefined, 'the runner to receive the hanging child startup output');
       fixture.child.kill('SIGTERM');
       await waitForClose(fixture.child, fixture.stderr);
       const receipt = JSON.parse(await readFile(path.join(fixture.runDir, 'result.json'), 'utf8'));

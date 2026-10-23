@@ -1,10 +1,13 @@
 {
+  "localAgent": {"title":"本機應用程式連線","empty":"尚未連接應用程式","description":"允許已授權的本機應用程式使用 Cindy 的模型與執行能力。供應商登入仍由 Cindy 管理。","revoke":"撤銷連線","failed":"無法讀取應用程式連線。","connectTitle":"連接本機應用程式","connectMessage":"允許「{{app}}」使用 Cindy？","connectDetail":"此應用程式可以查看模型與供應商目錄、建立自己的執行並提供工具。原生執行可以依目前系統使用者的權限讀寫檔案、執行命令；工作目錄不限制存取範圍。供應商憑證保留在 Cindy。可在設定 → 遠端連線 → 本機應用程式連線中個別撤銷連線。","cancel":"取消","allow":"允許連接","revokeMessage":"撤銷所有本機應用程式連線？","revokeDetail":"所有本機應用程式連線將失效，正在執行的接入任務會停止。需要時可重新申請連線。","clientIdentity":"應用程式自報編號：{{id}}\n版本：{{version}}\n名稱與編號由申請方提供，不代表 Cindy 已驗證其發行者。","revokeOneMessage":"撤銷「{{app}}」的這條連線？","revokeOneDetail":"透過此連線執行的任務會停止。其他應用程式連線不受影響，需要時可重新申請連線。","revokeConnection":"撤銷「{{app}}」的連線","clientId":"應用程式編號：{{id}}","operationFailed":"無法確認本機應用程式操作的結果，請先查看目前狀態。","invalidConnection":"應用程式連線編號無效。","revokeFailed":"無法確認撤銷結果，請查看目前連線狀態。","loading":"正在讀取應用程式連線…","revoking":"正在撤銷連線…","authorizationRequired":"此操作需要有效的本機應用程式授權。","pairExpired":"連線申請已過期或取消，請從應用程式重新申請連線。","busy":"本機應用程式仍有執行正在運行，或已達執行上限，請先結束不用的執行。","limitReached":"已達本機應用程式連線上限，請在設定中撤銷不用的連線。","invalidWorkspace":"應用程式須指定此電腦上已存在的絕對工作目錄。","sessionExists":"此應用程式連線已在使用該執行編號。","executionUnavailable":"所請求的執行或工具呼叫無法使用，訊息與工具操作未被重播。","selectionUnavailable":"所選模型、供應商或推理強度無法使用，請在應用程式中重新選擇。","requestNotReplayed":"此請求未被重複執行，請在應用程式中查看原操作結果。","storageUnavailable":"無法讀取或儲存本機應用程式連線資料，已保留現有授權紀錄。","stopUnconfirmed":"已阻止繼續向此執行傳送訊息，但尚未確認程序已停止。","interactionUnavailable":"引擎需要此應用程式無法接收的互動操作。","interrupted":"本次傳送已中斷。","toolTimeout":"應用程式工具呼叫已逾時，未自動重試。","connectResult":"請返回申請連線的應用程式查看結果，授權由 Cindy 確認視窗決定。","invalidRequest":"應用程式請求無效，或該操作不受支援。","hostInUse":"此設定檔的本機應用程式連線正由另一個 Cindy 執行個體管理，請在該執行個體中查看連線。","developerConnection":"開發連線","copyCode":"複製連線碼","codeCopied":"連線碼已複製","codeCopyFailed":"無法複製連線碼","developerState":{"ready":"供此電腦上的應用程式暫時連線，仍需在此 Cindy 中授權。重新啟動後需重新複製。","starting":"正在準備連線…","owner-unavailable":"請先登入或進入本機模式","host-in-use":"此資料目錄的連線正由另一個 Cindy 管理","failed":"本機連線未能啟動","stopped":"本機連線已停止"}},
   "mailReader": {
     "markReadFailed": "未能同步已讀狀態，請檢查信箱授權後重新開啟。",
     "title": "郵件",
     "openMailbox": "在信箱中開啟",
     "loading": "正在讀取郵件…",
-    "failed": "未能讀取這封郵件。請檢查連接的信箱帳號後重試，或在信箱中開啟。",
+    "failed": "未能讀取這封郵件。可以重試，或在信箱中開啟。",
+    "unavailable": "目前沒有可用的郵件插件，可以在信箱中開啟這封郵件。",
+    "notReady": "郵件插件尚未完成設定。請先連接信箱，或直接開啟原連結。",
     "retry": "重試",
     "to": "收件人",
     "cc": "副本",
@@ -19,7 +22,9 @@
     "collapseMessage": "收起來自 {{from}} 的郵件",
     "conversationFailed": "暫時無法讀取前後郵件。",
     "messageCount": "共 {{count}} 封郵件",
-    "showMessages": "展開 {{count}} 封郵件"
+    "showMessages": "展開 {{count}} 封郵件",
+    "choosePlugin": "選擇用哪個插件開啟這封郵件。",
+    "personalPlugin": "個人插件"
   },
   "taskActionConfirmation": {
     "title": "確認任務操作",
@@ -965,6 +970,9 @@
     "handoffWindow": "代輸入 · {{app}}"
   },
   "ipcError": {
+    "SSH_HARNESS_SWITCH_UNSUPPORTED": "此 SSH 任務暫不支援切換 Harness。請選擇目前 Harness 下的模型，或使用所需 Harness 建立新的 SSH 任務。",
+    "MODEL_SELECTION_UNAVAILABLE": "所選模型在該供應商下已無法使用。請在設定中檢查連線，或重新選擇可用模型。",
+    "HARNESS_SWITCH_NOT_READY": "Harness 尚未完成切換。請查看錯誤詳細資訊，待 Harness 就緒後重試。",
     "DEVICE_LINK_BUSY": "遠端忙碌中，請稍後再試。",
     "INVALID_PARAMS": "引數無效，請檢查後重試。",
     "PRECONDITION_FAILED": "目前狀態下無法執行此操作，請稍後再試。",
@@ -3351,7 +3359,7 @@
         "paymentRequired": "付費",
         "paymentUnlock": "付費解鎖",
         "enableModel": "啟用此模型",
-        "capabilityGroupHint": "不會出現在對話模型選擇中；開關控制影像、影片等功能是否列出",
+        "capabilityGroupHint": "不會出現在對話模型選擇中；開關控制對應功能是否列出",
         "accessWriteFailed": "停用設定未能儲存，請重試",
         "visibilityWriteFailed": "模型顯示設定未能儲存，請重試；如果仍然失敗，請重新啟動 Cindy。",
         "disabledGroup": "已停用",
@@ -3825,7 +3833,26 @@
         "pending": "憑證準備中",
         "unavailable": "暫時無法使用"
       },
-      "claudeAccountRetired": "Cindy 已不再支援透過這筆舊版 Claude 連線登入訂閱，不影響你的 Claude 帳號和訂閱。請改用「使用 Claude Code 登入」連線訂閱"
+      "claudeAccountRetired": "Cindy 已不再支援透過這筆舊版 Claude 連線登入訂閱，不影響你的 Claude 帳號和訂閱。請改用「使用 Claude Code 登入」連線訂閱",
+      "speechSetup": {
+        "title": "語音",
+        "add": "新增語音模型",
+        "referenceHint": "參考型號來自公開模型資料，不代表目前帳號已開通。是否可用以實際呼叫為準。",
+        "discoveryHint": "以下型號由供應商目錄傳回，尚未驗證語音呼叫。",
+        "saved": "已新增",
+        "reference": "參考型號",
+        "discovered": "目錄傳回",
+        "more": "更多語音型號（{{count}}）",
+        "manual": "手動輸入語音型號",
+        "modelId": "語音模型 ID",
+        "modelsHint": "儲存語音模型不會啟動語音合成。音色和逐句朗讀可在夥伴語音設定中調整。",
+        "otherModels": "對話與其他模型",
+        "separateKey": "語音服務需要 API Key。將建立獨立連線，原有訂閱或裝置碼連線會保留。",
+        "fetchFailed": "暫時無法取得模型目錄，仍可選擇參考型號新增。",
+        "saveFailed": "新增失敗，請重新開啟此頁面後重試。",
+        "manualSource": "手動新增",
+        "manualHint": "輸入供應商提供的語音模型 ID。"
+      }
     },
     "experimental": {
       "title": "實驗性功能",
@@ -6615,7 +6642,7 @@
         "installMeta": "版本 {{version}} · {{source}}",
         "updateMeta": "版本 {{from}} → {{to}} · {{source}}",
         "installDescription": "確認後才會安裝，安裝好後立即啟用，可隨時在插件頁停用或解除安裝。",
-        "updateDescription": "新版本需要更多權限，確認後才會更新；在此之前舊版本照常可用。",
+        "updateDescription": "確認後才會更新；在此之前舊版本照常可用。",
         "grantsTitle": "安裝後它將擁有：",
         "noPermissions": "這個插件沒有宣告額外權限。",
         "addedTitle": "新增或變更的權限：",
@@ -6632,7 +6659,11 @@
         "confirmInstall": "安裝",
         "confirmUpdate": "更新",
         "cancel": "取消",
-        "updateNeedsConsent": "需確認新權限"
+        "updateNeedsConsent": "需確認新權限",
+        "targetIdentity": "安裝位置：{{name}}",
+        "personalTarget": "個人",
+        "sourceChanged": "這次更新會改為本機來源。舊帳號和資料會隔離保留，需要重新連接帳號。",
+        "otherCopies": "已有 {{count}} 份同名插件；它們不會被覆蓋或停用。另裝的插件需要單獨連接帳號。"
       },
       "trust": {
         "official": "Cindy 官方插件",
@@ -6699,6 +6730,8 @@
         "panelTab": "面板「{{title}}」· 插件頁內開啟",
         "mainView": "可在 Cindy 左側導航新增「{{title}}」入口",
         "mainViewDetail": "點擊後將在插件沙箱中開啟主視圖，不會因此取得檔案、網路或憑證存取權限。",
+        "taskView": "任務頁「{{title}}」· 在任務的側邊欄開啟",
+        "taskViewDetail": "頁籤隨任務切換，在插件沙箱中開啟，不會因此取得檔案、網路或憑證存取權限。",
         "code": "可執行程式碼",
         "codeDetail": "在獨立沙箱中執行，無法訪問你的檔案與網路。",
         "resident": "常駐執行(生效後即啟動，不呼叫也保持後臺處理程序)",
@@ -6856,6 +6889,7 @@
       },
       "contents": {
         "mainView": "主視圖",
+        "taskView": "任務頁",
         "panel": "面板",
         "settingsUi": "自定義設定介面",
         "code": "可執行程式碼",
@@ -8189,7 +8223,8 @@
         "collaboration": "協同",
         "unknown": "未知標籤頁",
         "ghostPanel": "插件面板",
-        "pluginView": "插件視圖"
+        "pluginView": "插件視圖",
+        "pluginTask": "插件任務頁"
       },
       "controls": {
         "showAria": "顯示側欄",
@@ -8988,6 +9023,13 @@
       "undo": "復原",
       "undoFailed": "無法復原，請重試",
       "deleteFailed": "無法刪除，請重試",
+      "check": "幫我查查",
+      "checkMeta": "在已連接的郵件和訊息裡找新待辦",
+      "checkPrompt": "幫我查查已連接的信箱、訊息等來源裡，有沒有需要我處理的新事項，有就記成待辦。",
+      "checkFailed": "沒能傳送，請重試",
+      "dailyCheck": "每天幫我查一次",
+      "dailyCheckMeta": "工作日 9:00，沒有新待辦不打擾",
+      "dailyCheckFailed": "沒能儲存，請重試",
       "outputs": "輸出內容",
       "outputMeta": "{{time}} · {{task}}",
       "openFailed": "無法開啟檔案",
@@ -9726,7 +9768,8 @@
           "archived": "本群已封存，可繼續查看歷史記錄。",
           "noneHint": "本群只有夥伴的主人可以讓夥伴回應。",
           "companionPermissions": "夥伴權限",
-          "configureCapabilities": "工具與授權設定"
+          "configureCapabilities": "工具與授權設定",
+          "capabilityScope": "這是 {{name}} 自己的工具與授權，不是僅限本群的設定。"
         }
       },
       "lifecycle": {
@@ -12239,6 +12282,9 @@
       "daemonNotReady": "{{manager}} 升級完成，但遠端 daemon 暫未啟動 — 請手動重新傳送訊息"
     },
     "remoteError": {
+      "SSH_HARNESS_SWITCH_UNSUPPORTED": "此 SSH 任務暫不支援切換 Harness。請選擇目前 Harness 下的模型，或使用所需 Harness 建立新的 SSH 任務。",
+      "MODEL_SELECTION_UNAVAILABLE": "所選模型在該供應商下已無法使用。請在設定中檢查連線，或重新選擇可用模型。",
+      "HARNESS_SWITCH_NOT_READY": "Harness 尚未完成切換。請查看錯誤詳細資訊，待 Harness 就緒後重試。",
       "DEVICE_LINK_BUSY": "遠端忙碌中，請稍後再試。",
       "REMOTE_DAEMON_CLOSED": "遠端連線中斷了，可能正在更新。這一輪已經結束，請重新傳送。",
       "REMOTE_LOCAL_ATTACHMENT_UNSUPPORTED": "遠端任務無法訪問本地檔案/圖片附件。請直接貼上內容。",
@@ -12819,10 +12865,10 @@
         "title": "歸檔任務",
         "description": "確定要歸檔這個任務嗎？歸檔後將從列表中移除。",
         "dirtyWorktreeWarning": "該任務的 worktree 有未提交的更改；歸檔前會自動儲存為 git 快照，之後可在任務內一鍵恢復。",
-        "scheduleWarning_one": "該任務繫結了自動化{{names}}，歸檔後將暫停。",
-        "scheduleWarning_other": "該任務繫結了自動化{{names}}，歸檔後將暫停。",
-        "scheduleWarningMany_one": "其中 {{count}} 個任務繫結了自動化，歸檔後這些自動化將暫停。",
-        "scheduleWarningMany_other": "其中 {{count}} 個任務繫結了自動化，歸檔後這些自動化將暫停。",
+        "scheduleWarning_one": "關聯的自動化{{names}}仍會執行，並恢復此任務。",
+        "scheduleWarning_other": "關聯的自動化{{names}}仍會執行，並恢復此任務。",
+        "scheduleWarningMany_one": "其中 {{count}} 個任務關聯了自動化，後續執行時會恢復這些任務。",
+        "scheduleWarningMany_other": "其中 {{count}} 個任務關聯了自動化，後續執行時會恢復這些任務。",
         "scheduleName": "「{{name}}」",
         "scheduleNameSeparator": "、",
         "confirm": "確認",
@@ -12925,6 +12971,7 @@
         "moveToProjectRunningBlocked": "任務正在執行，結束後再移動",
         "moveToProjectAttachedBlocked": "任務正在被接管，結束接管後再移動",
         "moveToProjectRemoteUnsupported": "暫不支援移動遠端任務",
+        "moveToProjectWorktreeBlocked": "此任務的工作目錄是 worktree，暫不支援移動到其他專案",
         "openInNewWindow": "在新視窗開啟",
         "exportShare": "匯出任務…",
         "exportHtml": "匯出為 HTML…",
@@ -13665,7 +13712,7 @@
         "card": {
           "open": "開啟任務",
           "unbind": "解除繫結",
-          "persistentNote": "任務歸檔後會自動重建並續綁",
+          "persistentNote": "任務歸檔後，下次執行會恢復原任務",
           "deleted": "繫結任務已刪除",
           "deletedPersistentNote": "下次執行時會自動建立新任務並續綁",
           "fallbackTitle": "任務 {{id}}"
@@ -13810,7 +13857,8 @@
         "modelListAria": "模型列表",
         "modelSelectorAria": "模型選擇器",
         "categoryListAria": "{{category}} 模型",
-        "effortListAria": "Effort 級別"
+        "effortListAria": "Effort 級別",
+        "boundLocationLocked": "繫結的任務在原來的電腦上執行，請選擇那台電腦上的模型。"
       }
     },
     "toast": {
@@ -16005,6 +16053,10 @@
     "builtinFollowUp": {
       "name": "跟進（內建）",
       "hint": "任務卡住、等你、出錯、撞上用量上限或做完時叫醒它；內建，只能暫停或恢復。"
+    },
+    "builtinTodoCheck": {
+      "name": "每天查待辦（內建）",
+      "hint": "工作日 9:00 在已連接的來源裡找新待辦，沒有就不打擾；在近況裡開關，只能暫停或恢復。"
     }
   },
   "cindyMakeDoctor": {
@@ -17012,6 +17064,10 @@
     "exitFullscreen": "離開全螢幕"
   },
   "richAnswer": {
+    "send": "傳送訊息",
+    "sending": "正在傳送…",
+    "sent": "已提交",
+    "sendFailed": "訊息未提交，已保留填寫內容",
     "playVideo": "播放影片",
     "openVideoSource": "開啟原影片",
     "calculationUnavailable": "此項暫時無法計算。",

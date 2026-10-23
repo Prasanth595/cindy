@@ -60,6 +60,7 @@ import Anthropic, { APIError } from '@anthropic-ai/sdk';
 
 import {
   BaseAgent,
+  LOCAL_AGENT_CLIENT,
   OneShotError,
   AgentNotAuthenticatedError,
   AgentStartupStoppedError,
@@ -1892,6 +1893,13 @@ export class ClaudeCodeAgent extends BaseAgent {
       if (currentQ === q) nonHarnessMcpServerNames = fallbackNames;
     };
     const buildMcpServers = (): Record<string, McpServerConfig> | undefined => {
+      const client = opts[LOCAL_AGENT_CLIENT];
+      if (client) {
+        hostMcpServerNames = new Set([client.mcpName ?? 'client']);
+        registeredMcpServerNames = hostMcpServerNames;
+        nonHarnessMcpServerNames = hostMcpServerNames;
+        return { [client.mcpName ?? 'client']: { type: 'http', url: client.url, headers: { Authorization: `Bearer ${client.token}` } } };
+      }
       if (hosted) {
         // 设备托管：只用经隧道的服务——cindy_exec(文件与命令)+ 任务所在电脑提供的 Cindy 工具。
         const headers = { Authorization: `Bearer ${hosted.tunnelToken}` };
@@ -2244,7 +2252,7 @@ export class ClaudeCodeAgent extends BaseAgent {
     };
     const forceTurnConfirmation = (toolName: string, input: unknown): boolean => {
       const policy = activeTurnPermissionPolicy;
-      if (!policy) return false;
+      if (!policy || mutablePermissionMode === 'bypassPermissions') return false;
       try {
         return policy.forceConfirmToolCall(toolName, input) === true;
       } catch (error) {
@@ -2272,8 +2280,6 @@ export class ClaudeCodeAgent extends BaseAgent {
       kind: InteractionRequest['kind'];
       resolve: (d: InteractionDecision) => void;
       settled: boolean;
-      /** 本轮来源/执行范围约束独立于 MCP 的逐次审批偏好。 */
-      turnPolicyForcePrompt?: boolean;
       /** Auto 审阅故障降级来的确认:系统收口不能当成用户点了拒绝。 */
       unavailableHandoff?: boolean;
       /** 目录授权变化会使这次文件读写审批的根快照失效。 */
@@ -2293,7 +2299,7 @@ export class ClaudeCodeAgent extends BaseAgent {
      */
     async function dispatchInteraction(
       req: InteractionRequest,
-      opts?: { turnPolicyForcePrompt?: boolean; directorySensitive?: boolean },
+      opts?: { directorySensitive?: boolean },
     ): Promise<InteractionDecision> {
       if (!interactionResolver) {
         return safeDefaultDecision(req.kind, 'no_resolver_attached');
@@ -2304,7 +2310,6 @@ export class ClaudeCodeAgent extends BaseAgent {
           kind: req.kind,
           resolve,
           settled: false,
-          ...(opts?.turnPolicyForcePrompt ? { turnPolicyForcePrompt: true } : {}),
           ...(opts?.directorySensitive ? { directorySensitive: true } : {}),
           ...(req.kind === 'permission' && isAutoReviewUnavailableMetadata(req.metadata)
             ? { unavailableHandoff: true }
@@ -2337,11 +2342,10 @@ export class ClaudeCodeAgent extends BaseAgent {
       const entries = Array.from(pendingInteractions.entries());
       for (const [requestId, entry] of entries) {
         if (entry.settled) continue;
-        const effectiveResolveAs = resolveAs === 'allow' && entry.turnPolicyForcePrompt ? 'deny' : resolveAs;
-        const decision = effectiveResolveAs === 'allow' && entry.kind !== 'ask_user_question'
+        const decision = resolveAs === 'allow' && entry.kind !== 'ask_user_question'
           ? ({ kind: entry.kind, behavior: 'allow' } as InteractionDecision)
           : safeDefaultDecision(entry.kind, reason);
-        if (effectiveResolveAs === 'deny' && entry.unavailableHandoff) {
+        if (resolveAs === 'deny' && entry.unavailableHandoff) {
           autoReviewConfirmUndeliveredNotice.notify();
         }
         entry.settled = true;
@@ -2350,7 +2354,7 @@ export class ClaudeCodeAgent extends BaseAgent {
         const dismissedPayload: InteractionDismissedEvent = {
           requestId,
           reason,
-          resolvedAs: effectiveResolveAs,
+          resolvedAs: resolveAs,
         };
         eventQueue.push({ type: 'interaction_dismissed', data: dismissedPayload, source: 'claude-code' });
       }
@@ -2633,9 +2637,6 @@ export class ClaudeCodeAgent extends BaseAgent {
           return { behavior: 'deny', message: 'The current Plan turn is read-only.' };
         }
         if (modeAfterReview === 'bypassPermissions') {
-          if (turnPolicyForcePrompt) {
-            return { behavior: 'deny', message: 'Permission mode changed; retry within the authorized turn scope.' };
-          }
           return { behavior: 'allow', updatedInput: executionInput };
         }
         if (modeAfterReview !== reviewPermissionMode) {
@@ -2687,7 +2688,7 @@ export class ClaudeCodeAgent extends BaseAgent {
         unavailableHandoff
           ? annotatePermissionRequestForUnavailableReview(permissionRequest)
           : permissionRequest,
-        { turnPolicyForcePrompt, directorySensitive: directorySensitivePermission },
+        { directorySensitive: directorySensitivePermission },
       );
       notifyIfAutoReviewConfirmUndelivered(unavailableHandoff, decision);
       if (isPlanToolBlocked(toolName)) {
@@ -3896,7 +3897,6 @@ export class ClaudeCodeAgent extends BaseAgent {
             const REMOTE_APPROVAL_TIMEOUT_MS = 110_000;
             async function dispatchWithTimeout(
               req: InteractionRequest,
-              dispatchOpts?: { turnPolicyForcePrompt?: boolean },
             ): Promise<InteractionDecision> {
               let timer: NodeJS.Timeout | undefined;
               try {
@@ -3905,7 +3905,7 @@ export class ClaudeCodeAgent extends BaseAgent {
                     dismissSinglePending(req.requestId, 'approval_timeout');
                     reject(new Error('approval timed out'));
                   }, REMOTE_APPROVAL_TIMEOUT_MS);
-                  dispatchInteraction(req, dispatchOpts).then(resolve, reject);
+                  dispatchInteraction(req).then(resolve, reject);
                 });
               } finally {
                 if (timer) clearTimeout(timer);
@@ -4037,9 +4037,7 @@ export class ClaudeCodeAgent extends BaseAgent {
               params.input ?? {},
             );
             if (mutablePermissionMode === 'bypassPermissions') {
-              return remoteTurnPolicyForcePrompt
-                ? { kind: 'permission', behavior: 'deny', reason: 'Permission mode changed; retry within the authorized turn scope.' }
-                : { kind: 'permission', behavior: 'allow' };
+              return { kind: 'permission', behavior: 'allow' };
             }
             // 远端会话走同一份 host MCP 策略 —— 否则 SSH 会话里可信 server 又要逐次
             // 弹窗, prompt-each-time 的"禁止持久化授权"保护也整套缺失。
@@ -4074,9 +4072,7 @@ export class ClaudeCodeAgent extends BaseAgent {
                 return { kind: 'permission', behavior: 'deny', reason: 'The current Plan turn is read-only.' };
               }
               if (modeAfterReview === 'bypassPermissions') {
-                return remoteTurnPolicyForcePrompt
-                  ? { kind: 'permission', behavior: 'deny', reason: 'Permission mode changed; retry within the authorized turn scope.' }
-                  : { kind: 'permission', behavior: 'allow' };
+                return { kind: 'permission', behavior: 'allow' };
               }
               if (modeAfterReview === reviewPermissionMode && autoDecision.verdict === 'allow') {
                 return { kind: 'permission', behavior: 'allow' };
@@ -4118,7 +4114,6 @@ export class ClaudeCodeAgent extends BaseAgent {
                 remoteUnavailableHandoff
                   ? annotatePermissionRequestForUnavailableReview(remotePermissionRequest)
                   : remotePermissionRequest,
-                { turnPolicyForcePrompt: remoteTurnPolicyForcePrompt },
               );
             } catch {
               if (remoteUnavailableHandoff) autoReviewConfirmUndeliveredNotice.notify();
@@ -4319,7 +4314,7 @@ export class ClaudeCodeAgent extends BaseAgent {
       // Re-read at each Query boundary: plugin uninstall/disable may remove the
       // previous projection while the conversation itself remains open.
       // 受邀者(另一个账号)的托管会话不带本机安装的托管技能(属于本机用户与其组织)。
-      const managedSkills = !reviewMode && !hosted?.guest && this.deps.getManagedSkills
+      const managedSkills = !reviewMode && !hosted?.guest && !opts[LOCAL_AGENT_CLIENT]?.hostToolsOnly && this.deps.getManagedSkills
         ? await this.deps.getManagedSkills() : [];
       const managedDisabledPaths = currentDisabledSkillLaunchPaths(managedDisabledSkillLaunch);
       const allowedManagedSkills = resolveAllowedManagedSkills(managedSkills, managedSkillGrants, managedDisabledPaths);
@@ -4446,7 +4441,8 @@ export class ClaudeCodeAgent extends BaseAgent {
           canUseTool: sdkCanUseTool,
           // Bot MCP selection is explicit; native delegation remains available.
           // 设备托管：只用经隧道的 MCP(本机用户 / 项目里的 MCP 启动命令会在本机执行)。
-          ...(opts.botRuntimeProfile || hosted ? { strictMcpConfig: true } : {}),
+          ...(opts.botRuntimeProfile || hosted || opts[LOCAL_AGENT_CLIENT] ? { strictMcpConfig: true } : {}),
+          ...(opts[LOCAL_AGENT_CLIENT]?.hostToolsOnly ? { tools: [] } : {}),
           // 设备托管：自带文件与命令工具只能操作本机，关掉，由 cindy_exec 顶替；
           // 另含 host 路由表关闭的自带工具(见 claudeDisallowedTools)。
           ...(claudeDisallowedTools.length > 0
@@ -4456,7 +4452,7 @@ export class ClaudeCodeAgent extends BaseAgent {
           ...(hosted?.guest ? { tools: [...DEVICE_HOSTED_GUEST_CLAUDE_TOOLS] } : {}),
           // 设备托管：个人配置(用户级设置、hooks)属于任务所在电脑，不加载本机用户级设置；
           // 项目级设置来自同步过来的影子目录(只保留权限规则)。
-          settingSources: reviewMode || !!opts.botRuntimeProfile
+          settingSources: reviewMode || !!opts.botRuntimeProfile || opts[LOCAL_AGENT_CLIENT]?.hostToolsOnly
             ? []
             : hosted ? ['project', 'local'] : ['user', 'project', 'local'],
           // Settings (SDK "flag settings" 层, 优先级最高 — 覆盖 user/project/local 文件层):

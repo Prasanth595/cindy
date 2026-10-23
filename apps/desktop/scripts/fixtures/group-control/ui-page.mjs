@@ -47,6 +47,10 @@ export default {
       about: 'Single-speaker server group, nobody named: the queue card stands on its own, Aster answered and Nova is speaking next by itself',
       data: { ...base, arrangement: 'running' },
     },
+    'work-mentioned': {
+      about: 'Preserved running work plan in mentioned mode: ordinary text has no implicit worker recipient',
+      data: { ...base, arrangement: 'running', workMentioned: true },
+    },
     'arrangement-done': {
       about: 'The same queue once every turn is done: no 继续 row',
       data: { ...base, arrangement: 'done' },
@@ -56,7 +60,7 @@ export default {
       data: { ...base, members: QUEUE_CROWD, arrangement: 'long' },
     },
     settings: {
-      about: 'Single-speaker group settings: no 回复方式, 发言方式, 负责人 or project folder',
+      about: 'Single-speaker group settings: reply mode remains independent; no speaking mode, organizer or project folder',
       data: { ...base, arrangement: 'running', settings: true },
     },
     'thread-unread': {
@@ -112,10 +116,17 @@ export default {
 
     if (ui.case === 'settings') {
       const drawer = page.getByRole('dialog');
-      await drawer.getByText('群名称', { exact: true }).waitFor();
-      // Who answers follows @ (everyone queues when nobody is named); no group modes, no organizer.
-      for (const label of ['发言方式', '没有 @ 人的时候', '负责人', '项目文件夹'])
-        assert.equal(await drawer.getByText(label, { exact: true }).count(), 0, label);
+      await drawer.getByText(await ui.t('bots.groupChat.server.settings.name'), { exact: true }).waitFor();
+      const replyMode = drawer.getByRole('combobox', { name: await ui.t('bots.groupChat.settings.replyMode'), exact: true });
+      await replyMode.click();
+      await page.getByRole('option', { name: await ui.t('bots.groupChat.settings.replyModeMentioned'), exact: true }).click();
+      assert.equal(await replyMode.innerText(), await ui.t('bots.groupChat.settings.replyModeMentioned'));
+      for (const key of ['bots.groupChat.settings.speakingMode', 'bots.groupChat.organizer', 'bots.groupChat.settings.projectDir'])
+        assert.equal(await drawer.getByText(await ui.t(key), { exact: true }).count(), 0, key);
+      return;
+    }
+    if (ui.case === 'work-mentioned') {
+      assert.equal(await input.getAttribute('placeholder'), await ui.t('bots.groupChat.composer.placeholder'));
       return;
     }
     if (ui.case.startsWith('arrangement')) {

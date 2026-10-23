@@ -1,10 +1,13 @@
 {
+  "localAgent": {"title":"ローカルアプリの接続","empty":"接続済みのアプリはありません","description":"承認したローカルアプリが Cindy のモデルと実行機能を利用できます。認証情報は Cindy が管理します。","revoke":"接続を解除","failed":"アプリの接続を読み込めませんでした。","connectTitle":"ローカルアプリを接続","connectMessage":"「{{app}}」に Cindy の利用を許可しますか？","connectDetail":"このアプリはモデルとプロバイダーの一覧を取得し、独自の実行を作成してツールを提供できます。ネイティブ実行では、現在の OS ユーザーの権限でファイルを読み書きし、コマンドを実行できます。作業ディレクトリはアクセス範囲を制限しません。認証情報は Cindy が保持します。設定 → リモート接続 → ローカルアプリの接続で個別に解除できます。","cancel":"キャンセル","allow":"接続を許可","revokeMessage":"すべてのローカルアプリ接続を取り消しますか？","revokeDetail":"すべてのローカルアプリ接続が無効になり、実行中のタスクが停止します。必要に応じて再接続できます。","clientIdentity":"アプリが申告した ID：{{id}}\nバージョン：{{version}}\n名前と ID は申請元の申告であり、Cindy が発行元を確認したことを意味しません。","revokeOneMessage":"「{{app}}」のこの接続を取り消しますか？","revokeOneDetail":"この接続で実行中のタスクが停止します。他のアプリ接続には影響しません。必要に応じて再接続できます。","revokeConnection":"「{{app}}」の接続を取り消す","clientId":"アプリ ID：{{id}}","operationFailed":"ローカルアプリの操作結果を確認できませんでした。現在の状態を確認してから続けてください。","invalidConnection":"アプリ接続の ID が無効です。","revokeFailed":"接続の解除を確認できませんでした。現在の接続状態を確認してください。","loading":"アプリの接続を読み込み中…","revoking":"接続を解除中…","authorizationRequired":"この操作には有効なローカルアプリの承認が必要です。","pairExpired":"接続リクエストの有効期限が切れたか、キャンセルされました。アプリから接続を再申請してください。","busy":"ローカルアプリの実行が続いているか、実行数の上限に達しています。不要な実行を先に終了してください。","limitReached":"ローカルアプリの接続数が上限に達しています。設定で不要な接続を解除してください。","invalidWorkspace":"アプリは、このコンピューター上に存在する作業ディレクトリを絶対パスで指定する必要があります。","sessionExists":"このアプリ接続では、その実行 ID がすでに使われています。","executionUnavailable":"要求された実行またはツール呼び出しは利用できません。メッセージやツール操作は再実行されていません。","selectionUnavailable":"選択したモデル、プロバイダー、または推論強度は利用できません。アプリで利用可能な項目を選択してください。","requestNotReplayed":"このリクエストは再実行されていません。アプリで元の操作結果を確認してください。","storageUnavailable":"ローカルアプリの接続データを読み込めないか、保存できませんでした。既存の承認記録は保持されています。","stopUnconfirmed":"この実行への追加メッセージは停止しましたが、プロセスの終了はまだ確認できていません。","interactionUnavailable":"エンジンが必要とする操作を、このアプリでは受け取れません。","interrupted":"今回の送信は中断されました。","toolTimeout":"アプリのツールがタイムアウトしました。自動で再試行していません。","connectResult":"接続結果は申請元のアプリで確認してください。承認は Cindy の確認ウィンドウで決定します。","invalidRequest":"アプリのリクエストが無効か、この操作はサポートされていません。","hostInUse":"このプロファイルのローカルアプリ接続は、別の Cindy インスタンスが管理しています。そのインスタンスで接続を確認してください。","developerConnection":"開発用接続","copyCode":"接続コードをコピー","codeCopied":"接続コードをコピーしました","codeCopyFailed":"接続コードをコピーできませんでした","developerState":{"ready":"このパソコンのアプリから一時的に接続できます。この Cindy での許可が必要です。再起動後はコードをコピーし直してください。","starting":"接続を準備しています…","owner-unavailable":"先にログインするかローカルモードに入ってください","host-in-use":"このデータフォルダーの接続は別の Cindy が管理しています","failed":"ローカル接続を開始できませんでした","stopped":"ローカル接続は停止しています"}},
   "mailReader": {
     "markReadFailed": "既読状態を同期できませんでした。メールボックスの認証を確認して開き直してください。",
     "title": "メール",
     "openMailbox": "メールボックスで開く",
     "loading": "メールを読み込み中…",
-    "failed": "メールを読み込めませんでした。接続したアカウントを確認して再試行するか、メールボックスで開いてください。",
+    "failed": "メールを読み込めませんでした。再試行するか、メールボックスで開いてください。",
+    "unavailable": "利用できるメールプラグインがありません。メールボックスで開けます。",
+    "notReady": "メールプラグインの設定が完了していません。メールボックスを接続するか、元のリンクを開いてください。",
     "retry": "再試行",
     "to": "宛先",
     "cc": "Cc",
@@ -19,7 +22,9 @@
     "collapseMessage": "{{from}} からのメールを折りたたむ",
     "conversationFailed": "前後のメールを読み込めませんでした。",
     "messageCount": "{{count}} 件のメール",
-    "showMessages": "{{count}} 件のメールを表示"
+    "showMessages": "{{count}} 件のメールを表示",
+    "choosePlugin": "このメールを開くプラグインを選んでください。",
+    "personalPlugin": "個人用プラグイン"
   },
   "taskActionConfirmation": {
     "title": "セッション操作の確認",
@@ -965,6 +970,9 @@
     "handoffWindow": "代理入力 · {{app}}"
   },
   "ipcError": {
+    "SSH_HARNESS_SWITCH_UNSUPPORTED": "この SSH タスクでは Harness を切り替えられません。現在の Harness のモデルを選ぶか、必要な Harness で新しい SSH タスクを作成してください。",
+    "MODEL_SELECTION_UNAVAILABLE": "選択したプロバイダーのモデルは利用できなくなりました。設定で接続を確認するか、利用可能なモデルを選び直してください。",
+    "HARNESS_SWITCH_NOT_READY": "Harness の切り替えが完了していません。エラーの詳細を確認し、Harness の準備ができてから再試行してください。",
     "DEVICE_LINK_BUSY": "接続先のコンピュータが混み合っています。しばらくしてから再試行してください。",
     "INVALID_PARAMS": "パラメータが無効です。確認して再試行してください。",
     "PRECONDITION_FAILED": "現在の状態ではこの操作を実行できません。しばらくしてから再試行してください。",
@@ -3351,7 +3359,7 @@
         "paymentRequired": "有料",
         "paymentUnlock": "有料で解放",
         "enableModel": "このモデルを有効にする",
-        "capabilityGroupHint": "チャットのモデル選択には表示されません。スイッチで画像・動画機能への掲載を制御します。",
+        "capabilityGroupHint": "チャットのモデル選択には表示されません。スイッチで各機能での表示を切り替えます。",
         "accessWriteFailed": "変更を保存できませんでした。もう一度お試しください。",
         "visibilityWriteFailed": "モデルの表示設定を保存できませんでした。もう一度お試しください。問題が解決しない場合は、Cindy を再起動してください。",
         "disabledGroup": "無効",
@@ -3825,7 +3833,26 @@
         "pending": "認証情報を準備中",
         "unavailable": "一時的に利用できません"
       },
-      "claudeAccountRetired": "Cindy では、この旧式の Claude 接続を使ったサブスクリプションへのログインに対応していません。Claude アカウントとサブスクリプションには影響ありません。「Claude Code でログイン」から接続してください。"
+      "claudeAccountRetired": "Cindy では、この旧式の Claude 接続を使ったサブスクリプションへのログインに対応していません。Claude アカウントとサブスクリプションには影響ありません。「Claude Code でログイン」から接続してください。",
+      "speechSetup": {
+        "title": "音声",
+        "add": "音声モデルを追加",
+        "referenceHint": "参考モデルは公開カタログに基づき、アカウントの利用権限を示すものではありません。実際に利用できるかは呼び出し時に確認されます。",
+        "discoveryHint": "以下はプロバイダーのカタログから取得したモデルです。音声の実行は未検証です。",
+        "saved": "追加済み",
+        "reference": "参考モデル",
+        "discovered": "取得済み",
+        "more": "その他の音声モデル（{{count}}）",
+        "manual": "音声モデル ID を入力",
+        "modelId": "音声モデル ID",
+        "modelsHint": "音声モデルを保存しても、音声合成は開始されません。音声や文ごとの読み上げはパートナーの音声設定で調整できます。",
+        "otherModels": "チャットとその他のモデル",
+        "separateKey": "音声には API キーが必要です。別の接続を作成し、既存のサブスクリプションやデバイスコードの接続は保持します。",
+        "fetchFailed": "モデル一覧を取得できません。参考モデルを選んで追加できます。",
+        "saveFailed": "モデルを追加できませんでした。このページを開き直して再試行してください。",
+        "manualSource": "手動追加",
+        "manualHint": "プロバイダーが提供する音声モデル ID を入力してください。"
+      }
     },
     "experimental": {
       "title": "実験的機能",
@@ -6615,7 +6642,7 @@
         "installMeta": "バージョン {{version}} · {{source}}",
         "updateMeta": "バージョン {{from}} → {{to}} · {{source}}",
         "installDescription": "確認するまでインストールされません。インストール後はすぐに有効になり、プラグインページからいつでも無効化・アンインストールできます。",
-        "updateDescription": "新しいバージョンはより多くの権限を必要とするため、確認するまで更新されません。それまでは現在のバージョンをそのまま使えます。",
+        "updateDescription": "確認後に更新します。それまでは現在のバージョンをそのまま使えます。",
         "grantsTitle": "インストール後に持つ権限:",
         "noPermissions": "このプラグインは追加の権限を宣言していません。",
         "addedTitle": "追加・変更される権限:",
@@ -6632,7 +6659,11 @@
         "confirmInstall": "インストール",
         "confirmUpdate": "更新",
         "cancel": "キャンセル",
-        "updateNeedsConsent": "新しい権限の確認が必要"
+        "updateNeedsConsent": "新しい権限の確認が必要",
+        "targetIdentity": "インストール先: {{name}}",
+        "personalTarget": "個人",
+        "sourceChanged": "この更新でローカルソースに切り替わります。既存のアカウントとデータは別に保管されます。更新後にアカウントを接続し直してください。",
+        "otherCopies": "同名のプラグインがほかに {{count}} 個あります。上書きや無効化はされません。別のコピーには個別のアカウント接続が必要です。"
       },
       "trust": {
         "official": "Cindy 公式プラグイン",
@@ -6699,6 +6730,8 @@
         "panelTab": "パネル「{{title}}」· プラグインページ内で開く",
         "mainView": "Cindy の左側ナビゲーションに「{{title}}」への入口を追加できます",
         "mainViewDetail": "クリックするとプラグインのサンドボックス内でメインビューが開き、ファイル、ネットワーク、認証情報へのアクセスが追加で付与されることはありません。",
+        "taskView": "タスクページ「{{title}}」· タスクのサイドバーで開く",
+        "taskViewDetail": "タブはタスクに合わせて切り替わり、プラグインのサンドボックス内で開きます。ファイル、ネットワーク、認証情報へのアクセスが追加で付与されることはありません。",
         "code": "実行コード",
         "codeDetail": "独立したサンドボックスで実行され、ファイルやネットワークにはアクセスできません。",
         "resident": "常駐実行(有効化すると起動し、呼び出されなくてもバックグラウンドプロセスを維持)",
@@ -6856,6 +6889,7 @@
       },
       "contents": {
         "mainView": "メインビュー",
+        "taskView": "タスクページ",
         "panel": "パネル",
         "settingsUi": "カスタム設定画面",
         "code": "実行コード",
@@ -8189,7 +8223,8 @@
         "collaboration": "コラボ",
         "unknown": "不明なタブ",
         "ghostPanel": "プラグインパネル",
-        "pluginView": "プラグインビュー"
+        "pluginView": "プラグインビュー",
+        "pluginTask": "プラグインのタスクページ"
       },
       "controls": {
         "showAria": "サイドバーを表示",
@@ -8988,6 +9023,13 @@
       "undo": "元に戻す",
       "undoFailed": "元に戻せませんでした。もう一度お試しください",
       "deleteFailed": "削除できませんでした。もう一度お試しください",
+      "check": "確認して",
+      "checkMeta": "接続済みのメールやメッセージから新しい Todo を探します",
+      "checkPrompt": "接続済みのメールやメッセージなどに、私が対応すべき新しい用件がないか確認して、あれば Todo に追加して。",
+      "checkFailed": "送信できませんでした。もう一度お試しください",
+      "dailyCheck": "毎日確認する",
+      "dailyCheckMeta": "平日 9:00、新しい Todo がなければ通知しません",
+      "dailyCheckFailed": "保存できませんでした。もう一度お試しください",
       "outputs": "成果物",
       "outputMeta": "{{time}} · {{task}}",
       "openFailed": "ファイルを開けませんでした",
@@ -9726,7 +9768,8 @@
           "archived": "アーカイブ済みです。履歴は引き続き閲覧できます。",
           "noneHint": "このグループでは仲間の所有者だけが応答を依頼できます。",
           "companionPermissions": "仲間の権限",
-          "configureCapabilities": "ツールと利用権限の設定"
+          "configureCapabilities": "ツールと利用権限の設定",
+          "capabilityScope": "これは{{name}}自身のツールと利用権限で、このグループだけの設定ではありません。"
         }
       },
       "lifecycle": {
@@ -12240,6 +12283,9 @@
       "daemonNotReady": "{{manager}} のアップグレードは完了しましたが、リモート daemon がまだ起動していません — メッセージを手動で再送信してください"
     },
     "remoteError": {
+      "SSH_HARNESS_SWITCH_UNSUPPORTED": "この SSH タスクでは Harness を切り替えられません。現在の Harness のモデルを選ぶか、必要な Harness で新しい SSH タスクを作成してください。",
+      "MODEL_SELECTION_UNAVAILABLE": "選択したプロバイダーのモデルは利用できなくなりました。設定で接続を確認するか、利用可能なモデルを選び直してください。",
+      "HARNESS_SWITCH_NOT_READY": "Harness の切り替えが完了していません。エラーの詳細を確認し、Harness の準備ができてから再試行してください。",
       "DEVICE_LINK_BUSY": "接続先のコンピュータが混み合っています。しばらくしてから再試行してください。",
       "REMOTE_DAEMON_CLOSED": "リモート接続が切れました。更新中の可能性があります。このターンは終了したので、もう一度送信してください。",
       "REMOTE_LOCAL_ATTACHMENT_UNSUPPORTED": "リモートセッションではローカルのファイル/画像の添付にアクセスできません。内容を直接貼り付けてください。",
@@ -12819,10 +12865,10 @@
         "title": "セッションをアーカイブ",
         "description": "このセッションをアーカイブしますか？アーカイブ後はリストから消えます。",
         "dirtyWorktreeWarning": "このセッションのワークツリーには未コミットの変更があります。アーカイブ前に git スナップショットとして自動保存され、後でセッションから復元できます。",
-        "scheduleWarning_one": "このセッションに紐づく自動化{{names}}は、アーカイブ後に一時停止されます。",
-        "scheduleWarning_other": "このセッションに紐づく自動化{{names}}は、アーカイブ後に一時停止されます。",
-        "scheduleWarningMany_one": "そのうち {{count}} 件のセッションに自動化が紐づいており、アーカイブ後に一時停止されます。",
-        "scheduleWarningMany_other": "そのうち {{count}} 件のセッションに自動化が紐づいており、アーカイブ後に一時停止されます。",
+        "scheduleWarning_one": "関連する自動化{{names}}は引き続き実行され、その際にこのセッションを復元します。",
+        "scheduleWarning_other": "関連する自動化{{names}}は引き続き実行され、その際にこのセッションを復元します。",
+        "scheduleWarningMany_one": "{{count}} 件のセッションに自動化が紐づいており、次回実行時にセッションが復元されます。",
+        "scheduleWarningMany_other": "{{count}} 件のセッションに自動化が紐づいており、次回実行時にセッションが復元されます。",
         "scheduleName": "「{{name}}」",
         "scheduleNameSeparator": "、",
         "confirm": "確認",
@@ -12925,6 +12971,7 @@
         "moveToProjectRunningBlocked": "このセッションは実行中です。完了後に移動してください。",
         "moveToProjectAttachedBlocked": "このセッションはリモート操作中です。操作終了後に移動してください。",
         "moveToProjectRemoteUnsupported": "リモートセッションの移動はまだサポートされていません",
+        "moveToProjectWorktreeBlocked": "このタスクの作業ディレクトリは worktree のため、他のプロジェクトへは移動できません",
         "openInNewWindow": "新しいウィンドウで開く",
         "exportShare": "セッションをエクスポート…",
         "exportHtml": "HTML にエクスポート…",
@@ -13665,7 +13712,7 @@
         "card": {
           "open": "セッションを開く",
           "unbind": "連携を解除",
-          "persistentNote": "セッションがアーカイブされると自動的に再作成して連携を継続します",
+          "persistentNote": "アーカイブ後も、次回実行時に元のセッションが復元されます",
           "deleted": "連携先セッションは削除されました",
           "deletedPersistentNote": "次回の実行時に新しいセッションを作成して再連携します",
           "fallbackTitle": "セッション {{id}}"
@@ -13810,7 +13857,8 @@
         "modelListAria": "モデル一覧",
         "modelSelectorAria": "モデルセレクター",
         "categoryListAria": "{{category}} モデル",
-        "effortListAria": "推論強度"
+        "effortListAria": "推論強度",
+        "boundLocationLocked": "紐づけたタスクは元のコンピューターで実行されます。そのコンピューターのモデルを選んでください。"
       }
     },
     "toast": {
@@ -16005,6 +16053,10 @@
     "builtinFollowUp": {
       "name": "フォロー（組み込み）",
       "hint": "セッションが止まったとき、返信待ちになったとき、エラーになったとき、使用量の上限に達したとき、完了したときに起こします。組み込みのため、一時停止と再開のみできます。"
+    },
+    "builtinTodoCheck": {
+      "name": "毎日の Todo 確認（組み込み）",
+      "hint": "平日 9:00 に接続済みのソースから新しい Todo を探し、なければ通知しません。近況からオン・オフでき、一時停止と再開のみできます。"
     }
   },
   "cindyMakeDoctor": {
@@ -17012,6 +17064,10 @@
     "exitFullscreen": "全画面表示を終了"
   },
   "richAnswer": {
+    "send": "メッセージを送信",
+    "sending": "送信中…",
+    "sent": "送信済み",
+    "sendFailed": "メッセージを送信できませんでした。入力内容は保持されています。",
     "playVideo": "動画を再生",
     "openVideoSource": "元の動画を開く",
     "calculationUnavailable": "この値を計算できません。",

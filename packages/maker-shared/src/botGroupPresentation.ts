@@ -14,6 +14,7 @@ import {
   type BotGroupNoticeCode,
   type BotGroupPlanStepView,
   type BotGroupPlanView,
+  type BotGroupReplyMode,
   type BotGroupSummary,
 } from './botGroupChat.js';
 
@@ -222,13 +223,15 @@ export type BotGroupComposerPlanState =
   | { kind: 'running'; botName: string; talk?: boolean }
   | { kind: 'waiting'; botName: string; stepDone: boolean };
 
-export function botGroupComposerPlanState(plan: BotGroupPlanView | null): BotGroupComposerPlanState | null {
+export function botGroupComposerPlanState(plan: BotGroupPlanView | null, replyMode: BotGroupReplyMode = 'all'): BotGroupComposerPlanState | null {
   if (!plan) return null;
   if (plan.status === 'proposed') return { kind: 'proposed' };
   const current = currentBotGroupPlanStep(plan);
-  const botName = current?.botName.trim() ?? '';
-  // Someone who cannot add to a queue sends a new request: the composer must not promise otherwise.
-  if (plan.status === 'running' && plan.kind === 'talk') return plan.canAdd === false ? null : { kind: 'running', botName, talk: true };
+  // Keep the work-plan state for the division gate, but name a recipient only when
+  // ordinary text is actually forwarded to that worker (including legacy plans).
+  const botName = replyMode === 'mentioned' ? '' : current?.botName.trim() ?? '';
+  // Only promise additions when unmentioned words actually reach the speaking teammate.
+  if (plan.status === 'running' && plan.kind === 'talk') return plan.canAdd === false || replyMode === 'mentioned' ? null : { kind: 'running', botName, talk: true };
   if (plan.status === 'running') return { kind: 'running', botName };
   // A queue waiting for 继续 takes a new request, not changes to the last answer (bot-group-chat.md §4.0).
   if (plan.status === 'waiting' && plan.kind === 'talk') return null;

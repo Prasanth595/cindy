@@ -2,8 +2,9 @@ import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { afterEach, describe, it, expect, vi } from 'vitest';
 
-import type { AgentKind, CustomProviderConfig, ProviderView } from '@cindy/model-providers';
+import type { AgentKind, CustomProviderConfig, ProviderPreset, ProviderView } from '@cindy/model-providers';
 import { buildUserProvider } from '@cindy/model-providers';
+import { providerViewToCustomProviderConfig } from '../../../renderer/lib/customProviders.js';
 
 import type { ProviderImportPreview } from '../../../shared/providerImport.js';
 import { BUILTIN_REFRESHABLE_PROVIDER_IDS } from '../../../shared/providerModelRefresh.js';
@@ -4132,7 +4133,9 @@ describe('provider:oauth mutation ordering', () => {
     const owner = { dataOwnerId: 'owner-a', generation: 1 };
     registerProviderHandlers(harness, makeDeps({
       currentOwnerSession: () => ({ ...owner }),
-      assertTrustedSender: (event: any) => { event.sender.send = send; },
+      assertTrustedSender: (event) => {
+        (event as { sender: { send?: typeof send } }).sender.send = send;
+      },
       oauthLogin: async (_id, _current, onBrowserUrl) => {
         progress = onBrowserUrl!;
         return new Promise(resolve => { finish = resolve; });
@@ -4164,7 +4167,9 @@ describe('provider:oauth mutation ordering', () => {
     const owner = { dataOwnerId: 'owner-a', generation: 1 };
     registerProviderHandlers(harness, makeDeps({
       currentOwnerSession: () => ({ ...owner }),
-      assertTrustedSender: (event: any) => { event.sender.send = send; },
+      assertTrustedSender: (event) => {
+        (event as { sender: { send?: typeof send } }).sender.send = send;
+      },
       oauthLogin: async (_id, _current, _onBrowserUrl, method, onDeviceCode) => {
         receivedMethod = method;
         progress = onDeviceCode!;
@@ -4273,10 +4278,15 @@ describe('provider:oauth mutation ordering', () => {
           // Delay only the first real row read; the concurrent settings IPC uses
           // the same database normally and makes the original snapshot stale.
           const select = client!.drizzle.select.bind(client!.drizzle);
-          vi.spyOn(client!.drizzle, 'select').mockImplementationOnce((...args: any[]) => {
-            const builder = (select as any)(...args);
-            const from = builder.from.bind(builder);
-            builder.from = (...fromArgs: any[]) => {
+          vi.spyOn(client!.drizzle, 'select').mockImplementationOnce((...args: Parameters<typeof select>) => {
+            const builder = select(...args);
+            // The caller awaits get(); widen only the intercepted read result so
+            // this synchronous test database can pause it without untyped casts.
+            const pausableBuilder: {
+              from: (...fromArgs: Parameters<typeof builder.from>) => { get: () => unknown };
+            } = builder;
+            const from = pausableBuilder.from.bind(builder);
+            pausableBuilder.from = (...fromArgs: Parameters<typeof from>) => {
               const query = from(...fromArgs);
               const get = query.get.bind(query);
               query.get = async () => { const row = get(); read(); await resume; return row; };
@@ -4797,3 +4807,99 @@ it('preserves the actual Vertex API through the probe IPC and rejects unknown SD
     { kind: 'adhoc', spec: { ...spec, api: 'invented-sdk' } })).rejects.toThrow(/INVALID_PARAMS/);
   expect(deps.testConnection).toHaveBeenCalledOnce();
 });
+
+describe('speech additions through the real provider update handler', () => {
+  it('merges into the latest connection, preserving settings, credentials, duplicate IDs and another connection', async () => {
+    mountDb();
+    const harness = new IpcHarness();
+    const deps = makeDeps();
+    registerProviderHandlers(harness, deps);
+    const config: CustomProviderConfig = { id: 'speech-a', name: 'Renamed while dialog open', runtimes: {
+      codex: { baseUrl: 'https://api.minimax.io/v1', wireProtocol: 'openai-chat', models: [
+        { id: 'MiniMax-M3', name: 'My chat', defaultEnabled: false },
+        { id: 'speech-2.8-hd', name: 'My voice', mode: 'audio_speech', defaultEnabled: false },
+      ] },
+      pi: { baseUrl: 'https://api.minimax.io/anthropic', wireProtocol: 'anthropic-messages', models: [{ id: 'MiniMax-M3', name: 'Pi chat' }] },
+    } };
+    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_CREATE, config);
+    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_CREATE, { ...config, id: 'speech-b' });
+    vi.mocked(deps.storeCustomProviderKey).mockClear();
+    vi.mocked(deps.removeCustomProviderKey).mockClear();
+    const result = await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE, {
+      ...config, name: 'Stale name', runtimes: { codex: { ...config.runtimes.codex, models: [
+        { id: 'speech-2.8-turbo', name: 'Speech 2.8 Turbo' },
+        { id: 'speech-2.8-hd', name: 'Overwrite attempt', mode: 'audio_speech' },
+      ] } },
+    }, {}, { appendSpeechModelsOnly: true });
+    expect(result).toEqual({ ok: true });
+    const saved = await getCustomProvider(config.id);
+    expect(saved?.name).toBe(config.name);
+    expect(saved?.runtimes.pi).toEqual(config.runtimes.pi);
+    expect(saved?.runtimes.codex?.models).toEqual([...config.runtimes.codex!.models, { id: 'speech-2.8-turbo', name: 'Speech 2.8 Turbo' }]);
+    expect((await getCustomProvider('speech-b'))?.runtimes).toEqual(config.runtimes);
+    expect(deps.storeCustomProviderKey).not.toHaveBeenCalled();
+    expect(deps.removeCustomProviderKey).not.toHaveBeenCalled();
+  });
+  it('rejects stale endpoints and attempts to replace credentials without changing membership', async () => {
+    mountDb();
+    const harness = new IpcHarness();
+    const deps = makeDeps();
+    registerProviderHandlers(harness, deps);
+    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_CREATE, validConfig);
+    const request = { ...validConfig, runtimes: { codex: { ...validConfig.runtimes.codex, models: [{ id: 'speech-2.8-turbo', name: 'Speech' }] } } };
+    await expect(harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE, request, { codex: 'fake-replacement' }, { appendSpeechModelsOnly: true })).rejects.toThrow(/INVALID_PARAMS/);
+    await expect(harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE, { ...request, runtimes: { codex: { ...request.runtimes.codex, baseUrl: 'https://changed.example/v1' } } }, {}, { appendSpeechModelsOnly: true })).rejects.toThrow(/INVALID_PARAMS/);
+    expect((await getCustomProvider(validConfig.id))?.runtimes).toEqual(validConfig.runtimes);
+  });
+});
+
+// A saved explicit default becomes omitted in ProviderView; opening Settings must not make it stale.
+it('speech additions accept an unchanged projected default protocol and preserve its declaration', async () => {
+  mountDb();
+  const harness = new IpcHarness();
+  registerProviderHandlers(harness, makeDeps());
+  const config: CustomProviderConfig = { id: 'legacy-speech', name: 'Legacy', runtimes: {
+    codex: { baseUrl: 'https://api.openai.com/v1', wireProtocol: 'openai-responses', models: [{ id: 'gpt-5.4', name: 'Chat' }] },
+    pi: { baseUrl: 'https://api.openai.com/v1', wireProtocol: 'openai-chat', models: [{ id: 'tts-1', name: 'Already added', defaultEnabled: false }] },
+  } };
+  await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_CREATE, config);
+  await expect(harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE, { ...config, runtimes: {
+    codex: { baseUrl: config.runtimes.codex!.baseUrl, models: [{ id: 'gpt-4o-mini-tts', name: 'Speech' }, { id: 'tts-1', name: 'Duplicate' }] },
+  } }, {}, { appendSpeechModelsOnly: true })).resolves.toEqual({ ok: true });
+  const stored = await getCustomProvider(config.id);
+  expect(stored?.runtimes.codex?.wireProtocol).toBe('openai-responses');
+  expect(stored?.runtimes.codex?.models.map(model => model.id)).toEqual(['gpt-5.4', 'gpt-4o-mini-tts']);
+  expect(stored?.runtimes.pi).toEqual(config.runtimes.pi);
+});
+
+// Review regression: real catalog projection + update handler. A current preset can
+// replace a stored directory URL without changing the connection. Existing tests
+// only compared raw snapshots, so they missed this failed save (DB tier, no network).
+it.each([undefined, 'https://api.minimax.io/v1/old-models'])(
+  'appends speech against the current preset while preserving stored modelsUrl %s',
+  async (modelsUrl) => {
+    mountDb();
+    const harness = new IpcHarness();
+    const config: CustomProviderConfig = { id: 'preset-speech', name: 'My MiniMax', runtimes: {
+      codex: { catalogPresetId: 'minimax-api', baseUrl: 'https://api.minimax.io/v1',
+        modelsUrl, models: [{ id: 'MiniMax-M3', name: 'My chat' }] },
+    } };
+    const presets: ProviderPreset[] = [{ id: 'minimax-api', name: 'MiniMax API', runtimes: {
+      codex: { baseUrl: 'https://api.minimax.io/v1', modelsUrl: 'https://api.minimax.io/v1/current-models', models: [] },
+    } }];
+    registerProviderHandlers(harness, makeDeps({ listPresets: () => presets }));
+    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_CREATE, config);
+    const projected = buildUserProvider(config, { presets });
+    const request = providerViewToCustomProviderConfig({ ...projected, connected: true } as ProviderView);
+    request.runtimes.codex!.models = [{ id: 'speech-2.8-turbo', name: 'Speech' }];
+    expect(request.runtimes.codex!.modelsUrl).toBe(presets[0].runtimes.codex!.modelsUrl);
+    // A dialog from before the preset update is genuinely stale; reopening fixes it.
+    const stale = structuredClone(request);
+    stale.runtimes.codex!.modelsUrl = 'https://api.minimax.io/v1/stale-models';
+    await expect(harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE, stale, {}, { appendSpeechModelsOnly: true })).rejects.toThrow(/INVALID_PARAMS/);
+    await expect(harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE, request, {}, { appendSpeechModelsOnly: true })).resolves.toEqual({ ok: true });
+    expect((await getCustomProvider(config.id))?.runtimes.codex).toEqual({
+      ...config.runtimes.codex, models: [...config.runtimes.codex!.models, ...request.runtimes.codex!.models],
+    });
+  },
+);

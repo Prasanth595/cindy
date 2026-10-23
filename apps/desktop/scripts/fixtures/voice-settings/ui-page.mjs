@@ -80,6 +80,8 @@ export default {
       about: 'Eleven v3 keeps voice and preview but does not offer a speed slider',
       data: { modelId: 'eleven_v3' },
     },
+    hidden: { about: 'A saved hidden model remains displayed without offering other unchecked speech models', data: { hidden: true } },
+    'hidden-empty': { about: 'Hidden models are not selected automatically without a saved preference', data: { hidden: true, noPreference: true } },
     'qwen-catalog': {
       about: 'Complete Qwen3 system catalog with official display names and keyboard navigation',
       data: {
@@ -151,7 +153,7 @@ export default {
     },
   },
   async ready(page) {
-    const empty = await page.evaluate(() => window.__uiPage.ctx.data.empty);
+    const empty = await page.evaluate(() => window.__uiPage.ctx.data.empty || window.__uiPage.ctx.data.noPreference);
     if (empty) await page.getByRole('button').first().waitFor();
     else if (await page.evaluate(() => window.__uiPage.ctx.data.manual)) {
       const label = await page.evaluate(() => window.__uiPage.t('bots.voiceMode.voiceId'));
@@ -252,6 +254,22 @@ export default {
       return;
     }
     assert.equal(await standalonePreview.count(), 0);
+    if (ui.data.hidden) {
+      const model = page.getByRole('combobox', { name: await ui.t('bots.voiceMode.model'), exact: true });
+      if (ui.data.noPreference) {
+        assert.equal(await model.count(), 0);
+        await page.getByText(await ui.t('bots.voiceMode.noModels'), { exact: true }).waitFor();
+        await ui.capture('hidden-empty');
+      } else {
+        assert.ok((await model.textContent()).includes('eleven_flash_v2_5'));
+        await model.click();
+        await page.getByRole('option', { name: /Visible speech/ }).waitFor();
+        assert.equal(await page.getByRole('option', { name: /Unchecked speech/ }).count(), 0);
+        await ui.capture('hidden-selection');
+        await page.keyboard.press('Escape');
+      }
+      return;
+    }
     if (ui.data.gatewayReference) {
       const label = await ui.t('bots.voiceMode.voice');
       const trigger = page.getByRole('button', { name: label, exact: true });

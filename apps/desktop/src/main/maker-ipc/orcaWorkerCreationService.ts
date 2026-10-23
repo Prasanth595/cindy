@@ -206,7 +206,7 @@ export type OrcaWorkerCreationResult =
         providerId: string | null;
         role: string;
         label: string;
-        /** Worker 的 Agent 所在电脑(远程供应商)；null = 任务所在电脑。运行设备 Worker 不带。 */
+        /** Worker 的 Agent 所在电脑；null = Worker 的任务所在电脑。 */
         agentDeviceId?: string | null;
       };
     }
@@ -234,6 +234,8 @@ export interface OrcaWorkerCreateParams {
    */
   providerId?: string | null;
   initialTask?: string;
+  /** 可选, 随 initial_task 发给 worker 的本机图片绝对路径; 仅本机 worker。 */
+  initialTaskImages?: string[];
   /**
    * Existing absolute directory on the Worker's host; omission inherits Lead.
    * 指定运行设备时是那台电脑上的目录，缺省由那台按自身设置分配任务目录。
@@ -245,7 +247,7 @@ export interface OrcaWorkerCreateParams {
   workerPermissionMode?: OrcaWorkerPermissionMode;
   /**
    * 运行设备：同账号另一台电脑的设备 id。指定时 Worker 的任务、目录与命令都在那台；
-   * 缺省 = 与 Lead 同一台(现有行为)。与 SSH 远端 Lead、远程 Agent Lead 互斥。
+   * 缺省 = 与 Lead 的任务同一台。SSH Lead 不支持；远程 Agent Lead 可独立选工作电脑。
    */
   executionDeviceId?: string;
   /**
@@ -267,11 +269,13 @@ export type OrcaRemoteWorkerOpenResult =
       agent: AgentKind;
       model: string;
       workingDir: string;
+      agentDeviceId?: string | null;
+      providerId?: string | null;
     }
   | {
       ok: false;
       errorCode: Extract<OrcaWorkerCreationErrorCode,
-        'REMOTE_AGENT_DEVICE_UNREACHABLE' | 'UNSUPPORTED_CAPABILITY' | 'INVALID_PARAMS' | 'INTERNAL' |
+        `REMOTE_AGENT_${string}` | 'UNSUPPORTED_CAPABILITY' | 'INVALID_PARAMS' | 'INTERNAL' |
         'REMOTE_WORKDIR_NOT_FOUND' | 'REMOTE_WORKDIR_NOT_DIRECTORY' | 'REMOTE_WORKDIR_INVALID' | 'REMOTE_WORKDIR_UNAVAILABLE'>;
       message: string;
     };
@@ -362,6 +366,7 @@ export interface OrcaWorkerCreationDeps {
   dispatchWorkerTask(params: {
     targetSessionId: string;
     message: string;
+    imagePaths?: string[];
     dispatchMeta: {
       source: string;
       context: string;
@@ -383,6 +388,7 @@ export interface OrcaWorkerCreationDeps {
     agent: AgentKind;
     model?: string;
     providerId?: string;
+    agentDeviceId?: string | null;
     effort?: string;
     fast?: boolean | 'ultrafast';
     permissionMode: OrcaWorkerPermissionMode;
@@ -764,12 +770,11 @@ function resolveWorkerAgentDeviceId(
   if (!AGENT_DEVICE_ID_PATTERN.test(deviceId)) {
     return { ok: false, message: 'agent_device_id must be a device id or a shared provider id' };
   }
-  if (isSelfDeviceId?.(deviceId)) return { ok: true, agentDeviceId: null };
+  // For an execution-device Worker, an explicit id names a model computer
+  // relative to that execution host; the Lead’s own id is not its local route.
+  if (params.executionDeviceId === undefined && isSelfDeviceId?.(deviceId)) return { ok: true, agentDeviceId: null };
   if (lead.remoteHostId) {
     return { ok: false, message: 'Workers of an SSH Lead run their Agent on the SSH host; agent_device_id is not supported' };
-  }
-  if (params.executionDeviceId !== undefined) {
-    return { ok: false, message: 'execution_device_id and agent_device_id cannot be combined' };
   }
   return { ok: true, agentDeviceId: deviceId };
 }
@@ -799,7 +804,11 @@ function leadProviderGroupFollowCandidate(
 const SHARE_ROUTE_REJECTION = /\[(REMOTE_AGENT_SHARE_(?:PAUSED|REMOVED|UNAVAILABLE))\]/;
 
 /** 读不到 Worker 的 Agent 所在电脑的目录：分享保留具体原因，其余按那台连不上。 */
-export function agentDeviceCatalogFailure(err: unknown): Extract<OrcaWorkerCreationResult, { ok: false }> {
+export function agentDeviceCatalogFailure(err: unknown): {
+  ok: false;
+  errorCode: Extract<OrcaWorkerCreationErrorCode, `REMOTE_AGENT_${string}`>;
+  message: string;
+} {
   const message = err instanceof Error ? err.message : String(err);
   const share = SHARE_ROUTE_REJECTION.exec(message)?.[1] as
     | 'REMOTE_AGENT_SHARE_PAUSED'
@@ -856,11 +865,11 @@ export function createOrcaWorkerCreationService(deps: OrcaWorkerCreationDeps): O
     if (!deps.openRemoteWorker || !deps.recordRemoteWorker || !deps.discardRemoteWorker) {
       return { ok: false, errorCode: 'INVALID_PARAMS', message: 'this computer cannot run Workers on other devices' };
     }
-    if (lead.remoteHostId || lead.agentDeviceId) {
+    if (lead.remoteHostId) {
       return {
         ok: false,
         errorCode: 'INVALID_PARAMS',
-        message: 'a Lead on an SSH host or with its Agent on another computer cannot place Workers on other devices',
+        message: 'a Lead on an SSH host cannot place Workers on other devices',
       };
     }
     let requestedDir: string | undefined;
@@ -945,6 +954,7 @@ export function createOrcaWorkerCreationService(deps: OrcaWorkerCreationDeps): O
           agent: params.agent,
           ...(params.model !== undefined ? { model: params.model } : {}),
           ...(explicitSourceId ? { providerId: explicitSourceId } : {}),
+          ...(params.agentDeviceId !== undefined ? { agentDeviceId: params.agentDeviceId } : {}),
           ...(params.effort !== undefined ? { effort: params.effort } : {}),
           ...(params.fast !== undefined ? { fast: params.fast } : {}),
           permissionMode,
@@ -1011,7 +1021,8 @@ export function createOrcaWorkerCreationService(deps: OrcaWorkerCreationDeps): O
           model: opened.model,
           effort: opened.proxySession.effort || null,
           fastMode: opened.proxySession.fastMode,
-          providerId: explicitSourceId ?? null,
+          providerId: opened.providerId ?? explicitSourceId ?? null,
+          ...(opened.agentDeviceId !== undefined ? { agentDeviceId: opened.agentDeviceId } : {}),
           role,
           label,
         },

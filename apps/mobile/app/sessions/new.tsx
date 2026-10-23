@@ -1136,7 +1136,7 @@ export default function NewRemoteSessionScreen() {
   );
   const workerAgentCatalogs = useRemoteAgentCatalogs({
     enabled: remoteAgentSupported && collabForm.agentLocationSelectable && collabForm.modelPicker.open,
-    controlledDeviceId: selectedDeviceId,
+    controlledDeviceId: collabWorkerDeviceId,
     keepDeviceIds: workerAgentKeepDeviceIds,
   });
   const remoteAgentCatalog = remoteAgentPick

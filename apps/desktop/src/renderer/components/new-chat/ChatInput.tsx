@@ -15,7 +15,7 @@ import {
 import { isSharedTaskPeer } from '@cindy/device-link';
 import { useNavigate } from 'react-router-dom';
 import { buildLocalSkillPathRoute } from '@/features/skillhub/lib/localRoutes';
-import { AudioLines, Folder, MessageSquarePlus, Mic, TriangleAlert, X } from 'lucide-react';
+import { Folder, MessageSquarePlus, Mic, TriangleAlert, X } from 'lucide-react';
 import { useStableTranslation as useTranslation } from '@/hooks/useStableTranslation';
 import type { AgentInputReference } from '@cindy/maker-shared/agent-input-projection';
 import { CINDY_MAKE_ENABLED } from '@cindy/maker-shared/cindy-make-feature';
@@ -1197,6 +1197,28 @@ function deriveSyntheticAtQuery(editor: Editor, anchor: number, rangeEnd: number
   const text = doc.textBetween(anchor, pos, '￼', '￼');
   if (/[\s￼]/.test(text)) return null;
   return text;
+}
+
+/**
+ * Pi 切模/切来源时随 selection 携带的目标模型思考开关意图。
+ *
+ * 与思考开关展示同一口径：记忆缺失按 UI 默认（开）处理；引擎/来源/模型未知时
+ * 返回 undefined（不猜、不改 Pi 现状）。Pi 的 set_model 不重置 thinking level，
+ * 不带上这个意图就会让上一个模型的 off/旧档位漂移到新模型。
+ */
+function resolveModelThinkingIntent(input: {
+  kind: Parameters<typeof getProviderModelThinking>[0] | null | undefined;
+  providerId: string | null | undefined;
+  modelId: string | null | undefined;
+  memory: ModelMemoryAccessors | undefined;
+  deviceLinkDeviceId: string | null | undefined;
+}): boolean | undefined {
+  const { kind, providerId, modelId, memory, deviceLinkDeviceId } = input;
+  if (!kind || !providerId || !modelId) return undefined;
+  const remembered =
+    memory?.getThinking?.(kind, providerId, modelId) ??
+    (!deviceLinkDeviceId ? getProviderModelThinking(kind, providerId, modelId) : undefined);
+  return remembered ?? true;
 }
 
 export function ChatInput({
@@ -3685,7 +3707,6 @@ export function ChatInput({
   useEffect(() => {
     if (!composerLongPressVoiceInputEnabled) return;
     let capture: { pointerId: number; target: Element } | null = null;
-    let gesture: ComposerLongPressVoiceGesture;
 
     const handleLostPointerCapture = (event: Event) => {
       if (!(event instanceof PointerEvent)) return;
@@ -3707,7 +3728,7 @@ export function ChatInput({
       }
     };
 
-    gesture = createComposerLongPressVoiceGesture({
+    const gesture = createComposerLongPressVoiceGesture({
       getState: () => voiceInputGetStateRef.current(),
       start: () => handleVoiceInputStartRef.current(),
       stop: () => voiceInputStopRef.current(),
@@ -4041,7 +4062,7 @@ export function ChatInput({
       saveComposerTextAfterAsyncTransition(prevEditorKey, editor.getJSON(), recoveryCheckpoint!);
     };
 
-    let cancelled = false;
+    const cancelled = false;
     const isCurrentTransition = () =>
       !cancelled &&
       !editor.isDestroyed &&
@@ -6689,7 +6710,7 @@ export function ChatInput({
    * 分级语义见 shared/modelSwitchAssessment.ts。overflow 确认后由 host 交接换窗,
    * 不要再建议用户先 /compact —— 小窗口模型压整段历史同样会失败。
    * 返回 false = 用户取消, 调用方直接放弃本次切换(无任何副作用)。
-   * fail-open: 占用未知(0)/ 目标窗口未知时不拦；三个 harness 的强制换窗线统一为 90%。
+   * Codex 同引擎切模交原生压缩；其它引擎占用未知/窗口未知时不拦，强制换窗线为 90%。
    */
   const confirmModelSwitchContextGuard = useCallback(
     async (
@@ -6729,6 +6750,9 @@ export function ChatInput({
         return true;
       }
       const targetAgentKind = stagingSameAgentSelection ? runtimeAgentKind : currentModelAgentKind;
+      // Same-harness Codex preserves native history and owns downshift compaction.
+      // Keep authoritative recovery confirmations and cross-harness handoffs intact.
+      if (runtimeAgentKind === 'codex' && targetAgentKind === 'codex' && !requireDestructiveConfirmation) return true;
       const targetRouteProviderId =
         targetProviderId !== undefined && targetAgentKind
           ? effectiveSourceIdForModel(
@@ -6943,7 +6967,7 @@ export function ChatInput({
       targetAgentKind: 'claude-code' | 'codex' | 'pi',
       newModelId: string,
       providerId: string | null = null,
-      // 意图期内的档位/Fast 改动经此显式覆盖(用户手选优先于记忆/默认解析)。
+      // 意图期内的档位/Fast/思考开关改动经此显式覆盖(用户手选优先于记忆/默认解析)。
       overrides?: {
         effort?: Effort;
         fastMode?: boolean | 'ultrafast';
@@ -6954,6 +6978,7 @@ export function ChatInput({
          * 的运行位置一起换。不传 = 沿用已登记的换位置意图,没有就是位置不变。
          */
         agentDeviceId?: string | null;
+        thinking?: boolean;
       },
     ): Promise<boolean> => {
       // ★ 返回值 = **本端请求的完整配置真的落到会话上了没有**(2026-08-17 review 确立
@@ -7066,6 +7091,14 @@ export function ChatInput({
         const targetFast = fromOtherCatalog
           ? overrides?.fastMode ?? false
           : fastCapable ? requestedFast : false;
+        // Pi 的思考开关意图：显式 override 优先，否则按目标 (引擎,来源,模型) 记忆，
+        // 缺记忆按 UI 默认开；没有来源/记忆时不猜（不传该参）。
+        const targetThinking =
+          overrides?.thinking !== undefined
+            ? overrides.thinking
+            : providerId && modelMemory
+              ? (modelMemory.getThinking?.(targetAgentKind, providerId, newModelId) ?? true)
+              : undefined;
 
         // 会话级操作按来源路由:device-link 远程会话隧道到被控端(意图注册表与引擎
         // 交接都在那边),本机会话零变化直连本机 maker。
@@ -7089,6 +7122,7 @@ export function ChatInput({
               newEffort,
               targetFast,
               switchOptions,
+              targetThinking,
             )
           : await switchApi.switchSessionAgent(
               sourceSessionId,
@@ -7097,6 +7131,8 @@ export function ChatInput({
               providerId,
               newEffort,
               targetFast,
+              undefined,
+              targetThinking,
             );
         // device-link 往返期间可以切到另一个任务:同一路由下 ChatInput 会带着新
         // sessionId 继续渲染,sameEngineReselectRef 等闭包也已指向新会话。旧会话的
@@ -7737,6 +7773,17 @@ export function ChatInput({
         fastSupported: modelFastSupported(newModelId, effectiveSourceId),
         requestedFast: restoredFast,
       });
+      // Pi 切模后不重置 thinking level：把目标模型（同来源）的思考开关意图一起放进
+      // 选择快照，让被控端/本机 runtime 在切换成功后收敛档位，避免上一个模型的 off
+      // 残留到新模型（模型只能把推理写进正文）。缺记忆时按 UI 默认（开）处理；
+      // 来源/引擎未知时不猜（不传该字段）。旧被控端会忽略这个额外字段。
+      const nextThinking = resolveModelThinkingIntent({
+        kind: currentModelAgentKind,
+        providerId: effectiveSourceId,
+        modelId: newModelId,
+        memory: modelMemory,
+        deviceLinkDeviceId,
+      });
       try {
         if (sessionId) {
           // 切模型时 fast 恢复该 (供应商, 模型) 的记忆值(对齐 effort);模型不支持 → false。
@@ -7770,7 +7817,8 @@ export function ChatInput({
                   ? ({
                       effort: atomicEffort,
                       fastMode: atomicFast,
-                    } as { effort: string | null; fastMode: boolean | 'ultrafast' })
+                      ...(nextThinking !== undefined ? { thinking: nextThinking } : {}),
+                    } as { effort: string | null; fastMode: boolean | 'ultrafast'; thinking?: boolean })
                   : undefined,
               );
               if (remoteSetModelResult?.superseded) {
@@ -7831,8 +7879,14 @@ export function ChatInput({
                     {
                       effort: atomicEffort,
                       fastMode: atomicFast,
+                      ...(nextThinking !== undefined ? { thinking: nextThinking } : {}),
                       ...(confirmedContextWindow ? { confirmedContextWindow } : {}),
-                    } as { effort: string | null; fastMode: boolean | 'ultrafast' },
+                    } as {
+                      effort: string | null;
+                      fastMode: boolean | 'ultrafast';
+                      thinking?: boolean;
+                      confirmedContextWindow?: number;
+                    },
                   );
                 },
               );
@@ -7902,10 +7956,20 @@ export function ChatInput({
             localRuntimeSwitchSeqBySessionRef.current.get(sessionId) &&
           !getSessionDeviceId(sessionId)
         ) {
+          // 失败回滚同样要带旧模型的思考意图：否则回滚这次不下发档位，Pi 会停在
+          // 失败那次收敛后的档位（可能是 off），与 UI 显示的旧模型选择不一致。
+          const rollbackThinking = resolveModelThinkingIntent({
+            kind: currentModelAgentKind,
+            providerId: effectiveSourceId,
+            modelId: rollbackModelAfterPersistFailure.model,
+            memory: modelMemory,
+            deviceLinkDeviceId,
+          });
           await window.electronAPI.maker
             .setModel(sessionId, rollbackModelAfterPersistFailure.model, undefined, undefined, {
               effort: activeEffort,
               fastMode,
+              ...(rollbackThinking !== undefined ? { thinking: rollbackThinking } : {}),
             })
             .catch((rollbackErr) => {
               log.warn('model change rollback failed:', rollbackErr);
@@ -8328,6 +8392,13 @@ export function ChatInput({
               ? reconciledFast
               : resolveFast(targetModel, newProviderId),
         });
+        const targetThinking = resolveModelThinkingIntent({
+          kind: currentModelAgentKind,
+          providerId: newProviderId,
+          modelId: targetModel,
+          memory: modelMemory,
+          deviceLinkDeviceId,
+        });
         // 乐观显示目标 (model, effort, provider) + 置灰 selector,等被控端 echo 回流;失败回滚 provider/快照。
         setPendingRemoteSwitch({
           model: targetModel,
@@ -8352,7 +8423,8 @@ export function ChatInput({
               ? ({
                   effort: remoteAtomicEffort,
                   fastMode: restoredFast,
-                } as { effort: string | null; fastMode: boolean | 'ultrafast' })
+                  ...(targetThinking !== undefined ? { thinking: targetThinking } : {}),
+                } as { effort: string | null; fastMode: boolean | 'ultrafast'; thinking?: boolean })
               : undefined,
           );
           if (remoteSetModelResult?.superseded) {
@@ -8423,6 +8495,13 @@ export function ChatInput({
             fastSupported: modelFastSupported(modelId, newProviderId),
             requestedFast,
           });
+          const targetThinking = resolveModelThinkingIntent({
+            kind: currentModelAgentKind,
+            providerId: newProviderId,
+            modelId,
+            memory: modelMemory,
+            deviceLinkDeviceId,
+          });
           const switchSeqBySession = localRuntimeSwitchSeqBySessionRef.current;
           const rollbackSeq = (switchSeqBySession.get(sessionId) ?? 0) + 1;
           switchSeqBySession.set(sessionId, rollbackSeq);
@@ -8449,8 +8528,14 @@ export function ChatInput({
                   {
                     effort: atomicEffort,
                     fastMode: restoredFast,
+                    ...(targetThinking !== undefined ? { thinking: targetThinking } : {}),
                     ...(confirmedContextWindow ? { confirmedContextWindow } : {}),
-                  } as { effort: string | null; fastMode: boolean | 'ultrafast' },
+                  } as {
+                    effort: string | null;
+                    fastMode: boolean | 'ultrafast';
+                    thinking?: boolean;
+                    confirmedContextWindow?: number;
+                  },
                 );
               },
             );
@@ -8541,10 +8626,18 @@ export function ChatInput({
           rollbackProvider.seq === localRuntimeSwitchSeqBySessionRef.current.get(sessionId) &&
           !isRemoteSession
         ) {
+          const rollbackThinking = resolveModelThinkingIntent({
+            kind: currentModelAgentKind,
+            providerId: rollbackProvider.providerId,
+            modelId: rollbackProvider.model,
+            memory: modelMemory,
+            deviceLinkDeviceId,
+          });
           await window.electronAPI.maker
             .setModel(sessionId, rollbackProvider.model, rollbackProvider.providerId, undefined, {
               effort: activeEffort,
               fastMode,
+              ...(rollbackThinking !== undefined ? { thinking: rollbackThinking } : {}),
             })
             .catch((rollbackErr) => {
               log.warn('provider change rollback failed:', rollbackErr);
@@ -8865,6 +8958,16 @@ export function ChatInput({
   const showSecondaryStop =
     !queueEditActive &&
     showStopButton && (canSend || voiceBusyOnCurrentComposer) && !sendDispatchInFlight;
+  // Companion-only idle action: keep the existing send/stop slots and voice-release
+  // target. Recording/refinement and queue editing must never become "start call".
+  const mainSlotIsVoice = Boolean(
+    onStartVoiceConversation &&
+      !queueEditActive &&
+      !mainSlotIsStop &&
+      !canSend &&
+      !hasVoiceDraftText &&
+      !voiceBusyOnCurrentComposer,
+  );
   useEffect(() => {
     voiceInputCanStopAndSendRef.current = !queueEditActive && !sendButtonDisabled;
     composerCanSubmitRef.current = !sendButtonDisabled;
@@ -9562,6 +9665,18 @@ export function ChatInput({
                           );
                         }
                       }
+                      // 意图期内(点选尚未发送)必须把开关写回 staged 意图：否则结算回放
+                      // 会按登记时的旧快照下发档位，把用户刚关掉的思考又打开(或反之)。
+                      if (sessionId && currentModelAgentKind) {
+                        const intent = makerChatStore.getAgentSwitchIntent(sessionId);
+                        if (intent) {
+                          await performAgentSwitch(intent.target, intent.model, intent.providerId, {
+                            ...(intent.effort ? { effort: intent.effort as Effort } : {}),
+                            fastMode: intent.fastMode,
+                            thinking: enabled,
+                          });
+                        }
+                      }
                       if (sessionId) {
                         const api = deviceLinkDeviceId
                           ? makerApiForDevice(deviceLinkDeviceId)
@@ -9759,20 +9874,6 @@ export function ChatInput({
                       }
                     />
                   )}
-                  {!queueEditActive && onStartVoiceConversation ? (
-                    <Tip text={t('bots.voiceMode.startConversation')} side="top">
-                      <button
-                        ref={voiceConversationButtonRef}
-                        type="button"
-                        aria-label={t('bots.voiceMode.startConversation')}
-                        disabled={voiceConversationDisabled || composerEditorLocked || !editor || voiceInput.isBusy}
-                        onClick={onStartVoiceConversation}
-                        className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-full border border-[var(--border-default)] bg-[var(--composer-pill-bg)] text-[var(--composer-pill-icon)] transition-colors hover:bg-[var(--model-trigger-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring-soft)] disabled:cursor-not-allowed disabled:opacity-40"
-                      >
-                        <AudioLines size={15} aria-hidden="true" />
-                      </button>
-                    </Tip>
-                  ) : null}
                   {/* mousedown 吃掉默认行为:否则点发送会把焦点从 contenteditable
                       挪到 button 上,发完光标就没了(接着打字要先点回输入框),
                       推荐提示词的 Tab 也会因为编辑器失焦而落到原生焦点导航上。
@@ -9789,6 +9890,8 @@ export function ChatInput({
                   >
                     {mainSlotIsStop ? (
                       <SendButton
+                        ref={voiceConversationButtonRef}
+                        companionVoice={Boolean(onStartVoiceConversation)}
                         disabled={false}
                         onClick={handleStop}
                         isStreaming
@@ -9797,7 +9900,9 @@ export function ChatInput({
                     ) : (
                       <Tip
                         text={
-                          queueEditActive
+                          mainSlotIsVoice
+                            ? t('bots.voiceMode.startConversation')
+                            : queueEditActive
                             ? t('newChat.pendingQueue.editSaveAria')
                             : voiceReleaseToSendActive
                             ? t('newChat.chatInput.voiceInput.releaseToSend')
@@ -9815,7 +9920,11 @@ export function ChatInput({
                                   ? `${t('newChat.sendButton.send')} · ${composerSendShortcutLabel}`
                                   : selectedSourceDisconnected
                                     ? t('newChat.sourceDisconnected.sendBlocked')
-                                    : null
+                                    : onStartVoiceConversation
+                                      // Keep Tip mounted while the shared action is disabled:
+                                      // removing it remounts the button, losing focus and motion.
+                                      ? t('newChat.sendButton.send')
+                                      : null
                         }
                         side="top"
                         forceOpen={voiceReleaseToSendActive}
@@ -9825,19 +9934,28 @@ export function ChatInput({
                             running 时“排队/快捷键插话”提示完全不出现。 */}
                         <span className="inline-flex rounded-full">
                           <SendButton
-                            disabled={sendButtonDisabled}
+                            ref={voiceConversationButtonRef}
+                            companionVoice={Boolean(onStartVoiceConversation)}
+                            disabled={
+                              mainSlotIsVoice
+                                ? voiceConversationDisabled || composerEditorLocked || !editor || voiceInput.isBusy
+                                : sendButtonDisabled
+                            }
                             highlighted={voiceReleaseToSendActive}
-                            action={queueEditActive ? 'save' : 'send'}
+                            action={queueEditActive ? 'save' : mainSlotIsVoice ? 'voice' : 'send'}
                             visualVariant={isCreateAgentVariant ? 'create-agent' : 'default'}
                             ariaLabel={
-                              queueEditActive
+                              mainSlotIsVoice
+                                ? t('bots.voiceMode.startConversation')
+                                : queueEditActive
                                 ? t('newChat.pendingQueue.editSaveAria')
                                 : showStopButton
                                   ? t('newChat.sendButton.queue')
                                   : t('newChat.sendButton.send')
                             }
                             onClick={() => {
-                              void handleClickSend();
+                              if (mainSlotIsVoice) onStartVoiceConversation?.();
+                              else void handleClickSend();
                             }}
                           />
                         </span>

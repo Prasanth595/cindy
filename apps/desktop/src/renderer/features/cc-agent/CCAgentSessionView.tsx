@@ -1803,7 +1803,15 @@ function CCAgentSessionContent({
     slashCommandRanges?: SlashCommandRange[];
     onRemoteOptimisticFailure?: (clientId: string, error?: unknown) => void;
     onDeferredAccepted?: () => void;
+    literalText?: boolean;
+    resolveSubmission?: (accepted: boolean) => void;
   } | null>(null);
+
+  useEffect(() => () => {
+    // A picker abandoned by navigation must release the originating rich button.
+    pendingSendRef.current?.resolveSubmission?.(false);
+    pendingSendRef.current = null;
+  }, [sessionId]);
 
   const handleTitleUpdate = useCallback(() => {
     refreshSessions();
@@ -3301,6 +3309,7 @@ function CCAgentSessionContent({
     setFolderPickerOpen(open);
     // If user closed the popover without selecting, clear pending send
     if (!open) {
+      pendingSendRef.current?.resolveSubmission?.(false);
       pendingSendRef.current = null;
     }
   }, []);
@@ -3712,43 +3721,46 @@ function CCAgentSessionContent({
       pendingSendRef.current = null;
       void (async () => {
         try {
-          const slashDispatch = await maybeDispatchDesktopSlashCommand(
-            pending.message,
-            pending.files,
-            {
-              allowDesktopDispatch: pending.deliveryMode !== 'steer',
-              piRuntimeRetryDelaysMs: PI_RUNTIME_SKILL_RETRY_DELAYS_MS,
-              workingDirOverride: newDir,
-              builtInSkillIntent: pending.builtInSkillIntent,
-              preparePiRuntime: async () => {
-                if (!sessionId || dbToMakerAgentKind(session?.agentKind) !== 'pi') return;
-                const createOpts = {
-                  id: sessionId,
-                  ...buildCreateOptsForCurrentSession(
-                    sessionId,
-                    pending.model,
-                    pending.effort,
-                    pending.permissionMode,
-                    newDir,
-                    pending.vendorOptions ? { vendorOptions: pending.vendorOptions } : undefined,
-                  ),
-                  agentKind: 'pi' as const,
-                  workingDir: newDir,
-                  orcaRole: session?.orcaRole ?? null,
-                };
-                if (remoteDeviceId) {
-                  await window.electronAPI.deviceLink.invoke(
-                    remoteDeviceId,
-                    'maker:create-session',
-                    [createOpts],
-                  );
-                } else {
-                  await window.electronAPI.maker.createSession(createOpts);
-                }
-              },
-            },
-          );
+          const slashDispatch = pending.literalText
+            ? { handled: false, accepted: false, message: pending.message }
+            : await maybeDispatchDesktopSlashCommand(
+                pending.message,
+                pending.files,
+                {
+                  allowDesktopDispatch: pending.deliveryMode !== 'steer',
+                  piRuntimeRetryDelaysMs: PI_RUNTIME_SKILL_RETRY_DELAYS_MS,
+                  workingDirOverride: newDir,
+                  builtInSkillIntent: pending.builtInSkillIntent,
+                  preparePiRuntime: async () => {
+                    if (!sessionId || dbToMakerAgentKind(session?.agentKind) !== 'pi') return;
+                    const createOpts = {
+                      id: sessionId,
+                      ...buildCreateOptsForCurrentSession(
+                        sessionId,
+                        pending.model,
+                        pending.effort,
+                        pending.permissionMode,
+                        newDir,
+                        pending.vendorOptions ? { vendorOptions: pending.vendorOptions } : undefined,
+                      ),
+                      agentKind: 'pi' as const,
+                      workingDir: newDir,
+                      orcaRole: session?.orcaRole ?? null,
+                    };
+                    if (remoteDeviceId) {
+                      await window.electronAPI.deviceLink.invoke(
+                        remoteDeviceId,
+                        'maker:create-session',
+                        [createOpts],
+                      );
+                    } else {
+                      await window.electronAPI.maker.createSession(createOpts);
+                    }
+                  },
+                },
+              );
           if (slashDispatch.handled) {
+            pending.resolveSubmission?.(slashDispatch.accepted);
             if (slashDispatch.accepted) {
               pending.onDeferredAccepted?.();
               const resumedSessionId = sessionId;
@@ -3829,6 +3841,7 @@ function CCAgentSessionContent({
                 }
               : undefined,
           );
+          pending.resolveSubmission?.(accepted);
           if (accepted) {
             pending.onDeferredAccepted?.();
             const resumedSessionId = sessionId;
@@ -3840,6 +3853,7 @@ function CCAgentSessionContent({
             }
           }
         } catch (error) {
+          pending.resolveSubmission?.(false);
           log.warn(
             'pending send after working directory selection failed:',
             error instanceof Error ? error.message : String(error),
@@ -3938,6 +3952,7 @@ function CCAgentSessionContent({
       opts?: {
         deliveryMode?: MessageDeliveryMode;
         literalText?: boolean;
+        independent?: boolean;
         beforeEnqueue?: () => Promise<boolean>;
         onInputCreated?: (clientId: string) => void;
         builtInSkillIntent?: BuiltInSkillDraftIntent;
@@ -4116,9 +4131,17 @@ function CCAgentSessionContent({
 
       // ② Working directory check
       if (!session?.workingDir) {
+        // Composer sends keep their existing deferred callback contract. A rich
+        // submission awaits acceptance so its receipt cannot disagree with dispatch.
+        let resolveSubmission: ((accepted: boolean) => void) | undefined;
+        const submission = opts?.independent
+          ? new Promise<boolean>((resolve) => { resolveSubmission = resolve; })
+          : false;
         pendingSendRef.current = {
           deliveryMode,
           builtInSkillIntent: opts?.builtInSkillIntent,
+          literalText: opts?.literalText,
+          resolveSubmission,
           message,
           model,
           effort,
@@ -4138,7 +4161,7 @@ function CCAgentSessionContent({
           ...(opts?.onDeferredAccepted ? { onDeferredAccepted: opts.onDeferredAccepted } : {}),
         };
         setFolderPickerOpen(true);
-        return false;
+        return submission;
       }
 
       // ③ Auto-unarchive: 在 archived session 中发消息视为"激活"——状态先落库到
@@ -4197,7 +4220,7 @@ function CCAgentSessionContent({
       // ④ Execute send — effort + permissionMode came straight from ChatInput (fresh value)
       let rebalanceClientId: string | undefined;
       // 伙伴私聊引用回复:点发送时的待发引用随这条消息一起落库,送出后从输入框上方撤下。
-      const replyQuote = botChatIdentity ? getPendingBotReplyQuote(sessionId) : null;
+      const replyQuote = botChatIdentity && !opts?.independent ? getPendingBotReplyQuote(sessionId) : null;
       const sendOptions = {
         ...(replyQuote ? { replyQuote } : {}),
         beforeEnqueue: recordRebalance ? async () => {
@@ -5259,13 +5282,13 @@ function CCAgentSessionContent({
 
   // Message-level controls (e.g. a Market teammate's starter buttons) send through this session's own path.
   const quickSend = useMemo<SessionQuickSend>(() => ({
-    send: async (text: string) => {
+    send: async (text, options) => {
       if (!session) return false;
-      return (await handleSend(text, session.model, session.effort as Effort, session.permissionMode as PermissionMode)) !== false;
+      return (await handleSend(text, session.model, session.effort as Effort, session.permissionMode as PermissionMode, undefined, undefined, { ...options, ...(options?.literalText ? { slashCommandRanges: [] } : {}) })) !== false;
     },
   }), [handleSend, session]);
   const messageStreamWithQuickSend = (
-    <SessionQuickSendProvider value={quickSend}>{messageStreamEl}</SessionQuickSendProvider>
+    <SessionQuickSendProvider value={readOnly || cindyMakeInputLocked ? null : quickSend}>{messageStreamEl}</SessionQuickSendProvider>
   );
 
   const composerRuntimeVisible =
@@ -6093,7 +6116,7 @@ function CCAgentSessionContent({
                   }
                   folderPickerOpen={folderPickerOpen}
                   onFolderPickerOpenChange={handleFolderPickerOpenChange}
-                  showFolderPicker={false}
+                  showFolderPicker={folderPickerOpen}
                   onModelDidChange={handleModelDidChange}
                   onEffortDidChange={handleEffortDidChange}
                   onPermissionModeDidChange={handlePermissionModeDidChange}
@@ -6205,7 +6228,7 @@ function CCAgentSessionContent({
                       <Spinner size={12} className="text-[var(--workingdir-icon)]" />
                       <span className="block min-w-0 truncate text-12 font-medium leading-none text-[var(--workingdir-text)]">
                         {t('ccAgent.layout.worktreeCreating', '正在创建 worktree')}{' '}
-                        <code className="font-mono text-11 opacity-80">
+                        <code className="font-mono text-11 text-[var(--text-tertiary)]">
                           {worktreeCreation.name}
                         </code>
                         …
@@ -6399,9 +6422,9 @@ function CCAgentSessionContent({
         // openai-chat 桥接 Codex 只挂在本地 proxy),与 main 侧 remote-worker
         // guard 同规则(codex review R28)。
         sshRemote={!!session?.remoteHostId}
-        // 首个 Worker 也可放到另一台电脑：仅本机 Lead(非 SSH、Agent 也在本机)。
+        // Lead 的 Agent 位置独立于 Worker 的工作电脑；SSH Lead 仍沿用原限制。
         executionDevicesEnabled={
-          !remoteDeviceId && !session?.remoteHostId && !session?.agentDeviceId
+          !remoteDeviceId && !session?.remoteHostId
         }
         // Worker 的 Agent 默认跟 Lead 的 Agent 所在电脑(远程供应商)，模型目录也先按那台读；
         // 面板里列出与输入框同一份其他电脑 / 分享的供应商，可以换到本机或别处。

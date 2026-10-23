@@ -97,12 +97,35 @@ describe('mail reader opening intent', () => {
     Object.assign(ghost.manifest, { mail: true, mailReader: { tool: 'read_mail', hosts: ['mail.example.test'], markRead: optIn } });
     ghost.manifest.tools = ['read_mail', 'set_read'].map(name => ({ name, description: name }));
     const h = makeHarness({ ghost });
-    const args = { url: 'https://mail.example.test/message/one', markRead: !opened, mailReaderOpened: true };
+    const args = { url: 'https://mail.example.test/message/one', markRead: !opened, openDraft: true, mailReaderOpened: true };
     const pending = h.dispatcher.callGhostTool({ ghostId: 'art', tool, args, ...(opened ? { mailReaderOpened: true as const } : {}) });
-    expect(h.sent[0].args).toEqual(expected ? { ...args, markRead: true } : { url: args.url, mailReaderOpened: true });
+    expect(h.sent[0].args).toEqual(tool === 'set_read' ? args : {
+      url: args.url, mailReaderOpened: true, ...(opened ? { openDraft: true } : {}), ...(expected ? { markRead: true } : {}),
+    });
     expect(args.markRead).toBe(!opened); // Never mutate the caller's data.
     h.dispatcher.handleToolResult('art', { callId: h.sent[0].callId, ok: true, result: 'mail' });
     expect(await pending).toEqual({ ok: true, result: 'mail' });
+  });
+});
+
+describe('images shown to the model', () => {
+  const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]).toString('base64');
+
+  it('accepts top-level images next to result and drops invalid ones', async () => {
+    const h = makeHarness();
+    const pending = h.dispatcher.callGhostTool({ ghostId: 'art', tool: 'gen_image', args: {} });
+    h.dispatcher.handleToolResult('art', { callId: h.sent[0].callId, ok: true, result: { path: '/x.jpg' }, images: [{ data: PNG }, { data: 'nope!' }] });
+    expect(await pending).toEqual({ ok: true, result: { path: '/x.jpg' }, images: [{ data: PNG, mimeType: 'image/png' }] });
+  });
+
+  it('a result without images, or a failure, is unchanged', async () => {
+    const h = makeHarness();
+    const plain = h.dispatcher.callGhostTool({ ghostId: 'art', tool: 'gen_image', args: {} });
+    h.dispatcher.handleToolResult('art', { callId: h.sent[0].callId, ok: true, result: 'r' });
+    expect(await plain).toEqual({ ok: true, result: 'r' });
+    const failed = h.dispatcher.callGhostTool({ ghostId: 'art', tool: 'gen_image', args: {} });
+    h.dispatcher.handleToolResult('art', { callId: h.sent[1].callId, ok: false, errorCode: 'INVALID_ARGS', message: 'bad', images: [{ data: PNG }] });
+    expect(await failed).toEqual({ ok: false, errorCode: 'INVALID_ARGS', message: 'bad' });
   });
 });
 

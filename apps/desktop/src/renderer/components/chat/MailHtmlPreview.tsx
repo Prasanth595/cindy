@@ -1,9 +1,10 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { Maximize2, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { applyMailInlineEdits, mailInlineDocument, safeMailDocument, validMailImageUrl } from '@cindy/maker-shared/mail-text-edit';
+import { mailInlineDocument, safeMailDocument, validMailImageUrl } from '@cindy/maker-shared/mail-text-edit';
 import { followMailPreviewTheme } from './mailPreviewAppearance';
+import { mailBodySerializer } from './mailBodyEditing';
 
 export const safeMailHtml = safeMailDocument;
 type PreviewProps = { value: string; images?: { cid: string; url: string }[]; disabled?: boolean; reading?: boolean; onEnlarge?: () => void; onChange?: (html: string, text: string) => void };
@@ -11,22 +12,20 @@ function PreviewFrame({ value, images = [], enlarged = false, reading = false, d
   const frame = useRef<HTMLIFrameElement>(null);
   const stopTheme = useRef<(() => void) | undefined>(undefined);
   const bodyResize = useRef<ResizeObserver | undefined>(undefined);
-  useEffect(() => () => { stopTheme.current?.(); bodyResize.current?.disconnect(); }, []);
-  const model = useRef({ source: value, emitted: value, received: value, edits: {} as Record<string, string>, revision: 0 });
+  useLayoutEffect(() => () => { stopTheme.current?.(); bodyResize.current?.disconnect(); }, []);
+  const model = useRef({ emitted: value, received: value, revision: 0 });
   if (model.current.received !== value) {
-    if (value !== model.current.emitted) model.current = { source: value, emitted: value, received: value, edits: {}, revision: model.current.revision + 1 };
+    if (value !== model.current.emitted) model.current = { emitted: value, received: value, revision: model.current.revision + 1 };
     else model.current.received = value;
   }
   const current = useRef({ disabled, onChange, images });
   current.current = { disabled, onChange, images };
   const revision = model.current.revision;
-  useLayoutEffect(() => {
-    if (!frame.current) return;
-    frame.current.style.visibility = 'hidden';
-    frame.current.setAttribute('aria-busy', 'true');
-  }, [revision]);
-  // Echoes from autosave must not reload the document or move the caret/IME.
-  const html = useMemo(() => mailInlineDocument(model.current.source, images), [revision]);
+  // Keep the browsing context alive in both views. Other-view autosaves update
+  // its sanitized DOM before paint rather than navigating through a blank page.
+  const [html] = useState(() => mailInlineDocument(value, images));
+  const ready = useRef(false);
+  const serialize = useRef<ReturnType<typeof mailBodySerializer> | undefined>(undefined);
   const fit = () => {
     const el = frame.current, doc = el?.contentDocument;
     if (el && doc?.body && !enlarged) {
@@ -37,16 +36,42 @@ function PreviewFrame({ value, images = [], enlarged = false, reading = false, d
   };
   const refresh = () => {
     const doc = frame.current?.contentDocument;
-    if (!doc) return;
+    if (!ready.current || !doc?.body) return;
     for (const el of doc.querySelectorAll<HTMLElement>('[data-cindy-mail-run]')) {
-      el.contentEditable = current.current.onChange && !current.current.disabled ? 'plaintext-only' : 'false';
-      el.setAttribute('spellcheck', 'true');
+      el.removeAttribute('contenteditable');
     }
+    doc.body.contentEditable = current.current.onChange && !current.current.disabled ? 'true' : 'false';
+    doc.body.spellcheck = true;
     for (const el of doc.querySelectorAll<HTMLImageElement>('img[data-cindy-mail-cid]')) {
       const image = current.current.images.find(i => i.cid === el.getAttribute('data-cindy-mail-cid'));
       if (image && validMailImageUrl(image.url)) el.src = image.url;
     }
   };
+  const applySource = (replaceContents = true) => {
+    const doc = frame.current?.contentDocument;
+    if (!ready.current || !doc?.body || !doc.head) return;
+    const scroll = [doc.documentElement.scrollTop, doc.body.scrollTop];
+    stopTheme.current?.();
+    if (replaceContents) {
+      const next = new DOMParser().parseFromString(mailInlineDocument(model.current.emitted, current.current.images), 'text/html');
+      for (const [target, source] of [[doc.documentElement, next.documentElement], [doc.head, next.head], [doc.body, next.body]]) {
+        for (const attr of [...target.attributes]) target.removeAttribute(attr.name);
+        for (const attr of source.attributes) target.setAttribute(attr.name, attr.value);
+      }
+      doc.head.replaceChildren(...[...next.head.childNodes].map(node => doc.importNode(node, true)));
+      doc.body.replaceChildren(...[...next.body.childNodes].map(node => doc.importNode(node, true)));
+    }
+    serialize.current = mailBodySerializer(doc, model.current.emitted, () => current.current.images);
+    stopTheme.current = followMailPreviewTheme(doc, document);
+    bodyResize.current?.disconnect();
+    if (!enlarged && typeof ResizeObserver !== 'undefined') {
+      bodyResize.current = new ResizeObserver(fit);
+      bodyResize.current.observe(doc.body);
+    }
+    refresh(); fit();
+    doc.documentElement.scrollTop = scroll[0]; doc.body.scrollTop = scroll[1];
+  };
+  useLayoutEffect(applySource, [revision]);
   useEffect(refresh, [disabled, Boolean(onChange), JSON.stringify(images)]);
   useEffect(() => {
     if (!frame.current || typeof ResizeObserver === 'undefined') return;
@@ -58,36 +83,25 @@ function PreviewFrame({ value, images = [], enlarged = false, reading = false, d
     return () => observer.disconnect();
   }, [enlarged, reading]);
   const { t } = useTranslation();
+  // Hide only the initial load. Synchronized content never hides/remounts it.
   return <iframe ref={frame} title={t('chat.ghostCall.mailPreview')} sandbox="allow-same-origin" scrolling={reading ? 'no' : undefined}
     className="block w-full border-0" aria-busy="true"
     style={{ height: enlarged ? '100%' : 120, visibility: 'hidden', backgroundColor: 'transparent' }} srcDoc={html}
     onLoad={() => {
       const doc = frame.current?.contentDocument;
-      if (!doc) return;
-      stopTheme.current?.();
-      stopTheme.current = followMailPreviewTheme(doc, document);
-      bodyResize.current?.disconnect();
-      // Font reflow and late images can change the document after iframe load.
-      // Keep its full height so only the conversation owns vertical scrolling.
-      if (!enlarged && typeof ResizeObserver !== 'undefined') {
-        bodyResize.current = new ResizeObserver(fit);
-        bodyResize.current.observe(doc.body);
-      }
-      const loaded = model.current;
+      if (!doc?.body || !doc.head) return;
+      ready.current = true;
+      applySource(mailInlineDocument(model.current.emitted, current.current.images) !== html);
       let composing = false;
-      const update = (event: Event) => {
-        if (composing || loaded !== model.current || current.current.disabled || !current.current.onChange) return;
-        const el = (event.target as Element).closest<HTMLElement>('[data-cindy-mail-run]');
-        if (!el) return;
-        const id = el.getAttribute('data-cindy-mail-run')!;
-        const edits = { ...loaded.edits, [id]: el.innerText ?? el.textContent ?? '' };
-        const next = applyMailInlineEdits(loaded.source, edits);
+      const update = () => {
+        if (composing || current.current.disabled || !current.current.onChange) return;
+        const next = serialize.current?.();
         if (!next) return;
-        loaded.edits = edits; loaded.emitted = next.html;
+        model.current.emitted = next.html;
         current.current.onChange(next.html, next.text); fit();
       };
       doc.addEventListener('compositionstart', () => { composing = true; });
-      doc.addEventListener('compositionend', event => { composing = false; update(event); });
+      doc.addEventListener('compositionend', () => { composing = false; update(); });
       doc.addEventListener('input', update);
       doc.addEventListener('click', event => { if ((event.target as Element).closest('a')) event.preventDefault(); });
       doc.addEventListener('drop', event => event.preventDefault());

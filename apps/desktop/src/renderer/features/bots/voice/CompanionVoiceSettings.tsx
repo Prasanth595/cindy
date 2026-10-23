@@ -93,6 +93,9 @@ export function CompanionVoiceSettings(props: Props) {
   const speedLabel = (value: number) =>
     t('bots.voiceMode.speedValue', { speed: value.toFixed(2).replace(/0$/, '') });
   const validModel = !!selectedModel;
+  // Keep the saved current value readable, without offering other hidden routes
+  // or silently choosing one when there is no saved preference.
+  const pickerModels = models.filter((model) => model.pickerVisible !== false || model === selectedModel);
   const preview = useMemo(
     () =>
       new VoicePreviewController({
@@ -278,7 +281,7 @@ export function CompanionVoiceSettings(props: Props) {
 
   // Keep unavailable controls out of the empty state, including while its first
   // catalog request is pending. This only changes presentation, not saved preferences.
-  if (models.length === 0) {
+  if (pickerModels.length === 0) {
     return (
       <div className="space-y-4 pt-3">
         {loading ? (
@@ -336,7 +339,7 @@ export function CompanionVoiceSettings(props: Props) {
                 {...control}
                 label={t('bots.voiceMode.model')}
                 value={selectedModel ? voiceModelKey(selectedModel) : ''}
-                options={models.map((model) => ({
+                options={pickerModels.map((model) => ({
                   value: voiceModelKey(model),
                   label: [
                     model.name,
@@ -349,7 +352,7 @@ export function CompanionVoiceSettings(props: Props) {
                     .join(' · '),
                 }))}
                 onValueChange={chooseModel}
-                disabled={loading || !ready || saving || models.length === 0}
+                disabled={loading || !ready || saving || pickerModels.length === 0}
                 className="flex-1"
               />
               <Button

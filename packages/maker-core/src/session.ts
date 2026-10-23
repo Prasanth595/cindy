@@ -844,8 +844,7 @@ export class Session {
         return { accepted: false, reason: 'cancelled-before-dispatch' };
       }
     }
-    // A user/API permission change may have been waiting for the lease above.
-    // Preserve its ordering before admitting the next turn.
+    // Preserve user/API permission change ordering before admitting the next turn.
     while (this.externalPermissionModeChangesInFlight > 0) {
       if (await this.waitForGateOrAbort(this.externalPermissionModeChangeChain, handleOpts.signal)) {
         return { accepted: false, reason: 'cancelled-before-dispatch' };
@@ -1866,7 +1865,7 @@ export class Session {
 
   // ── 运行时切换 ─────────────────────────────────────────────────────────────
 
-  async setModel(model: string, opts?: { providerId?: string | null; effort?: Effort }): Promise<void> {
+  async setModel(model: string, opts?: { providerId?: string | null; effort?: Effort; thinkingEnabled?: boolean }): Promise<void> {
     if (!this.capabilities.switchModel.supported) {
       throw new NotSupportedError('switchModel', this.capabilities.switchModel);
     }
@@ -1904,16 +1903,8 @@ export class Session {
     this.assertPermissionModeSupported(mode);
     this.externalPermissionModeChangesInFlight += 1;
     const operation = this.externalPermissionModeChangeChain.catch(() => undefined).then(async () => {
-      if (this.isTurnPermissionPolicyUnsafe(mode)) {
-        // Official group turns hold a host lease until background continuations
-        // and the temporary safe-mode restore have both settled. Do not let an
-        // external Full access / accept-edits switch weaken that active turn.
-        // Host-owned temporary switches use setPermissionModeTracked and remain
-        // able to restore while this operation waits, avoiding a lease deadlock.
-        while (this.hostTurnLeases.size > 0) {
-          await Promise.all([...this.hostTurnLeases]);
-        }
-      }
+      // The owner's live permission choice applies equally to IM and Desktop
+      // turns. Host leases fence new sends/retirement, not permission changes.
       await this.setPermissionModeTracked(mode);
     });
     const tracked = operation.finally(() => {
@@ -1967,9 +1958,8 @@ export class Session {
     mode: PermissionMode,
   ): Promise<boolean> {
     this.assertPermissionModeSupported(mode);
-    // An external request is newer user intent even when an unsafe target is
-    // still waiting for a host turn lease. Never restore over it, and never
-    // wait here: that request may need this restore path to release the lease.
+    // An external request is newer user intent, including while its runtime
+    // update is still in flight. Never restore over it.
     if (this.externalPermissionModeChangesInFlight > 0) return false;
     this.permissionModeChangesInFlight += 1;
     const operation = this.permissionModeChangeChain.catch(() => undefined).then(async () => {
@@ -2012,10 +2002,6 @@ export class Session {
     if (!this.handle.setPermissionMode) {
       throw new NotSupportedError('setPermissionMode', { supported: false, reason: 'not-implemented' });
     }
-  }
-
-  private isTurnPermissionPolicyUnsafe(mode: PermissionMode): boolean {
-    return this.capabilities.turnPermissionPolicy?.unsupportedPermissionModes.includes(mode) === true;
   }
 
   async setFastMode(enabled: boolean | 'ultrafast'): Promise<void> {

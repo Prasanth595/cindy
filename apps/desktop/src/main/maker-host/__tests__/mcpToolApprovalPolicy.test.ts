@@ -89,6 +89,38 @@ describe('desktop Claude read-only allowlist', () => {
 });
 
 describe('desktop MCP approval policy', () => {
+  // #6826 security review 4354459321, unit: the shared policy must route each
+  // recipe invocation through normal session approval, including read-labelled
+  // recipes overridden by the user layer. Existing tests trusted the whole server.
+  it('reviews recipe calls without trusting caller-supplied access or reusable grants', () => {
+    for (const recipeId of ['opencli:weibo/delete', 'opencli:linkedin/safe-send', 'opencli:web/read', 'custom-recipe']) {
+      const args = { action: 'recipe', recipeId, access: 'read', inputs: { send: true } };
+      for (const toolName of ['call_tool', undefined]) {
+        for (const encoded of [args, JSON.stringify(args)]) {
+          expect(getDesktopMcpToolApprovalPolicy({ serverName: 'cindy_browser', toolName,
+            toolParams: { name: 'browser', args: encoded },
+          })).toBe('prompt-each-time');
+        }
+      }
+      expect(getDesktopMcpToolApprovalPolicy({ serverName: 'cindy_browser', toolName: 'browser', toolParams: args }))
+        .toBe('prompt-each-time');
+      expect(getDesktopMcpToolApprovalPolicy({ serverName: 'cindy_browser', toolParams: args }))
+        .toBe('prompt-each-time');
+      expect(getDesktopMcpToolApprovalPolicy({ serverName: 'cindy_browser',
+        toolParams: { ...args, name: 'browser', args: { action: 'snapshot' } },
+      })).toBe('prompt-each-time');
+    }
+    for (const toolParams of [undefined, { name: 'browser' }, { name: 'browser', args: 'broken' }]) {
+      expect(getDesktopMcpToolApprovalPolicy({ serverName: 'cindy_browser', toolName: 'call_tool', toolParams }))
+        .toBe('prompt-each-time');
+    }
+    expect(getDesktopMcpToolApprovalPolicy({ serverName: 'cindy_browser', toolName: 'list_tools' })).toBe('auto-approve');
+    for (const action of ['siteguide', 'snapshot', 'tabs']) {
+      expect(getDesktopMcpToolApprovalPolicy({ serverName: 'cindy_browser', toolName: 'call_tool',
+        toolParams: { name: 'browser', args: { action } },
+      })).toBe('auto-approve');
+    }
+  });
   it('never lets import discovery grant reusable approval to start a migration', () => {
     for (const operation of ['sources', 'preview', 'status', 'start', undefined]) {
       for (const toolName of ['import_agent', undefined]) {
@@ -177,7 +209,6 @@ describe('desktop MCP approval policy', () => {
   it('auto-approves only explicitly reviewed builtin servers', () => {
     for (const serverName of [
       'cindy_android',
-      'cindy_browser',
       'cindy_computer',
       // cindy_feishu_bot / cindy_telegram_bot 也在 trusted 表里, 但省略 toolName 时按次审批
       // (都带 call_api; 见下方专项用例)。

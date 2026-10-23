@@ -50,6 +50,7 @@ mountPage({
       customized: ctx.data.speed !== undefined || !!ctx.data.manual,
       sentencePlayback: true,
     };
+    if (ctx.data.noPreference) preference.selection = null;
     return {
       onAuthStateChange: () => () => {},
       voiceInput: { onPowerStateChange: () => () => {} },
@@ -61,6 +62,7 @@ mountPage({
             : [
                 {
                   id: modelId,
+                  ...(ctx.data.hidden ? { pickerVisible: false } : {}),
                   name: modelId,
                   providerId,
                   providerName: ctx.data.gatewayReference
@@ -77,6 +79,8 @@ mountPage({
                   protocolLocked: !ctx.data.custom,
                   defaultVoice: referenceVoice,
                 },
+                ...(ctx.data.hidden ? [{ id: 'unchecked', name: 'Unchecked speech', providerId: 'fixture', agent: 'codex' as const, pickerVisible: false }] : []),
+                ...(ctx.data.hidden && !ctx.data.noPreference ? [{ id: 'visible', name: 'Visible speech', providerId: 'fixture', agent: 'codex' as const, protocol, protocolLocked: true, defaultVoice: 'river' }] : []),
               ],
         voices: async () =>
           ctx.data.gatewayReference

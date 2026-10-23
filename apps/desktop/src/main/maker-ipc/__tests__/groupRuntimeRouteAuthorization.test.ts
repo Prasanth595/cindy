@@ -122,7 +122,7 @@ it.each([true, false])('refreshes after the final deferred-route read (revoked=%
   let prepared = false;
   const accept = vi.fn(() => 2);
   const deps = {
-    sessionId: 'route-child', model: 'next', effectiveProviderId: 'provider', routeExplicit: true, atomicSelection: undefined,
+    sessionId: 'route-child', model: 'next', effectiveProviderId: 'provider', routeExplicit: true, atomicSelection: undefined, currentEffort: null,
     internalOptions: { source: 'agent', beforeMutation: async () => {
       if (prepared && revoked) throw new GroupToolAuthorizationError();
     } },

@@ -794,7 +794,7 @@ function projectInvokeResultForTunnel(
       manual: row.manual,
       recurring: row.recurring,
       intervalMs: row.intervalMs,
-      // 归档确认据此区分持续会话(归档后换绑新任务继续跑,不会暂停);旧控制端忽略该字段。
+      // 保留运行模式与旧控制端兼容；当前归档提醒包含持续会话，运行时恢复原普通任务。
       ...(row.persistentSession === true ? { persistentSession: true } : {}),
     }));
   }

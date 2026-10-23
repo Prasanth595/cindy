@@ -13,9 +13,14 @@ import type { BrowserControlRequest, BrowserControlResult } from '@cindy/browser
 import { buildExtractFnSource, type ExtractSpec } from './extract.js';
 import type { Recipe, RecipeStep } from './recipe-loader.js';
 import { isHttpUrl } from './url-guard.js';
+import { runOpenCliAdapter } from './opencli-page.js';
+import type { RecipeFiles } from '@jackwener/opencli/cindy';
 
 export interface RecipeRunDeps {
   call: (req: BrowserControlRequest) => Promise<BrowserControlResult>;
+  targetId?: string;
+  recipeSecrets?: { read(key: string): string | null; write(key: string, value: string): boolean };
+  recipeFiles?: () => Promise<RecipeFiles>;
   logger?: { warn?: (message: string, meta?: unknown) => void };
 }
 
@@ -306,6 +311,24 @@ export async function runRecipe(
   inputs: Record<string, unknown> | undefined,
   deps: RecipeRunDeps,
 ): Promise<RecipeRunResult> {
+  if (recipe.adapter) {
+    let started = false;
+    try {
+      const args = { ...(inputs ?? {}) };
+      for (const [from, to] of Object.entries(recipe.adapterInputMap ?? {})) {
+        if (Object.hasOwn(args, from)) { args[to] = args[from]; if (from !== to) delete args[from]; }
+      }
+      const output = await runOpenCliAdapter(recipe.adapter, args, {
+        ...deps,
+        onExecutionStart: () => { started = true; },
+      });
+      return { ok: true, recipe: recipe.id, steps: [{ action: 'adapter', ok: true }], output };
+    } catch (error) {
+      return { ok: false, recipe: recipe.id, steps: started ? [{ action: 'adapter', ok: false }] : [],
+        ...(started ? { failedStep: 0, failedAction: 'adapter' } : {}),
+        failureKind: started ? 'action' : 'input', message: error instanceof Error ? error.message : String(error) };
+    }
+  }
   const vars: Record<string, unknown> = { ...(inputs ?? {}) };
   for (const [name, spec] of Object.entries(recipe.inputs ?? {})) {
     if (spec.required && (vars[name] === undefined || vars[name] === null)) {

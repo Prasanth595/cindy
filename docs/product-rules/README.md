@@ -36,5 +36,5 @@
   授权、未知选项）交给主人逐步完成，值不留痕；兜底、提醒、结束判定与已知边界。
 - [`session-runtime-control.md`](session-runtime-control.md)：Agent 调整任务模型、来源、
   推理强度与 Fast 的统一控制面，baseline/effective/pending 状态和自动降级边界。
-- [`archive-pauses-automations.md`](archive-pauses-automations.md)：归档后绑定的自动化会在
-  下次触发时被暂停（持续会话除外），用户归档这类任务前先弹确认。
+- [`archive-pauses-automations.md`](archive-pauses-automations.md)：运行中的自动化会恢复已归档的
+  原普通任务并保持激活（包括持续会话），归档前提示；暂停自动化和托管任务保留原生命周期。

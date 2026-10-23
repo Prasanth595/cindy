@@ -349,7 +349,9 @@ async function listSearchableSessions(
     ? undefined
     : or(gte(sessions.updatedAt, activityCutoff), gte(sessions.userSendAt, activityCutoff));
   const personalChat = and(
-    inArray(botSessionLinks.role, ['canonical', 'history']),
+    inArray(botSessionLinks.role, remoteVisibleOnly
+      ? ['canonical', 'history']
+      : ['canonical', 'history', 'channel']),
     ne(botProfiles.status, 'deleting'),
   );
   return db
@@ -367,11 +369,16 @@ async function listSearchableSessions(
       sessionSources === undefined
         ? or(inArray(sessions.source, DESKTOP_TASK_LIST_SESSION_SOURCES), personalChat)
         : sessionSources === null ? undefined : inArray(sessions.source, sessionSources),
-      // Migrated channel/group lanes may have an ordinary task source.
-      or(isNull(botSessionLinks.role), and(
-        ne(botSessionLinks.role, 'group'),
-        ne(botSessionLinks.role, 'channel'),
-      )),
+      // Group lanes remain private to their group. IM lanes are searchable on
+      // their own computer only, including migrated lanes with ordinary sources.
+      or(
+        isNull(botSessionLinks.role),
+        and(ne(botSessionLinks.role, 'group'), ne(botSessionLinks.role, 'channel')),
+        remoteVisibleOnly ? undefined : and(
+          eq(botSessionLinks.role, 'channel'),
+          ne(botProfiles.status, 'deleting'),
+        ),
+      ),
       remoteVisibleOnly ? or(isNull(botProfiles.id), eq(botSessionLinks.role, 'delegation'), and(
         or(isNull(botProfiles.hiddenAt), eq(botProfiles.hiddenAt, 0)),
         ne(botProfiles.status, 'archived'),
@@ -443,12 +450,13 @@ function sessionSummaryFromRow(
     orcaRole: row.orcaRole,
     parentSessionId: row.parentSessionId,
     ...(row.companionId && row.companionName != null
-      && (row.companionRole === 'canonical' || row.companionRole === 'history')
+      && (row.companionRole === 'canonical' || row.companionRole === 'history' || row.companionRole === 'channel')
       ? { companion: {
           id: row.companionId,
           name: row.companionName,
           role: row.companionRole,
-          readOnly: row.companionRole === 'history' || row.status !== 'active' || row.companionStatus !== 'active',
+          readOnly: row.companionRole === 'history' || row.companionRole === 'channel'
+            || row.status !== 'active' || row.companionStatus !== 'active',
         } }
       : {}),
     userSendAt: row.userSendAt === null ? null : new Date(row.userSendAt).toISOString(),

@@ -114,6 +114,9 @@ export type RemoteNewMakerWorktreeBranchPreference = {
  * 字段,防止同字段旧写的 push 回流把本机更新的乐观意图滚回(review P2)。
  */
 export const sessionPendingWrites = createPendingWriteTracker();
+// List-only previews reuse the existing counted tracker. Raw rows remain available
+// to details and metadata reconciliation until archive is actually confirmed.
+let sessionListRemovalPreviews = createPendingWriteTracker();
 
 /**
  * 会话元数据写序守卫与出网队列(app 级单例):首页滑动操作与会话详情页菜单是同一组
@@ -1778,6 +1781,7 @@ function sameElementRefs<T>(a: readonly T[], b: readonly T[]): boolean {
 
 function reconcileVisibleSessions(): void {
   const next = mergedSessions.filter((session) => session.source !== 'side-chat'
+    && sessionListRemovalPreviews.pendingFields(session.id).length === 0
     && (CINDY_MAKE_ENABLED || !isCindyMakeSource(session.source)));
   if (!sameElementRefs(visibleSessions, next)) visibleSessions = next;
 }
@@ -3316,6 +3320,21 @@ function sweepDevicesOffline(deviceIds: readonly string[]): boolean {
   return changed;
 }
 
+function cleanupRemovedSession(deviceId: string, sessionId: string, deleted: boolean): void {
+  protectedQuestions.delete(sessionId);
+  visibleInteractionCache.delete(sessionId);
+  void clearHistoryDisk(deviceId, sessionId);
+  clearRemoteHistoryViews(deviceId, sessionId);
+  deleteSessionLiveActivity(sessionId);
+  dropPendingTitlePreview(sessionId);
+  let messageStateChanged = invalidateSessionMessageWindowState(sessionId, false);
+  messageStateChanged = releaseSessionDetailProjections(sessionId) || messageStateChanged;
+  sessionMessageLifecycle.forget(sessionId);
+  sessionsOpenedInDetail.delete(sessionId);
+  if (deleted) clearSessionMessageCache(sessionId, deviceId);
+  if (messageStateChanged) bumpMessageVersion(sessionId);
+}
+
 export const remoteSessionStore = {
   /** Coalesce notifications for one logically atomic remote snapshot. */
   batch<T>(work: () => T): T {
@@ -3654,6 +3673,18 @@ export const remoteSessionStore = {
     recomputeSessions();
   },
 
+  /** Hide only the list projection; release never restores an old metadata snapshot. */
+  beginSessionListRemovalPreview(sessionId: string): () => void {
+    const release = sessionListRemovalPreviews.track(sessionId, ['status']);
+    const refresh = () => {
+      reconcileVisibleSessions();
+      reconcileHomeSessions();
+      emit();
+    };
+    refresh();
+    return () => { release(); refresh(); };
+  },
+
   applySessionPatch(deviceId: string, sessionId: string, patch: Partial<RemoteSession>): void {
     // Local optimistic removals must fence a late startup cache just like remote pushes,
     // even when the removed row has not reached this shard yet.
@@ -3674,19 +3705,8 @@ export const remoteSessionStore = {
     let shouldReseedAfterPatch = false;
     const turnEnded = historyTurnEnded(shard.sessions[idx], patch);
     if (patch.status === 'deleted' || patch.status === 'archived') {
-      protectedQuestions.delete(sessionId);
-      visibleInteractionCache.delete(sessionId);
-      void clearHistoryDisk(deviceId, sessionId);
-      clearRemoteHistoryViews(deviceId, sessionId);
       shard.sessions = shard.sessions.filter((s) => s.id !== sessionId);
-      deleteSessionLiveActivity(sessionId);
-      dropPendingTitlePreview(sessionId);
-      let messageStateChanged = invalidateSessionMessageWindowState(sessionId, false);
-      messageStateChanged = releaseSessionDetailProjections(sessionId) || messageStateChanged;
-      sessionMessageLifecycle.forget(sessionId);
-      sessionsOpenedInDetail.delete(sessionId);
-      if (patch.status === 'deleted') clearSessionMessageCache(sessionId, deviceId);
-      if (messageStateChanged) bumpMessageVersion(sessionId);
+      cleanupRemovedSession(deviceId, sessionId, patch.status === 'deleted');
     } else {
       const wasPinned = shard.sessions[idx].pinnedAt != null;
       const unpinned = Object.prototype.hasOwnProperty.call(patch, 'pinnedAt') && patch.pinnedAt == null;
@@ -5528,6 +5548,7 @@ export const remoteSessionStore = {
     sessionListRefreshArmed.clear();
     sessionListRefreshSeen.clear();
     pendingTitlePreview.clear();
+    sessionListRemovalPreviews = createPendingWriteTracker();
     mergedSessions = [];
     visibleSessions = [];
     mergedSessionById.clear();

@@ -126,7 +126,7 @@ Library 请求同时绑定迁移代次和安装批准，根解析、排队及开
 - 新插件统一使用 `schemaVersion: 3`，并填写插件实际依赖的首个 Cindy 正式版本作为
   `minCindyVersion`。Manifest schema 不设置统一的 Cindy 版本下限；具体版本只属于插件包元数据。
   v3 **没有** `slots`；
-  `tools`、`card`、`panel`、`mainView`、`subscribe`、`skill`、`cindy`、`agent`、`node`、`network`、
+  `tools`、`card`、`panel`、`mainView`、`taskView`、`subscribe`、`skill`、`cindy`、`agent`、`node`、`network`、
   `preview` 等顶层字段本身就是插件贡献项或自主 Host 能力的直接声明。
 - 无配置的布尔能力只接受字面量 `true`：`notify`、`badge`、`confirm`、`fs`、`library`、
   `sessionContext`、`pick`、`workspace`。不用就省略，写 `false` 是无效清单。
@@ -555,6 +555,16 @@ Library 请求同时绑定迁移代次和安装批准，根解析、排队及开
   `ghost_call.attachments` 显式交接；Host 复用已有的通用授权链，将授权后的指纹注入
   `args.attachments`，绝不把本地绝对路径暴露给插件。插件自行保存业务状态和更新 UI。
   Host 不自动回调插件，也不得新增画廊等插件业务语义。
+- 回环嵌入是第二个、也是更窄的页面网络例外：插件同时声明一种自绘页面（`panel`、`mainView`
+  或 `taskView`）、`node` 工作进程和 `preview.hosts` 中的 `localhost` / `127.0.0.1` 时
+  （`ghostPanelLoopbackEmbedAllowed`），
+  其页面 CSP 追加 `frame-src 'self' http://127.0.0.1:* http://localhost:*`，分区请求闸放行
+  三类请求：插件页面作为父帧发起的回环子帧导航；该子帧内部再套一层、**父帧与目标同
+  主机:端口**的子帧（本机页面自己的分层结构）；该子帧内回到**同一主机:端口**的资源、
+  XHR 与 WebSocket。面板页自身发出的回环 fetch/XHR、顶层导航到回环地址、换端口或换主机
+  的请求、带凭证的 URL 与 HTTPS 伪装一律继续拒绝。嵌入页由插件自己的随包 Node 进程在
+  本机提供，因此不扩大插件可达的网络范围；权限请求处理器不变（嵌入页不能申请摄像头、
+  定位等权限）。首个消费者是官方 `baguette-simulator`（iOS 模拟器的任务页与管理主视图）。
 - 所有插件 HTML 页面（`settingsHtml`、panel、mainView 与逻辑页）都可以通过 `<img>` 或
   CSS 图片直接加载任意 HTTPS 地址，这是唯一的页面网络直连例外。Host 统一生成包含
   `img-src https:` 的 CSP，并由 owner × plugin session 请求闸把外部请求严格限定为
@@ -723,6 +733,16 @@ Library 请求同时绑定迁移代次和安装批准，根解析、排队及开
 `ghost_forge_install`、点击市场安装或服务端 `defaultInstall` 明确触发；Forge 安装与本地
 导入必须复用同一套 Main 安装／更新事务。
 
+Forge 新装默认 root，不按当前登录组织自动创建组织实例。已有 root 优先原位更新；仅有
+一份当前组织的旧实例时原位更新，保留其归属。新装组织实例必须明确传当前组织 `namespace`，
+不能从名称前缀或当前登录推断归属。无法唯一确定已有实例时返回 `INSTALL_TARGET_REQUIRED`
+与现有实例的身份、版本、启用状态，不默认新增并启用副本。用户选择更新时传 `target_instance_id`，另装时明确传
+`install_copy:true`，两者互斥。更新受体仅可为 root 或当前组织，不能借当前组织权限更新
+其它组织；落位前复核原受体 receipt 和实例键，变更后拒绝而非改选。换源或存在其它副本
+时复用既有确认卡，说明位置、旧账号数据隔离及独立连接要求。不会自动迁移凭证、停用
+旧副本或保存全局选择。本地文件导入仍只更新 root；新增 root 的确认框告知已有其它副本，
+换源更新即使没有扩权也要确认账号影响。已装插件不会因升级被停用或要求补确认。
+
 凡改动**插件作者可见的契约**，同一改动内必须同步更新手册对应章节：
 
 - (a) `ghost.json` 身份卡字段或校验规则（`shared/ghost.ts` 的 `validateGhostManifest`）；
@@ -739,6 +759,16 @@ Library 请求同时绑定迁移代次和安装批准，根解析、排队及开
 3. 内置 `cindy-plugin-creator/references/` 的对应章节（兼容导出为 `FORGE_GUIDE`）及 Forge 测试。
 
 `mainView` 的现行协议在 `FORGE_GUIDE` §4.20；v2 的 `main-view` 只保留输入兼容。
+
+`taskView`（跟对话的任务页）的现行协议在 `FORGE_GUIDE` §4.22；v2 对应 `task-view` 槽。
+任务页页签（右侧栏 kind `plugin-task`）存在各任务自己的页签桶里，随任务切换；页面与
+panel / mainView 同一 Ghost WebView 沙箱（零桥、专属分区），只经查询参数 `session`
+得知所在任务。逻辑页经 `cindy.taskView({sessionId?})`（管子 `task-view-request`）打开或
+聚焦它：只承载包内页面、不收网址，因此不设 preview 式白名单与限速；Host 只做资格审
+（已装、启用、声明 taskView）与落点解析（显式任务优先，缺省台前任务），回执带回落点
+任务。远程任务不投影本机插件的任务页；插件停用、卸载或不再声明 taskView 时页签隐藏。
+使用该能力的插件须声明实际支持且完成整包验收的最低宿主版本。旧 Host 可能保留未知顶层
+字段，但会拒绝 `locale.taskView` 或 v2 的 `task-view` 槽；运行时检测 API 不能替代安装兼容验证。
 `mainView.icon` 只接受 Cindy 系统线性图标
 `puzzle`、`globe`、`code`、`folder`、`database`、`chart-column`、`image`、
 `message-circle`、`calendar-days`，缺省回退 `puzzle`。枚举值直接等于图标名，不设别名；

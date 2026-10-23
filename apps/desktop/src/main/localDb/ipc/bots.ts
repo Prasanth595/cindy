@@ -10,6 +10,8 @@ import { listBotSkillsForBot } from '../../maker-ipc/botSkillService.js';
 import { provisionDefaultBot } from '../../maker-ipc/botDefaultProvisioning.js';
 import { BOT_TEMPLATE_PRESET_AVATARS, CINDY_DEFAULT_IDENTITY } from '../../../shared/botTemplatePreset.js';
 import fs from 'node:fs/promises';
+import { chooseAvatarSource } from '../../profileEdit.js';
+import { toSdrAvatarImage } from '../../hdrAvatarToSdr.js';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 
@@ -114,6 +116,7 @@ import { getResolvedMainLocale } from '../../i18n.js';
 import { SUPPORTED_LOCALES, type SupportedLocale } from '../../../shared/locale.js';
 import { normalizeBotWelcomeContext, type BotWelcomeContext } from '../../../shared/botWelcomeContext';
 import { broadcastBotRemoteResourceChanged } from '../../maker-ipc/botRemoteResourceInvalidation.js';
+import { routineTools } from '../../routines/service.js';
 import { createBotMemoryService } from '../../maker-ipc/botMemoryService.js';
 
 const log = createLogger('bots');
@@ -2168,6 +2171,30 @@ export function registerBotIpc(): void {
     return profile;
   });
 
+  // Source preparation is local-only and account-independent, including for a
+  // Bot that has not been created yet. Saving still uses choose-avatar below.
+  ipcMain.handle('local-db:bots:choose-avatar-source', async (event) => {
+    assertTrustedAppRendererEvent(event);
+    const boundary = captureBotOperationOwner();
+    const owner = BrowserWindow.fromWebContents(event.sender);
+    const source = await chooseAvatarSource({
+      showAvatarOpenDialog: async () => {
+        const options: OpenDialogOptions = {
+          properties: ['openFile'],
+          filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp'] }],
+        };
+        const selection = owner
+          ? await dialog.showOpenDialog(owner, options)
+          : await dialog.showOpenDialog(options);
+        return selection.canceled ? null : selection.filePaths[0] ?? null;
+      },
+      readFile: (filePath) => fs.readFile(filePath),
+      toSdrAvatar: toSdrAvatarImage,
+    });
+    boundary.assertCurrent();
+    return source;
+  });
+
   ipcMain.handle('local-db:bots:choose-avatar', async (event, raw: unknown) => {
     assertTrustedAppRendererEvent(event);
     const body =
@@ -2586,6 +2613,17 @@ export function registerBotIpc(): void {
       owner.assertCurrent();return result;
     });
   }
+  // 近况「每天帮我查一次」：不传 enabled 只读，传了就开 / 关内置「每天查待办」。返回当前是否开着。
+  ipcMain.handle('local-db:bots:todos:daily-check', async (event, rawBotId: unknown, rawEnabled: unknown) => {
+    assertTrustedAppRendererEvent(event);
+    const botId = readText(rawBotId, 'botId', 128, true);
+    if (rawEnabled !== undefined && typeof rawEnabled !== 'boolean') throw new Error('Invalid enabled');
+    const owner = captureBotOperationOwner();
+    const result = rawEnabled === undefined ? await routineTools.todoCheckEnabled(botId) : await routineTools.setTodoCheck(botId, rawEnabled);
+    owner.assertCurrent();
+    if (rawEnabled !== undefined) broadcastBotRemoteResourceChanged(botId);
+    return result;
+  });
   // Exact per-task responsibility IDs from the current owner, without message bodies.
   ipcMain.handle('local-db:bots:workbench:follow-scopes', async (event) => {
     assertTrustedAppRendererEvent(event);

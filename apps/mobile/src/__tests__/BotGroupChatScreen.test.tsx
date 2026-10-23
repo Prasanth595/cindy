@@ -740,17 +740,27 @@ describe('group composer', () => {
     expect(last).not.toHaveProperty('division');
   });
 
-  it('explains why 安排分工 is unavailable while a plan runs, and stops the round when empty', async () => {
+  // Remote resource -> screen regression: transport through Desktop must not expose
+  // unsupported division in a single-speaker room (component tier).
+  it.each([true, false])('gates remote 安排分工 using singleSpeaker=%s', async singleSpeaker => {
+    h.chat.server = false;
+    await render(parseBotGroupChatData(group({ serverBacked: true, singleSpeaker, replyMode: 'mentioned', openPlan: null }))!);
+    expect(!!byId('botGroup.composer.menu.action.division')).toBe(!singleSpeaker);
+  });
+
+  it.each(['all', 'mentioned'] as const)('keeps the running work-plan gate and uses truthful %s copy', async replyMode => {
     const data = group({
+      replyMode,
       openPlan: { id: 'p1', status: 'running', currentStep: 0, stepCount: 2, currentBotName: '咪咪', currentStepStatus: 'running' },
       round: { status: 'running', speakers: [{ botId: 'mimi', sessionId: 's1', activity: 'step' }], canContinue: false },
     });
-    data.plans[0] = { ...data.plans[0]!, status: 'running', currentStep: 0, steps: [{ ...data.plans[0]!.steps[0]!, status: 'running' }, data.plans[0]!.steps[1]!] };
+    data.plans[0] = { ...data.plans[0]!, kind: 'work', status: 'running', currentStep: 0, steps: [{ ...data.plans[0]!.steps[0]!, status: 'running' }, data.plans[0]!.steps[1]!] };
     await render(data);
     expect(byId('botGroup.composer.menu')).toBeNull();
     await click('botGroup.composer.more');
     expect(h.alert).toHaveBeenCalledWith('groupChat.composer.division', 'groupChat.composer.divisionBusy');
-    expect(byId('placeholder')?.textContent).toBe('groupChat.composer.placeholderPlanRunning(name=咪咪)');
+    expect(byId('placeholder')?.textContent).toBe(replyMode === 'mentioned'
+      ? 'groupChat.composer.placeholder' : 'groupChat.composer.placeholderPlanRunning(name=咪咪)');
     await click('botGroup.composer.stop');
     expect(h.chat.act).toHaveBeenLastCalledWith('stop');
   });

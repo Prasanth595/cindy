@@ -259,6 +259,10 @@ Cindy Make 生成的本机定制应用成品。可与原版切换并沿用同一
 
 云端伙伴运行的那台电脑（docs/product-rules/cloud-companions.md §3）：伙伴的 Agent、工作目录与连接只在这台电脑上，其他电脑与手机是查看和发消息的入口。手机与桌面同一叫法，伙伴设置行名、离线横幅与侧栏状态共用。英文行名用 Title Case（Main Computer），句中小写 main computer，故 checkCase 为 false。不要写成「主设备」「宿主机」或 home device（代码字段 homeDeviceId 不是界面用语）。先登记为 proposed，待桌面与手机实机走查后再定。
 
+### Connection code
+
+本机应用临时连接的端点定位文本，不是授权令牌；连接仍需目标 Cindy 原生确认。
+
 ### Content Update
 
 指不更换 TestFlight 或商店安装包、可通过 OTA 下发的 JS 与资源更新。当前先采用四语直译并登记为待讨论术语，避免与整包更新或测试版本更新混称。

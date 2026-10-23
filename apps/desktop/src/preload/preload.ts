@@ -749,6 +749,7 @@ const fanOutGhostInstallConsentRequest = createIpcFanOut('ghosts:install-consent
 const fanOutGhostInstallConsentDismissed = createIpcFanOut('ghosts:install-consent:dismissed');
 // 插件预览开页(preview 槽:renderer 在右侧栏开 web-browser 标签)。
 const fanOutGhostPreviewOpen = createIpcFanOut('ghosts:preview-open');
+const fanOutGhostTaskViewOpen = createIpcFanOut('ghosts:task-view-open');
 // 插件自动化草稿(agent 槽 schedule 加档:renderer 开自动化创建面板并预填)。
 const fanOutGhostScheduleDraft = createIpcFanOut('ghosts:schedule-draft');
 const fanOutVoiceInputModifierShortcutKeys = createIpcFanOut('voice-input:modifier-shortcut-keys');
@@ -1076,6 +1077,28 @@ const appearanceSettingsInfo = ipcRenderer.sendSync(
 ) as AppearanceSettings | null;
 
 contextBridge.exposeInMainWorld('electronAPI', {
+  localAgent: {
+    onConfirmation: (listener: (request: import('../shared/localAgent').LocalAgentConfirmation) => void): (() => void) => {
+      const receive = (_event: Electron.IpcRendererEvent, request: import('../shared/localAgent').LocalAgentConfirmation) => listener(request);
+      ipcRenderer.on('local-agent:confirmation', receive);
+      return () => ipcRenderer.removeListener('local-agent:confirmation', receive);
+    },
+    onConfirmationDismissed: (listener: (requestId: string) => void): (() => void) => {
+      const receive = (_event: Electron.IpcRendererEvent, requestId: string) => listener(requestId);
+      ipcRenderer.on('local-agent:confirmation:dismissed', receive);
+      return () => ipcRenderer.removeListener('local-agent:confirmation:dismissed', receive);
+    },
+    answerConfirmation: (requestId: string, confirmed: boolean): Promise<boolean> =>
+      ipcRenderer.invoke('local-agent:confirmation:answer', requestId, confirmed),
+    developerConnection: (): Promise<import('../shared/localAgent').LocalAgentDeveloperConnection | null> => ipcRenderer.invoke('local-agent:developer-connection'),
+    connections: (): Promise<import('../shared/localAgent').LocalAgentConnection[]> => ipcRenderer.invoke('local-agent:connections'),
+    revoke: (connectionId?: string): Promise<boolean> => ipcRenderer.invoke('local-agent:revoke', connectionId),
+    onConnectionsChanged: (listener: () => void) => {
+      const receive = () => listener();
+      ipcRenderer.on('local-agent:connections-changed', receive);
+      return () => ipcRenderer.removeListener('local-agent:connections-changed', receive);
+    },
+  },
   modelFavoritesHost: {
     ready: () => ipcRenderer.send(FAVORITE_HOST_READY),
     changed: (stamp) => ipcRenderer.send(FAVORITE_HOST_CHANGED, stamp),
@@ -1274,7 +1297,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 意识仓库 (shared/ghost.ts)。listSync 走 sendSync:意识面板要与内置
   // 面板同帧注册进布局引擎(规则 7 无跳变);目录扫描极小,同步读不卡启动。
   ghosts: {
-    mailPreview: (sessionId: string, url: string, read: boolean, opened = false) => ipcRenderer.invoke('ghosts:mail-preview', sessionId, url, read, opened),
+    mailPreview: (sessionId: string, url: string, read: boolean, opened = false, providerId?: string) => ipcRenderer.invoke('ghosts:mail-preview', sessionId, url, read, opened, providerId),
     openRemoteSettings: (target: import('../shared/remotePluginSettings').RemotePluginSettingsTarget): Promise<import('../shared/remotePluginSettings').RemotePluginSettingsView> =>
       ipcRenderer.invoke('device-link:plugin-settings:open', target),
     closeRemoteSettings: (id: string): Promise<void> => ipcRenderer.invoke('device-link:plugin-settings:close', id),
@@ -1463,6 +1486,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     resolveInstallConsent: (requestId: string, confirmed: boolean): Promise<{ handled: boolean }> =>
       ipcRenderer.invoke('ghosts:install-consent:resolve', { requestId, confirmed }),
     onPreviewOpen: fanOutGhostPreviewOpen,
+    onTaskViewOpen: fanOutGhostTaskViewOpen,
     onScheduleDraft: fanOutGhostScheduleDraft,
     getCard: (
       callId: string,
@@ -2044,8 +2068,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     /** 把页签弹出到独立窗口;已弹出则聚焦。 */
     open: (request: SidebarTabWindowOpenRequest): Promise<void> =>
       ipcRenderer.invoke('maker:sidebar-tab-window:open', request),
-    focus: (tabId: string): Promise<void> =>
-      ipcRenderer.invoke('maker:sidebar-tab-window:focus', tabId),
+    focus: (tabId: string, options?: { userInitiated?: boolean }): Promise<void> =>
+      ipcRenderer.invoke('maker:sidebar-tab-window:focus', tabId, options),
     /** 页签已在侧边栏关闭:销毁其弹出窗口,不交回。 */
     closeForTab: (tabId: string): Promise<void> =>
       ipcRenderer.invoke('maker:sidebar-tab-window:close-for-tab', tabId),
@@ -5737,6 +5761,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
         locale?: import('../shared/locale').SupportedLocale;
       }): Promise<unknown[]> => ipcRenderer.invoke('local-db:bots:list', body),
       get: (botId: string): Promise<unknown> => ipcRenderer.invoke('local-db:bots:get', botId),
+      chooseAvatarSource: (): Promise<{ canceled: boolean; previewDataUrl?: string }> =>
+        ipcRenderer.invoke('local-db:bots:choose-avatar-source'),
       chooseAvatar: (body: { botId: string; avatarImageBase64?: string }): Promise<unknown> =>
         ipcRenderer.invoke('local-db:bots:choose-avatar', body),
       searchHistory: (body: unknown): Promise<unknown> =>
@@ -5757,6 +5783,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
         list: (botId: string) => ipcRenderer.invoke('local-db:bots:todos:list', botId),
         update: (botId: string, patch: import('@cindy/maker-shared/teammate-todo').TodoPatch) => ipcRenderer.invoke('local-db:bots:todos:update', botId, patch),
         act: (botId: string, input: {id:string;revision:number;requestId:string;locale?:string}) => ipcRenderer.invoke('local-db:bots:todos:act', botId, input),
+        dailyCheck: (botId: string, enabled?: boolean) => ipcRenderer.invoke('local-db:bots:todos:daily-check', botId, enabled),
       },
       projects: {
         list: (botId: string): Promise<import('../shared/botWorkbench').BotProjectOption[]> =>
@@ -7197,14 +7224,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // providerId 可选 —— 选了某供应商的模型时一并传,决定本会话路由到哪个上游/钥匙。
     // 不传 = 不改动该会话的供应商选择(老调用兼容);传 null = 清除选择回落默认路由。
     // 返回 { deferred } —— deferred=true 表示会话自己在跑 turn,凭证切换已登记为
-    // pending、turn 结束自动生效(renderer 据此提示"任务结束后生效")。旧被控端 /
+    // pending、turn 结束自动生效(renderer 据此提示“任务结束后生效”)。旧被控端 /
     // 老 host 可能返回 undefined,调用方按非 deferred 处理。
+    // selection.thinking(Pi-only) = 目标模型的思考开关意图，Pi 用它收敛切模后的
+    // thinking level；其它引擎忽略。
     setModel: (
       sessionId: string,
       model: string,
       providerId?: string | null,
       expectedAgentSwitchRevision?: number,
-      selection?: { effort: string | null; fastMode: boolean | 'ultrafast' },
+      selection?: { effort: string | null; fastMode: boolean | 'ultrafast'; thinking?: boolean },
     ): Promise<{ deferred: boolean; superseded?: boolean } | undefined> =>
       ipcRenderer.invoke(
         'maker:set-model',
@@ -7229,6 +7258,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       fastMode?: boolean | 'ultrafast',
       // 远程 Agent:同时换 Agent 所在电脑(null = 任务所在电脑)。不传 = 位置不变。
       options?: { agentDeviceId?: string | null; confirmedContextWindow?: number },
+      thinking?: boolean,
     ): Promise<{
       switched: boolean;
       agentKind: 'claude-code' | 'codex' | 'pi';
@@ -7238,7 +7268,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       sameEngineRevision?: number;
       sameEngineSuperseded?: boolean;
     }> =>
-      options
+      options || thinking !== undefined
         ? ipcRenderer.invoke(
             'maker:switch-session-agent',
             sessionId,
@@ -7248,6 +7278,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
             effort,
             fastMode,
             options,
+            thinking,
           )
         : ipcRenderer.invoke(
             'maker:switch-session-agent',

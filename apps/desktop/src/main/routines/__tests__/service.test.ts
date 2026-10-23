@@ -108,6 +108,19 @@ it('dispatches into the current canonical task through the existing silent runne
   expect((await routineTools.history('bot', routine.id))[0].resultText).toBe('Reviewed PR');
 });
 
+it('turns the teammate\'s weekday todo check on and off as one built-in routine', async () => {
+  // 近况里的「每天帮我查一次」：打开建内置例行任务，关掉只暂停，再打开复用同一条，不重复建。
+  expect(await routineTools.todoCheckEnabled('bot')).toBe(false);
+  expect(await routineTools.setTodoCheck('bot', true)).toBe(true);
+  const [routine] = await routineTools.list('bot');
+  expect(routine).toMatchObject({ builtin: 'todo-check', enabled: true, silentWhenIdle: true,
+    triggers: [{ kind: 'cron', expression: '0 9 * * 1-5' }] });
+  expect(await routineTools.setTodoCheck('bot', false)).toBe(false);
+  expect(await routineTools.todoCheckEnabled('bot')).toBe(false);
+  expect(await routineTools.setTodoCheck('bot', true)).toBe(true);
+  expect((await routineTools.list('bot')).map(row => [row.id, row.enabled])).toEqual([[routine.id, true]]);
+});
+
 it('skips a demoted teammate\'s routine while its home is another computer, keeping the rule', async () => {
   companionHomes.update({ enabled: true, selfDeviceId: 'desk', humanActorId: 'human', demotedBotIds: ['bot'],
     actors: [{ id: 'actor', externalId: 'bot', name: 'Bot', avatar: null, homeDeviceId: 'laptop' }] });

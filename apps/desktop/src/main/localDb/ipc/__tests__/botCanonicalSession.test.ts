@@ -1337,6 +1337,34 @@ describe('Bot canonical Session lifecycle', () => {
     expect(h.showOpenDialog).not.toHaveBeenCalled();
   });
 
+  // #6889 unit: exercise the registered Bot source IPC in local mode,
+  // including sender and owner-boundary errors. Existing tests only saved
+  // avatars for an already-created Bot; source preparation must not mutate it.
+  it('prepares a Bot avatar source in local mode without a profile write', async () => {
+    h.ownerScopeKey = 'local:fixture:1';
+    const filePath = resolve(__dirname, '../../../../renderer/assets/bot-presets/cindy.png');
+    h.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [filePath] });
+    const before = await invoke('local-db:bots:get', 'bot-1');
+    const source = await invoke('local-db:bots:choose-avatar-source', undefined);
+    expect(source).toEqual({ canceled: false, previewDataUrl: `data:image/png;base64,${readFileSync(filePath).toString('base64')}` });
+    expect(await invoke('local-db:bots:get', 'bot-1')).toEqual(before);
+  });
+
+  it('rejects an untrusted source chooser before opening a file dialog', async () => {
+    h.showOpenDialog.mockClear();
+    vi.mocked(assertTrustedAppRendererEvent).mockImplementationOnce(() => { throw new Error('untrusted'); });
+    await expect(invoke('local-db:bots:choose-avatar-source', undefined)).rejects.toThrow('untrusted');
+    expect(h.showOpenDialog).not.toHaveBeenCalled();
+  });
+
+  it('discards a source chooser result after changing owners', async () => {
+    h.showOpenDialog.mockImplementationOnce(async () => {
+      h.ownerScopeKey = 'another-owner';
+      return { canceled: true, filePaths: [] };
+    });
+    await expect(invoke('local-db:bots:choose-avatar-source', undefined)).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+  });
+
   it('retains the old host file chooser when no gallery bytes are supplied', async () => {
     h.showOpenDialog.mockClear();
     await expect(invoke('local-db:bots:choose-avatar', { botId: 'bot-1' })).resolves.toEqual({ canceled: true });

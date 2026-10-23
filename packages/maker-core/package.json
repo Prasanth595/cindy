@@ -12,7 +12,8 @@
     "./contacts-sync-worker": "./src/contacts/sync/worker-api.ts",
     "./pi-extension-ui": "./src/agents/pi/extension-ui-capabilities.ts",
     "./pi-subagent-runs": "./src/agents/pi/pi-subagent-runs.ts",
-    "./pi-background-commands": "./src/agents/pi/pi-background-commands.ts"
+    "./pi-background-commands": "./src/agents/pi/pi-background-commands.ts",
+    "./skill-scan-limits": "./src/agents/shared/skill-scan-limits.ts"
   },
   "scripts": {
     "build": "tsc --noEmit",

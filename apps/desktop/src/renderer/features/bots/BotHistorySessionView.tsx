@@ -6,6 +6,7 @@ import { CCAgentSessionView } from '@/features/cc-agent/CCAgentSessionView';
 import type { BotChatIdentity } from './BotSessionContentHeader';
 import { readIslandEntryRouteState, requestIslandEntryAlertDisposal } from './islandEntryAlert';
 import { useBotIslandVisibleSession } from './useBotIslandVisibleSession';
+import { useBotPluginFocusedSession } from './useBotPluginFocusedSession';
 import { remoteProjectsStore } from '@/features/device-link/remoteProjectsStore';
 import { getDataOwnerGeneration, isDataOwnerGenerationCurrent } from '@/contexts/dataOwnerGeneration';
 import type { Session } from '@/lib/ccAgent.types';
@@ -21,7 +22,7 @@ function readBotChatIdentity(bot: unknown, botId: string): BotChatIdentity | nul
   };
 }
 
-/** Historical Bot transcripts are reviewable but never writable from the history route. */
+/** History and hidden IM transcripts share the main-window read-only task view. */
 export function BotHistorySessionView() {
   const { botId, sessionId, deviceId } = useParams();
   return <BotHistorySessionGateView key={JSON.stringify([deviceId, botId, sessionId])} />;
@@ -31,6 +32,7 @@ function BotHistorySessionGateView() {
   const { t } = useTranslation();
   const { botId, sessionId, deviceId } = useParams();
   const [allowed, setAllowed] = useState<boolean | null>(null);
+  useBotPluginFocusedSession(allowed === true && !deviceId ? sessionId ?? null : null);
   useBotIslandVisibleSession(allowed === true ? sessionId ?? null : null);
   // 灵动岛点进来的那张卡,只在本门禁确认并显示了这段历史后才处置;被重定向走则保留。
   const islandEntryId = readIslandEntryRouteState(useLocation().state);
@@ -60,7 +62,8 @@ function BotHistorySessionGateView() {
     const personalLink = (bot: unknown) => {
       const rows = (bot as { sessions?: Array<{ id: string; role?: string; status?: string }> } | null)?.sessions;
       return rows?.some(row => row.id === sessionId && row.status !== 'deleted'
-        && (row.role === 'history' || row.role === 'canonical')) ?? false;
+        && (row.role === 'history' || row.role === 'canonical'
+          || (!deviceId && row.role === 'channel'))) ?? false;
     };
     const history = deviceId
       ? profile.then(bot => personalLink(bot) ? [{ id: sessionId }] : [])

@@ -100,9 +100,10 @@ function fakeDeps(
 }
 
 function parsePayload(result: {
-  content: { text: string }[];
+  content: Array<{ type: string; text?: string }>;
 }): Record<string, unknown> {
-  return JSON.parse(result.content[0].text) as Record<string, unknown>;
+  // The first block is always the JSON text (ghost_call may append images).
+  return JSON.parse(result.content[0].text ?? "") as Record<string, unknown>;
 }
 
 const READY_WITH_REAUTH_SUGGEST = {
@@ -592,6 +593,22 @@ describe("cindy_ghosts · ghost_call(派活透传)", () => {
       tool: "gen_image",
       args: {},
     });
+  });
+
+  it("images the plugin shows the model follow the JSON text as image content and stay out of the JSON", async () => {
+    const callGhostTool = vi.fn().mockResolvedValue({
+      ok: true,
+      result: { path: "/tmp/s.jpg" },
+      images: [{ data: "AAAA", mimeType: "image/jpeg" }],
+      imagesOmitted: 1,
+    });
+    const result = await handleGhostCall(fakeDeps({ callGhostTool }), { ghost_id: "sim", tool: "screenshot" });
+    expect(result.content).toHaveLength(2);
+    expect(result.content[1]).toEqual({ type: "image", data: "AAAA", mimeType: "image/jpeg" });
+    const payload = parsePayload(result);
+    expect(payload).toMatchObject({ ok: true, result: { path: "/tmp/s.jpg" }, images_omitted: 1 });
+    expect(payload).not.toHaveProperty("images");
+    expect(payload).not.toHaveProperty("imagesOmitted");
   });
 
   it("成功调用可附 setup.reauthSuggest，仍保持 ok:true", async () => {
@@ -1596,7 +1613,7 @@ describe("cindy_ghosts · ghost_forge(锻造)", () => {
   });
 
   it("forge_install 透传源码目录与可选图标并返回真实安装动作;失败标 isError", async () => {
-    const requests: Array<{ dir: string; iconSource?: string }> = [];
+    const requests: Array<{ dir: string; iconSource?: string; targetInstanceId?: string }> = [];
     const installed = await handleForgeInstall(
       fakeDeps({
         forgeInstall: async (request) => {
@@ -1615,6 +1632,7 @@ describe("cindy_ghosts · ghost_forge(锻造)", () => {
       {
         dir: "/src/my-ghost",
         icon_source: `cindy-media://blobs/${"a".repeat(64)}.png`,
+        target_instance_id: '_root__my-ghost',
       },
     );
     expect(parsePayload(installed)).toMatchObject({
@@ -1627,6 +1645,7 @@ describe("cindy_ghosts · ghost_forge(锻造)", () => {
       {
         dir: "/src/my-ghost",
         iconSource: `cindy-media://blobs/${"a".repeat(64)}.png`,
+        targetInstanceId: '_root__my-ghost',
       },
     ]);
 

@@ -52,7 +52,7 @@ it('keeps text-only policy local and ordinary tools independent of host UI failu
   const source = CINDY_BRIDGE_EXTENSION_SOURCE;
   const helperStart = source.indexOf('let textOnlyTurnActive = false');
   const helperEnd = source.indexOf('function currentPermissionState', helperStart);
-  const handlerStart = source.indexOf("  pi.on('tool_call'");
+  const handlerStart = source.indexOf("  pi.on('tool_call', async");
   const handlerEnd = source.indexOf('\n  });', handlerStart) + '\n  });'.length;
   const handlers = new Map<string, (event: any, ctx: any) => any>();
   let permissionReads = 0;
@@ -108,7 +108,7 @@ it('lets a shared user\'s Pi call only tools that Cindy extensions registered', 
   const source = CINDY_BRIDGE_EXTENSION_SOURCE;
   const gateStart = source.indexOf('function createCindyGuestToolGate');
   const gateEnd = source.indexOf('\nconst PERMISSION_TITLE', gateStart);
-  const handlerStart = source.indexOf("  pi.on('tool_call'");
+  const handlerStart = source.indexOf("  pi.on('tool_call', async");
   const handlerEnd = source.indexOf('\n  });', handlerStart) + '\n  });'.length;
   // 子代理扩展的工具名在生成时写进源码。
   expect(source).toContain('createCindyGuestToolGate(piApi, ["subagent"])');

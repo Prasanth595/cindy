@@ -1,5 +1,27 @@
 # 跨端协议兼容
 
+## Device Link 局域网优先直连
+
+可靠链路的 `link-open/link-accept` 增加可选能力 `direct-link-v1`。双方均支持且已完成
+现有授权与可靠握手后，字典序较小的 deviceId 后台发起 WebRTC DataChannel；信令通过
+既有 relay `push` 的 `device-link:direct-signal` channel 发送，含 offer/answer/close、
+随机通道 ID 及两端当前 transport stream。客户端验证账号范围、双方能力、链路就绪与
+stream 匹配后才处理；信令不进入业务可靠 FIFO，也不走直连。超时或信令丢失由独立退避
+重试恢复，普通业务继续走 relay，不产生新 invoke 白名单权限或服务端协议版本。
+
+数据通道 `device-link-v1` 只使用可靠有序 SCTP；同一完整 envelope 拆为不超过 16 KiB 的
+二进制片，首字节 0/1 表示续片/末片，剩余字节是 UTF-8。单条最多 `MAX_FRAME_BYTES`，
+重组有字节、分片数和超时边界；在原可靠层接收之前重组，序号、去重与 ACK 语义不变。
+桥接在途字节与 SCTP bufferedAmount 一起参与背压，平台静默失效同样会触发原有中继回退。
+
+旧端不声明能力，双方仍走 relay；只升级一端不会启用直连。Desktop 与 Mobile 均接入，
+同账号远程供应商沿用这条共享路径；跨账号供应商分享和共享任务继续由 relay 逐帧授权。
+不改数据库、服务端、Mobile 原生依赖或配置。Mobile 使用现有 WebView，iOS 的 WebKit
+网络行为参考 [Apple TN3179](https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy)。
+平台不可用或系统阻止局域网访问时沿用 relay，不能阻断业务。真实跨设备、iOS/Android
+前后台及系统网络权限的发布验收必须另记实测证据；浏览器本机 smoke 不等同于真机通过。
+
+
 ## 灵动岛完成卡操作
 
 `local-db:sessions:activity` 追加可选的 `completionToken`，由任务所属进程按完成卡代次签发。
@@ -91,6 +113,9 @@ Mobile 始终走原流程。Mobile 学到的这些结论绑定 device-link 连�
 既有 `local-db:conversations:search` 的结果 `session` 增加可选
 `companion: { id, name, role: 'canonical' | 'history', readOnly }`。
 归属由 Host 的 `bot_session_links` 关联确认；群聊与渠道专线不下发。
+本机搜索另允许渠道专线，并在 Desktop 本机结果中使用 `companion.role: 'channel'` 与 `readOnly: true`，
+沿用现有历史只读页及消息锚点。远程查询仍排除渠道专线，远程回包与 Mobile 消费的角色范围不变；
+不增加 IPC channel、请求参数或数据库字段。
 `local-db:bots:get` 的远程精简资料增加个人 `sessions: [{ id, role, status }]`，
 供控制端复核历史归属，不传提示词、工作目录或渠道配置。
 搜索前按远程伙伴可见性筛选，缓存／排队回复投递时再次核查，保持原账号与隐藏边界。
@@ -589,6 +614,21 @@ device-link 授权、撤权与 owner fence；仅有归属范围权限的调用�
 本次不改服务端和数据库 schema；手机与 IM 通过所在电脑的 Agent 使用能力，无新增界面。
 SSH 主机不自动成为设备目录成员。实现与回归见 `mcp-integrations/historyDevices.ts`、
 `localDb/ipc/historyQuery.ts` 和 `packages/lizi-mcps/src/__tests__/historyDevices.test.ts`。
+
+## 定时任务的 Agent 运行位置（2026-10-22）
+
+`maker:schedule:*` 读回的定时任务与写入参数新增可选 `agentDeviceId`（每次新建任务时 Agent 在哪台电脑或
+分享来的供应商上运行，相对定时任务所在电脑；省略 = 本机），旧端忽略该字段。新 host 收到的写入改了
+`agentKind` / `modelAgentKind` / `model` / `providerId` 却没带 `agentDeviceId` 时，把运行位置归回本机：
+旧版手机端与旧版桌面远程编辑选的是任务所在电脑的目录，沿用旧位置会把那份来源派到另一台电脑。
+`null` 同样表示回到本机。`cindy_scheduler` 跨电脑修改定时任务时拒绝设置 `agentDeviceId`，因为位置 id
+只对定时任务所在电脑有意义。
+
+项目自动化的 `.cindy/automations/schedules.json`（version 1）与既有 upsert 参数也保留可选
+`agentDeviceId`：提升用户自动化、表单编辑和文件同步均与模型／供应商一起保存，字段删除时
+清除已保存的位置。新 host 校验设备 ID 格式且要求显式模型；实际运行仍按当前账号的既有
+远程／分享授权校验，不因配置文件带了设备 ID 而获得授权。旧配置省略时继续使用本机；旧客户端
+不支持该字段，提升或编辑时可能丢失运行位置，远端项目自动化需使用支持此字段的客户端维护。
 
 ## Agent 跨电脑管理定时任务与发消息
 
@@ -1297,7 +1337,8 @@ Codex 原生图片恢复（#6412）在既有 `maker:remote-agent:v1` 上追加�
 
 - **方向**：A 始终是发起方。`open / call / reply / push / close / upload / caps` 是 A → B 的指令，
   `poll` 按游标拉取 B 的 NDJSON 事件流：同一台 B 上的全部任务共用一个 poll(一次带上各任务游标，
-  最多 64 个；无新数据时 B 挂起最多 10s)。A 登记新任务时可再发一个覆盖全部任务的 poll，两个 poll
+  最多 64 个；无新数据时 B 挂起最多 10s)。A 登记新任务时可再发一个覆盖全部任务的 poll(两个长等待都只含
+  旧任务时再多一个只为新任务补位的，合计最多 3 个；只是 A 本地调度，B 对并发 poll 本来就逐个处理)，几个 poll
   返回的数据可能重叠，回包里的 `from` 标明数据起点，A 按 `from` 去重、游标只进不退；B 不认识的任务
   或超出已写范围的游标回 `missing`。B 需要 A 处理的事(权限确认、执行器与 MCP 的 HTTP 请求、
   Codex exec-server 的 WebSocket 帧、`cancel`)都作为事件流里的反向请求，A 用 `reply / push` 回传。
@@ -1319,6 +1360,13 @@ Codex 原生图片恢复（#6412）在既有 `maker:remote-agent:v1` 上追加�
   `fs/readFile`、`fs/open` 的缺省/read 模式与目录读取按读取，显式非 read 的 open 模式仍从严按写入；`fs/walk` 按
   目录级读取，`fs/getMetadata`、`fs/canonicalize` 等只看元数据的不过闸门，其余 `fs/` 方法按写入；
   升级 Codex 后核对 exec-server 新增的方法，只读的要显式归类，否则会被当成写入拒掉(#5764)。
+  B 的隧道对镜像根内 A 映射不到的虚拟垫层，以及 A 在 `open` 的 `ancestorMarkers` 里明确报了「没有」的上级目录
+  标记，只读查询由 B 本机回答。镜像根外的绝对路径照常转发，只有两端路径格式相同且 A 明确报告其缺失的标记
+  才可本机回答；隐藏文件和未知外部标记不能凭名字判不存在。本机回答使用
+  原生的不存在错误 `-32004`(固定版本 `codex-rs/exec-server/src/remote_file_system.rs` 按 NotFound 处理)，不转给 A；
+  B 的 Codex 在执行环境断开时按同一个 id 重新 `environment/add`，先用实验接口 `environment/status` 判断。两者都随
+  Codex 版本可能变化，升级时一并核对(见 [`remote-and-mobile-adaptation.md`](remote-and-mobile-adaptation.md)
+  「托管 Codex 启动的跨机往返与执行环境恢复」)。
   非完全访问档下 `process/start` 与 `fs/*` 带 `sandbox`(固定版本 `codex-rs/file-system/src/lib.rs` 的
   `WireFileSystemSandboxContext`)，其中目录与权限条目都是 B 上看到的 file URI，中继换成 A 的路径：虚拟工作区内的
   映射为本机路径(绝对 glob 里本机目录名按字面转义)；不在其中的是 B 自己的目录(如它的 Codex 记忆目录)，读写
@@ -1331,7 +1379,10 @@ Codex 原生图片恢复（#6412）在既有 `maker:remote-agent:v1` 上追加�
   `CLAUDE.md` / `CLAUDE.local.md` / `AGENTS.md` / `AGENTS.override.md`，按层级 `up`，最多 24 级)与
   `personal`(A 的个人配置：Claude Code 的 `~/.claude/CLAUDE.md`、`skills/agents/commands/rules`、`settings.json`
   里的权限规则；Codex 的 `AGENTS(.override).md`；Codex / Pi 的个人 Skill 放在 `.agents/skills`、
-  `.codex/skills`；不含 hooks / env)。两者缺省按空处理。B 把影子目录按
+  `.codex/skills`；不含 hooks / env)。两者缺省按空处理。Codex 任务另带可选的 `ancestorMarkers`
+  (`{ names, levels: [{ up, present }] }`：A 检查过的名字与各级上级目录里存在的那些，`up` 从 1 起到根目录、最多
+  24 级)，只报名字在不在、不带内容，Agent 本来就能逐个查到，不多泄露上级目录的其它内容；格式有任何不对 B 整段丢弃。
+  旧 A 不带、旧 B 解码时丢弃，都退回逐个转发，只是慢。B 把影子目录按
   A 的真实路径逐级镜像在 `<runs>/workspaces/<控制端>/<任务>/fs/` 下，`open` 回包的 `mirrorRoot` 告诉 A
   镜像根，A 据此把影子路径逐级映射回真实路径；项目里已有的同名文件以项目为准。A 收集这些文件时跟随
   符号链接(与本机 Agent 加载一致，只防链接绕回上级目录与指向整个用户目录)，额度先给入口文件(SKILL.md、
@@ -1446,11 +1497,15 @@ Codex 原生图片恢复（#6412）在既有 `maker:remote-agent:v1` 上追加�
   字段；这两个协议位是整台 A 的，控制端用 A 一定注册的 Claude Code 读(Worker 选的 Agent 可能只装在 Agent 所在
   电脑上)。开启协同提交前再按能力核对一次，降级的 A 直接失败、不静默建错；控制端读不到 Lead 所在位置的目录时
   (控制端自己、只有 A 收到的分享)维持 A 的目录、不发这个字段。A 在占槽与启动前读那台的目录，读不到回
-  `REMOTE_AGENT_DEVICE_UNREACHABLE` / `REMOTE_AGENT_SHARE_*`；与运行设备(`executionDeviceId`)同给、SSH Lead 回
-  `INVALID_PARAMS`。Worker 列表(`local-db:orca-workflows:list-workers-by-lead` 的 `session.agentDeviceId`)只在 Agent
+  `REMOTE_AGENT_DEVICE_UNREACHABLE` / `REMOTE_AGENT_SHARE_*`；SSH Lead 回
+  `INVALID_PARAMS`。与 `executionDeviceId` 同给时，位置相对工作电脑，省略或 null 使用该电脑默认；
+  Lead 的 Agent 在其他电脑运行不影响创建。工作电脑 `remote-worker:caps.agentDevice: true` 且 Lead 的
+  `execution-devices` 投影 `supportsAgentDevice: true` 才开放独立位置；显式字段发给旧端前返回
+  `UNSUPPORTED_CAPABILITY`，不静默建错。新增同账号 `maker:orca:remote-worker:models` 查询 `{agent?, agentDeviceId?}`，
+  返回模型列表与 `locations`；共享访客不可调用。open 新增可选 `agentDeviceId`，回包可带准入后的
+  `agentDeviceId` / `providerId`；旧请求仍保持原行为。`list_available_models.execution_device_id` 从工作电脑读取目录。Worker 列表(`local-db:orca-workflows:list-workers-by-lead` 的 `session.agentDeviceId`)只在 Agent
   不在任务所在电脑时带值，旧端忽略即可。Lead 的 MCP 工具同步：`list_available_models` 可选 `agent_device_id` 并返回
-  `locations`，`create_worker` / `create_workers` 可选 `agent_device_id`(`"local"` = 任务所在电脑)。不新增 channel，
-  allowlist 不变。回归见 `orcaWorkerCreationService.test.ts`、`CreateWorkerPopover.test.tsx`、Mobile
+  `locations`，`create_worker` / `create_workers` 可选 `agent_device_id`(`"local"` = 任务所在电脑)。同账号 allowlist 新增上述 models 查询；共享任务清单不变。回归见 `orcaWorkerCreationService.test.ts`、`CreateWorkerPopover.test.tsx`、Mobile
   `orcaTeam.test.ts` / `useOrcaWorkerForm.test.tsx`。
 - **账号余量**(2026-10-09)：这一轮消耗的是 Agent 所在那台(B)的账号，桌面底部用量 chip 与手机任务菜单都改读 B 的
   余量，不读任务所在电脑(本机或被控电脑)的同名账号。直接经 device-link 调 B 已有的 `maker:usage:*` 读取与推送
@@ -1581,6 +1636,13 @@ Codex 原生图片恢复（#6412）在既有 `maker:remote-agent:v1` 上追加�
 
 ## 协同远端 Worker：Worker 在另一台电脑运行
 
+`maker:input:get-projection` 的既有输入投影可选增加 `turnInProgress`，由输入协调器按
+当前派发、运行、交互及终态持久化边界生成；它不表示 vendor 的 `isTurnRunning`。
+Lead 的自动回报同时识别既有 `autoResumePending`、`usageLimitWait` 和隐藏续跑队列，
+读取历史后再次核对投影，恢复期间保留原派活身份，不推进回报去重游标。旧查看端忽略新字段；
+新 Lead 连接旧运行端时仍使用既有恢复字段，完整的进行中边界核对需要运行端同时更新。
+只调整单个 Worker 的回报收尾，不改变通道、权限、relay、服务端或 Mobile 原生配置。
+
 主动回报可选追加 `maker:orca:remote-worker:bridge`，仅同账号 allowlist；不进入共享任务、
 供应商分享清单。运行设备从本机持久来源标记选定 Lead 电脑，传真实任务 ID、Lead ID、
 四个既有 Worker 工具名之一与其原参数。Lead 从 server 盖章的来源设备 ID 反查 active team
@@ -1618,7 +1680,7 @@ B 上的 Worker 是一条普通任务，`sessions.orca_remote_lead`(migration 01
 方案与产品决策见 [`../orca-cross-device-worker-plan.md`](../orca-cross-device-worker-plan.md)。
 
 - **新增 channel**(`packages/device-link/src/orcaRemoteWorker.ts`，只进同账号 allowlist，不进共享任务清单)：
-  `maker:orca:remote-worker:caps`(能力探测，回 `{ version }`)、`…:open`(按 A 给定的任务 id 新建 Worker 任务，
+  `maker:orca:remote-worker:caps`(能力探测，回 `{ version, agentDevice? }`)、`…:models`(查询工作电脑的模型与 Agent 位置)、`…:open`(按 A 给定的任务 id 新建 Worker 任务，
   幂等；超时 60s)、`…:release`(结束协同，任务与文件保留，幂等)。B 侧实现见
   `apps/desktop/src/main/maker-ipc/orcaRemoteWorkerHost.ts`。
 - **幂等 open 的终态检查**：同来源、同 Lead 且未 release 的已有任务也必须仍为 `active`；
@@ -2603,16 +2665,28 @@ Chat Server `/me` 追加 `capabilities.groupDiscussionParity: 1`。Desktop 只�
 ### 服务器伙伴群一次一位伙伴（`groupSingleSpeaker`，2026-10-21）
 
 Chat Server `/me` 追加 `capabilities.groupSingleSpeaker: 1`，服务端派发随之改变且对所有客户端生效：
-主群里 @ 多位或没 @ 人都直接建 `kind=talk` 的队列（没 @ 人时排全部伙伴）、不再自动续圈。旧客户端照常可用——
+主群里 @ 多位直接建 `kind=talk` 的队列；没有定向接收人的普通消息由现有 `responseMode` 决定：
+`all` 排全部可答伙伴，`mentioned` 不产生执行、不创建或替换队列。只有一位可答伙伴时直接回答，不建队列；不再自动续圈。旧客户端照常可用——
 它们本就声明 `planVersion: 1` 领取安排步骤、渲染安排卡并能「继续」；仍发送的 `deferExecution` /
 `continueDiscussion` 被接受（后者只记录、不续圈），旧的「继续讨论」只叫被 @ 的伙伴或第一位伙伴。
 
 新 Desktop 只在看到该能力时：不再发 `deferExecution`、不做发送前的辅助判断、不发 `continueDiscussion`；
 队列停着等继续时新消息按新请求发送（不作为补充）。队列前 5 位由服务端自动接续，无需客户端参与。
-`chat_plan.kind` 是附加字段，旧客户端忽略；新客户端缺字段时按旧分工卡呈现。
+`chat_plan.kind` 是附加字段，旧客户端忽略；新客户端缺字段时按旧分工卡呈现。手机解析电脑的群资源时，
+保留经校验的可选 `kind`（talk/work）与 `canAdd`（boolean）；缺失或非法时沿用旧分工呈现，不把字符串当作补充权限。
+`mentioned` 的运行中 talk 队列及存量 work 分工不接受普通无 @ 消息作为自动补充，两端输入框不得承诺交给正在答的伙伴；存量 work 分工仍保留未结束时阻止新建分工的限制。
+手机须保留电脑投影的 `singleSpeaker: true`，据此隐藏不支持的「安排分工」；远程电脑传输不等于旧群。缺字段的旧电脑沿用原入口。
 停止的范围收窄与主群上下文精简都只在看到该能力时启用，旧服务器保留整轮停止与完整主群历史；收窄只在执行端实现（成员只停自己的请求与伙伴，群主或管理员——含本账号拥有的管理员伙伴——可 `all`），沿用既有 control /
 plan action 的服务端权限，IPC `bot-group:stop` 追加可选 `scope`；
 手机经电脑的远程动作不变（停止为本人范围）。发布顺序：服务端整集群先上，再发客户端。
+
+2026-10-23 回复模式恢复（客户端 #6888 / cindy-server #1030）：`groupSingleSpeaker` 只表示回答顺序，
+不代表每条普通消息必有回答；主群、线程与过期 `deferExecution` 恢复共用 `responseMode` 判断，显式继续不受影响。
+仍保留定向回复规则：宿主把引用回复伙伴或伙伴根消息下话题回复的原作者加入 `mentions`，即使没有手打 @，
+服务端也按非空 `mentions` 处理；人类根消息下的普通话题回复不隐式点名伙伴。服务端不从正文猜接收人。
+不新增字段、能力版本或迁移；先部署服务端整集群以恢复已存模式，再发布客户端入口与补充消息修复。
+受影响的旧服务端仍忽略 `mentioned`，旧 Desktop 也可能把闲聊作为队列补充发送；能力位本身不能证明修复已部署，
+仅客户端或仅服务端合并均不代表完整生产修复上线，发布后须复验普通消息、定向回复与运行中队列补充。
 
 ### 伙伴群聊引用回复（`cindy.quote` v1）
 
@@ -2981,8 +3055,13 @@ Mark only the successfully resolved, visibly opened message, never the whole thr
 mark must retain the body and return `markReadFailed:true` for a non-blocking notice.
 It returns `MailMessage` (maker-shared/mail-message).
 Credentials and MIME parsing remain with the provider. Cindy validates the data
-and reuses its inert HTML/CID/recipient renderers, never compose actions. Multiple
-matching providers/accounts cannot silently select the first. Unknown providers or
+and reuses its inert HTML/CID/recipient renderers for delivered mail. Multiple
+matching providers/accounts cannot silently select the first. Host setup metadata
+selects a sole ready instance without probing mailboxes; several ready instances
+return optional `providers:[{id,name,namespace}]` for a user choice. The host-issued
+opaque `providerId` returned with a message pins neighboring reads to that instance;
+removal/disable never falls back to a different one. Choices are local to the current
+owner/device/session/link, with no persisted default or account migration. Unknown providers or
 older hosts keep normal browser opening. Attachments use managed image previews;
 other file types retain their metadata and the mailbox opening fallback.
 
@@ -2995,10 +3074,45 @@ unchanged. Old hosts ignore the new optional values; old providers still receive
 only `{url}`. No new channel, storage or native changes. Plugins adding an OAuth
 scope must keep existing granted operations usable; missing new scopes may fail
 marking read, not prevent viewing or composing.
+Explicit provider selection adds optional fifth `providerId` to `ghosts:mail-preview`,
+or JSON `query:{opened,providerId}` (serialized as a string) on the same remote resource;
+the three-element resource ID is unchanged. Main revalidates the selected instance
+against enabled approved matching readers after session authorization. Old clients
+ignore the extra response fields; old hosts do not expose choices, so new clients
+retain their normal legacy read request until a current host returns a choice.
 Existing 256-character resource ID bounds still apply; overlong remote links fall back to browser opening. Shared-task access does not
 grant mailbox access. Scope checks run before and after reads; clients bind display
 to account/device/session/URL and ignore stale responses. No mail content is stored
-in sidebar state or added to the chat by opening a link.
+in sidebar state. Delivered-mail links do not publish cards.
+
+For an explicit visible opening the dispatcher also injects Host-only `openDraft:true`;
+ordinary tool arguments cannot supply that intent. A draft-aware provider resolves the
+stable provider draft ID and reuses its existing compose read/presentation flow, returning
+optional `draftId`. Main registers the native call in the existing card service and returns
+optional `draftCallId` only after matching a current card's task, plugin, account and draft.
+This reference is never accepted from provider result data. Background reads cannot publish
+or return editor bindings. Desktop's local sidebar and Mobile use their existing card editors,
+autosave and send/undo actions. The Mobile editor reuses `plugin-results/card` subscriptions;
+no new transport, persistence, credential transfer or send path is introduced.
+The Mobile editor follows `supersededBy` through the same task-scoped resource reads only
+while installation, account and draft identity still match; its actions and invalidations
+use the resolved card ID. Ordinary chat rows continue hiding superseded cards.
+Remote Desktop retains the read-only message and original mailbox link because its
+existing card editor dispatches local actions only. Native reader calls are finalized
+even after owner/installation invalidation. Owner scope still guards result delivery;
+an invalid installation cannot acquire editor bindings or extend the call-bound Host capability window.
+Old hosts do not inject `openDraft` and remain read-only; old providers ignore it, and old clients ignore
+`draftCallId`. Source package compatibility remains 0.1.112; editable link support requires
+both the updated provider and the corresponding Host/client changes.
+Desktop link opening and card enlargement both await the existing card-form delivery
+barrier before changing tabs; explicit reads also await it before calling the provider.
+Failed delivery keeps the current editor intact. Probes and background reads do not
+wait for or flush editor changes.
+Link probes return `supported:false` when no enabled matching reader is ready, retaining
+normal browser opening on Desktop and Mobile. Explicit reads of restored tabs distinguish
+no matching reader (`supported:false`) from an unconfigured one (`MAIL_PROVIDER_NOT_READY`)
+without calling provider tools. Both show a labelled mailbox-opening action instead of
+an ineffective retry; restored tabs never launch an external page automatically.
 
 Desktop native mail cards also open this tab through `open-mail-card` with
 `sessionId` and `callId`. The tab stores only the card ID and uses the existing
@@ -3116,9 +3230,14 @@ namespace + id 下同一插件的有界 JSON 请求；`deviceSync: true` 是独�
 ## 自动化绑定投影的持续会话标记（归档确认）
 
 `maker:schedule:list` 在 `sessionBindings: true` 的投影里新增可选 `persistentSession`（仅为 `true` 时携带，
-`false` 或缺省都不下发）。新控制端读到它才把该自动化视为「归档后会换绑新任务继续跑」，归档前不提示；
-旧控制端的 `parseScheduleBindings` 只取已知字段，忽略新增字段。旧被控端不下发该字段时，新控制端只可能
-对持续会话多弹一次归档提醒，提醒不丢、不误归档，属安全降级。
+`false` 或缺省都不下发），继续保留运行模式与旧控制端兼容。当前控制端的归档提醒按 `active` 绑定筛选，
+包含持续会话，不再用该字段排除提醒；普通自动任务下次触发会恢复原任务，不因归档换绑。
+实际执行生命周期由被控端版本决定：旧被控端仍可能暂停普通自动化或为持续会话换绑，
+新被控端按恢复原普通任务的语义执行。混合版本的提示可能与实际执行不同，以被控端版本为准；
+不新增协议字段或版本协商。旧控制端可能仍按该字段省略持续会话提醒，或展示旧暂停文案。
+`parseScheduleBindings` 对未知字段继续忽略，旧被控端缺省该字段不影响新控制端的提醒筛选。
+
+产品语义与托管任务边界见 [`archive-pauses-automations.md`](../product-rules/archive-pauses-automations.md)。
 
 不新增 channel、能力、服务端 schema、数据库或 Mobile 原生指纹，`maker:schedule:list` 沿用既有白名单。
 桌面远程任务归档时，每台设备总是直取一次带 `sessionBindings: true` 的 `maker:schedule:list`（最多等

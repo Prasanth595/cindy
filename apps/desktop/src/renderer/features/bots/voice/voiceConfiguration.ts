@@ -16,7 +16,7 @@ export function resolveVoiceConfiguration(
 ) {
   const selectedModel = preference
     ? models.find((model) => voiceModelKey(model) === voiceModelKey(preference))
-    : models[0];
+    : models.find((model) => model.pickerVisible !== false);
   const protocolOverride = selectedModel?.protocolLocked ? undefined : preference?.protocol;
   const incompatibleSavedProtocol = Boolean(
     selectedModel?.protocolLocked &&

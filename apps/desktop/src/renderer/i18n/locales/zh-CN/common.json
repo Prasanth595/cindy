@@ -1,10 +1,13 @@
 {
+  "localAgent": {"title":"本机应用连接","empty":"尚未连接应用","description":"允许已授权的本机应用使用 Cindy 的模型与执行能力。供应商登录仍由 Cindy 管理。","revoke":"撤销连接","failed":"无法读取应用连接。","connectTitle":"连接本机应用","connectMessage":"允许“{{app}}”使用 Cindy？","connectDetail":"此应用可以查看模型与供应商目录、创建自己的执行并提供工具。原生执行可以按当前系统用户的权限读写文件、运行命令；工作目录不限制访问范围。供应商凭证保留在 Cindy。可在设置 → 远程连接 → 本机应用连接中单独撤销连接。","cancel":"取消","allow":"允许连接","revokeMessage":"撤销所有本机应用连接？","revokeDetail":"所有本机应用的连接会失效，正在运行的接入任务会停止。需要使用时可重新申请连接。","clientIdentity":"应用自报编号：{{id}}\n版本：{{version}}\n名称和编号由申请方提供，不代表 Cindy 已验证其发布者。","revokeOneMessage":"撤销“{{app}}”的这条连接？","revokeOneDetail":"这条连接正在运行的任务会停止。其他应用连接不受影响。需要使用时可重新申请连接。","revokeConnection":"撤销“{{app}}”的连接","clientId":"应用编号：{{id}}","operationFailed":"无法确认本机应用操作的结果，请先查看当前状态。","invalidConnection":"应用连接编号无效。","revokeFailed":"无法确认撤销结果，请查看当前连接状态。","loading":"正在读取应用连接…","revoking":"正在撤销连接…","authorizationRequired":"此操作需要有效的本机应用授权。","pairExpired":"连接申请已过期或取消，请从应用重新申请连接。","busy":"本机应用仍有执行正在运行，或已达到执行上限，请先结束不用的执行。","limitReached":"已达到本机应用连接上限，请在设置中撤销不用的连接。","invalidWorkspace":"应用须指定此电脑上已存在的绝对工作目录。","sessionExists":"此应用连接已在使用该执行编号。","executionUnavailable":"所请求的执行或工具调用不可用，消息与工具操作未被重放。","selectionUnavailable":"所选模型、供应商或推理强度不可用，请在应用中重新选择。","requestNotReplayed":"此请求未被重复执行，请在应用中查看原操作结果。","storageUnavailable":"无法读取或保存本机应用连接数据，已保留现有授权记录。","stopUnconfirmed":"已阻止继续向此执行发送消息，但尚未确认进程已停止。","interactionUnavailable":"引擎需要此应用无法接收的交互操作。","interrupted":"本次发送已中断。","toolTimeout":"应用工具调用已超时，未自动重试。","connectResult":"请返回申请连接的应用查看结果，授权由 Cindy 确认窗口决定。","invalidRequest":"应用请求无效，或该操作不受支持。","hostInUse":"此配置的本机应用连接正由另一个 Cindy 实例管理，请在该实例中查看连接。","developerConnection":"开发连接","copyCode":"复制连接码","codeCopied":"连接码已复制","codeCopyFailed":"未能复制连接码","developerState":{"ready":"供此电脑上的应用临时连接，仍需在此 Cindy 中授权。重启后需重新复制。","starting":"正在准备连接…","owner-unavailable":"请先登录或进入本地模式","host-in-use":"此数据目录的连接正由另一个 Cindy 管理","failed":"本机连接未能启动","stopped":"本机连接已停止"}},
   "mailReader": {
     "markReadFailed": "未能同步已读状态，请检查邮箱授权后重新打开。",
     "title": "邮件",
     "openMailbox": "在邮箱中打开",
     "loading": "正在读取邮件…",
-    "failed": "未能读取这封邮件。请检查连接的邮箱账号后重试，或在邮箱中打开。",
+    "failed": "未能读取这封邮件。可以重试，或在邮箱中打开。",
+    "unavailable": "当前没有可用的邮件插件，可以在邮箱中打开这封邮件。",
+    "notReady": "邮件插件尚未完成设置。请先连接邮箱，或直接打开原链接。",
     "retry": "重试",
     "to": "收件人",
     "cc": "抄送",
@@ -19,7 +22,9 @@
     "collapseMessage": "收起来自 {{from}} 的邮件",
     "conversationFailed": "暂时无法读取前后邮件。",
     "messageCount": "共 {{count}} 封邮件",
-    "showMessages": "展开 {{count}} 封邮件"
+    "showMessages": "展开 {{count}} 封邮件",
+    "choosePlugin": "选择用哪个插件打开这封邮件。",
+    "personalPlugin": "个人插件"
   },
   "taskActionConfirmation": {
     "title": "确认任务操作",
@@ -965,6 +970,9 @@
     "handoffWindow": "代输入 · {{app}}"
   },
   "ipcError": {
+    "SSH_HARNESS_SWITCH_UNSUPPORTED": "此 SSH 任务暂不支持切换 Harness。请选择当前 Harness 下的模型，或使用所需 Harness 新建 SSH 任务。",
+    "MODEL_SELECTION_UNAVAILABLE": "所选模型在该供应商下已不可用。请在设置中检查连接，或重新选择可用模型。",
+    "HARNESS_SWITCH_NOT_READY": "Harness 尚未完成切换。请查看错误详情，待 Harness 就绪后重试。",
     "DEVICE_LINK_BUSY": "远端繁忙，请稍后重试。",
     "INVALID_PARAMS": "参数无效，请检查后重试。",
     "PRECONDITION_FAILED": "当前状态下无法执行此操作，请稍后重试。",
@@ -3351,7 +3359,7 @@
         "paymentRequired": "付费",
         "paymentUnlock": "付费解锁",
         "enableModel": "启用此模型",
-        "capabilityGroupHint": "不会出现在对话模型选择中；开关控制图像、视频等功能是否列出",
+        "capabilityGroupHint": "不会出现在对话模型选择中；开关控制对应功能是否列出",
         "accessWriteFailed": "停用设置未能保存，请重试",
         "visibilityWriteFailed": "模型显示设置未能保存，请重试；如果仍然失败，请重启 Cindy。",
         "disabledGroup": "已停用",
@@ -3825,7 +3833,26 @@
         "pending": "凭据准备中",
         "unavailable": "暂时不可用"
       },
-      "claudeAccountRetired": "Cindy 已不再支持通过这条旧版 Claude 连接登录订阅，不影响你的 Claude 账号和订阅。请改用「使用 Claude Code 登录」连接订阅"
+      "claudeAccountRetired": "Cindy 已不再支持通过这条旧版 Claude 连接登录订阅，不影响你的 Claude 账号和订阅。请改用「使用 Claude Code 登录」连接订阅",
+      "speechSetup": {
+        "title": "语音",
+        "add": "添加语音模型",
+        "referenceHint": "参考型号来自公共模型资料，不代表当前账号已开通。是否可用以实际调用为准。",
+        "discoveryHint": "以下型号由供应商目录返回，尚未验证语音调用。",
+        "saved": "已添加",
+        "reference": "参考型号",
+        "discovered": "目录返回",
+        "more": "更多语音型号（{{count}}）",
+        "manual": "手动输入语音型号",
+        "modelId": "语音模型 ID",
+        "modelsHint": "保存语音模型不会发起语音合成。音色和逐句朗读可在伙伴语音设置中调整。",
+        "otherModels": "对话与其他模型",
+        "separateKey": "语音服务需要 API Key。将创建独立连接，原有订阅或设备码连接会保留。",
+        "fetchFailed": "模型目录暂时无法获取，仍可选择参考型号添加。",
+        "saveFailed": "添加失败，请重新打开此页面后重试。",
+        "manualSource": "手动添加",
+        "manualHint": "输入供应商提供的语音模型 ID。"
+      }
     },
     "experimental": {
       "title": "实验性功能",
@@ -6615,7 +6642,7 @@
         "installMeta": "版本 {{version}} · {{source}}",
         "updateMeta": "版本 {{from}} → {{to}} · {{source}}",
         "installDescription": "确认后才会安装，装好后立即启用，可随时在插件页停用或卸载。",
-        "updateDescription": "新版本需要更多权限，确认后才会更新；在此之前旧版本照常可用。",
+        "updateDescription": "确认后才会更新；在此之前旧版本照常可用。",
         "grantsTitle": "安装后它将拥有：",
         "noPermissions": "这个插件没有声明额外权限。",
         "addedTitle": "新增或变化的权限：",
@@ -6632,7 +6659,11 @@
         "confirmInstall": "安装",
         "confirmUpdate": "更新",
         "cancel": "取消",
-        "updateNeedsConsent": "需确认新权限"
+        "updateNeedsConsent": "需确认新权限",
+        "targetIdentity": "安装位置：{{name}}",
+        "personalTarget": "个人",
+        "sourceChanged": "这次更新会改为本地来源。旧账号和数据会隔离保存，需要重新连接账号。",
+        "otherCopies": "已有 {{count}} 份同名插件；它们不会被覆盖或停用。另装的插件需要单独连接账号。"
       },
       "trust": {
         "official": "Cindy 官方插件",
@@ -6699,6 +6730,8 @@
         "panelTab": "面板「{{title}}」· 插件页内打开",
         "mainView": "可在 Cindy 左侧导航添加“{{title}}”入口",
         "mainViewDetail": "点击后将在插件沙箱中打开主视图，不会因此获得文件、网络或凭证访问权限。",
+        "taskView": "任务页「{{title}}」· 在任务的侧边栏打开",
+        "taskViewDetail": "页签跟着任务切换，在插件沙箱中打开，不会因此获得文件、网络或凭证访问权限。",
         "code": "可执行代码",
         "codeDetail": "在独立沙箱中运行，无法访问你的文件与网络。",
         "resident": "常驻运行(生效后即启动，不调用也保持后台进程)",
@@ -6856,6 +6889,7 @@
       },
       "contents": {
         "mainView": "主视图",
+        "taskView": "任务页",
         "panel": "面板",
         "settingsUi": "自定义设置界面",
         "code": "可执行代码",
@@ -8189,7 +8223,8 @@
         "collaboration": "协同",
         "unknown": "未知标签页",
         "ghostPanel": "插件面板",
-        "pluginView": "插件视图"
+        "pluginView": "插件视图",
+        "pluginTask": "插件任务页"
       },
       "controls": {
         "showAria": "显示侧栏",
@@ -8988,6 +9023,13 @@
       "undo": "撤销",
       "undoFailed": "没能撤销，请重试",
       "deleteFailed": "没能删除，请重试",
+      "check": "帮我查查",
+      "checkMeta": "在已连接的邮件和消息里找新待办",
+      "checkPrompt": "帮我查查已连接的邮箱、消息等来源里，有没有需要我处理的新事项，有就记成待办。",
+      "checkFailed": "没能发送，请重试",
+      "dailyCheck": "每天帮我查一次",
+      "dailyCheckMeta": "工作日 9:00，没有新待办不打扰",
+      "dailyCheckFailed": "没能保存，请重试",
       "outputs": "输出内容",
       "outputMeta": "{{time}} · {{task}}",
       "openFailed": "没能打开文件",
@@ -9726,7 +9768,8 @@
           "archived": "本群已归档，可继续查看历史记录。",
           "noneHint": "本群只有伙伴的主人可以让伙伴回应。",
           "companionPermissions": "伙伴权限",
-          "configureCapabilities": "工具与授权设置"
+          "configureCapabilities": "工具与授权设置",
+          "capabilityScope": "这是 {{name}} 自己的工具与授权，不是仅限本群的设置。"
         }
       },
       "lifecycle": {
@@ -12240,6 +12283,9 @@
       "daemonNotReady": "{{manager}} 升级完成，但远端 daemon 暂未启动 — 请手动重新发送消息"
     },
     "remoteError": {
+      "SSH_HARNESS_SWITCH_UNSUPPORTED": "此 SSH 任务暂不支持切换 Harness。请选择当前 Harness 下的模型，或使用所需 Harness 新建 SSH 任务。",
+      "MODEL_SELECTION_UNAVAILABLE": "所选模型在该供应商下已不可用。请在设置中检查连接，或重新选择可用模型。",
+      "HARNESS_SWITCH_NOT_READY": "Harness 尚未完成切换。请查看错误详情，待 Harness 就绪后重试。",
       "DEVICE_LINK_BUSY": "远端繁忙，请稍后重试。",
       "REMOTE_DAEMON_CLOSED": "远端连接中断了，可能正在更新。这一轮已经结束，请重新发送。",
       "REMOTE_LOCAL_ATTACHMENT_UNSUPPORTED": "远端任务无法访问本地文件/图片附件。请直接粘贴内容。",
@@ -12819,10 +12865,10 @@
         "title": "归档任务",
         "description": "确定要归档这个任务吗？归档后将从列表中移除。",
         "dirtyWorktreeWarning": "该任务的 worktree 有未提交的更改；归档前会自动保存为 git 快照，之后可在任务内一键恢复。",
-        "scheduleWarning_one": "该任务绑定了自动化{{names}}，归档后将暂停。",
-        "scheduleWarning_other": "该任务绑定了自动化{{names}}，归档后将暂停。",
-        "scheduleWarningMany_one": "其中 {{count}} 个任务绑定了自动化，归档后这些自动化将暂停。",
-        "scheduleWarningMany_other": "其中 {{count}} 个任务绑定了自动化，归档后这些自动化将暂停。",
+        "scheduleWarning_one": "关联的自动化{{names}}仍会运行，并恢复此任务。",
+        "scheduleWarning_other": "关联的自动化{{names}}仍会运行，并恢复此任务。",
+        "scheduleWarningMany_one": "其中 {{count}} 个任务关联了自动化，后续运行时会恢复这些任务。",
+        "scheduleWarningMany_other": "其中 {{count}} 个任务关联了自动化，后续运行时会恢复这些任务。",
         "scheduleName": "「{{name}}」",
         "scheduleNameSeparator": "、",
         "confirm": "确认",
@@ -12925,6 +12971,7 @@
         "moveToProjectRunningBlocked": "任务正在运行，结束后再移动",
         "moveToProjectAttachedBlocked": "任务正在被接管，结束接管后再移动",
         "moveToProjectRemoteUnsupported": "暂不支持移动远程任务",
+        "moveToProjectWorktreeBlocked": "该任务的工作目录是 worktree，暂不支持移动到其他项目",
         "openInNewWindow": "在新窗口打开",
         "exportShare": "导出任务…",
         "exportHtml": "导出为 HTML…",
@@ -13665,7 +13712,7 @@
         "card": {
           "open": "打开任务",
           "unbind": "解除绑定",
-          "persistentNote": "任务归档后会自动重建并续绑",
+          "persistentNote": "任务归档后，下次运行会恢复原任务",
           "deleted": "绑定任务已删除",
           "deletedPersistentNote": "下次运行时会自动创建新任务并续绑",
           "fallbackTitle": "任务 {{id}}"
@@ -13810,7 +13857,8 @@
         "modelListAria": "模型列表",
         "modelSelectorAria": "模型选择器",
         "categoryListAria": "{{category}} 模型",
-        "effortListAria": "Effort 级别"
+        "effortListAria": "Effort 级别",
+        "boundLocationLocked": "绑定的任务在原来的电脑上运行，请选择那台电脑上的模型。"
       }
     },
     "toast": {
@@ -16005,6 +16053,10 @@
     "builtinFollowUp": {
       "name": "跟进（内置）",
       "hint": "任务卡住、等你、出错、撞上用量上限或做完时叫醒它；内置，只能暂停或恢复。"
+    },
+    "builtinTodoCheck": {
+      "name": "每天查待办（内置）",
+      "hint": "工作日 9:00 在已连接的来源里找新待办，没有就不打扰；在近况里开关，只能暂停或恢复。"
     }
   },
   "cindyMakeDoctor": {
@@ -17012,6 +17064,10 @@
     "exitFullscreen": "退出全屏"
   },
   "richAnswer": {
+    "send": "发送消息",
+    "sending": "正在发送…",
+    "sent": "已提交",
+    "sendFailed": "消息未提交，已保留填写内容",
     "playVideo": "播放视频",
     "openVideoSource": "打开原视频",
     "calculationUnavailable": "此项暂时无法计算。",

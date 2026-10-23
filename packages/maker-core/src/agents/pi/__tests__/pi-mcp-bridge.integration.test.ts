@@ -31,6 +31,7 @@ import { createWorkerSpecSchema } from '../../../../../lizi-mcps/src/xdt-helper/
 
 import { PiAgent } from '../index.js';
 import type { AgentDeps, AgentSessionHandle, PiExtraSpawnConfig } from '../../base-agent.js';
+import { LOCAL_AGENT_CLIENT } from '../../base-agent.js';
 import type { AgentEvent, InteractionRequest, InteractionDecision } from '../../../types/events.js';
 import type { Logger } from '../../../interfaces/logger.js';
 
@@ -152,6 +153,15 @@ function latestToolResultContent(request: Record<string, unknown>): string {
 
 function scriptedAnthropicTurn(requestBody: string): string {
   const toolResultCount = countToolResults(requestBody);
+  if (requestBody.includes('local host tool isolation')) {
+    const calls = [
+      { name: 'cindy_mcp_list_tools', input: {} },
+      { name: 'cindy_mcp_list_tools', input: { server: 'calendar', tool: 'echo' } },
+      { name: 'cindy_mcp_call_tool', input: { server: 'calendar', tool: 'echo', args: { text: 'hello-pi' } } },
+    ];
+    const call = calls[toolResultCount];
+    return call ? anthropicToolTurn(toolResultCount + 1, call.name, call.input) : anthropicTextTurn(4, 'Client tool complete');
+  }
   if (requestBody.includes('exercise task control modes')) {
     const calls = [
       { name: 'message_session_task', input: { task_id: 'task-fixture', mode: 'steer', message: 'new direction' } },
@@ -723,7 +733,12 @@ describe.skipIf(!piAvailable)('PiAgent × cindy-bridge (real pi + MCP bridge + p
         logout: async () => {},
         getAuthEnv: async () => ({ CINDY_PI_API_KEY: 'k' }),
       },
-      runtimeConfig: { endpoint: gatewayUrl },
+      runtimeConfig: {
+        endpoint: gatewayUrl,
+        systemPrompt: 'CINDY_HOST_IDENTITY_CANARY',
+        answerDeliveryPrompt: 'CINDY_ANSWER_DELIVERY_CANARY',
+      },
+      getGhostRosterPrompt: () => 'WORKDIR_GHOST_ROSTER_CANARY',
       binaryPath: PI_BINARY,
       logger,
       turnChangeCapture: {
@@ -911,6 +926,7 @@ describe.skipIf(!piAvailable)('PiAgent × cindy-bridge (real pi + MCP bridge + p
     bridgeMode:
         | 'local' | 'orca' | 'local-multi' | 'bot-memory' | 'remote' | 'remote-sse' | 'remote-paginated' = 'local',
     prompt = 'call the echo tool',
+    localHostOnly: boolean | 'native' = false,
   ): Promise<{
     events: AgentEvent[];
     permissionAsked: boolean;
@@ -929,6 +945,12 @@ describe.skipIf(!piAvailable)('PiAgent × cindy-bridge (real pi + MCP bridge + p
         workingDir: cwd,
         model: 'pi-test-model',
         permissionMode,
+        ...(localHostOnly ? {
+          [LOCAL_AGENT_CLIENT]: { url: mcpUrl, token: MCP_TOKEN, hostToolsOnly: localHostOnly === true, mcpName: 'calendar' },
+          userPrompt: 'CLIENT_INSTRUCTIONS_CANARY',
+          makerMemoryEnabled: false,
+          makerMemoryIndexSnapshot: 'PRIVATE_MEMORY_INDEX_CANARY',
+        } : {}),
       });
       handle.setInteractionResolver(async (req) => {
         if (req.kind === 'permission') permissionAsked = true;
@@ -975,6 +997,38 @@ describe.skipIf(!piAvailable)('PiAgent × cindy-bridge (real pi + MCP bridge + p
     expect(output).toContain('cindy/new');
     const startupNames = (requests[0]?.tools as Array<{name: string}>).map(tool => tool.name);
     expect(startupNames).not.toContain('mcp__cindy_orca__create_worker');
+  });
+
+  // 测试价值：真实 Pi 的启动工具面与调用链均受本机伙伴权限约束；旧 MCP 测试保留原生工具。
+  // 最小输入：独立客户端的 echo；tier integration，真实二进制与本机 socket，无供应商网络。
+  // 2026-10-22 维护者裁决：两种工具策略均保留 Cindy 装配与原生 preset，仍不装载私人记忆。
+  // 通过实际模型请求验证追加段与多次工具调用的稳定前缀，不读取生产源码或复制提示词常量。
+  it('local client tool isolation exposes only the client gateway and executes its tool', { timeout: 90_000 }, async () => {
+    echoCalls.length = 0;
+    const { requests, events, requestBodies } = await runOneTurn('bypassPermissions', async () => ({kind:'permission',behavior:'allow'}), 'local', 'local host tool isolation', true);
+    const system = JSON.stringify(requests[0].system);
+    for (const segment of ['CINDY_HOST_IDENTITY_CANARY', 'CINDY_ANSWER_DELIVERY_CANARY', 'CLIENT_INSTRUCTIONS_CANARY', 'WORKDIR_GHOST_ROSTER_CANARY'])
+      expect(system).toContain(segment);
+    expect(requests.every(request => JSON.stringify(request.system) === system)).toBe(true);
+    expect(requestBodies.join('')).not.toContain('PRIVATE_MEMORY_INDEX_CANARY');
+    expect((requests[0].tools as Array<{name:string}>).map(t=>t.name).sort()).toEqual(['cindy_mcp_call_tool','cindy_mcp_list_tools']);
+    expect(echoCalls.map(c=>c.text)).toEqual(['hello-pi']);
+    expect(events.some(e=>e.type==='text' && (e.data as {text?:string}).text?.includes('Client tool complete'))).toBe(true);
+  });
+
+  // core-product-principles §3.1 / pi-harness §3.1: explicitly selecting native
+  // execution preserves Pi's tools; application MCP isolation is not a safety downgrade.
+  it('keeps native Pi tools when an application explicitly selects native execution', { timeout: 90_000 }, async () => {
+    echoCalls.length = 0;
+    const { requests, requestBodies } = await runOneTurn('bypassPermissions', async () => ({ kind: 'permission', behavior: 'allow' }), 'local', 'local host tool isolation', 'native');
+    const tools = (requests[0].tools as Array<{ name: string }>).map(tool => tool.name);
+    expect(tools).toContain('bash'); expect(tools).toContain('read');
+    expect(echoCalls.map(call => call.text)).toEqual(['hello-pi']);
+    const system = JSON.stringify(requests[0].system);
+    for (const segment of ['CINDY_HOST_IDENTITY_CANARY', 'CINDY_ANSWER_DELIVERY_CANARY', 'CLIENT_INSTRUCTIONS_CANARY', 'WORKDIR_GHOST_ROSTER_CANARY'])
+      expect(system).toContain(segment);
+    expect(requests.every(request => JSON.stringify(request.system) === system)).toBe(true);
+    expect(requestBodies.join('')).not.toContain('PRIVATE_MEMORY_INDEX_CANARY');
   });
 
   it(

@@ -1145,6 +1145,7 @@ type ElectronLocalDbSessionListUsageOptions = Omit<
 };
 
 interface ElectronAPI {
+  localAgent: import('../shared/localAgent').LocalAgentSettingsApi;
   botMarket: import('../shared/botMarket').BotMarketApi;
   companionImport: import('@cindy/maker-shared/companion-import').CompanionImportApi;
   modelFavoritesHost: import('../shared/modelFavoritesSync').ModelFavoritesHostApi;
@@ -1277,7 +1278,7 @@ interface ElectronAPI {
 
   /** 意识仓库 —— 数据模型与校验见 shared/ghost.ts,main 端见 main/cindy-brain/。 */
   ghosts: {
-    mailPreview: (sessionId: string, url: string, read: boolean, opened?: boolean) => Promise<{ supported: boolean; message?: import('@cindy/maker-shared/mail-message').MailMessage; error?: string }>;
+    mailPreview: (sessionId: string, url: string, read: boolean, opened?: boolean, providerId?: string) => Promise<import('@cindy/maker-shared/mail-message').MailPreviewResult>;
     openRemoteSettings: (target: import('../shared/remotePluginSettings').RemotePluginSettingsTarget) => Promise<import('../shared/remotePluginSettings').RemotePluginSettingsView>;
     closeRemoteSettings: (id: string) => Promise<void>;
     onRemoteSettingsDirectory: (callback: (value: import('../shared/remotePluginSettings').RemotePluginSettingsDirectory) => void) => () => void;
@@ -1580,6 +1581,10 @@ interface ElectronAPI {
     ) => () => void;
     /** confirm 槽回包:把用户的点击送回 main 结算挂起的管子请求。 */
     resolveConfirm: (requestId: string, confirmed: boolean) => Promise<{ handled: boolean }>;
+    /** taskView 槽:插件请求在指定任务的右侧栏打开 / 聚焦它的任务页页签(main 已资格审)。 */
+    onTaskViewOpen: (
+      callback: (payload: { instanceId: string; sessionId: string }) => void,
+    ) => () => void;
     /** preview 槽:插件请求在右侧栏内置浏览器开预览标签(main 已白名单守门+限速)。 */
     onPreviewOpen: (
       callback: (payload: {
@@ -2069,7 +2074,7 @@ interface ElectronAPI {
     open?: (
       request: import('../shared/sidebarTabWindow').SidebarTabWindowOpenRequest,
     ) => Promise<void>;
-    focus: (tabId: string) => Promise<void>;
+    focus: (tabId: string, options?: { userInitiated?: boolean }) => Promise<void>;
     closeForTab: (tabId: string) => Promise<void>;
     /** 主窗口:把弹在独立窗口里的全局页签交回侧栏(任务页签不支持)。 */
     returnTab?: (tabId: string) => Promise<boolean>;
@@ -4941,6 +4946,7 @@ interface ElectronAPI {
         body: import('../shared/botCreation').BotCreationRequest,
       ) => Promise<import('../shared/botCreation').BotCreationDraft>;
       generateAvatar: (token: string) => Promise<{ avatarImageBase64: string }>;
+      chooseAvatarSource: () => Promise<{ canceled: boolean; previewDataUrl?: string }>;
       chooseAvatar: (body: { botId: string; avatarImageBase64?: string }) => Promise<{
         canceled: boolean;
         profile?: unknown;
@@ -4972,6 +4978,8 @@ interface ElectronAPI {
         list: (botId:string) => Promise<{items:import('@cindy/maker-shared/teammate-todo').TeammateTodo[];version:1}>;
         update: (botId:string, patch:import('@cindy/maker-shared/teammate-todo').TodoPatch) => Promise<import('@cindy/maker-shared/teammate-todo').TeammateTodo>;
         act: (botId:string, input:{id:string;revision:number;requestId:string;locale?:string}) => Promise<import('@cindy/maker-shared/teammate-todo').TeammateTodo | null>;
+        /** 近况「每天帮我查一次」：不传 enabled 只读；返回当前是否开着。 */
+        dailyCheck: (botId:string, enabled?:boolean) => Promise<boolean>;
       };
       projects: {
         list: (botId: string) => Promise<import('../shared/botWorkbench').BotProjectOption[]>;
@@ -6459,7 +6467,7 @@ interface ElectronAPI {
       model: string,
       providerId?: string | null,
       expectedAgentSwitchRevision?: number,
-      selection?: { effort: string | null; fastMode: boolean | 'ultrafast' },
+      selection?: { effort: string | null; fastMode: boolean | 'ultrafast'; thinking?: boolean },
     ) => Promise<{ deferred: boolean; superseded?: boolean } | undefined>;
     /**
      * session-agent-switch:同一会话切换 agent 引擎(claude-code ↔ codex)。
@@ -6477,6 +6485,7 @@ interface ElectronAPI {
       fastMode?: boolean | 'ultrafast',
       /** 远程 Agent:同时换 Agent 所在电脑(null = 任务所在电脑)。不传 = 位置不变。 */
       options?: { agentDeviceId?: string | null; confirmedContextWindow?: number },
+      thinking?: boolean,
     ) => Promise<{
       switched: boolean;
       agentKind: 'claude-code' | 'codex' | 'pi';
