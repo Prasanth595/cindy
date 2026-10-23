@@ -13,6 +13,7 @@ import { providerWeeklyQuotaSource } from '@/components/new-chat/useProviderWeek
 import { useDeviceProviders } from '@/hooks/useDeviceProviders';
 import { useProviders } from '@/hooks/useProviders';
 import { useDeviceLinkDeviceList } from '@/features/device-link/useDeviceLinkDeviceList';
+import { getDataOwnerGeneration, isDataOwnerGenerationCurrent } from '@/contexts/dataOwnerGeneration';
 import { cn } from '@/lib/utils';
 
 import type { ProviderGroupMember } from '../../../shared/providerGroup';
@@ -44,9 +45,43 @@ export function GroupMemberQuota({
   // The group's cached status can lag a reconnect; the shared device list lets
   // quota reads recover without waiting for that cache and the next group poll.
   const devices = useDeviceLinkDeviceList();
+  const targetDeviceId = target.kind === 'device' ? target.deviceId : null;
+  const owner = getDataOwnerGeneration();
+  const [presence, setPresence] = useState<{
+    deviceId: string;
+    directory: typeof devices;
+    owner: typeof owner;
+    online: boolean;
+    remoteControlEnabled: boolean;
+  } | null>(null);
+  useEffect(() => {
+    setPresence(null);
+    if (!targetDeviceId) return;
+    const deviceLink = window.electronAPI?.deviceLink;
+    if (!deviceLink?.onPresenceChanged) return;
+    let acceptingPresence = true;
+    const offPresence = deviceLink.onPresenceChanged((snapshot) => {
+      if (!acceptingPresence || snapshot.deviceId !== targetDeviceId || !isDataOwnerGenerationCurrent(owner)) return;
+      setPresence({
+        deviceId: targetDeviceId, directory: devices, owner,
+        online: snapshot.online, remoteControlEnabled: snapshot.remoteControlEnabled,
+      });
+    });
+    const offStatus = deviceLink.onStatusChanged?.(({ status }) => {
+      acceptingPresence = status === 'online';
+      if (status !== 'online') setPresence(null);
+    });
+    return () => { offPresence(); offStatus?.(); };
+  }, [targetDeviceId, devices, owner]);
+  // listDevices preserves its old array after a failed refresh. A target push
+  // remains fresher until the directory changes; local control permission still
+  // comes only from that directory, never from a remote online announcement.
+  const currentPresence = presence?.deviceId === targetDeviceId && presence.directory === devices &&
+    isDataOwnerGenerationCurrent(presence.owner) ? presence : null;
   const device = target.kind === 'device' ? devices?.find((entry) => entry.deviceId === target.deviceId) : undefined;
   const quotaOffline = device
-    ? !device.online || !device.remoteControlEnabled || !device.controlEnabled
+    ? !(currentPresence?.online ?? device.online) ||
+      !(currentPresence?.remoteControlEnabled ?? device.remoteControlEnabled) || !device.controlEnabled
     : offline;
   const remoteDeviceId = target.kind === 'device' && !quotaOffline ? target.deviceId : null;
   const { providers: localProviders } = useProviders();

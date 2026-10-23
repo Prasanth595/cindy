@@ -7,6 +7,7 @@
  */
 import { act, cleanup, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { setDataOwnerGeneration } from '@/contexts/dataOwnerGeneration';
 
 vi.mock('react-i18next', () => ({
   initReactI18next: { type: '3rdParty', init: () => undefined },
@@ -20,6 +21,8 @@ const mocks = vi.hoisted(() => ({
   cardReads: [] as Array<[string | undefined, string | null]>,
   cards: {} as Record<string, { title: string }>,
   devices: [] as Array<{ deviceId: string; online: boolean; remoteControlEnabled: boolean; controlEnabled: boolean }>,
+  presence: new Set<(snapshot: DeviceLinkPresenceSnapshot) => void>(),
+  status: new Set<(snapshot: { status: string }) => void>(),
 }));
 
 vi.mock('@/hooks/useProviders', () => ({ useProviders: () => ({ providers: mocks.local }) }));
@@ -54,6 +57,19 @@ function show(target: GroupMemberQuotaTarget, offline = false) {
 }
 
 beforeEach(() => {
+  setDataOwnerGeneration('quota-owner');
+  mocks.presence.clear();
+  mocks.status.clear();
+  vi.stubGlobal('electronAPI', { deviceLink: {
+    onPresenceChanged: (listener: (snapshot: DeviceLinkPresenceSnapshot) => void) => {
+      mocks.presence.add(listener);
+      return () => mocks.presence.delete(listener);
+    },
+    onStatusChanged: (listener: (snapshot: { status: string }) => void) => {
+      mocks.status.add(listener);
+      return () => mocks.status.delete(listener);
+    },
+  } });
   mocks.devices = [];
   mocks.local = [claude('anthropic')];
   mocks.byDevice = { mini: [claude('anthropic-1a2b')], pc: [apiKey('openrouter')] };
@@ -63,10 +79,59 @@ beforeEach(() => {
 });
 afterEach(() => {
   cleanup();
+  vi.unstubAllGlobals();
   vi.useRealTimers();
 });
 
 describe('GroupMemberQuota', () => {
+  // Unit regression r4355497190: listDevices retains its old offline array on
+  // failure. Existing recovery only replaced that array. A target online push
+  // must show its quota immediately, while another peer, disabled controls,
+  // stopped relay and a different owner cannot enable the read.
+  it('recovers from target presence while the device directory remains stale after a failed refresh', () => {
+    const device = { deviceId: 'mini', online: false, remoteControlEnabled: true, controlEnabled: true };
+    mocks.devices = [device];
+    const view = () => <GroupMemberQuota id="quota" target={{ kind: 'device', deviceId: 'mini', providerId: 'anthropic-1a2b' }} offline />;
+    const mounted = render(view());
+    const emit = (deviceId: string, remoteControlEnabled = true) => act(() => {
+      const snapshot = { deviceId, online: true, remoteControlEnabled } as DeviceLinkPresenceSnapshot;
+      mocks.presence.forEach(listener => listener(snapshot));
+    });
+    emit('other');
+    expect(screen.getByText('providerGroup.member.quota.offline')).toBeTruthy();
+    emit('mini', false);
+    expect(screen.getByText('providerGroup.member.quota.offline')).toBeTruthy();
+    emit('mini');
+    expect(screen.getByTestId('quota-card').textContent).toBe('Mini’s Claude');
+    expect(mocks.devices).toEqual([device]);
+    mounted.rerender(<GroupMemberQuota id="quota" target={{ kind: 'device', deviceId: 'other', providerId: 'anthropic-1a2b' }} offline />);
+    mounted.rerender(view());
+    expect(screen.getByText('providerGroup.member.quota.offline')).toBeTruthy();
+    emit('mini');
+    expect(screen.getByTestId('quota-card').textContent).toBe('Mini’s Claude');
+    mocks.devices = [{ ...device, controlEnabled: false }];
+    mounted.rerender(view());
+    emit('mini');
+    expect(screen.getByText('providerGroup.member.quota.offline')).toBeTruthy();
+    mocks.devices = [device];
+    mounted.rerender(view());
+    emit('mini');
+    expect(screen.getByTestId('quota-card').textContent).toBe('Mini’s Claude');
+    act(() => mocks.status.forEach(listener => listener({ status: 'stopped' })));
+    expect(screen.getByText('providerGroup.member.quota.offline')).toBeTruthy();
+    emit('mini');
+    expect(screen.getByText('providerGroup.member.quota.offline')).toBeTruthy();
+    act(() => mocks.status.forEach(listener => listener({ status: 'online' })));
+    emit('mini');
+    expect(screen.getByTestId('quota-card').textContent).toBe('Mini’s Claude');
+    setDataOwnerGeneration('another-owner');
+    mounted.rerender(<GroupMemberQuota id="quota" target={{ kind: 'device', deviceId: 'mini', providerId: 'anthropic-1a2b' }} offline />);
+    expect(screen.getByText('providerGroup.member.quota.offline')).toBeTruthy();
+    mounted.unmount();
+    expect(mocks.presence.size).toBe(0);
+    expect(mocks.status.size).toBe(0);
+  });
+
   // Unit regression: PR #6752 review r4344705878. The existing offline test only
   // checks that quota reads stop, not recovery from a stale offline group view.
   // Public component must read the target as soon as the shared device list says

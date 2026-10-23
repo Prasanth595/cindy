@@ -16,7 +16,7 @@ function isSnapshotShape(value: unknown): value is Record<string, unknown> {
 
 export interface RemoteDeviceUsageMirror<T> {
   useMirror(deviceId: string | null, providerId?: string): T | null;
-  request(deviceId: string, providerId?: string, queueIfPending?: boolean): void;
+  request(deviceId: string, providerId?: string, queueIfPending?: boolean, scheduling?: { background?: boolean }): void;
   resetForTest(): void;
 }
 
@@ -38,6 +38,7 @@ export function createRemoteDeviceUsageMirror<T extends object>(cfg: {
     unsupportedUntil: number;
     pending: boolean;
     refreshQueued: boolean;
+    refreshScheduling?: { background?: boolean };
     /** Last time a read or push settled this entry; 0 = never. */
     settledAt: number;
     owner: ReturnType<typeof getDataOwnerGeneration>;
@@ -73,11 +74,16 @@ export function createRemoteDeviceUsageMirror<T extends object>(cfg: {
     entry.settledAt = Date.now();
     for (const notify of entry.listeners) notify();
   }
-  function request(deviceId: string, providerId?: string, queueIfPending = false): void {
+  function request(deviceId: string, providerId?: string, queueIfPending = false, scheduling?: { background?: boolean }): void {
     if (!cfg.invokeChannel) return;
     const entry = entryFor(deviceId, providerId);
     if (entry.pending) {
-      if (queueIfPending) entry.refreshQueued = true;
+      if (queueIfPending) {
+        // An explicit recovery must keep its foreground priority even if a
+        // background refresh was already queued behind the current read.
+        if (!entry.refreshQueued || !scheduling?.background) entry.refreshScheduling = scheduling;
+        entry.refreshQueued = true;
+      }
       return;
     }
     if (Date.now() < entry.unsupportedUntil) return;
@@ -86,8 +92,10 @@ export function createRemoteDeviceUsageMirror<T extends object>(cfg: {
     // Keep the legacy builtin call shape; scoped reads must explicitly name their provider.
     if (providerId && providerId !== cfg.defaultProviderId) args.push(providerId);
     entry.pending = true;
-    void window.electronAPI.deviceLink
-      .invoke(deviceId, cfg.invokeChannel, args)
+    const read = scheduling
+      ? window.electronAPI.deviceLink.invoke(deviceId, cfg.invokeChannel, args, scheduling)
+      : window.electronAPI.deviceLink.invoke(deviceId, cfg.invokeChannel, args);
+    void read
       .then((value) => {
         if (!isDataOwnerGenerationCurrent(entry.owner) || entry.revision !== revision) return;
         // Older hosts may ignore new optional arguments. Never accept their builtin snapshot
@@ -121,8 +129,10 @@ export function createRemoteDeviceUsageMirror<T extends object>(cfg: {
       .finally(() => {
         entry.pending = false;
         if (entry.refreshQueued) {
+          const queuedScheduling = entry.refreshScheduling;
           entry.refreshQueued = false;
-          if (isDataOwnerGenerationCurrent(entry.owner) && entry.listeners.size > 0) request(deviceId, providerId);
+          entry.refreshScheduling = undefined;
+          if (isDataOwnerGenerationCurrent(entry.owner) && entry.listeners.size > 0) request(deviceId, providerId, false, queuedScheduling);
         }
       });
   }

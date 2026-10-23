@@ -109,8 +109,9 @@ export function requestRemoteCodexAccountRefresh(
   deviceId: string,
   providerId?: string,
   queueIfPending = false,
+  scheduling?: { background?: boolean },
 ): void {
-  codexAccountMirror.request(deviceId, providerId, queueIfPending);
+  codexAccountMirror.request(deviceId, providerId, queueIfPending, scheduling);
 }
 
 /** Query the execution computer's native account RPC even when another card has a cached result. */
@@ -151,8 +152,9 @@ export function requestRemoteXaiSubscriptionRefresh(
   deviceId: string,
   providerId?: string,
   queueIfPending = false,
+  scheduling?: { background?: boolean },
 ): void {
-  xaiSubscriptionMirror.request(deviceId, providerId, queueIfPending);
+  xaiSubscriptionMirror.request(deviceId, providerId, queueIfPending, scheduling);
 }
 
 /** 被控端 xAI 限流头镜像(push-only,tooltip 尽力显示;独立账号订阅各自的 provider 镜像)。 */

@@ -174,7 +174,7 @@ export function useDeviceProviderSubscriptionCard(
   useEffect(() => {
     if (!options.live || !source || !providerId) return;
     const timer = window.setInterval(
-      () => refreshSubscriptionCard(source, providerId, deviceId),
+      () => refreshSubscriptionCard(source, providerId, deviceId, false, { background: true }),
       15_000,
     );
     return () => window.clearInterval(timer);
@@ -196,14 +196,15 @@ function refreshSubscriptionCard(
   providerId: string,
   deviceId: string | null,
   queueIfPending = false,
+  scheduling?: { background?: boolean },
 ): void {
   if (deviceId) {
     if (source === 'codex') {
-      requestRemoteCodexRateLimitsRefresh(deviceId, providerId, queueIfPending);
-      requestRemoteCodexAccountRefresh(deviceId, providerId, queueIfPending);
+      requestRemoteCodexRateLimitsRefresh(deviceId, providerId, queueIfPending, scheduling);
+      requestRemoteCodexAccountRefresh(deviceId, providerId, queueIfPending, scheduling);
     } else if (source === 'claude') {
-      requestRemoteClaudeSubscriptionRefresh(deviceId, providerId, queueIfPending);
-    } else requestRemoteXaiSubscriptionRefresh(deviceId, providerId, queueIfPending);
+      requestRemoteClaudeSubscriptionRefresh(deviceId, providerId, queueIfPending, scheduling);
+    } else requestRemoteXaiSubscriptionRefresh(deviceId, providerId, queueIfPending, scheduling);
   } else if (source === 'codex') {
     requestCodexRateLimitsRefresh(providerId);
     requestCodexAccountRefresh(providerId);

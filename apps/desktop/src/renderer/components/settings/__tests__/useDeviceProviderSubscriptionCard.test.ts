@@ -7,6 +7,8 @@
  */
 import { act, cleanup, renderHook } from '@testing-library/react';
 import type { ProviderView } from '@cindy/model-providers';
+import { InvokeScheduler } from '../../../../../../../packages/device-link/src/invokeScheduler';
+import { resolveInvokePriority } from '@cindy/device-link';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setDataOwnerGeneration } from '@/contexts/dataOwnerGeneration';
 
@@ -112,6 +114,45 @@ const remaining = (card: ReturnType<typeof useDeviceProviderSubscriptionCard>) =
   card?.windows.map((window) => [window.key, window.window.utilization]);
 
 describe('useDeviceProviderSubscriptionCard', () => {
+  // Unit regression r4355497194 / remote-and-mobile-adaptation.md: six expanded
+  // accounts produce twelve slow periodic reads. Existing polling coverage had
+  // only one account. Run the real admission scheduler at the preload boundary:
+  // at most four automatic reads may start, and opening another card must work
+  // immediately without waiting for any of those reads to finish.
+  it('keeps periodic quota reads in background slots so opening another account is responsive', async () => {
+    const scheduler = new InvokeScheduler();
+    const accounts = Array.from({ length: 6 }, (_, index) =>
+      provider(`openai-${index}`, { method: 'oauth', native: 'codex' }));
+    const automaticIds = new Set(accounts.map(account => account.id));
+    const releases: Array<() => void> = [];
+    let polling = false;
+    let started = 0;
+    mocks.invoke.mockImplementation((deviceId, channel, args, scheduling?: { background?: boolean }) =>
+      scheduler.run(deviceId, resolveInvokePriority(channel, scheduling?.background), 30_000, async () => {
+        const providerId = args[channel === 'maker:usage:account' ? 1 : 0];
+        if (polling && automaticIds.has(providerId)) {
+          started++;
+          await new Promise<void>(resolve => releases.push(resolve));
+        }
+        const quota = { primary: { usedPercent: 91, windowMinutes: 300 } };
+        return channel === 'maker:usage:account' ? { providerId, ...quota }
+          : { providerId, account: { planType: 'plus' }, rateLimits: quota };
+      }));
+    for (const account of accounts) {
+      renderHook(() => useDeviceProviderSubscriptionCard(account, 'mini', { live: true }));
+    }
+    await act(async () => {});
+    polling = true;
+    await act(async () => { vi.advanceTimersByTime(15_000); });
+    expect(started).toBe(4);
+    const opened = renderHook(() => useDeviceProviderSubscriptionCard(
+      provider('openai-opened', { method: 'oauth', native: 'codex' }), 'mini', { live: true }));
+    await act(async () => {});
+    expect(remaining(opened.result.current)).toEqual([['primary', 91]]);
+    polling = false;
+    await act(async () => { releases.forEach(resolve => resolve()); });
+  });
+
   // Unit regression (provider-groups.md §10): the remote card used only a stale mirror.
   // Existing cases cover account location, not native RPC results or visible-card refreshes.
   // Minimal input: mirror says 50%, native account says 73%, with no usage push/local panel.
