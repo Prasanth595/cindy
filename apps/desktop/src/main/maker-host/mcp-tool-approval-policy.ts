@@ -14,8 +14,9 @@
  *   1. READ_ONLY_MCP_TOOLS —— 精确到工具的只读发现入口，server 未整体可信也放行
  *   2. cindy_contacts     —— 按内层 action 细粒度判定（见 contacts/approval.ts）
  *   3. cindy-art ghost_call —— 第一方作图/视频内层工具静默；其它插件继续走会话审批
- *   4. TRUSTED_MCP_SERVERS —— 已 review 的第一方 server，整体静默
- *   5. 其余                —— 进入会话审批（第三方 server、cindy_ssh、其它 ghost_call…）
+ *   4. 敏感聚合调用（含 browser recipe）—— 每次进入现有会话审批
+ *   5. TRUSTED_MCP_SERVERS —— 已 review 的第一方 server，其余调用静默
+ *   6. 其余                —— 进入会话审批（第三方 server、cindy_ssh、其它 ghost_call…）
  * 风险分类不覆盖会话档位：Full Access 免操作审批，Auto 走统一审阅，Ask 才交用户确认。
  */
 
@@ -202,6 +203,23 @@ export function getDesktopMcpToolApprovalPolicy(
   // 精确只读规则此时不命中；helper 等敏感 server 在下方按 payload 单独判定。
   if (toolName && READ_ONLY_MCP_TOOLS.has(`${serverName}::${toolName}`)) {
     return 'auto-approve';
+  }
+  // Recipes can write through an authenticated profile or be overridden by L2.
+  // Route the exact invocation through the existing session flow, never trust
+  // caller-supplied access metadata or reuse a server grant. Full Access/Auto/Ask
+  // retain their existing semantics; discovery and ordinary browser actions stay trusted.
+  if (serverName === 'cindy_browser') {
+    const params = readJsonObject(toolParams);
+    // Without an outer name, only an exact progressive envelope is unambiguous.
+    // A direct browser call can itself carry name/args plus action=recipe.
+    if (!toolName && (!params || Object.keys(params).some(key => key !== 'name' && key !== 'args'))) {
+      return 'prompt-each-time';
+    }
+    const progressive = toolName === 'call_tool' || !toolName;
+    const name = progressive ? (typeof params?.name === 'string' ? params.name.trim() : '') : toolName;
+    const args = progressive ? readJsonObject(params?.args) : params;
+    if ((name === 'browser' && args?.action === 'recipe')
+      || (progressive && (!name || !args))) return 'prompt-each-time';
   }
   if (serverName === 'cindy' && toolName === 'ghost_market_install') return 'prompt-each-time';
   // This bridge multiplexes independent imported connections and commands with

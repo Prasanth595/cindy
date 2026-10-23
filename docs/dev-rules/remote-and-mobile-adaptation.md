@@ -40,6 +40,25 @@ Cindy 的产品形态不止本地桌面单机。同一个功能可能运行在�
    同步 topic 路由；不登记，手机／远程控制端就永远调不通。
 3. 手机版需不需要对应的入口／UI／交互？
 
+## 远程任务存档的即时反馈
+
+桌面与手机的远程任务列表在点击存档后立即乐观移走任务行，不能等待远程预检或写入
+返回才更新。既有的运行态、接管、worktree 与自动化确认仍在真正写入前执行；取消、
+拦截或失败恢复列表，迟到的预检不能覆盖用户后续的恢复操作。展示必要确认框时仍保持
+任务行隐藏，不能把“已经打开确认框”当成取消；桌面归档入口等待同一个异步确认结果。
+预检期间保留任务内容，
+不提前清理消息或草稿；手机只从列表投影隐藏行，保留详情元数据和此前重命名、置顶的
+在途写入，确认后才取代这些写入并真正移除行。取消时解除隐藏，不拿旧快照覆盖期间
+已经保存的元数据。详情页在确认通过后再退出。手机详情菜单先收起，关闭动画结束后
+再查询并弹确认，避免远程等待卡住菜单或原生弹窗被关闭动画吞掉。
+手机详情将确认回调交给 `useSessionListActions.patchSession`，与列表共用同一个预览、
+写序和失败回滚入口；确认仍有效并开始提交时才退出详情。离页或后续状态操作使旧确认
+失效，结算时只解除该次预览，不写回旧状态。
+
+实现与回归：Desktop `useSessionLifecycleActions`、`sharedTaskArchiveGuard.test.ts`；
+Mobile `useSessionListActions`、`SessionMenuSheet`、`orphanSessionActions.test.ts` 与
+`remoteSessionStore.test.ts`。
+
 ## 代输入的多端适配（2026-10-13）
 
 产品规则见 [`../product-rules/input-handoff.md`](../product-rules/input-handoff.md)。三种形态的落点：

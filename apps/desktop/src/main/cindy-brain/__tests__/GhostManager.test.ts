@@ -3447,21 +3447,23 @@ describe('GhostManager · install', () => {
     await expectRejection(await manager.install(cindy), 'file-invalid');
   });
 
-  it('main-view 清单声明的 HTML 不在包内 → inspect/install 都拒绝', async () => {
+  // 安装入口与 Forge 必须同样拒绝缺失页面；原先只覆盖 main-view，task-view 会漏装。
+  it.each(['main-view', 'task-view'] as const)('%s 清单声明的 HTML 不在包内 → inspect/install 都拒绝', async (slot) => {
+    const field = slot === 'main-view' ? 'mainView' : 'taskView';
     const manifest = {
       ...goodManifest(),
       minCindyVersion: '1.2.3',
-      slots: ['tool', 'main-view'],
-      mainView: { html: 'ui/main-view.html' },
+      slots: ['tool', slot],
+      [field]: { html: `ui/${slot}.html` },
     };
-    const cindy = await makeCindy('missing-main-view.cindy', manifest, {
+    const cindy = await makeCindy(`missing-${slot}.cindy`, manifest, {
       'main.js': '// browser entry',
     });
 
     expect(await manager.inspect(cindy)).toMatchObject({
       rejection: {
         code: 'file-invalid',
-        reason: expect.stringContaining('ui/main-view.html'),
+        reason: expect.stringContaining(`ui/${slot}.html`),
       },
     });
     await expectRejection(await manager.install(cindy), 'file-invalid');

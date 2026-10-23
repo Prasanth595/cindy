@@ -402,15 +402,22 @@ describe('MakerScheduleRunner model selection', () => {
 
   describe('resolved automation selection survives the full fire', () => {
     // PR #6832: fire must resolve a replacement at the saved location from the saved
-    // preferences, not the relocated target's clamped copy. Existing archived cases
-    // used identical catalogs. Minimal input: archived persistent target on another
+    // preferences, not the relocated target's clamped copy. Existing replacement cases
+    // used identical catalogs. Minimal input: deleted persistent target on another
     // device, with different effort/Fast support. Tier: unit (in-memory host).
     // Windows standalone: 14.30s (collection 10.08s, 72 tests 3.85s). Reuses the
     // existing file-level imports/fixture; no module resets or new real I/O.
-    it.each([undefined, 'studio'])('re-resolves an archived relocated target at %s', async (agentDeviceId) => {
+    it.each([
+      { agentDeviceId: undefined, target: { status: 'deleted' } },
+      { agentDeviceId: 'studio', target: { status: 'deleted' } },
+      { agentDeviceId: undefined, target: { status: 'archived', source: 'bot' } },
+      { agentDeviceId: undefined, target: { status: 'archived', orcaRole: 'worker' as const } },
+      { agentDeviceId: undefined, target: { status: 'archived', orcaRemoteLead: '{"leadSessionId":"lead"}' } },
+      { agentDeviceId: undefined, target: { status: 'archived', source: 'review' } },
+    ])('preserves persistent replacement routing for an unavailable managed/deleted target: %j', async ({ agentDeviceId, target }) => {
       const h = createSessionHarness();
       Object.assign(h.session, { agentKind: 'codex', model: 'gpt-5.5' });
-      mocks.getSessionRowSnapshot.mockResolvedValue({ status: 'archived', agentDeviceId: 'relocated' });
+      mocks.getSessionRowSnapshot.mockResolvedValue({ ...target, agentDeviceId: 'relocated' });
       const resolveModelSelection = vi.fn(async (choice) => ({ ...choice, effort: 'high' as const }));
       const harness = createRunnerHarness(h, null, {
         acquirePendingAgentSwitch: async () => ({ release: vi.fn(), selection: {
@@ -435,17 +442,17 @@ describe('MakerScheduleRunner model selection', () => {
     // PR #6832: the old rebinding fixture returned a successful catalog snapshot.
     // Exercise the real selection entry with an unavailable old catalog; fire must
     // still create at the saved location with its route (unit, in-memory host).
-    it.each([undefined, 'studio'])('rebinds at %s when the archived target catalog is unavailable', async (agentDeviceId) => {
+    it.each([undefined, 'studio'])('rebinds at %s when the deleted target catalog is unavailable', async (agentDeviceId) => {
       const h = createSessionHarness();
       Object.assign(h.session, { agentKind: 'codex', model: 'gpt-5.5' });
-      mocks.getSessionRowSnapshot.mockResolvedValue({ status: 'archived', agentDeviceId: 'relocated' });
+      mocks.getSessionRowSnapshot.mockResolvedValue({ status: 'deleted', agentDeviceId: 'relocated' });
       const oldCatalog = vi.fn(async () => { throw new Error('old target offline or share revoked'); });
       const resolveModelSelection = vi.fn(async (choice) => ({ ...choice, effort: 'high' as const }));
       const harness = createRunnerHarness(h, null, {
         acquirePendingAgentSwitch: async (_id, _signal, selection) => ({
           release: vi.fn(),
           selection: await applyScheduledModelSelection(selection!, {
-            getTarget: async () => ({ agentKind: 'codex', status: 'archived' }),
+            getTarget: async () => ({ agentKind: 'codex', status: 'deleted' }),
             isBusy: () => false,
             resolveSelection: oldCatalog,
             switchHarness: async () => ({ engineReady: true }),
@@ -485,7 +492,7 @@ describe('MakerScheduleRunner model selection', () => {
       expect(harness.closeSession).toHaveBeenCalledTimes(mode === 'rebuild' ? 1 : 0);
     });
 
-    it.each(['active', 'archived', 'missing'] as const)('uses the explicit Pi route for a %s Codex target', async (status) => {
+    it.each(['active', 'deleted', 'missing'] as const)('uses the explicit Pi route for a %s Codex target', async (status) => {
       const h = createSessionHarness();
       Object.assign(h.session, { agentKind: 'pi', model: 'shared-model' });
       const release = vi.fn();

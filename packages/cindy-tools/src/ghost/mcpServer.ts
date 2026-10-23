@@ -320,6 +320,13 @@ interface McpTextResult {
   isError?: boolean;
 }
 
+/** ghost_call's result: the JSON text first, then any images the plugin shows the model. */
+interface McpGhostCallResult {
+  [key: string]: unknown;
+  content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[];
+  isError?: boolean;
+}
+
 function textResult(payload: unknown, isError = false): McpTextResult {
   return {
     content: [{ type: "text", text: JSON.stringify(payload) }],
@@ -917,7 +924,7 @@ export async function handleGhostCall(
   },
   agentToolUseId?: string,
   signal?: AbortSignal,
-): Promise<McpTextResult> {
+): Promise<McpGhostCallResult> {
   try {
     const result = await deps.callGhostTool({
       ghostId: input.ghost_id,
@@ -969,7 +976,7 @@ export async function handleGhostCall(
     // IM/hook 出站消费它,保证"意识画卡后删字段"也不影响媒体送达 IM 用户。
     // 声明了媒体字段(含 xdt_audio_tracks)时以声明为准,账本不注入
     // (声明是意图表达,能覆盖 render:false 抑制等语义)。
-    const { producedMedia, setup: unsafeSetup, ...resultForModel } = result;
+    const { producedMedia, setup: unsafeSetup, images, imagesOmitted, ...resultForModel } = result;
     const setup = sanitizeGhostSetupAssessment(unsafeSetup);
     const advisory = setup?.state === "ready" && setup.reauthSuggest ? { setup } : {};
     const declaredMedia = [
@@ -1015,13 +1022,19 @@ export async function handleGhostCall(
           : typeof hoisted.xdt_card_id === "string" || typeof hoisted.xdt_anchor_card_id === "string"
             ? { hint: "xdt_card_id / xdt_anchor_card_id 是卡片配对令牌，不代表所有客户端已经展示。请在最终回复中概括实际结果，不要复述令牌。" }
             : {};
-    return textResult({
+    const response: McpGhostCallResult = textResult({
       ...resultForModel,
       ...advisory,
       ...hoisted,
       ...producedFallback,
       ...mediaHint,
+      ...(imagesOmitted ? { images_omitted: imagesOmitted } : {}),
     });
+    // Images the plugin shows the model follow the JSON text as image content.
+    if (Array.isArray(images)) {
+      for (const image of images) response.content.push({ type: "image", data: image.data, mimeType: image.mimeType });
+    }
+    return response;
   } catch (err) {
     return textResult(
       {

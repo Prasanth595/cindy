@@ -2083,11 +2083,18 @@ export function getMaker(): Maker {
             ) {
               throw new Error('custom-context Codex host is missing its model or context window');
             }
+            const catalog = getDesktopSelectableCatalog();
+            const source = resolveDesktopModelContextProviderId(catalog, 'codex', ctx.customContextProviderId, modelId);
             const customCatalog = await prepareCodexCustomContextCatalog({
               binaryPath: codexPath,
               codexHome: effectiveCodexHome,
               modelId,
               contextWindow,
+              modelIds: catalog.providers.find(provider => provider.id === source)?.models.codex?.map(model => model.id),
+              resolveContextWindow: (nativeModelId) => {
+                return (source ? readModelContextLimit('codex', source, nativeModelId) : null)
+                  ?? resolveModelDefaultContextWindow(catalog, 'codex', source, nativeModelId);
+              },
               ...(smartSubagentConfig
                 ? { baseCatalog: smartSubagentConfig.modelCatalog }
                 : {}),

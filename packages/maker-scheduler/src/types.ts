@@ -256,9 +256,9 @@ export interface Schedule {
    *
    * 与 MCP 显式指定 `targetSessionId` 的"手绑 session"模式正交：显式绑定本身已经
    * 达到等效效果，`persistentSession=true` 在那种 schedule 上是 no-op；
-   * 绑定的 session 若被归档/删除：persistentSession=true → runner 自动清空
-   * targetSessionId 并本次 fire 走新建分支（自我续命）；persistentSession=false
-   * → 维持旧行为 pause 整条 schedule。
+   * 绑定的普通任务被归档时，自动输入与用户发送一样恢复原任务，完成后不重新归档。
+   * 仅当任务被删除或不存在时：persistentSession=true → runner 清空
+   * targetSessionId 并走新建分支；persistentSession=false → pause 整条 schedule。
    */
   persistentSession?: boolean;
   /**

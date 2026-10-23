@@ -6719,6 +6719,8 @@
         "panelTab": "面板「{{title}}」· 插件頁內開啟",
         "mainView": "可在 Cindy 左側導航新增「{{title}}」入口",
         "mainViewDetail": "點擊後將在插件沙箱中開啟主視圖，不會因此取得檔案、網路或憑證存取權限。",
+        "taskView": "任務頁「{{title}}」· 在任務的側邊欄開啟",
+        "taskViewDetail": "頁籤隨任務切換，在插件沙箱中開啟，不會因此取得檔案、網路或憑證存取權限。",
         "code": "可執行程式碼",
         "codeDetail": "在獨立沙箱中執行，無法訪問你的檔案與網路。",
         "resident": "常駐執行(生效後即啟動，不呼叫也保持後臺處理程序)",
@@ -6876,6 +6878,7 @@
       },
       "contents": {
         "mainView": "主視圖",
+        "taskView": "任務頁",
         "panel": "面板",
         "settingsUi": "自定義設定介面",
         "code": "可執行程式碼",
@@ -8209,7 +8212,8 @@
         "collaboration": "協同",
         "unknown": "未知標籤頁",
         "ghostPanel": "插件面板",
-        "pluginView": "插件視圖"
+        "pluginView": "插件視圖",
+        "pluginTask": "插件任務頁"
       },
       "controls": {
         "showAria": "顯示側欄",
@@ -12841,10 +12845,10 @@
         "title": "歸檔任務",
         "description": "確定要歸檔這個任務嗎？歸檔後將從列表中移除。",
         "dirtyWorktreeWarning": "該任務的 worktree 有未提交的更改；歸檔前會自動儲存為 git 快照，之後可在任務內一鍵恢復。",
-        "scheduleWarning_one": "該任務繫結了自動化{{names}}，歸檔後將暫停。",
-        "scheduleWarning_other": "該任務繫結了自動化{{names}}，歸檔後將暫停。",
-        "scheduleWarningMany_one": "其中 {{count}} 個任務繫結了自動化，歸檔後這些自動化將暫停。",
-        "scheduleWarningMany_other": "其中 {{count}} 個任務繫結了自動化，歸檔後這些自動化將暫停。",
+        "scheduleWarning_one": "關聯的自動化{{names}}仍會執行，並恢復此任務。",
+        "scheduleWarning_other": "關聯的自動化{{names}}仍會執行，並恢復此任務。",
+        "scheduleWarningMany_one": "其中 {{count}} 個任務關聯了自動化，後續執行時會恢復這些任務。",
+        "scheduleWarningMany_other": "其中 {{count}} 個任務關聯了自動化，後續執行時會恢復這些任務。",
         "scheduleName": "「{{name}}」",
         "scheduleNameSeparator": "、",
         "confirm": "確認",
@@ -13687,7 +13691,7 @@
         "card": {
           "open": "開啟任務",
           "unbind": "解除繫結",
-          "persistentNote": "任務歸檔後會自動重建並續綁",
+          "persistentNote": "任務歸檔後，下次執行會恢復原任務",
           "deleted": "繫結任務已刪除",
           "deletedPersistentNote": "下次執行時會自動建立新任務並續綁",
           "fallbackTitle": "任務 {{id}}"

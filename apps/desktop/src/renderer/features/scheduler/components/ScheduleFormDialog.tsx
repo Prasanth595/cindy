@@ -853,8 +853,8 @@ export function ScheduleFormDialog({
             <div className="flex flex-col gap-2.5">
             <div className="flex flex-wrap items-center gap-2.5">
               {/* "运行会话"三态:合并了旧 persistentSession 开关与手绑会话两个概念。
-                  fresh = 每次新建;persistent = 持续会话(首次 fire 创建后续绑,归档自动重建);
-                  bound = 绑定已有会话(picker 选,会话不可用时任务自动 pause)。
+                  fresh = 每次新建;persistent = 持续会话(首次 fire 创建后续绑,归档后恢复原任务);
+                  bound = 绑定已有会话(picker 选,归档后恢复，删除/丢失时自动 pause)。
                   project 自动化模式只显 fresh/persistent —— schedules.json 没有
                   targetSessionId 通道,bound 在该模式无法落库。 */}
               <span className="text-13 leading-none text-[var(--settings-btn-secondary-text)]">

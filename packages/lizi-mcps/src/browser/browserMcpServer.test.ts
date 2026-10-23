@@ -564,17 +564,17 @@ describe('createBrowserMcpServer', () => {
       name: 'call_tool',
       arguments: {
         name: 'browser',
-        args: { action: 'recipe', recipeId: 'books-list', inputs: { url: 'https://books.toscrape.com/' } },
+        args: { action: 'recipe', recipeId: 'wechat-article', inputs: { url: 'https://mp.weixin.qq.com/' } },
       },
     });
 
-    // navigate → wait → extract, all dispatched through the runtime.
+    // navigate → wait → evaluate, all dispatched through the runtime.
     expect((h.calls[0] as { action: string; url?: string })).toMatchObject({
       action: 'navigate',
-      url: 'https://books.toscrape.com/',
+      url: 'https://mp.weixin.qq.com/',
     });
     const parsed = JSON.parse((result.content as Array<{ text: string }>)[0].text);
-    expect(parsed).toMatchObject({ ok: true, action: 'recipe', recipe: 'books-list' });
+    expect(parsed).toMatchObject({ ok: true, action: 'recipe', recipe: 'wechat-article' });
     await h.cleanup();
   });
 
@@ -584,7 +584,7 @@ describe('createBrowserMcpServer', () => {
       name: 'call_tool',
       arguments: {
         name: 'browser',
-        args: { action: 'recipe', recipeId: 'books-list', targetId: 'tab-7', inputs: { url: 'https://books.toscrape.com/' } },
+        args: { action: 'recipe', recipeId: 'wechat-article', targetId: 'tab-7', inputs: { url: 'https://mp.weixin.qq.com/' } },
       },
     });
     // Without threading, steps fall back to the runtime's default/last tab.
@@ -606,7 +606,7 @@ describe('createBrowserMcpServer', () => {
       name: 'call_tool',
       arguments: {
         name: 'browser',
-        args: { action: 'recipe', recipeId: 'books-list', targetId: 'tab-7', inputs: { url: 'https://books.toscrape.com/' } },
+        args: { action: 'recipe', recipeId: 'wechat-article', targetId: 'tab-7', inputs: { url: 'https://mp.weixin.qq.com/' } },
       },
     });
     const ids = h.calls.map((c) => (c as { targetId?: string }).targetId);
@@ -627,7 +627,7 @@ describe('createBrowserMcpServer', () => {
       name: 'call_tool',
       arguments: {
         name: 'browser',
-        args: { action: 'recipe', recipeId: 'books-list', inputs: { url: 'https://books.toscrape.com/' } },
+        args: { action: 'recipe', recipeId: 'wechat-article', inputs: { url: 'https://mp.weixin.qq.com/' } },
       },
     });
     const ids = h.calls.map((c) => (c as { targetId?: string }).targetId);
@@ -652,12 +652,12 @@ describe('createBrowserMcpServer', () => {
     const h = await makeHarness({
       getUserRecipes: async () => ({
         recipes: new Map([
-          // overrides the bundled books-list
-          ['books-list', { id: 'books-list', steps: [{ action: 'navigate', url: 'https://user-override/' }] }],
+          // overrides the bundled wechat-article
+          ['wechat-article', { id: 'wechat-article', steps: [{ action: 'navigate', url: 'https://user-override/' }] }],
           // brand-new user-only recipe
           ['my-recipe', { id: 'my-recipe', steps: [{ action: 'navigate', url: 'https://mine/' }] }],
         ]),
-        siteGuides: new Map([['books.toscrape.com', { site: 'books.toscrape.com', notes: 'user note' }]]),
+        siteGuides: new Map([['mp.weixin.qq.com', { site: 'mp.weixin.qq.com', notes: 'user note' }]]),
         version: 'user-v1',
       }),
     });
@@ -676,7 +676,7 @@ describe('createBrowserMcpServer', () => {
     // overridden builtin → user version + provenance 'overridden'
     const r2 = await h.client.callTool({
       name: 'call_tool',
-      arguments: { name: 'browser', args: { action: 'siteguide', site: 'books.toscrape.com' } },
+      arguments: { name: 'browser', args: { action: 'siteguide', site: 'mp.weixin.qq.com' } },
     });
     expect(JSON.parse((r2.content as Array<{ text: string }>)[0].text)).toMatchObject({
       ok: true,
@@ -824,8 +824,8 @@ describe('createBrowserMcpServer', () => {
     expect(parsed.siteCount).toBeGreaterThan(0);
     // catalog enumerates known sites + each recipe's input schema (so the agent
     // passes required inputs first-try instead of failing into "missing required input").
-    const books = parsed.sites?.find((s) => s.site === 'books.toscrape.com');
-    expect(books?.recipes.map((r) => r.id)).toContain('books-list');
+    const books = parsed.sites?.find((s) => s.site === 'mp.weixin.qq.com');
+    expect(books?.recipes.map((r) => r.id)).toContain('wechat-article');
     const hn = parsed.sites?.find((s) => s.site === 'news.ycombinator.com');
     const hnSearch = hn?.recipes.find((r) => r.id === 'hn-search');
     expect(hnSearch?.required).toContain('query');
@@ -836,15 +836,15 @@ describe('createBrowserMcpServer', () => {
     const h = await makeHarness();
     const result = await h.client.callTool({
       name: 'call_tool',
-      arguments: { name: 'browser', args: { action: 'siteguide', site: 'books.toscrape.com' } },
+      arguments: { name: 'browser', args: { action: 'siteguide', site: 'mp.weixin.qq.com' } },
     });
     const parsed = JSON.parse((result.content as Array<{ text: string }>)[0].text) as {
       ok: boolean;
       data?: { site?: string; recipes?: string[] };
     };
     expect(parsed.ok).toBe(true);
-    expect(parsed.data?.site).toBe('books.toscrape.com');
-    expect(parsed.data?.recipes).toContain('books-list');
+    expect(parsed.data?.site).toBe('mp.weixin.qq.com');
+    expect(parsed.data?.recipes).toContain('wechat-article');
     await h.cleanup();
   });
 

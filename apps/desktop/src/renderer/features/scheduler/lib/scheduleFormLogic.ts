@@ -8,9 +8,9 @@
  *   - RunMode 三态("运行会话"概念,合并 persistentSession 与手绑会话):
  *       fresh      每次新建会话(persistentSession=false, targetSessionId='')
  *       persistent 持续会话·自动创建(persistentSession=true;首次 fire 后
- *                  runner 回写 targetSessionId,归档自动重建续绑)
+ *                  runner 回写 targetSessionId,归档后恢复原任务)
  *       bound      绑定已有会话(targetSessionId=<id>, persistentSession=false;
- *                  会话不可用时 runner 自动 pause)
+ *                  归档后恢复原任务，删除/丢失时 runner 自动 pause)
  *   - buildScheduleInput:表单 → CreateScheduleInput(原 toInput 迁入)
  */
 
@@ -164,7 +164,7 @@ export interface ScheduleFormState {
   targetSessionId: string;
   /**
    * 持续会话:true → runner 首次 fire 完把新建 sessionId 回写 targetSessionId,
-   * 后续每次 fire 都在同一 session 中接着跑;会话被归档后自动重建续绑。
+   * 后续每次 fire 都在同一 session 中接着跑;归档后恢复原任务，删除/丢失后重建续绑。
    * RunMode 三态中它是 persistent 与 bound 的判别器(bound 恒为 false)。
    */
   persistentSession: boolean;

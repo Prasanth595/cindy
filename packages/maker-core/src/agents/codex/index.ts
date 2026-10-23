@@ -2574,6 +2574,7 @@ export class CodexAgent extends BaseAgent {
       localToolCatalog?: string;
       customContextModel?: string;
       customContextWindow?: number;
+      customContextProviderId?: string | null;
       sqliteHome?: string;
       historyHome?: string;
       /** 受邀者任务的 app-server：值是分享给它的供应商(见 prepareCodexExtraSpawnConfig)。 */
@@ -2811,6 +2812,7 @@ assertRouteCurrent();
         opts.deviceHostedGuestSessionId,
         opts.deviceHostedGuestModelIds,
         opts.localToolCatalog,
+        opts.customContextProviderId,
       ).finally(() => {
         // 成功: this.hosts 已赋值, 后续走快路径; 失败: 清掉 promise 让下次调用能重试
         const current = this.hostPromises.get(key);
@@ -3063,6 +3065,7 @@ assertRouteCurrent();
     deviceHostedGuestSessionId?: string,
     deviceHostedGuestModelIds?: readonly string[],
     localToolCatalog?: string,
+    customContextProviderId?: string | null,
   ): Promise<AppServerHost> {
     const seq = (this.createHostSeqByKey.get(key) ?? 0) + 1;
     this.createHostSeqByKey.set(key, seq);
@@ -3204,6 +3207,7 @@ assertRouteCurrent();
                 ? {
                     customContextModel,
                     customContextWindow,
+                    customContextProviderId,
                     customContextHostKey: `${key}:${generation}`,
                   }
                 : {}),
@@ -5183,6 +5187,7 @@ assertRouteCurrent();
                 hostPurpose: 'custom-context' as const,
                 customContextModel: opts.model,
                 customContextWindow: initialCustomContextWindow ?? undefined,
+                customContextProviderId: opts.providerId,
               }
             : {}),
       });
@@ -6677,9 +6682,14 @@ assertRouteCurrent();
           && (!hosted || hostedLocalMcpNames.includes('cindy_memory'))
           ? { 'mcp_servers.cindy_memory.enabled': false }
           : {}),
-        // Configure the native window and its 90% compaction budget together.
-        // Native effective_context_window_percent independently reserves input headroom.
+        // Local custom-context hosts carry per-model budgets in their catalog.
+        // Global overrides hide the previous model's larger window from native
+        // downshift compaction. SSH and the separate host-tools-only catalog
+        // still need thread-scoped config. A changed
+        // explicit limit on this same live model uses the existing cold-resume
+        // refresh; switching models reloads the catalog and drops that override.
         ...(typeof threadContextWindow === 'number' && threadContextWindow > 0
+          && (!usesCustomContextHost || localToolCatalog || threadContextWindow !== initialCustomContextWindow)
           ? {
               model_context_window: Math.floor(threadContextWindow),
               model_auto_compact_token_limit: Math.max(

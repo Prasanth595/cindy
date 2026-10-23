@@ -6750,6 +6750,8 @@
         "panelTab": "Panel \"{{title}}\" · opens inside the Plugins page",
         "mainView": "Can add a “{{title}}” entry to Cindy's left navigation",
         "mainViewDetail": "Opening it displays the main view in the plugin sandbox and does not grant file, network, or credential access.",
+        "taskView": "Task page “{{title}}” · opens in the task's sidebar",
+        "taskViewDetail": "The tab follows the task and opens in the plugin sandbox; it does not grant file, network, or credential access.",
         "code": "Executable code",
         "codeDetail": "Runs in an isolated sandbox with no access to your files or network.",
         "resident": "Always-on (starts when enabled, keeps a background process even when idle)",
@@ -6907,6 +6909,7 @@
       },
       "contents": {
         "mainView": "Main view",
+        "taskView": "Task page",
         "panel": "Panel",
         "settingsUi": "Custom settings UI",
         "code": "Executable code",
@@ -8241,7 +8244,8 @@
         "collaboration": "Team",
         "unknown": "Unknown tab",
         "ghostPanel": "Plugin panel",
-        "pluginView": "Plugin view"
+        "pluginView": "Plugin view",
+        "pluginTask": "Plugin task page"
       },
       "controls": {
         "showAria": "Show sidebar",
@@ -12889,10 +12893,10 @@
         "title": "Archive session",
         "description": "Archive this session? It will be removed from the list.",
         "dirtyWorktreeWarning": "This session's worktree has uncommitted changes; they will be saved as a git snapshot before archiving and can be restored from the session later.",
-        "scheduleWarning_one": "The automation {{names}} linked to this session will be paused after archiving.",
-        "scheduleWarning_other": "The automations {{names}} linked to this session will be paused after archiving.",
-        "scheduleWarningMany_one": "{{count}} of them has linked automations, which will be paused after archiving.",
-        "scheduleWarningMany_other": "{{count}} of them have linked automations, which will be paused after archiving.",
+        "scheduleWarning_one": "The linked automation {{names}} will keep running and restore this session.",
+        "scheduleWarning_other": "The linked automations {{names}} will keep running and restore this session.",
+        "scheduleWarningMany_one": "{{count}} of these sessions has linked automations that will restore it when they run.",
+        "scheduleWarningMany_other": "{{count}} of these sessions have linked automations that will restore them when they run.",
         "scheduleName": "“{{name}}”",
         "scheduleNameSeparator": ", ",
         "confirm": "Confirm",
@@ -13735,7 +13739,7 @@
         "card": {
           "open": "Open session",
           "unbind": "Unbind",
-          "persistentNote": "Recreates and rebinds automatically if the session is archived",
+          "persistentNote": "If archived, the same session is restored on the next run",
           "deleted": "Bound session deleted",
           "deletedPersistentNote": "Creates and binds a new session on the next run",
           "fallbackTitle": "Session {{id}}"
