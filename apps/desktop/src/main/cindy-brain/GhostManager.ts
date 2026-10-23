@@ -2906,6 +2906,7 @@ export class GhostManager {
           enabled: !retired && enabled,
           ...(retirement ? { retirement } : {}),
           approval: { state: 'approved', revision: receipt.revision },
+          ...(receipt.harnessCapabilityApproved ? { harnessCapabilityApproved: [...receipt.harnessCapabilityApproved] } : {}),
           ...(receipt.taskCapabilityApproved === true ? { taskCapabilityApproved: true as const } : {}),
           ...(receipt.targetCapabilityApproved === true ? { targetCapabilityApproved: true as const } : {}),
           trust: receipt.trust,
@@ -3793,6 +3794,7 @@ export class GhostManager {
     opts?: {
       taskCapabilityApproved?: true;
       targetCapabilityApproved?: true;
+      harnessCapabilityApproved?: string[];
       initiallyEnabled?: boolean;
       expectedPackageSha256?: string;
       trustOverride?: GhostHostTrustOverride;
@@ -3818,6 +3820,7 @@ export class GhostManager {
     opts?: {
       taskCapabilityApproved?: true;
       targetCapabilityApproved?: true;
+      harnessCapabilityApproved?: string[];
       initiallyEnabled?: boolean;
       expectedPackageSha256?: string;
       trustOverride?: GhostHostTrustOverride;
@@ -3989,6 +3992,7 @@ export class GhostManager {
           manifest: approvedManifest,
           localeResources,
           enabled: initiallyEnabled,
+          ...(opts?.harnessCapabilityApproved?.length ? { harnessCapabilityApproved: [...opts.harnessCapabilityApproved] } : {}),
           ...(opts?.taskCapabilityApproved === true && approvedManifest.agent?.tasks === true ? {taskCapabilityApproved:true as const} : {}),
           ...(opts?.targetCapabilityApproved === true && approvedManifest.agent?.tasks === true && approvedManifest.agent.targets === true ? {targetCapabilityApproved:true as const} : {}),
           trust,
@@ -4114,6 +4118,7 @@ export class GhostManager {
     opts: {
       taskCapabilityApproved?: true;
       targetCapabilityApproved?: true;
+      harnessCapabilityApproved?: string[];
       expectedInstalledApproval: string;
       expectedPackageSha256?: string;
       trustOverride?: GhostHostTrustOverride;
@@ -4133,6 +4138,7 @@ export class GhostManager {
     opts: {
       taskCapabilityApproved?: true;
       targetCapabilityApproved?: true;
+      harnessCapabilityApproved?: string[];
       expectedInstalledApproval: string;
       expectedPackageSha256?: string;
       trustOverride?: GhostHostTrustOverride;
@@ -4376,6 +4382,10 @@ export class GhostManager {
         manifest: approvedManifest,
         localeResources,
         enabled,
+        harnessCapabilityApproved: [...new Set([
+          ...(archiveId === undefined && approvalResult.state === 'approved' ? approvalResult.receipt.harnessCapabilityApproved ?? [] : []),
+          ...(opts.harnessCapabilityApproved ?? []),
+        ])],
         ...((opts.taskCapabilityApproved === true || (archiveId === undefined && approvalResult.state === 'approved' && approvalResult.receipt.taskCapabilityApproved === true)) &&
           approvedManifest.agent?.tasks === true ? { taskCapabilityApproved: true as const } : {}),
         ...((opts.targetCapabilityApproved === true || (archiveId === undefined && approvalResult.state === 'approved' && approvalResult.receipt.targetCapabilityApproved === true)) &&
@@ -4785,6 +4795,7 @@ export class GhostManager {
         trust,
         skillContentSha256,
         packageSha256,
+        ...(current.state === 'approved' && current.receipt.harnessCapabilityApproved ? { harnessCapabilityApproved: [...current.receipt.harnessCapabilityApproved] } : {}),
         ...(current.state === 'approved' && current.receipt.taskCapabilityApproved === true &&
           approvedManifest.agent?.tasks === true ? { taskCapabilityApproved: true as const } : {}),
         ...(current.state === 'approved' && current.receipt.targetCapabilityApproved === true &&
