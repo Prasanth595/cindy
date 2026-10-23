@@ -54,6 +54,12 @@ export interface TaskActionScope {
   /** Host identity/active-input generation, captured before the confirmation. */
   key: string;
   ownerInput: boolean;
+  /**
+   * The Host can put a live action card in front of the owner right here (their own private
+   * lane). It authorizes nothing by itself: a silent "not owner input" denial becomes one
+   * exact yes/no, and refusal or timeout still denies.
+   */
+  ownerConfirmable?: boolean;
   /** Existing, explicitly confirmed delegation; never inferred from creator/follower. */
   delegated: boolean;
   /** Rechecked at mutation/delivery; includes account, target and delegation revocation. */
@@ -71,7 +77,7 @@ interface ActionContext {
   assertCurrentSync?(): void;
   assertDeliveryCurrent(): Promise<void>;
 }
-const actionContext = new AsyncLocalStorage<ActionContext>();
+const actionContext = new AsyncLocalStorage<ActionContext | null>();
 export const TASK_ACTION_INPUT_GUARD = Symbol('task-action-input-guard');
 export type TaskActionDeliveryGuard = (() => Promise<void>) & {
   onSettled?: () => Promise<void>;
@@ -111,8 +117,10 @@ export function createTaskActionAuthorizer(deps: {
     if (!call.sessionId) return denied();
     const fingerprint = taskActionFingerprint(call);
     if (!scope.delegated) {
-      // An automatic check proposes work in its report; it must not manufacture approval cards.
-      if (!scope.ownerInput) return denied();
+      // Asked before the action, answered for this exact call only. Automatic work without
+      // a reusable runtime permission decision reaches the card instead of a silent denial,
+      // because a live owner yes/no is not consent the Agent can mint on its own.
+      if (!scope.ownerInput && !scope.ownerConfirmable) return denied();
       if (!(await deps.confirm(call.sessionId, call.tool, structuredClone(call.args))))
         return denied('USER_CANCELLED');
     }
@@ -170,11 +178,20 @@ export async function assertTaskActionCurrent(): Promise<void> {
   await actionContext.getStore()?.assertCurrent();
 }
 
-/** Host lifecycle only: durable completion delivery is not another invocation
- * of the tool that started the task. Its caller must validate the persisted
- * delegation/run and recipient; this does not authorize any Agent task action. */
+/**
+ * Host lifecycle only. A delegated task's terminal wake-up, a failure notice or its pending
+ * question are Host facts delivered after the fact, not another invocation of the tool that
+ * started the task: the turn credential captured at start necessarily expired while it ran, so
+ * a delivery must not inherit it. The durable receipt (delegation id + runSequence + undelivered
+ * state + live recipient) stays the authority, and this scope can neither mint nor refresh any
+ * Agent grant.
+ */
 export function runHostCompletionDelivery<T>(operation: () => Promise<T>): Promise<T> {
-  return actionContext.exit(operation);
+  // "No Agent action here", scoped to this delivery only. `exit` also hides the store from the
+  // delivery, but the legacy AsyncLocalStorage implementation does that by disabling the whole
+  // instance, so concurrent callers lose their grant too. An explicit `null` affects only this
+  // operation, and every reader here already treats a missing store as "no Agent authority".
+  return actionContext.run(null, operation);
 }
 
 /** Existing lifecycle callbacks can outlive the AsyncLocalStorage call itself. */

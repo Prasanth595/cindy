@@ -6,6 +6,7 @@
  * Tier: unit. This file isolates the process-local authorization lifetime from SQLite/IPC.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { Session } from '@cindy/maker-core';
 import type { AutoReviewDecision, PermissionMode, SendOrigin } from '@cindy/maker-core';
 import { getDesktopMcpToolApprovalPolicy } from '../../maker-host/mcp-tool-approval-policy.js';
 import { withToolCallAuthority } from '../../../../../../packages/lizi-mcps/src/tool-call-authority.js';
@@ -21,6 +22,9 @@ import {
   ORCA_TASK_ACTION_TOOLS,
   captureTaskActionSyncGuard,
   captureTaskActionGuard,
+  captureTaskActionDeliveryGuard,
+  assertTaskActionCurrent,
+  runHostCompletionDelivery,
 } from '../taskActionAuthorization.js';
 
 function fixture(ownerInput = false, delegated = false) {
@@ -193,6 +197,86 @@ describe('Host task action authorization', () => {
   });
 });
 
+// Regression #6703: a delegated task's terminal wake-up is a Host system receipt delivered in a
+// later turn, so the turn credential captured when it started has necessarily expired. Unit tier.
+describe('Host system receipts', () => {
+  it('delivers outside the starting turn credential and leaves that scope untouched', async () => {
+    const h = fixture(true);
+    await withToolCallAuthority(h.authorize, call('start_session_task'), async () => {
+      expect(hasTaskActionAuthorization('companion')).toBe(true);
+      expect(captureTaskActionGuard()).not.toBeUndefined();
+      await runHostCompletionDelivery(async () => {
+        expect(hasTaskActionAuthorization('companion')).toBe(false);
+        expect(captureTaskActionGuard()).toBeUndefined();
+        expect(captureTaskActionSyncGuard()).toBeUndefined();
+        expect(captureTaskActionDeliveryGuard()).toBeUndefined();
+        await expect(assertTaskActionCurrent()).resolves.toBeUndefined();
+        // A later turn cannot turn a receipt into a new Agent action.
+        expect(approvedTaskDelegation('companion')).toBeUndefined();
+        const queued = { ...input(), origin: undefined };
+        bindTaskActionInput('target', queued);
+        expect(queued.taskActionRequiresAuthorization).toBeUndefined();
+        expect(taskActionInputGuard('target', queued)).toBeUndefined();
+      });
+      expect(hasTaskActionAuthorization('companion')).toBe(true);
+    });
+  });
+
+  it('keeps the receipt deliverable after the starting turn boundary moved', async () => {
+    let boundaryMoved = false;
+    const authorize = createTaskActionAuthorizer({
+      capture: async () => ({
+        key: 'accepted-input',
+        ownerInput: true,
+        delegated: false,
+        assertCurrent: async () => {
+          if (boundaryMoved) throw new Error('TASK_ACTION_AUTHORIZATION_EXPIRED');
+        },
+      }),
+      confirm: async () => true,
+    });
+    const decision = await authorize(call('send_to_session'));
+    if (!decision.ok || !decision.run) throw new Error('missing Host grant');
+    await decision.run(async () => {
+      boundaryMoved = true;
+      await expect(assertTaskActionCurrent()).rejects.toThrow('AUTHORIZATION_EXPIRED');
+      await expect(runHostCompletionDelivery(assertTaskActionCurrent)).resolves.toBeUndefined();
+    });
+  });
+
+  // Regression #6756: a Host receipt is not an Agent action, so it must not read a still-live
+  // outer turn grant even when it is delivered from inside that outer scope.
+  it('delivers as Host work even when an outer turn scope is still live', async () => {
+    const assertCurrent = vi.fn(async () => {});
+    const authorize = createTaskActionAuthorizer({
+      capture: async () => ({
+        key: 'accepted-input',
+        ownerInput: true,
+        delegated: false,
+        assertCurrent,
+      }),
+      confirm: async () => true,
+    });
+    const outer = await authorize(call('start_session_task'));
+    if (!outer.ok || !outer.run) throw new Error('missing Host grant');
+    await outer.run(async () => {
+      const inner = await authorize(call('send_to_session'));
+      if (!inner.ok || !inner.run) throw new Error('missing Host grant');
+      await inner.run(async () => {
+        const beforeDelivery = assertCurrent.mock.calls.length;
+        await expect(
+          runHostCompletionDelivery(async () => {
+            await assertTaskActionCurrent();
+            expect(hasTaskActionAuthorization('companion')).toBe(false);
+            expect(assertCurrent).toHaveBeenCalledTimes(beforeDelivery);
+          }),
+        ).resolves.toBeUndefined();
+      });
+      expect(hasTaskActionAuthorization('companion')).toBe(true);
+    });
+  });
+});
+
 // Regression #6399: the pure scope fixture above cannot detect lost group owner
 // provenance or a second confirmation added to the owner's ordinary tool flow.
 // Exercise the Desktop adapter + real group registry + shared helper/Orca entry.
@@ -207,6 +291,10 @@ vi.mock('../../routines/service.js', () => ({
 }));
 import { botDelegations, orcaTeams } from '../../localDb/schema.js';
 import { createDesktopTaskActionAuthorizer } from '../taskActionHost.js';
+import { buildTaskActionInputState, type TaskActionInputState } from '../taskActionInputState.js';
+import { OrcaWorkerPermissionConfirmBridge } from '../orcaWorkerPermissionConfirmBridge.js';
+import { taskActionConfirmationCopy } from '../taskActionConfirmation.js';
+import { MAKER_PUSH } from '../channels.js';
 import {
   registerGroupToolAuthority,
   GroupToolAuthorizationError,
@@ -231,6 +319,7 @@ function desktopFixture(kind: 'private' | 'group' | 'automatic' = 'group') {
       status: string;
       runSequence: number;
       permissionSnapshotJson: string;
+      pendingInteractionJson?: string | null;
     },
     team: null as null | { id: string },
   };
@@ -264,7 +353,7 @@ function desktopFixture(kind: 'private' | 'group' | 'automatic' = 'group') {
   hostFacts.getDb.mockReturnValue(db);
   hostFacts.boundaryPending.mockReturnValue(false);
   const activeInput = {
-    permission: undefined as undefined | {
+    permission: undefined as undefined | null | {
       permissionMode: string;
       planModeEnabled: boolean;
       isCurrent(): boolean;
@@ -275,7 +364,9 @@ function desktopFixture(kind: 'private' | 'group' | 'automatic' = 'group') {
     automatic: kind !== 'private',
     boundary: 'runtime-1',
   };
-  const confirm = vi.fn(async () => true);
+  const confirm = vi.fn<
+    (sessionId: string, tool: string, args: unknown) => Promise<boolean>
+  >(async () => true);
   const runtime = {
     stablePermissionModeState: { mode: 'auto' as PermissionMode, generation: 1 },
     stablePlanModeState: { enabled: false, generation: 1 },
@@ -359,11 +450,13 @@ describe('Owner-delegated scheduled task actions', () => {
     if (source === 'forwarded') h.runtime.getCurrentTurnOrigin = () => null;
     if (source === 'missing-runtime') h.getSession.mockReturnValue(undefined);
     if (source === 'plan') h.runtime.stablePlanModeState.enabled = true;
+    // A Bot lane asks its owner instead of inferring consent; a refused card still denies.
+    if (source === 'bot') h.confirm.mockResolvedValueOnce(false);
     const effect = vi.fn(async () => 'sent');
     expect(await withToolCallAuthority(h.authorize, scheduledSend(), effect)).toMatchObject({ isError: true });
     expect(effect).not.toHaveBeenCalled();
     expect(h.runtime.reviewHostPermissionAction).not.toHaveBeenCalled();
-    expect(h.confirm).not.toHaveBeenCalled();
+    expect(h.confirm).toHaveBeenCalledTimes(source === 'bot' ? 1 : 0);
   });
 
   it.each(['block', 'ask', 'cancel'] as const)('respects a normal %s permission decision', async verdict => {
@@ -462,11 +555,14 @@ describe('Desktop owner input task actions', () => {
         planModeEnabled: state === 'active-plan', isCurrent: () => state !== 'stale',
       };
       if (state === 'shared') h.caller.source = 'shared';
+      // A state that cannot authorize at all still asks the owner when the lane allows it.
+      const asksOwner = state === 'unknown';
+      if (asksOwner) h.confirm.mockResolvedValue(false);
       const effect = vi.fn(async () => 'changed');
       expect(await withToolCallAuthority(h.authorize, call('set_session_runtime'), effect))
         .toMatchObject({ isError: true });
       expect(effect).not.toHaveBeenCalled();
-      expect(h.confirm).not.toHaveBeenCalled();
+      expect(h.confirm).toHaveBeenCalledTimes(asksOwner ? 1 : 0);
     },
   );
 
@@ -517,6 +613,9 @@ describe('Desktop owner input task actions', () => {
       _registeredTools: Record<string, { handler(args: unknown): Promise<unknown> }>;
     })._registeredTools.switch_focus.handler;
     try {
+      // An automatic focus request without a live runtime decision asks the owner instead of
+      // failing silently; a refused card changes nothing.
+      h.confirm.mockResolvedValueOnce(false);
       expect(await handler({ worker_id_or_label: 'worker' })).toMatchObject({ isError: true });
       expect(switchFocus).not.toHaveBeenCalled();
       h.activeInput.key = 'explicit-owner-request';
@@ -526,7 +625,7 @@ describe('Desktop owner input task actions', () => {
       expect(switchFocus).toHaveBeenCalledExactlyOnceWith({
         leadSessionId: 'companion', workerIdOrLabel: 'worker',
       });
-      expect(h.confirm).not.toHaveBeenCalled();
+      expect(h.confirm).toHaveBeenCalledTimes(1);
     } finally {
       await server.close();
     }
@@ -615,7 +714,7 @@ describe('Desktop owner input task actions', () => {
     },
   );
 
-  it('keeps automatic/forwarded input restricted even with an unrelated live group owner grant', async () => {
+  it('keeps automatic input restricted to a live owner decision, not an unrelated group grant', async () => {
     const h = desktopFixture('automatic');
     releases.push(
       registerGroupToolAuthority('another-lane', {
@@ -626,10 +725,14 @@ describe('Desktop owner input task actions', () => {
       }),
     );
     const effect = vi.fn(async () => 'changed');
-    for (const [server, tool] of ownerWrites)
+    h.confirm.mockResolvedValue(false);
+    for (const [server, tool] of ownerWrites) {
       expect(
         await withToolCallAuthority(h.authorize, { ...call(tool), server }, effect),
       ).toMatchObject({ isError: true });
+      expect(h.confirm).toHaveBeenCalledTimes(1);
+      h.confirm.mockClear();
+    }
     expect(
       await withToolCallAuthority(h.authorize, call('get_task_digest'), async () => 'observed'),
     ).toBe('observed');
@@ -737,3 +840,645 @@ describe('Existing execution authority', () => {
     expect(h.confirm).not.toHaveBeenCalled();
   });
 });
+
+// Regression #6703: without a reusable runtime permission decision the owner saw an
+// authorization error and no card, so there was nowhere to grant the action. Unit tier:
+// the Desktop adapter, not the renderer, decides whether a card can be offered here.
+describe('Desktop private-chat action confirmation', () => {
+  it('offers one exact card and continues only after the owner approves it', async () => {
+    const h = desktopFixture('automatic');
+    const effect = vi.fn(async () => 'changed');
+    h.confirm.mockResolvedValueOnce(false);
+    const refused = await withToolCallAuthority(h.authorize, call('set_session_runtime'), effect);
+    expect(refused).toMatchObject({ isError: true });
+    expect(JSON.stringify(refused)).toContain('USER_CANCELLED');
+    expect(h.confirm).toHaveBeenCalledExactlyOnceWith('companion', 'set_session_runtime', call().args);
+    expect(effect).not.toHaveBeenCalled();
+    // Approval authorizes this call only; a second call asks again.
+    h.confirm.mockResolvedValueOnce(true);
+    expect(await withToolCallAuthority(h.authorize, call('set_session_runtime'), effect)).toBe('changed');
+    expect(h.confirm).toHaveBeenCalledTimes(2);
+    expect(effect).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['plan-mode', (h: ReturnType<typeof desktopFixture>) => {
+      h.activeInput.permission = { permissionMode: 'auto', planModeEnabled: true, isCurrent: () => true };
+    }],
+    ['plan-permission', (h: ReturnType<typeof desktopFixture>) => {
+      h.activeInput.permission = { permissionMode: 'plan', planModeEnabled: false, isCurrent: () => true };
+    }],
+    ['stale-permission', (h: ReturnType<typeof desktopFixture>) => {
+      h.activeInput.permission = { permissionMode: 'auto', planModeEnabled: false, isCurrent: () => false };
+    }],
+    ['shared-guest', (h: ReturnType<typeof desktopFixture>) => {
+      h.caller.source = 'shared';
+    }],
+    ['task-lane', (h: ReturnType<typeof desktopFixture>) => {
+      h.caller.role = 'delegation';
+    }],
+  ] as const)('keeps %s denials silent and closed', async (_state, arrange) => {
+    const h = desktopFixture('automatic');
+    arrange(h);
+    const effect = vi.fn(async () => 'changed');
+    expect(await withToolCallAuthority(h.authorize, call('set_session_runtime'), effect))
+      .toMatchObject({ isError: true });
+    expect(effect).not.toHaveBeenCalled();
+    expect(h.confirm).not.toHaveBeenCalled();
+  });
+
+  // Review gap on #6703: `permission == null` is exactly when the card is offered, so
+  // "no snapshot" must not be read as "not Plan". The live Session Plan state decides.
+  function setLivePlan(
+    h: ReturnType<typeof desktopFixture>,
+    plan: { enabled: boolean; generation: number } | null,
+  ) {
+    Object.defineProperty(h.runtime, 'stablePlanModeState', {
+      value: plan, writable: true, configurable: true,
+    });
+  }
+
+  it('still offers the card without a permission snapshot when the live Session is off Plan', async () => {
+    const h = desktopFixture('automatic');
+    h.activeInput.permission = null;
+    setLivePlan(h, { enabled: false, generation: 2 });
+    h.confirm.mockResolvedValueOnce(true);
+    const effect = vi.fn(async () => 'changed');
+    expect(await withToolCallAuthority(h.authorize, call('set_session_runtime'), effect)).toBe('changed');
+    expect(h.confirm).toHaveBeenCalledExactlyOnceWith('companion', 'set_session_runtime', call().args);
+    expect(effect).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['active', { enabled: true, generation: 2 }],
+    ['unknown', null],
+  ] as const)('keeps a %s Plan state silent when no reusable permission snapshot is available', async (_state, plan) => {
+    const h = desktopFixture('automatic');
+    h.activeInput.permission = null;
+    setLivePlan(h, plan);
+    const effect = vi.fn(async () => 'changed');
+    const result = await withToolCallAuthority(h.authorize, call('set_session_runtime'), effect);
+    expect(result).toMatchObject({ isError: true });
+    expect(JSON.stringify(result)).toContain('TASK_ACTION_AUTHORIZATION_REQUIRED');
+    expect(effect).not.toHaveBeenCalled();
+    expect(h.confirm).not.toHaveBeenCalled();
+  });
+
+  it('drops the approval when Plan turns on while the card is open', async () => {
+    const h = desktopFixture('automatic');
+    h.activeInput.permission = null;
+    setLivePlan(h, { enabled: false, generation: 2 });
+    h.confirm.mockImplementation(async () => {
+      setLivePlan(h, { enabled: true, generation: 3 });
+      return true;
+    });
+    const effect = vi.fn(async () => 'changed');
+    const result = await withToolCallAuthority(h.authorize, call('set_session_runtime'), effect);
+    expect(result).toMatchObject({ isError: true });
+    expect(JSON.stringify(result)).toContain('TASK_ACTION_AUTHORIZATION_EXPIRED');
+    expect(effect).not.toHaveBeenCalled();
+  });
+
+  // Review P1 on #6756: switching the permission tier into Plan advances only that tier's
+  // generation and leaves the Plan generation untouched, so the Plan re-read above cannot
+  // revoke the card. A tier still switching at answer time is not stable either, and any
+  // other tier is a different tier than the one the owner answered for.
+  it.each([
+    ['a Plan tier', { mode: 'plan' as PermissionMode, generation: 3 }],
+    ['no stable tier', null],
+    ['another non-Plan tier', { mode: 'ask' as PermissionMode, generation: 2 }],
+  ] as const)('drops the approval when the card is answered with %s', async (_state, tier) => {
+    const h = desktopFixture('automatic');
+    h.activeInput.permission = null;
+    setLivePlan(h, { enabled: false, generation: 2 });
+    h.confirm.mockImplementation(async () => {
+      Object.assign(h.runtime, { stablePermissionModeState: tier });
+      return true;
+    });
+    const effect = vi.fn(async () => 'changed');
+    const result = await withToolCallAuthority(h.authorize, call('set_session_runtime'), effect);
+    expect(result).toMatchObject({ isError: true });
+    expect(JSON.stringify(result)).toContain('TASK_ACTION_AUTHORIZATION_EXPIRED');
+    expect(effect).not.toHaveBeenCalled();
+  });
+
+  it('also revokes an approved card delivery when the permission tier turns into Plan', async () => {
+    const h = desktopFixture('automatic');
+    h.activeInput.permission = null;
+    setLivePlan(h, { enabled: false, generation: 2 });
+    h.confirm.mockResolvedValueOnce(true);
+    const queued = input();
+    expect(await withToolCallAuthority(h.authorize, call('send_to_session'), async () => {
+      bindTaskActionInput('target', queued);
+      return 'queued';
+    })).toBe('queued');
+    Object.assign(h.runtime, { stablePermissionModeState: { mode: 'plan', generation: 3 } });
+    await expect(taskActionInputGuard('target', queued)!()).rejects.toThrow(
+      'AUTHORIZATION_EXPIRED',
+    );
+  });
+
+  // Review P2 on #6756: Auto→Ask in the same session advances only the permission tier's
+  // generation; Plan state and the input boundary stay put, so the already-queued answer was
+  // dispatched under a tier the owner never approved. The tier frozen at admission decides.
+  it('revokes an approved card delivery when the permission tier changes without Plan', async () => {
+    const h = desktopFixture('automatic');
+    h.activeInput.permission = null;
+    setLivePlan(h, { enabled: false, generation: 2 });
+    h.confirm.mockResolvedValueOnce(true);
+    const queued = input();
+    expect(await withToolCallAuthority(h.authorize, call('send_to_session'), async () => {
+      bindTaskActionInput('target', queued);
+      return 'queued';
+    })).toBe('queued');
+    Object.assign(h.runtime, { stablePermissionModeState: { mode: 'ask', generation: 2 } });
+    await expect(taskActionInputGuard('target', queued)!()).rejects.toThrow(
+      'AUTHORIZATION_EXPIRED',
+    );
+  });
+
+  // The generation half of the same rule: a tier can be re-issued under the mode it already
+  // had (Auto→Ask→Auto ends on `auto` with a new generation), so a comparison that only looks
+  // at the mode would dispatch the old answer under a freshly issued tier.
+  it('revokes an approved card delivery when only the permission tier generation advances', async () => {
+    const h = desktopFixture('automatic');
+    h.activeInput.permission = null;
+    setLivePlan(h, { enabled: false, generation: 2 });
+    h.confirm.mockResolvedValueOnce(true);
+    const queued = input();
+    expect(await withToolCallAuthority(h.authorize, call('send_to_session'), async () => {
+      bindTaskActionInput('target', queued);
+      return 'queued';
+    })).toBe('queued');
+    Object.assign(h.runtime, { stablePermissionModeState: { mode: 'auto', generation: 2 } });
+    await expect(taskActionInputGuard('target', queued)!()).rejects.toThrow(
+      'AUTHORIZATION_EXPIRED',
+    );
+  });
+
+  // The other half of the same rule: the comparison is by (mode, generation) value, so an
+  // unchanged tier keeps both the execution and the queued delivery of the answer valid.
+  it('keeps an approved card valid while the permission tier stays the same', async () => {
+    const h = desktopFixture('automatic');
+    h.activeInput.permission = null;
+    setLivePlan(h, { enabled: false, generation: 2 });
+    h.confirm.mockImplementation(async () => {
+      // A fresh object with the same mode and generation is still the frozen tier.
+      Object.assign(h.runtime, { stablePermissionModeState: { mode: 'auto', generation: 1 } });
+      return true;
+    });
+    const queued = input();
+    expect(await withToolCallAuthority(h.authorize, call('send_to_session'), async () => {
+      bindTaskActionInput('target', queued);
+      return 'queued';
+    })).toBe('queued');
+    await expect(taskActionInputGuard('target', queued)!()).resolves.toBeUndefined();
+  });
+
+  // A tier that is still switching has no stable state to freeze, and the card is a yes/no
+  // about one exact tier: without a frozen tier there is nothing to show or to approve.
+  it('does not offer a card while the permission tier is switching', async () => {
+    const h = desktopFixture('automatic');
+    h.activeInput.permission = null;
+    setLivePlan(h, { enabled: false, generation: 2 });
+    Object.assign(h.runtime, { stablePermissionModeState: null });
+    const effect = vi.fn(async () => 'changed');
+    const result = await withToolCallAuthority(h.authorize, call('set_session_runtime'), effect);
+    expect(result).toMatchObject({ isError: true });
+    expect(JSON.stringify(result)).toContain('TASK_ACTION_AUTHORIZATION_REQUIRED');
+    expect(effect).not.toHaveBeenCalled();
+    expect(h.confirm).not.toHaveBeenCalled();
+  });
+
+  // Review P2 on #6756: resume input re-reads the delegation row only for its grant, so a
+  // pause (or a new run) written while the card was open survived as a frozen false boolean.
+  const resumeCall = {
+    ...call('message_session_task'),
+    args: { task_id: 'task', mode: 'resume', message: 'continue' },
+  };
+  function pausableDelegation(h: ReturnType<typeof desktopFixture>) {
+    const grant = { taskActionAuthority: { version: 1, actions: ['message_session_task'] } };
+    h.rows.delegation = {
+      status: 'running', runSequence: 1, permissionSnapshotJson: JSON.stringify(grant),
+    };
+    return grant;
+  }
+  const ownerPause = { token: 'pause-1', pausedAt: 1, previousStatus: 'running' };
+
+  it('drops the resume approval when the owner pauses that delegation while the card is open', async () => {
+    const h = desktopFixture('automatic');
+    h.activeInput.permission = null;
+    const grant = pausableDelegation(h);
+    h.confirm.mockImplementation(async () => {
+      h.rows.delegation!.permissionSnapshotJson = JSON.stringify({ ...grant, taskPause: ownerPause });
+      return true;
+    });
+    const effect = vi.fn(async () => 'continued');
+    const result = await withToolCallAuthority(h.authorize, resumeCall, effect);
+    expect(result).toMatchObject({ isError: true });
+    expect(JSON.stringify(result)).toContain('TASK_ACTION_AUTHORIZATION_EXPIRED');
+    expect(effect).not.toHaveBeenCalled();
+  });
+
+  it.each(['pause', 'new run'] as const)(
+    'revokes an approved resume delivery when the delegation gets a %s first',
+    async (change) => {
+      const h = desktopFixture('automatic');
+      h.activeInput.permission = null;
+      const grant = pausableDelegation(h);
+      h.confirm.mockResolvedValueOnce(true);
+      const queued = input();
+      expect(await withToolCallAuthority(h.authorize, resumeCall, async () => {
+        bindTaskActionInput('target', queued);
+        return 'continued';
+      })).toBe('continued');
+      // A real read returns a new row; never let the admission snapshot alias it.
+      h.rows.delegation = change === 'pause'
+        ? {
+            ...h.rows.delegation!,
+            permissionSnapshotJson: JSON.stringify({ ...grant, taskPause: ownerPause }),
+          }
+        : { ...h.rows.delegation!, runSequence: 2 };
+      await expect(taskActionInputGuard('target', queued)!()).rejects.toThrow(
+        'AUTHORIZATION_EXPIRED',
+      );
+    },
+  );
+
+  it('does not offer a card for work the owner paused', async () => {
+    const h = desktopFixture('automatic');
+    h.rows.delegation = {
+      status: 'running',
+      runSequence: 1,
+      permissionSnapshotJson: JSON.stringify({
+        taskActionAuthority: { version: 1, actions: ['message_session_task'] },
+        taskPause: { reason: 'owner' },
+      }),
+    };
+    const effect = vi.fn(async () => 'continued');
+    expect(await withToolCallAuthority(h.authorize, call('message_session_task'), effect))
+      .toMatchObject({ isError: true });
+    expect(effect).not.toHaveBeenCalled();
+    expect(h.confirm).not.toHaveBeenCalled();
+  });
+
+
+  it('drops the approval when the turn boundary moves while the card is open', async () => {
+    const h = desktopFixture('automatic');
+    h.confirm.mockImplementation(async () => {
+      h.activeInput.boundary = 'next-turn';
+      return true;
+    });
+    const effect = vi.fn(async () => 'changed');
+    expect(await withToolCallAuthority(h.authorize, call('set_session_runtime'), effect))
+      .toMatchObject({ isError: true });
+    expect(effect).not.toHaveBeenCalled();
+  });
+
+  // Review P1 (comment 4347064565) on #6756: an answer card is about one exact waiting
+  // request, but `botDelegationService.reply()` submits that answer by delegation id — to
+  // whichever request the task is waiting on when the card is consumed. A request settled
+  // elsewhere (the task's own window, another device, a timeout) and the next one raised for
+  // the same task moves neither the input boundary, nor `runSequence`, nor the pause intent,
+  // so every existing recheck still passed and the old card answered the new question.
+  const answerCall = {
+    ...call('message_session_task'),
+    args: { task_id: 'task', decision: 'approve' as const },
+  };
+  function waitingDelegation(requestId: string | null, status = 'waiting') {
+    return {
+      status, runSequence: 1, permissionSnapshotJson: JSON.stringify({}),
+      pendingInteractionJson: requestId
+        ? JSON.stringify({ requestId, kind: 'permission', summary: 'Raise the limit', raisedAt: 1 })
+        : null,
+    };
+  }
+
+  it.each([
+    ['another request', 'request-b', 'waiting'],
+    ['no request at all', null, 'running'],
+  ] as const)('drops an answer card when the task is on %s by the time it is answered', async (_state, requestId, status) => {
+    const h = desktopFixture('automatic');
+    h.activeInput.permission = null;
+    h.rows.delegation = waitingDelegation('request-a');
+    h.confirm.mockImplementation(async () => {
+      h.rows.delegation = waitingDelegation(requestId, status);
+      return true;
+    });
+    const reply = vi.fn(async () => 'answered');
+    const result = await withToolCallAuthority(h.authorize, answerCall, reply);
+    expect(result).toMatchObject({ isError: true });
+    expect(JSON.stringify(result)).toContain('TASK_ACTION_AUTHORIZATION_EXPIRED');
+    expect(reply).not.toHaveBeenCalled();
+  });
+
+  it('keeps the answer card valid while the same request is still waiting', async () => {
+    const h = desktopFixture('automatic');
+    h.activeInput.permission = null;
+    h.rows.delegation = waitingDelegation('request-a');
+    h.confirm.mockImplementation(async () => {
+      // A refreshed row with the same waiting request is still that request.
+      h.rows.delegation = waitingDelegation('request-a');
+      return true;
+    });
+    const reply = vi.fn(async () => 'answered');
+    expect(await withToolCallAuthority(h.authorize, answerCall, reply)).toBe('answered');
+    expect(reply).toHaveBeenCalledTimes(1);
+  });
+});
+
+/** Real Session authority with an in-memory provider, so the resolver reads live state. */
+function makeRealSession(initial: { permissionMode?: PermissionMode; plan?: boolean | null } = {}) {
+  let planMode: boolean | null = initial.plan === undefined ? false : initial.plan;
+  let endEvents!: () => void;
+  const eventsEnded = new Promise<void>((resolve) => { endEvents = resolve; });
+  let releaseSwitch: (() => void) | null = null;
+  const handle = {
+    id: 'provider-session', agentKind: 'pi', model: 'test',
+    async *events() { await eventsEnded; },
+    async close() { endEvents(); },
+    setInteractionResolver() {},
+    getPlanMode: () => planMode,
+    setPlanMode: async (enabled: boolean) => { planMode = enabled; },
+    // Resolves only when the test says the user's switch has been applied by the provider.
+    setPermissionMode: vi.fn(
+      () => new Promise<void>((resolve) => { releaseSwitch = resolve; }),
+    ),
+    reviewAutoPermissionAction: vi.fn(async () => ({ verdict: 'allow' as const })),
+  };
+  const session = new Session({
+    id: 'companion', sessionInstanceId: 'instance-1', agentKind: 'pi', workDir: '/repo',
+    permissionMode: initial.permissionMode ?? 'auto',
+    handle: handle as never,
+    capabilities: {
+      planMode: { supported: true },
+      permissionModes: [
+        { id: 'ask', displayName: 'Ask' },
+        { id: 'auto', displayName: 'Auto' },
+      ],
+      setPermissionModeMidSession: { supported: true },
+    } as never,
+    logger: {
+      trace() {}, debug() {}, info() {}, warn() {}, error() {}, fatal() {},
+      child() { return this; },
+    },
+  });
+  return {
+    session,
+    settlePermissionSwitch: () => releaseSwitch?.(),
+  };
+}
+
+type RealSession = ReturnType<typeof makeRealSession>;
+
+// Review P2 on #6756: the card used to be gated on "no input snapshot" *and* a frozen live
+// tier, but one Session read produces both halves of that pair, so the branch was
+// unreachable and the owner still only got `TASK_ACTION_AUTHORIZATION_REQUIRED`. These cases
+// drive the real input composition (`buildTaskActionInputState`, exactly what
+// `getTaskActionInputState` wires) against a real maker-core Session, so the admission they
+// assert is one this Host actually emits.
+// Unit tier: no Electron, no SQLite, no provider process.
+describe('Production card admission from the live input state', () => {
+  function productionFixture(deps: {
+    live?: RealSession;
+    session?: () => Session | undefined;
+    transform?: (state: TaskActionInputState) => TaskActionInputState;
+  } = {}) {
+    // Installs the caller row (private canonical Bot lane, no delegation) and the confirm spy.
+    const h = desktopFixture('automatic');
+    const live = deps.live ?? makeRealSession();
+    const readInput = () => {
+      const state = buildTaskActionInputState('companion', {
+        session: deps.session ?? (() => live.session),
+        provenance: () => ({ input: null, executing: true }),
+        ownerInput: () => false,
+        inputGeneration: () => 1,
+      });
+      return deps.transform ? deps.transform(state) : state;
+    };
+    const authorize = createDesktopTaskActionAuthorizer({
+      input: readInput,
+      getSession: () => (deps.session ? deps.session() : live.session),
+      confirm: h.confirm,
+    });
+    return { ...h, live, authorize, readInput };
+  }
+
+  it('reuses the live permission decision instead of asking the owner again', async () => {
+    const h = productionFixture();
+    expect(h.readInput()).toMatchObject({ permissionUnavailable: null });
+    expect(h.readInput().permission).not.toBeNull();
+    const effect = vi.fn(async () => 'ran');
+    expect(await withToolCallAuthority(h.authorize, call('set_session_runtime'), effect)).toBe('ran');
+    expect(h.confirm).not.toHaveBeenCalled();
+    expect(effect).toHaveBeenCalledTimes(1);
+  });
+
+  it('offers the card while the tier change is in flight and runs the exact call after the owner allows it', async () => {
+    const h = productionFixture();
+    const settling = h.live.session.setPermissionModeTracked('ask');
+    const state = h.readInput();
+    expect(state.permission).toBeNull();
+    expect(state.permissionUnavailable).toBe('permission-switching');
+    // The owner answers after the provider applied the switch, as in production.
+    h.confirm.mockImplementation(async () => {
+      h.live.settlePermissionSwitch();
+      await settling;
+      return true;
+    });
+    const effect = vi.fn(async () => 'ran');
+    expect(await withToolCallAuthority(h.authorize, call('set_session_runtime'), effect)).toBe('ran');
+    expect(h.confirm).toHaveBeenCalledExactlyOnceWith('companion', 'set_session_runtime', call().args);
+    expect(effect).toHaveBeenCalledTimes(1);
+    expect(h.live.session.stablePermissionModeState).toMatchObject({ mode: 'ask' });
+  });
+
+  it('offers no card on a missing snapshot alone, so the reason is what admits it', async () => {
+    const h = productionFixture({ transform: (state) => ({ ...state, permissionUnavailable: null }) });
+    // A tier change is what makes the snapshot absent; without the reason the Host must not
+    // guess that the live states are there (they are not: this is the same read).
+    const settling = h.live.session.setPermissionModeTracked('ask');
+    const effect = vi.fn(async () => 'ran');
+    const result = await withToolCallAuthority(h.authorize, call('set_session_runtime'), effect);
+    expect(result).toMatchObject({ isError: true });
+    expect(JSON.stringify(result)).toContain('TASK_ACTION_AUTHORIZATION_REQUIRED');
+    expect(h.confirm).not.toHaveBeenCalled();
+    expect(effect).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(h.live.session.stablePermissionModeState).toBeNull());
+    h.live.settlePermissionSwitch();
+    await settling;
+  });
+
+  it.each([
+    ['a Plan state that is still switching or unknown', 'plan-state-unavailable', () => ({
+      live: makeRealSession({ plan: null }),
+    })],
+    ['a closing Session', 'session-closing', () => ({
+      live: makeRealSession({ permissionMode: 'ask' }), close: true,
+    })],
+    ['no live Session', 'no-live-session', () => ({
+      live: makeRealSession(), session: () => undefined,
+    })],
+  ] as const)('stays silent for %s', async (_state, reason, prepare) => {
+    const setup = prepare();
+    if ('close' in setup) await setup.live.session.close();
+    const h = productionFixture(setup);
+    const state = h.readInput();
+    expect(state.permission).toBeNull();
+    expect(state.permissionUnavailable).toBe(reason);
+    const effect = vi.fn(async () => 'ran');
+    const result = await withToolCallAuthority(h.authorize, call('set_session_runtime'), effect);
+    expect(result).toMatchObject({ isError: true });
+    expect(JSON.stringify(result)).toContain('TASK_ACTION_AUTHORIZATION_REQUIRED');
+    expect(h.confirm).not.toHaveBeenCalled();
+    expect(effect).not.toHaveBeenCalled();
+  });
+
+  it('revokes the answer when the switch instead settles on Plan state', async () => {
+    const h = productionFixture();
+    const settling = h.live.session.setPermissionModeTracked('ask');
+    h.confirm.mockImplementation(async () => {
+      h.live.settlePermissionSwitch();
+      await settling;
+      // A Plan toggle advances the Plan generation, which the admission pinned.
+      await h.live.session.setPlanMode(true);
+      return true;
+    });
+    const effect = vi.fn(async () => 'ran');
+    const result = await withToolCallAuthority(h.authorize, call('set_session_runtime'), effect);
+    expect(result).toMatchObject({ isError: true });
+    expect(JSON.stringify(result)).toContain('TASK_ACTION_AUTHORIZATION_EXPIRED');
+    expect(effect).not.toHaveBeenCalled();
+  });
+});
+
+type CardRequest = { requestId: string; input?: unknown; [key: string]: unknown };
+type CardBroadcast = { channel: string; payload: { sessionId?: string; request: CardRequest } };
+
+function captureBroadcasts() {
+  const cards: CardBroadcast[] = [];
+  const bridge = new OrcaWorkerPermissionConfirmBridge({
+    broadcast: (channel, payload) => {
+      cards.push({ channel, payload: payload as CardBroadcast['payload'] });
+    },
+  });
+  return { cards, bridge };
+}
+
+// #6703: the card is the only place a private-chat owner can authorize such an action, so the
+// transport is covered against the real bridge register.ts publishes (not a `confirm` stub):
+// one exact card per call, allow/deny/timeout mapping, and no cross-approval between calls.
+describe('Task action confirmation card transport', () => {
+  it.each([
+    ['cindy_helper' as const, 'set_session_runtime', 'mcp__cindy_helper__set_session_runtime'],
+    ['cindy_orca' as const, 'create_worker', 'mcp__cindy_orca__create_worker'],
+  ])('names the exact %s tool the owner approves', (server, tool, toolName) => {
+    const copy = taskActionConfirmationCopy(tool, { task_id: 'task', mode: 'auto' });
+    expect(copy.action).toEqual({
+      toolName, confirmation: 'task_action', input: { task_id: 'task', mode: 'auto' },
+    });
+    // Host copy, not an Agent label: both strings resolve from the locale bundle.
+    expect(copy.title).toBeTruthy();
+    expect(copy.title).not.toBe('taskActionConfirmation.title');
+    expect(copy.description).not.toBe('taskActionConfirmation.once');
+    expect(server).toBeTruthy();
+  });
+
+  it('uses the delegation wording only for starting a task', () => {
+    expect(taskActionConfirmationCopy('start_session_task', {}).description)
+      .not.toBe(taskActionConfirmationCopy('send_to_session', {}).description);
+    expect(taskActionConfirmationCopy('start_session_task', {}).action.confirmation)
+      .toBe('task_action');
+  });
+
+  function cardedFixture(bridge: OrcaWorkerPermissionConfirmBridge) {
+    const h = desktopFixture('automatic');
+    h.activeInput.permission = null;
+    h.confirm.mockImplementation(async (sessionId: string, tool: string, args: unknown) =>
+      (await bridge.request(sessionId, taskActionConfirmationCopy(tool, args))).confirmed);
+    return h;
+  }
+
+  async function allowFromCard(cards: CardBroadcast[], index = 0) {
+    await vi.waitFor(() => expect(cards.length).toBeGreaterThan(index));
+    const card = cards[index]!;
+    expect(card.channel).toBe(MAKER_PUSH.INTERACTION_REQUEST);
+    const request = card.payload.request;
+    expect(request).toMatchObject({
+      kind: 'permission',
+      metadata: { hostOwnedConfirmation: 'task_action' },
+      toolName: 'mcp__cindy_helper__set_session_runtime',
+    });
+    expect(card.payload.sessionId).toBe('companion');
+    return request;
+  }
+
+  it('continues the exact call only after the owner allows the card', async () => {
+    const { cards, bridge } = captureBroadcasts();
+    const h = cardedFixture(bridge);
+    const effect = vi.fn(async () => 'changed');
+    const pending = withToolCallAuthority(h.authorize, call('set_session_runtime'), effect);
+    const request = await allowFromCard(cards);
+    // The picture on screen is the picture of this call, and it carries the Agent's arguments.
+    expect(request.input).toEqual(call('set_session_runtime').args);
+    expect(effect).not.toHaveBeenCalled();
+    bridge.resolveFromIpc(
+      request.requestId, { kind: 'permission', behavior: 'allow' },
+      { isDeviceLink: false, assertTrustedSender: () => {} },
+    );
+    await expect(pending).resolves.toBe('changed');
+    expect(effect).toHaveBeenCalledTimes(1);
+    // Answered once: no card is left behind, and no follow-up card was offered.
+    expect(bridge.pendingSnapshots()).toHaveLength(0);
+    expect(cards.filter((card) => card.channel === MAKER_PUSH.INTERACTION_REQUEST)).toHaveLength(1);
+  });
+
+  it.each([
+    ['denies', (bridge: OrcaWorkerPermissionConfirmBridge, requestId: string) => {
+      bridge.resolveFromIpc(
+        requestId, { kind: 'permission', behavior: 'deny' },
+        { isDeviceLink: false, assertTrustedSender: () => {} },
+      );
+    }],
+    ['times out', (bridge: OrcaWorkerPermissionConfirmBridge) => {
+      void bridge; // the bridge's own timeout denies the call
+    }],
+  ] as const)('reports USER_CANCELLED when the owner %s the card', async (_state, answer) => {
+    const cards: CardBroadcast[] = [];
+    const bridge = new OrcaWorkerPermissionConfirmBridge({
+      broadcast: (channel, payload) => {
+      cards.push({ channel, payload: payload as CardBroadcast['payload'] });
+    },
+      timeoutMs: _state === 'times out' ? 5 : undefined,
+    });
+    const h = cardedFixture(bridge);
+    const effect = vi.fn(async () => 'changed');
+    const pending = withToolCallAuthority(h.authorize, call('set_session_runtime'), effect);
+    const request = await allowFromCard(cards);
+    answer(bridge, request.requestId);
+    const result = await pending;
+    expect(result).toMatchObject({ isError: true });
+    expect(JSON.stringify(result)).toContain('USER_CANCELLED');
+    expect(effect).not.toHaveBeenCalled();
+  });
+
+  it('never approves one call with the card of another', async () => {
+    const { cards, bridge } = captureBroadcasts();
+    const h = cardedFixture(bridge);
+    const first = vi.fn(async () => 'first');
+    const second = vi.fn(async () => 'second');
+    const firstPending = withToolCallAuthority(h.authorize, call('set_session_runtime'), first);
+    const firstCard = await allowFromCard(cards);
+    // A second concurrent automatic call while the card is open gets no card of its own.
+    await expect(withToolCallAuthority(h.authorize, call('set_session_runtime'), second))
+      .resolves.toMatchObject({ isError: true });
+    expect(second).not.toHaveBeenCalled();
+    bridge.resolveFromIpc(
+      firstCard.requestId, { kind: 'permission', behavior: 'allow' },
+      { isDeviceLink: false, assertTrustedSender: () => {} },
+    );
+    await expect(firstPending).resolves.toBe('first');
+    expect(first).toHaveBeenCalledTimes(1);
+  });
+});
+

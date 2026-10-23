@@ -57,7 +57,7 @@ import { t } from '../i18n.js';
 import type { BotGroupTaskPostInput, BotGroupTaskPostResult } from './botGroupChatService.js';
 import { ensureBotWorkspaceDir } from './botProfileFolder.js';
 import type { SessionQueuedMessageControlResult, SessionSteerResult, SessionStopResult } from './sessionControlService.js';
-import { ownerScopedUserDataPath } from '../appSessionState.js';
+import { isAppSessionBoundaryPending, ownerScopedUserDataPath } from '../appSessionState.js';
 import type { SessionRuntimeProfile } from './sessionRuntimeControl.js';
 import { readBotTaskModelOverride, type BotModelRoute } from '../../shared/botModelChain.js';
 import { validateTaskModel, resolveTaskModelSelection, type TaskModelSelection } from './appDefaultModelControl.js';
@@ -1015,8 +1015,13 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
    * 投递目标：优先冻结的父任务；父任务已被恢复流程替换时，改投发起 Bot 当前的
    * 主任务。完成信号属于 Bot 本人，不属于损坏的旧任务。两者都不在（Bot 已
    * 暂停/归档）时只延后模型唤醒；每次执行的结果回执仍写入冻结的父任务。
+   *
+   * 凭证：这是系统回执，不是新的 Agent 动作。后台任务跨轮次跑完时，发起轮次的行动
+   * 凭证必然已经过期，所以整条投递走 `runHostCompletionDelivery`，不复用也不刷新那个
+   * 凭证；凭证换成本行的持久事实（delegation id + runSequence + 尚未投递 + 目标存活），
+   * 每次重试都按当前库状态重新核对。冷启动 `restore()` 一直走同一条无轮次凭证的路。
    */
-  const deliverCompletion = async (params: {
+  type CompletionReceipt = {
     id: string;
     runSequence: number;
     requestingBotId: string;
@@ -1028,7 +1033,20 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
     resultSummary?: string | null;
     artifacts?: BotDelegationArtifact[];
     lastError?: string | null;
-  }, attempt = 0): Promise<boolean> => runHostCompletionDelivery(async () => {
+  };
+  const deliverCompletion = (params: CompletionReceipt, attempt = 0): Promise<boolean> =>
+    // Never inherit the starting turn's action scope: a long task outlives it by design.
+    runHostCompletionDelivery(() => deliverCompletionAsHostReceipt(params, attempt));
+
+  const deliverCompletionAsHostReceipt = async (
+    params: CompletionReceipt, attempt = 0,
+  ): Promise<boolean> => {
+    // An account switch / owner-host repair owns the database right now. Retry later; the
+    // next `restore()` also re-delivers every receipt that is still pending.
+    if (isAppSessionBoundaryPending()) {
+      scheduleCompletionRetry(params, attempt);
+      return false;
+    }
     const previousDelivery = completionInFlight.get(params.id);
     if (previousDelivery) await previousDelivery.catch(() => undefined);
     let releaseDelivery!: () => void;
@@ -1278,7 +1296,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
         completionInFlight.delete(params.id);
       }
     }
-  });
+  };
 
   function scheduleCompletionRetry(
     params: Parameters<typeof deliverCompletion>[0],
@@ -1727,14 +1745,16 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
       const requesterSessionId = await requesterLiveSessionId(row.requestingBotId, home ? null : row.parentSessionId)
         ?? (home ? await restoredRequesterSessionId(row.requestingBotId) : null);
       if (!stillPending() || (row.childSessionId && heldSessionIds.has(row.childSessionId))) return;
-      const dispatched = requesterSessionId
-        ? await deps.dispatch({
+      const dispatched = requesterSessionId && !isAppSessionBoundaryPending()
+        // Same system-receipt rule as the terminal wake-up: the child's pending question
+        // outlives the turn that started the task, so it must not spend that turn's credential.
+        ? await runHostCompletionDelivery(() => deps.dispatch({
             targetSessionId: requesterSessionId,
             message,
             autoReviewUserText: { kind: 'agent-request' },
             persistedContent: `${UI_ACTION_TRIGGER_PREFIX}${message}`,
             clientId: `bot-delegation-interaction:${row.id}:${pending.requestId}`,
-          })
+          }))
         : null;
       if (dispatched?.ok) {
         // Acceptance in a parent that was deleted or archived during dispatch

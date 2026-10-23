@@ -132,6 +132,17 @@ Host 不因当前输入缺少主人标记再追加行动同意判定。只认运
 `autoReviewUserText`；引用与自动事件本身不获得本人身份或执行授权。
 实现与回归见 `maker-ipc/autoReviewUserIntent.ts`、`makerSendTransaction.test.ts` 和
 `agent-input-coordinator.test.ts`。
+2026-10-22 #6703 修订：没有可复用的实时权限决定时，主人的私聊（`canonical` / `thread` 会话）
+改为在会话内弹一张可点的行动确认卡，而不是只把 `TASK_ACTION_AUTHORIZATION_REQUIRED` 丢回模型；
+卡片只授权这一次准确调用，拒绝、超时或等待期间凭证变化仍返回拒绝。Plan、主人已暂停的委托、
+共享访客、群专线及其它 Session 的同一情形保持静默拒绝。
+#6756 修订：「没有可复用的决定」由输入状态显式携带（`getTaskActionInputState()` 的
+`permissionUnavailable` 及原因），Host 不据「快照为空」反推仍有两个稳定档可用。卡片只在
+`permission-switching`（会话活跃、Plan 已确定为关，仅权限档切换在途）时开；
+`no-live-session` / `session-closing` / `plan-state-unavailable` 仍静默拒绝。
+后台任务的完成／失败／待答回投是系统回执，
+不复用发起轮次的行动凭证，改由委派行自身（id + runSequence + 尚未投递 + 目标存活）授权，
+每次重试都重新核对。
 已有委托的执行权不依赖自动观察规则的开关；仅凭普通 Orca Lead 的当前 team 回报只延续原 team 范围。
 跨电脑任务互发要求双方支持
 行动回执，旧端明确提示不支持；未增加观察数据权限。实机多端验收仍待完成。
