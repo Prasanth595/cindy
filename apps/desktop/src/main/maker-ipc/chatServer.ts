@@ -1686,6 +1686,15 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
                 deps.log?.warn('Group execution local abort failed after server stop', { executionId, ...chatErrorDiagnostic(error) });
               });
             },
+            // Any successful group mutation can revoke another local lease (for
+            // example removing a human also removes their bots). Let the server
+            // decide validity, and reuse the event/heartbeat cleanup immediately.
+            reconcileExecutions: async () => {
+              await Promise.all([...running.values()].filter(active => active.execution.conversation_id === s.room.id)
+                .map(active => checkLease(active).catch(error => {
+                  deps.log?.warn('Group execution reconciliation failed', { executionId: active.execution.id, ...chatErrorDiagnostic(error) });
+                })));
+            },
           }),
           sourceGroup: { groupId: s.room.id, name: s.room.name },
           isCurrent: () => current() && running.get(execution.id) === run && !run.settlement,

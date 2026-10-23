@@ -746,6 +746,37 @@ describe('Chat Server result delivery and refresh', () => {
         expect((await executeCurrentGroupTool('lane', { type: 'inspect' }, confirm)).ok).toBe(false);
       } else expect(deps.abortLane).not.toHaveBeenCalled();
     });
+    // Other successful writes can revoke leases too; no websocket or timer should
+    // be needed to reconcile the server's decision. A still-valid lease must stay live.
+    it.each(['archive', 'dissolve', 'plan', 'member', 'still-valid'] as const)('immediately rechecks local leases after %s management', async type => {
+      await setup(); fixture.sockets[0].emit('close');
+      let applied = false;
+      const planId = '80000000-0000-4000-8000-000000000001';
+      const original = fixture.handle.getMockImplementation()!;
+      fixture.handle.mockImplementation((route, method, body) => {
+        if (method === 'GET' && route.includes('/plans?ids=')) return { body: [{ id: planId, revision: 1, status: 'running' }] };
+        if (applied && body?.action === 'heartbeat' && type !== 'still-valid') return { status: 409, body: { error: { code: 'STALE_EXECUTOR' } } };
+        return original(route, method, body);
+      });
+      mutate = () => { applied = true; return { body: type === 'dissolve'
+        ? { revision: 2, dissolvedAt: '2026-10-23T00:00:00Z', dissolvedBy: botId } : { revision: 2 } }; };
+      const action = type === 'archive' ? { type, archived: true, expectedRevision: 1 }
+        : type === 'dissolve' ? { type, expectedRevision: 1 }
+        : type === 'plan' ? { type, planId, expectedRevision: 1, action: 'stop' as const }
+        : type === 'member' ? { type, actorId: peerId, action: 'ban' as const }
+        : { type: 'update' as const, name: 'Renamed', expectedRevision: 1 };
+      expect(await call(action)).toMatchObject({ ok: true });
+      expect(deps.abortLane).toHaveBeenCalledTimes(type === 'still-valid' ? 0 : 1);
+      if (type !== 'still-valid') expect((await executeCurrentGroupTool('lane', { type: 'inspect' }, confirm)).ok).toBe(false);
+    });
+    it('allows re-inviting a former owner while protecting a joined owner', async () => {
+      await setup(); members[2].role = 'owner'; members[2].state = 'left';
+      expect(await call({ type: 'member', actorId: peerId, action: 'invite' })).toMatchObject({ ok: true });
+      members[2].state = 'joined';
+      expect(await executeCurrentGroupTool('lane', { type: 'manage', mutation: { operationId: '70000000-0000-4000-8000-000000000002',
+        action: { type: 'member', actorId: peerId, action: 'invite' } } }, confirm)).toMatchObject({ ok: false, errorCode: 'MEMBER_PROTECTED' });
+      expect(writes()).toHaveLength(1);
+    });
     it.each(['member', 'archive', 'createInvite', 'revokeInvite', 'transfer', 'dissolve'] as const)('executes %s as the current bot with the original operation id', async type => {
       await setup();
       const token = 'a'.repeat(43);

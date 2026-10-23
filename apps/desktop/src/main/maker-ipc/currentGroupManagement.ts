@@ -21,6 +21,7 @@ interface Dependencies {
   supportsDissolve(): boolean;
   ownedBots(): Promise<Array<{ actorId: string; botId: string; name: string }>>;
   executionStopped(executionId: string): Promise<void>;
+  reconcileExecutions(): Promise<void>;
 }
 
 /** Current execution only. No account proxy actor selection, private Bot access, or caller-selected group. */
@@ -63,7 +64,7 @@ export function createCurrentGroupManagement(deps: Dependencies) {
           self: { actorId: ctx.bot.id, role: ctx.bot.role }, requester: { actorId: ctx.requester.id, role: ctx.requester.role, directsOwnBot: ownerProxy() },
           permissions: { update: active && bothManage(), members: active && bothManage(), memberRoles: active && bothOwn(), invitations: active && bothManage(), archive: !ctx.room.dissolved_at && bothManage(), queue: active && bothManage(), transfer: active && bothOwn(), dissolve: active && bothOwn() && deps.supportsDissolve() },
           requiresConfirmation: ['transfer', 'dissolve'],
-          protectedActorIds: ctx.members.filter(m => m.role === 'owner' || m.id === ctx.bot.id || m.id === ctx.requester.id).map(m => m.id),
+          protectedActorIds: ctx.members.filter(m => (m.role === 'owner' && m.state === 'joined') || m.id === ctx.bot.id || m.id === ctx.requester.id).map(m => m.id),
           members: ctx.members.map(m => ({ actorId: m.id, kind: m.kind, name: m.name, role: m.role, state: m.state, ownerActorId: m.ownerActorId, ownerName: m.ownerName })),
           invitableBots: active && bothManage() ? ownedBots.filter(b => !ctx.members.some(m => m.id === b.actorId && m.state === 'joined')) : [],
           executions: executions.map(e => ({ id: e.id, status: e.status, botActorId: e.bot_id, requesterId: e.requester_id })),
@@ -101,7 +102,7 @@ export function createCurrentGroupManagement(deps: Dependencies) {
           } else {
             if (action.action === 'role' && (!action.role || !bothOwn())) throw new Error('GROUP_OWNER_REQUIRED');
             if (action.action !== 'invite' && !target) throw new Error('INVALID_MEMBER');
-            if (target?.id === ctx.bot.id || target?.id === ctx.requester.id || target?.role === 'owner') throw new Error('MEMBER_PROTECTED');
+            if (target?.id === ctx.bot.id || target?.id === ctx.requester.id || (target?.role === 'owner' && target.state === 'joined')) throw new Error('MEMBER_PROTECTED');
           }
         }
         deps.assertCurrent(); assertPermission();
@@ -156,6 +157,7 @@ export function createCurrentGroupManagement(deps: Dependencies) {
         const result: CurrentGroupResult = { ok: true, operationId, action: action.type, receipt };
         attempts.set(operationId, { fingerprint, result });
         if (action.type === 'execution') await deps.executionStopped(action.executionId);
+        await deps.reconcileExecutions();
         deps.changed();
         return result;
       } catch (error) {
