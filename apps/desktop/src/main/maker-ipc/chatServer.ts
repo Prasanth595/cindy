@@ -1013,6 +1013,10 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     const actor = actors.find(a => a.id === actorId && a.kind === 'bot');
     return profiles.find(p => p.id === actor?.externalId);
   }
+  async function ownedBots() {
+    await register();
+    return actors.flatMap(a => { const bot = a.kind === 'bot' ? localBot(a.id) : undefined; return bot?.status === 'active' ? [{ actorId: a.id, botId: bot.id, name: a.name }] : []; });
+  }
   function messageView(m: Message, members: Member[]): BotGroupMessageView {
     // Only the server-owned origin establishes a system event. A user-supplied
     // card with the same namespace must remain an ordinary chat message.
@@ -1672,7 +1676,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
               // No automatic auth replay after a management write may have committed.
               return api(route, method, payload, actorId, method !== undefined && method !== 'GET', 200);
             },
-            changed: () => changed(s.room.id), inviteToken, supportsDissolve: () => supportsDissolve,
+            changed: () => changed(s.room.id), inviteToken, supportsDissolve: () => supportsDissolve, ownedBots,
           }),
           sourceGroup: { groupId: s.room.id, name: s.room.name },
           isCurrent: () => current() && running.get(execution.id) === run && !run.settlement,
@@ -2169,7 +2173,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
   // controller loses our successful answer. The server still authorizes every replay.
   const postedThreadRecipients = new Map<string, string[]>();
   const chatServer: ChatServerApi = {
-    ownedBots: () => result(async () => { await register(); return { bots: actors.flatMap(a => { const bot = a.kind === 'bot' ? localBot(a.id) : undefined; return bot?.status === 'active' ? [{ actorId: a.id, botId: bot.id, name: a.name }] : []; }) }; }),
+    ownedBots: () => result(async () => ({ bots: await ownedBots() })),
     refreshProfile: () => result(async () => {
       await api('/profile/refresh', 'POST'); profileRefreshedAt = Date.now();
       for (const roomId of rooms.keys()) changed(roomId);

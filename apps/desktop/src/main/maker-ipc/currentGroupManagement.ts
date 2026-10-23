@@ -2,7 +2,11 @@ import { currentGroupMutation, type CurrentGroupRequest, type CurrentGroupResult
 import { chatGroupRolePermissions } from '@cindy/maker-shared/botGroupPresentation';
 import { z } from 'zod';
 
-interface Member { id: string; kind: string; name: string; state: string; role: string; ownerActorId: string }
+interface Member { id: string; kind: string; name: string; state: string; role: string; ownerActorId: string; ownerName?: string }
+interface Plan {
+  id: string; revision: number; status: string; kind?: string; current_step: number | null;
+  steps: Array<{ position: number; botId: string; botName: string; task: string; status: string }>;
+}
 interface Room { id: string; kind?: string; name: string; topic: string; description: string; revision: number; archived: boolean; dissolved_at?: string | null }
 type Confirm = (summary: Record<string, unknown>) => Promise<boolean>;
 interface Dependencies {
@@ -15,6 +19,7 @@ interface Dependencies {
   changed(): void;
   inviteToken(link: string): string;
   supportsDissolve(): boolean;
+  ownedBots(): Promise<Array<{ actorId: string; botId: string; name: string }>>;
 }
 
 /** Current execution only. No account proxy actor selection, private Bot access, or caller-selected group. */
@@ -47,7 +52,10 @@ export function createCurrentGroupManagement(deps: Dependencies) {
       const roomPath = `/conversations/${ctx.room.id}`;
       if (request.type === 'inspect') {
         const executions = await deps.api<Array<{ id: string; status: string; bot_id: string; requester_id?: string }>>(`${roomPath}/executions`);
-        const plans = await deps.api<Array<{ id: string; revision: number; status: string; kind?: string }>>(`${roomPath}/plans`);
+        const plans = await deps.api<Plan[]>(`${roomPath}/plans`);
+        // This account's non-member roster is private to its owner, even when a
+        // guest has tools access to a bot. Recheck before projecting the result.
+        const ownedBots = bothManage() ? await deps.ownedBots() : [];
         ctx = await context(); assertPermission();
         const active = !ctx.room.archived && !ctx.room.dissolved_at;
         const result: CurrentGroupResult = { ok: true, group: { id: ctx.room.id, name: ctx.room.name, topic: ctx.room.topic, description: ctx.room.description, revision: ctx.room.revision, archived: ctx.room.archived, dissolvedAt: ctx.room.dissolved_at ?? null },
@@ -55,9 +63,11 @@ export function createCurrentGroupManagement(deps: Dependencies) {
           permissions: { update: active && bothManage(), members: active && bothManage(), memberRoles: active && bothOwn(), invitations: active && bothManage(), archive: !ctx.room.dissolved_at && bothManage(), queue: active && bothManage(), transfer: active && bothOwn(), dissolve: active && bothOwn() && deps.supportsDissolve() },
           requiresConfirmation: ['transfer', 'dissolve'],
           protectedActorIds: ctx.members.filter(m => m.role === 'owner' || m.id === ctx.bot.id || m.id === ctx.requester.id).map(m => m.id),
-          members: ctx.members.map(m => ({ actorId: m.id, kind: m.kind, name: m.name, role: m.role, state: m.state })),
+          members: ctx.members.map(m => ({ actorId: m.id, kind: m.kind, name: m.name, role: m.role, state: m.state, ownerActorId: m.ownerActorId, ownerName: m.ownerName })),
+          invitableBots: active && bothManage() ? ownedBots.filter(b => !ctx.members.some(m => m.id === b.actorId && m.state === 'joined')) : [],
           executions: executions.map(e => ({ id: e.id, status: e.status, botActorId: e.bot_id, requesterId: e.requester_id })),
-          plans: plans.map(p => ({ id: p.id, revision: p.revision, status: p.status, kind: p.kind })),
+          plans: plans.map(p => ({ id: p.id, revision: p.revision, status: p.status, kind: p.kind, currentStep: p.current_step,
+            steps: p.steps.map(s => ({ position: s.position, botActorId: s.botId, botName: s.botName, task: s.task, status: s.status })) })),
           scope: 'current-group', privateAccessUnchanged: true,
           ...(!ownerProxy() ? { managementUnavailableReason: 'GROUP_REQUESTER_AUTHORIZATION_UNSUPPORTED' } : {}) };
         unknownResult = false;
@@ -67,11 +77,15 @@ export function createCurrentGroupManagement(deps: Dependencies) {
       const { operationId, action } = mutation;
       const fingerprint = JSON.stringify(action);
       // Even cached receipts require current authorization; operation ids cannot change their payload.
-      const check = () => {
+      const checkAuthorization = () => {
         if (!ownerProxy()) throw new Error('GROUP_REQUESTER_AUTHORIZATION_UNSUPPORTED');
         if (!bothManage()) throw new Error('GROUP_ROLE_REQUIRED');
+        if ((['transfer', 'dissolve'].includes(action.type) || (action.type === 'member' && action.action === 'role')) && !bothOwn()) throw new Error('GROUP_OWNER_REQUIRED');
+        deps.assertCurrent(); assertPermission();
+      };
+      const check = () => {
+        checkAuthorization();
         if (ctx.room.dissolved_at || (ctx.room.archived && action.type !== 'archive')) throw new Error('GROUP_CLOSED');
-        if (['transfer', 'dissolve'].includes(action.type) && !bothOwn()) throw new Error('GROUP_OWNER_REQUIRED');
         if (action.type === 'dissolve' && !deps.supportsDissolve()) throw new Error('LIFECYCLE_UNAVAILABLE');
         if (action.type === 'update' && Object.keys(action).length <= 2) throw new Error('INVALID_ACTION');
         if (action.type === 'plan' && ['remove', 'reassign'].includes(action.action)) {
@@ -91,11 +105,12 @@ export function createCurrentGroupManagement(deps: Dependencies) {
         }
         deps.assertCurrent(); assertPermission();
       };
-      check();
+      checkAuthorization();
       const previous = attempts.get(operationId);
       if (previous && previous.fingerprint !== fingerprint) throw new Error('OPERATION_CONFLICT');
       if (unknownResult) throw new Error('GROUP_RESULT_UNKNOWN');
       if (previous?.result.ok) return previous.result;
+      check();
       if (action.type === 'transfer' || action.type === 'dissolve') {
         if (!(await confirm({ groupId: ctx.room.id, groupName: ctx.room.name, actingBot: ctx.bot.id, requesterId: ctx.requester.id, operationId, action }))) throw new Error('USER_CANCELLED');
         ctx = await context(); check();

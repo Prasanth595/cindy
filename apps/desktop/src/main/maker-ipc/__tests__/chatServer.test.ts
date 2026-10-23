@@ -671,6 +671,50 @@ describe('Chat Server result delivery and refresh', () => {
       await setup(); mutate = () => ({ body: { token: 'broken', expiresAt: null } });
       expect(await call({ type: 'createInvite' })).toMatchObject({ ok: false, errorCode: 'GROUP_RESULT_UNKNOWN' });
     });
+    // PR #6944 review: previously the query omitted the public identity/step data
+    // needed to choose a target; successful retries also failed after revision advanced.
+    it('returns a successful receipt after revision advances but still checks revocation and operation conflicts', async () => {
+      await setup();
+      const action = { type: 'update' as const, expectedRevision: 1, name: 'Applied' };
+      mutate = () => { group.revision = 2; return { body: { revision: 2 } }; };
+      const receipt = await call(action);
+      expect(receipt.ok).toBe(true);
+      expect(await call(action)).toEqual(receipt);
+      expect(await call({ ...action, name: 'Different' })).toMatchObject({ ok: false, errorCode: 'OPERATION_CONFLICT' });
+      members[0].role = 'member';
+      expect(await call(action)).toMatchObject({ ok: false, errorCode: 'GROUP_ROLE_REQUIRED' });
+      expect(writes()).toHaveLength(1);
+    });
+    it('exposes public owner linkage and plan positions and uses a queried position for reassignment', async () => {
+      await setup();
+      members[2].name = 'Analyst'; members[2].ownerName = 'Chris';
+      const planId = '80000000-0000-4000-8000-000000000001';
+      const original = fixture.handle.getMockImplementation()!;
+      fixture.handle.mockImplementation((route, method, body) => method === 'GET' && route.includes('/plans')
+        ? { body: [{ id: planId, revision: 3, status: 'waiting', current_step: 1, steps: [{ position: 1, botId: peerId, botName: 'Analyst', task: 'Check report', status: 'pending', resultMessageId: 'not-projected' }] }] }
+        : original(route, method, body));
+      const inspected = await executeCurrentGroupTool('lane', { type: 'inspect' }, confirm);
+      expect(inspected).toMatchObject({ ok: true, members: expect.arrayContaining([{ actorId: peerId, kind: 'bot', name: 'Analyst', role: 'member', state: 'joined', ownerActorId: outsiderId, ownerName: 'Chris' }]),
+        plans: [{ id: planId, revision: 3, status: 'waiting', currentStep: 1, steps: [{ position: 1, botActorId: peerId, botName: 'Analyst', task: 'Check report', status: 'pending' }] }] });
+      expect(await call({ type: 'plan', planId, expectedRevision: 3, action: 'reassign', position: 1, botId })).toMatchObject({ ok: true });
+      expect(writes().at(-1)?.[2]).toMatchObject({ action: 'reassign', position: 1, botId });
+    });
+    it.each([selfId, outsiderId])('exposes invitable owned Chat actors only to the owner requester %s', async requester => {
+      await setup('owner', requester, 'admin');
+      members = members.filter(m => m.id !== peerId);
+      const original = fixture.handle.getMockImplementation()!;
+      fixture.handle.mockImplementation((route, method, body) => route === '/actors'
+        ? { body: [{ id: botId, kind: 'bot', externalId: 'local-bot', name: 'Bot' }, { id: peerId, kind: 'bot', externalId: 'new-local-bot', name: 'New Bot' }] }
+        : original(route, method, body));
+      fixture.profiles.push({ id: 'new-local-bot', displayName: 'New Bot', status: 'active' });
+      await vi.advanceTimersByTimeAsync(5001);
+      const inspected = await executeCurrentGroupTool('lane', { type: 'inspect' }, confirm);
+      expect(inspected).toMatchObject({ ok: true, invitableBots: requester === selfId ? [{ actorId: peerId, botId: 'new-local-bot', name: 'New Bot' }] : [] });
+      if (requester === selfId) {
+        expect(await call({ type: 'member', actorId: peerId, action: 'invite' })).toMatchObject({ ok: true });
+        expect(writes().at(-1)?.[2]).toMatchObject({ actorId: peerId, action: 'invite' });
+      }
+    });
     it.each(['execution', 'plan'] as const)('controls the existing %s queue through the actual bot actor', async type => {
       await setup('admin');
       const targetId = '80000000-0000-4000-8000-000000000001';

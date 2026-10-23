@@ -759,6 +759,10 @@ Desktop 群聊与话题之间的分隔线支持左右拖拽和方向键调宽；
 群专线的 helper bots 索引提供 get_current_group 和 manage_current_group。
 Host 从活跃执行绑定群与伙伴，不接受模型指定群或执行身份；查询读取当前服务端快照、成员与队列，
 返回伙伴自身角色、请求者角色和有效权限。角色投影复用 chatGroupRolePermissions。
+公开成员保留 ownerActorId／ownerName，以区分同名伙伴；计划返回 currentStep 及每步的位置、
+任务、负责伙伴 Chat actor ID 与状态，使移除／更换步骤有查询依据。人类主人请求且当前伙伴
+有管理角色时，额外返回主人自有的可邀请伙伴（本地 botId 与 Chat actorId），复用 ownedBots
+身份映射；非主人请求不暴露该非群成员名册，也不增加伙伴私人资料访问。
 UI 的账号代演规则仍可选主人拥有的群主／管理员；伙伴工具只使用当前 execution.bot_id，
 绝不调用 managementActor 借用主人或另一伙伴的身份。
 
@@ -791,6 +795,8 @@ HTTP 提交之前再次检查。Host 同时绑定运行中任务的权限／计�
 撤权后不能用旧快照或持久专线恢复授权。管理写请求禁用自动认证重发；明确的服务端拒绝返回错误码，
 超时、5xx 或损坏回执返回 GROUP_RESULT_UNKNOWN，要求先查询再决定是否以原 operationId 重试。
 本轮仍有未知操作时阻止新的写入，成功读取群状态后才允许重新决定。
+同一 operationId 与内容的已成功回执在当前授权核验后返回，不再套用首次写入的旧版本；
+撤权仍拒绝读取回执，同一标识更换内容仍返回 OPERATION_CONFLICT。
 如果转让／解散已使执行失效，查询也可能被拒绝，必须通过有权的群设置核对，不换身份重试。
 
 实现与合同证据：maker-ipc/currentGroupManagement.ts、botGroupToolAuthorization.ts、chatServer.ts
