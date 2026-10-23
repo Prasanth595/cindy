@@ -60,6 +60,7 @@ function sameOptions(a: GroupSessionsOptions, b: GroupSessionsOptions): boolean 
     a.projectAliases === b.projectAliases &&
     a.includePinnedInProjects === b.includePinnedInProjects &&
     a.includeDraftsInProjects === b.includeDraftsInProjects &&
+    a.provisionalDraftTaskId === b.provisionalDraftTaskId &&
     a.localPlatform === b.localPlatform &&
     a.botOwnerBySessionId === b.botOwnerBySessionId &&
     samePersistentProjects(a.persistentLocalProjects, b.persistentLocalProjects)

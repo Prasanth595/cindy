@@ -65,6 +65,23 @@ pnpm mobile:sim:start -- --region=cn
 `--region=cn`，或使用名称已明确限定区域的 `mobile:sim:start:cn`。发布构建继续要求显式
 指定 region。
 
+Global / CN 在全新 worktree 中不需要 `config/endpoint.dev.json`；Metro 会将该私有清单
+排除出它们的 bundle，即使本机已有该文件也不打入。显式 `--region=dev` 仍读取 dev 正本，
+缺失或非法时应修复配置，不得回落到 Global / CN，也不要从其他 checkout 复制私有配置。
+
+复现或验收时，将现有身份检查保存在该任务的产物目录。先安装依赖、创建产物目录，再把
+下例 UDID 和区域换成实际目标；直接调用同一脚本，避免 pnpm 与依赖检查日志混进 JSON：
+
+```bash
+node apps/mobile/scripts/sim-whoami.mjs --region=global --udid <UDID> --json > outputs/<任务>/mobile-identity.json
+```
+
+JSON 已包含 `worktree` / `expectedSource`、`region` / `bundleId`、目标设备 UDID、安装版本、
+`native` 指纹检查和 `metros` 运行归属，无需再维护一份手工版本台账。保留退出码：非零或
+`healthy: false` 表示身份链未通过；`healthy: true` 仍不证明 App 已加载新 bundle，
+`pageVerified: false` 明确保留这个边界。页面／bundle 验证与截图按模拟器调试手册另外完成，
+证据放在同一任务目录。
+
 不要用临时 Metro、端口探测或手工修改 `.env` 代替这些脚本。多 worktree、原生构建、
 登录态和日志排查见 `apps/mobile/docs/simulator-debugging.md`。
 
@@ -295,14 +312,14 @@ prebuild 时将 Expo 模板默认的 `proguard-android.txt` 换成
 
 SDK 规则随依赖一起进入应用的最终 R8 配置，不在应用侧重复保留全部依赖：
 
-| Android SDK / 桥接 | 保留规则来源与边界 |
-| --- | --- |
-| React Native、Reanimated / Worklets | 使用依赖自带的 consumer rules，保留 JNI / TurboModule / Fabric 入口。 |
-| Expo 原生模块 | 使用 `expo-modules-core` 的 consumer rules，保留模块构造与 `definition()`、Record、视图等动态入口。自定义模块的函数名通过 `ModuleDefinition` 字符串注册。 |
-| 微信 OpenSDK 6.8.38 | Maven AAR 自带 `com.tencent.mm.opensdk` / `com.tencent.wxop` 规则；微信回调 Activity 由 config plugin 写入 manifest，由 Android 构建规则保留。 |
-| TapSDK 4.10.5 | `modules/xdt-tapdb/android/consumer-rules.pro` 按[官方接入要求](https://developer.taptap.io/docs/sdk/access/quickstart/#android-code-obfuscation)保留 `com.taptap` / `com.tapsdk`，覆盖服务发现及反射调用。 |
-| ONNX Runtime Android 1.30.0 | `modules/cindy-speaker-onnx/android/consumer-rules.pro` 保留 `ai.onnxruntime` 的类与成员，覆盖 JNI 按原名查找的 `TensorInfo` 等类型及构造方法。声纹录入与过滤须用开启 R8 的 release 包验证，mock 原生桥的 JS 单测不能替代。 |
-| Nimbus JOSE JWT 10.9.1 | 远控凭证模块直接调用 JOSE API，协议 JSON 使用显式键名的 `JSONObject` / Map，不依赖业务类字段名反射序列化。`cindy-remote-credentials/android/consumer-rules.pro` 仅忽略未启用的 XC20P 算法所需的可选 Tink 类；当前协议创建和接收均限制为 `ECDH-ES + A256GCM`。若扩展算法，须重新核对可选依赖。 |
+| Android SDK / 桥接                  | 保留规则来源与边界                                                                                                                                                                                                                                                                            |
+| ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| React Native、Reanimated / Worklets | 使用依赖自带的 consumer rules，保留 JNI / TurboModule / Fabric 入口。                                                                                                                                                                                                                         |
+| Expo 原生模块                       | 使用 `expo-modules-core` 的 consumer rules，保留模块构造与 `definition()`、Record、视图等动态入口。自定义模块的函数名通过 `ModuleDefinition` 字符串注册。                                                                                                                                     |
+| 微信 OpenSDK 6.8.38                 | Maven AAR 自带 `com.tencent.mm.opensdk` / `com.tencent.wxop` 规则；微信回调 Activity 由 config plugin 写入 manifest，由 Android 构建规则保留。                                                                                                                                                |
+| TapSDK 4.10.5                       | `modules/xdt-tapdb/android/consumer-rules.pro` 按[官方接入要求](https://developer.taptap.io/docs/sdk/access/quickstart/#android-code-obfuscation)保留 `com.taptap` / `com.tapsdk`，覆盖服务发现及反射调用。                                                                                   |
+| ONNX Runtime Android 1.30.0         | `modules/cindy-speaker-onnx/android/consumer-rules.pro` 保留 `ai.onnxruntime` 的类与成员，覆盖 JNI 按原名查找的 `TensorInfo` 等类型及构造方法。声纹录入与过滤须用开启 R8 的 release 包验证，mock 原生桥的 JS 单测不能替代。                                                                   |
+| Nimbus JOSE JWT 10.9.1              | 远控凭证模块直接调用 JOSE API，协议 JSON 使用显式键名的 `JSONObject` / Map，不依赖业务类字段名反射序列化。`cindy-remote-credentials/android/consumer-rules.pro` 仅忽略未启用的 XC20P 算法所需的可选 Tink 类；当前协议创建和接收均限制为 `ECDH-ES + A256GCM`。若扩展算法，须重新核对可选依赖。 |
 
 升级 SDK 时核对其 AAR/JAR 的 consumer rules、应用的最终 `configuration.txt` 和 release
 运行结果。共享的 Expo 配置也可能改变 iOS 指纹，冷更范围以指纹比对为准。
@@ -399,12 +416,19 @@ JS OTA 仍按现有通道检查，设置页手动检查只报告内容更新。�
 
 - 全程只用一张内容高度的 Material 底部更新卡（`SheetModal.nativePresentation`）：
   应用图标、版本变化与更新内容固定在上方，授权说明、下载进度、安装与失败在同一张卡内
-  切换，不再叠系统对话框。启动／设置页／回前台发现普通更新时直接呈现该卡，卡上
-  「立即更新」才是用户确认；强更屏的「去更新」本身就是确认，不再出现确认步骤。
+  切换，不再叠系统对话框。启动／回前台自动发现普通更新时，先在 Wi-Fi 下静默下载，
+  下载完成且回到前台后才显示「安装更新」卡；自动下载不预先申请安装权限，不自动拉起安装器。
+  Wi-Fi 断开时暂停并保留字节，恢复 Wi-Fi 后续传；自动失败静默留待后续检查重试。
+  选择「稍后」后，本进程不再重复提示同一目标；手动检查仍可打开更新卡，明确确认后可在移动网络下载。
+  权限说明或拒绝权限卡上的「稍后」也沿用同一规则。根部自动检查 hook 持有共享安装器的通道生命周期，
+  通道变化或卸载时取消已启动的下载与安装卡，回前台启动的下载同样受此约束；取消不视为用户选择「稍后」。
+  下载与打开安装器期间按钮显示「取消」，仅终止当前操作，后续自动检查仍可在 Wi-Fi 下续传；
+  通道变化和目标替换也只取消旧操作，不记作「稍后」。按钮文案与抑制提示的行为共用同一阶段判据。
+  强更屏的「去更新」本身就是确认，不再出现确认步骤。
   旧原生包、网页地址与 Play 安装仍走原系统对话框和既有出口。
-- 已授权时确认后直接下载；未授权时卡内先说明权限，用户点「允许并更新」才打开系统设置，
-  返回后读取实际权限，授权成功即继续下载。拒绝不会循环申请，卡上保留「改用浏览器下载」。
-- 下载显示进度条并支持取消，服务器未给大小时显示不定进度（系统减弱动态效果时静止）；
+- 点击安装时已授权则直接使用已下载的包；未授权时卡内先说明权限，用户点「允许并更新」才打开系统设置，
+  返回后读取实际权限，授权成功即继续安装（尚未下载的手动更新先下载）。拒绝不会循环申请，卡上保留「改用浏览器下载」。
+- 手动下载显示进度条并支持取消，服务器未给大小时显示不定进度（系统减弱动态效果时静止）；
   网络停滞会结束并提供重试。中断、取消或进程重启后，按下载地址与目标版本复用私有缓存中
   已落盘的 APK 字节，重试时续传；不同目标版本不共用文件。服务器忽略 Range 时安全从头
   写入，返回 416 时仅回退重下一次；HTTP 错误响应不写入已有文件。关闭后立即重开会等待
@@ -412,8 +436,11 @@ JS OTA 仍按现有通道检查，设置页手动检查只报告内容更新。�
   解除原有强制更新闸门。
 - APK 只写入 app 私有 `cache/cindy-updates/`。原生桥只接受该目录内的 APK，校验包名、
   目标版本与递增的 versionCode；最终签名校验、安装确认和覆盖安装由 Android 负责。
-- 安装器已打开不代表安装完成。取消系统安装后可再次安装已下载的文件；交接后的文件
-  不立即删除，后续下载时清理超过 24 小时的本功能缓存。
+- 安装器已打开不代表安装完成。取消系统安装或关闭更新卡后保留当前目标的完整包，
+  再次安装或进程重启后直接复用，不重复下载或改写。发现新目标时（包括等待 Wi-Fi 期间），
+  立即清理本功能其他目标的完整包和断点包；只清理已知命名的文件。
+  系统安装器使用独立、不可改写的时间戳命名副本，沿用既有 24 小时清理宽限（包括旧客户端的同类副本），
+  避免 `startActivity` 返回后才读取 APK 时被新目标清理；打开安装器失败则立即回收该副本。
 
 实现：`modules/cindy-app-installer/`、`src/update/androidInstallController.ts`、
 `src/update/androidInstaller.ts`、`src/update/AndroidUpdateSheet.tsx`。

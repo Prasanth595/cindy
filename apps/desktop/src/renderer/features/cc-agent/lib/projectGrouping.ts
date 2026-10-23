@@ -52,7 +52,6 @@ import {
   type ProjectScope,
 } from '../../../../shared/projectKeys';
 import type { RemoteProjectMachineIdentity } from './remoteProjectIdentity';
-import { getProvisionalDraftTaskId } from './provisionalDraftTaskId';
 
 export { deviceLinkProjectKey, normalizeProjectKey, projectKeyComparisonKey, projectIdentityKey };
 
@@ -147,6 +146,8 @@ export interface GroupSessionsOptions {
   includePinnedInProjects?: boolean;
   /** Resource catalogues include created project sessions even before their first message. */
   includeDraftsInProjects?: boolean;
+  /** Keep the new-task draft in its selected project, including first-send handoff. */
+  provisionalDraftTaskId?: string | null;
   /** 与会话生命周期解耦的本地项目目录，用于保留零会话项目。 */
   persistentLocalProjects?: readonly PersistentLocalProject[];
   /** 本地路径身份比较所需的平台；Windows 盘符与 UNC 路径忽略大小写。 */
@@ -550,7 +551,7 @@ export function groupSessions(
     const isOrcaLead = isOrcaLeadSession(s);
     // 新建页里正在输入、还没发送的任务：已经选好项目，就放在那个项目下。
     const isAutoPlacedSession =
-      s.source === 'scheduler' || s.source === 'plugin' || s.id === getProvisionalDraftTaskId();
+      s.source === 'scheduler' || s.source === 'plugin' || s.id === options.provisionalDraftTaskId;
     if (
       dir == null ||
       (!options.includeDraftsInProjects &&

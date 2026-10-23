@@ -1,6 +1,6 @@
-import { foldDesktopLayout } from './foldDesktopLayout';
+import { foldDesktopLayout, foldDesktopRegion } from './foldDesktopLayout';
 import { useAdaptiveWindow } from '@/platform/AdaptiveWindowContext';
-import { windowDivision, controlRegion } from '@/platform/windowGeometry';
+import { controlRegion } from '@/platform/windowGeometry';
 import { FoldTouchpad } from './FoldTouchpad';
 import {
   useCallback,
@@ -309,8 +309,7 @@ export function RemoteDesktopSession({
   });
   const screenSize = windowSize;
   const geometry = useAdaptiveWindow();
-  const division = windowDivision(geometry);
-  const tableRegion = division && division.first.height >= 160 && division.second.height >= 160 && division.first.width >= 160 && division.second.width >= 160 ? division : null;
+  const tableRegion = foldDesktopRegion(geometry);
 
   const systemSideRail = Platform.OS === 'ios' && !tableRegion && (geometry.barEdge !== 'none' || (geometry.reservedRegionsSupported && geometry.regularWidth && windowSize.width > windowSize.height));
   // Android adjustResize shrinks the window for the IME, not the display.
@@ -500,6 +499,17 @@ export function RemoteDesktopSession({
   const [nativeKeyboardHeight, setNativeKeyboardHeight] = useState(0);
   const [keyboardPanelHeight, setKeyboardPanelHeight] = useState(0);
   const [backControlHeight, setBackControlHeight] = useState(44);
+  // On a wide iOS window the status reservation can occupy only the trailing
+  // corner. Share that row, with the native toolbar's bottom spacing, when the
+  // complete back button fits in its unobstructed leading corner.
+  const sharedBackTop = insets.top - backControlHeight - spacing.md;
+  const portraitBackLeft = edgePadding.paddingLeft + spacing.lg;
+  const sharedStatusRow = Platform.OS === 'ios' && !landscape && !tableRegion
+    && geometry.reservedRegionsSupported && geometry.regularWidth
+    && statusReservation.length > 0 && sharedBackTop >= spacing.md
+    && !geometry.regions.some(region =>
+      region.x < portraitBackLeft + navigationChrome.target && region.x + region.width > portraitBackLeft
+      && region.y < sharedBackTop + backControlHeight && region.y + region.height > sharedBackTop);
   // Android's system keyboard already resizes the window. Keep its existing
   // flow layout; only iOS needs an offset above the native keyboard.
   const landscapeKeyboardOverlay =
@@ -507,7 +517,7 @@ export function RemoteDesktopSession({
   const keyboardBottom =
     Platform.OS === "ios" && keyboard && !fullKeys ? nativeKeyboardHeight : 0;
   const foldLayout = foldDesktopLayout(geometry, keyboardBottom, keyboardPanelHeight, keyboard);
-  const fullScreenFoldBackground = Boolean(foldLayout && division?.axis === 'horizontal');
+  const fullScreenFoldBackground = Boolean(foldLayout);
   const foldControls = foldLayout?.controls ?? controlRegion(geometry);
   const heldKeys = useRef(new Map<string, string[]>());
   const [keyPage, setKeyPage] = useState(0);
@@ -3632,7 +3642,7 @@ export function RemoteDesktopSession({
           {
             top: landscape
               ? insets.top + spacing.lg
-              : edgePadding.paddingTop + spacing.xs,
+              : sharedStatusRow ? sharedBackTop : edgePadding.paddingTop + spacing.xs,
             // iOS landscape: Island/notch sits mid-edge, so the top-left
             // corner stays clear even when insets.left is large. Skip that
             // inset unless the top edge is also unsafe — a physical cutout
@@ -3642,7 +3652,7 @@ export function RemoteDesktopSession({
               ? (Platform.OS === "ios" && !geometry.reservedRegionsSupported && insets.top === 0 ? 0 : insets.left) +
                 spacing.lg +
                 (Platform.OS === "ios" ? spacing.xs : 0)
-              : edgePadding.paddingLeft + spacing.lg,
+              : portraitBackLeft,
           },
           systemSideRail && {
             top: sideRailTop,

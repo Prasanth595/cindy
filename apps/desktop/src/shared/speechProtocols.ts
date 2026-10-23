@@ -7,12 +7,18 @@ export const SPEECH_PROTOCOLS = [
   'dashscope-tts',
 ] as const;
 export type SpeechProtocol = (typeof SPEECH_PROTOCOLS)[number];
+export type SpeechSpeedRange = { min: number; max: number } | null;
 
 /** Native synthesis limits, shared by settings and Main. Compatible proxies must
  * implement their selected protocol; this is not a claim about gateway forwarding.
  * Eleven v3 currently excludes speed: https://elevenlabs.io/docs/eleven-creative/playground/text-to-speech#speed
  */
-export function speechSpeedRange(modelId: string, protocol?: SpeechProtocol) {
+export function speechSpeedRange(
+  modelId: string,
+  protocol?: SpeechProtocol,
+  routeRange?: SpeechSpeedRange,
+): SpeechSpeedRange {
+  if (routeRange !== undefined) return routeRange;
   switch (protocol) {
     case 'elevenlabs':
       return /(?:^|\/)eleven_v3(?:_|$)/i.test(modelId) ? null : { min: 0.7, max: 1.2 };
@@ -30,9 +36,10 @@ export function isSpeechSpeedSupported(
   modelId: string,
   protocol: SpeechProtocol,
   speed: number | undefined,
+  routeRange?: SpeechSpeedRange,
 ): boolean {
   if (speed === undefined) return true;
-  const range = speechSpeedRange(modelId, protocol);
+  const range = speechSpeedRange(modelId, protocol, routeRange);
   return !!range && Number.isFinite(speed) && speed >= range.min && speed <= range.max;
 }
 
@@ -42,8 +49,9 @@ export function resolveSpeechSpeed(
   modelId: string,
   protocol: SpeechProtocol | undefined,
   speed?: number,
+  routeRange?: SpeechSpeedRange,
 ) {
-  const range = speechSpeedRange(modelId, protocol);
+  const range = speechSpeedRange(modelId, protocol, routeRange);
   return range && speed !== undefined && Number.isFinite(speed)
     ? Math.min(range.max, Math.max(range.min, speed))
     : undefined;

@@ -2465,6 +2465,7 @@ export function registerProviderHandlers(
       const ownerAtIngress = captureProviderOwnerSession();
       const finishRouteMutation = deps.beginRouteMutation(id);
       const generation = beginOAuthMutation(id);
+      const isCurrent = () => isOAuthMutationCurrent(id, generation) && providerMutationOwnerMatches(ownerAtIngress);
       let owner: ProviderOAuthOwner | null = null;
       let codexHostPrepared = false;
       try {
@@ -2477,25 +2478,23 @@ export function registerProviderHandlers(
           ownerAtIngress,
         );
         codexHostPrepared = preparation.prepared;
-        const result = await deps.oauthLogin(id, () => isOAuthMutationCurrent(id, generation), (url) => {
+        const result = await deps.oauthLogin(id, isCurrent, (url) => {
           // Only the initiating local renderer gets this ephemeral authorization URL.
-          if (!ownerId || !sender || !isOAuthMutationCurrent(id, generation) ||
-              !providerMutationOwnerMatches(ownerAtIngress)) return;
+          if (!ownerId || !sender || !isCurrent()) return;
           try {
             sender.send?.(MAKER_PUSH.PROVIDER_OAUTH_PROGRESS, {
               providerId: id, ownerId, phase: 'browser-url', url,
             });
           } catch { /* A closed renderer must not interrupt credential cleanup. */ }
         }, method, (code) => {
-          if (!ownerId || !sender || !isOAuthMutationCurrent(id, generation) ||
-              !providerMutationOwnerMatches(ownerAtIngress)) return;
+          if (!ownerId || !sender || !isCurrent()) return;
           try {
             sender.send?.(MAKER_PUSH.PROVIDER_OAUTH_PROGRESS, {
               providerId: id, phase: 'device-code', ...code,
             });
           } catch { /* The login still runs if its initiating window closes. */ }
         });
-        if (isOAuthMutationCurrent(id, generation)) {
+        if (isCurrent()) {
           if (result.ok) {
             if (result.commitAccountCapabilities) {
               // Credentials are installed: close cancellation before committing their

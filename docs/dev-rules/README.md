@@ -13,7 +13,10 @@
 
 ## 当前文档
 
-- [`repo-map.md`](repo-map.md)：仓库地图——apps、packages 与顶层目录的定位导航。
+- 模块工作入口：[Desktop](../../apps/desktop/AGENTS.md)、[Mobile](../../apps/mobile/AGENTS.md)、
+  [maker-core](../../packages/maker-core/AGENTS.md)；这里只索引模块触发条件，专题正文不重复维护。
+- [`repo-map.md`](repo-map.md)：仓库地图——目录职责，以及发送、权限、恢复、默认模型和手机新建任务的生产入口、共享判据与测试。
+- [`session-regressions.md`](session-regressions.md)：已发生过的任务体验回归、现有测试入口与运行命令。
 - [`environment-setup.md`](environment-setup.md)：公共开发环境、依赖安装与 submodule
   准备。
 - [`model-catalog-maintenance.md`](model-catalog-maintenance.md)：模型配置与下发统一入口——架构图、字段职责、覆盖顺序、修改位置、代码导航与发布验收。

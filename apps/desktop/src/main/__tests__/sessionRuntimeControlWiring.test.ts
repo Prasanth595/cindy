@@ -3,6 +3,9 @@ import { resolve } from 'node:path';
 import ts from 'typescript';
 import { describe, expect, it, vi } from 'vitest';
 import { createEffortChangeCoordinator, enqueueEffortChange } from '../../renderer/components/new-chat/effortChangeQueue';
+import { supportsSubscriptionFastPolicy, type ProviderView } from '@cindy/model-providers';
+import { withFastModePolicy } from '../../../../../packages/maker-core/src/agents/shared/fast-mode-policy';
+import { commitRuntimeAxisAfterPersistence } from '../maker-ipc/runtimeSelectionAxes';
 
 const mainRoot = resolve(__dirname, '..');
 const bootstrapSource = readFileSync(resolve(mainRoot, 'bootstrap-electron.ts'), 'utf8').replace(
@@ -100,6 +103,9 @@ describe.each([
       sessionId: 'archived-task', effort: 'high', enabled: true,
       sessions: {}, eq: vi.fn(), getDbClient: () => ({ drizzle: { select: () => query } }),
       remoteResponse: response, persistSessionFields: persist, agentSwitchPending: pending,
+      readSessionRuntimeProfiles: async () => ({ effective: { providerId: 'next-provider', agentDeviceId: null } }),
+      getSessionProvider: () => 'next-provider',
+      createSubscriptionFastPolicy: () => ({ isAllowed: () => true }),
       // These archived fixtures have no saved automation model scope.
       updateSavedScheduledAxis: vi.fn(async () => false),
       updateScheduledPreference: vi.fn(async () => {}),
@@ -200,6 +206,71 @@ describe.each([
       expect(h.row).toMatchObject({ [field]: value });
     }
     expect(h.getSession).not.toHaveBeenCalled();
+  });
+});
+
+// Review R11: run the production IPC closure with the real runtime policy
+// wrapper. Policy-only tests cannot catch an IPC branch that bypasses it.
+// Guard tier shares this file's compiled Electron closure fixture; the minimal
+// sequence is deny -> allow -> explicit enable on an active Claude task.
+describe('active Claude subscription Fast setting', () => {
+  it.each([
+    { id: 'anthropic', auth: { method: 'oauth', native: 'claude' } },
+    { id: 'openai', auth: { method: 'oauth', native: 'codex' } },
+    { id: 'custom-api', auth: { method: 'apiKey' } },
+  ])('updates the live subscription handle while preserving API behavior ($id)', async provider => {
+    let allowed = true;
+    let fast: boolean | 'ultrafast' = true;
+    let enforce!: () => Promise<void>;
+    const onFastModeChanged = vi.fn();
+    const handle = withFastModePolicy({
+      setFastMode: async (next: boolean | 'ultrafast') => { fast = next; },
+      getFastMode: () => fast,
+      close: async () => {},
+    } as Parameters<typeof withFastModePolicy>[0], {
+      isAllowed: () => allowed,
+      subscribe: listener => { enforce = listener; return () => {}; },
+      onFastModeChanged,
+    });
+    const profile = { providerId: provider.id, agentDeviceId: null };
+    const query = { from: () => query, where: () => query, limit: async () => [{ status: 'active' }] };
+    const persistFastMode = vi.fn(async () => {});
+    const bindings = {
+      sessionId: 'active-claude-task', enabled: true, sessions: {}, eq: vi.fn(),
+      getDbClient: () => ({ drizzle: { select: () => query } }),
+      agentSwitchPending: new Map(), readSessionRuntimeProfiles: async () => ({ effective: profile }),
+      createSubscriptionFastPolicy: () => ({ isAllowed: () => allowed }), supportsSubscriptionFastPolicy,
+      getSessionProvider: () => provider.id,
+      getActiveCatalog: () => ({ providers: [provider as ProviderView] }),
+      assertOwnerCurrent: vi.fn(), assertSharedTaskCurrent: { admit: vi.fn() },
+      isUserPendingAgentSwitchIntent, updateSavedScheduledAxis: async () => false,
+      resolvePendingRuntimeAxisPatch: async (_id: string, patch: object) => ({ ...patch }),
+      recordUserSessionRuntimeAxisMutation: vi.fn(), setSessionFastMode: vi.fn(),
+      maker: { getSession: () => ({ agentKind: 'claude-code', setFastMode: handle.setFastMode, getFastMode: handle.getFastMode }) },
+      persistFastMode, commitRuntimeAxisAfterPersistence, pendingCredentialSwitchHolder: null,
+      remoteResponse: undefined, log: { debug: vi.fn() },
+    };
+    const run = new Function(...Object.keys(bindings), axisHandlers.get('applyFastMode')!)(...Object.values(bindings));
+    try {
+      allowed = false;
+      await enforce();
+      expect(handle.getFastMode!()).toBe(false);
+      allowed = true;
+      await enforce();
+      expect(handle.getFastMode!()).toBe(false); // relaxation alone must never enable
+      onFastModeChanged.mockClear();
+      await run();
+      expect(persistFastMode).toHaveBeenCalledOnce();
+      if (provider.auth.method === 'oauth') {
+        expect(handle.getFastMode!()).toBe(true);
+        expect(onFastModeChanged).toHaveBeenCalledWith(true);
+      } else {
+        expect(handle.getFastMode!()).toBe(false);
+        expect(onFastModeChanged).not.toHaveBeenCalled();
+      }
+    } finally {
+      await handle.close();
+    }
   });
 });
 

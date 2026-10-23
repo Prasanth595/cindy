@@ -2111,6 +2111,7 @@ export function setGhostAgentTurnRunner(runner: GhostAgentTurnRunner | null): vo
 export function setGhostSessionRevealer(reveal: ((sessionId: string) => void) | null): void {
   getGhostAgentSlot().setRevealSession(reveal);
   getGhostErrandSlot().setRevealSession(reveal);
+  getGhostTaskViewSlot().setRevealSession(reveal);
 }
 
 const pluginTargetSlot = new PluginTargetSlot();
@@ -3937,6 +3938,7 @@ export function getGhostTaskViewSlot(): GhostTaskViewSlot {
     taskViewSlotSingleton = new GhostTaskViewSlot({
       getGhost: findGhostForInstanceId,
       focusedSessionId: () => ghostSessionFocusTracker.current(),
+      consumeUserGesture: (id) => getGhostErrandSlot().consumeUserGesture(id),
       broadcast: (payload) => broadcastTaskViewOpen(
         BrowserWindow.getAllWindows(), payload,
         (window, push) => sendGhostWindowPush(window, GHOST_TASK_VIEW_OPEN_CHANNEL, push),

@@ -3922,6 +3922,35 @@ describe('provider:models-fetch handler', () => {
 });
 
 describe('provider:oauth mutation ordering', () => {
+  // PR #6900 unit: the login discovery callback must lose its authority on an
+  // owner switch too. Existing cancellation tests only invalidated the login ID.
+  it('invalidates login discovery and rolls credentials back after an owner change', async () => {
+    const harness = new IpcHarness();
+    const owner = { dataOwnerId: 'owner-a', generation: 1 };
+    let isCurrent!: () => boolean;
+    let finish!: () => void;
+    const pending = new Promise<void>(resolve => { finish = resolve; });
+    const rollbackCredentials = vi.fn(() => true);
+    const afterCommit = vi.fn();
+    const oauthLogin = vi.fn(async (_id: string, current: () => boolean) => {
+      isCurrent = current;
+      await pending;
+      return { ok: true, rollbackCredentials, afterCommit };
+    });
+    registerProviderHandlers(harness, makeDeps({ oauthLogin, currentOwnerSession: () => ({ ...owner }) }));
+    const login = harness.invoke(MAKER_INVOKE.PROVIDER_OAUTH_LOGIN, 'openrouter');
+    await vi.waitFor(() => expect(oauthLogin).toHaveBeenCalledOnce());
+    expect(isCurrent()).toBe(true);
+    owner.generation++;
+    const currentAfterSwitch = isCurrent();
+    finish();
+    const result = await login;
+    expect(currentAfterSwitch).toBe(false);
+    expect(result).toEqual({ ok: false, reason: 'login_cancelled' });
+    expect(rollbackCredentials).toHaveBeenCalledOnce();
+    expect(afterCommit).not.toHaveBeenCalled();
+  });
+
   it('keeps the old persisted generation reusable when retirement fails before credential write', async () => {
     const harness = new IpcHarness();
     const providerId = 'logout-prewrite-retire';

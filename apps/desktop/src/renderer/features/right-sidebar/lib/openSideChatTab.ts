@@ -12,7 +12,7 @@ import { createLogger } from '@/lib/logger';
 import { createCoalescedRefresh } from '@/lib/coalescedRefresh';
 import { getDataOwnerGeneration, isDataOwnerGenerationCurrent, isDataOwnerPushCurrent } from '@/contexts/dataOwnerGeneration';
 import { isDeviceLinkRemotePushCurrent } from '@/lib/remoteDataOwnerPushFence';
-import { isSharedTaskPeer } from '@cindy/device-link';
+import { isSharedTaskPeer, remoteAgentErrorCode } from '@cindy/device-link';
 import type { Session } from '@/lib/ccAgent.types';
 import { addTab, closeTab, ensureHydrated, getBucket, setActiveTab, subscribe } from '../store';
 import { mergeSidebarWindowBack } from './mergeSidebarWindowBack';
@@ -182,11 +182,14 @@ export async function openSideChatTab(
     return true;
   } catch (error) {
     const code = extractIpcError(error)?.code;
-    log.warn('open failed', { code });
+    const remoteCode = remoteAgentErrorCode(error instanceof Error ? error.message : String(error));
+    log.warn('open failed', { code, remoteCode });
     const key = code === 'NO_PRIOR_ASSISTANT' ? 'notReady'
       : code === 'UNSUPPORTED_CAPABILITY' ? 'unsupported'
       : code === 'DEVICE_LINK_CHANNEL_NOT_ALLOWED' ? 'updateHost' : 'failed';
-    toast.error(i18n.t(`chat.sideChat.${key}`));
+    toast.error(key === 'failed' && remoteCode
+      ? i18n.t(`chat.remoteError.${remoteCode}`, { defaultValue: i18n.t('chat.sideChat.failed') })
+      : i18n.t(`chat.sideChat.${key}`));
     return false;
   }
 }

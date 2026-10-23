@@ -31,6 +31,7 @@ type Props = {
   route: SpeechModelSelection;
   protocol?: SpeechProtocol;
   voice: string;
+  autoSelectFirstVoice: boolean;
   speed?: number;
   children?: ReactNode;
   disabled: boolean;
@@ -44,6 +45,7 @@ export function SpeechVoicePicker({
   route,
   protocol,
   voice,
+  autoSelectFirstVoice,
   speed,
   children,
   disabled,
@@ -156,6 +158,22 @@ export function SpeechVoicePicker({
     // Include the detected protocol in the refresh key, but send only an explicit
     // user override. Main must resolve inferred protocols against its current catalog.
   }, [routeKey, revision]);
+
+  useEffect(() => {
+    // Reuse only this route's successful catalog. Manual input, including an
+    // intentionally empty draft, always wins over a late catalog response.
+    if (
+      !autoSelectFirstVoice ||
+      voice ||
+      manual ||
+      disabled ||
+      currentCatalog?.phase !== 'ready' ||
+      !isDataOwnerGenerationCurrent(owner)
+    )
+      return;
+    const firstVoice = catalog?.voices[0]?.id;
+    if (firstVoice) onChange(firstVoice, true);
+  }, [autoSelectFirstVoice, voice, manual, disabled, currentCatalog, catalog, owner, onChange]);
 
   useEffect(() => {
     if (currentCatalog?.phase !== 'ready' || !catalog || !voice) return;

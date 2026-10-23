@@ -130,6 +130,40 @@ describe('Bot named worker transactions', () => {
     ).toEqual({ hiddenAt: null, pinnedAt: null });
   });
 
+  // #6895: model saves must retire only live profile-following restores, and
+  // a later write failure must roll back both the profile and the restore clear.
+  it('retires only active profile-following restores atomically with the model save', () => {
+    tx(db, { name: 'bots.createProfile', args: {
+      id: 'bot-1', displayName: 'Hermes', description: '', avatar: '🤖', avatarColor: 'violet',
+      identitySource: 'identity', capabilitiesJson: '{}', now: 1,
+    } });
+    for (const role of ['canonical', 'group', 'channel', 'thread', 'worker', 'archived']) {
+      db.prepare(`INSERT INTO sessions
+        (id, title, workspace_kind, model, effort, permission_mode, status, total_token_usage,
+         total_cost_usd, context_tokens, context_window, fast_mode, plan_mode_enabled, agent_kind,
+         extra_dirs, source, created_at, updated_at, scheduled_model_baseline)
+        VALUES (?, 'Hermes', 'dialogue', 'temporary', 'high', 'ask', 'active',
+         0, 0, 0, 0, 0, 0, 'codex', '[]', 'bot', 2, 2, 'old-route')`).run(role);
+      db.prepare(`INSERT INTO bot_session_links
+        (id, bot_id, session_id, profile_version, role, created_at, archived_at)
+        VALUES (?, 'bot-1', ?, 1, ?, 2, ?)`).run(`link-${role}`, role, role === 'archived' ? 'channel' : role, role === 'archived' ? 3 : null);
+    }
+    const args = { id: 'bot-1', identitySource: 'identity', capabilitiesJson: '{"model":"new"}',
+      profileContentChanged: true, expectedCurrentVersion: 1, clearScheduledModelBaseline: true, now: 4 };
+    // Fail the permission write after restore retirement, not its early input
+    // validation, so this still verifies rollback of the combined transaction.
+    db.exec(`CREATE TRIGGER reject_permission_write BEFORE UPDATE OF permission_mode ON sessions
+      BEGIN SELECT RAISE(ABORT, 'permission write failed'); END`);
+    expect(() => tx(db, { name: 'bots.updateProfile', args: { ...args, canonicalPermissionMode: 'auto' } }))
+      .toThrow('permission write failed');
+    expect(db.prepare('SELECT current_version FROM bot_profiles').pluck().get()).toBe(1);
+    expect(db.prepare('SELECT COUNT(*) FROM sessions WHERE scheduled_model_baseline IS NOT NULL').pluck().get()).toBe(6);
+    db.exec('DROP TRIGGER reject_permission_write');
+    tx(db, { name: 'bots.updateProfile', args });
+    expect(db.prepare('SELECT id FROM sessions WHERE scheduled_model_baseline IS NOT NULL ORDER BY id').pluck().all())
+      .toEqual(['archived', 'worker']);
+    expect(db.prepare('SELECT current_version FROM bot_profiles').pluck().get()).toBe(2);
+  });
   // #6782: production worker transactions; unit tier. Existing tests do not
   // interleave a composer permission commit with a settings save captured earlier.
   it.each([['ask', 'bypassPermissions', 'trusted'], ['trusted', 'ask', 'ask']])(

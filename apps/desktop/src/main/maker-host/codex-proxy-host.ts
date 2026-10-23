@@ -2,6 +2,7 @@ import { captureUsagePricing, createUsagePricingObserver } from './model-usage-p
 import { rewriteFastModel } from './model-fast-mode.js';
 import { createAttachmentRecovery } from './oversized-attachment-recovery.js';
 import { clearCodexTextOnlyPolicies, codexTextOnlyRequestGuard, codexTextOnlyWebSocketTransforms, isCodexTextOnly } from './codex-text-only-policy.js';
+import { restrictSubscriptionRequest, withSubscriptionFastRequestPolicy } from './subscription-fast-request-policy.js';
 import {
   resolveConversationSessionHeaders,
   withChatBridgeUserAgent,
@@ -3422,6 +3423,15 @@ async function createCodexProxyHandle(
   const frozenReasoning = createCustomProviderReasoningTransform(frozenCustomProviderRoutes);
   const routeWithUsageEncoding: RoutingTransform = (body, ctx) => {
     const uncompressed = (decision: RoutingDecision | null): RoutingDecision | null => {
+      const model = isPlainObject(body) && typeof body.model === 'string' ? body.model : '';
+      const context = providerContextForRequest(ctx.headers, model);
+      const customPath = parseCodexCustomProviderPath(ctx.url);
+      const customProviderId = customPath.kind === 'route' ? customProviderRouteSnapshot(customPath.routeId, frozenCustomProviderRoutes)?.providerId : null;
+      decision = withSubscriptionFastRequestPolicy(decision, {
+        sessionId: context.sessionId ?? guestSessionId,
+        providerId: customProviderId ?? gatewayProviderIdForRewrittenModel(model) ?? context.providerId ?? guestProviderId
+          ?? (gatewayProviderIdForRewrittenModel(model) ? null : (frozenAuthInjection ?? getCodexProxyAuthInjection()) === 'oauth-bearer' ? 'openai' : null),
+      }, ctx);
       if (decision?.localHandler || !isXaiUpstream(decision?.upstreamOverride ?? '')
         || ctx.method !== 'POST' || !ctx.url.split('?', 1)[0]?.endsWith('/responses')) return decision;
       // The observer receives raw wire bytes. Negotiate plaintext so the execution-price
@@ -3461,7 +3471,12 @@ async function createCodexProxyHandle(
     },
     requestGuard: ctx => codexTextOnlyRequestGuard(isCodexTextOnly(selectedThreadIdFromHeaders(ctx.headers)), ctx, isChatGptUpstreamBase),
     // Accepted WebSockets route exclusively to CODEX_OAUTH_UPSTREAM (see resolver below).
-    webSocketTransforms: ctx => codexTextOnlyWebSocketTransforms(() => isCodexTextOnly(selectedThreadIdFromHeaders(ctx.headers)), true),
+    webSocketTransforms: ctx => codexTextOnlyWebSocketTransforms(() => isCodexTextOnly(selectedThreadIdFromHeaders(ctx.headers)), true, message => {
+      const body: unknown = JSON.parse(message.toString('utf8'));
+      const context = providerContextForRequest(ctx.headers, isPlainObject(body) && typeof body.model === 'string' ? body.model : '');
+      const next = restrictSubscriptionRequest(body, context.sessionId ?? guestSessionId, context.providerId ?? guestProviderId ?? 'openai');
+      return next ? Buffer.from(JSON.stringify(next)) : message;
+    }),
     transformResponse: (ctx) => {
       const response = {
         contentType: ctx.responseHeaders['content-type'] ?? '',

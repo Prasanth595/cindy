@@ -8821,6 +8821,23 @@
       "preparingAria": "새 버전 준비 중입니다. 잠시만 기다려 주세요",
       "confirmTitle": "아직 실행 중인 작업이 있습니다",
       "confirmBusyHint": "재시작하면 작업이 중단됩니다",
+      "confirmBusyActivities": "다시 시작하면 {{activities}} 중단됩니다.",
+      "activityJoiner": ", ",
+      "activityJoinerPair": ", ",
+      "activityJoinerLast": ", ",
+      "activityNameJoiner": ", ",
+      "activityNameJoinerPair": ", ",
+      "activityNameJoinerLast": ", ",
+      "activity": {
+        "companion": "동료의 답장이",
+        "companionOne": "동료 {{names}}의 답장이",
+        "companionOther": "동료 {{names}}의 답장이",
+        "conversation": "진행 중인 채팅이",
+        "backgroundCommand": "백그라운드 명령이",
+        "scheduledTask": "예약 작업이",
+        "generation": "생성 작업이",
+        "subtask": "하위 작업이"
+      },
       "confirmButton": "그래도 앱 재시작",
       "cancel": "취소",
       "confirmTooltip": "아직 실행 중인 작업이 있습니다 — 재시작하면 중단됩니다",
@@ -10243,7 +10260,6 @@
       "openSettings": "음성 설정",
       "startConversation": "음성 대화 시작",
       "settingsHint": "이 파트너의 낭독 모델과 음성을 선택한 후 입력창에서 음성 대화를 시작하세요.",
-      "incompleteSettings": "음성 API와 음성을 선택하면 자동으로 저장됩니다.",
       "previewNeedsChat": "파트너와 대화를 시작하면 음성을 미리 들을 수 있습니다.",
       "voiceId": "음성 ID",
       "manualVoice": "음성 ID 직접 입력",
@@ -11692,6 +11708,7 @@
       "imageCopied": "이미지를 복사했습니다",
       "copyFailed": "복사에 실패했습니다",
       "openFolderFailed": "폴더를 열지 못했습니다",
+      "longImagePreview": "긴 이미지 · 클릭하여 전체 보기",
       "copyImage": "이미지 복사",
       "revealImage": "이미지 폴더 열기",
       "revealImageSidebar": "파일 브라우저에서 보기",
@@ -12312,6 +12329,7 @@
       "REMOTE_AGENT_UNSUPPORTED": "상대 컴퓨터에서는 이 Agent를 사용할 수 없습니다. 그 컴퓨터에서 설치하거나 로그인한 뒤 다시 시도하거나, 다른 Agent를 선택하세요.",
       "REMOTE_AGENT_INVALID": "Agent를 실행하는 컴퓨터와 통신하는 중 오류가 발생했습니다. 다시 시도하고, 계속되면 두 컴퓨터의 Cindy를 모두 최신 버전으로 업데이트하세요.",
       "REMOTE_AGENT_PROVIDER_NOT_ALLOWED": "그 컴퓨터에서 이 제공자 또는 선택한 모델의 원격 사용을 허용하지 않았습니다. 제공자에게 원격 및 공유에서 사용 범위를 조정해 달라고 요청하거나 다른 모델을 선택하세요.",
+      "REMOTE_AGENT_FORK_FAILED": "Agent를 실행하는 컴퓨터에서 여기서 새 세션을 시작하지 못했습니다. 다시 시도하거나 다른 메시지로 시도해 주세요.",
       "REMOTE_AGENT_SHARE_PAUSED": "공유한 사람이 나에 대한 공유를 일시 중지해서 재개될 때까지 이 모델을 사용할 수 없습니다. 다른 모델로 바꿔 계속할 수 있습니다.",
       "REMOTE_AGENT_SHARE_REMOVED": "이 공유는 더 이상 사용할 수 없습니다(공유한 사람이 삭제했거나 내가 나갔습니다). 다른 모델로 바꿔 계속할 수 있습니다.",
       "REMOTE_AGENT_SHARE_UNAVAILABLE": "공유된 제공자를 일시적으로 사용할 수 없습니다. 공유한 사람의 컴퓨터가 오프라인이거나 공유가 잠시 꺼져 있을 수 있습니다. 나중에 다시 시도하거나 다른 모델로 바꿔 계속할 수 있습니다.",
@@ -17076,5 +17094,12 @@
     "taskSource": "[작업 출처] 파트너가 시작한 작업입니다.",
     "taskId": "작업 ID:",
     "contextReferences": "참고 자료:"
+  },
+  "subscriptionFastPolicy": {
+    "label": "Fast 허용",
+    "providerHint": "끄면 이 구독 계정의 본인 및 공유 작업이 일반 속도로 실행됩니다. Ultrafast에도 적용됩니다.",
+    "groupHint": "끄면 이 그룹을 통해 실행하는 모든 작업이 일반 속도로 실행됩니다. Ultrafast에도 적용됩니다.",
+    "pending": "일부 컴퓨터가 설정을 확인하지 않았습니다. 연결을 유지하고 이 설정을 지원하지 않는 그룹 컴퓨터를 업데이트하세요.",
+    "saveFailed": "설정은 저장되었을 수 있지만 일부 실행 중인 작업이 일반 속도 전환을 확인하지 않았습니다. 연결을 확인한 후 다시 시도하세요."
   }
 }

@@ -8853,6 +8853,23 @@
       "preparingAria": "Preparing newer version, please wait",
       "confirmTitle": "A task is still running",
       "confirmBusyHint": "Restarting will interrupt it",
+      "confirmBusyActivities": "Restarting will interrupt {{activities}}.",
+      "activityJoiner": ", ",
+      "activityJoinerPair": " and ",
+      "activityJoinerLast": ", and ",
+      "activityNameJoiner": ", ",
+      "activityNameJoinerPair": " and ",
+      "activityNameJoinerLast": ", and ",
+      "activity": {
+        "companion": "a teammate's reply",
+        "companionOne": "{{names}}'s reply",
+        "companionOther": "{{names}}'s replies",
+        "conversation": "a chat in progress",
+        "backgroundCommand": "a background command",
+        "scheduledTask": "a scheduled task",
+        "generation": "a generation",
+        "subtask": "a subtask"
+      },
       "confirmButton": "Restart App Anyway",
       "cancel": "Cancel",
       "confirmTooltip": "A task is still running — restarting will interrupt it",
@@ -10278,7 +10295,6 @@
       "openSettings": "Voice settings",
       "startConversation": "Start voice conversation",
       "settingsHint": "Choose this companion’s speech model and voice, then start a voice conversation from the message composer.",
-      "incompleteSettings": "Choose a speech API and voice to save automatically.",
       "previewNeedsChat": "Start a conversation with this companion to preview a voice.",
       "voiceId": "Voice ID",
       "manualVoice": "Enter a voice ID",
@@ -11731,6 +11747,7 @@
       "imageCopied": "Image copied",
       "copyFailed": "Copy failed",
       "openFolderFailed": "Failed to open folder",
+      "longImagePreview": "Long image · Click to view full image",
       "copyImage": "Copy image",
       "revealImage": "Reveal image in folder",
       "revealImageSidebar": "Reveal in file browser",
@@ -12351,6 +12368,7 @@
       "REMOTE_AGENT_UNSUPPORTED": "This Agent isn't available on the other computer. Install or sign in to it there, or pick another Agent.",
       "REMOTE_AGENT_INVALID": "Something went wrong talking to the computer running the Agent. Try again; if it keeps happening, update Cindy on both computers.",
       "REMOTE_AGENT_PROVIDER_NOT_ALLOWED": "That computer hasn’t granted you remote access to this provider or the selected model. Ask its owner to adjust access in Remote & Sharing, or pick another model.",
+      "REMOTE_AGENT_FORK_FAILED": "The computer running the Agent couldn’t start a new session from here. Try again, or try a different message.",
       "REMOTE_AGENT_SHARE_PAUSED": "The owner has paused this share for you, so these models can’t be used until it’s resumed. Switch to another model to continue.",
       "REMOTE_AGENT_SHARE_REMOVED": "This share is no longer available (the owner removed it or you left). Switch to another model to continue.",
       "REMOTE_AGENT_SHARE_UNAVAILABLE": "The shared provider is temporarily unavailable. The owner's computer may be offline, or sharing is turned off for now. Try again later, or switch to another model to continue.",
@@ -17130,5 +17148,12 @@
     "taskSource": "[Task source] A companion started this task.",
     "taskId": "Task ID:",
     "contextReferences": "Context references:"
+  },
+  "subscriptionFastPolicy": {
+    "label": "Allow Fast",
+    "providerHint": "When off, this subscription account uses standard speed for your own and shared tasks, including Ultrafast.",
+    "groupHint": "When off, all tasks routed through this group use standard speed, including Ultrafast.",
+    "pending": "Some computers have not confirmed the setting. Keep them connected and update group computers that do not support this setting.",
+    "saveFailed": "The setting may be saved, but some running tasks have not confirmed standard speed. Check the connection and retry."
   }
 }

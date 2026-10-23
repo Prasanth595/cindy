@@ -16,7 +16,10 @@ export function FoldTouchpad({ send, enabled }: { send(message: object): void; e
     accessibilityHint={t('remoteDesktop.pointerHint')}
     accessibilityState={{ disabled: !enabled }}
     onStartShouldSetResponder={() => enabled}
-    onResponderGrant={(e) => { touch.current = { x: e.nativeEvent.pageX, y: e.nativeEvent.pageY, distance: 0, time: Date.now() }; }}
+    onResponderGrant={(e) => {
+      touch.current = { x: e.nativeEvent.pageX, y: e.nativeEvent.pageY, distance: 0, time: Date.now() };
+      send({ type: 'nativeTouchpad', phase: 'start' });
+    }}
     onResponderMove={(e) => {
       const last = touch.current;
       if (!last || !enabled) return;
@@ -29,6 +32,7 @@ export function FoldTouchpad({ send, enabled }: { send(message: object): void; e
       if (enabled && last && last.distance < 8 && Date.now() - last.time < 400) {
         send({ type: 'nativeTouchpad', tap: true });
       }
+      send({ type: 'nativeTouchpad', phase: 'end' });
     }}
     onResponderTerminate={() => { touch.current = null; send({ type: 'releaseInput' }); }}
     style={[styles.pad, { borderColor: colors.border }]}>

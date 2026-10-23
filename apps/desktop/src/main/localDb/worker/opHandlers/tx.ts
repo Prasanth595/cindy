@@ -374,6 +374,9 @@ function botsUpdateProfile(db: Database.Database, args: unknown): { currentVersi
   if (avatarRef && p.avatar === undefined) {
     throw new Error('botAvatarRef requires an avatar address');
   }
+  if (p.clearScheduledModelBaseline !== undefined && typeof p.clearScheduledModelBaseline !== 'boolean') {
+    throw new Error('clearScheduledModelBaseline must be a boolean');
+  }
   return db.transaction(() => {
     const current = db.prepare('SELECT current_version AS currentVersion, display_name AS displayName, avatar FROM bot_profiles WHERE id = ?')
       .get(id) as { currentVersion: number; displayName: string; avatar: string } | undefined;
@@ -471,6 +474,14 @@ function botsUpdateProfile(db: Database.Database, args: unknown): { currentVersi
       db.prepare(`UPDATE bot_session_links SET profile_version = ?
         WHERE bot_id = ? AND role IN ('canonical', 'group', 'channel', 'thread') AND archived_at IS NULL`)
         .run(nextVersion, id);
+    }
+    if (p.clearScheduledModelBaseline === true) {
+      // Persist the user's new model intent atomically with the profile. A crash
+      // before runtime refresh must not revive the superseded automation restore.
+      // Frozen delegated tasks and archived lanes retain their own selection.
+      db.prepare(`UPDATE sessions SET scheduled_model_baseline = NULL WHERE id IN
+        (SELECT session_id FROM bot_session_links WHERE bot_id = ? AND role IN ('canonical', 'group', 'channel', 'thread') AND archived_at IS NULL)`)
+        .run(id);
     }
     if (permissionMode !== undefined) {
       const mode = permissionMode;
