@@ -20,7 +20,7 @@ const mocks = vi.hoisted(() => ({
   deviceReads: [] as Array<string | undefined>,
   cardReads: [] as Array<[string | undefined, string | null]>,
   cards: {} as Record<string, { title: string }>,
-  devices: [] as Array<{ deviceId: string; online: boolean; remoteControlEnabled: boolean; controlEnabled: boolean }>,
+  devices: [] as Array<{ deviceId: string; online: boolean; remoteControlEnabled: boolean; controlEnabled: boolean }> | null,
   presence: new Set<(snapshot: DeviceLinkPresenceSnapshot) => void>(),
   status: new Set<(snapshot: { status: string }) => void>(),
 }));
@@ -84,6 +84,37 @@ afterEach(() => {
 });
 
 describe('GroupMemberQuota', () => {
+  // Unit regression r4356185973 / provider-groups.md §10: a stopped relay
+  // must disable a previously online member even before the directory clears,
+  // and keep it disabled after null replaces the directory. Existing stop
+  // coverage used an already-offline directory and offline=true group state.
+  it('stops remote quota reads when relay stops despite stale online group and directory snapshots', () => {
+    const online = [{ deviceId: 'mini', online: true, remoteControlEnabled: true, controlEnabled: true }];
+    mocks.devices = online;
+    const remote = () => <GroupMemberQuota id="quota" target={{ kind: 'device', deviceId: 'mini', providerId: 'anthropic-1a2b' }} offline={false} />;
+    const mounted = render(remote());
+    expect(screen.getByTestId('quota-card').textContent).toBe('Mini’s Claude');
+    act(() => mocks.status.forEach(listener => listener({ status: 'stopped' })));
+    expect(screen.getByText('providerGroup.member.quota.offline')).toBeTruthy();
+    expect(mocks.cardReads.at(-1)).toEqual([undefined, null]);
+    expect(mocks.deviceReads.at(-1)).toBeUndefined();
+    for (const directory of [null, [...online]]) {
+      mocks.devices = directory;
+      mounted.rerender(remote());
+      act(() => mocks.presence.forEach(listener => listener({ deviceId: 'mini', online: true, remoteControlEnabled: true } as DeviceLinkPresenceSnapshot)));
+      expect(screen.getByText('providerGroup.member.quota.offline')).toBeTruthy();
+      expect(mocks.cardReads.at(-1)).toEqual([undefined, null]);
+    }
+    mounted.rerender(<GroupMemberQuota id="quota" target={{ kind: 'local', providerId: 'anthropic' }} offline={false} />);
+    expect(screen.getByTestId('quota-card').textContent).toBe('This computer’s Claude');
+    act(() => mocks.status.forEach(listener => listener({ status: 'online' })));
+    mounted.rerender(remote());
+    expect(screen.getByTestId('quota-card').textContent).toBe('Mini’s Claude');
+    mounted.unmount();
+    expect(mocks.status.size).toBe(0);
+    expect(mocks.presence.size).toBe(0);
+  });
+
   // Unit regression r4355497190: listDevices retains its old offline array on
   // failure. Existing recovery only replaced that array. A target online push
   // must show its quota immediately, while another peer, disabled controls,

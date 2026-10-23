@@ -47,6 +47,7 @@ export function GroupMemberQuota({
   const devices = useDeviceLinkDeviceList();
   const targetDeviceId = target.kind === 'device' ? target.deviceId : null;
   const owner = getDataOwnerGeneration();
+  const [relayStopped, setRelayStopped] = useState(false);
   const [presence, setPresence] = useState<{
     deviceId: string;
     directory: typeof devices;
@@ -56,22 +57,22 @@ export function GroupMemberQuota({
   } | null>(null);
   useEffect(() => {
     setPresence(null);
-    if (!targetDeviceId) return;
     const deviceLink = window.electronAPI?.deviceLink;
-    if (!deviceLink?.onPresenceChanged) return;
+    if (!deviceLink) return;
     let acceptingPresence = true;
-    const offPresence = deviceLink.onPresenceChanged((snapshot) => {
+    const offPresence = targetDeviceId ? deviceLink.onPresenceChanged?.((snapshot) => {
       if (!acceptingPresence || snapshot.deviceId !== targetDeviceId || !isDataOwnerGenerationCurrent(owner)) return;
       setPresence({
         deviceId: targetDeviceId, directory: devices, owner,
         online: snapshot.online, remoteControlEnabled: snapshot.remoteControlEnabled,
       });
-    });
+    }) : undefined;
     const offStatus = deviceLink.onStatusChanged?.(({ status }) => {
       acceptingPresence = status === 'online';
+      setRelayStopped(status === 'stopped');
       if (status !== 'online') setPresence(null);
     });
-    return () => { offPresence(); offStatus?.(); };
+    return () => { offPresence?.(); offStatus?.(); };
   }, [targetDeviceId, devices, owner]);
   // listDevices preserves its old array after a failed refresh. A target push
   // remains fresher until the directory changes; local control permission still
@@ -79,10 +80,12 @@ export function GroupMemberQuota({
   const currentPresence = presence?.deviceId === targetDeviceId && presence.directory === devices &&
     isDataOwnerGenerationCurrent(presence.owner) ? presence : null;
   const device = target.kind === 'device' ? devices?.find((entry) => entry.deviceId === target.deviceId) : undefined;
-  const quotaOffline = device
+  // A stopped relay clears the shared directory to null. Keep the stop signal
+  // across that update instead of falling back to a stale online group row.
+  const quotaOffline = (target.kind === 'device' && relayStopped) || (device
     ? !(currentPresence?.online ?? device.online) ||
       !(currentPresence?.remoteControlEnabled ?? device.remoteControlEnabled) || !device.controlEnabled
-    : offline;
+    : offline);
   const remoteDeviceId = target.kind === 'device' && !quotaOffline ? target.deviceId : null;
   const { providers: localProviders } = useProviders();
   const deviceCatalog = useDeviceProviders(remoteDeviceId ?? undefined);
