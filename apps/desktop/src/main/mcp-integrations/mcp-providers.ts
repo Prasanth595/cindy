@@ -1,3 +1,4 @@
+import { executeCurrentGroupTool } from '../maker-ipc/botGroupToolAuthorization.js';
 import { todoForCaller } from '../maker-ipc/botTodoAccess.js';
 import { activeCompanionCloud } from '../companion-cloud/runtime.js';
 import { TodoError, queryTodoItems, type TodoListQuery, type TodoPatch, type preflightTodoEvents } from '@cindy/maker-shared/teammate-todo';
@@ -1044,6 +1045,23 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
           if (!owned) throw new Error('当前调用未绑定伙伴主任务');
           return owned.botId;
         },
+      },
+      // Group tools use only the live execution identity, never the account UI's proxy actor.
+      currentGroup: (sessionId, request) => {
+        const input = getTaskActionInputState(sessionId);
+        const assertCurrent = () => {
+          const fresh = getTaskActionInputState(sessionId);
+          if (fresh.key !== input.key || fresh.boundary !== input.boundary || input.permission?.isCurrent?.() !== true)
+            throw new Error('GROUP_AUTHORIZATION_REQUIRED');
+          if (request.type === 'manage' && input.permission?.planModeEnabled !== false)
+            throw new Error('GROUP_AUTHORIZATION_REQUIRED');
+        };
+        return executeCurrentGroupTool(sessionId, request, async summary => {
+          assertCurrent();
+          const confirmed = await confirmTaskAction(sessionId, 'manage_current_group', summary);
+          assertCurrent();
+          return confirmed;
+        }, assertCurrent);
       },
       // 伙伴的主力电脑:与界面同一条路径(本机交出 / 请主力电脑交出 / 在这台电脑继续)。
       teammateHome: {

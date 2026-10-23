@@ -18,6 +18,32 @@ function parsePayload(result: unknown): Record<string, unknown> {
 }
 
 describe("cindy_helper MCP server", () => {
+  // #6906, unit: MCP discovery/direct/progressive routes must reach the bound Host callback.
+  // Existing tests have no group-management tools; minimum failing input is list_tools(bots).
+  // Standalone file: 1.52s wall, 139ms test execution.
+  it.each(['claude-code', 'codex', 'pi'] as const)('discovers and routes current-group management for %s', async agentKind => {
+    const currentGroup = vi.fn(async (sessionId: string) => ({ ok: true as const, boundSession: sessionId }));
+    const server = createXdtHelperMcpServer({ resolveSurface: async () => 'bot', currentGroup }, {
+      agentKind, workingDir: '/isolated', sessionId: 'group-lane',
+    });
+    const client = new Client({ name: 'group-tools-test', version: '1' });
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(st), client.connect(ct)]);
+    try {
+      const categories = parsePayload(await client.callTool({ name: 'list_tools', arguments: {} }));
+      expect(categories.categories).toEqual(expect.arrayContaining([expect.objectContaining({ name: 'bots', description: expect.stringContaining('get_current_group') })]));
+      const catalog = parsePayload(await client.callTool({ name: 'list_tools', arguments: { category: 'bots' } }));
+      expect(catalog.tools).toEqual(expect.arrayContaining([expect.objectContaining({ name: 'get_current_group' }), expect.objectContaining({ name: 'manage_current_group' })]));
+      expect(parsePayload(await client.callTool({ name: agentKind === 'pi' ? 'call_tool' : 'get_current_group', arguments: agentKind === 'pi' ? { name: 'get_current_group', args: {} } : {} }))).toMatchObject({ ok: true, boundSession: 'group-lane' });
+      const mutation = { operationId: '70000000-0000-4000-8000-000000000001', action: { type: 'update', expectedRevision: 1, name: 'New name' } };
+      expect(parsePayload(await client.callTool({ name: 'call_tool', arguments: { name: 'manage_current_group', args: mutation } }))).toMatchObject({ ok: true });
+      expect(currentGroup).toHaveBeenLastCalledWith('group-lane', { type: 'manage', mutation });
+      const count = currentGroup.mock.calls.length;
+      const invalid = await client.callTool({ name: 'call_tool', arguments: { name: 'manage_current_group', args: { ...mutation, action: { type: 'botAccess', actorId: '70000000-0000-4000-8000-000000000002', access: 'tools' } } } });
+      expect(invalid.isError).toBe(true); expect(currentGroup).toHaveBeenCalledTimes(count);
+    } finally { await client.close(); await server.close(); }
+  });
+
   it.each(['default', 'bot-main'] as const)('exposes runtime declarations through the same helper tool for %s', async (surface) => {
     const runtimeCapabilities = vi.fn(async () => ({ ok: true, capabilities: [{ server: 'fixture' }] }));
     const server = createXdtHelperMcpServer({ resolveSurface: async () => surface, runtimeCapabilities }, {

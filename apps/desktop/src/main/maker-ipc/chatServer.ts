@@ -22,7 +22,8 @@ import { chatServerWorkspaces } from './chatServerWorkspaces.js';
 import { buildPlanStepBrief } from './botGroupDivision.js';
 import { chatMigrationReceipts } from './chatMigrationReceipts.js';
 import { prepareBotGroupTaskPost, type BotGroupTaskPostSnapshot } from './botGroupTaskPostSnapshot.js';
-import { registerGroupToolAuthority, GroupToolAuthorizationError } from './botGroupToolAuthorization.js';
+import { createCurrentGroupManagement } from './currentGroupManagement.js';
+import { registerGroupToolAuthority, assertGroupToolAuthorityCurrent, authorizeGroupTool, GroupToolAuthorizationError, type GroupToolAuthority } from './botGroupToolAuthorization.js';
 import path from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
 import WebSocket from 'ws';
@@ -1656,8 +1657,23 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
           ...(threadRootId ? { threadRootId } : {}) });
         if (!lane.ok) throw new Error(lane.errorCode);
         run.sessionId = lane.sessionId;
-        run.releaseToolAuthority = registerGroupToolAuthority(lane.sessionId, {
+        const groupAuthority: GroupToolAuthority = {
           botId: bot.id, mode: execution.access_mode,
+          currentGroup: createCurrentGroupManagement({
+            botActorId: execution.bot_id, requesterId: execution.requester_id,
+            validate: async () => {
+              assertGroupToolAuthorityCurrent(lane.sessionId, groupAuthority);
+              await authorizeGroupTool(lane.sessionId, bot.id, 'read-self');
+              assertGroupToolAuthorityCurrent(lane.sessionId, groupAuthority);
+            },
+            assertCurrent: () => assertGroupToolAuthorityCurrent(lane.sessionId, groupAuthority),
+            snapshot: () => groupSnapshot(s.room.id),
+            api: async (route, method, payload, actorId) => {
+              // No automatic auth replay after a management write may have committed.
+              return api(route, method, payload, actorId, method !== undefined && method !== 'GET', 200);
+            },
+            changed: () => changed(s.room.id), inviteToken, supportsDissolve: () => supportsDissolve,
+          }),
           sourceGroup: { groupId: s.room.id, name: s.room.name },
           isCurrent: () => current() && running.get(execution.id) === run && !run.settlement,
           validate: async () => {
@@ -1678,7 +1694,8 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
               throw error;
             }
           },
-        });
+        };
+        run.releaseToolAuthority = registerGroupToolAuthority(lane.sessionId, groupAuthority);
         if (run.plan && run.workspace?.ownerSessionId) {
           const settings = workspaces().read(s.room.id)!;
           const key = `${run.plan.id}:${execution.access_mode}:${execution.access_revision}`;

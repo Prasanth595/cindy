@@ -752,3 +752,51 @@ Desktop 群聊与话题之间的分隔线支持左右拖拽和方向键调宽；
 实现：`maker-ipc/chatServerThreads.ts`、`chatServer.ts`（`decorateThreads`、`shareToMain`）、`renderer/features/bots/BotGroupThreadViews.tsx`、
 `ChatThreadPanel.tsx`。回归：`chatServerThreads.test.ts`、`chatServer.test.ts`（thread previews and main-chat shares）、
 `BotGroupChatView.test.tsx`（thread previews and posting to the main chat）、`maker-shared` 的 `botGroupThreadShare.test.ts`。
+
+
+### 伙伴自身群角色与群管理工具（#6906，2026-10-23）
+
+群专线的 helper bots 索引提供 get_current_group 和 manage_current_group。
+Host 从活跃执行绑定群与伙伴，不接受模型指定群或执行身份；查询读取当前服务端快照、成员与队列，
+返回伙伴自身角色、请求者角色和有效权限。角色投影复用 chatGroupRolePermissions。
+UI 的账号代演规则仍可选主人拥有的群主／管理员；伙伴工具只使用当前 execution.bot_id，
+绝不调用 managementActor 借用主人或另一伙伴的身份。
+
+当前可写范围为：执行伙伴本身拥有对应角色，且发起请求的是它的人类主人。
+主人可以指挥这位伙伴自己的群角色，沿用界面的主人代伙伴管理规则；主人、另一伙伴的高权限
+不能补足执行伙伴缺失的角色。其他成员对这位伙伴的工具授权仍可查询群角色，但暂不开放群管理：
+现有客户端管理合同只传 X-Chat-Actor 与操作内容，没有请求者／租约的原子授权字段，
+仅客户端预检不能承诺解决非主人请求者在提交瞬间被撤权的竞态。
+工具返回 GROUP_REQUESTER_AUTHORIZATION_UNSUPPORTED，而不是借高权限伙伴执行。
+这不证明服务端未实现新能力；本次未取得服务端仓库读取权限，也未验证生产部署。
+在明确新合同并配套服务端校验之前，不猜测字段或静默降级。
+
+| 既有能力 | 当前群工具覆盖 | 权限及边界 |
+| --- | --- | --- |
+| 自身角色、有效权限、公开成员与队列 | get_current_group | 活跃授权执行；chat-only 专线仍禁用工具，不开放私人资料 |
+| 群名、主题、简介、响应及发言模式 | update | 当前伙伴 owner/admin；群 revision 校验；仅修改传入字段 |
+| 成员邀请、移除、封禁、解禁 | member | 当前伙伴 owner/admin；保护群主、执行伙伴与请求者；最终由服务端校验目标 |
+| 成员管理员／普通角色 | member.action=role | 当前伙伴 owner；禁止降级群主，转让单独处理 |
+| 创建／撤销邀请链接 | createInvite / revokeInvite | 当前伙伴 owner/admin；撤销复用 UI 口令解析；严格校验回执 |
+| 归档／取消归档 | archive | 当前伙伴 owner/admin；检查 revision；已解散群不可恢复 |
+| 停止某次执行 | execution | 当前伙伴 owner/admin；先核对目标属于本群；使用同一操作标识 |
+| 队列／分工开始、继续、重试、停止、结束、移除／更换步骤 | plan | 当前伙伴 owner/admin；检查计划 revision 与目标成员 |
+| 全部停止 | 查询队列后按项停止 | 每项独立授权与回执；不宣称批次原子完成；停止当前执行后旧权限失效 |
+| 群主转让／解散 | transfer / dissolve | 当前伙伴 owner、人类主人发起、Host 明确确认；确认后重新核验，Full Access 不跳过 |
+| 成员昵称／头像、伙伴工具／私人资料授权 | 保持原有设置入口 | 不借群角色修改其他伙伴授权 |
+| 本机项目目录、负责人设置、创建新讨论／分工安排 | 保持原有入口 | 本次没有增加本机文件访问或计划生成接口 |
+
+每次操作及排队出队时重新核验成员、伙伴归属、访问版本、请求者与执行租约；确认及读取之后、
+HTTP 提交之前再次检查。Host 同时绑定运行中任务的权限／计划模式代次与输入边界。
+撤权后不能用旧快照或持久专线恢复授权。管理写请求禁用自动认证重发；明确的服务端拒绝返回错误码，
+超时、5xx 或损坏回执返回 GROUP_RESULT_UNKNOWN，要求先查询再决定是否以原 operationId 重试。
+本轮仍有未知操作时阻止新的写入，成功读取群状态后才允许重新决定。
+如果转让／解散已使执行失效，查询也可能被拒绝，必须通过有权的群设置核对，不换身份重试。
+
+实现与合同证据：maker-ipc/currentGroupManagement.ts、botGroupToolAuthorization.ts、chatServer.ts
+的活跃执行注册与 api、mcp-integrations/mcp-providers.ts；工具发现见
+packages/lizi-mcps/src/xdt-helper/group_management.ts 与 helper 工厂。
+回归：chatServer.test.ts 的 #6906 分组经真实适配器和隔离 HTTP fixture 验证角色矩阵、主人代演、
+非主人拒绝、排队及确认等待撤权、目标保护、未知回执、邀请和队列控制；
+lizi_xdtHelperMcpServer.test.ts 经真实 MCP Client 验证三个 harness 的发现与调用路径。
+测试数据没有访问业务群；不代表真实服务端、多客户端一致性、安装版模型或线上权限验收通过。
