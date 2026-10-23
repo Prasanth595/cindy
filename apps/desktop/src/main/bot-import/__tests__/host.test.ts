@@ -1417,9 +1417,13 @@ it.each(['short-legacy-document', `memory-${'a'.repeat(20)}-${'b'.repeat(20)}`])
   const [source] = await listCompanionImportSources('phone');
   const preview = await previewCompanionImport(source!.id, 'phone');
   const selection = { previewId: preview.id, requestId: 'fixture-recovered-docs', name: 'Ada', entryIds: ['memory-original-entry'], takeover: false, deferSetup: true };
-  await startCompanionImport(selection, 'phone');
-  await vi.waitFor(async () => expect((await getCompanionImportResult(selection.requestId))?.status).toBe('needs-attention'));
+  const accepted = await startCompanionImport(selection, 'phone');
+  // CI on Windows can accept before real memory writes finish. Join the host's
+  // existing profile lock instead of polling under a fixed wall-clock budget;
+  // retain the partial-save and stable-ID assertions through the real import.
+  await withBotProfileLocks([accepted.botId], async () => {});
   const result = (await getCompanionImportResult(selection.requestId))!;
+  expect(result.status).toBe('needs-attention');
   // Simulate the old durable checkpoint, without an available source tree.
   await h.store.update(h.root, result.botId, () => {}, environment => {
     const snapshot = JSON.parse(environment.pendingImport!.snapshotJson);
@@ -1429,7 +1433,9 @@ it.each(['short-legacy-document', `memory-${'a'.repeat(20)}-${'b'.repeat(20)}`])
   const firstFiles = (await storage.list()).map(record => record.filename);
   expect(firstFiles).toHaveLength(1);
   await startCompanionImport(selection, 'reconnected');
-  await vi.waitFor(async () => expect((await getCompanionImportResult(selection.requestId))?.status).toBe('complete'));
+  await withBotProfileLocks([result.botId], async () => {});
+  const completed = await getCompanionImportResult(selection.requestId);
+  expect(completed?.status).toBe('complete');
   expect((await storage.list()).map(record => record.filename)).toEqual(firstFiles);
   const ids = h.importDocument.mock.calls.map(call => call[1] as string);
   expect(ids[0]).toBe(ids[1]);

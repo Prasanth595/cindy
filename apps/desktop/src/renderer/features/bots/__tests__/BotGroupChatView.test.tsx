@@ -500,6 +500,134 @@ describe('BotGroupChatView', () => {
     } finally { cleanup(); motion.restore(); }
   });
 
+  describe('thread width resizing', () => {
+    let available = 1200;
+    const observed = new Map<Element, ResizeObserverCallback>();
+    let restoreGeometry: () => void;
+
+    beforeEach(() => {
+      available = 1200;
+      observed.clear();
+      vi.stubGlobal('ResizeObserver', class {
+        constructor(private callback: ResizeObserverCallback) {}
+        observe(element: Element) { observed.set(element, this.callback); }
+        disconnect() {}
+      });
+      vi.stubGlobal('PointerEvent', class extends MouseEvent {
+        pointerId: number;
+        isPrimary: boolean;
+        constructor(type: string, init: PointerEventInit = {}) {
+          super(type, init);
+          this.pointerId = init.pointerId ?? 1;
+          this.isPrimary = init.isPrimary ?? true;
+        }
+      });
+      const original = HTMLElement.prototype.getBoundingClientRect;
+      const geometry = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+        if (this.tagName === 'ASIDE') return new DOMRect(0, 0, Number.parseFloat(this.style.width) || 448, 800);
+        if (this.querySelector(':scope > main')) return new DOMRect(0, 0, available, 800);
+        return original.call(this);
+      });
+      restoreGeometry = () => geometry.mockRestore();
+      mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true }) });
+    });
+    afterEach(() => { restoreGeometry(); });
+
+    async function openResizableThread() {
+      renderView();
+      const triggers = await screen.findAllByRole('button', { name: 'bots.groupChat.server.startTopic' });
+      fireEvent.click(triggers[0]!);
+      await screen.findByText('Reply to u1');
+      const panel = screen.getByRole('complementary');
+      const handle = within(panel).getByRole('separator', { name: 'diffPanel.shell.resizeHandleAria' });
+      Object.assign(handle, { setPointerCapture: vi.fn(), hasPointerCapture: () => true, releasePointerCapture: vi.fn() });
+      return { panel, handle, triggers };
+    }
+
+    it('only changes the width, keeping both inputs, message rows and scrolling in place', async () => {
+      const { panel, handle } = await openResizableThread();
+      const main = screen.getByRole('main');
+      const groupInput = within(main).getByRole('textbox');
+      const replyInput = within(panel).getByRole('textbox');
+      const message = screen.getByText('周六 8:10 有票').closest('article');
+      const timeline = screen.getByTestId('bot-group-timeline');
+      timeline.scrollTop = 25;
+      fireEvent.change(groupInput, { target: { value: 'Group draft' } });
+      fireEvent.change(replyInput, { target: { value: 'Reply draft' } });
+      expect(panel.style.width).toBe('');
+      expect(panel.style.maxWidth).toBe('');
+      fireEvent.pointerDown(handle, { button: 0, pointerId: 1, clientX: 752 });
+      fireEvent.pointerMove(handle, { pointerId: 2, clientX: 100 });
+      expect(panel.style.width).toBe('');
+      fireEvent.pointerMove(handle, { pointerId: 1, clientX: 552 });
+      expect(panel.style.width).toBe('648px');
+      expect(panel.style.maxWidth).toBe('none');
+      expect(handle.getAttribute('aria-valuenow')).toBe('648');
+      fireEvent.pointerUp(handle, { pointerId: 1 });
+      fireEvent.pointerMove(handle, { pointerId: 1, clientX: 100 });
+      expect(panel.style.width).toBe('648px');
+      expect(within(main).getByRole('textbox')).toBe(groupInput);
+      expect(within(panel).getByRole('textbox')).toBe(replyInput);
+      expect((groupInput as HTMLTextAreaElement).value).toBe('Group draft');
+      expect((replyInput as HTMLTextAreaElement).value).toBe('Reply draft');
+      expect(screen.getByText('周六 8:10 有票').closest('article')).toBe(message);
+      expect(screen.getByTestId('bot-group-timeline')).toBe(timeline);
+      expect(timeline.scrollTop).toBe(25);
+      // Dragging must not acquire a CSS transition that would lag behind the pointer.
+      expect(panel.className).not.toMatch(/transition/);
+    });
+
+    it('bounds both columns, adapts to container resizing, and ends cancelled pointer gestures', async () => {
+      const { panel, handle } = await openResizableThread();
+      fireEvent.pointerDown(handle, { button: 2, clientX: 752 });
+      fireEvent.pointerMove(handle, { clientX: 100 });
+      expect(panel.style.width).toBe('');
+      fireEvent.pointerDown(handle, { button: 0, pointerId: 1, clientX: 752 });
+      fireEvent.pointerMove(handle, { pointerId: 1, clientX: -1000 });
+      expect(panel.style.width).toBe('800px');
+      fireEvent.pointerCancel(handle, { pointerId: 1 });
+      fireEvent.pointerMove(handle, { pointerId: 1, clientX: 2000 });
+      expect(panel.style.width).toBe('800px');
+      const layout = panel.parentElement!;
+      available = 600;
+      act(() => observed.get(layout)!([], {} as ResizeObserver));
+      expect(panel.style.width).toBe('360px');
+      available = 1200;
+      act(() => observed.get(layout)!([], {} as ResizeObserver));
+      expect(panel.style.width).toBe('800px');
+      fireEvent.pointerDown(handle, { button: 0, pointerId: 3, clientX: 400 });
+      fireEvent.pointerMove(handle, { pointerId: 3, clientX: 2000 });
+      expect(panel.style.width).toBe('280px');
+      fireEvent.lostPointerCapture(handle, { pointerId: 3 });
+      fireEvent.pointerMove(handle, { pointerId: 3, clientX: 0 });
+      expect(panel.style.width).toBe('280px');
+    });
+
+    it('keeps the chosen width when switching topics and reopening, with the existing open/close motion', async () => {
+      const motion = mockThreadMotion('200ms');
+      try {
+        const { panel, handle, triggers } = await openResizableThread();
+        fireEvent.keyDown(handle, { key: 'ArrowLeft' });
+        expect(motion.animations[0]!.cancel).toHaveBeenCalled();
+        expect(panel.style.width).toBe('464px');
+        fireEvent.keyDown(handle, { key: 'ArrowRight' });
+        expect(panel.style.width).toBe('448px');
+        fireEvent.keyDown(handle, { key: 'ArrowLeft' });
+        fireEvent.click(triggers[1]!);
+        await screen.findByText('Reply to b1');
+        const switched = screen.getByRole('complementary');
+        expect(switched.style.width).toBe('464px');
+        fireEvent.click(within(switched).getByRole('button', { name: 'bots.close' }));
+        await act(async () => motion.animations[1]!.finish());
+        expect(screen.queryByRole('complementary')).toBeNull();
+        fireEvent.click(triggers[0]!);
+        const reopened = screen.getByRole('complementary');
+        expect(reopened.style.width).toBe('464px');
+        expect(motion.animate).toHaveBeenLastCalledWith([{ width: '0px' }, { width: '464px' }], expect.anything());
+      } finally { cleanup(); motion.restore(); }
+    });
+  });
+
   it('expands a sibling thread panel, keeps the group usable, switches threads and restores the layout on close', async () => {
     vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
     mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true }) });
@@ -3709,4 +3837,18 @@ describe('pending main-chat copies across accounts', () => {
     expect(mocks.shareToMain.mock.calls).toEqual(Array.from({ length: 3 }, () => [{ groupId: 'g1', messageId: 'new-reply' }]));
     expect(mocks.reply).toHaveBeenCalledTimes(1);
   });
+});
+
+// #6550: actual timeline must project a bot's component body before Markdown rendering.
+it('renders component body as readable text without changing the message', async () => {
+  const content = 'Before\n\n```cindy-ui\n' + JSON.stringify({ seq: 1, version: 1, op: 'create', id: 'body', kind: 'text', props: { text: 'Readable answer' } }) + '\n```\n\nAfter';
+  const reply = msg({ id: 'rich-body', sequence: 1, authorKind: 'bot', authorBotId: 'a', content });
+  mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ messages: [reply] }) });
+  renderView();
+  await screen.findByText(/Readable answer/);
+  const body = screen.getByTestId('bot-group-timeline');
+  expect(body.textContent).toContain('Before');
+  expect(body.textContent).toContain('After');
+  expect(body.textContent).not.toContain('"op":"create"');
+  expect(reply.content).toBe(content);
 });

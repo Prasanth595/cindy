@@ -2,9 +2,10 @@ import type {
   VoiceConversationApi,
   VoiceConversationSelection,
 } from '@/../shared/voiceConversation';
+import { extractIpcError } from '@/utils/ipcError';
 import type { SpeechPlayer } from './PcmSpeechPlayer';
 
-type Phase = 'idle' | 'preparing' | 'playing' | 'complete' | 'error';
+type Phase = 'idle' | 'preparing' | 'playing' | 'complete' | 'error' | 'timeout';
 
 /** Playback-only preview. It never captures the microphone, submits a message or saves a preference. */
 export class VoicePreviewController {
@@ -74,8 +75,9 @@ export class VoicePreviewController {
       this.update('playing');
       await player.play(() => this.deps.api.readPreview(id), sampleRate);
       if (generation === this.generation) this.update('complete');
-    } catch {
-      if (generation === this.generation) this.update('error');
+    } catch (error) {
+      if (generation === this.generation)
+        this.update(extractIpcError(error)?.code === 'VOICE_SPEECH_TIMEOUT' ? 'timeout' : 'error');
     } finally {
       player.close();
       if (this.current?.id === id) this.current = null;

@@ -43,6 +43,8 @@
   // 关闭 / 最大化 / 弹出按钮由主机统一提供);position:"tab" 时声明本字段拒装
   // 一级主视图是独立能力，见 §4.20。使用时直接声明：
   // "mainView": { "title": "工作台", "icon": "puzzle", "html": "main-view.html" }
+  // 跟对话的任务页(§4.22):页签存在每个任务自己的右侧栏里,随任务切换
+  // "taskView": { "title": "模拟器", "html": "task.html" }
   // 可选 "open": "page"(缺省,撑满内容区)/ "sidebar"(作为页签进聊天区某一边,配 "side":
   // left / right / top / bottom)/ "window"(弹成独立窗口);只是左侧导航入口的默认打开方式,
   // 用户拖过 / 弹过后以用户的放置为准。可选 "multiple": true 允许同一视图同时开在多处。
@@ -117,6 +119,7 @@ tool name 对齐，协议键、工具名和参数名不翻译：
   },
   "panel": { "title": "Plugin panel" },
   "mainView": { "title": "Workspace" },
+  "taskView": { "title": "Simulator" },
   "network": {
     "secrets": {
       "api_key": { "label": "API key", "hint": "Create one in account settings." }
@@ -139,7 +142,7 @@ tool name 对齐，协议键、工具名和参数名不翻译：
 ```
 
 可翻译字段：`name`、`description`、`whenToUse`、`tools`(工具 description 与参数
-文案)、`panel.title`、`mainView.title`、`network.secrets / connections`、`node.secretBindings`、
+文案)、`panel.title`、`mainView.title`、`taskView.title`、`network.secrets / connections`、`node.secretBindings`、
 `setup` 的 kv 标签；凭证、连接、Node 凭证和 kv 项按稳定 key 对齐(提供某个 key 的
 条目时 label 必填,hint 可选)。工具参数 schema 中已有的 `title / description` 用
 JSON Pointer 对齐（如 `/properties/query`；根节点用空字符串 `""`），参数名、类型、
@@ -153,7 +156,7 @@ node secretBindings key、setup kv key——都不能使用 `__proto__`、`const
 `prototype`；这些名称是宿主保留键，打包时会直接拒绝。
 
 v3 直接用顶层字段声明插件贡献项与自主 Host 能力，不再有 `slots`。带详单的字段是 `tools`、`cindy`、
-`agent`、`panel`、`mainView`、`card`、`subscribe`、`network`、`node`、`preview`、
+`agent`、`panel`、`mainView`、`taskView`、`card`、`subscribe`、`network`、`node`、`preview`、
 `skill`；布尔能力写成字面量 `true`：`notify`、`badge`、`confirm`、`fs`、
 `library`、`deviceSync`、`sessionContext`、`pick`、`workspace`。不用的字段直接省略。
 `deviceSync` 的声明与调用约定见 [§4.10.2 同账号电脑间的插件资料同步](plugin-files-and-library.md#4102-同账号电脑间的插件资料同步)。

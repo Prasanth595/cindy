@@ -157,6 +157,32 @@ describe('remote connection pool', () => {
     expect(a.released).toBe(1);
   });
 
+  // provider-sharing.md §3：提供方关闭或延长闲置收回后，不能按打开时缓存的旧时长继续让出；
+  // 读不到当前设置也不能用旧值关进程。原来的用例只在打开前手动更新 caps，未覆盖定时 trim。
+  it.each([0, 120, undefined, 'offline'] as const)('refreshes the provider policy before releasing when it becomes %s', async policy => {
+    let offline = policy === 'offline';
+    let minutes: number | undefined = typeof policy === 'number' ? policy : undefined;
+    const pool = new RemoteConnectionPool({
+      now: () => now, checkMs: 3_600_000,
+      readCaps: async () => {
+        if (offline) throw new Error('DEVICE_OFFLINE');
+        return { maxRuns: 5, idleReclaimMinutes: minutes };
+      },
+    });
+    pool.noteMaxRuns(5);
+    pool.noteIdleReclaimMinutes(1);
+    const members = Array.from({ length: 4 }, (_, index) => member(`m${index}`, now - 10 * MINUTE));
+    const remove = members.map(item => pool.add(item));
+    try {
+      await pool.trim();
+      expect(members.every(item => item.released === 0)).toBe(true);
+      offline = false;
+      minutes = 1;
+      await pool.trim();
+      expect(members.reduce((sum, item) => sum + item.released, 0)).toBe(1);
+    } finally { remove.forEach(unregister => unregister()); }
+  });
+
   it('after a capacity rejection releases one eligible connection, none when nothing qualifies', async () => {
     const { pool } = poolWith(10, now);
     pool.noteMaxRuns(16);
@@ -687,6 +713,33 @@ describe('remote connection pool with a real host', () => {
     fs.writeFileSync(path.join(project, 'bg.go'), '');
     await vi.waitFor(async () => expect(await ask(a, events, `read ${id}`)).toContain('bg-finished'), { timeout: 5_000, interval: 20 });
     expect(scenario.started).toHaveLength(3);
+  });
+
+  // provider-sharing.md §3「闲置收回由提供方决定」：对方按闲置收回结束了 Agent 进程(closed 带 idleReclaimed)。新控制端不报错、
+  // 不关句柄，本机后台命令留着；下一次发送带原来的会话 id 连回。改动前会当作任务结束关掉句柄，下一次发送直接失败。
+  it('keeps this computer\'s part when the provider reclaims an idle task, then reconnects to the same conversation', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    try {
+      limits = { perDevice: 16, total: 64, idleMinutes: TINY_MINUTES };
+      const a = await start(undefined);
+      const events = watch(a);
+      const started = await ask(a, events, 'bg');
+      const id = /with ID: (\S+?)\./.exec(started)?.[1];
+      expect(id).toBeTruthy();
+      const nativeA = a.id;
+      await sleep(5);
+      // 对方巡检：不忙且闲置满设置的时长，收回。
+      await vi.advanceTimersByTimeAsync(5_000);
+      await vi.waitFor(() => expect(host.runCount()).toBe(0));
+      expect(events.seen.filter((event) => event.type === 'error')).toEqual([]);
+      expect(await ask(a, events, `read ${id}`)).toContain('<status>running</status>');
+      expect(scenario.started).toHaveLength(2);
+      expect(scenario.started[1].options.resumeSessionId).toBe(nativeA);
+      fs.writeFileSync(path.join(project, 'bg.go'), '');
+      await vi.waitFor(async () => expect(await ask(a, events, `read ${id}`)).toContain('bg-finished'), { timeout: 5_000, interval: 20 });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('records setting changes while released and opens with them, without reconnecting just for them', async () => {

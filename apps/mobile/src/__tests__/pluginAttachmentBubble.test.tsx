@@ -6,6 +6,10 @@ import { describe, expect, it, vi } from 'vitest';
 const viewportHarness = vi.hoisted(() => ({ list: null as any, finishReveal: null as any, renders: 0, expanded: false }));
 
 // Keep site-video's native surface out of this Node message-rendering test.
+vi.mock('@/platform/gestureHandler', () => {
+  const chain = (): any => new Proxy({}, { get: (_target, key) => key === 'then' ? undefined : () => chain() });
+  return { GestureDetector: ({ children }: { children: unknown }) => children, Gesture: { LongPress: chain } };
+});
 vi.mock('react-native-webview', () => ({ WebView: () => null }));
 vi.mock('expo-modules-core', () => ({ requireOptionalNativeModule: () => null }));
 

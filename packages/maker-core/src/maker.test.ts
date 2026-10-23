@@ -20,6 +20,7 @@ import {
   AgentNotAuthenticatedError,
   AgentStartupCleanupPendingError,
   AgentStartupStoppedError,
+  LOCAL_AGENT_CLIENT,
   TurnPermissionPolicyUnsupportedError,
   type AgentSessionHandle,
   BaseAgent,
@@ -281,6 +282,49 @@ function createDeferred<T = void>(): {
   });
   return { promise, resolve };
 }
+
+describe('application-owned session lifecycle', () => {
+  // Production entry: Maker.startLocalAgentSession. Core rules §1/§2 require the
+  // existing Session lifecycle, without creating or enumerating private task rows.
+  // Existing createSession tests exercise persistent tasks, not this entry (unit).
+  it('uses normal continuation settlement without storing an application transcript in Cindy tasks', async () => {
+    const storage = createStorage(), queue = createAsyncQueue<AgentEvent>();
+    const handle = createHandle({ id: 'native-client' });
+    handle.events = () => queue;
+    handle.close = vi.fn(async () => { queue.end(); });
+    handle.beginTurnContinuationWait = id => id === 7 ? 'active' : null;
+    const maker = new Maker({ agents: { codex: createAgent(async () => handle) }, storage, logger: createLogger() });
+    const session = await maker.startLocalAgentSession('codex', { sessionId: 'client', workingDir: '/repo', model: 'm',
+      [LOCAL_AGENT_CLIENT]: { url: 'http://127.0.0.1:1', token: 'invalid-fixture', hostToolsOnly: false } });
+    const observed: string[] = [];
+    session.onEvent(event => { if (event.type === 'done') observed.push(session.getObservedCurrentTurnTerminal().kind); });
+    await session.send('hello');
+    queue.push({ type: 'done', turnContinuationId: 7, data: { status: 'completed' } });
+    await vi.waitFor(() => expect(observed).toEqual(['none']));
+    queue.push({ type: 'done', data: { status: 'completed' } });
+    await vi.waitFor(() => expect(observed).toEqual(['none', 'done']));
+    expect(session.sdkSessionId).toBe('native-client');
+    expect(await storage.list()).toEqual([]);
+    expect(maker.listActiveSessions()).toEqual([]);
+    await maker.shutdown({ reason: 'account-boundary' });
+    expect(handle.close).toHaveBeenCalledWith({ reason: 'account-boundary' });
+  });
+
+  it('closes an application handle that finishes starting after shutdown instead of publishing it', async () => {
+    const ready = createDeferred<AgentSessionHandle>(), storage = createStorage();
+    const handle = createHandle({ id: 'late-client' });
+    handle.close = vi.fn(async () => {});
+    const maker = new Maker({ agents: { codex: createAgent(() => ready.promise) }, storage, logger: createLogger() });
+    const opening = maker.startLocalAgentSession('codex', { workingDir: '/repo', model: 'm',
+      [LOCAL_AGENT_CLIENT]: { url: 'http://127.0.0.1:1', token: 'invalid-fixture', hostToolsOnly: true } });
+    const rejected = expect(opening).rejects.toThrow('stopped');
+    const stopping = maker.shutdown({ reason: 'account-boundary' });
+    ready.resolve(handle);
+    await stopping; await rejected;
+    expect(handle.close).toHaveBeenCalledWith({ reason: 'account-boundary' });
+    expect(await storage.list()).toEqual([]);
+  });
+});
 
 describe('Maker local Pi package generation fence', () => {
   it.each(['disable', 'remove', 'update'])(

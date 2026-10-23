@@ -80,13 +80,19 @@ export class VoiceConversationService {
     const owner = this.deps.owner();
     const connection = this.deps.connection(selection);
     const identity = JSON.stringify(connection);
-    return loadSpeechVoices(connection, selection.modelId, this.deps.fetch, () => {
-      if (
-        this.deps.owner() !== owner ||
-        JSON.stringify(this.deps.connection(selection)) !== identity
-      )
-        throw new Error('connection_changed');
-    });
+    return loadSpeechVoices(
+      connection,
+      selection.modelId,
+      this.deps.fetch,
+      () => {
+        if (
+          this.deps.owner() !== owner ||
+          JSON.stringify(this.deps.connection(selection)) !== identity
+        )
+          throw new Error('connection_changed');
+      },
+      selection.providerId ?? 'xd',
+    );
   }
 
   /** Preview uses the exact synthesis adapter without starting ASR or submitting a task. */

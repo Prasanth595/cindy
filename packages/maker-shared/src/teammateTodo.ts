@@ -160,6 +160,11 @@ export function todoLocalDate(now: Date, zone: string): string {
 export function effectiveTodoDeadline(t: TeammateTodo): TodoDeadline | null {
   return t.deadlineOverride ? t.deadlineOverride.value : t.sourceDeadline;
 }
+/** One due occurrence of a todo: moving its deadline makes it a new one, so the "due" dot lights again. */
+export function todoDueKey(t: TeammateTodo): string {
+  const deadline = effectiveTodoDeadline(t);
+  return `${t.id}@${deadline?.kind === 'instant' ? deadline.at : deadline?.date ?? ''}`;
+}
 /** Date-only items sort at the end of their source-local day, without inventing a stored time. */
 export function createTodoDueComparator() {
   const values = new Map<string, number>();
@@ -227,8 +232,9 @@ export function todoDateLabel(t: TeammateTodo, locale: string, now = new Date())
     month: 'numeric',
     day: 'numeric',
   }).format(new Date(dateString + 'T12:00:00Z'));
+  // Hermes (Mobile) has no Intl.RelativeTimeFormat; there "today" falls back to the date itself.
   const day =
-    d && d.date === todoLocalDate(now, d.timeZone)
+    d && d.date === todoLocalDate(now, d.timeZone) && typeof Intl.RelativeTimeFormat === 'function'
       ? new Intl.RelativeTimeFormat(locale, { numeric: 'auto' }).format(0, 'day')
       : date;
   return d?.kind === 'instant'

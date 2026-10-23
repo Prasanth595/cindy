@@ -49,6 +49,7 @@ import {
   AgentNotAuthenticatedError,
   AgentStartupCleanupPendingError,
   AgentStartupStoppedError,
+  LOCAL_AGENT_CLIENT,
 } from './agents/base-agent.js';
 import type {
   AgentSessionHandle,
@@ -484,6 +485,8 @@ export class Maker {
   >();
   /** All create paths, including anonymous ids, that may still publish or quarantine a handle. */
   private readonly pendingSessionCreations = new Set<Promise<Session>>();
+  /** Application-owned transcripts use the normal in-memory lifecycle without private storage. */
+  private readonly localAgentSessions = new Set<Session>();
   /** Once shutdown starts, no new handle may race past its creation barrier. */
   private shutdownStarted = false;
   /**
@@ -1410,7 +1413,7 @@ export class Maker {
     // Snapshot current sessions before the creation barrier. Existing local
     // Claude/PI processes must start terminating immediately; a stuck startup
     // must not consume the entire host quit window before their detach begins.
-    const initialSessionSnapshot = Array.from(this.activeSessions.values());
+    const initialSessionSnapshot = [...this.activeSessions.values(), ...this.localAgentSessions];
     const initialSessionIdentities = new Set(initialSessionSnapshot);
     const queueSessionDetaches = (
       sessions: readonly Session[],
@@ -1461,7 +1464,7 @@ export class Maker {
     // Only sessions published while the creation barrier was settling belong
     // to the late pass. Identity filtering avoids detaching an initial Session
     // twice when it remains in activeSessions until its first detach settles.
-    const lateSessionSnapshot = Array.from(this.activeSessions.values())
+    const lateSessionSnapshot = [...this.activeSessions.values(), ...this.localAgentSessions]
       .filter((session) => !initialSessionIdentities.has(session));
     const lateSessionDetaches = queueSessionDetaches(lateSessionSnapshot, 'late');
     const failedHandleCleanupSnapshot = Array.from(this.failedHandleCleanups.entries());
@@ -1538,6 +1541,43 @@ export class Maker {
     if (!opts.deviceHosted) throw new Error('hosted sessions require deviceHosted');
     if (opts.remoteHostId) throw new Error('hosted sessions cannot target an SSH host');
     return this.requireAgent(kind).startSession(opts);
+  }
+
+  /** A local application owns the transcript; supplier execution stays in Maker. */
+  async startLocalAgentSession(kind: AgentKind, opts: StartSessionOptions): Promise<Session> {
+    if (this.shutdownStarted) throw new Error('Maker is shutting down');
+    if (!opts[LOCAL_AGENT_CLIENT] || opts.deviceHosted || opts.remoteHostId) {
+      throw new Error('Local application sessions require a Main-process capability');
+    }
+    const agent = this.requireAgent(kind);
+    const creation = (async () => {
+      const handle = await agent.startSession(opts);
+      if (this.shutdownStarted) {
+        await handle.close({ reason: 'account-boundary' });
+        throw new Error('Maker stopped before the local application session started');
+      }
+      const session = new Session({
+        id: opts.sessionId ?? generateSessionId(),
+        agentKind: kind,
+        workDir: opts.workingDir,
+        handle,
+        logger: this.logger,
+        permissionMode: opts.permissionMode,
+        capabilities: capabilitiesForSession(kind, agent.capabilities, undefined, undefined, handle),
+        toolLoopReviewer: this.toolLoopReviewer,
+      });
+      this.localAgentSessions.add(session);
+      session.onStatusChange(status => {
+        if (status === 'closed') this.localAgentSessions.delete(session);
+      });
+      return session;
+    })();
+    this.pendingSessionCreations.add(creation);
+    try {
+      return await creation;
+    } finally {
+      this.pendingSessionCreations.delete(creation);
+    }
   }
 
   /**

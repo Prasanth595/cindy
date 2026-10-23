@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AsrSegment, AudioGate, AudioGateEmit } from '@cindy/voice-input-core';
+import { BUNDLED_CATALOG, buildUserProvider } from '@cindy/model-providers';
+import { speechModels, resolveSpeechConnection, type SpeechCatalogDeps } from '../models.js';
 import { VoiceConversationService } from '../service.js';
+import type { SpeechConnection } from '../speech.js';
 import { hasVoiceConversationLease } from '../lease.js';
 import type { VoiceExitDecision } from '../../../shared/voiceConversation.js';
 import type { VoiceExitClassification } from '../semanticExit.js';
@@ -19,6 +22,27 @@ const previewSelection = {
   voice: 'alloy',
   text: 'voice sample',
 };
+// Unit regression: Gateway catalogs were empty for these authorized speech models.
+// Exercise the service entrance so same-ID BYOK connections cannot inherit Gateway
+// references; catalog reads must not trigger a paid preview or allocate ASR.
+it.each(['elevenlabs/eleven_multilingual_v2', 'elevenlabs/eleven_v3', 'minimax/speech-2.8-turbo'])(
+  'offers named references only on the Gateway route for %s',
+  async (modelId) => {
+    const { service, deps } = fixture();
+    const catalog = await service.voices({ modelId });
+    expect(catalog.source).toBe('reference');
+    expect(catalog.voices).toHaveLength(4);
+    expect(catalog.voices.every(({ id, name }) => id && name && id !== name)).toBe(true);
+    expect(await service.voices({ providerId: 'xd', modelId })).toEqual(catalog);
+    expect(await service.voices({ providerId: 'custom', agent: 'codex', modelId })).toEqual({
+      source: 'manual',
+      voices: [],
+    });
+    expect(deps.fetch).not.toHaveBeenCalled();
+    expect(deps.createProvider).not.toHaveBeenCalled();
+  },
+);
+
 describe('voice preview ownership', () => {
   it('synthesizes the exact selection without allocating ASR, and excludes concurrent calls', async () => {
     const { service, deps } = fixture();
@@ -139,7 +163,7 @@ function fixture() {
     models: vi.fn(() => [{ id: 'tts', name: 'Speech' }]),
     createProvider: vi.fn(async () => provider),
     createAudioGate: vi.fn<() => AudioGate | undefined>(() => undefined),
-    connection: vi.fn(() => ({
+    connection: vi.fn<() => SpeechConnection>(() => ({
       baseUrl: 'https://gateway.test/v1',
       protocol: 'openai' as const,
       headers: { authorization: 'Bearer test-key' },
@@ -736,3 +760,35 @@ describe('input-only mute', () => {
     },
   );
 });
+
+// Review regression: real catalog admission + service starts, not a direct resolver
+// assertion. Hiding a saved route must not revoke it; disabling it must. Unit tier,
+// mock ASR/transport only, no devices, credentials or paid network requests.
+it.each(['startPreview', 'start', 'startPlayback'] as const)(
+  'keeps a hidden saved speech route usable through %s, but rejects a disabled route',
+  async (method) => {
+    const { service, deps } = fixture();
+    const catalog: SpeechCatalogDeps = {
+      catalog: { ...BUNDLED_CATALOG, providers: [buildUserProvider({
+        id: 'speech', name: 'Speech', runtimes: { codex: {
+          baseUrl: 'https://api.openai.com/v1', models: [{ id: 'tts', name: 'Speech', mode: 'audio_speech', defaultEnabled: false }],
+        } },
+      })] },
+      gatewayAllowed: false, disabled: () => false, visibilityOverride: () => false,
+      gatewayConnection: () => ({ baseUrl: '', apiKey: '' }), readKey: () => 'fake-test-key',
+    };
+    const saved = { ...selection, ...previewSelection, providerId: 'speech', agent: 'codex' as const };
+    deps.models.mockImplementation(() => speechModels(catalog));
+    deps.connection.mockImplementation(() => resolveSpeechConnection(catalog, saved));
+    await expect(service[method](1, saved)).resolves.toBeDefined();
+    expect(deps.connection).toHaveBeenCalled();
+    await service.end(1);
+    deps.fetch.mockClear();
+    deps.createProvider.mockClear();
+    catalog.disabled = () => true;
+    await expect(service[method](1, saved)).rejects.toThrow('model_unavailable');
+    expect(deps.fetch).not.toHaveBeenCalled();
+    expect(deps.createProvider).not.toHaveBeenCalled();
+    expect(hasVoiceConversationLease()).toBe(false);
+  },
+);

@@ -582,6 +582,19 @@ describe('wire payloads', () => {
     expect(decodeOpenPayload({ ...base, acceptsGroupSwitch: 1 })).not.toHaveProperty('acceptsGroupSwitch');
     expect(decodeOpenPayload({ ...base, groupSwitchToken: 'Zm9vYmFyYmF6cXV4MTIzNDU2' }).groupSwitchToken).toBe('Zm9vYmFyYmF6cXV4MTIzNDU2');
     expect(decodeOpenPayload({ ...base, groupSwitchToken: 'short' })).not.toHaveProperty('groupSwitchToken');
+    // 上级目录标记：被控端据此把「没有」的答成不存在，格式有任何不对都整段丢弃(按没带处理，照常逐个转发)，
+    // 不能把存在的路径答成不存在。
+    const markers = { names: ['.git', '.codex-plugin'], levels: [{ up: 1, present: ['.git'] }, { up: 2, present: [] }] };
+    expect(decodeOpenPayload({ ...base, ancestorMarkers: markers }).ancestorMarkers).toEqual(markers);
+    for (const bad of [
+      { names: ['../x'], levels: [{ up: 1, present: [] }] },
+      { names: ['.git'], levels: [{ up: 1, present: ['.svn'] }] },
+      { names: ['.git'], levels: [{ up: 0, present: [] }] },
+      { names: ['.git'], levels: [{ up: 1, present: [] }, { up: 1, present: [] }] },
+      { names: ['a/b'], levels: [{ up: 1, present: [] }] },
+    ]) {
+      expect(decodeOpenPayload({ ...base, ancestorMarkers: bad })).not.toHaveProperty('ancestorMarkers');
+    }
     expect(() => decodeOpenPayload({ sessionId: 's', options: { model: 'm' }, workspace: { workingDir: '/p', platform: 'beos' } })).toThrow();
   });
 

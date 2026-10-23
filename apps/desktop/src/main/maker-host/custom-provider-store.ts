@@ -257,6 +257,8 @@ function validateRuntime(agent: string, rt: unknown): ValidationResult {
     )) return invalid(`runtime '${agent}' discoveredCost invalid`);
     if (mm.discoveredMetadata !== undefined && !validModelMetadata(mm.discoveredMetadata))
       return invalid(`runtime '${agent}' discoveredMetadata invalid`);
+    if (mm.supportsUltrafastMode !== undefined && typeof mm.supportsUltrafastMode !== 'boolean')
+      return invalid(`runtime '${agent}' model.supportsUltrafastMode must be a boolean`);
     if (
       mm.contextWindow !== undefined &&
       (typeof mm.contextWindow !== 'number' ||
@@ -595,6 +597,8 @@ function normalizeRuntime(
       name: m.name.trim(),
       ...pickModelMetadata({ ...m, name: m.name.trim() }),
       ...(m.discoveredMetadata ? { discoveredMetadata: m.discoveredMetadata } : {}),
+      ...(typeof m.supportsUltrafastMode === 'boolean'
+        ? { supportsUltrafastMode: m.supportsUltrafastMode } : {}),
       ...(m.discoveredCost ? { discoveredCost: m.discoveredCost } : {}),
       ...(m.nameExplicit === true ? { nameExplicit: true } : {}),
       ...(m.api ? { api: m.api } : {}),
@@ -766,6 +770,26 @@ export function mergeDiscoveredModelsIntoConfig(
       };
 }
 
+/** Called only after an explicit native login commits a different identity. */
+export function clearCodexAccountUltrafast(config: CustomProviderConfig): CustomProviderConfig {
+  const runtime = config.runtimes.codex;
+  if (config.auth?.native !== 'codex' || !runtime) return config;
+  return { ...config, runtimes: { ...config.runtimes, codex: {
+    ...runtime, models: runtime.models.map(model => ({ ...model, supportsUltrafastMode: false })),
+  } } };
+}
+
+/** A CAS miss/owner switch rejects the replacement login instead of keeping an old grant. */
+export async function revokeCodexAccountUltrafast(
+  providerId: string,
+  sameOwner: () => boolean,
+): Promise<boolean> {
+  if (!sameOwner()) return false;
+  const previous = await getCustomProvider(providerId);
+  if (!sameOwner() || !previous || previous.auth?.native !== 'codex') return false;
+  return updateCustomProviderIfUnchanged(providerId, previous, clearCodexAccountUltrafast(previous));
+}
+
 /** 安全解析 auth 列 JSON（坏数据 / 结构不完整兜底为 undefined = API key 历史形态）。 */
 function parseAuth(raw: string | null): CustomProviderConfig['auth'] {
   if (!raw) return undefined;
@@ -827,6 +851,8 @@ function parseRuntimes(raw: string): Partial<Record<AgentKind, CustomProviderRun
               ...(validModelMetadata(m.discoveredMetadata)
                 ? { discoveredMetadata: m.discoveredMetadata }
                 : {}),
+              ...(typeof m.supportsUltrafastMode === 'boolean'
+                ? { supportsUltrafastMode: m.supportsUltrafastMode } : {}),
               ...(m.nameExplicit === true ? { nameExplicit: true } : {}),
               ...(typeof m.contextWindow === 'number' &&
               Number.isFinite(m.contextWindow) &&
@@ -954,22 +980,38 @@ export async function updateCustomProvider(
   now: number = Date.now(),
 ): Promise<CustomProviderConfig | null> {
   const db = getDbClient().drizzle;
-  const existing = await db.select().from(customProviders).where(eq(customProviders.id, id)).get();
-  if (!existing) return null;
-  const c = invalidateEditedProviderMetadata(
-    rowToConfig(existing),
-    normalizeConfig({ ...config, id }),
-  );
-  await db
-    .update(customProviders)
-    .set({
-      name: c.name,
-      runtimes: JSON.stringify(c.runtimes),
-      auth: c.auth ? JSON.stringify(c.auth) : null,
-      updatedAt: nextUpdatedAt(now, existing.updatedAt),
-    })
-    .where(eq(customProviders.id, id));
-  return c;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const existing = await db.select().from(customProviders).where(eq(customProviders.id, id)).get();
+    if (!existing) return null;
+    const previous = rowToConfig(existing);
+    const c = invalidateEditedProviderMetadata(previous, normalizeConfig({ ...config, id }));
+    const nativeAccount = previous.auth?.native === 'codex' || c.auth?.native === 'codex';
+    if (nativeAccount && c.runtimes.codex) {
+      // Settings snapshots cannot grant or revoke account-discovered capabilities.
+      // Only the main-owned discovery/revocation CAS path may change this field.
+      const models = new Map(previous.runtimes.codex?.models.map(model => [model.id, model]));
+      c.runtimes.codex.models = c.runtimes.codex.models.map(model => ({
+        ...model,
+        supportsUltrafastMode: previous.auth?.native === 'codex' && c.auth?.native === 'codex'
+          && models.get(model.id)?.supportsUltrafastMode === true,
+      }));
+    }
+    const result = await db
+      .update(customProviders)
+      .set({
+        name: c.name,
+        runtimes: JSON.stringify(c.runtimes),
+        auth: c.auth ? JSON.stringify(c.auth) : null,
+        updatedAt: nextUpdatedAt(now, existing.updatedAt),
+      })
+      .where(nativeAccount
+        ? and(eq(customProviders.id, id), eq(customProviders.updatedAt, existing.updatedAt))
+        : eq(customProviders.id, id))
+      .run();
+    if (!nativeAccount || result.changes === 1) return c;
+    // A discovery/revocation raced this write. Merge against the latest grant.
+  }
+  throw new Error('Provider changed while saving settings; retry the update');
 }
 
 /**

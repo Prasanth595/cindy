@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  botGroupBodyParts,
   botGroupComposerPlanState,
   botGroupErrorVariant,
   botGroupNoticeVariant,
@@ -154,5 +155,60 @@ describe('queue lanes', () => {
     const key = chatGroupTalkRouteKey('g1', { mode, revision: 2 }, 'q1');
     expect(isChatOnlyGroupLane(key)).toBe(chatOnly);
     expect(groupLaneOfRouteKey(key)).toBe(`group:g1:access:${mode}:2`);
+  });
+});
+
+// #6550: display-only projection. Existing presentation tests had no component bodies.
+describe('group body component display', () => {
+  const rich = (...nodes: Array<Record<string, unknown>>) => '```cindy-ui\n' + nodes.map((node, i) => JSON.stringify({ version: 1, seq: i + 1, op: 'create', id: `n${i}`, ...node })).join('\n') + '\n```';
+  it('preserves a code caption as literal text after the code', () => {
+    const content = rich({ kind: 'code', props: { text: 'const x = 1;', language: 'js', caption: '<name> *literal*' } });
+    expect(botGroupBodyParts(content, 'bot')).toEqual([
+      { kind: 'markdown', content: '```js\nconst x = 1;\n```' },
+      { kind: 'text', content: '<name> *literal*' },
+    ]);
+  });
+  it('retains the source block when a chart has an unavailable item', () => {
+    const block = rich({ kind: 'chart', props: { label: 'Totals', data: [
+      { label: 'Known', value: 3 }, { label: 'Missing', value: { ref: 'missing' } },
+    ] } });
+    expect(botGroupBodyParts('Before\n\n' + block + '\nAfter', 'bot')).toEqual([
+      { kind: 'markdown', content: 'Before\n\n' },
+      { kind: 'markdown', content: block + '\n' },
+      { kind: 'markdown', content: 'After' },
+    ]);
+  });
+  it('still projects a fully resolved chart including zero', () => {
+    const content = rich({ kind: 'chart', props: { label: 'Totals', data: [
+      { label: 'Zero', value: 0 }, { label: 'Known', value: 3 },
+    ] } });
+    expect(botGroupBodyParts(content, 'bot')).toEqual([{ kind: 'text', content: 'Totals\nZero: 0\nKnown: 3' }]);
+  });
+  it('keeps literal text literal, Markdown authored formatting, and surrounding prose in order', () => {
+    const content = 'Before\n\n' + rich({ kind: 'text', props: { text: '<name> *literal* & \n    indented' } }, { kind: 'markdown', props: { text: '**bold**' } }) + '\nAfter';
+    expect(botGroupBodyParts(content, 'bot')).toEqual([
+      { kind: 'markdown', content: 'Before\n\n' },
+      { kind: 'text', content: '<name> *literal* & \n    indented' },
+      { kind: 'markdown', content: '**bold**' },
+      { kind: 'markdown', content: 'After' },
+    ]);
+  });
+  it.each(['', 'Normal **text**', '```json\n{"op":"create"}\n```', '````md\n```cindy-ui\nexample\n```\n````'])('preserves ordinary or example body %s', content => {
+    expect(botGroupBodyParts(content, 'bot')).toEqual(content ? [{ kind: 'markdown', content }] : []);
+  });
+  it.each(['user', 'system'] as const)('does not convert %s authors', authorKind => {
+    const content = rich({ kind: 'text', props: { text: 'Example' } });
+    expect(botGroupBodyParts(content, authorKind)).toEqual([{ kind: 'markdown', content }]);
+  });
+  it.each([rich({ kind: 'text', props: { text: '' } }), rich({ kind: 'range' }), '```cindy-ui\ninvalid\n```'])('retains unreadable source %s', content => {
+    expect(botGroupBodyParts(content, 'bot')).toEqual([{ kind: 'markdown', content }]);
+  });
+  it('uses final tree content and exposes media descriptions without requesting local media', () => {
+    const content = rich({ kind: 'stack', props: { label: 'Summary' } }, { parent: 'n0', kind: 'text', props: { text: 'Old' } },
+      { op: 'patch', id: 'n1', props: { text: 'Updated' } }, { kind: 'image', props: { alt: 'Diagram', src: 'cindy-media://blobs/example.png' } });
+    expect(botGroupBodyParts(content, 'bot')).toEqual([
+      { kind: 'text', content: 'Summary' }, { kind: 'text', content: 'Updated' },
+      { kind: 'text', content: 'Diagram\ncindy-media://blobs/example.png' },
+    ]);
   });
 });

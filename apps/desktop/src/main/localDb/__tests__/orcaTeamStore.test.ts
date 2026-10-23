@@ -154,6 +154,29 @@ describe('orcaTeamStore', () => {
     expect(await store.listOrphanRemoteWorkerOpens()).toEqual([expect.objectContaining({ remoteSessionId: 'orphan-1' })]);
   });
 
+  // PR #6787, unit: real addRemoteWorker transaction + listWorkersByLead reread.
+  // Existing tests only associated an existing proxy and missed proxy creation.
+  // B executes the task while C supplies the Agent; explicit local / old-host
+  // omission must stay null rather than acquire B's execution-device identity.
+  it.each(['device-c', null, undefined])('retains the remote proxy Agent location %s across a Worker list refresh', async agentDeviceId => {
+    const store = await import('../orcaTeamStore.js');
+    const client = createTestDbClient();
+    setCurrentDbClient(client, 'test-user');
+    await seedOrcaWorkers(client);
+    await store.addRemoteWorker({ workerId: 'remote-worker', teamId: 'team-1', proxySessionId: 'remote-proxy',
+      deviceId: 'device-b', remoteSessionId: 'remote-1', label: 'remote', role: 'developer',
+      proxySession: { title: 'Remote', agentKind: 'codex', model: 'remote-model', effort: null,
+        permissionMode: 'auto', fastMode: false,
+        ...(agentDeviceId !== undefined ? { agentDeviceId } : {}),
+      },
+    });
+    const workers = await store.listWorkersByLead('lead-session-1');
+    expect(workers.find(worker => worker.id === 'remote-worker')).toMatchObject({
+      session: { agentDeviceId: agentDeviceId ?? null },
+      executionDevice: { deviceId: 'device-b', remoteSessionId: 'remote-1' },
+    });
+  });
+
   it('keeps a rolled-back remote Worker available for cleanup across database rereads', async () => {
     const store = await import('../orcaTeamStore.js');
     const client = createTestDbClient();

@@ -106,6 +106,7 @@ function existingHarness(args = 'target') {
     releaseUploadedSources: noop, setMediaAssetAttachments: noop, setAttachmentPreviews: noop,
     composerAnnotationsRef: { current: null }, setAttachments: noop, setAttachmentError: noop,
     voiceDictionaryLearningTrackerRef: { current: null }, formatRemoteError: String,
+    getPendingCompanionReplyQuote: () => null, clearSentCompanionReplyQuote: noop,
   };
   bindings.setSending = vi.fn((value: boolean) => { bindings.sending = value; });
   bindings.applyComposerDocument = vi.fn((doc: typeof initial) => { bindings.composerDocumentRef.current = doc; });

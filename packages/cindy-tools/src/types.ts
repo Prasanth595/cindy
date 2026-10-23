@@ -216,6 +216,14 @@ export type CindyGhostCallResult =
        * 固定媒体字段,不消费本字段(兼容性有回归测试锁定)。
        */
       xdt_media_descriptions?: Array<{ url: string; description: string }>;
+      /**
+       * Images the plugin shows the model (host-checked and re-encoded under
+       * the inline budget). ghost_call returns them as MCP image content after
+       * the JSON text; they are not part of the JSON.
+       */
+      images?: Array<{ data: string; mimeType: string }>;
+      /** Images the plugin offered that did not fit the inline budget. */
+      imagesOmitted?: number;
     }
   | {
       ok: false;

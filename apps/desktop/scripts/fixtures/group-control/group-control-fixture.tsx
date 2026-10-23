@@ -8,6 +8,7 @@ import { refreshBotGroups } from '../../../src/renderer/features/bots/botGroupSt
 import { ControlledBanner } from '../../../src/renderer/features/remote-device/ControlledBanner';
 
 interface GroupData {
+  bodyAnswer?: boolean;
   name: string;
   members: Array<{ botId: string; name: string }>;
   messages: number;
@@ -41,6 +42,21 @@ const message = (fields: Record<string, unknown>) => ({
 });
 
 /** One of each piece a teammate's bubble carries, in a conversation order. */
+function bodyMessages() {
+  const component = '```cindy-ui\n' + [
+    { seq: 1, version: 1, op: 'create', id: 'title', kind: 'heading', props: { text: '发布前检查' } },
+    { seq: 2, op: 'create', id: 'literal', kind: 'text', props: { text: '保留 <name>、*literal* 和 & 符号' } },
+    { seq: 3, op: 'create', id: 'list', kind: 'markdown', props: { text: '- 正文可以阅读\n- **重点**保持格式' } },
+  ].map(item => JSON.stringify(item)).join('\n') + '\n```';
+  return [
+    message({ id: 'body-user', sequence: 1, content: '请整理发布前检查', createdAt: T0 }),
+    message({ id: 'body-bot', sequence: 2, authorKind: 'bot', authorBotId: 'a', authorName: 'Aster',
+      content: '这是检查结果。\n\n' + component + '\n\n以上是本轮结论。', createdAt: T0 + MINUTE }),
+    message({ id: 'body-plain', sequence: 3, authorKind: 'bot', authorBotId: 'b', authorName: 'Nova',
+      content: '普通回复的 **加粗** 和段落保持原样。', createdAt: T0 + 2 * MINUTE }),
+  ];
+}
+
 function bubbleMessages(wrappedReactions = false) {
   const manyReactions = ['👍', '❤️', '😂', '🎉', '👀', '🙏', '✅', '🤔', '🔥', '👏', '🚀', '💯']
     .map((emoji) => ({ emoji, count: 1, me: false }));
@@ -204,7 +220,7 @@ function groupFrom(data: GroupData) {
       singleSpeaker: true } : {}),
     ...(data.bubbles || data.arrangement ? { serverBacked: true } : {}),
     ...(data.threadUnread ? { threads: threadSummaries() } : {}),
-    messages: data.arrangement ? arrangementMessages(data.arrangement)
+    messages: data.bodyAnswer ? bodyMessages() : data.arrangement ? arrangementMessages(data.arrangement)
       : bubbles ? bubbles.map(m => (data.threadUnread && UNREAD[m.id as string] ? { ...m, threadUnread: UNREAD[m.id as string] } : m))
       : Array.from({ length: data.messages }, (_, i) => ({
       id: `m${i}`,

@@ -515,6 +515,8 @@ export interface ImRunAgentTurnArgs {
   trackBackgroundTask?: (operation: () => Promise<void>) => void;
   /** Optional per-turn host policy (personal WeChat routes confirmations to Desktop). */
   turnPermissionPolicy?: TurnPermissionPolicy;
+  /** Opt in to native permissions only for a resolved companion route and verified owner. */
+  inheritCompanionOwnerPermissions?: boolean;
   /**
    * The triggering message passed the channel's owner check (DM owner gate or
    * group speaker.isOwner). Only this unlocks owner-only Host actions; omitted = not owner.
@@ -1339,7 +1341,11 @@ export function createTurnRunner(
       queueMode: args.queueMode,
       ...(args.beforeProviderStart ? { beforeProviderStart: args.beforeProviderStart } : {}),
       ...(args.onRouteResolved ? { onRouteResolved: args.onRouteResolved } : {}),
-      ...(args.turnPermissionPolicy ? { turnPermissionPolicy: args.turnPermissionPolicy } : {}),
+      // Binding presence is insufficient: unavailable companions fall back to
+      // channel-owned sessions, which must retain the mandatory policy.
+      ...(args.turnPermissionPolicy && !(args.inheritCompanionOwnerPermissions === true
+        && args.requesterIsOwner === true && target.botOwned)
+        ? { turnPermissionPolicy: args.turnPermissionPolicy } : {}),
       ...(args.requesterIsOwner === true ? { requesterIsOwner: true } : {}),
       ...(args.onEarlyReject ? { onEarlyReject: args.onEarlyReject } : {}),
       ...(args.protectedContent === true ? { protectedContent: true } : {}),
@@ -1684,6 +1690,8 @@ export function createTurnRunner(
             });
           }
           if (item.channelToolScope) {
+            // A retried dispatch must not reuse an earlier input receipt.
+            delete item.channelToolScope.inputClientId;
             item.turn.channelToolScopeRelease = beginChannelToolScope({
               sessionId: rowId,
               sessionInstanceId: state.makerSession.instanceId,
@@ -1793,6 +1801,7 @@ export function createTurnRunner(
           });
           if (persisted) {
             item.prePersistedUserMessage = { sessionId: rowId, clientId: persisted.clientId };
+            if (item.channelToolScope) item.channelToolScope.inputClientId = persisted.clientId;
             await beginTurnChangeSetAtDispatch(state.makerSession, persisted.clientId);
             turnChangeSetStarted = true;
           }

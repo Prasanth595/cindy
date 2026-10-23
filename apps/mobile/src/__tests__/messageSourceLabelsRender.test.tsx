@@ -6,6 +6,10 @@
 import { act, createElement, useImperativeHandle, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { beforeAll, describe, expect, it, vi } from "vitest";
+vi.mock('@/platform/gestureHandler', () => {
+  const chain = (): any => new Proxy({}, { get: (_target, key) => key === 'then' ? undefined : () => chain() });
+  return { GestureDetector: ({ children }: { children: unknown }) => children, Gesture: { LongPress: chain } };
+});
 vi.mock('expo-modules-core', () => ({ requireOptionalNativeModule: () => null }));
 
 const viewportHarness = vi.hoisted(() => ({

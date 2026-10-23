@@ -48,6 +48,8 @@ export function adaptComputerDriverArgs(
     // elements to register tokens and frames, and trims them from the model view.
     if ('tree_format' in props) args.tree_format ??= 'both';
     else delete args.tree_format;
+    // Evidence reads may use compact diffs; older drivers simply return full state.
+    if (!('since' in props)) delete args.since;
   }
   if (args.element_index !== undefined && !('element_index' in props) && 'element_token' in props) {
     // Newer drivers address an observed row only as `<snapshot_id>:<row>`.

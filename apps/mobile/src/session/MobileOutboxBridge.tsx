@@ -1,3 +1,4 @@
+import { readChatReplyQuote } from '@cindy/maker-shared/chat-reply-quote';
 import { useEffect, useRef, useSyncExternalStore } from "react";
 import { Alert, AppState } from "react-native";
 import { useAuth } from "@/auth/AuthContext";
@@ -322,6 +323,7 @@ export function MobileOutboxBridge() {
             agentReferences: item.agentReferences,
             pastedTextRanges: item.pastedTextRanges,
             slashCommandRanges: item.slashCommandRanges,
+            replyQuote: readChatReplyQuote(item.replyQuote) ?? undefined,
           },
         );
         return prepareMobileQueuedSessionReferences(

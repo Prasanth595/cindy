@@ -471,6 +471,8 @@ export function applyModelMetadata(
 export interface DiscoveredModel {
   id: string;
   name: string;
+  /** Account entitlement, never inherited as public model metadata. */
+  supportsUltrafastMode?: boolean;
   contextWindow?: number;
   discoveredCost?: import("./types.js").ModelCost;
   discoveredMetadata?: ModelMetadata;
@@ -488,6 +490,11 @@ export function mergeDiscoveredRuntimeModels(
     if (!model.id || !model.name || seen.has(model.id)) continue;
     seen.add(model.id);
     const index = models.findIndex((m) => m.id === model.id);
+    // Unlike descriptive metadata, a refreshed account entitlement must not stick
+    // when the latest response no longer declares it.
+    const accountCapabilities = model.supportsUltrafastMode !== undefined ||
+      (index >= 0 && models[index].supportsUltrafastMode !== undefined)
+      ? { supportsUltrafastMode: model.supportsUltrafastMode === true } : {};
     const discoveredMetadata = mergeModelMetadata(
       index >= 0 ? models[index].discoveredMetadata : undefined,
       pickModelMetadata(model.discoveredMetadata ?? model),
@@ -503,6 +510,7 @@ export function mergeDiscoveredRuntimeModels(
       added.push({
         id: model.id,
         name: model.name,
+        ...accountCapabilities,
         discoveredMetadata,
         ...(model.discoveredCost ? { discoveredCost: model.discoveredCost } : {}),
         ...(hideNew ? { defaultEnabled: false } : {}),
@@ -510,6 +518,7 @@ export function mergeDiscoveredRuntimeModels(
     else
       models[index] = {
         ...models[index],
+        ...accountCapabilities,
         ...(!models[index].discoveredMetadata ? { nameExplicit: true } : {}),
         discoveredMetadata,
         ...(model.discoveredCost ? { discoveredCost: model.discoveredCost } : {}),

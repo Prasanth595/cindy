@@ -44,7 +44,6 @@ import {
   type ProviderGroupStrategy,
 } from '../../../shared/providerGroup';
 import { providerShareComputerName, useProviderShareOwnerNameOf } from '../provider-share/providerShareNames';
-import { GroupMemberPace } from './GroupMemberPace';
 import { GroupMemberQuota, groupMemberQuotaTarget } from './GroupMemberQuota';
 import { GroupMemberReshare, reshareSummaryText } from './GroupMemberReshare';
 import { GroupMemberDetailsButton, GroupMemberVersion } from './GroupMemberVersion';
@@ -459,12 +458,6 @@ function MemberRow({
                     <span data-testid="provider-group-member-reshare-summary">
                       {reshareSummaryText(t, reshare, ownerName ?? '')}
                     </span>
-                  </>
-                )}
-                {status?.quota && (
-                  <>
-                    <span aria-hidden="true">·</span>
-                    <GroupMemberPace quota={status.quota} />
                   </>
                 )}
               </span>

@@ -138,7 +138,7 @@ export interface BotProfileRuntimeDeps {
   listOwnSkills?: (input: { botId: string }) => Promise<{
     pluginRoot: string;
     baseline?: { pluginRoot: string; skill: { name: string; description: string; path: string; filePath: string } };
-    skills: { name: string; description: string; path: string; filePath?: string }[];
+    skills: { name: string; description: string; path: string; filePath?: string; updatedAt?: string }[];
   }>;
   readSkillSource?: (input: {
     path: string;
@@ -717,7 +717,7 @@ export async function hydrateBotProfileRuntime(
     伙伴在任务里刚学会一个技能,紧接着要能续跑同一个任务;把自己写的文件也
     冻上,等于「一学会就再也 resume 不了」。
   */
-  let ownSkills: { name: string; description: string; path: string; filePath?: string }[] = [];
+  let ownSkills: { name: string; description: string; path: string; filePath?: string; updatedAt?: string }[] = [];
   let ownSkillPluginRoots: string[] = [];
   // SSH remote 会话的 harness 跑在远端文件系统上,本机 userData 里的技能目录
   // 在那边不存在 —— 与其挂一串打不开的路径,不如这类会话直接不挂。
@@ -1046,12 +1046,17 @@ export async function hydrateBotProfileRuntime(
     profilePrompt: opts.botProfilePrompt ?? '',
     contextPrompt: opts.botProfileContextPrompt ?? '',
     userProfilePrompt: opts.botUserProfilePrompt ?? '',
+    // All live chats compare this epoch before their next input. Shared learning
+    // must invalidate their frozen indexes even when the Profile did not change.
+    memoryIndex: opts.makerMemoryIndexSnapshot ?? '',
     skillResources: resolvedSkillEntries.map((entry) => ({
       name: entry.runtimeCommandName?.trim() || entry.name.trim(),
       path: entry.path?.trim() || null,
       sha256: entry.contentSha256 ?? null,
     })),
-    botOwnSkillResources: ownSkills.map((entry) => ({ name: entry.name, path: entry.path })),
+    botOwnSkillResources: ownSkills.map((entry) => ({
+      name: entry.name, path: entry.path, description: entry.description, updatedAt: entry.updatedAt ?? null,
+    })),
     mcpResources: resolvedMcpServers.map((name) => {
       const entry = mcpCatalog.find((item) => item.name === name);
       return { name, generation: entry?.generation ?? null };

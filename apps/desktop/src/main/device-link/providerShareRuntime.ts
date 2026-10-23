@@ -1,8 +1,6 @@
 import { isRemoteAgentLimitsPatch } from '../../shared/remoteAgentLimits.js';
 import { readRemoteAgentLimitsState, saveRemoteAgentLimits } from '../remote-agent/host/limitsStore.js';
 import { remoteAgentLimitUsage, revalidateRemoteModelAccess } from './dispatch.js';
-import { isRemoteAgentIdleRelease } from '../../shared/remoteAgentIdleRelease.js';
-import { readRemoteAgentIdleReleaseState, saveRemoteAgentIdleRelease } from '../remote-agent/controller/idleReleaseStore.js';
 /**
  * 供应商分享的本机接线：分享者与受邀者两侧运行时的起停、推送给 Renderer、系统通知，以及
  * Renderer 的命令通道。账号操作只接受本机应用窗口，不能经设备互联从别的电脑调用。
@@ -382,12 +380,6 @@ export function parseProviderShareCommand(raw: unknown): ProviderShareCommand {
     case 'set-run-limits':
       if (!isRemoteAgentLimitsPatch(value.limits)) throwIpcError('INVALID_PARAMS', 'Invalid remote task limits');
       return { action: value.action, limits: { ...value.limits } };
-    case 'get-idle-release':
-    case 'reset-idle-release':
-      return { action: value.action };
-    case 'set-idle-release':
-      if (!isRemoteAgentIdleRelease(value.value)) throwIpcError('INVALID_PARAMS', 'Invalid idle release minutes');
-      return { action: value.action, value: { idleMinutes: value.value.idleMinutes } };
     case 'owned':
       return { action: 'owned', range: usageRange(value.range) };
     case 'own-usage':
@@ -813,14 +805,6 @@ async function execute(command: ProviderShareCommand, assertCurrent: () => void 
       }
       return { ...readRemoteAgentLimitsState(), usage: remoteAgentLimitUsage() };
     }
-    case 'get-idle-release':
-    case 'set-idle-release':
-    case 'reset-idle-release':
-      if (command.action !== 'get-idle-release') {
-        await saveRemoteAgentIdleRelease(command.action === 'reset-idle-release' ? null : command.value);
-        assertCurrent();
-      }
-      return readRemoteAgentIdleReleaseState();
     case 'owned':
       if (running) markProviderShareHostActive(60_000);
       return ownerState(command.range);

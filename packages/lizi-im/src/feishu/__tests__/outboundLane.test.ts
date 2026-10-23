@@ -31,13 +31,13 @@ const larkMocks = vi.hoisted(() => {
     },
   );
   const deleteMessage = vi.fn(
-    function (this: unknown): Promise<{ code?: number; msg?: string; data?: {} }> {
+    function (this: unknown): Promise<{ code?: number; msg?: string; data?: object }> {
       deleteOwners.push(this);
       return Promise.resolve({ data: {} });
     },
   );
   const patch = vi.fn(
-    async (): Promise<{ code?: number; msg?: string; data?: {} }> => ({ data: {} }),
+    async (): Promise<{ code?: number; msg?: string; data?: object }> => ({ data: {} }),
   );
   const getMessage = vi.fn(
     function (
@@ -152,12 +152,12 @@ describe('feishu outbound lane routing', () => {
       handle.replace('revised');
       await vi.advanceTimersByTimeAsync(1500);
       await handle.finalize('finished');
-      expect(larkMocks.patch).toHaveBeenCalledTimes(3);
+      expect(larkMocks.patch).toHaveBeenCalledTimes(2);
       for (const client of larkMocks.patch.mock.contexts) expect(client).toBe(creator);
-      expect(larkMocks.patch).toHaveBeenLastCalledWith({
-        path: { message_id: handle.messageId },
-        data: { content: expect.stringContaining('finished') },
-      });
+      expect(larkMocks.create.mock.contexts.at(-1)).toBe(creator);
+      expect(larkMocks.create).toHaveBeenLastCalledWith(expect.objectContaining({
+        data: expect.objectContaining({ content: expect.stringContaining('finished') }),
+      }));
     },
   );
 
@@ -175,6 +175,28 @@ describe('feishu outbound lane routing', () => {
       method: 'DELETE',
       url: `open-apis/im/v1/messages/${handle.messageId}`,
     });
+  });
+
+  it.each([false, true])('final stays in its lane and does not consume the next queued turn (thread=%s)', async (thread) => {
+    const lane = thread ? 'g/oc_chat/omt_topic' : 'g/oc_chat';
+    outbound.pushReplyAnchor(lane, 'om_first');
+    outbound.pushReplyAnchor(lane, 'om_second');
+    const handle = await start(lane);
+    expect(larkMocks.reply.mock.calls[0][0].path).toEqual({ message_id: 'om_first' });
+    await handle.finalize('answer');
+    if (thread) {
+      expect(larkMocks.reply.mock.calls[1][0].path).toEqual({ message_id: 'om_first' });
+      expect(larkMocks.create).not.toHaveBeenCalled();
+    } else {
+      expect(larkMocks.reply.mock.calls[0][0].data).not.toHaveProperty('reply_in_thread');
+      expect(larkMocks.create).toHaveBeenCalledWith(expect.objectContaining({
+        params: { receive_id_type: 'chat_id' },
+        data: expect.objectContaining({ receive_id: 'oc_chat', content: expect.stringContaining('answer') }),
+      }));
+    }
+    const next = await start(lane);
+    expect(larkMocks.reply.mock.calls.at(-1)?.[0].path).toEqual({ message_id: 'om_second' });
+    next.close();
   });
 
   it('sends p2p messages via open_id unchanged', async () => {

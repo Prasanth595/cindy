@@ -171,7 +171,9 @@
     "diffEditCount": "{{n}} 處編輯",
     "groupSentNamed": "從群聊「{{name}}」傳送",
     "groupSent": "從群聊傳送",
-    "sourceGroupId": "群聊 ID：{{id}}"
+    "sourceGroupId": "群聊 ID：{{id}}",
+    "selectText": "選取文字",
+    "you": "你"
   },
   "actions": {
     "attachmentsPrefix": "附件：{{names}}",

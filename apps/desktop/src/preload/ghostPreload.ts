@@ -33,6 +33,9 @@ import { contextBridge, ipcRenderer } from 'electron';
  *   系统选文件夹窗口由主机弹,用户亲选即授权,守门全在主机侧 pickSlot。
  * - preview(req):preview 槽的便捷口——send({type:'preview-request', …req})
  *   的语法糖;URL 白名单守门在主机侧 previewSlot。
+ * - taskView(req):taskView 槽的便捷口——send({type:'task-view-request', …req});
+ *   在任务右侧栏打开 / 聚焦本插件的任务页,回执 {ok, sessionId} 带回落点任务;
+ *   {peek:true} 只回答落点、不开页签。
  * - workspace(req):workspace 槽的便捷口——send({type:'workspace-request',
  *   …req}) 的语法糖;目录授权与会话创建守门全在主机侧 workspaceSlot。
  * - confirm(req):confirm 槽的便捷口——send({type:'confirm-request', …req}) 的
@@ -119,6 +122,9 @@ contextBridge.exposeInMainWorld('cindy', {
     ipcRenderer.invoke('ghost-pipe:send', { ...req, type: 'pick-request' }),
   preview: (req: Record<string, unknown>): Promise<unknown> =>
     ipcRenderer.invoke('ghost-pipe:send', { ...req, type: 'preview-request' }),
+  // 在任务右侧栏打开 / 聚焦本插件的任务页(taskView);缺省落台前任务,回执带回落点任务。
+  taskView: (req: Record<string, unknown> = {}): Promise<unknown> =>
+    ipcRenderer.invoke('ghost-pipe:send', { ...req, type: 'task-view-request' }),
   workspace: (req: Record<string, unknown>): Promise<unknown> =>
     ipcRenderer.invoke('ghost-pipe:send', { ...req, type: 'workspace-request' }),
   confirm: (req: Record<string, unknown>): Promise<unknown> =>

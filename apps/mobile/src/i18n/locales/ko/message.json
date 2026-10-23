@@ -171,7 +171,9 @@
     "diffEditCount": "{{n}}개 편집",
     "groupSentNamed": "그룹 「{{name}}」에서 보냄",
     "groupSent": "그룹에서 보냄",
-    "sourceGroupId": "그룹 ID: {{id}}"
+    "sourceGroupId": "그룹 ID: {{id}}",
+    "selectText": "텍스트 선택",
+    "you": "나"
   },
   "actions": {
     "attachmentsPrefix": "첨부파일: {{names}}",

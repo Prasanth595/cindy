@@ -629,6 +629,8 @@ export interface Provider {
  * 并随用户配置持久化，避免已知长上下文模型被错误降级。
  */
 export interface ProviderRuntimeModelConfig extends ModelMetadata {
+  /** Current account discovery only; deliberately excluded from inheritable ModelMetadata. */
+  supportsUltrafastMode?: boolean;
   discoveredMetadata?: ModelMetadata;
   discoveredCost?: ModelCost;
   nameExplicit?: boolean;

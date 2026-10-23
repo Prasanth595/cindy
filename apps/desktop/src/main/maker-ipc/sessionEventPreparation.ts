@@ -1,4 +1,5 @@
 import { taskResultClientIdForInput } from '../../shared/botCollaboration.js';
+import { readChannelToolScope } from '../im/shared/channelToolScope.js';
 import { isQuietScheduledOutput } from '../scheduler-host/silent-output.js';
 import { captureTurnUsageContext, type TurnUsageContext } from './turnUsageContext.js';
 import type { BotCompactRuntimeRefreshCoordinator } from './botCompactRuntimeRefresh.js';
@@ -235,6 +236,14 @@ export function prepareSessionEvent(
         },
       }
     : event;
+  // Personal IM dispatches directly, outside AgentInputCoordinator. Preserve
+  // its accepted durable input on the reply before the turn lease is released.
+  if (!activeInputId && event.turnScope !== 'background') {
+    const inputClientId = readChannelToolScope({ sessionId: session.id, sessionInstanceId: session.instanceId })?.inputClientId;
+    if (inputClientId) attributedEvent = {
+      ...attributedEvent, agentMeta: { ...attributedEvent.agentMeta, replyToClientId: inputClientId },
+    };
+  }
   if (event.type === 'error' && isTerminalTurnErrorEvent(event)) {
     const reason =
       !session.remoteHostId && session.agentKind === 'claude-code'

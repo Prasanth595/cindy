@@ -6,6 +6,17 @@ const schemas = new Map(
   fixture.tools.map((tool) => [tool.name, tool.inputSchema as ComputerDriverToolSchema]),
 );
 describe('installed Computer Use contract', () => {
+  // Production argument adapter, unit tier: new incremental evidence requests
+  // must still dispatch with the existing old-driver fixture (previously untested).
+  it('preserves Markdown evidence diffs only for drivers advertising since', () => {
+    const input = { pid: 1, window_id: 2, include_screenshot: false, tree_format: 'markdown', since: 'latest' };
+    const modern = new Map<string, ComputerDriverToolSchema>([['get_window_state', {
+      properties: { pid: {}, window_id: {}, include_screenshot: {}, tree_format: {}, since: {} },
+      additionalProperties: false,
+    }]]);
+    expect(adaptComputerDriverArgs('get_window_state', input, modern)).toEqual(input);
+    expect(adaptComputerDriverArgs('get_window_state', input, schemas)).not.toHaveProperty('since');
+  });
   it('preserves driver credentials and rejects missing observation provenance', () => {
     const args = {
       pid: 1,

@@ -11,12 +11,21 @@ const LONG_DEVICE = 'Mac Studio · A very long device name for layout verificati
 /** Migrated from check-group-control-layout.mjs (remote-control notice above the composer). */
 export default {
   name: 'group-chat',
+  // The single-page builder does not implement Vite's ?url imports. Voice is outside this fixture.
+  stubs: {
+    'src/renderer/voice-input/workletUrl': 'export const getVoiceInputWorkletUrl = () => { throw new Error("Voice input is not covered by this fixture"); };',
+  },
   entry: './group-control-fixture.tsx',
   viewport: { width: 1280, height: 800 },
   real: 'BotGroupChatView (timeline, composer, send button, header registration), ControlledBanner, ContentHeader shell, Markdown, theme, fonts and translations',
   notCovered:
     'Sending, round control, real device-link control and revocation, pending interactions, plans and attachments; the bubbles case shows a task snapshot, not a live task; the sidebar is an empty frame',
   cases: {
+    'body-answer': {
+      about: '#6550: component body is readable; literal punctuation and surrounding Markdown are retained',
+      viewport: { width: 720, height: 700 },
+      data: { ...base, sidebar: false, bodyAnswer: true },
+    },
     default: { about: 'Empty group, short controller name, expanded sidebar', data: base },
     'long-thread': {
       about: '40 messages: bottom pin and history position survive notice changes',
@@ -69,6 +78,14 @@ export default {
   },
   async check(page, ui) {
     const definition = this.cases[ui.case];
+    if (ui.case === 'body-answer') {
+      const timeline = page.getByTestId('bot-group-timeline');
+      assert.ok((await timeline.innerText()).includes('保留 <name>、*literal* 和 & 符号'));
+      assert.ok((await timeline.innerText()).includes('以上是本轮结论。'));
+      assert.equal(await timeline.getByText('重点', { exact: true }).count(), 1);
+      assert.ok(!(await timeline.innerText()).includes('"op":"create"'));
+      return;
+    }
     const input = page.locator('textarea');
     const chip = page.locator('[data-controlled-banner-chip]');
     const collapsedDot = page.locator('[data-controlled-banner="collapsed"]');

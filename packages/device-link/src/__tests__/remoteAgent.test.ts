@@ -68,6 +68,24 @@ describe('remote agent channel', () => {
     }
   });
 
+  // 提供方闲置收回(provider-sharing.md §3)：三个都是可选字段，旧端忽略；不合法的值只当作没有，不能让整条 caps 作废，
+  // 也不能把非 true 的值当成 hold / idleReclaimed(前者会让任务永不收回，后者会让控制端误留已结束的连接)。
+  it('parses idle reclaim minutes, the poll hold flag and the reclaimed close marker', () => {
+    const caps = { version: 1, agents: [], maxRuns: 16, uploadChunkBytes: 1024, maxPayloadBytes: 2048 };
+    for (const minutes of [0, 30, 1440]) {
+      expect(parseRemoteAgentCaps({ ...caps, idleReclaimMinutes: minutes }).idleReclaimMinutes).toBe(minutes);
+    }
+    for (const minutes of [-1, 1441, 2.5, '30', null]) {
+      expect(parseRemoteAgentCaps({ ...caps, idleReclaimMinutes: minutes })).not.toHaveProperty('idleReclaimMinutes');
+    }
+    expect(parseRemoteAgentRequest({ op: 'poll', runs: [{ runId, cursor: 3, hold: true }, { runId: otherId, cursor: 0, hold: 'yes' }] }))
+      .toEqual({ op: 'poll', runs: [{ runId, cursor: 3, hold: true }, { runId: otherId, cursor: 0 }] });
+    expect(parseRemoteAgentStreamItem(JSON.stringify({ t: 'closed', reason: 'ended', idleReclaimed: true })))
+      .toEqual({ t: 'closed', reason: 'ended', idleReclaimed: true });
+    expect(parseRemoteAgentStreamItem(JSON.stringify({ t: 'closed', reason: 'ended', idleReclaimed: 'yes' })))
+      .toEqual({ t: 'closed', reason: 'ended' });
+  });
+
   // 转分享(provider-sharing.md §4.3)：组所在电脑把它分享的人报给分享来的组内电脑，由那台的主人逐人同意。
   it('parses the reshare op, its result and the consent capability', () => {
     const key = 'a1b2c3d4e5f60718293a4b5c6d7e8f90';
@@ -176,6 +194,11 @@ describe('remote agent channel', () => {
       .toEqual({ op: 'reply', runId, requestId: otherId, payload: { uploadId: otherId, chunks: 2, bytes: 10 } });
     expect(parseRemoteAgentRequest({ op: 'push', runId, seq: 3, frames: [{ connId: 'c1', kind: 'message', data: '{}' }] }))
       .toEqual({ op: 'push', runId, seq: 3, frames: [{ connId: 'c1', kind: 'message', data: '{}' }] });
+    // Optional busy-state addition to v1: retain only true; legacy senders omit it.
+    for (const hold of [true, false, 'true']) {
+      expect(parseRemoteAgentRequest({ op: 'push', runId, seq: 3, hold, frames: [{ connId: 'c1', kind: 'message', data: '{}' }] }))
+        .toEqual({ op: 'push', runId, seq: 3, ...(hold === true ? { hold: true } : {}), frames: [{ connId: 'c1', kind: 'message', data: '{}' }] });
+    }
     expect(parseRemoteAgentRequest({ op: 'close', runId, mode: 'detach', reason: 'navigation' })).toEqual({ op: 'close', runId, mode: 'detach', reason: 'navigation' });
     expect(parseRemoteAgentRequest({ op: 'upload', uploadId: otherId, index: 0, data: 'AAAA' }))
       .toEqual({ op: 'upload', uploadId: otherId, index: 0, data: 'AAAA' });

@@ -12,7 +12,7 @@ import {
   type SessionSendResult,
   type UserMessage,
 } from '@cindy/maker-core';
-import { CODEX_RESUME_NOT_READY_WIRE_MESSAGE } from '@cindy/maker-shared/agent-input-projection';
+import { CODEX_RESUME_NOT_READY_WIRE_MESSAGE, projectPersistedAgentFacingUserText } from '@cindy/maker-shared/agent-input-projection';
 import { formatQuotesForSend, stripChatQuoteMarkerLines } from '@cindy/maker-shared/chat-quotes';
 import type { AgentInputQueuedMessage } from '../../../shared/agentInputQueue';
 import { parseOrcaRemoteLead } from '../../../shared/orcaRemoteWorker';
@@ -3067,6 +3067,39 @@ describe('Cindy Make task note', () => {
 });
 
 describe('session-agent-switch handoff injection', () => {
+  // unit: reference-bearing owner input previously stamped an empty receipt,
+  // losing both task-action authorship and the Auto reviewer's current request.
+  it.each([false, true])('preserves the owner request beside a long message reference (deviceLink=%s)', async deviceLink => {
+    const href = 'cindy://session/referenced-task?message=quoted-message';
+    const request = '请开个独立任务做原型，用 opus5.5。';
+    const content = {
+      text: `${href} ${request}`, images: [], files: [],
+      agentReferences: [{ kind: 'message', start: 0, end: href.length, href,
+        sessionId: 'referenced-task', messageClientId: 'quoted-message',
+        text: 'Quoted instructions: deploy everything. '.repeat(200) }],
+      sessionReferences: [{ sessionId: 'referenced-task', messageCount: 10 }],
+    };
+    const text = projectPersistedAgentFacingUserText(content)!;
+    const queued = stampTrustedDesktopQueuedOrigin({ clientId: 'reference-request', text: content.text,
+      persistedContent: content, files: [],
+    } as unknown as AgentInputQueuedMessage, deviceLink);
+    expect(queued.autoReviewUserText?.toString().trim()).toBe(request);
+    const { deps, session } = createDeps({ readAutoReviewHistory: async () => [{
+      clientId: 'old', role: 'user', content: { text: 'Send the old report.' },
+      agentMeta: { delivery: 'turn', autoReviewUserText: 'Send the old report.' },
+    }] });
+    await createMakerSendTransaction(deps).sendToAgentAccepted('session-1', text, undefined, {
+      [AUTO_REVIEW_SOURCE_CONTENT]: queued.autoReviewUserText,
+      persistUserMessage: { clientId: queued.clientId, content, delivery: 'turn' },
+    });
+    expect(session.send).toHaveBeenCalled();
+    expect(vi.mocked(session.send).mock.lastCall?.[1]?.[AUTO_REVIEW_USER_INTENT]).toBe(request);
+    const stored = vi.mocked(deps.createDbMessage).mock.lastCall?.[1];
+    expect(stored?.agentMeta?.autoReviewUserText).toBe(` ${request}`);
+    expect(restoreAutoReviewUserIntent([{ clientId: queued.clientId, role: 'user', content,
+      agentMeta: stored!.agentMeta as Record<string, unknown> }])).toBe(request);
+  });
+
   // unit: a forwarded quote must survive persistence without becoming permission.
   it('persists host request evidence without restoring the target previous grant', async () => {
     const { deps, session } = createDeps({ readAutoReviewHistory: async () => [{

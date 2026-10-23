@@ -1438,6 +1438,12 @@ export const schedules = sqliteTable(
      * runner fire 时透传给 setSessionProvider；与 sessions.provider_id 同语义。
      */
     providerId: text('provider_id'),
+    /**
+     * 每次新建任务时 Agent 在哪台电脑运行(同账号另一台电脑或分享来的供应商)。
+     * NULL = 本机。provider_id 属于那台电脑的已授权目录。绑定的任务仍存在时不使用:
+     * 运行位置跟随被绑定的任务。与 sessions.agent_device_id 同语义。
+     */
+    agentDeviceId: text('agent_device_id'),
     effort: text('effort', {
       enum: ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
     }),

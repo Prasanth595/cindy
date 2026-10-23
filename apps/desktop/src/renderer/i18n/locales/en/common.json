@@ -1,4 +1,5 @@
 {
+  "localAgent": {"title":"Local App Connections","empty":"No connected apps","description":"Authorized local apps can use Cindy models and agent capabilities. Cindy keeps supplier credentials.","revoke":"Revoke Connection","failed":"Could not read app connections.","connectTitle":"Connect a Local App","connectMessage":"Allow “{{app}}” to use Cindy?","connectDetail":"This app can list models and providers, create its own executions, and supply tools. Native execution can read and write files and run commands with your system user permissions; the working directory does not restrict access. Provider credentials stay in Cindy. Revoke individual connections in Settings → Remote Connections → Local App Connections.","cancel":"Cancel","allow":"Allow Connection","revokeMessage":"Revoke all local app connections?","revokeDetail":"All local app connections will stop working and their running tasks will stop. Apps can request a new connection when needed.","clientIdentity":"App-reported ID: {{id}}\nVersion: {{version}}\nThe requesting app supplies its name and ID; Cindy has not verified its publisher.","revokeOneMessage":"Revoke this connection for “{{app}}”?","revokeOneDetail":"Tasks running through this connection will stop. Other app connections will keep working. The app can request a new connection when needed.","revokeConnection":"Revoke connection for “{{app}}”","clientId":"App ID: {{id}}","operationFailed":"Could not confirm the local app operation. Check its current state before continuing.","invalidConnection":"The app connection ID is invalid.","revokeFailed":"Could not confirm the revocation. Check the current connection state.","loading":"Loading app connections…","revoking":"Revoking connection…","authorizationRequired":"This operation requires valid local app authorization.","pairExpired":"The connection request expired or was cancelled. Request a new connection from the app.","busy":"A local app execution is still running or the execution limit is reached. End unused executions first.","limitReached":"The local app connection limit is reached. Revoke unused connections in Settings.","invalidWorkspace":"The app must specify an existing absolute working directory on this computer.","sessionExists":"This execution ID is already in use by this app connection.","executionUnavailable":"The requested execution or tool call is unavailable. Messages and tool operations were not replayed.","selectionUnavailable":"The selected model, provider, or reasoning effort is unavailable. Select an available option in the app.","requestNotReplayed":"This request was not repeated. Check the original operation result in the app.","storageUnavailable":"Could not read or save local app connection data. Existing authorization records were retained.","stopUnconfirmed":"Further messages to this execution are blocked, but the process has not been confirmed stopped.","interactionUnavailable":"The engine requires an interaction that this app cannot receive.","interrupted":"This send was interrupted.","toolTimeout":"The app tool timed out. It was not automatically retried.","connectResult":"Return to the requesting app for the connection result. Authorization is decided in the Cindy confirmation window.","invalidRequest":"The app request is invalid or the operation is unsupported.","hostInUse":"Another Cindy instance manages local app connections for this profile. View the connections in that instance.","developerConnection":"Development Connection","copyCode":"Copy Connection Code","codeCopied":"Connection code copied","codeCopyFailed":"Could not copy the connection code","developerState":{"ready":"For temporary connections from apps on this computer. Approval in this Cindy is still required. Copy a new code after restarting.","starting":"Preparing connection…","owner-unavailable":"Sign in or enter local mode first","host-in-use":"Another Cindy manages connections for this data folder","failed":"The local connection could not start","stopped":"The local connection has stopped"}},
   "mailReader": {
     "markReadFailed": "Could not sync read status. Check mailbox authorization and reopen this email.",
     "title": "Mail",
@@ -513,10 +514,13 @@
     },
     "runLimits": {
       "title": "Remote session limits",
-      "description": "Applies to all providers on this computer, including your other computers and devices using shared providers. Idle sessions count until released. Sessions run directly on this computer do not count.",
+      "description": "Applies to all providers on this computer, including your other computers and devices using shared providers. Idle sessions count until they are reclaimed. Sessions run directly on this computer do not count.",
       "perDevice": "Maximum sessions per connected device",
       "total": "Maximum sessions across all connected devices",
       "invalid": "Enter whole numbers from 1 to {{max}}. The per-device limit cannot exceed the total limit.",
+      "idleMinutes": "Reclaim idle sessions after (minutes)",
+      "idleHint": "When a session has been idle this long, this computer stops its agent and frees the slot. The next message reconnects to the same conversation. Running sessions are never reclaimed. Enter 0 to never reclaim.",
+      "idleInvalid": "Enter a whole number from 0 to {{max}}.",
       "usage": "{{used}} / {{total}} sessions held by {{devices}} devices; the busiest device holds {{largest}}.",
       "applyHint": "Changes apply immediately. Lowering a limit only blocks new sessions; existing sessions continue. Group relays count toward the directly connected device.",
       "save": "Save",
@@ -558,18 +562,6 @@
       "updated": "Updated {{time}}",
       "usageTitle": "Usage Details",
       "allowUsageDescription": "When enabled, everyone using this shared provider can view the sharer's and every other user's display names and detailed usage history."
-    },
-    "idleRelease": {
-      "title": "When this computer uses models on other computers",
-      "description": "When tasks on this computer use models on another computer, that computer limits how many of them it runs at once. As the limit gets close, you can let tasks idle longer than the time below disconnect temporarily to make room for new tasks. Send one a message and it reconnects automatically, with the earlier conversation intact. Tasks that are running are never disconnected; while a task is disconnected, its background commands on this computer keep running.",
-      "minutes": "Idle release (minutes)",
-      "hint": "The default is 0, which never disconnects; when the limit is reached you see the limit message. With 1–120, a task can disconnect only after it has been idle this long.",
-      "invalid": "Enter a whole number from 0 to {{max}}.",
-      "save": "Save",
-      "reset": "Restore defaults",
-      "saved": "Idle release setting saved",
-      "retry": "Reload",
-      "loading": "Loading…"
     }
   },
   "providerGroup": {
@@ -696,10 +688,6 @@
       },
       "runningCount_one": "{{count}} task running",
       "runningCount_other": "{{count}} tasks running",
-      "pace": {
-        "used": "{{used}}% used",
-        "usedExpected": "{{used}}% used, {{expected}}% expected by now"
-      },
       "limitAria": "Task limit for {{name}}",
       "limitOption_one": "Max {{count}}",
       "limitOption_other": "Max {{count}}",
@@ -1085,6 +1073,9 @@
   },
   "agentIsland": {
     "native": {
+      "markRead": "Mark as read",
+      "archive": "Archive",
+      "actionFailed": "Could not complete the action. The notification has been kept. Try again.",
       "newConversationTitle": "New Session",
       "newConversationHint": "Start a new session",
       "muteSound": "Mute Agent Island",
@@ -3391,7 +3382,7 @@
         "paymentRequired": "Paid",
         "paymentUnlock": "Pay to unlock",
         "enableModel": "Enable This Model",
-        "capabilityGroupHint": "Not shown in the chat model picker. The switch controls image and video features.",
+        "capabilityGroupHint": "Not shown in the chat model picker. The switch controls visibility in the relevant feature.",
         "accessWriteFailed": "Couldn't save the change. Please try again.",
         "visibilityWriteFailed": "Couldn't save the model visibility setting. Try again, or restart Cindy if the problem continues.",
         "disabledGroup": "Disabled",
@@ -3866,7 +3857,26 @@
         "pending": "Preparing credentials",
         "unavailable": "Temporarily unavailable"
       },
-      "claudeAccountRetired": "Cindy no longer supports signing in to your subscription through this legacy Claude connection. Your Claude account and subscription are unaffected. Use “Sign in with Claude Code” to connect."
+      "claudeAccountRetired": "Cindy no longer supports signing in to your subscription through this legacy Claude connection. Your Claude account and subscription are unaffected. Use “Sign in with Claude Code” to connect.",
+      "speechSetup": {
+        "title": "Speech",
+        "add": "Add speech models",
+        "referenceHint": "Reference models come from the public catalog, not your account entitlements. Availability depends on an actual request.",
+        "discoveryHint": "These models were returned by the provider catalog. Speech execution has not been tested.",
+        "saved": "Added",
+        "reference": "Reference",
+        "discovered": "Discovered",
+        "more": "More speech models ({{count}})",
+        "manual": "Enter a speech model ID",
+        "modelId": "Speech model ID",
+        "modelsHint": "Saving speech models does not start speech synthesis. Choose voices and sentence playback in companion voice settings.",
+        "otherModels": "Chat and other models",
+        "separateKey": "Speech requires an API key. This creates a separate connection and keeps your subscription or device-code connection.",
+        "fetchFailed": "The model catalog is unavailable. You can still add reference models.",
+        "saveFailed": "Could not add models. Reopen this page and try again.",
+        "manualSource": "Manual",
+        "manualHint": "Enter the speech model ID provided by your supplier."
+      }
     },
     "experimental": {
       "title": "Experimental",
@@ -4065,7 +4075,7 @@
         "assigned": "Replies come from the linked teammate",
         "description": "Chat with {{name}} on WeChat, sharing memory and the main task. This computer’s WeChat connection can belong to one teammate at a time.",
         "other": "WeChat is linked to another teammate. Remove that link in their connection settings or Personal WeChat settings first.",
-        "permissionNote": "WeChat keeps per-action permission checks. Choose Claude Code or Codex for this teammate, with Auto-review or Ask permissions.",
+        "permissionNote": "Your WeChat messages to this teammate use its permission settings, including Full access. Change permissions below the teammate’s chat input in Cindy. Messages from other people remain restricted.",
         "remove": "Remove teammate link",
         "useExisting": "Use connected WeChat with {{name}}",
         "updateFailed": "Could not update the link. Wait for WeChat tasks to finish, then retry and check that the teammate is available."
@@ -6740,6 +6750,8 @@
         "panelTab": "Panel \"{{title}}\" · opens inside the Plugins page",
         "mainView": "Can add a “{{title}}” entry to Cindy's left navigation",
         "mainViewDetail": "Opening it displays the main view in the plugin sandbox and does not grant file, network, or credential access.",
+        "taskView": "Task page “{{title}}” · opens in the task's sidebar",
+        "taskViewDetail": "The tab follows the task and opens in the plugin sandbox; it does not grant file, network, or credential access.",
         "code": "Executable code",
         "codeDetail": "Runs in an isolated sandbox with no access to your files or network.",
         "resident": "Always-on (starts when enabled, keeps a background process even when idle)",
@@ -6897,6 +6909,7 @@
       },
       "contents": {
         "mainView": "Main view",
+        "taskView": "Task page",
         "panel": "Panel",
         "settingsUi": "Custom settings UI",
         "code": "Executable code",
@@ -8231,7 +8244,8 @@
         "collaboration": "Team",
         "unknown": "Unknown tab",
         "ghostPanel": "Plugin panel",
-        "pluginView": "Plugin view"
+        "pluginView": "Plugin view",
+        "pluginTask": "Plugin task page"
       },
       "controls": {
         "showAria": "Show sidebar",
@@ -9031,6 +9045,13 @@
       "undo": "Undo",
       "undoFailed": "Couldn't undo. Try again.",
       "deleteFailed": "Couldn't delete. Try again.",
+      "check": "Check for me",
+      "checkMeta": "Look for new todos in connected mail and chats",
+      "checkPrompt": "Check my connected sources, like mail and messages, for anything new I need to handle, and add it to my todos.",
+      "checkFailed": "Couldn't send. Try again.",
+      "dailyCheck": "Check every day",
+      "dailyCheckMeta": "Weekdays at 9:00, quiet when nothing is new",
+      "dailyCheckFailed": "Couldn't save. Try again.",
       "outputs": "Outputs",
       "outputMeta": "{{time}} · {{task}}",
       "openFailed": "Couldn't open the file",
@@ -9728,7 +9749,9 @@
           "topic": "Topic",
           "description": "Description",
           "save": "Save",
-          "myProfile": "My profile",
+          "myProfile": "My profile in this group",
+          "groupAvatar": "Change group avatar",
+          "groupAvatarHint": "Only shown in this group. Your account and other groups stay unchanged. Reset to use your account avatar.",
           "editProfile": "Edit name and photo",
           "nickname": "My name in this group",
           "nicknameHint": "Only shown here. Leave empty to use your profile name.",
@@ -10250,7 +10273,8 @@
       "refreshVoices": "Refresh voices",
       "voicesLoading": "Loading voices…",
       "voicesError": "Couldn't load voices. Retry or enter a voice ID.",
-      "voicesReference": "These are OpenAI reference voices for this model. Compatible services may support different voices.",
+      "voicesCustomError": "Couldn’t load all custom voices. Retry or enter a voice ID.",
+      "voicesReference": "These are reference voices for this model. Compatible services may support different voices.",
       "voicesTruncated": "Showing part of the voice list. Enter an ID to use an unlisted voice.",
       "voicesManual": "No voice list is available for this interface. Enter a voice ID.",
       "preview": "Preview",
@@ -10263,12 +10287,12 @@
         "preparing": "Generating preview…",
         "playing": "Playing preview…",
         "complete": "Preview complete.",
-        "error": "Preview failed. Check the interface, model access and voice ID, then retry."
+        "error": "Could not preview this voice"
       },
       "readAloud": "Read aloud",
       "stopReadAloud": "Stop reading",
       "finishBeforeReadAloud": "End voice mode before reading a message aloud.",
-      "readAloudFailed": "Could not read this reply aloud. Check the model and voice in teammate settings, then try again.",
+      "readAloudFailed": "Could not read this reply aloud",
       "finishBeforeDictation": "End voice mode before starting dictation.",
       "title": "Voice Mode",
       "model": "Speech model",
@@ -10277,7 +10301,7 @@
       "voiceHint": "Use a voice name supported by the selected model, such as alloy.",
       "modelUnavailable": "The saved speech model is unavailable. Choose another model.",
       "noModels": "No text-to-speech models available.",
-      "noModelsSupportedProtocols": "Supports MiniMax, ElevenLabs, and providers with an OpenAI-compatible text-to-speech API.",
+      "noModelsSupportedProtocols": "Supports MiniMax, ElevenLabs, Qwen / CosyVoice HTTP APIs, and OpenAI-compatible text-to-speech providers.",
       "noModelsSetupHint": "Connect a provider and enable a speech model to set up your companion’s voice.",
       "openProviders": "Open Model Providers",
       "catalogError": "Could not load or save speech settings. Please try again.",
@@ -10309,7 +10333,8 @@
         "connection": "Voice connection interrupted. Your unsent text is kept below.",
         "microphone": "Microphone stopped. Check its permission and connection, then resume.",
         "send": "This message was not accepted. Your text is kept below.",
-        "speech": "Could not read the reply aloud. The text reply remains in the conversation. Check the speech model and voice."
+        "speech": "Could not read the reply aloud. The text reply remains in the conversation.",
+        "speechTimeout": "Speech response timed out"
       },
       "voiceIdHint": "Enter a voice ID available to this provider account.",
       "speed": "Speech speed",
@@ -10352,6 +10377,18 @@
       "rootNotLoaded": "The original message is not in the loaded history",
       "rootUnavailable": "The original message is no longer in this chat, so a thread can’t start here",
       "openFailed": "The thread didn’t open. Try again."
+    },
+    "projects": {
+      "title": "Linked Projects",
+      "description": "Read project materials when needed. Linking a project does not assign its sessions or start background work.",
+      "empty": "No linked projects yet.",
+      "choose": "Choose a project",
+      "add": "Add",
+      "remove": "Remove {{name}}",
+      "otherComputer": "On another computer",
+      "unavailable": "Directory unavailable",
+      "failed": "Could not update projects. Reload to check the saved state.",
+      "noAvailable": "Add more projects from the project list first."
     }
   },
   "common": {
@@ -12856,10 +12893,10 @@
         "title": "Archive session",
         "description": "Archive this session? It will be removed from the list.",
         "dirtyWorktreeWarning": "This session's worktree has uncommitted changes; they will be saved as a git snapshot before archiving and can be restored from the session later.",
-        "scheduleWarning_one": "The automation {{names}} linked to this session will be paused after archiving.",
-        "scheduleWarning_other": "The automations {{names}} linked to this session will be paused after archiving.",
-        "scheduleWarningMany_one": "{{count}} of them has linked automations, which will be paused after archiving.",
-        "scheduleWarningMany_other": "{{count}} of them have linked automations, which will be paused after archiving.",
+        "scheduleWarning_one": "The linked automation {{names}} will keep running and restore this session.",
+        "scheduleWarning_other": "The linked automations {{names}} will keep running and restore this session.",
+        "scheduleWarningMany_one": "{{count}} of these sessions has linked automations that will restore it when they run.",
+        "scheduleWarningMany_other": "{{count}} of these sessions have linked automations that will restore them when they run.",
         "scheduleName": "“{{name}}”",
         "scheduleNameSeparator": ", ",
         "confirm": "Confirm",
@@ -13702,7 +13739,7 @@
         "card": {
           "open": "Open session",
           "unbind": "Unbind",
-          "persistentNote": "Recreates and rebinds automatically if the session is archived",
+          "persistentNote": "If archived, the same session is restored on the next run",
           "deleted": "Bound session deleted",
           "deletedPersistentNote": "Creates and binds a new session on the next run",
           "fallbackTitle": "Session {{id}}"
@@ -13847,7 +13884,8 @@
         "modelListAria": "Model list",
         "modelSelectorAria": "Model selector",
         "categoryListAria": "{{category}} models",
-        "effortListAria": "Reasoning effort"
+        "effortListAria": "Reasoning effort",
+        "boundLocationLocked": "Bound tasks keep running where they are. Choose a model from that computer."
       }
     },
     "toast": {
@@ -16044,6 +16082,10 @@
     "builtinFollowUp": {
       "name": "Follow-up (built-in)",
       "hint": "Wakes it when a session is stuck, waiting for you, errors out, hits the usage limit, or finishes. Built in, so it can only be paused or resumed."
+    },
+    "builtinTodoCheck": {
+      "name": "Daily todo check (built-in)",
+      "hint": "Looks for new todos in connected sources on weekdays at 9:00 and stays quiet when there is nothing new. Turned on or off from the glance; it can only be paused or resumed."
     }
   },
   "cindyMakeDoctor": {
