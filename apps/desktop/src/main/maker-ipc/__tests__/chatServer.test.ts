@@ -324,6 +324,42 @@ describe('Chat Server result delivery and refresh', () => {
     expect(fixture.handle.mock.calls.filter(([route, method]) => route.endsWith('/messages') && method === 'POST')).toHaveLength(1);
   });
 
+  // #6920, unit: existing reply tests only sent text and could not catch dropped
+  // media or rejected attachment-only replies through the real service entry.
+  it.each(['', 'See attachment'])('posts a thread attachment with text %j', async text => {
+    const file = { id: 'file', name: 'log.txt', category: 'file' as const, mimeType: 'text/plain', size: 4, path: '/test/log.txt', url: null };
+    const prepared = { ok: true as const, attachments: [file], commit: vi.fn(), discard: vi.fn() };
+    deps.prepareAttachments = vi.fn(async () => prepared);
+    const blocks = [{ type: 'media', mediaId: '80000000-0000-4000-8000-000000000001', caption: 'log.txt' }];
+    fixture.upload.mockResolvedValue(blocks);
+    fixture.handle.mockImplementation((route, method) => route.endsWith('/messages') && method === 'POST'
+      ? { body: { id: 'thread-file' } } : route.endsWith('/members') ? { body: [] } : response(route));
+    const input = { groupId: roomId, rootId: execution.source_message_id, text, clientId: 'thread-file-1', mentions: { all: false, botIds: [] }, attachments: [{ ...file, url: undefined }] };
+    expect(await service.chatServer!.reply(input)).toEqual({ ok: true, messageId: 'thread-file' });
+    expect(deps.prepareAttachments).toHaveBeenCalledWith({ groupId: roomId, attachments: input.attachments });
+    expect(fixture.upload).toHaveBeenCalledWith(roomId, input.clientId, [file], selfId);
+    expect(fixture.handle).toHaveBeenCalledWith(`/conversations/${roomId}/messages`, 'POST', {
+      operationId: input.clientId, threadRootId: input.rootId, content: [...(text ? [{ type: 'text', text }] : []), ...blocks], mentions: [],
+    });
+    expect(prepared.commit).toHaveBeenCalledOnce();
+    expect(prepared.discard).not.toHaveBeenCalled();
+  });
+
+  it.each(['prepare', 'upload', 'revoked'] as const)('does not commit a refused thread attachment (%s)', async stage => {
+    const prepared = { ok: true as const, attachments: [], commit: vi.fn(), discard: vi.fn() };
+    deps.prepareAttachments = vi.fn(async () => stage === 'prepare'
+      ? { ok: false as const, errorCode: 'INVALID_PARAMS' as const, message: 'invalid file' } : prepared);
+    if (stage === 'upload') fixture.upload.mockRejectedValueOnce(new Error('MEDIA_UPLOAD_FAILED'));
+    fixture.handle.mockImplementation((route, method) => route.endsWith('/messages') && method === 'POST'
+      ? { status: 403, body: { error: { code: 'NOT_A_MEMBER' } } } : route.endsWith('/members') ? { body: [] } : response(route));
+    const input = { groupId: roomId, rootId: execution.source_message_id, text: '', clientId: 'refused-thread-file', mentions: { all: false, botIds: [] }, attachments: [{ id: 'file', name: 'log.txt', path: '/test/log.txt', category: 'file' as const, mimeType: 'text/plain' }] };
+    expect(await service.chatServer!.reply(input)).toMatchObject({ ok: false, errorCode: stage === 'prepare' ? 'INVALID_ATTACHMENT' : stage === 'upload' ? 'MEDIA_UPLOAD_FAILED' : 'NOT_A_MEMBER' });
+    expect(prepared.commit).not.toHaveBeenCalled();
+    if (stage !== 'prepare') expect(prepared.discard).toHaveBeenCalledOnce();
+    const posts = fixture.handle.mock.calls.filter(([route, method]) => route.endsWith('/messages') && method === 'POST');
+    expect(posts).toHaveLength(stage === 'revoked' ? 1 : 0);
+  });
+
   it('reports an HTTP send failure with safe route, code and status', async () => {
     deps.log = { warn: vi.fn() };
     fixture.handle.mockImplementation((route, method) => {

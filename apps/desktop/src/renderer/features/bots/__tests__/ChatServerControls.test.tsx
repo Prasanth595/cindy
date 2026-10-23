@@ -6,8 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 
 import { ChatInviteButton, ChatMessageActions } from '../ChatServerControls';
 import { ChatInviteDialog } from '../ChatInviteDialog';
 import { ChatThreadPanel } from '../ChatThreadPanel';
-import { botGroupThreadDraftKey } from '../botGroupAttachments';
-import { clearDraft } from '@/lib/composerDraftStore';
+import { botGroupDraftText, botGroupThreadDraftKey } from '../botGroupAttachments';
+import { clearDraft, getDraft } from '@/lib/composerDraftStore';
 import { flashThreadTarget } from '../BotGroupThreadViews';
 import { chatErrorKey } from '../chatError';
 import type { BotGroupDetail, BotGroupMessageView } from '../../../../shared/botGroupChat';
@@ -577,6 +577,92 @@ describe('chat interaction controls', () => {
     await waitFor(() => expect(mocks.reply).toHaveBeenCalledTimes(3));
     expect(mocks.reply.mock.calls[2]![0].mentions).toEqual({ all: false, botIds: members.map(member => member.botId) });
     expect(mocks.reply.mock.calls[2]![0].clientId).not.toBe(original.clientId);
+  });
+
+  // #6920, unit: the real panel/composer must expose file selection, preserve
+  // failed attachments and key retries by the batch. Previous coverage sent text only.
+  it('selects an attachment-only reply, restores a failed batch and reuses its operation id', async () => {
+    Object.assign(window.electronAPI, {
+      getFilePath: (file: File) => `/test/${file.name}`,
+      cacheImageFromPath: vi.fn(async () => ({ url: 'cindy-media://blobs/thread.png' })),
+      getFileThumbnail: vi.fn(async () => null),
+    });
+    mocks.reply.mockResolvedValueOnce({ ok: false, errorCode: 'REQUEST_TIMEOUT' }).mockResolvedValue({ ok: true, messageId: 'file-reply' });
+    render(<ChatThreadPanel group={group} rootId="root" onClose={vi.fn()} />);
+    await screen.findByText('Root message');
+    const more = screen.getByRole('button', { name: 'bots.groupChat.composer.more' });
+    fireEvent.keyDown(more, { key: 'Enter' });
+    expect(await screen.findByRole('menuitem', { name: 'extraDirs.addFiles' })).toBeTruthy();
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' });
+    const picker = document.querySelector('input[type="file"]')!;
+    fireEvent.change(picker, { target: { files: [new File(['bitmap'], 'photo.png', { type: 'image/png' }), new File(['diagnostic log'], 'log.txt', { type: 'text/plain' })] } });
+    await screen.findByText('log.txt');
+    const send = screen.getByRole('button', { name: k('sendReply') });
+    await waitFor(() => expect((send as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(send);
+    await screen.findByRole('alert');
+    expect(mocks.reply.mock.calls[0][0]).toMatchObject({ rootId: 'root', text: '', attachments: [{ name: 'photo.png', url: 'cindy-media://blobs/thread.png' }, { name: 'log.txt', path: '/test/log.txt' }] });
+    expect(window.electronAPI.cacheImageFromPath).toHaveBeenCalledWith(expect.objectContaining({ sessionId: botGroupThreadDraftKey(group.id, 'root') }));
+    expect(screen.getByText('log.txt')).toBeTruthy();
+    fireEvent.click(send);
+    await waitFor(() => expect(mocks.reply).toHaveBeenCalledTimes(2));
+    expect(mocks.reply.mock.calls[1][0]).toEqual(mocks.reply.mock.calls[0][0]);
+    await waitFor(() => expect(within(screen.getByRole('textbox').parentElement!).queryByText('log.txt')).toBeNull());
+    expect(mocks.shareToMain).not.toHaveBeenCalled();
+  });
+
+  it('recovers a late attachment failure only in its original thread and keeps its retry id after reopening', async () => {
+    Object.assign(window.electronAPI, { getFilePath: (file: File) => `/test/${file.name}`, getFileThumbnail: vi.fn(async () => null) });
+    let settle!: (value: { ok: false; errorCode: string }) => void;
+    mocks.reply.mockReturnValueOnce(new Promise(resolve => { settle = resolve; })).mockResolvedValue({ ok: true, messageId: 'recovered-file' });
+    const view = render(<ChatThreadPanel key="root" group={group} rootId="root" onClose={vi.fn()} />);
+    fireEvent.change(document.querySelector('input[type="file"]')!, { target: { files: [new File(['log'], 'late.txt', { type: 'text/plain' })] } });
+    await screen.findByText('late.txt');
+    fireEvent.click(screen.getByRole('button', { name: k('sendReply') }));
+    await waitFor(() => expect(mocks.reply).toHaveBeenCalledOnce());
+    const original = mocks.reply.mock.calls[0][0];
+    view.rerender(<Tooltip.Provider><ChatThreadPanel key="other" group={group} rootId="other" onClose={vi.fn()} /></Tooltip.Provider>);
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Other thread draft' } });
+    await act(async () => settle({ ok: false, errorCode: 'REQUEST_TIMEOUT' }));
+    expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('Other thread draft');
+    expect(screen.queryByText('late.txt')).toBeNull();
+    expect(getDraft(botGroupThreadDraftKey(group.id, 'root'))?.attachments[0].name).toBe('late.txt');
+    view.rerender(<Tooltip.Provider><ChatThreadPanel key="root" group={group} rootId="root" onClose={vi.fn()} /></Tooltip.Provider>);
+    await screen.findByText('late.txt');
+    fireEvent.click(screen.getByRole('button', { name: k('sendReply') }));
+    await waitFor(() => expect(mocks.reply).toHaveBeenCalledTimes(2));
+    expect(mocks.reply.mock.calls[1][0]).toEqual(original);
+    clearDraft(botGroupThreadDraftKey(group.id, 'other'));
+  });
+
+  // Review #6930: reopen BEFORE the old request fails. A file-only test missed
+  // text restored in the store but never applied to the new composer instance.
+  it.each(['', 'New unsent text'])('keeps late recovery visible after reopening, preserving newer text %j', async newerText => {
+    Object.assign(window.electronAPI, { getFilePath: (file: File) => `/test/${file.name}`, getFileThumbnail: vi.fn(async () => null) });
+    let settle!: (value: { ok: false; errorCode: string }) => void;
+    mocks.reply.mockReturnValueOnce(new Promise(resolve => { settle = resolve; })).mockResolvedValue({ ok: true, messageId: 'recovered-file' });
+    const panel = (id: string) => <Tooltip.Provider><ChatThreadPanel key={id} group={group} rootId={id} onClose={vi.fn()} /></Tooltip.Provider>;
+    const view = render(panel('root'));
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Original text with file' } });
+    fireEvent.change(document.querySelector('input[type="file"]')!, { target: { files: [new File(['log'], 'reopened.txt', { type: 'text/plain' })] } });
+    await screen.findByText('reopened.txt');
+    fireEvent.click(screen.getByRole('button', { name: k('sendReply') }));
+    await waitFor(() => expect(mocks.reply).toHaveBeenCalledOnce());
+    const original = mocks.reply.mock.calls[0][0];
+    view.rerender(panel('other'));
+    view.rerender(panel('root'));
+    if (newerText) fireEvent.change(screen.getByRole('textbox'), { target: { value: newerText } });
+    await act(async () => settle({ ok: false, errorCode: 'REQUEST_TIMEOUT' }));
+    expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe(newerText || original.text);
+    expect(screen.getByText('reopened.txt')).toBeTruthy();
+    view.rerender(panel('other'));
+    expect(botGroupDraftText(getDraft(botGroupThreadDraftKey(group.id, 'root'))?.text)).toBe(newerText || original.text);
+    view.rerender(panel('root'));
+    fireEvent.click(screen.getByRole('button', { name: k('sendReply') }));
+    await waitFor(() => expect(mocks.reply).toHaveBeenCalledTimes(2));
+    expect(mocks.reply.mock.calls[1][0].text).toBe(newerText || original.text);
+    if (!newerText) expect(mocks.reply.mock.calls[1][0]).toEqual(original);
+    clearDraft(botGroupThreadDraftKey(group.id, 'other'));
   });
 
   it('keeps a failed reply draft and reuses its operation id; IME confirmation does not send', async () => {
