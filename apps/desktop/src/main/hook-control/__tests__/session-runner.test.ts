@@ -30,7 +30,9 @@ const h = vi.hoisted(() => {
   const calls: string[] = [];
   return {
     calls,
+    bridgeHandle: vi.fn(async (_args: unknown) => undefined),
     followPolicy: vi.fn(),
+    prepareBot: vi.fn(async (): Promise<string | null> => null),
     syncDefaultRoute: vi.fn(async () => false),
     writeDefaultRecord: vi.fn(async (_id: string, _fingerprint: string) => undefined),
     acquirePendingAgentSwitch: vi.fn(async (_id: string, _sync: () => Promise<boolean>): Promise<() => void> => () => {}),
@@ -153,6 +155,7 @@ vi.mock('../../device-link/broadcast-tap.js', () => ({
 vi.mock('../../maker-ipc/register.js', () => ({
   acquirePendingAgentSwitchForImSend: h.acquirePendingAgentSwitch,
   beginTurnChangeSetAtDispatch: h.beginTurnChangeSetAtDispatch,
+  prepareBotSessionForImSend: h.prepareBot,
   prepareUnhealthySessionForSend: vi.fn(async () => undefined),
   wireSessionToIpc: vi.fn(),
   isSessionInTurn: () => false,
@@ -188,9 +191,22 @@ vi.mock('../../localDb/ipc/sessions.js', () => ({
   setWorktreePathInDb: vi.fn(async () => undefined),
   touchUserSendInDb: h.touchUserSendInDb,
 }));
-vi.mock('../../maker-host/session-provider-store.js', () => ({
+vi.mock('../../maker-host/session-provider-store.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../maker-host/session-provider-store.js')>(),
+  getSessionProvider: () => null,
   setSessionProvider: h.setSessionProvider,
   hydrateSessionProvider: h.hydrateSessionProvider,
+}));
+vi.mock('../../maker-host/anthropic-responses-bridge-host.js', () => ({
+  getResponsesBridgeHandler: () => ({ handle: h.bridgeHandle }),
+  getPiNativeSubscriptionHandler: vi.fn(),
+}));
+vi.mock('../../maker-host/claude-fast-mode-log.js', () => ({
+  createClaudeFastModeRequestTransform: () => () => null,
+  createClaudeFastModeResponseObserver: () => () => undefined,
+}));
+vi.mock('../../maker-host/runtime-configs.js', () => ({
+  claudeUpstreamEndpoint: () => 'http://127.0.0.1:1',
 }));
 vi.mock('../../maker-host/session-storage.js', () => ({
   desktopSessionStorage: { create: h.createSessionRow },
@@ -318,6 +334,7 @@ function makeFakeSession(id: string) {
   const permission = makePermissionModeFake();
   return {
     id,
+    ...({ instanceId: `instance-${id}` } as { instanceId?: string }),
     workDir: 'D:/repo',
     get permissionModeState() {
       return permission.permissionModeState;
@@ -368,6 +385,7 @@ const fakeMaker = {
   getSessionMeta: vi.fn(async () => ({
     workDir: 'D:/repo',
     model: 'meta-model',
+    ...({ effort: 'high', fastMode: true } as { effort?: Effort; fastMode?: boolean }),
     sdkSessionId: 'sdk-1',
     agentKind: 'claude-code' as const,
     permissionMode: undefined as 'ask' | 'bypassPermissions' | undefined,
@@ -394,7 +412,7 @@ vi.mock('../../im/shared/sessionProviderLabel.js', () => ({
   resolveSessionErrorContext: vi.fn(async () => ({ providerLabel: 'OpenAI', modelLabel: 'GPT-6 Astra', taskLabel: '测试任务（sess-new）' })),
 }));
 
-import { createMakerHookSessionRunner, extractToolResultImageUrls } from '../session-runner.js';
+import { createMakerHookSessionRunner, extractToolResultMediaUrls } from '../session-runner.js';
 import { MAIN_OWNED_SEND_CONTEXT, Session, type AgentSessionHandle, type Capabilities } from '@cindy/maker-core';
 import { observeHookTurn } from '../turnObserver.js';
 import { buildHookPromptNote, SLACK_HOOK_PROMPT_NOTE } from '../outbound.js';
@@ -402,6 +420,8 @@ import { getResolvedMainLocale } from '../../i18n.js';
 import { buildUiLanguageErrorNote } from '../../maker-ipc/uiLanguageErrorNote.js';
 import { resolveSafe as resolveXdtImage } from '../../imageCacheStore.js';
 import { isHeadlessGhostSetupTurn } from '../../mcp-integrations/ghostSetupInteractionSurface.js';
+import { createModelRoutingTransform, setClaudeProxySessionIdResolver } from '../../maker-host/anthropic-compat-proxy-host.js';
+import { clearAllSessionRuntimeAxes, setSessionEffort, setSessionFastMode } from '../../maker-host/session-effort-store.js';
 
 const log = { info: vi.fn(), warn: vi.fn() };
 
@@ -461,6 +481,8 @@ function baseReq(
 
 beforeEach(() => {
   vi.clearAllMocks();
+  clearAllSessionRuntimeAxes();
+  setClaudeProxySessionIdResolver(() => null);
   h.acquirePendingAgentSwitch.mockReset();
   h.acquirePendingAgentSwitch.mockResolvedValue(() => {});
   h.calls.length = 0;
@@ -493,6 +515,55 @@ beforeEach(() => {
 });
 
 describe('hook task model selection on next send', () => {
+  // Regression #6493: createSession options do not hydrate Claude's bridge.
+  // Exercise the production runner + routing transform at provider startup,
+  // with no profile switch, both after restart and when clearing old axes (unit).
+  it.each([
+    { model: 'chatgpt/gpt-5.4', effort: 'high' as const, fastMode: true, stale: false },
+    { model: 'xai/grok-4.6', effort: undefined, fastMode: false, stale: true },
+  ])('hydrates X companion bridge preferences for $model', async ({ model, effort, fastMode, stale }) => {
+    const req = baseReq({ isNew: false, companionBotId: 'bot-one', source: { im: 'x' } });
+    if (stale) {
+      setSessionEffort(req.sessionId, 'high');
+      setSessionFastMode(req.sessionId, true);
+    }
+    const meta = await fakeMaker.getSessionMeta();
+    fakeMaker.getSessionMeta.mockResolvedValueOnce({ ...meta, model, effort, fastMode });
+    setClaudeProxySessionIdResolver(() => req.sessionId);
+    fakeMaker.createSession.mockImplementationOnce(async (opts) => {
+      const parsedBody = { model, messages: [{ role: 'user', content: 'hello' }] };
+      const route = await createModelRoutingTransform()(parsedBody, {
+        reqId: 1, method: 'POST', url: '/v1/messages',
+        headers: { 'x-claude-code-session-id': 'sdk-fixture' },
+      });
+      expect(route?.localHandler).toBeTypeOf('function');
+      await route!.localHandler!({ parsedBody } as Parameters<NonNullable<NonNullable<typeof route>['localHandler']>>[0]);
+      expect(h.bridgeHandle).toHaveBeenCalledWith(expect.objectContaining({
+        prefs: { reasoningEffort: effort, fast: fastMode },
+      }));
+      return makeFakeSession(opts.id ?? req.sessionId);
+    });
+    expect((await createMakerHookSessionRunner({ log }).run(req)).status).toBe('ok');
+    expect(h.bridgeHandle).toHaveBeenCalledOnce();
+  });
+
+  // A companion lane inherits its current profile route and owner tool scope;
+  // a paused profile must never reach the provider (unit, production runner).
+  it('preserves X companion model options and blocks unavailable companions', async () => {
+    const runner = createMakerHookSessionRunner({ log });
+    const req = baseReq({ isNew: false, companionBotId: 'bot-one', source: { im: 'x' } });
+    expect((await runner.run(req)).status).toBe('ok');
+    expect(h.prepareBot).toHaveBeenCalledWith(req.sessionId);
+    expect(fakeMaker.createSession).toHaveBeenCalledWith(expect.objectContaining({
+      model: 'meta-model', effort: 'high', fastMode: true,
+      vendorOptions: expect.objectContaining({ source: 'x' }),
+    }));
+    fakeMaker.createSession.mockClear();
+    h.prepareBot.mockResolvedValueOnce('Companion paused');
+    expect(await runner.run(req)).toMatchObject({ status: 'error', errorMessage: 'Companion paused' });
+    expect(fakeMaker.createSession).not.toHaveBeenCalled();
+  });
+
   it('runs default following under the send lock before reading metadata', async () => {
     const readMeta = fakeMaker.getSessionMeta.getMockImplementation()!;
     h.acquirePendingAgentSwitch.mockImplementationOnce(async (id, sync) => {
@@ -3712,23 +3783,40 @@ describe('providerId(来源/供应商)贯通 —— issue #854 回归', () => {
   });
 });
 
-describe('extractToolResultImageUrls 的兜底账本回落(xdt_media_produced)', () => {
+describe('extractToolResultMediaUrls 的兜底账本回落(xdt_media_produced)', () => {
+  // #6447: declared video fields suppress the fallback ledger; no caption is required.
+  // Unit: exercise the same extractor used by tool-result events.
+  it.each(['xdt_video_url', 'xdt_video_urls'])('collects declared %s only for X', (field) => {
+    const video = `cindy-media://blobs/${'a'.repeat(64)}.mp4`;
+    const payload = { [field]: field.endsWith('urls') ? [video, video, 42, '/tmp/clip.mp4'] : video };
+    expect(extractToolResultMediaUrls(JSON.stringify(payload), 'x')).toEqual([video]);
+    expect(extractToolResultMediaUrls(JSON.stringify(payload), 'telegram')).toEqual([]);
+    expect(extractToolResultMediaUrls(JSON.stringify({ ...payload, _xdt_render_image: false }), 'x')).toEqual([]);
+  });
+
+  it('X receives generated video URLs while other channels retain image-only behavior', () => {
+    const video = `cindy-media://blobs/${'a'.repeat(64)}.mp4`;
+    const text = JSON.stringify({ xdt_media_produced: [video] });
+    expect(extractToolResultMediaUrls(text, 'x')).toEqual([video]);
+    expect(extractToolResultMediaUrls(text, 'telegram')).toEqual([]);
+  });
+
   const IMG = `cindy-media://blobs/${'d'.repeat(64)}.png`;
   const MP3 = `cindy-media://blobs/${'e'.repeat(64)}.mp3`;
 
   it('意识未声明媒体字段时,从 xdt_media_produced 接走图片(过滤非图)', () => {
     const text = JSON.stringify({ ok: true, xdt_media_produced: [IMG, MP3] });
-    expect(extractToolResultImageUrls(text)).toEqual([IMG]);
+    expect(extractToolResultMediaUrls(text)).toEqual([IMG]);
   });
 
   it('声明字段与账本并存时合并去重', () => {
     const text = JSON.stringify({ ok: true, xdt_image_urls: [IMG], xdt_media_produced: [IMG] });
-    expect(extractToolResultImageUrls(text)).toEqual([IMG]);
+    expect(extractToolResultMediaUrls(text)).toEqual([IMG]);
   });
 
   it('_xdt_render_image:false 哨兵优先,全部不外发', () => {
     const text = JSON.stringify({ ok: true, xdt_media_produced: [IMG], _xdt_render_image: false });
-    expect(extractToolResultImageUrls(text)).toEqual([]);
+    expect(extractToolResultMediaUrls(text)).toEqual([]);
   });
 });
 

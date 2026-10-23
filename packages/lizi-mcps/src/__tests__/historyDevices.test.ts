@@ -99,6 +99,22 @@ function setup() {
 }
 
 describe("history device discovery and queries", () => {
+  // The execution-device Worker has no local orcaRole. Keep its persisted origin
+  // visible through the real list_sessions projection so it can identify its Lead.
+  it("projects remote Worker origin while leaving local role and Fork fields absent", async () => {
+    const s = setup();
+    const base = await s.history.listSessions({ sessionIds: null, workdir: null, fromMs: null, toMs: null,
+      agentKind: null, includeDeleted: false, limit: 1, cursor: null, order: "desc" });
+    if (!base.ok) throw new Error("fixture unavailable");
+    const lead = { leadDeviceId: "pc", leadDeviceName: "PC", leadSessionId: "lead-1", leadTitle: "Lead", workerLabel: "tester" };
+    vi.mocked(s.history.listSessions).mockResolvedValueOnce({ ...base,
+      page: { ...base.page, items: [{ ...base.page.items[0]!, orcaRemoteLead: lead }] } });
+    const result = await s.call("list_sessions");
+    expect(result.sessions[0]).toMatchObject({ orcaRemoteLead: lead });
+    expect(result.sessions[0]).not.toHaveProperty("orcaRole");
+    expect(result.sessions[0]).not.toHaveProperty("parentSessionId");
+  });
+
   it("keeps legacy local queries local and preserves their response", async () => {
     const s = setup();
     expect(await s.call("list_sessions")).toMatchObject({

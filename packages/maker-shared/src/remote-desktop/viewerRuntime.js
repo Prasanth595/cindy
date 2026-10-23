@@ -1490,7 +1490,8 @@ export function mountRemoteDesktopViewer(root, postMessage, config) {
           dx: Math.max(-2000, Math.min(2000, wx)),
           dy: Math.max(-2000, Math.min(2000, wy)),
         });
-        flush();
+        // Let the existing input tick coalesce trackpad bursts. Key/button
+        // edges still flush immediately, preserving their order with scrolls.
       },
       { passive: false },
     );

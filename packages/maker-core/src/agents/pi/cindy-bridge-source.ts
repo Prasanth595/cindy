@@ -4206,11 +4206,19 @@ function registerCindyHostedTools(
 }
 
 export default async function cindyBridge(piApi: any) {
+  const localHostToolsOnly = process.env.CINDY_LOCAL_HOST_TOOLS_ONLY === '1';
   // 受邀者：只放行 Cindy 扩展注册的工具(本扩展经下面的 pi 注册的，加上子代理扩展的工具)。
-  const guestToolGate = CINDY_HOSTED && CINDY_HOSTED.guest
+  const guestToolGate = (CINDY_HOSTED && CINDY_HOSTED.guest) || process.env.CINDY_LOCAL_HOST_TOOLS_ONLY === '1'
     ? createCindyGuestToolGate(piApi, [${JSON.stringify(CINDY_SUBAGENT_TOOL_NAME)}])
     : null;
   const pi = guestToolGate ? guestToolGate.pi : piApi;
+  if (localHostToolsOnly) {
+    const allowed = new Set(['cindy_mcp_list_tools', 'cindy_mcp_call_tool']);
+    const isolate = () => pi.setActiveTools([...allowed]);
+    pi.on('session_start', isolate);
+    pi.on('before_agent_start', isolate);
+    pi.on('tool_call', (event: any) => allowed.has(event.toolName) ? undefined : { block: true, reason: 'This session only exposes the authorized client tools.' });
+  }
   if (guestToolGate) {
     // 被拦的工具也不交给模型(例如 Pi 自带的 codemode、tool_search)。
     pi.on('before_agent_start', () => {
@@ -4272,9 +4280,22 @@ export default async function cindyBridge(piApi: any) {
     },
   });
   if (!currentPermissionState().reviewOnly) registerCindyQuestionTool(pi);
+  function learnedCachePayload(payload, model) {
+    if (model?.api !== 'openai-completions' || !payload || typeof payload !== 'object' || Array.isArray(payload)) return payload;
+    try {
+      const file = path.join(process.env.PI_CODING_AGENT_DIR || '', 'pi-cache-compatibility.json');
+      if (!process.env.PI_CODING_AGENT_DIR || statSync(file).size > 256 * 1024) return payload;
+      const rules = JSON.parse(readFileSync(file, 'utf8'));
+      if (!Array.isArray(rules) || !rules.some((rule) => rule.provider === model.provider && rule.id === model.id && rule.baseUrl === model.baseUrl)) return payload;
+      const next = { ...payload };
+      delete next.prompt_cache_key;
+      delete next.prompt_cache_retention;
+      return next;
+    } catch { return payload; }
+  }
   pi.on('before_provider_request', async (event, ctx) => {
     const payload = astraResponsesPayload(event.payload, ctx.model) ?? event.payload;
-    return (await nativeFastPayload(payload, ctx.model, ctx)) ?? payload;
+    return learnedCachePayload((await nativeFastPayload(payload, ctx.model, ctx)) ?? payload, ctx.model);
   });
   const mcpGateway = new CindyMcpGateway();
   // bash 隔离 home 经 resolveBashPackageHome 解析(首次加载读删 + 防篡改 stash,

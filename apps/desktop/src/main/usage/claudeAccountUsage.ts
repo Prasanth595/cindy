@@ -98,6 +98,7 @@ let snapshot: ClaudeAccountUsageSnapshot | null = null;
 let snapshotOwnerKey: string | null = null;
 let clearReason: ClaudeQuotaClear['quotaState'] = 'unlimited';
 let fetchInFlight = false;
+let fetchPromise: Promise<void> | null = null;
 let fetchOwnerKey: string | null = null;
 let refreshQueued = false;
 let lastFetchAt = 0;
@@ -112,6 +113,7 @@ export function __resetClaudeAccountUsageForTesting(): void {
   snapshotOwnerKey = null;
   clearReason = 'unlimited';
   fetchInFlight = false;
+  fetchPromise = null;
   fetchOwnerKey = null;
   refreshQueued = false;
   lastFetchAt = 0;
@@ -281,7 +283,7 @@ async function fetchOnce(authenticatedUserId?: string): Promise<ClaudeAccountUsa
 
 /**
  * 触发一次 Claude 账号配额刷新 (background)。
- *   - in-flight 去重: 已有进行中直接跳过
+ *   - in-flight 去重: 已有同账号读取时等待共享结果
  *   - 节流: 距上次拉取 < 10s 跳过 (force=true 跳过节流, warm-start 用)
  *   - 拉到新数据后写 in-memory snapshot + broadcast
  *   - 首次成功 fetch 后启动空闲轮询定时器 (5 分钟周期, 保活 dailyBaselineStore.lastSeenSpend)
@@ -291,6 +293,7 @@ export async function triggerClaudeAccountUsageRefresh(force = false): Promise<v
   if (!owner) return;
   if (fetchInFlight) {
     if (fetchOwnerKey !== owner.key) refreshQueued = true;
+    await fetchPromise;
     return;
   }
   if (!force && lastFetchOwnerKey === owner.key && Date.now() - lastFetchAt < THROTTLE_MS) return;
@@ -299,33 +302,42 @@ export async function triggerClaudeAccountUsageRefresh(force = false): Promise<v
   fetchOwnerKey = owner.key;
   lastFetchAt = Date.now();
   lastFetchOwnerKey = owner.key;
-  try {
-    if (owner.key.startsWith('cloud:')) refreshQuotaCredentialOwner(owner.key);
-    const generation = quotaCredentialGeneration();
-    const next = await fetchOnce(owner.authenticatedUserId);
-    if (getAuthState().mode === 'cloud' && quotaCredentialGeneration() !== generation) return;
-    if (currentQuotaOwner()?.key !== owner.key) return;
-    if (next === 'unlimited') {
-      clearReason = 'unlimited';
-      snapshot = null;
+  let resolveFetch!: () => void;
+  let rejectFetch!: (error: unknown) => void;
+  const pending = new Promise<void>((resolve, reject) => { resolveFetch = resolve; rejectFetch = reject; });
+  fetchPromise = pending;
+  void (async () => {
+    try {
+      if (owner.key.startsWith('cloud:')) refreshQuotaCredentialOwner(owner.key);
+      const generation = quotaCredentialGeneration();
+      const next = await fetchOnce(owner.authenticatedUserId);
+      if (getAuthState().mode === 'cloud' && quotaCredentialGeneration() !== generation) return;
+      if (currentQuotaOwner()?.key !== owner.key) return;
+      if (next === 'unlimited') {
+        const changed = snapshotOwnerKey !== owner.key || snapshot !== null || clearReason !== 'unlimited';
+        clearReason = 'unlimited';
+        snapshot = null;
+        snapshotOwnerKey = owner.key;
+        if (changed) broadcast(null);
+        ensureIdlePoll();
+        return;
+      }
+      if (!next) return;
+      snapshot = next;
       snapshotOwnerKey = owner.key;
-      broadcast(null);
+      broadcast(next);
       ensureIdlePoll();
-      return;
+    } finally {
+      fetchInFlight = false;
+      fetchPromise = null;
+      fetchOwnerKey = null;
+      if (refreshQueued) {
+        refreshQueued = false;
+        void triggerClaudeAccountUsageRefresh(true);
+      }
     }
-    if (!next) return;
-    snapshot = next;
-    snapshotOwnerKey = owner.key;
-    broadcast(next);
-    ensureIdlePoll();
-  } finally {
-    fetchInFlight = false;
-    fetchOwnerKey = null;
-    if (refreshQueued) {
-      refreshQueued = false;
-      void triggerClaudeAccountUsageRefresh(true);
-    }
-  }
+  })().then(resolveFetch, rejectFetch);
+  await pending;
 }
 
 /**

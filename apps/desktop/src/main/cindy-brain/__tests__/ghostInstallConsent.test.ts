@@ -272,3 +272,22 @@ describe('pending consent prompts', () => {
     expect(second.signal.aborted).toBe(false);
   });
 });
+
+it('records target consent only when the independent capability was shown', async () => {
+  const previous = { ...manifest(['api.weather.test']), agent: { tasks: true } };
+  const next = { ...previous, agent: { tasks: true, targets: true } };
+  const prompt = userPrompt(true);
+  const policy = { mode: 'prompt' as const, prompt, initiator: 'user' as const, origin: 'market' as const };
+  const before = installed(previous);
+  const decision = await obtainGhostInstallConsent(policy, before, next, reviewedDigest);
+  assertGhostInstallConsent(decision, before, next, reviewedDigest);
+  expect(prompt).toHaveBeenCalledWith(expect.objectContaining({ facts: expect.objectContaining({ added: [expect.objectContaining({ key: 'agent:targets' })] }) }));
+  expect(confirmedTaskCapability(decision, before, next, 'targets')).toBe(true);
+  expect(confirmedTaskCapability(decision, before, next)).toBeUndefined();
+  expect(confirmedTaskCapability({ mode: 'unprompted' }, before, next, 'targets')).toBeUndefined();
+  const alreadyDeclared = installed(next);
+  const expanded = { ...next, network: { hosts: ['api.weather.test', 'other.test'] } };
+  const unrelated = await obtainGhostInstallConsent(policy, alreadyDeclared, expanded, reviewedDigest);
+  assertGhostInstallConsent(unrelated, alreadyDeclared, expanded, reviewedDigest);
+  expect(confirmedTaskCapability(unrelated, alreadyDeclared, expanded, 'targets')).toBeUndefined();
+});

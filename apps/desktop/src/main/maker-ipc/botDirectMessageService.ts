@@ -1,3 +1,5 @@
+import type { CapturedAgentRequest } from './forwardedRequest.js';
+import { matchesForwardedRequest, readForwardedRequestSource, type AgentRequestReceipt, type ForwardedRequestSource } from '../../shared/forwardedRequest.js';
 import { parseBotPeerAddress, botPeerAddress, MAX_BOT_PEER_ADDRESS_CHARS } from '../../shared/botPeerAddress.js';
 import { isCompanionShadowed } from '../companion-cloud/homes.js';
 import { createHash, randomUUID } from 'node:crypto';
@@ -91,10 +93,10 @@ export type BotDirectMessageResult =
 /** Device transport is injected; it retains device-link's account and control gates. */
 export interface BotMessageTransport {
   selfDeviceId(): string | null;
-  verifySender(input: { controllerDeviceId: string; senderBotId: string; targetBotId: string; messageId: string; message: string }, assertCurrent: () => void): Promise<boolean>;
+  verifySender(input: { controllerDeviceId: string; senderBotId: string; targetBotId: string; messageId: string; message: string; requestSource?: ForwardedRequestSource }, assertCurrent: () => void): Promise<boolean>;
   resolve(targetId: string): Promise<{ id: string; name: string; bridgeSessionId?: string }>;
   list(): Promise<{ agents: Array<{ id: string; name: string; deviceId: string; deviceName: string }>; unavailableDevices: Array<{ deviceId: string; deviceName: string; errorCode: string }> }>;
-  send(input: { targetId: string; senderBotId: string; senderName?: string; message: string; messageId: string; bridgeSessionId?: string }, assertCurrent: () => void): Promise<BotDirectMessageResult>;
+  send(input: { targetId: string; senderBotId: string; senderName?: string; message: string; messageId: string; bridgeSessionId?: string; requestSource?: ForwardedRequestSource }, assertCurrent: () => void): Promise<BotDirectMessageResult>;
   readReceipt?(input: { targetId: string; senderBotId: string; messageId: string }, assertCurrent: () => void): Promise<{ messageId: string; accepted: true | null }>;
   readReply?(input: { targetId: string; sessionId: string; messageId: string }, assertCurrent: () => void): Promise<{
     delivered: boolean; replies: Array<{ id: string; content: string }>; truncated: boolean;
@@ -104,6 +106,7 @@ export interface BotMessageTransport {
 export interface BotDirectMessageServiceDeps {
   transport?: BotMessageTransport;
   dispatch: (params: {
+    autoReviewUserText?: AgentRequestReceipt;
     targetSessionId: string;
     dispatcherSessionId?: string;
     message: string;
@@ -461,14 +464,21 @@ export function createBotDirectMessageService(deps: BotDirectMessageServiceDeps)
     callerSessionId: string;
     targetBotId: string;
     message: string;
-  }, remoteSender?: { id: string; name: string; messageId: string }): Promise<BotDirectMessageResult> => {
+  }, remoteSender?: { id: string; name: string; messageId: string; requestSource?: ForwardedRequestSource }): Promise<BotDirectMessageResult> => {
     const ownerScope = deps.captureOwnerScope?.();
     const ownerIsCurrent = (): boolean =>
       ownerScope === undefined || !deps.isOwnerScopeCurrent || deps.isOwnerScopeCurrent(ownerScope);
-    const message = input.message.trim();
-    if (!message || message.length > MAX_MESSAGE_CHARS) {
+    const rawMessage = input.message.trim();
+    if (!rawMessage || rawMessage.length > (remoteSender ? 200_000 : MAX_MESSAGE_CHARS)) {
       return failed('INVALID_ARGS', `message 必须为 1-${MAX_MESSAGE_CHARS} 个字符`);
     }
+
+    // A peer conversation is not a delegated owner instruction. Preserve old
+    // verified envelopes when receiving them, but never wrap a new message.
+    const captured: CapturedAgentRequest = { message: rawMessage,
+      autoReviewUserText: { kind: 'agent-request',
+        ...(remoteSender?.requestSource ? { request: remoteSender.requestSource } : {}) } };
+    const message = captured.message;
 
     const caller = remoteSender ? {
       botId: remoteSender.id, botName: remoteSender.name, sessionSource: 'bot',
@@ -694,7 +704,6 @@ export function createBotDirectMessageService(deps: BotDirectMessageServiceDeps)
           `[Group source: ${trustedHeaderLabel(groupAuthority.sourceGroup?.name ?? '', MAX_SENDER_NAME_CHARS)} (${trustedHeaderLabel(groupAuthority.sourceGroup?.groupId ?? '', MAX_SENDER_ID_CHARS)}); lane: ${trustedHeaderLabel(input.callerSessionId, MAX_SENDER_ID_CHARS)}]`,
           'Replies go to the sender teammate\'s private chat with its owner. They are not delivered to the group lane. Retain this group source when replying.',
         ] : []),
-        `Handle this in your current canonical task. If a useful answer, result, or clarification should go back, call send_to_agent with target_id="${senderId}". Do not send acknowledgement-only replies.`,
         message,
       ].join('\n\n');
       const deliveryId = remoteSender?.messageId ?? createId();
@@ -830,7 +839,7 @@ export function createBotDirectMessageService(deps: BotDirectMessageServiceDeps)
         // running tools. Transport writes are never automatically replayed.
         try {
           const result = await deps.transport!.send({ targetId: input.targetBotId,
-            senderBotId: caller.botId, senderName: caller.botName, message, messageId: deliveryId, bridgeSessionId }, () => {
+            senderBotId: caller.botId, senderName: caller.botName, message, messageId: deliveryId, bridgeSessionId, requestSource: captured.autoReviewUserText.request }, () => {
             if (!ownerIsCurrent()) throw new Error('[OWNER_CHANGED] Account changed');
           });
           if (!result.ok && result.errorCode !== 'DELIVERY_UNKNOWN') {
@@ -854,7 +863,7 @@ export function createBotDirectMessageService(deps: BotDirectMessageServiceDeps)
       {
         try {
           dispatched = await deps.dispatch({
-            targetSessionId: targetSessionId!, message: envelope,
+            targetSessionId: targetSessionId!, message: envelope, autoReviewUserText: captured.autoReviewUserText,
             ...(groupAuthority ? { dispatcherSessionId: input.callerSessionId } : {}),
             // Group routing details belong only to the agent wire. Shared
             // history and queue projections can expose the persisted body.
@@ -900,7 +909,9 @@ export function createBotDirectMessageService(deps: BotDirectMessageServiceDeps)
       throw error;
     }
   };
-  const receiveRemote = async (input: { controllerDeviceId: string; senderBotId: string; targetBotId: string; messageId: string; message: string }) => {
+  const receiveRemote = async (input: { controllerDeviceId: string; senderBotId: string; targetBotId: string; messageId: string; message: string; requestSource?: ForwardedRequestSource }) => {
+    if (input.requestSource !== undefined && (!readForwardedRequestSource(input.requestSource)
+      || !matchesForwardedRequest(input.requestSource, input.message))) return failed('INVALID_ARGS', 'Request source does not match the forwarded body');
     if (!deps.transport) return failed('HOST_NOT_READY', 'Device messaging is not ready');
     const scope = deps.captureOwnerScope?.();
     const assertCurrent = () => {
@@ -915,7 +926,7 @@ export function createBotDirectMessageService(deps: BotDirectMessageServiceDeps)
       if (!await deps.transport.verifySender(input, assertCurrent)) return failed('PERMISSION_DENIED', 'Sender has no matching canonical message reservation');
       assertCurrent();
       return sendMessage({ callerSessionId: '', targetBotId: input.targetBotId, message: input.message },
-        { id: senderId, name: sender.name, messageId: input.messageId });
+        { id: senderId, name: sender.name, messageId: input.messageId, requestSource: readForwardedRequestSource(input.requestSource) ?? undefined });
     } catch (error) { return transportFailure(error); }
   };
   // One in-flight discovery per current owner, shared by all local teammate sessions.
@@ -960,7 +971,7 @@ export function createBotDirectMessageService(deps: BotDirectMessageServiceDeps)
     return { ok: true as const, agents: [...local.map(row => ({ ...row, local: true })),
       ...remote.agents.map(row => ({ ...row, local: false }))], unavailableDevices: remote.unavailableDevices, ...(discoveryError ? { discoveryError } : {}) };
   };
-  const verifyRemoteMessage = async (input: { controllerDeviceId: string; senderBotId: string; targetBotId: string; messageId: string; message: string }): Promise<boolean> => {
+  const verifyRemoteMessage = async (input: { controllerDeviceId: string; senderBotId: string; targetBotId: string; messageId: string; message: string; requestSource?: ForwardedRequestSource }): Promise<boolean> => {
     const scope = deps.captureOwnerScope?.();
     const [row] = await getDbClient().drizzle.select().from(botDirectMessages)
       .where(eq(botDirectMessages.id, input.messageId)).limit(1);

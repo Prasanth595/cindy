@@ -9,6 +9,7 @@
     }
   },
   "renderer": {
+    "failedSamplingAttempt": "This reply did not complete. Its content is for reference only.",
     "moreActions": "More message actions",
     "reply": "Reply",
     "newMessagesToBottom": "New messages, jump to bottom",
@@ -170,7 +171,9 @@
     "diffEditCount": "{{n}} edits",
     "groupSentNamed": "Sent from group “{{name}}”",
     "groupSent": "Sent from a group",
-    "sourceGroupId": "Group ID: {{id}}"
+    "sourceGroupId": "Group ID: {{id}}",
+    "selectText": "Select Text",
+    "you": "You"
   },
   "actions": {
     "attachmentsPrefix": "Attachments: {{names}}",
@@ -181,6 +184,9 @@
     "turnTokens": "{{tokens}} tokens"
   },
   "lightbox": {
+    "originalUnavailable": "Original image unavailable",
+    "retryOriginal": "Retry Original Image",
+    "loadingOriginal": "Loading original image…",
     "sourceMissing": "The source image is missing on this computer. Import the original file again.",
     "deviceOffline": "The computer is disconnected. Reconnect and try again.",
     "cancelAnnotation": "Cancel annotation",
@@ -236,7 +242,15 @@
     "sendingMessage": "Sending message: {{text}}",
     "uploadingAttachments": "Uploading attachments {{uploaded}}/{{total}}",
     "delete": "Delete",
-    "retry": "Retry"
+    "retry": "Retry",
+    "notSent": "Not sent",
+    "imagesNotUploaded_one": "{{count}} image didn't upload",
+    "imagesNotUploaded_other": "{{count}} images didn't upload",
+    "waitingForComputer": "Sends when your computer is back",
+    "waitingForNetwork": "Sends when you’re back online",
+    "queued": "Queued",
+    "retryImage": "Upload this image again",
+    "waitingMessage": "Waiting to send: {{text}}"
   },
   "systemCard": {
     "contextRebuild": {
@@ -290,6 +304,7 @@
     "agentSwitchLocation": "Agent moved to {{device}}",
     "agentSwitchLocationThisComputer": "Agent moved back to this computer",
     "agentSwitchLocationOtherComputer": "Agent moved to another computer",
+    "agentSwitchLocationQuotaRebalance": "its quota should be used first",
     "learnStarted": "Skill learning started",
     "learnStartedBody": "Distillation runs in the background on desktop. When it's done, review the skill draft on desktop.",
     "learnFailed": "Skill learning couldn't start",
@@ -390,5 +405,11 @@
     "memory": "Remembered: {{title}}",
     "skillCreated": "Created skill: {{title}}",
     "skillUpdated": "Updated skill: {{title}}"
+  },
+  "richAnswer": {
+    "playVideo": "Play video",
+    "openVideoSource": "Open original video",
+    "calculationUnavailable": "Unable to calculate this value.",
+    "incomplete": "Some content could not be displayed."
   }
 }

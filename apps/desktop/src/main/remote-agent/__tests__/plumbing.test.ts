@@ -4,7 +4,9 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { MAIN_OWNED_SEND_CONTEXT, type InteractionDecision } from '@cindy/maker-core';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import WebSocket from 'ws';
 
 import { mapClaudeHostedEvent } from '../controller/eventMap';
@@ -15,6 +17,8 @@ import type { RemoteAgentRunClient } from '../controller/runClient';
 import { credentialConfirmation, takeGroupSwitchState } from '../controller/startRemote';
 import { EventLog, LineSplitter } from '../eventLog';
 import { ExecutorGate } from '../executor/gate';
+import { RemoteExecutor, type ExecutorConfirmation } from '../executor/executor';
+import { handleExecMcpRequest } from '../executor/ccMcp';
 import { ExecutorWorkspace } from '../executor/workspace';
 import { createRunTunnel } from '../host/tunnel';
 import { PROVIDER_SHARE_CREDENTIAL_SESSION_APPROVAL } from '../../../shared/providerShareCredentialConsent';
@@ -63,6 +67,229 @@ describe('event log', () => {
 });
 
 describe('tunnel', () => {
+  // Regression: SDK cancellation uses a notification without closing its transport.
+  // Real MCP Client -> tunnel -> executor, with a pending credential read (unit/loopback).
+  // Socket-abort coverage did not catch stale execution/grants after a tool timeout.
+  it.each(['timeout', 'abort'])('cancels an MCP tool through the SDK %s notification without accepting late approval', async (end) => {
+    fs.writeFileSync(path.join(root, '.env'), 'INVALID_FIXTURE=secret');
+    fs.writeFileSync(path.join(root, 'hello.txt'), 'ordinary read');
+    const signals: AbortSignal[] = [];
+    const answers: Array<(answer: ExecutorConfirmation) => void> = [];
+    const workspace = new ExecutorWorkspace({ workingDir: root });
+    const gate = new ExecutorGate(workspace, 'full', Date.now, { confirmCredentials: true });
+    const executor = new RemoteExecutor({
+      workspace, gate, rgPath: '',
+      confirm: (_action, signal) => {
+        signals.push(signal);
+        return new Promise((resolve) => { answers.push(resolve); });
+      },
+    });
+    let streamStarted = false;
+    const tunnel = await createRunTunnel({
+      http: (request, signal) => handleExecMcpRequest(executor, request.method, request.body, signal),
+      wsOpen() {}, wsMessage() {}, wsClose() {},
+    });
+    const client = new Client({ name: 'cancellation-test', version: '1' });
+    const abort = new AbortController();
+    try {
+      await client.connect(new StreamableHTTPClientTransport(new URL(`${tunnel.url}/mcp/cindy_exec`), {
+        requestInit: { headers: { authorization: `Bearer ${tunnel.token}` } },
+        fetch: async (input, init) => {
+          const response = await fetch(input, init);
+          if (response.headers.get('content-type')?.includes('text/event-stream')) streamStarted = true;
+          return response;
+        },
+      }));
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
+      const read = { name: 'Read', arguments: { file_path: path.join(root, '.env') } };
+      const pending = client.callTool(read, undefined, { timeout: 60_000, signal: abort.signal }).catch((error: unknown) => error);
+      await vi.waitFor(() => { expect(signals).toHaveLength(1); expect(streamStarted).toBe(true); });
+      const ordinary = client.callTool({ name: 'Read', arguments: { file_path: path.join(root, 'hello.txt') } }, undefined, { timeout: 120_000 });
+      if (end === 'timeout') await vi.advanceTimersByTimeAsync(60_000);
+      else abort.abort();
+      expect(await pending).toBeInstanceOf(Error);
+      await vi.waitFor(() => expect(signals[0].aborted).toBe(true));
+      answers[0]('session');
+      expect(await ordinary).toMatchObject({ content: [expect.objectContaining({ text: expect.stringContaining('ordinary read') })] });
+      await vi.waitFor(() => expect(tunnel.linkActivity().httpInFlight).toBe(0));
+      const retry = client.callTool(read);
+      await vi.waitFor(() => expect(signals).toHaveLength(2));
+      expect(gate.needsCredentialConsent({ kind: 'read', path: path.join(root, '.env') })).toBe(true);
+      answers[1](false);
+      expect(await retry).toMatchObject({ isError: true });
+    } finally {
+      abort.abort();
+      await executor.close();
+      for (const answer of answers) answer(false);
+      await client.close();
+      await tunnel.close();
+      vi.useRealTimers();
+    }
+  });
+
+  // Cancellation belongs to one run/session/typed request id. A reused id must survive
+  // a late result from its cancelled predecessor, and a duplicate must not replace it (unit).
+  it('isolates cancellation identities and keeps a reused id registered after a late result', async () => {
+    const calls: Array<{ name: string; signal: AbortSignal; finish: () => void }> = [];
+    const handlers: Parameters<typeof createRunTunnel>[0] = {
+      http: (request, signal) => {
+        const message = JSON.parse(request.body!.toString());
+        if (message.method !== 'tools/call') return Promise.resolve({ status: 202, headers: [] });
+        return new Promise((resolve) => calls.push({ name: message.params.name, signal,
+          finish: () => resolve({ status: 200, headers: [['content-type', 'application/json']],
+            body: Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: message.id, result: { content: [] } })) }),
+        }));
+      },
+      wsOpen() {}, wsMessage() {}, wsClose() {},
+    };
+    const first = await createRunTunnel(handlers);
+    const second = await createRunTunnel(handlers);
+    const post = (tunnel: typeof first, session: string, body: unknown, token = tunnel.token) => fetch(`${tunnel.url}/mcp/cindy_exec`, {
+      method: 'POST', headers: { authorization: `Bearer ${token}`, 'mcp-session-id': session, accept: 'application/json, text/event-stream' },
+      body: JSON.stringify(body),
+    });
+    const call = (tunnel: typeof first, session: string, id: string | number, name: string) =>
+      post(tunnel, session, { jsonrpc: '2.0', id, method: 'tools/call', params: { name } });
+    const cancel = (tunnel: typeof first, session: string, requestId: string | number, token?: string) =>
+      post(tunnel, session, { jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId } }, token);
+    try {
+      const responses = await Promise.all([
+        call(first, 'a', 0, 'original'), call(first, 'a', '0', 'string-id'),
+        call(first, 'b', 0, 'other-session'), call(second, 'a', 0, 'other-run'),
+      ]);
+      expect((await call(first, 'a', 0, 'duplicate')).status).toBe(400);
+      expect(calls).toHaveLength(4);
+      expect((await cancel(first, 'a', 0, 'wrong-token')).status).toBe(401);
+      expect((await cancel(first, 'a', 'unknown')).status).toBe(202);
+      expect(calls.every((entry) => !entry.signal.aborted)).toBe(true);
+      expect((await cancel(first, 'a', 0)).status).toBe(202);
+      expect(calls.filter((entry) => entry.signal.aborted).map((entry) => entry.name)).toEqual(['original']);
+      expect(await responses[0].text()).toContain('Request cancelled.');
+      const reused = await call(first, 'a', 0, 'reused');
+      calls.find((entry) => entry.name === 'original')!.finish();
+      await vi.waitFor(() => expect(first.linkActivity().httpInFlight).toBe(3));
+      await cancel(first, 'a', 0);
+      expect(calls.find((entry) => entry.name === 'reused')!.signal.aborted).toBe(true);
+      expect(await reused.text()).toContain('Request cancelled.');
+      for (const entry of calls) entry.finish();
+      for (const response of responses.slice(1)) expect(await response.text()).toContain('"result"');
+      await vi.waitFor(() => {
+        expect(first.linkActivity().httpInFlight).toBe(0);
+        expect(second.linkActivity().httpInFlight).toBe(0);
+      });
+    } finally {
+      for (const entry of calls) entry.finish();
+      await first.close();
+      await second.close();
+    }
+  });
+
+  // 60s 首次响应超时：真实 tunnel 必须先返回 MCP SSE，等待业务结果时保持连接；旧用例都是立即返回(unit)。
+  it('starts an MCP tool response before confirmation and finishes it with the original result', async () => {
+    let answer!: (value: { status: number; headers: Array<[string, string]>; body: Buffer }) => void;
+    const tunnel = await createRunTunnel({
+      http: () => new Promise((resolve) => { answer = resolve; }),
+      wsOpen() {}, wsMessage() {}, wsClose() {},
+    });
+    const abort = new AbortController();
+    let received = false;
+    const response = fetch(`${tunnel.url}/mcp/cindy_exec`, {
+      method: 'POST', signal: abort.signal,
+      headers: { authorization: `Bearer ${tunnel.token}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 0, method: 'tools/call', params: { name: 'Read', arguments: { file_path: '.env' } } }),
+    }).then((value) => { received = true; return value; });
+    void response.catch(() => {});
+    try {
+      await vi.waitFor(() => expect(received).toBe(true), { timeout: 1000 });
+      const stream = await response;
+      expect(stream.headers.get('content-type')).toContain('text/event-stream');
+      const result = { jsonrpc: '2.0', id: 0, result: { content: [{ type: 'text', text: 'fixture' }] } };
+      answer({ status: 200, headers: [['content-type', 'application/json']], body: Buffer.from(JSON.stringify(result)) });
+      const data = (await stream.text()).split('\n').filter((line) => line.startsWith('data:')).map((line) => JSON.parse(line.slice(5)));
+      expect(data).toEqual([result]);
+    } finally {
+      abort.abort();
+      answer?.({ status: 200, headers: [], body: Buffer.from('{}') });
+      await tunnel.close();
+    }
+  });
+
+  // 同一生产 HTTP 入口：SSE 不能改变 JSON 客户端、初始化与其他 MCP 服务的状态码/响应(unit)。
+  it.each([
+    ['/mcp/cindy_exec', 'application/json', 'tools/call'],
+    ['/mcp/cindy_exec', 'text/event-stream', 'initialize'],
+    ['/mcp/other', 'text/event-stream', 'tools/call'],
+  ])('preserves the ordinary response for %s accepting %s on %s', async (endpoint, accept, method) => {
+    const tunnel = await createRunTunnel({
+      http: async () => ({ status: 409, headers: [['content-type', 'application/json']], body: Buffer.from('{"error":"fixture"}') }),
+      wsOpen() {}, wsMessage() {}, wsClose() {},
+    });
+    try {
+      const response = await fetch(`${tunnel.url}${endpoint}`, {
+        method: 'POST', headers: { authorization: `Bearer ${tunnel.token}`, accept },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method }),
+      });
+      expect(response.status).toBe(409);
+      expect(response.headers.get('content-type')).toBe('application/json');
+      expect(await response.json()).toEqual({ error: 'fixture' });
+    } finally { await tunnel.close(); }
+  });
+
+  // 流已建立后无法改 HTTP 状态；失败必须收口成对应请求的协议错误，不能泄露内部异常(unit)。
+  it.each(['status', 'invalid-json', 'empty', 'throw'])('ends an MCP stream with a protocol error on %s', async (failure) => {
+    const tunnel = await createRunTunnel({
+      http: async () => {
+        if (failure === 'throw') throw new Error('PRIVATE_FIXTURE_PATH');
+        return { status: failure === 'status' ? 502 : 200, headers: [],
+          ...(failure === 'empty' ? {} : { body: Buffer.from('PRIVATE_FIXTURE_PATH') }) };
+      },
+      wsOpen() {}, wsMessage() {}, wsClose() {},
+    });
+    try {
+      const response = await fetch(`${tunnel.url}/mcp/cindy_exec`, {
+        method: 'POST', headers: { authorization: `Bearer ${tunnel.token}`, accept: 'text/event-stream' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 'call-1', method: 'tools/call' }),
+      });
+      const body = await response.text();
+      expect(body).not.toContain('PRIVATE_FIXTURE_PATH');
+      expect(JSON.parse(body.split('\n').find((line) => line.startsWith('data:'))!.slice(5)))
+        .toMatchObject({ jsonrpc: '2.0', id: 'call-1', error: { code: -32603 } });
+    } finally { await tunnel.close(); }
+  });
+
+  // 旧用例没有挂起 SSE：等待期间有心跳，客户端取消必须中止反向请求并清除心跳(unit)。
+  it('keeps a pending MCP stream alive and cancels its reverse request and heartbeat on disconnect', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    let cancelled!: () => void;
+    const cancellation = new Promise<void>((resolve) => { cancelled = resolve; });
+    const tunnel = await createRunTunnel({
+      http: (_request, signal) => new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => { cancelled(); reject(new Error('aborted')); }, { once: true });
+      }),
+      wsOpen() {}, wsMessage() {}, wsClose() {},
+    });
+    const abort = new AbortController();
+    try {
+      const response = await fetch(`${tunnel.url}/mcp/cindy_exec`, {
+        method: 'POST', signal: abort.signal,
+        headers: { authorization: `Bearer ${tunnel.token}`, accept: 'text/event-stream' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call' }),
+      });
+      const reader = response.body!.getReader();
+      expect(new TextDecoder().decode((await reader.read()).value)).toContain(': waiting');
+      vi.advanceTimersByTime(60_000);
+      expect(new TextDecoder().decode((await reader.read()).value)).toContain(': waiting');
+      abort.abort();
+      await cancellation;
+      await vi.waitFor(() => expect(tunnel.linkActivity().httpInFlight).toBe(0));
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      abort.abort();
+      await tunnel.close();
+      vi.useRealTimers();
+    }
+  });
+
   it('requires the run token in the header or the path prefix and strips the prefix', async () => {
     const seen: string[] = [];
     const tunnel = await createRunTunnel({
@@ -355,6 +582,19 @@ describe('wire payloads', () => {
     expect(decodeOpenPayload({ ...base, acceptsGroupSwitch: 1 })).not.toHaveProperty('acceptsGroupSwitch');
     expect(decodeOpenPayload({ ...base, groupSwitchToken: 'Zm9vYmFyYmF6cXV4MTIzNDU2' }).groupSwitchToken).toBe('Zm9vYmFyYmF6cXV4MTIzNDU2');
     expect(decodeOpenPayload({ ...base, groupSwitchToken: 'short' })).not.toHaveProperty('groupSwitchToken');
+    // 上级目录标记：被控端据此把「没有」的答成不存在，格式有任何不对都整段丢弃(按没带处理，照常逐个转发)，
+    // 不能把存在的路径答成不存在。
+    const markers = { names: ['.git', '.codex-plugin'], levels: [{ up: 1, present: ['.git'] }, { up: 2, present: [] }] };
+    expect(decodeOpenPayload({ ...base, ancestorMarkers: markers }).ancestorMarkers).toEqual(markers);
+    for (const bad of [
+      { names: ['../x'], levels: [{ up: 1, present: [] }] },
+      { names: ['.git'], levels: [{ up: 1, present: ['.svn'] }] },
+      { names: ['.git'], levels: [{ up: 0, present: [] }] },
+      { names: ['.git'], levels: [{ up: 1, present: [] }, { up: 1, present: [] }] },
+      { names: ['a/b'], levels: [{ up: 1, present: [] }] },
+    ]) {
+      expect(decodeOpenPayload({ ...base, ancestorMarkers: bad })).not.toHaveProperty('ancestorMarkers');
+    }
     expect(() => decodeOpenPayload({ sessionId: 's', options: { model: 'm' }, workspace: { workingDir: '/p', platform: 'beos' } })).toThrow();
   });
 

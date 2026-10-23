@@ -1,3 +1,7 @@
+import { VideoSitePreview } from './VideoSitePreview';
+import { youtubeVideo } from '@cindy/maker-shared/rich-answer';
+import { splitRichAnswer, richMediaSource, richMarkdown, richString, type RichNode } from '@cindy/maker-shared/rich-answer';
+import { RichAnswer } from './RichAnswer';
 /**
  * MarkdownRenderer
  * ---------------------------------------------------------------------------
@@ -16,7 +20,7 @@ import { useImageLoadFailure } from './useImageLoadFailure';
 import { ChatLoadingImage } from './ChatLoadingImage';
 import { FileTypeIcon } from '@/components/ui/file-type-icon';
 import { CHAT_CODE_CLASS, CHAT_CODE_SURFACE_CLASS, CHAT_ICON_BUTTON_CLASS } from './chatChrome';
-import { createElement, memo, useCallback, useEffect, useRef, useState, useMemo, isValidElement, type HTMLAttributes, type ReactNode } from 'react';
+import { createElement, memo, useId, useCallback, useEffect, useRef, useState, useMemo, isValidElement, type HTMLAttributes, type ReactNode } from 'react';
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkCjkFriendly from 'remark-cjk-friendly';
@@ -113,6 +117,7 @@ import { SessionHandoffCard } from './SessionHandoffCard';
 import { SessionLinkChip } from './SessionLinkChip';
 import { ProjectLinkChip } from './ProjectLinkChip';
 import { ImageLightbox } from './ImageLightbox';
+import { splitQuestionReferences } from '@cindy/maker-shared/interaction';
 import { useImageClipboard } from './useImageClipboard';
 import { ImageHoverPreview } from './ImageHoverPreview';
 import { ImageMissingPlaceholder } from './ImageMissingPlaceholder';
@@ -332,6 +337,7 @@ const previewSafeUrlTransform: UrlTransform = (url, key) => {
 };
 
 interface MarkdownRendererProps {
+  renderRichAnswers?: boolean;
   /** F1: session cwd used to resolve relative paths in markdown links.
    *  Stable per-session — only changes on session switch (parent remount). */
   workingDir: string;
@@ -1114,6 +1120,7 @@ function ResolvedLocalLink({
   anchorProps,
   children,
   sessionId,
+  showFileIcon = true,
 }: {
   resolvedAbsPath: string;
   localKind: MarkdownLocalKind;
@@ -1125,6 +1132,7 @@ function ResolvedLocalLink({
   children: ReactNode;
   /** 当前会话 id;就位时 html 文件左键弹"打开方式"菜单(同 FileTargetChip)。 */
   sessionId?: string;
+  showFileIcon?: boolean;
 }) {
   const { t } = useTranslation();
   // 同 FileTargetChip:html + 有会话上下文时左键按偏好直开,「查看源文件」
@@ -1162,7 +1170,7 @@ function ResolvedLocalLink({
         onContextMenu={ctxMenu.onContextMenu}
         {...anchorProps}
       >
-        {localKind !== 'directory' && nodeToText(children).trim() && (
+        {showFileIcon && localKind !== 'directory' && nodeToText(children).trim() && (
           <FileTypeIcon name={resolvedAbsPath} size={14} className="mr-1 inline-block align-[-0.125em]" />
         )}
         {children}
@@ -1429,6 +1437,41 @@ async function activateResolvedLocalTarget(
   });
 }
 
+/** Evidence in a question uses the same verified targets and previews as messages. */
+export function QuestionReferenceText({ text, onPreviewOpenChange }: { text: string; onPreviewOpenChange?: (open: boolean) => void }) {
+  const ctx = useChatSessionFile();
+  const [image, setImage] = useState<string | null>(null);
+  const [file, setFile] = useState<{ path: string; name: string; line?: number } | null>(null);
+  const [model, setModel] = useState<string | null>(null);
+  const previewOpen = !!(image || file || model);
+  useEffect(() => {
+    onPreviewOpenChange?.(previewOpen);
+    return () => onPreviewOpenChange?.(false);
+  }, [previewOpen, onPreviewOpenChange]);
+  return <>
+    {splitQuestionReferences(text).map((part, index) => part.href ? (
+      <MarkdownTargetLink
+        key={index}
+        href={part.href}
+        workingDir={ctx.workingDir}
+        sessionId={ctx.sessionId}
+        remoteMediaOrigin={toRemoteMediaOrigin(ctx.origin, ctx.workingDir)}
+        isStreaming={false}
+        allowPrivilegedLinks
+        fromBarePath
+        showFileIcon={false}
+        anchorProps={{}}
+        setLightboxSrc={setImage}
+        setTextLightboxFile={setFile}
+        setModelLightboxPath={setModel}
+      >{part.text}</MarkdownTargetLink>
+    ) : part.text)}
+    {image && <ImageLightbox src={image} onClose={() => setImage(null)} />}
+    {file && <TextLightbox filePath={file.path} fileName={file.name} initialLine={file.line} onClose={() => setFile(null)} />}
+    {model && <ModelLightbox source={{ kind: 'local', absPath: model }} onClose={() => setModel(null)} />}
+  </>;
+}
+
 function MarkdownTargetLink({
   href,
   children,
@@ -1443,6 +1486,7 @@ function MarkdownTargetLink({
   fromBarePath,
   remoteMediaOrigin,
   sessionId,
+  showFileIcon,
 }: {
   href?: string;
   children: ReactNode;
@@ -1460,6 +1504,8 @@ function MarkdownTargetLink({
    * shouldRenderCodeReferenceLabel 的调用点与 DESIGN.md §14.5。
    */
   fromBarePath?: boolean;
+  /** Plain question text preserves its layout when a file becomes clickable. */
+  showFileIcon?: boolean;
   /** 远程会话媒体来源:把 xdt-audio:// 等链接改写到 cindy-remote-media://;本地 undefined。 */
   remoteMediaOrigin?: RemoteMediaOrigin;
   /** 当前会话 id;就位时外链 / html 文件左键弹"打开方式"菜单。 */
@@ -1533,6 +1579,7 @@ function MarkdownTargetLink({
           onOpen={openResolvedTarget}
           anchorProps={anchorProps}
           sessionId={sessionId}
+          showFileIcon={showFileIcon}
         >
           {children}
         </ResolvedLocalLink>
@@ -1666,7 +1713,7 @@ function InlineCodeWithTarget({
   );
 }
 
-export const MarkdownRenderer = memo(function MarkdownRenderer({
+const MarkdownRendererBase = memo(function MarkdownRendererBase({
   workingDir,
   content,
   isStreaming = false,
@@ -1684,7 +1731,7 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
   // 流式逐词淡入（DESIGN.md §14.4）：消息级 state 跨 parse / remount 保留，
   // 各稳定 Markdown 分片只维护自己的内容匹配状态，但共享同一条连续时间线。
   // isStreaming 翻 false 时整段回落到普通 Markdown，终版没有流式 span 包装。
-  // 用户开关(Settings → 个性化 → 流式动效,默认开)与 reduced-motion 取 AND:
+  // 用户开关(Settings → 外观 → 回复动效,默认开)与 reduced-motion 取 AND:
   // 系统级减弱动效永远优先,开关只在 motion 允许的前提下再做个人选择。
   const reducedMotion = useReducedMotion();
   const streamFadeEnabled = useStreamFadeEnabled();
@@ -1978,4 +2025,28 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
       )}
     </div>
   );
+});
+
+/** Assistant-only envelope decoding, before Markdown chunking or repairs. */
+export const MarkdownRenderer = memo(function MarkdownRenderer(props: MarkdownRendererProps) {
+  const instanceKey = useId();
+  const sessionFileCtx = useChatSessionFile();
+  const source = useStreamingThrottle(props.content, props.isStreaming ?? false);
+  const renderMedia = (node: RichNode) => {
+    if (node.kind === 'image') return <MarkdownRendererBase {...props} content={richMarkdown(node) ?? ''} isStreaming={false} />;
+    const raw = richMediaSource(node);
+    if (!raw) return null;
+    if (node.kind === 'video' && youtubeVideo(raw)) return <VideoSitePreview src={raw} title={richString(node, 'alt', 'YouTube')} />;
+    const normalized = raw.startsWith('xdt-audio://') && props.allowPrivilegedLinks !== false ? raw : normalizeMarkdownImageSrc(raw, props.workingDir, props.allowPrivilegedLinks !== false);
+    if (!normalized) return null;
+    const src = rewriteToRemoteMediaOrigin(normalized, props.currentSessionId ? toRemoteMediaOrigin(sessionFileCtx.origin, sessionFileCtx.workingDir) : undefined);
+    return node.kind === 'audio' ? <InlineXdtAudioPlayer src={src} /> : <ChatVideoView src={src} filename={richString(node, 'alt', 'video')} variant="tool-output" sessionId={props.currentSessionId} />;
+  };
+  const parts = useMemo(() => props.renderRichAnswers ? splitRichAnswer(source) : [], [source, props.renderRichAnswers]);
+  if (!parts.some(part => part.kind === 'rich')) return <MarkdownRendererBase {...props} />;
+  return <div className="rich-answer-body">{parts.map(part => part.kind === 'rich'
+    ? <RichAnswer renderMedia={renderMedia} key={part.key} source={part.source} complete={part.complete || !props.isStreaming}
+        stateKey={`${props.streamFadeKey ?? instanceKey}:${part.key}`}
+        renderMarkdown={(content, id) => <MarkdownRendererBase {...props} content={content} streamFadeKey={`${props.streamFadeKey}:${part.key}:${id}`} />} />
+    : <MarkdownRendererBase {...props} key={part.key} content={part.source} isStreaming={!part.complete && props.isStreaming} streamFadeKey={`${props.streamFadeKey}:${part.key}`} />)}</div>;
 });

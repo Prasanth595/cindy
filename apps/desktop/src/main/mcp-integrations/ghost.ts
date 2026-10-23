@@ -82,6 +82,7 @@ import {
   deriveGhostSessionContext,
   ghostInstallApprovalToken,
   type GhostSessionContextInjected,
+  type GhostToolCallResult,
   type GhostSetupAssessment,
   type InstalledGhost,
 } from '../../shared/ghost.js';
@@ -94,6 +95,8 @@ import {
   resolveInstalledGhost,
 } from '../../shared/pluginIdentity.js';
 import { withCardToken } from '../cindy-brain/cardService.js';
+import { fitGhostModelImages } from '../cindy-brain/ghostModelImages.js';
+import { compressInlineImage } from './inlineImageCompressor.js';
 import { drainGhostCallMedia } from '../cindy-brain/ghostMediaLedger.js';
 import {
   getGhostCardService,
@@ -294,6 +297,7 @@ async function authorizeForgeOutsideWorkdir(params: {
     sessionId: live.sessionId,
     sessionInstanceId: live.sessionInstanceId,
     lane: 'forge_source',
+    requiresResolvedPathReview: path.relative(path.resolve(params.dir), authorizedDir) !== '',
     items: [{
       name: path.basename(authorizedDir) || authorizedDir,
       absPath: authorizedDir,
@@ -362,6 +366,9 @@ export async function authorizeDesktopSessionPath(
     sessionId: live.sessionId,
     sessionInstanceId: live.sessionInstanceId,
     lane: 'outside_workdir',
+    // This Host callback receives only a canonical path, without the original
+    // harness arguments. Native ownership cannot prove it reviewed this target.
+    requiresResolvedPathReview: true,
     items: [{
       name: path.basename(request.path) || request.path,
       absPath: request.path,
@@ -452,7 +459,7 @@ async function packForgeSource(
  * workdir 外过户 / Forge 源码确认:
  *   - 对象在会话 workdir 内 → 自动放行;
  *   - 本地活跃会话当前为 Full Access(bypassPermissions) → Host 自动放行;
- *   - Auto → 当前会话统一审阅器(allow 继续 / block 返回原因 / ask 才弹卡);
+ *   - Auto → 原生已接管则不复审，否则当前会话审阅器(allow / block / ask);
  *   - 其余(Ask、无会话、远程、查询失败)→ 弹确认卡,用户点允许才继续。
  * 禁止在 Host 已按当前档位放行后再因目录边界悄悄硬断。
  * Full Access 只替代本处确认,不扩大插件 manifest slot、网络、
@@ -465,6 +472,8 @@ export interface GhostGrantLiveSessionState {
   /** Includes the captured permission/Plan generations and forbids active or unknown Plan. */
   isCurrent?: () => boolean;
   reviewAction?: (action: ReviewableAction) => Promise<AutoReviewDecision>;
+  /** Supplied by the live harness; absent means Cindy owns review. */
+  autoReviewOwner?: 'native' | 'cindy';
 }
 
 /**
@@ -682,6 +691,8 @@ async function requestGrantConfirm(params: {
   sessionInstanceId: string | null;
   lane: GhostGrantLane;
   items: GhostGrantFileItem[];
+  /** Native approval of an alias does not authorize a newly resolved target. */
+  requiresResolvedPathReview?: boolean;
   toolName?: string;
   operation?: 'read' | 'write';
   getLiveSessionGrantState?: CindyGhostsHostDeps['getLiveSessionGrantState'];
@@ -714,6 +725,13 @@ async function requestGrantConfirm(params: {
         return { ok: true, approvalSource: 'full-access', isCurrent };
       }
       if (live?.permissionMode === 'auto' && live.reviewAction) {
+        // The harness already owns this MCP invocation. Keep live authority and
+        // path/slot checks, but do not ask a second model to reinterpret its intent.
+        // A remote task cannot extend approval to controller-local files.
+        if (!params.requiresResolvedPathReview && live.autoReviewOwner === 'native' && !live.remoteHostId && live.isCurrent?.() === true && isCurrent?.() === true) {
+          log.debug('ghost grant: native reviewer owns handoff', { lane: params.lane });
+          return { ok: true, approvalSource: 'auto-review', isCurrent };
+        }
         const decision = await live.reviewAction(toolAutoReviewAction('plugin_file_handoff', {
           ghostId: params.ghostId,
           lane: params.lane,
@@ -807,6 +825,10 @@ async function requestMediaPathRevealConfirm(params: {
         return { ok: true, isCurrent };
       }
       if (live?.permissionMode === 'auto' && live.reviewAction) {
+        if (live.autoReviewOwner === 'native' && !live.remoteHostId && live.isCurrent?.() === true && isCurrent?.() === true) {
+          log.debug('ghost media: native reviewer owns path reveal');
+          return { ok: true, isCurrent };
+        }
         const decision = await live.reviewAction(toolAutoReviewAction('cindy_media.resolve_local_path', {
           path: params.absPath, mimeType: params.mimeType,
         }, 'Return the controller local path of this managed media to the agent.'));
@@ -1014,6 +1036,7 @@ async function prepareLocalPathAttachments(params: {
         sessionInstanceId: params.sessionInstanceId,
         lane: 'attachments',
         items,
+        requiresResolvedPathReview: needConfirm.some((item) => path.relative(path.resolve(item.url), item.absPath) !== ''),
         getLiveSessionGrantState: params.getLiveSessionGrantState,
       });
       if (!confirm.ok) return confirm;
@@ -1127,6 +1150,7 @@ async function confirmDepositOutsideWorkdir(params: {
     sessionInstanceId: params.sessionInstanceId,
     lane: params.lane,
     items: [item],
+    requiresResolvedPathReview: path.relative(path.resolve(params.dirAbs), real) !== '',
     getLiveSessionGrantState: params.getLiveSessionGrantState,
   });
   if (!confirm.ok) return confirm;
@@ -1847,7 +1871,7 @@ export function getCindyGhostsMcpDeps(
         : undefined;
       let result: Record<string, unknown>;
       try {
-        result = await callCindyMedia(request, downloadContext);
+        result = await callCindyMedia(request, downloadContext, sessionId);
       } finally {
         downloadContext?.dispose?.();
       }
@@ -2385,13 +2409,23 @@ export function getCindyGhostsMcpDeps(
       // 失败也 drain(清账防泄漏),但只在成功结果上附带——cindy-tools 层
       // 在意识未声明媒体字段时以 xdt_media_produced 注入,兜底 IM/hook 送达。
       const producedMedia = drainGhostCallMedia(instanceId, callId);
-      const finalized = withCardToken(result, cardService.finalizeCall(callId), callId);
+      // Images the plugin shows the model stay out of the card and media-ledger
+      // path (never stored, never sent to IM): fit them into the inline budget
+      // and let ghost_call return them as image content (ghostModelImages.ts).
+      const requestedImages = result.ok ? result.images : undefined;
+      const plainResult: GhostToolCallResult = result.ok && result.images ? { ok: true, result: result.result } : result;
+      const finalized = withCardToken(plainResult, cardService.finalizeCall(callId), callId);
       if (!finalized.ok) return finalized;
+      const fitted = requestedImages?.length ? await fitGhostModelImages(requestedImages, compressInlineImage) : null;
+      const modelImages = {
+        ...(fitted?.images.length ? { images: fitted.images } : {}),
+        ...(fitted?.omitted ? { imagesOmitted: fitted.omitted } : {}),
+      };
       // 附最后一道 gate(postCtx)的快照:它是派发前最新的 ready 判定。
       const advisory = postCtxAssessment.reauthSuggest ? { setup: postCtxAssessment } : {};
       const base = producedMedia.length > 0
-        ? { ...finalized, ...advisory, producedMedia }
-        : { ...finalized, ...advisory };
+        ? { ...finalized, ...advisory, producedMedia, ...modelImages }
+        : { ...finalized, ...advisory, ...modelImages };
       // 视觉桥工具结果图片描述(最佳努力,不阻塞):把工具返回的 cindy-media://
       // 图片 URL 转成文字描述,附加为 xdt_media_descriptions——纯文本模型
       // (deepseek 等)拿不到 image block,只能看到 URL 文本,易幻觉编造图片

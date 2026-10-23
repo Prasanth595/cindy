@@ -143,6 +143,7 @@ let onDeviceLinkStatusChanged: ((data: unknown) => void) | undefined;
 let onPresenceChanged: ((data: unknown) => void) | undefined;
 let onRemotePush: ((data: unknown, ownerStamp?: unknown) => void) | undefined;
 let onDbMessageCreated: ((data: unknown) => void) | undefined;
+let onDbMessageDeleted: ((data: unknown) => void) | undefined;
 let onErrorPersisted: ((data: unknown, ownerStamp?: unknown) => void) | undefined;
 let onInputProjection: ((data: unknown) => void) | undefined;
 let onInteractionRequest: ((data: unknown) => void) | undefined;
@@ -261,6 +262,7 @@ function installElectronBridge(): void {
   onPresenceChanged = undefined;
   onRemotePush = undefined;
   onDbMessageCreated = undefined;
+  onDbMessageDeleted = undefined;
   onErrorPersisted = undefined;
   onInputProjection = undefined;
   onInteractionRequest = undefined;
@@ -330,6 +332,10 @@ function installElectronBridge(): void {
       },
       localDb: {
         messages: {
+          onDeleted: (cb: (data: unknown) => void) => {
+            onDbMessageDeleted = cb;
+            return vi.fn();
+          },
           onCreated: (cb: (data: unknown) => void) => {
             onDbMessageCreated = cb;
             return vi.fn();
@@ -2034,6 +2040,44 @@ describe('makerChatStore text delta batching', () => {
     expect(makerChatStore.getSnapshot(SESSION_ID).messages).toEqual([
       expect.objectContaining({ clientId: 'assistant-1', content: 'complete answer', isStreaming: false }),
     ]);
+  });
+
+  it.each(['local', 'remote'] as const)('preserves newer queued text when an older item is retracted through %s ingress', (source) => {
+    if (source === 'remote') remoteProjectsStore.pinSessionOrigin('device-1', SESSION_ID);
+    const send = (channel: string, payload: unknown) => {
+      if (source === 'remote') onRemotePush?.({ deviceId: 'device-1', channel, payload });
+      else if (channel === 'maker:event') onEvent?.(payload);
+      else onDbMessageDeleted?.(payload);
+    };
+    const text = (persistId: string, value: string) => send('maker:event', {
+      sessionId: SESSION_ID, persistId,
+      event: { type: 'text', source: 'codex', data: { text: value, isFinal: false } },
+    });
+    text('old-a', 'Withdrawn');
+    vi.advanceTimersByTime(32);
+    text('new-b', 'Next');
+    vi.advanceTimersByTime(32);
+    text('new-b', ' pending');
+    send('local-db:messages:deleted', { sessionId: SESSION_ID, clientId: 'old-a', clientIds: ['old-a'] });
+    vi.advanceTimersByTime(32);
+    expect(makerChatStore.getSnapshot(SESSION_ID).messages).toEqual([
+      expect.objectContaining({ clientId: 'new-b', content: 'Next pending', isStreaming: true }),
+    ]);
+    text('new-b', ' tail');
+    vi.advanceTimersByTime(32);
+    expect(makerChatStore.getSnapshot(SESSION_ID).messages[0].content).toBe('Next pending tail');
+    // Legacy deltas without persistId inherit the current stream identity.
+    send('maker:event', { sessionId: SESSION_ID,
+      event: { type: 'text', data: { text: ' anonymous', isFinal: false } } });
+    send('local-db:messages:deleted', { sessionId: SESSION_ID, clientId: 'old-a' });
+    vi.advanceTimersByTime(32);
+    expect(makerChatStore.getSnapshot(SESSION_ID).messages[0].content).toBe('Next pending tail anonymous');
+    // Deleting the actual batch owner must still discard it without resurrection.
+    send('maker:event', { sessionId: SESSION_ID,
+      event: { type: 'text', data: { text: ' discarded', isFinal: false } } });
+    send('local-db:messages:deleted', { sessionId: SESSION_ID, clientId: 'new-b' });
+    vi.advanceTimersByTime(32);
+    expect(makerChatStore.getSnapshot(SESSION_ID).messages).toHaveLength(0);
   });
 
   it('calibrates an earlier finalized item in place without sealing a newer stream', () => {
@@ -4164,6 +4208,26 @@ describe('makerChatStore text delta batching', () => {
     expect(snap.pendingQueue).toHaveLength(1);
     expect(snap.pendingQueue[0]?.text).toBe('queued');
     expect(snap.messages.some((m) => m.role === 'user' && m.content === 'queued')).toBe(false);
+  });
+
+  it.each(['sendMessage', 'steerMessage'] as const)('correlates voice input through %s without serializing the renderer callback', async (method) => {
+    const created = vi.fn<(id: string) => void>();
+    await expect(makerChatStore[method](SESSION_ID, 'spoken sentence', MODEL, EFFORT, PERMISSION_MODE, WORKING_DIR,
+      undefined, undefined, { onInputCreated: created, beforeEnqueue: async () => true, slashCommandRanges: [] })).resolves.toBe(true);
+    expect(created).toHaveBeenCalledOnce();
+    const transport = method === 'sendMessage' ? input.enqueue : input.steer;
+    expect(transport).toHaveBeenCalledWith(SESSION_ID, expect.objectContaining({
+      clientId: created.mock.calls[0][0],
+      chatMessage: expect.objectContaining({ clientId: created.mock.calls[0][0], content: 'spoken sentence', slashCommandRanges: [] }),
+    }), expect.any(Object));
+    expect(JSON.stringify(transport.mock.calls)).not.toContain('onInputCreated');
+  });
+
+  it.each(['sendMessage', 'steerMessage'] as const)('cancels a retired voice call before %s reaches the main queue', async (method) => {
+    await expect(makerChatStore[method](SESSION_ID, 'cancelled speech', MODEL, EFFORT, PERMISSION_MODE, WORKING_DIR,
+      undefined, undefined, { beforeEnqueue: async () => false })).resolves.toBe(false);
+    expect(input.enqueue).not.toHaveBeenCalled(); expect(input.steer).not.toHaveBeenCalled();
+    expect(makerChatStore.getSnapshot(SESSION_ID).messages.some(m => m.content === 'cancelled speech')).toBe(false);
   });
 
   it('shows a local busy send before the enqueue projection settles', async () => {
@@ -7339,6 +7403,31 @@ describe('makerChatStore text delta batching', () => {
 
     expect(preflightCalls).toBe(2);
     expect(sentTexts).toEqual(['wait for preflight']);
+  });
+
+  // #6351: the row update must change the live reply and survive history reload;
+  // translator/persistence tests cannot observe this renderer projection.
+  it('projects failed sampling metadata into live text and reloaded history', async () => {
+    emitTextDelta('Opening from a failed attempt');
+    vi.advanceTimersByTime(32);
+    const persisted = serverMessage({
+      id: 'failed-row', clientId: 'assistant-1', sessionId: SESSION_ID, role: 'assistant',
+      content: 'Opening from a failed attempt', createdAt: new Date().toISOString(),
+      agentMeta: { failedSamplingAttempt: { threadId: 'thread', turnId: 'turn', attempt: 1, itemId: 'item' },
+        turnCompleted: false, turnCostUsd: 0.1 },
+    });
+    emitDbMessageCreated(persisted);
+    const assertFailure = () => {
+      const replies = makerChatStore.getSnapshot(SESSION_ID).messages.filter(message => message.role === 'assistant');
+      expect(replies).toHaveLength(1);
+      expect(replies[0]).toMatchObject({ content: persisted.content, failedSamplingAttempt: true, turnCompleted: false });
+    };
+    assertFailure();
+    makerChatStore.purgeSession(SESSION_ID);
+    vi.mocked(messageService.list).mockResolvedValueOnce([persisted]);
+    makerChatStore.ensureInitialMessages(SESSION_ID);
+    await flushPromises();
+    assertFailure();
   });
 
   it('hydrates existing runtime messages with authoritative DB-created timestamps', () => {

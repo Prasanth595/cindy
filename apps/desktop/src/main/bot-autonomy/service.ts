@@ -102,6 +102,7 @@ function startRuntime(engine: RoutineEngine, scope: string): void {
       log,
       onChange,
       getActivitySnapshots: () => getAgentIslandService()?.getSessionActivitySnapshots() ?? [],
+      readSessionExecution: (id) => getBotAutonomyHostDeps().readSessionExecution?.(id) ?? null,
       isToolCallInFlight: (sessionId) => getAgentIslandService()?.isToolCallInFlight(sessionId) ?? false,
       getPendingInteractions: (sessionId) => {
         try {
@@ -116,9 +117,9 @@ function startRuntime(engine: RoutineEngine, scope: string): void {
         assertScope(scope);
         return rows;
       },
-      readInterruptedSessions: async (sinceMs, limit) => {
+      readInterruptedSessions: async (sinceMs, limit, sessionIds) => {
         assertScope(scope);
-        const rows = await readInterruptedSessionMetas(sinceMs, limit);
+        const rows = await readInterruptedSessionMetas(sinceMs, limit, sessionIds);
         assertScope(scope);
         return rows;
       },

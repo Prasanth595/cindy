@@ -627,9 +627,12 @@ describe('sendToSession ordering', () => {
       'restoreControlStores();',
       'throw persistenceError;',
     );
-    expect(preloadSource).toContain('selection?: { effort: string | null; fastMode: boolean },');
+    // Protect the SET_MODEL wire argument order. Other preload APIs (including
+    // voice preferences) also accept `selection` and are outside this contract.
+    const preloadSetModel = extractBetween(preloadSource, '    setModel: (', '    switchSessionAgent: (');
+    expect(preloadSetModel).toContain("selection?: { effort: string | null; fastMode: boolean | 'ultrafast' },");
     expectOrder(
-      preloadSource,
+      preloadSetModel,
       'expectedAgentSwitchRevision,',
       'selection,',
     );
@@ -640,15 +643,17 @@ describe('sendToSession ordering', () => {
       'const release = await acquireSendToSessionLock(sessionId, undefined, () => stage);',
       'applyPendingAgentSwitchIfIdle(',
     );
-    for (const operation of [
-      'reconcileBotModelRoute', 'applyPendingAgentSwitchIfIdle',
-      'applyScheduledModelSelection', 'prepareUnhealthySession',
+    for (const [operation, call] of [
+      ['reconcileBotModelRoute', 'reconcileBotModelRoute'],
+      ['applyPendingAgentSwitchIfIdle', 'applyPendingAgentSwitchIfIdle'],
+      ['applyScheduledModelSelection', 'applyScheduledProfile'],
+      ['prepareUnhealthySession', 'prepareUnhealthySession'],
     ]) {
-      expectOrder(directSendSwitchBlock, `stage = 'direct-send:${operation}'`, `${operation}(`);
+      expectOrder(directSendSwitchBlock, `stage = 'direct-send:${operation}'`, `${call}(`);
     }
     expectOrder(directSendSwitchBlock, 'prepareUnhealthySession', "stage = 'direct-send:caller-dispatch'");
     expectOrder(directSendSwitchBlock, 'applyPendingAgentSwitchIfIdle(', 'prepareUnhealthySession');
-    expectOrder(directSendSwitchBlock, 'prepareUnhealthySession', 'return { release, selection: resolvedSelection };');
+    expectOrder(directSendSwitchBlock, 'prepareUnhealthySession', 'return { release, selection: resolvedSelection');
   });
 
   it('仅 Device Link 归一化 SET_MODEL 的 JSON null 可选占位,本地仍走严格校验', () => {
@@ -671,7 +676,7 @@ describe('sendToSession ordering', () => {
     const makerSendCreateDbMessageBlock = extractBetween(
       source,
       'const createUserMessageDurably:',
-      'const { sendToAgentAccepted: sendToAgentAcceptedUnlocked }',
+      '    sendToAgentAccepted: sendToAgentAcceptedUnlocked,',
     );
     const makerSendPreviewHookBlock = extractBetween(
       source,

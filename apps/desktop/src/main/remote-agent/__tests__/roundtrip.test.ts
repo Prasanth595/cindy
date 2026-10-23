@@ -17,15 +17,16 @@ import type {
   SendOptions,
   UserMessage,
 } from '@cindy/maker-core';
-import { MAIN_OWNED_SEND_CONTEXT } from '@cindy/maker-core';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { MAIN_OWNED_SEND_CONTEXT, Session } from '@cindy/maker-core';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { RemoteAgentPoller } from '../controller/poller';
 import { credentialGrantFor, forgetCredentialGrants } from '../executor/credentialGrants';
-import { startRemoteAgentSession, type StartRemoteAgentDeps } from '../controller/startRemote';
+import { cancelPendingRemoteStart, startRemoteAgentSession, type StartRemoteAgentDeps } from '../controller/startRemote';
 import { createRemoteAgentHost, type HostedStartInput } from '../host/runHost';
 import { PROVIDER_SHARE_CREDENTIAL_SESSION_APPROVAL } from '../../../shared/providerShareCredentialConsent';
 import { DEFAULT_REMOTE_AGENT_LIMITS, type RemoteAgentLimits } from '../../../shared/remoteAgentLimits';
+import { installDesktopInteractionHandler } from '../../maker-ipc/interactionRouter';
 
 const RG = path.resolve(__dirname, '../../../../../ripgrep-bin', `${process.platform}-${process.arch}`, process.platform === 'win32' ? 'rg.exe' : 'rg');
 const CONTROLLER = 'controller-device-1';
@@ -200,6 +201,52 @@ function createHost(readLimits: () => RemoteAgentLimits = () => DEFAULT_REMOTE_A
 }
 
 describe('remote agent round trip', () => {
+  // provider-sharing §9：走 HTTP → 执行器 → Session → 真实交互路由，检查取消卡片及迟到授权。
+  // 现有往返用例没有挂起确认后取消；最小输入是一次 .env 读取，tier: unit(仅 loopback)。
+  it.each(['request', 'stop', 'permission', 'close'])('dismisses a shared-provider credential card on %s cancellation', async (end) => {
+    fs.writeFileSync(path.join(project, '.env'), 'INVALID_FIXTURE=one');
+    const host = createHost();
+    const grant = credentialGrantFor(`cancel-${end}`, 'share:fixture');
+    const handle = await startRemoteAgentSession('claude-code', {
+      sessionId: `cancel-${end}`, workingDir: project, model: 'm', permissionMode: 'bypassPermissions',
+    }, { ...makeDeps(host), credentialConsent: { description: 'fixture', grant } });
+    const noop = () => {};
+    const logger = { trace: noop, debug: noop, info: noop, warn: noop, error: noop, fatal: noop, child: () => logger };
+    const session = new Session({ id: `cancel-${end}`, agentKind: 'claude-code', workDir: project, handle, capabilities: {} as never, logger, turnStallMs: 0 });
+    let answer!: (value: InteractionDecision) => void;
+    let requestId = '';
+    const cancel = vi.fn();
+    installDesktopInteractionHandler(session, (request) => {
+      requestId = request.requestId;
+      return new Promise((resolve) => { answer = resolve; });
+    }, cancel);
+    const abort = new AbortController();
+    const tunnel = hostInputs[0].tunnel;
+    const response = fetch(`${tunnel.url}/exec/fs.read`, {
+      method: 'POST', signal: abort.signal,
+      headers: { authorization: `Bearer ${tunnel.token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ path: '.env' }),
+    });
+    void response.catch(() => {});
+    try {
+      await vi.waitFor(() => expect(requestId).not.toBe(''));
+      if (end === 'request') abort.abort();
+      else if (end === 'stop') await handle.abort();
+      else if (end === 'permission') await handle.setPermissionMode!('ask');
+      else await handle.close({ reason: 'navigation' });
+      await vi.waitFor(() => expect(cancel).toHaveBeenCalledWith(requestId, expect.objectContaining({ behavior: 'deny' })), { timeout: 1000 });
+      answer({ kind: 'permission', behavior: 'allow', permissionUpdates: [PROVIDER_SHARE_CREDENTIAL_SESSION_APPROVAL] });
+      await response.then((value) => value.arrayBuffer(), () => undefined);
+      expect(grant.restore(JSON.stringify(['bypassPermissions', false]))).toBe(false);
+    } finally {
+      abort.abort();
+      answer?.({ kind: 'permission', behavior: 'deny' });
+      await session.close();
+      host.dispose();
+      forgetCredentialGrants(`cancel-${end}`);
+    }
+  });
+
   it('enforces limits through the controller and releases capacity after close', async () => {
     let limits = { perDevice: 1, total: 2 };
     const host = createHost(() => limits);
@@ -541,8 +588,8 @@ describe('remote agent round trip', () => {
       await reader;
       expect(texts[0]).toBe('read:from-controller');
     }));
-    // 六个任务同时进行，拉取始终最多两个在途，不会挤占设备互联的其它请求。
-    expect(peakPolls).toBeLessThanOrEqual(2);
+    // 六个任务同时进行，拉取最多两个长等待加一个给新任务的补位，不会挤占设备互联的其它请求。
+    expect(peakPolls).toBeLessThanOrEqual(3);
     expect(peakAll).toBeLessThan(12);
     await Promise.all(handles.map((handle) => handle.close({ reason: 'navigation' })));
     expect(host.runCount()).toBe(0);
@@ -566,6 +613,99 @@ describe('remote agent round trip', () => {
     await expect(startRemoteAgentSession('claude-code', { sessionId: 's2', workingDir: project, model: 'm' }, makeDeps(host)))
       .rejects.toMatchObject({ name: 'AgentNotAuthenticatedError', message: 'Claude Code is not signed in' });
     host.dispose();
+  });
+
+  // 2026-10-22 远程供应商调查：慢启动期间任务被删除，控制端不再等了，对方却在几分钟后仍启动 Agent 并跑完
+  // 这一轮(供应商组还会换电脑接着启动)。删除或归档时要让对方结束这个任务，迟到完成的启动也立刻关掉。
+  // #6844 review：旧用例只覆盖远端已开始启动；MCP 准备是更早的异步等待，删除后不得发出 open，已准备资源要释放。
+  it('does not open a remote run after the task was removed while preparing MCP', async () => {
+    const host = createHost();
+    const base = makeDeps(host);
+    let finishPrepare!: () => void;
+    const prepareGate = new Promise<void>((resolve) => { finishPrepare = resolve; });
+    const dispose = vi.fn();
+    const prepareMcp = vi.fn(async () => {
+      await prepareGate;
+      return { servers: new Map(), dispose };
+    });
+    const invoke = vi.fn(base.invoke);
+    const sessionId = randomUUID();
+    const starting = startRemoteAgentSession('claude-code', { sessionId, workingDir: project, model: 'm' }, {
+      ...base, invoke, prepareMcp,
+    });
+    void starting.catch(() => undefined);
+    let handle: AgentSessionHandle | undefined;
+    try {
+      expect(prepareMcp).toHaveBeenCalledTimes(1);
+      cancelPendingRemoteStart(sessionId);
+      finishPrepare();
+      const result = await starting.then((value) => { handle = value; return null; }, (error: unknown) => error);
+      expect(result).toBeInstanceOf(Error);
+      expect(String(result)).toContain('[REMOTE_AGENT_EXPIRED]');
+      expect(invoke).not.toHaveBeenCalled();
+      expect(dispose).toHaveBeenCalledTimes(1);
+      expect(host.limitUsage().total).toBe(0);
+    } finally {
+      finishPrepare();
+      await handle?.close({ reason: 'navigation' });
+      host.dispose();
+    }
+  });
+
+  it('ends the run on the other computer when the task is removed while it is still starting', async () => {
+    let finishStart!: () => void;
+    const startGate = new Promise<void>((resolve) => { finishStart = resolve; });
+    const closed = vi.fn();
+    const host = createRemoteAgentHost({
+      isAgentAvailable: () => true,
+      startHosted: async (input) => {
+        hostInputs.push(input);
+        await startGate;
+        const agent = fakeHostedAgent(input);
+        return { ...agent, async close() { closed(); await agent.close(); } };
+      },
+      isControllerAuthorized: () => true,
+      captureOwner: () => 'owner',
+      isOwnerCurrent: () => true,
+      runsRoot: hostRoot,
+    });
+    const sessionId = randomUUID();
+    const starting = startRemoteAgentSession('claude-code', { sessionId, workingDir: project, model: 'm' }, makeDeps(host));
+    void starting.catch(() => undefined);
+    try {
+      await vi.waitFor(() => expect(hostInputs).toHaveLength(1));
+      expect(host.limitUsage().total).toBe(1);
+      cancelPendingRemoteStart(sessionId);
+      await expect(starting).rejects.toThrow('[REMOTE_AGENT_EXPIRED]');
+      expect(host.limitUsage().total).toBe(0);
+      finishStart();
+      await vi.waitFor(() => expect(closed).toHaveBeenCalledTimes(1));
+      expect(hostSends).toEqual([]);
+    } finally {
+      finishStart();
+      host.dispose();
+    }
+  });
+
+  // #6420: a new remote run carries the task Host clear epoch, independent of source clocks.
+  it('sends the persisted image clear generation when opening a remote run', async () => {
+    const host = createHost();
+    const base = makeDeps(host);
+    const opened: Array<Record<string, unknown>> = [];
+    const invoke: StartRemoteAgentDeps['invoke'] = async (args) => {
+      const request = args[0] as { op?: string; payload?: { json?: Record<string, unknown> } };
+      if (request.op === 'open' && request.payload?.json) opened.push(request.payload.json);
+      return base.invoke(args);
+    };
+    try {
+      for (const epoch of [0, 456]) {
+        const handle = await startRemoteAgentSession('codex', { sessionId: 'image-task', workingDir: project, model: 'm' }, {
+          ...base, invoke, readImageDeliveryEpoch: async (sessionId) => { expect(sessionId).toBe('image-task'); return epoch; },
+        });
+        expect(opened.at(-1)).toMatchObject({ imageDeliveryEpoch: epoch, acceptsImageDeliveryReceipts: true });
+        await handle.close({ reason: 'navigation' });
+      }
+    } finally { host.dispose(); }
   });
 
   it('declares provider group switch support and brings back the token after a handoff', async () => {

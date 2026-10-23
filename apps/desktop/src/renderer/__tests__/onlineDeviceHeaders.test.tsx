@@ -133,6 +133,8 @@ function props(groupDevice: boolean): ProjectsSectionProps {
     linkingCodexProject: null,
     onBrowseFiles: vi.fn(),
     onArchiveAll: vi.fn(),
+    onSearchDialogues: vi.fn(),
+    onArchiveAllDialogues: vi.fn(),
     onCreateDialogue: vi.fn(),
   };
 }
@@ -178,6 +180,58 @@ describe('Online device headers without tasks', () => {
   it('does not show device headers when device grouping is disabled', () => {
     render(<ProjectsSection {...props(false)} bots={[]} allProjectKeysForOrder={[]} />);
     expect(screen.queryByText('Remote device')).toBeNull();
+  });
+});
+
+// #6615: entering Settings unmounts ProjectsSection. Existing device tests only
+// rerender it, so they miss lost collapse state. Unit tier: real component clicks
+// and unmount/remount with jsdom storage; the smallest input is two empty devices.
+describe('Device collapse state after remounting', () => {
+  const localName = 'ccAgent.sidebar.deviceGroup.local';
+  const remoteName = 'Remote device';
+  const deviceHeader = (name: string) => screen.getByText(name).closest('button')!;
+
+  it.each([
+    { collapsedNames: [localName] },
+    { collapsedNames: [remoteName] },
+    { collapsedNames: [localName, remoteName] },
+  ])(
+    'restores individually collapsed devices: $collapsedNames',
+    ({ collapsedNames }) => {
+      const p = props(true);
+      const view = render(<ProjectsSection {...p} />);
+      for (const name of [localName, remoteName]) {
+        expect(deviceHeader(name).getAttribute('aria-expanded')).toBe('true');
+      }
+      for (const name of collapsedNames) fireEvent.click(deviceHeader(name));
+      view.unmount();
+
+      render(<ProjectsSection {...p} />);
+      for (const name of [localName, remoteName]) {
+        expect(deviceHeader(name).getAttribute('aria-expanded')).toBe(
+          String(!collapsedNames.includes(name)),
+        );
+      }
+    },
+  );
+
+  it('remembers bulk collapse and clears it after expanding all', () => {
+    const p = props(true);
+    let view = render(<ProjectsSection {...p} />);
+    fireEvent.click(screen.getByText('ccAgent.sidebar.foldAll.collapseDevices'));
+    view.unmount();
+
+    view = render(<ProjectsSection {...p} />);
+    for (const name of [localName, remoteName]) {
+      expect(deviceHeader(name).getAttribute('aria-expanded')).toBe('false');
+    }
+    fireEvent.click(screen.getByText('ccAgent.sidebar.foldAll.expandAll'));
+    view.unmount();
+
+    render(<ProjectsSection {...p} />);
+    for (const name of [localName, remoteName]) {
+      expect(deviceHeader(name).getAttribute('aria-expanded')).toBe('true');
+    }
   });
 });
 

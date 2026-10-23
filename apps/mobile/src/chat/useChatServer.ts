@@ -6,7 +6,7 @@ import type { RemoteActionInvokeResponse } from '@cindy/device-link';
 import type { BotGroupAttachment, BotGroupRemoteActionId } from '@cindy/maker-shared/botGroupChat';
 import { useAuth } from '@/auth/AuthContext';
 import { getActiveMobileSessionRealm, getMobileEndpointForRealm, loadMobileEndpointsForRealm } from '@/config/env';
-import { forgetRemoteResource, markRemoteResourceRead } from '@/device-link/remoteResourceCache';
+import { cacheChatRoster, forgetRemoteResource, hideCachedChatRooms, markRemoteResourceRead, readCachedChatRoster } from '@/device-link/remoteResourceCache';
 import { useRemoteSyncCoordinator } from '@/device-link/remoteSyncTask';
 import type { BotGroupChatState } from '@/session/useBotGroupChat';
 import { chatAccessLost, chatCursor, chatGroupView, chatHttpsUrl, chatRoomRow, chatReadAt, chatReadSequence, chatLastReplyAt, chatLastReplySequence, createChatServerClient, type ChatActor, type ChatPage, type ChatRequest, type ChatSnapshot } from './chatServerClient';
@@ -54,7 +54,7 @@ export function useChatClient() {
       check(); return result;
     };
     const client = createChatServerClient(request, listFor(owner));
-    return { owner, userId: auth.user?.id ?? '', current, baseUrl, endpoint, request, client,
+    return { owner, realm, userId: auth.user?.id ?? '', current, baseUrl, endpoint, request, client,
       token: async () => { check(); await client.me(); const token = await deps.current.getAccessToken(); check(); return token; }, enabled: !!auth.user };
   }, [owner, !!auth.user]);
 }
@@ -71,24 +71,40 @@ export function useChatServerRoster(enabled: boolean) {
   const read = useRemoteSyncCoordinator(async run => {
     if (!api.enabled || !enabled) return;
     setState(old => ({ ...old, refreshing: run.reasons.includes('visible') }));
+    const saved = await readCachedChatRoster(api.userId, api.realm);
+    const cached = saved ?? { items: [], ids: [] };
+    if (run.isStale() || !api.current()) return;
+    for (const id of cached.ids) known.current.ids.add(id);
+    if (saved) setState(old => old.owner === api.owner && !old.loading ? old : { owner: api.owner,
+      rooms: cached.items.filter(row => !api.client.personalList.hidden(row.item.ref.id)), loading: false, refreshing: false, error: null });
     try {
       await api.client.syncListState(run.reasons.some(reason => ['focus', 'visible', 'connected'].includes(reason)));
       const [rooms, self] = await Promise.all([api.client.list(), api.client.me()]);
       const rows: ReturnType<typeof chatRoomRow>[] = [];
       const fresh = new Map<string, { owner: string; head: string | undefined; value: ChatSnapshot }>();
+      // Keep archived IDs in `rooms` for computer-copy deduplication, but do not
+      // download their histories or project them into the default teammate list.
+      const visibleRooms = rooms.filter(room => !room.archived);
       let partial = false;
       // List provides room heads, so unchanged rooms need no history download on polling.
-      for (let offset = 0; offset < rooms.length; offset += 4) {
-        await Promise.all(rooms.slice(offset, offset + 4).map(async room => {
+      for (let offset = 0; offset < visibleRooms.length; offset += 4) {
+        await Promise.all(visibleRooms.slice(offset, offset + 4).map(async room => {
           try {
             const cached = snapshots.current.get(room.id);
             const value = cached?.owner === api.owner && room.head !== undefined && cached.head === room.head
               && !run.reasons.some(reason => ['changed', 'connected', 'visible'].includes(reason))
               ? cached.value : await api.client.snapshot(room.id);
             fresh.set(room.id, { owner: api.owner, head: room.head, value });
-            rows.push(chatRoomRow(room, value, self));
+            // An archive can land between the list and the newer snapshot.
+            if (!value.room.archived) rows.push(chatRoomRow(room, value, self));
           } catch (error) {
-            if (!chatAccessLost(error)) { partial = true; rows.push(chatRoomRow(room)); }
+            if (!chatAccessLost(error)) {
+              partial = true;
+              const previous = cached.items.find(row => row.item.ref.id === room.id);
+              const row = chatRoomRow(room);
+              // Member links back the composite avatar and member search until a snapshot replaces them.
+              rows.push(previous ? { ...previous, item: { ...row.item, display: { ...previous.item.display, title: row.item.display.title }, links: previous.item.links } } : row);
+            }
           }
         }));
         if (run.isStale() || !api.current()) return;
@@ -104,10 +120,15 @@ export function useChatServerRoster(enabled: boolean) {
         snapshots.current = fresh;
         for (const room of rooms) known.current.ids.add(room.id);
         for (const id of api.client.personalList.ids()) known.current.ids.add(id);
-        setState({ owner: api.owner, rooms: rows.filter(row => !api.client.personalList.hidden(row.item.ref.id)), loading: false, refreshing: false, error: partial ? 'CHAT_LIST_FAILED' : null });
+        const visible = rows.filter(row => !api.client.personalList.hidden(row.item.ref.id));
+        setState({ owner: api.owner, rooms: visible, loading: false, refreshing: false, error: partial ? 'CHAT_LIST_FAILED' : null });
+        await cacheChatRoster(api.userId, api.realm, visible, known.current.ids);
       }
     } catch (error) {
-      if (!run.isStale() && api.current()) setState(old => ({ owner: api.owner, rooms: old.owner === api.owner && !chatAccessLost(error) ? old.rooms.filter(row => !api.client.personalList.hidden(row.item.ref.id)) : [], loading: false, refreshing: false, error: error instanceof Error && error.message === 'CHAT_ENDPOINT_UNAVAILABLE' ? error.message : 'CHAT_LIST_FAILED' }));
+      if (!run.isStale() && api.current()) {
+        setState(old => ({ owner: api.owner, rooms: old.owner === api.owner && !chatAccessLost(error) ? old.rooms.filter(row => !api.client.personalList.hidden(row.item.ref.id)) : [], loading: false, refreshing: false, error: error instanceof Error && error.message === 'CHAT_ENDPOINT_UNAVAILABLE' ? error.message : 'CHAT_LIST_FAILED' }));
+        if (chatAccessLost(error)) await cacheChatRoster(api.userId, api.realm, [], known.current.ids);
+      }
     }
   }, api.owner);
   const refresh = useCallback(() => read({ reason: 'visible' }), [read]);
@@ -149,6 +170,7 @@ export function useChatServerRoster(enabled: boolean) {
     if (!api.current()) return;
     for (const id of api.client.personalList.ids()) known.current.ids.add(id);
     setState(old => old.owner !== api.owner ? old : { ...old, rooms: old.rooms.filter(row => !api.client.personalList.hidden(row.item.ref.id)) });
+    void hideCachedChatRooms(api.userId, api.realm, api.client.personalList.ids().filter(id => api.client.personalList.hidden(id)));
   }), [api]);
   const own = state.owner === api.owner;
   return { items: own ? state.rooms : [], serverIds: known.current.ids, loading: api.enabled && (!own || state.loading),
@@ -168,6 +190,7 @@ export function useChatServerGroup(groupId: string, enabled: boolean) {
   const valid = () => api.current() && active.current === identity;
   const loseAccess = () => {
     accessGeneration.current++; freshRead.current = false; page.current = null;
+    if (valid()) void forgetRemoteResource(api.userId, groupId);
     setState({ identity, value: { kind: 'missing' }, online: false, loadingOlder: false });
   };
   const view = (next: ChatPage, self: string, actors: ChatActor[]) => ({ ...chatGroupView(next, self, actors), ...api.client.lifecycleCapabilities() });

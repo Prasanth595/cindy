@@ -1,3 +1,4 @@
+import { hasRichAnswer } from '@cindy/maker-shared/rich-answer';
 import { botTaskResultKey, readBotCollaborationMeta } from '@cindy/maker-shared/botCollaboration';
 import { extractRenderedMarkdownImageTargets } from '@/components/chat/markdownImageTargets';
 import { HISTORY_GAP_SPLIT_MS } from '@/lib/historyGap';
@@ -30,9 +31,9 @@ function expandWorkGroups(items: readonly RenderItem[]): RenderItem[] {
 /** A presentation-only projection. Never mutate messages or infer intent from prose.
  * isFinal from the adapters closes a text block, not a turn (Pi/Claude can call
  * another tool afterwards). Reuse the normal work-group turn seal, showing provider-marked final prose immediately while keeping
- * unclassified top-level intermediate prose hidden. Work groups (live activity and
- * the completed "worked Xs" summary), running agent tasks and workflow cards pass
- * through untouched so the bot chat shows its work exactly like a normal session.
+ * unclassified top-level intermediate prose hidden. While a turn runs its work groups
+ * show like a normal session; once the turn ends they are dropped, so a finished turn
+ * shows only what the bot said, results and errors. Agent tasks and workflow cards pass through.
  * On stop/error or old history without a seal, expose the last useful
  * prose so an answer or plain-text question cannot disappear permanently.
  */
@@ -161,7 +162,7 @@ function projectWindow(
   let sealedRun = false;
   for (let index = expanded.length - 1; index >= 0; index -= 1) {
     const item = expanded[index];
-    if (!isProse(item) || !item.message.content.trim()) {
+    if (!isProse(item) || !item.message.content.trim() || item.message.failedSamplingAttempt) {
       sealedRun = false;
       continue;
     }
@@ -169,8 +170,9 @@ function projectWindow(
     if (sealedRun) sealedAnswers.add(item.message);
   }
   const isAddressedReply = (message: ChatMessage) => Boolean(message.content.trim())
-    && !(message.assistantPhase === 'commentary' && !message.explicitDelivery)
-    && (message.assistantPhase === 'final_answer' || Boolean(message.sourceGroup)
+    && !message.failedSamplingAttempt
+    && !(message.assistantPhase === 'commentary' && !message.explicitDelivery && !hasRichAnswer(message.content))
+    && (hasRichAnswer(message.content) || message.assistantPhase === 'final_answer' || Boolean(message.sourceGroup)
       || Boolean(message.explicitDelivery) || isCompletedAssistantMessage(message) || sealedAnswers.has(message));
   const result: RenderItem[] = [];
   let turn: RenderItem[] = [];
@@ -180,7 +182,7 @@ function projectWindow(
     for (let index = 0; index < turn.length; index += 1) {
       const item = turn[index];
       if (isProse(item) && item.message.content.trim()) lastProse = index;
-      if ((isProse(item) && (hasAttachments(item.message)
+      if ((isProse(item) && (hasAttachments(item.message) || hasRichAnswer(item.message.content)
         || extractRenderedMarkdownImageTargets(item.message.content).length > 0))
         || (item.type === 'message' && item.message.systemCardType === 'bot-session-task-result')
         || (item.type === 'generated_files' && visibleGeneratedFileKeys?.has(item.key))
@@ -197,13 +199,16 @@ function projectWindow(
       // Bots never produce change cards; keep them out like before. Thinking is
       // always folded into a work group by the shared grouping, never top level.
       if (item.type === 'turn_changes') return;
+      // The work process shows only while its turn runs; a finished turn keeps only what
+      // the bot said, results and errors (cindy-bots-runtime.md).
+      if (!active && item.type === 'work_group') return;
       if (item.type === 'message' && item.message.role === 'thinking') return;
       if (item.type === 'message' && item.message.isSyntheticTrigger) return;
       if (isProse(item)) {
-        if (!item.message.content.trim() && !hasAttachments(item.message)) return;
-        if (item.message.assistantPhase === 'commentary' && !item.message.explicitDelivery && !hasAttachments(item.message)) return;
+        if (!item.message.content.trim() && !hasAttachments(item.message) && !hasRichAnswer(item.message.content)) return;
+        if (item.message.assistantPhase === 'commentary' && !item.message.explicitDelivery && !hasAttachments(item.message) && !hasRichAnswer(item.message.content)) return;
         if (item.message.assistantPhase !== 'final_answer' && !item.message.sourceGroup && !item.message.explicitDelivery && !isCompletedAssistantMessage(item.message) && !sealedAnswers.has(item.message)
-          && !hasAttachments(item.message) && index !== fallbackProse
+          && !hasAttachments(item.message) && !hasRichAnswer(item.message.content) && index !== fallbackProse
           && extractRenderedMarkdownImageTargets(item.message.content).length === 0) {
           return;
         }

@@ -36,13 +36,10 @@ export function BotRoutines({
   backRef,
   embedded = false,
   header,
-  footer,
 }: {
   embedded?: boolean;
   /** Settings shown above the list (not inside the editor), e.g. the teammate's follow-up switches. */
   header?: ReactNode;
-  /** Shown below the list (not inside the editor), e.g. the teammate's todos. */
-  footer?: ReactNode;
   botId: string;
   beforeLeaveRef?: { current: (() => Promise<boolean>) | null };
   /** Host back button: steps from the editor to the list first (the inline back button is then omitted). */
@@ -269,13 +266,18 @@ export function BotRoutines({
           {!loading && !error && !routines.length && (
             <p className="text-[var(--text-secondary)]">{t('routines.empty')}</p>
           )}
-          {routines.map((routine) => routine.builtin === 'follow-up' ? (
-            <BuiltinFollowUpRow
+          {routines.map((routine) => routine.builtin ? (
+            <BuiltinRoutineRow
               key={routine.id}
               routine={routine}
               disabled={busy}
               onEnabledChange={(enabled) =>
-                void act(() => window.electronAPI.routines.save(botId, routineInput({ ...routine, enabled }), routine.id))
+                void act(() =>
+                  // 每天查待办与近况开关同一个入口：恢复时按当前模板重建，并通知近况。
+                  routine.builtin === 'todo-check'
+                    ? window.electronAPI.localDb.bots.todos.dailyCheck(botId, enabled)
+                    : window.electronAPI.routines.save(botId, routineInput({ ...routine, enabled }), routine.id),
+                )
               }
             />
           ) : (
@@ -305,7 +307,6 @@ export function BotRoutines({
           ))}
         </div>
       ) : null}
-      {!draft && footer ? <div className="mt-6">{footer}</div> : null}
       {draft ? (
         <fieldset ref={editorRef} disabled={busy} className="min-w-0 space-y-5">
           <div className="flex flex-wrap items-center justify-between gap-2">
@@ -865,7 +866,10 @@ function routineInput(routine: Routine): RoutineInput {
 /**
  * 宿主内置的「跟进」：指令与触发条件由宿主维护，这里不进编辑器、不能删，只能暂停或恢复。
  */
-function BuiltinFollowUpRow({
+/** 内置例行任务（跟进、每天查待办）的文案键；名称与说明随界面语言，不用宿主存的名字。 */
+const BUILTIN_COPY = { 'follow-up': 'routines.builtinFollowUp', 'todo-check': 'routines.builtinTodoCheck' } as const;
+
+function BuiltinRoutineRow({
   routine,
   disabled,
   onEnabledChange,
@@ -875,7 +879,8 @@ function BuiltinFollowUpRow({
   onEnabledChange: (enabled: boolean) => void;
 }) {
   const { t } = useTranslation();
-  const name = t('routines.builtinFollowUp.name');
+  const copy = BUILTIN_COPY[routine.builtin ?? 'follow-up'];
+  const name = t(`${copy}.name`);
   return (
     <div className="flex min-h-12 w-full items-start gap-3 rounded-lg px-3 py-3">
       {routine.activity ? (
@@ -888,7 +893,7 @@ function BuiltinFollowUpRow({
       <span className="min-w-0 flex-1">
         <span className="block truncate">{name}</span>
         {/* 触发条件由宿主维护、条数多且来源重复，这里只写一句白话，不逐条列出。 */}
-        <span className="block text-12 text-[var(--text-secondary)]">{t('routines.builtinFollowUp.hint')}</span>
+        <span className="block text-12 text-[var(--text-secondary)]">{t(`${copy}.hint`)}</span>
       </span>
       <Switch
         aria-label={name}

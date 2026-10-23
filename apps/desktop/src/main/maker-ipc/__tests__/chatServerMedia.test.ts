@@ -12,6 +12,25 @@ import type { BotGroupAttachment } from '../../../shared/botGroupChat.js';
 const attachment: BotGroupAttachment = { id: 'file', name: 'picture.png', category: 'image', mimeType: 'image/png', size: 3, url: 'cindy-media://test', path: null };
 
 describe('chat private media', () => {
+  it.each([undefined, '120'])('preserves PUT 429 Retry-After %s for settlement backoff', async retryAfter => {
+    f.read.mockResolvedValue({ buffer: Buffer.from('png') });
+    f.fetch.mockResolvedValue(new Response('', { status: 429, headers: retryAfter ? { 'Retry-After': retryAfter } : {} }));
+    const api = vi.fn(async () => ({ id: 'media', uploadUrl: 'https://upload.example.test/signed' })) as unknown as ChatApi;
+    const before = Date.now();
+    const error = await createChatMedia(api, () => true).upload('room', 'reply', [attachment], 'actor').catch(error => error);
+    expect(error).toMatchObject({ message: 'MEDIA_UPLOAD_FAILED', status: 429 });
+    if (retryAfter) expect(error.retryAt).toBeGreaterThanOrEqual(before + 120_000);
+    else expect(error.retryAt).toBeUndefined();
+    expect(vi.mocked(api).mock.calls.some(([route]) => route.endsWith('/complete'))).toBe(false);
+  });
+
+  it('does not PUT an ordinary reply after execution changes during prepare', async () => {
+    let current = true; f.read.mockResolvedValueOnce({ buffer: Buffer.from('png') }); f.fetch.mockClear();
+    const api = vi.fn(async () => { current = false; return { id: 'media', uploadUrl: 'https://upload.example.test/signed' }; }) as unknown as ChatApi;
+    await expect(createChatMedia(api, () => true).upload('room', 'reply', [attachment], 'actor', () => { if (!current) throw new Error('STALE_EXECUTOR'); })).rejects.toThrow('STALE_EXECUTOR');
+    expect(f.fetch).not.toHaveBeenCalled();
+  });
+
   it('uploads the bytes without a Cindy token and seals before returning the message reference', async () => {
     f.read.mockResolvedValue({ buffer: Buffer.from('png'), mimeType: 'image/png' });
     f.fetch.mockResolvedValue(new Response('', { status: 200 }));

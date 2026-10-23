@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, ChevronUp, Crown, Shield } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
@@ -83,17 +83,20 @@ export function ChatGroupSettings({ group }: { group: BotGroupSummary }) {
     if (await confirm({ presentation: 'standard', title, description: note, confirmText,
       cancelText: t('bots.cancel'), confirmVariant: 'destructive' }) && mounted.current && isDataOwnerGenerationCurrent(owner)) await mutate(action, exit);
   }
-  const profileOpenChange = useCallback((open: boolean) => {
-    setEditingProfile(open);
-    if (!open) {
-      const owner = getDataOwnerGeneration();
-      void api().refreshProfile().then(result => {
-        if (!isDataOwnerGenerationCurrent(owner)) return;
-        if (!result.ok) setError(t(chatErrorKey(result.errorCode)));
-        else refreshBotGroups();
-      }).catch(() => { if (mounted.current && isDataOwnerGenerationCurrent(owner)) setError(t(chatErrorKey('REQUEST_FAILED'))); });
-    }
-  }, [t]);
+  const profileOpenChange = useCallback((open: boolean) => setEditingProfile(open), []);
+  const avatarEditor = useMemo(() => ({
+    title: t(key('groupAvatar')),
+    hint: t(key('groupAvatarHint')),
+    getState: async () => ({ name: me?.name ?? '', avatarUrl: me?.groupAvatar ?? null, defaultAvatarUrl: me?.defaultAvatarUrl ?? null }),
+    save: async (avatar: Parameters<Window['electronAPI']['profileUpdate']>[0]['avatar']) => {
+      if (!me?.actorId) throw new Error('MEMBER_NOT_FOUND');
+      const generation = getDataOwnerGeneration();
+      const result = await api().manage({ groupId: group.id, action: { type: 'avatar', actorId: me.actorId, avatar } });
+      if (!mounted.current || !isDataOwnerGenerationCurrent(generation)) throw new Error('OWNER_CHANGED');
+      if (!result.ok) throw new Error(result.errorCode);
+      refreshBotGroups();
+    },
+  }), [group.id, me?.actorId, me?.name, me?.groupAvatar, me?.defaultAvatarUrl, t]);
   async function updateWorkSettings(input: { organizerBotId?: string; projectDir?: string | null }) {
     if (busyRef.current) return;
     busyRef.current = true; setBusy(true); setError('');
@@ -127,15 +130,19 @@ export function ChatGroupSettings({ group }: { group: BotGroupSummary }) {
           onChange={event => { editGroup(); setTopic(event); }} />}</FormField>
         <FormField label={t(key('description'))}>{props => <Input {...props} value={description} maxLength={2000} disabled={!manager || busy}
           onChange={event => { editGroup(); setDescription(event); }} />}</FormField>
+        {/* One teammate at a time: who answers follows @ (everyone queues when nobody is named), not a group mode. */}
+        {group.singleSpeaker ? null : <>
         <FormField label={t(shared('replyMode'))}>{props => <Select {...props} label={t(shared('replyMode'))} value={replyMode}
           disabled={!manager || busy} options={(['all', 'mentioned'] as const).map(value => ({ value, label: t(REPLY_MODE_LABELS[value]) }))}
           onValueChange={value => { editGroup(); setReplyMode(value as typeof replyMode); }} />}</FormField>
         <FormField label={t(shared('speakingMode'))}>{props => <Select {...props} label={t(shared('speakingMode'))} value={speakingMode}
           disabled={!manager || busy} options={(['auto', 'sequential'] as const).map(value => ({ value, label: t(SPEAKING_MODE_LABELS[value]) }))}
           onValueChange={value => { editGroup(); setSpeakingMode(value as typeof speakingMode); }} />}</FormField>
+        </>}
         {manager && <Button type="submit" size="sm" variant="secondary" disabled={busy || !name.trim()}>{t(key('save'))}</Button>}
       </form>
-      <section className="space-y-3 border-t border-[var(--border-default)] pt-5">
+      {/* Organizer and project folder only serve a division of work, which single-speaker groups do not have. */}
+      {group.singleSpeaker ? null : <section className="space-y-3 border-t border-[var(--border-default)] pt-5">
         <FormField label={t('bots.groupChat.organizer')} hint={t('bots.groupChat.settings.organizerNote')}>{props =>
           <Select {...props} label={t('bots.groupChat.organizer')} value={group.organizerBotId ?? ''}
             disabled={!manager || busy} options={companions.filter(m => m.status === 'active').map(m => ({ value: m.botId, label: m.name }))}
@@ -146,11 +153,11 @@ export function ChatGroupSettings({ group }: { group: BotGroupSummary }) {
             {group.projectDir && <Button size="sm" variant="secondary" disabled={busy} onClick={() => void updateWorkSettings({ projectDir: null })}>{t('bots.groupChat.settings.projectDirClear')}</Button>}
             <Button size="sm" variant="secondary" disabled={busy} onClick={() => void chooseProjectDir()}>{t('bots.groupChat.settings.projectDirChoose')}</Button>
           </div>}</FormField>
-      </section>
+      </section>}
       <section className="space-y-3 border-t border-[var(--border-default)] pt-5">
         <div className="flex items-center justify-between gap-3">
           <h3 className="text-14 font-medium text-[var(--text-primary)]">{t(key('myProfile'))}</h3>
-          <Button size="sm" variant="secondary" onClick={() => setEditingProfile(true)}>{t(key('editProfile'))}</Button>
+          {group.supportsMemberAvatar && <Button size="sm" variant="secondary" disabled={busy || !me || !!group.dissolvedAt} onClick={() => setEditingProfile(true)}>{t(key('groupAvatar'))}</Button>}
         </div>
         <form className="flex items-end gap-2" onSubmit={event => {
           event.preventDefault();
@@ -226,6 +233,6 @@ export function ChatGroupSettings({ group }: { group: BotGroupSummary }) {
         </div>
       </div>
     </div>
-    <ProfileEditDialog open={editingProfile} onOpenChange={profileOpenChange} />
+    <ProfileEditDialog key={group.id} open={editingProfile} onOpenChange={profileOpenChange} avatarEditor={avatarEditor} />
   </div>;
 }

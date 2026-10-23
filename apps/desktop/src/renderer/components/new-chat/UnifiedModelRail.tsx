@@ -1,4 +1,6 @@
 import type { ReactNode } from 'react';
+import { isProviderShareAgentDeviceId } from '../../../shared/providerShare';
+import { useProviderShareWeeklyQuota } from '@/features/provider-share/useProviderShareWeeklyQuota';
 import { LayoutGrid, Star } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
@@ -149,6 +151,12 @@ export function UnifiedModelRail({
               />
             )}
             <RailButton
+              shareDeviceId={
+                (item.kind === 'provider' || item.kind === 'remote-provider') &&
+                isProviderShareAgentDeviceId(usageDeviceId)
+                  ? usageDeviceId
+                  : null
+              }
               label={label}
               accountIdentity={accountIdentity}
               {...(groupNote ? { groupNote } : {})}
@@ -199,17 +207,26 @@ interface RailButtonProps {
   disabled: boolean;
   provider?: ProviderView;
   usageDeviceId: string | null;
+  shareDeviceId?: string | null;
   children: ReactNode;
 }
 
 function RailButton(props: RailButtonProps) {
   // Quota follows the directory's owner: remote directories read that device's mirrors
   // and must never borrow this desktop's account quota.
+  if (props.shareDeviceId) {
+    return <SharedProviderQuotaButton {...props} shareDeviceId={props.shareDeviceId} />;
+  }
   return props.provider ? (
     <ProviderQuotaButton {...props} provider={props.provider} />
   ) : (
     <RailButtonView {...props} />
   );
+}
+
+function SharedProviderQuotaButton(props: RailButtonProps & { shareDeviceId: string }) {
+  const quota = useProviderShareWeeklyQuota(props.shareDeviceId);
+  return <RailButtonView {...props} quota={quota} />;
 }
 
 function ProviderQuotaButton(props: RailButtonProps & { provider: ProviderView }) {

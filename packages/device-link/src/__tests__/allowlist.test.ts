@@ -108,6 +108,7 @@ describe('REMOTE_INVOKE_ALLOWLIST', () => {
 
   it('放行会话未读已读回执(控制端看完会话,清被控端灵动岛 / 角标 / 侧栏未读)', () => {
     expect(REMOTE_INVOKE_ALLOWLIST.has('notification:clear-session-attention')).toBe(true);
+    expect(REMOTE_INVOKE_ALLOWLIST.has('agent-island:completion-action')).toBe(true);
     // mark 方向不放行:未读的产生真相只在被控端 main,远程不得凭空标未读。
     expect(REMOTE_INVOKE_ALLOWLIST.has('notification:mark-session-attention')).toBe(false);
   });
@@ -193,6 +194,7 @@ describe('REMOTE_INVOKE_ALLOWLIST', () => {
   it('放行 Codex 官方额度读取与 desktop 绑定的人工 reset offer', () => {
     expect(REMOTE_INVOKE_ALLOWLIST.has('maker:usage:codex-rate-limits')).toBe(true);
     expect(REMOTE_INVOKE_ALLOWLIST.has('maker:usage:codex-rate-limit-reset')).toBe(true);
+    expect(REMOTE_INVOKE_ALLOWLIST.has('maker:usage:codex-reset-auto-use')).toBe(true);
   });
 
   it('放行 Claude 订阅余量快照只读(远程订阅会话 chip 镜像被控端窗口剩余)', () => {

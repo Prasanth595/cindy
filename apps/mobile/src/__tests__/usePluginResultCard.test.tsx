@@ -35,6 +35,24 @@ beforeEach(() => {
 });
 afterEach(() => { act(() => root?.unmount()); root = undefined; vi.useRealTimers(); });
 describe('plugin card lifecycle on Mobile', () => {
+  // A superseded card must disappear with its wrapper, including after an
+  // invalidation of an already visible card; keep the stored snapshot intact.
+  it('hides a mail card when the host publishes its replacement and restores that state from history', async () => {
+    vi.useFakeTimers();
+    const mail = { accountId: 'a', draftId: 'd', key: '12345678-1234-1234-1234-123456789abc', from: '',
+      fields: ['to', 'cc', 'bcc', 'subject', 'body'].map(name => ({ name, label: name, value: '' })),
+      attachments: [], state: 'draft', status: 'Saved', sendLabel: 'Send', fromLabel: 'From' };
+    const card = (supersededBy?: string) => ({ display: { title: 'Mail' }, blocks: [
+      { id: 'actions', primitive: 'plugin-card-actions', fallbackMarkdown: '', data: { mail: { ...mail, supersededBy } } },
+    ] });
+    h.get.mockResolvedValue(card()); await render(); expect(current.hidden).toBe(false);
+    h.get.mockResolvedValue(card('new'));
+    await act(async () => { h.push?.('mac', { collectionId: 'plugin-results' }); await vi.advanceTimersByTimeAsync(250); });
+    expect(current.hidden).toBe(true);
+    expect(current.blocks).toHaveLength(1);
+    await render({ card: 'old-history' }); expect(current.hidden).toBe(true);
+    h.get.mockResolvedValue(card()); await render({ card: 'new' }); expect(current.hidden).toBe(false);
+  });
   it('loads history and refreshes on card change, foreground and reconnect', async () => {
     vi.useFakeTimers(); await render();
     expect(current.blocks?.[0].fallbackMarkdown).toBe('done');

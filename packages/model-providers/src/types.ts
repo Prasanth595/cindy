@@ -429,6 +429,8 @@ export interface CatalogModel {
    * 不能读跨 provider 拍平去重后的列表（那只保留首个 provider 的值，会错）。
    */
   supportsFastMode?: boolean;
+  /** Account-discovered Ultrafast access. Never inferred from a model name or plan label. */
+  supportsUltrafastMode?: boolean;
   /** Same-provider, same-harness catalog model used for Fast. null explicitly disables mapping.
    * Unlike a service tier, this changes the upstream model; availability must be checked per account.
    */
@@ -627,6 +629,8 @@ export interface Provider {
  * 并随用户配置持久化，避免已知长上下文模型被错误降级。
  */
 export interface ProviderRuntimeModelConfig extends ModelMetadata {
+  /** Current account discovery only; deliberately excluded from inheritable ModelMetadata. */
+  supportsUltrafastMode?: boolean;
   discoveredMetadata?: ModelMetadata;
   discoveredCost?: ModelCost;
   nameExplicit?: boolean;

@@ -515,6 +515,8 @@ export interface ImRunAgentTurnArgs {
   trackBackgroundTask?: (operation: () => Promise<void>) => void;
   /** Optional per-turn host policy (personal WeChat routes confirmations to Desktop). */
   turnPermissionPolicy?: TurnPermissionPolicy;
+  /** Opt in to native permissions only for a resolved companion route and verified owner. */
+  inheritCompanionOwnerPermissions?: boolean;
   /**
    * The triggering message passed the channel's owner check (DM owner gate or
    * group speaker.isOwner). Only this unlocks owner-only Host actions; omitted = not owner.
@@ -1339,7 +1341,11 @@ export function createTurnRunner(
       queueMode: args.queueMode,
       ...(args.beforeProviderStart ? { beforeProviderStart: args.beforeProviderStart } : {}),
       ...(args.onRouteResolved ? { onRouteResolved: args.onRouteResolved } : {}),
-      ...(args.turnPermissionPolicy ? { turnPermissionPolicy: args.turnPermissionPolicy } : {}),
+      // Binding presence is insufficient: unavailable companions fall back to
+      // channel-owned sessions, which must retain the mandatory policy.
+      ...(args.turnPermissionPolicy && !(args.inheritCompanionOwnerPermissions === true
+        && args.requesterIsOwner === true && target.botOwned)
+        ? { turnPermissionPolicy: args.turnPermissionPolicy } : {}),
       ...(args.requesterIsOwner === true ? { requesterIsOwner: true } : {}),
       ...(args.onEarlyReject ? { onEarlyReject: args.onEarlyReject } : {}),
       ...(args.protectedContent === true ? { protectedContent: true } : {}),
@@ -1684,6 +1690,8 @@ export function createTurnRunner(
             });
           }
           if (item.channelToolScope) {
+            // A retried dispatch must not reuse an earlier input receipt.
+            delete item.channelToolScope.inputClientId;
             item.turn.channelToolScopeRelease = beginChannelToolScope({
               sessionId: rowId,
               sessionInstanceId: state.makerSession.instanceId,
@@ -1793,6 +1801,7 @@ export function createTurnRunner(
           });
           if (persisted) {
             item.prePersistedUserMessage = { sessionId: rowId, clientId: persisted.clientId };
+            if (item.channelToolScope) item.channelToolScope.inputClientId = persisted.clientId;
             await beginTurnChangeSetAtDispatch(state.makerSession, persisted.clientId);
             turnChangeSetStarted = true;
           }
@@ -1963,7 +1972,7 @@ export function createTurnRunner(
       const agentKind = toCoreAgentKind(row.agentKind);
       hydrateSessionProvider(sessionId, row.providerId ?? null);
       if (row.effort) setSessionEffort(sessionId, row.effort);
-      setSessionFastMode(sessionId, !!row.fastMode);
+      setSessionFastMode(sessionId, (row.fastMode ?? false));
       current = await maker.createSession({
         id: sessionId,
         agentKind,
@@ -2216,7 +2225,7 @@ export function createTurnRunner(
     // bridge 会话态(effort / fast)同点 hydrate —— chatgpt/ / xai/ 模型经 IM 触发 turn 时,
     // compat-proxy 路由决策从这两个 store 读出闭包进订阅 handler(与 register.ts bootstrapSession 对齐)。
     if (row.effort) setSessionEffort(row.id, row.effort);
-    setSessionFastMode(row.id, !!row.fastMode);
+    setSessionFastMode(row.id, (row.fastMode ?? false));
     // 接管路径: 必须传 resumeSessionId 让 Claude SDK 用 desktop 留下的 sdkSessionId
     // resume, 否则 maker.activeSessions 没该 row.id 时会 spawn 全新空会话——oneshot
     // "总结当前状态" 就变成总结空会话, agent 输出短促/无内容; 用户看到渠道卡片

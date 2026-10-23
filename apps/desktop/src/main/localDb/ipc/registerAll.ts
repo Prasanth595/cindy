@@ -41,6 +41,7 @@ import { createLogger } from '../../logger';
 import { recordDesktopDevLocalDbStartupResult } from '../../devStartupStatus';
 import { createOwnerEnsureCoordinator } from './ownerEnsureCoordinator';
 import { reconcileSessionMediaRefsForDeletedSessions } from '../../cindy-media/sessionCleanup';
+import { reconcileGeneratedImageRecovery } from '../../cindy-media/generatedImageRecovery';
 import { reconcileMediaRefCompensationsForOwner } from '../../cindy-media/refCompensationJournal';
 import { setSessionRouteLockImplementation } from '../sessionRouteLock';
 
@@ -70,6 +71,7 @@ function startMediaRefCompensationReconcile(
     }, MEDIA_REF_COMPENSATION_BUSY_RETRY_MS);
     retry.unref?.();
   };
+  void reconcileGeneratedImageRecovery().catch(() => log.warn('native image cleanup reconciliation deferred'));
   void run(true).catch((error) => {
     log.warn('media reference compensation reconcile failed', {
       userId,

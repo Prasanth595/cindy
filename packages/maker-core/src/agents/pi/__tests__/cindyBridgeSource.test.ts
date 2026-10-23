@@ -53,7 +53,7 @@ it('keeps text-only policy local and ordinary tools independent of host UI failu
   const source = CINDY_BRIDGE_EXTENSION_SOURCE;
   const helperStart = source.indexOf('let textOnlyTurnActive = false');
   const helperEnd = source.indexOf('function currentPermissionState', helperStart);
-  const handlerStart = source.indexOf("  pi.on('tool_call'");
+  const handlerStart = source.indexOf("  pi.on('tool_call', async");
   const handlerEnd = source.indexOf('\n  });', handlerStart) + '\n  });'.length;
   const handlers = new Map<string, (event: any, ctx: any) => any>();
   let permissionReads = 0;
@@ -109,7 +109,7 @@ it('lets a shared user\'s Pi call only tools that Cindy extensions registered', 
   const source = CINDY_BRIDGE_EXTENSION_SOURCE;
   const gateStart = source.indexOf('function createCindyGuestToolGate');
   const gateEnd = source.indexOf('\nconst PERMISSION_TITLE', gateStart);
-  const handlerStart = source.indexOf("  pi.on('tool_call'");
+  const handlerStart = source.indexOf("  pi.on('tool_call', async");
   const handlerEnd = source.indexOf('\n  });', handlerStart) + '\n  });'.length;
   // 子代理扩展的工具名在生成时写进源码。
   expect(source).toContain('createCindyGuestToolGate(piApi, ["subagent"])');
@@ -2734,4 +2734,22 @@ it('leaves a direct tool alone when its required name is not the Cindy envelope'
     .rejects.toThrow(/write_file failed/);
   expect(requests).toHaveLength(1);
   expect(requests[0].params).toEqual({ name: 'write_file', arguments: { content: 'text' } });
+});
+
+it('removes cache fields only for an exact learned Chat Completions route and preserves Fast', () => {
+  const start = CINDY_BRIDGE_EXTENSION_SOURCE.indexOf('  function learnedCachePayload(');
+  const end = CINDY_BRIDGE_EXTENSION_SOURCE.indexOf("  pi.on('before_provider_request'", start);
+  const model = { provider: 'connection-a', id: 'wire', baseUrl: 'http://localhost/api.openai.com/v1', api: 'openai-completions' };
+  let rules = JSON.stringify([model]);
+  const adapt = new Function('path', 'process', 'statSync', 'readFileSync', CINDY_BRIDGE_EXTENSION_SOURCE.slice(start, end) + '; return learnedCachePayload;')(
+    { join: (...v: string[]) => v.join('/') }, { env: { PI_CODING_AGENT_DIR: '/isolated' } }, () => ({ size: rules.length }), () => rules,
+  );
+  const original = { messages: [], prompt_cache_key: 'key', prompt_cache_retention: '24h', service_tier: 'priority' };
+  expect(adapt(original, model)).toEqual({ messages: [], service_tier: 'priority' });
+  expect(original.prompt_cache_key).toBe('key');
+  expect(adapt(original, { ...model, provider: 'connection-b' })).toBe(original);
+  expect(adapt(original, { ...model, baseUrl: 'http://other/v1' })).toBe(original);
+  expect(adapt(original, { ...model, api: 'openai-responses' })).toBe(original);
+  rules = '{bad-json';
+  expect(adapt(original, model)).toBe(original);
 });

@@ -13,6 +13,13 @@ const listProviders = vi.hoisted(() => vi.fn());
 const identityCard = vi.hoisted(() => vi.fn());
 const remember = vi.hoisted(() => vi.fn());
 const usageStores = vi.hoisted(() => ({ ownHistory: vi.fn(), memberHistory: vi.fn(), pricing: vi.fn() }));
+const memberNotes = vi.hoisted(() => ({ read: vi.fn(), set: vi.fn() }));
+vi.mock('../providerShareQuota.js', () => ({ readProviderShareQuota: vi.fn(), readProviderShareQuotaAccount: vi.fn() }));
+const visibility = vi.hoisted(() => ({ read: vi.fn(), set: vi.fn() }));
+const modelAccess = vi.hoisted(() => ({ read: vi.fn(), set: vi.fn(), allows: vi.fn() }));
+vi.mock('../remoteModelAccess.js', () => ({ remoteModelAccess: modelAccess }));
+vi.mock('../providerShareVisibility.js', () => ({ providerShareVisibility: visibility }));
+vi.mock('../providerShareMemberNotes.js', () => ({ providerShareMemberNotes: memberNotes }));
 
 vi.mock('../../appSessionState.js', () => ({
   activeOwnerScopeKey: () => state.owner,
@@ -46,17 +53,18 @@ vi.mock('../providerShareApi.js', () => ({
 }));
 vi.mock('../dispatch.js', () => ({
   getControllerDisplayName: vi.fn(), providerShareActiveControllers: vi.fn(),
-  revokeProviderShareControllers: vi.fn(), setProviderShareAccess: vi.fn(),
+  revalidateRemoteModelAccess: vi.fn(async () => undefined), revokeProviderShareControllers: vi.fn(), setProviderShareAccess: vi.fn(),
 }));
 vi.mock('../providerShareHost.js', () => ({
   startProviderShareHost: vi.fn(), stopProviderShareHost: vi.fn(),
   refreshProviderShareHost: host.refresh, getProviderShareHostSnapshot: host.snapshot,
   clearProviderShareRequestQuiet: vi.fn(),
-  providerShareGuestAccess: vi.fn(), providerShareGuestDenial: vi.fn(), ensureProviderSharePeerKnown: vi.fn(),
+  providerShareAccessRevision: vi.fn(), providerShareGuestAccess: vi.fn(), providerShareGuestDenial: vi.fn(), ensureProviderSharePeerKnown: vi.fn(),
   quietProviderShareRequests: host.quiet, markProviderShareHostActive: host.active,
   applyLocalRequestDecision: host.decision, applyLocalMemberChange: host.member,
 }));
-vi.mock('../providerShareGuest.js', () => ({ startProviderShareGuest: vi.fn(), stopProviderShareGuest: vi.fn() }));
+const guest = vi.hoisted(() => ({ revision: 0, share: null as unknown }));
+vi.mock('../providerShareGuest.js', () => ({ startProviderShareGuest: vi.fn(), stopProviderShareGuest: vi.fn(), findReceivedShare: () => guest.share, providerShareReceivedRevision: () => guest.revision }));
 vi.mock('../providerShareGuestPrefs.js', () => ({ configureProviderShareGuestPrefs: vi.fn(), invalidateProviderShareGuestPrefsCache: vi.fn() }));
 vi.mock('../providerShareGuestPrefsIpc.js', () => ({ setProviderShareCredentialConsentFromIpc: vi.fn() }));
 
@@ -77,6 +85,19 @@ const mutations: ProviderShareManagementCommand[] = [
   { action: 'set-member', memberId: 'm1', status: 'remove' },
 ];
 
+function saveMemberNote(entry: 'local' | 'same-account'): Promise<unknown> {
+  const command = { action: 'set-member-note', memberId: 'm1', note: 'Alice' } as const;
+  if (entry === 'same-account') return executeProviderShareManagementCommand(command);
+  const handle = vi.spyOn(ipcMain, 'handle');
+  try {
+    registerProviderShareIpc();
+    const handler = handle.mock.calls.find(([channel]) => channel === 'provider-share:command')![1];
+    return handler({} as Electron.IpcMainInvokeEvent, command);
+  } finally {
+    handle.mockRestore();
+  }
+}
+
 beforeEach(() => {
   vi.resetAllMocks();
   state.owner = 'owner-a';
@@ -88,6 +109,10 @@ beforeEach(() => {
   api.reject.mockResolvedValue({ ok: true });
   api.setMember.mockResolvedValue({ status: 'removed' });
   host.refresh.mockResolvedValue(undefined);
+  memberNotes.read.mockReturnValue({});
+  memberNotes.set.mockResolvedValue(undefined);
+  modelAccess.read.mockReturnValue({ models: null, providerModels: null });
+  modelAccess.set.mockImplementation(async (_provider, _models, _member, assertCurrent) => { assertCurrent(); });
   host.snapshot.mockReturnValue([{ requests: [{ requestId: 'r1' }], members: [{ memberId: 'm1' }] }]);
   usageStores.ownHistory.mockReturnValue({ self: { lastUsedAt: null, days: [] }, relays: [] });
   usageStores.memberHistory.mockReturnValue([]);
@@ -154,11 +179,64 @@ describe('provider share usage history wire budget', () => {
 });
 
 describe('remote task limit management payloads', () => {
-  it.each([{ perDevice: 24 }, { total: 80 }, { perDevice: 16, total: 64 }])('preserves only supplied fields in %j', limits => {
+  // idleMinutes：提供方的闲置收回时长，0 = 不收回(provider-sharing.md §3)。
+  it.each([{ perDevice: 24 }, { total: 80 }, { perDevice: 16, total: 64 }, { idleMinutes: 0 }, { idleMinutes: 1440 }])('preserves only supplied fields in %j', limits => {
     expect(parseProviderShareCommand({ action: 'set-run-limits', limits })).toEqual({ action: 'set-run-limits', limits });
   });
-  it.each([{}, { unknown: 1 }, { perDevice: '16' }, { perDevice: 0 }, { total: 1001 }, { total: 1.5 }])('rejects malformed patches %j', limits => {
+  it.each([
+    {}, { unknown: 1 }, { perDevice: '16' }, { perDevice: 0 }, { total: 1001 }, { total: 1.5 },
+    { idleMinutes: -1 }, { idleMinutes: 1441 }, { idleMinutes: '30' },
+  ])('rejects malformed patches %j', limits => {
     expect(() => parseProviderShareCommand({ action: 'set-run-limits', limits })).toThrow('INVALID_PARAMS');
+  });
+});
+
+/* 测试价值：2026-10-19 用户备注；生产 parser/管理执行入口此前未覆盖备注。
+ * 最小输入：空备注、超长/非字符串备注、不属于本机的成员，以及刷新中切账号。tier: unit。
+ */
+describe('member note management', () => {
+  it('normalizes a single-line note and accepts clearing it', () => {
+    expect(parseProviderShareCommand({ action: 'set-member-note', memberId: 'm1', note: ' Alice\nTeam ' }))
+      .toEqual({ action: 'set-member-note', memberId: 'm1', note: 'Alice Team' });
+    expect(parseProviderShareCommand({ action: 'set-member-note', memberId: 'm1', note: '' }))
+      .toEqual({ action: 'set-member-note', memberId: 'm1', note: '' });
+  });
+  it.each([null, 123, 'x'.repeat(81)])('rejects an invalid note %j', (note) => {
+    expect(() => parseProviderShareCommand({ action: 'set-member-note', memberId: 'm1', note })).toThrow('INVALID_PARAMS');
+  });
+  it.each(['local', 'same-account'] as const)('saves an existing member note without changing sharing authorization (%s)', async (entry) => {
+    await expect(saveMemberNote(entry))
+      .resolves.toEqual({ ok: true });
+    expect(memberNotes.set).toHaveBeenCalledWith('m1', 'Alice', expect.any(Function));
+    expect(host.refresh).toHaveBeenCalledExactlyOnceWith('management');
+    expect(api.setMember).not.toHaveBeenCalled();
+  });
+  /* PR #6445 discussion_r4312429158：本机真实 IPC 之前绕过管理入口的刷新。
+   * 现有缺口：只测远程入口与已缺席成员，未测缓存仍有、刷新后退出的成员。
+   * 最小输入：m1 在刷新后消失；或刷新期间切账号。结果必须拒绝保存，不写备注。
+   * tier: unit；复用本文件内存 fixture 与生产 IPC / 管理入口，不新增网络或等待。
+   * 单文件实测：50 项通过，1.58 秒。
+   */
+  it.each(['local', 'same-account'] as const)('refuses a note when the cached member has left before saving (%s)', async (entry) => {
+    host.refresh.mockImplementationOnce(async () => { host.snapshot.mockReturnValue([]); });
+    await expect(saveMemberNote(entry)).rejects.toThrow('NOT_FOUND');
+    expect(memberNotes.set).not.toHaveBeenCalled();
+  });
+  it.each(['pending', 'switched'] as const)('refuses a local note when the account changes during refresh (%s)', async (boundary) => {
+    host.refresh.mockImplementationOnce(async () => {
+      if (boundary === 'pending') state.boundaryPending = true;
+      else state.owner = 'owner-b';
+    });
+    await expect(saveMemberNote('local')).rejects.toThrow('PRECONDITION_FAILED');
+    expect(memberNotes.set).not.toHaveBeenCalled();
+  });
+  it('refuses notes for absent members and a pending account transition', async () => {
+    await expect(executeProviderShareManagementCommand({ action: 'set-member-note', memberId: 'absent', note: 'Alice' }))
+      .rejects.toThrow('NOT_FOUND');
+    host.refresh.mockImplementationOnce(async () => { state.boundaryPending = true; });
+    await expect(executeProviderShareManagementCommand({ action: 'set-member-note', memberId: 'm1', note: 'Alice' }))
+      .rejects.toThrow('PRECONDITION_FAILED');
+    expect(memberNotes.set).not.toHaveBeenCalled();
   });
 });
 
@@ -265,5 +343,85 @@ describe('same-account share management during account transitions', () => {
     host.quiet.mockRejectedValueOnce(new Error('ownership save failed'));
     await expect(executeProviderShareManagementCommand(createLink)).rejects.toThrow('ownership save failed');
     expect(remember).not.toHaveBeenCalled();
+  });
+});
+
+/* 用户要求的型号权限：生产命令入口验证成员归属和切号；原来的备注、分享开关不覆盖型号范围。
+ * 最小输入为另一供应商的同名成员以及读目录期间切号。unit，复用本文件进程内 fixture。 */
+describe('remote model access management', () => {
+  beforeEach(() => {
+    listProviders.mockResolvedValue([{ id: 'anthropic', models: { 'claude-code': [
+      { id: 'small', name: 'Small' }, { id: 'large', name: 'Large' }, { id: 'stopped', disabled: true },
+    ] } }]);
+    host.snapshot.mockReturnValue([{ providerId: 'anthropic', requests: [], members: [{ memberId: 'm1' }] }]);
+  });
+  it.each([undefined, 'm1'])('saves remote model permissions in the managed owner scope: member=%s', async (memberId) => {
+    const command = parseProviderShareCommand({ action: 'set-model-access', providerId: 'anthropic', memberId, models: ['small'] }) as ProviderShareManagementCommand;
+    const result = await executeProviderShareManagementCommand(command);
+    expect(modelAccess.set).toHaveBeenCalledWith('anthropic', ['small'], memberId, expect.any(Function));
+    expect(result).toMatchObject({ version: 1, availableModels: [{ id: 'small', name: 'Small' }, { id: 'large', name: 'Large' }] });
+    expect(api.setMember).not.toHaveBeenCalled();
+  });
+  // Unit regression for review 4326867264: the management command must offer every
+  // enabled media model; the old fixture only covered chat models. Media-only providers
+  // and duplicated ids must yield a usable, deduplicated authorization selection too.
+  it.each([false, true])('offers media models alongside chat models or on their own: mediaOnly=%s', async (mediaOnly) => {
+    listProviders.mockResolvedValue([{
+      id: 'anthropic',
+      models: mediaOnly ? {} : { codex: [{ id: 'chat', name: 'Chat' }], pi: [{ id: 'chat', name: 'Chat' }] },
+      imageModels: [{ id: 'image', name: 'Image' }, { id: 'disabled-image', disabled: true }],
+      videoModels: [{ id: 'video', name: 'Video' }],
+      audioModels: [{ id: 'audio', name: 'Audio' }],
+      embeddingModels: [{ id: 'embedding' }, { id: 'image', name: 'Image' }],
+    }]);
+    const result = await executeProviderShareManagementCommand({ action: 'get-model-access', providerId: 'anthropic', memberId: 'm1' });
+    expect(result).toMatchObject({ availableModels: [
+      ...(mediaOnly ? [] : [{ id: 'chat', name: 'Chat' }]),
+      { id: 'image', name: 'Image' }, { id: 'video', name: 'Video' },
+      { id: 'audio', name: 'Audio' }, { id: 'embedding', name: 'embedding' },
+    ] });
+  });
+  it('refuses to modify a person who belongs to a different provider', async () => {
+    host.snapshot.mockReturnValue([{ providerId: 'other', members: [{ memberId: 'm1' }] }]);
+    await expect(executeProviderShareManagementCommand({ action: 'set-model-access', providerId: 'anthropic', memberId: 'm1', models: [] })).rejects.toThrow('NOT_FOUND');
+    expect(modelAccess.set).not.toHaveBeenCalled();
+  });
+  it('does not save a delayed model selection into a newly signed-in account', async () => {
+    listProviders.mockImplementationOnce(async () => { state.owner = 'owner-b'; return [{ id: 'anthropic', models: {} }]; });
+    await expect(executeProviderShareManagementCommand({ action: 'set-model-access', providerId: 'anthropic', models: [] })).rejects.toThrow('PRECONDITION_FAILED');
+    expect(modelAccess.set).not.toHaveBeenCalled();
+  });
+  it.each([['small', 'small'], [false], {}, undefined])('rejects invalid selection payload %#', (models) => {
+    expect(() => parseProviderShareCommand({ action: 'set-model-access', providerId: 'anthropic', models })).toThrow('INVALID_PARAMS');
+  });
+});
+
+/* 分享可见性：生产管理/IPC入口补足远程设置与受邀者在途撤权、旧端返回差异。tier: unit。 */
+describe('share visibility management and guest query', () => {
+  it('saves only the requested switch via the same-account management entry', async () => {
+    visibility.set.mockImplementation(async (_id, patch, assertCurrent) => { assertCurrent(); return { quota: false, usage: true, ...patch }; });
+    const result = await executeProviderShareManagementCommand(parseProviderShareCommand({ action: 'set-visibility', providerId: 'anthropic', visibility: { quota: true } }) as ProviderShareManagementCommand);
+    expect(result).toMatchObject({ quota: true, usage: true });
+    expect(visibility.set).toHaveBeenCalledWith('anthropic', { quota: true }, expect.any(Function));
+    expect(() => parseProviderShareCommand({ action: 'set-visibility', providerId: 'anthropic', visibility: { quota: 'true' } })).toThrow('INVALID_PARAMS');
+  });
+  it.each(['revision', 'owner', 'removed', 'old-version', 'old-unscoped'])('rejects a stale or unsupported guest response: %s', async (change) => {
+    guest.share = { shareId: 's', memberId: 'm', status: 'active', hostOnline: true };
+    guest.revision = 0;
+    const invoke = vi.fn(async () => {
+      if (change === 'revision') guest.revision += 2; // pause then resume: same current share, different generation
+      if (change === 'owner') state.owner = 'owner-b';
+      if (change === 'removed') guest.share = null;
+      return { ok: true, result: change === 'old-unscoped' ? { version: 1, capabilities: { quota: false, usage: true }, status: { quota: 'disabled', usage: 'ready' }, quota: null, usage: { todayKey: '2026-10-19', coverageStart: null, parties: [] } } : {} } as const;
+    });
+    stopProviderShareRuntime(); startProviderShareRuntime(vi.fn(), { invoke });
+    const handle = vi.spyOn(ipcMain, 'handle');
+    registerProviderShareIpc();
+    const handler = handle.mock.calls.find(([channel]) => channel === 'provider-share:command')![1];
+    handle.mockRestore();
+    await expect(handler({} as Electron.IpcMainInvokeEvent, { action: 'insights', shareId: 's', includeUsage: false })).rejects.toThrow(
+      change.startsWith('old-') ? 'UNSUPPORTED_CAPABILITY' : change === 'owner' ? 'PRECONDITION_FAILED' : 'PERMISSION_DENIED');
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(invoke).toHaveBeenCalledWith('share:s', 'provider-share:insights:v1', [{ version: 1, includeUsage: false }], expect.any(Object));
   });
 });

@@ -29,6 +29,7 @@ import { z } from 'zod';
 import type { XdtHelperToolRegistry } from '../lizi_xdtHelperToolRegistry.js';
 import type { XdtHelperHistoryDeps, HistoryRole } from './_history_types.js';
 import { okPayload, errorPayload } from './_payload.js';
+import { stringArrayParam } from './_array-param.js';
 import { resolveHistoryScope } from './_history_scope.js';
 import { historyDeviceShape, HISTORY_DEVICE_DESCRIPTION, queryHistoryDevices } from './_history_devices.js';
 
@@ -88,9 +89,7 @@ export function registerSearchChatHistoryTool(
     inputShape: {
       ...historyDeviceShape,
       query: z.string().min(1).max(256).describe('自然语言查询(必填, 最长 256)。例: "上次怎么修的语音输入授权问题"。'),
-      session_ids: z
-        .array(z.string().min(1))
-        .max(50)
+      session_ids: stringArrayParam(z.array(z.string().min(1)).max(50))
         .optional()
         .describe('限定一批 sessionId(最多 50)。与其它过滤叠加(AND)。'),
       workdir: z.string().optional().describe('精确匹配 sessions.workingDir。'),
@@ -100,8 +99,7 @@ export function registerSearchChatHistoryTool(
         .enum(['cc', 'codex', 'pi'])
         .optional()
         .describe('按 session.agentKind 过滤; 不传 = 全部搜。'),
-      roles: z
-        .array(z.enum(ROLE_VALUES))
+      roles: stringArrayParam(z.array(z.enum(ROLE_VALUES)))
         .optional()
         .describe(
           '只命中这些 role 的消息(也用于上下文窗口过滤)。不传 = 问答类' +

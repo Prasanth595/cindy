@@ -46,9 +46,6 @@
     "apps/desktop/src/main/__tests__/computerUsePluginIpc.test.ts": {
       "sourceReads": 11
     },
-    "apps/desktop/src/main/__tests__/controlProjects.test.ts": {
-      "sourceReads": 1
-    },
     "apps/desktop/src/main/__tests__/deviceLinkSettingsStore.test.ts": {
       "resetModules": 1
     },
@@ -120,7 +117,7 @@
       "sourceReads": 1
     },
     "apps/desktop/src/main/__tests__/sessionTaskSummary.test.ts": {
-      "sourceReads": 4
+      "sourceReads": 2
     },
     "apps/desktop/src/main/__tests__/setSessionsStatusInDb.test.ts": {
       "sourceReads": 2
@@ -705,9 +702,6 @@
     "apps/desktop/src/renderer/__tests__/newMakerWorktreeSend.test.ts": {
       "sourceReads": 2
     },
-    "apps/desktop/src/renderer/__tests__/pendingHandoffRecovery.test.ts": {
-      "resetModules": 2
-    },
     "apps/desktop/src/renderer/__tests__/permissionSessionApproval.test.ts": {
       "sourceReads": 1
     },
@@ -731,9 +725,6 @@
     },
     "apps/desktop/src/renderer/__tests__/releaseNotesNormalize.test.ts": {
       "resetModules": 2
-    },
-    "apps/desktop/src/renderer/__tests__/remoteCatalogSnapshot.test.ts": {
-      "resetModules": 1
     },
     "apps/desktop/src/renderer/__tests__/remoteHistoryHandoff.test.ts": {
       "sourceReads": 1
@@ -798,12 +789,6 @@
     "apps/desktop/src/renderer/__tests__/userMessageCollapse.test.ts": {
       "sourceReads": 1
     },
-    "apps/desktop/src/renderer/__tests__/voiceInputEnterToSend.test.ts": {
-      "sourceReads": 2
-    },
-    "apps/desktop/src/renderer/__tests__/worktreeRemovalWarning.test.ts": {
-      "sourceReads": 2
-    },
     "apps/desktop/src/renderer/components/chat/__tests__/embeddedSessionNavigation.test.tsx": {
       "sourceReads": 1
     },
@@ -846,11 +831,8 @@
     "apps/desktop/src/renderer/features/bots/__tests__/botGroupListRemoval.test.ts": {
       "resetModules": 1
     },
-    "apps/desktop/src/renderer/features/bots/__tests__/botModelChainDefaults.test.tsx": {
-      "resetModules": 1
-    },
     "apps/desktop/src/renderer/features/bots/__tests__/botNavigation.test.ts": {
-      "sourceReads": 6
+      "sourceReads": 5
     },
     "apps/desktop/src/renderer/features/bots/__tests__/botStore.lifecycle.test.ts": {
       "resetModules": 2
@@ -1075,7 +1057,7 @@
       "realWaits": 2
     },
     "packages/maker-core/src/agents/pi/__tests__/cindySubagentRunner.test.ts": {
-      "realWaits": 2
+      "realWaits": 1
     },
     "packages/maker-core/src/agents/pi/__tests__/cindySubagentSource.test.ts": {
       "sourceReads": 3

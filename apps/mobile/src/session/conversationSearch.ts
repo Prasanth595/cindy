@@ -247,8 +247,23 @@ function sessionToSearchSummary(
 
 export type ConversationSearchListItem = RemoteSessionListItem & {
   searchFocusClientId?: string;
+  searchCompanion?: ConversationSearchSessionSummary['companion'];
   searchLocallyCached: boolean;
 };
+
+/** Keep the exact transcript selected by search, including an archived personal thread. */
+export function conversationSearchCompanionParams(item: object): Record<string, string> {
+  const companion = (item as Partial<ConversationSearchListItem>).searchCompanion;
+  if (!companion) return {};
+  return {
+    resourceCollectionId: 'teammates',
+    resourceKind: 'bot',
+    resourceId: companion.id,
+    ...(companion.readOnly
+      ? { resourceHistorySessionId: (item as ConversationSearchListItem).session.id }
+      : {}),
+  };
+}
 
 export function conversationSearchSessionCacheKey(
   session: Pick<RemoteSession, 'id'> & {
@@ -321,6 +336,10 @@ export function toSearchListItem(
   const searchFocusClientId = item.contentHit?.messageClientId?.trim();
   return {
     ...listItem,
+    ...(item.session.companion ? {
+      title: `${item.session.companion.name} · ${listItem.title}`,
+      searchCompanion: item.session.companion,
+    } : {}),
     searchLocallyCached: !!cached,
     ...(searchFocusClientId ? { searchFocusClientId } : {}),
   };

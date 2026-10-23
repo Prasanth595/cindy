@@ -6,6 +6,11 @@
 import { act, createElement, useImperativeHandle, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { beforeAll, describe, expect, it, vi } from "vitest";
+vi.mock('@/platform/gestureHandler', () => {
+  const chain = (): any => new Proxy({}, { get: (_target, key) => key === 'then' ? undefined : () => chain() });
+  return { GestureDetector: ({ children }: { children: unknown }) => children, Gesture: { LongPress: chain } };
+});
+vi.mock('expo-modules-core', () => ({ requireOptionalNativeModule: () => null }));
 
 const viewportHarness = vi.hoisted(() => ({
   list: null as any,
@@ -99,6 +104,7 @@ vi.mock("@legendapp/list/react-native", () => ({
   useViewability: () => {},
 }));
 vi.mock("lucide-react-native", () => ({
+  Mail: () => null, CalendarDays: () => null, Folder: () => null, ChartColumn: () => null, Info: () => null, Clock: () => null, MapPin: () => null, Coffee: () => null, Image: () => null, Users: () => null, Star: () => null,
   Database: () => null,
   FileArchive: () => null,
   FileAudio: () => null,
@@ -149,6 +155,9 @@ vi.mock("react-native-svg", () => ({
 }));
 vi.mock("react-native-uitextview", async () => ({ UITextView: (await import('react-native')).Text }));
 vi.mock("expo-image", () => ({ Image: () => null }));
+// The site-video preview imports this native surface; label tests keep the
+// production renderer but must not load React Native's Flow runtime in Node.
+vi.mock("react-native-webview", () => ({ WebView: () => null }));
 vi.mock("expo-router", () => ({
   useRouter: () => ({ push: vi.fn() }),
   useFocusEffect: vi.fn(),

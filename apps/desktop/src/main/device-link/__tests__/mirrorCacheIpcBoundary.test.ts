@@ -202,6 +202,14 @@ beforeEach(() => {
   registerDeviceLinkIpc();
 });
 
+it('rejects Renderer-supplied remote Skill approval before forwarding any request', async () => {
+  await expect(call(DEVICE_LINK_INVOKE.INVOKE, {
+    deviceId: 'private-peer', channel: 'maker:remote-resources:invoke',
+    args: [{ collectionId: 'skills', actionId: 'management:answer', input: { accepted: true } }],
+  })).rejects.toThrow('PERMISSION_DENIED');
+  expect(remoteInvoke).not.toHaveBeenCalled();
+});
+
 it.each([1_000, 30_000])('flushes completed calls on quit after %i ms without duplicate summaries', async (elapsed) => {
   vi.useFakeTimers();
   try {
@@ -214,10 +222,10 @@ it.each([1_000, 30_000])('flushes completed calls on quit after %i ms without du
     const quit = h.quitHandlers.get('device-link-ipc-diagnostics');
     expect(quit?.phase).toBe('sync');
     quit!.fn();
-    const summaries = h.diagnosticsInfo.mock.calls.filter(([event]) => event === 'transport summary');
-    expect(summaries).toHaveLength(2);
-    expect(summaries.map(([, fields]) => [fields.code, fields.completed])).toEqual([
-      ['OK', 1], ['NOT_CONNECTED', 1],
+    const summaries = h.diagnosticsInfo.mock.calls.filter(([event]) => event.startsWith('transport summary'));
+    // Failing buckets stay per bucket; successes fold into one baseline line.
+    expect(summaries.map(([event, fields]) => [event, fields.code, fields.completed])).toEqual([
+      ['transport summary', 'NOT_CONNECTED', 1], ['transport summary ok', undefined, 1],
     ]);
     const count = h.diagnosticsInfo.mock.calls.length;
     quit!.fn();

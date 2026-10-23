@@ -13,6 +13,9 @@ const mocks = vi.hoisted(() => ({
   confirm: vi.fn(async () => true),
 }));
 
+// The shared-quota rail observes auth; this component fixture has no auth host.
+vi.mock('@/contexts/AuthContext', () => ({ useOptionalAuthUser: () => null }));
+
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string, opts?: Record<string, unknown>) =>

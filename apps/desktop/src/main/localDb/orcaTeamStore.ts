@@ -2,6 +2,7 @@ import { BrowserWindow } from 'electron';
 import { and, desc, eq, gt, inArray, isNotNull, isNull, ne } from 'drizzle-orm';
 import { createId } from '@paralleldrive/cuid2';
 import type { OrcaRemotePendingReport } from '../../shared/orcaRemoteWorker.js';
+import { parseOrcaRemoteLead } from '../../shared/orcaRemoteWorker.js';
 
 import { getDbClient } from './client/current.js';
 import type { OrcaRemoteWorkerProxySessionSeed } from './client/tx/types.js';
@@ -60,7 +61,7 @@ export interface OrcaWorkerRecord {
     model: string;
     effort: string;
     permissionMode: string;
-    fastMode: boolean;
+    fastMode: boolean | 'ultrafast';
     sdkSessionId?: string;
     /** Worker 的 Agent 在另一台电脑或分享上运行(远程供应商)；null = 任务所在电脑。旧端缺省。 */
     agentDeviceId?: string | null;
@@ -104,7 +105,7 @@ export interface OrcaWorkerLinkRecord {
     providerId?: string | null;
     effort: string;
     permissionMode: string;
-    fastMode: boolean;
+    fastMode: boolean | 'ultrafast';
     sdkSessionId?: string;
     title: string;
     /** SSH 远端 lead 的 host id;bridge rehydrate 必须带回 createSession。 */
@@ -511,7 +512,7 @@ export async function getWorkerLink(input: {
       providerId: row.leadSession.providerId ?? null,
       effort: row.leadSession.effort,
       permissionMode: row.leadSession.permissionMode,
-      fastMode: !!row.leadSession.fastMode,
+      fastMode: (row.leadSession.fastMode ?? false),
       sdkSessionId: row.leadSession.sdkSessionId ?? undefined,
       title: row.leadSession.title,
       remoteHostId: row.leadSession.remoteHostId ?? null,
@@ -527,6 +528,14 @@ export async function getSessionOrcaRole(sessionId: string): Promise<OrcaRole | 
     .where(eq(sessions.id, sessionId))
     .limit(1);
   return row?.orcaRole === 'lead' || row?.orcaRole === 'worker' ? row.orcaRole : null;
+}
+
+/** Persisted execution-device identity; never inferred from model-supplied vendor options. */
+export async function getRemoteOrcaSession(sessionId: string) {
+  const [row] = await getDbClient().drizzle
+    .select({ status: sessions.status, orcaRemoteLead: sessions.orcaRemoteLead })
+    .from(sessions).where(eq(sessions.id, sessionId)).limit(1);
+  return row ? { status: row.status, orcaRemoteLead: parseOrcaRemoteLead(row.orcaRemoteLead) } : null;
 }
 
 /**
@@ -709,7 +718,7 @@ function workerToRecord(
       model: session.model,
       effort: session.effort,
       permissionMode: session.permissionMode,
-      fastMode: !!session.fastMode,
+      fastMode: (session.fastMode ?? false),
       sdkSessionId: session.sdkSessionId ?? undefined,
       agentDeviceId: session.agentDeviceId && !session.remoteHostId ? session.agentDeviceId : null,
     },
@@ -769,12 +778,15 @@ export async function saveWorkerRemoteReport(
   workerId: string,
   pending: OrcaRemotePendingReport | null,
   lastBridgedMessageId?: string,
+  markWorkerDone = false,
 ): Promise<void> {
   const db = getDbClient();
   await db
     .drizzle.update(orcaWorkers)
     .set({ pendingRemoteReport: pending ? JSON.stringify(pending) : null,
-      ...(lastBridgedMessageId ? { lastBridgedMessageId } : {}) })
+      ...(lastBridgedMessageId ? { lastBridgedMessageId } : {}),
+      // One SQL update commits retirement and status together; neither can succeed alone.
+      ...(markWorkerDone ? { status: 'done' as const, updatedAt: Date.now() } : {}) })
     .where(eq(orcaWorkers.id, workerId));
 }
 
