@@ -4,7 +4,7 @@
  * 我的其他电脑经 device-link 查询那台的额度，OpenAI 优先原生查询。别人分享来的电脑不读：分享者的余量不对受邀者开放
  * (与任务底部用量条同一口径，见 lib/usageAccountLocation.ts)。只在展开时挂载，收起的行不读任何电脑。
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { useDeviceProviderSubscriptionCard } from '@/components/settings/useProviderSubscriptionCard';
@@ -26,6 +26,7 @@ export type GroupMemberQuotaTarget =
 
 /** 读了这么久还没有额度就不再写「正在读取」：那台可能较旧或这个账号暂时没有额度数据。 */
 const LOADING_GRACE_MS = 8_000;
+type QuotaRelayStatus = 'stopped' | 'connecting' | 'online';
 
 export function GroupMemberQuota({
   id,
@@ -46,8 +47,10 @@ export function GroupMemberQuota({
   // quota reads recover without waiting for that cache and the next group poll.
   const devices = useDeviceLinkDeviceList();
   const targetDeviceId = target.kind === 'device' ? target.deviceId : null;
+  const remoteTarget = target.kind === 'device';
   const owner = getDataOwnerGeneration();
-  const [relayStopped, setRelayStopped] = useState(false);
+  const [relay, setRelay] = useState<{ owner: typeof owner; status: QuotaRelayStatus } | null>(null);
+  const relayRef = useRef<typeof relay>(null);
   const [presence, setPresence] = useState<{
     deviceId: string;
     directory: typeof devices;
@@ -56,23 +59,44 @@ export function GroupMemberQuota({
     remoteControlEnabled: boolean;
   } | null>(null);
   useEffect(() => {
+    const deviceLink = window.electronAPI?.deviceLink;
+    if (!deviceLink) return;
+    let disposed = false;
+    let revision = 0;
+    const apply = (status: QuotaRelayStatus) => {
+      if (disposed || !isDataOwnerGenerationCurrent(owner)) return;
+      relayRef.current = { owner, status };
+      setRelay(relayRef.current);
+      if (status !== 'online') setPresence(null);
+    };
+    // Subscribe before reading: a newer push must beat a delayed initial reply.
+    const offStatus = deviceLink.onStatusChanged?.(({ status }) => {
+      revision++;
+      apply(status);
+    });
+    if (remoteTarget) {
+      void deviceLink.getState?.().then(state => {
+        if (revision === 0) apply(state.linkStatus);
+      }).catch(() => undefined);
+    }
+    return () => { disposed = true; offStatus?.(); };
+  }, [owner, remoteTarget]);
+  useEffect(() => {
     setPresence(null);
     const deviceLink = window.electronAPI?.deviceLink;
     if (!deviceLink) return;
-    let acceptingPresence = true;
     const offPresence = targetDeviceId ? deviceLink.onPresenceChanged?.((snapshot) => {
-      if (!acceptingPresence || snapshot.deviceId !== targetDeviceId || !isDataOwnerGenerationCurrent(owner)) return;
+      const currentRelay = relayRef.current;
+      if (
+        snapshot.deviceId !== targetDeviceId || !isDataOwnerGenerationCurrent(owner) ||
+        (currentRelay && isDataOwnerGenerationCurrent(currentRelay.owner) && currentRelay.status !== 'online')
+      ) return;
       setPresence({
         deviceId: targetDeviceId, directory: devices, owner,
         online: snapshot.online, remoteControlEnabled: snapshot.remoteControlEnabled,
       });
     }) : undefined;
-    const offStatus = deviceLink.onStatusChanged?.(({ status }) => {
-      acceptingPresence = status === 'online';
-      setRelayStopped(status === 'stopped');
-      if (status !== 'online') setPresence(null);
-    });
-    return () => { offPresence?.(); offStatus?.(); };
+    return () => { offPresence?.(); };
   }, [targetDeviceId, devices, owner]);
   // listDevices preserves its old array after a failed refresh. A target push
   // remains fresher until the directory changes; local control permission still
@@ -82,11 +106,13 @@ export function GroupMemberQuota({
   const device = target.kind === 'device' ? devices?.find((entry) => entry.deviceId === target.deviceId) : undefined;
   // A stopped relay clears the shared directory to null. Keep the stop signal
   // across that update instead of falling back to a stale online group row.
-  const quotaOffline = (target.kind === 'device' && relayStopped) || (device
+  const relayStatus = relay && isDataOwnerGenerationCurrent(relay.owner) ? relay.status : null;
+  const quotaOffline = (remoteTarget && relayStatus === 'stopped') || (device
     ? !(currentPresence?.online ?? device.online) ||
       !(currentPresence?.remoteControlEnabled ?? device.remoteControlEnabled) || !device.controlEnabled
     : offline);
-  const remoteDeviceId = target.kind === 'device' && !quotaOffline ? target.deviceId : null;
+  // Unknown initial state cannot authorize a remote read from a cached group row.
+  const remoteDeviceId = target.kind === 'device' && relayStatus !== null && !quotaOffline ? target.deviceId : null;
   const { providers: localProviders } = useProviders();
   const deviceCatalog = useDeviceProviders(remoteDeviceId ?? undefined);
   const provider =
