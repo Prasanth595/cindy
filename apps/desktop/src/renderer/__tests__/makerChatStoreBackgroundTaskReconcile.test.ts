@@ -637,6 +637,48 @@ describe('活动熄灭触发的 stale running 对账', () => {
     }
   });
 
+  it('旧请求的响应只销自己的登记,不清掉后一次停止的记录', async () => {
+    const sid = `stop-overlap-${Math.random().toString(36).slice(2, 8)}`;
+    try {
+      applyTask(sid, {
+        provider: 'pi',
+        taskId: 'bash-a',
+        status: 'running',
+        taskType: 'local_bash',
+      });
+      // A 的请求一直挂着。
+      const firstRequest: { settle?: (value: { tasks: unknown[] }) => void } = {};
+      listTasks.mockImplementationOnce(
+        () => new Promise((resolve) => { firstRequest.settle = resolve; }),
+      );
+      makerChatStore.requestBackgroundTaskReconcile(sid, 100);
+      await vi.advanceTimersByTimeAsync(110);
+      expect(listTasks).toHaveBeenCalledTimes(1);
+
+      // A 还没回来，用户又停了 B：登记被覆盖成 B 的。
+      applyTask(sid, {
+        provider: 'pi',
+        taskId: 'bash-b',
+        status: 'running',
+        taskType: 'local_bash',
+      });
+      makerChatStore.requestBackgroundTaskReconcile(sid, 200);
+
+      // A 的旧响应落地：不得替 B 销账。
+      firstRequest.settle?.({ tasks: [] });
+      await vi.advanceTimersByTimeAsync(0);
+
+      // B 的定时器随后被 active:true 取消 —— 仍应按剩余预算补挂，最终收口 B。
+      emitActivity({ sessionId: sid, active: true });
+      await vi.advanceTimersByTimeAsync(300);
+      expect(listTasks).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(makerChatStore.getSnapshot(sid).taskUpdates?.get('bash-b')?.status).toBe('stopped');
+    } finally {
+      makerChatStore.purgeSession(sid);
+    }
+  });
+
   it('停止点击后的补挂有预算上限(活跃会话里不会退化成轮询)', async () => {
     const sid = `stop4-${Math.random().toString(36).slice(2, 8)}`;
     try {

@@ -3665,7 +3665,8 @@ function _purgeSession(sessionId: string): void {
   invalidateBackgroundTaskReconcile(sessionId);
   cancelBackgroundTaskReconcile(sessionId);
   backgroundTaskStaleRetrySessions.delete(sessionId);
-  clearPendingStopBackgroundTaskReconcile(sessionId);
+  // purge 无条件清：会话已经没了，与哪次停止登记无关。
+  backgroundTaskStopReconcilePending.delete(sessionId);
   // 同一 id 之后可能重新建出来(新建页的未发送任务)，预热提醒要重新开始计时。
   lastPrewarmRequest.delete(sessionId);
   // 代际递增(bump 而非 delete,原因见 _messagesEpoch 注释):作废 in-flight 翻页,
@@ -7580,21 +7581,38 @@ const BACKGROUND_TASK_STOP_RECONCILE_REARM_BUDGET = 2;
 interface PendingStopReconcile {
   delayMs: number;
   reArmsLeft: number;
+  /**
+   * 这次停止登记的标识。同一会话里 A 还在飞时停止 B 会覆盖登记 —— A 的响应必须
+   * 只清自己那条，否则 B 的待补挂记录被旧响应删掉，B 的定时器再被 active:true
+   * 取消就再也没机会补挂（A 的候选集不含 B，B 会一直显示运行中）。
+   */
+  token: number;
 }
+let backgroundTaskStopReconcileToken = 0;
 const backgroundTaskStopReconcilePending = new Map<string, PendingStopReconcile>();
-function clearPendingStopBackgroundTaskReconcile(sessionId: string): void {
+function clearPendingStopBackgroundTaskReconcile(sessionId: string, token?: number): void {
+  if (token === undefined) return;
+  const current = backgroundTaskStopReconcilePending.get(sessionId);
+  // token 不匹配 = 记录已属于后来的一次停止，不能替它销账。
+  if (current && current.token !== token) return;
   backgroundTaskStopReconcilePending.delete(sessionId);
 }
 /** 按剩余预算重新挂一次停止后的对账(响应被作废时用)。 */
-function rearmStopReconcile(sessionId: string): void {
-  const rearmDelayMs = takeStopReconcileRearm(sessionId);
+function rearmStopReconcile(sessionId: string, token: number): void {
+  const rearmDelayMs = takeStopReconcileRearm(sessionId, token);
   if (rearmDelayMs !== null) scheduleBackgroundTaskReconcile(sessionId, rearmDelayMs);
 }
 
-/** 取一次补挂机会(消耗预算);预算用尽返回 null。 */
-function takeStopReconcileRearm(sessionId: string): number | null {
+/**
+ * 取一次补挂机会(消耗预算);预算用尽或记录已换成别人的返回 null。
+ *
+ * token 不匹配时**不消耗**预算:那次停止已经换成新的登记了,旧请求没有资格动它的
+ * 预算(否则同一会话里连续停止会互相把补挂次数烧光)。
+ */
+function takeStopReconcileRearm(sessionId: string, token: number): number | null {
   const pending = backgroundTaskStopReconcilePending.get(sessionId);
-  if (!pending || pending.reArmsLeft <= 0) {
+  if (!pending || pending.token !== token) return null;
+  if (pending.reArmsLeft <= 0) {
     backgroundTaskStopReconcilePending.delete(sessionId);
     return null;
   }
@@ -7664,6 +7682,8 @@ function scheduleBackgroundTaskReconcile(
 ): void {
   cancelBackgroundTaskReconcile(sessionId);
   const reconcileEpochAtSchedule = backgroundTaskReconcileEpoch.get(sessionId) ?? 0;
+  // 这次调度对应的停止登记标识：A 的响应只允许清/重挂它自己那条记录。
+  const stopReconcileToken = backgroundTaskStopReconcilePending.get(sessionId)?.token;
   backgroundTaskReconcileTimers.set(
     sessionId,
     setTimeout(() => {
@@ -7671,7 +7691,7 @@ function scheduleBackgroundTaskReconcile(
       if ((backgroundTaskReconcileEpoch.get(sessionId) ?? 0) !== reconcileEpochAtSchedule) {
         // 代际被作废(active 翻转 / purge)。停止点击后的那次对账不能就这么消失:按新
         // 代际再挂一次(预算有限)。熄灭沿的定时器没有 pending 标记,照旧直接丢弃。
-        rearmStopReconcile(sessionId);
+        if (stopReconcileToken !== undefined) rearmStopReconcile(sessionId, stopReconcileToken);
         return;
       }
       // 触发沿复查远程归属(粘滞版):调度沿已筛过,但 3s 窗口内会话可能被识别
@@ -7703,17 +7723,21 @@ function scheduleBackgroundTaskReconcile(
             // 响应作废 ≠ 这次点击的仲裁已落地：销账必须等到响应被接受，否则在飞
             // 窗口内的 active:true 会让「已销账 + 响应被丢弃」同时成立，僵尸行再
             // 也没有补挂机会（预算还没用完也一样）。按新代际重挂。
-            rearmStopReconcile(sessionId);
+            if (stopReconcileToken !== undefined) {
+              rearmStopReconcile(sessionId, stopReconcileToken);
+            }
             return;
           }
           // 响应落地前再复查一次:请求在飞期间远程注册表才完成会话水合的话,
           // 本机「查无此会话」的空表不可用于收口镜像任务。
           if (isRemoteSessionSticky(sessionId)) {
-            rearmStopReconcile(sessionId);
+            if (stopReconcileToken !== undefined) {
+              rearmStopReconcile(sessionId, stopReconcileToken);
+            }
             return;
           }
-          // 到这里这次快照真的被接受了，才销账。
-          clearPendingStopBackgroundTaskReconcile(sessionId);
+          // 到这里这次快照真的被接受了，才销账 —— 且只销自己那条。
+          clearPendingStopBackgroundTaskReconcile(sessionId, stopReconcileToken);
           makerChatStore.seedBackgroundTaskSnapshots(sessionId, tasks, {
             staleRunningCandidates,
             reconcileWakeBridge: capturedWakeBridge,
@@ -9899,10 +9923,12 @@ function initGlobalListeners(options: GlobalListenerOptions = {}): void {
         // 的注释(同一会话里别的任务仍在跑,正是僵尸行最需要被收口的场景)。
         // 重挂会捕获新代际,依旧受后续任何翻转沿 / purge 作废。
         if (!isRemoteSessionSticky(p.sessionId)) {
-          const rearmDelayMs = takeStopReconcileRearm(p.sessionId);
-          if (rearmDelayMs !== null) scheduleBackgroundTaskReconcile(p.sessionId, rearmDelayMs);
+          // 取当前登记的 token：翻转沿取消的是最后那次停止的定时器，补挂的预算
+          // 也只能算在它头上。
+          const stopToken = backgroundTaskStopReconcilePending.get(p.sessionId)?.token;
+          if (stopToken !== undefined) rearmStopReconcile(p.sessionId, stopToken);
         } else {
-          clearPendingStopBackgroundTaskReconcile(p.sessionId);
+          backgroundTaskStopReconcilePending.delete(p.sessionId);
         }
         return;
       }
@@ -18567,6 +18593,7 @@ export const makerChatStore = {
     backgroundTaskStopReconcilePending.set(sessionId, {
       delayMs: effectiveDelayMs,
       reArmsLeft: BACKGROUND_TASK_STOP_RECONCILE_REARM_BUDGET,
+      token: ++backgroundTaskStopReconcileToken,
     });
     scheduleBackgroundTaskReconcile(sessionId, effectiveDelayMs);
   },
