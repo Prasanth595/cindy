@@ -17043,6 +17043,10 @@
     "exitFullscreen": "전체 화면 종료"
   },
   "richAnswer": {
+    "send": "메시지 보내기",
+    "sending": "보내는 중…",
+    "sent": "제출됨",
+    "sendFailed": "메시지가 제출되지 않았습니다. 입력한 내용은 유지됩니다.",
     "playVideo": "동영상 재생",
     "openVideoSource": "원본 동영상 열기",
     "calculationUnavailable": "이 값을 계산할 수 없습니다.",

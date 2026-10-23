@@ -17043,6 +17043,10 @@
     "exitFullscreen": "離開全螢幕"
   },
   "richAnswer": {
+    "send": "傳送訊息",
+    "sending": "正在傳送…",
+    "sent": "已提交",
+    "sendFailed": "訊息未提交，已保留填寫內容",
     "playVideo": "播放影片",
     "openVideoSource": "開啟原影片",
     "calculationUnavailable": "此項暫時無法計算。",

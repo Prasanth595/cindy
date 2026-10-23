@@ -3937,6 +3937,7 @@ function CCAgentSessionContent({
       opts?: {
         deliveryMode?: MessageDeliveryMode;
         literalText?: boolean;
+        independent?: boolean;
         beforeEnqueue?: () => Promise<boolean>;
         onInputCreated?: (clientId: string) => void;
         builtInSkillIntent?: BuiltInSkillDraftIntent;
@@ -4196,7 +4197,7 @@ function CCAgentSessionContent({
       // ④ Execute send — effort + permissionMode came straight from ChatInput (fresh value)
       let rebalanceClientId: string | undefined;
       // 伙伴私聊引用回复:点发送时的待发引用随这条消息一起落库,送出后从输入框上方撤下。
-      const replyQuote = botChatIdentity ? getPendingBotReplyQuote(sessionId) : null;
+      const replyQuote = botChatIdentity && !opts?.independent ? getPendingBotReplyQuote(sessionId) : null;
       const sendOptions = {
         ...(replyQuote ? { replyQuote } : {}),
         beforeEnqueue: recordRebalance ? async () => {
@@ -5258,13 +5259,13 @@ function CCAgentSessionContent({
 
   // Message-level controls (e.g. a Market teammate's starter buttons) send through this session's own path.
   const quickSend = useMemo<SessionQuickSend>(() => ({
-    send: async (text: string) => {
+    send: async (text, options) => {
       if (!session) return false;
-      return (await handleSend(text, session.model, session.effort as Effort, session.permissionMode as PermissionMode)) !== false;
+      return (await handleSend(text, session.model, session.effort as Effort, session.permissionMode as PermissionMode, undefined, undefined, { ...options, ...(options?.literalText ? { slashCommandRanges: [] } : {}) })) !== false;
     },
   }), [handleSend, session]);
   const messageStreamWithQuickSend = (
-    <SessionQuickSendProvider value={quickSend}>{messageStreamEl}</SessionQuickSendProvider>
+    <SessionQuickSendProvider value={readOnly || cindyMakeInputLocked ? null : quickSend}>{messageStreamEl}</SessionQuickSendProvider>
   );
 
   const composerRuntimeVisible =

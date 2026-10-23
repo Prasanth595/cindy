@@ -407,6 +407,10 @@
     "skillUpdated": "Updated skill: {{title}}"
   },
   "richAnswer": {
+    "send": "Send Message",
+    "sending": "Sending…",
+    "sent": "Submitted",
+    "sendFailed": "The message was not submitted. Your entries are still here.",
     "playVideo": "Play video",
     "openVideoSource": "Open original video",
     "calculationUnavailable": "Unable to calculate this value.",

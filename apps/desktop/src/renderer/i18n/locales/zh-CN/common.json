@@ -17043,6 +17043,10 @@
     "exitFullscreen": "退出全屏"
   },
   "richAnswer": {
+    "send": "发送消息",
+    "sending": "正在发送…",
+    "sent": "已提交",
+    "sendFailed": "消息未提交，已保留填写内容",
     "playVideo": "播放视频",
     "openVideoSource": "打开原视频",
     "calculationUnavailable": "此项暂时无法计算。",
