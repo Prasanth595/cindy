@@ -7254,11 +7254,18 @@ describe('DeviceLinkClient', () => {
      *   语义,防止后人把门槛放宽成「窗口满就绕行」。
      * - 现有覆盖缺口：既有 backpressure 用例的队头是 live invoke;没有覆盖「队头是回包但
      *   尚未重发」这一档。
-     * - 最小失败输入：ctrl-1 塞满 64 条回包(attempts 保持 1)后再回一条探针 result。
+     * - 最小失败输入：ctrl-1 塞满 64 条回包(attempts 保持 1)后再回一条探针 result;
+     *   重试上限配成 1 时同样不得绕行。
      * - tier：unit(进程内 FakeWs,无真实计时)。
      */
-    it('F:队头只发过一次时,窗口满仍按原语义抛 BACKPRESSURE', async () => {
-      const h = makeHarness({ timing: { pingIntervalMs: 60_000, transportRetryIntervalMs: 60_000 } });
+    it.each([
+      { maxAttempts: undefined },
+      { maxAttempts: 1 },
+    ])('F:队头只发过一次时,窗口满仍按原语义抛 BACKPRESSURE(transportMaxRetryAttempts=$maxAttempts)', async ({ maxAttempts }) => {
+      const h = makeHarness({ timing: {
+        pingIntervalMs: 60_000, transportRetryIntervalMs: 60_000,
+        ...(maxAttempts === undefined ? {} : { transportMaxRetryAttempts: maxAttempts }),
+      } });
       h.client.start();
       try {
         await tick();

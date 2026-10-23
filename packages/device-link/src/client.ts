@@ -4905,8 +4905,9 @@ export class DeviceLinkClient {
     if (!peer?.reliable) return false;
     const head = peer.pending.values().next().value as PendingReliableMessage | undefined;
     if (!head || !head.sent || head.firstSentAt === undefined) return false;
-    const minAttempts = Math.min(2, normalizeTransportRetryAttempts(this.timing.transportMaxRetryAttempts));
-    return head.attempts >= minAttempts;
+    // 固定要求至少重发过一轮:即使 transportMaxRetryAttempts 配成 1,也不能把「只发过一次、
+    // ACK 可能还在路上」当成卡死。重试上限为 1 的配置因此不会走这条逃生路径。
+    return head.attempts >= 2;
   }
 
   /**
