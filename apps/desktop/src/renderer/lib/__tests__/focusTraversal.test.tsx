@@ -66,6 +66,33 @@ describe('handOffTabFromCard', () => {
     expect(document.activeElement).toBe(document.getElementById('card-region'));
   });
 
+  it('display:none 容器里的按钮不会被当成焦点目标（缓存不吞 Tab）', () => {
+    // 回归（Greptile P1）：隐藏判定记忆化曾把「尚未发现外层隐藏」的中间包装层缓存为
+    // 可见；同一容器里的第二个按钮命中过期缓存后，隐藏按钮被当成出卡目标 → Tab 被吞。
+    render(
+      <>
+        <button type="button" id="usage-chip">用量明细</button>
+        <div data-testid="card-host">
+          <div id="card-root">
+            <button type="button" id="card-last">卡内最后一档</button>
+          </div>
+        </div>
+        <div style={{ display: 'none' }}>
+          <div id="hidden-wrap">
+            <button type="button" id="hidden-a">隐藏A</button>
+            <button type="button" id="hidden-b">隐藏B</button>
+          </div>
+        </div>
+        <button type="button" id="ctx-chip">任务上下文窗口</button>
+      </>,
+    );
+    const cardRoot = document.getElementById('card-root')!;
+    document.getElementById('card-last')!.focus();
+    expect(handOffTabFromCard(cardRoot, { shiftKey: false })).toBe(true);
+    // 焦点必须越过 display:none 的两个按钮，落到可见的下一枚 chip。
+    expect(document.activeElement).toBe(document.getElementById('ctx-chip'));
+  });
+
   it('卡内中间的 Tab 只扫卡片子树，不扫全文档（长聊天记录下的键盘性能）', () => {
     render(<CardHarness extraInsideMiddle />);
     const cardRoot = document.getElementById('card-root')!;

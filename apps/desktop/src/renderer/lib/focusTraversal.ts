@@ -35,22 +35,32 @@ function collectTabbables(scope: Document | HTMLElement): HTMLElement[] {
   return nodes.filter((element) => !isHiddenForFocus(element, hiddenCache));
 }
 
-/** 隐藏判定带记忆化：一次扫描里共享父节点（卡片根、容器等）只查一次 getComputedStyle。 */
+/**
+ * 隐藏判定带记忆化：一次扫描里共享父节点（卡片根、容器等）只查一次 getComputedStyle。
+ * 缓存语义：`cache.get(el) === true` = el 因自身或祖先隐藏而不可聚焦（其子树同判）；
+ * `false` = el 到根全可见。路径节点的缓存值在**定论后统一回写**——中途发现外层
+ * 隐藏时，先前按可见缓存的中间层必须一起改判，否则同容器的兄弟元素会命中过期的
+ * false，把 display:none 里的按钮当成可聚焦目标（Greptile P1）。
+ */
 function isHiddenForFocus(node: HTMLElement, hiddenCache: Map<Element, boolean>): boolean {
   const cached = hiddenCache.get(node);
   if (cached !== undefined) return cached;
   const view = node.ownerDocument.defaultView;
-  let result = view?.getComputedStyle(node).visibility === 'hidden';
+  const path: HTMLElement[] = [];
+  let hidden = view?.getComputedStyle(node).visibility === 'hidden';
   let cursor: HTMLElement | null = node;
-  while (!result && cursor) {
-    const cursorCached = hiddenCache.get(cursor);
-    if (cursorCached !== undefined) { result = cursorCached; break; }
-    result = view?.getComputedStyle(cursor).display === 'none';
-    hiddenCache.set(cursor, result);
-    cursor = cursor.parentElement;
+  while (!hidden && cursor) {
+    path.push(cursor);
+    hidden = view?.getComputedStyle(cursor).display === 'none';
+    const parent: HTMLElement | null = cursor.parentElement;
+    if (!hidden && parent) {
+      const parentCached = hiddenCache.get(parent);
+      if (parentCached !== undefined) { hidden = parentCached; break; }
+    }
+    cursor = parent;
   }
-  hiddenCache.set(node, result);
-  return result;
+  for (const element of path) hiddenCache.set(element, hidden);
+  return hidden;
 }
 
 /**
