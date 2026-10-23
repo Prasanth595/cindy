@@ -3993,6 +3993,11 @@
         "hint": "Sends a private message via the linked Feishu or Lark bot; only when the window is unfocused.",
         "disabledHint": "First set up the bot and DM it once to complete binding."
       },
+      "contacts": {
+        "contactsOn": "People who speak in groups are auto-added to Smart Contacts (master switch is on).",
+        "contactsOff": "Smart Contacts is off — people who speak in groups won't be remembered automatically.",
+        "contactsEnable": "Turn on"
+      },
       "bind": "Bind"
     },
     "wechatBot": {

@@ -13,6 +13,10 @@ import { describe, expect, it, vi } from 'vitest';
 import os from 'node:os';
 import path from 'node:path';
 
+const contactsMocks = vi.hoisted(() => ({
+  autoRegisterFeishuSpeakers: vi.fn(),
+}));
+
 const scopeMocks = vi.hoisted(() => ({
   owner: 'cloud-a',
   root: '',
@@ -48,6 +52,11 @@ vi.mock('../../../maker-host/index.js', () => ({
 // 单测只钉住「读到什么就用什么」)。
 vi.mock('../../defaultSettingsStore', () => ({
   readImDefaultSettings: (channel?: string) => scopeMocks.readImDefaultSettings(channel),
+}));
+// 群历史发言人会自动登记进智能通讯录 — 单测只钉住「传了谁、带没带 app 作用域」,
+// 通讯录写入行为本身在 contactsAutoRegister 的单测里覆盖。
+vi.mock('../contactsAutoRegister', () => ({
+  autoRegisterFeishuSpeakers: contactsMocks.autoRegisterFeishuSpeakers,
 }));
 
 import type {
@@ -367,6 +376,7 @@ describe('feishu group lane adapter hooks', () => {
   });
 
   it('prepareAgentTurnText: 群 lane 拉历史拼上下文前缀(带时间标注), 剔除触发消息', async () => {
+    contactsMocks.autoRegisterFeishuSpeakers.mockClear();
     fetchChatHistoryPage.mockResolvedValueOnce(
       historyPage([
         historyEntry({ messageId: 'om_h1', senderName: 'Alice', text: '部署挂了' }),
@@ -380,6 +390,11 @@ describe('feishu group lane adapter hooks', () => {
     // user_id 只给模型, 不进「群聊背景」展示快照。
     expect(result?.contextSnapshot?.groupContext).not.toContain('user_id');
     expect(result?.contextSnapshot?.groupMessageCount).toBe(1);
+    // 群历史里说过话的人登记进通讯录(带这个 bot 应用的 open_id 作用域)。
+    expect(contactsMocks.autoRegisterFeishuSpeakers).toHaveBeenCalledWith(
+      [expect.objectContaining({ openId: 'ou_alice', name: 'Alice' })],
+      expect.objectContaining({ appId: 'cli_abc' }),
+    );
     expect(result?.contextSnapshot?.groupContext).not.toContain('<group_chat_context>');
     expect(result?.contextSnapshot?.groupContext).not.toContain('上面说的问题怎么解决');
     expect(result?.agentText).not.toContain('触发消息自己');
@@ -421,6 +436,7 @@ describe('feishu group lane adapter hooks', () => {
         replyContext: {
           author: '张乾',
           text: 'Omarchy Quattro 发布了！https://omarchy.org',
+          senderId: 'ou_zhangqian',
         },
       }),
     );
@@ -430,7 +446,11 @@ describe('feishu group lane adapter hooks', () => {
     expect(agentText).not.toContain('<group_chat_context>');
     expect(agentText).not.toContain('两张图和 Pi/Claude 的讨论');
     expect(agentText).toContain(
-      '<reply_context>\n[张乾] Omarchy Quattro 发布了！https://omarchy.org',
+      '<reply_context>\n[张乾 (user_id: ou_zhangqian)] Omarchy Quattro 发布了！https://omarchy.org',
+    );
+    expect(contactsMocks.autoRegisterFeishuSpeakers).toHaveBeenCalledWith(
+      [expect.objectContaining({ openId: 'ou_zhangqian', name: '张乾' })],
+      expect.objectContaining({ appId: 'cli_abc' }),
     );
     expect(agentText.indexOf('</reply_context>')).toBeLessThan(
       agentText.indexOf('看下这个有什么特别之处'),

@@ -13,6 +13,7 @@ import { savedCredentialsNoteKey, shouldShowSavedCredentialsCard } from './feish
 import { ImChannelSettingsCard, useImChannelSettingsSummary } from './ImChannelSettingsCard';
 import { ImDefaultSettingsSection } from './ImDefaultSettingsSection';
 import { FeishuBotNotificationSection } from './FeishuBotNotificationSection';
+import { ContactsAutoRegisterHint } from './ContactsAutoRegisterHint';
 
 const APP_LAUNCHER_URL: Record<FeishuBotService, string> = {
   feishu: 'https://open.feishu.cn/page/launcher?from=backend_oneclick',
@@ -183,6 +184,7 @@ export function FeishuBotSection({
         <>
           <div className="h-px w-full bg-[var(--border-default)]" />
           <FeishuBotNotificationSection />
+          <ContactsAutoRegisterHint root="settings.feishuBot.contacts" />
         </>
       )}
     </ImChannelSettingsCard>

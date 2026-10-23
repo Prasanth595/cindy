@@ -3962,6 +3962,11 @@
         "hint": "연동된 Feishu 또는 Lark 봇을 통해 DM을 보냅니다. 창이 비활성 상태일 때만 전송됩니다.",
         "disabledHint": "먼저 Bot을 설정하고 바인딩을 완료하려면 DM을 보내주세요."
       },
+      "contacts": {
+        "contactsOn": "그룹에서 말한 사람은 스마트 연락처에 자동 등록됩니다(마스터 스위치 켜짐).",
+        "contactsOff": "스마트 연락처가 꺼져 있어 그룹에서 말한 사람이 자동으로 기억되지 않습니다.",
+        "contactsEnable": "켜기"
+      },
       "bind": "연동"
     },
     "wechatBot": {

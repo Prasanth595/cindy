@@ -1838,6 +1838,9 @@ export async function resolveReplyMessage(
       replyContext: {
         author,
         text,
+        ...(item.sender?.id_type === 'open_id' && item.sender.id
+          ? { senderId: item.sender.id }
+          : {}),
         ...(parsed.attachments.length ? {
           unavailableAttachments: parsed.attachments.map((attachment) =>
             `引用${attachment.kind === 'image' ? '图片' : attachment.fileName}：仅提供原消息记录，未下载文件内容`),
