@@ -47,6 +47,8 @@ vi.mock('../ModelPriceOverrideDialog', () => ({ ModelPriceOverrideDialog: () => 
 import { ModelAdvancedDrawer } from '../ModelAdvancedDrawer';
 import { setModelVisibility } from '@/state/modelVisibilityPrefs';
 import { setProviderModelEffort, getProviderModelEffort, clearProviderModelEffort } from '@/state/providerModelMemory';
+import { appendDiscoveredCustomProviderModels } from '@/lib/customProviders';
+import { buildUnionRows } from '../UnifiedModelList';
 
 const model: CatalogModel = {
   id: 'gpt-6',
@@ -100,6 +102,133 @@ beforeEach(() => {
 });
 
 describe('model advanced editor', () => {
+  // #5090, unit: the drawer previously had no display-name write entry. Existing
+  // discovery tests cover name precedence, but not UI saves or aggregated IDs.
+  it('renames only the selected row across real engine IDs and preserves its configuration on refresh', async () => {
+    const config = { id: 'rename-test', name: 'My Relay', runtimes: {
+      codex: { baseUrl: 'https://relay.example.invalid/v1', wireProtocol: 'openai-chat' as const, models: [
+        { id: 'gpt-6', name: 'GPT-6', reasoning: true, reasoningEfforts: ['high' as const], route: { baseUrl: 'https://relay.example.invalid/v1', wireProtocol: 'openai-chat' as const, requestPath: '/custom' }, extra: { keep: true } },
+        { id: 'other', name: 'GPT-6' },
+      ] },
+      pi: { baseUrl: 'https://relay.example.invalid/v1', models: [
+        { id: 'chatgpt/gpt-6', name: 'GPT-6', discoveredMetadata: { name: 'Upstream', contextWindow: 32000 } },
+        { id: 'gpt-6', name: 'Unrelated ID on this engine' },
+      ] },
+    } };
+    const source = { ...buildUserProvider(config), connected: true } as ProviderView;
+    source.routing.pi = { ...source.routing.pi!, modelPrefixes: ['chatgpt/'] };
+    const update = vi.fn(async (..._args: unknown[]) => ({ ok: true }));
+    const previous = window.electronAPI;
+    Object.defineProperty(window, 'electronAPI', { configurable: true, value: { maker: { updateCustomProvider: update } } });
+    const renderDrawer = (provider: ProviderView) => <ModelAdvancedDrawer provider={provider} row={buildUnionRows(provider)[0]} open
+      onOpenChange={vi.fn()} pricePresentationOf={() => null} onDisable={vi.fn()} disabled={false} paymentRequired={false} />;
+    try {
+      const view = render(renderDrawer(source));
+      fireEvent.change(screen.getByRole('textbox', { name: 'settings.providers.models.advanced.displayName' }), { target: { value: '  Work Model  ' } });
+      fireEvent.click(screen.getByRole('button', { name: 'settings.providers.models.advanced.saveName' }));
+      await waitFor(() => expect(update).toHaveBeenCalledOnce());
+      const saved = update.mock.calls[0]![0] as typeof config;
+      expect(saved).toEqual({ ...config, runtimes: {
+        codex: { ...config.runtimes.codex, models: [{ ...config.runtimes.codex.models[0], name: 'Work Model', nameExplicit: true }, config.runtimes.codex.models[1]] },
+        pi: { ...config.runtimes.pi, models: [{ ...config.runtimes.pi.models[0], name: 'Work Model', nameExplicit: true }, config.runtimes.pi.models[1]] },
+      } });
+      expect(update.mock.calls[0]!.slice(1)).toEqual([{}, { source: 'manual-settings' }]);
+      expect(config.runtimes.codex.models[0].name).toBe('GPT-6');
+      const refreshed = { ...saved, runtimes: { ...saved.runtimes, pi: { ...saved.runtimes.pi, models:
+        appendDiscoveredCustomProviderModels(saved.runtimes.pi.models, [{ id: 'chatgpt/gpt-6', name: 'Refreshed Upstream' }]).models } } };
+      const active = { ...buildUserProvider(refreshed), connected: true } as ProviderView;
+      active.routing.pi = { ...active.routing.pi!, modelPrefixes: ['chatgpt/'] };
+      expect(buildUnionRows(active)[0].name).toBe('Work Model');
+      view.rerender(renderDrawer(active));
+      expect(screen.getByRole('heading', { name: 'Work Model' })).toBeTruthy();
+      expect((screen.getByRole('textbox', { name: 'settings.providers.models.advanced.displayName' }) as HTMLInputElement).value).toBe('Work Model');
+    } finally { Object.defineProperty(window, 'electronAPI', { configurable: true, value: previous }); }
+  });
+
+  it.each(['rejected', 'thrown'])('retains a manual model name after a %s save and allows retry', async (failure) => {
+    const source = { ...buildUserProvider({ id: 'manual', name: 'Manual', runtimes: { codex: { baseUrl: 'https://manual.example.invalid/v1', models: [{ id: 'private', name: 'private' }] } } }), connected: true } as ProviderView;
+    const update = vi.fn(async (..._args: unknown[]) => ({ ok: true }));
+    let failFirst!: () => void;
+    update.mockImplementationOnce(() => new Promise((resolve, reject) => {
+      failFirst = () => failure === 'thrown' ? reject(new Error('save failed')) : resolve({ ok: false });
+    }));
+    const previous = window.electronAPI;
+    Object.defineProperty(window, 'electronAPI', { configurable: true, value: { maker: { updateCustomProvider: update } } });
+    try {
+      const close = vi.fn();
+      const disable = vi.fn();
+      const disabled = failure === 'thrown';
+      render(<ModelAdvancedDrawer provider={source} row={buildUnionRows(source)[0]} open onOpenChange={close} pricePresentationOf={() => null} onDisable={disable} disabled={disabled} paymentRequired={false} />);
+      const input = screen.getByRole('textbox', { name: 'settings.providers.models.advanced.displayName' }) as HTMLInputElement;
+      const save = screen.getByRole('button', { name: 'settings.providers.models.advanced.saveName' }) as HTMLButtonElement;
+      fireEvent.change(input, { target: { value: '   ' } });
+      fireEvent.click(save);
+      expect(update).not.toHaveBeenCalled();
+      fireEvent.change(input, { target: { value: 'Private Alias' } });
+      fireEvent.click(save);
+      fireEvent.click(save);
+      fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
+      const toggle = screen.getByRole('button', { name: `settings.providers.models.${disabled ? 'enableModel' : 'disableModel'}` }) as HTMLButtonElement;
+      fireEvent.click(toggle);
+      expect(toggle.disabled).toBe(true);
+      expect(disable).not.toHaveBeenCalled();
+      expect(input.disabled).toBe(true);
+      expect((screen.getByRole('button', { name: 'settings.providers.models.advanced.close' }) as HTMLButtonElement).disabled).toBe(true);
+      expect(update).toHaveBeenCalledOnce();
+      expect(close).not.toHaveBeenCalled();
+      failFirst();
+      await waitFor(() => expect(save.disabled).toBe(false));
+      expect(toggle.disabled).toBe(false);
+      expect(input.value).toBe('Private Alias');
+      expect(close).not.toHaveBeenCalled();
+      fireEvent.click(save);
+      await waitFor(() => expect(update).toHaveBeenCalledTimes(2));
+      expect(update.mock.calls[1]![0]).toMatchObject({ runtimes: { codex: { models: [{ id: 'private', name: 'Private Alias', nameExplicit: true }] } } });
+    } finally { Object.defineProperty(window, 'electronAPI', { configurable: true, value: previous }); }
+  });
+
+  // #6601 review: unlike the close-button test, the parent can change the active
+  // model while IPC is pending. Unit, two models + one deferred save; the old
+  // response must not overwrite the new model's input; its next save targets it.
+  it('keeps another model draft when an earlier model save completes', async () => {
+    const source = { ...buildUserProvider({ id: 'manual', name: 'Manual', runtimes: { codex: { baseUrl: 'https://manual.example.invalid/v1', models: [{ id: 'first', name: 'First' }, { id: 'second', name: 'Second' }] } } }), connected: true } as ProviderView;
+    let finish!: () => void;
+    const update = vi.fn(async (..._args: unknown[]) => ({ ok: true }));
+    update.mockImplementationOnce(() => new Promise(resolve => { finish = () => resolve({ ok: true }); }));
+    const previous = window.electronAPI;
+    Object.defineProperty(window, 'electronAPI', { configurable: true, value: { maker: { updateCustomProvider: update } } });
+    const rows = buildUnionRows(source);
+    const renderDrawer = (id: string) => <ModelAdvancedDrawer provider={source} row={rows.find(row => row.id === id)!} open
+      onOpenChange={vi.fn()} pricePresentationOf={() => null} onDisable={vi.fn()} disabled={false} paymentRequired={false} />;
+    try {
+      const view = render(renderDrawer('first'));
+      fireEvent.change(screen.getByRole('textbox', { name: 'settings.providers.models.advanced.displayName' }), { target: { value: 'First Alias' } });
+      fireEvent.click(screen.getByRole('button', { name: 'settings.providers.models.advanced.saveName' }));
+      view.rerender(renderDrawer('second'));
+      const input = screen.getByRole('textbox', { name: 'settings.providers.models.advanced.displayName' }) as HTMLInputElement;
+      expect(input.value).toBe('Second');
+      finish();
+      await waitFor(() => expect(input.disabled).toBe(false));
+      expect(input.value).toBe('Second');
+      fireEvent.change(input, { target: { value: 'Second Alias' } });
+      fireEvent.click(screen.getByRole('button', { name: 'settings.providers.models.advanced.saveName' }));
+      await waitFor(() => expect(update).toHaveBeenCalledTimes(2));
+      expect(update.mock.calls[1]![0]).toMatchObject({ runtimes: { codex: { models: [{ id: 'first', name: 'First' }, { id: 'second', name: 'Second Alias', nameExplicit: true }] } } });
+    } finally { Object.defineProperty(window, 'electronAPI', { configurable: true, value: previous }); }
+  });
+
+  it.each(['builtin', 'organization', 'native', 'cindy-local-ollama', 'cindy-local-llamacpp'])('does not offer personal model renaming for %s providers', (kind) => {
+    const source = { ...buildUserProvider({ id: kind, name: kind, runtimes: { codex: { baseUrl: 'https://example.invalid/v1', models: [{ id: 'gpt-6', name: 'GPT-6' }] } } }), connected: true } as ProviderView;
+    if (kind === 'builtin' || kind === 'organization') source.source = kind;
+    if (kind === 'native') source.auth = { method: 'oauth', native: 'codex' };
+    const previous = window.electronAPI;
+    Object.defineProperty(window, 'electronAPI', { configurable: true, value: { maker: { llamaCppStatus: async () => ({ models: [] }) } } });
+    try {
+      render(drawer(source.models.codex![0], 'high', ['high'], source));
+      expect(screen.queryByRole('textbox', { name: 'settings.providers.models.advanced.displayName' })).toBeNull();
+    } finally { cleanup(); Object.defineProperty(window, 'electronAPI', { configurable: true, value: previous }); }
+  });
+
   // Regression: the details editor must save the Codex-only Ultra intent,
   // adapting other engines instead of reducing the whole row to their maximum.
   it.each(['gpt-6-sol', 'gpt-6.1-sol', 'gpt-6-astra'])('saves Ultra from the %s details panel', (id) => {
@@ -489,7 +618,7 @@ describe('model advanced editor', () => {
     expect(screen.getByText(/^Messages/)).toBeTruthy();
     expect(screen.getByText(/^Responses/)).toBeTruthy();
     expect(screen.getByText(/^Chat Completions/)).toBeTruthy();
-    expect((screen.getByRole('textbox') as HTMLInputElement).value).toBe('1048');
+    expect((screen.getByRole('textbox', { name: 'settings.providers.models.advanced.contextLimitAria' }) as HTMLInputElement).value).toBe('1048');
   });
 
   it('shows whole K without rewriting the exact catalog value on untouched blur', () => {
