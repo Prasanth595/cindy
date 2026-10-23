@@ -119,17 +119,18 @@ describe('useDeviceLinkSettings deletion', () => {
     unmount();
   });
 
-  // 服务端以「在线」拒绝删除(409 → ALREADY_EXISTS)时，先刷新列表再选提示，提示要跟刷新后
+  // 服务端以「在线」拒绝删除(409 → ALREADY_EXISTS)时，先刷新列表再选提示，提示要跟此刻
   // 界面上的列表一致：仍显示离线的设备不能再提示「尚不支持移除在线设备」；点删除时与刷新后
-  // 状态不同，以刷新后的为准。刷新失败(界面换成错误块)或一直不返回(界面没更新)时不能断言
-  // 「列表中显示离线」，沿用原提示；没有截止时间的请求也不能让删除一直不返回。
+  // 状态不同，以刷新后的为准。刷新一直不返回时界面仍是原列表，按原列表选提示；刷新失败时
+  // 界面换成错误块，沿用原提示。没有截止时间的请求也不能让删除一直不返回。
   it.each([
     [false, 'offline', 'settings.devices.toast.deleteRejectedWhileOffline'],
     [true, 'online', 'settings.devices.toast.deleteOnline'],
     [false, 'online', 'settings.devices.toast.deleteOnline'],
     [true, 'offline', 'settings.devices.toast.deleteRejectedWhileOffline'],
     [false, 'fails', 'settings.devices.toast.deleteOnline'],
-    [false, 'never returns', 'settings.devices.toast.deleteOnline'],
+    [false, 'never returns', 'settings.devices.toast.deleteRejectedWhileOffline'],
+    [true, 'never returns', 'settings.devices.toast.deleteOnline'],
   ] as const)('explains an online rejection by the refreshed list (online before: %s, refresh: %s)', async (onlineBefore, refreshed, message) => {
     const off = vi.fn();
     const subscribe = vi.fn(() => off);

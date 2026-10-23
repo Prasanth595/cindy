@@ -86,12 +86,10 @@ export function useDeviceLinkSettings(active = true): DeviceLinkSettings {
   const disabledControlDeviceIdsRef = useRef<string[]>([]);
   // getState() 与 ownership push 可能乱序返回;事件版本推进后,旧快照不得覆盖新事实。
   const ownershipEventVersion = useRef(0);
-  // 最近一次拉列表的结果。删除被拒时要按「此刻」界面上的列表选提示:异步调用里读闭包的
-  // devices 会拿到发起删除那一刻的旧列表;version 只在成功拉到列表时递增,ok 记录最近一次
-  // 拉取是否成功(失败时界面显示错误块,不再显示设备行)。
-  const latestList = useRef<{ devices: DeviceLinkDeviceView[] | null; version: number; ok: boolean }>({
+  // 界面此刻展示的列表。删除被拒时要按它选提示:异步调用里读闭包的 devices 会拿到发起删除
+  // 那一刻的旧列表;ok 记录最近一次拉取是否成功(失败时界面显示错误块,不再显示设备行)。
+  const latestList = useRef<{ devices: DeviceLinkDeviceView[] | null; ok: boolean }>({
     devices: null,
-    version: 0,
     ok: false,
   });
 
@@ -116,7 +114,7 @@ export function useDeviceLinkSettings(active = true): DeviceLinkSettings {
       try {
         const { devices: list } = await window.electronAPI.deviceLink.listDevices();
         if (!mounted.current || generation !== refreshGeneration.current) return;
-        latestList.current = { devices: list, version: latestList.current.version + 1, ok: true };
+        latestList.current = { devices: list, ok: true };
         setDevices(list);
         setListError(null);
       } catch (err) {
@@ -260,11 +258,10 @@ export function useDeviceLinkSettings(active = true): DeviceLinkSettings {
           toast.error(t('settings.devices.toast.deleteFailed'));
           return false;
         }
-        // 服务端以「设备在线」拒绝删除。先刷新一次列表与服务端对齐，再按刷新后的列表选提示：
-        // 仍显示离线说明两边的在线判断不一致，不能再提示「尚不支持移除在线设备」让用户误以为
-        // 设备真在线；刷新后显示在线、刷新失败(界面换成错误块)或超时(界面没更新)时都沿用原
-        // 提示，不对界面上已不成立的状态下结论。
-        const versionBeforeRefresh = latestList.current.version;
+        // 服务端以「设备在线」拒绝删除。先刷新一次列表与服务端对齐(最多等一会儿)，再按此刻
+        // 界面上的列表选提示：仍显示离线(含刷新超时、界面仍是原列表)说明两边的在线判断不一致，
+        // 不能再提示「尚不支持移除在线设备」让用户误以为设备真在线；显示在线或刷新失败(界面
+        // 换成错误块、看不到设备行)时沿用原提示。
         let timer: ReturnType<typeof setTimeout> | undefined;
         await Promise.race([
           refresh(),
@@ -273,11 +270,9 @@ export function useDeviceLinkSettings(active = true): DeviceLinkSettings {
           }),
         ]);
         clearTimeout(timer);
-        const { devices: listed, version, ok } = latestList.current;
+        const { devices: listed, ok } = latestList.current;
         const listedOffline =
-          ok &&
-          version > versionBeforeRefresh &&
-          (listed?.some((device) => device.deviceId === deviceId && !device.online) ?? false);
+          ok && (listed?.some((device) => device.deviceId === deviceId && !device.online) ?? false);
         toast.error(
           t(
             listedOffline
