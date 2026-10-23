@@ -608,9 +608,9 @@ describe('活动熄灭触发的 stale running 对账', () => {
         taskType: 'local_bash',
       });
       // 第一次请求一直挂着：响应回来时已经是旧代际。
-      let settleFirst: ((value: { tasks: unknown[] }) => void) | null = null;
+      const firstRequest: { settle?: (value: { tasks: unknown[] }) => void } = {};
       listTasks.mockImplementationOnce(
-        () => new Promise((resolve) => { settleFirst = resolve; }),
+        () => new Promise((resolve) => { firstRequest.settle = resolve; }),
       );
       makerChatStore.requestBackgroundTaskReconcile(sid, 100);
       await vi.advanceTimersByTimeAsync(110);
@@ -618,7 +618,7 @@ describe('活动熄灭触发的 stale running 对账', () => {
 
       // 请求在飞窗口内会话重新活跃 → 代际作废。
       emitActivity({ sessionId: sid, active: true });
-      settleFirst?.({ tasks: [] });
+      firstRequest.settle?.({ tasks: [] });
       await vi.advanceTimersByTimeAsync(0);
       // 旧响应被丢弃，僵尸行仍是 running（还没被仲裁）。
       expect(makerChatStore.getSnapshot(sid).taskUpdates?.get('bash-inflight')?.status).toBe(
