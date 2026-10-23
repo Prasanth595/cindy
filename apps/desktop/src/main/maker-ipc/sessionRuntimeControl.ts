@@ -418,6 +418,17 @@ export function resolveCompatibleSessionRuntimeEffort(
   );
 }
 
+/** A cleared fixed-effort axis must not revive the NOT NULL row's historical rank. */
+export function resolveSessionRuntimeRefreshEffort(params: {
+  model: CatalogModel | null;
+  storedEffort: Effort | null;
+  persistedEffort: Effort | null;
+}): Effort | null {
+  return params.storedEffort ?? (params.model
+    ? resolveCompatibleSessionRuntimeEffort(params.model, params.persistedEffort)
+    : params.persistedEffort);
+}
+
 export function resolveSessionRuntimeAxes(params: {
   model: CatalogModel;
   effort: Effort | null;

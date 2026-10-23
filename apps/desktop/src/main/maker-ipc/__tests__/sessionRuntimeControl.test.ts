@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { ProviderView } from '@cindy/model-providers';
+import { clearAllSessionRuntimeAxes, getSessionEffort, setSessionEffort } from '../../maker-host/session-effort-store.js';
+import { buildDeferredRuntimeSelectionProfile } from '../../../shared/runtimeModelSwitchGate';
 
 import {
   acceptSessionRuntimeAxisMutation,
@@ -20,6 +22,7 @@ import {
   recordUserSessionRuntimeMutation,
   resolveCompatibleSessionRuntimeAxisPatch,
   resolveSessionRuntimeAxes,
+  resolveSessionRuntimeRefreshEffort,
   sessionRuntimeControlOwnerEpochMatches,
   sessionRuntimeGenerationMatches,
   settlePendingSessionRuntimeMutation,
@@ -28,6 +31,7 @@ import {
 
 afterEach(() => {
   clearAllSessionRuntimeControlStates();
+  clearAllSessionRuntimeAxes();
 });
 
 const current: SessionRuntimeProfile = {
@@ -606,6 +610,36 @@ describe('session runtime fallback selection', () => {
       .toMatchObject({ ok: true, fastMode: 'ultrafast' });
     expect(resolveSessionRuntimeAxes({ ...request, fastExplicit: false }))
       .toMatchObject({ ok: true, fastMode: false });
+  });
+
+  // PR #6872: the store and override are cleared on a fixed-effort user switch,
+  // while the NOT NULL row retains xhigh. Builder-only tests missed this lookup.
+  // Unit tier: use the real store/control lifecycle and observe the refresh profile.
+  it.each([false, true])('refresh preserves a cleared fixed effort (cold=%s)', (cold) => {
+    const sessionId = 'runtime-refresh-fixed';
+    const model = provider('xd', [{ id: 'fixed', efforts: [] }]).models.codex![0]!;
+    if (!cold) {
+      setSessionEffort(sessionId, 'xhigh');
+      acceptSessionRuntimeMutation({ sessionId, source: 'agent', profile: current, deferred: false });
+      setSessionEffort(sessionId, null);
+      recordUserSessionRuntimeMutation(sessionId);
+    }
+    expect(getSessionRuntimeControlSnapshot(sessionId).effectiveOverride).toBeNull();
+    const profile = buildDeferredRuntimeSelectionProfile({
+      agentKind: 'pi', model: model.id, providerId: 'xd', currentFastMode: false,
+      currentEffort: resolveSessionRuntimeRefreshEffort({ model,
+        storedEffort: getSessionEffort(sessionId) as SessionRuntimeProfile['effort'],
+        persistedEffort: 'xhigh' }),
+    });
+    expect(profile.effort).toBeNull();
+  });
+
+  it('keeps live adjustable effort and normalizes cold persisted effort', () => {
+    const model = provider('xd', [{ id: 'adjustable', efforts: ['medium', 'xhigh'] }]).models.codex![0]!;
+    expect(resolveSessionRuntimeRefreshEffort({ model, storedEffort: 'xhigh', persistedEffort: 'medium' }))
+      .toBe('xhigh');
+    expect(resolveSessionRuntimeRefreshEffort({ model, storedEffort: null, persistedEffort: 'ultra' }))
+      .toBe('medium');
   });
 
   it('rejects explicit unsupported axes and normalizes inherited axes', () => {

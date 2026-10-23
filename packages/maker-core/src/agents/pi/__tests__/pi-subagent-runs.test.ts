@@ -1514,6 +1514,23 @@ describe('PI durable subagent run store', () => {
         await expect(stopAllPiSubagentRunsForExit(agentHome, 0)).resolves.toBe(true);
       });
 
+      it('treats a finished Windows inventory with no command lines as absence', async () => {
+        usePlatform('win32');
+        const { root } = await terminalReceiptHome(async () => {});
+        // Empty stdout is still an unknown probe. A completed report with zero
+        // readable processes is the case where every user process has exited.
+        childProcess.spawnSync.mockImplementation(() => ({
+          status: 0,
+          stdout: JSON.stringify({ complete: true, count: 0, commands: [] }),
+        }));
+        await expect(stopPiSubagentRunsForAccountBoundary(root, { timeoutMs: 0 })).resolves.toBe(true);
+        childProcess.spawnSync.mockImplementation(() => ({
+          status: 0,
+          stdout: JSON.stringify({ complete: false, count: 0, commands: [] }),
+        }));
+        await expect(stopPiSubagentRunsForAccountBoundary(root, { timeoutMs: 0 })).resolves.toBe(false);
+      });
+
       it.each([
         ...cases,
         ['contains zero bytes', async (dir: string) => writeFile(path.join(dir, 'status.json'), Buffer.alloc(72_506))],

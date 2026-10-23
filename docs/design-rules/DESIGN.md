@@ -642,6 +642,22 @@ The registration covers only the collapsed outer frame; the inner buttons retain
 control-tier treatment. Keep semantic surface/border/text colors in both Light and Dark.
 It does not authorize pill-shaped toolbars or other status panels.
 
+### Desktop hidden channel records
+
+`BotChannelsPage` lists each connection's hidden channel tasks. The record name and
+summary are one narrowly scoped bare-text control: resting, hover and pressed states
+keep the existing text block (12px `--text-primary` name, 11px `--text-tertiary` meta,
+no fill, border, radius or added padding). Making that existing text open the read-only
+history page does not assign a pill frame or change task state. The separate restart
+action remains the registered compact secondary Button and is outside this exemption.
+This records the accepted quiet list, not a general exemption for settings actions.
+
+Keyboard focus uses the theme-invariant `--focus-ring` as a `focus-visible` box-shadow
+ring. Non-input `outline` is suppressed globally, so an outline class is not a visible
+focus treatment here. The ring appears only for keyboard focus and does not create an
+ordinary control frame (§5). The single-page comparison showed no resting-pixel change;
+this registration does not claim a new client screenshot of the keyboard ring.
+
 ### About: harness versions
 
 Each harness occupies one compact row. Pi shows the executable's actual version and a short
@@ -772,7 +788,7 @@ Ordinary control frames, containers and inner-control surfaces not covered by St
 
 **A layer with no frame or surface to round needs no corner-radius assignment.** This does not authorize a control to discard its prescribed frame treatment merely by omitting a fill or border. A transient hover or pressed surface on an ordinary control remains that control's frame and takes its assigned tier.
 
-**A focus or selection indicator is a separate visual treatment.** Its appearance alone does not create a new ordinary control frame or reclassify the associated layer. Registered bare-text buttons (wizard back-navigation "← 上一步", the §16.3 login text-button category) remain frameless and retain their visible focus treatment; new bare-text-button usages must still be registered in the introducing component entry.
+**A focus or selection indicator is a separate visual treatment.** Its appearance alone does not create a new ordinary control frame or reclassify the associated layer. Registered bare-text buttons (wizard back-navigation "← 上一步", the §16.3 login text-button category, and the hidden-channel record text in the §4 Desktop hidden channel records entry) remain frameless and retain their visible focus treatment; new bare-text-button usages must still be registered in the introducing component entry.
 
 Evaluate the approved component treatment across its states, including shared styles and pseudo-elements. **The absence of a local background or border class is not evidence of frameless status.**
 

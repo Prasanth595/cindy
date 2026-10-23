@@ -140,7 +140,7 @@ export function shouldSkipColdPiWindowRehydration(input: {
   );
 }
 
-/** 回合中登记 pending 时写入的运行时快照:必须带上点选时的 effort / Fast,不能等结算再猜。 */
+/** Applied and pending snapshots preserve omitted axes; explicit null clears effort. */
 export function buildDeferredRuntimeSelectionProfile<
   TAgent extends string,
   TEffort extends string | null = string | null,
@@ -149,6 +149,7 @@ export function buildDeferredRuntimeSelectionProfile<
   model: string;
   providerId: string | null;
   atomicSelection?: { effort: TEffort; fastMode: boolean | 'ultrafast' } | null;
+  currentEffort?: TEffort;
   currentFastMode: boolean | 'ultrafast';
 }): {
   agentKind: TAgent;
@@ -161,7 +162,7 @@ export function buildDeferredRuntimeSelectionProfile<
     agentKind: input.agentKind,
     model: input.model,
     providerId: input.providerId,
-    effort: input.atomicSelection?.effort ?? null,
+    effort: input.atomicSelection ? input.atomicSelection.effort : input.currentEffort ?? null,
     fastMode: input.atomicSelection?.fastMode ?? input.currentFastMode,
   };
 }

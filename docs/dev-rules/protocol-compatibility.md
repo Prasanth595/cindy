@@ -91,6 +91,9 @@ Mobile 始终走原流程。Mobile 学到的这些结论绑定 device-link 连�
 既有 `local-db:conversations:search` 的结果 `session` 增加可选
 `companion: { id, name, role: 'canonical' | 'history', readOnly }`。
 归属由 Host 的 `bot_session_links` 关联确认；群聊与渠道专线不下发。
+本机搜索另允许渠道专线，并在 Desktop 本机结果中使用 `companion.role: 'channel'` 与 `readOnly: true`，
+沿用现有历史只读页及消息锚点。远程查询仍排除渠道专线，远程回包与 Mobile 消费的角色范围不变；
+不增加 IPC channel、请求参数或数据库字段。
 `local-db:bots:get` 的远程精简资料增加个人 `sessions: [{ id, role, status }]`，
 供控制端复核历史归属，不传提示词、工作目录或渠道配置。
 搜索前按远程伙伴可见性筛选，缓存／排队回复投递时再次核查，保持原账号与隐藏边界。
