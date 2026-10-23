@@ -4645,8 +4645,10 @@ describe('codex proxy host', () => {
     }
 
     expect(current).toEqual(original);
-    await expect(Promise.resolve(routingTransform(current, ctx))).resolves.toEqual({
+    await expect(Promise.resolve(routingTransform(current, ctx))).resolves.toMatchObject({
       upstreamOverride: 'https://chatgpt.com/backend-api/codex',
+      transformRequestBody: expect.any(Function),
+      dispatchGenerationValid: expect.any(Function),
     });
     host.clearCodexProxyAuthInjection();
     clearSessionProvider('session-subscription-search');

@@ -630,6 +630,23 @@ describe('provider group relay for shared users', () => {
       .rejects.toThrow(/cannot be resumed/);
     await client.close('close', 'navigation');
   });
+
+  it.each([
+    { groupAssigned: true },
+    { groupAssigned: true, relay: relayKeyFor(GUEST_A) },
+  ])('keeps the local group policy on a guest execution even when routing was already assigned: %j', async (extra) => {
+    const env = setup({ plans: [{ kind: 'local' }] });
+    const started: Started[] = [];
+    const host = fakeAgentHost('policy-host', started, { trust: () => 'guest', groupRelay: env.relay });
+    try {
+      await host.handle(GUEST_A, { op: 'open', runId: runId(), agentKind: 'claude-code', payload: { json: openPayload('policy-task', extra) } });
+      await waitFor(() => started.length > 0);
+      expect(started[0].input.groupProviderId).toBe('shared-provider');
+      expect(env.relay.plan).not.toHaveBeenCalled();
+    } finally {
+      await host.dispose();
+    }
+  });
 });
 
 describe('provider group relay: starting, load and cleanup', () => {

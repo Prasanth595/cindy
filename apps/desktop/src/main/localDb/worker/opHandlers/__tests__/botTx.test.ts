@@ -18,7 +18,7 @@ describe('Bot named worker transactions', () => {
         context_tokens INTEGER NOT NULL, context_window INTEGER NOT NULL, fast_mode INTEGER NOT NULL,
         plan_mode_enabled INTEGER NOT NULL, cleared_at INTEGER, pinned_at INTEGER, user_send_at INTEGER,
         agent_kind TEXT NOT NULL, orca_role TEXT, parent_session_id TEXT, forked_at_message_id TEXT,
-        worktree_path TEXT, extra_dirs TEXT NOT NULL, remote_host_id TEXT, provider_id TEXT,
+        worktree_path TEXT, extra_dirs TEXT NOT NULL, remote_host_id TEXT, provider_id TEXT, agent_device_id TEXT,
         source TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
       );
       CREATE TABLE bot_profiles (
@@ -130,6 +130,35 @@ describe('Bot named worker transactions', () => {
     ).toEqual({ hiddenAt: null, pinnedAt: null });
   });
 
+  // #6782: production worker transactions; unit tier. Existing tests do not
+  // interleave a composer permission commit with a settings save captured earlier.
+  it.each([['ask', 'bypassPermissions', 'trusted'], ['trusted', 'ask', 'ask']])(
+    'keeps the explicit permission when an older model save lands afterwards (%s → %s)',
+    (previousPermission, mode, expectedPermission) => {
+      tx(db, { name: 'bots.createProfile', args: {
+        id: 'bot-1', displayName: 'Hermes', description: '', avatar: '🤖', avatarColor: 'violet',
+        identitySource: 'identity', capabilitiesJson: JSON.stringify({ permissions: previousPermission, model: 'old' }), now: 1,
+      } });
+      db.prepare(`INSERT INTO sessions
+        (id, title, workspace_kind, model, effort, permission_mode, status, total_token_usage,
+         total_cost_usd, context_tokens, context_window, fast_mode, plan_mode_enabled, agent_kind,
+         extra_dirs, source, created_at, updated_at)
+        VALUES ('canonical', 'Hermes', 'dialogue', 'model', 'high', 'ask', 'active',
+         0, 0, 0, 0, 0, 0, 'cc', '[]', 'bot', 2, 2)`).run();
+      db.prepare(`INSERT INTO bot_session_links
+        (id, bot_id, session_id, profile_version, role, created_at)
+        VALUES ('link', 'bot-1', 'canonical', 1, 'canonical', 2)`).run();
+      tx(db, { name: 'bots.persistSessionPermission', args: { sessionId: 'canonical', mode } });
+      tx(db, { name: 'bots.updateProfile', args: {
+        id: 'bot-1', expectedCurrentVersion: 1, profileContentChanged: true,
+        identitySource: 'identity', capabilitiesJson: JSON.stringify({ permissions: previousPermission, model: 'new' }), now: 3,
+      } });
+      expect(JSON.parse(db.prepare('SELECT capabilities_json FROM bot_profile_versions WHERE version = 2').pluck().get() as string))
+        .toEqual({ permissions: expectedPermission, model: 'new' });
+      expect(db.prepare("SELECT permission_mode FROM sessions WHERE id = 'canonical'").pluck().get()).toBe(mode);
+    },
+  );
+
   it('creates a local-first profile and keeps one permanent canonical Session', () => {
     tx(db, { name: 'bots.createProfile', args: {
       id: 'bot-1', displayName: 'Hermes', description: '', avatar: '🤖', avatarColor: 'violet',
@@ -157,6 +186,56 @@ describe('Bot named worker transactions', () => {
     expect(db.prepare("SELECT session_id FROM bot_session_links WHERE role = 'canonical'").pluck().get())
       .toBe('session-1');
     expect(db.prepare('SELECT COUNT(*) FROM sessions').pluck().get()).toBe(1);
+  });
+
+  // #6782: production named transactions must propagate a canonical choice in both
+  // directions. Existing tests never changed permission after creating a channel.
+  // Minimal failure: ask main + ask channel, save main bypass -> channel stayed ask.
+  // Unit tier, isolated SQLite; this also covers new-lane snapshots and old-data repair.
+  it('cascades canonical permissions without changing history or delegated work', () => {
+    tx(db, { name: 'bots.createProfile', args: {
+      id: 'bot-1', displayName: 'Hermes', description: '', avatar: '🤖', avatarColor: 'violet',
+      identitySource: 'identity', capabilitiesJson: '{"permissions":"ask"}', now: 1,
+    } });
+    const session = (id: string) => ({ id, title: id, workingDir: '/tmp/fixture', workspaceKind: 'dialogue',
+      model: 'm', effort: 'high', permissionMode: 'ask', agentKind: 'codex', extraDirs: '[]', source: 'bot', createdAt: 1, updatedAt: 1 });
+    tx(db, { name: 'bots.replaceCanonicalSession', args: {
+      botId: 'bot-1', expectedCanonicalSessionId: null, expectedProfileVersion: 1, session: session('main'), now: 1,
+    } });
+    tx(db, { name: 'bots.createChannelLane', args: { botId: 'bot-1', routeKey: 'im:feishu:g:1', session: session('feishu') } });
+    for (const role of ['group', 'thread', 'delegation', 'history']) {
+      db.prepare(`INSERT INTO sessions SELECT ?, title, working_dir, workspace_kind, model, effort, permission_mode, status,
+        scheduled_model_baseline, sdk_session_id, total_token_usage, total_cost_usd, context_tokens, context_window, fast_mode,
+        plan_mode_enabled, cleared_at, pinned_at, user_send_at, agent_kind, orca_role, parent_session_id, forked_at_message_id,
+        worktree_path, extra_dirs, remote_host_id, provider_id, agent_device_id, source, created_at, updated_at FROM sessions WHERE id = 'main'`).run(role);
+      db.prepare('INSERT INTO bot_session_links (id, bot_id, session_id, profile_version, role, created_at, archived_at) VALUES (?, ?, ?, 1, ?, 1, ?)')
+        .run(role, 'bot-1', role, role, role === 'history' ? 1 : null);
+    }
+    const mode = (id: string) => db.prepare('SELECT permission_mode FROM sessions WHERE id = ?').pluck().get(id);
+    for (const next of ['bypassPermissions', 'auto', 'ask']) {
+      tx(db, { name: 'bots.persistSessionPermission', args: { sessionId: 'main', mode: next } });
+      expect(['main', 'feishu', 'group', 'thread'].map(mode)).toEqual([next, next, next, next]);
+      expect(['delegation', 'history'].map(mode)).toEqual(['ask', 'ask']);
+    }
+    // A stale preflight must not mint a lane with authority older than the Profile.
+    tx(db, { name: 'bots.persistSessionPermission', args: { sessionId: 'main', mode: 'bypassPermissions' } });
+    tx(db, { name: 'bots.createChannelLane', args: { botId: 'bot-1', routeKey: 'im:feishu:g:2', session: session('new') } });
+    expect(mode('new')).toBe('bypassPermissions');
+    db.prepare("UPDATE bot_profile_versions SET capabilities_json = ? WHERE bot_id = 'bot-1'").run(JSON.stringify({ permissions: 'ask' }));
+    expect(tx(db, { name: 'bots.reconcileLanePermission', args: { sessionId: 'feishu' } }))
+      .toMatchObject({ mode: 'bypassPermissions', canonicalSessionId: 'main' });
+    expect(['main', 'feishu', 'group', 'thread', 'new'].map(mode))
+      .toEqual(Array(5).fill('bypassPermissions'));
+    expect(JSON.parse(db.prepare('SELECT capabilities_json FROM bot_profile_versions WHERE bot_id = ?').pluck().get('bot-1') as string).permissions)
+      .toBe('trusted');
+    // Main is authoritative in both directions; never choose the widest snapshot.
+    db.prepare("UPDATE sessions SET permission_mode = 'ask' WHERE id = 'main'").run();
+    expect(tx(db, { name: 'bots.reconcileLanePermission', args: { sessionId: 'main' } }))
+      .toMatchObject({ mode: 'ask', canonicalSessionId: 'main' });
+    expect(['main', 'feishu', 'group', 'thread', 'new'].map(mode)).toEqual(Array(5).fill('ask'));
+    expect(['delegation', 'history'].map(mode)).toEqual(['ask', 'ask']);
+    expect(tx(db, { name: 'bots.reconcileLanePermission', args: { sessionId: 'history' } })).toMatchObject({ mode: null });
+    expect(db.prepare('SELECT COUNT(*) FROM sessions').pluck().get()).toBe(7);
   });
 
   it('does not insert a losing canonical CAS session', () => {

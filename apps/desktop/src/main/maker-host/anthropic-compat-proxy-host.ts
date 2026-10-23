@@ -63,6 +63,7 @@ import {
   isOwnerBoundaryPendingError,
 } from './owner-boundary-error.js';
 import { getSessionEffort, getSessionFastMode } from './session-effort-store.js';
+import { subscriptionRequestAllowsFast, withSubscriptionFastRequestPolicy } from './subscription-fast-request-policy.js';
 import {
   isExclusiveXaiModelId,
   isSubscriptionDirectRoute,
@@ -599,6 +600,7 @@ function unavailablePiProviderRoute(providerId: string): RoutingDecision {
  * chip 用全局活性状态重算会与 child 真实路由发散。export 仅供单测。
  */
 export function createModelRoutingTransform(): RoutingTransform {
+  const fastIdentities = new WeakMap<Readonly<Record<string, string>>, { sessionId?: string | null; providerId?: string | null }>();
   // guest：供应商分享受邀者的 Claude Code 请求(带路由令牌，已核对模型)，按其会话显式来源路由，
   // 不走隐式推断与默认网关(分享的就是网关时除外)。缺省 = 本机用户自己的请求，路由不变。
   const route = async (
@@ -762,6 +764,7 @@ export function createModelRoutingTransform(): RoutingTransform {
     if (pendingRoute) return pendingRoute;
 
     const selectedProviderId = sessionId ? getSessionProvider(sessionId) : null;
+    fastIdentities.set(ctx.headers, { sessionId, providerId: piSessionId ? piProviderId : selectedProviderId });
     // CC may resolve a different provider for this request (subscriptions and
     // implicit child routes). Check the grant where the actual route is known.
     const authorizeClaudeRoute = (providerId: string | null | undefined, model = wireModel): RoutingDecision | null =>
@@ -810,6 +813,7 @@ export function createModelRoutingTransform(): RoutingTransform {
       const bridgeProviderId = isExclusiveXaiModelId(wireModel)
         ? (isXaiSubscriptionProviderId(selectedProviderId) ? selectedProviderId : 'xai')
         : (isOpenAiSubscriptionProviderId(selectedProviderId) ? selectedProviderId : 'openai');
+      fastIdentities.set(ctx.headers, { sessionId, providerId: bridgeProviderId });
       const denied = authorizeClaudeRoute(bridgeProviderId, bridgedSubscriptionModel(wireModel));
       if (denied) return denied;
       const bridgeHandler = getResponsesBridgeHandler((isOpenAiSubscriptionProviderId(selectedProviderId) || isXaiSubscriptionProviderId(selectedProviderId)) ? selectedProviderId! : undefined);
@@ -837,7 +841,12 @@ export function createModelRoutingTransform(): RoutingTransform {
           }
           return bridgeHandler.handle({
             ...args,
-            prefs: { reasoningEffort: effort ?? undefined, fast },
+            prefs: {
+              reasoningEffort: effort ?? undefined,
+              // The bridge reads this after awaiting authentication. Keep the
+              // request's preference, but recheck the live host restriction.
+              get fast() { return fast && subscriptionRequestAllowsFast(sessionId, bridgeProviderId); },
+            },
           });
         },
       };
@@ -969,7 +978,10 @@ export function createModelRoutingTransform(): RoutingTransform {
             bridged && bridgeRoute.routing.requestPath
               ? { ...bridged, pathOverride: bridgeRoute.routing.requestPath }
               : bridged;
-          if (withRequestPath) return attachClaudeProviderBridge(withRequestPath, bridgeRoute.providerId, wireModel, sessionId ?? undefined);
+          if (withRequestPath) {
+            fastIdentities.set(ctx.headers, { sessionId, providerId: bridgeRoute.providerId });
+            return attachClaudeProviderBridge(withRequestPath, bridgeRoute.providerId, wireModel, sessionId ?? undefined);
+          }
         }
         const implicitOAuth = resolveImplicitProviderOAuthRouteDecision(
           wireModel,
@@ -988,6 +1000,7 @@ export function createModelRoutingTransform(): RoutingTransform {
     // ② 未显式选供应商 → 据请求凭证判定 spawn 形态(见上方注释)。
     // 函数声明提升:①.5 的回落分支在自身解析落空时复用本段,行为与引入 ①.5 前一致。
     function decideDefaultRoute(): RoutingDecision | null {
+      fastIdentities.delete(ctx.headers);
       const denied = authorizeClaudeRoute('xd');
       if (denied) return denied;
       // 计费路由旁路只记「未显式选供应商」的会话(registry 声明的语义,消费方也只在
@@ -1087,6 +1100,7 @@ export function createModelRoutingTransform(): RoutingTransform {
       // pending 与 activeOwnerScopeKey 合成同一条 ownerBoundDispatchUnsafe:
       // 切换在 await 里完整完成时两端 pending 都是 false。
       if (ownerBoundDispatchUnsafe(ctx)) return ownerBoundaryPendingRoute();
+      resolved = withSubscriptionFastRequestPolicy(resolved, fastIdentities.get(ctx.headers) ?? {}, ctx);
       return withOwnerBoundaryDispatchGate(
         refuseUnsafePlaceholderPassthrough(stripGuestRouteHeader(stripInternalPiHeaders(resolved)), ctx),
         ctx,

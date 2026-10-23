@@ -17076,5 +17076,12 @@
     "taskSource": "[任务来源] 本任务由伙伴发起。",
     "taskId": "任务 ID：",
     "contextReferences": "参考资料："
+  },
+  "subscriptionFastPolicy": {
+    "label": "允许使用 Fast",
+    "providerHint": "关闭后，此订阅账号使用普通模式，包括自己使用和分享使用。也适用于 Ultrafast。",
+    "groupHint": "关闭后，经此组运行的任务使用普通模式，也适用于 Ultrafast。",
+    "pending": "部分电脑尚未确认设置。请保持连接，并更新不支持此设置的组内电脑。",
+    "saveFailed": "设置可能已保存，但运行中的任务尚未全部确认切换为普通模式。请检查连接后重试。"
   }
 }
