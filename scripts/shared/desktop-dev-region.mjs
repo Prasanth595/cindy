@@ -1,5 +1,101 @@
+import { createHash } from "node:crypto";
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+
+/**
+ * 内置 worktree 目录段名（含迁移前形态）。命中时视为「worktree 会话内的 dev 启动」。
+ * 与 apps/desktop/src/main/worktree 的托管目录命名保持一致；判据刻意只认路径段，
+ * 不校验 baseRepo 是否真的注册过——防止把 worktree 名写进目录的任何拷贝都算数，
+ * 也避免脚本侧依赖 app 数据库。
+ */
+const WORKTREE_DIR_NAMES = new Set([".cindy-worktrees", ".xdt-worktrees"]);
+
+/** 从 cwd 截取 worktree 根（含 worktree 名）；保留原始分隔符，兼容相对/Windows 路径。 */
+const WORKTREE_ROOT_RE =
+  /^(.*?(?:^|[\\/])(?:\.cindy-worktrees|\.xdt-worktrees)[\\/][^\\/]+)/;
+
+/** 与 apps/desktop/src/main/devCliFlags.ts 的 ISOLATION_NAME_RE 同款：合法名字才能进
+ * 命名沙箱（目录名跨平台安全 + 并入 deviceId 后不超服务端 64 字符白名单）。 */
+const ISOLATION_NAME_RE = /^[A-Za-z0-9_-]{1,32}$/;
+
+/** 与 restart 的 `--isolated=@worktree` 共用：沙箱名后缀的 checkout 路径摘要长度。 */
+const WORKTREE_NAME_DIGEST_LEN = 6;
+
+/** 路径摘要键：Windows / macOS 默认折叠大小写，Linux 保留（与 restart 既有实现一致）。 */
+function worktreeHashKey(rootDir, foldCase) {
+  const resolved = path.resolve(rootDir).replaceAll("\\", "/");
+  return foldCase ? resolved.toLowerCase() : resolved;
+}
+
+/**
+ * 探测已存在的目录所在卷是否大小写不敏感（macOS 可有大小写敏感卷、Windows 可有
+ * 大小写敏感目录）。同名路径是否折叠不能按平台猜，必须看文件系统真值。
+ */
+export function volumeIsCaseInsensitive(existingDir) {
+  let dir = existingDir;
+  for (;;) {
+    const parent = path.dirname(dir);
+    const atRoot = parent === dir;
+    if (!atRoot) {
+      try {
+        if (fs.statSync(parent).dev !== fs.statSync(dir).dev) return false;
+      } catch {
+        return false;
+      }
+    }
+    const name = path.basename(dir);
+    const flipped = name.replace(/[a-zA-Z]/g, (ch) => (
+      ch === ch.toLowerCase() ? ch.toUpperCase() : ch.toLowerCase()
+    ));
+    if (flipped !== name) {
+      try {
+        return fs.realpathSync.native(path.join(parent, flipped))
+          === fs.realpathSync.native(dir);
+      } catch {
+        return false;
+      }
+    }
+    if (atRoot) return false;
+    dir = parent;
+  }
+}
+
+/**
+ * 给 `isolationNameFromWorktree` 的卷语义参数：目录不存在（首启/测试假路径）时
+ * 返回 `{}`，让调用方沿用平台默认；存在时按卷真值决定是否折叠大小写。
+ */
+export function foldCaseOption(dir) {
+  try {
+    fs.statSync(dir);
+    return { foldCase: volumeIsCaseInsensitive(dir) };
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * 从 checkout 根目录派生稳定的命名沙箱名 `<basename>-<6 位路径摘要>`。
+ *
+ * 只用目录 basename 会让同机两个 clone 里的同名 worktree（或恰好叫 `dev` 的
+ * worktree）落进同一个沙箱、共享登录数据与派生 deviceId（review-pr P2, PR #2640）。
+ * restart 的 `--isolated=@worktree` 已用本函数；自动隔离路径复用同一实现。
+ */
+export function isolationNameFromWorktree(rootDir, { foldCase } = {}) {
+  const resolved = path.resolve(rootDir);
+  let name = path.basename(resolved);
+  name = name.replace(/^cindy-/i, "");
+  name = name.replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
+  if (!name) name = "worktree";
+  const shouldFold = foldCase ?? process.platform !== "linux";
+  const digest = createHash("sha256")
+    .update(worktreeHashKey(resolved, shouldFold))
+    .digest("hex")
+    .slice(0, WORKTREE_NAME_DIGEST_LEN);
+  const maxBase = 32 - 1 - digest.length;
+  const base = name.slice(0, maxBase).replace(/-+$/g, "") || "wt";
+  return `${base}-${digest}`;
+}
 
 /** Desktop dev 支持的区域身份。 */
 export const DESKTOP_DEV_REGIONS = Object.freeze(["cn", "global", "dev"]);
@@ -140,4 +236,152 @@ export function applyDesktopDevStartupConfig(options) {
     delete env.XDT_ENDPOINT_MANIFEST_FILE;
   }
   return config;
+}
+
+/**
+ * 命中 worktree 自动隔离时，计算传给 Electron 的启动环境（返回新对象，不改入参）。
+ *
+ * 1) 清除**继承自宿主 dev 进程**的启动覆写。宿主 Desktop 会把解析后的 userData /
+ *    deviceId 同步回 process.env（apps/desktop/src/main/index.ts），Codex / Claude /
+ *    PI 等 agent 子进程会原样继承。若不清除，resolveDevCliFlags 会优先采用宿主
+ *    userData、且因已有 device override 不派生独立身份——注入的沙箱语义被覆盖
+ *    （review-pr P1, PR #2640）。识别「继承」只认宿主信号：
+ *    - `XDT_DESKTOP_DEV_MODE=remote|local`：dev wrapper 注入 Electron 的「本进程
+ *      来自 dev 实例」标记，agent 子进程继承；人肉 shell 不会带；
+ *    - `XDT_USER_DATA_DIR_EPOCH=1`：restart 脚本派生目录时设置的可信纪元信号。
+ *    两者都没有时，`XDT_USER_DATA_DIR` / `XDT_DEVICE_ID_OVERRIDE` 视为人工显式
+ *    配置，按 docs/dev-rules/desktop-development.md「已手动设 `XDT_USER_DATA_DIR`
+ *    时尊重用户值」保留（review-pr P1, PR #2640）。
+ * 2) 无论来源如何都清除 `XDT_SCHEDULER_PASSIVE`：passive 语义属于宿主的共享
+ *    profile；独立沙箱没有 primary，继承 passive 会不触发定时任务、跳过单实例锁
+ *    （review-pr P1, PR #2640）。
+ * 3) **先删除**继承的 `XDT_ISOLATED_NAME` 再按本次 worktree 名重写：宿主
+ *    `--isolated=<名>` 同样会把名字留给 agent 子进程；worktree 名不合法回落默认
+ *    沙箱时若沿用宿主名字，userData/deviceId 会落回宿主沙箱（review-pr P1,
+ *    PR #2640）。
+ */
+export function applyWorktreeIsolationEnv(env, worktreeName) {
+  const next = { ...env };
+  const inheritedFromDevHost =
+    next.XDT_DESKTOP_DEV_MODE === "remote" ||
+    next.XDT_DESKTOP_DEV_MODE === "local" ||
+    next.XDT_USER_DATA_DIR_EPOCH === "1";
+  if (inheritedFromDevHost) {
+    delete next.XDT_USER_DATA_DIR;
+    delete next.XDT_USER_DATA_DIR_EPOCH;
+    delete next.XDT_DEVICE_ID_OVERRIDE;
+    // 宿主 Desktop 在 index.ts 里只在未设置时按当前 userData 计算浏览器运行目录；
+    // 继承值不清掉，新沙箱会继续把 browser runtime 的持久 Cookie/登录态写到宿主
+    // 目录（与正式版或宿主 agent 共用 profile；review-pr P1, PR #2640）。
+    delete next.XDT_BROWSER_RUNTIME_DIR;
+  }
+  delete next.XDT_SCHEDULER_PASSIVE;
+  // isolated-auth 授权只在 restart 的本次调用内有效（restart 边界也成组清除）：
+  // 裸 dev 没有 --isolated-auth 授权路径，继承的标记/旧 proof 会让新进程进入
+  // isolated-auth 分支，但缺少 epoch 且 proof 绑定旧 userData，最终
+  // isolated_auth_cleanup_failed 并跳过普通只读凭证 reconcile（review-pr P2, PR #2640）。
+  delete next.XDT_ISOLATED_AUTH;
+  delete next.XDT_ALLOW_DEV_OAUTH_WRITE;
+  delete next.XDT_ISOLATED_AUTH_PROOF;
+  delete next.XDT_ISOLATED_NAME;
+  next.XDT_ISOLATED = "1";
+  if (worktreeName) next.XDT_ISOLATED_NAME = worktreeName;
+  return next;
+}
+
+/**
+ * 从启动 cwd 提取托管 worktree 名；不在 worktree 目录下时返回 null。
+ * cwd 可以是 worktree 根或其任意子目录（如 apps/desktop），沿路径段找
+ * `.cindy-worktrees` / `.xdt-worktrees`，取紧随其后的目录名。
+ * 纯路径段判定（同时识别 `/` 与 `\`），不 resolve 到磁盘：worktree 名只取决于
+ * 路径形态，且相对路径在测试与真实 cwd 之间不应有差异。
+ */
+export function worktreeNameFromPath(cwd) {
+  const segments = cwd.split(/[\\/]+/).filter(Boolean);
+  for (let index = 0; index < segments.length - 1; index += 1) {
+    if (WORKTREE_DIR_NAMES.has(segments[index])) {
+      return segments[index + 1];
+    }
+  }
+  return null;
+}
+
+/**
+ * 从启动 cwd 取托管 worktree 的根路径（含 worktree 名，保留原始分隔符）。
+ * 用于按完整 checkout 路径派生沙箱名；不在 worktree 下时返回 null。
+ */
+export function worktreeRootFromPath(cwd) {
+  const match = String(cwd).match(WORKTREE_ROOT_RE);
+  return match ? match[1] : null;
+}
+
+/**
+ * 判定「worktree 会话内的裸 dev 启动」是否需要自动注入隔离意图。
+ *
+ * 背景（issue #2635）：内置 worktree 里跑 `pnpm dev:remote`（不经 restart 包装）时
+ * 若不带 `--isolated`，dev 会用区域默认 profile（global→CindyGlobal）+ 物理机
+ * machineId 作为 deviceId——与同区域 release 撞设备身份：dev 登录按 (userId,
+ * deviceId) 覆盖 release 的服务端 refresh token，release 下次续期即 401 被登出
+ * （日志形态：device-link 4409 乒乓 → INVALID_REFRESH_TOKEN → clearing auth）。
+ *
+ * 语义：
+ * - cwd 命中托管 worktree 且调用方未声明任何显式模式时返回 `{ worktreeName }`；
+ *   worktree 名按 checkout 完整路径派生 `<名>-<6 位摘要>`（`isolationNameFromWorktree`，
+ *   摘要的路径按卷语义决定是否折叠大小写，避免同机不同 clone 的同名 worktree 共用
+ *   沙箱——包括只在大小写上不同的真实不同 checkout）；worktree 名本身不合法时返回
+ *   `{ worktreeName: null }`（仍隔离，回退默认沙箱，与 devCliFlags 的
+ *   invalidIsolationName 语义一致——回落到不隔离会混进正式版数据）；
+ * - 显式 `--isolated[=<名>]` / `--passive`（argv，人类裸跑 `pnpm dev:remote -- --passive`
+ *   的合法用法，Electron 侧 resolveDevCliFlags 认识并收敛为被动模式）已设置时返回
+ *   null（显式意图优先，不覆盖用户选择）；
+ * - `XDT_RESTART_MANAGED=1`（restart 链路：参数契约显式——无参 / `--passive` 由
+ *   `normalizeDesktopRestartArgv()` 补成固定 `--isolated=dev`，`--isolated=<名>` /
+ *   `--isolated=@worktree` 用命名沙箱，只有 `--shared` / `--preserve-running` 共享
+ *   正式 profile；由 restart 自己负责，不套自动隔离）
+ *   已设置时返回 null——这是**唯一**可靠的 env 豁免标记（one-hop，dev-remote-env /
+ *   dev-local-env 判定后从 Electron env 删除，不会被子进程继承）；
+ * - 其余 env 变量**一律不豁免**（review-pr P1×3, PR #2640）：`XDT_ISOLATED` /
+ *   `XDT_USER_DATA_DIR` / `XDT_SCHEDULER_PASSIVE` 都是宿主 Desktop（可能以 --isolated /
+ *   --passive 模式运行）留在 process.env 的变量，会沿 Electron → agent 子进程继承
+ *   （buildCodexEnv / PI spawn env 复制 process.env）——agent 在 worktree 跑裸
+ *   dev:remote 时若凭它们豁免，会复用宿主 userData（单实例锁冲突立即退出 / passive
+ *   并发开沙箱）或重新共享 profile/deviceId 互踢。restart 链路的 --isolated /
+ *   --passive / --preserve-running 已由 XDT_RESTART_MANAGED 识别，无需也不应依赖这些
+ *   可长期继承的变量；
+ * - `--preserve-running` **不在** argv 豁免清单：裸 dev 路径上 Electron 侧不认这个参数
+ *   （只有 restart 会翻译成 XDT_SCHEDULER_PASSIVE=1），豁免它会共享 userData 却
+ *   正常调度 + 正常单实例锁（review-pr P1, PR #2640）；restart 链路经 env 标记识别；
+ * - baseRepo 直跑（cwd 不在 worktree 下）返回 null，保持既有共库语义不变。
+ */
+export function resolveWorktreeIsolationFromCwd({
+  cwd = process.cwd(),
+  argv = [],
+  env = process.env,
+} = {}) {
+  if (
+    argv.some(
+      (arg) =>
+        arg === "--isolated" ||
+        arg.startsWith("--isolated=") ||
+        arg === "--passive",
+    )
+  ) {
+    return null;
+  }
+  // restart 链路（restart-desktop-remote.mjs → desktop-dev-runner → dev:desktop:remote）
+  // 的启动参数契约是显式的，由 XDT_RESTART_MANAGED（one-hop 标记）识别——无参 /
+  // --passive 由 normalizeDesktopRestartArgv() 补成固定 --isolated=dev，--shared /
+  // --preserve-running 共享正式 profile，--isolated=@worktree 走命名沙箱。该标记判定后
+  // 即从 Electron env 删除，不会被子进程继承，是可靠的 restart 识别信号。其它 env 变量
+  // （XDT_ISOLATED / XDT_USER_DATA_DIR / XDT_SCHEDULER_PASSIVE）都可能是宿主 Desktop
+  // 留在 process.env 的、会被 agent 继承的变量，一律不视为本次显式配置。
+  if (env.XDT_RESTART_MANAGED === "1") return null;
+
+  const name = worktreeNameFromPath(cwd);
+  if (name === null) return null;
+  if (!ISOLATION_NAME_RE.test(name)) return { worktreeName: null };
+  const root = worktreeRootFromPath(cwd) ?? name;
+  return {
+    worktreeName: isolationNameFromWorktree(root, foldCaseOption(root)),
+  };
 }

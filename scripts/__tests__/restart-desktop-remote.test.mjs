@@ -1069,6 +1069,27 @@ test("devEnvPrefix passes the explicit isolated OAuth write escape hatch", () =>
 	);
 });
 
+test("devEnvPrefix passes the restart-managed marker so auto-isolation never overrides restart semantics", () => {
+	// XDT_RESTART_MANAGED 是 restart 链路的显式表态（无参 / --passive 默认
+	// --isolated=dev，--shared / --preserve-running 共享），必须
+	// 经白名单透传给 dev 进程；worktree 内裸 dev:remote 的自动隔离判定据此跳过
+	// restart 链路（review-pr P1，PR #2640）。
+	const prefix = devEnvPrefix(
+		{ XDT_RESTART_MANAGED: "1", XDT_SCHEDULER_PASSIVE: "1" },
+		"win32",
+	);
+	assert.ok(
+		prefix.includes('set "XDT_RESTART_MANAGED=1"'),
+		`XDT_RESTART_MANAGED must be passed through: ${prefix}`,
+	);
+	assert.ok(
+		prefix.includes('set "XDT_SCHEDULER_PASSIVE=1"'),
+		`XDT_SCHEDULER_PASSIVE must be passed through: ${prefix}`,
+	);
+	// 空环境只保留 CUA smoke 的显式归零（main 既有契约），不透传任何 XDT 隔离标记
+	assert.equal(devEnvPrefix({}, "win32"), 'set "CINDY_CUA_SMOKE=0" && ');
+});
+
 test("devEnvPrefix passes explicit model catalog test controls to Desktop", () => {
 	const prefix = devEnvPrefix(
 		{

@@ -1,12 +1,16 @@
-import { createHash } from 'node:crypto';
 import path from 'node:path';
-import { resolveDesktopDevRegion } from './shared/desktop-dev-region.mjs';
+import {
+  isolationNameFromWorktree,
+  resolveDesktopDevRegion,
+} from './shared/desktop-dev-region.mjs';
 
 export const DESKTOP_DEV_VERDICT_PREFIX = 'DESKTOP_DEV_VERDICT';
 export const WORKTREE_ISOLATED_ARG = '--isolated=@worktree';
 export const SHARED_USERDATA_ARG = '--shared';
 export const DEFAULT_ISOLATED_ARG = '--isolated=dev';
-const WORKTREE_NAME_DIGEST_LEN = 6;
+
+// 自动隔离（裸 dev）与 restart 的 `--isolated=@worktree` 共用同一沙箱名派生实现。
+export { isolationNameFromWorktree };
 
 const VERDICT_FIELDS = Object.freeze([
   'code',
@@ -37,29 +41,8 @@ function normalizeRoot(value) {
   return path.resolve(value).replaceAll('\\', '/').toLowerCase();
 }
 
-function worktreeHashKey(rootDir, foldCase) {
-  const resolved = path.resolve(rootDir).replaceAll('\\', '/');
-  return foldCase ? resolved.toLowerCase() : resolved;
-}
-
 function singleLine(value) {
   return String(value).replace(/\s+/g, ' ').trim();
-}
-
-export function isolationNameFromWorktree(rootDir, { foldCase } = {}) {
-  const resolved = path.resolve(rootDir);
-  let name = path.basename(resolved);
-  name = name.replace(/^cindy-/i, '');
-  name = name.replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
-  if (!name) name = 'worktree';
-  const shouldFold = foldCase ?? process.platform !== 'linux';
-  const digest = createHash('sha256')
-    .update(worktreeHashKey(resolved, shouldFold))
-    .digest('hex')
-    .slice(0, WORKTREE_NAME_DIGEST_LEN);
-  const maxBase = 32 - 1 - digest.length;
-  const base = name.slice(0, maxBase).replace(/-+$/g, '') || 'wt';
-  return `${base}-${digest}`;
 }
 
 export function isolatedRestartNextCommand({ local = false, region } = {}) {

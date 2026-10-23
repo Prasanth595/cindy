@@ -9,7 +9,9 @@ import {
   applyDesktopDevStartupConfig,
   DESKTOP_DEV_REGIONS,
   desktopUserDataDirNameForRegion,
+  foldCaseOption,
   resolveDesktopDevRegion,
+  volumeIsCaseInsensitive,
 } from './shared/desktop-dev-region.mjs';
 import {
   buildDesktopDevVerdictFromFailure,
@@ -625,44 +627,6 @@ export function inheritedUserDataBlocksNamedIsolation(isolatedArg, envUserDataDi
   return canonicalizeUserDataDir(envUserDataDir) !== canonicalizeUserDataDir(derivedDir);
 }
 
-function volumeIsCaseInsensitive(existingDir) {
-  let dir = existingDir;
-  for (;;) {
-    const parent = path.dirname(dir);
-    const atRoot = parent === dir;
-    if (!atRoot) {
-      try {
-        if (fs.statSync(parent).dev !== fs.statSync(dir).dev) return false;
-      } catch {
-        return false;
-      }
-    }
-    const name = path.basename(dir);
-    const flipped = name.replace(/[a-zA-Z]/g, (ch) => (
-      ch === ch.toLowerCase() ? ch.toUpperCase() : ch.toLowerCase()
-    ));
-    if (flipped !== name) {
-      try {
-        return fs.realpathSync.native(path.join(parent, flipped))
-          === fs.realpathSync.native(dir);
-      } catch {
-        return false;
-      }
-    }
-    if (atRoot) return false;
-    dir = parent;
-  }
-}
-
-function foldCaseOption(dir) {
-  try {
-    fs.statSync(dir);
-    return { foldCase: volumeIsCaseInsensitive(dir) };
-  } catch {
-    return {};
-  }
-}
-
 export function canonicalizeUserDataDir(dir) {
   const resolved = path.resolve(dir);
   try {
@@ -960,6 +924,7 @@ function devEnvEntries(env) {
     ['XDT_USER_DATA_DIR_EPOCH', env.XDT_USER_DATA_DIR_EPOCH],
     ['XDT_DEVICE_ID_OVERRIDE', env.XDT_DEVICE_ID_OVERRIDE],
     ['XDT_SCHEDULER_PASSIVE', env.XDT_SCHEDULER_PASSIVE],
+    ['XDT_RESTART_MANAGED', env.XDT_RESTART_MANAGED],
     ['XDT_ISOLATED', env.XDT_ISOLATED],
     ['XDT_ISOLATED_NAME', env.XDT_ISOLATED_NAME],
     // Cindy Make 测试窗口标记必须穿过 restart → dev-env → Forge，
@@ -1215,6 +1180,14 @@ async function main() {
   }
   const killOnly = argv.includes('--kill-only');
   const waitReady = argv.includes('--wait-ready');
+  // 显式表态：本启动由 restart 参数契约管理（无参 / --passive 由
+  // normalizeDesktopRestartArgv() 补成固定 --isolated=dev，--shared /
+  // --preserve-running 共享正式 profile，--isolated=@worktree 走命名沙箱），经
+  // devEnvPrefix 白名单透传给 dev 进程。worktree 内裸 dev:remote 的自动隔离兜底
+  // （desktop-dev-region.mjs 的 resolveWorktreeIsolationFromCwd）据此识别 restart
+  // 链路并不干预——否则 restart 已选定的沙箱会被自动隔离再改一次（review-pr P1,
+  // PR #2640）。
+  process.env.XDT_RESTART_MANAGED = '1';
   const preserveRunning = argv.includes('--preserve-running');
   const replaceRunningArg = argv.find((arg) => arg.startsWith('--replace-running-root='));
   const replaceRunningRoot = replaceRunningArg
