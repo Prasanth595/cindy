@@ -910,6 +910,7 @@ async function serveGhostGallery(storagePart: string, protocolHost: string): Pro
 }
 
 class ElectronSandboxHandle implements SandboxHandle {
+  private readonly webContentsId: number;
   private win: BrowserWindow | null;
   private goneCb: ((details: { reason: string }) => void) | null = null;
   private destroyed = false;
@@ -937,6 +938,7 @@ class ElectronSandboxHandle implements SandboxHandle {
         devTools: !ghostSandboxDevToolsDisabled,
       },
     });
+    this.webContentsId = this.win.webContents.id;
     ghostWebContentsIds.add(this.win.webContents.id);
     logicWebContentsToGhost.set(this.win.webContents.id, installedGhostStoragePart(ghost));
     this.win.webContents.on('render-process-gone', (_event, details) => {
@@ -960,7 +962,7 @@ class ElectronSandboxHandle implements SandboxHandle {
     const win = this.win;
     this.win = null;
     if (win) {
-      logicWebContentsToGhost.delete(win.webContents.id);
+      logicWebContentsToGhost.delete(this.webContentsId);
       if (!win.isDestroyed()) win.destroy();
     }
   }
