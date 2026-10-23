@@ -7451,12 +7451,12 @@ export class PiAgent extends BaseAgent {
       if (!declared) return null;
       // 空数组 = 显式「不支持思考」，同样是有效结论（上一轮把 efforts:[] 当成 undefined
       // 会让「刚保存的关闭声明」在对账层又退回保留旧快照，关闭不生效）。
-      const next = [...declared] as Effort[];
-      const current = activeEffortSnapshot ?? [];
-      if (current.length === next.length && current.every((tier, index) => tier === next[index])) {
-        return null;
-      }
-      return { tiers: next, from: current };
+      // 不能用「与 activeEffortSnapshot 相同」判空：那是**当前模型**的快照，与目标模型的
+      // 子进程状态无关（目标模型在本进程启动时冻结的快照可能还停在旧声明，set_model 后
+      // pi 又会重置到目标默认档）。碰巧相同也必须返回结论，否则 preflight 退回冻结快照
+      // （声明后带新档切入被误拒）、落定回退同样过期的冻结值。返回结论不会多发 RPC：
+      // 恢复门仍按落定快照决定是否 set_thinking_level。
+      return { tiers: [...declared] as Effort[], from: activeEffortSnapshot ?? [] };
     };
     /**
      * 应用思考开关（调用方必须已在 `runExclusivePiRpc` 队列内）。
@@ -7755,6 +7755,9 @@ export class PiAgent extends BaseAgent {
       // 都会掉回默认档，表现为「推理强度自动变低」。目标档 = 显式 effort > 会话原档位
       // （mutableEffort）；新模型不支持（含未声明档位）时保持 pi 默认，与能力收敛一致。
       const restoredEffort = setOpts?.effort ?? mutableEffort;
+      // 恢复门已确认的档位：尾部归一化段不再按过期快照重发/降档（2026-10-23 Greptile：
+      // 恢复门按落定快照发 max、归一化段按冻结快照改回首档的自相矛盾）。
+      let restoredConfirmed: Effort | null = null;
       // 恢复门必须用**本次落定的** activeEffortSnapshot（含用户新声明），不能用启动时冻结的
       // nextEffortSnapshot：目标模型启动时只有 low、用户随后声明了 max 并带 effort=max 切入时，
       // 预检已放行、set_model 已成功，若这里仍按冻结快照判断就会静默不发 set_thinking_level，
@@ -7778,6 +7781,7 @@ export class PiAgent extends BaseAgent {
             // 思考是开着的 —— 关闭状态到此被覆盖，后续 reload 恢复的是这个档位而不是 off。
             mutableEffort = restoredEffort;
             mutableThinkingEnabled = true;
+            restoredConfirmed = restoredEffort;
           } else {
             deps.logger.warn('pi: restore thinking level after model switch failed', {
               effort: restoredEffort,
@@ -7853,9 +7857,12 @@ export class PiAgent extends BaseAgent {
             model,
             provider,
           });
-        } else if (targetReasoning === true) {
-          const usable = nextEffortSnapshot && nextEffortSnapshot.length > 0
-            ? nextEffortSnapshot
+          } else if (targetReasoning === true) {
+          // 与恢复门同口径：用本次落定的 activeEffortSnapshot（含会话期间的新声明），
+          // 不能用启动冻结的 nextEffortSnapshot——目标模型刚声明的新档会被这里按旧快照
+          // 降档覆盖（恢复门发 max、归一化又改回首档）。
+          const usable = activeEffortSnapshot && activeEffortSnapshot.length > 0
+            ? activeEffortSnapshot
             : undefined;
           // 用户明确要开思考、目标也支持：即使这次 selection 没带档位（BYOM/无 effort
           // 目录的会话），也要按启动快照收敛——不能什么都不发，否则上一个模型的 off 会
@@ -7901,35 +7908,39 @@ export class PiAgent extends BaseAgent {
           }
         }
         if (level) {
-          // 拒绝可能是瞬时（例如 Pi 正在处理前一条档位请求）：重试一次再放弃。
-          // 仍失败只告警：模型路由已经确认，抛出会让上层回滚它。
-          for (let attempt = 0; attempt < 2; attempt += 1) {
-            try {
-              const resp = await proc.request({ type: 'set_thinking_level', level });
-              if (resp.success) {
-                if (appliedEffort) mutableEffort = appliedEffort;
-                // 意图标记只在 RPC 成功后更新：显式意图才算用户意图（显式 true+目标
-                // 不支持思考而下发的 off 不是用户意图，标记仍为开）；失败沿用原标记。
-                if (explicitThinking === true) thinkingExplicitlyOff = false;
-                else if (explicitThinking === false) thinkingExplicitlyOff = true;
-                break;
-              }
-              if (attempt === 1) {
-                deps.logger.warn('pi: set_thinking_level rejected after model switch', {
-                  model,
-                  provider,
-                  level,
-                  error: resp.error,
-                });
-              }
-            } catch (err) {
-              if (attempt === 1) {
-                deps.logger.warn('pi: set_thinking_level failed after model switch', {
-                  model,
-                  provider,
-                  level,
-                  message: err instanceof Error ? err.message : String(err),
-                });
+          if (restoredConfirmed && appliedEffort === restoredConfirmed) {
+            // 恢复门刚按落定快照确认过同档，不再重发同值（归一化只兜底未恢复的场景）。
+          } else {
+            // 拒绝可能是瞬时（例如 Pi 正在处理前一条档位请求）：重试一次再放弃。
+            // 仍失败只告警：模型路由已经确认，抛出会让上层回滚它。
+            for (let attempt = 0; attempt < 2; attempt += 1) {
+              try {
+                const resp = await proc.request({ type: 'set_thinking_level', level });
+                if (resp.success) {
+                  if (appliedEffort) mutableEffort = appliedEffort;
+                  // 意图标记只在 RPC 成功后更新：显式意图才算用户意图（显式 true+目标
+                  // 不支持思考而下发的 off 不是用户意图，标记仍为开）；失败沿用原标记。
+                  if (explicitThinking === true) thinkingExplicitlyOff = false;
+                  else if (explicitThinking === false) thinkingExplicitlyOff = true;
+                  break;
+                }
+                if (attempt === 1) {
+                  deps.logger.warn('pi: set_thinking_level rejected after model switch', {
+                    model,
+                    provider,
+                    level,
+                    error: resp.error,
+                  });
+                }
+              } catch (err) {
+                if (attempt === 1) {
+                  deps.logger.warn('pi: set_thinking_level failed after model switch', {
+                    model,
+                    provider,
+                    level,
+                    message: err instanceof Error ? err.message : String(err),
+                  });
+                }
               }
             }
           }

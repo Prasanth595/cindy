@@ -6972,6 +6972,56 @@ describe("Pi provider-aware model routing", () => {
     await handle.close();
   });
 
+  it("still realigns when the target catalog equals the current snapshot, not the frozen one", async () => {
+    // 当前模型的快照与目标模型目录结论碰巧相同时，对账也不能跳过：目标模型在本进程
+    // 启动时冻结的快照还停在旧声明，set_model 后 pi 又会重置到目标默认档。若用「相同」
+    // 判空，preflight 退回冻结快照 → 带新档切入直接被误拒；不带 effort 切则落定过期值、
+    // 静默掉默认档。
+    const declaredB = { tiers: ["high"] as string[] | undefined };
+    const agent = new PiAgent({
+      ...byomDeps(
+        async () => ({
+          providers: [
+            {
+              id: "tier-equal",
+              name: "Tier Equal",
+              baseUrl: "http://tier-equal.test",
+              api: "openai-completions",
+              models: [
+                { id: "model-a", input: ["text"], reasoning: true, thinkingLevelMap: { high: "high", max: "max" } },
+                { id: "model-b", input: ["text"], reasoning: true, thinkingLevelMap: { high: "high" } },
+              ],
+            },
+          ],
+          env: {},
+        }),
+      ),
+      readModelCatalogThinkingTiers: (providerId, modelId) =>
+        providerId === "tier-equal" && modelId === "model-b" ? declaredB.tiers : undefined,
+    });
+    const handle = await agent.startSession({
+      sessionId: "thinking-tier-equal",
+      workingDir: cwd,
+      model: "model-a",
+      providerId: "tier-equal",
+    });
+
+    // 会话期间 model-b 的声明改为与当前模型 model-a 的快照完全相同的集合（启动时
+    // model-b 冻结的快照还没有 max）。宣告集合碰巧相同，对账也不能跳过。
+    declaredB.tiers = ["minimal", "low", "medium", "high", "max"];
+    const beforeSwitch = captured.requests.length;
+    await handle.setModel!("model-b", { providerId: "tier-equal", effort: "max" });
+    expect(captured.runtimeModel).toBe("model-b");
+
+    // 恢复门按落定快照（含 max）发出档位，而不是静默跑在 pi 默认档上。
+    expect(
+      captured.requests.slice(beforeSwitch).filter(
+        (request) => request.type === "set_thinking_level",
+      ),
+    ).toEqual([{ type: "set_thinking_level", level: "max" }]);
+    await handle.close();
+  });
+
   it("does not realign the thinking tier snapshot when the model switch fails", async () => {
     // 对账发生在切模的最早入口（成员校验 / effort 校验 / set_model RPC 之前）。若在那里
     // 就改写 activeEffortSnapshot，set_model 被拒后子进程仍停在旧模型，快照却已是失败
