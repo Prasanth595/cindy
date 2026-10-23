@@ -730,6 +730,22 @@ describe('Chat Server result delivery and refresh', () => {
       expect(write[0]).toBe('/conversations/' + roomId + (type === 'execution' ? '/executions/' + targetId + '/control' : '/plans/' + targetId));
       expect(fixture.requests.filter(r => new URL(r.url).pathname === '/v1' + write[0]).at(-1)?.actor).toBe(botId);
     });
+    // #6944 review: HTTP stop can succeed while the event socket is disconnected.
+    // Verify immediate local abort/authority revocation without a heartbeat/event.
+    it.each([200, 403, 500])('only aborts a local execution after a successful stop receipt (HTTP %s)', async status => {
+      await setup('admin');
+      fixture.sockets[0].emit('close');
+      const original = fixture.handle.getMockImplementation()!;
+      fixture.handle.mockImplementation((route, method, body) => method === 'GET' && route.endsWith('/executions')
+        ? { body: [execution] } : original(route, method, body));
+      if (status !== 200) mutate = () => ({ status, body: { error: { code: 'FORBIDDEN' } } });
+      const result = await call({ type: 'execution', executionId: execution.id, action: 'stop' });
+      expect(result.ok).toBe(status === 200);
+      if (status === 200) {
+        expect(deps.abortLane).toHaveBeenCalledExactlyOnceWith('lane');
+        expect((await executeCurrentGroupTool('lane', { type: 'inspect' }, confirm)).ok).toBe(false);
+      } else expect(deps.abortLane).not.toHaveBeenCalled();
+    });
     it.each(['member', 'archive', 'createInvite', 'revokeInvite', 'transfer', 'dissolve'] as const)('executes %s as the current bot with the original operation id', async type => {
       await setup();
       const token = 'a'.repeat(43);

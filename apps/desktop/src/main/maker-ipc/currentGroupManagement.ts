@@ -20,6 +20,7 @@ interface Dependencies {
   inviteToken(link: string): string;
   supportsDissolve(): boolean;
   ownedBots(): Promise<Array<{ actorId: string; botId: string; name: string }>>;
+  executionStopped(executionId: string): Promise<void>;
 }
 
 /** Current execution only. No account proxy actor selection, private Bot access, or caller-selected group. */
@@ -154,6 +155,7 @@ export function createCurrentGroupManagement(deps: Dependencies) {
         if (action.type === 'dissolve') z.object({ revision: z.number().int().positive(), dissolvedAt: z.string().refine(value => Number.isFinite(Date.parse(value))), dissolvedBy: z.string().uuid() }).parse(response);
         const result: CurrentGroupResult = { ok: true, operationId, action: action.type, receipt };
         attempts.set(operationId, { fingerprint, result });
+        if (action.type === 'execution') await deps.executionStopped(action.executionId);
         deps.changed();
         return result;
       } catch (error) {

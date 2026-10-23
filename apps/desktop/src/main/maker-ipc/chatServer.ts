@@ -1677,6 +1677,15 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
               return api(route, method, payload, actorId, method !== undefined && method !== 'GET', 200);
             },
             changed: () => changed(s.room.id), inviteToken, supportsDissolve: () => supportsDissolve, ownedBots,
+            executionStopped: async executionId => {
+              const stopped = running.get(executionId);
+              if (!stopped || stopped.execution.conversation_id !== s.room.id) return;
+              // Do not wait for a socket event or heartbeat to retire local authority.
+              forgetRun(stopped); stopped.releaseToolAuthority?.();
+              if (stopped.sessionId) await deps.abortLane(stopped.sessionId).catch(error => {
+                deps.log?.warn('Group execution local abort failed after server stop', { executionId, ...chatErrorDiagnostic(error) });
+              });
+            },
           }),
           sourceGroup: { groupId: s.room.id, name: s.room.name },
           isCurrent: () => current() && running.get(execution.id) === run && !run.settlement,
