@@ -399,6 +399,8 @@ Chat Server 声明 `capabilities.groupSingleSpeaker: 1` 时，服务器群按下
 - 群聊页与电脑一致：多作者时间线、安排卡、交接消息与文件名、「下一步 · 继续」「没做完 · 重试」、
   「N 步都做完了」、正在发言／安排／做的伙伴、待确认操作内嵌；输入框支持 @、附件（见 3.1）与「+」安排分工。
 - 电脑不支持群附件时（旧版本，`supportsAttachments` 缺省），手机不显示附件入口。
+- 伙伴正文中的 Markdown 表格保留表头与单元格，逐列统一宽度；短表铺满正文可用宽度，宽表在表格内横向滚动，长内容在所属单元格内换行。
+  列宽复用普通任务的 `messageTableLayout.ts`，实现与回归见 `BotGroupMessageText.tsx`、`BotGroupMarkdownText.test.tsx`。
 - 分工产出的文件在电脑上：手机只显示文件名，不在手机上打开。消息附件里的图片经已有远程媒体读取显示缩略图，
   文件只显示名字。
 - 视觉遵循 Mobile 设计规范：按钮用手机端现有的紧凑按钮（视觉轻、触控够），Light / Dark 同时实现。
