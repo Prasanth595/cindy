@@ -12,7 +12,12 @@ import {
   remarkReviewAnnotations,
 } from '@/components/chat/remarkReviewAnnotations';
 
-import { buildMarkdownRevision, REVISION_MAX_SOURCE_CHARS } from '../markdownRevision';
+import {
+  buildMarkdownRevision,
+  cutsHtmlEntity,
+  htmlEntityRanges,
+  REVISION_MAX_SOURCE_CHARS,
+} from '../markdownRevision';
 
 /** 镜像审查预览的渲染链（含 remarkMath + KaTeX），用于契约断言。 */
 function renderLikePreview(content: string): string {
@@ -286,6 +291,20 @@ describe('回退到整块装饰的边界', () => {
     // `cost&copy;` → `cost&reg;`：只改实体名会让标记插进 `&…;` 中间，
     // 折叠后正文一致但预览显示字面的实体名。
     expect(buildMarkdownRevision('cost&copy; 是版权符号\n', 'cost&reg; 是版权符号\n')).toBeNull();
+  });
+
+  it('大量重复实体下的实体边界检查不随片段数放大', () => {
+    // 逐片段重扫全文是 O(片段数 × 实体数)：8000 条 `&copy;` 时单这一步就 ~5s，
+    // 且发生在渲染期同步执行。区间预计算 + 二分后应远低于预算。
+    const source = '&copy; old '.repeat(8_000);
+    const entities = htmlEntityRanges(source);
+    const started = Date.now();
+    for (let index = 0; index < 8_000; index += 1) {
+      const start = index * 11;
+      // 片段边界落在 `&` 之后、`;` 之前 = 切断实体。
+      expect(cutsHtmlEntity({ start: start + 1, end: start + 4 }, entities)).toBe(true);
+    }
+    expect(Date.now() - started).toBeLessThan(500);
   });
 
   it('实体完整保留时仍走词级标记', () => {

@@ -318,11 +318,15 @@ export function buildMarkdownRevision(before: string, after: string): string | n
   }
   // 改动只盖住字符实体的一半时（`&copy;` → `&reg;`），标记会切断实体、预览显示字面
   // 的实体名。实体是渲染期原子跨度，词级标记做不到，整块回退。
+  const beforeEntities = htmlEntityRanges(before);
+  const afterEntities = htmlEntityRanges(after);
   if (
     slices.some(
       (slice) =>
         (slice.added || slice.removed) &&
-        (slice.added ? cutsHtmlEntity(slice.after, after) : cutsHtmlEntity(slice.before, before)),
+        (slice.added
+          ? cutsHtmlEntity(slice.after, afterEntities)
+          : cutsHtmlEntity(slice.before, beforeEntities)),
     )
   ) {
     return null;
@@ -357,19 +361,42 @@ function buildWholeBlockRevision(
 /** HTML 字符实体（`&copy;` / `&#169;`）：标记落进实体内部会把它切断。 */
 const HTML_ENTITY_PATTERN = /&(?:[A-Za-z][A-Za-z0-9]*|#\d+|#x[0-9A-Fa-f]+);/g;
 
-/** 改动片段是否只盖住某个实体的**一部分**（`cost&copy;` → `cost&reg;` 的 `copy`）。 */
-function cutsHtmlEntity(
-  range: SourceRange | null,
-  source: string,
-): boolean {
-  if (!range) return false;
+/** 一段源码里所有实体的 `[start, end)` 区间，按起点升序（供二分判断）。 */
+export function htmlEntityRanges(source: string): Array<[number, number]> {
+  const ranges: Array<[number, number]> = [];
   for (const entity of source.matchAll(HTML_ENTITY_PATTERN)) {
     const start = entity.index ?? 0;
-    const end = start + entity[0].length;
-    if (range.start > start && range.start < end) return true;
-    if (range.end > start && range.end < end) return true;
+    ranges.push([start, start + entity[0].length]);
+  }
+  return ranges;
+}
+
+/** 位置是否落在某个实体内部（严格在 `&` 与 `;` 之间）。 */
+function insideHtmlEntity(pos: number, ranges: readonly [number, number][]): boolean {
+  let lo = 0;
+  let hi = ranges.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const [start, end] = ranges[mid]!;
+    if (pos <= start) hi = mid - 1;
+    else if (pos >= end) lo = mid + 1;
+    else return true;
   }
   return false;
+}
+
+/**
+ * 改动片段是否只盖住某个实体的**一部分**（`cost&copy;` → `cost&reg;` 的 `copy`）。
+ *
+ * 区间由调用方一次算好再传进来：逐片段重新扫描全文是 O(片段数 × 实体数)，
+ * `&copy;` 重复上千次时单是这一步就能让渲染卡住数秒。
+ */
+export function cutsHtmlEntity(
+  range: SourceRange | null,
+  ranges: readonly [number, number][],
+): boolean {
+  if (!range || ranges.length === 0) return false;
+  return insideHtmlEntity(range.start, ranges) || insideHtmlEntity(range.end, ranges);
 }
 
 /** 片段下标闭区间（区域 = 一段连续的 diff 片段）。 */
