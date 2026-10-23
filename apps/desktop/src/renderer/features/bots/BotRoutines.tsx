@@ -15,6 +15,7 @@ import { Input, Textarea } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
 import { useConfirmDialog } from '@/components/ui/confirm-dialog-provider';
 import { Spinner } from '@/components/ui/spinner';
+import { useBotSettingsTarget } from './useBotSettingsTarget';
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -46,6 +47,8 @@ export function BotRoutines({
   backRef?: { current: (() => Promise<boolean>) | null };
 }) {
   const { confirm } = useConfirmDialog();
+  const settingsTarget = useBotSettingsTarget();
+  const routinesApi = settingsTarget.routines;
   const inFlight = useRef(false);
   const [loading, setLoading] = useState(true);
   const [reload, setReload] = useState(0);
@@ -60,8 +63,8 @@ export function BotRoutines({
   const [deletePending, setDeletePending] = useState(false);
   const refresh = useCallback(async () => {
     const [items, available] = await Promise.all([
-      window.electronAPI.routines.list(botId),
-      window.electronAPI.routines.sources(),
+      routinesApi.list(botId),
+      routinesApi.sources(),
     ]);
     setRoutines(items);
     setSources(available);
@@ -72,8 +75,8 @@ export function BotRoutines({
     const load = () => {
       const current = ++request;
       void Promise.all([
-        window.electronAPI.routines.list(botId),
-        window.electronAPI.routines.sources(),
+        routinesApi.list(botId),
+        routinesApi.sources(),
       ])
         .then(([items, available]) => {
           if (alive && current === request) {
@@ -92,7 +95,7 @@ export function BotRoutines({
     };
     setLoading(true);
     load();
-    const unsubscribe = window.electronAPI.routines.onChanged(load);
+    const unsubscribe = routinesApi.onChanged(load);
     return () => {
       alive = false;
       unsubscribe();
@@ -105,7 +108,7 @@ export function BotRoutines({
       return;
     }
     const load = () => {
-      void window.electronAPI.routines
+      void routinesApi
         .history(botId, selected)
         .then((runs) => {
           if (alive) setHistory(runs);
@@ -115,7 +118,7 @@ export function BotRoutines({
         });
     };
     load();
-    const unsubscribe = window.electronAPI.routines.onChanged(load);
+    const unsubscribe = routinesApi.onChanged(load);
     return () => {
       alive = false;
       unsubscribe();
@@ -274,9 +277,10 @@ export function BotRoutines({
               onEnabledChange={(enabled) =>
                 void act(() =>
                   // 每天查待办与近况开关同一个入口：恢复时按当前模板重建，并通知近况。
-                  routine.builtin === 'todo-check'
+                  // 远程伙伴还没有这个入口，按普通例行任务在伙伴所在的电脑上切换。
+                  routine.builtin === 'todo-check' && settingsTarget.kind === 'local'
                     ? window.electronAPI.localDb.bots.todos.dailyCheck(botId, enabled)
-                    : window.electronAPI.routines.save(botId, routineInput({ ...routine, enabled }), routine.id),
+                    : routinesApi.save(botId, routineInput({ ...routine, enabled }), routine.id),
                 )
               }
             />
@@ -330,9 +334,9 @@ export function BotRoutines({
                 onClick={() => {
                   if (revealInvalidField()) return;
                   void act(async () => {
-                    const saved = await window.electronAPI.routines.save(botId, draft, selected!);
+                    const saved = await routinesApi.save(botId, draft, selected!);
                     setDraft(structuredClone(saved));
-                    await window.electronAPI.routines.runNow(botId, saved.id);
+                    await routinesApi.runNow(botId, saved.id);
                   });
                 }}
               >
@@ -499,7 +503,7 @@ export function BotRoutines({
               onClick={() => {
                 if (revealInvalidField()) return;
                 void act(async () => {
-                  const saved = await window.electronAPI.routines.save(
+                  const saved = await routinesApi.save(
                     botId,
                     draft,
                     selected === 'new' ? undefined : selected!,
@@ -523,7 +527,7 @@ export function BotRoutines({
                   disabled={busy}
                   onClick={() =>
                     void act(async () => {
-                      await window.electronAPI.routines.remove(botId, selected!);
+                      await routinesApi.remove(botId, selected!);
                       setDraft(null);
                       setSelected(null);
                       setDeletePending(false);

@@ -32,13 +32,28 @@ import { classifyVoiceExit } from './semanticExit.js';
 
 const log = createLogger('voice-conversation');
 
+/** What a remote Desktop's voice settings page needs; the IPC channels stay local to this window. */
+export interface VoiceSettingsHostApi {
+  models(): ReturnType<VoiceConversationService['models']>;
+  voices(selection: unknown): ReturnType<VoiceConversationService['voices']>;
+  preference(botId: unknown): Promise<VoiceConversationPreference>;
+  setPreference(botId: unknown, value: unknown, sentencePlayback: unknown): Promise<VoiceConversationPreference>;
+}
+let settingsApi: VoiceSettingsHostApi | null = null;
+export function getVoiceSettingsHostApi(): VoiceSettingsHostApi | null {
+  return settingsApi;
+}
+
 function boundedString(value: unknown, name: string, limit: number): string {
   const text = requireString(value, name);
   if (!text.trim() || text.length > limit) throwIpcError('INVALID_PARAMS', `Invalid ${name}`);
   return text;
 }
 
-/** Local top-level renderer only; deliberately absent from device-link and plugin allowlists. */
+/**
+ * Local top-level renderer only; the IPC channels are deliberately absent from device-link and plugin
+ * allowlists. Model catalog and per-teammate preference are also served to the teammate settings host.
+ */
 export function registerVoiceConversationIpc(deps: {
   createProvider(): Promise<AsrProvider>;
   createAudioGate(): AudioGate | undefined;
@@ -148,10 +163,9 @@ export function registerVoiceConversationIpc(deps: {
       throw new Error('invalid_companion');
     return action(botId);
   };
-  handle('preference', (_event, raw) =>
-    preferenceBot(raw, (botId) => companionVoicePreference(deps.getSettings(), botId)),
-  );
-  handle('set-preference', (_event, raw, value, sentencePlayback) =>
+  const readPreference = (raw: unknown) =>
+    preferenceBot(raw, (botId) => companionVoicePreference(deps.getSettings(), botId));
+  const writePreference = (raw: unknown, value: unknown, sentencePlayback: unknown) =>
     preferenceBot(raw, (botId) => {
       const settings = deps.getSettings();
       const patch: Partial<VoiceInputSettings> = {};
@@ -172,8 +186,23 @@ export function registerVoiceConversationIpc(deps: {
         );
       }
       return companionVoicePreference(deps.updateSettings(patch), botId);
-    }),
+    });
+  handle('preference', (_event, raw) => readPreference(raw));
+  handle('set-preference', (_event, raw, value, sentencePlayback) =>
+    writePreference(raw, value, sentencePlayback),
   );
+  // The settings page of a remote Desktop reads and writes the same preference through the
+  // teammate settings host. Calls, previews and audio stay on the IPC channels above.
+  settingsApi = {
+    models: () => service.models(),
+    voices: (raw) => {
+      const selection = normalizeSpeechModelSelection(raw);
+      if (!selection) throwIpcError('INVALID_PARAMS', 'Invalid speech model');
+      return service.voices(selection!);
+    },
+    preference: readPreference,
+    setPreference: writePreference,
+  };
   for (const operation of ['start', 'start-playback'] as const) {
     handle(operation, async (event, raw) => {
       if (isAppSessionBoundaryPending()) throw new Error('changing_account');

@@ -1634,6 +1634,23 @@ Codex 原生图片恢复（#6412）在既有 `maker:remote-agent:v1` 上追加�
     回归见 `remote-agent/__tests__/connectionPool.test.ts`、`execServerProjection.e2e.test.ts`(中继忙闲)，以及真实 Claude Code / Codex / Pi 的
     `claudeHosted` / `codexHosted` / `piHosted.e2e.test.ts`(共用 `poolHarness.ts`)。
 
+## 伙伴设置动作 `management:settings`（Remote Resource，2026-10-22）
+
+桌面控制另一台电脑上的伙伴时，设置页的读写经现有 `maker:remote-resources:invoke`，不新增 device-link 通道，也不改 allowlist。契约正本是
+`apps/desktop/src/shared/botRemoteSettings.ts`，字段只追加：
+
+- **声明**：主机在 `teammates` 集合描述里增加集合动作 `{ id: "management:settings" }`（手机只检查 `open-create`，不显示该动作）。
+- **请求**：`collectionId: "teammates"`、`actionId: "management:settings"`、`input: { v: 1, op, args? }`；需要伙伴的操作带
+  `resourceRef: { collectionId: "teammates", kind: "bot", id }`，主机级操作（`caps`、`models.default`、`autonomy.*`、`routines.sources`、
+  `voice.models`、`voice.voices`、`channels.im.listAdoptable`）不带。`input` 受 64 KiB 上限约束，控制端把超长文本补丁拆成多次请求。
+- **响应**：`{ effects: [], result: { ok: true, value } | { ok: false, code, message } }`。失败以数据返回（`PRECONDITION_FAILED`、
+  `INVALID_PARAMS`、`NOT_FOUND`、`ALREADY_EXISTS`、`UNSUPPORTED_CAPABILITY`），因为注册表适配层会把其它异常折叠成泛化 `INTERNAL`，
+  会让页面看不到 revision 冲突；`message` 去掉 `[CODE] ` 前缀，非白名单异常仍抛 `INTERNAL`，不带原文。
+- **能力协商**：`caps` 返回 `{ version, ops[] }`；控制端按操作决定显示哪些页（缺操作的页不出现），主机没有声明动作时整页回退到
+  通用表单页。新增操作只追加到 `BOT_SETTINGS_OPS`，旧控制端不识别的操作不会被调用。
+- **安全边界**：主机检查「允许同账号设备控制本机」、撤权、共享任务 / 供应商分享对端与伙伴可见性，并在返回前复核账号 owner；
+  凭证、本机路径、运行时快照、最近消息预览不出现在任何结果里；`profile.update` 白名单字段且拒绝 `permissions`；消息平台操作只触达该伙伴自己的连接。
+
 ## 协同远端 Worker：Worker 在另一台电脑运行
 
 `maker:input:get-projection` 的既有输入投影可选增加 `turnInProgress`，由输入协调器按

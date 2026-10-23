@@ -5569,6 +5569,7 @@ interface ElectronAPI {
     listCindyCopies: () => Promise<import('../shared/companionCloud').CompanionCindyCopy[]>;
     mergeCindy: (keepBotId: string, fromBotIds: string[]) => Promise<import('../shared/companionCloud').CompanionMergeResult>;
     getCompanionAttachment: (botId: string, mediaId: string) => Promise<import('../shared/botGroupChat').BotGroupAttachment>;
+    dismissCompanionArrivalNotices: (botId: string) => Promise<void>;
     resolveCompanionAvatar: (request: { avatar: string; deviceId?: string | null; fetch?: boolean }) => Promise<string | null>;
     onCompanionCloudChanged: (
       cb: (

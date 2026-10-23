@@ -8,7 +8,7 @@ import type { HostedRemoteCollectionItem, RemoteResourceHostTarget } from '@/dev
 import { useGuardedPush } from '@/utils/useGuardedPush';
 import { useHomeMode } from './useHomeMode';
 import type { HomeMode } from './homeViewPreferenceStore';
-import { homeDismissCount, teammateIdentity, teammateResourceRoute, teammateSessionPreview } from './teammateNavigation';
+import { homeDismissCount, staleCompanionChatCount, teammateIdentity, teammateResourceRoute, teammateSessionPreview } from './teammateNavigation';
 import { remoteSessionStore } from './remoteSessionStore';
 import { readRemoteCollectionCache, writeRemoteCollectionCache } from '@/device-link/remoteResourceAvailability';
 
@@ -49,8 +49,12 @@ export function useTeammateNavigation() {
       }
     } finally { if (pendingAccount.current === accountGeneration) pendingAccount.current = null; }
   }, [accountGeneration, navigation, preferences.setMode, router]);
-  /** `replace` swaps the current screen (the cloud view handing over to the new main computer). */
-  const openTeammate = useCallback(async (hosted: HostedRemoteCollectionItem, options?: { replace?: boolean }) => {
+  /**
+   * `replace` swaps the current screen (the cloud view handing over to the new main computer);
+   * `leaving` also drops that companion's chat on the computer being left from under it, so back goes to the list.
+   */
+  const openTeammate = useCallback(async (hosted: HostedRemoteCollectionItem,
+    options?: { replace?: boolean; leaving?: { botId: string; deviceId: string } }) => {
     const identity = teammateIdentity(hosted);
     if (!identity || pendingAccount.current === accountGeneration) return;
     // Fence rapid taps before the async preference write, not only at router.push.
@@ -71,11 +75,18 @@ export function useTeammateNavigation() {
           remoteSessionStore.upsertDeviceSession(hosted.host.deviceId, hosted.host.deviceName, preview);
         }
         const route = teammateResourceRoute(hosted, i18n.language);
-        if (options?.replace) router.replace(route);
+        const state = options?.replace && options.leaving ? navigation.getState() : null;
+        const routes = state?.routes.slice(0, state.index + 1) ?? [];
+        const stale = options?.leaving ? staleCompanionChatCount(routes, options.leaving.botId, options.leaving.deviceId) : 0;
+        if (stale > 0) navigation.reset({
+          index: routes.length - stale - 1,
+          routes: [...routes.slice(0, routes.length - 1 - stale), { name: route.pathname.slice(1), params: route.params }],
+        } as never);
+        else if (options?.replace) router.replace(route);
         else push(route);
       }
     } finally { if (pendingAccount.current === accountGeneration) pendingAccount.current = null; }
-  }, [accountGeneration, i18n.language, preferences.selectTeammate, push, router, user?.id]);
+  }, [accountGeneration, i18n.language, navigation, preferences.selectTeammate, push, router, user?.id]);
   const openCreatedTeammate = useCallback(async (host: RemoteResourceHostTarget, ref: RemoteResourceRef) => {
     if (!mounted.current || current.current !== accountGeneration || !host.deviceId || !ref.id || !ref.collectionId
       || ref.kind !== 'bot' || pendingAccount.current === accountGeneration) return;

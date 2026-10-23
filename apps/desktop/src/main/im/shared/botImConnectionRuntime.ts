@@ -734,6 +734,12 @@ export function parseBotImConnectionAddInput(payload: unknown): BotImConnectionA
   return { botId, channel: 'discord', token, ownerUserId };
 }
 
+/** 隐藏任务小节(本机设置页与远程桌面的设置页共用): 群名沿用「群聊」小节同一份已知群。 */
+const laneOptions = () => ({ knownGroups: (record: BotImConnectionRecord) => requireDeps().listKnownGroups(record) });
+export const listBotImConnectionLanesForSettings = (id: string) => listBotImConnectionLanes(id, laneOptions());
+export const resetBotImConnectionLaneForSettings = (id: string, sessionId: string) =>
+  resetBotImConnectionLane(id, sessionId, laneOptions());
+
 export function registerBotImConnectionIpc(): void {
   if (ipcRegistered) return;
   ipcRegistered = true;
@@ -768,12 +774,11 @@ export function registerBotImConnectionIpc(): void {
     return setBotImConnectionGroupMode(p.id, p.chatId, mode);
   });
   // 隐藏任务小节: 群名沿用「群聊」小节同一份已知群(deps.listKnownGroups)。
-  const laneOptions = { knownGroups: (record: BotImConnectionRecord) => requireDeps().listKnownGroups(record) };
   ipcMain.handle('botImConnection:list-lanes', (e, payload) => {
     assertTrustedAppRendererEvent(e);
     const id = (payload as { id?: unknown } | null)?.id;
     if (!isBotImConnectionId(id)) throwIpcError('INVALID_PARAMS', 'id is invalid');
-    return listBotImConnectionLanes(id, laneOptions);
+    return listBotImConnectionLanesForSettings(id);
   });
   ipcMain.handle('botImConnection:reset-lane', (e, payload) => {
     assertTrustedAppRendererEvent(e);
@@ -782,7 +787,7 @@ export function registerBotImConnectionIpc(): void {
     if (typeof p.sessionId !== 'string' || !/^[A-Za-z0-9_.:-]{1,200}$/.test(p.sessionId)) {
       throwIpcError('INVALID_PARAMS', 'sessionId is invalid');
     }
-    return resetBotImConnectionLane(p.id, p.sessionId, laneOptions);
+    return resetBotImConnectionLaneForSettings(p.id, p.sessionId);
   });
 }
 

@@ -856,6 +856,7 @@ export const MAKER_INVOKE = {
   COMPANION_CLOUD_MERGE_CINDY: 'maker:companion-cloud:merge-cindy',
   /** A file of the companion's room, brought to this computer (works while its home is offline). */
   COMPANION_CLOUD_ATTACHMENT: 'maker:companion-cloud:attachment',
+  COMPANION_CLOUD_DISMISS_NOTICES: 'maker:companion-cloud:dismiss-notices',
   /** Local copy of an avatar from another computer or the cloud (looked up first, optionally fetched). */
   COMPANION_AVATAR_RESOLVE: 'maker:companion-avatar:resolve',
 } as const;

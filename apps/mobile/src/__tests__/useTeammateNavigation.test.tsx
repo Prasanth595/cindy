@@ -4,11 +4,11 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MobileUser } from '@/auth/AuthContext';
 const h = vi.hoisted(() => ({
-  disk: new Map<string, string>(), push: vi.fn(), dismissTo: vi.fn(), dismiss: vi.fn(), reset: vi.fn(), accountGeneration: 1,
+  disk: new Map<string, string>(), push: vi.fn(), replace: vi.fn(), dismissTo: vi.fn(), dismiss: vi.fn(), reset: vi.fn(), accountGeneration: 1,
   user: { id: 'account', passportId: 'passport', membershipKind: 'personal', orgId: null } as MobileUser,
   sessions: [] as import('@/session/types').RemoteSession[], upsert: vi.fn(), get: vi.fn(), set: vi.fn(), routes: [] as Array<{ name: string; params?: unknown }>,
 }));
-vi.mock('expo-router', () => ({ useRouter: () => ({ dismissTo: h.dismissTo, dismiss: h.dismiss }), useNavigation: () => ({ reset: h.reset, getState: () => ({ routes: h.routes, index: h.routes.length - 1 }) }) }));
+vi.mock('expo-router', () => ({ useRouter: () => ({ dismissTo: h.dismissTo, dismiss: h.dismiss, replace: h.replace }), useNavigation: () => ({ reset: h.reset, getState: () => ({ routes: h.routes, index: h.routes.length - 1 }) }) }));
 vi.mock('react-native', () => ({ Keyboard: { dismiss() {} } }));
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ i18n: { language: 'en' } }) }));
 vi.mock('@/auth/AuthContext', () => ({ useAuth: () => ({ user: h.user, accountGeneration: h.accountGeneration }) }));
@@ -56,6 +56,23 @@ describe('header/home shared navigation', () => {
       mode: 'teammates', lastTeammate: teammateIdentity(teammate),
     });
     expect(h.set).toHaveBeenCalledTimes(1);
+  });
+  // Tier: behavior. After "continue on another computer" the cloud view replaced itself with the new chat, but the old
+  // computer's chat it was opened from stayed underneath, so back showed it ("Computer not connected") before the list.
+  it('handing over from the cloud view also drops the old computer\'s chat, so back goes to the list', async () => {
+    const moved = { ...teammate, key: 'win:writer', host: { deviceId: 'win', deviceName: 'Studio' } };
+    const old = { name: 'resources/[collectionId]/[resourceId]', key: 'old', params: { resourceId: 'writer', deviceId: 'mac' } };
+    const list = { name: 'devices/index', key: 'list' }; const cloud = { name: 'companions/cloud/[actorId]', key: 'cloud' };
+    h.routes = [list, old, cloud];
+    await render(); await act(async () => result.openTeammate(moved, { replace: true, leaving: { botId: 'writer', deviceId: 'mac' } }));
+    expect(h.reset).toHaveBeenCalledExactlyOnceWith({ index: 1, routes: [list, { name: 'resources/[collectionId]/[resourceId]', params: {
+      collectionId: 'teammates', resourceId: 'writer', resourceKind: 'bot', deviceId: 'win', deviceName: 'Studio', title: 'Writer',
+    } }] });
+    expect(h.replace).not.toHaveBeenCalled();
+    // Opened straight from the list: only the cloud view is replaced.
+    h.reset.mockClear(); h.routes = [list, cloud];
+    await act(async () => result.openTeammate(moved, { replace: true, leaving: { botId: 'writer', deviceId: 'mac' } }));
+    expect(h.reset).not.toHaveBeenCalled(); expect(h.replace).toHaveBeenCalledTimes(1);
   });
   it('opens a creation receipt through the canonical resolver with one atomic preference update', async () => {
     await render(); await act(async () => result.openCreatedTeammate(teammate.host, teammate.item.ref));

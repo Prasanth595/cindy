@@ -165,7 +165,7 @@ describe('Bot task route recovery', () => {
   it('passes the live Bot roster and the teammate identity into the shared task composer', () => {
     expect(source).toContain('window.electronAPI.localDb.bots.list(');
     expect(source).toContain('lastReadAtByBotId: { [botId]: lastReadAt }');
-    expect(source).toContain('botMentions={gate.mentions}');
+    expect(source).toContain('botMentions={mentions}');
     expect(source).toContain('botIdentity={chatIdentity ?? gate.identity}');
     // The live identity is wrapped with canonicalChat so only the main private chat offers add-to-group.
     expect(source).toContain('{ ...(identity ?? gateIdentity), canonicalChat }');

@@ -2957,6 +2957,8 @@ let botGroupChatServiceHolder: BotGroupChatService | null = null;
  */
 function settleCompanionOwner(): void { void botGroupChatServiceHolder?.chatServer; }
 let unsubscribeCompanionCloudBroadcast: (() => void) | null = null;
+/** What a companion that arrived on this computer could not keep (shown once in its chat). */
+const companionArrivalNotices = (botId: string) => activeCompanionCloud()?.arrivalNotices(botId) ?? [];
 const listCompanionDevices = async () => (await handleListDevices(deviceDirectoryDeps())).devices;
 /** Cloud-companion version of another computer's Cindy; 0 when it is old or cannot be reached. */
 async function companionCloudPeerVersion(deviceId: string): Promise<number> {
@@ -12844,7 +12846,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   unsubscribeCompanionCloudBroadcast?.();
   unsubscribeCompanionCloudBroadcast = companionHomes.onChange((snapshot) => {
     const scope = captureDataOwnerBroadcastScope();
-    void companionCloudView(snapshot, listCompanionDevices).then((view) => {
+    void companionCloudView(snapshot, listCompanionDevices, companionArrivalNotices).then((view) => {
       // Device lookups can finish out of order: a superseded snapshot is never pushed after a newer one.
       if (companionHomes.snapshot() !== snapshot) return;
       broadcastToAllWindows(MAKER_PUSH.COMPANION_CLOUD_CHANGED, view, scope);
@@ -13181,7 +13183,13 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   const currentCompanionHomes = () => { settleCompanionOwner(); return companionHomes; };
   ipcMain.handle(MAKER_INVOKE.COMPANION_CLOUD_STATE, async (event) => {
     assertTrustedAppRendererEvent(event);
-    return companionCloudView(currentCompanionHomes().snapshot(), listCompanionDevices);
+    return companionCloudView(currentCompanionHomes().snapshot(), listCompanionDevices, companionArrivalNotices);
+  });
+  ipcMain.handle(MAKER_INVOKE.COMPANION_CLOUD_DISMISS_NOTICES, async (event, botId: unknown) => {
+    assertTrustedAppRendererEvent(event);
+    const id = companionBotId(botId);
+    currentCompanionHomes();
+    activeCompanionCloud()?.dismissArrivalNotices(id);
   });
   const companionBotId = (value: unknown) => {
     if (typeof value !== 'string' || !value.trim() || value.length > 200) throwIpcError('INVALID_PARAMS', 'botId required');

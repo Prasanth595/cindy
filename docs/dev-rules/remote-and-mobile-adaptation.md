@@ -525,6 +525,22 @@ Desktop 的同账号远程 Cindy Make 任务同样消费该投影：准备与测
 实现与回归见 Desktop Renderer 的 `features/device-link/useSessionResourceCards.ts`、
 `SessionResourceCards.tsx` 及同目录测试；SSH 工作区不由此获得 Make 执行能力。
 
+## 桌面远程控制的伙伴设置（`management:settings`，2026-10-22）
+
+产品规则见 [`../product-rules/cindy-bots-runtime.md`](../product-rules/cindy-bots-runtime.md)「伙伴设置」。落点：
+
+- **走 Remote Resource，不新增通道**：`teammates` 集合声明集合动作 `management:settings`，`input.op` 选固定操作，结果放在
+  `RemoteActionInvokeResponse.result`（`{ ok, value | code, message }`）。`allowlist.ts` 不变；伙伴 `settings-*` 等原始 IPC 仍不放行。
+- **主机沿用本机服务**：每个操作调用本机 IPC 同一份服务，凭证、本机路径、运行时快照不进结果；写入口白名单（`BOT_SETTINGS_PATCH_FIELDS`），
+  拒绝 `permissions`；消息平台操作只触达该伙伴自己的连接，没有接收凭证的操作。
+- **控制端兼容**：用集合动作 + `caps` 探测，主机不支持（旧版）整页回退到通用表单页；手机与旧桌面不变。
+- **故障半径三问**：① 故障层级：单个请求（读取 / 写入某个设置）；对方离线只标记页面状态，不判定设置失败。
+  ② 动作层级：仅该 peer 上该伙伴的请求，不重建 link、不断 relay、不重放写操作；写入失败沿用自动保存的回滚与重试，读取只在
+  推送 / 重连 / 聚焦后 400ms 合并重读，消息平台状态每 5 秒读取一次（仅页面打开且可见）。
+  ③ 多 peer：主机按请求内的控制端校验授权与撤权，一个控制端的写入不影响另一个的在途读取；回归见
+  `botRemoteSettingsHost.test.ts`（授权、可见性、owner 切换后丢弃结果、冲突形状、凭证 / 路径不出主机）与
+  `remoteBotSettingsTarget.test.ts`、`remoteTeammateSettings.test.tsx`。
+
 ## 本机与远程共用查询策略
 
 本机独立使用、远程操作、两端同时使用应共享数据语义与通用查询策略；远程连接状态

@@ -9,7 +9,12 @@ const h = vi.hoisted(() => ({
   get: vi.fn(), list: vi.fn(), history: vi.fn(), invoke: vi.fn(),
   profiles: [] as Array<{ id: string; name: string; avatar: string; avatarColor: string; invitation?: { stage: string } }>,
   profileListeners: new Set<() => void>(),
+  cloud: null as null | import('../../../../shared/companionCloud').CompanionCloudSnapshot,
 }));
+vi.mock('../companionCloudStore', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../companionCloudStore')>();
+  return { ...original, useCompanionCloud: () => h.cloud ?? original.useCompanionCloud() };
+});
 // 工作台在右侧栏里有自己的数据订阅，这里只验证伙伴对话的挂载与读位。
 vi.mock('../botStore', async () => {
   const { useSyncExternalStore } = await import('react');
@@ -31,13 +36,13 @@ vi.mock('../useBotIslandVisibleSession', () => ({ useBotIslandVisibleSession: ()
 // The private-chat topic host belongs to the chat surface these tests isolate.
 vi.mock('../BotDmThreadHost', () => ({ BotDmThreadHost: ({ children }: { children: import('react').ReactNode }) => <>{children}</> }));
 vi.mock('@/features/cc-agent/CCAgentSessionView', () => ({
-  CCAgentSessionView: ({ botIdentity, botInvitationStage, readOnly }: { botIdentity?: BotChatBinding; botInvitationStage?: string; readOnly?: boolean }) => {
+  CCAgentSessionView: ({ botIdentity, botInvitationStage, readOnly, botMentions }: { botIdentity?: BotChatBinding; botInvitationStage?: string; readOnly?: boolean; botMentions?: Array<{ id: string }> }) => {
     const sessions = useRemoteProjectSessions();
     const identity = resolveBotChatIdentity(botIdentity, h.params.sessionId);
     // The real chat header requires session metadata from this mirror. Keep the
     // production gate/store path; omit the unrelated editor and transcript tree.
     if (h.params.deviceId && !sessions.some(row => row.id === h.params.sessionId)) return <div>metadata-loading</div>;
-    return <div data-name={identity?.name} data-avatar={identity?.avatar} data-device-id={identity?.deviceId} data-read-only={readOnly} data-invitation-stage={botInvitationStage ?? ''}>{identity ? `companion:${identity.id}` : 'task controls'}</div>;
+    return <div data-name={identity?.name} data-avatar={identity?.avatar} data-device-id={identity?.deviceId} data-read-only={readOnly} data-invitation-stage={botInvitationStage ?? ''} data-mentions={(botMentions ?? []).map(item => item.id).join(',')}>{identity ? `companion:${identity.id}` : 'task controls'}</div>;
   },
 }));
 import { BotSessionView } from '../BotSessionView';
@@ -47,7 +52,7 @@ beforeEach(() => {
   h.params = { botId: 'bot', sessionId: 'chat', deviceId: undefined };
   h.get.mockReset(); h.list.mockReset().mockResolvedValue([]); h.history.mockReset();
   h.invoke.mockReset(); remoteProjectsStore.clear(); remoteProjectsStore.__resetPinnedOriginsForTest();
-  h.profiles = []; h.profileListeners.clear();
+  h.profiles = []; h.profileListeners.clear(); h.cloud = null;
   window.electronAPI = { localDb: { bots: { get: h.get, list: h.list, history: h.history } }, deviceLink: { invoke: h.invoke } } as unknown as Window['electronAPI'];
 });
 afterEach(() => { cleanup(); remoteProjectsStore.clear(); remoteProjectsStore.__resetPinnedOriginsForTest(); });
@@ -164,4 +169,13 @@ it.each(['history', 'channel'])('checks remote %s links before displaying a sear
     expect(remoteProjectsStore.getSessionDeviceId('chat')).toBeUndefined();
     expect(h.invoke).toHaveBeenCalledTimes(1);
   }
+});
+it('offers only teammates that run here to send to or delegate to, not copies that run elsewhere or were retired there', async () => {
+  h.get.mockResolvedValue({ id: 'bot', name: 'Melody', status: 'active', sessions: [{ id: 'chat', kind: 'chat', status: 'active', role: 'canonical' }] });
+  h.list.mockResolvedValue([{ id: 'bot', name: 'Melody' }, { id: 'kept', name: 'Kept' }, { id: 'retired', name: 'Retired' }, { id: 'away', name: 'Away' }]);
+  h.cloud = { enabled: true, selfDeviceId: 'desk', humanActorId: 'human', demotedBotIds: ['retired'], actors: [
+    { id: 'a-away', externalId: 'away', name: 'Away', avatar: null, homeDeviceId: 'laptop' }] };
+  render(<BotSessionView />);
+  const chat = await screen.findByText('companion:bot');
+  expect(chat.getAttribute('data-mentions')).toBe('kept');
 });

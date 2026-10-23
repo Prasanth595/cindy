@@ -12,7 +12,7 @@ import { useCompanionCloud } from './companionCloudStore';
 import { isBotChannelLaneSession } from './botGroupLane';
 import { BOT_DM_THREAD_PARAM } from './botDmThreadRoute';
 import { useRemoteBots } from './useRemoteBots';
-import { RemoteBotSettings } from './RemoteBotSettings';
+import { RemoteTeammateSettings } from './RemoteTeammateSettings';
 
 /** Route-owned compact drawer that keeps the current teammate chat mounted below it. */
 export function BotSettingsDrawer() {
@@ -47,7 +47,7 @@ export function BotSettingsDrawer() {
 
   const requestedPage = searchParams.get('settingsPage');
   const initialPage = requestedPage === 'memory' || requestedPage === 'capabilities' ? requestedPage : 'home';
-  // 「模型」「语音」「消息平台」只有本机伙伴有; 远端伙伴仍只认上面两页。
+  // 「模型」「语音」「消息平台」可直接深链；远程伙伴同样，所在电脑不支持的页会回到设置首页。
   const localInitialPage =
     requestedPage === 'model' || requestedPage === 'voice' || requestedPage === 'channels'
       ? requestedPage
@@ -166,11 +166,12 @@ export function BotSettingsDrawer() {
               </p>
             ) : null}
             {remoteBot ? (
-              <RemoteBotSettings
-                key={`${remoteBot.deviceId}:${remoteBot.id}:${open}:${initialPage}`}
+              <RemoteTeammateSettings
+                key={`${remoteBot.deviceId}:${remoteBot.id}:${open}:${localInitialPage}`}
                 bot={remoteBot}
-                initialPage={initialPage}
+                initialPage={localInitialPage}
                 beforeCloseRef={beforeCloseRef}
+                onBack={performClose}
                 onDeleted={() => {
                   allowNavigation.current = true;
                   navigate('/bots', { replace: true });

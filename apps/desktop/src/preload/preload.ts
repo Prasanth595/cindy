@@ -6309,6 +6309,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('maker:companion-cloud:merge-cindy', keepBotId, fromBotIds),
     getCompanionAttachment: (botId: string, mediaId: string): Promise<import('../shared/botGroupChat').BotGroupAttachment> =>
       ipcRenderer.invoke('maker:companion-cloud:attachment', botId, mediaId),
+    dismissCompanionArrivalNotices: (botId: string): Promise<void> =>
+      ipcRenderer.invoke('maker:companion-cloud:dismiss-notices', botId),
     resolveCompanionAvatar: (request: { avatar: string; deviceId?: string | null; fetch?: boolean }): Promise<string | null> =>
       ipcRenderer.invoke('maker:companion-avatar:resolve', request),
     onBotProfileChanged: fanOutBotProfileChanged,

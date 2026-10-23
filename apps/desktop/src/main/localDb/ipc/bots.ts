@@ -1291,8 +1291,15 @@ async function readProfile(
       mcpServers: Array.isArray(config.mcpServers)
         ? config.mcpServers.filter((item): item is string => typeof item === 'string')
         : [],
+      ...(config.mcpServerNames && typeof config.mcpServerNames === 'object' && !Array.isArray(config.mcpServerNames)
+        ? { mcpServerNames: Object.fromEntries(Object.entries(config.mcpServerNames as Record<string, unknown>)
+            .filter((entry): entry is [string, string] => typeof entry[1] === 'string')) } : {}),
       memory: config.memory !== false,
       permissions: config.permissions === 'trusted' || config.permissions === 'auto' ? config.permissions : 'ask',
+      // Stored and enforced elsewhere (input handoff policy, scheduler follow); the settings page reads them
+      // back from here, so an explicit choice must survive a reload. Absent keeps the defaults.
+      ...(config.inputHandoff === false ? { inputHandoff: false } : {}),
+      ...(config.allowSchedulerFollow === true ? { allowSchedulerFollow: true } : {}),
     },
     sessions: links.flatMap((link) => {
       const row = byId.get(link.sessionId);
@@ -1343,6 +1350,11 @@ async function readProfile(
       ];
     }),
   };
+}
+
+/** Full profile read for the teammate settings pages (the remote Desktop projects it before sending). */
+export async function readBotSettingsProfile(botId: string) {
+  return readProfile(getDbClient(), botId);
 }
 
 /**
@@ -1702,8 +1714,14 @@ export async function setBotProfileAvatar(botId: string, image: { buffer: Buffer
     return profile;
 }
 
+/**
+ * Trusted, main-only inputs of a companion restored from the cloud (cloud-companions.md §3.1):
+ * the preset it was made from. Never reachable from a renderer or model body.
+ */
+export interface RestoredBotOrigin { templateId?: unknown }
+
 /** Main-owned creation path shared by the renderer and Bot runtime tools. */
-export async function createBotProfile(raw: unknown) {
+export async function createBotProfile(raw: unknown, restored?: RestoredBotOrigin) {
   const body =
     raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
   const draftEntry = body.creationDraftToken ? readBotCreationDraft(body.creationDraftToken) : undefined;
@@ -1776,6 +1794,7 @@ export async function createBotProfile(raw: unknown) {
   delete persistedCapabilities.invitation;
   delete persistedCapabilities.templateId;
   if (templateId) persistedCapabilities.templateId = templateId;
+  else if (isBotTemplatePresetId(restored?.templateId)) persistedCapabilities.templateId = restored.templateId;
   if (prepareInvitation) persistedCapabilities.invitation = {
     id: randomUUID(), stage: 'skills', locale: readBotInvitationLocale(body.locale),
     avatarRequested: body.generateAvatar === true && !avatarImage,
@@ -1880,7 +1899,7 @@ export async function prepareImportedBotInvitation(botId: string, requestId: str
 
 /** Shared profile mutation for trusted settings and owner-bound capability selection. */
 export async function updateBotProfile(raw: unknown, expectedVersion?: number,
-  validateAdditions?: (update: BotCapabilityUpdate) => Promise<void>) {
+  validateAdditions?: (update: BotCapabilityUpdate) => Promise<void>, restored?: RestoredBotOrigin) {
   const body =
     raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
   const id = readText(body.id, 'botId', 128, true);
@@ -1972,7 +1991,9 @@ export async function updateBotProfile(raw: unknown, expectedVersion?: number,
     capabilityBaseline: body.capabilityBaseline,
   });
   // Template identity survives renames and cannot be replaced through settings.
-  const retainedTemplate = typeof previous.templateId === 'string' ? previous.templateId : inferBotTemplatePresetId(version?.identitySource ?? '');
+  const retainedTemplate = typeof previous.templateId === 'string' ? previous.templateId
+    : isBotTemplatePresetId(restored?.templateId) ? restored.templateId
+      : inferBotTemplatePresetId(version?.identitySource ?? '');
   if (retainedTemplate) nextConfig.templateId = retainedTemplate;
   else delete nextConfig.templateId;
   // Keep preparation checkpoints outside caller-editable capabilities.
@@ -2136,6 +2157,42 @@ async function findExistingCindy(client: ReturnType<typeof getDbClient>) {
   const rows = await client.drizzle.select({ id: botProfiles.id, config: botProfileVersions.capabilitiesJson, identity: botProfileVersions.identitySource }).from(botProfiles).innerJoin(botProfileVersions, and(eq(botProfileVersions.botId, botProfiles.id), eq(botProfileVersions.version, botProfiles.currentVersion))).where(ne(botProfiles.status, 'archived')).orderBy(botProfiles.createdAt);
   const existing = rows.find(row => parseJson(row.config).templateId === 'cindy' || inferBotTemplatePresetId(row.identity) === 'cindy');
   return existing ? readProfile(client, existing.id) : null;
+}
+
+/** Teammate history search; the local settings IPC and the remote settings host share it. */
+export async function searchBotHistory(botId: string, query: string, limit: number) {
+  const db = getDbClient().drizzle;
+  const [profile] = await db
+    .select({ id: botProfiles.id })
+    .from(botProfiles)
+    .where(eq(botProfiles.id, botId))
+    .limit(1);
+  if (!profile) throwIpcError('NOT_FOUND', 'Bot 不存在');
+  // Group / IM channel lanes only hold hidden channel turns; the group chat or
+  // the IM conversation itself is the user's record.
+  const links = await db
+    .select({ sessionId: botSessionLinks.sessionId })
+    .from(botSessionLinks)
+    .where(and(
+      eq(botSessionLinks.botId, botId),
+      ne(botSessionLinks.role, 'group'),
+      ne(botSessionLinks.role, 'channel'),
+    ));
+  return searchConversations(
+    {
+      query,
+      limit,
+      semanticMode: 'hybrid',
+      filters: {
+        status: 'all',
+        sessionIds: links.map((row) => row.sessionId),
+      },
+    },
+    // The Bot-owned Session id set above is authoritative. Passing null here
+    // allows migrated IM history to retain its original source while keeping
+    // the renderer unable to widen the search scope.
+    { sessionSources: null },
+  );
 }
 
 export function registerBotIpc(): void {
@@ -2307,38 +2364,7 @@ export function registerBotIpc(): void {
       typeof body.limit === 'number' && Number.isFinite(body.limit)
         ? Math.max(1, Math.min(50, Math.floor(body.limit)))
         : 20;
-    const db = getDbClient().drizzle;
-    const [profile] = await db
-      .select({ id: botProfiles.id })
-      .from(botProfiles)
-      .where(eq(botProfiles.id, botId))
-      .limit(1);
-    if (!profile) throwIpcError('NOT_FOUND', 'Bot 不存在');
-    // Group / IM channel lanes only hold hidden channel turns; the group chat or
-    // the IM conversation itself is the user's record.
-    const links = await db
-      .select({ sessionId: botSessionLinks.sessionId })
-      .from(botSessionLinks)
-      .where(and(
-        eq(botSessionLinks.botId, botId),
-        ne(botSessionLinks.role, 'group'),
-        ne(botSessionLinks.role, 'channel'),
-      ));
-    return searchConversations(
-      {
-        query,
-        limit,
-        semanticMode: 'hybrid',
-        filters: {
-          status: 'all',
-          sessionIds: links.map((row) => row.sessionId),
-        },
-      },
-      // The Bot-owned Session id set above is authoritative. Passing null here
-      // allows migrated IM history to retain its original source while keeping
-      // the renderer unable to widen the search scope.
-      { sessionSources: null },
-    );
+    return searchBotHistory(botId, query, limit);
   });
 
   ipcMain.handle('local-db:bots:create', async (event, raw: unknown) => {

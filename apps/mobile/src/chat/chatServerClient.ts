@@ -70,12 +70,16 @@ const bodyBlocks = (message: ChatMessage) => message.deleted || readImportedBotG
 // Media blocks are the message's attachments; only the list preview falls back to their names.
 const contentText = (message: ChatMessage) => bodyBlocks(message)
   .flatMap(block => block.type === 'media' ? [] : [block.text ?? block.fallback ?? '']).join('\n');
-// The cloud companion transcript has no attachment strip, so it keeps captions inline.
-export const chatMessageText = (message: ChatMessage) => bodyBlocks(message)
-  .map(block => block.text ?? block.fallback ?? (block.type === 'media' ? block.caption ?? '' : '')).join('\n');
+// The cloud companion transcript draws the same attachment strip as the group chat, so its text leaves media out too.
+export const chatMessageText = contentText;
 // The server makes a caption optional; an unnamed attachment still needs a visible name.
 const attachmentName = (block: ChatMessage['content'][number]) => block.caption?.trim()
   || (i18next.isInitialized ? i18next.t('groupChat.files.untitled') : '') || 'Attachment';
+/** The message's media blocks as attachments; the address is fetched when one is opened (`media`). */
+export const chatMessageAttachments = (message: ChatMessage): BotGroupAttachment[] => message.deleted ? [] : message.content.flatMap(block => {
+  if (block.type !== 'media' || !block.mediaId) return [];
+  return [{ id: block.mediaId, name: attachmentName(block), category: 'file' as const, mimeType: '', size: 0, url: null, path: null }];
+});
 const mediaNames = (message: ChatMessage) => message.deleted ? '' : message.content
   .flatMap(block => block.type === 'media' ? [attachmentName(block)] : []).join(', ');
 
@@ -173,11 +177,7 @@ export function chatGroupView(page: ChatPage, selfId: string, actors: readonly C
       isSelf: message.authorId === selfId, content: contentText(message), mentions: { all: false, botIds: [] },
       ...(quote ? { quote: deletedIds.has(quote.messageId) ? { ...quote, originalDeleted: true } : quote } : {}),
       noticeCode: joined ? 'member-joined' : null, planId: null, files: [],
-      attachments: message.deleted ? [] : message.content.flatMap(block => {
-        if (block.type !== 'media' || !block.mediaId) return [];
-        return [{ id: block.mediaId, name: attachmentName(block), category: 'file' as const,
-          mimeType: '', size: 0, url: null, path: null }];
-      }), createdAt: Date.parse(message.createdAt) };
+      attachments: chatMessageAttachments(message), createdAt: Date.parse(message.createdAt) };
   });
   const last = messages.at(-1);
   const failures = (page.failures ?? []).flatMap(row => {

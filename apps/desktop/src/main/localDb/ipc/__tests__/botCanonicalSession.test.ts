@@ -610,6 +610,16 @@ describe('Bot global model restore IPC', () => {
 });
 
 describe('Bot canonical Session lifecycle', () => {
+  it('reads the stored 代输入 and follow-by-scheduler choices back into the settings profile', async () => {
+    expect((await invoke('local-db:bots:get', 'bot-1')).capabilities).not.toHaveProperty('inputHandoff');
+    await invoke('local-db:bots:update', { id: 'bot-1', capabilities: { inputHandoff: false, allowSchedulerFollow: true } });
+    expect((await invoke('local-db:bots:get', 'bot-1')).capabilities).toMatchObject({ inputHandoff: false, allowSchedulerFollow: true });
+    await invoke('local-db:bots:update', { id: 'bot-1', capabilities: { inputHandoff: true, allowSchedulerFollow: false } });
+    const reset = (await invoke('local-db:bots:get', 'bot-1')).capabilities;
+    expect(reset.inputHandoff).not.toBe(false);
+    expect(reset.allowSchedulerFollow).not.toBe(true);
+  });
+
   it.each(['inherit', 'allowlist'])('omits retired toolsets from the %s companion settings and discovery', async (mode) => {
     const row = h.sqlite!.prepare('SELECT capabilities_json FROM bot_profile_versions WHERE bot_id = ? AND version = 1')
       .get('bot-1') as { capabilities_json: string };
