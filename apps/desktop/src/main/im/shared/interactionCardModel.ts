@@ -44,11 +44,11 @@ export const MAX_PLAN_LEN = 1500;
 /** 按钮文案截断(Slack plain_text 上限 75, 对齐 IM 的 30)。 */
 export const BTN_LABEL_MAX = 30;
 /**
- * permission 卡的工具入参摘要截断 —— 两侧**刻意不同**, 属渲染差异:
- * hook 卡是单行 JSON 摘要(卡片只要能看清意图), IM 卡是 pretty JSON 代码块。
+ * hook 侧 permission 卡的工具入参摘要截断 —— 单行 JSON。
+ * IM 侧不再走 JSON 摘要, 改为中文键值行(见 permissionInputSummary.ts),
+ * 所以这里只剩 hook 这一个上限。
  */
 export const HOOK_PERMISSION_INPUT_SUMMARY_MAX = 600;
-export const IM_PERMISSION_INPUT_PREVIEW_MAX = 800;
 /** 无选项降级时唯一按钮的文案(两侧一致)。 */
 export const ASK_CONTINUE_LABEL = '继续';
 /**

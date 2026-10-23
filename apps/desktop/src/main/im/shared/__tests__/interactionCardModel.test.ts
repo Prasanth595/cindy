@@ -400,10 +400,10 @@ describe('跨实现一致性 — IM cardBuilders vs hook composeInteractionCard'
     ]);
     expect(imDecisions).toEqual(hookDecisions);
 
-    // 两侧都渲染 toolName 与入参摘要, 但上限不同(600 单行 vs 800 pretty) —— 渲染差异
+    // 两侧都渲染 toolName 与入参摘要, 形式不同(hook 单行 JSON / IM 中文键值行) —— 渲染差异
     expect(hook.card.body).toContain('Bash');
     expect(hook.card.body.length).toBeLessThan(800);
-    expect(im.body).toContain('command');
+    expect(im.body).toContain('命令');
     expect(im.body!.length).toBeLessThan(1000);
     expect(im.body).not.toContain('自动审批没完成');
   });
@@ -415,11 +415,42 @@ describe('跨实现一致性 — IM cardBuilders vs hook composeInteractionCard'
       metadata: { autoReviewUnavailable: true },
     });
     expect(im.body).toContain('自动审批没完成，请确认要不要允许这次操作。');
-    expect(im.body).toContain('command');
+    expect(im.body).toContain('命令');
     expect(im.buttons.map((b) => b.id)).toEqual([
       'permission:allow:once',
       'permission:deny',
     ]);
+  });
+
+  it('MCP 审批信封: 标题给人话动作, 正文给中文键值行, 信封本身不上卡', () => {
+    const toolDescription =
+      '以当前 bot 身份调任意飞书 / Lark Open API(具名工具没覆盖到的能力)。'.repeat(20);
+    const im = cards.buildPermissionCard({
+      ...PERMISSION_RICH,
+      requestId: 'req-perm-mcp',
+      toolName: 'call_api',
+      input: {
+        serverName: 'cindy_feishu_bot',
+        toolName: 'call_api',
+        toolParams: { method: 'GET', path: '/open-apis/im/v1/messages', params: { page_size: 50 } },
+        toolParamsDisplay: [{ name: 'method', value: 'GET', display_name: 'method' }],
+        message: 'Allow the cindy_feishu_bot MCP server to run tool "call_api"?',
+        toolDescription,
+      },
+    });
+    // 标题: 入参能推出动作时给人话(读取 + 消息), 不用工具名兜底
+    expect(im.title).toBe('🔧 想读取消息');
+    // 正文: 来源行 + 中文键值行, 要审的信息都在
+    expect(im.body).toContain('来自：cindy_feishu_bot · call_api');
+    expect(im.body).toContain('路径：/open-apis/im/v1/messages');
+    expect(im.body).toContain('条数：50');
+    // 信封本身(英文说明 / 工具描述全文 / 渲染副本 / 原始 key / JSON 代码块)不上卡
+    expect(im.body).not.toContain('Allow the');
+    expect(im.body).not.toContain('display_name');
+    expect(im.body).not.toContain(toolDescription.slice(0, 30));
+    expect(im.body).not.toContain('toolParams');
+    expect(im.body).not.toContain('\`\`\`');
+    expect(im.body).not.toContain('已截断');
   });
 
   it('安全默认: IM cancelPending 与 hook defaultDecision 同形(只有 reason 由渠道给)', async () => {
@@ -450,7 +481,7 @@ describe('跨实现一致性 — IM cardBuilders vs hook composeInteractionCard'
       { title: im.title ?? '', body: im.body ?? '' },
       '✅ 已允许（仅本次）',
     );
-    // 原始正文(工具名 + 参数预览)完整保留
+    // 原始正文(工具名 + 入参摘要)完整保留
     expect(resolved.body).toContain(im.body!);
     expect(resolved.title).toBe(im.title);
     // 决策结果追加在末尾

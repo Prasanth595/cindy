@@ -4155,7 +4155,7 @@ export function createTurnRunner(
           req.kind as InteractionDecision['kind'],
           messageId,
           // Preserve the permission scope for the 'allow:always' decision.
-          // permissionCard 留着收口时恢复原始正文(工具名 + 参数预览)。
+          // permissionCard 留着收口时恢复原始正文(工具名 + 入参摘要)。
           {
             owner: pendingOwner,
             ...(req.kind === 'permission'

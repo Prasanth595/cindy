@@ -59,8 +59,10 @@ export const ui = {
   },
   cards: {
     permission: {
-      title: (toolName: string) => `🔧 工具调用：${toolName}`,
-      paramsLabel: '**参数预览**',
+      title: (toolName: string, action?: string | null) =>
+        action ? `🔧 想${action}` : `🔧 工具调用：${toolName}`,
+      paramsLabel: '**这次要做什么**',
+      sourceLine: (source: string) => `来自：${source}`,
       btnAllowOnce: '✅ 仅本次允许',
       btnAllowAlways: '✅ 总是允许',
       btnDeny: '❌ 拒绝',

@@ -34,23 +34,14 @@ import {
   truncateBlock,
   truncateInline,
   BTN_LABEL_MAX,
-  IM_PERMISSION_INPUT_PREVIEW_MAX,
   MAX_OPTIONS,
   MAX_PLAN_LEN,
 } from './interactionCardModel';
+import { summarizePermissionInput } from './permissionInputSummary';
 import type { ControlProject, ControlSession, RecentControlSession } from './controlProjects';
 
 /** IM 卡片文本截断(实现见 interactionCardModel.truncateBlock)。 */
 const truncate = truncateBlock;
-
-/** 工具入参 -> pretty JSON 预览(IM 卡片正文有排版空间, 与 hook 侧的单行摘要不同)。 */
-function previewInput(input: Record<string, unknown>): string {
-  try {
-    return truncate(JSON.stringify(input, null, 2), IM_PERMISSION_INPUT_PREVIEW_MAX);
-  } catch {
-    return '<unserializable>';
-  }
-}
 
 export interface ImCardBuilders {
   buildPermissionCard(
@@ -198,11 +189,21 @@ export function createCardBuilders(
 
     buildPermissionCard(req) {
       const model = composeInteractionModel(req);
-      const params = `${ui.cards.permission.paramsLabel}\n\`\`\`json\n${previewInput(model.input)}\n\`\`\``;
+      // 用户要审的是「这次到底要动什么」: 人话来源行 + 中文键值行。
+      // 原始入参不上卡 —— 英文 key + 嵌套 JSON 读不出意图, 800 字上限还会把
+      // 真正要审的行切在尾部(完整入参在电脑端的工具详情里看)。
+      const summary = summarizePermissionInput(model.input, truncateInline);
+      const whatToDo = [
+        ui.cards.permission.paramsLabel,
+        summary.source ? ui.cards.permission.sourceLine?.(summary.source) : '',
+        ...summary.rows,
+      ]
+        .filter(Boolean)
+        .join('\n');
       const unavailable = autoReviewUnavailablePromptLine(req);
       return {
-        title: ui.cards.permission.title(model.toolName),
-        body: [req.description, unavailable, params].filter(Boolean).join('\n\n'),
+        title: ui.cards.permission.title(model.toolName, summary.action),
+        body: [req.description, unavailable, whatToDo].filter(Boolean).join('\n\n'),
         buttons: [
           {
             id: 'permission:allow:once',
@@ -651,7 +652,7 @@ export function createCardBuilders(
     },
 
     /**
-     * 授权卡被点击后的收口形态: **保留原始正文**(工具名 + 参数预览 — 用户
+     * 授权卡被点击后的收口形态: **保留原始正文**(工具名 + 入参摘要 — 用户
      * 需要看到自己刚刚批准的是什么), 去掉按钮, 末尾追加决策结果一行。
      * 与 buildResolvedCard 的差异正在于不吞掉决策正文。
      */

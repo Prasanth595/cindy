@@ -401,8 +401,15 @@ export interface ImUiTextPack {
   };
   cards: {
     permission: {
-      title: (toolName: string) => string;
+      /**
+       * 卡片标题。action 是入参推出的人话动作(如「读取消息」), 推不出时为
+       * null —— 此时退回工具名; 不要为好看编一个动作出来。
+       */
+      title: (toolName: string, action?: string | null) => string;
+      /** 正文小标题, 下面跟着来源行与参数行。 */
       paramsLabel: string;
+      /** 正文来源行: 谁在调用(如「cindy_feishu_bot · call_api」)。缺省不显示。 */
+      sourceLine?: (source: string) => string;
       btnAllowOnce: string;
       btnAllowAlways: string;
       btnDeny: string;
