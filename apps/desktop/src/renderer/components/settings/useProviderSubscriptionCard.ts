@@ -165,7 +165,7 @@ export function useDeviceProviderSubscriptionCard(
   const epoch = useDeviceLinkReconnectEpoch(
     options.live && source ? deviceId ?? undefined : undefined,
   );
-  const refreshState = useRef({ epoch, active: false, lastTarget: null as string | null });
+  const previousEpoch = useRef(epoch);
   const local = useProviderSubscriptionCard(deviceId === null ? activeProvider : undefined);
   const remote = useRemoteProviderSubscriptionCard(
     deviceId === null ? undefined : activeProvider,
@@ -180,15 +180,11 @@ export function useDeviceProviderSubscriptionCard(
     return () => window.clearInterval(timer);
   }, [options.live, source, providerId, deviceId]);
   useEffect(() => {
-    const target = options.live && source && providerId && deviceId
-      ? JSON.stringify([deviceId, providerId, source]) : null;
-    const previous = refreshState.current;
-    const reconnected = previous.epoch !== epoch;
-    // Hiding/offline/provider reload can remove the epoch listener while an old
-    // read is still pending. Queue once when that same live target resumes.
-    const resumed = target !== null && !previous.active && previous.lastTarget === target;
-    refreshState.current = { epoch, active: target !== null, lastTarget: target ?? previous.lastTarget };
-    if ((reconnected || resumed) && options.live && source && providerId && deviceId) {
+    const reconnected = previousEpoch.current !== epoch;
+    previousEpoch.current = epoch;
+    // Mirrors own mount/resume reads, including queuing behind an old pending
+    // read. Only a reconnect observed while mounted needs another refresh here.
+    if (reconnected && options.live && source && providerId && deviceId) {
       refreshSubscriptionCard(source, providerId, deviceId, true);
     }
   }, [options.live, source, providerId, deviceId, epoch]);

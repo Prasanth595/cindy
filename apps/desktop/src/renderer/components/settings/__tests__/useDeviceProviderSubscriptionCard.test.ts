@@ -170,6 +170,44 @@ describe('useDeviceProviderSubscriptionCard', () => {
     expect(remaining(hook.result.current)).toEqual([['primary', 50]]);
   });
 
+  // Unit regression: PR #6752 r4355398578. Recovery coverage only kept an old
+  // request pending. With no old request, the mount already starts a fresh read;
+  // queuing another read can clear its successful native quota on a second error.
+  // Minimal input: 73% before hiding/offline, then native 91%, with any duplicate
+  // native request failing. The real card must keep 91% with one recovery read.
+  it.each(['foreground', 'member-online'] as const)('keeps fresh native quota after one %s recovery read', async (resume) => {
+    const openai = provider('openai-extra', { method: 'oauth', native: 'codex' });
+    let nativeReads = 0;
+    mocks.invoke.mockImplementation(async (_deviceId, channel) => {
+      const quota = { primary: { usedPercent: 50, windowMinutes: 300 } };
+      if (channel === 'maker:usage:account') return { providerId: openai.id, ...quota };
+      if (++nativeReads > 2) throw new Error('duplicate recovery read failed');
+      return {
+        providerId: openai.id,
+        account: { planType: 'plus' },
+        rateLimits: { primary: { usedPercent: nativeReads === 1 ? 73 : 91, windowMinutes: 300 } },
+      };
+    });
+    const hook = renderHook(({ selected, deviceId }: { selected: ProviderView | undefined; deviceId: string | null }) =>
+      useDeviceProviderSubscriptionCard(selected, deviceId, { live: true }),
+    { initialProps: { selected: openai as ProviderView | undefined, deviceId: 'mini' as string | null } });
+    await act(async () => {});
+    expect(remaining(hook.result.current)).toEqual([['primary', 73]]);
+    if (resume === 'foreground') {
+      vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+      act(() => document.dispatchEvent(new Event('visibilitychange')));
+      vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
+      await act(async () => document.dispatchEvent(new Event('visibilitychange')));
+    } else {
+      hook.rerender({ selected: undefined, deviceId: null });
+      hook.rerender({ selected: openai, deviceId: 'mini' });
+      await act(async () => {});
+    }
+    expect(remaining(hook.result.current)).toEqual([['primary', 91]]);
+    expect(nativeReads).toBe(2);
+    expect(mocks.invoke.mock.calls.filter(([, channel]) => channel === 'maker:usage:account')).toHaveLength(2);
+  });
+
   // Unit regression: PR #6752 review r4344705884. Existing reconnect coverage used
   // a completed/mocked mirror. r4344881854 adds foreground/member-online recovery:
   // those paths temporarily unmount the epoch listener, so they must also queue
