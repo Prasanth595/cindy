@@ -16,18 +16,22 @@
  *   - 含 `%` 的路径不搜索：主进程查找前会先做 URL 解码，任务目录同时有 `a%20b.jpg` 与
  *     `a b.jpg` 时会换成另一个文件，违背「直接拼接能找到时保持原地址」。
  *   - 结论在组件里另存一份：共享缓存有容量上限，被其他引用挤掉后不能退回坏地址。
+ *   - 没有命中 / 命中多个不是最终结论：回复可能先引用产物、文件后写出。新挂载、流式结束、
+ *     窗口重新聚焦时重查一次（与图片加载失败的自然重试时机一致），重查期间照常显示拼接
+ *     地址；唯一命中不重查。
  *
  * 范围:
  *   只用于本机会话。远程会话的路径解析不在远端搜索（见 MarkdownRenderer 的
  *   useResolvedMarkdownTarget），调用方传 enabled=false 时原样返回。
  */
 
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 
 import {
   peekResolveLocalPathSmart,
   resolveLocalPath,
   resolveLocalPathSmartCached,
+  revalidateNegativeLocalPathSmart,
   type SmartResolveResult,
 } from '@/lib/localPathResolver';
 
@@ -57,28 +61,46 @@ export function useWorkspaceMediaPath(
   src: string | undefined,
   workingDir: string,
   enabled: boolean,
+  streaming = false,
 ): WorkspaceMediaPath {
   const href =
     enabled && src && workingDir && isRelativeLocalPath(src) && !src.includes('%') ? src : null;
   const key = href ? `${workingDir}::${href}` : null;
   const [settled, setSettled] = useState<{ key: string; result: SmartResolveResult } | null>(null);
+  // 重查时机：窗口重新聚焦、所在消息流式结束(挂载本身由下面的 effect 覆盖)。
+  const [recheck, setRecheck] = useState(0);
+  useEffect(() => {
+    if (!href) return;
+    const onFocus = () => setRecheck((n) => n + 1);
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [href]);
+  const wasStreaming = useRef(streaming);
+  useEffect(() => {
+    if (wasStreaming.current && !streaming) setRecheck((n) => n + 1);
+    wasStreaming.current = streaming;
+  }, [streaming]);
+
   useEffect(() => {
     if (!href || !key) return;
+    let cancelled = false;
+    const apply = (result: SmartResolveResult) => {
+      if (cancelled) return;
+      setSettled((current) =>
+        current?.key === key && current.result === result ? current : { key, result },
+      );
+    };
     const cached = peekResolveLocalPathSmart(href, workingDir);
     if (cached) {
-      setSettled((current) =>
-        current?.key === key && current.result === cached ? current : { key, result: cached },
-      );
-      return;
+      apply(cached);
+      void revalidateNegativeLocalPathSmart(href, workingDir)?.then(apply);
+    } else {
+      void resolveLocalPathSmartCached(href, workingDir).then(apply);
     }
-    let cancelled = false;
-    void resolveLocalPathSmartCached(href, workingDir).then((result) => {
-      if (!cancelled) setSettled({ key, result });
-    });
     return () => {
       cancelled = true;
     };
-  }, [href, key, workingDir]);
+  }, [href, key, workingDir, recheck]);
 
   if (!href) return { src, pending: false };
   const result =
@@ -101,13 +123,16 @@ export function WorkspaceMediaSrc({
   src,
   workingDir,
   enabled,
+  streaming,
   children,
 }: {
   src: string | undefined;
   workingDir: string;
   enabled: boolean;
+  /** 所在消息仍在流式输出；结束时重查没有命中的路径。 */
+  streaming?: boolean;
   children: (src: string | undefined) => ReactNode;
 }) {
-  const resolved = useWorkspaceMediaPath(src, workingDir, enabled);
+  const resolved = useWorkspaceMediaPath(src, workingDir, enabled, streaming);
   return resolved.pending ? null : <>{children(resolved.src)}</>;
 }

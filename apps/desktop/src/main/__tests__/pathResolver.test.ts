@@ -532,6 +532,24 @@ describe('resolveWorkspacePathBatchCached', () => {
     expect(r2['src/App.tsx']).toEqual(r1['src/App.tsx']);
   });
 
+  // 回复可能先引用产物、文件后写出：调用方要求重查时，缓存里的 none 必须重新搜索；
+  // 已唯一命中的结论照常走缓存，不因重查放大目录遍历。
+  it('re-walks cached negative answers only when asked to revalidate them', async () => {
+    const first = await resolveWorkspacePathBatchCached(['src/App.tsx'], workspace);
+    expect(first['src/App.tsx'].status).toBe('none');
+    const app = write('apps/desktop/src/App.tsx');
+
+    // 不要求重查时仍走缓存；要求重查时重新搜索并写回缓存。
+    expect((await resolveWorkspacePathBatchCached(['src/App.tsx'], workspace))['src/App.tsx'].status).toBe('none');
+    const rechecked = await resolveWorkspacePathBatchCached(['src/App.tsx'], workspace, {}, true);
+    expect(rechecked['src/App.tsx']).toEqual({ status: 'unique', candidates: [app], kind: 'file' });
+
+    // 唯一命中的结论即使要求重查也走缓存（删掉文件后结论不变说明没有重新遍历）。
+    fs.rmSync(app);
+    const kept = await resolveWorkspacePathBatchCached(['src/App.tsx'], workspace, {}, true);
+    expect(kept['src/App.tsx'].candidates).toEqual([app]);
+  });
+
   it('shares its cache with the single-point resolveWorkspacePathCached', async () => {
     const target = write('apps/desktop/src/App.tsx');
     await resolveWorkspacePathBatchCached(['src/App.tsx'], workspace);

@@ -378,6 +378,12 @@ export async function resolveLocalPathSmart(
 const SMART_RESOLVE_CACHE_CAP = 500;
 const smartResolveCache = new Map<string, SmartResolveResult>();
 const smartResolveInflight = new Map<string, Promise<SmartResolveResult>>();
+// When each cached entry was last answered, and re-checks in flight; see
+// `revalidateNegativeLocalPathSmart`.
+const smartResolveCheckedAt = new Map<string, number>();
+const smartRevalidateInflight = new Map<string, Promise<SmartResolveResult>>();
+/** A negative answer younger than this is not re-checked (remount bursts reuse it). */
+const NEGATIVE_RECHECK_MIN_MS = 2_000;
 
 function smartResolveCacheKey(workingDir: string, href: string): string {
   return `${workingDir}::${href}`;
@@ -426,6 +432,19 @@ function smartResultFromBatch(
   return { status: 'none', fallbackAbsPath: resolveLocalPath(href, workingDir) };
 }
 
+function storeSmartResult(key: string, result: SmartResolveResult): void {
+  // Capacity eviction: drop oldest insertion (Map preserves order).
+  if (!smartResolveCache.has(key) && smartResolveCache.size >= SMART_RESOLVE_CACHE_CAP) {
+    const oldest = smartResolveCache.keys().next().value;
+    if (oldest !== undefined) {
+      smartResolveCache.delete(oldest);
+      smartResolveCheckedAt.delete(oldest);
+    }
+  }
+  smartResolveCache.set(key, result);
+  smartResolveCheckedAt.set(key, Date.now());
+}
+
 /** Cache a resolved result, evict if over capacity, and wake every waiter. */
 function settleSmartResult(
   workingDir: string,
@@ -434,12 +453,7 @@ function settleSmartResult(
   result: SmartResolveResult,
 ): void {
   const key = smartResolveCacheKey(workingDir, href);
-  // Capacity eviction: drop oldest insertion (Map preserves order).
-  if (smartResolveCache.size >= SMART_RESOLVE_CACHE_CAP) {
-    const oldest = smartResolveCache.keys().next().value;
-    if (oldest !== undefined) smartResolveCache.delete(oldest);
-  }
-  smartResolveCache.set(key, result);
+  storeSmartResult(key, result);
   smartResolveInflight.delete(key);
   const entry = hrefMap.get(href);
   if (entry) for (const resolve of entry.resolvers) resolve(result);
@@ -539,10 +553,50 @@ export async function resolveLocalPathSmartCached(
   return promise;
 }
 
+/**
+ * Re-check a cached `none` / `multiple` answer. A reply can cite an output file
+ * before it is written, so negative answers are not final for embedded media:
+ * callers re-check at their own boundaries (new mount, stream end, window
+ * focus). The main process skips its TTL cache for these hrefs too, otherwise
+ * it would hand back the same stale answer for 30s. Returns null when there is
+ * nothing to re-check: no cached answer, a unique match, or a negative answer
+ * from the last `NEGATIVE_RECHECK_MIN_MS`.
+ */
+export function revalidateNegativeLocalPathSmart(
+  href: string,
+  workingDir: string,
+): Promise<SmartResolveResult> | null {
+  const key = smartResolveCacheKey(workingDir, href);
+  const cached = smartResolveCache.get(key);
+  if (!cached || cached.status === 'unique') return null;
+  const inflight = smartRevalidateInflight.get(key);
+  if (inflight) return inflight;
+  if (Date.now() - (smartResolveCheckedAt.get(key) ?? 0) < NEGATIVE_RECHECK_MIN_MS) return null;
+  const api = (typeof window !== 'undefined' ? window.electronAPI : undefined) as
+    | { resolvePathBatch?: typeof window.electronAPI.resolvePathBatch }
+    | undefined;
+  if (!api?.resolvePathBatch) return null;
+
+  const lookup = href.startsWith('file://') ? resolveLocalPath(href, workingDir) : href;
+  const promise = api
+    .resolvePathBatch({ hrefs: [lookup], workingDir, revalidateNegative: true })
+    .then((raw) => smartResultFromBatch(href, workingDir, raw[lookup]))
+    .catch(() => cached)
+    .then((result) => {
+      storeSmartResult(key, result);
+      smartRevalidateInflight.delete(key);
+      return result;
+    });
+  smartRevalidateInflight.set(key, promise);
+  return promise;
+}
+
 /** Test-only: drop all cached + in-flight entries and pending batches. */
 export function _clearSmartResolveCache(): void {
   smartResolveCache.clear();
   smartResolveInflight.clear();
+  smartResolveCheckedAt.clear();
+  smartRevalidateInflight.clear();
   pendingBatch = new Map();
   flushScheduled = false;
 }

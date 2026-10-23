@@ -40,6 +40,7 @@ import { _clearSmartResolveCache, localFileUrlToAudioUrl, toLocalFileUrl } from 
 import { MarkdownRenderer } from '../MarkdownRenderer';
 
 afterEach(() => {
+  vi.restoreAllMocks();
   sessionFile.current = null;
   delete (window as unknown as { electronAPI?: unknown }).electronAPI;
   _clearSmartResolveCache();
@@ -107,8 +108,8 @@ describe('MarkdownRenderer workspace-relative media in local sessions', () => {
     sessionFile.current = { sessionId: 's1', workingDir: '/task', ...ownership };
     const resolvePathBatch = vi.fn(async () => batch);
     (window as unknown as { electronAPI: unknown }).electronAPI = { resolvePathBatch };
-    const renderWith = (title?: string) => (
-      <MarkdownRenderer workingDir="/task" currentSessionId="s1" currentSessionTitle={title} renderRichAnswers content={content} />
+    const renderWith = (title?: string, isStreaming = false) => (
+      <MarkdownRenderer workingDir="/task" currentSessionId="s1" currentSessionTitle={title} isStreaming={isStreaming} renderRichAnswers content={content} />
     );
     const view = render(renderWith());
     return { view, renderWith, resolvePathBatch };
@@ -152,6 +153,44 @@ describe('MarkdownRenderer workspace-relative media in local sessions', () => {
   it('keeps the joined path when the workspace has no match', async () => {
     const { view } = mount(richVideo, LOCAL, { 'renders/out/clip.mp4': { status: 'none', candidates: [] } });
     await waitFor(() => expect(mediaSrc(view.container)).toBe(toLocalFileUrl('/task/renders/out/clip.mp4')));
+  });
+
+  // 回复可能先引用产物、文件后写出：没有命中不是最终结论。新挂载、流式结束、窗口重新聚焦时
+  // 重查一次，并要求主进程跳过它对否定结论的缓存；唯一命中不重查。
+  const missing = { 'renders/out/clip.mp4': { status: 'none', candidates: [] } };
+  const later = () => {
+    const now = Date.now();
+    vi.spyOn(Date, 'now').mockImplementation(() => now + 3_000);
+  };
+  it.each(['a later mount', 'the end of streaming', 'window focus'] as const)(
+    'finds a file written after the first lookup on %s',
+    async (boundary) => {
+      const { view, renderWith, resolvePathBatch } = mount(richVideo, LOCAL, missing);
+      if (boundary === 'the end of streaming') view.rerender(renderWith(undefined, true));
+      await waitFor(() => expect(mediaSrc(view.container)).toBe(toLocalFileUrl('/task/renders/out/clip.mp4')));
+
+      later();
+      resolvePathBatch.mockResolvedValue(unique('renders/out/clip.mp4'));
+      if (boundary === 'a later mount') {
+        view.unmount();
+        const again = render(renderWith());
+        await waitFor(() => expect(mediaSrc(again.container)).toBe(toLocalFileUrl('/task/film/renders/out/clip.mp4')));
+      } else {
+        if (boundary === 'window focus') act(() => { window.dispatchEvent(new Event('focus')); });
+        else view.rerender(renderWith(undefined, false));
+        await waitFor(() => expect(mediaSrc(view.container)).toBe(toLocalFileUrl('/task/film/renders/out/clip.mp4')));
+      }
+      expect(resolvePathBatch).toHaveBeenLastCalledWith({ hrefs: ['renders/out/clip.mp4'], workingDir: '/task', revalidateNegative: true });
+    },
+  );
+
+  it('does not search again for a unique match', async () => {
+    const { view, resolvePathBatch } = mount(richVideo, LOCAL, unique('renders/out/clip.mp4'));
+    await waitFor(() => expect(mediaSrc(view.container)).toBe(toLocalFileUrl('/task/film/renders/out/clip.mp4')));
+    later();
+    act(() => { window.dispatchEvent(new Event('focus')); });
+    await act(async () => {});
+    expect(resolvePathBatch).toHaveBeenCalledTimes(1);
   });
 
   // 远程会话的设备归属可能晚于首次渲染才注入，那之前 origin 也是 local；归属没确认就不能拿

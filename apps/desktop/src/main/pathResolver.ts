@@ -504,11 +504,16 @@ export async function resolveWorkspacePathBatch(
  * each href from the shared TTL cache; only misses go through one
  * `resolveWorkspacePathBatch` pass, and their results are written back so later
  * single-point (`resolveWorkspacePathCached`) and batch calls share them.
+ *
+ * `revalidateNegative` treats cached `none` / `multiple` entries as misses: a
+ * reply can cite an output file before it is written, and the caller re-checks
+ * such paths at its own boundaries (new mount, stream end, window focus).
  */
 export async function resolveWorkspacePathBatchCached(
   hrefs: readonly string[],
   workingDir: string,
   options: ResolveOptions = {},
+  revalidateNegative = false,
 ): Promise<Record<string, ResolvePathResult>> {
   const now = Date.now();
   const out: Record<string, ResolvePathResult> = {};
@@ -520,7 +525,7 @@ export async function resolveWorkspacePathBatchCached(
     seen.add(href);
     const key = makeCacheKey(workingDir, href);
     const hit = cache.get(key);
-    if (hit && hit.expireAt > now) {
+    if (hit && hit.expireAt > now && !(revalidateNegative && hit.result.status !== 'unique')) {
       out[href] = hit.result;
     } else {
       if (hit) cache.delete(key);

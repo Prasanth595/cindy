@@ -1819,6 +1819,7 @@ const MarkdownRendererBase = memo(function MarkdownRendererBase({
             src={typeof rawLocalSrc === 'string' ? rawLocalSrc : src}
             workingDir={workingDir}
             enabled={resolveMediaInWorkspace}
+            streaming={isStreaming}
           >
             {(localSrc) => {
               const normalized = normalizeMarkdownImageSrc(localSrc, workingDir, allowPrivilegedLinks);
@@ -2054,7 +2055,7 @@ export const MarkdownRenderer = memo(function MarkdownRenderer(props: MarkdownRe
     // 与 Markdown 图片同一条判定：只在本机会话消息里按任务目录搜索相对路径。
     const resolveInWorkspace = Boolean(props.currentSessionId) && allowPrivilegedLinks && sessionFileCtx.localConfirmed === true;
     return (
-      <WorkspaceMediaSrc src={raw} workingDir={props.workingDir} enabled={resolveInWorkspace}>
+      <WorkspaceMediaSrc src={raw} workingDir={props.workingDir} enabled={resolveInWorkspace} streaming={props.isStreaming ?? false}>
         {(localSrc = raw) => {
           const normalized = localSrc.startsWith('xdt-audio://') && allowPrivilegedLinks ? localSrc : normalizeMarkdownImageSrc(localSrc, props.workingDir, allowPrivilegedLinks);
           if (!normalized) return null;
